@@ -148,7 +148,13 @@ export type ConvertPlanItemResult =
        *  work-item had changed hands at all, let alone whose. */
       executionRecordTakeover?: ExecutionRecordTakeover;
     }
-  | { status: 'refused'; reason: string; assignee?: string }
+  | {
+      status: 'refused';
+      reason: string;
+      assignee?: string;
+      /** WI-10008137: machine-readable refusal code, e.g. 'activation_audit_required'. */
+      code?: string;
+    }
   | { status: 'conflict'; conflict: PlanItemClaim };
 
 /** EI-22427741014249929: the forensic record of a cross-agent execution-record
@@ -645,6 +651,32 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
   }
   if (item.status === 'done' || item.status === 'dropped') {
     return { status: 'refused', reason: `plan item ${opts.itemId} is already ${item.status}` };
+  }
+
+  // ── 0. WI-10008137: no new work on an unaudited draft plan ─────────────────
+  // Every pickup door lands here (plan_items:convert, plan_items:claim's auto-convert,
+  // coord:declare-intent's auto-convert, plans:set-status' claim conversion), so this is
+  // the one place that stops new work starting on a draft plan with no activation audit.
+  // Resuming an item that an open work-item already covers still passes. Runs before
+  // the lease, so a refusal leaves nothing behind. A lookup failure fails OPEN
+  // (logged): the plan's own activation stays fail-closed in with-plan-lock.ts.
+  try {
+    const { checkDraftItemStartGateLive } = await import('../agent-tools/plans/draft-item-start-gate');
+    const refusal = await checkDraftItemStartGateLive({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      slug: opts.planSlug,
+      itemId: opts.itemId,
+      toStatus: 'wip',
+      // The body is already in hand; never re-read it (null = unreadable, gate passes).
+      planContent: typeof read.row?.content === 'string' ? read.row.content : null,
+    });
+    if (refusal) return { status: 'refused', reason: refusal.hint, code: refusal.error };
+  } catch (error) {
+    console.warn(
+      `[plan-items/convert] draft item-start gate skipped for ${opts.planSlug}#${opts.itemId}: ` +
+        (error instanceof Error ? error.message : String(error)),
+    );
   }
 
   // ── 1. Policy + lease FIRST (assignment / work-group / mutual exclusion) ──

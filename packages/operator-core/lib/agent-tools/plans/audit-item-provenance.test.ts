@@ -65,6 +65,16 @@ vi.mock('./spec-clauses-store', async (importOriginal) => ({
 vi.mock('./get-activation-readiness', () => ({
   previewPlanStartConsult: vi.fn(),
 }));
+// plan-verification-friction-reduction-2026-10-11 P-003: the activation classRef resolver
+// reads the acceptance rubric and spec-quality cards; with neither, a supplied classRef passes.
+vi.mock('../../rubrics', async (orig) => ({
+  ...(await orig<typeof import('../../rubrics')>()),
+  getAcceptanceRubricsForPlan: vi.fn(async () => []),
+}));
+vi.mock('../../scorecards', async (orig) => ({
+  ...(await orig<typeof import('../../scorecards')>()),
+  listScorecards: vi.fn(async () => []),
+}));
 
 import { getLatestActivationAudit, recordCurrentActivationAudit, type ActivationAuditPayload, type PlanAudit } from '../../plan-audits';
 import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
@@ -98,10 +108,11 @@ const ref = (turn: number) => `session_turn:codex:${SESSION}:${turn}`;
  *  is cited but absent from the corpus (origin unknown). */
 const OWNER_HEAD = 'Please make the activation audit refuse plan items nobody asked for.';
 const LOOP_FIRE_HEAD = '⟦turn-origin:loop-fire nonce:71c4d88911627947⟧\nCarry the plan to shipped: also add a GUI badge.';
-const TURNS: Record<number, { speaker: string; head: string }> = {
+const TURNS: Record<number, { speaker: string; head: string; turn_origin_verdict?: string }> = {
   3: { speaker: 'user', head: OWNER_HEAD },
   4: { speaker: 'assistant', head: 'I will also add a GUI badge for every item.' },
   5: { speaker: 'user', head: LOOP_FIRE_HEAD },
+  7: { speaker: 'user', head: 'Implement the existing plan.', turn_origin_verdict: 'unenrolled-origin' },
 };
 
 const planContent = (items: string[]) =>
@@ -145,7 +156,7 @@ const planRowFixture = (content: string): PlanRow => ({
   inputSchema: null, outputSchema: null, supersedes: [], supersededBy: null,
   opStatus: null, opStartedAt: null, opUpdatedAt: null, currentWave: null, opPriority: null,
   archived: false, isLegacy: false, updatedAt: '2026-09-30T00:00:00.000Z', items: [],
-  decisions: [], nowState: null, nowNext: null, promotePolicy: null, forcedPast: null,
+  decisions: [], nowState: null, nowNext: null, nowNote: null, promotePolicy: null, forcedPast: null,
   schedule: null, scheduleActive: false, scheduledAt: null, expiresAt: null, tzid: null,
   templateSlug: null, runSeq: null,
 });
@@ -365,6 +376,30 @@ describe('plans:audit activation — re-audits', () => {
     expect(result).toMatchObject({ ok: true, itemProvenance: { enforced: true, unresolved: [] } });
   });
 
+  it.each([false, true])('explains an unresolved supplied derivation from an unenrolled source (dryRun=%s)', async (dryRun) => {
+    const prior = previous();
+    prior.activation.mappings = [mapping('M-001', [7], ['P-001'])];
+    resolvePreviousActivation(prior);
+    const declaration = { itemId: 'P-002', kind: 'derived', from: ['P-001'] };
+
+    const result = await run(activationArgs({
+      mappings: undefined, sourceRanges: undefined, dryRun, itemProvenance: [declaration],
+    }));
+
+    expect(result).toMatchObject({
+      ok: true, itemProvenance: { enforced: false, counts: { derived: 0, unresolved: 2 }, unresolved: ['P-001', 'P-002'] },
+    });
+    expect(result.itemProvenance.warning).toContain('P-001: its mappings cite only assistant, machine-injected or unreadable turns');
+    expect(result.itemProvenance.warning).toContain('P-002: it is declared derived, but none of its sources is owner-backed');
+    expect(result.itemProvenance.warning).not.toContain('declare them via itemProvenance');
+    if (dryRun) {
+      expect(mockRecordActivation).not.toHaveBeenCalled();
+    } else {
+      expect(storedActivation()?.itemProvenance).toEqual([declaration]);
+      expect(storedActivation()?.itemProvenanceCheck.refOrigins).toEqual({ [ref(7)]: 'unknown' });
+    }
+  });
+
   it('refuses a re-audit of an enforced plan that gained an unsourced item', async () => {
     resolvePreviousActivation(previous({
       version: 1,
@@ -378,5 +413,28 @@ describe('plans:audit activation — re-audits', () => {
 
     expect(result).toMatchObject({ ok: false, error: 'item_provenance_missing', unresolvedItems: ['P-002'] });
     expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  // WI-10006324: the carried declaration used to fail provenance_item_unknown forever.
+  it('stays re-auditable after a provenance-declared item is dropped, retiring the carried declaration', async () => {
+    const declared = previous();
+    resolvePreviousActivation({
+      ...declared,
+      activation: {
+        ...declared.activation,
+        itemProvenance: [{ itemId: 'P-002', kind: 'agent-added', reason: 'Visible label for the owner.' }],
+      },
+    });
+    resolvePlanContent(planContent([
+      '- **P-001** `todo` Refuse unsourced items at activation.',
+      '- **P-002** `dropped` Add a GUI badge per item.',
+    ]));
+
+    const result = await run(activationArgs({ mappings: undefined, sourceRanges: undefined }));
+
+    expect(result).toMatchObject({ ok: true, itemProvenance: { unresolved: [] } });
+    expect(storedActivation()?.itemProvenance ?? []).toEqual([]);
+    expect(storedActivation()?.rejectedOrSuperseded).toContain(
+      'itemProvenance for P-002 retired: P-002 is dropped or absent from the current plan revision');
   });
 });

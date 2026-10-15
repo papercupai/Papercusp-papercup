@@ -124,7 +124,8 @@ describe('su ideation outcome readback (real PG — P-003)', () => {
     // Origin isolation: the scout row sharing the deprecated ref is NOT ours.
     expect(byId.has('scout-dep')).toBe(false);
 
-    expect(res.summary).toEqual({ won: 1, lost: 1, pending: 1, graded: 1, total: 3 });
+    // `unresolvable` (scout-su-ideate-pipeline-gaps-2026-10-08 P-002): no paused rail here, so 0.
+    expect(res.summary).toEqual({ won: 1, lost: 1, pending: 1, unresolvable: 0, graded: 1, total: 3 });
     expect(res.outcomesError).toBeUndefined();
 
     // The priming leg still composes: the graded filing appears, newest-first.

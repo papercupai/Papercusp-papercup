@@ -23,8 +23,10 @@
  *    `searchForWorkspaceRoot`, never a hand list.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isInForeignHive } from './lib/foreign-hive-submodules.mjs';
 import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -61,9 +63,18 @@ export const PLAIN_CONFIG_EXEMPTIONS = new Set([
   'libs/agent-chat/vitest.config.ts',
   'libs/generic/git-graph/vitest.config.ts',
   'libs/generic/ui-primitives/vitest.config.ts',
+  // Same class (WI-6554700010009161): libs/generic/rrf is github.com/Papercusp/rrf and its config
+  // deliberately follows @papercusp/search's standalone route.
+  // A registered foreign-hive submodule (scripts/lib/foreign-hive-submodules.mjs, e.g. the drill
+  // fixture app apps/slack-asana-bug-drill) needs NO entry here: it is another hive's code, judged by
+  // that hive's own gate, so declaredWorkspaceDirs never collects it (WI-6554700010009815).
+  'libs/generic/rrf/vitest.config.ts',
   // node:test package (`node --test src/**/*.node-test.ts`); its vitest config is `include: []`
   // and runs nothing, so it has no pass proofs to record.
   'libs/papercusp/packages/cli/vitest.config.ts',
+  // Standalone Papercusp submodule (github.com/Papercusp/plan-parser): it owns its
+  // Vitest config and cannot import this superproject's private test-config package.
+  'libs/generic/plan-parser/vitest.config.ts',
 ]);
 
 function normalizePath(filePath) {
@@ -137,10 +148,21 @@ function workspacePatterns(rootPackage) {
   return Array.isArray(workspaces) ? workspaces : workspaces?.packages ?? [];
 }
 
+/** A workspace glob as a whole-path matcher: `*` stands for one path segment's characters. */
+function workspaceGlobMatcher(pattern) {
+  const source = pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*');
+  return new RegExp(`^${source}$`);
+}
+
 function declaredWorkspaceDirs(root = ROOT) {
   const rootPackage = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   const dirs = new Set();
-  for (const pattern of workspacePatterns(rootPackage)) {
+  const patterns = workspacePatterns(rootPackage);
+  // npm honours `!pattern` exclusions (e.g. `!apps/*-checkpoint`); a directory they exclude is
+  // not a workspace, so its config is not declared (WI-6554700010009161).
+  const excluded = patterns.filter((p) => p.startsWith('!')).map((p) => workspaceGlobMatcher(p.slice(1)));
+  for (const pattern of patterns) {
+    if (pattern.startsWith('!')) continue;
     if (pattern.endsWith('/*')) {
       const base = pattern.slice(0, -2);
       const absoluteBase = join(root, base);
@@ -154,7 +176,12 @@ function declaredWorkspaceDirs(root = ROOT) {
     }
     if (existsSync(join(root, pattern, 'package.json'))) dirs.add(pattern);
   }
-  return [...dirs].sort();
+  // A registered foreign-hive submodule (scripts/lib/foreign-hive-submodules.mjs) is another hive's
+  // code, judged by that hive's own gate, so its configs are not this tree's population
+  // (WI-6554700010009815).
+  return [...dirs]
+    .filter((dir) => !excluded.some((re) => re.test(normalizePath(dir))) && !isInForeignHive(normalizePath(dir)))
+    .sort();
 }
 
 function collectWorkspaceConfigs(workspaceDir, root, out) {
@@ -167,8 +194,10 @@ function collectWorkspaceConfigs(workspaceDir, root, out) {
   }
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
-        collectWorkspaceConfigs(join(workspaceDir, entry.name), root, out);
+      const childDir = join(workspaceDir, entry.name);
+      // A foreign hive nested under a declared workspace is skipped for the same reason.
+      if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.') && !isInForeignHive(normalizePath(childDir))) {
+        collectWorkspaceConfigs(childDir, root, out);
       }
       continue;
     }
@@ -233,7 +262,7 @@ export async function main(root = ROOT) {
 // No top-level await here: this module is IMPORTED on the gate's hot path (executed-source-map.mjs,
 // test-config/vitest-config.ts), and a loader that transforms it to CJS rejects top-level await at
 // transform time — that took the green-checkpoint down before any suite ran (WI-10003808).
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   main().then(
     (code) => {
       process.exitCode = code;

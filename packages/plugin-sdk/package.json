@@ -6,7 +6,9 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "pack:dist": "node scripts/pack-dist.mjs",
+    "typecheck": "bash ../../scripts/pc-heavy.sh tsc --noEmit -p tsconfig.json"
   },
   "exports": {
     ".": {
@@ -18,6 +20,21 @@
       "types": "./src/iframe.ts",
       "import": "./src/iframe.ts",
       "default": "./src/iframe.ts"
+    },
+    "./provider": {
+      "types": "./src/provider.ts",
+      "import": "./src/provider.ts",
+      "default": "./src/provider.ts"
+    },
+    "./provider-daemon": {
+      "types": "./src/provider-daemon.ts",
+      "import": "./src/provider-daemon.ts",
+      "default": "./src/provider-daemon.ts"
+    },
+    "./provider-conformance": {
+      "types": "./src/provider-conformance.ts",
+      "import": "./src/provider-conformance.ts",
+      "default": "./src/provider-conformance.ts"
     }
   },
   "dependencies": {
@@ -25,5 +42,17 @@
   },
   "devDependencies": {
     "@papercusp/test-config": "*"
+  },
+  "peerDependencies": {
+    "@types/node": ">=18",
+    "@types/react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "@types/node": {
+      "optional": true
+    },
+    "@types/react": {
+      "optional": true
+    }
   }
 }

@@ -17,7 +17,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
 
 const hb = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -57,6 +57,7 @@ const {
   listActiveAwaitsForKey,
   fireAwaitsForKey,
   listParkedAwaitsForSubscribers,
+  hasPendingDeliberateWakeDelivery,
   listVerifiedWaitTakeoversForSubscribers,
   countActiveAwaitsByPrefixes,
   countActiveAwaitsByKeyShapes,
@@ -77,6 +78,7 @@ const { defineAgentObligation, evaluateAgentObligations } = await import('../../
 const { classifyVerifiedWaitTimeout } = await import('./verified-wait');
 const { observeCheckpointProducer } = await import('./checkpoint-verified-wait');
 import type { ProducerHealthCertificate } from './verified-wait';
+import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
 
 let rootSql: postgres.Sql;
 
@@ -86,6 +88,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -176,6 +179,16 @@ beforeAll(async () => {
       taken_by text, last_progress_at timestamptz,
       admission text, admitted_at timestamptz, admitted_by text
     )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.routines (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default',
+      target_owner_id text, active boolean NOT NULL DEFAULT true,
+      reschedule_interval_sec integer
+    )`);
+  await rootSql.unsafe(`CREATE TABLE harness_shared.audit_log (
+    id text PRIMARY KEY, ts bigint NOT NULL, actor text NOT NULL, action text NOT NULL,
+    subject text, details jsonb, workspace_id text NOT NULL DEFAULT 'default'
+  )`);
   hb.sql = rootSql;
 }, 90_000);
 
@@ -189,6 +202,8 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.predicate_watches`;
   await rootSql`TRUNCATE harness_shared.event_key_fires`;
   await rootSql`TRUNCATE harness_shared.work_items`;
+  await rootSql`TRUNCATE harness_shared.routines`;
+  await rootSql`TRUNCATE harness_shared.audit_log`;
 });
 
 async function waitForAnnouncementAdvisoryLock(eventKey: string, expected: 'held' | 'waiting') {
@@ -484,6 +499,79 @@ describe('await-event store (PG)', () => {
     expect(await reconcileFiredWakeDeliveries()).toBe(1);
     expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${wake.id}`).toHaveLength(1);
     expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${expire.id}`).toHaveLength(0);
+  });
+
+  it('matches filtered timeout suppression against the latched key-fire payload', async () => {
+    const mismatched = await registerAwait({
+      subscriberId: 'filtered-timeout-mismatch',
+      eventKey: 'timeout:filtered:mismatch',
+      timeoutSec: 60,
+      timeoutBehavior: 'wake',
+      payloadFilter: { installId: 'papercusp' },
+    });
+    const matching = await registerAwait({
+      subscriberId: 'filtered-timeout-match',
+      eventKey: 'timeout:filtered:match',
+      timeoutSec: 60,
+      timeoutBehavior: 'wake',
+      payloadFilter: { installId: 'papercusp' },
+    });
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET created_at = now() - interval '2 minutes',
+             expires_ts = now() - interval '1 minute'
+       WHERE id IN (${mismatched.id}, ${matching.id})
+    `;
+
+    await Promise.all([
+      recordKeyFire({ eventKey: mismatched.eventKey, payload: { installId: 'restart' } }),
+      recordKeyFire({ eventKey: matching.eventKey, payload: { installId: 'papercusp' } }),
+    ]);
+    await rootSql`
+      UPDATE harness_shared.event_key_fires
+         SET last_fired_at = now() - interval '90 seconds'
+       WHERE event_key IN (${mismatched.eventKey}, ${matching.eventKey})
+    `;
+
+    const timedOut = await fireTimedOutAwaits();
+    const timedOutIds = timedOut.map((row) => row.id);
+    expect(timedOutIds).toContain(mismatched.id);
+    expect(timedOutIds).not.toContain(matching.id);
+  });
+
+  it('does not claim exact or pattern one-shot awaits after their deadline', async () => {
+    const exact = await registerAwait({
+      subscriberId: 'expired-exact',
+      eventKey: 'expired:exact',
+      timeoutSec: 60,
+    });
+    const filteredExact = await registerAwait({
+      subscriberId: 'expired-filtered-exact',
+      eventKey: 'expired:filtered-exact',
+      timeoutSec: 60,
+      payloadFilter: { ready: true },
+    });
+    const pattern = await registerAwait({
+      subscriberId: 'expired-pattern',
+      eventKey: 'expired:pattern:*',
+      timeoutSec: 60,
+      payloadFilter: { ready: true },
+    });
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET expires_ts = now() - interval '1 second'
+       WHERE id IN (${exact.id}, ${filteredExact.id}, ${pattern.id})
+    `;
+
+    expect(await fireAwaitsForKey({ eventKey: exact.eventKey, payload: { ready: true } })).toEqual([]);
+    expect(await fireAwaitsForKey({ eventKey: filteredExact.eventKey, payload: { ready: true } })).toEqual([]);
+    expect(await fireAwaitsForKey({ eventKey: 'expired:pattern:one', payload: { ready: true } })).toEqual([]);
+    const rows = await rootSql<{ id: number; fired_at: Date | null }[]>`
+      SELECT id, fired_at FROM harness_shared.event_awaits
+       WHERE id IN (${exact.id}, ${filteredExact.id}, ${pattern.id})
+       ORDER BY id
+    `;
+    expect(rows.map((row) => row.fired_at)).toEqual([null, null, null]);
   });
 
   it('serializes a recovery sweep against the original one-shot delivery writer', async () => {
@@ -846,9 +934,11 @@ describe('await-event store (PG)', () => {
     expect(rows[0].payload).not.toHaveProperty('held_open_reason');
   });
 
-  it('same-key supersession clears only the event blocker and preserves unrelated blockers', async () => {
+  // EI-25231851216237441: renewing a declaration does not fire its gate.
+  it.each([false, true])('same-key announcement renewal preserves active event blockers (unrelated blocker: %s)', async (withUnrelatedBlocker) => {
     const eventKey = 'gate:announcement-supersede-reconciles-blocker';
     const first = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    const blockers = [eventBlocker(eventKey), ...(withUnrelatedBlocker ? [runtimeBlocker()] : [])];
     await rootSql`
       INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
       VALUES (
@@ -857,13 +947,16 @@ describe('await-event store (PG)', () => {
           _claimHold: true,
           held_open_by: 'test-agent',
           held_open_reason: 'blocked',
-          externalBlockers: [eventBlocker(eventKey), runtimeBlocker()],
+          externalBlockers: blockers,
         })}::text::jsonb
       )
     `;
 
     const second = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
     expect(second.causalGeneration).toBeGreaterThan(first.causalGeneration ?? 0);
+    expect(second.firedAt).toBeNull();
+    expect(second.firedReason).toBeNull();
+    expect(await getKeyFireLatch(eventKey)).toBeNull();
 
     const rows = await rootSql`
       SELECT status, payload
@@ -871,19 +964,13 @@ describe('await-event store (PG)', () => {
        WHERE feature_id = 'EI-supersede-reconcile'
     `;
     expect(rows[0].status).toBe('blocked');
-    expect(rows[0].payload).toMatchObject({
-      externalBlockers: [
-        expect.objectContaining({ kind: 'event', ref: eventKey, status: 'cleared' }),
-        expect.objectContaining({ kind: 'runtime', ref: 'runtime:still-live', status: 'active' }),
-      ],
-    });
+    expect(rows[0].payload.externalBlockers).toEqual(blockers);
     expect(rows[0].payload).toHaveProperty('_claimHold', true);
     expect(rows[0].payload).toHaveProperty('held_open_reason', 'blocked');
   });
 
-  // EI-20721448404004954: firing is the THIRD settlement path. Retirement and
-  // supersession already reconciled blockers; a gate that actually OPENED did not,
-  // so the success case was the one that stranded finished work.
+  // EI-20721448404004954: a real fire must settle blockers as explicit retirement
+  // does. Renewing the declaration above is not a settlement path.
   it('firing clears the matching event blocker and restores an auto-blocked issue', async () => {
     const eventKey = 'gate:announcement-fire-reconciles-blocker';
     const otherKey = 'gate:announcement-fire-unrelated-gate';
@@ -940,6 +1027,62 @@ describe('await-event store (PG)', () => {
     expect(control[0].payload).toMatchObject({
       externalBlockers: [expect.objectContaining({ kind: 'event', ref: otherKey, status: 'active' })],
     });
+  });
+
+  it('a pause completion event retains the owner pause while releasing an ordinary dependency', async () => {
+    const eventKey = 'work-item:done:WI-pause-task';
+    await registerAnnouncement({ subscriberId: 'pause-driver', eventKey, scopeKind: 'global' });
+    const pausePayload = {
+      _claimHold: true, claim_hold_by: 'pause-driver', claim_hold_reason: 'owner-directed pause',
+      claim_hold_at: '2026-09-24T23:34:00.000Z',
+      claim_hold_release: {
+        condition: 'WI-pause-task reaches terminal done, ending this system-wide pause.',
+        owner: 'pause-driver', trigger: eventKey, reachability: 'satisfied', evidence: 'pause task completed',
+      },
+      keepMe: { ownerDecision: 'retain until explicit resume' },
+    };
+    const dependencyPayload = { ...pausePayload, claim_hold_reason: 'wait for the pause notification task',
+      claim_hold_release: { ...pausePayload.claim_hold_release, condition: 'the notification task completes' } };
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES ('EI-pause-contract', 'open', 'bug', ${JSON.stringify(pausePayload)}::text::jsonb),
+             ('EI-pause-dependency-control', 'open', 'bug', ${JSON.stringify(dependencyPayload)}::text::jsonb)`;
+    await expect(stampAnnouncementsFired(eventKey, { firedBy: 'pause-driver' })).resolves.toBe(1);
+    const rows = await rootSql<{ feature_id: string; status: string; payload: Record<string, unknown> }[]>`
+      SELECT feature_id, status, payload FROM harness_shared.work_items ORDER BY feature_id`;
+    const pause = rows.find(row => row.feature_id === 'EI-pause-contract')!;
+    expect(pause.status).toBe('open');
+    expect(pause.payload).toEqual(pausePayload);
+    const control = rows.find(row => row.feature_id === 'EI-pause-dependency-control')!;
+    expect(control.payload).toEqual({ keepMe: pausePayload.keepMe });
+    const receipts = await rootSql<{ subject: string }[]>`
+      SELECT subject FROM harness_shared.audit_log WHERE action = 'work_items:durable_park:clear' ORDER BY subject`;
+    expect(receipts.map(row => row.subject)).toEqual(['EI-pause-dependency-control']);
+
+    // Repairing the contract retains the park. Only this episode's explicit
+    // resume event may subsequently release it; repeating the pause event cannot.
+    const resumeKey = 'owner-resume:pause-episode:WI-pause-task';
+    await registerAnnouncement({ subscriberId: 'resume-authority-driver', eventKey: resumeKey, scopeKind: 'global' });
+    const repairedPayload = { ...pausePayload, claim_hold_release: {
+      condition: 'Verified explicit owner resume for pause episode WI-pause-task is recorded.',
+      owner: 'resume-authority-driver', trigger: resumeKey,
+      reachability: 'reachable', evidence: 'episode-specific resume declaration, not yet fired',
+    } };
+    await rootSql`
+      UPDATE harness_shared.work_items SET payload = ${JSON.stringify(repairedPayload)}::text::jsonb
+      WHERE feature_id = 'EI-pause-contract'`;
+    await stampAnnouncementsFired(eventKey, { firedBy: 'pause-driver' });
+    const retained = await rootSql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload FROM harness_shared.work_items WHERE feature_id = 'EI-pause-contract'`;
+    expect(retained[0].payload).toEqual(repairedPayload);
+    await expect(stampAnnouncementsFired(resumeKey, { firedBy: 'resume-authority-driver' })).resolves.toBe(1);
+    const resumed = await rootSql<{ status: string; payload: Record<string, unknown> }[]>`
+      SELECT status, payload FROM harness_shared.work_items WHERE feature_id = 'EI-pause-contract'`;
+    expect(resumed[0]).toEqual({ status: 'open', payload: { keepMe: pausePayload.keepMe } });
+    const resumeReceipts = await rootSql<{ subject: string; trigger: string }[]>`
+      SELECT subject, details->>'trigger' AS trigger FROM harness_shared.audit_log
+      WHERE action = 'work_items:durable_park:clear' AND subject = 'EI-pause-contract'`;
+    expect(resumeReceipts).toEqual([{ subject: 'EI-pause-contract', trigger: resumeKey }]);
   });
 
   it('firing clears only matching typed durable parks and preserves a coexisting lease', async () => {
@@ -1055,6 +1198,52 @@ describe('await-event store (PG)', () => {
     const assigned = rows.find((row) => row.feature_id === 'EI-fire-durable-park-assigned')!;
     expect(assigned.taken_by).toBe('active-worker');
     expect(assigned.payload).toHaveProperty('claim_hold_by', 'park-owner');
+    const receipts = await rootSql`SELECT subject, actor, details FROM harness_shared.audit_log
+      WHERE action = 'work_items:durable_park:clear' ORDER BY subject`;
+    expect(receipts.map((row) => row.subject)).toEqual(['EI-fire-durable-park', 'EI-fire-durable-park-lease']);
+    expect(receipts[0]).toMatchObject({ actor: 'emit', details: { reasonCode: 'condition-satisfied',
+      trigger: eventKey, priorPark: { by: 'park-owner', reason: 'resume when the gate opens',
+        at: '2026-09-08T18:00:00.000Z' }, preservedLease: false } });
+    expect(receipts[1].details.preservedLease).toBe(true);
+    await expect(stampAnnouncementsFired(eventKey, { firedBy: 'emit' })).resolves.toBe(0);
+    expect(await rootSql`SELECT id FROM harness_shared.audit_log`).toHaveLength(2);
+  });
+
+  it('rolls back the announcement fire and park clear when its audit receipt cannot commit', async () => {
+    const eventKey = 'gate:audit-receipt-rollback';
+    await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    const payload = { _claimHold: true, claim_hold_by: 'park-owner',
+      claim_hold_release: { condition: 'gate opens', owner: 'gate-owner', trigger: eventKey,
+        reachability: 'reachable', evidence: 'producer declared' } };
+    await rootSql`INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES ('EI-audit-rollback', 'open', 'bug', ${JSON.stringify(payload)}::text::jsonb)`;
+    await rootSql`ALTER TABLE harness_shared.audit_log ADD CONSTRAINT reject_park_receipt
+      CHECK (action <> 'work_items:durable_park:clear')`;
+    try {
+      await expect(stampAnnouncementsFired(eventKey, { firedBy: 'emit' })).rejects.toMatchObject({ code: '23514' });
+      expect((await rootSql`SELECT payload FROM harness_shared.work_items WHERE feature_id = 'EI-audit-rollback'`)[0].payload).toEqual(payload);
+      expect((await findAnnouncementsForKey(eventKey))[0].firedAt).toBeNull();
+    } finally {
+      await rootSql`ALTER TABLE harness_shared.audit_log DROP CONSTRAINT reject_park_receipt`;
+    }
+  });
+
+  it.each(['work-item:claimable', 'release:deployed', 'release:deployed:abc123',
+    'coord:inbox-wake:park-owner', 'fleet:item-completed:test', 'work-item:unblocked'])
+  ('firing a declared broad trigger retains the specific-condition park: %s', async (eventKey) => {
+    await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    const payload = { _claimHold: true, claim_hold_by: 'park-owner',
+      claim_hold_reason: 'owner grade has not cleared', claim_hold_at: '2026-09-08T18:00:00.000Z',
+      held_open_by: 'independent-reviewer', held_open_reason: 'review pending',
+      claim_hold_release: { condition: 'owner grade is cleared', owner: 'grade-owner',
+        trigger: eventKey, reachability: 'reachable', evidence: 'wake is registered' } };
+    await rootSql`INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES ('EI-broad-fire-durable-park', 'open', 'bug', ${JSON.stringify(payload)}::text::jsonb)`;
+    await expect(stampAnnouncementsFired(eventKey, { firedBy: 'unrelated-producer' })).resolves.toBe(1);
+    const rows = await rootSql`SELECT payload FROM harness_shared.work_items
+      WHERE feature_id = 'EI-broad-fire-durable-park'`;
+    expect(rows[0].payload).toEqual(payload);
+    expect(await rootSql`SELECT id FROM harness_shared.audit_log`).toHaveLength(0);
   });
 
   it('guards announcement retirement by owner, generation, and fired state', async () => {
@@ -1287,6 +1476,52 @@ describe('await-event store (PG)', () => {
     });
   });
 
+  it('protects an active loop inbox-wake while preserving the loopless opt-out', async () => {
+    const owner = 'looping-owner';
+    const eventKey = 'coord:inbox-wake:' + owner;
+    await rootSql`
+      INSERT INTO harness_shared.routines (workspace_id, target_owner_id, active, reschedule_interval_sec)
+      VALUES ('default', ${owner}, TRUE, 60)
+    `;
+    const wake = await upsertInboxWakeAwait({
+      subscriberId: owner,
+      eventKey,
+      wakeHandle: { sessionId: 'loop-owner' } as never,
+    });
+
+    await expect(cancelAwaitDetailed({
+      awaitId: wake.id,
+      subscriberId: owner,
+      source: 'operator',
+      confirmStanding: true,
+    })).resolves.toMatchObject({
+      awaitId: wake.id,
+      cancelled: false,
+      eventKey,
+      once: false,
+      error: 'active_loop_inbox_wake_requires_loop_end',
+    });
+    expect(await listActiveAwaits(owner)).toHaveLength(1);
+
+    await rootSql`
+      UPDATE harness_shared.routines
+         SET active = FALSE
+       WHERE target_owner_id = ${owner}
+    `;
+    await expect(cancelAwaitDetailed({
+      awaitId: wake.id,
+      subscriberId: owner,
+      source: 'operator',
+      confirmStanding: true,
+    })).resolves.toMatchObject({
+      awaitId: wake.id,
+      cancelled: true,
+      eventKey,
+      once: false,
+    });
+    expect(await listActiveAwaits(owner)).toHaveLength(0);
+  });
+
   it('never exposes or cancels an announcement through ordinary await ids', async () => {
     const eventKey = 'gate:await-id-must-not-retire-announcement';
     const announcement = await registerAnnouncement({
@@ -1321,6 +1556,13 @@ describe('await-event store (PG)', () => {
       confirmStanding: true,
     })).toBe(true);
     expect(await cancelAwait({ awaitId: internalCancelled.id, subscriberId: 'leader' })).toBe(true);
+    const reasons = await rootSql<Array<{ id: number; cancel_reason: string | null }>>`
+      SELECT id, cancel_reason FROM harness_shared.event_awaits
+       WHERE id IN (${operatorCancelled.id}, ${internalCancelled.id})`;
+    expect(Object.fromEntries(reasons.map((row) => [Number(row.id), row.cancel_reason]))).toEqual({
+      [operatorCancelled.id]: 'operator',
+      [internalCancelled.id]: AWAIT_CANCEL_REASONS.internalCleanup,
+    });
     expect(await listOperatorCancelledAwaits('leader', [key, 'fleet:drained:alpha'])).toMatchObject([
       { id: operatorCancelled.id, subscriberId: 'leader', eventKey: key },
     ]);
@@ -1329,23 +1571,64 @@ describe('await-event store (PG)', () => {
     expect(await listOperatorCancelledAwaits('leader', [key])).toEqual([]);
   });
 
-  // EI-10541: on a successful claim, the claim path cancels the agent's stale idle-park
-  // `work-item:claimable` await(s) so they stop firing spurious timeout wakes while it works.
-  it("cancelClaimableAwaits cancels ONLY the caller's work-item:claimable await(s), key- and subscriber-scoped", async () => {
-    // sub-1's standing idle-park claimable await (once:false) — the one that lingers post-claim
-    await registerAwait({ subscriberId: 'sub-1', eventKey: 'work-item:claimable', once: false, timeoutSec: 1800 });
-    // sub-1's claimable await from a re-register (once:true variant) — also stale on claim
-    await registerAwait({ subscriberId: 'sub-1', eventKey: 'work-item:claimable', once: true });
-    // sub-1's await on an UNRELATED key → must survive (only claimable is mutually exclusive with a claim)
-    await registerAwait({ subscriberId: 'sub-1', eventKey: 'lock:grant:xyz' });
-    // a PEER's claimable await → subscriber-scoped, must survive
-    await registerAwait({ subscriberId: 'sub-2', eventKey: 'work-item:claimable', once: false });
+  // EI-10541: a successful claim retires its stale one-shot idle wait, while a reusable
+  // once:false watch remains armed. A paused fleet explicitly retires standing wake watches.
+  it('cancelClaimableAwaits cancels one-shot wake waits on claim and standing wake watches on pause', async () => {
+    const standingWake = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'work-item:claimable',
+      policy: 'wake',
+      once: false,
+      timeoutSec: 1800,
+    });
+    const oneShotWake = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'work-item:claimable',
+      policy: 'wake',
+      once: true,
+    });
+    const standingNotify = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'work-item:claimable',
+      policy: 'notify',
+      once: false,
+    });
+    const unrelated = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'lock:grant:xyz',
+      policy: 'wake',
+    });
+    const peerWake = await registerAwait({
+      subscriberId: 'sub-2',
+      eventKey: 'work-item:claimable',
+      policy: 'wake',
+      once: false,
+    });
 
-    expect(await cancelClaimableAwaits('sub-1')).toBe(2); // both of sub-1's claimable rows
-    expect(await cancelClaimableAwaits('sub-1')).toBe(0); // idempotent: already cancelled → no-op
+    // A successful claim removes the stale one-shot wake, not the reusable watch or inbox interest.
+    expect(await cancelClaimableAwaits('sub-1')).toBe(1);
+    expect(await cancelClaimableAwaits('sub-1')).toBe(0);
+    expect((await listActiveAwaits('sub-1')).map((r) => r.id).sort()).toEqual(
+      [standingWake.id, standingNotify.id, unrelated.id].sort(),
+    );
 
-    expect((await listActiveAwaits('sub-1')).map((r) => r.eventKey)).toEqual(['lock:grant:xyz']); // unrelated await kept
-    expect((await listActiveAwaits('sub-2')).map((r) => r.eventKey)).toEqual(['work-item:claimable']); // peer's kept
+    // Exact one-shot registrations supersede each other across policies, so add this
+    // notify wait after the wake wait is retired and verify claim cleanup leaves it alone.
+    const oneShotNotify = await registerAwait({
+      subscriberId: 'sub-1',
+      eventKey: 'work-item:claimable',
+      policy: 'notify',
+      once: true,
+    });
+    expect(await cancelClaimableAwaits('sub-1')).toBe(0);
+
+    // A paused member must not be re-woken by future claimable transitions.
+    expect(await cancelClaimableAwaits('sub-1', { includeStanding: true })).toBe(1);
+    expect(await cancelClaimableAwaits('sub-1', { includeStanding: true })).toBe(0);
+    expect((await listActiveAwaits('sub-1')).map((r) => r.id).sort()).toEqual(
+      [standingNotify.id, oneShotNotify.id, unrelated.id].sort(),
+    );
+    expect((await listActiveAwaits('sub-2')).map((r) => r.id)).toEqual([peerWake.id]);
   });
 
   // EI-12457: cancelAwaitsForSubscribersOnKeys — the shared primitive behind sibling-
@@ -1410,7 +1693,7 @@ describe('await-event store (PG)', () => {
     const ownerId = 'sub-obligation-roundtrip';
     const now = new Date();
     const deadlineAt = new Date(now.getTime() + 60_000).toISOString();
-    const obligation = defineAgentObligation({
+    const obligationInput: Parameters<typeof defineAgentObligation>[0] = {
       ruleId: 'plan-independent-verification',
       ruleRevision: 'v1',
       family: 'independent-verification',
@@ -1438,7 +1721,8 @@ describe('await-event store (PG)', () => {
         nextDeadlineAt: deadlineAt,
         cancellationRef: 'plan:plan-a',
       },
-    });
+    };
+    const obligation = defineAgentObligation(obligationInput);
     const deps = {
       captureHandle: vi.fn(async () => ({ handle: null, note: 'integration probe' })),
       listHistory: listLifecycleBoundAwaits,
@@ -1465,12 +1749,29 @@ describe('await-event store (PG)', () => {
     );
     expect(warm).toMatchObject({ desired: 1, registered: 0, retained: 1, cancelled: 0 });
 
-    const cleared = await reconcileAgentObligationReminders(
+    // P-010: an obligation this turn did not evaluate is unknown, not resolved,
+    // so an empty agenda keeps its pending reminder (retention horizon).
+    const unevaluated = await reconcileAgentObligationReminders(
       { ownerId, agenda: evaluateAgentObligations([], now.toISOString()), now },
       deps,
     );
+    expect(unevaluated).toMatchObject({ desired: 0, registered: 0, cancelled: 0, retainedUnevaluated: 1 });
+    expect((await listLifecycleBoundAwaits(ownerId, 'agent-obligation'))[0]?.cancelledAt).toBeNull();
+
+    // Leaving scope is a MEASURED discharge: the same obligation (same id, the
+    // id ignores status) evaluated not-applicable, with no change signal left to
+    // watch, cancels the row, and the real ledger keeps the reason the delivery
+    // metric reads (WI-10005938).
+    const discharged = defineAgentObligation({ ...obligationInput, status: 'not-applicable', changeSignal: undefined });
+    expect(discharged.id).toBe(obligation.id);
+    const cleared = await reconcileAgentObligationReminders(
+      { ownerId, agenda: evaluateAgentObligations([discharged], now.toISOString()), now },
+      deps,
+    );
     expect(cleared).toMatchObject({ desired: 0, registered: 0, retained: 0, cancelled: 1 });
-    expect((await listLifecycleBoundAwaits(ownerId, 'agent-obligation'))[0]?.cancelledAt).not.toBeNull();
+    const [settled] = await listLifecycleBoundAwaits(ownerId, 'agent-obligation');
+    expect(settled?.cancelledAt).not.toBeNull();
+    expect(settled?.cancelReason).toBe('obligation-discharged');
   });
 
   it('events:await supersession retires only one-shot rows and preserves the standing inbox wake', async () => {
@@ -1718,6 +2019,8 @@ describe('await-event store (PG)', () => {
           subscriberId: 'sub-a',
           eventKey: 'coord:inbox-wake:sub-a',
           note: 'explicit bounded inbox-wake park',
+          // P-009: loop:end's guarantee check reads this; absent, it defaulted to 'wake'.
+          timeoutBehavior: 'wake',
         }),
       ]),
     );
@@ -1730,6 +2033,35 @@ describe('await-event store (PG)', () => {
     // empty / all-blank input short-circuits to []
     expect(await listParkedAwaitsForSubscribers([])).toEqual([]);
     expect(await listParkedAwaitsForSubscribers([''])).toEqual([]);
+  });
+
+  it('recognizes an outstanding delivery from a fired deliberate await, but excludes platform interests', async () => {
+    const subscriberId = 'loop-end-fired-wake-delivery';
+    const deliberate = await registerAwait({ subscriberId, eventKey: 'release:green:loop-end' });
+    const fired = await fireAwaitsForKey({ eventKey: 'release:green:loop-end' });
+    expect(fired.map((row) => row.id)).toContain(deliberate.id);
+    await insertDeliveries({ awaits: fired, summary: 'event fired during the active turn' });
+    await rootSql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET status = 'parked'
+       WHERE subscriber_id = ${subscriberId}
+         AND await_id = ${deliberate.id}
+    `;
+
+    expect(await hasPendingDeliberateWakeDelivery(subscriberId)).toBe(true);
+    expect(await hasPendingDeliberateWakeDelivery('loop-end-no-delivery')).toBe(false);
+    expect(await hasPendingDeliberateWakeDelivery('')).toBe(false);
+
+    const platformSubscriber = 'loop-end-platform-wake-delivery';
+    await registerAwait({
+      subscriberId: platformSubscriber,
+      eventKey: 'claim:released:WI-loop-end',
+      boundTo: { kind: 'work-item-claim', ref: 'WI-loop-end' },
+    });
+    const platformFired = await fireAwaitsForKey({ eventKey: 'claim:released:WI-loop-end' });
+    await insertDeliveries({ awaits: platformFired, summary: 'platform claim interest fired' });
+
+    expect(await hasPendingDeliberateWakeDelivery(platformSubscriber)).toBe(false);
   });
 
   it('excludes platform-armed claim and obligation reminders but keeps genuine lifecycle waits', async () => {
@@ -2248,11 +2580,14 @@ describe('recordKeyFire / getKeyFireLatch / inspectEventKey.fireLatch (PG)', () 
 });
 
 describe('probeKeyFireEvidence (PG) — EI-18676056143796303, the emitter evidence behind the orphan guard', () => {
-  it('keyFireEvidencePrefix takes the family (first two segments), and a short key probes itself', () => {
+  it('keyFireEvidencePrefix uses stable families and keeps dynamic scopes exact', () => {
     expect(keyFireEvidencePrefix('coord:inbox-wake:su-abc-123')).toBe('coord:inbox-wake');
     expect(keyFireEvidencePrefix('plan-item:done:my-plan:P-004')).toBe('plan-item:done');
     expect(keyFireEvidencePrefix('work-item:claimable')).toBe('work-item:claimable');
     expect(keyFireEvidencePrefix('single')).toBe('single');
+    expect(keyFireEvidencePrefix('fleet:drain:resume')).toBe('fleet:drain:resume');
+    expect(keyFireEvidencePrefix('plan:my-plan:review-ready')).toBe('plan:my-plan:review-ready');
+    expect(keyFireEvidencePrefix('harness:papercusp:runtime-ready')).toBe('harness:papercusp:runtime-ready');
   });
 
   it('reports NO evidence for a key whose family has never fired — the genuine-orphan case still warns', async () => {
@@ -2288,6 +2623,45 @@ describe('probeKeyFireEvidence (PG) — EI-18676056143796303, the emitter eviden
     expect(ev.distinctKeys).toBe(2);
     expect(ev.fires).toBe(3);
     expect(ev.prefix).toBe('coord:inbox-wake');
+  });
+
+  it.each([
+    ['fleet', 'drain-fleet'],
+    ['plan', 'review-plan'],
+    ['harness', 'managed-harness'],
+  ] as const)('does not treat an unannounced %s scoped gate as a sibling family', async (namespace, scopeRef) => {
+    const siblingKey = `${namespace}:${scopeRef}:previous-gate`;
+    const eventKey = `${namespace}:${scopeRef}:new-gate`;
+    await recordKeyFire({ eventKey: siblingKey });
+
+    const siblingEvidence = await probeKeyFireEvidence(eventKey);
+    expect(siblingEvidence).toMatchObject({
+      prefix: eventKey,
+      exact: false,
+      distinctKeys: 0,
+      fires: 0,
+      lastFiredAt: null,
+    });
+
+    await recordKeyFire({ eventKey });
+    const exactEvidence = await probeKeyFireEvidence(eventKey);
+    expect(exactEvidence).toMatchObject({
+      prefix: eventKey,
+      exact: true,
+      distinctKeys: 1,
+      fires: 1,
+    });
+  });
+
+  it('keeps a short key exact instead of borrowing fires from colon descendants', async () => {
+    await recordKeyFire({ eventKey: 'short-key:descendant' });
+    expect(await probeKeyFireEvidence('short-key')).toMatchObject({
+      prefix: 'short-key',
+      exact: false,
+      distinctKeys: 0,
+      fires: 0,
+      lastFiredAt: null,
+    });
   });
 
   it('does NOT leak across families — a neighbouring prefix is not evidence', async () => {

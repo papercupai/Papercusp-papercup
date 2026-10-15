@@ -1,0 +1,208 @@
+{
+  "evidenceRef": "gitnexus-deterministic-integration-2026-10-05 P-002(d) / D-010(d), re-scoped by WI-10006543 / D-027: recursive caller-shaped greps (quoted `IDENT(` pattern) whose EVERY search root is anchored inside this repo, from harness_shared.session_turn_parts tool_use Bash/capability:bash/exec_command calls, 30 days to extractedAt, atomized, filtered by graphCallersLookup.bashPattern. Same corpus as the P-002(d) fixture. Sample = 40 identifiers by sampleDistinct over the distinct identifiers, one atom each (the lexically first). Graph outcomes for these identifiers, measured with each atom's own roots as graph:query `paths`: CALLERS_GRAPH_OUTCOMES.",
+  "extractedAt": "2026-10-06T08:00:00Z",
+  "totalAtoms": 192,
+  "totalSessions": 78,
+  "sample": [
+    {
+      "sid": "su-f08bc8c5-d836-4e9c-bea6-f7ddaac4d186",
+      "ts": "2026-09-29T13:37:02.693-04:00",
+      "atom": "grep -rln 'acceptCommand(' --include=*.ts packages/operator-core/lib apps/operator 2>/dev/null"
+    },
+    {
+      "sid": "su-56d0a9bd-9c98-4c87-8e0d-ab9ddf15ba8f",
+      "ts": "2026-09-20T02:25:06.801-04:00",
+      "atom": "grep -rn 'appliedIdentityArtifact(' --include=*.ts packages/operator-core/lib"
+    },
+    {
+      "sid": "su-bbee4f64-5f43-40f2-bbfe-84bfcb27c409",
+      "ts": "2026-09-22T21:18:52.183-04:00",
+      "atom": "grep -rn \"applySessionPresenceSet(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-87a3826a-7c37-4bea-8cb2-2f87a93d23a5",
+      "ts": "2026-10-06T00:40:36.071-04:00",
+      "atom": "grep -rn \"attributionMapForRepo(\" --include=*.ts packages/operator-core/lib"
+    },
+    {
+      "sid": "su-985d63c7-acf7-48ee-bfde-6fb7856cd9ae",
+      "ts": "2026-09-23T19:24:25.209-04:00",
+      "atom": "grep -rn \"buildRubricTemplateData(\" --include=*.ts packages/operator-core/lib"
+    },
+    {
+      "sid": "su-fd916e65-7aa6-4c61-9a19-9712841e4ae8",
+      "ts": "2026-10-01T09:15:50.319-04:00",
+      "atom": "grep -rl \"claimIssue(\" --include=*.integration.test.ts packages/operator-core/lib"
+    },
+    {
+      "sid": "su-fd916e65-7aa6-4c61-9a19-9712841e4ae8",
+      "ts": "2026-10-03T10:03:36.414-04:00",
+      "atom": "grep -rn --include=*.ts 'createCheckpointTreeFixPrecheckRunner(' packages/operator-core/lib apps/operator/lib"
+    },
+    {
+      "sid": "su-cb96f15f-7cf4-4986-9fd2-f420512a1326",
+      "ts": "2026-10-01T23:37:09.636-04:00",
+      "atom": "grep -rln \"createWorkItem(\" packages/operator-core/lib --include=*.integration.test.ts"
+    },
+    {
+      "sid": "su-091ad703-d98f-4ccb-a20f-ea02d02e9f75",
+      "ts": "2026-09-23T07:40:44.113-04:00",
+      "atom": "grep -rln \"dispatchProjectedTool(\" --include=*.ts packages/operator-core/lib apps/operator/lib apps/operator/bin"
+    },
+    {
+      "sid": "su-c0b38c83-dc1a-4a6f-93c2-652aef1d791e",
+      "ts": "2026-09-30T05:08:31.224-04:00",
+      "atom": "grep -rn 'enqueueDependencyPrebuild(' packages/operator-core/lib/harness/git-sync/git-sync-action.ts"
+    },
+    {
+      "sid": "su-d18cd980-6bbb-4b0c-ace7-42b84796d817",
+      "ts": "2026-09-30T00:05:19.051-04:00",
+      "atom": "grep -rn \"ensurePotGitRepo(\" --include=*.ts packages/operator-core/lib apps/operator/lib 2>/dev/null"
+    },
+    {
+      "sid": "su-32d1b8df-01dd-442a-8711-7ff4e8d9cc92",
+      "ts": "2026-10-03T01:30:20.913-04:00",
+      "atom": "grep -rn \"evaluateScorecardInstrumentContract(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-c0b38c83-dc1a-4a6f-93c2-652aef1d791e",
+      "ts": "2026-09-30T01:24:54.712-04:00",
+      "atom": "grep -rn \"failOnConsole(\" packages/operator-core --include=*.ts -l"
+    },
+    {
+      "sid": "su-f35e5c5a-3d93-40aa-b5bd-864f3c31519b",
+      "ts": "2026-10-01T21:06:04.114-04:00",
+      "atom": "grep -rln \"getContent(\" packages/operator-core/lib apps/operator/lib apps/operator/bin 2>/dev/null"
+    },
+    {
+      "sid": "su-539c555c-adf6-4271-9758-338743c26513",
+      "ts": "2026-09-29T04:48:03.716-04:00",
+      "atom": "grep -rln \"gitPipelineSnapshot(\" --include=*.ts apps/operator/lib packages/operator-core/lib packages/operator-core/lib/endpoint-route 2>/dev/null"
+    },
+    {
+      "sid": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+      "ts": "2026-09-29T22:59:40.526-04:00",
+      "atom": "grep -rnE \"harnessFsAdapter\\(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-a973d2b0-0677-4a5b-b483-93676730c9e9",
+      "ts": "2026-10-05T18:38:25.863-04:00",
+      "atom": "grep -rln \"installPluginFromCupboard(\" packages/operator-core/lib apps/operator/lib --include=*.ts"
+    },
+    {
+      "sid": "su-38e71009-f36b-4ca7-8a14-e617921fd7cd",
+      "ts": "2026-09-24T03:49:43.192-04:00",
+      "atom": "grep -n \"invalidateFromSse(\" libs/generic/sync/src -r"
+    },
+    {
+      "sid": "su-9306f9c3-98b4-4a32-b4d5-23a42097c3bb",
+      "ts": "2026-09-23T00:24:31.251-04:00",
+      "atom": "grep -rn 'json(' packages/operator-core/lib/consult/get-feedback-core.ts"
+    },
+    {
+      "sid": "su-4f968faa-adbb-4de7-97e7-b3314e842678",
+      "ts": "2026-09-30T22:56:50.853-04:00",
+      "atom": "grep -rn \"llmCallViaCodexGateway(\" --include=*.ts packages/operator-core/lib"
+    },
+    {
+      "sid": "su-3ee17ad9-e8f0-4145-bce5-732819d9ea4e",
+      "ts": "2026-09-28T16:30:07.062-04:00",
+      "atom": "grep -rn \"mapLiveLockHoldingsForRepo(\" packages/operator-core/lib/harness/git-sync/*.ts"
+    },
+    {
+      "sid": "su-e3d58938-591a-44d1-baed-8baac32f6926",
+      "ts": "2026-09-22T22:10:44.892-04:00",
+      "atom": "grep -rln \"openEscalation(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-4f968faa-adbb-4de7-97e7-b3314e842678",
+      "ts": "2026-10-02T14:09:39.57-04:00",
+      "atom": "grep -rn \"planAcceptanceChangedKey(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-32d1b8df-01dd-442a-8711-7ff4e8d9cc92",
+      "ts": "2026-09-29T23:31:21.363-04:00",
+      "atom": "grep -n \"preflightExactPlanAdmission(\" -r packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-52c6aaea-46d8-4e52-bdd5-9ec276a8d029",
+      "ts": "2026-09-26T13:52:07.569-04:00",
+      "atom": "grep -rnE \"reactionRulesFor\\(\" --include=*.ts packages/operator-core/lib"
+    },
+    {
+      "sid": "su-32d1b8df-01dd-442a-8711-7ff4e8d9cc92",
+      "ts": "2026-09-30T13:12:59.166-04:00",
+      "atom": "grep -rn \"readGoalPortfolioBrief(\" packages/operator-core/lib packages/agent-mcp/src apps/operator/lib --include=*.ts"
+    },
+    {
+      "sid": "su-d7530acf-8a3f-496a-8f0b-48ff2a642fdf",
+      "ts": "2026-09-08T14:50:44.239-04:00",
+      "atom": "grep -rn \"realCheckpointDeps(\" apps/operator/lib/release/*.test.ts packages/operator-core/lib/doc-claims/*.ts 2>/dev/null"
+    },
+    {
+      "sid": "su-87a3826a-7c37-4bea-8cb2-2f87a93d23a5",
+      "ts": "2026-10-06T00:48:38.055-04:00",
+      "atom": "grep -rn \"recordEditAttribution(\" --include=*.ts packages/operator-core/lib apps/operator/lib"
+    },
+    {
+      "sid": "su-a973d2b0-0677-4a5b-b483-93676730c9e9",
+      "ts": "2026-10-05T22:35:46.046-04:00",
+      "atom": "grep -rn \"registerConnectionAdapter(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-e445ff19-9904-4cb9-9694-88cb40f1ec82",
+      "ts": "2026-09-30T07:20:57.878-04:00",
+      "atom": "grep -rlE \"requirePrincipal\\(\" --include=index.ts packages/operator-core/lib/endpoint-route/routes"
+    },
+    {
+      "sid": "su-7273d7a5-ed8f-4ca4-ac4d-d31fc4e8c396",
+      "ts": "2026-09-23T21:23:54.482-04:00",
+      "atom": "grep -rn 'resolveControllerWorkspaceHostBootstrap(' packages/operator-core/lib apps/operator/lib --include=*.ts"
+    },
+    {
+      "sid": "su-4d390264-fc3c-4875-a655-a71b0afcd6ef",
+      "ts": "2026-10-02T09:17:55.206-04:00",
+      "atom": "grep -rn \"resolveMessageRef(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-f08bc8c5-d836-4e9c-bea6-f7ddaac4d186",
+      "ts": "2026-09-29T22:37:53.531-04:00",
+      "atom": "grep -rn \"rotateTestPgReuseGeneration(\" libs/test-config/src/*.ts"
+    },
+    {
+      "sid": "su-d18cd980-6bbb-4b0c-ace7-42b84796d817",
+      "ts": "2026-09-30T01:54:29.149-04:00",
+      "atom": "grep -rn \"runPhysicalDrillCliToExit(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-4f968faa-adbb-4de7-97e7-b3314e842678",
+      "ts": "2026-09-30T23:47:46.517-04:00",
+      "atom": "grep -rn \"scoutConfigDelta(\" --include=*.ts packages/operator-core/lib"
+    },
+    {
+      "sid": "su-d18cd980-6bbb-4b0c-ace7-42b84796d817",
+      "ts": "2026-09-30T06:52:58.668-04:00",
+      "atom": "grep -rlnE \"setCommsTrust\\(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-ce93b3cb-ed97-4784-aa81-842bb2b2fc76",
+      "ts": "2026-10-01T05:56:22.986-04:00",
+      "atom": "grep -rlnE \"setHiveSetting\\(\" --include=*.ts packages/operator-core/lib"
+    },
+    {
+      "sid": "su-075445e6-540e-4f8d-b350-608f9cae12a9",
+      "ts": "2026-09-29T16:44:54.06-04:00",
+      "atom": "grep -rn \"splitMarkdown(\" --include=*.ts packages/operator-core/lib libs/generic/search/src"
+    },
+    {
+      "sid": "su-fd916e65-7aa6-4c61-9a19-9712841e4ae8",
+      "ts": "2026-10-01T11:04:45.912-04:00",
+      "atom": "grep -rn \"terminalDependencies(\" packages/operator-core/lib --include=*.ts"
+    },
+    {
+      "sid": "su-96de869c-900e-48aa-a8e3-770b47715b52",
+      "ts": "2026-09-23T10:21:09.124-04:00",
+      "atom": "grep -rn \"wakeRecipients(\" packages/operator-core/lib --include=*.ts"
+    }
+  ]
+}

@@ -1,6 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 import { join } from 'node:path';
 import { readHostedHttp1AcceptanceConfig } from './e2e/_hosted-http1-config';
+import { preparePlaywrightTempDirectory } from '../../scripts/lib/playwright-temp-directory.cjs';
+
+// The workspace profile extends this config and inherits the same preflight.
+preparePlaywrightTempDirectory();
 
 const acceptance = readHostedHttp1AcceptanceConfig();
 

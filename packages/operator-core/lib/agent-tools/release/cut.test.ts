@@ -7,9 +7,15 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/release/cut.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import type { ExecFileOptions } from 'node:child_process';
 import type { PreflightResult, CutStatus, HandoffResult, ReleaseGate } from '../../release-cut-launch';
 
-const { auditSqlM } = vi.hoisted(() => ({ auditSqlM: vi.fn() }));
+const { auditSqlM, reclaimGatherM, reclaimRenderM } = vi.hoisted(() => ({
+  auditSqlM: vi.fn(),
+  reclaimGatherM: vi.fn(),
+  reclaimRenderM: vi.fn(),
+}));
 
 // Partial-mock: keep the REAL pure helpers the handler uses (isValidVersion, buildCutArgv,
 // desktopRoot, CHANNELS, CUT_UNIT, cutUnitFor, legsForPlatform, ...) and override only the
@@ -35,9 +41,18 @@ vi.mock('../../task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../task-manager/store')>()),
   markSpawned: vi.fn(),
 }));
+vi.mock('../capability/bash-task-provenance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../capability/bash-task-provenance')>()),
+  resolveBashTaskProvenance: vi.fn(),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: { unsafe: auditSqlM } }) as never,
+}));
+vi.mock('../../release-cut-reclaim', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../release-cut-reclaim')>()),
+  gatherCutReclaimPlan: reclaimGatherM,
+  renderReclaimPlan: reclaimRenderM,
 }));
 vi.mock('../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../workspace-registry')>()),
@@ -56,16 +71,19 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 }));
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
-  execFileSync: vi.fn(),
+  execFile: vi.fn(),
 }));
 
 import { launchDetachedCut, readCutStatus, collectHandoff, preflightCut, abortLeg, readOrCreateGate } from '../../release-cut-launch';
 import { beginCutOperation } from '../../release-cut-operation';
 import { markSpawned } from '../../task-manager/store';
+import { BashProvenanceRefusal, resolveBashTaskProvenance } from '../capability/bash-task-provenance';
 import { loadHarnessRegistry } from '../../harness-registry';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { gatherCutReclaimPlan, renderReclaimPlan } from '../../release-cut-reclaim';
 const beginOpM = vi.mocked(beginCutOperation);
 const markSpawnedM = vi.mocked(markSpawned);
+const provenanceM = vi.mocked(resolveBashTaskProvenance);
 const launchM = vi.mocked(launchDetachedCut);
 const statusM = vi.mocked(readCutStatus);
 const handoffM = vi.mocked(collectHandoff);
@@ -73,10 +91,39 @@ const preflightM = vi.mocked(preflightCut);
 const abortLegM = vi.mocked(abortLeg);
 const gateM = vi.mocked(readOrCreateGate);
 const registryM = vi.mocked(loadHarnessRegistry);
-const execFileSyncM = vi.mocked(execFileSync);
+const execFileM = vi.mocked(execFile);
+const reclaimGatherMock = vi.mocked(gatherCutReclaimPlan);
+const reclaimRenderMock = vi.mocked(renderReclaimPlan);
+
+/**
+ * WI-10005193: cut.ts runs its children through callback-style execFile (runFileAsync) so the
+ * operator main thread is never blocked. Drive the mock from a synchronous implementation:
+ * its return value is the child's stdout and a throw is the child's failure. The callback fires
+ * on a later macrotask, as a real child's exit does.
+ */
+type ExecFileCallback = (err: Error | null, stdout: string, stderr: string) => void;
+function installExecFile(
+  impl: (command: string, args: readonly string[], options: ExecFileOptions, callback: ExecFileCallback) => unknown,
+) {
+  execFileM.mockImplementation(impl as never);
+}
+function mockExecFile(impl: (command: string, args: readonly string[], options: unknown) => string) {
+  installExecFile((command, args, options, callback) => {
+    let stdout = '';
+    let failure: Error | null = null;
+    try {
+      stdout = impl(command, args, options);
+    } catch (err) {
+      failure = err as Error;
+    }
+    setImmediate(() => callback(failure, failure ? '' : stdout, ''));
+    return { stdin: { end: () => undefined } };
+  });
+}
 const {
   default: tool,
   defaultWorktreeStatus,
+  runFileAsync,
   resolveCutRoot,
   isAutoManagedCutWorktree,
   validateReleaseResumeResidue,
@@ -112,6 +159,11 @@ function mkPreflight(over: Partial<PreflightResult> = {}, inFlight = false): Pre
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // A bare vi.fn() never invokes execFile's callback, which would HANG an unstubbed path
+  // instead of failing it. Fail loud; each test that expects a child stubs its own output.
+  mockExecFile((command, args) => {
+    throw new Error(`unstubbed execFile in cut.test.ts: ${command} ${args.join(' ')}`);
+  });
   auditSqlM.mockResolvedValue([]);
   registryM.mockResolvedValue({ projects: [] });
   preflightM.mockReturnValue(mkPreflight());
@@ -141,23 +193,129 @@ beforeEach(() => {
     unit: 'pc-task1.service',
   });
   markSpawnedM.mockResolvedValue(undefined);
+  provenanceM.mockResolvedValue({
+    launchedBy: 'o', sessionId: 'o', harnessSlug: null, workItemId: null, planSlug: null, goalRef: null,
+  });
+});
+
+describe('release:cut reclaim timing diagnostics', () => {
+  it('correlates planner phases to the MCP request without logging target paths', async () => {
+    const privateTarget = '/tmp/private-release-cut-target';
+    reclaimGatherMock.mockImplementationOnce(async (options) => {
+      options.onPhase?.({ phase: 'release-records', stage: 'start' });
+      options.onPhase?.({ phase: 'release-records', stage: 'finish', elapsedMs: 65_000, outcome: 'fulfilled' });
+      return {} as never;
+    });
+    // Partial render: only `counts` is read on this path. A checked assertion to the real
+    // return type, not an `as never` escape (lint:mock-cast-escape).
+    reclaimRenderMock.mockReturnValueOnce(
+      { counts: { reclaimable: 0, namedOnly: 0, protected: 0 } } as ReturnType<typeof renderReclaimPlan>,
+    );
+    const log = vi.fn();
+
+    const response = await tool.handler(
+      { op: 'reclaim', targets: [privateTarget] } as never,
+      { role: 'operator', requestOrigin: { mcpRequestTraceId: 'mcp-reclaim-trace' }, log } as never,
+    );
+
+    expect(body(response)).toMatchObject({ ok: true, op: 'reclaim', dryRun: true });
+    const prefix = '[release:cut] reclaim timing ';
+    const entries = log.mock.calls
+      .map(([message]) => String(message))
+      .filter((message) => message.startsWith(prefix))
+      .map((message) => JSON.parse(message.slice(prefix.length)) as Record<string, unknown>);
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'handler', stage: 'start' }),
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'release-records', stage: 'start' }),
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'release-records', stage: 'finish', elapsedMs: 65_000 }),
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'response-serialization', stage: 'finish' }),
+      expect.objectContaining({ traceId: 'mcp-reclaim-trace', phase: 'handler', stage: 'finish' }),
+    ]));
+    expect(JSON.stringify(entries)).not.toContain(privateTarget);
+  });
+});
+
+/**
+ * WI-10005193: release:cut is an MCP tool, so its children run on the OPERATOR MAIN THREAD.
+ * Measured 2026-10-02T02:28:01Z on :3170: an event-loop-sentinel stall profile put 54% of samples
+ * in execFileSync < defaultListWorktrees / defaultWorktreeStatus < resolveCutRoot, and prepare-tag
+ * could hold the thread for its whole 120s timeout (the sentinel SIGKILLs the host at 20s).
+ */
+describe('release:cut — children never block the operator event loop (WI-10005193)', () => {
+  async function useRealExecFile() {
+    const real = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    installExecFile((command, args, options, callback) =>
+      real.execFile(command, [...args], { ...options, encoding: 'utf8' }, callback),
+    );
+  }
+
+  it('keeps the event loop turning while a child runs', async () => {
+    await useRealExecFile();
+    let ticks = 0;
+    let stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      ticks += 1;
+      setTimeout(tick, 10);
+    };
+    setTimeout(tick, 10);
+    let out: string;
+    try {
+      out = await runFileAsync(process.execPath, [
+        '-e',
+        'const t = Date.now(); while (Date.now() - t < 400) {} process.stdout.write("done")',
+      ]);
+    } finally {
+      stopped = true;
+    }
+    expect(out).toBe('done');
+    // A synchronous spawn holds the loop for the child's whole lifetime, so no timer can fire
+    // before the result is returned: ticks would be 0. The child busy-loops for 400ms.
+    expect(ticks).toBeGreaterThanOrEqual(5);
+  });
+
+  it('closes the child stdin, so a child that reads stdin sees EOF instead of hanging', async () => {
+    await useRealExecFile();
+    const out = await runFileAsync(
+      process.execPath,
+      ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write("eof"))'],
+      { timeout: 10_000 },
+    );
+    expect(out).toBe('eof');
+  });
+
+  it('rejects with the child failure, as execFileSync threw', async () => {
+    await useRealExecFile();
+    await expect(
+      runFileAsync(process.execPath, ['-e', 'process.stderr.write("boom"); process.exit(3)']),
+    ).rejects.toThrow(/boom/);
+  });
+
+  it('cut.ts makes no synchronous child-process call', () => {
+    const source = readFileSync(new URL('./cut.ts', import.meta.url), 'utf8');
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    // Positive control: the stripped text is still the module (comment stripping ate nothing real).
+    expect(code).toMatch(/\brunFileAsync\(/);
+    expect(code).not.toMatch(/\b(?:execFileSync|spawnSync|execSync)\s*\(/);
+  });
 });
 
 describe('release:cut — constrained root selector', () => {
   const worktreeRoot = '/registered/isolated-worktree';
   const desktopRoot = `${worktreeRoot}/papercusp-desktop`;
 
-  it('reads worktree status without optional Git index writes', () => {
-    execFileSyncM.mockReturnValue('');
+  it('reads worktree status without optional Git index writes', async () => {
+    mockExecFile(() => '');
 
-    expect(defaultWorktreeStatus(worktreeRoot)).toBe('');
-    expect(execFileSyncM).toHaveBeenCalledWith(
+    await expect(defaultWorktreeStatus(worktreeRoot)).resolves.toBe('');
+    expect(execFileM).toHaveBeenCalledWith(
       'git',
       ['-C', worktreeRoot, 'status', '--porcelain'],
       expect.objectContaining({
         timeout: 10_000,
         env: expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
       }),
+      expect.any(Function),
     );
   });
 
@@ -448,12 +606,12 @@ describe('release:cut — explicit registered root routing', () => {
 
   function useRegisteredRoot() {
     registryM.mockResolvedValue({ projects: [{ slug: 'isolated', path: worktreeRoot }] });
-    execFileSyncM.mockImplementation(((command: string, args: readonly string[]) => {
+    mockExecFile((command, args) => {
       if (command !== 'git') throw new Error(`unexpected command ${command}`);
       if (args[2] === 'worktree') return `worktree ${worktreeRoot}\nHEAD deadbeef\n\n`;
       if (args[2] === 'status') return '';
       throw new Error(`unexpected git args: ${args.join(' ')}`);
-    }) as never);
+    });
   }
 
   it('routes preflight through the selected desktop root', async () => {
@@ -463,6 +621,55 @@ describe('release:cut — explicit registered root routing', () => {
 
     expect(b).toMatchObject({ ok: true, op: 'preflight', root: desktopRoot, rootSelector: 'isolated', worktreeRoot });
     expect(preflightM).toHaveBeenCalledWith({}, { root: desktopRoot });
+  });
+
+  it('transports explicit tag deferral through preflight and both preview/confirmed launch paths', async () => {
+    useRegisteredRoot();
+    const common = { root: 'isolated', version: '0.0.29', channel: 'alpha', sourceSha, deferTag: true };
+    const preflight = { op: 'preflight', ...common };
+    expect(tool.args.safeParse(preflight).success).toBe(true);
+    await tool.handler(preflight as never, { role: 'operator' } as never);
+    expect(preflightM).toHaveBeenLastCalledWith({}, {
+      root: desktopRoot, release: { version: common.version, channel: common.channel, sourceSha }, deferTag: true,
+    });
+    for (const op of ['run', 'run-leg']) {
+      const args = { op, ...common, ownerName: 'Avi', ...(op === 'run-leg' ? { platform: 'linux' } : {}) };
+      expect(tool.args.safeParse(args).success).toBe(true);
+      const preview = body(await tool.handler(args as never, { role: 'operator' } as never));
+      expect(preview.wouldRun).toContain("PAPERCUSP_RELEASE_DEFER_TAG='1'");
+      await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never);
+      expect(launchM).toHaveBeenLastCalledWith(expect.objectContaining({
+        root: desktopRoot, expectedSourceSha: sourceSha, runtime: expect.objectContaining({ deferTag: true }),
+      }));
+      expect(preflightM).toHaveBeenLastCalledWith({}, expect.objectContaining({ root: desktopRoot, deferTag: true }));
+    }
+  });
+
+  it('routes status through a registered root and reads that root\'s status files', async () => {
+    useRegisteredRoot();
+    statusM.mockReturnValue({
+      state: 'done',
+      running: false,
+      exitCode: 0,
+      logTail: 'root-scoped log',
+      logPath: '/tmp/root-scoped.log',
+      donePath: '/tmp/root-scoped.done',
+      operation: { operationId: 'op-root', taskId: 'taskroot001', startedAtSec: 1_700_000_000 },
+    });
+    const args = { op: 'status', root: 'isolated' };
+    expect(tool.args.safeParse(args).success).toBe(true);
+
+    const b = body(await tool.handler(args as never, { role: 'cup' } as never));
+
+    expect(b).toMatchObject({
+      ok: true,
+      op: 'status',
+      root: desktopRoot,
+      rootSelector: 'isolated',
+      worktreeRoot,
+      state: 'done',
+    });
+    expect(statusM).toHaveBeenCalledWith({ platform: undefined, root: desktopRoot });
   });
 
   it('passes carried release context to preflight so it checks the exact release tag (EI-24611322499942803)', async () => {
@@ -599,7 +806,7 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
     });
     expect(b.wouldRun).toContain(`PAPERCUSP_RELEASE_PREPARE_TAG_SHA='${sourceSha}'`);
     expect(b.wouldRun).toContain("PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM='1'");
-    expect(execFileSyncM).not.toHaveBeenCalled();
+    expect(execFileM).not.toHaveBeenCalled();
   });
 
   it('previews an implicit auto-managed root without allowing a confirmed write', async () => {
@@ -614,12 +821,12 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
       expect(preview.blocker).toMatch(/root_not_isolated/);
       expect(preview.wouldRun).toContain('<registered-isolated-worktree>/papercusp-desktop');
       expect(preview.wouldRun).not.toContain('/workspace/papercusp-release/');
-      expect(execFileSyncM).not.toHaveBeenCalled();
+      expect(execFileM).not.toHaveBeenCalled();
 
       const confirmed = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
       expect(confirmed).toMatchObject({ ok: false, refused: true });
       expect(confirmed.reason).toMatch(/root_not_isolated/);
-      expect(execFileSyncM).not.toHaveBeenCalled();
+      expect(execFileM).not.toHaveBeenCalled();
     } finally {
       process.env.PAPERCUSP_DESKTOP_ROOT = priorRoot;
     }
@@ -630,7 +837,7 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
 
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/bad_source_sha/);
-    expect(execFileSyncM).not.toHaveBeenCalled();
+    expect(execFileM).not.toHaveBeenCalled();
   });
 
   it('role-gates the confirmed remote write', async () => {
@@ -638,11 +845,11 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
 
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/role_forbidden/);
-    expect(execFileSyncM).not.toHaveBeenCalled();
+    expect(execFileM).not.toHaveBeenCalled();
   });
 
   it('runs the release-owned helper with exact source + explicit confirmation', async () => {
-    execFileSyncM.mockReturnValue('created exact tag\n');
+    mockExecFile(() => 'created exact tag\n');
 
     const b = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
 
@@ -656,7 +863,7 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
       artifactUpload: false,
       output: 'created exact tag',
     });
-    expect(execFileSyncM).toHaveBeenCalledWith(
+    expect(execFileM).toHaveBeenCalledWith(
       expect.stringMatching(/papercusp-desktop\/bin\/release-local\.sh$/),
       ['0.0.18', 'alpha'],
       expect.objectContaining({
@@ -665,11 +872,30 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
           PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM: '1',
         }),
       }),
+      expect.any(Function),
     );
   });
 
+  it('binds a tag from a build-dirty isolated root without allowing a dirty build launch', async () => {
+    const worktreeRoot = '/registered/isolated-worktree';
+    registryM.mockResolvedValue({ projects: [{ slug: 'isolated', path: worktreeRoot }] });
+    mockExecFile((command, argv) => {
+      if (command === 'git' && argv[2] === 'worktree') return `worktree ${worktreeRoot}\nHEAD ${sourceSha}\n\n`;
+      if (command === 'git' && argv[2] === 'status') return ' M papercusp-desktop\n';
+      if (command.endsWith('/bin/release-local.sh')) return 'created exact tag\n';
+      throw new Error(`unexpected command: ${command} ${argv.join(' ')}`);
+    });
+    const bound = body(await tool.handler({ ...args, root: 'isolated', confirm: true } as never, { role: 'operator' } as never));
+    expect(bound).toMatchObject({ ok: true, sourceSha, tag: 'desktop-v0.0.18-alpha' });
+    const run = body(await tool.handler({ op: 'run', version: args.version, channel: args.channel, sourceSha,
+      root: 'isolated', ownerName: 'Avi', deferTag: true, confirm: true } as never, { role: 'operator' } as never));
+    expect(run).toMatchObject({ ok: false, refused: true });
+    expect(run.reason).toMatch(/root_not_clean/);
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
   it('returns a structured refusal when create detects an existing mismatch', async () => {
-    execFileSyncM.mockImplementation(() => {
+    mockExecFile(() => {
       throw new Error('origin refs/tags/desktop-v0.0.18-alpha already exists at deadbeef');
     });
 
@@ -682,8 +908,13 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
 });
 
 describe('release:cut — status (read-only)', () => {
-  it('accepts version/channel context carried by release-cut status callers', async () => {
-    const statusArgs = { op: 'status', version: '0.0.19', channel: 'stable' };
+  it('accepts version/channel/sourceSha context carried by release-cut status callers', async () => {
+    const statusArgs = {
+      op: 'status',
+      version: '0.0.19',
+      channel: 'stable',
+      sourceSha: '1feac8dd867c6566af834445a58b5a2e43b14649',
+    };
     expect(tool.args.safeParse(statusArgs).success).toBe(true);
 
     statusM.mockReturnValue({
@@ -814,6 +1045,66 @@ describe('release:cut — run (operator-gated write)', () => {
   it('publishes seedless and fullHistory as explicit run arguments', () => {
     expect(tool.args.safeParse({ ...runArgs, seedless: true }).success).toBe(true);
     expect(tool.args.safeParse({ ...runArgs, fullHistory: true }).success).toBe(true);
+  });
+  it('transports D166 inputs through the public cut schema, preview and detached runtime', async () => {
+    const seedUuidIdempotency = { plansPath: '/private/plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen-original',
+      censusPath: '/private/census.json', censusSha256: 'b'.repeat(64) };
+    expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency }).success).toBe(true);
+    expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency: { ...seedUuidIdempotency, plansSha256: 'bad' } }).success).toBe(false);
+    expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency: { ...seedUuidIdempotency, censusPath: undefined } }).success).toBe(false);
+    expect(tool.args.safeParse({ ...runArgs, seedUuidIdempotency: { ...seedUuidIdempotency, censusSha256: 'bad' } }).success).toBe(false);
+    const preview = body(await tool.handler({ ...runArgs, seedUuidIdempotency } as never, { role: 'operator' } as never));
+    expect(preview.wouldRun).toContain("PAPERCUSP_SEED_UUID_PLAN_PATH='/private/plans.json'");
+    expect(preview.wouldRun).toContain("PAPERCUSP_SEED_UUID_CENSUS_PATH='/private/census.json'");
+    expect(preview.wouldRun).toContain(`PAPERCUSP_SEED_UUID_CENSUS_SHA256='${'b'.repeat(64)}'`);
+    await tool.handler({ ...runArgs, seedUuidIdempotency, confirm: true } as never, { role: 'operator' } as never);
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({ runtime: expect.objectContaining({ seedUuidIdempotency }) }));
+  });
+  it('refuses UUID plans with seed reuse or seedless before opening a managed operation', async () => {
+    const seedUuidIdempotency = { plansPath: '/private/plans.json', plansSha256: 'a'.repeat(64), sourceStoreDir: '/private/frozen-original',
+      censusPath: '/private/census.json', censusSha256: 'b'.repeat(64) };
+    for (const bad of [{ reuseSeed: true }, { seedless: true }]) {
+      const result = body(await tool.handler({ ...runArgs, seedUuidIdempotency, ...bad } as never, { role: 'operator' } as never));
+      expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('seed_uuid_mode_conflict') });
+    }
+    expect(beginOpM).not.toHaveBeenCalled(); expect(launchM).not.toHaveBeenCalled();
+  });
+  it('binds the whole-cut task, detached tests, and preview to the same caller harness', async () => {
+    const ctx = { role: 'operator', harnessSlug: 'customer-app' } as never;
+    const preview = body(await tool.handler(runArgs as never, ctx));
+    expect(preview.wouldRun).toContain("PAPERCUSP_TEST_RUN_HARNESS='customer-app'");
+    await tool.handler({ ...runArgs, confirm: true } as never, ctx);
+    expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'customer-app' }));
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+      runtime: expect.objectContaining({ harnessSlug: 'customer-app' }),
+    }));
+  });
+  it('attributes the whole cut to the explicit parent despite a stale subtask goal', async () => {
+    provenanceM.mockResolvedValue({
+      launchedBy: 'o', sessionId: 'o', harnessSlug: null, workItemId: 'WI-parent', planSlug: null, goalRef: 'WI-subtask',
+    });
+    const args = { ...runArgs, work_item_id: 'WI-parent', confirm: true };
+    expect(tool.args.safeParse(args).success).toBe(true);
+    const b = body(await tool.handler(args as never, { role: 'operator' } as never));
+    expect(b.ok).toBe(true);
+    expect(provenanceM).toHaveBeenCalledWith(expect.anything(), null, undefined, {
+      explicitWorkItemId: 'WI-parent', requireExplicitForMultipleHeldItems: true,
+    });
+    expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'WI-parent' }));
+  });
+  it('refuses an explicit unheld whole-cut item before opening or launching the task', async () => {
+    provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_not_held', 'WI-other is not held'));
+    const b = body(await tool.handler({ ...runArgs, work_item_id: 'WI-other', confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'WI-other is not held' });
+    expect(beginOpM).not.toHaveBeenCalled();
+    expect(launchM).not.toHaveBeenCalled();
+  });
+  it('requires an explicit item for a whole cut when several items are held', async () => {
+    provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_id_required', 'name the release item'));
+    const b = body(await tool.handler({ ...runArgs, confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'name the release item' });
+    expect(beginOpM).not.toHaveBeenCalled();
+    expect(launchM).not.toHaveBeenCalled();
   });
 
   it('refuses conflicting seed controls before resolving or launching a root', async () => {
@@ -1153,6 +1444,43 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
         identity: expect.objectContaining({ platform: 'mac', version: '0.0.8', channel: 'alpha', sourceSha }),
       }),
     );
+  });
+  it('attributes a leg to the explicit parent despite a stale subtask goal', async () => {
+    provenanceM.mockResolvedValue({
+      launchedBy: 'o', sessionId: 'o', harnessSlug: null, workItemId: 'WI-parent', planSlug: null, goalRef: 'WI-subtask',
+    });
+    const args = { ...legArgs, work_item_id: 'WI-parent', confirm: true };
+    expect(tool.args.safeParse(args).success).toBe(true);
+    const b = body(await tool.handler(args as never, { role: 'operator' } as never));
+    expect(b.ok).toBe(true);
+    expect(provenanceM).toHaveBeenCalledWith(expect.anything(), null, undefined, {
+      explicitWorkItemId: 'WI-parent', requireExplicitForMultipleHeldItems: true,
+    });
+    expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'WI-parent' }));
+  });
+  it('binds a leg task and its detached test proof to the caller harness', async () => {
+    const ctx = { role: 'operator', harnessSlug: 'customer-app' } as never;
+    const preview = body(await tool.handler(legArgs as never, ctx));
+    expect(preview.wouldRun).toContain("PAPERCUSP_TEST_RUN_HARNESS='customer-app'");
+    await tool.handler({ ...legArgs, confirm: true } as never, ctx);
+    expect(beginOpM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'customer-app' }));
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+      runtime: expect.objectContaining({ harnessSlug: 'customer-app' }),
+    }));
+  });
+  it('refuses an explicit unheld leg item before opening or launching the task', async () => {
+    provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_not_held', 'WI-other is not held'));
+    const b = body(await tool.handler({ ...legArgs, work_item_id: 'WI-other', confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'WI-other is not held' });
+    expect(beginOpM).not.toHaveBeenCalled();
+    expect(launchM).not.toHaveBeenCalled();
+  });
+  it('requires an explicit item for a leg when several items are held', async () => {
+    provenanceM.mockRejectedValue(new BashProvenanceRefusal('work_item_id_required', 'name the release item'));
+    const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'name the release item' });
+    expect(beginOpM).not.toHaveBeenCalled();
+    expect(launchM).not.toHaveBeenCalled();
   });
 
   it('refuses to launch when the task ledger cannot reserve a killable service unit', async () => {

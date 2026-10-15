@@ -70,7 +70,7 @@ beforeAll(async () => {
        SET input_schema = '{"type":"object","properties":{"topic":{"type":"string"}}}'::jsonb
      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${P_MID}`;
   const sources = await admin<Array<{ id: string }>>`
-    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+    INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES (${WS}, 'slack', 'ready')
     RETURNING id::text`;
   sourceId = sources[0].id;
@@ -93,7 +93,7 @@ afterAll(async () => {
      WHERE workspace_id = ${WS} AND plan_harness_slug = ${HARNESS}
   `.catch(() => {});
   await admin`
-    DELETE FROM harness_shared.trigger_sources
+    DELETE FROM harness_shared.data_sources
      WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid
   `.catch(() => {});
   await admin`

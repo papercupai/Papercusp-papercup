@@ -12,6 +12,14 @@
  *
  * The guard is at the WIRING, not the call site: a call-site guard cannot see what the
  * production deps object omits.
+ *
+ * WI-10007408 — the same sweep ALSO deleted the fixer liveness probe
+ * (`frozenRepairFixerAlive`) and the dead-fixer classifier (`classifyDeadFrozenRepairFixer`),
+ * and only the dispatcher came back. With the probe absent the gate read `fixerAlive` as
+ * `undefined`; the queue policy re-dispatches only on `=== false`, so a dead fixer was
+ * `wait-for-fixer` / "unknown" on every tick, forever (candidate ad82b273, 2026-10-08: 13h
+ * behind a dead release-fixer). Every frozen-repair dep the gate optional-chains is pinned
+ * here, present iff the reservation trio is.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -37,6 +45,31 @@ vi.mock(
   }),
 );
 
+const ORG_SQL = { orgSqlSentinel: true };
+const releaseFixerSpawnAlive = vi.fn(async (): Promise<boolean | null> => false);
+const classifyDeadReleaseFixerSpawn = vi.fn(
+  async (): Promise<{ infrastructure: boolean; reason: string } | null> => ({
+    infrastructure: true,
+    reason: "wiring-test",
+  }),
+);
+
+vi.mock("@papercusp/db-org", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@papercusp/db-org")>()),
+  getOrgPg: () => ({ sql: ORG_SQL }),
+}));
+
+vi.mock(
+  "@papercusp/operator-core/lib/release/fixer-liveness",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("@papercusp/operator-core/lib/release/fixer-liveness")
+    >()),
+    releaseFixerSpawnAlive,
+    classifyDeadReleaseFixerSpawn,
+  }),
+);
+
 const { realCheckpointDeps } = await import("./green-checkpoint");
 const { releaseConfig } = await import("./release-config");
 
@@ -46,21 +79,90 @@ const RESERVATION_TRIO = [
   "finalizeFrozenRepairFixer",
 ] as const;
 
+/** Every frozen-repair dep the gate optional-chains — absent ⇒ a silent no-op, never an error. */
+const FIXER_DEPS = [
+  "dispatchFrozenRepairFixer",
+  "frozenRepairFixerAlive",
+  "classifyDeadFrozenRepairFixer",
+] as const;
+
+/**
+ * The half-wiring this file exists to catch: the reservation trio is supplied but a fixer dep
+ * is not. Returns the missing fixer deps (empty when the wiring is whole, or when the trio is
+ * itself absent — that case is pinned separately below).
+ */
+function halfWiredFixerDeps(deps: Record<string, unknown>): string[] {
+  const trioPresent = RESERVATION_TRIO.every((key) => typeof deps[key] === "function");
+  if (!trioPresent) return [];
+  return FIXER_DEPS.filter((key) => typeof deps[key] !== "function");
+}
+
 describe("WI-10000758: realCheckpointDeps wires the frozen-repair dispatcher", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     dispatchReleaseFixer.mockClear();
+    releaseFixerSpawnAlive.mockClear();
+    classifyDeadReleaseFixerSpawn.mockClear();
   });
 
-  it("supplies dispatchFrozenRepairFixer whenever it supplies the reservation trio", () => {
+  it("supplies the dispatcher, the liveness probe and the dead-fixer classifier whenever it supplies the reservation trio", () => {
     vi.stubEnv(GATE_VERDICT_WORKSPACE_ENV, "papercusp-workspace");
     vi.stubEnv(GATE_VERDICT_HARNESS_ENV, "papercusp");
     const deps = realCheckpointDeps(releaseConfig({}));
     for (const key of RESERVATION_TRIO) {
       expect(typeof deps[key], key).toBe("function");
     }
-    // The regression this file exists for: trio present, dispatcher absent.
-    expect(typeof deps.dispatchFrozenRepairFixer).toBe("function");
+    // The regressions this file exists for: trio present, a fixer dep absent.
+    expect(halfWiredFixerDeps(deps as unknown as Record<string, unknown>)).toEqual([]);
+  });
+
+  it("control: the half-wiring check flags the exact shape sweep c076b0dd95 shipped (trio present, fixer deps gone)", () => {
+    const fn = async () => null;
+    // The 2026-09-04 shape: reservation trio wired, dispatcher + liveness probe + classifier
+    // deleted. The real wiring must not look like this; the check must say so.
+    const sweptShape: Record<string, unknown> = {
+      reserveFrozenRepairFixer: fn,
+      renewFrozenRepairFixerReservation: fn,
+      finalizeFrozenRepairFixer: fn,
+    };
+    expect(halfWiredFixerDeps(sweptShape)).toEqual([...FIXER_DEPS]);
+    // The intermediate shape after WI-10000758 restored only the dispatcher (WI-10007408).
+    expect(halfWiredFixerDeps({ ...sweptShape, dispatchFrozenRepairFixer: fn })).toEqual([
+      "frozenRepairFixerAlive",
+      "classifyDeadFrozenRepairFixer",
+    ]);
+    // Calibration: a whole wiring passes.
+    expect(
+      halfWiredFixerDeps({
+        ...sweptShape,
+        dispatchFrozenRepairFixer: fn,
+        frozenRepairFixerAlive: fn,
+        classifyDeadFrozenRepairFixer: fn,
+      }),
+    ).toEqual([]);
+  });
+
+  it("answers fixer liveness through releaseFixerSpawnAlive, so a dead fixer reads false (not undefined)", async () => {
+    vi.stubEnv(GATE_VERDICT_WORKSPACE_ENV, "papercusp-workspace");
+    vi.stubEnv(GATE_VERDICT_HARNESS_ENV, "papercusp");
+    const deps = realCheckpointDeps(releaseConfig({}));
+
+    await expect(deps.frozenRepairFixerAlive!("spawn-dead")).resolves.toBe(false);
+    expect(releaseFixerSpawnAlive).toHaveBeenCalledTimes(1);
+    expect(releaseFixerSpawnAlive).toHaveBeenCalledWith(ORG_SQL, "spawn-dead");
+  });
+
+  it("classifies a dead fixer through classifyDeadReleaseFixerSpawn", async () => {
+    vi.stubEnv(GATE_VERDICT_WORKSPACE_ENV, "papercusp-workspace");
+    vi.stubEnv(GATE_VERDICT_HARNESS_ENV, "papercusp");
+    const deps = realCheckpointDeps(releaseConfig({}));
+
+    await expect(deps.classifyDeadFrozenRepairFixer!("spawn-dead")).resolves.toEqual({
+      infrastructure: true,
+      reason: "wiring-test",
+    });
+    expect(classifyDeadReleaseFixerSpawn).toHaveBeenCalledTimes(1);
+    expect(classifyDeadReleaseFixerSpawn).toHaveBeenCalledWith(ORG_SQL, "spawn-dead");
   });
 
   it("forwards the frozen queue to dispatchReleaseFixer with the stamped target, repairHead, failingTests and the queue itself", async () => {
@@ -80,11 +182,14 @@ describe("WI-10000758: realCheckpointDeps wires the frozen-repair dispatcher", (
 
     expect(fired).toEqual({ spawnId: "s-wiring-test", runId: "r-wiring-test" });
     expect(dispatchReleaseFixer).toHaveBeenCalledTimes(1);
+    // The 5th argument is the checkpoint evidence the dispatcher forwards when the gate has
+    // one; this call supplies none, so it is forwarded as undefined.
     expect(dispatchReleaseFixer).toHaveBeenCalledWith(
       { workspaceId: "papercusp-workspace", installSlug: "papercusp" },
       queue.repairHead,
       queue.failingTests,
       queue,
+      undefined,
     );
   });
 
@@ -95,6 +200,8 @@ describe("WI-10000758: realCheckpointDeps wires the frozen-repair dispatcher", (
     for (const key of RESERVATION_TRIO) {
       expect(deps[key], key).toBeUndefined();
     }
-    expect(deps.dispatchFrozenRepairFixer).toBeUndefined();
+    for (const key of FIXER_DEPS) {
+      expect(deps[key], key).toBeUndefined();
+    }
   });
 });

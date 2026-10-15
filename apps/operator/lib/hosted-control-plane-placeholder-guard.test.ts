@@ -31,6 +31,38 @@ import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
+describe('hosted control plane bundled boot', () => {
+  it('gives isolated chat children the existing unpinned account-pool route', () => {
+    const unit = readFileSync(resolve(__dirname, '../scripts/systemd/papercusp-hosted-control-plane.service.in'), 'utf8');
+    const environment = unit.split('\n').filter(line => line.startsWith('Environment='))
+      .map(line => line.slice('Environment='.length));
+    const values = Object.fromEntries(environment.map(line => {
+      const equals = line.indexOf('=');
+      return [line.slice(0, equals), line.slice(equals + 1)];
+    }));
+    expect(values.PAPERCUSP_CODEX_GATEWAY).toBe('1');
+    expect(values.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+    expect(new URL(values.ANTHROPIC_BASE_URL).hostname).toBe('127.0.0.1');
+    expect(values.ANTHROPIC_AUTH_TOKEN).toBe('papercusp-gateway');
+    expect(values.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+    expect(values.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it('prebuilds the exact named entry and starts that bundle with stale fallback', () => {
+    const rendered = spawnSync('bash', [resolve(__dirname, '../scripts/systemd/deploy-hosted-control-plane.sh'), '--render-only'], {
+      encoding: 'utf8',
+      env: { ...process.env, PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'development' },
+    });
+    expect(rendered.status, rendered.stderr).toBe(0);
+    const unit = rendered.stdout;
+    expect(unit).toContain('Environment=BUNDLE_HOST_OPERATOR_DIR=');
+    expect(unit).toContain('Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1');
+    expect(unit).toMatch(/^ExecStartPre=.*papercusp-script-snapshot.sh .*bundle-host.sh bin\/serve.ts dist-hosted-control-plane\/serve.mjs$/m);
+    expect(unit).toMatch(/^ExecStart=.*exec node dist-hosted-control-plane\/serve.mjs/m);
+    expect(unit).not.toContain('exec npx tsx bin/serve.ts');
+  });
+});
+
 // PROBE_SCRIPT lets scripts/mutation-probe.sh point this suite at a MUTATED
 // COPY outside the tree, so falsifiability can be proven without mutating the
 // shared checkout (where git-sync would commit the mutant mid-probe).

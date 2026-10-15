@@ -51,6 +51,7 @@
 
 import * as dns from 'node:dns/promises';
 import net from 'node:net';
+import { StringDecoder } from 'node:string_decoder';
 
 /** Bound on the whole SMTP dialogue for one host, in ms. */
 const DEFAULT_PROBE_TIMEOUT_MS = 8_000;
@@ -202,13 +203,17 @@ export function verdictBlocks(verdict: MailboxVerdict): verdict is Extract<
 function readReply(socket: net.Socket, timeoutMs: number): Promise<{ code: number; text: string }> {
   return new Promise((resolve, reject) => {
     let buffer = '';
+    const decoder = new StringDecoder('utf8');
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error('smtp_timeout'));
     }, timeoutMs);
     const onData = (chunk: Buffer) => {
-      buffer += chunk.toString('utf8');
+      buffer += decoder.write(chunk);
       // A reply ends on a line shaped `NNN <text>`; `NNN-<text>` continues it.
+      // A TCP chunk may stop in the middle of a valid-looking code line. SMTP
+      // completes replies with CRLF, so do not resolve from a partial line.
+      if (!buffer.endsWith('\n')) return;
       const lines = buffer.split(/\r?\n/).filter(Boolean);
       const last = lines[lines.length - 1];
       if (!last || !/^\d{3}(?: |$)/.test(last)) return;

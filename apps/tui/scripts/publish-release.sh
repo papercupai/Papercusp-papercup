@@ -14,6 +14,7 @@ Usage: apps/tui/scripts/publish-release.sh --archive <pui-*.tar.gz> [options]
   --acceptance <f>  exact archive acceptance report (default: <archive>.acceptance.json)
   --sums <f>        published digest file (default: SHA256SUMS beside archive)
   --work <dir>      keep generated publication files in this directory
+  --previous <f>   previous latest.json (offline preview only; live publication reads R2)
 
 Environment:
   DRY_RUN=1                  validate + render, upload nothing
@@ -31,6 +32,7 @@ ACCEPTANCE=""
 SUMS=""
 WORK=""
 KEEP_WORK=0
+PREVIOUS=""
 while (($#)); do
   case "$1" in
     --archive) ARCHIVE="${2:?--archive needs a value}"; shift 2 ;;
@@ -41,6 +43,7 @@ while (($#)); do
     --sums=*) SUMS="${1#*=}"; shift ;;
     --work) WORK="${2:?--work needs a value}"; KEEP_WORK=1; shift 2 ;;
     --work=*) WORK="${1#*=}"; KEEP_WORK=1; shift ;;
+    --previous) PREVIOUS="${2:?--previous needs a value}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "unknown argument: $1" ;;
   esac
@@ -104,9 +107,17 @@ if (process.env.PUI_TARGET.startsWith('linux-') && (!Array.isArray(stock)
 if (acceptance.runner?.cloudDeviceStart?.ok !== true) fail('public cloud device-start guard did not pass');
 const legs = acceptance.runner?.legs;
 const advertise = acceptance.candidate?.advertise;
+const targetPlatforms = {
+  'linux-x86_64': ['Linux x86_64', 'WSL2'],
+  'macos-aarch64': ['macOS Apple Silicon', 'macOS arm64'],
+  'macos-x86_64': ['macOS Intel', 'macOS x86_64'],
+}[process.env.PUI_TARGET];
 if (!Array.isArray(advertise) || advertise.length === 0
-  || advertise.some((row) => !['Linux x86_64', 'macOS Apple Silicon', 'macOS Intel', 'WSL2'].includes(row.platform)
+  || advertise.some((row) => !targetPlatforms.includes(row.platform)
     || !['Claude', 'Codex', 'OMP'].includes(row.backend))) fail('advertised platform/backend scope is absent or invalid');
+if (process.env.PUI_TARGET.startsWith('macos-') && !targetPlatforms.includes(acceptance.runner?.platform)) {
+  fail('macOS publication needs installed acceptance on the matching macOS host');
+}
 if (!Array.isArray(legs) || !legs.some((row) => row.engine === 'scripted' && row.status === 0)
   || !advertise.every((cell) => legs.some((row) => row.engine === cell.backend.toLowerCase() && row.status === 0))
   || legs.some((row) => row.status !== 0)) {
@@ -124,7 +135,7 @@ const publicReport = {
   candidate: { sourceSha: provenance.source.commit, artifact: provenance.target,
     archiveSha256: process.env.PUI_DIGEST, advertise },
   runner: {
-    stockMachines: stock.filter((row) => ['ubuntu:24.04', 'debian:stable-slim'].includes(row.image))
+    stockMachines: (stock ?? []).filter((row) => ['ubuntu:24.04', 'debian:stable-slim'].includes(row.image))
       .map((row) => ({ image: row.image, status: row.status })),
     cloudDeviceStart: { ok: true },
     legs: legs.filter((row) => ['scripted', 'claude', 'codex', 'omp'].includes(row.engine))
@@ -143,6 +154,11 @@ process.stdout.write(JSON.stringify({
 NODE
 ACCEPTANCE="$WORK/$NAME.acceptance.json"
 SUMS="$WORK/SHA256SUMS"
+# Each target needs its own immutable checksum object: a shared version-level
+# SHA256SUMS cannot change when the next platform for that version is published.
+SUMS_NAME="$NAME.sha256"
+cp "$SUMS" "$WORK/$SUMS_NAME"
+SUMS="$WORK/$SUMS_NAME"
 
 RELEASE_HOST_ENV="${PUI_RELEASE_HOST_ENV:-$HOME/.papercusp/release-host.env}"
 [[ -f "$RELEASE_HOST_ENV" ]] || die "$RELEASE_HOST_ENV not found — no release host configured"
@@ -158,10 +174,35 @@ NODE
 KEY_PREFIX="$(printf '%s' "$BASE" | sed -E 's#^https?://[^/]+/?##; s#/$##')"
 [[ -n "$KEY_PREFIX" ]] || die "release host must include its permanent path prefix"
 PUI_BASE="$BASE/pui"
-VERSION_BASE="$PUI_BASE/$VERSION"
+# A committed package generation can retain its semantic version. Bind its
+# immutable objects to the accepted archive bytes as well, so moving latest
+# never requires replacing an earlier generation at the same version.
+VERSION_BASE="$PUI_BASE/$VERSION/$DIGEST"
+
+if [[ "${DRY_RUN:-0}" != "1" ]]; then
+  [[ -z "$PREVIOUS" ]] || die "--previous is only for offline DRY_RUN previews"
+  command -v aws >/dev/null || die "missing required tool: aws"
+  R2_ENV="${PUI_R2_ENV:-$HOME/.papercusp/r2.env}"
+  [[ -f "$R2_ENV" ]] || die "$R2_ENV not found — R2 credentials are not configured"
+  set -a; . "$R2_ENV"; set +a
+  : "${R2_ACCOUNT_ID:?set R2_ACCOUNT_ID in $R2_ENV}"
+  : "${R2_BUCKET:?set R2_BUCKET in $R2_ENV}"
+  : "${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID in $R2_ENV}"
+  : "${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY in $R2_ENV}"
+  ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+  export AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}"
+  export AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
+  if aws s3api get-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" \
+    --key "$KEY_PREFIX/pui/latest.json" "$WORK/previous.json" \
+    >"$WORK/previous-output.log" 2>"$WORK/previous-error.log"; then
+    PREVIOUS="$WORK/previous.json"
+  elif ! rg -q '\(404\)|\(NoSuchKey\)|\(NotFound\)' "$WORK/previous-error.log"; then
+    die "previous platform releases could not be read; refusing to erase them"
+  fi
+fi
 
 PUI_META="$WORK/validated.json" PUI_BASE="$PUI_BASE" PUI_VERSION_BASE="$VERSION_BASE" \
-PUI_ARCHIVE_NAME="$NAME" PUI_ACCEPTANCE_NAME="$(basename "$ACCEPTANCE")" \
+PUI_ARCHIVE_NAME="$NAME" PUI_ACCEPTANCE_NAME="$(basename "$ACCEPTANCE")" PUI_SUMS_NAME="$SUMS_NAME" PUI_PREVIOUS="$PREVIOUS" \
 node <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
@@ -169,20 +210,54 @@ const work = path.dirname(process.env.PUI_META);
 const meta = JSON.parse(fs.readFileSync(process.env.PUI_META, 'utf8'));
 const archiveUrl = `${process.env.PUI_VERSION_BASE}/${process.env.PUI_ARCHIVE_NAME}`;
 const acceptanceUrl = `${process.env.PUI_VERSION_BASE}/${process.env.PUI_ACCEPTANCE_NAME}`;
-const sumsUrl = `${process.env.PUI_VERSION_BASE}/SHA256SUMS`;
-const latest = { ...meta, archiveUrl, acceptanceUrl, sumsUrl, unsigned: true };
+const sumsUrl = `${process.env.PUI_VERSION_BASE}/${process.env.PUI_SUMS_NAME}`;
+const current = { ...meta, archiveUrl, acceptanceUrl, sumsUrl, unsigned: true };
+const targets = ['linux-x86_64', 'macos-aarch64', 'macos-x86_64'];
+let artifacts = {};
+if (process.env.PUI_PREVIOUS) {
+  const previous = JSON.parse(fs.readFileSync(process.env.PUI_PREVIOUS, 'utf8'));
+  artifacts = previous.artifacts ?? { [previous.target]: previous };
+  for (const [target, release] of Object.entries(artifacts)) {
+    if (!targets.includes(target) || release.target !== target
+      || !/^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$/.test(release.version)
+      || !/^[a-f0-9]{40}$/.test(release.sourceSha ?? '')
+      || !/^[a-f0-9]{64}$/.test(release.archiveSha256 ?? '')) throw new Error('invalid previous platform release');
+    const versionBase = `${process.env.PUI_BASE}/${release.version}/`;
+    const bases = [versionBase, `${versionBase}${release.archiveSha256}/`];
+    const name = `pui-${release.version}-${target}.tar.gz`;
+    if (!bases.some((base) => release.archiveUrl === `${base}${name}`
+      && release.acceptanceUrl === `${base}${name}.acceptance.json`
+      && [`${base}SHA256SUMS`, `${base}${name}.sha256`].includes(release.sumsUrl))) {
+      throw new Error('previous platform release URL does not match this release host');
+    }
+  }
+}
+artifacts[meta.target] = current;
+// Keep the original top-level fields for existing latest.json consumers.
+const latest = { ...current, artifacts };
 fs.writeFileSync(path.join(work, 'latest.json'), JSON.stringify(latest, null, 2) + '\n');
 const esc = (value) => String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const download = (release, label) => release
+  ? `<p><a href="${esc(release.archiveUrl)}">Download ${esc(label)} — PUI ${esc(release.version)} + psu</a></p>
+<p>SHA-256: <code>${esc(release.archiveSha256)}</code></p>
+<p><a href="${esc(release.sumsUrl)}">SHA-256 checksum file</a> · <a href="${esc(release.acceptanceUrl)}">acceptance report</a></p>`
+  : `<p>${esc(label)} download is awaiting release verification.</p>`;
 fs.writeFileSync(path.join(work, 'index.html'), `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Download PUI ${esc(meta.version)}</title><meta name="robots" content="noindex"><style>
-body{font:16px/1.55 system-ui,sans-serif;max-width:48rem;margin:4rem auto;padding:0 1.25rem;color:#e8eef8;background:#07101d}a{color:#72c7ff}code{overflow-wrap:anywhere}.card{padding:1.25rem;border:1px solid #29415f;border-radius:.75rem;background:#0d1a2a}
-</style></head><body><main><h1>PUI ${esc(meta.version)}</h1><div class="card"><p>Papercusp's terminal app for ${esc(meta.target)}.</p>
-<p><a href="${esc(archiveUrl)}">Download ${esc(process.env.PUI_ARCHIVE_NAME)}</a></p>
-<p>SHA-256: <code>${esc(meta.archiveSha256)}</code></p>
-<p><a href="${esc(sumsUrl)}">SHA256SUMS</a> · <a href="${esc(acceptanceUrl)}">acceptance report</a></p></div>
-<p>Install: unpack the archive, enter its directory, and run <code>./install.sh</code>.</p>
-<p>This candidate is unsigned. Verify its SHA-256 before installing. PUI includes psu and a private Node runtime. It needs a Papercusp Server or cloud workspace; the desktop GUI is optional.</p></main></body></html>\n`);
+<title>Download PUI + psu for Linux, macOS and Windows</title><meta name="robots" content="noindex"><style>
+body{font:16px/1.55 system-ui,sans-serif;max-width:48rem;margin:4rem auto;padding:0 1.25rem;color:#e8eef8;background:#07101d}a{color:#72c7ff}code{overflow-wrap:anywhere}.card{padding:1.25rem;margin:1rem 0;border:1px solid #29415f;border-radius:.75rem;background:#0d1a2a}h2{margin-top:0}
+</style></head><body><main><h1>Download PUI + psu</h1>
+<p>Connect to your Papercusp cloud desktop from your console. Launch PSU, select your cloud desktop and connect Claude, Codex, OMP, or the Papercusp TUI to it.</p>
+<p><strong>PSU and PUI are already included in Desktop Server.</strong> If you installed Desktop Server, you do not need this separate download. Use this package to connect from another computer or to a cloud desktop without installing the server.</p>
+<p><a href="../index.html#download-psu">All Papercusp downloads</a> · <a href="../index.html#download-gui">Download the desktop app</a></p>
+<section class="card"><h2>Linux</h2>${download(artifacts['linux-x86_64'], 'Linux x86_64')}</section>
+<section class="card"><h2>macOS</h2>${download(artifacts['macos-aarch64'], 'macOS Apple Silicon')}${download(artifacts['macos-x86_64'], 'macOS Intel')}</section>
+<section class="card"><h2>Windows</h2><p><strong>Windows uses the same download as Linux, through WSL2.</strong> Install WSL2 with an x86_64 Linux distribution, open its Linux terminal, and install the Linux package there. There is no separate Windows executable.</p>${download(artifacts['linux-x86_64'], 'Windows via WSL2')}</section>
+<h2>Install and connect from your console</h2>
+<p>Unpack the archive, enter its directory, and run <code>./install.sh</code>. The installer links both <code>pui</code> and <code>psu</code> into <code>~/.local/bin</code>; add that directory to your PATH if needed.</p>
+<ol><li>Run <code>psu</code> in your console.</li><li>In <strong>Where should psu run?</strong>, select your cloud desktop. The first time, choose <strong>Papercusp cloud — sign in to use a hosted workspace</strong>, sign in in your browser, then select your desktop.</li><li>Choose Claude, Codex, OMP, or PUI (the Papercusp TUI) in the launcher, then follow its interactive choices to connect.</li></ol>
+<p>To use an installed local server, choose <strong>Local — this computer</strong> instead.</p>
+<p>These archives are unsigned. Verify the SHA-256 before installing. Cloud connections run agents on your workspace; for local use, install and start Papercusp Server. The desktop GUI is optional.</p></main></body></html>\n`);
 NODE
 
 HOSTNAME_ONLY="$(printf '%s' "$BASE" | sed -E 's#^https?://([^/]+).*#\1#')"
@@ -198,16 +273,6 @@ if [[ "${DRY_RUN:-0}" == "1" ]]; then
 fi
 
 for tool in aws curl cmp; do command -v "$tool" >/dev/null || die "missing required tool: $tool"; done
-R2_ENV="${PUI_R2_ENV:-$HOME/.papercusp/r2.env}"
-[[ -f "$R2_ENV" ]] || die "$R2_ENV not found — R2 credentials are not configured"
-set -a; . "$R2_ENV"; set +a
-: "${R2_ACCOUNT_ID:?set R2_ACCOUNT_ID in $R2_ENV}"
-: "${R2_BUCKET:?set R2_BUCKET in $R2_ENV}"
-: "${AWS_ACCESS_KEY_ID:?set AWS_ACCESS_KEY_ID in $R2_ENV}"
-: "${AWS_SECRET_ACCESS_KEY:?set AWS_SECRET_ACCESS_KEY in $R2_ENV}"
-ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-export AWS_REQUEST_CHECKSUM_CALCULATION="${AWS_REQUEST_CHECKSUM_CALCULATION:-when_required}"
-export AWS_RESPONSE_CHECKSUM_VALIDATION="${AWS_RESPONSE_CHECKSUM_VALIDATION:-when_required}"
 
 s3() {
   aws s3 --endpoint-url "$ENDPOINT" "$@" >"$WORK/storage-output.log" 2>"$WORK/storage-error.log" \
@@ -250,14 +315,14 @@ upload_versioned() {
     --cache-control 'public, max-age=31536000, immutable' --metadata "sha256=$sha"
 }
 
-VERSION_PREFIX="$KEY_PREFIX/pui/$VERSION"
+VERSION_PREFIX="$KEY_PREFIX/pui/$VERSION/$DIGEST"
 preflight_versioned "$ARCHIVE" "$VERSION_PREFIX/$NAME"
 preflight_versioned "$ACCEPTANCE" "$VERSION_PREFIX/$(basename "$ACCEPTANCE")"
-preflight_versioned "$SUMS" "$VERSION_PREFIX/SHA256SUMS"
+preflight_versioned "$SUMS" "$VERSION_PREFIX/$SUMS_NAME"
 upload_versioned "$ARCHIVE" "$VERSION_PREFIX/$NAME" 'application/gzip'
 upload_versioned "$ACCEPTANCE" "$VERSION_PREFIX/$(basename "$ACCEPTANCE")" 'application/json'
-upload_versioned "$SUMS" "$VERSION_PREFIX/SHA256SUMS" 'text/plain; charset=utf-8'
-for pair in "$ARCHIVE|$VERSION_PREFIX/$NAME" "$ACCEPTANCE|$VERSION_PREFIX/$(basename "$ACCEPTANCE")" "$SUMS|$VERSION_PREFIX/SHA256SUMS"; do
+upload_versioned "$SUMS" "$VERSION_PREFIX/$SUMS_NAME" 'text/plain; charset=utf-8'
+for pair in "$ARCHIVE|$VERSION_PREFIX/$NAME" "$ACCEPTANCE|$VERSION_PREFIX/$(basename "$ACCEPTANCE")" "$SUMS|$VERSION_PREFIX/$SUMS_NAME"; do
   file="${pair%%|*}"; key="${pair#*|}"; expected="$(sha256sum "$file" | cut -d' ' -f1)"
   [[ "$(remote_sha "$key")" == "$expected" ]] || die "R2 metadata did not bind ${key##*/} to its local SHA-256"
 done
@@ -270,10 +335,10 @@ curl_public() {
 }
 curl_public "$VERSION_BASE/$NAME" "$VERIFY/$NAME"
 curl_public "$VERSION_BASE/$(basename "$ACCEPTANCE")" "$VERIFY/$(basename "$ACCEPTANCE")"
-curl_public "$VERSION_BASE/SHA256SUMS" "$VERIFY/SHA256SUMS"
+curl_public "$VERSION_BASE/$SUMS_NAME" "$VERIFY/$SUMS_NAME"
 [[ "$(sha256sum "$VERIFY/$NAME" | cut -d' ' -f1)" == "$DIGEST" ]] || die "public archive bytes do not match"
 cmp -s "$ACCEPTANCE" "$VERIFY/$(basename "$ACCEPTANCE")" || die "public acceptance report differs"
-cmp -s "$SUMS" "$VERIFY/SHA256SUMS" || die "public SHA256SUMS differs"
+cmp -s "$SUMS" "$VERIFY/$SUMS_NAME" || die "public SHA256SUMS differs"
 # Advertise only after verifying every versioned file through its public path.
 s3 cp "$WORK/latest.json" "s3://${R2_BUCKET}/${KEY_PREFIX}/pui/latest.json" --only-show-errors \
   --content-type 'application/json' --cache-control 'no-cache, max-age=0'

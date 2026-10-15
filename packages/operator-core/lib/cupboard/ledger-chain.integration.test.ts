@@ -4,7 +4,7 @@
  *
  * Real: Postgres with the full migration set (append-only trigger, primary and
  * unique keys, RLS), the pot_settings rows the governance store writes, and the
- * production link store. Substituted: pot-scope resolution only.
+ * production link store. Substituted: pot scope, signing authority and clock.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { verifyChainExport } from '@papercusp/hash-chain';
@@ -17,24 +17,35 @@ import {
   type PlanAdmissionGovernanceStoreDeps,
 } from '../agent-tools/plans/plan-admission-governance-store';
 import type { FederatedGovernanceEvent } from '../agent-tools/plans/governance-federation';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
+import { governanceAuthorityHash, governanceEventSigningBytes, type GovernanceSigningAuthority } from '../agent-tools/plans/governance-authentication';
+import { DEFAULT_PLAN_ADMISSION_POLICY } from '../agent-tools/plans/plan-admission-policy';
 import { exportLedger, pgLedgerChainLinkStore, verifyLedger, witnessLedger } from './ledger-chain';
 
 const WS = 'ws-p040-ledger-chain';
 const POT = 'p040-pot';
 const T0 = 1_790_000_000_000;
+const signer = generateEd25519KeypairDer();
+const authority: GovernanceSigningAuthority = { potId: POT, policy: DEFAULT_PLAN_ADMISSION_POLICY,
+  members: [{ memberId: 'owner', publicKey: signer.pubkeyBase64, keyEpoch: 1,
+    roles: ['round-open', 'pause', 'vote'], originPeerIds: ['peer-a'] }] };
 
 let db: OrgTestDb;
 
 function pauseEvent(i: number): FederatedGovernanceEvent {
-  return {
+  const unsigned: Omit<FederatedGovernanceEvent, 'signature'> = {
     eventId: `evt-${i}`,
     potId: POT,
     roundId: 'round-1',
     originPeerId: 'peer-a',
     occurredAtMs: T0 + i,
-    body: { kind: 'pause', expiresAtMs: T0 + 1_000 + i },
-    signature: `sig-${i}`,
-  } as FederatedGovernanceEvent;
+    body: i === 0 ? { kind: 'round-open', round: { roundId: 'round-1', planRevisionHash: 'revision',
+      policyVersion: 1, eligibleMemberIds: ['owner'], createdAtMs: T0, authorityHash: governanceAuthorityHash(authority) } }
+      : { kind: 'pause', expiresAtMs: T0 + 1_000 + i },
+    authorization: { memberId: 'owner', keyEpoch: 1 },
+  };
+  return { ...unsigned, signature: signWithPrivateKeyDer(signer.privateKeyDer,
+    governanceEventSigningBytes(unsigned)).toString('base64') };
 }
 
 // The real pot_settings table, written directly: the hive-settings store
@@ -55,6 +66,8 @@ async function listPotSettings(workspaceId: string): Promise<HiveSettingRecord[]
 
 function deps(): PlanAdmissionGovernanceStoreDeps {
   return {
+    resolveAuthority: async () => authority,
+    nowMs: () => T0 + 1_000,
     resolvePotScope: async () => POT,
     listSettings: (workspaceId) => listPotSettings(workspaceId),
     setSetting: async (input) => {

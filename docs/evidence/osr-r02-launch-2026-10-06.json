@@ -1,0 +1,33 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "R-2: the published public cut 3c1ed9a1 authenticates to Anthropic only with user-supplied credentials",
+ "framework": "operational",
+ "command": [
+  "git -C pub archive 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c | tar -x -C cut (pub = clone of https://github.com/Papercusp/papercusp-app.git; ls-remote refs/heads/main = 3c1ed9a1 at 2026-10-06T04:20Z)",
+  "npx tsx .papercusp/scratch/osr/r1006/r2-live-probe.mts (imports cut/packages/operator-core/lib/anthropic-auth-policy.ts and cut/.../inference-gateway/spawn-env.ts — the published code, not the private tree)",
+  "grep -rIEl 'sk-ant-(api|oat|admin)[0-9]{2}-[A-Za-z0-9_-]{20,}' cut | wc -l, with a planted-token positive control",
+  "R-14 export gate over a copy of the same cut (audit-release-bundle, --scan-dir, gitleaks, trufflehog): GATE clean, EXIT=0 (docs/evidence/osr-r14-launch-2026-10-06.json)"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-10-06T04:24:00Z",
+ "finishedAt": "2026-10-06T04:25:00Z",
+ "summary": "The published public cut bakes the public profile (its MANIFEST.json target=public makes papercusp-desktop/bin/lib/distribution-profile.sh resolve default_distribution_profile=public, which build-desktop-sidecar.sh exports). Under that profile the cut's own policy withholds all four subscription relays (account-pool, credential-sync, honor-account, gateway-reinjection) and gatewaySpawnEnv returns an empty patch, so a claude spawn keeps the user's own ANTHROPIC_API_KEY or unmodified CLI sign-in and gets no gateway base URL or auth token. Controls: the explicit own-account opt-in and the dogfood profile both still route through the gateway. No committed file in the cut carries an Anthropic key or OAuth token shape (0 files; positive control matched), and the full export gate over the cut is clean.",
+ "assertions": [
+  { "id": "baked-public-profile", "passed": true, "evidence": "MANIFEST.json target=public; default_distribution_profile(cut/papercusp-desktop) printed 'public'." },
+  { "id": "public-withholds-every-relay", "passed": true, "evidence": "PAPERCUSP_DISTRIBUTION_PROFILE=public, no opt-in: subscriptionRelayAllowed = false for account-pool, credential-sync, honor-account, gateway-reinjection." },
+  { "id": "user-credentials-untouched", "passed": true, "evidence": "public profile with a user-supplied synthetic ANTHROPIC_API_KEY: gatewaySpawnEnv(true, …) returned {} — no ANTHROPIC_BASE_URL, no ANTHROPIC_AUTH_TOKEN, no ANTHROPIC_API_KEY override." },
+  { "id": "own-account-opt-in-control", "passed": true, "evidence": "public + PAPERCUSP_ALLOW_OWN_SUBSCRIPTION_RELAY=1: every relay allowed; patch keys ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL, ANTHROPIC_CUSTOM_HEADERS." },
+  { "id": "dogfood-control", "passed": true, "evidence": "dogfood profile: every relay allowed; gateway patch injects ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN (so the public result is the profile's effect, not a broken probe)." },
+  { "id": "credential-free-cut", "passed": true, "evidence": "Anthropic key/OAuth-token pattern over all 16275 committed files of the cut: 0 files; the same pattern matched a planted synthetic token (count 1). R-14 gate over the cut: audit-release-bundle, --scan-dir, gitleaks and trufflehog all clean." }
+ ],
+ "limitations": [
+  "The public release is a source release: no compiled binary is published from Papercusp/papercusp-app. 'Published public build' is measured as the published source plus the profile its own build scripts bake from it; a compiled public binary was not built or exercised here.",
+  "The probe exercises the policy and spawn-env functions directly, not a running claude CLI against Anthropic; no real credential was used or forwarded."
+ ],
+ "evidencePlane": "live",
+ "plan": "open-source-release-2026-09-29",
+ "specId": "R-2",
+ "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+ "workItemId": "WI-10003960"
+}

@@ -43,6 +43,11 @@
 #                        supply-chain and render gates still run. Mutually exclusive with the
 #                        release-root options because those inputs are already baked into REF.
 #   --insecure-registry  plain-HTTP / self-signed registry (local testing only).
+#   --allow-unpinned-context
+#                        bake from a build context that does not equal a git commit (uncommitted
+#                        or untracked files in infra/images/bootc, or no git checkout at all). The
+#                        snapshot and its content hash are still recorded; only the commit pin is
+#                        waived, and the manifest says so (buildContext.pinned=false).
 #   --dry-run            resolve and PLAN every step, run no build and no bake. Prints the same
 #                        digest-pinned refs the real run would use.
 #
@@ -99,7 +104,7 @@ declare -A CLOUD_SHA=() CLOUD_BYTES=()
 
 REGISTRY=""; KEY=""; PUBKEY=""; TAG=""; CLOUDS="gcp,aws,azure"; OUT="./.bake-out"
 RELEASE_ROOT=""; RELEASE_VERSION=""; SOURCE_IMAGE=""
-INSECURE=0; DRY_RUN=0
+INSECURE=0; DRY_RUN=0; ALLOW_UNPINNED_CONTEXT=0
 BIB_IMG="${BOOTC_IMAGE_BUILDER:-quay.io/centos-bootc/bootc-image-builder:latest}"
 SKOPEO_IMG="${SKOPEO_IMAGE:-quay.io/centos-bootc/centos-bootc:stream9}"
 
@@ -117,8 +122,9 @@ while [ $# -gt 0 ]; do
     --release-version) RELEASE_VERSION="${2:-}"; shift 2;;
     --source-image) SOURCE_IMAGE="${2:-}"; shift 2;;
     --insecure-registry) INSECURE=1; shift;;
+    --allow-unpinned-context) ALLOW_UNPINNED_CONTEXT=1; shift;;
     --dry-run) DRY_RUN=1; shift;;
-    -h|--help) sed -n '1,45p' "$0"; exit 0;;
+    -h|--help) sed -n '1,50p' "$0"; exit 0;;
     *) die "unknown argument '$1'";;
   esac
 done
@@ -151,6 +157,19 @@ case "$REGISTRY" in
 esac
 TAG="${TAG:-papercusp-workspace-host-$(date -u +%Y%m%d)}"
 REPO="$REGISTRY/workspace-host"
+
+# EI-25301484626869456: timestamped outputs identify attempts, not releases.
+# Hold admission through process exit, including every child bake step.
+if [ "$DRY_RUN" -eq 0 ] && [ -n "$RELEASE_VERSION" ]; then
+  command -v flock >/dev/null 2>&1 || die "'flock' not found; cannot guard concurrent release bakes"
+  BAKE_LOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}/papercusp-bake-$UID}/papercusp-release-bakes"
+  mkdir -p "$BAKE_LOCK_DIR" || die "cannot create release bake lock directory"
+  exec {BAKE_RELEASE_LOCK}>"$BAKE_LOCK_DIR/$RELEASE_VERSION.lock" \
+    || die "cannot open release bake lock"
+  flock -n "$BAKE_RELEASE_LOCK" \
+    || die "release bake already active: $RELEASE_VERSION (refusing duplicate)"
+fi
+# End release bake admission.
 
 PODMAN=(podman)
 if [ "$(id -u)" -ne 0 ]; then PODMAN=(sudo -n podman); fi
@@ -219,7 +238,109 @@ esac
 
 mkdir -p "$OUT" || die "cannot create $OUT"
 OUT="$(cd "$OUT" && pwd)" || die "cannot resolve artifact directory"
+
+# ── 0. Freeze the BUILD CONTEXT (WI-10005766) ─────────────────────────────────────────────────
+# The startup snapshot above freezes this SCRIPT only. The image is built from "$HERE": the
+# Containerfile and every file it COPYs, plus release-supply-chain.sh and the build-health helper.
+# HERE is the live shared checkout, which other agents edit and git-sync rewrites during a bake that
+# runs for an hour or more. So an edit landing mid-bake reached the image with nothing recording it,
+# and two bakes launched back to back could differ in OS content. Copy the context ONCE, before
+# anything reads it, point every later step at the copy, and record in bake-manifest.json what was
+# copied: always a content hash, plus the git commit and whether the copy equals that commit's tree.
+# A context that does not equal a commit is refused unless --allow-unpinned-context is passed.
+#
+# The hash covers each file's bytes, its path and its executable bit (the only mode bit git
+# records), and each symlink's target. The same function hashes the committed tree, so "pinned" is
+# a content comparison. It does not read `git status`, which could race a concurrent edit.
+build_context_sha256() { # $1 directory
+  ( cd "$1" || exit 1
+    find . \( -type f -o -type l \) -print0 | LC_ALL=C sort -z |
+      while IFS= read -r -d '' p; do
+        if [ -L "$p" ]; then
+          printf 'link %s -> %s\n' "$p" "$(readlink -- "$p")"
+        else
+          x=-; [ -x "$p" ] && x=x
+          printf 'file %s %s %s\n' "$(sha256sum < "$p" | cut -d' ' -f1)" "$x" "$p"
+        fi
+      done
+  ) | sha256sum | cut -d' ' -f1
+}
+HERE_REAL="$(cd "$HERE" && pwd -P)" || die "cannot resolve build context directory: $HERE"
+OUT_REAL="$(cd "$OUT" && pwd -P)" || die "cannot resolve artifact directory: $OUT"
+[ "$OUT_REAL" != "$HERE_REAL" ] || die "--out must not be the build context directory itself ($HERE_REAL)"
+CONTEXT_EXCLUDE=()
+case "$OUT_REAL" in "$HERE_REAL"/*) CONTEXT_EXCLUDE=(--exclude="./${OUT_REAL#"$HERE_REAL"/}");; esac
+BUILD_CONTEXT="$OUT/build-context"
+{ rm -rf -- "$BUILD_CONTEXT" && mkdir -p -- "$BUILD_CONTEXT"; } \
+  || die "cannot create the build context snapshot directory: $BUILD_CONTEXT"
+tar -C "$HERE_REAL" "${CONTEXT_EXCLUDE[@]}" -cf - . | tar -C "$BUILD_CONTEXT" -xpf - \
+  || die "cannot snapshot build context $HERE_REAL into $BUILD_CONTEXT"
+BUILD_CONTEXT_SHA256="$(build_context_sha256 "$BUILD_CONTEXT")"
+case "$BUILD_CONTEXT_SHA256" in
+  [0-9a-f][0-9a-f]*) [ "${#BUILD_CONTEXT_SHA256}" -eq 64 ] || die "build context hash is malformed";;
+  *) die "cannot hash the build context snapshot";;
+esac
+BUILD_CONTEXT_COMMIT=""; BUILD_CONTEXT_PINNED=0
+if git -C "$HERE_REAL" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  BUILD_CONTEXT_COMMIT="$(GIT_OPTIONAL_LOCKS=0 git -C "$HERE_REAL" rev-parse --verify HEAD 2>/dev/null)" \
+    || BUILD_CONTEXT_COMMIT=""
+  ctx_prefix="$(git -C "$HERE_REAL" rev-parse --show-prefix 2>/dev/null)"
+  # Archive from the TOP LEVEL: run inside a subdirectory, git archive also restricts the output
+  # to that subdirectory WITHIN the tree-ish, so `<commit>:infra/images/bootc/` comes back empty.
+  ctx_top="$(git -C "$HERE_REAL" rev-parse --show-toplevel 2>/dev/null)"
+  if [ -n "$BUILD_CONTEXT_COMMIT" ] && [ -n "$ctx_top" ]; then
+    ctx_tree="$(mktemp -d "${TMPDIR:-/tmp}/papercusp-bake-context-tree.XXXXXX")" \
+      || die "cannot create a scratch directory for the committed build context"
+    if GIT_OPTIONAL_LOCKS=0 git -C "$ctx_top" archive --format=tar "$BUILD_CONTEXT_COMMIT:$ctx_prefix" \
+         | tar -C "$ctx_tree" -xpf - &&
+       [ "$(build_context_sha256 "$ctx_tree")" = "$BUILD_CONTEXT_SHA256" ]; then
+      BUILD_CONTEXT_PINNED=1
+    fi
+    rm -rf -- "$ctx_tree"
+  fi
+fi
+if [ "$BUILD_CONTEXT_PINNED" -ne 1 ] && [ "$ALLOW_UNPINNED_CONTEXT" -ne 1 ]; then
+  die "build context $HERE_REAL does not equal git commit ${BUILD_CONTEXT_COMMIT:-<none: not a git checkout>}: it has uncommitted, untracked or ignored files. Commit them, or pass --allow-unpinned-context to bake this exact snapshot anyway (sha256 $BUILD_CONTEXT_SHA256)"
+fi
+BUILD_CONTEXT_PINNED_JSON=false; [ "$BUILD_CONTEXT_PINNED" -eq 1 ] && BUILD_CONTEXT_PINNED_JSON=true
+echo "BAKE_BUILD_CONTEXT=$BUILD_CONTEXT sha256=$BUILD_CONTEXT_SHA256 commit=${BUILD_CONTEXT_COMMIT:-none} pinned=$BUILD_CONTEXT_PINNED_JSON"
+# The secret scan's release auditor lives OUTSIDE the build context (papercusp-desktop/bin), so
+# image-secret-scan.sh cannot find it relative to the snapshot (WI-10005946: the first bake after
+# the snapshot landed spent its whole build and then refused at the scan). Resolve it from the
+# real source tree now, refuse in seconds if it is missing, and hand it down explicitly. It is not
+# copied: the auditor locates its own repo-relative data files from its real path.
+PAPERCUSP_RELEASE_AUDITOR="${PAPERCUSP_RELEASE_AUDITOR:-$HERE_REAL/../../../papercusp-desktop/bin/audit-release-bundle.py}"
+if [ -f "$PAPERCUSP_RELEASE_AUDITOR" ]; then
+  PAPERCUSP_RELEASE_AUDITOR="$(cd "$(dirname "$PAPERCUSP_RELEASE_AUDITOR")" && pwd -P)/$(basename "$PAPERCUSP_RELEASE_AUDITOR")"
+  echo "BAKE_RELEASE_AUDITOR=$PAPERCUSP_RELEASE_AUDITOR"
+elif [ "$DRY_RUN" -eq 1 ]; then
+  echo "DRY_RUN: WARNING release auditor not found at $PAPERCUSP_RELEASE_AUDITOR — the real run would refuse before building"
+else
+  die "release auditor not found: $PAPERCUSP_RELEASE_AUDITOR. The supply chain's secret scan needs it; set PAPERCUSP_RELEASE_AUDITOR=/path/to/audit-release-bundle.py"
+fi
+export PAPERCUSP_RELEASE_AUDITOR
+# The generic provider-policy guard also lives outside the snapshotted build context.
+PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR="${PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR:-$HERE_REAL/../../../apps/operator/lib/release/bootc-image-release-request-cli.ts}"
+PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER="${PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER:-$HERE_REAL/../../../node_modules/.bin/tsx}"
+if [ "$DRY_RUN" -ne 1 ]; then
+  [ -f "$PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR" ] || die "bundled secret policy evaluator missing before bake"
+  [ -x "$PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER" ] || die "bundled secret policy runner missing before bake"
+  [ -x "${GITLEAKS_BIN:-$(command -v gitleaks || true)}" ] || die "gitleaks missing before bake"
+fi
+export PAPERCUSP_BUNDLED_SECRET_POLICY_EVALUATOR PAPERCUSP_BUNDLED_SECRET_POLICY_RUNNER
+# From here on every step reads the snapshot, never the live checkout.
+HERE="$BUILD_CONTEXT"
+BUILD_HEALTH="$HERE/p307-build-health.sh"
 [ -x "$BUILD_HEALTH" ] || die "build health helper is missing or not executable: $BUILD_HEALTH"
+# WI-10005960: bound the rootful podman storage this bake fills (graphroot on the ROOT disk) and
+# refuse a bake the disk cannot hold. BAKE_STORAGE_HYGIENE overrides the helper (test seam).
+STORAGE_HYGIENE="${BAKE_STORAGE_HYGIENE:-$HERE/bake-storage-hygiene.sh}"
+storage_prune() {
+  local keep=(--keep-tag "$TAG")
+  # A reused local source image in this repo must survive the prune that runs before it is retagged.
+  case "$SOURCE_IMAGE" in "$REPO":*) keep+=(--keep-tag "${SOURCE_IMAGE#"$REPO":}");; esac
+  bash "$STORAGE_HYGIENE" prune --repo "$REPO" "${keep[@]}"
+}
 
 # Run one potentially long-lived rootful container operation while the companion
 # detector samples its process tree and build log. The operation's own exit code
@@ -373,10 +494,10 @@ verify_release_disk_metadata() (
     "$deployment_root/etc/nftables/papercusp-workspace-host.nft" >/dev/null \
     || disk_fail 'nftables-ruleset-table-missing'
 
-  host_prepare_unit="$deployment_root/usr/lib/systemd/system/papercusp-host-prepare.service"
-  "${privilege[@]}" grep -Fx 'Requires=local-fs.target nftables.service' "$host_prepare_unit" >/dev/null \
+ host_prepare_unit="$deployment_root/usr/lib/systemd/system/papercusp-host-prepare.service"
+  "${privilege[@]}" grep -Fx 'Requires=local-fs.target systemd-tmpfiles-setup.service nftables.service' "$host_prepare_unit" >/dev/null \
     || disk_fail 'host-prepare-nftables-requires-missing'
-  "${privilege[@]}" grep -Fx 'After=local-fs.target nftables.service' "$host_prepare_unit" >/dev/null \
+  "${privilege[@]}" grep -Fx 'After=local-fs.target systemd-tmpfiles-setup.service nftables.service' "$host_prepare_unit" >/dev/null \
     || disk_fail 'host-prepare-nftables-order-missing'
   [ "$("${privilege[@]}" readlink -- "$deployment_root/etc/systemd/system/multi-user.target.wants/nftables.service")" \
       = '/usr/lib/systemd/system/nftables.service' ] \
@@ -444,6 +565,14 @@ export SYFT_BIN="$SYFT_RESOLVED" GRYPE_BIN="$GRYPE_RESOLVED"
 # The registry namespace is substituted into policy.json + registries.d INSIDE the build (layer
 # 3), all-or-nothing, so an image either names the real registry in both files or fails closed
 # in both. Passing it here is what makes the built image able to verify its own upgrades.
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "DRY_RUN: would prune superseded $REPO images and require ${BAKE_MIN_FREE_GIB:-64}GiB free on podman's graphroot and $OUT"
+else
+  # Prune BEFORE measuring: a disk full of this bake's own superseded images is not a reason to refuse.
+  [ -r "$STORAGE_HYGIENE" ] || die "storage hygiene helper is missing: $STORAGE_HYGIENE"
+  storage_prune
+  bash "$STORAGE_HYGIENE" precheck "$OUT" || exit 1 # it printed BAKE_RESULT=FAILED storage-headroom
+fi
 if [ -n "$SOURCE_IMAGE" ] && [ "$DRY_RUN" -eq 1 ]; then
   echo "DRY_RUN: would require local source image=$SOURCE_IMAGE, retag it as $REPO:$TAG, and push it"
 elif [ -n "$SOURCE_IMAGE" ]; then
@@ -462,6 +591,7 @@ elif [ "$DRY_RUN" -eq 1 ]; then
 else
   echo "### 1/4 build (one image, all clouds)"
   build_args=(
+    --build-arg "PAPERCUSP_VENDOR_REFRESH=$(date -u +%s%N)" \
     --build-arg "RELEASE_REGISTRY_NAMESPACE=$REGISTRY" \
     --build-arg "RELEASE_STORAGE_DRIVER=$STORAGE_DRIVER" \
     --build-arg "RELEASE_SIGNING_PUBKEY_B64=$PUBKEY_B64" \
@@ -514,8 +644,16 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "DRY_RUN: would run release-supply-chain.sh --image $PINNED"
 else
   echo "### 3/4 supply chain (sign, attest, SBOM, scan, verify-back)"
-  sc_args=(--image "$PINNED" --key "$KEY" --pubkey "$PUBKEY" --out "$OUT/supply-chain")
+  sc_args=(--image "$PINNED" --key "$KEY" --pubkey "$PUBKEY" --out "$OUT/supply-chain" --fail-on-vulns)
   [ "$INSECURE" -eq 1 ] && sc_args+=(--insecure-registry)
+  # The supply chain runs from the build-context SNAPSHOT ($HERE), which is not a git checkout,
+  # so it cannot read the commit itself; hand it the commit the snapshot was verified equal to.
+  # An unpinned context has no such commit and its provenance says so (WI-10006045).
+  if [ "$BUILD_CONTEXT_PINNED" -eq 1 ]; then
+    sc_args+=(--source-commit "$BUILD_CONTEXT_COMMIT")
+  else
+    sc_args+=(--allow-unpinned-source)
+  fi
   bash "$HERE/release-supply-chain.sh" "${sc_args[@]}"
   sc_rc=$?
   if [ "$sc_rc" -ne 0 ]; then
@@ -542,6 +680,140 @@ if [ "$DRY_RUN" -eq 0 ]; then
     echo "BAKE_RESULT=FAILED $PINNED absent from local storage; bootc-image-builder --local cannot render it"
     exit 1
   }
+fi
+
+# ── 3c. Read back the release the IMAGE carries (WI-10005761) ─────────────────────────────────
+# On the bootc model a release is image CONTENT: the bootstrap never installs one, it requires
+# /opt/papercusp/releases/<version> to already be in the booted image. So bake-manifest.json
+# records the release read out of the pinned image itself, never restated from --release-version:
+# a --source-image reuse carries whatever its REF was built with, and only the image can say what
+# that is. Release consumers (bootc-image-release-request-cli, the release gate) refuse a release
+# the manifest does not record. That check was missing, and an OS-only bake paired with a release
+# cost two billable clean rooms that booted, passed harden-os, then died at install-runtime.
+IMAGE_RELEASE=""
+if [ "$DRY_RUN" -eq 1 ]; then
+  IMAGE_RELEASE="$RELEASE_VERSION"
+  echo "DRY_RUN: would read the baked release from /opt/papercusp/current in $PINNED"
+else
+  echo "### 3c/4 read back the release the image carries"
+  # Every branch prints a verdict line, so an empty answer is a failed probe, never "OS-only".
+  release_probe='if [ -L /opt/papercusp/current ]; then t="$(readlink /opt/papercusp/current)"; case "$t" in releases/*) if [ -d "/opt/papercusp/$t" ]; then printf "PAPERCUSP_IMAGE_RELEASE=%s\n" "${t#releases/}"; else printf "PAPERCUSP_IMAGE_RELEASE_INVALID=dangling:%s\n" "$t"; fi;; *) printf "PAPERCUSP_IMAGE_RELEASE_INVALID=target:%s\n" "$t";; esac; elif [ -e /opt/papercusp/current ]; then echo PAPERCUSP_IMAGE_RELEASE_INVALID=not-a-symlink; else echo PAPERCUSP_IMAGE_RELEASE_NONE=1; fi'
+  release_probe_out="$("${PODMAN[@]}" run --rm --pull=never --network=none --entrypoint /bin/sh "$PINNED" -c "$release_probe" 2>&1)"
+  release_probe_rc=$?
+  if [ "$release_probe_rc" -ne 0 ]; then
+    echo "BAKE_RESULT=FAILED could not read the release $PINNED carries (podman exit $release_probe_rc): $release_probe_out"
+    exit 1
+  fi
+  case "$release_probe_out" in
+    *PAPERCUSP_IMAGE_RELEASE_INVALID=*)
+      echo "BAKE_RESULT=FAILED $PINNED has an unusable /opt/papercusp/current: $release_probe_out"
+      exit 1;;
+    *PAPERCUSP_IMAGE_RELEASE_NONE=1*) IMAGE_RELEASE="";;
+    *PAPERCUSP_IMAGE_RELEASE=*)
+      IMAGE_RELEASE="$(printf '%s\n' "$release_probe_out" | sed -n 's/^PAPERCUSP_IMAGE_RELEASE=//p' | tail -n 1)";;
+    *)
+      echo "BAKE_RESULT=FAILED the release probe on $PINNED gave no verdict: ${release_probe_out:-<empty>}"
+      exit 1;;
+  esac
+  # The same charset the Containerfile enforces; it is also what keeps the manifest JSON well-formed.
+  case "$IMAGE_RELEASE" in
+    '') ;;
+    [A-Za-z0-9]*)
+      case "$IMAGE_RELEASE" in *[!A-Za-z0-9._+-]*)
+        echo "BAKE_RESULT=FAILED the image carries an unsafe release name: $IMAGE_RELEASE"; exit 1;;
+      esac
+      [ "${#IMAGE_RELEASE}" -le 128 ] \
+        || { echo "BAKE_RESULT=FAILED the image release name is longer than 128 characters"; exit 1; };;
+    *) echo "BAKE_RESULT=FAILED the image carries an unsafe release name: $IMAGE_RELEASE"; exit 1;;
+  esac
+fi
+if [ -n "$RELEASE_VERSION" ] && [ "$IMAGE_RELEASE" != "$RELEASE_VERSION" ]; then
+  echo "BAKE_RESULT=FAILED --release-version $RELEASE_VERSION, but the built image carries ${IMAGE_RELEASE:-no release}"
+  exit 1
+fi
+echo "BAKE_IMAGE_RELEASE=${IMAGE_RELEASE:-none}"
+
+# ── 3d. Load every native addon the release ships, in the image's own runtime (WI-10005910) ───
+# The release is built on a newer userland than an older bootc base can supply. On
+# centos-bootc:stream9 (libstdc++ 11.5, glibc 2.34) rocksdb-native needs GLIBCXX_3.4.30, so the
+# image built, signed, rendered, published and booted, and the workspace service then died on the
+# host roughly an hour later (P-012 clean room A, chain3). Nothing earlier in the bake runs the
+# release, so this is the first point the mismatch can be seen: dlopen each addon with the
+# release's own node, inside the pinned image, with no network. A foreign-platform prebuild
+# (darwin-*, win32-*, *-musl, ...) is reported and skipped; anything else that fails to load fails
+# the bake. A probe that loaded nothing measured nothing, so zero loaded addons also fails.
+ADDON_PROBE_JS=""
+IFS= read -r -d '' ADDON_PROBE_JS <<'JS'
+// PAPERCUSP_ADDON_PROBE (WI-10005910): argv[1] is the release root.
+const fs = require("fs"), path = require("path");
+const root = process.argv[1];
+const here = process.platform + "-" + process.arch;
+const PLATFORMS = /^(aix|android|darwin|freebsd|linux|openbsd|sunos|win32)$/;
+const ARCHES = /^(arm|arm64|ia32|loong64|mips|mipsel|ppc|ppc64|riscv64|s390|s390x|x64)$/;
+function foreign(rel) {
+  const seg = rel.toLowerCase().split(path.sep);
+  for (let i = 0; i < seg.length; i++) {
+    if (/(^|[-_.])musl([-_.]|$)/.test(seg[i])) return true;
+    const m = /^([a-z0-9]+)-([a-z0-9]+)(-|$)/.exec(seg[i]);
+    if (m && PLATFORMS.test(m[1]) && ARCHES.test(m[2]) && m[1] + "-" + m[2] !== here) return true;
+    if (PLATFORMS.test(seg[i]) && i + 1 < seg.length && ARCHES.test(seg[i + 1])
+      && seg[i] + "-" + seg[i + 1] !== here) return true;
+  }
+  return false;
+}
+let ok = 0, fail = 0, skipped = 0;
+function walk(dir) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch (e) { fail++; console.log("PAPERCUSP_ADDON_FAIL " + dir + " :: unreadable: " + e.message); return; }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) { walk(p); continue; }
+    if (!e.isFile() || !e.name.endsWith(".node")) continue;
+    const rel = path.relative(root, p);
+    if (foreign(rel)) { skipped++; console.log("PAPERCUSP_ADDON_SKIP " + rel); continue; }
+    try { process.dlopen({ exports: {} }, p); ok++; }
+    catch (x) { fail++; console.log("PAPERCUSP_ADDON_FAIL " + rel + " :: " + String(x && x.message).split("\n")[0]); }
+  }
+}
+walk(root);
+console.log("PAPERCUSP_ADDON_PROBE ok=" + ok + " fail=" + fail + " skipped=" + skipped);
+JS
+if [ -n "$IMAGE_RELEASE" ] && [ "$DRY_RUN" -eq 1 ]; then
+  echo "DRY_RUN: would load every native addon under /opt/papercusp/releases/$IMAGE_RELEASE in $PINNED"
+elif [ -n "$IMAGE_RELEASE" ]; then
+  echo "### 3d/4 load every native addon the release ships, in the image's own runtime"
+  release_dir="/opt/papercusp/releases/$IMAGE_RELEASE"
+  addon_probe_out="$("${PODMAN[@]}" run --rm --pull=never --network=none \
+    --entrypoint "$release_dir/bin/node" "$PINNED" -e "$ADDON_PROBE_JS" "$release_dir" 2>&1)"
+  addon_probe_rc=$?
+  addon_ok=""; addon_fail=""; addon_skipped=""
+  for kv in $(printf '%s\n' "$addon_probe_out" | sed -n 's/^PAPERCUSP_ADDON_PROBE //p' | tail -n 1); do
+    case "$kv" in
+      ok=*) addon_ok="${kv#ok=}";;
+      fail=*) addon_fail="${kv#fail=}";;
+      skipped=*) addon_skipped="${kv#skipped=}";;
+    esac
+  done
+  printf '%s\n' "$addon_probe_out" | grep -E '^PAPERCUSP_ADDON_(FAIL|SKIP) ' | sed 's/^/  /'
+  if [ "$addon_probe_rc" -ne 0 ]; then
+    echo "BAKE_RESULT=FAILED the native-addon probe could not run in $PINNED (podman exit $addon_probe_rc): $(printf '%s\n' "$addon_probe_out" | tail -n 3)"
+    exit 1
+  fi
+  case "$addon_ok:$addon_fail:$addon_skipped" in
+    *[!0-9:]*|:*|*::*|*:)
+      echo "BAKE_RESULT=FAILED the native-addon probe on $PINNED gave no verdict: ${addon_probe_out:-<empty>}"
+      exit 1;;
+  esac
+  if [ "$addon_fail" -gt 0 ]; then
+    echo "BAKE_RESULT=FAILED $addon_fail native addon(s) in release $IMAGE_RELEASE do not load on this image's runtime (see PAPERCUSP_ADDON_FAIL above)"
+    exit 1
+  fi
+  if [ "$addon_ok" -eq 0 ]; then
+    echo "BAKE_RESULT=FAILED the native-addon probe loaded no addon under $release_dir; it measured nothing"
+    exit 1
+  fi
+  echo "BAKE_NATIVE_ADDONS=ok:$addon_ok skipped:$addon_skipped"
 fi
 
 # ── 4. Render each cloud from the SAME pinned digest ──────────────────────────────────────────
@@ -595,8 +867,10 @@ bake_one() { # $1 cloud  $2 pinned ref
     echo "  $cloud: FAILED — exited 0 but produced no disk at ${CLOUD_FILE[$cloud]}"
     return 1
   fi
-  if [ "$cloud" = gcp ] && [ -n "$RELEASE_VERSION" ]; then
-    verify_release_disk_metadata "$dest/${CLOUD_FILE[$cloud]}" "$RELEASE_VERSION" || {
+  # Every RAW disk that carries a release (gcp and aws; WI-10005761 found the aws disk was never
+  # checked). The azure VHD is not loop-mounted here.
+  if [ -n "$IMAGE_RELEASE" ] && [ "${CLOUD_FILE[$cloud]##*.}" = raw ]; then
+    verify_release_disk_metadata "$dest/${CLOUD_FILE[$cloud]}" "$IMAGE_RELEASE" || {
       echo "  $cloud: FAILED — converted disk did not preserve the immutable release metadata"
       return 1
     }
@@ -634,6 +908,16 @@ fi
   echo "  \"pinnedRef\": \"$PINNED\","
   echo "  \"registryNamespace\": \"$REGISTRY\","
   echo "  \"dryRun\": $( [ "$DRY_RUN" -eq 1 ] && echo true || echo false ),"
+  # Read back from the image in step 3c (WI-10005761); null = OS-only.
+  if [ -n "$IMAGE_RELEASE" ]; then
+    echo "  \"release\": {\"version\": \"$IMAGE_RELEASE\"},"
+  else
+    echo "  \"release\": null,"
+  fi
+  # WI-10005766: what the image was built from. commit is HEAD at bake start (null outside git);
+  # pinned says whether the snapshot equals that commit's tree.
+  if [ -n "$BUILD_CONTEXT_COMMIT" ]; then ctx_commit_json="\"$BUILD_CONTEXT_COMMIT\""; else ctx_commit_json=null; fi
+  echo "  \"buildContext\": {\"sha256\": \"$BUILD_CONTEXT_SHA256\", \"commit\": $ctx_commit_json, \"pinned\": $BUILD_CONTEXT_PINNED_JSON},"
   printf '  "clouds": ['
   for i in "${!rendered[@]}"; do
     [ "$i" -gt 0 ] && printf ', '
@@ -647,5 +931,7 @@ fi
 
 echo "BAKE_MANIFEST=$OUT/bake-manifest.json"
 echo "BAKE_RENDERED=${rendered[*]:-none}"
+# The pushed image now lives in the registry; drop what this bake superseded (never fails the bake).
+[ "$DRY_RUN" -eq 1 ] || storage_prune
 echo "BAKE_RESULT=PASS"
 exit 0

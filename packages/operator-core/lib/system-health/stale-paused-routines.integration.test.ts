@@ -16,43 +16,28 @@
  *     ones").
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import type postgres from 'postgres';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const { readStalePausedRoutines } = await import('./compute');
 
 let rootSql: postgres.Sql;
+let db: OrgTestDb;
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `stalepaused_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
-  await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.routines (
-      id text PRIMARY KEY, install_slug text NOT NULL, name text NOT NULL,
-      trigger_kind text NOT NULL, trigger_config jsonb NOT NULL, target_role text NOT NULL,
-      active boolean DEFAULT true NOT NULL, last_fired_at timestamptz, next_fire_at timestamptz,
-      updated_at timestamptz DEFAULT now() NOT NULL, workspace_id text NOT NULL,
-      metadata jsonb
-    )`);
+  // The reader also resolves its acceptance-backlog subquery's plan schema,
+  // even when this case seeds only a non-grading routine. Share the current
+  // migration-keyed fixture rather than maintaining a private table subset.
+  db = await createOrgTestDb();
+  rootSql = db.adminSql;
 }, 90_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  await db?.cleanup();
 });
 
 beforeEach(async () => {
-  await rootSql`TRUNCATE harness_shared.routines`;
+  await rootSql`TRUNCATE harness_shared.routines, harness_shared.harness_plans CASCADE`;
 });
 
 async function insertRoutine(o: {
@@ -63,8 +48,8 @@ async function insertRoutine(o: {
   active: boolean;
   updatedAt?: Date;
   metadata?: Record<string, unknown> | null;
-}) {
-  await rootSql`
+}, sql: postgres.Sql | postgres.TransactionSql = rootSql) {
+  await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, name, trigger_kind, trigger_config, target_role, active, updated_at, workspace_id, metadata)
     VALUES (${o.id}, ${o.installSlug}, ${o.name}, 'schedule', '{}'::jsonb, 'system:loop-wake',
@@ -72,6 +57,57 @@ async function insertRoutine(o: {
 }
 
 const oldPause = () => new Date(Date.now() - 11.5 * 60 * 60_000); // 11.5h ago — past the 4h critical threshold
+
+async function insertPlan(o: {
+  slug: string;
+  workspaceId: string;
+  status: 'ready' | 'awaiting-acceptance';
+  template?: string;
+  archived?: boolean;
+}) {
+  await rootSql`
+    INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, status, template, archived)
+    VALUES (${o.workspaceId}, 'papercusp', ${o.slug}, ${o.status},
+            ${o.template ?? null}, ${o.archived ?? false})`;
+}
+
+describe('readStalePausedRoutines — canonical acceptance-backlog projection (WI-10006323)', () => {
+  it('counts only current-workspace awaiting plans that are neither rubrics nor archived', async () => {
+    const at = new Date();
+    await insertRoutine({
+      id: 'grading-paused', name: 'acceptance-grading-sweep', installSlug: 'papercusp',
+      workspaceId: 'ws1', active: false, updatedAt: at,
+      metadata: { pause: { pausedAtMs: at.getTime(), reason: 'attributed recent pause' } },
+    });
+    await insertPlan({ slug: 'other-workspace', workspaceId: 'ws-other', status: 'awaiting-acceptance' });
+    await insertPlan({ slug: 'ready', workspaceId: 'ws1', status: 'ready' });
+    await insertPlan({ slug: 'rubric', workspaceId: 'ws1', status: 'awaiting-acceptance', template: 'rubric' });
+    await insertPlan({ slug: 'archived', workspaceId: 'ws1', status: 'awaiting-acceptance', archived: true });
+    expect(await readStalePausedRoutines(rootSql, 'papercusp', 'ws1')).toEqual([]);
+
+    await insertPlan({ slug: 'awaiting', workspaceId: 'ws1', status: 'awaiting-acceptance' });
+    const rows = await readStalePausedRoutines(rootSql, 'papercusp', 'ws1');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ name: 'acceptance-grading-sweep', backlogDepth: 1, reasonMissing: false });
+
+    await rootSql`
+      UPDATE harness_shared.harness_plans SET status = 'ready'
+       WHERE workspace_id = 'ws1' AND harness_slug = 'papercusp' AND plan_slug = 'awaiting'`;
+    expect(await readStalePausedRoutines(rootSql, 'papercusp', 'ws1')).toEqual([]);
+  });
+
+  it('does not attach an acceptance backlog to an unrelated paused routine', async () => {
+    const at = new Date();
+    await insertRoutine({
+      id: 'scout-paused', name: 'scout-cycle', installSlug: 'papercusp',
+      workspaceId: 'ws1', active: false, updatedAt: at,
+      metadata: { pause: { pausedAtMs: at.getTime(), reason: 'attributed recent pause' } },
+    });
+    await insertPlan({ slug: 'awaiting', workspaceId: 'ws1', status: 'awaiting-acceptance' });
+    expect(await readStalePausedRoutines(rootSql, 'papercusp', 'ws1')).toEqual([]);
+  });
+});
 
 describe('readStalePausedRoutines — SQL-level scoping (EI-18718973731535914)', () => {
   it('excludes an inactive row belonging to a DIFFERENT workspace (no cross-tenant leak)', async () => {
@@ -87,12 +123,27 @@ describe('readStalePausedRoutines — SQL-level scoping (EI-18718973731535914)',
   });
 
   it('excludes an inactive row when a HEALTHY ACTIVE sibling exists for the same (workspace, install, name) — the "13 healthy outvoted by 1 dead row" repro', async () => {
-    // The orphaned/duplicate dead row (e.g. left behind by a reseed).
-    await insertRoutine({ id: 'gc-orphan', name: 'green-checkpoint', installSlug: 'papercusp', workspaceId: 'ws1', active: false, updatedAt: oldPause() });
-    // The healthy, currently-firing row for the SAME workspace/install/name.
-    await insertRoutine({ id: 'gc-live', name: 'green-checkpoint', installSlug: 'papercusp', workspaceId: 'ws1', active: true });
-    const r = await readStalePausedRoutines(rootSql, 'papercusp', 'ws1');
-    expect(r).toEqual([]);
+    await rootSql.begin(async (sql) => {
+      // Reproduce the historical duplicate rows this control protects against.
+      // Current uniqueness prevents seeding them normally; confine that legacy
+      // shape to this transaction and restore both keys before committing.
+      // An assertion failure rolls back the DDL as well as the seeded rows.
+      await sql.unsafe(`
+        ALTER TABLE harness_shared.routines DROP CONSTRAINT routines_install_slug_name_key;
+        DROP INDEX harness_shared.routines_workspace_install_slug_name_key;
+      `);
+      await insertRoutine({ id: 'gc-orphan', name: 'green-checkpoint', installSlug: 'papercusp', workspaceId: 'ws1', active: false, updatedAt: oldPause() }, sql);
+      await insertRoutine({ id: 'gc-live', name: 'green-checkpoint', installSlug: 'papercusp', workspaceId: 'ws1', active: true }, sql);
+      // The reader uses the tag/unsafe API shared by a client and transaction.
+      expect(await readStalePausedRoutines(sql as never, 'papercusp', 'ws1')).toEqual([]);
+      await sql`DELETE FROM harness_shared.routines WHERE id = 'gc-orphan'`;
+      await sql.unsafe(`
+        ALTER TABLE harness_shared.routines
+          ADD CONSTRAINT routines_install_slug_name_key UNIQUE (install_slug, name);
+        CREATE UNIQUE INDEX routines_workspace_install_slug_name_key
+          ON harness_shared.routines (workspace_id, install_slug, name);
+      `);
+    });
   });
 
   it('still reports an inactive row when NO active sibling exists for it (a genuine stale pause)', async () => {

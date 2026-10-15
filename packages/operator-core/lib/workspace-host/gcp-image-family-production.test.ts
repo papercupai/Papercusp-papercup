@@ -35,6 +35,7 @@ import {
 } from './gcp-image-family-adapter';
 import {
   WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,
+  workspaceHostAgentAdmissionProbeSpecs,
   type WorkspaceHostAgentCredentialAdmissionEvidence,
 } from './agent-credential-admission';
 
@@ -315,22 +316,28 @@ function readinessRaw() {
 
 function agentAdmission(): WorkspaceHostAgentCredentialAdmissionEvidence {
   const observedAt = READINESS_NOW.toISOString();
+  // Each agent's receipt takes the kind and disclosure of the probe admission actually RUNS for it
+  // (WI-10005806): a fixture that labels every agent authenticated-account is a receipt no real
+  // probe can produce, and the shipped validator refuses it.
   const agents = Object.fromEntries(
-    ['claude', 'codex', 'omp'].map((agent) => [
-      agent,
-      {
-        contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
+    (['claude', 'codex', 'omp'] as const).map((agent) => {
+      const spec = workspaceHostAgentAdmissionProbeSpecs(agent)[0]!;
+      return [
         agent,
-        ready: true,
-        verificationKind: 'authenticated-account',
-        endpoint: 'credential-probe',
-        exitStatus: 0,
-        observedAt,
-        subject: 'authenticated',
-        proofDigest: `${agent}-proof`,
-        subjectDisclosure: 'redacted',
-      },
-    ]),
+        {
+          contractVersion: WORKSPACE_HOST_AGENT_VERIFICATION_CONTRACT_VERSION,
+          agent,
+          ready: true,
+          verificationKind: spec.verificationKind,
+          endpoint: 'credential-probe',
+          exitStatus: 0,
+          observedAt,
+          ...(spec.subjectDisclosure === 'redacted' ? { subject: 'authenticated' } : {}),
+          proofDigest: `${agent}-proof`,
+          subjectDisclosure: spec.subjectDisclosure,
+        },
+      ];
+    }),
   );
   return {
     contractVersion: WORKSPACE_HOST_AGENT_CREDENTIAL_ADMISSION_CONTRACT_VERSION,

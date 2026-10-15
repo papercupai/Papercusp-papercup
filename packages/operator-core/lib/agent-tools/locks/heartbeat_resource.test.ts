@@ -10,7 +10,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', coordinationDomain: 'dom' })) }));
+vi.mock('./identity', () => ({
+  readIdentity: vi.fn(() => ({ ownerId: 'me', coordinationDomain: 'dom' })),
+  readFileLockIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'me', coordinationDomain: 'dom' })),
+}));
 vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
 }));
@@ -35,6 +38,7 @@ import { mockResolvedTyped } from '../../testing/typed-mock';
 const hbM = vi.mocked(tryHeartbeatResource);
 const txnM = vi.mocked(inWorkspaceTxn);
 const tool = (await import('./heartbeat_resource')).default;
+const fileLockTool = (await import('./heartbeat')).default;
 
 type Out = { data?: any; content?: { text: string }[] };
 const call = (args: Record<string, unknown> = { lock_id: '33333333-3333-3333-3333-333333333333' }) =>
@@ -42,6 +46,16 @@ const call = (args: Record<string, unknown> = { lock_id: '33333333-3333-3333-333
 const body = (o: Out) => o.data ?? JSON.parse(o.content![0]!.text);
 
 beforeEach(() => vi.clearAllMocks());
+
+describe('heartbeat tool selection guidance', () => {
+  it('distinguishes file locks from named-resource leases', () => {
+    expect(fileLockTool.name).toBe('locks:heartbeat');
+    expect(fileLockTool.description).toContain('file lock');
+    expect(fileLockTool.description).toContain('locks:heartbeat_resource');
+    expect(tool.name).toBe('locks:heartbeat_resource');
+    expect(tool.description).toContain('named-resource lease');
+  });
+});
 
 describe('locks:heartbeat_resource handler', () => {
   it('extends and returns the new ISO expiry', async () => {

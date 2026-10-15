@@ -1,0 +1,185 @@
+SET
+# taken 2026-10-06T09:32:08Z
+## P1a inbox-resolve runs created in the last 24h (run|requested_by|phase|created|started|finished|total|auto|rec|skip|fail|onCurrentBuild|error)
+bulk-6a477364-6e6e-47f7-8124-a9ae39fc8241|system:inbox-bulk-resolve|review|2026-10-05 14:59:35.440899+00|2026-10-05 14:59:43.797814+00|2026-10-05 15:19:24.478214+00|86|0|86|0|0|older|
+bulk-4b640fd3-8398-4afc-b8e8-32969a7fcf66|system:inbox-bulk-resolve|review|2026-10-05 15:33:14.407802+00|2026-10-05 15:33:28.301621+00|2026-10-05 15:59:17.724969+00|182|0|182|0|0|older|
+bulk-bdec04a4-ebe4-4a83-91d4-0988b734c40c|system:inbox-bulk-resolve|review|2026-10-05 16:00:36.842387+00|2026-10-05 16:00:44.713937+00|2026-10-05 16:10:48.984623+00|18|0|18|0|0|older|
+bulk-4fb9083b-7f01-40a7-8868-69e66b0623f6|system:inbox-bulk-resolve|review|2026-10-05 16:15:34.934056+00|2026-10-05 16:15:44.044616+00|2026-10-05 16:21:28.01249+00|23|0|23|0|0|older|
+bulk-1af27da6-1582-4d44-a2b9-c958b2e17ea3|system:inbox-bulk-resolve|review|2026-10-05 16:30:33.860648+00|2026-10-05 16:30:42.829956+00|2026-10-05 16:39:19.087942+00|14|0|14|0|0|older|
+bulk-1afd00bc-9d1d-444e-a0df-3a6c5d7ef7d8|system:inbox-bulk-resolve|review|2026-10-05 16:45:32.334247+00|2026-10-05 16:45:42.987853+00|2026-10-05 16:56:29.846886+00|6|0|6|0|0|older|
+bulk-6331f818-388f-4450-8a5f-3327f4d086e6|system:inbox-bulk-resolve|review|2026-10-05 17:02:15.428478+00|2026-10-05 17:02:25.705698+00|2026-10-05 17:15:07.305576+00|32|0|32|0|0|older|
+bulk-9d068ee7-7fd7-4dd4-9d15-ce8c159eb164|system:inbox-bulk-resolve|review|2026-10-05 17:17:16.68209+00|2026-10-05 17:17:26.287215+00|2026-10-05 17:37:20.173869+00|14|0|14|0|0|older|
+bulk-089a58e2-df5f-4f40-a80e-4483f18172ea|system:inbox-bulk-resolve|review|2026-10-05 17:46:09.497371+00|2026-10-05 17:46:18.174877+00|2026-10-05 17:56:21.132267+00|33|0|33|0|0|older|
+bulk-e976334e-9bd2-4a2f-b5aa-9534442844e1|system:inbox-bulk-resolve|review|2026-10-05 18:00:32.991307+00|2026-10-05 18:00:42.903693+00|2026-10-05 18:06:33.261233+00|18|0|18|0|0|older|
+bulk-e4ee59b2-4ed6-4d91-867e-38ca586f6cf1|system:inbox-bulk-resolve|review|2026-10-05 18:16:21.136617+00|2026-10-05 18:16:28.911725+00|2026-10-05 18:21:03.402331+00|8|0|8|0|0|older|
+bulk-1e55fcdf-a830-426a-8075-6d85713f2c4c|system:inbox-bulk-resolve|review|2026-10-05 18:30:39.086702+00|2026-10-05 18:30:47.036537+00|2026-10-05 18:39:20.246603+00|49|0|49|0|0|older|
+bulk-aa3ffbc1-6898-4d3c-94fa-10f353d7ac51|system:inbox-bulk-resolve|review|2026-10-05 19:00:37.430851+00|2026-10-05 19:00:44.889919+00|2026-10-05 19:05:31.176423+00|9|0|9|0|0|older|
+bulk-a53d65db-c6c7-480f-bc48-861872720ad9|system:inbox-bulk-resolve|review|2026-10-05 19:17:04.979679+00|2026-10-05 19:17:12.488917+00|2026-10-05 19:19:21.854868+00|3|0|3|0|0|older|
+bulk-e8d185eb-3be1-47ec-9494-34fd69a0f5ff|system:inbox-bulk-resolve|review|2026-10-05 19:30:36.902205+00|2026-10-05 19:30:44.848851+00|2026-10-05 19:34:43.24964+00|6|0|6|0|0|older|
+bulk-e5a7656a-94bd-4db2-9485-b47253142586|system:inbox-bulk-resolve|review|2026-10-05 19:46:36.62941+00|2026-10-05 19:46:44.231797+00|2026-10-05 19:49:25.799927+00|3|0|3|0|0|older|
+bulk-8ca1155c-c522-463b-b0ca-2b0bbdb74fe7|system:inbox-bulk-resolve|review|2026-10-05 20:02:46.211074+00|2026-10-05 20:02:53.810962+00|2026-10-05 20:07:31.502066+00|6|0|6|0|0|older|
+bulk-435bd18a-b01e-46fc-9b63-683464a3d3a5|system:inbox-bulk-resolve|review|2026-10-05 20:16:12.511429+00|2026-10-05 20:16:20.232003+00|2026-10-05 20:19:15.531567+00|8|0|8|0|0|older|
+bulk-7bdf0305-e25b-4340-89cd-d2a9d8261470|system:inbox-bulk-resolve|review|2026-10-05 20:30:34.859958+00|2026-10-05 20:30:42.346276+00|2026-10-05 20:34:16.058919+00|4|0|4|0|0|older|
+bulk-473a2a10-ad28-4e2c-afe3-c8ca96de8d4e|system:inbox-bulk-resolve|review|2026-10-05 20:50:36.244914+00|2026-10-05 20:50:44.126516+00|2026-10-05 20:58:17.05803+00|13|0|13|0|0|older|
+bulk-3c70abd2-9a7a-4c72-b0d1-d9816e76fe23|system:inbox-bulk-resolve|review|2026-10-05 21:00:44.750754+00|2026-10-05 21:00:55.317902+00|2026-10-05 21:05:57.54844+00|5|0|5|0|0|older|
+bulk-30e493f1-e791-4f92-8f8f-e4aa127fe9f4|system:inbox-bulk-resolve|review|2026-10-05 21:15:34.92832+00|2026-10-05 21:15:42.464667+00|2026-10-05 21:21:04.618824+00|15|0|15|0|0|older|
+bulk-7ec73b0a-4fac-4f6a-97eb-e713dc656505|system:inbox-bulk-resolve|review|2026-10-05 21:30:37.577129+00|2026-10-05 21:30:45.811035+00|2026-10-05 21:36:56.767074+00|8|0|8|0|0|older|
+bulk-3bdb46de-ebd6-4d75-aa85-a84ed6b05e0f|system:inbox-bulk-resolve|review|2026-10-05 21:46:04.871279+00|2026-10-05 21:46:19.488024+00|2026-10-05 21:55:25.804381+00|41|0|41|0|0|older|
+bulk-3cb4d522-377b-4d6b-8757-99499a5ddd18|system:inbox-bulk-resolve|review|2026-10-05 22:01:46.369446+00|2026-10-05 22:01:54.442172+00|2026-10-05 22:20:35.26071+00|40|0|40|0|0|older|
+bulk-556053e4-0175-448a-9b26-56e5481c2cdc|system:inbox-bulk-resolve|review|2026-10-05 22:30:39.087465+00|2026-10-05 22:30:47.235913+00|2026-10-05 22:41:25.065804+00|28|0|28|0|0|older|
+bulk-81413e59-cfe6-4299-aff7-52d55651f155|system:inbox-bulk-resolve|review|2026-10-05 22:46:05.702014+00|2026-10-05 22:46:13.372093+00|2026-10-05 22:54:11.787493+00|11|0|11|0|0|older|
+bulk-e694fd7c-63aa-40c3-84a1-c7d84190d8b2|system:inbox-bulk-resolve|review|2026-10-05 23:00:38.376789+00|2026-10-05 23:00:45.81674+00|2026-10-05 23:06:29.735+00|9|0|9|0|0|older|
+bulk-23134acb-63cb-46dc-b8f3-7f0bcdff46a4|system:inbox-bulk-resolve|review|2026-10-05 23:15:33.499284+00|2026-10-05 23:15:41.484652+00|2026-10-05 23:19:09.744725+00|5|0|5|0|0|older|
+bulk-47bd80bc-9879-4a4f-8cba-0a8de04be6fc|system:inbox-bulk-resolve|failed|2026-10-05 23:30:41.734114+00|2026-10-05 23:30:50.579228+00|2026-10-05 23:37:06.39848+00|13|0|0|0|13|older|Resolver stopped reporting (5m since the last evidence of life); 13 item(s) were never decided. Mark
+bulk-ea3ac76d-5a1c-45dd-b52c-644bd074bca7|system:inbox-bulk-resolve|review|2026-10-05 23:45:35.187874+00|2026-10-05 23:45:42.64263+00|2026-10-05 23:52:54.546423+00|20|0|20|0|0|older|
+bulk-fd9aea28-a473-4c56-bde8-6fedf6080a21|system:inbox-bulk-resolve|review|2026-10-06 00:01:05.453066+00|2026-10-06 00:01:12.97035+00|2026-10-06 00:09:54.388768+00|11|0|11|0|0|older|
+bulk-ab043534-92b5-4a8e-ac71-c1ca68a87fd0|system:inbox-bulk-resolve|review|2026-10-06 00:15:34.095051+00|2026-10-06 00:15:42.760572+00|2026-10-06 00:20:42.242844+00|3|0|3|0|0|older|
+bulk-f02745ad-41ff-489d-98ea-1ec4b1ff6d4c|system:inbox-bulk-resolve|review|2026-10-06 00:30:40.507703+00|2026-10-06 00:30:48.781372+00|2026-10-06 00:43:52.216569+00|27|0|27|0|0|older|
+bulk-4ab8a1f7-48fd-40a6-93e2-724e2417b91f|system:inbox-bulk-resolve|review|2026-10-06 00:47:06.697286+00|2026-10-06 00:48:36.990685+00|2026-10-06 00:55:19.071421+00|13|0|13|0|0|older|
+bulk-692fad70-edef-4716-9cf8-42c036a9a5ad|system:inbox-bulk-resolve|review|2026-10-06 01:00:42.27374+00|2026-10-06 01:00:50.839372+00|2026-10-06 01:10:01.351954+00|26|0|26|0|0|older|
+bulk-e04d8c76-92b1-4af5-839e-b2de58c93251|system:inbox-bulk-resolve|review|2026-10-06 01:15:37.946242+00|2026-10-06 01:20:46.133827+00|2026-10-06 01:29:14.977062+00|10|0|10|0|0|older|
+bulk-7485e5ec-94d2-450b-bc78-7a5b2da7eecf|system:inbox-bulk-resolve|review|2026-10-06 01:31:05.728148+00|2026-10-06 01:31:16.113062+00|2026-10-06 01:38:32.966227+00|6|0|6|0|0|older|
+bulk-3ac4eaef-2d54-47eb-ae50-a47fd37a5bbd|system:inbox-bulk-resolve|review|2026-10-06 01:45:37.186955+00|2026-10-06 01:45:47.652386+00|2026-10-06 01:54:29.988204+00|10|0|10|0|0|older|
+bulk-eb6e25b2-f66e-4c76-a0e3-3c0d58c92450|system:inbox-bulk-resolve|review|2026-10-06 02:05:05.306723+00|2026-10-06 02:05:14.955563+00|2026-10-06 02:15:24.050279+00|17|0|17|0|0|older|
+bulk-c6d1e817-1b26-44f6-8045-7a6240c0498d|system:inbox-bulk-resolve|review|2026-10-06 02:19:39.550472+00|2026-10-06 02:19:47.355247+00|2026-10-06 02:26:06.208223+00|8|0|8|0|0|older|
+bulk-3217128b-8843-449c-9cb6-5bc885a5141e|system:inbox-bulk-resolve|review|2026-10-06 02:30:39.751909+00|2026-10-06 02:31:28.872032+00|2026-10-06 02:38:38.641678+00|8|0|8|0|0|older|
+bulk-10787a7d-34e0-474c-a42f-f7b3f60cb2af|system:inbox-bulk-resolve|review|2026-10-06 02:45:36.539744+00|2026-10-06 02:45:44.015796+00|2026-10-06 02:57:24.349374+00|33|0|33|0|0|older|
+bulk-0c473f54-ac74-4c23-abee-f04216dc2715|system:inbox-bulk-resolve|review|2026-10-06 03:01:14.796091+00|2026-10-06 03:01:23.7936+00|2026-10-06 03:09:03.716269+00|11|0|11|0|0|older|
+bulk-454e8df1-ab3e-40eb-8ec1-ffb5174a0269|system:inbox-bulk-resolve|review|2026-10-06 03:21:39.151714+00|2026-10-06 03:21:47.179199+00|2026-10-06 03:29:27.560696+00|18|0|18|0|0|older|
+bulk-2db7cbb0-c844-45d9-9403-599e85fb687d|system:inbox-bulk-resolve|review|2026-10-06 03:32:38.562408+00|2026-10-06 03:32:47.490006+00|2026-10-06 03:45:54.419537+00|27|0|27|0|0|older|
+bulk-c207ef69-39b4-46c3-887b-4a389e4782f6|system:inbox-bulk-resolve|review|2026-10-06 04:01:44.073116+00|2026-10-06 04:01:53.621142+00|2026-10-06 04:16:57.687614+00|53|0|53|0|0|older|
+bulk-011c1921-ab45-4299-96bc-4dca50b3b6b4|system:inbox-bulk-resolve|review|2026-10-06 04:17:08.985439+00|2026-10-06 04:17:19.333193+00|2026-10-06 04:30:10.126976+00|16|0|16|0|0|older|
+bulk-0c405fc0-b99a-4154-bfd4-20d99e3a20a3|system:inbox-bulk-resolve|review|2026-10-06 04:31:41.309595+00|2026-10-06 04:31:49.591892+00|2026-10-06 04:44:59.329781+00|26|0|26|0|0|older|
+bulk-5cb534f7-c62b-4587-b257-3c906f589f37|system:inbox-bulk-resolve|review|2026-10-06 04:56:21.156135+00|2026-10-06 04:56:33.705307+00|2026-10-06 05:12:09.215811+00|41|0|41|0|0|older|
+bulk-e1f01dbd-9c83-45ac-8f0f-bc7331b190f3|system:inbox-bulk-resolve|review|2026-10-06 05:12:33.235982+00|2026-10-06 05:12:43.99006+00|2026-10-06 05:24:13.801105+00|67|0|67|0|0|older|
+bulk-1eea6e6c-7677-4a29-b86f-068e0555cf6c|system:inbox-bulk-resolve|review|2026-10-06 05:33:22.669728+00|2026-10-06 05:33:35.788907+00|2026-10-06 05:48:56.014049+00|34|0|34|0|0|older|
+bulk-2bd8d378-2be9-416b-9cb3-53e1c1141504|system:inbox-bulk-resolve|review|2026-10-06 06:20:36.092385+00|2026-10-06 06:20:49.748116+00|2026-10-06 06:45:33.510459+00|121|0|121|0|0|older|
+bulk-35c81648-1d69-45ad-bfe3-b1a966ec7ce1|system:inbox-bulk-resolve|review|2026-10-06 07:08:15.291915+00|2026-10-06 07:08:38.139979+00|2026-10-06 07:36:59.731337+00|51|0|51|0|0|older|
+bulk-878a801a-05e4-4d68-91e5-fe8bfba3779d|system:inbox-bulk-resolve|review|2026-10-06 07:42:10.061209+00|2026-10-06 07:43:31.642121+00|2026-10-06 08:04:04.852681+00|48|0|48|0|0|older|
+bulk-8b224d21-4f4f-4526-b4c3-187ec0be2cb8|system:inbox-bulk-resolve|review|2026-10-06 08:09:17.057418+00|2026-10-06 08:09:30.276235+00|2026-10-06 08:35:29.229347+00|59|0|59|0|0|older|
+bulk-8e037116-043e-4cec-b342-1c2e8f19aad2|system:inbox-bulk-resolve|running|2026-10-06 09:14:36.456122+00|2026-10-06 09:14:50.105335+00||75|0|0|0|0|current-process|
+## P1b execution overlap at each current-build run creation (run|created|overlapping_executing_runs|immediate_predecessor|predecessor_phase|predecessor_finished)
+bulk-8e037116-043e-4cec-b342-1c2e8f19aad2|2026-10-06 09:14:36.456122+00|current-process|0|bulk-8b224d21-4f4f-4526-b4c3-187ec0be2cb8|review|2026-10-06 08:35:29.229347+00
+## P1c positive control: inbox-resolve phase census, all time (phase|n)
+complete|9
+failed|20
+review|197
+running|1
+## P1d original stale-run dismiss receipts (run|kind|phase|requested_by|total|auto|rec|skip|fail|finished)
+bulk-7d35ee41-f64f-4150-8e12-35524c481213|plan-cleanup|complete|owner|200|11|0|13|0|2026-10-01 10:12:13.578445+00
+bulk-bc6d1eeb-5609-4881-8731-029b5b102682|plan-cleanup|complete|owner|200|6|0|26|0|2026-10-01 10:12:17.478398+00
+bulk-ef1590f9-6abe-4072-9389-8857864d2b90|inbox-resolve|complete|owner|158|14|0|144|0|2026-10-01 10:12:12.993607+00
+## P1e per-item outcome of the dismissed runs (run|outcome|disposition|n)
+bulk-ef1590f9|auto_resolved|auto_resolved|14
+bulk-ef1590f9|dismissed|dismissed|144
+## P2a run f3083502 rows (id|status|started|finished|census_before|census_after|failedAfterMergeCommit|error|outcome|workBudget|coverageAssertion)
+bulk-dedup-scheduled-1791273167828-f3083502-census-0|complete|2026-10-06 07:54:15.039+00|2026-10-06 08:09:33.424987+00|56623|57048|f||{"unit": "snapshots", "attempted": 1, "unchanged": 0, "rolledBack": 0, "successful": 1, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 0}||{"ok": true, "expected": 5983, "memberRows": 5983, "uniqueMembers": 5983}
+bulk-dedup-scheduled-1791273167828-f3083502-stage-1|complete|2026-10-06 08:13:54.936259+00|2026-10-06 08:43:42.412003+00|57048|56352|f||{"unit": "pairs", "attempted": 512, "unchanged": 2, "rolledBack": 0, "successful": 510, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 1}|{"pairLimit": 512, "deferredPairs": 56677, "selectedPairs": 512, "availablePairs": 57189}|
+bulk-dedup-scheduled-1791273167828-f3083502-stage-2|running|2026-10-06 08:47:26.884648+00||||f||{"unit": "pairs", "attempted": 512, "unchanged": null, "rolledBack": null, "successful": null, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": null}|{"pairLimit": 512, "deferredPairs": 56399, "selectedPairs": 512, "availablePairs": 56911}|
+bulk-dedup-scheduled-1791273167828-f3083502-stage-1-census-after|complete|2026-10-06 08:54:33.242+00|2026-10-06 09:10:54.929128+00|56303|56776|f||{"unit": "snapshots", "attempted": 1, "unchanged": 0, "rolledBack": 0, "successful": 1, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 0}||{"ok": true, "expected": 5993, "memberRows": 5993, "uniqueMembers": 5993}
+## P2b bulk-dedup stage rows, last 7 days (id|status|started|finished|outcome|workBudget|error)
+bulk-dedup-scheduled-1790874835458-4d405acd-stage-1|failed|2026-10-01 18:06:46.555035+00|2026-10-03 02:43:33.626062+00|{"unit": "pairs", "attempted": 65060, "unchanged": null, "rolledBack": null, "successful": null, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": null}||reaped: still running past the stage lease with no finish (process died mid-run)
+bulk-dedup-scheduled-1790995393202-4adfe2f9-stage-1|blocked|2026-10-03 02:56:19.534921+00|2026-10-03 03:46:05.449139+00|{"unit": "pairs", "attempted": 512, "unchanged": 512, "rolledBack": 0, "successful": 0, "blockedReason": "bulk admission merge guard refused 64 endpoint(s): EI-11171:claim-held, EI-13268:claim-held, EI-13623:claim-held, EI-15404:review-gated, EI-15428:review-gated", "failureReason": null, "uniqueRowsChanged": 0}|{"pairLimit": 512, "deferredPairs": 66239, "selectedPairs": 512, "availablePairs": 66751}|bulk admission merge guard refused 64 endpoint(s): EI-11171:claim-held, EI-13268:claim-held, EI-13623:claim-held, EI-154
+bulk-dedup-scheduled-1791000557028-2309feb4-stage-1|complete|2026-10-03 04:21:46.925833+00|2026-10-03 04:22:51.078574+00|{"unit": "pairs", "attempted": 512, "unchanged": 1, "rolledBack": 0, "successful": 511, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 0}|{"pairLimit": 512, "deferredPairs": 66244, "selectedPairs": 512, "availablePairs": 66756}|
+bulk-dedup-scheduled-1791000557028-2309feb4-stage-2|complete|2026-10-03 04:39:29.252117+00|2026-10-03 05:08:55.651164+00|{"unit": "pairs", "attempted": 512, "unchanged": 0, "rolledBack": 0, "successful": 512, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 0}|{"pairLimit": 512, "deferredPairs": 65732, "selectedPairs": 512, "availablePairs": 66244}|
+bulk-dedup-scheduled-1791022871543-c399ec17-stage-1|complete|2026-10-03 10:35:35.615583+00|2026-10-03 11:14:06.267841+00|{"unit": "pairs", "attempted": 512, "unchanged": 1, "rolledBack": 0, "successful": 511, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 0}|{"pairLimit": 512, "deferredPairs": 56926, "selectedPairs": 512, "availablePairs": 57438}|
+bulk-dedup-scheduled-1791022871543-c399ec17-stage-2|complete|2026-10-03 11:33:57.531611+00|2026-10-03 12:54:54.812973+00|{"unit": "pairs", "attempted": 512, "unchanged": 1, "rolledBack": 0, "successful": 511, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 1}|{"pairLimit": 512, "deferredPairs": 56476, "selectedPairs": 512, "availablePairs": 56988}|
+bulk-dedup-scheduled-1791212611575-7c1d6b46-stage-1|failed|2026-10-05 15:15:30.602287+00|2026-10-05 16:05:06.469635+00|{"unit": "pairs", "attempted": 512, "unchanged": null, "rolledBack": null, "successful": null, "blockedReason": null, "failureReason": "admission census ratchet violated: 56606 -> 65264 (+8658)", "uniqueRowsChanged": null}|{"pairLimit": 512, "deferredPairs": 56194, "selectedPairs": 512, "availablePairs": 56706}|admission census ratchet violated: 56606 -> 65264 (+8658)
+bulk-dedup-scheduled-1791260346916-a3ffb71a-stage-1|failed|2026-10-06 04:36:23.966231+00|2026-10-06 06:33:48.270864+00|{"unit": "pairs", "attempted": 512, "unchanged": null, "rolledBack": null, "successful": null, "blockedReason": null, "failureReason": "serializable transaction failed to commit after 12 attempts (pg 40001)", "uniqueRowsChanged": null}|{"pairLimit": 512, "deferredPairs": 56582, "selectedPairs": 512, "availablePairs": 57094}|serializable transaction failed to commit after 12 attempts (pg 40001)
+bulk-dedup-scheduled-1791273167828-f3083502-stage-1|complete|2026-10-06 08:13:54.936259+00|2026-10-06 08:43:42.412003+00|{"unit": "pairs", "attempted": 512, "unchanged": 2, "rolledBack": 0, "successful": 510, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 1}|{"pairLimit": 512, "deferredPairs": 56677, "selectedPairs": 512, "availablePairs": 57189}|
+bulk-dedup-scheduled-1791273167828-f3083502-stage-2|running|2026-10-06 08:47:26.884648+00||{"unit": "pairs", "attempted": 512, "unchanged": null, "rolledBack": null, "successful": null, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": null}|{"pairLimit": 512, "deferredPairs": 56399, "selectedPairs": 512, "availablePairs": 56911}|
+## P2c bulk-dedup / digest / inbox / admission routines (id|name|install|active|trigger_kind|last_fired|next_fire|trigger_config)
+rt_papercusp_improvement_human_digest|improvement-human-digest|papercusp|t|cron|2026-10-05 15:05:04.53+00|2026-10-06 13:00:00+00|{"cron": "0 0 9 * * *", "top_n": 5}
+rt_papercusp_inbox_bulk_resolve|inbox-bulk-resolve|papercusp|t|cron|2026-10-06 09:14:32.613+00|2026-10-06 09:15:26+00|{"cap": 200, "cron": "26 */15 * * * *"}
+rt_papercusp_plan_schedule_daily_improvement_digest_2026_07_06|plan-schedule-daily-improvement-digest-2026-07-06|papercusp|f|cron||2026-07-07 09:00:00+00|{"kind": "rrule", "rrule": "FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0"}
+rt_papercusp_plan_schedule_work_queue_admission_and_bulk_dedup_2026_08_24|plan-schedule-work-queue-admission-and-bulk-dedup-2026-08-24|papercusp|f|cron|2026-10-01 07:39:01.344+00|2026-10-02 07:30:00+00|{"kind": "rrule", "tzid": "America/New_York", "rrule": "FREQ=DAILY;BYHOUR=3;BYMINUTE=30;BYSECOND=0", "catchup": "skip-old", "concurrency": "skip", "executorKind
+rt_papercusp_unclaimed_work_digest|unclaimed-work-digest|papercusp|t|cron|2026-10-05 15:05:04.762+00|2026-10-06 13:00:00+00|{"cron": "0 0 9 * * *", "top_n": 10, "harness": "papercusp"}
+rt_papercusp_work_item_admission_bulk_dedup_driver|work-item-admission-bulk-dedup-driver|papercusp|t|cron|2026-10-06 04:19:01.84+00|2026-10-07 04:17:00+00|{"cron": "0 17 0 * * *"}
+rt_papercusp_work_item_admission_bulk_dedup_fc_reconcile_p003_20260905_wm1788628151920|work-item-admission-bulk-dedup-fc-reconcile-p003-20260905-wm1788628151920|papercusp|f|cron|2026-09-05 17:34:18.411+00||{}
+rt_wi3467_smoke_test_work_item_admission_bulk_dedup_p004_d007_canary_20260901|work-item-admission-bulk-dedup-p004-d007-canary-20260901|wi3467-smoke-test|f|cron|2026-09-01 04:41:03.071+00||{}
+rt_wi3467_smoke_test_work_item_admission_bulk_dedup_p008_verification_canary_20260901_0305|work-item-admission-bulk-dedup-p008-verification-canary-20260901-0305|wi3467-smoke-test|f|cron|2026-09-01 07:08:29.272+00||{}
+rt_papercusp_work_item_admission_bulk_dedup_scheduled|work-item-admission-bulk-dedup-scheduled|papercusp|f|cron|2026-10-06 07:54:08.827+00||{}
+rt_papercusp_work_item_admission_bulk_dedup_wi_10004722_p005_live_20261001|work-item-admission-bulk-dedup-wi-10004722-p005-live-20261001|papercusp|f|cron|2026-10-01 12:01:32.635+00||{}
+rt_wi3467_smoke_test_work_item_admission_bulk_dedup_wi3467_p003_canary_20260901_0256|work-item-admission-bulk-dedup-wi3467-p003-canary-20260901-0256|wi3467-smoke-test|f|cron|2026-09-01 02:56:06.864+00||{}
+rt_papercusp_work_item_admission_bulk_dedup_wi_42208_p006_live_20260827|work-item-admission-bulk-dedup-wi-42208-p006-live-20260827|papercusp|f|cron|2026-08-27 10:17:32.588+00||{}
+rt_papercusp_work_item_admission_bulk_dedup_wi_42278_p012_final_20260827|work-item-admission-bulk-dedup-wi-42278-p012-final-20260827|papercusp|f|cron|2026-08-27 23:56:04.417+00||{}
+rt_papercusp_work_item_admission_bulk_dedup_wi_42278_p012_prereq_20260827|work-item-admission-bulk-dedup-wi-42278-p012-prereq-20260827|papercusp|f|cron|2026-08-27 22:52:01.761+00||{}
+rt_papercusp_work_item_admission_bulk_dedup_wi_42278_p012_timeoutfix_20260828|work-item-admission-bulk-dedup-wi-42278-p012-timeoutfix-20260828|papercusp|f|cron|2026-08-28 22:41:01.458+00||{}
+rt_papercusp_work_item_admission_daily_digest|work-item-admission-daily-digest|papercusp|t|cron|2026-10-06 06:40:03.347+00|2026-10-07 06:37:00+00|{"cron": "0 37 2 * * *"}
+rt_papercusp_work_item_admission_delta_sweep|work-item-admission-delta-sweep|papercusp|t|cron|2026-10-06 08:16:11.796+00|2026-10-06 09:07:00+00|{"cron": "0 7 * * * *"}
+rt_papercusp_work_item_admission_fail_open|work-item-admission-fail-open|papercusp|t|cron|2026-10-06 08:21:08.129+00|2026-10-06 08:45:00+00|{"cron": "0 15,45 * * * *"}
+rt_papercusp_work_item_admission_promoter|work-item-admission-promoter|papercusp|t|cron|2026-10-06 09:11:06.821+00|2026-10-06 09:18:00.819+00|{"cron": "0 */30 * * * *"}
+## P2d daily digests, last 4 days (id|status|started|finished|sourceCensusRunId|sourceBulkStageRunId|coverage|outcome)
+3e27aac8-5d9a-4376-8b78-b258a631d214|complete|2026-10-03 04:41:04.619+00|2026-10-03 04:51:09.095946+00|bulk-dedup-scheduled-1791000557028-2309feb4-stage-1-census-after|bulk-dedup-scheduled-1791000557028-2309feb4-stage-1|{"live": 5599, "ratio": 0.9978567601357385, "covered": 5587, "uncovered": 12}|{"unit": "links", "attempted": 151, "unchanged": 0, "rolledBack": 0, "successful": 151, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 151}
+sched-.routinesTick-2026-10-03T06:37:00.000Z-55|complete|2026-10-03 06:37:08.1+00|2026-10-03 06:54:21.147583+00|bulk-dedup-scheduled-1791000557028-2309feb4-stage-2-census-after|bulk-dedup-scheduled-1791000557028-2309feb4-stage-2|{"live": 5631, "ratio": 0.985082578582845, "covered": 5547, "uncovered": 84}|{"unit": "links", "attempted": 177, "unchanged": 0, "rolledBack": 0, "successful": 177, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 177}
+ca3ffb8e-6a19-4f62-b31f-6d79c89c4539|complete|2026-10-03 11:39:08.332+00|2026-10-03 11:51:47.049254+00|bulk-dedup-scheduled-1791022871543-c399ec17-stage-1-census-after|bulk-dedup-scheduled-1791022871543-c399ec17-stage-1|{"live": 5635, "ratio": 0.9960958296362024, "covered": 5613, "uncovered": 22}|{"unit": "links", "attempted": 171, "unchanged": 0, "rolledBack": 0, "successful": 171, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 171}
+sched-.routinesTick-2026-10-05T15:04:00.000Z-3|complete|2026-10-05 15:04:01.806+00|2026-10-05 15:13:16.63833+00|bulk-dedup-scheduled-1791022871543-c399ec17-stage-2-census-after|bulk-dedup-scheduled-1791022871543-c399ec17-stage-2|{"live": 5664, "ratio": 0.9883474576271186, "covered": 5598, "uncovered": 66}|{"unit": "links", "attempted": 193, "unchanged": 0, "rolledBack": 0, "successful": 193, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 193}
+sched-.routinesTick-2026-10-06T06:40:00.000Z-21|complete|2026-10-06 06:40:04.088+00|2026-10-06 06:54:45.845647+00|bulk-dedup-scheduled-1791022871543-c399ec17-stage-2-census-after|bulk-dedup-scheduled-1791022871543-c399ec17-stage-2|{"live": 5932, "ratio": 0.9268374915711396, "covered": 5498, "uncovered": 434}|{"unit": "links", "attempted": 225, "unchanged": 0, "rolledBack": 0, "successful": 225, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 225}
+a16a3ec7-64c3-4bf9-97f3-303bd1223cdb|complete|2026-10-06 08:45:25.094+00|2026-10-06 09:04:03.357373+00|bulk-dedup-scheduled-1791273167828-f3083502-stage-1-census-after|bulk-dedup-scheduled-1791273167828-f3083502-stage-1|{"live": 5993, "ratio": 0.9958284665443017, "covered": 5968, "uncovered": 25}|{"unit": "links", "attempted": 113, "unchanged": 0, "rolledBack": 0, "successful": 113, "blockedReason": null, "failureReason": null, "uniqueRowsChanged": 113}
+## P3a fixed before/after promoter-tick population (window|ticks|model_ticks|model_ticks_with_yield|promoted|merged|failed)
+1-before|16|9|5|10|13|1
+2-after|285|148|81|127|41|2
+3-prior-process-same-runner-blobs|0|0|0|0|0|0
+4-current-process|1|1|1|1|0|0
+## P3a2 D-006 model-tick yield windows (window|model_ticks|with_yield|promoted|merged)
+d006-after|8|6|12|13
+d006-before|7|0|0|0
+## P3e promoter-tick wall-clock latency per fixed window, finished ticks only (window|finished_ticks|p50_s|p90_s|max_s|model_p50_s|model_p90_s)
+1-before|16|283.6|772.3|1412.3|549.7|940.0
+2-after|285|67.3|700.7|1439.8|480.9|900.9
+3-prior-process-same-runner-blobs|0|||||
+4-current-process|1|471.1|471.1|471.1|471.1|471.1
+## P3d current-build prescreen dispositions, samples removed (id|prescreen)
+sched-.routinesTick-2026-10-06T09:11:00.000Z-7|current-process|{"window": 60, "deferred": 47, "selected": 13, "forcedHolds": 11, "selfBlocked": 0, "protectedPairs": 243, "unresolvablePairs": 161}
+## P3b current-build promoter ticks (id|status|started|finished|batch|promoted|merged|held|tokens_in|prescreen|misHomedByScope|reviewDebt|reviewMoot)
+sched-.routinesTick-2026-10-06T09:11:00.000Z-7|current-process|complete|2026-10-06 09:11:11.81535+00|2026-10-06 09:19:02.872952+00|13|1|0|12|118520|{"window": 60, "samples": [{"class": "unresolvable-pair", "itemId": "EI-22775230678410844", "reason": "terminal-canonical-without-completion", "blockedBy": "EI-22762627412117946"}, {"class": "unresolvable-pair", "itemId": "EI-22775230678410844", "reason": "terminal-canonical-without-completion", "blockedBy": "EI-22762729556879480"}, {"class": "deferred", "itemId": "EI-22775230678410844", "reason":|||
+## P3c 14-row repair: every copy of the rehomed + dropped original learning-loop ids (feature_id|harness|status|origin|admission|rehomed_from|state_changed)
+EI-24267222596600774|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:36.899569+00
+EI-24267222596600774|papercusp|dropped|local|admitted|{"at": "2026-10-01T12:39:49.647Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:15:06.606756+00
+EI-24267222687679039|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:50.887548+00
+EI-24267222687679039|papercusp|dropped|local|admitted|{"at": "2026-10-01T12:39:50.009Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:15:07.482903+00
+EI-24267222757977875|operator:papercusp-workspace|dropped|local|pending||2026-10-01 13:58:17.783065+00
+EI-24267222828322218|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:51.194625+00
+EI-24267222828322218|papercusp|dropped|local|admitted|{"at": "2026-10-01T12:39:50.702Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:15:08.441751+00
+EI-24267222877903887|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:51.543652+00
+EI-24267222877903887|papercusp|dropped|local|admitted|{"at": "2026-10-01T12:39:50.806Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:15:11.378905+00
+EI-24267222930354063|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:51.878836+00
+EI-24267222930354063|papercusp|dropped|local|admitted|{"at": "2026-10-01T12:39:51.316Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:15:12.148089+00
+EI-24267222987491045|operator:papercusp-workspace|dropped|local|pending||2026-10-01 13:58:29.399413+00
+EI-24267223026430401|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:53.212926+00
+EI-24267223026430401|papercusp|dropped|local|admitted|{"at": "2026-10-01T12:39:51.946Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:15:12.772998+00
+EI-24267223080265746|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:53.592068+00
+EI-24267223080265746|papercusp|dropped|local|admitted|{"at": "2026-10-01T12:39:51.983Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:15:13.438992+00
+EI-24267223117079571|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:53.956071+00
+EI-24267223117079571|papercusp|done|local|admitted|{"at": "2026-10-01T12:39:52.155Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 12:56:35.282202+00
+EI-24267223158951308|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:54.246906+00
+EI-24267223158951308|papercusp|done|local|admitted|{"at": "2026-10-01T12:39:52.196Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:14:55.674665+00
+EI-24267223196812737|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:54.811443+00
+EI-24267223196812737|papercusp|done|local|admitted|{"at": "2026-10-01T12:39:52.239Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:05:59.744631+00
+EI-24267223251151764|operator:papercusp-workspace|dropped|local|pending||2026-10-03 13:51:55.100967+00
+EI-24267223251151764|papercusp|dropped|local|admitted|{"at": "2026-10-01T12:39:52.287Z", "by": "role:operator", "reason": "WI-10004723 (P-003): learning-loop alarm mis-homed under the legacy non-pot slug operator:papercusp-workspace; re-home to the platform harness", "harness": "operator:papercusp-workspace"}|2026-10-01 13:15:14.361985+00
+EI-24267223289868756|operator:papercusp-workspace|dropped|local|pending||2026-10-01 13:58:29.790334+00
+## P4a kind-threshold residual: unfinished admission_runs of any kind or age (run_kind|id|status|started|age)
+bulk-stage|bulk-dedup-scheduled-1791273167828-f3083502-stage-2|running|2026-10-06 08:47:26.884648+00|00:44:43.108913
+## P4b positive control: runs started in the last 6h by kind (run_kind|started|finished|unfinished|max_duration)
+bulk-stage|3|2|1|01:57:24.304633
+census|3|3|0|00:16:21.687128
+daily-digest|2|2|0|00:18:38.263373
+delta-sweep|5|5|0|00:01:57.433
+durable-park-audit|1|1|0|00:00:10.174
+promoter-tick|24|24|0|00:15:17.704786
+## P4c historic reap ledger (reapedBy|reapedAt|run_kind|n)
+fc-reconcile-p003-20260905-wm1788628151920|2026-09-05T17:34:19.585Z|bulk-stage|1
+fc-reconcile-p003-20260905-wm1788628151920|2026-09-05T17:34:19.585Z|census|1
+fc-reconcile-p003-20260905-wm1788628151920|2026-09-05T17:34:19.585Z|promoter-tick|2
+sched-.routinesTick-2026-10-01T11:16:00.000Z-19|2026-10-01T11:16:27.915Z|durable-park-audit|1
+sched-.routinesTick-2026-10-01T11:16:00.000Z-19|2026-10-01T11:16:27.915Z|promoter-tick|5
+bulk-dedup-scheduled-1790995393202-4adfe2f9|2026-10-03T02:43:33.601Z|bulk-stage|1
+## P4d comparable review-debt series from promoter ticks (id|started|reviewDebt.pending|overdue|reviewMoot.closed|truncatedByLimit)
+sched-.routinesTick-2026-10-01T12:16:30.000Z-19|2026-10-01 12:16:33.789793+00|2217|2182||
+sched-.routinesTick-2026-10-01T12:46:30.000Z-7|2026-10-01 12:46:33.583866+00|2241|2182||
+sched-.routinesTick-2026-10-01T13:15:30.000Z-25|2026-10-01 13:15:36.889368+00|2246|2182||
+sched-.routinesTick-2026-10-01T14:00:00.000Z-11|2026-10-01 14:00:06.26115+00|1105|1084|1148|false
+sched-.routinesTick-2026-10-03T09:15:00.000Z-63|2026-10-03 09:15:04.235653+00|1045|1033|6|false
+## P4e independent re-count of review debt (same predicate as readWorkItemAdmissionQueueHealth, workspace-wide) (review_pending|review_overdue|population)
+1219|1218|10027

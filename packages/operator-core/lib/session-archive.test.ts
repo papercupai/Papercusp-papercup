@@ -10,8 +10,8 @@
  *   - rematerialize never clobbers a differing existing file (disk wins).
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { appendFile, mkdtemp, mkdir, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { appendFile, lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -22,12 +22,18 @@ import {
   deleteArchivedSessionFiles,
   isSessionKeyedRelpath,
   listClaudeSessionIds,
+  listCodexRolloutSessionIds,
   rematerializeSession,
   sha256Hex,
   type ArchiveFileRow,
   type ArchiveStampRow,
   type SessionArchiveStore,
 } from './session-archive';
+
+vi.mock('node:fs/promises', async (original) => {
+  const actual = await original<typeof import('node:fs/promises')>();
+  return { ...actual, readdir: vi.fn(actual.readdir), lstat: vi.fn(actual.lstat) };
+});
 
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
 const OTHER = 'bbbbbbbb-5555-6666-7777-888888888888';
@@ -327,6 +333,29 @@ describe('collectors — symlink safety + per-CLI shapes', () => {
   it('listClaudeSessionIds enumerates every uuid in the config dir', async () => {
     const { root } = await claudeFixture();
     expect((await listClaudeSessionIds(root)).sort()).toEqual([SID, OTHER].sort());
+  });
+
+  it.each(['claude', 'codex'] as const)('%s session enumeration propagates directory read failures', async (backend) => {
+    const root = await tmp('sa-unreadable-');
+    await mkdir(join(root, backend === 'claude' ? 'projects' : 'sessions'));
+    const error = Object.assign(new Error('directory read denied'), { code: 'EACCES' });
+    vi.mocked(readdir).mockRejectedValueOnce(error);
+    await expect((backend === 'claude' ? listClaudeSessionIds : listCodexRolloutSessionIds)(root))
+      .rejects.toBe(error);
+  });
+
+  it.each(['claude', 'codex'] as const)('%s session enumeration propagates directory stat failures', async (backend) => {
+    const root = await tmp('sa-stat-unavailable-');
+    const error = Object.assign(new Error('directory stat failed'), { code: 'EIO' });
+    vi.mocked(lstat).mockRejectedValueOnce(error);
+    await expect((backend === 'claude' ? listClaudeSessionIds : listCodexRolloutSessionIds)(root))
+      .rejects.toBe(error);
+  });
+
+  it.each(['claude', 'codex'] as const)('%s session enumeration still accepts a missing transcript directory', async (backend) => {
+    const root = await tmp('sa-no-transcripts-');
+    await expect((backend === 'claude' ? listClaudeSessionIds : listCodexRolloutSessionIds)(root))
+      .resolves.toEqual([]);
   });
 });
 

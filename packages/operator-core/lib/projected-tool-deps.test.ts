@@ -234,6 +234,20 @@ describe('authorizationFailureHint — judge MCP route guidance (EI-215434503419
     expect(hint).toContain('tools:invoke');
   });
 
+  it('routes a judge denied capability:git to the read-only pinned-evidence reader', () => {
+    const hint = PROJECTED_DEPS.authorizationFailureHint!({
+      toolName: 'capability:git',
+      missingCapability: 'capability:git',
+      ctx: judgeCtx,
+    });
+    expect(hint).toContain('`capability:git` is intentionally withheld from judge sessions');
+    expect(hint).toContain('capability:git-evidence');
+    expect(hint).toContain('op: "readFileAtCommit"');
+    expect(hint).toContain('full commit SHA');
+    expect(hint).toContain('repository-relative path');
+    expect(hint).toContain('separate authorized su/operator session');
+  });
+
   // R-7 / P-012 (acceptance-machinery-seam-fixes-2026-09-16): a ROLE denial names the
   // allowed roles and nothing else, so the caller learns what WOULD work but not where
   // to get it. Both denial shapes have the same remedy, so they share this seam.

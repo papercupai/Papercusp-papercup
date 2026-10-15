@@ -1,0 +1,29 @@
+# One timed run of apps/operator/bin/bundle-host.sh, 2026-10-06 ~16:13Z (plan desktop-dev-startup-speed-2026-10-06, D-002).
+# Column 1 = seconds since start. load_start/load_end = /proc/loadavg (128 cores).
+load_start 124.73 119.75 107.05 59/49550 932474
+    1.4 → restricted-hold gate: snapshotted 15/15 last-known-good artifact(s)
+    1.4 → esbuild-bundling bin/hono-host.ts → apps/operator/dist-devhost/hono-host.mjs (plain-node host entry)
+   47.7   dist-devhost/hono-host.mjs.tmp  65.9mb
+   47.7 ⚡ Done in 4857ms
+   47.7 ✓ bundled CLI-entry guard check passed
+   47.7 ✓ bundled top-level-await check passed
+   47.7 BUNDLE_FREE_REFS_RESULT status=clean selection=changed-since-baseline inputs=6562 checked=0 findings=0 unparsed=0 ms=1
+   47.7 → ascii-escape: 13,332 non-ASCII chars escaped (65.9 MB → 66.0 MB on disk)
+   47.7 ✓ bundled: 66M apps/operator/dist-devhost/hono-host.mjs
+   47.7 ✓ bundled systemd scope environment runner beside the host entry
+   47.8 ✓ bundled pot-git ext bridge beside the host entry
+   47.9 → bundling @papercusp/harness blueprints
+   48.1     ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml
+   48.1 → bundling @papercusp/locks DDL
+   48.3     ✓ bundled @papercusp/locks DDL matches the tree (highest migration 931, 33 files)
+   75.0   dist-devhost/event-loop-sentinel.worker.mjs  30.4kb   ⚡ Done in 21ms
+   75.0   dist-devhost/snapshot-fold.worker.mjs  27.2kb   ⚡ Done in 32ms
+   75.0   dist-devhost/mutation-probe-closure.worker.mjs  18.2kb   ⚡ Done in 16ms
+   75.0   dist-devhost/admission-jobs.worker.mjs  72.6kb   ⚡ Done in 39ms
+   75.0   dist-devhost/precision-bench-worker.mjs  430.8kb   ⚡ Done in 63ms
+   99.5   dist-devhost/spawner-sidecar.mjs  63.3mb   ⚡ Done in 4828ms
+   99.5 ✓ bundled CLI-entry guard check passed
+   99.5 ✓ bundled top-level-await check passed
+   99.5 → ascii-escape: 12,970 non-ASCII chars escaped (63.3 MB → 63.4 MB on disk)
+  105.4 ✓ restricted-hold gate: 9301 bundle inputs checked, none is a held restricted write (D-012)
+rc=0 total=105.760375 load_end 121.86 120.01 108.54 83/49644 1012715

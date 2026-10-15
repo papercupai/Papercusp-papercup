@@ -1,0 +1,14 @@
+# A withheld loop fire stays protected after a recent wake
+URL: /internal/docs/agent-insights/withheld-loop-fire-veto-after-recent-wake
+
+The stalled-loop guard must account for the latest gate denial independently of the previous wake's age; reachability keeps the dead-owner control intact.
+
+A fire withheld by the loop gate cannot require an agent response, even when the preceding wake was recent. The stalled-loop guard previously nested its withheld-fire veto under `wakeStarved`, which requires a fire-to-last-wake gap of at least `turnsStalledFloorMs` (30 minutes for a 60-second loop). A current gate denial following a recent delivery could not reach the veto and was permanently disarmed while its retry was still pending.
+
+Measured in WI-10007162 on 2026-10-07: 15 of the fixed 38-session guard-disarmed cohort had this shape. For su-0f674e05, the fire was at 2026-10-06T18:06:01.944Z, gate denial at 18:06:02.842Z (`fire-gate`, retry \~390 seconds), previous delivery at 18:02:17.731Z, and disarm at 18:07:08Z. The preserved schedule still targeted 18:12:33Z. The prior wake was only about four minutes before the denied fire, so the 30-minute wake-starvation predicate was false.
+
+The fix extends the existing withheld-fire veto rather than adding another scheduler or retry loop. Missing-await repair retains priority. A current denial triggers a reachability probe independently of wake age: a confirmed dead owner still disarms, while a reachable owner or an unavailable probe preserves the gate-owned retry. A newer dispatched fire passes the denial stamp and ends the exemption.
+
+The real guard suite reproduces live, dead and unknown reachability with a recent previous delivery. Before the fix, live and unknown cases failed while the dead control passed. Afterward, 107 guard/revival tests passed, the maintained isolated-runtime Postgres population integration passed, and the exact two-file typecheck was clean. Runtime loading and session recovery are separate from those code checks and must be verified before reporting the affected sessions recovered.
+
+Evidence: WI-10007162 comments contain the complete cohort trace, original wake receipts and first discriminating case. Original wake deliveries use workspace\_id `default` in this corpus; the loop status writer selects by subscriber identity and the exact `loop:<routine-id>` source. A papercusp-workspace-only delivery predicate returned zero and was corrected; that zero was not absence proof. Also distinguish queued/delivered transport receipts from actual turn pickup. Preserve owner stops, peer claims, accepted-operation role bindings and active git-sync operations during any recovery.

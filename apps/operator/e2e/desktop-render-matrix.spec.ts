@@ -9,9 +9,9 @@ import {
 } from '../../../packages/operator-core/lib/design-compare/render-matrix';
 
 test.describe.configure({ mode: 'serial' });
-const root = path.resolve(__dirname, '../../..');
+const root = path.resolve(import.meta.dirname, '../../..');
 const output = process.env.DESKTOP_MATRIX_OUTPUT_DIR;
-const referencePath = 'scratchpad/visual-desktop-mockups-2026-09-07/b-workspace.png';
+const referencePath = 'docs/evidence/visual-desktop-mockups-2026-09-07/b-workspace.png';
 const states = ['ready', 'empty', 'loading', 'disconnected', 'error'] as const;
 const sizes = { desktop: { width: 1440, height: 900 }, narrow: { width: 390, height: 844 } };
 const themes = ['light', 'dark'] as const;
@@ -69,7 +69,9 @@ test.beforeAll(async () => {
         });
       },
     }],
-    server: { host: '127.0.0.1', port: 0, strictPort: false },
+    // No HMR / watcher: root is the shared tree the fleet edits, so a watched change can
+    // full-reload the page mid-test (see e2e/_desktop-grid-fixture-server.ts).
+    server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false, watch: null },
   });
   await server.listen();
   origin = server.resolvedUrls!.local[0]!.replace(/\/$/, '');

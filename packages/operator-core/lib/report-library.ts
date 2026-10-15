@@ -30,11 +30,10 @@
  * resolves by id, it just leaves the default list.
  *
  * ## One visibility predicate, one implementation
- * {@link visibleTo} returns a SQL fragment and is the ONLY expression of the
- * visibility rule (R-7). There is deliberately no JavaScript twin that evaluates
- * the same matrix in memory: two implementations of one security rule drift, and
- * the drift is silent in the permissive direction. Every read path composes this
- * fragment instead.
+ * {@link visibleTo} returns the SQL fragment for the visibility rule (R-7).
+ * Ordinary reads compose it directly. The judge-only scorecard-evidence path can
+ * add one exact report ID after canonical scorecard proof; it never changes the
+ * visibility predicate or widens list, search, or lineage reads.
  *
  * Transport-agnostic: every function TAKES the `sql` handle, so the same code
  * serves the live `getOrgPg()` connection and the integration test's testcontainer
@@ -42,8 +41,13 @@
  *
  * Server-only.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
+import { lexicalLeg } from './search/lexical/rank';
+import {
+  parseGoalOwnerReportSnapshot, serializeGoalOwnerReportSnapshot,
+  type GoalOwnerReportSnapshotV1,
+} from '@papercusp/chat-protocol';
 
 /**
  * Hard cap on a stored markdown body (R-1). An over-cap body is REFUSED with its
@@ -88,13 +92,19 @@ export interface ReportOrigin {
   authorOwnerId?: string | null;
   /** A session/turn reference for the write. */
   authorSessionRef?: string | null;
+  /** Server-verified retry namespace. Never accepted from publication args. */
+  requestScope?: string | null;
 }
 
 export interface PublishReportInput {
   workspaceId: string;
+  /** Retry identity scoped to workspace and server-verified publication origin. */
+  requestKey?: string;
   title: string;
   summary?: string;
   bodyMd?: string;
+  /** Optional typed metadata on this existing immutable report row. */
+  goalOwnerReport?: GoalOwnerReportSnapshotV1;
   kind?: ReportKind;
   subject?: ReportSubject;
   visibility?: ReportVisibility;
@@ -107,10 +117,13 @@ export interface PublishReportInput {
 
 export interface ReportRecord {
   workspaceId: string;
+  requestKey?: string | null;
   reportId: string;
   title: string;
   summary: string;
   bodyMd: string;
+  bodySha256: string;
+  goalOwnerReport: GoalOwnerReportSnapshotV1 | null;
   kind: ReportKind;
   subject: { kind: ReportSubjectKind; ref: string | null; label: string | null };
   origin: { harnessSlug: string | null; authorOwnerId: string | null; authorSessionRef: string | null };
@@ -135,6 +148,11 @@ export interface ReportViewer {
   potSlug?: string | null;
 }
 
+export interface ReportCitationReadScope {
+  kind: 'scorecard-citation';
+  reportId: string;
+}
+
 /** Raised when a body exceeds {@link REPORT_BODY_MAX_BYTES}; carries the overage. */
 export class ReportBodyTooLargeError extends Error {
   readonly bytes: number;
@@ -153,12 +171,21 @@ export class ReportBodyTooLargeError extends Error {
   }
 }
 
+export class ReportRequestConflictError extends Error {
+  constructor(readonly requestKey: string) {
+    super(`report request_key ${JSON.stringify(requestKey)} already names different content; use a new key for a new edition`);
+    this.name = 'ReportRequestConflictError';
+  }
+}
+
 interface DbRow {
   workspace_id: string;
+  request_key: string | null;
   report_id: string;
   title: string;
   summary: string;
   body_md: string;
+  goal_owner_report: GoalOwnerReportSnapshotV1 | null;
   kind: string;
   subject_kind: string;
   subject_ref: string | null;
@@ -182,10 +209,13 @@ const toIso = (value: Date | string): string =>
 function mapRow(row: DbRow): ReportRecord {
   return {
     workspaceId: row.workspace_id,
+    requestKey: row.request_key ?? null,
     reportId: row.report_id,
     title: row.title,
     summary: row.summary ?? '',
     bodyMd: row.body_md ?? '',
+    bodySha256: reportBodySha256(row.body_md ?? ''),
+    goalOwnerReport: row.goal_owner_report ?? null,
     kind: row.kind as ReportKind,
     subject: {
       kind: row.subject_kind as ReportSubjectKind,
@@ -214,7 +244,11 @@ const SELECT_COLS = `
   subject_kind, subject_ref, subject_label,
   origin_harness_slug, author_owner_id, author_session_ref,
   visibility, supersedes_report_id, lineage_id, source, tags,
-  published_at, updated_at, retired_at`;
+  published_at, updated_at, retired_at, goal_owner_report, request_key`;
+
+/** SHA-256 of the exact persisted UTF-8 body; no trimming or normalization. */
+export const reportBodySha256 = (bodyMd: string): string =>
+  createHash('sha256').update(bodyMd, 'utf8').digest('hex');
 
 const clampLimit = (limit?: number): number =>
   Math.max(1, Math.min(Math.trunc(limit ?? 50), 200));
@@ -288,61 +322,107 @@ export async function publishReport(
   if (!title) throw new Error('report title is required');
   if (!input.workspaceId) throw new Error('report workspaceId is required');
 
-  const bodyMd = input.bodyMd ?? '';
+  const snapshot = input.goalOwnerReport === undefined ? null : parseGoalOwnerReportSnapshot(input.goalOwnerReport);
+  if (input.goalOwnerReport !== undefined && !snapshot) throw new Error('invalid report goalOwnerReport');
+  if (snapshot && snapshot.workspaceId !== input.workspaceId) throw new Error('invalid report snapshot workspaceId');
+  if (snapshot && input.subject && (input.subject.kind !== 'goal' || input.subject.ref !== snapshot.goalId)) {
+    throw new Error('invalid report snapshot subject');
+  }
+  const canonicalBody = snapshot ? serializeGoalOwnerReportSnapshot(snapshot) : null;
+  if (canonicalBody !== null && input.bodyMd !== undefined && input.bodyMd !== canonicalBody) {
+    throw new Error('invalid report snapshot bodyMd: must match the canonical serialization');
+  }
+  const bodyMd = canonicalBody ?? input.bodyMd ?? '';
   const bytes = Buffer.byteLength(bodyMd, 'utf8');
   if (bytes > REPORT_BODY_MAX_BYTES) throw new ReportBodyTooLargeError(bytes);
 
   const kind = requireOneOf(input.kind, REPORT_KINDS, 'audit', 'kind');
   const visibility = requireOneOf(input.visibility, REPORT_VISIBILITIES, 'owner', 'visibility');
-  const subject = normalizeSubject(input.subject);
-
-  const reportId = `rpt_${randomUUID()}`;
-  let lineageId = reportId;
-  let supersedes: string | null = null;
+  const subject = normalizeSubject(snapshot ? { ...input.subject, kind: 'goal', ref: snapshot.goalId } : input.subject);
 
   const supersedesId = input.supersedes?.trim() || null;
-  if (supersedesId) {
-    const [prev] = await sql<{ report_id: string; lineage_id: string }[]>`
-      SELECT report_id, lineage_id
-        FROM harness_shared.report_library
-       WHERE workspace_id = ${input.workspaceId} AND report_id = ${supersedesId}`;
-    if (!prev) {
-      throw new Error(
-        `cannot supersede ${JSON.stringify(supersedesId)}: no such report in workspace ${input.workspaceId}`,
-      );
-    }
-    lineageId = prev.lineage_id;
-    supersedes = prev.report_id;
+  const requestKey = input.requestKey === undefined ? null : input.requestKey.trim();
+  if (requestKey !== null && (!requestKey || requestKey.length > 200)) {
+    throw new Error('invalid report request_key: expected 1–200 characters');
   }
-
-  const [row] = await sql<DbRow[]>`
-    INSERT INTO harness_shared.report_library (
-      workspace_id, report_id, title, summary, body_md, kind,
-      subject_kind, subject_ref, subject_label,
-      origin_harness_slug, author_owner_id, author_session_ref,
-      visibility, supersedes_report_id, lineage_id, source, tags
-    ) VALUES (
-      ${input.workspaceId}, ${reportId}, ${title}, ${input.summary?.trim() ?? ''}, ${bodyMd}, ${kind},
-      ${subject.kind}, ${subject.ref}, ${subject.label},
-      ${origin.harnessSlug ?? null}, ${origin.authorOwnerId ?? null}, ${origin.authorSessionRef ?? null},
-      ${visibility}, ${supersedes}, ${lineageId}, ${input.source ?? 'agent'}, ${input.tags ?? []}::text[]
-    )
-    RETURNING ${sql.unsafe(SELECT_COLS)}`;
-  return mapRow(row);
+  const requestScope = origin.requestScope ?? `author:${origin.authorOwnerId ?? ''}`;
+  const contentIdentity = (r: ReportRecord) => JSON.stringify([
+    r.title, r.summary, r.bodyMd, r.kind, r.visibility, r.subject,
+    r.supersedesReportId, r.source, [...r.tags].sort(), r.goalOwnerReport,
+    r.origin.harnessSlug,
+  ]);
+  async function write(connection: postgres.Sql): Promise<ReportRecord> {
+    if (requestKey !== null) {
+      // Serialize check+insert before inspecting the key. The unique index also
+      // guards writers outside this function; a retry never becomes a new row.
+      const namespace = JSON.stringify([input.workspaceId, origin.requestScope ?? origin.authorOwnerId ?? '', requestKey]);
+      await connection`SELECT pg_advisory_xact_lock(hashtextextended(${namespace}, 0))`;
+      const [existing] = await connection<DbRow[]>`
+        SELECT ${connection.unsafe(SELECT_COLS)} FROM harness_shared.report_library
+        WHERE workspace_id = ${input.workspaceId}
+          AND COALESCE(request_scope, 'author:' || COALESCE(author_owner_id, '')) = ${requestScope}
+          AND request_key = ${requestKey}`;
+      if (existing) {
+        const saved = mapRow(existing);
+        const expected = { ...saved, title, summary: input.summary?.trim() ?? '', bodyMd, kind, visibility,
+          subject, supersedesReportId: supersedesId, source: input.source ?? 'agent', tags: input.tags ?? [],
+          goalOwnerReport: snapshot, origin: { ...saved.origin, harnessSlug: origin.harnessSlug ?? null } };
+        if (contentIdentity(saved) !== contentIdentity(expected)) throw new ReportRequestConflictError(requestKey);
+        return saved;
+      }
+    }
+    const reportId = `rpt_${randomUUID()}`;
+    let lineageId = reportId;
+    if (supersedesId) {
+      const [prev] = await connection<{ report_id: string; lineage_id: string }[]>`
+        SELECT report_id, lineage_id FROM harness_shared.report_library
+        WHERE workspace_id = ${input.workspaceId} AND report_id = ${supersedesId}`;
+      if (!prev) throw new Error(`cannot supersede ${JSON.stringify(supersedesId)}: no such report in workspace ${input.workspaceId}`);
+      lineageId = prev.lineage_id;
+    }
+    const [row] = await connection<DbRow[]>`
+      INSERT INTO harness_shared.report_library (
+        workspace_id, report_id, title, summary, body_md, kind,
+        subject_kind, subject_ref, subject_label,
+        origin_harness_slug, author_owner_id, author_session_ref,
+        visibility, supersedes_report_id, lineage_id, source, tags, goal_owner_report, request_key, request_scope
+      ) VALUES (
+        ${input.workspaceId}, ${reportId}, ${title}, ${input.summary?.trim() ?? ''}, ${bodyMd}, ${kind},
+        ${subject.kind}, ${subject.ref}, ${subject.label},
+        ${origin.harnessSlug ?? null}, ${origin.authorOwnerId ?? null}, ${origin.authorSessionRef ?? null},
+        ${visibility}, ${supersedesId}, ${lineageId}, ${input.source ?? 'agent'}, ${input.tags ?? []}::text[],
+        ${snapshot === null ? null : connection.json(snapshot as unknown as postgres.JSONValue)}, ${requestKey},
+        ${origin.requestScope ?? null}
+      ) RETURNING ${connection.unsafe(SELECT_COLS)}`;
+    return mapRow(row);
+  }
+  // Unkeyed publication keeps its existing contract: each call is a new edition.
+  if (requestKey === null) return write(sql);
+  return await sql.begin(tx => write(tx as unknown as postgres.Sql)) as unknown as ReportRecord;
 }
 
 /**
  * Resolve one report by id. Deliberately does NOT filter retired rows: retirement
  * is a soft state and a citation to a report id must keep resolving (R-3).
- * Pass `viewer` to gate the read; omit it only on server-internal paths.
+ * Pass `viewer` to gate the read; omit it only on server-internal paths. A citation
+ * scope is valid only for its exact report ID and is constructed by reports:get
+ * after it verifies the corresponding scorecard citation.
  */
 export async function getReport(
   sql: postgres.Sql,
   workspaceId: string,
   reportId: string,
   viewer?: ReportViewer,
+  citationScope?: ReportCitationReadScope,
 ): Promise<ReportRecord | null> {
-  const gate = viewer ? visibleTo(sql, viewer) : sql`TRUE`;
+  const visibleGate = viewer ? visibleTo(sql, viewer) : sql`TRUE`;
+  const citationGate =
+    viewer &&
+    citationScope?.kind === 'scorecard-citation' &&
+    citationScope.reportId === reportId
+      ? sql`report_id = ${citationScope.reportId}`
+      : sql`FALSE`;
+  const gate = sql`(${visibleGate}) OR (${citationGate})`;
   const [row] = await sql<DbRow[]>`
     SELECT ${sql.unsafe(SELECT_COLS)}
       FROM harness_shared.report_library
@@ -359,9 +439,17 @@ export interface ListReportsOptions {
   subject?: { kind: ReportSubjectKind; ref?: string | null };
   /** Filter by the pot a report was WRITTEN in. */
   originHarnessSlug?: string;
+  /** Exact server-stamped author/source filters for persisted producer provenance. */
+  originOwnerId?: string;
+  source?: string;
   /** Rows must carry ALL of these tags. */
   tags?: string[];
   /** Include soft-retired rows (default false). */
+  visibility?: ReportVisibility;
+  since?: string;
+  query?: string;
+  /** Keyset cursor, applied AFTER lineage collapse so older revisions never reappear. */
+  cursor?: { publishedAt: string; reportId: string };
   includeRetired?: boolean;
   /** Show only the newest row per lineage (default true). */
   collapseLineage?: boolean;
@@ -383,7 +471,19 @@ export async function listReports(
     ${opts.subject?.kind ? sql`AND subject_kind = ${opts.subject.kind}` : sql``}
     ${opts.subject?.ref ? sql`AND subject_ref = ${opts.subject.ref}` : sql``}
     ${opts.originHarnessSlug ? sql`AND origin_harness_slug = ${opts.originHarnessSlug}` : sql``}
-    ${opts.tags?.length ? sql`AND tags @> ${opts.tags}::text[]` : sql``}`;
+    ${opts.originOwnerId ? sql`AND author_owner_id = ${opts.originOwnerId}` : sql``}
+    ${opts.source ? sql`AND source = ${opts.source}` : sql``}
+    ${opts.tags?.length ? sql`AND tags @> ${opts.tags}::text[]` : sql``}
+    ${opts.visibility ? sql`AND visibility = ${opts.visibility}` : sql``}
+    ${opts.since ? sql`AND published_at >= ${opts.since}::timestamptz` : sql``}`;
+  const cursor = opts.cursor
+    ? sql`AND (published_at, report_id) < (${opts.cursor.publishedAt}::timestamptz, ${opts.cursor.reportId})`
+    : sql``;
+  // Search the selected edition, never resurrect a matching superseded body.
+  const query = opts.query?.trim()
+    ? sql`AND report_id IN (SELECT report_id FROM harness_shared.report_library
+        WHERE workspace_id = ${opts.workspaceId} AND search_tsv @@ websearch_to_tsquery('english', ${opts.query}))`
+    : sql``;
 
   // DISTINCT ON needs its own ORDER BY (lineage first), so the caller-facing
   // recency order is applied by the outer select.
@@ -392,7 +492,7 @@ export async function listReports(
       ? await sql<DbRow[]>`
           SELECT ${sql.unsafe(SELECT_COLS)}
             FROM harness_shared.report_library
-           WHERE workspace_id = ${opts.workspaceId} AND ${gate} ${filters}
+           WHERE workspace_id = ${opts.workspaceId} AND ${gate} ${filters} ${cursor} ${query}
            ORDER BY published_at DESC, report_id DESC
            LIMIT ${clampLimit(opts.limit)}`
       : await sql<DbRow[]>`
@@ -401,7 +501,7 @@ export async function listReports(
               FROM harness_shared.report_library
              WHERE workspace_id = ${opts.workspaceId} AND ${gate} ${filters}
              ORDER BY lineage_id, published_at DESC, report_id DESC
-          ) latest
+          ) latest WHERE TRUE ${cursor} ${query}
            ORDER BY published_at DESC, report_id DESC
            LIMIT ${clampLimit(opts.limit)}`;
   return rows.map(mapRow);
@@ -442,18 +542,21 @@ export interface SearchReportsOptions {
 
 export interface ReportSearchHit {
   report: ReportRecord;
-  /** `ts_rank` against the weighted `search_tsv`; higher is a better match. */
+  /**
+   * Relevance, higher is a better match: BM25 when the report_library BM25 index is live,
+   * else `ts_rank` against the weighted `search_tsv`. Comparable within one search only.
+   */
   rank: number;
 }
 
 /**
  * Full-text search over the library, gated by {@link visibleTo}.
  *
- * Ranking rides the STORED generated `search_tsv` column (migration 1166), which
- * weights title > summary/subject_label > body. Searching the generated column
- * rather than re-deriving a tsvector here keeps one definition of "what a report's
- * searchable text is": a second `to_tsvector(...)` expression in this file would
- * silently diverge from the index and quietly stop using it.
+ * Ranking goes through the lexical seam: BM25 over the report_library expression
+ * registered in search/lexical/corpora.ts (pinned to migration 1447's index by
+ * corpora.test.ts) when that index is live, else the STORED generated `search_tsv`
+ * column (migration 1166), which weights title > summary/subject_label > body. Neither
+ * path re-derives a text expression here, so neither can drift from its index.
  *
  * With `collapseLineage` (the default) the newest row per lineage is selected FIRST
  * and ranked second, so the library never offers a superseded body as a hit — the
@@ -465,6 +568,16 @@ export async function searchReports(
 ): Promise<ReportSearchHit[]> {
   const gate = opts.viewer ? visibleTo(sql, opts.viewer) : sql`TRUE`;
   const tsq = sql`websearch_to_tsquery('english', ${opts.query})`;
+  // BM25 over the registered report_library expression when its index is live, else
+  // ts_rank over search_tsv (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-005).
+  // A query using phrase/OR/-negation syntax keeps the websearch predicate as its filter
+  // under BM25 too (D-007), so the syntax reports:search documents still holds.
+  const leg = await lexicalLeg(sql, {
+    table: 'report_library',
+    query: opts.query,
+    querySyntax: 'websearch',
+    legacy: { score: sql`ts_rank(search_tsv, ${tsq})`, match: sql`search_tsv @@ ${tsq}` },
+  });
   const filters = sql`
     ${opts.includeRetired ? sql`` : sql`AND retired_at IS NULL`}
     ${opts.kind ? sql`AND kind = ${opts.kind}` : sql``}`;
@@ -473,19 +586,19 @@ export async function searchReports(
   const rows =
     opts.collapseLineage === false
       ? await sql<RankedRow[]>`
-          SELECT ${sql.unsafe(SELECT_COLS)}, ts_rank(search_tsv, ${tsq}) AS rank
+          SELECT ${sql.unsafe(SELECT_COLS)}, ${leg.score} AS rank
             FROM harness_shared.report_library
            WHERE workspace_id = ${opts.workspaceId} AND ${gate}
-             AND search_tsv @@ ${tsq} ${filters}
-           ORDER BY rank DESC, published_at DESC, report_id DESC
+             AND ${leg.match} ${filters}
+           ORDER BY ${leg.order}, published_at DESC, report_id DESC
            LIMIT ${clampLimit(opts.limit)}`
       : await sql<RankedRow[]>`
           SELECT * FROM (
             SELECT DISTINCT ON (lineage_id) ${sql.unsafe(SELECT_COLS)},
-                   ts_rank(search_tsv, ${tsq}) AS rank
+                   ${leg.score} AS rank
               FROM harness_shared.report_library
              WHERE workspace_id = ${opts.workspaceId} AND ${gate}
-               AND search_tsv @@ ${tsq} ${filters}
+               AND ${leg.match} ${filters}
              ORDER BY lineage_id, published_at DESC, report_id DESC
           ) latest
            ORDER BY rank DESC, published_at DESC, report_id DESC

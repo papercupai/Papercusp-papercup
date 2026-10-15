@@ -248,6 +248,8 @@ describe('vacuous pass (4)+(5) — retired and generated code are not consumers'
    */
   it('excludes build output by LOCATION, since shape cannot catch a non-minified bundle', () => {
     expect(isBuildOutput('apps/operator/dist-host/hono-host.mjs')).toBe(true);
+    expect(isBuildOutput('apps/operator/dist-devhost/server.mjs')).toBe(true);
+    expect(isBuildOutput('apps/operator/dist-hosted-control-plane/serve.mjs')).toBe(true);
     expect(isBuildOutput('apps/operator-vite/dist/assets/DevAdminRail-BAsNLrF6.js')).toBe(true);
     expect(isBuildOutput('libs/agent-chat/storybook-static/assets/PatchBlock.stories.js')).toBe(true);
     expect(isBuildOutput('apps/operator/public/docs/pagefind/pagefind-highlight.js')).toBe(true);

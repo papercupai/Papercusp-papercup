@@ -90,6 +90,14 @@ const setParam = (column: string): unknown => {
 /** The kill criterion is a COLUMN now (migration 765), not a key inside metadata. */
 const writtenCriterion = (): unknown => setParam('kill_criterion');
 
+describe('existing-goal declaration extension contract', () => {
+  it('requires an exact observed schema with each declaration patch', () => {
+    expect(tool.args.safeParse({ id: 'g1', propertySchemaPatch: {} }).success).toBe(false);
+    expect(tool.args.safeParse({ id: 'g1', expectedPropertySchema: {} }).success).toBe(false);
+    expect(tool.args.safeParse({ id: 'g1', propertySchemaPatch: {}, expectedPropertySchema: {} }).success).toBe(true);
+  });
+});
+
 beforeEach(() => {
   calls = [];
   existingRow = {
@@ -735,7 +743,7 @@ describe('goals:update — closing a goal', () => {
     expect(res.degraded).toBe(true);
     expect(res.degradedReasons?.join(' ')).toContain('nope');
     // and must not have attempted the write
-    expect(calls.some((c) => /UPDATE/.test(c.sql))).toBe(false);
+    expect(calls.some((c) => /^\s*UPDATE\s/.test(c.sql))).toBe(false);
   });
 
   it('passes the goal write transaction to the terminal stop fan-out', async () => {

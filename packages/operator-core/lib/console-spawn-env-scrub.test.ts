@@ -25,10 +25,17 @@
  * drops the terminal/multiplexer identity of whatever tab THIS process was
  * started in.
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { TERMINAL_CONTEXT_ENV_KEYS, scrubTerminalContextEnv } from './terminal-spawn';
+import {
+  TERMINAL_CONTEXT_ENV_KEYS,
+  agentInheritedOperatorEnv,
+  mainWorktreeOf,
+  scrubTerminalContextEnv,
+} from './terminal-spawn';
 
 const FILES = ['console-spawn.ts', 'terminal-spawn.ts'] as const;
 
@@ -36,34 +43,82 @@ function source(file: string): string {
   return readFileSync(join(__dirname, file), 'utf8');
 }
 
-/**
- * Matches an object literal that spreads process.env INSIDE a
- * scrubTerminalContextEnv(...) call. `[^}]*` is safe here because none of these
- * literals contain a nested brace — if one ever does, this test fails loudly
- * (the spread reads as unscrubbed) rather than silently passing, which is the
- * correct direction for a guard.
- */
-const SCRUBBED = /scrubTerminalContextEnv\(\{[^}]*\.\.\.process\.env/g;
-const ANY_SPREAD = /\.\.\.process\.env/g;
+type SpawnEnvSite = { line: number; expression: ts.Expression | undefined };
+
+function propertyName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  return undefined;
+}
+
+function spawnEnvSites(file: string): { sourceFile: ts.SourceFile; sites: SpawnEnvSite[] } {
+  const sourceFile = ts.createSourceFile(file, source(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const sites: SpawnEnvSite[] = [];
+
+  function visit(node: ts.Node): void {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'spawn') {
+      const options = node.arguments[2];
+      const envProperty = options && ts.isObjectLiteralExpression(options)
+        ? options.properties.find((property): property is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(property) && propertyName(property.name) === 'env',
+          )
+        : undefined;
+      sites.push({
+        line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+        expression: envProperty?.initializer,
+      });
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return { sourceFile, sites };
+}
+
+function containsScrubCall(node: ts.Node): boolean {
+  if (
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === 'scrubTerminalContextEnv'
+  ) {
+    return true;
+  }
+  return node.getChildren().some(containsScrubCall);
+}
+
+function isScrubbedEnv(expression: ts.Expression, sourceFile: ts.SourceFile, visited = new Set<string>()): boolean {
+  if (containsScrubCall(expression)) return true;
+  if (!ts.isIdentifier(expression) || visited.has(expression.text)) return false;
+
+  const name = expression.text;
+  visited.add(name);
+  let initializer: ts.Expression | undefined;
+  function findInitializer(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === name &&
+      node.initializer
+    ) {
+      initializer = node.initializer;
+      return;
+    }
+    ts.forEachChild(node, findInitializer);
+  }
+  findInitializer(sourceFile);
+  return initializer ? isScrubbedEnv(initializer, sourceFile, visited) : false;
+}
 
 describe('spawned-child env scrub (EI-19407722209410974)', () => {
   for (const file of FILES) {
-    it(`${file}: every ...process.env spread is wrapped in scrubTerminalContextEnv`, () => {
-      const src = source(file);
-      const total = src.match(ANY_SPREAD)?.length ?? 0;
-      const scrubbed = src.match(SCRUBBED)?.length ?? 0;
-      expect(
-        scrubbed,
-        `${file} spreads process.env ${total}× but only ${scrubbed}× through ` +
-          `scrubTerminalContextEnv. A spawned terminal must not inherit this ` +
-          `process's terminal identity — see EI-19385011811175105.`,
-      ).toBe(total);
-    });
-
-    it(`${file}: no spawn passes a bare process.env spread as its env`, () => {
-      // The specific shape the bug had, pinned separately so the failure message
-      // names the actual mistake rather than a count mismatch.
-      expect(source(file)).not.toMatch(/env:\s*\{\s*\.\.\.process\.env/);
+    it(`${file}: every child spawn passes an env scrubbed by scrubTerminalContextEnv`, () => {
+      const { sourceFile, sites } = spawnEnvSites(file);
+      expect(sites.length, `${file} should retain at least one audited child spawn`).toBeGreaterThan(0);
+      for (const site of sites) {
+        expect(
+          site.expression && isScrubbedEnv(site.expression, sourceFile),
+          `${file}:${site.line} child spawn must set env through scrubTerminalContextEnv`,
+        ).toBe(true);
+      }
     });
   }
 
@@ -110,5 +165,96 @@ describe('spawned-child env scrub (EI-19407722209410974)', () => {
         'PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR',
       ]),
     );
+  });
+});
+
+describe('agent children inherit the canonical integration root, not the operator generation (WI-10005320)', () => {
+  function spreadsOf(file: string, name: string): { bare: number[]; canonicalized: number } {
+    const sourceFile = ts.createSourceFile(file, source(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const bare: number[] = [];
+    let canonicalized = 0;
+    const isProcessEnv = (e: ts.Expression) =>
+      ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && e.expression.text === 'process' && e.name.text === 'env';
+    function visit(node: ts.Node): void {
+      if (ts.isSpreadAssignment(node)) {
+        const spread = node.expression;
+        if (isProcessEnv(spread)) {
+          bare.push(sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1);
+        } else if (ts.isCallExpression(spread)) {
+          const callee = spread.expression;
+          const firstArg = spread.arguments[0];
+          if (ts.isIdentifier(callee) && callee.text === name && firstArg !== undefined && isProcessEnv(firstArg)) {
+            canonicalized += 1;
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+    return { bare, canonicalized };
+  }
+
+  it('console-spawn.ts builds every child env from the canonicalized base, never a bare ...process.env', () => {
+    const { bare, canonicalized } = spreadsOf('console-spawn.ts', 'agentInheritedOperatorEnv');
+    expect(bare, `bare ...process.env spreads at console-spawn.ts lines ${bare.join(', ')}`).toEqual([]);
+    // The two visible-terminal paths, the headless spawn, and the install-boundary root.
+    expect(canonicalized).toBeGreaterThanOrEqual(4);
+  });
+
+  function makeRepoWithWorktree(): { root: string; main: string; worktree: string; submodule: string } {
+    const root = mkdtempSync(join(tmpdir(), 'wi10005320-'));
+    const main = join(root, 'papercusp');
+    const worktree = join(root, 'papercusp-staging.generations', '.candidate-abc.x', 'checkout');
+    const submodule = join(main, 'libs', 'papercusp');
+    mkdirSync(join(main, '.git', 'worktrees', 'checkout13'), { recursive: true });
+    mkdirSync(join(main, '.git', 'modules', 'libs', 'papercusp'), { recursive: true });
+    mkdirSync(worktree, { recursive: true });
+    mkdirSync(submodule, { recursive: true });
+    writeFileSync(join(worktree, '.git'), `gitdir: ${join(main, '.git', 'worktrees', 'checkout13')}\n`);
+    // Submodules use a RELATIVE gitdir into .git/modules — that is not a linked worktree.
+    writeFileSync(join(submodule, '.git'), 'gitdir: ../../.git/modules/libs/papercusp\n');
+    return { root, main, worktree, submodule };
+  }
+
+  it('maps a linked worktree to its main worktree and leaves every other root unchanged', () => {
+    const repo = makeRepoWithWorktree();
+    try {
+      expect(mainWorktreeOf(repo.worktree)).toBe(repo.main);
+      expect(mainWorktreeOf(repo.main)).toBe(repo.main); // .git is a directory
+      expect(mainWorktreeOf(repo.submodule)).toBe(repo.submodule); // .git/modules, not worktrees
+      expect(mainWorktreeOf(join(repo.root, 'absent'))).toBe(join(repo.root, 'absent'));
+    } finally {
+      rmSync(repo.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rewrites only PAPERCUSP_INTEGRATION_ROOT, returns a copy, and keeps an envelope pin when merged after it', () => {
+    const repo = makeRepoWithWorktree();
+    try {
+      const operatorEnv = { PATH: '/usr/bin', PAPERCUSP_INTEGRATION_ROOT: repo.worktree, PORT: '3170' };
+      const inherited = agentInheritedOperatorEnv(operatorEnv);
+      expect(inherited.PAPERCUSP_INTEGRATION_ROOT).toBe(repo.main);
+      expect(inherited.PATH).toBe('/usr/bin');
+      expect(operatorEnv.PAPERCUSP_INTEGRATION_ROOT).toBe(repo.worktree); // input not mutated
+      // A launch envelope that deliberately pins an isolation worktree is merged AFTER the base.
+      const merged = { ...inherited, ...{ PAPERCUSP_INTEGRATION_ROOT: repo.worktree } };
+      expect(merged.PAPERCUSP_INTEGRATION_ROOT).toBe(repo.worktree);
+      expect(agentInheritedOperatorEnv({ PATH: '/usr/bin' })).toEqual({ PATH: '/usr/bin' });
+      expect(agentInheritedOperatorEnv({ PAPERCUSP_INTEGRATION_ROOT: repo.main }).PAPERCUSP_INTEGRATION_ROOT).toBe(repo.main);
+    } finally {
+      rmSync(repo.root, { recursive: true, force: true });
+    }
+  });
+
+  it('drops parent kickoff transports while preserving explicitly merged child values', () => {
+    const parent = { PATH: '/usr/bin', PAPERCUSP_KICKOFF_PROMPT: 'parent note',
+      PAPERCUSP_KICKOFF_PROMPT_FILE: '/parent/prompt', PAPERCUSP_KICKOFF_PROOF_PATH: '/parent/proof',
+      PAPERCUSP_KICKOFF_PROOF_TOKEN: 'parent-token' };
+    expect(agentInheritedOperatorEnv(parent)).toEqual({ PATH: '/usr/bin' });
+    expect(parent.PAPERCUSP_KICKOFF_PROMPT).toBe('parent note');
+    const child = { ...agentInheritedOperatorEnv(parent), PAPERCUSP_KICKOFF_PROMPT: 'child note',
+      PAPERCUSP_KICKOFF_PROOF_PATH: '/child/proof' };
+    expect(child.PAPERCUSP_KICKOFF_PROMPT).toBe('child note');
+    expect(child.PAPERCUSP_KICKOFF_PROOF_PATH).toBe('/child/proof');
   });
 });

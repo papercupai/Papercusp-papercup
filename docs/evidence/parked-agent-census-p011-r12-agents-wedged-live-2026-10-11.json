@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-011 R-12 live: the infra-liveness alarm raises agents-wedged when the wedged-session count exceeds its threshold (current build)",
+  "framework": "operational",
+  "command": [
+    "sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-F|", "-v", "ON_ERROR_STOP=1",
+    "-f", "docs/evidence/parked-agent-census-p011-r12-agents-wedged-live-2026-10-11.sql"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-11T14:58:25Z",
+  "finishedAt": "2026-10-11T14:58:25Z",
+  "summary": "Falsifier NOT observed. At 2026-10-11T14:39:17Z the request-path infra-liveness alarm on the current build raised livenessSignature agents-wedged (severity blocker, to human): 11 sessions cannot take a turn (pending-turn-stuck 9, quota-blocked 2) against a threshold of 10. Over 04:36Z-14:39Z it raised agents-wedged 41 times and agents-stranded 58 times. CAVEAT: the alarm fires correctly but is not yet STANDING on the shared rows: all 99 raises were auto-resolved (median ~8s) by the release operator :3070 (d740fc3802), which has no agents-wedged code and no EVALUATED_LIVENESS_SIGNATURES registry, so it reads the signature as absent and resolves it. That ends when :3070 deploys a build carrying the registry.",
+  "assertions": [
+    {
+      "id": "r12-runtime-identity",
+      "passed": true,
+      "evidence": "dev:pipeline_position (2026-10-11 ~14:47Z) servingRuntimes for packages/operator-core/lib/system-health/agent-strand-census.ts: staging-operator :3170 build 03595bfda4 containsChange=true; bg-host vintage 03595bfda4 containsChange=true; release-operator :3070 d740fc3802 containsChange=false. git show d740fc3802:packages/operator-core/lib/system-health/liveness-alarm.ts contains neither agents-wedged nor EVALUATED_LIVENESS_SIGNATURES; the 03595bfda4 blob contains both."
+    },
+    {
+      "id": "r12-alarm-raised-over-threshold",
+      "passed": true,
+      "evidence": "Query #2: escalation mv3ximlh-0000-02a6d7c861d04258b5347327d44b3744 at 2026-10-11T14:39:17.473859Z, livenessSignature agents-wedged, severity blocker, to [human], summary '11 agent session(s) cannot take a turn (pending-turn-stuck 9, quota-blocked 2; threshold 10)'. body sha256 6bc75c3e563acd4f1b6264e170b61c8a529345b3971033e8341dacb7b84a20f3."
+    },
+    {
+      "id": "r12-alarm-population",
+      "passed": true,
+      "evidence": "Query #1 (04:00Z-14:40Z): agents-wedged raised 41, agents-stranded raised 58, first raise 04:36:04Z, last 14:39:17Z. Every raise came from the current build: no build without the census can emit these signatures."
+    },
+    {
+      "id": "r12-not-yet-standing-disclosed",
+      "passed": true,
+      "evidence": "Query #1 resolved = raised for both signatures (41/41, 58/58), median open 7.8s / 9.1s. Query #3: the observed raise was resolved 7s later by system:infra-liveness-alarm, choice auto-resolved, note 'cleared (condition recovered) - no per-signature evidence recorded', the old-build resolve path. Disclosed as a gap, not hidden."
+    }
+  ],
+  "plan": "parked-agent-census-resumption-and-root-cause-2026-10-09",
+  "clauses": ["AUTO-BAR-R-12-P-011"],
+  "workItems": ["WI-10008162"],
+  "evidencePlane": "live",
+  "takenAt": "2026-10-11T14:58:25Z",
+  "measuredBy": "su-92de4154-4d25-4c00-b14f-2fee51639247",
+  "reproduce": {
+    "sql": "docs/evidence/parked-agent-census-p011-r12-agents-wedged-live-2026-10-11.sql",
+    "command": "sudo -n -u postgres psql -d papercusp -At -F'|' -v ON_ERROR_STOP=1 -f docs/evidence/parked-agent-census-p011-r12-agents-wedged-live-2026-10-11.sql",
+    "output": "docs/evidence/parked-agent-census-p011-r12-agents-wedged-live-2026-10-11.out.txt",
+    "outputSha256": "b3cb1b64be39d6f94c6b3b1751b4cf5a74f9e05885118c30546151a17d40029d"
+  },
+  "writers": {
+    "alarm": "packages/operator-core/lib/system-health/liveness-alarm.ts (runLivenessAlarmTick, request-path)",
+    "census": "packages/operator-core/lib/system-health/agent-strand-census.ts",
+    "ledger": "harness_shared.coord_event_log (workspace_id papercusp-workspace), body.kind escalation / escalation_resolved"
+  },
+  "disclosures": [
+    "The alarm is not yet STANDING: :3070 (d740fc3802) auto-resolves every raise because it predates the per-build signature registry. The fix is on staging; it takes effect when :3070 deploys past the held green-checkpoint gate."
+  ],
+  "couldNotDetermine": [
+    "Whether the owner was notified for each of the 99 raises, or only the open ones (raises are severity blocker, to human, needsHumanRoute true)."
+  ]
+}

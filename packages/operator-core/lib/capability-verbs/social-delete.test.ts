@@ -11,7 +11,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  PROVIDER_SOCIAL_POST_CAPABILITY,
+  PROVIDER_SOCIAL_REPLY_CAPABILITY,
+} from '@papercusp/plugin-sdk';
+import {
   assertDeleteConfirmed,
+  deleteCanonicalSocialPost,
   DELETE_TOKEN_TEXT_WINDOW,
   socialDeleteIdempotencyKey,
   socialDeleteToken,
@@ -19,6 +24,8 @@ import {
 } from './social-delete';
 import { socialPostIdempotencyKey, socialReplyIdempotencyKey, type SocialPostRef } from './social';
 import type { CanonicalDocument } from './resolve';
+import type { OutboundDispatchDeps } from './provider-dispatch';
+import { installSocialPackages, invokedArgs } from './social-provider.fixture';
 
 const REF: SocialPostRef = { platform: 'reddit', externalId: 't3_abc123' };
 const OTHER: SocialPostRef = { platform: 'reddit', externalId: 't3_zzz999' };
@@ -157,5 +164,129 @@ describe('assertDeleteConfirmed', () => {
     const d = doc();
     expect(echoRail('reddit:t3_abc123', 'reddit:t3_abc123')).toBe(true);
     expect(() => assertDeleteConfirmed(d, REF, 'reddit:t3_abc123')).toThrow(SocialDeleteNotConfirmed);
+  });
+});
+
+describe('deleteCanonicalSocialPost — through the installed provider package (P-002)', () => {
+  /** A post the owner has, as `resolveCanonicalDocument` reads it from the vault. */
+  const MASTODON_ROW = {
+    id: 'doc-1',
+    source: 'mastodon',
+    kind: 'social-post',
+    externalId: '109999',
+    occurredAt: '2026-08-23T00:00:00.000Z',
+    participants: ['owner@mastodon.social'],
+    title: '',
+    text: 'a post the owner wants gone',
+    metadata: { statusId: '109999', instanceHost: 'mastodon.social', visibility: 'public', authorHandle: 'owner' },
+  };
+  const MASTODON_SOURCE = {
+    id: 'src-mastodon-1',
+    workspaceId: 'ws',
+    kind: 'mastodon',
+    ownerUserId: 'user-1',
+    credentialRef: 'cred-mastodon-1',
+    status: 'connected',
+    config: { installSlug: 'papercusp' },
+    cursor: {},
+  };
+  const MASTODON_REF: SocialPostRef = { platform: 'mastodon', externalId: '109999' };
+  const CONFIRMED = socialDeleteToken(MASTODON_REF, MASTODON_ROW.text);
+
+  /** Canned rows in call order: the vault read, then the owner's sources. Counts calls. */
+  function fakeSql() {
+    const rowSets: unknown[][] = [[MASTODON_ROW], [MASTODON_SOURCE]];
+    let call = 0;
+    const sql: any = () => {
+      const rows = rowSets[Math.min(call, rowSets.length - 1)] ?? [];
+      call += 1;
+      return Promise.resolve(rows);
+    };
+    sql.calls = () => call;
+    return sql;
+  }
+
+  function del(sql: unknown, confirmToken: string, deps: OutboundDispatchDeps) {
+    return deleteCanonicalSocialPost(
+      sql as never,
+      { workspaceId: 'ws', userId: 'user-1', postId: 'mastodon:109999', confirmToken },
+      deps,
+    );
+  }
+
+  it('deletes through the package, handing it the resolved coordinates and a derived key', async () => {
+    const installed = await installSocialPackages([{ platform: 'mastodon' }]);
+
+    const result = await del(fakeSql(), CONFIRMED, installed.deps);
+
+    expect(result.deleted).toBe(true);
+    expect(result.echo.postId).toBe('mastodon:109999');
+    expect(installed.invokes).toHaveLength(1);
+    expect(installed.invokes[0]!.request.capability).toBe('social.delete');
+    expect(installed.invokes[0]!.request.source).toBe('src-mastodon-1');
+    const [args] = invokedArgs<{ externalId: string; target: unknown; idempotencyKey: string }>(installed);
+    expect(args!.externalId).toBe('109999');
+    expect(args!.target).toEqual({ platform: 'mastodon', inReplyToId: '109999', instanceHost: 'mastodon.social' });
+    expect(args!.idempotencyKey).toBe(socialDeleteIdempotencyKey(MASTODON_REF));
+  });
+
+  it('refuses an unconfirmed delete before the owner\'s sources are even listed', async () => {
+    const installed = await installSocialPackages([{ platform: 'mastodon' }]);
+    const sql = fakeSql();
+
+    await expect(del(sql, 'pc-social-del-deadbeef', installed.deps)).rejects.toBeInstanceOf(
+      SocialDeleteNotConfirmed,
+    );
+    // Only the vault read ran: an unconfirmed delete never reaches a code path
+    // holding the owner's identity.
+    expect(sql.calls()).toBe(1);
+    expect(installed.invokes).toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
+  });
+
+  it('refuses a platform with NO installed package by name, before any network call', async () => {
+    // A package for another platform is installed, so "nothing was invoked"
+    // cannot pass merely because the registry is empty.
+    const installed = await installSocialPackages([{ platform: 'reddit' }]);
+    const sql = fakeSql();
+
+    await expect(del(sql, CONFIRMED, installed.deps)).rejects.toThrow(
+      /^outbound_source_not_connected:social-post:mastodon — no installed provider package serves mastodon$/,
+    );
+    expect(sql.calls()).toBe(1);
+    expect(installed.invokes).toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
+  });
+
+  it('refuses a package that does not declare social.delete', async () => {
+    const installed = await installSocialPackages([
+      { platform: 'mastodon', capabilities: [PROVIDER_SOCIAL_POST_CAPABILITY, PROVIDER_SOCIAL_REPLY_CAPABILITY] },
+    ]);
+
+    await expect(del(fakeSql(), CONFIRMED, installed.deps)).rejects.toThrow(
+      /^provider_capability_unsupported:mastodon:social\.delete$/,
+    );
+    expect(installed.invokes).toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
+  });
+
+  it('carries deleted:false through rather than smoothing it into success', async () => {
+    // "Nothing was there to delete" is a different fact from "I deleted it",
+    // and only the package can tell them apart.
+    const installed = await installSocialPackages([
+      { platform: 'mastodon', respond: () => ({ deleted: false, detail: 'already gone' }) },
+    ]);
+
+    const result = await del(fakeSql(), CONFIRMED, installed.deps);
+    expect(result.deleted).toBe(false);
+    expect(result.detail).toBe('already gone');
+  });
+
+  it('rejects a package answer that is not a delete result', async () => {
+    const installed = await installSocialPackages([{ platform: 'mastodon', respond: () => ({ deleted: 'yes' }) }]);
+
+    await expect(del(fakeSql(), CONFIRMED, installed.deps)).rejects.toThrow(
+      /^provider_result_invalid:mastodon:social\.delete:deleted must be a boolean$/,
+    );
   });
 });

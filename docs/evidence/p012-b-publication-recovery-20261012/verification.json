@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "p012-historical-verification-recovery-v1",
+  "kind": "original-verifier-output",
+  "source": {
+    "workspaceId": "default",
+    "session": "codex:01a11bed-cfb3-7220-a6cb-d2fff983ab17",
+    "partIndex": 219,
+    "observedAt": "2026-10-08 12:22:18.949-04",
+    "originalCommandExitCode": 0,
+    "receiptLineSha256": "df64e9b130ec67524671f29429c356109b26adaa38010295c12a3f09912dd59e",
+    "verifierSourceSha256": "53687d3f80e43404c138c51f32514df556e4c1709d3ea80a8897b5e685f810af"
+  },
+  "receipt": {
+    "path": "/mnt/backup/p012-bake-fire105/aws-b-p012r70-20261007t125744z/publish.B-contained.json",
+    "ok": true,
+    "accepted": true,
+    "trusted": true,
+    "version": "0.0.21-p012r70",
+    "image": "ami-05a8be4f5e5e553f3",
+    "manifestIdentity": "sha256:73420c6303698a4b33a0670b942b295d451142d68a6a7f0a2d34ff6304a23402",
+    "manifestUri": "ssm://us-east-1/papercusp/workspace-host/ami/manifests/0.0.21-p012r70",
+    "activePins": [
+      {
+        "region": "us-east-1",
+        "imageId": "ami-05a8be4f5e5e553f3",
+        "version": "0.0.21-p012r70"
+      }
+    ],
+    "cleanProof": {
+      "evidenceRef": "aws-ami-canary:i-0cd66f4c04226ca1c:d71bee60182c6c4c7bedf3258a589e49",
+      "observedAt": "2026-10-08T16:18:03.419Z",
+      "serviceHealthy": true,
+      "terminated": true,
+      "residue": []
+    }
+  },
+  "originalReceiptLine": "{\"path\":\"/mnt/backup/p012-bake-fire105/aws-b-p012r70-20261007t125744z/publish.B-contained.json\",\"ok\":true,\"accepted\":true,\"trusted\":true,\"version\":\"0.0.21-p012r70\",\"image\":\"ami-05a8be4f5e5e553f3\",\"manifestIdentity\":\"sha256:73420c6303698a4b33a0670b942b295d451142d68a6a7f0a2d34ff6304a23402\",\"manifestUri\":\"ssm://us-east-1/papercusp/workspace-host/ami/manifests/0.0.21-p012r70\",\"activePins\":[{\"region\":\"us-east-1\",\"imageId\":\"ami-05a8be4f5e5e553f3\",\"version\":\"0.0.21-p012r70\"}],\"cleanProof\":{\"evidenceRef\":\"aws-ami-canary:i-0cd66f4c04226ca1c:d71bee60182c6c4c7bedf3258a589e49\",\"observedAt\":\"2026-10-08T16:18:03.419Z\",\"serviceHealthy\":true,\"terminated\":true,\"residue\":[]}}",
+  "limitations": [
+    "This is the original historical verification summary, not the missing full publish.B-contained.json.",
+    "No current AWS scan, IAM grant, controller adoption, lifecycle or shipment is asserted.",
+    "Deletion or relocation cause and full original JSON recovery remain unresolved in EI-25740161578224454."
+  ]
+}

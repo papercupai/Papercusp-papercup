@@ -29,9 +29,10 @@ import '../../../agent-tools/index';
 // WI-5364: shared extras carry the runScoped seam so proxied handlers that use
 // ctx.tx get a real DB handle instead of 500ing "ctx.tx is not a function".
 import { ADMIN_PROXY_HOST_EXTRAS as HOST_EXTRAS } from './proxy-host-extras';
-import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
+import { defineTool, PAPERCUSP_CONTEXT_HEADERS, type RouteContext } from '@papercusp/agent-mcp';
 import { bodyFromSearchParams } from './_plans-args';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { activeWorkspaceId } from '../../../workspace-registry';
 // papercusp-dogfood-v5 P-021 (server-side half): fire SSE invalidations
 // on successful plan writes so any subscriber to `plans.*` queryNames
 // refetches. Pairs with the existing `notifySyncInvalidate` →
@@ -105,6 +106,8 @@ const WRITE_VERBS = new Set([
   // plan's values, so a human can satisfy the start gate from the UI rather
   // than having to call plans:set-template-data from an agent session.
   'set-template-data',
+  // Signed immutable ingress uses the same policy verifier and federated store.
+  'governance-event',
 ]);
 
 // Admin proxy identity: the writes (set-status/set-now/add-decision/
@@ -191,11 +194,15 @@ export function unwrapBulkSingle(
   return Response.json(env as Record<string, unknown>);
 }
 
-function collectHeaders(req: Request): Record<string, string | undefined> {
+function collectHeaders(req: Request, ctx: RouteContext): Record<string, string | undefined> {
   const m: Record<string, string | undefined> = {};
   req.headers.forEach((v, k) => {
     m[k.toLowerCase()] = v;
   });
+  // The nested admin projection does not authenticate the cookie again.
+  // Use the workspace already admitted by the route; caller hints cannot
+  // move a Plans read or write into another workspace.
+  m[PAPERCUSP_CONTEXT_HEADERS.workspace] = ctx.principal?.workspaceId ?? activeWorkspaceId();
   return m;
 }
 
@@ -287,7 +294,7 @@ export async function dispatchRead(req: Request, ctx: RouteContext): Promise<Res
       method: 'POST',
       pathname: `/api/agent-tools/plans/${verb}`,
       searchParams: adminSearchParams(url.searchParams),
-      headers: collectHeaders(req),
+      headers: collectHeaders(req, ctx),
       body,
     },
     HOST_EXTRAS,
@@ -334,7 +341,7 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       method: 'POST',
       pathname: `/api/agent-tools/plans/${verb}`,
       searchParams: adminSearchParams(url.searchParams),
-      headers: collectHeaders(req),
+      headers: collectHeaders(req, ctx),
       body,
     },
     HOST_EXTRAS,

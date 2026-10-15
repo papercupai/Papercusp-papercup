@@ -25,6 +25,7 @@ import {
   type RelevanceEvalCoverage,
   type RelevanceEvalResult,
 } from '@papercusp/search-core';
+import { pairedBootstrapCI } from '@papercusp/bench-metrics';
 
 import {
   JUDGE_AGREEMENT_MODEL,
@@ -34,7 +35,7 @@ import {
 } from './judge-agreement';
 
 /** Bump when the mapping, the k, or anything else about this pass changes. */
-export const LABELLED_PASS_VERSION = 'search-relevance-labelled.v1';
+export const LABELLED_PASS_VERSION = 'search-relevance-labelled.v2';
 
 /** Default cutoff. Matches the eval harness's nDCG@10. */
 export const DEFAULT_K = 10;
@@ -200,11 +201,28 @@ export interface QueryOutcome {
    * as if they had been measured and agreed.
    */
   excludedReason: string | null;
+  attemptStatus: 'scored' | 'empty' | 'degraded' | 'retrieval-failed' | 'judge-failed';
+  requestedK: number;
+  returnedCount: number;
+  /** Independently labelled opportunity; null means the run cannot judge usefulness. */
+  usefulContextSuccess: boolean | null;
+  recallAtK: number | null;
+  missingIds: string[];
 }
 
 /** Per-stratum roll-up. Never pooled across `degraded` runs. */
 export interface ToolAggregate {
   tool: string;
+  attempted: number;
+  outcomeCounts: Record<QueryOutcome['attemptStatus'], number>;
+  returnedHits: number;
+  requestedSlots: number;
+  underfilled: number;
+  usefulSuccesses: number;
+  usefulFailures: number;
+  usefulUnknown: number;
+  /** Full-attempt denominator; unknown opportunities remain in the denominator. */
+  usefulSuccessLowerBound: number | null;
   /** Queries that CONTRIBUTED (excluded ones are not counted here). */
   n: number;
   excluded: number;
@@ -245,6 +263,66 @@ export interface LabelledPassReport {
   judgedHits: number;
   /** Limits that must travel WITH the numbers, never as a footnote elsewhere. */
   caveats: string[];
+  /** Missing fingerprints are explicit, never silently inferred from defaults. */
+  contract: Record<'runtime' | 'corpus' | 'judge' | 'adapter' | 'sample', string | null>;
+}
+
+export interface TaskUtilityArm {
+  /** Independently verified task success, never inferred from a memory citation. */
+  passed: boolean | null;
+  harmful: boolean | null;
+  blinded: boolean;
+  independentEvidenceRef: string | null;
+  /** Same model/task/tools/budget/evaluator in both arms; injection is the sole change. */
+  contractFingerprint: string;
+  tokens?: number;
+  latencyMs?: number;
+  costUsd?: number;
+}
+
+/** Paired held-out task outcomes reuse the existing benchmark/statistics seam. */
+export function assessPairedTaskUtility(input: {
+  requiredPairIds: readonly string[];
+  pairs: readonly { pairId: string; cluster: string; baseline?: TaskUtilityArm; injection?: TaskUtilityArm }[];
+  policy: { minClusters: number; practicalMargin: number; ci: number; iterations: number; seed: number };
+}) {
+  const { policy } = input;
+  if (!Number.isInteger(policy.minClusters) || policy.minClusters < 2 ||
+    !Number.isFinite(policy.practicalMargin) || policy.practicalMargin < 0 || policy.practicalMargin > 1 ||
+    !(policy.ci > 0 && policy.ci < 1) || !Number.isInteger(policy.iterations) || policy.iterations < 1 ||
+    !Number.isInteger(policy.seed)) throw new Error('invalid prespecified task-utility policy');
+  const census = new Set(input.requiredPairIds);
+  if (census.size !== input.requiredPairIds.length || [...census].some((id) => !id.trim())) throw new Error('pair census must be unique nonempty IDs');
+  const byId = new Map(input.pairs.map((pair) => [pair.pairId, pair]));
+  if (byId.size !== input.pairs.length || input.pairs.some((pair) => !census.has(pair.pairId))) throw new Error('pairs must belong uniquely to the frozen census');
+  const checked = [...census].map((pairId) => {
+    const pair = byId.get(pairId);
+    const arms = [pair?.baseline, pair?.injection];
+    const valid = pair?.cluster.trim() && arms.every((arm) => arm?.blinded === true &&
+      !!arm.independentEvidenceRef?.trim() && typeof arm.passed === 'boolean' && typeof arm.harmful === 'boolean' &&
+      !!arm.contractFingerprint.trim()) && pair?.baseline?.contractFingerprint === pair?.injection?.contractFingerprint;
+    return { pairId, pair, valid: !!valid };
+  });
+  const measured = checked.filter((row) => row.valid).map((row) => row.pair!);
+  const clusters = [...new Set(measured.map((pair) => pair.cluster))];
+  // Equal-weight cluster means: repeated tasks from one source are not independent trials.
+  const means = (arm: 'baseline' | 'injection') => clusters.map((cluster) => {
+    const rows = measured.filter((pair) => pair.cluster === cluster);
+    return meanOf(rows.map((pair) => Number(pair[arm]!.passed)));
+  });
+  const comparison = clusters.length >= policy.minClusters
+    ? pairedBootstrapCI(means('baseline'), means('injection'), policy) : null;
+  const unknownPairs = checked.filter((row) => !row.valid).map((row) => row.pairId);
+  const harmfulPairs = measured.filter((pair) => pair.injection!.harmful).map((pair) => pair.pairId);
+  const metricDelta = (key: 'tokens' | 'latencyMs' | 'costUsd') => measured.length && measured.every((pair) =>
+    [pair.baseline?.[key], pair.injection?.[key]].every((value) => value !== undefined && Number.isFinite(value) && value >= 0))
+    ? meanOf(measured.map((pair) => pair.injection![key]! - pair.baseline![key]!)) : null;
+  return { attemptedPairs: census.size, measuredPairs: measured.length, unknownPairs, clusters: clusters.length,
+    estimand: 'equal-weight cluster mean of paired task success', policy, comparison, harmfulPairs,
+    tokenDelta: metricDelta('tokens'), latencyDeltaMs: metricDelta('latencyMs'), costDeltaUsd: metricDelta('costUsd'),
+    verdict: harmfulPairs.length ? 'broken' : unknownPairs.length || comparison === null ? 'unknown'
+      : comparison.delta.lower > policy.practicalMargin ? 'healthy'
+      : comparison.delta.upper < -policy.practicalMargin ? 'degraded' : 'unknown' };
 }
 
 // =============================================================================
@@ -290,6 +368,18 @@ function rollUp(tool: string, outcomes: readonly QueryOutcome[]): ToolAggregate 
   const grades = counted.flatMap((o) => o.hits.map((h) => h.grade));
   return {
     tool,
+    attempted: outcomes.length,
+    outcomeCounts: Object.fromEntries(
+      ['scored', 'empty', 'degraded', 'retrieval-failed', 'judge-failed'].map((status) =>
+        [status, outcomes.filter((o) => o.attemptStatus === status).length]),
+    ) as ToolAggregate['outcomeCounts'],
+    returnedHits: outcomes.reduce((n, o) => n + o.returnedCount, 0),
+    requestedSlots: outcomes.reduce((n, o) => n + o.requestedK, 0),
+    underfilled: outcomes.filter((o) => o.returnedCount < o.requestedK).length,
+    usefulSuccesses: outcomes.filter((o) => o.usefulContextSuccess === true).length,
+    usefulFailures: outcomes.filter((o) => o.usefulContextSuccess === false).length,
+    usefulUnknown: outcomes.filter((o) => o.usefulContextSuccess === null).length,
+    usefulSuccessLowerBound: outcomes.length ? outcomes.filter((o) => o.usefulContextSuccess === true).length / outcomes.length : null,
     n: counted.length,
     excluded: outcomes.length - counted.length,
     meanNdcgAtK: meanOf(counted.map((o) => o.ndcgAtK ?? 0)),
@@ -314,7 +404,11 @@ export function aggregateByTool(outcomes: readonly QueryOutcome[]): ToolAggregat
 // =============================================================================
 
 export interface RunLabelledPassOptions {
-  queries: readonly { tool: string; query: string; terms: number }[];
+  queries: readonly {
+    tool: string; query: string; terms: number;
+    /** Frozen independent labels, supplied BEFORE retrieval; [] explicitly means no needed item. */
+    groundTruthIds?: readonly string[];
+  }[];
   retrieve: (query: string) => Promise<RetrievalResult>;
   /** Judge ONE (query, document) pair. Inject `judgeRelevance` bound to an llm. */
   judge: (input: { pairId: string; query: string; docId: string; docText: string }) => Promise<JudgeVerdict>;
@@ -333,6 +427,7 @@ export interface RunLabelledPassOptions {
   log?: (msg: string) => void;
   /** Called after each query so a long run can persist incrementally. */
   onQueryDone?: (outcome: QueryOutcome, index: number) => void;
+  contract?: Partial<LabelledPassReport['contract']>;
 }
 
 /**
@@ -358,7 +453,10 @@ async function mapWithConcurrency<T, R>(
       out[i] = await fn(items[i] as T, i);
     }
   };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  // Drain every paid worker before recording a failed attempt or moving to the next query.
+  const settled = await Promise.allSettled(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  const failure = settled.find((r) => r.status === 'rejected');
+  if (failure?.status === 'rejected') throw failure.reason;
   return out;
 }
 
@@ -373,6 +471,7 @@ async function mapWithConcurrency<T, R>(
  */
 export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<LabelledPassReport> {
   const k = opts.k ?? DEFAULT_K;
+  if (!Number.isInteger(k) || k < 1) throw new Error('k must be a positive integer');
   const log = opts.log ?? (() => {});
   const startedAt = new Date().toISOString();
   const outcomes: QueryOutcome[] = [];
@@ -380,7 +479,20 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
   let judgedHits = 0;
 
   for (const [i, q] of opts.queries.entries()) {
-    const retrieval = await opts.retrieve(q.query);
+    const failed = (status: 'retrieval-failed' | 'judge-failed' | 'degraded', reason: string, returnedCount = 0): QueryOutcome => ({
+      tool: q.tool, query: q.query, terms: q.terms, hits: [], ndcgAtK: null,
+      precisionAtK: null, accessoryAtK: null, coverage: 'empty-ranking',
+      degraded: status === 'degraded', rerankApplied: false, judgeCostUsd: 0,
+      excludedReason: reason, attemptStatus: status, requestedK: k, returnedCount,
+      usefulContextSuccess: q.groundTruthIds === undefined ? null : false,
+      recallAtK: q.groundTruthIds?.length ? 0 : null, missingIds: [...new Set(q.groundTruthIds ?? [])],
+    });
+    let retrieval: RetrievalResult;
+    try { retrieval = await opts.retrieve(q.query); }
+    catch (error) {
+      const outcome = failed('retrieval-failed', `retrieval failed: ${String(error)}`);
+      outcomes.push(outcome); opts.onQueryDone?.(outcome, i); continue;
+    }
 
     // A degraded engine is neither a pass nor a fail: it measured a different
     // system. Judge nothing for it — that would also be paying for a label of a
@@ -404,6 +516,9 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
         ...(retrieval.poolHits ? { poolHits: [] } : {}),
         ...(retrieval.latencyMs !== undefined ? { latencyMs: retrieval.latencyMs } : {}),
         excludedReason: `engine DEGRADED (${retrieval.degradeWarning ?? 'a ranker leg did not run'})`,
+        attemptStatus: 'degraded', requestedK: k, returnedCount: Math.min(k, retrieval.hits.length),
+        usefulContextSuccess: q.groundTruthIds === undefined ? null : false,
+        recallAtK: q.groundTruthIds?.length ? 0 : null, missingIds: [...new Set(q.groundTruthIds ?? [])],
       };
       outcomes.push(outcome);
       opts.onQueryDone?.(outcome, i);
@@ -438,7 +553,9 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
       }
     }
 
-    const judged = await mapWithConcurrency(
+    const costBefore = judgeCostUsd;
+    let judged: LabelledHit[];
+    try { judged = await mapWithConcurrency(
       pool ?? page,
       opts.judgeConcurrency ?? 4,
       async (hit): Promise<LabelledHit> => {
@@ -458,13 +575,22 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
           ...(verdict.judgeNotes ? { judgeNotes: verdict.judgeNotes } : {}),
         };
       },
-    );
+    ); } catch (error) {
+      const outcome = failed('judge-failed', `judge failed: ${String(error)}`, page.length);
+      outcome.rerankApplied = retrieval.rerankApplied;
+      outcome.judgeCostUsd = judgeCostUsd - costBefore;
+      outcomes.push(outcome); opts.onQueryDone?.(outcome, i); continue;
+    }
 
     // The page is the prefix (asserted above), so this slice re-uses the very
     // objects `poolHits` holds — never a second judgement of the same pair.
     const labelled = pool ? judged.slice(0, k) : judged;
 
     const scored = scoreQuery(labelled, k);
+    const truth = q.groundTruthIds === undefined ? null : evaluateRelevance({
+      ranked: labelled, grade: (h) => h.grade, k,
+      groundTruth: { ids: q.groundTruthIds, idOf: (h) => h.docId },
+    });
     // An EMPTY ranking scores ndcg → 0, indistinguishable from "retrieval
     // worked and everything it found was irrelevant". Those are opposite
     // verdicts, so it is excluded and named rather than averaged in as a zero.
@@ -489,6 +615,11 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
       judgeCostUsd: judged.reduce((a, h) => a + h.judgeCostUsd, 0),
       ...(retrieval.latencyMs !== undefined ? { latencyMs: retrieval.latencyMs } : {}),
       excludedReason,
+      attemptStatus: excludedReason ? 'empty' : 'scored', requestedK: k, returnedCount: labelled.length,
+      usefulContextSuccess: truth === null ? null : q.groundTruthIds?.length === 0
+        ? labelled.length === 0
+        : truth.missingIds.length === 0 && labelled.some((h) => h.grade >= 2),
+      recallAtK: truth?.recallAtK ?? null, missingIds: truth?.missingIds ?? [],
     };
     outcomes.push(outcome);
     opts.onQueryDone?.(outcome, i);
@@ -562,6 +693,7 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
     judgeCostUsd,
     judgedHits,
     caveats,
+    contract: { runtime: null, corpus: null, judge: null, adapter: null, sample: null, ...opts.contract },
   };
 }
 
@@ -578,6 +710,9 @@ export function formatLabelledReport(report: LabelledPassReport): string {
     `judge=${report.judgeModel} rubric=${report.rubricVersion} bar=${report.passBar} ` +
       `k=${report.k} seed=${report.sampleSeed}`,
     `queries=${report.outcomes.length} judged hits=${report.judgedHits} cost=$${report.judgeCostUsd.toFixed(2)}`,
+    `attempts=${report.overall.attempted} outcomes=${JSON.stringify(report.overall.outcomeCounts)} ` +
+      `useful=${report.overall.usefulSuccesses}/${report.overall.attempted} unknown=${report.overall.usefulUnknown} ` +
+      `returned=${report.overall.returnedHits}/${report.overall.requestedSlots} requested slots`,
     ``,
     // `uninf` sits immediately right of nDCG@k on purpose: it is the share of that
     // very column computed over uniform grade vectors, where nDCG cannot fall.

@@ -63,7 +63,11 @@ import {
 } from '../release/routine-engine-liveness';
 import { deriveGitSyncFreshness } from '../agent-tools/routines/list';
 import type { SystemHealth } from './types';
-import type { BeesLivenessContext } from './liveness-alarm';
+import {
+  GIT_SYNC_MISSED_INTERVALS_ALARM,
+  GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
+  type BeesLivenessContext,
+} from './liveness-alarm';
 
 export const CONDITION_STALENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:condition-staleness-alarm',
@@ -97,6 +101,8 @@ const DEFAULT_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_SIGNAL_ABSENCE_MS = 2 * 60 * 60_000;
 
 const GIT_SYNC_STALL_PREFIX = 'git-sync-stall:';
+const INFRA_GIT_SYNC_MISSED_INTERVALS_KEY =
+  'infra-liveness:' + GIT_SYNC_MISSED_INTERVALS_SIGNATURE;
 
 interface GitSyncHealthRow {
   install_slug: string;
@@ -109,6 +115,7 @@ interface GitSyncHealthRow {
   last_status: string | null;
   local_sync_status: string | null;
   last_error: string | null;
+  last_skip_reason: string | null;
   watchdog_alerted: boolean | null;
   reaped_count: number | null;
   wd_error_sweeps: number | null;
@@ -168,28 +175,64 @@ export function verifiedGitSyncHealth(
   return !verdict.stalled;
 }
 
+function isGitSyncMissedIntervalsConditionKey(key: string): boolean {
+  return key === INFRA_GIT_SYNC_MISSED_INTERVALS_KEY ||
+    key.startsWith(INFRA_GIT_SYNC_MISSED_INTERVALS_KEY + ':');
+}
+
+/**
+ * Match the source alarm's missed-interval exclusions against writer-backed routine data.
+ * Undefined means the writer did not provide a usable cadence measurement, so the condition
+ * must remain unresolved.
+ */
+export function gitSyncMissedIntervalsAlarmActive(
+  freshness: { missed_intervals?: unknown; scheduler?: unknown; execution?: unknown },
+  lastStatus: string | null,
+  lastSkipReason: string | null,
+): boolean | undefined {
+  if (lastStatus === 'error' || lastStatus === 'conflict') return false;
+  if (lastStatus === 'skipped' && lastSkipReason === 'no_path') return false;
+
+  const missedIntervals = freshness.missed_intervals;
+  if (typeof missedIntervals !== 'number' || !Number.isFinite(missedIntervals) || missedIntervals < 0) {
+    return undefined;
+  }
+  const scheduler = freshness.scheduler as { stalled_behind_in_flight_fire?: unknown } | undefined;
+  const execution = freshness.execution as { status?: unknown } | undefined;
+  const progressingFireExplainsMissedIntervals =
+    scheduler?.stalled_behind_in_flight_fire === true && execution?.status === 'in-flight';
+  if (progressingFireExplainsMissedIntervals) return false;
+  return missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM;
+}
+
 /**
  * Read the writer-backed git-sync state for open condition keys and reuse the
- * watchdog's pure verdict to decide whether the condition is healthy now.
+ * source alarm's pure verdicts to decide whether the condition is healthy now.
  *
- * This is intentionally a READ-only companion to git-sync-stall-watchdog.ts.
- * The watchdog emits the recovery broadcast only on its next 15-minute sweep;
- * the condition actor runs every 5 minutes, so this closes the recovery-lag
- * window without duplicating the watchdog's alarm/write path. Missing rows or
- * an unreadable routine-engine clock stay UNKNOWN (no map entry), never healthy.
+ * This is intentionally a READ-only companion to the routine health writers.
+ * The stall family reuses the watchdog verdict; missed-interval conditions use
+ * the liveness alarm's cadence threshold and exclusions. Missing rows, missing
+ * cadence data, or an unreadable engine clock for stall verdicts stay UNKNOWN
+ * (no map entry), never healthy.
  */
 async function defaultReadGitSyncHealth(
   openGitSyncKeys: readonly string[],
   now: number,
 ): Promise<Map<string, boolean>> {
   const out = new Map<string, boolean>();
-  const installSlugs = [...new Set(
-    openGitSyncKeys
-      .filter((key) => key.startsWith(GIT_SYNC_STALL_PREFIX))
+  const stallKeys = openGitSyncKeys.filter((key) => key.startsWith(GIT_SYNC_STALL_PREFIX));
+  const missedIntervalKeys = openGitSyncKeys.filter(isGitSyncMissedIntervalsConditionKey);
+  const hasBareMissedIntervalsKey = missedIntervalKeys.includes(INFRA_GIT_SYNC_MISSED_INTERVALS_KEY);
+  const installSlugs = [...new Set([
+    ...stallKeys
       .map((key) => key.slice(GIT_SYNC_STALL_PREFIX.length).trim())
       .filter(Boolean),
-  )];
-  if (installSlugs.length === 0) return out;
+    ...missedIntervalKeys
+      .filter((key) => key !== INFRA_GIT_SYNC_MISSED_INTERVALS_KEY)
+      .map((key) => key.slice((INFRA_GIT_SYNC_MISSED_INTERVALS_KEY + ':').length).trim())
+      .filter(Boolean),
+  ])];
+  if (installSlugs.length === 0 && !hasBareMissedIntervalsKey) return out;
 
   try {
     const { sql } = getOrgPg();
@@ -205,6 +248,7 @@ async function defaultReadGitSyncHealth(
                metadata->>'last_status' AS last_status,
                metadata->>'local_sync_status' AS local_sync_status,
                metadata->>'last_error' AS last_error,
+               metadata->>'last_skip_reason' AS last_skip_reason,
                COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted,
                COALESCE((metadata->>'reaped_count')::int, 0) AS reaped_count,
                COALESCE((metadata->>'wd_error_sweeps')::int, 0) AS wd_error_sweeps,
@@ -213,15 +257,36 @@ async function defaultReadGitSyncHealth(
          WHERE target_role = 'system:git-sync'
            AND active = true
            AND workspace_id = ${coordScopeWorkspace()}
-           AND install_slug = ANY(${installSlugs})`,
-      readRoutineEngineLiveness(sql, { nowMs: now }),
+           AND (${hasBareMissedIntervalsKey} OR install_slug = ANY(${installSlugs}))`,
+      stallKeys.length > 0
+        ? readRoutineEngineLiveness(sql, { nowMs: now })
+        : Promise.resolve(undefined),
     ]);
 
-    // An unknown engine clock cannot prove that a healthy-looking routine is
-    // actually live. Leave all keys unresolved so this backstop fails open.
-    if (routineEngine.unknown) return out;
+    const baseMissedIntervalResults: Array<boolean | undefined> = [];
 
     for (const row of rows) {
+      const freshness = deriveGitSyncFreshness(
+        { last_synced_at: row.last_synced_at, git_sync_activity: row.git_sync_activity },
+        row.cron,
+        true,
+        now,
+      );
+      const missedIntervalsAlarmActive = gitSyncMissedIntervalsAlarmActive(
+        freshness,
+        row.last_status,
+        row.last_skip_reason,
+      );
+      const missedIntervalsKey = INFRA_GIT_SYNC_MISSED_INTERVALS_KEY + ':' + row.install_slug;
+      if (missedIntervalKeys.includes(missedIntervalsKey) && missedIntervalsAlarmActive !== undefined) {
+        out.set(missedIntervalsKey, !missedIntervalsAlarmActive);
+      }
+      if (hasBareMissedIntervalsKey) baseMissedIntervalResults.push(missedIntervalsAlarmActive);
+
+      // The missed-interval alarm reads the routine writer directly. The separate stall
+      // verdict is only meaningful while the routine-engine clock is known and live.
+      if (!routineEngine || routineEngine.unknown) continue;
+
       const headSinceMs = row.wd_head_since_ms == null ? null : Number(row.wd_head_since_ms);
       let headUnchangedMs: number | null;
       if (row.head_sha == null) {
@@ -259,12 +324,6 @@ async function defaultReadGitSyncHealth(
         },
         now,
       );
-      const freshness = deriveGitSyncFreshness(
-        { last_synced_at: row.last_synced_at, git_sync_activity: row.git_sync_activity },
-        row.cron,
-        true,
-        now,
-      );
       const freshSuccessfulCompletion = hasFreshSuccessfulGitSyncCompletion(
         row.git_sync_activity,
         freshness,
@@ -274,6 +333,17 @@ async function defaultReadGitSyncHealth(
       if (healthy !== undefined) {
         out.set(`${GIT_SYNC_STALL_PREFIX}${row.install_slug}`, healthy);
       }
+    }
+    if (
+      hasBareMissedIntervalsKey &&
+      rows.length > 0 &&
+      baseMissedIntervalResults.length === rows.length &&
+      baseMissedIntervalResults.every((active) => active !== undefined)
+    ) {
+      out.set(
+        INFRA_GIT_SYNC_MISSED_INTERVALS_KEY,
+        !(baseMissedIntervalResults as boolean[]).some(Boolean),
+      );
     }
   } catch {
     // A read failure is unknown, never evidence that git-sync recovered.
@@ -637,19 +707,17 @@ export interface ConditionStalenessDeps {
    *  + never re-paged, regardless of which family sourced it. Default =
    *  DEFAULT_SIGNAL_ABSENCE_MS. */
   absenceMs?: number;
-  /** EI-14072 guard #2: resolve the health of currently-open `infra-liveness:*`
-   *  condition keys. Default = `readInfraLivenessHealthFromSharedSnapshot` (a
-   *  fresh shared SystemHealth read + evaluateLivenessAlarm re-check). Injectable so tests
-   *  never hit real I/O. */
+  /** EI-14072 guard #2: resolve snapshot-backed `infra-liveness:*` keys. Missed-interval
+   *  git-sync keys are excluded and read from routine metadata, because the shared snapshot
+   *  can be healthy while the writer remains starved. */
   readHealthByKey?: (openInfraKeys: readonly string[]) => Promise<Map<string, boolean>>;
   /** EI-14072 guard #2: broadcast the reconciled keys' recovery so the NEXT
    *  computeConditionStates read (and every other reader) also sees them closed —
    *  not just this tick's local view. Default = the real
    *  `broadcastSevereEventResolvedMany`. */
   broadcastResolvedMany?: (input: { conditionKeys: string[]; summary: string }) => Promise<boolean>;
-  /** EI-211981: read active git-sync routine metadata and return a health verdict
-   * for each requested `git-sync-stall:<installSlug>` key. Missing/failed reads
-   * must omit the key (unknown), never return true. */
+  /** Read active git-sync routine metadata for the source-backed stall and missed-interval
+   * condition families. Missing rows or failed reads must omit the key (unknown), never true. */
   readGitSyncHealthByKey?: (
     openGitSyncKeys: readonly string[],
     now: number,
@@ -774,12 +842,15 @@ export async function runConditionStalenessTick(
   const openInfraKeys = states
     .filter((s) => s.open && s.condition_key.startsWith(INFRA_LIVENESS_PREFIX))
     .map((s) => s.condition_key);
+  const openMissedIntervalsKeys = openInfraKeys.filter(isGitSyncMissedIntervalsConditionKey);
+  const openInfraSnapshotKeys = openInfraKeys.filter((key) => !isGitSyncMissedIntervalsConditionKey(key));
   const openGitSyncKeys = states
     .filter((s) => s.open && s.condition_key.startsWith(GIT_SYNC_STALL_PREFIX))
     .map((s) => s.condition_key);
+  openGitSyncKeys.push(...openMissedIntervalsKeys);
   let infraHealthByKey = new Map<string, boolean>();
   try {
-    infraHealthByKey = await readHealthByKey(openInfraKeys);
+    infraHealthByKey = await readHealthByKey(openInfraSnapshotKeys);
   } catch {
     infraHealthByKey = new Map();
   }

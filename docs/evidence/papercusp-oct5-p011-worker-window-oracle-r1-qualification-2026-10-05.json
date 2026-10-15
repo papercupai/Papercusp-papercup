@@ -1,0 +1,108 @@
+{
+  "schemaVersion": "p011-worker-window-independent-qualification-v1",
+  "workItem": "WI-10006124",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "status": "supporting-independent-reader-and-corruption-guards-only",
+  "implementation": {
+    "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+    "bytes": 122567,
+    "sha256": "a368bc9e08887bc4a3f09e08481a91a648aed12d5a148009de7f6ecb76431ae7"
+  },
+  "behavior": [
+    "Reconstruct bounded selected-worker resource windows from persisted rows without importing the sampler or its assignment auditor.",
+    "Validate selected PID/startTicks/executable/entry and sampled ancestry, loaded process/build and raw serving roles across phases and windows.",
+    "Recompute exact one-to-many server HTTP UUID/query/process tuples; reject cross-worker assignments, duplicate tuples, drift and inconsistent published summaries.",
+    "Derive unsigned allocation and signed PSS changes from raw counters. Negative PSS changes remain observations, without an intervention-savings claim.",
+    "Preserve missing HTTP IDs as unknown, evicted-ring requests as partial, and unsampled/capped census rows as explicit residue.",
+    "Reuse the existing frozen baseline oracle entrypoint for scalar main/spawner pairs or bounded selected-worker reports. No new configuration key, service or tool."
+  ],
+  "verification": {
+    "command": "env -u PAPERCUSP_P011_LIVE_PID -u PAPERCUSP_P011_BASELINE_ORACLE_INPUTS PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+    "testRunId": 20747779,
+    "ledgerStatus": "pass",
+    "harness": "papercusp",
+    "workspace": "papercusp-workspace",
+    "commitSha": "d196dbf33a004094c8706d57daf6155f43ccccab",
+    "worktreeDirty": true,
+    "passed": 250,
+    "failed": 0,
+    "optInSkipped": 4,
+    "skippedChecks": [
+      "Saved unforced expiry resource report",
+      "Frozen scalar or selected-worker reports",
+      "Saved request heap report",
+      "Saved inbox cache graphs"
+    ],
+    "boundary": "Independently constructed deterministic worker-window fixtures, corruption controls, and existing saved-evidence guards. This test run did not open an inspector, perform a shared workload, or replay a historical producer.",
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "namedFiles": 1,
+      "actualErrors": 0,
+      "exitCode": 0
+    },
+    "logs": [
+      {
+        "path": "/tmp/su-7db4f-p011-worker-window-oracle-r2.log",
+        "bytes": 7649,
+        "sha256": "66c6a8c513deb32126ea57c46dbd61ed4ad428803a424be4c794292cbb762d4c"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-worker-window-oracle-types-r2.log",
+        "bytes": 1073,
+        "sha256": "399fc5c49b49ea6948ec2333343936040e20b494173c778d4cf7775b108dabd7"
+      }
+    ]
+  },
+  "intermediate": {
+    "testRunId": 20747676,
+    "passed": 61,
+    "filteredOrOptInSkipped": 187,
+    "qualification": "Earlier source revision; not the final 250-test proof.",
+    "logs": [
+      {
+        "path": "/tmp/su-7db4f-p011-worker-window-oracle-r1.log",
+        "bytes": 67890,
+        "sha256": "3869c5f8f2886db7f0bc26e1651aff22a9ecfa6352edbb303d4ad3a215524ae9"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-worker-window-oracle-types-r1.log",
+        "bytes": 1073,
+        "sha256": "f9f9ffe1d6faf76598dc6ddd7b02b7db87ba2f0d7ccd6402f1cc914dac64049b"
+      }
+    ]
+  },
+  "sourceFingerprints": {
+    "scope": "Three named current file identities, not the complete executed-source graph",
+    "files": [
+      {
+        "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+        "bytes": 101906,
+        "sha256": "72fb01e2df0e50b3bcddd64d18003bf5b92566b02367267165ef876ff7f63a7a"
+      },
+      {
+        "path": "scripts/lib/identity-leak-patterns.mjs",
+        "bytes": 44163,
+        "sha256": "9ccce5c5ad56db19caa554f3ac03f00dcc831ea959566e013acec184926cd21d"
+      }
+    ]
+  },
+  "priorQualification": {
+    "path": "docs/evidence/papercusp-oct5-p011-inspector-lifecycle-r1-qualification-2026-10-05.json",
+    "bytes": 6729,
+    "sha256": "27e00a437ff6e5e31eef8e123773d84e4327921c6f5b96c2e9d14a7ca3923411",
+    "qualification": "All ten exact links re-resolved without mismatch. The sampler remains unchanged by this reader edit."
+  },
+  "limits": [
+    "No new shared current-build resource window or frozen request-worker report was measured.",
+    "Unsampled ancestor lifetimes are not serialized in the collector's window; they remain unknown in independent output.",
+    "No configured six-worker change, production worker-clone census, native ownership or physical-savings proof.",
+    "Whole P011@2/D-021, all-eight-source disposition, complete executed graph, full independent acceptance and shipment remain open.",
+    "Existing native owner-origin question remains pending. No duplicate question, activation, authorization-audit rewrite or LIVE_GATE_OPS."
+  ]
+}

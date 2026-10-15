@@ -19,6 +19,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
+
 const { sqlMock, readLinesMock, fastPathState } = vi.hoisted(() => ({
   sqlMock: vi.fn(),
   readLinesMock: vi.fn(async () => [] as unknown[]),

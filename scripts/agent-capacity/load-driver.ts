@@ -9,7 +9,11 @@
  *   npx tsx scripts/agent-capacity/load-driver.ts --agents 8 \
  *     [--select cli=claude,repo=excalidraw,profile=light | --sessions <id,id>] \
  *     [--duration-sec 1800] [--speed 1] [--stagger-ms 2000] [--isolation systemd|none] \
- *     [--corpus ~/.cache/agent-capacity/corpus] [--out ~/.cache/agent-capacity/runs/<runId>]
+ *     [--corpus ~/.cache/agent-capacity/corpus] [--out ~/.cache/agent-capacity/runs/<runId>] \
+ *     [--tasks-file <tasks.json the recordings were made from; default corpus/tasks.json>]
+ *     [--check   validate imports, tasks file, corpus, selection and CLI versions; drive nothing]
+ *     [--parked M [--park-at-request 4] [--release-at-sec <0.6 x duration>]]   P-015: M extra claude
+ *       sessions that idle mid-session on a held reply, then all wake together (ParkedPlan)
  *
  * Each agent SLOT runs sessions round-robin from the selection; with `--duration-sec` a slot
  * keeps starting its next session until the deadline, so N stays N for the whole window (the
@@ -40,7 +44,7 @@ import path from 'node:path';
 import { assertHostAdmission } from './host-admission';
 import { startReplayServer, type ReplayServer, type ReplayState } from './replay-server';
 import { finished } from 'node:stream/promises';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, loadCorpus, promptFor, recordedWorkDir, summarizeToolOutcomes, type Corpus, type SessionMeta } from './record-session';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, corpusFileFromArgv, loadCorpus, promptFor, recordedWorkDir, summarizeToolOutcomes, type Corpus, type SessionMeta } from './record-session';
 // Checkouts are copied/removed with SPAWNED native cp/rm (see session-process.ts): the replay
 // server shares this event loop with every running agent's model replies.
 import { parseCgroupStats, prepareWorkdir, removeTree as rm, sessionSpawn, type Isolation, type WorkdirMode } from './session-process';
@@ -72,6 +76,8 @@ export interface AgentRun {
   /** The replay's tool outcomes differ from the recording's. */
   toolDiverged: boolean;
   diverged: boolean;
+  /** A parked session (see ParkedPlan): one reply held until the shared release. Never in the active stats. */
+  parked?: true;
 }
 
 export type ToolOutcomes = ReturnType<typeof summarizeToolOutcomes>;
@@ -203,6 +209,29 @@ export function versionMismatches(
   return out;
 }
 
+/** The major of a `node --version` string (`v25.9.0` → 25), or null when it does not parse. */
+export function nodeMajor(version: string | null | undefined): number | null {
+  const m = /^v?(\d+)\./.exec((version ?? '').trim());
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * The recorded `node --version`s whose major differs from the replay host's `node`. A different
+ * Node major ships a different toolset: Node 25 dropped the bundled corepack, so a recorded
+ * `command -v corepack` that failed on the tower succeeds on a Node 24 VM and the replay's tool
+ * outcomes diverge (WI-10004683). Sessions recorded before `env.node` was stored are skipped;
+ * `unchecked` counts them so the caller can say the check did not cover them.
+ */
+export function nodeMismatches(
+  sessions: Pick<SessionMeta, 'env'>[],
+  installed: string,
+): { have: string; want: string[]; unchecked: number } {
+  const have = nodeMajor(installed);
+  const recorded = sessions.map((s) => s.env?.node ?? null);
+  const want = [...new Set(recorded.filter((v): v is string => !!v && nodeMajor(v) !== have))];
+  return { have: installed, want, unchecked: recorded.filter((v) => !v).length };
+}
+
 /** `<cli> --version` resolved on `PATH` (the driver's own when undefined). */
 function installedVersion(cli: string, PATH?: string): string {
   try {
@@ -254,12 +283,17 @@ async function runOne(o: {
   workdir: WorkdirMode;
   pathMode: PathMode;
   pathPrepend?: string;
+  agentEnv?: Record<string, string>;
+  /** A parked session: its own `p` instance namespace (the server holds `${runId}-p*`) and a kill timer extended by the hold. */
+  parked?: { extraTimeoutMs: number };
 }): Promise<AgentRun> {
   const { meta, slot, iteration, runId } = o;
-  const instance = `${runId}-s${slot}-i${iteration}`;
-  const workDir = path.join(o.cacheDir, 'replay-work', runId, `s${slot}-i${iteration}`);
-  const home = path.join(o.cacheDir, 'replay-home', runId, `s${slot}-i${iteration}`);
+  const tag = `${o.parked ? 'p' : 's'}${slot}-i${iteration}`;
+  const instance = `${runId}-${tag}`;
   const prepared = path.join(o.cacheDir, 'prepared', meta.repo.name);
+  // `shared`: every session works in the prepared checkout itself, as hosted sessions share one tree.
+  const workDir = o.workdir === 'shared' ? prepared : path.join(o.cacheDir, 'replay-work', runId, tag);
+  const home = path.join(o.cacheDir, 'replay-home', runId, tag);
   if (!existsSync(prepared)) throw new Error(`prepared checkout missing: ${prepared}`);
   const setupT0 = Date.now();
   const checkout = await prepareWorkdir(o.workdir, prepared, workDir);
@@ -274,6 +308,9 @@ async function runOne(o: {
     writeFileSync(path.join(home, 'config.toml'), codexConfigToml(base));
     env = { ...cleanEnv(process.env), CODEX_HOME: home };
   }
+  // cleanEnv drops every PAPERCUSP_* variable, so a host-provided agent variable (hostedFixedEnv's
+  // tsc-service template, for one) must be passed explicitly to reach the session.
+  if (o.agentEnv) env = { ...env, ...o.agentEnv };
   const PATH = replayPath(o.pathMode, env.PATH, meta, o.pathPrepend);
   if (PATH !== undefined) env.PATH = PATH;
   const argv = [meta.cli, ...cliArgs(meta.cli, promptFor(o.corpus, meta.task), workDir, meta.claudeModel ?? 'sonnet')];
@@ -290,7 +327,7 @@ async function runOne(o: {
     const child = spawn(s.cmd, s.args, { cwd: workDir, env: s.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.pipe(cliLog);
     child.stderr.pipe(errLog);
-    const limitMs = replayTimeoutMs(meta.wallMs);
+    const limitMs = replayTimeoutMs(meta.wallMs) + (o.parked?.extraTimeoutMs ?? 0);
     const timer = setTimeout(() => {
       timedOut = true;
       if (s.killArgs) spawn('systemctl', s.killArgs, { stdio: 'ignore' });
@@ -338,6 +375,7 @@ async function runOne(o: {
     toolOutcomes,
     toolDiverged,
     diverged: served.exhausted > 0 || served.path > 0 || toolDiverged,
+    ...(o.parked ? { parked: true as const } : {}),
   };
 }
 
@@ -363,13 +401,76 @@ export interface DriverOptions {
   pathMode?: PathMode;
   /** A directory put first on every session's PATH (a pinned CLI build). */
   pathPrepend?: string;
+  /** Variables added to every session's env after the CLI env is built; see parseAgentEnv. */
+  agentEnv?: Record<string, string>;
+  /** Extra parked claude sessions next to the N active slots (P-015); see ParkedPlan. */
+  parked?: ParkedPlan;
   onRun?: (r: AgentRun) => void;
+  onRelease?: (e: ParkRelease) => void;
+}
+
+/**
+ * P-015 parked agents: `agents` extra CLAUDE sessions (the GC question is about Node CLIs), one
+ * session each, started with the active slots. The replay server holds each one's first streamed
+ * reply at or after request `atRequest`, so the CLI waits mid-session with its heap resident (an
+ * agent waiting on the model), and releases them all together `releaseAtSec` after the start: the
+ * "many agents wake at once" storm. Parked runs are reported apart from the active step's stats.
+ */
+export interface ParkedPlan {
+  agents: number;
+  atRequest: number;
+  releaseAtSec: number;
+}
+
+export interface ParkRelease {
+  at: string;
+  /** Replies held when the release fired (a session that had not reached its hold point is not held). */
+  held: number;
+  parked: number;
+}
+
+/** Refuse a parked plan that cannot do what it says, before any session starts. */
+export function checkParkedPlan(plan: ParkedPlan | undefined, sessions: SessionMeta[], durationSec: number): SessionMeta[] {
+  if (!plan || plan.agents <= 0) return [];
+  const claude = sessions.filter((s) => s.cli === 'claude');
+  if (!claude.length) throw new Error('--parked needs at least one claude session in the selection');
+  if (!(plan.atRequest >= 1)) throw new Error(`--park-at-request must be >= 1, got ${plan.atRequest}`);
+  if (!(plan.releaseAtSec > 0)) throw new Error(`--release-at-sec must be > 0, got ${plan.releaseAtSec}`);
+  if (durationSec > 0 && plan.releaseAtSec >= durationSec) {
+    throw new Error(`--release-at-sec (${plan.releaseAtSec}) must fall inside --duration-sec (${durationSec}), or the storm lands after the step`);
+  }
+  return claude;
+}
+
+/**
+ * `--agent-env 'KEY=VALUE;KEY2=VALUE2'` → the variables added to every session's env. Keys must be
+ * shell variable names; a value may contain `=` but not `;`. Absent or empty → none.
+ */
+export function parseAgentEnv(spec: string | undefined): Record<string, string> | undefined {
+  if (!spec?.trim()) return undefined;
+  const env: Record<string, string> = {};
+  for (const pair of spec.split(';')) {
+    if (!pair.trim()) continue;
+    const eq = pair.indexOf('=');
+    const key = eq < 0 ? '' : pair.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`--agent-env: expected KEY=VALUE, got "${pair}"`);
+    env[key] = pair.slice(eq + 1);
+  }
+  return env;
 }
 
 export async function drive(o: DriverOptions): Promise<AgentRun[]> {
   if (!o.sessions.length) throw new Error('no sessions selected');
+  const parkSessions = checkParkedPlan(o.parked, o.sessions, o.durationSec);
+  const park = parkSessions.length ? o.parked : undefined;
   mkdirSync(o.outDir, { recursive: true });
-  const server = await startReplayServer({ corpusDir: o.corpusDir, speed: o.speed, logFile: path.join(o.outDir, 'served.jsonl') });
+  const server = await startReplayServer({
+    corpusDir: o.corpusDir,
+    speed: o.speed,
+    logFile: path.join(o.outDir, 'served.jsonl'),
+    // Active instances are `${runId}-s*`, parked ones `${runId}-p*`: only parked replies are held.
+    ...(park ? { hold: { instancePrefix: `${o.runId}-p`, atRequest: park.atRequest } } : {}),
+  });
   const runs: AgentRun[] = [];
   const deadline = Date.now() + o.durationSec * 1000;
   // Sweep mode: slots share one queue and every selected session runs exactly once.
@@ -383,18 +484,62 @@ export async function drive(o: DriverOptions): Promise<AgentRun[]> {
     for (let it = 0; ; it++) {
       const meta = pick(s, it);
       if (!meta) break;
-      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork, workdir: o.workdir ?? 'copy', pathMode: o.pathMode ?? 'inherit', pathPrepend: o.pathPrepend });
+      const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta, slot: s, iteration: it, server, isolation: o.isolation, keepWork: o.keepWork, workdir: o.workdir ?? 'copy', pathMode: o.pathMode ?? 'inherit', pathPrepend: o.pathPrepend, agentEnv: o.agentEnv });
       runs.push(r);
       appendFileSync(path.join(o.outDir, 'agents.jsonl'), JSON.stringify(r) + '\n');
       o.onRun?.(r);
     }
   };
+  const parkedSlot = async (k: number) => {
+    await new Promise((r) => setTimeout(r, k * o.staggerMs));
+    const r = await runOne({ cacheDir: o.cacheDir, runId: o.runId, outDir: o.outDir, corpus: o.corpus, corpusDir: o.corpusDir, meta: parkSessions[k % parkSessions.length], slot: k, iteration: 0, server, isolation: o.isolation, keepWork: o.keepWork, workdir: o.workdir ?? 'copy', pathMode: o.pathMode ?? 'inherit', pathPrepend: o.pathPrepend, agentEnv: o.agentEnv, parked: { extraTimeoutMs: park!.releaseAtSec * 1000 } });
+    runs.push(r);
+    appendFileSync(path.join(o.outDir, 'agents.jsonl'), JSON.stringify(r) + '\n');
+    o.onRun?.(r);
+  };
+  const releaseTimer = park
+    ? setTimeout(() => {
+        const e: ParkRelease = { at: new Date().toISOString(), held: server.releaseHolds(), parked: park.agents };
+        appendFileSync(path.join(o.outDir, 'parked.jsonl'), JSON.stringify({ event: 'release', ...e }) + '\n');
+        o.onRelease?.(e);
+      }, park.releaseAtSec * 1000)
+    : undefined;
   try {
-    await Promise.all(Array.from({ length: o.agents }, (_, s) => slot(s)));
+    await Promise.all([
+      ...Array.from({ length: o.agents }, (_, s) => slot(s)),
+      ...Array.from({ length: park?.agents ?? 0 }, (_, k) => parkedSlot(k)),
+    ]);
   } finally {
+    clearTimeout(releaseTimer);
     await server.close();
   }
   return runs;
+}
+
+/**
+ * The parked sessions' own numbers: how many were really held at the release, and how long each
+ * took to finish its session once woken (end minus release; the wake storm's cost shows as this
+ * rising across swap modes at the same N). Per-request wake gaps are in served.jsonl (`heldMs`).
+ */
+export function summarizeParked(runs: AgentRun[], release: ParkRelease | null) {
+  const parked = runs.filter((r) => r.parked);
+  const releaseMs = release ? Date.parse(release.at) : null;
+  const afterRelease = parked
+    .filter((r) => r.exitCode === 0 && !r.timedOut && releaseMs !== null)
+    .map((r) => Date.parse(r.startedAt) + r.wallMs - (releaseMs as number))
+    .filter((ms) => ms >= 0)
+    .sort((a, b) => a - b);
+  const at = (p: number) => (afterRelease.length ? afterRelease[Math.min(afterRelease.length - 1, Math.floor((p / 100) * afterRelease.length))] : null);
+  const peaks = parked.map((r) => r.memPeakBytes).filter((x): x is number => x !== null);
+  return {
+    runs: parked.length,
+    heldAtRelease: release?.held ?? null,
+    releasedAt: release?.at ?? null,
+    failed: parked.filter((r) => r.exitCode !== 0 || r.timedOut).length,
+    toolDiverged: parked.filter((r) => r.toolDiverged).length,
+    finishAfterReleaseMs: { p50: at(50), p95: at(95), max: at(100) },
+    memPeakMiBMax: peaks.length ? Math.round(Math.max(...peaks) / 2 ** 20) : null,
+  };
 }
 
 export function summarize(runs: AgentRun[], window?: Parameters<typeof achievedConcurrency>[1]) {
@@ -429,7 +574,7 @@ function arg(name: string, fallback?: string): string | undefined {
 
 async function main(): Promise<void> {
   assertHostAdmission(__dirname);
-  const corpus = loadCorpus();
+  const corpus = loadCorpus(corpusFileFromArgv(process.argv));
   const corpusDir = arg('corpus', path.join(CACHE, 'corpus'))!;
   const metas = loadMetas(corpusDir);
   const sessions = selectSessions(metas, arg('select'), arg('sessions')?.split(',').filter(Boolean));
@@ -444,6 +589,13 @@ async function main(): Promise<void> {
     byPath.set(p, [...(byPath.get(p) ?? []), m]);
   }
   const mismatch = [...byPath].flatMap(([p, group]) => versionMismatches(group, (cli) => installedVersion(cli, p || undefined)));
+  let nodeUnchecked = 0;
+  for (const [p, group] of byPath) {
+    const node = nodeMismatches(group, installedVersion('node', p || undefined));
+    nodeUnchecked += node.unchecked;
+    if (node.want.length) mismatch.push({ cli: 'node', have: node.have, want: node.want });
+  }
+  if (nodeUnchecked) console.log(`NOTE ${nodeUnchecked} session(s) predate the recorded node version; their node major is not checked`);
   if (mismatch.length) {
     // A different CLI build sends different requests, so the replay would diverge and read as a
     // fidelity failure. Refuse unless explicitly allowed (measured 2026-10-01: the systemd user
@@ -454,11 +606,32 @@ async function main(): Promise<void> {
   }
   const runId = arg('run-id', new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, ''))!;
   const outDir = arg('out', path.join(CACHE, 'runs', runId))!;
-  mkdirSync(outDir, { recursive: true });
   const isolation = arg('isolation', 'systemd');
   if (isolation !== 'systemd' && isolation !== 'none') throw new Error('--isolation systemd|none');
   const workdir = arg('workdir', 'copy');
-  if (workdir !== 'copy' && workdir !== 'overlay') throw new Error('--workdir copy|overlay');
+  if (workdir !== 'copy' && workdir !== 'overlay' && workdir !== 'shared') throw new Error('--workdir copy|overlay|shared');
+  const agentEnv = parseAgentEnv(arg('agent-env'));
+  const durationSecArg = Number(arg('duration-sec', '0'));
+  const parkedN = Number(arg('parked', '0'));
+  const parked: ParkedPlan | undefined =
+    parkedN > 0
+      ? {
+          agents: parkedN,
+          atRequest: Number(arg('park-at-request', '4')),
+          releaseAtSec: Number(arg('release-at-sec', String(Math.floor(durationSecArg * 0.6)))),
+        }
+      : undefined;
+  checkParkedPlan(parked, sessions, durationSecArg);
+  // --check: everything above (the whole import graph, tasks file, corpus, selection, CLI versions)
+  // validated, nothing driven. Ramp scripts run this before their first step so a broken driver
+  // fails in seconds with its real error instead of reading as a saturated step (P-529, 2026-10-01:
+  // a missing module and a missing tasks.json both ended arm A and arm B at n=12 as "SATURATED").
+  if (process.argv.includes('--check')) {
+    if (!sessions.length) throw new Error(`the selection matched no recorded session in ${corpusDir}`);
+    console.log(`DRIVER_CHECK_OK sessions=${sessions.length} corpus=${corpusDir} tasks=${corpus.tasks.length}`);
+    return;
+  }
+  mkdirSync(outDir, { recursive: true });
   const opts: DriverOptions = {
     cacheDir: arg('cache', CACHE)!,
     agents: Math.max(1, Number(arg('agents', '1'))),
@@ -469,13 +642,15 @@ async function main(): Promise<void> {
     runId,
     speed: Number(arg('speed', '1')),
     staggerMs: Number(arg('stagger-ms', '2000')),
-    durationSec: Number(arg('duration-sec', '0')),
+    durationSec: durationSecArg,
     isolation,
     keepWork: process.argv.includes('--keep-work'),
     workdir,
     sweep: process.argv.includes('--sweep'),
     pathMode,
     pathPrepend,
+    agentEnv,
+    parked,
     onRun: (r) =>
       console.log(
         `RUN ${r.instance} ${r.sessionId} exit=${r.exitCode} timedOut=${r.timedOut} wallMs=${r.wallMs}/${r.recordedWallMs} peakMiB=${r.memPeakBytes === null ? '?' : (r.memPeakBytes / 2 ** 20).toFixed(0)} cpuS=${r.cpuUsec === null ? '?' : (r.cpuUsec / 1e6).toFixed(1)} served=${JSON.stringify(r.served)} tools=${r.toolOutcomes.replayed.results}/${r.toolOutcomes.recorded?.results ?? '?'} toolErrors=${r.toolOutcomes.replayed.errors}/${r.toolOutcomes.recorded?.errors ?? '?'}${r.diverged ? ' DIVERGED' : ''}${r.toolDiverged ? ' TOOL_DIVERGED' : ''}`,
@@ -491,8 +666,13 @@ async function main(): Promise<void> {
   process.once('SIGINT', stopUnits);
   writeFileSync(path.join(outDir, 'run.json'), JSON.stringify({ ...opts, sessions: sessions.map((s) => s.sessionId), corpus: undefined, onRun: undefined, startedAt: new Date().toISOString() }, null, 2) + '\n', { flag: 'w' });
   const startMs = Date.now();
-  const runs = await drive(opts);
-  const summary = summarize(runs, opts.sweep || !opts.durationSec ? undefined : { startMs, agents: opts.agents, staggerMs: opts.staggerMs, durationSec: opts.durationSec });
+  let release: ParkRelease | null = null;
+  const runs = await drive({ ...opts, onRelease: (e) => (release = e) });
+  const active = runs.filter((r) => !r.parked);
+  const summary = {
+    ...summarize(active, opts.sweep || !opts.durationSec ? undefined : { startMs, agents: opts.agents, staggerMs: opts.staggerMs, durationSec: opts.durationSec }),
+    ...(opts.parked && opts.parked.agents > 0 ? { parked: summarizeParked(runs, release) } : {}),
+  };
   writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n');
   console.log(`SUMMARY ${JSON.stringify(summary)}`);
 }

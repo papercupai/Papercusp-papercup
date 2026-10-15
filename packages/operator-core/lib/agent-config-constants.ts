@@ -794,6 +794,26 @@ export function defaultBulkResolverLaunchProfiles(): BulkResolverLaunchProfiles 
 export type LaunchAgentBackend = 'claude' | 'codex' | 'omp';
 
 /**
+ * Canonical Codex model ids that are NOT a `gpt-5.6-<menu alias>` expansion, so
+ * the menu derivation below cannot reach them. Without this list a configured
+ * `gpt-6.1-sol` (CODEX_SAFE_DEFAULT_MODEL, owner directive #1111) resolved to NO
+ * backend and every bulk-resolver start refused it — the Plans Clean-up button and
+ * the scheduled sweep both (WI-10004814). This module must stay client-safe, so it
+ * cannot import the server-side gateway lineup; instead
+ * `agent-config-constants.test.ts` pins every `CODEX_GATEWAY_FALLBACK_LINEUP` slug
+ * to resolve to `codex` here, so a model the gateway offers cannot be unlaunchable.
+ */
+export const CODEX_CANONICAL_MODEL_IDS = [
+  'gpt-6.1-sol',
+  'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6-luna',
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+] as const;
+
+/**
  * Infer the CLI backend from the SAME model vocabulary the launch selectors
  * render. A host-local OMP selector is always `provider/id`; the native aliases
  * carry their backend on `CLOUD_MODEL_MENU`. Codex also exposes the canonical
@@ -810,6 +830,7 @@ export function launchAgentBackendForModel(model?: string | null): LaunchAgentBa
   const normalizedBase = base.toLowerCase();
   const bareChoice = CLOUD_MODEL_MENU.find((choice) => choice.value === normalizedBase);
   if (bareChoice) return bareChoice.backend;
+  if ((CODEX_CANONICAL_MODEL_IDS as readonly string[]).includes(normalizedBase)) return 'codex';
 
   // Codex's native model ids are the canonical expansion of the same three
   // selectable aliases. Keep the mapping derived from the menu so adding a

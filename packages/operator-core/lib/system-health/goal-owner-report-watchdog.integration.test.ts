@@ -4,7 +4,7 @@
  * executes that SQL so JSONB containment, legacy POSIX regexes, attribution,
  * and GREATEST/null behavior cannot drift behind a mocked template tag.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   GOAL_OWNER_REPORT_FIELD,
@@ -12,7 +12,7 @@ import {
   type GoalOwnerReportStamp,
 } from '../goal-owner-report';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { readGoalOwnerReportObligation } from './goal-owner-report-watchdog';
+import { readGoalOwnerReportObligation, runGoalOwnerReportSweepOnce, goalOwnerReportConditionKey } from './goal-owner-report-watchdog';
 
 const WS = 'goal-owner-report-pg';
 const OTHER_WS = 'goal-owner-report-other';
@@ -145,6 +145,39 @@ beforeEach(async () => {
 });
 
 describe('GOAL owner-report evidence union (real PostgreSQL)', () => {
+  it('opens the original detector and recovers from exact real-PG report evidence beyond candidate absence', async () => {
+    const now = NOW + 3600_000;
+    const key = goalOwnerReportConditionKey({ workspaceId: WS, goalId: GOAL, agentId: OWNER });
+    const broadcast = vi.fn(async () => true), resolve = vi.fn(async () => true);
+    const deps = { now: () => now, flagEnabled: async () => true, readOpenConditionKeys: async () => [] as string[],
+      resolveLiveness: async () => new Map([[OWNER, { ownerId: OWNER, sessionState: 'live' as const,
+        wakeable: true, liveTurn: true, confirmLiveness: null, heartbeatFresh: true }]]),
+      escalate: async () => ({ coalesced: true }), nudge: async () => {}, rail: { broadcast, resolve } };
+    await runGoalOwnerReportSweepOnce(db.sql, deps);
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: key, oneShot: true }));
+    const restart = { ...deps, readGoalModeOwners: async () => [], readOpenConditionKeys: async () => [key] };
+    const freshAt = '2026-09-01T01:50:00.000Z';
+    await insertCoord('messages', 'foreign-owner', freshAt, { from: OTHER_OWNER, to: ['human'],
+      [GOAL_OWNER_REPORT_FIELD]: reportStamp() });
+    await insertCoord('messages', 'foreign-goal', freshAt, { from: OWNER, to: ['human'],
+      [GOAL_OWNER_REPORT_FIELD]: reportStamp(OTHER_GOAL) });
+    await insertCoord('messages', 'foreign-workspace', freshAt, { from: OWNER, to: ['human'],
+      [GOAL_OWNER_REPORT_FIELD]: reportStamp() }, OTHER_WS);
+    await runGoalOwnerReportSweepOnce(db.sql, restart);
+    expect(resolve).not.toHaveBeenCalled();
+    await insertCoord('messages', 'measured-exact-report', freshAt, { from: OWNER, to: ['human'],
+      [GOAL_OWNER_REPORT_FIELD]: reportStamp() });
+    await runGoalOwnerReportSweepOnce(db.sql, restart);
+    expect(resolve).toHaveBeenCalledWith({ conditionKey: key, summary: 'goal-owner-report-watchdog recovered' });
+    resolve.mockClear();
+    await db.sql`UPDATE harness_shared.goals SET status = 'paused' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    await runGoalOwnerReportSweepOnce(db.sql, restart);
+    expect(resolve).not.toHaveBeenCalled();
+    await db.sql`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    await runGoalOwnerReportSweepOnce(db.sql, restart);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it('uses the newest complete exact-goal stamp from escalation, human-send, or attributed attention', async () => {
     expect(await lastReportAt()).toBeNull();
 

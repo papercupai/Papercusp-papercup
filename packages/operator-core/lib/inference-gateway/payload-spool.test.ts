@@ -278,8 +278,10 @@ describe('PgGatewayPayloadStore — EI-21880026143110293 contention retry on the
     });
 
     await expect(store.put('a'.repeat(64), body('retried write'))).resolves.toBeUndefined();
-    // Two failed attempts + the one that lands.
-    expect(sqlCalls).toHaveLength(3);
+    // Two failed attempts (each fails at its first statement) + the attempt that lands,
+    // which runs D-017's three statements: find/refresh chunks, insert missing chunks,
+    // insert the manifest.
+    expect(sqlCalls).toHaveLength(5);
   });
 
   it('surfaces a typed, contention-labelled error once retries are exhausted — never a bare opaque timeout', async () => {
@@ -339,9 +341,12 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
     // healthy bounded sweep. WI-10003469: two minutes, not two hours, so most rows
     // are written and deleted inside one checkpoint cycle (see the constant's doc).
     expect(DEFAULT_PAYLOAD_SPOOL_TTL_MS).toBe(2 * 60 * 1000);
-    expect(sqlCalls).toHaveLength(1);
-    expect(sqlCalls[0]!.text).toContain('expires_at');
-    expect(sqlCalls[0]!.values.at(-1)).toEqual(new Date(now + DEFAULT_PAYLOAD_SPOOL_TTL_MS));
+    // D-017: find/refresh chunks, insert the (all-new) chunks, then the manifest row.
+    expect(sqlCalls).toHaveLength(3);
+    const manifest = sqlCalls[2]!;
+    expect(manifest.text).toContain('INSERT INTO harness_shared.gateway_payload_blobs');
+    expect(manifest.text).toContain('expires_at');
+    expect(manifest.values).toContainEqual(new Date(now + DEFAULT_PAYLOAD_SPOOL_TTL_MS));
   });
 
   it('renews the expiry on a dedupe HEAD hit, so the sweep cannot race the caller’s retain()', async () => {
@@ -374,7 +379,8 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
 
     await expect(store.sweep(7.9)).resolves.toBe(1);
 
-    expect(sqlCalls).toHaveLength(2);
+    // Legacy backfill, manifest DELETE, then D-017's chunk DELETE.
+    expect(sqlCalls).toHaveLength(3);
     const [backfill, deletion] = sqlCalls;
     expect(backfill!.text).toContain('expires_at IS NULL');
     expect(backfill!.text).toContain('created_at');
@@ -414,7 +420,8 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
 
     await store.sweep(Number.NaN);
 
-    expect(sqlCalls).toHaveLength(2);
+    // Legacy backfill, manifest DELETE, then D-017's chunk DELETE.
+    expect(sqlCalls).toHaveLength(3);
     expect(sqlCalls.flatMap((call) => call.values)).toContain(DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT);
     expect(sqlCalls.flatMap((call) => call.values)).toContain(DEFAULT_PAYLOAD_SPOOL_SWEEP_MAX_BYTES);
   });
@@ -440,7 +447,13 @@ describe('PgGatewayPayloadStore — WI-10002667 single-flight lifecycle sweep', 
   // measured open for 6 minutes under WAL pressure had a second one queued behind it
   // from the same process. These tests hold the DELETE open and fire again.
   const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
-  const countDeletes = () => sqlCalls.filter((c) => c.text.includes('DELETE FROM')).length;
+  // A pass is the manifest DELETE followed by D-017's chunk DELETE. Only the manifest
+  // DELETE is held open: holding every DELETE would park the chunk statement on a
+  // promise no test settles, and the pass would never resolve.
+  const MANIFEST_DELETE = 'DELETE FROM harness_shared.gateway_payload_blobs';
+  const CHUNK_DELETE = 'DELETE FROM harness_shared.gateway_payload_chunks';
+  const countDeletes = () => sqlCalls.filter((c) => c.text.includes(MANIFEST_DELETE)).length;
+  const countChunkDeletes = () => sqlCalls.filter((c) => c.text.includes(CHUNK_DELETE)).length;
 
   function heldDeleteSql(outcomes: Array<'resolve' | 'reject'> = ['resolve', 'resolve']) {
     const pending: Array<{ resolve: (v: never) => void; reject: (e: unknown) => void }> = [];
@@ -448,7 +461,7 @@ describe('PgGatewayPayloadStore — WI-10002667 single-flight lifecycle sweep', 
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join(' ');
       sqlCalls.push({ text, values });
-      if (!text.includes('DELETE FROM')) return Promise.resolve([] as never);
+      if (!text.includes(MANIFEST_DELETE)) return Promise.resolve([] as never);
       return new Promise<never>((resolve, reject) => pending.push({ resolve, reject }));
     }) as unknown as NonNullable<PgGatewayPayloadStoreOptions['sql']>;
     const settleNext = (rows: unknown[] = [{ blob_key: 'a'.repeat(64) }]) => {
@@ -472,12 +485,15 @@ describe('PgGatewayPayloadStore — WI-10002667 single-flight lifecycle sweep', 
 
     expect(countDeletes()).toBe(1);
     expect(held.pendingCount()).toBe(1);
+    expect(countChunkDeletes()).toBe(0); // the chunk sweep waits for the manifest DELETE
 
     held.settleNext([{ blob_key: 'a'.repeat(64) }, { blob_key: 'b'.repeat(64) }]);
     await expect(first).resolves.toBe(2);
     await expect(second).resolves.toBe(2);
     await expect(third).resolves.toBe(2);
     expect(countDeletes()).toBe(1);
+    // The joined callers share one pass, so the chunk sweep ran once, not three times.
+    expect(countChunkDeletes()).toBe(1);
   });
 
   it('runs a fresh pass once the previous one has settled', async () => {

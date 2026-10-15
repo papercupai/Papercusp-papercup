@@ -40,6 +40,7 @@ vi.mock('drizzle-orm/postgres-js', () => ({
 }));
 
 import tool from './get';
+import statusTool from './status';
 
 // The handler's declared return is the generic ToolResult union; these tests read the
 // degraded-envelope fields, so narrow with a local shape (EI-1834 additions stay typed).
@@ -144,5 +145,17 @@ describe('harness:get', () => {
   it('arg schema: detail defaults to summary and rejects unknown values', () => {
     expect(tool.args.parse({ slug: 's' }).detail).toBe('summary');
     expect(() => tool.args.parse({ slug: 's', detail: 'everything' })).toThrow();
+  });
+
+  it('get and status accept an optional per-call workspace for unscoped superusers', () => {
+    expect(tool.args.parse({ slug: 's', workspace: 'ws-a' })).toMatchObject({
+      slug: 's',
+      detail: 'summary',
+      workspace: 'ws-a',
+    });
+    expect(statusTool.args.parse({ slug: 's', workspace: 'ws-a' })).toMatchObject({
+      slug: 's',
+      workspace: 'ws-a',
+    });
   });
 });

@@ -97,7 +97,14 @@ describe('effect-marker audit (B-CX-EFFECT): known mutators are effect:write', (
 
   // Control: genuine readers must STAY 'read'. Guards against an over-broad flip (which
   // would gate everything) AND proves the effect field is actually populated, not defaulted.
-  it.each(['coord:inbox', 'work_items:list', 'plans:get', 'memory:search', 'work_items:get'])(
+  it.each([
+    'coord:inbox',
+    'work_items:list',
+    'plans:get',
+    'memory:search',
+    'work_items:get',
+    'capability:pty_read_screen',
+  ])(
     "reader '%s' stays effect:'read'",
     (name) => {
       const tool = lookupByMcpName(name);
@@ -141,6 +148,7 @@ const REVIEWED_PURE: Record<string, string> = {
   'scheduler:get_claim_spec': 'reads the current claim spec row (the read counterpart of scheduler:set_claim_spec); claims nothing',
   'plans:run-transcript': 'renders a plan run transcript from stored rows; reads only',
   'events:lost-wake-check': 'reports wakes that never fired; diagnostic read, repairs nothing',
+  'trigger-packs:review': 'lists installed packs and builds a review report; reads only',
 };
 
 describe('late-completion read policy (WI-10004577): the admitted population is registry-guarded', () => {
@@ -159,10 +167,10 @@ describe('late-completion read policy (WI-10004577): the admitted population is 
 
   it('admits genuine reads and rejects the mutators that share a *:read capability', async () => {
     const names = new Set((await admitted()).map((t) => t.name));
-    for (const pure of ['coord:inbox', 'memory:search', 'intel:spawn_tree', 'flags:attest']) {
+    for (const pure of ['coord:inbox', 'memory:search', 'intel:spawn_tree', 'flags:attest', 'trigger-packs:review']) {
       expect(names.has(pure), `${pure} is a pure read and should be admitted`).toBe(true);
     }
-    for (const mutator of ['voice:say', 'voice:delegate_deep', 'memory:sweep', 'plans:export', 'knowledge_packs:export', 'fleet:create']) {
+    for (const mutator of ['voice:say', 'voice:delegate_deep', 'memory:sweep', 'plans:export', 'knowledge_packs:export', 'trigger-packs:export', 'fleet:create']) {
       expect(names.has(mutator), `${mutator} mutates and must NOT be admitted`).toBe(false);
     }
   });

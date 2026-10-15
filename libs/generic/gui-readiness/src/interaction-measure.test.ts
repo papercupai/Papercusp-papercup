@@ -239,8 +239,35 @@ describe('classifyAttemptTimeout — slow sample vs void attempt', () => {
     expect(attempt({ terminalPlaceholder: '   ' }).verdict).toBe('slow');
   });
 
-  it('DISCRIMINATES: no start mark means nothing was timed', () => {
-    expect(attempt({ startMarkPresent: false, startMarkAgeMs: null }).verdict).toBe('void');
+  it('DISCRIMINATES: no begin or current phase evidence is a void attempt', () => {
+    expect(attempt({ startMarkPresent: false, startMarkAgeMs: null, phasesSeen: [] }).verdict).toBe('void');
+  });
+
+  it('retains a completed measure arriving between wait expiry and the diagnostic read', () => {
+    const d = classifyAttemptTimeout({
+      ...DISPATCHED_AND_STUCK,
+      startMarkPresent: false,
+      startMarkAgeMs: null,
+      measureCount: 1,
+    });
+    expect(d.verdict).toBe('measured');
+    expect(d.reason).toContain('1 measure');
+  });
+
+  it('does not retry away a consumed or cleared start with current dispatch evidence', () => {
+    const d = attempt({ startMarkPresent: false, startMarkAgeMs: null });
+    expect(d.verdict).toBe('inconclusive');
+    expect(d.reason).not.toContain('never began');
+  });
+
+  it('keeps an observed begin without a remaining start or phase inconclusive', () => {
+    expect(classifyAttemptTimeout({
+      ...DISPATCHED_AND_STUCK,
+      startMarkPresent: false,
+      startMarkAgeMs: null,
+      phasesSeen: [],
+      beginObserved: true,
+    }).verdict).toBe('inconclusive');
   });
 
   it('DISCRIMINATES: a stale start mark cannot belong to this attempt', () => {

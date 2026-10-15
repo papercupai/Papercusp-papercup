@@ -30,15 +30,19 @@ import {
   IMPORTANCE_LEVELS,
   ITEM_STATUSES,
   PLAN_STATUSES,
-  derivePlanLifecycle,
   parsePlan,
-  reconcilePlanLifecycle,
   type Importance,
   type ItemStatus,
   type PlanItem,
   type PlanLifecycleDisposition,
-  type PlanLifecycleVerdict,
 } from './parser';
+import {
+  PLAN_LIFECYCLE_VERDICTS,
+  deriveListLifecycle,
+  readPlanListLifecycleSignals,
+  type DerivedLifecycleRow,
+  type PlanListLifecycleSignals,
+} from './list-derived-lifecycle';
 import { reconcileStartStatus } from './plan-start-state';
 import { shapePlansList } from './list-shape';
 import { cachedRead, type CachedReadCtx } from '../../cache';
@@ -68,6 +72,7 @@ const PLANS_LIST_SOFT_TTL_MS = 45_000;
  */
 const GROUP_BY_KEYS = [
   'status',
+  'lifecycle',
   'lifecycleDisposition',
   'harness',
   'template',
@@ -82,9 +87,11 @@ const GROUP_BY_KEYS = [
 ] as const;
 type GroupByKey = (typeof GROUP_BY_KEYS)[number];
 
-/** Dimensions that need per-plan item resolution — everything else can run
- *  compact (no itemCounts pass) when the caller wants counts only. */
-const GROUP_KEYS_NEEDING_ITEMS = new Set<GroupByKey>(['importance', 'lifecycleDisposition']);
+/** Dimensions that need the per-plan effective-status pass — everything else can
+ *  run compact (no itemCounts pass) when the caller wants counts only. The
+ *  lifecycle dimensions are NOT here: `derivedLifecycle` is computed for every
+ *  row in every mode (P-007 of derived-status-not-hand-written-2026-10-12). */
+const GROUP_KEYS_NEEDING_ITEMS = new Set<GroupByKey>(['importance']);
 
 const LIFECYCLE_DISPOSITIONS = [
   'abstained',
@@ -100,11 +107,17 @@ const argsSchema = z.object({
     .describe(
       'Filter by plan-level status. Legacy plans (no frontmatter) report status "draft"; use includeLegacy + the isLegacy flag to find them.',
     ),
+  lifecycle: z
+    .enum([...PLAN_LIFECYCLE_VERDICTS])
+    .optional()
+    .describe(
+      'Filter by the DERIVED lifecycle verdict, not the stored status. `active` is the live filter: live items AND activity (a plan write, a linked work-item transition, or a live claim) within 30 days. `stalled` = live items, nobody moving them.',
+    ),
   lifecycleDisposition: z
     .enum([...LIFECYCLE_DISPOSITIONS])
     .optional()
     .describe(
-      'Filter by the read-time reconciliation between stored plan status and the item graph. `contradicted` is the terminal-debt queue (for example shipped with live items). Forces item resolution even with compact:true.',
+      'Filter by the read-time reconciliation between stored plan status and the item graph. `contradicted` is the terminal-debt queue (for example shipped with live items).',
     ),
   includeArchived: z.boolean().optional().describe('Include plans under docs/plans/archive/. Default false.'),
   includeLegacy: z.boolean().optional().describe('Include plans without valid frontmatter. Default true.'),
@@ -193,7 +206,7 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      'Skip per-plan item-state resolution — omit itemCounts + maxImportance + lifecycle for a smaller, cheaper result (keeps slug/title/status/updated/created/owner/template/nextAction/harness). Use for a fast directory scan; lifecycleDisposition filters/groups override compact because they need the item graph.',
+      'Skip per-plan effective-status resolution — omit itemCounts + maxImportance for a smaller, cheaper result (keeps slug/title/status/derivedLifecycle/updated/created/owner/template/nextAction/harness). Use for a fast directory scan.',
     ),
   groupBy: z
     .enum([...GROUP_BY_KEYS] as [GroupByKey, ...GroupByKey[]])
@@ -241,12 +254,12 @@ type ListRow = {
   archived: boolean;
   isLegacy: boolean;
   itemCounts: Partial<Record<(typeof ITEM_STATUSES)[number] | 'unknown', number>> | null;
-  /** Compact read-time reconciliation. Null only for compact or legacy rows. */
-  lifecycle: {
-    verdict: PlanLifecycleVerdict;
-    disposition: PlanLifecycleDisposition;
-    contradiction: { claim: string; evidence: string } | null;
-  } | null;
+  /**
+   * The derived lifecycle verdict and its reconciliation with the stored status
+   * (P-007 of derived-status-not-hand-written-2026-10-12). Present on EVERY row,
+   * compact and legacy included: liveness is read from here, never from `status`.
+   */
+  derivedLifecycle: DerivedLifecycleRow;
   nextAction: string | null;
   /**
    * Resolved harness slug per
@@ -308,7 +321,7 @@ export type PlanGroup = { key: string | null; count: number };
 function groupValue(
   row: {
     status: string;
-    lifecycle: ListRow['lifecycle'];
+    derivedLifecycle: ListRow['derivedLifecycle'];
     harness: string;
     template: string | null;
     owner: string | null;
@@ -325,8 +338,10 @@ function groupValue(
   switch (key) {
     case 'status':
       return row.status;
+    case 'lifecycle':
+      return row.derivedLifecycle.verdict;
     case 'lifecycleDisposition':
-      return row.lifecycle?.disposition ?? null;
+      return row.derivedLifecycle.disposition;
     case 'harness':
       return row.harness;
     case 'template':
@@ -519,6 +534,11 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const ctxWorkspace = (ctx as { workspaceId?: string | null }).workspaceId?.trim();
+    // Resolve once before cachedRead: an unbound superuser wildcard still
+    // reads one concrete workspace, and its row notifications invalidate
+    // that partition. Retain the same scope in detached SWR source reads.
+    const workspaceId = ctxWorkspace && ctxWorkspace !== '*' ? ctxWorkspace : activeWorkspaceId();
     const includeArchived = args.includeArchived === true;
     const includeLegacy = args.includeLegacy !== false;
     const includeFinished = args.includeFinished !== false;
@@ -526,14 +546,11 @@ export default defineTool({
     // P-005 aggregate path: `aggregateOnly` is only meaningful with a dimension.
     const groupBy = args.groupBy;
     const aggregateOnly = args.aggregateOnly === true && !!groupBy;
-    const needsLifecycle = Boolean(args.lifecycleDisposition || groupBy === 'lifecycleDisposition');
-    // A counts-only read skips the (expensive) per-plan item-state pass unless the
-    // dimension/filter itself is item-derived. A lifecycle request wins over an
-    // explicit compact:true because filtering without deriving would fabricate
-    // an empty result.
-    const compact = needsLifecycle
-      ? false
-      : args.compact === true || (aggregateOnly && !(groupBy && GROUP_KEYS_NEEDING_ITEMS.has(groupBy)));
+    // A counts-only read skips the (expensive) per-plan effective-status pass unless
+    // the dimension itself needs it. The derived lifecycle is computed in every mode,
+    // so lifecycle filters/groups no longer force compact off.
+    const compact =
+      args.compact === true || (aggregateOnly && !(groupBy && GROUP_KEYS_NEEDING_ITEMS.has(groupBy)));
     // EI-19932192274787948: `status` (and `includeLegacy:false`) are filtered
     // in JS AFTER the SQL fetch (below — the `draft` status must also match a
     // NULL column for legacy plans, which the SQL `status = $1` filter used by
@@ -544,7 +561,8 @@ export default defineTool({
     // well-formed, plausible, WRONG "complete" answer. Skip the limit pushdown
     // whenever a JS-side post-filter could still drop rows; `limited` below
     // (computed AFTER the JS filters run) re-applies the cap correctly.
-    const hasJsPostFilter = Boolean(args.status || args.lifecycleDisposition) || !includeLegacy || !includeFinished;
+    const hasJsPostFilter =
+      Boolean(args.status || args.lifecycle || args.lifecycleDisposition) || !includeLegacy || !includeFinished;
     // Server-side recency/order/limit (pushed into the SQL, not post-filtered).
     // With `groupBy`, `limit` is NOT pushed down: the aggregate must see every
     // matched row, so the cap applies to the returned rows only (below).
@@ -588,6 +606,7 @@ export default defineTool({
     // two `4d` calls share one entry within the TTL window).
     const cacheKey = {
       status: args.status ?? null,
+      lifecycle: args.lifecycle ?? null,
       lifecycleDisposition: args.lifecycleDisposition ?? null,
       includeArchived,
       includeLegacy,
@@ -607,7 +626,7 @@ export default defineTool({
     };
 
     const { plans, groups, harnessCount, batchUnknown, truncated } = await cachedRead(
-      ctx as CachedReadCtx,
+      { ...(ctx as CachedReadCtx), workspaceId },
       {
         tool: 'plans:list',
         key: cacheKey,
@@ -628,7 +647,7 @@ export default defineTool({
         const batches: Array<{ harnessSlug: string; rows: PlanIndexRow[] }> = [];
         if (args.workspaceWide) {
           const allRows = await listPlanIndexRowsForWorkspace({
-            workspaceId: activeWorkspaceId(),
+            workspaceId,
             includeArchived,
             includeInstances,
             ...(args.template ? { template: args.template } : {}),
@@ -646,6 +665,7 @@ export default defineTool({
           for (const harnessSlug of perHarness) {
             try {
               const rows = await listPlanIndexRows({
+                workspaceId,
                 harnessSlug,
                 includeArchived,
                 includeInstances,
@@ -716,6 +736,15 @@ export default defineTool({
           }
         }
 
+        // P-007 (R-6): the freshness + acceptance signals for the derived lifecycle,
+        // ONE batched read for every plan in every batch. Best-effort by contract —
+        // a failed read is reported per row in `derivedLifecycle.unmeasured`.
+        const lifecycleSignals: PlanListLifecycleSignals = await readPlanListLifecycleSignals({
+          workspaceId,
+          planSlugs: batches.flatMap((b) => b.rows.map((r) => r.planSlug)),
+        });
+        const lifecycleNow = new Date().toISOString();
+
         for (const { harnessSlug, rows } of batches) {
           // Index-only rows (audit P-042 — EI-98/EI-174/EI-175): every field this
           // row needs lives in the harness_plans projection columns, so the
@@ -726,9 +755,9 @@ export default defineTool({
           // Stage-3 items index — e.g. a federated remote row whose projection
           // didn't fill): ONE batched content fetch for just those slugs, parsed
           // below. Best-effort — on failure their counts degrade to {}.
-          const gapSlugs = compact
-            ? []
-            : rows.filter((r) => !r.isLegacy && r.items.length === 0).map((r) => r.planSlug);
+          // Fetched in compact mode too: the derived lifecycle needs every row's
+          // items, and a gap row read as itemless would report `no-items`.
+          const gapSlugs = rows.filter((r) => !r.isLegacy && r.items.length === 0).map((r) => r.planSlug);
           let gapContents = new Map<string, string>();
           if (gapSlugs.length > 0) {
             try {
@@ -768,9 +797,16 @@ export default defineTool({
 
             let itemCounts: ListRow['itemCounts'] = null;
             let maxImportance: Importance | null = null;
-            let lifecycle: ListRow['lifecycle'] = null;
+            const planItems = itemsForRow(row);
+            const derivedLifecycle = deriveListLifecycle({
+              planSlug: slug,
+              storedStatus: status,
+              items: planItems,
+              planUpdatedAt: row.updatedAt,
+              signals: lifecycleSignals,
+              now: lifecycleNow,
+            });
             if (!compact && !row.isLegacy) {
-              const planItems = itemsForRow(row);
               const { items } = applyPlanItemBlocks(resolveEffectiveStatusForItems(planItems).items, (id) =>
                 allBlocked.get(planItemRef(slug, id)),
               );
@@ -787,22 +823,12 @@ export default defineTool({
                 }
               }
               itemCounts = counts;
-
-              // The directory now exposes the same pure item-graph/status
-              // reconciliation as plans:get. Keep this list payload compact:
-              // counts already ride in itemCounts, while the full explanatory
-              // text and signal provenance remain available from plans:get.
-              const reconciled = reconcilePlanLifecycle(status, derivePlanLifecycle(planItems));
-              lifecycle = {
-                verdict: reconciled.derived.verdict,
-                disposition: reconciled.disposition,
-                contradiction: reconciled.contradiction,
-              };
             }
 
             if (args.status && status !== args.status) continue;
             if (!includeFinished && (status === 'shipped' || status === 'superseded')) continue;
-            if (args.lifecycleDisposition && lifecycle?.disposition !== args.lifecycleDisposition) continue;
+            if (args.lifecycle && derivedLifecycle.verdict !== args.lifecycle) continue;
+            if (args.lifecycleDisposition && derivedLifecycle.disposition !== args.lifecycleDisposition) continue;
 
             const dedupKey = `${harnessSlug}:${slug}`;
             if (seenRowKeys.has(dedupKey)) continue;
@@ -821,7 +847,7 @@ export default defineTool({
               archived: row.archived,
               isLegacy: row.isLegacy,
               itemCounts,
-              lifecycle,
+              derivedLifecycle,
               nextAction: row.nowNext,
               harness: harnessSlug,
               // Self-heal the started/terminal invariant on read: a terminal plan

@@ -31,8 +31,9 @@
  * Hermetic via route-stubbing (mirrors adv-dep-graph-interlock.spec.ts): the
  * shell's projects/lite is stubbed so the slug always mounts the dock, and the
  * sync layer is stubbed through `_sync-stub.ts` so `workItems.byHarness` returns
- * a couple of rows (enough to make the State/Kind enum option lists non-empty)
- * without depending on a populated substrate. This spec used to stub
+ * a couple of rows and `workItems.summary` returns their facets (the State/Kind
+ * enum option lists come from the summary, not the rows) without depending on a
+ * populated substrate. This spec used to stub
  * `POST /api/zero-harness/rest-query-batch`, which the client has not spoken
  * since 2026-07-26 — the stub was never hit and the panel rendered from real,
  * unstubbed traffic (WI-39533).
@@ -98,6 +99,29 @@ const WORK_ITEMS = [
     verifiedAuthorGithubUserId: null,
   },
 ];
+
+/**
+ * The enum option lists (State / Kind / …) are the SERVER's drill-down facets,
+ * read from the `workItems.summary` sync query (WorkItemsPanel →
+ * workItemFacetOptions in app/adv/harnesses/work-item-list-query.ts), NOT
+ * re-derived from the loaded rows. Unstubbed, that query answers from the real
+ * (empty) DB and every option list is empty. Derived from WORK_ITEMS so the two
+ * stubs can never disagree about what the panel holds.
+ */
+const FACET_KEYS = ['kind', 'state', 'assignee', 'severity'] as const;
+const WORK_ITEMS_SUMMARY = {
+  total: WORK_ITEMS.length,
+  matched: WORK_ITEMS.length,
+  facets: FACET_KEYS.map((key) => {
+    const counts = new Map<string, number>();
+    for (const row of WORK_ITEMS) {
+      const value = row[key];
+      if (typeof value === 'string' && value) counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+    const values = [...counts].map(([value, count]) => ({ value, count }));
+    return { key, values, hiddenValueCount: 0, distinctCount: values.length };
+  }),
+};
 
 const SKIP_MSG =
   'The /adv shell did not mount the Work items panel. Run against an HMR-enabled ' +
@@ -166,6 +190,8 @@ async function stubApis(page: Page): Promise<SyncQueryStub> {
   return stubSyncQueries(page, (name) => {
     if (name === 'harnessProjects.lite') return PROJECTS;
     if (name === 'workItems.byHarness') return WORK_ITEMS;
+    // One summary row per query (WorkItemsPanel reads `summaryQuery.data?.[0]`).
+    if (name === 'workItems.summary') return [WORK_ITEMS_SUMMARY];
     return undefined;
   });
 }
@@ -224,7 +250,7 @@ test.describe('/adv Work items panel — column filter bar', () => {
     // Prove the stub is actually feeding the panel BEFORE the enum-option
     // assertions below: a bypassed stub then fails in seconds with a diagnostic
     // instead of surfacing as an empty option list at the locator's timeout.
-    await sync.waitForServed(['workItems.byHarness']);
+    await sync.waitForServed(['workItems.byHarness', 'workItems.summary']);
     const addFilter = bar.getByRole('combobox', { name: 'Add a column filter' });
     await expect(addFilter).toBeVisible();
 

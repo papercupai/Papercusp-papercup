@@ -54,6 +54,10 @@ import './ops/memory-precision-bench.js';
 // deployment-watching complement to memory-precision (which watches the code path in an
 // isolated bench schema). Flag-only (no governor); always-on monitoring.
 import './ops/memory-live-recall-canary.js';
+// scout-su-ideate-pipeline-gaps-2026-10-08 P-007 (D-005/D-006): the hourly su-ideate
+// scheduler — evaluates the D-015 overdue verdict per harness and launches at most one
+// headless su ideate pass (budgeted, one in flight). Kill switch = pause the routine row.
+import './ops/su-ideate-schedule.js';
 // oddsmith:prospect is no longer compiled in here. As of harness-provided-cadence-ops-
 // 2026-06-26 (P-007 / D-001) it is a HARNESS-PROVIDED dispatched op: the oddsmith-prospector
 // blueprint declares it in its `ops:` manifest, the operator registers a PROXY CoordOp on

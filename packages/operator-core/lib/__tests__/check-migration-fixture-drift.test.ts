@@ -6,9 +6,78 @@
  * only the column the migration just introduced).
  */
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its parsing primitives. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build (and a multi-line @ts-expect-error additionally reds as an unused directive).
-import { columnNamesFromClauses, extractIntroducedColumns, findAlterTableAddColumns, findCreateTables, findDrift, findFixtureGaps, formatReport, splitTopLevelClauses } from '../../../../scripts/check-migration-fixture-drift.mjs';
+import { changedSqlFilesSince, columnNamesFromClauses, extractIntroducedColumns, findAlterTableAddColumns, findCreateTables, findDrift, findFixtureGaps, formatReport, splitTopLevelClauses } from '../../../../scripts/check-migration-fixture-drift.mjs';
+
+describe('migration selection from a superproject comparison base', () => {
+  const sqlRoot = 'libs/papercusp/libs/db/sql';
+  function withMigrationRepository(check: (root: string, base: string, sqlDir: string) => void, nested = true) {
+    const root = mkdtempSync(join(tmpdir(), 'migration-diff-'));
+    const owner = nested ? join(root, 'libs/papercusp') : root;
+    const sqlDir = join(root, sqlRoot);
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', args, {
+      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    const init = (cwd: string) => {
+      git(cwd, 'init', '-q');
+      git(cwd, 'config', 'user.name', 'fixture');
+      git(cwd, 'config', 'user.email', 'fixture@example.invalid');
+    };
+    try {
+      mkdirSync(sqlDir, { recursive: true });
+      init(root);
+      if (nested) init(owner);
+      writeFileSync(join(sqlDir, '001.sql'), 'CREATE TABLE harness_shared.example (id bigint);\n');
+      git(owner, 'add', '.');
+      git(owner, 'commit', '-qm', 'initial schema');
+      const ownerBase = git(owner, 'rev-parse', 'HEAD');
+      if (nested) {
+        git(root, 'update-index', '--add', '--cacheinfo', `160000,${ownerBase},libs/papercusp`);
+        git(root, 'commit', '-qm', 'initial gitlink');
+      }
+      const base = git(root, 'rev-parse', 'HEAD');
+      writeFileSync(join(sqlDir, '001.sql'), 'ALTER TABLE harness_shared.example ADD COLUMN value text;\n');
+      git(owner, 'add', '.');
+      git(owner, 'commit', '-qm', 'changed migration');
+      writeFileSync(join(sqlDir, '002.sql'), 'ALTER TABLE harness_shared.example ADD COLUMN other text;\n');
+      check(root, base, sqlDir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('selects committed nested SQL and a new untracked migration against the recorded gitlink', () => {
+    withMigrationRepository((root, base) => {
+      expect(changedSqlFilesSince(base, { root })).toEqual([`${sqlRoot}/001.sql`, `${sqlRoot}/002.sql`]);
+    });
+  });
+
+  it('expands an exact forwarded gitlink but does not widen an exact file scope', () => {
+    withMigrationRepository((root, base) => {
+      expect(changedSqlFilesSince(base, { root, files: ['libs/papercusp'] })).toHaveLength(2);
+      expect(changedSqlFilesSince(base, { root, files: [`${sqlRoot}/002.sql`] })).toEqual([`${sqlRoot}/002.sql`]);
+      expect(changedSqlFilesSince(base, { root, files: ['packages/unrelated.ts'] })).toEqual([]);
+      expect(changedSqlFilesSince(base, { root, files: [] })).toEqual([]);
+    });
+  });
+
+  it('preserves the expected unavailable-base result without treating it as a pathspec', () => {
+    withMigrationRepository((root) => {
+      expect(changedSqlFilesSince('missing-base', { root })).toEqual([]);
+    });
+  });
+
+  it('retains ordinary repository SQL selection when the schema is not in a submodule', () => {
+    withMigrationRepository((root, base) => {
+      expect(changedSqlFilesSince(base, { root })).toEqual([`${sqlRoot}/001.sql`, `${sqlRoot}/002.sql`]);
+    }, false);
+  });
+});
 
 describe('findCreateTables', () => {
   it('extracts columns from a CREATE TABLE IF NOT EXISTS harness_shared.<table> block', () => {

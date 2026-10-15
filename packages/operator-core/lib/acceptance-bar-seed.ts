@@ -32,12 +32,17 @@ import {
   buildRubricPlanBody,
   computeAcceptanceBarSetHash,
   DEFAULT_RATING_SCALE,
+  formatRubricRevisionSnapshot,
   normalizeAcceptanceBarCriterion,
+  planStatusToRubricStatus,
   type ProposeRubricCriterion,
 } from './rubrics';
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
 import { synchronizeAcceptanceBarRevision } from './acceptance-bar-amendment';
 import { requirementSections } from './requirement-contract';
+import { acceptanceBarProjectedBehavior } from './acceptance-bar-projection';
+
+export { acceptanceBarProjectedBehavior } from './acceptance-bar-projection';
 import {
   ACCEPTANCE_BAR_REQUIREMENT_BLOCK_TEMPLATE,
   acceptanceBarContractGaps,
@@ -305,40 +310,14 @@ function evidencePlaneOf(raw: string | undefined): AcceptanceEvidencePlane | nul
 export function acceptanceBarBehaviorClass(
   evidencePlane: AcceptanceEvidencePlane,
   requiredTestLayers?: readonly string[],
+  check?: Parameters<typeof isExplicitlyManualCheck>[0],
 ): SpecBehaviorClass {
+  // An explicitly manual review can concern a tree artifact too. Its plane
+  // determines where to inspect it, not whether a mutation test is owed.
+  if ((requiredTestLayers?.length ?? 0) === 0 && isExplicitlyManualCheck(check)) return 'non-automated';
   return evidencePlane === 'tree' || (requiredTestLayers?.length ?? 0) > 0
     ? 'happy-path'
     : 'non-automated';
-}
-
-/**
- * The clause behavior DERIVED from a BAR criterion.
- *
- * `model` is rubric prose and routinely opens by restating its own title, which
- * reads naturally in a rubric and is fatal in a spec clause: the projected
- * behavior becomes two sentences and fails spec-quality's
- * `atomic-observable-behavior`, which blocks plan-item promotion and shipping.
- *
- * Repairing the projected clause instead is not a fix. `preserveRefinements` in
- * acceptance-bar-amendment only protects a clause edit while the BAR's hash
- * material is unchanged (or only test layers moved), so the first amendment that
- * touches meaning silently re-derives the clause and discards the repair —
- * measured on ship-main-greening-program-2026-09-15, where clause revisions 3-12
- * held the atomic form and revision 13 reverted all six bars at once
- * (EI-23920059935763829). Strip the duplicated opening at the SOURCE of the
- * derivation so the repair cannot be lost, and every re-projection is atomic.
- */
-export function acceptanceBarProjectedBehavior(
-  criterion: { title?: string | null; model?: string | null },
-): string {
-  const model = String(criterion.model ?? '').trim();
-  const title = String(criterion.title ?? '').trim().replace(/[.\s]+$/, '');
-  if (!model || !title) return model;
-  const prefix = `${title}.`;
-  if (!model.startsWith(prefix)) return model;
-  const rest = model.slice(prefix.length).replace(/^\s+/, '');
-  // A model that is ONLY its own title carries no separate behavior to keep.
-  return rest.length > 0 ? rest : model;
 }
 
 /** Parse the plan's existing design table. A third `evidence plane` column is
@@ -528,6 +507,19 @@ export function validateAcceptanceBarSource(planContent: string):
     new Set(requirements.bars.map((bar) => bar.barKey)),
   );
   if (!mappings.ok) return { ok: false, problems: mappings.problems };
+  const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
+  const conflicts = requirements.bars.filter((bar) => {
+    const mapping = mappingByKey.get(bar.barKey)!;
+    return mapping.evidencePlaneExplicit && bar.criterion?.evidencePlane &&
+      mapping.evidencePlane !== bar.criterion.evidencePlane;
+  });
+  if (conflicts.length) {
+    return { ok: false, problems: conflicts.map((bar) => ({
+      code: 'bar_evidence_plane_invalid',
+      barKey: bar.barKey,
+      detail: `${bar.barKey} has conflicting Acceptance and map evidence planes`,
+    })) };
+  }
   return { ok: true, bars: requirements.bars, mappings: mappings.mappings };
 }
 
@@ -536,6 +528,8 @@ const SEED_CODE_BY_CONTRACT_GAP: Record<AcceptanceBarContractGap, AcceptanceBarS
   check_missing: 'bar_contract_check_missing',
   test_layers_missing: 'bar_contract_test_layers_missing',
   check_layer_mismatch: 'bar_contract_check_layer_mismatch',
+  // The finding's detail names the unrecordable layer and the recorded vocabulary (WI-10006536).
+  test_layer_unrecordable: 'bar_contract_check_layer_mismatch',
 };
 
 /**
@@ -552,18 +546,18 @@ const SEED_CODE_BY_CONTRACT_GAP: Record<AcceptanceBarContractGap, AcceptanceBarS
 export function acceptanceBarSourceContractProblems(
   bars: readonly ParsedRequirementBar[],
   mappings: readonly ParsedBarMapping[],
+  canonicalCriteria?: ReadonlyMap<string, ProposeRubricCriterion>,
 ): AcceptanceBarSeedProblem[] {
   const planeByBar = new Map(mappings.map((mapping) => [mapping.barKey, mapping.evidencePlane]));
   const problems: AcceptanceBarSeedProblem[] = [];
   let templateShown = false;
   for (const bar of bars) {
-    const criterion = bar.criterion;
+    const criterion = canonicalCriteria?.get(bar.barKey) ?? bar.criterion;
     const evidencePlane = criterion?.evidencePlane ?? planeByBar.get(bar.barKey) ?? 'tree';
     const layers = criterion?.requiredTestLayers;
     // A structured tests check owes automated proof even on a live/deployed plane,
     // whose generated clause class is otherwise non-automated. Match the projection
     // so activation cannot accept a contract that amendment would refuse.
-    const explicitlyManual = isExplicitlyManualCheck(criterion?.check) && (layers?.length ?? 0) === 0;
     const gaps = acceptanceBarContractGaps({
       role: criterion?.role ?? 'outcome',
       method: criterion?.method,
@@ -571,12 +565,14 @@ export function acceptanceBarSourceContractProblems(
       requiredTestLayers: layers,
       automatedProofRequired:
         criterion?.check?.kind === 'tests' ||
-        (!explicitlyManual && acceptanceBarBehaviorClass(evidencePlane, layers) !== 'non-automated'),
+        acceptanceBarBehaviorClass(evidencePlane, layers, criterion?.check) !== 'non-automated',
     });
     if (gaps.length === 0) continue;
     let repair: string;
     if (criterion) {
-      repair = `Fix these fields in ${bar.barKey}'s \`\`\`requirement block, then re-run the activation audit.`;
+      repair = canonicalCriteria?.has(bar.barKey)
+        ? `Fix these fields in the authored acceptance criterion for ${bar.barKey}, then re-run the activation audit.`
+        : `Fix these fields in ${bar.barKey}'s \`\`\`requirement block, then re-run the activation audit.`;
     } else if (!templateShown) {
       templateShown = true;
       repair =
@@ -624,19 +620,19 @@ export function unexpectedAcceptanceBarProjectionIds(
     .map((row) => row.spec_id);
 }
 
+export function acceptanceBarProjectionConflictDetail(unexpected: readonly string[]): string {
+  return `stored BAR projection(s) are outside the exact current map: ${unexpected.join(', ')}. ` +
+    `To clear an intentionally removed mapping, use plans:set-specs on each current clause with ` +
+    `lifecycleStatus:'superseded' and sourceBar:null, then rerun the activation audit. ` +
+    `lifecycleStatus:'retired' with a retained sourceBar pin still counts as a live conflict.`;
+}
+
 export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): AcceptanceBarSeedBuildResult {
   const source = validateAcceptanceBarSource(input.planContent);
   if (!source.ok) return refusal(source.problems);
   const requirements = { ok: true as const, bars: source.bars };
   const mappings = { ok: true as const, mappings: source.mappings };
   const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
-  const conflicts = requirements.bars.filter((bar) => {
-    const mapping = mappingByKey.get(bar.barKey)!;
-    return mapping.evidencePlaneExplicit && bar.criterion?.evidencePlane &&
-      mapping.evidencePlane !== bar.criterion.evidencePlane;
-  });
-  if (conflicts.length) return refusal(conflicts.map((bar) => ({ code: 'bar_evidence_plane_invalid',
-    barKey: bar.barKey, detail: `${bar.barKey} has conflicting Acceptance and map evidence planes` })));
 
   const existingParsed = input.existingTemplateData === undefined
     ? null
@@ -708,11 +704,38 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
     }]);
   }
 
+  // An authored, unstarted rubric already contains the full contract. Plain
+  // Requirements cannot reproduce its falsifier/check or absent legacy Intent.
+  // Preserve it only when the source label, outcome and mapped plane agree. A
+  // historical heading echo is the sole accepted outcome alias; no semantic
+  // inference may turn source drift into an approved criterion.
+  const authoredCriteria = new Map<string, ProposeRubricCriterion>();
+  if (existing && !existing.barContract && !legacyMap) {
+    for (const bar of requirements.bars) {
+      const prior = existingByBar.get(bar.barKey);
+      if (!prior || bar.criterion) continue;
+      const model = prior.model?.replace(/\r\n?/g, '\n').trim();
+      const outcome = bar.model.replace(/\r\n?/g, '\n').trim();
+      if (prior.title !== bar.title ||
+          (model !== outcome && model !== `${bar.title}. ${outcome}`) ||
+          prior.evidencePlane !== mappingByKey.get(bar.barKey)!.evidencePlane) {
+        return refusal([{ code: 'bar_rubric_conflict', barKey: bar.barKey,
+          detail: `${bar.barKey} Requirements disagree with the authored acceptance criterion; reconcile the source and rubric explicitly before adoption` }]);
+      }
+      authoredCriteria.set(bar.barKey, prior);
+    }
+  }
+
   // BARs whose criterion is derived from the plan body in THIS build, as opposed to
   // preserved, legacy-adopted or unchanged-meaning ones. Only these are judged for
   // contract completeness: an unchanged BAR was already judged when it was fresh.
   const freshBarKeys = new Set<string>();
   const criteria = requirements.bars.map((bar) => {
+    const authored = authoredCriteria.get(bar.barKey);
+    if (authored) return { ...authored, barProvenance: authored.barProvenance ?? {
+      lifecycle: input.cohort === 'post-epoch' && !input.backfilled ? 'pre-implementation' : 'legacy-backfilled',
+      declaredAt: input.declaredAt, declaredBy: input.actorId,
+    } } as ProposeRubricCriterion;
     const seeded = seededCriterion(bar, mappingByKey.get(bar.barKey)!, input, existing?.ratingScale);
     const legacy = legacyMap && existing?.criteria.find((criterion) => criterion.key === legacyMap[bar.barKey]);
     if (legacy) {
@@ -748,8 +771,9 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
   // discards bound proof. Legacy-backfilled BARs describe work that already exists.
   if (input.requireContractCompleteness && input.cohort === 'post-epoch' && !input.backfilled) {
     const contractProblems = acceptanceBarSourceContractProblems(
-      requirements.bars.filter((bar) => freshBarKeys.has(bar.barKey)),
+      requirements.bars.filter((bar) => freshBarKeys.has(bar.barKey) || authoredCriteria.has(bar.barKey)),
       mappings.mappings,
+      authoredCriteria,
     );
     if (contractProblems.length > 0) return refusal(contractProblems);
   }
@@ -796,7 +820,7 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
         expectedRevision: 0,
         planItemId,
         behavior: acceptanceBarProjectedBehavior(criterion),
-        behaviorClass: acceptanceBarBehaviorClass(evidencePlane, criterion.requiredTestLayers),
+        behaviorClass: acceptanceBarBehaviorClass(evidencePlane, criterion.requiredTestLayers, criterion.check),
         requiredEvidence: [evidencePlane],
         ...(criterion.requiredTestLayers ? { requiredTestLayers: criterion.requiredTestLayers } : {}),
         lifecycleStatus: 'draft',
@@ -847,6 +871,58 @@ interface RubricRow {
   template_data: unknown;
 }
 
+/** Share the seed writer's exact workspace/harness and live-rubric selection with
+ * activation. A retired subject pin must not hide a newly authored successor. */
+export async function discoverAcceptanceBarSeedRubrics(input: {
+  executor: SpecClauseSql; workspaceId: string; harnessSlug: string; planSlug: string;
+}): Promise<RubricRow[]> {
+  const sql = input.executor;
+  return sql<RubricRow[]>`
+    SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, title,
+           template, template_slug, archived, template_data
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${input.workspaceId}
+       AND template = 'rubric'
+       AND template_slug IS NULL
+       AND archived = false
+       AND status IN ('active', 'ready')
+       AND template_data->>'kind' = 'acceptance'
+       AND template_data->>'subjectPlan' = ${input.planSlug}
+       AND (template_data->>'subjectHarnessSlug' = ${input.harnessSlug}
+         OR (template_data->>'subjectHarnessSlug' IS NULL AND (
+           SELECT count(*) = 1 AND bool_and(subject.harness_slug = ${input.harnessSlug})
+             FROM harness_shared.harness_plans AS subject
+            WHERE subject.workspace_id = ${input.workspaceId}
+              AND subject.plan_slug = ${input.planSlug}
+         )))
+     ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
+     LIMIT 2`;
+}
+
+/** Only a reopened draft with an intact retired contract can leave the historical
+ * amendment behind. Live contracts and already-started successors still owe the
+ * canonical amendment path. This only selects a route: the transactional seeder
+ * retains all validation, locks, revision writes and proof invalidation. */
+export function canSeedAcceptanceBarSuccessor(input: {
+  planStatus: string | null; planSlug: string;
+  pinnedRubricSlug: string; pinnedRubricStatus: string | null;
+  pinnedRubricArchived: boolean; pinnedTemplateData: unknown;
+  activeRubrics: ReadonlyArray<Pick<RubricRow, 'plan_slug' | 'template_data'>>;
+}): boolean {
+  if (input.planStatus !== 'draft' ||
+      planStatusToRubricStatus(input.pinnedRubricStatus, input.pinnedRubricArchived) !== 'retired' ||
+      input.activeRubrics.length !== 1) return false;
+  const successor = input.activeRubrics[0]!;
+  if (successor.plan_slug === input.pinnedRubricSlug) return false;
+  const pinned = rubricTemplateDataAuthoringSchema.safeParse(input.pinnedTemplateData);
+  const next = rubricTemplateDataAuthoringSchema.safeParse(successor.template_data);
+  return pinned.success && next.success &&
+    pinned.data.kind === 'acceptance' && pinned.data.subjectPlan === input.planSlug &&
+    pinned.data.barContract != null &&
+    next.data.kind === 'acceptance' && next.data.subjectPlan === input.planSlug &&
+    next.data.barContract == null;
+}
+
 /**
  * The live-rubric discovery query intentionally excludes historical rows. When
  * the deterministic slug is already occupied, however, the locked row may be
@@ -881,6 +957,8 @@ export interface TransactionalAcceptanceBarSeedInput {
   now: Date;
   /** Validate and describe the same canonical write without mutating any rows. */
   dryRun?: boolean;
+  /** Preview-only neutral pin advance validated by the canonical synchronizer. */
+  preserveExistingBars?: boolean;
   /** Activation-door policy; see {@link AcceptanceBarSeedBuildInput.requireContractCompleteness}. */
   requireContractCompleteness?: boolean;
   /**
@@ -939,26 +1017,7 @@ export async function seedAcceptanceBarsInTransaction(
   input: TransactionalAcceptanceBarSeedInput,
 ): Promise<TransactionalAcceptanceBarSeedResult> {
   const sql = input.executor;
-  const rubrics = await sql<RubricRow[]>`
-    SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version, title,
-           template, template_slug, archived, template_data
-      FROM harness_shared.harness_plans
-     WHERE workspace_id = ${input.workspaceId}
-       AND template = 'rubric'
-       AND template_slug IS NULL
-       AND archived = false
-       AND status IN ('active', 'ready')
-       AND template_data->>'kind' = 'acceptance'
-       AND template_data->>'subjectPlan' = ${input.planSlug}
-       AND (template_data->>'subjectHarnessSlug' = ${input.harnessSlug}
-         OR (template_data->>'subjectHarnessSlug' IS NULL AND (
-           SELECT count(*) = 1 AND bool_and(subject.harness_slug = ${input.harnessSlug})
-             FROM harness_shared.harness_plans AS subject
-            WHERE subject.workspace_id = ${input.workspaceId}
-              AND subject.plan_slug = ${input.planSlug}
-         )))
-     ORDER BY updated_at DESC NULLS LAST, plan_slug ASC
-     LIMIT 2`;
+  const rubrics = await discoverAcceptanceBarSeedRubrics(input);
   if (rubrics.length > 1) {
     return refusal([{
       code: 'bar_rubric_conflict',
@@ -1002,6 +1061,9 @@ export async function seedAcceptanceBarsInTransaction(
   const existingTemplate = existing
     ? rubricTemplateDataAuthoringSchema.safeParse(existing.template_data)
     : null;
+  const seedTemplateData = input.dryRun && input.preserveExistingBars && existingTemplate?.success && existingTemplate.data.barContract
+    ? { ...existingTemplate.data, barContract: { ...existingTemplate.data.barContract, subjectPlanRevision: input.planVersion } }
+    : existing?.template_data;
   const seedInstant =
     existingTemplate?.success &&
     existingTemplate.data.barContract?.subjectPlanRevision === input.planVersion &&
@@ -1023,7 +1085,8 @@ export async function seedAcceptanceBarsInTransaction(
     planStatus: input.planStatus,
     rubricSlug,
     rubricRevision: provisionalRevision,
-    ...(existing ? { existingTemplateData: existing.template_data } : {}),
+    ...(existing ? { existingTemplateData: seedTemplateData } : {}),
+    preserveExistingBars: input.dryRun && input.preserveExistingBars,
     requireContractCompleteness: input.requireContractCompleteness,
   });
   if (!built.ok) return built;
@@ -1081,7 +1144,7 @@ export async function seedAcceptanceBarsInTransaction(
     }]) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>;
   }
 
-  const rubricChanged = !existing || stableJson(existing.template_data) !== stableJson(built.templateData);
+  const rubricChanged = !existing || stableJson(seedTemplateData) !== stableJson(built.templateData);
   // WI-10004146 / D-093: a receiver never authors or revises the federated rubric.
   // Rubric absent (the plan arrived first) or not yet agreeing with the local plan
   // (a newer revision of either is still in flight): write nothing. The other row's
@@ -1112,7 +1175,8 @@ export async function seedAcceptanceBarsInTransaction(
       planStatus: input.planStatus,
       rubricSlug,
       rubricRevision,
-      existingTemplateData: existing!.template_data,
+      existingTemplateData: seedTemplateData,
+      preserveExistingBars: input.dryRun && input.preserveExistingBars,
       requireContractCompleteness: input.requireContractCompleteness,
     });
     if (!built.ok) return built;
@@ -1147,7 +1211,9 @@ export async function seedAcceptanceBarsInTransaction(
         updated_at = now(),
         origin = 'local'`;
 
-    const snapshot = `${body}${body.endsWith('\n') ? '\n' : '\n\n'}## Structured rubric data (\`template_data\`)\n\n~~~json\n${JSON.stringify(built.templateData, null, 2)}\n~~~\n`;
+    // A clause may retain this exact pin after a sibling BAR is amended. Persist
+    // the committed version, rather than relying on the audit sequence to name it.
+    const snapshot = formatRubricRevisionSnapshot(body, built.templateData, null, rubricRevision);
     await sql`
       INSERT INTO harness_shared.plan_revisions (
         workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, rationale,
@@ -1204,9 +1270,7 @@ export async function seedAcceptanceBarsInTransaction(
   if (unexpected.length > 0) {
     throw new AcceptanceBarSeedAbort(refusal([{
       code: 'bar_projection_conflict',
-      detail:
-        `stored BAR projection(s) are outside the exact current map: ` +
-        unexpected.join(', '),
+      detail: acceptanceBarProjectionConflictDetail(unexpected),
     }]) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>);
   }
   const identityBySpec = new Map(identities.map((row) => [row.spec_id, row]));

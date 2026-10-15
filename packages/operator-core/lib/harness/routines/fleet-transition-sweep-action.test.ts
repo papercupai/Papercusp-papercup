@@ -44,6 +44,7 @@ vi.mock('../../fleet-repeated-recovery', async (importOriginal) => ({
 }));
 import {
   __resetFleetTransitionSnapshotForTests,
+  gatherFleetObservations,
   gatherFleetAdmissionObservations,
   runFleetTransitionSweep,
 } from './fleet-transition-sweep-action';
@@ -137,6 +138,22 @@ describe('runFleetTransitionSweep', () => {
       [member({ sessionState: 'recorded', wakeable: false, claimCount: 0 })],
     ]);
     expect(rounds).toEqual([[], ['fleet:member-left:push-not-poll'], [], []]);
+  });
+
+  it('carries a healthy loop state from fleet assignments into member observations', async () => {
+    productionMocks.listFleetAssignments.mockResolvedValue([presenceRow('gather')]);
+    productionMocks.reconcileWakeability.mockImplementation(async (agents) =>
+      agents.map((agent: object) => ({ ...agent, sessionState: 'recorded', wakeable: false })),
+    );
+    productionMocks.decorateLoopMonitorStates.mockImplementation(async (agents) => {
+      for (const agent of agents) Object.assign(agent, { monitorState: 'waiting' });
+      return agents;
+    });
+    productionMocks.fetchContextPressure.mockResolvedValue(new Map());
+
+    await expect(gatherFleetObservations()).resolves.toMatchObject([
+      { sessionState: 'recorded', wakeable: false, loopMonitorState: 'waiting' },
+    ]);
   });
 
   it('does not wake the leader repeatedly for live/recorded flaps with unchanged claims', async () => {

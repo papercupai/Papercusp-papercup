@@ -25,6 +25,10 @@ import { fileURLToPath } from 'node:url';
 import { resolveDb, type DbScope } from './reproducibility/db';
 import { applyGradeMap, setBenchRunStatus } from './run-store';
 import { defaultBenchResultsDir } from './preserved-runs';
+import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from './reproducibility/schema';
+import { requireCommittedPreregistration } from './reproducibility/prereg';
+import { canonicalJson } from './reproducibility/canonical-json';
+import { createHash } from 'node:crypto';
 
 export interface GradeArgs {
   dir: string;
@@ -32,6 +36,8 @@ export interface GradeArgs {
   sampleJsonl: string;
   /** The run's benchmark suite — selects which official harness grades the diffs. */
   suite: string;
+  /** Passed only after the current run's committed protocol is verified. */
+  frozenGrader?: CurrentBenchmarkProtocol['grader'];
 }
 
 export interface GradeDeps {
@@ -39,6 +45,8 @@ export interface GradeDeps {
   /** Run the official grader → { instance_id: resolved }. Default: dispatch by suite (Pro python path). */
   grade?: (args: GradeArgs) => Promise<Record<string, boolean>>;
   baseDir?: string;
+  verifyCurrentPreregistration?: typeof requireCommittedPreregistration;
+  currentRepoRoot?: string;
 }
 
 /** Kick a (re-)grade of a run. Sets status=grading, runs the grader DETACHED,
@@ -49,8 +57,8 @@ export async function gradeBenchRun(
 ): Promise<{ runId: string; done: Promise<void> } | { error: string }> {
   const scope = deps.scope ?? {};
   const { sql, ws } = resolveDb(scope);
-  const rows = await sql<{ arm: string; suite: string }[]>`
-    SELECT arm, suite FROM harness_shared.bench_runs WHERE id = ${runId} AND workspace_id = ${ws} LIMIT 1
+  const rows = await sql<{ arm: string; suite: string; config: Record<string, unknown> | null }[]>`
+    SELECT arm, suite, config FROM harness_shared.bench_runs WHERE id = ${runId} AND workspace_id = ${ws} LIMIT 1
   `;
   const row = rows[0];
   if (!row) return { error: 'run_not_found' };
@@ -60,12 +68,37 @@ export async function gradeBenchRun(
   const sampleJsonl = join(dir, 'tasks-sample.jsonl');
   const grade = deps.grade ?? runGradeBySuite;
   const suite = row.suite ?? 'swe-bench-pro';
+  let frozenGrader: CurrentBenchmarkProtocol['grader'] | undefined;
+  let frozenTaskIds: string[] | undefined;
+  if (row.config && 'current' in row.config) {
+    try {
+      const protocol = currentBenchmarkProtocolSchema.parse(row.config.protocol);
+      const current = row.config.current as { workspaceId?: string; protocolRunId?: string; preregHash?: string; seed?: number } | null;
+      if (!current || current.workspaceId !== ws || current.protocolRunId !== protocol.runId ||
+          typeof current.preregHash !== 'string' || !protocol.seeds.includes(current.seed!) || !protocol.arms.some(arm => arm.id === row.arm) ||
+          suite !== 'swe-bench-pro' || protocol.grader.family !== 'swe-bench-pro' ||
+          !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(protocol.grader.version) || !protocol.grader.datasetSha256 ||
+          !protocol.grader.images || protocol.taskIds.some(id => !protocol.grader.images![id]) ||
+          createHash('sha256').update(canonicalJson(protocol.grader.images)).digest('hex') !== protocol.grader.imageDigest) {
+        throw new Error('Current grading requires the matching frozen official source, CSV and immutable task images.');
+      }
+      await (deps.verifyCurrentPreregistration ?? requireCommittedPreregistration)(protocol.runId,
+        { preregHash: current.preregHash, config: protocol }, { ...scope, repoRoot: deps.currentRepoRoot });
+      frozenGrader = protocol.grader;
+      frozenTaskIds = protocol.taskIds;
+    } catch (error) {
+      return { error: `current_grader_protocol: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
 
   await setBenchRunStatus(runId, 'grading', {}, scope);
 
   const done = (async () => {
     try {
-      const gradeMap = await grade({ dir, arm: row.arm, sampleJsonl, suite });
+      const gradeMap = await grade({ dir, arm: row.arm, sampleJsonl, suite, ...(frozenGrader ? { frozenGrader } : {}) });
+      if (frozenTaskIds && Object.entries(gradeMap).some(([id, resolved]) => !frozenTaskIds.includes(id) || typeof resolved !== 'boolean')) {
+        throw new Error('Official grader returned a verdict outside the frozen task roster.');
+      }
       await applyGradeMap(runId, gradeMap, scope);
       await setBenchRunStatus(runId, 'done', {}, scope);
     } catch (e) {
@@ -109,13 +142,22 @@ async function runProGradeScript(args: GradeArgs): Promise<Record<string, boolea
   const scriptPath = fileURLToPath(new URL('./_xbench_grade.py', import.meta.url));
   await new Promise<void>((resolve, reject) => {
     const proc = spawn('python3', [scriptPath, arm], {
-      env: { ...process.env, XBENCH_OUT_DIR: dir, XBENCH_SAMPLE: sampleJsonl },
+      env: { ...process.env, XBENCH_OUT_DIR: dir, XBENCH_SAMPLE: sampleJsonl,
+        // Always replace a inherited setting; a historical grade has no current pins.
+        XBENCH_FROZEN_GRADER: args.frozenGrader ? JSON.stringify(args.frozenGrader) : '' },
       stdio: 'inherit',
     });
     proc.on('error', reject);
     // The script exits 2 when no verdict was produced; treat only 0 as success.
     proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`grade script exit ${code}`))));
   });
+  if (args.frozenGrader) {
+    const receipt = JSON.parse(readFileSync(join(dir, `grade-${arm}`, 'grader-receipt.json'), 'utf8'));
+    if (receipt.sourceCommit !== args.frozenGrader.version || receipt.datasetSha256 !== args.frozenGrader.datasetSha256 ||
+        receipt.imageDigest !== args.frozenGrader.imageDigest || canonicalJson(receipt.images) !== canonicalJson(args.frozenGrader.images)) {
+      throw new Error('Official grader receipt differs from the frozen protocol.');
+    }
+  }
   const resultsPath = join(dir, `grade-${arm}`, 'out', 'eval_results.json');
   if (!existsSync(resultsPath)) throw new Error('grading produced no eval_results.json');
   const parsed = JSON.parse(readFileSync(resultsPath, 'utf8')) as Record<string, unknown>;

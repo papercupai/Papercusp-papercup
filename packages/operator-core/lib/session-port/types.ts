@@ -4,6 +4,35 @@ export const SESSION_PORT_TRANSFORM_VERSION = 4 as const;
 export const SESSION_PORT_TOKEN_ESTIMATOR = 'utf8-byte-upper-bound-v1' as const;
 
 export type SessionBackend = 'claude' | 'codex' | 'omp';
+
+/** Every backend a session port can read from or write to. The inspect route's
+ * `targetBackend` validator and the capabilities advertisement both read this
+ * list, so what a build accepts and what it advertises cannot diverge. */
+export const SESSION_PORT_BACKENDS = ['claude', 'codex', 'omp'] as const satisfies readonly SessionBackend[];
+
+export function isSessionPortBackend(value: unknown): value is SessionBackend {
+  return (SESSION_PORT_BACKENDS as readonly unknown[]).includes(value);
+}
+
+export interface SessionPortPair {
+  source: SessionBackend;
+  target: SessionBackend;
+}
+
+/** The ordered source→target pairs this build ports: every cross-backend pair
+ * (consult-backed-parking-2026-10-12 D-009 — no pair is refused wholesale; a
+ * single unresumable session is refused with its cause instead). Same-backend
+ * continuation is a native resume, never a port, so it is not listed.
+ *
+ * Served by GET /adv/sessions/port/capabilities. Protocol/transform versions
+ * alone cannot tell a launcher which pairs an operator supports — main
+ * d740fc3802 and the P-011 staging build both speak 2/4, yet the first accepts
+ * only claude→codex|omp — so the launcher builds its resume picker from this
+ * list rather than offering a target the server will refuse (WI-6554700010011137). */
+export const SESSION_PORT_SUPPORTED_PAIRS: readonly SessionPortPair[] = SESSION_PORT_BACKENDS.flatMap(
+  (source) => SESSION_PORT_BACKENDS.filter((target) => target !== source).map((target) => ({ source, target })),
+);
+
 export type PortableRole = 'user' | 'assistant' | 'system' | 'tool';
 
 export interface PortableTextBlock {
@@ -93,6 +122,8 @@ export interface PortableSessionPort {
      * identity: changing the file behind a stable path must create a new logical
      * request, while moving byte-identical context must not. */
     launchContextHash: string;
+    /** Explicit distinct answer identity. Omitted for source continuation. */
+    ownerId?: string;
   };
   fidelity: 'full' | 'summary-tail';
   versions: {

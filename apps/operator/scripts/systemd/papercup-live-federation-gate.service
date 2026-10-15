@@ -43,7 +43,13 @@ Environment=PC_HEAVY_PREEMPT_AFTER_READY=1
 Environment=PC_HEAVY_RETRY_PREEMPTIONS=1
 # Join the same heavy-slot domain as agent verification. The script also
 # self-enrols direct invocations; PC_HEAVY_BYPASS makes this wrapper one-shot.
-ExecStart=%h/papercupai-workspace/papercusp/scripts/pc-heavy.sh -- /usr/bin/env bash bin/live-federation-gate.sh
+# Both run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt them (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+# The launcher copies pc-heavy.sh AND the gate under $TMPDIR, so the gate can no longer
+# find its checkout from its own path: both roots are pinned here (WI-10006358).
+Environment=PAPERCUSP_REPO_ROOT=%h/papercupai-workspace/papercusp
+Environment=DESKTOP_DIR=%h/papercupai-workspace/papercusp/papercusp-desktop
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/scripts/pc-heavy.sh -- /usr/bin/env bash bin/live-federation-gate.sh
 # rebuild + repack + content-matrix (≈15-30 min) PLUS the local-matrix leg. Budget
 # history: 2700s killed every local-matrix-day run at exactly 45 min (2026-07-17 00:30);
 # raised to 7200s — which then killed runs 122147/142153/162155 (2026-07-18) at exactly

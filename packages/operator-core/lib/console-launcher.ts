@@ -16,9 +16,10 @@
  * Server-only.
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import { readSuperuserToken } from './superuser-token';
 
 import { resolveBackend } from '@papercusp/papercusp-shared/agent';
 
@@ -33,6 +34,7 @@ import {
   resolveSpawnPathDirs,
 } from './backend-bin-resolve.mjs';
 import { papercuspPathForWorkspace } from './papercusp-root';
+import { PAPERCUSP_MCP_SERVER } from './papercusp-mcp-servers';
 // EI-10938: resolve the workspace's home CHECKOUT for a no-slug launch.
 import { detectPapercupRoot, hasPapercupMarkers } from './harness/register-papercusp';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
@@ -199,7 +201,6 @@ export interface BuildEnvelopeOpts {
 
 // (kickoff-kind allowlist moved to @/lib/agent-kickoff/kickoff-kind in P-032,
 //  when the omp launch flavour was retired from this module.)
-const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
 
 /**
  * Where the bundled `papercup` shim + `papercup-status.mjs` live so the
@@ -241,25 +242,16 @@ export function buildSuperuserMcpUrl(
   operatorBaseUrl: string,
   workspaceId: string,
   allWorkspaces = false,
+  routingEnv: NodeJS.ProcessEnv = process.env,
 ): string {
   // WI-573: route the console's superuser MCP through the resilient proxy when the env opts in
   // (PAPERCUSP_MCP_PROXY_BASE) so it survives a :3070 deploy restart; else the operator base.
-  const url = new URL(`${resolveAgentMcpBaseUrl(operatorBaseUrl)}/api/mcp`);
+  const url = new URL(`${resolveAgentMcpBaseUrl(operatorBaseUrl, routingEnv)}/api/mcp`);
   url.searchParams.set('superuser', '1');
   url.searchParams.set('workspace', allWorkspaces ? '*' : workspaceId);
   return url.toString();
 }
 
-/** Read the superuser bearer token. Returns null if not yet installed. */
-function readSuperuserToken(): string | null {
-  if (!existsSync(TOKEN_PATH)) return null;
-  try {
-    const t = readFileSync(TOKEN_PATH, 'utf8').trim();
-    return t.length > 0 ? t : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * EI-10938 — the cwd for a workspace-only (no-slug) launch.
@@ -322,7 +314,16 @@ export async function buildConsoleEnvelope(
     cwd = await resolveWorkspaceHomeCwd(opts.workspaceId);
   }
 
-  const agentMcpBaseUrl = opts.agentMcpBaseUrl ?? resolveLongLivedSessionMcpBaseUrl();
+  // An explicit endpoint binds this launch to a runtime (for example a consult
+  // preparing an isolated session port). The background host's ordinary agents
+  // endpoint must not move that preparation onto a different serving build.
+  // Keep the same-runtime proxy routing and the default agents policy.
+  const mcpRoutingEnv = opts.agentMcpBaseUrl == null
+    ? process.env
+    : { ...process.env, PAPERCUSP_BG_HOST_AGENTS_MCP_BASE: undefined };
+  const agentMcpBaseUrl = resolveAgentMcpBaseUrl(
+    opts.agentMcpBaseUrl ?? resolveLongLivedSessionMcpBaseUrl(), mcpRoutingEnv,
+  );
 
   // 2. Build env — same shape as the Pi pty (PI_CODING_AGENT_DIR if
   //    we have a state dir, PAPERCUSP_HARNESS_SLUG if we have a slug,
@@ -340,7 +341,7 @@ export async function buildConsoleEnvelope(
     // explicit marker so psu clears inherited gateway credentials before
     // restoring the system login (EI-21575557995965463).
     PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default',
-    PAPERCUSP_OPERATOR_URL: resolveAgentMcpBaseUrl(agentMcpBaseUrl),
+    PAPERCUSP_OPERATOR_URL: agentMcpBaseUrl,
     // A selected A/B/current-build endpoint is a pin. Clear any inherited managed
     // marker; automatically resolved desktop/proxy endpoints retain rediscovery.
     PAPERCUSP_OPERATOR_URL_PROVENANCE: opts.agentMcpBaseUrl != null ? '' : 'psu-launcher',
@@ -425,11 +426,11 @@ export async function buildConsoleEnvelope(
     // '*' which most first-party tools reject. Baking &workspace=<slug>
     // gives the user's agent useful defaults; tool-by-tool override via
     // args still works.
-    const mcpUrl = buildSuperuserMcpUrl(agentMcpBaseUrl, opts.workspaceId, opts.allWorkspaces);
+    const mcpUrl = buildSuperuserMcpUrl(agentMcpBaseUrl, opts.workspaceId, opts.allWorkspaces, mcpRoutingEnv);
     mcpJsonContents = JSON.stringify(
       {
         mcpServers: {
-          papercusp: {
+          [PAPERCUSP_MCP_SERVER]: {
             url: mcpUrl,
             headers: token ? { Authorization: `Bearer ${token}` } : {},
           },
@@ -574,7 +575,7 @@ export async function buildConsoleEnvelope(
       // No-ops on an already-healthy dir; never throws.
       if (row.coordOwnerId) {
         const { ensureInteractiveClaudeConfig } = await import('./interactive-claude-config');
-        ensureInteractiveClaudeConfig({ sid: row.coordOwnerId });
+        await ensureInteractiveClaudeConfig({ sid: row.coordOwnerId });
       }
     }
     const verb = opts.fork ? 'forking' : 'resuming';

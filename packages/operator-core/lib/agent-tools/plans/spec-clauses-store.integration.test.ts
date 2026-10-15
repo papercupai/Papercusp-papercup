@@ -120,14 +120,33 @@ beforeAll(async () => {
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
+      content text NOT NULL DEFAULT '',
+      content_hash text NOT NULL DEFAULT '',
       template text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
+    );
+    CREATE TABLE harness_shared.plan_revisions (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      seq integer NOT NULL,
+      content_hash text NOT NULL,
+      content_snapshot text NOT NULL,
+      rationale text,
+      author_kind text NOT NULL,
+      author_id text NOT NULL,
+      session_id text,
+      session_kind text,
+      created_at bigint NOT NULL,
+      UNIQUE (workspace_id, harness_slug, plan_slug, seq)
     );
     CREATE TABLE harness_shared.plan_items (
       workspace_id text NOT NULL,
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
       item_id text NOT NULL,
+      seq integer NOT NULL DEFAULT 0,
       owner_gate_marker text,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id),
       FOREIGN KEY (workspace_id, harness_slug, plan_slug)
@@ -155,6 +174,10 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       feature_id text NOT NULL,
       source_plan_slug text,
+      source_plan_item_ids text[] NOT NULL DEFAULT '{}',
+      status text NOT NULL DEFAULT 'open',
+      taken_by text,
+      payload jsonb NOT NULL DEFAULT '{}',
       admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id)
     );
@@ -198,7 +221,101 @@ beforeEach(async () => {
 });
 
 describe('first-class plan spec clauses', () => {
-  it('exposes create/current/history through the structured tools and preserves a legacy VAL verdict', async () => {
+  it('replays the historical current set after revision and identity additions without using live pointers', async () => {
+    await store.setSpecClause(clause());
+    const [cutoff] = await db.sql<{ at: string }[]>`SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at`;
+    await store.setSpecClause(clause({ expectedRevision: 1, behavior: 'Revised behavior' }));
+    await store.setSpecClause(clause({ specId: 'SPEC-004-01', sourceValId: 'VAL-004-01', planItemId: 'P-004' }));
+    const selected = await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan', asOf: cutoff!.at });
+    expect(selected.map((row) => [row.specId, row.revision, row.currentRevision, row.behavior])).toEqual([
+      ['SPEC-003-01', 1, 1, clause().behavior],
+    ]);
+    const live = await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan' });
+    expect(live.map((row) => [row.specId, row.revision])).toEqual([['SPEC-003-01', 2], ['SPEC-004-01', 1]]);
+    const tool = await getSpecsTool.handler(getSpecsTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan', asOf: cutoff!.at }), CTX);
+    expect(tool).toMatchObject({ data: { mode: 'snapshot', count: 1, specs: [{ revision: 1, currentRevision: 1 }] } });
+    await expect(store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan', asOf: cutoff!.at, revision: 1 })).rejects.toThrow('spec_snapshot_selector_invalid');
+    expect(getSpecsTool.args.safeParse({ slug: 'reconnect-plan', asOf: cutoff!.at, includeHistory: true }).success).toBe(false);
+  });
+
+  it('does not expose an accepted revision before its acceptance timestamp in an as-of read', async () => {
+    await store.setSpecClause(clause({ lifecycleStatus: 'draft', acceptanceRef: null }));
+    const [cutoff] = await db.sql<{ at: string }[]>`SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at`;
+    await db.sql`
+      INSERT INTO harness_shared.plan_spec_clause_revisions (
+        workspace_id, harness_slug, plan_slug, spec_id, revision, plan_item_id,
+        behavior, behavior_class, lifecycle_status, content_hash, created_by, created_at,
+        accepted_by, accepted_at, acceptance_ref
+      ) VALUES (
+        ${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 'SPEC-003-01', 2, 'P-003',
+        'Accepted revision whose acceptance occurs after the replay cutoff.', 'concurrency',
+        'active', ${'f'.repeat(64)}, 'reviewer',
+        ${cutoff!.at}::timestamptz - INTERVAL '1 millisecond',
+        'reviewer', ${cutoff!.at}::timestamptz + INTERVAL '1 millisecond', 'D-003'
+      )`;
+    await db.sql`
+      UPDATE harness_shared.plan_spec_clauses SET current_revision = 2
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01'`;
+
+    const selected = await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan', asOf: cutoff!.at });
+    expect(selected).toMatchObject([{
+      specId: 'SPEC-003-01',
+      revision: 1,
+      lifecycleStatus: 'draft',
+      acceptedAt: null,
+    }]);
+  });
+
+  it('reads a bounded current clause from the shared ad-hoc scope through plans:get-specs', async () => {
+    const specId = 'WI-10007428:quota-recovery-operation-diagnostics';
+    const planItemId = 'P-10007428';
+    const behavior = 'The ad-hoc work item clause is returned by its exact current read.';
+    await store.setSpecClause(clause({
+      planSlug: undefined,
+      specId,
+      sourceValId: null,
+      planItemId,
+      behavior,
+    }));
+
+    const result = (await getSpecsTool.handler(
+      getSpecsTool.args.parse({
+        harness: HARNESS,
+        slug: 'adhoc-work-item-specs',
+        specIds: [specId],
+        planItemIds: [planItemId],
+      }),
+      CTX,
+    )) as { data: { count: number; mode: string; specs: SpecClauseRevision[] } };
+
+    expect(result.data).toMatchObject({
+      count: 1,
+      mode: 'current',
+      specs: [{ planSlug: 'adhoc-work-item-specs', specId, planItemId, revision: 1, behavior }],
+    });
+  });
+
+  it('resolves an immutable plan snapshot by exact body hash within the requested scope', async () => {
+    await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions (
+      id bigserial, workspace_id text, harness_slug text, plan_slug text,
+      seq integer, content_hash text, content_snapshot text
+    )`;
+    const { hashPlanContent } = await import('./content-hash');
+    const { getPlanRevisionSnapshot } = await import('./revisions');
+    const body = '---\ntitle: Historical fixture\n---\n## Items\n- **P-003** `todo` Contract';
+    const hash = hashPlanContent(body);
+    await db.sql`DELETE FROM harness_shared.plan_revisions`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions (
+        workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, author_kind, author_id, created_at
+      ) VALUES (${WORKSPACE}, ${HARNESS}, 'reconnect-plan', 7, ${hash}, ${body}, 'test', 'fixture', 0),
+               (${WORKSPACE}, 'other', 'reconnect-plan', 9, ${hash}, 'wrong scope', 'test', 'fixture', 0)`;
+    expect(await getPlanRevisionSnapshot('reconnect-plan', hash, { harnessSlug: HARNESS })).toMatchObject({ seq: 7, contentSnapshot: body, contentSnapshotHash: hash });
+    expect(await getPlanRevisionSnapshot('reconnect-plan', 'f'.repeat(64), { harnessSlug: HARNESS })).toBeNull();
+    expect(await getPlanRevisionSnapshot('reconnect-plan', 7, { harnessSlug: HARNESS })).toMatchObject({ contentSnapshot: body });
+  });
+
+  it('exposes create/current/history through the structured tools and never writes the retired VAL store (P-003)', async () => {
     await db.sql`
       INSERT INTO harness_shared.harness_plan_assertions (
         workspace_id, harness_slug, val_id, plan_slug, item_id,
@@ -247,9 +364,10 @@ describe('first-class plan spec clauses', () => {
     const legacy = await db.sql<{ status: string; verify_text: string }[]>`
       SELECT status, verify_text FROM harness_shared.harness_plan_assertions
        WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND val_id = 'VAL-003-01'`;
+    // The retired store is neither mirrored nor overwritten: the legacy row is untouched.
     expect(legacy[0]).toEqual({
       status: 'passed',
-      verify_text: 'Acknowledged event 42 is not replayed after reconnect.',
+      verify_text: 'old behavior',
     });
   });
 

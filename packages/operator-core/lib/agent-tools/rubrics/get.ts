@@ -32,6 +32,16 @@ import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
 import type { Rubric } from '../../rubrics';
+import { parseRequirementBars } from '../../acceptance-bar-seed';
+import { readLiveAcceptanceCriteria, type LiveAcceptanceViewDeps } from '../../acceptance-live-requirements';
+
+/** The plan parser, narrowed to the live-view contract (only explicit blocks carry verification). */
+const parseRequirementBarsForLiveView: LiveAcceptanceViewDeps['parseRequirementBars'] = (content) => {
+  const parsed = parseRequirementBars(content);
+  return parsed.ok
+    ? { ok: true, bars: parsed.bars.map((bar) => ({ barKey: bar.barKey, ...(bar.criterion ? { criterion: bar.criterion } : {}) })) }
+    : { ok: false, problems: parsed.problems };
+};
 
 /**
  * P-007 (RSR-P-007-A): the default rubric read is an INDEX — identity, the hashes a
@@ -205,6 +215,25 @@ export default defineTool({
                     }
                   : {}),
               });
+              // P-001 (R-1): a CURRENT acceptance read takes verification fields (method, check
+              // files, replication) from the subject plan's live requirement blocks. Vetting above
+              // was computed on the STORED rubric, whose hashes are the recorded identity; an
+              // explicit `revision` read stays an immutable snapshot and is never overlaid.
+              if (args.revision === undefined) {
+                const live = await readLiveAcceptanceCriteria(rubric, {
+                  readSubjectPlanContent: async ({ planSlug, harnessSlug }) => {
+                    const { getPlanRow } = await import('../plans/source');
+                    const row = await getPlanRow(planSlug, {
+                      ...(harnessSlug ? { harnessSlug } : {}),
+                      ...(identity.workspaceId && identity.workspaceId !== '*' ? { workspaceId: identity.workspaceId } : {}),
+                    });
+                    return row ? { content: row.content, version: row.version } : null;
+                  },
+                  parseRequirementBars: (content) => parseRequirementBarsForLiveView(content),
+                });
+                const liveShaped = full ? { rubric: { ...rubric, criteria: live.criteria } } : shaped;
+                return { ok: true as const, rubricRef, ...liveShaped, vetting, liveRequirements: live.status };
+              }
               return { ok: true as const, rubricRef, ...shaped, vetting };
             }
             return { ok: true as const, rubricRef, ...shaped };
@@ -247,7 +276,7 @@ export default defineTool({
               rubricRef,
               error:
                 `rubric revision ${args.revision} exists, but its immutable snapshot could not be projected.` +
-                ' If this is a first-party exact-current-body legacy chain, preview rubrics:repair with dryRun:true.' +
+                ` Preview rubrics:repair { rubricRef, rubricRevision: ${args.revision}, dryRun:true } for a missing current first-party version; omit rubricRevision to inspect an exact-current-body legacy chain.` +
                 vintageHint +
                 freshCodeHint,
             };

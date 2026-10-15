@@ -36,11 +36,12 @@ const BELOW_GATE_TOKENS = 60_000;
 const M = vi.hoisted(() => ({
   readPriorRespawnOutcome: vi.fn(async () => ({ outcome: "none" }) as unknown),
   getPresence: vi.fn(async () => null as unknown),
-  selfCompactionAvailability: vi.fn(() => ({ available: false })),
+  selfCompactionAvailability: vi.fn((_ownerId?: string) => ({ available: false })),
   readFleetWindDownLoopEndAuthorization: vi.fn(async () => null as boolean | null),
 }));
 
-vi.mock("../identity", () => ({
+vi.mock("../identity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../identity")>()),
   resolveAgentIdentity: (ctx: { ownerId?: string }) => ({
     ownerId: ctx?.ownerId ?? "owner-a",
   }),
@@ -84,7 +85,13 @@ vi.mock("../../../compaction-usage", () => ({
 }));
 vi.mock("../../../events/await/psu-pty-discovery", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../events/await/psu-pty-discovery")>();
-  return { ...actual, selfCompactionAvailability: M.selfCompactionAvailability };
+  // The handler reads availability through the async variant (WI-10005186); route
+  // it to the same mock so both entry points stay pinned.
+  return {
+    ...actual,
+    selfCompactionAvailability: M.selfCompactionAvailability,
+    selfCompactionAvailabilityAsync: async (ownerId: string) => M.selfCompactionAvailability(ownerId),
+  };
 });
 vi.mock("./continuation-gate", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./continuation-gate")>();

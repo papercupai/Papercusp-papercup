@@ -34,6 +34,7 @@ import {
 } from './lifecycle';
 import { trackDetached } from '../../detached-imports';
 import { enterAgentReview } from './agent-review';
+import { effectiveReporter } from './provenance';
 import {
   createImplementationReadiness,
   implementationReadinessIsLegacyEquivalent,
@@ -54,6 +55,8 @@ export interface ApplyTriageInput {
   id: string;
   decision: TriageDecision;
   reason: string;
+  /** D-005 routing target; owner-escalations must not enter harness agent review. */
+  target?: string;
   /** Who decided ('Queen', 'improvement-triage' for the scheduled pass, a human id). */
   by?: string;
   /** Write an audit comment on the issue (default true; the scheduled batch
@@ -65,6 +68,8 @@ export interface ApplyTriageResult {
   ok: boolean;
   id: string;
   decision?: TriageDecision;
+  /** Effective D-005 target, including the inferred infra-environment route. */
+  target?: string;
   lifecycle?: IdeaLifecyclePayload;
   /** True when decision='reject' closed the issue (it left the open queue). */
   closed?: boolean;
@@ -342,9 +347,22 @@ function lifecycleOf(issue: EngineerIssue): IdeaLifecyclePayload | null {
     : null;
 }
 
+/**
+ * The deployment screen could not answer: it ran and returned `unknown`, or it was
+ * unavailable. An unknown is never evidence the bug is gone, so such a row waits for a
+ * reviewer rather than being placed as ready.
+ */
+function deploymentFreshnessUnknown(deployment: DeploymentStalenessScreen | undefined): boolean {
+  return Boolean(
+    (deployment?.screened && deployment.state === 'unknown') ||
+      (!deployment?.screened && deployment?.skipReason === 'screen-unavailable'),
+  );
+}
+
 function triageImplementationReadiness(input: {
   issue: EngineerIssue;
   decision: TriageDecision;
+  target?: string;
   citations?: EvidenceCitationInspection;
   deployment?: DeploymentStalenessScreen;
 }): ImplementationReadinessState {
@@ -410,14 +428,14 @@ function triageImplementationReadiness(input: {
       ...withEvidence,
     });
   }
-  if (
-    (input.deployment?.screened && input.deployment.state === 'unknown') ||
-    (!input.deployment?.screened && input.deployment?.skipReason === 'screen-unavailable')
-  ) {
+  if (deploymentFreshnessUnknown(input.deployment)) {
+    // P-008 / D-038: no separate freshness hold. The open freshness question waits in the
+    // one review stage, under its one reason; evidence.deployment (when the screen ran)
+    // tells the reviewer what could not be answered, and applyTriageDecision enrols it.
     return createImplementationReadiness({
       status: 'unknown',
       source: 'triage-freshness',
-      reason: 'deployment-freshness-unknown',
+      reason: 'awaiting-agent-review',
       ...withEvidence,
     });
   }
@@ -425,7 +443,12 @@ function triageImplementationReadiness(input: {
     return createImplementationReadiness({
       status: 'unknown',
       source: 'triage-freshness',
-      reason: input.decision === 'gate' ? 'awaiting-agent-review' : 'awaiting-validation',
+      reason:
+        input.decision === 'gate'
+          ? input.target === 'owner-escalation'
+            ? 'awaiting-owner-escalation'
+            : 'awaiting-agent-review'
+          : 'awaiting-validation',
       ...withEvidence,
     });
   }
@@ -553,6 +576,9 @@ export async function applyTriageDecision(
   // Full-fidelity classification (D-005): the candidate view carries paths +
   // watchdogKey + kind, which the taxonomy keys off — never a scope-only call.
   const ideaType = classifyIdeaType(issueToCandidate(issue)).type;
+  // Manual triage callers may omit a target; retain the taxonomy's owner route for
+  // infra/environment items instead of silently treating every gate as agent review.
+  const routeTarget = input.target ?? (ideaType === 'infra-environment' ? 'owner-escalation' : undefined);
   const lifecycle = updateIdeaLifecycle(current, 'triaged', {
     triageDecision: decision,
     triageReason: reason,
@@ -563,6 +589,7 @@ export async function applyTriageDecision(
   const implementationReadiness = triageImplementationReadiness({
     issue,
     decision,
+    target: routeTarget,
     citations: citationInspection,
     deployment: deploymentStaleness,
   });
@@ -583,11 +610,24 @@ export async function applyTriageDecision(
   if (decision === 'reject') patch.decidedReason = reason;
   await deps.mergeIssuePayload(input.id, patch);
 
-  // A triage gate is review work, not an owner-capability escalation. Enrollment is
-  // idempotent: an already-pending item stays in the same review round, while strict
-  // typed owner actions and remote-owned rows remain on their existing lanes.
-  if (decision === 'gate') {
-    await deps.enterAgentReview({ id: input.id, submittedBy: by });
+  // Generic gates enter harness-bound agent review. Owner escalations follow the
+  // coordinator's owner-action path and operator-scoped rows have no harness to review.
+  //
+  // A PLACE whose deployment screen could not answer waits in the review stage, and
+  // nothing ever re-screens it: 217 open bugs sat in that dead zone on 2026-10-05
+  // (P-002 / EI-25176539351759672). P-008 / D-038: it carries the one stage reason,
+  // awaiting-agent-review, and enters agent review here so the reviewer lane owns the
+  // open question. Keyed off the screen itself, not off a hold reason.
+  const freshnessUnknownPlace =
+    decision === 'place' &&
+    implementationReadiness.status === 'unknown' &&
+    implementationReadiness.reason === 'awaiting-agent-review' &&
+    deploymentFreshnessUnknown(deploymentStaleness);
+  if ((decision === 'gate' && routeTarget !== 'owner-escalation') || freshnessUnknownPlace) {
+    // `by` identifies the triage actor, not the author who can answer a revision.
+    // Preserve the filing provenance so a scheduled service never becomes the
+    // review submitter for an agent's report. A missing reporter stays explicit.
+    await deps.enterAgentReview({ id: input.id, submittedBy: effectiveReporter(issue).id ?? by });
   }
 
   if (input.comment !== false) {
@@ -624,6 +664,7 @@ export async function applyTriageDecision(
     ok: true,
     id: input.id,
     decision,
+    ...(routeTarget ? { target: routeTarget } : {}),
     lifecycle,
     closed,
     ...(evidenceDowngrade ? { evidenceDowngrade } : {}),

@@ -55,13 +55,20 @@ describe('askOp', () => {
     openThread: vi.fn().mockResolvedValue({ thread_id: 't1', conversation_id: 'c1' }),
     escalate: vi.fn().mockResolvedValue({ msg_id: 'e1' }),
     sleep: vi.fn().mockResolvedValue(undefined),
+    // P-006: caller is in no goal lineage → the ask opens fresh (goal_ask_dedup: not-in-goal).
+    findOverlappingGoalAsk: vi.fn().mockResolvedValue({ goalId: null, compared: 0, overlap: null }),
   });
 
   it('opens a question thread, escalates, and returns the answer when already answered', async () => {
     const caps = { ...baseCaps(), readAnswer: vi.fn().mockResolvedValue({ answered: true, answer: 'do A' }) };
     const a = askOp.argsSchema.parse({ question: 'A or B?' });
     const out = await askOp.run(a, makeCtx(caps));
-    expect(out).toEqual({ answered: true, answer: 'do A', conversation_id: 'c1' });
+    expect(out).toEqual({
+      answered: true,
+      answer: 'do A',
+      conversation_id: 'c1',
+      goal_ask_dedup: { status: 'not-in-goal' },
+    });
     expect(caps.openThread).toHaveBeenCalledWith(expect.objectContaining({ kind: 'question', body: 'A or B?' }));
     expect(caps.escalate).toHaveBeenCalled();
     expect(caps.sleep).not.toHaveBeenCalled(); // answered on the first read
@@ -111,7 +118,12 @@ describe('askOp', () => {
     const caps = { ...baseCaps(), readAnswer: vi.fn().mockResolvedValue({ answered: false, answer: null }) };
     const a = askOp.argsSchema.parse({ question: 'q', timeout_s: 0 });
     const out = await askOp.run(a, makeCtx(caps));
-    expect(out).toEqual({ answered: false, answer: null, conversation_id: 'c1' });
+    expect(out).toEqual({
+      answered: false,
+      answer: null,
+      conversation_id: 'c1',
+      goal_ask_dedup: { status: 'not-in-goal' },
+    });
     expect(caps.sleep).not.toHaveBeenCalled();
     expect(caps.readAnswer).toHaveBeenCalledTimes(1);
   });

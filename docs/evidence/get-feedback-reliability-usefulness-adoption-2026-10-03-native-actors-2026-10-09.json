@@ -1,0 +1,467 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P002 current native actor correlation supplement",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItem": "WI-10005889",
+  "incident": "EI-25532882040525639",
+  "evidencePlane": "current-build",
+  "servingBuildSha": "42ead3e6b0",
+  "asOf": "2026-10-09T20:14:00Z",
+  "exitCode": 0,
+  "priorEvidence": {
+    "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-native-current-2026-10-09.json",
+    "sha256": "8436776944392788b04df8c552f6bb30c6e706c80bcfa53e0e875325210af85d",
+    "sourceSha256": "e9bdd242286ecad9b19fe4abde461222f826211a346bb4692a906eb035512ed7",
+    "unchanged": false,
+    "redactionNote": "Host-specific absolute paths were normalized after capture; non-path evidence values were preserved."
+  },
+  "correction": {
+    "prior": "Physical native MCP call correlation was unknown because only outer functions.exec call IDs were examined.",
+    "current": "The maintained native event_msg/item_completed/McpToolCall.id records each inner MCP call. All three SHA256 IDs match requestOrigin.nativeSession.callIdFingerprint. Native thread fingerprints and caller-row identityLaunchRecord bind each to its isolated answering row.",
+    "outerExecLink": "Not required for the matching inner MCP call identity; arbitrary outer-to-inner mapping remains unasserted."
+  },
+  "links": [
+    {
+      "row": 39008,
+      "invocation": 34873473,
+      "tool": "consult:decline",
+      "idHash": "321cbee4be09b42f21af02fee7e085b6f58d1d62e15fd06cec56c4f7f47ec229",
+      "threadHash": "2f8d4eaefc44395afcd7a691b88dde49d0bd097d46c179134c1ceaf044f0a228",
+      "post": 1169106,
+      "outcome": "durable decline; initial request timed out and eventual completion had incomplete receipt",
+      "owner": "su-16846131-8519-4a8b-a3d5-6d061c21648b",
+      "nativePath": "$HOME/.papercusp/su-codex-homes/session-39008/sessions/2026/10/09/rollout-2026-10-09T15-50-51-01a12237-e764-72e0-bcdf-37ec9ff0ce4e.jsonl",
+      "nativeItemId": "exec-7be6866a-443b-4714-9060-45a8045ff340",
+      "line": 48,
+      "threadId": "01a12237-e764-72e0-bcdf-37ec9ff0ce4e",
+      "turnId": "01a12237-ead2-7283-ba9d-3d53d75a1476",
+      "argumentSha256": "6e072f1ce614e6162500f5e4567274cc03871bb17bbbbba42eb8bee529725c44",
+      "carrier": "meta:threadId",
+      "binding": "bound",
+      "identityLaunchSelection": "caller-row",
+      "identityLaunchRow": 39008
+    },
+    {
+      "row": 39012,
+      "invocation": 34874213,
+      "tool": "consult:reply",
+      "idHash": "f4f53a3d0d24fd43869a66ab136439c0982920fca916f93bea62a267d81f8851",
+      "threadHash": "c57d651313db088572ff47cd9e8e83b0e6148c80a0c55fac03ac8b8108924a2e",
+      "post": 1169109,
+      "outcome": "native substantive reply; successful settlement",
+      "owner": "su-cba7ccb2-d21c-497d-82ff-4542c2bec71c",
+      "nativePath": "$HOME/.papercusp/su-codex-homes/session-39012/sessions/2026/10/09/rollout-2026-10-09T15-52-52-01a12239-c18b-7911-bbc6-d82f5ea08127.jsonl",
+      "nativeItemId": "exec-f6646a92-a329-4bd3-beb0-6675c95f0210",
+      "line": 76,
+      "threadId": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+      "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30",
+      "argumentSha256": "559ea81da2e4df46fbecbfe7dd07f2a3439f9f3d4e425064efe0b3b75ae50e24",
+      "carrier": "meta:threadId",
+      "binding": "bound",
+      "identityLaunchSelection": "caller-row",
+      "identityLaunchRow": 39012
+    },
+    {
+      "row": 39015,
+      "invocation": 34874437,
+      "tool": "consult:reply",
+      "idHash": "5f12f4e95c88f4254977dc8b2c7f4cbd1f45ab08d86ee7b0bd3b62796ffeef4b",
+      "threadHash": "e8d23ed5427d47a55c08a725a35876972cd5c7813eeeb7b965d5622b8d373575",
+      "post": 1169111,
+      "outcome": "native substantive reply through tools:invoke; successful tool row; settlement metadata absent",
+      "owner": "su-d41e957e-450a-45fc-9dd4-cff36edae472",
+      "nativePath": "$HOME/.papercusp/su-codex-homes/session-39015/sessions/2026/10/09/rollout-2026-10-09T15-54-06-01a1223a-e212-7633-a036-1e45ca780c09.jsonl",
+      "nativeItemId": "exec-c37963cb-b429-4b7d-bd61-6e6cfb288f13",
+      "line": 33,
+      "threadId": "01a1223a-e212-7633-a036-1e45ca780c09",
+      "turnId": "01a1223a-e566-7762-b634-14781d7441a4",
+      "argumentSha256": "669dacc9aaddc12e8eb0dc5777c185bd7e0f0a02910f9e328c20e73992cb21ee",
+      "carrier": "meta:threadId",
+      "binding": "bound",
+      "identityLaunchSelection": "caller-row",
+      "identityLaunchRow": 39015
+    }
+  ],
+  "targetActionCensus": {
+    "population": "Recorded item_completed action items in the three saved target JSONL snapshots, ending in each native task_complete.",
+    "snapshots": [
+      {
+        "targetRow": 39008,
+        "answeringOwner": "su-16846131-8519-4a8b-a3d5-6d061c21648b",
+        "sourceOwner": "su-77610b91-024c-4c2d-a5f8-de6a42b2af38",
+        "nativePath": "$HOME/.papercusp/su-codex-homes/session-39008/sessions/2026/10/09/rollout-2026-10-09T15-50-51-01a12237-e764-72e0-bcdf-37ec9ff0ce4e.jsonl",
+        "nativeSha256": "f237ef5c2348a82e3ca68115d2d5c81ae3a784a013b530e1c542dcaf686e8212",
+        "nativeBytes": 450400,
+        "itemTypeCounts": {
+          "UserMessage": 1,
+          "Reasoning": 5,
+          "AgentMessage": 2,
+          "CommandExecution": 3,
+          "McpToolCall": 1
+        },
+        "taskCompletions": [
+          {
+            "line": 62,
+            "timestamp": "2026-10-09T19:52:58.941Z",
+            "turnId": "01a12237-ead2-7283-ba9d-3d53d75a1476"
+          }
+        ],
+        "actions": [
+          {
+            "line": 31,
+            "threadId": "01a12237-e764-72e0-bcdf-37ec9ff0ce4e",
+            "turnId": "01a12237-ead2-7283-ba9d-3d53d75a1476",
+            "type": "CommandExecution",
+            "id": "exec-ebcb3eb0-0a41-46a4-9bf5-8c65179c8e1e",
+            "idSha256": "0a3cf3e368e619de99bb2d0d274c4ebd6581afb38e4529b27c9f4d85a5493a0c",
+            "itemSha256": "a6078a763d03e05865e4f8375494fc5b5952eea2c3f2f4dfc4784e7fb7758d71",
+            "status": "completed",
+            "startedAtMs": 1791575466830,
+            "completedAtMs": 1791575468483,
+            "command": [
+              "/bin/bash",
+              "-lc",
+              "ptool conversations:get --json - <<'JSON'\n{\"id\":\"conv-request-061189b84359f587ca4d669209fa802670bde77c2c17a05e5050cb729d13c44f\"}\nJSON"
+            ],
+            "cwd": "<repo-root-file-uri>"
+          },
+          {
+            "line": 39,
+            "threadId": "01a12237-e764-72e0-bcdf-37ec9ff0ce4e",
+            "turnId": "01a12237-ead2-7283-ba9d-3d53d75a1476",
+            "type": "CommandExecution",
+            "id": "exec-ae07bb69-db75-4bc0-8dc5-c84df8924e6b",
+            "idSha256": "5ade1a0cb79bc5b7486f679bad56a5748884a6ab8875d030d1243e29b1e13ab0",
+            "itemSha256": "bc701efc9576dc51fed23d6cebe9157b9c6837d3758292445aaab56c86f9376c",
+            "status": "completed",
+            "startedAtMs": 1791575487082,
+            "completedAtMs": 1791575492556,
+            "command": [
+              "/bin/bash",
+              "-lc",
+              "ptool tools:find --json - <<'JSON'\n{\"query\":\"consult:decline exact schema\"}\nJSON"
+            ],
+            "cwd": "<repo-root-file-uri>"
+          },
+          {
+            "line": 48,
+            "threadId": "01a12237-e764-72e0-bcdf-37ec9ff0ce4e",
+            "turnId": "01a12237-ead2-7283-ba9d-3d53d75a1476",
+            "type": "McpToolCall",
+            "id": "exec-7be6866a-443b-4714-9060-45a8045ff340",
+            "idSha256": "321cbee4be09b42f21af02fee7e085b6f58d1d62e15fd06cec56c4f7f47ec229",
+            "itemSha256": "debe32f2fe0f0dd5308b4d136a92836cca3c69a088c97c6c181ad5ddd951faf0",
+            "status": "failed",
+            "startedAtMs": 1791575503846,
+            "completedAtMs": 1791575564397,
+            "server": "papercusp-su",
+            "tool": "consult:decline",
+            "argumentSha256": "6e072f1ce614e6162500f5e4567274cc03871bb17bbbbba42eb8bee529725c44"
+          },
+          {
+            "line": 55,
+            "threadId": "01a12237-e764-72e0-bcdf-37ec9ff0ce4e",
+            "turnId": "01a12237-ead2-7283-ba9d-3d53d75a1476",
+            "type": "CommandExecution",
+            "id": "exec-be38647d-45e1-4f52-b54d-d7d859200ab1",
+            "idSha256": "8ee3dc888f85026774ed0756d4cefeaf74071ede7caa642c08e3b5ee237c15b3",
+            "itemSha256": "7dc933e4f70bd14c24578996943db4fed037e9b5615c5df860de5215714d803a",
+            "status": "completed",
+            "startedAtMs": 1791575572120,
+            "completedAtMs": 1791575574279,
+            "command": [
+              "/bin/bash",
+              "-lc",
+              "ptool conversations:get --json - <<'JSON'\n{\"id\":\"conv-request-061189b84359f587ca4d669209fa802670bde77c2c17a05e5050cb729d13c44f\"}\nJSON"
+            ],
+            "cwd": "<repo-root-file-uri>"
+          }
+        ]
+      },
+      {
+        "targetRow": 39012,
+        "answeringOwner": "su-cba7ccb2-d21c-497d-82ff-4542c2bec71c",
+        "sourceOwner": "su-cb667d2a-6543-4a42-817d-48c566ff6b31",
+        "nativePath": "$HOME/.papercusp/su-codex-homes/session-39012/sessions/2026/10/09/rollout-2026-10-09T15-52-52-01a12239-c18b-7911-bbc6-d82f5ea08127.jsonl",
+        "nativeSha256": "bf2c9f5f8c3eefaf99038dcce004fa9a0456376c08ec023aaec8f65abf8c5c1b",
+        "nativeBytes": 797546,
+        "itemTypeCounts": {
+          "UserMessage": 1,
+          "Reasoning": 9,
+          "AgentMessage": 2,
+          "McpToolCall": 2,
+          "CommandExecution": 6
+        },
+        "taskCompletions": [
+          {
+            "line": 83,
+            "timestamp": "2026-10-09T19:54:15.915Z",
+            "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30"
+          }
+        ],
+        "actions": [
+          {
+            "line": 31,
+            "threadId": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+            "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30",
+            "type": "McpToolCall",
+            "id": "exec-b9fd409d-8dee-4b1f-8e83-8ad9646b6ccd",
+            "idSha256": "9fd4a30741789edee560a9ef67082371f73b216ab75e103ace21729bf4521331",
+            "itemSha256": "149b8ce15db47239945447b6ef5521e796c8fd5f172b7b67503093aa777e7668",
+            "status": "completed",
+            "startedAtMs": 1791575588258,
+            "completedAtMs": 1791575589782,
+            "server": "papercusp-su",
+            "tool": "tools:find",
+            "argumentSha256": "e64a0e09eb40bc46a12606768beaeb63543ce2b7cfa34eebd3f1c7dd406551c2"
+          },
+          {
+            "line": 39,
+            "threadId": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+            "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30",
+            "type": "CommandExecution",
+            "id": "exec-9f66da38-bc12-4596-be40-799390f38850",
+            "idSha256": "611fd8b88f9e3a0ca1a8c5152f62c0be057bd45decb255979937e1ea8f4623fe",
+            "itemSha256": "91de4a087948907e96da218f4bc0cb49a114359fd982c1acce307f9f36b40a3b",
+            "status": "completed",
+            "startedAtMs": 1791575597339,
+            "completedAtMs": 1791575597340,
+            "command": [
+              "/bin/bash",
+              "-lc",
+              "rg -n \"threadId|callId|identityLaunchRecord|nativeSession|transcript|tool_invocations|session\" packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts packages/operator-core/lib/role-codex-home.ts packages/operator-core/lib -g 'role-codex-home.ts' -g '_mcp-host.ts'"
+            ],
+            "cwd": "<repo-root-file-uri>"
+          },
+          {
+            "line": 40,
+            "threadId": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+            "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30",
+            "type": "CommandExecution",
+            "id": "exec-c20f0b3f-b639-44ce-a959-6ebda8152b76",
+            "idSha256": "53ba3a38b07a170d9a372ef5a0a1df40d23542be330709770c231fc1193d485a",
+            "itemSha256": "ad0d0a2d055c01ccfe590b06a3f74902b1150efa61dd06c8bf4b6064cad50900",
+            "status": "completed",
+            "startedAtMs": 1791575597428,
+            "completedAtMs": 1791575599629,
+            "command": [
+              "/bin/bash",
+              "-lc",
+              "ptool tools:find --json - <<'JSON'\n{\"query\":\"conversations:get exact schema\"}\nJSON"
+            ],
+            "cwd": "<repo-root-file-uri>"
+          },
+          {
+            "line": 47,
+            "threadId": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+            "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30",
+            "type": "CommandExecution",
+            "id": "exec-37e34930-ea37-4db2-a3db-b49830495e9e",
+            "idSha256": "dd72921a6d49c93a6df76e85fefe43666cfb96b8a29d78a364c5da1105780e79",
+            "itemSha256": "86f76178338655788e70b4b87ad14d2015e4a382d9bfa6cb44207ab2b1d96b6c",
+            "status": "completed",
+            "startedAtMs": 1791575605121,
+            "completedAtMs": 1791575606300,
+            "command": [
+              "/bin/bash",
+              "-lc",
+              "ptool conversations:get --json - <<'JSON'\n{\"id\":\"conv-request-061189b84359f587ca4d669209fa802670bde77c2c17a05e5050cb729d13c44f\"}\nJSON"
+            ],
+            "cwd": "<repo-root-file-uri>"
+          },
+          {
+            "line": 54,
+            "threadId": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+            "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30",
+            "type": "CommandExecution",
+            "id": "exec-7892cd75-2c21-4a65-a61f-c8a3949378c3",
+            "idSha256": "4488769defe92e9f0e6a021a7828ae61445e997576773d4ff3005df22f4d1011",
+            "itemSha256": "aba973dd8defb281d4ed143dab5b9cc771f4c4f68d5b880ea252008b7d405a36",
+            "status": "completed",
+            "startedAtMs": 1791575612187,
+            "completedAtMs": 1791575612188,
+            "command": [
+              "/bin/bash",
+              "-lc",
+              "rg -n -C 8 \"threadId|callId|identityLaunchRecord|nativeSession|PAPERCUSP_NATIVE|mcp_url|native-session\" packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts packages/operator-core/lib/role-codex-home.ts | head -n 500"
+            ],
+            "cwd": "<repo-root-file-uri>"
+          },
+          {
+            "line": 62,
+            "threadId": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+            "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30",
+            "type": "CommandExecution",
+            "id": "exec-09d23cc5-c139-4ffe-bdf4-a6df83e0003b",
+            "idSha256": "f42c1f6bc2914fc4d74e109c3262405938b768aab2c86fcd100ac3187584cdc6",
+            "itemSha256": "0250469c42500db62332c75c607de25900e6ad5a02c567e3c5083fa9d5edce5a",
+            "status": "completed",
+            "startedAtMs": 1791575617073,
+            "completedAtMs": 1791575617151,
+            "command": [
+              "/bin/bash",
+              "-lc",
+              "sed -n '1750,1895p' packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts\nsed -n '1438,1490p' packages/operator-core/lib/role-codex-home.ts\nrg -n -C 5 \"identityLaunchRecord\" packages/operator-core/lib | head -n 220"
+            ],
+            "cwd": "<repo-root-file-uri>"
+          },
+          {
+            "line": 68,
+            "threadId": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+            "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30",
+            "type": "CommandExecution",
+            "id": "exec-7b6b5dea-008e-42d9-8d59-f9c09eb77218",
+            "idSha256": "c0e38fab05fbe8f0092158b390dd38f74d382b66a1332aea9b1af85ae87bfbe8",
+            "itemSha256": "621118afcc4f915e795216ddb651c85c434a80dba2671b60b2555c5c6dfefa29",
+            "status": "completed",
+            "startedAtMs": 1791575624046,
+            "completedAtMs": 1791575624046,
+            "command": [
+              "/bin/bash",
+              "-lc",
+              "rg -n -C 6 \"callIdFingerprint|valueFingerprint|nativeSession.*binding|requestOrigin\" packages/operator-core/lib/projected-tool-deps.ts packages/operator-core/lib/projected-tool-deps.friction.ts packages/operator-core/lib | head -n 360"
+            ],
+            "cwd": "<repo-root-file-uri>"
+          },
+          {
+            "line": 76,
+            "threadId": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+            "turnId": "01a12239-c49c-7cf1-bc52-edaa30ca4d30",
+            "type": "McpToolCall",
+            "id": "exec-f6646a92-a329-4bd3-beb0-6675c95f0210",
+            "idSha256": "f4f53a3d0d24fd43869a66ab136439c0982920fca916f93bea62a267d81f8851",
+            "itemSha256": "afee21e7e5ff5b4a67d1d2fed15ea19ec63c337e5f51540d282e2521ae72a79f",
+            "status": "completed",
+            "startedAtMs": 1791575642033,
+            "completedAtMs": 1791575653061,
+            "server": "papercusp-su",
+            "tool": "consult:reply",
+            "argumentSha256": "559ea81da2e4df46fbecbfe7dd07f2a3439f9f3d4e425064efe0b3b75ae50e24"
+          }
+        ]
+      },
+      {
+        "targetRow": 39015,
+        "answeringOwner": "su-d41e957e-450a-45fc-9dd4-cff36edae472",
+        "sourceOwner": "su-89413428-d12b-49c8-a378-92c79940ccf9",
+        "nativePath": "$HOME/.papercusp/su-codex-homes/session-39015/sessions/2026/10/09/rollout-2026-10-09T15-54-06-01a1223a-e212-7633-a036-1e45ca780c09.jsonl",
+        "nativeSha256": "12f534c27f28575fff1f8098e45f669ec2a5bea388b0f6c9b19e530f0730561b",
+        "nativeBytes": 455528,
+        "itemTypeCounts": {
+          "UserMessage": 1,
+          "Reasoning": 3,
+          "AgentMessage": 2,
+          "McpToolCall": 2
+        },
+        "taskCompletions": [
+          {
+            "line": 40,
+            "timestamp": "2026-10-09T19:54:43.651Z",
+            "turnId": "01a1223a-e566-7762-b634-14781d7441a4"
+          }
+        ],
+        "actions": [
+          {
+            "line": 25,
+            "threadId": "01a1223a-e212-7633-a036-1e45ca780c09",
+            "turnId": "01a1223a-e566-7762-b634-14781d7441a4",
+            "type": "McpToolCall",
+            "id": "exec-a45c86c8-6972-4104-8e27-fb3982ac900d",
+            "idSha256": "964f2096e3d842035fcf023d639512688c03156a141cf4ab0f0a9a717fbd3869",
+            "itemSha256": "216550d0628614f0605a4bbe474ad7829fe3f36a43df08f8ae4c720f8961b266",
+            "status": "completed",
+            "startedAtMs": 1791575658942,
+            "completedAtMs": 1791575659081,
+            "server": "papercusp-su",
+            "tool": "tools:invoke",
+            "argumentSha256": "720dfb12c96e9f00e96ca9cbf74fb5d5997ec88b1c675f951c7ac5c97469701b",
+            "nestedTool": "conversations:get"
+          },
+          {
+            "line": 33,
+            "threadId": "01a1223a-e212-7633-a036-1e45ca780c09",
+            "turnId": "01a1223a-e566-7762-b634-14781d7441a4",
+            "type": "McpToolCall",
+            "id": "exec-c37963cb-b429-4b7d-bd61-6e6cfb288f13",
+            "idSha256": "5f12f4e95c88f4254977dc8b2c7f4cbd1f45ab08d86ee7b0bd3b62796ffeef4b",
+            "itemSha256": "a1b5dadba0463c7ef52192dd8e75ae147f6dbfaf6cc932de311260aeb0a013d0",
+            "status": "completed",
+            "startedAtMs": 1791575678843,
+            "completedAtMs": 1791575679000,
+            "server": "papercusp-su",
+            "tool": "tools:invoke",
+            "argumentSha256": "669dacc9aaddc12e8eb0dc5777c185bd7e0f0a02910f9e328c20e73992cb21ee",
+            "nestedTool": "consult:reply"
+          }
+        ]
+      }
+    ],
+    "scope": "Includes recorded native shell commands and direct MCP calls, including tools:invoke inner tool identity. Read-only shell inspection is present in reviewer2. The only recorded mutating MCP actions are one decline and two replies to this consultation.",
+    "notProven": [
+      "Unrecorded actions",
+      "Absence of source-side native activity",
+      "System actions on behalf of either identity",
+      "Source work immutability"
+    ]
+  },
+  "sourceLedger": {
+    "from": "2026-10-09T19:49:31.703Z",
+    "through": "2026-10-09T19:57:41.222Z",
+    "sources": [
+      "su-77610b91-024c-4c2d-a5f8-de6a42b2af38",
+      "su-cb667d2a-6543-4a42-817d-48c566ff6b31",
+      "su-89413428-d12b-49c8-a378-92c79940ccf9"
+    ],
+    "rows": [],
+    "truncated": false,
+    "positiveControl": {
+      "rows": [
+        {
+          "id": "34873473"
+        }
+      ],
+      "rowCount": 1,
+      "truncated": false,
+      "fields": [
+        "id"
+      ],
+      "status": "passed"
+    },
+    "meaning": "No matching source-owner MCP rows in this exact window. This ledger does not cover source native actions; absence is not source immutability."
+  },
+  "originalCohort": {
+    "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "eligible": 4,
+    "shortfall": 4,
+    "unchanged": true,
+    "supplementAddsNoOriginalCohortCredit": true
+  },
+  "assertions": [
+    {
+      "name": "Three exact native MCP item identities match stored tool-call fingerprints",
+      "passed": true
+    },
+    {
+      "name": "Each call has meta:threadId bound and matching caller-row identityLaunchRecord",
+      "passed": true
+    },
+    {
+      "name": "All three target snapshots have recorded task completion",
+      "passed": true
+    },
+    {
+      "name": "Original cohort and prior supplement are preserved without backfill",
+      "passed": true
+    }
+  ],
+  "remaining": [
+    "Initial decline interactive timeout; shared completion decoder class fixed locally but exact runtime shipment unverified",
+    "Source-side universal immutability remains unproven",
+    "P004 metadata/integration/L4",
+    "P009/P010/P011 independent/current adequacy",
+    "Normal independent acceptance and exact shipped artifact"
+  ]
+}

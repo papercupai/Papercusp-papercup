@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { decideGitSyncPush, type PushDecisionInput } from './decide-git-sync-push';
+import { decideGitSyncPush, isCommitOnlyMember, type PushDecisionInput } from './decide-git-sync-push';
 
 /** Creator-side, upstream-bearing baseline; tests override one axis at a time. */
 const base: PushDecisionInput = { joinerSide: false, hasUpstreamRemote: true };
+
+it.each([
+  ['commit-only:bridged', true], ['commit-only:p2p-only', true], ['commit-only:config', true],
+  ['push', false], ['', false], [null, false],
+] as const)('classifies recorded push mode %s without loading the pipeline resolver', (pushMode, expected) => {
+  expect(isCommitOnlyMember({ pushMode })).toBe(expected);
+});
 
 describe('decideGitSyncPush — the five rules', () => {
   it('rule 1: no upstream remote → push false (P-011, fetch-less repo is quiet only with push off)', () => {

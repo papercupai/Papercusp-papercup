@@ -1,16 +1,28 @@
-# Auto-applied PR labels — read by .github/workflows/labeler.yml
-# Per testing-spec §1.11 visual-regression and §1.9 E2E policy.
+name: Pull Request Labeler
 
-run-visual:
-  - changed-files:
-    - any-glob-to-any-file:
-      - 'libs/**/*.stories.@(ts|tsx)'
-      - 'libs/**/lostpixel.config.ts'
-      - 'libs/**/.storybook/**'
-      - 'libs/**/lostpixel-baseline/**'
+# Label PR metadata using the trusted base-branch configuration. Never check out
+# or execute PR code with this event's write-capable token.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
 
-run-e2e:
-  - changed-files:
-    - any-glob-to-any-file:
-      - 'apps/**/e2e/**'
-      - 'apps/**/playwright.config.ts'
+permissions: {}
+
+concurrency:
+  group: labeler-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  labeler:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write # Create the configured labels if they do not exist yet.
+    steps:
+      - name: Apply test-selection labels
+        uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7
+        with:
+          configuration-path: .github/labeler.yml
+          sync-labels: 'false' # Preserve explicitly requested test labels.

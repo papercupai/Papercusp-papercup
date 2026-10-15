@@ -166,6 +166,10 @@ describe('R-3 — no false pairing on shared numbers alone', () => {
   });
 });
 
+// Isolation runs take tens of ms; gate-load inflation measured 2219ms against the old 1500ms
+// budget (verify 4988081a, d740fc38). The bound only has to catch runaway backtracking.
+const BOUNDED_BUDGET_MS = 15_000;
+
 describe('R-5 — fail-open and bounded', () => {
   it('empty and non-string input yields no measurements and no match', () => {
     expect(extractMeasurements('')).toEqual([]);
@@ -184,7 +188,7 @@ describe('R-5 — fail-open and bounded', () => {
     const elapsed = performance.now() - t0;
     expect(out.length).toBe(MAX_MEASUREMENTS_PER_TEXT);
     expect(overlap.match).toBe(true);
-    expect(elapsed).toBeLessThan(1500);
+    expect(elapsed).toBeLessThan(BOUNDED_BUDGET_MS);
   });
 
   it('a >=100 KB single line of number/unit soup and separator noise stays bounded', () => {
@@ -193,6 +197,6 @@ describe('R-5 — fail-open and bounded', () => {
     const t0 = performance.now();
     expect(() => extractMeasurements(soup)).not.toThrow();
     expect(() => measurementOverlap(soup, soup)).not.toThrow();
-    expect(performance.now() - t0).toBeLessThan(1500);
+    expect(performance.now() - t0).toBeLessThan(BOUNDED_BUDGET_MS);
   });
 });

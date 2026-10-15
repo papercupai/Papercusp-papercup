@@ -63,6 +63,9 @@ import {
 } from '../../authority/sha-token-registry';
 import {
   FILE_LOCK_OP_KINDS,
+  hookLockOperationSchema,
+  hookOperationStoreIdentity,
+  decodeHookOperationPrepare,
   emitAcquireLockEvents,
   type FileLockAcquireParams,
   type FileLockAcquireResult,
@@ -75,6 +78,7 @@ import { hardText, LIMITS } from '../limits';
 import { isExternalLockKey, resolveExternalPathLockIdentity } from './external-path';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { isTransientPgConnectionError } from '../../host-benign-errors';
+import { withPgRetry } from '../../pg-transient-retry';
 import { validateExplicitRepoPaths } from '../work_items/_derive-paths';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
@@ -177,6 +181,7 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    hook_operation: hookLockOperationSchema.optional().describe('native hook only: fixed operation UUID/deadline and prepared authority pin'),
     paths: z.array(z.string().min(1)).max(50).optional().describe('repo-relative POSIX file paths (no ./, .., backslashes, or absolute paths)'),
     coordination_domain: z
       .string()
@@ -371,20 +376,87 @@ export default defineTool({
     // degrades to the raw local acquire, so the worst case on the fleet's hot per-edit
     // path is exactly today's behavior. The WAIT / wake_on_grant queue below stays local
     // (cross-machine waiter coherence is a documented further step).
+    // postgres-js CONNECT_TIMEOUT is raised while opening the pool connection,
+    // before BEGIN or the lock query reaches PostgreSQL. Replay only that narrow
+    // pre-execution failure; CONNECTION_CLOSED can be post-write and is not safe.
     const localAcquire = (): Promise<Awaited<ReturnType<typeof tryAcquire>>> =>
-      inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
-        tryAcquire(tx, {
-          coordinationDomain,
-          owner: ownerId,
-          ownerLabel,
-          paths,
-          intent: args.intent,
-          ttlSec,
-          goalRef,
-          automatic: args.intent.startsWith('PreToolUse:'),
-        }),
-        { paths },
+      withPgRetry(
+        () => inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+          tryAcquire(tx, {
+            coordinationDomain,
+            owner: ownerId,
+            ownerLabel,
+            paths,
+            intent: args.intent,
+            ttlSec,
+            goalRef,
+            automatic: args.intent.startsWith('PreToolUse:'),
+            operation: args.hook_operation,
+          }),
+          { paths },
+        ),
+        { label: 'locks:acquire:workspace-txn' },
       );
+
+    if (args.hook_operation) {
+      if (!args.intent.startsWith('PreToolUse:') || args.wake_on_grant || args.pending_edit) {
+        return jsonResult({ ok: false, reason: 'operation_conflict', busy: [] });
+      }
+      const operation = args.hook_operation;
+      try {
+        const routed = await acquireWithContentionRetry(() => routeFileLockOp<Record<string, unknown>>(
+          coordinationDomain, {
+            authorityFence: {
+              expected: operation.authority,
+              localStoreIdentity: hookOperationStoreIdentity,
+              prepare: (authority) => ({ ok: false, reason: 'operation_authority_required', operation_authority: authority }),
+            },
+            local: async () => {
+              const r = await localAcquire();
+              return r.ok
+                ? { ok: true, lock_id: r.lock_id, held: r.held, newly_held: r.newly_held,
+                    expires_ts: r.expires_ts.toISOString(), operation_id: operation.id }
+                : { ok: false, busy: r.busy, ...('reason' in r ? { reason: r.reason } : {}),
+                    ...('retryable' in r ? { retryable: r.retryable } : {}), operation_id: operation.id };
+            },
+            remote: {
+              kind: FILE_LOCK_OP_KINDS.acquire,
+              payload: { owner: ownerId, ownerLabel, paths, intent: args.intent, ttlSec, goalRef,
+                automatic: true, coordinationDomain, operation } satisfies FileLockAcquireParams,
+              prepare: {
+                kind: FILE_LOCK_OP_KINDS.queue,
+                payload: { owner: ownerId, coordinationDomain, operationPrepare: true },
+                decode: decodeHookOperationPrepare,
+              },
+              decode: (raw) => {
+                const r = raw as FileLockAcquireResult;
+                if (r.operationId !== operation.id) throw new Error('operation response unavailable');
+                return r.ok
+                  ? { ok: true, lock_id: r.lockId, held: paths, newly_held: r.newlyHeld,
+                      expires_ts: r.expiresTs, operation_id: operation.id, sha_token: r.shaToken }
+                  : { ok: false, busy: r.busy ?? [], reason: r.reason, retryable: r.retryable, operation_id: operation.id };
+              },
+            },
+          },
+        ));
+        const value = routed.value;
+        if (value.ok === true) {
+          const held = value.held as string[];
+          const expiresAtMs = Date.parse(value.expires_ts as string);
+          value.sha_token ??= shaTokenForGrant(coordinationDomain, held, Date.now(), ownerId);
+          noteShaTokenGrant(coordinationDomain, held, ownerId, expiresAtMs);
+          if (routed.scope && routed.via !== 'remote-authority') {
+            emitAcquireLockEvents((event) => void recordLockEvent(event), {
+              scope: routed.scope, owner: ownerId, paths: held, expiresAtMs, ts: Date.now(),
+            });
+          }
+        }
+        return jsonResult(value);
+      } catch (err) {
+        return jsonResult({ ok: false, reason: isWorkspaceContended(err) ? 'workspace_contended' :
+          (err as { reason?: string }).reason ?? 'operation_authority_unknown', busy: [], operation_id: operation.id });
+      }
+    }
 
     let first: Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant };
     // P-015 (WI-1550): when the grant is decided LOCALLY (we are the authority, or
@@ -507,7 +579,7 @@ export default defineTool({
         ok: false,
         reason: 'queued_waiter',
         busy: await enrichBusy(first.busy, { ownerId }),
-        advice: 'A queued agent is ahead for this path. Coordinate with that owner or use wake_on_grant:true to join the queue.',
+        advice: 'An earlier lock-wait ticket is ahead for this path. `busy` lists active holders only; use locks:queue { paths } to inspect ticket order, or wake_on_grant:true to join the queue.',
       });
     }
 
@@ -895,7 +967,9 @@ export default defineTool({
 
       // Re-read the current busy snapshot (may differ from the initial
       // first.busy if some paths freed but others didn't).
-      let finalBusy: { won: true; lockId: string; expires: Date; held: string[] } | { won: false; busy: AcquireBusy[] };
+      let finalBusy:
+        | { won: true; lockId: string; expires: Date; held: string[] }
+        | { won: false; busy: AcquireBusy[]; reason?: 'queued_waiter' };
       try {
         finalBusy = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) => {
           const r = await tryAcquire(tx, {
@@ -911,7 +985,11 @@ export default defineTool({
             // Lucky race — got it after timeout fired but before re-read.
             return { won: true as const, lockId: r.lock_id, expires: r.expires_ts, held: r.held };
           }
-          return { won: false as const, busy: r.busy };
+          return {
+            won: false as const,
+            busy: r.busy,
+            ...('reason' in r && r.reason === 'queued_waiter' ? { reason: r.reason } : {}),
+          };
         }, { paths });
       } catch (err: unknown) {
         if (!isTransientPgConnectionError(err)) throw err;
@@ -948,7 +1026,9 @@ export default defineTool({
                   }
                 : {}),
             }
-          : { reason: 'timeout' }),
+          : 'reason' in finalBusy && finalBusy.reason
+            ? { reason: finalBusy.reason }
+            : { reason: 'timeout' }),
         ...(waitClamped
           ? {
               wait_clamped: {

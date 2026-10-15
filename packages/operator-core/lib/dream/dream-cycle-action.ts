@@ -100,6 +100,7 @@ function stableCycleId(ctx: SystemActionCtx): string {
 export async function productionDreamCycle(
   ctx: SystemActionCtx,
   config: DreamCycleActionConfig,
+  overrides: Pick<import('./capability-review-sources').BuildCapabilityReviewSourcesInput, 'verifyPacket'> = {},
 ): Promise<DreamCycleResult> {
   if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
     const { gatewayLlmEnv } = await import('../inference-gateway/spawn-env');
@@ -129,7 +130,7 @@ export async function productionDreamCycle(
   const cycleId = stableCycleId(ctx);
   const llmCall: ScoutLlmCall = (input) => llm.llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug });
   const sources = (values: import('./capability-contracts').CapabilityPacket[]) =>
-    reviewSources.buildCapabilityReviewSources({ sql, scope, rootPath, manifest, packets: values });
+    reviewSources.buildCapabilityReviewSources({ sql, scope, rootPath, manifest, packets: values, ...overrides });
   const { notifySyncInvalidate } = await import('../sync-sse');
   const changing = async <T>(write: () => Promise<T>): Promise<T> => {
     const value = await write();
@@ -179,6 +180,7 @@ export async function productionDreamCycle(
       },
       loadHistory: () => store.listDreamRuns(sql, { ...scope, limit: 500 }),
       reviewSources: sources,
+      ...(overrides.verifyPacket ? { verifyPacket: overrides.verifyPacket } : {}),
       loadProblems: () => problemSources.readDreamProblemContext(scope),
       beginRun: ({ runId, capability }) =>
         changing(() =>

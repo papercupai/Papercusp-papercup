@@ -71,6 +71,10 @@ vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner }));
 vi.mock('../pot/watchdog', () => ({ claimWatchdogFire }));
 vi.mock('../pot-membership', () => ({ routineStorageSlug }));
 vi.mock('./nudge-recipient', () => ({ deliverScoutNudge }));
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({
+  readConditionEnvelopes: async () => [], computeConditionStates: () => [],
+}));
 
 // The steering store answers PAUSED for every read. If any leg of the sweep
 // ever starts consulting it, it gets the pause — and the assertions below flip.

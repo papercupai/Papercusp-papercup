@@ -563,8 +563,8 @@ describe('federation content matrix — ALL shared content types federate BOTH d
         swarmOverride: swarmOwner,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idJoiner.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
-          applyOwner ??= buildPeerApply(dbOwner.sql, HIVE_HOME, handleOwner!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyOwner ??= buildPeerApply(dbOwner.sql, HIVE_HOME, ctx.ownLogKeyHex);
           return applyOwner(op);
         },
         mergePollMs: 0,
@@ -770,8 +770,8 @@ describe('federation content matrix — ALL shared content types federate BOTH d
         swarmOverride: swarmMember,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idOwner.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
-          applyMember ??= buildPeerApply(dbMember.sql, MEMBER_SLUG, handleMember!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyMember ??= buildPeerApply(dbMember.sql, MEMBER_SLUG, ctx.ownLogKeyHex);
           return applyMember(op);
         },
         mergePollMs: 0,

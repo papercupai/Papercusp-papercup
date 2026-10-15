@@ -1,32 +1,38 @@
 /**
- * plans:set-now — replace the `## Now` block atomically.
+ * plans:set-now — write the plan's Now note.
  *
- * Per agent-plan-tracking-2026-05-20.md §4.2.
+ * Per agent-plan-tracking-2026-05-20.md §4.2: the Now is the cold-resume
+ * anchor, a state+next pair.
  *
- * The Now block is the cold-resume anchor. This verb rewrites just the
- * state+next pair, preserving the surrounding plan body.
+ * derived-status-not-hand-written-2026-10-12 P-004 (D-007/D-008): the note is
+ * stored as structured fields in harness_plans.now_note (text, author,
+ * written-at, the now_updated event's id), NOT rewritten into the plan's
+ * markdown. The content, its hash and the version are untouched, so a Now
+ * update records no revision. Readers take the note over any content `## Now`
+ * section, which stays only as frozen legacy text (now-note-store.ts).
  *
- * Tolerant heading match: any `## Now` (or `## 3. Now`, etc.) is found
- * and replaced. If no Now block exists, one is inserted directly after
- * the closing frontmatter `---` block, before the first body content.
+ * Writes inside the plan lock; the Now/item omission guard evaluates the plan
+ * as it will read with the new note.
  *
- * Writes inside a lock. Auto-bumps frontmatter updated:.
+ * P-006 (D-011): a note may mention finished items. Item status is derived from
+ * the item rows, so the note is narration only; set-now no longer refuses a note
+ * that names a done item, and no terminal/greenlit stamp is written into it.
+ *
+ * `replaceNowBlock` below is the content-section writer used by the
+ * plan-scope-cascade banners (stampMootCarrierNowBlock / stampBarReadinessNowBlock).
  */
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
-import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
+import { newMsgId } from '@papercusp/coordination/core';
+import { withPlanLock } from './with-plan-lock';
 import { maskFences, parsePlan } from './parser';
-import {
-  detectNowItemContradictions,
-  detectNowItemOmissions,
-  type NowItemContradiction,
-  type NowItemOmission,
-} from './now-item-contradictions';
+import { detectNowItemOmissions, type NowItemOmission } from './now-item-contradictions';
+import { applyNowNoteToParsed, buildSetNowNote, type PlanNowNote } from './now-note-store';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
-import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { softText, clampText } from '../limits';
 import {
@@ -48,7 +54,7 @@ const argsSchema = z.object({
     .string()
     .optional()
     .describe(
-      'Optional — a short why behind this state change. Stored on the plan revision and shown in the revision timeline (D-009). Routine progress updates can omit it; the launch seed prefers substantive set-content rationales.',
+      'Optional — a short why behind this state change, stored on the Now note. Routine progress updates can omit it.',
     ),
 }).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
   message: 'pass `slug` or `slugs`',
@@ -59,7 +65,6 @@ const argsSchema = z.object({
 type SetNowValue =
   | { ok: true }
   | { ok: false; code: 'not_found' }
-  | { ok: false; code: 'now_item_status_contradiction'; contradictions: NowItemContradiction[] }
   | { ok: false; code: 'now_item_omission'; omissions: NowItemOmission[] };
 
 export function replaceNowBlock(body: string, state: string, next: string): string {
@@ -98,43 +103,53 @@ export function replaceNowBlock(body: string, state: string, next: string): stri
 }
 
 /**
- * Pure decision core for plans:set-now. Keeping the contradiction check in
- * the same evaluator used by the handler makes the structured write guard
+ * Pure decision core for plans:set-now. Keeping the omission check in the
+ * same evaluator used by the handler makes the structured write guard
  * unit-testable without the SU lock side-database.
+ *
+ * derived-status-not-hand-written-2026-10-12 P-004 (D-007/D-008): the Now is a
+ * structured note, not a content section. The evaluator never returns a body
+ * (`newBody` is always null, so the plan's markdown, content hash and version
+ * are untouched and no revision is recorded); on success it returns the note
+ * withPlanLock stores in `now_note`. The guards run on the plan as readers will
+ * see it: the current content with its Now replaced by the new note.
  */
 export function evaluateNowUpdate(
   current: string | null,
   state: string,
   next: string,
   slug: string,
-): { newBody: string | null; value: SetNowValue } {
+  meta: {
+    author: string | null;
+    eventId: string | null;
+    rationale?: string | null;
+    writtenAt?: Date;
+  } = {
+    author: null,
+    eventId: null,
+  },
+): { newBody: null; nowNote?: PlanNowNote; value: SetNowValue } {
   if (current === null) {
     return { newBody: null, value: { ok: false, code: 'not_found' } };
   }
 
-  const replaced = replaceNowBlock(current, state, next);
-  const final = bumpUpdatedDate(replaced);
-  const contradictions = detectNowItemContradictions(parsePlan(final, { filePath: `${slug}.md` }));
-  if (contradictions.length > 0) {
-    return {
-      newBody: null,
-      value: { ok: false, code: 'now_item_status_contradiction', contradictions },
-    };
-  }
-  const omissions = detectNowItemOmissions(parsePlan(final, { filePath: `${slug}.md` }));
+  const nowNote = buildSetNowNote({ state, next, ...meta });
+  const asRead = applyNowNoteToParsed(parsePlan(current, { filePath: `${slug}.md` }), nowNote);
+  // P-006: no contradiction refusal — a note naming a done item is narration.
+  const omissions = detectNowItemOmissions(asRead);
   if (omissions.length > 0) {
     return {
       newBody: null,
       value: { ok: false, code: 'now_item_omission', omissions },
     };
   }
-  return { newBody: final, value: { ok: true } };
+  return { newBody: null, nowNote, value: { ok: true } };
 }
 
 export default defineTool({
   name: 'plans:set-now',
   description:
-    "Replace the `## Now` block atomically. The Now block is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (both auto-truncate, reported as `clamped`; long-form detail belongs in the plan body via plans:set-content / set-content-chunk). Auto-bumps frontmatter updated:.",
+    "Write the plan's Now note (state + next, stored as structured fields; the plan markdown and version are untouched). The Now is the cold-resume anchor — the single most-read field, NOT a log: keep State ≤2000 chars + Next ≤800 (both auto-truncate, reported as `clamped`; long-form detail belongs in the plan body via plans:set-content / set-content-chunk).",
   guidance: {
     when: 'Plan state advances meaningfully — phase boundaries, blocking discovery, finishing a chunk of work, picking up a new direction.',
     notWhen:
@@ -172,27 +187,39 @@ export default defineTool({
         : []),
     ];
     const slugs = mergeIds(args.slug, args.slugs);
+    let author: string | null = null;
+    try {
+      author = resolveAgentIdentity(ctx as ResolveIdentityCtx).ownerId;
+    } catch {
+      author = null;
+    }
     const env = await runBulk(
       slugs,
       async (slug) => {
-        const rev = planRevisionCapture(
-          ctx as PlanRevisionCtx,
-          slug,
-          args.rationale,
-          harnessSlug ? { harnessSlug } : {},
-        );
+        // P-004: the note names its own now_updated event. The id is minted
+        // before the locked write and the event is emitted with it after the
+        // commit (emission stays outside the lock and best-effort).
+        const eventId = newMsgId();
+        let writtenNote: PlanNowNote | undefined;
         const result = await withPlanLock<SetNowValue>(
           ctx as never,
           {
             slug,
             intent: `plans:set-now`,
             ...(harnessSlug ? { harnessSlug } : {}),
-            afterWrite: rev.afterWrite,
           },
-          async (current): Promise<{ newBody: string | null; value: SetNowValue }> =>
-            evaluateNowUpdate(current, state, next, slug),
+          async (current) => {
+            const evaluated = evaluateNowUpdate(current, state, next, slug, {
+              author,
+              eventId,
+              rationale: args.rationale?.trim() || null,
+            });
+            writtenNote = evaluated.nowNote;
+            return evaluated;
+          },
         );
 
+        if (result.kind === 'refused') return { slug, error: result.value.code, ...result.value };
         if (result.kind === 'busy') {
           return {
             ok: false as const,
@@ -212,10 +239,8 @@ export default defineTool({
             ok: false as const,
             slug,
             error: result.value.code,
-            ...(result.value.code === 'now_item_status_contradiction'
-              ? { contradictions: result.value.contradictions }
-              : result.value.code === 'now_item_omission'
-                ? { omissions: result.value.omissions }
+            ...(result.value.code === 'now_item_omission'
+              ? { omissions: result.value.omissions }
               : {}),
           };
         }
@@ -267,18 +292,27 @@ export default defineTool({
           /* fail-open: the Now write already landed */
         }
 
-        await emitPlanEventForCaller(ctx, {
+        const emitted = await emitPlanEventForCaller(ctx, {
           planSlug: slug,
           event: 'now_updated',
           after: next,
           detail: state.slice(0, 200),
+          msgId: eventId,
         });
 
         return {
           ok: true as const,
           slug,
           filePath: result.filePath,
-          revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+          // P-004: the note is stored beside the content, so the plan markdown,
+          // content hash and version are unchanged and no revision is recorded.
+          revision: null,
+          note: {
+            writtenAt: writtenNote?.writtenAt ?? null,
+            // null when the best-effort event emit failed (the note keeps the
+            // pre-minted id, which then names no event).
+            eventId: emitted,
+          },
           ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
           ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
           ...(provenanceLint ? { provenanceLint } : {}),

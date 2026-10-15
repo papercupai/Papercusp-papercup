@@ -16,6 +16,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { z } from 'zod';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('./identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })),
@@ -35,19 +37,26 @@ vi.mock('./resource-broadcast', () => ({ broadcastResourceDrainStart: vi.fn() })
 vi.mock('./cross-domain-conflict', () => ({
   findCrossDomainResourceConflicts: vi.fn(async () => []),
   CROSS_DOMAIN_CONFLICT_HINT: 'HINT',
+  parseHostGlobalResourceExclusionError: vi.fn(() => null),
 }));
 
 import { tryAcquireResource, type ResourceAcquireResult } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { endedSessionOwners } from './ended-session-owners';
-import { findCrossDomainResourceConflicts } from './cross-domain-conflict';
+import {
+  findCrossDomainResourceConflicts,
+  parseHostGlobalResourceExclusionError,
+  type HostGlobalResourceConflict,
+} from './cross-domain-conflict';
 import { inWorkspaceTxn } from './in-workspace-txn';
 const sharedM = vi.mocked(tryAcquireResource);
 const exclM = vi.mocked(acquireResourceExclusiveWithWait);
 const endedOwnersM = vi.mocked(endedSessionOwners);
 const crossM = vi.mocked(findCrossDomainResourceConflicts);
+const exclusionM = vi.mocked(parseHostGlobalResourceExclusionError);
 const txnM = vi.mocked(inWorkspaceTxn);
+const foreignCoordinationDomain = join(tmpdir(), 'papercusp-release');
 const { default: tool, resolveWaitSec } = await import('./acquire_resource');
 
 type Out = { content: { text: string }[] };
@@ -80,6 +89,8 @@ beforeEach(() => {
   endedOwnersM.mockReset();
   crossM.mockReset();
   crossM.mockResolvedValue([]);
+  exclusionM.mockReset();
+  exclusionM.mockReturnValue(null);
 });
 afterEach(() => vi.useRealTimers());
 
@@ -98,6 +109,45 @@ describe('locks:acquire_resource shared', () => {
     const b = body(await callShared());
     expect(b).toMatchObject({ ok: false, reason: 'held_exclusive' });
     expect(b.holders[0]).toMatchObject({ owner: 'o2', mode: 'shared', expires_ts: '2026-01-01T00:00:00.000Z' });
+  });
+
+  it('maps an atomic host-global exclusion race to a structured refusal with its domain', async () => {
+    const conflict: HostGlobalResourceConflict = {
+      resource: 'dev-server',
+      requested_domain: 'papercusp-host-global',
+      coordination_domain: foreignCoordinationDomain,
+      owner: 'su-peer',
+      mode: 'exclusive',
+      status: 'held',
+    };
+    const error = Object.assign(new Error('trigger refusal'), {
+      code: '23P01',
+      constraint_name: 'resource_host_global_exclusion',
+    });
+    exclusionM.mockReturnValue(conflict);
+    sharedM.mockRejectedValueOnce(error);
+
+    const b = body(await callShared());
+
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'held_in_other_domain',
+      holders: [
+        {
+          resource: 'dev-server',
+          coordination_domain: foreignCoordinationDomain,
+          owner: 'su-peer',
+          owner_label: null,
+          mode: 'exclusive',
+          status: 'held',
+        },
+      ],
+      hint: 'HINT',
+    });
+    expect(exclusionM).toHaveBeenCalledWith(error, {
+      resource: 'dev-server',
+      targetDomain: expect.any(String),
+    });
   });
 
   it('maps transient workspace contention to an explicit retryable result', async () => {

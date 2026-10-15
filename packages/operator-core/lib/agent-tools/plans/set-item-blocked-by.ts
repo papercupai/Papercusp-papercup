@@ -273,6 +273,12 @@ async function setBlockedByGroup(
     },
   );
 
+  if (result.kind === 'refused') {
+    return group.items.map((item) => ({
+      inputIndex: item.inputIndex,
+      result: { slug: item.slug, itemId: item.itemId, error: result.value.code, ...result.value },
+    }));
+  }
   if (result.kind === 'busy') {
     const busy = result.busy.map((b) => ({
       path: b.path,

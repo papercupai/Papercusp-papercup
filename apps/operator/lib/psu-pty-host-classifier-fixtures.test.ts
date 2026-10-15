@@ -113,13 +113,15 @@ const naiveCodexPortToClaude: Classifier = (row, ctx) => {
  */
 function fencelessFor(agent: string): Classifier {
   return (row) => {
-    const r = row as { type?: string; payload?: { type?: string }; message?: { stop_reason?: string } };
+    const r = row as { type?: string; payload?: { type?: string }; message?: { role?: string; stopReason?: string; stop_reason?: string } };
     if (agent === 'codex') {
       if (r?.type !== 'event_msg') return 'ignore';
       if (r.payload?.type === 'task_complete' || r.payload?.type === 'turn_completed') return 'turn-completed';
       if (['task_started', 'user_message', 'turn_aborted'].includes(r.payload?.type ?? '')) return 'turn-started';
       return 'ignore';
     }
+    if (agent === 'omp' && r?.type === 'message' && r.message?.role === 'assistant'
+      && r.message.stopReason && !['tooluse', 'tool_use', 'tool_calls'].includes(r.message.stopReason.toLowerCase())) return 'turn-completed';
     if (r?.type === 'assistant' && r.message?.stop_reason === 'end_turn') return 'turn-completed';
     return 'ignore';
   };
@@ -127,6 +129,10 @@ function fencelessFor(agent: string): Classifier {
 
 /** Per-agent proof that the captured window still exercises the real trap. */
 const DISCRIMINATORS: Record<string, { describe: string; count: (rows: unknown[]) => number }> = {
+  omp: {
+    describe: 'native toolResult messages',
+    count: rows => rows.filter(row => (row as { message?: { role?: string } })?.message?.role === 'toolResult').length,
+  },
   claude: {
     describe: "type:'user' rows carrying a tool_result block (the D-003 trap)",
     count: (rows) => rows.filter((row) => {
@@ -314,6 +320,7 @@ describe('nativeTurnCompletedInTranscript dispatches through the registry (R-2)'
   const ISOLATED_LAYOUT: Record<string, { envKey: string; subdir: string }> = {
     claude: { envKey: 'CLAUDE_CONFIG_DIR', subdir: 'projects' },
     codex: { envKey: 'CODEX_HOME', subdir: 'sessions' },
+    omp: { envKey: 'PI_CONFIG_DIR', subdir: 'agent/sessions' },
   };
 
   it.each(REGISTERED)('every registered agent has an isolated-root layout defined: %s', (agent) => {

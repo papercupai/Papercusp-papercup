@@ -41,8 +41,9 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 import { markAdvSessionEnded } from './adv-sessions';
-import { interruptViaPty, findLiveHost, listLiveHostsAsync } from './events/await/psu-pty-discovery';
+import { interruptViaPty, findLiveHostAsync, listLiveHostsAsync } from './events/await/psu-pty-discovery';
 import { COORD_INBOX_WAKE_PREFIX } from './agent-tools/coordination/inbox-wake';
+import { AWAIT_CANCEL_REASONS } from './events/await/cancel-reasons';
 import { gatherOnDesktopSessions, isPidUnderOpenWindow } from './desktop-window-liveness';
 import { gatherViewerAttachedOwners } from './pty-viewer-heartbeat';
 import { issuesScopeWorkspace } from './issues-engineer';
@@ -1399,7 +1400,7 @@ export interface TerminateDeps {
   /** Graceful Ctrl-C into the owner's live psu-pty host; true on a clean write. */
   gracefulInterrupt: (ownerId: string) => Promise<boolean>;
   /** Resolve the owner's live host pid (for the SIGKILL escalation), or null. */
-  resolvePid: (ownerId: string) => number | null;
+  resolvePid: (ownerId: string) => number | null | Promise<number | null>;
   /** True iff the pid is still alive. */
   pidAlive: (pid: number) => boolean;
   /** Hard-kill the pid; true on success. */
@@ -1424,7 +1425,7 @@ export interface TerminateDeps {
    * only ever prevent a kill that happens today, never cause one, and it stays
    * silent (`false`) for a session that is not in a terminal window scope at all.
    */
-  windowProtects: (ownerId: string) => boolean;
+  windowProtects: (ownerId: string) => boolean | Promise<boolean>;
 }
 
 function defaultPidAlive(pid: number): boolean {
@@ -1442,7 +1443,7 @@ const defaultTerminateDeps: TerminateDeps = {
   isFlagOn: (flag) => getFlag(flag, 'system').catch(() => false),
   listIdle: (opts) => findIdleLiveSessions(opts),
   gracefulInterrupt: (ownerId) => interruptViaPty(ownerId, 'sigint').catch(() => false),
-  resolvePid: (ownerId) => findLiveHost(ownerId)?.pid ?? null,
+  resolvePid: async (ownerId) => (await findLiveHostAsync(ownerId))?.pid ?? null,
   pidAlive: defaultPidAlive,
   sigkill: (pid) => {
     try {
@@ -1454,9 +1455,9 @@ const defaultTerminateDeps: TerminateDeps = {
   },
   markEnded: async (advSessionId) => { await markAdvSessionEnded(advSessionId, null, 'reaper'); },
   wait: (ms) => new Promise((r) => setTimeout(r, ms)),
-  windowProtects: (ownerId) => {
+  windowProtects: async (ownerId) => {
     try {
-      const pid = findLiveHost(ownerId)?.pid;
+      const pid = (await findLiveHostAsync(ownerId))?.pid;
       if (pid == null) return false; // nothing to judge — leave the existing rules alone
       return cgroupWindowProtects(isPidInLiveWindowScope(pid, nodeCgroupFs));
     } catch {
@@ -1522,7 +1523,7 @@ export async function terminateIdleLiveSessions(
       //    before the SIGKILL — interrupting the turn of a session the owner is
       //    watching is itself the harm, so a protection that only guarded the kill
       //    would arrive too late.
-      if (deps.windowProtects(t.coordOwnerId)) {
+      if (await deps.windowProtects(t.coordOwnerId)) {
         result.sparedByWindow += 1;
         continue;
       }
@@ -1536,7 +1537,7 @@ export async function terminateIdleLiveSessions(
       await deps.gracefulInterrupt(t.coordOwnerId);
       // 2. give it a moment to exit, then SIGKILL the host pid if still alive.
       await deps.wait(TERMINATE_GRACE_MS);
-      const pid = deps.resolvePid(t.coordOwnerId);
+      const pid = await deps.resolvePid(t.coordOwnerId);
       if (pid != null && deps.pidAlive(pid)) deps.sigkill(pid);
       // 3. mark the row ended (re-checks ended_at IS NULL inside markAdvSessionEnded).
       await deps.markEnded(t.advSessionId);
@@ -2097,7 +2098,7 @@ export async function reclaimDanglingInboxWakeAwaits(
       // row), so an await re-armed between the read and here is never clobbered.
       const rows = await sql<Array<{ id: number }>>`
         UPDATE harness_shared.event_awaits
-           SET cancelled_at = now()
+           SET cancelled_at = now(), cancel_reason = ${AWAIT_CANCEL_REASONS.danglingInboxWakeReclaimed}
          WHERE subscriber_id = ANY(${dead}::text[])
            AND event_key LIKE ${wakePrefix}
            AND policy = 'wake' AND once = false

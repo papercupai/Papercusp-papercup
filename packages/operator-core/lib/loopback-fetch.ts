@@ -172,21 +172,30 @@ export function isConnRefused(err: unknown): boolean {
 export async function loopbackFetch(
   input: string | URL,
   init?: RequestInit,
-  opts: { backoffsMs?: number[]; launch?: boolean } = {},
+  opts: { backoffsMs?: number[]; launch?: boolean;
+    /** Wrap the actual send after dispatcher preparation. A request guard may
+     * replace init with a Request; the prepared dispatcher must survive that. */
+    wrapFetch?: (send: typeof fetch) => typeof fetch;
+  } = {},
 ): Promise<Response> {
   const backoffs = opts.backoffsMs ?? DEFAULT_BACKOFFS_MS;
+  const wrapFetch = opts.wrapFetch;
+  const nativeFetch = globalThis.fetch;
   // P-033: a long-running launch call (kind:'hive' Queen / overwatch) opts into the
   // raised-timeout dispatcher so its connection isn't severed by the caller's 5-min
   // undici headers/body cap while the worker runs up to the route's 45-min ceiling.
   let fetchInit = init;
+  let dispatcher: Awaited<ReturnType<typeof getLaunchDispatcher>> | undefined;
   if (opts.launch) {
-    const dispatcher = await getLaunchDispatcher();
+    dispatcher = await getLaunchDispatcher();
     fetchInit = { ...(init ?? {}), dispatcher } as RequestInit;
   }
+  const send = wrapFetch ? wrapFetch((input, guardedInit) => nativeFetch(input,
+    dispatcher ? { ...guardedInit, dispatcher } as RequestInit : guardedInit)) : nativeFetch;
   let lastErr: unknown;
   for (let attempt = 0; attempt <= backoffs.length; attempt++) {
     try {
-      return await fetch(input, fetchInit);
+      return await send(input, fetchInit);
     } catch (err) {
       lastErr = err;
       if (isTransientNetworkError(err) && attempt < backoffs.length) {

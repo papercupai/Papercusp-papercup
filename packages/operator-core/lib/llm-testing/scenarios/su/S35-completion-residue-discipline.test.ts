@@ -77,8 +77,10 @@ describe('S35 completion-residue discipline — fixture world', () => {
       .toMatchObject({ ok: true, effectReceipt: { effect: 'checkpoint-recorded' } });
     expect(await parse('tools:invoke', { name: 'work_items:checkpoint', args: JSON.stringify(JSON.stringify(checkpoint)) }))
       .toMatchObject({ ok: true, effectReceipt: { effect: 'checkpoint-recorded' } });
-    // An args string that does not parse is production's retryable invalid_args, not not_applicable.
-    expect(await parse('tools:invoke', { name: 'work_items:checkpoint', args: `${JSON.stringify(checkpoint)}}` }))
+    // A genuinely non-JSON args string is production's retryable invalid_args,
+    // not not_applicable. The one-surplus-brace compatibility case is pinned
+    // by tools/invoke.test.ts and must not be used for this negative assertion.
+    expect(await parse('tools:invoke', { name: 'work_items:checkpoint', args: 'not-json {' }))
       .toMatchObject({ ok: false, error: 'invalid_args' });
   });
 

@@ -19,6 +19,7 @@ import { createHostedPrincipal, type HostedPrincipal } from './hosted-principal'
 import type { HostedMembershipAuthority, HostedMembershipAuthorityReader } from './hosted-membership-authority';
 import type { HostedSession, HostedSessionCookieCodec } from './hosted-session';
 import type { HostedSessionAuthorizationState } from './hosted-authorization';
+import type { HostedConnectorTicketBinding } from '../endpoint-route/hosted-workspace-connector';
 
 export const HOSTED_PRINCIPAL_DENIAL_REASONS = [
   /** No hosted session cookie, or the cookie failed its HMAC/format check. */
@@ -72,6 +73,35 @@ export interface HostedPrincipalResolverDependencies {
 }
 
 export type HostedPrincipalResolver = (headers: Headers) => Promise<HostedPrincipalResolution>;
+
+/** Internal connector door. Input is the consumed ticket on an authenticated
+ * channel, never request headers or a browser frame. Re-read the same session
+ * and membership authority without transporting the browser cookie. */
+export function createHostedChannelPrincipalResolver(
+  deps: Omit<HostedPrincipalResolverDependencies, 'sessionCookieCodec'>,
+  input: HostedConnectorTicketBinding,
+): () => Promise<HostedPrincipalResolution> {
+  const channel = { ...input };
+  if (channel.kind !== 'session' || channel.state !== 'active' || channel.transport !== 'websocket'
+    || channel.audience !== 'workspace-operator' || !channel.userId || !channel.hostedSessionId
+    || channel.controlPlaneWorkspaceId !== deps.controlPlaneWorkspaceId) {
+    return async () => ({ ok: false, reason: 'authority_unavailable' });
+  }
+  const resolve = createHostedPrincipalResolver({ ...deps,
+    sessionCookieCodec: { read: () => channel.hostedSessionId! } });
+  return async () => {
+    const result = await resolve(new Headers());
+    if (!result.ok) return result;
+    const p = result.principal;
+    if (p.sessionId !== channel.hostedSessionId || p.userId !== channel.userId
+      || p.workspaceId !== channel.controlPlaneWorkspaceId
+      || p.activeOrganizationId !== channel.organizationId
+      || p.selectedWorkspaceId !== channel.customerWorkspaceId) {
+      return { ok: false, reason: 'session_organization_mismatch' };
+    }
+    return result;
+  };
+}
 
 /**
  * The authoritative session state for `authorizeHostedOperation`.

@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-app-live-tutorial-2026-10-01",
+  "governingDecision": "D-047",
+  "workItems": [
+    "EI-25727582485448528",
+    "EI-25729515004564990",
+    "WI-10007170"
+  ],
+  "scope": "Retained compiled hosted artifact readiness using an owned private operator and TEST identity; no model turn, production deployment, attended voice, novice pilot or full-product shipment acceptance.",
+  "artifact": {
+    "portalCommit": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7",
+    "operatorCommit": "9d60d682b3e67e78074e2b842aeee43d2c472b8e",
+    "buildId": "1DHsq9zazhmCtWqHAHyaP",
+    "sourceRootDigest": "37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0",
+    "servedRelease": {
+      "schemaVersion": 2,
+      "buildId": "1DHsq9zazhmCtWqHAHyaP",
+      "release": "1DHsq9zazhmCtWqHAHyaP-20261011103425643-4056354-aa8048b0",
+      "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-0e88e2e67b-2lSWTE",
+      "publishedAt": "2026-10-11T10:34:25.643Z",
+      "sourceRootDigest": "37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0"
+    }
+  },
+  "fixtureSource": {
+    "state": "working-uncommitted",
+    "head": "edc11a5cb465bd3c3441f7de532fa7a2eb71cc06",
+    "sha256": {
+      "packages/operator-core/lib/llm-testing/public-manual-hosted-fixture.ts": "e5d9f49d21f2c7cdf09dbb87f1fa294e82a00f3760e71606f42c73427225fd0e",
+      "packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts": "90c1d468db733df0aae08ba78e378d65277717c845666d59ca9dfdebaa83b896",
+      "packages/operator-core/lib/endpoint-route/hosted-workspace-connector.test.ts": "5cedd8ffc0622943cb0e9876735df614bc5029c8f4f6e9b031312b7d145ddb6c"
+    }
+  },
+  "rootCause": {
+    "hostname": "Private loopback socket authority did not match the production connector hostname policy. The existing fixture ingress now qualifies only the configured loopback connector socket authority; origin, credentials and unrelated routes remain unchanged.",
+    "ownedList": "The readiness fixture compared list row.id with creation chat.id. The retained PostgreSQL ownership writer and Portal list contract emit row.chatId; the corrected assertion also requires backend converse.",
+    "distinguishingEvidence": "The unchanged D-047 artifact returned connector200/chat201/history200 in the failed2349 run, and the corrected fixture then passed ownedList200containsChattrue in0006. Existing retained Portal proxy regression asserts row.chatId."
+  },
+  "actualReadiness": {
+    "observedAt": "2026-10-12T00:09:09.268Z",
+    "buildId": "1DHsq9zazhmCtWqHAHyaP",
+    "sourceRootDigest": "37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0",
+    "servedRelease": {
+      "schemaVersion": 2,
+      "buildId": "1DHsq9zazhmCtWqHAHyaP",
+      "release": "1DHsq9zazhmCtWqHAHyaP-20261011103425643-4056354-aa8048b0",
+      "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-0e88e2e67b-2lSWTE",
+      "publishedAt": "2026-10-11T10:34:25.643Z",
+      "sourceRootDigest": "37e01dacde909d62046081e9579874dc859477aead6195c8cb3910fa70c7a5a0"
+    },
+    "modelTurnRequests": 0,
+    "observations": {
+      "anonymousCreation": {
+        "status": 401
+      },
+      "connector": {
+        "hostId": "host-7212e4871e713ceed91e99b7",
+        "routeLabel": "manual-092a99a1-20ee-498f-b7c7-3d5d1b2b0271",
+        "status": 200
+      },
+      "creation": {
+        "status": 201,
+        "ok": true,
+        "errorCode": null
+      },
+      "history": {
+        "status": 200,
+        "turns": []
+      },
+      "ownedList": {
+        "status": 200,
+        "containsChat": true
+      },
+      "anonymousHistory": {
+        "status": 401
+      }
+    },
+    "cleanup": {
+      "attempted": 3,
+      "completed": 3,
+      "failed": 0,
+      "byKind": {
+        "hosted-operator-connector": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        },
+        "hosted-test-user": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        },
+        "http-client": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        }
+      }
+    },
+    "phase": {
+      "stage": "cleanup",
+      "state": "complete",
+      "startedAt": "2026-10-12T00:09:22.534Z"
+    },
+    "runtimeBudget": {
+      "remainingMs": 323771,
+      "workMs": 90000,
+      "cleanupMs": 20000
+    },
+    "receiptPath": "/tmp/tutorial-d047-readiness-evidence-20261012T0006/public-manual-hosted-readiness-1c484dee-1eff-40e7-8712-7bedc8e8fb42/case.json",
+    "receiptSha256": "ed9590a45dddea61fd0c770acce207d06d495d59e7c53fa886f61530e528e598",
+    "logPath": "/tmp/tutorial-d047-readiness-20261012T0006.log",
+    "taskId": "0mv4hup7owx4k1233xy",
+    "terminal": "completed",
+    "exitCode": 0,
+    "testResult": {
+      "passed": 1,
+      "excludedBySelector": 63
+    },
+    "ledger": "No shared LOCAL row was returned for the actual0006 run at read time; raw receipt and durable terminal evidence are cited without inventing a run id."
+  },
+  "conventionalGuard": {
+    "logPath": "/tmp/tutorial-readiness-contract-full-20261012T0004.log",
+    "localTestRunId": 21134104,
+    "passed": 36,
+    "optInExcluded": 28,
+    "sourceState": "working-uncommitted; root and harness absent in shared ledger"
+  },
+  "cleanup": {
+    "testResources": {
+      "attempted": 3,
+      "completed": 3,
+      "failed": 0,
+      "byKind": {
+        "hosted-operator-connector": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        },
+        "hosted-test-user": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        },
+        "http-client": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        }
+      }
+    },
+    "temporaryScopes": [
+      {
+        "taskId": "0mv4ht6301ue4zy2aem",
+        "kind": "Portal",
+        "verifiedEmpty": true
+      },
+      {
+        "taskId": "0mv4hpwvz4gkbm915qw",
+        "kind": "operator",
+        "verifiedEmpty": true
+      }
+    ],
+    "privateRuntime": {
+      "logPath": "/tmp/tutorial-d047-hosted-prepare-20261012T0006.log",
+      "runtimeRemoved": true,
+      "pgDataRemoved": true,
+      "cleanupElapsedMs": 2280
+    }
+  },
+  "supersededAttempt": {
+    "logPath": "/tmp/tutorial-d047-readiness-20261011T2349.log",
+    "receiptPath": "/tmp/tutorial-d047-readiness-evidence-20261011T2349/public-manual-hosted-readiness-e0a4a1c9-65ec-4bfc-8dbc-7568e4d8fc6d/case.json",
+    "taskId": "0mv4hh2zatfy2cou40k",
+    "exitCode": 1,
+    "failedAssertion": "ownedList containsChat compared row.id",
+    "cleanupCompleted": 3,
+    "cleanupFailed": 0
+  },
+  "committedConventionalGuard": {
+    "commit": "a91383fe74d9c22088ee09aa22602e71490f2b1b",
+    "root": "/dev/shm/pcv/papercusp-lint-as-committed-a91383fe74-jYqbSt",
+    "harness": "papercusp",
+    "source": "local",
+    "worktreeDirty": false,
+    "logPath": "/tmp/tutorial-readiness-connector-committed-a91383fe-20261012T0056.log",
+    "logSha256": "cbc9dac007b6342cfea6b9b33bea1092c2f8ac8ea629e66fd5d6f5cc846c0493",
+    "exitCode": 0,
+    "testNamePattern": null,
+    "suites": [
+      {
+        "file": "packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts",
+        "localTestRunId": 21134709,
+        "passed": 36,
+        "failed": 0,
+        "explicitOptInExcluded": 28
+      },
+      {
+        "file": "packages/operator-core/lib/endpoint-route/hosted-workspace-connector.test.ts",
+        "localTestRunId": 21134714,
+        "passed": 14,
+        "failed": 0,
+        "excluded": 0
+      }
+    ],
+    "sourceVerification": "The three fixtureSource.sha256 values match blobs at this single immutable commit. Original actualReadiness and its working-source provenance are preserved.",
+    "scope": "Complete default fixture and connector suites; the 28 explicitly opt-in cases did not run. This guard proof does not renew actual hosted, model, voice, novice, production or full-product acceptance."
+  },
+  "remaining": [
+    "Remaining plan BAR, actual public-manual behavior, full-product acceptance, protected attended voice, novice pilot and final shipment evidence."
+  ]
+}

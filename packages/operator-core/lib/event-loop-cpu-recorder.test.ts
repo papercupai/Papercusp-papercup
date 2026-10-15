@@ -3,6 +3,8 @@ import { LoopCpuRecorder, LOOP_CPU_SAMPLING_INTERVAL_US } from './event-loop-cpu
 
 function fixture() {
   let now = 0;
+  let threadUser = 0;
+  let threadSystem = 0;
   const live = new Set<string>();
   const events: string[] = [];
   const session = {
@@ -10,9 +12,19 @@ function fixture() {
     disconnect: vi.fn(() => { live.clear(); events.push('disconnect'); }),
     post: vi.fn(async (method: string, _params?: Record<string, number>): Promise<unknown> => {
       events.push(method);
+      if (method === 'Profiler.enable') {
+        threadUser += 1234;
+        threadSystem += 56;
+      }
       return method === 'Profiler.stop' ? { profile: { nodes: [], samples: [1, 2, 3] } } : {};
     }),
   };
+  const threadCpuUsage = vi.fn((previous?: { user: number; system: number }) => {
+    const current = { user: threadUser, system: threadSystem };
+    return previous
+      ? { user: current.user - previous.user, system: current.system - previous.system }
+      : current;
+  });
   let maxLive = 0;
   const make = vi.fn(async () => session);
   const log = vi.fn();
@@ -21,8 +33,9 @@ function fixture() {
     begin: (name) => { live.add(name); maxLive = Math.max(maxLive, live.size); events.push('begin'); },
     end: (name) => { live.delete(name); events.push('end'); },
     now: () => now,
+    threadCpuUsage,
   });
-  return { recorder, session, make, log, events, live, advance: (ms: number) => { now += ms; }, maxLive: () => maxLive };
+  return { recorder, session, make, log, events, live, threadCpuUsage, advance: (ms: number) => { now += ms; }, maxLive: () => maxLive };
 }
 
 describe('monitor-owned warm CPU recorder', () => {
@@ -44,6 +57,22 @@ describe('monitor-owned warm CPU recorder', () => {
       expect(f.events.slice(2, 5)).toEqual(['begin', 'begin', 'end']);
     } finally { f.recorder.stop(); }
     expect(f.live.size).toBe(0);
+  });
+
+  it('logs bounded main-thread CPU deltas only around cold initialization', async () => {
+    const f = fixture();
+    try {
+      expect(await f.recorder.update(true, true)).toBe(true);
+      expect(f.log).toHaveBeenCalledWith('[event-loop-lag] CPU recorder observer cost', expect.objectContaining({
+        warmupMainThreadUserCpuUs: 1234,
+        warmupMainThreadSystemCpuUs: 56,
+        samplingIntervalUs: LOOP_CPU_SAMPLING_INTERVAL_US,
+      }));
+      expect(f.threadCpuUsage).toHaveBeenCalledTimes(2);
+
+      expect(await f.recorder.update(true, true)).toBe(true);
+      expect(f.threadCpuUsage).toHaveBeenCalledTimes(2);
+    } finally { f.recorder.stop(); }
   });
 
   it.each(['disabled', 'unsafe', 'stop', 'overdue'] as const)('revokes active sampling on %s without serializing the old anchor', async (reason) => {

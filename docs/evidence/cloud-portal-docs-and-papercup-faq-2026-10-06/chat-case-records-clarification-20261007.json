@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-portal-docs-and-papercup-faq-2026-10-06",
+  "workItem": "WI-10006920",
+  "defect": "EI-25363219284170931",
+  "testRunId": 20912783,
+  "command": "OPERATOR_BASE_URL=http://127.0.0.1:3397 PAPERCUSP_TEST_PUBLIC_CHAT=1 PAPERCUSP_TEST_RUN_HARNESS=papercusp LLM_TEST_EVIDENCE_ROOT=/tmp/su73-clarification-evidence-2312 npm run test:file -- packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts -t 'clarifies an ambiguous question'",
+  "result": {
+    "exitCode": 0,
+    "passed": 1,
+    "failed": 0,
+    "filterExcluded": 5
+  },
+  "runtimeLimit": "Canonical source request-only utility host, docs-only public PI; no production shipment claim",
+  "record": {
+    "id": "ambiguous",
+    "question": "Is it running?",
+    "recordedAt": "2026-10-07T23:09:47.380Z",
+    "baseUrl": "http://127.0.0.1:3397",
+    "runtimeBuild": {
+      "sha": "1ebe8008c2",
+      "measuredAt": "2026-10-07T23:09:35.271Z"
+    },
+    "workspaceId": "public-chat-manual-c0160eb5-038a-47db-8ddb-24ed4f12fc54",
+    "sessionId": "llm-testing/5fcdea72-93a1-429a-90cd-0735f4356d67",
+    "answer": "What are you checking?",
+    "finishReason": "done",
+    "toolCalls": [],
+    "toolResults": [],
+    "error": null
+  }
+}

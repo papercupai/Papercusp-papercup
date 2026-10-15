@@ -1,0 +1,151 @@
+{
+  "schemaVersion": "p011-bootstrap-query-build-qualification-v1",
+  "workItem": "EI-25177041329489394",
+  "parent": "WI-10006124",
+  "planParent": "WI-10004890",
+  "status": "root-fix-and-failure-persistence-verified-locally-shared-acceptance-open",
+  "rootCause": {
+    "hypothesis": "createPgDiagnosticHooks freezes a null source build stamp when a pool is constructed before the host installs its loaded-build resolver.",
+    "alternativeHypothesis": "The HTTP request correlation, served process, or query tuple identifies another worker or build.",
+    "distinguishingTest": "Read saved R2 failed raw after observations and evaluate each HTTP/operation/process/build/status/pool identity predicate. Construct a pool before the build resolver is known, then install it and record another result.",
+    "actualObservation": "R2 has 16 query records for eight exact HTTP requests. All HTTP/operation/process/correlation-build/status/pool predicates match; source.buildSha is null for all sixteen while snapshot and correlation build are 513b5d97fe. Canonical constructor-order regression fails before fix with [null,null], expected [null,abcdef1234], and passes after fix.",
+    "durableFix": "Resolve an unknown pool source stamp once on a subsequent result, preserving process/pool UUIDs and every historical record; a known stamp stays pinned.",
+    "detectorFix": "The existing multi-target collector records detached raw before, HTTP identities, after, resources and assignment through its caller's publication callback before derived assignment can throw."
+  },
+  "sourceFingerprints": {
+    "scope": "Three named files only, not complete executed-source graph",
+    "files": [
+      {
+        "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+        "bytes": 29673,
+        "sha256": "2566bd434b4ac2b720e5ea24727136ddd82e55fa063a4442fd06b5f4380e51c7"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/acquire-registry.test.ts",
+        "bytes": 26951,
+        "sha256": "9b22f0f37655ef6d84634bf8e29d0bf18ff45a0b946b0d393683e13c02307f95"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+        "bytes": 105790,
+        "sha256": "c98d523e56b3ca856f3302ad0670df20a72bbd9ac076235631e4f384c68b0172"
+      }
+    ]
+  },
+  "failedLiveReports": [
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r1-2026-10-05.json",
+      "bytes": 20247,
+      "sha256": "9f6da398bbd1bc3290415195ff1acb28d7edaf318d64de765805e7db99eb5cfd"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r2-diagnostic-2026-10-05.json",
+      "bytes": 128127,
+      "sha256": "374466b42b47bce7cca96ea5e715cbb8caa4e5c68c56ea524460b027707d8e0d"
+    }
+  ],
+  "verification": {
+    "failedSharedRuns": [
+      {
+        "testRunId": 20760395,
+        "status": "fail",
+        "requests": 8,
+        "requestWorkerWindows": 0
+      },
+      {
+        "testRunId": 20760428,
+        "status": "fail",
+        "requests": 8,
+        "selectedQueryRecords": 16,
+        "rawAttemptStage": "resources"
+      }
+    ],
+    "bootstrapBefore": {
+      "testRunId": 20760467,
+      "status": "fail",
+      "failed": 1,
+      "filteredSkipped": 37
+    },
+    "bootstrapAfter": {
+      "testRunId": 20760854,
+      "status": "pass",
+      "passed": 38,
+      "skipped": 0
+    },
+    "samplerIntermediate": {
+      "testRunId": 20760860,
+      "status": "pass",
+      "passed": 38,
+      "filteredSkipped": 20,
+      "qualification": "Before the final type-narrowing edit; exact source graph unknown after router HEAD moved."
+    },
+    "samplerFinalFailureGuard": {
+      "testRunId": 20761334,
+      "status": "pass",
+      "passed": 1,
+      "filteredSkipped": 57
+    },
+    "typecheck": {
+      "exitCode": 0,
+      "dbPackageTypecheck": "pass",
+      "operatorCoreActualErrors": 0,
+      "qualification": "The DB test is outside the operator-core TS program. The db package typecheck and canonical Vitest runner cover their own declared programs; no full monorepo claim.",
+      "intermediateFailure": "Earlier typecheck found one possibly-undefined snapshot.results access in the new fixture; the final observed-state narrowing fixes it."
+    },
+    "logs": [
+      {
+        "path": "/tmp/su-7db4f-p011-shared-worker-window-r1.log",
+        "bytes": 33016,
+        "sha256": "db5d276331b1f96ccf684c0e0143ba359d7f8b8cbee036aa752150ad39ad927e"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-shared-worker-window-r2-diagnostic.log",
+        "bytes": 33926,
+        "sha256": "8331e985f6d4ed563d51d8330f0157252afe5934cba212be71fd7ca7c9146987"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-bootstrap-build-before-r1.log",
+        "bytes": 22676,
+        "sha256": "c4381430dc98b9cc86f954d8fcce6a10c12227f2fcfbbd34422adcadde604308"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-bootstrap-build-after-r1.log",
+        "bytes": 5119,
+        "sha256": "65e789bc37489449db0ad875e1307938bbca25a913aa9b9763fe409725d75742"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-worker-window-failure-guards-r2.log",
+        "bytes": 13007,
+        "sha256": "85267db3a21c88eeab6ddb4b0e43ba6f8826189c984ee6ae4e540a2bd8ba09b6"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-worker-window-failure-guard-r3.log",
+        "bytes": 26979,
+        "sha256": "cb77b90cbff38ff6e86ac82a0bba4682d28c848489d7aa4231a184ea8b0bcff3"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-bootstrap-build-types-r1.log",
+        "bytes": 3471,
+        "sha256": "b3ff98b54c06eedb8a90df8cceb635d91af5b6f95a2fc6d2f3390695c8d3d83b"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-bootstrap-build-types-r2.log",
+        "bytes": 3158,
+        "sha256": "96bbd7a322f3a5055fe53c6f00eeca4a94cf4abb793154038914bb007977962d"
+      }
+    ],
+    "provenance": "Every cited ledger row is papercusp. Both full after-fix guard runs reported source-graph UNKNOWN because HEAD moved; named file hashes and raw logs are retained, without a complete graph or reproducible clean-commit claim."
+  },
+  "runtime": {
+    "measuredFailureBuild": "513b5d97fe",
+    "measuredFailurePid": 62030,
+    "cleanup": "Both probes closed only their own inspector and preserved selected process identity.",
+    "reload": "Coordinated dev:restart executed; next listener PID659390 still serves 513b5d97fe, which does not contain the fix. On-demand background-host git-sync and the existing staging-sync service were triggered. No third cohort before source containment is verified."
+  },
+  "limits": [
+    "Both live report FAIL states remain immutable; missing/old source stamps are never relabeled accepted.",
+    "No post-fix shared request-worker acceptance yet; no complete configured worker census, retained/native ownership or physical savings.",
+    "Whole P011@2/D021/all-eight-source/full-graph/independent acceptance/final shipment remain open.",
+    "Native owner-origin question remains pending; no authorization/audit rewrite, activation or LIVE_GATE_OPS."
+  ]
+}

@@ -64,6 +64,14 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => vi.clearAllMocks());
 
+describe('conversations:post discovery', () => {
+  it('routes consult threads to their typed verbs', () => {
+    expect(tool.description).toContain(
+      'Consult threads require typed verbs: use consult:reply to respond, consult:decline to decline, or consult:close to close',
+    );
+  });
+});
+
 describe('conversations:post reply path', () => {
   it('appends a reply and reports post_id + notified subscribers', async () => {
     replyM.mockResolvedValue({ post: { id: 'p1' }, delivered: 3 } as never);

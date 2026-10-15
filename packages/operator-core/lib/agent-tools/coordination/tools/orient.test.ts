@@ -6,6 +6,7 @@ import {
   orientServedDelta,
   bindOrientOutputResult,
   composeSelectedOrientModes,
+  orientModeContractsInContext,
   orientRoleFolds,
   assembleOrientOutput,
   ORIENT_AGGREGATE_TIMEOUT_MS,
@@ -26,7 +27,8 @@ import orientTool from './orient';
 import { FLEET_DELTA_SCHEMA_VERSION, fingerprintFleet } from './fleet-monitor-delta';
 import type { InnerCall } from '../../_compound-dispatch';
 import type { GoalPortfolioBrief } from '../../../goal-launch-settings';
-import { lookupByMcpName } from '@papercusp/agent-mcp';
+import { lookupByMcpName, runToolOrchestration, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { createPhaseTracker } from '@papercusp/tooldef';
 import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
 
 // Unit handler cases do not own an org PG pool. Keep the new root SU receipt's
@@ -174,6 +176,80 @@ describe('coord:orient selected mode definitions', () => {
     expect(result.contracts).toBe('');
     expect(result.definitionUnavailable).toBe('approved source changed');
   });
+
+  it('replaces repeated contracts with a working mode fetch pointer only after context proof', async () => {
+    const contract = 'SELECTED AUTO '.repeat(1000);
+    const resolver = vi.fn(async () => new Map([['auto', {
+      contract, sourceRevision: 'source', contractRevision: 'definition',
+    }]]));
+    const proof = vi.fn(async () => true);
+    const modeRows = rows.filter((row) => row.mode === 'auto');
+    const result = await composeSelectedOrientModes(modeRows, resolver as never, proof);
+    expect(proof).toHaveBeenCalledExactlyOnceWith([contract]);
+    expect(result).toMatchObject({ contracts: '', contractsInPrompt: true,
+      contractsRefetch: 'mode:get { contracts: true }',
+      active: modeRows, definitionRevisions: { auto: { sourceRevision: 'source', definitionRevision: 'definition' } } });
+    expect(JSON.stringify(result).length).toBeLessThan(1000);
+    // Recovery/full callers omit the proof seam and still receive every byte.
+    expect((await composeSelectedOrientModes(modeRows, resolver as never)).contracts).toBe(contract);
+    expect((await composeSelectedOrientModes(modeRows, resolver as never, async () => { throw new Error('DB unavailable'); })).contracts).toBe(contract);
+    expect((await composeSelectedOrientModes(modeRows, resolver as never, async () => false)).contracts).toBe(contract);
+  });
+
+  it('keeps a short contract when its pointer would cost more bytes', async () => {
+    const resolver = async () => new Map([['auto', { contract: '短い', sourceRevision: 'source', contractRevision: 'definition' }]]);
+    const result = await composeSelectedOrientModes(rows.filter((row) => row.mode === 'auto'), resolver as never, async () => true);
+    expect(result.contracts).toBe('短い');
+    expect(result).not.toHaveProperty('contractsInPrompt');
+  });
+
+  const deliveredProof = {
+    status: 'applied', specificationRevision: 'spec', stateRevision: 'state',
+    desiredSpecificationRevision: 'spec', desiredStateRevision: 'state',
+    nativeSessionId: 'native-current', appliedNativeSessionId: 'native-current',
+    appliedAt: '2026-10-13T18:00:01Z', epochBumpedAt: '2026-10-13T18:00:00Z',
+  };
+
+  it('requires the exact rendered bytes for every active mode after a current-incarnation receipt', async () => {
+    const readPrompt = vi.fn(async () => 'prefix\nAUTO\nGOAL\nsuffix');
+    expect(await orientModeContractsInContext('owner', 'workspace', ['AUTO', 'GOAL'], {
+      readProof: async () => deliveredProof, readPrompt,
+    })).toBe(true);
+    expect(readPrompt).toHaveBeenCalledExactlyOnceWith({ specificationRevision: 'spec', stateRevision: 'state' });
+    for (const contracts of [['AUTO', 'OLD GOAL'], [''], []]) {
+      expect(await orientModeContractsInContext('owner', 'workspace', contracts, {
+        readProof: async () => deliveredProof, readPrompt,
+      })).toBe(false);
+    }
+  });
+
+  it.each([
+    ['native compact after applied', { epochBumpedAt: '2026-10-13T18:00:02Z' }],
+    ['prior incarnation', { appliedNativeSessionId: 'native-old' }],
+    ['unknown incarnation', { nativeSessionId: '' }],
+    ['pending activation', { status: 'prepared' }],
+    ['changed definition', { desiredSpecificationRevision: 'new-spec' }],
+    ['changed state', { desiredStateRevision: 'new-state' }],
+    ['unknown epoch', { epochBumpedAt: 'invalid' }],
+    ['unknown receipt time', { appliedAt: 'invalid' }],
+  ])('retains full contracts when context proof fails: %s', async (_label, patch) => {
+    const readPrompt = vi.fn(async () => 'AUTO');
+    expect(await orientModeContractsInContext('owner', 'workspace', ['AUTO'], {
+      readProof: async () => ({ ...deliveredProof, ...patch }), readPrompt,
+    })).toBe(false);
+    expect(readPrompt).not.toHaveBeenCalled();
+  });
+
+  it('fails open to full contracts when delivery or artifact reads are unavailable', async () => {
+    for (const readProof of [async () => null, async () => { throw new Error('proof unavailable'); }]) {
+      expect(await orientModeContractsInContext('owner', 'workspace', ['AUTO'], { readProof })).toBe(false);
+    }
+    for (const readPrompt of [async () => null, async () => { throw new Error('artifact unavailable'); }]) {
+      expect(await orientModeContractsInContext('owner', 'workspace', ['AUTO'], {
+        readProof: async () => deliveredProof, readPrompt,
+      })).toBe(false);
+    }
+  });
 });
 
 // Register every orient fold so the guard checks the projected metadata, not
@@ -276,6 +352,8 @@ const readOwnerPresenceMock = vi.hoisted(() =>
   vi.fn(async () => ({ present: false, lastSeenAgoMs: null, activeSessions: 0 })),
 );
 const getFlagMock = vi.hoisted(() => vi.fn(async () => false));
+const readAgentObligationAgendaMock = vi.hoisted(() => vi.fn(async () => ({ agenda: null })));
+const projectAgentTurnStartObligationBriefMock = vi.hoisted(() => vi.fn(() => null));
 const resolvePresenceFleetMock = vi.hoisted(() =>
   vi.fn(async () => ({ fleetSlug: null, fleetRole: null })),
 );
@@ -297,6 +375,11 @@ vi.mock('../../_compound-dispatch', async (importOriginal) => ({
 vi.mock('../../../modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../modes/store')>()),
   getModes: getModesMock,
+}));
+vi.mock('../../../agent-obligation-reader', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-obligation-reader')>()),
+  readAgentObligationAgenda: readAgentObligationAgendaMock,
+  projectAgentTurnStartObligationBrief: projectAgentTurnStartObligationBriefMock,
 }));
 vi.mock('../../../power-user-sessions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../power-user-sessions')>()),
@@ -460,13 +543,36 @@ describe('coord:orient args', () => {
     }
   });
 
+  it('passes the effective parent response deadline to the aggregate work callback', async () => {
+    vi.useFakeTimers();
+    const startedAtMs = Date.now();
+    const callerDeadlineAtMs = startedAtMs + 20_000;
+    let observedDeadlineAtMs: number | undefined;
+    try {
+      const value = await withOrientAggregateTimeout(
+        async (deadlineAtMs) => {
+          observedDeadlineAtMs = deadlineAtMs;
+          return 'complete';
+        },
+        'fallback',
+        undefined,
+        callerDeadlineAtMs,
+      );
+
+      expect(value).toBe('complete');
+      expect(observedDeadlineAtMs).toBe(callerDeadlineAtMs - 1_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('marks the aggregate fallback partial and preserves the latest snapshot', () => {
     const fallback = createOrientAggregateFallback();
     const snapshot = {
       ok: true,
       me: { summary: { agents: 1 } },
       claimable: [{ id: 'EI-1' }],
-      inbox: { summary: { total: 2 }, recent: [{ msg_id: 'm1' }] },
+      inbox: { summary: { total: 2 }, entries: [{ msg_id: 'm1' }] },
     };
 
     snapshotOrientAggregate(fallback, snapshot);
@@ -480,6 +586,57 @@ describe('coord:orient args', () => {
     });
   });
 
+  it.each([-1, 0, 500])('does not start recovery when the parent has no response headroom (%s)', async (remainingMs) => {
+    const fallback = createOrientAggregateFallback();
+    const work = vi.fn(async () => ({ data: { complete: true } }));
+    const timeout = vi.fn();
+    await expect(withOrientAggregateTimeout(work, fallback, timeout, Date.now() + remainingMs)).resolves.toBe(fallback);
+    expect(work).not.toHaveBeenCalled();
+    expect(timeout).toHaveBeenCalledWith(0);
+  });
+
+  it.each([undefined, NaN, Infinity, 60_000])('never widens the aggregate ceiling for an invalid or longer parent deadline (%s)', async (remainingMs) => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fallback = createOrientAggregateFallback();
+    try {
+      const deadline = remainingMs === undefined ? undefined : Date.now() + remainingMs;
+      const result = withOrientAggregateTimeout(() => new Promise<typeof fallback>(() => {}), fallback, undefined, deadline);
+      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
+      await expect(result).resolves.toBe(fallback);
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns the bounded orient snapshot through a live orchestration worker before it expires', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const orient = {
+      pluginName: 'fix', description: 'bounded recovery', effect: 'read', capabilities: [],
+      inputSchema: { type: 'object' }, expose: { mcp: { name: 'coord:orient' } },
+      fn: async (_args: unknown, ctx: UnifiedToolContext) => {
+        const result = await withOrientAggregateTimeout(
+          () => new Promise<ReturnType<typeof createOrientAggregateFallback>>(() => {}),
+          createOrientAggregateFallback(), undefined, ctx.deadlineAtMs,
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result.data) }] };
+      },
+    } as ProjectedTool;
+    try {
+      const result = await runToolOrchestration('return await tools.coord.orient({});', {
+        ctx: { signal: new AbortController().signal, log: vi.fn(), progress: vi.fn(), emit: vi.fn(), role: 'su' } as UnifiedToolContext,
+        deps: {}, tools: [orient], timeoutMs: 3_000,
+      });
+      expect(result.ok).toBe(true);
+      expect(result.summary).toMatchObject({ status: 'unknown', partial: true, degradedReason: 'aggregate_timeout' });
+      expect(result.detachedCalls).toBeUndefined();
+      expect(result.intermediateBytes).toBeGreaterThan(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('returns the stable partial snapshot when the aggregate deadline fires', async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -488,7 +645,7 @@ describe('coord:orient args', () => {
       ok: true,
       me: { agents: [{ ownerId: 'me' }] },
       claimable: [{ id: 'EI-1' }],
-      inbox: { summary: { total: 1 }, recent: [] },
+      inbox: { summary: { total: 1 }, entries: [] },
     };
 
     try {
@@ -510,7 +667,7 @@ describe('coord:orient args', () => {
     }
   });
 
-  it('handler returns the afterCompaction partial snapshot when a later fold exceeds the aggregate deadline', async () => {
+  it('does not wait for disclosure recording after afterCompaction composition', async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const ownerId = 'su-orient-handler-test';
@@ -532,17 +689,18 @@ describe('coord:orient args', () => {
       throw new Error(`unexpected sub-call: ${name}`);
     });
     getModesMock.mockResolvedValue(null);
+  readAgentObligationAgendaMock.mockClear();
+  projectAgentTurnStartObligationBriefMock.mockClear();
     readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
     getFlagMock.mockResolvedValue(false);
     resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
     fetchOrientPipelineMock.mockResolvedValue(null);
     buildCompactionRecoveryMock.mockResolvedValue(recovery);
     readGovernorStateSnapshotMock.mockResolvedValue(null);
-    // This is the late handler-owned fold that used to leave aggregate recovery
-    // without a handler-level regression. The compose progress callback must have
-    // already copied the useful afterCompaction snapshot into the stable fallback.
-    // Signal from the mock itself instead of guessing how many microtasks/dynamic
-    // imports the real handler needs before reaching this late fold.
+    // This optional background fold must not delay assembly of the useful
+    // afterCompaction snapshot.
+    // Signal from the mock instead of guessing how many microtasks/dynamic imports
+    // the real handler needs before reaching this late fold.
     let disclosuresStartedResolve!: () => void;
     const disclosuresStarted = new Promise<void>((resolve) => {
       disclosuresStartedResolve = resolve;
@@ -582,19 +740,9 @@ describe('coord:orient args', () => {
         'ws-test',
         expect.any(Object),
       );
-      // The handler must not advance the control watermark while this late
-      // fold is still preventing the orient payload from assembling.
-      expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
       const result = (await resultPromise) as { data: Record<string, unknown> };
 
       expect(result.data).toMatchObject({
-        ok: true,
-        status: 'unknown',
-        degraded: true,
-        degradedReason: 'aggregate_timeout',
-        partial: true,
         recovery,
         me: {
           ok: true,
@@ -603,10 +751,14 @@ describe('coord:orient args', () => {
         },
         claimable: [],
       });
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
+      expect(result.data.degradedReason).not.toBe('aggregate_timeout');
+      expect(result.data.partial).not.toBe(true);
+      expect(acknowledgeControlTransitionMock).toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
     } finally {
       recordOrientDisclosuresMock.mockReset();
       recordOrientDisclosuresMock.mockResolvedValue('unchanged');
+      acknowledgeControlTransitionMock.mockClear();
       inProcessCallMock.mockReset();
       getModesMock.mockReset();
       getModesMock.mockResolvedValue(null);
@@ -627,7 +779,7 @@ describe('coord:orient args', () => {
     }
   });
 
-  it('bounds an early preflight stall before core composition and preserves assignments in the aggregate fallback', async () => {
+  it('does not wait for disclosure recording after an early preflight stall', async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const ownerId = 'su-orient-preflight-timeout-test';
@@ -693,15 +845,9 @@ describe('coord:orient args', () => {
     try {
       await vi.advanceTimersByTimeAsync(ORIENT_PREFLIGHT_LEG_TIMEOUT_MS);
       await disclosuresStarted;
-      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
       const result = (await resultPromise) as { data: Record<string, unknown> };
 
       expect(result.data).toMatchObject({
-        ok: true,
-        status: 'unknown',
-        degraded: true,
-        degradedReason: 'aggregate_timeout',
-        partial: true,
         recovery,
         me: {
           ok: true,
@@ -710,10 +856,13 @@ describe('coord:orient args', () => {
         },
         claimable: [],
       });
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
+      expect(result.data.degradedReason).not.toBe('aggregate_timeout');
+      expect(result.data.partial).not.toBe(true);
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
     } finally {
       recordOrientDisclosuresMock.mockReset();
       recordOrientDisclosuresMock.mockResolvedValue('unchanged');
+      acknowledgeControlTransitionMock.mockClear();
       inProcessCallMock.mockReset();
       getModesMock.mockReset();
       getModesMock.mockResolvedValue(null);
@@ -733,6 +882,7 @@ describe('coord:orient args', () => {
   });
 
   it('acknowledges the recovered control generation after a successful afterCompaction assembly', async () => {
+    acknowledgeControlTransitionMock.mockClear();
     const ownerId = 'su-orient-handler-success-test';
     const recovery = {
       selfRecall: "sessions:search { session: 'self' }",
@@ -789,6 +939,199 @@ describe('coord:orient args', () => {
       expect.any(Object),
     );
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith(ownerId, 'ws-test', 5);
+  });
+
+  // papercusp-performance-audit-2026-10-12 P-001 (PERF-P001-PHASES): orient must track
+  // its phases on the DISPATCHER's per-call tracker (ctx.phases), because only that
+  // tracker is persisted into tool_invocations.metadata_json.handlerPhases. A private
+  // tracker would time the phases and then drop them on every completed call.
+  it('tracks its named phases on the dispatcher tracker passed as ctx.phases', async () => {
+    const ownerId = 'su-orient-handler-phases-test';
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      control: { generation: 7 },
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+    inProcessCallMock.mockReturnValue(async (name: string) => {
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error(`unexpected sub-call: ${name}`);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    const phases = createPhaseTracker();
+    const result = (await orientTool.handler(
+      {
+        afterCompaction: true,
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+        phases,
+      } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(result.data).toMatchObject({ ok: true });
+    const tracked = phases.intervals().map((p) => p.phase);
+    expect(tracked).toEqual(
+      expect.arrayContaining([
+        'handler:preflight',
+        'composeOrient',
+        'handler:compactionRecovery',
+      'background:recordOrientDisclosures',
+        'handler:acknowledgeControlTransition',
+        'handler:bindOutputResult',
+      ]),
+    );
+    const record = phases.toMetadata();
+    expect(record).toMatchObject({ schemaVersion: 'handler-phases-v1', pending: [] });
+    expect(record!.phases.length).toBe(tracked.length);
+  });
+
+  it('keeps Judge assignment reads self-scoped afterCompaction even when a fleet route is recovered', async () => {
+    const ownerId = 'judge-orient-handler-scope-test';
+    const nestedCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      control: { state: { route: { kind: 'fleet', fleet: 'orch-unify', role: 'member' } } },
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+
+    inProcessCallMock.mockReturnValue(async (name: string, args: Record<string, unknown>) => {
+      nestedCalls.push({ name, args });
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error('unexpected sub-call: ' + name);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    const result = (await orientTool.handler(
+      {
+        afterCompaction: true,
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'judge',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    )) as { data: Record<string, unknown> };
+
+    const assignmentCall = nestedCalls.find((entry) => entry.name === 'fleet:assignments');
+    expect(assignmentCall?.args).toEqual({ agent: 'self' });
+    expect(result.data).toMatchObject({
+      recoveredFleetScope: {
+        fleet: 'orch-unify',
+        role: 'member',
+        note: expect.stringContaining('role-specific scope'),
+      },
+    });
+  });
+
+  it('uses the full-roster snapshot for a recovered member afterCompaction read', async () => {
+    const ownerId = 'su-orient-handler-snapshot-test';
+    const nestedCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const recovery = {
+      selfRecall: "sessions:search { session: 'self' }",
+      control: { state: { route: { kind: 'fleet', fleet: 'orch-unify', role: 'member' } } },
+      coverage: { selfSession: true, control: true, heldItems: true, staleness: null },
+    };
+
+    inProcessCallMock.mockReturnValue(async (name: string, args: Record<string, unknown>) => {
+      nestedCalls.push({ name, args });
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          detail: 'snapshot',
+          summary: { agents: 2, claims: 1 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 1 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error('unexpected sub-call: ' + name);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    buildCompactionRecoveryMock.mockResolvedValue(recovery);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    await orientTool.handler(
+      {
+        afterCompaction: true,
+        harness: 'papercusp',
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    );
+
+    const assignmentCall = nestedCalls.find((entry) => entry.name === 'fleet:assignments');
+    expect(assignmentCall?.args).toEqual({ fleet: 'orch-unify', detail: 'snapshot', harness: 'papercusp' });
   });
 
   it('applies caller-specific tool-surface activation in the real handler', async () => {
@@ -870,8 +1213,9 @@ describe('coord:orient args', () => {
     }
   });
 
-  it('keeps recovery in the aggregate fallback when a post-composition fold stalls', async () => {
+  it.each([undefined, 30_000, 44_000])('keeps recovery in the aggregate fallback before the parent deadline (%s)', async (parentBudgetMs) => {
     vi.useFakeTimers();
+    const aggregateBudgetMs = parentBudgetMs === undefined ? ORIENT_AGGREGATE_TIMEOUT_MS : parentBudgetMs - 1_000;
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const ownerId = 'su-orient-recovery-fallback-test';
     const recovery = {
@@ -881,11 +1225,13 @@ describe('coord:orient args', () => {
 
     inProcessCallMock.mockReturnValue(async (name: string) => {
       if (name === 'fleet:assignments') {
-        return {
+        // This call's own 8s bound expires first; the dispatch settles at 8.5s,
+        // so the aggregate fallback must name the later governor wait as active.
+        return new Promise((resolve) => setTimeout(() => resolve({
           ok: true,
           summary: { agents: 1 },
           agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
-        };
+        }), 8_500));
       }
       if (name === 'coord:whoami') return { fleetSlug: null };
       throw new Error(`unexpected sub-call: ${name}`);
@@ -925,15 +1271,22 @@ describe('coord:orient args', () => {
         log: vi.fn(),
         progress: vi.fn(),
         activateTools: vi.fn(() => false),
+        ...(parentBudgetMs === undefined ? {} : { deadlineAtMs: Date.now() + parentBudgetMs }),
       } as never,
     );
+    let settled = false;
+    void resultPromise.then(() => { settled = true; });
 
     try {
+      await vi.advanceTimersByTimeAsync(8_000);
       await governorStarted;
       // Let the recovery promise's early aggregate-fallback observer run before
       // the later enrichment stalls the handler.
       await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(500);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(aggregateBudgetMs - 8_500);
+      expect(settled).toBe(true);
       const result = (await resultPromise) as { data: Record<string, unknown> };
 
       expect(result.data).toMatchObject({
@@ -944,10 +1297,23 @@ describe('coord:orient args', () => {
         partial: true,
         recovery,
         me: {
-          ok: true,
-          summary: { agents: 1 },
-          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+          // The per-leg assignments budget expires at 8s, before this mocked
+          // dispatch settles at 8.5s. Preserve that degraded core snapshot while
+          // the later governor phase is what exhausts the aggregate budget.
+          ok: false,
+          degraded: true,
+          degradedLeg: 'fleet:assignments',
+          degradedReason: 'fleet:assignments read exceeded 8000ms',
+          agents: [],
         },
+      });
+      expect(result.data.phaseDiagnostics).toMatchObject({
+        aggregateElapsedMs: aggregateBudgetMs,
+        activePhase: 'handler:governor',
+        activePhaseSelection: 'latest-started-pending',
+        completedDurationsMs: expect.arrayContaining([
+          { phase: 'inner:fleet:assignments', durationMs: 8_500 },
+        ]),
       });
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
     } finally {
@@ -1026,11 +1392,17 @@ describe('coord:orient args', () => {
   it('starts bounded post-compaction recovery before composeOrient so the budgets overlap', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const recoveryStart = source.indexOf('const compactionRecoveryPromise =');
-    const composeStart = source.indexOf('const result = await composeOrient(');
+    const composeStart = source.indexOf("const result = await phaseTracker.track('composeOrient', () => composeOrient(");
     const recoveryAwait = source.indexOf('const recovery = compactionRecoveryPromise');
+    const composeDeadline = source.indexOf(
+      'const composeDeadlineAtMs = aggregateResponseDeadlineAtMs - ORIENT_PARENT_DEADLINE_HEADROOM_MS;',
+    );
 
     expect(recoveryStart).toBeGreaterThanOrEqual(0);
     expect(composeStart).toBeGreaterThan(recoveryStart);
+    expect(composeDeadline).toBeGreaterThanOrEqual(0);
+    expect(composeDeadline).toBeLessThan(composeStart);
+    expect(source.slice(composeStart, recoveryAwait)).toContain('composeDeadlineAtMs,');
     expect(source.slice(recoveryStart, composeStart)).toContain('withBoundedTimeout');
     expect(recoveryAwait).toBeGreaterThan(composeStart);
   });
@@ -1038,7 +1410,7 @@ describe('coord:orient args', () => {
   it('derives the recovered fleet scope before composeOrient and awaits it before assignments', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const recoveredScopePromiseStart = source.indexOf('const recoveredFleetScopePromise =');
-    const composeCallStart = source.indexOf('const result = await composeOrient(');
+    const composeCallStart = source.indexOf("const result = await phaseTracker.track('composeOrient', () => composeOrient(");
     const composeDefinitionStart = source.indexOf('export async function composeOrient(');
     const recoveredScopeAwait = source.indexOf(
       'const recovered = await recoveredFleetScopeFold();',
@@ -1055,26 +1427,38 @@ describe('coord:orient args', () => {
   it('starts the handler-owned GOAL portfolio read before composeOrient', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const modesStart = source.indexOf('const runtimeModesPromise =');
-    const portfolioStart = source.indexOf('const goalPortfolioReadPromise =');
+    const portfolioStart = source.indexOf('const goalPortfolioStagedPromise =');
     const obligationsStart = source.indexOf('const goalObligationsPromise =');
-    const composeStart = source.indexOf('const result = await composeOrient(');
+    const composeStart = source.indexOf("const result = await phaseTracker.track('composeOrient', () => composeOrient(");
 
     expect(modesStart).toBeGreaterThanOrEqual(0);
     expect(portfolioStart).toBeGreaterThan(modesStart);
     expect(obligationsStart).toBeGreaterThan(portfolioStart);
     expect(obligationsStart).toBeLessThan(composeStart);
-    expect(source.slice(obligationsStart, composeStart)).toContain('readAgentObligationAgenda');
-    expect(source.slice(obligationsStart, composeStart)).toContain('projectAgentTurnStartObligationBrief');
-    expect(source.slice(portfolioStart, composeStart)).toContain('readGoalPortfolioBrief');
+    const ownerReportStart = source.indexOf('const goalOwnerReportPromise =', obligationsStart);
+    expect(ownerReportStart).toBeGreaterThan(obligationsStart);
+    expect(ownerReportStart).toBeLessThan(composeStart);
+    const obligationsSlice = source.slice(obligationsStart, ownerReportStart);
+    expect(obligationsSlice).toContain('readAgentObligationAgenda');
+    expect(obligationsSlice).toContain('projectAgentTurnStartObligationBrief');
+    expect(obligationsSlice).toMatch(/const goalObligationsPromise =\s*ownerId\s*\?/);
+    expect(obligationsSlice).toContain('const goalObligationsPromise =\n      ownerId');
+    expect(obligationsSlice).not.toContain('goalSubject && ownerId');
+    expect(source.slice(portfolioStart, composeStart)).toContain('readGoalPortfolioBriefStaged');
+    // EI-25191349922959563: the obligation fold (900ms budget) must read the
+    // UNCOUNTED snapshot stage, never the counted display read it used to share.
+    expect(obligationsSlice).toContain('goalPortfolio: async () => (goalPortfolioSnapshotPromise');
+    expect(obligationsSlice).not.toContain('await goalPortfolioReadPromise');
     // WI-2140700: the holder's owner-report obligation starts in the same early
     // window (overlapping the sequential folds) and is folded into
     // `modes.ownerReport`, the field the GOAL contract tells a holder to read
     // FIRST every wake.
-    const ownerReportStart = source.indexOf('const goalOwnerReportPromise =');
     expect(ownerReportStart).toBeGreaterThan(portfolioStart);
     expect(ownerReportStart).toBeLessThan(composeStart);
     expect(source.slice(ownerReportStart, composeStart)).toContain('readGoalOwnerReportObligation');
-    expect(source).toContain('modes.ownerReport = await goalOwnerReportPromise');
+    expect(source.slice(composeStart)).toContain(
+      "modes.ownerReport = await phaseTracker.track('handler:goalOwnerReport', () => goalOwnerReportPromise)",
+    );
     expect(composeStart).toBeGreaterThan(portfolioStart);
   });
 
@@ -1312,6 +1696,8 @@ const GOAL_PORTFOLIO: GoalPortfolioBrief = {
     unmeasuredPricedSpend: false,
     spentCentsAt: null,
     spentCentsSource: null,
+    interactiveUsageFreshnessStatus: null,
+    interactiveUsageLastIngestedAtMs: null,
     budgetWindowSec: null,
   },
   tripwires: [],
@@ -1351,6 +1737,23 @@ function composeGoalOrient(
   );
 }
 
+function composeOrientWithDeadline(
+  args: Parameters<typeof composeOrient>[0],
+  call: InnerCall,
+  deadlineAtMs: number,
+): ReturnType<typeof composeOrient> {
+  return composeOrient(
+    args,
+    call,
+    'me',
+    undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined, undefined, undefined, undefined,
+    undefined, undefined,
+    deadlineAtMs,
+  );
+}
+
 describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   it.each([1, 8])('overlaps assignments with the independent backlog chain for %i readers', async (readers) => {
     vi.useFakeTimers();
@@ -1381,7 +1784,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         expect(result).toMatchObject({
           me: assignments,
           claimable: [{ id: 'WI-visible' }],
-          inbox: { summary: inbox.summary, entries: inbox.entries, recent: inbox.entries },
+          inbox: {
+            summary: inbox.summary,
+            entries: inbox.entries,
+            recent: { movedTo: 'inbox.entries', length: inbox.entries.length },
+          },
         });
       }
     } finally {
@@ -1457,7 +1864,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect((r.me as { agents: Array<{ ownerId: string }> }).agents[0].ownerId).toBe('me');
     expect(r.claimable).toHaveLength(2);
     expect((r.inbox.summary as { total: number }).total).toBe(3);
-    expect(r.inbox.recent).toEqual([{ msg_id: 'm1' }]);
+    expect(r.inbox.entries).toEqual([{ msg_id: 'm1' }]);
     expect(r.planEvents).toEqual({ total: 1, recent: [{ kind: 'item_status_changed', plan: 'p1' }] });
     // No intent ⇒ no memory recall, no declare.
     expect(r.memory).toBeUndefined();
@@ -1588,15 +1995,20 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(ids).toEqual(['EI-1', 'EI-2', 'F-KEEP']);
   });
 
-  // EI-18667514339699744: coord:orient folds coord:inbox's `entries` under `recent`;
-  // coord:inbox itself calls the same array `entries`. A caller reading the "wrong"
-  // key for the surface it's on got a silent [] instead of an error. Both keys must
-  // resolve to the same rows off coord:orient's fold.
-  it('EI-18667514339699744: aliases the folded inbox under BOTH `recent` and `entries`', async () => {
+  // EI-18667514339699744: coord:orient used to fold coord:inbox's `entries` under
+  // `recent`, so a caller reading the other tool's key got a silent []. The first fix
+  // aliased both keys to one array, which JSON serialized TWICE (26% of orient spill
+  // bytes — oversized-tool-results-reduction-2026-10-12 P-006). Root fix: one name.
+  // The rows live under `entries`; `recent` is a pointer that is loud on misuse.
+  it('EI-18667514339699744: folds the inbox rows ONCE under `entries`, with a loud `recent` pointer', async () => {
     const { call } = fakeCall({ ...CORE });
     const r = await composeOrient({ harness: 'h' }, call, 'me');
-    expect(r.inbox.recent).toEqual([{ msg_id: 'm1' }]);
-    expect(r.inbox.entries).toEqual(r.inbox.recent);
+    expect(r.inbox.entries).toEqual([{ msg_id: 'm1' }]);
+    expect(r.inbox.recent).toEqual({ movedTo: 'inbox.entries', length: 1 });
+    // Not iterable: a reader still on the old key throws instead of seeing an empty inbox.
+    expect(() => [...(r.inbox.recent as unknown as Iterable<unknown>)]).toThrow(TypeError);
+    // The serialized fold carries the row a single time.
+    expect(JSON.stringify(r.inbox).split('"m1"').length - 1).toBe(1);
   });
 
   it('omits the agent filter when no ownerId resolved (fleet-wide assignments)', async () => {
@@ -4291,6 +4703,61 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       warnSpy.mockRestore();
     });
 
+    it('preserves recovered self membership when the fleet assignment roster exceeds orient budget', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ownerId = 'su-recovered-membership-timeout-test';
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => new Promise(() => {}),
+      });
+      const recoveredScope = async () => ({ fleetSlug: 'orch-unify', fleetRole: 'member' });
+      try {
+        const resultPromise = composeOrient(
+          { mode: 'monitor', afterCompaction: true },
+          call,
+          ownerId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { fleetSlug: null, fleetRole: null },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          recoveredScope,
+        );
+
+        await vi.advanceTimersByTimeAsync(8_000);
+        const result = await resultPromise;
+        const assignmentCall = calls.find((entry) => entry.name === 'fleet:assignments');
+
+        expect(assignmentCall?.args).toEqual({ fleet: 'orch-unify', detail: 'snapshot' });
+        expect(result.me).toMatchObject({
+          ok: false,
+          degraded: true,
+          degradedLeg: 'fleet:assignments',
+          degradedReason: 'fleet:assignments read exceeded 8000ms',
+          retryable: true,
+          agents: [
+            {
+              agentId: ownerId,
+              isSelf: true,
+              fleetSlug: 'orch-unify',
+              fleetRole: 'member',
+            },
+          ],
+        });
+        expect(warnSpy).toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
     it('annotates an unsuccessful fleet:assignments envelope even when it resolves without timing out', async () => {
       const { call } = fakeCall({
         ...CORE,
@@ -4454,6 +4921,47 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
     });
+  });
+
+  it('caps the final declare-intent wait to the remaining aggregate budget after sequential folds', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const startedAtMs = Date.now();
+    const deadlineAtMs = startedAtMs + 17_500;
+    const delay = <T>(value: T, ms: number): Promise<T> =>
+      new Promise((resolve) => setTimeout(() => resolve(value), ms));
+    let declareStartedAtMs: number | undefined;
+    const { call } = fakeCall({
+      ...CORE,
+      // These individually healthy legs consume 15s in composeOrient's sequential
+      // backlog → inbox fold, leaving less than the final leg's normal 8s budget.
+      'work_items:claimable': () => delay({ claimable: [] }, 7_500),
+      'coord:inbox': () => delay({ summary: { total: 0 }, entries: [] }, 7_500),
+      'memory:search': () => ({ hits: [] }),
+      'coord:declare-intent': () => {
+        declareStartedAtMs = Date.now();
+        return new Promise(() => {});
+      },
+    });
+    const resultPromise = composeOrientWithDeadline(
+      { harness: 'h', intent: 'sequential bootstrap', includePlanEvents: false },
+      call,
+      deadlineAtMs,
+    ).then((result) => ({ result, resolvedAtMs: Date.now() }));
+
+    try {
+      await vi.advanceTimersByTimeAsync(deadlineAtMs - startedAtMs);
+      const { result, resolvedAtMs } = await resultPromise;
+
+      expect(declareStartedAtMs).toBeGreaterThanOrEqual(startedAtMs + 15_000);
+      expect(deadlineAtMs - declareStartedAtMs!).toBeLessThan(8_000);
+      expect(resolvedAtMs).toBeLessThanOrEqual(deadlineAtMs);
+      expect(result.intentDeclared).toBe(false);
+    } finally {
+      await vi.runAllTimersAsync();
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 

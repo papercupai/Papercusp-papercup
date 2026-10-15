@@ -14,6 +14,7 @@ import { FLAGS } from "@papercusp/flags";
 const M = vi.hoisted(() => ({
   planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
   listPlanIndexRows: vi.fn(async () => [] as unknown[]),
+  getPlanSlugsWithSpecTriadDeclaration: vi.fn(async () => new Set<string>()),
   getPlanContentsBySlugs: vi.fn(async () => new Map<string, string>()),
   getPlanRow: vi.fn(async () => null as unknown),
   planItemsForRow: vi.fn(() => [] as unknown[]),
@@ -29,6 +30,7 @@ vi.mock("./source", async (orig) => {
     ...actual,
     planHarnessesForSlugs: M.planHarnessesForSlugs,
     listPlanIndexRows: M.listPlanIndexRows,
+    getPlanSlugsWithSpecTriadDeclaration: M.getPlanSlugsWithSpecTriadDeclaration,
     getPlanContentsBySlugs: M.getPlanContentsBySlugs,
     getPlanRow: M.getPlanRow,
     planItemsForRow: M.planItemsForRow,
@@ -81,6 +83,8 @@ beforeEach(async () => {
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
   M.listPlanIndexRows.mockClear();
+  M.getPlanSlugsWithSpecTriadDeclaration.mockReset();
+  M.getPlanSlugsWithSpecTriadDeclaration.mockResolvedValue(new Set());
   M.getPlanContentsBySlugs.mockClear();
   M.getPlanRow.mockReset();
   M.getPlanRow.mockResolvedValue(null);
@@ -445,5 +449,52 @@ describe("plans:items — cache wiring", () => {
     };
     expect(all.data.items[0]?.specTriadMissing).toEqual(["requirements", "design"]);
     expect(all.data.specTriadDiagnostics).toHaveLength(1);
+  });
+
+  it("keeps rubric templates actionable and outside the spec-triad gate", async () => {
+    setFlagOverridesForTest({
+      [CACHE_LAYER]: true,
+      [CACHE_L2]: false,
+      [FLAGS.SPEC_TRIAD_REQUIRED]: true,
+    });
+    await _refreshCacheLayerForTests();
+
+    const planSlug = "acceptance-rubric-plan";
+    const planItem = {
+      id: "P-001",
+      text: "rubric item",
+      storedStatus: "todo",
+      importance: "normal",
+      blockedBy: [],
+      decisionRefs: [],
+      phase: "Phase 1",
+      lineNumber: 0,
+      rawLine: "",
+      effectiveStatus: "todo",
+      unresolvedBlockers: [],
+      needsHuman: false,
+      staleBlockedHint: null,
+    };
+    M.listPlanIndexRows.mockResolvedValue([{
+      planSlug,
+      archived: false,
+      isLegacy: false,
+      status: "active",
+      items: [planItem],
+      content: "",
+      created: "2026-10-01T00:00:00.000Z",
+      template: "rubric",
+    }]);
+    M.getPlanContentsBySlugs.mockResolvedValue(new Map([
+      [planSlug, `---\nslug: ${planSlug}\n---\n`],
+    ]));
+    M.planItemsForRow.mockReturnValue([planItem]);
+
+    const actionable = await run({ actionable: true }) as {
+      data: { items: unknown[]; specTriadDiagnostics: unknown[] };
+    };
+    expect(actionable.data.items).toHaveLength(1);
+    expect(actionable.data.specTriadDiagnostics ?? []).toEqual([]);
+    expect(M.getPlanContentsBySlugs).not.toHaveBeenCalled();
   });
 });

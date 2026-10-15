@@ -239,6 +239,8 @@ export interface ListFleetAssignmentsOpts {
   activeOnly?: boolean;
   /** Restrict to these plan-item refs (`<plan>#<P-NNN>`). */
   planItemRefs?: readonly string[];
+  /** Include every direct claim in this plan alongside linked work-item ids. */
+  planItemPlan?: string;
   /** Restrict to these linked work-item ids. */
   workItemIds?: readonly string[];
 }
@@ -304,8 +306,12 @@ export async function listFleetAssignments(
       AND ${opts.fleet ? sql`fleet_slug = ${opts.fleet}` : sql`TRUE`}
       AND ${activeOnly ? sql`(claim_active IS DISTINCT FROM false)` : sql`TRUE`}
       AND ${
-        opts.planItemRefs !== undefined || opts.workItemIds !== undefined
+        opts.planItemRefs !== undefined || opts.planItemPlan !== undefined || opts.workItemIds !== undefined
           ? sql`(
+              ${opts.planItemPlan !== undefined
+                ? sql`(source = 'plan_item_claim' AND plan_slug = ${opts.planItemPlan})`
+                : sql`FALSE`}
+              OR
               ${opts.planItemRefs !== undefined
                 ? opts.planItemRefs.length > 0
                   ? sql`(plan_slug || '#' || item_id) = ANY(${opts.planItemRefs}::text[])`
@@ -1044,6 +1050,24 @@ export interface HolderActivity {
 }
 
 /**
+ * A standing `work-item:claimable` watch is a broad queue wake, not a
+ * dependency of a claim the holder already owns. Keep that watch from making
+ * a stalled held claim look covered by a healthy loop monitor.
+ */
+export function isBroadClaimableParkMaskingStalledClaim(
+  monitorState: HolderActivity['monitorState'] | null | undefined,
+  parkedOn: readonly string[] | null | undefined,
+  hasStalledClaim: boolean,
+): boolean {
+  return (
+    hasStalledClaim &&
+    monitorState === 'parked-awaiting-capability' &&
+    (parkedOn?.length ?? 0) > 0 &&
+    parkedOn?.every((key) => key === 'work-item:claimable') === true
+  );
+}
+
+/**
  * EI-18716042694888410: how recent a tool invocation must be for its holder to
  * count as WORKING regardless of `sessionState`.
  *
@@ -1210,8 +1234,13 @@ export function deriveClaimHealth(
   if (holder?.monitorState !== undefined) {
     evidence.push({ writer: 'loop_status', signal: 'monitor_state', value: holder.monitorState ?? null });
   }
-  if (holder?.parkedOn?.length) {
-    evidence.push({ writer: 'events_await', signal: 'exact_dependency_waits', value: [...holder.parkedOn] });
+  const activeEventWaits = holder?.parkedOn ?? [];
+  const parkedDependencyWaits = activeEventWaits.filter((key) => key !== 'work-item:claimable');
+  if (activeEventWaits.length) {
+    evidence.push({ writer: 'events_await', signal: 'active_event_waits', value: [...activeEventWaits] });
+  }
+  if (parkedDependencyWaits.length) {
+    evidence.push({ writer: 'events_await', signal: 'exact_dependency_waits', value: [...parkedDependencyWaits] });
   }
   if (holder?.checkpointKind !== undefined) {
     evidence.push({ writer: 'work_items_checkpoint', signal: 'checkpoint_kind', value: holder.checkpointKind ?? null });
@@ -1227,7 +1256,11 @@ export function deriveClaimHealth(
     holder?.checkpointKind === 'authored' && isFreshIso(r.lastProgressAt, nowMs, expectedCadenceMs);
   const mechanicalOnly =
     holder?.checkpointKind === 'mechanical' && !freshProductive && !freshTool;
-  const dependencyWait = (holder?.parkedOn?.length ?? 0) > 0 || holder?.monitorState === 'parked-awaiting-capability';
+  // `work-item:claimable` is a broad queue wake (created-unclaimed, released,
+  // unblocked), not a dependency of a work-item this holder already owns. A
+  // member can keep that standing watch after draining its lane; treating it as
+  // this claim's dependency masks stale held work as `waiting` indefinitely.
+  const dependencyWait = parkedDependencyWaits.length > 0;
   const scheduledWait = holder?.monitorState === 'waiting' || holder?.monitorState === 'monitoring';
   const recoverable = holder?.sessionState === 'suspect' && holder.wakeable === true;
   const contradicted =

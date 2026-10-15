@@ -89,6 +89,14 @@ describe('API keys settings page — sign-in cards retired (P-001)', () => {
     expect(screen.getByRole('heading', { name: /API keys — Core/ })).toBeTruthy();
   });
 
+  it('retires the OMP search-provider section and its credential request', async () => {
+    await renderPage();
+    expect(screen.getByLabelText(/openai embeddings key/i)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Search providers' })).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/credentials/search-providers'))).toBe(false);
+    expect(screen.getByText(/For Anthropic API keys/)).toBeTruthy();
+  });
+
   it('offers NO account sign-in affordance any more', async () => {
     await renderPage();
     // Asserted on ACTIONABLE CONTROLS, not on vocabulary. The page legitimately still says the

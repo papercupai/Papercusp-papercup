@@ -58,6 +58,7 @@
 import { FLAGS } from '@papercusp/flags';
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { observeFallback } from '../degradation/fallback-observations';
 import { systemDistinctId } from '../flag-distinct-id';
 import { cacheLayerEnabled } from './instance';
 import { PgL2Store } from './pg-l2-store';
@@ -181,6 +182,7 @@ const L2_ERROR_LOG_INTERVAL_MS = 60_000;
 const lastLoggedAt = new Map<string, number>();
 
 export function noteL2Error(op: string, err: unknown): void {
+  observeFallback('cache-l2-operation', { eligible: 1, applied: 0, reason: 'backend-error', scope: op });
   const now = Date.now();
   const prev = lastLoggedAt.get(op);
   if (prev !== undefined && now - prev < L2_ERROR_LOG_INTERVAL_MS) return;
@@ -251,6 +253,7 @@ export function withL2<V>(
     const store = getL2Store();
     try {
       const hit = await store.get<V>(workspaceId, fullKey);
+      observeFallback('cache-l2-operation', { eligible: 1, applied: 1, reason: 'applied', scope: 'get' });
       if (hit) {
         opts.onL2Outcome?.('hit');
         return hit.value;
@@ -277,6 +280,7 @@ export function withL2<V>(
     if (value !== undefined && value !== null) {
       void store
         .set(workspaceId, fullKey, value, { tags: opts.tags, hardTtlMs: ttlMs })
+        .then(() => { observeFallback('cache-l2-operation', { eligible: 1, applied: 1, reason: 'applied', scope: 'set' }); })
         .catch((err: unknown) => noteL2Error('set', err));
     }
     return value;
@@ -331,5 +335,8 @@ export function invalidateL2ByTagsWithRetry(
     classifier: isRetryableL2InvalidationError,
     label: 'cache-l2.invalidateByTags',
     sleep: opts.sleep,
+  }).then((count) => {
+    observeFallback('cache-l2-operation', { eligible: 1, applied: 1, reason: 'applied', scope: 'invalidateByTags' });
+    return count;
   });
 }

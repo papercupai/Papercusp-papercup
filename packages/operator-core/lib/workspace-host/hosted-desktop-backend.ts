@@ -59,6 +59,7 @@ import type {
   HostedDesktopRosterEntry,
   HostedDesktopSessionRecord,
   HostedDesktopSocket,
+  HostedDesktopViewer,
 } from './hosted-session-host';
 
 /**
@@ -96,6 +97,19 @@ export interface HostedDesktopBackendDeps {
    */
   ensureDesktop: () => Promise<string | undefined>;
   /**
+   * Lease ONE person's own desktop (or return the live one) and name its registry row —
+   * `desktop-lease.ensurePersonalDesktop` (personal-cloud-desktop-2026-10-06 P-003).
+   * Omitted: this host serves no personal desktops and `startPersonal` is absent.
+   */
+  ensurePersonalDesktop?: (userId: string) => Promise<string | undefined>;
+  /**
+   * Who a live lease belongs to, by registry id — `desktop-lease.leaseOwnerBySessionId`.
+   * Read from the lease this process holds, so `lookup` can name a personal desktop's
+   * owner without trusting a registry row. Omitted: no desktop is reported as personal,
+   * which is only correct for a host that cannot lease one (no `ensurePersonalDesktop`).
+   */
+  leaseOwner?: (desktopSessionId: string) => { scope: string; scopeRef: string } | undefined;
+  /**
    * Retire registry rows no live lease backs — `reconcileLocalDesktopSessions` as
    * sole owner. Run once, before the first roster or start: a row a previous
    * operator incarnation left `ready` (a reboot, an upgrade's new boot disk, a plain
@@ -104,6 +118,22 @@ export interface HostedDesktopBackendDeps {
    * (WI-10002797). A failure is warned and retried on the next call.
    */
   reconcile?: () => Promise<number>;
+  /**
+   * Grab one frame on demand for a desktop this host leases when the capture loop has
+   * no fresh file for it — `desktopThumbnailer().thumbnail` (plan
+   * agent-multi-desktops-grid-2026-10-06 P-005 / D-008). The loop's display list is
+   * fixed at frame bootstrap, so a desktop an agent starts later is only ever seen
+   * through this path. Only a grid read calls it, so idle cost stays zero. Omitted:
+   * no fallback (a missing or stale capture file answers null).
+   */
+  grabThumbnail?: (display: number) => Promise<Buffer | null>;
+  /**
+   * The work-item an agent is on right now — its most recent live claim
+   * (`work-item-claims.getActiveClaimForOwner`). Plan agent-multi-desktops-grid
+   * D-009: the grid labels each agent desktop with it, derived at roster time and
+   * never stored on the desktop row. Omitted, or a failed read: no label.
+   */
+  activeClaimFor?: (owner: string) => Promise<HostedDesktopOwnerClaim | null>;
   /** Override the capture directory (tests, or a pack that relocates it). */
   captureDir?: string;
   /** Override the KasmVNC websocket path. */
@@ -249,16 +279,65 @@ export function desktopRecordForLease(desktop: SandboxDesktop): HostedDesktopSes
 }
 
 /** One registry row as the viewer's picker renders it. */
-export function rosterEntryForSession(session: DesktopSessionRecord): HostedDesktopRosterEntry {
+/** An owner's current work-item, as the roster labels its desktops. */
+export interface HostedDesktopOwnerClaim {
+  workItemId: string;
+  intent: string | null;
+}
+
+/** Longest claim intent the roster carries: a tile label, not the claim's full text. */
+export const HOSTED_ROSTER_INTENT_MAX_CHARS = 160;
+
+export function rosterEntryForSession(
+  session: DesktopSessionRecord,
+  claim: HostedDesktopOwnerClaim | null = null,
+): HostedDesktopRosterEntry {
   const display = displayNumber(session.display);
   const { width, height } = session.displayGeometry;
+  // A workspace desktop's scopeRef is the workspace id, which names no owner.
+  const owner = session.scope === 'workspace' ? '' : session.scopeRef;
+  const intent = claim?.intent?.trim().slice(0, HOSTED_ROSTER_INTENT_MAX_CHARS) ?? '';
   return {
     desktopSessionId: session.id,
     state: session.state,
     ...(display === null ? {} : { displayNumber: display }),
     ...(width && height ? { geometry: `${width}x${height}` } : {}),
     ...(session.lastActiveAt ? { lastActiveAt: session.lastActiveAt.toISOString() } : {}),
+    scope: session.scope,
+    ...(owner ? { owner } : {}),
+    ...(session.name ? { name: session.name } : {}),
+    ...(claim ? { workItemId: claim.workItemId } : {}),
+    ...(claim && intent ? { workItemIntent: intent } : {}),
   };
+}
+
+/**
+ * Each agent owner's current claim, read once per owner. A failed read is a missing
+ * label, never a failed roster: the grid must still show every desktop.
+ *
+ * Exported because the LOCAL roster (`/deploy/local-desktops`, D-015) labels its
+ * tiles the same way: one function, so a cloud tile and a local tile for the same
+ * agent can never disagree about which work-item it is on.
+ */
+export async function claimsForSessions(
+  sessions: readonly DesktopSessionRecord[],
+  activeClaimFor: HostedDesktopBackendDeps['activeClaimFor'],
+  warn: (message: string) => void,
+): Promise<Map<string, HostedDesktopOwnerClaim>> {
+  const claims = new Map<string, HostedDesktopOwnerClaim>();
+  if (!activeClaimFor) return claims;
+  const owners = [...new Set(sessions.filter((s) => s.scope === 'agent').map((s) => s.scopeRef))];
+  await Promise.all(
+    owners.map(async (owner) => {
+      try {
+        const claim = await activeClaimFor(owner);
+        if (claim) claims.set(owner, claim);
+      } catch (error) {
+        warn(`hosted-desktop-backend — claim lookup for ${owner} failed: ${String(error)}`);
+      }
+    }),
+  );
+  return claims;
 }
 
 /**
@@ -416,7 +495,10 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
       // from "unknown id": both are `desktop_session_unknown` to the viewer, and
       // telling an unauthorised caller which desktop ids exist elsewhere is the
       // enumeration oracle this refusal exists to avoid.
-      return desktop ? desktopRecordForLease(desktop) : null;
+      if (!desktop) return null;
+      const record = desktopRecordForLease(desktop);
+      const lease = deps.leaseOwner?.(desktopSessionId);
+      return lease?.scope === 'user' ? { ...record, personalOwner: lease.scopeRef } : record;
     },
 
     dial(input: HostedDesktopDialInput): Promise<HostedDesktopSocket> {
@@ -436,9 +518,16 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
       });
     },
 
-    async roster(): Promise<HostedDesktopRosterEntry[]> {
+    async roster(viewer?: HostedDesktopViewer): Promise<HostedDesktopRosterEntry[]> {
       await reconcile();
-      return (await deps.listSessions()).map(rosterEntryForSession);
+      // A person's own desktop is listed only to its owner; with no viewer, none is.
+      const sessions = (await deps.listSessions()).filter(
+        (session) => session.scope !== 'user' || (!!viewer?.userId && session.scopeRef === viewer.userId),
+      );
+      const claims = await claimsForSessions(sessions, deps.activeClaimFor, warn);
+      return sessions.map((session) =>
+        rosterEntryForSession(session, session.scope === 'agent' ? (claims.get(session.scopeRef) ?? null) : null),
+      );
     },
 
     async start(): Promise<HostedDesktopRosterEntry | null> {
@@ -458,18 +547,53 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
       return session ? rosterEntryForSession(session) : null;
     },
 
+    // Only a host that can lease a person's desktop offers this; elsewhere the relay
+    // answers `personal_desktop_unavailable` (P-004).
+    ...(deps.ensurePersonalDesktop
+      ? {
+          async startPersonal(userId: string): Promise<HostedDesktopRosterEntry | null> {
+            const ensurePersonal = deps.ensurePersonalDesktop!;
+            await reconcile();
+            // A host without the personal worker throws `PersonalDesktopUnavailableError`
+            // from inside the lease, before anything starts; it propagates unchanged so the
+            // relay can report `personal_desktop_unavailable` (R-22).
+            const desktopSessionId = await ensurePersonal(userId);
+            if (!desktopSessionId) {
+              warn('hosted-desktop-backend — desktop.start personal: the desktop has no registry row');
+              return null;
+            }
+            if (!deps.leasedDesktop(desktopSessionId)) return null;
+            // The row must be THIS user's own desktop; anything else is never handed out.
+            const session = (await deps.listSessions()).find((entry) => entry.id === desktopSessionId);
+            if (!session || session.scope !== 'user' || session.scopeRef !== userId) return null;
+            return rosterEntryForSession(session);
+          },
+        }
+      : {}),
+
     async thumbnail(desktopSessionId: string): Promise<Buffer | null> {
       const display = await displayFor(desktopSessionId);
       if (display === null) return null;
       const path = `${captureDir}/display-${display}.jpg`;
+      let fromLoop: Buffer | null = null;
       try {
         const info = await stat(path);
-        if (now() - info.mtimeMs > HOSTED_THUMBNAIL_MAX_AGE_MS) return null;
-        return await readFile(path);
+        if (now() - info.mtimeMs <= HOSTED_THUMBNAIL_MAX_AGE_MS) fromLoop = await readFile(path);
       } catch {
         // Absent is the capture loop's NORMAL answer for a display with no active
-        // client (it removes the stale jpeg on purpose), so this is null, never an
-        // error — the picker renders "no recent frame" instead of a dead screen.
+        // client (it removes the stale jpeg on purpose), so this is not an error.
+      }
+      if (fromLoop) return fromLoop;
+      // A stale or absent file is never served as live. A desktop this host LEASES is
+      // grabbed directly instead — a fresh frame is the truth, and a dead display just
+      // yields null. A display number known only from a registry row is not grabbed:
+      // it could name an X server this process does not own.
+      const leased = displayNumber(deps.leasedDesktop(desktopSessionId)?.display);
+      if (leased === null || !deps.grabThumbnail) return null;
+      try {
+        return await deps.grabThumbnail(leased);
+      } catch (error) {
+        warn(`hosted-desktop-backend — on-demand thumbnail for ${desktopSessionId} failed: ${String(error)}`);
         return null;
       }
     },

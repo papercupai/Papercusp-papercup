@@ -28,6 +28,11 @@ export interface IdentitySurfaceCandidate {
   capabilities: readonly string[];
 }
 
+/** Add candidates carried by the same host-owned identity record being gated. */
+export type IdentitySurfaceCandidateExpander = (
+  identityLaunchRecord: unknown,
+) => readonly IdentitySurfaceCandidate[];
+
 type KernelState = NonNullable<Awaited<ReturnType<typeof readControlAnchorKernelState>>>;
 type PolicyReader = Parameters<typeof checkIdentityGrantKernel>[3] & {};
 
@@ -107,6 +112,7 @@ export async function resolveIdentityToolSurface(
   ctx: UnifiedToolContext,
   candidates: readonly IdentitySurfaceCandidate[],
   deps: IdentitySurfaceDeps = DEFAULT_DEPS,
+  expandCandidates?: IdentitySurfaceCandidateExpander,
 ): Promise<IdentityToolSurface> {
   const request = (candidate: IdentitySurfaceCandidate): KernelEnforcementRequest => ({
     phase: 'preflight', boundary: 'dispatch', toolName: candidate.name,
@@ -119,13 +125,22 @@ export async function resolveIdentityToolSurface(
     return { kind: 'unresolved', key: null };
   }
   const key = identitySurfaceKey(state);
-  if (!state || !Object.prototype.hasOwnProperty.call(state, 'identityLaunchRecord') || candidates.length === 0) {
+  if (!state || !Object.prototype.hasOwnProperty.call(state, 'identityLaunchRecord')) {
     return { kind: 'ungoverned', key };
   }
   if (state.authorityUnavailable || state.revoked) return { kind: 'unresolved', key };
+  const byName = new Map<string, IdentitySurfaceCandidate>();
+  for (const candidate of candidates) {
+    if (candidate?.name && !byName.has(candidate.name)) byName.set(candidate.name, candidate);
+  }
+  for (const candidate of expandCandidates?.(state.identityLaunchRecord) ?? []) {
+    if (candidate?.name && !byName.has(candidate.name)) byName.set(candidate.name, candidate);
+  }
+  const surfaceCandidates = [...byName.values()];
+  if (surfaceCandidates.length === 0) return { kind: 'ungoverned', key };
   const readPolicy = memoizedPolicyReader(deps.readPolicy);
   const admitted = new Set<string>();
-  for (const candidate of candidates) {
+  for (const candidate of surfaceCandidates) {
     let verdict: KernelEnforcementResult | null;
     try {
       verdict = await deps.check(request(candidate), state, state.identityLaunchRecord, readPolicy, async () => true);

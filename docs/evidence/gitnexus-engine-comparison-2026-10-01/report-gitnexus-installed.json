@@ -1,0 +1,216 @@
+{
+  "armId": "gitnexus-installed",
+  "version": "1.6.9",
+  "unavailable": null,
+  "treeFingerprint": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
+  "coldIndex": {
+    "wallMs": 436040,
+    "peakRssKb": 10141156,
+    "ok": true,
+    "loadAvg1": null,
+    "error": null
+  },
+  "indexBytes": 2889981522,
+  "cases": [
+    {
+      "caseId": "selective-scheduler-edge",
+      "intent": "callees",
+      "coldQueryMs": 5312,
+      "warmQueryMs": 4967,
+      "warmSamplesMs": [
+        4967,
+        5074,
+        4940
+      ],
+      "responseBytes": 33871,
+      "estTokens": 8468,
+      "correct": true,
+      "recall": 1,
+      "grade": {
+        "correct": true,
+        "missing": [],
+        "extra": [],
+        "reason": "all 1 expected site(s) present"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/long-lived-admin-pool.ts:145",
+        "packages/operator-core/lib/scheduler/claim-spec-match.ts:374",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:189",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:502",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:535",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:835",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:892",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:914",
+        "packages/operator-core/lib/scheduler/fleet-idle-drain.ts:98",
+        "packages/operator-core/lib/scheduler/get-next.ts:2779",
+        "packages/operator-core/lib/scheduler/plan-item-lane-guard.ts:470"
+      ],
+      "error": "gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current."
+    },
+    {
+      "caseId": "selective-fingerprint-chain",
+      "intent": "callees",
+      "coldQueryMs": 6819,
+      "warmQueryMs": 7187,
+      "warmSamplesMs": [
+        7000,
+        7777,
+        7187
+      ],
+      "responseBytes": 29029,
+      "estTokens": 7258,
+      "correct": false,
+      "recall": 0.5,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:74"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:74"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/agent-tools/plans/source.ts:488",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:98",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:110",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:131",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:470",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:580",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:648",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:653",
+        "packages/operator-core/lib/pg-timestamp.ts:44"
+      ],
+      "error": "gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current."
+    },
+    {
+      "caseId": "selective-external-consumer",
+      "intent": "callers",
+      "coldQueryMs": 4451,
+      "warmQueryMs": 4412,
+      "warmSamplesMs": [
+        4502,
+        4337,
+        4412
+      ],
+      "responseBytes": 14042,
+      "estTokens": 3511,
+      "correct": true,
+      "recall": 1,
+      "grade": {
+        "correct": true,
+        "missing": [],
+        "extra": [],
+        "reason": "all 3 expected site(s) present"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:123",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:902",
+        "packages/operator-core/lib/design-compare/acceptance.ts:120",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts:?"
+      ],
+      "error": "gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus callers returned 4 edge(s): 3 resolved call site(s) and 1 FILE-level edge(s) carrying no line. The file rows are listed last, with kind:\"file\". Do not count them as callers — the same file can appear both as a resolved site and as a file edge, so counting rows overstates the real total."
+    },
+    {
+      "caseId": "selective-route-boundary",
+      "intent": "text-search",
+      "coldQueryMs": 0,
+      "warmQueryMs": 0,
+      "warmSamplesMs": [
+        0,
+        0,
+        0
+      ],
+      "responseBytes": 0,
+      "estTokens": 0,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:48"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:48"
+      },
+      "returnedSites": [],
+      "error": "declined: gitnexus facade does not route intent 'text-search'"
+    },
+    {
+      "caseId": "selective-exact-index-symbol",
+      "intent": "symbol-search",
+      "coldQueryMs": 2104,
+      "warmQueryMs": 2242,
+      "warmSamplesMs": [
+        2212,
+        2274,
+        2242
+      ],
+      "responseBytes": 59,
+      "estTokens": 15,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/work-items.ts:7991"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/work-items.ts:7991"
+      },
+      "returnedSites": [],
+      "error": "gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus context failed or returned an unrecognized status (missing): Symbol 'claimNextIssueWorkItem' not found. Use scoped rg or official LSP."
+    }
+  ],
+  "fixtures": [
+    {
+      "name": "edit",
+      "pass": false,
+      "detail": "missing packages/operator-core/lib/scheduler/get-next.ts:3108 [engine note: gitnexus dispatch threw: gitnexus context exit 139: GitNexus: found 90371 byte lbug.wal without lbug.shadow before read-only open; will rely on LadybugDB replay/recovery instead of deleting pending WAL data.]",
+      "refreshCost": {
+        "wallMs": 1800855.3973730002,
+        "peakRssKb": null,
+        "ok": false,
+        "error": "exit 124 (deadline: process group killed): 1.x can crash while installing gitnexus via npx (npm/arborist \"node.target is null\"). Prefer: pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze or npm install -g gitnexus@latest. See https://github.com/abhigyanpatwari/GitNexus/issues/1939",
+        "loadAvg1": 53.88
+      },
+      "recoveryCost": null,
+      "faultSurfaced": null
+    },
+    {
+      "name": "delete",
+      "pass": false,
+      "detail": "query FAILED (error and no sites) [engine note: gitnexus dispatch threw: gitnexus context exit 139: ]",
+      "refreshCost": {
+        "wallMs": 1811864.4249920002,
+        "peakRssKb": null,
+        "ok": false,
+        "error": "exit 124 (deadline: process group killed): 1.x can crash while installing gitnexus via npx (npm/arborist \"node.target is null\"). Prefer: pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze or npm install -g gitnexus@latest. See https://github.com/abhigyanpatwari/GitNexus/issues/1939",
+        "loadAvg1": 72.25
+      },
+      "recoveryCost": null,
+      "faultSurfaced": null
+    },
+    {
+      "name": "refresh-failure",
+      "pass": true,
+      "detail": "fault SILENT; correct cold=2 while-broken=2 after-restore=2; recovery refresh ok=true",
+      "refreshCost": {
+        "wallMs": 821.7162430007011,
+        "peakRssKb": 134920,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 89.05
+      },
+      "recoveryCost": {
+        "wallMs": 749.7745509995148,
+        "peakRssKb": 135848,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 76.63
+      },
+      "faultSurfaced": false
+    }
+  ],
+  "error": null,
+  "measuredAt": "2026-10-02T16:37:34.722Z"
+}

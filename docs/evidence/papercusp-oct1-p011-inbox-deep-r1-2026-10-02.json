@@ -1,0 +1,2915 @@
+{
+  "schemaVersion": 1,
+  "plane": "live-current-build-operator-api",
+  "incomplete": false,
+  "pid": 3709357,
+  "buildSha": "1b7afa4b28",
+  "startedAt": "2026-10-02T13:24:16.650Z",
+  "samples": [
+    {
+      "label": "idle-0-start",
+      "at": 1790947458776,
+      "pid": 3709357,
+      "uptime": 1292.157830233,
+      "memory": {
+        "rss": 1933438976,
+        "heapTotal": 991838208,
+        "heapUsed": 813305304,
+        "external": 92752833,
+        "arrayBuffers": 10214815
+      },
+      "heap": {
+        "total_heap_size": 991838208,
+        "total_heap_size_executable": 38879232,
+        "total_physical_size": 991838208,
+        "total_available_size": 136889476416,
+        "used_heap_size": 813305544,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118668536,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 2093144,
+        "used_global_handles_size": 1541088,
+        "external_memory": 92752833,
+        "total_allocated_bytes": 140313951304
+      },
+      "os": {
+        "pid": 3709357,
+        "startTicks": "23584573",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1900065792,
+        "rssBytes": 1988009984,
+        "anonymousBytes": 1897226240
+      },
+      "pinnedState": {
+        "pid": 3709357,
+        "registryPresent": true,
+        "population": 141,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 140,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 140,
+        "objects": 0,
+        "entries": 331,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.87381699983962
+            },
+            "entries": 331,
+            "objects": 0,
+            "maps": 1,
+            "mapEntries": 331,
+            "arrays": 0,
+            "arrayEntries": 0,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 0,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 331,
+              "checked": 0,
+              "notChecked": 331,
+              "scanned": 331,
+              "undigestibleKeys": 0,
+              "values": [],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "unresolvedAreMissing": true,
+                "selectedNotChecked": 2,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": true
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 2,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 3.2221109999809414,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 4077038,
+          "startTicks": "23628192",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 398336,
+          "rssBytes": 40615936,
+          "anonymousBytes": 204800
+        },
+        {
+          "pid": 4077249,
+          "startTicks": "23628202",
+          "parentPid": 4077038,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 557297664,
+          "rssBytes": 634703872,
+          "anonymousBytes": 554987520
+        },
+        {
+          "pid": 4136708,
+          "startTicks": "23634173",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1124352,
+          "rssBytes": 7782400,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 388644,
+          "startTicks": "23678643",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1124352,
+          "rssBytes": 7766016,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 567466,
+          "startTicks": "23695156",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2810880,
+          "rssBytes": 8806400,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568014,
+          "startTicks": "23695200",
+          "parentPid": 567466,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2808832,
+          "rssBytes": 6934528,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568016,
+          "startTicks": "23695200",
+          "parentPid": 568014,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 373760,
+          "rssBytes": 3866624,
+          "anonymousBytes": 368640
+        },
+        {
+          "pid": 568020,
+          "startTicks": "23695200",
+          "parentPid": 568016,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 86171648,
+          "rssBytes": 144941056,
+          "anonymousBytes": 85880832
+        },
+        {
+          "pid": 587994,
+          "startTicks": "23697676",
+          "parentPid": 568020,
+          "executable": "/home/builduser/.local/share/claude/versions/2.1.284",
+          "executableSha256": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+          "pssBytes": 327759872,
+          "rssBytes": 451432448,
+          "anonymousBytes": 323678208
+        },
+        {
+          "pid": 679269,
+          "startTicks": "23708901",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1122304,
+          "rssBytes": 7729152,
+          "anonymousBytes": 950272
+        },
+        {
+          "pid": 705129,
+          "startTicks": "23711926",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 9994240,
+          "rssBytes": 50122752,
+          "anonymousBytes": 9801728
+        },
+        {
+          "pid": 705308,
+          "startTicks": "23711937",
+          "parentPid": 705129,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 443392,
+          "rssBytes": 3964928,
+          "anonymousBytes": 438272
+        },
+        {
+          "pid": 705423,
+          "startTicks": "23711939",
+          "parentPid": 705308,
+          "executable": "/usr/bin/flock",
+          "executableSha256": "e619344dc3eec4023498465679262f9ca27d1e8cef9cfc4c1ae72b428577b806",
+          "pssBytes": 132096,
+          "rssBytes": 2076672,
+          "anonymousBytes": 110592
+        },
+        {
+          "pid": 705431,
+          "startTicks": "23711939",
+          "parentPid": 705423,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 438230016,
+          "rssBytes": 498466816,
+          "anonymousBytes": 437899264
+        },
+        {
+          "pid": 711890,
+          "startTicks": "23712667",
+          "parentPid": 705431,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 48510976,
+          "rssBytes": 102457344,
+          "anonymousBytes": 48226304
+        },
+        {
+          "pid": 712646,
+          "startTicks": "23712910",
+          "parentPid": 711890,
+          "executable": "/usr/bin/dash",
+          "executableSha256": "86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42",
+          "pssBytes": 118784,
+          "rssBytes": 1966080,
+          "anonymousBytes": 114688
+        },
+        {
+          "pid": 712647,
+          "startTicks": "23712910",
+          "parentPid": 712646,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 140035072,
+          "rssBytes": 200081408,
+          "anonymousBytes": 139075584
+        },
+        {
+          "pid": 713410,
+          "startTicks": "23713037",
+          "parentPid": 712647,
+          "executable": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild",
+          "executableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+          "pssBytes": 13828096,
+          "rssBytes": 21028864,
+          "anonymousBytes": 12107776
+        },
+        {
+          "pid": 717417,
+          "startTicks": "23713880",
+          "parentPid": 712647,
+          "executable": "/usr/bin/dash",
+          "executableSha256": "86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42",
+          "pssBytes": 118784,
+          "rssBytes": 1966080,
+          "anonymousBytes": 114688
+        },
+        {
+          "pid": 717419,
+          "startTicks": "23713880",
+          "parentPid": 717417,
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssBytes": 6969344,
+          "rssBytes": 11132928,
+          "anonymousBytes": 6107136
+        },
+        {
+          "pid": 717497,
+          "startTicks": "23713889",
+          "parentPid": 717419,
+          "executable": "/usr/lib/git-core/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssBytes": 1476608,
+          "rssBytes": 4800512,
+          "anonymousBytes": 286720
+        },
+        {
+          "pid": 712931,
+          "startTicks": "23712932",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1131520,
+          "rssBytes": 7778304,
+          "anonymousBytes": 958464
+        }
+      ],
+      "observerMs": 1603.3013230000006
+    },
+    {
+      "label": "idle-0-end",
+      "at": 1790947465341,
+      "pid": 3709357,
+      "uptime": 1298.722238694,
+      "memory": {
+        "rss": 1933885440,
+        "heapTotal": 992665600,
+        "heapUsed": 797984744,
+        "external": 88502363,
+        "arrayBuffers": 5964345
+      },
+      "heap": {
+        "total_heap_size": 992665600,
+        "total_heap_size_executable": 38879232,
+        "total_physical_size": 992665600,
+        "total_available_size": 136908717192,
+        "used_heap_size": 797984984,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118668536,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 2093144,
+        "used_global_handles_size": 1538496,
+        "external_memory": 88502363,
+        "total_allocated_bytes": 140379759112
+      },
+      "os": {
+        "pid": 3709357,
+        "startTicks": "23584573",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1900895232,
+        "rssBytes": 1988837376,
+        "anonymousBytes": 1898053632
+      },
+      "pinnedState": {
+        "pid": 3709357,
+        "registryPresent": true,
+        "population": 141,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 140,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 140,
+        "objects": 0,
+        "entries": 332,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.93926299992017
+            },
+            "entries": 332,
+            "objects": 0,
+            "maps": 1,
+            "mapEntries": 332,
+            "arrays": 0,
+            "arrayEntries": 0,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 0,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 332,
+              "checked": 0,
+              "notChecked": 332,
+              "scanned": 332,
+              "undigestibleKeys": 0,
+              "values": [],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "unresolvedAreMissing": true,
+                "selectedNotChecked": 2,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": true
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 2,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 1.128101000096649,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 4077038,
+          "startTicks": "23628192",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 399360,
+          "rssBytes": 40615936,
+          "anonymousBytes": 204800
+        },
+        {
+          "pid": 4077249,
+          "startTicks": "23628202",
+          "parentPid": 4077038,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 557555712,
+          "rssBytes": 634957824,
+          "anonymousBytes": 555241472
+        },
+        {
+          "pid": 4136708,
+          "startTicks": "23634173",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1134592,
+          "rssBytes": 7782400,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 388644,
+          "startTicks": "23678643",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1134592,
+          "rssBytes": 7766016,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 567466,
+          "startTicks": "23695156",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2810880,
+          "rssBytes": 8806400,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568014,
+          "startTicks": "23695200",
+          "parentPid": 567466,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2808832,
+          "rssBytes": 6934528,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568016,
+          "startTicks": "23695200",
+          "parentPid": 568014,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 373760,
+          "rssBytes": 3866624,
+          "anonymousBytes": 368640
+        },
+        {
+          "pid": 568020,
+          "startTicks": "23695200",
+          "parentPid": 568016,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 86172672,
+          "rssBytes": 144941056,
+          "anonymousBytes": 85880832
+        },
+        {
+          "pid": 587994,
+          "startTicks": "23697676",
+          "parentPid": 568020,
+          "executable": "/home/builduser/.local/share/claude/versions/2.1.284",
+          "executableSha256": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+          "pssBytes": 310024192,
+          "rssBytes": 433696768,
+          "anonymousBytes": 305942528
+        },
+        {
+          "pid": 679269,
+          "startTicks": "23708901",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1122304,
+          "rssBytes": 7729152,
+          "anonymousBytes": 950272
+        },
+        {
+          "pid": 705129,
+          "startTicks": "23711926",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 9995264,
+          "rssBytes": 50122752,
+          "anonymousBytes": 9801728
+        },
+        {
+          "pid": 705308,
+          "startTicks": "23711937",
+          "parentPid": 705129,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 443392,
+          "rssBytes": 3964928,
+          "anonymousBytes": 438272
+        },
+        {
+          "pid": 705423,
+          "startTicks": "23711939",
+          "parentPid": 705308,
+          "executable": "/usr/bin/flock",
+          "executableSha256": "e619344dc3eec4023498465679262f9ca27d1e8cef9cfc4c1ae72b428577b806",
+          "pssBytes": 132096,
+          "rssBytes": 2076672,
+          "anonymousBytes": 110592
+        },
+        {
+          "pid": 705431,
+          "startTicks": "23711939",
+          "parentPid": 705423,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 438505472,
+          "rssBytes": 498741248,
+          "anonymousBytes": 438173696
+        },
+        {
+          "pid": 711890,
+          "startTicks": "23712667",
+          "parentPid": 705431,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 48513024,
+          "rssBytes": 102457344,
+          "anonymousBytes": 48226304
+        },
+        {
+          "pid": 712646,
+          "startTicks": "23712910",
+          "parentPid": 711890,
+          "executable": "/usr/bin/dash",
+          "executableSha256": "86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42",
+          "pssBytes": 118784,
+          "rssBytes": 1966080,
+          "anonymousBytes": 114688
+        },
+        {
+          "pid": 712647,
+          "startTicks": "23712910",
+          "parentPid": 712646,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 69634048,
+          "rssBytes": 129679360,
+          "anonymousBytes": 68673536
+        },
+        {
+          "pid": 713410,
+          "startTicks": "23713037",
+          "parentPid": 712647,
+          "executable": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild",
+          "executableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+          "pssBytes": 13828096,
+          "rssBytes": 21028864,
+          "anonymousBytes": 12107776
+        },
+        {
+          "pid": 717417,
+          "startTicks": "23713880",
+          "parentPid": 712647,
+          "executable": "/usr/bin/dash",
+          "executableSha256": "86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42",
+          "pssBytes": 118784,
+          "rssBytes": 1966080,
+          "anonymousBytes": 114688
+        },
+        {
+          "pid": 717419,
+          "startTicks": "23713880",
+          "parentPid": 717417,
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssBytes": 7515136,
+          "rssBytes": 11141120,
+          "anonymousBytes": 6115328
+        },
+        {
+          "pid": 718856,
+          "startTicks": "23714243",
+          "parentPid": 717419,
+          "executable": "/usr/lib/git-core/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssBytes": 2710528,
+          "rssBytes": 6365184,
+          "anonymousBytes": 958464
+        },
+        {
+          "pid": 712931,
+          "startTicks": "23712932",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1130496,
+          "rssBytes": 7778304,
+          "anonymousBytes": 958464
+        }
+      ],
+      "observerMs": 135.25980999999956
+    },
+    {
+      "label": "ordinary-0-end",
+      "at": 1790947466943,
+      "pid": 3709357,
+      "uptime": 1300.324194411,
+      "memory": {
+        "rss": 1964507136,
+        "heapTotal": 1021554688,
+        "heapUsed": 842802000,
+        "external": 95463296,
+        "arrayBuffers": 8295966
+      },
+      "heap": {
+        "total_heap_size": 1021554688,
+        "total_heap_size_executable": 38879232,
+        "total_physical_size": 1021554688,
+        "total_available_size": 136836136944,
+        "used_heap_size": 842802240,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118668536,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 2093144,
+        "used_global_handles_size": 1551328,
+        "external_memory": 95463296,
+        "total_allocated_bytes": 140488447104
+      },
+      "os": {
+        "pid": 3709357,
+        "startTicks": "23584573",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1934351360,
+        "rssBytes": 2024263680,
+        "anonymousBytes": 1931485184
+      },
+      "pinnedState": {
+        "pid": 3709357,
+        "registryPresent": true,
+        "population": 141,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 140,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 140,
+        "objects": 0,
+        "entries": 332,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.87690300005488
+            },
+            "entries": 332,
+            "objects": 0,
+            "maps": 1,
+            "mapEntries": 332,
+            "arrays": 0,
+            "arrayEntries": 0,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 0,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 332,
+              "checked": 0,
+              "notChecked": 332,
+              "scanned": 332,
+              "undigestibleKeys": 0,
+              "values": [],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "unresolvedAreMissing": true,
+                "selectedNotChecked": 2,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": true
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 2,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 4.883467999985442,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 4077038,
+          "startTicks": "23628192",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 389120,
+          "rssBytes": 40615936,
+          "anonymousBytes": 204800
+        },
+        {
+          "pid": 4077249,
+          "startTicks": "23628202",
+          "parentPid": 4077038,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 557646848,
+          "rssBytes": 635064320,
+          "anonymousBytes": 555347968
+        },
+        {
+          "pid": 4136708,
+          "startTicks": "23634173",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1145856,
+          "rssBytes": 7782400,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 388644,
+          "startTicks": "23678643",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1144832,
+          "rssBytes": 7766016,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 567466,
+          "startTicks": "23695156",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2810880,
+          "rssBytes": 8806400,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568014,
+          "startTicks": "23695200",
+          "parentPid": 567466,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2807808,
+          "rssBytes": 6934528,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568016,
+          "startTicks": "23695200",
+          "parentPid": 568014,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 373760,
+          "rssBytes": 3866624,
+          "anonymousBytes": 368640
+        },
+        {
+          "pid": 568020,
+          "startTicks": "23695200",
+          "parentPid": 568016,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 86157312,
+          "rssBytes": 144941056,
+          "anonymousBytes": 85880832
+        },
+        {
+          "pid": 587994,
+          "startTicks": "23697676",
+          "parentPid": 568020,
+          "executable": "/home/builduser/.local/share/claude/versions/2.1.284",
+          "executableSha256": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+          "pssBytes": 310011904,
+          "rssBytes": 433684480,
+          "anonymousBytes": 305930240
+        },
+        {
+          "pid": 679269,
+          "startTicks": "23708901",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1132544,
+          "rssBytes": 7729152,
+          "anonymousBytes": 950272
+        },
+        {
+          "pid": 705129,
+          "startTicks": "23711926",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 9985024,
+          "rssBytes": 50122752,
+          "anonymousBytes": 9801728
+        },
+        {
+          "pid": 705308,
+          "startTicks": "23711937",
+          "parentPid": 705129,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 443392,
+          "rssBytes": 3964928,
+          "anonymousBytes": 438272
+        },
+        {
+          "pid": 705423,
+          "startTicks": "23711939",
+          "parentPid": 705308,
+          "executable": "/usr/bin/flock",
+          "executableSha256": "e619344dc3eec4023498465679262f9ca27d1e8cef9cfc4c1ae72b428577b806",
+          "pssBytes": 132096,
+          "rssBytes": 2076672,
+          "anonymousBytes": 110592
+        },
+        {
+          "pid": 705431,
+          "startTicks": "23711939",
+          "parentPid": 705423,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 438490112,
+          "rssBytes": 498741248,
+          "anonymousBytes": 438173696
+        },
+        {
+          "pid": 711890,
+          "startTicks": "23712667",
+          "parentPid": 705431,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 48498688,
+          "rssBytes": 102457344,
+          "anonymousBytes": 48226304
+        },
+        {
+          "pid": 712646,
+          "startTicks": "23712910",
+          "parentPid": 711890,
+          "executable": "/usr/bin/dash",
+          "executableSha256": "86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42",
+          "pssBytes": 118784,
+          "rssBytes": 1966080,
+          "anonymousBytes": 114688
+        },
+        {
+          "pid": 712647,
+          "startTicks": "23712910",
+          "parentPid": 712646,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 77537280,
+          "rssBytes": 138452992,
+          "anonymousBytes": 76726272
+        },
+        {
+          "pid": 713410,
+          "startTicks": "23713037",
+          "parentPid": 712647,
+          "executable": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild",
+          "executableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+          "pssBytes": 13812736,
+          "rssBytes": 21028864,
+          "anonymousBytes": 12107776
+        },
+        {
+          "pid": 712931,
+          "startTicks": "23712932",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1132544,
+          "rssBytes": 7778304,
+          "anonymousBytes": 958464
+        }
+      ],
+      "observerMs": 257.93454399999973
+    },
+    {
+      "label": "idle-1-start",
+      "at": 1790947468755,
+      "pid": 3709357,
+      "uptime": 1302.136642818,
+      "memory": {
+        "rss": 1940836352,
+        "heapTotal": 995397632,
+        "heapUsed": 808649072,
+        "external": 99099819,
+        "arrayBuffers": 3022396
+      },
+      "heap": {
+        "total_heap_size": 995397632,
+        "total_heap_size_executable": 38879232,
+        "total_physical_size": 995397632,
+        "total_available_size": 136897818584,
+        "used_heap_size": 808649312,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118668536,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 2093144,
+        "used_global_handles_size": 1546112,
+        "external_memory": 99099819,
+        "total_allocated_bytes": 140523542080
+      },
+      "os": {
+        "pid": 3709357,
+        "startTicks": "23584573",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1904637952,
+        "rssBytes": 1994551296,
+        "anonymousBytes": 1901772800
+      },
+      "pinnedState": {
+        "pid": 3709357,
+        "registryPresent": true,
+        "population": 141,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 140,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 140,
+        "objects": 0,
+        "entries": 331,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.93104799999855
+            },
+            "entries": 331,
+            "objects": 0,
+            "maps": 1,
+            "mapEntries": 331,
+            "arrays": 0,
+            "arrayEntries": 0,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 0,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 331,
+              "checked": 0,
+              "notChecked": 331,
+              "scanned": 331,
+              "undigestibleKeys": 0,
+              "values": [],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "unresolvedAreMissing": true,
+                "selectedNotChecked": 2,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": true
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 2,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 1.7102210000157356,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 4077038,
+          "startTicks": "23628192",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 395264,
+          "rssBytes": 40615936,
+          "anonymousBytes": 204800
+        },
+        {
+          "pid": 4077249,
+          "startTicks": "23628202",
+          "parentPid": 4077038,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 557736960,
+          "rssBytes": 635150336,
+          "anonymousBytes": 555433984
+        },
+        {
+          "pid": 4136708,
+          "startTicks": "23634173",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1143808,
+          "rssBytes": 7782400,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 388644,
+          "startTicks": "23678643",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1143808,
+          "rssBytes": 7766016,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 567466,
+          "startTicks": "23695156",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2810880,
+          "rssBytes": 8806400,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568014,
+          "startTicks": "23695200",
+          "parentPid": 567466,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2807808,
+          "rssBytes": 6934528,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568016,
+          "startTicks": "23695200",
+          "parentPid": 568014,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 373760,
+          "rssBytes": 3866624,
+          "anonymousBytes": 368640
+        },
+        {
+          "pid": 568020,
+          "startTicks": "23695200",
+          "parentPid": 568016,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 86164480,
+          "rssBytes": 144941056,
+          "anonymousBytes": 85880832
+        },
+        {
+          "pid": 587994,
+          "startTicks": "23697676",
+          "parentPid": 568020,
+          "executable": "/home/builduser/.local/share/claude/versions/2.1.284",
+          "executableSha256": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+          "pssBytes": 303396864,
+          "rssBytes": 427069440,
+          "anonymousBytes": 299315200
+        },
+        {
+          "pid": 679269,
+          "startTicks": "23708901",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1132544,
+          "rssBytes": 7729152,
+          "anonymousBytes": 950272
+        },
+        {
+          "pid": 705129,
+          "startTicks": "23711926",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 9991168,
+          "rssBytes": 50122752,
+          "anonymousBytes": 9801728
+        },
+        {
+          "pid": 705308,
+          "startTicks": "23711937",
+          "parentPid": 705129,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 443392,
+          "rssBytes": 3964928,
+          "anonymousBytes": 438272
+        },
+        {
+          "pid": 705423,
+          "startTicks": "23711939",
+          "parentPid": 705308,
+          "executable": "/usr/bin/flock",
+          "executableSha256": "e619344dc3eec4023498465679262f9ca27d1e8cef9cfc4c1ae72b428577b806",
+          "pssBytes": 132096,
+          "rssBytes": 2076672,
+          "anonymousBytes": 110592
+        },
+        {
+          "pid": 705431,
+          "startTicks": "23711939",
+          "parentPid": 705423,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 438505472,
+          "rssBytes": 498749440,
+          "anonymousBytes": 438181888
+        },
+        {
+          "pid": 711890,
+          "startTicks": "23712667",
+          "parentPid": 705431,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 48503808,
+          "rssBytes": 102457344,
+          "anonymousBytes": 48226304
+        },
+        {
+          "pid": 712646,
+          "startTicks": "23712910",
+          "parentPid": 711890,
+          "executable": "/usr/bin/dash",
+          "executableSha256": "86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42",
+          "pssBytes": 118784,
+          "rssBytes": 1966080,
+          "anonymousBytes": 114688
+        },
+        {
+          "pid": 712647,
+          "startTicks": "23712910",
+          "parentPid": 712646,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 77545472,
+          "rssBytes": 138452992,
+          "anonymousBytes": 76726272
+        },
+        {
+          "pid": 713410,
+          "startTicks": "23713037",
+          "parentPid": 712647,
+          "executable": "/home/builduser/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild",
+          "executableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+          "pssBytes": 13812736,
+          "rssBytes": 21028864,
+          "anonymousBytes": 12107776
+        },
+        {
+          "pid": 712931,
+          "startTicks": "23712932",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1140736,
+          "rssBytes": 7778304,
+          "anonymousBytes": 958464
+        }
+      ],
+      "observerMs": 238.02417799999967
+    },
+    {
+      "label": "idle-1-end",
+      "at": 1790947471196,
+      "pid": 3709357,
+      "uptime": 1304.577764688,
+      "memory": {
+        "rss": 1944518656,
+        "heapTotal": 1004408832,
+        "heapUsed": 872698056,
+        "external": 98152827,
+        "arrayBuffers": 6889151
+      },
+      "heap": {
+        "total_heap_size": 1004408832,
+        "total_heap_size_executable": 39141376,
+        "total_physical_size": 1004408832,
+        "total_available_size": 136832629688,
+        "used_heap_size": 872698296,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118668536,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 2093144,
+        "used_global_handles_size": 1554464,
+        "external_memory": 98152827,
+        "total_allocated_bytes": 140770194648
+      },
+      "os": {
+        "pid": 3709357,
+        "startTicks": "23584573",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1908711424,
+        "rssBytes": 1998618624,
+        "anonymousBytes": 1905840128
+      },
+      "pinnedState": {
+        "pid": 3709357,
+        "registryPresent": true,
+        "population": 141,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 140,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 140,
+        "objects": 0,
+        "entries": 331,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.90483699995093
+            },
+            "entries": 331,
+            "objects": 0,
+            "maps": 1,
+            "mapEntries": 331,
+            "arrays": 0,
+            "arrayEntries": 0,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 0,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 331,
+              "checked": 0,
+              "notChecked": 331,
+              "scanned": 331,
+              "undigestibleKeys": 0,
+              "values": [],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "unresolvedAreMissing": true,
+                "selectedNotChecked": 2,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": true
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 2,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 1.8729439999442548,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 4077038,
+          "startTicks": "23628192",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 397312,
+          "rssBytes": 40615936,
+          "anonymousBytes": 204800
+        },
+        {
+          "pid": 4077249,
+          "startTicks": "23628202",
+          "parentPid": 4077038,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 557861888,
+          "rssBytes": 635269120,
+          "anonymousBytes": 555552768
+        },
+        {
+          "pid": 4136708,
+          "startTicks": "23634173",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1145856,
+          "rssBytes": 7782400,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 388644,
+          "startTicks": "23678643",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1145856,
+          "rssBytes": 7766016,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 567466,
+          "startTicks": "23695156",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2810880,
+          "rssBytes": 8806400,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568014,
+          "startTicks": "23695200",
+          "parentPid": 567466,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2808832,
+          "rssBytes": 6934528,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568016,
+          "startTicks": "23695200",
+          "parentPid": 568014,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 373760,
+          "rssBytes": 3866624,
+          "anonymousBytes": 368640
+        },
+        {
+          "pid": 568020,
+          "startTicks": "23695200",
+          "parentPid": 568016,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 86169600,
+          "rssBytes": 144941056,
+          "anonymousBytes": 85880832
+        },
+        {
+          "pid": 587994,
+          "startTicks": "23697676",
+          "parentPid": 568020,
+          "executable": "/home/builduser/.local/share/claude/versions/2.1.284",
+          "executableSha256": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+          "pssBytes": 303249408,
+          "rssBytes": 426921984,
+          "anonymousBytes": 299167744
+        },
+        {
+          "pid": 679269,
+          "startTicks": "23708901",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1133568,
+          "rssBytes": 7729152,
+          "anonymousBytes": 950272
+        },
+        {
+          "pid": 705129,
+          "startTicks": "23711926",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 9994240,
+          "rssBytes": 50122752,
+          "anonymousBytes": 9801728
+        },
+        {
+          "pid": 705308,
+          "startTicks": "23711937",
+          "parentPid": 705129,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 443392,
+          "rssBytes": 3964928,
+          "anonymousBytes": 438272
+        },
+        {
+          "pid": 705423,
+          "startTicks": "23711939",
+          "parentPid": 705308,
+          "executable": "/usr/bin/flock",
+          "executableSha256": "e619344dc3eec4023498465679262f9ca27d1e8cef9cfc4c1ae72b428577b806",
+          "pssBytes": 132096,
+          "rssBytes": 2076672,
+          "anonymousBytes": 110592
+        },
+        {
+          "pid": 705431,
+          "startTicks": "23711939",
+          "parentPid": 705423,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 438515712,
+          "rssBytes": 498753536,
+          "anonymousBytes": 438185984
+        },
+        {
+          "pid": 711890,
+          "startTicks": "23712667",
+          "parentPid": 705431,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 48509952,
+          "rssBytes": 102457344,
+          "anonymousBytes": 48226304
+        },
+        {
+          "pid": 712646,
+          "startTicks": "23712910",
+          "parentPid": 711890,
+          "executable": "/usr/bin/dash",
+          "executableSha256": "86d31f6fb799e91fa21bad341484564510ca287703a16e9e46c53338776f4f42",
+          "pssBytes": 118784,
+          "rssBytes": 1966080,
+          "anonymousBytes": 114688
+        }
+      ],
+      "observerMs": 160.05683000000136
+    },
+    {
+      "label": "ordinary-1-end",
+      "at": 1790947475800,
+      "pid": 3709357,
+      "uptime": 1309.181570353,
+      "memory": {
+        "rss": 1944518656,
+        "heapTotal": 1007067136,
+        "heapUsed": 886632984,
+        "external": 95638710,
+        "arrayBuffers": 4375034
+      },
+      "heap": {
+        "total_heap_size": 1007067136,
+        "total_heap_size_executable": 39141376,
+        "total_physical_size": 1007067136,
+        "total_available_size": 136818988288,
+        "used_heap_size": 886633224,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118668536,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 2093144,
+        "used_global_handles_size": 1562304,
+        "external_memory": 95638710,
+        "total_allocated_bytes": 140828236968
+      },
+      "os": {
+        "pid": 3709357,
+        "startTicks": "23584573",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1909757952,
+        "rssBytes": 1999663104,
+        "anonymousBytes": 1906884608
+      },
+      "pinnedState": {
+        "pid": 3709357,
+        "registryPresent": true,
+        "population": 141,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 140,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 140,
+        "objects": 0,
+        "entries": 330,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.9230820001103
+            },
+            "entries": 330,
+            "objects": 0,
+            "maps": 1,
+            "mapEntries": 330,
+            "arrays": 0,
+            "arrayEntries": 0,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 0,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 330,
+              "checked": 0,
+              "notChecked": 330,
+              "scanned": 330,
+              "undigestibleKeys": 0,
+              "values": [],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "unresolvedAreMissing": true,
+                "selectedNotChecked": 2,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": true
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 2,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 1.9531389998737723,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 4077038,
+          "startTicks": "23628192",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 398336,
+          "rssBytes": 40615936,
+          "anonymousBytes": 204800
+        },
+        {
+          "pid": 4077249,
+          "startTicks": "23628202",
+          "parentPid": 4077038,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 559920128,
+          "rssBytes": 637325312,
+          "anonymousBytes": 557608960
+        },
+        {
+          "pid": 4136708,
+          "startTicks": "23634173",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1145856,
+          "rssBytes": 7782400,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 388644,
+          "startTicks": "23678643",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1145856,
+          "rssBytes": 7766016,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 567466,
+          "startTicks": "23695156",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2810880,
+          "rssBytes": 8806400,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568014,
+          "startTicks": "23695200",
+          "parentPid": 567466,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2808832,
+          "rssBytes": 6934528,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568016,
+          "startTicks": "23695200",
+          "parentPid": 568014,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 373760,
+          "rssBytes": 3866624,
+          "anonymousBytes": 368640
+        },
+        {
+          "pid": 568020,
+          "startTicks": "23695200",
+          "parentPid": 568016,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 86171648,
+          "rssBytes": 144941056,
+          "anonymousBytes": 85880832
+        },
+        {
+          "pid": 587994,
+          "startTicks": "23697676",
+          "parentPid": 568020,
+          "executable": "/home/builduser/.local/share/claude/versions/2.1.284",
+          "executableSha256": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+          "pssBytes": 303331328,
+          "rssBytes": 427003904,
+          "anonymousBytes": 299249664
+        },
+        {
+          "pid": 679269,
+          "startTicks": "23708901",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1133568,
+          "rssBytes": 7729152,
+          "anonymousBytes": 950272
+        }
+      ],
+      "observerMs": 139.84365199999957
+    },
+    {
+      "label": "idle-2-start",
+      "at": 1790947476116,
+      "pid": 3709357,
+      "uptime": 1309.497197948,
+      "memory": {
+        "rss": 1947820032,
+        "heapTotal": 1018306560,
+        "heapUsed": 876245600,
+        "external": 99407015,
+        "arrayBuffers": 4312901
+      },
+      "heap": {
+        "total_heap_size": 1018306560,
+        "total_heap_size_executable": 39141376,
+        "total_physical_size": 1018306560,
+        "total_available_size": 136829427152,
+        "used_heap_size": 876245840,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4252144,
+        "peak_malloced_memory": 118668536,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 2093144,
+        "used_global_handles_size": 1560736,
+        "external_memory": 99407015,
+        "total_allocated_bytes": 140898689288
+      },
+      "os": {
+        "pid": 3709357,
+        "startTicks": "23584573",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1909327872,
+        "rssBytes": 1999233024,
+        "anonymousBytes": 1906454528
+      },
+      "pinnedState": {
+        "pid": 3709357,
+        "registryPresent": true,
+        "population": 141,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 140,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 140,
+        "objects": 0,
+        "entries": 331,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.931317999959
+            },
+            "entries": 331,
+            "objects": 0,
+            "maps": 1,
+            "mapEntries": 331,
+            "arrays": 0,
+            "arrayEntries": 0,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 0,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 331,
+              "checked": 0,
+              "notChecked": 331,
+              "scanned": 331,
+              "undigestibleKeys": 0,
+              "values": [],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "unresolvedAreMissing": true,
+                "selectedNotChecked": 2,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": true
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 2,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 3.5240520001389086,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 4077038,
+          "startTicks": "23628192",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 397312,
+          "rssBytes": 40615936,
+          "anonymousBytes": 204800
+        },
+        {
+          "pid": 4077249,
+          "startTicks": "23628202",
+          "parentPid": 4077038,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 559918080,
+          "rssBytes": 637325312,
+          "anonymousBytes": 557608960
+        },
+        {
+          "pid": 4136708,
+          "startTicks": "23634173",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1136640,
+          "rssBytes": 7782400,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 388644,
+          "startTicks": "23678643",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1136640,
+          "rssBytes": 7766016,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 567466,
+          "startTicks": "23695156",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2810880,
+          "rssBytes": 8806400,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568014,
+          "startTicks": "23695200",
+          "parentPid": 567466,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2808832,
+          "rssBytes": 6934528,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568016,
+          "startTicks": "23695200",
+          "parentPid": 568014,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 373760,
+          "rssBytes": 3866624,
+          "anonymousBytes": 368640
+        },
+        {
+          "pid": 568020,
+          "startTicks": "23695200",
+          "parentPid": 568016,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 86169600,
+          "rssBytes": 144941056,
+          "anonymousBytes": 85880832
+        },
+        {
+          "pid": 587994,
+          "startTicks": "23697676",
+          "parentPid": 568020,
+          "executable": "/home/builduser/.local/share/claude/versions/2.1.284",
+          "executableSha256": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+          "pssBytes": 303331328,
+          "rssBytes": 427003904,
+          "anonymousBytes": 299249664
+        },
+        {
+          "pid": 679269,
+          "startTicks": "23708901",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1123328,
+          "rssBytes": 7729152,
+          "anonymousBytes": 950272
+        },
+        {
+          "pid": 726730,
+          "startTicks": "23715519",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1140736,
+          "rssBytes": 7778304,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 142.92397100000017
+    },
+    {
+      "label": "idle-2-end",
+      "at": 1790947478308,
+      "pid": 3709357,
+      "uptime": 1311.689942654,
+      "memory": {
+        "rss": 1984696320,
+        "heapTotal": 1084862464,
+        "heapUsed": 972348048,
+        "external": 104731258,
+        "arrayBuffers": 7544496
+      },
+      "heap": {
+        "total_heap_size": 1084862464,
+        "total_heap_size_executable": 39141376,
+        "total_physical_size": 1084854272,
+        "total_available_size": 136696345336,
+        "used_heap_size": 972348288,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118668536,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 2093144,
+        "used_global_handles_size": 1584320,
+        "external_memory": 104731258,
+        "total_allocated_bytes": 141240729152
+      },
+      "os": {
+        "pid": 3709357,
+        "startTicks": "23584573",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1946425344,
+        "rssBytes": 2036322304,
+        "anonymousBytes": 1943543808
+      },
+      "pinnedState": {
+        "pid": 3709357,
+        "registryPresent": true,
+        "population": 141,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 140,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 140,
+        "objects": 0,
+        "entries": 333,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.94412300013937
+            },
+            "entries": 333,
+            "objects": 0,
+            "maps": 1,
+            "mapEntries": 333,
+            "arrays": 0,
+            "arrayEntries": 0,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 0,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 333,
+              "checked": 0,
+              "notChecked": 333,
+              "scanned": 333,
+              "undigestibleKeys": 0,
+              "values": [],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "unresolvedAreMissing": true,
+                "selectedNotChecked": 2,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": true
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 2,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 1.0885749999433756,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 4077038,
+          "startTicks": "23628192",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 400384,
+          "rssBytes": 40615936,
+          "anonymousBytes": 204800
+        },
+        {
+          "pid": 4077249,
+          "startTicks": "23628202",
+          "parentPid": 4077038,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 560172032,
+          "rssBytes": 637571072,
+          "anonymousBytes": 557854720
+        },
+        {
+          "pid": 4136708,
+          "startTicks": "23634173",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1134592,
+          "rssBytes": 7782400,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 388644,
+          "startTicks": "23678643",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1134592,
+          "rssBytes": 7766016,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 567466,
+          "startTicks": "23695156",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2810880,
+          "rssBytes": 8806400,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568014,
+          "startTicks": "23695200",
+          "parentPid": 567466,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2808832,
+          "rssBytes": 6934528,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568016,
+          "startTicks": "23695200",
+          "parentPid": 568014,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 373760,
+          "rssBytes": 3866624,
+          "anonymousBytes": 368640
+        },
+        {
+          "pid": 568020,
+          "startTicks": "23695200",
+          "parentPid": 568016,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 86216704,
+          "rssBytes": 144982016,
+          "anonymousBytes": 85921792
+        },
+        {
+          "pid": 587994,
+          "startTicks": "23697676",
+          "parentPid": 568020,
+          "executable": "/home/builduser/.local/share/claude/versions/2.1.284",
+          "executableSha256": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+          "pssBytes": 303335424,
+          "rssBytes": 427008000,
+          "anonymousBytes": 299253760
+        },
+        {
+          "pid": 679269,
+          "startTicks": "23708901",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1122304,
+          "rssBytes": 7729152,
+          "anonymousBytes": 950272
+        }
+      ],
+      "observerMs": 103.27719900000011
+    },
+    {
+      "label": "ordinary-2-end",
+      "at": 1790947482458,
+      "pid": 3709357,
+      "uptime": 1315.839607305,
+      "memory": {
+        "rss": 1985744896,
+        "heapTotal": 1086251008,
+        "heapUsed": 984577864,
+        "external": 106867050,
+        "arrayBuffers": 9680288
+      },
+      "heap": {
+        "total_heap_size": 1086251008,
+        "total_heap_size_executable": 39141376,
+        "total_physical_size": 1086251008,
+        "total_available_size": 136683250728,
+        "used_heap_size": 984578104,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118668536,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 2093144,
+        "used_global_handles_size": 1597952,
+        "external_memory": 106867050,
+        "total_allocated_bytes": 141255464072
+      },
+      "os": {
+        "pid": 3709357,
+        "startTicks": "23584573",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1947378688,
+        "rssBytes": 2037272576,
+        "anonymousBytes": 1944494080
+      },
+      "pinnedState": {
+        "pid": 3709357,
+        "registryPresent": true,
+        "population": 141,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 140,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 140,
+        "objects": 0,
+        "entries": 333,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.93279099999927
+            },
+            "entries": 333,
+            "objects": 0,
+            "maps": 1,
+            "mapEntries": 333,
+            "arrays": 0,
+            "arrayEntries": 0,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 0,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 333,
+              "checked": 0,
+              "notChecked": 333,
+              "scanned": 333,
+              "undigestibleKeys": 0,
+              "values": [],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [
+                  "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+                  "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+                ],
+                "unresolvedAreMissing": true,
+                "selectedNotChecked": 2,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": true
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 2,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 1.189558999845758,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 4077038,
+          "startTicks": "23628192",
+          "parentPid": 3709357,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 401408,
+          "rssBytes": 40615936,
+          "anonymousBytes": 204800
+        },
+        {
+          "pid": 4077249,
+          "startTicks": "23628202",
+          "parentPid": 4077038,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 564767744,
+          "rssBytes": 642162688,
+          "anonymousBytes": 562446336
+        },
+        {
+          "pid": 4136708,
+          "startTicks": "23634173",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1157120,
+          "rssBytes": 7782400,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 388644,
+          "startTicks": "23678643",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1157120,
+          "rssBytes": 7766016,
+          "anonymousBytes": 962560
+        },
+        {
+          "pid": 567466,
+          "startTicks": "23695156",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2810880,
+          "rssBytes": 8806400,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568014,
+          "startTicks": "23695200",
+          "parentPid": 567466,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 2808832,
+          "rssBytes": 6934528,
+          "anonymousBytes": 5152768
+        },
+        {
+          "pid": 568016,
+          "startTicks": "23695200",
+          "parentPid": 568014,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "pssBytes": 373760,
+          "rssBytes": 3866624,
+          "anonymousBytes": 368640
+        },
+        {
+          "pid": 568020,
+          "startTicks": "23695200",
+          "parentPid": 568016,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 86217728,
+          "rssBytes": 144982016,
+          "anonymousBytes": 85921792
+        },
+        {
+          "pid": 587994,
+          "startTicks": "23697676",
+          "parentPid": 568020,
+          "executable": "/home/builduser/.local/share/claude/versions/2.1.284",
+          "executableSha256": "5cd90aabd83f8a15136c35aa37bb1d92b348993573316643dc3fe4e04afbf88f",
+          "pssBytes": 302843904,
+          "rssBytes": 426516480,
+          "anonymousBytes": 298762240
+        },
+        {
+          "pid": 679269,
+          "startTicks": "23708901",
+          "parentPid": 3709357,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1144832,
+          "rssBytes": 7729152,
+          "anonymousBytes": 950272
+        }
+      ],
+      "observerMs": 124.13132799999948
+    }
+  ],
+  "windows": [
+    {
+      "window": 0,
+      "startedAt": "2026-10-02T13:24:26.288Z",
+      "endedAt": "2026-10-02T13:24:28.477Z"
+    },
+    {
+      "window": 1,
+      "startedAt": "2026-10-02T13:24:34.587Z",
+      "endedAt": "2026-10-02T13:24:35.949Z"
+    },
+    {
+      "window": 2,
+      "startedAt": "2026-10-02T13:24:41.736Z",
+      "endedAt": "2026-10-02T13:24:42.766Z"
+    }
+  ],
+  "requests": [
+    {
+      "window": 0,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21143,
+      "responseSha256": "d8ecdcbaf01013f05ec32228ce3ba24bf9511fe169d692ad8e586a90ccc6fbcb",
+      "elapsedMs": 318.334605
+    },
+    {
+      "window": 0,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "ab069df2336b20b36570a13441e888fa7637120d55c806d0406b8d7efad3ec9e",
+      "elapsedMs": 315.1905139999999
+    },
+    {
+      "window": 0,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "85e3c51ac194b3b60df4ec02d8b7d4c23a8ef4da7257c6bb43f7404f7cffe219",
+      "elapsedMs": 43.25980499999969
+    },
+    {
+      "window": 0,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "0efe4fcd5f353b4f7719fbf63cb2817a8a37e9fc891e84166f6ba33a04704d38",
+      "elapsedMs": 70.5550549999989
+    },
+    {
+      "window": 0,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "5ae4e2134cd32c9e8dc01dec1d9c6fd41978b2c07ee8e3ce7492e9e9c546ed2d",
+      "elapsedMs": 163.25425800000085
+    },
+    {
+      "window": 0,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "a63807fb2330cf944b303945dab6dff54efddb0f427e88f653f92532ae1688b8",
+      "elapsedMs": 165.27480600000126
+    },
+    {
+      "window": 0,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "20e25c627abc056e8db773f9eee7547cf826d789f7f025a7f6a4291f39b07fd5",
+      "elapsedMs": 92.53880299999946
+    },
+    {
+      "window": 0,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "2cad3e67386de33b245afbc9b6632914660fc1ea3402ffc57dd0922501cee94a",
+      "elapsedMs": 93.31192200000078
+    },
+    {
+      "window": 1,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21143,
+      "responseSha256": "6119f9e8d538ae0c72fda7f54bd88ac89b5a930e4e346e3e39ab5642168429ee",
+      "elapsedMs": 956.1183650000021
+    },
+    {
+      "window": 1,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21143,
+      "responseSha256": "950b415f378de616047f5d5a762683493301e2525066ee89504131d259aec3ad",
+      "elapsedMs": 1020.0796639999971
+    },
+    {
+      "window": 1,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "719a6417dcf48ce458ec3a671feed463a02500382efac29948bd7d0feafc57e1",
+      "elapsedMs": 101.70244599999933
+    },
+    {
+      "window": 1,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "842f8748842667e28acbc67456eb2c9d3b798353154d69901a2e26b32f54e676",
+      "elapsedMs": 102.31890199999907
+    },
+    {
+      "window": 1,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "f51ffec94c4f0665ce46681beb1d2e44d6d5022f60800501d591715d2aad38ef",
+      "elapsedMs": 41.32299999999668
+    },
+    {
+      "window": 1,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "de54080ed2fa1d8e91e6b0f16efb8fe2e17ffb04d68424e1d0d5fcb6fb5d196b",
+      "elapsedMs": 43.94540699999925
+    },
+    {
+      "window": 1,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "850053d7a57ec7b84c3bc242447bac94df9f4b36d981a89598c87ff1fd24b04a",
+      "elapsedMs": 42.83133200000157
+    },
+    {
+      "window": 1,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "c15e05f66039fe97b4b5c9b9eb5833f0b57a38402cda5c7f14d3aa652cb2c423",
+      "elapsedMs": 45.52308300000004
+    },
+    {
+      "window": 2,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21143,
+      "responseSha256": "34f357ba986a1b8022c2b8f68779a0d91e526fa44dcfe381d4f37eac44a0a967",
+      "elapsedMs": 620.7796060000001
+    },
+    {
+      "window": 2,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21143,
+      "responseSha256": "56e125ab69bbef4b3efa04027f4c1cd431366aeef6c13fbd45958e782519e467",
+      "elapsedMs": 622.5988770000004
+    },
+    {
+      "window": 2,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "c6e130ead7eab367d3be2983fd5aef9f385142a576556894e065a6b30b38b6f6",
+      "elapsedMs": 37.23155699999916
+    },
+    {
+      "window": 2,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "85653fc8685c1b4f9083247ac9a07fd6c210565a36c71640b14637eec3f5df2a",
+      "elapsedMs": 42.664944000000105
+    },
+    {
+      "window": 2,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "b0321fa913280ee55bf24f63142454795a6e5cf60e4166856dd093db71310a00",
+      "elapsedMs": 27.874939000001177
+    },
+    {
+      "window": 2,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "cec55b58d6c0a35706d693ae9aeedd5a1a0c3030842ba562e3f03576bdfe56cc",
+      "elapsedMs": 34.62428
+    },
+    {
+      "window": 2,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "a1fef4d4d3a6f7f03775a52cfd4552fd80ffe19a9a3ea25f1fc5453d08cc7c95",
+      "elapsedMs": 19.115410000002157
+    },
+    {
+      "window": 2,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 21142,
+      "responseSha256": "b55699b4ccf0d8a4e24a48a419b2af1639715684883392bb92c13c44b28a3a95",
+      "elapsedMs": 19.417171000000963
+    }
+  ],
+  "operations": [],
+  "cleanup": {
+    "inspector": {
+      "closed": true
+    },
+    "processIdentityPreserved": true
+  },
+  "metricDefinitions": {
+    "pssBytes": "smaps_rollup Pss kernel kB times 1024",
+    "heapAndNative": "V8/Node counters, overlapping with PSS; no additive native-residual estimate",
+    "pinnedState": "Reachable logical payloads under named roots; not total retained heap/native bytes",
+    "observerMs": "wall time for inspector counter read and proc descendant census"
+  },
+  "limits": {
+    "windows": 3,
+    "idleMs": 2000,
+    "requestsPerWindow": 8,
+    "concurrency": 2,
+    "descendantsPerSample": 64
+  },
+  "pinnedOwners": [
+    "@papercusp/operator-core.operatorCache"
+  ],
+  "pinnedLimits": {
+    "maxObjects": 16384,
+    "maxEntries": 32768,
+    "maxFields": 64,
+    "maxDepth": 8,
+    "budgetMs": 200,
+    "maxCacheEntries": 2,
+    "maxEntryEntries": 32768,
+    "maxEntryObjects": 16384,
+    "cacheKeyDigests": [
+      "79f3b8efc7b4e5d37912661314d1b8500696574b05d1cf0cd1b03904b8bf46e1",
+      "3f8bad90acccae9c51e1ea41a8e4265ec9b3d45770ee01a153a109e906c2047e"
+    ]
+  },
+  "operatorCacheEntries": true,
+  "limitations": [
+    "Main service PID only; HTTP requests may be served by sibling workers.",
+    "Ambient workload is uncontrolled; idle means no probe HTTP requests.",
+    "No paired intervention, allocation profiler, retainer graph or physical-savings claim.",
+    "Current disk bundle hash is recorded separately from the health-reported loaded build."
+  ],
+  "healthBefore": {
+    "sha": "1b7afa4b28",
+    "version": "0.0.0",
+    "at": "2026-10-02T13:24:17.814Z"
+  },
+  "bundle": {
+    "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-1b7afa4b2852.ThCgWW/checkout/apps/operator/dist-host/hono-host.mjs",
+    "argvEntry": "dist-host/hono-host.mjs",
+    "diskSha256": "920c66dc29dca89cfe50754a8af674d5741960d7e2d5aece051e48da84f6d935",
+    "diskSha256After": "920c66dc29dca89cfe50754a8af674d5741960d7e2d5aece051e48da84f6d935"
+  },
+  "inspectorWasOpen": false,
+  "inspector": {
+    "pid": 3709357,
+    "port": 9229,
+    "openedByProbe": true
+  },
+  "descendantExitRaces": 3,
+  "healthAfter": {
+    "sha": "1b7afa4b28",
+    "version": "0.0.0",
+    "at": "2026-10-02T13:24:42.954Z"
+  },
+  "endedAt": "2026-10-02T13:24:43.165Z"
+}

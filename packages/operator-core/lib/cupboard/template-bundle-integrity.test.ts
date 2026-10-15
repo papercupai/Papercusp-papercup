@@ -37,7 +37,10 @@
  *     copy is drift too, and the one this guard used to be blind to (see
  *     findVendorDrift). Vendoring buys platform-independence at the cost of
  *     duplication; this is the price paid so the duplication cannot drift silently
- *     (plan D-001).
+ *     (plan D-001). The one derived exception is the root package.json: it must equal
+ *     vendoredManifestOf(canonical), the canonical manifest minus devDependencies that
+ *     serve only the dev harness a vendored copy omits (scripts/lib/vendored-manifest.mjs,
+ *     shared with the writer scripts/sync-template-kit-vendored.mjs).
  */
 import {
   existsSync,
@@ -54,6 +57,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { listLocalTemplates, readLocalGuide } from './template-store';
+import { isVendorDevOnly, vendoredManifestOf } from '../../../../scripts/lib/vendored-manifest.mjs';
 
 /** Repo root: walk up from this file until the root package.json (the one with `workspaces`). */
 function repoRoot(): string {
@@ -178,13 +182,19 @@ function filesUnder(dir: string, base = dir): string[] {
  * ships runtime code and its manifest, not the dev harness. Anything NOT matched
  * here must appear in both copies (see findVendorDrift's second direction).
  *
- * Kept deliberately small and explicit rather than a broad glob: every entry is a
- * hole in the symmetry check, so a new one should be an argued decision, not a
- * pattern that quietly swallows a missing runtime file.
+ * The ONE definition lives in scripts/lib/vendored-manifest.mjs, shared with the
+ * writer (scripts/sync-template-kit-vendored.mjs) so the two cannot drift apart.
+ * Re-exported here for callers of this file's pure functions.
  */
-export function isVendorDevOnly(rel: string): boolean {
-  const base = rel.split(/[\\/]/).pop() ?? rel;
-  return base.endsWith('.test.ts') || base === 'vitest.config.ts' || base === 'README.md';
+export { isVendorDevOnly };
+
+/**
+ * What a vendored file must contain given its canonical text: a byte copy, except
+ * the root package.json, which must equal vendoredManifestOf(canonical), the
+ * canonical manifest minus devDependencies that serve only the omitted dev harness.
+ */
+function expectedVendoredText(rel: string, canonicalText: string): string {
+  return rel === 'package.json' ? vendoredManifestOf(canonicalText) : canonicalText;
 }
 
 /**
@@ -242,8 +252,13 @@ export function findVendorDrift(templatesDir: string, libsGenericDir: string): s
           drift.push(`templates/${ref}/${entry}/${rel} has no counterpart in libs/generic/${entry}`);
           continue;
         }
-        if (readFileSync(join(vendored, rel), 'utf8') !== readFileSync(b, 'utf8')) {
-          drift.push(`templates/${ref}/${entry}/${rel} differs from libs/generic/${entry}/${rel}`);
+        if (readFileSync(join(vendored, rel), 'utf8') !== expectedVendoredText(rel, readFileSync(b, 'utf8'))) {
+          drift.push(
+            `templates/${ref}/${entry}/${rel} differs from libs/generic/${entry}/${rel}` +
+              (rel === 'package.json'
+                ? ' (a vendored manifest must equal vendoredManifestOf(canonical), scripts/lib/vendored-manifest.mjs)'
+                : ''),
+          );
         }
       }
       // Direction 2: everything canonical ships (bar the dev harness) is PRESENT in
@@ -445,6 +460,35 @@ describe('template bundle integrity — the guard itself fails when it should', 
     writeFileSync(join(libsGeneric, 'partial-kit', 'src', 'helper.ts'), 'export const helper = 1;\n');
     writeFileSync(join(libsGeneric, 'partial-kit', 'src', 'index.test.ts'), 'import { it } from "vitest";\n');
     writeFileSync(join(libsGeneric, 'partial-kit', 'README.md'), '# partial-kit\n');
+
+    // MANIFEST DERIVATION (WI-6554700010009816): canonical declares its dev harness's
+    // private devDependency. 'derived-manifest' vendors the derived manifest without
+    // it (healthy); 'raw-manifest' vendors the byte copy the old writer produced,
+    // which hands a materialized app a devDependency it cannot resolve.
+    const canonicalManifest =
+      JSON.stringify(
+        {
+          name: '@papercusp/harness-kit',
+          main: './src/index.ts',
+          devDependencies: { '@papercusp/test-config': '*', vitest: '^4.1.4' },
+        },
+        null,
+        2,
+      ) + '\n';
+    mkdirSync(join(libsGeneric, 'harness-kit', 'src'), { recursive: true });
+    writeFileSync(join(libsGeneric, 'harness-kit', 'package.json'), canonicalManifest);
+    writeFileSync(join(libsGeneric, 'harness-kit', 'src', 'index.ts'), 'export const kit = 1;\n');
+    writeFileSync(join(libsGeneric, 'harness-kit', 'vitest.config.ts'), 'export default {};\n');
+    for (const [ref, manifest] of [
+      ['derived-manifest', vendoredManifestOf(canonicalManifest)],
+      ['raw-manifest', canonicalManifest],
+    ] as const) {
+      mkdirSync(join(templates, ref, 'checks'), { recursive: true });
+      mkdirSync(join(templates, ref, 'harness-kit', 'src'), { recursive: true });
+      writeFileSync(join(templates, ref, 'checks', 'e.test.ts'), 'import { it } from "vitest";\n');
+      writeFileSync(join(templates, ref, 'harness-kit', 'package.json'), manifest);
+      writeFileSync(join(templates, ref, 'harness-kit', 'src', 'index.ts'), 'export const kit = 1;\n');
+    }
   });
 
   afterAll(() => rmSync(fixture, { recursive: true, force: true }));
@@ -484,5 +528,30 @@ describe('template bundle integrity — the guard itself fails when it should', 
     const rows = findVendorDrift(templates, libsGeneric).filter((r) => r.includes('partial-kit'));
     expect(rows.some((r) => r.includes('index.test.ts'))).toBe(false);
     expect(rows.some((r) => r.includes('README.md'))).toBe(false);
+  });
+
+  it('accepts a vendored manifest derived without the dev harness devDependency', () => {
+    const rows = findVendorDrift(templates, libsGeneric).filter((r) => r.includes('derived-manifest'));
+    expect(rows, rows.join('\n')).toEqual([]);
+  });
+
+  it('FIRES on a vendored manifest that byte-copies a dev-harness-only devDependency', () => {
+    const rows = findVendorDrift(templates, libsGeneric);
+    expect(
+      rows.some((r) => r.includes('raw-manifest/harness-kit/package.json') && r.includes('differs')),
+      `raw canonical manifest not reported. rows:\n${rows.join('\n')}`,
+    ).toBe(true);
+  });
+
+  it('vendoredManifestOf drops only dev-harness devDependencies and byte-copies everything else', () => {
+    const plain = '{"name":"@papercusp/demo-kit","main":"./src/index.ts"}';
+    expect(vendoredManifestOf(plain)).toBe(plain);
+    const derived = JSON.parse(
+      vendoredManifestOf('{"name":"x","devDependencies":{"@papercusp/test-config":"*","vitest":"^4.1.4"}}'),
+    ) as { devDependencies?: Record<string, string> };
+    expect(derived.devDependencies).toEqual({ vitest: '^4.1.4' });
+    expect(JSON.parse(vendoredManifestOf('{"name":"x","devDependencies":{"@papercusp/test-config":"*"}}'))).toEqual({
+      name: 'x',
+    });
   });
 });

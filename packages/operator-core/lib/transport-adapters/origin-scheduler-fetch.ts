@@ -585,7 +585,10 @@ export function installOriginSchedulerFetch(): InstallHandle | null {
 
     const { inFlightReads } = dedupeState;
     const existing = inFlightReads.get(key);
-    if (existing) return joinInFlightRead(existing, signal);
+    // The last waiter can abort synchronously (for example on StrictMode
+    // cleanup) before promise settlement drops the entry. A replacement must
+    // start fresh rather than inherit that already-cancelled transport.
+    if (existing && !existing.controller?.signal.aborted) return joinInFlightRead(existing, signal);
 
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const entry: InFlightRead = {

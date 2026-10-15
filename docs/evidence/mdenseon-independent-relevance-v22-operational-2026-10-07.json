@@ -1,0 +1,416 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "mdenseon P-003 independent blinded relevance (V21): paired source-target MRR by class vs both incumbents under the D-008 stop rule",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItemId": "WI-10004537",
+  "specId": "MDENSE-blind-cohort-estimate",
+  "relatedSpecIds": [
+    "AUTO-BAR-R-1-P-003"
+  ],
+  "evidencePlane": "tree",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    ".papercusp/scratch/p003-v21-operational.mts",
+    "--out=docs/evidence/mdenseon-independent-relevance-v22-operational-2026-10-07.json"
+  ],
+  "assembler": {
+    "path": "$HOME/papercupai-workspace/papercusp/.papercusp/scratch/p003-v21-operational.mts",
+    "sha256": "862b2ab013ec7c5589194499b31d63c47bf94d0c54c0bcde28d45a00953d1466",
+    "bytes": 11013
+  },
+  "startedAt": "2026-10-07T08:23:59.837Z",
+  "finishedAt": "2026-10-07T08:23:59.998Z",
+  "exitCode": 0,
+  "input": {
+    "manifest": {
+      "path": "docs/evidence/mdenseon-independent-relevance-2026-10-01.json",
+      "commit": "2a0d28b2351da53fbbb31143e0a03700e8096920",
+      "blob": "c567c1f3b2ec8f819e26b55fad356445bf7b5873",
+      "sha256": "b653d5c01b556db4d40afe796683b875a520f755b6df862e1062681d6985708f",
+      "bytes": 174197
+    },
+    "labels": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/blind-labels-v21-resume-v20-concurrency-succession/labels.json",
+      "sha256": "483b7c46469da4aa39d87c5d1b6b0a3b173beb4211855191178a5d7e72374641",
+      "bytes": 779620
+    },
+    "cohortAudit": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/completed-prose-expansion-v21-audit-v1.json",
+      "sha256": "b2a73e24bca9a9eba35b157d59d3631100bca40e90766c926d4dfceb264403dc",
+      "bytes": 5406
+    },
+    "frozenManifest": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v21-prose-expansion-v1.json",
+      "sha256": "1ea230de3a8bcf91c35aa67adf583d5649f73a3ee5bc2a158879d146e07f6d7a",
+      "bytes": 410040
+    },
+    "sourceAnalysis": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v21-prose-expansion-v1/source-pair-analysis-v21-v1.json",
+      "sha256": "325e7f4816fc567cfb89f6d07d3adf3b1c07986a95a979843d76db41cd46c70c",
+      "bytes": 4814462
+    }
+  },
+  "runs": [
+    {
+      "taskId": "0mux12gb91vtolfc1ph",
+      "logs": [
+        {
+          "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/v21-audit-v3.log",
+          "sha256": "96f8047e39e605d4fa7b9be70063c6305ba0948f1072be9d32df08012391db99",
+          "bytes": 616
+        },
+        {
+          "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/v21-prep-v3.log",
+          "sha256": "39bba047ed2b3ef93dc9b17ce70d9b6bde05bd1a3cc3d64a6558413ac0194c9a",
+          "bytes": 1319
+        },
+        {
+          "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/v21-run-v3.log",
+          "sha256": "fcbe69e11127e0e958ab966859f4790ad32dfe109f964f8ba94acf9e524d55b8",
+          "bytes": 5203
+        },
+        {
+          "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/v21-analysis-v3.log",
+          "sha256": "9c6df0b738b5c47377a72c74661a578e5c9db731a75cfe11d66f242645fdb936",
+          "bytes": 6196
+        }
+      ],
+      "completion": {
+        "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v21-prose-expansion-v1/completion.json",
+        "sha256": "fe892d57dddfb2a7e02fcefaa50fd922a71a528510cfbf3b28908904d44a7ad1",
+        "bytes": 4769
+      }
+    }
+  ],
+  "results": {
+    "decisionMargin": 0.03,
+    "primaryComparisonUnit": "source-target-component",
+    "census": {
+      "memory": {
+        "test": 312,
+        "allEligibleSourcesAuthored": true
+      },
+      "prose": {
+        "test": 1601,
+        "allEligibleSourcesAuthored": true
+      }
+    },
+    "stopRule": {
+      "contract": "margin-resolved-or-censused-population-exhausted",
+      "mrrMargin": 0.03,
+      "allMarginsResolved": false,
+      "censusExhausted": {
+        "memory": true,
+        "prose": true
+      },
+      "satisfied": true
+    },
+    "agreement": {
+      "memory": {
+        "accepted": 220,
+        "judged": 1624,
+        "agreement": 0.5381773399014779
+      },
+      "prose": {
+        "accepted": 1472,
+        "judged": 8460,
+        "agreement": 0.5468085106382978
+      }
+    },
+    "accepted": {
+      "memory": 220,
+      "prose": 1472
+    },
+    "byCell": {
+      "memory|gemma|lexical-gap": {
+        "sources": 40,
+        "delta": {
+          "point": 0.03125,
+          "lower": -0.03333335,
+          "upper": 0.097916675,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "memory|gemma|exact-identifier": {
+        "sources": 40,
+        "delta": {
+          "point": 0.01354167500000003,
+          "lower": -0.070833325,
+          "upper": 0.09375002499999999,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "memory|gemma|session-start-intent": {
+        "sources": 40,
+        "delta": {
+          "point": 0.045833324999999925,
+          "lower": 0,
+          "upper": 0.11666665000000001,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "memory|gemma|ALL_ANSWERABLE": {
+        "sources": 40,
+        "delta": {
+          "point": 0.030208333333333615,
+          "lower": -0.011805558333333336,
+          "upper": 0.07361110833333333,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "memory|harrier|lexical-gap": {
+        "sources": 40,
+        "delta": {
+          "point": 0.16319444999999988,
+          "lower": 0.072222225,
+          "upper": 0.266666675,
+          "ci": 0.95
+        },
+        "marginDecision": "improvement-above-margin"
+      },
+      "memory|harrier|exact-identifier": {
+        "sources": 40,
+        "delta": {
+          "point": 0.04916667499999994,
+          "lower": -0.008333324999999999,
+          "upper": 0.124166675,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "memory|harrier|session-start-intent": {
+        "sources": 40,
+        "delta": {
+          "point": 0.065972225,
+          "lower": 0.0125,
+          "upper": 0.13541667500000001,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "memory|harrier|ALL_ANSWERABLE": {
+        "sources": 40,
+        "delta": {
+          "point": 0.09277778333333353,
+          "lower": 0.04601852479166666,
+          "upper": 0.14764238020833298,
+          "ci": 0.95
+        },
+        "marginDecision": "improvement-above-margin"
+      },
+      "prose|gemma|lexical-gap": {
+        "sources": 275,
+        "delta": {
+          "point": -0.0157979800000001,
+          "lower": -0.0478337673181818,
+          "upper": 0.01625278663636362,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "prose|gemma|exact-identifier": {
+        "sources": 275,
+        "delta": {
+          "point": -0.015393941818181878,
+          "lower": -0.030121214545454546,
+          "upper": -0.002121214545454545,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "prose|gemma|session-start-intent": {
+        "sources": 275,
+        "delta": {
+          "point": -0.019818183636363562,
+          "lower": -0.04672726913636364,
+          "upper": 0.006363629181818184,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "prose|gemma|ALL_ANSWERABLE": {
+        "sources": 275,
+        "delta": {
+          "point": -0.01700336848484829,
+          "lower": -0.03223054321212121,
+          "upper": -0.0020706368787878843,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "prose|harrier|lexical-gap": {
+        "sources": 275,
+        "delta": {
+          "point": 0.04855555454545446,
+          "lower": 0.011377941090909083,
+          "upper": 0.085269842,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "prose|harrier|exact-identifier": {
+        "sources": 275,
+        "delta": {
+          "point": 0.0007186145454546322,
+          "lower": -0.014528138181818182,
+          "upper": 0.0164158018181818,
+          "ci": 0.95
+        },
+        "marginDecision": "inside-margin"
+      },
+      "prose|harrier|session-start-intent": {
+        "sources": 275,
+        "delta": {
+          "point": 0.01129870363636376,
+          "lower": -0.017489830999999983,
+          "upper": 0.03993096518181817,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      },
+      "prose|harrier|ALL_ANSWERABLE": {
+        "sources": 275,
+        "delta": {
+          "point": 0.020190957575757285,
+          "lower": 0.002646196121212129,
+          "upper": 0.03760476699999995,
+          "ci": 0.95
+        },
+        "marginDecision": "unresolved"
+      }
+    },
+    "judgeCost": {
+      "item": "EI-25217660453528358",
+      "model": "claude-sonnet-4-6",
+      "calls": 12355,
+      "inputTokens": 165712922,
+      "outputTokens": 10149115,
+      "usd": 649.38,
+      "receiptsMissingCost": 0,
+      "scope": "Exact V20+V21 blind-judge spend summed from every per-call attempt receipt. Quadratic by design (2 passes x query chunks x document chunks); disclosed per D-008, not a defect."
+    }
+  },
+  "limitations": [
+    "Blind labels are LLM judgments (claude-sonnet-4-6, two passes); accepted only where both passes agree, so agreement (prose 0.547) bounds the accepted population.",
+    "Memory corpus labels and vectors are identical to V19; only the prose cohort is new in V21.",
+    "Vector timing in this run is not comparable to full inference (missing-only embedding on pinned donors); performance is measured separately in P-005.",
+    "The stop rule is satisfied by census exhaustion, not by every margin resolving; unresolved cells are the final result."
+  ],
+  "assertions": [
+    {
+      "id": "manifest-committed",
+      "passed": true,
+      "evidence": "HEAD blob c567c1f3b2ec == working blob c567c1f3b2ec @ 2a0d28b2351d"
+    },
+    {
+      "id": "labels-pinned",
+      "passed": true,
+      "evidence": "483b7c46469da4aa == 483b7c46469da4aa (779620 B)"
+    },
+    {
+      "id": "cohort-audit-pinned",
+      "passed": true,
+      "evidence": "b2a73e24bca9a9eb == b2a73e24bca9a9eb (5406 B)"
+    },
+    {
+      "id": "frozen-manifest-pinned",
+      "passed": true,
+      "evidence": "1ea230de3a8bcf91 == 1ea230de3a8bcf91 (410040 B)"
+    },
+    {
+      "id": "completion-pinned",
+      "passed": true,
+      "evidence": "fe892d57dddfb2a7 == fe892d57dddfb2a7 (4769 B)"
+    },
+    {
+      "id": "v19-memory-manifest-pinned",
+      "passed": true,
+      "evidence": "c4e4c343d2bdc332 == c4e4c343d2bdc332 (142445 B)"
+    },
+    {
+      "id": "source-analysis-pinned",
+      "passed": true,
+      "evidence": "325e7f4816fc567c == 325e7f4816fc567c (4814462 B)"
+    },
+    {
+      "id": "stage-v21-audit-v3-exit0",
+      "passed": true,
+      "evidence": "EXIT=0 2026-10-06T19:05:11Z"
+    },
+    {
+      "id": "stage-v21-prep-v3-exit0",
+      "passed": true,
+      "evidence": "EXIT=0 2026-10-06T19:05:18Z"
+    },
+    {
+      "id": "stage-v21-run-v3-exit0",
+      "passed": true,
+      "evidence": "EXIT=0 2026-10-06T20:03:41Z"
+    },
+    {
+      "id": "stage-v21-analysis-v3-exit0",
+      "passed": true,
+      "evidence": "EXIT=0 2026-10-06T20:04:21Z"
+    },
+    {
+      "id": "analysis-model-free",
+      "passed": true,
+      "evidence": "modelCalls 0"
+    },
+    {
+      "id": "analysis-pins-verified",
+      "passed": true,
+      "evidence": "10539 pins"
+    },
+    {
+      "id": "cohort-audit-model-free",
+      "passed": true,
+      "evidence": "modelRequests 0, labelsByteEqual true, judgmentsEquivalent true"
+    },
+    {
+      "id": "points-recomputed-from-source-groups",
+      "passed": true,
+      "evidence": "16/16 class points equal the mean paired source delta over their 2520 source groups"
+    },
+    {
+      "id": "every-class-estimated",
+      "passed": true,
+      "evidence": "16/16 corpus x baseline x class cells carry a 95% source-paired interval"
+    },
+    {
+      "id": "stop-rule-recomputed",
+      "passed": true,
+      "evidence": "allMarginsResolved false (stored false); census exhausted true; satisfied true"
+    },
+    {
+      "id": "unresolved-count-consistent",
+      "passed": true,
+      "evidence": "13 unresolved listed == 13 recomputed"
+    },
+    {
+      "id": "regressions-reported",
+      "passed": true,
+      "evidence": "prose vs gemma exact-identifier -0.015 [-0.030, -0.002]; prose vs gemma ALL_ANSWERABLE -0.017 [-0.032, -0.002]"
+    },
+    {
+      "id": "judge-cost-complete",
+      "passed": true,
+      "evidence": "12355 calls, $649.38, 0 receipts missing cost"
+    },
+    {
+      "id": "manifest-verdict",
+      "passed": true,
+      "evidence": "p003Complete true; status v21-census-exhausted-stop-rule-satisfied"
+    }
+  ],
+  "summary": "All 21 assertions pass. memory vs gemma: ALL +0.030 [-0.012, 0.074] unresolved; memory vs harrier: ALL +0.093 [0.046, 0.148] improvement-above-margin; prose vs gemma: ALL -0.017 [-0.032, -0.002] unresolved; prose vs harrier: ALL +0.020 [0.003, 0.038] unresolved. Stop rule satisfied by census exhaustion (memory 312, prose 1601 test sources). Judge cost 12355 calls / $649.38.",
+  "defectsFound": []
+}

@@ -156,3 +156,11 @@ pure-decider (`packages/operator-core/lib/dns-truth-divergence.ts`) any future
 health check or agent tooling can call to compare an in-sandbox resolution
 against an externally-supplied truth and flag exactly this divergence
 pattern, instead of every agent re-deriving the UDP/TCP tell from scratch.
+
+## Roaming can leave the reconciler checking an inactive profile
+
+Measured on 2026-10-08 under WI-10007372/P-012: the maintained reconciler still selected saved GateWayFiber58 while the active connection was AbeandPearl. The saved profile ignored DHCP DNS, but the active profile did not. The old check excluded only a remembered router address, so it returned success while systemd-resolved selected the current DHCP router under strict DNS-over-TLS. During a bounded EBS upload, simultaneous endpoint probes timed out resolving DNS; the router refused TCP 853. This is a local configuration and detector defect, not evidence of an AWS outage or general resource pressure.
+
+The existing script now resolves the active NetworkManager connection unless explicitly overridden and rejects every residual per-link DNS server. It retains the authenticated global Cloudflare/Quad9 policy. Old live check returned 0; fixed pre-apply check returned 1; maintained apply and after-check returned 0. Seven canonical Vitest tests cover active profile selection, explicit override, residual DNS and the existing direct-DNS contract. Installed script and canonical source hash matched.
+
+The same 2 GiB fixture with 16 coldsnap workers then completed in 782 seconds; all 38 simultaneous DNS probes succeeded, and eight PUT retries recovered without changed timeouts. Exact task 0muz0zugn1xeoo3tqml; generated evidence: `.papercusp/scratch/wi10005036/p012-transport-20261008t041749z/`. The temporary snapshot was deleted and fresh same-role positive control plus InvalidSnapshot.NotFound proved absence. This bounded diagnostic does not certify a full image release and does not establish that every historical PUT error had the DNS cause.

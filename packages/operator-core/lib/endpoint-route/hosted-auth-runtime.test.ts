@@ -30,6 +30,19 @@ function serviceRunner(currentUser = 'hosted_service', bootOrder?: string[]): Ho
 }
 
 describe('narrow hosted auth runtime', () => {
+  it('mounts an injected tutorial token issuer behind hosted session authority without eager provider calls', async () => {
+    const voiceToken = { disabled: vi.fn(), issue: vi.fn() };
+    const runtime = await createHostedAuthRuntime(configuration, {
+      resolveSecret: async () => 'hosted-auth-runtime-cookie-secret-more-than-32-bytes',
+      runService: serviceRunner(), tutorialAssistance: { voiceToken },
+    });
+    expect(runtime.tutorialMounted.map(route => `${route.method} ${route.path}`))
+      .toContain('POST /hosted/browser/onboarding/tutorial-voice-token');
+    const response = await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-voice-token', { method: 'POST' });
+    expect(response.status).toBe(401);
+    expect(voiceToken.disabled).not.toHaveBeenCalled();
+    expect(voiceToken.issue).not.toHaveBeenCalled();
+  });
   it('mounts only canonical auth routes and resolves only the cookie secret at boot', async () => {
     const bootOrder: string[] = [];
     const resolveSecret = vi.fn(async (reference: string) => {
@@ -49,12 +62,44 @@ describe('narrow hosted auth runtime', () => {
     );
     expect(bootOrder).toEqual(['service-role', `secret:${configuration.hostedSessionCookieSecretRef}`]);
     expect(resolveSecret).toHaveBeenCalledTimes(1);
+    expect(runtime.tutorialMounted.map(route => `${route.method} ${route.path}`)).toEqual([
+      'GET /hosted/browser/onboarding/tutorial-progress', 'POST /hosted/browser/onboarding/tutorial-progress',
+      'POST /hosted/browser/onboarding/tutorial-help',
+    ]);
+    for (const method of ['GET', 'POST']) {
+      const progress = await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-progress?scope=account&version=3', { method });
+      expect(progress.status).toBe(401);
+      expect(await progress.json()).toMatchObject({ error: { message: 'session_cookie_missing' } });
+    }
+    expect((await runtime.tutorial.request('/api/hosted/browser/rest-query')).status).toBe(404);
+    const help = await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-help', { method: 'POST' });
+    expect(help.status).toBe(401);
+    expect(await help.json()).toMatchObject({ error: { message: 'session_cookie_missing' } });
+    expect((await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-help')).status).toBe(404);
+    expect((await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-speech', { method: 'POST' })).status).toBe(404);
     expect((await runtime.app.request('/api/auth/login', { method: 'POST' })).status).toBe(404);
     const session = await runtime.app.request('/api/hosted/auth/session');
     expect(session.status).toBe(401);
     expect(await session.json()).toEqual({
       error: { code: 'unauthorized', message: 'session_cookie_missing' },
     });
+  });
+
+  it('mounts configured speech behind the same session authority without eager synthesis', async () => {
+    const speech = vi.fn();
+    const runtime = await createHostedAuthRuntime(configuration, {
+      resolveSecret: async () => 'hosted-auth-runtime-cookie-secret-more-than-32-bytes',
+      runService: serviceRunner(),
+      tutorialAssistance: { speech },
+    });
+    expect(runtime.tutorialMounted.map(route => `${route.method} ${route.path}`)).toContain(
+      'POST /hosted/browser/onboarding/tutorial-speech',
+    );
+    const response = await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-speech', { method: 'POST' });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { message: 'session_cookie_missing' } });
+    expect(speech).not.toHaveBeenCalled();
+    expect((await runtime.tutorial.request('/api/hosted/browser/onboarding/tutorial-speech')).status).toBe(404);
   });
 
   it('refuses boot before secrets when the service runner is not hosted_service', async () => {

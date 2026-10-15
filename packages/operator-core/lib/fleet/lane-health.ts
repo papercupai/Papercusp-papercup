@@ -38,6 +38,13 @@ export function interpretFleetClaimability(input: {
   fleetPaused: boolean | null;
   planScoped?: boolean | null;
   drainConfirmed?: boolean;
+  /**
+   * WI-6554700010010002: status-floor-free evidence shows every matching row is terminal,
+   * held by an agent, or parked (blocked/needs-human). Nothing is pull-claimable, but the
+   * lane is not complete — so this is reported as drained with its own reason, never as
+   * `spec-empty` (the filter does match rows; they are simply outside the claimable states).
+   */
+  remainderUnclaimable?: boolean;
   evidenceComplete?: boolean;
 }): FleetClaimabilityInterpretation {
   const evidence = {
@@ -56,6 +63,18 @@ export function interpretFleetClaimability(input: {
     return {
       state: 'drained',
       exactness: { status: 'exact', reason: 'independent terminal/exhaustion evidence confirms the scoped lane is complete' },
+      evidence,
+    };
+  }
+  if (input.remainderUnclaimable) {
+    return {
+      state: 'drained',
+      exactness: {
+        status: 'exact',
+        reason:
+          'independent status-floor-free evidence shows every matching row is terminal, held by an agent, or parked ' +
+          '(blocked/needs-human): nothing is pull-claimable, and the unfinished remainder is with its holders',
+      },
       evidence,
     };
   }
@@ -217,7 +236,7 @@ export interface ReadFleetLaneHealthArgs {
 type Possible = { yes: boolean; no: boolean };
 const SUBJECT: ClaimSpecSubject = {
   id: null, title: null, summary: null, kind: null, priority: null, tags: [], paths: [], plan: null,
-  planItem: [], fleet: null, triageGate: null, age: null, riskTier: null, redundancy: null, estCost: null,
+  planItem: [], fleet: null, triageGate: null, itemClass: 'work', age: null, riskTier: null, redundancy: null, estCost: null,
   assignee: null, severity: null, goal: null,
 };
 
@@ -260,6 +279,17 @@ function sumExcluded(issue: Record<string, number>, feature: Record<string, numb
   const combined = { ...issue };
   for (const [key, count] of Object.entries(feature)) combined[key] = (combined[key] ?? 0) + count;
   return combined;
+}
+
+/**
+ * Drop absent named counts. The feature-family breakdown's `excluded` is open-ended
+ * (optional floors such as `stopTheLine` may be undefined), while lane health reports a
+ * plain `Record<string, number>` — and `sumExcluded` must never add an undefined count.
+ */
+function definedCounts(counts: Record<string, number | undefined>): Record<string, number> {
+  const defined: Record<string, number> = {};
+  for (const [key, count] of Object.entries(counts)) if (count !== undefined) defined[key] = count;
+  return defined;
 }
 
 /** PURE: which storage families can this validated claim-spec possibly admit? */
@@ -371,7 +401,13 @@ export async function readClaimSpecLaneHealth(args: ReadClaimSpecLaneHealthArgs)
       : { claimable: 0, matchedByFilter: 0, excluded: {} };
 
     const featureFamily: FleetLaneHealth['featureFamily'] = familyReachability.feature
-      ? featureBreakdown ?? { claimable: null, matchedByFilter: null, excluded: null }
+      ? featureBreakdown
+        ? {
+            claimable: featureBreakdown.claimable,
+            matchedByFilter: featureBreakdown.matchedByFilter,
+            excluded: definedCounts(featureBreakdown.excluded),
+          }
+        : { claimable: null, matchedByFilter: null, excluded: null }
       : null;
 
     const effective: FleetLaneHealth['effective'] = familyReachability.issue && familyReachability.feature

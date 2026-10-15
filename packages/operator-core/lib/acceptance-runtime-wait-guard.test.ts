@@ -2,20 +2,35 @@
  * acceptance-runtime-plane-not-main-2026-09-23 P-003/P-006 — a deploy wait is challenged
  * when the caller's held live acceptance bars are measured on another runtime.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   acceptancePlaneAdvisoryForWait,
   buildAcceptancePlaneAdvisory,
   goalNamesDeployWait,
   isDeployWaitEvent,
   loadHeldLiveBars,
+  mainWaitAdvisoryForWait,
   mainWaitPlanReviewForWait,
+  planSlugsNamedIn,
   reviewMainWaitPlan,
+  workItemIdsNamedIn,
   type MainWaitPlanSnapshot,
   type WaitGuardDeps,
 } from './acceptance-runtime-wait-guard';
 
 const BG_PATH = 'packages/operator-core/lib/harness/routines/psu-pty-host-events-ingest.ts';
+
+it('routes an external acceptance runtime to the existing vintage registry, never an operator test route', async () => {
+  const runtime = 'runtime-vintage:papercusp-workspace/portal-web@builder' as const;
+  const bars = await loadHeldLiveBars('su-x', deps([{ key: 'r-1', evidencePlane: 'live', evidenceRuntime: runtime }]));
+  expect(bars[0]?.resolution.runtime).toBe(runtime);
+  const advisory = buildAcceptancePlaneAdvisory(bars);
+  expect(advisory).toContain(runtime);
+  expect(advisory).toContain('deploys:vintage');
+  expect(advisory).toContain('if absent or unmeasured, keep acceptance unknown');
+  expect(advisory).not.toContain('http://127.0.0.1:3170');
+  expect(advisory).not.toContain('Current-build test route(s)');
+});
 
 const deps = (criteria: Awaited<ReturnType<WaitGuardDeps['acceptanceCriteria']>>): WaitGuardDeps & { reads: number } => {
   const d = {
@@ -51,6 +66,14 @@ describe('deploy-wait detection', () => {
     expect(goalNamesDeployWait('finish once it lands on main')).toBe(true);
     expect(goalNamesDeployWait('the main risk is the parser; fix it')).toBe(false);
     expect(goalNamesDeployWait('Carry plan X to shipped')).toBe(false);
+  });
+
+  it('allows checkpoint development goals that name the system without waiting for a live verdict', () => {
+    expect(goalNamesDeployWait('Continue green-main-cycle-time work; implement P-014 replay canary on the current build')).toBe(false);
+    expect(goalNamesDeployWait('Implement green-checkpoint replay canary and run its focused tests')).toBe(false);
+    expect(goalNamesDeployWait('Fix the green main watchdog sources and verify locally')).toBe(false);
+    expect(goalNamesDeployWait('Monitor green-checkpoint until the verdict is green')).toBe(true);
+    expect(goalNamesDeployWait('Finish after green main receives the fix')).toBe(true);
   });
 });
 
@@ -195,8 +218,11 @@ describe('advisory construction', () => {
     );
     expect(bars.map((b) => b.barKey)).toEqual(['R-1', 'R-3']);
     const advisory = buildAcceptancePlaneAdvisory(bars);
-    expect(advisory).toMatch(/bg-host: psu-pty-plan#R-1, psu-pty-plan#R-3 \(inferred\)/);
-    expect(advisory).toMatch(/None of your held bars needs the release operator/);
+    expect(advisory).toMatch(/bg-host: psu-pty-plan#R-1/);
+    expect(advisory).toMatch(/psu-pty-plan#R-3: runtime unknown/);
+    expect(advisory).toMatch(/read the BAR method/);
+    expect(advisory).not.toMatch(/bg-host: psu-pty-plan#R-1, psu-pty-plan#R-3/);
+    expect(advisory).not.toContain('None of your held bars needs the release operator');
     expect(advisory).toMatch(/background-federation: node scripts\/with-test-pg\.mjs --isolated-runtime/);
     expect(advisory).toMatch(/Disposable migrated DB, HOME\/device keychain/);
     expect(advisory).toMatch(/Registered anyway/);
@@ -226,6 +252,115 @@ describe('advisory construction', () => {
     );
     expect(buildAcceptancePlaneAdvisory(bars)).toMatch(/Only psu-pty-plan#R-9 genuinely need the release operator/);
     expect(buildAcceptancePlaneAdvisory(bars)).toMatch(/operator-api: http:\/\/127\.0\.0\.1:3170/);
+  });
+
+  it('respects a BAR method that explicitly requires :3070 while treating path-only inference as unknown', async () => {
+    const bars = await loadHeldLiveBars(
+      'su-x',
+      deps([
+        {
+          key: 'r-1', barKey: 'R-1', evidencePlane: 'deployed',
+          method: `Compare bytes in the deployed :3070 release checkout for packages/operator-core/lib/agent-tools/plans/get.ts`,
+        },
+        {
+          key: 'r-2', barKey: 'R-2', evidencePlane: 'live',
+          method: 'Call the tool implemented in packages/operator-core/lib/agent-tools/plans/get.ts',
+        },
+        { key: 'r-3', barKey: 'R-3', evidencePlane: 'live', evidenceRuntime: 'bg-host' },
+      ]),
+    );
+    expect(bars[0]?.resolution.runtime).toBe('release-operator');
+    const advisory = buildAcceptancePlaneAdvisory(bars);
+    expect(advisory).toMatch(/psu-pty-plan#R-2: runtime unknown/);
+    expect(advisory).toMatch(/Only psu-pty-plan#R-1 genuinely need the release operator/);
+    expect(advisory).not.toContain('staging-operator: psu-pty-plan#R-2');
+  });
+});
+
+describe('mainWaitAdvisoryForWait — every main wait gets the reminder (WI-6554700010014960)', () => {
+  const open = (id: string, text = `Implement ${id} on staging`): MainWaitPlanSnapshot['items'][number] => ({
+    id,
+    text,
+    effectiveStatus: 'todo',
+    blockedBy: [],
+    linkedBlocked: false,
+    liveHeld: false,
+    heldByCaller: false,
+  });
+  const plansDeps = (
+    related: string[],
+    snapshots: Record<string, MainWaitPlanSnapshot>,
+  ): WaitGuardDeps & { relatedCalls: string[] } => {
+    const d = {
+      ...deps([]),
+      relatedCalls: [] as string[],
+      planSnapshot: async () => null,
+      relatedPlanSlugs: async (_ownerId: string, text: string) => {
+        d.relatedCalls.push(text);
+        return related;
+      },
+      planSnapshotForSlug: async (_ownerId: string, slug: string) => snapshots[slug] ?? null,
+    };
+    return d;
+  };
+
+  it('extracts dated plan slugs and work-item ids from a wait note', () => {
+    const note = 'On fire: gate-test-reuse-yield-2026-10-01 P-008 (WI-10004719) and EI-25911343611632456; not main-ish-word.';
+    expect(planSlugsNamedIn(note)).toEqual(['gate-test-reuse-yield-2026-10-01']);
+    expect(workItemIdsNamedIn(note)).toEqual(['WI-10004719', 'EI-25911343611632456']);
+  });
+
+  it('gives an agent with no plan anywhere the generic reminder instead of silence', async () => {
+    const advisory = await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green:papercusp' }, plansDeps([], {}));
+    expect(advisory).toMatch(/MAIN-WAIT ADVISORY/);
+    expect(advisory).toContain('No plan was found');
+    expect(advisory).toContain('do it now');
+    expect(advisory).toContain('advice, not a refusal');
+  });
+
+  it('names staging-ready items of plans found outside presence (held work-items, the note)', async () => {
+    const d = plansDeps(['plan-a-2026-10-01', 'plan-b-2026-10-02', 'missing-2026-10-03'], {
+      'plan-a-2026-10-01': { slug: 'plan-a-2026-10-01', items: [open('P-006'), open('P-008')] },
+      'plan-b-2026-10-02': { slug: 'plan-b-2026-10-02', items: [{ ...open('P-005'), liveHeld: true }] },
+    });
+    const note = 'carry plans; WI-10007221 needs the deployed check';
+    const advisory = await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green:papercusp', note }, d);
+    expect(d.relatedCalls).toEqual([note]);
+    expect(advisory).toContain('plan-a-2026-10-01 (2 open; staging-ready: P-006, P-008)');
+    expect(advisory).not.toContain('plan-b-2026-10-02 (1 open; staging-ready');
+    expect(advisory).not.toContain('missing-2026-10-03');
+  });
+
+  it('stays silent for a non-main wait and for the fixer operating the gate', async () => {
+    const d = plansDeps(['plan-a-2026-10-01'], { 'plan-a-2026-10-01': { slug: 'plan-a-2026-10-01', items: [open('P-001')] } });
+    expect(await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'work-item:done:WI-1' }, d)).toBeNull();
+    expect(
+      await mainWaitAdvisoryForWait(
+        { ownerId: 'su-x', event: 'release:green:papercusp', note: 'repair the green-checkpoint gate red and rerun' },
+        d,
+      ),
+    ).toBeNull();
+    expect(d.relatedCalls).toEqual([]);
+  });
+
+  it('degrades to the generic reminder when plan discovery fails', async () => {
+    const broken: WaitGuardDeps = {
+      ...deps([]),
+      relatedPlanSlugs: async () => {
+        throw new Error('pool exhausted');
+      },
+      planSnapshotForSlug: async () => null,
+    };
+    // withBoundedTimeout reports the swallowed read failure; that warning is the expected trace.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green' }, broken)).resolves.toContain(
+        'No plan was found',
+      );
+      expect(warn.mock.calls.some((call) => String(call[0]).includes('main-wait-advisory'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

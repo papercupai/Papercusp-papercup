@@ -45,12 +45,12 @@ const READERS = [
 ] as const;
 
 /**
- * Fields a ROW READ may legitimately honour alone. `limit` is not a predicate — an
- * aggregate has no LIMIT to apply, and giving one would be the separate bug of counting
- * over a capped fetch. Every other divergence is a defect until argued otherwise HERE,
- * which is the point: widening this set is a deliberate, reviewable edit.
+ * Options that are not membership predicates, though the source scanner sees them as
+ * `filter.<field>` references. `limit` caps returned rows; `payloadProjection` selects
+ * result columns and can choose metric ordering. Neither changes which issues match.
+ * Keep this list narrow: every other field divergence remains a defect.
  */
-const ROW_READ_ONLY = new Set(['limit']);
+const NON_PREDICATE_OPTIONS = new Set(['limit', 'payloadProjection']);
 
 /** Shared WHERE fragments every reader must apply, so their predicates cannot drift. */
 const SHARED_FRAGMENTS = ['issueShapeWhereSql', 'issueMatchWhereSql'] as const;
@@ -67,6 +67,7 @@ const MATCH_FRAGMENT_FIELDS = [
   'titlePrefix',
   'excludeObservationLane',
   'watchdogKeyed',
+  'watchdogCloseRoutes',
 ] as const;
 
 /** Line span of a top-level `function <name>` up to the next function in READERS order. */
@@ -102,7 +103,7 @@ function directFilterFields(body: string): Set<string> {
 export function findFilterDivergence(
   source: string,
   names: readonly string[] = READERS,
-  exempt: ReadonlySet<string> = ROW_READ_ONLY,
+  exempt: ReadonlySet<string> = NON_PREDICATE_OPTIONS,
 ): Array<{ field: string; missingFrom: string[] }> {
   const bodies = functionSpans(source, names);
   const fields: Record<string, Set<string>> = {};
@@ -191,6 +192,19 @@ describe('issues-engineer filter parity across the row read and its aggregates',
       // broken into always reporting a divergence.
       expect(AGREEING_FIXTURE).not.toEqual(DIVERGENT_FIXTURE);
       expect(findFilterDivergence(AGREEING_FIXTURE)).toEqual([]);
+    });
+
+    it('does not mistake a projection option for a membership predicate', () => {
+      const withProjection = AGREEING_FIXTURE.replace(
+        'async function listIssuesWithLimit(filter) {',
+        'async function listIssuesWithLimit(filter) {\n        const columns = filter.payloadProjection;',
+      );
+      expect(findFilterDivergence(withProjection)).toEqual([]);
+      // The scanner still sees the field; only the explicit non-predicate exemption
+      // prevents this output-shape option from looking like a dropped WHERE clause.
+      expect(findFilterDivergence(withProjection, READERS, new Set()).map((d) => d.field)).toEqual([
+        'payloadProjection',
+      ]);
     });
 
     it('CALIBRATION: the exemption set is honoured, and only for what it names', () => {

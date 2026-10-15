@@ -18,6 +18,7 @@ import {
   subscribe,
 } from '@papercusp/flags/client';
 import { onSyncBusEvent } from '@papercusp/sync';
+import { useOperatorWorkspaceLocation } from '@papercusp/operator-ui';
 
 let bootstrapStarted = false;
 
@@ -40,16 +41,20 @@ function ensureBootstrap(): void {
 }
 
 export function useFlag(key: FlagKey): boolean {
-  ensureBootstrap();
+  const workspaceLocation = useOperatorWorkspaceLocation();
+  // The bootstrap endpoint belongs to the desktop profile. Hosted Settings
+  // uses the maintained defaults without probing an unavailable API.
+  if (workspaceLocation === 'local') ensureBootstrap();
   const [value, setValue] = useState<boolean>(() => {
     const snap = getFlagSnapshot();
     return snap.flags[key] ?? FLAG_DEFAULTS[key];
   });
   useEffect(() => {
+    if (workspaceLocation === 'cloud') return;
     const unsub = subscribe((next: FlagValues) => {
       setValue(next[key] ?? FLAG_DEFAULTS[key]);
     });
     return unsub;
-  }, [key]);
-  return value;
+  }, [key, workspaceLocation]);
+  return workspaceLocation === 'cloud' ? FLAG_DEFAULTS[key] : value;
 }

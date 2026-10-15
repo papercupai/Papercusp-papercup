@@ -21,10 +21,19 @@ import type {
   GenerationBudget,
   GradeResult,
 } from './types';
-import { BASELINE_B_ARM } from './native-harness-config';
+import { BASELINE_B_ARM, DEFAULT_NATIVE_HARNESS_CONFIG } from './native-harness-config';
 
 /** `blueprintId` for the Harbor-driven native arm — documents the harness, not a Papercusp spine. */
 export const HARBOR_BLUEPRINT_ID = 'native-claude-code-harbor';
+
+/**
+ * The Terminal-Bench dataset this seam runs when a task names none, as a Harbor registry id. It stays at
+ * 2.0 because harbor-framework/harbor's registry.json lists only terminal-bench 2.0 (89 tasks), plus
+ * terminal-bench-pro 1.0 and terminal-bench-sample 2.0 (read 2026-10-11). Upstream 2.1
+ * (harbor-framework/terminal-bench-2-1) has no registry id yet, so 'terminal-bench@2.1' would not resolve.
+ * When Harbor can address 2.1, change it here, in one place.
+ */
+export const TERMINAL_BENCH_DATASET_ID = 'terminal-bench@2.0';
 
 /** What `harbor run --agent claude-code` is invoked with for ONE Terminal-Bench task. */
 export interface HarborRunSpec {
@@ -123,16 +132,18 @@ export async function runNativeHarnessTerminalBench(
 ): Promise<NativeTerminalBenchResult> {
   const now = ports.now ?? Date.now;
   const startedAt = now();
-  const harborVersion = ports.harborVersion ?? 'terminal-bench@2.0';
+  const datasetId = typeof task.graderMeta?.['datasetId'] === 'string'
+    ? (task.graderMeta['datasetId'] as string)
+    : TERMINAL_BENCH_DATASET_ID;
+  // The recorded pin names the dataset actually run unless the caller supplies a fuller version string.
+  const harborVersion = ports.harborVersion ?? datasetId;
   const envRef = `harbor:${task.instanceId}:${seed}`;
 
   let result: HarborResult | undefined;
   let runError: string | undefined;
   try {
     result = await ports.runHarbor({
-      datasetId: typeof task.graderMeta?.['datasetId'] === 'string'
-        ? (task.graderMeta['datasetId'] as string)
-        : 'terminal-bench@2.0',
+      datasetId,
       taskId: task.instanceId,
       model: DEFAULT_TB_MODEL,
       agent: 'claude-code',
@@ -194,4 +205,4 @@ export async function runNativeHarnessTerminalBench(
 }
 
 /** Default model for the TB scaffold; the pilot pins the same id as the Papercusp/M1 arms. */
-const DEFAULT_TB_MODEL = 'claude-opus-4-8';
+const DEFAULT_TB_MODEL = DEFAULT_NATIVE_HARNESS_CONFIG.model;

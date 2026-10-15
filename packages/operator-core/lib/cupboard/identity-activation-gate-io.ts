@@ -21,6 +21,8 @@
  */
 import { isAbsolute, relative, sep } from 'node:path';
 import type { Sql } from 'postgres';
+import type { AppliedIdentityRules } from '../agent-identities/sync-hook-rules';
+import type { SuSessionRefusal } from '@papercusp/chat-protocol';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { resolveCupboardBaseUrl } from './base-url';
 import {
@@ -290,13 +292,20 @@ function cachedVerdict(row: IdentityReleaseFundingRow | undefined): IdentityPric
 export async function admitIdentityActivation(request: IdentityActivationRequest): Promise<IdentityActivationDecision> {
   const io = gateIo();
   const layers = await io.resolveLayers(request.stack, request.repoDir);
+  return admitResolvedIdentityLayers(request.workspaceId, layers, io);
+}
+
+/** Shared funds read, with a host-owned population instead of mutable stack resolution. */
+async function admitResolvedIdentityLayers(workspaceId: string,
+  layers: readonly InstalledIdentityReleaseLayer[], io: IdentityActivationGateIo,
+): Promise<IdentityActivationDecision> {
   if (layers.length === 0) return { ok: true, charged: [] };
 
   const skuRefs = [...new Set(layers.map((layer) => layer.skuRef))];
   let funding = new Map<string, IdentityReleaseFundingRow>();
   let fundingReadError: string | null = null;
   try {
-    funding = await io.readFunding(request.workspaceId, skuRefs);
+    funding = await io.readFunding(workspaceId, skuRefs);
   } catch (error) {
     fundingReadError = error instanceof Error ? error.message : String(error);
   }
@@ -318,7 +327,7 @@ export async function admitIdentityActivation(request: IdentityActivationRequest
       if (offers.ok) {
         const verdict = identityReleasePricing(sku, offers.value);
         pricing.set(sku, verdict);
-        if (!fundingReadError) await io.recordPricing(request.workspaceId, sku, verdict).catch(() => undefined);
+        if (!fundingReadError) await io.recordPricing(workspaceId, sku, verdict).catch(() => undefined);
       } else {
         // The hosted offers are unreachable: a release last seen free stays free; a
         // release last seen priced keeps its price (its funds are re-read below);
@@ -346,6 +355,67 @@ export async function admitIdentityActivation(request: IdentityActivationRequest
     channels.set(layer.skuRef, channelId ? await io.readChannel(channelId) : { ok: true, value: null });
   }
   return evaluateIdentityActivation({ layers, pricing, prepaid, channels });
+}
+
+/** Historical exact pins remain authoritative when ACTIVE moves after launch.
+ * A same-version collision is unreadable, never an excuse to run a paid pin free. */
+export async function resolveAppliedIdentityReleaseLayers(
+  worn: Pick<AppliedIdentityRules, 'packagePins'>,
+  deps: { readReleases?: (id: string) => Promise<Awaited<ReturnType<typeof import('./blueprint-release')['readBlueprintLifecycle']>>['releases']> } = {},
+): Promise<InstalledIdentityReleaseLayer[]> {
+  const readReleases = deps.readReleases ?? (async (id: string) => {
+    const [{ INSTALLED_BLUEPRINTS_DIR }, { readBlueprintLifecycle }] = await Promise.all([
+      import('../blueprint/installed-blueprints'), import('./blueprint-release'),
+    ]);
+    return (await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), id)).releases;
+  });
+  const out: InstalledIdentityReleaseLayer[] = [];
+  const seen = new Set<string>();
+  for (const pin of worn.packagePins) {
+    if (pin.packageKind !== 'blueprint') continue;
+    const candidates = (await readReleases(pin.ref)).filter((r) => r.version === pin.revision);
+    if (candidates.length === 0) continue;
+    const exact = candidates.filter((r) => r.contentHash === pin.contentHash);
+    if (exact.length !== 1 || candidates.length !== 1) throw new Error('APPLIED identity release pin is ambiguous or changed');
+    const release = exact[0]!;
+    for (const dependency of release.pins) {
+      const loaded = worn.packagePins.find((p) => p.packageKind === dependency.packageKind && p.ref === dependency.ref);
+      if (!loaded || loaded.revision !== dependency.revision || loaded.contentHash !== dependency.contentHash) {
+        throw new Error('APPLIED identity dependency differs from its retained release');
+      }
+    }
+    const identity = { id: release.id, version: release.version }, skuRef = identityReleaseSkuRef(identity);
+    if (seen.has(skuRef)) continue;
+    seen.add(skuRef);
+    out.push({ layerRef: `blueprint:${pin.ref}`, identity, skuRef });
+  }
+  return out;
+}
+
+/** Production structured-native admission. No reserve is possible until a
+ * supported native source supplies complete provider-billed dollar evidence. */
+export async function admitNativeIdentityInference(input: { workspaceId: string; ownerId: string; backend: string },
+  deps: {
+    readApplied?: (ownerId: string, workspaceId: string) => Promise<AppliedIdentityRules | null>;
+    resolveLayers?: typeof resolveAppliedIdentityReleaseLayers;
+    io?: IdentityActivationGateIo;
+  } = {},
+): Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)> {
+  try {
+    const readApplied = deps.readApplied ?? (await import('../agent-identities/sync-hook-rules')).readAppliedIdentityRules;
+    const worn = await readApplied(input.ownerId, input.workspaceId);
+    if (!worn) return { ok: true };
+    const layers = await (deps.resolveLayers ?? resolveAppliedIdentityReleaseLayers)(worn);
+    const decision = await admitResolvedIdentityLayers(input.workspaceId, layers, deps.io ?? gateIo());
+    if (!decision.ok) return { ok: false, code: decision.code, message: decision.detail, retryable: false };
+    if (!decision.charged.length) return { ok: true };
+    return { ok: false, code: 'identity-native-billing-unsupported', retryable: false,
+      message: `Paid identity inference on ${input.backend} requires complete provider-billed dollar cost; native token totals cannot settle it`,
+      liftsWhen: 'Use an unpriced identity until a supported provider-billed native lifecycle is available.' };
+  } catch {
+    return { ok: false, code: 'identity-funding-unverifiable', retryable: false,
+      message: 'The exact APPLIED identity release and funding could not be verified' };
+  }
 }
 
 /** The door form: resolve when the stack may be activated, else throw the typed refusal. */

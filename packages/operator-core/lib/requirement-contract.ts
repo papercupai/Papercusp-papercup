@@ -1,6 +1,6 @@
 /** Unified authoring over the existing criterion fields. No second persisted BAR. */
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
-import type { ServingRuntimeId } from './serving-runtimes';
+import type { EvidenceRuntimeId } from './serving-runtimes';
 
 export interface RequirementIntent {
   request: string;
@@ -15,7 +15,7 @@ export interface RequirementAcceptance {
   requiredScope?: string[];
   evidencePlane?: 'tree' | 'deployed' | 'live';
   /** WHICH runtime a deployed/live promise is measured on (acceptance-runtime-plane P-002). */
-  evidenceRuntime?: ServingRuntimeId;
+  evidenceRuntime?: EvidenceRuntimeId;
   /** Required depth of outcome proof; changing this changes the promise. */
   requiredTestLayers?: string[];
   passRatings?: string[];
@@ -24,10 +24,17 @@ export interface RequirementAcceptance {
   coversBarKeys?: string[];
 }
 
+/** P-011: what a bar's proof must run under. Validated by productionConfigurationSchema. */
+export interface RequirementProductionConfiguration {
+  flags?: Record<string, boolean>;
+  env?: Record<string, string>;
+}
+
 export interface RequirementVerification {
   method: string;
   check?: RubricCriterionCheck;
   replication?: string;
+  productionConfiguration?: RequirementProductionConfiguration;
 }
 
 export interface RequirementSectionInput {
@@ -40,7 +47,7 @@ export interface RequirementSectionInput {
   driftMarkers?: string;
   requiredScope?: string[];
   evidencePlane?: 'tree' | 'deployed' | 'live';
-  evidenceRuntime?: ServingRuntimeId;
+  evidenceRuntime?: EvidenceRuntimeId;
   requiredTestLayers?: string[];
   passRatings?: string[];
   mandatory?: boolean;
@@ -49,6 +56,7 @@ export interface RequirementSectionInput {
   method?: string;
   check?: RubricCriterionCheck;
   replication?: string;
+  productionConfiguration?: RequirementProductionConfiguration;
 }
 
 function comparable(value: unknown): unknown {
@@ -88,6 +96,7 @@ export function normalizeRequirementSections<T extends RequirementSectionInput>(
     assign('method', verification.method);
     assign('check', verification.check);
     assign('replication', verification.replication);
+    assign('productionConfiguration', verification.productionConfiguration);
   }
   return { ...canonical, ...result };
 }
@@ -112,6 +121,8 @@ export function requirementSections(input: RequirementSectionInput) {
       method: input.method ?? '',
       check: input.check ?? null,
       replication: input.replication ?? null,
+      // Additive only: a bar without a declaration projects exactly as before P-011.
+      ...(input.productionConfiguration ? { productionConfiguration: input.productionConfiguration } : {}),
     },
   };
 }

@@ -309,6 +309,14 @@ describe('sessions:list historical bounded census', () => {
 
     const sql = queries[0];
     expect(sql).toContain('FROM harness_shared.session_turns');
+    // Preserve the COALESCE(ts, ingested_at) semantics without hiding both
+    // indexed timestamp columns from PostgreSQL's bounded-window planner.
+    expect(sql).toContain('ts AS event_at');
+    expect(sql).toContain('ts IS NULL');
+    expect(sql).toContain('ingested_at AS event_at');
+    expect(sql).toMatch(/ts\s*>=/);
+    expect(sql).toMatch(/ingested_at\s*>=/);
+    expect(sql).not.toMatch(/COALESCE\(ts,\s*ingested_at\)\s*>=/i);
     expect(sql).toContain('FROM harness_shared.agent_activity');
     expect(sql).toContain('FROM harness_shared.tool_invocations');
     expect(sql).toContain('coord_owner_id AS owner_id');
@@ -319,6 +327,77 @@ describe('sessions:list historical bounded census', () => {
     expect(sql).toContain('<');
     expect(sql).not.toMatch(/\bstarted_at\b/);
     expect(sql).not.toContain('spawn_id');
+  });
+
+  it('aggregates raw event keys before mapping and splits null/non-null session joins', async () => {
+    const { queries } = await run(
+      {
+        mode: 'historical',
+        since: '2026-07-13T13:30:00Z',
+        until: '2026-07-13T14:30:00Z',
+      },
+      [[]],
+    );
+
+    const sql = queries[0];
+    const rawEventGroups = sql.indexOf('raw_event_groups AS MATERIALIZED');
+    const rawEventGroupBy = sql.indexOf('GROUP BY owner_id, session_id', rawEventGroups);
+    const mapStart = sql.indexOf('session_map AS MATERIALIZED');
+    const mapKeys = sql.indexOf('FROM raw_event_groups k', mapStart);
+    const lateralLookup = sql.indexOf('LEFT JOIN LATERAL', mapKeys);
+    const splitJoin = sql.indexOf('mapped_key_events AS', lateralLookup);
+    const metricRollup = sql.indexOf('event_group_metrics AS', splitJoin);
+    const sourceRollup = sql.indexOf('event_group_sources AS', metricRollup);
+    const sessionLookupEnd = sql.indexOf(') a ON true', lateralLookup);
+    const sessionLookup = sql.slice(lateralLookup, sessionLookupEnd);
+    const sessionLookupSelect = sessionLookup.slice(0, sessionLookup.indexOf('FROM harness_shared.adv_sessions'));
+
+    expect(rawEventGroups).toBeGreaterThanOrEqual(0);
+    expect(rawEventGroupBy).toBeGreaterThan(rawEventGroups);
+    expect(mapStart).toBeGreaterThanOrEqual(0);
+    expect(mapStart).toBeGreaterThan(rawEventGroupBy);
+    expect(mapKeys).toBeGreaterThan(mapStart);
+    expect(lateralLookup).toBeGreaterThan(mapKeys);
+    expect(splitJoin).toBeGreaterThan(lateralLookup);
+    expect(metricRollup).toBeGreaterThan(splitJoin);
+    expect(sourceRollup).toBeGreaterThan(metricRollup);
+    expect(sql).toContain('WHERE k.session_id IS NOT NULL');
+    expect(sql).toContain('WHERE k.session_id IS NULL');
+    // The append-only event stream is scanned exactly once, inside the grouped CTE.
+    expect(sql.match(/\bFROM raw_events\b/g)).toHaveLength(1);
+    const rawEventScan = sql.search(/\bFROM raw_events\b/);
+    expect(rawEventScan).toBeGreaterThan(rawEventGroups);
+    expect(rawEventScan).toBeLessThan(rawEventGroupBy);
+    expect(sql).not.toContain('a.raw_session_id IS NOT DISTINCT FROM e.session_id');
+    expect(sql).toContain('sum(event_count)::int AS event_count');
+    expect(sql).toContain('array_agg(DISTINCT source.event_source ORDER BY source.event_source) AS event_sources');
+    expect(sessionLookup).toContain("FROM harness_shared.adv_sessions");
+    expect(sessionLookupSelect).toContain("launch_spec->>'harnessSlug' AS harness_slug");
+    expect(sessionLookupSelect).not.toMatch(/,\s*harness_slug\s*,/);
+  });
+
+  it('uses disjoint indexed lookups for known sessions and owner-only events', async () => {
+    const { queries } = await run(
+      {
+        mode: 'historical',
+        since: '2026-07-13T13:30:00Z',
+        until: '2026-07-13T14:30:00Z',
+      },
+      [[]],
+    );
+    const sql = queries[0];
+    const start = sql.indexOf('session_map AS MATERIALIZED');
+    const lookup = sql.slice(start, sql.indexOf('mapped_key_events AS', start));
+
+    // The nullable OR and CASE order caused a repeated lookup/sort for every
+    // grouped key. Each disjoint branch must retain its own earliest-row limit.
+    expect(lookup).toContain('k.session_id IS NOT NULL AND session_id = k.session_id');
+    expect(lookup).toContain('coord_owner_id = k.owner_id AND k.session_id IS NULL');
+    expect(lookup).toContain('UNION ALL');
+    expect(lookup.match(/LIMIT 1/g)).toHaveLength(2);
+    expect(lookup.match(/first_seen_at ASC NULLS LAST,\s*id ASC/g)).toHaveLength(2);
+    expect(lookup).not.toMatch(/k\.session_id IS NULL OR session_id/);
+    expect(lookup).not.toContain('ORDER BY CASE');
   });
 
   it('supports the historical compatibility alias while retaining the same bounds', async () => {

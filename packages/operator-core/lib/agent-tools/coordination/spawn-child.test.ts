@@ -2,8 +2,9 @@
  * Unit tests for the promote spawn_child branch
  * (promote-spawn-child-harness-2026-05-31 P-003/P-004/P-006).
  *
- * Pure pieces: seed-plan synthesis (D-002) round-trips through the canonical
- * VAL-* extractor, deterministic id minting (D-004 retry idempotency), the
+ * Pure pieces: seed-plan synthesis (D-002) emits plain Acceptance sub-bullets
+ * and NO inline VAL-* block (VAL-* retired, verification-system-improvements-
+ * 2026-10-10 P-003), deterministic id minting (D-004 retry idempotency), the
  * child import payload, and the `## Promoted` spawned-child row annotation.
  * Orchestration: executeSpawnChild's step ordering + the D-004 failure model
  * (warnings, never throws; later steps aborted; idempotent retry paths) via
@@ -11,6 +12,9 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { stripCommentsAndStrings } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 import {
   childSeedSlug,
   mintChildFeatureIds,
@@ -19,10 +23,13 @@ import {
   buildChildImportPayload,
   executeSpawnChild,
   describeSpawnStart,
+  seedPlanRefusalOf,
   type SpawnChildDeps,
   type SpawnChildOpts,
 } from './spawn-child';
-import { extractAssertions } from '../plans/val-assertions';
+import { findValBlocks } from '../plans/val-retirement';
+import { activationGateRefusalValue } from '../plans/plan-activation-gate';
+import { invalidPlanDependenciesValue } from '../plans/plan-candidate-dependencies';
 import { buildPromotedRows } from './tools/promote';
 import type { BuiltFeature, SpawnChild } from '../plans/promote-policy';
 
@@ -42,7 +49,7 @@ const FEATURES: BuiltFeature[] = [
     spawn_child_slug: 'my-tool-cli',
   },
   {
-    // No acceptance — must synthesize an item with zero VALs, not a broken block.
+    // No acceptance — must synthesize an item with zero Acceptance sub-bullets, not a broken block.
     title: 'Write the child README',
     spawn_child_slug: 'my-tool-cli',
   },
@@ -85,6 +92,30 @@ describe('childSeedSlug / mintChildFeatureIds (D-002 / D-004 determinism)', () =
 });
 
 describe('synthesizeChildSeedPlan (D-002)', () => {
+  it('declares the child-seed template, so the activation gate exempts it (D-038)', () => {
+    expect(synth().body).toMatch(/^template: child-seed$/m);
+  });
+
+  it('spawn-child.ts is the ONLY source that may introduce the child-seed template (D-038 no-self-serve)', () => {
+    // Producer pin: allowChildSeedTemplate is the capability that bypasses the
+    // child_seed_template_reserved refusal. Scan non-test source with comments and
+    // string literals stripped, so prose that mentions the flag cannot self-match.
+    // Stripping is the expensive step, so it runs only on files whose raw text names the
+    // flag at all (a superset of the setters); the full strip over every lib file timed out.
+    const libRoot = path.resolve(__dirname, '..', '..');
+    const files = fs.readdirSync(libRoot, { recursive: true, encoding: 'utf8' })
+      .filter((f) => f.endsWith('.ts') && !/\.test\.ts$/.test(f) && !f.includes('node_modules'));
+    const mentions = files.filter((f) => fs.readFileSync(path.join(libRoot, f), 'utf8').includes('allowChildSeedTemplate'));
+    const setters = mentions.filter((f) =>
+      /allowChildSeedTemplate\s*:\s*true/.test(stripCommentsAndStrings(fs.readFileSync(path.join(libRoot, f), 'utf8'))),
+    );
+    // Positive controls: the scan must cover lib and see the real producer and the gate that
+    // declares the option, or an empty result is vacuous.
+    expect(files.length).toBeGreaterThan(100);
+    expect(mentions).toContain(path.join('agent-tools', 'plans', 'with-plan-lock.ts'));
+    expect(setters).toEqual([path.join('agent-tools', 'coordination', 'spawn-child.ts')]);
+  });
+
   it('frontmatter carries the seed slug, active status, and the goal as title', () => {
     const seed = synth();
     expect(seed.body).toMatch(/^---\n/);
@@ -110,26 +141,25 @@ describe('synthesizeChildSeedPlan (D-002)', () => {
     expect(seed.body).toMatch(/^- \*\*P-003\*\* `todo` Write the child README$/m);
   });
 
-  it('acceptance entries round-trip through the canonical VAL-* extractor', () => {
+  it('acceptance entries ride as plain Acceptance sub-bullets — no inline VAL-* block (P-003)', () => {
     const seed = synth();
-    const assertions = extractAssertions(seed.body);
-    // 2 + 1 + 0 acceptance entries → 3 VALs, globally numbered.
-    expect(assertions.map((a) => a.valId)).toEqual([
-      'VAL-my-tool-cli-seed-2026-06-07-001',
-      'VAL-my-tool-cli-seed-2026-06-07-002',
-      'VAL-my-tool-cli-seed-2026-06-07-003',
-    ]);
-    expect(assertions[0]).toMatchObject({
-      itemId: 'P-001',
-      verifyText: 'CLI builds in the child repo',
-      status: 'todo',
-      requiresTest: true,
-    });
-    expect(assertions[2]).toMatchObject({ itemId: 'P-002', verifyText: 'tagged release publishes' });
-    // The per-item VAL ids the import claims ride on match the extraction.
-    expect(seed.items[0].valIds).toEqual(assertions.slice(0, 2).map((a) => a.valId));
-    expect(seed.items[1].valIds).toEqual([assertions[2].valId]);
-    expect(seed.items[2].valIds).toEqual([]);
+    // 2 + 1 + 0 acceptance entries → 3 Acceptance sub-bullets, under their items.
+    expect(seed.body.match(/^ {2}- \*\*Acceptance:\*\* /gm)).toHaveLength(3);
+    expect(seed.body).toMatch(
+      /^- \*\*P-001\*\* `todo` Port the CLI entrypoints\n {2}- \*\*Acceptance:\*\* CLI builds in the child repo\n {2}- \*\*Acceptance:\*\* smoke-run passes$/m,
+    );
+    expect(seed.body).toMatch(
+      /^- \*\*P-002\*\* `todo` Wire release automation\n {2}- \*\*Acceptance:\*\* tagged release publishes$/m,
+    );
+    // The retired surface is absent: plans:promote refuses a body with a VAL
+    // block (val-block-retired), so the synthesized seed must never carry one.
+    expect(findValBlocks(seed.body)).toEqual([]);
+    expect(seed.body).not.toContain('VAL-');
+    // Positive control — the detector DOES see a VAL block, so the empty result
+    // above is a real absence, not a blind instrument.
+    expect(findValBlocks('- **P-001** `todo` x\n  - **[VAL-x-001]**\n    - **Verify:** y')).toHaveLength(1);
+    // Items carry no VAL ids any more.
+    expect(seed.items[0]).toEqual({ itemId: 'P-001', featureIndex: 0 });
   });
 
   it('flattens multi-line titles/acceptance into single plan lines', () => {
@@ -137,8 +167,7 @@ describe('synthesizeChildSeedPlan (D-002)', () => {
       features: [{ title: 'A\nmulti-line\ttitle', acceptance: ['line one\nline two'] }],
     });
     expect(seed.body).toMatch(/^- \*\*P-001\*\* `todo` A multi-line title$/m);
-    const [a] = extractAssertions(seed.body);
-    expect(a.verifyText).toBe('line one line two');
+    expect(seed.body).toMatch(/^ {2}- \*\*Acceptance:\*\* line one line two$/m);
   });
 
   it('is deterministic — same input, byte-identical body (D-004 retry)', () => {
@@ -167,7 +196,7 @@ describe('synthesizeScaffoldSpec', () => {
 });
 
 describe('buildChildImportPayload', () => {
-  it('stamps seed-plan provenance, deterministic ids, and child VAL claims', () => {
+  it('stamps seed-plan provenance and deterministic ids, and carries no VAL claims (P-003)', () => {
     const seed = synth();
     const ids = mintChildFeatureIds('my-tool-cli', FEATURES.length);
     const payload = buildChildImportPayload({
@@ -185,7 +214,6 @@ describe('buildChildImportPayload', () => {
       summary: 'Move bin/ + the arg parser.',
       source_plan_slug: seed.seedSlug,
       source_plan_item_ids: ['P-001'],
-      claims: seed.items[0].valIds,
     });
     // metadata.source_plan is the DISPATCHER eligibility key (readFrontierFeatures
     // gates on metadata->>'source_plan' ∈ started plans) — must be the SEED slug.
@@ -195,8 +223,9 @@ describe('buildChildImportPayload', () => {
       wave: 'extract-cli',
       parent_harness: 'papercup',
     });
-    // No acceptance → no claims key at all (import sets claims only on INSERT).
-    expect(payload[2].claims).toBeUndefined();
+    // VAL-* is retired: no feature carries a claims key, acceptance or not
+    // (feature 0 HAS acceptance entries — the case the old code turned into claims).
+    for (const p of payload) expect(p).not.toHaveProperty('claims');
   });
 });
 
@@ -242,10 +271,6 @@ function stubDeps(overrides: Partial<SpawnChildDeps> = {}) {
       calls.push('importFeatures');
       return { ids: payload.map((p) => p.id), inserted: payload.length, updated: 0 };
     }),
-    writeAssertions: vi.fn(async (_s, _p, assertions) => {
-      calls.push('writeAssertions');
-      return { written: assertions.length, errors: [] };
-    }),
     startPlan: vi.fn(async (): Promise<'started' | 'plan_not_found' | 'axis_retired'> => {
       calls.push('startPlan');
       return 'started';
@@ -268,30 +293,21 @@ function opts(overrides: Partial<SpawnChildOpts> = {}): SpawnChildOpts {
 }
 
 describe('executeSpawnChild — happy path', () => {
-  // P-003 (D-002/D-005): writeAssertions MUST precede importFeatures. The child's
-  // features carry the seed plan's synthesized VAL-* ids as `claims`, and a claim is
-  // resolvable ONLY through harness_plan_assertions — a different datastore from the
-  // one importFeatures writes, with no transaction spanning both. This sequence is
-  // therefore the entire integrity guarantee, not an incidental detail: reversing it
-  // is what allowed a feature to carry claim ids whose rows never persisted.
-  it('runs scaffold → seed plan → assertions → import → start, in order', async () => {
+  // The former assertions step (harness_plan_assertions upsert between the seed
+  // write and the import) is RETIRED with inline VAL-* (verification-system-
+  // improvements-2026-10-10 P-003): the seed mints no VAL ids and the import
+  // carries no claims, so nothing sits between the seed write and the import.
+  it('runs scaffold → seed plan → import → start, in order', async () => {
     const { deps, calls } = stubDeps();
     const r = await executeSpawnChild(opts(), deps);
-    expect(calls).toEqual([
-      'resolveChild',
-      'scaffold',
-      'writeSeedPlan',
-      'writeAssertions',
-      'importFeatures',
-      'startPlan',
-    ]);
+    expect(calls).toEqual(['resolveChild', 'scaffold', 'writeSeedPlan', 'importFeatures', 'startPlan']);
+    expect(r).not.toHaveProperty('assertions_written');
     expect(r).toMatchObject({
       child_slug: 'my-tool-cli',
       seed_plan_slug: 'my-tool-cli-seed-2026-06-07',
       scaffold: 'created',
       seed_plan: 'created',
       feature_ids: ['F-MY-TOOL-CLI-SEED-001', 'F-MY-TOOL-CLI-SEED-002', 'F-MY-TOOL-CLI-SEED-003'],
-      assertions_written: 3,
       started: true,
       warnings: [],
     });
@@ -377,11 +393,38 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
     expect(r.warnings.some((w) => w.includes('scaffolded-but-unseeded'))).toBe(true);
   });
 
-  // P-003: with assertions persisted FIRST, an import failure now leaves ORPHAN
-  // assertion rows instead of dangling claims. That is the benign half of the
-  // inverted failure mode — no feature references those rows, the upsert is
-  // idempotent, and a re-promote re-converges them.
-  it('import failure leaves orphan assertion rows, never dangling claims', async () => {
+  // WI-6554700010008416: withPlanLock returns a refused write as kind:'applied' with
+  // the refusal object cast to the value type. A refused seed must fail the seed step
+  // and name the refusal — never be reported as a created seed.
+  it('a refused seed-plan write fails the seed step and names the refusal code', async () => {
+    const { deps } = stubDeps({
+      writeSeedPlan: vi.fn(async () => ({
+        refused: true as const,
+        code: 'conversation_audit_required',
+        message: 'plan needs a conversation audit',
+      })),
+    });
+    const r = await executeSpawnChild(opts(), deps);
+    expect(r.scaffold).toBe('created');
+    expect(r.seed_plan).toBe('failed');
+    expect(deps.importFeatures).not.toHaveBeenCalled();
+    expect(deps.startPlan).not.toHaveBeenCalled();
+    expect(r.warnings.some((w) => w.includes('conversation_audit_required'))).toBe(true);
+  });
+
+  it('seedPlanRefusalOf keeps the code and message of both withPlanLock refusal builders', () => {
+    const gate = seedPlanRefusalOf(
+      activationGateRefusalValue('seed-x', { satisfied: false, code: 'conversation_audit_required', message: 'm1' } as never),
+    );
+    expect(gate).toEqual({ refused: true, code: 'conversation_audit_required', message: 'm1' });
+    const deps = seedPlanRefusalOf(invalidPlanDependenciesValue('seed-x', { state: 'rejected', diagnostics: [] } as never));
+    expect(deps.refused).toBe(true);
+    expect(deps.code).toBe('invalid_plan_dependencies');
+    expect(deps.message).toContain('seed-x');
+    expect(seedPlanRefusalOf(undefined)).toMatchObject({ refused: true, code: 'unknown_refusal' });
+  });
+
+  it('import failure aborts the start step with a re-promote warning', async () => {
     const { deps } = stubDeps({
       importFeatures: vi.fn(async () => {
         throw new Error('features_import_failed:404');
@@ -391,9 +434,6 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
     expect(r.feature_ids).toEqual([]);
     expect(r.started).toBe(false);
     expect(deps.startPlan).not.toHaveBeenCalled();
-    // The rows were already written — orphaned (harmless), not dangling (corrupt).
-    expect(deps.writeAssertions).toHaveBeenCalled();
-    expect(r.assertions_written).toBe(3);
     expect(r.warnings.some((w) => w.includes('feature import failed'))).toBe(true);
   });
 
@@ -416,7 +456,6 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
     expect(r.warnings).toEqual([]);
     // Everything BEFORE the start step still ran — the child is fully seeded.
     expect(r.feature_ids).toHaveLength(3);
-    expect(r.assertions_written).toBe(3);
   });
 
   it('a start step that never ran is `skipped`, distinct from a refusal', async () => {
@@ -449,63 +488,6 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
     expect(describeSpawnStart('plan_not_found')).toContain('NOT started');
     expect(describeSpawnStart('failed')).toContain('NOT started');
     expect(describeSpawnStart('skipped')).toBe('');
-  });
-
-  // P-003 (D-002/D-005). This REPLACES a test that pinned the defect: assertion
-  // failures used to "degrade to warnings" while the claims had already ridden the
-  // import — precisely the state the plan item forbids ("no feature may carry claim
-  // ids whose assertion rows failed to persist"). A partial failure is the dangerous
-  // case, because `written > 0` made it look like the store had worked.
-  it('a PARTIAL assertion-store failure fails closed — no feature is imported', async () => {
-    const { deps } = stubDeps({
-      writeAssertions: vi.fn(async () => ({ written: 1, errors: ['VAL-x: dead column'] })),
-    });
-    const r = await executeSpawnChild(opts(), deps);
-    expect(deps.importFeatures).not.toHaveBeenCalled();
-    expect(deps.startPlan).not.toHaveBeenCalled();
-    expect(r.feature_ids).toEqual([]);
-    expect(r.started).toBe(false);
-    expect(r.warnings.some((w) => w.includes('dead column'))).toBe(true);
-    expect(r.warnings.some((w) => w.includes('claim ids with no assertion row'))).toBe(true);
-    expect(r.warnings.some((w) => w.includes('re-promote to retry'))).toBe(true);
-  });
-
-  it('a THROWN assertion store fails closed the same way (PG unreachable)', async () => {
-    const { deps } = stubDeps({
-      writeAssertions: vi.fn(async () => {
-        throw new Error('pg down');
-      }),
-    });
-    const r = await executeSpawnChild(opts(), deps);
-    expect(deps.importFeatures).not.toHaveBeenCalled();
-    expect(deps.startPlan).not.toHaveBeenCalled();
-    expect(r.feature_ids).toEqual([]);
-    expect(r.started).toBe(false);
-    expect(r.warnings.some((w) => w.includes('pg down'))).toBe(true);
-    expect(r.warnings.some((w) => w.includes('claim ids with no assertion row'))).toBe(true);
-  });
-
-  // Retry/idempotency: a re-promote after a failed assertion store must re-run the
-  // write and then proceed — the guard refuses the import, it does not latch.
-  it('a retry after a failed assertion store completes normally', async () => {
-    let attempt = 0;
-    const { deps } = stubDeps({
-      writeAssertions: vi.fn(async (_s, _p, assertions) => {
-        attempt++;
-        return attempt === 1
-          ? { written: 0, errors: ['VAL-x: deadlock detected'] }
-          : { written: assertions.length, errors: [] };
-      }),
-    });
-    const first = await executeSpawnChild(opts(), deps);
-    expect(first.feature_ids).toEqual([]);
-    expect(deps.importFeatures).not.toHaveBeenCalled();
-
-    const second = await executeSpawnChild(opts(), deps);
-    expect(deps.importFeatures).toHaveBeenCalledTimes(1);
-    expect(second.feature_ids).toHaveLength(3);
-    expect(second.assertions_written).toBe(3);
-    expect(second.started).toBe(true);
   });
 
   it('seed plan already existing is a no-op, not a failure (retry path)', async () => {

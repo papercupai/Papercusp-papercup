@@ -13,10 +13,12 @@ import {
   MissingCapabilityError,
   UnknownMethodError,
 } from './capabilities.ts';
+import type { ServiceDef } from '@papercusp/plugin-sdk';
 
-// Inline service def — equivalent to `defineService({...})` from @papercusp/plugin-sdk
-// but avoids cross-package imports in tsx --test which has resolution issues.
-function defineService<T extends { name: string; methods: Record<string, { capability: any }> }>(def: T): T {
+// Inline service def — equivalent to `defineService({...})` from @papercusp/plugin-sdk (a type-only
+// import, so no runtime cross-package resolution). Typed as the SDK's ServiceDef so the fixture is
+// checked against the real Capability union.
+function defineService(def: ServiceDef): ServiceDef {
   return def;
 }
 

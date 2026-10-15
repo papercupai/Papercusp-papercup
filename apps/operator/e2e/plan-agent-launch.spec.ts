@@ -27,6 +27,8 @@
  *   8. /admin/plans page renders without 500 (smoke).
  */
 import { test, expect, type APIRequestContext } from './_egress';
+import { assertFixtureApiSuccess, assertFixturePlanReadback, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
+let harnessSlug = 'main';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -34,15 +36,18 @@ const baseURL =
 
 async function fakeLlmActive(request: APIRequestContext): Promise<boolean> {
   try {
-    const res = await request.post(`${baseURL}/api/agent-tools/architect:chat`, {
+    const res = await request.post(`${baseURL}/api/agent-tools/architect/chat`, {
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      data: { message: 'probe', harnessSlug: 'main' },
+      data: { message: 'probe', harnessSlug },
       timeout: 6_000,
     });
-    if (!res.ok()) return false;
+    if (!res.ok() && process.env.VERIFY_TAURI_ISOLATED_DB !== '1') return false;
     const body = await res.text();
-    return body.includes('[fake-llm]');
-  } catch {
+    const active = body.includes('[fake-llm]');
+    if (process.env.VERIFY_TAURI_ISOLATED_DB === '1' && !active) throw new Error(`Isolated fake LLM probe failed: ${res.status()} ${body}`);
+    return active;
+  } catch (error) {
+    if (process.env.VERIFY_TAURI_ISOLATED_DB === '1') throw error;
     return false;
   }
 }
@@ -61,12 +66,13 @@ async function adminPost(
 ): Promise<{ status: number; json: unknown }> {
   const res = await request.post(`${baseURL}/api/admin/plans/${verb}`, {
     headers: { 'Content-Type': 'application/json' },
-    data: body,
+    data: { ...body, harness: harnessSlug },
     timeout: 20_000,
   });
   const text = await res.text();
   let json: unknown = text;
   try { json = JSON.parse(text); } catch { /* leave as text */ }
+  if (verb === 'new' || verb === 'set-content') assertFixtureApiSuccess(verb, json);
   return { status: res.status(), json };
 }
 
@@ -76,6 +82,7 @@ async function adminGet(
   params: Record<string, string | number | boolean> = {},
 ): Promise<{ status: number; json: unknown }> {
   const url = new URL(`${baseURL}/api/admin/plans/${verb}`);
+  url.searchParams.set('harness', harnessSlug);
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, String(v));
   }
@@ -108,12 +115,13 @@ async function pollRunStatus(
 }
 
 test.describe('plan-agent-launch E2E (P-028)', () => {
+  test.beforeAll(async () => { harnessSlug = await seedFakeLlmHarness({ hive: true }); });
   test('full flow: author → edit twice → launch → resume → verify rows', async ({ request, page }) => {
     if (!(await fakeLlmActive(request))) {
       test.skip(true, 'PAPERCUSP_FAKE_LLM=1 not set on dev server; skipping');
     }
 
-    const slug = freshSlug();
+    let slug = freshSlug();
 
     // ── 1. Author the plan. plans:new emits a real revision spine
     //      entry (seq 1) — the origin per D-006.
@@ -121,14 +129,20 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       slug,
       title: 'P-028 launch e2e',
       status: 'draft',
-      owner: 'e2e@example.com',
+      ownerEmail: 'e2e@example.com',
     });
-    expect(created.status, 'plans:new should succeed').toBe(200);
+    expect(created.status, `plans:new should succeed: ${JSON.stringify(created.json)}`).toBe(200);
     expect((created.json as { ok?: boolean }).ok ?? false).toBe(true);
+    // plans:new canonicalizes the slug (including its date suffix). Follow the
+    // returned identity for every later read and CAS write.
+    const createdSlug = (created.json as { slug?: string }).slug;
+    expect(createdSlug, 'plans:new should return the persisted slug').toBeTruthy();
+    slug = createdSlug!;
 
     // Fetch to get the current contentHash for the CAS write.
     const initialGet = await adminGet(request, 'get', { slug });
     expect(initialGet.status).toBe(200);
+    expect((initialGet.json as { ok?: boolean }).ok, JSON.stringify(initialGet.json)).toBe(true);
     const hash1 = (initialGet.json as { contentHash?: string }).contentHash;
     expect(hash1, 'plans:get should include contentHash').toBeTruthy();
 
@@ -150,6 +164,25 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       '',
       'First edit landed.',
       '',
+      '## Requirements',
+      '',
+      '**R-1 — Durable launch rows.**',
+      '```requirement',
+      JSON.stringify({
+        intent: { request: 'Verify plan launch and resume persist their revision and turn rows.', sourceRefs: ['test:plan-agent-launch'] },
+        acceptance: { condition: 'Launch and resume retain the expected plan run and transcript rows.', falsifier: 'A launched run or seeded user turn is absent.', evidencePlane: 'tree', requiredScope: ['launch', 'resume'], requiredTestLayers: ['e2e'] },
+        verification: { method: 'Run this scripted fake-LLM journey and inspect runs and run-transcript through the admin API.', check: { kind: 'tests', files: ['apps/operator/e2e/plan-agent-launch.spec.ts'] } },
+      }),
+      '```',
+      '',
+      '## Design',
+      '',
+      '### Bar-to-work map for this plan',
+      '',
+      '| bar | implementing plan items | evidence plane |',
+      '|---|---|---|',
+      '| R-1 | P-001 | tree |',
+      '',
       '## Phase 1',
       '',
       '- **P-001** `todo` Author the e2e fixture.',
@@ -159,10 +192,12 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       slug,
       content: edit1Body,
       expectedHash: hash1,
+      // This test deliberately replaces its own generated starter template.
+      allowShrink: true,
       rationale: 'P-028 e2e: first scripted edit — adds a Now block.',
     });
     expect(edit1.status).toBe(200);
-    expect((edit1.json as { ok?: boolean }).ok ?? false).toBe(true);
+    expect((edit1.json as { ok?: boolean }).ok ?? false, JSON.stringify(edit1.json)).toBe(true);
     const hash2 = (edit1.json as { contentHash?: string }).contentHash;
     expect(hash2).toBeTruthy();
     expect(hash2).not.toBe(hash1);
@@ -180,7 +215,11 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       rationale: 'P-028 e2e: flip P-001 to wip — agent is picking it up.',
     });
     expect(edit2.status).toBe(200);
-    expect((edit2.json as { ok?: boolean }).ok ?? false).toBe(true);
+    expect((edit2.json as { ok?: boolean }).ok ?? false, JSON.stringify(edit2.json)).toBe(true);
+
+    const persisted = await adminGet(request, 'get', { slug, mode: 'full', includeRaw: true });
+    expect(persisted.status).toBe(200);
+    assertFixturePlanReadback(persisted.json, (edit2.json as { contentHash?: string }).contentHash, edit2Body);
 
     // ── 4. plans:revisions — expect 3 entries (origin + 2 edits)
     //      newest-first, with rationales intact.
@@ -196,10 +235,12 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
     expect(revisions[1]!.rationale).toContain('first scripted edit');
     expect(revisions[2]!.seq).toBe(1); // origin
 
-    // ── 5. plans:launch — admin path always sends await:false; we
+    // ── 5. plans:launch — request the background mode used by the UI; we
     //      verify the row exists immediately.
+    await seedFakeLlmPlanAcceptance(harnessSlug, slug);
     const launched = await adminPost(request, 'launch', {
       slug,
+      await: false,
       note: 'P-028: focus on P-001.',
     });
     expect(launched.status).toBe(200);
@@ -210,7 +251,7 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
       mode?: string;
       status?: string;
     };
-    expect(launchJson.ok).toBe(true);
+    expect(launchJson.ok, JSON.stringify(launched.json)).toBe(true);
     expect(launchJson.mode).toBe('background');
     expect(launchJson.status).toBe('running');
     expect(launchJson.runId).toBeGreaterThan(0);
@@ -253,6 +294,7 @@ test.describe('plan-agent-launch E2E (P-028)', () => {
     if (settled!.status === 'idle') {
       const resumed = await adminPost(request, 'resume', {
         runId,
+        await: false,
         message: 'P-028: continue — describe what you just did.',
       });
       expect(resumed.status).toBe(200);

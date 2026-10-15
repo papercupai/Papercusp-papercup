@@ -1,0 +1,439 @@
+{
+  "schemaVersion": 1,
+  "kind": "d006-source-repair-focused-evidence",
+  "workItem": "WI-10006170",
+  "inheritedRepairItem": "EI-24329108585573844",
+  "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
+  "historicalArchive": {
+    "run": "1307302-b9c3dd76",
+    "sha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+    "diagnosticLines": [
+      13741,
+      13760,
+      13765
+    ],
+    "testSha256": "4c040103fe2d59d82c91224e4e169dfc08d48e6f1389b2ebf5903eb81f1cae04"
+  },
+  "inheritedFocused": {
+    "testRunId": 20795770,
+    "status": "pass",
+    "passed": 1,
+    "skipped": 0,
+    "exitCode": 0,
+    "commitSha": "d152edfe0371ce04abb94d19eee265c7d6829809",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "root": "/tmp/papercusp-lint-as-committed-d152edfe03-bAdv9Z",
+    "source": "local",
+    "worktreeDirty": false,
+    "isScratchConfig": false,
+    "testSha256": "e10ec1861b5abaf348ee9992a89ee1e2f5afbf87523c8c3b0229e7c0a618fcc8",
+    "completionAuthority": "committed",
+    "rootCauseVerification": {
+      "hypothesis": "Successful-join fixture lacked owner_device_pubkey, correctly entering production partial_identity_stamp refusal despite valid registry/rekey ordering.",
+      "testResult": "Local and immutable full named suite1PASS0skip; all retained ordering and added identity assertions pass.",
+      "evidenceRefs": [
+        "/tmp/cloud-tutorial-parent-join-identity-current.log",
+        "/tmp/cloud-tutorial-ei243291-local.log",
+        "/tmp/cloud-tutorial-ei243291-clean-d152edfe.log",
+        "test-run:20795770",
+        "commit:d152edfe0371ce04abb94d19eee265c7d6829809"
+      ],
+      "testProcedure": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_FILE_TIMEOUT_MS=300000 npm run lint:as-committed -- test:file --any --ref=d152edfe0371ce04abb94d19eee265c7d6829809 -- packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
+      "contractVersion": 2,
+      "actualObservation": "Current baseline logs missing owner_device_pubkey degraded join and fails. Changing only the fixture identity and strengthening persisted-field oracle gives clean committedPASS with real registry/rekey checks.",
+      "distinguishingTest": "Supply owner public key through the existing fixture resolver, assert both identity fields in real persisted registry, and retain fresh registry-at-rekey and home-before-member ordering assertions.",
+      "alternativeHypothesis": "Registry commit/rekey ordering is broken even with a complete identity stamp.",
+      "predictedObservations": {
+        "hypothesis": "Complete owner identity removes partial-stamp refusal; real registry commit and ordering assertions pass.",
+        "alternativeHypothesis": "Complete identity succeeds but registry visibility/order assertions fail."
+      }
+    },
+    "qualification": "Peer baseline/local logs have moved-HEAD unknown provenance; immutable20795770 carries the clean committed named-file proof. Full peer import/environment identity was not captured."
+  },
+  "focused": {
+    "testRunId": 20905584,
+    "status": "pass",
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "exitCode": 0,
+    "commitSha": "9a996d182039906f402aabb590326661333734f7",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "root": ".",
+    "branch": "staging",
+    "source": "local",
+    "worktreeDirty": true,
+    "namedTestDirty": false,
+    "isScratchConfig": false,
+    "routerProvenance": "stamped",
+    "testSha256": "e10ec1861b5abaf348ee9992a89ee1e2f5afbf87523c8c3b0229e7c0a618fcc8",
+    "log": "/tmp/d006-join-hive-current-63.log",
+    "logSha256": "688347510633750ab4b492734f314153b83ad77bbda6de231a5e205426ea77a7"
+  },
+  "rootCause": "The archived successful-join fixture supplied hive_pubkey but returned no owner_device_pubkey. Production correctly refused a partial identity stamp and emitted the degraded-join error. The existing repair supplies a complete typed synthetic public identity and strengthens real persisted-registry assertions.",
+  "recurrenceGuard": "The existing conventional real-PG test asserts both hive_pubkey and owner_device_pubkey in the committed home-view, fresh registry visibility at every rekey, and home-before-member rekey order. Production partial-identity refusal remains unchanged.",
+  "sourceCapture": {
+    "rawRef": "/tmp/d006-join-hive-current-63-sources.json",
+    "rawSha256": "a8ed92d724c03b8de1092a7e7358362ded8686a42d4e6f47dc6270754ac7469b",
+    "workerSources": {
+      "schemaVersion": "vite-collected-source-evidence-v1",
+      "scope": "repository-worker-vite-original-sources",
+      "status": "stable",
+      "reasons": [],
+      "sourceCount": 1132,
+      "sourceRowsSha256": "1126f4f6b353cc8dd0e648575a741f5408a270e374eb7631d78293104d9c10e2",
+      "sourceRowsRef": "/tmp/d006-join-hive-current-63-sources.json#diagnostics[0].sourceEvidence.sources",
+      "persistenceScope": "Bounded qualification and digest only; complete worker rows remain in the referenced raw capture."
+    },
+    "configDisk": {
+      "schemaVersion": "vitest-config-disk-snapshots-v1",
+      "scope": "repository-vite-config-dependencies",
+      "basis": "reporter-init-disk",
+      "status": "unchanged",
+      "sources": [
+        {
+          "path": "packages/operator-core/vitest.integration.config.ts",
+          "sha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337",
+          "currentSha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337"
+        }
+      ],
+      "reasons": []
+    },
+    "configLoaded": {
+      "schemaVersion": "node-loaded-config-sources-v1",
+      "scope": "repository-vite-config-dependencies",
+      "basis": "node-load-hook",
+      "status": "unknown",
+      "sources": [
+        {
+          "path": "packages/operator-core/vitest.integration.config.ts",
+          "sha256": null,
+          "currentSha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337"
+        }
+      ],
+      "reasons": [
+        "config-node-load-capture-unavailable",
+        "config-original-load-unavailable:packages/operator-core/vitest.integration.config.ts"
+      ]
+    },
+    "mainProcessLoaded": {
+      "schemaVersion": "node-loaded-main-process-sources-v1",
+      "scope": "repository-node-main-process-sources",
+      "basis": "node-load-hook",
+      "status": "unknown",
+      "sources": [],
+      "reasons": [
+        "main-process-dependencies-unavailable",
+        "main-process-loaded-sources-unavailable",
+        "main-process-node-load-capture-unavailable"
+      ]
+    }
+  },
+  "postRunComparison": {
+    "measuredAt": "2026-10-08T06:51:11.438275+00:00",
+    "scope": "captured repository worker originals only; snapshot does not create an execution verdict",
+    "status": "changed",
+    "compared": 1132,
+    "changed": [
+      {
+        "path": "libs/generic/rules/src/schema.ts",
+        "runEndSha256": "4d67074ba624df82097750744cdee963cea93c39ea8632ee3e8a4cc370802ee8",
+        "currentSha256": "170cdfed7a86aeaa5c31480f041e38d20dc4fbc9b95eaeeee32248842c71df3a"
+      },
+      {
+        "path": "libs/generic/tooldef/src/code-orchestration/orchestrate.ts",
+        "runEndSha256": "92e515d5a0793d991a203882db55dd8dfc03d1835ee2d1010eb183652ba1434d",
+        "currentSha256": "9de3a23decc790f658ac249491544ab234e09b28c01eb84284a66adaea3e8383"
+      },
+      {
+        "path": "libs/generic/tooldef/src/dispatch-stack.ts",
+        "runEndSha256": "1fe865ed91103c9abe871386440409f9106256a5cbccd0b6bd948312595581cf",
+        "currentSha256": "36598c857890c0c34254892deb93bb25f9b9c617a1533389bae501c6dab9af95"
+      },
+      {
+        "path": "libs/generic/tooldef/src/dispatch-types.ts",
+        "runEndSha256": "8251c42e414c4fcd93295b56998a0766900a124feda5744724e6d7ffccbedea2",
+        "currentSha256": "424961ef8a87ab246cb3df36ce46e69e7356ea041282e02bdfd24421ced25cc1"
+      },
+      {
+        "path": "libs/generic/tooldef/src/tool-projection.ts",
+        "runEndSha256": "8d4baa821ab04962c16f34d0feb7b55853edb6df923258f085501059dd728e4c",
+        "currentSha256": "b9971b7f9be1fe151b2bc8a7e6cd989a70a0f3e4cb4a82b9b0f8485a48de7809"
+      },
+      {
+        "path": "libs/papercusp-shared/src/agent/chat-stream.ts",
+        "runEndSha256": "c545f5dc496c3d1557419b4ffb35d8cf3bf26c40277174f8f0ef518baabc6c4c",
+        "currentSha256": "c56b14cb915b668e31d491b93c4b5260d111c054aeb8e76befc11234af99862d"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/schema/generated.ts",
+        "runEndSha256": "c2ce1902183821c509ffd2a64b0b397f5291745881bddb323c8a734d2e08cec3",
+        "currentSha256": "1b5f09c713fa5a61bf416a6d4fdabfe87431a34c319697baa135fbeba8677b8b"
+      },
+      {
+        "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+        "runEndSha256": "83aa1325c1b82f8072bcb8e0518d7bd0b18c0d81298bae772e6f6c3ea4243d59",
+        "currentSha256": "874ed65decfbe36ff81e79472d0a1ff698ece06e80d9e38ab5edfffe33ec8aca"
+      },
+      {
+        "path": "libs/test-config/src/execution-details.ts",
+        "runEndSha256": "d46d02d6f73d2fdc97429ad14bc68032215a32c10b31e2167acaca2ab91fab91",
+        "currentSha256": "a398627eee4914b03c40a5b81c9e17da988a1318f58f122cad8904f2a084173f"
+      },
+      {
+        "path": "packages/agent-mcp/src/tools/goals/update.ts",
+        "runEndSha256": "4de792f199dba47e56d86d4106a7cf141af92c3a63421e6e3a8d633946c8f887",
+        "currentSha256": "997cabf96ed4e5cb807ae56712c2c32ddf99bfaf4d7165f254ac25480273792d"
+      },
+      {
+        "path": "packages/docs-engine/src/adapters/generic-fs.ts",
+        "runEndSha256": "fe63157594a3fd41775893ab315e6b9c15e9d9c058b4d50ac011d4552da19a9b",
+        "currentSha256": "649d2a3d8ac2b756402159a989e74c3d1b1b595c4df1587190fa8571a360db8c"
+      },
+      {
+        "path": "packages/docs-engine/src/adapters/harness-fs.ts",
+        "runEndSha256": "ce3bee6e3ce6e877b7e9077b256bbd1bfa237afbe0ae5c95a3efc069f37d8c44",
+        "currentSha256": "90de0232dd23dde6a45a513f33e18816f57be96bf4b2402f805f816064bfb106"
+      },
+      {
+        "path": "packages/docs-engine/src/adapters/starlight.ts",
+        "runEndSha256": "f24541d4d5ae1b15ffc2e4727384ec0693ace53f27cee7e0d880356bdef63922",
+        "currentSha256": "aff24db27ff0c4affa701fa36907e87d2b8e394d2fa0086f0830219a1058b3a6"
+      },
+      {
+        "path": "packages/docs-engine/src/index.ts",
+        "runEndSha256": "c24a050af08a841ce1caa706c272586e29a61333415b9a07b61566ff9c5acc35",
+        "currentSha256": "b3e0cc03d2ea008dff3056a61eac26d064447a1c67ec1a8faec4ff49c37f28d6"
+      },
+      {
+        "path": "packages/docs-engine/src/render-mdx.ts",
+        "runEndSha256": "386059fce4923566f110bd0ad8059bbab6d92f5999d5d7682861e5675339126c",
+        "currentSha256": "a0447f17c5bf8aee391ca9453766090f291703d58d4e688e776e786f0074e108"
+      },
+      {
+        "path": "packages/docs-engine/src/search.ts",
+        "runEndSha256": "bbd550a2b6d17a26a5cf038a7ff78d38394c9ad2dfdcb105c5026857c24d544c",
+        "currentSha256": "e4d054083b2e732fd6a4b529d65973ee44fe6022cebfea5d8c29cc5523c65e99"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-bin-detect.ts",
+        "runEndSha256": "6ef6a6711f7fd48e79b467944c2d0fbc71dc3dfc06adfc7868cae6101dc0b7e9",
+        "currentSha256": "011eae052745785cc4f79e7a2561b58d0a873e20ced8483d1444d81a6be0895c"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-fleets-store.ts",
+        "runEndSha256": "6472f7552a82eba4eec7a7fa13e4c26f960de1ff621d82948168178107eba069",
+        "currentSha256": "6d864c265873fdc7a1fb0a22484ffea3687105755cd92906efd9aba015c0aaa0"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/liveness-oracle.ts",
+        "runEndSha256": "18a9ed734b1200fcb6b19806d3e975c5aad7e25388c9781cff2df9f8c4e5d64c",
+        "currentSha256": "986b3222043f91d01e3066a56ebed956130517ceb33ca83afe4e32404dbe5e93"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/source.ts",
+        "runEndSha256": "4591ef3d46cfd39dc91568b9154f100ccf375a2146080fd70cb449061ef39959",
+        "currentSha256": "ac87b8736170814a26f0e2dfabfa4da82aac453fe38a15a85bc61827746cab9e"
+      },
+      {
+        "path": "packages/operator-core/lib/attention/bulk-dispositions.ts",
+        "runEndSha256": "baa4117c470c7f4fcd6183cfecca57efcd9f1040e5fc30e7f7b9c0871a29f734",
+        "currentSha256": "ec3d9afbd0cd17671fb3035ca366a88ef230fd1bdc2276dd29f1c8ac988a44d1"
+      },
+      {
+        "path": "packages/operator-core/lib/backend-bin-resolve.mjs",
+        "runEndSha256": "928a7b13db8f09c577da7d655e6f56bb4dbde763d3f39f5f7bf3a5cb2c44af41",
+        "currentSha256": "1f34437265c95322d7352e58b7a4700ad8648109542b05c60929d920ce7f8022"
+      },
+      {
+        "path": "packages/operator-core/lib/connected-apps/service-keys.ts",
+        "runEndSha256": "fd9c9f61ab66e2ea70a976a120f1ba1ea708ae7abc384131d514aa3a0f8e97a2",
+        "currentSha256": "56b2d733b42d440a46f1b35ea89045098513b8b08cb446eac696618397077fba"
+      },
+      {
+        "path": "packages/operator-core/lib/datatype-display.ts",
+        "runEndSha256": "871cfd91390f712c13f80d7f041a7c223add52e6da3bbe8c336fcaef47c658b1",
+        "currentSha256": "77589636e9332b329262d520db1f241749ceb6bc9d1e2420fd1b3d2060d0cba1"
+      },
+      {
+        "path": "packages/operator-core/lib/events/await/wake-executor.ts",
+        "runEndSha256": "a3571c6533f8d456090bdd63b2dd5cbe4955c0a15de1ff0a9bb7ac19e1f9ba1d",
+        "currentSha256": "87ff9c79fb06c462ad52060adc0be67551764a0d17bacb771c84d642307928d0"
+      },
+      {
+        "path": "packages/operator-core/lib/external-blockers.ts",
+        "runEndSha256": "7a97292526c9459e1021f5f801ffe276f1ae6aaeb23e5de9f6c7e2f5158549d1",
+        "currentSha256": "9a22866adeac2573e07d5823a91972e2ca061f38f78df278f66d77022e48346e"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/fleet-roster.ts",
+        "runEndSha256": "3ad6bdcbb1b63627d035f7e3ecbe4a67e2d4f88edcd2c37f33f64adea10d3b8d",
+        "currentSha256": "c4d7d997845b4647882f05b8ebb4939c36ffc68b9b7539c30920e6814c40f769"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/git-via-sidecar.ts",
+        "runEndSha256": "d5aeead650807baae44553ab8f32aa22379c68a0cc8af9860bad2dcd2abc38d8",
+        "currentSha256": "1cb3397947bdc8283ce3c793faefc0e9c8d1b18ac3dda0309bd76b287f670e93"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-launch-settings.ts",
+        "runEndSha256": "705e3a10d86ba733d36ed0dda14433761eaa7aaaa39f187d52cb697664369126",
+        "currentSha256": "12e31e34f3eb921ff9639a9221f97a07d3ddc101ba33744db06a6ac5ece14a38"
+      },
+      {
+        "path": "packages/operator-core/lib/goals/package-property-datatypes.ts",
+        "runEndSha256": "20b84df196f3d3a713616ae7025f9a6c3465563dccf26eabacd6de2fcd7b1a3f",
+        "currentSha256": "124b7f931b8d9f4b9345dc91b0194bbbe99a3551b999e89101e7210de7c054b2"
+      },
+      {
+        "path": "packages/operator-core/lib/goals/package-update.ts",
+        "runEndSha256": "a7dccd5fb6d3d5129e5c23c61d0ce172db8d6b84eb141d2c9bb13efce1f62c9d",
+        "currentSha256": "7e018b5571250aeb580f55774d0942c398a41d7c9d4b4de359ac800029d8e7e2"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/improvements/agent-review-policy.ts",
+        "runEndSha256": "e1c6588349ecffaabc095557db333cc291823538db799403a5e1f67394a525c5",
+        "currentSha256": "f3e829fac77e584f5d24a9828c27996fd2a4978b3ba1dd2e0e3ea279785f5926"
+      },
+      {
+        "path": "packages/operator-core/lib/inference-gateway/codex-oauth-kernel-adapter.ts",
+        "runEndSha256": "c936d917ead40e6fb463ff4de22ac74505c5470a3afb686df3006f1962b744c1",
+        "currentSha256": "ab9bd1367f92305546f91941520cbbf9352405c0c39f9775f2d5686945403439"
+      },
+      {
+        "path": "packages/operator-core/lib/inference-gateway/codex-oauth-proxy.ts",
+        "runEndSha256": "1cc234ae63430876e9b823cc3ff1baae013a854e25eb26f962e69f71163a9960",
+        "currentSha256": "f0b75f4c5c9163b01f4ab996be0dbc9c9c50003daa6f846b30c96099e8c18eed"
+      },
+      {
+        "path": "packages/operator-core/lib/inference-gateway/gateway.ts",
+        "runEndSha256": "d035988bc6075d4e10a691bd36cca9df12034b1a46996f4d58f5fd730763ed86",
+        "currentSha256": "300f8ceb94037821f0303b2e6b07e63eea516e91152f568434a7c06dcedd13c3"
+      },
+      {
+        "path": "packages/operator-core/lib/issues-engineer.ts",
+        "runEndSha256": "694dd45894f6e9b9d913ab783c08976bca6fa6e635c1a648ef6e51f4d98e916f",
+        "currentSha256": "010b7009c2dbc4d07d47c9216a022a115568c6bf7399c1569de4c6de441ff75a"
+      },
+      {
+        "path": "packages/operator-core/lib/modes/goal-context.ts",
+        "runEndSha256": "6070912bd5b922f57139c6e009080fb3469b93131569e98d786ed988937c9185",
+        "currentSha256": "1260101c425aa5011b4378978878ff766a5243b65a8732dc45ccdb1223881900"
+      },
+      {
+        "path": "packages/operator-core/lib/plan-items/reconcile-linked-work-items.ts",
+        "runEndSha256": "f28879f5f3c96950a24794484082afbebe90064e98c2cba26f0cf7650c4fc888",
+        "currentSha256": "e2ee82896a364be314c81e8167bb59ec3f44224b0b00a4228cb190bc7942c1c1"
+      },
+      {
+        "path": "packages/operator-core/lib/projected-tool-deps.ts",
+        "runEndSha256": "a15d97d2974d7be8f51442a973e0decb308126b83e994bde37afc32191eae45f",
+        "currentSha256": "bbe31235b1a3f4c71333f36db4d9fbe7f3701d27693403391c5006fdaad3ee39"
+      },
+      {
+        "path": "packages/operator-core/lib/release/candidate-snapshot.ts",
+        "runEndSha256": "2a2a401ad5d49dc1307cbae62465a7985d5e7c1de21b97c771d07665b64c373a",
+        "currentSha256": "ed8187ffeef197572d8f2e41f38dbfb610981e4a2ba4a4152dec64f14dfb0332"
+      },
+      {
+        "path": "packages/operator-core/lib/release/checkpoint-qualification-transaction.ts",
+        "runEndSha256": "9bf8de0e8338cbc464d9268c1bc7e23c84527b9c970610d5c5d5a80814a85e1d",
+        "currentSha256": "ffeaa3632a8ed02a2a21f22a6b667be7c112f2375d15024e16227633bbe7f76d"
+      },
+      {
+        "path": "packages/operator-core/lib/result-projection/apply.ts",
+        "runEndSha256": "fb57f5e4cc2ecd5b9627b968916587a4eccf7e32b143b4a3e33a0d576aec7ce8",
+        "currentSha256": "e16cf99867903e6cf7f39a8aaab19543b6fd7c2d74b0fb44a1007e350f1388a7"
+      },
+      {
+        "path": "packages/operator-core/lib/scratch-gc.ts",
+        "runEndSha256": "ad4741860c98b38ab442bf4c5ccf5ba39f9cdc97bafff617dff3644822d9f48d",
+        "currentSha256": "2fc788a7090b377cc28ed8f4b656f76444d5c337e9523875e94a6974fa2d3089"
+      },
+      {
+        "path": "packages/operator-core/lib/scratch-reference.ts",
+        "runEndSha256": "a03bccea9260f9a7800009825485943c02b9ae7a021654966ba9073457390412",
+        "currentSha256": "925a068c922ccdf075d2eff0a11fd692d804300803b927c93be918d88c7896ff"
+      },
+      {
+        "path": "packages/operator-core/lib/search/self-session.ts",
+        "runEndSha256": "dbd91a754323d0214b552ad9fdfeb4099ae90108e1048c83aad41173f7831934",
+        "currentSha256": "7273f1012c1c932fa40de06c529214c62edad09b6b79005c6520f3a99593aa35"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/managed-spawn.ts",
+        "runEndSha256": "d2f4bc17f915708a184c3208818385feccb1efe410794f7d6a3961a89958f02c",
+        "currentSha256": "b141f3596ec47391be3d2ea2214eb20f9bde5413d0f58c3a807171f57aebad75"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/store.ts",
+        "runEndSha256": "ef711b956c906aab24c8d5e9aa90cf33c44721819a6bbe94bea3877d887c364e",
+        "currentSha256": "5ece7ca2828537b012ccaf62432bfb4b13977fd6cd798c3b040ee9c6c6f03760"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties-db.ts",
+        "runEndSha256": "950b9a44112a713cc1191e9d155ac0c0347e44ef11dbe4d3247b89a7d99dddac",
+        "currentSha256": "c356cf32141e3109841cf224154179a1115e47166d05c6f38108933d9af35e90"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "runEndSha256": "91e418dccdfc95660343b0c87e895644133b8eb4c6baa05f79deaf0b9503706f",
+        "currentSha256": "e43b921689fcb887fe80346ca8c3da8ee573f0a801656da68417d0aa6c5f93ae"
+      },
+      {
+        "path": "packages/operator-core/lib/work-item-blocking.ts",
+        "runEndSha256": "11fc0e5b51d34abd66b845721f8746d3af28be50bc533ae8ab453bf199e249c2",
+        "currentSha256": "d1fb6e2e6878a7ba30db5198e67330f6051498f72e36706f061ec31ab153ef41"
+      },
+      {
+        "path": "packages/operator-core/lib/work-items-durable-park-audit.ts",
+        "runEndSha256": "6debb25972adb7888a4d27f3105269e1e9faf4506a17e477a4ebcad445d1ef5e",
+        "currentSha256": "c55365dec81f902a2cc47900e72151d16db29d7366de7ff1d0ada9c3b319a5f3"
+      },
+      {
+        "path": "packages/operator-core/lib/work-items.ts",
+        "runEndSha256": "05b668d6d6b4fd94af74a6da0f5787e61313fc85465bf226e847c7b3d09202a2",
+        "currentSha256": "f9d70bbb14199594138eb9f30f5d10cd3db409567cd9193492561754a01c6569"
+      }
+    ],
+    "missing": [],
+    "criticalSources": [
+      {
+        "path": "libs/papercusp/libs/db/src/connection.ts",
+        "runEndSha256": "3b9eba90c2ff65d8d9db405fd0bd65994ccc5643d99e7411e1447c20aaf6bcbf",
+        "currentSha256": "3b9eba90c2ff65d8d9db405fd0bd65994ccc5643d99e7411e1447c20aaf6bcbf"
+      },
+      {
+        "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+        "runEndSha256": "83aa1325c1b82f8072bcb8e0518d7bd0b18c0d81298bae772e6f6c3ea4243d59",
+        "currentSha256": "874ed65decfbe36ff81e79472d0a1ff698ece06e80d9e38ab5edfffe33ec8aca"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
+        "runEndSha256": "e10ec1861b5abaf348ee9992a89ee1e2f5afbf87523c8c3b0229e7c0a618fcc8",
+        "currentSha256": "e10ec1861b5abaf348ee9992a89ee1e2f5afbf87523c8c3b0229e7c0a618fcc8"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/join-hive.ts",
+        "runEndSha256": "dd152795bbc68e520b341ba20aefd7923b5e323f00d33fbbf561f7aec995d080",
+        "currentSha256": "dd152795bbc68e520b341ba20aefd7923b5e323f00d33fbbf561f7aec995d080"
+      }
+    ],
+    "unchangedCount": 1080,
+    "meaning": "Worker originals were stable between collection and run end. Source movement after the run invalidates current worker-graph assurance; named-test equality alone does not restore it."
+  },
+  "unverified": [
+    "current full worker-source execution after recorded source movement",
+    "loaded config original sources",
+    "main-process original sources",
+    "subprocess/native/environment identity",
+    "complete original/current source and import equality",
+    "final D006 integration-only population and verdict",
+    "D011 original-source STOP",
+    "shipment"
+  ],
+  "acceptanceClaim": false,
+  "shipmentClaim": false
+}

@@ -10,16 +10,27 @@
 
 
 /* Settings */
+.pc-settings-frame {
+  /* Native hosts may center surfaces in a flex row. Size containment on an
+     inner page (Inference) must not erase this surface's intrinsic width. */
+  width: 100%;
+  min-width: 0;
+  container: pc-settings / inline-size;
+}
+
 .pc-settings-shell {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 220px minmax(0, 1fr);
   gap: 32px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   max-width: 1080px;
   margin: 0 auto;
   padding: 28px 24px 64px;
 }
 
-@media (max-width: 720px) {
+@container pc-settings (max-width: 720px) {
   .pc-settings-shell { grid-template-columns: 1fr; }
 }
 
@@ -214,7 +225,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-@media (max-width: 920px) {
+@container pc-settings (max-width: 920px) {
   .kbd-settings-section {
     grid-template-columns: 1fr;
     gap: 4px;
@@ -716,7 +727,7 @@
   cursor: pointer;
 }
 
-@media (max-width: 720px) {
+@container pc-settings (max-width: 720px) {
   .pc-settings-shell {
     gap: 16px;
     padding-inline: 16px;
@@ -809,9 +820,9 @@ body:has(.pc-settings-page--voice) .pc-settings-shell section section[style*="pa
   box-sizing: border-box;
 }
 
-@media (max-width: 720px) {
+@container pc-settings (max-width: 720px) {
   .pc-settings-shell {
-    max-width: 100vw;
+    max-width: 100%;
     overflow-x: clip;
   }
 
@@ -1090,7 +1101,7 @@ body:has(.pc-settings-nav-link[href="/settings/mobile"][aria-current="page"]) .p
   height: auto;
 }
 
-@media (max-width: 720px) {
+@container pc-settings (max-width: 720px) {
   body:has(.pc-settings-nav-link[href="/settings/mobile"][aria-current="page"]) .pc-settings-content > .space-y-8.p-6 {
     gap: 18px;
     padding: 4px 0 0 !important;
@@ -1628,6 +1639,12 @@ html[data-visual-effects='minimal'] [class*='pc-wiki-missing-']::after {
   margin-inline: auto;
 }
 
+.pc-personal-vault :is(input, textarea) {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 .pc-vault-hero {
   position: relative;
   display: grid;
@@ -1898,8 +1915,13 @@ html[data-visual-effects='minimal'] [class*='pc-wiki-missing-']::after {
 
 .pc-vault-advanced-content {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   padding: 14px;
+}
+
+.pc-vault-advanced-content > * {
+  min-width: 0;
 }
 
 .pc-vault-visually-hidden {
@@ -1912,12 +1934,12 @@ html[data-visual-effects='minimal'] [class*='pc-wiki-missing-']::after {
   white-space: nowrap !important;
 }
 
-@media (max-width: 860px) {
+@container pc-settings (max-width: 860px) {
   .pc-vault-steps,
   .pc-vault-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 620px) {
+@container pc-settings (max-width: 620px) {
   .pc-vault-hero { display: grid; grid-template-columns: 1fr; padding: 20px; }
   .pc-vault-section-heading { display: grid; grid-template-columns: 1fr; }
   .pc-vault-health { justify-self: start; }

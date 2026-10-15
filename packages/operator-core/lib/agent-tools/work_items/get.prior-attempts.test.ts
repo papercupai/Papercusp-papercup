@@ -186,6 +186,21 @@ describe('work_items:get — priorAttemptRefs (raw drill-down)', () => {
     expect(r.priorAttemptRefResolution.records[0].text).toBe('the full untruncated body');
   });
 
+  it('uses raw refs instead of duplicating the bounded brief when detail is also requested', async () => {
+    resolvePriorAttemptRefs.mockResolvedValue({
+      schemaVersion: 'prior-attempt-refs-v1',
+      records: [{ authority: 'attempt', scope: 'plan-wide', rawRef: 'WI-3#checkpoint', text: 'the full untruncated body' }],
+      unresolved: [],
+      fingerprint: 'fp-1',
+    });
+
+    const r = await one({ id: 'WI-1', detail: true, priorAttemptRefs: ['WI-3#checkpoint'] });
+
+    expect(getClaimTimePriorAttemptBrief).not.toHaveBeenCalled();
+    expect(r.priorAttempts).toBeUndefined();
+    expect(r.priorAttemptRefResolution.records[0].text).toBe('the full untruncated body');
+  });
+
   it('works WITHOUT detail:true — a ref read from a claim reply must not cost the full render', async () => {
     resolvePriorAttemptRefs.mockResolvedValue({
       schemaVersion: 'prior-attempt-refs-v1',

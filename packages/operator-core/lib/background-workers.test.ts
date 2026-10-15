@@ -1,5 +1,17 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { backgroundWorkersEnabled, dbosLaunchesHere, isHostSingleton, reactionMatcherShouldArm, requestOnlyHost, utilityHostEnabled } from './background-workers';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  __pendingOperatorHostStartsForTests,
+  __resetOperatorHostProcessForTests,
+  backgroundWorkersEnabled,
+  dbosLaunchesHere,
+  declareOperatorHostProcess,
+  isHostSingleton,
+  isOperatorHostProcess,
+  reactionMatcherShouldArm,
+  requestOnlyHost,
+  utilityHostEnabled,
+  whenOperatorHostProcess,
+} from './background-workers';
 
 const saved = {
   VITEST: process.env.VITEST,
@@ -171,5 +183,50 @@ describe('requestOnlyHost (EI-9534 — no hive-directory swarm on a secondary ho
     // look request-only and wrongly suppress swarm-injecting directory-wire tests.
     expect(requestOnlyHost({ VITEST: 'true', PAPERCUSP_BACKGROUND_WORKERS: '0' } as unknown as NodeJS.ProcessEnv)).toBe(true);
     expect(requestOnlyHost({ VITEST: 'true', PAPERCUSP_HONO_PORT: '3070' } as unknown as NodeJS.ProcessEnv)).toBe(false);
+  });
+});
+
+describe('whenOperatorHostProcess / declareOperatorHostProcess (WI-10006280 — host-only import-time loops)', () => {
+  beforeEach(() => __resetOperatorHostProcessForTests());
+  afterEach(() => __resetOperatorHostProcessForTests());
+
+  it('queues a start until the process declares itself a host, and never runs it otherwise', () => {
+    const start = vi.fn();
+    whenOperatorHostProcess('loop-a', start);
+    expect(start).not.toHaveBeenCalled();
+    expect(isOperatorHostProcess()).toBe(false);
+    expect(__pendingOperatorHostStartsForTests()).toEqual(['loop-a']);
+  });
+
+  it('runs every queued start, in order, when the host declares — exactly once even if declared twice', () => {
+    const order: string[] = [];
+    whenOperatorHostProcess('loop-a', () => order.push('a'));
+    whenOperatorHostProcess('loop-b', () => order.push('b'));
+    declareOperatorHostProcess();
+    declareOperatorHostProcess();
+    expect(order).toEqual(['a', 'b']);
+    expect(isOperatorHostProcess()).toBe(true);
+    expect(__pendingOperatorHostStartsForTests()).toEqual([]);
+  });
+
+  it('runs a start immediately when the host has already declared (registry imported after boot)', () => {
+    declareOperatorHostProcess();
+    const start = vi.fn();
+    whenOperatorHostProcess('late-loop', start);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(__pendingOperatorHostStartsForTests()).toEqual([]);
+  });
+
+  it('a start that throws neither blocks the declaration nor the starts queued after it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const after = vi.fn();
+    whenOperatorHostProcess('broken-loop', () => {
+      throw new Error('relation "event_awaits" does not exist');
+    });
+    whenOperatorHostProcess('healthy-loop', after);
+    expect(() => declareOperatorHostProcess()).not.toThrow();
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls.flat().join(' ')).toContain('broken-loop');
+    warn.mockRestore();
   });
 });

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "plane": "live-current-build-operator-api",
+  "incomplete": true,
+  "pid": 1731718,
+  "counterPid": 1731718,
+  "counterPids": [
+    1731718
+  ],
+  "buildSha": "d2a53e1154",
+  "startedAt": "2026-10-05T22:48:34.789Z",
+  "samples": [],
+  "windows": [],
+  "requests": [],
+  "operations": [],
+  "cleanup": {
+    "inspectors": [],
+    "processIdentityPreserved": true,
+    "counterIdentityPreserved": true
+  },
+  "metricDefinitions": {
+    "pssBytes": "smaps_rollup Pss kernel kB times 1024",
+    "heapAndNative": "V8/Node counters, overlapping with PSS; no additive native-residual estimate",
+    "heapSpaces": "V8 getHeapSpaceStatistics per-space bytes; space membership can change across GC",
+    "heapCode": "V8 getHeapCodeStatistics bytes; code/source counters overlap heap/external and do not identify retainers",
+    "pinnedState": "Reachable logical payloads under named roots; not total retained heap/native bytes",
+    "observerMs": "wall time for inspector counter read and proc descendant census"
+  },
+  "limits": {
+    "windows": 3,
+    "idleMs": 2000,
+    "requestsPerWindow": 8,
+    "concurrency": 2,
+    "descendantsPerSample": 64
+  },
+  "operatorCacheEntries": false,
+  "limitations": [
+    "Legacy samples cover the first explicitly selected PID; requestWorkerWindows bracket each selected request-only PID. Unsampled workers remain unknown.",
+    "Ambient workload is uncontrolled; idle means no probe HTTP requests.",
+    "No paired intervention, allocation profiler, retainer graph or physical-savings claim.",
+    "Sibling build identity is read from its PID-bound server capability when available; missing advertisements stay unknown.",
+    "Current disk bundle hash is recorded separately from the health-reported loaded build."
+  ],
+  "error": "fetch failed",
+  "endedAt": "2026-10-05T22:48:34.929Z"
+}

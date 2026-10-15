@@ -35,6 +35,7 @@ const errorStyle: React.CSSProperties = {
 
 export function FormField({
   label,
+  htmlFor,
   error,
   description,
   required,
@@ -42,6 +43,7 @@ export function FormField({
   className,
 }: {
   label: string;
+  htmlFor?: string;
   error?: FieldError | string | undefined;
   description?: string;
   required?: boolean;
@@ -51,7 +53,7 @@ export function FormField({
   const message = typeof error === 'string' ? error : error?.message;
   return (
     <div className={`h-form-field ${className ?? ''}`} style={{ marginBottom: 12 }}>
-      <label style={labelStyle}>
+      <label htmlFor={htmlFor} style={labelStyle}>
         {label} {required && <span style={{ color: 'var(--bad)' }}>*</span>}
       </label>
       {description && <div style={descriptionStyle}>{description}</div>}

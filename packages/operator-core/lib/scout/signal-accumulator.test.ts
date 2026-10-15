@@ -9,7 +9,12 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
+// A hoisted spy, so the P-006 tests can count statements; by default every
+// statement resolves to no rows (importing the module has no IO side effects).
+const pg = vi.hoisted(() => ({
+  sql: vi.fn((..._args: unknown[]): Promise<unknown[]> => Promise.resolve([])),
+}));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: pg.sql }) }));
 vi.mock('../pot/started', () => ({
   listBlenderMaintenanceScopes: vi.fn(async () => []),
   listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
@@ -26,6 +31,7 @@ import {
   signalAccumulatorSweepSec,
   scoutSignalAccumulatorSweep,
   strongerLaneCount,
+  groupScopesByWorkspace,
   __resetSweepThrottleForTests,
   type LaneCount,
 } from './signal-accumulator';
@@ -162,6 +168,122 @@ describe('scoutSignalAccumulatorSweep — fail-soft shell', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/**
+ * One recount per WORKSPACE (papercusp-performance-audit-2026-10-12 P-006).
+ * Every lane count and the watermark are workspace-wide, yet the sweep used to
+ * run the seven count statements once per install scope: 42 scopes in the live
+ * workspace meant 42 identical recounts per sweep (measured 2026-10-12:
+ * ~2.6 s of statement time and ~2.86 M shared buffers per recount).
+ */
+describe('scoutSignalAccumulatorSweep — one recount per workspace (P-006)', () => {
+  const statementText = (call: unknown[]): string =>
+    Array.isArray(call[0]) ? (call[0] as readonly string[]).join('?') : '';
+  const isCount = (call: unknown[]) => /count\(\*\)/.test(statementText(call));
+  const isUpsert = (call: unknown[]) => /INSERT INTO harness_shared\.scout_signal_accumulator/.test(statementText(call));
+  const PER_WORKSPACE = { 'ws-a': 3, 'ws-b': 7 } as const;
+  const HW = '2026-07-12T11:00:00.000Z';
+
+  afterEach(() => {
+    pg.sql.mockReset();
+    pg.sql.mockImplementation(() => Promise.resolve([]));
+  });
+
+  async function sweepFourScopes() {
+    const { listBlenderMaintenanceScopes } = await import('../pot/started');
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValue([
+      { workspaceId: 'ws-a', installSlug: 'a1' },
+      { workspaceId: 'ws-b', installSlug: 'b1' },
+      { workspaceId: 'ws-a', installSlug: 'a2' },
+      { workspaceId: 'ws-a', installSlug: 'a3' },
+    ] as Awaited<ReturnType<typeof listBlenderMaintenanceScopes>>);
+    // Every count statement interpolates the workspace id first; answer with a
+    // per-workspace count so a cross-workspace mix-up is visible.
+    pg.sql.mockImplementation((...call: unknown[]) => {
+      if (!isCount(call)) return Promise.resolve([]);
+      const ws = call[1] as keyof typeof PER_WORKSPACE;
+      return Promise.resolve([{ c: PER_WORKSPACE[ws], hw: HW }]);
+    });
+    return scoutSignalAccumulatorSweep({ now: NOW });
+  }
+
+  it('runs each lane count statement once per workspace, not once per install scope', async () => {
+    await sweepFourScopes();
+    const counts = pg.sql.mock.calls.filter(isCount);
+    // readLaneCounts issues 7 count statements (observations has two legs).
+    expect(counts).toHaveLength(7 * 2);
+    expect(counts.filter((c) => c[1] === 'ws-a')).toHaveLength(7);
+    expect(counts.filter((c) => c[1] === 'ws-b')).toHaveLength(7);
+  });
+
+  it('writes the workspace recount to every scope of that workspace in one upsert', async () => {
+    await sweepFourScopes();
+    const upserts = pg.sql.mock.calls.filter(isUpsert);
+    expect(upserts).toHaveLength(2);
+    const byWorkspace = new Map(upserts.map((c) => [c[1] as string, c]));
+    // Interpolation order: workspace, watermark, install slugs, lanes, counts, high-waters.
+    expect(byWorkspace.get('ws-a')?.[3]).toEqual(['a1', 'a2', 'a3']);
+    expect(byWorkspace.get('ws-b')?.[3]).toEqual(['b1']);
+    expect(byWorkspace.get('ws-a')?.[4]).toEqual([...SIGNAL_LANES]);
+    expect(byWorkspace.get('ws-a')?.[5]).toEqual(SIGNAL_LANES.map(() => 3));
+    expect(byWorkspace.get('ws-b')?.[5]).toEqual(SIGNAL_LANES.map(() => 7));
+    expect(byWorkspace.get('ws-a')?.[6]).toEqual(SIGNAL_LANES.map(() => HW));
+  });
+
+  it('reports one swept result per scope, carrying its own workspace counts', async () => {
+    const results = await sweepFourScopes();
+    expect(results.map((r) => `${r.workspaceId}/${r.installSlug}`)).toEqual(['ws-a/a1', 'ws-a/a2', 'ws-a/a3', 'ws-b/b1']);
+    for (const r of results) {
+      expect(r.outcome).toBe('swept');
+      expect(r.evaluatedWorkspaceCount).toBe(2);
+      expect(r.evaluatedScopeCount).toBe(4);
+      const n = PER_WORKSPACE[r.workspaceId as keyof typeof PER_WORKSPACE];
+      expect(r.eligibleBacklogCount).toBe(n * SIGNAL_LANES.length);
+      expect(r.score).toBe(weightedSignalScore(Object.fromEntries(SIGNAL_LANES.map((l) => [l, n]))));
+    }
+  });
+
+  it('marks every scope of a workspace as error when its recount fails, and still sweeps the others', async () => {
+    const { listBlenderMaintenanceScopes } = await import('../pot/started');
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValue([
+      { workspaceId: 'ws-a', installSlug: 'a1' },
+      { workspaceId: 'ws-a', installSlug: 'a2' },
+      { workspaceId: 'ws-b', installSlug: 'b1' },
+    ] as Awaited<ReturnType<typeof listBlenderMaintenanceScopes>>);
+    pg.sql.mockImplementation((...call: unknown[]) => {
+      if (isCount(call) && call[1] === 'ws-a') return Promise.reject(new Error('statement timeout'));
+      if (isCount(call)) return Promise.resolve([{ c: 1, hw: HW }]);
+      return Promise.resolve([]);
+    });
+    const results = await scoutSignalAccumulatorSweep({ now: NOW });
+    expect(results.map((r) => [r.installSlug, r.outcome, r.reason])).toEqual([
+      ['a1', 'error', 'statement timeout'],
+      ['a2', 'error', 'statement timeout'],
+      ['b1', 'swept', SIGNAL_LANES.map((l) => `${l}=1`).join(' ')],
+    ]);
+    expect(pg.sql.mock.calls.filter(isUpsert).map((c) => c[1])).toEqual(['ws-b']);
+  });
+});
+
+describe('groupScopesByWorkspace', () => {
+  it('groups by workspace in first-seen order and drops a repeated install slug', () => {
+    expect(
+      groupScopesByWorkspace([
+        { workspaceId: 'w2', installSlug: 'x' },
+        { workspaceId: 'w1', installSlug: 'y' },
+        { workspaceId: 'w2', installSlug: 'z' },
+        { workspaceId: 'w2', installSlug: 'x' },
+      ]),
+    ).toEqual([
+      { workspaceId: 'w2', installSlugs: ['x', 'z'] },
+      { workspaceId: 'w1', installSlugs: ['y'] },
+    ]);
+  });
+
+  it('returns no groups for no scopes', () => {
+    expect(groupScopesByWorkspace([])).toEqual([]);
   });
 });
 

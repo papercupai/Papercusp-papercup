@@ -12,9 +12,15 @@ import { expect, test } from './_egress';
  * marketing page.
  */
 test.describe('root route', () => {
-  test('/ redirects to the primary surface (/adv) or the setup wizard', async ({ page }) => {
+  // The unfinished-setup landing is `firstRunTarget()` in operator-vite
+  // `src/routes/index.tsx`: `/onboarding` while the agent-first onboarding flag is
+  // on (the default), `/setup` otherwise. A fresh/isolated DB is unfinished, so
+  // the old `/(adv|setup)/` pin failed every isolated run (WI-10006791).
+  const LANDING = /\/(adv|setup|onboarding)\b/;
+
+  test('/ redirects to the primary surface (/adv) or the first-run surface', async ({ page }) => {
     await page.goto('/', { waitUntil: 'domcontentloaded' });
-    await expect(page).toHaveURL(/\/(adv|setup)\b/);
+    await expect(page).toHaveURL(LANDING);
   });
 
   test('/ lands without app console errors', async ({ page }) => {
@@ -23,7 +29,7 @@ test.describe('root route', () => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
     });
     await page.goto('/', { waitUntil: 'domcontentloaded' });
-    await expect(page).toHaveURL(/\/(adv|setup)\b/);
+    await expect(page).toHaveURL(LANDING);
     // Flag only genuine app errors. Ignore: third-party / hydration noise, and
     // failed-resource 401/403 — the landed app surface fetches authed data, and
     // a raw e2e browser has no verified session, so those are expected here.

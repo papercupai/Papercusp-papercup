@@ -28,9 +28,12 @@
  * 4. The runner actually wires it in — a formatter nothing calls is not a fix.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Script } from 'node:vm';
+import { affectedTestRunLogPath } from '../../../../libs/test-config/src/hermetic-tmpdir.ts';
 
 import {
   formatFailingFilesLine,
@@ -757,8 +760,25 @@ describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls 
   });
 
   it('stamps the same run token that names the full run log', () => {
-    expect(source).toContain("const RUN_LOG_ROOT = join(tmpdir(), 'papercusp-affected-tests');");
-    expect(source).toContain('const RUN_LOG_PATH = join(RUN_LOG_ROOT, `${RUN_TOKEN}.log`);');
+    const declaration = source.match(/^const RUN_LOG_PATH\s*=\s*.+;$/m)?.[0];
+    expect(declaration).toBeDefined();
+    expect(source).toMatch(/import\s*\{[^}]*\baffectedTestRunLogPath\b[^}]*\}\s*from\s*'[^']+\/hermetic-tmpdir\.ts'/);
+    const home = mkdtempSync(join(tmpdir(), 'affected-run-token-'));
+    try {
+      // Execute the runner's initializer: a hard-coded token or a move back into
+      // swept scratch must fail even if the helper's own tests still pass.
+      for (const runToken of ['1234-abcd', '5678-ef01']) {
+        const journal = new Script(`${declaration}\nRUN_LOG_PATH`).runInNewContext({
+          RUN_TOKEN: runToken,
+          RUN_LOG_ROOT: join(home, 'scratch'),
+          join,
+          affectedTestRunLogPath: (token: string) => affectedTestRunLogPath(token, home),
+        });
+        expect(journal).toBe(join(home, '.papercusp', 'logs', 'papercusp-affected-tests', `${runToken}.log`));
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('greps for the token via the shared constant, so a rename cannot desync', () => {

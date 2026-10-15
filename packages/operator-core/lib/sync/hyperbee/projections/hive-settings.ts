@@ -16,6 +16,8 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
+import { PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX } from '../../../agent-tools/plans/governance-federation';
+import type { PendingMembershipContent } from '../pending-membership-content';
 
 /** Wire-shape of a hive_settings row in Hyperbee — the federated subset. Defensive
  *  on every field: a malformed remote op is dropped (decodeValue → null). */
@@ -48,6 +50,10 @@ export interface HiveSettingsProjectionOpts {
   harnessSlug: string;
   /** Test/multi-peer seam — write to THIS client instead of getOrgPg().sql. */
   sql?: postgres.Sql;
+  /** Receiver-stamped log key → admitted device, supplied by register-all/boot. */
+  resolveAuthorDevice?: (sourceLogKeyHex: string) => string | null;
+  /** Reuse boot's bounded membership-ordering buffer and its existing drain. */
+  pendingMemberContent?: PendingMembershipContent;
 }
 
 function composeKey(row: HiveSettingRow): string {
@@ -62,9 +68,56 @@ async function writeToPg(
   opts: HiveSettingsProjectionOpts,
   row: HiveSettingRow,
   provenance: ProvenanceContext,
-): Promise<void> {
+): Promise<void | false> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const sql = opts.sql ?? getOrgPg().sql;
+  if (row.setting_key.startsWith(PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX)) {
+    const { isFederatedGovernanceEvent, planAdmissionGovernanceEventSettingKey,
+      resolvePlanAdmissionGovernanceAuthority } = await import('../../../agent-tools/plans/plan-admission-governance-store');
+    const { authenticateGovernanceEnvelope, authenticateGovernanceEvent } = await import('../../../agent-tools/plans/governance-authentication');
+    let event: unknown;
+    try { event = row.value === null ? null : JSON.parse(row.value); } catch { return false; }
+    if (!isFederatedGovernanceEvent(event) || event.potId !== opts.harnessSlug ||
+        planAdmissionGovernanceEventSettingKey(event) !== row.setting_key) return false;
+    if (provenance.origin === 'remote') {
+      const device = provenance.authorPubkey ? opts.resolveAuthorDevice?.(provenance.authorPubkey) : null;
+      const deferred = { tableTag: 'hive-settings-by-key', rowKey: row.setting_key,
+        fedHlc: provenance.fedHlc ?? null, fedTs: provenance.ts ?? null,
+        reapply: async () => { await writeToPg(opts, row, provenance); } };
+      if (!device) {
+        if (provenance.authorPubkey) opts.pendingMemberContent?.deferUnresolvedSourceLog(
+          { ...deferred, sourceLogKey: provenance.authorPubkey }, Date.now());
+        return false;
+      }
+      const { listHiveMembers } = await import('../../../hive-membership-store');
+      const { unsafeFederatedPotScope } = await import('../../../federated-pot-scope');
+      // This is the projection's canonical WRITE binding, never a local joiner alias.
+      const members = await listHiveMembers(opts.workspaceId,
+        unsafeFederatedPotScope(opts.harnessSlug, 'register-all hiveScoped projection binding'), sql);
+      if (members.some(member => member.revokedPubkeys.includes(device))) return false;
+      if (!members.some(member => member.deviceAttestations.some(attestation => attestation.device_pubkey === device))) {
+        opts.pendingMemberContent?.defer({ ...deferred, authorDevice: device }, Date.now());
+        return false;
+      }
+    }
+    const authority = await resolvePlanAdmissionGovernanceAuthority({ workspaceId: opts.workspaceId,
+      potHomeSlug: opts.harnessSlug, potId: opts.harnessSlug }, sql);
+    const nowMs = Date.now();
+    if (!authority || !authenticateGovernanceEnvelope({ authority, event, nowMs }).ok) return false;
+    if (event.body.kind === 'round-open' && !authenticateGovernanceEvent({ authority, event, nowMs }).ok) return false;
+    // INSERT-only facts. Authenticated members can relay another signer's event;
+    // the envelope authenticates the signer independently of the source device.
+    // Round/ballot dependencies may arrive later; the consumer always reauthenticates.
+    await sql`
+      INSERT INTO harness_shared.pot_settings
+        (workspace_id, harness_slug, setting_key, value, author_pubkey, origin, fed_ts, fed_hlc, created_at, updated_at)
+      VALUES (${opts.workspaceId}, ${row.harness_slug}, ${row.setting_key}, ${row.value},
+        ${provenance.authorPubkey ?? null}, ${provenance.origin}, ${provenance.ts ?? null},
+        ${provenance.fedHlc ?? null}, ${nowMs}, ${nowMs})
+      ON CONFLICT (workspace_id, harness_slug, setting_key) DO NOTHING
+    `;
+    return;
+  }
   const authorPubkey = provenance?.authorPubkey ?? null;
   const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
@@ -99,8 +152,9 @@ async function deleteFromPg(
   key: string,
   delTs?: number,
   delHlc?: string,
-): Promise<void> {
+): Promise<void | false> {
   if (!key) return;
+  if (key.startsWith(PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX)) return false;
   const sql = opts.sql ?? getOrgPg().sql;
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;

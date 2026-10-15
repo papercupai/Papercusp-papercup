@@ -2,6 +2,7 @@
  *  auto-checkpoint composition/merge + unregistered-artifact detection. */
 import { describe, expect, it } from 'vitest';
 import {
+  isUnpublishedReportTurn,
   MECHANICAL_CHECKPOINT_MARKER,
   STALE_CHECKPOINT_MS,
   UNGUARDED_HALT_NOTE,
@@ -23,6 +24,20 @@ import {
   settledMessagesCursor,
   unregisteredArtifactTripwire,
 } from './turn-end-tracking';
+
+describe('Reports unpublished-turn signal', () => {
+  const report = '# Architecture audit\n\n## Findings\n' + 'Measured architecture evidence. '.repeat(16)
+    + '\n## Recommendations\nPreserve these conclusions in the library.';
+  it('signals a report-shaped fixture only before publication', () => {
+    expect(isUnpublishedReportTurn(report, false)).toBe(true);
+    expect(isUnpublishedReportTurn(report, true)).toBe(false);
+  });
+  it('ignores progress notes, quoted reports and report examples inside code', () => {
+    expect(isUnpublishedReportTurn('The audit tests passed; capture verification remains open.', false)).toBe(false);
+    expect(isUnpublishedReportTurn(report.split('\n').map(line => `> ${line}`).join('\n'), false)).toBe(false);
+    expect(isUnpublishedReportTurn('```markdown\n' + report + '\n```', false)).toBe(false);
+  });
+});
 
 const NOW = 1_784_000_000_000;
 
@@ -81,6 +96,37 @@ describe('composeMechanicalCheckpoint / mergeMechanicalCheckpoint', () => {
     expect(second).not.toContain('P-015 legs 1-2 landed');
   });
 
+  it('preserves a newer authored checkpoint appended after a mechanical snapshot', async () => {
+    const { renderCarryNote, readCarryLatestUpdate, shortCarryHash, splitCarryNoteChecks, splitCarryNoteWalls } =
+      await import('./carry-note');
+    const firstNote = renderCarryNote({ did: 'Original authored progress.', next: 'Continue the original action.' });
+    const first = mergeMechanicalCheckpoint(firstNote, block);
+    const latestNote = renderCarryNote({
+      did: 'New authored progress after the prior mechanical snapshot.',
+      next: 'Resume from this exact structured action.',
+    });
+    const latestUpdate = splitCarryNoteWalls(splitCarryNoteChecks(latestNote).body).body.trim();
+    const appended = `${first}\n\n---\n${latestNote}`;
+    const nextBlock = composeMechanicalCheckpoint({
+      atIso: '2026-07-14T20:30:00.000Z',
+      journalNote: 'Latest authored checkpoint is preserved.',
+    });
+
+    const merged = mergeMechanicalCheckpoint(appended, nextBlock);
+    const offset = merged.indexOf(latestUpdate);
+    const latestSpan = {
+      noteHash: shortCarryHash(merged),
+      offset,
+      length: offset >= 0 ? latestUpdate.length : 0,
+    };
+
+    expect(merged).toContain('New authored progress after the prior mechanical snapshot.');
+    expect(merged).toContain('Resume from this exact structured action.');
+    expect(merged.match(new RegExp(MECHANICAL_CHECKPOINT_MARKER, 'g'))).toHaveLength(1);
+    expect(merged).not.toContain('P-015 legs 1-2 landed');
+    expect(readCarryLatestUpdate(merged, latestSpan)).toEqual({ status: 'available', text: latestUpdate });
+  });
+
   it('keeps mechanical tool logs outside authored Checks and Walls rows', async () => {
     const { splitCarryNoteChecks, splitCarryNoteWalls } = await import('./carry-note');
     const prior = [
@@ -104,6 +150,51 @@ describe('composeMechanicalCheckpoint / mergeMechanicalCheckpoint', () => {
     expect(walls[0]?.claim).toBe('owner approval remains');
     expect(body).toContain(MECHANICAL_CHECKPOINT_MARKER);
     expect(merged.indexOf(MECHANICAL_CHECKPOINT_MARKER)).toBeLessThan(merged.indexOf('## Checks'));
+  });
+
+  it('preserves check evidence and walls through repeated snapshots and a successor checkpoint', async () => {
+    const { mergeCarryRows, splitCarryNoteChecks, splitCarryNoteWalls, withCarryNoteChecks, withCarryNoteWalls } =
+      await import('./carry-note');
+    const prior = withCarryNoteWalls(withCarryNoteChecks('## Did\nAuthored progress.\n\n## Next action\nVerify the source.', [
+      { id: 'real-mcp-spill-attribution', claim: 'The spill remains readable.', sinceMs: 1, verified: 'Passing fixture.', recheck: 'Run the spill fixture.' },
+      { id: 'quota-scan-reuse', claim: 'Quota waiters share one scan.', sinceMs: 2, verified: 'One scan observed.', falsifier: 'More than one scan.' },
+      { id: 'scratch-phase-attribution', claim: 'The diagnostic retains the original error.', sinceMs: 3, observed: 'Original error retained.' },
+    ]), [{ id: 'source-custody', claim: 'Preserve the source lane.', sinceMs: 4, recheck: 'Read the governing decision.' }]);
+    const originalChecks = splitCarryNoteChecks(prior).checks;
+    const originalWalls = splitCarryNoteWalls(prior).walls;
+    const first = mergeMechanicalCheckpoint(prior, block);
+    const later = composeMechanicalCheckpoint({ atIso: '2026-07-14T19:30:00.000Z', journalNote: 'Later snapshot.' });
+    const second = mergeMechanicalCheckpoint(first, later);
+
+    expect(splitCarryNoteChecks(second).checks).toEqual(originalChecks);
+    expect(splitCarryNoteWalls(second).walls).toEqual(originalWalls);
+    expect(second).toContain('Authored progress.');
+    expect(second.match(new RegExp(MECHANICAL_CHECKPOINT_MARKER, 'g'))).toHaveLength(1);
+    expect(second).not.toContain('P-015 legs 1-2 landed');
+
+    const successor = mergeCarryRows({
+      priorNote: second, baseNote: '## Did\nSuccessor resumed.', hasNoteWrite: true, mode: 'merge',
+    });
+    expect(successor.checks).toEqual(originalChecks);
+    expect(successor.walls).toEqual(originalWalls);
+    expect(successor.droppedChecks).toEqual([]);
+    expect(successor.droppedWalls).toEqual([]);
+  });
+
+  it('replaces a legacy mechanical tail without losing the preceding protected rows', async () => {
+    const { splitCarryNoteChecks, splitCarryNoteWalls, withCarryNoteChecks, withCarryNoteWalls } = await import('./carry-note');
+    const prior = withCarryNoteWalls(withCarryNoteChecks('Authored progress.', [
+      { id: 'verified-check', claim: 'Keep this verified check.', sinceMs: 1, verified: 'Saved evidence.' },
+    ]), [{ id: 'source-wall', claim: 'Keep source custody.', sinceMs: 2 }]);
+    const legacy = `${prior}\n\n---\n${block}`;
+    const later = composeMechanicalCheckpoint({ atIso: '2026-07-14T19:30:00.000Z', journalNote: 'New snapshot.' });
+    const merged = mergeMechanicalCheckpoint(legacy, later);
+
+    expect(splitCarryNoteChecks(merged).checks).toEqual(splitCarryNoteChecks(prior).checks);
+    expect(splitCarryNoteWalls(merged).walls).toEqual(splitCarryNoteWalls(prior).walls);
+    expect(merged.match(new RegExp(MECHANICAL_CHECKPOINT_MARKER, 'g'))).toHaveLength(1);
+    expect(merged.indexOf(MECHANICAL_CHECKPOINT_MARKER)).toBeLessThan(merged.indexOf('## Checks'));
+    expect(merged).not.toContain('P-015 legs 1-2 landed');
   });
 });
 

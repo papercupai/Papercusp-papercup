@@ -110,14 +110,62 @@ describe('deadline-aware admission (WI-1639265)', () => {
     expect(error).toBeInstanceOf(Error);
     expect(isTaskDeadlineRefusal(error)).toBe(true);
     expect(error!.message).toContain('TASK_DEADLINE_REFUSAL');
-    expect(error!.message).toContain('knownEstimateMs=120000');
+    expect(error!.message).toContain('knownEstimateMs=60000');
     expect(error!.message).toContain('knownTasks=2');
     expect(error!.message).toContain('unknownTasks=0');
     // The whole point: nothing ran, so nothing was measured and nothing was thrown away.
     expect(ran).toEqual([]);
   });
 
-  it('counts an unknown estimate as ZERO rather than guessing, so a refusal is a lower bound', async () => {
+  it('admits concurrent tasks whose wall projection fits even when their summed work does not', async () => {
+    const { ran, notices, options } = harness();
+    const pool = await runBudgetedTaskShards(
+      shardsOf([
+        { id: 'a', estimateMs: 60_000 },
+        { id: 'b', estimateMs: 60_000 },
+      ]),
+      { ...options, deadlineEpochMs: Date.now() + 90_000 },
+    );
+
+    expect(ran.sort()).toEqual(['a', 'b']);
+    expect(pool.results).toHaveLength(2);
+    expect(notices.some((line) => line.startsWith('AFFECTED_TESTS_DEADLINE_SHORTFALL'))).toBe(false);
+  });
+
+  it('still refuses sequential shards whose combined wall projection exceeds the deadline', async () => {
+    const { ran, options } = harness();
+    const error = await runBudgetedTaskShards(
+      shardsOf([{ id: 'a', estimateMs: 60_000 }], [{ id: 'b', estimateMs: 60_000 }]),
+      { ...options, deadlineEpochMs: Date.now() + 90_000 },
+    ).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(isTaskDeadlineRefusal(error)).toBe(true);
+    expect(error!.message).toContain('knownEstimateMs=120000');
+    expect(ran).toEqual([]);
+  });
+
+  it('still refuses summed work when the configured lane policy is serial', async () => {
+    const { ran, options } = harness({ maxConcurrentTasks: 1 });
+    const error = await runBudgetedTaskShards(
+      shardsOf([
+        { id: 'a', estimateMs: 60_000 },
+        { id: 'b', estimateMs: 60_000 },
+      ]),
+      { ...options, deadlineEpochMs: Date.now() + 90_000 },
+    ).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(isTaskDeadlineRefusal(error)).toBe(true);
+    expect(error!.message).toContain('knownEstimateMs=120000');
+    expect(ran).toEqual([]);
+  });
+
+  it('counts an unknown estimate as ZERO rather than guessing a duration', async () => {
     const { ran, options } = harness();
     // Same tiny clock, but no duration history for either task. A refusal here would be a
     // prediction, not a measurement — so the run proceeds and only the shortfall is voiced.

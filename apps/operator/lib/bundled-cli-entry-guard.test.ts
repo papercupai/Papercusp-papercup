@@ -156,16 +156,17 @@ describe('check-bundled-cli-entry-guards', () => {
     // commit its own mutant even when nothing goes wrong.
     const subject = process.env.PROBE_BUNDLE_HOST_SH || join(repoRoot, 'apps/operator/bin/bundle-host.sh');
     const script = readFileSync(subject, 'utf8');
-    const esbuildIdx = script.indexOf('npx --yes esbuild@');
+    const esbuildIdx = script.indexOf('bundle_host_esbuild');
     const scannerIdx = script.indexOf('check-bundled-cli-entry-guards.mjs');
     expect(esbuildIdx).toBeGreaterThan(-1);
     expect(scannerIdx).toBeGreaterThan(esbuildIdx);
     // The esbuild invocation itself must be failure-checked.
-    expect(script).toMatch(/if ! npx --yes esbuild@/);
+    expect(script).toMatch(/bundle_host_run_step host-compile bundle_host_esbuild/);
+    expect(script).toMatch(/\|\| compiler_rc=\$\?\s+if \(\( compiler_rc != 0 \)\); then[\s\S]*?exit "\$compiler_rc"/);
     // And it must exit between esbuild and the scanner, so the scanner never runs on a
     // metafile esbuild did not write.
     const between = script.slice(esbuildIdx, scannerIdx);
-    expect(between).toMatch(/exit 1/);
+    expect(between).toContain('exit "$compiler_rc"');
     // The fallback banner must not assert a cause it cannot know: the bundle step is
     // esbuild + this scanner + ascii-escape + the atomic swap, and any of them can fail.
     expect(script).not.toMatch(/FAILED — the esbuild error is above/);
@@ -223,6 +224,22 @@ describe('check-bundled-cli-entry-guards', () => {
         metafile,
         JSON.stringify({ inputs: { [relative(apps, join(repoRoot, 'scripts/next-migration.mjs'))]: {} } }),
       );
+      expect(await findBundledTopLevelAwaits({ metafilePath: metafile, baseDir: apps })).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps imported test-router helpers safe in the actual host bundle input graph', async () => {
+    const repoRoot = repositoryRoot();
+    const root = mkdtempSync(join(tmpdir(), 'bundled-test-router-entry-'));
+    try {
+      const apps = join(repoRoot, 'apps', 'operator');
+      const metafile = join(root, 'bundle.meta.json');
+      writeFileSync(metafile, JSON.stringify({ inputs: Object.fromEntries([
+        'scripts/check-vitest-config-enrollment.mjs', 'scripts/workspace-test.mjs',
+      ].map((p) => [relative(apps, join(repoRoot, p)), {}])) }));
+      expect(findBundledCliEntryGuards({ metafilePath: metafile, baseDir: apps })).toEqual([]);
       expect(await findBundledTopLevelAwaits({ metafilePath: metafile, baseDir: apps })).toEqual([]);
     } finally {
       rmSync(root, { recursive: true, force: true });

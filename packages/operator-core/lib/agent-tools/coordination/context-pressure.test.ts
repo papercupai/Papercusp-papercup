@@ -133,6 +133,21 @@ describe('fetchContextPressure (IO seam)', () => {
     expect(out).toEqual(new Map());
     expect(await fetchContextPressureReadings([])).toEqual(new Map());
   });
+
+  it('returns the estimate timestamp and age alongside the derived bucket', async () => {
+    const now = 1_800_000_000_000;
+    const estimatedAt = new Date(now - 90_000).toISOString();
+    sqlMock.mockResolvedValueOnce([{
+      owner_id: 'owner',
+      context_tokens: 95_000,
+      compaction_limit: 100_000,
+      context_estimated_at: estimatedAt,
+    }]);
+
+    const readings = await fetchContextPressureReadings(['owner'], now);
+
+    expect(readings.get('owner')).toEqual({ bucket: 'critical', estimatedAt, ageSec: 90 });
+  });
 });
 
 describe('resolveContextPressureHeadroom (fleet-role aware)', () => {

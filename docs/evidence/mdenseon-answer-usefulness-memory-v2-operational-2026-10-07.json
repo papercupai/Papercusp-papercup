@@ -1,0 +1,485 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "mdenseon P-008 downstream answer usefulness (memory): fixed answerer, blinded frozen judge, mdenseon vs both incumbents",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItemId": "WI-10004542",
+  "specId": "AUTO-BAR-R-7-P-008",
+  "relatedSpecIds": [
+    "MDENSE-blinded-answer-score"
+  ],
+  "evidencePlane": "tree",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    ".papercusp/scratch/p008-answer-operational-v2.mts",
+    "memory"
+  ],
+  "assembler": {
+    "path": "$HOME/papercupai-workspace/papercusp/.papercusp/scratch/p008-answer-operational-v2.mts",
+    "sha256": "2d8230e2d0925d645ba8e365d8a9d4c1d8d41b7869553961b98cdbac029f1c7c",
+    "bytes": 12996
+  },
+  "startedAt": "2026-10-07T07:38:34.324Z",
+  "finishedAt": "2026-10-07T07:38:35.234Z",
+  "exitCode": 0,
+  "input": {
+    "snapshot": {
+      "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/snapshot-v4-prose-source-complete.json",
+      "sha256": "49dbfafc277855af9ff13a46fb95ef466b8cb117fb83b8b5a753854610d204ea",
+      "bytes": 4156938
+    },
+    "gold": {
+      "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v19-resume-v17-format-repair/labels.json",
+      "sha256": "833f6dc372a9380adf7bc113edfa0df146e846ba24f62ac196a1b6c11bc5c487",
+      "bytes": 129298
+    },
+    "retrievalReports": [
+      {
+        "arm": "mdenseon",
+        "file": "memory-mdenseon-v1.json",
+        "sha256": "e530e90196763549c8f9f0472240fa7e4e582dedaea2902f7963efda48361c85",
+        "profileId": "mdenseon-a5fdb000-768@v1",
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/memory-mdenseon-v1.json",
+        "bytes": 309454
+      },
+      {
+        "arm": "harrier",
+        "file": "memory-harrier-v1.json",
+        "sha256": "e89e519fb1f537f6feaf208998c19431f85255a668f31362729679aee40ba59e",
+        "profileId": "harrier-oss-v1-0.6b-1024@v1",
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/memory-harrier-v1.json",
+        "bytes": 310241
+      },
+      {
+        "arm": "gemma",
+        "file": "memory-gemma-v1.json",
+        "sha256": "582dc6a3d71a572b42728139529eae43c6b80d38900ef429ef67bcc2169d3c72",
+        "profileId": "gemma-embeddinggemma-300m-768@v1",
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/memory-gemma-v1.json",
+        "bytes": 348754
+      }
+    ]
+  },
+  "runs": [
+    {
+      "taskId": "0muwq9a5gx1abcaegqc",
+      "output": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-answer-usefulness-WI10004542-20261006/memory-answer-usefulness-v1.json",
+        "sha256": "f5702dcc7060375e27fc6e858b614dfba7fb94639e6332efcb4a9499a1c74488",
+        "bytes": 942689
+      },
+      "log": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-answer-usefulness-WI10004542-20261006/run.log",
+        "sha256": "d12a9b9e31a37e3852eba70e746f50bd8a0ac0de396d7267772b039ab9c8c480",
+        "bytes": 3610043
+      },
+      "receipts": {
+        "answers": 475,
+        "judgments": 950
+      }
+    }
+  ],
+  "results": {
+    "baseline": "mdenseon",
+    "arms": [
+      "mdenseon",
+      "harrier",
+      "gemma"
+    ],
+    "derivedSummary": {
+      "mdenseon": {
+        "queries": 160,
+        "answerable": 120,
+        "unanswerable": 40,
+        "usefulRate": 0.9354838709677419,
+        "groundedAccuracy": 0.9130434782608695,
+        "correctRejection": 1,
+        "unsupportedAnswerRate": 0,
+        "unsupportedOnUnanswerable": 0,
+        "citationGoldPrecision": 0.9480225988700566,
+        "invalidCitationRate": 0
+      },
+      "harrier": {
+        "queries": 160,
+        "answerable": 120,
+        "unanswerable": 40,
+        "usefulRate": 0.9050632911392406,
+        "groundedAccuracy": 0.8728813559322034,
+        "correctRejection": 1,
+        "unsupportedAnswerRate": 0,
+        "unsupportedOnUnanswerable": 0,
+        "citationGoldPrecision": 0.9407894736842105,
+        "invalidCitationRate": 0
+      },
+      "gemma": {
+        "queries": 160,
+        "answerable": 120,
+        "unanswerable": 40,
+        "usefulRate": 0.9363057324840764,
+        "groundedAccuracy": 0.9145299145299145,
+        "correctRejection": 1,
+        "unsupportedAnswerRate": 0,
+        "unsupportedOnUnanswerable": 0,
+        "citationGoldPrecision": 0.938034188034188,
+        "invalidCitationRate": 0
+      }
+    },
+    "paired": {
+      "harrier": {
+        "vs": "mdenseon",
+        "useful": {
+          "n": 153,
+          "mean": -0.032679738562091505,
+          "lo": -0.0784313725490196,
+          "hi": 0,
+          "wins": 2,
+          "losses": 7
+        },
+        "groundedAccuracy": {
+          "n": 113,
+          "mean": -0.04424778761061947,
+          "lo": -0.09734513274336283,
+          "hi": 0.008849557522123894,
+          "wins": 2,
+          "losses": 7
+        },
+        "unsupportedAnswer": {
+          "n": 159,
+          "mean": 0,
+          "lo": 0,
+          "hi": 0,
+          "wins": 0,
+          "losses": 0
+        },
+        "citationGoldPrecision": {
+          "n": 114,
+          "mean": -0.005409356725146199,
+          "lo": -0.039473684210526314,
+          "hi": 0.037719298245614034,
+          "wins": 6,
+          "losses": 7
+        },
+        "byClass": {
+          "exact-identifier": {
+            "n": 40,
+            "mean": 0.025,
+            "lo": -0.05,
+            "hi": 0.1,
+            "wins": 2,
+            "losses": 1
+          },
+          "hard-negative": {
+            "n": 40,
+            "mean": 0,
+            "lo": 0,
+            "hi": 0,
+            "wins": 0,
+            "losses": 0
+          },
+          "lexical-gap": {
+            "n": 36,
+            "mean": -0.1111111111111111,
+            "lo": -0.2222222222222222,
+            "hi": -0.027777777777777776,
+            "wins": 0,
+            "losses": 4
+          },
+          "session-start-intent": {
+            "n": 37,
+            "mean": -0.05405405405405406,
+            "lo": -0.13513513513513514,
+            "hi": 0,
+            "wins": 0,
+            "losses": 2
+          }
+        }
+      },
+      "gemma": {
+        "vs": "mdenseon",
+        "useful": {
+          "n": 154,
+          "mean": 0,
+          "lo": -0.045454545454545456,
+          "hi": 0.03896103896103896,
+          "wins": 6,
+          "losses": 6
+        },
+        "groundedAccuracy": {
+          "n": 114,
+          "mean": 0,
+          "lo": -0.07017543859649122,
+          "hi": 0.05263157894736842,
+          "wins": 6,
+          "losses": 6
+        },
+        "unsupportedAnswer": {
+          "n": 159,
+          "mean": 0,
+          "lo": 0,
+          "hi": 0,
+          "wins": 0,
+          "losses": 0
+        },
+        "citationGoldPrecision": {
+          "n": 116,
+          "mean": -0.018247126436781606,
+          "lo": -0.04741379310344827,
+          "hi": 0.010201149425287359,
+          "wins": 4,
+          "losses": 6
+        },
+        "byClass": {
+          "exact-identifier": {
+            "n": 39,
+            "mean": 0.05128205128205128,
+            "lo": 0,
+            "hi": 0.1282051282051282,
+            "wins": 2,
+            "losses": 0
+          },
+          "hard-negative": {
+            "n": 40,
+            "mean": 0,
+            "lo": 0,
+            "hi": 0,
+            "wins": 0,
+            "losses": 0
+          },
+          "lexical-gap": {
+            "n": 37,
+            "mean": 0.02702702702702703,
+            "lo": -0.08108108108108109,
+            "hi": 0.13513513513513514,
+            "wins": 3,
+            "losses": 2
+          },
+          "session-start-intent": {
+            "n": 38,
+            "mean": -0.07894736842105263,
+            "lo": -0.21052631578947367,
+            "hi": 0.02631578947368421,
+            "wins": 1,
+            "losses": 4
+          }
+        }
+      }
+    },
+    "agreement": {
+      "correctness": {
+        "n": 467,
+        "binaryAgreement": 0.9935760171306209,
+        "kappa": 0.9234886134017797,
+        "meanAbsScoreDiff": 0.029978586723768737
+      },
+      "grounding": {
+        "n": 467,
+        "binaryAgreement": 0.9914346895074947,
+        "kappa": 0.7956683439072424,
+        "meanAbsScoreDiff": 0.021413276231263382
+      }
+    },
+    "cost": {
+      "answerCalls": 475,
+      "judgeCalls": 950,
+      "answerCostUsd": 0.8812207999999996,
+      "judgeCostUsd": 3.278007000000003,
+      "answerReplays": 0,
+      "judgeReplays": 0,
+      "uniqueTotalUsd": 4.159227800000003
+    },
+    "completedReceiptCost": {
+      "answerUsd": 0.8812207999999998,
+      "judgeUsd": 3.2780069999999992,
+      "scope": "All distinct completed request receipts, including resumed calls; excludes failed calls without a successful receipt. Not total gateway billing."
+    },
+    "byClass": {
+      "mdenseon": {
+        "exact-identifier": {
+          "queries": 40,
+          "usefulRate": 0.925
+        },
+        "hard-negative": {
+          "queries": 40,
+          "usefulRate": 1
+        },
+        "lexical-gap": {
+          "queries": 40,
+          "usefulRate": 0.8648648648648649
+        },
+        "session-start-intent": {
+          "queries": 40,
+          "usefulRate": 0.9473684210526315
+        }
+      },
+      "harrier": {
+        "exact-identifier": {
+          "queries": 40,
+          "usefulRate": 0.95
+        },
+        "hard-negative": {
+          "queries": 40,
+          "usefulRate": 1
+        },
+        "lexical-gap": {
+          "queries": 40,
+          "usefulRate": 0.7692307692307693
+        },
+        "session-start-intent": {
+          "queries": 40,
+          "usefulRate": 0.8974358974358975
+        }
+      },
+      "gemma": {
+        "exact-identifier": {
+          "queries": 40,
+          "usefulRate": 1
+        },
+        "hard-negative": {
+          "queries": 40,
+          "usefulRate": 1
+        },
+        "lexical-gap": {
+          "queries": 40,
+          "usefulRate": 0.8974358974358975
+        },
+        "session-start-intent": {
+          "queries": 40,
+          "usefulRate": 0.8461538461538461
+        }
+      }
+    }
+  },
+  "limitations": [
+    "answers come from one fixed model (claude-haiku-4-5) at temperature 0; agent models in production differ",
+    "the judge (claude-sonnet-4-6) is a different model family member from the answerer but is still an LLM; agreement is same-model temperature agreement",
+    "context is the production pull route top-k truncated to the frozen character budget",
+    "unanswerable queries are the independently labelled hard negatives (empty gold)"
+  ],
+  "assertions": [
+    {
+      "id": "run-exited-zero",
+      "passed": true,
+      "evidence": "run.log EXIT=0 2026-10-06T14:16:34Z"
+    },
+    {
+      "id": "snapshot-pinned",
+      "passed": true,
+      "evidence": "49dbfafc277855af == 49dbfafc277855af"
+    },
+    {
+      "id": "gold-pinned",
+      "passed": true,
+      "evidence": "833f6dc372a9380a == 833f6dc372a9380a (blind-labels-v19-resume-v17-format-repair/labels.json)"
+    },
+    {
+      "id": "mdenseon-retrieval-report-pinned",
+      "passed": true,
+      "evidence": "memory-mdenseon-v1.json e530e90196763549 == e530e90196763549 profile=mdenseon-a5fdb000-768@v1"
+    },
+    {
+      "id": "harrier-retrieval-report-pinned",
+      "passed": true,
+      "evidence": "memory-harrier-v1.json e89e519fb1f537f6 == e89e519fb1f537f6 profile=harrier-oss-v1-0.6b-1024@v1"
+    },
+    {
+      "id": "gemma-retrieval-report-pinned",
+      "passed": true,
+      "evidence": "memory-gemma-v1.json 582dc6a3d71a572b == 582dc6a3d71a572b profile=gemma-embeddinggemma-300m-768@v1"
+    },
+    {
+      "id": "answer-contract-fixed",
+      "passed": true,
+      "evidence": "one contract for every arm: model=claude-haiku-4-5 temperature=0 hash 107454ae8b089239"
+    },
+    {
+      "id": "judge-separate-and-frozen",
+      "passed": true,
+      "evidence": "judge claude-sonnet-4-6 rubric answer-usefulness.5e739180cbd6 passes [0,0.4] vs answerer claude-haiku-4-5"
+    },
+    {
+      "id": "answer-receipts-complete",
+      "passed": true,
+      "evidence": "475/475 unique answers have receipts; new=475, resumed=0"
+    },
+    {
+      "id": "judgment-receipts-complete",
+      "passed": true,
+      "evidence": "950/950 unique judgments have receipts; new=950, resumed=0"
+    },
+    {
+      "id": "receipt-fingerprints-match",
+      "passed": true,
+      "evidence": "0 receipts whose recorded fingerprint differs from their file name"
+    },
+    {
+      "id": "every-judgment-blind",
+      "passed": true,
+      "evidence": "950/950 judgment receipts carry a verified blind attestation"
+    },
+    {
+      "id": "mdenseon-summary-rederived",
+      "passed": true,
+      "evidence": "useful 0.9355 grounded 0.9130 rejection 1 unsupported 0 citeGoldPrec 0.9480 (n=160, 40 absent-answer)"
+    },
+    {
+      "id": "mdenseon-absent-answer-queries-measured",
+      "passed": true,
+      "evidence": "40 unanswerable queries, correctRejection 1"
+    },
+    {
+      "id": "harrier-summary-rederived",
+      "passed": true,
+      "evidence": "useful 0.9051 grounded 0.8729 rejection 1 unsupported 0 citeGoldPrec 0.9408 (n=160, 40 absent-answer)"
+    },
+    {
+      "id": "harrier-absent-answer-queries-measured",
+      "passed": true,
+      "evidence": "40 unanswerable queries, correctRejection 1"
+    },
+    {
+      "id": "gemma-summary-rederived",
+      "passed": true,
+      "evidence": "useful 0.9363 grounded 0.9145 rejection 1 unsupported 0 citeGoldPrec 0.9380 (n=160, 40 absent-answer)"
+    },
+    {
+      "id": "gemma-absent-answer-queries-measured",
+      "passed": true,
+      "evidence": "40 unanswerable queries, correctRejection 1"
+    },
+    {
+      "id": "harrier-vs-mdenseon-paired-useful-rederived",
+      "passed": true,
+      "evidence": "n=153 mean -0.0327 [-0.0784, 0.0000] wins 2 losses 7; re-derived n=153 mean -0.0327"
+    },
+    {
+      "id": "gemma-vs-mdenseon-paired-useful-rederived",
+      "passed": true,
+      "evidence": "n=154 mean 0.0000 [-0.0455, 0.0390] wins 6 losses 6; re-derived n=154 mean 0.0000"
+    },
+    {
+      "id": "judge-agreement-correctness",
+      "passed": true,
+      "evidence": "n=467 binaryAgreement 0.9936 kappa 0.9235"
+    },
+    {
+      "id": "judge-agreement-grounding",
+      "passed": true,
+      "evidence": "n=467 binaryAgreement 0.9914 kappa 0.7957"
+    },
+    {
+      "id": "cost-reported",
+      "passed": true,
+      "evidence": "LATEST successful invocation unique $4.1592 (answers $0.8812, judge $3.2780); excludes prior invocations and failed-call spend; replays 0/0"
+    }
+  ],
+  "summary": "All 23 assertions pass on 160 memory test queries (120 answerable, 40 absent-answer). Useful rate: mdenseon 0.935, harrier 0.905, gemma 0.936. harrier vs mdenseon -0.033 [-0.078, 0.000]; gemma vs mdenseon +0.000 [-0.045, 0.039]. Absent-answer rejection / unsupported-answer rate: mdenseon 1 / 0, harrier 1 / 0, gemma 1 / 0.",
+  "defectsFound": [
+    {
+      "workItemId": "EI-25296417482817603",
+      "note": "Resumed study after quota and transport failures. Cause diagnostics identified local gateway restart; bounded loopback cause classification corrected. Latest task completed; earlier upstream timeout origin remains unproven."
+    }
+  ]
+}

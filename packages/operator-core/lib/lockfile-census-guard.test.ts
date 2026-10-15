@@ -179,6 +179,47 @@ describe('census and workspace derivation fail CLOSED', () => {
     });
     expect([...dirs].sort()).toEqual(['apps/gamma', 'packages/alpha']);
   });
+
+  it('refuses a registered standalone dev graph even when its lock never existed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'census-standalone-'));
+    const standalone = 'tools/perf-test/wdio';
+    try {
+      writeFileSync(join(dir, 'package-lock.json'), JSON.stringify({
+        packages: { '': {}, 'packages/workspace': {} },
+      }));
+      mkdirSync(join(dir, standalone, 'node_modules'), { recursive: true });
+      writeFileSync(join(dir, standalone, 'package.json'), JSON.stringify({
+        devDependencies: { runner: '1.0.0' },
+      }));
+      expect(() => censusOrThrow(dir))
+        .toThrow(/tools\/perf-test\/wdio.*no package-lock.json/);
+
+      writeFileSync(join(dir, standalone, 'package-lock.json'), JSON.stringify({
+        packages: { '': {}, 'node_modules/runner': { version: '1.0.0', dev: true } },
+      }));
+      expect(censusOrThrow(dir))
+        .toEqual(['package-lock.json', 'tools/perf-test/wdio/package-lock.json']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the root lock for registered runners that are actual workspaces', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'census-workspace-runner-'));
+    const standalone = 'packages/runner';
+    try {
+      writeFileSync(join(dir, 'package-lock.json'), JSON.stringify({
+        packages: { '': {}, [standalone]: { devDependencies: { runner: '1.0.0' } } },
+      }));
+      mkdirSync(join(dir, standalone), { recursive: true });
+      writeFileSync(join(dir, standalone, 'package.json'), JSON.stringify({
+        devDependencies: { runner: '1.0.0' },
+      }));
+      expect(censusOrThrow(dir, { standaloneDirs: [standalone] })).toEqual(['package-lock.json']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('walkLockfiles', () => {

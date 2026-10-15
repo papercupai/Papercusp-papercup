@@ -21,8 +21,14 @@
  * DECISION logic sitting on top of it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { GOAL_OWNER_REPORT_HEADING_LIST } from './goal-owner-report';
 import type { Sql } from 'postgres';
 import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
+import {
+  checkGoalInferenceAdmission,
+  evaluateGoalInferenceBudget,
+} from './goal-launch-settings';
+import type { GoalSpendRollup } from './goals/spend-rollup';
 
 // P-006: the budget gate reads its flag and opens its escalation through
 // DYNAMIC imports (the module keeps heavyweight deps out of the launch path's
@@ -54,8 +60,11 @@ vi.mock('./agent-tools/coordination/escalations', () => ({
     return {};
   },
 }));
-vi.mock('./goals/holder', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./goals/holder')>()),
+// EI-25642470052572430: this suite exercises the launch decisions above the
+// holder reader, not its presence-oracle graph (covered by holder.test.ts).
+// importOriginal pulls that graph back through agent-mcp before publishing the
+// spy, leaving the dynamic reader in a circular module initialization.
+vi.mock('./goals/holder', () => ({
   resolveGoalHolders: goalHoldersMock,
 }));
 // The launch-time spend measurement (D-011 clause 3 / stewardship D-014). The gate
@@ -64,8 +73,17 @@ vi.mock('./goals/holder', async (importOriginal) => ({
 // Default: every leg empty (the zero-usage bootstrap).
 const liveSpend = vi.hoisted(() => ({
   legs: { spentCents: null as number | null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 0 },
+  freshnessStatus: 'fresh' as 'fresh' | 'stale' | 'unavailable',
   throws: false,
   calls: 0,
+}));
+// EI-25306440159635835: only the READ is replaced (it builds the workspace identity
+// graph); renderGoalRubricStewardshipBrief stays real. No other test here gives a
+// goal rubric duties, so nothing else reaches this spy.
+const rubricStewardshipRead = vi.hoisted(() => vi.fn(async () => null));
+vi.mock('./goal-rubric-stewardship', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./goal-rubric-stewardship')>()),
+  readGoalRubricStewardship: rubricStewardshipRead,
 }));
 vi.mock('./goals/spend-rollup', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./goals/spend-rollup')>()),
@@ -73,14 +91,24 @@ vi.mock('./goals/spend-rollup', async (importOriginal) => ({
     liveSpend.calls += 1;
     if (liveSpend.throws) throw new Error('ledger read failed');
     const l = liveSpend.legs;
+    const freshnessReason = liveSpend.freshnessStatus === 'fresh'
+      ? null
+      : `interactive-usage-${liveSpend.freshnessStatus}` as 'interactive-usage-stale' | 'interactive-usage-unavailable';
     return {
       spentCents: l.spentCents,
-      unmeasuredReason:
-        l.spentCents != null ? null : l.lineage === 0 ? 'no-lineage-samples' : 'unpriced-lineage-samples',
+      unmeasuredReason: freshnessReason ??
+        (l.spentCents != null ? null : l.lineage === 0 ? 'no-lineage-samples' : 'unpriced-lineage-samples'),
       samples: l.pot + l.session,
       pot: { samples: l.pot },
       session: { samples: l.session },
       lineage: { samples: l.lineage, unpricedSamples: l.lineageUnpriced },
+      interactiveUsageFreshness: {
+        status: liveSpend.freshnessStatus,
+        lastIngestedAtMs: liveSpend.freshnessStatus === 'fresh' ? Date.now() : null,
+        ageMs: liveSpend.freshnessStatus === 'fresh' ? 0 : null,
+        windowMs: 30 * 60_000,
+        reason: `test freshness ${liveSpend.freshnessStatus}`,
+      },
     };
   },
 }));
@@ -97,6 +125,7 @@ import {
   GOAL_LAUNCH_ROLES,
   isGoalLaunchRole,
   readGoalPortfolioBrief,
+  readGoalPortfolioBriefStaged,
   compileGoalPlanPlacement,
   parseGoalLaunchSettings,
   readGoalLaunchSettings,
@@ -142,6 +171,8 @@ interface MockOpts {
       spent_cents_unmeasured_reason?: string | null;
       spent_cents_at?: string | null;
       spent_cents_source?: string | null;
+      spent_cents_freshness_status?: 'fresh' | 'stale' | 'unavailable' | null;
+      spent_cents_freshness_last_ingested_at_ms?: number | string | null;
     }
   >;
   /** Goal-owned fields that share the launch-policy row read. */
@@ -155,6 +186,8 @@ interface MockOpts {
       standing?: boolean;
     }
   >;
+  /** Current lifecycle state for goal inference-admission fixtures. */
+  goalStatus?: Record<string, string>;
   /** headcount fixture by goal id. */
   headcount?: Record<string, { total: number; fleet: number }>;
   /** P-012 canonical portfolio projection row by goal id. */
@@ -245,6 +278,7 @@ function mockSql(opts: MockOpts = {}): Sql {
       const brief = opts.brief?.[goalId];
       return Promise.resolve([
         {
+          status: opts.goalStatus?.[goalId] ?? 'active',
           title: brief?.title ?? `Goal ${goalId}`,
           body: brief?.body ?? null,
           kill_criterion: brief?.kill_criterion ?? null,
@@ -256,6 +290,10 @@ function mockSql(opts: MockOpts = {}): Sql {
           spent_cents_unmeasured_reason: b?.spent_cents_unmeasured_reason ?? null,
           spent_cents_at: b?.spent_cents_at ?? null,
           spent_cents_source: b?.spent_cents_source ?? null,
+          interactive_usage_freshness_status:
+            b?.spent_cents_freshness_status ?? (b?.spent_cents != null ? 'fresh' : null),
+          interactive_usage_last_ingested_at_ms:
+            b?.spent_cents_freshness_last_ingested_at_ms ?? (b?.spent_cents != null ? Date.now() : null),
         },
       ]);
     }
@@ -954,6 +992,8 @@ describe('readGoalLaunchSettings', () => {
         unmeasuredPricedSpend: false,
         spentCentsAt: null,
         spentCentsSource: null,
+        interactiveUsageFreshnessStatus: null,
+        interactiveUsageLastIngestedAtMs: null,
       },
       brief: {
         title: 'Goal g1',
@@ -1428,6 +1468,8 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       spentCentsAt: '2026-08-28T02:00:00Z',
       // The ordinary case: a rollup-written figure, so it carries the marker.
       spentCentsSource: 'goal-lineage-rollup',
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
     },
     ceilings: { maxAgents: 12, maxPerFleet: 5 },
     headcount: { total: 3, fleet: 2 },
@@ -1528,6 +1570,169 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     }
   });
 
+  it("rubricStewardship:'skip' omits the stewardship read even for a goal with rubric duties (EI-25306440159635835)", async () => {
+    // The stewardship read's identity graph was the slowest statement (455-500ms on
+    // 60d3a8) inside the obligation reader's 900ms budget, and that reader never reads it.
+    const dutyLaunch = { ...launch, goalBrief: { ...launch.goalBrief, body: 'Maintain rubric coverage on every worklist plan.' } };
+    const read = (rubricStewardship: 'read' | 'skip') => readGoalPortfolioBrief({
+      workspaceId: WS,
+      goalId: 'goal-1',
+      sql: mockSql({ portfolio: { 'goal-1': portfolioRow } }),
+      now: NOW,
+      launch: dutyLaunch,
+      claimability: 'skip',
+      rubricStewardship,
+    });
+
+    // CONTROL: a goal with rubric duties reaches the stewardship read by default,
+    // so the skip assertion cannot pass merely because the duty phrase never matched.
+    rubricStewardshipRead.mockClear();
+    const withDuties = await read('read');
+    expect(rubricStewardshipRead).toHaveBeenCalledTimes(1);
+    expect(withDuties).toHaveProperty('rubricStewardship');
+
+    rubricStewardshipRead.mockClear();
+    const skipped = await read('skip');
+    expect(rubricStewardshipRead).not.toHaveBeenCalled();
+    expect(skipped).not.toHaveProperty('rubricStewardship');
+    expect(skipped?.worklist).toEqual(withDuties?.worklist);
+  });
+
+  it('staged snapshot preserves planning inputs while rubric stewardship is still pending (EI-25679819974924161)', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const stewardshipStarted = new Promise<void>((resolve) => { started = resolve; });
+    let stewardshipEntries = 0;
+    const blockedStewardship = async () => {
+      if (++stewardshipEntries === 2) started();
+      await gate;
+      return null;
+    };
+    rubricStewardshipRead.mockImplementationOnce(blockedStewardship).mockImplementationOnce(blockedStewardship);
+    const args = {
+      workspaceId: WS, goalId: 'goal-1', now: NOW,
+      sql: mockSql({ portfolio: { 'goal-1': { ...portfolioRow, blender_pending: 7 } } }),
+      launch: { ...launch, goalBrief: { ...launch.goalBrief, body: 'Maintain rubric coverage on every worklist plan.' } },
+    };
+    // The previous shared-read shape waits for the same pending provider.
+    const unsplit = readGoalPortfolioBrief({ ...args, claimability: 'skip' });
+    const staged = readGoalPortfolioBriefStaged(args);
+    let snapshotSettled = false;
+    let countedSettled = false;
+    let unsplitSettled = false;
+    void staged.snapshot.then(() => { snapshotSettled = true; });
+    void staged.counted.then(() => { countedSettled = true; });
+    void unsplit.then(() => { unsplitSettled = true; });
+    try {
+      await stewardshipStarted;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(snapshotSettled).toBe(true);
+      expect(countedSettled).toBe(false);
+      expect(unsplitSettled).toBe(false);
+      const snapshot = await staged.snapshot;
+      expect(snapshot?.goal.id).toBe('goal-1');
+      expect(snapshot?.worklist.length).toBeGreaterThan(0);
+      expect(snapshot?.pending.blenderIdeas).toBe(7);
+      expect(snapshot).not.toHaveProperty('rubricStewardship');
+      release();
+      const counted = await staged.counted;
+      expect(counted).toHaveProperty('rubricStewardship', null);
+      expect(counted?.goal).toEqual(snapshot?.goal);
+      expect(counted?.worklist).toEqual(snapshot?.worklist);
+      expect(counted?.pending).toEqual(snapshot?.pending);
+      expect(counted?.assembledAt).toBe(snapshot?.assembledAt);
+      expect((await unsplit)?.worklist).toEqual(snapshot?.worklist);
+    } finally {
+      release();
+      await Promise.all([staged.counted, unsplit]);
+    }
+  });
+
+  it('stewardship failure rejects the display stage without losing the obligation snapshot', async () => {
+    rubricStewardshipRead.mockRejectedValueOnce(new Error('stewardship unavailable'));
+    const staged = readGoalPortfolioBriefStaged({
+      workspaceId: WS, goalId: 'goal-1', now: NOW,
+      sql: mockSql({ portfolio: { 'goal-1': { ...portfolioRow, blender_pending: 7 } } }),
+      launch: { ...launch, goalBrief: { ...launch.goalBrief, body: 'Maintain rubric coverage on every worklist plan.' } },
+    });
+    await expect(staged.counted).rejects.toThrow('stewardship unavailable');
+    const snapshot = await staged.snapshot;
+    expect(snapshot?.worklist.length).toBeGreaterThan(0);
+    expect(snapshot?.pending.blenderIdeas).toBe(7);
+    expect(snapshot?.degradedReasons).toEqual([]);
+    expect(snapshot).not.toHaveProperty('rubricStewardship');
+  });
+
+  it('staged read delivers the snapshot before the claim-floor count finishes (EI-25191349922959563)', async () => {
+    // orient shares one portfolio snapshot between its obligation fold (900ms
+    // budget, never reads queue.claimable) and its display fold. The obligation
+    // fold must not wait on the per-id count, which alone timed it out every wake.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const explainIssueClaimFloors = vi.fn(async (_harness: string, ids: string[]) => {
+      await gate;
+      return ids.map(() => ({ admissible: true }));
+    });
+    vi.doMock('./work-items', () => ({ explainIssueClaimFloors }));
+    try {
+      const row = {
+        ...portfolioRow,
+        queue: {
+          ...portfolioRow.queue,
+          issueCandidates: [
+            { id: 'EI-1', harness: 'papercusp' },
+            { id: 'EI-2', harness: 'papercusp' },
+            { id: 'EI-3', harness: 'other' },
+          ],
+        },
+      };
+      const staged = readGoalPortfolioBriefStaged({
+        workspaceId: WS,
+        goalId: 'goal-1',
+        sql: mockSql({ portfolio: { 'goal-1': row } }),
+        now: NOW,
+        launch,
+      });
+      let countedSettled = false;
+      void staged.counted.then(() => { countedSettled = true; });
+
+      const snapshot = await staged.snapshot;
+      expect(snapshot?.queue).toMatchObject({ claimable: null, claimabilityScope: 'not-requested' });
+      expect(snapshot?.priorities.join(' ') ?? '').not.toContain('goal-scoped claimable');
+      // The count is in flight but blocked: the snapshot did not wait for it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(explainIssueClaimFloors).toHaveBeenCalled();
+      expect(countedSettled).toBe(false);
+
+      release();
+      const counted = await staged.counted;
+      // Same candidate rows, counted per harness.
+      expect(explainIssueClaimFloors).toHaveBeenCalledWith('papercusp', ['EI-1', 'EI-2']);
+      expect(explainIssueClaimFloors).toHaveBeenCalledWith('other', ['EI-3']);
+      expect(counted?.queue).toMatchObject({ claimable: 3, claimabilityScope: 'issue-family' });
+      expect(counted?.priorities.join(' ') ?? '').toContain('Place 3 goal-scoped claimable issue(s)');
+      expect(counted?.assembledAt).toBe(snapshot?.assembledAt);
+    } finally {
+      vi.doUnmock('./work-items');
+    }
+  });
+
+  it('a failed claim-floor count leaves the counted stage unknown and degraded, not zero', async () => {
+    const explainIssueClaimFloors = vi.fn(async () => { throw new Error('floor read down'); });
+    vi.doMock('./work-items', () => ({ explainIssueClaimFloors }));
+    try {
+      const row = { ...portfolioRow, queue: { ...portfolioRow.queue, issueCandidates: [{ id: 'EI-1', harness: 'papercusp' }] } };
+      const counted = await readGoalPortfolioBrief({
+        workspaceId: WS, goalId: 'goal-1', sql: mockSql({ portfolio: { 'goal-1': row } }), now: NOW, launch,
+      });
+      expect(counted?.queue).toMatchObject({ claimable: null, claimabilityScope: 'unknown' });
+      expect(counted?.degradedReasons.join(' ') ?? '').toContain('goal-scoped claimability unavailable: floor read down');
+    } finally {
+      vi.doUnmock('./work-items');
+    }
+  });
+
   it('assembles ordered plan state while keeping drain and TEST activity out of plan placement', async () => {
     const seen: string[] = [];
     const brief = await readGoalPortfolioBrief({
@@ -1575,7 +1780,9 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       },
       reporting: { draft: { fields: {
         moved: expect.stringContaining('no previous report watermark'),
-        cost: expect.stringContaining('coverage=measured'),
+        cost: expect.stringContaining(
+          'coverage=measured; source=goal-lineage-rollup; measured at=2026-08-28T02:00:00Z; read at=2026-08-28T02:30:00.000Z',
+        ),
         ownerWalled: expect.stringContaining('WI-43: provide billing access'),
         killed: 'none evidenced in the current portfolio',
       } } },
@@ -1588,12 +1795,23 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       'Triage 1 blocked/cursed queue item(s) and remove stranded blockers.',
       'Grade or route 2 pending Blender idea(s).',
     ]);
+    expect(brief?.reporting?.draft.fields.cost).not.toContain('unmeasured');
     expect(goalHoldersMock).toHaveBeenCalledWith(expect.anything(), {
       workspaceId: WS,
       goalId: 'goal-1',
     });
 
     const rendered = renderGoalPortfolioBrief(brief!);
+    const rubricContext = renderGoalPortfolioBrief({ ...brief!, rubricStewardship: {
+      measuredAt: NOW.toISOString(), windowStart: NOW.toISOString(), complete: false,
+      rubricRef: 'work-on-everything-stewardship-health', rubricRevision: 47,
+      criteria: { 'rubric-coverage-stewardship': null, 'rubric-quality-stewardship': null, 'grading-correction-closure': null },
+      cycles: [], error: null,
+    } });
+    expect(rubricContext).toContain('RUBRIC STEWARDSHIP');
+    expect(rubricContext).toContain('work-on-everything-stewardship-health@47');
+    expect(rubricContext).toContain('Grading cycles: none measured');
+    expect(rubricContext).toContain('limited recent page, not a census');
     expect(rendered).toContain('intendedParallelPlanFleets=undeclared');
     expect(rendered).toContain('Independent plan-lane placement candidates: plan:papercusp/alpha');
     expect(rendered).toContain('OWNER REPORT DRAFT');
@@ -1636,18 +1854,31 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
     expect(absent).toContain('Budget: spent=unknownc /');
     const kickoffEvidenceMarker = rendered.indexOf('GOAL KICKOFF EVIDENCE — REQUIRED BEFORE ANY PORTFOLIO MUTATION');
-    const ownerReportInstruction = rendered.indexOf(
-      `In the current GOAL window, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} on the goal's terms; ` +
-        'then send an owner-facing report AFTER those reads (coord:send to ["human"] or coord:escalate) that names the exact goal id "goal-1".',
+    const kickoffReadInstruction = rendered.indexOf(
+      `Before any portfolio mutation, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} against goal "goal-1" and use those current reads to choose this pass’s actions.`,
     );
-    const kickoffCompletionInstruction = rendered.indexOf(
-      'Only after those reads and the owner-facing report may you create, launch, or place portfolio work.',
+    const actionPrioritiesMarker = rendered.indexOf('CURRENT ACTION PRIORITIES');
+    const postActionReportMarker = rendered.indexOf('POST-ACTION OWNER REPORT — REQUIRED AFTER THE PASS ACTIONS');
+    const ownerReportRefreshInstruction = rendered.indexOf(
+      'After all selected actions have returned, fetch goals:get { id: "goal-1", detail: "full" } again. Send the report from that post-action response’s reporting.draft and use its assembledAt as the portfolio read time.',
     );
     const mandatoryPlacementMarker = rendered.indexOf('MANDATORY NEXT PLAN PLACEMENT');
     expect(kickoffEvidenceMarker).toBeGreaterThanOrEqual(0);
-    expect(ownerReportInstruction).toBeGreaterThan(kickoffEvidenceMarker);
-    expect(kickoffCompletionInstruction).toBeGreaterThan(ownerReportInstruction);
-    expect(mandatoryPlacementMarker).toBeGreaterThan(kickoffCompletionInstruction);
+    expect(kickoffReadInstruction).toBeGreaterThan(kickoffEvidenceMarker);
+    expect(mandatoryPlacementMarker).toBeGreaterThan(kickoffReadInstruction);
+    expect(actionPrioritiesMarker).toBeGreaterThan(mandatoryPlacementMarker);
+    expect(postActionReportMarker).toBeGreaterThan(actionPrioritiesMarker);
+    expect(ownerReportRefreshInstruction).toBeGreaterThan(postActionReportMarker);
+    expect(rendered).toContain('reports:publish goal_owner_report snapshot');
+    expect(rendered).toContain('report: { plans: [], goalReport:');
+    expect(rendered).toContain('Do not truncate owner asks to fit');
+    expect(rendered).toContain(
+      `Only after that final refresh, send ${GOAL_OWNER_REPORT_HEADING_LIST} to ["human"] with coord:send or use coord:escalate, naming exact goal id "goal-1".`,
+    );
+    expect(rendered).toContain('OWNER REPORT DRAFT — provisional snapshot');
+    expect(rendered).toContain('only actions with a successful result already returned');
+    expect(rendered).toContain('every goal-scoped work item that reached a terminal state after the previous report watermark');
+    expect(rendered).toContain('When refreshed evidence says coverage=measured, do not describe spend as unmeasured');
     expect(rendered).toContain('MANDATORY NEXT PLAN PLACEMENT');
     expect(rendered).toContain(
       'Use fleet:launch-on-plan with this plan/leader identity: {"name":"papercusp-alpha-plan-fleet","plan":"alpha","harness":"papercusp","leader":"spawn","headless":true}.',
@@ -1663,13 +1894,23 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(portfolioSql).toContain("pic.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])");
     expect(portfolioSql).toContain("cp.workspace_id = ANY(ARRAY[g.workspace_id, 'default', '*']::text[])");
     expect(portfolioSql).toContain('count(DISTINCT member_presence.owner_id)');
-    expect(portfolioSql).toContain("END)->>'plan' = p.plan_slug");
-    expect(portfolioSql).toContain("END)->>'harness' = p.harness_slug");
+    const planFleetPrefetchSql = portfolioSql.slice(
+      portfolioSql.indexOf('plan_fleets AS MATERIALIZED'),
+      portfolioSql.indexOf('SELECT g.status'),
+    );
+    expect(planFleetPrefetchSql).toContain('af.workspace_id = g.workspace_id');
+    expect(planFleetPrefetchSql).toContain('CASE jsonb_typeof(af.headcount_config)');
+    expect(planFleetPrefetchSql).toContain("WHEN 'string' THEN (af.headcount_config #>> '{}')::jsonb");
+    expect(planFleetPrefetchSql).toContain('ELSE af.headcount_config');
+    expect(planFleetPrefetchSql).toContain("SELECT DISTINCT ON (fc.cfg->>'harness', fc.cfg->>'plan')");
+    expect(planFleetPrefetchSql).toContain("ORDER BY fc.cfg->>'harness', fc.cfg->>'plan', af.updated_at DESC");
+    expect(portfolioSql).toContain('af.plan_slug = p.plan_slug');
+    expect(portfolioSql).toContain('af.harness_slug = p.harness_slug');
     const placementFleetSql = portfolioSql.slice(
       portfolioSql.indexOf("'fleet', ("),
       portfolioSql.indexOf('FROM jsonb_array_elements_text', portfolioSql.indexOf("'fleet', (")),
     );
-    expect(placementFleetSql).toContain('FROM harness_shared.agent_fleets af');
+    expect(placementFleetSql).toContain('FROM plan_fleets af');
     expect(placementFleetSql).not.toMatch(/agent_modes|session_briefs|goal_role|drain_fleet/);
   });
 
@@ -1723,11 +1964,43 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         },
       },
     });
-    expect(compileGoalPlanPlacement({ ...base, source: { claims: [lane] } })).toMatchObject({
+    expect(compileGoalPlanPlacement({ ...base, source: { claims: [lane], goalHolderOwnerIds: ['su-plan'] } })).toMatchObject({
       state: 'admitting',
       reconciliation: {
         action: 'launch-spawned-leader',
         toolCall: { tool: 'fleet:launch-on-plan' },
+      },
+    });
+    expect(compileGoalPlanPlacement({
+      ...base,
+      source: {
+        claims: [{ ...lane, ownerId: 'su-member', fleetSlug: 'other-alpha-fleet', workItemId: 'WI-alpha-member' }],
+        goalHolderOwnerIds: ['su-goal'],
+      },
+    })).toMatchObject({
+      state: 'blocked',
+      activeLane: { ownerId: 'su-member', ownerFleet: 'other-alpha-fleet', workItemId: 'WI-alpha-member' },
+      reconciliation: {
+        consistent: false,
+        action: 'reconcile-plan-lane-holder',
+        reason: expect.stringContaining('other-alpha-fleet'),
+        toolCall: null,
+      },
+    });
+    expect(compileGoalPlanPlacement({
+      ...base,
+      source: {
+        claims: [{ ...lane, ownerId: 'su-solo', fleetSlug: null, workItemId: 'WI-alpha-solo' }],
+        goalHolderOwnerIds: ['su-goal'],
+      },
+    })).toMatchObject({
+      state: 'blocked',
+      activeLane: { ownerId: 'su-solo', ownerFleet: null, workItemId: 'WI-alpha-solo' },
+      reconciliation: {
+        consistent: false,
+        action: 'reconcile-plan-lane-holder',
+        reason: expect.stringContaining('su-solo'),
+        toolCall: null,
       },
     });
     expect(
@@ -1843,6 +2116,190 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
   });
 
+  describe('physically complete partial launch placement (EI-25157449632977265)', () => {
+    const base = {
+      plan: { harness: 'papercusp', slug: 'alpha', ambiguousMatches: 1 },
+      status: 'active',
+      itemStatuses: ['done', 'wip'],
+      actionableItemId: 'P-002',
+      now: NOW,
+    };
+    const memberSource = () => ({
+      goalHolderOwnerIds: ['su-goal'],
+      claims: [{
+        itemId: 'P-002',
+        ownerId: 'su-member',
+        fleetSlug: 'alpha-fleet',
+        holderLive: true,
+        expiresAt: '2026-08-28T02:40:00.000Z',
+        workItemId: 'WI-alpha-member',
+      }],
+      fleet: {
+        slug: 'alpha-fleet',
+        controlState: 'active',
+        leaderOwnerId: 'su-leader',
+        leaderLive: true,
+        liveMembers: 1,
+        target: 1,
+        claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter: { field: 'plan', op: '=', value: 'alpha' } } },
+        launchTransaction: {
+          transactionId: 'tx-physically-complete',
+          state: 'partial',
+          requestedMemberIds: ['su-member'],
+          openedMemberIds: ['su-member'],
+          verifiedMemberIds: ['su-member'],
+          failed: [],
+          // Historical readiness is NOT current worker accountability.
+          workerReadyMemberIds: [],
+          workerAttestations: [{ ownerId: 'su-member', gaps: ['scheduler-pull-missing', 'disposition-missing'] }],
+          recovery: { retryOwnerIds: [], nextAction: 'resume the first unresolved identity' },
+        },
+      },
+    });
+    const withTransaction = (patch: Record<string, unknown>) => {
+      const source = memberSource();
+      return {
+        ...source,
+        fleet: { ...source.fleet, launchTransaction: { ...source.fleet.launchTransaction, ...patch } },
+      };
+    };
+
+    it.each([{ unconfirmedMemberIds: undefined }, { unconfirmedMemberIds: [] }])(
+      'uses current accountability with legacy/empty unconfirmed=$unconfirmedMemberIds without rewriting history',
+      ({ unconfirmedMemberIds }) => {
+        const source = withTransaction({ unconfirmedMemberIds });
+        const before = structuredClone(source);
+        const placement = compileGoalPlanPlacement({ ...base, source });
+        expect(placement).toMatchObject({
+          state: 'working',
+          activeLane: { ownerId: 'su-member', workItemId: 'WI-alpha-member' },
+          reconciliation: { action: 'none', consistent: true, toolCall: null },
+        });
+        expect(placement.launchTransaction).toEqual({
+          transactionId: 'tx-physically-complete',
+          state: 'partial',
+          retryOwnerIds: [],
+          nextAction: 'resume the first unresolved identity',
+        });
+        expect(source).toEqual(before);
+      },
+    );
+
+    it('keeps the completed launch cohort separate from the current member identity', () => {
+      const source = withTransaction({
+        requestedMemberIds: ['su-original', 'su-second'],
+        openedMemberIds: ['su-original', 'su-second'],
+        verifiedMemberIds: ['su-original', 'su-second'],
+      });
+      expect(compileGoalPlanPlacement({ ...base, source })).toMatchObject({
+        state: 'working',
+        activeLane: { ownerId: 'su-member', workItemId: 'WI-alpha-member' },
+        launchTransaction: { state: 'partial' },
+        reconciliation: { action: 'none', consistent: true, toolCall: null },
+      });
+    });
+
+    it('accepts the existing JSON transaction provider and follows the current work transition', () => {
+      const source = memberSource();
+      expect(compileGoalPlanPlacement({
+        ...base,
+        itemStatuses: ['done', 'todo'],
+        source: {
+          ...source,
+          fleet: { ...source.fleet, launchTransaction: JSON.stringify(source.fleet.launchTransaction) },
+        },
+      })).toMatchObject({
+        state: 'independently-led',
+        launchTransaction: { state: 'partial' },
+        reconciliation: { action: 'none', consistent: true, toolCall: null },
+      });
+    });
+
+    it.each([
+      ['retry pending', { recovery: { retryOwnerIds: ['su-retry'] } }],
+      ['retry unmeasured', { recovery: {} }],
+      ['retry null', { recovery: { retryOwnerIds: null } }],
+      ['retry malformed', { recovery: { retryOwnerIds: 'none' } }],
+      ['recovery absent', { recovery: undefined }],
+      ['request absent', { requestedMemberIds: undefined }],
+      ['request empty', { requestedMemberIds: [] }],
+      ['request malformed', { requestedMemberIds: ['su-member', null] }],
+      ['request blank', { requestedMemberIds: [''] }],
+      ['opened unmeasured', { openedMemberIds: undefined }],
+      ['unopened member', { openedMemberIds: [] }],
+      ['opened wrong identity', { openedMemberIds: ['su-other'] }],
+      ['second member unopened', { requestedMemberIds: ['su-member', 'su-second'], verifiedMemberIds: ['su-member', 'su-second'] }],
+      ['verified unmeasured', { verifiedMemberIds: undefined }],
+      ['unverified member', { verifiedMemberIds: [] }],
+      ['verified wrong identity', { verifiedMemberIds: ['su-other'] }],
+      ['second member unverified', { requestedMemberIds: ['su-member', 'su-second'], openedMemberIds: ['su-member', 'su-second'] }],
+      ['failure recorded', { failed: [{ ownerId: 'su-member', phase: 'verify', reason: 'failed' }] }],
+      ['failure unmeasured', { failed: undefined }],
+      ['failure null', { failed: null }],
+      ['unconfirmed member', { unconfirmedMemberIds: ['su-member'] }],
+      ['unconfirmed null', { unconfirmedMemberIds: null }],
+      ['unconfirmed malformed', { unconfirmedMemberIds: 'unknown' }],
+      ['still launching', { state: 'launching' }],
+    ])('retains recovery for %s despite a live claimed lane', (_label, transactionPatch) => {
+      const placement = compileGoalPlanPlacement({ ...base, source: withTransaction(transactionPatch) });
+      expect(placement).toMatchObject({
+        state: 'admitting',
+        reconciliation: {
+          action: 'resume-partial-launch',
+          consistent: false,
+          toolCall: { tool: 'fleet:launch-on-plan', args: { name: 'alpha-fleet' } },
+        },
+      });
+    });
+
+    it.each([
+      ['no live leader', { leaderLive: false }, 'restore-spawned-leader'],
+      ['paused fleet', { controlState: 'paused' }, 'reconcile-plan-lane-holder'],
+      ['GOAL steward leader', { leaderOwnerId: 'su-goal' }, 'reconcile-plan-lane-holder'],
+      ['leader identity absent', { leaderOwnerId: null }, 'reconcile-plan-lane-holder'],
+      ['plan admission absent', { claimSpec: null }, 'reconcile-plan-lane-holder'],
+      ['other plan admitted', { claimSpec: { ...DEFAULT_CLAIM_SPEC, view: { filter: { field: 'plan', op: '=', value: 'other' } } } }, 'reconcile-plan-lane-holder'],
+    ])('still repairs %s after physical completion', (_label, fleetPatch, action) => {
+      const source = memberSource();
+      const placement = compileGoalPlanPlacement({ ...base, source: { ...source, fleet: { ...source.fleet, ...fleetPatch } } });
+      expect(placement.reconciliation).toMatchObject({ action, consistent: false });
+      expect(placement.state).not.toBe('working');
+      expect(placement.launchTransaction?.state).toBe('partial');
+    });
+
+    it.each([
+      ['member not live', { holderLive: false }],
+      ['work item absent', { workItemId: null }],
+      ['another fleet', { fleetSlug: 'other-fleet' }],
+      ['leader-only lease', { ownerId: 'su-leader' }],
+      ['GOAL steward lease', { ownerId: 'su-goal' }],
+      ['lease expiry absent', { expiresAt: null }],
+      ['expired lease', { expiresAt: '2026-08-28T02:00:00.000Z' }],
+    ])('requires current matching member accountability: %s', (_label, claimPatch) => {
+      const source = memberSource();
+      expect(compileGoalPlanPlacement({
+        ...base,
+        source: { ...source, claims: [{ ...source.claims[0], ...claimPatch }] },
+      })).toMatchObject({
+        launchTransaction: { state: 'partial' },
+        reconciliation: { action: 'reconcile-plan-lane-holder', consistent: false, toolCall: null },
+      });
+    });
+
+    it('does not treat physical completion or live-member count as a current claim', () => {
+      const source = memberSource();
+      expect(compileGoalPlanPlacement({ ...base, source: { ...source, claims: [] } })).toMatchObject({
+        state: 'admitting',
+        reconciliation: { action: 'reconcile-plan-lane-holder', toolCall: null },
+      });
+      const { goalHolderOwnerIds: _unmeasured, ...withoutHolderIdentity } = source;
+      expect(compileGoalPlanPlacement({ ...base, source: withoutHolderIdentity })).toMatchObject({
+        state: 'blocked',
+        reconciliation: { action: 'reconcile-plan-lane-holder', toolCall: null },
+      });
+    });
+  });
+
   it('terminates the same shipped plan once its closure evidence is supplied', () => {
     // The other half of the pair above: closure is what terminates a plan now,
     // so the SAME input with evidenced closure must still reach `terminal`.
@@ -1888,6 +2345,110 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       reconciliation: { action: 'resolve-plan-blockers', toolCall: null },
     });
     expect(placement.reconciliation.reason).toMatch(/draft.*cannot launch/i);
+  });
+
+  it('WI-10005657: compiles a plan whose dependency-free frontier is only needs-human as owner-walled, never launchable', () => {
+    const args = {
+      plan: { harness: 'papercusp', slug: 'hud', ambiguousMatches: 1 },
+      status: 'active',
+      itemStatuses: ['done', 'needs-human'],
+      actionableItemId: null,
+      source: {},
+      now: NOW,
+    };
+    // Positive control: the SAME input without the wall evidence stays the generic
+    // repairable `blocked` — so the wall is the ONLY thing that changes the state.
+    expect(compileGoalPlanPlacement(args)).toMatchObject({
+      state: 'blocked',
+      reconciliation: { action: 'resolve-plan-blockers', toolCall: null },
+    });
+    const walled = compileGoalPlanPlacement({ ...args, ownerWalledItemIds: ['P-003'] });
+    expect(walled).toMatchObject({
+      state: 'owner-walled',
+      wall: { kind: 'owner', itemIds: ['P-003'] },
+      reconciliation: { action: 'none', consistent: true, toolCall: null },
+    });
+    expect(walled.reconciliation.reason).toMatch(/needs-human/);
+    // A wall never overrides a harder fact: an unstartable (draft) plan is still
+    // blocked on its lifecycle gate, and an ambiguous plan on its identity.
+    expect(compileGoalPlanPlacement({ ...args, status: 'draft', ownerWalledItemIds: ['P-003'] })).toMatchObject({
+      state: 'blocked',
+      reconciliation: { action: 'resolve-plan-blockers' },
+    });
+    expect(
+      compileGoalPlanPlacement({ ...args, plan: { ...args.plan, ambiguousMatches: 2 }, ownerWalledItemIds: ['P-003'] }),
+    ).toMatchObject({ state: 'blocked', reconciliation: { action: 'resolve-plan-identity' } });
+  });
+
+  it('WI-10005657: an owner-walled plan is named in the brief and never re-mandates a fleet launch', async () => {
+    const readBrief = (plans: readonly Record<string, unknown>[]) =>
+      readGoalPortfolioBrief({
+        workspaceId: WS,
+        goalId: 'goal-1',
+        sql: mockSql({ portfolio: { 'goal-1': { ...portfolioRow, plans } } }),
+        now: NOW,
+        launch,
+      });
+    const hud = {
+      ref: 'plan:papercusp/hud',
+      ordinal: 1,
+      harness: 'papercusp',
+      slug: 'hud',
+      title: 'Owner-reserved plan',
+      status: 'active',
+      ambiguousMatches: 1,
+      items: [
+        { id: 'P-001', text: 'Shipped', status: 'done', phase: 'Build', blockedBy: [], seq: 1 },
+        { id: 'P-003', text: 'Owner route change', status: 'needs-human', phase: 'Build', blockedBy: [], seq: 2 },
+      ],
+    };
+    const walledBrief = await readBrief([hud]);
+    expect(walledBrief?.worklist).toMatchObject([
+      { slug: 'hud', placement: { state: 'owner-walled', wall: { kind: 'owner', itemIds: ['P-003'] }, reconciliation: { toolCall: null } } },
+    ]);
+    const walledRendered = renderGoalPortfolioBrief(walledBrief!);
+    expect(walledRendered).toContain('OWNER-WALLED placement');
+    expect(walledRendered).toContain('plan:papercusp/hud (P-003)');
+    expect(walledRendered).not.toContain('MANDATORY NEXT PLAN PLACEMENT');
+
+    // Positive control 1: a needs-human item BESIDE a dependency-free todo is one of
+    // several open fronts, not a wall — the plan is still launchable.
+    const mixed = await readBrief([
+      { ...hud, items: [...hud.items, { id: 'P-004', text: 'Agent-doable', status: 'todo', phase: 'Build', blockedBy: [], seq: 3 }] },
+    ]);
+    expect(mixed?.worklist[0]?.placement).toMatchObject({ state: 'unplaced', reconciliation: { action: 'launch-plan-fleet' } });
+    expect(renderGoalPortfolioBrief(mixed!)).not.toContain('OWNER-WALLED placement');
+
+    // Positive control 2: a needs-human item that is itself still blocked by an open
+    // dependency is not the frontier — the dependency is, so nothing is walled yet.
+    const gated = await readBrief([
+      {
+        ...hud,
+        items: [
+          { id: 'P-001', text: 'Open dep', status: 'todo', phase: 'Build', blockedBy: [], seq: 1 },
+          { id: 'P-003', text: 'Owner route change', status: 'needs-human', phase: 'Build', blockedBy: ['P-001'], seq: 2 },
+        ],
+      },
+    ]);
+    expect(gated?.worklist[0]?.placement.state).not.toBe('owner-walled');
+
+    // The walled plan must not starve a later eligible plan: the launch mandate
+    // names the NEXT plan, not the wall.
+    const beta = {
+      ref: 'plan:papercusp/beta',
+      ordinal: 2,
+      harness: 'papercusp',
+      slug: 'beta',
+      title: 'Eligible plan',
+      status: 'active',
+      ambiguousMatches: 1,
+      items: [{ id: 'P-001', text: 'Launch me', status: 'todo', phase: 'Build', blockedBy: [], seq: 1 }],
+    };
+    const both = await readBrief([hud, beta]);
+    const bothRendered = renderGoalPortfolioBrief(both!);
+    expect(bothRendered).toContain('OWNER-WALLED placement');
+    expect(bothRendered).toContain('MANDATORY NEXT PLAN PLACEMENT');
+    expect(bothRendered).toContain('plan:papercusp/beta is the highest-priority eligible worklist plan');
   });
 
   it('skips a blocked first worklist plan and emits the next eligible launch', async () => {
@@ -1945,6 +2506,68 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(rendered).toContain('MANDATORY NEXT PLAN PLACEMENT');
     expect(rendered).toContain('plan:papercusp/beta is the highest-priority eligible worklist plan');
     expect(rendered).not.toContain('Call fleet:launch-on-plan exactly once with {"name":"papercusp-draft');
+  });
+
+  it('treats a todo whose blockers are all done or dropped as dependency-free, and keeps an open blocker blocking', async () => {
+    // Live shape on goal 60d3a8 (2026-10-01): gitnexus P-005 waited only on done P-004 and
+    // compiled as `blocked`, so placement offered nothing but a floor-gated plan.
+    const brief = await readGoalPortfolioBrief({
+      workspaceId: WS,
+      goalId: 'goal-1',
+      sql: mockSql({
+        portfolio: {
+          'goal-1': {
+            ...portfolioRow,
+            plans: [
+              {
+                ref: 'plan:papercusp/open-blocker',
+                ordinal: 1,
+                harness: 'papercusp',
+                slug: 'open-blocker',
+                title: 'Waits on unfinished work',
+                status: 'active',
+                ambiguousMatches: 1,
+                items: [
+                  { id: 'P-001', text: 'Still going', status: 'blocked', phase: 'Build', blockedBy: [], seq: 1 },
+                  { id: 'P-002', text: 'Waits', status: 'todo', phase: 'Build', blockedBy: ['P-001'], seq: 2 },
+                ],
+              },
+              {
+                ref: 'plan:papercusp/resolved',
+                ordinal: 2,
+                harness: 'papercusp',
+                slug: 'resolved',
+                title: 'Blockers finished',
+                status: 'ready',
+                ambiguousMatches: 1,
+                items: [
+                  { id: 'P-001', text: 'Done', status: 'done', phase: 'Build', blockedBy: [], seq: 1 },
+                  { id: 'P-002', text: 'Dropped', status: 'dropped', phase: 'Build', blockedBy: [], seq: 2 },
+                  { id: 'P-003', text: 'Next', status: 'todo', phase: 'Build', blockedBy: ['P-001', 'P-002'], seq: 3 },
+                  { id: 'P-004', text: 'After', status: 'todo', phase: 'Build', blockedBy: ['P-003'], seq: 4 },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+      now: NOW,
+      launch,
+    });
+
+    expect(brief?.worklist).toMatchObject([
+      { next: null, placement: { state: 'blocked', reconciliation: { action: 'resolve-plan-blockers' } } },
+      {
+        next: { id: 'P-003', blockedBy: [] },
+        placement: {
+          state: 'unplaced',
+          reconciliation: {
+            action: 'launch-plan-fleet',
+            toolCall: { tool: 'fleet:launch-on-plan', args: { plan: 'resolved' } },
+          },
+        },
+      },
+    ]);
   });
 
   it('ignores an expired actionable lease instead of compiling a false placement', () => {
@@ -2076,7 +2699,47 @@ describe('P-019 goal attribution ladder', () => {
     });
     expect(wrong.issues.map((issue) => issue.code)).toEqual(['plan-goal-mismatch', 'work-item-goal-mismatch']);
     expect(evaluateGoalLadderHealth({ goalId: 'goal-a', pots: [], plans: [], workItems: [], unreadable: true }))
-      .toMatchObject({ status: 'unknown', issues: [{ code: 'ladder-unreadable' }] });
+      .toMatchObject({ status: 'unknown', issues: [{ code: 'ladder-unreadable' }], remoteOwned: [] });
+  });
+
+  // WI-10005269: federation-owned (origin='remote') rows refuse local field edits and the attribution
+  // backfill skips them, so no local verb can ever stamp one. Reporting them as an actionable
+  // `unstamped-work-item` pinned the ladder at `incomplete` forever. The split is by ORIGIN only.
+  describe('remote-owned unstamped work-items', () => {
+    const plan = { ref: 'plan:papercusp/alpha', harness: 'papercusp', goalId: 'goal-a', exists: true };
+    const remote = { id: 'WI-R', harness: 'papercusp', planSlug: 'alpha', goalId: null, origin: 'remote' };
+
+    it('lists a remote unstamped row as non-blocking remoteOwned, never as an issue', () => {
+      const verdict = evaluateGoalLadderHealth({ goalId: 'goal-a', pots: [pot], plans: [plan], workItems: [remote] });
+      expect(verdict).toMatchObject({
+        status: 'healthy', issues: [], remoteOwned: ['WI-R'], checked: { pots: 1, plans: 1, workItems: 1 },
+      });
+    });
+
+    it('still fails the ladder for a LOCAL unstamped row beside a remote one (origin, not a blanket skip)', () => {
+      const verdict = evaluateGoalLadderHealth({
+        goalId: 'goal-a', pots: [pot], plans: [plan],
+        workItems: [
+          remote,
+          { id: 'WI-L', harness: 'papercusp', planSlug: 'alpha', goalId: null, origin: 'local' },
+          { id: 'WI-U', harness: 'papercusp', planSlug: 'alpha', goalId: null },
+        ],
+      });
+      expect(verdict.status).toBe('incomplete');
+      expect(verdict.issues).toEqual([
+        expect.objectContaining({ code: 'unstamped-work-item', ref: 'WI-L' }),
+        expect.objectContaining({ code: 'unstamped-work-item', ref: 'WI-U' }),
+      ]);
+      expect(verdict.remoteOwned).toEqual(['WI-R']);
+    });
+
+    it('does not excuse a remote row stamped to ANOTHER goal — that is a real mismatch', () => {
+      const verdict = evaluateGoalLadderHealth({
+        goalId: 'goal-a', pots: [pot], plans: [plan], workItems: [{ ...remote, goalId: 'goal-b' }],
+      });
+      expect(verdict.issues).toEqual([expect.objectContaining({ code: 'work-item-goal-mismatch', ref: 'WI-R' })]);
+      expect(verdict.remoteOwned).toEqual([]);
+    });
   });
 });
 
@@ -2305,6 +2968,7 @@ describe('resolveGoalLaunch — degradation is REPORTED, never silent', () => {
     expect(r.refusal).toBeNull();
     expect(r.degraded).toBe(true);
     expect(r.degradedReasons.join(' ')).toMatch(/ceiling not enforced/);
+    expect(r.headcountMeasurement).toBeNull();
   });
 
   it('reports an unreadable settings document without blocking the launch', async () => {
@@ -2316,6 +2980,51 @@ describe('resolveGoalLaunch — degradation is REPORTED, never silent', () => {
     expect(r.refusal).toBeNull();
     expect(r.degraded).toBe(true);
     expect(r.degradedReasons.join(' ')).toMatch(/launch settings not applied/);
+  });
+});
+
+describe('resolveGoalLaunch — concurrent versus sequential admission evidence (EI-25166050736574344)', () => {
+  it('identifies two decisions on one pre-registration population; a sequential second read refuses', async () => {
+    const baseSql = mockSql({ modeSubject: { 'su-goal': 'g1' }, settings: { g1: { maxAgents: 6, maxPerFleet: 3 } } });
+    const existing = Array.from({ length: 5 }, (_, index) => ({
+      ownerId: `existing-${index}`, inFleet: index === 0, basis: 'boot-grace',
+      heartbeatAt: null, briefUpdatedAt: '2026-10-05 18:40:16+00',
+    }));
+    let readers = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const wrap = (countRead: () => Promise<unknown[]>) => ((strings: TemplateStringsArray, ...values: unknown[]) =>
+      strings.join('').includes('FROM harness_shared.session_briefs b')
+        ? countRead() : (baseSql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => unknown)(strings, ...values)
+    ) as unknown as Sql;
+    const row = (population_rows = existing) => ({
+      total: population_rows.length, fleet: population_rows.filter((owner) => owner.inFleet).length,
+      measured_at: '2026-10-05 18:40:16+00', population_rows, presence_rows: [],
+    });
+    const concurrentSql = wrap(async () => {
+      const snapshot = row();
+      if (++readers === 2) release();
+      await barrier;
+      return [snapshot];
+    });
+    const launch = (sql: Sql) => resolveGoalLaunch({
+      workspaceId: WS, launcherOwnerId: 'su-goal', fleetSlug: 'f1', count: 1, sql,
+    });
+    // The resolver is a measurement/decision seam, not a registration or
+    // reservation. This fixture does not attribute the original Fire57 run.
+    const concurrent = await Promise.all([launch(concurrentSql), launch(concurrentSql)]);
+    expect(readers).toBe(2);
+    expect(concurrent.map((result) => result.refusal)).toEqual([null, null]);
+    expect(concurrent.map((result) => result.headcountMeasurement?.counted.map((owner) => owner.ownerId)))
+      .toEqual([existing.map((owner) => owner.ownerId), existing.map((owner) => owner.ownerId)]);
+    const sequentialFirst = await launch(wrap(async () => [row()]));
+    const sequentialSecond = await launch(wrap(async () => [row([...existing, {
+      ownerId: 'first-registration', inFleet: true, basis: 'boot-grace',
+      heartbeatAt: null, briefUpdatedAt: '2026-10-05 18:40:16+00',
+    }])]));
+    expect(sequentialFirst.refusal).toBeNull();
+    expect(sequentialSecond.refusal?.reason).toBe('goal_max_agents');
+    expect(sequentialSecond.headcountMeasurement?.counted.map((owner) => owner.ownerId)).toContain('first-registration');
   });
 });
 
@@ -2370,9 +3079,12 @@ describe('P-006: the budget launch gate', () => {
     budgetGateFlag.throws = false;
     escalated.calls.length = 0;
     liveSpend.legs = { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 0 };
+    liveSpend.freshnessStatus = 'fresh';
     liveSpend.throws = false;
     liveSpend.calls = 0;
   });
+
+  const UNPRICED = 'unpriced-lineage-samples';
 
   const launchWithBudget = (
     budget: {
@@ -2382,18 +3094,28 @@ describe('P-006: the budget launch gate', () => {
       spent_cents_unmeasured_reason?: string | null;
       spent_cents_at?: string | null;
       spent_cents_source?: string | null;
+      spent_cents_freshness_status?: 'fresh' | 'stale' | 'unavailable' | null;
+      spent_cents_freshness_last_ingested_at_ms?: number | string | null;
     },
     seen?: string[],
-  ) =>
-    resolveGoalLaunch({
+  ) => {
+    const freshSnapshotDefaults = budget.spent_cents_unmeasured_reason === UNPRICED &&
+      budget.spent_cents_freshness_status === undefined
+      ? {
+          spent_cents_freshness_status: 'fresh' as const,
+          spent_cents_freshness_last_ingested_at_ms: Date.now(),
+        }
+      : {};
+    return resolveGoalLaunch({
       workspaceId: WS,
       launcherOwnerId: 'su-goal',
       sql: mockSql({
         modeSubject: { 'su-goal': 'g1' },
-        budget: { g1: budget },
+        budget: { g1: { ...budget, ...freshSnapshotDefaults } },
         ...(seen ? { seen } : {}),
       }),
     });
+  };
 
   it('refuses at spent == budget (the ceiling is inclusive) and skips the headcount read', async () => {
     const seen: string[] = [];
@@ -2445,6 +3167,8 @@ describe('P-006: the budget launch gate', () => {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: 'goal-lineage-rollup',
+      interactiveUsageFreshnessStatus: 'fresh',
+      interactiveUsageLastIngestedAtMs: expect.any(Number),
     });
     // Under budget the D-015 default ceilings still get their headcount.
     expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(true);
@@ -2461,26 +3185,27 @@ describe('P-006: the budget launch gate', () => {
   });
 
   it('the retired goal-spend-tick marker no longer carries authority (D-011)', async () => {
-    // Its writer was deleted, so a figure stamped with it can only be stale.
+    // Its writer was deleted. The cached figure cannot decide admission, and
+    // the empty live rollup cannot establish budget headroom either.
     const r = await launchWithBudget({
       budget_cents: '7000',
       spent_cents: 7000,
       spent_cents_source: 'goal-spend-tick',
     });
-    expect(r.refusal).toBeNull();
-    expect(r.degradedReasons.some((s) => s.includes('no recognized platform spend provenance marker'))).toBe(true);
+    expect(liveSpend.calls).toBe(1);
+    expect(r.refusal).toMatchObject({
+      reason: 'goal_budget_unmeasurable',
+      current: null,
+      currentScope: REFUSAL_SCOPES.BUDGET_NO_SAMPLES,
+    });
   });
 
   // ── WI-10002052 / D-011 clause 3: an unmeasurable ceiling must not fail OPEN ──
   //
   // `spentCents: null` carries TWO populations, and the rollup names which one in
-  // `spentCentsUnmeasuredReason`: nothing attributed in the window (harmless —
-  // nothing is being let past a ceiling), and attributed samples the ledger
-  // could not price, so the true total is unknown. For the second, failing open
-  // means the ceiling never binds while those samples stay in the window. These
-  // tests pin the split.
-  const UNPRICED = 'unpriced-lineage-samples';
-
+  // `spentCentsUnmeasuredReason`: no attributed samples, or attributed samples
+  // the ledger could not price. Neither supplies a priced spend figure, so
+  // launch admission must refuse until the ceiling can be measured.
   it('REFUSES a goal whose window holds attributed samples that carry no price', async () => {
     const r = await launchWithBudget({
       budget_cents: 50000,
@@ -2514,8 +3239,8 @@ describe('P-006: the budget launch gate', () => {
   // ── The OTHER null: no snapshot, or an empty authoritative stream ──
   //
   // Neither is evidence that nothing was spent (D-011 clause 3). The gate used to
-  // admit both on the absence; it now measures every leg at launch and admits only
-  // the zero-usage bootstrap (stewardship-remediation D-014).
+  // admit both on the absence; D-017 now refuses either when no priced goal spend
+  // can be measured, including the all-empty case.
   const NULL_SNAPSHOTS = [null, 'no-lineage-samples'] as const;
 
   it('REFUSES an empty authoritative stream beside goal usage on the pot/session legs', async () => {
@@ -2565,19 +3290,19 @@ describe('P-006: the budget launch gate', () => {
     expect(under.degradedReasons.filter((s) => s.includes('budget'))).toEqual([]);
   });
 
-  it('BOOTSTRAP (D-014): admits, reported degraded, ONLY when every leg is empty', async () => {
+  it('REFUSES the all-empty bootstrap because no priced spend was measured (D-011)', async () => {
     for (const spent_cents_unmeasured_reason of NULL_SNAPSHOTS) {
       const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null, spent_cents_unmeasured_reason });
-      expect(r.refusal).toBeNull();
-      expect(r.degraded).toBe(true);
-      expect(r.degradedReasons.some((s) => s.includes('zero-usage bootstrap'))).toBe(true);
+      expect(r.refusal?.reason).toBe('goal_budget_unmeasurable');
+      expect(r.refusal?.current).toBeNull();
+      expect(r.refusal?.currentScope).toBe(REFUSAL_SCOPES.BUDGET_NO_SAMPLES);
+      expect(r.degraded).toBe(false);
     }
   });
 
-  it('CONTROL: one usage sample on ANY diagnostic leg is enough to refuse the bootstrap', async () => {
-    // Pairs with the bootstrap case: the only difference is a single sample, so a
-    // mutant that admitted on `lineage.samples === 0` alone passes the bootstrap
-    // test above and fails here.
+  it('classifies diagnostic-only usage separately from an all-empty refusal', async () => {
+    // Both cases refuse admission. A diagnostic-only sample changes the refusal
+    // scope to unattributed usage without inventing a priced goal spend figure.
     for (const legs of [
       { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 1, session: 0 },
       { spentCents: null, lineage: 0, lineageUnpriced: 0, pot: 0, session: 1 },
@@ -2599,6 +3324,30 @@ describe('P-006: the budget launch gate', () => {
     await launchWithBudget({ budget_cents: 50000, spent_cents: null });
     expect(liveSpend.calls).toBe(1);
   });
+
+  it.each(['stale', 'unavailable'] as const)(
+    're-measures a stale snapshot and refuses %s live usage without an authoritative spend figure', async (status) => {
+      liveSpend.freshnessStatus = status;
+      liveSpend.legs = { spentCents: null, lineage: 1, lineageUnpriced: 0, pot: 0, session: 1 };
+      const r = await launchWithBudget({
+        budget_cents: 5000,
+        spent_cents: 6000,
+        spent_cents_source: 'goal-lineage-rollup',
+        spent_cents_freshness_status: 'fresh',
+        spent_cents_freshness_last_ingested_at_ms: Date.now() - 31 * 60_000,
+      });
+      expect(liveSpend.calls).toBe(1);
+      expect(r.refusal).toMatchObject({
+        reason: 'goal_budget_unmeasurable',
+        current: null,
+        currentScope: REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED,
+      });
+      expect(r.refusal?.message).toContain(`interactive usage stream is ${status}`);
+      expect(r.degradedReasons.some((reason) => reason.includes('admitted as headroom'))).toBe(false);
+      await vi.waitFor(() => expect(escalated.calls.length).toBe(1));
+      expect(String(escalated.calls[0]?.summary)).toContain('UNMEASURABLE');
+    },
+  );
 
   it('opens a distinctly-deduped owner escalation, so the refusal is never silent', async () => {
     await launchWithBudget({
@@ -2632,37 +3381,60 @@ describe('P-006: the budget launch gate', () => {
   });
 
   it('D-003: a declared budget with NO snapshot is measured at launch — never guessed', async () => {
-    // With every leg empty that is the bootstrap: admitted, but reported.
     const r = await launchWithBudget({ budget_cents: 5000, spent_cents: null });
     expect(liveSpend.calls).toBe(1);
-    expect(r.refusal).toBeNull();
-    expect(r.degraded).toBe(true);
-    expect(r.degradedReasons.some((s) => s.includes('budget ceiling not enforced'))).toBe(true);
-    expect(r.degradedReasons.some((s) => s.includes('no usage on any leg in its budget window'))).toBe(true);
+    expect(r.refusal?.reason).toBe('goal_budget_unmeasurable');
+    expect(r.refusal?.currentScope).toBe(REFUSAL_SCOPES.BUDGET_NO_SAMPLES);
+    expect(r.refusal?.current).toBeNull();
   });
 
-  it('fails OPEN when spentCents has no recognized provenance — legacy values cannot enforce the ceiling', async () => {
+  it('re-measures untrusted cached cents and admits only measured live headroom', async () => {
     for (const spent_cents_source of [null, 'legacy-import']) {
+      liveSpend.legs = { spentCents: 100, lineage: 2, lineageUnpriced: 0, pot: 0, session: 2 };
       const seen: string[] = [];
       const r = await launchWithBudget(
         { budget_cents: 5000, spent_cents: 6000, spent_cents_source },
         seen,
       );
       expect(r.refusal).toBeNull();
-      expect(r.degraded).toBe(true);
-      expect(r.degradedReasons.some((s) => s.includes('no recognized platform spend provenance marker'))).toBe(true);
+      expect(r.degraded).toBe(false);
       expect(r.budget?.spentCents).toBe(6000);
       expect(r.budget?.spentCentsSource).toBe(spent_cents_source);
-      // Without a trustworthy refusal, the normal agent-ceiling read still runs.
+      // The cached 6000 cannot refuse against this 5000 cap; live 100 can admit.
       expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(true);
     }
+    expect(liveSpend.calls).toBe(2);
   });
 
-  it('garbage spentCents reads as UNKNOWN (degraded), never as 0-spent (admit-on-garbage)', async () => {
+  it.each([null, 'legacy-import'])(
+    'refuses an unmeasured live rollup behind untrusted cached provenance %s', async (spent_cents_source) => {
+      const r = await launchWithBudget({ budget_cents: 5000, spent_cents: 100, spent_cents_source });
+      expect(liveSpend.calls).toBe(1);
+      expect(r.refusal).toMatchObject({
+        reason: 'goal_budget_unmeasurable',
+        current: null,
+        currentScope: REFUSAL_SCOPES.BUDGET_NO_SAMPLES,
+      });
+    },
+  );
+
+  it('refuses a measured live breach behind an untrusted under-budget cache', async () => {
+    liveSpend.legs = { spentCents: 5000, lineage: 2, lineageUnpriced: 0, pot: 0, session: 2 };
+    const r = await launchWithBudget({ budget_cents: 5000, spent_cents: 100, spent_cents_source: 'legacy-import' });
+    expect(liveSpend.calls).toBe(1);
+    expect(r.refusal).toMatchObject({
+      reason: 'goal_budget_exceeded',
+      current: 5000,
+      currentScope: REFUSAL_SCOPES.BUDGET_LINEAGE,
+    });
+  });
+
+  it('garbage spentCents stays UNKNOWN and cannot admit a launch on an empty live measurement', async () => {
     const r = await launchWithBudget({ budget_cents: 5000, spent_cents: 'not-a-number' });
-    expect(r.refusal).toBeNull();
+    expect(r.refusal?.reason).toBe('goal_budget_unmeasurable');
+    expect(r.refusal?.currentScope).toBe(REFUSAL_SCOPES.BUDGET_NO_SAMPLES);
     expect(r.budget?.spentCents).toBeNull();
-    expect(r.degradedReasons.some((s) => s.includes('budget ceiling not enforced'))).toBe(true);
+    expect(r.degraded).toBe(false);
   });
 
   it('no budget declared → the gate is silent (no refusal, no degradation)', async () => {
@@ -2677,6 +3449,8 @@ describe('P-006: the budget launch gate', () => {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
+      interactiveUsageFreshnessStatus: 'fresh',
+      interactiveUsageLastIngestedAtMs: expect.any(Number),
     });
   });
 
@@ -2708,5 +3482,122 @@ describe('P-006: the budget launch gate', () => {
     expect(meta.dedupKind).toBe('goal-budget-exceeded');
     expect(meta.subjectSignature).toBe(`${WS}:g1`);
     expect((call.identity as { ownerId: string }).ownerId).toBe('su-goal');
+  });
+});
+
+describe('per-turn goal inference budget admission (WI-10003507)', () => {
+  const base = {
+    goalId: 'goal-1',
+    goalStatus: 'active',
+    budgetCents: 1000,
+    budgetWindowSec: 21600,
+  };
+  const rollup = (override: Record<string, unknown> = {}) =>
+    ({
+      spentCents: null,
+      unmeasuredReason: 'no-lineage-samples',
+      windowSec: 21600,
+      samples: 0,
+      pot: { samples: 0 },
+      session: { samples: 0 },
+      lineage: { samples: 0, unpricedSamples: 0 },
+      interactiveUsageFreshness: {
+        status: 'fresh', lastIngestedAtMs: 1, ageMs: 0, windowMs: 30 * 60_000, reason: 'test fresh data',
+      },
+      ...override,
+    }) as unknown as GoalSpendRollup;
+
+  it('refuses unmeasured spend even when every usage leg is empty, and refuses a reached ceiling', () => {
+    expect(evaluateGoalInferenceBudget({ ...base, rollup: rollup() })).toMatchObject({
+      allowed: false,
+      status: 403,
+      code: 'goal_budget_unmeasurable',
+      spentCents: null,
+    });
+    expect(
+      evaluateGoalInferenceBudget({
+        ...base,
+        rollup: rollup({ samples: 1, session: { samples: 1 } }),
+      }),
+    ).toMatchObject({ allowed: false, status: 403, code: 'goal_budget_unmeasurable' });
+    expect(
+      evaluateGoalInferenceBudget({
+        ...base,
+        rollup: rollup({ spentCents: 1000, unmeasuredReason: null }),
+      }),
+    ).toMatchObject({ allowed: false, status: 403, code: 'goal_budget_exceeded', spentCents: 1000 });
+  });
+
+  it.each(['interactive-usage-stale', 'interactive-usage-unavailable'] as const)(
+    'refuses %s live spend when usage rows exist but its price cannot be verified', (unmeasuredReason) => {
+      const status = unmeasuredReason === 'interactive-usage-stale' ? 'stale' : 'unavailable';
+      const decision = evaluateGoalInferenceBudget({
+        ...base,
+        rollup: rollup({
+          unmeasuredReason,
+          samples: 1,
+          pot: { samples: 1 },
+          session: { samples: 0 },
+          lineage: { samples: 1, unpricedSamples: 0 },
+          interactiveUsageFreshness: {
+            status, lastIngestedAtMs: null, ageMs: null, windowMs: 30 * 60_000, reason: unmeasuredReason,
+          },
+        }),
+      });
+      expect(decision).toMatchObject({
+        allowed: false,
+        goalId: 'goal-1',
+        status: 503,
+        code: 'goal_budget_unmeasurable',
+        spentCents: null,
+      });
+      if (!decision.allowed) expect(decision.message).toContain(unmeasuredReason);
+    },
+  );
+
+  it('resolves the active goal and measures current spend before allowing another turn', async () => {
+    budgetGateFlag.value = true;
+    budgetGateFlag.throws = false;
+    liveSpend.throws = false;
+    liveSpend.legs = { spentCents: 1001, lineage: 4, lineageUnpriced: 0, pot: 2, session: 2 };
+    const seen: string[] = [];
+    const before = liveSpend.calls;
+    const sql = mockSql({
+      modeSubject: { 'owner-1': 'goal-1' },
+      budget: { 'goal-1': { budget_cents: 1000 } },
+      brief: { 'goal-1': { budget_window_sec: 21600 } },
+      seen,
+    });
+
+    const decision = await checkGoalInferenceAdmission({ workspaceId: WS, ownerId: 'owner-1', sql });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      status: 403,
+      code: 'goal_budget_exceeded',
+      goalId: 'goal-1',
+      spentCents: 1001,
+    });
+    expect(liveSpend.calls).toBe(before + 1);
+    expect(seen.some((statement) => statement.includes('SELECT status, budget_cents, budget_window_sec'))).toBe(true);
+  });
+
+  it('fails closed when the live spend measurement fails', async () => {
+    budgetGateFlag.value = true;
+    budgetGateFlag.throws = false;
+    liveSpend.throws = true;
+    const sql = mockSql({
+      modeSubject: { 'owner-1': 'goal-1' },
+      budget: { 'goal-1': { budget_cents: 1000 } },
+      brief: { 'goal-1': { budget_window_sec: 21600 } },
+    });
+
+    const decision = await checkGoalInferenceAdmission({ workspaceId: WS, ownerId: 'owner-1', sql });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      status: 503,
+      code: 'goal_budget_unmeasurable',
+    });
   });
 });

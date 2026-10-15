@@ -97,6 +97,13 @@ beforeEach(() => {
 });
 
 describe('claimWorkItem — issue-family workspace-scope consistency (EI-1545)', () => {
+  it('forwards dispatch provenance to the issue writer (EI-25163151398656476)', async () => {
+    await claimWorkItem('WI-246', 'su-member', { assignedBy: 'su-leader' });
+    expect(claimIssue).toHaveBeenCalledWith('WI-246', 'su-member', expect.objectContaining({
+      workspaceId: 'ws-0', assignedBy: 'su-leader',
+    }));
+  });
+
   it('resolves the issue-scope workspace exactly ONCE per claim, and threads that SAME value into both the pre-check and the write', async () => {
     const result = await claimWorkItem('WI-246', 'su-me');
 

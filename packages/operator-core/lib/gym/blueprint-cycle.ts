@@ -24,10 +24,12 @@
  */
 import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, existsSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { readSuperuserToken, superuserTokenPath } from '../superuser-token';
 import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -38,7 +40,7 @@ import { spawnGymOperatorWithRetry } from './operator-ready';
 import { findFreeBasePort } from '../deployment/p2p-perf-tier3/free-port-base';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, '../../../..');
+const REPO_ROOT = moduleRepoRoot(import.meta.url);
 const FAKE_AGENT = join(__dirname, 'fixtures/fake-gym-agent.mjs');
 const FEATURE_ID = 'G-1';
 
@@ -219,7 +221,7 @@ export async function runGymBlueprintCycle(opts: RunGymBlueprintCycleOptions = {
     const spec1 = [
       `Optimize the TARGET harness \`${TARGET_SLUG}\` (a registered research-blueprint harness; its tree is at ${targetDir}).`,
       `Eval matrix (bounded, D-019): variants = baseline + ONE candidate (prompts-only, researcher role) × 1 train task × 1 repeat.`,
-      `Mechanics available on this operator (loopback): register a throwaway sub-harness via POST http://127.0.0.1:${PORT}/api/harness/projects {slug,path}; file its work item via the work_items tools (or SQL); start its pipeline via POST http://127.0.0.1:${PORT}/api/admin/dbos/pipeline/start?superuser=1 with the bearer from ~/.papercusp/superuser-token; judge runs with the gym:judge tool (the target's rubric: work-item-output trace).`,
+      `Mechanics available on this operator (loopback): register a throwaway sub-harness via POST http://127.0.0.1:${PORT}/api/harness/projects {slug,path}; file its work item via the work_items tools (or SQL); start its pipeline via POST http://127.0.0.1:${PORT}/api/admin/dbos/pipeline/start?superuser=1 with the bearer from ${superuserTokenPath()}; judge runs with the gym:judge tool (the target's rubric: work-item-output trace).`,
       `The proposer records its proposed prompt edit + rationale + numbers on this work item (work_items comment / output).`,
       `A/B-gate for THIS bounded cycle: autoloop AUTO-ACCEPT (the gym-director persona's auto-accept arm) — if the candidate's judged composite beats the baseline and no deterministic signal regresses, proceed to ACCEPT; otherwise ESCALATE with the numbers. No human review row is required.`,
       `On ACCEPT the committer applies the edit to ${targetDir}/.papercusp/prompts/researcher.md (create it), commits IN THE TARGET TREE (one commit, message names the role + rationale), and reports the new content hash.`,
@@ -234,8 +236,7 @@ export async function runGymBlueprintCycle(opts: RunGymBlueprintCycleOptions = {
 
     // 6. Start the durable pipeline (manual dispatch — the P-018 mechanism). The route
     //    resolves the gym spine from the registered harness's .papercusp/blueprint.yaml.
-    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
-    const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
+    const suToken = readSuperuserToken() ?? '';
     const startRes = await fetch(`http://127.0.0.1:${PORT}/api/admin/dbos/pipeline/start?superuser=1`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${suToken}` },

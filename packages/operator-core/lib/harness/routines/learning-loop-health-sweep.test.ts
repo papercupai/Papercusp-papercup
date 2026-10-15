@@ -13,6 +13,7 @@ vi.mock('../../blueprint/learning-loop-read', () => ({ readLearningLoopHealth: v
 import {
   selectLearningLoopsNeedingEscalation,
   learningLoopHealthSweep,
+  learningLoopHealthSweepWithEvidence,
 } from './learning-loop-health-sweep';
 import { summarizeLearningLoopHealth, type LearningLoopHealth } from '../../blueprint/learning-loop-health';
 import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
@@ -125,6 +126,36 @@ describe('learningLoopHealthSweep (EI-19281872822982156, defect 2)', () => {
     vi.clearAllMocks();
   });
 
+  it('retains the resolved workspace and every classifier candidate/outcome in a JSON-safe report', async () => {
+    const singletonRow = {
+      installSlug: '@singleton',
+      name: 'bp-singleton-scout-0',
+      active: false,
+      lastFiredAt: '2026-10-04T00:00:00.000Z',
+      nextFireAt: null,
+      pauseReviewBy: null,
+    };
+    vi.mocked(readLearningLoopHealth).mockResolvedValue([
+      loop({ blueprintId: 'scout', status: 'should-be-on-but-dark', singletonRow }),
+      loop({ blueprintId: 'regret', status: 'firing', active: true }),
+    ]);
+
+    const report = await learningLoopHealthSweepWithEvidence();
+
+    expect(report).toMatchObject({
+      schemaVersion: 'learning-loop-health-sweep/v1',
+      workspaceId: 'ws-test',
+      runStatus: 'completed',
+      candidateCount: 2,
+      candidates: [
+        { blueprintId: 'scout', status: 'should-be-on-but-dark', selectedForEscalation: true, singletonRow },
+        { blueprintId: 'regret', status: 'firing', selectedForEscalation: false },
+      ],
+      escalations: [{ blueprintId: 'scout', outcome: 'escalated' }],
+    });
+    expect(JSON.parse(JSON.stringify(report))).toEqual(report);
+  });
+
   it('does not escalate an empty registry during a pristine packaged desktop first boot', async () => {
     process.env.PAPERCUSP_DESKTOP = '1';
     vi.mocked(isLikelyFreshInstallGap).mockResolvedValue(true);
@@ -150,6 +181,26 @@ describe('learningLoopHealthSweep (EI-19281872822982156, defect 2)', () => {
     ]);
     expect(readLearningLoopHealth).toHaveBeenCalled();
     expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the bg-host process start time into the shared classifier read', async () => {
+    const nowMs = Date.parse('2026-10-06T04:00:00.000Z');
+    const uptimeSeconds = 321;
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+    const uptimeSpy = vi.spyOn(process, 'uptime').mockReturnValue(uptimeSeconds);
+    vi.mocked(readLearningLoopHealth).mockResolvedValue([]);
+
+    try {
+      await learningLoopHealthSweep();
+
+      expect(readLearningLoopHealth).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(readLearningLoopHealth).mock.calls[0]?.[2]).toEqual({
+        processStartedAtMs: nowMs - uptimeSeconds * 1_000,
+      });
+    } finally {
+      nowSpy.mockRestore();
+      uptimeSpy.mockRestore();
+    }
   });
 
   it('keeps real alarms active on a packaged desktop after a project is provisioned', async () => {

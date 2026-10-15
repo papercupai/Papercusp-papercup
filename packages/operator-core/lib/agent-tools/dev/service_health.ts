@@ -26,12 +26,14 @@ import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
 import { runtimeDiagnostic, type RuntimeDiagnostic } from "../../runtime-diagnostic";
 import { probeServiceStart, probeUnitStates, type ServiceStartInfo } from "./systemd-service-probe";
+import { dhtUniverseNextVerb, probeProductHostDhtUniverse } from "./dht-universe-probe";
 import { isSidecarEnabledFromEnv } from "../../process-supervision/sidecar-spawn-shared";
 import {
   readMcpProxyFailureTail,
   summarizeMcpProxyHealth,
   type McpProxyFailureRecord,
 } from "../../system-health/mcp-proxy-health";
+import { MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS } from "../../system-health/thresholds";
 
 function sidecarFlapState(s: SidecarSupervisionStatus): SupervisionFlapState {
   return s.gaveUp ? "gave-up" : s.respawnAttemptsInWindow > 0 ? "damping" : "ok";
@@ -496,7 +498,7 @@ export function buildMcpProxyTransportBlock(
   const h = summarizeMcpProxyHealth(recs, nowMs);
   // `recovered` is deliberately NOT in this sum: on its own it means the proxy absorbed a deploy
   // blip, which is the resilience working. The notable set is what an agent should act on.
-  const notable = h.hardFailures + h.handshakeStalls + h.shed + h.otherNon2xx;
+  const notable = h.hardFailures + h.handshakeStalls + h.shed + h.otherNon2xx + h.criticalContinuationQueueStalls;
   if (notable === 0) return {};
   return {
     mcpProxyTransport: {
@@ -504,16 +506,39 @@ export function buildMcpProxyTransportBlock(
       hardFailures: h.hardFailures,
       handshakeStalls: h.handshakeStalls,
       shed: h.shed,
+      criticalContinuationQueueStalls: h.criticalContinuationQueueStalls,
+      criticalContinuationQueueMaxWaitMs: h.criticalContinuationQueueMaxWaitMs,
       otherNon2xx: h.otherNon2xx,
       recovered: h.recovered,
       byKind: h.byKind,
       newestAt: h.newestAt,
       note:
-        h.handshakeStalls > 0
+        h.criticalContinuationQueueStalls > 0
+          ? `${h.criticalContinuationQueueStalls} critical continuation request(s) exceeded ${MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS / 60_000}m during the last hour (longest observed ${Math.round(h.criticalContinuationQueueMaxWaitMs / 1000)}s). This is a recent incident signal and does not establish whether a request remains queued.`
+          : h.handshakeStalls > 0
           ? `${h.handshakeStalls} upstream-silence stall(s) on the MCP handshake (WI-6740). Each was RETRIED and survived — but this is the class that leaves a session tool-dark for its entire life if the retry ever runs out. Not benign.`
           : `${h.hardFailures} hard tool-transport failure(s) the proxy could not hide from callers.`,
     },
   };
+}
+
+/** Measure one independently awaited handler phase using a monotonic clock. */
+function measureHealthPhase<T>(
+  timings: Record<string, number>,
+  phase: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const startedAt = performance.now();
+  let result: Promise<T>;
+  try {
+    result = operation();
+  } catch (error) {
+    timings[phase] = Math.max(0, Math.round(performance.now() - startedAt));
+    throw error;
+  }
+  return result.finally(() => {
+    timings[phase] = Math.max(0, Math.round(performance.now() - startedAt));
+  });
 }
 
 /** Additive stable scan path over the existing service/supervision payload. */
@@ -524,6 +549,10 @@ export function buildServiceHealthDiagnostic(
    *  could read it. Drives the ownership disclosure on a bg-host `nextVerb`; `undefined` is an
    *  honest unknown that discloses ownership WITHOUT asserting the watchdog is up. */
   watchdogActive?: boolean,
+  /** WI-10005995: product hosts resolved OFF the public DHT with no drill holding the rig.
+   *  Lowest-priority root cause — named only when nothing is down or unhealthy, so a real
+   *  outage still leads, while a quiet isolated host cannot read as an all-clear. */
+  dhtWarnings?: ReadonlyArray<{ unit: string; warning: string }>,
 ): RuntimeDiagnostic<
   { services: string[]; supervised: string[] },
   { up: number; down: number; wedged: number; absent: number; supervisionUnhealthy: number },
@@ -543,6 +572,8 @@ export function buildServiceHealthDiagnostic(
   const wedgedFailures = failures.filter((s) => s.wedged === true);
   const first = wedgedFailures[0] ?? failures[0];
   const supervisor = unhealthySupervision[0];
+  const dhtWarning = dhtWarnings?.[0];
+  const rootCauseIsDht = !first && !supervisor && dhtWarning !== undefined;
   const rootCause: ServiceRootCause | null = first
     ? { component: first.name, reason: first.note ?? `probe failed (status ${first.status ?? "none"})` }
     : supervisor
@@ -553,7 +584,9 @@ export function buildServiceHealthDiagnostic(
               ? `systemd state ${supervisor.activeState ?? "unhealthy"}`
               : `supervisor state ${supervisor.flapState}`,
         }
-      : null;
+      : dhtWarning
+        ? { component: dhtWarning.unit, reason: dhtWarning.warning }
+        : null;
   return runtimeDiagnostic({
     configured: {
       services: services.map((s) => s.name),
@@ -576,7 +609,9 @@ export function buildServiceHealthDiagnostic(
     // verb must name that owner. Same `includes("bg-host")` predicate `restartVerbForService`
     // uses, so every component routed to the bg-host restart carries the disclosure with it —
     // a name that earns the verb but not the caveat is exactly how this gap reappears.
-    nextVerb: rootCause
+    nextVerb: rootCauseIsDht && dhtWarning
+      ? dhtUniverseNextVerb(dhtWarning.unit)
+      : rootCause
       ? nextVerbForService(rootCause.component, first?.wedged) +
         (rootCause.component.includes("bg-host") ? bgHostWatchdogOwnership(watchdogActive) : "")
       : null,
@@ -586,9 +621,9 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe fixed dev endpoints (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith, desktop, bg-host ticker) plus optional systemd units. Services report URL/status/latency; `mcpHandshake` independently validates JSON-RPC initialize, so a green operator GET does not prove MCP health. bg-host-ticker is separate from :3070, and an absent desktop is absent rather than failed. In `supervision[]`, read `healthy` as the verdict and `activeState` as raw systemd state: episodic inactive may be healthy, while enabled/static inactive is not; omitted is unknown. `units` + `scope` query arbitrary user/system units and return `unitStates` + `unitsUnknown`; read unknowns first because nonexistent and stopped units can both appear inactive.',
+    'Probe fixed dev endpoints (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith, desktop, bg-host ticker) plus optional systemd units. Services report URL/status/latency; `mcpHandshake` independently validates JSON-RPC initialize, so a green operator GET does not prove MCP health. bg-host-ticker is separate from :3070, and an absent desktop is absent rather than failed. In `supervision[]`, read `healthy` as the verdict and `activeState` as raw systemd state: episodic inactive may be healthy, while enabled/static inactive is not; omitted is unknown. `units` + `scope` query arbitrary user/system units and return `unitStates` + `unitsUnknown`; pass `unitsOnly:true` to skip the full endpoint snapshot when you only need those states. Read unknowns first because nonexistent and stopped units can both appear inactive.',
   guidance: {
-    when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercusp-staging-api"], scope:"user" }` (read unitsUnknown before unitStates, then probe :3170); diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
+    when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercusp-staging-api"], scope:"user", unitsOnly:true }` (read unitsUnknown before unitStates, then probe :3170). Omit unitsOnly when you also want the full fixed-endpoint snapshot; diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
     notWhen:
       "File/lock contention — that is locks:queue. Migration drift — db:check_drift.",
     // EI-21678459404022074: `target` is dev:restart's argument, not this tool's — and
@@ -611,11 +646,11 @@ export default defineTool({
         // "<work-item-id>"); an enum arg must carry a real member. 'staging' matches this
         // tool's own `when` clause and the papercusp-staging-api example in `note` below.
         args: { target: 'staging' },
-        note: 'dev:service_health probes a FIXED endpoint set and takes only `units` + `scope` — there is no `target` to aim it at. Restarting a named service is dev:restart { target }; to VERIFY that restart, call this tool with units:["papercusp-staging-api"], scope:"user" and read unitsUnknown before unitStates',
+        note: 'dev:service_health probes a FIXED endpoint set and accepts `units`, `scope`, and optional `unitsOnly`; there is no `target` to aim it at. Restarting a named service is dev:restart { target }; to VERIFY that restart, call this tool with units:["papercusp-staging-api"], scope:"user", unitsOnly:true when you only need that unit state (omit unitsOnly for the full snapshot), and read unitsUnknown before unitStates',
       },
     },
     returns:
-      "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision }. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
+      "Default result: { configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision, dhtUniverse?, unitStates?, unitsUnknown?, scopesUnavailable?, healthPhaseTimingsMs }. With `unitsOnly:true`, the result contains only `{ ok, snapshotMode:'units-only', unitStates, unitsUnknown, scopesUnavailable, healthPhaseTimingsMs }`; this mode requires `units` and avoids unrelated snapshot probes. `healthPhaseTimingsMs` reports measured wall time for each independently awaited handler phase; absent optional phases were not requested or not entered. `dhtUniverse.warnings` flags a product host off the public DHT outside a drill. The unit fields appear when `units` is requested; read `unitsUnknown` before treating an inactive `unitStates` entry as a stopped unit. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
     seeAlso: [
       "dev:restart (restart a down service)",
       "dev:pg_health (Postgres health specifically)",
@@ -669,6 +704,20 @@ export default defineTool({
       .describe(
         "Which systemd manager `units` is looked up in: 'user' (default — every papercup-* unit), 'system' (auditd, ufw, pgbouncer), or 'all' to query both and merge. Only meaningful with `units`.",
       ),
+    unitsOnly: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, return only the requested `units` state and skip the full endpoint/supervision snapshot. Requires at least one `units` entry. Default false preserves the combined snapshot behavior.",
+      ),
+  }).superRefine((input, ctx) => {
+    if (input.unitsOnly && !input.units?.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["units"],
+        message: "unitsOnly requires at least one unit",
+      });
+    }
   }),
   // Keep the complete diagnostic snapshot available as structured MCP content.
   // The text projection remains human-oriented, while this schema makes the
@@ -683,9 +732,34 @@ export default defineTool({
       services: z.unknown().optional(),
       telemetry: z.unknown().optional(),
       supervision: z.unknown().optional(),
+      healthPhaseTimingsMs: z.record(z.string(), z.number()),
+      unitStates: z.unknown().optional(),
+      unitsUnknown: z.unknown().optional(),
+      scopesUnavailable: z.unknown().optional(),
     })
     .passthrough(),
-  async handler({ units, scope }) {
+  async handler({ units, scope, unitsOnly }) {
+    const healthPhaseTimingsMs: Record<string, number> = {};
+    if (unitsOnly) {
+      const unitStates = await measureHealthPhase(healthPhaseTimingsMs, "requestedUnitStates", () =>
+        probeUnitStates(units!, scope ?? "user"),
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              ok: true,
+              snapshotMode: "units-only",
+              unitStates: unitStates.states,
+              unitsUnknown: unitStates.unitsUnknown,
+              ...(unitStates.scopesUnavailable.length ? { scopesUnavailable: unitStates.scopesUnavailable } : {}),
+              healthPhaseTimingsMs,
+            }),
+          },
+        ],
+      };
+    }
     // The unit query is ADDITIVE and independent of the fixed probe set: a
     // caller passing `units` still gets the full snapshot, because "is this one
     // unit up" and "what is the state of everything" are usually asked in the
@@ -693,19 +767,26 @@ export default defineTool({
     // whole plan exists to remove.
     // These reads do not depend on one another. A slow systemd/spawner-sidecar
     // request must not serialize two more probe phases past the MCP deadline.
-    const unitStatesPromise = units?.length ? probeUnitStates(units, scope ?? "user") : Promise.resolve(null);
-    const supervisionPromise = overlaySystemdRestartRecency(
-      overlayNodeChildSupervision(
-        supervisionSnapshot(),
-        substrateSidecarSupervisionStatus(),
-        spawnerSidecarSupervisionStatus(),
+    const unitStatesPromise = units?.length
+      ? measureHealthPhase(healthPhaseTimingsMs, "requestedUnitStates", () => probeUnitStates(units, scope ?? "user"))
+      : Promise.resolve(null);
+    const supervisionPromise = measureHealthPhase(healthPhaseTimingsMs, "supervision", () =>
+      overlaySystemdRestartRecency(
+        overlayNodeChildSupervision(
+          supervisionSnapshot(),
+          substrateSidecarSupervisionStatus(),
+          spawnerSidecarSupervisionStatus(),
+        ),
       ),
     );
-    const [unitStates, rawServices, mcpHandshake, supervision] = await Promise.all([
+    const [unitStates, rawServices, mcpHandshake, supervision, dhtUniverse] = await Promise.all([
       unitStatesPromise,
-      probeAll(),
-      probeMcpHandshake(),
+      measureHealthPhase(healthPhaseTimingsMs, "probeAll", () => probeAll()),
+      measureHealthPhase(healthPhaseTimingsMs, "mcpHandshake", () => probeMcpHandshake()),
       supervisionPromise,
+      // WI-10005995: product hosts on an isolated DHT outside a drill. null = systemd unreadable
+      // (no verdict); a probe failure must never take the rest of the snapshot down with it.
+      measureHealthPhase(healthPhaseTimingsMs, "dhtUniverse", () => probeProductHostDhtUniverse().catch(() => null)),
     ]);
     // EI-19934795546523351: reconcile the bg-host-ticker verdict against this SAME
     // response's supervision block BEFORE it can drive a contradictory rootCause/
@@ -719,7 +800,9 @@ export default defineTool({
     const bgHostFailing = services.some((s) => s.present !== false && !s.up && s.name.includes("bg-host"));
     let watchdogActive: boolean | undefined;
     if (bgHostFailing) {
-      const probed = await probeUnitStates([BG_HOST_WATCHDOG_UNIT], "user").catch(() => null);
+      const probed = await measureHealthPhase(healthPhaseTimingsMs, "watchdogUnitStates", () =>
+        probeUnitStates([BG_HOST_WATCHDOG_UNIT], "user").catch(() => null),
+      );
       const row = probed?.states?.[0];
       // `not-found` (never installed) is a determinate NO supervisor, not an unknown. A missing
       // row / failed probe stays undefined — an unreadable probe must never read as an absence.
@@ -751,7 +834,12 @@ export default defineTool({
                     : {}),
                 }
               : {}),
-            ...buildServiceHealthDiagnostic(services, supervision),
+            // WI-10005995: present on Linux whenever systemd answered; `warnings` is the alarm.
+            ...(dhtUniverse ? { dhtUniverse } : {}),
+            // watchdogActive was computed above but never passed, so a failing bg-host always
+            // read as watchdog-liveness UNKNOWN on the live tool (WI-10005995 review).
+            ...buildServiceHealthDiagnostic(services, supervision, watchdogActive, dhtUniverse?.warnings),
+            healthPhaseTimingsMs,
           }),
         },
       ],

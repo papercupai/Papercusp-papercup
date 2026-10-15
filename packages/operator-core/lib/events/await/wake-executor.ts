@@ -34,6 +34,7 @@
  */
 
 import { spawn as childSpawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   existsSync,
@@ -47,9 +48,11 @@ import {
   writeFileSync,
   type Dirent,
 } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
-import { resolveInheritedOperatorBaseUrl } from '../../mcp-base-url';
+import { resolveResumedSessionOperatorBaseUrl } from '../../mcp-base-url';
+import { withBoundedTimeout } from '../../bounded-timeout';
+import { redactSensitiveText } from '../../sensitive-text';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { packWakeText, recordWakePack, renderSectionIndex } from './wake-text-budget';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -63,6 +66,7 @@ import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token
 import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
+  latestAdvSessionByCoordOwner,
   claimAdvSessionResume,
   setAdvSessionPid,
 } from '../../adv-sessions';
@@ -93,7 +97,9 @@ import {
   type FreshContextDeps,
 } from './wake-executor-fresh-context';
 import { appendCrashResumeAdvisory } from './crash-resume-advisory';
-import { getPresence } from '../../agent-tools/coordination/presence';
+import { getPresence, touchHeartbeat } from '../../agent-tools/coordination/presence';
+import { resolveWakeMode } from '../../agent-tools/coordination/wake-mode';
+import { stagePendingWake } from '../../agent-tools/coordination/pending-wakes';
 import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
@@ -119,16 +125,18 @@ import { payloadIsTimeout, wakeSummaryHeadline } from './timeout-fallback';
 import { prepareCellWakeFold } from './cell-wake-fold';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   hostIsAgentLaunched,
   hostSupports,
   injectIntoHost,
   injectIntoHostWithConfirmation,
   readHostEventTail,
+  readHostEventTailAsync,
   type InjectConfirmation,
   type PsuPtyHost,
   type PtyHostEvent,
 } from './psu-pty-discovery';
+import { decideQuotaWakeRecovery, recentAuthRecoveryCount } from './host-recovery-eligibility';
 import {
   decideColdWake,
   readColdLoopMarker,
@@ -144,6 +152,7 @@ import {
   shortCarryHash,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
+  type CheckEntry,
 } from '../../carry-note';
 import {
   clipLoopCheckpointForWake,
@@ -151,7 +160,34 @@ import {
   renderLoopWallsBlock,
 } from '../../harness/routines/loop-fire';
 import { getLoopStatus, countAgentToolCallsInWindow } from '../../harness/routines/loop';
-import { formatEnvelope, mintNonce, tagTurnForInjection } from '../../turn-provenance/turn-provenance';
+import {
+  formatEnvelope,
+  mintNonce,
+  tagTurnForInjection,
+  type TaggedTurn,
+} from '../../turn-provenance/turn-provenance';
+
+/** The envelope+ledger tagger seam. The real one is async (WI-10005327: its
+ *  ledger write must not block the event loop); hermetic test stubs may stay
+ *  sync, so callers always await the result. */
+export type WakeTurnTagger = (args: Parameters<typeof tagTurnForInjection>[0]) => TaggedTurn | Promise<TaggedTurn>;
+
+// Text accepted by the lower-level injector only after tagWakeText has written
+// its provenance ledger entry and prefixed the envelope. The brand lets the
+// source guard preserve that proof through the nested warm-wake closure.
+declare const ENROLLED_WAKE_TEXT: unique symbol;
+type EnrolledWakeText = {
+  readonly [ENROLLED_WAKE_TEXT]: true;
+  readonly text: string;
+  /** The exact timestamp supplied to the provenance ledger writer. */
+  readonly provenanceIssuedAtMs: number;
+  /** Origin recorded alongside this exact tagged text. */
+  readonly origin: string;
+};
+
+function enrolledWakeText(text: string, provenanceIssuedAtMs: number, origin: string): EnrolledWakeText {
+  return { text, provenanceIssuedAtMs, origin } as EnrolledWakeText;
+}
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import {
   readOwnerChatTurnText,
@@ -163,16 +199,27 @@ import {
   appendClaudeToolReferencesToSeed,
   CLAUDE_TOOL_REFERENCE_POISON_TURNS,
   isMissingClaudeToolReferenceError,
+  neutralizeResumeNativeToolReferences,
 } from '../../claude-resume-tool-references.mjs';
-import { quarantineRepeatedClaudeToolReferenceFailures } from './poisoned-resume-session';
+import {
+  claudeInheritedEffortOverride,
+  readClaudeLaunchSettings,
+  type ClaudeLaunchSettings,
+} from '../../model-context-budget.mjs';
+import {
+  quarantineRepeatedClaudeToolReferenceFailures,
+  quarantineRepeatedCodexContextOverflow,
+} from './poisoned-resume-session';
+import { findCodexRolloutPath } from './codex-rollout-overflow';
 import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
-import type { ResumeTurnContext, ResumeTurnExitRaw } from './resume-turn-outcome';
-import type { DeliveryWork, WakeChannel, WakeOutcome } from './types';
+import { classifyResumeTurnExit, type ResumeTurnContext, type ResumeTurnExitRaw } from './resume-turn-outcome';
+import type { DeliveryWork, WakeChannel, WakeOutcome, WakeHandle } from './types';
 
 /** Bounded output-tail capture for an observed resume turn (P0a). The CLIs print
  *  API errors (incl. the 429 / usage-limit lines) to STDOUT; the dying turn's error
  *  is at the END of its output, so a tail is enough to classify it. */
 const RESUME_OUTPUT_TAIL_BYTES = Number(process.env.PAPERCUSP_RESUME_OUTPUT_TAIL_BYTES) || 8192;
+const WAKE_MODE_DELIVERY_LOOKUP_TIMEOUT_MS = 15_000;
 
 /** WI-666: bound the attended-loop recovery leg. A resumable loop owner may be
  * alive in a terminal the operator cannot inject, so send SIGINT and wait only
@@ -393,6 +440,8 @@ export interface HeadlessResumeTurnInput {
   resumeId: string | null;
   cwd: string;
   argv: string[];
+  /** Declared child route, not the gateway's eventual account selection. */
+  declaredAccountRoute?: Pick<WakeAccountRoute, 'mode' | 'accountId'> | null;
 }
 
 export interface HeadlessResumeTurnAccounting {
@@ -431,21 +480,52 @@ export function defaultAccountHeadlessResumeTurn(input: HeadlessResumeTurnInput)
         coordOwnerId: input.coordOwnerId,
         advSessionId: input.advSessionId,
         agent: input.agent,
+        declaredAccountRoute: input.declaredAccountRoute
+          ? { mode: input.declaredAccountRoute.mode, accountId: input.declaredAccountRoute.accountId }
+          : null,
       },
     },
     input.pid,
     { workspaceId: input.sessionWorkspaceId ?? input.deliveryWorkspaceId },
   );
+  // WI-10005725: a resume-headless turn has no psu launcher, so no supervisor
+  // beat ever reports its pid. Without this stamp the presence row keeps the
+  // DEAD launcher pid of the session being resumed, the liveness oracle's ESRCH
+  // probe outranks the turn's own fresh activity, and the working turn reads
+  // `ended` (a goal-holder respawner then replaces it). Stamp the child's
+  // pid/host so the probe describes the process actually running; once the
+  // child exits, the same probe correctly reads it gone. Best-effort like the
+  // adv write: the spawn never waits on it, a failure never rejects
+  // `pidRecorded`, and touchHeartbeat is a no-op without a presence row.
+  const presenceStamped = touchHeartbeat(input.coordOwnerId, {
+    pid: input.pid,
+    host: hostname(),
+  }).catch(() => undefined);
   let finished = false;
   return {
-    pidRecorded: setAdvSessionPid(input.advSessionId, input.pid, undefined, input.sessionWorkspaceId),
+    pidRecorded: Promise.all([
+      setAdvSessionPid(input.advSessionId, input.pid, undefined, input.sessionWorkspaceId),
+      presenceStamped,
+    ]).then(() => undefined),
     finish: (exit) => {
       if (finished) return;
       finished = true;
+      // EI-25724272623153106: the event engine classified these tails, but
+      // the durable task row retained only the exit code/signal. Scrub BEFORE
+      // classification truncates the message, so a cut credential cannot leak.
+      // Successful model output is never retained as a diagnostic.
+      const outcome = classifyResumeTurnExit({
+        ...exit,
+        stdoutTail: redactSensitiveText(exit.stdoutTail),
+        stderrTail: redactSensitiveText(exit.stderrTail),
+        ...(input.agent === 'codex' ? { outputProtocol: 'codex-jsonl' as const } : {}),
+      });
       finishSyncEnrolment(enrolment, {
         state: exit.signal ? 'killed' : 'exited',
         exitCode: exit.exitCode,
-        exitReason: exit.signal ?? null,
+        exitReason: exit.signal ?? (outcome.ok
+          ? null
+          : redactSensitiveText(`${outcome.error.class}: ${outcome.error.message}`).slice(0, 1024)),
       });
     },
   };
@@ -555,8 +635,41 @@ export interface EnsureCodexHomeForWakeInput {
   /** Channel-2 wake resumes are detached/headless and must retain that config policy. */
   headless: true;
   sessionRow?: CodexRepairSessionRow | null;
-  /** The launcher passes this when the rollout is bound to the gateway provider. */
+  /**
+   * Keep (or restore) the unpinned gateway route in the rewritten config.toml.
+   * Channel-2 wakes set this from the session's persisted `--account=auto`;
+   * without it the repair treats any gateway block as drift and strips it, so
+   * the resumed thread falls back to the shared ChatGPT login (WI-10006825).
+   */
   requireGatewayProvider?: boolean;
+  /** Persisted `--account=<id>` hard pin for the resumed thread (null = no pin). */
+  codexGatewayAccountId?: string | null;
+}
+
+/**
+ * The gateway inputs a codex wake repair must carry, derived from the session's
+ * persisted `--account` exactly as the psu launcher derives them on an
+ * interactive resume (`applyCodexGatewayRoute`): `auto` → unpinned gateway
+ * provider, a pin → the gateway provider with that account header, `default` or
+ * an absent/legacy argv → no gateway (today's behavior). Exported for tests.
+ */
+export function codexWakeGatewayInputs(
+  route: WakeAccountRoute | null,
+): Pick<EnsureCodexHomeForWakeInput, 'requireGatewayProvider' | 'codexGatewayAccountId'> {
+  if (route?.mode === 'auto') return { requireGatewayProvider: true, codexGatewayAccountId: null };
+  if (route?.mode === 'pin' && route.accountId) {
+    return { requireGatewayProvider: false, codexGatewayAccountId: route.accountId };
+  }
+  return { requireGatewayProvider: false, codexGatewayAccountId: null };
+}
+
+/** Rebuild the Codex-specific child route after a wake; its home config and process env are separate. */
+export function codexWakeGatewayEnv(route: WakeAccountRoute | null): Record<string, string> {
+  if (route?.mode === 'auto') return { PAPERCUSP_CODEX_GATEWAY: '1' };
+  if (route?.mode === 'pin' && route.accountId) {
+    return { PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_ACCOUNT_ID: route.accountId };
+  }
+  return {};
 }
 
 export type EnsureCodexHomeForWakeResult = {
@@ -573,7 +686,7 @@ export type EnsureCodexHomeForWakeResult = {
  * Codex resume. `ensureSuCodexHomeConfig` only rewrites managed files in an
  * existing home, so the rollout restored by the archive leg remains intact.
  */
-async function defaultEnsureCodexHomeForWake(
+export async function defaultEnsureCodexHomeForWake(
   input: EnsureCodexHomeForWakeInput,
 ): Promise<EnsureCodexHomeForWakeResult> {
   try {
@@ -581,27 +694,40 @@ async function defaultEnsureCodexHomeForWake(
       { readSuLaunchSpecByOwner },
       { parseSuLaunchSpecRecord },
       { buildLaunchSpec },
-      { ensureSuCodexHomeConfig },
+      { ensureSuCodexHomeConfigAsync },
       { readSuperuserToken },
+      { parseLaunchCompactionLimitArgv },
+      { sessionAllowsAmbientContext },
     ] = await Promise.all([
       import('../../adv-sessions'),
       import('../../su-persona-render'),
       import('../../role-launch-spec'),
       import('../../role-codex-home'),
       import('../../superuser-token'),
+      import('../../compaction-usage'),
+      import('../../capability-envelope/session-confinement-store')
+        .then(() => import('../../capability-envelope/session-confinement-port')),
     ]);
     const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(input.owner));
+    const sessionRow = input.sessionRow ?? (await getAdvSession(input.advSessionId).catch(() => null));
     const record =
       persistedRecord ??
-      fallbackCodexLaunchSpecFromAdvSession(
-        input.sessionRow ?? (await getAdvSession(input.advSessionId).catch(() => null)),
-        input.owner,
-      );
+      fallbackCodexLaunchSpecFromAdvSession(sessionRow, input.owner);
     if (!record) return { ok: true, repaired: false, reason: 'no-launch-spec' };
     if (record.agent !== 'codex') return { ok: true, repaired: false, reason: 'unsupported-agent' };
+    // Runtime budget changes outlive the recorded launch argv. Match managed
+    // resume precedence so a wake cannot restore an obsolete native threshold.
+    const currentCompactionLimit = (await getPresence(input.owner))?.compactionLimit;
+    const compactionLimit =
+      typeof currentCompactionLimit === 'number' && Number.isFinite(currentCompactionLimit) && currentCompactionLimit > 0
+        ? Math.floor(currentCompactionLimit)
+        : parseLaunchCompactionLimitArgv(sessionRow?.launchArgv);
+    const denyAmbientContext = !(await sessionAllowsAmbientContext({
+      ownerId: input.owner, workspaceId: record.workspaceId,
+    }));
 
     const operatorBaseUrl =
-      resolveInheritedOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL) ||
+      resolveResumedSessionOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL) ||
       `http://localhost:${process.env.PAPERCUSP_HONO_PORT ?? '3070'}`;
     const spec = await buildLaunchSpec({
       kind: 'su',
@@ -617,23 +743,27 @@ async function defaultEnsureCodexHomeForWake(
     });
     return {
       ok: true,
-      ...ensureSuCodexHomeConfig({
+      ...(await ensureSuCodexHomeConfigAsync({
         sessionKey: input.advSessionId,
         mcpUrl: spec.mcpUrl,
         sid: input.owner,
         model: record.model,
+        compactionLimit,
         token: readSuperuserToken(),
+        codexGatewayAccountId: input.codexGatewayAccountId ?? null,
         codexGatewayAuto: input.requireGatewayProvider === true,
-        codexGatewayPriority: input.requireGatewayProvider === true ? 'su' : null,
+        codexGatewayPriority:
+          input.requireGatewayProvider === true || !!input.codexGatewayAccountId ? 'su' : null,
         headless: input.headless,
         trustDir: null,
-        projectDir: input.sessionRow?.cwd,
-      }),
+        projectDir: sessionRow?.cwd,
+        ...(denyAmbientContext ? { denyAmbientContext: true } : {}),
+      })),
     };
   } catch (err) {
     // A repair failure must not turn a recoverable rollout into a dropped wake;
     // the exact UUID check below remains the authoritative resume safety gate.
-    console.warn(`[wake-executor] codex home repair failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`[wake-executor] codex home repair failed: ${redactSensitiveText(err instanceof Error ? err.message : String(err))}`);
     return { ok: false, repaired: false, reason: 'repair-failed' };
   }
 }
@@ -963,6 +1093,17 @@ type ClaimableDeliveryFreshness = {
   staleIds: string[];
 };
 
+type BlockedBoundDeliveryComponent = {
+  itemId: string;
+  eventIndex: number | null;
+};
+
+type BlockedBoundDeliveryFreshness = {
+  delivery: DeliveryWork;
+  staleOnly: boolean;
+  staleIds: string[];
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1006,8 +1147,8 @@ function deliveryEventPayloadIsTimeout(event: CoalescedDeliveryEvent): boolean {
   return isRecord(event.payload) && event.payload.timeout === true;
 }
 
-/** Rebuild the coalesced headline after stale claimable components are removed. */
-function rebuildCoalescedClaimableDelivery(
+/** Rebuild the coalesced headline after stale components are removed. */
+function rebuildCoalescedDelivery(
   d: DeliveryWork,
   events: CoalescedDeliveryEvent[],
 ): DeliveryWork {
@@ -1137,7 +1278,106 @@ async function revalidateClaimableDelivery(
   }
 
   return {
-    delivery: rebuildCoalescedClaimableDelivery(d, remaining),
+    delivery: rebuildCoalescedDelivery(d, remaining),
+    staleOnly: false,
+    staleIds: [...staleIds],
+  };
+}
+
+/** Find the blocked work-item lifecycle target stamped on an auto-armed wake. */
+function blockedBoundWorkItemId(payload: unknown): string | null {
+  if (!isRecord(payload) || !isRecord(payload.bound_to)) return null;
+  const binding = payload.bound_to;
+  if (binding.kind !== 'work-item-blocked' || typeof binding.ref !== 'string') return null;
+  const ref = binding.ref.trim();
+  return ref || null;
+}
+
+/** Preserve per-event binding provenance when the engine coalesced several wakes. */
+function blockedBoundDeliveryComponents(d: DeliveryWork): BlockedBoundDeliveryComponent[] {
+  if (isRecord(d.payload) && d.payload.coalesced === true && Array.isArray(d.payload.events)) {
+    return d.payload.events.flatMap((raw, eventIndex) => {
+      const itemId = isRecord(raw) ? blockedBoundWorkItemId(raw.payload) : null;
+      return itemId ? [{ itemId, eventIndex }] : [];
+    });
+  }
+  const itemId = blockedBoundWorkItemId(d.payload);
+  return itemId ? [{ itemId, eventIndex: null }] : [];
+}
+
+/**
+ * A fired one-shot may already have a queued delivery by the time its bound
+ * work-item settles, so cancelling the await row alone cannot suppress it.
+ * Re-read that lifecycle target at delivery time and remove only components
+ * whose `work-item-blocked` target is confirmed terminal. Unreadable targets
+ * stay fail-open so a transient store problem cannot swallow a live wake.
+ */
+async function revalidateBlockedBoundDelivery(
+  d: DeliveryWork,
+  lookup: typeof getWorkItem,
+  timeoutMs: number,
+): Promise<BlockedBoundDeliveryFreshness> {
+  const components = blockedBoundDeliveryComponents(d);
+  if (components.length === 0) return { delivery: d, staleOnly: false, staleIds: [] };
+
+  const freshnessById = new Map<string, Promise<boolean | null>>();
+  const staleEventIndexes = new Set<number>();
+  const staleIds = new Set<string>();
+  for (const component of components) {
+    let terminal: boolean | null = null;
+    try {
+      let pending = freshnessById.get(component.itemId);
+      if (!pending) {
+        pending = withWakeTimeout(
+          Promise.resolve().then(() => lookup(component.itemId)),
+          `blocked-bound delivery lookup/${component.itemId}`,
+          Math.max(1, timeoutMs),
+        ).then((item) => (item ? isSettledWorkItemState(item.state) : null));
+        freshnessById.set(component.itemId, pending);
+      }
+      terminal = await pending;
+    } catch {
+      // Unknown reads preserve the original wake, matching the other delivery gates.
+      terminal = null;
+    }
+    if (terminal !== true) continue;
+    staleIds.add(component.itemId);
+    if (component.eventIndex != null) staleEventIndexes.add(component.eventIndex);
+  }
+
+  if (staleIds.size === 0) return { delivery: d, staleOnly: false, staleIds: [] };
+
+  const ids = [...staleIds].join(', ');
+  const coalescedPayload =
+    isRecord(d.payload) && d.payload.coalesced === true && Array.isArray(d.payload.events) ? d.payload : null;
+  if (!coalescedPayload) {
+    return {
+      delivery: {
+        ...d,
+        payload: null,
+        summary: `work-item-blocked wake is stale; bound work-item(s) ${ids} are terminal`,
+      },
+      staleOnly: true,
+      staleIds: [...staleIds],
+    };
+  }
+
+  const events = coalescedPayload.events as unknown[];
+  const remaining = events.filter((_event, index) => !staleEventIndexes.has(index)) as CoalescedDeliveryEvent[];
+  if (remaining.length === 0) {
+    return {
+      delivery: {
+        ...d,
+        payload: null,
+        summary: `work-item-blocked wake is stale; bound work-item(s) ${ids} are terminal`,
+      },
+      staleOnly: true,
+      staleIds: [...staleIds],
+    };
+  }
+
+  return {
+    delivery: rebuildCoalescedDelivery(d, remaining),
     staleOnly: false,
     staleIds: [...staleIds],
   };
@@ -1611,6 +1851,56 @@ function formatCarryNoteSnapshotIdentity(identity: CarryNoteSnapshotIdentity): s
     `readStatus=${identity.readFailed ? 'failed' : 'ok'}`;
 }
 
+/**
+ * Default delivery-time carried-probe block (P-001). Loaded lazily so a wake whose note carries no
+ * probe never loads the runner or its dispatcher. Never throws: an import failure is rendered as an
+ * explicit could-not-run line, never as silence a reader would take for "everything holds".
+ */
+export async function defaultCarriedProbeBlock(input: {
+  ownerId: string;
+  checks: ReadonlyArray<CheckEntry>;
+  harness: string;
+  readAtIso: string;
+}): Promise<string | null> {
+  try {
+    const { carriedProbeBlockForDelivery, carriedProbeSources } = await import('../../carry-probe-eval');
+    return await carriedProbeBlockForDelivery(
+      carriedProbeSources({ loop: { ownerId: input.ownerId, checks: input.checks } }),
+      { harness: input.harness, readAtIso: input.readAtIso },
+    );
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return (
+      `🧪 CARRIED PROBES — COULD NOT RUN at delivery (readAt=${input.readAtIso}): ${why.slice(0, 220)}. ` +
+      `This is NOT evidence the carried checks hold; run their re-checks before relying on them.`
+    );
+  }
+}
+
+/**
+ * Default delivery-time carried-reference block (P-002, carry-recheck-and-governed-memory-2026-10-14).
+ * Re-checks the version stamps of the references the delivered loop note cites; null when none moved.
+ * Loaded lazily; never throws (an import failure renders as an explicit could-not-re-check line).
+ */
+export async function defaultCarryRefBlock(input: {
+  ownerId: string;
+  harness: string;
+  workspaceId: string | null | undefined;
+  deliveredNote: string;
+  readAtIso: string;
+}): Promise<string | null> {
+  try {
+    const { carryRefChangesForWake } = await import('../../carry-ref-delivery');
+    return await carryRefChangesForWake(input);
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    return (
+      `🔗 CARRIED REFERENCES — COULD NOT RE-CHECK at wake delivery (readAt=${input.readAtIso}): ${why.slice(0, 220)}. ` +
+      `This is NOT evidence they are unchanged.`
+    );
+  }
+}
+
 export async function rehydrateLoopWakeText(
   d: DeliveryWork,
   baseText: string,
@@ -1626,6 +1916,18 @@ export async function rehydrateLoopWakeText(
     /** Capture the exact delivery-time snapshot used to compose the live block. */
     captureLoopCarryNoteMeta?: (meta: DeliveryCarryNoteMeta) => void;
     getLoopStatusFn?: typeof getLoopStatus;
+    /**
+     * P-001 (carry-recheck-and-governed-memory-2026-10-14): run the carried checks' probes at
+     * delivery and render holds / changed / could-not-run. Injectable for tests; the default
+     * reuses the bounded read-only continuity-probe runner (carry-probe-eval.ts).
+     */
+    carriedProbeBlockFn?: typeof defaultCarriedProbeBlock;
+    /**
+     * P-002 (carry-recheck-and-governed-memory-2026-10-14): re-check the version stamps of the
+     * references the delivered note cites and render one line per changed or gone reference
+     * (nothing when none moved). Injectable for tests; the default is carry-ref-delivery.ts.
+     */
+    carryRefBlockFn?: typeof defaultCarryRefBlock;
   } = {},
 ): Promise<string> {
   try {
@@ -1699,6 +2001,30 @@ export async function rehydrateLoopWakeText(
     const checksNow = carryNoteReadFailed
       ? '🧪 CARRIED CHECKS — UNKNOWN: the delivery-time carry-note read failed; do not infer that no checks are open.'
       : renderLoopChecksBlock(checks);
+    // P-001 (carry-recheck-and-governed-memory-2026-10-14, D-004): the block above prints each
+    // carried check's claim and probe; RUN the probes too, so a stale claim is reported as changed
+    // at delivery instead of being trusted. Only the note already read here is probed — no extra
+    // store read on the wake path — and the runner refuses any non-read-only probe undispatched.
+    const probesNow = checks.some((check) => check.probe !== undefined)
+      ? await (deps.carriedProbeBlockFn ?? defaultCarriedProbeBlock)({
+          ownerId: d.subscriberId,
+          checks,
+          harness: marker.harness,
+          readAtIso: deliveryReadAtIso,
+        })
+      : null;
+    // P-002 (carry-recheck-and-governed-memory-2026-10-14): one line per reference the delivered
+    // note cites whose stamped version moved or no longer resolves; null (prints nothing) when none
+    // did. A note citing no reference never reads the stamp row.
+    const refsNow = readableNote
+      ? await (deps.carryRefBlockFn ?? defaultCarryRefBlock)({
+          ownerId: d.subscriberId,
+          harness: marker.harness,
+          workspaceId: d.workspaceId,
+          deliveredNote: readableNote,
+          readAtIso: deliveryReadAtIso,
+        })
+      : null;
     const ageMs = readableNote && meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
     const ageStr = ageMs != null ? `${Math.max(0, Math.round(ageMs / 1000))}s` : 'unknown';
 
@@ -1807,6 +2133,11 @@ export async function rehydrateLoopWakeText(
       `🔄 LIVE RE-CHECK at actual delivery time (EI-10935 / EI-20230529647745311 — this delivery may have been ` +
       `queued/staged, so the checkpoint/walls text below can be a stale snapshot from when the wake FIRED, not ` +
       `from now). Freshest carry-note is ${ageStr} old.\n\n` +
+      // Delivery deltas need their own sections ahead of the narrative. Otherwise the
+      // packer inherits the note's final heading and can spill a changed/failed check
+      // together with historical prose while keeping the stale claim visible.
+      (probesNow ? `## Carried probe changes\n${probesNow}\n\n` : '') +
+      (refsNow ? `## Carried reference changes\n${refsNow}\n\n` : '') +
       checkpointState +
       `\n\nCurrent open walls:\n${wallsNow}\n` +
       (checksNow ? `${checksNow}\n` : '') +
@@ -1854,7 +2185,8 @@ function injectionDoorTokens(subscriberId: string | null | undefined): number {
  * by priority (headline, then next-action / owner / blocker sections, then document
  * order) and names every section it left out in one `[injection-door: …]` pointer; the
  * FULL original plus a section index is spilled to
- * `~/.papercusp/wake-spills/<subscriber>/delivery-<id>.md`. Nothing is cut mid-section.
+ * `~/.papercusp/wake-spills/<subscriber>/delivery-<id>-<content hash>.md`. Retries
+ * with different delivery-time reads preserve earlier evidence. Nothing is cut mid-section.
  * FAIL-SOFT: a spill write failure delivers the FULL untrimmed text (a lost wake tail is
  * worse than a fat hop), and the kill-switch env bypasses entirely. Applied BEFORE
  * provenance tagging so the envelope is never sheared.
@@ -1871,18 +2203,27 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
       'wake-spills',
       String(d.subscriberId ?? 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_'),
     );
-    const file = join(dir, `delivery-${d.id}.md`);
+    // A delivery can retry after its live reads change. Its pointer must continue
+    // to identify that attempt's evidence, rather than a later retry's snapshot.
+    const contentHash = createHash('sha256').update(`${doorTokens}\n${text}`).digest('hex');
+    const file = join(dir, `delivery-${d.id}-${contentHash}.md`);
     const packed = packWakeText(text, budgetChars, doorTokens, file);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      file,
-      `# Wake spill — delivery #${d.id} (event ${d.eventKey})\n\n` +
-        `The composed wake exceeded the per-hop injection door (~${doorTokens} tokens), so ` +
-        `${packed.omitted.length} whole section(s) were left out of the delivered text. ` +
-        `This file carries the FULL original text. Safe to delete after reading.\n\n` +
-        `## Section index\n\n${renderSectionIndex(packed)}\n\n---\n\n${text}\n`,
-      { mode: 0o600 },
-    );
+    try {
+      writeFileSync(
+        file,
+        `# Wake spill — delivery #${d.id} (event ${d.eventKey})\n\n` +
+          `The composed wake exceeded the per-hop injection door (~${doorTokens} tokens), so ` +
+          `${packed.omitted.length} whole section(s) were left out of the delivered text. ` +
+          `This file carries the FULL original text. Safe to delete after reading.\n\n` +
+          `## Section index\n\n${renderSectionIndex(packed)}\n\n---\n\n${text}\n`,
+        { mode: 0o600, flag: 'wx' },
+      );
+    } catch (error) {
+      // Identical retries share the same immutable snapshot; every other write
+      // failure retains the existing fail-soft full-text delivery below.
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
     recordWakePack(packed.omitted.length);
     console.info(
       `[wake-budget] delivery #${d.id} for ${d.subscriberId}: ${packed.omitted.length} section(s) left out whole ` +
@@ -1907,7 +2248,9 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
  * ledger write still returns deliverable tagged text (the turn then shows as
  * UNVERIFIED at the hook — visible, never a dropped wake).
  */
-function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInjection): string {
+// Export the existing boundary so callers' regression suites can carry their
+// actual wake payload through enrollment instead of reconstructing an envelope.
+export async function tagWakeText(d: Pick<DeliveryWork, 'payload' | 'subscriberId'>, text: string, tag: WakeTurnTagger): Promise<EnrolledWakeText> {
   const origin = readLoopDeliveryMarker(d.payload)
     ? 'loop-fire'
     : // EI-20130618357432548: an owner CHAT-PANE turn is the same authority as an
@@ -1925,15 +2268,17 @@ function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInject
       isInboxOwnerReplyPayload(d.payload) || readOwnerChatTurnText(d.payload)
       ? OWNER_CHAT_TURN_ORIGIN
       : 'wake-pump';
+  const provenanceIssuedAtMs = Date.now();
   try {
-    return tag({ sid: d.subscriberId, origin, text }).taggedText;
+    const tagged = await tag({ sid: d.subscriberId, origin, text, nowMs: provenanceIssuedAtMs });
+    return enrolledWakeText(tagged.taggedText, provenanceIssuedAtMs, origin);
   } catch {
     // The wake itself is fail-soft, but returning it without an envelope turns a
     // machine prompt into affirmative owner speech in every transcript reader.
     // Keep delivery moving with a syntactically valid, unverified envelope; the
     // prompt hook can classify it as unverified (there is no ledger row), while
     // owner-visible readers still fail closed on the non-owner origin.
-    return `${formatEnvelope(origin, mintNonce())}\n${text}`;
+    return enrolledWakeText(`${formatEnvelope(origin, mintNonce())}\n${text}`, provenanceIssuedAtMs, origin);
   }
 }
 
@@ -1970,13 +2315,20 @@ async function notifyPoisonedResumeSession(
   send: typeof sendMessage,
 ): Promise<void> {
   try {
+    const codex = context.agent === 'codex';
     await send(inboxNotifierIdentity(delivery.workspaceId), {
       to: [delivery.subscriberId],
-      summary: `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
+      summary: codex
+        ? `Codex session #${context.advSessionId} quarantined: its thread exceeds the model context window`
+        : `Claude session #${context.advSessionId} quarantined after repeated unavailable tool references`,
       body:
-        `The Claude transcript recorded at least ${CLAUDE_TOOL_REFERENCE_POISON_TURNS} consecutive assistant turns ` +
-        `rejected because a Papercusp tool_reference was absent from the resumed tool list. Wake retries for this ` +
-        `session incarnation have stopped; session-end lease cleanup was scheduled to release its work-item claims.\n\n` +
+        (codex
+          ? `${context.poisonReason ?? 'Consecutive Codex turns exceeded the model context window'}. ` +
+            `No resume or native compaction can fit this thread; relaunch it onto a fresh thread. Wake retries for this ` +
+            `session incarnation have stopped; session-end lease cleanup was scheduled to release its work-item claims.\n\n`
+          : `The Claude transcript recorded at least ${CLAUDE_TOOL_REFERENCE_POISON_TURNS} consecutive assistant turns ` +
+            `rejected because a Papercusp tool_reference was absent from the resumed tool list. Wake retries for this ` +
+            `session incarnation have stopped; session-end lease cleanup was scheduled to release its work-item claims.\n\n`) +
         `Last provider evidence: ${error}`,
       category: 'event',
       extra: {
@@ -2011,14 +2363,26 @@ export async function degradeToInboxOrDrop(
   d: DeliveryWork,
   reason: string,
   send: typeof sendMessage,
+  options: { allowLoopMarkerFallback?: boolean } = {},
 ): Promise<WakeOutcome> {
+  // An inbox notice proves that a message was queued, not that a loop iteration
+  // started. Keep a surviving loop marker as a visible drop so reconciliation
+  // can retry/backstop it; mixed wakes whose stale loop component was stripped
+  // above remain eligible for the ordinary inbox fallback.
+  if (!options.allowLoopMarkerFallback && readLoopDeliveryMarkers(d.payload).length > 0) {
+    return {
+      kind: 'drop',
+      reason: 'loop turn delivery cannot fall back to inbox: ' + reason,
+    };
+  }
+  const inboxDelivery = deferredLockGrantInboxSnapshot(d);
   try {
     await send(inboxNotifierIdentity(d.workspaceId), {
-      to: [d.subscriberId],
-      summary: `${wakeSummaryHeadline(d.eventKey, d.payload)} — delivered to your coord inbox (${reason})`,
-      body: wakeTurnText(d),
+      to: [inboxDelivery.subscriberId],
+      summary: `${wakeSummaryHeadline(inboxDelivery.eventKey, inboxDelivery.payload)} — delivered to your coord inbox (${reason})`,
+      body: wakeTurnText(inboxDelivery),
       category: 'event',
-      extra: { auto: true, event_key: d.eventKey, wake_delivery_id: d.id },
+      extra: { auto: true, event_key: inboxDelivery.eventKey, wake_delivery_id: inboxDelivery.id },
     });
     return { kind: 'delivered', channel: 'inbox' };
   } catch (err) {
@@ -2027,6 +2391,52 @@ export async function degradeToInboxOrDrop(
       reason: `${reason} — inbox delivery also failed (no resolvable owner): ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+}
+
+/**
+ * A positive lock grant may be valid when its event first reaches the delivery
+ * pump, then become invalid while the durable inbox waits for the recipient's
+ * next turn. The lock-grant ownership check in executeWake protects immediate
+ * injection; this inbox path is consumed later and cannot inherit that earlier
+ * snapshot as present-tense authority. Keep the original notice for audit, but
+ * lead with a mandatory current-ownership check before the recipient acts.
+ */
+function deferredLockGrantInboxSnapshot(d: DeliveryWork): DeliveryWork {
+  if (!d.eventKey.startsWith(LOCK_GRANT_PREFIX)) return d;
+  const grant = parseLockGrantPayload(d.payload);
+  if (!grant) return d;
+  const summary = d.summary ?? '';
+  if (summary.includes('⚠ STALE') && summary.includes('RETRACTED')) return d;
+
+  const original = summary.trim() || 'No grant summary was provided.';
+  return {
+    ...d,
+    summary:
+      `⚠ INBOX SNAPSHOT — lock grant ${grant.lockId} may be stale by the time you read this. ` +
+      `Re-check current ownership with locks:queue before acting. ` +
+      `Original grant notification (snapshot only): ${original}`,
+  };
+}
+
+/**
+ * WI-10005900: `claude --resume` names no effort, so the resumed CLI falls back
+ * to the effortLevel in its settings.json — a key Claude Code writes itself. A
+ * session whose settings were written while Opus 5 offered `xhigh` then resumes
+ * with `xhigh` and 400s on its first request. The gateway clamps that on the
+ * `auto`/pinned routes, but the `default` route skips the gateway, so the resume
+ * argv carries the clamped level explicitly (the same rule psu-launcher applies
+ * to its own launches). Returns `args` itself when nothing needs clamping, the
+ * argv already names an effort, or it has no `--resume`.
+ */
+export function withClaudeResumeEffortClamp(args: string[], settings: ClaudeLaunchSettings): string[] {
+  if (args.some((a) => a === '--effort' || a.startsWith('--effort='))) return args;
+  const at = args.indexOf('--resume');
+  if (at < 0) return args;
+  const modelAt = args.indexOf('--model');
+  const model = modelAt >= 0 && modelAt + 1 < args.length ? args[modelAt + 1] : null;
+  const level = claudeInheritedEffortOverride({ model, settings });
+  if (!level) return args;
+  return [...args.slice(0, at), '--effort', level, ...args.slice(at)];
 }
 
 /** Per-client resume invocation (mirrors psu-launcher resumeArgsFor, headless-
@@ -2346,9 +2756,14 @@ export async function injectOmpWakeTurnWhenReady(input: {
 export interface ExecuteWakeDeps {
   /** Injected for tests; default real implementations below. */
   getSession?: typeof getAdvSession;
+  /** Delivery-time owner-session election used when a captured session is no longer live. */
+  getLatestSessionForOwner?: typeof latestAdvSessionByCoordOwner;
   findPty?: typeof findPtyByPid;
   write?: typeof writePty;
   spawnManagedPty?: typeof spawnPty;
+  /** WI-10005900: reads the settings.json a resumed claude child falls back to
+   *  for its model + effort, given the env that child will run with. */
+  readClaudeLaunchSettings?: (env: Record<string, string | undefined>) => ClaudeLaunchSettings;
   spawnDetached?: (
     bin: string,
     args: string[],
@@ -2367,6 +2782,8 @@ export interface ExecuteWakeDeps {
   onResumeTurnExit?: (d: DeliveryWork, exit: ResumeTurnExitRaw, context?: ResumeTurnContext) => void;
   /** Injected detector/quarantine seam for repeated unavailable Claude tool references. */
   quarantineToolReferenceSession?: typeof quarantineRepeatedClaudeToolReferenceFailures;
+  /** WI-6554700010008894: injected detector/quarantine seam for a Codex thread past its context window. */
+  quarantineCodexOverflowSession?: typeof quarantineRepeatedCodexContextOverflow;
   /** WI-10003466: move a LIVE Claude session whose transcript replays an unavailable
    *  tool reference onto fresh context (the compaction watchdog's forced carry-respawn)
    *  BEFORE any quarantine. Injected for tests; defaults to the watchdog's recovery. */
@@ -2377,10 +2794,21 @@ export interface ExecuteWakeDeps {
   /** WI-10002854: is this live recorded pid a headless resume turn of the same
    *  session? When it is, the wake parks. It never force-interrupts that turn. */
   isHeadlessResumeTurn?: (pid: number, resumeId: string | null) => boolean;
+  /** Restore the standing inbox-wake after a successful resume claim and before
+   *  the resumed process starts. Injected so the executor stays hermetic in tests. */
+  ensureInboxWakeArmedForActiveSession?: (input: {
+    ownerId: string;
+    forceRecheck?: boolean;
+  }) => Promise<boolean>;
   kill?: typeof killPty;
   presence?: typeof getPresence;
   /** EI-203843: durable release-latch read, before any wake reanimation. */
   getSessionLifecycle?: (ownerId: string) => Promise<SessionBriefLifecycle | null>;
+  /** Re-read the target's effective mode before consuming a queued wake. */
+  resolveWakeModeFn?: typeof resolveWakeMode;
+  /** Stage a queued delivery when manual mode became active after its emit. */
+  stageManualWakeFn?: typeof stagePendingWake;
+  wakeModeDeliveryLookupTimeoutMs?: number;
   /** EI-22449230917085417: delivery-time ownership read for positive
    *  `lock:grant:*` wakes. A confirmed false downgrades a delayed grant to the
    *  coord inbox; null/rejection/timeout preserves the normal wake. */
@@ -2415,7 +2843,7 @@ export interface ExecuteWakeDeps {
   /** WI-666: injected force-resume seam for hermetic tests. */
   forceResume?: (pid: number) => Promise<boolean>;
   /** EI-212246: atomic single-winner claim immediately before Channel 2 resume. */
-  claimResume?: (advSessionId: number) => Promise<boolean>;
+  claimResume?: (advSessionId: number, key?: string | null, windowSec?: number, ownerId?: string | null) => Promise<boolean | 'retired'>;
   /** P-001 (wake-delivery-degradation-fix-2026-07-09): the coord-message send
    *  used to degrade a would-be DROP into a durable inbox notification.
    *  Injected for tests; defaults to the real sendMessage. */
@@ -2424,12 +2852,12 @@ export interface ExecuteWakeDeps {
    *  wake delivery (never inbox bodies). Injected for tests (a hermetic test stubs
    *  it to avoid real ~/.papercusp/turn-provenance writes, or to a passthrough to
    *  assert un-tagged text); defaults to the real tagTurnForInjection. */
-  tagTurn?: typeof tagTurnForInjection;
+  tagTurn?: WakeTurnTagger;
   resumePlanRun?: (input: { runId: number; wakeText: string }) => Promise<{ ok: true } | { ok: false; error: string }>;
   /** turn-lifecycle-control Phase 3 (P-014): discover + inject into a live
    *  psu-hosted managed-pty session's control socket. The operator can't see it
    *  via findPty — the pty lives in the psu process (D-006). */
-  findPsuHost?: typeof findLiveHost;
+  findPsuHost?: typeof findLiveHostAsync;
   injectPsuHost?: typeof injectIntoHost;
   /** WI-6862: the confirmation-carrying transport used for a COLD context-reset, so the delivery
    *  ledger can distinguish a host ACK from the optimistic bare-close fallback. Defaults to the
@@ -2440,6 +2868,8 @@ export interface ExecuteWakeDeps {
    * quota recovery, and the existing productive-tool writer used to prove the
    * recovered successor actually picked the wake up. */
   readPsuHostEventTail?: typeof readHostEventTail;
+  /** Non-blocking host ledger reader for terminal delivery reconciliation. */
+  readPsuHostEventTailAsync?: typeof readHostEventTailAsync;
   lastProductiveToolCallAtByOwner?: typeof lastProductiveToolCallAtByOwner;
   /** queen-brief-cache-assembly B-01/P-012: fire a FRESH hive launch instead of
    *  resuming a hive-operator session. Injected for tests; default fires the
@@ -2489,6 +2919,10 @@ export interface ExecuteWakeDeps {
     harness: string | null;
     wakeText: string;
     deliveryId: number;
+    /** Explicit cold wakes override carry; transcript recovery preserves the source. */
+    carry?: 'cold';
+    /** Preserve the enrolled origin only for a loop-fire successor kickoff. */
+    turnOrigin?: 'loop-fire';
   }) => Promise<boolean>;
   /** P-013 part A (review-system-rework-reduction-2026-09-23, RSR-P-013-A): decide whether a
    *  dead Claude session's resume must be RE-HOMED because its account is walled. Injected
@@ -2584,50 +3018,38 @@ export interface ExecuteWakeDeps {
  * satisfies it; hermetic tests hand in a literal.
  */
 type PsuInjectHostView = {
+  execution?: PsuPtyHost['execution'];
+  startedAt?: number;
   sock: string;
   ownerId?: string | null;
   bridgeTty?: boolean | null;
   lastInputAt?: number | null;
   quotaBlocked?: boolean | null;
+  authBlocked?: boolean | null;
   caps?: string[] | null;
   launchedBy?: string | null;
 };
 
-export interface QuotaWakeRecoveryDecision {
-  eligible: boolean;
-  reason:
-    | 'eligible'
-    | 'wrong-owner'
-    | 'not-quota-blocked'
-    | 'not-headless'
-    | 'not-agent-launched'
-    | 'route-not-auto'
-    | 'host-capability-missing';
-  operationId: string;
+function isAcceptedPsuHostDelivery(delivery: Pick<DeliveryWork, 'lastError'>): boolean {
+  return delivery.lastError?.startsWith('psu-host accepted:') === true ||
+    delivery.lastError?.startsWith('psu-host pending-delivery-id:') === true;
 }
 
-/** Pure, fail-closed eligibility gate for the one automatic lifecycle action in
- * this path. A recycle is useful only when gateway auto-routing can choose a
- * different credential, and safe only for a headless agent-owned host carrying
- * the new operation/dedup contract. */
-export function decideQuotaWakeRecovery(input: {
-  host: PsuInjectHostView;
-  subscriberId: string;
-  deliveryId: string;
-  accountMode?: string | null;
-}): QuotaWakeRecoveryDecision {
-  const base = { operationId: input.deliveryId } as const;
-  if (input.host.ownerId !== input.subscriberId) return { ...base, eligible: false, reason: 'wrong-owner' };
-  if (input.host.quotaBlocked !== true) return { ...base, eligible: false, reason: 'not-quota-blocked' };
-  if (input.host.bridgeTty !== false) return { ...base, eligible: false, reason: 'not-headless' };
-  if (!hostIsAgentLaunched(input.host as PsuPtyHost)) {
-    return { ...base, eligible: false, reason: 'not-agent-launched' };
+function hasCurrentHostEndingDrop(
+  events: readonly PtyHostEvent[],
+  deliveryId: string,
+  hostStartedAt: number | undefined,
+): boolean {
+  if (!Number.isFinite(hostStartedAt)) return false;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i] as Record<string, unknown>;
+    if (event.kind !== 'wake-rearm-dropped' || event.mode !== 'turn' || event.reason !== 'host-ending') continue;
+    const eventAt = typeof event.ts === 'string' ? Date.parse(event.ts) : Number.NaN;
+    if (!Number.isFinite(eventAt) || eventAt < (hostStartedAt as number)) continue;
+    if (!Array.isArray(event.deliveryIds) || !event.deliveryIds.some((id) => String(id) === deliveryId)) continue;
+    return true;
   }
-  if (input.accountMode !== 'auto') return { ...base, eligible: false, reason: 'route-not-auto' };
-  if (!hostSupports(input.host as PsuPtyHost, 'quota-recovery')) {
-    return { ...base, eligible: false, reason: 'host-capability-missing' };
-  }
-  return { ...base, eligible: true, reason: 'eligible' };
+  return false;
 }
 
 export interface QuotaRecoveryReceipt {
@@ -2675,6 +3097,24 @@ export function quotaRecoveryPickupConfirmed(
 }
 
 /**
+ * WI-10005134: an ACKED `deferred-*` refusal (busy gate, pending carry-respawn,
+ * owner typing, quota wall) is the live psu host deciding "not now". The host is
+ * alive and owns the session, so the only safe outcome is a durable park. Treating
+ * it as a socket miss (null) let the executor fall through to `resume-headless`,
+ * which put a second `claude --resume` process on the live session.
+ */
+export function parkOnHostDeferral(
+  confirmation: InjectConfirmation | null | undefined,
+  reason: string | null | undefined,
+): WakeOutcome | null {
+  if (confirmation !== 'acked' || typeof reason !== 'string' || !reason.startsWith('deferred-')) return null;
+  return {
+    kind: 'park',
+    reason: `psu-host ${reason}: the live host deferred this wake; parked for a durable retry, never a second process`,
+  };
+}
+
+/**
  * Inject a wake into a live psu-pty host, forking WARM (default) vs COLD
  * (su-cold-auto-mode-2026-07-03 Phase 2). Shared by BOTH executeWake psu-host inject
  * branches (the handle-less always-armed path + the main adv-session path) so the
@@ -2689,18 +3129,33 @@ export function quotaRecoveryPickupConfirmed(
  * flag / carry-note error falls back to warm, and a failed COLD inject retries warm in
  * place — the cold path never drops or corrupts a wake.
  *
- * Returns the delivered WakeOutcome on a clean inject, or null on a socket miss (the
- * caller then falls through to the normal channels, exactly as before).
+ * Returns the delivered WakeOutcome on a clean inject, a park when the live host
+ * acknowledged and deferred it (WI-10005134), or null on a socket miss (the caller
+ * then falls through to the normal channels, exactly as before).
  */
 async function injectPsuHostWake(
   d: DeliveryWork,
   host: PsuInjectHostView,
-  warmText: string,
+  warmText: EnrolledWakeText,
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
   capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null,
   accountRoute: WakeAccountRoute | null = null,
 ): Promise<WakeOutcome | null> {
+  // An accepted ACK only fences inbox fallback while this host still owns the
+  // detached write. Cleanup emits an exact-id terminal row before clearing the
+  // host dedup slot; consume that row on retry so a host-ending delivery can
+  // leave the accepted-commit park. Fence it to this host generation so an old
+  // log row cannot release a later host's new acceptance for the same delivery.
+  if (isAcceptedPsuHostDelivery(d) && Number.isFinite(host.startedAt)) {
+    const events = await (deps.readPsuHostEventTailAsync ?? readHostEventTailAsync)(d.subscriberId).catch(() => []);
+    if (hasCurrentHostEndingDrop(events, String(d.id), host.startedAt)) {
+      return {
+        kind: 'park',
+        reason: `psu-host terminal host-ending drop confirmed for delivery ${d.id}; prior accepted write is no longer host-owned`,
+      };
+    }
+  }
   const sock = host.sock;
   // WI-5510: read the loop-fire marker ONCE up front — both the warm and cold
   // branches below need {wakeCount, routineId} to stamp the delivery-side
@@ -2711,30 +3166,86 @@ async function injectPsuHostWake(
   const fireNumber = loopMarker?.wakeCount;
   const routineId = loopMarker?.routineId;
   const injectWarm = async (useConfirmation = true): Promise<WakeOutcome | null> => {
+    const confirming = useConfirmation
+      ? (deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation))
+      : null;
+    if (d.hostCancellation && confirming && d.hostCancellation.deliveryIds.length > 0) {
+      const cancellation = await confirming(sock, {
+        mode: 'turn',
+        data: warmText.text,
+        ownerId: d.subscriberId,
+        deliveryId: d.hostCancellation.deliveryIds[0],
+        cancelDeliveryIds: d.hostCancellation.deliveryIds,
+        handledMsgIds: d.hostCancellation.handledMsgIds,
+        provenanceIssuedAtMs: warmText.provenanceIssuedAtMs,
+      });
+      if (cancellation.ok && cancellation.reason === 'cancelled-before-write') {
+        return { kind: 'delivered', channel: 'suppressed-redundant' };
+      }
+      if (cancellation.ok && cancellation.reason === 'cancel-requested') {
+        return {
+          kind: 'park',
+          reason: 'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
+          hostCommitPending: true,
+        };
+      }
+      if (cancellation.ok && cancellation.reason === 'pending-delivery-id') {
+        return {
+          kind: 'park',
+          reason: 'psu-host still owns the accepted delivery; cancellation is unsupported and the retry remains durable',
+          hostCommitPending: true,
+        };
+      }
+      if (cancellation.ok && cancellation.reason === 'accepted') {
+        return {
+          kind: 'park',
+          reason: 'psu-host accepted the fail-open wake retry; waiting for its delivery outcome',
+          hostCommitPending: true,
+        };
+      }
+      if (cancellation.ok && cancellation.reason === 'duplicate-delivery-id') {
+        return { kind: 'delivered', channel: 'psu-socket-inject' };
+      }
+    }
+    const recoveryStartedAtMs = Date.now();
+    // P-004: the auth bound reads the host's own ledger, only when it matters.
+    const priorAuthRecoveries =
+      host.authBlocked === true
+        ? recentAuthRecoveryCount(
+            (deps.readPsuHostEventTail ?? readHostEventTail)(d.subscriberId),
+            d.subscriberId,
+            recoveryStartedAtMs,
+          )
+        : 0;
     const quotaRecovery = decideQuotaWakeRecovery({
       host,
       subscriberId: d.subscriberId,
       deliveryId: String(d.id),
       accountMode: accountRoute?.mode,
+      priorAuthRecoveries,
     });
-    const recoveryStartedAtMs = Date.now();
     // EI-19311270129974785: thread this delivery's own durable id so a retry the
     // CLIENT believes is fresh (its ack-wait timed out, or the host's ack write
     // back failed) is recognized by the host as the SAME delivery it already
     // committed to, instead of injecting a second real duplicate turn.
     const injectMsg = {
       mode: quotaRecovery.eligible && useConfirmation ? 'recycle' : 'turn',
-      data: warmText,
+      data: warmText.text,
       fireNumber,
       routineId,
       ownerId: d.subscriberId,
       deliveryId: String(d.id),
+      provenanceIssuedAtMs: warmText.provenanceIssuedAtMs,
+      ...(useConfirmation && !quotaRecovery.eligible && hostSupports(host as PsuPtyHost, 'native-turn-start')
+        ? { requireNativeTurnStart: true, expectedChildGeneration: host.execution?.childGeneration,
+            expectedHostStartedAt: host.startedAt } : {}),
       ...(quotaRecovery.eligible && useConfirmation
         ? {
             quotaRecovery: {
               operationId: String(d.id),
               ownerId: d.subscriberId,
               startedAtMs: recoveryStartedAtMs,
+              cause: quotaRecovery.cause,
             },
           }
         : {}),
@@ -2743,16 +3254,21 @@ async function injectPsuHostWake(
     // only means the detached gate pipeline was queued; it is not proof that a
     // turn started. Keep the durable wake parked until a later retry observes a
     // completed/duplicate outcome. Boolean test stubs retain today's behavior.
-    const confirming = useConfirmation
-      ? (deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation))
-      : null;
     if (confirming) {
       const result = await confirming(sock, injectMsg);
-      if (!result.ok) return null;
-      if (result.reason === 'accepted' || result.reason === 'pending-delivery-id') {
+      if (!result.ok) return parkOnHostDeferral(result.confirmation, result.reason);
+      if (result.reason === 'cancelled-before-write') {
+        return { kind: 'delivered', channel: 'suppressed-redundant' };
+      }
+      if (
+        result.reason === 'accepted' ||
+        result.reason === 'pending-delivery-id' ||
+        result.reason === 'coalesced-into-pending-turn'
+      ) {
         return {
           kind: 'park',
           reason: `psu-host ${result.reason}: delivery accepted before turn-start proof; retry remains durable`,
+          hostCommitPending: true,
         };
       }
       if (result.reason === 'duplicate-delivery-id') {
@@ -2777,12 +3293,21 @@ async function injectPsuHostWake(
                 'waiting for a productive same-owner tool invocation',
             };
           }
-          return { kind: 'delivered', channel: 'psu-socket-recycle' };
+          // Pickup was just confirmed by a productive same-owner tool invocation (P-006/D-004).
+          return { kind: 'delivered', channel: 'psu-socket-recycle', turnProof: 'host-attested' };
         }
       }
+      // P-006/D-004: the host replies 'delivered' under requireNativeTurnStart only after it
+      // observed the native turn start (its native-turn-start-confirmed event). Any other ok
+      // reason here (a duplicate-delivery-id with no quota receipt, an older host) proves only
+      // that the bytes were accepted, so the turn is left for the pump to observe.
+      const hostAttested =
+        (injectMsg as { requireNativeTurnStart?: boolean }).requireNativeTurnStart === true &&
+        result.reason === 'delivered';
       return {
         kind: 'delivered',
         channel: quotaRecovery.eligible ? 'psu-socket-recycle' : 'psu-socket-inject',
+        ...(hostAttested ? { turnProof: 'host-attested' as const } : {}),
       };
     }
     const ok = await injectPsuHost(sock, injectMsg);
@@ -3035,7 +3560,7 @@ async function injectPsuHostWake(
       lastTurnAtMs ?? undefined,
       agentToolCallsSinceNote,
     );
-    const coldText = tagWakeText(
+    const coldText = await tagWakeText(
       d,
       mixedSnapshotWarning ? `${mixedSnapshotWarning}\n\n${renderedColdWake}` : renderedColdWake,
       deps.tagTurn ?? tagTurnForInjection,
@@ -3067,15 +3592,16 @@ async function injectPsuHostWake(
     // EI-19311270129974785: same delivery-id dedup rationale as injectWarm above —
     // the cold reset/recycle path goes through the identical gated pipeline and
     // is exposed to the identical ack-loss-then-retry duplicate.
-    const injectMsg: Parameters<typeof injectIntoHost>[1] = {
+    const injectMsg = {
       mode: coldTransportMode,
-      data: coldText,
-      ...(codexColdRespawn ? { systemPromptAddendum: coldText } : {}),
+      data: coldText.text,
+      ...(codexColdRespawn ? { systemPromptAddendum: coldText.text } : {}),
       fireNumber: coldFireCount,
       routineId,
       ownerId: d.subscriberId,
       deliveryId: String(d.id),
-    };
+      provenanceIssuedAtMs: coldText.provenanceIssuedAtMs,
+    } as Parameters<typeof injectIntoHost>[1] & { provenanceIssuedAtMs: number };
     let ok: boolean;
     let confirmation: InjectConfirmation | null = null;
     let confirmationReason: string | null | undefined;
@@ -3092,6 +3618,7 @@ async function injectPsuHostWake(
         return {
           kind: 'park',
           reason: `psu-host ${confirmationReason}: delivery accepted before turn-start proof; retry remains durable`,
+          hostCommitPending: true,
         };
       }
       // A re-exec the host never confirmed is reported as such instead of as a clean success.
@@ -3106,6 +3633,10 @@ async function injectPsuHostWake(
             : 'psu-socket-reset';
       return { kind: 'delivered', channel };
     }
+    // WI-10005134: a live host that DEFERRED the cold inject is not a miss —
+    // re-injecting warm would only hit the same deferral.
+    const coldDeferral = parkOnHostDeferral(confirmation, confirmationReason);
+    if (coldDeferral) return coldDeferral;
     // Cold inject missed → warm in place rather than drop the wake. Deliberately
     // use the boolean injector here: the confirmation transport just failed, so
     // retrying that same seam would repeat the miss instead of exercising the
@@ -3126,14 +3657,14 @@ async function injectPsuHostWake(
  */
 async function injectPsuHostWakeWithReverify(
   d: DeliveryWork,
-  warmText: string,
-  findPsuHost: (ownerId: string) => PsuInjectHostView | null,
+  warmText: EnrolledWakeText,
+  findPsuHost: (ownerId: string) => Promise<PsuInjectHostView | null>,
   injectPsuHost: typeof injectIntoHost,
   deps: ExecuteWakeDeps,
   capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null,
   accountRoute: WakeAccountRoute | null = null,
 ): Promise<WakeOutcome | null> {
-  let host = findPsuHost(d.subscriberId);
+  let host = await findPsuHost(d.subscriberId);
   for (let attempt = 0; host && attempt < 2; attempt += 1) {
     const outcome = await injectPsuHostWake(
       d,
@@ -3147,7 +3678,7 @@ async function injectPsuHostWakeWithReverify(
     if (outcome) return outcome;
     // Re-read the owner-scoped discovery record after a miss. Do not reuse the
     // first host object: a live psu host may have rebound its control socket.
-    host = findPsuHost(d.subscriberId);
+    host = await findPsuHost(d.subscriberId);
   }
   return null;
 }
@@ -3217,6 +3748,7 @@ function newestDeliveryCarryNoteMeta(
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
 export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): Promise<WakeOutcome> {
   const getSession = deps.getSession ?? getAdvSession;
+  const getLatestSessionForOwner = deps.getLatestSessionForOwner ?? latestAdvSessionByCoordOwner;
   const findPty = deps.findPty ?? findPtyByPid;
   const write = deps.write ?? writePty;
   const spawnManaged = deps.spawnManagedPty ?? spawnPty;
@@ -3262,10 +3794,58 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const isHeadlessResumeTurn = deps.isHeadlessResumeTurn ?? defaultIsHeadlessResumeTurn;
   const accountHeadlessResumeTurn = deps.accountHeadlessResumeTurn ?? defaultAccountHeadlessResumeTurn;
   const claimResume = deps.claimResume ?? claimAdvSessionResume;
-  const findPsuHost = deps.findPsuHost ?? findLiveHost;
+  const ensureInboxWakeArmedForActiveSession = deps.ensureInboxWakeArmedForActiveSession ?? (async (input: {
+    ownerId: string;
+    forceRecheck?: boolean;
+  }) => {
+    const { ensureInboxWakeArmedForActiveSession: ensureArmed } = await import('./inbox-wake-arm');
+    return ensureArmed(input);
+  });
+  const findPsuHost = deps.findPsuHost ?? findLiveHostAsync;
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
   const sendCoordMessage = deps.sendCoordMessage ?? sendMessage;
+  const cancelAcceptedHostDelivery = async (
+    delivery: DeliveryWork,
+  ): Promise<'not-needed' | 'cancelled' | 'committed' | { pending: string }> => {
+    const acceptedRetry =
+      delivery.lastError?.startsWith('psu-host accepted:') ||
+      delivery.lastError?.startsWith('psu-host pending-delivery-id:');
+    if (!acceptedRetry) return 'not-needed';
+
+    const confirming =
+      deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation);
+    if (!confirming) return { pending: 'confirmation transport is unavailable' };
+
+    try {
+      const host = await findPsuHost(delivery.subscriberId);
+      // If the accepting host has exited, its in-memory pending write is gone.
+      if (!host) return 'not-needed';
+      if (host.ownerId != null && host.ownerId !== delivery.subscriberId) {
+        return { pending: 'discovered host owner does not match the delivery subscriber' };
+      }
+      if (!hostSupports(host as PsuPtyHost, 'delivery-cancel')) {
+        return { pending: 'live host does not advertise delivery-cancel' };
+      }
+
+      const cancellation = await confirming(host.sock, {
+        mode: 'delivery-cancel',
+        data: '',
+        ownerId: delivery.subscriberId,
+        deliveryId: String(delivery.id),
+      });
+      if (cancellation.confirmation !== 'acked') {
+        return { pending: 'host did not acknowledge the cancellation request' };
+      }
+      if (cancellation.ok && cancellation.reason === 'cancelled-before-write') return 'cancelled';
+      if (cancellation.reason === 'delivery-already-committed') return 'committed';
+      // `cancel-requested` is only a request; the host must cross its atomic
+      // pre-write barrier and return `cancelled-before-write` before inbox fallback.
+      return { pending: `host cancellation receipt is ${cancellation.reason ?? 'unconfirmed'}` };
+    } catch {
+      return { pending: 'host discovery or cancellation failed before a receipt' };
+    }
+  };
   const tagTurn = deps.tagTurn ?? tagTurnForInjection;
   // EI-20460364238376772: the delivery-time carry-note read is the authority for
   // this whole wake. Rehydration runs immediately before psu-host injection, but
@@ -3316,6 +3896,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const ensureCodexHomeForWake = deps.ensureCodexHomeForWake ?? defaultEnsureCodexHomeForWake;
   const quarantineToolReferenceSession =
     deps.quarantineToolReferenceSession ?? quarantineRepeatedClaudeToolReferenceFailures;
+  const quarantineCodexOverflowSession =
+    deps.quarantineCodexOverflowSession ?? quarantineRepeatedCodexContextOverflow;
   const recoverToolReferenceDeath =
     deps.recoverToolReferenceDeath ??
     (async (ownerId: string, opts: { workspaceId: string }): Promise<ToolReferenceDeathRecovery> => {
@@ -3358,6 +3940,140 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         reason:
           `session ${d.subscriberId} is released from fleet ${released.fleet} ` +
           `(marked ${released.at} by ${released.by}) — end now; queued wake suppressed`,
+      };
+    }
+
+    // EI-25270078901082313: an early host ACK parks the durable delivery until
+    // a later retry observes completion. Intentional shutdown can remove that
+    // host (and its in-memory completed-ID map) before the retry, so PID death
+    // alone must NOT authorize reopening the same handled wake headlessly.
+    // The existing session-brief lifecycle is owner-scoped and survives native
+    // reactivation. Both accepted-host retries and failed-turn reopens cross
+    // this same cutoff; neither can replay work predating accepted shutdown.
+    const shutdownAtMs = lifecycle?.shutdown ? Date.parse(lifecycle.shutdown.at) : Number.NaN;
+    const managedShutdown = Number.isFinite(shutdownAtMs);
+    if (managedShutdown) {
+      // A fresh headline can hide the same old retry as a folded sibling.
+      // Reuse the canonical union rebuilder so the old payload/summary cannot
+      // leak into the new turn while the new component remains actionable.
+      if (isRecord(d.payload) && d.payload.coalesced === true && Array.isArray(d.payload.events)) {
+        const events = d.payload.events;
+        if (events.some((event) => !isRecord(event) || typeof event.createdAt !== 'string' || !Number.isFinite(Date.parse(event.createdAt)))) {
+          return { kind: 'park', reason: 'managed shutdown wake union has unknown component timestamps; replay order is unverified' };
+        }
+        const remaining = (events as CoalescedDeliveryEvent[]).filter(
+          (event) => Date.parse(event.createdAt as string) > shutdownAtMs,
+        );
+        if (remaining.length === 0) {
+          return { kind: 'drop', reason: `wake #${d.id} contains only pre-managed shutdown events; queued replay suppressed` };
+        }
+        if (remaining.length < events.length) d = rebuildCoalescedDelivery(d, remaining);
+      }
+      const createdAtMs = Date.parse(d.createdAt);
+      if (Number.isFinite(createdAtMs) && createdAtMs <= shutdownAtMs) {
+        return {
+          kind: 'drop',
+          reason: `wake #${d.id} predates accepted managed shutdown at ${lifecycle!.shutdown!.at}; queued replay suppressed`,
+        };
+      }
+      // A genuinely newer wake is not dropped, but recovery must provide a
+      // managed host. A bare detached CLI would lose session:end/bench control.
+      if (!Number.isFinite(createdAtMs) || !(await findPsuHost(d.subscriberId))) {
+        return { kind: 'park', reason: 'managed shutdown requires a managed psu host for a new wake; no hostless resume' };
+      }
+    }
+
+    // A wake may wait in the delivery queue after its emit-time admission. Re-read
+    // the authoritative mode before any continuation/injection/resume branch so a
+    // later manual pause moves the wake into the same owner-review queue as a
+    // send that arrived while already paused.
+    const wakeModeRead = await withBoundedTimeout(
+      () => (deps.resolveWakeModeFn ?? resolveWakeMode)(d.subscriberId),
+      {
+        fallback: 'auto' as const,
+        timeoutMs: deps.wakeModeDeliveryLookupTimeoutMs ?? WAKE_MODE_DELIVERY_LOOKUP_TIMEOUT_MS,
+        label: 'wake-executor:delivery-mode',
+      },
+    ).catch(() => ({ value: 'auto' as const }));
+    if (wakeModeRead.value === 'manual') {
+      const [
+        {
+          isLoopWakeSource,
+          isOwnerGuiWakeSource,
+          isDeliveryLadderWakeSource,
+          isEscalationSlaRerouteWakeSource,
+          MANUAL_WAKE_QUEUE_RELEASE_SOURCE_PREFIX,
+          inboxWakeKey,
+        },
+        { isOwnerVerifiedRelay, readRelayProvenance },
+      ] = await Promise.all([
+        import('../../agent-tools/coordination/inbox-wake'),
+        import('../../agent-tools/coordination/relay-provenance'),
+      ]);
+      const source = d.source ?? undefined;
+      const payloadRecord =
+        d.payload !== null && typeof d.payload === 'object' && !Array.isArray(d.payload)
+          ? (d.payload as Record<string, unknown>)
+          : null;
+      const recordOf = (value: unknown): Record<string, unknown> | null =>
+        value !== null && typeof value === 'object' && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : null;
+      const ownerVerifiedRelayPayload = (payload: unknown): boolean =>
+        isOwnerVerifiedRelay(readRelayProvenance(recordOf(payload)));
+      // Relay authority is carried only on the addressed coord inbox-wake. The
+      // event pump wraps coalesced rows under `events[]`; require every component
+      // to be an owner-verified inbox relay so one approved message cannot
+      // authorize an unrelated sibling in the same coalesced turn. Ambiguous
+      // legacy/latest-only envelopes stay in the owner-review queue.
+      const ownerVerifiedInboxRelay =
+        d.eventKey === inboxWakeKey(d.subscriberId) &&
+        (payloadRecord?.coalesced === true
+          ? Array.isArray(payloadRecord.events) &&
+            payloadRecord.events.length > 0 &&
+            payloadRecord.events.every((value) => {
+              const component = recordOf(value);
+              return component?.event === d.eventKey && ownerVerifiedRelayPayload(component.payload);
+            })
+          : ownerVerifiedRelayPayload(payloadRecord));
+      const bypassManualGate =
+        isLoopWakeSource(source) ||
+        isOwnerGuiWakeSource(source) ||
+        isDeliveryLadderWakeSource(source) ||
+        isEscalationSlaRerouteWakeSource(source) ||
+        (source ?? '').startsWith(MANUAL_WAKE_QUEUE_RELEASE_SOURCE_PREFIX) ||
+        ownerVerifiedInboxRelay;
+      if (!bypassManualGate) {
+        await (deps.stageManualWakeFn ?? stagePendingWake)({
+          ownerId: d.subscriberId,
+          summary: d.summary ?? undefined,
+          payload: d.payload,
+          source: d.source ?? undefined,
+          workspaceId: d.workspaceId,
+        });
+        return {
+          kind: 'drop',
+          reason: 'effective wake mode is manual at delivery time; queued wake staged for owner review',
+        };
+      }
+    }
+
+    // EI-24119981583160918: an auto-armed blocked-item await can fire before
+    // its target settles, leaving a delivery queued after the one-shot itself
+    // is no longer cancellable. Revalidate the stamped lifecycle binding before
+    // any wake side effect so a terminal target does not spend a full turn.
+    const blockedBoundFreshness = await revalidateBlockedBoundDelivery(
+      d,
+      getCurrentWorkItem,
+      claimableLookupTimeoutMs,
+    );
+    d = blockedBoundFreshness.delivery;
+    if (blockedBoundFreshness.staleOnly) {
+      return {
+        kind: 'drop',
+        reason:
+          `blocked-item-holder wake is stale because bound work-item(s) ` +
+          `${blockedBoundFreshness.staleIds.join(', ')} are terminal`,
       };
     }
 
@@ -3494,6 +4210,20 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const claimableFreshness = await revalidateClaimableDelivery(d, getCurrentWorkItem, claimableLookupTimeoutMs);
     d = claimableFreshness.delivery;
     if (claimableFreshness.staleOnly) {
+      // An accepted native retry may still be queued behind the host's gates.
+      // Cancel that exact pending write before degrading the stale claimable
+      // wake, otherwise the inbox fallback leaves a duplicate host turn queued.
+      const cancellation = await cancelAcceptedHostDelivery(d);
+      if (cancellation === 'committed') {
+        return { kind: 'delivered', channel: 'psu-socket-inject' };
+      }
+      if (typeof cancellation === 'object') {
+        return {
+          kind: 'park',
+          reason: `psu-host accepted: stale claimable delivery ${d.id} remains host-owned; ${cancellation.pending}`,
+          hostCommitPending: true,
+        };
+      }
       return degradeToInboxOrDrop(
         d,
         `work-item:claimable delivery revalidated stale item(s): ${claimableFreshness.staleIds.join(', ')}`,
@@ -3535,6 +4265,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           d,
           `${lifecycleReason}; loop injection/resume was withheld`,
           sendCoordMessage,
+          { allowLoopMarkerFallback: true },
         );
       }
       return {
@@ -3579,7 +4310,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       /* a fold must never break a wake */
     }
 
-    const handle = d.wakeHandle;
+    let handle = d.wakeHandle;
     if (!handle) {
       // Registered without a resumable session (warned at registration). BUT a
       // live psu-pty host socket can still wake it in place — it injects into the
@@ -3589,7 +4320,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       const rehydratedText = await rehydrateForDelivery(d, wakeTurnText(d));
       const outcome = await injectPsuHostWakeWithReverify(
         d,
-        tagWakeText(d, applyInjectionDoor(d, rehydratedText), tagTurn),
+        await tagWakeText(d, applyInjectionDoor(d, rehydratedText), tagTurn),
         findPsuHost,
         injectPsuHost,
         deliveryDeps,
@@ -3610,18 +4341,73 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // wake reason as the prompt. Lazy import keeps the engine free of a
       // static plans-tool dependency.
       const resumePlanRun = deps.resumePlanRun ?? (await import('./plan-run-wake')).resumePlanRunForWake;
-      const planRunText = tagWakeText(
+      const planRunText = await tagWakeText(
         d,
         applyInjectionDoor(d, await rehydrateForDelivery(d, wakeTurnText(d))),
         tagTurn,
       );
-      const r = await resumePlanRun({ runId: handle.runId, wakeText: planRunText });
+      const r = await resumePlanRun({ runId: handle.runId, wakeText: planRunText.text });
       if (r.ok) return { kind: 'delivered', channel: 'plan-run-resume' };
       return { kind: 'error', error: r.error };
     }
 
     // ── adv-session handle ───────────────────────────────────────────────
-    const fresh = await getSession(handle.advSessionId).catch(() => null);
+    let fresh = await getSession(handle.advSessionId).catch(() => null);
+    const sessionIsAlive = async (
+      row: Awaited<ReturnType<typeof getSession>>,
+      candidateHandle: Extract<WakeHandle, { kind: 'adv-session' }>,
+    ): Promise<boolean> => {
+      if (row?.endedAt != null) return false;
+      const candidatePid = row?.pid ?? candidateHandle.pid;
+      if (candidatePid != null && candidatePid > 0) return alive(candidatePid);
+      const currentPresence = await presence(d.subscriberId).catch(() => null);
+      return Boolean(currentPresence && !currentPresence.stale && !currentPresence.revoked);
+    };
+    let isAlive = await sessionIsAlive(fresh, handle);
+    if (!isAlive) {
+      // A delayed wake can outlive the adv-session row it captured. Elect the
+      // current row for this coord owner before Channel 2 can resume a dead
+      // predecessor while its carry successor already exists.
+      const latest = await withWakeTimeout(
+        getLatestSessionForOwner(d.subscriberId),
+        `latest adv-session/${d.subscriberId}`,
+        1_500,
+      ).catch(() => null);
+      if (!latest || latest.coordOwnerId !== d.subscriberId) {
+        return {
+          kind: 'park',
+          reason: 'current owner adv-session could not be verified; parked before wake injection or resume',
+        };
+      }
+      if (latest.id === handle.advSessionId) {
+        if (!fresh || fresh.id !== latest.id || fresh.coordOwnerId !== d.subscriberId) {
+          return {
+            kind: 'park',
+            reason: `current owner adv-session #${latest.id} could not be re-read; parked before resume`,
+          };
+        }
+      } else {
+        const current = await getSession(latest.id).catch(() => null);
+        if (!current || current.id !== latest.id || current.coordOwnerId !== d.subscriberId) {
+          return {
+            kind: 'park',
+            reason: `newer owner adv-session #${latest.id} could not be re-read; parked before resume`,
+          };
+        }
+        fresh = current;
+        handle = {
+          kind: 'adv-session',
+          advSessionId: current.id,
+          agent: current.agent,
+          sessionId: current.sessionId,
+          ompThreadId: current.ompThreadId,
+          cwd: current.cwd,
+          pid: current.pid,
+        };
+        d = { ...d, wakeHandle: handle };
+      }
+      isAlive = await sessionIsAlive(fresh, handle);
+    }
     const sessionAgent = fresh?.agent ?? handle.agent;
     const sessionOwner = fresh?.coordOwnerId ?? d.subscriberId;
     const sessionId = fresh?.sessionId ?? handle.sessionId;
@@ -3635,7 +4421,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     ) {
       return {
         kind: 'drop',
-        reason: `Claude session incarnation ${handle.advSessionId} is quarantined: ${priorPoison.reason}`,
+        reason: `Session incarnation ${handle.advSessionId} is quarantined: ${priorPoison.reason}`,
       };
     }
     // The await/delivery plane is intentionally pinned to DEFAULT_COORD_WORKSPACE
@@ -3648,20 +4434,24 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const pid = fresh?.pid ?? handle.pid;
     const ended = fresh?.endedAt != null;
     const pidKnown = pid != null && pid > 0;
-    // Liveness: a recorded pid is authoritative; with NO pid recorded (hook-
-    // bootstrapped sessions), FRESH presence is the alive-evidence — resuming
-    // a session whose process is actually still open would run a concurrent
-    // second client on the same session file. When in doubt, park (the parked
-    // row converts to a resume once presence goes stale or the row ends).
-    let isAlive: boolean;
-    if (ended) {
-      isAlive = false;
-    } else if (pidKnown) {
-      isAlive = alive(pid);
-    } else {
-      const p = await presence(d.subscriberId).catch(() => null);
-      isAlive = Boolean(p && !p.stale && !p.revoked);
-    }
+    const loopDeliveryMarker = readLoopDeliveryMarker(d.payload);
+    const canUseLoopChannel2 = async (): Promise<boolean> => {
+      const loopStillArmed = await withWakeTimeout(
+        Promise.resolve().then(() => isLoopArmed(d.subscriberId)),
+        `loop status/${d.subscriberId}`,
+        1_000,
+      );
+      if (loopStillArmed !== true) return false;
+
+      const currentLiveness = await withWakeTimeout(
+        Promise.resolve().then(() =>
+          resolveMemberLiveness([{ ownerId: d.subscriberId }], { hydratePerId: true }),
+        ),
+        `session liveness/${d.subscriberId}`,
+        fleetMemberDeadLookupTimeoutMs,
+      );
+      return currentLiveness?.get(d.subscriberId)?.sessionState === 'parked';
+    };
 
     // A live interactive transcript has no detached-child exit callback. Check
     // the saved assistant-turn streak before injecting another wake. A dead
@@ -3734,14 +4524,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       }
     }
 
-    const text = tagWakeText(
+    const untaggedText = applyInjectionDoor(
       sessionDelivery,
-      applyInjectionDoor(
-        sessionDelivery,
-        await rehydrateForDelivery(sessionDelivery, wakeTurnText(sessionDelivery)),
-      ),
-      tagTurn,
+      await rehydrateForDelivery(sessionDelivery, wakeTurnText(sessionDelivery)),
     );
+    const text = await tagWakeText(sessionDelivery, untaggedText, tagTurn);
 
     // Channel 1b (turn-lifecycle-control Phase 3, P-014): a live INTERACTIVE psu
     // session hosts its pty + control socket in the psu PROCESS (D-006), so our
@@ -3751,6 +4538,33 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // + socket present) — so inject the wake turn in place; on any miss fall
     // through to the normal channels.
     const liveAccountRoute = wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId);
+    // A live quota host takes Channel 1b, never the Channel 2 home-repair leg.
+    // Reusing its native argv with a stripped provider would recycle straight
+    // back into the default account's wall. Restore the persisted auto route
+    // before either warm injection or cold/recycle startup. This does not
+    // relax the independent agent-launch provenance/operation fences.
+    if (handle.agent === 'codex' && liveAccountRoute?.mode === 'auto') {
+      const quotaHost = await findPsuHost(d.subscriberId);
+      if (quotaHost?.ownerId === d.subscriberId && quotaHost.bridgeTty === false && quotaHost.quotaBlocked === true) {
+        const repair = await ensureCodexHomeForWake({
+          advSessionId: handle.advSessionId,
+          owner: d.subscriberId,
+          codexHome: codexHomeForAdvSession(handle.advSessionId),
+          headless: true,
+          sessionRow: fresh,
+          ...codexWakeGatewayInputs(liveAccountRoute),
+        }).catch((error: unknown) => ({
+          ok: false,
+          reason: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+        }));
+        if (!repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent') {
+          return {
+            kind: 'park',
+            reason: `Codex quota gateway repair could not restore the persisted auto route (${repair.reason ?? 'unknown'}); parked before native recovery`,
+          };
+        }
+      }
+    }
     const outcome = await injectPsuHostWakeWithReverify(
       sessionDelivery,
       text,
@@ -3776,7 +4590,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         // claude TUI's paste detector (CR → literal newline, turn never submits).
         // Mirror of psu-pty-host.mjs controlWrites (different process + pty owner,
         // so the code can't be shared — kept in lockstep via the shared env var).
-        const okWrite = write(pty.id, Buffer.from(text, 'utf8'), pty.accessScope);
+        const okWrite = write(pty.id, Buffer.from(text.text, 'utf8'), pty.accessScope);
         if (okWrite) {
           setTimeout(() => {
             try {
@@ -3799,6 +4613,12 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         return {
           kind: 'park',
           reason: `headless resume turn pid ${pid} is still running for this session; parked until it exits`,
+          // The detached turn already owns this delivery's resume boundary. Keep
+          // the durable row parked while it runs; the pump must not mistake this
+          // intentional wait for an exhausted, unowned park and emit a parallel
+          // inbox fallback. A later retry can observe the child exit and continue
+          // through the normal settlement path.
+          hostCommitPending: true,
         };
       }
       // WI-666: a warm engine-loop owner is explicitly unattended and its
@@ -3839,6 +4659,14 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         };
       }
     }
+    // `sessionIsAlive` treats fresh presence as live when no PID is recorded.
+    // That is safe for ordinary wakes, but can strand a loop wake after its turn
+    // has ended. The shared oracle may clear that keepalive-only verdict when it
+    // confirms both an armed loop and a parked session.
+    if (isAlive && !pidKnown && loopDeliveryMarker && await canUseLoopChannel2()) {
+      isAlive = false;
+    }
+
     if (isAlive) {
       // No pid recorded but presence is fresh — the session is (very likely)
       // still open somewhere we can't see. Never concurrent-resume it; park.
@@ -3848,47 +4676,104 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       };
     }
 
+    // WI-10005134: every channel below STARTS A NEW PROCESS for this session
+    // Retirement is independent of ended_at: generic activity and resume may
+    // reconcile that tuple, but cannot authorize another process after a kill.
+    const retirement = await getLatestSessionForOwner(d.subscriberId);
+    if (retirement?.retiredAt != null) {
+      return { kind: 'drop', reason:
+        `owner retired by deliberate kill (${retirement.retiredBy ?? 'unknown'} @ ${retirement.retiredAt}); no process started (WI-6554700010010429)` };
+    }
+    // (cold successor, hive fresh wake, fresh-context fork, backend re-home,
+    // resume-headless). The recorded pid above can be stale while the session
+    // is still alive: a psu host carry-respawns its CLI child under a new pid.
+    // A live, identity-verified psu host is the authoritative "this session is
+    // running" signal, so if the host ladder above did not take the wake, park.
+    // A parked delivery is retried; a second process on one session is not
+    // recoverable (measured 2026-10-01: three wakes for su-9dfd3ffc went
+    // resume-headless while its host was live and deferring them).
+    if (await findPsuHost(d.subscriberId)) {
+      return {
+        kind: 'park',
+        reason:
+          'live psu host owns this session but did not take the wake inject; parked instead of starting a second process (WI-10005134)',
+      };
+    }
+
+    // Recheck the boundary too: the host seen before injection may have
+    // disappeared during the socket attempt. Never let that race fall through
+    // to Channel 2's detached headless fallback after managed shutdown.
+    if (managedShutdown) {
+      return { kind: 'park', reason: 'managed psu host did not take the post-shutdown wake; no hostless resume' };
+    }
+
     // A cold wake cannot safely use Channel 2: `resume-headless` restores the
     // predecessor transcript, defeating the fresh-context contract. The host
     // ladder has already had its bounded attempts above; park until a host is
     // available rather than silently reopening the old context. This is only
     // active for an eligible explicit-cold wake; warm/disabled/unanchored wakes
     // preserve the normal resume fallback below.
-    if (await coldWakeRequiresPsuHost(sessionDelivery, deliveryDeps)) {
+    const coldWakeNeedsHost = await coldWakeRequiresPsuHost(sessionDelivery, deliveryDeps);
+    // EI-24797049094820185: a detached Claude turn has no managed host to
+    // carry-respawn. After its process exits, replaying the rejected transcript
+    // just produces the same API 400. Reuse the identity-preserving successor
+    // path below, even for warm/event wakes, without changing its carry policy.
+    const rejectedTranscriptNeedsSuccessor = sessionAgent === 'claude' &&
+      !reconciledTranscriptHealthy && Boolean(claudeTranscriptAnalysis?.needsFreshContext);
+    if (coldWakeNeedsHost || rejectedTranscriptNeedsSuccessor) {
       // The former P-013 inbox fallback discarded the cold marker. Its second
       // delivery therefore resumed the old Codex UUID and kept the critical
       // context. Use the existing identity-preserving successor launch instead.
       const launchSuccessor = deps.launchColdFreshSuccessor ?? (async (input: {
         subscriberId: string; workspaceId: string; harness: string | null;
-        wakeText: string; deliveryId: number;
+        wakeText: string; deliveryId: number; carry?: 'cold'; turnOrigin?: 'loop-fire';
       }) => {
-        const { default: launchTool } = await import('../../agent-tools/capability/launch-agent');
+        const { default: launchTool, INTERNAL_LOOP_FIRE_ORIGIN } =
+          await import('../../agent-tools/capability/launch-agent');
+        const launchContext = {
+          workspaceId: input.workspaceId,
+          harnessSlug: input.harness,
+          role: 'su',
+          ...(input.turnOrigin === 'loop-fire'
+            ? { [INTERNAL_LOOP_FIRE_ORIGIN]: 'loop-fire' as const }
+            : {}),
+        };
         const result = await launchTool.handler({
           successor: { agentId: input.subscriberId },
           brief: input.wakeText,
           harness: input.harness ?? undefined,
           headless: true,
-          carry: 'cold',
+          carry: input.carry,
           idempotencyKey: `cold-wake:${input.deliveryId}`,
-        } as never, {
-          workspaceId: input.workspaceId,
-          harnessSlug: input.harness,
-          role: 'su',
-        } as never);
+        } as never, launchContext as never);
         const launch = (result as { data?: { launch?: { tasks?: Array<{ ownerId?: string }> } }; isError?: boolean }).data?.launch;
         return !('isError' in result && result.isError) && !!launch?.tasks?.some((task) => task.ownerId === input.subscriberId);
       });
+      // The PTY path checks the nonce age at receive and before its final write.
+      // A no-host cold wake instead launches a fresh session, bypassing those
+      // fences; host checks and other delivery gates above may also have waited
+      // beyond the ledger TTL. Re-tag the same delivery-time text at this final
+      // launch boundary so the successor opens with a live ledger row.
+      const successorText = await tagWakeText(sessionDelivery, untaggedText, tagTurn);
       const successorStarted = await launchSuccessor({
         subscriberId: d.subscriberId,
-        workspaceId: d.workspaceId,
+        workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
         harness: fresh?.harnessSlug ?? readLoopDeliveryMarker(d.payload)?.harness ?? null,
-        wakeText: text,
+        wakeText: successorText.text,
         deliveryId: d.id,
+        ...(coldWakeNeedsHost ? { carry: 'cold' as const } : {}),
+        ...(successorText.origin === 'loop-fire' ? { turnOrigin: 'loop-fire' as const } : {}),
       }).catch((error) => {
         console.warn(`[wake-executor] cold fresh successor failed for ${d.subscriberId}: ${String(error)}`);
         return false;
       });
       if (successorStarted) return { kind: 'delivered', channel: 'cold-fresh-successor' };
+      if (rejectedTranscriptNeedsSuccessor && !coldWakeNeedsHost) {
+        return {
+          kind: 'park',
+          reason: 'Claude transcript repeatedly references an unavailable tool; fresh successor failed — parked without replaying the rejected transcript',
+        };
+      }
       // No inbox-wake watcher (or the fan failed): nothing else can carry this fire,
       // so the limbo guard below still streaks it toward pause + escalation.
       // EI-21431587306904888: for an ENDED session no injectable host ever
@@ -3938,7 +4823,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // time/watchdog wake re-surveys, so the no-resume invariant holds absolutely.
     const hiveInstallSlug = hiveInstallSlugFromLabel(fresh?.label ?? null);
     if (hiveInstallSlug) {
-      const fired = await fireHiveWake({ installSlug: hiveInstallSlug, kickoff: text }).catch(() => false);
+      const fired = await fireHiveWake({ installSlug: hiveInstallSlug, kickoff: text.text }).catch(() => false);
       if (fired) return { kind: 'delivered', channel: 'hive-fresh-wake' };
       return {
         kind: 'park',
@@ -3962,6 +4847,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       );
       if (forked) return { kind: 'delivered', channel: 'fresh-context-warm-inject' };
       // else fall through to the legacy resume below (fail-soft).
+    }
+
+    // Channel 2 starts a new process. Loop-fire markers may use it only while
+    // the loop is still armed and the current session is confirmed parked; a
+    // live, ended, unknown, timed-out, or failed verdict stays safely parked.
+    if (loopDeliveryMarker && !(await canUseLoopChannel2())) {
+      return {
+        kind: 'park',
+        reason: 'loop wake cannot use Channel 2 without an active loop and confirmed parked session; parked safely',
+      };
     }
 
     const resumeAgent = fresh?.agent ?? handle.agent;
@@ -3991,7 +4886,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           workspaceId: sessionDelivery.workspaceId,
           harnessSlug: fresh?.harnessSlug ?? readLoopDeliveryMarker(d.payload)?.harness ?? null,
           cwd: fresh?.cwd ?? handle.cwd ?? null,
-          wakeText: appendCrashResumeAdvisory(text, {
+          wakeText: appendCrashResumeAdvisory(text.text, {
             agent: resumeAgent,
             endedAtIso: typeof fresh?.endedAt === 'string' ? fresh.endedAt : null,
           }),
@@ -4004,30 +4899,6 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       }
     }
 
-    // Channel 2: process gone → resume. The manual psu resume path claims the
-    // same ended row before spawning; this atomic predicate makes exactly one
-    // of the two competing resume writers proceed.
-    // A claim that could not be EVALUATED is not a claim that was LOST: reporting
-    // a datastore fault as a lost race sends the operator hunting a competing
-    // resumer that never existed. Park either way (never risk a second writer),
-    // but say which happened.
-    let claimed: boolean;
-    try {
-      claimed = await claimResume(handle.advSessionId);
-    } catch (err) {
-      return {
-        kind: 'park',
-        reason:
-          `resume claim for adv session #${handle.advSessionId} could not be evaluated ` +
-          `(${err instanceof Error ? err.message : String(err)}); parked before Channel 2 spawn`,
-      };
-    }
-    if (!claimed) {
-      return {
-        kind: 'park',
-        reason: `resume claim for adv session #${handle.advSessionId} was won by another resumer; parked before Channel 2 spawn`,
-      };
-    }
     // `--account` is a launch-time choice and Claude does not retain launch
     // flags across `--resume`. Rebuild it from the persisted argv for Claude
     // wakes; the helper also emits the high-precedence settings overlay and
@@ -4039,6 +4910,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         : rehome?.action === 'rehome-account'
           ? autoWakeAccountRoute(d.subscriberId)
           : wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId);
+    const codexAccountRoute =
+      resumeAgent === 'codex' ? wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId) : null;
     // codex resumes from its per-session CODEX_HOME (keyed by the adv-session
     // id, exactly as bootstrap-su/psu minted it) and needs the conversation
     // UUID recovered from that home's rollout — codex carries no native id on
@@ -4079,17 +4952,34 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         // the rollout, but BEFORE resolving its native UUID. The repair helper
         // never recreates/removes the home, so it cannot erase the exact archive
         // that the resume safety check below is about to select.
-        await ensureCodexHomeForWake({
+        // WI-10006825: carry the persisted `--account` route into the repair.
+        // `accountRoute` above is Claude-only (it feeds `--settings`); codex
+        // routes through config.toml, which this repair rewrites, so omitting
+        // the route here stripped the gateway on every wake.
+        const repair = await ensureCodexHomeForWake({
           advSessionId: handle.advSessionId,
           owner: fresh?.coordOwnerId ?? d.subscriberId,
           codexHome: home,
           headless: true,
           sessionRow: fresh,
+          ...codexWakeGatewayInputs(codexAccountRoute),
         }).catch((err) => {
-          console.warn(
-            `[wake-executor] codex home repair seam failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          const reason = redactSensitiveText(err instanceof Error ? err.message : String(err));
+          console.warn(`[wake-executor] codex home repair seam failed: ${reason}`);
+          return { ok: false, reason };
         });
+        if (
+          codexAccountRoute &&
+          (codexAccountRoute.mode === 'auto' || codexAccountRoute.mode === 'pin') &&
+          (!repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent')
+        ) {
+          return {
+            kind: 'park',
+            reason:
+              `Codex ${codexAccountRoute.mode} gateway route repair did not complete ` +
+              `(${repair.reason ?? 'unknown'}); parked before native resume`,
+          };
+        }
         // The adv-session/handle id is only an archive lookup hint. It may be
         // stale, and using it here would let a missing/failed rematerialize
         // launch `codex exec resume` against a home with no matching rollout.
@@ -4152,7 +5042,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // carries the crash-resume re-verify advisory (EI-16611 class). Appended
     // HERE, after channel selection, so every in-place inject above stays
     // byte-identical (D-002's channel-agnostic wakeTurnText contract).
-    const resumeText = appendCrashResumeAdvisory(text, {
+    const resumeText = appendCrashResumeAdvisory(text.text, {
       agent: resumeAgent,
       endedAtIso: typeof fresh?.endedAt === 'string' ? fresh.endedAt : null,
     });
@@ -4178,6 +5068,36 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       return degradeToInboxOrDrop(d, 'session ended, not resumable, presence gone — dead waiter', sendCoordMessage);
     }
 
+    // Channel 2: process gone → resume. The manual psu resume path claims the
+    // same ended row before spawning; this atomic predicate makes exactly one
+    // of the two competing resume writers proceed. Claim only after resume
+    // preparation succeeds: claimResume clears terminal markers, so a failed
+    // required Codex gateway repair must leave the row resumable for the next wake.
+    // A claim that could not be EVALUATED is not a claim that was LOST: reporting
+    // a datastore fault as a lost race sends the operator hunting a competing
+    // resumer that never existed. Park either way (never risk a second writer),
+    // but say which happened.
+    let claimed: boolean | 'retired';
+    try {
+      claimed = await claimResume(handle.advSessionId, null, undefined, d.subscriberId);
+    } catch (err) {
+      return {
+        kind: 'park',
+        reason:
+          `resume claim for adv session #${handle.advSessionId} could not be evaluated ` +
+          `(${err instanceof Error ? err.message : String(err)}); parked before Channel 2 spawn`,
+      };
+    }
+    if (claimed === 'retired') {
+      return { kind: 'drop', reason: 'owner retired by deliberate kill during resume claim; no process started (WI-6554700010010429)' };
+    }
+    if (!claimed) {
+      return {
+        kind: 'park',
+        reason: `resume claim for adv session #${handle.advSessionId} was lost or superseded by a newer owner session; parked before Channel 2 spawn`,
+      };
+    }
+
     // A process-gone loop wake may arrive from an older adv-session row whose
     // best-effort launch_spec was never persisted. The loop fire's marker carries
     // the harness scope on current rows; fall back to the current loop routine for
@@ -4200,6 +5120,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
 
     const env: Record<string, string> = {
       ...(accountRoute?.env ?? {}),
+      ...(resumeAgent === 'codex' ? codexWakeGatewayEnv(codexAccountRoute) : {}),
       PAPERCUSP_SID: d.subscriberId,
       // Scope the resumed agent's user-level MCP to the bee's workspace. omp's
       // ~/.omp/agent/mcp.json sends x-papercusp-workspace via
@@ -4248,8 +5169,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // append `/api/mcp` themselves, so an inherited suffixed value doubles
     // into a 404ing `.../api/mcp/api/mcp` and the resumed session comes up
     // with zero papercusp-su tools. Normalize it down to a bare (proxy-routed)
-    // origin before the child spawns.
-    const normalizedOperatorUrl = resolveInheritedOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL);
+    // origin before the child spawns. A direct live :3070 base inherited from a host
+    // without the proxy env is routed like a fresh long-lived launch (WI-6554700010008371).
+    const normalizedOperatorUrl = resolveResumedSessionOperatorBaseUrl(process.env.PAPERCUSP_OPERATOR_URL);
     if (normalizedOperatorUrl) env.PAPERCUSP_OPERATOR_URL = normalizedOperatorUrl;
     // Tracked hive launches keep their per-session CLAUDE_CONFIG_DIR (transcript
     // + plugin isolation) at a conventional path — point the resumed claude at
@@ -4279,6 +5201,22 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         } catch (e) {
           console.warn(`[wake-executor] claude rematerialize check failed: ${(e as Error)?.message ?? e}`);
         }
+        // EI-24890753013901545: the resumed headless process has its own tool surface, so
+        // a NATIVE deferred tool the earlier process loaded (ExitPlanMode,
+        // WaitForMcpServers…) can be absent and the provider 400s the first replayed
+        // request — the seed below restores only Papercusp MCP names. This process holds
+        // no live session (we are about to spawn the resume), so drop the native
+        // references from the transcript first; they only pre-load a schema.
+        try {
+          const dropped = neutralizeResumeNativeToolReferences(join(cfgDir, 'projects'), sid);
+          if (dropped.rewritten > 0) {
+            console.log(
+              `[wake-executor] dropped ${dropped.rewritten} native deferred tool reference(s) (${dropped.toolNames.join(', ')}) from claude/${sid} before resume`,
+            );
+          }
+        } catch (e) {
+          console.warn(`[wake-executor] native tool-reference neutralize failed: ${(e as Error)?.message ?? e}`);
+        }
         const analysis = await refreshClaudeResumeTranscript(owner, sid);
         const inheritedToolSeed = process.env.PAPERCUSP_TOOLS;
         if (analysis?.toolReferences.length && inheritedToolSeed?.trim()) {
@@ -4301,6 +5239,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // per-session CODEX_HOME — point the resumed `codex exec resume` at it
     // (turn-lifecycle-control P-009).
     if (codexHome) env.CODEX_HOME = codexHome;
+
+    // WI-10005900: clamp the effort the resumed claude would inherit from the
+    // settings.json it will actually read. Read it with the CHILD's env (the
+    // isolated CLAUDE_CONFIG_DIR set above), never the operator's own.
+    if (resumeAgent === 'claude') {
+      const childEnv = { ...sanitizeInheritedWakeEnv(process.env), ...env };
+      resume.args = withClaudeResumeEffortClamp(
+        resume.args,
+        (deps.readClaudeLaunchSettings ?? readClaudeLaunchSettings)(childEnv),
+      );
+    }
 
     const spawnDetached = deps.spawnDetached ?? defaultSpawnDetached;
 
@@ -4360,11 +5309,60 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
                 } catch (error) {
                   console.warn(`[wake-executor] tool-reference poison detector failed: ${(error as Error)?.message ?? error}`);
                 }
+              } else if (resumeAgent === 'codex' && codexHome && codexSessionId) {
+                // WI-6554700010008894: a Codex thread that no longer fits its model window
+                // fails every resume the same way; quarantine it once the persisted rollout
+                // shows a sustained streak, instead of re-firing the wake forever.
+                // The ROLLOUT is the evidence, not this exit's text: after the overflowing
+                // turn Codex runs a remote compact task, and when that fails (e.g. on the
+                // account usage wall) the exit tail reports only the compact failure. Gating
+                // on the exit text missed every real occurrence (measured 2026-10-12 12:22Z).
+                // A healthy thread's newest terminal is a completed turn, so the analyzer
+                // returns a zero streak and nothing is quarantined.
+                try {
+                  const rolloutPath = findCodexRolloutPath(codexHome, codexSessionId);
+                  const quarantine = await quarantineCodexOverflowSession(
+                    { ...context, transcriptPath: rolloutPath },
+                    errorText,
+                  );
+                  if (quarantine.poisoned) {
+                    context = {
+                      ...context,
+                      transcriptPath: rolloutPath,
+                      poisoned: true,
+                      poisonReason:
+                        `quarantined after ${quarantine.turns} consecutive Codex turns exceeded the model ` +
+                        'context window; relaunch it onto a fresh thread',
+                    };
+                    if (!deps.onResumeTurnExit) {
+                      await notifyPoisonedResumeSession(d, context, errorText, sendCoordMessage);
+                    }
+                  }
+                } catch (error) {
+                  console.warn(`[wake-executor] codex context-overflow detector failed: ${(error as Error)?.message ?? error}`);
+                }
               }
               deps.onResumeTurnExit!(d, observedExit, context);
             })();
           }
         : undefined;
+      // A resume claim advances adv_sessions.started_at to the new incarnation.
+      // Re-arm just before spawn so the first native tool call cannot beat the
+      // activity:report self-heal. forceRecheck bypasses only that helper's
+      // process-local throttle; its live-session and same-incarnation cancel
+      // checks still protect an explicit inbox-wake opt-out. This is best-effort
+      // and bounded so a PG stall does not strand the wake before process start.
+      try {
+        await withWakeTimeout(
+          ensureInboxWakeArmedForActiveSession({ ownerId: d.subscriberId, forceRecheck: true }),
+          `re-arm inbox wake for resumed session ${d.subscriberId}`,
+          2_000,
+        );
+      } catch (err) {
+        console.warn(
+          `[wake-executor] inbox-wake re-arm failed for ${d.subscriberId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env }, onExit);
       if (!pid2) return { kind: 'error', error: 'headless resume spawn failed' };
       // With no exit observer the ledger row is not closed here. The reconciler
@@ -4383,6 +5381,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
               : (fresh?.sessionId ?? handle.sessionId ?? null),
           cwd,
           argv: ledgerSafeResumeArgv(resume.bin, resume.args, resumeText),
+          declaredAccountRoute: resumeAgent === 'codex' ? codexAccountRoute : accountRoute,
         });
         // Write the pid BEFORE reporting delivered. Otherwise the next wake reads
         // the dead predecessor's pid and resumes the session a second time.

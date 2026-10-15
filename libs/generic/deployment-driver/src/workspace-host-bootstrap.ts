@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { posix } from 'node:path';
 import {
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_ENTRYPOINT,
   WORKSPACE_HOST_PUI_COMPANION_PATH,
@@ -19,6 +20,15 @@ import {
   BWRAP_USERNS_PROBE_ARGS,
   bwrapUsernsGrantShellLines,
 } from './bwrap-userns-grant';
+import {
+  ZRAM_GENERATOR_APT_PACKAGE,
+  ZRAM_GENERATOR_BIN,
+  ZRAM_GENERATOR_CONFIG,
+  ZRAM_SWAP_FUNCTION,
+  ZRAM_SWAP_STATUS_PREFIX,
+  ZRAM_SYSCTL_CONFIG,
+  zramSwapShellLines,
+} from './zram-swap';
 
 /**
  * Provider-neutral bootstrap contract for a durable Papercusp workspace host.
@@ -64,7 +74,7 @@ export const DEFAULT_WORKSPACE_HOST_MODEL: WorkspaceHostModel =
  * deployment's origin against it.
  */
 export const WORKSPACE_HOST_BOOTC_BASE_IMAGE =
-  'quay.io/centos-bootc/centos-bootc:stream9';
+  'quay.io/centos-bootc/centos-bootc:stream10';
 
 /**
  * The ONE containers signature policy a bootc pull actually consults — D-286.
@@ -132,8 +142,24 @@ export const DEFAULT_WORKSPACE_HOST_WORKSPACE_USER = 'papercusp-workspace';
  * hold exactly as written while the agents remain runnable.
  */
 export const DEFAULT_WORKSPACE_HOST_AGENT_USER = 'papercusp-agent';
+/**
+ * The bootc image's immutable runtime-read capability (D-314): the group that owns the 0750
+ * `/opt/papercusp` parents, declared with exactly two members (service + agent) by
+ * `infra/images/bootc/papercusp-sysusers.conf` and re-verified on every boot by
+ * `papercusp-host-prepare.sh`. On that model it is the agent identity's ONLY path to the
+ * runtime (no named-user ACL survives a container commit), so the bootstrap must keep the agent
+ * in it rather than clear its supplementary groups (WI-10006173).
+ */
+export const WORKSPACE_HOST_BOOTC_RUNTIME_READ_GROUP = 'papercusp-runtime-read';
 export const WORKSPACE_HOST_RUNTIME_ROOT = '/opt/papercusp';
 export const WORKSPACE_HOST_STATE_ROOT = '/var/lib/papercusp';
+/**
+ * Root-only bootstrap bookkeeping (WI-10006299). The completion marker lived under
+ * $RUNTIME_ROOT, which is read-only on a bootc image (/opt is part of the image), so a
+ * bootc bootstrap died on its last step. It is not under $STATE_ROOT either: the service
+ * user owns that, and could forge the marker to make a later boot skip its restart.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_STATE_DIR = '/var/lib/papercusp-bootstrap';
 export const WORKSPACE_HOST_DATA_ROOT = '/srv/papercusp/workspaces';
 /** Private key and host pin for the operator's loopback PTY hop into the customer identity. */
 export const WORKSPACE_HOST_HOSTED_PTY_SSH_KEY = `${WORKSPACE_HOST_STATE_ROOT}/hosted-pty-ssh/id_ed25519`;
@@ -146,6 +172,28 @@ export const WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS = `${WORKSPACE_HOST_STATE_ROO
  */
 export const WORKSPACE_HOST_BOOTC_RELEASE_REGISTRY_SCOPE_PATH =
   '/usr/lib/papercusp/release-registry-namespace';
+/**
+ * WI-10005830: where `/usr/local` must resolve on a bootc host.
+ *
+ * On the bootc base `/usr/local` is a real directory inside the read-only `/usr`, so every runtime
+ * install the bootstrap makes there (the privileged conduits below, native OMP, the ollama
+ * runtime, the customer agent toolchain) died with EROFS — the first AWS bootc clean room that got
+ * past install-runtime died on the initializer conduit. The image links `/usr/local` to this
+ * machine-local root (`infra/images/bootc/workspace-host.Containerfile`), the layout the base's
+ * own `rpm-ostree-0-integration-opt-usrlocal.conf` dropin already creates `/var/usrlocal` for,
+ * and `validate-host` asserts the link before anything writes through it. The bundle model keeps
+ * an ordinary writable `/usr/local` and never consults this.
+ */
+export const WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET = '/var/usrlocal';
+/**
+ * The `ollama` service account's home, which is also where it stores pulled models. The bundle
+ * model keeps the upstream installer's `/usr/share/ollama` (live GCP hosts already carry it); a
+ * bootc host cannot create a home under the read-only `/usr`, so it uses machine-local `/var/lib`.
+ */
+export const WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL = {
+  'ubuntu-release-bundle': '/usr/share/ollama',
+  'bootc-image': '/var/lib/ollama',
+} as const satisfies Record<WorkspaceHostModel, string>;
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT =
   "/usr/local/bin/papercusp-workspace-host-initialize";
 export const WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT =
@@ -226,6 +274,10 @@ export const WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES = [
   "bubblewrap",
   "ca-certificates",
   "curl",
+  // The release's content bootstrap shallow-clones the first-party bundle with git
+  // (offline-content-bundle-install-io.ts gitCloneShallow). Stock Ubuntu images ship git, so
+  // this was never named, and the bootc image (Stream 9) booted without it (WI-10005779).
+  "git",
   "jq",
   "minisign",
   "openssh-server",
@@ -324,6 +376,16 @@ export const WORKSPACE_HOST_AGENT_NODE_SHA256: Readonly<Record<'x64' | 'arm64', 
  */
 export const WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT = '/usr/local/lib/papercusp-agent-toolchain';
 export const WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN = `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT}/bin`;
+
+/**
+ * WI-10005362: the shared typecheck service's systemd USER template units (one instance per
+ * checkout, the instance being the systemd-escaped checkout path). The operator sets
+ * `PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE=<this base>` on hosted agents only when the socket unit file
+ * exists, and the checkout's own `scripts/lib/tsc-service.mjs` starts the instance on demand.
+ */
+export const WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE = 'papercusp-tsc-service';
+export const WORKSPACE_HOST_TSC_SERVICE_SOCKET_UNIT_FILE = `/etc/systemd/user/${WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE}@.socket`;
+export const WORKSPACE_HOST_TSC_SERVICE_UNIT_FILE = `/etc/systemd/user/${WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE}@.service`;
 
 /**
  * The pinned local-inference runtime (D-266).
@@ -517,9 +579,14 @@ export type WorkspaceHostBootstrapPhase =
  *
  * - `gce-guest-attributes`: PUT to the GCE metadata server's guest attributes, which the
  *   controller reads through `compute.instances.getGuestAttributes`.
+ * - `ec2-console-output`: one marker line written to `/dev/console`, which EC2 captures as the
+ *   instance's serial console output; the controller reads it through `ec2:GetConsoleOutput` and
+ *   takes the LAST marker line ({@link parseEc2ConsoleBootstrapStatus}). EC2 has no guest-writable
+ *   metadata store, and the console is the one channel already granted for host-key pinning.
  */
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_CHANNELS = [
   'gce-guest-attributes',
+  'ec2-console-output',
 ] as const;
 export type WorkspaceHostBootstrapStatusChannel =
   (typeof WORKSPACE_HOST_BOOTSTRAP_STATUS_CHANNELS)[number];
@@ -528,6 +595,55 @@ export type WorkspaceHostBootstrapStatusChannel =
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE =
   'papercusp';
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY = 'bootstrap';
+
+/**
+ * The token that opens every `ec2-console-output` report line: `<marker> <report>`. The console
+ * also carries kernel, cloud-init and journal output, so the marker is what tells a report apart
+ * from anything else that happens to print the word `failed`.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER =
+  'PAPERCUSP_BOOTSTRAP_STATUS';
+
+/**
+ * The delimiters of the SSH host-key block on the EC2 console, in cloud-init's format, which the
+ * controller pins from before its first SSH (`parseEc2ConsoleHostKeys` in operator-core reads
+ * these same constants). WI-10007009: the bootc AMI has no cloud-init, so on the
+ * `ec2-console-output` channel the bootstrap prints the block itself.
+ */
+export const WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_BEGIN = '-----BEGIN SSH HOST KEY KEYS-----';
+export const WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_END = '-----END SSH HOST KEY KEYS-----';
+
+/** The host-key algorithms the controller can pin; the bootstrap prints only these. */
+export const WORKSPACE_HOST_EC2_CONSOLE_HOST_KEY_ALGORITHMS = [
+  'ssh-ed25519',
+  'ecdsa-sha2-nistp256',
+  'ssh-rsa',
+] as const;
+
+/**
+ * GCP guest-environment units the bootc image ships and that only fail or spin on EC2
+ * (WI-10007009, measured on ami-0f0944cd39ad0234e: google-guest-agent-manager stuck activating,
+ * google-oslogin-cache and google-startup-scripts failed, google-guest-compat-manager logging a
+ * metadata error every 10s). Disabled and masked on the `ec2-console-output` channel only.
+ */
+export const WORKSPACE_HOST_EC2_GCP_GUEST_UNITS = [
+  'google-guest-agent.service',
+  'google-guest-agent-manager.service',
+  'google-guest-compat-manager.service',
+  'google-oslogin-cache.service',
+  'google-oslogin-cache.timer',
+  'google-startup-scripts.service',
+  'google-shutdown-scripts.service',
+] as const;
+
+/**
+ * An rsyslog rule that copies messages to the serial console, in the legacy `selector action`
+ * form (the GCP guest environment's `/etc/rsyslog.d/90-google.conf` ships `daemon,kern.*
+ * /dev/console`). systemd services log under facility `daemon`, so that rule copies every
+ * service's journal to the console. ERE, matched per line; comments never match.
+ */
+export const WORKSPACE_HOST_RSYSLOG_CONSOLE_RULE =
+  '^[[:space:]]*[^#[:space:]][^#]*[[:space:]]-?/dev/console[[:space:]]*$';
 
 /** The longest die() message a report carries; the serial console has the full log. */
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS = 300;
@@ -560,6 +676,28 @@ export function parseWorkspaceHostBootstrapReportedStatus(
     phase: match[2] || null,
     error: match[3] || null,
   };
+}
+
+/**
+ * Read the bootstrap's status from an EC2 instance's console output (the `ec2-console-output`
+ * channel). The LAST marker line wins, because every run opens with `running` and a later run's
+ * report supersedes an earlier one's. Serial consoles end lines with `\r\n` and may interleave
+ * kernel output before the marker, so the marker is found anywhere in the line and carriage
+ * returns are dropped. A last marker whose report does not parse yields null (keep waiting) —
+ * never an older report, which would resurrect a superseded outcome.
+ */
+export function parseEc2ConsoleBootstrapStatus(
+  consoleText: string,
+): WorkspaceHostBootstrapReportedStatus | null {
+  const token = `${WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER} `;
+  const lines = consoleText.split('\n');
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index].replace(/\r/g, '');
+    const at = line.lastIndexOf(token);
+    if (at < 0) continue;
+    return parseWorkspaceHostBootstrapReportedStatus(line.slice(at + token.length));
+  }
+  return null;
 }
 
 /**
@@ -1788,6 +1926,109 @@ function workspaceOmpRuntimeInstallLines(
  * and must NOT be able to read the Papercusp release or the platform agent home (D-043). A copy
  * that dragged a credential file along dies here instead of publishing it.
  */
+/**
+ * Plan agent-capacity-and-cost-gcp-2026-09-30 D-031 ruling 2: publish the heavy-job admission pair
+ * (the node --require preload and pc-heavy.sh, which is self-contained) into the customer toolchain,
+ * so hosted agents' tsc/vitest wait for a memory slot. One root-owned read-only script plus a
+ * preload: no runtime, no credential, no control-plane logic (D-031's reading of D-043). Copied
+ * only when the release carries BOTH files, and the bootstrap log says which way it went; the
+ * operator sets the activating env only when both are present in the published toolchain
+ * (<toolchain root>/lib/heavy-admission/, read by hostedHeavyAdmissionEnv in operator-core's
+ * workspace-host/hosted-agent-identity.ts).
+ */
+function customerHeavyAdmissionInstallLines(): string[] {
+  return [
+    'if [[ -f "$RELEASE_DIR/scripts/heavy-admission.cjs" && -f "$RELEASE_DIR/scripts/pc-heavy.sh" ]]; then',
+    '  install -d -m 0755 -o root -g root -- "$TOOLCHAIN_NEXT/lib" "$TOOLCHAIN_NEXT/lib/heavy-admission"',
+    '  install -m 0644 -o root -g root -- "$RELEASE_DIR/scripts/heavy-admission.cjs" "$TOOLCHAIN_NEXT/lib/heavy-admission/heavy-admission.cjs"',
+    '  install -m 0755 -o root -g root -- "$RELEASE_DIR/scripts/pc-heavy.sh" "$TOOLCHAIN_NEXT/lib/heavy-admission/pc-heavy.sh"',
+    '  echo "PAPERCUSP_HEAVY_ADMISSION status=installed"',
+    'else',
+    '  echo "PAPERCUSP_HEAVY_ADMISSION status=absent reason=release-lacks-scripts (hosted agents run heavy jobs unadmitted)"',
+    'fi',
+  ];
+}
+
+/**
+ * WI-10005362 (plan agent-capacity-and-cost-gcp-2026-09-30, D-021's lever): install the shared
+ * typecheck service as systemd USER template units, so every hosted agent's scoped
+ * `lint:tsc --files` in a papercusp checkout is answered by one loaded tsgo program (~1.5 s) instead
+ * of a full compile (measured on a spot e2-standard-16: 312 CPU-s, 14 GB peak per check).
+ *
+ * A template because the host's checkouts are cloned under the workspace root AFTER this script ran,
+ * so no fixed-ROOT unit (the tower's papercup-tsc-service) can name them. The instance is the
+ * systemd-escaped checkout path (`%f` resolves it back); the checkout's own client starts it on
+ * demand in the agent account's user manager (agents run over a loopback SSH login, so pam_systemd
+ * provides one). It runs the CHECKOUT's own server script with the toolchain's Node, as the
+ * customer: no Papercusp runtime code and no credential cross (D-043).
+ *
+ * Memory: one operator-core program is 5-9 GiB loaded. MemoryMax is a quarter of host RAM clamped to
+ * 10-16 GiB, and hosts under 24 GiB get no service (the bootstrap removes the units, so the operator
+ * stops advertising them). The service's RSS lowers MemAvailable, which pc-heavy's admission reads
+ * live, so the two budgets cannot double-book. A killed or refused service costs speed, never a
+ * verdict: the client falls back to the full compile.
+ */
+export function customerTscServiceInstallLines(
+  paths: { readonly unitDir?: string; readonly meminfo?: string } = {},
+): string[] {
+  const base = WORKSPACE_HOST_TSC_SERVICE_UNIT_TEMPLATE;
+  const unitDir = paths.unitDir ?? posix.dirname(WORKSPACE_HOST_TSC_SERVICE_SOCKET_UNIT_FILE);
+  const socketUnit = posix.join(unitDir, `${base}@.socket`);
+  const serviceUnit = posix.join(unitDir, `${base}@.service`);
+  return [
+    '',
+    '# WI-10005362: the shared typecheck service, one user-unit instance per papercusp checkout.',
+    `MEM_TOTAL_GIB=$(( $(awk '/^MemTotal:/{print $2}' ${shellQuote(paths.meminfo ?? '/proc/meminfo')}) / 1048576 ))`,
+    'if (( MEM_TOTAL_GIB >= 24 )); then',
+    '  TSC_MAX_GIB=$(( MEM_TOTAL_GIB / 4 )); (( TSC_MAX_GIB > 16 )) && TSC_MAX_GIB=16; (( TSC_MAX_GIB < 10 )) && TSC_MAX_GIB=10',
+    '  TSC_HIGH_GIB=$(( TSC_MAX_GIB - 2 )); TSC_RSS_RESET_GIB=$(( TSC_MAX_GIB - 4 ))',
+    '  TSC_MAX_PROJECTS=1; (( TSC_MAX_GIB >= 14 )) && TSC_MAX_PROJECTS=2',
+    `  install -d -m 0755 -o root -g root -- ${shellQuote(unitDir)}`,
+    `  cat > ${shellQuote(`${socketUnit}.next`)} <<PAPERCUSP_TSC_SOCKET`,
+    '[Unit]',
+    'Description=Papercusp shared typecheck service socket for %f (WI-10005362)',
+    '',
+    '[Socket]',
+    `ListenStream=%t/${base}-%i.sock`,
+    'SocketMode=0600',
+    'PAPERCUSP_TSC_SOCKET',
+    `  cat > ${shellQuote(`${serviceUnit}.next`)} <<PAPERCUSP_TSC_SERVICE`,
+    '[Unit]',
+    'Description=Papercusp shared typecheck service for %f (WI-10005362)',
+    `Requires=${base}@%i.socket`,
+    `After=${base}@%i.socket`,
+    'ConditionPathExists=%f/scripts/tsc-service/server.mjs',
+    '',
+    '[Service]',
+    'Type=simple',
+    'Environment=PATH=$TOOLCHAIN_ROOT/bin:/usr/local/bin:/usr/bin:/bin',
+    'Environment=PAPERCUSP_TSC_SERVICE_ROOT=%f',
+    'Environment=PAPERCUSP_TSC_SERVICE_IDLE_SEC=1200',
+    'Environment=PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB=$TSC_RSS_RESET_GIB',
+    'Environment=PAPERCUSP_TSC_SERVICE_MAX_PROJECTS=$TSC_MAX_PROJECTS',
+    'WorkingDirectory=%f',
+    'ExecStart=$TOOLCHAIN_ROOT/bin/node %f/scripts/tsc-service/server.mjs',
+    'Restart=on-failure',
+    'RestartSec=2',
+    'Nice=10',
+    'CPUWeight=50',
+    'MemoryAccounting=yes',
+    'MemoryHigh=${TSC_HIGH_GIB}G',
+    'MemoryMax=${TSC_MAX_GIB}G',
+    'MemorySwapMax=0',
+    'PAPERCUSP_TSC_SERVICE',
+    `  chown root:root -- ${shellQuote(`${socketUnit}.next`)} ${shellQuote(`${serviceUnit}.next`)}`,
+    `  chmod 0644 -- ${shellQuote(`${socketUnit}.next`)} ${shellQuote(`${serviceUnit}.next`)}`,
+    `  mv -f -- ${shellQuote(`${socketUnit}.next`)} ${shellQuote(socketUnit)}`,
+    `  mv -f -- ${shellQuote(`${serviceUnit}.next`)} ${shellQuote(serviceUnit)}`,
+    '  echo "PAPERCUSP_TSC_SERVICE status=installed memoryMaxGiB=$TSC_MAX_GIB maxProjects=$TSC_MAX_PROJECTS"',
+    'else',
+    `  rm -f -- ${shellQuote(socketUnit)} ${shellQuote(serviceUnit)}`,
+    '  echo "PAPERCUSP_TSC_SERVICE status=absent reason=host-memory-below-24GiB memTotalGiB=$MEM_TOTAL_GIB (hosted agents pay a full compile per scoped typecheck)"',
+    'fi',
+  ];
+}
+
 function customerAgentToolchainInstallLines(
   installs: readonly WorkspaceHostAgentRuntimeInstall[],
 ): string[] {
@@ -1818,14 +2059,20 @@ function customerAgentToolchainInstallLines(
   }
   if (has('claude')) {
     lines.push(
+      // WI-10006974: compare CANONICAL to CANONICAL. On a bootc image /home is a symlink to
+      // var/home, so `readlink -f` of the installer's symlink yields /var/home/<agent>/... while
+      // $AGENT_HOME stays /home/<agent>; a prefix test against the raw $AGENT_HOME then refuses a
+      // correctly installed CLI.
       'CLAUDE_REAL="$(readlink -f -- "$AGENT_RUNTIME_CLAUDE")"',
-      '[[ "$CLAUDE_REAL" == "$AGENT_HOME/"* && -f "$CLAUDE_REAL" ]] || die "vendor claude did not resolve to a file inside the agent home"',
+      'AGENT_HOME_REAL="$(readlink -f -- "$AGENT_HOME")"',
+      '[[ -n "$AGENT_HOME_REAL" && "$CLAUDE_REAL" == "$AGENT_HOME_REAL/"* && -f "$CLAUDE_REAL" ]] || die "vendor claude did not resolve to a file inside the agent home"',
       'install -m 0755 -o root -g root -- "$CLAUDE_REAL" "$TOOLCHAIN_NEXT/bin/claude"',
     );
   }
   if (has('omp')) {
     lines.push('ln -s /usr/local/bin/omp "$TOOLCHAIN_NEXT/bin/omp"');
   }
+  lines.push(...customerHeavyAdmissionInstallLines());
   lines.push(
     'chown -R -h root:root -- "$TOOLCHAIN_NEXT"',
     'chmod -R go-w,a+rX -- "$TOOLCHAIN_NEXT"',
@@ -1846,6 +2093,7 @@ function customerAgentToolchainInstallLines(
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$RELEASE_DIR" || die "customer account can read the Papercusp release (D-043)"',
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$AGENT_HOME" || die "customer agent toolchain path exposes the platform agent home"',
   );
+  lines.push(...customerTscServiceInstallLines());
   return lines;
 }
 
@@ -1868,6 +2116,7 @@ function customerAgentToolchainInstallLines(
  */
 function localInferenceRuntimeInstallLines(
   installs: readonly WorkspaceHostAgentRuntimeInstall[],
+  hostModel: WorkspaceHostModel,
 ): string[] {
   if (!installs.some((install) => install.agent === 'omp')) return [];
   const version = WORKSPACE_HOST_OLLAMA_VERSION;
@@ -1950,7 +2199,7 @@ function localInferenceRuntimeInstallLines(
     '  die "local-inference runner (llama-server) missing after install"',
     'fi',
     'getent group ollama >/dev/null || groupadd --system ollama || die "could not create the ollama group"',
-    'getent passwd ollama >/dev/null || useradd --system --gid ollama --home-dir /usr/share/ollama --create-home --shell /usr/sbin/nologin ollama || die "could not create the ollama account"',
+    `getent passwd ollama >/dev/null || useradd --system --gid ollama --home-dir ${WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL[hostModel]} --create-home --shell /usr/sbin/nologin ollama || die "could not create the ollama account"`,
     'cat > /etc/systemd/system/ollama.service <<PAPERCUSP_OLLAMA',
     '[Unit]',
     'Description=Papercusp local-inference runtime',
@@ -2034,6 +2283,15 @@ function hostModelValidateLines(v: ValidatedBootstrapInput): string[] {
     'BOOTED_BASE_IMAGE="$(cat /usr/lib/papercusp/base-image 2>/dev/null || true)"',
     '[[ -n "$BOOTED_BASE_IMAGE" ]] || die "booted image does not record its base at /usr/lib/papercusp/base-image"',
     'if [[ "$BOOTC_BASE_IMAGE" != "$BOOTED_BASE_IMAGE" ]]; then die "booted image was built from $BOOTED_BASE_IMAGE, not the expected $BOOTC_BASE_IMAGE"; fi',
+    // WI-10005830: every later phase installs under /usr/local (conduits, OMP, the ollama runtime,
+    // the customer toolchain). On this model that is only writable because the image links it to
+    // machine-local storage, so assert the link HERE, before the first write, and name the cause —
+    // otherwise the host dies phases later on a bare EROFS from whichever install comes first.
+    `[[ -L /usr/local && "$(readlink -f /usr/local)" == ${shellQuote(WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET)} ]] || die "/usr/local does not link to ${WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET} on the booted image, so every runtime install under it would hit the read-only /usr (WI-10005830)"`,
+    // The image's tmpfiles dropin creates these at boot; creating them here too keeps the install
+    // phases independent of whether systemd-tmpfiles has run yet. Explicit mode, because this
+    // script runs under umask 027 and secure_path directories must be traversable.
+    'install -d -o root -g root -m 0755 /usr/local/bin /usr/local/sbin /usr/local/lib /usr/local/libexec',
   ];
 }
 
@@ -2115,19 +2373,11 @@ function bootcReleaseLines(
   hostId: string,
 ): string[] {
   const bootc = v.bootc as NonNullable<ValidatedBootstrapInput['bootc']>;
-  // A tag separator is a colon AFTER the final slash; a registry port is a colon
-  // BEFORE it. `split(':')[0]` therefore turns
-  // `127.0.0.1:5096/papercusp/workspace-host:tag` into `127.0.0.1` and stages a
-  // different image. SAFE_IMAGE_REF excludes digests here, so the last-colon
-  // comparison is a complete parser for the admitted shape.
-  const finalSlash = bootc.image.lastIndexOf('/');
-  const finalColon = bootc.image.lastIndexOf(':');
-  const imageRepository =
-    finalColon > finalSlash ? bootc.image.slice(0, finalColon) : bootc.image;
+  const imageRepository = workspaceHostBootcImageRepository(bootc.image);
   // Pull BY DIGEST. The tag rides along as provenance only: a tag is mutable, so switching to
   // `image:tag` and then attesting the digest that arrived would attest whatever the registry
   // happened to be serving, which is a description of the outcome rather than a constraint on it.
-  const pinnedImage = `${imageRepository}@${bootc.imageDigest}`;
+  const pinnedImage = workspaceHostBootcPinnedImageRef(bootc);
   return [
     assignment('EXPECTED_IMAGE', bootc.image),
     assignment('EXPECTED_IMAGE_REPO', imageRepository),
@@ -2203,19 +2453,90 @@ function statusReportLines(
   const url =
     'http://169.254.169.254/computeMetadata/v1/instance/guest-attributes/' +
     `${WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_NAMESPACE}/${WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY}`;
+  // The console report is ONE line: a die message with a newline would otherwise split the
+  // report and the parser would read only its head.
   const deliver =
     channel === 'gce-guest-attributes'
       ? 'report_status() { curl --silent --max-time 5 --output /dev/null --request PUT ' +
         `--header "Metadata-Flavor: Google" --data-binary "$1" ${shellQuote(url)} || true; }`
-      : 'report_status() { :; }';
+      : channel === 'ec2-console-output'
+        ? `report_status() { printf '%s %s\\n' ${WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER} ` +
+          `"\${1//[$'\\r\\n']/ }" > /dev/console 2>/dev/null || true; }`
+        : 'report_status() { :; }';
   return [
     'BOOTSTRAP_PHASE=""',
     'BOOTSTRAP_ERROR=""',
     deliver,
-    'report_outcome() { if [[ "$1" -eq 0 ]]; then report_status succeeded; else ' +
-      `report_status "failed exit=$1 phase=$BOOTSTRAP_PHASE error=\${BOOTSTRAP_ERROR:0:${WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS}}"; fi; }`,
+    ...(channel === 'ec2-console-output' ? ec2ConsoleChannelLines() : NO_CONSOLE_CHANNEL_LINES),
+    // EI-25267772765088134: a non-die abort (a `set -u` unbound variable, an unguarded failing
+    // command) leaves BOOTSTRAP_ERROR empty, so the controller saw `error=` with nothing after it.
+    // Inside the EXIT trap BASH_COMMAND still holds the UNEXPANDED command that aborted; report
+    // that, with single-quoted literals redacted (an inline payload never reaches the console)
+    // and newlines folded.
+    // The keys again right before `succeeded`, so a finished host's console ENDS with its key
+    // block and its marker no matter what scrolled through during the run.
+    'report_outcome() { if [[ "$1" -eq 0 ]]; then publish_host_keys; report_status succeeded; else ' +
+      `local err="$BOOTSTRAP_ERROR"; if [[ -z "$err" ]]; then local cmd="\${BASH_COMMAND//$'\\n'/ }"; ` +
+      `err="aborted outside die: \${cmd//\\'*\\'/\\'<redacted>\\'}"; fi; ` +
+      `report_status "failed exit=$1 phase=$BOOTSTRAP_PHASE error=\${err:0:${WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS}}"; fi; }`,
     `trap 'status=$?; report_outcome "$status"; exit "$status"' EXIT`,
+    // Order matters on EC2: quiet the console first, so nothing this run logs can bury the key
+    // block or the marker; then the keys, because the controller pins from them BEFORE it waits
+    // on this script (establishAwsSsmHostKeyTrust runs at initialization-resolve time, bounded
+    // at 300s, so keys printed only at the end would arrive minutes too late).
+    'console_quiet',
+    'publish_host_keys',
     'report_status running',
+  ];
+}
+
+/** Other channels never touch the console: both helpers are no-ops. */
+const NO_CONSOLE_CHANNEL_LINES = [
+  'console_quiet() { :; }',
+  'publish_host_keys() { :; }',
+] as const;
+
+/**
+ * The `ec2-console-output` channel's two console helpers (WI-10007009). Measured on the bootc AMI
+ * ami-0f0944cd39ad0234e: the bootstrap SUCCEEDED, but its `succeeded` marker never reached the
+ * 64 KiB console window the controller reads, because the GCP guest environment's rsyslog rule
+ * copied ~660 lines of the service's own migration log to the console after it; and with no
+ * cloud-init on the image, no host-key block was ever printed, so first SSH could never pin.
+ *
+ * Both are best-effort, like `report_status`: neither may change the bootstrap's own outcome.
+ * - `console_quiet` comments out every rsyslog rule that writes to `/dev/console` (restoring the
+ *   file's SELinux label, since `sed -i` replaces the file) and restarts rsyslog only if it changed
+ *   something; then disables and masks the GCP guest units, which only fail or spin on EC2.
+ * - `publish_host_keys` prints the host public keys in cloud-init's block format, one line per
+ *   supported algorithm, comments dropped. No supported key means no block at all: an EMPTY block
+ *   is a hard refusal in the parser, whereas an absent one only keeps the controller waiting.
+ */
+function ec2ConsoleChannelLines(): string[] {
+  const rule = WORKSPACE_HOST_RSYSLOG_CONSOLE_RULE;
+  const supported = WORKSPACE_HOST_EC2_CONSOLE_HOST_KEY_ALGORITHMS.map(
+    (algorithm) => `$1 == "${algorithm}"`,
+  ).join(' || ');
+  return [
+    'console_quiet() {',
+    '  local conf unit changed=0',
+    '  for conf in /etc/rsyslog.conf /etc/rsyslog.d/*.conf; do',
+    `    [[ -f "$conf" ]] && grep -Eq '${rule}' "$conf" || continue`,
+    `    sed -i -E '\\%${rule}%s%^%# disabled by papercusp, console is the status channel (WI-10007009): %' "$conf" || continue`,
+    '    command -v restorecon >/dev/null 2>&1 && restorecon "$conf" >/dev/null 2>&1 || true',
+    '    changed=1',
+    '  done',
+    '  [[ "$changed" -eq 0 ]] || systemctl try-restart rsyslog.service >/dev/null 2>&1 || true',
+    `  for unit in ${WORKSPACE_HOST_EC2_GCP_GUEST_UNITS.join(' ')}; do`,
+    '    systemctl disable --now --no-block "$unit" >/dev/null 2>&1 || true',
+    '    systemctl mask "$unit" >/dev/null 2>&1 || true',
+    '  done',
+    '}',
+    'publish_host_keys() {',
+    '  local keys',
+    `  keys="$(awk '(${supported}) && NF >= 2 && !seen[$1]++ { print $1 " " $2 }' /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true)"`,
+    '  [[ -n "$keys" ]] || return 0',
+    `  printf '%s\\n%s\\n%s\\n' '${WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_BEGIN}' "$keys" '${WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_END}' > /dev/console 2>/dev/null || true`,
+    '}',
   ];
 }
 
@@ -2346,6 +2667,7 @@ export function buildWorkspaceHostBootstrap(
     assignment("AGENT_HOME", `/home/${agentUser}`),
     assignment("RUNTIME_ROOT", WORKSPACE_HOST_RUNTIME_ROOT),
     assignment("STATE_ROOT", WORKSPACE_HOST_STATE_ROOT),
+    assignment("BOOTSTRAP_STATE_DIR", WORKSPACE_HOST_BOOTSTRAP_STATE_DIR),
     assignment("WORKSPACE_ROOT", WORKSPACE_HOST_DATA_ROOT),
     assignment("HOSTED_PTY_SSH_KEY", WORKSPACE_HOST_HOSTED_PTY_SSH_KEY),
     assignment("HOSTED_PTY_KNOWN_HOSTS", WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS),
@@ -2391,7 +2713,17 @@ export function buildWorkspaceHostBootstrap(
     "",
     'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }',
     // Both record what the status report (below) says about a failure.
-    'die() { log "ERROR: $1" >&2; BOOTSTRAP_ERROR="$1"; exit 1; }',
+    // Every die on an SELinux host carries the boot's AVC denials (WI-10006258): a bootc failure
+    // whose real cause is a label otherwise reads as an unexplained refusal, and each unexplained
+    // refusal cost a ~45 min clean-room cycle. Silent where SELinux is absent (Ubuntu).
+    'selinux_denials() {',
+    '  command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled || return 0',
+    '  echo "[workspace-host-bootstrap] --- SELinux denials this boot ---"',
+    // Kernel ring + audit log only: AVC denials land in one of the two (auditd present or
+    // not), and a whole-boot `journalctl -b` scan measured 10.7s on a busy host.
+    '  { journalctl -b -k --no-pager -o cat 2>/dev/null; cat /var/log/audit/audit.log 2>/dev/null; } | grep -F "avc:" | grep -F denied | tail -n 10 | cut -c1-400 || echo "(none)"',
+    '}',
+    'die() { log "ERROR: $1" >&2; BOOTSTRAP_ERROR="$1"; selinux_denials >&2 || true; exit 1; }',
     'phase() { log "phase:$1"; BOOTSTRAP_PHASE="$1"; }',
     // Bounded retry for the few commands that reach the network before anything else has. A fresh
     // boot can lose its first egress attempts (WI-10002837: every archive fetch failed ~110s after
@@ -2437,6 +2769,17 @@ export function buildWorkspaceHostBootstrap(
             '# Managed by the papercusp workspace-host bootstrap (WI-10004636).',
           ),
           `${BWRAP_USERNS_GRANT_FUNCTION} ${APPARMOR_PROFILE_DIR} ${APPARMOR_RESTRICT_UNPRIVILEGED_USERNS_SYSCTL} ${BWRAP_BIN}`,
+          // WI-6554700010012418 (owner directive #1879): compressed-RAM swap as a cushion against
+          // memory spikes. Best-effort and outside the apt contract above on purpose: a host that
+          // cannot fetch the generator still boots, and the status line says why (zram-swap.ts).
+          ...zramSwapShellLines(
+            '# Managed by the papercusp workspace-host bootstrap (WI-6554700010012418).',
+          ),
+          `if retry 3 apt_install -y --no-install-recommends ${ZRAM_GENERATOR_APT_PACKAGE} >/dev/null; then`,
+          `  ${ZRAM_SWAP_FUNCTION} ${ZRAM_GENERATOR_CONFIG} ${ZRAM_SYSCTL_CONFIG} ${ZRAM_GENERATOR_BIN} /proc/swaps`,
+          'else',
+          `  echo "${ZRAM_SWAP_STATUS_PREFIX} status=absent reason=package-install-failed package=${ZRAM_GENERATOR_APT_PACKAGE}"`,
+          'fi',
         ]
       : []),
     // A recreated image may allocate different numeric IDs to the same named accounts. `/home`
@@ -2475,7 +2818,13 @@ export function buildWorkspaceHostBootstrap(
     // privileged conduits invoke it via `runuser`, so it needs no password, no shell and no key.
     'getent group "$AGENT_GROUP" >/dev/null || groupadd --system "$AGENT_GROUP"',
     'id -u "$AGENT_USER" >/dev/null 2>&1 || useradd --system --gid "$AGENT_GROUP" --home-dir "$AGENT_HOME" --create-home --shell /usr/sbin/nologin "$AGENT_USER"',
-    'usermod --lock --gid "$AGENT_GROUP" --groups "" --home "$AGENT_HOME" --shell /usr/sbin/nologin "$AGENT_USER"',
+    // Supplementary groups are SET, not merely cleared. ubuntu: none (the runtime grant is the
+    // named-user ACL below). bootc: exactly the image's runtime-read group, because that is the
+    // agent's only route through the 0750 /opt/papercusp parents; clearing it left every agent
+    // CLI unexecutable and made papercusp-host-prepare refuse the next boot (WI-10006173).
+    `usermod --lock --gid "$AGENT_GROUP" --groups ${
+      hostModel === 'bootc-image' ? `"${WORKSPACE_HOST_BOOTC_RUNTIME_READ_GROUP}"` : '""'
+    } --home "$AGENT_HOME" --shell /usr/sbin/nologin "$AGENT_USER"`,
     'repair_persisted_home_ownership "$AGENT_USER" "$AGENT_GROUP" "$AGENT_HOME"',
     // Two memberships, refused for two different reasons. $SERVICE_GROUP would hand the agent
     // runtime $STATE_ROOT — embedded PG and every delivered credential. $WORKSPACE_GROUP would
@@ -2489,7 +2838,18 @@ export function buildWorkspaceHostBootstrap(
     // fails every tool command while the run reports success (WI-10004636, plan D-012).
     `sandbox_probe_err="$(runuser -u "$AGENT_USER" -- ${BWRAP_BIN} ${BWRAP_USERNS_PROBE_ARGS.join(" ")} 2>&1)" || die "agent sandbox cannot create a user namespace as $AGENT_USER: \${sandbox_probe_err:-bwrap exited non-zero}"`,
     'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/embedded-pg"',
-    'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
+    // WI-10005754: on the bootc model the runtime root is immutable image content. D-314 bakes its
+    // access as root:papercusp-runtime-read:750 and papercusp-host-prepare.service verifies that
+    // metadata on every boot (refusing a named-user ACL), so this script must not write it:
+    // `install -d` dies with EROFS on /opt, and the setfacl below would contradict D-314.
+    ...(hostModel === 'ubuntu-release-bundle'
+      ? [
+          'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
+        ]
+      : [
+          'install -d -o root -g "$SERVICE_GROUP" -m 0750 /etc/papercusp',
+          '[[ -d "$RUNTIME_ROOT/releases" ]] || die "image-provided runtime root $RUNTIME_ROOT/releases is absent on this bootc deployment"',
+        ]),
     // The AGENT identity must TRAVERSE the runtime root, because it is the account that runs the
     // bundled agent CLIs: `bind-credential` delivers Claude/Codex/OMP material into its 0700
     // home, and the agent probes execute `$RUNTIME_ROOT/current/bin/{claude,codex,omp}` as this
@@ -2510,7 +2870,9 @@ export function buildWorkspaceHostBootstrap(
     // that group also gates $STATE_ROOT (embedded PG, delivered credentials) and /etc/papercusp.
     // Traverse-and-read is the entire grant; root stays sole owner and sole writer, so the
     // immutability the 0750 was reaching for is carried by ownership, not by the read bits.
-    'setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
+    ...(hostModel === 'ubuntu-release-bundle'
+      ? ['setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"']
+      : []),
     "install -d -o root -g root -m 0711 /srv/papercusp",
     'install -d -o root -g root -m 0770 "$WORKSPACE_ROOT"',
     'setfacl --remove-all "$WORKSPACE_ROOT"',
@@ -2538,6 +2900,21 @@ export function buildWorkspaceHostBootstrap(
     // A separate local key lets the unprivileged operator service start a PTY under the existing
     // customer SSH identity. Re-add it on every bootstrap because controller keys are reset above.
     'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$(dirname "$HOSTED_PTY_SSH_KEY")"',
+    // ⛔ SELinux hosts (bootc): ssh-keygen started from this script's domain (initrc_t under
+    // systemd-run) enters the confined ssh_keygen_t, which may write only SSH-identity types. The
+    // policy maps this directory to var_lib_t, so the keygen is refused with a bare EACCES and a
+    // dontaudit'ed AVC (WI-10006903, measured on a P-012 host in that exact domain: var_lib_t
+    // refused, ssh_home_t accepted). Relabeling to the policy default is therefore NOT enough:
+    // register the directory as an SSH identity directory. The state root is relabeled first
+    // because on a fresh durable data disk it is unlabeled_t, which ssh_keygen_t cannot traverse.
+    // The path itself must not move: the published release runtime reads it from its own build.
+    'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then',
+    '  HOSTED_PTY_SSH_DIR="$(dirname "$HOSTED_PTY_SSH_KEY")"',
+    '  restorecon -F "$STATE_ROOT" || die "could not restore the SELinux label of the runtime state root"',
+    '  [[ "$(matchpathcon -n "$HOSTED_PTY_SSH_DIR")" == *:ssh_home_t:* ]] || semanage fcontext -a -t ssh_home_t "$HOSTED_PTY_SSH_DIR(/.*)?" || die "could not register the hosted PTY key directory as an SSH identity directory"',
+    '  restorecon -RF "$HOSTED_PTY_SSH_DIR" || die "could not restore the SELinux labels of the hosted PTY key directory"',
+    '  [[ "$(stat -c %C "$HOSTED_PTY_SSH_DIR")" == *:ssh_home_t:* ]] || die "hosted PTY key directory is not labeled ssh_home_t: $(stat -c %C "$HOSTED_PTY_SSH_DIR")"',
+    'fi',
     'if [[ ! -f "$HOSTED_PTY_SSH_KEY" ]]; then runuser -u "$SERVICE_USER" -- ssh-keygen -q -t ed25519 -N "" -f "$HOSTED_PTY_SSH_KEY" || die "hosted PTY key generation failed"; fi',
     '[[ ! -L "$HOSTED_PTY_SSH_KEY" && "$(stat -c %U:%G:%a "$HOSTED_PTY_SSH_KEY")" == "$SERVICE_USER:$SERVICE_GROUP:600" ]] || die "hosted PTY private key ownership or mode is unsafe"',
     'HOSTED_PTY_PUB="$(runuser -u "$SERVICE_USER" -- ssh-keygen -y -f "$HOSTED_PTY_SSH_KEY")" || die "hosted PTY public key is invalid"',
@@ -2553,7 +2930,22 @@ export function buildWorkspaceHostBootstrap(
     // correctly-hardened sshd are indistinguishable from a healthy host until someone tries
     // to reach it, which is exactly how this went undetected.
     'test -s "/home/$WORKSPACE_USER/.ssh/authorized_keys" || die "workspace authorized_keys is empty; the host would be unreachable after sshd hardening"',
-    "cat > /etc/ssh/sshd_config.d/60-papercusp-workspace.conf <<PAPERCUSP_SSH",
+    // SELinux hosts (bootc): ~/.ssh and authorized_keys were created above by THIS script's
+    // domain (the SSM agent's), so they carry whatever that domain's create rules give them,
+    // not the policy's ssh_home_t, and sshd_t may be refused reading them (WI-10006258).
+    // Relabel to the policy default, logging both labels so a run shows which one sshd saw.
+    'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then',
+    '  log "selinux labels before restorecon: $(stat -L -c "%n=%C" "/home/$WORKSPACE_USER" "/home/$WORKSPACE_USER/.ssh" "/home/$WORKSPACE_USER/.ssh/authorized_keys" 2>&1 | paste -sd " " -)"',
+    '  restorecon -RF "/home/$WORKSPACE_USER/.ssh" || die "could not restore the SELinux labels of the workspace .ssh directory"',
+    '  log "selinux labels after restorecon: $(stat -L -c "%n=%C" "/home/$WORKSPACE_USER/.ssh" "/home/$WORKSPACE_USER/.ssh/authorized_keys" 2>&1 | paste -sd " " -)"',
+    'fi',
+    // 05-, not 60-: sshd keeps the FIRST value it reads for each keyword, and CentOS (bootc)
+    // ships 50-redhat.conf with `X11Forwarding yes`, so a 60- drop-in silently lost that key
+    // (WI-10006176, measured with in-image `sshd -T`). Sorting before every vendor drop-in
+    // makes these values win on both bases. The legacy name is removed so an upgraded host
+    // does not keep a stale copy.
+    "rm -f /etc/ssh/sshd_config.d/60-papercusp-workspace.conf",
+    "cat > /etc/ssh/sshd_config.d/05-papercusp-workspace.conf <<PAPERCUSP_SSH",
     "# Managed by Papercusp workspace-host bootstrap.",
     "PasswordAuthentication no",
     "KbdInteractiveAuthentication no",
@@ -2586,6 +2978,16 @@ export function buildWorkspaceHostBootstrap(
     ...harden.tail,
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[2]}'`,
+    // WI-10006965: state that code AFTER the model branch reads is assigned HERE, for both
+    // models. Both used to be assigned only inside the bundle arm, so a bootc host died under
+    // `set -u`: WORK_DIR in the local-inference (ollama) install, PREVIOUS_TARGET in
+    // service_restart_needed on any re-run after a reboot. A bootc run never switches
+    // `current` (the release is the booted image), so the same readback is its true value.
+    // The trap replaces statusReportLines' trap and keeps its reporting; the bundle arm's
+    // cleanup() replaces this one and removes WORK_DIR itself.
+    'WORK_DIR="$(mktemp -d /var/tmp/papercusp-bootstrap.XXXXXX)"',
+    `trap 'status=$?; rm -rf -- "$WORK_DIR"; report_outcome "$status"; exit "$status"' EXIT`,
+    'PREVIOUS_TARGET="$(readlink -f "$RUNTIME_ROOT/current" 2>/dev/null || true)"',
     // The two update paths. ⛔ The bundle arm below is NOT legacy awaiting deletion — it is what
     // every provisioned host runs today, and both models are live through the transition
     // (D-280). It is kept verbatim, in place, with its comments attached to their lines.
@@ -2664,12 +3066,11 @@ export function buildWorkspaceHostBootstrap(
     'bundle_storage_diagnostics',
     'RELEASE_DIR="$RUNTIME_ROOT/releases/$RELEASE_VERSION"',
     'prune_bundle_releases',
-    'WORK_DIR="$(mktemp -d /var/tmp/papercusp-bootstrap.XXXXXX)"',
+    // WORK_DIR and PREVIOUS_TARGET are assigned before the model branch (WI-10006965).
     'BUNDLE_PATH="$WORK_DIR/server-bundle.tgz"',
     'SIGNATURE_PATH="$WORK_DIR/server-bundle.tgz.minisig"',
     'PUBLIC_KEY_PATH="$WORK_DIR/bootstrap-public.key"',
     'STAGE_DIR=""',
-    'PREVIOUS_TARGET="$(readlink -f "$RUNTIME_ROOT/current" 2>/dev/null || true)"',
     "SWITCHED=0",
     "restore_previous() {",
     '  [[ "$SWITCHED" -eq 1 && -n "$PREVIOUS_TARGET" && -d "$PREVIOUS_TARGET" ]] || return 0',
@@ -2760,7 +3161,7 @@ export function buildWorkspaceHostBootstrap(
     'NODE_MAJOR="${NODE_MAJOR%%.*}"',
     '[[ "$NODE_MAJOR" =~ ^[0-9]+$ && "$NODE_MAJOR" -ge "$MINIMUM_NODE_MAJOR" ]] || die "bundled Node runtime is below the required floor"',
     ...agentRuntimeInstallLines(agentRuntimeInstalls),
-    ...localInferenceRuntimeInstallLines(agentRuntimeInstalls),
+    ...localInferenceRuntimeInstallLines(agentRuntimeInstalls, hostModel),
     ...workspaceOmpRuntimeInstallLines(agentRuntimeInstalls),
     ...customerAgentToolchainInstallLines(agentRuntimeInstalls),
     "",
@@ -2837,6 +3238,19 @@ export function buildWorkspaceHostBootstrap(
     'chown root:root "$PRIVILEGED_CONDUIT_SUDOERS"',
     'chmod 0440 "$PRIVILEGED_CONDUIT_SUDOERS"',
     'visudo -cf "$PRIVILEGED_CONDUIT_SUDOERS" >/dev/null',
+    // WI-10006110: the unit used to declare no start budget, so systemd's generic 90s
+    // DefaultTimeoutStartSec bounded a FIRST boot (embedded-PG initdb, migrations, content
+    // install) that ExecStartPost's health poll must see finish. Every AWS bootc clean room
+    // died there ("start-post operation timed out", 6.35s CPU in 90s: waiting, not computing).
+    // TEMPORARY MITIGATION until the start sampler below names what the wait is; durable fix
+    // = remove that wait, tracked on WI-10006110. The budget is explicit so a slow start is
+    // a measured number in the bootstrap log, never systemd's silent default.
+    "SERVICE_START_TIMEOUT_SEC=600",
+    // ExecStartPost's papercusp-health has its OWN budget (PAPERCUSP_HEALTH_TIMEOUT_SEC,
+    // default 120s, max 600). chain8 measured it giving up at 120s, long before the 600s
+    // TimeoutStartSec, so the start budget above never applied. Derive it from the start budget,
+    // 30s short, so the probe reports its own error before systemd kills it.
+    "SERVICE_HEALTH_TIMEOUT_SEC=$((SERVICE_START_TIMEOUT_SEC - 30))",
     'cat > "/etc/systemd/system/$SERVICE_NAME.service" <<PAPERCUSP_SERVICE',
     "[Unit]",
     "Description=Papercusp durable workspace host",
@@ -2845,6 +3259,8 @@ export function buildWorkspaceHostBootstrap(
     "",
     "[Service]",
     "Type=simple",
+    "TimeoutStartSec=$SERVICE_START_TIMEOUT_SEC",
+    "Environment=PAPERCUSP_HEALTH_TIMEOUT_SEC=$SERVICE_HEALTH_TIMEOUT_SEC",
     "User=$SERVICE_USER",
     "Group=$SERVICE_GROUP",
     "WorkingDirectory=$STATE_ROOT",
@@ -2880,6 +3296,10 @@ export function buildWorkspaceHostBootstrap(
     "Environment=PAPERCUSP_PROMPTS_DIR=$STATE_ROOT/.papercusp/blueprints/base/prompts",
     "Environment=PAPERCUSP_SPA_DIST=$RUNTIME_ROOT/current/spa",
     "Environment=PAPERCUSP_DOCS_ROOT=$RUNTIME_ROOT/current/internal-docs",
+    // WI-10004899: the cut packs precomputed doc_sections vectors into the bundle, so a fresh
+    // host applies them instead of embedding ~15k sections on its own CPU (WI-10004455). A
+    // bundle cut before the seed existed has no such dir; applyShippedDocVectorSeed fails open.
+    "Environment=PAPERCUSP_DOC_VECTOR_SEED_DIR=$RUNTIME_ROOT/current/doc-vector-seed",
     "Environment=PAPERCUSP_TEMPLATES_DIR=$STATE_ROOT/.papercusp/templates",
     "Environment=PAPERCUSP_RUBRICS_DIR=$STATE_ROOT/.papercusp/rubrics",
     // D-403: the connector bearer, once enrolled. Optional (`-`), so the unit starts unchanged
@@ -2979,7 +3399,7 @@ export function buildWorkspaceHostBootstrap(
     // rendered script, `current` unchanged by this run, and the unit active. A release switch,
     // a changed rendering, or a second run within one boot still restarts (P-018 r7 above).
     `BOOTSTRAP_FINGERPRINT=${WORKSPACE_HOST_BOOTSTRAP_FINGERPRINT_PLACEHOLDER}`,
-    'BOOTSTRAP_COMPLETE_MARKER="$RUNTIME_ROOT/.bootstrap-complete"',
+    'BOOTSTRAP_COMPLETE_MARKER="$BOOTSTRAP_STATE_DIR/complete"',
     'BOOT_ID="$(cat /proc/sys/kernel/random/boot_id)"',
     'service_restart_needed() {',
     '  local marker_fingerprint="" marker_boot_id=""',
@@ -2991,8 +3411,57 @@ export function buildWorkspaceHostBootstrap(
     '  [[ "$(systemctl is-active "$SERVICE_NAME.service" 2>/dev/null)" == "active" ]] || return 0',
     '  return 1',
     '}',
+    // WI-10006110: service_diagnostics runs AFTER the start has failed, when systemd has
+    // already killed the server and scheduled its auto-restart — so it can say THAT the
+    // start timed out but never WHAT the server was waiting on. The sampler records the
+    // service's processes (state + wait channel), disk-read counters, listeners and
+    // pending outbound connects every 10s WHILE systemctl restart blocks, so a failed
+    // start carries its own in-flight evidence off the instance before teardown.
+    'START_SAMPLE_LOG=""',
+    'START_SAMPLER_PID=""',
+    'start_sampler() {',
+    '  START_SAMPLE_LOG="$(mktemp /run/papercusp-start-samples.XXXXXX 2>/dev/null || mktemp)"',
+    '  ( t0=$SECONDS; while true; do',
+    '      { echo "=== start sample t+$((SECONDS - t0))s";',
+    '        echo "cpustat $(head -1 /proc/stat)";',
+    '        grep -E " (nvme[0-9]+n[0-9]+|xvd[a-z]+|sd[a-z]+) " /proc/diskstats | sed "s/^ */diskstats /";',
+    '        ps -e -o pid=,stat=,wchan:22=,etimes=,time=,rss=,args= | grep -E "node|postgres|initdb|papercusp" | grep -v grep | cut -c1-180 | head -n 12;',
+    '        ss -ltn | tail -n +2 | sed "s/^/listen /" | head -n 8;',
+    '        ss -tn state syn-sent | tail -n +2 | sed "s/^/syn-sent /" | head -n 5;',
+    '      } >> "$START_SAMPLE_LOG" 2>&1 || true',
+    '      sleep 10',
+    // Detached from the bootstrap's stdio: a killed sampler's orphaned `sleep` would
+    // otherwise hold the SSM command's output pipe open for up to 10s.
+    '    done ) >/dev/null 2>&1 &',
+    '  START_SAMPLER_PID=$!',
+    '}',
+    'stop_sampler() {',
+    '  if [[ -n "$START_SAMPLER_PID" ]]; then kill "$START_SAMPLER_PID" 2>/dev/null || true; fi',
+    '  START_SAMPLER_PID=""',
+    '}',
+    'start_diagnostics() {',
+    '  if [[ -n "$START_SAMPLE_LOG" && -s "$START_SAMPLE_LOG" ]]; then',
+    '    echo "[workspace-host-bootstrap] --- start samples: first, then last (every 10s during systemctl restart) ---" >&2',
+    '    head -n 25 "$START_SAMPLE_LOG" >&2 || true',
+    '    echo "..." >&2',
+    '    tail -n 60 "$START_SAMPLE_LOG" >&2 || true',
+    '  fi',
+    '  echo "[workspace-host-bootstrap] --- recent logs under $STATE_ROOT ---" >&2',
+    '  find "$STATE_ROOT" -xdev -type f \\( -name "*.log" -o -name "logfile" -o -name "postmaster.log" \\) -mmin -20 2>/dev/null | head -n 6 | while read -r f; do echo "## $f" >&2; tail -n 15 "$f" 2>&1 | cut -c1-240 >&2; done || true',
+    '  selinux_denials >&2 || true',
+    '}',
     'if service_restart_needed; then',
-    '  systemctl restart "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }',
+    '  start_sampler',
+    '  SERVICE_START_T0=$SECONDS',
+    '  if systemctl restart "$SERVICE_NAME.service"; then',
+    '    stop_sampler',
+    '    log "service:started in $((SECONDS - SERVICE_START_T0))s (TimeoutStartSec=$SERVICE_START_TIMEOUT_SEC)"',
+    '  else',
+    '    stop_sampler',
+    '    service_diagnostics',
+    '    start_diagnostics',
+    '    die "workspace service failed to start"',
+    '  fi',
     'else',
     '  log "service:unchanged — this boot re-runs the bootstrap that completed on an earlier boot; $SERVICE_NAME.service keeps running"',
     'fi',
@@ -3004,7 +3473,21 @@ export function buildWorkspaceHostBootstrap(
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property User --value)" == "$SERVICE_USER" ]] || die "workspace service is not running under the dedicated service user"',
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property Group --value)" == "$SERVICE_GROUP" ]] || die "workspace service is not running under the dedicated service group"',
     '[[ "$(stat -c %U "$RUNTIME_ROOT")" == "root" ]] || die "runtime root must be owned by root"',
-    '[[ -z "$(find "$RUNTIME_ROOT/releases" -xdev \\( -type f -o -type d \\) -perm -0004 -print -quit)" ]] || die "runtime release tree must not be world-readable"',
+    ...(hostModel === 'ubuntu-release-bundle'
+      ? [
+          '[[ -z "$(find "$RUNTIME_ROOT/releases" -xdev \\( -type f -o -type d \\) -perm -0004 -print -quit)" ]] || die "runtime release tree must not be world-readable"',
+        ]
+      : [
+          // WI-10006110 / chain10: the bootc image (workspace-host.Containerfile, D-314) keeps
+          // EXECUTABLE files a+rx on purpose, because embedded-postgres checks all 0555 bits, and
+          // carries confidentiality on the 0750 root:papercusp-runtime-read parents instead. The
+          // ubuntu predicate above can never pass on that tree: measured on image A r62b, all 163
+          // world-readable entries were executables, with 0 world-readable directories and 0
+          // world-readable non-executable files. So assert the bootc contract: the three parents
+          // admit no other-class access, and nothing else under them is world-readable.
+          '[[ "$(stat -c %a "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" "$(readlink -f "$RUNTIME_ROOT/current")" | sort -u)" == "750" ]] || die "runtime release tree must not be world-readable"',
+          '[[ -z "$(find "$RUNTIME_ROOT/releases" -xdev \\( -type d -o \\( -type f ! -perm /111 \\) \\) -perm -0004 -print -quit)" ]] || die "runtime release tree must not be world-readable"',
+        ]),
     // The two halves of D-248, asserted together because either one alone is satisfiable by the
     // broken shape. D-043 (owner ruling) requires the SSH account to be locked out of the runtime
     // tree; D-246 measured that the account running the agents must read it. Both are true, and
@@ -3075,6 +3558,7 @@ export function buildWorkspaceHostBootstrap(
     'grep -Fq "$CONDUIT_NODE" "$CREDENTIAL_DELIVERY_CONDUIT" || die "credential delivery conduit does not pin the bundled interpreter"',
     'SSHD_POLICY="$(sshd -T -C user="$WORKSPACE_USER",host=localhost,addr=127.0.0.1)"',
     'grep -Fx "allowtcpforwarding local" <<<"$SSHD_POLICY" >/dev/null || die "SSH TCP forwarding must be local-only"',
+    'grep -Fx "x11forwarding no" <<<"$SSHD_POLICY" >/dev/null || die "SSH X11 forwarding must be off; a vendor sshd drop-in is overriding the workspace policy"',
     'grep -Fx "permitopen 127.0.0.1:$SERVICE_PORT" <<<"$SSHD_POLICY" >/dev/null || die "SSH forwarding must be restricted to the loopback operator"',
     // EI-22185970114422986 — the reachability property, observed WHERE `healthy` IS CLAIMED.
     //
@@ -3098,9 +3582,20 @@ export function buildWorkspaceHostBootstrap(
     '[[ "$(stat -c "%U:%G:%a" "$HOSTED_PTY_KNOWN_HOSTS")" == "$SERVICE_USER:$SERVICE_GROUP:600" ]] || die "hosted PTY host pin ownership or mode is unsafe at attest time"',
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$HOSTED_PTY_SSH_KEY" || die "customer can read hosted PTY private key"',
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$STATE_ROOT/embedded-pg" || die "customer PTY identity can read embedded database state"',
+    // A refused loopback must say WHY (WI-10006258): the account, the label/owner/mode of every
+    // path sshd's StrictModes and SELinux check, sshd's effective auth settings, and sshd's own
+    // log lines ("Authentication refused: ..."). die() then adds the AVC denials.
+    'pty_loopback_evidence() {',
+    '  echo "[workspace-host-bootstrap] --- hosted PTY loopback evidence ---"',
+    '  getent passwd "$WORKSPACE_USER" || true',
+    '  passwd -S "$WORKSPACE_USER" 2>&1 || true',
+    '  stat -L -c "%n %U:%G %a %C" / /home "/home/$WORKSPACE_USER" "/home/$WORKSPACE_USER/.ssh" "/home/$WORKSPACE_USER/.ssh/authorized_keys" 2>&1 || true',
+    '  sshd -T -C user="$WORKSPACE_USER",host=localhost,addr=127.0.0.1 2>&1 | grep -E "^(usepam|strictmodes|pubkeyauthentication|authorizedkeysfile|authenticationmethods|allowusers|pubkeyacceptedalgorithms) " || true',
+    '  journalctl -b --no-pager -o cat -u sshd -u ssh -n 20 2>/dev/null | cut -c1-300 || true',
+    '}',
     // Permissions checked via runuser alone would miss a bad key, host pin or sshd policy.
     // Exercise the actual customer PTY identity switch before attesting the host healthy.
-    `timeout -k 5 30 runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH=/usr/bin:/bin /usr/bin/ssh -F /dev/null -tt -i "$HOSTED_PTY_SSH_KEY" -o "UserKnownHostsFile=$HOSTED_PTY_KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ClearAllForwardings=yes -o ConnectTimeout=10 -l "$WORKSPACE_USER" 127.0.0.1 ${shellQuote(hostedPtySmoke)} || die "hosted customer PTY loopback authentication or isolation failed"`,
+    `timeout -k 5 30 runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH=/usr/bin:/bin /usr/bin/ssh -F /dev/null -tt -i "$HOSTED_PTY_SSH_KEY" -o "UserKnownHostsFile=$HOSTED_PTY_KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ClearAllForwardings=yes -o ConnectTimeout=10 -l "$WORKSPACE_USER" 127.0.0.1 ${shellQuote(hostedPtySmoke)} || { pty_loopback_evidence >&2; die "hosted customer PTY loopback authentication or isolation failed"; }`,
     'grep -Fx "pubkeyauthentication yes" <<<"$SSHD_POLICY" >/dev/null || die "sshd would refuse public-key authentication for the workspace user"',
     'grep -Eq "^authorizedkeysfile .*\\.ssh/authorized_keys" <<<"$SSHD_POLICY" || die "sshd does not read the authorized_keys this bootstrap wrote"',
     'OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
@@ -3113,6 +3608,7 @@ export function buildWorkspaceHostBootstrap(
     `printf '${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}%s\\n' "$(base64 --wrap=0 < \"$ATTESTATION_PATH\")"`,
     "SWITCHED=0",
     // WI-10004242: only a run that got this far may let a LATER boot skip the service restart.
+    'install -d -o root -g root -m 0700 "$BOOTSTRAP_STATE_DIR"',
     'printf "%s %s\\n" "$BOOTSTRAP_FINGERPRINT" "$BOOT_ID" > "$BOOTSTRAP_COMPLETE_MARKER.next"',
     'mv -Tf "$BOOTSTRAP_COMPLETE_MARKER.next" "$BOOTSTRAP_COMPLETE_MARKER"',
     'log "bootstrap complete"',
@@ -3170,6 +3666,32 @@ export function parseWorkspaceHostBootstrapAttestation(
  * Validate the remote result against the exact requested release, trust root,
  * migration, runtime floor, and loopback service contract.
  */
+/**
+ * The repository of a bootc release image ref: the ref without its tag. A tag separator is a
+ * colon AFTER the final slash; a registry port is a colon BEFORE it, so `split(':')[0]` would
+ * turn `127.0.0.1:5096/papercusp/workspace-host:tag` into `127.0.0.1`. SAFE_IMAGE_REF admits
+ * no digest in `bootc.image`, so the last-colon comparison is a complete parser for that shape.
+ */
+export function workspaceHostBootcImageRepository(image: string): string {
+  const finalSlash = image.lastIndexOf('/');
+  const finalColon = image.lastIndexOf(':');
+  return finalColon > finalSlash ? image.slice(0, finalColon) : image;
+}
+
+/**
+ * The image ref a correct bootc host BOOTS: the release repository pinned to its digest. The
+ * bake renders every cloud from `repo@sha256:…` (bake-cloud-images.sh refuses a tag) and the
+ * bootstrap switches by digest, so `bootc status` reports exactly this ref — never the tag,
+ * which rides along as provenance only. Every check of an attested `release.source` compares
+ * against this, not `bootc.image` (WI-10006339: the tag comparison failed every correct host).
+ */
+export function workspaceHostBootcPinnedImageRef(bootc: {
+  image: string;
+  imageDigest: string;
+}): string {
+  return `${workspaceHostBootcImageRepository(bootc.image)}@${bootc.imageDigest}`;
+}
+
 export function validateWorkspaceHostBootstrapAttestation(
   attestation: unknown,
   expected: WorkspaceHostBootstrapInput,
@@ -3284,7 +3806,8 @@ export function validateWorkspaceHostBootstrapAttestation(
   if (candidate.hostModel === 'bootc-image') {
     addMismatch(
       errors,
-      candidate.release.source === validated.bootc?.image,
+      validated.bootc !== undefined &&
+        candidate.release.source === workspaceHostBootcPinnedImageRef(validated.bootc),
       'attested booted image ref does not match the pinned release image',
     );
     addMismatch(

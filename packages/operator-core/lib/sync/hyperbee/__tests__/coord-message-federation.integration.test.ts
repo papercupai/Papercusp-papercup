@@ -22,6 +22,11 @@ import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-keys';
 import { buildCoordMessageProjection, type CoordMessageRow } from '../projections/coord-message';
+vi.mock('../../../degradation/fallback-observations', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../degradation/fallback-observations')>(),
+  observeFallback: vi.fn(() => true),
+}));
+import { observeFallback } from '../../../degradation/fallback-observations';
 import { resetFederatedWakeRate } from '../federated-wake-rate';
 
 // EI-279: the projection's federated deliver-and-wake fan dynamically imports
@@ -709,6 +714,7 @@ describe('coord_event_log federation (real PG)', () => {
 
   describe('P-008 — delivery receipts on apply', () => {
     beforeEach(() => {
+      vi.mocked(observeFallback).mockClear();
       resetFederatedWakeRate();
       vi.mocked(sendMessage).mockClear();
       vi.mocked(wakeRecipients).mockClear();
@@ -741,6 +747,18 @@ describe('coord_event_log federation (real PG)', () => {
         woken: 1, // the mocked fan woke 1
         machine: 'test-machine',
       });
+    });
+
+    it('a failed receipt records degradation while the federated message remains applied', async () => {
+      vi.mocked(sendMessage).mockRejectedValueOnce(new Error('receipt unavailable'));
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await proj().writeToPg(receiptRow('rcpt-failed'), { authorPubkey: 'peerPubA', origin: 'remote' });
+        expect(await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='rcpt-failed'`).toHaveLength(1);
+        expect(observeFallback).toHaveBeenCalledWith('coord-delivery-receipt', {
+          eligible: 1, applied: 0, reason: 'receipt-send-failed', scope: HARNESS,
+        });
+      } finally { warn.mockRestore(); }
     });
 
     it('re-applies never re-emit the receipt (once per msg_id)', async () => {

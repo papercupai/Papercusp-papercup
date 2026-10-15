@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const h = vi.hoisted(() => ({
   rows: vi.fn(),
@@ -28,7 +29,7 @@ const { default: tool } = await import('./tool-log');
 type ArgsSchema = {
   safeParse: (value: unknown) => { success: boolean; data?: Record<string, unknown> };
 };
-type Guidance = { when?: string };
+type Guidance = { when?: string; argRedirects?: { limit?: string } };
 
 const argsSchema = (tool as unknown as { args: ArgsSchema }).args;
 const guidance = (tool as unknown as { guidance?: Guidance }).guidance;
@@ -40,6 +41,21 @@ type HandlerResult = {
   isError?: boolean;
   content?: Array<{ text?: string }>;
 };
+
+type JsonSchemaProperty = {
+  type?: string;
+  minimum?: number;
+  maximum?: number;
+  description?: string;
+};
+
+function schemaProperty(name: string): JsonSchemaProperty | undefined {
+  const schema = z.toJSONSchema(argsSchema as never) as {
+    properties?: Record<string, JsonSchemaProperty>;
+    anyOf?: Array<{ properties?: Record<string, JsonSchemaProperty> }>;
+  };
+  return schema.properties?.[name] ?? schema.anyOf?.map((branch) => branch.properties?.[name]).find(Boolean);
+}
 
 function errorBody(result: unknown) {
   const text = (result as HandlerResult).content?.[0]?.text;
@@ -53,6 +69,24 @@ beforeEach(() => {
 });
 
 describe('activity:tool-log timestamp boundaries', () => {
+  it('advertises and enforces max_lines as an integer in the range 5..200', () => {
+    expect(schemaProperty('max_lines')).toMatchObject({ type: 'integer', minimum: 5, maximum: 200 });
+    expect(argsSchema.safeParse({ owner: 'self', max_lines: 5 }).success).toBe(true);
+    expect(argsSchema.safeParse({ owner: 'self', max_lines: 200 }).success).toBe(true);
+    expect(argsSchema.safeParse({ owner: 'self', max_lines: 4 }).success).toBe(false);
+    expect(argsSchema.safeParse({ owner: 'self', max_lines: 201 }).success).toBe(false);
+  });
+
+  it('advertises and enforces top_k as an integer in the range 1..25', () => {
+    expect(schemaProperty('top_k')).toMatchObject({ type: 'integer', minimum: 1, maximum: 25 });
+    expect(schemaProperty('top_k')?.description).toContain('default 8');
+    expect(schemaProperty('top_k')?.description).toContain('maximum 25');
+    expect(guidance?.argRedirects?.limit).toContain('integer 1-25');
+    expect(argsSchema.safeParse({ owner: 'self', top_k: 25 }).success).toBe(true);
+    expect(argsSchema.safeParse({ owner: 'self', top_k: 26 }).success).toBe(false);
+    expect(argsSchema.safeParse({ owner: 'self', top_k: 0 }).success).toBe(false);
+  });
+
   it('rejects relative durations before they reach the timestamptz query', () => {
     expect(argsSchema.safeParse({ owner: 'self', since: '-15 min' }).success).toBe(false);
     expect(argsSchema.safeParse({ owner: 'self', until: '10m' }).success).toBe(false);
@@ -136,6 +170,15 @@ describe('activity:tool-log timestamp boundaries', () => {
   it('keeps a full session-shaped owner id usable for historical queries when the roster is unavailable', async () => {
     const full = 'su-b2cecf28-09b6-47f9-bb60-8b93863d52ea';
     h.knownOwnerIdSet.mockResolvedValue(null);
+
+    await tool.handler(argsSchema.safeParse({ owner: full }).data as never, {} as never);
+
+    expect(h.knownOwnerIdSet).not.toHaveBeenCalled();
+    expect(h.rows).toHaveBeenCalledWith(expect.objectContaining({ ownerId: full }));
+  });
+
+  it('keeps a su-respawn owner id usable for historical queries without a live roster match', async () => {
+    const full = 'su-respawn-1529d5283907a0f8c68b462778e0d1e3';
 
     await tool.handler(argsSchema.safeParse({ owner: full }).data as never, {} as never);
 

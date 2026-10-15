@@ -4,31 +4,29 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Overview
-description: >-
-  What agent spawning is, why we built it, and when to use it. NOTE: the launch verb
-  named throughout this page — `cup:spawn` — REFUSES as of 2026-08-09; the Mug · Kettle ·
-  Cup/nursery tier is retired and a FLEET is the only fan-out. The spawn engine, the
-  ceiling, `fleet:tree` / `fleet:cancel` and the lineage model are all still live.
+title: "Overview"
+description: "What agent spawning is, why we built it, and when to use it. NOTE: the launch verb named throughout this page — `cup:spawn` — REFUSES as of 2026-08-09; the Mug · Kettle · Cup/nursery tier is retired and a FLEET is the only fan-out. The spawn engine, the ceiling, `fleet:tree` / `fleet:cancel` and the lineage model are all still live."
+type: Insight
+discovered: 2026-10-13
+status: active
+documents:
+  - "packages/operator-core/lib/fleet/operator-spawn.ts"
+  - "packages/operator-core/lib/agent-tools/fleet/tree.ts"
+  - "packages/operator-core/lib/agent-tools/fleet/cancel.ts"
+  - "packages/operator-core/lib/fleet/spawn-reclaim.ts"
+  - "packages/operator-core/lib/spawn-signing.ts"
+  - "packages/agent-mcp/src/spawn-context.ts"
+  - "packages/operator-core/lib/dbos/orchestrator-runner.ts"
+  - "packages/operator-core/lib/fleet/parent-wake.ts"
+  - "libs/papercusp/packages/orchestrator/src/spawn-mcp.ts"
+plans:
+  - "fumadocs-to-starlight-2026-05-20"
+  - "starlight-projection-site-2026-06-18"
+  - "fleet-as-supervised-blackboard-2026-06-04"
+  - "autoloop-pot-operator-rebuild-2026-06-05"
+  - "unify-agent-spawn-chokepoint-2026-06-06"
 sidebar:
   order: 1
-plans:
-  - fumadocs-to-starlight-2026-05-20
-  - starlight-projection-site-2026-06-18
-  - fleet-as-supervised-blackboard-2026-06-04
-  - autoloop-pot-operator-rebuild-2026-06-05
-  - unify-agent-spawn-chokepoint-2026-06-06
-documents:
-  - packages/operator-core/lib/fleet/operator-spawn.ts
-  - packages/operator-core/lib/agent-tools/fleet/spawn.ts
-  - packages/operator-core/lib/agent-tools/fleet/tree.ts
-  - packages/operator-core/lib/agent-tools/fleet/cancel.ts
-  - packages/operator-core/lib/fleet/spawn-reclaim.ts
-  - packages/operator-core/lib/spawn-signing.ts
-  - packages/agent-mcp/src/spawn-context.ts
-  - packages/operator-core/lib/dbos/orchestrator-runner.ts
-  - packages/operator-core/lib/fleet/parent-wake.ts
-  - libs/papercusp/packages/orchestrator/src/spawn-mcp.ts
 ---
 
 :::caution[The launch verb on this page is retired — `cup:spawn` REFUSES]

@@ -63,7 +63,7 @@ export function workspaceTxnOptionsForExclusiveWait(maxWaitSec: number): Workspa
  * else is treated as ALIVE — we must never force-reclaim a lock we can't prove is
  * abandoned; a false "dead" verdict would let two live holders race the resource.
  */
-function isPidDefinitivelyDead(pid: number): boolean {
+export function isPidDefinitivelyDead(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return false;

@@ -61,6 +61,20 @@ beforeEach(async () => {
 });
 
 describe('getConsultStates session cost projection (P-007)', () => {
+  it('reads the persisted routing result without inferring it from lifecycle or another workspace', async () => {
+    const result = { verdict: 'relevance_unmeasured', reason: 'evidence_unavailable',
+      hint: 'This does not prove no expert exists.' };
+    for (const [workspace, routing] of [[WS, { request: { result } }],
+      ['another-workspace', { request: { result: { verdict: 'no_qualified_responder' } } }]] as const) {
+      await sql`INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, state, routing, created_at)
+        VALUES (${workspace}, 'routing-result', 'no_qualified_responder', ${sql.json(routing as never)}, NOW())`;
+    }
+    const states = await runWithWorkspace(WS, () => getConsultStates(['routing-result']));
+    expect(states.get('routing-result')).toMatchObject({ state: 'no_qualified_responder', request_result: result });
+    expect(states.get('routing-result')?.request_result?.verdict).not.toBe('no_qualified_responder');
+  });
+
   it('correlates post-consult native-session samples and keeps priced, estimated, unpriced, and pending distinct', async () => {
     const createdAt = '2026-09-23T08:00:00.000Z';
     const startedAt = '2026-09-23T08:01:00.000Z';

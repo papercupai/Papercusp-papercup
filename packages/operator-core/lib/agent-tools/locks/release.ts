@@ -7,17 +7,26 @@
  * loop the result.
  */
 
+import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readFileLockIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry } from './contention-retry';
-import { readResourceLockStatus, releaseGranular, tryRelease } from './su-lock-store';
+import {
+  ensureBootstrap,
+  getTxPool,
+  readQueue,
+  readResourceLockStatus,
+  releaseGranular,
+  tryRelease,
+} from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
   FILE_LOCK_OP_KINDS,
+  finishHookLockOperationSchema,
   emitReleaseLockEvents,
   isNativeEditProofForPaths,
   type FileLockReleaseParams,
@@ -25,9 +34,11 @@ import {
 } from '../../authority/file-lock-authority-ops';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
-import { recordEditAttribution } from '../../edit-attribution';
+import { recordEditAttribution, recordEditAttributionStrict } from '../../edit-attribution';
+import { recordRestrictedEditBeforeRelease } from '../../personal-vault/git-sync-hold';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
+import { resolveExternalPathLockIdentity } from './external-path';
 import { domainsHoldingLocks, ownedLocksForPaths, type OwnedLockPaths } from './owner-lock-domains';
 import { releaseAllOwnedLocks } from './release-all-owned';
 
@@ -45,12 +56,118 @@ const lockIdSchema = z.string().uuid({
   },
 });
 
+const textResult = (value: unknown) => ({
+  content: [{ type: 'text' as const, text: JSON.stringify(value) }],
+});
+
+function normalizeReleasePaths(paths: string[] | undefined): string[] | undefined {
+  if (paths === undefined) return undefined;
+  return paths.map((path) => {
+    if (!isAbsolute(path)) return path;
+    const identity = resolveExternalPathLockIdentity(path);
+    if (identity.coordinationDomain) {
+      throw new Error(
+        'absolute managed-repository paths are not supported by locks:release paths; pass the lock_id to select that exact file lock',
+      );
+    }
+    return identity.path;
+  });
+}
+
+/**
+ * WI-10006831 — attribute a native edit made under a lock the caller STILL holds.
+ *
+ * The edit-attribution ledger is written only when a release carries
+ * native_edit_proof for exactly the rows it released (EI-21641025582934324).
+ * An edit covered by the owner's own explicit lock gets no release token from
+ * the PreToolUse hook (EI-63: releasing would dissolve the deliberate hold), so
+ * before this path that edit never reached the ledger at all: measured, 46 of
+ * 343 codex owners had ANY ledger row in 24h, because codex sessions are told
+ * to lock explicitly before editing.
+ *
+ * `retain` keeps the lock and writes the attribution, and only for paths the
+ * caller holds live in this coordination domain. The subject paths come from
+ * the proof itself, never a `paths` selector. That is deliberate: an operator
+ * that predates `retain` strips the unknown key, and a request carrying
+ * `paths` would then be a plain path release that drops the explicit hold.
+ * Without `paths` an older operator refuses the request and releases nothing.
+ */
+async function attestRetainedNativeEdit(input: {
+  ownerId: string;
+  ownerLabel: string | undefined;
+  coordinationDomain: string;
+  proof: unknown;
+  conflictingSelector: boolean;
+  identity: { workspaceId?: string | null; userId?: string | null };
+}): Promise<Record<string, unknown>> {
+  const base = { retained: [] as string[], released: [] as string[], attributed: [] as string[] };
+  if (input.conflictingSelector) {
+    return { ok: false, error: 'retain_conflicting_selector', ...base };
+  }
+  const proof = input.proof as NativeEditProof | undefined;
+  const subject = Array.isArray(proof?.paths) ? [...new Set(proof.paths)] : [];
+  if (subject.length === 0 || !isNativeEditProofForPaths(proof, subject)) {
+    return { ok: false, error: 'retain_requires_native_edit_proof', ...base };
+  }
+
+  let heldPaths: Set<string>;
+  try {
+    await ensureBootstrap();
+    const snapshot = await acquireWithContentionRetry(() =>
+      readQueue(getTxPool(), { coordinationDomain: input.coordinationDomain, owner: input.ownerId, paths: subject }),
+    );
+    heldPaths = new Set(
+      snapshot.active_locks
+        .filter(
+          (row) =>
+            row.owner === input.ownerId &&
+            row.coordination_domain === input.coordinationDomain &&
+            subject.includes(row.path),
+        )
+        .map((row) => row.path),
+    );
+  } catch (err) {
+    return { ok: false, error: `retain_hold_check_failed: ${err instanceof Error ? err.message : String(err)}`, ...base };
+  }
+  const notHeld = subject.filter((path) => !heldPaths.has(path));
+  if (notHeld.length > 0) {
+    // Attribution rides on a live hold. A path the caller no longer holds may
+    // already be a peer's, so nothing is written for any of them.
+    return { ok: false, error: 'retain_paths_not_held', not_held: notHeld, ...base };
+  }
+
+  const tools = proof.tool ?? proof.tools?.join(',') ?? 'native-edit';
+  const attribution = {
+    repoRoot: input.coordinationDomain,
+    files: subject,
+    intent: `PostToolUse:${proof.source}:${tools}:retained`,
+    workspaceId: input.identity.workspaceId ?? undefined,
+    contributor: input.identity.userId ?? undefined,
+  };
+  try {
+    // P-014: a restricted owner's row is the git-sync hold, written strictly.
+    const restricted = await recordRestrictedEditBeforeRelease({ ...attribution, ownerId: input.ownerId });
+    if (!restricted) await recordEditAttributionStrict({ ...attribution, agentId: input.ownerId });
+  } catch (err) {
+    return { ok: false, error: `retain_attribution_failed: ${err instanceof Error ? err.message : String(err)}`, ...base };
+  }
+  return {
+    ok: true,
+    retained: subject,
+    released: [],
+    attributed: subject,
+    held_before: subject.length,
+    owner: input.ownerId,
+    owner_label: input.ownerLabel,
+  };
+}
+
 export default defineTool({
   name: 'locks:release',
   description:
-    'Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. A named-resource UUID is rejected with guidance to use locks:release_resource. Fires the classic file-lock grant cascade for waiting agents.',
+    'Release held classic file-lock or granular intention-lock sets. Select one with lock_id, several with lock_ids, caller-owned classic locks with paths (across coordination domains), or all your locks with all_mine=true. Use locks:release_resource for named resources. Releasing a classic lock grants waiting agents.',
   guidance: {
-    when: 'Immediately after the edit is committed. Pass paths to release your active rows when the lock_id is unavailable; this resolves across coordination domains and releases only the requested paths. Release several known lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row\'s lock_id.',
+    when: 'Immediately after the edit is committed. Pass paths to release your active rows when the lock_id is unavailable; this resolves across coordination domains and releases only the requested paths. The paths selector accepts repo-relative paths, canonical @external/* keys, or absolute home/XDG-runtime paths (normalized to the canonical key). Use lock_id for an absolute managed-repository file. Release several known lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row\'s lock_id.',
     notWhen: 'Mid-edit. The lock should outlive the edit by enough that no other agent races between release and PR merge.',
     chaining: 'locks:acquire or locks:acquire_granular → work → locks:release { lock_id } or { lock_ids:[…] }. If a classic file-lock id was lost, locks:queue → select your active row\'s lock_id → locks:release { lock_id }. Or: session-end → locks:release { all_mine: true }.',
     seeAlso: [
@@ -68,12 +185,13 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    hook_operation: finishHookLockOperationSchema.optional().describe('native hook only: finish this exact prepared operation, including a lost acquire reply'),
     lock_id: lockIdSchema.optional(),
     lock_ids: z.array(lockIdSchema).min(1).max(200).optional(),
     paths: z
       .array(z.string())
       .optional()
-      .describe('path filter for a selected lock_id, or a path-only selector for your active locks across all coordination domains'),
+      .describe('repo-relative paths, canonical @external/* lock keys, or absolute home/XDG-runtime files (normalized to their canonical key); path filter for a selected lock_id or path-only selector across coordination domains. Use lock_id for an absolute managed-repository file.'),
     coordination_domain: z
       .string()
       .min(1)
@@ -101,15 +219,33 @@ export default defineTool({
         message: 'native_edit_proof requires tool or tools',
       })
       .optional(),
+    retain: z
+      .boolean()
+      .optional()
+      .describe('edit hook only: attribute native_edit_proof.paths, still held by you, and release nothing'),
   })
     .refine(
-      (a) => Boolean(a.lock_id) || (a.lock_ids?.length ?? 0) > 0 || Boolean(a.all_mine) || (a.paths?.length ?? 0) > 0,
+      (a) =>
+        Boolean(a.lock_id) ||
+        (a.lock_ids?.length ?? 0) > 0 ||
+        Boolean(a.all_mine) ||
+        Boolean(a.hook_operation) ||
+        (a.paths?.length ?? 0) > 0 ||
+        (Boolean(a.retain) && Boolean(a.native_edit_proof)),
       { message: 'pass lock_id, lock_ids, all_mine=true, or one or more paths' },
     )
     .refine(
       (a) => !a.all_mine || ((a.lock_ids?.length ?? 0) === 0 && !a.lock_id && (a.paths?.length ?? 0) === 0),
       { message: 'all_mine=true cannot be combined with lock_id(s) or paths' },
-    ),
+    )
+    .refine(
+      (a) =>
+        !a.retain ||
+        (Boolean(a.native_edit_proof) && !a.lock_id && (a.lock_ids?.length ?? 0) === 0 && !a.all_mine && (a.paths?.length ?? 0) === 0),
+      { message: 'retain=true takes native_edit_proof (its paths are the subject) and no lock_id(s), paths or all_mine' },
+    )
+    .refine((a) => !a.hook_operation || (!a.lock_id && !(a.lock_ids?.length) && !a.all_mine && !a.paths?.length && !a.retain),
+      { message: 'hook_operation cannot be combined with release selectors or retain' }),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readFileLockIdentity(ctx);
     let coordinationDomain: string;
@@ -122,7 +258,40 @@ export default defineTool({
     }
     const lockIds = mergeIds(args.lock_id, args.lock_ids);
 
-    const hasPathSelector = (args.paths?.length ?? 0) > 0;
+    if (args.hook_operation) {
+      const op = args.hook_operation;
+      const { routeHookOperationFinish } = await import('./file-lock-authority-wiring');
+      return textResult(await routeHookOperationFinish({
+        owner: ownerId, coordinationDomain, nativeEditProof: args.native_edit_proof,
+        operation: { id: op.id, deadline: op.deadline, paths: op.paths, intent: op.intent,
+          ttlSec: op.ttl_sec, outcome: 'completed' },
+      }, op.authority));
+    }
+
+    if (args.retain) {
+      return textResult(
+        await attestRetainedNativeEdit({
+          ownerId,
+          ownerLabel,
+          coordinationDomain,
+          proof: args.native_edit_proof,
+          conflictingSelector: lockIds.length > 0 || Boolean(args.all_mine) || (args.paths?.length ?? 0) > 0,
+          identity: resolveAgentIdentity(ctx),
+        }),
+      );
+    }
+
+    let selectedPaths: string[] | undefined;
+    try {
+      selectedPaths = normalizeReleasePaths(args.paths);
+    } catch (err) {
+      return textResult({
+        ok: false,
+        error: 'locks:release could not resolve path selector: ' + (err instanceof Error ? err.message : String(err)),
+      });
+    }
+
+    const hasPathSelector = (selectedPaths?.length ?? 0) > 0;
     if (lockIds.length === 0 && !args.all_mine && !hasPathSelector) {
       return {
         content: [
@@ -232,6 +401,9 @@ export default defineTool({
        * a future release path cannot pick up half of them: every `return` from
        * releaseFileLocks goes through here.
        */
+      // P-014: set when the restricted-owner path below already wrote this edit's
+      // ledger row before the release, so the post-release write does not repeat it.
+      let restrictedEditPreRecorded = false;
       const onFileLocksReleased = (released: string[] | undefined): void => {
         // G-0 (P-033): remember the published sha for the next grant. On the
         // remote-authority path the authority records it too (from the routed
@@ -244,7 +416,7 @@ export default defineTool({
         // mutation. Attribute only after a successful recognized native edit
         // proof whose paths exactly equal the rows actually released.
         const proof = args.native_edit_proof as NativeEditProof | undefined;
-        if (released && isNativeEditProofForPaths(proof, released)) {
+        if (!restrictedEditPreRecorded && released && isNativeEditProofForPaths(proof, released)) {
           const identity = resolveAgentIdentity(ctx);
           void recordEditAttribution({
             repoRoot: domain,
@@ -262,6 +434,24 @@ export default defineTool({
         // (acquire and release share one bus key — D-042).
         notifyPlanLockChange(released ?? []);
       };
+      // P-014 (WI-10005571, D-006): when the owner holds an active personal disclosure,
+      // write this edit's ledger row BEFORE the lock goes away, so git-sync's census
+      // holds the path with no instant where it sees neither the lock nor the hold.
+      // Throws disclosure_ledger_unavailable (the lock is kept) when the row cannot be
+      // written. An unrestricted owner pays one indexed existence check and nothing else.
+      const preReleaseProof = args.native_edit_proof as NativeEditProof | undefined;
+      const preReleasePaths = Array.isArray(preReleaseProof?.paths) ? preReleaseProof.paths : [];
+      if (preReleasePaths.length > 0 && isNativeEditProofForPaths(preReleaseProof, preReleasePaths)) {
+        const identity = resolveAgentIdentity(ctx);
+        restrictedEditPreRecorded = await recordRestrictedEditBeforeRelease({
+          repoRoot: domain,
+          files: preReleasePaths,
+          ownerId,
+          intent: `PostToolUse:${preReleaseProof.source}:${preReleaseProof.tool ?? preReleaseProof.tools?.join(',') ?? 'native-edit'}`,
+          workspaceId: identity.workspaceId ?? undefined,
+          contributor: identity.userId ?? undefined,
+        });
+      }
       try {
         const routed = await acquireWithContentionRetry(() =>
           routeFileLockOp<ReleaseOutcome>(
@@ -343,7 +533,7 @@ export default defineTool({
     async function releaseFileLocks(
       lockId: string | undefined,
       allMine = false,
-      paths: string[] | undefined = args.paths,
+      paths: string[] | undefined = selectedPaths,
     ): Promise<ReleaseOutcome> {
       const primary = await releaseInDomain(coordinationDomain, lockId, allMine, paths);
       if (primary.released.length > 0) return primary;
@@ -427,7 +617,7 @@ export default defineTool({
     if (lockIds.length === 0 && hasPathSelector) {
       let selected: OwnedLockPaths[];
       try {
-        selected = await ownedLocksForPaths({ ownerId, paths: args.paths ?? [] });
+        selected = await ownedLocksForPaths({ ownerId, paths: selectedPaths ?? [] });
       } catch (err) {
         return {
           content: [

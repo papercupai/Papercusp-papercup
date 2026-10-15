@@ -319,9 +319,13 @@ export async function resolveCommitTimeMs(sha: string): Promise<number | null> {
   if (hit !== undefined) return hit;
   let value: number | null = null;
   try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    const { stdout } = await promisify(execFile)('git', ['show', '-s', '--format=%ct', key], { timeout: 5_000 });
+    const { execFileViaSidecar } = await import('../../fleet/git-via-sidecar');
+    const { stdout } = await execFileViaSidecar('git', ['show', '-s', '--format=%ct', key], {
+      timeoutMs: 5_000,
+      subsystem: 'host-code-staleness-from-ledger',
+      cwd: process.cwd(),
+      env: process.env,
+    });
     const secs = Number(stdout.trim());
     value = Number.isFinite(secs) && secs > 0 ? secs * 1_000 : null;
   } catch {

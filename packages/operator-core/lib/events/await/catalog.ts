@@ -439,6 +439,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     emitter: 'external-trigger ingestion core (packages/operator-core/lib/external-triggers/ingestion.ts)',
     exists: true,
   },
+  // ── Wake pickup (P-006 / D-004) ──────────────────────────────────────────────────
+  {
+    family: 'wake-not-picked-up',
+    keyTemplate: 'wake:not-picked-up:<subscriberId>',
+    params: [{ name: 'subscriberId', required: true, describe: 'the coord ownerId the wake was delivered to' }],
+    describe:
+      "One or more wake deliveries to this subscriber started no turn within the pickup window (PAPERCUSP_WAKE_PICKUP_WINDOW_SEC, default 600s): no turn-only MCP call and no host turn-start after delivery. Payload names the delivery ids, channels, and any delivery re-queued once for host recovery (auth/quota blocked, unbound successor). A delivered wake is NOT a pickup — await this instead of trusting status='delivered'.",
+    emitter: 'wake pickup sweep (packages/operator-core/lib/events/await/pickup-sweep.ts)',
+    exists: true,
+    replacesPoll: 'polling coord:presence / tool activity to check whether a woken peer actually started',
+  },
   // ── Work items ────────────────────────────────────────────────────────────
   {
     family: 'work-item',
@@ -677,6 +688,45 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
   },
   {
+    family: 'scorecard-grading-audit',
+    keyTemplate: 'scorecard:grading-audit:<id>',
+    params: [{ name: 'id', required: true, describe: 'the AUDITED scorecard id (not the audit card), e.g. EI-123' }],
+    describe:
+      "A scorecard's grading-integrity audit SETTLED (pending → passed|failed, or an explicit superseding correction). Payload carries `state` and `auditIssueId`, so you can branch on the verdict without re-reading. The audited card is terminal from the moment it was filed, so work-item:status:<id> never fires for this — park here after filing a vetting attestation or spec-adequacy card instead of re-polling scorecards:get.",
+    emitter:
+      'scorecard-emitted-events (packages/operator-core/lib/scorecard-emitted-events.ts) — fired from scorecards:emit when the filed grading-integrity card settles its subject via recordGradingAudit (EI-24852356444105284)',
+    exists: true,
+    replacesPoll: 'polling scorecards:get for gradingAudit.state',
+  },
+  {
+    family: 'rubric-criterion-regressed',
+    keyTemplate: 'rubric:criterion-regressed:<rubricRef>',
+    params: [
+      {
+        name: 'rubricRef',
+        required: true,
+        describe: 'the rubric whose executable criteria a plan-scheduled system:rubric-rescore re-runs',
+      },
+    ],
+    describe:
+      "A scheduled re-score found a criterion that MET its bar on its previous ledger result and now FAILS it (pass → fail). Moves into `error` (nothing measured) or out of `unknown` never fire. Payload carries `criterionKey`, `before`, `after` and the deciding `testRunId`. The standing alert is `watch:create { pattern: 'rubric:criterion-regressed:<rubricRef>', targetKind: 'event', wake: false }`.",
+    emitter:
+      'rubric-rescore action (packages/operator-core/lib/harness/routines/rubric-rescore-action.ts) — system:rubric-rescore, fired by a plans:set-schedule { action } routine; one event per crossing',
+    exists: true,
+    replacesPoll: 'polling scorecards or test_runs for a criterion that fell below its bar',
+  },
+  {
+    family: 'plan-drift-alarm',
+    keyTemplate: 'plan:drift-alarm:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the plan whose spec-conformance run found drift' }],
+    describe:
+      "A spec-conformance run OPENED a drift alarm on one of this plan's requirements: a `violatedWhen` falsifier fired, or the requirement's done-when check moved pass → fail (a done-when that never passed is progress, not drift). Fires once per newly opened alarm, never again while that alarm stays open. Payload carries `barKey`, `alarmId`, `firedFalsifiers`, `doneWhenRegressed` and the `blocked` work-item ids the alarm now blocks. Standing alert: `watch:create { pattern: 'plan:drift-alarm:<slug>', targetKind: 'event', wake: false }`.",
+    emitter:
+      'spec-conformance run (packages/operator-core/lib/spec-conformance/conformance-run.ts runPlanConformance) through the production adapter emitDriftAlarm in packages/operator-core/lib/spec-conformance/conformance-run-deps.ts; one event per alarm opening',
+    exists: true,
+    replacesPoll: 'polling work_items or the conformance results ledger for a requirement that drifted',
+  },
+  {
     family: 'plan-acceptance-changed',
     keyTemplate: 'plan:acceptance:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the subject plan slug' }],
@@ -697,6 +747,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       'fleet-drained-events (packages/operator-core/lib/fleet-drained-events.ts) — fired from plans:set-status when a →done flip drains the plan; ALSO fired by fleet-idle-drain.ts (packages/operator-core/lib/scheduler/fleet-idle-drain.ts) on a scheduler:get_next miss when every fleet member is idle (P-006, WI-3763)',
     exists: true, // WI-1830: set-status fires `fleet:drained:<slug>` on the plan-drain edge
     sugar: 'fleet:await-drained',
+  },
+  {
+    family: 'fleet-leader-changed',
+    keyTemplate: 'fleet:leader-changed:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      'The durable registered leader changed after an authorized handoff or a compare-and-swap succession. The payload names the previous and current leader; re-read fleet:status for the current roster and vacancy clock.',
+    emitter:
+      'takeFleetLeadership (packages/operator-core/lib/agent-tools/fleet_registry/take-leadership-core.ts) after the registry write succeeds',
+    exists: true,
+    replacesPoll: 'polling fleet:status for a leader vacancy or handoff',
   },
   // ── Fleet transitions a LEADER reacts to (P-009 / D-008 of
   //    fleet-leadership-continuity-and-actuation-2026-08-01).
@@ -806,6 +867,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
       'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — classified from agent_activity + session_turn_parts by the periodic fleet-transition sweep',
     exists: true,
     replacesPoll: 'polling fleet:leader-brief for repeated recovery-only member cycles',
+  },
+  {
+    family: 'fleet-member-quota-starved',
+    keyTemplate: 'fleet:member-quota-starved:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      "A member's CLI has been quota/usage-limit blocked past the starvation threshold (default 5 min) and every wake sent to it failed, so its claims are not progressing while its presence still reads alive. Payload: agentId, agent, accountId, ageMs, attemptedGatedInjections. The leader can reroute the member's claims or relaunch it on another account, instead of waiting 40+ min for presence to decay to suspect. Fires at most once per blocked episode per member.",
+    emitter:
+      'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — reported by the member\'s psu pty host through POST /api/admin/psu-pty/quota-starvation',
+    exists: true,
+    replacesPoll: 'polling coord:presence / fleet:leader-brief for a member that stopped taking turns',
   },
   {
     family: 'goal-drain-dead',
@@ -940,6 +1012,19 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     describe:
       "The canonical item that YOUR item duplicates has settled — targeted at each duplicate-holder's assignee, not a subscriber fan-out.",
     emitter: 'work-items-events (packages/operator-core/lib/work-items-events.ts) — the `duplicates` edge fan',
+    exists: true,
+  },
+  {
+    // WI-6554700010008444: the concrete "new evidence" trigger for a tool-failure report.
+    // Before it, an item parked to await an independent reporter could only use the broad
+    // work-item:status:<id>, which a durable park refuses as non-specific.
+    family: 'work-item-tool-failure-reporter',
+    keyTemplate: 'work-item:tool-failure-reporter:<id>',
+    params: [{ name: 'id', required: true, describe: 'the tool-failure signature row id' }],
+    describe:
+      'A tool-failure signature row gained a reporter it had never had (a different agent hit the same failure). Park a release-churned or probation report here instead of re-claiming it; the same reporter repeating never fires.',
+    emitter:
+      'capture-core (packages/operator-core/lib/harness/improvements/capture-core.ts) — captureToolInvocationFriction via noteNewToolFailureReporter',
     exists: true,
   },
   {

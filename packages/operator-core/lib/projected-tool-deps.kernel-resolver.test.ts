@@ -1,9 +1,15 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { brotliDecompressSync } from 'node:zlib';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { DEFAULT_TX_ACQUIRE_DEADLINE_MS } from '@papercusp/db-org';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
 import type { IdentityGrantPolicy } from './capability-envelope/identity-grants-port';
 import { isLazyIdentityLaunchRecord } from './capability-envelope/lazy-launch-record';
+import * as servingIdentity from './serving-host-identity';
+import { mockReturnOnceTyped } from './testing/typed-mock';
 
 const db = vi.hoisted(() => {
   const rows: unknown[][] = [];
@@ -44,18 +50,57 @@ const db = vi.hoisted(() => {
     const at = strings.findIndex((part) => part.endsWith('(s.id::text = '));
     return at < 0 ? { id: null, xmin: null } : { id: values[at], xmin: values[at + 1] };
   };
-  const sql = vi.fn(async (strings: readonly string[], ...values: unknown[]) => {
-    if (strings.join(' ').includes('SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin')) {
+  const bodyReads: Array<{ advSessionId: unknown; want: unknown }> = [];
+  const BODY_READ_MARKER = 'AS launch_spec, n.launch_spec_xmin';
+  // The narrowing is a postgres.js FRAGMENT (narrowedLaunchSpecSql,
+  // identity-receipt-narrowing.ts, WI-10004801): built with `sql`…`` and never
+  // awaited, then interpolated into the body read as its first value. Modelled
+  // as a marker carrying the `want` parameter (null = read the record whole).
+  const fragment = (strings: readonly string[], values: unknown[]) => {
+    const text = strings.join(' ').trim();
+    return text === 'n.launch_spec' || text.startsWith('CASE')
+      ? { narrowedLaunchSpecFragment: true, want: text === 'n.launch_spec' ? null : values[0] }
+      : null;
+  };
+  const query = async (strings: readonly string[], values: unknown[]) => {
+    // The narrowed body read: values are [fragment, advSessionId, ownerId,
+    // workspaceId]. The mock applies the module's own JS statement of the
+    // narrowing, which the real-PG test holds the SQL to.
+    // `AS launch_spec, n.launch_spec_xmin` is unique to the body read; the
+    // anchor read also selects `s.xmin::text AS launch_spec_xmin`.
+    if (strings.join(' ').includes(BODY_READ_MARKER)) {
+      const want = (values[0] as { want: unknown }).want;
+      bodyReads.push({ advSessionId: values[1], want });
       const override = loadOverrides.shift();
       if (override instanceof Error) throw override;
       if (override) return override;
-      const body = bodies.get(String(values[0]));
-      return body ? [body] : [];
+      const body = bodies.get(String(values[1]));
+      if (!body) return [];
+      const { narrowIdentityHistory } = await import('./capability-envelope/identity-receipt-narrowing');
+      return [{
+        ...body,
+        launch_spec: want == null ? body.launch_spec
+          : narrowIdentityHistory(body.launch_spec, JSON.parse(String(want)) as unknown[]),
+      }];
     }
     const known = knownFrom(strings, values);
-    return (rows.shift() ?? []).map((row) => toWire(row, known));
-  });
-  return { rows, sql, bodies, loadOverrides, failClient: false };
+    const selectorAt = strings.findIndex((part) => part.endsWith('::bigint IS NULL OR s.id = '));
+    const callerAdvSessionId = selectorAt < 0 ? null : values[selectorAt];
+    return (rows.shift() ?? [])
+      .filter((row) => callerAdvSessionId == null ||
+        (row as Record<string, unknown>).adv_session_id != null &&
+        String((row as Record<string, unknown>).adv_session_id) === String(callerAdvSessionId))
+      .map((row) => toWire(row, known));
+  };
+  const sql = vi.fn((strings: readonly string[], ...values: unknown[]) =>
+    fragment(strings, values) ?? query(strings, values));
+  const release = vi.fn();
+  const reserve = vi.fn(async () => sql);
+  Object.assign(sql, { reserve, release });
+  /** Real queries only: a fragment build is not a round trip to PostgreSQL. */
+  const queryCalls = () => sql.mock.calls.filter(([strings, ...values]) => !fragment(strings, values));
+  const isBodyRead = (template: unknown) => (template as readonly string[]).join(' ').includes(BODY_READ_MARKER);
+  return { rows, sql, reserve, release, queryCalls, isBodyRead, bodies, bodyReads, loadOverrides, failClient: false };
 });
 const grants = vi.hoisted(() => ({ read: vi.fn(), claim: vi.fn(async () => true), kernelThrows: false }));
 // Keep artifact validation and policy evaluation real; inject only policy I/O.
@@ -108,6 +153,10 @@ import type { KernelEnforcementRequest, UnifiedToolContext } from '@papercusp/ag
 const PLAIN_ARTIFACT = compileAgentSpecification({
   source: { id: 'kernel-plain', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
   prompt: { role: 'worker', text: 'Plain.' },
+});
+const PREDECESSOR_ARTIFACT = compileAgentSpecification({
+  source: { id: 'kernel-predecessor', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+  prompt: { role: 'worker', text: 'Re-armed predecessor.' },
 });
 const REVISION_A = {
   specificationRevision: PLAIN_ARTIFACT.specificationRevision,
@@ -167,6 +216,7 @@ function appliedActivation(revision = REVISION_A) {
 beforeEach(() => {
   db.rows.splice(0, db.rows.length);
   db.bodies.clear();
+  db.bodyReads.splice(0, db.bodyReads.length);
   db.loadOverrides.splice(0, db.loadOverrides.length);
   // The identity-resolution cache is process-pinned; a verdict cached by one
   // test must not turn the next test's miss into a hit.
@@ -177,6 +227,8 @@ beforeEach(() => {
   heal.converge.mockReset().mockResolvedValue(false);
   setStaleArtifactConverger(heal.converge as never);
   db.sql.mockClear();
+  db.reserve.mockClear().mockImplementation(async () => db.sql);
+  db.release.mockClear();
   db.failClient = false;
   grants.read.mockReset();
   grants.claim.mockReset().mockResolvedValue(true);
@@ -225,6 +277,219 @@ describe('control-anchor kernel resolver (D-030)', () => {
     });
   });
 
+  it('records successful control-anchor SQL and identity-grant evaluation timings', async () => {
+    const queryStart = '2026-10-14T23:00:00.000Z';
+    db.rows.push([anchorRow({ activation: appliedActivation() }, {
+      backend_pid: 73142,
+      query_start: queryStart,
+    })]);
+
+    const verdict = await controlAnchorKernelResolver(request());
+
+    expect(verdict).toMatchObject({
+      decision: 'allow',
+      serverAudit: {
+        authorityTimings: {
+          schemaVersion: 1,
+          controlAnchorSql: {
+            calls: 1,
+            totalMs: expect.any(Number),
+            executions: [{
+              queryFingerprint: 'controlAnchorSql/v1',
+              traceId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+              backendPid: 73142,
+              queryStart,
+              poolAcquisitionMs: expect.any(Number),
+              clientQueryMs: expect.any(Number),
+              clientCompletedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+              outcome: 'fulfilled',
+            }],
+          },
+          identityGrantEvaluation: { calls: 1, totalMs: expect.any(Number) },
+        },
+      },
+    });
+    const timings = verdict?.serverAudit?.authorityTimings as Record<string, unknown>;
+    const [anchorQuery] = db.queryCalls()[0] as [readonly string[], ...unknown[]];
+    expect(anchorQuery.join(' ')).toContain('/* papercusp:controlAnchorSql/v1 */');
+    expect(anchorQuery.join(' ')).toContain('pg_backend_pid() AS backend_pid');
+    expect(anchorQuery.join(' ')).toContain('statement_timestamp() AS query_start');
+    expect(JSON.stringify(timings)).not.toMatch(/ws-a|SELECT|launch_spec/i);
+    expect(db.reserve).toHaveBeenCalledOnce();
+    expect(db.release).toHaveBeenCalledOnce();
+  });
+
+  it('bounds control-anchor pool acquisition and releases a client that arrives after the deadline', async () => {
+    vi.useFakeTimers();
+    type ReservedConnection = Awaited<ReturnType<typeof db.reserve>>;
+    let resolveLateConnection: (connection: ReservedConnection) => void = () => {};
+    const pendingConnection = new Promise<ReservedConnection>((resolve) => {
+      resolveLateConnection = resolve;
+    });
+    mockReturnOnceTyped(db.reserve, pendingConnection);
+
+    try {
+      const pendingVerdict = controlAnchorKernelResolver(request());
+      await vi.advanceTimersByTimeAsync(DEFAULT_TX_ACQUIRE_DEADLINE_MS + 1);
+      const verdict = await pendingVerdict;
+
+      expect(verdict).toMatchObject({
+        decision: 'deny',
+        serverAudit: {
+          authorityTimings: {
+            controlAnchorSql: {
+              calls: 1,
+              executions: [{
+                outcome: 'rejected',
+                poolAcquisitionMs: expect.any(Number),
+                clientQueryMs: null,
+                clientCompletedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+              }],
+            },
+          },
+        },
+      });
+      expect(db.reserve).toHaveBeenCalledOnce();
+      expect(db.sql).not.toHaveBeenCalled();
+
+      resolveLateConnection(db.sql);
+      await pendingConnection;
+      await Promise.resolve();
+      expect(db.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('selects the verified native caller row instead of a newer re-armed predecessor', async () => {
+    db.rows.push([
+      anchorRow({ activation: appliedActivation() }, {
+        adv_session_id: 31595, adv_session_xmin: '901',
+      }),
+      anchorRow({ activation: appliedActivation() }, {
+        adv_session_id: 32433, adv_session_xmin: '902',
+      }),
+    ]);
+
+    const state = await readControlAnchorKernelState(request({
+      ctx: ctx({ advSessionId: 32433 }),
+    }));
+
+    expect(state?.identityLaunchRecordVersion).toEqual({ sessionId: '32433', rowVersion: '902' });
+    const [template, ...values] = db.sql.mock.calls[0] as unknown[];
+    const anchorSql = (template as readonly string[]).join(' ');
+    expect(anchorSql).toContain('OR s.id = ');
+    expect(values).toContain(32433);
+  });
+
+  it('distinguishes tools:find preflight on a re-armed predecessor from the verified native incarnation', async () => {
+    const predecessor = anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 31595,
+      adv_session_xmin: '901',
+      started_at: '2026-10-03T10:00:00.000Z',
+      ended_at: null,
+      ended_by: null,
+      launch_spec: {
+        workspaceId: 'ws-a',
+        harnessSlug: 'sales',
+        specificationRevision: PREDECESSOR_ARTIFACT.specificationRevision,
+        stateRevision: REVISION_A.stateRevision,
+        specificationArtifact: PREDECESSOR_ARTIFACT,
+      },
+    });
+    const current = anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 32433,
+      adv_session_xmin: '902',
+      started_at: '2026-10-03T09:00:00.000Z',
+      ended_at: null,
+      ended_by: null,
+    });
+    const toolsFindPreflight = (advSessionId?: number) => request({
+      toolName: 'tools:find',
+      capabilities: ['agent_tools:read'],
+      args: { query: 'fixture' },
+      ctx: ctx(advSessionId === undefined ? {} : { advSessionId }),
+    });
+
+    // Owner-only SQL elects the latest immutable registration despite the
+    // predecessor's resume timestamp. An explicitly bound old caller still
+    // judges its own receipt and must fail closed below.
+    db.rows.push([current, predecessor]);
+    const ownerOnlyState = await readControlAnchorKernelState(toolsFindPreflight());
+    expect(ownerOnlyState?.identityLaunchRecordVersion).toEqual({ sessionId: '32433', rowVersion: '902' });
+    const [ownerOnlyTemplate] = db.sql.mock.calls[0] as unknown[];
+    expect((ownerOnlyTemplate as readonly string[]).join(' ')).toContain(
+      'ORDER BY s.id DESC',
+    );
+
+    db.rows.push([current, predecessor]);
+    await expect(controlAnchorKernelResolver(toolsFindPreflight())).resolves.toMatchObject({
+      decision: 'allow',
+      serverAudit: {
+        identityLaunchRecord: { advSessionId: '32433', xmin: '902' },
+      },
+    });
+
+    db.rows.push([predecessor, current]);
+    await expect(controlAnchorKernelResolver(toolsFindPreflight(31595))).resolves.toMatchObject({
+      decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+      serverAudit: {
+        identityLaunchRecordSelection: {
+          advSessionId: '31595', rowVersion: '901', selection: 'caller-row',
+        },
+      },
+    });
+
+    // A transport-verified native session binds the preflight to the current row.
+    db.rows.push([predecessor, current]);
+    await expect(controlAnchorKernelResolver(toolsFindPreflight(32433))).resolves.toMatchObject({
+      decision: 'allow',
+      serverAudit: { identityLaunchRecord: { advSessionId: '32433', xmin: '902' } },
+    });
+  });
+
+  it('fails closed when the verified native caller row is missing', async () => {
+    db.rows.push([
+      anchorRow({ activation: appliedActivation() }, {
+        adv_session_id: 31595, adv_session_xmin: '901',
+      }),
+    ]);
+
+    const denied = await controlAnchorKernelResolver(request({
+      ctx: ctx({ advSessionId: 32433 }),
+    }));
+    expect(denied).toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['verified-caller-row-unavailable'] },
+    });
+    expect(denied?.serverAudit?.identityLaunchRecord).toBeUndefined();
+  });
+
+  it.each([
+    { caller: undefined, selected: 541, selection: 'owner-workspace-fallback' },
+    { caller: 541, selected: 541, selection: 'caller-row' },
+    { caller: 543, selected: 543, selection: 'caller-row' },
+  ])('audits $selection for source incarnation $selected on misses and cache hits', async ({ caller, selected, selection }) => {
+    const source = anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 541, adv_session_xmin: '901', port_id: null,
+    });
+    // A same-owner port is a legitimate source incarnation, not an isolated
+    // answerer. Its presence must not force attribution to the original row.
+    const continuation = anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 543, adv_session_xmin: '903', port_id: 'same-owner-port',
+    });
+    const call = request({ ctx: ctx(caller === undefined ? {} : { advSessionId: caller }) });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      db.rows.push([source, continuation]);
+      const verdict = await controlAnchorKernelResolver(call);
+      expect(verdict?.decision).toBe('allow');
+      expect(verdict?.serverAudit?.identityLaunchRecord).toEqual({
+        advSessionId: String(selected), xmin: selected === 541 ? '901' : '903', selection,
+      });
+    }
+    expect(db.bodyReads).toHaveLength(1);
+  });
+
   it('carries the database-owned launch row version into identity enforcement', async () => {
     const launchRow = anchorRow({ activation: appliedActivation() }, {
       adv_session_id: 27, adv_session_xmin: '1549',
@@ -237,11 +502,49 @@ describe('control-anchor kernel resolver (D-030)', () => {
     const handle = state?.identityLaunchRecord;
     if (!isLazyIdentityLaunchRecord(handle)) throw new Error('expected a lazy launch record');
     expect(await handle.load()).toEqual({ record: launchRow.launch_spec, rowVersion: '1549' });
-    const [bodyTemplate, ...bodyParams] = db.sql.mock.calls[1] as unknown[];
+    const [bodyTemplate, ...bodyParams] = db.queryCalls()[1] as unknown[];
+    expect(db.isBodyRead(bodyTemplate)).toBe(true);
     const bodySql = (bodyTemplate as readonly string[]).join(' ');
-    expect(bodySql).toContain('SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin');
+    expect(bodySql).toContain('s.xmin::text AS launch_spec_xmin');
     expect(bodySql).toContain('FROM harness_shared.adv_sessions s');
-    expect(bodyParams).toEqual([27, 'owner-a', 'ws-a']);
+    // No receipts requested ⇒ `want` is null ⇒ the record is read whole.
+    expect(bodyParams).toEqual([{ narrowedLaunchSpecFragment: true, want: null }, 27, 'owner-a', 'ws-a']);
+  });
+
+  // WI-10004801 (#1155): the body read narrows identityHistory to the receipt
+  // the gate will select. A retained history entry is ~1 MB, so shipping all of
+  // them to the request worker is what spiked worker heaps.
+  it('asks PostgreSQL for only the applied receipt on a cache miss, and still resolves from history', async () => {
+    const current = anchorRow({ activation: appliedActivation() }).launch_spec as Record<string, unknown>;
+    // The top-level record is at a later STATE revision, so the applied receipt
+    // (REVISION_A) must come from identityHistory. One unrelated entry must not
+    // survive the narrowing; the matching one must.
+    const spec = {
+      ...current,
+      stateRevision: 'state-later',
+      identityHistory: [
+        { specificationRevision: 'c'.repeat(64), stateRevision: 'state-c', specificationArtifact: { bulky: 'x'.repeat(64) } },
+        {
+          specificationRevision: REVISION_A.specificationRevision,
+          stateRevision: REVISION_A.stateRevision,
+          specificationArtifact: current.specificationArtifact,
+        },
+      ],
+    };
+    db.rows.push([anchorRow({ activation: appliedActivation() }, {
+      adv_session_id: 41, adv_session_xmin: '4100', launch_spec: spec,
+    })]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
+    expect(db.bodyReads).toHaveLength(1);
+    expect(db.bodyReads[0]).toEqual({
+      advSessionId: 41,
+      want: JSON.stringify([{
+        specificationRevision: REVISION_A.specificationRevision, stateRevision: REVISION_A.stateRevision,
+      }]),
+    });
+    const { narrowIdentityHistory } = await import('./capability-envelope/identity-receipt-narrowing');
+    const narrowed = narrowIdentityHistory(spec, [REVISION_A]) as { identityHistory: Array<{ stateRevision: string }> };
+    expect(narrowed.identityHistory.map((entry) => entry.stateRevision)).toEqual([REVISION_A.stateRevision]);
   });
 
   // WI-10002721 — the recurrence guard for the per-call body read. Every
@@ -249,8 +552,7 @@ describe('control-anchor kernel resolver (D-030)', () => {
   // 884KB, max 3.9MB) even when identityResolutionCache already held the
   // verdict for that exact row version.
   describe('launch record body is read only on an identity-resolution cache miss (WI-10002721)', () => {
-    const bodyReads = () => db.sql.mock.calls.filter(([template]) =>
-      (template as readonly string[]).join(' ').includes('SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin')).length;
+    const bodyReads = () => db.queryCalls().filter(([template]) => db.isBodyRead(template)).length;
     const rowAt = (xmin: string, over: Record<string, unknown> = {}) =>
       anchorRow({ activation: appliedActivation() }, { adv_session_id: 31, adv_session_xmin: xmin, ...over });
 
@@ -261,11 +563,17 @@ describe('control-anchor kernel resolver (D-030)', () => {
       await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
       expect(bodyReads()).toBe(1);
       // Two anchor reads + one body read: the hit issued no body query at all.
-      expect(db.sql).toHaveBeenCalledTimes(3);
+      // (Fragment builds are not queries; queryCalls() excludes them.)
+      expect(db.queryCalls()).toHaveLength(3);
       // The body query stays scoped to the anchor's owner and workspace.
-      const bodyCall = db.sql.mock.calls.find(([template]) =>
-        (template as readonly string[]).join(' ').includes('SELECT s.launch_spec'))!;
-      expect(bodyCall.slice(1)).toEqual([31, 'owner-a', 'ws-a']);
+      const bodyCall = db.queryCalls().find(([template]) => db.isBodyRead(template))!;
+      expect(bodyCall.slice(1)).toEqual([
+        {
+          narrowedLaunchSpecFragment: true,
+          want: JSON.stringify([{ specificationRevision: REVISION_A.specificationRevision, stateRevision: REVISION_A.stateRevision }]),
+        },
+        31, 'owner-a', 'ws-a',
+      ]);
     });
 
     it('reads the body again when the launch row version changes', async () => {
@@ -462,9 +770,105 @@ describe('control-anchor kernel resolver (D-030)', () => {
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
       decision: 'deny',
       code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['control-anchor-query-failed'] },
     });
     db.rows.push([]);
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow', availability: 'unavailable' });
+  });
+
+  it.each(['55P03', '57014', '08006'])('retains SQLSTATE %s on the failed authority read without exposing SQL or parameters', async (pgCode) => {
+    db.sql.mockRejectedValueOnce(Object.assign(new Error('private SQL and credential'), {
+      code: pgCode, query: 'SELECT private_value', parameters: ['secret'], detail: 'private detail',
+      servingPid: -1, servingProcessId: 'untrusted-error-identity',
+    }));
+    const verdict = await controlAnchorKernelResolver(request());
+    expect(verdict).toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode }] },
+    });
+    const failures = verdict?.serverAudit?.authorityReadFailures as Array<Record<string, unknown>>;
+    expect(failures).toHaveLength(1);
+    expect(Object.keys(failures[0]).sort()).toEqual(['elapsedMs', 'pgCode', 'servingPid', 'servingProcessId', 'source']);
+    expect(failures[0].servingPid).toBe(process.pid);
+    expect(failures[0].servingProcessId).toBe(servingIdentity.getServingHostIdentity().processId);
+    expect(failures[0].elapsedMs).toEqual(expect.any(Number));
+    expect(failures[0].elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(verdict?.serverAudit)).not.toMatch(/private|secret|SELECT/);
+  });
+
+  it.each(['missing', 'throws'])('preserves denial when the serving process identity %s', async (mode) => {
+    const identity = vi.spyOn(servingIdentity, 'getServingHostIdentity');
+    if (mode === 'throws') identity.mockImplementation(() => { throw new Error('identity unavailable'); });
+    else identity.mockReturnValue({ host: 'fixture', processId: null, buildSha: null });
+    try {
+      db.sql.mockRejectedValueOnce(Object.assign(new Error('private lock error'), { code: '55P03' }));
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+        decision: 'deny', code: 'policy-unavailable',
+        serverAudit: { authorityReadFailures: [{
+          source: 'control-anchor-query-failed', pgCode: '55P03',
+          servingPid: process.pid, servingProcessId: null,
+        }] },
+      });
+    } finally {
+      identity.mockRestore();
+    }
+  });
+
+  it.each([undefined, 55_003, 'ERR_CONNECTION_RESET', '55P03 private'])('keeps an unclassified authority failure explicit for code %s', async (code) => {
+    db.sql.mockRejectedValueOnce(Object.assign(new Error('private error'), { code }));
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode: null }] },
+    });
+  });
+
+  it('preserves the denial even when inspecting an error code throws', async () => {
+    const error = Object.defineProperty(new Error('private error'), 'code', {
+      get() { throw new Error('diagnostic unavailable'); },
+    });
+    db.sql.mockRejectedValueOnce(error);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityReadFailures: [{ source: 'control-anchor-query-failed', pgCode: null }] },
+    });
+  });
+
+  it('attributes independent control and revocation SQL failures to their own reads', async () => {
+    db.sql.mockRejectedValueOnce(Object.assign(new Error('control locked'), { code: '55P03' }))
+      .mockRejectedValueOnce(Object.assign(new Error('revocation canceled'), { code: '57014' }));
+    await expect(controlAnchorKernelResolver(request({
+      ctx: ctx({ isSuperuser: false, isPowerUser: true, uiClientId: 'pus-a' }),
+    }))).resolves.toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityReadFailures: [
+        { source: 'control-anchor-query-failed', pgCode: '55P03' },
+        { source: 'power-user-revocation-query-failed', pgCode: '57014' },
+      ] },
+    });
+  });
+
+  it('audits a database lock refusal at dispatch without running the handler', async () => {
+    db.sql.mockRejectedValueOnce(Object.assign(new Error('control locked'), { code: '55P03' }));
+    const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'effect' }] }));
+    const recordInvocation = vi.fn(async () => {});
+    const result = await dispatchProjectedTool({
+      pluginName: 'fixture', description: 'fixture', inputSchema: { type: 'object' },
+      capabilities: [], expose: { mcp: { name: 'mail:send' } }, fn: handler,
+    } as ProjectedTool, 'mail:send', {}, ctx(), { kernelEnforcement: controlAnchorKernelResolver, recordInvocation });
+    expect(result.ok).toBe(false);
+    expect(recordInvocation).toHaveBeenCalledOnce();
+    expect(recordInvocation).toHaveBeenCalledWith(expect.objectContaining({
+      kernelPreflight: expect.objectContaining({
+        decision: 'deny',
+        serverAudit: expect.objectContaining({
+          authorityReadFailures: [{
+            source: 'control-anchor-query-failed', pgCode: '55P03', elapsedMs: expect.any(Number),
+            servingPid: process.pid, servingProcessId: servingIdentity.getServingHostIdentity().processId,
+          }],
+        }),
+      }),
+    }));
+    expect(handler).not.toHaveBeenCalled();
   });
 
   // The compaction watchdog writes a session_briefs row (carry + control_state,
@@ -542,13 +946,17 @@ describe('control-anchor kernel resolver (D-030)', () => {
     db.failClient = true;
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
       decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['authority-reader-initialization-failed'] },
     });
     db.failClient = false;
     db.sql.mockResolvedValueOnce([anchorRow({ activation: appliedActivation() })])
       .mockRejectedValueOnce(new Error('credential authority unavailable'));
     await expect(controlAnchorKernelResolver(request({
       ctx: ctx({ isSuperuser: false, isPowerUser: true, uiClientId: 'pus-a' }),
-    }))).resolves.toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
+    }))).resolves.toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['power-user-revocation-query-failed'] },
+    });
   });
 });
 
@@ -669,6 +1077,29 @@ describe('P-005 grants reach actual execution boundaries', () => {
       capabilities: [], expose: { mcp: { name } }, fn,
     };
   }
+
+  it.each([
+    { caller: undefined, selection: 'owner-workspace-fallback' },
+    { caller: 1, selection: 'caller-row' },
+  ])('records $selection on governed allows independently of tool arguments and still denies revoked grants', async ({ caller, selection }) => {
+    const f = grantedRow();
+    const row = { ...f.row, adv_session_xmin: '941' };
+    grants.read.mockResolvedValue(f.policy);
+    const call = request({
+      toolName: 'mail:send', capabilities: ['mail:send'],
+      ctx: ctx(caller === undefined ? {} : { advSessionId: caller }),
+      args: { identityLaunchRecord: { selection: 'caller-row' } },
+    });
+    db.rows.push([row], [row]);
+    const allowed = await controlAnchorKernelResolver(call);
+    expect(allowed).toMatchObject({
+      decision: 'allow',
+      serverAudit: { identityLaunchRecord: { advSessionId: '1', xmin: '941', selection } },
+    });
+    grants.read.mockResolvedValue({ ...f.policy, policyRevision: 'policy-revoked', bindings: [] });
+    const denied = await controlAnchorKernelResolver(call);
+    expect(denied).toMatchObject({ decision: 'deny' });
+  });
 
   it.each(['dispatch', 'indirect-dispatch', 'reaction'] as const)(
     'refuses an unauthorized %s before its handler',
@@ -804,5 +1235,129 @@ describe('P-005 grants reach actual execution boundaries', () => {
       obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
     });
     expect(grants.read).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Plan token-efficiency-prompts-cache-and-behavior-2026-10-11 P-011 (D-018): the
+ * refused-compaction retry loop was a re-armed predecessor's launch row judging a
+ * live owner's `session:request-compaction`. These cases replay REAL rows instead
+ * of compiled stand-ins: one owner's `session_briefs` control anchor and both of
+ * its open `adv_sessions` rows, read verbatim from the live database at 08:57Z on
+ * 2026-10-12 (read-only transaction; capture script recorded on the plan) and
+ * stored brotli-compressed. The SHA-256 pin makes a hand-edited fixture fail loudly.
+ * Row 39614 is the owner's current launch (its specificationRevision is the applied
+ * pair); row 39406 is an older, still-open launch at an earlier revision with no
+ * receipt for the applied pair — the re-armed predecessor.
+ */
+interface RealKernelCapture {
+  capturedAt: string;
+  ownerId: string;
+  workspaceId: string;
+  brief: { control_state: { activation?: { applied?: { specificationRevision?: string; stateRevision?: string } } }; control_generation: number; workspace_id: string };
+  sessions: Array<{
+    adv_session_id: number; adv_session_xmin: string; started_at: string; ended_at: string | null;
+    ended_by: string | null; port_id: string | null;
+    launch_spec: { specificationRevision: string; stateRevision: string; identityHistory?: Array<{ specificationRevision: string; stateRevision: string }> };
+  }>;
+}
+const REAL_ROWS_FIXTURE = new URL('./__fixtures__/kernel-anchor-rows.re-armed-predecessor.json.br', import.meta.url);
+const REAL_ROWS_SHA256 = 'c184f14f95f4fd51c1dd56ae7283b81556dab1515c64d8889d8112ca9dd18e56';
+const REAL_CURRENT_ROW = 39614;
+const REAL_PREDECESSOR_ROW = 39406;
+
+function loadRealCapture(): RealKernelCapture {
+  const bytes = readFileSync(REAL_ROWS_FIXTURE);
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(REAL_ROWS_SHA256);
+  return JSON.parse(brotliDecompressSync(bytes).toString('utf8')) as RealKernelCapture;
+}
+
+/** The anchor read's rows for this owner, newest first — the SQL's `ORDER BY s.id DESC`. */
+function realAnchorRows(capture: RealKernelCapture) {
+  return capture.sessions.map((session) => ({ ...capture.brief, ...session }));
+}
+
+function realCompactionRequest(capture: RealKernelCapture, advSessionId?: number) {
+  return request({
+    toolName: 'session:request-compaction',
+    capabilities: ['coord:write'],
+    args: { autoContinue: true },
+    ctx: ctx({
+      workspaceId: capture.workspaceId,
+      uiClientId: capture.ownerId,
+      ...(advSessionId === undefined ? {} : { advSessionId }),
+    }),
+  });
+}
+
+describe('control-anchor kernel resolver over real captured rows (P-011)', () => {
+  it('the captured rows reproduce a re-armed predecessor beside the current launch', () => {
+    const capture = loadRealCapture();
+    const applied = capture.brief.control_state.activation?.applied;
+    expect(applied?.specificationRevision).toMatch(/^[0-9a-f]{64}$/);
+    const byId = new Map(capture.sessions.map((s) => [s.adv_session_id, s]));
+    const current = byId.get(REAL_CURRENT_ROW);
+    const predecessor = byId.get(REAL_PREDECESSOR_ROW);
+    // Both launches are still open for the same owner and workspace.
+    expect(current?.ended_at).toBeNull();
+    expect(predecessor?.ended_at).toBeNull();
+    expect(capture.sessions.map((s) => s.adv_session_id)).toEqual([REAL_CURRENT_ROW, REAL_PREDECESSOR_ROW]);
+    // The current row carries the applied pair; the predecessor carries neither it nor a receipt for it.
+    expect(current?.launch_spec.specificationRevision).toBe(applied?.specificationRevision);
+    expect(current?.launch_spec.stateRevision).toBe(applied?.stateRevision);
+    expect(predecessor?.launch_spec.specificationRevision).not.toBe(applied?.specificationRevision);
+    expect((predecessor?.launch_spec.identityHistory ?? []).some((h) =>
+      h.specificationRevision === applied?.specificationRevision && h.stateRevision === applied?.stateRevision)).toBe(false);
+  });
+
+  it('refuses a flipped fixture byte through the SHA-256 pin', () => {
+    const bytes = Buffer.from(readFileSync(REAL_ROWS_FIXTURE));
+    bytes[bytes.length >> 1] ^= 0x01;
+    expect(createHash('sha256').update(bytes).digest('hex')).not.toBe(REAL_ROWS_SHA256);
+  });
+
+  it('allows the current launch to request compaction when it is the verified caller', async () => {
+    const capture = loadRealCapture();
+    db.rows.push(realAnchorRows(capture));
+    const verdict = await controlAnchorKernelResolver(realCompactionRequest(capture, REAL_CURRENT_ROW));
+    expect(verdict).toMatchObject({
+      decision: 'allow',
+      serverAudit: { identityLaunchRecord: { advSessionId: String(REAL_CURRENT_ROW), selection: 'caller-row' } },
+    });
+  });
+
+  it('denies the re-armed predecessor as stale-artifact when it is the verified caller', async () => {
+    const capture = loadRealCapture();
+    db.rows.push(realAnchorRows(capture));
+    const verdict = await controlAnchorKernelResolver(realCompactionRequest(capture, REAL_PREDECESSOR_ROW));
+    expect(verdict).toMatchObject({
+      decision: 'deny',
+      obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } },
+      serverAudit: {
+        identityLaunchRecordSelection: { advSessionId: String(REAL_PREDECESSOR_ROW), selection: 'caller-row' },
+      },
+    });
+  });
+
+  it('fails closed as verified-caller-row-unavailable when the verified caller row is absent', async () => {
+    const capture = loadRealCapture();
+    db.rows.push(realAnchorRows(capture));
+    const verdict = await controlAnchorKernelResolver(realCompactionRequest(capture, REAL_CURRENT_ROW + 1));
+    expect(verdict).toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['verified-caller-row-unavailable'] },
+    });
+  });
+
+  it('elects the newest launch, not the predecessor, when no caller row is bound', async () => {
+    const capture = loadRealCapture();
+    db.rows.push(realAnchorRows(capture));
+    const verdict = await controlAnchorKernelResolver(realCompactionRequest(capture));
+    expect(verdict).toMatchObject({
+      decision: 'allow',
+      serverAudit: {
+        identityLaunchRecord: { advSessionId: String(REAL_CURRENT_ROW), selection: 'owner-workspace-fallback' },
+      },
+    });
   });
 });

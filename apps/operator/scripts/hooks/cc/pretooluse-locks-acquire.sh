@@ -24,7 +24,9 @@
 # On success we exit 0 with NO stdout — "no decision, proceed with the
 # client's normal flow" — and cache the lock_id by tool_use_id so the
 # matching PostToolUse hook can release only paths newly acquired by this
-# edit. A same-owner already-held grant gets no release cache.
+# edit. The owner and native session id sidecars also let Stop perform a
+# session-scoped cleanup if PostToolUse did not consume the cache entry. A
+# same-owner already-held grant gets no release cache.
 #
 # Claude also sends transcript_path on PreToolUse. When the matching assistant
 # message contains two or more native file-edit tool_use blocks, all of those
@@ -73,6 +75,10 @@ from datetime import datetime
 operator_url, token_path, agent_id, cache_dir, hook_dir = sys.argv[1:6]
 sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
+from mcp_response import (prepare_lock_operation, write_lock_operation,
+                          lock_operation_arguments, settle_lock_operation, with_native_session)
+from mcp_response import (origin_operation_protocol_qualified,  # noqa: E402
+                          forget_origin_operation_protocol, retire_inert_lock_operation)
 raw = read_hook_payload()
 token = read_token_file(token_path)
 
@@ -100,16 +106,49 @@ def mark_success():
         write_marker(owner_marker_name('success'), value)
 
 
-def mark_error(phase, detail):
-    value = {
-        'ts': now_iso(), 'handler': 'pretooluse', 'phase': phase,
-        'detail': str(detail)[:200], 'operator_url': operator_url,
-    }
+# WI-6554700010011017: this invocation's PRIMARY error record. The marker has
+# one slot, and a recovery step that runs after a failed acquire (the
+# locks:queue read, a locks:release) can fail too. Writing that second failure
+# over the first erased WHY the edit failed open, leaving only the recovery
+# refusal. Recovery failures are appended to the primary record instead.
+_primary_error = None
+RECOVERY_ERROR_LIMIT = 3
+
+
+def _write_error_record(value):
     write_marker('last-error.json', value)
     owner_value = globals().get('owner')
     if isinstance(owner_value, str) and owner_value:
-        value['owner'] = owner_value
-        write_marker(owner_marker_name('error'), value)
+        write_marker(owner_marker_name('error'), dict(value, owner=owner_value))
+
+
+def mark_error(phase, detail):
+    global _primary_error
+    _primary_error = {
+        'ts': now_iso(), 'handler': 'pretooluse', 'phase': phase,
+        'detail': str(detail)[:200], 'operator_url': operator_url,
+    }
+    _write_error_record(_primary_error)
+
+
+def mark_recovery_error(phase, detail):
+    """Record a failed recovery step without replacing the primary error.
+
+    The primary record keeps its own phase, detail and ts. Failures are
+    appended to its bounded `recovery` list (most recent RECOVERY_ERROR_LIMIT),
+    and `recovery_dropped` counts any that were shifted out, so a truncated list
+    is never mistaken for a complete one. With no primary error in this
+    invocation, the recovery failure is itself the record."""
+    if _primary_error is None:
+        mark_error(phase, detail)
+        return
+    entries = list(_primary_error.get('recovery') or [])
+    entries.append({'ts': now_iso(), 'phase': phase, 'detail': str(detail)[:200]})
+    overflow = max(0, len(entries) - RECOVERY_ERROR_LIMIT)
+    _primary_error['recovery'] = entries[overflow:]
+    if overflow:
+        _primary_error['recovery_dropped'] = _primary_error.get('recovery_dropped', 0) + overflow
+    _write_error_record(_primary_error)
 
 
 def now_iso():
@@ -117,6 +156,29 @@ def now_iso():
 
 
 compatibility_advisory = None
+# WI-6554700010010405: the operator ANSWERED, but its reply carried no grant,
+# and the hook fails open. That edit lands without a lock, so the model must be
+# told. Otherwise a fail-open looks exactly like a healthy grant, and every edit
+# of the session goes unprotected without a word.
+fail_open_advisory = None
+
+
+def _note_fail_open(detail, ambiguous=False):
+    global fail_open_advisory
+    if ambiguous:
+        # An unreadable reply is not a refusal: the operator may have committed
+        # a grant this hook never saw. "NOT protected" would then be false, and
+        # implying protection is worse, so state what is known and what to assume.
+        fail_open_advisory = (
+            'file-lock fail-open: this edit is NOT confirmed lock-protected (non-blocking). '
+            f'The lock operator reply was ambiguous ({detail}), so any grant it committed '
+            'is unconfirmed; do not rely on it.'
+        )
+        return
+    fail_open_advisory = (
+        'file-lock fail-open: this edit is NOT lock-protected (non-blocking). '
+        f'The lock operator answered without a grant: {detail}'
+    )
 
 
 def allow():
@@ -130,6 +192,14 @@ def allow():
             'permissionDecision': 'allow',
             'permissionDecisionReason': 'file-lock compatibility fallback (non-blocking)',
             'additionalContext': compatibility_advisory,
+        }}, sys.stdout)
+        sys.exit(0)
+    if fail_open_advisory:
+        json.dump({'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'allow',
+            'permissionDecisionReason': 'file-lock fail-open (non-blocking)',
+            'additionalContext': fail_open_advisory,
         }}, sys.stdout)
         sys.exit(0)
     # Exit 0, no stdout → no decision, client proceeds with normal flow.
@@ -164,9 +234,19 @@ cwd = payload.get('cwd') or os.getcwd()
 # the machine-wide su-agent-id (two shells sharing only that collapse to
 # one owner — the bug PAPERCUSP_SID fixes). Pre + Post share the env, so
 # release still matches acquire.
+#
+# A CLI NESTED inside another agent (a `claude -p` from an su's Bash tool, or under a
+# capability:bash job) inherits that su's PAPERCUSP_SID and so locks AS the su. That is
+# deliberate (WI-10004945), unlike the activity/ask/nudge hooks, which skip a nested CLI
+# (pc_nested_cli.sh). The nested CLI edits the shared tree on the su's behalf, so the
+# su answers for those edits, and skipping here would drop the lock rail from them
+# entirely, leaving them free to clobber a peer's held file.
 env_sid = os.environ.get('PAPERCUSP_SID')
 lock_sid = os.environ.get('PAPERCUSP_LOCK_SID')
 session_id = payload.get('session_id')
+native_session_id = session_id
+if not isinstance(native_session_id, str) or not native_session_id:
+    native_session_id = os.environ.get('PAPERCUSP_NATIVE_SESSION_ID')
 
 
 def diagnostic_lock_sid():
@@ -355,6 +435,10 @@ def _read_batch_descriptor(path, current_tool_id):
         }
     return None
 
+
+# THIS call's own paths, kept before any batch union below replaces raw_paths:
+# a cross-repository batch falls back to locking just these (WI-10006390).
+call_raw_paths = list(raw_paths)
 
 if transcript_path and tool_name in EDIT_TOOL_NAMES and tool_use_id:
     batch_info = _read_batch_descriptor(transcript_path, tool_use_id)
@@ -753,6 +837,13 @@ def _is_isolation_worktree(repo_root, canonical_tree):
 # ── Resolve to repo-relative POSIX, refuse symlinked paths ─────────────
 repo_relative = []
 repo_domains = set()
+# WI-10006390 bookkeeping, parallel to repo_relative: which raw path produced
+# each entry, and the repository domain of each repo-relative entry (an
+# @external key has none). The loop below appends from several branches, so
+# entries are attributed lazily at the top of each iteration and once after it.
+_entry_raw = []
+_entry_domain = {}
+_entry_raw_cursor = None
 
 
 def _external_lock_key(abs_path):
@@ -797,6 +888,8 @@ def _external_lock_key(abs_path):
 
 
 for p in raw_paths:
+    _entry_raw.extend([_entry_raw_cursor] * (len(repo_relative) - len(_entry_raw)))
+    _entry_raw_cursor = p
     abs_p = p if os.path.isabs(p) else os.path.join(cwd, p)
     abs_p = os.path.abspath(abs_p)
 
@@ -1019,7 +1112,53 @@ for p in raw_paths:
     except Exception:
         pass  # realpath failure (broken link, EACCES) → leave to server.
 
+    _entry_domain[len(repo_relative)] = _real_root
     repo_relative.append(rel)
+_entry_raw.extend([_entry_raw_cursor] * (len(repo_relative) - len(_entry_raw)))
+
+# ── Cross-repository edit sets (WI-10006390) ──────────────────────────
+# A file lock keys on (coordination_domain, path relative to THAT domain), and
+# each entry above is relative to its OWN repository. One locks:acquire names
+# one domain, so a set spanning repositories has no correct single request.
+# Omitting the domain (the old behaviour) filed every path under the server
+# default, the superproject: libs/papercusp/libs/db/sql/X was locked as
+# (superproject, 'libs/db/sql/X'), a key that exists nowhere and never
+# conflicts with a peer's real (libs/papercusp, 'libs/db/sql/X') lock. That
+# was silent lock evasion for every cross-repository Codex patch.
+#
+# The domain set counts only domains that carry an entry: a path skipped after
+# its domain was noted (escapes the repo, nested foreign scope) locks nothing.
+repo_domains = set(_entry_domain.values())
+if len(repo_domains) > 1 and batch_info:
+    # A Claude native batch unions several single-file tool calls; each call
+    # alone is single-repository. Lock just THIS call's entries and forgo batch
+    # atomicity for this cross-repository batch. Every sibling hook process
+    # computes the same union and takes the same per-call fallback.
+    _own = set(call_raw_paths)
+    _keep = [i for i, raw in enumerate(_entry_raw) if raw in _own]
+    repo_relative = [repo_relative[i] for i in _keep]
+    _entry_domain = {
+        j: _entry_domain[i] for j, i in enumerate(_keep) if i in _entry_domain
+    }
+    repo_domains = set(_entry_domain.values())
+    batch_info = None
+if len(repo_domains) > 1:
+    _by_domain = {}
+    for _i, _dom in sorted(_entry_domain.items()):
+        _by_domain.setdefault(_dom, []).append(repo_relative[_i])
+    _listing = '; '.join(
+        f"{_dom} -> {', '.join(sorted(set(_rels))[:6])}"
+        + (' …' if len(set(_rels)) > 6 else '')
+        for _dom, _rels in sorted(_by_domain.items())
+    )
+    deny(
+        f"locks: refused — this {tool_name} edits files in "
+        f"{len(_by_domain)} repositories ({_listing}). A file lock is scoped to "
+        f"ONE repository (submodules are their own), so one cross-repository "
+        f"edit cannot be locked correctly and would leave its files "
+        f"unprotected. Split it into one {tool_name} per repository, keeping "
+        f"the paths exactly as you wrote them, and retry."
+    )
 
 if not repo_relative:
     allow()
@@ -1149,6 +1288,9 @@ def _batch_terminal_state(status, **extra):
         'updated_at': time.time(),
     }
     state.update(extra)
+    if globals().get('operation_path'):
+        state['operation_path'] = operation_path
+        state['session_id'] = native_session_id
     return _batch_write_json(_batch_path('.state.json'), state)
 
 
@@ -1237,6 +1379,32 @@ lock_arguments = {
 }
 if len(repo_domains) == 1:
     lock_arguments['coordination_domain'] = next(iter(repo_domains))
+legacy_lock_arguments = dict(lock_arguments)
+
+operation_path = (_batch_path('.operation.json') if batch_info else
+                  os.path.join(cache_dir, tool_use_id + '.operation.json'))
+# D-003/D-004(4): use the operation protocol only at an origin whose locks
+# schemas declare hook_operation (read-only, cached per origin). An unqualified
+# origin gets the legacy acquire and no operation record. An existing record is
+# never stripped, whatever the origin reads now — unless it is inert (D-005):
+# never pinned and past its admission deadline, so nothing under it was ever
+# admitted or ever can be. A recurring native tool id must not replay it.
+retire_inert_lock_operation(operation_path)
+operation_record = None
+if os.path.exists(operation_path) or origin_operation_protocol_qualified(
+        cache_dir, operator_url, token, owner):
+    try:
+        operation_record = prepare_lock_operation(
+            operation_path, owner, native_session_id,
+            batch_info['batch_id'] if batch_info else tool_use_id, lock_arguments)
+    except Exception as exc:
+        mark_error('operation-persist', exc)
+        deny('locks: could not persist the native edit operation; retry after inspecting hook health.')
+    lock_arguments = lock_operation_arguments(operation_record)
+    if operation_record.get('terminal'):
+        deny('locks: this native edit operation already finished; issue a new native tool call.')
+else:
+    operation_path = None
 
 
 def _make_tool_request(name, arguments):
@@ -1248,8 +1416,8 @@ def _make_tool_request(name, arguments):
         'params': {'name': name, 'arguments': arguments},
     }).encode()
     return urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client='
-        + urllib.parse.quote(owner, safe=''),
+        with_native_session(operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client='
+        + urllib.parse.quote(owner, safe=''), native_session_id),
         data=body,
         headers={
             'Authorization': 'Bearer ' + token,
@@ -1265,11 +1433,34 @@ def _make_request(arguments):
 
 
 req = _make_request(lock_arguments)
-req_without_coordination_domain = None
-if 'coordination_domain' in lock_arguments:
-    fallback_arguments = dict(lock_arguments)
+req_legacy_lock = _make_request(legacy_lock_arguments)
+req_legacy_without_coordination_domain = None
+if 'coordination_domain' in legacy_lock_arguments:
+    fallback_arguments = dict(legacy_lock_arguments)
     del fallback_arguments['coordination_domain']
-    req_without_coordination_domain = _make_request(fallback_arguments)
+    req_legacy_without_coordination_domain = _make_request(fallback_arguments)
+req_without_coordination_domain = (
+    req_legacy_without_coordination_domain if 'hook_operation' not in lock_arguments else None
+)
+
+
+def _operation_protocol_rejection(value):
+    """Recognize only an explicit argument-validation refusal of hook_operation.
+
+    Some operator deployments advertise the native edit-operation schema before
+    every serving replica accepts it. Only a rejection that names this field
+    and an invalid/unrecognized-key condition is safe to retry through the
+    legacy lock call; other errors remain on the normal refusal path.
+    """
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    except Exception:
+        text = str(value)
+    if 'hook_operation' not in text:
+        return None
+    if not re.search(r'invalid[_ -]?args|unrecognized key|unknown key|unexpected key', text, re.I):
+        return None
+    return text[:300]
 
 
 def _coordination_domain_rejection(value):
@@ -1290,6 +1481,34 @@ def _coordination_domain_rejection(value):
     if not re.search(r'invalid[_ -]?args|unrecognized key|unknown key|unexpected key', text, re.I):
         return None
     return text[:300]
+
+
+# WI-6554700010010405: a refusal of the CALLER'S IDENTITY is deterministic, not a
+# transport failure. A retry fails the same way, and the authority admitted
+# nothing. Failing open would let every edit of this session land unlocked and
+# without a word, so deny it. Keep the match narrow. Any other refusal, such as
+# the transient superuser_native_session_verifier_unavailable, keeps the
+# fail-open, with a visible advisory.
+_IDENTITY_REFUSAL_RE = re.compile(
+    r'\brequest_rejected:\s*(superuser_foreign_native_session|superuser_native_session_unverified)\b')
+
+
+def _rejection_text(value):
+    """The human text of an MCP refusal: a JSON-RPC error's message, or the
+    first text content of an isError tool result. Capped at 300 chars."""
+    text = None
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, dict):
+        message = value.get('message')
+        if isinstance(message, str) and message.strip():
+            text = message
+        else:
+            for item in value.get('content') or []:
+                if isinstance(item, dict) and isinstance(item.get('text'), str) and item['text'].strip():
+                    text = item['text']
+                    break
+    return text.strip()[:300] if text else None
 
 
 def _is_conn_refused(exc):
@@ -1365,8 +1584,8 @@ ORPHAN_EXPIRED_SEC = float(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_EXPIRED_SEC') 
 ORPHAN_RELEASE_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_RELEASE_MAX') or 25)
 ORPHAN_PRUNE_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_PRUNE_MAX') or 200)
 ORPHAN_SCAN_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_SCAN_MAX') or 2000)
-_ORPHAN_SUFFIXES = ('.lock', '.paths', '.domain', '.owner', '.batch',
-                    '.edited', '.files', '.done', '.checked')
+_ORPHAN_SUFFIXES = ('.lock', '.paths', '.domain', '.owner', '.session', '.batch',
+                    '.edited', '.files', '.done', '.checked', '.attest')
 
 
 def _orphan_sidecar(base, suffix):
@@ -1398,8 +1617,20 @@ def _sweep_orphaned_claims():
         candidates = []
         with os.scandir(cache_dir) as entries:
             for entry in entries:
+                if entry.name.endswith('.attest'):
+                    # WI-10006831: an attest sidecar holds no lock, so it never
+                    # needs a release; only drop one its PostToolUse never consumed.
+                    try:
+                        if pruned < ORPHAN_PRUNE_MAX and now - entry.stat().st_mtime >= ORPHAN_EXPIRED_SEC:
+                            os.remove(entry.path)
+                            pruned += 1
+                    except Exception:
+                        pass
+                    continue
                 if not entry.name.endswith('.lock'):
                     continue
+                if os.path.exists(entry.path[:-len('.lock')] + '.operation.json'):
+                    continue  # Native terminal evidence, never age, owns this fence.
                 scanned += 1
                 if scanned > ORPHAN_SCAN_MAX:
                     break
@@ -1487,14 +1718,31 @@ def _locks_acquire_once(request):
 
     inner, rpc_error, phase = parse_mcp_response(raw_resp)
     if rpc_error is not None:
+        operation_error = _operation_protocol_rejection(rpc_error)
+        if operation_error:
+            return {
+                '_hook_operation_unsupported': True,
+                '_detail': operation_error,
+            }
         compatibility_error = _coordination_domain_rejection(rpc_error)
         if compatibility_error:
             return {
                 '_hook_compatibility_error': True,
                 '_detail': compatibility_error,
             }
-        detail = 'MCP tool returned isError:true' if phase == 'is-error' else 'JSON-RPC error in response'
+        detail = _rejection_text(rpc_error) or (
+            'MCP tool returned isError:true' if phase == 'is-error' else 'JSON-RPC error in response')
+        identity_refusal = _IDENTITY_REFUSAL_RE.search(detail)
+        if identity_refusal:
+            # Nothing was admitted, so there is nothing to recover or settle.
+            mark_error('identity-refused', detail)
+            _batch_deny(
+                f'locks: the operator refused this session identity ({identity_refusal.group(1)}), '
+                'so this edit cannot be lock-protected and is blocked. Relaunch through psu so the '
+                'native session is registered to its owner, or edit via capability:edit / capability:write.',
+                settle=False)
         mark_error('parse', detail)
+        _note_fail_open(detail)
         _recover_ambiguous_acquire(operation_started_at)
         if batch_info:
             return {
@@ -1508,6 +1756,7 @@ def _locks_acquire_once(request):
             'no-text': 'no text content in tool result',
         }.get(phase, 'unparseable operator response')
         mark_error('parse', detail)
+        _note_fail_open(detail, ambiguous=True)
         _recover_ambiguous_acquire(operation_started_at)
         if batch_info:
             return {
@@ -1515,6 +1764,12 @@ def _locks_acquire_once(request):
                 '_detail': detail,
             }
         allow()
+    operation_error = _operation_protocol_rejection(inner)
+    if operation_error:
+        return {
+            '_hook_operation_unsupported': True,
+            '_detail': operation_error,
+        }
     compatibility_error = _coordination_domain_rejection(inner)
     if compatibility_error:
         return {
@@ -1535,6 +1790,10 @@ def _timestamp_epoch(value):
 
 
 def _recover_ambiguous_acquire(started_at):
+    if globals().get('operation_record'):
+        # The persisted operation is the recovery selector even before a grant
+        # exists. A queue snapshot cannot rule out a later committed grant.
+        return
     """Release only a just-created automatic lock after a lost acquire reply.
 
     The acquire is a write: the operator can commit the lock and lose the MCP
@@ -1554,11 +1813,11 @@ def _recover_ambiguous_acquire(started_at):
     }
     queued, rpc_error, phase, exc = _best_effort_tool('locks:queue', queue_arguments)
     if exc is not None:
-        mark_error('recovery-queue', exc)
+        mark_recovery_error('recovery-queue', exc)
         return
     if rpc_error is not None or phase != 'ok' or not isinstance(queued, dict):
         if rpc_error is not None:
-            mark_error('recovery-queue', rpc_error)
+            mark_recovery_error('recovery-queue', rpc_error)
         return
 
     rows = queued.get('active_locks')
@@ -1615,11 +1874,11 @@ def _recover_ambiguous_acquire(started_at):
                 'locks:release', release_arguments,
             )
         if release_exc is not None:
-            mark_error('recovery-release', release_exc)
+            mark_recovery_error('recovery-release', release_exc)
         elif release_error is not None or release_phase != 'ok' or not isinstance(released, dict):
-            mark_error('recovery-release', release_error or release_phase)
+            mark_recovery_error('recovery-release', release_error or release_phase)
         elif released.get('ok') is False:
-            mark_error('recovery-release', released)
+            mark_recovery_error('recovery-release', released)
 
 
 def _grant(granted):
@@ -1648,10 +1907,19 @@ def _grant(granted):
         # existing behavior rather than silently allowing an untracked edit.
         release_paths = repo_relative[:50]
     if batch_info:
+        # WI-10006900: the batch analogue of the .attest sidecar below. Paths the
+        # owner already held get no release, so PostToolBatch attests them with
+        # locks:release { retain:true } once every edit in the batch succeeded.
+        # Only when the server reported newly_held and the batch has one domain.
+        batch_attest = (
+            [p for p in repo_relative[:100] if p not in release_paths]
+            if isinstance(newly_held, list) and len(repo_domains) == 1 else []
+        )
         _batch_terminal_state(
             'granted',
             lock_id=lock_id,
             release_paths=release_paths,
+            attest_paths=batch_attest,
             coordination_domain=(next(iter(repo_domains)) if len(repo_domains) == 1 else None),
         )
         _batch_mark_tool('granted')
@@ -1689,16 +1957,44 @@ def _grant(granted):
             # abandoned claim from a peer's — only the owner can release it.
             with open(os.path.join(cache_dir, tool_use_id + '.owner'), 'w') as f:
                 f.write(owner)
+            if isinstance(native_session_id, str) and native_session_id:
+                with open(os.path.join(cache_dir, tool_use_id + '.session'), 'w') as f:
+                    f.write(native_session_id)
             if len(repo_domains) == 1:
                 with open(os.path.join(cache_dir, tool_use_id + '.domain'), 'w') as f:
                     f.write(next(iter(repo_domains)))
+        except Exception:
+            pass
+    # WI-10006831: paths covered by the owner's OWN explicit hold get no release
+    # token (EI-63 above), so their edit never reached edit_attribution_ledger.
+    # Leave an attest sidecar; PostToolUse turns a successful edit into
+    # locks:release { retain:true }, which records attribution and keeps the hold.
+    # Only when the server reported newly_held (an older operator gives no way to
+    # tell held from new) and the edit lives in exactly one coordination domain.
+    attest_paths = [p for p in repo_relative[:50] if p not in release_paths] if isinstance(newly_held, list) else []
+    if tool_use_id and attest_paths and len(repo_domains) == 1:
+        try:
+            with open(os.path.join(cache_dir, tool_use_id + '.attest'), 'w') as f:
+                json.dump({
+                    'paths': attest_paths,
+                    'domain': next(iter(repo_domains)),
+                    'owner': owner,
+                }, f)
         except Exception:
             pass
     _clear_transient_streak()
     allow()
 
 
-def _batch_deny(reason):
+def _batch_deny(reason, settle=True):
+    if settle and globals().get('operation_record'):
+        def cancel_call(name, arguments):
+            value, error, phase, exc = _best_effort_tool(name, arguments)
+            return value, exc or error or (None if phase == 'ok' else phase)
+        try:
+            settle_lock_operation(operation_path, operation_record, cancel_call)
+        except Exception as exc:
+            mark_error('operation-cancel', exc)
     if batch_info:
         _batch_terminal_state('denied', reason=reason)
         _batch_mark_tool('denied')
@@ -1776,7 +2072,62 @@ _sweep_orphaned_claims()
 request = req
 inner = _locks_acquire_once(request)
 _batch_allow_fail_open(inner)
+if operation_record is not None and inner.get('reason') == 'operation_authority_required':
+    authority = inner.get('operation_authority')
+    if not isinstance(authority, str) or not authority:
+        _batch_deny('locks: operation authority preparation was incomplete.')
+    operation_record['operation']['authority'] = authority
+    try:
+        write_lock_operation(operation_path, operation_record)
+    except Exception as exc:
+        mark_error('operation-pin-persist', exc)
+        _batch_deny('locks: could not persist the prepared authority; no acquire admitted.')
+    request = _make_request(lock_operation_arguments(operation_record))
+    inner = _locks_acquire_once(request)
+    _batch_allow_fail_open(inner)
+if inner.get('_hook_operation_unsupported'):
+    detail = inner.get('_detail', 'hook_operation rejected')
+    operation = operation_record.get('operation') if isinstance(operation_record, dict) else None
+    if operation_record is None:
+        mark_error('compatibility', detail)
+        _batch_deny(
+            'locks: running operator rejected the native operation scope without a persisted operation; '
+            'no legacy acquire retry is safe.',
+            settle=False)
+    forget_origin_operation_protocol(cache_dir, operator_url)
+    if not isinstance(operation, dict):
+        mark_error('compatibility', detail)
+        _batch_deny(
+            'locks: running operator rejected the native operation scope and its persisted operation is invalid; '
+            'no legacy acquire retry is safe.',
+            settle=False)
+    mark_error('compatibility', detail)
+    if operation.get('authority'):
+        _batch_deny(
+            'locks: running operator rejected the native operation scope after authority was prepared; '
+            'no legacy acquire retry is safe.',
+            settle=False)
+    else:
+        # Keep the operation identity even when no authority was prepared. A
+        # serving runtime that rejects hook_operation is not qualified for
+        # this request; retrying as a legacy acquire drops its terminal fence.
+        _batch_deny(
+            'locks: running operator rejected the native operation scope before authority was prepared; '
+            'the operation record is retained and no legacy acquire retry is safe.',
+            settle=False)
+if operation_record is not None and inner.get('ok') is True and (not operation_record['operation'].get('authority')
+        or inner.get('operation_id') != operation_record['operation']['id']):
+    _batch_deny('locks: running operator did not confirm the native operation protocol; no legacy acquire retry is safe.')
 if inner.get('_hook_compatibility_error'):
+    if operation_record is not None:
+        # A qualified origin still rejected the operation scope: never
+        # downgrade this operation (D-003); re-qualify the origin next time.
+        # The rejection is argument validation, so the authority admitted
+        # nothing: do not settle, which would send a second acquire to an
+        # origin that just refused the scope.
+        forget_origin_operation_protocol(cache_dir, operator_url)
+        _batch_deny('locks: running operator rejected the operation scope; retry after the maintained protocol is available.',
+                    settle=False)
     if req_without_coordination_domain is None:
         mark_error('compatibility', inner.get('_detail', 'coordination_domain rejected'))
         if batch_info:
@@ -1786,12 +2137,15 @@ if inner.get('_hook_compatibility_error'):
     # The tree hook can update before the operator process reaches main. Keep
     # the edit protected by retrying the same acquire against the older
     # argument contract, and surface the skew as a non-blocking advisory.
-    compatibility_advisory = (
+    coordination_domain_advisory = (
         'locks:acquire compatibility fallback: the running operator rejected '
         'the coordination_domain argument (likely hook/operator version skew). '
         'Retried without that field and retained file-lock enforcement; '
         'domain isolation is unavailable until the operator deploy catches up.'
     )
+    compatibility_advisory = (
+        (compatibility_advisory + '\n') if compatibility_advisory else ''
+    ) + coordination_domain_advisory
     mark_error('compatibility', inner.get('_detail', 'coordination_domain rejected'))
     request = req_without_coordination_domain
     inner = _locks_acquire_once(request)

@@ -25,7 +25,8 @@ function portfolio(populated = false, ready = true): GoalPortfolioBrief {
     queue: { total: 0, terminal: 0, inFlight: 0, blocked: 0, needsHuman: 0, claimable: 0, claimabilityScope: 'none' },
     launch: { settings: null, ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null } },
     budget: { budgetCents: null, spentCents: null, unmeasuredPricedSpend: false, spentCentsAt: null,
-      spentCentsSource: null, budgetWindowSec: null },
+      spentCentsSource: null, interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null, budgetWindowSec: null },
     tripwires: [], pending: { blenderIdeas: 0, acceptanceRubric: null },
     continuity: { checkpoint: null, lastOwnerReportAt: null }, priorities: [], degradedReasons: [],
   };
@@ -37,6 +38,8 @@ function input(p = portfolio(), disposition: GoalPlanningReview['disposition'] =
     review: { schemaVersion: 1, goalId: base.goalId, disposition, rationale: 'Review of the named fixture outcome.',
       evidenceRefs: ['goal:goal-local'], planRefs: ['plan:fixture/existing'],
       ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover checkout' } : {}),
+      ...(disposition === 'existing-plans-sufficient' || disposition === 'no-eligible-work'
+        ? { coverage: [{ need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:fixture/existing' }] } : {}),
       portfolioFingerprint: goalPlanningPortfolioFingerprint(p), reviewedAt: NOW },
     authorities: { fixture: { allowed: true, reason: 'caller-goal-owns-pot', ownerGoalId: base.goalId, ownerGoalTitle: 'Goal' } },
   } } };

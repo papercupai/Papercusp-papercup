@@ -104,11 +104,17 @@ import {
 } from './physical-drill-phase-h';
 import {
   attemptPhysicalPhaseI,
+  parsePhaseICanaryTarget,
+  phaseICanaryOwnerSigner,
+  phaseIRepoKey,
   startPhaseIOwner,
+  validatePhaseIRealTargetSnapshot,
   validatePhysicalPhaseI,
   type PhysicalPhaseIAttempt,
   type PhysicalPhaseIInput,
   type PhysicalPhaseIStep,
+  type PhaseICanaryTargetConfig,
+  type PhaseIRealTargetSnapshot,
 } from './physical-drill-phase-i';
 import {
   installPhysicalPhaseJFault,
@@ -274,6 +280,40 @@ function writeOutputsAtomically(
   writeFileSync(trustTmp, `${JSON.stringify(artifacts.trust, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   renameSync(trustTmp, trustPath);
   renameSync(evidenceTmp, evidencePath);
+}
+
+/** Optional canary flags extend the existing Phase I commands without changing the P-521 path. */
+export function parsePhysicalPhaseICliArgs(args: string[]): {
+  positional: string[];
+  target?: PhaseICanaryTargetConfig;
+  snapshot?: PhaseIRealTargetSnapshot;
+} {
+  const positional: string[] = [];
+  let targetPath: string | undefined;
+  let snapshotPath: string | undefined;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (arg === '--canary-target' || arg === '--real-target-snapshot') {
+      const path = args[++index];
+      if (!path || path.startsWith('--')) throw new Error(`physical Phase I ${arg} requires a JSON file`);
+      if (arg === '--canary-target') {
+        if (targetPath) throw new Error('physical Phase I duplicate --canary-target');
+        targetPath = path;
+      } else {
+        if (snapshotPath) throw new Error('physical Phase I duplicate --real-target-snapshot');
+        snapshotPath = path;
+      }
+    } else if (arg.startsWith('--')) throw new Error(`physical Phase I unknown option ${arg}`);
+    else positional.push(arg);
+  }
+  if (snapshotPath && !targetPath) throw new Error('physical Phase I --real-target-snapshot requires --canary-target');
+  const target = targetPath ? parsePhaseICanaryTarget(readJson(targetPath)) : undefined;
+  const snapshot = snapshotPath ? readJson(snapshotPath) as PhaseIRealTargetSnapshot : undefined;
+  if (snapshotPath) {
+    const errors = validatePhaseIRealTargetSnapshot(snapshot);
+    if (errors.length) throw new Error(`physical Phase I invalid real-target snapshot: ${errors.join('; ')}`);
+  }
+  return { positional, ...(target ? { target } : {}), ...(snapshot ? { snapshot } : {}) };
 }
 
 export async function cli(argv: string[]): Promise<unknown> {
@@ -800,11 +840,17 @@ export async function cli(argv: string[]): Promise<unknown> {
     // mode that does not exit on its own: it serves owner signatures until the
     // scenario SIGKILLs it (the physical owner loss) or its EXIT trap does. The
     // scenario always starts it detached, so no caller waits on its exit.
-    const [dir, runId] = args;
-    if (!dir || !runId || args.length !== 2) {
-      throw new Error('usage: physical-drill-producer phase-i-owner <absolute-phase-dir> <run-id>');
+    const parsed = parsePhysicalPhaseICliArgs(args);
+    const [dir, runId] = parsed.positional;
+    if (!dir || !runId || parsed.positional.length !== 2 || parsed.snapshot) {
+      throw new Error('usage: physical-drill-producer phase-i-owner <absolute-phase-dir> <run-id> [--canary-target target.json]');
     }
-    const owner = await startPhaseIOwner({ dir, runId });
+    if (parsed.target?.repoKey === phaseIRepoKey(runId)) throw new Error('physical Phase I canary owner requires the real repoKey');
+    const signer = parsed.target ? await (async () => {
+      const { loadHiveKeyStatus, signWithHiveKey } = await import('../../identity/hive-keypair');
+      return phaseICanaryOwnerSigner(parsed.target!, { loadKeyStatus: loadHiveKeyStatus, sign: signWithHiveKey });
+    })() : undefined;
+    const owner = await startPhaseIOwner({ dir, runId, ...(signer ? { signer } : {}) });
     await writeFlushed(process.stdout, `${JSON.stringify(owner.record)}\n`);
     return new Promise<never>(() => undefined);
   }
@@ -812,15 +858,17 @@ export async function cli(argv: string[]): Promise<unknown> {
     // The device signer is this host's REAL physical device key, addressed by
     // the keychain id its host identity names. The VM record files carry the
     // captured owner proof (live) and the VM's signed device head (outage).
-    const [hostId, step, dir, runId, deviceKey, keychainId, hiveId, vmLivePath, vmOutagePath] = args;
+    const parsed = parsePhysicalPhaseICliArgs(args);
+    const [hostId, step, dir, runId, deviceKey, keychainId, hiveId, vmLivePath, vmOutagePath] = parsed.positional;
     if (
       (hostId !== 'tower' && hostId !== 'vm') || !step || !dir || !runId || !deviceKey || !keychainId || !hiveId ||
-      args.length > 9
+      parsed.positional.length > 9
     ) {
       throw new Error(
-        'usage: physical-drill-producer phase-i-attempt <tower|vm> <live|lost|outage|restored> <absolute-phase-dir> <run-id> <device-key> <keychain-id> <hive-id> [vm-live.json [vm-outage.json]]',
+        'usage: physical-drill-producer phase-i-attempt <tower|vm> <live|lost|outage|restored> <absolute-phase-dir> <run-id> <device-key> <keychain-id> <hive-id> [vm-live.json [vm-outage.json]] [--canary-target target.json --real-target-snapshot snapshot.json]',
       );
     }
+    if (parsed.target && (parsed.target.hiveId !== hiveId || !parsed.snapshot)) throw new Error('physical Phase I canary attempt requires matching hiveId and a real-target snapshot');
     const { signWithDeviceKey } = await import('../../identity/sign-with-device-key');
     return attemptPhysicalPhaseI({
       host: hostId,
@@ -829,6 +877,7 @@ export async function cli(argv: string[]): Promise<unknown> {
       runId,
       deviceKey,
       hiveId,
+      ...(parsed.target ? { repoKey: parsed.target.repoKey, realTargetSnapshot: parsed.snapshot } : {}),
       ownerSocket: hostId === 'vm' ? resolve(dir, 'owner', 'owner.sock') : null,
       vmLive: vmLivePath ? (readJson(vmLivePath) as PhysicalPhaseIAttempt) : null,
       vmOutage: vmOutagePath ? (readJson(vmOutagePath) as PhysicalPhaseIAttempt) : null,

@@ -894,3 +894,60 @@ describe('isCapacityError — the no-capacity classifier (scheduler)', () => {
     expect(errBar.observed).toContain('9 cycle(s) withheld by the no-capacity gate');
   });
 });
+
+describe('evaluateProgramSuccess — outcome tally excludes paused-rail ideas from win-rate denominators (scout-su-ideate-pipeline-gaps-2026-10-08 P-002 / R-3)', () => {
+  const routed = [
+    idea({ ideaId: 'w', rail: 'improvement', routedRef: 'wi:1', outcome: 'won' }),
+    idea({ ideaId: 'l', rail: 'improvement', routedRef: 'wi:2', outcome: 'lost' }),
+    idea({ ideaId: 'g-pending', rail: 'gym', routedRef: 'gym:SP-x-1', outcome: 'pending' }),
+    idea({ ideaId: 'g-legacy', rail: 'gym', routedRef: 'gym:SP-001', outcome: 'unresolvable' }),
+  ];
+
+  it('a gym-rail idea is NOT counted in the win-rate denominator while the gym is paused', () => {
+    const r = evaluateProgramSuccess({ ...inputs([], routed), pausedRails: ['gym'] });
+    expect(r.outcomes.pausedRails).toEqual(['gym']);
+    expect(r.outcomes.scout).toEqual({ routed: 2, won: 1, lost: 1, pending: 0, unresolvable: 2, decided: 2, winRate: 0.5 });
+    expect(r.outcomes.all.routed).toBe(2);
+  });
+
+  it('CONTROL: with no paused rail, the undecided gym idea is pending (cached unresolvable stays excluded)', () => {
+    const r = evaluateProgramSuccess(inputs([], routed));
+    expect(r.outcomes.scout).toEqual({ routed: 3, won: 1, lost: 1, pending: 1, unresolvable: 1, decided: 2, winRate: 0.5 });
+  });
+});
+
+describe('evaluateProgramSuccess — agent-review is reported in its own bucket, never as ideation (scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-18)', () => {
+  const ideation = [
+    idea({ ideaId: 'w', rail: 'improvement', routedRef: 'wi:1', outcome: 'won', origin: 'scout' }),
+    idea({ ideaId: 'l', rail: 'improvement', routedRef: 'wi:2', outcome: 'lost', origin: 'su-ideate' }),
+  ];
+  const review = [
+    idea({ ideaId: 'ar-won', rail: 'improvement', routedRef: 'wi:3', outcome: 'won', origin: 'agent-review', humanGrade: 5, gradedBy: 'su-x' }),
+    idea({ ideaId: 'ar-won-2', rail: 'improvement', routedRef: 'wi:4', outcome: 'won', origin: 'agent-review' }),
+    idea({ ideaId: 'ar-null', rail: 'improvement', routedRef: 'wi:5', origin: 'agent-review', humanGrade: 2, gradedBy: 'su-x' }),
+  ];
+
+  it('agent-review rows land in outcomes.agentReview and leave the ideation tally untouched', () => {
+    const r = evaluateProgramSuccess({ ...inputs([], ideation), agentReviewIdeas: review });
+    expect(r.outcomes.all).toEqual({ routed: 2, won: 1, lost: 1, pending: 0, unresolvable: 0, decided: 2, winRate: 0.5 });
+    expect(r.outcomes.agentReview).toEqual({ routed: 3, won: 2, lost: 0, pending: 1, unresolvable: 0, decided: 2, winRate: 1, graded: 2 });
+    expect(r.window.routedIdeas).toBe(2);
+  });
+
+  it('an agent-review row that leaks into `ideas` is moved to its bucket, not counted as ideation (falsifier)', () => {
+    const r = evaluateProgramSuccess({ ...inputs([], ideation), ideas: [...ideation, ...review] });
+    // Without the partition, the two agent-review wins would lift the ideation win rate to 0.75.
+    expect(r.outcomes.all.winRate).toBe(0.5);
+    expect(r.outcomes.all.routed).toBe(2);
+    expect(r.outcomes.agentReview.routed).toBe(3);
+    expect(r.window.routedIdeas).toBe(2);
+    // The ideation grader bar must not count agent-review grades as ideation grading.
+    expect(bar(r, 'grader-feedback-revised').observed).toContain('0 of 2 routed ideas are graded');
+  });
+
+  it('CONTROL: no agent-review input ⇒ an empty agent-review bucket; origin-less (in-memory) provenance stays ideation', () => {
+    const r = evaluateProgramSuccess(inputs([], [idea({ ideaId: 'mem', rail: 'improvement', routedRef: 'wi:9', outcome: 'won' })]));
+    expect(r.outcomes.all.routed).toBe(1);
+    expect(r.outcomes.agentReview).toEqual({ routed: 0, won: 0, lost: 0, pending: 0, unresolvable: 0, decided: 0, winRate: null, graded: 0 });
+  });
+});

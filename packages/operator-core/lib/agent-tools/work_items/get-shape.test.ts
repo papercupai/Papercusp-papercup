@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { PAYLOAD_TIER_HARD_CEILING_CHARS } from "@papercusp/agent-mcp";
 import { CHARS_PER_TOKEN_ESTIMATE } from "../../context-doors";
 import { RESULT_DOOR_TOKENS } from "../../result-door";
-import { shapeWorkItemsGet } from "./get-shape";
+import { COMPLETION_EMITTED_AT_ROW, shapeWorkItemsGet } from "./get-shape";
 
 type Envelope = {
   ok: boolean;
@@ -60,7 +60,41 @@ function envelope(rows: Array<Record<string, unknown>>): Envelope {
   return { ok: true, results: rows, counts: { ok: rows.length, failed: 0 } };
 }
 
+function operationalBrief(subject: string, text: string): Record<string, unknown> {
+  return {
+    schemaVersion: "operational-brief-v1",
+    surface: "work-item",
+    subject,
+    state: { status: "known", value: "open", source: "workItem.state" },
+    owner: { status: "known", value: "su-1", source: "workItem.assignee" },
+    nextAction: { status: "known", value: "Read the focused regression result.", source: "checkpoint.next" },
+    blockers: { status: "known", value: [], source: "workItem.payload external blockers (active)" },
+    lastVerified: { status: "unknown", reason: "no verified completion evidence is recorded" },
+    deadline: { status: "unknown", reason: "work-item reads do not measure a deadline" },
+    facts: {
+      kind: "bug",
+      claim: { status: "known", value: { assignee: "su-1", takenAt: null, lastProgressAt: null, holderGoal: null, holderStale: null }, source: "workItem claim" },
+      checkpoint: { status: "known", value: { status: "available", updatedAt: null, contentHash: null, structured: false }, source: "workItem checkpoint" },
+      successorResidue: { status: "known", value: { left: null, walls: [] }, source: "checkpoint" },
+      holdsUp: { status: "unknown", reason: "outgoing links require detail:true" },
+      blockedByLinks: { status: "unknown", reason: "incoming links are not read by work_items:get" },
+    },
+    unknowns: ["lastVerified", "deadline", "facts.holdsUp", "facts.blockedByLinks"],
+    text,
+  };
+}
+
 describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", () => {
+  it('preserves a standalone bounded attachment byte page through both tiers', () => {
+    const evidence = { sourceWorkItemId: 'EI-source', attachments: [], page: {
+      id: 'attachment', encoding: 'base64', data: Buffer.alloc(2048, 1).toString('base64'),
+      offset: 0, byteLength: 2048, totalBytes: 4096, nextOffset: 2048,
+    } };
+    for (const tier of ['standard', 'trimmed'] as const) {
+      const result = shapeWorkItemsGet(envelope([{ ok: true, id: 'WI-1', reportAttachments: evidence }]), tier) as Envelope;
+      expect(result.results[0].reportAttachments).toEqual(evidence);
+    }
+  });
   it('preserves the top-level read/count qualifiers and plan-item text drift', () => {
     const read = {
       schemaVersion: 'work-items-get-read-v1',
@@ -81,7 +115,7 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     ) as Envelope;
 
     expect(out.counts).toEqual({ ok: 1, failed: 0 });
-    expect(out.read).toEqual(read);
+    expect(out.read).toEqual({ ...read, detailRows: 1, stubbedRows: 0 });
     expect(out.results[0]).toMatchObject({
       availability: 'available',
       planItemTextDrift: { status: 'drifted' },
@@ -148,6 +182,30 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     expect(out.results[0]).not.toHaveProperty("workItem");
     expect(out.results[0]).not.toHaveProperty("checkpoint");
     expect(out.results[1]).toEqual({ ok: false, id: "WI-missing", error: "not found" });
+  });
+
+  it('preserves the exact checkpoint page and marks ordinary clipped checkpoints as recoverable', () => {
+    const page = {
+      offset: 0,
+      limit: 768,
+      totalChars: 10_000,
+      returnedChars: 768,
+      nextOffset: 768,
+      text: 'P'.repeat(768),
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const exact = shapeWorkItemsGet({
+        ...envelope([{ ok: true, id: 'WI-page', checkpointPage: page, checkpointContentHash: '123456789abc' }]),
+        __checkpointOnly: true,
+      }, tier) as Envelope;
+      expect(exact._shapeNote).toMatchObject({ checkpointOnly: true });
+      expect(exact.results[0]).toMatchObject({ checkpointPage: page, checkpointContentHash: '123456789abc' });
+      expect(exact.results[0]).not.toHaveProperty('checkpoint');
+
+      const ordinary = shapeWorkItemsGet(envelope([row({ checkpoint: 'C'.repeat(20_000) })]), tier) as Envelope;
+      expect(ordinary.results[0].checkpointTruncated).toBe(true);
+      expect(String(ordinary.results[0].checkpoint)).toContain('[TRUNCATED');
+    }
   });
 
   it('preserves checkpoint check-row capacity in both payload tiers and compact fallback', () => {
@@ -519,7 +577,56 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
 
     expect(result.completion).toEqual(completion);
     expect(result.hasCompletionEvidence).toBe(true);
-    expect(workItem.terminalCompletionEvidence).toEqual(completion);
+    // P-001 (oversized-tool-results-reduction-2026-10-12): `completion` is derived from
+    // `workItem.terminalCompletionEvidence`, so a shaped row emits the record ONCE and the
+    // nested key carries an in-band reference instead of a second copy.
+    expect(workItem.terminalCompletionEvidence).toBe(COMPLETION_EMITTED_AT_ROW);
+    expect(JSON.stringify(out).split(completion.summary).length - 1).toBe(1);
+  });
+
+  it('emits a completion record once at both shaped tiers and keeps a differing nested record', () => {
+    const completion = {
+      summary: 'S'.repeat(400),
+      testsRun: 'npm run test:file -- get-shape.test.ts',
+      testResult: 'passed',
+      verifiedHow: 'focused Vitest regression',
+      filesChanged: ['get-shape.ts'],
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeWorkItemsGet(
+        envelope([
+          row({
+            workItem: { id: 'WI-once', kind: 'bug', state: 'done', title: 'once', terminalCompletionEvidence: completion },
+            completion,
+            checkpoint: null,
+          }),
+        ]),
+        tier,
+      ) as Envelope;
+      const body = JSON.stringify(out);
+      expect(body.split('S'.repeat(400)).length - 1).toBe(1);
+      expect((out.results[0].workItem as Record<string, unknown>).terminalCompletionEvidence).toBe(
+        COMPLETION_EMITTED_AT_ROW,
+      );
+      expect(out.results[0].hasCompletionEvidence).toBe(true);
+    }
+
+    // A row-level record that is NOT the nested one must not be collapsed into a reference.
+    const other = { ...completion, summary: 'different record' };
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          workItem: { id: 'WI-differs', kind: 'bug', state: 'done', title: 'differs', terminalCompletionEvidence: completion },
+          completion: other,
+          checkpoint: null,
+        }),
+      ]),
+      'trimmed',
+    ) as Envelope;
+    expect((out.results[0].workItem as Record<string, unknown>).terminalCompletionEvidence).not.toBe(
+      COMPLETION_EMITTED_AT_ROW,
+    );
+    expect(out.results[0].completion).toEqual(other);
   });
 
   it('keeps the evidence-presence bit when completion detail is clipped', () => {
@@ -747,6 +854,7 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
     const rows = Array.from({ length: 100 }, (_, i) =>
       row({
         id: `EI-${String(i).padStart(17, "0")}`,
+        availability: "available",
         workItem: {
           id: `EI-${String(i).padStart(17, "0")}`,
           kind: "bug",
@@ -757,7 +865,20 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
         checkpoint: "C".repeat(2_000),
       }),
     );
-    const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+    const out = shapeWorkItemsGet(
+      {
+        ...envelope(rows),
+        read: {
+          schemaVersion: "work-items-get-read-v1",
+          mode: "complete",
+          requested: 100,
+          available: 100,
+          absent: 0,
+          unavailable: 0,
+        },
+      },
+      "trimmed",
+    ) as Envelope;
     const size = JSON.stringify(out).length;
 
     // WI-39844: the old test asserted only PAYLOAD_TIER_HARD_CEILING_CHARS (~30k),
@@ -780,6 +901,289 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
       note: expect.stringMatching(/re-read an id alone/),
     });
     expect(out._shapeNote?.dropped.some((d) => d.startsWith("rows("))).toBe(true);
+    expect(out.read).toMatchObject({ requested: 100, available: 100, detailRows: 0, stubbedRows: 100 });
+  });
+
+  it("keeps candidate titles and state across a five-ID compact fallback", () => {
+    const ids = ["EI-CANDIDATE-1", "EI-CANDIDATE-2", "EI-CANDIDATE-3", "EI-CANDIDATE-4", "EI-CANDIDATE-5"];
+    const completion = {
+      summary: "S".repeat(7_000),
+      testsRun: "T".repeat(7_000),
+      testResult: "R".repeat(7_000),
+      workOutcome: "O".repeat(7_000),
+      verifiedHow: "V".repeat(7_000),
+    };
+    const checkpointChecks = {
+      count: 12,
+      cap: 12,
+      remaining: 0,
+      rows: Array.from({ length: 12 }, (_, check) => ({
+        id: `check-${check + 1}`,
+        claim: `check ${check + 1}: ${"C".repeat(90)}`,
+      })),
+    };
+    const lifecycle = {
+      coverage: { note: "C".repeat(300) },
+      flags: { note: "F".repeat(50) },
+      events: Array.from({ length: 8 }, (_, event) => ({
+        event: `event-${event + 1}`,
+        detail: "L".repeat(500),
+      })),
+    };
+    const rows = ids.map((id, index) =>
+      row({
+        id,
+        availability: "available",
+        workItem: {
+          id,
+          kind: "bug",
+          family: "issue",
+          harness: "papercusp",
+          state: index === 3 ? "done" : "open",
+          title: `candidate ${index + 1}`,
+          severity: "major",
+          origin: "local",
+          assignee: "su-1",
+          ...(index === 3
+            ? { completionAuthority: "committed", terminalCompletionEvidence: completion }
+            : {}),
+          takenAt: "2026-10-10T20:00:00.000Z",
+          lastProgressAt: "2026-10-10T20:01:00.000Z",
+          parent: null,
+          createdAt: "2026-10-10T19:00:00.000Z",
+          updatedAt: "2026-10-10T20:01:00.000Z",
+          closedAt: null,
+          summary: "S".repeat(1_000),
+          payload: { description: "P".repeat(2_000) },
+        },
+        completion,
+        checkpoint: "C".repeat(8_000),
+        checkpointChecks: index === 3 ? checkpointChecks : { count: 0, cap: 12, remaining: 12, rows: [] },
+        checkpointBody: { chars: 31_999, cap: 32_000, remaining: 1 },
+        checkpointContentHash: "h".repeat(64),
+        checkpointSubjectFingerprint: "f".repeat(64),
+        lifecycle,
+        ...(index === 3
+          ? {
+              checkpointStale: { status: "stale", reason: "R".repeat(300) },
+              holder: { goalRef: "goal:compact-read", stale: false, agreement: "held", competing: [] },
+            }
+          : {}),
+        ...(index === 4
+          ? {
+              deploymentPosition: {
+                paths: Array.from({ length: 8 }, (_, path) => ({
+                  path: `packages/record-${path}.ts`,
+                  deployed: false,
+                  reason: "D".repeat(60),
+                })),
+                unknownPaths: [],
+                totalPaths: 8,
+                truncated: false,
+              },
+            }
+          : {}),
+        priorAttempts: {
+          schemaVersion: "prior-attempts-v1",
+          authority: Array.from({ length: 8 }, (_, attempt) => ({
+            ref: `authority-${attempt}`,
+            text: "A".repeat(2_000),
+          })),
+          attempts: Array.from({ length: 8 }, (_, attempt) => ({
+            ref: `attempt-${attempt}`,
+            text: "P".repeat(2_000),
+          })),
+          rawRefs: Array.from({ length: 20 }, (_, attempt) => `raw-${attempt}`),
+        },
+        priorAttemptRefResolution: {
+          records: Array.from({ length: 5 }, (_, attempt) => ({
+            ref: `resolved-${attempt}`,
+            text: "R".repeat(2_000),
+          })),
+        },
+      }),
+    );
+    for (const tier of ["standard", "trimmed"] as const) {
+      const out = shapeWorkItemsGet(
+        {
+          ...envelope(rows),
+          read: {
+            schemaVersion: "work-items-get-read-v1",
+            mode: "complete",
+            requested: ids.length,
+            available: ids.length,
+            absent: 0,
+            unavailable: 0,
+          },
+        },
+        tier,
+      ) as Envelope;
+
+      expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+      expect(out.results.map((result) => result.id)).toEqual(ids);
+      expect(out.results.every((result) => result._stub !== true)).toBe(true);
+      expect(out.results.map((result) => (result.workItem as Record<string, unknown>).title)).toEqual([
+        "candidate 1",
+        "candidate 2",
+        "candidate 3",
+        "candidate 4",
+        "candidate 5",
+      ]);
+      expect(out.results.map((result) => (result.workItem as Record<string, unknown>).state)).toEqual([
+        "open",
+        "open",
+        "open",
+        "done",
+        "open",
+      ]);
+      expect(out.results.every((result) => result.hasCompletionEvidence === true)).toBe(true);
+      expect(out.results[3]).toMatchObject({
+        completion: null,
+        hasCompletionEvidence: true,
+        workItem: { completionAuthority: "committed" },
+      });
+      expect(Object.keys(out.results[0].workItem as Record<string, unknown>).sort()).toEqual([
+        "assignee",
+        "family",
+        "harness",
+        "id",
+        "kind",
+        "origin",
+        "severity",
+        "state",
+        "title",
+      ]);
+      expect(out.results[0].lifecycle).toBeUndefined();
+      expect(out.results[4].deploymentPosition).toBeUndefined();
+      expect(out.read).toMatchObject({ requested: 5, available: 5, detailRows: 5, stubbedRows: 0 });
+      expect(out._shapeNote?.dropped).toContain("completion");
+      expect(out._shapeNote?.dropped).toContain("priorAttempts");
+      expect(out._shapeNote?.dropped).toContain("priorAttemptRefResolution");
+      expect(out._shapeNote?.dropped).toContain("deploymentPosition");
+      expect(out.results.every((result) => result.priorAttempts === undefined)).toBe(true);
+    }
+  });
+
+  it("tries all five compact identities before the trimmed three-row stub rung", () => {
+    const ids = ["EI-CANDIDATE-1", "EI-CANDIDATE-2", "EI-CANDIDATE-3", "EI-CANDIDATE-4", "EI-CANDIDATE-5"];
+    const completion = {
+      summary: "S".repeat(7_000),
+      testsRun: "T".repeat(7_000),
+      testResult: "R".repeat(7_000),
+      workOutcome: "O".repeat(7_000),
+      verifiedHow: "V".repeat(7_000),
+    };
+    const rows = ids.map((id, index) =>
+      row({
+        id,
+        availability: "available",
+        workItem: {
+          id,
+          kind: "bug",
+          state: "open",
+          title: `candidate ${index + 1}`,
+        },
+        completion,
+        checkpoint: "C".repeat(8_000),
+      }),
+    );
+    const out = shapeWorkItemsGet(
+      {
+        ...envelope(rows),
+        read: {
+          schemaVersion: "work-items-get-read-v1",
+          mode: "complete",
+          requested: ids.length,
+          available: ids.length,
+          absent: 0,
+          unavailable: 0,
+        },
+      },
+      "trimmed",
+    ) as Envelope;
+
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+    expect(out.results.map((result) => result.id)).toEqual(ids);
+    expect(out.results.every((result) => result._stub !== true)).toBe(true);
+    expect(out.results.map((result) => (result.workItem as Record<string, unknown>).title)).toEqual([
+      "candidate 1",
+      "candidate 2",
+      "candidate 3",
+      "candidate 4",
+      "candidate 5",
+    ]);
+    expect(out.results.map((result) => (result.workItem as Record<string, unknown>).state)).toEqual([
+      "open",
+      "open",
+      "open",
+      "open",
+      "open",
+    ]);
+  });
+
+  it("reports available detail reduced to two id-only stubs while keeping each reread ID", () => {
+    const bulkyHolder = {
+      goalRef: "WI-2",
+      competing: Array.from({ length: 8 }, () => "X".repeat(12_000)),
+    };
+    const rows = ["WI-1", "WI-2"].map((id) =>
+      row({ id, availability: "available", holder: bulkyHolder, workItem: { id, state: "open" } }),
+    );
+    const out = shapeWorkItemsGet(
+      {
+        ...envelope(rows),
+        read: {
+          schemaVersion: "work-items-get-read-v1",
+          mode: "complete",
+          requested: 2,
+          available: 2,
+          absent: 0,
+          unavailable: 0,
+        },
+      },
+      "trimmed",
+    ) as Envelope;
+
+    expect(out.results).toEqual([
+      { ok: true, id: "WI-1", _stub: true },
+      { ok: true, id: "WI-2", _stub: true },
+    ]);
+    expect(out.read).toMatchObject({ requested: 2, available: 2, detailRows: 0, stubbedRows: 2 });
+  });
+
+  it("keeps absent and unavailable outcomes separate from shaped available detail", () => {
+    const out = shapeWorkItemsGet(
+      {
+        ...envelope([
+          row({ id: "WI-available", availability: "available", workItem: { id: "WI-available", state: "open" } }),
+          { ok: false, id: "WI-absent", availability: "absent", error: "not found" },
+          { ok: false, id: "WI-unavailable", availability: "unavailable", error: "timeout", retryable: true },
+        ]),
+        read: {
+          schemaVersion: "work-items-get-read-v1",
+          mode: "complete",
+          requested: 3,
+          available: 1,
+          absent: 1,
+          unavailable: 1,
+        },
+      },
+      "trimmed",
+    ) as Envelope;
+
+    expect(out.read).toMatchObject({
+      requested: 3,
+      available: 1,
+      absent: 1,
+      unavailable: 1,
+      detailRows: 1,
+      stubbedRows: 0,
+    });
+    expect(out.results.map((r) => [r.id, r.availability])).toEqual([
+      ["WI-available", "available"],
+      ["WI-absent", "absent"],
+      ["WI-unavailable", "unavailable"],
+    ]);
   });
 
   it("a 10-id read preserves every id when the result door requires stubs", () => {
@@ -795,6 +1199,175 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
     expect(out._shapeNote?.stubbed?.note).toMatch(/re-read an id alone/);
     expect(out._shapeNote?.dropped.some((d) => d.startsWith("rows("))).toBe(true);
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+  });
+});
+
+describe("shapeWorkItemsGet — operationalBrief stays bounded across multi-item reads", () => {
+  const DOOR = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
+
+  function briefRow(id: string, text: string): Record<string, unknown> {
+    return row({
+      id,
+      availability: "available",
+      workItem: { id, kind: "bug", state: "open", title: "brief subject" },
+      operationalBrief: operationalBrief(id, text),
+    });
+  }
+
+  it("retains each requested brief and marks clipped row text", () => {
+    const rows = ["WI-brief-a", "WI-brief-b"].map((id) =>
+      briefRow(id, "A verified next action, blocker, and evidence summary. ".repeat(100)),
+    );
+
+    for (const tier of ["trimmed", "standard"] as const) {
+      const out = shapeWorkItemsGet(envelope(rows), tier) as Envelope;
+      expect(out.results.map((result) => result.id)).toEqual(rows.map((source) => source.id));
+      for (const result of out.results) {
+        expect(result._stub).toBeUndefined();
+        expect(result.operationalBrief).toMatchObject({
+          schemaVersion: "operational-brief-v1",
+          subject: result.id,
+          shapeNote: {
+            clipped: true,
+            paths: expect.arrayContaining(["operationalBrief.text"]),
+          },
+        });
+        expect((result.operationalBrief as Record<string, unknown>).text).toMatch(/TRUNCATED/);
+      }
+      expect(out._shapeNote?.dropped).toContain("operationalBrief(clipped)");
+      expect(JSON.stringify(out).length).toBeLessThanOrEqual(DOOR);
+    }
+  });
+
+  it("retains a compact operational brief when a single row descends to a zero-brief rung", () => {
+    const id = "EI-25491082181195271";
+    const input = row({
+      id,
+      availability: "available",
+      checkpoint: "C".repeat(25_000),
+      checkpointFreshness: { diagnostic: "F".repeat(3_000) },
+      operationalBrief: operationalBrief(id, "Verified next action and evidence. ".repeat(100)),
+    });
+
+    const out = shapeWorkItemsGet(envelope([input]), "standard") as Envelope;
+    const result = out.results[0];
+
+    expect(result.operationalBrief).toMatchObject({
+      schemaVersion: "operational-brief-v1",
+      subject: id,
+      state: { status: "known", value: "open" },
+      owner: { status: "known", value: "su-1" },
+    });
+    expect(result.operationalBrief).toHaveProperty("shapeNote.clipped", true);
+    expect(out._shapeNote?.dropped).toContain("operationalBrief(clipped)");
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(DOOR);
+  });
+
+  it("keeps three brief rows when duplicated completion bodies exhaust the door", () => {
+    const evidence = {
+      summary: "S".repeat(1_800),
+      testsRun: "T".repeat(1_600),
+      testResult: "R".repeat(1_600),
+      verifiedHow: "V".repeat(600),
+      workOutcome: "O".repeat(1_200),
+      addedTests: "A".repeat(900),
+      filesChanged: Array.from(
+        { length: 24 },
+        (_, index) => `packages/path/${String(index).padStart(2, "0")}-${"x".repeat(80)}`,
+      ),
+    };
+    const ids = ["EI-11111111111111111", "EI-22222222222222222", "EI-33333333333333333"];
+    const rows = ids.map((id) => row({
+      id,
+      availability: "available",
+      workItem: {
+        id,
+        kind: "bug",
+        family: "issue",
+        harness: "papercusp",
+        state: "done",
+        title: "terminal item",
+        severity: "major",
+        origin: "local",
+        assignee: "su-1",
+        summary: "summary ".repeat(500),
+        payload: { details: "P".repeat(4_000) },
+        terminalCompletionEvidence: evidence,
+      },
+      checkpoint: "C".repeat(3_000),
+      completion: evidence,
+      hasCompletionEvidence: true,
+      operationalBrief: operationalBrief(id, "Verified next action and evidence. ".repeat(100)),
+    }));
+    const read = {
+      schemaVersion: "work-items-get-read-v1",
+      mode: "complete",
+      requested: 3,
+      available: 3,
+      absent: 0,
+      unavailable: 0,
+      budgetMs: 30_000,
+      elapsedMs: 7,
+      baseReadMaxMs: 4,
+      enrichmentMaxMs: 0,
+      outerStageAttribution: "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time",
+    };
+
+    for (const tier of ["trimmed", "standard"] as const) {
+      const out = shapeWorkItemsGet({ ...envelope(rows), read }, tier) as Envelope;
+
+      expect(out.results.map((result) => result.id)).toEqual(ids);
+      expect(out.results.every((result) => result._stub === undefined)).toBe(true);
+      for (const result of out.results) {
+        const workItem = result.workItem as Record<string, unknown>;
+        expect(result.operationalBrief).toMatchObject({
+          subject: result.id,
+          state: { status: "known", value: "open" },
+          shapeNote: {
+            clipped: true,
+            paths: expect.arrayContaining([
+              "operationalBrief.text",
+              "operationalBrief.facts",
+              "operationalBrief.unknowns",
+            ]),
+          },
+        });
+        expect(result.operationalBrief).not.toHaveProperty("text");
+        expect(result.operationalBrief).not.toHaveProperty("facts");
+        expect(result.operationalBrief).not.toHaveProperty("unknowns");
+        expect(result.operationalBrief).toMatchObject({
+          owner: { status: "known", value: "su-1" },
+          nextAction: { status: "known" },
+        });
+        expect(result.hasCompletionEvidence).toBe(true);
+        expect(result.completion).toBeNull();
+        expect(workItem.terminalCompletionEvidence).toBeNull();
+      }
+      expect(out._shapeNote?.dropped).toEqual(
+        expect.arrayContaining(["completion", "workItem.terminalCompletionEvidence"]),
+      );
+      expect(JSON.stringify(out).length).toBeLessThanOrEqual(DOOR);
+    }
+  });
+
+  it("does not spend more bulk-row capacity on briefs whose shared share is too small", () => {
+    const rows = Array.from({ length: 12 }, (_, index) =>
+      briefRow(`EI-${String(index).padStart(17, "0")}`, "Large brief text. ".repeat(300)),
+    );
+    const withBriefs = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+    const withoutBriefs = shapeWorkItemsGet(
+      envelope(rows.map(({ operationalBrief: _brief, ...rest }) => rest)),
+      "trimmed",
+    ) as Envelope;
+
+    expect(withBriefs.results.map((result) => result.id)).toEqual(rows.map((source) => source.id));
+    expect(withBriefs.results.every((result) => result.operationalBrief === undefined)).toBe(true);
+    expect(withBriefs._shapeNote?.dropped).toContain("operationalBrief");
+    expect(withBriefs.results.every((result) => result._stub === undefined)).toBe(true);
+    expect(withBriefs.results.filter((result) => result._stub).length).toBe(
+      withoutBriefs.results.filter((result) => result._stub).length,
+    );
+    expect(JSON.stringify(withBriefs).length).toBeLessThanOrEqual(DOOR);
   });
 });
 
@@ -1047,6 +1620,85 @@ describe("citedFacts survives the shaper (EI-19465127338264010)", () => {
     ) as Envelope;
     expect(out.results[0].notAWhitelistedField).toBeUndefined();
     expect(out.results[0].citedFacts).toBeDefined();
+  });
+});
+
+/**
+ * P-003 (R-3, carry-recheck-and-governed-memory-2026-10-14): the retraction cascade's
+ * READ seam. A flag that the whitelist drops is a flag nobody sees — R-3 requires it
+ * be VISIBLE, naming the fact and the reason — so it must survive every tier,
+ * including the compact single-item floor, and say so when it is cut.
+ */
+describe("assumptionFlags survive the shaper (P-003 / R-3)", () => {
+  const flag = (i: number) => ({
+    dedupeKey: `retracted:workspace::release-window:${i}`,
+    condition: "retracted",
+    factRef: `workspace:release-window-${i}`,
+    scope: "workspace",
+    scopeRef: null,
+    key: `release-window-${i}`,
+    citedVersionId: null,
+    versionId: 10 + i,
+    supersededBy: null,
+    reason: "window moved",
+    by: "su-peer",
+    at: "2026-10-14T18:00:00.000Z",
+    line: `Fact workspace:release-window-${i} was retracted by su-peer: window moved`,
+  });
+
+  for (const tier of ["trimmed", "standard"] as const) {
+    it(`keeps the flag, naming fact and reason, at the '${tier}' tier`, () => {
+      const out = shapeWorkItemsGet(envelope([row({ assumptionFlags: [flag(0)] })]), tier) as Envelope;
+      const flags = out.results[0].assumptionFlags as Array<Record<string, unknown>>;
+      expect(flags).toHaveLength(1);
+      expect(flags[0].factRef).toBe("workspace:release-window-0");
+      expect(flags[0].line).toContain("window moved");
+      expect(out.results[0].assumptionFlagsTruncated).toBeUndefined();
+    });
+  }
+
+  it("discloses truncation as { shown, total } rather than dropping flags silently", () => {
+    const many = Array.from({ length: 9 }, (_, i) => flag(i));
+    const out = shapeWorkItemsGet(envelope([row({ assumptionFlags: many })]), "trimmed") as Envelope;
+    const flags = out.results[0].assumptionFlags as unknown[];
+    expect(flags.length).toBeLessThan(many.length);
+    expect(out.results[0].assumptionFlagsTruncated).toEqual({ shown: flags.length, total: 9 });
+    expect(out._shapeNote?.dropped).toContain("assumptionFlags");
+  });
+
+  it("keeps the flag line at the compact single-item floor", () => {
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          checkpoint: "C".repeat(40_000),
+          holder: { goalRef: "WI-1", goalText: "H".repeat(40_000), assumptions: { keys: [] }, agreement: "sole", competing: [] },
+          lifecycle: { events: Array.from({ length: 100 }, (_, i) => ({ kind: `event-${i}` })) },
+          priorAttempts: { attempts: [{ text: "A".repeat(10_000) }] },
+          assumptionFlags: [flag(0)],
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+    expect(out._shapeNote?.singleItemFloor, "did not reach the single-item floor").toMatch(/reduced identity/);
+    const flags = out.results[0].assumptionFlags as Array<Record<string, unknown>>;
+    expect(flags).toEqual([
+      { condition: "retracted", factRef: "workspace:release-window-0", line: flag(0).line },
+    ]);
+  });
+
+  it("is absent when the item carries no flag", () => {
+    const out = shapeWorkItemsGet(envelope([row()]), "trimmed") as Envelope;
+    expect(out.results[0].assumptionFlags).toBeUndefined();
+    expect(out.results[0].assumptionFlagsTruncated).toBeUndefined();
+  });
+
+  it("CONTROL: an unlisted sibling of identical shape is dropped, so the keep is the whitelist's doing", () => {
+    const out = shapeWorkItemsGet(
+      envelope([row({ assumptionFlags: [flag(0)], notWhitelistedFlags: [flag(1)] })]),
+      "trimmed",
+    ) as Envelope;
+    expect(out.results[0].notWhitelistedFlags).toBeUndefined();
+    expect(out.results[0].assumptionFlags).toBeDefined();
   });
 });
 
@@ -1395,6 +2047,22 @@ describe("shapeWorkItemsGet — priorAttempts survives, and says what it cut", (
     expect(out._shapeNote?.dropped).toEqual(
       expect.arrayContaining(["priorAttempts.attempts(text clipped)"]),
     );
+    expect(out._shapeNote?.next).toContain("priorAttemptRefs");
+    expect(out._shapeNote?.next).toContain("rawRef");
+    expect(out._shapeNote?.next).toContain("retry alone does not retrieve");
+    expect(out._shapeNote?.next).not.toContain("Fields were dropped or clipped for the '");
+  });
+
+  it("names both recovery routes when prior-attempt text and a tier-shaped field are clipped", () => {
+    const out = shapeWorkItemsGet(
+      envelope([briefRow({ checkpoint: "C".repeat(40_000) }, 1, 5_000)]),
+      "trimmed",
+    ) as Envelope;
+    expect(out._shapeNote?.dropped).toEqual(
+      expect.arrayContaining(["priorAttempts.attempts(text clipped)", "checkpoint(clipped)"]),
+    );
+    expect(out._shapeNote?.next).toContain("priorAttemptRefs");
+    expect(out._shapeNote?.next).toContain("payloadTier:'full'");
   });
 
   it("keeps the OMISSION accounting whole while cutting records — the qualifier outlives what it qualifies", () => {

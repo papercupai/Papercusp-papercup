@@ -95,7 +95,14 @@ const tagsParams = z
   .strict();
 const dateParams = z.object({ includeTime: z.boolean().optional(), min: z.string().optional(), max: z.string().optional() }).strict();
 const listParams = z
-  .object({ itemDatatype: datatypeRefSchema.optional(), minItems: z.number().int().nonnegative().optional(), maxItems: z.number().int().positive().optional() })
+  .object({
+    itemDatatype: datatypeRefSchema.optional(),
+    minItems: z.number().int().nonnegative().optional(),
+    maxItems: z.number().int().positive().optional(),
+    order: z.enum(['display', 'priority']).optional(),
+    selectable: z.boolean().optional(),
+    defaultSelected: z.boolean().optional(),
+  })
   .strict();
 const recordParams = z
   .object({

@@ -109,4 +109,32 @@ describe('acquireWithContentionRetry', () => {
     expect([...LOCK_CONTENTION_BACKOFFS_MS]).toEqual([500, 1500, 4000]);
     expect(LOCK_CONTENTION_BACKOFFS_MS.reduce((a, b) => a + b, 0)).toBe(6000);
   });
+
+  it('honours a narrowed isRetryable predicate: excluded contention codes propagate at once (WI-10004951)', async () => {
+    const sleep = vi.fn(async () => {});
+    const only55P03 = (e: unknown) => (e as { code?: string }).code === '55P03';
+
+    // 57014 IS contention by default, but a caller with a deliberately long
+    // statement_timeout must not retry it.
+    const timedOut = vi.fn(async () => {
+      throw { code: '57014' };
+    });
+    await expect(
+      acquireWithContentionRetry(timedOut, { sleep, backoffsMs: [1, 2], isRetryable: only55P03 }),
+    ).rejects.toEqual({ code: '57014' });
+    expect(timedOut).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+
+    let calls = 0;
+    const refusedOnce = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw { code: '55P03' };
+      return 'ok';
+    });
+    await expect(
+      acquireWithContentionRetry(refusedOnce, { sleep, backoffsMs: [1, 2], isRetryable: only55P03 }),
+    ).resolves.toBe('ok');
+    expect(refusedOnce).toHaveBeenCalledTimes(2);
+    expect(sleep.mock.calls.map((c) => (c as unknown[])[0])).toEqual([1]);
+  });
 });

@@ -1,0 +1,81 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "R-5: ScanCode over the public launch cut 3c1ed9a1, every license finding classified",
+ "framework": "operational",
+ "command": [
+  "git -C pub archive 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c | tar -x -C cut (pub = clone of https://github.com/Papercusp/papercusp-app.git)",
+  "scancode --license --copyright --only-findings --processes 8 --timeout 300 --json-pp scancode-3c1ed9a.json cut",
+  ".papercusp/scratch/osr/r1006/classify_r5.py -> r5-classification.json (sha256 74a43d8629a9120e135d9cad2b0bf27995fbc1925eddefceb4fbb72697eb065a)"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-10-06T03:45:33Z",
+ "finishedAt": "2026-10-06T04:09:03Z",
+ "summary": "ScanCode (529 files with findings, 0 scan errors) over the exact live public main 3c1ed9a1 found 27 files whose detected expression names GPL/AGPL/LGPL/SSPL/proprietary/NC/PolyForm/unknown. All 27 are the same paths reviewed and classified in the 2026-09-30 scan (8 classes); none is a first-party license grant or vendored copyleft code. Oracle: ScanCode's own detections, independent of the export implementation.",
+ "assertions": [
+  {
+   "id": "subject-is-live-public-main",
+   "passed": true,
+   "evidence": "git ls-remote https://github.com/Papercusp/papercusp-app.git refs/heads/main = 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c at 2026-10-06T04:20Z; scanned tree = git archive of that commit (16275 files = git ls-tree -r count)."
+  },
+  {
+   "id": "scan-complete",
+   "passed": true,
+   "evidence": "ScanCode 32.5.0, headers[0].errors=[]; 529 files with findings; scan 2026-10-06T03:45:36Z..04:08:55Z; output sha256 fd687128aa255969f3a6c1e11cecf48bb624904e457a25f159942c8b66a09cea."
+  },
+  {
+   "id": "class-0",
+   "passed": true,
+   "evidence": "build-script comment explaining why a GPL/PolyForm component is excluded (libav, bash 3.2, gitnexus), no license grant: papercusp-desktop/bin/build-appimage.sh, papercusp-desktop/bin/build-desktop-sidecar.sh, papercusp-desktop/bin/lib/source-tree-selection.sh, scripts/check-mac-bash-portability.mjs"
+  },
+  {
+   "id": "class-1",
+   "passed": true,
+   "evidence": "docs prose naming a third-party model/tool license (e.g. CC-BY-NC models disqualified): apps/operator-docs/src/content/docs/agent-insights/embedding-space-vs-dimension.md, apps/operator-docs/src/content/docs/testing/index.mdx, apps/operator/public/internal/docs/agent-insights/embedding-space-vs-dimension.html, apps/operator/public/internal/docs/agent-insights/embedding-space-vs-dimension.md, apps/operator/public/internal/docs/testing.html, apps/operator/public/internal/docs/testing/index.md"
+  },
+  {
+   "id": "class-2",
+   "passed": true,
+   "evidence": "license-policy text: names disallowed licenses to reject them (ELv2 CLA/CONTRIBUTING, license gate, notices): CLA.md, CONTRIBUTING.md, THIRD-PARTY-NOTICES.md, scripts/check-licenses.d.mts, scripts/check-licenses.mjs, scripts/installer-components.json, scripts/public-release/CLA.md, scripts/public-release/CONTRIBUTING.md"
+  },
+  {
+   "id": "class-3",
+   "passed": true,
+   "evidence": "lockfile: third-party dependency licenses recorded by npm, resolved at install, no code vendored: libs/papercusp/packages/harness/docs-viewer/package-lock.json, package-lock.json"
+  },
+  {
+   "id": "class-4",
+   "passed": true,
+   "evidence": "prose: \"NVIDIA proprietary driver\" in a code comment, no license grant: apps/operator/app/harness/PiPanel.tsx, packages/operator-core/lib/agent-tools/computer/desktop-sandbox.ts, papercusp-desktop/src-tauri/src/main.rs"
+  },
+  {
+   "id": "class-5",
+   "passed": true,
+   "evidence": "prose: comment on an external HF dataset license; no dataset content is vendored (only .ts files in the directory): packages/operator-core/lib/external-bench/gdpval/dataset.ts"
+  },
+  {
+   "id": "class-6",
+   "passed": true,
+   "evidence": "user-facing caveat about a third-party dependency license (hyperformula GPLv3 not vendored; Firecrawl AGPL is a network service): libs/papercusp/packages/harness/templates/projects/sheets-clone/AGENTS.md, libs/papercusp/plugins/firecrawl-bridge/README.md"
+  },
+  {
+   "id": "class-7",
+   "passed": true,
+   "evidence": "vendored MIT OR Apache-2.0 crate (LICENSE_MIT, LICENSE_APACHE-2.0 present); CC-BY-NC-ND names the Tauri logo, which is not vendored: papercusp-desktop/src-tauri/vendor/tauri-runtime-wry/README.md"
+  },
+  {
+   "id": "no-unclassified",
+   "passed": true,
+   "evidence": "unclassified=[]; flagged=27, every flagged path matched a class reviewed in osr-r05-live-2026-09-30.json by exact path (class sizes sum to 27)."
+  }
+ ],
+ "limitations": [
+  "Classes are carried from the 2026-09-30 review of public commit b9851864 by exact path; the per-file detected expressions at 3c1ed9a1 are listed in r5-classification.json, and the flagged set is identical in membership (27 paths). A grader should spot-check that a carried file's content still matches its class description.",
+  "This run did not pass --ignore '*/node_modules/*'; the git-archive cut contains no node_modules directory, so the scanned population is the full committed tree."
+ ],
+ "evidencePlane": "live",
+ "plan": "open-source-release-2026-09-29",
+ "specId": "R-5",
+ "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+ "workItemId": "WI-10003960"
+}

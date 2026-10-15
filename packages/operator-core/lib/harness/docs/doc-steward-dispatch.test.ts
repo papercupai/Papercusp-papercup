@@ -82,6 +82,19 @@ describe('dispatchDocStewardForDrift (doc-steward P-008)', () => {
     expect(payload.docs.some((d) => d.docId === `doc-${DOC_STEWARD_MAX_DOCS_PER_DISPATCH}.mdx`)).toBe(false);
   });
 
+  it('P016: carries source-linked rename evidence unchanged to the existing steward review route', async () => {
+    mockGetFlag.mockResolvedValue(true);
+    mockFire.mockResolvedValue({ blueprintId: 'doc-steward' });
+    const candidate: DriftedDoc = { ...docs[0], sourceChanges: [{ path: 'src/a.ts', status: 'measured',
+      before: { commit: '1'.repeat(40), sha256: 'a'.repeat(64) }, after: { commit: '2'.repeat(40), sha256: 'b'.repeat(64) },
+      removedSymbols: ['readApi'], addedSymbols: ['readApiV2'], changedSymbols: [], reason: 'documented rename' }] };
+    const original = structuredClone(candidate);
+    await dispatchDocStewardForDrift('h', 'ws-1', [candidate]);
+    const input = mockFire.mock.calls[0][1] as { extra: string[] };
+    expect(JSON.parse(input.extra[1]).docs).toEqual([original]);
+    expect(candidate).toEqual(original);
+  });
+
   it('does NOT fire while a doc-steward is active OR started within the dispatch cooldown (WI-2104 pacing)', async () => {
     mockGetFlag.mockResolvedValue(true);
     mockSql.mockResolvedValue([{ n: '1' }]);

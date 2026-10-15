@@ -31,7 +31,9 @@ import {
   getPotTimeWake,
   readPotWakeState,
   type PotEventSubscription,
+  type PotWakeState,
 } from '../../pot/wake';
+import { mapWithConcurrency } from '../../gym/concurrency';
 import { resolveHivePubkey } from '../../hive-identity';
 import { getHiveByPubkey } from '../../hive-store';
 
@@ -97,11 +99,14 @@ async function buildWakeView(
   sql: Sql,
   homeSlug: string,
   workspaceId: string,
+  /** The workspace's wake state, when the caller already read it (it is per-workspace,
+   *  not per-pot, so a multi-pot caller reads it once). */
+  wakeState?: PotWakeState,
 ): Promise<PotWakeView> {
   // K1 (workspace-scoped-coordination P-003): read the workspace-papercup wake
   // routine when the flag is ON (OFF ⇒ per-pot, unchanged).
   const time = await getPotTimeWake(sql, homeSlug, { workspaceId });
-  const state = await readPotWakeState(workspaceId);
+  const state = wakeState ?? await readPotWakeState(workspaceId);
   return {
     active: time?.active ?? false,
     nextFireAt: time?.nextFireAt ? new Date(time.nextFireAt).toISOString() : null,
@@ -189,13 +194,22 @@ export async function listPots(workspaceId?: string): Promise<PotDescriptor[]> {
   const hives = reg.projects.filter(isPotProject);
   if (hives.length === 0) return [];
   const { sql } = getOrgPg();
-  const out: PotDescriptor[] = [];
-  for (const p of hives) {
-    const pubkey = await resolveHivePubkey(ws, p.slug);
-    out.push(describePot(p, await buildWakeView(sql, p.slug, ws), pubkey));
-  }
-  return out;
+  // EI-25272347580822642: this ran one pot at a time and re-read the per-workspace wake state
+  // for every pot, so the system-health tick's list-pots leg grew with pot count times PG
+  // latency (measured up to 100s). The wake state is read once; pots resolve in parallel,
+  // bounded so a large registry cannot flood the shared pool. Registry order is preserved.
+  const wakeState = await readPotWakeState(ws);
+  return mapWithConcurrency(hives, LIST_POTS_CONCURRENCY, async (p) => {
+    const [pubkey, wake] = await Promise.all([
+      resolveHivePubkey(ws, p.slug),
+      buildWakeView(sql, p.slug, ws, wakeState),
+    ]);
+    return describePot(p, wake, pubkey);
+  });
 }
+
+/** In-flight pot resolutions in `listPots` (each makes ~3 PG reads). */
+export const LIST_POTS_CONCURRENCY = 4;
 
 /**
  * The workspace's HOME pot slug — `PAPERCUSP_POT_HOME_SLUG` when set, else the

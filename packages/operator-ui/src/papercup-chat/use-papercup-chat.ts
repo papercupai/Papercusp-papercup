@@ -316,6 +316,10 @@ export function askErrorMessage(
   switch (code) {
     case 'portal_chat_content_required':
       return 'Type a question first.';
+    case 'portal_chat_voice_turn_invalid':
+      return 'Papercup could not read that voice message. Try speaking again or type your question.';
+    case 'portal_chat_voice_turn_too_long':
+      return 'That voice message is too long to send. Try a shorter question or send it in parts.';
     case 'portal_chat_context_must_be_string':
       return 'Papercup could not read that request. Try again.';
     case 'portal_chat_context_too_long':
@@ -600,6 +604,8 @@ export function usePapercupChat(options: UsePapercupChatOptions): PapercupChatCo
   const { adapter, conversationId, historyPageSize = 50, onNavigate, onAssistantTurn } = options;
 
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const turnsRef = useRef(turns);
+  turnsRef.current = turns;
   const [live, setLive] = useState<AskTurnState | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [hasMoreEarlier, setHasMoreEarlier] = useState(false);
@@ -627,13 +633,22 @@ export function usePapercupChat(options: UsePapercupChatOptions): PapercupChatCo
       const load = adapterRef.current.loadHistory;
       if (!load) return;
       const gen = generationRef.current;
+      const existingIds = new Set(turnsRef.current.map((turn) => turn.id));
       setLoadingHistory(true);
       if (mode === 'replace') setSurfaceError(null);
       try {
         const page = await load({ beforeSeq, limit: historyPageSize });
         if (gen !== generationRef.current) return;
         setHasMoreEarlier(page.hasMoreEarlier);
-        setTurns((prev) => (mode === 'replace' ? page.turns : [...page.turns, ...prev]));
+        setTurns((prev) => {
+          if (mode === 'prepend') return [...page.turns, ...prev];
+          // An initial history read can finish after the first typed or voice
+          // turn. Preserve additions made since this read began; replacing
+          // them with the earlier snapshot silently erases the live question.
+          const loadedIds = new Set(page.turns.map((turn) => turn.id));
+          const added = prev.filter((turn) => !existingIds.has(turn.id) && !loadedIds.has(turn.id));
+          return [...page.turns, ...added];
+        });
       } catch (err) {
         if (gen !== generationRef.current) return;
         const code = err instanceof ChatTurnRefusedError ? askTurnRefusalState(err.body).errorCode : errorCodeOf(err);

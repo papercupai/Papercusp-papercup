@@ -470,17 +470,24 @@ export async function countRoutedByOriginSince(
  */
 export async function countActionableUngradedOlderThan(
   sql: Sql,
-  args: { workspaceId: string; policy: UngradedEpochPolicy; staleBeforeMs: number },
+  args: { workspaceId: string; policy: UngradedEpochPolicy; staleBeforeMs: number;
+    /** Optional exact recovery partition; uses the same workspace-global reach as the row reader. */
+    harnessSlug?: string; origin?: string },
 ): Promise<number> {
-  const { workspaceId, policy, staleBeforeMs } = args;
+  const { workspaceId, policy, staleBeforeMs, harnessSlug, origin } = args;
   const floors = JSON.stringify(policy.byOrigin);
   const fallback = policy.fallbackMs;
+  const scope = workspaceGlobalScopeFor(workspaceId, harnessSlug ?? '');
   const rows = await sql<{ c: number | string | null }[]>`
     WITH scoped AS (
       SELECT origin, routed_at,
              coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
         FROM harness_shared.scout_routed_ideas
        WHERE workspace_id = ${workspaceId}
+         AND (${harnessSlug == null} OR harness_slug = ${harnessSlug ?? ''}
+              OR (${scope.absorbsWorkspaceGlobal}
+                  AND (harness_slug = ANY(${scope.labels}) OR harness_slug LIKE ${scope.likePattern})))
+         AND (${origin == null} OR origin = ${origin ?? ''})
          AND origin <> ${SHADOW_VARIANT_ORIGIN}
          AND human_grade IS NULL
          AND (outcome IS NULL OR outcome = 'pending')
@@ -488,7 +495,18 @@ export async function countActionableUngradedOlderThan(
     SELECT count(*)::int AS c
       FROM scoped
      WHERE routed_at >= epoch_ms AND routed_at <= ${staleBeforeMs}`;
-  return Math.max(0, Number(rows[0]?.c ?? 0));
+  return measuredUngradedCount(rows);
+}
+
+/** COUNT always returns one non-null row. Missing/malformed readings are unknown, never recovery. */
+function measuredUngradedCount(rows: readonly { c: number | string | null }[]): number {
+  const raw = rows[0]?.c;
+  const count = typeof raw === 'number' || (typeof raw === 'string' && raw.trim() !== '')
+    ? Number(raw) : Number.NaN;
+  if (rows.length !== 1 || !Number.isSafeInteger(count) || count < 0) {
+    throw new Error('ungraded count unavailable: expected one non-negative integer COUNT');
+  }
+  return count;
 }
 
 /**
@@ -567,7 +585,7 @@ export async function countActionableUngradedOutsideScopes(
                  AND (r.harness_slug IN (SELECT jsonb_array_elements_text(s.labels))
                       OR r.harness_slug LIKE s.like_pattern))
        )`;
-  return Math.max(0, Number(rows[0]?.c ?? 0));
+  return measuredUngradedCount(rows);
 }
 
 /** What `watchdog:status` reports about the nudge rail's pending/eligible backlog. */

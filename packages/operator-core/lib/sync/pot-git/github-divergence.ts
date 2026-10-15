@@ -304,7 +304,7 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
     );
   if (unreachable.some((s) => s.transient))
     parts.push(
-      'the git transport could not even be SPAWNED for ANY branch this tick (e.g. right after a process restart — an env/PATH hiccup, not a remote URL or credential problem) — likely transient; no owner action needed unless it persists across ticks',
+      'the GitHub remote could not be reached for ANY requested branch this tick (for example, a DNS or connection failure, or a git process-level fault) — likely transient; no owner action needed unless it persists across ticks',
     );
   const egressUnreachable = signals.filter(
     (s): s is Extract<DivergenceSignal, { kind: 'bridge-egress-unreachable' }> => s.kind === 'bridge-egress-unreachable',
@@ -315,7 +315,7 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
     );
   if (egressUnreachable.some((s) => s.transient))
     parts.push(
-      'the egress git transport could not be SPAWNED this tick — likely transient; no owner action needed unless it persists across ticks',
+      'GitHub egress had a transient network or transport failure this tick (for example, a DNS or connection failure) — no owner action needed unless it persists across ticks',
     );
   if (c('egress-canonical-missing') > 0)
     parts.push(

@@ -1,0 +1,16 @@
+---
+rel_path: "evidence/public-manual-expansion-and-freshness-2026-10-03/plan-revision-4-goal-decisions.json"
+updated_at: 1791015878590
+_body: "content"
+---
+
+{
+  "source": "harness_shared.plan_revisions",
+  "revisionId": "70040",
+  "seq": 4,
+  "contentHash": "866ef72bf5c0935173c611af40f261ae4b1f1db14a88cd8ddf3c6a9c0fc4d5ff",
+  "snapshotSha256": "866ef72bf5c0935173c611af40f261ae4b1f1db14a88cd8ddf3c6a9c0fc4d5ff",
+  "fullSnapshotArtifact": "evidence/public-manual-expansion-and-freshness-2026-10-03/plan-revision-4-866ef72bf5c0935173c611af40f261ae4b1f1db14a88cd8ddf3c6a9c0fc4d5ff.json",
+  "goalAndScope": "---\ntitle: Expand and refresh the public manual, publish it, and guard freshness\nslug: public-manual-expansion-and-freshness-2026-10-03\nstatus: draft\ncreated: 2026-10-03\nupdated: 2026-10-03\n---\n\n## Now\n**State:** Owner-approved self implementation; source/publication inventory in progress.\n**Next:** Add missing guides, refresh existing pages, extend reused freshness tracking, test and publish.\n\n## Scope and constraints\nThis session implements directly; no implementation fleet or native subagents. Public content stays in apps/papercusp-docs/src/content/docs. Reuse Starlight/Pagefind, the existing managed portal build/publication, and source-anchor/drift/doc-steward mechanisms. Preserve private engineering and authenticated project-doc boundaries. Do not confuse source or current-build verification with shipment. Use manual file locks; leave commits/pushes to git-sync; never edit release/checkpoint trees.\n",
+  "decisions": "## Decisions\n### D-001 — Explicit approval and self route\nAvi approved the proposed approach and directed this session to implement it now end-to-end. NEW documentation is mandatory, not audit-only. Source: session_turn:codex:01a10007-31e6-7b21-921f-f3596e3aa792:5.\n\n### D-002 — Acceptance BAR amendment\nDate: 2026-10-03\nAmendment-Id: amend-aced267ea940d97a14d02b9e\nRequest-Hash: da96ef5eeefac0cc4cdefd8f4a20d17f6fabf8908cf35894ae0cb52102fa5f5e\nActor: su-cf001af0-17f9-45b4-b912-814e7df84ba6\nReason: Preserve complete promised outcomes/scopes/checks while expressing each BAR model as one observable sentence; repair atomicity failure before plan start.\nApproved-By: system:judge/su-c8508dca-0050-495b-ba40-42bec1203224\nApproval-Ref: thread-post:1156797\nApproved-At: 2026-10-03T05:12:31.587Z\nRubric revision: 1 → 2\nSubject plan revision: 3 → 4\nChanged BARs: R-1, R-2, R-3, R-4\nPrior evidence, grades, vetting, author verdicts, and ship verdicts remain audit history and are revision-ineligible.\n\n"
+}

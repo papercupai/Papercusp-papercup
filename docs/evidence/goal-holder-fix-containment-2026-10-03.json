@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Goal 60d3a8 holder: every built fix is present in the build serving the holder (content containment, not timing)",
+  "framework": "shell",
+  "plan": "goal-holder-plans-ideation-truthful-reports-2026-10-03",
+  "clauses": ["SPEC-P-007-containment"],
+  "workItem": "WI-10005901",
+  "command": [
+    "BG=1916310c80 bash .papercusp/scratch/p007-containment.sh"
+  ],
+  "commandNote": "For each ref (REL = :3070 release operator d740fc3802, BG = bg-host :3271 serving build 1916310c80, staging tip 049ee04c56) the probe runs git show <ref>:<path> | grep -c <marker>; submodule paths are resolved through the gitlink each ref pins. Files without a unique marker are compared by blob equality with the staging tip. The holder's serving build comes from harness_shared.tool_invocations: holder su-a70547cc (goal_actor_class holder-agent), serving_host port-3271, serving_build_sha 1916310c80, 38 calls up to 13:28:43Z.",
+  "workingDirectory": "papercusp",
+  "startedAt": "2026-10-03T13:29:20Z",
+  "finishedAt": "2026-10-03T13:29:23Z",
+  "exitCode": 0,
+  "summary": "All 12 fix markers and all 5 blob checks are present in the holder's serving build 1916310c80 (bg-host :3271). The positive control (loop-fire.ts 'export') reads 34|37|37 across REL|BG|staging, so the instrument reads content in every ref. The :3070 release operator d740fc3802 carries none of the fixes; that gap is tracked on WI-10005650 and WI-10005725 and does not affect the holder, whose calls are served by bg-host.",
+  "assertions": [
+    { "id": "control-loop-fire-export", "passed": true, "evidence": "loop-fire.ts 'export': d740fc3802=34, 1916310c80=37, staging=37" },
+    { "id": "WI-10005778-P-006", "passed": true, "evidence": "harness/routines/loop-fire.ts defaultOwnerStewardsActiveGoal: REL 0, BG 3, staging 3" },
+    { "id": "WI-10005725", "passed": true, "evidence": "agent-tools/coordination/liveness-oracle.ts liveHostSupersedesRecordedPid: REL 0, BG 2, staging 2" },
+    { "id": "WI-10005685-wall-plan-state", "passed": true, "evidence": "agent-tools/facts/wall-plan-state.ts: REL absent, BG present (9 exports), staging 9" },
+    { "id": "WI-10005685-assert", "passed": true, "evidence": "agent-tools/facts/assert.ts wallPlanState: REL 0, BG 2, staging 2" },
+    { "id": "WI-10005650-WI-10005134", "passed": true, "evidence": "events/await/wake-executor.ts parkOnHostDeferral: REL 0, BG 3, staging 3" },
+    { "id": "WI-10005472", "passed": true, "evidence": "apps/operator/scripts/psu-pty-host.mjs composer-unseen-ordinary-gate: REL 0, BG 3, staging 3" },
+    { "id": "WI-10005899-P-004-review", "passed": true, "evidence": "goal-planning-review.ts GOAL_DAY_MIN_CANDIDATES: REL 0, BG 4, staging 4" },
+    { "id": "WI-10005899-P-004-ideate-pass", "passed": true, "evidence": "agent-tools/scout/ideate-pass-record.ts ideationYield: REL 0, BG 5, staging 5" },
+    { "id": "WI-10005899-P-004-metrics", "passed": true, "evidence": "goal-holder-behavior-metrics.ts readGoalDayCandidates: REL absent, BG 1, staging 1" },
+    { "id": "WI-10005899-P-004-goal-prompt", "passed": true, "evidence": "libs/papercusp/packages/harness/blueprints/su.mode-goal/prompts/goal.md goal-day (through the pinned gitlink): REL 0, BG 5, staging 5" },
+    { "id": "WI-10005885-P-002", "passed": true, "evidence": "goals/unplanned-clusters.ts: REL absent, BG present (18 exports), staging 18" },
+    { "id": "WI-10005904", "passed": true, "evidence": "goals/holder-launch-capacity.ts holderLaunchAccountUnhonored: REL 0, BG 1, staging 1" },
+    { "id": "WI-10005545-blob", "passed": true, "evidence": "harness/routines/reconcile-loop-routines.ts blob equals staging tip in BG (y), not in REL (n)" },
+    { "id": "P-010-blob", "passed": true, "evidence": "agent-obligation-reminders.ts blob equals staging tip in BG (y), not in REL (n); last touch 3e769a6fdd 09:30:52Z" },
+    { "id": "P-009-blob", "passed": true, "evidence": "agent-obligation-providers.ts blob equals staging tip in BG (y), not in REL (n)" },
+    { "id": "P-013-blob", "passed": true, "evidence": "scorecards.ts blob equals staging tip in BG (y), not in REL (n)" },
+    { "id": "P-002-watchdog-blob", "passed": true, "evidence": "system-health/goal-liveness-watchdog.ts blob equals staging tip in BG (y), not in REL (n)" }
+  ]
+}

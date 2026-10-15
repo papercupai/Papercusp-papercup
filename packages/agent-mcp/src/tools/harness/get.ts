@@ -32,6 +32,13 @@ export default defineTool({
   args: z.object({
     slug: z.string().min(1),
     detail: z.enum(['summary', 'full']).default('summary'),
+    workspace: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Per-call workspace scope (superuser only). An unscoped superuser session (workspaceId "*") must pass this to open the workspace transaction; scoped sessions ignore it and use their session workspace.',
+      ),
   }),
   async handler(args, ctx) {
     const txDb = drizzle(ctx.tx);

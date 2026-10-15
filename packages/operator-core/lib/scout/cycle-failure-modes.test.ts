@@ -310,7 +310,7 @@ describe('failure: malformed LLM JSON per stage (real step implementations)', ()
     expect(r.proposals.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("critique: unparseable critics fail safe — never 'keep', corpus-novel ideas survive only as capped moonshots, cycle continues", async () => {
+  it("critique: unparseable critics fail safe — never 'keep', every idea rejected as critic-failure, cycle stops at no-survivors (WI-10007486)", async () => {
     const { deps } = makeRealStepDeps({
       responders: [
         jsonAt(isIdeate, VALID_IDEAS),
@@ -322,15 +322,20 @@ describe('failure: malformed LLM JSON per stage (real step implementations)', ()
     const r = await runScoutCycle(deps);
 
     expect(r.scored).toHaveLength(4);
-    // The fail-safe (critics.ts runCritic): feasibility 0 forbids 'keep'; the
-    // search-first novelty ceiling (empty corpus → 1) makes them preserved leaps.
+    // The fail-safe (critics.ts runCritic): an unparseable critic judged nothing, so it
+    // can never smuggle an idea through to 'keep'.
     expect(r.scored.some((s) => s.verdict === 'keep')).toBe(false);
-    expect(r.survivors.length).toBe(2); // maxMoonshots cap (D-005) — the rest demoted to reject
-    expect(r.survivors.every((s) => s.verdict === 'moonshot')).toBe(true);
-    expect(r.survivors.every((s) => s.notes.includes('no parseable JSON'))).toBe(true);
-    // The cycle did NOT stop: moonshot survivors proceeded to recombine + routing.
-    expect(r.calls.some((c) => c.step === 'recombine')).toBe(true);
-    expect(r.stop).toBe('completed');
+    // WI-10007486: the failed critic's placeholder scores (novelty 1, feasibility 0) are
+    // not a judgment. Bucketing them used to promote un-critiqued, lexically novel ideas
+    // to MOONSHOT, so critiqueIdea rejects them with the cause and critiqueIdeas keeps
+    // them out of the moonshot bucket.
+    expect(r.scored.every((s) => s.verdict === 'reject' && s.rejectCause === 'critic-failure')).toBe(true);
+    expect(r.scored.every((s) => s.notes.includes('no parseable JSON'))).toBe(true);
+    expect(r.survivors).toHaveLength(0);
+    // No survivors: the cycle stops before recombine instead of spending on ideas no
+    // critic has judged.
+    expect(r.calls.some((c) => c.step === 'recombine')).toBe(false);
+    expect(r.stop).toBe('no-survivors');
   });
 
   it('recombine: truncated fenced JSON → every group dropped by the D-006 gate → no-proposals stop, route never runs', async () => {

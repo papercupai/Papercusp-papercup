@@ -1,0 +1,239 @@
+{
+  "schemaVersion": 1,
+  "plan": "personal-cloud-desktop-2026-10-06",
+  "item": "P-006",
+  "workItem": "WI-10006781",
+  "evidencePlane": "live",
+  "framework": "shell",
+  "layer": "operational",
+  "run": "p006-e2e-20261007-0630",
+  "startedAt": "2026-10-07T06:28:16.821Z",
+  "finishedAt": "2026-10-07T06:28:45.936Z",
+  "host": {
+    "hostId": "host-560adc2a196edd88206fb582",
+    "instance": "pc-host-560adc2a196edd88206fb582-190a4acd-vm",
+    "project": "papercusp-hosted-workspaces",
+    "zone": "us-central1-c",
+    "organizationId": "d405-e2e-probe-org-20260923154559",
+    "customerWorkspaceId": "ws-560adc2a196edd88206fb582",
+    "runtime": "0.0.21-pcd006b"
+  },
+  "relay": {
+    "broker": "ws://127.0.0.1:3880/api/hosted/connectors/socket",
+    "publicHost": "app.papercusp.com",
+    "identities": {
+      "owner": "pcd-owner-p006-e2e-20261007-0630",
+      "secondMember": "pcd-member-p006-e2e-20261007-0630"
+    },
+    "ticketIssuer": "HostedWorkspaceConnectorGateway.issueSessionTicket (production control-plane gateway; synthetic probe-org identities, no browser sign-in)"
+  },
+  "desktop": {
+    "desktopSessionId": "ad81e2be-2d5e-464f-881c-4d6a43ec8118",
+    "state": "ready",
+    "displayNumber": 211,
+    "geometry": "1024x768",
+    "lastActiveAt": "2026-10-07T06:28:21.977Z",
+    "scope": "user",
+    "owner": "pcd-owner-p006-e2e-20261007-0630"
+  },
+  "passed": true,
+  "assertions": [
+    {
+      "id": "personal-desktop-uid",
+      "passed": true,
+      "evidence": "{\"passed\":true,\"bar\":\"R-6\",\"xvncPid\":\"26529\",\"xvncUid\":\"1001\",\"customerAccountUid\":\"1001\"}"
+    },
+    {
+      "id": "personal-desktop-home",
+      "passed": true,
+      "evidence": "{\"passed\":true,\"bar\":\"R-17\",\"home\":\"/home/papercusp-workspace\",\"workspaceCheckouts\":[\"papercusp-workspace\"]}"
+    },
+    {
+      "id": "personal-desktop-takeover-input",
+      "passed": true,
+      "evidence": "{\"passed\":true,\"bar\":\"R-18\",\"ready\":{\"action\":\"takeover\",\"inputAllowed\":true},\"rfb\":{\"greeting\":\"RFB 003.008\",\"securityTypes\":[1],\"width\":1024,\"height\":768,\"name\":\"x11\"},\"keys\":\"Ctrl+Alt+T\",\"windowsBefore\":[\"12582915 xfce4-panel\",\"12582926 xfce4-panel\",\"12582930 xfce4-panel\",\"14680104 Desktop\",\"18874371 wrapper-2.0\",\"20971523 wrapper-2.0\",\"8388658 Xfwm4\"],\"windowsAfter\":[\"12582915 xfce4-panel\",\"12582926 xfce4-panel\",\"12582930 xfce4-panel\",\"14680104 Desktop\",\"18874371 wrapper-2.0\",\"20971523 wrapper-2.0\",\"25165827 Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~\",\"8388658 Xfwm4\"],\"opened\":[\"25165827 Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~\"]}"
+    },
+    {
+      "id": "personal-desktop-reconnect",
+      "passed": true,
+      "evidence": "{\"passed\":true,\"bar\":\"R-19\",\"desktopSessionIdBefore\":\"ad81e2be-2d5e-464f-881c-4d6a43ec8118\",\"desktopSessionIdAfter\":\"ad81e2be-2d5e-464f-881c-4d6a43ec8118\",\"desktopSessionIdAfterObserved\":\"ad81e2be-2d5e-464f-881c-4d6a43ec8118\",\"desktopSessionIdAfterObservedProvenance\":{\"source\":\"owner-session desktop.roster.result\",\"requestId\":\"pcd-roster-owner-p006-e2e-20261007-0630-f96cdc98-752e-4fe6-9eee-139446ebe306\",\"observedAt\":\"2026-10-07T06:28:42.646Z\",\"independentlyMeasured\":true},\"rosterStillLists\":true,\"ownerRosterEntryCount\":1,\"xvncPidBefore\":\"26529\",\"xvncPidAfter\":\"26529\",\"reopenedReady\":{\"action\":\"takeover\",\"inputAllowed\":true},\"rfbAfter\":\"RFB 003.008\"}"
+    },
+    {
+      "id": "personal-desktop-non-owner-refused",
+      "passed": true,
+      "evidence": "{\"passed\":true,\"bar\":\"R-20\",\"refusals\":[{\"mode\":\"takeover\",\"messages\":[{\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"9140e002-0a2b-4437-a464-c7765723fbf9\",\"role\":\"controller\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-e2e-20261007-0630-other-takeover\"}}],\"close\":{\"code\":4000,\"reason\":\"desktop_not_owner\"},\"rfbBytes\":0},{\"mode\":\"watch\",\"messages\":[{\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"d19a2db2-8adb-4564-b65d-947652e3cb34\",\"role\":\"observer\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-e2e-20261007-0630-other-watch\"}}],\"close\":{\"code\":4000,\"reason\":\"desktop_not_owner\"},\"rfbBytes\":0}],\"hiddenFromOtherRoster\":true}"
+    }
+  ],
+  "transcript": [
+    "2026-10-07T06:28:16.821Z RUN p006-e2e-20261007-0630 host host-560adc2a196edd88206fb582 owner pcd-owner-p006-e2e-20261007-0630 other pcd-member-p006-e2e-20261007-0630",
+    "2026-10-07T06:28:16.970Z RECV owner-session {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"dc932d2f-2886-4db2-a4a3-94f7fcd3f8c3\",\"role\":\"controller\",\"kind\":\"pty\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-e2e-20261007-0630-owner-session\"}}",
+    "2026-10-07T06:28:17.161Z RECV owner-session {\"type\":\"pty.ready\",\"resumed\":false,\"role\":\"controller\",\"program\":\"shell\",\"limits\":{\"maxFileBytes\":8388608,\"maxUploadChunkBytes\":524288}}",
+    "2026-10-07T06:28:22.016Z RECV owner-session {\"type\":\"desktop.start.result\",\"requestId\":\"pcd-start\",\"desktop\":{\"desktopSessionId\":\"ad81e2be-2d5e-464f-881c-4d6a43ec8118\",\"state\":\"ready\",\"displayNumber\":211,\"geometry\":\"1024x768\",\"lastActiveAt\":\"2026-10-07T06:28:21.977Z\",\"scope\":\"user\",\"owner\":\"pcd-owner-p006-e2e-20261007-0630\"}}",
+    "2026-10-07T06:28:22.016Z PERSONAL_DESKTOP {\"desktopSessionId\":\"ad81e2be-2d5e-464f-881c-4d6a43ec8118\",\"state\":\"ready\",\"displayNumber\":211,\"geometry\":\"1024x768\",\"lastActiveAt\":\"2026-10-07T06:28:21.977Z\",\"scope\":\"user\",\"owner\":\"pcd-owner-p006-e2e-20261007-0630\"}",
+    "2026-10-07T06:28:23.754Z VM$ set -e; acct=$(id -u papercusp-workspace); x=$(pgrep -u papercusp-workspace -n -f '[X]vnc|[X]kasmvnc' || true); s=$(pgrep -u papercusp-workspace -n -x xfce4-ses => P1 acct_uid=1001 xvnc_pid=26529 xvnc_uid=1001 session_pid=27250\nP1 env_HOME=/home/papercusp-workspace\nP1 env_USER=papercusp-workspace\nP1 env_DISPLAY=:211",
+    "2026-10-07T06:28:25.364Z VM$ ls -1 /home/papercusp-workspace/workspaces | head -20 => papercusp-workspace",
+    "2026-10-07T06:28:25.384Z RECV owner-takeover-1 {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"16dc5da4-68f2-4205-8908-6a25e02418e3\",\"role\":\"controller\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-e2e-20261007-0630-owner-takeover-1\"}}",
+    "2026-10-07T06:28:25.461Z RECV owner-takeover-1 {\"type\":\"desktop.ready\",\"action\":\"takeover\",\"inputAllowed\":true}",
+    "2026-10-07T06:28:25.670Z RFB {\"greeting\":\"RFB 003.008\",\"securityTypes\":[1],\"width\":1024,\"height\":768,\"name\":\"x11\"}",
+    "2026-10-07T06:28:27.235Z VM$ DISPLAY=:211  xdotool search --onlyvisible --name '.' 2>/dev/null | while read w; do echo \"$w $(DISPLAY=:211  xdotool getwindowname $w 2>/dev/null)\"; done | sor => 12582915 xfce4-panel\n12582926 xfce4-panel\n12582930 xfce4-panel\n14680104 Desktop\n18874371 wrapper-2.0\n20971523 wrapper-2.0\n8388658 Xfwm4",
+    "2026-10-07T06:28:34.419Z VM$ DISPLAY=:211  xdotool search --onlyvisible --name '.' 2>/dev/null | while read w; do echo \"$w $(DISPLAY=:211  xdotool getwindowname $w 2>/dev/null)\"; done | sor => 12582915 xfce4-panel\n12582926 xfce4-panel\n12582930 xfce4-panel\n14680104 Desktop\n18874371 wrapper-2.0\n20971523 wrapper-2.0\n25165827 Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~\n8388658 Xfwm4",
+    "2026-10-07T06:28:34.424Z CLOSE owner-takeover-1 1000 p006 done",
+    "2026-10-07T06:28:40.466Z RECV owner-takeover-2 {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"8f31152e-05ef-408a-a322-4885bba5e977\",\"role\":\"controller\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-e2e-20261007-0630-owner-takeover-2\"}}",
+    "2026-10-07T06:28:40.530Z RECV owner-takeover-2 {\"type\":\"desktop.ready\",\"action\":\"takeover\",\"inputAllowed\":true}",
+    "2026-10-07T06:28:42.569Z VM$ set -e; acct=$(id -u papercusp-workspace); x=$(pgrep -u papercusp-workspace -n -f '[X]vnc|[X]kasmvnc' || true); s=$(pgrep -u papercusp-workspace -n -x xfce4-ses => P2 acct_uid=1001 xvnc_pid=26529 xvnc_uid=1001 session_pid=27250\nP2 env_HOME=/home/papercusp-workspace\nP2 env_USER=papercusp-workspace\nP2 env_DISPLAY=:211",
+    "2026-10-07T06:28:42.646Z RECV owner-session {\"type\":\"desktop.roster.result\",\"requestId\":\"pcd-roster-owner-p006-e2e-20261007-0630-f96cdc98-752e-4fe6-9eee-139446ebe306\",\"desktops\":[{\"desktopSessionId\":\"ad81e2be-2d5e-464f-881c-4d6a43ec8118\",\"state\":\"ready\",\"displayNumber\":211,\"geometry\":\"1024x768\",\"lastActiveAt\":\"2026-10-07T06:28:21.977Z\",\"scope\":\"user\",\"owner\":\"pcd-owner-p006-e2e-20261007-0630\"}]}",
+    "2026-10-07T06:28:42.648Z CLOSE owner-takeover-2 1000 p006 done",
+    "2026-10-07T06:28:42.662Z RECV other-takeover {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"9140e002-0a2b-4437-a464-c7765723fbf9\",\"role\":\"controller\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-e2e-20261007-0630-other-takeover\"}}",
+    "2026-10-07T06:28:42.741Z CLOSE other-takeover 4000 desktop_not_owner",
+    "2026-10-07T06:28:44.258Z RECV other-watch {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"d19a2db2-8adb-4564-b65d-947652e3cb34\",\"role\":\"observer\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-e2e-20261007-0630-other-watch\"}}",
+    "2026-10-07T06:28:44.322Z CLOSE other-watch 4000 desktop_not_owner",
+    "2026-10-07T06:28:45.839Z RECV other-session {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"6664c409-4e35-4822-a062-5efb6c93c18c\",\"role\":\"controller\",\"kind\":\"pty\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-e2e-20261007-0630-other-session\"}}",
+    "2026-10-07T06:28:45.911Z RECV other-session {\"type\":\"pty.ready\",\"resumed\":false,\"role\":\"controller\",\"program\":\"shell\",\"limits\":{\"maxFileBytes\":8388608,\"maxUploadChunkBytes\":524288}}",
+    "2026-10-07T06:28:45.935Z RECV other-session {\"type\":\"desktop.roster.result\",\"requestId\":\"pcd-roster-other\",\"desktops\":[]}"
+  ],
+  "kind": "operational-test-evidence",
+  "name": "Personal desktop real-host e2e proof 2026-10-07",
+  "command": [
+    "npm",
+    "run",
+    "test:file",
+    "--",
+    "packages/operator-core/lib/desktop/personal-desktop.live.e2e.test.ts"
+  ],
+  "exitCode": 0,
+  "observations": {
+    "personal-desktop-uid": {
+      "passed": true,
+      "bar": "R-6",
+      "xvncPid": "26529",
+      "xvncUid": "1001",
+      "customerAccountUid": "1001"
+    },
+    "personal-desktop-home": {
+      "passed": true,
+      "bar": "R-17",
+      "home": "/home/papercusp-workspace",
+      "workspaceCheckouts": [
+        "papercusp-workspace"
+      ]
+    },
+    "personal-desktop-takeover-input": {
+      "passed": true,
+      "bar": "R-18",
+      "ready": {
+        "action": "takeover",
+        "inputAllowed": true
+      },
+      "rfb": {
+        "greeting": "RFB 003.008",
+        "securityTypes": [
+          1
+        ],
+        "width": 1024,
+        "height": 768,
+        "name": "x11"
+      },
+      "keys": "Ctrl+Alt+T",
+      "windowsBefore": [
+        "12582915 xfce4-panel",
+        "12582926 xfce4-panel",
+        "12582930 xfce4-panel",
+        "14680104 Desktop",
+        "18874371 wrapper-2.0",
+        "20971523 wrapper-2.0",
+        "8388658 Xfwm4"
+      ],
+      "windowsAfter": [
+        "12582915 xfce4-panel",
+        "12582926 xfce4-panel",
+        "12582930 xfce4-panel",
+        "14680104 Desktop",
+        "18874371 wrapper-2.0",
+        "20971523 wrapper-2.0",
+        "25165827 Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~",
+        "8388658 Xfwm4"
+      ],
+      "opened": [
+        "25165827 Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~"
+      ]
+    },
+    "personal-desktop-reconnect": {
+      "passed": true,
+      "bar": "R-19",
+      "desktopSessionIdBefore": "ad81e2be-2d5e-464f-881c-4d6a43ec8118",
+      "desktopSessionIdAfter": "ad81e2be-2d5e-464f-881c-4d6a43ec8118",
+      "desktopSessionIdAfterObserved": "ad81e2be-2d5e-464f-881c-4d6a43ec8118",
+      "desktopSessionIdAfterObservedProvenance": {
+        "source": "owner-session desktop.roster.result",
+        "requestId": "pcd-roster-owner-p006-e2e-20261007-0630-f96cdc98-752e-4fe6-9eee-139446ebe306",
+        "observedAt": "2026-10-07T06:28:42.646Z",
+        "independentlyMeasured": true
+      },
+      "rosterStillLists": true,
+      "ownerRosterEntryCount": 1,
+      "xvncPidBefore": "26529",
+      "xvncPidAfter": "26529",
+      "reopenedReady": {
+        "action": "takeover",
+        "inputAllowed": true
+      },
+      "rfbAfter": "RFB 003.008"
+    },
+    "personal-desktop-non-owner-refused": {
+      "passed": true,
+      "bar": "R-20",
+      "refusals": [
+        {
+          "mode": "takeover",
+          "messages": [
+            {
+              "type": "session.bound",
+              "protocol": "papercusp-hosted-workspace.v1",
+              "channelId": "9140e002-0a2b-4437-a464-c7765723fbf9",
+              "role": "controller",
+              "kind": "desktop",
+              "binding": {
+                "organizationId": "d405-e2e-probe-org-20260923154559",
+                "customerWorkspaceId": "ws-560adc2a196edd88206fb582",
+                "hostId": "host-560adc2a196edd88206fb582",
+                "generation": 4,
+                "hostedSessionId": "p006-e2e-20261007-0630-other-takeover"
+              }
+            }
+          ],
+          "close": {
+            "code": 4000,
+            "reason": "desktop_not_owner"
+          },
+          "rfbBytes": 0
+        },
+        {
+          "mode": "watch",
+          "messages": [
+            {
+              "type": "session.bound",
+              "protocol": "papercusp-hosted-workspace.v1",
+              "channelId": "d19a2db2-8adb-4564-b65d-947652e3cb34",
+              "role": "observer",
+              "kind": "desktop",
+              "binding": {
+                "organizationId": "d405-e2e-probe-org-20260923154559",
+                "customerWorkspaceId": "ws-560adc2a196edd88206fb582",
+                "hostId": "host-560adc2a196edd88206fb582",
+                "generation": 4,
+                "hostedSessionId": "p006-e2e-20261007-0630-other-watch"
+              }
+            }
+          ],
+          "close": {
+            "code": 4000,
+            "reason": "desktop_not_owner"
+          },
+          "rfbBytes": 0
+        }
+      ],
+      "hiddenFromOtherRoster": true
+    }
+  },
+  "summary": "Five real-host assertions passed with zero skipped through the project e2e runner. Fresh request-correlated owner roster independently measures reconnect identity; Xvnc PID is read before and after. This first run used locally uncommitted test files; clean committed rerun still required. Historical live-run.json is preserved."
+}

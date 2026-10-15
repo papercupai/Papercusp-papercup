@@ -31,9 +31,11 @@
 import type postgres from 'postgres';
 import { hitProvenance, type MatchProvenance, type SearchFilters, type SearchHit } from '@papercusp/search';
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import {
   readSessionSearchReadiness,
   sessionSearchTierAvailability,
+  SESSION_TURN_WINDOW_MAX_LITERAL,
   type SessionSearchReadiness,
 } from '../../session-search-index-build';
 import { parseTurnRef } from '../sessions/_shared';
@@ -76,6 +78,16 @@ export interface SessionTurnLiteralPolicy {
    * intersection, NOT the neighbour's document frequency, so a df ceiling cannot bound it.
    */
   fuzzyVariantDeadlineMs: number;
+  /**
+   * Share of `exactDeadlineMs` the trigram route (windows or legacy) may spend before the exact tier falls
+   * back to the recency walk (WI-10005294). A literal present in most turns ('the', 'papercusp') cannot be
+   * resolved by ANY trigram index inside the deadline, so the remainder is spent walking newest-first
+   * instead of returning an empty deadline.
+   */
+  recencyTrigramShare: number;
+  /** Span of the newest recency-walk slice; each older slice spans `recencySliceGrowth` times the previous. */
+  recencyFirstSliceMs: number;
+  recencySliceGrowth: number;
   /** Characters of context kept each side of the matched literal in the excerpt. */
   snippetRadius: number;
 }
@@ -95,6 +107,9 @@ export const SESSION_TURN_LITERAL_POLICY: SessionTurnLiteralPolicy = {
   fuzzyExpandDeadlineMs: 1000,
   fuzzyResolveDeadlineMs: 2000,
   fuzzyVariantDeadlineMs: 500,
+  recencyTrigramShare: 0.6,
+  recencyFirstSliceMs: 20 * 60_000,
+  recencySliceGrowth: 4,
   snippetRadius: 160,
 };
 
@@ -155,6 +170,13 @@ export interface TierReceipt {
   returned: number;
   elapsedMs: number;
   error?: string;
+  /**
+   * Exact only (WI-10005294): the trigram route hit its deadline, so the hits come from the recency walk
+   * instead. `completeSince` = every matching turn with `ts >= completeSince` is in `returned`; older matches
+   * may exist. Absent on a complete result.
+   */
+  partial?: boolean;
+  completeSince?: string;
   /** Fuzzy only: what each expanded token was expanded to. */
   expanded?: Array<{ token: string; words: Array<{ word: string; similarity: number; ndoc: number }> }>;
   /** Fuzzy only: variants that hit their own deadline (or the total budget) and so contributed no hits. */
@@ -236,6 +258,147 @@ const isStatementTimeout = (err: unknown): boolean =>
   (err as { code?: string } | null)?.code === '57014';
 
 /**
+ * The windows-route lookup for one lowered literal (P-011). `windowPattern` is the escaped
+ * `%prefix%` matched against `session_turn_windows.wtext`; the prefix is the literal's first
+ * `SESSION_TURN_WINDOW_MAX_LITERAL` characters (counted in code points, as PostgreSQL counts them) so
+ * the lookup stays recall-complete for any literal length. `verify` = the literal was longer than the
+ * prefix, so the parent turn must still be checked against the FULL literal.
+ */
+export interface WindowsLookup {
+  windowPattern: string;
+  verify: boolean;
+}
+
+export function windowsLookupFor(loweredLiteral: string): WindowsLookup {
+  const chars = Array.from(loweredLiteral);
+  const verify = chars.length > SESSION_TURN_WINDOW_MAX_LITERAL;
+  const prefix = verify ? chars.slice(0, SESSION_TURN_WINDOW_MAX_LITERAL).join('') : loweredLiteral;
+  return { windowPattern: `%${escapeLikeLiteral(prefix)}%`, verify };
+}
+
+type Tx = postgres.TransactionSql;
+
+/**
+ * The scope + filter predicates every exact-tier query shape applies to `harness_shared.session_turns`
+ * (the trigram branch's candidate CTE AND the recency walk) — one definition so the two can never disagree
+ * about which turns a filter admits. Includes the D-006 reader rule, fail closed (WI-10005570): a turn an
+ * agent recorded inside one of its disclosure windows matches only when `filters.readerIds` names that agent.
+ */
+function turnScopePredicate(tx: Tx, q: SessionTurnLiteralQuery) {
+  const f = q.filters ?? {};
+  const owners = f.owners && f.owners.length ? f.owners : null;
+  return tx`(workspace_id = ${q.workspaceId} OR workspace_id = 'default')
+             AND (${q.scopeFilter ?? null}::text IS NULL OR harness_slug = ${q.scopeFilter ?? null})
+             AND (${owners}::text[] IS NULL OR owner = ANY(${owners}::text[]))
+             AND (${f.speaker ?? null}::text IS NULL OR speaker = ${f.speaker ?? null})
+             AND (${f.turnOrigin ?? null}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin ?? null})
+             AND (${f.ownerOnly ?? null}::boolean IS NULL OR NOT ${f.ownerOnly ?? null} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
+             AND (${f.ownerCandidates ?? null}::boolean IS NULL OR NOT ${f.ownerCandidates ?? null} OR turn_origin_verdict = ANY(${OWNER_CANDIDATE_TURN_VERDICTS as string[]}::text[]))
+             AND (${f.sessionId ?? null}::text IS NULL OR session_id = ${f.sessionId ?? null})
+             AND (${f.sourceKind ?? null}::text IS NULL OR source_kind = ${f.sourceKind ?? null})
+             AND (${f.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since ?? null}::timestamptz)
+             AND (${f.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until ?? null}::timestamptz)
+             AND NOT ${restrictedTurnSql(tx as unknown as Parameters<typeof restrictedTurnSql>[0], 'session_turns', f.readerIds ?? []) as never}`;
+}
+
+// ─────────────────────── recency walk (WI-10005294, D-015) ───────────────────────
+
+/** A time slice of `session_turns.ts`: `loMs <= ts < hiMs`; a null bound is open. */
+export interface RecencySlice {
+  loMs: number | null;
+  hiMs: number | null;
+}
+
+/** The oldest slice reaches back this far, then its lower bound opens (a stale or skewed `ts` is still found). */
+const RECENCY_WALK_HORIZON_MS = 400 * 24 * 3_600_000;
+
+/**
+ * Newest-first slices that tile all of time with no gap and no overlap: the first is open above (catches a
+ * future-dated or clock-skewed turn) and spans `firstSliceMs`; each older slice spans `growth` times the
+ * previous; the last is open below. Geometric growth bounds the total work at a small multiple of the last
+ * slice walked, while the first slices stay small enough that a ubiquitous literal fills its limit inside one
+ * of them.
+ */
+export function recencySlices(nowMs: number, firstSliceMs: number, growth: number): RecencySlice[] {
+  const first = Math.max(1, Math.floor(firstSliceMs));
+  const g = Math.max(1.5, growth);
+  const slices: RecencySlice[] = [];
+  let hi: number | null = null;
+  let lo = nowMs - first;
+  let span = first;
+  for (;;) {
+    if (nowMs - lo >= RECENCY_WALK_HORIZON_MS) {
+      slices.push({ loMs: null, hiMs: hi });
+      return slices;
+    }
+    slices.push({ loMs: lo, hiMs: hi });
+    hi = lo;
+    span = Math.ceil(span * g);
+    lo = hi - span;
+  }
+}
+
+export interface RecencyWalk {
+  rows: LiteralRow[];
+  /** `filled` = `limit` rows found (the newest `limit` matches); `exhausted` = every slice ran; `timeout` = budget spent. */
+  status: 'filled' | 'exhausted' | 'timeout';
+  /** Lower bound (epoch ms) of the oldest slice that COMPLETED, or null when no slice completed (or all did). */
+  completeSinceMs: number | null;
+}
+
+/**
+ * Walk `session_turns` newest-first in time slices, verifying the literal per turn with `position()` — a
+ * predicate no trigram index serves, so the planner cannot pick the lossy GIN that makes a common literal
+ * slow — and stop at `limit` rows or the budget. Cost tracks turns walked, not the literal's trigram
+ * posting list, which is what makes it the right fallback when the trigram route times out. Ordering is by
+ * `ts` (the indexed column); a turn with a NULL `ts` is not walked.
+ */
+export async function runRecencyWalk(
+  sql: Sql,
+  q: SessionTurnLiteralQuery,
+  needle: string,
+  limit: number,
+  budgetMs: number,
+  policy: SessionTurnLiteralPolicy,
+  slices: readonly RecencySlice[] = recencySlices(Date.now(), policy.recencyFirstSliceMs, policy.recencySliceGrowth),
+): Promise<RecencyWalk> {
+  const t0 = Date.now();
+  const radius = policy.snippetRadius;
+  const rows: LiteralRow[] = [];
+  let completeSinceMs: number | null = null;
+  for (const slice of slices) {
+    const remaining = Math.floor(budgetMs - (Date.now() - t0));
+    if (remaining < 1) return { rows, status: 'timeout', completeSinceMs };
+    const want = limit - rows.length;
+    try {
+      const part = await sql.begin(async (tx) => {
+        await tx.unsafe(`SET LOCAL statement_timeout = ${remaining}`);
+        return (await tx`
+          SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug,
+                 ts::text AS ts, extract(epoch FROM ts)::float8 AS sort_epoch,
+                 ${needle}::text AS needle, 1 AS needle_ord,
+                 substr(text, GREATEST(position(${needle} in lower(text)) - ${radius}, 1), ${radius * 2} + length(${needle})) AS snippet
+            FROM harness_shared.session_turns
+           WHERE ${turnScopePredicate(tx, q)}
+             AND (${slice.loMs === null ? null : new Date(slice.loMs).toISOString()}::timestamptz IS NULL OR ts >= ${slice.loMs === null ? null : new Date(slice.loMs).toISOString()}::timestamptz)
+             AND (${slice.hiMs === null ? null : new Date(slice.hiMs).toISOString()}::timestamptz IS NULL OR ts < ${slice.hiMs === null ? null : new Date(slice.hiMs).toISOString()}::timestamptz)
+             AND position(${needle} in lower(text)) > 0
+           ORDER BY session_turns.ts DESC
+           LIMIT ${want}
+        `) as unknown as LiteralRow[];
+      });
+      rows.push(...part);
+      completeSinceMs = slice.loMs;
+      if (rows.length >= limit) return { rows, status: 'filled', completeSinceMs };
+    } catch (err) {
+      if (isStatementTimeout(err)) return { rows, status: 'timeout', completeSinceMs };
+      throw err;
+    }
+  }
+  return { rows, status: 'exhausted', completeSinceMs: null };
+}
+
+/**
  * ONE index-served literal branch: scope + filter predicates INSIDE the branch, a MATERIALIZED
  * candidate cap, then newest-first. `likePatterns` are already-escaped, already-lowercased
  * `%literal%` patterns; one pattern is a plain LIKE (the exact tier), several is LIKE ANY (the
@@ -249,32 +412,44 @@ async function runLiteralBranch(
   limit: number,
   deadlineMs: number,
   policy: SessionTurnLiteralPolicy,
+  windows?: WindowsLookup,
 ): Promise<{ rows: LiteralRow[]; deadline: boolean }> {
   const f = q.filters ?? {};
-  const owners = f.owners && f.owners.length ? f.owners : null;
   const radius = policy.snippetRadius;
   try {
     const rows = await sql.begin(async (tx) => {
       await tx.unsafe(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(deadlineMs))}`);
-      const match =
-        likePatterns.length === 1
+      // Legacy route: the whole-turn trigram predicate. Windows route (P-011): the window GIN already
+      // proved the literal's (<= 65-char) prefix occurs in the turn, so the parent-turn predicate is only
+      // re-checked when the literal was longer than one window overlap (prefix-filtered).
+      const match = windows
+        ? windows.verify
+          ? tx`lower(text) LIKE ${likePatterns[0]!}`
+          : tx`TRUE`
+        : likePatterns.length === 1
           ? tx`lower(text) LIKE ${likePatterns[0]!}`
           : tx`lower(text) LIKE ANY (${likePatterns as unknown as string[]}::text[])`;
+      // The windows candidate set: turns having ANY window that contains the literal, resolved BEFORE the
+      // parent-turn predicates. Per-window recheck is the lever: a 512-char window costs ~8 us to recheck
+      // where a whole turn (up to 8000 chars) costs ~80 us, and a window trigram match is ~20x rarer.
+      const hitCte = windows
+        ? tx`hit AS MATERIALIZED (
+          SELECT DISTINCT w.workspace_id, w.source_kind, w.session_id, w.turn_idx
+            FROM harness_shared.session_turn_windows w
+           WHERE (w.workspace_id = ${q.workspaceId} OR w.workspace_id = 'default')
+             AND (${f.sessionId ?? null}::text IS NULL OR w.session_id = ${f.sessionId ?? null})
+             AND (${f.sourceKind ?? null}::text IS NULL OR w.source_kind = ${f.sourceKind ?? null})
+             AND w.wtext LIKE ${windows.windowPattern}
+        ),`
+        : tx``;
+      const fromTurns = windows
+        ? tx`harness_shared.session_turns JOIN hit USING (workspace_id, source_kind, session_id, turn_idx)`
+        : tx`harness_shared.session_turns`;
       return (await tx`
-        WITH cand AS MATERIALIZED (
+        WITH ${hitCte} cand AS MATERIALIZED (
           SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, ingested_at, text
-            FROM harness_shared.session_turns
-           WHERE (workspace_id = ${q.workspaceId} OR workspace_id = 'default')
-             AND (${q.scopeFilter ?? null}::text IS NULL OR harness_slug = ${q.scopeFilter ?? null})
-             AND (${owners}::text[] IS NULL OR owner = ANY(${owners}::text[]))
-             AND (${f.speaker ?? null}::text IS NULL OR speaker = ${f.speaker ?? null})
-             AND (${f.turnOrigin ?? null}::text IS NULL OR turn_origin_verdict = ${f.turnOrigin ?? null})
-             AND (${f.ownerOnly ?? null}::boolean IS NULL OR NOT ${f.ownerOnly ?? null} OR turn_origin_verdict IN ('owner-typed', 'owner-dialog'))
-             AND (${f.ownerCandidates ?? null}::boolean IS NULL OR NOT ${f.ownerCandidates ?? null} OR turn_origin_verdict = ANY(${OWNER_CANDIDATE_TURN_VERDICTS as string[]}::text[]))
-             AND (${f.sessionId ?? null}::text IS NULL OR session_id = ${f.sessionId ?? null})
-             AND (${f.sourceKind ?? null}::text IS NULL OR source_kind = ${f.sourceKind ?? null})
-             AND (${f.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since ?? null}::timestamptz)
-             AND (${f.until ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until ?? null}::timestamptz)
+            FROM ${fromTurns}
+           WHERE ${turnScopePredicate(tx, q)}
              AND ${match}
            LIMIT ${policy.candidateCap}
         )
@@ -323,18 +498,40 @@ function toHit(
   };
 }
 
-/** The exact tier. Caller has already established readiness; this never checks it. */
+/**
+ * The exact tier. Caller has already established readiness; this never checks it. `route` is the
+ * route readiness chose (`sessionSearchTierAvailability(...).exact.route`): `windows` resolves the
+ * literal through the per-window trigram index (bounded latency for common literals), `legacy` (the
+ * default) through the whole-turn trigram index.
+ */
 export async function retrieveSessionTurnExact(
   sql: Sql,
   q: SessionTurnLiteralQuery,
   policy: SessionTurnLiteralPolicy = SESSION_TURN_LITERAL_POLICY,
-): Promise<{ hits: SessionTurnLiteralHit[]; deadline: boolean }> {
+  route: 'windows' | 'legacy' = 'legacy',
+): Promise<{ hits: SessionTurnLiteralHit[]; deadline: boolean; partial?: { completeSince: string | null } }> {
   const literal = q.query.trim();
   const lowered = literal.toLowerCase();
+  const limit = policy.exactReserve + policy.fuzzyReserve;
+  const t0 = Date.now();
+  // The trigram route gets a share of the budget; a literal present in most turns cannot finish inside it.
+  const trigramBudgetMs = Math.max(1, Math.floor(policy.exactDeadlineMs * policy.recencyTrigramShare));
   const { rows, deadline } = await runLiteralBranch(
-    sql, q, [`%${escapeLikeLiteral(lowered)}%`], [lowered], policy.exactReserve + policy.fuzzyReserve, policy.exactDeadlineMs, policy,
+    sql, q, [`%${escapeLikeLiteral(lowered)}%`], [lowered], limit, trigramBudgetMs, policy,
+    route === 'windows' ? windowsLookupFor(lowered) : undefined,
   );
-  return { hits: rows.map((r) => toHit(r, 'exact')), deadline };
+  if (!deadline) return { hits: rows.map((r) => toHit(r, 'exact')), deadline: false };
+  // WI-10005294 (D-015): never answer a deadline with nothing when matches exist. Spend the rest of the
+  // budget walking newest-first; the first `limit` verified hits ARE the newest `limit` matches, so a filled
+  // (or exhausted) walk is a complete answer, and a timed-out walk is a bounded PARTIAL with an honest marker.
+  const walk = await runRecencyWalk(sql, q, lowered, limit, policy.exactDeadlineMs - (Date.now() - t0), policy);
+  const hits = walk.rows.map((r) => toHit(r, 'exact'));
+  if (walk.status !== 'timeout') return { hits, deadline: false };
+  return {
+    hits,
+    deadline: true,
+    partial: { completeSince: walk.completeSinceMs === null ? null : new Date(walk.completeSinceMs).toISOString() },
+  };
 }
 
 interface Neighbour { word: string; similarity: number; ndoc: number }
@@ -495,8 +692,16 @@ export async function retrieveSessionTurnLiteralTiers(
     if (!availability.exact.available) return { hits: [], receipt: skipped(availability.exact.skipReason ?? 'exact-unavailable') };
     const t0 = Date.now();
     try {
-      const { hits, deadline } = await retrieveSessionTurnExact(sql, q, policy);
-      return { hits, receipt: { status: deadline ? 'deadline' : 'ran', returned: hits.length, elapsedMs: Date.now() - t0 } };
+      const { hits, deadline, partial } = await retrieveSessionTurnExact(sql, q, policy, availability.exact.route ?? 'legacy');
+      return {
+        hits,
+        receipt: {
+          status: deadline ? 'deadline' : 'ran',
+          returned: hits.length,
+          elapsedMs: Date.now() - t0,
+          ...(partial ? { partial: true, ...(partial.completeSince ? { completeSince: partial.completeSince } : {}) } : {}),
+        },
+      };
     } catch (err) {
       return { hits: [], receipt: { status: 'error', returned: 0, elapsedMs: Date.now() - t0, error: (err as Error).message } };
     }

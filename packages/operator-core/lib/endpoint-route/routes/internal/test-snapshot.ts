@@ -6,7 +6,6 @@ import { getOrgPg, generated } from '@papercusp/db-org';
 import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { notifySyncInvalidate } from '../../../sync-sse';
-import { deriveAssertionStatus } from '../../../harness-test-rollup';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
@@ -26,7 +25,7 @@ export default defineTool({
     const m = authHeader.match(/^Bearer\s+(\S+)$/i);
     if (!m) return Response.json({ error: 'missing bearer' }, { status: 401 });
     const token = m[1];
-    const { db, sql } = getOrgPg();
+    const { db } = getOrgPg();
     const tokenRows = await db.select({ harness_slug: ti.harnessSlug }).from(ti).where(eq(ti.token, token)).limit(1);
     if (tokenRows.length === 0) return Response.json({ error: 'invalid bearer' }, { status: 401 });
     const slug = tokenRows[0].harness_slug;
@@ -62,53 +61,11 @@ export default defineTool({
       keep.push({ testId: f.testId, name, status, durationMs, lastRunTs, payload });
     }
 
-    // The plan↔test link, through the VAL (Phase E P-058 + Phase G P-080/P-081).
-    // One assertion fetch drives three things; fail-soft if the table is absent
-    // and skipped entirely for harnesses not yet on the inline-VAL flow.
-    if (keep.length > 0) {
-      try {
-        const assertions = await sql<
-          { val_id: string; plan_slug: string; item_id: string; requires_test: boolean }[]
-        >`
-          SELECT val_id, plan_slug, item_id, requires_test
-            FROM harness_shared.harness_plan_assertions
-           WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
-        if (assertions.length > 0) {
-          const byVal = new Map(assertions.map((a) => [a.val_id, a]));
-          const coversOf = (k: Keep): string[] => {
-            const raw = (k.payload as { coversVALs?: unknown }).coversVALs;
-            return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];
-          };
-
-          // P-058: quarantine test rows whose coversVALs reference an unknown VAL.
-          for (const k of keep) {
-            const covers = coversOf(k);
-            if (covers.length > 0 && covers.some((v) => !byVal.has(v))) {
-              k.status = 'invalid_val_ref';
-            }
-          }
-
-          // P-080: stamp plan linkage (plan_slug + item ids) onto each test's
-          // payload, resolved from the VALs it covers. Empty/unmatched → no stamp
-          // (infra/Built-in tests stay plan-unlinked, P-084).
-          for (const k of keep) {
-            const matched = coversOf(k)
-              .map((v) => byVal.get(v))
-              .filter((a): a is NonNullable<typeof a> => !!a);
-            if (matched.length > 0) {
-              k.payload = {
-                ...k.payload,
-                planSlug: matched[0].plan_slug,
-                planItemIds: Array.from(new Set(matched.map((a) => a.item_id))),
-              };
-            }
-          }
-
-        }
-      } catch {
-        /* assertions table unavailable — skip linkage (fail-soft) */
-      }
-    }
+    // The plan↔test link through inline VAL-* ids (P-058 quarantine, P-080 plan
+    // stamping, P-081 display-cache refresh) is RETIRED with the VAL store
+    // (verification-system-improvements-2026-10-10 P-003). A snapshot no longer
+    // reads or writes it; the requirement contract (spec clauses + bound evidence)
+    // carries the plan↔test link.
 
     if (keep.length === 0) {
       await db.delete(ht).where(and(eq(ht.harnessSlug, slug), eq(ht.phase, phase)));
@@ -130,44 +87,6 @@ export default defineTool({
           },
         });
       }
-    }
-
-    // P-081 / EI-21437624500324717: refresh the display-cache status only
-    // AFTER this phase's replace-all write, then derive against ALL phases.
-    // Deriving from `keep` alone is wrong: a staging snapshot must not reset a
-    // VAL still covered in production. Conversely, skipping derived `todo`
-    // leaves a stale `passed` forever after the final covering test disappears.
-    // Reading the post-write table solves both cases, including an empty
-    // current-phase snapshot, while the verdict-bearing consumers continue to
-    // derive live from this same evidence rather than trusting the cache.
-    try {
-      const assertions = await sql<{ val_id: string }[]>`
-        SELECT val_id
-          FROM harness_shared.harness_plan_assertions
-         WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
-      if (assertions.length > 0) {
-        const testRows = await sql<
-          { status: string; payload: { coversVALs?: unknown } | null }[]
-        >`
-          SELECT status, payload
-            FROM harness_shared.harness_tests
-           WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
-        const tests = testRows.map((row) => ({
-          status: row.status,
-          coversVALs: Array.isArray(row.payload?.coversVALs)
-            ? row.payload.coversVALs.filter((val): val is string => typeof val === 'string')
-            : [],
-        }));
-        for (const assertion of assertions) {
-          const derived = deriveAssertionStatus(assertion.val_id, tests);
-          await sql`
-            UPDATE harness_shared.harness_plan_assertions
-               SET status = ${derived}
-             WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND val_id = ${assertion.val_id}`;
-        }
-      }
-    } catch {
-      /* assertions/tests table unavailable — skip display-cache refresh (fail-soft) */
     }
 
     void notifySyncInvalidate('harnessTests.byHarness', { harnessSlug: slug, phase }).catch(() => {});

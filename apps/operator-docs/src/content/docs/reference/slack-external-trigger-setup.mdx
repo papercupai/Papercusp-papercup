@@ -4,94 +4,93 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "Slack external triggers — Socket Mode setup"
-description: "Create the Papercusp Slack app, store its Socket Mode credentials outside the repository, connect an owned source, and verify replay and connection health."
+title: "Slack setup — Cupboard package, bug triage, and report-bug gestures"
+description: "Install the Slack package from the Cupboard and connect it on Settings → Integrations, turn Slack bug reports and the report-bug gestures (shortcut, :bug: reaction, bug mention) into tickets with the Bug triage trigger pack, optionally add organization-wide history and live search, and check that it works."
 type: runbook
 discovered: 2026-08-22
-tags: ["external-triggers", "slack", "socket-mode", "setup"]
+tags: ["external-triggers", "slack", "socket-mode", "setup", "cupboard", "bug-triage"]
 status: active
 documents:
-  - "packages/operator-core/lib/external-triggers/slack.ts"
-  - "packages/operator-core/lib/external-triggers/slack-socket-manager.ts"
+  - "libs/papercusp/plugins/slack/papercusp.json"
+  - "libs/papercusp/plugins/slack/provider.mjs"
+  - "libs/papercusp/plugins/slack/README.md"
+  - "libs/papercusp/plugins/bug-triage/papercusp.json"
+  - "libs/papercusp/plugins/bug-triage/report.md"
+  - "apps/operator/app/settings/integrations/page.tsx"
+  - "apps/operator/app/settings/integrations/ProviderAppRegistration.tsx"
+  - "apps/operator/app/settings/integrations/TriggerPackSection.tsx"
+  - "packages/operator-core/lib/providers/provider-socket-ingress.ts"
   - "packages/operator-core/lib/endpoint-route/routes/admin/external-triggers.ts"
+  - "packages/operator-core/lib/external-triggers/admin.ts"
+  - "packages/operator-core/lib/providers/slack/slack-pilot-journeys.integration.test.ts"
 plans:
   - "external-triggers-gmail-slack-2026-08-22"
+  - "cupboard-distributable-integrations-2026-10-10"
 ---
 
 ## What this installs
 
-Papercusp uses Slack Socket Mode: the desktop makes an outbound WebSocket connection and exposes no public webhook. Live mention, DM, and `/papercusp` envelopes are acknowledged immediately and deduplicated by Slack `event_id`. After a cold start, configured channels reconcile through `conversations.history`; the adapter performs at most one page per minute and honors HTTP 429 `Retry-After`.
+Slack connects through the **Slack** package from the Cupboard (`libs/papercusp/plugins/slack`, published as `Papercusp/papercusp-slack`). It uses Slack Socket Mode: the host makes an outbound WebSocket connection and exposes no public webhook, acknowledges each envelope immediately, and deduplicates deliveries by Slack `event_id`. Messages arrive as provider-neutral `chat-message` records and `ext:slack:<event>` events. The same package handles the Slack report-bug gestures (the **Report a bug** shortcut, a :bug: reaction and a bug mention), and an organization-wide source can also bring in channel history and live search.
 
-## 0. Both routes below need a TRUSTED principal — a bare curl is refused
+Turning Slack messages into tickets is a separate package, the **Bug triage** trigger pack (`libs/papercusp/plugins/bug-triage`). It reads `chat-message` events from the channels you pick and files the ones that report a software bug as tickets in the project you pick, through an installed ticket provider (Asana or Linear). It also files every message someone reports with one of the gestures.
 
-⚠ **Read this before running anything.** The two routes in steps 1 and 3 declare `auth: { trust: ['verified', 'trusted'] }` (`external-triggers.ts`, the `slackManifest` and `slackConnect` definitions). That is deliberate: provider-token setup must not inherit the cookie-less `unverified-loopback` fallback that sibling admin routes accept.
+## Connect Slack from the Cupboard
 
-A plain shell `curl` resolves at rung 5 of the principal ladder (`auth/require-principal.ts`) to `trust: 'unverified-loopback'`, which is NOT in that allowlist, so it fails:
+1. Open the **Cupboard**, find **Slack**, and install it. The install review lists what the package may reach (`slack.com` only) and asks for your consent.
+2. Go to **Settings → Integrations** and open the **Slack** card. Choose **Create app**: Slack opens with the package's app definition filled in (Socket Mode, the `/papercusp` command, the **Report a bug** message shortcut, the message, mention and reaction events, and only the scopes those need). If the link cannot open, copy the definition from the card and paste it into **Create New App → From a manifest**.
+3. Install the app to your Slack workspace. Under **Basic Information → App-Level Tokens**, generate an app-level token with `connections:write`; it starts with `xapp-`. Copy the bot token from **OAuth & Permissions**; it starts with `xoxb-`.
+4. Paste both tokens into the card's masked fields and connect. Each value is checked against the format the package declares before it is saved. Tokens are stored host-side, are never shown again, and are never given to the package; the host attaches the bot token only to requests for `slack.com`.
+5. Invite the bot to every channel it should read.
 
-```
-$ curl -fsS http://127.0.0.1:3070/api/admin/triggers/slack/manifest
-HTTP 403
-{"error":{"code":"forbidden","message":"trust unverified-loopback not in allowlist"}}
-```
+⚠ Connect each Slack app once. Slack spreads one app's events across all of its open Socket Mode connections, so connecting the same app to two sources splits the traffic between them and each sees only part of it.
 
-**The fix is to authenticate as the superuser bearer** (rung 3 → `trust: 'trusted'`), validated against `~/.papercusp/superuser-token` (mode 0600) and additionally required to be loopback. Every curl below carries it:
+## Turn Slack bug reports into tickets
 
-```bash
--H "Authorization: Bearer $(cat ~/.papercusp/superuser-token)"
-```
+1. Install and connect a ticket provider (**Asana** or **Linear**) from the Cupboard if you have not already.
+2. Install **Bug triage** from the Cupboard. Installing does not turn it on.
+3. On **Settings → Integrations**, open the **Bug triage** section, choose the project, then pick the channels to watch and where to file bugs. Both are pickers filled from the connected providers; nothing is typed.
+4. Review the bindings, which start disarmed, and arm them. There are four: messages posted in the watched channels, the :bug: reaction, the **Report a bug** shortcut, and a bug mention.
 
-No `Origin` header is needed. `requireAllowedOriginOr403` (`endpoint-route/cors.ts`) explicitly allows a request that sends no `Origin` — "non-browser: curl, server-to-server, SU bearer".
+A bug report posted in a watched channel becomes one ticket at the chosen destination. Other messages file nothing. The destination is fixed by the installation, so a message cannot redirect a ticket.
 
-⛔ **Do not "fix" a 403 here by adding `unverified-loopback` to either route's auth tier.** That gate is the control keeping a cookie-less caller away from provider-token storage. Authenticate the caller instead.
+## Report a bug from Slack
 
-There is currently **no UI path**: `/admin/triggers` contains no Slack surface, and nothing outside the route definition calls `/admin/triggers/slack/connect`. The corrected curl below is the only supported route today.
+Each of these files the message as one ticket at the installation's destination, quoting it, without asking whether it is a bug:
 
-## 1. Create the Slack app from the maintained manifest
+- **Report a bug shortcut**: on a message, open the message menu and choose **Report a bug**. A short form opens in Slack where you can add a note; submitting it files the message.
+- **:bug: reaction**: react to the message with :bug:.
+- **Bug mention**: mention the app followed by `bug` (for example `@Papercusp bug` or `@Papercusp report this bug`). In a thread, the mention files the message it replies to, plus anything you add.
 
-Fetch the current manifest from the local operator:
+A message outside the watched channels is not filed. A bug mention is not also triaged as an ordinary message.
 
-```bash
-curl -fsS -H "Authorization: Bearer $(cat ~/.papercusp/superuser-token)" \
-  http://127.0.0.1:3070/api/admin/triggers/slack/manifest | jq .manifest
-```
+Known issue: reacting with :bug: to a message that triage already filed can file a second ticket (WI-6554700010008873).
 
-Paste that JSON into **Slack API → Your Apps → Create New App → From an app manifest**. The manifest enables Socket Mode, subscribes to `app_mention` and `message.im`, declares the `/papercusp` command, and requests the history scopes required for offline reconciliation.
+## Organization-wide history and live search
 
-In **Event Subscriptions**, enable Slack's **Delayed Events** option when it is available for the workspace. It extends retry coverage for a desktop that is temporarily offline; provider history remains the authoritative cold-gap source.
+Both are optional switches on the Slack card.
 
-## 2. Generate and install the tokens
+- **Organization-wide**: the source brings in the history of every channel the app is in, thread replies included. Each channel's readers are exactly its current Slack members, so a message is readable only by people in its channel. History arrives as `history` records, so workflows bound to new messages do not fire on old ones.
+- **Live search**: searches Slack directly for the person searching. Each person pastes their own user token (`xoxp-…`, from **OAuth & Permissions → User OAuth Token**). It is theirs alone and is sent to `slack.com` only for their searches. Slack decides what they can see, and nothing is stored.
 
-1. Under **Basic Information → App-Level Tokens**, generate an app token with `connections:write`; it starts with `xapp-`.
-2. Install the app to the workspace and copy the bot token; it starts with `xoxb-`.
-3. Invite the bot to every public/private channel that should participate. Record those channel IDs. DMs are learned automatically after the first live event.
+## Check that it works
 
-## 3. Connect without putting secrets in the tree or shell history
-
-The connect route validates the bot token with `auth.test`, writes both tokens through the existing OAuth token-storage adapter, and stores only an opaque `slack-socket:<field>` reference on `trigger_sources`. The local token file is mode 0600 and its Postgres mirror is encrypted. Responses never echo either token.
-
-```bash
-read -rsp 'Slack app token (xapp-): ' SLACK_APP_TOKEN; echo
-read -rsp 'Slack bot token (xoxb-): ' SLACK_BOT_TOKEN; echo
-SLACK_CHANNELS='["C0123456789"]'
-jq -n \
-  --arg appToken "$SLACK_APP_TOKEN" \
-  --arg botToken "$SLACK_BOT_TOKEN" \
-  --argjson channels "$SLACK_CHANNELS" \
-  '{appToken:$appToken,botToken:$botToken,installSlug:"papercusp",channels:$channels}' \
-| curl -fsS -X POST http://127.0.0.1:3070/api/admin/triggers/slack/connect \
-    -H "Authorization: Bearer $(cat ~/.papercusp/superuser-token)" \
-    -H 'content-type: application/json' --data-binary @-
-unset SLACK_APP_TOKEN SLACK_BOT_TOKEN SLACK_CHANNELS
-```
-
-A credential problem surfaces as HTTP 400 with a detail naming the provider call, e.g. `{"ok":false,"error":"slack_connect_failed","detail":"slack_auth_test_200:invalid_auth"}`. That response means the request cleared the auth tier and the CSRF gate and reached Slack — so it is a token problem, not a setup-path problem.
-
-## 4. Verify health
-
-- `triggers:status` shows the Slack source as `connected`; a bad or missing credential becomes `error`, while a transient network or rate-limit failure becomes `degraded`.
-- A `kind='slack'` row appears in `harness_shared.trigger_sources` for the workspace.
-- `schedule:inventory` shows the managed `slack-socket-reconcile` lifecycle timer, including its last fire and last error.
-- Replaying the same Socket Mode event does not launch twice because the canonical delivery ledger keys the Slack event by `event_id`.
-- Once the source is live, `ext:slack:<event>` becomes awaitable (`events:catalog`, family `external-trigger`), so downstream acceptance should PARK on that key rather than poll for the row.
+- The Slack card shows the connection as connected. A bad or revoked token shows an error on the card instead.
+- Post a bug report in a watched channel: one `ext:slack:message` delivery, one run of the bug-triage binding, and one ticket at the destination. Replaying the same Slack `event_id` neither launches again nor files a second ticket.
+- Use **Report a bug** on a message in a watched channel: one `ext:slack:report` delivery and one ticket at the destination.
+- `ext:slack:<event>` keys are awaitable (`events:catalog`, family `external-trigger`), so an acceptance check can wait on the event instead of polling.
 
 Slack protocol references: https://docs.slack.dev/apis/events-api/using-socket-mode/ · https://docs.slack.dev/reference/app-manifest/ · https://docs.slack.dev/reference/methods/conversations.history/ · https://docs.slack.dev/apis/web-api/rate-limits/
+
+## Support, freshness and recovery
+
+Papercusp maintains the Slack package and host integration. The workspace administrator owns app installation, Slack scopes, token renewal, channel membership and identity mapping. Organization reads use `source-acl`; stored corpus reads also require the reader's mapped identity and corpus grant. A channel access change takes effect after a successful membership refresh, which unfinished backfill or provider backoff can delay. Live search uses the searching person's own Slack token and current Slack access; revoking their identity mapping prevents that search. Read access never grants permission to post: `chat.reply` also requires its applicable write policy and Slack's `chat:write` scope.
+
+While connected, the socket delivers edits and deletions. After an outage, each successful sync round rotates a seven-day scan across known channels. Whole-history re-walks rotate about once every 30 days, covering older posts and threads. Recovery depends on completing those paginated scans; throttling, missing scopes and an offline host extend the lag. A recent successful pass alone does not certify complete backfill or immediate source revocation.
+
+Authorized administrators can inspect the shared `/admin/triggers` snapshot, also used by `triggers:list` and `triggers:status`. Source fields include `scope`, `scopeRef`, `permissionMode`, `backfillStatus`, `lastSyncAt`, `nextAttemptAt`, `failureCount`, `status` and `lastError`. `lastSyncAt` records a successful driver pass, including a pass with more pages remaining; read it with `backfillStatus`. A null value means no successful driver pass is recorded. The projection includes the policy mode without expanding ACLs or credentials.
+
+- `rate_limited`: honor `nextAttemptAt` and Slack's `Retry-After`. The driver keeps the uncommitted cursor and resumes it after backoff.
+- `reconnect_required`: restore the revoked token or missing Slack scope, then reconnect on Settings → Integrations. The source remains in error without automatic retries until reconnected.
+- After recovery, verify a new successful pass, cleared error/failure count, completed backfill, and a scoped read as the affected person.
+
+The maintained package support contract in `libs/papercusp/plugins/slack/README.md` describes version 0.2.0. Internal stand-in Slack acceptance demonstrates the host/package paths; customer-tenant and packaged-release qualification remain separate. Private network reachability does not apply to this package's `slack.com`-only egress.

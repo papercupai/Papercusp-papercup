@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { asSevereEventEmitter, renderSevereEventEmitter } from '../../severe-event-emitter';
+
 /**
  * inbox-visibility.ts — the PURE "is this entry visible in a default coord:inbox
  * read?" predicates. PURE: no I/O, no PG, no tool registration.
@@ -100,26 +103,22 @@ export function isAmbientBroadcast(e: Record<string, unknown>): boolean {
 }
 
 /**
- * Is this entry addressed to a SPECIFIC reader rather than broadcast to everyone?
+ * Is this entry addressed to this specific reader rather than broadcast to everyone?
  *
- * P-001 (tool-contract-repair-2026-09-05): `coord:inbox { directed: true }` is the
- * "messages actually addressed to me" filter — the question the tool exists to
- * answer, and until now the one narrowing it could not express. The ambient filter
- * suppresses only CATEGORIZED system broadcasts, so an ordinary peer `to:['*']`
- * broadcast still lands in the default window; `unanswered_only` is stricter in the
- * other direction (it also requires an expected, still-missing reply).
+ * P-001: coord:inbox's directed filter answers "who wrote to ME." Its base read
+ * includes entries for this reader and broadcasts, so a mixed recipient list is
+ * directed only when it actually names ownerId. For example, ['*', ownerId] is
+ * directed to this reader, while ['*', otherOwner] is still only a broadcast here.
+ * isAmbientBroadcast answers a different question: whether a categorized system
+ * broadcast should be hidden by default.
  *
- * The delivery predicate is deliberately the SAME one `isAmbientBroadcast` applies
- * above — all-'*' is broadcast, and mixed `['*', owner]` counts as directed — so the
- * two filters cannot drift into disagreeing about what "directed" means. An entry
- * with no usable `to` array is treated as directed: it reached this reader's inbox
- * somehow, and silently hiding it would make the filter lossy in the one direction
- * an inbox filter must never be.
+ * Keep the fail-open for a missing or malformed recipient list: such an entry has
+ * already reached this reader's inbox, and silently hiding it would be lossy.
  */
-export function isDirectedDelivery(e: Record<string, unknown>): boolean {
+export function isDirectedDelivery(e: Record<string, unknown>, ownerId: string): boolean {
   const recipients = e["to"];
   if (!Array.isArray(recipients) || recipients.length === 0) return true;
-  return !recipients.every((recipient) => recipient === "*");
+  return ownerId.length > 0 && recipients.includes(ownerId);
 }
 
 /** EI-6144 ambient/broadcast coalescing: collapse REPEATED categorized system
@@ -150,6 +149,106 @@ export function isDirectedDelivery(e: Record<string, unknown>): boolean {
  *  than repetition. A count is signal; an instant is noise. */
 const VOLATILE_TIMESTAMP_RE =
   /\d{4}-\d{2}-\d{2}[T ][\d:]{5,8}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+
+function isSystemNotice(entry: Record<string, unknown>): boolean {
+  const to = entry['to'];
+  return entry['auto'] === true && entry['kind'] === 'message' && !entry['lifecycle'] &&
+    Array.isArray(to) && to.length > 0 && to.every(recipient => recipient === '*') &&
+    typeof entry['category'] === 'string' && typeof entry['summary'] === 'string';
+}
+
+/** Native delivery only: derive scope from live presence and held claims, never
+ * from an alarm's guessed audience. VIEW/feed history keeps the complete rows.
+ * A failed scope read passes null and preserves delivery. */
+export function relevantSystemNoticeDelivery<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  scope: { ownerId: string; workItemIds: readonly string[]; planSlug?: string | null;
+    files?: readonly string[]; fleetSlug?: string | null } | null,
+): { entries: T[]; excluded: number } {
+  if (!scope) return { entries: [...entries], excluded: 0 };
+  const refs = [scope.ownerId, ...scope.workItemIds, scope.planSlug, scope.fleetSlug,
+    ...(scope.files ?? [])].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0);
+  const mentions = (text: string, ref: string): boolean => {
+    for (let index = text.indexOf(ref); index >= 0; index = text.indexOf(ref, index + 1)) {
+      const before = text[index - 1];
+      const after = text[index + ref.length];
+      if ((!before || !/[\w./-]/.test(before)) && (!after || !/[\w./-]/.test(after))) return true;
+    }
+    return false;
+  };
+  const kept = entries.filter(entry => {
+    if (!isSystemNotice(entry) || entry['blocking'] === true ||
+        ['ack', 'answer', 'action'].includes(String(entry['expects']))) return true;
+    // Exclude emitter bookkeeping: its checkout/cwd identifies the producer,
+    // not the subject. Preserve both structured references and literal prose.
+    const text = JSON.stringify([entry['summary'], entry['body'], entry['sections'],
+      entry['condition_key'], entry['resolves_condition'], entry['resolves_conditions'],
+      entry['plan_slug'], entry['files'], entry['items'], entry['why']]);
+    return refs.some(ref => mentions(text, ref));
+  });
+  return { entries: kept, excluded: entries.length - kept.length };
+}
+
+/** Remember only compact fingerprints on the existing two-phase inbox cursor.
+ * Public inbox VIEW reads do not use this filter. Directed/mixed deliveries and
+ * peer broadcasts always pass through. Losing state re-delivers, never skips. */
+export function changedSystemNoticeDelivery<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  previous: unknown,
+  shownLimit = entries.length,
+): { entries: T[]; state: Record<string, string>; suppressed: number } {
+  const state: Record<string, string> = {};
+  if (previous && typeof previous === 'object' && !Array.isArray(previous)) {
+    for (const [key, value] of Object.entries(previous)) {
+      if (/^[a-f0-9]{64}$/.test(key) && typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)) {
+        state[key] = value;
+      }
+    }
+  }
+  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const kept: T[] = [];
+  const pending = new Map<T, { key: string; fingerprint: string }>();
+  for (const entry of entries) {
+    if (!isSystemNotice(entry) || entry['blocking'] === true ||
+        ['ack', 'answer', 'action'].includes(String(entry['expects']))) {
+      kept.push(entry);
+      continue;
+    }
+    const normalize = (value: unknown): unknown =>
+      typeof value === 'string' ? value.replace(VOLATILE_TIMESTAMP_RE, '<ts>') : value;
+    const emitter = asSevereEventEmitter(entry['emitter']);
+    let body = entry['body'];
+    if (emitter && typeof body === 'string') {
+      const trailer = renderSevereEventEmitter(emitter);
+      if (body.endsWith(trailer)) body = body.slice(0, -trailer.length);
+    }
+    const condition = entry['condition_key'];
+    const key = digest([entry['from'], typeof condition === 'string' && condition
+      ? condition : [entry['kind'], entry['category'], normalize(entry['summary'])]]);
+    const sectionText = body === undefined && Array.isArray(entry['sections'])
+      ? entry['sections'].map((section) => section && typeof section === 'object'
+        ? normalize((section as Record<string, unknown>)['text']) : null) : null;
+    const fingerprint = digest([entry['kind'], entry['category'], normalize(entry['summary']),
+      normalize(body), sectionText, entry['resolved'] === true, emitter?.pid, emitter?.startedAt]);
+    if (state[key] !== fingerprint) kept.push(entry);
+    pending.set(entry, { key, fingerprint });
+  }
+  // Native injection renders the newest bounded rows. Never remember a notice
+  // that its overflow omitted. Machine messages have no intent/digest collapse.
+  const shown = shownLimit > 0
+    ? [...kept].sort((a, b) => String(a['ts']).localeCompare(String(b['ts']))).slice(-shownLimit)
+    : [];
+  for (const entry of shown) {
+    const notice = pending.get(entry);
+    if (!notice) continue;
+    const { key, fingerprint } = notice;
+    delete state[key];
+    state[key] = fingerprint;
+  }
+  const keys = Object.keys(state);
+  for (const key of keys.slice(0, Math.max(0, keys.length - 256))) delete state[key];
+  return { entries: kept, state, suppressed: entries.length - kept.length };
+}
 
 export function coalesceRepeatedBroadcasts<T extends Record<string, unknown>>(
   entries: readonly T[],
@@ -236,23 +335,166 @@ export function inboxPriorityBucket(e: Record<string, unknown>): number {
   return 2;
 }
 
+interface InboxChunkPart {
+  group: string;
+  part: number;
+  of: number;
+}
+
+const CHUNK_HEADER_RE = /^⟦part (\d+)\/(\d+) g:([0-9a-f]{8})( cont)?⟧$/;
+const CHUNK_SUMMARY_RE = /\(part (\d+)\/(\d+)\)$/;
+
+/**
+ * Read the chunker-owned header + summary suffix. Requiring both keeps an
+ * ordinary message that merely starts with marker-like prose out of the group
+ * path. These fields are already present on every persisted coord:send chunk.
+ */
+function inboxChunkPart(e: Record<string, unknown>): InboxChunkPart | null {
+  const body = e['body'];
+  if (typeof body !== 'string') return null;
+  const header = CHUNK_HEADER_RE.exec(body.split(/\r?\n/, 1)[0] ?? '');
+  const summary = typeof e['summary'] === 'string' ? CHUNK_SUMMARY_RE.exec(e['summary']) : null;
+  if (!header || !summary) return null;
+  const part = Number(header[1]);
+  const of = Number(header[2]);
+  if (
+    part !== Number(summary[1]) ||
+    of !== Number(summary[2]) ||
+    of < 2 ||
+    part < 1 ||
+    part > of
+  ) {
+    return null;
+  }
+  return { group: header[3]!, part, of };
+}
+
+function inboxChunkGroupKey(e: Record<string, unknown>, chunk: InboxChunkPart): string | null {
+  const from = e['from'];
+  const to = e['to'];
+  if (typeof from !== 'string' || from.length === 0 || !Array.isArray(to)) return null;
+  const recipients = to.map((recipient) => String(recipient)).sort();
+  return JSON.stringify([from, recipients, e['harness_slug'] ?? null, chunk.group, chunk.of]);
+}
+
+/**
+ * Expand a message-id selection to include every available part of any matching
+ * chunked message. A coord:send chunk is one logical message even though only
+ * its final part can carry `expects:'answer'`; filtering on that part's msg_id
+ * alone would make the window selector see an incomplete group and suppress the
+ * whole answer. Keep this expansion beside the chunk parser so filter callers
+ * use the same grouping identity as {@link prioritizedInboxWindow}.
+ */
+export function expandInboxChunkGroupsForMessageIds<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  messageIds: ReadonlySet<string>,
+): T[] {
+  if (messageIds.size === 0 || entries.length === 0) return [];
+
+  const matchingIds = new Set<string>();
+  const matchingGroups = new Set<string>();
+  for (const entry of entries) {
+    const msgId = entry['msg_id'];
+    if (typeof msgId !== 'string' || !messageIds.has(msgId)) continue;
+    matchingIds.add(msgId);
+    const chunk = inboxChunkPart(entry);
+    if (chunk) {
+      const key = inboxChunkGroupKey(entry, chunk);
+      if (key !== null) matchingGroups.add(key);
+    }
+  }
+
+  return entries.filter((entry) => {
+    const msgId = entry['msg_id'];
+    if (typeof msgId === 'string' && matchingIds.has(msgId)) return true;
+    const chunk = inboxChunkPart(entry);
+    if (!chunk) return false;
+    const key = inboxChunkGroupKey(entry, chunk);
+    return key !== null && matchingGroups.has(key);
+  });
+}
+
 /** Select + order the visible inbox window by P-009 priority before applying
  * the caller's display limit. Rows within a bucket are newest-first so a flood
  * of low-priority broadcasts cannot crowd an older actionable ask out of a
- * bounded default read. */
+ * bounded default read. A chunked coord:send is one logical message even though
+ * only its final row carries `expects`; select a complete group together or do
+ * not show any part. Otherwise the final actionable part can survive the limit
+ * while the continuation holding the first half of its instructions disappears. */
 export function prioritizedInboxWindow<T extends Record<string, unknown>>(
   entries: readonly T[],
   limit: number,
 ): T[] {
   if (limit <= 0) return [];
-  return [...entries]
-    .sort((a, b) => {
-      const bucket = inboxPriorityBucket(a) - inboxPriorityBucket(b);
-      if (bucket !== 0) return bucket;
-      const ats = String(a["ts"] ?? "");
-      const bts = String(b["ts"] ?? "");
-      if (ats !== bts) return bts.localeCompare(ats);
-      return String(b["msg_id"] ?? "").localeCompare(String(a["msg_id"] ?? ""));
-    })
-    .slice(0, limit);
+  type RankedUnit = { entries: T[]; bucket: number; ts: string; msgId: string };
+  type ChunkGroup = {
+    of: number;
+    entries: Array<{ entry: T; part: number }>;
+    parts: Set<number>;
+    invalid: boolean;
+  };
+
+  const units: RankedUnit[] = [];
+  const chunkGroups = new Map<string, ChunkGroup>();
+  for (const entry of entries) {
+    const chunk = inboxChunkPart(entry);
+    const key = chunk ? inboxChunkGroupKey(entry, chunk) : null;
+    if (!chunk || key === null) {
+      units.push({
+        entries: [entry],
+        bucket: inboxPriorityBucket(entry),
+        ts: String(entry['ts'] ?? ''),
+        msgId: String(entry['msg_id'] ?? ''),
+      });
+      continue;
+    }
+    const group = chunkGroups.get(key) ?? {
+      of: chunk.of,
+      entries: [],
+      parts: new Set<number>(),
+      invalid: false,
+    };
+    if (group.of !== chunk.of) group.invalid = true;
+    group.entries.push({ entry, part: chunk.part });
+    group.parts.add(chunk.part);
+    chunkGroups.set(key, group);
+  }
+
+  for (const group of chunkGroups.values()) {
+    const complete = !group.invalid && Array.from({ length: group.of }, (_, index) => index + 1)
+      .every((part) => group.parts.has(part));
+    if (!complete) continue;
+
+    const chunkEntries = group.entries
+      .sort((a, b) => {
+        if (a.part !== b.part) return a.part - b.part;
+        const ats = String(a.entry['ts'] ?? '');
+        const bts = String(b.entry['ts'] ?? '');
+        if (ats !== bts) return ats.localeCompare(bts);
+        return String(a.entry['msg_id'] ?? '').localeCompare(String(b.entry['msg_id'] ?? ''));
+      })
+      .map(({ entry }) => entry);
+    const newest = chunkEntries.reduce((best, entry) =>
+      String(entry['ts'] ?? '') > String(best['ts'] ?? '') ? entry : best,
+    );
+    units.push({
+      entries: chunkEntries,
+      bucket: Math.min(...chunkEntries.map(inboxPriorityBucket)),
+      ts: String(newest['ts'] ?? ''),
+      msgId: String(newest['msg_id'] ?? ''),
+    });
+  }
+
+  units.sort((a, b) => {
+    if (a.bucket !== b.bucket) return a.bucket - b.bucket;
+    if (a.ts !== b.ts) return b.ts.localeCompare(a.ts);
+    return b.msgId.localeCompare(a.msgId);
+  });
+
+  const selected: T[] = [];
+  for (const unit of units) {
+    if (selected.length + unit.entries.length > limit) continue;
+    selected.push(...unit.entries);
+  }
+  return selected;
 }

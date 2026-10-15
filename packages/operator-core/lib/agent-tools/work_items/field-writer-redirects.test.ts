@@ -34,7 +34,8 @@
  * Run: npm run test:file -- packages/operator-core/lib/agent-tools/work_items/field-writer-redirects.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { splitLocalSchemaTarget } from '@papercusp/tooldef';
+import { z } from 'zod';
+import { splitLocalSchemaTarget, toJsonSchema } from '@papercusp/tooldef';
 import releaseTool from './release';
 import createTool from './create';
 import amendTool from './amend';
@@ -49,19 +50,54 @@ type ToolLike = {
   guidance?: { argRedirects?: Record<string, Redirect> };
 };
 
-/** `.refine()`/`.superRefine()` wrap a ZodObject in ZodEffects, so `.shape` can be one or
- *  more `_def` hops down — several of these verbs carry cross-field refinements. Walk
- *  rather than assume a depth, so a new refinement cannot silently make this a no-op. */
+/** Use the same version-aware adapter as the tool catalog, including union variants. */
 function argKeys(tool: ToolLike): string[] {
-  let node: unknown = tool.args;
-  for (let hop = 0; hop < 8 && node; hop += 1) {
-    const shape = (node as { shape?: Record<string, unknown> }).shape;
-    if (shape && typeof shape === 'object') return Object.keys(shape).sort();
-    const def = (node as { _def?: { schema?: unknown; innerType?: unknown } })._def;
-    node = def?.schema ?? def?.innerType;
+  const keys = new Set<string>();
+  function collect(node: unknown, depth = 0): boolean {
+    if (!node || typeof node !== 'object' || depth >= 8) return false;
+    const schema = node as Record<string, unknown>;
+    let foundObject = false;
+    if (schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)) {
+      Object.keys(schema.properties).forEach((key) => keys.add(key));
+      foundObject = true;
+    }
+    for (const kind of ['anyOf', 'oneOf', 'allOf']) {
+      const variants = schema[kind];
+      if (Array.isArray(variants)) {
+        for (const variant of variants) foundObject = collect(variant, depth + 1) || foundObject;
+      }
+    }
+    return foundObject;
   }
+  if (collect(toJsonSchema(tool.args))) return [...keys].sort();
   throw new Error(`could not read an object shape from ${tool.name}'s args schema`);
 }
+
+describe('declared argument inspection', () => {
+  it('reads actual keys through object refinements', () => {
+    const args = z.object({ id: z.string(), note: z.string().optional() }).superRefine(() => {});
+    expect(argKeys({ name: 'fixture:refined', args })).toEqual(['id', 'note']);
+  });
+
+  it('includes declarations from every object union variant without inventing aliases', () => {
+    const args = z.union([
+      z.object({ id: z.string(), reason: z.string() }).strict(),
+      z.object({ ids: z.array(z.string()), note: z.string() }).refine(() => true),
+    ]);
+    expect(argKeys({ name: 'fixture:union', args })).toEqual(['id', 'ids', 'note', 'reason']);
+    const withoutAliases = z.union([
+      z.object({ id: z.string() }),
+      z.object({ ids: z.array(z.string()) }),
+    ]);
+    expect(argKeys({ name: 'fixture:without-aliases', args: withoutAliases })).toEqual(['id', 'ids']);
+  });
+
+  it('fails closed when the schema has no object argument shape', () => {
+    expect(() => argKeys({ name: 'fixture:scalar', args: z.string() })).toThrow(
+      "could not read an object shape from fixture:scalar's args schema",
+    );
+  });
+});
 
 function redirect(tool: ToolLike, key: string): Redirect {
   const found = tool.guidance?.argRedirects?.[key];

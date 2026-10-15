@@ -30,7 +30,9 @@
  *
  *       live-contract — a started instance gets CONTRACT fields only: title,
  *         body, killCriterion, tripwires (thresholds; `current` readings are
- *         preserved by metric), inputSchema, outputSchema. Operational tuning
+ *         preserved by metric), inputSchema, outputSchema, propertySchema.
+ *         Package declarations merge over instance declarations; stored values
+ *         and their edit provenance/CAS versions remain untouched. Operational tuning
  *         (standing, budgets, launchSettings) and live state (status, inputs,
  *         properties, pause/identity metadata) are NEVER touched — those were
  *         start-time folds or owner decisions, and retuning a live instance is
@@ -50,6 +52,7 @@ import {
   type GoalPackageTripwire,
 } from '../cupboard/goal-package-store';
 import { semverGt } from '../knowledge-packs/pack-format';
+import { TypedPropertySchemaDocumentSchema } from '../typed-properties';
 
 /** The offer, as folded onto read surfaces (HUD rows, goals:get). */
 export interface GoalPackageUpdateInfo {
@@ -150,6 +153,7 @@ export interface GoalRowForPackageUpdate {
   launch_settings: Record<string, unknown> | null;
   input_schema: Record<string, unknown> | null;
   output_schema: Record<string, unknown> | null;
+  property_schema: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
 }
 
@@ -203,6 +207,7 @@ export interface GoalPackageUpdateDeps {
       workspaceId: string;
       goalId: string;
       pkg: LocalGoalPackage;
+      propertySchema: Record<string, unknown>;
       metadata: Record<string, unknown>;
     },
   ) => Promise<void>;
@@ -213,10 +218,16 @@ export interface GoalPackageUpdateDeps {
       workspaceId: string;
       goalId: string;
       pkg: LocalGoalPackage;
+      propertySchema: Record<string, unknown>;
       tripwires: GoalRowTripwire[] | null;
       metadata: Record<string, unknown>;
     },
   ) => Promise<void>;
+  validatePropertySchema: (
+    sql: Sql,
+    workspaceId: string,
+    doc: Record<string, unknown>,
+  ) => Promise<{ ok: true } | { ok: false; issues: string[] }>;
 }
 
 const DEFAULT_DEPS: GoalPackageUpdateDeps = {
@@ -225,13 +236,13 @@ const DEFAULT_DEPS: GoalPackageUpdateDeps = {
     const rows = (await sql`
       SELECT id, title, status, body, standing, kill_criterion, tripwires,
              budget_cents, budget_window_sec, launch_settings, input_schema,
-             output_schema, metadata
+             output_schema, property_schema, metadata
         FROM harness_shared.goals
        WHERE workspace_id = ${workspaceId} AND id = ${goalId}
-       LIMIT 1`) as unknown as GoalRowForPackageUpdate[];
+       LIMIT 1 FOR UPDATE`) as unknown as GoalRowForPackageUpdate[];
     return rows[0] ?? null;
   },
-  writeStubRefresh: async (sql, { workspaceId, goalId, pkg, metadata }) => {
+  writeStubRefresh: async (sql, { workspaceId, goalId, pkg, propertySchema, metadata }) => {
     await sql`
       UPDATE harness_shared.goals
          SET title = ${pkg.title},
@@ -244,11 +255,12 @@ const DEFAULT_DEPS: GoalPackageUpdateDeps = {
              launch_settings = ${pkg.launchSettings ? JSON.stringify(pkg.launchSettings) : null}::jsonb,
              input_schema = ${pkg.inputSchema ? JSON.stringify(pkg.inputSchema) : null}::jsonb,
              output_schema = ${pkg.outputSchema ? JSON.stringify(pkg.outputSchema) : null}::jsonb,
+             property_schema = ${JSON.stringify(propertySchema)}::jsonb,
              metadata = ${JSON.stringify(metadata)}::jsonb,
              updated_at = now()
        WHERE workspace_id = ${workspaceId} AND id = ${goalId}`;
   },
-  writeLiveContract: async (sql, { workspaceId, goalId, pkg, tripwires, metadata }) => {
+  writeLiveContract: async (sql, { workspaceId, goalId, pkg, propertySchema, tripwires, metadata }) => {
     await sql`
       UPDATE harness_shared.goals
          SET title = ${pkg.title},
@@ -257,9 +269,20 @@ const DEFAULT_DEPS: GoalPackageUpdateDeps = {
              tripwires = ${tripwires ? JSON.stringify(tripwires) : null}::jsonb,
              input_schema = ${pkg.inputSchema ? JSON.stringify(pkg.inputSchema) : null}::jsonb,
              output_schema = ${pkg.outputSchema ? JSON.stringify(pkg.outputSchema) : null}::jsonb,
+             property_schema = ${JSON.stringify(propertySchema)}::jsonb,
              metadata = ${JSON.stringify(metadata)}::jsonb,
              updated_at = now()
        WHERE workspace_id = ${workspaceId} AND id = ${goalId}`;
+  },
+  validatePropertySchema: async (sql, workspaceId, doc) => {
+    const [{ ensurePlanRefListDatatype }, { validatePropertySchemaDeclaration }] = await Promise.all([
+      import('./package-property-datatypes'),
+      import('../typed-properties-db'),
+    ]);
+    if (Object.values(doc).some((def) => (def as { datatype?: unknown })?.datatype === 'plan-ref-list')) {
+      await ensurePlanRefListDatatype(sql, workspaceId);
+    }
+    return validatePropertySchemaDeclaration(sql, workspaceId, doc);
   },
 };
 
@@ -364,6 +387,16 @@ export async function planGoalPackageUpdate(
     };
   }
 
+  // Only the accepted package owns its declared keys. Retain declarations
+  // added to this instance and every stored property value/version/provenance.
+  const propertySchema = { ...(row.property_schema ?? {}), ...(pkg.propertySchema ?? {}) };
+  const declaration = TypedPropertySchemaDocumentSchema.safeParse(propertySchema);
+  if (!declaration.success) {
+    return { ok: false, reason: 'contract-problem',
+      detail: `propertySchema invalid: ${declaration.error.message}`,
+      fromVersion: installed, toVersion: pkg.version };
+  }
+
   if (isAdoptableStub(row)) {
     const changes = [
       change('title', row.title, pkg.title),
@@ -376,6 +409,7 @@ export async function planGoalPackageUpdate(
       change('launchSettings', row.launch_settings, pkg.launchSettings),
       change('inputSchema', row.input_schema, pkg.inputSchema),
       change('outputSchema', row.output_schema, pkg.outputSchema),
+      change('propertySchema', row.property_schema, propertySchema),
     ].filter((c): c is GoalPackageFieldChange => c !== null);
     return {
       ok: true,
@@ -397,6 +431,7 @@ export async function planGoalPackageUpdate(
     change('tripwires', row.tripwires, mergedTripwires),
     change('inputSchema', row.input_schema, pkg.inputSchema),
     change('outputSchema', row.output_schema, pkg.outputSchema),
+    change('propertySchema', row.property_schema, propertySchema),
   ].filter((c): c is GoalPackageFieldChange => c !== null);
   return {
     ok: true,
@@ -437,11 +472,8 @@ export async function applyGoalPackageUpdate(
 ): Promise<GoalPackageUpdateApplied> {
   const plan = await planGoalPackageUpdate(sql, input, deps);
   if (!plan.ok) return plan;
-  // Re-read is not needed: plan just read the row through the same deps in
-  // this call. A racing write between plan and apply loses only cosmetically
-  // (the diff reported vs written), never structurally — both writes are
-  // whole-field REPLACEs derived from the package, not read-modify-writes of
-  // row values (the one merged value, tripwire `current`, is re-derived below).
+  // The maintained read takes a row lock in the tool's workspace transaction,
+  // so schema/metadata merges serialize with concurrent instance edits.
   const row = await deps.readRow(sql, input);
   if (!row) {
     return { ok: false, reason: 'not-found', detail: `goal '${input.goalId}' vanished mid-apply` };
@@ -455,11 +487,17 @@ export async function applyGoalPackageUpdate(
     };
   }
   const metadata = { ...(row.metadata ?? {}), packageVersion: pkg.version };
+  const propertySchema = { ...(row.property_schema ?? {}), ...(pkg.propertySchema ?? {}) };
+  const check = await deps.validatePropertySchema(sql, input.workspaceId, propertySchema);
+  if (!check.ok) return { ok: false, reason: 'contract-problem',
+    detail: `propertySchema invalid: ${check.issues.join('; ')}`,
+    fromVersion: plan.fromVersion, toVersion: pkg.version };
   if (plan.mode === 'stub-refresh') {
     await deps.writeStubRefresh(sql, {
       workspaceId: input.workspaceId,
       goalId: plan.goalId,
       pkg,
+      propertySchema,
       metadata,
     });
   } else {
@@ -467,6 +505,7 @@ export async function applyGoalPackageUpdate(
       workspaceId: input.workspaceId,
       goalId: plan.goalId,
       pkg,
+      propertySchema,
       tripwires: mergeTripwiresPreservingCurrent(pkg.tripwires, row.tripwires),
       metadata,
     });

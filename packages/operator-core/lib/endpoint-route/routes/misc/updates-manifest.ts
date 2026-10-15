@@ -38,6 +38,7 @@
  */
 import { readOperatorState } from '../../../operator-state-pg';
 import { defineTool } from '@papercusp/agent-mcp';
+import { observeFallback } from '../../../degradation/fallback-observations';
 import {
   GITHUB_DESKTOP_REPO,
   fetchAssetText,
@@ -591,6 +592,9 @@ export default defineTool({
         const latest = JSON.parse(
           (await fetchAssetText(latestAsset.id, token)) ?? 'null',
         ) as LatestJson | null;
+        const readable = latest != null && typeof latest === 'object' && !Array.isArray(latest);
+        observeFallback('release-state-read', { eligible: 1, applied: readable ? 1 : 0,
+          reason: readable ? 'applied' : 'metadata-unavailable', scope: `update-manifest:${product}:${platformKey}` });
         const entry = latest?.platforms?.[platformKey];
         // latest.json is currently generated for the GUI product only.
         if (entry?.signature && entry.url && product === 'gui') {
@@ -608,6 +612,8 @@ export default defineTool({
           } satisfies TauriManifest);
         }
       } catch (e: unknown) {
+        observeFallback('release-state-read', { eligible: 1, applied: 0,
+          reason: 'metadata-read-failed', scope: `update-manifest:${product}:${platformKey}` });
         console.warn(
           `[updates/manifest] latest.json fallback failed for ${candidate.tag_name}: ${e instanceof Error ? e.message : String(e)}`,
         );

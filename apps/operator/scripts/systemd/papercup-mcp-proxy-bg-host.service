@@ -1,0 +1,29 @@
+[Unit]
+Description=Papercusp resilient MCP proxy for BG-host (:9271 → :3271) — keeps its MCP endpoint stable across host restarts
+# A same-vintage instance of the shared stateless MCP proxy. Explicit target
+# pinning is single-candidate fail-closed, so background-host clients never cross
+# onto green :3070 or staging :3170 while :3271 restarts.
+After=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=6
+
+[Service]
+Type=simple
+WorkingDirectory=%h/papercupai-workspace/papercusp/apps/operator
+Environment=PAPERCUSP_MCP_PROXY_PORT=9271
+Environment=PAPERCUSP_MCP_PROXY_TARGET_PORT=3271
+# The bg-host unit allows up to 300s for its bundled start; keep clients alive
+# for that entire pre-connect refusal window. Post-connect calls remain unreplayed.
+Environment=PAPERCUSP_MCP_PROXY_RETRY_MS=300000
+Environment=PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE=64
+Environment=PAPERCUSP_MCP_PROXY_MAX_HANDSHAKES_IN_FLIGHT=32
+Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:%h/.cargo/bin:%h/.local/bin:%h/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/bash -c 'exec npx tsx bin/mcp-proxy.ts'
+Restart=always
+RestartSec=5
+MemoryAccounting=yes
+MemorySwapMax=0
+CPUAccounting=yes
+
+[Install]
+WantedBy=default.target

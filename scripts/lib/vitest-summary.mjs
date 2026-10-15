@@ -121,12 +121,23 @@ export function parseSummaryFailedCounts(text) {
  * @param {string} output combined stdout+stderr of a `vitest run` invocation
  * @returns {number | null} tests executed, or null when unreadable
  */
+function nodeTestCountsFrom(output) {
+  const counts = {};
+  for (const match of output.matchAll(/^\s*(?:ℹ|#)?\s*(tests|pass|fail|cancelled|skipped|todo)\s+(\d+)\s*$/gm)) {
+    counts[match[1]] = Number(match[2]);
+  }
+  if (!['tests', 'pass', 'fail'].every((key) => Number.isSafeInteger(counts[key]))) return null;
+  const skipped = (counts.skipped ?? 0) + (counts.todo ?? 0) + (counts.cancelled ?? 0);
+  const executed = counts.pass + counts.fail;
+  return executed + skipped === counts.tests ? { executed, skipped } : null;
+}
+
 export function testsExecutedFrom(output) {
   const plain = stripVitestAnsi(output ?? '');
   // `Test Files` cannot match: it is `Test` + space, never `Tests` + whitespace. Take the LAST
   // row so appended output can never leave us reading a superseded summary.
   const rows = [...plain.matchAll(/^[ \t]*Tests[ \t]+(.*)$/gm)];
-  if (rows.length === 0) return null;
+  if (rows.length === 0) return nodeTestCountsFrom(plain)?.executed ?? null;
   const body = rows[rows.length - 1][1];
   if (/^\s*no tests\b/i.test(body)) return 0;
   let ran = null;
@@ -162,7 +173,7 @@ export function testsExecutedFrom(output) {
 export function testsSkippedFrom(output) {
   const plain = stripVitestAnsi(output ?? '');
   const rows = [...plain.matchAll(/^[ \t]*Tests[ \t]+(.*)$/gm)];
-  if (rows.length === 0) return null;
+  if (rows.length === 0) return nodeTestCountsFrom(plain)?.skipped ?? null;
   const body = rows[rows.length - 1][1];
   if (/^\s*no tests\b/i.test(body)) return 0;
   let skipped = null;

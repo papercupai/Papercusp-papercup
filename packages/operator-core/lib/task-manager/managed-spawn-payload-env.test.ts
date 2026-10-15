@@ -143,7 +143,9 @@ describe('confined payload env is not the client env (WI-40906)', () => {
     expect(runnerIdx).toBeGreaterThan(0);
     expect(argv[runnerIdx - 1]).toBe(process.execPath);
     expect(argv[runnerIdx + 1]).toBe('--env-fd-path');
-    expect(argv[runnerIdx + 2]).toMatch(new RegExp(`^/proc/${process.pid}/fd/\\d+$`));
+    expect(argv[runnerIdx + 2]).toBe('/proc/self/fd/3');
+    expect(l.options.stdio).toHaveLength(4);
+    expect(typeof l.options.stdio?.[3]).toBe('number');
     expect(argv.slice(runnerIdx + 3)).toEqual(['--', 'zenity', '--info']);
     expect(argv).not.toContain(`AT_SPI_BUS_ADDRESS=${A11Y_BUS}`);
     expect(argv).not.toContain(`DBUS_SESSION_BUS_ADDRESS=${A11Y_BUS}`);
@@ -163,9 +165,35 @@ describe('confined payload env is not the client env (WI-40906)', () => {
     expect(l.options.env).toEqual(DESKTOP_ENV);
   });
 
-  it('preserves the caller stdio on the client (a --scope payload inherits it)', async () => {
-    const l = await launch({ confined: true, env: { ...DESKTOP_ENV }, stdio: 'ignore' });
-    expect(l.options.stdio).toBe('ignore');
+  it.each(['pipe', 'ignore', 'inherit'] as const)(
+    'normalizes string stdio %s before appending the inherited environment fd',
+    async (stdio) => {
+      const l = await launch({ confined: true, env: { ...DESKTOP_ENV }, stdio });
+      expect(l.options.stdio).toHaveLength(4);
+      expect(l.options.stdio?.slice(0, 3)).toEqual([stdio, stdio, stdio]);
+      expect(typeof l.options.stdio?.[3]).toBe('number');
+    },
+  );
+
+  it('places the inherited environment fd after an existing slot-3 IPC channel', async () => {
+    const l = await launch({
+      confined: true,
+      env: { ...DESKTOP_ENV },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    });
+    const argv = [l.command, ...l.args];
+    const runnerIdx = argv.indexOf(SYSTEMD_ENV_RUNNER_PATH);
+
+    expect(argv[runnerIdx + 2]).toBe('/proc/self/fd/4');
+    expect(l.options.stdio?.[3]).toBe('ipc');
+    expect(typeof l.options.stdio?.[4]).toBe('number');
+  });
+
+  it('normalizes default stdio to its equivalent pipe slots before appending the fd', async () => {
+    const l = await launch({ confined: true, env: { ...DESKTOP_ENV } });
+    expect(l.options.stdio).toHaveLength(4);
+    expect(l.options.stdio?.slice(0, 3)).toEqual(['pipe', 'pipe', 'pipe']);
+    expect(typeof l.options.stdio?.[3]).toBe('number');
   });
 
   it('does not wrap a confined spawn that passed no env', async () => {

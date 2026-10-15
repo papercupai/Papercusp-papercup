@@ -53,7 +53,7 @@ vi.mock('../../../agent-tools/coordination/presence', async (importOriginal) => 
   touchHeartbeat: vi.fn(async () => {}),
 }));
 
-import { syncLaunchModeToRegistry } from './bootstrap-su';
+import { normalizeBootstrapLaunchMode, syncLaunchModeToRegistry } from './bootstrap-su';
 
 beforeEach(() => {
   setModeMock.mockClear();
@@ -65,6 +65,16 @@ beforeEach(() => {
 });
 
 describe('syncLaunchModeToRegistry (EI-11110 / WI-5976)', () => {
+  it('uses the same member-role normalization for first-turn prose and durable scope', () => {
+    const inherited = { mode: 'drain', subject: 'bugs', instructions: 'Lead this fleet', ownerDirected: true };
+    const member = normalizeBootstrapLaunchMode(inherited, { slug: 'bugs', role: 'member' });
+    expect(member?.ownerDirected).toBe(false);
+    expect(member?.instructions).toContain('Do not take leadership');
+    expect(member?.instructions).not.toContain('Lead this fleet');
+    expect(normalizeBootstrapLaunchMode(inherited, { slug: 'bugs', role: 'leader' })).toEqual(inherited);
+    expect(normalizeBootstrapLaunchMode(inherited)).toEqual(inherited);
+  });
+
   it('no-ops (never touches the registry) when autoMode is false', async () => {
     const err = await syncLaunchModeToRegistry({
       workspaceId: 'ws',
@@ -157,6 +167,50 @@ describe('syncLaunchModeToRegistry (EI-11110 / WI-5976)', () => {
       body: 'DRAIN SCOPE — while \'drain\' is on, obey this verbatim: checkpoint incidental defects',
       workspaceId: 'ws',
     }));
+    expect(retractFactMock).not.toHaveBeenCalled();
+  });
+
+  it('derives a fleet member scope without copying launcher leadership or owner authority', async () => {
+    const inherited = "DRAIN SCOPE — while 'drain' is on, obey this verbatim: Lead the existing nonp2p-bug-drain fleet. (set by the owner; retracted when the mode is turned off)";
+    const err = await syncLaunchModeToRegistry({
+      workspaceId: 'ws', ownerId: 'su-child', autoMode: true, drainMode: true,
+      subject: 'nonp2p-bug-drain', instructions: inherited, ownerDirected: true,
+      reason: 'fleet member launch',
+      fleet: { slug: 'nonp2p-bug-drain', role: 'member' },
+    });
+    expect(err).toBeNull();
+    expect(setModeMock.mock.calls[1][0]).toMatchObject({
+      modeId: 'drain', subject: 'nonp2p-bug-drain', ownerDirected: false,
+    });
+    const fact = assertFactMock.mock.calls[0]?.[0] as { body: string };
+    expect(fact.body).toContain("member of fleet 'nonp2p-bug-drain'");
+    expect(fact.body).toContain('admitted claim spec');
+    expect(fact.body).not.toContain('Lead the existing');
+    expect(fact.body).not.toContain('set by the owner');
+  });
+
+  it('does not overwrite or clear a standing scope after a named-mode sticky refusal', async () => {
+    setModeMock
+      .mockResolvedValueOnce({ ok: true, noop: false })
+      .mockResolvedValueOnce({ ok: false, stickyConflict: true });
+    const err = await syncLaunchModeToRegistry({
+      workspaceId: 'ws', ownerId: 'su-child', autoMode: true, drainMode: true,
+      instructions: '', reason: 'scope refresh refused',
+    });
+    expect(err).toBeNull();
+    expect(assertFactMock).not.toHaveBeenCalled();
+    expect(retractFactMock).not.toHaveBeenCalled();
+  });
+
+  it('does not assert replacement scope when the named-mode write was refused', async () => {
+    setModeMock
+      .mockResolvedValueOnce({ ok: true, noop: false })
+      .mockResolvedValueOnce({ ok: false, stickyConflict: true });
+    await syncLaunchModeToRegistry({
+      workspaceId: 'ws', ownerId: 'su-child', autoMode: true, drainMode: true,
+      instructions: 'Replacement scope', reason: 'scope refresh refused',
+    });
+    expect(assertFactMock).not.toHaveBeenCalled();
     expect(retractFactMock).not.toHaveBeenCalled();
   });
 

@@ -433,6 +433,135 @@ describe('CupboardDetailPage — plugin Install (direct global install, EI-27)',
     expect(msg).toContain('missing tool "ghost"');
     expect(h.push).not.toHaveBeenCalled();
   });
+
+  /**
+   * A plugin that declares a DATA PROVIDER needs consent at install
+   * (generalized-integrations P-001 / D-006). The server refuses the first call
+   * with the exact review; the page must render it (what it reads, which OAuth
+   * scopes, which hosts) and the confirming call must echo that review back as
+   * `expectedReview` — the server installs only the package that was shown.
+   */
+  function providerReview(egressHosts: string[] = ['gmail.googleapis.com']) {
+    return {
+      name: 'demo-plugin',
+      version: '1.3.0',
+      kind: 'plugin',
+      capabilities: [],
+      dependencies: { tools: [], packs: [], plugins: [], events: [] },
+      provider: {
+        id: 'demo-mail',
+        contractVersion: 1,
+        runtime: 'daemon',
+        datatypes: ['email.message'],
+        capabilities: ['read', 'sync'],
+        oauthScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+        egressHosts,
+      },
+    };
+  }
+
+  function sequencedFetch(listing: HarnessListing, responses: Array<{ status: number; body: unknown }>) {
+    const queue = [...responses];
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('/api/cupboard/listings/')) {
+        return new Response(JSON.stringify({ listing }), { status: 200 });
+      }
+      if (u.includes('/api/cupboard/install-plugin')) {
+        const next = queue.shift() ?? { status: 500, body: { ok: false, error: 'unexpected extra call' } };
+        return new Response(JSON.stringify(next.body), { status: next.status });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  function installBodies(fetchMock: ReturnType<typeof vi.fn>) {
+    return fetchMock.mock.calls
+      .filter((c) => String(c[0]).includes('/api/cupboard/install-plugin'))
+      .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as Record<string, unknown>);
+  }
+
+  it('renders the provider review on provider_install_consent_required and re-posts the exact review on confirm', async () => {
+    const review = providerReview();
+    const fetchMock = sequencedFetch(pluginListing(), [
+      {
+        status: 409,
+        body: {
+          ok: false,
+          error: 'provider "demo-mail" requires consent',
+          code: 'provider_install_consent_required',
+          data: { review },
+        },
+      },
+      {
+        status: 200,
+        body: { ok: true, name: 'demo-plugin', version: '1.3.0', kind: 'plugin', capabilities: [], granted: [] },
+      },
+    ]);
+    render(<CupboardDetailPage />);
+
+    fireEvent.click(await screen.findByTestId('cupboard-detail-action'));
+
+    const panel = await screen.findByTestId('cupboard-provider-review');
+    expect(panel.getAttribute('data-provider-id')).toBe('demo-mail');
+    expect(screen.getByTestId('cupboard-provider-datatypes').textContent).toContain('email.message');
+    expect(screen.getByTestId('cupboard-provider-scopes').textContent).toContain('gmail.readonly');
+    expect(screen.getByTestId('cupboard-provider-egress').textContent).toContain('gmail.googleapis.com');
+    // A consent refusal is a review step, not a failure.
+    expect(h.toastError).not.toHaveBeenCalled();
+    expect(h.toastSuccess).not.toHaveBeenCalled();
+
+    const cta = screen.getByTestId('cupboard-detail-action');
+    expect(cta.getAttribute('data-capability-stage')).toBe('provider-consent');
+    expect(cta.textContent).toContain('Install with provider access');
+    fireEvent.click(cta);
+
+    await waitFor(() => expect(h.toastSuccess).toHaveBeenCalled());
+    const bodies = installBodies(fetchMock);
+    expect(bodies).toHaveLength(2);
+    // First call carries no consent; the second pins exactly what was shown.
+    expect(bodies[0]).toEqual({ listingId: 'bp-listing-1' });
+    expect(bodies[1]).toEqual({ listingId: 'bp-listing-1', acceptCapabilities: true, expectedReview: review });
+    await waitFor(() => expect(screen.queryByTestId('cupboard-provider-review')).toBeNull());
+  });
+
+  it('shows the CURRENT review and an error when the plugin changed after review (plugin_review_changed)', async () => {
+    const first = providerReview();
+    const changed = providerReview(['gmail.googleapis.com', 'exfil.example.com']);
+    const fetchMock = sequencedFetch(pluginListing(), [
+      { status: 409, body: { ok: false, error: 'consent', code: 'provider_install_consent_required', data: { review: first } } },
+      { status: 409, body: { ok: false, error: 'changed', code: 'plugin_review_changed', data: { review: changed } } },
+    ]);
+    render(<CupboardDetailPage />);
+
+    fireEvent.click(await screen.findByTestId('cupboard-detail-action'));
+    await screen.findByTestId('cupboard-provider-review');
+    fireEvent.click(screen.getByTestId('cupboard-detail-action'));
+
+    await waitFor(() => expect(h.toastError).toHaveBeenCalled());
+    expect(String(h.toastError.mock.calls[0][0])).toContain('changed since you reviewed it');
+    await waitFor(() =>
+      expect(screen.getByTestId('cupboard-provider-egress').textContent).toContain('exfil.example.com'),
+    );
+    expect(h.toastSuccess).not.toHaveBeenCalled();
+    expect(installBodies(fetchMock)[1]).toEqual({ listingId: 'bp-listing-1', acceptCapabilities: true, expectedReview: first });
+  });
+
+  it('Cancel on the provider review drops the consent and restores the plain Install action', async () => {
+    sequencedFetch(pluginListing(), [
+      { status: 409, body: { ok: false, error: 'consent', code: 'provider_install_consent_required', data: { review: providerReview() } } },
+    ]);
+    render(<CupboardDetailPage />);
+
+    fireEvent.click(await screen.findByTestId('cupboard-detail-action'));
+    await screen.findByTestId('cupboard-provider-review');
+    fireEvent.click(screen.getByTestId('cupboard-provider-review-cancel'));
+
+    await waitFor(() => expect(screen.queryByTestId('cupboard-provider-review')).toBeNull());
+    expect(screen.getByTestId('cupboard-detail-action').getAttribute('data-capability-stage')).toBe('initial');
+  });
 });
 
 /**

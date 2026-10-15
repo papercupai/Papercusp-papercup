@@ -36,6 +36,15 @@ export interface RecipientResolution {
   ambiguous: { id: string; matches: string[] }[];
 }
 
+export type ExplicitAgentOwnerResolution =
+  | { ok: true; ownerId: string }
+  | {
+      ok: false;
+      code: 'assignee_empty' | 'assignee_not_agent' | 'assignee_unknown' | 'assignee_ambiguous';
+      message: string;
+      candidates?: string[];
+    };
+
 /** Find current owner IDs for a concrete recipient using its supplied prefix
  * or short-handle substring. A stale full ID is not proof of a successor. */
 function matchingOwnerIds(id: string, knownOwnerIds: readonly string[]): string[] {
@@ -238,6 +247,54 @@ export async function resolveRecipients(
     return { resolved: [...to], unknown: [], ambiguous: [] };
   }
   return resolveRecipientsAgainst(to, knownOwnerIds);
+}
+
+/** Resolve one work-item assignee against the same unified roster as coord:send,
+ *  but fail closed when no roster is available. Placement cannot safely inherit
+ *  resolveRecipients' intentional send-path fail-open behavior: an unverified
+ *  owner would strand a real claim. The caller itself is known from the request
+ *  identity and does not need a roster read. */
+export async function resolveExplicitAgentOwnerId(
+  raw: string,
+  callerOwnerId: string,
+  workspaceId?: string | null,
+): Promise<ExplicitAgentOwnerResolution> {
+  const input = raw.trim();
+  if (!input) {
+    return { ok: false, code: 'assignee_empty', message: 'Assignee must name a known agent ownerId.' };
+  }
+  if (input === 'self' || input === callerOwnerId) return { ok: true, ownerId: callerOwnerId };
+  if (isSelectorOrWildcard(input)) {
+    return {
+      ok: false,
+      code: 'assignee_not_agent',
+      message: `Assignee '${input}' is a selector or wildcard, not one concrete agent ownerId.`,
+    };
+  }
+
+  let knownOwnerIds: string[] = [];
+  try {
+    knownOwnerIds = await readKnownOwnerIds(workspaceId);
+  } catch {
+    // A roster read failure is not evidence that the supplied id is a valid owner.
+    // The assignment boundary must refuse instead of persisting a phantom holder.
+  }
+  const resolution = resolveRecipientsAgainst([input], knownOwnerIds);
+  if (resolution.resolved.length === 1) return { ok: true, ownerId: resolution.resolved[0]! };
+  const ambiguous = resolution.ambiguous[0];
+  if (ambiguous) {
+    return {
+      ok: false,
+      code: 'assignee_ambiguous',
+      message: `Assignee '${input}' matches more than one agent ownerId (${ambiguous.matches.join(', ')}). Pass the full ownerId.`,
+      candidates: ambiguous.matches,
+    };
+  }
+  return {
+    ok: false,
+    code: 'assignee_unknown',
+    message: `Assignee '${input}' does not resolve to a known workspace ownerId; no work-item claim was made. Pass a current full ownerId from coord:presence.`,
+  };
 }
 
 /** PURE best-effort core: rewrite each entry to its FULL ownerId when a unique

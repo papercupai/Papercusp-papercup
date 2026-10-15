@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "incomplete": false,
+  "sourceStart": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/attention.ts",
+      "sha256": "36586b13d4f441f4ca486b7cd8c6250aab00cd06f32558808a8dc282f10fb78a"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/source.ts",
+      "sha256": "4591ef3d46cfd39dc91568b9154f100ccf375a2146080fd70cb449061ef39959"
+    },
+    {
+      "path": "packages/operator-core/lib/plan-item-coverage.ts",
+      "sha256": "187eddb1921a695535eb366d09bf7f1da3116fa1e8964bb4c3207c908203bb93"
+    },
+    {
+      "path": "packages/operator-core/lib/sync-resolver/attention-counts.ts",
+      "sha256": "23a64bde69d2d90068667d6b6f94fccecd876c89f3252d787c4b6c51cf709e8f"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/attention.performance.integration.test.ts",
+      "sha256": "b3afa8a8aed3ede85f7162024f00929b6ea8bd30e7f36efa642236b886ae71cb"
+    },
+    {
+      "path": "libs/flags/src/types.ts",
+      "sha256": "81a05d3e370280b7004163d45b4415148c953a9943c51a7432d9229952fbaf02"
+    },
+    {
+      "path": "packages/operator-core/lib/cache/cached-read.ts",
+      "sha256": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9"
+    },
+    {
+      "path": "packages/operator-core/lib/cache/l2-tier.ts",
+      "sha256": "2e8209bdbe21cc5acc97c8213a63a6e66f6f13e8ff250014376675f97781beed"
+    },
+    {
+      "path": "packages/operator-core/lib/cache/pg-l2-store.ts",
+      "sha256": "eaf32921ed4ed1a7c039745f6923b79d3b2d77105620e9446ac3d21a77908f3c"
+    },
+    {
+      "path": "packages/operator-core/lib/events/builtin-actions.ts",
+      "sha256": "d02ea3641ab91fff455165e305b5b79255feea7283fab57b8fc534c8814b5b91"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+      "sha256": "52ba4a96d84e385260ad10c1e337ecc973868e1cb6286ae6f68d793935ffbf92"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+      "sha256": "7f7f77bd955134982f7aeb70847b956a58db4bc9f6186fbf3141839acbfd7bfe"
+    }
+  ],
+  "snapshots": [
+    {
+      "phase": "baseline",
+      "data": {
+        "counts": {
+          "decisionItems": 280,
+          "decisionPlans": 8,
+          "alerts": 0,
+          "total": 1048
+        },
+        "degraded": false
+      }
+    },
+    {
+      "phase": "direct-source-after-unversioned-seed",
+      "beforeVersion": 1,
+      "afterVersion": 1,
+      "item": {
+        "id": "P-001",
+        "text": "Item 0: controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-",
+        "storedStatus": "done",
+        "importance": "normal",
+        "riskTier": null,
+        "authority": "system",
+        "blockedBy": [],
+        "decisionRefs": [],
+        "phase": null,
+        "lineNumber": 9,
+        "rawLine": "- **P-001** `done` Item 0: controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-controlled-content-"
+      }
+    },
+    {
+      "phase": "L1-only-negative-control",
+      "data": {
+        "counts": {
+          "total": 1048,
+          "alerts": 0,
+          "decisionItems": 280,
+          "decisionPlans": 8
+        },
+        "degraded": false
+      }
+    },
+    {
+      "phase": "uncached-source-control",
+      "data": {
+        "counts": {
+          "decisionItems": 279,
+          "decisionPlans": 8,
+          "alerts": 0,
+          "total": 1047
+        },
+        "degraded": false
+      }
+    },
+    {
+      "phase": "production-two-tier-invalidation",
+      "data": {
+        "counts": {
+          "decisionItems": 279,
+          "decisionPlans": 8,
+          "alerts": 0,
+          "total": 1047
+        },
+        "degraded": false
+      }
+    },
+    {
+      "phase": "production-writer-restored",
+      "data": {
+        "counts": {
+          "decisionItems": 280,
+          "decisionPlans": 8,
+          "alerts": 0,
+          "total": 1048
+        },
+        "degraded": false
+      }
+    }
+  ],
+  "hypothesis": "L1-only fixture invalidation reuses the old durable L2 value",
+  "alternativeHypothesis": "Unbumped seed version makes the production plan reader return old content",
+  "sourceEnd": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/attention.ts",
+      "sha256": "36586b13d4f441f4ca486b7cd8c6250aab00cd06f32558808a8dc282f10fb78a"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/source.ts",
+      "sha256": "4591ef3d46cfd39dc91568b9154f100ccf375a2146080fd70cb449061ef39959"
+    },
+    {
+      "path": "packages/operator-core/lib/plan-item-coverage.ts",
+      "sha256": "187eddb1921a695535eb366d09bf7f1da3116fa1e8964bb4c3207c908203bb93"
+    },
+    {
+      "path": "packages/operator-core/lib/sync-resolver/attention-counts.ts",
+      "sha256": "23a64bde69d2d90068667d6b6f94fccecd876c89f3252d787c4b6c51cf709e8f"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/attention.performance.integration.test.ts",
+      "sha256": "b3afa8a8aed3ede85f7162024f00929b6ea8bd30e7f36efa642236b886ae71cb"
+    },
+    {
+      "path": "libs/flags/src/types.ts",
+      "sha256": "81a05d3e370280b7004163d45b4415148c953a9943c51a7432d9229952fbaf02"
+    },
+    {
+      "path": "packages/operator-core/lib/cache/cached-read.ts",
+      "sha256": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9"
+    },
+    {
+      "path": "packages/operator-core/lib/cache/l2-tier.ts",
+      "sha256": "2e8209bdbe21cc5acc97c8213a63a6e66f6f13e8ff250014376675f97781beed"
+    },
+    {
+      "path": "packages/operator-core/lib/cache/pg-l2-store.ts",
+      "sha256": "eaf32921ed4ed1a7c039745f6923b79d3b2d77105620e9446ac3d21a77908f3c"
+    },
+    {
+      "path": "packages/operator-core/lib/events/builtin-actions.ts",
+      "sha256": "d02ea3641ab91fff455165e305b5b79255feea7283fab57b8fc534c8814b5b91"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts",
+      "sha256": "52ba4a96d84e385260ad10c1e337ecc973868e1cb6286ae6f68d793935ffbf92"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/__tests__/_pg-tool-fixture.ts",
+      "sha256": "7f7f77bd955134982f7aeb70847b956a58db4bc9f6186fbf3141839acbfd7bfe"
+    }
+  ]
+}

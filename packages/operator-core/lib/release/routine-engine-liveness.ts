@@ -41,6 +41,16 @@ export async function readRoutineEngineLiveness(
   opts: { staleMs?: number; nowMs?: number } = {},
 ): Promise<RoutineEngineLiveness> {
   try {
+    // Request-only workers can have DBOS disabled locally while the background
+    // host still writes this shared watermark. Check the database, not this
+    // process's launch flag. Private databases that never launched DBOS have no
+    // watermark tables; querying them on every alarm tick only emits 42P01.
+    const relations = await sql<Array<{ workflow_status: boolean; operation_outputs: boolean }>>`
+      SELECT to_regclass('dbos.workflow_status') IS NOT NULL AS workflow_status,
+             to_regclass('dbos.operation_outputs') IS NOT NULL AS operation_outputs`;
+    if (!relations[0]?.workflow_status || !relations[0]?.operation_outputs) {
+      return { stale: false, unknown: true, lastTickMs: null, staleMs: null };
+    }
     const rows = await sql<Array<{ last_tick_ms: Date | string | number | null }>>`
        SELECT MAX(tick.completed_at) AS last_tick_ms
         FROM dbos.workflow_status tick

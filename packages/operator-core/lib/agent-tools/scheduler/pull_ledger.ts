@@ -52,7 +52,13 @@ export interface PullLedgerRow {
   reason: string | null;
   durationMs: number | null;
   status: string;
+  /** Null means no late resolver settlement was recorded; it never proves no claim occurred. */
+  lateSettlement: PullLedgerLateSettlement | null;
 }
+
+export type PullLedgerLateSettlement =
+  | { kind: 'claimed'; workItemId: string; settledAt: string }
+  | { kind: 'no-claim' | 'rejected-unknown'; settledAt: string };
 
 /** Raw shape of one selected `tool_invocations` row — the columns the query below projects. */
 export interface PullLedgerInvocationRow {
@@ -62,6 +68,7 @@ export interface PullLedgerInvocationRow {
   status: string;
   duration_ms: number | null;
   disposition: unknown;
+  late_settlement: unknown;
 }
 
 function isSchedulerDisposition(value: unknown): value is SchedulerDispositionMetadata {
@@ -70,6 +77,14 @@ function isSchedulerDisposition(value: unknown): value is SchedulerDispositionMe
     typeof value === 'object' &&
     ((value as { kind?: unknown }).kind === 'claimed' || (value as { kind?: unknown }).kind === 'no-claim')
   );
+}
+
+function isPullLedgerLateSettlement(value: unknown): value is PullLedgerLateSettlement {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as { kind?: unknown; workItemId?: unknown; settledAt?: unknown };
+  if (typeof record.settledAt !== 'string' || record.settledAt.length === 0) return false;
+  if (record.kind === 'claimed') return typeof record.workItemId === 'string' && record.workItemId.trim().length > 0;
+  return record.kind === 'no-claim' || record.kind === 'rejected-unknown';
 }
 
 /**
@@ -94,6 +109,7 @@ export function pullLedgerRowFromInvocation(row: PullLedgerInvocationRow): PullL
     reason: d?.kind === 'no-claim' ? d.reason : null,
     durationMs: row.duration_ms,
     status: row.status,
+    lateSettlement: isPullLedgerLateSettlement(row.late_settlement) ? row.late_settlement : null,
   };
 }
 
@@ -119,6 +135,11 @@ const pullLedgerRowSchema = z.object({
   reason: z.string().nullable(),
   durationMs: z.number().nullable(),
   status: z.string(),
+  lateSettlement: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('claimed'), workItemId: z.string().min(1), settledAt: z.string() }),
+    z.object({ kind: z.literal('no-claim'), settledAt: z.string() }),
+    z.object({ kind: z.literal('rejected-unknown'), settledAt: z.string() }),
+  ]).nullable(),
 });
 
 const pullLedgerResultSchema = z.object({
@@ -144,7 +165,7 @@ export default defineTool({
   name: 'scheduler:pull_ledger',
   profile: 'engineer',
   description:
-    'History of scheduler:get_next calls: who pulled what, when, under which spec, and why a pull came up empty. Reads the existing tool_invocations ledger get_next already writes — no new table.',
+    'History of scheduler:get_next calls: who pulled what, when, under which spec, why a pull came up empty, and any exact-key late claim settlement observed after a timeout. Reads the existing tool_invocations ledger — no new table.',
   guidance: {
     when:
       "After re-steering a fleet's claim spec, or debugging a mis-steer: see what { fleet } (ever-members) or { bee } actually pulled and under which specId@revision. One of fleet|bee is required.",
@@ -152,7 +173,7 @@ export default defineTool({
       "Live state, not history — scheduler:running. Current floor breakdown — work_items:claimable. A rank/floor REPLAY of one past pull is not carried (would add a query to get_next's hot path) — that stays get_next's own live diagnosis on an actual miss.",
     chaining: 'scheduler:set_claim_spec → scheduler:pull_ledger { fleet } → scheduler:running.',
     returns:
-      '{ok, window: {sinceTs, limit}, summary: {pulls, claimed, noClaim, unrecorded?, truncated?, hint?}, rows: [{at, bee, harness, disposition: claimed|no-claim|unrecorded, item, specId, revision, specRef, reason, durationMs, status}], note?}. `note` appears ONLY when a named fleet resolved to an EMPTY ever-members set — it means "no members known", never "this fleet did nothing"; verify the slug. `summary.truncated` means the row cap was reached, so these are the newest `limit` pulls in the window, not every pull in it. A row reads `disposition:"unrecorded"` when its invocation carried no readable disposition (it errored before one was written) — never read that as a no-claim.',
+      '{ok, window: {sinceTs, limit}, summary: {pulls, claimed, noClaim, unrecorded?, truncated?, hint?}, rows: [{at, bee, harness, disposition: claimed|no-claim|unrecorded, item, specId, revision, specRef, reason, durationMs, status, lateSettlement}], note?}. `lateSettlement` is a separately recorded exact-key outcome of a timed-out resolver; `rejected-unknown` and null never mean no-claim. `note` appears ONLY when a named fleet resolved to an EMPTY ever-members set — it means "no members known", never "this fleet did nothing"; verify the slug. `summary.truncated` means the row cap was reached, so these are the newest `limit` pulls in the window, not every pull in it. A row reads `disposition:"unrecorded"` when its invocation carried no readable disposition (it errored before one was written) — never read that as a no-claim.',
     seeAlso: [
       'scheduler:running (live-execution view, not history)',
       'scheduler:get_claim_spec (current spec for one bee/fleet)',
@@ -230,7 +251,8 @@ export default defineTool({
     const { sql } = getOrgPg();
     const rows = await sql<PullLedgerInvocationRow[]>`
       SELECT invoked_at, coord_owner_id, harness_slug, status, duration_ms,
-             metadata_json->'schedulerDisposition' AS disposition
+             metadata_json->'schedulerDisposition' AS disposition,
+             metadata_json->'schedulerLateSettlement' AS late_settlement
         FROM harness_shared.tool_invocations
        WHERE workspace_id = ${workspaceId}
          AND tool_name = 'scheduler:get_next'

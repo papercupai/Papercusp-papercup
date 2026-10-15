@@ -15,7 +15,7 @@
 // DeliberationsView/AgentChatsView did not have this list-row fallback.
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 
 // ---- stateful nuqs mock: setRoute updates a store and re-renders subscribers ----
 const store: Record<string, unknown> = {};
@@ -102,7 +102,7 @@ beforeEach(() => {
   Object.assign(store, {
     conv: 'inbox', fkind: [], fadvanced: 'closed', fagent: '', fplan: '', fq: '', fmsg: null,
     cq: '', cvf: {}, conversation: null, cstate: 'open', ckind: 'all', ctopic: '', thread: null,
-    acharness: '', acrole: '', chat: null, opc: null,
+    acharness: '', acrole: '', chat: null, cmsg: null, opc: null,
   });
   snapCache.clear();
   syncQueryCalls = [];
@@ -193,6 +193,46 @@ describe('curated Conversations — a row click reaches the main pane (WI-4216)'
 // query for the NEWLY selected id resolves to a row whose OWN `id` still belongs
 // to the PREVIOUS selection (precisely what keepPreviousData serves up mid-flight).
 const OTHER_THREAD_TITLE = 'why did the deploy pipeline stall for an hour?';
+
+describe('curated Conversations — agent-message selection survives normalization (WI-6554700010009158)', () => {
+  const message = {
+    msg_id: 'agent-message-1', kind: 'message', from: 'su-aabbccdd-sender', to: ['su-eeff0011-recipient'],
+    summary: 'private message selection', body: 'the selected agent message body',
+    harness_slug: 'papercusp', plan_slug: null, lifecycle: null, audience: [], broadcast: false,
+    reply_count: 0, ts: new Date().toISOString(), last_reply_ts: null,
+  };
+
+  beforeEach(() => {
+    syncResults['conversations.agentMessageList'] = ready([message]);
+    syncResults[syncKey('conversations.agentMessageDetail', { id: message.msg_id })] = ready([
+      { message, replies: [] },
+    ]);
+  });
+
+  it('keeps the clicked agent message selected and renders its exact body', async () => {
+    render(<AdvConversationsTab />);
+    fireEvent.click(screen.getByRole('button', { name: `Open ${message.summary}` }));
+    expect(store.conv).toBe('messages');
+    expect(store.cmsg).toBe(message.msg_id);
+    expect(await within(screen.getByRole('tabpanel')).findByText(message.body)).toBeTruthy();
+  });
+
+  it('keeps an agent-message deep link selected after mounting', async () => {
+    Object.assign(store, { conv: 'messages', cmsg: message.msg_id });
+    render(<AdvConversationsTab />);
+    expect(store.conv).toBe('messages');
+    expect(store.cmsg).toBe(message.msg_id);
+    expect(await within(screen.getByRole('tabpanel')).findByText(message.body)).toBeTruthy();
+  });
+
+  it('normalizes a message route without an id back to the inbox', () => {
+    Object.assign(store, { conv: 'messages', cmsg: null });
+    render(<AdvConversationsTab />);
+    expect(store.conv).toBe('inbox');
+    expect(store.cmsg).toBeNull();
+    expect(screen.getByRole('button', { name: `Open ${message.summary}` })).toBeTruthy();
+  });
+});
 
 describe('curated Conversations — a cross-id keepPreviousData placeholder never renders as the current detail (WI-4142)', () => {
   it('does not show the previous thread\'s stale detail while a new thread is loading', async () => {

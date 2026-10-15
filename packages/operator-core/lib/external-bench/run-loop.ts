@@ -4,7 +4,8 @@
  * run to DONE under the iso-budget cap, and return the generation telemetry. The shared
  * instantiation infra for the impartial benchmark suite (`impartial-benchmark-suite-2026-06-15`):
  *
- *   - the FULL Papercusp arm passes `'external-bench'` — the complete coding spine (spine ON).
+ *   - the CURRENT Papercusp arm passes `'su'` — the maintained native product execution path.
+ *     Explicit historical blueprint requests remain separate from this current binding.
  *   - Baseline A (ablation) passes `'coding-solo'` — one worker, spine OFF (P-006, su-136a4's
  *     `runSingleAgentAttempt` calls THIS port with `'coding-solo'`).
  *   - Baseline C (best-of-N, P-008) samples the `'coding-solo'` primitive through it N times.
@@ -37,12 +38,12 @@ import type {
 } from './types';
 
 /** The blueprint ids the suite instantiates (the matched causal-isolation pair). */
-export const FULL_SPINE_BLUEPRINT = 'external-bench'; // arm 'papercusp' — spine ON
+export const FULL_SPINE_BLUEPRINT = 'su'; // current treatment: maintained native su execution
 export const SINGLE_WORKER_BLUEPRINT = 'coding-solo'; // arm 'baseline-a-ablation' — spine OFF
 
 /** Inputs a driver needs to spin + run + cost ONE throwaway bench harness. */
 export interface BenchHarnessRunRequest {
-  /** `'external-bench'` (full spine) | `'coding-solo'` (single worker). */
+  /** `'su'` (current native treatment); explicit historical bindings retain their recorded id. */
   blueprintId: string;
   task: BenchTask;
   /** The clean checkout the harness edits (the diff is taken from `checkout.dir`). */

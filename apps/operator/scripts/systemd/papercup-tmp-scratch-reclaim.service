@@ -10,9 +10,17 @@ Type=oneshot
 Nice=19
 IOSchedulingClass=idle
 TimeoutStartSec=600
+# Recovery must not allocate its launcher snapshots on the full filesystem it
+# is supposed to clean. systemd creates this private runtime directory before
+# ExecStart and keeps it writable under ProtectSystem=strict.
+RuntimeDirectory=papercup-tmp-scratch-reclaim
+RuntimeDirectoryMode=0700
+Environment=TMPDIR=%t/papercup-tmp-scratch-reclaim
 # The script is deliberately invoked with the production root and conservative
 # age floor. It remains dry-run by default when run manually.
-ExecStart=%h/papercupai-workspace/papercusp/scripts/reclaim-tmp-scratch-residue.sh --execute --root /tmp --max-age-min 240
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/scripts/reclaim-tmp-scratch-residue.sh --execute --root /tmp --max-age-min 240
 # The reclaimer must see the host's shared /tmp; PrivateTmp=yes would create an
 # isolated namespace and make a successful-looking no-op.
 PrivateTmp=no

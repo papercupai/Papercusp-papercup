@@ -1,0 +1,64 @@
+{
+  "at": "2026-10-11T10:41:25.991Z",
+  "version": "PostgreSQL 18.4 on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 7.5.0-3ubuntu1~18.04) 7.5.0, 64-bit",
+  "shared_preload_libraries": "pg_textsearch",
+  "extversion": "1.5.1",
+  "flagOverrideRows": [],
+  "bm25IndexCount": 16,
+  "bm25Indexes": [
+    "audit_log.audit_log_bm25",
+    "capability_class_registry.capability_class_registry_bm25",
+    "carry_notes.carry_notes_bm25",
+    "code_recipes.code_recipes_bm25",
+    "coord_thread_posts.coord_thread_posts_bm25",
+    "datatype_registry.datatype_registry_bm25",
+    "documents.documents_bm25",
+    "event_key_registry.event_key_registry_bm25",
+    "goals.goals_bm25",
+    "harness_brainstorm.harness_brainstorm_bm25",
+    "harness_decisions.harness_decisions_bm25",
+    "harness_escalations.harness_escalations_bm25",
+    "harness_plans.harness_plans_bm25",
+    "report_library.report_library_bm25",
+    "session_turns.session_turns_bm25",
+    "work_items.work_items_bm25"
+  ],
+  "bm25Probe": "cess start) — writing one now\"},{\"name\":\"bm25-lexical\",\"up\":true,\"status\":null,\"latencyMs\":92,\"note\":\"BM25 ok: 16 index(es) present, work-item p95 5.9ms of 50ms\"}],\"mcpHandshake\":{\"ok\":true,\"status\":200,\"protocolVersion\":\"2025-06-18\",\"latencyMs\":17,\"url\":\"http://127.0.0.1:33701/api/mcp?client=mcp-health\"},\"telemetry\":{\"droppedRows\":0,\"insertErrorCount\":0,\"lastInsertErrorAt\":null,\"frictionSkippedCount\":0,\"frictionErrorCount\":0},\"mcpProxy",
+  "searches": {
+    "work_items:search": {
+      "ok": true,
+      "head": "{ \"ok\": true, \"count\": 0, \"items\": [], \"legs\": { \"lexical\": { \"status\": \"ran\", \"sourceCalls\": [ { \"source\": \"work_items_features\", \"ranker\": \"lexical\", \"status\": \"ran\", \"rows\": 0, \"durationMs\": 11, \"reason\": null }, { \"source\": \"work_items_issues\", \"ranker\": \"lexical\", \"status\": \"ran\", \"rows\": 0, \"durationMs\": 13, \"reason\": null } ], \"candidates\": 0, \"floored\": 0, \"stage2Added\": 0, \"callsRun\": 2, "
+    },
+    "events:catalog": {
+      "ok": true,
+      "head": "{ \"ok\": true, \"count\": 1, \"total\": 69, \"subject_scope_census\": { \"global\": 16, \"scope\": 26, \"id\": 27 }, \"announced_visibility\": { \"total_active\": 0, \"total_fired_history\": 0, \"total_discoverable\": 0, \"returned\": 0, \"hidden_by_scope\": 0, \"hidden_by_query\": 0, \"hidden_by_cap\": 0, \"reader_scope\": { \"fleet\": null, \"plan\": null, \"harness\": null }, \"reader_resolved\": true, \"note\": \"No announced gates ar"
+    },
+    "search:fulltext": {
+      "ok": true,
+      "head": "{ \"query\": \"search ranking\", \"scope\": [ \"escalations\", \"brainstorm\", \"turns\", \"decisions\" ], \"total_hits\": 0, \"results\": [], \"work_item_scope_hint\": \"the bug/change/task issue corpus was NOT searched (scope:['work_item'] is opt-in, not part of this default) — a ZERO or low hit count above does NOT mean no matching bug/change exists. Before filing (improvements:capture / work_items:create), re-run "
+    }
+  },
+  "idxScanDeltas": [
+    {
+      "index": "harness_decisions_bm25",
+      "delta": 2
+    },
+    {
+      "index": "harness_escalations_bm25",
+      "delta": 2
+    },
+    {
+      "index": "work_items_bm25",
+      "delta": 9
+    }
+  ],
+  "checks": {
+    "embeddedPg18_4": true,
+    "preloaded": true,
+    "extensionInstalled": true,
+    "bm25IndexesAllValid": true,
+    "healthProbeOk": true,
+    "searchServedByBm25Index": true
+  },
+  "pass": true
+}

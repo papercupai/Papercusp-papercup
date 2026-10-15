@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "kind": "manual-native-review-evidence",
+  "name": "Current account-first guide native controls",
+  "workItemId": "WI-10007744",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "observedAt": "2026-10-10T04:39:24.522Z",
+  "rootCommit": "abecdede05c105975fbeb57709f1f8e858c70729",
+  "portalCommit": "a88e00241d4786dcc54f9ead11b2900eee01a4c7",
+  "sourceManifest": "docs/evidence/account-first-tutorial-native-manifest-2026-10-10.json",
+  "result": "Scoped keyboard, native 200% zoom, AT-SPI focus and Orca speech-log review passed.",
+  "verified": {
+    "billingHeadingFocus": true,
+    "helpExpandedByReturn": true,
+    "questionEntry": true,
+    "askHelpFocusedByTab": true,
+    "scopedFixtureAnswerVisible": true,
+    "pauseResumeButtonFocus": true,
+    "resumeBillingHeadingFocus": true,
+    "zoom": 200,
+    "screenReader": "Orca with Speech Dispatcher espeak-ng",
+    "reducedMotion": true
+  },
+  "speechObserved": [
+    "notification Zoom: 200%",
+    "Understand the bills clickable.",
+    "Help with this lesson toggle button expanded.",
+    "Ask AI Help push button."
+  ],
+  "evidence": [
+    {
+      "path": "/dev/shm/tutorial-product-native-current-20261010T0438.json",
+      "sha256": "3061e3683faf07da0adc07902869765699e77b3053ebe842347ce93bdcc6b1d0"
+    },
+    {
+      "path": "/dev/shm/tutorial-product-native-current-20261010T0438-runner.log",
+      "sha256": "39f84c85af73fc102a5512e3dec5e1ab50622d57fef976fd826e7e0ce25fa536"
+    },
+    {
+      "path": "/dev/shm/tutorial-product-native-current-20261010T0438-speech.log",
+      "sha256": "6edc53fd25dce20f92fc9dc6f84368dd671d01c23ccd492b2a9fc42f881af015"
+    },
+    {
+      "path": "/dev/shm/tutorial-native-current-200.png",
+      "sha256": "4bec4b00285feb08bcddd6bacc0ff4817b918528972e037cba6c5444ba18e032"
+    },
+    {
+      "path": "/dev/shm/tutorial-native-current-help200.png",
+      "sha256": "7cda4d4a3f89625b74415633f2df4bfc67e178e86b6cf8c1a03337436b7cd148"
+    }
+  ],
+  "teardown": {
+    "execExitCode": 143,
+    "orcaProcessGone": true,
+    "windowManagerGone": true,
+    "reviewProcessResidue": []
+  },
+  "limitations": [
+    "Manual mounted-guide review only; no automated native PASS.",
+    "AT-SPI initially positioned focus; no whole-app pure-Tab acceptance or reload.",
+    "Help response is the maintained route fixture, not a provider response.",
+    "Output controls were visually present. Extra mute/stop keyboard probe after resume found Help collapsed and raised StopIteration; no output native control PASS asserted.",
+    "No human-heard audio, authenticated hosted journey, novice or production acceptance claimed."
+  ]
+}

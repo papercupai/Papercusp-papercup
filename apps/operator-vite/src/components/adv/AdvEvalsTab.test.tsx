@@ -17,6 +17,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
+import { buildSuiteReport, type TaskRunResult } from '@papercusp/bench-metrics';
 
 // ── nuqs: per-key store with spy setters captured per render. ──
 const nuqsState: Record<string, unknown> = { evalView: 'external', evalSuite: null, evalRun: null };
@@ -39,11 +40,15 @@ vi.mock('nuqs', () => ({
 const H = vi.hoisted(() => ({
   results: {} as Record<string, { data: unknown[]; loading: boolean; fetching: boolean; error: unknown; invalidate: ReturnType<typeof vi.fn> }>,
   mutatePaths: [] as string[],
+  queryCalls: [] as Array<{ queryName: string; args: unknown }>,
 }));
-const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null, invalidate: vi.fn() });
+const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null as unknown, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
+  useSyncQuery: ({ queryName, args }: { queryName: string; args: unknown }) => {
+    H.queryCalls.push({ queryName, args });
+    return H.results[queryName] ?? blank();
+  },
   useSyncMutate: (path: string, restFallback: (args: unknown) => Promise<unknown>) => {
     H.mutatePaths.push(path);
     return restFallback;
@@ -101,7 +106,7 @@ vi.mock('@/app/harness/Select', () => ({
   ),
 }));
 
-import AdvEvalsTab, { toFrontierPoints, toComparePerTask } from './AdvEvalsTab';
+import AdvEvalsTab, { toFrontierPoints, toComparePerTask, normalizeEvalReport, FrontierSweVersionBadge } from './AdvEvalsTab';
 
 beforeEach(() => {
   nuqsState.evalView = 'external';
@@ -111,12 +116,63 @@ beforeEach(() => {
   nuqsState.compareB = null;
   H.results = {};
   H.mutatePaths = [];
+  H.queryCalls = [];
 });
 afterEach(() => cleanup());
 
 function seedSuites(suites: unknown[], extra: Partial<ReturnType<typeof blank>> = {}) {
   H.results['evals.suites'] = { ...blank(), data: suites, ...extra };
 }
+
+function canonicalReport(over: Partial<TaskRunResult> = {}, singleRepository = false) {
+  const rows = ['a', 'b'].flatMap(taskId => ['papercusp', 'baseline'].map(arm => ({
+    runId: 'current-run', suite: 'swe-bench-pro', taskId, arm, seed: 0,
+    modality: 'diff', resolved: arm === 'papercusp', graderStatus: arm === 'papercusp' ? 'passed' : 'failed',
+    graderFamily: 'official', graderVersion: 'pinned', generationStatus: 'completed',
+    tokensIn: 100, tokensOut: 100, tokensTotal: 200, costUsd: 0.1, priceTableVersion: 'price-table-v1',
+    wallClockMs: 10, turns: 1, capped: false, modelId: 'claude-opus-4-8', harnessVersion: 'current',
+    preregHash: 'frozen', rolloutId: `${taskId}-${arm}`, createdAt: '2026-10-10T00:00:00Z',
+    ...(arm === 'papercusp' && taskId === 'a' ? over : {}),
+  } as TaskRunResult)));
+  return buildSuiteReport(rows, { assignedTaskIds: ['a', 'b', 'absent'], assignedSeeds: [0, 1, 2],
+    assignedArms: ['papercusp', 'baseline'], ci: 0.9,
+    repositoryByTask: { a: 'repo-a', b: singleRepository ? 'repo-a' : 'repo-b', absent: 'repo-a' } });
+}
+
+describe('canonical benchmark report boundary', () => {
+  it('renders actual maintained report output, paired policy and complete assignment counts', () => {
+    nuqsState.evalView = 'report'; nuqsState.evalRun = 'current-run';
+    H.results['evals.report'] = { ...blank(), data: [canonicalReport()] };
+    render(<AdvEvalsTab />);
+    expect(screen.getByText(/3 task pairs.*2 independent repositories.*3 assigned seeds per task.*90% CI/)).toBeTruthy();
+    expect(screen.getByText(/Primary difference: 22%.*Paired 90% CI/)).toBeTruthy();
+    expect(screen.getByText(/Absent assignments: baseline 7, treatment 7/)).toBeTruthy();
+    expect(screen.queryByTestId('viz-compare-baseline-b-native')).toBeNull();
+    for (const queryName of ['evals.report', 'evals.runs']) {
+      expect(H.queryCalls.find(call => call.queryName === queryName)?.args).toEqual({ runId: 'current-run' });
+    }
+  });
+
+  it('withholds primary intervals for missing grades and reports insufficient repository inference', () => {
+    nuqsState.evalView = 'report';
+    H.results['evals.report'] = { ...blank(), data: [canonicalReport({ resolved: null, graderStatus: 'error' })] };
+    const view = render(<AdvEvalsTab />);
+    expect(screen.getByText(/Primary difference: —.*Interval unavailable: missing official grades/)).toBeTruthy();
+    expect(screen.getByText(/Missing measurements: 1/)).toBeTruthy();
+    expect(screen.getByText('Cost efficiency is unmeasured.')).toBeTruthy();
+    H.results['evals.report'].data = [canonicalReport({}, true)]; view.rerender(<AdvEvalsTab />);
+    expect(screen.getByText(/Interval unavailable: fewer than two independent sampling units/)).toBeTruthy();
+  });
+
+  it('uses canonical normalized attempt cost and omits incomplete usage from the frontier', () => {
+    const report = canonicalReport();
+    const normalized = normalizeEvalReport(report)!;
+    expect(toFrontierPoints(normalized).find(point => point.arm === 'papercusp')?.cost)
+      .toBe(report.arms[0].cost.costUsd / report.arms[0].attempts);
+    expect(toFrontierPoints(normalizeEvalReport(canonicalReport({ armMeta: { costUsdMeasurementMissing: true } }))))
+      .not.toContainEqual(expect.objectContaining({ arm: 'papercusp' }));
+  });
+});
 
 describe('toFrontierPoints', () => {
   it('returns [] for no report', () => {
@@ -182,6 +238,22 @@ describe('<AdvEvalsTab> shell + routing', () => {
     expect(nuqsSetters.evalView).toHaveBeenCalledWith('throughput');
   });
 
+  it.each([false, true])('shows a denied suite read and withholds empty or stale results (cached=%s)', (cached) => {
+    seedSuites(cached ? [{ suite: 'denied-suite', runId: 'denied-run',
+      passAt1ByArm: { papercusp: 0.75 } }] : [], { error: new Error('HTTP 403: fixture denial') });
+    const view = render(<AdvEvalsTab />);
+    expect(screen.getByRole('alert').textContent).toContain('Could not load benchmark suites: HTTP 403');
+    expect(screen.queryByText('No benchmark runs yet')).toBeNull();
+    expect(view.container.querySelector('.pc-evals__scoreboard')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Reload the evaluation data' }));
+    expect(H.results['evals.suites'].invalidate).toHaveBeenCalledOnce();
+    H.results['evals.suites'].error = null;
+    view.rerender(<AdvEvalsTab />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    if (cached) expect(view.container.querySelector('.pc-evals__scoreboard')).not.toBeNull();
+    else expect(screen.getByText('No benchmark runs yet')).toBeTruthy();
+  });
+
   it('throughput view (no suites) shows its own L2 empty card', () => {
     nuqsState.evalView = 'throughput';
     render(<AdvEvalsTab />);
@@ -235,6 +307,7 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
   const RUN_DETAIL = {
     id: 'm3-realqueen-2026-06-16',
     arm: 'hive-realqueen',
+    source: 'import',
     status: 'done',
     run: { arm: 'hive-realqueen', startedAt: '2026-06-16T04:00:00Z', coordEvents: [{ kind: 'placement' }, { kind: 'complete' }] },
     perTask: [
@@ -269,6 +342,10 @@ describe('<AdvEvalsTab> runs subtab (evals.benchRuns / evals.benchRun)', () => {
     expect(screen.getByLabelText(/hive-realqueen — preserved run summary/)).toBeTruthy();
     expect(screen.getByTestId('preserved-task-grid')).toBeTruthy();
     expect(screen.getByTestId('rich-grid').getAttribute('data-rows')).toBe('2');
+    expect(screen.getByText('Historical archive evidence')).toBeTruthy();
+    // vacuous-negative-ok: gone-for-good ratchet on summary claims deleted from AdvEvalsTab.tsx
+    // on 2026-10-10. The lowercase tab label "real graded runs" is an older, different element.
+    expect(screen.queryByText(/Real graded run|92% opus|no valid no-Mug control/)).toBeNull();
     // The per-task Compare + the single-arm throughput/MAST viz are fed from the detail.
     expect(screen.getByTestId('viz-throughput')).toBeTruthy();
     expect(screen.getByTestId('viz-mast')).toBeTruthy();
@@ -284,7 +361,7 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
       vi.fn(async (url: string, init?: RequestInit) => {
         if (String(url).includes('/runs/launch')) {
           expect(init?.method).toBe('POST');
-          return { ok: true, json: async () => ({ ok: true, runId: 'ui-hive-realqueen-123' }) } as Response;
+          return { ok: true, text: async () => JSON.stringify({ ok: true, runId: 'current-study-result' }) } as Response;
         }
         return { ok: false, status: 404, json: async () => ({}) } as Response;
       }),
@@ -294,13 +371,36 @@ describe('<AdvEvalsTab> launch subtab (P-006)', () => {
 
   it('renders the arm picker + a launch button when no run is in flight', async () => {
     nuqsState.evalView = 'launch';
-    H.results['evals.benchEstimate'] = { ...blank(), data: [{ taskCount: 11, estCostUsd: 38.5, estWallMin: 36, perTaskUsd: 3.5, basis: 'm3' }] };
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: false, error: 'Register an OpenAI API bearer account.' }] };
     render(<AdvEvalsTab />);
     expect(screen.getByLabelText('Benchmark arm')).toBeTruthy();
     expect(screen.getByLabelText('Launch benchmark run')).toBeTruthy();
     expect(H.mutatePaths).toContain('externalBench.launchRun');
-    // The cost estimate (≥$20) requires an owner-confirm before launch is enabled.
-    await screen.findByLabelText('Approve this spend');
+    expect(screen.getByLabelText('Committed protocol run ID')).toBeTruthy();
+    expect(screen.queryByText('opus')).toBeNull();
+    expect(screen.getByText('Register an OpenAI API bearer account.')).toBeTruthy();
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('submits verified protocol controls and refuses a stale result after the seed changes', async () => {
+    nuqsState.evalView = 'launch';
+    const current = { workspaceId: 'benchmarks', protocolRunId: 'study', preregHash: 'a'.repeat(64), seed: 1,
+      observation: { runtimeWorkspaceId: 'host', workerUnit: 'staging-api', gatewayUnit: 'staging-api' } };
+    H.results['evals.benchEstimate'] = { ...blank(), data: [{ ready: true, arm: 'papercusp', current,
+      taskCount: 3, estCostUsd: 9, estWallMin: 15, perTaskUsd: 3, aggregateBudgetUsd: 60,
+      model: 'frozen-model', effort: 'high', account: 'api', basis: 'Frozen caps' }] };
+    render(<AdvEvalsTab />);
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Committed protocol run ID'), { target: { value: 'study' } });
+    fireEvent.click(screen.getByLabelText('Approve this spend'));
+    expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByLabelText('Launch benchmark run'));
+    // This fixture replaces setter spies on each render; observe its stored URL
+    // state after the asynchronous mutation rather than a replacement spy.
+    await vi.waitFor(() => expect(nuqsState.evalRun).toBe('current-study-result'));
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({ arm: 'papercusp', taskSetId: 'custom', current });
+    fireEvent.change(screen.getByLabelText('Registered seed'), { target: { value: '2' } });
     expect((screen.getByLabelText('Launch benchmark run') as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -405,5 +505,39 @@ describe('<AdvEvalsTab> with suites loaded', () => {
     expect(screen.getByTestId('viz-compare-baseline-c-bestofn')).toBeTruthy();
     // The B-native Compare got the one comparable task pivoted in.
     expect(screen.getByTestId('viz-compare-baseline-b-native').getAttribute('data-n')).toBe('1');
+  });
+});
+
+describe('FSWE-P016-BADGE: FrontierSWE version badge on the Evaluation run list', () => {
+  const run = (id: string, taskSetId: string) => ({
+    id, arm: 'p', taskSetId, status: 'graded', source: 'store', resolvedPct: 0.5, costUsd: 1, createdAt: '2026-10-12T00:00:00Z',
+  });
+
+  it('labels every v2 run in the run list "FrontierSWE v2", never v1 or unversioned', () => {
+    nuqsState.evalView = 'preserved';
+    nuqsState.evalRun = 'run-v2a';
+    H.results['evals.benchRuns'] = {
+      ...blank(),
+      data: [run('run-v2a', 'frontier-swe-v2'), run('run-v2b', 'frontier-swe-v2-cpu'), run('run-v1', 'frontier-swe'), run('run-other', 'swe-bench-pro')],
+    };
+    render(<AdvEvalsTab />);
+    const select = screen.getByLabelText('Preserved run') as HTMLSelectElement;
+    const label = (id: string) => Array.from(select.options).find(o => o.value === id)!.textContent ?? '';
+    expect(label('run-v2a')).toContain('FrontierSWE v2');
+    expect(label('run-v2b')).toContain('FrontierSWE v2');
+    expect(label('run-v1')).toContain('FrontierSWE v1');
+    expect(label('run-v1')).not.toContain('v2');
+    expect(label('run-other')).not.toContain('FrontierSWE');
+  });
+
+  it('renders the badge for FrontierSWE task sets and nothing for any other set', () => {
+    const view = render(<FrontierSweVersionBadge taskSetId="frontier-swe-v2-pilot" />);
+    expect(view.container.textContent).toContain('FrontierSWE v2');
+    view.rerender(<FrontierSweVersionBadge taskSetId="frontier-swe-cpu" />);
+    expect(view.container.textContent).toContain('FrontierSWE v1');
+    view.rerender(<FrontierSweVersionBadge taskSetId="swe-bench-pro" />);
+    expect(view.container.textContent).toBe('');
+    view.rerender(<FrontierSweVersionBadge taskSetId={undefined} />);
+    expect(view.container.textContent).toBe('');
   });
 });

@@ -18,6 +18,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   callOwnerProcess,
+  locateOwnerRpcResource,
   startPrimaryOwnerRpcRelay,
   type OwnerRpcClusterLike,
   type OwnerRpcHandle,
@@ -119,6 +120,15 @@ afterAll(async () => {
 });
 
 describe('cluster owner rpc across real worker processes', () => {
+  it('explains that a missing local mapping has several possible causes', async () => {
+    const out = await locateOwnerRpcResource('fixture-kernel', `unknown-${Date.now()}`, 'workspace-a:owner-a:papercusp');
+    expect(out).toMatchObject({
+      ok: false,
+      code: 'owner_gone',
+      message: expect.stringContaining('unknown, foreign, expired, or lost on process restart'),
+    });
+  });
+
   it('lets worker B drive an object that only worker A holds', async () => {
     expect(a.pid).not.toBe(b.pid);
     const opened = await callFrom(a, a.pid, { op: 'open' });
@@ -148,6 +158,33 @@ describe('cluster owner rpc across real worker processes', () => {
       ok: false,
       code: 'timeout',
     });
+  });
+
+  it('distinguishes an absent owner mapping from a recorded owner with no live worker', async () => {
+    const id = `kernel-${Date.now()}`;
+    const scope = 'workspace-a:owner-a:papercusp';
+    const kind = 'fixture-kernel';
+    const bound = await callFrom(a, a.pid, { op: 'resource-bind', kind, id, scope });
+    expect(bound).toMatchObject({ ok: true, result: { bound: true, ownerPid: a.pid } });
+
+    const absent = await callFrom(b, b.pid, { op: 'resource-locate', kind, id: `${id}-unknown`, scope });
+    expect(absent).toMatchObject({ ok: true, result: {
+      ok: false, code: 'owner_gone', message: expect.stringContaining('unknown, foreign, expired, or lost on primary restart'),
+    } });
+
+    const ownerPid = a.pid;
+    const ownerEntry = Object.entries(workers).find(([, worker]) => worker.process.pid === ownerPid);
+    expect(ownerEntry).toBeDefined();
+    const [ownerKey, ownerWorker] = ownerEntry!;
+    delete workers[ownerKey];
+    try {
+      const gone = await callFrom(b, b.pid, { op: 'resource-locate', kind, id, scope });
+      expect(gone).toMatchObject({ ok: true, result: {
+        ok: false, code: 'owner_gone', message: expect.stringContaining(`owner worker pid ${ownerPid} is no longer live`),
+      } });
+    } finally {
+      workers[ownerKey] = ownerWorker;
+    }
   });
 
   it('reports a pid that is not a live worker as owner_gone, authoritatively', async () => {

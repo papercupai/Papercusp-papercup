@@ -6,7 +6,7 @@
 //   1. the launcher's handoff successor re-derives the trio when absent (heal);
 //   2. the pty-host allowlist is PINNED ⊇ the helper's keys, so the next key the fresh
 //      path adds cannot silently fall out of the handoff again.
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   contextTrimmingEnv,
   healContextTrimmingEnv,
@@ -14,9 +14,102 @@ import {
   nativeDeferralReachable,
   terminalRenderEnv,
   applyLauncherOperatorUrlEnv,
+  applyHostHandoffEnv,
   resolveOperatorTarget,
 } from '../scripts/psu-launcher.mjs';
-import { HOST_HANDOFF_ENV_KEYS } from '../scripts/psu-pty-host.mjs';
+import {
+  HOST_HANDOFF_ENV_KEYS,
+  publishKickoffProofReceipt,
+  shutdownRefusalReason,
+  unreportedKickoffRefusalStrandsHost,
+} from '../scripts/psu-pty-host.mjs';
+
+describe('host adoption receipt custody (EI-25733617164988734)', () => {
+  it.each([false, true])('retires the original receipt even when carried by old handoff code (%s)', (carried) => {
+    const receipt = {
+      PAPERCUSP_KICKOFF_PROOF_PATH: '/expired-original-launch/receipt.json',
+      PAPERCUSP_KICKOFF_PROOF_TOKEN: 'a'.repeat(48),
+    };
+    const env: Record<string, string> = { ...receipt, PAPERCUSP_SID: 'su-original' };
+    applyHostHandoffEnv(env, {
+      ...(carried ? receipt : {}),
+      PAPERCUSP_SID: 'su-original',
+      PAPERCUSP_ACCOUNT_ID: 'original-account',
+      PAPERCUSP_MODEL: 'original-model',
+      CODEX_HOME: '/original/isolated-home',
+    });
+    expect(env).toEqual({
+      PAPERCUSP_SID: 'su-original',
+      PAPERCUSP_ACCOUNT_ID: 'original-account',
+      PAPERCUSP_MODEL: 'original-model',
+      CODEX_HOME: '/original/isolated-home',
+    });
+    const refusal = publishKickoffProofReceipt({ persisted: false, reason: 'quota-blocked' }, env);
+    expect(refusal).toEqual({ published: false, reason: 'kickoff-proof-request-missing' });
+    expect(unreportedKickoffRefusalStrandsHost({ delivered: false, headless: true, receipt: refusal })).toBe(false);
+  });
+
+  it('keeps a fresh launch receipt active until an adoption actually consumes the session', () => {
+    const fresh = {
+      PAPERCUSP_KICKOFF_PROOF_PATH: '/expired-original-launch/receipt.json',
+      PAPERCUSP_KICKOFF_PROOF_TOKEN: 'a'.repeat(48),
+    };
+    const refusal = publishKickoffProofReceipt({ persisted: false, reason: 'quota-blocked' }, fresh);
+    expect(refusal.reason).toBe('kickoff-proof-receipt-publish-failed');
+    expect(unreportedKickoffRefusalStrandsHost({ delivered: false, headless: true, receipt: refusal })).toBe(true);
+  });
+});
+
+describe('host-code handoff launch provenance (EI-25370180511092356)', () => {
+  const carryEnv = (env: Record<string, string>) => Object.fromEntries(
+    Object.entries(env).filter(([key, value]) => HOST_HANDOFF_ENV_KEYS.includes(key) && value.length > 0),
+  );
+
+  it('retains the original launching actor for a fleetless headless successor', () => {
+    const carried = carryEnv({
+      PAPERCUSP_SID: 'su-original',
+      PAPERCUSP_AGENT: 'codex',
+      PAPERCUSP_LAUNCHED_BY: 'su-launching-agent',
+      UNRELATED_SECRET: 'must-not-cross-the-handoff',
+    });
+    expect(carried.PAPERCUSP_LAUNCHED_BY).toBe('su-launching-agent');
+    expect(carried.UNRELATED_SECRET).toBeUndefined();
+    expect(shutdownRefusalReason({
+      launchedBy: carried.PAPERCUSP_LAUNCHED_BY,
+      headless: true,
+      fleetSlug: '',
+      agentQuietMs: 60_000,
+    })).toBeNull();
+  });
+
+  it.each<Record<string, string>>([{}, { PAPERCUSP_LAUNCHED_BY: '' }])('does not invent agent provenance for an unmarked host (%j)', (env) => {
+    const carried = carryEnv(env);
+    expect(carried.PAPERCUSP_LAUNCHED_BY).toBeUndefined();
+    expect(shutdownRefusalReason({
+      launchedBy: carried.PAPERCUSP_LAUNCHED_BY,
+      headless: true,
+      fleetSlug: '',
+      agentQuietMs: 60_000,
+    })).toBe('not-agent-launched');
+  });
+});
+
+describe('host-code handoff mutex identity', () => {
+  it('preserves the explicit mutex root through adoption and launcher re-exec', () => {
+    const root = '/shared-control-plane/explicit-mutex-root';
+    const carried = Object.fromEntries(Object.entries({
+      PAPERCUSP_SID: 'su-mutex-handoff',
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: root,
+      UNRELATED_SECRET: 'must-not-cross-the-handoff',
+    }).filter(([key]) => HOST_HANDOFF_ENV_KEYS.includes(key)));
+    const successor: Record<string, string> = {};
+
+    applyHostHandoffEnv(successor, JSON.parse(JSON.stringify(carried)));
+
+    expect(successor.PAPERCUSP_FS_MUTEX_LOCK_DIR).toBe(root);
+    expect(successor.UNRELATED_SECRET).toBeUndefined();
+  });
+});
 
 describe('host-code handoff operator target provenance', () => {
   it.each(['discovery', 'env'])('retains the %s target policy through the handoff allowlist', (source) => {
@@ -76,7 +169,18 @@ describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => 
     expect(trio.some((k) => preFix.includes(k))).toBe(false);
   });
 
-  it('healContextTrimmingEnv fills ONLY absent keys, keeps explicit values, is idempotent', () => {
+  // WI-10005917: older full-seed handoffs could carry an empty compact list, while new
+  // handoffs derive the generated compact intersection. Pin both settings so the heal
+  // contract is measured regardless of the runner's environment.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['off', ''],
+    ['on', '1'],
+  ])('healContextTrimmingEnv fills ONLY absent keys, keeps explicit values, is idempotent (full seed %s)', (_label, fullSeed) => {
+    vi.stubEnv('PAPERCUSP_CLAUDE_FULL_SEED', fullSeed);
     const env: Record<string, string | undefined> = {
       PAPERCUSP_AGENT: 'claude',
       PAPERCUSP_CONTEXT_TIER: 'full',

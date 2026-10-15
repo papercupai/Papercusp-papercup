@@ -101,6 +101,22 @@ describe('dispatchCleanupFindingAction', () => {
     expect(h.call).toHaveBeenCalledWith(tool, args);
   });
 
+  it('preserves a failed member detail when the outer bulk envelope is also failed', async () => {
+    h.call.mockResolvedValue({
+      ok: false,
+      results: [{ ok: false, slug: 'plan-a', error: 'acceptance_unaudited', detail: 'no code-truth audit' }],
+      counts: { ok: 0, failed: 1 },
+    });
+
+    await expect(
+      dispatchCleanupFindingAction({
+        run,
+        finding: finding('finish-plan', null),
+        call: h.call,
+      }),
+    ).rejects.toThrow('plans:set-plan-status: acceptance_unaudited: no code-truth audit');
+  });
+
   it('targets exactly one orphaned claim through the canonical stale-claim reaper', async () => {
     await dispatchCleanupFindingAction({ run, finding: finding('orphaned-claim'), call: h.call });
     expect(h.reclaimExpiredPlanItemClaims).toHaveBeenCalledWith(h.sql, {
@@ -119,5 +135,16 @@ describe('dispatchCleanupFindingAction', () => {
       dispatchCleanupFindingAction({ run, finding: finding('stale-now', null), call: h.call }),
     ).rejects.toThrow(/requires an authored state\/next proposal/);
     expect(h.call).not.toHaveBeenCalled();
+  });
+
+  it('dispatches an authored Now update through the canonical validator', async () => {
+    await dispatchCleanupFindingAction({
+      run, finding: finding('stale-now', null), call: h.call,
+      proposal: { state: 'P-002 remains open.', next: 'Implement P-002 and verify its acceptance.' },
+    });
+    expect(h.call).toHaveBeenCalledWith('plans:set-now', {
+      slug: 'plan-a', harness: 'papercusp', state: 'P-002 remains open.',
+      next: 'Implement P-002 and verify its acceptance.',
+    });
   });
 });

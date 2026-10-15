@@ -1,0 +1,903 @@
+{
+  "schemaVersion": "bounded-live-source-port-observation-v1",
+  "scope": "Maintained source-port seam observation on current build; no normal-consult or full matrix/R6/acceptance/shipment claim",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planVersion": 40,
+  "governingDecision": "D-017",
+  "workItems": [
+    "WI-10005889",
+    "WI-10007521"
+  ],
+  "runtime": {
+    "endpoint": "http://127.0.0.1:3170",
+    "buildSha": "919b3798fa",
+    "containmentRead": "dev:pipeline_position source.ts/operator-api containsChange true; native actor headers host 3170"
+  },
+  "before": {
+    "capturedAt": "2026-10-10T15:18:10.064Z",
+    "sourceOwner": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+    "sourceAdvSessionId": 37370,
+    "sourceNativeSessionId": "01a1265a-5ef4-7770-9327-79d07ccf0802",
+    "sourceEndedAt": null,
+    "canonicalPath": "${HOME}/.papercusp/su-codex-homes/session-37370/sessions/2026/10/10/rollout-2026-10-10T11-06-59-01a1265a-5ef4-7770-9327-79d07ccf0802.jsonl",
+    "snapshotKind": "live-jsonl",
+    "highWaterBytes": 1403484,
+    "completeBytes": 1403484,
+    "completeSha256": "f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058",
+    "dev": 66307,
+    "ino": 40254829,
+    "nlink": 1,
+    "targetOwner": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+    "target": {
+      "operation": "port",
+      "sourceAgent": "codex",
+      "targetAgent": "codex",
+      "provider": "openai",
+      "modelSpec": "gpt-6.1-sol:xhigh",
+      "modelSource": "inherited"
+    },
+    "nonce": "r2-live-port-20261010-1518-ede23fcc-c1a7-4fe4-bfd6-3d979e31fb6b",
+    "conversationId": "conv-mv2jfldk-0000-943feaf6b4164f1388692d68a56c7cf9",
+    "servingRuntime": "http://127.0.0.1:3170",
+    "servingSha": "919b3798fa",
+    "scope": "bounded maintained native source-port seam trial; no normal-consult/R6/full acceptance credit"
+  },
+  "afterTargetEnd": {
+    "at": "2026-10-10T15:26:42.839Z",
+    "source": {
+      "id": 37370,
+      "owner": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+      "native": "01a1265a-5ef4-7770-9327-79d07ccf0802",
+      "endedAt": null
+    },
+    "completeBytes": 1886886,
+    "prefixSha256": "f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058",
+    "prefixPreserved": true,
+    "dev": 66307,
+    "ino": 40254829,
+    "nlink": 1
+  },
+  "portStoreReceipt": {
+    "id": "cdde1f65-a9b3-4714-8138-7176ff012a12",
+    "workspaceId": "papercusp-workspace",
+    "idempotencyKey": "fa30841a07ae949fc4dd139d4c2c7abfafd7c2badf4432d07a4a61ba3e10630a",
+    "retryOfPortId": null,
+    "protocolVersion": 2,
+    "sourceAdvSessionId": 37370,
+    "targetAdvSessionId": 39700,
+    "sourceBackend": "codex",
+    "targetBackend": "codex",
+    "targetModel": "gpt-6.1-sol:xhigh",
+    "status": "delivered",
+    "sourceHash": "f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058",
+    "normalizedHash": "d5f7beb4744c9eedab487378bed0cecfaac6fc85288b53b611a98f77de3801c6",
+    "renderedHash": "5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3",
+    "tokenHash": "9270233e7fc22b161578c4e1e458d18bed36c58d209fbf00d6463cdfca218392",
+    "artifactPath": "${HOME}/.papercusp/session-ports/cdde1f65-a9b3-4714-8138-7176ff012a12.seed.md",
+    "metadata": {
+      "summary": {
+        "stats": {
+          "toolCalls": 23,
+          "redactions": 14,
+          "toolResults": 22,
+          "sourceRecords": 229,
+          "textAttachments": 0,
+          "delimiterEscapes": 0,
+          "malformedRecords": 0,
+          "sidechainRecords": 0,
+          "syntheticRecords": 0,
+          "activePathRecords": 105,
+          "unsupportedBlocks": 0,
+          "compactedAncestors": 0,
+          "omittedAttachments": 0,
+          "controlBytesRemoved": 0,
+          "unlinkedToolResults": 0,
+          "truncatedAttachments": 0,
+          "omittedThinkingBlocks": 22,
+          "omittedSignatureBlocks": 22,
+          "truncatedToolNarratives": 9
+        },
+        "budget": {
+          "estimator": "utf8-byte-upper-bound-v1",
+          "availableInputTokens": 771091,
+          "finalPayloadEstimatedTokens": 505339,
+          "summarizerOutputBudgetTokens": null
+        },
+        "hashes": {
+          "source": "f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058",
+          "rendered": "5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3",
+          "normalized": "d5f7beb4744c9eedab487378bed0cecfaac6fc85288b53b611a98f77de3801c6"
+        },
+        "source": {
+          "cwd": "${PAPERCUSP_WORKSPACE_ROOT}",
+          "backend": "codex",
+          "planSlug": null,
+          "snapshot": {
+            "kind": "live-jsonl",
+            "sha256": "f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058",
+            "completeBytes": 1403484,
+            "archiveRelpath": null,
+            "highWaterBytes": 1403484
+          },
+          "harnessSlug": null,
+          "workspaceId": "papercusp-workspace",
+          "advSessionId": 37370,
+          "nativeSessionId": "01a1265a-5ef4-7770-9327-79d07ccf0802"
+        },
+        "target": {
+          "model": "gpt-6.1-sol:xhigh",
+          "account": "auto",
+          "backend": "codex",
+          "ownerId": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+          "provider": "openai",
+          "contextSize": "trimmed",
+          "contextWindow": 872000,
+          "launchContextHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "availableInputTokens": 771091
+        },
+        "summary": null,
+        "fidelity": "full",
+        "versions": {
+          "adapter": 1,
+          "renderer": 3,
+          "transform": 4,
+          "summaryPrompt": null
+        },
+        "warnings": [
+          "9 tool narrative(s) truncated with an inline marker",
+          "22 provider thinking block(s) omitted",
+          "22 provider signature block(s) omitted"
+        ],
+        "protocolVersion": 2
+      },
+      "disclosure": {
+        "targetEgress": "openai/auto",
+        "sourceUntouched": true,
+        "authorityCarried": false,
+        "newTargetSession": true,
+        "summarizerEgress": null
+      },
+      "artifactBytes": 505339,
+      "estimatedTokens": 505339,
+      "persistenceProof": {
+        "nativeRef": "${HOME}/.papercusp/su-codex-homes/session-39700/sessions/2026/10/10/rollout-2026-10-10T11-18-12-01a12664-a44c-7f20-9070-85d1e69c1c7d.jsonl",
+        "persisted": true,
+        "renderedHash": "5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3"
+      },
+      "bootstrapLedgerKey": "bootstrap-su:session-port:cdde1f65-a9b3-4714-8138-7176ff012a12",
+      "sourceCoordOwnerId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+      "targetCoordOwnerId": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+      "bootstrapRequestHash": "d2acbc53970a9a8e630b40590c77a755443765ed258f5facdfaa6471d6a6d7b2",
+      "persistenceVerifiedAt": "2026-10-10T15:18:18.448Z",
+      "targetNativeSessionId": null,
+      "bootstrapReceiptCommitted": true,
+      "bootstrapReceiptTargetAdvSessionId": 39700
+    },
+    "error": null,
+    "preparedAt": "2026-10-10T15:18:10.414Z",
+    "pendingAt": "2026-10-10T15:18:10.545Z",
+    "deliveredAt": "2026-10-10T15:18:18.450Z",
+    "failedAt": null,
+    "expiresAt": "2026-10-10T15:33:10.413Z"
+  },
+  "native": {
+    "path": "${HOME}/.papercusp/su-codex-homes/session-39700/sessions/2026/10/10/rollout-2026-10-10T11-18-12-01a12664-a44c-7f20-9070-85d1e69c1c7d.jsonl",
+    "exists": true,
+    "nativeFingerprintMatches": true,
+    "expectedCallIdFingerprint": "0a30f73eb9bf8b53ed4e9cc91a7feddb1ea1d7144d1c0440196b1a774fc1b826",
+    "matchedNativeCalls": [
+      {
+        "line": 59,
+        "timestamp": "2026-10-10T15:21:08.476Z",
+        "recordType": "event_msg",
+        "eventType": "item_completed",
+        "threadId": "01a12664-a44c-7f20-9070-85d1e69c1c7d",
+        "turnId": "01a12664-a8f0-7fc0-a56c-13c16c118fd5",
+        "itemType": "McpToolCall",
+        "itemId": "exec-82c95053-b835-4d1c-81f6-9a6812b6cef0",
+        "server": "papercusp-su",
+        "tool": "tools:invoke",
+        "invokedTool": "conversations:post",
+        "callIdFingerprint": "0a30f73eb9bf8b53ed4e9cc91a7feddb1ea1d7144d1c0440196b1a774fc1b826",
+        "serverInvocationIds": [35426214, 35426215],
+        "argumentBodySha256": "e7701ae3bd2a8f07a3258b966f580b4d93a3cb2ad31b87c910621bd0e5f7fd89",
+        "argumentBodyMatchesReadBackPost": true,
+        "status": "completed",
+        "error": null
+      }
+    ],
+    "nativeReplyResults": [
+      {
+        "line": 59,
+        "ok": true,
+        "conversation_id": "conv-mv2jfldk-0000-943feaf6b4164f1388692d68a56c7cf9",
+        "post_id": 1172250,
+        "notified_subscribers": 1
+      }
+    ],
+    "frame": {
+      "line": 9,
+      "timestamp": "2026-10-10T15:18:14.290Z",
+      "renderedHash": "5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3",
+      "matchesStore": true,
+      "portIdPresent": true,
+      "freshIdentityHeader": true
+    },
+    "nativeBytes": 1554446,
+    "nativeSha256": "82866e7634d578b12bf8d6386431c6c2a1ca8e2a456433b1efa8c2efa8645ce8"
+  },
+  "finalNativeByteCount": 1554446,
+  "finalNativeSha256": "82866e7634d578b12bf8d6386431c6c2a1ca8e2a456433b1efa8c2efa8645ce8",
+  "nativeAnswerAndEndFrames": [
+    {
+      "line": 57,
+      "record": {
+        "timestamp": "2026-10-10T15:21:08.130Z",
+        "ordinal": 56,
+        "type": "response_item",
+        "payload": {
+          "type": "custom_tool_call",
+          "id": "ctc_058e85698c3b05df016aca57c957748193a1f40f608c41ffc8",
+          "status": "completed",
+          "call_id": "call_9a5288e465234411af6783c573f05f6c",
+          "name": "exec",
+          "input": "const body = `Nonce: r2-live-port-20261010-1518-ede23fcc-c1a7-4fe4-bfd6-3d979e31fb6b.\n\nI verified coord:whoami through native tools:invoke: owner su-107966f7-cd40-434c-baf4-ff39c2a91c9c, distinct from source su-e16e0da4-f858-4e10-9665-55116edbc36b. Native dev:resolve_owner and my own rollout session_meta independently agree on target native session 01a12664-a44c-7f20-9070-85d1e69c1c7d; target adv ID is 39700 (PAPERCUSP_ADV_SESSION_ID / CODEX_HOME session-39700).\n\nThe actual first port prompt is native rollout row 9, timestamp 2026-10-10T15:18:14.290Z, origin nonce 88e03deb97a3c004. Its header says port-id cdde1f65-a9b3-4714-8138-7176ff012a12, codex → codex, fidelity full, fresh identity with no source authority carried. Declared frame checksum is 5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3. I recomputed SHA-256 over the exact rendered payload, excluding the added turn-origin prefix and checksum receipt; it matches. This is the rendered-frame checksum, NOT the raw source-prefix hash.\n\nOne correction to the current instruction: this first frame's header does not actually expose source adv/native ID or raw source hash. render.ts:91–112 confirms those fields are absent from the renderer's header. The following values are observed separately in /dev/shm/get-feedback-live-port-before-20261010-1518.json and its matching LIVE_PORT_BEFORE launch-log record, not inferred from the frame: source adv 37370; native 01a1265a-5ef4-7770-9327-79d07ccf0802; capturedAt 2026-10-10T15:18:10.064Z; sourceEndedAt null; snapshotKind live-jsonl; highWaterBytes and completeBytes 1403484; completeSha256 f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058; dev 66307, inode 40254829, nlink 1. The log separately confirms preparation of the same cdde1f65 port. Source canonical path is ${HOME}/.papercusp/su-codex-homes/session-37370/sessions/2026/10/10/rollout-2026-10-10T11-06-59-01a1265a-5ef4-7770-9327-79d07ccf0802.jsonl.\n\nI read current source.ts:133–166 and plan v40 D-017 through native plans:get. readStableLiveJsonl opens ONE descriptor O_RDONLY | O_NOFOLLOW, stats that descriptor, bounds allocation/read to its measured byte size, and performs positional reads through that descriptor. A path replacement after opening does not redirect those reads to another inode; O_NOFOLLOW rejects a symlink at the opened final component. It finds the last newline among bytes actually read, excludes the unfinished tail, and hashes exactly that complete-line prefix. Appends beyond the captured high-water do not enter this snapshot.\n\nThe reader assumes append-only data; it does not lock the inode against same-file overwrites or provide a before/after preservation comparison. Its completeBytes may be less than highWaterBytes after a partial trailing record or short read. Thus acquisition establishes which complete bytes were read at one bounded observation, not that those bytes remained unchanged through launch, that later appends came from the source owner, or that source claims/wakes were preserved. D-017 requires the later exact-prefix comparison and independent target/launch/per-call/D006 actor evidence. No such after-comparison or actor-ledger audit was performed by this answering session. I also have not independently measured the serving build: 919b3798fa is the saved launch record's build value.\n\nEstablished limitation: the native frame itself lacks the source identity/hash fields requested by the instruction, so source provenance needs the separately retained preparation/launch evidence. The matched checksum proves this target received that rendered frame; it does not prove raw-source immutability, universal same-UID/process isolation, a normal consult matrix, R6 acceptance, or shipment. This answer is posted once through native MCP tools:invoke, not a ptool delivery substitute. Source claims/modes/loop were not changed or claimed.`;\nstore(\"trialAnswer\",body);\ntext(await tools.mcp__papercusp_su__tools_invoke({name:\"conversations:post\",args:{conversation_id:\"conv-mv2jfldk-0000-943feaf6b4164f1388692d68a56c7cf9\",body}}));\n",
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a12664-a8f0-7fc0-a56c-13c16c118fd5",
+            "create_time": 1791645641.350385
+          }
+        }
+      }
+    },
+    {
+      "line": 60,
+      "record": {
+        "timestamp": "2026-10-10T15:21:08.579Z",
+        "ordinal": 59,
+        "type": "response_item",
+        "payload": {
+          "type": "custom_tool_call_output",
+          "id": "ctco_01a12667-54e3-7fe3-a6ec-ae1c6853fb7e",
+          "call_id": "call_9a5288e465234411af6783c573f05f6c",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "Script completed\nWall time 0.4 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true,\\\"conversation_id\\\":\\\"conv-mv2jfldk-0000-943feaf6b4164f1388692d68a56c7cf9\\\",\\\"post_id\\\":1172250,\\\"notified_subscribers\\\":1}\"},{\"type\":\"text\",\"text\":\"See also: conversations:join (participate in an existing thread); conversations:answer (a definitive answer, not just a reply); conversations:list (find a thread to post to)\"},{\"type\":\"text\",\"text\":\"See also: tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)\"}]}"
+            }
+          ],
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a12664-a8f0-7fc0-a56c-13c16c118fd5",
+            "create_time": 1791645668.579375
+          }
+        },
+        "metadata": {
+          "client_authored": false,
+          "fallback_token_limit_override": 12000
+        }
+      }
+    },
+    {
+      "line": 66,
+      "record": {
+        "timestamp": "2026-10-10T15:21:32.170Z",
+        "ordinal": 65,
+        "type": "response_item",
+        "payload": {
+          "type": "custom_tool_call",
+          "id": "ctc_058e85698c3b05df016aca57fa9d38819381a0e8f77bc82ff0",
+          "status": "completed",
+          "call_id": "call_fb14d96cb62e467ca84fe7908cdf75fe",
+          "name": "exec",
+          "input": "text(await tools.mcp__papercusp_su__tools_invoke({name:\"conversations:get\",args:{id:\"conv-mv2jfldk-0000-943feaf6b4164f1388692d68a56c7cf9\",projection:{pick:[\"results[].id\",\"results[].posts[].id\",\"results[].posts[].author_id\"]}}}));\n",
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a12664-a8f0-7fc0-a56c-13c16c118fd5",
+            "create_time": 1791645690.616606
+          }
+        }
+      }
+    },
+    {
+      "line": 69,
+      "record": {
+        "timestamp": "2026-10-10T15:21:32.849Z",
+        "ordinal": 68,
+        "type": "response_item",
+        "payload": {
+          "type": "custom_tool_call_output",
+          "id": "ctco_01a12667-b3b1-73f3-b275-355f09b90376",
+          "call_id": "call_fb14d96cb62e467ca84fe7908cdf75fe",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "Script completed\nWall time 0.7 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "{\"content\":[{\"type\":\"text\",\"text\":\"{\\n  \\\"results\\\": [\\n    {\\n      \\\"id\\\": \\\"conv-mv2jfldk-0000-943feaf6b4164f1388692d68a56c7cf9\\\",\\n      \\\"posts\\\": [\\n        {\\n          \\\"id\\\": 1172250,\\n          \\\"author_id\\\": \\\"su-107966f7-cd40-434c-baf4-ff39c2a91c9c\\\"\\n        }\\n      ]\\n    }\\n  ]\\n}\"},{\"type\":\"text\",\"text\":\"\\n[projection: pick results[].id,results[].posts[].id,results[].posts[].author_id → 13 of 13 lines, 236 of 5,437 chars (96% saved)\\n⚠ pick applied to the JSON payload item; 1 advisory text item(s) (e.g. \\\"See also\\\" routing hints) were dropped — re-call without `pick` to keep them.]\"},{\"type\":\"text\",\"text\":\"See also: tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)\"}]}"
+            }
+          ],
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a12664-a8f0-7fc0-a56c-13c16c118fd5",
+            "create_time": 1791645692.849122
+          }
+        },
+        "metadata": {
+          "client_authored": false,
+          "fallback_token_limit_override": 12000
+        }
+      }
+    },
+    {
+      "line": 71,
+      "record": {
+        "timestamp": "2026-10-10T15:21:37.591Z",
+        "ordinal": 70,
+        "type": "response_item",
+        "payload": {
+          "type": "custom_tool_call",
+          "id": "ctc_058e85698c3b05df016aca57ffd654819380d2ab50c295a840",
+          "status": "completed",
+          "call_id": "call_869ef148146d419c97da212668122e23",
+          "name": "exec",
+          "input": "text(await tools.mcp__papercusp_su__tools_invoke({name:\"session:end\",args:{reason:\"Completed single isolated live-source port trial answer; native MCP post 1172250 verified under this target owner. Source authority untouched; requester retains preservation/actor acceptance work.\",force:true}}));\n",
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a12664-a8f0-7fc0-a56c-13c16c118fd5",
+            "create_time": 1791645695.8467739
+          }
+        }
+      }
+    },
+    {
+      "line": 74,
+      "record": {
+        "timestamp": "2026-10-10T15:21:38.357Z",
+        "ordinal": 73,
+        "type": "response_item",
+        "payload": {
+          "type": "custom_tool_call_output",
+          "id": "ctco_01a12667-c935-7643-a9d5-164370e4c899",
+          "call_id": "call_869ef148146d419c97da212668122e23",
+          "output": [
+            {
+              "type": "input_text",
+              "text": "Script completed\nWall time 0.7 seconds\nOutput:\n"
+            },
+            {
+              "type": "input_text",
+              "text": "{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"ok\\\":true,\\\"result\\\":\\\"sent\\\",\\\"note\\\":\\\"Shutdown accepted. This session is winding down and its terminal window will close; do not expect another turn.\\\",\\\"shutdownWakeGuardRecorded\\\":true,\\\"agentLaunched\\\":true,\\\"hostSupportsShutdown\\\":true}\"},{\"type\":\"text\",\"text\":\"See also: loop:end (stop the wake source first); work_items:complete (release your claims first)\"},{\"type\":\"text\",\"text\":\"See also: tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)\"}]}"
+            }
+          ],
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a12664-a8f0-7fc0-a56c-13c16c118fd5",
+            "create_time": 1791645698.3571615
+          }
+        },
+        "metadata": {
+          "client_authored": false,
+          "fallback_token_limit_override": 12000
+        }
+      }
+    }
+  ],
+  "actorAudit": {
+    "at": "2026-10-10T15:24:35.103Z",
+    "rows": [
+      {
+        "id": 35426214,
+        "tool_name": "conversations:post",
+        "status": "ok",
+        "coord_owner_id": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+        "spawn_id": "ephemeral-3686e8c24a1b340c",
+        "invoked_at": "2026-10-10 11:21:08.466-04",
+        "args_json": {
+          "body": "Nonce: r2-live-port-20261010-1518-ede23fcc-c1a7-4fe4-bfd6-3d979e31fb6b.\n\nI verified coord:whoami through native tools:invoke: owner su-107966f7-cd40-434c-baf4-ff39c2a91c9c, distinct from source su-e16e0da4-f858-4e10-9665-55116edbc36b. Native dev:resolve_owner and my own rollout session_meta independently agree on target native session 01a12664-a44c-7f20-9070-85d1e69c1c7d; target adv ID is 39700 (PAPERCUSP_ADV_SESSION_ID / CODEX_HOME session-39700).\n\nThe actual first port prompt is native rollout row 9, timestamp 2026-10-10T15:18:14.290Z, origin nonce 88e03deb97a3c004. Its header says port-id cdde1f65-a9b3-4714-8138-7176ff012a12, codex → codex, fidelity full, fresh identity with no source authority carried. Declared frame checksum is 5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3. I recomputed SHA-256 over the exact rendered payload, excluding the added turn-origin prefix and checksum receipt; it matches. This is the rendered-frame checksum, NOT the raw source-prefix hash.\n\nOne correction to the current instruction: this first frame's header does not actually expose source adv/native ID or raw source hash. render.ts:91–112 confirms those fields are absent from the renderer's header. The following values are observed separately in /dev/shm/get-feedback-live-port-before-20261010-1518.json and its matching LIVE_PORT_BEFORE launch-log record, not inferred from the frame: source adv 37370; native 01a1265a-5ef4-7770-9327-79d07ccf0802; capturedAt 2026-10-10T15:18:10.064Z; sourceEndedAt null; snapshotKind live-jsonl; highWaterBytes and completeBytes 1403484; completeSha256 f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058; dev 66307, inode 40254829, nlink 1. The log separately confirms preparation of the same cdde1f65 port. Source canonical path is ${HOME}/.papercusp/su-codex-homes/session-37370/sessions/2026/10/10/rollout-2026-10-10T11-06-59-01a1265a-5ef4-7770-9327-79d07ccf0802.jsonl.\n\nI read current source.ts:133–166 and plan v40 D-017 through native plans:get. readStableLiveJsonl opens ONE descriptor O_RDONLY | O_NOFOLLOW, stats that descriptor, bounds allocation/read to its measured byte size, and performs positional reads through that descriptor. A path replacement after opening does not redirect those reads to another inode; O_NOFOLLOW rejects a symlink at the opened final component. It finds the last newline among bytes actually read, excludes the unfinished tail, and hashes exactly that complete-line prefix. Appends beyond the captured high-water do not enter this snapshot.\n\nThe reader assumes append-only data; it does not lock the inode against same-file overwrites or provide a before/after preservation comparison. Its completeBytes may be less than highWaterBytes after a partial trailing record or short read. Thus acquisition establishes which complete bytes were read at one bounded observation, not that those bytes remained unchanged through launch, that later appends came from the source owner, or that source claims/wakes were preserved. D-017 requires the later exact-prefix comparison and independent target/launch/per-call/D006 actor evidence. No such after-comparison or actor-ledger audit was performed by this answering session. I also have not independently measured the serving build: 919b3798fa is the saved launch record's build value.\n\nEstablished limitation: the native frame itself lacks the source identity/hash fields requested by the instruction, so source provenance needs the separately retained preparation/launch evidence. The matched checksum proves this target received that rendered frame; it does not prove raw-source immutability, universal same-UID/process isolation, a normal consult matrix, R6 acceptance, or shipment. This answer is posted once through native MCP tools:invoke, not a ptool delivery substitute. Source claims/modes/loop were not changed or claimed.",
+          "conversation_id": "conv-mv2jfldk-0000-943feaf6b4164f1388692d68a56c7cf9"
+        },
+        "metadata_json": {
+          "kernel": {
+            "enforce": {
+              "applied": false,
+              "decision": "allow",
+              "serverAudit": {
+                "identityLaunchRecord": {
+                  "xmin": "841744319",
+                  "selection": "caller-row",
+                  "advSessionId": "39700"
+                }
+              },
+              "availability": "unavailable"
+            },
+            "preflight": {
+              "applied": false,
+              "decision": "allow",
+              "serverAudit": {
+                "identityLaunchRecord": {
+                  "xmin": "841744319",
+                  "selection": "caller-row",
+                  "advSessionId": "39700"
+                }
+              },
+              "availability": "unavailable"
+            }
+          },
+          "uiClientId": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+          "requestOrigin": {
+            "path": "/api/mcp",
+            "query": {
+              "tools": "coord:orient,coord:declare-intent,coord:inbox,coord:send,coord:glance,coord:dispatch,plans:new,plans:get,plans:set-status,plans:items,plans:set-now,work_items:list,work_items:create,work_items:claim,work_items:claim_next,work_items:get,work_items:complete,work_items:release,work_items:set_state,work_items:comment,work_items:update,scheduler:get_next,docs:search,memory:search,memory:remember,improvements:capture,code:run,recipes:search,dev:pg_query,facts:assert,facts:list,facts:retract,work_items:checkpoint,loop:arm,loop:checkpoint,loop:status,loop:end,checkpoint:await,events:await,events:catalog,events:cancel,session:request-compaction,fleet:launch-on-plan,search:fulltext,plans:add-decision,work_items:claimable,mode:set,tools:find,tools:invoke,chat:ask_choice,locks:release,consult:get_feedback,consult:reply,consult:decline,consult:close",
+              "client": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+              "superuser": "1",
+              "workspace": "papercusp-workspace"
+            },
+            "headers": {
+              "host": "127.0.0.1:3170",
+              "user-agent": "codex-mcp-client/0.162.1"
+            },
+            "transport": "mcp",
+            "connection": "http",
+            "nativeSession": {
+              "binding": "bound",
+              "carrier": "meta:threadId",
+              "valueFingerprint": "a0697b6f36c8e02089c31af99361be27105213281612bc2908751a9f06d1854c",
+              "callIdFingerprint": "0a30f73eb9bf8b53ed4e9cc91a7feddb1ea1d7144d1c0440196b1a774fc1b826",
+              "candidateAdvSessionId": 39700
+            },
+            "mcpRequestTraceId": "29850224-9b67-4992-993d-f0dc2f3e06c1"
+          },
+          "dispatchStages": {
+            "unit": "ms",
+            "steps": [
+              {
+                "name": "kernel-preflight",
+                "elapsedMs": 1.5991059998050332
+              },
+              {
+                "name": "default-deny",
+                "elapsedMs": 0.004288000054657459
+              },
+              {
+                "name": "role-allowlist",
+                "elapsedMs": 0.005119999870657921
+              },
+              {
+                "name": "capability-check",
+                "elapsedMs": 0.0023250002413988113
+              },
+              {
+                "name": "capability-envelope",
+                "elapsedMs": 0.788832999765873
+              },
+              {
+                "name": "role-requirement",
+                "elapsedMs": 0.002774999476969242
+              },
+              {
+                "name": "harness-check",
+                "elapsedMs": 0.001702999696135521
+              },
+              {
+                "name": "quota",
+                "elapsedMs": 0.0021939994767308235
+              },
+              {
+                "name": "authorize",
+                "elapsedMs": 0.003205999732017517
+              },
+              {
+                "name": "preconditions",
+                "elapsedMs": 0.0024849995970726013
+              },
+              {
+                "name": "entity-check",
+                "elapsedMs": 0.007645000703632832
+              },
+              {
+                "name": "timeout",
+                "elapsedMs": 0.03248300030827522
+              },
+              {
+                "name": "idle-watchdog",
+                "elapsedMs": 0.0022339997813105583
+              },
+              {
+                "name": "replay-buffer",
+                "elapsedMs": 0.0014829998835921288
+              },
+              {
+                "name": "ctx-bindings",
+                "elapsedMs": 0.29189400002360344
+              },
+              {
+                "name": "kernel-enforce",
+                "elapsedMs": 1.8986849999055266
+              },
+              {
+                "name": "invoke",
+                "elapsedMs": 69.32861899957061
+              }
+            ],
+            "timing": "wall-time-sequential-steps",
+            "elapsedMs": 74.00506500061601,
+            "schemaVersion": "dispatch-stages-v1"
+          }
+        }
+      },
+      {
+        "id": 35426215,
+        "tool_name": "tools:invoke",
+        "status": "ok",
+        "coord_owner_id": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+        "spawn_id": "ephemeral-3686e8c24a1b340c",
+        "invoked_at": "2026-10-10 11:21:08.467-04",
+        "args_json": {
+          "args": {
+            "body": "Nonce: r2-live-port-20261010-1518-ede23fcc-c1a7-4fe4-bfd6-3d979e31fb6b.\n\nI verified coord:whoami through native tools:invoke: owner su-107966f7-cd40-434c-baf4-ff39c2a91c9c, distinct from source su-e16e0da4-f858-4e10-9665-55116edbc36b. Native dev:resolve_owner and my own rollout session_meta independently agree on target native session 01a12664-a44c-7f20-9070-85d1e69c1c7d; target adv ID is 39700 (PAPERCUSP_ADV_SESSION_ID / CODEX_HOME session-39700).\n\nThe actual first port prompt is native rollout row 9, timestamp 2026-10-10T15:18:14.290Z, origin nonce 88e03deb97a3c004. Its header says port-id cdde1f65-a9b3-4714-8138-7176ff012a12, codex → codex, fidelity full, fresh identity with no source authority carried. Declared frame checksum is 5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3. I recomputed SHA-256 over the exact rendered payload, excluding the added turn-origin prefix and checksum receipt; it matches. This is the rendered-frame checksum, NOT the raw source-prefix hash.\n\nOne correction to the current instruction: this first frame's header does not actually expose source adv/native ID or raw source hash. render.ts:91–112 confirms those fields are absent from the renderer's header. The following values are observed separately in /dev/shm/get-feedback-live-port-before-20261010-1518.json and its matching LIVE_PORT_BEFORE launch-log record, not inferred from the frame: source adv 37370; native 01a1265a-5ef4-7770-9327-79d07ccf0802; capturedAt 2026-10-10T15:18:10.064Z; sourceEndedAt null; snapshotKind live-jsonl; highWaterBytes and completeBytes 1403484; completeSha256 f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058; dev 66307, inode 40254829, nlink 1. The log separately confirms preparation of the same cdde1f65 port. Source canonical path is ${HOME}/.papercusp/su-codex-homes/session-37370/sessions/2026/10/10/rollout-2026-10-10T11-06-59-01a1265a-5ef4-7770-9327-79d07ccf0802.jsonl.\n\nI read current source.ts:133–166 and plan v40 D-017 through native plans:get. readStableLiveJsonl opens ONE descriptor O_RDONLY | O_NOFOLLOW, stats that descriptor, bounds allocation/read to its measured byte size, and performs positional reads through that descriptor. A path replacement after opening does not redirect those reads to another inode; O_NOFOLLOW rejects a symlink at the opened final component. It finds the last newline among bytes actually read, excludes the unfinished tail, and hashes exactly that complete-line prefix. Appends beyond the captured high-water do not enter this snapshot.\n\nThe reader assumes append-only data; it does not lock the inode against same-file overwrites or provide a before/after preservation comparison. Its completeBytes may be less than highWaterBytes after a partial trailing record or short read. Thus acquisition establishes which complete bytes were read at one bounded observation, not that those bytes remained unchanged through launch, that later appends came from the source owner, or that source claims/wakes were preserved. D-017 requires the later exact-prefix comparison and independent target/launch/per-call/D006 actor evidence. No such after-comparison or actor-ledger audit was performed by this answering session. I also have not independently measured the serving build: 919b3798fa is the saved launch record's build value.\n\nEstablished limitation: the native frame itself lacks the source identity/hash fields requested by the instruction, so source provenance needs the separately retained preparation/launch evidence. The matched checksum proves this target received that rendered frame; it does not prove raw-source immutability, universal same-UID/process isolation, a normal consult matrix, R6 acceptance, or shipment. This answer is posted once through native MCP tools:invoke, not a ptool delivery substitute. Source claims/modes/loop were not changed or claimed.",
+            "conversation_id": "conv-mv2jfldk-0000-943feaf6b4164f1388692d68a56c7cf9"
+          },
+          "name": "conversations:post"
+        },
+        "metadata_json": {
+          "kernel": {
+            "enforce": {
+              "applied": false,
+              "decision": "allow",
+              "serverAudit": {
+                "identityLaunchRecord": {
+                  "xmin": "841744319",
+                  "selection": "caller-row",
+                  "advSessionId": "39700"
+                }
+              },
+              "availability": "unavailable"
+            },
+            "preflight": {
+              "applied": false,
+              "decision": "allow",
+              "serverAudit": {
+                "identityLaunchRecord": {
+                  "xmin": "841744319",
+                  "selection": "caller-row",
+                  "advSessionId": "39700"
+                }
+              },
+              "availability": "unavailable"
+            }
+          },
+          "uiClientId": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+          "requestOrigin": {
+            "path": "/api/mcp",
+            "query": {
+              "tools": "coord:orient,coord:declare-intent,coord:inbox,coord:send,coord:glance,coord:dispatch,plans:new,plans:get,plans:set-status,plans:items,plans:set-now,work_items:list,work_items:create,work_items:claim,work_items:claim_next,work_items:get,work_items:complete,work_items:release,work_items:set_state,work_items:comment,work_items:update,scheduler:get_next,docs:search,memory:search,memory:remember,improvements:capture,code:run,recipes:search,dev:pg_query,facts:assert,facts:list,facts:retract,work_items:checkpoint,loop:arm,loop:checkpoint,loop:status,loop:end,checkpoint:await,events:await,events:catalog,events:cancel,session:request-compaction,fleet:launch-on-plan,search:fulltext,plans:add-decision,work_items:claimable,mode:set,tools:find,tools:invoke,chat:ask_choice,locks:release,consult:get_feedback,consult:reply,consult:decline,consult:close",
+              "client": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+              "superuser": "1",
+              "workspace": "papercusp-workspace"
+            },
+            "headers": {
+              "host": "127.0.0.1:3170",
+              "user-agent": "codex-mcp-client/0.162.1"
+            },
+            "transport": "mcp",
+            "connection": "http",
+            "nativeSession": {
+              "binding": "bound",
+              "carrier": "meta:threadId",
+              "valueFingerprint": "a0697b6f36c8e02089c31af99361be27105213281612bc2908751a9f06d1854c",
+              "callIdFingerprint": "0a30f73eb9bf8b53ed4e9cc91a7feddb1ea1d7144d1c0440196b1a774fc1b826",
+              "candidateAdvSessionId": 39700
+            },
+            "mcpRequestTraceId": "29850224-9b67-4992-993d-f0dc2f3e06c1"
+          },
+          "dispatchStages": {
+            "unit": "ms",
+            "steps": [
+              {
+                "name": "kernel-preflight",
+                "elapsedMs": 1.7265130002051592
+              },
+              {
+                "name": "default-deny",
+                "elapsedMs": 0.005169999785721302
+              },
+              {
+                "name": "role-allowlist",
+                "elapsedMs": 0.005961999297142029
+              },
+              {
+                "name": "capability-check",
+                "elapsedMs": 0.002956000156700611
+              },
+              {
+                "name": "capability-envelope",
+                "elapsedMs": 2.406074999831617
+              },
+              {
+                "name": "role-requirement",
+                "elapsedMs": 0.0027949996292591095
+              },
+              {
+                "name": "harness-check",
+                "elapsedMs": 0.0018330002203583717
+              },
+              {
+                "name": "quota",
+                "elapsedMs": 0.0021340008825063705
+              },
+              {
+                "name": "authorize",
+                "elapsedMs": 0.0027550002560019493
+              },
+              {
+                "name": "preconditions",
+                "elapsedMs": 0.002875000238418579
+              },
+              {
+                "name": "entity-check",
+                "elapsedMs": 0.006282000802457333
+              },
+              {
+                "name": "timeout",
+                "elapsedMs": 0.04122900031507015
+              },
+              {
+                "name": "idle-watchdog",
+                "elapsedMs": 0.0031359996646642685
+              },
+              {
+                "name": "replay-buffer",
+                "elapsedMs": 0.0013419995084404945
+              },
+              {
+                "name": "ctx-bindings",
+                "elapsedMs": 0.16174199990928173
+              },
+              {
+                "name": "kernel-enforce",
+                "elapsedMs": 4.085165999829769
+              },
+              {
+                "name": "invoke",
+                "elapsedMs": 76.44155799970031
+              }
+            ],
+            "timing": "wall-time-sequential-steps",
+            "elapsedMs": 84.94173500034958,
+            "schemaVersion": "dispatch-stages-v1"
+          },
+          "dispatchedTool": "conversations:post",
+          "dispatchWrapper": true,
+          "effectiveStatus": "ok",
+          "childFailureCount": 0,
+          "mcpRequestSettlement": {
+            "stage": "inner_dispatch_settled",
+            "outcome": "success",
+            "traceId": "29850224-9b67-4992-993d-f0dc2f3e06c1",
+            "elapsedMs": 128,
+            "settledAt": "2026-10-10T15:21:08.468Z",
+            "afterDeadline": false,
+            "phaseTimingsMs": {
+              "advisory": 1,
+              "resultDoor": 0,
+              "advisoryFlagReads": 0,
+              "postDispatchToSettlement": 1
+            }
+          }
+        }
+      }
+    ],
+    "port": {
+      "id": "cdde1f65-a9b3-4714-8138-7176ff012a12",
+      "workspaceId": "papercusp-workspace",
+      "idempotencyKey": "fa30841a07ae949fc4dd139d4c2c7abfafd7c2badf4432d07a4a61ba3e10630a",
+      "retryOfPortId": null,
+      "protocolVersion": 2,
+      "sourceAdvSessionId": 37370,
+      "targetAdvSessionId": 39700,
+      "sourceBackend": "codex",
+      "targetBackend": "codex",
+      "targetModel": "gpt-6.1-sol:xhigh",
+      "status": "delivered",
+      "sourceHash": "f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058",
+      "normalizedHash": "d5f7beb4744c9eedab487378bed0cecfaac6fc85288b53b611a98f77de3801c6",
+      "renderedHash": "5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3",
+      "tokenHash": "9270233e7fc22b161578c4e1e458d18bed36c58d209fbf00d6463cdfca218392",
+      "artifactPath": "${HOME}/.papercusp/session-ports/cdde1f65-a9b3-4714-8138-7176ff012a12.seed.md",
+      "metadata": {
+        "summary": {
+          "stats": {
+            "toolCalls": 23,
+            "redactions": 14,
+            "toolResults": 22,
+            "sourceRecords": 229,
+            "textAttachments": 0,
+            "delimiterEscapes": 0,
+            "malformedRecords": 0,
+            "sidechainRecords": 0,
+            "syntheticRecords": 0,
+            "activePathRecords": 105,
+            "unsupportedBlocks": 0,
+            "compactedAncestors": 0,
+            "omittedAttachments": 0,
+            "controlBytesRemoved": 0,
+            "unlinkedToolResults": 0,
+            "truncatedAttachments": 0,
+            "omittedThinkingBlocks": 22,
+            "omittedSignatureBlocks": 22,
+            "truncatedToolNarratives": 9
+          },
+          "budget": {
+            "estimator": "utf8-byte-upper-bound-v1",
+            "availableInputTokens": 771091,
+            "finalPayloadEstimatedTokens": 505339,
+            "summarizerOutputBudgetTokens": null
+          },
+          "hashes": {
+            "source": "f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058",
+            "rendered": "5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3",
+            "normalized": "d5f7beb4744c9eedab487378bed0cecfaac6fc85288b53b611a98f77de3801c6"
+          },
+          "source": {
+            "cwd": "${PAPERCUSP_WORKSPACE_ROOT}",
+            "backend": "codex",
+            "planSlug": null,
+            "snapshot": {
+              "kind": "live-jsonl",
+              "sha256": "f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058",
+              "completeBytes": 1403484,
+              "archiveRelpath": null,
+              "highWaterBytes": 1403484
+            },
+            "harnessSlug": null,
+            "workspaceId": "papercusp-workspace",
+            "advSessionId": 37370,
+            "nativeSessionId": "01a1265a-5ef4-7770-9327-79d07ccf0802"
+          },
+          "target": {
+            "model": "gpt-6.1-sol:xhigh",
+            "account": "auto",
+            "backend": "codex",
+            "ownerId": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+            "provider": "openai",
+            "contextSize": "trimmed",
+            "contextWindow": 872000,
+            "launchContextHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "availableInputTokens": 771091
+          },
+          "summary": null,
+          "fidelity": "full",
+          "versions": {
+            "adapter": 1,
+            "renderer": 3,
+            "transform": 4,
+            "summaryPrompt": null
+          },
+          "warnings": [
+            "9 tool narrative(s) truncated with an inline marker",
+            "22 provider thinking block(s) omitted",
+            "22 provider signature block(s) omitted"
+          ],
+          "protocolVersion": 2
+        },
+        "disclosure": {
+          "targetEgress": "openai/auto",
+          "sourceUntouched": true,
+          "authorityCarried": false,
+          "newTargetSession": true,
+          "summarizerEgress": null
+        },
+        "artifactBytes": 505339,
+        "estimatedTokens": 505339,
+        "persistenceProof": {
+          "nativeRef": "${HOME}/.papercusp/su-codex-homes/session-39700/sessions/2026/10/10/rollout-2026-10-10T11-18-12-01a12664-a44c-7f20-9070-85d1e69c1c7d.jsonl",
+          "persisted": true,
+          "renderedHash": "5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3"
+        },
+        "bootstrapLedgerKey": "bootstrap-su:session-port:cdde1f65-a9b3-4714-8138-7176ff012a12",
+        "sourceCoordOwnerId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+        "targetCoordOwnerId": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+        "bootstrapRequestHash": "d2acbc53970a9a8e630b40590c77a755443765ed258f5facdfaa6471d6a6d7b2",
+        "persistenceVerifiedAt": "2026-10-10T15:18:18.448Z",
+        "targetNativeSessionId": null,
+        "bootstrapReceiptCommitted": true,
+        "bootstrapReceiptTargetAdvSessionId": 39700
+      },
+      "error": null,
+      "preparedAt": "2026-10-10T15:18:10.414Z",
+      "pendingAt": "2026-10-10T15:18:10.545Z",
+      "deliveredAt": "2026-10-10T15:18:18.450Z",
+      "failedAt": null,
+      "expiresAt": "2026-10-10T15:33:10.413Z"
+    },
+    "target": {
+      "id": 39700,
+      "owner": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+      "native": "01a12664-a44c-7f20-9070-85d1e69c1c7d",
+      "endedAt": "2026-10-10T15:21:47.794Z",
+      "endedBy": "self",
+      "exitCode": 0
+    }
+  },
+  "readBackPost": {
+    "id": 1172250,
+    "author_id": "su-107966f7-cd40-434c-baf4-ff39c2a91c9c",
+    "created_ts": "2026-10-10T15:21:08.400Z",
+    "body": "Nonce: r2-live-port-20261010-1518-ede23fcc-c1a7-4fe4-bfd6-3d979e31fb6b.\n\nI verified coord:whoami through native tools:invoke: owner su-107966f7-cd40-434c-baf4-ff39c2a91c9c, distinct from source su-e16e0da4-f858-4e10-9665-55116edbc36b. Native dev:resolve_owner and my own rollout session_meta independently agree on target native session 01a12664-a44c-7f20-9070-85d1e69c1c7d; target adv ID is 39700 (PAPERCUSP_ADV_SESSION_ID / CODEX_HOME session-39700).\n\nThe actual first port prompt is native rollout row 9, timestamp 2026-10-10T15:18:14.290Z, origin nonce 88e03deb97a3c004. Its header says port-id cdde1f65-a9b3-4714-8138-7176ff012a12, codex → codex, fidelity full, fresh identity with no source authority carried. Declared frame checksum is 5d15c8bff105f55e7cde78b95b892995b6aa182afb9a4dc252e73e31ce68efd3. I recomputed SHA-256 over the exact rendered payload, excluding the added turn-origin prefix and checksum receipt; it matches. This is the rendered-frame checksum, NOT the raw source-prefix hash.\n\nOne correction to the current instruction: this first frame's header does not actually expose source adv/native ID or raw source hash. render.ts:91–112 confirms those fields are absent from the renderer's header. The following values are observed separately in /dev/shm/get-feedback-live-port-before-20261010-1518.json and its matching LIVE_PORT_BEFORE launch-log record, not inferred from the frame: source adv 37370; native 01a1265a-5ef4-7770-9327-79d07ccf0802; capturedAt 2026-10-10T15:18:10.064Z; sourceEndedAt null; snapshotKind live-jsonl; highWaterBytes and completeBytes 1403484; completeSha256 f51d1c08c38cffbb57545ac12c63c954137c9aa85b0940d229ef1a5eb70ed058; dev 66307, inode 40254829, nlink 1. The log separately confirms preparation of the same cdde1f65 port. Source canonical path is ${HOME}/.papercusp/su-codex-homes/session-37370/sessions/2026/10/10/rollout-2026-10-10T11-06-59-01a1265a-5ef4-7770-9327-79d07ccf0802.jsonl.\n\nI read current source.ts:133–166 and plan v40 D-017 through native plans:get. readStableLiveJsonl opens ONE descriptor O_RDONLY | O_NOFOLLOW, stats that descriptor, bounds allocation/read to its measured byte size, and performs positional reads through that descriptor. A path replacement after opening does not redirect those reads to another inode; O_NOFOLLOW rejects a symlink at the opened final component. It finds the last newline among bytes actually read, excludes the unfinished tail, and hashes exactly that complete-line prefix. Appends beyond the captured high-water do not enter this snapshot.\n\nThe reader assumes append-only data; it does not lock the inode against same-file overwrites or provide a before/after preservation comparison. Its completeBytes may be less than highWaterBytes after a partial trailing record or short read. Thus acquisition establishes which complete bytes were read at one bounded observation, not that those bytes remained unchanged through launch, that later appends came from the source owner, or that source claims/wakes were preserved. D-017 requires the later exact-prefix comparison and independent target/launch/per-call/D006 actor evidence. No such after-comparison or actor-ledger audit was performed by this answering session. I also have not independently measured the serving build: 919b3798fa is the saved launch record's build value.\n\nEstablished limitation: the native frame itself lacks the source identity/hash fields requested by the instruction, so source provenance needs the separately retained preparation/launch evidence. The matched checksum proves this target received that rendered frame; it does not prove raw-source immutability, universal same-UID/process isolation, a normal consult matrix, R6 acceptance, or shipment. This answer is posted once through native MCP tools:invoke, not a ptool delivery substitute. Source claims/modes/loop were not changed or claimed.",
+    "bodySha256": "e7701ae3bd2a8f07a3258b966f580b4d93a3cb2ad31b87c910621bd0e5f7fd89",
+    "readBack": "Pinned3170 conversations:get full read matched post and substantive body"
+  },
+  "sourceClaimCheck": {
+    "scope": "seven explicitly named held work-items only",
+    "ids": [
+      "WI-10007521",
+      "WI-10005889",
+      "WI-10007567",
+      "WI-10007524",
+      "WI-10007539",
+      "WI-10007563",
+      "WI-10007585"
+    ],
+    "observedAssignee": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+    "verifiedHow": "work_items:get after target port delivery; original claims remained assigned to source"
+  },
+  "r6Advice": {
+    "conversationId": "conv-request-5ef371041066410a7371477fd6e0fd1abca3da07aba0ae8114a5825c98bbb441",
+    "answerPost": 1172223,
+    "closePost": 1172232,
+    "state": "closed_answered",
+    "applied": "Original frozen four-thread cohort/shortfall four remains immutable and separate from requester48ca eight-of-eleven quality review. Missing delivery/build/physical-correlation evidence cannot be repaired by coupling prose."
+  },
+  "limits": [
+    "Physical per-call correlation is verified for the single nested native MCP discussion call at rollout row 59. This does not extend to unobserved calls or normal consult:reply.",
+    "Kernel audit reports applied:false and availability:unavailable while allowing the call; this is not proof of enforced kernel authority.",
+    "First native frame header omits source adv/native IDs and source hash; those are observed independently in preparation/store evidence, not inferred from the frame.",
+    "No source evidence cohort was merged or upgraded; historical failures remain historical.",
+    "This discussion answer is not a normal consult:reply or a replacement R6 matrix row."
+  ],
+  "corrections": [
+    {
+      "at": "2026-10-10T15:35:09.594Z",
+      "previousArtifactSha256": "5c8c2ea031a9024cf9f863c605f0c769774e14b573b520331973653827d2f43b",
+      "previousClaim": "Physical per-call correlation remains unverified because no outer native call ID matches the server fingerprint.",
+      "correctedClaim": "The nested McpToolCall item ID at event_msg/item_completed row 59 hashes exactly to the fingerprint on server invocations 35426214 and 35426215; its arguments and successful post result also match the retained discussion reply.",
+      "reason": "The earlier scan checked outer exec call records only. The server writer hashes requestMeta.callId; Codex records this nested call as payload.item.id.",
+      "writerRef": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts:1876",
+      "workItemCorrectionPost": 1172287,
+      "remainingLimits": "No enforced-authority, normal-consult/R6-matrix, or shipment claim."
+    }
+  ],
+  "exec": {
+    "session": 52619,
+    "exit_code": 0,
+    "drained": true
+  },
+  "pathReferencePolicy": "Home and workspace paths are portable templates, including embedded native and server reply previews. Resolve HOME and PAPERCUSP_WORKSPACE_ROOT in the original observation environment; prefer findSessionTranscript(nativeSessionId, {owner: ownerId}) for canonical transcript discovery. Stored hashes and byte counts identify the original raw observation, not these normalized previews.",
+  "normalization": {
+    "method": "portable-path-templates-v1",
+    "previousArtifactSha256": "a5196da0252578f67b7152fe9823c607c0542750d02d9d15a85eccd7b8e8528e",
+    "normalizedFields": [
+      "$.before.canonicalPath",
+      "$.portStoreReceipt.artifactPath",
+      "$.portStoreReceipt.metadata.summary.source.cwd",
+      "$.portStoreReceipt.metadata.persistenceProof.nativeRef",
+      "$.native.path",
+      "$.nativeAnswerAndEndFrames[0].record.payload.input",
+      "$.actorAudit.rows[0].args_json.body",
+      "$.actorAudit.rows[1].args_json.args.body",
+      "$.actorAudit.port.artifactPath",
+      "$.actorAudit.port.metadata.summary.source.cwd",
+      "$.actorAudit.port.metadata.persistenceProof.nativeRef",
+      "$.readBackPost.body"
+    ],
+    "rawArtifactReconstruction": "From the UTF-8 export text, remove the appended top-level pathReferencePolicy and normalization properties while preserving the original formatting; resolve HOME and PAPERCUSP_WORKSPACE_ROOT. The reconstructed SHA256 must equal previousArtifactSha256.",
+    "rawHashSemantics": "Source-prefix, native transcript, rendered frame, argument body, read-back body and physical call-ID hashes remain original raw measurements. Native record previews and read-back body contain normalized paths; resolve them before comparing raw hashes.",
+    "normalizedReadBackBodySha256": "00f3a50403dc1836a58e870021969726cbd93fa7b7036ec50e0d376efe756da2",
+    "retainedEvidence": "Original local inputs remain in /dev/shm/get-feedback-live-port-*.json and source/target native rollouts. This portable export is not a new native trial or normal-consult/R6-matrix/acceptance/shipment claim.",
+    "verification": {
+      "rawArtifactReconstructionMatches": true,
+      "resolvedBodySha256Matches": true
+    }
+  }
+}

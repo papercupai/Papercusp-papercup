@@ -13,6 +13,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/scorecards/freshness.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName, readJsonResult, type UnifiedToolContext } from '@papercusp/agent-mcp';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 // Partial mock, NOT a full replacement: `../../rubrics` is a large module whose other
@@ -176,5 +177,57 @@ describe('scorecards:freshness — subjectPlan resolution (EI-22084134815763318)
     expect(checkScorecardFreshnessM).toHaveBeenCalledWith(expect.objectContaining({ rubricRef: 'direct-ref' }));
     expect(body).toMatchObject({ ok: true });
     expect(body.resolvedFromSubjectPlan).toBeUndefined();
+  });
+});
+
+const context = (role: string): UnifiedToolContext => ({
+  log: vi.fn(),
+  signal: new AbortController().signal,
+  progress: vi.fn(),
+  emit: vi.fn(),
+  workspaceId: 'default',
+  runId: 'freshness-judge-access-test',
+  role,
+  transport: 'mcp',
+  requestedFormat: 'json',
+});
+
+describe('scorecards:freshness independent grading access', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('allows a judge through real dispatch and preserves the complete freshness verdict', async () => {
+    const freshness = {
+      rubricRef: 'memory-recall-health',
+      since: '2026-10-09T00:00:00Z',
+      status: 'fresh' as const,
+      rubricKnown: true,
+      emitted: true,
+      complete: true,
+      count: 1,
+      partialCount: 0,
+      lastEmittedAt: '2026-10-09T01:00:00Z',
+      lastCompleteAt: '2026-10-09T01:00:00Z',
+      latestMissingKeys: [],
+      latestExtraKeys: [],
+    };
+    vi.mocked(checkScorecardFreshness).mockResolvedValue(freshness);
+    const target = lookupByMcpName('scorecards:freshness')!;
+    expect(target.effect).toBe('read');
+    const result = await dispatchProjectedTool(target, 'scorecards:freshness', {
+      rubricRef: 'memory-recall-health', since: freshness.since,
+    }, context('judge'), {});
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(readJsonResult(result.result!)).toMatchObject({ ok: true, freshness });
+    expect(checkScorecardFreshness).toHaveBeenCalledWith(expect.objectContaining({
+      rubricRef: 'memory-recall-health', since: freshness.since,
+    }));
+  });
+
+  it('still refuses an unlisted role before calling the freshness reader', async () => {
+    const result = await dispatchProjectedTool(lookupByMcpName('scorecards:freshness')!,
+      'scorecards:freshness', { rubricRef: 'memory-recall-health' }, context('unlisted-role'), {});
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('role_not_allowed');
+    expect(checkScorecardFreshness).not.toHaveBeenCalled();
   });
 });

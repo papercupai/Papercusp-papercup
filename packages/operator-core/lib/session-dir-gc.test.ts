@@ -23,6 +23,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRetentionPin } from './storage/retention-pins';
 import {
   DEFAULT_RETENTION_MS,
   defaultSessionDirRoots,
@@ -61,6 +62,21 @@ function seedDir(root: string, name: string, ageMs: number): string {
 }
 
 describe('sessionDirKey', () => {
+  it('a retention pin protects an expired session directory until expiry', () => {
+    const root = tmpRoot();
+    const path = seedDir(root, 'su-review', DEFAULT_RETENTION_MS + 1000);
+    const pin = createRetentionPin({ path, owner: 'reviewer', reason: 'retain session',
+      expiresAt: new Date(NOW + 1000).toISOString() }, { nowMs: NOW, dir: join(root, 'leases') });
+    const candidates: SessionDirCandidate[] = [{ path, key: 'su-review', keyKind: 'owner', mtimeMs: NOW - DEFAULT_RETENTION_MS - 1000 }];
+    const kept = sweepStaleSessionDirs({ protectedIdentity: empty, candidates, nowMs: NOW, retentionPins: [pin] });
+    expect(kept.removed).toEqual([]);
+    expect(kept.keptProtected).toBe(1);
+    expect(existsSync(path)).toBe(true);
+    const expired = sweepStaleSessionDirs({ protectedIdentity: empty, candidates, nowMs: NOW + 1000, retentionPins: [pin] });
+    expect(expired.removed).toEqual([path]);
+    expect(existsSync(path)).toBe(false);
+  });
+
   it('owner roots use the name verbatim; session roots strip the session- prefix', () => {
     expect(sessionDirKey('su-1c079ae0-b17d', 'owner')).toBe('su-1c079ae0-b17d');
     expect(sessionDirKey('s-1780813923126-d6fffc0a', 'owner')).toBe('s-1780813923126-d6fffc0a');
@@ -162,6 +178,20 @@ describe('planSessionDirGc archive guard', () => {
     keyKind: 'owner',
     key,
     mtimeMs: NOW - ageMs,
+  });
+
+  it('OWNERSHIP (WI-6554700010010238): never collects a dir another install materialized, even past retention', () => {
+    const mine = mk('su-mine', DEFAULT_RETENTION_MS * 2);
+    const foreign = mk('su-foreign', DEFAULT_RETENTION_MS * 2);
+    const plan = planSessionDirGc({
+      candidates: [mine, foreign],
+      protectedIdentity: { ...empty, owned: { ownerIds: new Set(['su-mine']), sessionKeys: new Set() } },
+      nowMs: NOW,
+      retentionMs: DEFAULT_RETENTION_MS,
+      unarchivedPaths: new Set(),
+    });
+    expect(plan.remove).toEqual([mine]);
+    expect(plan.keptForeign).toEqual([foreign]);
   });
 
   it('diverts a stale-but-unarchived dir to keptUnarchived instead of remove', () => {

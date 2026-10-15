@@ -28,8 +28,11 @@ import { dirSizeBytes, gatherProtectedSessionIdentity, listDiskEntries } from '.
 import {
   defaultSessionDirRoots,
   discoverSessionDirCandidates,
+  findUnarchivedSessionDirs,
   planSessionDirGc,
 } from '../session-dir-gc';
+import { readRegistry } from '../workspace-registry';
+import { RETENTION_MS, runScratchGc } from '../scratch-gc';
 
 export interface PruneRequest {
   categoryId: string;
@@ -289,11 +292,19 @@ async function pruneDiskSessions(
   }
   const days = Math.max(req.olderThanDays ?? 0, cat.minOlderThanDays ?? 0);
   const candidates = discoverSessionDirCandidates(defaultSessionDirRoots());
+  const provisional = planSessionDirGc({
+    candidates,
+    protectedIdentity: gather.identity,
+    nowMs: Date.now(),
+    retentionMs: days * 86400000,
+  });
+  const unarchivedPaths = await findUnarchivedSessionDirs(provisional.remove);
   const plan = planSessionDirGc({
     candidates,
     protectedIdentity: gather.identity,
     nowMs: Date.now(),
     retentionMs: days * 86400000,
+    unarchivedPaths,
   });
   for (const c of plan.remove) {
     const size = dirSizeBytes(c.path);
@@ -361,6 +372,40 @@ function pruneDiskPlain(cat: DiskStorageCategory, req: PruneRequest): PruneResul
   return result;
 }
 
+/** Scratch entries are workspace trees, not independent disposable top-level directories. */
+async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promise<PruneResult> {
+  const requestedMs = req.olderThanDays == null ? 0 : req.olderThanDays * 86400000;
+  const categoryFloorMs = (cat.minOlderThanDays ?? 0) * 86400000;
+  const retentionMs = Math.max(RETENTION_MS, categoryFloorMs, requestedMs);
+  const workspaceRegistry = readRegistry().workspaces.map((workspace) => workspace.id);
+  const gc = await runScratchGc({
+    workspaceRegistry,
+    dryRun: req.dryRun,
+    retentionMs,
+    quietMs: retentionMs,
+    enforceQuota: false,
+  });
+  const removed = gc.retentionEvictions + gc.deadWorkspaces;
+  const notes: string[] = [];
+  if (retentionMs > requestedMs) {
+    notes.push(`scratch run retention floored to ${Math.ceil(retentionMs / 86400000)}d by scratch GC`);
+  }
+  if (gc.unprovenEntries > 0) notes.push(`kept ${gc.unprovenEntries} unproven top-level scratch entr${gc.unprovenEntries === 1 ? 'y' : 'ies'}`);
+  if (gc.deadWorkspacesDeferred.length > 0) {
+    notes.push(`kept ${gc.deadWorkspacesDeferred.length} marked workspace root(s) without complete quiet/open-writer proof`);
+  }
+  return {
+    ok: true,
+    categoryId: cat.id,
+    dryRun: req.dryRun,
+    removed,
+    reclaimedBytes: gc.retentionEvictedBytes + gc.deadWorkspaceBytes,
+    reclaimEstimated: false,
+    vacuumed: false,
+    ...(notes.length > 0 ? { note: notes.join('; ') } : {}),
+  };
+}
+
 /**
  * Prune one category by age (or all). Refuses federated categories and invalid
  * day values; never auto-fires (only an explicit call runs it).
@@ -382,10 +427,10 @@ export async function pruneStorageCategory(req: PruneRequest): Promise<PruneResu
   if (!isTrimmable(cat)) return base('federated_not_trimmable');
   if (!validDays(req.olderThanDays)) return base('invalid_older_than_days');
 
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const sql = getOrgPg().sql as unknown as Sql;
-
   try {
+    if (cat.kind === 'disk' && cat.store === 'scratch') return await pruneScratch(cat, req);
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const sql = getOrgPg().sql as unknown as Sql;
     if (cat.kind === 'pg') return await prunePg(sql, cat, req);
     if (cat.store === 'session-dirs') return await pruneDiskSessions(sql, cat, req);
     return pruneDiskPlain(cat, req);

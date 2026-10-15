@@ -4,18 +4,18 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: useSyncMutate optimism is WebSocket/Zero-only — inert on the SSE desktop
+title: "useSyncMutate optimism is WebSocket/Zero-only — inert on the SSE desktop"
 description: "@papercusp/sync's useSyncMutate applies optimistically only through the Zero client, which exists only on the WebSocket transport. Zero is retired and the desktop ships on SSE, so useSyncMutate degrades to the plain REST fallback there — no optimistic apply. Hand-roll optimism in the hook (apply → reconcile → rollback)."
+type: Insight
 discovered: 2026-06-17
-tags: [sync, useSyncMutate, optimistic, zero, sse, gotcha]
+tags: ["sync", "useSyncMutate", "optimistic", "zero", "sse", "gotcha"]
 status: active
 documents:
-  - libs/generic/sync/src/SyncContext.ts
-  - apps/operator/providers/HarnessSyncProvider.tsx
-  - apps/operator-vite/src/components/adv/use-account-override.ts
+  - "libs/generic/sync/src/SyncContext.ts"
+  - "apps/operator/providers/HarnessSyncProvider.tsx"
+  - "packages/operator-ui/src/accounts/use-account-override.ts"
 sidebar:
   order: 40
-type: Insight
 generated:
   by: agent
   at: 2026-06-17

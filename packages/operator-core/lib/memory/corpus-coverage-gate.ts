@@ -77,7 +77,7 @@ import type { SearchCoverageReport, SourceCoverageAssessment } from '../search/c
  * `corpus-coverage-gate.test.ts` asserts this equals the real list, so drift
  * fails a test rather than silently mis-scoping the verdict.
  */
-export const CORPUS_GATE_SOURCES = ['session_turn', 'work_item'] as const;
+export const CORPUS_GATE_SOURCES = ['session_turn', 'work_item', 'plan', 'doc', 'report'] as const;
 
 export type CorpusGateVerdict =
   /** Semantic ran and every semantic source is at or above the coverage floor. */

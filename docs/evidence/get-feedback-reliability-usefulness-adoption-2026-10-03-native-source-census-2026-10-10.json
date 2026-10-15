@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "scope": "Partial proof for an ended Claude source; does not complete the current-build backend matrix, live-source acceptance, or shipment.",
+  "pathReferencePolicy": "Home and project paths are templates. Resolve the literal archive path from canonicalArchiveManifest.key; resolve local transcript paths with findSessionTranscript(nativeSessionId, {owner: ownerId}). The retained scoped artifact preserves the original measurement.",
+  "planSlug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItemRefs": ["WI-10007521", "WI-10007567"],
+  "conversationId": "conv-request-69a746bf4d19aea96ca476cb3c865d326faaffe08b314d20c2aef80b67f95eb8",
+  "requestKey": "get-feedback-natural-source-census-20261010-e16e0-1",
+  "source": {
+    "ownerId": "su-89413428-d12b-49c8-a378-92c79940ccf9",
+    "nativeSessionId": "68806532-f325-4e72-82d3-9f2e128aa765",
+    "advSessionId": 35144,
+    "endedAt": "2026-10-06T12:32:48.314774Z",
+    "localResolution": {
+      "procedure": "findSessionTranscript(nativeSessionId, {owner: sourceOwnerId}) in a fresh process, from packages/operator-core/lib/claude-sessions.ts",
+      "path": null,
+      "classification": "No local source transcript resolved; this does not establish a mismatch or changed source."
+    },
+    "canonicalArchiveManifest": {
+      "database": "papercusp",
+      "server": "127.0.0.1",
+      "port": 5432,
+      "reader": "dev:pg_query through code:run",
+      "key": {"workspaceId": "default", "sourceKind": "claude", "sessionId": "68806532-f325-4e72-82d3-9f2e128aa765"},
+      "sessionRootTemplate": "~/.papercusp/session-claude/su-89413428-d12b-49c8-a378-92c79940ccf9",
+      "archivedAt": "2026-10-06T17:20:21.607277Z",
+      "relpathTemplate": "projects/{projectKey}/68806532-f325-4e72-82d3-9f2e128aa765.jsonl",
+      "bytesRaw": 2980785,
+      "sha256": "c5da29a5142fd66d6a5849c024530b27d548912aca564aa28ebf44b1fb8ec809",
+      "sql": "SELECT current_database() AS db,inet_server_addr()::text AS server,inet_server_port() AS port,a.owner,a.adv_session_id,a.session_root,a.archived_at,a.manifest FROM harness_shared.session_archives a WHERE workspace_id='default' AND source_kind='claude' AND session_id='68806532-f325-4e72-82d3-9f2e128aa765'",
+      "positiveControl": "SELECT session_id FROM harness_shared.session_archives WHERE workspace_id='default' AND source_kind='claude' LIMIT 1; passed on the preceding exact-key read."
+    }
+  },
+  "forkSeed": {
+    "ownerId": "su-c56e5863-3b2e-4667-b53c-458441284560",
+    "pathTemplate": "~/.papercusp/session-claude/su-c56e5863-3b2e-4667-b53c-458441284560/projects/{projectKey}/68806532-f325-4e72-82d3-9f2e128aa765.jsonl",
+    "reader": "readStableLiveJsonl from packages/operator-core/lib/session-port/source.ts",
+    "completeBytes": 2980785,
+    "sha256": "c5da29a5142fd66d6a5849c024530b27d548912aca564aa28ebf44b1fb8ec809",
+    "matchesProductionArchiveManifest": true,
+    "productionArchiveFullByteRead": "unknown",
+    "separateCopyControl": {
+      "database": "papercusp",
+      "serverPort": 24680,
+      "reader": "readCanonicalClaudeArchive with pgSessionArchiveStore() in capability:bash without an explicit DB route",
+      "archiveAdvSessionId": null,
+      "byteEqualToForkSeed": true,
+      "sha256": "c5da29a5142fd66d6a5849c024530b27d548912aca564aa28ebf44b1fb8ec809",
+      "limitation": "This is a separate archive copy, not a production-database full-byte read. The operator database independently supplies the matching canonical owner, size and manifest digest.",
+      "followUpRef": "EI-25585311380105293"
+    }
+  },
+  "nativeAnswerReceipt": {
+    "ownerId": "su-c56e5863-3b2e-4667-b53c-458441284560",
+    "advSessionId": 39573,
+    "nativeSessionId": "0c82d68e-3363-4163-bae4-4e6be4931179",
+    "pathTemplate": "~/.papercusp/session-claude/su-c56e5863-3b2e-4667-b53c-458441284560/projects/{projectKey}/0c82d68e-3363-4163-bae4-4e6be4931179.jsonl",
+    "snapshotSha256": "fb8703a808302ffc5ae87fb54c5425660a17f3c06ae297ad9d89f4c043f3196b",
+    "rejectedAttempt": {
+      "callLine": 318,
+      "resultLine": 319,
+      "callId": "toolu_01MNkUSfZ9f4U3xke91GeFJP",
+      "timestamp": "2026-10-10T09:08:58.467Z",
+      "outcome": "invalid_input: unrecognized evidence_note argument; preserved as a rejected attempt"
+    },
+    "successfulAttempt": {
+      "callLine": 321,
+      "resultLine": 327,
+      "callId": "toolu_01Baaw5yx8mVfy1nGCkkXwhv",
+      "callTimestamp": "2026-10-10T09:09:40.665Z",
+      "resultTimestamp": "2026-10-10T09:09:41.370Z",
+      "nativeTool": "mcp__papercusp-su__tools_invoke",
+      "invokedTool": "consult:reply",
+      "argumentKeys": ["conversation_id", "kind", "evidence", "body"],
+      "inputSha256": "84c97b1140674cd6b53b22e22f468377b34d7accecc7fc33aef6ae3c6ab688ad",
+      "resultSha256": "b5ebafe3935657a76250e82d2bfb7e6f0a3c9bdc738267b732b49fd57ef7cea2",
+      "ok": true,
+      "postId": 1170958,
+      "state": "active",
+      "cascadeAdvancedTo": "su-b3e6b587-c0b1-4fe6-95d4-0558e461ed6d"
+    },
+    "parserProcedure": "Read native Claude JSONL message.content tool_use/tool_result frames; match tool_use_id, inspect tools_invoke input.name and correlate conversation_id and returned post_id. The preceding substring-only consultToolFrames parser was unqualified."
+  },
+  "requesterDecision": {
+    "postId": 1170960,
+    "authorId": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+    "decision": "Adopt separate source-file, source wake/turn/claim and independent target-native receipt controls; keep literal sourceUntouched, unknown actors and unavailable paths out of positive proof. This natural-work consultation has its own cut and does not enlarge the original quality cohort."
+  },
+  "retainedScopedEvidence": {
+    "artifact": "/dev/shm/get-feedback-source-census-reproduction-20261010-1005.json",
+    "interval": ["2026-10-10T09:04:19.743Z", "2026-10-10T09:17:37Z"],
+    "sourceStoresWithZeroRowsAndPassingPositiveControls": ["coord_event_log directed wake envelopes", "agent_activity", "session_turn_parts exact source owner/native id", "tool_invocations MCP calls"],
+    "taskProvenance": "harness_shared.task_ledger.detail.consultAnswer names operation=fork, sourceOwnerId, answeringOwnerId and conversationId",
+    "originalQualityPopulation": 4,
+    "originalQualityShortfall": 4
+  },
+  "corrections": [
+    "The historical native-files artifact's seedEqualsCurrentSource:false and sourceMtimePredatesDispatch:false were default values for a missing source path, not measured mismatches. Preserve that artifact unchanged and use this qualification.",
+    "Native consultToolFrames:[] from the old parser was not evidence of no reply; the matched native reply result confirms post1170958.",
+    "Two dispatch walks are the intentional expert cascade after the first reply advances its slot; withdrawn duplicate suspicion EI-25583898709276246 remains withdrawn."
+  ],
+  "unknowns": [
+    "Live-source preservation and the full current-build source/backend matrix remain unestablished.",
+    "Universal OS/non-MCP actor immutability remains unknown.",
+    "Production archive full-byte validation was not performed in this snapshot; only its authoritative manifest was read.",
+    "R6/R7 acceptance and final shipment remain open."
+  ]
+}

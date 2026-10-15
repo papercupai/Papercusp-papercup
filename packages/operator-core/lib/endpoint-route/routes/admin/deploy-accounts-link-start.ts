@@ -14,6 +14,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   method: 'POST',
   path: '/admin/deploy-accounts/link-start',
+  // Codex can wait separately for its URL and device code (30s each).
+  timeoutSec: 90,
   // unverified-loopback: cookie-less desktop webview (EI-338) — mirrors /register, /reset-rate.
   auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
   async handler(req) {

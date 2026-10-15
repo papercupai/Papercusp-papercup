@@ -22,6 +22,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
+// P-020 field-authority guard: no admissions by default; workspace pinned so the guard never reads the registry.
+vi.mock('../../work-admission/admit', () => ({ refuseExternalOwnedPatch: vi.fn(async () => null) }));
+vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'ws-test' }));
 // The factory must name EVERY binding update.ts pulls from '../../work-items'.
 // unlinkWorkItem is a STATIC import there, so omitting it here leaves it undefined at
 // call time — and the clear path wraps it in try/catch, so the TypeError would be

@@ -16,6 +16,8 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => WORKSPACE }));
 
 const { beginPlanClosureObservation, readPlanClosureObservations } = await import('./plan-closure-observations');
+const { resolvePlanClosure } = await import('./plan-closure');
+const { compileGoalPlanPlacement } = await import('../goal-launch-settings');
 
 const here = dirname(fileURLToPath(import.meta.url));
 const migration = (name: string) => resolve(here, '../../../../libs/papercusp/libs/db/sql', name);
@@ -33,6 +35,7 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       plan_slug text NOT NULL,
       version bigint NOT NULL DEFAULT 1,
+      status text NOT NULL DEFAULT 'active',
       acceptance_bar_epoch integer,
       template text,
       template_data jsonb,
@@ -67,6 +70,7 @@ beforeAll(async () => {
     );
   `);
   await applyMigrationForTest(db.sql, migration('1284-plan-closure-observations.sql'));
+  await applyMigrationForTest(db.sql, migration('1313-plan-closure-observations-rubric-grader.sql'));
 }, 120_000);
 
 afterAll(async () => {
@@ -98,6 +102,80 @@ async function read(now = new Date()) {
 }
 
 describe('plan closure observations (D-032)', () => {
+  it('reads each plan input once when returning and comparing its fingerprint', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+    let statement: { text: string; params: Parameters<typeof db.sql.unsafe>[1] } | undefined;
+    const sql = new Proxy(db.sql, {
+      apply(target, receiver, args) {
+        const strings = args[0] as TemplateStringsArray;
+        statement = {
+          text: strings.map((part, index) => part + (index < strings.length - 1 ? `$${index + 1}` : '')).join(''),
+          params: args.slice(1),
+        };
+        return Reflect.apply(target, receiver, args);
+      },
+    });
+    const observations = await readPlanClosureObservations({ workspaceId: WORKSPACE, planSlugs: [PLAN], sql });
+    expect(observations.get(PLAN)).toMatchObject({ status: 'fresh', gate: { satisfied: false } });
+    expect(statement).toBeDefined();
+
+    // Inspect actual PostgreSQL work, not elapsed time or the query's spelling.
+    // Inlining the fingerprint doubles this input scan because both the returned
+    // value and the freshness comparison expand the same watermark aggregate.
+    const [explained] = await db.sql.unsafe(`EXPLAIN (ANALYZE, FORMAT JSON) ${statement!.text}`, statement!.params);
+    type PlanNode = { 'Relation Name'?: string; 'Actual Loops': number; Plans?: PlanNode[] };
+    const scanLoops = (node: PlanNode): number =>
+      (node['Relation Name'] === 'plan_items' ? node['Actual Loops'] : 0)
+      + (node.Plans ?? []).reduce((total, child) => total + scanLoops(child), 0);
+    expect(scanLoops(explained['QUERY PLAN'][0].Plan)).toBe(1);
+  });
+
+  it('reads canonical supersession beside stale and absent acceptance verdicts', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+    await db.sql`UPDATE harness_shared.harness_plans SET status = 'superseded', version = version + 1
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+    expect(await read()).toMatchObject({ status: 'stale', planStatus: 'superseded' });
+
+    await db.sql`DELETE FROM harness_shared.plan_closure_observations
+      WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
+    expect(await read()).toMatchObject({ status: 'absent', planStatus: 'superseded' });
+  });
+
+  it('keeps qualified same-slug verdicts distinct while the legacy bare slug stays ambiguous', async () => {
+    const secondHarness = 'second-harness';
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, version, acceptance_bar_epoch)
+      VALUES (${WORKSPACE}, ${secondHarness}, ${PLAN}, 2, 1)`;
+    const recording = await beginPlanClosureObservation(PLAN);
+    await recording.record(HARNESS, { satisfied: true });
+    await recording.record(secondHarness, VERDICT);
+    const observations = await readPlanClosureObservations({ workspaceId: WORKSPACE,
+      planSlugs: [PLAN], planRefs: [{ planSlug: PLAN, harnessSlug: HARNESS },
+        { planSlug: PLAN, harnessSlug: secondHarness }], sql: db.sql });
+    expect(observations.get(`plan:${HARNESS}/${PLAN}`)).toMatchObject({ status: 'fresh', gate: { satisfied: true } });
+    expect(observations.get(`plan:${secondHarness}/${PLAN}`)).toMatchObject({ status: 'fresh', gate: { satisfied: false } });
+    expect(observations.get(PLAN)?.status).toBe('ambiguous');
+    expect(observations.get(`plan:${HARNESS}/${PLAN}`)).not.toEqual(observations.get(`plan:${secondHarness}/${PLAN}`));
+  });
+
+  it.each(['shipped-without-closure', 'satisfied-closure'])('outer control catches persisted closure verdict adapter: %s', async (scenario) => {
+    const satisfied = scenario === 'satisfied-closure';
+    const projected = async (verdictSatisfied: boolean) => {
+      await (await beginPlanClosureObservation(PLAN)).record(HARNESS, { ...VERDICT, satisfied: verdictSatisfied });
+      const observation = await read();
+      expect(observation.status).toBe('fresh');
+      if (observation.status !== 'fresh') throw new Error('expected the persisted gate verdict');
+      return compileGoalPlanPlacement({
+        plan: { harness: HARNESS, slug: PLAN, ambiguousMatches: 1 },
+        status: 'shipped', itemStatuses: ['done'], actionableItemId: null, source: {},
+        closure: resolvePlanClosure({ planSlug: PLAN, status: 'read', gate: observation.gate }),
+      });
+    };
+    const expectedState = satisfied ? 'terminal' : 'awaiting-closure';
+    expect((await projected(satisfied)).state).toBe(expectedState);
+    const faulty = await projected(!satisfied);
+    expect(() => expect(faulty.state).toBe(expectedState)).toThrowError();
+  });
   it('reads absent until the gate records a verdict, then serves it', async () => {
     expect((await read()).status).toBe('absent');
 
@@ -111,6 +189,61 @@ describe('plan closure observations (D-032)', () => {
     const [stored] = await db.sql`SELECT build_sha, fingerprint FROM harness_shared.plan_closure_observations`;
     expect(stored.build_sha).toBe('abc1234');
     expect(stored.fingerprint).toMatchObject({ planVersion: '36', acceptanceBarEpoch: 1, auditSeq: '5', rubrics: [`${RUBRIC}@10`] });
+  });
+
+  it('persists and serves the rubric and grader of a graded verdict (D-039)', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, {
+      satisfied: true, rubricId: RUBRIC, gradedBy: 'su-grader', buildProvenance: { sha: 'abc1234' },
+    });
+
+    expect(await read()).toMatchObject({
+      status: 'fresh', gate: { satisfied: true, rubricId: RUBRIC, gradedBy: 'su-grader' },
+    });
+
+    // A later verdict without a grader clears the stored one rather than inheriting it.
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+    const [stored] = await db.sql`SELECT rubric_id, graded_by FROM harness_shared.plan_closure_observations`;
+    expect(stored).toEqual({ rubric_id: null, graded_by: null });
+  });
+
+  it('persisted placement contract: shipped-without-closure', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, VERDICT);
+
+    const observation = await read();
+    expect(observation).toMatchObject({
+      status: 'fresh', gate: { satisfied: false, code: 'acceptance_ungraded' },
+    });
+    if (observation.status !== 'fresh') throw new Error('expected the persisted gate verdict');
+    const closure = resolvePlanClosure({ planSlug: PLAN, status: 'read', gate: observation.gate });
+    expect(closure.evidenceSatisfied).toBe(false);
+
+    expect(compileGoalPlanPlacement({
+      plan: { harness: HARNESS, slug: PLAN, ambiguousMatches: 1 },
+      status: 'shipped', itemStatuses: ['done'], actionableItemId: null, source: {}, closure,
+    })).toMatchObject({
+      state: 'awaiting-closure',
+      reconciliation: { action: 'close-plan', consistent: false, toolCall: null },
+    });
+  });
+
+  it('persisted placement contract: satisfied-closure', async () => {
+    await (await beginPlanClosureObservation(PLAN)).record(HARNESS, {
+      satisfied: true, buildProvenance: { sha: 'abc1234' },
+    });
+
+    const observation = await read();
+    expect(observation).toMatchObject({ status: 'fresh', gate: { satisfied: true } });
+    if (observation.status !== 'fresh') throw new Error('expected the persisted gate verdict');
+    const closure = resolvePlanClosure({ planSlug: PLAN, status: 'read', gate: observation.gate });
+    expect(closure.evidenceSatisfied).toBe(true);
+
+    expect(compileGoalPlanPlacement({
+      plan: { harness: HARNESS, slug: PLAN, ambiguousMatches: 1 },
+      status: 'shipped', itemStatuses: ['done'], actionableItemId: null, source: {}, closure,
+    })).toMatchObject({
+      state: 'terminal',
+      reconciliation: { action: 'none', consistent: true, toolCall: null },
+    });
   });
 
   it('goes stale on a grading scorecard, a vetting scorecard, a plan write, an item, an audit or a rubric amend', async () => {

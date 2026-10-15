@@ -24,6 +24,11 @@
  * is for direct seed/cleanup of the shared coord tables.
  */
 import { inject } from 'vitest';
+// Type-only: brings in the `ProvidedContext { baselineSchemaDsn }` augmentation that
+// `inject('baselineSchemaDsn')` below depends on. Without it this file typechecked only
+// because unrelated test files happened to import the same module; the public source
+// cut omits those, and the key then resolves to `never` (WI-10006573).
+import type {} from '@papercusp/test-config';
 import postgres from 'postgres';
 import { assertPgReachable } from '@papercusp/test-config/pg';
 import {
@@ -40,6 +45,19 @@ export interface BaselineCoordFixture {
   admin: postgres.Sql;
   /** Tear down: close the admin client + reset every cached pool/URL the modules memoized. */
   dispose: () => Promise<void>;
+}
+
+/** Cleanup hooks also run when beforeAll failed before returning a fixture. */
+export async function disposeBaselineCoordFixture(
+  fixture: BaselineCoordFixture | undefined,
+  cleanup?: (admin: postgres.Sql) => Promise<void>,
+): Promise<void> {
+  if (!fixture) return;
+  try {
+    await cleanup?.(fixture.admin);
+  } finally {
+    await fixture.dispose();
+  }
 }
 
 function withUser(dsn: string, user: string, password: string): string {
@@ -96,8 +114,10 @@ async function releaseFixtureMutex(lockClient: postgres.Sql): Promise<void> {
  * Re-point the coordination modules at the injected baseline DB + hand back an
  * admin client. Call once in `beforeAll`.
  */
-export async function setupBaselineCoordFixture(): Promise<BaselineCoordFixture> {
-  const dsn = inject('baselineSchemaDsn');
+export async function setupBaselineCoordFixture(
+  opts: { /** A caller-owned migrated test DB for suites needing isolated global/default rows. */ dsn?: string } = {},
+): Promise<BaselineCoordFixture> {
+  const dsn = opts.dsn ?? inject('baselineSchemaDsn');
 
   // EI-2627: globalSetup's own health check (EI-2433) ran once, potentially
   // minutes before this beforeAll — long enough on a heavily-loaded fleet box

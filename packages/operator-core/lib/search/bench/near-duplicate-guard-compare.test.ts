@@ -6,6 +6,7 @@ import {
   classifyWithLibrary,
   GUARD_CANDIDATE_LIMIT,
   HYBRID_TITLE_FLOOR,
+  pairedArmDivergence,
   summarizeComparison,
   type ApproachVerdict,
   type FilingObservation,
@@ -119,5 +120,41 @@ describe('summarizeComparison', () => {
     expect(library!.strata.find((s) => s.label === 'distinct')).toMatchObject({ pairs: 1, filings: 1, falseMerges: 1 });
     expect(library!.strata.find((s) => s.label === 'unlabelled')).toMatchObject({ pairs: 1, filingsFlagged: 1 });
     expect(current!.strata.find((s) => s.label === 'unlabelled')).toMatchObject({ filingsFlagged: 0 });
+  });
+});
+
+describe('pairedArmDivergence (WI-10005217: a paired pool comparison must compare something)', () => {
+  const real = { id: 'WI-1', cosine: 0.9, titleSimilarity: 0.5 };
+  const reflection = { id: 'EI-OBS', cosine: 0.95, titleSimilarity: 0.1 };
+
+  it('reports a filing whose unfiltered arm admitted an observation row as divergent', () => {
+    const current = obs({ filingId: 'F-1', poolSize: 100, top: [real] });
+    const previous = obs({ filingId: 'F-1', poolSize: 101, top: [reflection, real] });
+    expect(pairedArmDivergence([{ current, previous }])).toEqual({
+      filingsCompared: 1,
+      poolsDiffer: 1,
+      topKDiffers: 1,
+      vacuous: false,
+    });
+  });
+
+  it('flags as vacuous a run whose two arms saw the same pool for every filing', () => {
+    // The WI-10005217 shape: the observation filter sat in the SHARED pool CTE,
+    // so "previous" was the current arm again and the delta read 0/0.
+    const a = obs({ filingId: 'F-1', poolSize: 100, top: [real] });
+    const b = obs({ filingId: 'F-2', poolSize: 250, top: [{ ...real, id: 'WI-2' }] });
+    expect(pairedArmDivergence([{ current: a, previous: { ...a } }, { current: b, previous: { ...b } }])).toMatchObject({
+      filingsCompared: 2,
+      poolsDiffer: 0,
+      topKDiffers: 0,
+      vacuous: true,
+    });
+  });
+
+  it('is not vacuous when only the top-k order differs, and never for an empty run', () => {
+    const current = obs({ filingId: 'F-1', poolSize: 100, top: [real, reflection] });
+    const previous = obs({ filingId: 'F-1', poolSize: 100, top: [reflection, real] });
+    expect(pairedArmDivergence([{ current, previous }])).toMatchObject({ poolsDiffer: 0, topKDiffers: 1, vacuous: false });
+    expect(pairedArmDivergence([])).toMatchObject({ filingsCompared: 0, vacuous: false });
   });
 });

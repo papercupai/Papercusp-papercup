@@ -6,52 +6,50 @@ import { loadPluginFromDir } from './index';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
+/**
+ * `oauth` is the in-app OAuth connection a pack binds through a config field. A pack without it
+ * binds the source a provider package creates (cupboard-distributable-integrations-2026-10-10
+ * P-008: the Slack pack moved onto the `slack` package's source), so it declares no credential.
+ */
 const PACKS = [
   {
     slug: 'email-draft-responder',
     targetId: 'draft-reply',
     sourceKind: 'gmail',
     eventPattern: 'ext:gmail:message.received',
-    oauthField: 'googleWorkspace',
-    provider: 'google',
     datatype: 'email-message',
-    scopes: [
-      'https://www.googleapis.com/auth/gmail.readonly',
-      'https://www.googleapis.com/auth/gmail.compose',
-    ],
+    oauth: {
+      field: 'googleWorkspace',
+      provider: 'google',
+      scopes: [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.compose',
+      ],
+    },
   },
   {
     slug: 'slack-thread-responder',
     targetId: 'thread-reply',
     sourceKind: 'slack',
     eventPattern: 'ext:slack:mention',
-    oauthField: 'slackSocket',
-    provider: 'slack',
     datatype: 'chat-message',
-    scopes: [
-      'app_mentions:read',
-      'channels:history',
-      'groups:history',
-      'im:history',
-      'mpim:history',
-      'commands',
-      'chat:write',
-      'connections:write',
-    ],
+    oauth: null,
   },
   {
     slug: 'meeting-prep-brief',
     targetId: 'prepare-brief',
     sourceKind: 'gcal',
     eventPattern: 'ext:gcal:event-upcoming',
-    oauthField: 'googleWorkspace',
-    provider: 'google',
     datatype: 'calendar-event',
-    scopes: [
-      'https://www.googleapis.com/auth/gmail.readonly',
-      'https://www.googleapis.com/auth/calendar.readonly',
-      'https://www.googleapis.com/auth/contacts.readonly',
-    ],
+    oauth: {
+      field: 'googleWorkspace',
+      provider: 'google',
+      scopes: [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/calendar.readonly',
+        'https://www.googleapis.com/auth/contacts.readonly',
+      ],
+    },
   },
 ] as const;
 
@@ -76,7 +74,7 @@ describe.each(PACKS)('$slug shipped trigger pack', (pack) => {
         source: {
           kind: 'external',
           sourceKind: pack.sourceKind,
-          oauthField: pack.oauthField,
+          ...(pack.oauth ? { oauthField: pack.oauth.field } : {}),
         },
         target: pack.targetId,
         eventPattern: pack.eventPattern,
@@ -99,16 +97,23 @@ describe.each(PACKS)('$slug shipped trigger pack', (pack) => {
     }
 
     const configProperties = object(object(result.plugin.configSchema).properties);
-    expect(configProperties[pack.oauthField]).toMatchObject({
+    if (!pack.oauth) {
+      // A package-bound pack carries no credential field and no in-app OAuth requirement.
+      expect(result.triggerPack?.bindings.every((binding) => !('oauthField' in binding.source))).toBe(true);
+      expect(result.plugin.oauth ?? []).toEqual([]);
+      expect(Object.values(configProperties).some((field) => object(field).secret === true)).toBe(false);
+      return;
+    }
+    expect(configProperties[pack.oauth.field]).toMatchObject({
       secret: true,
       shareable: false,
       snapshotPolicy: 'strip',
-      oauth: { provider: pack.provider, scopes: [...pack.scopes] },
+      oauth: { provider: pack.oauth.provider, scopes: [...pack.oauth.scopes] },
     });
     expect(result.plugin.oauth?.[0]).toMatchObject({
-      provider: pack.provider,
-      fieldName: pack.oauthField,
-      scopes: [...pack.scopes],
+      provider: pack.oauth.provider,
+      fieldName: pack.oauth.field,
+      scopes: [...pack.oauth.scopes],
     });
   });
 });

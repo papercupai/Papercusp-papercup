@@ -32,6 +32,10 @@ function fakeSql(rows: unknown[][] | unknown[]) {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   const queue = Array.isArray(rows[0]) ? ([...rows] as unknown[][]) : [rows as unknown[]];
   const sql = (strings: TemplateStringsArray, ...params: unknown[]) => {
+    // postgres tagged fragments are lazy query pieces, not executed reads.
+    if (strings.join('').trim() === '' || strings.join('').trim() === 'FOR UPDATE OF ei, hu') {
+      return { fragment: strings.join('') };
+    }
     calls.push({ sql: strings.join('?').replace(/\s+/g, ' ').trim(), params });
     return Promise.resolve(queue.shift() ?? []);
   };
@@ -385,7 +389,7 @@ describe('PostgresHostedIdentityDirectory', () => {
 
     expect(found).toEqual({ userId: USER });
     const [call] = sql.calls;
-    expect(call.params).toEqual([PROVIDER, SUBJECT]);
+    expect(call.params).toEqual([PROVIDER, SUBJECT, { fragment: '' }]);
     // The FK proves the user EXISTS, never that it is still active.
     expect(call.sql).toContain('JOIN papercusp_auth.hosted_users');
     for (const clause of [

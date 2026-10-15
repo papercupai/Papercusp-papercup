@@ -13,8 +13,10 @@
  * statement is SELECT/WITH…SELECT, so planner diagnostics remain read-only.
  */
 
+import { Buffer } from 'node:buffer';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { clipWithMarker, payloadTierRecoveryHint } from '../plans/shape-clip';
 import {
   pgReadQuery,
   extractPgErrorInfo,
@@ -29,10 +31,12 @@ import {
   buildAdvSessionsLivenessAdvisory,
   buildAgentFactsSupersessionAdvisory,
   buildEventFireWindowAdvisory,
+  buildDbosHistoricalIntervalJoinAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildJsonTextSearchAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
+  buildJsonNullArrowAdvisory,
   buildUnusedCteAdvisory,
   buildPopulationNarrowingAdvisory,
   buildNonSummingPartitionAdvisory,
@@ -48,8 +52,12 @@ import {
   listRelations,
   stripSqlLiteralsAndComments,
   PG_READ_QUERY_DEFAULT_MAX_ROWS,
+  PG_READ_QUERY_DEFAULT_TIMEOUT_MS,
+  PG_READ_QUERY_CALL_OVERHEAD_MS,
   PG_READ_QUERY_HARD_MAX_ROWS,
+  PG_READ_QUERY_HARD_TIMEOUT_MS,
   PgReadQueryTimeoutError,
+  withCallDeadline,
 } from '../../pg-read-query';
 // WI-10002035 (P-003): labelled advisory fire telemetry. Kept separate from the
 // pg-read-query block above because nothing here participates in COMPOSING an
@@ -86,7 +94,193 @@ export const PG_QUERY_MODE = {
 export type PgQueryMode = (typeof PG_QUERY_MODE)[keyof typeof PG_QUERY_MODE];
 
 /** A successful JSON payload in the MCP content shape. */
+export const PG_QUERY_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const ADVISORY_SUMMARY_MAX_CHARS = 1024;
+
+const PG_QUERY_MAX_JSON_DEPTH = 256;
+
+type JsonSizeEstimate =
+  | { fits: true; bytes: number }
+  | { fits: false; reason: 'too_large' | 'unsafe_to_estimate' };
+
+/** Count JSON string UTF-8 bytes without allocating an escaped copy of the string. */
+function jsonStringBytesWithin(value: string, budget: number): number | null {
+  let bytes = 2; // opening + closing quote
+  if (bytes > budget) return null;
+
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === 0x22 || code === 0x5c) {
+      bytes += 2;
+    } else if (code < 0x20) {
+      bytes += code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d ? 2 : 6;
+    } else if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index++;
+      } else {
+        // Well-formed JSON.stringify escapes unpaired UTF-16 surrogates.
+        bytes += 6;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      bytes += 6;
+    } else {
+      bytes += 3;
+    }
+
+    if (bytes > budget) return null;
+  }
+
+  return bytes;
+}
+
+/**
+ * Estimate the exact JSON UTF-8 size for the plain values returned by pg.
+ * This deliberately stops once the response budget is crossed, before making
+ * the large string that JSON.stringify would allocate. Date and Buffer are
+ * modeled after their built-in JSON representations; unknown custom objects
+ * are rejected because a user-defined toJSON method cannot be bounded safely.
+ */
+function estimateJsonBytes(value: unknown, maxBytes: number): JsonSizeEstimate {
+  let total = 0;
+  let failure: 'too_large' | 'unsafe_to_estimate' = 'unsafe_to_estimate';
+  const active = new WeakSet<object>();
+
+  const consume = (bytes: number): boolean => {
+    if (bytes > maxBytes - total) {
+      total = maxBytes + 1;
+      failure = 'too_large';
+      return false;
+    }
+    total += bytes;
+    return true;
+  };
+
+  const consumeString = (text: string): boolean => {
+    const bytes = jsonStringBytesWithin(text, maxBytes - total);
+    if (bytes === null) {
+      total = maxBytes + 1;
+      failure = 'too_large';
+      return false;
+    }
+    return consume(bytes);
+  };
+
+  const consumeBuffer = (buffer: Buffer): boolean => {
+    // Buffer#toJSON returns { type: 'Buffer', data: [byte, ...] }.
+    if (
+      !consume(1) ||
+      !consumeString('type') ||
+      !consume(1) ||
+      !consumeString('Buffer') ||
+      !consume(1) ||
+      !consumeString('data') ||
+      !consume(2)
+    ) {
+      return false;
+    }
+    for (let index = 0; index < buffer.length; index++) {
+      if (index > 0 && !consume(1)) return false;
+      const byte = buffer[index];
+      if (!consume(byte >= 100 ? 3 : byte >= 10 ? 2 : 1)) return false;
+    }
+    return consume(2); // closing array + object
+  };
+
+  const visit = (current: unknown, depth: number, arraySlot = false): boolean => {
+    if (depth > PG_QUERY_MAX_JSON_DEPTH) return false;
+    if (current === null) return consume(4);
+
+    switch (typeof current) {
+      case 'string':
+        return consumeString(current);
+      case 'number':
+        return consume(Number.isFinite(current) ? String(current).length : 4);
+      case 'boolean':
+        return consume(current ? 4 : 5);
+      case 'undefined':
+      case 'function':
+      case 'symbol':
+        return arraySlot ? consume(4) : true;
+      case 'bigint':
+        return false;
+      case 'object':
+        break;
+      default:
+        return false;
+    }
+
+    if (Buffer.isBuffer(current)) return consumeBuffer(current);
+    if (current instanceof Date) {
+      const serializedDate = current.toJSON();
+      return serializedDate === null ? consume(4) : consumeString(serializedDate);
+    }
+    if (depth === PG_QUERY_MAX_JSON_DEPTH) return false;
+
+    const object = current as Record<string, unknown>;
+    if (typeof object.toJSON === 'function' || active.has(object)) return false;
+
+    if (Array.isArray(current)) {
+      if (!consume(1)) return false;
+      for (let index = 0; index < current.length; index++) {
+        if (index > 0 && !consume(1)) return false;
+        if (!visit(current[index], depth + 1, true)) return false;
+      }
+      return consume(1);
+    }
+
+    const prototype = Object.getPrototypeOf(object);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+
+    active.add(object);
+    try {
+      if (!consume(1)) return false;
+      let hasEntry = false;
+      for (const key in object) {
+        if (!Object.prototype.hasOwnProperty.call(object, key)) continue;
+        const entry = object[key];
+        if (entry === undefined || typeof entry === 'function' || typeof entry === 'symbol') continue;
+        if ((hasEntry && !consume(1)) || !consumeString(key) || !consume(1) || !visit(entry, depth + 1)) {
+          return false;
+        }
+        hasEntry = true;
+      }
+      return consume(1);
+    } finally {
+      active.delete(object);
+    }
+  };
+
+  if (!visit(value, 0)) return { fits: false, reason: failure };
+  return { fits: true, bytes: total };
+}
+
+/** A successful JSON payload in the MCP content shape, with a pre-serialization byte cap. */
 function jsonResult(payload: unknown) {
+  const estimate = estimateJsonBytes(payload, PG_QUERY_MAX_RESPONSE_BYTES);
+  if (!estimate.fits) {
+    if (estimate.reason === 'too_large') {
+      return jsonError(
+        'result_too_large',
+        'Query result exceeds the 4 MiB serialized response limit and was not serialized. Select fewer columns or rows, or aggregate large JSON values in PostgreSQL.',
+        {
+          limitBytes: PG_QUERY_MAX_RESPONSE_BYTES,
+          estimatedBytesAtLeast: PG_QUERY_MAX_RESPONSE_BYTES + 1,
+        },
+      );
+    }
+    return jsonError(
+      'result_size_unavailable',
+      'Query result could not be safely size-estimated and was not serialized. Return plain JSON-compatible values or use a smaller projection.',
+      { limitBytes: PG_QUERY_MAX_RESPONSE_BYTES },
+    );
+  }
+
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
@@ -460,8 +654,8 @@ export default defineTool({
   skipWorkspaceTx: true,
   // EI-20244135937023756: ptool consumes this response as JSON. The generic
   // result door appends a truncation footer to oversized relation descriptions,
-  // which makes the machine-readable JSON invalid instead of returning a
-  // parseable result that the caller can inspect or project.
+  // which makes the machine-readable JSON invalid. SQL results instead enforce
+  // an explicit byte cap before their hand-written JSON serialization below.
   skipResultDoor: 'programmatic-caller',
   // Acceptance judges need the rubric method's ad-hoc, read-only evidence
   // query surface; this does not widen any write-capable role set.
@@ -475,7 +669,7 @@ export default defineTool({
       sql: z
         .string()
         .min(1)
-        .describe('A single read-only SELECT, WITH…SELECT, or EXPLAIN whose explained statement is SELECT/WITH…SELECT. No `;`-separated statements.'),
+        .describe('A single read-only SELECT, WITH…SELECT, or EXPLAIN whose explained statement is SELECT/WITH…SELECT. No `;`-separated statements. Serialized SQL results are capped at 4 MiB; select fewer columns/rows or aggregate large JSON values.'),
       describe: z.never().optional().describe('Only valid for relation-description calls; omit it when passing `sql`.'),
       maxRows: z
         .number()
@@ -491,7 +685,7 @@ export default defineTool({
         .max(30000)
         .optional()
         .describe(
-          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) fails fast rather than hanging past it. ⚠ This is the SQL budget, not the wall-clock ceiling: the call deadline is timeoutMs PLUS a fixed ~3s overhead allowance (and, on the acquire path, the acquire budget too), so timeoutMs:5000 legitimately surfaces a failure at ~8000ms. Size the value by how long the QUERY may run; do not read a longer elapsed time as the bound being ignored.',
+          'Bounds the whole dev:pg_query handler, including tenant preflight, SQL execution, result advisories, and optional error enrichment (default 5000, max 30000), plus a fixed ~3s overhead allowance (so the default wall-clock deadline is ~8000ms). The SQL query receives only the remaining budget after preflight; a later phase that hangs returns call_timeout at the same shared deadline. Size timeoutMs for the work across phases, not only the SQL statement.',
         ),
       positiveControlSql: z
         .string()
@@ -540,7 +734,7 @@ export default defineTool({
         .max(30000)
         .optional()
         .describe(
-          'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) fails fast rather than hanging past it. ⚠ This is the SQL budget, not the wall-clock ceiling: the call deadline is timeoutMs PLUS a fixed ~3s overhead allowance (and, on the acquire path, the acquire budget too), so timeoutMs:5000 legitimately surfaces a failure at ~8000ms. Size the value by how long the QUERY may run; do not read a longer elapsed time as the bound being ignored.',
+          'Bounds the whole dev:pg_query handler, including relation lookup and optional near-match enrichment (default 5000, max 30000), plus a fixed ~3s overhead allowance (so the default wall-clock deadline is ~8000ms). A hung metadata lookup returns call_timeout at the shared handler deadline.',
         ),
       positiveControlSql: z
         .never()
@@ -597,6 +791,37 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    // Reuse the existing explicit full tier; an internal projection promotion
+    // does not request the advisory prose the caller chose to omit.
+    const fullAdvisoryRequested =
+      ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true;
+    const advisoryText = (entries: (string | null)[]) => {
+      const unique = [...new Set(entries.filter((entry): entry is string => Boolean(entry)))];
+      const text = unique.join(' ');
+      if (!text || fullAdvisoryRequested || text.length <= ADVISORY_SUMMARY_MAX_CHARS) return text || null;
+      // Put every warning heading ahead of the bounded prose. Otherwise an
+      // early long warning can hide a later tenant/absence warning entirely.
+      const headings = unique.map((entry) => entry.split(':', 1)[0]!.slice(0, 24)).join('; ');
+      return clipWithMarker(`${headings}\n${text}`, ADVISORY_SUMMARY_MAX_CHARS,
+        payloadTierRecoveryHint('dev:pg_query'));
+    };
+    const requestedTimeoutMs = Math.max(
+      100,
+      Math.min(PG_READ_QUERY_HARD_TIMEOUT_MS, Math.trunc(args.timeoutMs ?? PG_READ_QUERY_DEFAULT_TIMEOUT_MS)),
+    );
+    const callDeadlineMs = requestedTimeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
+    const deadlineAt = performance.now() + callDeadlineMs;
+    const timeoutMessage =
+      'dev:pg_query did not complete within ' +
+      String(callDeadlineMs) +
+      'ms of its whole-call deadline (' +
+      String(requestedTimeoutMs) +
+      'ms query budget plus ' +
+      String(PG_READ_QUERY_CALL_OVERHEAD_MS) +
+      'ms setup allowance). Tenant checks, SQL execution, and result advisories share this deadline.';
+    const withinDeadline = <T>(work: (assertActive: () => void) => Promise<T>): Promise<T> =>
+      withCallDeadline(work, Math.max(0, deadlineAt - performance.now()), timeoutMessage);
+
     // `describe` is the `\d` path (P-011): a psql CLIENT meta-command has no
     // SQL form, so it cannot ride through pgReadQuery's statement path at all.
     if (args.describe) {
@@ -606,7 +831,11 @@ export default defineTool({
       try {
         // A glob (or bare `*`) means "list what matches" rather than "describe one".
         if (/[*?]/.test(args.describe)) {
-          const relations = await listRelations(args.describe);
+          const relations = await withinDeadline((assertActive) => {
+            assertActive();
+            return listRelations(args.describe);
+          });
+          if (performance.now() >= deadlineAt) throw new PgReadQueryTimeoutError(timeoutMessage);
           return dataResult({
             mode: PG_QUERY_MODE.describeList,
             pattern: args.describe,
@@ -614,9 +843,17 @@ export default defineTool({
             relations,
           });
         }
-        const description = await describeRelation(args.describe);
+        const description = await withinDeadline((assertActive) => {
+          assertActive();
+          return describeRelation(args.describe);
+        });
+        if (performance.now() >= deadlineAt) throw new PgReadQueryTimeoutError(timeoutMessage);
         if (!description) {
-          const near = await listRelations(`*${args.describe.replace(/^.*\./, '')}*`, { limit: 10 }).catch(() => []);
+          const near = await withinDeadline((assertActive) => {
+            assertActive();
+            return listRelations(`*${args.describe.replace(/^.*\./, '')}*`, { limit: 10 }).catch(() => []);
+          });
+          if (performance.now() >= deadlineAt) throw new PgReadQueryTimeoutError(timeoutMessage);
           return jsonError(
             'relation_not_found',
             `No relation matching "${args.describe}".` +
@@ -626,6 +863,9 @@ export default defineTool({
         }
         return dataResult({ mode: PG_QUERY_MODE.describe, ...description });
       } catch (err) {
+        if (err instanceof PgReadQueryTimeoutError) {
+          return jsonError('call_timeout', err.message);
+        }
         return jsonError('describe_failed', extractPgErrorInfo(err).message ?? String(err));
       }
     }
@@ -665,6 +905,7 @@ export default defineTool({
     // the answer is wrong for EVERY row and looks like a clean "none".
     const nullPathAdvisory = advisoryOf(() => buildSilentNullPathAdvisory(sql));
     const jsonbTypeofAdvisory = advisoryOf(() => buildJsonbTypeofNegationAdvisory(sql));
+    const jsonNullArrowAdvisory = advisoryOf(() => buildJsonNullArrowAdvisory(sql));
     // EI-20261038811991822: a CTE defined but never joined. The sibling of the
     // advisories above in kind — the query SUCCEEDS and returns well-formed
     // rows from the WRONG population, so nothing in the result distinguishes it
@@ -706,6 +947,13 @@ export default defineTool({
     // is deliberately no clearing clause — the honest fix is to downgrade the
     // claim to "unknown", not to rewrite the SQL.
     const eventFireWindowAdvisory = advisoryOf(() => buildEventFireWindowAdvisory(sql));
+    // EI-25237971414928998: an upper-only workflow start predicate leaves all
+    // earlier DBOS rows in the candidate set even when joined operations use
+    // narrow windows. maxRows caps output, not scan cost, so carry this warning
+    // through both success and error payloads.
+    const dbosHistoricalIntervalJoinAdvisory = advisoryOf(() =>
+      buildDbosHistoricalIntervalJoinAdvisory(sql),
+    );
     // EI-20103748074297088 — two more ways a read returns a well-formed ZERO that reads as a
     // real answer. Kept as their own builders, like the three above, because each is a
     // DIFFERENT failure: the tenant advisory warns the rows may be from the wrong tenant;
@@ -761,8 +1009,10 @@ export default defineTool({
       backlogFlowAdvisory,
       agentFactsSupersessionAdvisory,
       eventFireWindowAdvisory,
+      dbosHistoricalIntervalJoinAdvisory,
       nullPathAdvisory,
       jsonbTypeofAdvisory,
+      jsonNullArrowAdvisory,
       unusedCteAdvisory,
       populationNarrowingAdvisory,
       // The sibling of populationNarrowing above: that one warns a ZERO cannot
@@ -840,7 +1090,10 @@ export default defineTool({
         workspaceId: ctx.workspaceId,
         harnessSlug: ctx.harnessSlug,
       };
-      const tenantAdvisory = await buildTenantScopeAdvisory(sql, tenantScope).catch(() => null);
+      const tenantAdvisory = await withinDeadline((assertActive) => {
+        assertActive();
+        return buildTenantScopeAdvisory(sql, tenantScope).catch(() => null);
+      });
       if (tenantAdvisory && !args.allowUnscoped) {
         // test_runs is deliberately different from an ordinary tenant table:
         // CI rows have NULL tenant columns, and a LIKE suffix is not an exact
@@ -855,18 +1108,37 @@ export default defineTool({
         );
       }
       const positiveControlTenantAdvisory = args.positiveControlSql
-        ? await buildTenantScopeAdvisory(args.positiveControlSql, tenantScope).catch(() => null)
+        ? await withinDeadline((assertActive) => {
+            assertActive();
+            return buildTenantScopeAdvisory(args.positiveControlSql!, tenantScope).catch(() => null);
+          })
         : null;
       if (positiveControlTenantAdvisory && !args.allowUnscoped) {
+        const correction = positiveControlTenantAdvisory.startsWith('⚠ harness_shared.test_runs:')
+          ? 'For a local reporter positive control, use an exact file_path = value with both tenant predicates and a bounded LIMIT, ' +
+            'or a bounded id/run_group_id with both tenant predicates; for CI/gate controls, filter by source or commit_sha. ' +
+            'An open-ended file_path LIKE does not establish local identity, and workspace_id/harness_slug alone are ' +
+            'insufficient because CI/gate rows have NULL-by-design tenant columns. Pass allowUnscoped: true only for a ' +
+            'deliberate broader read.'
+          : 'Add tenant predicate(s) to positiveControlSql, or pass allowUnscoped: true for a deliberate cross-tenant read.';
         return jsonError(
           'positive_control_tenant_scope_required',
-          `${positiveControlTenantAdvisory} Add the tenant predicate(s) to positiveControlSql, or pass allowUnscoped: true for a deliberate cross-tenant read.`,
+          `${positiveControlTenantAdvisory} ${correction}`,
         );
       }
-      const result = await pgReadQuery(sql, {
-        maxRows: args.maxRows,
-        timeoutMs: args.timeoutMs,
-        ...(args.positiveControlSql ? { positiveControlSql: args.positiveControlSql } : {}),
+      const result = await withinDeadline(async (assertActive) => {
+        assertActive();
+        const remainingQueryTimeoutMs = Math.floor(
+          Math.min(requestedTimeoutMs, deadlineAt - performance.now() - PG_READ_QUERY_CALL_OVERHEAD_MS),
+        );
+        if (remainingQueryTimeoutMs < 100) throw new PgReadQueryTimeoutError(timeoutMessage);
+        const queryResult = await pgReadQuery(sql, {
+          maxRows: args.maxRows,
+          timeoutMs: remainingQueryTimeoutMs,
+          ...(args.positiveControlSql ? { positiveControlSql: args.positiveControlSql } : {}),
+        });
+        assertActive();
+        return queryResult;
       });
       const scalarCountControl = args.positiveControlSql
         ? hasScalarCountPositiveControl(args.positiveControlSql)
@@ -911,7 +1183,10 @@ export default defineTool({
       // open to the statements-only string it replaces.
       const executedPartitionAdvisory =
         nonSummingPartitionAdvisory !== null
-          ? await buildExecutedPartitionAdvisory(sql).catch(() => null)
+          ? await withinDeadline((assertActive) => {
+              assertActive();
+              return buildExecutedPartitionAdvisory(sql).catch(() => null);
+            })
           : null;
       // Hoisted out of the join so P-003's fire telemetry reads the
       // POST-SUBSTITUTION values. Counting before the map would record the
@@ -929,31 +1204,24 @@ export default defineTool({
         positiveControlAdvisory,
         toolRoutingAdvisory,
       ];
-      const advisory = deliveredAdvisories.filter(Boolean).join(' ') || null;
+      const advisory = advisoryText(deliveredAdvisories);
       // WI-10002035 (P-003): never awaited and never throws — the caller is
       // already holding their query result.
       recordAdvisoryFiresDetached({
         ...advisoryFireScope,
         fires: firesForDelivery(labelDeliveredAdvisories(deliveredAdvisories), 'success'),
       });
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              ...(advisory ? { advisory } : {}),
-              mode: PG_QUERY_MODE.query,
-              rowCount: result.rowCount,
-              truncated: result.truncated,
-              fields: result.fields,
-              elapsedMs: result.elapsedMs,
-              rows: result.rows,
-              ...(positiveControl ? { positiveControl } : {}),
-              ...(absence ? { absence } : {}),
-            }),
-          },
-        ],
-      };
+      return jsonResult({
+        ...(advisory ? { advisory } : {}),
+        mode: PG_QUERY_MODE.query,
+        rowCount: result.rowCount,
+        truncated: result.truncated,
+        fields: result.fields,
+        elapsedMs: result.elapsedMs,
+        rows: result.rows,
+        ...(positiveControl ? { positiveControl } : {}),
+        ...(absence ? { absence } : {}),
+      });
     } catch (err) {
       // EI-19415142351884573: a whole-call timeout (connect/acquire, or PG
       // itself never finishing) is a DIFFERENT failure from a real PG error —
@@ -1014,7 +1282,7 @@ export default defineTool({
         ...sqlShapeAdvisories,
         toolRoutingAdvisory,
       ];
-      const errorAdvisory = deliveredErrorAdvisories.filter(Boolean).join(' ') || null;
+      const errorAdvisory = advisoryText(deliveredErrorAdvisories);
       if (errorAdvisory) payload.advisory = errorAdvisory;
       // WI-10002035 (P-003): a failed query still DELIVERS its shape advisories
       // — a query's shape is no less true for having failed to run, per the
@@ -1033,7 +1301,18 @@ export default defineTool({
       // CANONICAL column lists so the retry takes one round trip, not a
       // guessing loop (a fresh post-compaction context has no query memory).
       if (info.code === '42703') {
-        const described = await describeReferencedTableColumns(sql).catch(() => []);
+        let described: Awaited<ReturnType<typeof describeReferencedTableColumns>> = [];
+        try {
+          described = await withinDeadline((assertActive) => {
+            assertActive();
+            return describeReferencedTableColumns(sql).catch(() => []);
+          });
+        } catch (diagnosticError) {
+          if (diagnosticError instanceof PgReadQueryTimeoutError) {
+            return jsonError('call_timeout', diagnosticError.message);
+          }
+          throw diagnosticError;
+        }
         if (described.length) {
           payload.knownColumns = Object.fromEntries(described.map((d) => [d.table, d.columns]));
         }
@@ -1054,7 +1333,18 @@ export default defineTool({
         // redirect already claimed the name, so the two advisories never argue
         // about the same column in one payload.
         if (!redirect) {
-          const nested = await buildJsonbPathRedirect(sql, info.message).catch(() => null);
+          let nested: Awaited<ReturnType<typeof buildJsonbPathRedirect>> = null;
+          try {
+            nested = await withinDeadline((assertActive) => {
+              assertActive();
+              return buildJsonbPathRedirect(sql, info.message).catch(() => null);
+            });
+          } catch (diagnosticError) {
+            if (diagnosticError instanceof PgReadQueryTimeoutError) {
+              return jsonError('call_timeout', diagnosticError.message);
+            }
+            throw diagnosticError;
+          }
           if (nested) payload.jsonbPath = nested;
         }
       }

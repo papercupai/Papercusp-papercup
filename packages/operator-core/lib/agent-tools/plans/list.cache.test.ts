@@ -12,6 +12,9 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
+  activeWorkspace: "ws-active",
+  l2Get: vi.fn(async () => undefined),
+  l2Set: vi.fn(async () => {}),
   listPlanIndexRows: vi.fn(async () => [] as unknown[]),
   listPlanIndexRowsForWorkspace: vi.fn(async () => [] as unknown[]),
   getPlanContentsBySlugs: vi.fn(async () => new Map<string, string>()),
@@ -32,6 +35,10 @@ vi.mock("./source", async (orig) => {
   };
 });
 vi.mock("./_ctx-opts", () => ({ ctxToPlanSourceOpts: M.ctxToPlanSourceOpts }));
+vi.mock("../../workspace-registry", async (orig) => ({
+  ...await orig<typeof import("../../workspace-registry")>(),
+  activeWorkspaceId: () => M.activeWorkspace,
+}));
 vi.mock("../../issue-blocks-merge", async (orig) => {
   const actual = await orig<typeof import("../../issue-blocks-merge")>();
   return {
@@ -52,6 +59,8 @@ import {
   __setCachedReadEnabledForTests,
 } from "../../cache";
 import { _refreshCacheLayerForTests } from "../../cache/instance";
+import { installL2StoreForTests, setL2EnabledForTests, __resetL2StateForTests } from "../../cache/l2-tier";
+import type { PgL2Store } from "../../cache/pg-l2-store";
 
 const CACHE_LAYER = "papercusp-cache-layer";
 
@@ -81,11 +90,21 @@ beforeEach(async () => {
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
   M.listPlanIndexRows.mockClear();
+  M.listPlanIndexRowsForWorkspace.mockClear();
+  M.activeWorkspace = "ws-active";
+  M.l2Get.mockClear();
+  M.l2Set.mockClear();
+  // This suite tests the real L1 wiring with a durable-tier miss. The
+  // separate private PG workflow verifies L2; no unit case opens real PG.
+  installL2StoreForTests({ get: M.l2Get, set: M.l2Set,
+    invalidateByTags: async () => 0 } as unknown as PgL2Store);
+  setL2EnabledForTests(true);
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
 
 afterEach(async () => {
+  __resetL2StateForTests();
   __setCachedReadEnabledForTests(false);
   setFlagOverridesForTest(null);
   await _refreshCacheLayerForTests();
@@ -98,6 +117,7 @@ describe("plans:list — cache wiring", () => {
     await run({});
     await run({});
     expect(M.listPlanIndexRows).toHaveBeenCalledTimes(1);
+    expect(M.l2Get).toHaveBeenCalledWith("ws-list", expect.any(String));
   });
 
   it("a plan-table write BUSTS the entry (tags=harness_plans → ECA bump rebuilds)", async () => {
@@ -114,6 +134,27 @@ describe("plans:list — cache wiring", () => {
     getOperatorCache().invalidateByTags("ws-list", ["plan_revisions"]);
     await run({});
     expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["*", "ws-admitted"])(
+    "workspace-wide context %s caches in the concrete workspace its rows use",
+    async (workspaceId) => {
+      const viewedWorkspace = workspaceId === "*" ? M.activeWorkspace : workspaceId;
+      await run({ workspaceWide: true }, workspaceId);
+      expect(M.listPlanIndexRowsForWorkspace).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workspaceId: viewedWorkspace }),
+      );
+      getOperatorCache().invalidateByTags(viewedWorkspace, ["harness_plans"]);
+      await run({ workspaceWide: true }, workspaceId);
+      expect(M.listPlanIndexRowsForWorkspace).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("passes the admitted workspace to each harness source read", async () => {
+    await run({}, "ws-admitted");
+    expect(M.listPlanIndexRows).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceId: "ws-admitted", harnessSlug: "papercup" }),
+    );
   });
 
   it("different args do NOT share an entry (no cross-arg leak)", async () => {

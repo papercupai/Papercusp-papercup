@@ -56,7 +56,7 @@ export {
 } from './use-papercup-chat';
 export { PAPERCUP_CHAT_CSS } from './papercup-chat.styles';
 export { MessageTimestamp, formatMessageStamp, formatAge, useChatClock, CHAT_CLOCK_TICK_MS, type MessageStamp, type MessageTimestampProps } from './message-timestamp';
-export { HydratedWorkRefPill, type HydratedWorkRefPillProps } from './HydratedWorkRefPill';
+export { HydratedWorkRefPill, useWorkRefVisibility, type HydratedWorkRefPillProps } from './HydratedWorkRefPill';
 export { WorkRefPill, type WorkRefPillProps, type WorkRefState } from './WorkRefPill';
 export { remarkWorkRefs, type WorkRefPillNode } from './remark-work-refs';
 export { parseWorkRefs, type WorkRefKind, type WorkRefMatch } from './parse-work-refs';

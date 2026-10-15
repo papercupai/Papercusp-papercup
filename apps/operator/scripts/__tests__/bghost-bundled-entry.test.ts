@@ -11,6 +11,12 @@ const GATEWAY_AUTHORITY_DROP_IN = join(
   'papercup-bg-host.service.d',
   '97-gateway-systemd-authority.conf',
 );
+const PACKAGED_SERVER_GATEWAY_AUTHORITY_DROP_IN = join(
+  SCRIPTS_DIR,
+  'systemd',
+  'papercusp-server.service.d',
+  '97-gateway-systemd-authority.conf',
+);
 const DEPENDENCY_GENERATION_DROP_IN = join(
   SCRIPTS_DIR,
   'systemd',
@@ -27,6 +33,7 @@ const README = join(SCRIPTS_DIR, 'systemd', 'README.md');
  * identity-lint leg of green-checkpoint rejects.
  */
 const BUNDLE_HOST_UNIT_PATH = '%h/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh';
+const SNAPSHOT_LAUNCHER_UNIT_PATH = '%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh';
 
 /**
  * SCOPE — THIS SUITE READS REPO FILES ONLY. It cannot see systemd and must never be
@@ -43,10 +50,11 @@ const BUNDLE_HOST_UNIT_PATH = '%h/papercupai-workspace/papercusp/apps/operator/b
  * cannot live here: CI has no user systemd session, so the fact is unobservable from a
  * vitest by construction.
  */
-describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', () => {
+describe('papercup-bg-host and Linux gateway-authority file contracts', () => {
   const bundleHost = readFileSync(BUNDLE_HOST, 'utf8');
   const dropIn = readFileSync(DROP_IN, 'utf8');
   const gatewayAuthorityDropIn = readFileSync(GATEWAY_AUTHORITY_DROP_IN, 'utf8');
+  const packagedServerGatewayAuthorityDropIn = readFileSync(PACKAGED_SERVER_GATEWAY_AUTHORITY_DROP_IN, 'utf8');
   const dependencyGenerationDropIn = readFileSync(DEPENDENCY_GENERATION_DROP_IN, 'utf8');
   const readme = readFileSync(README, 'utf8');
 
@@ -82,7 +90,7 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
   });
 
   it('fails closed when the bundled CLI-entry recurrence guard rejects the graph', () => {
-    const guard = 'if ! node "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \\';
+    const guard = 'if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \\';
     expect(bundleHost).toContain(guard);
     const guardAt = bundleHost.indexOf(guard);
     const exitAt = bundleHost.indexOf('    exit 1\n  fi', guardAt);
@@ -97,8 +105,9 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     const execLines = serviceLines.filter((line) => line.startsWith('ExecStart'));
     const environmentLines = serviceLines.filter((line) => line.startsWith('Environment='));
 
+    // WI-10006398: bundle-host.sh runs from a frozen snapshot, with the checkout pinned.
     expect(execLines).toEqual([
-      `ExecStartPre=${BUNDLE_HOST_UNIT_PATH}`,
+      `ExecStartPre=${SNAPSHOT_LAUNCHER_UNIT_PATH} ${BUNDLE_HOST_UNIT_PATH}`,
       'ExecStart=',
       'ExecStart=/usr/bin/bash -c "set -a; [ -f .env.local ] && . ./.env.local; PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH=$${PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH:-$$GOOGLE_APPLICATION_CREDENTIALS}; unset GOOGLE_APPLICATION_CREDENTIALS; set +a; exec env \\',
     ]);
@@ -109,7 +118,10 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     // Supervisor policy belongs on the unit; child runtime configuration stays
     // inline in ExecStart. Requiring the exact set catches drift in either
     // direction without rejecting the stale-bundle availability opt-in.
-    expect(environmentLines).toEqual(['Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1']);
+    expect(environmentLines).toEqual([
+      'Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1',
+      'Environment=BUNDLE_HOST_OPERATOR_DIR=%h/papercupai-workspace/papercusp/apps/operator',
+    ]);
 
     for (const assignment of [
       'PAPERCUSP_HONO_PORT=3271',
@@ -152,14 +164,14 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     expect(dropIn).toContain('ExecStartPre=%h/');
   });
 
-  it('documents the canonical symlink installation without restarting bg-host', () => {
+  it('documents the canonical symlink installation without restarting services', () => {
     expect(readme).toContain('papercup-bg-host.service.d/95-bundled-entry.conf');
     expect(readme).toContain('papercup-bg-host.service.d/98-dependency-generation-root.conf');
     expect(readme).toContain('sudo install -d -m 0750');
     expect(readme).toMatch(/mkdir -p ~\/\.config\/systemd\/user\/papercup-bg-host\.service\.d/);
     expect(readme).toMatch(/ln -sfn "\$\(pwd\)\/papercup-bg-host\.service\.d\/95-bundled-entry\.conf"/);
     expect(readme).toContain('systemctl --user daemon-reload');
-    expect(readme).toMatch(/Do not restart bg-host\s+as part of this installation/);
+    expect(readme).toMatch(/Do not restart bg-host or\s+papercusp-server as part of this installation/);
   });
 
   it('pins the standalone systemd gateway as the single Linux :8788 authority (EI-22359055031706978)', () => {
@@ -175,5 +187,19 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     );
     expect(readme).toContain('PAPERCUSP_GATEWAY_SUPERVISE=0');
     expect(readme).toContain('papercup-inference-gateway.service');
+  });
+
+  it('disables the packaged server fallback only through the shared Linux host override', () => {
+    expect(packagedServerGatewayAuthorityDropIn).toContain('[Service]');
+    expect(packagedServerGatewayAuthorityDropIn).toContain('Environment=PAPERCUSP_GATEWAY_SUPERVISE=0');
+    expect(packagedServerGatewayAuthorityDropIn).toContain('papercup-inference-gateway.service');
+    expect(packagedServerGatewayAuthorityDropIn).toContain('without the dedicated gateway');
+
+    expect(readme).toContain('papercusp-server.service.d/97-gateway-systemd-authority.conf');
+    expect(readme).toMatch(/mkdir -p ~\/\.config\/systemd\/user\/papercusp-server\.service\.d/);
+    expect(readme).toMatch(
+      /ln -sfn "\$\(pwd\)\/papercusp-server\.service\.d\/97-gateway-systemd-authority\.conf"/,
+    );
+    expect(readme).toMatch(/Do not restart bg-host or\s+papercusp-server/);
   });
 });

@@ -23,7 +23,8 @@ import {
 import { notifySyncInvalidate } from '../../sync-sse';
 import { generationStatusForStopReason } from '../types';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
-import type { EmitRolloutInput } from './schema';
+import { currentProtocolFromConfig, currentProtocolPriceTable, type EmitRolloutInput } from './schema';
+import { canonicalJson } from './canonical-json';
 import { resolveDb, type DbScope } from './db';
 
 const jb = (v: unknown): string | null => (v == null ? null : JSON.stringify(v));
@@ -42,7 +43,7 @@ export function rolloutIdFor(
 }
 
 export interface EmitOptions extends DbScope {
-  /** Override the published price table (default price-table-v1). */
+  /** Override historical prices. Current runs must match their frozen schedule. */
   priceTable?: PriceTable;
 }
 
@@ -57,21 +58,10 @@ export async function emitRollout(
   opts: EmitOptions = {},
 ): Promise<{ rolloutId: string; runId: string }> {
   const { sql, ws } = resolveDb(opts);
-  const table = opts.priceTable ?? DEFAULT_PRICE_TABLE;
   const g = input.generation;
   const gr = input.grading;
 
   const rolloutId = rolloutIdFor(input.runId, input.suite, input.taskId, input.arm, input.seed);
-  const costUsd = priceRun(
-    {
-      tokensIn: g.tokensIn,
-      tokensOut: g.tokensOut,
-      tokensCacheRead: g.tokensCacheRead ?? null,
-      tokensCacheWrite: g.tokensCacheWrite ?? null,
-    },
-    g.modelId,
-    table,
-  );
 
   const prov = input.provenance ?? {};
   const rawGraderOutputRef = gr.rawOutput != null ? `rollout:${rolloutId}#grader` : null;
@@ -83,7 +73,7 @@ export async function emitRollout(
 
   await sql.begin(async (tx) => {
     const pre = await tx`
-      SELECT 1 FROM harness_shared.benchmark_prereg
+      SELECT run_id, suites, config FROM harness_shared.benchmark_prereg
        WHERE prereg_hash = ${input.preregHash} AND workspace_id = ${ws} LIMIT 1
     `;
     if (pre.length === 0) {
@@ -92,6 +82,25 @@ export async function emitRollout(
           `pre-register the run config before emitting (tune-to-test firewall)`,
       );
     }
+
+    const decoded = (value: unknown) => typeof value === 'string' ? JSON.parse(value) : value;
+    const protocol = currentProtocolFromConfig(decoded(pre[0].config));
+    let table = opts.priceTable ?? DEFAULT_PRICE_TABLE;
+    if (protocol) {
+      const suites = decoded(pre[0].suites);
+      const arm = protocol.arms.find(value => value.id === input.arm);
+      if (pre[0].run_id !== input.runId || protocol.runId !== input.runId ||
+          !Array.isArray(suites) || suites.length !== 1 || suites[0] !== input.suite ||
+          !arm || !protocol.taskIds.includes(input.taskId) || !protocol.seeds.includes(input.seed) ||
+          arm.model !== g.modelId || protocol.grader.family !== gr.family || protocol.grader.version !== gr.version) {
+        throw new Error('emitRollout: result identity differs from the frozen current protocol');
+      }
+      table = currentProtocolPriceTable(protocol, [g]);
+      if (opts.priceTable && canonicalJson(opts.priceTable) !== canonicalJson(table)) {
+        throw new Error('emitRollout: caller override differs from frozen current prices');
+      }
+    }
+    const costUsd = priceRun(g, g.modelId, table);
 
     await tx`
       INSERT INTO harness_shared.benchmark_rollout
@@ -245,6 +254,7 @@ export async function emitFromAttempt(
         submission: i.attempt.diff,
         trajectoryRef: i.attempt.trajectoryRef,
         trajectoryKind: 'pg:spawned_agents',
+        armMeta: i.attempt.armMeta,
       },
       grading: {
         resolved,

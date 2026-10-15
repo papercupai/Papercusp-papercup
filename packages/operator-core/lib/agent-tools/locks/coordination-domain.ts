@@ -254,6 +254,12 @@ export function hostGlobalLockDomain(): string {
 export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set([
   'release-deploy',
   'dev-server',
+  // EI-25181611831349662: all operator checkouts target the same :3170
+  // systemd unit. A tree-scoped shared probe lease was invisible to the
+  // staging-sync restart served from the other checkout. Its debounce marker
+  // must use the same host-wide identity too.
+  'staging-server',
+  'staging-server-cooldown',
   // EI-24374781045212391: one physical rig is shared by callers on :3170 and
   // :3070, whose staging and release checkouts must see the same lease.
   'hive-git-physical-rig',
@@ -342,13 +348,13 @@ export function workspaceScopedLockDomain(): string {
  * all degrade to exactly the inference above. A declaration can promote a
  * resource OUT of the caller-tree domain; nothing can demote one INTO it.
  */
-export function resourceLockDomain(resource: string): string {
+export function resourceLockDomain(resource: string, callerTree = lockCoordinationDomain()): string {
   if (HOST_GLOBAL_RESOURCES.has(resource)) return hostGlobalLockDomain();
   if (isWorkspaceScopedResource(resource)) return workspaceScopedLockDomain();
   const declared = declaredResourceDomainKind(resource);
   if (declared === 'host-global') return hostGlobalLockDomain();
   if (declared === 'workspace') return workspaceScopedLockDomain();
-  return lockCoordinationDomain();
+  return callerTree;
 }
 
 /**

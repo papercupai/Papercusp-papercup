@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25413183662300308-36a861f7fe5e90fe83a938e464bae804-reconcile.json"
+updated_at: 1791670959579
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-25413183662300308:36a861f7fe5e90fe83a938e464bae804",
+  "inputSha256": "36a861f7fe5e90fe83a938e464bae80430d29402e39f6fac94eae2392ab3d503",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:22:39.579Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-25413183662300308",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "030bb711cfe7833cf847322322f669e3e9e416f79ace9f82f9a82ca8735cb21a",
+      "observedParkFingerprint": "030bb711cfe7833cf847322322f669e3e9e416f79ace9f82f9a82ca8735cb21a",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:EI-25410344016199089 (condition: 'The result-door source and test file locks held by su-ddb4cbf4-2581-4f7c-8d6a-efbb712bd295 are released after their EI-25410344016199089 work.'). Re-read 2026-10-10T22:22Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): EI-25410344016199089 status=done, taken_by none; EI-25413183662300308 status=open, taken_by null. Condition clause beyond the trigger, verified: EI-25410344016199089 completion filesChanged = packages/operator-core/lib/result-door.ts and packages/operator-core/lib/result-door.test.ts; locks:queue on both paths at ~22:22Z returns active_locks [] and waiting []. The holder su-ddb4cbf4 is parked with currentFiles [] and no claimed items, so the result-door source and test file locks are released. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25413183662300308-36a861f7fe5e90fe83a938e464bae804-reconcile.json"
+}

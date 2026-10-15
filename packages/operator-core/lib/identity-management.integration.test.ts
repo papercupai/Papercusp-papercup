@@ -79,6 +79,21 @@ beforeAll(async () => {
 afterAll(async () => db?.cleanup(), 300_000);
 
 describe('identity management live-schema contract', () => {
+  it.each([false, true])('reads the latest registration after predecessor activity (successor ended=%s)', async (ended) => {
+    const owner = `${OWNER}-registration-${ended}`;
+    const oldId = ended ? 20 : 10;
+    const spec = { v: 1, agent: 'codex', workspaceId: WORKSPACE, contextSize: 'trimmed' };
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions (id, workspace_id, mode, coord_owner_id, launch_spec, started_at, ended_at)
+      VALUES (${oldId}, ${WORKSPACE}, 'console', ${owner},
+              ${db.sql.json({ ...spec, stack: ['domain:predecessor'] })}, now() + interval '1 hour', NULL),
+             (${oldId + 1}, ${WORKSPACE}, 'console', ${owner},
+              ${db.sql.json({ ...spec, stack: ['domain:successor'] })}, now() - interval '1 hour',
+              ${ended ? new Date() : null})`;
+    const surface = await readIdentitySurface({ workspaceId: WORKSPACE, ownerId: owner, sql: db.sql });
+    expect(surface.session?.explicitStack).toEqual(['domain:successor']);
+  });
+
   it('reads the authoritative launch-spec harness from adv_sessions without a physical harness_slug column', async () => {
     const [stored] = await db.sql<Array<{ launch_spec: unknown }>>`
       SELECT to_jsonb(a)->'launch_spec' AS launch_spec

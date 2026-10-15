@@ -7,6 +7,20 @@
  * (real PG, fake dispatch via configurePredicateDispatch).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const dispatchMocks = vi.hoisted(() => ({
+  lookupByMcpName: vi.fn(),
+  dispatchProjectedTool: vi.fn(async () => ({ ok: true })),
+  withWorkspace: vi.fn(async (_workspaceId: string, callback: (tx: unknown) => Promise<unknown>) => callback({})),
+}));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  lookupByMcpName: dispatchMocks.lookupByMcpName,
+  dispatchProjectedTool: dispatchMocks.dispatchProjectedTool,
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  withWorkspace: dispatchMocks.withWorkspace,
+}));
 import {
   valueAtPath,
   comparePredicate,
@@ -15,7 +29,9 @@ import {
   extractToolPayload,
   INTERNAL_MACHINE_DISPATCH_PAYLOAD_CONTEXT,
   configurePredicateDispatch,
+  dispatchReadOnlyTool,
   dispatchPredicateTool,
+  resolvePredicateToolEffect,
   withPredicateDispatchTimeout,
   predicateEvaluatorKey,
   nextEvaluatorBaselines,
@@ -23,6 +39,71 @@ import {
   type EvaluatorBaseline,
   type PredicateWatchRow,
 } from './predicate-watch';
+
+describe('predicate tool effect resolution', () => {
+  it('uses argument-sensitive read/write classification for the exact call args', () => {
+    const effectForCall = vi.fn((args: unknown) =>
+      (args as { op?: string; confirm?: boolean }).op === 'get' ? 'read' : 'write',
+    );
+    const projected = { effect: 'write' as const, effectForCall };
+
+    expect(resolvePredicateToolEffect(projected, { op: 'get' })).toBe('read');
+    expect(resolvePredicateToolEffect(projected, { op: 'admit', confirm: true })).toBe('write');
+    expect(effectForCall).toHaveBeenNthCalledWith(1, { op: 'get' });
+    expect(effectForCall).toHaveBeenNthCalledWith(2, { op: 'admit', confirm: true });
+  });
+
+  it('fails closed when a classifier throws, even if the static effect says read', () => {
+    expect(resolvePredicateToolEffect({ effect: 'read', effectForCall: () => { throw new Error('bad args'); } }, {})).toBe('unknown');
+  });
+
+  it('uses the static effect only when no argument-sensitive classifier exists', () => {
+    expect(resolvePredicateToolEffect({ effect: 'read' }, {})).toBe('read');
+    expect(resolvePredicateToolEffect({ effect: 'write' }, {})).toBe('write');
+    expect(resolvePredicateToolEffect({}, {})).toBe('unknown');
+  });
+});
+
+describe('read-only projected dispatch effect gate', () => {
+  const env = {
+    workspaceId: 'ws-predicate-test',
+    harnessSlug: 'papercusp',
+    role: 'su',
+    onBehalfOf: 'su-watcher',
+    spawnId: 'predicate-watch-test',
+  };
+
+  beforeEach(() => {
+    dispatchMocks.lookupByMcpName.mockReset();
+    dispatchMocks.dispatchProjectedTool.mockClear();
+    dispatchMocks.withWorkspace.mockClear();
+  });
+
+  it('dispatches a read operation when effectForCall classifies the supplied args as read', async () => {
+    const effectForCall = vi.fn((args: unknown) => (args as { op?: string }).op === 'get' ? 'read' : 'write');
+    const projected = { effect: 'write', effectForCall };
+    dispatchMocks.lookupByMcpName.mockReturnValue(projected);
+
+    await dispatchReadOnlyTool('release:repair-queue', { op: 'get' }, env);
+
+    expect(effectForCall).toHaveBeenCalledWith({ op: 'get' });
+    expect(dispatchMocks.withWorkspace).toHaveBeenCalledTimes(1);
+    expect(dispatchMocks.dispatchProjectedTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a write operation before entering the workspace dispatcher', async () => {
+    const effectForCall = vi.fn((args: unknown) => (args as { confirm?: boolean }).confirm ? 'write' : 'read');
+    dispatchMocks.lookupByMcpName.mockReturnValue({ effect: 'write', effectForCall });
+
+    await expect(dispatchReadOnlyTool('release:repair-queue', { op: 'admit', confirm: true }, env)).rejects.toMatchObject({
+      code: 'not_read_only',
+    });
+
+    expect(effectForCall).toHaveBeenCalledWith({ op: 'admit', confirm: true });
+    expect(dispatchMocks.withWorkspace).not.toHaveBeenCalled();
+    expect(dispatchMocks.dispatchProjectedTool).not.toHaveBeenCalled();
+  });
+});
 
 describe('WI-7060 — predicate dispatch deadline', () => {
   beforeEach(() => vi.useFakeTimers());
@@ -118,6 +199,34 @@ describe('comparePredicate', () => {
     expect(comparePredicate('a', 'eq', 'b')).toBe(false);
     expect(comparePredicate({ a: 1 }, 'eq', { a: 1 })).toBe(true);
     expect(comparePredicate({ a: 1 }, 'ne', { a: 2 })).toBe(true);
+  });
+
+  it('compares JSONB baselines independently of nested object key order', () => {
+    const observed = [{ runtime: 'staging-operator', build: { sha: 'd1b140799c', containsChange: false } }];
+    const persisted = [{ build: { containsChange: false, sha: 'd1b140799c' }, runtime: 'staging-operator' }];
+
+    expect(comparePredicate(observed, 'eq', persisted)).toBe(true);
+    expect(comparePredicate(observed, 'ne', persisted)).toBe(false);
+    expect(comparePredicate(observed, 'changed', undefined, { established: true, value: persisted })).toBe(false);
+    expect(comparePredicate(observed, 'contains', persisted[0])).toBe(true);
+  });
+
+  it('still detects nested value changes and reordered arrays', () => {
+    const before = [{ build: { containsChange: false }, runtime: 'staging-operator' }, { runtime: 'release-operator' }];
+    const changed = [{ runtime: 'staging-operator', build: { containsChange: true } }, { runtime: 'release-operator' }];
+
+    expect(comparePredicate(changed, 'changed', undefined, { established: true, value: before })).toBe(true);
+    expect(comparePredicate([...before].reverse(), 'eq', before)).toBe(false);
+    expect(comparePredicate([...before].reverse(), 'changed', undefined, { established: true, value: before })).toBe(true);
+  });
+
+  it('preserves literal JSON object keys when comparing a persisted baseline', () => {
+    const before = JSON.parse('{"__proto__":{"containsChange":false},"runtime":"staging-operator"}');
+    const reordered = JSON.parse('{"runtime":"staging-operator","__proto__":{"containsChange":false}}');
+    const changed = JSON.parse('{"runtime":"staging-operator","__proto__":{"containsChange":true}}');
+
+    expect(comparePredicate(reordered, 'eq', before)).toBe(true);
+    expect(comparePredicate(changed, 'changed', undefined, { established: true, value: before })).toBe(true);
   });
 
   it('numeric ops coerce both sides (a jsonb number often arrives as a string)', () => {

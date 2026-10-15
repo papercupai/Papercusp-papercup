@@ -1,0 +1,325 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "EI-24815884898197408",
+  "planSlug": "papercusp-log-performance-remediation-2026-09-23",
+  "specId": "PERF-OCT1-P011-MEMORY",
+  "definition": "One PID/start-time-verified release HTTP worker: passive bounded esbuild function-call trace with paired process/V8/PSS/direct-child measurements. No GC, heap snapshot, profiler reset, service restart or synthetic compiler workload.",
+  "outcome": "No compiler calls were observed in this 26.1-second window. Actual historical gigabyte compiler caller/root cause remains unproven.",
+  "limitations": [
+    "Recorded counters are bounded observations, not allocation-byte attribution or a complete runtime census.",
+    "Different-worker/workload/time comparisons cannot establish a memory reduction.",
+    "Direct child arrays are transient samples; executable identity is required to classify compiler services.",
+    "Initial guarded cmdline-substring census bash-b987e601-61f can count shell payloads; it cannot prove pid2824961 was a compiler. Historical R11 used executable classification.",
+    "Corrected executable census bash-b990b5e7-9d9 at 2026-10-02T00:01:28Z found zero actual compiler executables in its guarded release cgroup; this single moving-workload observation is not absence or recovery proof."
+  ],
+  "evidence": {
+    "traceTaskId": "0muq731fs2jbu3d1h93",
+    "traceLog": ".papercusp/scratch/bash-8db08f5b-d94.log",
+    "distilledLog": ".papercusp/scratch/bash-e26cd50b-7f9.log",
+    "initialCensus": ".papercusp/scratch/bash-b987e601-61f.log",
+    "correctedExecutableCensus": ".papercusp/scratch/bash-b990b5e7-9d9.log",
+    "helper": "scripts/cdp-inspector.mjs",
+    "helperWorkItemId": "WI-10005149",
+    "helperTerminalState": "done/committed; exact child tests preserved, not replayed",
+    "peerProfilerWorkItemId": "WI-10005145",
+    "runtimeSharedLockId": "10524afe-5bde-4dc1-a17d-8aaaf8056943",
+    "runtimeSharedLockDisposition": "released after trace completed and owned inspector close verified"
+  },
+  "result": {
+    "pid": 1768919,
+    "startTicks": "18729768",
+    "cwd": "~/papercupai-workspace/papercup-release/apps/operator",
+    "entry": "~/papercupai-workspace/papercup-release/apps/operator/dist-host/hono-host.mjs",
+    "sourceHash": "83fba70f8c9ef599c13620dc7ada05def9476cf163be137c40f42830b19d282f",
+    "modules": [
+      {
+        "filename": "~/papercupai-workspace/papercup-release/node_modules/esbuild/lib/main.js",
+        "version": "0.27.3",
+        "build": "function",
+        "transform": "function",
+        "context": "function"
+      }
+    ],
+    "scripts": [
+      {
+        "scriptId": "123",
+        "url": "file://~/papercupai-workspace/papercup-release/apps/operator/dist-host/hono-host.mjs",
+        "hash": "83fba70f8c9ef599c13620dc7ada05def9476cf163be137c40f42830b19d282f"
+      }
+    ],
+    "samples": [
+      {
+        "at": 1790899100367,
+        "startTicks": "18729768",
+        "process": {
+          "pid": 1768919,
+          "at": 1790899100368,
+          "uptime": 1481.806536978,
+          "memory": {
+            "rss": 1506869248,
+            "heapTotal": 821604352,
+            "heapUsed": 646065048,
+            "external": 126001769,
+            "arrayBuffers": 39674725
+          },
+          "heap": {
+            "total_heap_size": 821604352,
+            "total_heap_size_executable": 36519936,
+            "total_physical_size": 821604352,
+            "total_available_size": 136994852016,
+            "used_heap_size": 646066952,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4227168,
+            "peak_malloced_memory": 190953024,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 1372232,
+            "used_global_handles_size": 1288352,
+            "external_memory": 126001769,
+            "total_allocated_bytes": 60205310264
+          }
+        },
+        "pss": "1447091",
+        "children": [
+          {
+            "pid": 1947018,
+            "parent": 1768919,
+            "startTicks": "18756226",
+            "esbuild": false,
+            "pssKiB": 81
+          },
+          {
+            "pid": 2192219,
+            "parent": 1768919,
+            "startTicks": "18785475",
+            "esbuild": false,
+            "pssKiB": 427
+          },
+          {
+            "pid": 2193787,
+            "parent": 1768919,
+            "startTicks": "18785705",
+            "esbuild": false,
+            "pssKiB": 415
+          },
+          {
+            "pid": 2195287,
+            "parent": 1768919,
+            "startTicks": "18785816",
+            "esbuild": false,
+            "pssKiB": 1479
+          },
+          {
+            "pid": 2846844,
+            "parent": 1768919,
+            "startTicks": "18865897",
+            "esbuild": false,
+            "pssKiB": 1312
+          },
+          {
+            "pid": 2942300,
+            "parent": 1768919,
+            "startTicks": "18876767",
+            "esbuild": false,
+            "pssKiB": 9771
+          }
+        ]
+      },
+      {
+        "at": 1790899114550,
+        "startTicks": "18729768",
+        "process": {
+          "pid": 1768919,
+          "at": 1790899114550,
+          "uptime": 1495.988877527,
+          "memory": {
+            "rss": 1486336000,
+            "heapTotal": 833867776,
+            "heapUsed": 672398648,
+            "external": 109600977,
+            "arrayBuffers": 27372744
+          },
+          "heap": {
+            "total_heap_size": 833867776,
+            "total_heap_size_executable": 36519936,
+            "total_physical_size": 833867776,
+            "total_available_size": 136989687288,
+            "used_heap_size": 672398888,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4227168,
+            "peak_malloced_memory": 190953024,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 1421384,
+            "used_global_handles_size": 1375136,
+            "external_memory": 109600977,
+            "total_allocated_bytes": 60689261448
+          }
+        },
+        "pss": "1425317",
+        "children": [
+          {
+            "pid": 1947018,
+            "parent": 1768919,
+            "startTicks": "18756226",
+            "esbuild": false,
+            "pssKiB": 81
+          },
+          {
+            "pid": 2192219,
+            "parent": 1768919,
+            "startTicks": "18785475",
+            "esbuild": false,
+            "pssKiB": 427
+          },
+          {
+            "pid": 2193787,
+            "parent": 1768919,
+            "startTicks": "18785705",
+            "esbuild": false,
+            "pssKiB": 415
+          },
+          {
+            "pid": 2195287,
+            "parent": 1768919,
+            "startTicks": "18785816",
+            "esbuild": false,
+            "pssKiB": 1479
+          },
+          {
+            "pid": 2846844,
+            "parent": 1768919,
+            "startTicks": "18865897",
+            "esbuild": false,
+            "pssKiB": 1311
+          },
+          {
+            "pid": 2956770,
+            "parent": 1768919,
+            "startTicks": "18878419",
+            "esbuild": false,
+            "pssKiB": 9597
+          }
+        ]
+      },
+      {
+        "at": 1790899127601,
+        "startTicks": "18729768",
+        "process": {
+          "pid": 1768919,
+          "at": 1790899127602,
+          "uptime": 1509.040615795,
+          "memory": {
+            "rss": 1528213504,
+            "heapTotal": 924291072,
+            "heapUsed": 785580832,
+            "external": 179218389,
+            "arrayBuffers": 43001138
+          },
+          "heap": {
+            "total_heap_size": 924291072,
+            "total_heap_size_executable": 36782080,
+            "total_physical_size": 924291072,
+            "total_available_size": 136863813896,
+            "used_heap_size": 785581072,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4227168,
+            "peak_malloced_memory": 190953024,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 1478728,
+            "used_global_handles_size": 1396000,
+            "external_memory": 179218389,
+            "total_allocated_bytes": 62032792312
+          }
+        },
+        "pss": "1466379",
+        "children": [
+          {
+            "pid": 1947018,
+            "parent": 1768919,
+            "startTicks": "18756226",
+            "esbuild": false,
+            "pssKiB": 81
+          },
+          {
+            "pid": 2192219,
+            "parent": 1768919,
+            "startTicks": "18785475",
+            "esbuild": false,
+            "pssKiB": 427
+          },
+          {
+            "pid": 2193787,
+            "parent": 1768919,
+            "startTicks": "18785705",
+            "esbuild": false,
+            "pssKiB": 415
+          },
+          {
+            "pid": 2195287,
+            "parent": 1768919,
+            "startTicks": "18785816",
+            "esbuild": false,
+            "pssKiB": 1479
+          },
+          {
+            "pid": 2846844,
+            "parent": 1768919,
+            "startTicks": "18865897",
+            "esbuild": false,
+            "pssKiB": 1313
+          },
+          {
+            "pid": 2956770,
+            "parent": 1768919,
+            "startTicks": "18878419",
+            "esbuild": false,
+            "pssKiB": 9596
+          }
+        ]
+      }
+    ],
+    "value": "passive production workload only",
+    "trace": {
+      "pid": 1768919,
+      "startedAt": 1790899101505,
+      "until": 1790899131505,
+      "total": 0,
+      "observerMs": 0,
+      "calls": {
+        "build": {
+          "calls": 0,
+          "stacks": []
+        },
+        "transform": {
+          "calls": 0,
+          "stacks": []
+        },
+        "context": {
+          "calls": 0,
+          "stacks": []
+        }
+      },
+      "endedAt": 1790899127650,
+      "limited": false
+    },
+    "limits": {
+      "durationMs": 30000,
+      "maxCalls": 128,
+      "maxStacks": 4,
+      "maxStackChars": 2500
+    }
+  },
+  "inspector": {
+    "port": 9229,
+    "preexisting": [],
+    "closed": {
+      "closed": true
+    }
+  },
+  "rerunProcedure": "node --input-type=module <<'JS'\nimport fs from 'node:fs';\nimport {createHash} from 'node:crypto';\nimport {setTimeout as sleep} from 'node:timers/promises';\nimport {createCdpClient,discoverInspector,readProcessMemory,withFunctionCallTrace,closeInspector} from './scripts/cdp-inspector.mjs';\nconst pid=1768919, expectedStart='18729768';\nconst stat=()=>fs.readFileSync(`/proc/${pid}/stat`,'utf8').split(') ')[1].split(' ');\nif(stat()[19]!==expectedStart)throw Error('target identity changed');\nconst cwd=fs.realpathSync(`/proc/${pid}/cwd`);\nconst entry=fs.readFileSync(`/proc/${pid}/cmdline`,'utf8').split('\\0').find(x=>x.endsWith('/dist-host/hono-host.mjs'));\nif(!entry||!cwd.includes('/papercup-release/apps/operator'))throw Error('target not bound to release worker');\nconst sourceHash=createHash('sha256').update(fs.readFileSync(entry)).digest('hex');\nconst beforePorts=[];\nfor(let p=9229;p<9250;p++){const x=await discoverInspector({startPort:p,portCount:1,requestTimeoutMs:150});if(x)beforePorts.push(p);}\nprocess.kill(pid,'SIGUSR1');\nlet found;\nfor(let i=0;i<20&&!found;i++){await sleep(100);for(let p=9229;p<9250;p++){if(beforePorts.includes(p))continue;const x=await discoverInspector({startPort:p,portCount:1,requestTimeoutMs:150});if(!x)continue;const c=createCdpClient(x.wsUrl,{requestTimeoutMs:3000});await c.connect();const got=(await c.evaluate('process.pid',{returnByValue:true})).result.value;if(got===pid){found={...x,client:c};break;}c.close();}}\nif(!found)throw Error('no newly owned target inspector; existing inspectors untouched');\nconst client=found.client;let result,closed,err;const scripts=[];\nclient.ws.on('message',raw=>{try{const j=JSON.parse(String(raw));if(j.method==='Debugger.scriptParsed'&&j.params.url===`file://${entry}`)scripts.push({scriptId:j.params.scriptId,url:j.params.url,hash:j.params.hash});}catch{}});\nconst sample=async()=>({at:Date.now(),startTicks:stat()[19],process:await readProcessMemory(client,{expectedPid:pid}),pss:fs.readFileSync(`/proc/${pid}/smaps_rollup`,'utf8').match(/^Pss:\\s+(\\d+) kB/m)?.[1],children:fs.readFileSync(`/proc/${pid}/task/${pid}/children`,'utf8').trim().split(/\\s+/).filter(Boolean).map(child=>{try{const s=fs.readFileSync(`/proc/${child}/stat`,'utf8').split(') ')[1].split(' ');return {pid:Number(child),parent:Number(s[1]),startTicks:s[19],esbuild:fs.readFileSync(`/proc/${child}/cmdline`,'utf8').includes('esbuild'),pssKiB:Number(fs.readFileSync(`/proc/${child}/smaps_rollup`,'utf8').match(/^Pss:\\s+(\\d+) kB/m)?.[1])};}catch{return {pid:Number(child),notChecked:true};}})});\ntry{\n const modules=(await client.evaluate(\"Object.entries(process.getBuiltinModule('module')._cache).filter(([k])=>k.endsWith('/esbuild/lib/main.js')).map(([filename,m])=>({filename,version:m.exports.version,build:typeof m.exports.build,transform:typeof m.exports.transform,context:typeof m.exports.context}))\",{returnByValue:true})).result.value;\n if(modules.length!==1)throw Error('expected exactly one loaded compiler module');\n const base=`process.getBuiltinModule('module')._cache[${JSON.stringify(modules[0].filename)}].exports`;\n const samples=[await sample()];\n const trace=await withFunctionCallTrace(client,{expectedPid:pid,targets:['build','transform','context'].map(name=>({name,expression:base+'.'+name})),durationMs:30000,maxCalls:128,maxStacks:4,maxStackChars:2500},async()=>{await sleep(13000);samples.push(await sample());await sleep(13000);samples.push(await sample());return 'passive production workload only';});\n result={pid,startTicks:expectedStart,cwd,entry,sourceHash,modules,scripts,samples,...trace};\n}catch(e){err=String(e.stack||e);}finally{closed=await closeInspector(client,found.port);}\nconsole.log(JSON.stringify({result,error:err,inspector:{port:found.port,preexisting:beforePorts,closed}}));\nif(err)process.exitCode=1;\nJS"
+}

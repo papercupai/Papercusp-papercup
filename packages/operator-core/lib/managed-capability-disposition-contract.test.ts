@@ -75,7 +75,7 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
         expect(gap.falsifier.length, gap.id).toBeGreaterThan(30);
         expect(gap.owningPlanItems.length, gap.id).toBeGreaterThan(0);
         expect(gap.owningPlanItems, gap.id).not.toContain('P-001');
-        for (const item of gap.owningPlanItems) expect(item).toMatch(/^P-00[2-8]$/);
+        for (const item of gap.owningPlanItems) expect(item).toMatch(/^P-(?:015|016|017|018|019|020)$/);
       }
     }
   });
@@ -100,7 +100,37 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
         { ...MANAGED_CAPABILITY_DISPOSITIONS[0], cutoverReady: true },
         ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
       ]),
-    ).toContain('cutover-not-blocked:shell-ssh-interpreters');
+    ).toContain('cutover-with-open-gaps:shell-ssh-interpreters');
+  });
+
+  it('allows an explicitly closed replacement gap ledger without changing shipped readiness', () => {
+    const provenShell = { ...MANAGED_CAPABILITY_DISPOSITIONS[0], gaps: [], cutoverReady: true };
+    expect(managedCapabilityContractViolations([
+      provenShell,
+      ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
+    ])).toEqual([]);
+
+    // A completed candidate must not mutate the published contract or activate rollout.
+    expect(managedCapabilityDisposition('shell-ssh-interpreters').cutoverReady).toBe(false);
+    expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
+
+    expect(managedCapabilityContractViolations([
+      { ...provenShell, cutoverReady: false },
+      ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
+    ])).toContain('missing-gap:shell-ssh-interpreters');
+    expect(managedCapabilityContractViolations([
+      { ...provenShell, cutoverReady: undefined },
+      ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
+    ])).toContain('invalid-cutover-readiness:shell-ssh-interpreters');
+  });
+
+  it('rejects a cutover claim for an unsupported or intentionally retained interface', () => {
+    for (const disposition of ['unsupported-gap', 'deliberately-retained-interface'] as const) {
+      expect(managedCapabilityContractViolations([
+        { ...MANAGED_CAPABILITY_DISPOSITIONS[0], disposition, gaps: [], cutoverReady: true },
+        ...MANAGED_CAPABILITY_DISPOSITIONS.slice(1),
+      ])).toContain('non-replacement-cutover:shell-ssh-interpreters');
+    }
   });
 
   it('gives every family one primary evidence citation and verifies every cited source anchor', () => {
@@ -146,14 +176,17 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
     expect(jobs.gaps.map((gap) => gap.id)).not.toContain('pty-resize-completion-reattach');
     expect(jobs.gaps).toContainEqual(expect.objectContaining({
       id: 'pty-real-client-restart-acceptance',
-      owningPlanItems: ['P-007', 'P-008'],
+      owningPlanItems: ['P-019', 'P-020', 'P-015'],
     }));
 
     expect(scripts.boundary).toContain('explicit replay state');
     expect(scripts.boundary).toContain('uncertain-write reporting');
+    expect(scripts.boundary).toContain('JavaScript worker/VM open/run/status/close');
+    expect(scripts.boundary).toContain('Cross-worker routing and current-client acceptance remain open');
+    expect(scripts.gaps[0].description).not.toContain('not implemented');
     expect(scripts.gaps).toContainEqual(expect.objectContaining({
       id: 'persistent-kernel-lifecycle',
-      owningPlanItems: ['P-006', 'P-008'],
+      owningPlanItems: ['P-017', 'P-020', 'P-015'],
     }));
     expect([...jobs.gaps, ...scripts.gaps].flatMap((gap) => gap.owningPlanItems)).not.toContain('P-003');
     expect(jobs.cutoverReady).toBe(false);
@@ -178,7 +211,7 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
       expect.objectContaining({
         id: 'patch-notebook-real-client-acceptance',
         kind: 'evidence',
-        owningPlanItems: ['P-007', 'P-008'],
+        owningPlanItems: ['P-019', 'P-020', 'P-015'],
       }),
     );
 
@@ -195,16 +228,32 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
     expect(MANAGED_CAPABILITY_CUTOVER_READY).toBe(false);
   });
 
+  it('assigns remaining implementation and evidence gaps to current Phase 4 lanes', () => {
+    const gap = (family: Parameters<typeof managedCapabilityDisposition>[0], id: string) =>
+      managedCapabilityDisposition(family).gaps.find((candidate) => candidate.id === id);
+
+    expect(gap('script-orchestration-kernels', 'persistent-kernel-lifecycle')?.owningPlanItems).toContain('P-017');
+    expect(gap('http-search-browser-computer', 'browser-provider-contract')?.owningPlanItems).toContain('P-018');
+    expect(gap('jobs-output-stop-pty', 'pty-real-client-restart-acceptance')?.owningPlanItems).toContain('P-019');
+    for (const entry of MANAGED_CAPABILITY_DISPOSITIONS) {
+      expect(entry.gaps.flatMap((candidate) => candidate.owningPlanItems)).toContain('P-015');
+    }
+
+    const exclusion = gap('memory-checkpoint-resume-rewind', 'offline-bounded-recovery');
+    expect(exclusion?.description).toContain('DELIBERATELY EXCLUDED');
+    expect(exclusion?.owningPlanItems).toEqual(['P-016']);
+    expect(exclusion?.owningPlanItems).not.toContain('P-004');
+    expect(managedCapabilityDisposition('memory-checkpoint-resume-rewind').cutoverReason)
+      .toContain('without rebuilding it');
+  });
+
   it('keeps R-7 HTTP fetch distinct from search and browser/DOM instead of equating them', () => {
     const network = managedCapabilityDisposition('http-search-browser-computer');
 
-    // A browser/DOM provider is an honest declared gap, not a hidden one (R-1: discovery-only hiding is not security).
+    // A local implementation does not dispose the current-client acceptance gap.
     expect(network.disposition).toBe('unsupported-gap');
-    // Same `in` narrowing the anchor-verification test uses: absentAnchors is optional across the citation union.
-    const evidence = network.evidence;
-    expect('absentAnchors' in evidence ? (evidence.absentAnchors ?? []) : []).toContain(
-      "import './browser/browser';",
-    );
+    expect(network.evidence.path).toBe('packages/operator-core/lib/agent-tools/capability/fetch.ts');
+    expect(network.evidence.anchors).toContain('browserSessionArg.optional()');
     expect(network.gaps).toContainEqual(expect.objectContaining({ id: 'browser-provider-contract' }));
 
     // R-7: fetch, search, and browser/computer must be named as separate surfaces.
@@ -212,8 +261,10 @@ describe('managed capability disposition contract (P-001 / R-1)', () => {
     expect(network.boundary).toContain('remain distinct');
     expect(network.managedAuthorities).toContain('capability:fetch');
 
-    // No false equivalence: raw HTTP or sandbox pixels must not be registered as a browser authority.
-    expect(network.managedAuthorities.some((authority) => /browser/i.test(authority))).toBe(false);
+    // Browser operations reuse the fetch door but have their own explicit lifetime.
+    expect(network.managedAuthorities).toContain('capability:fetch browser sessions');
+    expect(network.boundary).toContain('worker routing, actual-ledger/API, confinement, and restart cleanup acceptance remain open');
+    expect(network.reuseSites.find((site) => site.path.endsWith('browser-session.e2e.test.ts'))?.note).toContain('mocked ledger');
     const browserGap = network.gaps.find((gap) => gap.id === 'browser-provider-contract');
     expect(browserGap?.falsifier).toContain('without conflating it with raw HTTP or sandbox pixels');
 

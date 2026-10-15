@@ -23,6 +23,7 @@ import {
 } from '../../turn-journal';
 import { latestJournalCreatedAt, ledgerEntriesSince, recordTurnJournal } from '../../turn-journal-store';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 /** Without a previous journal row the turn window falls back to this. */
 const DEFAULT_TURN_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -67,23 +68,28 @@ export default defineTool({
     // workspace. Resolved once here so both rows land in the same partition.
     const journalWorkspaceId = requireWorkspaceId(identity, 'journal:record-turn');
 
+    let goalPlacementTurnEnd: { recorded: boolean; reason: string } | null = null;
+    if (ownerId && ownerId === identity.ownerId) {
+      const input = { ownerId, workspaceId: journalWorkspaceId, nativeSessionId: args.session_id, sourceKind };
+      try {
+        const receipts = await import('../../goal-placement-turn-receipts');
+        goalPlacementTurnEnd = await receipts.boundedRecordGoalPlacementTurnEnd(input);
+        if (!goalPlacementTurnEnd.recorded && goalPlacementTurnEnd.reason !== 'no-canonical-goal') {
+          await receipts.boundedRecordGoalPlacementTurnEndOutcome(input, goalPlacementTurnEnd);
+        }
+      } catch {
+        goalPlacementTurnEnd ??= { recorded: false, reason: 'turn-end-read-unavailable' };
+      }
+    }
+
     const filePath = await resolveTranscriptPath(sourceKind, args.session_id, args.transcript_path);
     if (!filePath) {
-      return { data: { ok: false, recorded: false, reason: 'transcript_not_found' } };
+      return { data: { ok: false, recorded: false, reason: 'transcript_not_found', goalPlacementTurnEnd } };
     }
-    // Sample placement policy at the existing native turn-end boundary, BEFORE
-    // slower journal enrichment. The producer independently verifies the acting
-    // owner's current native session and a final response; journal prose itself
-    // is never completion or eligibility evidence. Cross-owner journal writes
-    // cannot create a subject's opportunity evidence.
-    if (ownerId && ownerId === identity.ownerId) {
-      const { boundedRecordGoalPlacementTurnEnd } = await import('../../goal-placement-turn-receipts');
-      await boundedRecordGoalPlacementTurnEnd({ ownerId, workspaceId: journalWorkspaceId,
-        nativeSessionId: args.session_id, sourceKind }).catch(() => null);
-    }
+    // Journal prose itself is never completion or eligibility evidence.
     const turn = await readLastAssistantTurn(filePath, sourceKind);
     if (!turn) {
-      return { data: { ok: false, recorded: false, reason: 'no_assistant_turn' } };
+      return { data: { ok: false, recorded: false, reason: 'no_assistant_turn', goalPlacementTurnEnd } };
     }
     const currentTurn = ownerId
       ? await resolveCurrentTurnStamp(ownerId, { filePath, sessionId: args.session_id }).catch(() => null)
@@ -91,7 +97,7 @@ export default defineTool({
     const machineTurn = currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface';
     const extracted = extractJournalFromAssistantText(turn.text);
     if (!extracted) {
-      return { data: { ok: false, recorded: false, reason: 'no_note' } };
+      return { data: { ok: false, recorded: false, reason: 'no_note', goalPlacementTurnEnd } };
     }
 
     // Turn window = everything since the previous journal row for this session
@@ -170,6 +176,7 @@ export default defineTool({
     // P-013 tool-call log tail. Marked ⟦auto-checkpoint mechanical⟧, never
     // overwrites agent-authored prose. Bounded + fail-soft; plan D-003.
     let autoCheckpointed: Array<{ id: string; mechanical: true }> = [];
+    let unpublishedReportObservationScheduled = false;
     if (ownerId && !deduped) {
       const { boundedAutoCheckpoint } = await import('../../turn-end-tracking-io');
       autoCheckpointed = await boundedAutoCheckpoint({
@@ -179,6 +186,16 @@ export default defineTool({
         sinceIso,
         journalNote: extracted.note,
       });
+      const observationInput = {
+        ownerId, workspaceId: journalWorkspaceId, sessionId: args.session_id, sinceIso,
+        assistantText: turn.text, turnRef: `${args.session_id}:${turn.ts?.toISOString() ?? id}`,
+        harnessSlug: resolveConcreteHarnessSlug(undefined, ctx) ?? undefined,
+      };
+      // This optional observation must not delay or fail the recorded turn.
+      // The response reports scheduling; only the observation ledger proves filing.
+      void Promise.resolve().then(() => ioMod.boundedUnpublishedReportTurn(observationInput))
+        .catch(error => console.warn(`[reports] turn observation failed: ${String(error)}`));
+      unpublishedReportObservationScheduled = true;
     }
 
     // unread-count-truthfulness-2026-07-27 P-008 / D-008: SETTLE the coord
@@ -285,7 +302,9 @@ export default defineTool({
         flagged: extracted.flagged,
         tripwire,
         turn_ts: turn.ts ? turn.ts.toISOString() : null,
+        goalPlacementTurnEnd,
         ...(autoCheckpointed.length ? { autoCheckpointed } : {}),
+        ...(unpublishedReportObservationScheduled ? { unpublishedReportObservationScheduled } : {}),
         ...(unguardedHaltTripwire ? { unguardedHalt: unguardedHaltTripwire } : {}),
         ...(openTaskReminder
           ? {

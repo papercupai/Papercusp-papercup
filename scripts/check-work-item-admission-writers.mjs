@@ -202,12 +202,22 @@ function trackedFiles() {
     files: files
       .filter((p) => /\.tsx?$/.test(p))
       .filter((p) => !p.includes('/_retired/') && !p.includes('/node_modules/'))
+      // Test support modules are tracked TypeScript too, but they seed private
+      // fixtures and are not production filing paths. Keep the CLI and its measured
+      // population free of these intentional test-only writers.
+      .filter((p) => !/(^|\/)(?:test|tests|__tests__)\//.test(p))
       .filter((p) => !/\.(test|spec)\.tsx?$/.test(p)),
     unscanned,
   };
 }
 
-function scan() {
+/**
+ * Scan the measured production source population. Exported so the registered
+ * real-tree test exercises this exact filter and verdict without a subprocess.
+ *
+ * @returns {{ minting: Array<{ rel: string, decided: boolean, allowlisted: boolean }>, offenders: string[], unscanned: unknown }}
+ */
+export function scan() {
   const { files, unscanned } = trackedFiles();
   const minting = [];
   const offenders = [];

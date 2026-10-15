@@ -1,0 +1,1523 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "owned-container-cpu-profile",
+  "name": "P058 changed lazy-target release ARM late startup diagnostic collection",
+  "command": [
+    "node",
+    ".papercusp/scratch/p058-lazy-target-profile-20261011/run.mjs"
+  ],
+  "cwd": ".",
+  "startedAt": "2026-10-11T19:03:47.719Z",
+  "finishedAt": "2026-10-11T19:07:48.808Z",
+  "exitCode": 0,
+  "timestampsScope": "Guest child start through full host post-run verification; producer task also includes full pre-run guards",
+  "workItemId": "EI-25500068013952985",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "producerTaskId": "0mv46uuji1x2v5jn1e1",
+  "sourceCommit": "af73da044b9c67adc47a9a5044968b6139578a8a",
+  "candidateAccepted": false,
+  "evidencePlane": "current-build diagnostic on frozen sourceaf73 and release9fdec in preserved ARM runtime",
+  "summary": "Fresh changed-input profiler completed with saved90s profile, explicit0644 and verified inspector process identity. Instrumented child emitted boot marker and exited0 after110423.232ms; this is not the original60000ms qualification. Whole39157-file source, all4release artifacts, retained overlaycedde and supplemental4481 stayed bound before/after; exact producer removed and private child/home absent. Sampled profile shows early ESM compilation, middle CommonJS loading and late registry/Zod initialization; no single canonical timeout cause is established.",
+  "originalCanonicalQualification": {
+    "evidenceFile": "docs/evidence/p058-lazy-target-arm-original-deadline-2026-10-11.json",
+    "sha256": "438cbd99677dfbeb23f9a81481010f43ae9bf97eb72b5b9b4346f2c94202bcfe",
+    "testRunId": 21105024,
+    "verdict": "FAIL",
+    "deadlineMs": 60000
+  },
+  "observation": {
+    "profile": {
+      "sha256": "b899165640e034384c450b15618460a2e127771f1bc3d34da11f8fcc77285764",
+      "bytes": 11822877,
+      "mode": 420
+    },
+    "bootObservation": {
+      "status": 0,
+      "signal": null,
+      "timedOut": false,
+      "markerObserved": true
+    },
+    "bootElapsedMs": 110423.232216,
+    "capture": {
+      "status": "passed",
+      "savedAt": "2026-10-11T19:05:26.138Z",
+      "savedWhileTargetAlive": true,
+      "target": {
+        "pid": 25,
+        "entry": "/opt/papercusp/sidecar/serve.mjs",
+        "argv": [
+          "--verify-boot-imports"
+        ],
+        "execArgv": [
+          "/opt/papercusp/sidecar/bin/node",
+          "/opt/papercusp/sidecar/bin/node",
+          "--inspect-wait=127.0.0.1:0",
+          "--import",
+          "/opt/papercusp/sidecar/p058-diagnostic/loader.mjs"
+        ],
+        "startTicks": "53440126",
+        "listenerInode": "1731227073",
+        "identity": "proc"
+      },
+      "startupResumed": true,
+      "captureMs": 90000,
+      "profile": {
+        "sha256": "b899165640e034384c450b15618460a2e127771f1bc3d34da11f8fcc77285764",
+        "bytes": 11822877,
+        "samples": 57425,
+        "nodes": 56663
+      }
+    },
+    "analysis": {
+      "schemaVersion": 1,
+      "workItemId": "EI-25500068013952985",
+      "diagnosticOnly": true,
+      "candidateAccepted": false,
+      "sourceServeSha256": "9fdec4840e5c9407e1ea52eb15c5a8815d38ba9b40702f6f3d3a3dbab0449caa",
+      "bindings": {
+        "resultSha256": "1101fd95e6c30d481c9075232685ba780cd71fd2cdf69509af913c4e4ad17eff",
+        "auditSha256": "cd7c06d846017819b35d545c0049b84694bc90f5d6adc331e038a5f0c0fc479a",
+        "analyzerSha256": "eebee7b39d7a6a1087a2540d26ebf58ab7bd5d5999161771efac4bd0fcd2a58e",
+        "profileSha256": "b899165640e034384c450b15618460a2e127771f1bc3d34da11f8fcc77285764",
+        "loadsSha256": "d1ddb7cfcd45c1cbf86b17272b0075059c035ba0292c926d97ee99d1fd75ff6a",
+        "sampleDurationWriterSha256": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3"
+      },
+      "profile": {
+        "samples": 57425,
+        "nodes": 56663,
+        "wallUs": 90163087,
+        "nominalIntervalUs": 1096,
+        "leadInUs": 112797,
+        "unsampledGapUs": 10744962,
+        "gapCount": 66
+      },
+      "aggregate": {
+        "totalUs": 79305391,
+        "realUs": 79080295,
+        "excludedUs": 225096,
+        "frames": [
+          [
+            "compileSourceTextModule @ node:internal/modules/esm/utils:315",
+            15809920
+          ],
+          [
+            "(anonymous) @ papercusp/sidecar/serve.mjs:1",
+            6304095
+          ],
+          [
+            "wrapSafe @ node:internal/modules/cjs/loader:1761",
+            4095893
+          ],
+          [
+            "(anonymous) @ papercusp/sidecar/serve.mjs:105",
+            3071203
+          ],
+          [
+            "(garbage collector) @ (native):-1",
+            2864382
+          ],
+          [
+            "init2 @ papercusp/sidecar/serve.mjs:41",
+            2051436
+          ],
+          [
+            "parse @ (native):-1",
+            1547111
+          ],
+          [
+            "detectModuleFormat @ node:internal/modules/esm/get_format:86",
+            1240397
+          ],
+          [
+            "(anonymous) @ papercusp/sidecar/serve.mjs:44",
+            1189091
+          ],
+          [
+            "extractTablesRelationalConfig @ papercusp/sidecar/serve.mjs:3",
+            809869
+          ],
+          [
+            "read @ (native):-1",
+            763010
+          ],
+          [
+            "(anonymous) @ papercusp/sidecar/serve.mjs:0",
+            760288
+          ],
+          [
+            "getPackageScopeConfig @ (native):-1",
+            723690
+          ],
+          [
+            "realpathSync @ node:fs:2710",
+            644504
+          ],
+          [
+            "readFileUtf8 @ (native):-1",
+            628920
+          ],
+          [
+            "getPackageScopeConfig @ node:internal/modules/package_json_reader:191",
+            618904
+          ],
+          [
+            "defaultLoadSync @ node:internal/modules/esm/load:135",
+            571528
+          ],
+          [
+            "mergeDefs @ papercusp/sidecar/serve.mjs:41",
+            570869
+          ],
+          [
+            "dlopen @ (native):-1",
+            507672
+          ],
+          [
+            "finalize @ papercusp/sidecar/serve.mjs:105",
+            507538
+          ],
+          [
+            "decodeUTF8 @ (native):-1",
+            477075
+          ],
+          [
+            "deserializePackageJSON @ node:internal/modules/package_json_reader:43",
+            472365
+          ],
+          [
+            "resolveSync @ node:internal/modules/esm/loader:736",
+            468140
+          ],
+          [
+            "getNearestParentPackageJSON @ (native):-1",
+            426838
+          ],
+          [
+            "#getOrCreateModuleJobAfterResolve @ node:internal/modules/esm/loader:521",
+            411286
+          ]
+        ]
+      },
+      "windows": [
+        {
+          "fromMs": 0,
+          "toMs": 35000,
+          "sampledUs": 29394295,
+          "realUs": 29259631,
+          "excludedUs": 134664,
+          "frames": [
+            [
+              "compileSourceTextModule @ node:internal/modules/esm/utils:315",
+              15032630
+            ],
+            [
+              "parse @ (native):-1",
+              1324717
+            ],
+            [
+              "detectModuleFormat @ node:internal/modules/esm/get_format:86",
+              1240397
+            ],
+            [
+              "getPackageScopeConfig @ (native):-1",
+              544162
+            ],
+            [
+              "read @ (native):-1",
+              531023
+            ],
+            [
+              "(garbage collector) @ (native):-1",
+              482005
+            ],
+            [
+              "decodeUTF8 @ (native):-1",
+              461454
+            ],
+            [
+              "getPackageScopeConfig @ node:internal/modules/package_json_reader:191",
+              442244
+            ],
+            [
+              "defaultLoadSync @ node:internal/modules/esm/load:135",
+              432143
+            ],
+            [
+              "realpathSync @ node:fs:2710",
+              376417
+            ],
+            [
+              "resolveSync @ node:internal/modules/esm/loader:736",
+              351985
+            ],
+            [
+              "#getOrCreateModuleJobAfterResolve @ node:internal/modules/esm/loader:521",
+              306346
+            ],
+            [
+              "syncLink @ node:internal/modules/esm/module_job:146",
+              262527
+            ],
+            [
+              "normalizeString @ node:path:91",
+              230848
+            ],
+            [
+              "deserializePackageJSON @ node:internal/modules/package_json_reader:43",
+              228584
+            ],
+            [
+              "open @ (native):-1",
+              202547
+            ],
+            [
+              "finalizeResolution @ node:internal/modules/esm/resolve:224",
+              181628
+            ],
+            [
+              "URL @ node:internal/url:823",
+              180619
+            ],
+            [
+              "internalModuleStat @ (native):-1",
+              176179
+            ],
+            [
+              "ModuleWrap @ (native):-1",
+              175119
+            ],
+            [
+              "load @ file:///opt/papercusp/sidecar/p058-diagnostic/loader.mjs:3",
+              172344
+            ],
+            [
+              "resolve @ node:path:1244",
+              167138
+            ],
+            [
+              "compileForInternalLoader @ node:internal/bootstrap/realm:382",
+              151657
+            ],
+            [
+              "pathToFileURL @ (native):-1",
+              146663
+            ],
+            [
+              "lstat @ (native):-1",
+              144462
+            ]
+          ],
+          "urls": [
+            [
+              "node:internal/modules/esm/utils",
+              15052948
+            ],
+            [
+              "(native)",
+              5017215
+            ],
+            [
+              "node:internal/modules/esm/get_format",
+              1341547
+            ],
+            [
+              "node:internal/modules/esm/loader",
+              1048729
+            ],
+            [
+              "node:internal/modules/package_json_reader",
+              1004175
+            ],
+            [
+              "node:fs",
+              743545
+            ],
+            [
+              "node:internal/url",
+              611183
+            ],
+            [
+              "node:internal/modules/esm/resolve",
+              478677
+            ],
+            [
+              "node:internal/modules/esm/load",
+              472935
+            ],
+            [
+              "node:path",
+              404217
+            ],
+            [
+              "node:internal/modules/esm/module_job",
+              358277
+            ],
+            [
+              "node:internal/bootstrap/realm",
+              317600
+            ],
+            [
+              "node:internal/deps/undici/undici",
+              254573
+            ],
+            [
+              "node:internal/modules/customization_hooks",
+              240633
+            ],
+            [
+              "node:internal/fs/utils",
+              175553
+            ],
+            [
+              "file:///opt/papercusp/sidecar/p058-diagnostic/loader.mjs",
+              174520
+            ],
+            [
+              "node:internal/validators",
+              158495
+            ],
+            [
+              "node:internal/modules/esm/module_map",
+              134785
+            ],
+            [
+              "node:internal/source_map/source_map_cache",
+              116691
+            ],
+            [
+              "node:internal/crypto/util",
+              105694
+            ],
+            [
+              "node:buffer",
+              89450
+            ],
+            [
+              "node:internal/modules/esm/translators",
+              69166
+            ],
+            [
+              "node:internal/errors",
+              56259
+            ],
+            [
+              "node:internal/util",
+              52483
+            ],
+            [
+              "node:internal/encoding",
+              49839
+            ]
+          ]
+        },
+        {
+          "fromMs": 35000,
+          "toMs": 60000,
+          "sampledUs": 21348932,
+          "realUs": 21318464,
+          "excludedUs": 30468,
+          "frames": [
+            [
+              "wrapSafe @ node:internal/modules/cjs/loader:1761",
+              3772601
+            ],
+            [
+              "(anonymous) @ file:///opt/papercusp/sidecar/serve.mjs:1",
+              1044071
+            ],
+            [
+              "compileSourceTextModule @ node:internal/modules/esm/utils:315",
+              777290
+            ],
+            [
+              "(anonymous) @ file:///opt/papercusp/sidecar/serve.mjs:0",
+              760288
+            ],
+            [
+              "(garbage collector) @ (native):-1",
+              675173
+            ],
+            [
+              "readFileUtf8 @ (native):-1",
+              429593
+            ],
+            [
+              "pgTableWithSchema @ file:///opt/papercusp/sidecar/serve.mjs:2",
+              409160
+            ],
+            [
+              "getNearestParentPackageJSON @ (native):-1",
+              400229
+            ],
+            [
+              "(anonymous) @ node:internal/modules/esm/translators:231",
+              375412
+            ],
+            [
+              "__export @ file:///opt/papercusp/sidecar/serve.mjs:1",
+              324941
+            ],
+            [
+              "libs/papercusp/libs/db/src/schema/generated.ts @ file:///opt/papercusp/sidecar/serve.mjs:9",
+              264762
+            ],
+            [
+              "libs/papercusp/libs/db/src/connection.ts @ file:///opt/papercusp/sidecar/serve.mjs:147",
+              257987
+            ],
+            [
+              "realpathSync @ node:fs:2710",
+              248677
+            ],
+            [
+              "read @ (native):-1",
+              231251
+            ],
+            [
+              "createAggregatedClient @ file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/client/index.js:718",
+              219691
+            ],
+            [
+              "(anonymous) @ file:///opt/papercusp/sidecar/node_modules/@aws-sdk/client-ec2/dist-cjs/index.js:0",
+              206699
+            ],
+            [
+              "deserializePackageJSON @ node:internal/modules/package_json_reader:43",
+              198977
+            ],
+            [
+              "(anonymous) @ node:internal/modules/cjs/loader:725",
+              196795
+            ],
+            [
+              "parse @ (native):-1",
+              184967
+            ],
+            [
+              "getPackageScopeConfig @ (native):-1",
+              179528
+            ],
+            [
+              "load @ file:///opt/papercusp/sidecar/p058-diagnostic/loader.mjs:3",
+              177973
+            ],
+            [
+              "getPackageScopeConfig @ node:internal/modules/package_json_reader:191",
+              176660
+            ],
+            [
+              "writeFileUtf8 @ (native):-1",
+              176170
+            ],
+            [
+              "(anonymous) @ file:///opt/papercusp/sidecar/node_modules/@typescript/old/lib/typescript.js:15",
+              173961
+            ],
+            [
+              "(anonymous) @ node:internal/modules/cjs/loader:1266",
+              164016
+            ]
+          ],
+          "urls": [
+            [
+              "node:internal/modules/cjs/loader",
+              4946037
+            ],
+            [
+              "file:///opt/papercusp/sidecar/serve.mjs",
+              4423827
+            ],
+            [
+              "(native)",
+              3110287
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/@mcp-ui/server/dist/index.mjs",
+              1077077
+            ],
+            [
+              "node:internal/modules/esm/utils",
+              779456
+            ],
+            [
+              "node:internal/modules/package_json_reader",
+              625893
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/@typescript/old/lib/typescript.js",
+              436695
+            ],
+            [
+              "node:fs",
+              403470
+            ],
+            [
+              "node:internal/modules/esm/translators",
+              383158
+            ],
+            [
+              "node:path",
+              308710
+            ],
+            [
+              "node:internal/modules/esm/loader",
+              308220
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/client/index.js",
+              300595
+            ],
+            [
+              "node:internal/modules/esm/module_job",
+              247858
+            ],
+            [
+              "node:internal/url",
+              207949
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/@aws-sdk/client-ec2/dist-cjs/index.js",
+              206699
+            ],
+            [
+              "file:///opt/papercusp/sidecar/p058-diagnostic/loader.mjs",
+              177973
+            ],
+            [
+              "node:internal/modules/esm/resolve",
+              151208
+            ],
+            [
+              "node:internal/modules/esm/load",
+              149657
+            ],
+            [
+              "node:internal/fs/utils",
+              136399
+            ],
+            [
+              "node:internal/util",
+              114439
+            ],
+            [
+              "node:internal/modules/helpers",
+              106521
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/ox/node_modules/@noble/hashes/esm/sha3.js",
+              98037
+            ],
+            [
+              "node:internal/modules/customization_hooks",
+              96181
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/ox/node_modules/@noble/curves/esm/abstract/modular.js",
+              74172
+            ],
+            [
+              "node:internal/modules/esm/module_map",
+              68142
+            ]
+          ]
+        },
+        {
+          "fromMs": 60000,
+          "toMs": 90000,
+          "sampledUs": 28399077,
+          "realUs": 28339113,
+          "excludedUs": 59964,
+          "frames": [
+            [
+              "(anonymous) @ file:///opt/papercusp/sidecar/serve.mjs:1",
+              5240441
+            ],
+            [
+              "(anonymous) @ file:///opt/papercusp/sidecar/serve.mjs:105",
+              2954690
+            ],
+            [
+              "init2 @ file:///opt/papercusp/sidecar/serve.mjs:41",
+              1921791
+            ],
+            [
+              "(garbage collector) @ (native):-1",
+              1705871
+            ],
+            [
+              "(anonymous) @ file:///opt/papercusp/sidecar/serve.mjs:44",
+              1138601
+            ],
+            [
+              "extractTablesRelationalConfig @ file:///opt/papercusp/sidecar/serve.mjs:3",
+              809869
+            ],
+            [
+              "mergeDefs @ file:///opt/papercusp/sidecar/serve.mjs:41",
+              560980
+            ],
+            [
+              "finalize @ file:///opt/papercusp/sidecar/serve.mjs:105",
+              503650
+            ],
+            [
+              "dlopen @ (native):-1",
+              447533
+            ],
+            [
+              "(anonymous) @ file:///opt/papercusp/sidecar/serve.mjs:103",
+              397830
+            ],
+            [
+              "captureDefinitionSite @ file:///opt/papercusp/sidecar/serve.mjs:2662",
+              381256
+            ],
+            [
+              "deepStrictifyInPlace @ file:///opt/papercusp/sidecar/serve.mjs:2662",
+              369213
+            ],
+            [
+              "spawn @ node:internal/child_process:355",
+              335390
+            ],
+            [
+              "wrapSafe @ node:internal/modules/cjs/loader:1761",
+              323292
+            ],
+            [
+              "get @ file:///opt/papercusp/sidecar/serve.mjs:105",
+              302822
+            ],
+            [
+              "process2 @ file:///opt/papercusp/sidecar/serve.mjs:103",
+              292242
+            ],
+            [
+              "spawnSync @ node:internal/child_process:1127",
+              288923
+            ],
+            [
+              "defineLazy @ file:///opt/papercusp/sidecar/serve.mjs:41",
+              285039
+            ],
+            [
+              "s8 @ file:///opt/papercusp/sidecar/serve.mjs:10410",
+              251096
+            ],
+            [
+              "objectProcessor @ file:///opt/papercusp/sidecar/serve.mjs:105",
+              240926
+            ],
+            [
+              "flattenRef @ file:///opt/papercusp/sidecar/serve.mjs:105",
+              220516
+            ],
+            [
+              "_2 @ file:///opt/papercusp/sidecar/serve.mjs:41",
+              194764
+            ],
+            [
+              "readPackageJSON @ (native):-1",
+              179319
+            ],
+            [
+              "(anonymous) @ file:///opt/papercusp/sidecar/serve.mjs:42",
+              177977
+            ],
+            [
+              "registerRoleGatedAsProjected @ file:///opt/papercusp/sidecar/serve.mjs:2662",
+              154030
+            ]
+          ],
+          "urls": [
+            [
+              "file:///opt/papercusp/sidecar/serve.mjs",
+              23165402
+            ],
+            [
+              "(native)",
+              2801316
+            ],
+            [
+              "node:internal/child_process",
+              634733
+            ],
+            [
+              "node:internal/modules/cjs/loader",
+              567003
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/@mcp-ui/server/dist/index.mjs",
+              148339
+            ],
+            [
+              "node:os",
+              107190
+            ],
+            [
+              "node:fs",
+              91446
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/rrule/dist/es5/rrule.js",
+              83028
+            ],
+            [
+              "node:child_process",
+              77036
+            ],
+            [
+              "node:internal/modules/package_json_reader",
+              63713
+            ],
+            [
+              "node:internal/modules/helpers",
+              40611
+            ],
+            [
+              "node:internal/url",
+              39418
+            ],
+            [
+              "node:path",
+              36283
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/bare-addon-resolve/index.js",
+              31396
+            ],
+            [
+              "node:internal/errors",
+              30112
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/@dbos-inc/dbos-sdk/dist/src/decorators.js",
+              29759
+            ],
+            [
+              "file:///opt/papercusp/sidecar/p058-diagnostic/loader.mjs",
+              29555
+            ],
+            [
+              "node:internal/crypto/random",
+              27646
+            ],
+            [
+              "node:internal/bootstrap/realm",
+              27321
+            ],
+            [
+              "node:internal/crypto/hash",
+              26165
+            ],
+            [
+              "file:///opt/papercusp/sidecar/node_modules/sodium-native/index.js",
+              24325
+            ],
+            [
+              "node:internal/util",
+              23732
+            ],
+            [
+              "node:internal/modules/customization_hooks",
+              22513
+            ],
+            [
+              "node:buffer",
+              15718
+            ],
+            [
+              "node:events",
+              12928
+            ]
+          ]
+        }
+      ],
+      "loader": {
+        "count": 2287,
+        "first": {
+          "url": "file:///opt/papercusp/sidecar/serve.mjs",
+          "beforeMs": 65.12669899999992,
+          "afterMs": 165.9730370000002,
+          "format": "module",
+          "bytes": 56552547
+        },
+        "last": {
+          "url": "node:os",
+          "beforeMs": 103106.553629,
+          "afterMs": 103106.56976,
+          "format": "builtin",
+          "bytes": null
+        },
+        "longest": [
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/@aws-sdk/client-ec2/dist-cjs/index.js",
+            "beforeMs": 17753.542424,
+            "afterMs": 18660.442512,
+            "format": "commonjs",
+            "bytes": 2045329,
+            "loadMs": 906.9000880000021
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/fast-check/lib/fast-check.js",
+            "beforeMs": 20206.869346,
+            "afterMs": 20978.665950000002,
+            "format": "module",
+            "bytes": 360778,
+            "loadMs": 771.7966040000028
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/yaml/dist/visit.js",
+            "beforeMs": 48894.676123,
+            "afterMs": 49443.876331,
+            "format": "commonjs",
+            "bytes": 9253,
+            "loadMs": 549.200208000002
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/pg-types/lib/textParsers.js",
+            "beforeMs": 47202.618837999995,
+            "afterMs": 47737.151230999996,
+            "bytes": 5367,
+            "loadMs": 534.5323930000013
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/undici/lib/dispatcher/client.js",
+            "beforeMs": 51661.160766999994,
+            "afterMs": 51936.977407,
+            "bytes": 19117,
+            "loadMs": 275.81664000000455
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/aggregator.js",
+            "beforeMs": 37939.539322,
+            "afterMs": 38126.852044,
+            "bytes": 3841,
+            "loadMs": 187.3127220000024
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/@aws-sdk/client-ssm/dist-cjs/index.js",
+            "beforeMs": 19842.294047,
+            "afterMs": 20024.915531000002,
+            "format": "commonjs",
+            "bytes": 392920,
+            "loadMs": 182.62148400000297
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/yaml/dist/compose/compose-node.js",
+            "beforeMs": 49741.491422,
+            "afterMs": 49897.448252999995,
+            "format": "commonjs",
+            "bytes": 4269,
+            "loadMs": 155.95683099999587
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/@smithy/core/dist-cjs/submodules/cbor/index.js",
+            "beforeMs": 17522.530364000002,
+            "afterMs": 17668.192883,
+            "format": "commonjs",
+            "bytes": 83589,
+            "loadMs": 145.6625189999977
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/yaml/dist/doc/directives.js",
+            "beforeMs": 48740.387994,
+            "afterMs": 48883.845339,
+            "format": "commonjs",
+            "bytes": 6237,
+            "loadMs": 143.45734500000253
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/ox/node_modules/@noble/hashes/esm/cryptoNode.js",
+            "beforeMs": 27029.661824000003,
+            "afterMs": 27159.722,
+            "format": "module",
+            "bytes": 482,
+            "loadMs": 130.06017599999905
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/ox/node_modules/@noble/curves/esm/abstract/modular.js",
+            "beforeMs": 27469.285694000002,
+            "afterMs": 27591.856288000003,
+            "format": "module",
+            "bytes": 18279,
+            "loadMs": 122.57059400000071
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/operators/query/comparison/index.js",
+            "beforeMs": 14734.878899,
+            "afterMs": 14854.620767,
+            "bytes": 1551,
+            "loadMs": 119.74186800000098
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/@typescript/old/lib/typescript.js",
+            "beforeMs": 15712.587182,
+            "afterMs": 15826.138668,
+            "bytes": 9144216,
+            "loadMs": 113.5514860000003
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/viem/node_modules/@noble/curves/esm/secp256k1.js",
+            "beforeMs": 29033.126023,
+            "afterMs": 29139.92811,
+            "format": "module",
+            "bytes": 12723,
+            "loadMs": 106.80208700000003
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/serve.mjs",
+            "beforeMs": 65.12669899999992,
+            "afterMs": 165.9730370000002,
+            "format": "module",
+            "bytes": 56552547,
+            "loadMs": 100.84633800000029
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/ox/_esm/erc8010/index.js",
+            "beforeMs": 25953.337748,
+            "afterMs": 26041.820752,
+            "format": "module",
+            "bytes": 1879,
+            "loadMs": 88.48300399999789
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/streamx/index.js",
+            "beforeMs": 78873.572227,
+            "afterMs": 78954.565571,
+            "bytes": 33510,
+            "loadMs": 80.99334400000225
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/rrule/dist/es5/rrule.js",
+            "beforeMs": 75711.782184,
+            "afterMs": 75790.13601,
+            "bytes": 130524,
+            "loadMs": 78.35382600000594
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/luxon/build/node/luxon.js",
+            "beforeMs": 76000.34604799999,
+            "afterMs": 76078.10212,
+            "bytes": 261910,
+            "loadMs": 77.75607200000377
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/ox/node_modules/@noble/hashes/esm/_md.js",
+            "beforeMs": 27203.934201,
+            "afterMs": 27275.58881,
+            "format": "module",
+            "bytes": 6192,
+            "loadMs": 71.65460900000107
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/viem/_esm/utils/unit/formatEther.js",
+            "beforeMs": 22201.378181,
+            "afterMs": 22271.053298000003,
+            "format": "module",
+            "bytes": 399,
+            "loadMs": 69.6751170000025
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/signal-promise/index.js",
+            "beforeMs": 79214.171538,
+            "afterMs": 79280.004907,
+            "bytes": 1252,
+            "loadMs": 65.83336899999995
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/fs-native-extensions/binding.js",
+            "beforeMs": 79405.375907,
+            "afterMs": 79469.878887,
+            "bytes": 90,
+            "loadMs": 64.50298000000475
+          },
+          {
+            "url": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/index.js",
+            "beforeMs": 14414.641528,
+            "afterMs": 14475.418411000002,
+            "format": "commonjs",
+            "bytes": 4369,
+            "loadMs": 60.77688300000227
+          }
+        ],
+        "largestGaps": [
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/serve.mjs",
+            "nextUrl": "node:url",
+            "fromMs": 165.9730370000002,
+            "toMs": 13548.732760000003,
+            "gapMs": 13382.759723000003
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/undici/lib/web/eventsource/util.js",
+            "nextUrl": "node:events",
+            "fromMs": 53041.850222999994,
+            "toMs": 61353.048374,
+            "gapMs": 8311.198151000004
+          },
+          {
+            "priorUrl": "node:os",
+            "nextUrl": "node:fs",
+            "fromMs": 85609.143486,
+            "toMs": 93154.906003,
+            "gapMs": 7545.762516999996
+          },
+          {
+            "priorUrl": "node:os",
+            "nextUrl": "node:fs",
+            "fromMs": 96873.111979,
+            "toMs": 102980.028071,
+            "gapMs": 6106.9160919999995
+          },
+          {
+            "priorUrl": "node:os",
+            "nextUrl": "node:fs",
+            "fromMs": 80809.39816699999,
+            "toMs": 85604.632925,
+            "gapMs": 4795.234758000006
+          },
+          {
+            "priorUrl": "node:os",
+            "nextUrl": "node:fs",
+            "fromMs": 93460.97252,
+            "toMs": 96799.659193,
+            "gapMs": 3338.686673000004
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/core/index.js",
+            "nextUrl": "node:perf_hooks",
+            "fromMs": 42218.930415999996,
+            "toMs": 45479.377425,
+            "gapMs": 3260.447009000003
+          },
+          {
+            "priorUrl": "node:os",
+            "nextUrl": "node:fs",
+            "fromMs": 68168.10981899999,
+            "toMs": 70908.750036,
+            "gapMs": 2740.6402170000074
+          },
+          {
+            "priorUrl": "node:os",
+            "nextUrl": "node:os",
+            "fromMs": 70909.27417799999,
+            "toMs": 73229.062097,
+            "gapMs": 2319.7879190000094
+          },
+          {
+            "priorUrl": "node:process",
+            "nextUrl": "node:util",
+            "fromMs": 62733.886325,
+            "toMs": 64874.855757,
+            "gapMs": 2140.969431999998
+          },
+          {
+            "priorUrl": "node:os",
+            "nextUrl": "file:///opt/papercusp/sidecar/node_modules/rrule/dist/es5/rrule.js",
+            "fromMs": 73686.102597,
+            "toMs": 75711.782184,
+            "gapMs": 2025.6795869999914
+          },
+          {
+            "priorUrl": "node:stream",
+            "nextUrl": "node:util",
+            "fromMs": 64877.034124,
+            "toMs": 66467.60653199999,
+            "gapMs": 1590.5724079999927
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/luxon/build/node/luxon.js",
+            "nextUrl": "node:events",
+            "fromMs": 76078.10212,
+            "toMs": 77302.6969,
+            "gapMs": 1224.5947799999994
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/@aws-sdk/client-ec2/dist-cjs/index.js",
+            "nextUrl": "file:///opt/papercusp/sidecar/node_modules/@aws-sdk/client-ssm/dist-cjs/index.js",
+            "fromMs": 18660.442512,
+            "toMs": 19842.294047,
+            "gapMs": 1181.851534999998
+          },
+          {
+            "priorUrl": "node:events",
+            "nextUrl": "node:process",
+            "fromMs": 61458.070625,
+            "toMs": 62616.70246,
+            "gapMs": 1158.6318350000001
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/quickbit-native/package.json",
+            "nextUrl": "node:fs",
+            "fromMs": 79661.495593,
+            "toMs": 80805.81116,
+            "gapMs": 1144.3155669999978
+          },
+          {
+            "priorUrl": "node:net",
+            "nextUrl": "node:stream",
+            "fromMs": 66531.95153399999,
+            "toMs": 67625.52974499999,
+            "gapMs": 1093.578211
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/@aws-sdk/core/dist-cjs/submodules/util/index.js",
+            "nextUrl": "file:///opt/papercusp/sidecar/node_modules/undici/lib/dispatcher/client.js",
+            "fromMs": 50860.962249,
+            "toMs": 51661.160766999994,
+            "gapMs": 800.1985179999974
+          },
+          {
+            "priorUrl": "node:crypto",
+            "nextUrl": "file:///opt/papercusp/sidecar/node_modules/@lydell/node-pty-linux-arm64/lib/index.js",
+            "fromMs": 45539.774781,
+            "toMs": 46306.981089999994,
+            "gapMs": 767.2063089999938
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/ox/_esm/core/AbiParameters.js",
+            "nextUrl": "file:///opt/papercusp/sidecar/node_modules/ox/_esm/core/Address.js",
+            "fromMs": 26062.301629,
+            "toMs": 26674.782831,
+            "gapMs": 612.481201999999
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/@typescript/old/lib/typescript.js",
+            "nextUrl": "node:diagnostics_channel",
+            "fromMs": 15826.138668,
+            "toMs": 16433.441542,
+            "gapMs": 607.3028740000009
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/viem/_esm/utils/hash/isHash.js",
+            "nextUrl": "file:///opt/papercusp/sidecar/node_modules/viem/_esm/utils/hash/ripemd160.js",
+            "fromMs": 24969.497294,
+            "toMs": 25510.543379000002,
+            "gapMs": 541.0460850000018
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/rocksdb-native/package.json",
+            "nextUrl": "file:///opt/papercusp/sidecar/node_modules/rocksdb-native/lib/constants.js",
+            "fromMs": 78248.674897,
+            "toMs": 78789.198145,
+            "gapMs": 540.5232479999977
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/viem/_esm/utils/errors/getNodeError.js",
+            "nextUrl": "file:///opt/papercusp/sidecar/node_modules/viem/_esm/utils/formatters/extract.js",
+            "fromMs": 22418.767901,
+            "toMs": 22929.698682000002,
+            "gapMs": 510.93078100000275
+          },
+          {
+            "priorUrl": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/operators/expression/type/toDate.js",
+            "nextUrl": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/operators/expression/type/toDouble.js",
+            "fromMs": 40300.958801999994,
+            "toMs": 40749.834585,
+            "gapMs": 448.87578300000314
+          }
+        ]
+      },
+      "bootObservation": {
+        "status": 0,
+        "signal": null,
+        "timedOut": false,
+        "markerObserved": true
+      },
+      "bootElapsedMs": 110423.232216,
+      "limitations": [
+        "CPU sampling covers90s of the110s diagnostic, not the entire boot.",
+        "CPU-profile time and loader time have distinct origins; window boundaries do not imply synchronized loader timestamps.",
+        "Loader gaps are chronology, not additional measured CPU self time; never sum them with frames.",
+        "Inspector and synchronous loader tracing add observer overhead; canonical60s qualification remainsfailed.",
+        "A frame is measured self time; inclusive callees and source module costs require a separate justified grouping."
+      ]
+    }
+  },
+  "inputBindings": [
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/qualify2-config.json",
+      "sha256": "708d0c407f75c5f7bfd635987225fa6a93c7932f2aa8de6bd721e92c29449a5e"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/build.json",
+      "sha256": "e9f1096ff7d1aa4245765f76bda7a1b65b6cdd4078fd51b12184f04fffe75cc4"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/source-receipt.json",
+      "sha256": "aeb4412d7f46519b1b4cc4fa110052c6ff9336a71718c38b58ac413754daef29"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/supplemental-binding.json",
+      "sha256": "e8c2d7d2f91689a06c783d1c72ef040313b436e64d88945f34b18efa22346750"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/docs/evidence/p058-changed-release-arm-qualification-2026-10-11.json",
+      "sha256": "bfc1ee6f47fa06c7fbc7b51e7b0e7ee76267d9e24d410d048c6863dfa5bc0ea5"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/docs/evidence/p058-lazy-target-arm-original-deadline-2026-10-11.json",
+      "sha256": "438cbd99677dfbeb23f9a81481010f43ae9bf97eb72b5b9b4346f2c94202bcfe"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/docs/evidence/p058-supplemental-arm-external-closure-2026-10-11.json",
+      "sha256": "c05e2030b49f698bdd1c9ec13b223367327432bcd2c765f6df6b6b6333c64287"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-release-source-4f991247-20261011/papercusp-desktop/bin/lib/server-container.mjs",
+      "sha256": "478ec0548be8792d553d3f722cc904b230bcbc8fcd2cc39c7b611fe89d2e9137"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/scripts/cpu-sample.mjs",
+      "sha256": "c75cb780006a80b85a760550c6cd10539c90fe035d00190e0aef415da32c3df3"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/scripts/cdp-inspector.mjs",
+      "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/scripts/lib/cpu-profile.mjs",
+      "sha256": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/scripts/proc-guard.mjs",
+      "sha256": "5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/scripts/source-preview.mjs",
+      "sha256": "8ab46c2bdd60f07b4ef59efd9f9f2986b37ef15f536c59331f31c0a929fc93ca"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/packages/operator-core/lib/verifier-source.ts",
+      "sha256": "5e4695155314f1e1d97a0f0334a2575cc74ea0444a89a6cc4195f56b9a5bcaae"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-lazy-target-profile-20261011/run.mjs",
+      "sha256": "71c9db83b94a6aa8dcf0a335f1ca6ddfde0e25fdecb69fad8328ec930ea66f33"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-lazy-target-profile-20261011/guest.mjs",
+      "sha256": "45279cdd1defa2830bc32edecad4b45308bfd031d5d6218e695807f0d00fb1d0"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-lazy-target-profile-20261011/loader.mjs",
+      "sha256": "61bb9e6c6d3ad73e8607a57368f8be42be88f81e1b99ca045fbd2f86961142f2"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/qualification-precheck.json",
+      "sha256": "0935bd469e5675ced84dc3d988e7ae7aae64aee2425d21421e3624df385a30eb"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/overlay-full-inventory.json",
+      "sha256": "a72784932299bfe42b79a1718f0bc9e610063b46ed43970e7deb41ab3e7f2136"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/supplemental-canonical-tests.json",
+      "sha256": "af39503504a311033c85708f435a9fd26d1528d9c77cf29ba985626036adeb65"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/supplemental-canonical-tests.log",
+      "sha256": "08349099b7749c22911d7001dd62a782de4dd7d12f14f34ce17b9164e6d8d5dc"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/supplemental-copier.log",
+      "sha256": "48dbe2c8006ff10f6903d4343da20e01769694ce1ef1fba43fc243eef94bf437"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/qualify2.json",
+      "sha256": "fb43c8ff4e49764b3a55562c87d4e565f3b7b265298ffe7234d38e4ad00f3a28"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-storage.conf",
+      "sha256": "32d27a26eb39a35be52005de497b4ec80cc17955ceff178d82c1b1e0bec3aaf6"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-containers.conf",
+      "sha256": "5aabfd07777b9c02e3132080ab796f5e5d1860faa6420a60e4de587612999715"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/release-output/serve.mjs",
+      "sha256": "9fdec4840e5c9407e1ea52eb15c5a8815d38ba9b40702f6f3d3a3dbab0449caa"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/release-output/serve.mjs.meta.json",
+      "sha256": "c23a1686f7dc2896f8f894e3a6579079de7df5ca9fa91a0e1b44d7d74d20d2ef"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/release-output/spawner-sidecar.mjs",
+      "sha256": "a53f70dd54afc032f6fa06f3a2d54a83ef9cb7f464ec0e6d4d077d801ac35be6"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/release-output/spawner-sidecar.mjs.meta.json",
+      "sha256": "5ae96da0467bf897b07ffcf916cb79927807819de4259f7f1dfd8b131a386518"
+    }
+  ],
+  "sourceBefore": {
+    "files": 39157,
+    "sourceCommit": "af73da044b9c67adc47a9a5044968b6139578a8a",
+    "receiptSha256": "aeb4412d7f46519b1b4cc4fa110052c6ff9336a71718c38b58ac413754daef29"
+  },
+  "sourceAfter": {
+    "files": 39157,
+    "sourceCommit": "af73da044b9c67adc47a9a5044968b6139578a8a",
+    "receiptSha256": "aeb4412d7f46519b1b4cc4fa110052c6ff9336a71718c38b58ac413754daef29"
+  },
+  "overlaysBefore": {
+    "retained": {
+      "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+      "entries": 27985,
+      "bytes": 136031718,
+      "elfFiles": 0
+    },
+    "supplemental": {
+      "sha256": "4481af5cf402a15957a0dd9ab8b86fcc3b261dd54db84a74480b2593c212edea",
+      "entries": 44,
+      "bytes": 22442452,
+      "elfFiles": 0
+    }
+  },
+  "overlaysAfter": {
+    "retained": {
+      "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+      "entries": 27985,
+      "bytes": 136031718,
+      "elfFiles": 0
+    },
+    "supplemental": {
+      "sha256": "4481af5cf402a15957a0dd9ab8b86fcc3b261dd54db84a74480b2593c212edea",
+      "entries": 44,
+      "bytes": 22442452,
+      "elfFiles": 0
+    }
+  },
+  "ownership": {
+    "schemaVersion": 1,
+    "engine": "podman",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "leaseTimeoutMs": 15000,
+    "leaseRoot": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-lazy-target-profile-20261011/output/.native-producer-owner-uefllR",
+    "clockRoot": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-lazy-target-profile-20261011/output/.native-producer-owner-uefllR/clock",
+    "status": "completed",
+    "containerName": "papercusp-native-4a864a47-a885-4d00-a003-03e22f50e15c",
+    "ownerToken": "feb1aca2-a900-4d2c-82c4-941d7df34a52",
+    "cleanupPending": false,
+    "containerId": "0b0f88cde0239efbe06e94c2fbe621fc72452e584667cd348f0497cd7298f553",
+    "exitCode": 0,
+    "removed": true
+  },
+  "cleanup": {
+    "childAbsent": true,
+    "homeAbsent": true
+  },
+  "artifactRefs": [
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/run.mjs",
+      "sha256": "71c9db83b94a6aa8dcf0a335f1ca6ddfde0e25fdecb69fad8328ec930ea66f33"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/guest.mjs",
+      "sha256": "45279cdd1defa2830bc32edecad4b45308bfd031d5d6218e695807f0d00fb1d0"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/loader.mjs",
+      "sha256": "61bb9e6c6d3ad73e8607a57368f8be42be88f81e1b99ca045fbd2f86961142f2"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/analyze.mjs",
+      "sha256": "eebee7b39d7a6a1087a2540d26ebf58ab7bd5d5999161771efac4bd0fcd2a58e"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/export.mjs",
+      "sha256": "023e4129fed035b721efa0f1cc63f36434cf86461fa926fcbbba19d4b0419267"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/harness-audit.json",
+      "sha256": "cd7c06d846017819b35d545c0049b84694bc90f5d6adc331e038a5f0c0fc479a"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/result.json",
+      "sha256": "1101fd95e6c30d481c9075232685ba780cd71fd2cdf69509af913c4e4ad17eff"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/analysis.json",
+      "sha256": "2acdb3e7e9ca76f4e94a525f632cb799acd7dabbc119c315b1165f3053bd2e41"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/output/profile.cpuprofile",
+      "sha256": "b899165640e034384c450b15618460a2e127771f1bc3d34da11f8fcc77285764"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/output/capture.json",
+      "sha256": "a81ff9c83f7a15ec1cf3640ee1c1f78d347c2cab125cb3025c092dcf7000e4bf"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/output/target.json",
+      "sha256": "782bbfefa119fb45048914e3c4753fb31a296cf52ba5a4f8494e8c9973ab7b81"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/output/child-owner.json",
+      "sha256": "9ec250533bb532a24beb616ee760f56adda3bf691bf3cbdb6e6cfb96c08222be"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/output/loads.jsonl",
+      "sha256": "d1ddb7cfcd45c1cbf86b17272b0075059c035ba0292c926d97ee99d1fd75ff6a"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/output/guest-result.json",
+      "sha256": "809ed51ade03cdb2331f61a50b0bfd2bb0d2d97a8747695dce5454487d8fbac8"
+    },
+    {
+      "path": ".papercusp/scratch/p058-lazy-target-profile-20261011/output/guest-phases.jsonl",
+      "sha256": "ff7ddee307796d33b9258fa44f6641e1a38d9393fe825ddee58272f8e9015b9b"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "saved-profile-identity-mode-and-hash",
+      "passed": true,
+      "evidence": "Saved while exact inspector target alive; host digestb8991656 matched capture receipt and mode0644."
+    },
+    {
+      "id": "fresh-changed-input-not-replayed",
+      "passed": true,
+      "evidence": "New root/output absent before launch; exact sourceaf73 and serve9fdec were distinct from old1333 profile; no oldprofile/static2/qualify2 replay."
+    },
+    {
+      "id": "whole-inputs-before-after",
+      "passed": true,
+      "evidence": "Complete39157sourcefiles, all4release artifacts, oldoverlaycedde and supplemental4481 reverified before and after."
+    },
+    {
+      "id": "exact-owned-cleanup",
+      "passed": true,
+      "evidence": "Exact producer0b0f88cd removedtrue/cleanupPendingfalse; child and privateHOME absent."
+    },
+    {
+      "id": "maintained-sampling-attribution",
+      "passed": true,
+      "evidence": "Analysis uses bound scripts/lib/cpu-profile.mjs sampleDurations and excludes lead-in/unsampled gaps from frame credit; first35s,35-60s,60-90s are separated."
+    }
+  ],
+  "counts": {
+    "pass": 5,
+    "fail": 0,
+    "skip": 0
+  },
+  "limitations": [
+    "CPU sampling covers90s of the110s diagnostic, not the entire boot.",
+    "CPU-profile time and loader time have distinct origins; window boundaries do not imply synchronized loader timestamps.",
+    "Loader gaps are chronology, not additional measured CPU self time; never sum them with frames.",
+    "Inspector and synchronous loader tracing add observer overhead; canonical60s qualification remainsfailed.",
+    "A frame is measured self time; inclusive callees and source module costs require a separate justified grouping.",
+    "Loader captured2287 rows. Different phases have distinct costs; profile supports investigation, not a root-cause close.",
+    "No physical ARM, installed-native, trusted signing/publication, transfer or final shipment acceptance."
+  ],
+  "evidenceSerialization": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs::serializeIdentitySafeJson",
+    "sourceArtifactRefsPreservedByHash": true
+  }
+}

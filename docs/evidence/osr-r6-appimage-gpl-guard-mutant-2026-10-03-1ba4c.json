@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-6: current AppImage GPL guard counterexample",
+  "framework": "node",
+  "command": [
+    "python3: shutil.copy existing appimage-gpl-guard.test.js and build-appimage.sh into a temporary test/bin tree, then replace only if [ -n \"$_gpl_hits\" ]; then with if false; then in the copied script",
+    "node --test /tmp/osr-20261003-r6-ha698lit/test/appimage-gpl-guard.test.js"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-10-03T04:52:23.032655+00:00",
+  "finishedAt": "2026-10-03T04:52:23.366293+00:00",
+  "summary": "Disabling the GPL library rejection condition in a bounded temporary source copy caused two existing behavioral assertions to fail: rejection of libavcodec.so.60 and rejection of D-013 non-media GPL libraries. Five tests passed and two failed. Exit 1 is the expected counterexample outcome, paired with the seven-test passing baseline.",
+  "assertions": [
+    {
+      "id": "codec-rejection-assertion-catches-disabled-guard",
+      "passed": false,
+      "evidence": "The existing test 'the guard fails the build when a GPL codec library reaches the AppDir' expected status 1 but observed 0."
+    },
+    {
+      "id": "non-media-rejection-assertion-catches-disabled-guard",
+      "passed": false,
+      "evidence": "The existing D-013 test expected libslang.so.2 to fail the guard, but observed status 0."
+    }
+  ],
+  "mutation": {
+    "subject": "papercusp-desktop/bin/build-appimage.sh",
+    "replace": "if [ -n \"$_gpl_hits\" ]; then",
+    "with": "if false; then",
+    "expectedOutcome": "caught",
+    "observedOutcome": "caught",
+    "baselineEvidence": "docs/evidence/osr-r6-appimage-gpl-guard-baseline-2026-10-03-1ba4c.json",
+    "sharedSourceChanged": false
+  },
+  "evidencePlane": "tree",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "AUTO-BAR-R-6-P-020",
+  "workItemId": "WI-10004075"
+}

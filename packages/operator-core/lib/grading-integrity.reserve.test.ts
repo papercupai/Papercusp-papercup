@@ -20,11 +20,25 @@ function transactionHarness(options: {
   retracted?: boolean;
   backoff?: unknown;
   confirmReservation?: boolean;
+  /** WI-10005273: the row's state + lease as read by the claim's leading row lock. */
+  priorState?: string | null;
+  priorReservation?: unknown;
+  priorLastReservation?: unknown;
 }) {
   const statements: Array<{ text: string; values: unknown[] }> = [];
   const tx = (async (strings: TemplateStringsArray, ...values: unknown[]): Promise<QueryResult> => {
     const text = strings.join('?');
     statements.push({ text, values });
+    if (text.includes('AS prior_reservation')) {
+      return [
+        {
+          feature_id: 'EI-prior',
+          prior_state: options.priorState === undefined ? 'pending' : options.priorState,
+          prior_reservation: options.priorReservation ?? null,
+          prior_last_reservation: options.priorLastReservation ?? null,
+        },
+      ];
+    }
     if (text.includes('RETURNING feature_id')) {
       return options.claim ? [{ feature_id: 'EI-legacy-settled' }] : [];
     }
@@ -32,6 +46,7 @@ function transactionHarness(options: {
       return options.confirmReservation ? [{ feature_id: 'EI-reserved' }] : [];
     }
     if (text.includes("payload #- '{observation,gradingAudit,dispatchReservation}'")) return [];
+    if (text.includes("jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}'")) return [];
     if (text.includes("'{observation,gradingAudit}'")) return [];
     if (text.includes("SELECT payload->'observation'->'gradingAudit'->>'state'")) {
       return [
@@ -79,6 +94,10 @@ describe('reservePendingGradingAudit', () => {
       'grading-audit:reserved',
       '2026-09-08T00:00:00.000Z',
       '2026-09-08T00:00:00.000Z',
+      false,
+      null,
+      null,
+      null,
     ]);
     expect(confirmation?.text).toContain("gradingAudit'->>'state' = 'pending'");
     expect(confirmation?.text).toContain("gradingAudit'->'dispatchReservation'->>'key' = ?");
@@ -108,6 +127,145 @@ describe('reservePendingGradingAudit', () => {
     expect(release?.text).toContain("gradingAudit'->'dispatchReservation'->>'key' = ?");
     expect(release?.text).toContain("gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
     expect(release?.values).toContain('2026-09-08T00:00:00.000Z');
+  });
+
+  describe('WI-10005273: an expired lease held by a live auditor is restored, never deleted', () => {
+    const expiredLease = { key: 'grading-audit:EI-long-audit', reservedAt: '2026-10-02T03:20:18.000Z' };
+
+    it('returns the expired pending lease this claim replaced, read under the row lock', async () => {
+      const { statements } = transactionHarness({ claim: true, priorReservation: expiredLease });
+
+      const result = await reservePendingGradingAudit('EI-long-audit', 'grading-audit:EI-long-audit', {
+        workspaceId: 'ws-test',
+        now: new Date('2026-10-02T03:40:00.000Z'),
+      });
+
+      expect(result).toEqual({
+        status: 'claimed',
+        reservation: { key: 'grading-audit:EI-long-audit', reservedAt: '2026-10-02T03:40:00.000Z' },
+        prior: expiredLease,
+      });
+      const lockIndex = statements.findIndex((statement) => statement.text.includes('AS prior_reservation'));
+      const claimIndex = statements.findIndex((statement) => statement.text.includes('RETURNING feature_id'));
+      expect(lockIndex).toBeGreaterThanOrEqual(0);
+      // The lease is read under the same row lock, BEFORE the claim overwrites it.
+      expect(lockIndex).toBeLessThan(claimIndex);
+      expect(statements[lockIndex]?.text).toContain('FOR UPDATE');
+    });
+
+    it('preserves the last lease when an earlier sweep already cleared the active reservation', async () => {
+      const { statements } = transactionHarness({
+        claim: true,
+        priorReservation: null,
+        priorLastReservation: expiredLease,
+      });
+
+      const result = await reservePendingGradingAudit('EI-long-audit', 'grading-audit:EI-long-audit', {
+        workspaceId: 'ws-test',
+        now: new Date('2026-10-02T03:40:00.000Z'),
+      });
+
+      expect(result).toEqual({
+        status: 'claimed',
+        reservation: { key: 'grading-audit:EI-long-audit', reservedAt: '2026-10-02T03:40:00.000Z' },
+        prior: expiredLease,
+      });
+      const lock = statements.find((statement) => statement.text.includes('AS prior_reservation'));
+      expect(lock?.text).toContain("'lastDispatchReservation' AS prior_last_reservation");
+      expect(lock?.text).toContain('FOR UPDATE');
+    });
+
+    it('reports no prior for a fresh claim or for a settled card being reopened', async () => {
+      transactionHarness({ claim: true, priorReservation: null });
+      const fresh = await reservePendingGradingAudit('EI-fresh', 'grading-audit:EI-fresh', { workspaceId: 'ws-test' });
+      expect(fresh.prior).toBeUndefined();
+
+      // A settled card's leftover lease belongs to no live auditor of the reopened audit.
+      transactionHarness({
+        claim: true,
+        priorState: 'failed',
+        priorReservation: expiredLease,
+        priorLastReservation: expiredLease,
+      });
+      const reopened = await reservePendingGradingAudit('EI-settled', 'grading-audit:EI-settled', {
+        workspaceId: 'ws-test',
+      });
+      expect(reopened.prior).toBeUndefined();
+
+      // A malformed lease is never echoed back as a restorable one.
+      transactionHarness({ claim: true, priorReservation: { key: 'grading-audit:EI-bad' } });
+      const malformed = await reservePendingGradingAudit('EI-bad', 'grading-audit:EI-bad', { workspaceId: 'ws-test' });
+      expect(malformed.prior).toBeUndefined();
+
+      // A malformed active reservation is not permission to resurrect an older epoch.
+      transactionHarness({
+        claim: true,
+        priorReservation: { key: 'grading-audit:EI-bad' },
+        priorLastReservation: expiredLease,
+      });
+      const malformedActive = await reservePendingGradingAudit('EI-bad', 'grading-audit:EI-bad', { workspaceId: 'ws-test' });
+      expect(malformedActive.prior).toBeUndefined();
+    });
+
+    it('restores the supplied lease in the same compare-and-set release instead of deleting it', async () => {
+      const { statements } = transactionHarness({ claim: false });
+
+      await releasePendingGradingAudit('EI-long-audit', 'grading-audit:EI-long-audit', {
+        workspaceId: 'ws-test',
+        reservedAt: '2026-10-02T03:40:00.000Z',
+        restore: expiredLease,
+      });
+
+      const release = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'));
+      const restoreWrite = statements.find((statement) =>
+        statement.text.includes("jsonb_set(payload, '{observation,gradingAudit,dispatchReservation}'"),
+      );
+      // The restored lease is written back verbatim, and the reservation is never deleted.
+      expect(restoreWrite?.values).toEqual([JSON.stringify(expiredLease), JSON.stringify(expiredLease)]);
+      expect(
+        statements.some((statement) =>
+          statement.text.includes("payload #- '{observation,gradingAudit,dispatchReservation}'"),
+        ),
+      ).toBe(false);
+      // Still a compare-and-set on THIS dispatcher's own epoch: a newer owner is never clobbered.
+      expect(release?.text).toContain("gradingAudit'->'dispatchReservation'->>'key' = ?");
+      expect(release?.text).toContain("gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
+      expect(release?.values).toContain('2026-10-02T03:40:00.000Z');
+    });
+
+    it('restores the prior lease and records retry backoff in the same compare-and-set release', async () => {
+      const { statements } = transactionHarness({ claim: false });
+      const backoff = {
+        until: '2026-10-12T02:02:10.272Z',
+        source: 'retry-window' as const,
+        code: 'generation_incompatible',
+        recordedAt: '2026-10-12T01:47:09.741Z',
+        reason: 'dispatcher build is older than the graded build',
+      };
+
+      const result = await releasePendingGradingAudit('EI-long-audit', 'grading-audit:EI-long-audit', {
+        workspaceId: 'ws-test',
+        reservedAt: '2026-10-12T01:47:09.741Z',
+        restore: expiredLease,
+        backoff,
+      });
+
+      expect(result).toBe(false);
+      const payloadWrite = statements.find((statement) =>
+        statement.text.includes("'{observation,gradingAudit,dispatchReservation}'") &&
+        statement.text.includes("'{observation,gradingAudit,dispatchBackoff}'"),
+      );
+      const release = statements.find((statement) => statement.text.includes('UPDATE harness_shared.work_items'));
+      expect(payloadWrite?.text).toContain("'{observation,gradingAudit,lastDispatchReservation}'");
+      expect(payloadWrite?.text).not.toContain("payload #- '{observation,gradingAudit,dispatchReservation}'");
+      expect(payloadWrite?.values).toEqual([
+        JSON.stringify(expiredLease),
+        JSON.stringify(expiredLease),
+        JSON.stringify(backoff),
+      ]);
+      expect(release?.text).toContain("gradingAudit'->'dispatchReservation'->>'reservedAt' = ?");
+      expect(release?.values).toContain('2026-10-12T01:47:09.741Z');
+    });
   });
 
   it('does not report a live reservation for a retracted card from a stale candidate snapshot', async () => {
@@ -162,6 +320,7 @@ describe('reservePendingGradingAudit', () => {
       criteriaHash: 'hash-current',
       stampedAt: now.toISOString(),
       dispatchReservation: { key: 'grading-audit:legacy', reservedAt: now.toISOString() },
+      lastDispatchReservation: { key: 'grading-audit:legacy', reservedAt: now.toISOString() },
     });
   });
 
@@ -211,6 +370,7 @@ describe('reservePendingGradingAudit', () => {
       const result = await reservePendingGradingAudit('EI-walled', 'grading-audit:walled', {
         workspaceId: 'ws-test',
         now,
+        allowGenerationIncompatibleBackoff: true,
       });
 
       expect(result).toEqual({ status: 'quota-backoff', backoff: liveBackoff });
@@ -233,9 +393,36 @@ describe('reservePendingGradingAudit', () => {
       const result = await reservePendingGradingAudit('EI-route-failed', 'grading-audit:route-failed', {
         workspaceId: 'ws-test',
         now,
+        allowGenerationIncompatibleBackoff: true,
       });
 
       expect(result).toEqual({ status: 'dispatch-backoff', backoff: dispatchBackoff });
+    });
+
+    it('lets a proven compatible dispatcher clear a live legacy generation-incompatible backoff', async () => {
+      const generationBackoff = {
+        ...liveBackoff,
+        source: 'retry-window' as const,
+        code: 'generation_incompatible',
+        reason: 'an older dispatcher build failed ancestry validation',
+      };
+      const { statements } = transactionHarness({
+        claim: true,
+        currentState: 'pending',
+        backoff: generationBackoff,
+      });
+
+      const result = await reservePendingGradingAudit('EI-recovered-generation', 'grading-audit:recovered-generation', {
+        workspaceId: 'ws-test',
+        now,
+        allowGenerationIncompatibleBackoff: true,
+      });
+
+      expect(result).toMatchObject({ status: 'claimed' });
+      const claim = statements.find((statement) => statement.text.includes('RETURNING feature_id'));
+      expect(claim?.text).toContain("payload->'observation'->'gradingAudit'->'dispatchBackoff'->>'code' = 'generation_incompatible'");
+      expect(claim?.values).toContain(true);
+      expect(claim?.text).toContain("#- '{observation,gradingAudit,dispatchBackoff}'");
     });
 
     it('does not refuse on a SPENT backoff — an elapsed stamp falls through to the ordinary verdict', async () => {

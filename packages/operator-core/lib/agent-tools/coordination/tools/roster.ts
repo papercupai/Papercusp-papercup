@@ -19,6 +19,7 @@
  * Presence-coord-unification P-001 / D-001.
  */
 
+import { performance } from 'node:perf_hooks';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
@@ -27,6 +28,7 @@ import {
   projectRosterRows,
   filterRosterRowsByState,
   computeRosterViewEtag,
+  type PresenceSnapshotDiagnostic,
 } from '../presence-snapshot';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { readIdentity } from '../../locks/identity';
@@ -171,7 +173,7 @@ export default defineTool({
       .enum(['hive', 'workspace', 'all'])
       .optional()
       .describe(
-        'hive (DEFAULT) = your Hive\'s agents + federated peers; workspace = the whole workspace; all = every workspace — SUPERUSER only, and a non-superuser asking for it is silently narrowed to workspace rather than refused. Caller with no Hive (SU/operator) falls back to workspace.',
+        'hive (DEFAULT for browse reads) = your Hive\'s agents + federated peers; workspace = the whole workspace; all = every workspace — SUPERUSER only, and a non-superuser asking for it is silently narrowed to workspace rather than refused. A targeted owner lookup defaults to workspace unless you explicitly pass scope or pot; pass scope:"hive" to narrow it. Caller with no Hive (SU/operator) falls back to workspace.',
       ),
     pot: z
       .string()
@@ -244,7 +246,7 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const view = args.view ?? 'live';
-    const scope = args.scope ?? 'hive';
+    const scope = args.scope;
 
     // `plan` is a claims-lens filter.  The shared argument schema keeps the
     // field available for every view so callers can discover one stable
@@ -285,6 +287,27 @@ export default defineTool({
 
     if (view === 'live' || view === 'members') {
       // Live and members views: use presence-snapshot infrastructure
+      const readStartedAt = performance.now();
+      const metadata = (ctx as { metadata?: (value: Record<string, unknown>) => void } | undefined)?.metadata;
+      const snapshotDiagnostics: PresenceSnapshotDiagnostic[] = [];
+      let scopeResolutionMs: number | null = null;
+      const publishSnapshotDiagnostics = () => {
+        try {
+          metadata?.({
+            snapshotDiagnostics: {
+              schemaVersion: 'coord-roster-snapshot-diagnostics-v1',
+              unit: 'ms',
+              timing: 'elapsed wall time; enrichment phase durations can overlap',
+              elapsedMs: Math.max(0, Math.round(performance.now() - readStartedAt)),
+              scopeResolutionMs,
+              stages: snapshotDiagnostics.slice(-32),
+            },
+          });
+        } catch {
+          /* Diagnostics are best-effort and must not change the roster result. */
+        }
+      };
+      const scopeStartedAt = performance.now();
       const resolved = await resolvePresenceScope(c, {
         scope: effScope,
         hive: args.pot,
@@ -294,6 +317,8 @@ export default defineTool({
         // still found instead of reading as "no such agent".
         targetedOwner: !!args.owner,
       });
+      scopeResolutionMs = Math.max(0, Math.round(performance.now() - scopeStartedAt));
+      publishSnapshotDiagnostics();
 
       let detail: { coordinationDomain: string } | undefined;
       if (args.include_detail) {
@@ -307,7 +332,12 @@ export default defineTool({
       const snapshot = await assemblePresenceSnapshot(resolved, {
         ...(args.owner ? { owner: args.owner } : {}),
         ...(detail ? { detail } : {}),
+        onDiagnostic: (diagnostic) => {
+          snapshotDiagnostics.push(diagnostic);
+          publishSnapshotDiagnostics();
+        },
       });
+      publishSnapshotDiagnostics();
 
       const self = resolveSelfRef(ctx);
 

@@ -42,7 +42,7 @@ export default defineTool({
     notWhen: 'You are assigning a NEW lane — use coord:dispatch (assign+deliver+queue). You have a contextual message to deliver — use coord:send {wake:\'required\'}. The target is `ended` (coord:presence) — it needs a relaunch/resume, not a wake.',
     chaining: 'coord:presence (find a parked target) → coord:wake { to } → check `queued`/`warning`, then verify pickup from a fresh checkpoint or activity timestamp. A queued wake is not proof that a turn executed.',
     returns:
-      '{ ok, to, queued, woken:0, pickupConfirmed:false, recipient_dead?, recipient_dormant_scheduled?, recipient_alive_not_wakeable?, warning? }. `queued` counts matched durable wake deliveries; it does NOT prove a turn executed. `woken` stays 0 until an execution-confirming handshake exists. Verify pickup from a fresh checkpoint/activity timestamp. A queue miss still reports WHICH kind: `recipient_dead` (genuinely `ended`, no scheduled fire) is a LOUD miss; `recipient_dormant_scheduled` means deferred; `recipient_alive_not_wakeable` means alive without a watcher.',
+      '{ ok, to, queued, woken:0, pickupConfirmed:false, pickup?, recipient_dead?, recipient_dormant_scheduled?, recipient_alive_not_wakeable?, warning? }. `queued` counts matched durable wake deliveries; it does NOT prove a turn executed. To verify pickup, events:await `pickup[0].event` with timeout_sec ≈ windowSec+60 (it fires only if NO turn started; a quiet timeout is pickup), or read a fresh checkpoint. A queue miss still reports WHICH kind: `recipient_dead` (genuinely `ended`, no scheduled fire) is a LOUD miss; `recipient_dormant_scheduled` means deferred; `recipient_alive_not_wakeable` means alive without a watcher.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -63,6 +63,9 @@ export default defineTool({
       queued: z.number().int().nonnegative(),
       woken: z.number().int().nonnegative(),
       pickupConfirmed: z.boolean(),
+      pickup: z
+        .array(z.object({ target: z.string(), event: z.string(), windowSec: z.number().int().positive() }))
+        .optional(),
       recipient_dead: z.unknown().optional(),
       recipient_dormant_scheduled: z.unknown().optional(),
       recipient_alive_not_wakeable: z.unknown().optional(),
@@ -191,6 +194,7 @@ export default defineTool({
       queued,
       woken,
       pickupConfirmed: false,
+      ...(fan.pickup?.length ? { pickup: fan.pickup } : {}),
       ...(fan.staged > 0 ? { staged: fan.staged } : {}),
       ...(recipient_dead ? { recipient_dead } : {}),
       ...(recipient_dormant_scheduled ? { recipient_dormant_scheduled } : {}),
@@ -201,6 +205,9 @@ export default defineTool({
           ? {
               warning:
                 `coord:wake queued ${queued} durable wake delivery for ${to}, but pickup is NOT confirmed — ` +
+                (fan.pickup?.[0]
+                  ? `events:await "${fan.pickup[0].event}" (fires only if no turn starts within ${fan.pickup[0].windowSec}s) or `
+                  : '') +
                 'verify a fresh work-item checkpoint or activity timestamp before treating the target as running.',
             }
           : {}),

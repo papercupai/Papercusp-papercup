@@ -333,6 +333,21 @@ describe('runReplyDeadlineSweepOnce', () => {
       expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
       expect(wakeRecipients).toHaveBeenCalledTimes(1);
     });
+
+    it('does not dismiss an audit request when a filed scorecard only receives a later lease update', async () => {
+      h.rows = [row({ summary: 'Continue the independent audit of EI-20275359435606597 and report its blocker' })];
+      h.effectRows = [
+        effectRow({
+          status: 'done',
+          closed_ts: null,
+          updated_ts: String(NOW - 2 * 60_000),
+        }),
+      ];
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    });
   });
 
   // EI-20760420701985610: a recipient's fresh, unthreaded coord response

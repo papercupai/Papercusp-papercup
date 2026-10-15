@@ -1,0 +1,39 @@
+{
+  "plan": "voice-two-tier-elevenlabs-agent-2026-10-06",
+  "planItem": "P-012",
+  "workItem": "WI-10006885",
+  "specId": "SPEC-P-012",
+  "specRevision": 1,
+  "clause": "The final release item of cloud-app-live-tutorial-2026-10-01 lists P-010 of this plan as a blocker.",
+  "falsifier": "The tutorial plan final release item has no blocker on this plan P-010.",
+  "measuredAt": "2026-10-06T20:03:40Z",
+  "measuredBy": "su-5cc3d9e5-9451-456b-9ab0-0bcd4f321c75",
+  "authority": "Avi directive #1489 (owner-typed): 'hold the release. add spoken questions now.' Recorded as cloud-app-live-tutorial-2026-10-01#D-022 and voice-two-tier-elevenlabs-agent-2026-10-06#D-001.",
+  "rerun": {
+    "call": "work_items:get { ids: ['WI-10004839', 'WI-10006883', 'WI-10006884', 'WI-10006876'], harness: 'papercusp', detail: true }",
+    "check": "results[id=WI-10006883].workItem.links contains { rel: 'blocks', dst.ref: 'papercusp#WI-10004839' }, where WI-10004839 implements cloud-app-live-tutorial-2026-10-01#P-012 and WI-10006883 implements voice-two-tier-elevenlabs-agent-2026-10-06#P-010"
+  },
+  "observed": {
+    "WI-10004839": {
+      "implements": "cloud-app-live-tutorial-2026-10-01#P-012",
+      "title": "Perform final end-to-end acceptance and approved production release for the exact hosted surface ...",
+      "state": "blocked"
+    },
+    "WI-10006883": {
+      "implements": "voice-two-tier-elevenlabs-agent-2026-10-06#P-010",
+      "blocks": ["papercusp#WI-10004839"]
+    },
+    "WI-10006884": {
+      "implements": "voice-two-tier-elevenlabs-agent-2026-10-06#P-011",
+      "blocks": ["papercusp#WI-10006886", "papercusp#WI-10004839"]
+    }
+  },
+  "verdict": "pass: the tutorial's final release item is held by this plan's P-010 (and P-011).",
+  "negativeControl": {
+    "purpose": "Show the same check returns false for an item that does not hold the tutorial release, so a pass is not vacuous.",
+    "item": "WI-10006876",
+    "implements": "voice-two-tier-elevenlabs-agent-2026-10-06#P-003",
+    "blocks": ["papercusp#WI-10006878", "papercusp#WI-10006880"],
+    "checkResult": "false: no blocks link to papercusp#WI-10004839"
+  }
+}

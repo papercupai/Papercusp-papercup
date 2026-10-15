@@ -1,0 +1,70 @@
+---
+title: Harness templates
+description: Use a maintained app template and its guides to start a new managed project.
+documents:
+  - packages/operator-core/lib/agent-tools/templates/list.ts
+  - packages/operator-core/lib/agent-tools/templates/get-guide.ts
+  - packages/operator-core/lib/agent-tools/templates/new-app.ts
+---
+
+Use this guide to start a new project from a template that fits your app.
+You should finish with a chosen starting point, its current building guides,
+and a plan for checking the app before sharing it.
+
+A template is a **maintained, pre-built app scaffold**: a starting chassis,
+data layer and conventions. It saves you and your agents from inventing the
+same setup for every project.
+
+## Choose from the installed catalog
+
+The catalog changes. Ask your agent to list the available templates rather
+than copying a template name from an old example. The maintained tool sequence
+is `templates:list` → `templates:get-guide` → `templates:new-app`.
+
+The catalog distinguishes:
+
+- **App-scope templates**, which provide the root of a whole app.
+- **Aspect templates**, which compose capabilities such as a desktop/web
+  chassis, data layer, user interface or agent plane onto that root.
+
+Read the template's guide before choosing. A web app and a desktop app need
+different hosting and packaging decisions; an app with embedded agents also
+needs the appropriate agent integration.
+
+## Tell the agent what you want
+
+For example:
+
+> Create a browser app for tracking reading notes. First show the maintained
+> app templates that fit, explain the hosting and agent choices, and propose a
+> plan with acceptance tests. Do not publish my notes publicly.
+
+Specify the target platform, who can use it, where its data lives, and how you
+will tell it works. If you want your own framework instead of a template, say
+so explicitly and name the framework.
+
+## Materialize, then build
+
+Materialization creates a managed project from the selected template. Its
+**PROTOCOL.md** and **GUIDE.md** explain the building conventions and
+verification contract. Read those files in the new project; an old guide from
+a different template is not interchangeable.
+
+The template workflow can start a building agent. If you want only the
+scaffold, make that intent clear before materialization and have the agent
+check the current tool options.
+
+## Verification and sharing
+
+A template is a starting point, not a finished product. Run the selected
+template's registered checks plus tests for your app's behavior. For hosted
+apps, verify the actual deployed destination before calling it shipped.
+
+First-party templates can be bundled with the installation. Marketplace
+availability and template publication depend on the current catalog and
+configuration. Ask the agent to inspect the supported Cupboard publishing
+workflow; do not assume a generic `publish` command exists. Review the files,
+license, secrets and destination before sharing a template.
+
+For related capabilities, see [Plugins](/docs/plugins) and
+[Workspaces and agents](/docs/workspaces-and-agents).

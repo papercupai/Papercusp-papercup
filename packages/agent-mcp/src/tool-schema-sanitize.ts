@@ -62,6 +62,13 @@ function isUnconstrainedSchema(v: unknown): v is Record<string, unknown> {
  *  encodings — see `boolToSchema` — so every objectifying helper takes this. */
 export type SanitizePosition = "input" | "output";
 
+/** A published outputSchema obligates every successful MCP reply to carry
+ * structuredContent. Compact/raw clients do not request that representation;
+ * publish the schema only on the connection that negotiates it. */
+export function negotiatedMcpOutputSchema<T>(schema: T, structured: boolean): T | undefined {
+  return structured ? schema : undefined;
+}
+
 /** Rewrite an unconstrained object schema to the same shape as
  *  `boolToSchema(true, position)`, preserving its annotations (the schema's
  *  own description wins over the generic placeholder). */

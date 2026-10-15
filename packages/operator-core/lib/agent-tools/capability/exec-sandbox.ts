@@ -30,7 +30,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, platform as osPlatform, tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { FLAGS } from '@papercusp/flags';
@@ -163,6 +163,23 @@ export interface BuildSandboxOpts {
   maskExists?: (abs: string) => boolean;
 }
 
+/** Prepare the host's scheduler directory, including its kernel flocks.
+ * A sandbox-private /tmp directory would split the admission domain. Never make
+ * /run or XDG_RUNTIME_DIR writable wholesale; only this metadata directory is bound.
+ * Prepare it before the read-only root is mounted, including on a fresh host.
+ */
+export function capabilityHeavySchedulerWritePath(env: NodeJS.ProcessEnv = process.env): string {
+  const candidate = env.PC_HEAVY_DIR || join(env.XDG_RUNTIME_DIR || '/tmp', 'pc-heavy-slots');
+  try {
+    mkdirSync(candidate, { recursive: true, mode: 0o700 });
+    const real = realpathSync(candidate);
+    if (!statSync(real).isDirectory()) throw new Error('not a directory');
+    return real;
+  } catch (cause) {
+    throw new Error(`Shared heavy scheduler metadata is unavailable at ${candidate}`, { cause });
+  }
+}
+
 /**
  * EI-12725: BUILD-CACHE dirs that live OUTSIDE the repo tree, resolved to their REAL
  * paths and made writable in BOTH backends.
@@ -247,6 +264,7 @@ export function capabilitySrtSettingsPathForCwd(cwd: string): string {
     ...settings.filesystem.allowWrite,
     '/tmp',
     ...capabilityBuildCacheWritePaths(cwd),
+    capabilityHeavySchedulerWritePath(),
   ];
   // WI-39391: keep the srt-preferred path in parity with the bwrap fallback.
   // Without this absolute denyRead entry, a child can bypass the literal
@@ -312,13 +330,15 @@ const EXEC_ENV_ALLOW_EXACT: ReadonlySet<string> = new Set([
   // JVM/Android toolchains.
   'JAVA_HOME', 'ANDROID_HOME', 'ANDROID_SDK_ROOT',
   // Papercusp exec-path plumbing (non-secret): the operator base URL a helper
-  // script may need to reach the operator itself, the workspace-root markers
+  // script may need to reach the operator itself, its configured MCP proxy base
+  // so helper CLIs can use the proxy's longer connection budget, the workspace-root markers
   // the hook/exec paths resolve worktree roots from, and the tracked session /
   // workspace identity that provenance-aware helper scripts (for example
   // scripts/verify-tauri-headless.sh) must carry into a confined child. These
   // are identifiers, not credentials; deliberately do not widen this to every
   // PAPERCUSP_* variable because that namespace also contains secrets.
-  'PAPERCUSP_OPERATOR_URL', 'PAPERCUSP_WORKSPACE_ROOT', 'PAPERCUSP_CANONICAL_TREE',
+  'PAPERCUSP_OPERATOR_URL', 'PAPERCUSP_MCP_PROXY_BASE',
+  'PAPERCUSP_WORKSPACE_ROOT', 'PAPERCUSP_CANONICAL_TREE',
   'PAPERCUSP_SID', 'PAPERCUSP_WORKSPACE',
 ]);
 
@@ -467,11 +487,14 @@ export function buildCapabilitySandboxCommand(
     // the cwd bind mounts an empty tmpfs OVER it, so the bind vanishes and `--chdir`
     // fails ("Can't chdir … No such file or directory"). Binding the cwd on TOP of
     // the tmpfs makes bwrap create the mount point inside the writable tmpfs, so the
-    // real cwd survives at its path and `--chdir` succeeds.
-    '--tmpfs', '/tmp',
-    '--bind', input.cwd, input.cwd,
+    // real cwd survives at its path and `--chdir` succeeds. The same holds for the
+    // fresh /proc and /dev: a cwd under /dev/shm (the test TMPDIR guard's fallback
+    // when /tmp is short of headroom) was covered by a later `--dev /dev`
+    // (WI-10006742). Every fresh mount goes before the cwd bind.
     '--proc', '/proc',
     '--dev', '/dev',
+    '--tmpfs', '/tmp',
+    '--bind', input.cwd, input.cwd,
     '--unshare-pid',
     '--unshare-ipc',
     '--unshare-uts',
@@ -505,6 +528,8 @@ export function buildCapabilitySandboxCommand(
   for (const cache of capabilityBuildCacheWritePaths(input.cwd, home)) {
     argv.push('--bind', cache, cache);
   }
+  const schedulerPath = capabilityHeavySchedulerWritePath();
+  argv.push('--bind', schedulerPath, schedulerPath);
   // Mask credential paths. Applied AFTER the ro-bind of `/`, so the overlay wins.
   // Dirs read empty via a tmpfs overlay; file credentials (e.g. ~/.npmrc) read
   // empty via `--ro-bind /dev/null` (a tmpfs needs a DIRECTORY mount point, so a

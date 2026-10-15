@@ -8,6 +8,7 @@ import {
   nextEmbedBackoffMs,
 } from './configure';
 import { memoryToolTimeoutMs } from './op-deadline';
+import { buildOpenAiEmbedderCore as buildWorkerSafeOpenAiEmbedder } from './openai-embedder-core';
 
 // The OpenAI embedder used to throw on the FIRST non-OK response with no retry,
 // so a burst of memory writes (knowledge-pack seeding fires items in concurrent
@@ -23,6 +24,28 @@ afterEach(() => vi.restoreAllMocks());
 
 const okEmbed = (v: number[]) => new Response(JSON.stringify({ data: [{ embedding: v }] }), { status: 200 });
 const noSleep = async () => {}; // assert attempt counts without real delays
+
+describe('worker-safe OpenAI embedder core', () => {
+  it('runs without operator admission and accepts a host-injected admission seam', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okEmbed([0.4, 0.5]))
+      .mockResolvedValueOnce(okEmbed([0.4, 0.5]));
+    vi.stubGlobal('fetch', fetchMock);
+    const admission = {
+      acquire: vi.fn(async () => ({ release: vi.fn() })),
+      recordResponse: vi.fn(),
+      penalize: vi.fn(),
+    };
+
+    expect(await buildWorkerSafeOpenAiEmbedder('sk-worker', { sleep: noSleep })('plain')).toEqual([0.4, 0.5]);
+    expect(await buildWorkerSafeOpenAiEmbedder('sk-operator', { sleep: noSleep }, {
+      admission: () => admission,
+    })('governed')).toEqual([0.4, 0.5]);
+    expect(admission.acquire).toHaveBeenCalledWith('governed', 'memory');
+    expect(admission.recordResponse).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('buildOpenAiEmbedder — transient-failure resilience', () => {
   it('retries a 429 rate-limit then succeeds (the seeding-burst case)', async () => {

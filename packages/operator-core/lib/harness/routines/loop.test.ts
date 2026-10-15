@@ -11,9 +11,10 @@ import type { Sql } from 'postgres';
 // which vitest-fail-on-console turns into a hard test failure across every materializeLoop
 // case. `sqlStub` is a minimal callable tagged-template stand-in (resolves to `[]`) so
 // that internal call succeeds silently, exactly like a real (if inert) postgres client.
-const { upsertRoutineSpy, sqlStub } = vi.hoisted(() => ({
+const { upsertRoutineSpy, sqlStub, orgSqlHolder } = vi.hoisted(() => ({
   upsertRoutineSpy: vi.fn(),
   sqlStub: (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]),
+  orgSqlHolder: { sql: null as unknown },
 }));
 
 /**
@@ -60,8 +61,15 @@ function transactionalSql(
 // file actually needs to stub.
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: sqlStub }),
+  getOrgPg: () => ({ sql: orgSqlHolder.sql ?? sqlStub }),
   upsertRoutine: upsertRoutineSpy,
+}));
+
+// Alarm delivery has its own rail tests; loop materialization stays isolated from
+// the shared condition stream even when an unbounded re-arm clears an old alarm.
+vi.mock('../../alarm-attention', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../alarm-attention')>()),
+  resolveAlarm: vi.fn(async () => true),
 }));
 
 // autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001) reads the
@@ -104,6 +112,32 @@ import {
   LOOP_INTERVAL_FLOOR_SEC,
   countAgentToolCallsInWindow,
 } from './loop';
+
+describe('getLoopStatuses — default client acquisition attribution (EI-25884587459468153)', () => {
+  it('labels the getOrgPg client as org-admin when its connection acquisition times out', async () => {
+    vi.useFakeTimers();
+    const { resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+    resetAcquireRegistryForTest();
+    orgSqlHolder.sql = { begin: () => new Promise(() => {}) };
+    try {
+      const pending = getLoopStatuses(['su-x']).then(
+        () => null,
+        (error: unknown) => error as { pool: string | null; message: string },
+      );
+
+      await vi.advanceTimersByTimeAsync(8_001);
+      const error = await pending;
+
+      expect(error).not.toBeNull();
+      expect(error?.pool).toBe('org-admin');
+      expect(error?.message).toContain('acquirePool=org-admin');
+    } finally {
+      orgSqlHolder.sql = null;
+      resetAcquireRegistryForTest();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('buildLoopWakePrompt — instructs VALID work-item states (EI-6978)', () => {
   const prompt = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'do the thing' });
@@ -275,6 +309,48 @@ describe('computeLoopFireStarvation (EI-21301493615546911 — no post-arm fire)'
 
   it('stays quiet when the owner has recent activity (a legitimate long first turn)', () => {
     expect(computeLoopFireStarvation({ ...base, lastActiveAtMs: NOW - 1_000 })).toBe(false);
+  });
+
+  describe('WI-6554700010012442 — presence must not mask a loop whose arming turn already ended', () => {
+    // Observed 2026-10-14 (su-1055507e): parked ~66 min, firesSinceArm 0 vs expected 52,
+    // while inbox wakes and fleet awaits kept the presence beat fresh. A fresh beat can
+    // only excuse zero fires while the arming turn is still running. A later prompt proves
+    // that turn ended, so after the floor the loop should have fired.
+    const observed = {
+      ...base,
+      armedAtMs: NOW - 66 * 60_000,
+      lastFiredAtMs: null,
+      expectedFiresSinceArm: 52,
+      lastActiveAtMs: NOW - 5_000,
+    };
+
+    it('flags a parked never-fired loop with fresh presence once a post-arm prompt is past the floor', () => {
+      expect(
+        computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: NOW - 60 * 60_000 }),
+      ).toBe(true);
+    });
+
+    it('stays quiet while the first post-arm prompt is younger than the floor', () => {
+      expect(
+        computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: NOW - 2 * 60_000 }),
+      ).toBe(false);
+    });
+
+    it('stays quiet with fresh presence and no post-arm prompt (the arming turn may still be running)', () => {
+      expect(computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: null })).toBe(false);
+      expect(computeLoopFireStarvation(observed)).toBe(false);
+    });
+
+    it('ignores a prompt timestamp at or before the arm', () => {
+      expect(computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: observed.armedAtMs })).toBe(false);
+      expect(computeLoopFireStarvation({ ...observed, firstPromptAfterArmAtMs: Number.NaN })).toBe(false);
+    });
+
+    it('still requires an overdue concrete next fire for an unparked loop', () => {
+      const settled = { ...observed, parked: false, firstPromptAfterArmAtMs: NOW - 60 * 60_000 };
+      expect(computeLoopFireStarvation({ ...settled, nextFireAtMs: NOW + 1_000 })).toBe(false);
+      expect(computeLoopFireStarvation({ ...settled, nextFireAtMs: NOW - 1_000 })).toBe(true);
+    });
   });
 
   it('allows a never-fired loop with no fire timestamp to be diagnosed once the floor is crossed', () => {
@@ -664,6 +740,34 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     expect(p).toContain('acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true');
     // every placeholder was substituted
     expect(p).not.toMatch(/\{(intervalSec|harness|ownerId|goal)\}/);
+  });
+
+  // parked-agent-census-resumption-and-root-cause-2026-10-09 P-008: the wake prompts used to
+  // teach "blocked externally -> loop:end" and a reflexive acknowledgeWakeLessAutonomy. 100 of
+  // 140 self-stopped parkers passed that flag; 51 were AUTO, holding claims, with no wake source.
+  it('teaches blocked = set_blocker + bounded await + end turn, never loop:end (P-008)', () => {
+    const base = { ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' };
+    const work = buildLoopWakePrompt(base);
+    const monitor = buildLoopWakePrompt({ ...base, mode: 'monitor' });
+    const driven = buildLoopWakePrompt({ ...base, carry: 'cold', workItem: 'WI-123' });
+    for (const p of [work, monitor, driven]) {
+      expect(p).not.toContain('call `loop:end` and say why');
+      expect(p).not.toContain('(or you are blocked)');
+    }
+    for (const p of [work, driven]) {
+      expect(p).toContain('work_items:set_blocker');
+      expect(p).toContain("on_timeout:'wake'");
+    }
+    expect(work).toContain('work-item:unblocked:<id>');
+    expect(work).toContain('Being blocked is never a reason to call `loop:end`');
+    // The acknowledgement is scoped to a claimless stop; a claim holder follows the refusal's recovery.
+    expect(work).toContain('that acknowledgement covers a claimless stop only');
+    for (const p of [work, monitor]) {
+      expect(p).toContain('acknowledgeWakeLessAutonomy:true` for a claimless stop');
+      expect(p).toContain("follow the refusal's `recovery`");
+    }
+    expect(driven).toContain('you hold no other unfinished work-items');
+    expect(driven).toContain('do not loop:end');
   });
 
   it('a WARM loop (default / absent carry) is byte-identical — no cold addendum (su-cold-auto P-002)', () => {
@@ -1271,6 +1375,103 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
     expect(upsertRoutineSpy).not.toHaveBeenCalled();
     expect(armInboxWakeSpy).not.toHaveBeenCalled();
   });
+
+  function inactiveMonitorSql(
+    statusMonitor: Record<string, unknown> | null,
+    payloadMonitor: Record<string, unknown> | null,
+    standdown = false,
+    activeAtMaterialization = false,
+  ) {
+    const payload = {
+      kickoff: 'preserved member monitor kickoff',
+      goal: 'continue the owned bounded monitor',
+      mode: 'monitor',
+      ...(payloadMonitor ? { monitor: payloadMonitor } : {}),
+    };
+    return transactionalSql((strings) => {
+      const query = strings.join(' ? ');
+      if (/DISTINCT ON/.test(query)) {
+        return [{
+          install_slug: 'papercusp',
+          name: 'loop-su-member-1',
+          active: false,
+          reschedule_interval_sec: 1200,
+          target_owner_id: 'su-member-1',
+          payload_template: { ...payload, monitor: statusMonitor },
+          metadata: standdown
+            ? { monitor_standdown: { code: 'no_delta_budget_exhausted', reason: 'quiet budget exhausted', atMs: 1791335177901 } }
+            : {},
+          fire_count: 100,
+        }];
+      }
+      if (/SELECT r.active/.test(query)) {
+        return [{ active: false, install_slug: 'papercusp', reschedule_interval_sec: 1200, payload_template: payload }];
+      }
+      if (/FOR UPDATE/.test(query) && activeAtMaterialization) {
+        return [{ id: 'explicit-arm', name: 'loop-su-member-1', active: true, target_role: 'su', reschedule_interval_sec: 300 }];
+      }
+      return [];
+    });
+  }
+
+  const memberMonitor = {
+    predicateKey: 'owned-member-predicate',
+    stopCondition: 'owned operation completes',
+    noDeltaBudget: 100,
+    remainingNoDeltaBudget: 0,
+    authority: { kind: 'work-item', workItem: 'WI-12345' },
+  };
+
+  it.each(['status', 'payload', 'standdown'] as const)(
+    'does not revive an exhausted member monitor recorded by %s',
+    async (source) => {
+      const sql = inactiveMonitorSql(
+        source === 'status' ? memberMonitor : null,
+        source === 'payload' ? memberMonitor : null,
+        source === 'standdown',
+      );
+
+      const res = await autoArmFleetMemberLoop({ ...baseOpts, sql: sql as any });
+
+      expect(res).toEqual({ armed: false, reason: 'no-delta-budget-exhausted', loopName: 'loop-su-member-1' });
+      expect(upsertRoutineSpy).not.toHaveBeenCalled();
+      expect(recordLoopTransitionSpy).not.toHaveBeenCalled();
+      expect(armInboxWakeSpy).not.toHaveBeenCalled();
+      expect(memberMonitor.remainingNoDeltaBudget).toBe(0);
+    },
+  );
+
+  it.each(['status', 'payload'] as const)(
+    'preserves a renewed positive member monitor budget from %s despite historical standdown',
+    async (source) => {
+      const renewedMonitor = { ...memberMonitor, remainingNoDeltaBudget: 73 };
+      const sql = inactiveMonitorSql(
+        source === 'status' ? renewedMonitor : null,
+        source === 'payload' ? renewedMonitor : null,
+        true,
+      );
+
+      const res = await autoArmFleetMemberLoop({ ...baseOpts, sql: sql as any });
+
+      expect(res).toMatchObject({ armed: true, reason: 'armed' });
+      expect(upsertRoutineSpy.mock.calls.at(-1)?.[1].payloadTemplate).toMatchObject({
+        mode: 'monitor',
+        monitor: renewedMonitor,
+        kickoff: 'preserved member monitor kickoff',
+      });
+      expect(renewedMonitor.remainingNoDeltaBudget).toBe(73);
+    },
+  );
+
+  it('preserves an explicit active member arm that wins the recovery race', async () => {
+    const renewedMonitor = { ...memberMonitor, remainingNoDeltaBudget: 73 };
+    const sql = inactiveMonitorSql(renewedMonitor, renewedMonitor, false, true);
+
+    await autoArmFleetMemberLoop({ ...baseOpts, sql: sql as any });
+
+    expect(upsertRoutineSpy).not.toHaveBeenCalled();
+    expect(recordLoopTransitionSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is actually compared against)', () => {
@@ -1299,6 +1500,7 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
       last_wake_channel: null,
       last_wake_status: null,
       last_wake_at: null,
+      last_wake_created_at: null,
       last_wake_error: null,
       presence_last_active_at: null,
       ...over,
@@ -1320,6 +1522,19 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     // ...while the comparison the payload used to permit says the opposite. This assertion is
     // the guard: it fails if anyone ever "simplifies" firesSinceArm back to the lifetime count.
     expect(s.fireCount).toBeGreaterThan(s.maxFires!);
+  });
+
+  it('exposes the wake dispatch clock separately from its later delivery-settle clock', async () => {
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        last_wake_status: 'delivered',
+        last_wake_at: '2026-10-09T20:21:04.131Z',
+        last_wake_created_at: '2026-10-09T20:20:14.031Z',
+      }) as any,
+    });
+    const status = out.get('su-x')!;
+    expect(status.lastWakeAt).toBe('2026-10-09T20:21:04.131Z');
+    expect(status.lastWakeCreatedAt).toBe('2026-10-09T20:20:14.031Z');
   });
 
   it('reuses an injected TransactionSql instead of opening a nested transaction', async () => {

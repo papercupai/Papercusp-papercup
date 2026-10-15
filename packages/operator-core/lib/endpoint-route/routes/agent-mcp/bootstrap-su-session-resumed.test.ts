@@ -7,6 +7,7 @@
  * acquireAdvSessionResume for keyed callers, retain claimAdvSessionResume for
  * legacy callers, preserve the historical `reactivated` response field, and
  * expose the keyed finalize/release transitions used after spawn/setup failure.
+ * A successful keyed resume also re-arms that session's standing inbox wake.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AdvSessionResumeReservation } from '../../../adv-sessions';
@@ -19,7 +20,7 @@ beforeAll(async () => {
   routes = mod.default as unknown as typeof routes;
 }, 60_000);
 
-const claimResumeMock = vi.hoisted(() => vi.fn(async (): Promise<boolean> => true));
+const claimResumeMock = vi.hoisted(() => vi.fn(async (): Promise<boolean | 'retired'> => true));
 const acquireResumeMock = vi.hoisted(() =>
   vi.fn(
     async (): Promise<AdvSessionResumeReservation> => ({
@@ -32,6 +33,17 @@ const acquireResumeMock = vi.hoisted(() =>
 );
 const finalizeResumeMock = vi.hoisted(() => vi.fn(async (): Promise<boolean> => true));
 const releaseResumeMock = vi.hoisted(() => vi.fn(async (): Promise<boolean> => true));
+const getAdvSessionMock = vi.hoisted(() =>
+  vi.fn(async () => ({ workspaceId: 'ws-test', coordOwnerId: 'su-resumed-test' }) as any),
+);
+const armInboxWakeMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    awaitId: 1,
+    eventKey: 'coord:inbox-wake:su-resumed-test',
+    handleNote: 'resume',
+    minSleepSec: 60,
+  })),
+);
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -47,11 +59,13 @@ vi.mock('../../../adv-sessions', async (orig) => ({
   markAdvSessionEnded: vi.fn(async () => {}),
   acquireAdvSessionResume: acquireResumeMock,
   finalizeAdvSessionResume: finalizeResumeMock,
+  getAdvSession: getAdvSessionMock,
   claimAdvSessionResume: claimResumeMock,
   releaseAdvSessionResume: releaseResumeMock,
   reanchorAdvSessionNativeId: vi.fn(async () => ({ reanchored: true, owner: null })),
   reanchorAdvSessionNativeIdByOwner: vi.fn(async () => ({ reanchored: true, owner: null })),
 }));
+vi.mock('../../../events/await/inbox-wake-arm', () => ({ armInboxWake: armInboxWakeMock }));
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
 }));
@@ -67,6 +81,13 @@ beforeEach(() => {
   });
   finalizeResumeMock.mockResolvedValue(true);
   releaseResumeMock.mockResolvedValue(true);
+  getAdvSessionMock.mockResolvedValue({ workspaceId: 'ws-test', coordOwnerId: 'su-resumed-test' });
+  armInboxWakeMock.mockResolvedValue({
+    awaitId: 1,
+    eventKey: 'coord:inbox-wake:su-resumed-test',
+    handleNote: 'resume',
+    minSleepSec: 60,
+  });
 });
 afterEach(() => { vi.clearAllMocks(); });
 
@@ -94,6 +115,30 @@ async function postTransition(
 }
 
 describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
+  it('preserves retirement refusals for keyed and legacy callers without rearming wakes', async () => {
+    acquireResumeMock.mockResolvedValue({ status: 'retired', acquired: false });
+    claimResumeMock.mockResolvedValue('retired');
+    expect(await (await postResumed({ advSessionId: 42, resumeClaimKey: 'wake' })).json()).toEqual({ ok: true, status: 'retired', acquired: false, reactivated: false });
+    expect(await (await postResumed({ advSessionId: 42 })).json()).toEqual({ ok: true, status: 'retired', reactivated: false });
+    expect(armInboxWakeMock).not.toHaveBeenCalled();
+  });
+
+  it('threads an explicit retirement opt-in only into keyed acquisition', async () => {
+    const response = await postResumed({ advSessionId: 42, resumeClaimKey: 'explicit', allowRetired: true });
+    expect(response.status).toBe(200);
+    expect(acquireResumeMock).toHaveBeenCalledWith(42, 'explicit', undefined, undefined, undefined, true);
+    expect(armInboxWakeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed retirement opt-ins before touching lifecycle state', async () => {
+    for (const allowRetired of ['true', 1, null, {}]) {
+      expect((await postResumed({ advSessionId: 42, resumeClaimKey: 'explicit', allowRetired })).status).toBe(400);
+      expect((await postTransition('session-resume-finalized', { advSessionId: 42, resumeClaimKey: 'explicit', allowRetired })).status).toBe(400);
+    }
+    expect(acquireResumeMock).not.toHaveBeenCalled();
+    expect(finalizeResumeMock).not.toHaveBeenCalled();
+  });
+
   it('acquires a keyed reservation without asserting liveness and returns its typed lease', async () => {
     const res = await postResumed({ advSessionId: 42, resumeClaimKey: 'resume-claim-1' });
 
@@ -126,6 +171,7 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
       undefined,
       undefined,
       evidence,
+      false,
     );
   });
 
@@ -214,6 +260,7 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
       undefined,
       undefined,
       evidence,
+      false,
     );
   });
 
@@ -241,6 +288,13 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
 });
 
 describe('POST bootstrap-su/session-resume-finalized — spawn evidence transition', () => {
+  it('threads successful explicit relaunch permission to finalization before rearming wakes', async () => {
+    const response = await postTransition('session-resume-finalized', { advSessionId: 42, resumeClaimKey: 'explicit', allowRetired: true });
+    expect(response.status).toBe(200);
+    expect(finalizeResumeMock).toHaveBeenCalledWith(42, 'explicit', undefined, true);
+    expect(armInboxWakeMock).toHaveBeenCalledOnce();
+  });
+
   it('finalizes only the matching reservation key', async () => {
     const launchArgv = ['psu', '--resume=42', '--agent=claude', '--account=auto'];
     const res = await postTransition('session-resume-finalized', {
@@ -255,7 +309,9 @@ describe('POST bootstrap-su/session-resume-finalized — spawn evidence transiti
       finalized: true,
       resumeClaimKey: 'resume-claim-1',
     });
-    expect(finalizeResumeMock).toHaveBeenCalledWith(42, 'resume-claim-1', launchArgv);
+    expect(finalizeResumeMock).toHaveBeenCalledWith(42, 'resume-claim-1', launchArgv, undefined);
+    expect(getAdvSessionMock).toHaveBeenCalledWith(42);
+    expect(armInboxWakeMock).toHaveBeenCalledWith({ ownerId: 'su-resumed-test' });
   });
 
   it('returns the false key-match verdict and surfaces datastore faults', async () => {
@@ -269,6 +325,8 @@ describe('POST bootstrap-su/session-resume-finalized — spawn evidence transiti
       finalized: false,
       resumeClaimKey: 'stale-key',
     });
+    expect(getAdvSessionMock).not.toHaveBeenCalled();
+    expect(armInboxWakeMock).not.toHaveBeenCalled();
 
     finalizeResumeMock.mockRejectedValueOnce(new Error('finalize unavailable'));
     const fault = await postTransition('session-resume-finalized', {
@@ -277,6 +335,18 @@ describe('POST bootstrap-su/session-resume-finalized — spawn evidence transiti
     });
     expect(fault.status).toBe(503);
     expect(await fault.json()).toEqual({ ok: false, error: 'finalize unavailable' });
+  });
+
+  it('keeps the successful resume verdict when the best-effort inbox re-arm fails', async () => {
+    armInboxWakeMock.mockRejectedValueOnce(new Error('arm unavailable'));
+    const res = await postTransition('session-resume-finalized', {
+      advSessionId: 42,
+      resumeClaimKey: 'resume-claim-1',
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, finalized: true, resumeClaimKey: 'resume-claim-1' });
+    expect(armInboxWakeMock).toHaveBeenCalledWith({ ownerId: 'su-resumed-test' });
   });
 });
 

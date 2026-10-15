@@ -27,6 +27,8 @@ import { integrationRoot } from '../release-deploy-launch';
 import { emitAwaitedEvent, type EmitAwaitedEventOpts } from '../events/await/engine';
 import { activeWorkspaceId } from '../workspace-registry';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { resolveCheckpointRouting } from '../harness/routines/hive-release-env';
+import type { GateVerdictTarget } from '../release/gate-verdict-target';
 import {
   PRE_SUITE_NO_VERDICT_REASONS,
   recordStoredQualificationEligibility,
@@ -57,6 +59,7 @@ export interface CheckpointEligibilityWaitDeps {
     requiredAncestor: string;
     predictedCandidate: string | null;
     root?: string;
+    target?: GateVerdictTarget;
   }) => Promise<RequiredAncestorPreflight>;
   launch: (opts: {
     force?: boolean;
@@ -221,10 +224,11 @@ export async function runCheckpointEligibilityWait(
 
   if (input.requiredAncestorSha) {
     const requiredAncestor = await (deps.assessRequiredAncestor ?? ((args) =>
-      assessRequiredAncestorPreflight(args.requiredAncestor, args.predictedCandidate, args.root)))({
+      assessRequiredAncestorPreflight(args.requiredAncestor, args.predictedCandidate, args.root, args.target)))({
       requiredAncestor: input.requiredAncestorSha,
       predictedCandidate: recheck.candidate,
       root: input.root,
+      target: input.target,
     });
     const ancestorEligibility = await updateEligibility({
       'required-ancestor': {
@@ -345,7 +349,7 @@ export async function runCheckpointEligibilityWait(
 async function checkpointEligibilityWaitImpl(
   input: CheckpointEligibilityWaitRequest,
 ): Promise<CheckpointEligibilityWaitOutcome> {
-  const target = { workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() };
+  const target = input.target ?? { workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() };
   return runCheckpointEligibilityWait(input, {
     sleep: (ms) => DBOS.sleep(ms),
     assess: (args) =>
@@ -353,7 +357,19 @@ async function checkpointEligibilityWaitImpl(
         name: 'checkpoint-eligibility-recheck',
       }),
     launch: (opts) =>
-      DBOS.runStep(() => launchDetachedCheckpoint(opts), {
+      DBOS.runStep(async () => {
+        const routing = await resolveCheckpointRouting(target, integrationRoot());
+        if (routing.skip) return { launched: false, reason: `checkpoint_routing_skip:${routing.skip.reason}`,
+          unit: '', argv: [], logPath: '' };
+        return launchDetachedCheckpoint({
+          ...opts,
+          root: routing.root,
+          integrationRoot: input.root ?? routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root,
+          extraEnv: routing.extraEnv,
+          clearEnv: routing.clearEnv,
+          target,
+        });
+      }, {
         name: 'checkpoint-eligibility-launch',
       }),
     emit: (opts) =>

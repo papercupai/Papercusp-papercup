@@ -1,0 +1,125 @@
+---
+title: Using the app
+description: Sign in, choose a workspace, give an agent a first task and review its result.
+documents:
+  - packages/operator-core/lib/auth/hosted/self-signup.ts
+  - packages/operator-core/lib/agent-tools/mode/set.ts
+---
+
+Use this guide to choose where a task runs, approve a small change and inspect
+its result. Before acting, sign in with the intended account, check organization
+access and select a connected workspace and project. The browser controls the
+work; its host is the computer that performs it.
+
+## 1. Open Papercusp
+
+For a single end-to-end checklist, start with
+[Your first successful task](/docs/quickstart).
+
+Open the [Papercusp portal](https://app.papercusp.com/). Choose **Create account**
+if you are new, or **Sign in** if you already have an account. Complete the
+sign-in flow and return to the portal.
+
+For a new account, review the terms and privacy notice. Use the same identity
+when signing in again. Account access, integration connections and billing
+are separate; see [Accounts and billing](/docs/accounts-and-billing).
+
+Connecting Gmail or Calendar is optional app setup, not a substitute for your
+Papercusp sign-in. You do not need a Google connection to read this manual.
+
+If you already have the desktop app, open it from your computer's applications.
+Use its setup flow for your local installation. Do not use development-server
+addresses as an installation procedure. For a new desktop installation, use
+the download destination offered by the portal; this guide does not assume a
+Homebrew package or a particular installer command.
+
+## 2. Choose where the work runs
+
+Open **Workspaces** and select the workspace you intend to use. Check that the
+workspace is connected before asking an agent to act on it.
+
+- A **hosted or cloud workspace** runs on a remote machine. Its provider and
+  provisioning options depend on your account and configuration.
+- A **local workspace** runs on a computer with Papercusp installed. That
+  computer must be on and connected for remote work.
+
+The browser is your control surface; selecting a workspace does not move a
+project from one machine to another. Check the workspace and project name
+before authorizing changes. See [Workspaces and agents](/docs/workspaces-and-agents).
+
+## 3. Start with a small task
+
+Use **Ask Papercup…** in the portal's assistant conversation. Name the intended
+connected workspace and project, and ask Papercup to confirm the target before
+editing. Read the chat's access notice: actions in this public conversation
+can run without another confirmation.
+
+Papercup can answer or hand off implementation. Follow the returned work-item
+or session reference to review the implementing agent's plan and result. A
+handoff alone does not mean the work is finished. Give a concrete task, enough
+context to find the project, and an observable result. For example:
+
+> In the selected project, inspect the sign-in screen and propose a clearer
+> error message. Show me the plan before editing. Keep the existing
+> authentication behavior, add a regression test if behavior changes, and tell
+> me what you verified.
+
+For a new app, ask the agent to list the available **app templates** and explain
+the choices before building. See [Harness templates](/docs/harness-templates).
+
+Do not paste credentials into an agent message. Use the installation's
+credential or connection setup when a task needs access to another service.
+
+## 4. Review the plan and execution mode
+
+A plan should say what will change, what will not change, which work depends on
+which, and what evidence will demonstrate success.
+
+The implementing agent may ask for your approval and execution route before
+substantive work. Approve only the intended scope in that conversation. If you
+explicitly enable **AUTO**, the agent
+may proceed within that scope without asking at each step. AUTO is not a
+promise that every tool is available, and it does not remove permissions,
+security boundaries or verification requirements.
+
+Read [Plans and work](/docs/plans-and-work) for plan lifecycle and acceptance,
+and [Agent modes and fleets](/docs/agent-modes-and-fleets) before choosing
+parallel workers or unattended continuation.
+
+Ask for a pause or stop when you need to reconsider. Do not assume closing a
+browser tab cancels an agent running on another machine.
+
+## 5. Follow work and verify the result
+
+Use **Plans**, **Work**, **Inbox**, or the session conversation to follow the
+task. Available destinations depend on the workspace and your permissions.
+Read the agent's evidence, not just a “done” label:
+
+- What changed, and in which project?
+- Which tests ran, and what did they prove?
+- Is the result in the current working build, or actually deployed?
+- Is anything deferred, blocked, or still awaiting your decision?
+
+For a deployed change, ask for verification on the actual destination. A
+passing local test is not proof that the public portal has been updated.
+
+## 6. Protect your work
+
+Use your normal source-control and backup process. Before a risky data change,
+ask for an appropriate snapshot or backup and a restore procedure. A saved
+conversation alone is not a project backup. See
+[Snapshots and backups](/docs/harness-snapshots).
+
+If you cannot sign in, connect a workspace, or see the expected result, use
+[Troubleshooting](/docs/troubleshooting).
+
+## Expected result and next step
+
+You can identify the selected workspace and project, open the changed result,
+and understand the agent's verification report. If access or connection fails,
+preserve the error and use the matching troubleshooting section before trying
+another workspace or creating a new host.
+
+For account and cost questions, continue with
+[Accounts and billing](/docs/accounts-and-billing). For data access and
+credential setup, read [Remote access](/docs/remote-access).

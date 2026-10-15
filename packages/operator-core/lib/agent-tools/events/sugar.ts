@@ -629,7 +629,9 @@ defineTool({
       supersedeKeys: keys,
     });
 
-    if (pipeline) {
+    // A zero timeout is an immediate probe, not a request to re-arm a
+    // producer-health wait after the first progress observation.
+    if (pipeline && timeoutSec > 0) {
       try {
         const snapshot = await withBoundedTimeout(
           gitPipelineSnapshot(pipeline, { includeActiveRun: true }),
@@ -646,7 +648,7 @@ defineTool({
             ...(args.runId ? { runId: args.runId } : {}),
             ownerId: resolveAgentIdentity(ctx).ownerId,
             issuedAtMs: registrationStartedAtMs,
-            expectedCadenceMs: CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC * 1000,
+            expectedCadenceMs: timeoutSec * 1000,
             verificationDeadlineMs: registrationStartedAtMs + timeoutSec * 1000,
             snapshot: snapshot.value,
           });

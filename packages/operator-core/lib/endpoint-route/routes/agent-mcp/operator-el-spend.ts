@@ -4,6 +4,7 @@
  */
 import { withWorkspace } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { observeFallback } from '../../../degradation/fallback-observations';
 import { loadVoicePrefs } from '../../../voice-prefs';
 import { readElevenLabsKey } from '../../../voice-credentials';
 import { TtlMap } from '../../../ttl-map';
@@ -136,7 +137,9 @@ export default defineTool({
         try {
           secsUsed = await fetchElSpendSecs(agentId, apiKey, localMonthStartUnixSecs());
           source = 'elevenlabs';
+          observeFallback('voice-spend-read', { eligible: 1, applied: 1, reason: 'applied' }, { workspaceId: workspace });
         } catch (e: unknown) {
+          observeFallback('voice-spend-read', { eligible: 1, applied: 0, reason: 'api-read-failed' }, { workspaceId: workspace });
           const msg = (e as Error)?.message ?? String(e);
           console.warn('[el-spend] EL API failed, falling back to PG:', msg.slice(0, 200));
           secsUsed = await fetchPgFallbackSecs(workspace, ym);

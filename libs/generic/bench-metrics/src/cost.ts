@@ -74,7 +74,11 @@ export function accountTokens(
   let tokensCacheRead = 0;
   let tokensCacheWrite = 0;
   let costUsd = 0;
+  let missingMeasurements = 0;
   for (const r of rows) {
+    if (r.armMeta?.costUsdMeasurementMissing !== undefined && r.armMeta.costUsdMeasurementMissing !== false) {
+      missingMeasurements++;
+    }
     tokensIn += r.tokensIn;
     tokensOut += r.tokensOut;
     tokensTotal += r.tokensTotal;
@@ -101,7 +105,8 @@ export function accountTokens(
     tokensCacheWrite,
     costUsd,
     tokensPerRun: n === 0 ? 0 : tokensTotal / n,
-    costPerResolved: resolved === 0 ? null : costUsd / resolved,
+    costPerResolved: resolved === 0 || missingMeasurements > 0 ? null : costUsd / resolved,
+    ...(missingMeasurements > 0 ? { missingMeasurements } : {}),
   };
 }
 

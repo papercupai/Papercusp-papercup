@@ -19,6 +19,13 @@
  *   - `hunk-conflict`      a hunk's anchor is not in the content at that point of the replay:
  *                          the fix was made on top of a foreign change. Names the hunk and the
  *                          other agents who touched the path. Same two exits.
+ *   - `hunk-already-applied` a hunk's effect is ALREADY on repairHead (WI-6554700010009955): an
+ *                          earlier admission carried it without consuming its ledger row — a
+ *                          whole-blob / committed-patch admission, or a build that predates
+ *                          consumed-row tracking. Replaying an insertion again DUPLICATES its text
+ *                          (no anchor miss, so nothing else refuses); a replacement would refuse
+ *                          as a misleading `hunk-conflict`. Exit: the exact `ledgerRowIds` of the
+ *                          hunks repairHead does not carry yet — never skipped on the tool's own.
  *   - `oversize`           a hunk exceeded the ledger cap and carries no content.
  *   - `not-a-blob`         the path is a symlink/gitlink/directory at repairHead — replaying
  *                          text hunks onto it is meaningless; admit it whole-blob by name.
@@ -33,12 +40,13 @@ import { join } from 'node:path';
 import {
   ADMISSION_GIT_DATE,
   ADMISSION_GIT_IDENTITY,
+  findGitlinkAncestor,
   normalizeAdmissionPath,
   realAdmissionGit,
   type AdmissionGitResult,
   type AdmissionGitRunner,
 } from './repair-head-admission';
-import { replayFrozenRepairHunks, type FrozenRepairEditLedgerRow } from './frozen-repair-edit-ledger';
+import { replayFrozenRepairHunks, type FrozenRepairEditHunk, type FrozenRepairEditLedgerRow } from './frozen-repair-edit-ledger';
 import type { FrozenRepairAdmission } from './frozen-candidate-repair-queue';
 
 const SHA_RE = /^[0-9a-f]{40,64}$/;
@@ -60,12 +68,15 @@ export interface HunkExactPathReport {
 }
 
 export type HunkExactRefusalCode =
+  | 'invalid-ledger-selection'
   | 'invalid-paths'
   | 'repair-head-unresolvable'
   | 'no-ledgered-hunks'
   | 'hunk-conflict'
+  | 'hunk-already-applied'
   | 'oversize'
   | 'not-a-blob'
+  | 'path-under-gitlink'
   | 'invalid-patch-source'
   | 'patch-conflict'
   | 'git-failed';
@@ -86,6 +97,8 @@ export interface HunkExactRefusal {
 
 export interface HunkExactSuccess {
   ok: true;
+  /** Exact source-capture identities, never an admission-end timestamp watermark. */
+  ledgerRowIds?: number[];
   /** The synthesised source commit (parent: repairHead). Pass as `source.ref` to the primitive. */
   sourceCommit: string;
   tree: string;
@@ -106,8 +119,118 @@ export interface BuildHunkExactSourceInput {
   actor: string;
   /** D-008 layer 3a: other agents whose hunks are replayed too (a genuinely shared fix). */
   includeHunksFrom?: readonly string[];
+  /** Pin a reviewed source snapshot while a precheck runs. */
+  ledgerRowIds?: readonly number[];
+  /** Identities recorded by prior successful admissions of this candidate. */
+  consumedLedgerRowIds?: readonly number[];
+  /** Legacy hunk admissions recorded exact per-path replay counts before row ids existed. */
+  admissions?: readonly FrozenRepairAdmission[];
   git?: AdmissionGitRunner;
   nowMs: number;
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  return needle === '' ? 0 : haystack.split(needle).length - 1;
+}
+
+/**
+ * WI-6554700010009955: indices of `hunks` whose effect `base` ALREADY carries, judged in replay
+ * order (a hunk found present is not re-applied, so later hunks are judged against the content
+ * they were authored on top of). Content-based on purpose: consumed-row bookkeeping covers only
+ * hunk-exact admissions, so a whole-blob / committed-patch admission — or one recorded by a build
+ * that predates consumed-row tracking — leaves its carried rows unconsumed, and this is the one
+ * check that holds whatever the bookkeeping missed.
+ *
+ *   - an INSERTION keeps its anchor (`new` contains `old`), so re-applying it never misses the
+ *     anchor — it silently duplicates the inserted text. Present = its post-image is in the
+ *     content (for `replaceAll`: every occurrence of the anchor sits inside a post-image).
+ *   - a REPLACEMENT / DELETION removes its anchor. Present = anchor gone and post-image there
+ *     (a deletion has none). Without this it refuses as a misleading `hunk-conflict`.
+ *
+ * Stops at the first hunk it cannot judge (an oversize hunk, or a genuine anchor miss): the
+ * replay reports those with their own refusal code. Whole-file writes are idempotent on replay
+ * and never reported.
+ */
+export function findAlreadyAppliedHunks(base: string | null, hunks: readonly FrozenRepairEditHunk[]): number[] {
+  let content = base ?? '';
+  const already: number[] = [];
+  for (let i = 0; i < hunks.length; i += 1) {
+    const h = hunks[i]!;
+    if (h.kind === 'oversize') return already;
+    if (h.kind === 'write') {
+      content = h.body;
+      continue;
+    }
+    if (h.new === h.old) continue;
+    if (h.old === '') {
+      // Client-level create: present when the file already holds exactly that body.
+      if (content !== '' && content === h.new) {
+        already.push(i);
+        continue;
+      }
+      if (content !== '') return already;
+      content = h.new;
+      continue;
+    }
+    const hasOld = content.includes(h.old);
+    const hasNew = h.new !== '' && content.includes(h.new);
+    const insertion = h.new.includes(h.old);
+    const present = insertion
+      ? h.replaceAll
+        ? hasNew && countOccurrences(content, h.old) === countOccurrences(h.new, h.old) * countOccurrences(content, h.new)
+        : hasNew
+      : !hasOld && (h.new === '' || hasNew);
+    if (present) {
+      already.push(i);
+      continue;
+    }
+    if (!hasOld) return already;
+    const at = content.indexOf(h.old);
+    content = h.replaceAll ? content.split(h.old).join(h.new) : content.slice(0, at) + h.new + content.slice(at + h.old.length);
+  }
+  return already;
+}
+
+/**
+ * WI-6554700010009991: the ledger rows a whole-blob / committed-patch admission CARRIES, so the
+ * admission can record them as `ledgerRowIds` and a later hunk-exact admission treats them as
+ * consumed instead of refusing `hunk-already-applied` (or, on a build without that check,
+ * replaying an insertion twice).
+ *
+ * Each unconsumed row on a path is judged INDEPENDENTLY against that path's REAL admitted
+ * content. It deliberately does not reuse `findAlreadyAppliedHunks`' sequence result: that
+ * applies an absent-but-applicable hunk to a virtual content and keeps judging, so a later row
+ * could be judged present on text the real blob lacks. A mis-consumed row is never replayed,
+ * which is the unsafe direction, so this errs toward leaving a row unconsumed; a row left behind
+ * still meets the WI-6554700010009955 content check on the next hunk-exact admission.
+ *
+ *   - `write`    carried when the content is exactly its body.
+ *   - `oversize` never: it holds no content to judge.
+ *   - `edit`     the same presence rule as `findAlreadyAppliedHunks`, applied to one row alone.
+ *
+ * A path missing from `contentByPath`, or mapped to null (deleted, or not a regular-file blob),
+ * carries nothing. Ids come back in ledger order.
+ */
+export function findCarriedLedgerRowIds(input: {
+  contentByPath: ReadonlyMap<string, string | null>;
+  ledger: readonly FrozenRepairEditLedgerRow[];
+  consumedLedgerRowIds?: Iterable<number>;
+}): number[] {
+  const consumed = new Set(input.consumedLedgerRowIds ?? []);
+  const carried: number[] = [];
+  for (const row of input.ledger) {
+    if (consumed.has(row.id)) continue;
+    const content = input.contentByPath.get(row.path);
+    if (content === undefined || content === null) continue;
+    const h = row.hunk;
+    const present =
+      h.kind === 'write' ? content === h.body : h.kind === 'edit' && findAlreadyAppliedHunks(content, [h]).length === 1;
+    if (present) {
+      consumed.add(row.id);
+      carried.push(row.id);
+    }
+  }
+  return carried;
 }
 
 function exitsFor(path: string, foreignAgents: string[]): string[] {
@@ -162,6 +285,32 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
   if (!repairHeadTree) return gitFailed('rev-parse repairHead^{tree}', run(['rev-parse', `${repairHead}^{tree}`]));
 
   const accepted = new Set<string>([input.actor.trim(), ...(input.includeHunksFrom ?? []).map((a) => a.trim()).filter(Boolean)]);
+  const consumed = new Set(input.consumedLedgerRowIds ?? []);
+  for (const admission of input.admissions ?? []) {
+    if (admission.ledgerRowIds) {
+      for (const id of admission.ledgerRowIds) consumed.add(id);
+      continue;
+    }
+    if (admission.mode !== 'hunk-exact') continue;
+    for (const [path, captured] of Object.entries(admission.hunks ?? {})) {
+      // The legacy builder replayed the complete ordered actor prefix. Its recorded
+      // count, rather than publication time, distinguishes edits arriving during R6.
+      if (!Number.isSafeInteger(captured.applied) || captured.applied <= 0) continue;
+      const prefix = input.ledger.filter((r) => r.path === path && captured.agents.includes(r.agent))
+        .slice(0, captured.applied);
+      if (prefix.length === captured.applied && prefix.every((r) => r.atMs <= admission.atMs)) {
+        for (const r of prefix) consumed.add(r.id);
+      }
+    }
+  }
+  const selected = input.ledgerRowIds === undefined ? null : new Set(input.ledgerRowIds);
+  if (selected && (selected.size === 0 || selected.size !== input.ledgerRowIds!.length ||
+    [...selected].some((id) => !Number.isSafeInteger(id) || id <= 0 || consumed.has(id) ||
+      !input.ledger.some((r) => r.id === id && r.candidate === input.candidate && paths.includes(r.path) && accepted.has(r.agent))))) {
+    return { ok: false, code: 'invalid-ledger-selection', detail: 'Every selected row must exist for this candidate, named path and accepted actor, and must not already be consumed.', exits: [] };
+  }
+  // Capture once. Later rows, including ones written during R6, remain available.
+  const ledger = input.ledger.filter((r) => !consumed.has(r.id) && (selected === null || selected.has(r.id)));
   const scratch = mkdtempSync(join(tmpdir(), 'papercusp-hunk-exact-'));
   const indexEnv: NodeJS.ProcessEnv = { GIT_INDEX_FILE: join(scratch, 'index') };
   try {
@@ -169,8 +318,30 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
     if (rt.status !== 0) return gitFailed('read-tree', rt);
 
     const perPath: HunkExactPathReport[] = [];
+    const alreadyApplied: Array<{ path: string; row: FrozenRepairEditLedgerRow; index: number }> = [];
     for (const path of paths) {
-      const rows = input.ledger.filter((r) => r.path === path);
+      // A file inside a submodule has no entry in the superproject tree, so without this check
+      // its hunks replay onto an empty base and refuse as a misleading `hunk-conflict`
+      // (WI-10005976). The superproject can only admit the submodule POINTER, whole.
+      for (const commit of [repairHead, input.candidate]) {
+        const enclosing = findGitlinkAncestor(run, commit, path);
+        if (!enclosing.ok) return gitFailed(enclosing.step, enclosing.result);
+        if (enclosing.entry) {
+          const gitlink = enclosing.entry.path;
+          return {
+            ok: false,
+            code: 'path-under-gitlink',
+            path,
+            detail:
+              `${path} is inside the submodule gitlink ${gitlink} (${(enclosing.entry.sha ?? '?').slice(0, 12)} at ${commit.slice(0, 12)}); ` +
+              'hunks cannot be replayed into a submodule from the superproject. Admit the submodule pointer itself.',
+            exits: [
+              `release:repair-queue { op:'admit', paths:['${gitlink}'], wholeBlob:true, reason:'<why the staging pin of ${gitlink} is safe to admit whole>' } — moves the gitlink to staging's pin, carrying every submodule commit between the two pins`,
+            ],
+          };
+        }
+      }
+      const rows = ledger.filter((r) => r.path === path);
       const mine = rows.filter((r) => accepted.has(r.agent));
       const foreign = rows.filter((r) => !accepted.has(r.agent));
       const foreignAgents = [...new Set(foreign.map((r) => r.agent))].sort();
@@ -215,6 +386,13 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
         if (cat.status !== 0) return gitFailed(`cat-file blob ${baseBlob.slice(0, 12)}`, cat);
         base = cat.stdout;
       }
+      // WI-6554700010009955: a hunk repairHead already carries is never replayed twice. Judged
+      // after every path, so the exit is ONE ledgerRowIds selection covering them all.
+      const present = findAlreadyAppliedHunks(base, mine.map((r) => r.hunk));
+      if (present.length > 0) {
+        for (const index of present) alreadyApplied.push({ path, row: mine[index]!, index });
+        continue;
+      }
       const replay = replayFrozenRepairHunks(
         base,
         mine.map((r) => r.hunk),
@@ -254,6 +432,41 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
         unchanged: blob === baseBlob,
       });
     }
+    if (alreadyApplied.length > 0) {
+      const presentIds = new Set(alreadyApplied.map((a) => a.row.id));
+      const remaining = ledger.filter((r) => paths.includes(r.path) && accepted.has(r.agent) && !presentIds.has(r.id));
+      const remainingPaths = paths.filter((p) => remaining.some((r) => r.path === p));
+      const presentPaths = [...new Set(alreadyApplied.map((a) => a.path))];
+      const others = [...accepted].filter((a) => a !== input.actor.trim());
+      const quoted = (ps: readonly string[]) => ps.map((p) => `'${p}'`).join(', ');
+      const exits: string[] = [];
+      if (remaining.length > 0) {
+        exits.push(
+          `release:repair-queue { op:'admit', paths:[${quoted(remainingPaths)}]` +
+            (others.length ? `, includeHunksFrom:[${others.map((a) => JSON.stringify(a)).join(', ')}]` : '') +
+            `, ledgerRowIds:[${remaining.map((r) => r.id).join(', ')}] } — replay only the hunks repairHead does not carry yet`,
+        );
+      }
+      exits.push(
+        `release:repair-queue { op:'admit', paths:[${quoted(presentPaths)}], wholeBlob:true, reason:'<why the whole staging blob is safe>' } — admit staging's blob as-is`,
+      );
+      const first = alreadyApplied[0]!;
+      return {
+        ok: false,
+        code: 'hunk-already-applied',
+        path: first.path,
+        hunkIndex: first.index,
+        detail:
+          `${alreadyApplied.length} ledgered hunk(s) are ALREADY on repairHead ${repairHead.slice(0, 12)}: ` +
+          alreadyApplied.map((a) => `${a.path} row #${a.row.id} (hunk #${a.index + 1} by ${a.row.agent})`).join('; ') +
+          '. An earlier admission carried them without consuming their ledger rows (a whole-blob / committed-patch admission, ' +
+          'or a build without consumed-row tracking); replaying them again would duplicate inserted text. ' +
+          (remaining.length > 0
+            ? `${remaining.length} selected hunk(s) are not on repairHead yet — admit exactly those (first exit).`
+            : 'Every selected hunk is already on repairHead — there is nothing to admit hunk-exactly.'),
+        exits,
+      };
+    }
     const wt = run(['write-tree'], indexEnv);
     const tree = wt.stdout.trim();
     if (wt.status !== 0 || !SHA_RE.test(tree)) return gitFailed('write-tree', wt);
@@ -272,7 +485,8 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
     const ct = run(['commit-tree', tree, '-p', repairHead, '-m', message], identityEnv);
     const sourceCommit = ct.stdout.trim();
     if (ct.status !== 0 || !SHA_RE.test(sourceCommit)) return gitFailed('commit-tree', ct);
-    return { ok: true, sourceCommit, tree, perPath, allUnchanged: perPath.every((p) => p.unchanged) };
+    const ledgerRowIds = ledger.filter((r) => paths.includes(r.path) && accepted.has(r.agent)).map((r) => r.id);
+    return { ok: true, sourceCommit, tree, perPath, ledgerRowIds, allUnchanged: perPath.every((p) => p.unchanged) };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
@@ -382,6 +596,84 @@ export function buildCommittedPatchSource(input: {
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+// ── P-004 (gate-throughput-shift-left-2026-10-06): attribution without the hunk ledger ──
+
+/** One row of `harness_shared.edit_attribution_ledger` — who edited a file, and when.
+ *  Written by the edit hook through a different path from the frozen hunk ledger, so it
+ *  survives the misses that produce `no-ledgered-hunks` (measured: all three edits in
+ *  EI-24313562050732849 and EI-24557368838482892 are present there with the right agent). */
+export interface EditAttributionRow {
+  path: string;
+  agent: string;
+  tsMs: number;
+}
+
+/** How far before the candidate's commit time the attribution window opens. An edit is
+ *  swept into a commit minutes after it is made, so a peer's edit made just before the cut
+ *  but committed after it is still inside this window — and therefore still refuses. */
+export const SOLE_EDITOR_WINDOW_MARGIN_MS = 30 * 60_000;
+
+export type SoleEditorVerdict =
+  | { ok: true; agentsByPath: Record<string, string[]> }
+  | {
+      ok: false;
+      reason: 'peer-edits' | 'no-recorded-edits';
+      path: string;
+      peers: string[];
+      detail: string;
+    };
+
+/**
+ * Decide whether an admission whose paths carry NO ledgered hunk at all may still be
+ * attributed to the caller. It may only when, for EVERY path, the attribution ledger
+ * records at least one edit since the window opened and every recorded edit is by the
+ * caller (∪ includeHunksFrom). Then staging's whole post-freeze change to those paths is
+ * the caller's, and admitting staging's blob carries no peer work. Any other recorded
+ * editor — a `system:` writer included — refuses, naming them: a peer's concurrent hunk
+ * is never admitted. An edit no hook recorded at all cannot be seen by any attribution
+ * source; that residual risk is the same one `wholeBlob:true` already carries.
+ */
+export function attributeUnledgeredPaths(input: {
+  paths: readonly string[];
+  actor: string;
+  includeHunksFrom?: readonly string[];
+  rows: readonly EditAttributionRow[];
+  windowStartMs: number;
+}): SoleEditorVerdict {
+  const accepted = new Set([input.actor.trim(), ...(input.includeHunksFrom ?? []).map((a) => a.trim()).filter(Boolean)]);
+  const agentsByPath: Record<string, string[]> = {};
+  for (const raw of input.paths) {
+    const path = normalizeAdmissionPath(raw) ?? raw;
+    const rows = input.rows.filter((r) => r.path === path && r.tsMs >= input.windowStartMs);
+    const agents = [...new Set(rows.map((r) => r.agent))].sort();
+    const peers = agents.filter((a) => !accepted.has(a));
+    if (peers.length > 0) {
+      return {
+        ok: false,
+        reason: 'peer-edits',
+        path,
+        peers,
+        detail:
+          `${path} has no ledgered hunk, and the edit attribution ledger shows ${peers.join(', ')} also edited it ` +
+          `since the freeze window opened — staging's blob would carry their work, so it cannot be admitted as yours`,
+      };
+    }
+    if (agents.length === 0) {
+      return {
+        ok: false,
+        reason: 'no-recorded-edits',
+        path,
+        peers: [],
+        detail:
+          `${path} has no ledgered hunk, and the edit attribution ledger records no edit to it by anyone since the ` +
+          `freeze window opened — the change cannot be attributed to ${input.actor.trim()}`,
+      };
+    }
+    agentsByPath[path] = agents;
+  }
+  return { ok: true, agentsByPath };
 }
 
 /** Ledgered hunks on `paths` by agents other than `actor` (∪ include) — what a whole-blob admission may carry. */

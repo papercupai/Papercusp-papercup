@@ -41,6 +41,14 @@ const call = async (args: Record<string, unknown>) => {
 beforeEach(() => vi.clearAllMocks());
 
 describe('events:emit envelope', () => {
+  it('validates and documents announce/to incompatibility before the handler', () => {
+    expect(emit.args.safeParse({ event: 'g', announce: true, to: ['su-x'] }).success).toBe(false);
+    expect(emit.args.safeParse({ event: 'g', announce: true }).success).toBe(true);
+    expect(emit.args.safeParse({ event: 'g', to: ['su-x'] }).success).toBe(true);
+    expect(emit.description).toContain('`announce:true`, `to` is rejected');
+    expect(emit.args.shape.to.description).toContain('`announce:true` rejects `to`');
+  });
+
   it('forwards source=identity.ownerId + workspaceId, and key/summary/payload/to', async () => {
     vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k1', woken: 2, notified: ['a', 'b', 'c'], msgId: 'm-9', waiters: 2 });
     await call({ event: 'k1', summary: 's', payload: { n: 1 }, to: ['x', 'y'] });

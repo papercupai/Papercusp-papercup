@@ -440,7 +440,8 @@ ExecStart=/usr/local/lib/ollama/llama-server \\
   -m /blobs/sha256-deadbeef \\
   --host 127.0.0.1 --port 11436 \\
   --flash-attn on \\
-  -ngl 999 \\
+  -ngl auto \\
+  --fit on --fit-target 1024 \\
   -np 2 -c 180224 \\
   --cache-type-k q8_0 --cache-type-v q8_0 \\
   --alias maxwell1500/ornith-35b:IQ3_M

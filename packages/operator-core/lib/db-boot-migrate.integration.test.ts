@@ -30,10 +30,11 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
 import { readBackupLockedRelationNames } from './backup-lock-migration-proof';
+import { withBoundedTimeout } from './bounded-timeout';
 
 // ── shared test-DB + mock holders ────────────────────────────────────────────
 const h = vi.hoisted(() => ({
@@ -141,6 +142,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -385,6 +387,24 @@ describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
     expect(rows.map((r) => r.filename)).toEqual(['954-candidate-exact.sql']);
   });
 
+  it('retains ordered migration preflight progress through actual client cleanup', async () => {
+    h.bootSqlDir = makeSqlDir({ '956-preflight-phases.sql': 'CREATE TABLE harness_shared.boot_preflight_phases (id int);' });
+    await seedMigrationReservations(['956-preflight-phases.sql']);
+    const progress = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let lines: string[] = [];
+    try {
+      const result = await applyPendingMigrationsNow({ broadcast: false });
+      expect(result?.failed).toEqual([]);
+      expect((await bootClient`SELECT to_regclass('harness_shared.boot_preflight_phases') AS relation`)[0].relation).toBeTruthy();
+      lines = progress.mock.calls.map(([line]) => String(line)).filter(line => line.startsWith('[boot-migrate] preflight phase='));
+    } finally { progress.mockRestore(); }
+    const phases = lines.map(line => line.match(/phase=(.*?) elapsedMs=/)?.[1]);
+    expect(phases).toEqual(['read cooldown', 'backup rendezvous', 'apply pending migrations', 'reconcile reservations',
+      'schema drift diagnostics', 'complete', 'close client', 'client closed']);
+    const times = lines.map(line => Number(line.match(/elapsedMs=(\d+)$/)?.[1]));
+    expect(times.every((time, i) => Number.isFinite(time) && time >= 0 && (i === 0 || time >= times[i - 1]))).toBe(true);
+  });
+
   it('applies pending files, collects the broken one in failed, broadcasts, and does not throw', async () => {
     // The wired entry resolves resolveSqlDir() → this dir and builds its own
     // max:1 client from getHarnessAdminUrl() → the test DB (both mocked above).
@@ -532,6 +552,103 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
     expect(lockReleased).toBe(true);
   });
 
+  it('closes the timed-out migration backend without releasing the backup lock or applying its migration', async () => {
+    const filename = '959-native-boot-timeout-cancel.sql';
+    const relation = 'boot_native_timeout_cancel_target';
+    await rootSql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.${relation} (id int)`);
+    const dir = makeSqlDir({
+      [filename]: `ALTER TABLE harness_shared.${relation} ADD COLUMN timeout_note text;`,
+    });
+    await seedMigrationReservations([filename]);
+
+    const backupApp = 'pcbackup-workspace';
+    const holder = postgres(dbUrl, {
+      max: 1,
+      prepare: false,
+      onnotice: () => {},
+      connection: { application_name: backupApp },
+    });
+    const dump = await holder.reserve();
+    const bootLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnLog = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let boundedAttempt: Promise<unknown> | undefined;
+    try {
+      await dump`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      await dump`BEGIN`;
+      await dump`LOCK TABLE harness_shared.boot_native_timeout_cancel_target IN ACCESS SHARE MODE`;
+
+      const attempt = withBoundedTimeout(
+        (signal) => applyPendingMigrationsNow({ sqlDir: dir, broadcast: false, signal }),
+        { fallback: null, timeoutMs: 5_000, label: 'boot migration cancellation regression' },
+      );
+      boundedAttempt = attempt;
+
+      const waitLine = `waiting for backup migration rendezvous; pending migrations: ${filename}`;
+      const startDeadline = Date.now() + 4_000;
+      let backendSeenWaiting = false;
+      while (!backendSeenWaiting && Date.now() < startDeadline) {
+        const backends = await rootSql<{ pid: number }[]>`
+          SELECT pid FROM pg_stat_activity
+           WHERE datname = current_database() AND application_name = 'papercusp-boot-migrate'`;
+        const loggedWait = bootLog.mock.calls.some((call) => String(call[0]).includes(waitLine));
+        backendSeenWaiting = backends.length === 1 && loggedWait;
+        if (!backendSeenWaiting) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(backendSeenWaiting, 'the migration backend must be observed waiting before its deadline').toBe(true);
+
+      const timeout = await attempt;
+      expect(timeout).toMatchObject({ value: null, degraded: true, reason: 'timeout' });
+      expect(warnLog.mock.calls.some(([line]) =>
+        String(line).includes('preflight cancelled during backup rendezvous'),
+      )).toBe(true);
+
+      const closeDeadline = Date.now() + 5_000;
+      let backendClosed = false;
+      while (!backendClosed && Date.now() < closeDeadline) {
+        const backends = await rootSql<{ pid: number }[]>`
+          SELECT pid FROM pg_stat_activity
+           WHERE datname = current_database() AND application_name = 'papercusp-boot-migrate'`;
+        backendClosed = backends.length === 0;
+        if (!backendClosed) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(backendClosed, 'timeout must close the abandoned postgres-js backend').toBe(true);
+
+      const backupLock = await rootSql<{ held: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_locks l
+          JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE l.locktype = 'advisory' AND l.granted AND a.application_name = ${backupApp}
+        ) AS held`;
+      expect(backupLock).toEqual([{ held: true }]);
+
+      const migrationState = await rootSql<{ recorded: boolean; columnPresent: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM harness_shared.schema_migrations WHERE filename = ${filename}
+        ) AS recorded,
+        EXISTS (
+          SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'harness_shared' AND table_name = ${relation}
+             AND column_name = 'timeout_note'
+        ) AS "columnPresent"`;
+      expect(migrationState).toEqual([{ recorded: false, columnPresent: false }]);
+    } finally {
+      // Let the bounded timeout fire before dropping the backup barriers, then
+      // clean up a leaked backend so a failing regression cannot apply its
+      // fixture after the assertion has finished.
+      await boundedAttempt?.catch(() => {});
+      await rootSql`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+        WHERE datname = current_database() AND application_name = 'papercusp-boot-migrate'`;
+      await dump`ROLLBACK`.catch(() => {});
+      await dump`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch(() => {});
+      dump.release();
+      await holder.end({ timeout: 5 });
+      bootLog.mockRestore();
+      warnLog.mockRestore();
+      errorLog.mockRestore();
+    }
+  });
+
   // WI-10003357: the wait is relation-scoped. Boot waits while the backup
   // holds a relation the pending migration names, and resumes as soon as the
   // dump stops holding it — even though the rendezvous itself is still held
@@ -658,6 +775,59 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
       expect(names).toEqual(expect.arrayContaining(['boot_backup_child', 'boot_backup_parent', 'boot_backup_child_id_idx']));
     } finally {
       await dump`ROLLBACK`.catch(() => {});
+      dump.release();
+      await holder.end({ timeout: 5 });
+    }
+  });
+
+  it.each([
+    ['INSERT', '', 960],
+    ['UPDATE OF id', 'WHEN (NEW.id = 1)', 961],
+    ['INSERT OR UPDATE OF id', 'WHEN (NEW.id = 1)', 962],
+  ])('applies a static %s trigger migration while the backup rendezvous remains held on an unrelated table', async (event, predicate, number) => {
+    const filename = `${number}-native-boot-backup-static-trigger.sql`;
+    const target = `boot_static_trigger_target_${number}`;
+    const transcript = `boot_static_trigger_transcript_${number}`;
+    const action = `boot_static_trigger_action_${number}`;
+    const trigger = `boot_static_trigger_${number}`;
+    await rootSql.unsafe(`
+      CREATE TABLE harness_shared.${target} (id int);
+      CREATE TABLE harness_shared.${transcript} (id int);
+      CREATE FUNCTION harness_shared.${action}() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;`);
+    const dir = makeSqlDir({
+      [filename]: `CREATE TRIGGER ${trigger}
+        AFTER ${event} ON harness_shared.${target}
+        FOR EACH ROW ${predicate} EXECUTE FUNCTION harness_shared.${action}();`,
+    });
+    await seedMigrationReservations([filename]);
+    const holder = postgres(dbUrl, {
+      max: 1, prepare: false, onnotice: () => {},
+      connection: { application_name: 'pcbackup-workspace' },
+    });
+    const dump = await holder.reserve();
+    try {
+      await dump`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      await dump`BEGIN`;
+      await dump.unsafe(`LOCK TABLE harness_shared.${transcript} IN ACCESS SHARE MODE`);
+      const result = await withBoundedTimeout(
+        (signal) => applyPendingMigrationsNow({ sqlDir: dir, broadcast: false, signal }),
+        { fallback: null, timeoutMs: 5_000, label: 'static trigger backup rendezvous regression' },
+      );
+      expect(result.degraded).toBe(false);
+      expect(result.value).toMatchObject({ applied: 1, failed: [] });
+      const observed = await rootSql<{ created: boolean; backupStillHeld: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_trigger WHERE tgname = ${trigger}
+        ) AS created,
+        EXISTS (
+          SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE l.locktype = 'advisory' AND l.granted AND a.application_name = 'pcbackup-workspace'
+        ) AS "backupStillHeld"`;
+      expect(observed).toEqual([{ created: true, backupStillHeld: true }]);
+    } finally {
+      await dump`ROLLBACK`.catch(() => {});
+      await dump`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch(() => {});
       dump.release();
       await holder.end({ timeout: 5 });
     }

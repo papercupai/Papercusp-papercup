@@ -1,0 +1,316 @@
+{
+ "rubricRef": "acceptance-gitnexus-selective-hardening-and-comparison-2026-09-13",
+ "criteria": [
+  {
+   "key": "r-1",
+   "title": "Preserve question-specific authority",
+   "model": "Shipped agent guidance assigns each question class to exactly one authority (graph: topology; LSP: compiler semantics; rg: current text; ast-grep: syntax) and never routes a semantic or current-text question to the graph.",
+   "barKey": "R-1",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "tree"
+   ],
+   "evidencePlane": "tree",
+   "requiredTestLayers": [
+    "integration",
+    "unit"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) shipped guidance names the graph as authority for a compiler-semantic or current-text question; (2) guidance.integration.test.ts 'publishes local guidance through actual tools/list and refuses raw query without another child' is red or absent; (3) its mutation case 'the same discovery oracle rejects an isolated forbidden-next-route mutation' is red or absent; (4) Serena appears in any guidance route; (5) existing guidance overrides or code:run access are forked instead of reused. RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read the testing:runs rows (source=ci, worktreeDirty=false, committed candidate) for guidance.integration.test.ts and runtime-artifact-parity.test.ts, then capability:read packages/operator-core/lib/code-intelligence/graph-fallback-guidance.ts and libs/papercusp/plugins/gitnexus-bridge/index.ts guidance text. Cite the it() titles in marker (2) and (3) by name. index.test.ts is deliberately NOT bound: its 64 tests pin plugin surface (PATH fallbacks), not authority. GOVERNING DECISIONS: D-002 (installed GitNexus 1.6.9 stays the backend; no upgrade, no Codebase-Memory replacement); this bar constrains how agents consume it, not which engine. PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "libs/papercusp/plugins/gitnexus-bridge/guidance.integration.test.ts",
+      "libs/papercusp/plugins/gitnexus-bridge/runtime-artifact-parity.test.ts"
+     ]
+    }
+   }
+  },
+  {
+   "key": "r-2",
+   "title": "Actionable, truthful guidance",
+   "model": "Shipped guidance fires on known-symbol and shared-helper-change questions, shows the fallback matching the failure class, and never promises complete consumers or exact current source.",
+   "barKey": "R-2",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "tree"
+   ],
+   "evidencePlane": "tree",
+   "requiredTestLayers": [
+    "integration",
+    "unit"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) guidance sends agents to a refused raw query path (guidance.integration.test.ts 'publishes local guidance through actual tools/list and refuses raw query without another child' red or absent); (2) guidance promises every consumer or exact current source; (3) the fallback shown does not match the failure class; (4) runtime-artifact-parity.test.ts 'is up to date with index.ts (regenerate with: npm run gen:gitnexus-bridge)' is red, i.e. source and generated artifact drifted; (5) 'ships the agent-facing tool guidance that the hand-written mirror omitted' is red; (6) the known-symbol or shared-helper-change trigger text is absent from the shipped guidance. RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read the testing:runs rows for guidance.integration.test.ts and runtime-artifact-parity.test.ts at the committed candidate, then compare the shipped guidance text (capability:read libs/papercusp/plugins/gitnexus-bridge/index.ts) with the generated runtime artifact. index.test.ts is deliberately NOT bound (plugin-surface tests). GOVERNING DECISIONS: D-002 (installed GitNexus 1.6.9 stays the backend; no upgrade, no Codebase-Memory replacement). PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "libs/papercusp/plugins/gitnexus-bridge/guidance.integration.test.ts",
+      "libs/papercusp/plugins/gitnexus-bridge/runtime-artifact-parity.test.ts"
+     ]
+    }
+   }
+  },
+  {
+   "key": "r-3",
+   "title": "Truthful failure and coverage",
+   "model": "The code-intelligence contract reports source coverage only against a measured denominator and never collapses distinct result states (graph edge, file-level link, limited output, stale revision, missing/unindexed symbol, backend failure) into one another.",
+   "barKey": "R-3",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "tree"
+   ],
+   "evidencePlane": "tree",
+   "requiredTestLayers": [
+    "integration",
+    "unit"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) contracts.ts collapses two of the six states (graph edge, file-level link, limited output, stale revision, missing/unindexed symbol, backend failure) into one; (2) an empty, non-truncated, fresh result claims source coverage without a measured denominator; (3) graph-coverage.integration.test.ts 'propagates a fresh-index miss without turning it into source absence' or 'reports ambiguity and backend failure distinctly across the handler' is red or absent; (4) contracts.test.ts 'grades an unmeasured backend not-measured, NOT within-budget' or 'grades a TRUNCATED walk not-measured even when the partial total looks fine' is red or absent. RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read testing:runs rows for graph-coverage.integration.test.ts, lsp-facade-coverage.test.ts and contracts.test.ts at the committed candidate, and capability:read packages/operator-core/lib/code-intelligence/contracts.ts to confirm the six states are distinct types or fields. GOVERNING DECISIONS: D-002 (installed GitNexus 1.6.9 stays the backend; no upgrade, no Codebase-Memory replacement). PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "packages/operator-core/lib/code-intelligence/graph-coverage.integration.test.ts",
+      "packages/operator-core/lib/code-intelligence/lsp-facade-coverage.test.ts",
+      "packages/operator-core/lib/code-intelligence/contracts.test.ts"
+     ]
+    }
+   }
+  },
+  {
+   "key": "r-4",
+   "title": "Reliable existing backend",
+   "model": "The known-symbol omission in the installed GitNexus 1.6.9 backend is reproduced, root-caused, guarded and fixed, and no refresh/restart/crash class is closed by restart alone.",
+   "barKey": "R-4",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "tree"
+   ],
+   "evidencePlane": "tree",
+   "requiredTestLayers": [
+    "integration",
+    "unit"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) gitnexus-exact-index.integration.test.ts 'omits a known declaration at the vendor default, then indexes it at the routine-derived limit' is red or absent (omission not reproduced); (2) gitnexus-reindex-mutation-control.test.ts 'rejects a healthy-looking graph when its known source file is absent' is red, or the control survives removal of the guard; (3) gitnexus-recovery.integration.test.ts 'recovers a known call edge after a reader is killed without changing snapshot provenance' is red or absent (crash class); (4) gitnexus-reindex-action.test.ts 'refreshes when the indexed commit is no longer in history (rebase/prune)' or 'says the rebuild is FORCED and the marker deliberately kept' is red or absent (refresh class); (5) any class is closed by a restart only, with no guard; (6) an upgrade is adopted without a passing measured failure fixture, contradicting D-002. RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read testing:runs rows for the four gitnexus routine tests at the committed candidate and cite the it() titles in markers (1)-(4) by name; a work-item or completion comment is never code truth for this bar. GOVERNING DECISIONS: D-002 (installed GitNexus 1.6.9 stays the backend; no upgrade, no Codebase-Memory replacement): the full-rebuild policy stays until a candidate passes its failure fixture. PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.test.ts",
+      "packages/operator-core/lib/harness/routines/gitnexus-recovery.integration.test.ts",
+      "packages/operator-core/lib/harness/routines/gitnexus-exact-index.integration.test.ts",
+      "packages/operator-core/lib/harness/routines/gitnexus-reindex-mutation-control.test.ts"
+     ]
+    }
+   }
+  },
+  {
+   "key": "r-5",
+   "title": "Selective agent adoption",
+   "model": "Bounded graph evidence is attached only at known-symbol navigation and shared-code impact decisions through the existing routing/eval surfaces, with no per-grep, per-read or per-turn graph call.",
+   "barKey": "R-5",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "tree"
+   ],
+   "evidencePlane": "tree",
+   "requiredTestLayers": [
+    "integration",
+    "unit"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) selective-assist.test.ts 'fires on a known identifier for every identifier-shaped frozen corpus query' or 'fires on a substantive change to an exported shared helper, and only then' is red or absent; (2) a legitimate non-use (text, log, runtime query) dispatches a graph call: the 'none (reason) with zero dispatches' cases are red or absent; (3) a graph site that current source contradicts is acted on; (4) a new parallel routing or eval surface exists instead of reuse of the existing one; (5) either file is red on the committed candidate. RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read testing:runs rows for selective-assist.test.ts and selective-assist.integration.test.ts and capability:read packages/operator-core/lib/code-intelligence/selective-assist.ts; cite the it() titles in markers (1)-(3) by name. GOVERNING DECISIONS: D-002 (installed GitNexus 1.6.9 stays the backend; no upgrade, no Codebase-Memory replacement). PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "packages/operator-core/lib/code-intelligence/selective-assist.test.ts",
+      "packages/operator-core/lib/code-intelligence/selective-assist.integration.test.ts"
+     ]
+    }
+   }
+  },
+  {
+   "key": "r-6",
+   "title": "Consumer evidence in existing BAR/rubric",
+   "model": "Consumer evidence rides on the existing acceptance BAR/rubric, bound to its index and source revision with the unchecked set stated, and neither a graph invocation nor zero graph callers satisfies it.",
+   "barKey": "R-6",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "tree"
+   ],
+   "evidencePlane": "tree",
+   "requiredTestLayers": [
+    "integration",
+    "unit"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) consumer-evidence.test.ts 'a graph INVOCATION with no consumers and no independent sweep is not evidence' or 'ZERO callers from the graph alone (graph-empty) is not evidence of absence' is red or absent; (2) consumer-evidence.integration.test.ts 'NEGATIVE: a stale index is bound to its OWN revision, so the mismatch is visible' or 'NEGATIVE: a backend that throws falls back, and unchecked behavior keeps the outcome nonpassing' is red or absent; (3) a consumer list is presented without its index revision and unchecked set; (4) a new rubric/BAR scorer exists parallel to the existing acceptance method; (5) a mandatory failure or unknown leaves a passing rating. RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read testing:runs rows for both consumer-evidence tests at the committed candidate and cite the it() titles in markers (1)-(2) by name. GOVERNING DECISIONS: D-002 (installed GitNexus 1.6.9 stays the backend; no upgrade, no Codebase-Memory replacement). PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "packages/operator-core/lib/code-intelligence/consumer-evidence.test.ts",
+      "packages/operator-core/lib/code-intelligence/consumer-evidence.integration.test.ts"
+     ]
+    }
+   }
+  },
+  {
+   "key": "r-7",
+   "title": "Additive affected tests",
+   "model": "Affected-test selection with graph suggestions always contains the whole baseline selection, and invalid, stale or unavailable graph evidence degrades to baseline only.",
+   "barKey": "R-7",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "tree"
+   ],
+   "evidencePlane": "tree",
+   "requiredTestLayers": [
+    "integration",
+    "unit"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) any baseline-selected test is missing from the final selection (affected-tests-graph-suggestions.integration.test.ts 'positive: a PRODUCED snapshot ADDS exactly the importer workspace and keeps the whole baseline' red or absent); (2) a stale snapshot removes or adds tests ('stale: the importer changed after the snapshot was produced => nothing added, nothing lost' red or absent); (3) unavailable graph input changes the selection ('graph unavailable (no snapshot file): selection === baseline, no live graph needed' red or absent); (4) a suggestion is accepted without snapshot binding and source corroboration; (5) the sample replication below shows the final selection is not a superset of the baseline. RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read testing:runs rows for the three graph-suggestion tests at the committed candidate. Replicate on the fixed sample change: run testing:run { changedPaths: ['packages/operator-core/lib/code-intelligence/consumer-evidence.ts'] } and confirm the baseline selection is a subset of the final selection; two graders on the same candidate must get the same answer. GOVERNING DECISIONS: D-002 (installed GitNexus 1.6.9 stays the backend; no upgrade, no Codebase-Memory replacement). PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "packages/operator-core/lib/__tests__/affected-tests-graph-suggestions.test.ts",
+      "packages/operator-core/lib/__tests__/affected-tests-graph-suggestions.integration.test.ts",
+      "packages/operator-core/lib/__tests__/gen-graph-dependency-snapshot.test.ts"
+     ]
+    }
+   }
+  },
+  {
+   "key": "r-8",
+   "title": "Bounded comparative evidence",
+   "model": "The bounded engine comparison ran baseline LSP/rg, installed GitNexus, one pinned candidate GitNexus and Codebase-Memory on the same frozen tasks, with a passing fairness audit and each report bound to its engine build.",
+   "barKey": "R-8",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "live"
+   ],
+   "evidencePlane": "live",
+   "requiredTestLayers": [
+    "integration",
+    "unit"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) any of the four engines is missing from docs/evidence/gitnexus-engine-comparison-2026-10-01/ (report-baseline-lsp-rg.json, report-gitnexus-installed.json, report-gitnexus-candidate.json, report-codebase-memory.json); (2) fairness-audit.json is absent or not passing; (3) an engine was measured on different tasks than the others (task-runs.json); (4) a report is not bound to its engine build: engine-comparison-provenance.integration.test.ts 'reproduces the recorded verdict, residue and source-parity reading' or 're-pointing one executed arm at a different tree is reported as a fingerprint mismatch' is red or absent; (5) an unexecuted arm is counted as a pass ('an arm that was never executed is UNAVAILABLE residue and the verdict cannot be a pass' red or absent). RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read the five engine-comparison test rows via testing:runs, then capability:read the committed evidence bundle docs/evidence/gitnexus-engine-comparison-2026-10-01/ (engine-comparison.md, verdict.json, fairness-audit.json, task-runs.json, report-*.json). GOVERNING DECISIONS: D-002 (installed GitNexus 1.6.9 stays the backend; no upgrade, no Codebase-Memory replacement): exactly ONE pinned candidate upgrade is compared, and no alternative becomes a second permanent stack. PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "packages/operator-core/lib/code-intelligence/engine-comparison.test.ts",
+      "packages/operator-core/lib/code-intelligence/engine-comparison-exec.test.ts",
+      "packages/operator-core/lib/code-intelligence/engine-comparison-report.test.ts",
+      "packages/operator-core/lib/code-intelligence/engine-comparison-cbm.test.ts",
+      "packages/operator-core/lib/code-intelligence/engine-comparison-provenance.integration.test.ts"
+     ]
+    }
+   }
+  },
+  {
+   "key": "r-9",
+   "title": "Evidence-based backend disposition",
+   "model": "The recorded backend disposition (keep GitNexus 1.6.9, no upgrade, no Codebase-Memory replacement) is the disposition derivable from the measured verdict.",
+   "barKey": "R-9",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "tree"
+   ],
+   "evidencePlane": "tree",
+   "requiredTestLayers": [
+    "unit"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) the decision field of docs/evidence/gitnexus-engine-comparison-2026-10-01/verdict.json is not 'keep' while the recorded disposition says keep; (2) engine-comparison-disposition.test.ts 'keep claims no win: both challengers measured worse on the shared tree' or 'a tree-fingerprint mismatch downgrades the SAME winning candidate to inconclusive and names the fingerprints' is red or absent; (3) PINNED_GITNEXUS_VERSION in libs/papercusp/plugins/gitnexus-bridge/index.ts is not '1.6.9'; (4) a Codebase-Memory replacement or a second permanent stack shipped. RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read the testing:runs row for engine-comparison-disposition.test.ts at the committed candidate, plan Decision D-002 (plans:get decisionId D-002), and the decision field of docs/evidence/gitnexus-engine-comparison-2026-10-01/verdict.json; capability:read libs/papercusp/plugins/gitnexus-bridge/index.ts for PINNED_GITNEXUS_VERSION. GOVERNING DECISIONS: D-002 (installed GitNexus 1.6.9 stays the backend; no upgrade, no Codebase-Memory replacement). PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts"
+     ]
+    }
+   }
+  },
+  {
+   "key": "r-10",
+   "title": "End-to-end delivery",
+   "model": "The five end-to-end integration suites pass on the committed candidate, and the runtime that serves those source paths executes that candidate.",
+   "barKey": "R-10",
+   "role": "outcome",
+   "mandatory": true,
+   "requiredScope": [
+    "deployed"
+   ],
+   "evidencePlane": "deployed",
+   "requiredTestLayers": [
+    "integration"
+   ],
+   "passRatings": [
+    "healthy"
+   ],
+   "driftMarkers": "BROKEN if any ONE holds: (1) any of the five integration files has no passing source=ci, worktreeDirty=false row at the committed candidate; (2) dev:pipeline_position on a changed source path reports serving.startedSinceCodeChange false, or a non-null blockedOn, i.e. the serving runtime does not execute the candidate; (3) any step shipped by a force-deploy past a red gate. RATING BASIS: healthy only when no marker holds on the committed candidate; any marker holding, or a required row unmeasured, is not healthy.",
+   "verification": {
+    "method": "Read the five integration-test rows via testing:runs at the committed candidate, then dev:pipeline_position { path } for each of: packages/operator-core/lib/code-intelligence/selective-assist.ts, packages/operator-core/lib/code-intelligence/consumer-evidence.ts, packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts, packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts, scripts/affected-tests.mjs. Per-item code-truth audit, independent grading and the implementer verdict are enforced by the plans:set-plan-status ship gate, so they are not restated here. D-002 and D-003 govern; the shared release gate has exactly one live owner (state:read gate.greenCheckpoint.ownership). PASS when no marker holds.",
+    "check": {
+     "kind": "tests",
+     "files": [
+      "packages/operator-core/lib/code-intelligence/selective-assist.integration.test.ts",
+      "packages/operator-core/lib/code-intelligence/consumer-evidence.integration.test.ts",
+      "packages/operator-core/lib/code-intelligence/engine-comparison-provenance.integration.test.ts",
+      "packages/operator-core/lib/harness/routines/gitnexus-recovery.integration.test.ts",
+      "packages/operator-core/lib/__tests__/affected-tests-graph-suggestions.integration.test.ts"
+     ]
+    }
+   }
+  }
+ ],
+ "reason": "Fold the rubric-vetting consult (conv-muqgkyes-0000-cbd68d695f944399a9e37c2a2161e10e) critiques B1-B4 into one amendment: atomic one-sentence models, numbered BROKEN-if markers naming it() titles, GOVERNING DECISIONS in methods, R-8 re-pathed to the committed evidence bundle, index.test.ts unbound from R-1/R-2, R-10 narrowed to the deployed observable.",
+ "expectedRubricRevision": 3,
+ "idempotencyKey": "wi-10001409-gitnexus-vetting-fold-1",
+ "dryRun": true
+}

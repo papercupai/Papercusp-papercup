@@ -1,6 +1,22 @@
 import { describe, it, expect } from 'vitest';
 import { extractAnchors, anchorMetadata } from './anchors';
 
+describe('non-file evidence anchors', () => {
+  it('preserves colon-bearing canonical session ids', () => {
+    expect(extractAnchors('session_turn:codex:host:session:42'))
+      .toContainEqual({ kind: 'session-turn', value: 'codex:host:session:42' });
+  });
+  it('extracts all five governed source kinds, with stable deduplicated identities', () => {
+    const body = 'WI-123 WI-123 EI-456 governed-memory-2026-10-14#D-007 fact:guard-rail:safe '
+      + 'session_turn:codex:abc-def:42 report:rpt_12345678-1234-1234-1234-123456789abc';
+    expect(anchorMetadata(body)?.anchors.filter(a => ['work-item','decision','fact','session-turn','report'].includes(a.kind)))
+      .toEqual([{ kind: 'work-item', value: 'WI-123' }, { kind: 'work-item', value: 'EI-456' },
+        { kind: 'decision', value: 'governed-memory-2026-10-14#D-007' },
+        { kind: 'fact', value: 'guard-rail:safe' }, { kind: 'session-turn', value: 'codex:abc-def:42' },
+        { kind: 'report', value: 'rpt_12345678-1234-1234-1234-123456789abc' }]);
+  });
+});
+
 describe('extractAnchors — file paths', () => {
   it('extracts a single file path', () => {
     const a = extractAnchors('See apps/operator/lib/foo.ts for details.');

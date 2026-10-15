@@ -34,7 +34,9 @@ import {
   type ScoutCycleRunner,
   type ScoutTickDepsBuilder,
   type ScoutCycleActionConfig,
+  type ScoutCycleDeps,
 } from './run';
+import { readGenerationPreflightTicks } from './generation-preflight-guard';
 
 /**
  * The cadence-gated tick orchestration this action runs is SHARED with the
@@ -89,6 +91,10 @@ export function makeScoutCycleAction(
   // runner. Same PG-free contract as the gates above: unwired in unit tests, wired at
   // boot. Appended LAST so no positional caller shifts.
   hiveRunnerGate?: (input: { workspaceId: string; installSlug: string }) => Promise<{ run: boolean; reason?: string }>,
+  // WI-10007380 / P-003: recent ticks for the generation preflight (skip paid
+  // generation while dedup saturation outlasts the novelty widening). Same PG-free
+  // contract: unwired in unit tests, wired at boot and in the blueprint op.
+  generationPreflightTicks?: ScoutCycleDeps['generationPreflightTicks'],
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
     // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate
@@ -130,6 +136,7 @@ export function makeScoutCycleAction(
         ...(potGate ? { potGate } : {}),
         ...(resolveConfigDelta ? { resolveConfigDelta } : {}),
         ...(hiveRunnerGate ? { hiveRunnerGate } : {}),
+        ...(generationPreflightTicks ? { generationPreflightTicks } : {}),
       },
     );
 
@@ -173,6 +180,9 @@ export function registerScoutCycleAction(runCycle: ScoutCycleRunner): void {
       // the blueprint op uses. `lint:deps-wiring-parity` now fails the build if these
       // two deps objects ever diverge again.
       ({ workspaceId, installSlug }) => checkHiveSingleRunner(workspaceId, installSlug),
+      // WI-10007380 / P-003: the generation preflight's tick reader (same helper as
+      // the blueprint op).
+      readGenerationPreflightTicks,
     ),
   );
 }

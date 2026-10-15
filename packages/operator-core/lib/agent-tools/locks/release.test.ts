@@ -6,8 +6,11 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/release.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { mockRejectedTyped, mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 import type { ActiveLockRow } from './su-lock-store';
+import { resolveExternalPathLockIdentity } from './external-path';
 
 /** The release outcome release.ts decodes — see its `ReleaseOutcome`. */
 type ReleaseOutcomeShape = { released: string[]; heldBefore: number | null };
@@ -38,7 +41,8 @@ vi.mock('./su-lock-store', () => ({
 }));
 vi.mock('./resource-broadcast', () => ({ broadcastResourceBackUp: vi.fn() }));
 vi.mock('../../authority/file-lock-routing', () => ({ routeFileLockOp: vi.fn() }));
-vi.mock('../../authority/file-lock-authority-ops', () => ({
+vi.mock('../../authority/file-lock-authority-ops', async () => ({
+  ...(await vi.importActual<typeof import('../../authority/file-lock-authority-ops')>('../../authority/file-lock-authority-ops')),
   FILE_LOCK_OP_KINDS: { release: 'release' },
   isNativeEditProofForPaths: vi.fn((proof: unknown, released: string[]) => {
     if (!proof || typeof proof !== 'object') return false;
@@ -59,7 +63,12 @@ vi.mock('../../authority/file-lock-authority-ops', () => ({
   }),
 }));
 vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }));
-vi.mock('../../edit-attribution', () => ({ recordEditAttribution: vi.fn(async () => {}) }));
+vi.mock('../../edit-attribution', () => ({
+  recordEditAttribution: vi.fn(async () => {}),
+  recordEditAttributionStrict: vi.fn(async () => {}),
+}));
+// P-014: the pre-release restricted-edit hold. Default: an unrestricted owner (nothing written).
+vi.mock('../../personal-vault/git-sync-hold', () => ({ recordRestrictedEditBeforeRelease: vi.fn(async () => false) }));
 
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
@@ -69,9 +78,11 @@ import {
   releaseAllResourcesForOwner,
   releaseGranular,
   readQueue,
+  tryRelease,
 } from './su-lock-store';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
-import { recordEditAttribution } from '../../edit-attribution';
+import { recordEditAttribution, recordEditAttributionStrict } from '../../edit-attribution';
+import { recordRestrictedEditBeforeRelease } from '../../personal-vault/git-sync-hold';
 
 const routeM = vi.mocked(routeFileLockOp);
 const releaseGranularM = vi.mocked(releaseGranular);
@@ -293,6 +304,46 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
     expect(routeM.mock.calls.map((call) => call[0])).toEqual(['dom', HIVE, 'dom', OTHER]);
   });
 
+  it('normalizes an absolute home path before selecting the caller-owned external lock', async () => {
+    const absolute = join(homedir(), '.papercusp-release-test', 'fixture.json');
+    const identity = resolveExternalPathLockIdentity(absolute);
+    expect(identity.coordinationDomain).toBeUndefined();
+    routeByDomain((domain) => domain === HIVE
+      ? { value: { released: [identity.path], heldBefore: 1 }, via: 'local-authority' }
+      : { value: { released: [], heldBefore: 0 }, via: 'local-authority' });
+    heldIn(activeLock(LOCK, HIVE, identity.path));
+
+    const b = body(await call({ paths: [absolute] }));
+
+    expect(readQueueM.mock.calls[0]?.[1]).toMatchObject({
+      coordinationDomain: null,
+      owner: 'me',
+      paths: [identity.path],
+    });
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [{
+        ok: true,
+        lock_id: LOCK,
+        requested_paths: [identity.path],
+        released: [identity.path],
+        cross_domain_released: [{ coordination_domain: HIVE, released: [identity.path] }],
+      }],
+    });
+  });
+
+  it('rejects absolute paths outside home/runtime instead of returning an empty successful selection', async () => {
+    const b = body(await call({ paths: ['/etc/hosts'] }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('locks:release could not resolve path selector'),
+    });
+    expect(readQueueM).not.toHaveBeenCalled();
+    expect(routeM).not.toHaveBeenCalled();
+  });
+
   it('returns an empty keyed envelope when no requested path is held by the caller', async () => {
     heldIn(activeLock(LOCK, HIVE, 'other.ts'));
 
@@ -497,6 +548,39 @@ describe('locks:release — native edit attribution requires positive proof', ()
     }));
   });
 
+  describe('P-014: a restricted owner’s edit is recorded BEFORE the lock is released', () => {
+    const preRecordM = vi.mocked(recordRestrictedEditBeforeRelease);
+    const proof = { success: true, source: 'claude', tool: 'Edit', paths: ['a.ts'] } as const;
+
+    it('writes the ledger row ahead of the release and does not write it again afterwards', async () => {
+      let routedBeforeRecord: number | null = null;
+      preRecordM.mockImplementationOnce(async () => {
+        routedBeforeRecord = routeM.mock.calls.length;
+        return true;
+      });
+      mockResolvedOnceTyped(routeM, { value: { ok: true, released: ['a.ts'] }, via: 'local-authority' });
+
+      await call({ lock_id: LOCK, native_edit_proof: proof });
+
+      expect(routedBeforeRecord).toBe(0);
+      expect(routeM).toHaveBeenCalled();
+      expect(preRecordM).toHaveBeenCalledWith(expect.objectContaining({ repoRoot: 'dom', files: ['a.ts'], ownerId: 'me' }));
+      expect(recordAttributionM).not.toHaveBeenCalled();
+    });
+
+    it('keeps the lock (never routes the release) when the restricted record is refused', async () => {
+      preRecordM.mockRejectedValueOnce(new Error('disclosure_ledger_unavailable: down'));
+      await call({ lock_id: LOCK, native_edit_proof: proof }).catch(() => undefined);
+      expect(routeM).not.toHaveBeenCalled();
+    });
+
+    it('is not consulted for a release with no native-edit proof', async () => {
+      mockResolvedTyped(routeM, { value: { ok: true, released: ['a.ts'] }, via: 'local-authority' });
+      await call({ lock_id: LOCK });
+      expect(preRecordM).not.toHaveBeenCalled();
+    });
+  });
+
   it.each([
     ['lock-only release', undefined],
     ['failed native result', { success: false, source: 'claude', tool: 'Edit', paths: ['a.ts'] }],
@@ -511,5 +595,132 @@ describe('locks:release — native edit attribution requires positive proof', ()
     await call({ lock_id: LOCK, native_edit_proof: nativeEditProof });
 
     expect(recordAttributionM).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-10006831 — an edit made under the caller's own EXPLICIT lock gets no
+ * release token (EI-63), so before `retain` it never reached the ledger.
+ * `retain` writes the attribution for paths still held and releases nothing.
+ */
+describe('locks:release retain (WI-10006831)', () => {
+  const strictM = vi.mocked(recordEditAttributionStrict);
+  const restrictedM = vi.mocked(recordRestrictedEditBeforeRelease);
+  const held = (path: string, owner = 'me', domain = 'dom'): ActiveLockRow => ({
+    lock_id: '44444444-4444-4444-4444-444444444444',
+    path,
+    owner,
+    owner_label: 'Me',
+    goal_ref: null,
+    intent: 'explicit multi-file hold',
+    acquired_ts: new Date(0),
+    expires_ts: new Date(Date.now() + 60_000),
+    coordination_domain: domain,
+  });
+  const proof = (paths: string[]) => ({ success: true, source: 'claude', tool: 'Edit', paths });
+
+  it('attributes held proof paths and releases nothing', async () => {
+    mockResolvedTyped(readQueueM, { active_locks: [held('a.ts'), held('b.ts')], waiting: [] });
+
+    const out = body(await call({ retain: true, native_edit_proof: proof(['a.ts', 'b.ts']) }));
+
+    expect(out).toMatchObject({ ok: true, retained: ['a.ts', 'b.ts'], released: [], attributed: ['a.ts', 'b.ts'] });
+    expect(strictM).toHaveBeenCalledTimes(1);
+    expect(strictM).toHaveBeenCalledWith(expect.objectContaining({
+      repoRoot: 'dom',
+      files: ['a.ts', 'b.ts'],
+      agentId: 'me',
+      intent: 'PostToolUse:claude:Edit:retained',
+    }));
+    // Nothing is released: neither the routed release nor the local store runs.
+    expect(routeM).not.toHaveBeenCalled();
+    expect(vi.mocked(tryRelease)).not.toHaveBeenCalled();
+    expect(readQueueM).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      coordinationDomain: 'dom',
+      owner: 'me',
+      paths: ['a.ts', 'b.ts'],
+    }));
+  });
+
+  it('uses the explicit coordination_domain the hook sends', async () => {
+    mockResolvedTyped(readQueueM, { active_locks: [held('a.ts', 'me', '/hives/sidestage')], waiting: [] });
+
+    const out = body(await call({
+      retain: true,
+      coordination_domain: '/hives/sidestage',
+      native_edit_proof: proof(['a.ts']),
+    }));
+
+    expect(out.ok).toBe(true);
+    expect(strictM).toHaveBeenCalledWith(expect.objectContaining({ repoRoot: '/hives/sidestage', files: ['a.ts'] }));
+  });
+
+  it.each([
+    ['a path the caller does not hold', [held('a.ts')], ['b.ts']],
+    ['a path a peer holds', [held('a.ts'), held('b.ts', 'peer')], ['b.ts']],
+    ['a hold in another coordination domain', [held('a.ts'), held('b.ts', 'me', '/other')], ['b.ts']],
+  ])('refuses and writes nothing for %s', async (_label, rows, notHeld) => {
+    mockResolvedTyped(readQueueM, { active_locks: rows, waiting: [] });
+
+    const out = body(await call({ retain: true, native_edit_proof: proof(['a.ts', 'b.ts']) }));
+
+    expect(out).toMatchObject({ ok: false, error: 'retain_paths_not_held', not_held: notHeld, attributed: [] });
+    expect(strictM).not.toHaveBeenCalled();
+    expect(restrictedM).not.toHaveBeenCalled();
+    expect(routeM).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no proof', undefined],
+    ['a failed native result', { success: false, source: 'claude', tool: 'Edit', paths: ['a.ts'] }],
+    ['a non-edit tool', { success: true, source: 'claude', tool: 'Read', paths: ['a.ts'] }],
+  ])('refuses %s without reading holds', async (_label, nativeEditProof) => {
+    const out = body(await call({ retain: true, native_edit_proof: nativeEditProof }));
+
+    expect(out).toMatchObject({ ok: false, error: 'retain_requires_native_edit_proof' });
+    expect(readQueueM).not.toHaveBeenCalled();
+    expect(strictM).not.toHaveBeenCalled();
+  });
+
+  it('refuses a release selector beside retain instead of releasing it', async () => {
+    const out = body(await call({ retain: true, paths: ['a.ts'], native_edit_proof: proof(['a.ts']) }));
+
+    expect(out).toMatchObject({ ok: false, error: 'retain_conflicting_selector' });
+    expect(routeM).not.toHaveBeenCalled();
+    expect(strictM).not.toHaveBeenCalled();
+  });
+
+  it('writes the restricted-owner hold instead of the plain row', async () => {
+    mockResolvedTyped(readQueueM, { active_locks: [held('a.ts')], waiting: [] });
+    restrictedM.mockResolvedValueOnce(true);
+
+    const out = body(await call({ retain: true, native_edit_proof: proof(['a.ts']) }));
+
+    expect(out.ok).toBe(true);
+    expect(restrictedM).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'me', files: ['a.ts'] }));
+    expect(strictM).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed ledger write instead of claiming attribution', async () => {
+    mockResolvedTyped(readQueueM, { active_locks: [held('a.ts')], waiting: [] });
+    strictM.mockRejectedValueOnce(new Error('ledger down'));
+
+    const out = body(await call({ retain: true, native_edit_proof: proof(['a.ts']) }));
+
+    expect(out).toMatchObject({ ok: false, attributed: [] });
+    expect(String(out.error)).toContain('retain_attribution_failed');
+  });
+
+  it('schema: retain without paths validates; retain with paths or lock_id does not', () => {
+    const schema = tool.args;
+    expect(schema.safeParse({ retain: true, native_edit_proof: proof(['a.ts']) }).success).toBe(true);
+    expect(schema.safeParse({ retain: true, paths: ['a.ts'], native_edit_proof: proof(['a.ts']) }).success).toBe(false);
+    expect(schema.safeParse({
+      retain: true,
+      lock_id: '44444444-4444-4444-4444-444444444444',
+      native_edit_proof: proof(['a.ts']),
+    }).success).toBe(false);
+    // An operator without `retain` strips the key and must REFUSE, never release.
+    expect(schema.safeParse({ native_edit_proof: proof(['a.ts']) }).success).toBe(false);
   });
 });

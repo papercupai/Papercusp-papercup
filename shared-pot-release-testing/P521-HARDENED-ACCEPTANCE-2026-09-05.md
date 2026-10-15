@@ -31,11 +31,10 @@ On candidate handoff, retain this snapshot in history; supply actual execution e
 
 ## After GO
 
-Start the actual 72-hour canary only AFTER the independent GO timestamp. Then complete the registered chaos/fencing exercise, default Git-mode decision, portfolio closeout, completion audit and independent grade before marking the plans shipped. D-022 supersedes automatic lease-failover claims: losing the single owner freezes protected effects; restoring that owner permits fresh authorized progress. P502's older lease-failover wording must be aligned to that decision before execution.
+After the independent GO timestamp, complete the actual registered owner-freeze/recovery chaos exercise, evidence-based default Git-mode decision, portfolio closeout, completion audit and independent grade before marking the plans shipped. D-170/D-173 remove P-501 and every timed-soak prerequisite. D-179 permits the exact private candidate for this acceptance; public publication remains separately governed. D-022 supersedes automatic lease-failover claims: losing the single owner freezes protected effects; restoring that owner permits fresh authorized progress. Denied non-owner, device-only, missing, foreign and stale proofs must leave protected effects unchanged; recovery requires a fresh owner-countersigned monotonic advance, never automatic takeover.
 
 Public v1 exclusions remain: retired generic work offers, untrusted public compute marketplace, billing/metering, universal memory federation, default-on optional media and 256-peer validation. Opt-in memory and optional media retain their own bounded support/trust/readiness claims. Recorded signing inputs remain pending; no new request to Avi is implied.
 
 ## Source evidence banked for this handoff
 
 P517 source-set digest: `621c0a35c48adabca0ec4858d038d96f6dfc8e9e475babba17507855b6fa2f02` (SHA256 over sorted path + NUL + bytes + NUL; file list in `/tmp/p517-submodule-types-20260905.log`). This is NOT a package digest. Final types: clean, exit 0 at 2026-09-05T17:48:15Z. New submodule/retry and production wiring runs: `2549a41d-59b5-4f06-afba-920ffeeebdd4`, `68003c8d-c13f-4828-9af3-ac595960bd20`, `8c207b26-72c8-42f6-8bfb-ec83668f47c7`. Earlier pure and separate-OS-process proof remains on WI-2144478. P514 capability/runtime proof remains on WI-2144475.
-

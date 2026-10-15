@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS } from './pipeline_position';
+import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS, shapePipelinePosition } from './pipeline_position';
 import { gitPipelinePosition, type PipelinePosition, type RuntimeOwnership } from '../../git-pipeline-position';
 import { resolveSeeAlso } from '@papercusp/agent-mcp';
+import { takeNamedViewFromArgs } from '../../result-projection';
 /**
  * P-010: the handler reads the LIVE cell registry, which the tool barrel populates via
  * this wiring module (agent-tools/index.ts). A test importing only the tool would see an
@@ -27,11 +28,57 @@ vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
  * re-narrowing that would re-break the note's promise. The tool is read-only (intel:read), so a
  * wide allowlist is safe.
  */
+describe('dev:pipeline_position accepted-source contract (WI-10007982)', () => {
+  const expectedSourceSha256 = 'a'.repeat(64);
+  const path = 'packages/operator-core/lib/harness/routines/loop-execution-recovery.ts';
+
+  it('requires a concrete path and a valid frozen SHA256', () => {
+    expect(tool.args.safeParse({ expectedSourceSha256 }).success).toBe(false);
+    expect(tool.args.safeParse({ path, expectedSourceSha256: 'bad' }).success).toBe(false);
+    expect(tool.args.safeParse({ path, expectedSourceSha256 }).success).toBe(true);
+    expect(tool.args.safeParse({}).success).toBe(true);
+  });
+
+  it('forwards the expected fingerprint and keeps keyed containment in a bounded response', async () => {
+    const acceptedSource = { expectedSha256: expectedSourceSha256, observedSha256: expectedSourceSha256,
+      matches: true, deployedContains: false, runtimeContainment: { 'release-operator': false, 'bg-host': null } };
+    const result = { input: { path, sha: null }, repoRoot: '/repo', acceptedSource,
+      notes: ['large detail '.repeat(2000)] } as unknown as PipelinePosition;
+    vi.mocked(gitPipelinePosition).mockResolvedValue(result);
+    const out = await tool.handler({ path, expectedSourceSha256 } as never, {} as never) as { data: Record<string, unknown> };
+    expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({ path, expectedSourceSha256 }));
+    expect(out.data.acceptedSource).toEqual(acceptedSource);
+    expect((out.data.projection as { fullRead: { args: unknown } }).fullRead.args)
+      .toMatchObject({ path, expectedSourceSha256 });
+  });
+});
+
+describe('native P017 pipeline source-runtime measurement selector', () => {
+  it('survives the actual named-view extraction boundary and catches the reserved-key control', () => {
+    const args = tool.args.parse({ path: 'target.ts', sourceRuntimeOnly: true });
+    expect(takeNamedViewFromArgs(args, 'dev:pipeline_position')).toEqual({ kind: 'none', args });
+    expect(takeNamedViewFromArgs({ path: 'target.ts', view: 'source-runtime' }, 'dev:pipeline_position').kind).toBe('error');
+  });
+  it('preserves exact repository and bound source/runtime identity without the large pipeline digest', async () => {
+    const digest = 'a'.repeat(64);
+    const acceptedSource = { expectedSha256: digest, observedSha256: digest, matches: true,
+      deployedContains: false, runtimeContainment: { 'staging-operator': true, 'release-operator': false } };
+    const servingRuntimes = [{ runtime: 'release-operator', buildSha: 'b'.repeat(40), containsChange: false },
+      { runtime: 'staging-operator', buildSha: 'c'.repeat(40), containsChange: true }];
+    vi.mocked(gitPipelinePosition).mockResolvedValue({ repoRoot: '/native-fixture', submodule: null,
+      acceptedSource, servingRuntimes, gate: { ownerBrief: 'x'.repeat(20_000) } } as unknown as PipelinePosition);
+    const args = tool.args.parse({ path: 'target.ts', expectedSourceSha256: digest, sourceRuntimeOnly: true });
+    const result = await tool.handler(args, {} as never) as { data: Record<string, unknown> };
+    expect(result.data).toEqual({ repoRoot: '/native-fixture', submodule: null, acceptedSource, servingRuntimes });
+    expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({ path: 'target.ts', expectedSourceSha256: digest }));
+  });
+});
+
 describe('dev:pipeline_position role allowlist', () => {
   it('is available to every execution/judgment role the cross-role note points at', () => {
     const roles = new Set(tool.agentRoles ?? []);
     const expected = [
-      'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer',
+      'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer', 'judge',
       'debugger', 'documenter', 'curator', 'cup', 'papercup', 'papercup-deep', 'kettle',
       'release-fixer', 'merge-resolver', 'content-fixer', 'release-manager',
     ];
@@ -77,6 +124,37 @@ describe('dev:pipeline_position current-build test route selection', () => {
     servingRuntimes: { entries: [] },
   } as unknown as PipelinePosition;
 
+  it('keeps the original native selectors and route through schema, named-view and oversized handler output (EI-25679146311569247)', async () => {
+    const request = {
+      path: 'packages/operator-core/lib/goal-holder-behavior-metrics.ts',
+      testClass: 'operator-api',
+      marker: 'ideationAttribution',
+    };
+    const parsed = tool.args.parse(request);
+    const selected = takeNamedViewFromArgs(parsed, 'dev:pipeline_position');
+    expect(selected).toEqual({ kind: 'none', args: request });
+    if (selected.kind !== 'none') throw new Error('unexpected named-view selection');
+
+    // A missing repository measurement and a large digest must not erase the
+    // route selected by the handler. This uses the reporter's original marker;
+    // a control with a different marker cannot attest these inputs.
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...running,
+      input: { path: request.path, sha: null },
+      repoRoot: null,
+      notes: Array.from({ length: 40 }, () => 'oversized diagnostic '.repeat(100)),
+    } as unknown as PipelinePosition);
+    const out = await tool.handler(selected.args, {} as never) as {
+      data: { currentBuildTestRoute?: { id: string; runtime: string }; projection?: { fullRead: { args: unknown } } };
+    };
+    expect(gitPipelinePosition).toHaveBeenLastCalledWith(expect.objectContaining({
+      path: request.path, marker: request.marker,
+    }));
+    expect(out.data.currentBuildTestRoute).toMatchObject({ id: 'operator-api', runtime: 'staging-operator' });
+    expect(out.data.projection?.fullRead.args).toEqual(request);
+    expect(JSON.stringify(out.data).length).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
+  });
+
   it('returns an exact route with isolation and prerequisites before main is green', async () => {
     vi.mocked(gitPipelinePosition).mockResolvedValue(running);
     const out = await tool.handler({ path: PATH, testClass: 'operator-api' } as never, {} as never) as {
@@ -100,6 +178,30 @@ describe('dev:pipeline_position current-build test route selection', () => {
       route: expect.stringContaining('--isolated-runtime'),
       prerequisites: expect.arrayContaining(['explicit teardown assertion']),
     });
+  });
+
+  it('returns the maintained AWS candidate route while the current build is absent from main', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue(running);
+    const out = await tool.handler({
+      path: 'packages/operator-core/lib/workspace-host/aws-ami-production.ts',
+      testClass: 'aws-ami-candidate',
+    } as never, {} as never) as {
+      data: { currentBuildTestRoute?: {
+        readiness: string; runtime: string | null; route: string; routeFile: string;
+        prerequisites: string[]; isolation: string; verification: string;
+      } };
+    };
+    const route = out.data.currentBuildTestRoute;
+    expect(route).toMatchObject({ readiness: 'requires-prerequisites', runtime: null });
+    expect(route?.routeFile).toBe('apps/operator/lib/release/aws-ami-release-cli.ts');
+    expect(route?.route).toContain('workspace-host-clean-room-acceptance-cli.ts --input-file');
+    expect(route?.route).toContain('aws-ami-release-cli.ts --request-file');
+    expect(route?.prerequisites.join(' ')).toMatch(/persisted AWS publisher connection/i);
+    expect(route?.prerequisites.join(' ')).toMatch(/distinct clean-account role/i);
+    expect(route?.prerequisites.join(' ')).toMatch(/private SSM parameter prefix/i);
+    expect(route?.isolation).toMatch(/unique owned fixture/i);
+    expect(route?.verification).toMatch(/termination with zero residual resources/i);
+    expect(route?.verification).toMatch(/preflight alone is not cloud acceptance/i);
   });
 
   it('rejects unknown classes rather than defaulting them to the release route', async () => {
@@ -241,6 +343,46 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     });
     expect(JSON.stringify(out.data).length).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
   };
+
+  it('retains positionsMarker in the final minimal fallback', () => {
+    const verboseDetail = Object.fromEntries(
+      Array.from({ length: 24 }, (_, index) => [`detail${index}`, 'x'.repeat(360)]),
+    );
+    const positionsMarker = {
+      marker,
+      onStaging: {
+        marker,
+        sha: 'sha0000002',
+        present: true,
+        count: 1,
+        pathPresent: true,
+        unknownReason: null,
+      },
+      inMain: null,
+      deployed: null,
+    };
+    const out = shapePipelinePosition(
+      {
+        input: { path: PATH, sha: null },
+        targetSha: 'sha0000001',
+        targetShortSha: 'sha000000',
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        positionsMarker,
+        submodule: verboseDetail,
+        submodulePin: verboseDetail,
+      } as unknown as PipelinePosition,
+      {},
+      { path: PATH, marker },
+    ) as Record<string, unknown>;
+    const projection = out.projection as Record<string, unknown>;
+
+    expect(projection).toMatchObject({ kind: 'bounded', truncated: true });
+    expect(projection.returnedChars).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
+    expect(projection.fullRead).toEqual({ tool: 'dev:pipeline_position', args: { path: PATH, marker } });
+    expect(out).not.toHaveProperty('submodule');
+    expect(out).not.toHaveProperty('submodulePin');
+    expect(out.positionsMarker).toEqual(positionsMarker);
+  });
 
   it('bounds the multi-consumer exit without dropping activations', async () => {
     vi.mocked(gitPipelinePosition).mockResolvedValue({

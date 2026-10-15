@@ -18,6 +18,7 @@ import { checkBudget, shouldBypassOperatorBudget } from '../../../operator-budge
 import { getConversationById } from '../../../operator-conversations';
 import { UI_CONTEXT_MAX_CHARS } from '../../../chat-context-sections';
 import { defineTool } from '@papercusp/agent-mcp';
+import { tutorialHelpContextSchema, type TutorialHelpContext } from '../../../onboarding/cloud-tutorial-help';
 
 interface ConverseRequestBody {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
@@ -32,6 +33,7 @@ interface ConverseRequestBody {
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
+  voiceProfile?: 'standard' | 'slim';
   /** Rendering surface: 'desktop' (default) vs 'tui' (the pui terminal
    *  workbench). Forwarded to operator:converse so it injects per-surface
    *  affordances (tui-operator-surface D-003). */
@@ -58,6 +60,7 @@ interface ConverseRequestBody {
    *  authority) — the agent-chats seam's `body.context`. Capped at
    *  UI_CONTEXT_MAX_CHARS; longer is a 400. */
   uiContext?: string;
+  lessonContext?: TutorialHelpContext;
 }
 
 export default defineTool({
@@ -97,6 +100,15 @@ export default defineTool({
       return Response.json({ error: "hostTrust must be 'owner' or 'public'" }, { status: 400 });
     }
     const hostTrust: 'owner' | 'public' = body.hostTrust === 'public' ? 'public' : 'owner';
+    let lessonContext: TutorialHelpContext | undefined;
+    if (body.lessonContext !== undefined) {
+      const parsed = tutorialHelpContextSchema.safeParse(body.lessonContext);
+      if (!parsed.success || hostTrust !== 'public' || body.conversationId !== undefined
+        || body.principalToken !== undefined || (body.role !== undefined && body.role !== 'operator')) {
+        return Response.json({ error: 'invalid_tutorial_context' }, { status: 400 });
+      }
+      lessonContext = parsed.data;
+    }
     if (body.uiContext !== undefined && typeof body.uiContext !== 'string') {
       return Response.json({ error: 'uiContext must be a string' }, { status: 400 });
     }
@@ -122,7 +134,7 @@ export default defineTool({
     let sessionUser: { id: string; username: string; display_name: string; has_password: boolean } | null = null;
     try {
       const { getSessionUserOrDefault } = await import('../../../auth');
-      sessionUser = await getSessionUserOrDefault(req.headers);
+      sessionUser = lessonContext ? null : await getSessionUserOrDefault(req.headers);
     } catch (err) {
       console.warn('[operator-converse] session user resolution failed:', (err as Error).message);
     }
@@ -258,12 +270,14 @@ export default defineTool({
 
         let totalCost = 0;
         let unreportedFrames = 0;
+        let lessonAnswer: string | undefined;
         try {
           for await (const ev of dispatchProjectedToolStream(
             operatorConverseTool,
             converseToolName,
             {
               messages: body.messages ?? [],
+              voiceProfile: body.voiceProfile,
               trigger: body.trigger,
               welcomedUser: body.welcomed_user,
               mayAskActive: body.mayAskActive,
@@ -277,6 +291,7 @@ export default defineTool({
               // prompt builder loads the matching persona set ('operator' default).
               role,
               sessionUser,
+              lessonContext,
               // P-005 (D-007 §2): trust-keyed toolset / mount / prompt sections.
               hostTrust,
               principalToken,
@@ -292,6 +307,7 @@ export default defineTool({
               try {
                 const text = (ev.result.content[0] as { text?: string })?.text ?? '{}';
                 const out = JSON.parse(text) as { totalCost?: number; assembled?: string; unreportedFrames?: number };
+                if (lessonContext && typeof out.assembled === 'string') lessonAnswer = out.assembled.trim().slice(0, 2000);
                 if (typeof out.totalCost === 'number' && Number.isFinite(out.totalCost)) totalCost = out.totalCost;
                 if (typeof out.unreportedFrames === 'number' && Number.isSafeInteger(out.unreportedFrames) && out.unreportedFrames > 0) {
                   unreportedFrames += out.unreportedFrames;
@@ -305,7 +321,8 @@ export default defineTool({
               return;
             }
           }
-          sink.done({ costUsd: totalCost, ...(unreportedFrames > 0 ? { unreportedFrames } : {}) });
+          sink.done({ costUsd: totalCost, ...(unreportedFrames > 0 ? { unreportedFrames } : {}),
+            ...(lessonContext ? { answer: lessonAnswer ?? '' } : {}) });
         } catch (err) {
           if (!ctrl.signal.aborted) {
             sink.event('error', { message: err instanceof Error ? err.message : String(err) });

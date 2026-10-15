@@ -40,6 +40,13 @@ describe('GYM_SIGNAL_REGISTRY / resolveSignals', () => {
 });
 
 describe('evaluateSignals', () => {
+  it('marks incomplete regression coverage inapplicable instead of passing', () => {
+    const { results } = evaluateSignals(['regressionsFromTests'], {
+      preTests: [{ name: 'kept', passed: true }, { name: 'missing', passed: true }],
+      postTests: [{ name: 'kept', passed: true }],
+    });
+    expect(results).toEqual([{ name: 'regressionsFromTests', value: false, applicable: false }]);
+  });
   it('regressionsFromTests fires true on a pre-green test gone red', () => {
     const ctx: SignalContext = {
       preTests: [{ name: 't1', passed: true }],

@@ -6,7 +6,9 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
 import {
   parseJsonWithTrailer,
+  trackPhase,
   type AbortCompletionReceipt,
+  type PhaseTracker,
   type ToolResult,
 } from '@papercusp/tooldef';
 import { COORD_ROLES } from '../coordination/roles';
@@ -17,6 +19,7 @@ import { deriveAgentRunEvidenceRecordSafe, type EvidenceRecordSql } from './agen
 import {
   classifyRubricEvidenceCurrentness,
   getRubric,
+  readRubric,
   getRubricCriteriaHash,
   getRubricEvidenceIdentity,
   getRubricPlanRevision,
@@ -27,8 +30,10 @@ import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vettin
 import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { OperationHandleSchema, getBlueprintOperationTerminalWorker } from '../../blueprint/operation-service';
 import { readVettingConsultCritique } from '../../consult/get-feedback-core';
-import { readVettingWorkItemCritique } from '../../work-items';
+import { getWorkItem, readVettingWorkItemCritique, type WorkItem } from '../../work-items';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -45,6 +50,10 @@ import {
 } from '../../harness/improvements/observation-types';
 import { readRunningGeneration } from '../../scout/generation-watermark';
 import {
+  classifyGradingAuditCurrentness,
+  acquireGradingAuditSubjectMutex,
+  SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS,
+  ScorecardEmitMutexWaitTimeoutError,
   auditVerdictFromRatings,
   listScorecards,
   evaluateScorecardInstrumentContract,
@@ -58,19 +67,28 @@ import {
   parseGradedGeneration,
   computeWorkOnEverythingRollup,
   resolveScorecardInstrumentSnapshots,
-  validateWorkOnEverythingEvidenceEnvelope,
+  validateRubricRatingContracts,
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
 import { realGitProbe } from '../../release/judged-sha-containment';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
 import {
+  CLIPPED_SCORECARD_TEXT_CODE,
+  clippedScorecardTextMessage,
+  findClippedScorecardText,
+} from './emit-clipped-text';
+import {
   adequacyCardRevisionDisposition,
   PLAN_CLASS_RUBRIC_REFS,
+  SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
   specTestAdequacySubjectRef,
 } from '../plans/spec-test-adequacy';
-import { argsSchema as evaluatorArgsSchema } from '../plans/evaluate-spec-test-adequacy';
+import {
+  argsSchema as evaluatorArgsSchema,
+  replaySpecTestAdequacyForHistoricalAudit,
+} from '../plans/evaluate-spec-test-adequacy';
 import {
   collapseCriticsToSoleParty,
   resolveAcceptanceGraderEligibility,
@@ -110,9 +128,17 @@ import {
   type CriterionCheckRunner,
   type CriterionCheckRunnerResult,
 } from '../../rubrics-criterion-checks';
+import {
+  probeCheckResults,
+  readLatestRubricCheckResults,
+  recordCheckResultsReported,
+  type CheckLedgerOutcome,
+  type recordRubricCheckResults,
+} from '../../check-results-ledger';
+import { fillRatingsFromLedger } from '../../scorecard-ledger-fill';
 import { getEffectiveItemAudits, getLatestActivationAudit, getPlanItemStatuses } from '../../plan-audits';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
-import { resolvePlanHarnessSlug } from '../plans/source';
+import { resolvePlanHarness } from '../plans/source';
 
 /**
  * The `planTouched` reverse map: every implementing file the subject plan's work-items
@@ -141,6 +167,7 @@ import { acceptanceSeatRefusalHint, resolveAcceptanceSeatSuccession } from '../.
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
 import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 import { runtimeCitationRefusal } from '../../acceptance-runtime-citation';
+import { adoptComputedTenureRatings } from '../../goal-computed-tenure-card';
 // TYPE-ONLY (erased at runtime) — see defaultResolveAuthorSessionState below,
 // which mirrors rebind-identity.ts's own dynamic-import discipline for the
 // same oracle so this write-path module never carries it on its static graph.
@@ -383,7 +410,10 @@ function scorecardEmitMutexSql(): postgres.Sql {
   if (!_scorecardEmitMutexSql) {
     _scorecardEmitMutexSql = postgres(scorecardEmitMutexUrl(), {
       onnotice: () => {},
-      max: 1,
+      // The database advisory lock serializes emitters for the same dedup key.
+      // Keep a bounded set of sessions available so distinct keys can proceed
+      // independently instead of queueing behind one process-wide reservation.
+      max: 8,
       idle_timeout: 0,
       connection: {
         application_name: `pcusp:scorecard-emit-mutex:p${process.pid}`.slice(0, 63),
@@ -422,21 +452,26 @@ export function scorecardEmitMutexKey(input: {
 
 type ScorecardEmitMutexReservation = Awaited<ReturnType<ReturnType<typeof scorecardEmitMutexSql>['reserve']>>;
 
-async function acquireScorecardEmitMutex(key: string): Promise<() => Promise<void>> {
-  const reserved: ScorecardEmitMutexReservation = await scorecardEmitMutexSql().reserve();
+async function acquireScorecardEmitMutex(
+  key: string,
+  phases?: PhaseTracker,
+  waitTimeoutMs = SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS,
+): Promise<() => Promise<void>> {
+  const reserved: ScorecardEmitMutexReservation = await trackPhase(
+    phases,
+    'scorecards:emit:mutex:dedup:pool-reservation',
+    () => scorecardEmitMutexSql().reserve(),
+  );
   let acquired = false;
   try {
-    // The harness_admin role carries a finite lock_timeout (currently 15s), and
-    // may also acquire a statement_timeout in a future policy revision. This
-    // rendezvous is deliberately allowed to wait for an in-flight emitter: the
-    // tool itself has a 15-minute budget, while either inherited setting would
-    // abort a valid second emit long before that budget. Clear both session
-    // limits before the blocking lock, matching the backup/boot rendezvous
-    // contract. The client is dedicated to this mutex and never runs ordinary
-    // application queries.
-    await reserved`SET lock_timeout = 0`;
+    // Allow valid serialization waits beyond the role's inherited timeout, but
+    // stay below the 300s MCP caller deadline so a stuck holder becomes a
+    // retryable refusal. This client is dedicated to the mutex.
+    await reserved`SELECT set_config('lock_timeout', ${`${waitTimeoutMs}ms`}, false)`;
     await reserved`SET statement_timeout = 0`;
-    await reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`;
+    await trackPhase(phases, 'scorecards:emit:mutex:dedup:advisory-lock', () =>
+      reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`,
+    );
     acquired = true;
     return async () => {
       if (!acquired) return;
@@ -451,6 +486,9 @@ async function acquireScorecardEmitMutex(key: string): Promise<() => Promise<voi
     };
   } catch (error) {
     reserved.release();
+    if ((error as { code?: string } | null)?.code === '55P03') {
+      throw new ScorecardEmitMutexWaitTimeoutError('dedup', waitTimeoutMs);
+    }
     throw error;
   }
 }
@@ -494,6 +532,63 @@ const specTestAdequacyCurrentFingerprintSchema = z
       });
     }
   });
+const specTestAdequacyBindingMeasurementSchema = z
+  .object({
+    bindingId: z.number().int().positive(),
+    evidenceKind: z.string().trim().min(1).max(120),
+    evidenceRef: z.string().trim().min(1).max(2000),
+    status: z.enum(['measured', 'unavailable', 'unmeasured']),
+    measuredAtCommit: z.string().trim().min(1).max(128).optional(),
+  })
+  .strict()
+  .superRefine((binding, ctx) => {
+    if (binding.status !== 'measured' && binding.measuredAtCommit !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['measuredAtCommit'],
+        message: 'only a server-measured binding can carry measuredAtCommit',
+      });
+    }
+  });
+const specTestAdequacyMeasurementEvidenceSchema = z
+  .object({
+    status: z.enum(['none', 'measured', 'partial', 'unmeasured', 'degraded']),
+    selectedBindings: z.number().int().nonnegative().max(2000),
+    measuredBindings: z.number().int().nonnegative().max(2000),
+    unavailableBindings: z.array(z.object({
+      id: z.number().int().positive(),
+      evidenceKind: z.string().trim().min(1).max(120),
+      evidenceRef: z.string().trim().min(1).max(2000),
+      reason: z.string(),
+    }).strict()).max(2000),
+    withoutMeasurementBasis: z.array(z.object({
+      id: z.number().int().positive(),
+      evidenceKind: z.string().trim().min(1).max(120),
+      evidenceRef: z.string().trim().min(1).max(2000),
+    }).strict()).max(2000),
+    bindings: z.array(specTestAdequacyBindingMeasurementSchema).max(2000),
+  })
+  .strict()
+  .superRefine((evidence, ctx) => {
+    if (evidence.measuredBindings > evidence.selectedBindings) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['measuredBindings'],
+        message: 'measuredBindings cannot exceed selectedBindings',
+      });
+    }
+    const ids = new Set<number>();
+    evidence.bindings.forEach((binding, index) => {
+      if (ids.has(binding.bindingId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['bindings', index, 'bindingId'],
+          message: 'binding measurement identities must be unique',
+        });
+      }
+      ids.add(binding.bindingId);
+    });
+  });
 const specTestAdequacyRerunRecipeSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -531,6 +626,9 @@ const specTestAdequacyRerunRecipeSchema = z
               .strict(),
           )
           .max(500),
+        // The evaluator pins immutable binding rows as well as their references.
+        // Reuse its selector schema so a generated replay keeps the same cohort.
+        bindingIds: evaluatorArgsSchema.shape.bindingIds,
       })
       .strict(),
     current: z
@@ -541,6 +639,9 @@ const specTestAdequacyRerunRecipeSchema = z
           .max(500),
       })
       .strict(),
+    // Added for new recipes; omitted on historical cards. Emit verifies this
+    // server-derived snapshot against a fresh evaluator measurement before writing.
+    measurementEvidence: specTestAdequacyMeasurementEvidenceSchema.optional(),
     derivation: z
       .object({
         kind: z.literal('listSpecEvidence.currentness'),
@@ -553,13 +654,19 @@ const specTestAdequacyRerunRecipeSchema = z
 
 const scorecardEmitBaseShape = {
     rubricRef: z.string().min(1).max(120),
+    interactionReviewerHandle: OperationHandleSchema.optional()
+      .describe('CRM review operation receipt. Resolves the actual terminal reviewer independently of the submitting app caller.'),
+    rubricRevision: z.number().int().positive().optional()
+      .describe('Expected reviewed rubric revision; refuse if the instrument changed before filing.'),
+    criteriaHash: z.string().regex(/^[a-f0-9]{64}$/).optional()
+      .describe('Expected reviewed criterion fingerprint; refuse if it changed before filing.'),
     sourceHive: z
       .string()
       .min(1)
       .max(120)
       .optional()
       .describe(
-        "Hive that produced/filed this scorecard; omitted defaults to the caller's hive. In cross-hive grading, use the grader/source hive here, not the harness owning the rubric subject plan; use targetHive for that subject hive.",
+        "Producing/grader hive; defaults to caller hive. For cross-hive grading put the subject plan's hive in targetHive.",
       ),
     targetHive: z
       .string()
@@ -567,8 +674,14 @@ const scorecardEmitBaseShape = {
       .max(120)
       .optional()
       .describe(
-        "Hive whose plan/repository is being graded. In cross-hive acceptance grading, this is the rubric subject plan's harness and directs deterministic checks to the subject tree; it does not change sourceHive.",
+        "Subject plan/repository hive; directs deterministic checks to that tree. Independent of sourceHive.",
       ),
+    harness: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe("Subject plan's harness, as in every plans tool: sets targetHive. Refused if it disagrees with targetHive."),
     title: z.string().min(1).max(240).optional(),
     body: z.string().max(8000).optional(),
     ratings: z
@@ -604,6 +717,17 @@ const scorecardEmitBaseShape = {
         "The EXACT independent scorecard this acceptance verdict responds to (its issue id, e.g. 'EI-123…'). Valid only alongside `acceptance`. Naming it lets you omit `ratings`: the server re-reads that card, re-checks it against the same independence, completeness and current-revision rails the scan applies, and adopts its ratings verbatim into your card, stamping ratingsProvenance so the adoption stays auditable. Prefer it over omitting the reference — without it the server accepts whatever independent card it finds first, which may not be the one you read.",
       ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
+    fromLedger: z
+      .boolean()
+      .optional()
+      .describe('Rate probe/instrument-checked criteria from their latest results-ledger rows; rate only the rest.'),
+    ledgerDispositions: z
+      .record(
+        z.string().min(1),
+        scorecardRatingEntrySchema.pick({ remediation: true, disregard: true, suggestion: true, attribution: true }),
+      )
+      .optional()
+      .describe('With fromLedger: remediation/disregard for a poor ledger-rated criterion, without a rating.'),
     current: z
       .array(evidenceCurrentInputSchema)
       .max(2000)
@@ -653,7 +777,12 @@ const scorecardEmitBaseShape = {
       .min(1)
       .max(120)
       .optional()
-      .describe('Issue id of the earlier scorecard this corrected filing replaces.'),
+      .describe(
+        'Issue id of the earlier scorecard this corrected filing replaces. Changed evidence from the same author automatically supersedes their latest current terminal card for the same subject and rubric identity; pass this explicitly for other corrections.',
+      ),
+    baselineRef: z.string().min(1).max(120).optional().describe(
+      'Preserved audited pre-repair scorecard for a comparable re-grade. Unlike supersedes, this does not replace or correct the baseline; use the same target and pinned rubric revision.',
+    ),
     terminal: z
       .boolean()
       .optional()
@@ -730,7 +859,26 @@ type SpecTestAdequacyReplayRow = {
   verdict?: unknown;
   wouldBlock?: unknown;
   ratings?: unknown;
+  measurementEvidence?: unknown;
 };
+
+function measurementEvidenceFingerprint(value: unknown): string | undefined {
+  const parsed = specTestAdequacyMeasurementEvidenceSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const evidence = parsed.data;
+  return JSON.stringify({
+    status: evidence.status,
+    selectedBindings: evidence.selectedBindings,
+    measuredBindings: evidence.measuredBindings,
+    unavailableBindings: [...evidence.unavailableBindings].sort((a, b) =>
+      a.id - b.id || a.evidenceKind.localeCompare(b.evidenceKind) || a.evidenceRef.localeCompare(b.evidenceRef),
+    ),
+    withoutMeasurementBasis: [...evidence.withoutMeasurementBasis].sort((a, b) =>
+      a.id - b.id || a.evidenceKind.localeCompare(b.evidenceKind) || a.evidenceRef.localeCompare(b.evidenceRef),
+    ),
+    bindings: [...evidence.bindings].sort((a, b) => a.bindingId - b.bindingId),
+  });
+}
 
 type SpecTestAdequacyEvaluatorBuild = z.infer<typeof specTestAdequacyEvaluatorBuildSchema>;
 
@@ -784,7 +932,8 @@ function unwrapSpecTestAdequacyReplay(result: unknown): unknown {
  * can exceed the result door and return a spill envelope instead of the payload
  * the guard must inspect. Force the evaluator's contract-equivalent summary
  * shape while retaining full-tier materialization so those compact fields are
- * never tier-trimmed.
+ * never tier-trimmed. Selection arguments stay exactly as recorded; forcing
+ * includeDraft false would replay draft-origin cards as selection_empty.
  */
 function compactSpecTestAdequacyReplayArgs(
   replayArgs: Record<string, unknown>,
@@ -792,7 +941,6 @@ function compactSpecTestAdequacyReplayArgs(
   return {
     ...replayArgs,
     detail: 'summary',
-    includeDraft: false,
     payloadTier: 'full',
   };
 }
@@ -808,14 +956,25 @@ async function validateSpecTestAdequacyReplay(
   args: z.infer<typeof scorecardEmitArgs>,
   dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
 ): Promise<SpecTestAdequacyBindingError | undefined> {
-  if (args.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF || !args.rerunRecipe || !dispatchTool) return undefined;
+  if (args.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF || !args.rerunRecipe) return undefined;
 
   const parsedRecipe = specTestAdequacyRerunRecipeSchema.safeParse(args.rerunRecipe);
   if (!parsedRecipe.success) return undefined;
   const submittedPasses = Object.entries(args.ratings ?? {}).filter(
     ([, entry]) => ratingVerdict(entry.rating) === 'pass',
   );
-  if (submittedPasses.length === 0) return undefined;
+  const recordedMeasurementEvidence = parsedRecipe.data.measurementEvidence;
+  if (submittedPasses.length === 0 && recordedMeasurementEvidence === undefined) return undefined;
+  if (!dispatchTool) {
+    return recordedMeasurementEvidence
+      ? {
+          code: 'invalid_spec_test_adequacy_binding',
+          error:
+            `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' cannot verify the recorded server measurement provenance without an evaluator replay; ` +
+            'no scorecard was persisted',
+        }
+      : undefined;
+  }
 
   // New recipes carry the pin in both the human-readable recipe and the exact
   // evaluator args. Historical cards may only have the former, so thread that
@@ -910,9 +1069,27 @@ async function validateSpecTestAdequacyReplay(
     };
   }
 
+  if (recordedMeasurementEvidence !== undefined) {
+    const recordedFingerprint = measurementEvidenceFingerprint(recordedMeasurementEvidence);
+    const replayFingerprint = measurementEvidenceFingerprint(row.measurementEvidence);
+    if (recordedFingerprint === undefined || replayFingerprint === undefined || recordedFingerprint !== replayFingerprint) {
+      return {
+        code: 'invalid_spec_test_adequacy_binding',
+        error:
+          `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' recorded server-measured per-binding measurement provenance ` +
+          'does not match the evaluator\'s fresh measurement; no scorecard was persisted',
+      };
+    }
+  }
+
   const replayRatings =
     row.ratings && typeof row.ratings === 'object' && !Array.isArray(row.ratings)
-      ? (row.ratings as Record<string, { rating?: unknown }>)
+      ? (row.ratings as Record<string, {
+          rating?: unknown;
+          evidence?: unknown;
+          evidenceTruncated?: unknown;
+          suggestion?: unknown;
+        }>)
       : {};
   const wouldBlock = Array.isArray(row.wouldBlock)
     ? row.wouldBlock.filter((key): key is string => typeof key === 'string')
@@ -922,12 +1099,21 @@ async function validateSpecTestAdequacyReplay(
     const replayVerdict =
       replayRating && typeof replayRating.rating === 'string' ? ratingVerdict(replayRating.rating) : null;
     if (replayVerdict !== 'pass' || wouldBlock.includes(criterion)) {
+      // Preserve the reason from this exact replay. Re-running the evaluator later
+      // can measure a different evidence cohort and cannot reconstruct this refusal.
+      const diagnostic = (['evidence', 'suggestion'] as const).flatMap((key) => {
+        const value = replayRating?.[key];
+        if (typeof value !== 'string' || !value.trim()) return [];
+        const truncated = value.length > 1200 || (key === 'evidence' && replayRating.evidenceTruncated === true);
+        return [`${key}: ${value.slice(0, 1200)}${truncated ? ' [truncated]' : ''}`];
+      }).join('; ');
       return {
         code: 'invalid_spec_test_adequacy_binding',
         error:
           `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' cannot claim ${criterion}='${submitted.rating}' ` +
           `when the exact evaluator replay returns '${typeof replayRating?.rating === 'string' ? replayRating.rating : 'unknown'}' ` +
           `${wouldBlock.includes(criterion) ? `and wouldBlock includes '${criterion}'` : ''}; ` +
+          (diagnostic ? `${diagnostic}; ` : '') +
           'use the evaluator ratings returned by plans:evaluate-spec-test-adequacy',
       };
     }
@@ -939,6 +1125,17 @@ type GradingAuditReplayConsistencyError = {
   code: 'grading_audit_replay_uncorroborated' | 'grading_audit_replay_consistent' | 'grading_audit_evaluator_changed';
   error: string;
 };
+
+function gradingAuditEvidenceReferenceKeys(evidenceRef: string, evidenceKind?: string): Set<string> {
+  const ref = evidenceRef.trim();
+  const keys = new Set([ref]);
+  const testRunRef = /(?:^|\b)test-run(?:\s+|:)(\d+)(?=$|\b)/i.exec(ref);
+  if (testRunRef) keys.add(`test-run:${testRunRef[1]}`);
+  if (evidenceKind?.trim().toLowerCase() === 'test-run' && /^\d+$/.test(ref)) {
+    keys.add(`test-run:${ref}`);
+  }
+  return keys;
+}
 
 /**
  * A grading-integrity audit can call the target card's exact evaluator recipe
@@ -953,7 +1150,8 @@ type GradingAuditReplayConsistencyError = {
 export async function validateGradingAuditReplayConsistency(
   gradedObservation: NonNullable<ReturnType<typeof asStructuredObservation>>,
   auditRatings: z.infer<typeof scorecardEmitArgs>['ratings'],
-  dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
+  _dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
+  historicalContext?: { gradedCardCreatedAt?: string; workspaceId?: string },
 ): Promise<GradingAuditReplayConsistencyError | undefined> {
   if (
     gradedObservation.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF ||
@@ -965,7 +1163,7 @@ export async function validateGradingAuditReplayConsistency(
   }
 
   const parsedRecipe = specTestAdequacyRerunRecipeSchema.safeParse(gradedObservation.rerunRecipe);
-  if (!parsedRecipe.success || !dispatchTool) {
+  if (!parsedRecipe.success) {
     return {
       code: 'grading_audit_replay_uncorroborated',
       error:
@@ -982,22 +1180,48 @@ export async function validateGradingAuditReplayConsistency(
       ? { evaluatorBuild: recordedEvaluatorBuild }
       : {}),
   };
+  const selection = parsedRecipe.data.selection;
+  const selectedEvidenceRefs = [...new Set(selection.evidence.map(({ evidenceRef }) => evidenceRef))].sort();
+  const historicalArgs = {
+    ...replayArgs,
+    ...(replayArgs.slug === undefined ? { slug: selection.planSlug } : {}),
+    ...(replayArgs.specIds === undefined ? { specIds: [selection.specId] } : {}),
+    ...(replayArgs.evidenceRefs === undefined ? { evidenceRefs: selectedEvidenceRefs } : {}),
+    ...(replayArgs.bindingIds === undefined && selection.bindingIds !== undefined
+      ? { bindingIds: selection.bindingIds }
+      : {}),
+    ...(replayArgs.specRevision === undefined ? { specRevision: selection.specRevision } : {}),
+    ...(replayArgs.specFingerprint === undefined ? { specFingerprint: selection.specFingerprint } : {}),
+    ...(replayArgs.replaySnapshot !== true ? { replaySnapshot: true } : {}),
+    ...(replayArgs.current === undefined && parsedRecipe.data.current.supplied
+      ? { current: parsedRecipe.data.current.fingerprints }
+      : {}),
+  };
 
+  const createdAt = historicalContext?.gradedCardCreatedAt;
+  const auditAsOf = createdAt ? new Date(createdAt) : null;
+  if (!auditAsOf || !Number.isFinite(auditAsOf.getTime()) || !historicalContext?.workspaceId) {
+    return {
+      code: 'grading_audit_replay_uncorroborated',
+      error:
+        'grading-integrity cannot reconstruct the graded card snapshot because its creation time or workspace scope is unavailable; no audit card was persisted',
+    };
+  }
   let replay: unknown;
   try {
-    replay = unwrapSpecTestAdequacyReplay(
-      await dispatchTool('plans:evaluate-spec-test-adequacy', compactSpecTestAdequacyReplayArgs(replayArgs)),
-    );
+    replay = await replaySpecTestAdequacyForHistoricalAudit({
+      args: historicalArgs as z.infer<typeof evaluatorArgsSchema>,
+      selection,
+      workspaceId: historicalContext.workspaceId,
+      auditAsOf,
+    });
   } catch (error) {
     return {
       code: 'grading_audit_replay_uncorroborated',
       error:
-        `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
-        `re-runnable-evidence='pass': the server-side evaluator replay failed ` +
-        `(${error instanceof Error ? error.message : String(error)}); no audit card was persisted`,
+        `grading-integrity cannot replay the graded card's historical evidence (${error instanceof Error ? error.message : String(error)}); no audit card was persisted`,
     };
   }
-
   const payload =
     replay && typeof replay === 'object' && !Array.isArray(replay)
       ? (replay as {
@@ -1006,8 +1230,27 @@ export async function validateGradingAuditReplayConsistency(
           error?: unknown;
           evaluatorBuild?: unknown;
           evaluatorBuildDrift?: unknown;
+          historicalAuditOnly?: unknown;
         })
       : null;
+  const historicalMarker = payload?.historicalAuditOnly;
+  if (
+    payload?.ok === true &&
+    (!historicalMarker ||
+      typeof historicalMarker !== 'object' ||
+      Array.isArray(historicalMarker) ||
+      (historicalMarker as { provenance?: unknown }).provenance !== 'historical-audit-only' ||
+      (historicalMarker as { asOf?: unknown }).asOf !== auditAsOf.toISOString() ||
+      !['historical-snapshot', 'unknown-at-emission'].includes(
+        String((historicalMarker as { freshness?: unknown }).freshness),
+      ))
+  ) {
+    return {
+      code: 'grading_audit_replay_uncorroborated',
+      error:
+        'grading-integrity refused a replay without matching historical audit-only provenance; no audit card was persisted',
+    };
+  }
   if (payload?.ok === false) {
     return {
       code: 'grading_audit_replay_uncorroborated',
@@ -1054,7 +1297,6 @@ export async function validateGradingAuditReplayConsistency(
     }
   }
 
-  const selection = parsedRecipe.data.selection;
   const rows = Array.isArray(payload?.rows) ? (payload.rows as SpecTestAdequacyReplayRow[]) : [];
   const row = rows.find(
     (candidate) =>
@@ -1123,14 +1365,46 @@ export async function validateGradingAuditReplayConsistency(
       replayRating && typeof replayRating.rating === 'string' ? ratingVerdict(replayRating.rating) : null;
     return replayVerdict !== gradedVerdict || wouldBlock.has(criterion) ? [criterion] : [];
   });
-  if (mismatches.length > 0) return undefined;
+  // Replaying the exact evaluator proves deterministic reproduction, not that the
+  // selected test case semantically exercises the clause. An independent auditor
+  // may find that mismatch in the same bound evidence. Let that challenge proceed
+  // only with the existing structured citation fields, and only when the cited
+  // artifact is outside the graded card's exact evidence selection. A free-form
+  // disagreement or a citation back to the same selection still fails closed.
+  const auditFinding = auditRatings?.['degenerate-distribution'];
+  const independentEvidenceRef = auditFinding?.evidenceRef?.trim();
+  const replayEvidenceRefs = new Set<string>();
+  for (const { evidenceKind, evidenceRef } of selection.evidence) {
+    for (const key of gradingAuditEvidenceReferenceKeys(evidenceRef, evidenceKind)) replayEvidenceRefs.add(key);
+  }
+  for (const evidenceRef of parsedRecipe.data.args.evidenceRefs ?? []) {
+    for (const key of gradingAuditEvidenceReferenceKeys(evidenceRef)) replayEvidenceRefs.add(key);
+  }
+  for (const id of parsedRecipe.data.args.bindingIds ?? []) {
+    replayEvidenceRefs.add(String(id));
+    replayEvidenceRefs.add(`binding:${id}`);
+  }
+  const auditEvidenceRefs = independentEvidenceRef
+    ? gradingAuditEvidenceReferenceKeys(independentEvidenceRef, auditFinding?.evidenceKind)
+    : new Set<string>();
+  const citesIndependentEvidence =
+    typeof auditFinding?.evidenceKind === 'string' &&
+    auditFinding.evidenceKind.trim().length > 0 &&
+    !!independentEvidenceRef &&
+    ![...auditEvidenceRefs].some((evidenceRef) => replayEvidenceRefs.has(evidenceRef));
+  if (mismatches.length > 0 || citesIndependentEvidence) return undefined;
 
   return {
     code: 'grading_audit_replay_consistent',
     error:
       `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
       `re-runnable-evidence='pass': the graded card's exact server-side evaluator replay reproduced ` +
-      `every applicable rating with no wouldBlock contradiction; no audit card was persisted`,
+      `every applicable rating, and the audit supplied no separately cited evidence outside the replay selection. ` +
+      `For an external challenge, provide both ratings['degenerate-distribution'].evidenceKind and ` +
+      `ratings['degenerate-distribution'].evidenceRef with a reference outside the replay selection ` +
+      `(for example evidenceKind:'test-run', evidenceRef:'20924105'). The prose evidence field is preserved ` +
+      `as the explanation, but this guard does not parse it to establish selection membership; ` +
+      'no audit card was persisted',
   };
 }
 
@@ -1163,6 +1437,19 @@ function validateSpecTestAdequacyBinding(
     };
   }
 
+  // Equality of two unknown SHAs does not identify a replayable evaluator.
+  // Refuse before replay/persistence, so a best-effort build-info failure cannot
+  // create a card whose sole independent auditor has no exact build to run.
+  const evaluatorBuilds = [parsedRecipe.data.evaluatorBuild, parsedRecipe.data.args.evaluatorBuild];
+  if (evaluatorBuilds.some(build => build && !build.sha?.trim())) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' cannot certify an unmeasured evaluator build; ` +
+        'restore the evaluator artifact identity and re-run its current draft; no scorecard was persisted',
+    };
+  }
+
   const selection = parsedRecipe.data.selection;
   const expectedRef = specTestAdequacySubjectRef(selection.planSlug, selection.specId, selection.specRevision);
   if (args.subject?.kind !== 'plan' || args.subject.ref !== expectedRef) {
@@ -1170,7 +1457,22 @@ function validateSpecTestAdequacyBinding(
       code: 'invalid_spec_test_adequacy_binding',
       error:
         `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' requires subject:{ kind:'plan', ref:'${expectedRef}' } ` +
-        'matching rerunRecipe.selection (the evaluator-owned clause revision)',
+      'matching rerunRecipe.selection (the evaluator-owned clause revision)',
+    };
+  }
+
+  // A matching build identity only proves that the same evaluator build replayed;
+  // a stale evaluator can reproduce its own outdated rule. Do not persist a new card
+  // unless the rule revision matches the emitter's current evaluator contract. Legacy
+  // recipes without the stamp are revision 1, matching adequacyCardRevisionDisposition.
+  const recordedEvaluatorRevision = parsedRecipe.data.evaluatorRevision ?? 1;
+  if (recordedEvaluatorRevision !== SPEC_TEST_ADEQUACY_EVALUATOR_REVISION) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' evaluator rule revision ${recordedEvaluatorRevision} ` +
+        `does not match current revision ${SPEC_TEST_ADEQUACY_EVALUATOR_REVISION}; ` +
+        're-run the evaluator and emit its fresh draft; no scorecard was persisted',
     };
   }
 
@@ -1236,7 +1538,20 @@ export async function cleanupAcceptanceGraderTasks(
  * paths belong to targetHive, not the grader's checkout. Same-Hive and legacy
  * callers retain the handler's caller-root behavior.
  */
-async function resolveDeterministicCheckScope(
+type DeterministicCheckScope =
+  | { root: string; workspaceId?: string; harnessSlug?: string; refusal?: undefined }
+  | {
+      /** The subject plan's slug names plans in several harnesses and nothing
+       *  on the call or the rubric says which one is graded. */
+      refusal: {
+        error: 'subject_plan_ambiguous_across_harnesses';
+        subjectPlan: string;
+        candidates: string[];
+        detail: string;
+      };
+    };
+
+export async function resolveDeterministicCheckScope(
   args: Pick<z.infer<typeof scorecardEmitArgs>, 'targetHive'>,
   input: {
     ctxHarness?: string;
@@ -1244,22 +1559,38 @@ async function resolveDeterministicCheckScope(
     checkRoot?: string;
     rubricWorkspaceId?: string | null;
     rubricSubjectPlan?: string | null;
+    rubricSubjectHarness?: string | null;
   },
-): Promise<{ root: string; workspaceId?: string; harnessSlug?: string }> {
+): Promise<DeterministicCheckScope> {
   const callerRoot = input.checkRoot ?? resolveAgentWorkspaceRoot({});
   // EI-21384279769470409: a workspace-scoped superuser dispatch may omit
   // ctx.workspaceId even though the rubric itself is workspace-bound.
   const workspaceId = input.workspaceId ?? input.rubricWorkspaceId ?? undefined;
   // Acceptance graders often omit targetHive because the rubric already names its
   // subject plan. Recover that plan's owning harness so repo-relative checks run in
-  // the subject tree rather than the grader's checkout. An explicit targetHive is
-  // authoritative and short-circuits this fallback, preserving cross-hive callers'
-  // existing precedence.
-  const targetHive =
-    args.targetHive ??
-    (input.rubricSubjectPlan && workspaceId
-      ? await resolvePlanHarnessSlug(workspaceId, input.rubricSubjectPlan)
-      : undefined);
+  // the subject tree rather than the grader's checkout. Precedence: an explicit
+  // targetHive, then the harness the rubric recorded for its subject, then a
+  // slug-only lookup. The lookup refuses a slug held by several harnesses rather
+  // than run the checks in whichever same-slug plan was touched last (P-006).
+  let targetHive: string | null | undefined = args.targetHive ?? input.rubricSubjectHarness ?? undefined;
+  if (!targetHive && input.rubricSubjectPlan && workspaceId) {
+    const resolution = await resolvePlanHarness(workspaceId, input.rubricSubjectPlan);
+    if (resolution.status === 'ambiguous') {
+      return {
+        refusal: {
+          error: 'subject_plan_ambiguous_across_harnesses',
+          subjectPlan: input.rubricSubjectPlan,
+          candidates: resolution.candidates,
+          detail:
+            `The rubric's subject plan '${input.rubricSubjectPlan}' exists in several harnesses of ` +
+            `workspace '${workspaceId}' (${resolution.candidates.join(', ')}), and neither this call nor ` +
+            'the rubric names one, so its tests-checks have no unambiguous tree to run in. Pass ' +
+            'targetHive naming the subject plan\'s harness.',
+        },
+      };
+    }
+    if (resolution.status === 'resolved') targetHive = resolution.harnessSlug;
+  }
   const harnessSlug = targetHive ?? input.ctxHarness;
   // Scope is useful only as a complete pair: the ledger query requires both
   // tenant dimensions, and passing one half would recreate the same ambiguous
@@ -1310,6 +1641,22 @@ async function defaultResolveAuthorSessionState(
  * same-agent-new-sid successor at rebind, which remains correct for them.
  */
 
+class ScorecardGenerationChangedBeforePersistError extends Error {
+  readonly code = 'generation_changed_re_gather_required' as const;
+
+  constructor(
+    readonly evidenceHostStartedAt: string,
+    readonly persistenceHostStartedAt: string,
+  ) {
+    super(
+      `The Scout bg-host restarted while scorecard evidence was being gathered ` +
+        `(hostStartedAt ${evidenceHostStartedAt} → ${persistenceHostStartedAt}). ` +
+        'Re-run scorecards:evaluate and scorecards:emit so every instrument snapshot belongs to one host generation. No scorecard was filed.',
+    );
+    this.name = 'ScorecardGenerationChangedBeforePersistError';
+  }
+}
+
 export async function emitScorecard(
   args: z.infer<typeof scorecardEmitArgs>,
   input: {
@@ -1317,11 +1664,15 @@ export async function emitScorecard(
     ctxHarness?: string;
     role?: string;
     workspaceId?: string;
+    /** Internal read-only classification for an evaluator-produced draft. */
+    previewOnly?: boolean;
     /** Full request context used by the bounded post-write audit-dispatch repair. */
     launchContext?: GradingAuditLaunchContext;
     /** P-011 (D-006): the tree tests-check files resolve + run against — the handler
      *  passes its ctx-resolved root; omitted ⇒ the resolver's ctx-less fallback. */
     checkRoot?: string;
+    /** The dispatcher's per-call phase recorder, carried through the tool-context bridge. */
+    phases?: PhaseTracker;
   },
   deps: {
     /** Injectable seam for tests — production runs the real router via the testing:run core. */
@@ -1332,6 +1683,10 @@ export async function emitScorecard(
     evaluateProbeChecks?: typeof evaluateCriterionProbeChecks;
     /** Host-bound direct dispatcher used by ContinuityProbe checks. */
     dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+    /** Injectable results-ledger writer (P-006); production writes harness_shared.test_runs. */
+    recordCheckResults?: typeof recordRubricCheckResults;
+    /** Injectable latest-result read for `fromLedger` (P-007); production reads test_runs. */
+    readLatestCheckResults?: typeof readLatestRubricCheckResults;
     /** Injectable seam for tests — production runs the native Cargo crate runner. */
     evaluateCargoChecks?: typeof evaluateCriterionCargoChecks;
     evaluateCoverageChecks?: typeof evaluateCriterionCoverageChecks;
@@ -1356,10 +1711,129 @@ export async function emitScorecard(
     closeSourceAuditConsults?: typeof closeSourceAuditConsults;
     /** Tri-state git ancestry seam for replay-based grading-integrity audits. */
     generationAncestry?: GenerationAncestryProbe;
+    /** Canonical producing-task read for CRM interaction reviewer independence. */
+    readInteractionProducer?: (workspaceId: string, id: string, opts: { includeBody: false }) =>
+      Promise<Pick<WorkItem, 'state' | 'terminalOwner' | 'terminalCompletionRef'> | null>;
+    readInteractionReviewer?: (handle: z.infer<typeof OperationHandleSchema>, callerId: string) =>
+      ReturnType<typeof getBlueprintOperationTerminalWorker>;
+    /** Shortened mutex deadline seam for real-Postgres contention tests. */
+    scorecardMutexWaitTimeoutMs?: number;
   } = {},
 ) {
-  const rubric = await getRubric(args.rubricRef);
-  if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  // WI-10005715: a field that ENDS in the MCP result door's clip marker is a clipped
+  // tool response re-typed as evidence. Refuse before ANY store read, so a clipped
+  // draft costs nothing and persists nothing. Covers every route into the write
+  // facade (scorecards:emit and plans:certify-spec-clauses share this function).
+  const clippedPath = findClippedScorecardText(args);
+  if (clippedPath) {
+    // An inline literal on purpose: see clippedScorecardTextMessage for why a helper-built
+    // object here strands readers of the result's optional fields.
+    return {
+      ok: false as const,
+      code: CLIPPED_SCORECARD_TEXT_CODE,
+      error: clippedScorecardTextMessage(clippedPath),
+    };
+  }
+  const requestedMutexWaitTimeoutMs = deps.scorecardMutexWaitTimeoutMs;
+  const scorecardMutexWaitTimeoutMs =
+    typeof requestedMutexWaitTimeoutMs === 'number' && Number.isFinite(requestedMutexWaitTimeoutMs) && requestedMutexWaitTimeoutMs > 0
+      ? Math.floor(Math.min(requestedMutexWaitTimeoutMs, SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS))
+      : SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS;
+  const rubricRead = await readRubric(args.rubricRef);
+  if (rubricRead.kind === 'ambiguous') throw rubricRead.error;
+  if (rubricRead.kind === 'read-failed') {
+    return {
+      ok: false as const,
+      error:
+        `rubric '${args.rubricRef}' could not be resolved because the backing plan read failed; ` +
+        'retry or verify independently before treating it as absent',
+    };
+  }
+  if (rubricRead.kind === 'missing') return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  const rubric = rubricRead.rubric;
+  if ((args.rubricRevision !== undefined && args.rubricRevision !== rubric.revision) ||
+      (args.criteriaHash !== undefined && args.criteriaHash !== rubric.criteriaHash)) {
+    return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',
+      error: 'The reviewed rubric revision or criterion fingerprint changed; re-review before filing.' };
+  }
+  // CRM grades the task that PRODUCED the call/email, never its reviewer task.
+  // Enforce this at the canonical writer too: an app-side parse gate alone can
+  // be bypassed by a producer calling scorecards:emit directly.
+  let interactionReviewer: { ownerId: string; completionRef: string; outputEvidenceRef: string; handle: z.infer<typeof OperationHandleSchema> } | undefined;
+  if (rubric.rubricId === 'crm-interaction-quality') {
+    if (rubric.status !== 'active') {
+      return { ok: false as const, code: 'interaction_rubric_not_active',
+        error: 'CRM interaction grading requires an independently ratified active rubric.' };
+    }
+    if (args.subject?.kind !== 'work-item' || !/^WI-\d+$/.test(args.subject.ref) || !input.workspaceId ||
+        args.rubricRevision === undefined || args.criteriaHash === undefined) {
+      return { ok: false as const, code: 'interaction_producer_required',
+        error: 'CRM interaction grading requires a producing work-item subject, concrete workspace, and reviewed rubric revision/hash.' };
+    }
+    let producer;
+    try {
+      producer = deps.readInteractionProducer
+        ? await deps.readInteractionProducer(input.workspaceId, args.subject.ref, { includeBody: false })
+        : await runWithWorkspaceIfConcrete(input.workspaceId, () =>
+          getWorkItem(args.subject!.ref, args.targetHive ?? args.sourceHive ?? 'crm', { includeBody: false }));
+    } catch {
+      return { ok: false as const, code: 'interaction_producer_unreadable',
+        error: 'Could not resolve the producing task; no interaction scorecard was filed.' };
+    }
+    if (!producer?.terminalOwner || !producer.terminalCompletionRef ||
+        !['done', 'passed', 'resolved', 'closed'].includes(producer.state)) {
+      return { ok: false as const, code: 'interaction_producer_unresolved',
+        error: 'The producing task must have a terminal owner and completion evidence before independent grading.' };
+    }
+    const handle = args.interactionReviewerHandle;
+    if (!handle || handle.workspaceId !== input.workspaceId || handle.operationId !== 'call-review' ||
+        handle.target.kind !== 'work-item' || handle.target.id === args.subject.ref ||
+        handle.harnessSlug !== (args.sourceHive ?? input.ctxHarness)) {
+      return { ok: false as const, code: 'interaction_reviewer_required',
+        error: 'CRM grading requires the distinct call-review operation handle in the caller workspace and harness.' };
+    }
+    try {
+      const reviewer = deps.readInteractionReviewer
+        ? await deps.readInteractionReviewer(handle, input.createdBy)
+        : await getBlueprintOperationTerminalWorker(getOrgPg().sql, handle, input.createdBy);
+      // Private source expires at completion. Its trusted non-content identity
+      // remains in the accepted input pin for canonical scorecard validation.
+      const context = reviewer.input.reviewBinding as Record<string, unknown> | undefined;
+      if (!reviewer.ownerId || !reviewer.completionRef || context?.gradedWorkItemRef !== args.subject.ref ||
+          context.rubricRef !== args.rubricRef || context.rubricRevision !== args.rubricRevision ||
+          context.criteriaHash !== args.criteriaHash) {
+        return { ok: false as const, code: 'interaction_reviewer_mismatch',
+          error: 'The canonical review operation does not cover this producing task and reviewed instrument.' };
+      }
+      const related = deps.lineageRelated ?? areAcceptanceLineageRelated;
+      if (await related(producer.terminalOwner, input.createdBy) || await related(producer.terminalOwner, reviewer.ownerId)) {
+        return { ok: false as const, code: 'interaction_grader_in_producer_lineage',
+          error: 'The producing agent and its lineage cannot grade their own CRM interaction.' };
+      }
+      // Bind the app's submitted ratings to the validated reviewer output, rather
+      // than treating possession of a review handle as permission to invent them.
+      const grade = z.object({
+        gradedWorkItemRef: z.string(), rubricRef: z.string(), rubricRevision: z.number(), criteriaHash: z.string(),
+        ratings: z.array(z.object({ key: z.string(), rating: z.string(), evidence: z.string(), evidenceRef: z.string() })),
+      }).safeParse((reviewer.output as { interactionGrade?: unknown } | null)?.interactionGrade);
+      const submitted = args.ratings;
+      if (!grade.success || !submitted || !reviewer.evidenceRef ||
+          grade.data.gradedWorkItemRef !== args.subject.ref || grade.data.rubricRef !== args.rubricRef ||
+          grade.data.rubricRevision !== args.rubricRevision || grade.data.criteriaHash !== args.criteriaHash ||
+          new Set(grade.data.ratings.map(entry => entry.key)).size !== grade.data.ratings.length ||
+          Object.keys(submitted).length !== grade.data.ratings.length ||
+          grade.data.ratings.some(entry => submitted[entry.key]?.rating !== entry.rating ||
+            submitted[entry.key]?.evidence !== entry.evidence || submitted[entry.key]?.evidenceRef !== entry.evidenceRef)) {
+        return { ok: false as const, code: 'interaction_reviewer_output_mismatch',
+          error: 'Submitted CRM ratings must match the validated call-review output and its instrument pins.' };
+      }
+      interactionReviewer = { ownerId: reviewer.ownerId, completionRef: reviewer.completionRef,
+        outputEvidenceRef: reviewer.evidenceRef, handle };
+    } catch {
+      return { ok: false as const, code: 'interaction_producer_unreadable',
+        error: 'Could not verify reviewer independence; no interaction scorecard was filed.' };
+    }
+  }
   // P-004: the meta-rubric is an attestation surface, not a free-standing
   // observation. Without a subject the scorecard cannot say WHICH acceptance
   // rubric it vetted, so it can never satisfy the ship gate and only creates a
@@ -1393,9 +1867,15 @@ export async function emitScorecard(
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
   let releaseScorecardEmitMutex: (() => Promise<void>) | undefined;
+  let releaseGradingAuditSubjectMutex: (() => Promise<void>) | undefined;
   try {
-    let runningGenerationRead = false;
-    let runningGeneration: Awaited<ReturnType<typeof readRunningGeneration>> | null = null;
+    // Bind the card to the Scout host generation that was current before this
+    // emit started resolving instrument snapshots and collecting evidence. The
+    // final persistence boundary below re-reads the watermark and refuses a
+    // card if a known host restart crossed this evidence window.
+    const evidenceGeneration = await readRunningGeneration().catch(() => null);
+    let runningGenerationRead = true;
+    let runningGeneration: Awaited<ReturnType<typeof readRunningGeneration>> | null = evidenceGeneration;
     const readCurrentGeneration = async () => {
       if (!runningGenerationRead) {
         runningGenerationRead = true;
@@ -1403,7 +1883,12 @@ export async function emitScorecard(
       }
       return runningGeneration;
     };
-    const specTestAdequacyReplayError = await validateSpecTestAdequacyReplay(args, deps.dispatchTool);
+    // plans:certify-spec-clauses has just produced this evaluator-owned draft in
+    // the same invocation. Its dry run only classifies persisted scorecard state,
+    // so it can reuse the emitter's guards without replaying the evaluator again.
+    const specTestAdequacyReplayError = input.previewOnly
+      ? undefined
+      : await validateSpecTestAdequacyReplay(args, deps.dispatchTool);
     if (specTestAdequacyReplayError) return { ok: false as const, ...specTestAdequacyReplayError };
     // EI-21765534049482705: a meta-rubric card whose subject is an active
     // acceptance rubric is the vetting attestation consumed by the completion
@@ -1423,7 +1908,17 @@ export async function emitScorecard(
       // but that narrowing does not flow through the aliased conjunction — bind the ref
       // once so the guard and the message cannot disagree about its nullability.
       const vettedRubricRef = args.subject!.ref;
-      const subjectRubric = await getRubric(vettedRubricRef);
+      const subjectRubricRead = await readRubric(vettedRubricRef);
+      if (subjectRubricRead.kind === 'ambiguous') throw subjectRubricRead.error;
+      if (subjectRubricRead.kind === 'read-failed') {
+        return {
+          ok: false as const,
+          error:
+            `vetting subject '${vettedRubricRef}' could not be resolved because the backing plan read failed; ` +
+            'retry or verify independently before treating it as absent',
+        };
+      }
+      const subjectRubric = subjectRubricRead.kind === 'found' ? subjectRubricRead.rubric : null;
       if (subjectRubric?.kind === 'acceptance' && subjectRubric.status === 'active') {
         return {
           ok: false as const,
@@ -1447,6 +1942,11 @@ export async function emitScorecard(
     // bump (which fires on ANY propose, typo included, and says nothing about
     // WHAT changed). Same fail-open/unrecorded-on-failure contract as rubricRevision.
     const criteriaHash = rubricEvidenceIdentity.criteriaHash;
+    if ((args.rubricRevision !== undefined && args.rubricRevision !== rubricRevision) ||
+        (args.criteriaHash !== undefined && args.criteriaHash !== criteriaHash)) {
+      return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',
+        error: 'The rubric identity could not be pinned to the reviewed instrument; no scorecard was filed.' };
+    }
     const rubricMeaningRevision = rubricEvidenceIdentity.meaningRevision;
     // A rubric named as the SUBJECT is distinct from the meta-rubric used to
     // score it. Pin both identities so later subject edits can invalidate this
@@ -1494,8 +1994,13 @@ export async function emitScorecard(
       // task cleanup, so a BAR-only or divergent contract is refused before a
       // costly grading pass is spent.
       if (rubric.barContract?.adoptionEpoch != null && rubric.subjectPlan) {
+        // Scope to the subject plan's own harness: a plan slug is unique per harness, not per
+        // workspace, so an unscoped read can span two copies and refuse
+        // `bar_snapshot_plan_ambiguous` (WI-10005160).
         const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
           expectedApplicable: true,
+          harnessSlug: rubric.subjectHarnessSlug,
+          ...(args.current ? { current: args.current } : {}),
         });
         if (!lifecycle.satisfied) {
           return {
@@ -1795,7 +2300,79 @@ export async function emitScorecard(
     // names `acceptanceOf` as the way to get it.
     const adoptedRatings =
       args.ratings === undefined && acceptanceOf && acceptedIndependent ? acceptedIndependent.ratings : undefined;
-    const suppliedRatings = (args.ratings ?? adoptedRatings) as ObservationRatings | undefined;
+    // P-004 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): a grader who
+    // supersedes a holder tenure's COMPUTED goal-mode-e2e card for the identical window
+    // rates only the residual criteria; the computed card's settled ratings (pass, and
+    // unknown idle/not-exercised) fill every criterion the grader omitted. Anything else
+    // stays missing, so the completeness check below names exactly the residual keys.
+    const computedAdoption = await adoptComputedTenureRatings(
+      {
+        rubricRef: args.rubricRef,
+        supersedes: args.supersedes,
+        subject: args.subject,
+        supplied: args.ratings as Record<string, Record<string, unknown>> | undefined,
+        criterionKeys: rubric.criteria.map((criterion) => criterion.key),
+      },
+      {
+        readCard: async (issueId) => {
+          const issue = await getIssue(issueId);
+          const payload =
+            issue?.payload && typeof issue.payload === 'object' && !Array.isArray(issue.payload)
+              ? (issue.payload as { observation?: unknown; _ei?: { created_by?: unknown } })
+              : null;
+          const observation = asStructuredObservation(payload?.observation);
+          if (!observation?.ratings) return null;
+          const createdBy = typeof payload?._ei?.created_by === 'string' ? payload._ei.created_by.trim() : null;
+          return {
+            createdBy,
+            subject: observation.subject ?? null,
+            ratings: observation.ratings as Record<string, { rating?: string; unknownReason?: string; evidence?: string }>,
+          };
+        },
+      },
+    );
+    // test-rubric-unification-2026-10-12 P-007 (D-004 rule 2): fromLedger rates every executable
+    // (probe / command-instrument) criterion from its latest results-ledger row and asks the
+    // caller only for the rest; see scorecard-ledger-fill.ts for the rating rules.
+    let ledgerOwnedKeys = new Set<string>();
+    let ledgerFillSummary: { filled: string[]; unrecorded: string[] } | null = null;
+    let ledgerRatings: ObservationRatings | undefined;
+    if (args.ledgerDispositions && !args.fromLedger) {
+      return {
+        ok: false as const,
+        error: 'ledgerDispositions routes ledger-rated criteria; pass it with fromLedger:true, or put remediation/disregard on each rating.',
+      };
+    }
+    if (args.fromLedger) {
+      if (acceptanceOf || computedAdoption) {
+        return {
+          ok: false as const,
+          error: 'fromLedger rates from the results ledger; it cannot be combined with acceptanceOf or a computed-card supersede.',
+        };
+      }
+      const latest = await (deps.readLatestCheckResults ?? readLatestRubricCheckResults)({
+        rubricRef: rubric.rubricId,
+        workspaceId: rubric.workspaceId ?? null,
+      });
+      const fill = fillRatingsFromLedger({
+        criteria: rubric.criteria,
+        rubricRatingScale: rubric.ratingScale,
+        callerRatings: args.ratings as ObservationRatings | undefined,
+        latest,
+        dispositions: args.ledgerDispositions,
+      });
+      if (!fill.ok) {
+        return {
+          ok: false as const,
+          error: fill.detail,
+          ledgerFillRefusal: { error: fill.error, criterionKeys: fill.criterionKeys },
+        };
+      }
+      ledgerRatings = fill.ratings;
+      ledgerOwnedKeys = new Set([...fill.ledgerFilled, ...fill.unrecorded]);
+      ledgerFillSummary = { filled: fill.ledgerFilled, unrecorded: fill.unrecorded };
+    }
+    const suppliedRatings = (ledgerRatings ?? computedAdoption?.ratings ?? args.ratings ?? adoptedRatings) as ObservationRatings | undefined;
     if (suppliedRatings === undefined) {
       return {
         ok: false as const,
@@ -1827,9 +2404,18 @@ export async function emitScorecard(
     // scorecard-poor-rating-disposition (owner-directed 2026-08-31): a poor rating
     // on a standard rubric must carry `remediation` (WI-/EI-/F- ref) or an explicit
     // `disregard` — the agent-facing emit door enforces what the schema teaches.
-    validateScorecardPoorRatingDisposition(observationForValidation, rubric);
     try {
-      validateWorkOnEverythingEvidenceEnvelope(args.rubricRef, ratings);
+      validateScorecardPoorRatingDisposition(observationForValidation, rubric);
+    } catch (error) {
+      // P-007: a ledger-rated poor result is routed without retyping its rating.
+      if (ledgerFillSummary && error instanceof Error) {
+        error.message +=
+          ' With fromLedger, route a ledger-rated criterion via ledgerDispositions:{ <key>: { remediation | disregard } } — no rating needed.';
+      }
+      throw error;
+    }
+    try {
+      validateRubricRatingContracts(args.rubricRef, ratings);
     } catch (error) {
       return {
         ok: false as const,
@@ -1895,10 +2481,35 @@ export async function emitScorecard(
       ratings,
       instrumentSnapshots,
     });
+    if (instrumentContract.positiveClaimsWithoutSnapshots.length) {
+      return {
+        ok: false as const,
+        error:
+          `positive rating requires an instrument snapshot for: ${instrumentContract.positiveClaimsWithoutSnapshots.join(', ')}. ` +
+          'Supply a resolvable snapshot or rate only what the available evidence supports.',
+        instrumentContract,
+        instrumentSnapshots,
+      };
+    }
     if (args.rubricRef === 'work-on-everything-stewardship-health' && instrumentContract.verdictMismatches.length) {
       return {
         ok: false as const,
         error: 'A registered platform measurement contradicts the claimed rating.',
+        instrumentContract,
+        instrumentSnapshots,
+      };
+    }
+    // P-003 (goal-grading-live-coverage-and-holder-followthrough-2026-10-08): on goal-mode-e2e a
+    // claimed pass is refused only where a platform-computed instrument measured a fail or that
+    // the criterion's trigger never occurred. A fail over a computed pass stays allowed: the
+    // grader may see what the ledgers cannot (a shell-only edit, a perfunctory search).
+    if (args.rubricRef === 'goal-mode-e2e' && instrumentContract.positiveClaimContradictions.length) {
+      return {
+        ok: false as const,
+        error:
+          `A platform-computed measurement contradicts the claimed pass for ` +
+          `${instrumentContract.positiveClaimContradictions.join(', ')}. Read instrumentSnapshots[<key>].value.reason; ` +
+          'rate fail, or unknown with unknownReason not-exercised, as the measurement shows.',
         instrumentContract,
         instrumentSnapshots,
       };
@@ -1949,6 +2560,7 @@ export async function emitScorecard(
     // guards in proposeRubric).
     let vetting: ScorecardVetting | undefined;
     let vettingSeatSuccession: AcceptanceSeatSuccession | undefined;
+    let vettingConsultCritique: Awaited<ReturnType<typeof readVettingConsultCritique>> | undefined;
     let vettedSubjectPlan: string | null = null;
     // WI-41477: two alternate recording channels, one predicate. The consult channel
     // is the router-assigned get_feedback flow; the work-item channel is where a
@@ -2000,7 +2612,17 @@ export async function emitScorecard(
             `vettingConsult/vettingWorkItem and cite the separately emitted meta-rubric scorecard instead`,
         };
       }
-      const vettedRubric = await getRubric(subjectRef);
+      const vettedRubricRead = await readRubric(subjectRef);
+      if (vettedRubricRead.kind === 'ambiguous') throw vettedRubricRead.error;
+      if (vettedRubricRead.kind === 'read-failed') {
+        return {
+          ok: false as const,
+          error:
+            `vetting subject '${subjectRef}' could not be resolved because the backing plan read failed; ` +
+            'retry or verify independently before treating it as absent',
+        };
+      }
+      const vettedRubric = vettedRubricRead.kind === 'found' ? vettedRubricRead.rubric : null;
       if (!vettedRubric) {
         return {
           ok: false as const,
@@ -2015,7 +2637,9 @@ export async function emitScorecard(
         // P-003: vetting is the first phase that requires the as-built METHOD
         // and its runnable/manual check. Reuse the same snapshot rather than
         // inspecting the submitted meta-scorecard in isolation.
-        const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(vettedRubric.subjectPlan, 'pre-vetting');
+        const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(vettedRubric.subjectPlan, 'pre-vetting', {
+          harnessSlug: vettedRubric.subjectHarnessSlug,
+        });
         if (!lifecycle.satisfied) {
           return {
             ok: false as const,
@@ -2037,7 +2661,22 @@ export async function emitScorecard(
       const vettingAuthorIdentity = await sameVettedRubricAuthor(vettedRubricAuthor, input.createdBy, {
         workspaceId: vettingWorkspace,
       });
-      if (!vettingAuthorIdentity) {
+      // An outside-lineage reviewer selected by the rubric-vetting policy can
+      // author the scorecard that records their own judgment, but only when the
+      // persisted answering identity matches this caller AND that caller wrote
+      // a non-decline critique post. The source responder_id is not sufficient:
+      // a consult fork answers under its separately stamped answeringOwnerId.
+      if (!vettingAuthorIdentity && args.vettingConsult) {
+        vettingConsultCritique = await readVettingConsultCritique(
+          getOrgPg().sql,
+          activeWorkspaceId(),
+          args.vettingConsult,
+          input.createdBy,
+          [subjectRef, vettedSubjectPlan].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0),
+        );
+      }
+      const isRoutedVettingCritic = vettingConsultCritique?.routedVettingCritic === input.createdBy;
+      if (!vettingAuthorIdentity && !isRoutedVettingCritic) {
         const resolveAuthorSessionState = deps.resolveAuthorSessionState ?? defaultResolveAuthorSessionState;
         const resolveSeat = deps.resolveAcceptanceSeatSuccession ?? resolveAcceptanceSeatSuccession;
         const seat = await resolveSeat({
@@ -2108,13 +2747,15 @@ export async function emitScorecard(
     }
     if (args.vettingConsult) {
       const subjectRef = args.subject!.ref;
-      const critique = await readVettingConsultCritique(
-        getOrgPg().sql,
-        activeWorkspaceId(),
-        args.vettingConsult,
-        input.createdBy,
-        [subjectRef, vettedSubjectPlan].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0),
-      );
+      const critique =
+        vettingConsultCritique ??
+        (await readVettingConsultCritique(
+          getOrgPg().sql,
+          activeWorkspaceId(),
+          args.vettingConsult,
+          input.createdBy,
+          [subjectRef, vettedSubjectPlan].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0),
+        ));
       if (!critique.exists) {
         return {
           ok: false as const,
@@ -2274,6 +2915,12 @@ export async function emitScorecard(
             "grading-integrity audits a SCORECARD — pass subject:{ kind:'scorecard', ref:'<the graded card's issue id>' } (D-004: terminal cards only, one level deep)",
         };
       }
+      if (!process.env.VITEST || process.env.PAPERCUSP_SCORECARD_EMIT_MUTEX_TEST === '1') {
+        releaseGradingAuditSubjectMutex = await acquireGradingAuditSubjectMutex({
+          workspaceId: input.workspaceId ?? activeWorkspaceId(),
+          subjectIssueId: args.subject.ref,
+        }, input.phases, scorecardMutexWaitTimeoutMs);
+      }
       const graded = await getIssue(args.subject.ref);
       const gradedRawObservation =
         graded?.payload && typeof graded.payload === 'object' && !Array.isArray(graded.payload)
@@ -2292,39 +2939,96 @@ export async function emitScorecard(
           error: `audit subject '${args.subject.ref}' carries no gradingAudit stamp — only terminal standard-rubric cards emitted under the audit gate are auditable`,
         };
       }
-      const activeDispatchReservation = gradedObservation.gradingAudit.dispatchReservation;
-      const suppliedDispatchReservation = args.gradingAuditReservation;
-      if (gradedObservation.gradingAudit.state === 'pending' && activeDispatchReservation && !suppliedDispatchReservation) {
+      const gradingAuditCurrentness = classifyGradingAuditCurrentness(gradedObservation.gradingAudit, {
+        rubricId: rubric.rubricId,
+        revision: rubric.revision,
+        criteriaHash: rubric.criteriaHash,
+      });
+      if (gradingAuditCurrentness.state !== 'current') {
         return {
           ok: false as const,
-          code: 'grading_audit_reservation_missing' as const,
           error:
-            `audit subject '${args.subject.ref}' has an active dispatch reservation, but gradingAuditReservation is missing; ` +
-            `re-read the target and pass the exact lease key '${activeDispatchReservation.key}' and reservedAt '${activeDispatchReservation.reservedAt}'`,
+            `audit subject '${args.subject.ref}' carries a ${gradingAuditCurrentness.state} gradingAudit stamp ` +
+            `(${gradingAuditCurrentness.reason}); re-open it through the pending-audit dispatcher before settling a new audit`,
+        };
+      }
+      const activeDispatchReservation = gradedObservation.gradingAudit.dispatchReservation;
+      const lastDispatchReservation = gradedObservation.gradingAudit.lastDispatchReservation;
+      const latestDispatchReservation = activeDispatchReservation ?? lastDispatchReservation;
+      const suppliedDispatchReservation = args.gradingAuditReservation;
+      if (
+        gradedObservation.gradingAudit.state === 'pending' &&
+        activeDispatchReservation &&
+        lastDispatchReservation &&
+        (activeDispatchReservation.key !== lastDispatchReservation.key ||
+          activeDispatchReservation.reservedAt !== lastDispatchReservation.reservedAt)
+      ) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_reservation_mismatch' as const,
+          error: `audit subject '${args.subject.ref}' has inconsistent active and latest dispatch reservation epochs; re-dispatch before emitting`,
         };
       }
       if (
         gradedObservation.gradingAudit.state === 'pending' &&
-        activeDispatchReservation &&
+        !latestDispatchReservation &&
+        suppliedDispatchReservation
+      ) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_reservation_unavailable' as const,
+          error:
+            `audit subject '${args.subject.ref}' has no active or retained dispatch reservation epoch for the supplied lease; ` +
+            're-dispatch the pending audit before emitting',
+        };
+      }
+      if (gradedObservation.gradingAudit.state === 'pending' && latestDispatchReservation && !suppliedDispatchReservation) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_reservation_missing' as const,
+          error:
+            `audit subject '${args.subject.ref}' has a dispatch reservation epoch, but gradingAuditReservation is missing; ` +
+            `re-read the target and pass the exact latest lease key '${latestDispatchReservation.key}' and reservedAt '${latestDispatchReservation.reservedAt}'`,
+        };
+      }
+      if (
+        gradedObservation.gradingAudit.state === 'pending' &&
+        latestDispatchReservation &&
         suppliedDispatchReservation &&
-        (suppliedDispatchReservation.key !== activeDispatchReservation.key ||
-          suppliedDispatchReservation.reservedAt !== activeDispatchReservation.reservedAt)
+        (suppliedDispatchReservation.key !== latestDispatchReservation.key ||
+          suppliedDispatchReservation.reservedAt !== latestDispatchReservation.reservedAt)
       ) {
         return {
           ok: false as const,
           code: 'grading_audit_reservation_mismatch' as const,
           error:
-            `audit subject '${args.subject.ref}' gradingAuditReservation does not match its current active dispatch reservation; ` +
+            `audit subject '${args.subject.ref}' gradingAuditReservation does not match its latest dispatch reservation epoch; ` +
             're-read the target and use the exact current lease key and reservedAt, or stop if the lease changed',
         };
       }
-      if (gradedObservation.gradingAudit.state === 'pending' && !activeDispatchReservation && suppliedDispatchReservation) {
+      // EI-25246208524832409: a LAPSED lease (TTL passed, dispatcher dropped it, nobody
+      // re-dispatched) leaves the card pending with no reservation. An emit that omits
+      // gradingAuditReservation is admitted on exactly that card, so refusing the dispatched
+      // auditor that honestly presents its lapsed lease only refused the diligent one: a full
+      // audit of a 39-criterion card took ~18 min against the 15-min lease and its verdict was
+      // lost. Admit it while it is still the source responder for that lease. A NEWER lease
+      // remains in lastDispatchReservation after release, so it is refused as a mismatch above.
+      if (
+        gradedObservation.gradingAudit.state === 'pending' &&
+        !activeDispatchReservation &&
+        suppliedDispatchReservation &&
+        !(await (deps.isCurrentSourceAuditResponder ?? isCurrentSourceAuditResponder)(
+          args.subject.ref,
+          suppliedDispatchReservation,
+          input.createdBy,
+        ))
+      ) {
         return {
           ok: false as const,
           code: 'grading_audit_reservation_unavailable' as const,
           error:
-            `audit subject '${args.subject.ref}' has no active dispatch reservation to match the supplied gradingAuditReservation; ` +
-            're-read the target and emit only if its current pending lease is present',
+            `audit subject '${args.subject.ref}' has no active dispatch reservation, and the supplied gradingAuditReservation ` +
+            'belongs to a different consult answerer; re-read the target and stop without emitting',
         };
       }
       if (
@@ -2428,6 +3132,7 @@ export async function emitScorecard(
         gradedObservation,
         args.ratings,
         deps.dispatchTool,
+        { gradedCardCreatedAt: graded?.createdAt, workspaceId: identityWorkspace },
       );
       if (replayConsistencyError) {
         if (
@@ -2436,6 +3141,9 @@ export async function emitScorecard(
         ) {
           await markGradingAuditAwaitingReemit(args.subject.ref, gradedObservation.gradingAudit, {
             reason: replayConsistencyError.error,
+            // Pending stamps intentionally have no auditor yet; bind this
+            // compare-and-set to the trusted owner from the handler identity.
+            responderOwnerId: input.createdBy,
           });
         }
         return { ok: false as const, ...replayConsistencyError };
@@ -2479,7 +3187,12 @@ export async function emitScorecard(
         verdict: auditVerdict,
         ...(rubric.revision != null ? { rubricRevision: rubric.revision } : {}),
         ...(rubric.criteriaHash ? { criteriaHash: rubric.criteriaHash } : {}),
-        ...(args.gradingAuditReservation ? { dispatchReservation: args.gradingAuditReservation } : {}),
+        // Carry a known lease epoch into the settle compare-and-set even after its active
+        // reservation lapses. lastDispatchReservation fences a late audit from a newer
+        // dispatch that also claimed and released the card in the meantime.
+        ...(args.gradingAuditReservation && latestDispatchReservation
+          ? { dispatchReservation: args.gradingAuditReservation }
+          : {}),
       };
     }
     // PENDING STAMP — a terminal standard-rubric card is final but UNAUDITED until a
@@ -2508,38 +3221,21 @@ export async function emitScorecard(
       };
     }
     let sourceHive = args.sourceHive ?? input.ctxHarness;
-    // P-013: a pending subject card is waiting for a GRADING-INTEGRITY audit,
-    // not another ordinary scorecard against the same rubric. Without this
-    // boundary a non-author auditor can accidentally file a second peer card
-    // that looks successful while leaving the original card pending until the
-    // far-end completion gate notices. Refuse the ambiguous form before any
-    // scorecard write and teach the only form that settles the pending stamp.
-    if (args.subject) {
-      const pendingSubject = (
-        await listScorecards({
-          rubricRef: args.rubricRef,
-          subjectRef: args.subject.ref,
-          limit: 100,
-        })
-      ).find(
-        (card) =>
-          card.gradingAudit?.state === 'pending' &&
-          card.subject?.ref === args.subject?.ref &&
-          (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
-          card.supersededBy == null &&
-          card.issueId !== args.supersedes,
-      );
-      if (pendingSubject) {
-        return {
-          ok: false as const,
-          code: 'grading_audit_required' as const,
-          error:
-            `scorecard '${pendingSubject.issueId}' for rubric '${args.rubricRef}' has a pending grading audit — ` +
-            `either supersede it by passing supersedes:'${pendingSubject.issueId}' on a corrected ` +
-            'same-rubric scorecard, or emit the audit as { rubricRef:\'grading-integrity\', ratings, terminal:true, ' +
-            `subject:{ kind:'scorecard', ref:'${pendingSubject.issueId}' } } instead of filing another ` +
-            'same-rubric peer scorecard',
-        };
+    if (args.baselineRef) {
+      if (args.supersedes) {
+        return { ok: false as const, code: 'baseline_correction_conflict',
+          error: 'A re-grade preserves its baseline; a correction uses supersedes. Emit these as distinct scorecards.' };
+      }
+      const [baseline] = await listScorecards({ issueIds: [args.baselineRef], limit: 1 });
+      if (!baseline || !args.subject || baseline.subject?.kind !== args.subject.kind ||
+          baseline.subject?.ref !== args.subject.ref || baseline.rubricRef !== args.rubricRef ||
+          baseline.rubricRevision !== rubric.revision || baseline.criteriaHash !== rubric.criteriaHash ||
+          baseline.provisional || baseline.retracted || baseline.synthesized ||
+          !baseline.rubricResolved || baseline.missingKeys.length > 0 || (baseline.extraKeys?.length ?? 0) > 0 ||
+          baseline.gradingAudit?.state !== 'passed' || baseline.gradingAuditCurrentness?.state !== 'current' ||
+          baseline.rubricCurrentness?.state !== 'current') {
+        return { ok: false as const, code: 'baseline_not_comparable',
+          error: 'baselineRef must resolve to preserved current audited evidence for the same target and rubric revision; changed meaning needs a fresh baseline.' };
       }
     }
     if (args.supersedes) {
@@ -2609,7 +3305,7 @@ export async function emitScorecard(
           const sameSubject =
             !subject || (card.subject?.ref === subject.ref && (card.subject?.kind ?? null) === (subject.kind ?? null));
           return (
-            sameSubject &&
+            sameSubject && card.issueId !== args.baselineRef &&
             card.rubricRef === args.rubricRef &&
             classifyRubricEvidenceCurrentness(
               {
@@ -2655,20 +3351,34 @@ export async function emitScorecard(
           rubricRef: args.rubricRef,
           sourceHive,
         }),
+        input.phases,
+        scorecardMutexWaitTimeoutMs,
       );
     }
-    const latest = (await listScorecards({ rubricRef: args.rubricRef, sourceHive, limit: 1 }))[0];
+    // The evidence fingerprint deliberately excludes subject for stored-row
+    // compatibility, so this read must select the exact typed subject before
+    // comparing fingerprints. Otherwise a newer unrelated card can mask the
+    // matching predecessor and cause a duplicate emission.
+    const latest = (
+      await listScorecards({
+        rubricRef: args.rubricRef,
+        sourceHive,
+        ...(args.subject ? { subjectRef: args.subject.ref, subjectKind: args.subject.kind } : {}),
+        limit: 1,
+      })
+    )[0];
     const latestFingerprint = latest
-      ? (latest.evidenceFingerprint ??
-        scorecardEvidenceFingerprint({
-          rubricRef: latest.rubricRef,
-          ratings: latest.ratings,
-          ...(latest.acceptance ? { acceptance: latest.acceptance } : {}),
-          ...(latest.rerunRecipe ? { rerunRecipe: latest.rerunRecipe } : {}),
-          ...(latest.testedSha ? { testedSha: latest.testedSha } : {}),
-        }))
+      ? (latest.rerunRecipe || !latest.evidenceFingerprint
+        ? scorecardEvidenceFingerprint({
+            rubricRef: latest.rubricRef,
+            ratings: latest.ratings,
+            instrumentSnapshots: latest.instrumentSnapshots,
+            ...(latest.acceptance ? { acceptance: latest.acceptance } : {}),
+            ...(latest.rerunRecipe ? { rerunRecipe: latest.rerunRecipe } : {}),
+            ...(latest.testedSha ? { testedSha: latest.testedSha } : {}),
+          })
+        : latest.evidenceFingerprint)
       : null;
-    const sameCorrectionAlreadyExists = args.supersedes && latest?.supersedes === args.supersedes;
     // P-008: a terminal re-emit of IDENTICAL ratings is the finalization step, not a
     // duplicate — the fingerprint (rubricRef+ratings+snapshots, unchanged for
     // compatibility with stored rows) cannot see finality, so compare it separately.
@@ -2722,6 +3432,35 @@ export async function emitScorecard(
         subjectRubricIdentity,
       ).state !== 'current'
     );
+    let effectiveSupersedes = args.supersedes;
+    // A changed terminal card from the same author is a replacement, not a
+    // second current verdict. Persist the edge so read-time supersession and the
+    // pending-audit dispatcher can retire the old card/lease atomically. Keep
+    // provisional finalization, acceptance, baseline comparisons, forced samples,
+    // and grading-integrity audit corrections on their explicit contracts.
+    if (
+      !effectiveSupersedes &&
+      !args.force &&
+      !args.acknowledgeExisting &&
+      !args.acceptance &&
+      !args.baselineRef &&
+      args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF &&
+      args.subject &&
+      provisional === undefined &&
+      latest &&
+      latest.createdBy === input.createdBy &&
+      latest.provisional === undefined &&
+      latest.acceptance === undefined &&
+      latest.baselineRef === undefined &&
+      !vettingChanged &&
+      !rubricIdentityChanged &&
+      !subjectRubricIdentityChanged &&
+      latestFingerprint !== evidenceFingerprint
+    ) {
+      effectiveSupersedes = latest.issueId;
+    }
+    const sameCorrectionAlreadyExists =
+      effectiveSupersedes && latest?.supersedes === effectiveSupersedes;
     if (
       !args.force &&
       !finalityChanged &&
@@ -2729,10 +3468,51 @@ export async function emitScorecard(
       !rubricIdentityChanged &&
       !subjectRubricIdentityChanged &&
       latestFingerprint === evidenceFingerprint &&
-      (!args.supersedes || sameCorrectionAlreadyExists)
+      (!effectiveSupersedes || sameCorrectionAlreadyExists)
     ) {
+      // EI-25837260733792769: persistence and audit settlement can fail separately.
+      // An exact retry by the original auditor must finish the guarded settlement,
+      // rather than strand the target behind unchanged-evidence dedup forever.
+      let recoveredAudit: Awaited<ReturnType<typeof recordGradingAudit>> | undefined;
+      let recoveredAuditCleanupError: string | undefined;
+      if (!input.previewOnly && auditContext && latest?.createdBy === auditContext.auditor) {
+        recoveredAudit = await recordGradingAudit(auditContext.subjectIssueId, {
+          auditIssueId: latest.issueId,
+          auditor: auditContext.auditor,
+          verdict: auditContext.verdict,
+          requireCurrentIdentity: true,
+          ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
+          ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
+          ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
+          ...(effectiveSupersedes ? { supersedesAuditIssueId: effectiveSupersedes } : {}),
+        });
+        if (recoveredAudit.ok) {
+          try {
+            await (deps.closeSourceAuditConsults ?? closeSourceAuditConsults)(
+              input.workspaceId || activeWorkspaceId(), auditContext.subjectIssueId,
+            );
+          } catch (error) {
+            recoveredAuditCleanupError = error instanceof Error ? error.message : String(error);
+          }
+          const stamp = recoveredAudit.gradingAudit;
+          if (stamp && (stamp.state === 'passed' || stamp.state === 'failed')) {
+            await emitScorecardEmitted({
+              issueId: latest.issueId, rubricRef: args.rubricRef, rubricKind: rubric.kind ?? null,
+              subjectKind: args.subject?.kind ?? null, subjectRef: args.subject?.ref ?? null,
+              createdBy: latest.createdBy, hasAcceptance: Boolean(latest.acceptance),
+            }, {
+              workspaceId: input.workspaceId || activeWorkspaceId(), filed: false,
+              settledAudit: {
+                issueId: auditContext.subjectIssueId, state: stamp.state,
+                auditIssueId: stamp.auditIssueId ?? latest.issueId, auditor: stamp.auditor ?? null,
+                auditedAt: stamp.auditedAt ?? null, rubricRevision: stamp.rubricRevision ?? null,
+              },
+            });
+          }
+        }
+      }
       const acceptanceGraderCleanup =
-        rubric.kind === 'acceptance' && input.role === 'judge'
+        !input.previewOnly && rubric.kind === 'acceptance' && input.role === 'judge'
           ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
           : undefined;
       return {
@@ -2744,6 +3524,77 @@ export async function emitScorecard(
         canonicalRatings: ratings,
         ...(vettingWarning ? { warning: vettingWarning } : {}),
         ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
+        ...(recoveredAudit ? {
+          gradingAuditRecorded: recoveredAudit.ok,
+          ...(recoveredAudit.gradingAudit ? { gradingAudit: recoveredAudit.gradingAudit } : {}),
+          ...(recoveredAudit.error ? { gradingAuditError: recoveredAudit.error } : {}),
+          ...(recoveredAuditCleanupError ? { gradingAuditCleanupError: recoveredAuditCleanupError } : {}),
+        } : {}),
+      };
+    }
+
+    // P-013: a pending subject card is waiting for a GRADING-INTEGRITY audit,
+    // not another ordinary scorecard against the same rubric. Run this after
+    // exact replay dedup and the locked latest-card read: an identical retry is
+    // idempotent, and a same-author changed-evidence correction has its persisted
+    // supersedes edge before this pending-audit guard runs.
+    if (args.subject) {
+      const pendingSameSubject = (
+        await listScorecards({ rubricRef: args.rubricRef, subjectRef: args.subject.ref, limit: 100 })
+      ).filter(
+        (card) =>
+          card.gradingAudit?.state === 'pending' &&
+          card.subject?.ref === args.subject?.ref &&
+          (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
+          card.supersededBy == null &&
+          card.issueId !== effectiveSupersedes,
+      );
+      // WI-10005211: a grading-integrity revision re-opens every settled audit
+      // (reservePendingGradingAudit), so a windowed grader's whole back-catalogue
+      // turns pending at once and each old card blocked the author's next card
+      // until it was re-audited, one at a time. A RE-OPENED audit is not the
+      // P-013 case: the card already carries an independent verdict, and its
+      // own author can never be the auditor. So the author's new card is not
+      // blocked by its own re-opened cards. A never-audited pending card still
+      // blocks everyone, and a non-author is still taught the audit shape.
+      const ownPending = pendingSameSubject.filter((card) => card.createdBy === input.createdBy);
+      const previouslyAudited = new Set<string>();
+      if (ownPending.length > 0) {
+        for (const audit of await listScorecards({
+          rubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          subjectRefs: ownPending.map((card) => card.issueId),
+          limit: 500,
+        })) {
+          if (audit.subject?.kind === 'scorecard' && audit.subject.ref && !audit.retracted) {
+            previouslyAudited.add(audit.subject.ref);
+          }
+        }
+      }
+      const pendingSubject = pendingSameSubject.find(
+        (card) => !(card.createdBy === input.createdBy && previouslyAudited.has(card.issueId)),
+      );
+      if (pendingSubject) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_required' as const,
+          error:
+            `scorecard '${pendingSubject.issueId}' for rubric '${args.rubricRef}' has a pending grading audit — ` +
+            `either supersede it by passing supersedes:'${pendingSubject.issueId}' on a corrected ` +
+            'same-rubric scorecard, or emit the audit as { rubricRef:\'grading-integrity\', ratings, terminal:true, ' +
+            `subject:{ kind:'scorecard', ref:'${pendingSubject.issueId}' } } instead of filing another ` +
+            'same-rubric peer scorecard',
+        };
+      }
+    }
+
+    if (input.previewOnly) {
+      return {
+        ok: true as const,
+        created: false,
+        reason: 'would-file' as const,
+        evidenceFingerprint,
+        previousIssueId: latest?.issueId ?? null,
+        canonicalRatings: ratings,
       };
     }
 
@@ -2756,6 +3607,8 @@ export async function emitScorecard(
     // and BEFORE the write so a card is only ever filed with its live check verdicts
     // stamped (observation.checkRuns). Criteria without a tests-check are untouched.
     let checkRuns: Record<string, import('../../rubrics-criterion-checks').CriterionCheckRun> | undefined;
+    /** P-006: where this emit's executed checks landed in the results ledger (null = none executed). */
+    let checkLedger: CheckLedgerOutcome | null = null;
     const testCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'tests');
     if (testCheckedCriteria.length > 0) {
       const evaluateChecks = deps.evaluateChecks ?? evaluateCriterionTestChecks;
@@ -2763,39 +3616,45 @@ export async function emitScorecard(
         ...input,
         rubricWorkspaceId: rubric.workspaceId,
         rubricSubjectPlan: rubric.subjectPlan,
+        rubricSubjectHarness: rubric.subjectHarnessSlug,
       });
-      const checkEvaluation = await evaluateChecks({
-        criteria: rubric.criteria,
-        ratings,
-        root: checkScope.root,
-        ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
-        ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
-        ...(deps.evaluateChecks ? {} : {
-          // force:true expressly asks for a fresh sample even when the evidence
-          // fingerprint is unchanged; never satisfy it from an older check run.
-          runner: args.force
-            ? runCriterionCheckFiles
-            : (opts: Parameters<CriterionCheckRunner>[0]) => (deps.runRecoverableChecks ?? runRecoverableScorecardChecks)(opts, {
-                rubricRef: args.rubricRef,
-                rubricRevision: rubricRevision ?? null,
-                criteriaHash: criteriaHash ?? null,
-                evidenceFingerprint,
-                createdBy: input.createdBy,
-                subjectRef: args.subject?.ref ?? null,
-                operationRef: JSON.stringify({
-                  terminal: args.terminal ?? null,
-                  supersedes: args.supersedes ?? null,
-                  acceptanceOf: args.acceptanceOf ?? null,
-                  acknowledgeExisting: args.acknowledgeExisting ?? null,
-                }),
-            }),
+      if (checkScope.refusal) {
+        return { ok: false as const, error: checkScope.refusal.detail, checkScopeRefusal: checkScope.refusal };
+      }
+      const checkEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:tests', () =>
+        evaluateChecks({
+          criteria: rubric.criteria,
+          ratings,
+          root: checkScope.root,
+          ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
+          ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
+          ...(deps.evaluateChecks ? {} : {
+            // force:true expressly asks for a fresh sample even when the evidence
+            // fingerprint is unchanged; never satisfy it from an older check run.
+            runner: args.force
+              ? runCriterionCheckFiles
+              : (opts: Parameters<CriterionCheckRunner>[0]) => (deps.runRecoverableChecks ?? runRecoverableScorecardChecks)(opts, {
+                  rubricRef: args.rubricRef,
+                  rubricRevision: rubricRevision ?? null,
+                  criteriaHash: criteriaHash ?? null,
+                  evidenceFingerprint,
+                  createdBy: input.createdBy,
+                  subjectRef: args.subject?.ref ?? null,
+                  operationRef: JSON.stringify({
+                    terminal: args.terminal ?? null,
+                    supersedes: effectiveSupersedes ?? null,
+                    acceptanceOf: args.acceptanceOf ?? null,
+                    acknowledgeExisting: args.acknowledgeExisting ?? null,
+                  }),
+              }),
+          }),
+          // One shared budget for the batched run. scorecards:emit declares a longer
+          // tool timeout below, so the transport gives this mutation enough time to
+          // return a typed verdict (and still leaves a full minute for process-group
+          // settlement, the ledger write, and response serialization).
+          timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
         }),
-        // One shared budget for the batched run. scorecards:emit declares a longer
-        // tool timeout below, so the transport gives this mutation enough time to
-        // return a typed verdict (and still leaves a full minute for process-group
-        // settlement, the ledger write, and response serialization).
-        timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
-      });
+      );
       if (!checkEvaluation.ok) {
         return {
           ok: false as const,
@@ -2810,14 +3669,35 @@ export async function emitScorecard(
     // and bounded batch executor as carried checks. They run after unchanged
     // evidence deduplication and before persistence, so every filed card keeps
     // the live predicate result that justified its rating.
-    const probeCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'probe');
+    // A ledger-owned criterion (P-007 fromLedger) is rated from its recorded run, so it is not
+    // re-executed here: a fresh live run would become the latest row the rating did not see.
+    const probeCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'probe' && !ledgerOwnedKeys.has(c.key));
     if (probeCheckedCriteria.length > 0) {
       const evaluateProbe = deps.evaluateProbeChecks ?? evaluateCriterionProbeChecks;
-      const probeEvaluation = await evaluateProbe({
-        criteria: rubric.criteria,
-        ratings,
-        dispatchTool: deps.dispatchTool,
-      });
+      const probeEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:probe', () =>
+        evaluateProbe({
+          criteria: rubric.criteria.filter((c) => !ledgerOwnedKeys.has(c.key)),
+          ratings,
+          dispatchTool: deps.dispatchTool,
+        }),
+      );
+      // test-rubric-unification-2026-10-12 P-006 (D-004 rule 1): every EXECUTED probe writes one
+      // results-ledger row, pass or fail — including the one that contradicted its rating and
+      // refuses this emit. A ledger fault is reported, never allowed to change the verdict.
+      const executedProbeRuns = probeEvaluation.ok
+        ? probeEvaluation.checkRuns
+        : probeEvaluation.error === 'probe_contradicted' && 'run' in probeEvaluation && probeEvaluation.run
+          ? { [probeEvaluation.criterionKey]: probeEvaluation.run }
+          : {};
+      checkLedger = await recordCheckResultsReported(
+        probeCheckResults(rubric.rubricId, executedProbeRuns, rubric.criteria),
+        {
+          workspaceId: rubric.workspaceId ?? null,
+          harnessSlug: rubric.subjectHarnessSlug ?? null,
+          ...(input.checkRoot ? { root: input.checkRoot } : {}),
+        },
+        deps.recordCheckResults,
+      );
       if (!probeEvaluation.ok) {
         return {
           ok: false as const,
@@ -2841,15 +3721,21 @@ export async function emitScorecard(
         ...input,
         rubricWorkspaceId: rubric.workspaceId,
         rubricSubjectPlan: rubric.subjectPlan,
+        rubricSubjectHarness: rubric.subjectHarnessSlug,
       });
-      const checkEvaluation = await evaluateCargo({
-        criteria: rubric.criteria,
-        ratings,
-        root: checkScope.root,
-        ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
-        ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
-        timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
-      });
+      if (checkScope.refusal) {
+        return { ok: false as const, error: checkScope.refusal.detail, checkScopeRefusal: checkScope.refusal };
+      }
+      const checkEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:cargo', () =>
+        evaluateCargo({
+          criteria: rubric.criteria,
+          ratings,
+          root: checkScope.root,
+          ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
+          ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
+          timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
+        }),
+      );
       if (!checkEvaluation.ok) {
         return {
           ok: false as const,
@@ -2876,19 +3762,21 @@ export async function emitScorecard(
       // narrowing a property access does not carry across a function boundary.
       const subjectPlan = rubric.subjectPlan;
       const workspaceId = input.workspaceId;
-      const coverageEvaluation = await evaluateCoverage({
-        criteria: rubric.criteria,
-        ratings,
-        readCoverage: (a) => readCoverage(a),
-        // planTouched resolves to the files the subject plan's COMPLETED work actually
-        // changed. Only an acceptance rubric has a subject plan; anywhere else this
-        // returns null and the check refuses rather than silently widening its scope.
-        // The workspace is required for the SAME reason: planTouchedFiles filters on
-        // `workspace_id`, so resolving it without one would widen the scope to every
-        // workspace's rows — the silent-widening this check exists to refuse.
-        resolvePlanTouchedFiles: () =>
-          subjectPlan && workspaceId ? planTouchedFiles(workspaceId, subjectPlan) : Promise.resolve(null),
-      });
+      const coverageEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:coverage', () =>
+        evaluateCoverage({
+          criteria: rubric.criteria,
+          ratings,
+          readCoverage: (a) => readCoverage(a),
+          // planTouched resolves to the files the subject plan's COMPLETED work actually
+          // changed. Only an acceptance rubric has a subject plan; anywhere else this
+          // returns null and the check refuses rather than silently widening its scope.
+          // The workspace is required for the SAME reason: planTouchedFiles filters on
+          // `workspace_id`, so resolving it without one would widen the scope to every
+          // workspace's rows — the silent-widening this check exists to refuse.
+          resolvePlanTouchedFiles: () =>
+            subjectPlan && workspaceId ? planTouchedFiles(workspaceId, subjectPlan) : Promise.resolve(null),
+        }),
+      );
       if (!coverageEvaluation.ok) {
         return {
           ok: false as const,
@@ -2915,32 +3803,40 @@ export async function emitScorecard(
       const evaluateRequirements = deps.evaluateRequirementChecks ?? evaluateCriterionRequirementChecks;
       // Hoisted for the same narrowing reason as the coverage block above.
       const requirementsPlan = rubric.subjectPlan;
-      const requirementsEvaluation = await evaluateRequirements({
-        criteria: rubric.criteria,
-        ratings,
-        readRequirementRealization: async () => {
-          if (!requirementsPlan) return null;
-          // Read all three together. They are independent queries over the same plan, and
-          // the judge's own contract treats an empty planItems list as "not supplied"
-          // (never as "the plan has no items"), so a transient read failure degrades to
-          // the pre-P-016 behaviour instead of convicting every target.
-          const [activationAudit, itemAudits, planItems] = await Promise.all([
-            getLatestActivationAudit(requirementsPlan),
-            getEffectiveItemAudits(requirementsPlan),
-            getPlanItemStatuses(requirementsPlan),
-          ]);
-          const proof = itemAudits.some(({ entry }) => entry.verdict === 'not-code')
-            ? await readAndEvaluateAcceptanceBarLifecycle(requirementsPlan, 'pre-grading', { current: args.current })
-            : null;
-          return {
-            planSlug: requirementsPlan,
-            mappings: activationAudit?.activation?.mappings ?? [],
-            itemAudits,
-            planItems,
-            nonCodeItemProofs: proof?.nonCodeItemProofs,
-          };
-        },
-      });
+      const requirementsEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:requirements', () =>
+        evaluateRequirements({
+          criteria: rubric.criteria,
+          ratings,
+          readRequirementRealization: async () => {
+            if (!requirementsPlan) return null;
+            // Read all three together. They are independent queries over the same plan, and
+            // the judge's own contract treats an empty planItems list as "not supplied"
+            // (never as "the plan has no items"), so a transient read failure degrades to
+            // the pre-P-016 behaviour instead of convicting every target.
+            // Item rows are owned per (harness, slug), so scope them to the subject plan's
+            // harness (WI-10005167). The two audit reads stay (workspace, slug): plan_audits
+            // is keyed that way and its harness_slug is only a citation context.
+            const [activationAudit, itemAudits, planItems] = await Promise.all([
+              getLatestActivationAudit(requirementsPlan),
+              getEffectiveItemAudits(requirementsPlan),
+              getPlanItemStatuses(requirementsPlan, { harnessSlug: rubric.subjectHarnessSlug }),
+            ]);
+            const proof = itemAudits.some(({ entry }) => entry.verdict === 'not-code')
+              ? await readAndEvaluateAcceptanceBarLifecycle(requirementsPlan, 'pre-grading', {
+                  current: args.current,
+                  harnessSlug: rubric.subjectHarnessSlug,
+                })
+              : null;
+            return {
+              planSlug: requirementsPlan,
+              mappings: activationAudit?.activation?.mappings ?? [],
+              itemAudits,
+              planItems,
+              nonCodeItemProofs: proof?.nonCodeItemProofs,
+            };
+          },
+        }),
+      );
       if (!requirementsEvaluation.ok) {
         return {
           ok: false as const,
@@ -2968,11 +3864,6 @@ export async function emitScorecard(
             windowEnd: args.subject.windowEnd ?? null,
           })
         : null;
-    // EI-23074025929199961: this stamp measures the SEPARATE Scout bg-host.
-    // Its boot HEAD differing from the querying build says nothing about this
-    // evaluator's freshness. Preserve and surface that telemetry, but never use
-    // it to refuse an otherwise valid scorecard. Exact evaluator build/selection
-    // and pass-claim checks remain in validateSpecTestAdequacyReplay above.
     const result = await captureImprovement({
       title: args.title ?? `Scorecard: ${rubric.title}${sourceHive ? ` — ${sourceHive}` : ''}`,
       kind: 'change',
@@ -2989,6 +3880,7 @@ export async function emitScorecard(
       payloadExtra: {
         observation: {
           rubricRef: args.rubricRef,
+          ...(ledgerFillSummary ? { ledgerFilled: true } : {}),
           ...(rubricRevision != null ? { rubricRevision } : {}),
           ...(criteriaHash != null ? { criteriaHash } : {}),
           ...(rubricMeaningRevision != null ? { rubricMeaningRevision } : {}),
@@ -3001,11 +3893,13 @@ export async function emitScorecard(
           ...(args.targetHive ? { targetHive: args.targetHive } : {}),
           ...(instrumentSnapshots ? { instrumentSnapshots } : {}),
           evidenceFingerprint,
-          ...(args.supersedes ? { supersedes: args.supersedes } : {}),
+          ...(effectiveSupersedes ? { supersedes: effectiveSupersedes } : {}),
+          ...(args.baselineRef ? { baselineRef: args.baselineRef } : {}),
           ...(gradedGeneration ? { gradedGeneration } : {}),
           ...(provisional ? { provisional } : {}),
           ...(gradingAudit ? { gradingAudit } : {}),
           ...(args.subject ? { subject: args.subject } : {}),
+          ...(interactionReviewer ? { interactionReviewer } : {}),
           ...(evidenceRecord ? { evidenceRecord } : {}),
           ...(subjectRubricIdentity ? { subjectRubricIdentity } : {}),
           ...(rollup ? { rollup } : {}),
@@ -3013,10 +3907,33 @@ export async function emitScorecard(
           ...(checkRuns ? { checkRuns } : {}),
         },
       },
+      // captureImprovement performs awaited preparation after this call begins.
+      // Re-read at its actual INSERT boundary so a host restart during that prep
+      // refuses before each create attempt, including contention retries.
+      beforeIssueCreate: async () => {
+        const persistenceGeneration = await readRunningGeneration().catch(() => null);
+        const evidenceHostStartedAt = evidenceGeneration?.hostStartedAt;
+        const persistenceHostStartedAt = persistenceGeneration?.hostStartedAt;
+        if (
+          evidenceHostStartedAt != null &&
+          persistenceHostStartedAt != null &&
+          evidenceHostStartedAt !== persistenceHostStartedAt
+        ) {
+          throw new ScorecardGenerationChangedBeforePersistError(
+            evidenceHostStartedAt,
+            persistenceHostStartedAt,
+          );
+        }
+      },
+      onIssuePersisted: async () => {
+        if (releaseScorecardEmitMutex) {
+          await releaseScorecardEmitMutex();
+          releaseScorecardEmitMutex = undefined;
+        }
+      },
     });
-    // The advisory lock covers the final dedup read through the complete ledger
-    // capture. Post-write notifications/audit settlement are deliberately outside
-    // the critical section so a slow subscriber cannot serialize future emits.
+    // Successful creates release at the persistence boundary above. Keep this
+    // fallback for duplicate and early-return capture paths.
     if (releaseScorecardEmitMutex) {
       await releaseScorecardEmitMutex();
       releaseScorecardEmitMutex = undefined;
@@ -3046,8 +3963,12 @@ export async function emitScorecard(
         ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
         ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
         ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
-        ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
+        ...(effectiveSupersedes ? { supersedesAuditIssueId: effectiveSupersedes } : {}),
       });
+      if (releaseGradingAuditSubjectMutex) {
+        await releaseGradingAuditSubjectMutex();
+        releaseGradingAuditSubjectMutex = undefined;
+      }
       if (auditSettlement.ok) {
         try {
           await (deps.closeSourceAuditConsults ?? closeSourceAuditConsults)(
@@ -3071,6 +3992,21 @@ export async function emitScorecard(
     // anyone (a refused or re-read emit fires nothing), and fail-soft inside, so a failed
     // emit can never fail the scorecard write that already succeeded.
     if (result.created && result.issue?.id) {
+      // EI-24852356444105284: a settled grading audit also fires
+      // `scorecard:grading-audit:<audited id>` — the audited card is already terminal,
+      // so no work-item status event can tell its author the verdict landed.
+      const settledStamp = auditContext && auditSettlement?.ok ? auditSettlement.gradingAudit : undefined;
+      const settledAudit =
+        auditContext && settledStamp && (settledStamp.state === 'passed' || settledStamp.state === 'failed')
+          ? {
+              issueId: auditContext.subjectIssueId,
+              state: settledStamp.state,
+              auditIssueId: settledStamp.auditIssueId ?? result.issue.id,
+              auditor: settledStamp.auditor ?? null,
+              auditedAt: settledStamp.auditedAt ?? null,
+              rubricRevision: settledStamp.rubricRevision ?? null,
+            }
+          : undefined;
       await emitScorecardEmitted(
         {
           issueId: result.issue.id,
@@ -3081,7 +4017,10 @@ export async function emitScorecard(
           createdBy: input.createdBy ?? null,
           hasAcceptance: Boolean(args.acceptance),
         },
-        input.workspaceId ? { workspaceId: input.workspaceId } : {},
+        {
+          ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+          ...(settledAudit ? { settledAudit } : {}),
+        },
       );
     }
     // P-013 backlog repair: every newly filed non-audit scorecard is a cheap,
@@ -3116,11 +4055,21 @@ export async function emitScorecard(
         cardSummary: gradingCardDigestExcerpt(ratings),
       });
     }
+    if (rubric.kind === 'acceptance' && result.issue?.id && input.workspaceId) {
+      void trackDetached(import('../../report-capture').then(({ captureAcceptanceVerdict }) => captureAcceptanceVerdict({
+        workspaceId: input.workspaceId!, ownerId: input.createdBy, harnessSlug: input.ctxHarness,
+        sessionRef: input.createdBy, issueId: result.issue!.id, rubricRef: args.rubricRef,
+        title: args.title ?? `Acceptance: ${rubric.title}`, planSlug: rubric.subjectPlan,
+        body: args.body, ratings, acceptance: acceptanceRecord,
+      })).catch(error => console.warn(`Reports acceptance capture failed: ${String(error)}`)));
+    }
     return {
       ok: true as const,
       created: result.created,
       issueId: result.issue?.id ?? null,
       evidenceFingerprint,
+      ...(checkLedger ? { checkLedger } : {}),
+      ...(ledgerFillSummary ? { ledgerFill: ledgerFillSummary } : {}),
       ...(gradedGeneration
         ? {
             gradedGeneration,
@@ -3154,7 +4103,7 @@ export async function emitScorecard(
             ...(auditSettlement.error ? { gradingAuditError: auditSettlement.error } : {}),
           }
         : {}),
-      ...(args.supersedes ? { supersedes: args.supersedes } : {}),
+      ...(effectiveSupersedes ? { supersedes: effectiveSupersedes } : {}),
       canonicalRatings: ratings,
       ...(releaseGateBinding ? { releaseGateBinding } : {}),
       ...(acceptanceRecord ? { acceptance: acceptanceRecord } : {}),
@@ -3167,7 +4116,27 @@ export async function emitScorecard(
       ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
     };
   } catch (error) {
+    if (error instanceof ScorecardEmitMutexWaitTimeoutError) {
+      return {
+        ok: false as const,
+        code: error.code,
+        error: error.message,
+        retryable: true as const,
+      };
+    }
     if (error instanceof ObservationEvidenceError) return { ok: false as const, error: error.message };
+    if (error instanceof ScorecardGenerationChangedBeforePersistError) {
+      return {
+        ok: false as const,
+        code: error.code,
+        error: error.message,
+        reGatherRequired: true as const,
+        generationChange: {
+          evidenceHostStartedAt: error.evidenceHostStartedAt,
+          persistenceHostStartedAt: error.persistenceHostStartedAt,
+        },
+      };
+    }
     throw error;
   } finally {
     // Covers every refusal/exception between the final dedup read and capture,
@@ -3175,6 +4144,10 @@ export async function emitScorecard(
     if (releaseScorecardEmitMutex) {
       await releaseScorecardEmitMutex().catch(() => {});
       releaseScorecardEmitMutex = undefined;
+    }
+    if (releaseGradingAuditSubjectMutex) {
+      await releaseGradingAuditSubjectMutex().catch(() => {});
+      releaseGradingAuditSubjectMutex = undefined;
     }
   }
 }
@@ -3194,7 +4167,7 @@ export default defineTool({
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     returns:
-      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. Successful emits surface `gradedGeneration`, `staleHost` and `deployedSha`: these describe the separate Scout bg-host relative to the querying build, not evaluator freshness. Exact spec-test-adequacy replay independently refuses changed evaluator builds, missing identities or contradicted pass claims. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
+      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. If the Scout bg-host `hostStartedAt` changes between evidence gathering and persistence, returns code `generation_changed_re_gather_required` with `reGatherRequired:true` and writes no card; re-run evaluate and emit. Successful emits surface `gradedGeneration`, `staleHost` and `deployedSha`: these describe the separate Scout bg-host relative to the querying build, not evaluator freshness. Exact spec-test-adequacy replay independently refuses changed evaluator builds or rule revisions, missing identities or contradicted pass claims. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
     chaining:
       'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance adopts ratings via acceptanceOf; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
@@ -3207,6 +4180,10 @@ export default defineTool({
   // (60s), surfacing as a bare `write CONNECTION_CLOSED`. Same declaration as
   // testing:run, for the same reason; every DB access here manages its own connection.
   skipWorkspaceTx: true,
+  // EI-25881485881954432: this write receipt carries complete nested ratings and
+  // audit evidence. Keep the session's ambient payload-tier projector from
+  // pruning those fields before the result door can preserve the emit response.
+  ignoreSessionPayloadTier: true,
   // EI-20965113106044588: the deterministic gate can legitimately exceed the flat
   // 55s MCP deadline. Declaring the real tool budget makes effectiveMcpDeadlineMs
   // extend the transport race instead of returning request_timeout while the
@@ -3239,21 +4216,55 @@ export default defineTool({
           hostStartedAt: z.string().nullable(),
           bootHeadSha: z.string().nullable(),
           scoutCodeHash: z.string().nullable(),
-          staleHost: z.boolean(),
+          staleHost: z.boolean().nullable(),
         })
         .optional(),
-      staleHost: z.boolean().optional(),
+      staleHost: z.boolean().nullable().optional(),
       deployedSha: z.string().nullable().optional(),
       code: z.string().optional(),
+      reGatherRequired: z.boolean().optional(),
+      generationChange: z
+        .object({ evidenceHostStartedAt: z.string(), persistenceHostStartedAt: z.string() })
+        .optional(),
       canonicalRatings: z.record(z.string(), z.unknown()).optional(),
       error: z.string().optional(),
     })
     .passthrough(),
   async handler(args, ctx) {
-    const data = await emitScorecardForToolContext(args, ctx);
+    const resolved = resolveHarnessTargetHive(args);
+    if (!resolved.ok) return { data: attachScorecardCompletionReceipt(resolved) };
+    const data = await emitScorecardForToolContext(resolved.args, ctx);
     return { data: attachScorecardCompletionReceipt(data) };
   },
 });
+
+/**
+ * plan-verification-friction-reduction-2026-10-11 P-005 (R-6): `harness` names the subject
+ * plan's harness, as in every plans tool, so it maps to `targetHive` (the subject hive that
+ * directs deterministic checks) — never to `sourceHive` (the grader's hive). A call naming
+ * both with different values is ambiguous about which tree is graded, so it is refused.
+ */
+export function resolveHarnessTargetHive<A extends { harness?: string; targetHive?: string }>(
+  args: A,
+):
+  // Distributive: the emit args are a union of vetting-channel branches, and a plain Omit
+  // would collapse them into one shape the handler cannot accept.
+  | { ok: true; args: A extends unknown ? Omit<A, 'harness'> : never }
+  | { ok: false; code: 'harness_target_hive_mismatch'; error: string } {
+  const { harness, ...rest } = args;
+  type Resolved = A extends unknown ? Omit<A, 'harness'> : never;
+  if (harness === undefined) return { ok: true, args: rest as Resolved };
+  if (rest.targetHive !== undefined && rest.targetHive !== harness) {
+    return {
+      ok: false,
+      code: 'harness_target_hive_mismatch',
+      error:
+        `harness '${harness}' and targetHive '${rest.targetHive}' disagree. Both name the subject ` +
+        "plan's hive; pass one, or pass the same value in both.",
+    };
+  }
+  return { ok: true, args: { ...rest, targetHive: harness } as Resolved };
+}
 
 type ScorecardCompletionData = {
   ok: boolean;
@@ -3344,6 +4355,7 @@ export async function emitScorecardForToolContext(
   // The full tool-handler context: GradingAuditLaunchContext IS that type (it is derived
   // from a defineTool handler's ctx parameter), and the handler above passes its own ctx.
   ctx: GradingAuditLaunchContext,
+  options: { previewOnly?: boolean } = {},
 ) {
   const identity = resolveAgentIdentity(ctx);
   const ctxHarness =
@@ -3355,7 +4367,9 @@ export async function emitScorecardForToolContext(
       ctxHarness,
       role: ctx.role,
       workspaceId: identity.workspaceId ?? undefined,
+      previewOnly: options.previewOnly === true,
       launchContext: ctx,
+      phases: ctx.phases,
       // P-011: tests-checks resolve + run against the tree the AGENT edits.
       checkRoot: resolveAgentWorkspaceRoot(ctx),
     },

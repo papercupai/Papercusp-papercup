@@ -13,9 +13,11 @@
 // This module is the part both sides share: which runs are eligible, which files a scoped verdict
 // needs checked, how an API diagnostic is rendered in the CLI's own text format (so the gate's
 // existing parser reads service output unchanged), and the socket client.
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { dirname, join, relative, resolve } from 'node:path';
+import ts from 'typescript';
 
 /** Set to `0` to force the full CLI compile (the A/B control, and the escape hatch). */
 export const TSC_SERVICE_ENV = 'PAPERCUSP_TSC_SERVICE';
@@ -35,8 +37,122 @@ export const TSC_SERVICE_TIMEOUT_MS = Number(process.env.PAPERCUSP_TSC_SERVICE_T
  */
 export function tscServiceSocketPath(env = process.env) {
   if (env.PAPERCUSP_TSC_SERVICE_SOCKET) return env.PAPERCUSP_TSC_SERVICE_SOCKET;
-  const runtimeDir = env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`;
-  return join(runtimeDir, 'papercusp-tsc-service.sock');
+  return join(tscServiceRuntimeDir(env), 'papercusp-tsc-service.sock');
+}
+
+/**
+ * @param {Record<string, string | undefined>} env
+ * @returns {string}
+ */
+function tscServiceRuntimeDir(env) {
+  return env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? 0}`;
+}
+
+/**
+ * WI-10005362 — hosted workspace hosts run one service PER CHECKOUT. Set (by the operator, never
+ * the customer) to the base name of the systemd user template units the host bootstrap installs,
+ * `/etc/systemd/user/<base>@.{socket,service}`; the instance is the systemd-escaped checkout path.
+ * A template, not the tower's fixed-ROOT unit, because a hosted host's checkouts are cloned under
+ * its workspace root after the bootstrap ran, so the bootstrap cannot name them.
+ */
+export const TSC_SERVICE_UNIT_TEMPLATE_ENV = 'PAPERCUSP_TSC_SERVICE_UNIT_TEMPLATE';
+
+/**
+ * `systemd-escape --path`, so the client names the same instance the unit's `%f` resolves back to.
+ * Byte-wise over UTF-8: `/` becomes `-`, a leading `.` and anything outside `[0-9A-Za-z:_.]`
+ * becomes `\xNN`, and empty / `.` components are dropped first.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+export function systemdEscapePath(path) {
+  const simplified = path.split('/').filter((part) => part !== '' && part !== '.').join('/');
+  if (simplified === '') return '-';
+  const bytes = Buffer.from(simplified, 'utf8');
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    const byte = bytes[i];
+    const ch = String.fromCharCode(byte);
+    if (ch === '/') out += '-';
+    else if ((i === 0 && ch === '.') || byte >= 0x80 || !/[0-9A-Za-z:_.]/.test(ch)) {
+      out += `\\x${byte.toString(16).padStart(2, '0')}`;
+    } else out += ch;
+  }
+  return out;
+}
+
+/**
+ * The socket unit serving `root` under a template base.
+ *
+ * @param {string} template
+ * @param {string} root
+ * @returns {string}
+ */
+export function tscServiceTemplateSocketUnit(template, root) {
+  return `${template}@${systemdEscapePath(resolve(root))}.socket`;
+}
+
+/**
+ * Start (idempotently) the per-checkout socket unit and read the path systemd actually bound, so
+ * the client never re-derives the unit's `ListenStream` expansion. Synchronous: two short
+ * `systemctl --user` calls in the caller's own user manager, no root and no detached process.
+ *
+ * @param {{
+ *   template: string,
+ *   root: string,
+ *   env?: Record<string, string | undefined>,
+ *   run?: (command: string, args: string[], options: object) => { status: number | null, stdout?: string | null, stderr?: string | null, error?: Error },
+ * }} opts
+ * @returns {{ socketPath: string, unit: string } | { error: string, unit: string }}
+ */
+export function tscServiceTemplateSocket({ template, root, env = process.env, run = spawnSync }) {
+  const unit = tscServiceTemplateSocketUnit(template, root);
+  const options = {
+    encoding: 'utf8',
+    timeout: 15_000,
+    env: { ...env, XDG_RUNTIME_DIR: tscServiceRuntimeDir(env) },
+  };
+  const started = run('systemctl', ['--user', 'start', unit], options);
+  if (started.error || started.status !== 0) {
+    const why = started.error?.message ?? (started.stderr ?? '').trim().split('\n').pop() ?? '';
+    return { unit, error: `systemctl --user start ${unit} failed (status ${started.status}): ${why}` };
+  }
+  const shown = run('systemctl', ['--user', 'show', '-p', 'Listen', '--value', unit], options);
+  // One `Listen=` value per line, e.g. `/run/user/1001/papercusp-tsc-service-….sock (Stream)`.
+  const listen = (shown.stdout ?? '').split('\n').map((line) => line.trim()).find((line) => line.startsWith('/'));
+  if (shown.status !== 0 || !listen) return { unit, error: `${unit} reports no unix socket` };
+  return { unit, socketPath: unescapeSystemctlValue(listen.replace(/\s+\([A-Za-z]+\)$/, '')) };
+}
+
+/**
+ * `systemctl show` C-escapes property values: the escaped instance's literal `\x2d` in the socket
+ * path prints as `\\x2d` (measured, systemd 255), so the printed path is not the path on disk.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function unescapeSystemctlValue(value) {
+  const bytes = [];
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (ch === '\\' && i + 1 < value.length) {
+      const next = value[i + 1];
+      const hex = value.slice(i + 2, i + 4);
+      if (next === 'x' && /^[0-9a-fA-F]{2}$/.test(hex)) {
+        bytes.push(Number.parseInt(hex, 16));
+        i += 3;
+        continue;
+      }
+      const simple = { '\\': 0x5c, n: 0x0a, t: 0x09, '"': 0x22, "'": 0x27 }[next];
+      if (simple !== undefined) {
+        bytes.push(simple);
+        i += 1;
+        continue;
+      }
+    }
+    bytes.push(...Buffer.from(ch, 'utf8'));
+  }
+  return Buffer.from(bytes).toString('utf8');
 }
 
 /**
@@ -229,34 +345,87 @@ export function importsAnyModule(content, importerAbs, namedKeys, namedTails) {
 }
 
 /**
+ * Compare a loaded project's root files with a fresh parse of its tsconfig.
+ * `invalidateAll` refreshes contents and imports but does not re-evaluate include globs, so the
+ * service must tell the native API about both new and removed roots explicitly.
+ *
+ * @param {readonly string[]} knownRootFiles
+ * @param {readonly string[]} configuredRootFiles
+ * @returns {{ created: string[], deleted: string[] }}
+ */
+export function projectRootFileChanges(knownRootFiles, configuredRootFiles) {
+  const known = new Set(knownRootFiles);
+  const configured = new Set(configuredRootFiles);
+  return {
+    created: [...configured].filter((file) => !known.has(file)),
+    deleted: [...known].filter((file) => !configured.has(file)),
+  };
+}
+
+/**
+ * Reconcile a loaded snapshot's root files with the current tsconfig include set.
+ *
+ * @param {{
+ *   api: {
+ *     parseConfigFile(config: string): Promise<{ fileNames?: string[] }>,
+ *     updateSnapshot(params: { fileChanges: { created?: string[], deleted?: string[] } }): Promise<{
+ *       getProject(config: string): { rootFiles?: string[] } | undefined,
+ *       dispose(): void,
+ *     }>,
+ *   },
+ *   snapshot: {
+ *     getProject(config: string): { rootFiles?: string[] } | undefined,
+ *     dispose(): void,
+ *   },
+ *   projects: string[],
+ * }} opts
+ * @returns {Promise<{
+ *   getProject(config: string): { rootFiles?: string[] } | undefined,
+ *   dispose(): void,
+ * }>}
+ */
+export async function refreshProjectRootFiles({ api, snapshot, projects }) {
+  const created = new Set();
+  const deleted = new Set();
+  for (const config of projects) {
+    const project = snapshot.getProject(config);
+    if (!project) continue;
+    const parsed = await api.parseConfigFile(config);
+    const changes = projectRootFileChanges(project.rootFiles ?? [], parsed.fileNames ?? []);
+    for (const file of changes.created) created.add(file);
+    for (const file of changes.deleted) deleted.add(file);
+  }
+  if (created.size === 0 && deleted.size === 0) return snapshot;
+
+  const fileChanges = {
+    ...(created.size > 0 ? { created: [...created] } : {}),
+    ...(deleted.size > 0 ? { deleted: [...deleted] } : {}),
+  };
+  const nextSnapshot = await api.updateSnapshot({ fileChanges });
+  snapshot.dispose();
+  return nextSnapshot;
+}
+
+/**
  * The files a scoped verdict about `named` depends on, drawn from the project's program:
  *
  *   - the named files themselves;
- *   - files that textually reference a type/interface/class/enum a named file exports — the gate's
- *     cause-aware widening (EI-18756182128903253) attributes their regressions to the caller, so
- *     they must be checked, not just parsed;
- *   - direct importers of a named file, whose breakage the CLI run would have reported.
- *
- * The residual against a full compile is a TRANSITIVE importer (through a barrel or a package
- * entry point) whose error does not mention an exported type name. The green-checkpoint's bare
- * run still judges those; the gate banner says so.
+ *   - resolved importers of a named module, including aliases and transitive barrels.
+ * Comments, strings and unrelated same-name declarations do not establish a dependency.
  *
  * @param {{
  *   root: string,
  *   named: Iterable<string>,
  *   programFiles: readonly string[],
- *   typeNames: Set<string>,
  *   readText: (absFile: string) => string | null,
+ *   configFile?: string,
  * }} opts
  * @returns {{ files: string[], named: number, typeReferencing: number, importers: number, namedNotInProgram: string[] }}
  */
-export function checkedSetFor({ root, named, programFiles, typeNames, readText }) {
+export function checkedSetFor({ root, named, programFiles, readText, configFile }) {
   const rootPrefix = `${resolve(root)}/`;
   const namedAbs = new Set([...named].map((file) => resolve(root, file)));
-  const namedKeys = new Set([...namedAbs].flatMap(moduleKeysFor));
-  const namedTails = new Set([...namedKeys].map((key) => key.split('/').slice(-2).join('/')));
-  const escaped = [...typeNames].map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const typePattern = escaped.length > 0 ? new RegExp(`\\b(?:${escaped.join('|')})\\b`) : null;
+  const dependent = filesDependingOnChangedModules({ root, named: namedAbs, candidates: programFiles, readText, configFile });
 
   const files = [];
   let namedCount = 0;
@@ -271,18 +440,167 @@ export function checkedSetFor({ root, named, programFiles, typeNames, readText }
       namedCount += 1;
       continue;
     }
-    const content = readText(abs);
-    if (content === null) continue;
-    if (typePattern?.test(content)) {
-      files.push(abs);
-      typeReferencing += 1;
-    } else if (importsAnyModule(content, abs, namedKeys, namedTails)) {
+    if (dependent.has(abs)) {
       files.push(abs);
       importers += 1;
     }
   }
   const namedNotInProgram = [...namedAbs].filter((abs) => !inProgram.has(abs)).map((abs) => relative(root, abs));
   return { files, named: namedCount, typeReferencing, importers, namedNotInProgram };
+}
+
+/**
+ * Shared CLI/service attribution (EI-25720784739215773). Resolve actual import/export edges
+ * with TypeScript, then walk reverse edges from the changed modules. Aliases, namespace
+ * imports, inferred callbacks, barrels and cycles retain provenance; comments, strings and
+ * unrelated local declarations cannot invent it. No second compiler program is created.
+ * Companion declarations and their executable source share a module identity.
+ *
+ * @param {{ root: string, named: Iterable<string>, candidates: Iterable<string>,
+ *   readText?: (absFile: string) => string | null, configFile?: string }} opts
+ * @returns {Set<string>} Absolute candidate paths depending on a named module.
+ */
+export function filesDependingOnChangedModules({ root, named, candidates, readText, configFile }) {
+  const base = resolve(root);
+  const inside = (file) => file.startsWith(`${base}/`) && !file.includes('/node_modules/');
+  const identity = (file) => file.replace(SOURCE_EXTENSION, '');
+  const targets = new Set([...named].map((file) => identity(resolve(base, file))));
+  const candidateAbs = [...candidates].map((file) => resolve(base, file)).filter(inside);
+  if (targets.size === 0) return new Set();
+  const optionsByConfig = new Map();
+  const configsByDir = new Map();
+  const optionsFor = (file) => {
+    const dir = dirname(file);
+    if (!configsByDir.has(dir)) configsByDir.set(dir, configFile
+      ? resolve(base, configFile) : ts.findConfigFile(dir, ts.sys.fileExists));
+    const config = configsByDir.get(dir);
+    if (!optionsByConfig.has(config)) {
+      const options = config
+        ? ts.parseJsonConfigFileContent(ts.readConfigFile(config, ts.sys.readFile).config ?? {},
+          { ...ts.sys, readDirectory: () => [] }, dirname(config), undefined, config).options
+        : { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, allowJs: true };
+      optionsByConfig.set(config, { options, cache: ts.createModuleResolutionCache(base, (s) => s, options) });
+    }
+    return optionsByConfig.get(config);
+  };
+  const reverse = new Map();
+  // This request-local module census grows only once per resolved repository file.
+  // Set iteration visits newly resolved modules without retaining duplicate import edges.
+  const moduleFiles = new Set(candidateAbs);
+  for (const file of moduleFiles) {
+    const text = readText ? readText(file) : ts.sys.readFile(file);
+    if (text == null) continue;
+    const { options, cache } = optionsFor(file);
+    for (const imp of ts.preProcessFile(text, true, true).importedFiles) {
+      const resolved = ts.resolveModuleName(imp.fileName, file, options, ts.sys, cache).resolvedModule;
+      if (!resolved || !inside(resolved.resolvedFileName)) continue;
+      const key = identity(resolved.resolvedFileName);
+      if (!reverse.has(key)) reverse.set(key, new Set());
+      reverse.get(key).add(identity(file));
+      moduleFiles.add(resolved.resolvedFileName);
+    }
+  }
+  const reachable = new Set(targets);
+  for (const module of reachable) {
+    for (const importer of reverse.get(module) ?? []) {
+      reachable.add(importer);
+    }
+  }
+  return new Set(candidateAbs.filter((file) => reachable.has(identity(file)) && !targets.has(identity(file))));
+}
+
+/**
+ * A dependency is check scope, not diagnostic causality. Attribute only a diagnostic whose
+ * actual or contextual type resolves to a type exported by a changed module. Binding symbols
+ * preserves renamed imports and inferred callback/object fixtures without blaming unrelated
+ * errors in the same importer (EI-25720784739215773).
+ *
+ * @param {{root: string, named: Iterable<string>, candidates: Iterable<string>,
+ *   output: string, configFile?: string}} opts
+ * @returns {Set<string>} Absolute diagnostic paths with changed-type provenance.
+ */
+export function diagnosticFilesDependingOnChangedTypes({ root, named, candidates, output, configFile }) {
+  const base = resolve(root);
+  const names = [...named].map((file) => resolve(base, file));
+  const dependent = filesDependingOnChangedModules({ root, named: names, candidates, configFile });
+  if (dependent.size === 0) return new Set();
+  const config = configFile ? resolve(base, configFile) : ts.findConfigFile(base, ts.sys.fileExists);
+  const configured = config ? ts.parseJsonConfigFileContent(ts.readConfigFile(config, ts.sys.readFile).config ?? {},
+    { ...ts.sys, readDirectory: () => [] }, dirname(config), undefined, config).options : {};
+  const options = { ...configured, noEmit: true, noLib: true, types: [], allowJs: true };
+  const host = ts.createCompilerHost(options);
+  // We bind the relevant repository symbols, not third-party packages or a second full check.
+  const cache = ts.createModuleResolutionCache(base, (s) => s, options);
+  host.resolveModuleNameLiterals = (literals, file) => literals.map((literal) => {
+    const result = ts.resolveModuleName(literal.text, file, options, ts.sys, cache);
+    const resolved = result.resolvedModule;
+    return resolved?.resolvedFileName.startsWith(`${base}/`) && !resolved.resolvedFileName.includes('/node_modules/')
+      ? result : { resolvedModule: undefined };
+  });
+  const program = ts.createProgram([...names, ...dependent], options, host);
+  const checker = program.getTypeChecker();
+  const targetKeys = new Set(names.map((file) => file.replace(SOURCE_EXTENSION, '')));
+  const targets = new Set();
+  const unalias = (symbol) => symbol?.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+  for (const file of program.getSourceFiles()) {
+    if (!targetKeys.has(file.fileName.replace(SOURCE_EXTENSION, ''))) continue;
+    const module = checker.getSymbolAtLocation(file);
+    if (!module) continue;
+    for (const symbol of checker.getExportsOfModule(module)) {
+      const original = unalias(symbol);
+      if (original?.declarations?.some((d) => targetKeys.has(d.getSourceFile().fileName.replace(SOURCE_EXTENSION, ''))
+        && (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d) || ts.isClassDeclaration(d) || ts.isEnumDeclaration(d)))) targets.add(original);
+    }
+  }
+  const carriesTarget = (type, seen = new Set()) => {
+    if (!type || seen.has(type)) return false;
+    seen.add(type);
+    if (targets.has(unalias(type.symbol)) || targets.has(unalias(type.aliasSymbol))) return true;
+    const parts = type.isUnionOrIntersection() ? type.types : [];
+    const args = type.flags & ts.TypeFlags.Object && type.objectFlags & ts.ObjectFlags.Reference
+      ? checker.getTypeArguments(type) : [];
+    return [...parts, ...args].some((part) => carriesTarget(part, seen));
+  };
+  const attributed = new Set();
+  for (const line of String(output).split('\n')) {
+    const match = /^(.+)\((\d+),(\d+)\):\s*error TS\d+:/.exec(line);
+    if (!match) continue;
+    const path = resolve(base, match[1]);
+    if (!dependent.has(path)) continue;
+    const file = program.getSourceFile(path);
+    if (!file) continue;
+    // tsc judged an EARLIER snapshot of a shared, live tree; this program re-reads the file now, so
+    // a diagnostic's (line, column) may no longer exist in it. getPositionOfLineAndCharacter ASSERTS
+    // on an out-of-range column (TypeScript "Debug Failure. False expression." in
+    // computePositionOfLineAndCharacter), and that throw crashed the whole gate (EI-25816656568127078).
+    // Apply TypeScript's own bound here and skip a location this snapshot cannot hold, exactly as an
+    // out-of-range line already is: the diagnostic describes text that is gone.
+    const starts = file.getLineStarts();
+    const lineIndex = Number(match[2]) - 1;
+    const character = Number(match[3]) - 1;
+    if (lineIndex < 0 || lineIndex >= starts.length || character < 0) continue;
+    const pos = starts[lineIndex] + character;
+    if (lineIndex + 1 < starts.length ? pos >= starts[lineIndex + 1] : pos > file.text.length) continue;
+    let node = file;
+    const descend = (parent) => ts.forEachChild(parent, (child) => {
+      if (child.getFullStart() <= pos && pos < child.getEnd()) { node = child; descend(child); }
+    });
+    descend(file);
+    // Diagnostic locations include the object itself, a variable name, or a nested property.
+    // Stop before the surrounding function/file can lend an unrelated contextual signature.
+    for (let current = node, depth = 0; current && depth < 4 && !ts.isSourceFile(current); current = current.parent, depth += 1) {
+      // A named-only ImportClause has no default-binding symbol. TypeScript's
+      // getTypeAtLocation handles it as a default import and dereferences that
+      // missing symbol (undefined.flags). Its identifiers/specifiers are queried
+      // at their own locations; the containing clause has no value type to ask for.
+      if (ts.isImportClause(current) && !current.name) continue;
+      const context = ts.isExpression(current) ? checker.getContextualType(current) : undefined;
+      const receiver = ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)
+        ? checker.getTypeAtLocation(current.expression) : undefined;
+      if (carriesTarget(context) || carriesTarget(receiver) || carriesTarget(checker.getTypeAtLocation(current))) { attributed.add(path); break; }
+    }
+  }
+  return attributed;
 }
 
 /**
@@ -351,11 +669,30 @@ export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE
  * The gate's side: ask the service to check `files` in `project`, returning null (with the
  * reason already printed) whenever the caller must fall back to the full compile.
  *
- * @param {{ root: string, project: string, files: string[], label: string, log?: (line: string) => void }} opts
+ * Under {@link TSC_SERVICE_UNIT_TEMPLATE_ENV} the socket is this checkout's template instance,
+ * started on demand; otherwise the one fixed socket of {@link tscServiceSocketPath}.
+ *
+ * @param {{
+ *   root: string,
+ *   project: string,
+ *   files: string[],
+ *   label: string,
+ *   log?: (line: string) => void,
+ *   env?: Record<string, string | undefined>,
+ * }} opts
  * @returns {Promise<Extract<TscServiceResponse, { ok: true }> | null>}
  */
-export async function typecheckViaService({ root, project, files, label, log = (line) => console.error(line) }) {
-  const socketPath = tscServiceSocketPath();
+export async function typecheckViaService({ root, project, files, label, log = (line) => console.error(line), env = process.env }) {
+  let socketPath = tscServiceSocketPath(env);
+  const template = env[TSC_SERVICE_UNIT_TEMPLATE_ENV];
+  if (template) {
+    const located = tscServiceTemplateSocket({ template, root, env });
+    if ('error' in located) {
+      log(`⚠ TSC_SERVICE unavailable (${located.error}) — running the full ${label} compile instead.`);
+      return null;
+    }
+    socketPath = located.socketPath;
+  }
   try {
     const response = await requestTscService({ socketPath, request: { v: 1, root, project, files } });
     if (response.ok) return response;
@@ -370,23 +707,39 @@ export async function typecheckViaService({ root, project, files, label, log = (
  * The line a service-served run prints, so a reader knows this verdict came from the service and
  * how far it reached.
  *
+ * WI-10007624: a named file this leg ROUTED to its owning leg is also, necessarily, outside this
+ * project's program. Printing it under "not in this project's program" beside a `status=clean`
+ * reads as a false green (a reader concluded the operator files went unchecked when the operator
+ * leg had judged them). Pass the routed set, and those files get their own line saying where they
+ * were judged; only files nobody judged stay on the not-in-program line.
+ *
  * @param {Extract<TscServiceResponse, { ok: true }>} response
+ * @param {{ routedAway?: Iterable<string> }} [opts] repo-relative files a delegate leg already judged
  * @returns {string[]}
  */
-export function formatTscServiceBanner(response) {
+export function formatTscServiceBanner(response, { routedAway = [] } = {}) {
   const lines = [
     `TSC_SERVICE used=1 checked=${response.checked.length} named=${response.counts.named} ` +
       `typeReferencing=${response.counts.typeReferencing} importers=${response.counts.importers} ` +
       `errors=${response.errorCount} queuedMs=${response.queuedMs} checkMs=${response.checkMs} ` +
       `snapshotAgeMs=${response.snapshotAgeMs}`,
-    `   (shared typecheck service: judged your files, files referencing their exported types, and their direct ` +
-      `importers — not the whole project. A transitive importer is judged by the bare run; ` +
+    `   (shared typecheck service: judged your files and resolved importers, including barrels ` +
+      `— not the whole project. Unrelated files are judged by the bare run; ` +
       `${TSC_SERVICE_ENV}=0 forces the full compile.)`,
   ];
-  if (response.namedNotInProgram.length > 0) {
+  const routed = new Set([...routedAway].map((file) => String(file).replace(/^\.\//, '')));
+  const delegated = response.namedNotInProgram.filter((file) => routed.has(file));
+  const unjudged = response.namedNotInProgram.filter((file) => !routed.has(file));
+  if (unjudged.length > 0) {
     lines.push(
-      `   (${response.namedNotInProgram.length} named file(s) are not in this project's program, as with the CLI: ` +
-        `${response.namedNotInProgram.slice(0, 5).join(', ')}${response.namedNotInProgram.length > 5 ? ', …' : ''})`,
+      `   (${unjudged.length} named file(s) are not in this project's program, as with the CLI: ` +
+        `${unjudged.slice(0, 5).join(', ')}${unjudged.length > 5 ? ', …' : ''})`,
+    );
+  }
+  if (delegated.length > 0) {
+    lines.push(
+      `   (${delegated.length} named file(s) belong to another project and were judged by its own leg, ` +
+        `counted as filesRoutedAway: ${delegated.slice(0, 5).join(', ')}${delegated.length > 5 ? ', …' : ''})`,
     );
   }
   return lines;

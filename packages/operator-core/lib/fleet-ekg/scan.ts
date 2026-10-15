@@ -89,7 +89,9 @@ export interface FleetEkgTickDeps {
     result: DriftResult,
     findings: AttributedFinding[],
   ) => Promise<PersistedShift[]>;
-  alarm: (input: { title: string; body: string; workspaceId: string }) => Promise<void>;
+  alarm: (input: { title: string; body: string; workspaceId: string; notifyOwner?: boolean }) => Promise<void>;
+  /** A completed healthy measurement clears the workspace's shift condition. */
+  resolveCondition?: (workspaceId: string) => Promise<unknown>;
   markNotified: (workspaceId: string, shiftIds: number[]) => Promise<void>;
   nowMs: () => number;
   log?: (message: string) => void;
@@ -298,9 +300,19 @@ export function defaultFleetEkgDeps(sql: Sql): FleetEkgTickDeps {
       return readRecentChanges(ws, { sinceMs, limit: 200 });
     },
     persistShifts: (ws, fromMs, toMs, result, findings) => persistShiftRows(sql, ws, fromMs, toMs, result, findings),
-    alarm: async ({ title, body, workspaceId }) => {
+    alarm: async ({ title, body, workspaceId, notifyOwner }) => {
+      const { broadcastSevereEvent } = await import('../severe-event-broadcast');
+      await broadcastSevereEvent({
+        category: 'fleet-ekg', summary: title, body,
+        conditionKey: `alarm:fleet-ekg:${workspaceId}`, oneShot: true,
+      }).catch(() => false);
+      if (notifyOwner === false) return;
       const { notifyAttention } = await import('../attention-notify');
       await notifyAttention({ kind: 'intervention', title, body, importance: 'high', workspaceId });
+    },
+    resolveCondition: async (workspaceId) => {
+      const { resolveAlarm } = await import('../alarm-attention');
+      return resolveAlarm(`alarm:fleet-ekg:${workspaceId}`, 'fleet-ekg');
     },
     markNotified: (ws, ids) => markShiftsNotified(sql, ws, ids),
     nowMs: () => Date.now(),
@@ -369,6 +381,8 @@ export async function runFleetEkgTick(
     alarmed: 0,
   };
   if (result.status !== 'ok' || result.findings.length === 0) {
+    // Sparse/insufficient cohorts are unknown, not evidence of recovery.
+    if (!opts.dryRun && result.status === 'ok') await deps.resolveCondition?.(workspaceId).catch(() => {});
     log(`[fleet-ekg] embedded ${vectors.length} (skipped ${skippedSmall} small), ${result.status}, no shifts`);
     return base;
   }
@@ -386,21 +400,25 @@ export async function runFleetEkgTick(
 
   // 5. Alarm unattributable MAJOR shifts, once per (feature, window day).
   if (!opts.dryRun) {
-    const toAlarm = persisted.filter((p) => !p.attributed && p.severity === 'major' && !p.alreadyNotified);
-    if (toAlarm.length > 0) {
-      const alarmFindings = findings.filter((f) => toAlarm.some((p) => p.feature === f.feature));
+    const unhealthy = persisted.filter((p) => !p.attributed && p.severity === 'major');
+    const toAlarm = unhealthy.filter((p) => !p.alreadyNotified);
+    if (unhealthy.length > 0) {
+      const alarmFindings = findings.filter((f) => unhealthy.some((p) => p.feature === f.feature));
       try {
         await deps.alarm({
           workspaceId,
-          title: `Fleet EKG: ${toAlarm.length} unattributable behavior shift${toAlarm.length === 1 ? '' : 's'}`,
+          title: `Fleet EKG: ${unhealthy.length} unattributable behavior shift${unhealthy.length === 1 ? '' : 's'}`,
           body: alarmBody(alarmFindings, result),
+          notifyOwner: toAlarm.length > 0,
         });
-        await deps.markNotified(workspaceId, toAlarm.map((p) => p.id));
+        if (toAlarm.length > 0) await deps.markNotified(workspaceId, toAlarm.map((p) => p.id));
         base.alarmed = toAlarm.length;
       } catch (e) {
         // Alarm delivery is best-effort; the shift rows persist regardless.
         log(`[fleet-ekg] alarm FAILED (shift rows persisted): ${e instanceof Error ? e.message : e}`);
       }
+    } else if (findings.every((finding) => persisted.some((shift) => shift.feature === finding.feature))) {
+      await deps.resolveCondition?.(workspaceId).catch(() => {});
     }
   }
 

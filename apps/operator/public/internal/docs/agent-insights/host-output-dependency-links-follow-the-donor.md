@@ -1,0 +1,33 @@
+# Relinking a prepared host output can write into its dependency donor
+URL: /internal/docs/agent-insights/host-output-dependency-links-follow-the-donor
+
+Measured WI-6554700010010906: bundle-host already creates custom output dependencies; an unconditional second ln follows that directory link into the canonical donor.
+
+## Measured failure
+
+On 2026-10-13 the canonical dependency donor contained `node_modules/node_modules`, an absolute symlink to its own parent. Strict pinned dependency preflight correctly rejected `absolute-pinned-dependency-link:node_modules/node_modules` before any guard tests ran (WI-6554700010010906).
+
+Root cause: a P006 voice-proof shell caller ran `bundle-host.sh` for a custom output, then unconditionally ran `ln -s "$PWD/node_modules" "$task_dir/node_modules"`. The bundler had already prepared that destination as a directory symlink to the donor. `ln` treated the existing destination as a directory and created the nested link inside the shared donor. A failed compilation did not prevent this caller step because its conditional shell context disabled implicit `set -e` handling.
+
+Retained producer evidence: Codex session `01a13698-f515-7012-b368-12a6fe0ec769`, owner `su-d7c6542c-582d-44dc-a02b-6cca3ebc2352`, original command at 18:55:41Z and admitted invocation at 19:09Z. `/tmp/pcv/p006-proof.LzQN9s/node_modules` pointed to the canonical donor at 19:11:31Z; the nested donor link's mtime was 19:11:48Z. The caller owner confirmed and checkpointed a link-free replacement on WI-10006879 (checkpoint `e3ae6096861f`, coord reply `coord-send-3106f7e6db869b8b001b4b5389d8f7dc929cefa13ebf6e07e7795299353aeaf6`). Historical unsafe commands are retired as replay recipes.
+
+## Maintained boundary
+
+`prepare_host_runtime_dependencies` in `apps/operator/bin/bundle-host.sh` owns this setup. Callers consume the prepared path and do not relink it:
+
+```bash
+bash apps/operator/bin/bundle-host.sh "$entry" "$task_dir/host.mjs" development || exit 1
+test -d "$task_dir/node_modules" || exit 1
+```
+
+The initializer uses Node's exact-path symlink syscall. An existing destination produces EEXIST atomically; it never descends into a directory. The final directory check validates a concurrent winner while preserving caller-supplied dependency trees and refusing broken links.
+
+## Evidence and remediation
+
+The project test `host-bundle-runtime-externals.test.ts` injects a destination alias exactly between absence check and create. Old `ln -s` creates a donor self-link and fails the guard; atomic creation preserves the alias without nesting. `sidecar-pinned-deps.test.ts` reproduces the legacy double-link sequence and asserts strict snapshot refusal before allocation. These are conventional Vitest tests run by `npm run test:file`.
+
+Local verification ran both complete files: 72 passes, one failure, zero skips. Both new guards passed and the pinned-deps file passed 58/58. The separate existing viem plain-Node probe timed out; it remains owned as EI-25899202370543485. This is not a full-suite green claim or shipment proof.
+
+Remediation removed only the confirmed canonical self-link under its explicit file lock and the maintained exclusive install mutex (`withFsMutex(installLockNameForRoot(root))`), which drains dependency readers. Validate the exact symlink inode and target before unlinking; refuse a changed target. Strict donor preflight refused the exact link before removal and passed afterward. Lockfile and selected installed-package sentinel hashes remained equal. Never weaken the strict verifier or recursively delete a dependency tree to hide this shape.
+
+Frozen failed guard runs remain terminal. Donor repair is a prerequisite for a fresh source/install qualification and a new immutable guard invocation; a source-capture receipt alone is not a test pass.

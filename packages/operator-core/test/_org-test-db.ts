@@ -124,7 +124,7 @@ const clientOpts = {
  *  `sql.array(...)` on a cold pool, sent as `text` instead of `text[]`/`bigint[]`
  *  (WI-10004177). lib/__tests__/org-test-db-client-fixes-parity.test.ts fails if
  *  buildClient gains a fix this function does not apply. */
-function applyRawSerializerFixes(client: postgres.Sql): postgres.Sql {
+export function applyRawSerializerFixes(client: postgres.Sql): postgres.Sql {
   restoreRawDateSerializers(client);
   restoreRawJsonbSerializer(client);
   seedBuiltinArrayTypes(client);

@@ -33,30 +33,35 @@ export async function resolveBridge(config: VerifyConfig): Promise<VerifyResult<
     };
   }
 
-  const tokenPath = join(tmpdir(), `tauri-dev-bridge-${config.tauriPID}.token`);
-  try {
-    const parsed = JSON.parse(await readFile(tokenPath, 'utf8')) as {
-      port?: unknown;
-      token?: unknown;
-      pid?: unknown;
-    };
-    const port = Number(parsed.port);
-    const pid = Number(parsed.pid);
-    if (!Number.isInteger(port) || port <= 0 || typeof parsed.token !== 'string' || !parsed.token) {
-      throw new Error('token file is missing a valid port/token');
+  const tokenName = `tauri-dev-bridge-${config.tauriPID}.token`;
+  const tokenPaths = [...new Set([join(tmpdir(), tokenName), join('/tmp', tokenName)])];
+  const failures: string[] = [];
+  for (const tokenPath of tokenPaths) {
+    try {
+      const parsed = JSON.parse(await readFile(tokenPath, 'utf8')) as {
+        port?: unknown;
+        token?: unknown;
+        pid?: unknown;
+      };
+      const port = Number(parsed.port);
+      const pid = Number(parsed.pid);
+      if (!Number.isInteger(port) || port <= 0 || typeof parsed.token !== 'string' || !parsed.token) {
+        throw new Error('token file is missing a valid port/token');
+      }
+      if (Number.isInteger(pid) && pid > 0 && pid !== config.tauriPID) {
+        throw new Error(`token belongs to PID ${pid}, not ${config.tauriPID}`);
+      }
+      return { ok: true, value: { port, token: parsed.token, pid: config.tauriPID } };
+    } catch (error) {
+      failures.push(`${tokenPath}: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (Number.isInteger(pid) && pid > 0 && pid !== config.tauriPID) {
-      throw new Error(`token belongs to PID ${pid}, not ${config.tauriPID}`);
-    }
-    return { ok: true, value: { port, token: parsed.token, pid: config.tauriPID } };
-  } catch (error) {
-    return {
-      ok: false,
-      code: 'bridge_token_unavailable',
-      error: `Cannot resolve Tauri PID ${config.tauriPID}: ${error instanceof Error ? error.message : String(error)}`,
-      evidence: { tokenPath },
-    };
   }
+  return {
+    ok: false,
+    code: 'bridge_token_unavailable',
+    error: `Cannot resolve Tauri PID ${config.tauriPID}: ${failures.join('; ')}`,
+    evidence: { tokenPath: tokenPaths[0], tokenPaths },
+  };
 }
 
 export async function bridgeEval<T = unknown>(

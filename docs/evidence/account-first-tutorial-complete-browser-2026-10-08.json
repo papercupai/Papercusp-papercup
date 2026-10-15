@@ -1,0 +1,260 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "pathNotation": "The command's script path is repository-relative; expand it from the operator checkout. Original execution receipts and measured hashes are unchanged.",
+  "framework": "playwright",
+  "name": "Complete immutable account-first full-product tutorial browser acceptance",
+  "startedAt": "2026-10-08T17:39:48.816Z",
+  "finishedAt": "2026-10-08T17:42:20.550Z",
+  "exitCode": 0,
+  "summary": "40 maintained browser cases passed at clean Portal8fb9ff5c and captured operator source hashes, including account-first, independent invalid scope controls, complete review/reload, completed-account entry, catalogue/Help and delayed destination observer regressions. Production, protected voice, expanded native review and full affected verdict remain separate.",
+  "assertions": [{"id":"browser-case-1","passed":true,"evidence":"agents destination keeps expanded Help and resume reachable inside its real popover"},{"id":"browser-case-2","passed":true,"evidence":"processes destination keeps expanded Help and resume reachable inside its real popover"},{"id":"browser-case-3","passed":true,"evidence":"voice destination keeps Help and resume clickable above the actual dismiss backdrop"},{"id":"browser-case-4","passed":true,"evidence":"optional disabled telemetry never interrupts saved guide progress"},{"id":"browser-case-5","passed":true,"evidence":"optional unavailable telemetry never interrupts saved guide progress"},{"id":"browser-case-6","passed":true,"evidence":"guide precedes portal destination and persists reload with workspace=null"},{"id":"browser-case-7","passed":true,"evidence":"guide precedes portal destination and persists reload with workspace=assigned-workspace"},{"id":"browser-case-8","passed":true,"evidence":"actual PortalEntry shows the enrolled guide before destination reads with workspace=null"},{"id":"browser-case-9","passed":true,"evidence":"actual PortalEntry shows the enrolled guide before destination reads with workspace=assigned-workspace"},{"id":"browser-case-10","passed":true,"evidence":"complete independent curriculum review survives reload and leaves product tasks unclaimed with workspace=null"},{"id":"browser-case-11","passed":true,"evidence":"complete independent curriculum review survives reload and leaves product tasks unclaimed with workspace=assigned-workspace"},{"id":"browser-case-12","passed":true,"evidence":"completed account enters its destination without repeating orientation with workspace=null"},{"id":"browser-case-13","passed":true,"evidence":"completed account enters its destination without repeating orientation with workspace=assigned-workspace"},{"id":"browser-case-14","passed":true,"evidence":"every catalogue lesson teaches and preserves the navigation boundary with workspace=null"},{"id":"browser-case-15","passed":true,"evidence":"every catalogue lesson teaches and preserves the navigation boundary with workspace=assigned-workspace"},{"id":"browser-case-16","passed":true,"evidence":"each permitted catalogue link navigates only after an acknowledged pause, without domain writes"},{"id":"browser-case-17","passed":true,"evidence":"small viewport, enlarged text and keyboard preserve readable lessons and exit controls"},{"id":"browser-case-18","passed":true,"evidence":"non-Cloud panel navigation saves pause and preserves contextual Help/trust with workspace=null"},{"id":"browser-case-19","passed":true,"evidence":"non-Cloud panel navigation saves pause and preserves contextual Help/trust with workspace=assigned-workspace"},{"id":"browser-case-20","passed":true,"evidence":"current-lesson AI Help requires an explicit question and stays advisory without progress writes"},{"id":"browser-case-21","passed":true,"evidence":"non-Cloud workspace targets stay unavailable before selection and denied progress has honest recovery"},{"id":"browser-case-22","passed":true,"evidence":"rechecks immediate explained Workspaces while its placeholder remains mounted"},{"id":"browser-case-23","passed":true,"evidence":"rechecks delayed explained Workspaces while its placeholder remains mounted"},{"id":"browser-case-24","passed":true,"evidence":"rechecks a Health shell whose explanation mounts after the empty-state container"},{"id":"browser-case-25","passed":true,"evidence":"waits for delayed health destination <div class=\"pc-health pc-health--empty\"><div class=\"pc-health__placeholder\">System health is disabled.</div></div>"},{"id":"browser-case-26","passed":true,"evidence":"waits for delayed health destination <div class=\"pc-health pc-health--empty\"><div class=\"pc-health__placeholder\">Health unavailable — permission refused</div></div>"},{"id":"browser-case-27","passed":true,"evidence":"waits for delayed health destination <div class=\"pc-health\"><button>Read details</button></div>"},{"id":"browser-case-28","passed":true,"evidence":"waits for delayed workspaces destination <div class=\"placeholder-surface\"><h2>Control plane not reachable</h2><p>This is not an empty estate</p></div>"},{"id":"browser-case-29","passed":true,"evidence":"refuses unresolved <div class=\"pc-health pc-health--empty\"><div class=\"pc-health__placeholder\">Loading system health…</div></div>"},{"id":"browser-case-30","passed":true,"evidence":"refuses unresolved <div class=\"placeholder-surface\"><button>Placeholder control</button></div>"},{"id":"browser-case-31","passed":true,"evidence":"classifies old-document cancellation for /api/notifications/refresh body={}"},{"id":"browser-case-32","passed":true,"evidence":"classifies old-document cancellation for /api/hosted/browser/onboarding/select-workspace body={}"},{"id":"browser-case-33","passed":true,"evidence":"classifies old-document cancellation for /api/preferences body={}"},{"id":"browser-case-34","passed":true,"evidence":"classifies old-document cancellation for /api/notifications/refresh body={\"change\":true}"},{"id":"browser-case-35","passed":true,"evidence":"refuses an explicit same-document bootstrap abort"},{"id":"browser-case-36","passed":true,"evidence":"rejects known invalid foreign-tenant response before any progress or domain write"},{"id":"browser-case-37","passed":true,"evidence":"rejects known invalid foreign-user response before any progress or domain write"},{"id":"browser-case-38","passed":true,"evidence":"rejects known invalid wrong-version response before any progress or domain write"},{"id":"browser-case-39","passed":true,"evidence":"rejects known invalid unknown-lesson response before any progress or domain write"},{"id":"browser-case-40","passed":true,"evidence":"valid account fixture saves a review while retaining independent account scope and version"}],
+  "workItemId": "WI-10007170",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "testRunId": 20937012,
+  "observedAt": "2026-10-08T17:39:46.850Z",
+  "portalCommit": "8fb9ff5c3ccafe0c334c84c897c16aa1afabe98a",
+  "operatorCommit": "c889625bec27718ef9ba8750115d009b812f1968",
+  "result": {
+    "passed": 40,
+    "failed": 0,
+    "skipped": 0,
+    "flaky": 0
+  },
+  "command": [
+    "node",
+    "scripts/lint-as-committed.mjs",
+    "test:e2e:browser",
+    "--any",
+    "--ref=8fb9ff5c3ccafe0c334c84c897c16aa1afabe98a",
+    "--keep",
+    "--",
+    "e2e/portal-product-tutorial.spec.ts",
+    "--reporter=list,json,@papercusp/operator-core/lib/testing-playwright-reporter"
+  ],
+  "reports": [
+    {
+      "path": "/tmp/tutorial-observer-committed-diagnostic-20261008.json",
+      "sha256": "50b972aaf7dedb1845a79fe0a4e2f390e3cca45d28d2477595da08a043f29f6e"
+    },
+    {
+      "path": "/tmp/tutorial-observer-committed-diagnostic-20261008.log",
+      "sha256": "4e79609283ddbbb636b90ca2fc6981a6d40008724e7939ecc76d76d7c73243bf"
+    },
+    {
+      "path": "/tmp/tutorial-observer-committed-diagnostic-20261008.err",
+      "sha256": "8d7e2f85e147e006eda9d58aa0875b6d5756b7bf50c4b2479374a9dbbd43ddde"
+    },
+    {
+      "path": "/tmp/tutorial-observer-committed-diagnostic-20261008-receipts.jsonl",
+      "sha256": "ed5e7126b4323dba178af5a76e49c016946b2b3b477434edae5b1591ec9fe52c"
+    },
+    {
+      "path": "/tmp/tutorial-observer-committed-diagnostic-20261008-process.json",
+      "sha256": "96d1491e388dc0bf58136093b599df3e658c4a75fdcb7f7b65d84f925ab419c1"
+    }
+  ],
+  "sourceCustody": {
+    "capture": "esbuild-onLoad-consumed-bytes",
+    "attachmentCount": 23,
+    "uniqueCaptureCount": 1,
+    "inputs": [
+      {
+        "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+        "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4"
+      },
+      {
+        "path": "packages/operator-ui/src/browser-telemetry.tsx",
+        "sha256": "465b90f33d7bc3ca21c96da30b74f09234cd389967f51e2dfde12b8ce61923d5"
+      },
+      {
+        "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx",
+        "sha256": "ae0fe892c3299b0eec086a625ca234d266662d087bd94eb90dc7d6d603bdad83"
+      }
+    ],
+    "verifiedAgainstCommittedBlobs": true
+  },
+  "fixture": {
+    "portalTree": "/dev/shm/papercusp-lint-as-committed-8fb9ff5c3c-1AEDIV",
+    "progressControls": [
+      "foreign-tenant",
+      "foreign-user",
+      "wrong-version",
+      "unknown-lesson",
+      "valid",
+      "completed"
+    ],
+    "transport": "in-memory intercepted browser HTTP",
+    "browser": "system Chrome",
+    "scope": "real mounted guide and production PortalEntry declarations; private fixture HTTP responses"
+  },
+  "cases": [
+    {
+      "title": "agents destination keeps expanded Help and resume reachable inside its real popover",
+      "status": "expected"
+    },
+    {
+      "title": "processes destination keeps expanded Help and resume reachable inside its real popover",
+      "status": "expected"
+    },
+    {
+      "title": "voice destination keeps Help and resume clickable above the actual dismiss backdrop",
+      "status": "expected"
+    },
+    {
+      "title": "optional disabled telemetry never interrupts saved guide progress",
+      "status": "expected"
+    },
+    {
+      "title": "optional unavailable telemetry never interrupts saved guide progress",
+      "status": "expected"
+    },
+    {
+      "title": "guide precedes portal destination and persists reload with workspace=null",
+      "status": "expected"
+    },
+    {
+      "title": "guide precedes portal destination and persists reload with workspace=assigned-workspace",
+      "status": "expected"
+    },
+    {
+      "title": "actual PortalEntry shows the enrolled guide before destination reads with workspace=null",
+      "status": "expected"
+    },
+    {
+      "title": "actual PortalEntry shows the enrolled guide before destination reads with workspace=assigned-workspace",
+      "status": "expected"
+    },
+    {
+      "title": "complete independent curriculum review survives reload and leaves product tasks unclaimed with workspace=null",
+      "status": "expected"
+    },
+    {
+      "title": "complete independent curriculum review survives reload and leaves product tasks unclaimed with workspace=assigned-workspace",
+      "status": "expected"
+    },
+    {
+      "title": "completed account enters its destination without repeating orientation with workspace=null",
+      "status": "expected"
+    },
+    {
+      "title": "completed account enters its destination without repeating orientation with workspace=assigned-workspace",
+      "status": "expected"
+    },
+    {
+      "title": "every catalogue lesson teaches and preserves the navigation boundary with workspace=null",
+      "status": "expected"
+    },
+    {
+      "title": "every catalogue lesson teaches and preserves the navigation boundary with workspace=assigned-workspace",
+      "status": "expected"
+    },
+    {
+      "title": "each permitted catalogue link navigates only after an acknowledged pause, without domain writes",
+      "status": "expected"
+    },
+    {
+      "title": "small viewport, enlarged text and keyboard preserve readable lessons and exit controls",
+      "status": "expected"
+    },
+    {
+      "title": "non-Cloud panel navigation saves pause and preserves contextual Help/trust with workspace=null",
+      "status": "expected"
+    },
+    {
+      "title": "non-Cloud panel navigation saves pause and preserves contextual Help/trust with workspace=assigned-workspace",
+      "status": "expected"
+    },
+    {
+      "title": "current-lesson AI Help requires an explicit question and stays advisory without progress writes",
+      "status": "expected"
+    },
+    {
+      "title": "non-Cloud workspace targets stay unavailable before selection and denied progress has honest recovery",
+      "status": "expected"
+    },
+    {
+      "title": "rechecks immediate explained Workspaces while its placeholder remains mounted",
+      "status": "expected"
+    },
+    {
+      "title": "rechecks delayed explained Workspaces while its placeholder remains mounted",
+      "status": "expected"
+    },
+    {
+      "title": "rechecks a Health shell whose explanation mounts after the empty-state container",
+      "status": "expected"
+    },
+    {
+      "title": "waits for delayed health destination <div class=\"pc-health pc-health--empty\"><div class=\"pc-health__placeholder\">System health is disabled.</div></div>",
+      "status": "expected"
+    },
+    {
+      "title": "waits for delayed health destination <div class=\"pc-health pc-health--empty\"><div class=\"pc-health__placeholder\">Health unavailable — permission refused</div></div>",
+      "status": "expected"
+    },
+    {
+      "title": "waits for delayed health destination <div class=\"pc-health\"><button>Read details</button></div>",
+      "status": "expected"
+    },
+    {
+      "title": "waits for delayed workspaces destination <div class=\"placeholder-surface\"><h2>Control plane not reachable</h2><p>This is not an empty estate</p></div>",
+      "status": "expected"
+    },
+    {
+      "title": "refuses unresolved <div class=\"pc-health pc-health--empty\"><div class=\"pc-health__placeholder\">Loading system health…</div></div>",
+      "status": "expected"
+    },
+    {
+      "title": "refuses unresolved <div class=\"placeholder-surface\"><button>Placeholder control</button></div>",
+      "status": "expected"
+    },
+    {
+      "title": "classifies old-document cancellation for /api/notifications/refresh body={}",
+      "status": "expected"
+    },
+    {
+      "title": "classifies old-document cancellation for /api/hosted/browser/onboarding/select-workspace body={}",
+      "status": "expected"
+    },
+    {
+      "title": "classifies old-document cancellation for /api/preferences body={}",
+      "status": "expected"
+    },
+    {
+      "title": "classifies old-document cancellation for /api/notifications/refresh body={\"change\":true}",
+      "status": "expected"
+    },
+    {
+      "title": "refuses an explicit same-document bootstrap abort",
+      "status": "expected"
+    },
+    {
+      "title": "rejects known invalid foreign-tenant response before any progress or domain write",
+      "status": "expected"
+    },
+    {
+      "title": "rejects known invalid foreign-user response before any progress or domain write",
+      "status": "expected"
+    },
+    {
+      "title": "rejects known invalid wrong-version response before any progress or domain write",
+      "status": "expected"
+    },
+    {
+      "title": "rejects known invalid unknown-lesson response before any progress or domain write",
+      "status": "expected"
+    },
+    {
+      "title": "valid account fixture saves a review while retaining independent account scope and version",
+      "status": "expected"
+    }
+  ],
+  "limitations": [
+    "Production hosted acceptance is separate",
+    "Protected provider voice is separate",
+    "Expanded native accessibility review is separate",
+    "Full affected verdict is separate",
+    "Earlier interrupted attempt EI-25433175419091718 remains unconfirmed and owned"
+  ]
+}

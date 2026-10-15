@@ -14,6 +14,7 @@ import {
   bindAccount,
   unbindAccount,
   recordAccountPenalty,
+  recordAccountCredentialFailure,
   recordAccountReset,
   recordAccountWindow,
   recordProbeFailure,
@@ -31,6 +32,7 @@ import {
   effectiveDrainUtil,
   accountFull,
   usageWalledUntil,
+  accountBurnVerdict,
   AccountPoolError,
   DEFAULT_SCALE_POLICY,
   DRAIN_UTIL_STALE_MS,
@@ -42,6 +44,68 @@ import { ROLLING_WINDOW_REPROBE_MAX_MS } from '@papercusp/papercusp-shared/resil
 const T0 = 1_000_000_000_000; // a fixed epoch-ms base
 const MIN = 60_000;
 
+describe('provider credit-balance observations', () => {
+  it('persists zero and its observation time without refreshing an unrelated quota meter', () => {
+    let pool = registerAccount(emptyPool(), { id: 'codex', provider: 'codex', credentialRef: 'codex-cli:/tmp/codex' }, T0);
+    pool = recordAccountWindow(pool, 'codex', { utilization7d: 1 }, T0);
+    pool = recordAccountWindow(pool, 'codex', { creditBalance: { amount: 0, unit: 'credits', source: 'codex' } }, T0 + MIN);
+    const row = normalizeAccount(JSON.parse(JSON.stringify(getAccount(pool, 'codex'))));
+    expect(row.rate.creditBalance).toEqual({ amount: 0, unit: 'credits', source: 'codex', observedAt: T0 + MIN });
+    expect(row.rate.utilizationAt).toBe(T0);
+    expect(recordAccountWindow(pool, 'codex', { utilization7d: 0.5 }, T0 + 2 * MIN).accounts[0].rate.creditBalance).toEqual(row.rate.creditBalance);
+  });
+
+  it('accepts verified Claude Console dollars only on API accounts', () => {
+    let pool = registerAccount(emptyPool(), { id: 'api', provider: 'claude', credentialRef: 'apikey:env:TEST_KEY' }, T0);
+    pool = registerAccount(pool, { id: 'subscription', provider: 'claude', credentialRef: 'token:/tmp/claude' }, T0);
+    const reading = { amount: 12.34, unit: 'USD' as const, source: 'claude-console' as const, walletId: 'org-1' };
+    pool = recordAccountWindow(pool, 'api', { creditBalance: reading }, T0);
+    pool = recordAccountWindow(pool, 'subscription', { creditBalance: reading }, T0);
+    expect(getAccount(pool, 'api')?.rate.creditBalance).toMatchObject({ amount: 12.34, unit: 'USD', walletId: 'org-1', observedAt: T0 });
+    expect(getAccount(pool, 'subscription')?.rate.creditBalance).toBeUndefined();
+  });
+
+  it('rejects a provider/unit mismatch and non-finite amounts', () => {
+    const pool = registerAccount(emptyPool(), { id: 'codex', provider: 'codex', credentialRef: 'codex-cli:/tmp/codex' }, T0);
+    for (const creditBalance of [
+      { amount: 10, unit: 'USD' as const, source: 'claude-console' as const },
+      { amount: NaN, unit: 'credits' as const, source: 'codex' as const },
+      { amount: -1, unit: 'credits' as const, source: 'codex' as const },
+    ]) expect(recordAccountWindow(pool, 'codex', { creditBalance }, T0).accounts[0].rate.creditBalance).toBeUndefined();
+  });
+});
+
+describe('Codex credit-backed allowance exhaustion', () => {
+  const creditedPool = (available: boolean) => recordAccountWindow(
+    registerAccount(emptyPool(), { id: 'credited', provider: 'codex', credentialRef: 'codex-cli:/tmp/credited' }, T0),
+    'credited',
+    { utilization7d: 1, windowResetAt7d: T0 + 10_080 * MIN, usageCreditsAvailable: available },
+    T0,
+  );
+
+  it('persists credits and keeps a full included meter serviceable after rehydration', () => {
+    const account = normalizeAccount(JSON.parse(JSON.stringify(getAccount(creditedPool(true), 'credited'))));
+    expect(account.rate.utilization7d).toBe(1);
+    expect(account.rate.usageCreditsAvailable).toBe(true);
+    expect(accountFull(account, T0)).toBe(false);
+    expect(usageWalledUntil(account, T0)).toBe(0);
+    expect(accountBurnVerdict(account.rate, T0).action).toBe('none');
+  });
+
+  it('reinstates the allowance wall when credits are no longer available', () => {
+    const p = recordAccountWindow(creditedPool(true), 'credited', { usageCreditsAvailable: false }, T0 + MIN);
+    expect(getAccount(p, 'credited')!.rate.utilizationAt).toBe(T0);
+    expect(getAccount(p, 'credited')!.rate.usageCreditsObservedAt).toBe(T0 + MIN);
+    expect(accountFull(getAccount(p, 'credited')!, T0 + MIN)).toBe(true);
+    expect(usageWalledUntil(getAccount(p, 'credited')!, T0 + MIN)).toBe(T0 + 10_080 * MIN);
+  });
+
+  it('does not bypass an actual account pause', () => {
+    const p = recordAccountPenalty(creditedPool(true), 'credited', T0, { pausedUntil: T0 + 10 * MIN });
+    expect(accountFull(getAccount(p, 'credited')!, T0)).toBe(true);
+  });
+});
+
 function poolOf(...ids: string[]): AccountPool {
   let p = emptyPool();
   ids.forEach((id, i) => (p = registerAccount(p, { id, credentialRef: `token:~/.papercusp/${id}` }, T0 + i)));
@@ -49,6 +113,38 @@ function poolOf(...ids: string[]): AccountPool {
 }
 
 describe('registerAccount', () => {
+  it('persists, preserves, updates and explicitly clears an Anthropic workspace binding', () => {
+    const input = { id: 'api', credentialRef: 'apikey:env:TEST_API_KEY' };
+    let p = registerAccount(emptyPool(), { ...input, anthropicWorkspaceId: 'wrkspc_first' }, T0);
+    expect(normalizeAccount(JSON.parse(JSON.stringify(getAccount(p, 'api')))).anthropicWorkspaceId).toBe('wrkspc_first');
+    p = registerAccount(p, input, T0 + 1);
+    expect(getAccount(p, 'api')?.anthropicWorkspaceId).toBe('wrkspc_first');
+    p = registerAccount(p, { ...input, anthropicWorkspaceId: 'wrkspc_second' }, T0 + 2);
+    expect(getAccount(p, 'api')?.anthropicWorkspaceId).toBe('wrkspc_second');
+    p = registerAccount(p, { ...input, anthropicWorkspaceId: null }, T0 + 3);
+    expect(getAccount(p, 'api')?.anthropicWorkspaceId).toBeUndefined();
+    expect(() => registerAccount(p, { ...input, anthropicWorkspaceId: 'wrong' }, T0)).toThrow(/anthropicWorkspaceId/);
+    expect(() => registerAccount(p, { ...input, provider: 'codex', anthropicWorkspaceId: 'wrkspc_wrong_provider' }, T0)).toThrow(/anthropicWorkspaceId/);
+  });
+
+  it('blocks failed credentials across quota resets, sticky pins and permissive selectors until repair', () => {
+    let pool = registerAccount(emptyPool(), { id: 'bad', credentialRef: 'token:bad' }, T0);
+    pool = registerAccount(pool, { id: 'good', credentialRef: 'token:good' }, T0);
+    pool = recordAccountCredentialFailure(pool, 'bad', T0 + 1, 'su-failed');
+    const failed = getAccount(pool, 'bad')!;
+    expect(isAvailable(failed, T0 + 99 * MIN)).toBe(false);
+    expect(isSpawnEligible(failed, T0 + MIN)).toBe(false);
+    expect(selectAccountForSpawn(pool, T0 + MIN, { priorAccountId: 'bad', rng: () => 0 }).accountId).toBe('good');
+    expect(selectAccountByHeadroom(pool, T0 + MIN, { availableOnly: false })?.id).toBe('good');
+    expect(selectAccountByDrain(pool, T0 + MIN, { eligible: () => true })?.id).toBe('good');
+    expect(getAccount(recordAccountReset(pool, 'bad'), 'bad')?.credentialFailure).toEqual(failed.credentialFailure);
+    const repaired = registerAccount(pool, { id: 'bad', credentialRef: 'token:repaired' }, T0 + 2);
+    expect(isAvailable(getAccount(repaired, 'bad')!, T0 + MIN)).toBe(true);
+    expect(recordAccountCredentialFailure(repaired, 'bad', T0 + 1, 'su-stale')).toBe(repaired);
+    expect(recordAccountCredentialFailure(pool, 'bad', T0 + 1, 'su-replay')).toBe(pool);
+    expect(recordAccountCredentialFailure(pool, 'missing', T0 + 3, 'su-missing')).toBe(pool);
+  });
+
   it('appends a fresh account with empty bindings + zeroed rate state', () => {
     const p = registerAccount(emptyPool(), { id: 'acct-1', credentialRef: 'token:~/t', label: 'main' }, T0);
     const a = getAccount(p, 'acct-1')!;

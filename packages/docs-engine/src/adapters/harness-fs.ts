@@ -18,8 +18,8 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { humanize } from '../shared.js';
-import { renderMdxToMarkdown } from '../render-mdx.js';
-import type { DocPage, DocSource, SectionMeta } from '../types.js';
+import { raceWithAbort, renderMdxToMarkdown, throwIfAborted } from '../render-mdx.js';
+import type { DocContentOptions, DocPage, DocSource, SectionMeta } from '../types.js';
 
 export interface HarnessFsAdapterOptions {
   /** Stable identifier for telemetry + cache namespacing. */
@@ -202,17 +202,24 @@ export function harnessFsAdapter(projectPath: string, opts: HarnessFsAdapterOpti
       const { absolutePath: _abs, ...page } = fp;
       return page;
     },
-    async getContent(page: DocPage): Promise<string> {
-      const cache = await buildPages();
-      const fp = cache.get(page.slug);
-      if (!fp) throw new Error(`harnessFsAdapter: page ${page.slug} not found`);
-      const content = await readSafe(fp.absolutePath);
-      if (content === null) throw new Error(`harnessFsAdapter: could not read ${fp.absolutePath}`);
-      // Render MDX→markdown if the file is .mdx; .md passes through.
-      if (/\.mdx$/i.test(fp.absolutePath)) {
-        return await renderMdxToMarkdown(content, fp.absolutePath);
-      }
-      return content;
+    async getContent(page: DocPage, options?: DocContentOptions): Promise<string> {
+      const signal = options?.signal;
+      const work = (async () => {
+        throwIfAborted(signal);
+        const cache = await buildPages();
+        throwIfAborted(signal);
+        const fp = cache.get(page.slug);
+        if (!fp) throw new Error(`harnessFsAdapter: page ${page.slug} not found`);
+        const content = await readSafe(fp.absolutePath);
+        if (content === null) throw new Error(`harnessFsAdapter: could not read ${fp.absolutePath}`);
+        throwIfAborted(signal);
+        // Render MDX→markdown if the file is .mdx; .md passes through.
+        if (/\.mdx$/i.test(fp.absolutePath)) {
+          return await renderMdxToMarkdown(content, fp.absolutePath, signal);
+        }
+        return content;
+      })();
+      return await raceWithAbort(work, signal);
     },
     // WI-1511581: the file exactly as it sits on disk — frontmatter included, MDX
     // unrendered. `readSafe` returning null (missing, not a file, over the size

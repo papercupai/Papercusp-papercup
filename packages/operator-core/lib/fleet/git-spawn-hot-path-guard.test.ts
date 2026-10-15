@@ -56,6 +56,10 @@ const HOT_GIT_MODULES: { file: string; why: string }[] = [
     file: 'git-pipeline-hives.ts',
     why: 'revListCount runs per hive row inside the pipeline snapshot (0.62% of the main thread)',
   },
+  {
+    file: 'agent-tools/plans/committed-tree-reader.ts',
+    why: 'uncached committed-blob reads fork git on operator handlers; the 2026-10-07 stall profile attributed 96.4% of samples to defaultBlobBatchReader',
+  },
 ];
 
 describe('hot-path git seams route through the spawner sidecar', () => {
@@ -70,15 +74,15 @@ describe('hot-path git seams route through the spawner sidecar', () => {
       ).toBe(true);
     });
 
-    it(`${file} keeps a LOCAL fallback so a sidecar fault degrades perf, not correctness`, () => {
+    it(`${file} retains an explicit local route without fabricating Git results`, () => {
       const src = readFileSync(join(LIB, file), 'utf8');
-      // Each of these modules must still contain a direct spawn/execFile path:
-      // the sidecar is an optimisation, and a sidecar outage must never turn a
-      // git result into a wrong answer (an absent ref, an empty drift log).
+      // Keep deliberate disabled/cold execution available. Enabled blob-reader
+      // failures must reject before this path; committed-tree-reader-sidecar-route
+      // tests enforce that with timeout, infrastructure, and cold-read controls.
       expect(
         /spawn\(\s*['"]git['"]|execFile\(\s*['"]git['"]|pexec\(\s*['"]git['"]/.test(src),
         `${file} routes git through the sidecar but has no local fallback path. ` +
-          `A sidecar outage would then change RESULTS, not just latency.`,
+          `Preserve explicit disabled-mode execution and exact error/result identity.`,
       ).toBe(true);
     });
   }
@@ -142,6 +146,7 @@ const HOT_GIT_SCAN_FILES: string[] = [
   'harness/docs/git-runner.ts',
   'dev-deploy-state.ts',
   'git-pipeline-hives.ts',
+  'agent-tools/plans/committed-tree-reader.ts',
   'harness/git-sync/run-git-sync.ts',
   // DELEGATE to a shared seam and must therefore contain NO raw git spawn at
   // all. These are the three that silently kept private copies (WI-6404), plus
@@ -152,6 +157,9 @@ const HOT_GIT_SCAN_FILES: string[] = [
   'sync/pot-git/github-egress.ts',
   // Streaming seam — see its allowlist entry.
   'sync/pot-git/fetch-transport.ts',
+  // Completion-settlement reads, run by the git-sync reconciler on bg-host every
+  // pass (jev-memory-timeouts-to-zero-2026-10-01: ~8 forks/s traced, ~54 ms each).
+  'agent-tools/work_items/untouched-paths.ts',
 ];
 
 /** Every raw git invocation ALLOWED in the hot set, keyed by the top-level
@@ -188,9 +196,21 @@ const ALLOWED_RAW_GIT: { file: string; symbol: string; why: string }[] = [
       'safe, so it is asserted separately below rather than trusted.',
   },
   {
+    file: 'agent-tools/plans/committed-tree-reader.ts',
+    symbol: 'defaultBlobBatchReader',
+    why: 'binary cat-file only when the sidecar route is disabled; enabled timeout/infrastructure failures reject before local spawn, enforced by committed-tree-reader-sidecar-route.test.ts',
+  },
+  {
     file: 'git-pipeline-hives.ts',
     symbol: 'revListCountLocal',
     why: 'the local fallback for the per-hive rev-list count',
+  },
+  {
+    file: 'agent-tools/work_items/untouched-paths.ts',
+    symbol: 'streamGitFieldsLocal',
+    why:
+      'the streaming local path behind streamGitFields: the default for unbounded reads (an early stop must kill git) ' +
+      'and the fallback when a preferSidecar read cannot reach the sidecar',
   },
   {
     file: 'harness/git-sync/run-git-sync.ts',
@@ -199,8 +219,11 @@ const ALLOWED_RAW_GIT: { file: string; symbol: string; why: string }[] = [
   },
 ];
 
-/** Any raw git invocation, however it is spelled. */
-const RAW_GIT_CALL = /(?:spawn|spawnSync|execFile|execFileSync|pexec)\(\s*['"]git['"]/g;
+/** Any raw git invocation, however it is spelled — including a test seam's
+ *  nullish default, `spawn(opts.gitBinary ?? 'git', …)`, which a bare
+ *  `spawn('git'` match cannot see. */
+const RAW_GIT_CALL =
+  /(?:spawn|spawnSync|execFile|execFileSync|pexec)\(\s*(?:[A-Za-z_$][\w$.?]*\s*\?\?\s*)?['"]git['"]/g;
 
 /** Nearest preceding TOP-LEVEL declaration — indentation 0, so a local
  *  `const child = spawn(...)` on the matching line itself is never mistaken

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "session-transcript-exact-fuzzy-search P-011 live real-corpus receipt: common-trigram literal 'finder' on the windows route",
+  "framework": "operational",
+  "plan": "session-transcript-exact-fuzzy-search-2026-09-14",
+  "planItem": "P-011",
+  "acceptanceBar": "R-1",
+  "specClause": "SPEC-P011-COMMON-LITERAL-BOUNDED@1",
+  "workItem": "WI-10005256",
+  "evidencePlane": "live",
+  "runtime": "live operator database, harness_shared.session_turn_windows_state status=ready (windows route available), exact-tier deadline 2000 ms",
+  "command": [
+    "tsx .papercusp/scratch/p011-measure-windows.mts  # polls windows_state until ready, prints AVAIL, then TIERS lines per literal (windows route) and LEGACY lines (forced legacy route control); log .papercusp/scratch/p011-measure-run.log"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T04:46:20.000Z",
+  "finishedAt": "2026-10-02T04:46:35.270Z",
+  "recordedBy": "su-c642360d-f94c-4ef6-83ec-7bb48948faee",
+  "summary": "Real-corpus endpoint receipt for the R-1 example literal. With the windows index ready, the exact tier answers the common-trigram literal 'finder' with 147 verified hits, receipt status=ran, in 289 ms, inside the 2000 ms deadline. The forced-legacy control for the same literal reproduces the defect: status deadline, 0 hits, 2002 ms. 'error' (150 hits, 1852 ms) and 'function' (150 hits, 590 ms) are also status=ran. DISCLOSED RESIDUE, not claimed fixed here: the near-ubiquitous literals 'the' and 'papercusp' still return status=deadline with 0 hits (2013 ms / 2015 ms); that is tracked as WI-10005294 under plan decision D-015.",
+  "assertions": [
+    {
+      "id": "common-trigram-literal-finder-ran-inside-deadline-with-hits",
+      "passed": true,
+      "evidence": "TIERS {\"lit\":\"finder\",\"ms\":2090,\"exactHits\":147,\"exactReceipt\":{\"status\":\"ran\",\"returned\":147,\"elapsedMs\":289}} — status ran, 147 hits, 289 ms exact-tier elapsed against a 2000 ms deadline (AVAIL {\"exact\":{\"available\":true,\"route\":\"windows\"},\"policy\":{\"deadline\":2000}})."
+    },
+    {
+      "id": "legacy-control-reproduces-the-defect",
+      "passed": true,
+      "evidence": "LEGACY {\"lit\":\"finder\",\"ms\":2002,\"hits\":0,\"deadline\":true} — the unchanged substring route on the same corpus hits the deadline with 0 hits, so the improvement is the windows route and not a warm cache."
+    },
+    {
+      "id": "other-common-literals-ran",
+      "passed": true,
+      "evidence": "TIERS error: status ran, 150 hits, 1852 ms. TIERS function: status ran, 150 hits, 590 ms. LEGACY error control: 150 hits, 112 ms, no deadline."
+    },
+    {
+      "id": "disclosed-residue-near-ubiquitous-literals-still-deadline",
+      "passed": true,
+      "evidence": "TIERS papercusp: status deadline, 0 hits, 2015 ms. TIERS the: status deadline, 0 hits, 2013 ms. Not claimed fixed by this spec clause; owned by WI-10005294 (plan decision D-015)."
+    }
+  ]
+}

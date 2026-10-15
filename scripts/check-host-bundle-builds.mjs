@@ -30,6 +30,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { hostBundleAsciiVerdict } from './lib/host-bundle-ascii.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const operatorDir = join(repoRoot, 'apps', 'operator');
@@ -55,12 +56,19 @@ const outFile = join(outDir, 'hono-host.mjs');
 // growth and (b) PRINT the size on every run, so erosion is visible instead of
 // being rediscovered months later. A breach is often legitimate growth — diagnose
 // first, then re-baseline deliberately.
-const HOST_BUNDLE_BUDGET_BYTES = 68 * 1024 * 1024;
+//
+// Re-baselined 2026-10-12 (WI-6554700010009462): externalizing pdf-lib,
+// @pdf-lib/fontkit, pdfjs-dist and @openrouter/ai-sdk-provider (see
+// apps/operator/bin/bundle-host.sh) took the bundle 77.05 -> 70.39 MiB. The
+// remainder is organic first-party growth, not a single leaked dependency, so
+// the budget was raised 68 -> 72 MiB. Diagnose again before the next raise.
+const HOST_BUNDLE_BUDGET_BYTES = 72 * 1024 * 1024;
 const HOST_BUNDLE_POST_TRIM_BASELINE_MB = 36.4;
 const HOST_PROCESS_COUNT = 17;
 
 let failed = false;
 let bundleBytes = null;
+let asciiVerdict = null;
 try {
   execFileSync('bash', [join(operatorDir, 'bin', 'bundle-host.sh'), 'bin/hono-host.ts', outFile], {
     cwd: operatorDir,
@@ -74,6 +82,8 @@ try {
   // after the try/catch so a budget breach never inherits the build-failure
   // handler's (wrong) "this WILL take :3170 down at the next restart" diagnosis.
   bundleBytes = statSync(outFile).size;
+  // bundle-host.sh has already run the ascii-escape pass, so this is the shipped text.
+  asciiVerdict = hostBundleAsciiVerdict(readFileSync(outFile, 'utf8'));
 
   const runnerSource = join(repoRoot, 'packages', 'operator-core', 'lib', 'systemd-scope-env-runner.mjs');
   const runnerOutput = join(outDir, 'systemd-scope-env-runner.mjs');
@@ -131,6 +141,30 @@ if (!failed && bundleBytes !== null) {
         `+${sinceBaseline} MB since; ~${boxWideGb} GB across ${HOST_PROCESS_COUNT} host processes)`,
     );
   }
+}
+
+// ASCII verdict (WI-6554700010009506). The ascii-escape pass never fails the build: when
+// a String.raw template carries a non-ASCII char it ships the WHOLE bundle un-escaped,
+// which roughly doubles the resident source in every host process. Catch that here.
+if (asciiVerdict && !asciiVerdict.ok) {
+  failed = true;
+  const where = asciiVerdict.sites.map(
+    (s) => `  ${s.module ?? '(no esbuild module marker found)'} (bundle line ${s.line}): ${s.codePoints.join(', ')}`,
+  );
+  console.error(
+    `\n✘ host bundle is NOT pure ASCII after the ascii-escape pass ` +
+      `(${asciiVerdict.nonAscii.toLocaleString()} non-ASCII chars left).\n\n` +
+      `node then holds the whole bundle source two-byte, about 2x resident memory in each host process.\n` +
+      (where.length
+        ? `These String.raw templates carry non-ASCII chars, so the pass refused the whole bundle:\n` +
+          `${where.join('\n')}\n\n` +
+          `Fix: splice the char in from its code point inside a \${...} interpolation, e.g.\n` +
+          `String.fromCharCode(0x2019). The runtime string stays byte-identical.`
+        : `No String.raw template is to blame: re-run apps/operator/bin/ascii-escape-bundle.mjs on the\n` +
+          `bundle and read its warning (for example a failed node --check).`),
+  );
+} else if (asciiVerdict) {
+  console.log('✓ host bundle is pure ASCII (the ascii-escape pass applied)');
 }
 
 process.exit(failed ? 1 : 0);

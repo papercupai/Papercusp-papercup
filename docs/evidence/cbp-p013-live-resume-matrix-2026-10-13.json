@@ -1,0 +1,42 @@
+{
+  "plan": "consult-backed-parking-2026-10-12",
+  "item": "P-013",
+  "workItem": "WI-6554700010009500",
+  "bars": ["R-10", "R-11"],
+  "recordedBy": "su-a2d144e1-4576-4511-8c32-3bf4de08bd29",
+  "recordedAt": "2026-10-13T03:12:00Z",
+  "plane": {
+    "operator": "staging :3170 via staging proxy :9171",
+    "operatorBuild": "3e8525d881 (/api/health sha, 2026-10-13T02:46Z)",
+    "launcher": "papercusp/apps/operator/scripts/psu-launcher.mjs (canonical tree; blob 8c2805c87cd5f50386834c73c379987eaa80c2d1, identical in 3e8525d881)",
+    "driver": "papercusp/.papercusp/scratch/cbp-p013/run.sh (PAPERCUSP_PSU_LAUNCHER=<canonical launcher>, PAPERCUSP_OPERATOR_URL=http://127.0.0.1:3170, PAPERCUSP_SID unset)"
+  },
+  "sources": [
+    { "backend": "claude", "advSessionId": 42034, "owner": "su-53bbe56b-2068-44ae-b41c-3d864179def8", "native": "09881b50-6286-4916-a0fc-2f2affb7f01a", "token": "cbp13-claude-7f3a", "proof": "psu: kickoff delivered - verified the exact provenance marker in the native transcript; reply 'MATRIX-SRC cbp13-claude-7f3a' present in the native jsonl" },
+    { "backend": "omp", "advSessionId": 42036, "owner": "su-b0d6898f-9372-4baa-8a84-f2c82e010321", "native": "01a13331-7bd3-74d1-aecb-6bb95cc45cd7", "token": "cbp13-omp-5d1c", "proof": "psu: kickoff delivered - verified the exact provenance marker in the native transcript" },
+    { "backend": "codex", "advSessionId": 42045, "owner": "su-1f67d5db-a891-4b48-8bac-eed2fdb08d6c", "native": "01a13335-6b1a-71a2-bfea-279da4044d57", "token": "cbp13-codex-9e41", "proof": "psu: kickoff delivered - verified the exact provenance marker in the native transcript; TUI shows 'MATRIX-SRC cbp13-codex-9e41'" }
+  ],
+  "crossBackendPairs": [
+    { "pair": "claude->codex", "port": "28e089f7-a4fa-4b14-b1c5-e7350027c149", "status": "delivered", "deliveredAt": "2026-10-13T02:57:45Z", "targetAdv": 42042, "targetNative": "01a13331-b82e-7e92-be31-3c3c3f42cc72", "renderedHash": "fb7e44a7c4626ad3", "fidelity": "full", "launchLog": "bash-d8d1c1b3-e68.log", "readerProof": "psu: session port delivered - verified the exact seed checksum in the target native transcript" },
+    { "pair": "claude->omp", "port": "71dc94c9-f5e2-42f2-beef-d8b15fe7d7b0", "status": "delivered", "deliveredAt": "2026-10-13T02:58:17Z", "targetAdv": 42041, "targetNative": "01a13331-c0cd-7617-958d-37031188a431", "renderedHash": "9432333c6eac9dd0", "fidelity": "full", "launchLog": "bash-cf0cd127-c29.log", "readerProof": "psu: session port delivered - verified the exact seed checksum in the target native transcript" },
+    { "pair": "omp->codex", "port": "33b0b29b-4320-405d-8ab4-129d0c99f96d", "status": "delivered", "deliveredAt": "2026-10-13T03:01:23Z", "targetAdv": 42044, "targetNative": "01a13335-03b6-7e91-b4b1-53420cca6b5b", "renderedHash": "ca1533a0855201b2", "fidelity": "full", "launchLog": "bash-91cb731b-cc1.log", "readerProof": "psu: session port delivered - verified the exact seed checksum in the target native transcript" },
+    { "pair": "omp->claude", "port": "4d15634c-4095-4237-a07b-4b50c8b6c791", "status": "delivered", "deliveredAt": "2026-10-13T03:03:24Z", "targetAdv": 42046, "targetNative": "5f115d1a-fa37-44c6-9242-67eb73b5ba9c", "renderedHash": "f3ba3b2b089590e4", "fidelity": "full", "launchLog": "bash-59d33c43-c56.log", "readerProof": "psu: session port delivered - verified the exact seed checksum in the target native transcript", "firstPairEverDelivered": true },
+    { "pair": "codex->claude", "port": "0898982e-3ed9-4b92-82d0-7df09fe8130d", "status": "delivered", "deliveredAt": "2026-10-13T03:07:23Z", "targetAdv": 42050, "targetNative": "ba1c90e0-0627-464b-baeb-c3cb3f2e1694", "renderedHash": "e075bb2614d33ed1", "fidelity": "full (188681-token upper bound)", "launchLog": "bash-e0832a2c-96a.log", "readerProof": "psu: session port delivered - verified the exact seed checksum in the target native transcript" },
+    { "pair": "codex->omp", "port": "28d4b61f-691f-44d4-a208-2c457bbacab6", "status": "delivered", "deliveredAt": "2026-10-13T03:10:21Z", "targetAdv": 42051, "targetNative": "01a1333c-2508-765b-97b2-16c87348009d", "renderedHash": "c8f2f7449e5c5797", "fidelity": "summary-tail (target budget 107386 < 188678)", "launchLog": "bash-c8a4a66a-310.log", "readerProof": "session_ports.status=delivered (production reader reported delivery)", "firstPairEverDelivered": true }
+  ],
+  "refusedAttempts": [
+    { "pair": "omp->claude", "port": "1a0587f1-667f-4c31-a04e-3a8f3c1d0a57", "status": "failed", "error": "managed pty unavailable before session-port seed delivery", "cause": "Harness sequencing, not a product defect. A port keeps the source coordination identity; omp->codex and omp->claude were launched from source 42036 concurrently, and psu-pty-host refused the duplicate logical session (single-continuation guard). Re-run sequentially as port 4d15634c: delivered." }
+  ],
+  "puiResumeOriginalBackend": [
+    { "backend": "claude", "advSessionId": 42034, "argv": "claude --resume 09881b50-6286-4916-a0fc-2f2affb7f01a ...", "sameNativeConversation": true, "launchLog": "bash-1da13e03-7b4.log" },
+    { "backend": "omp", "advSessionId": 42036, "argv": "omp -r 01a13331-7bd3-74d1-aecb-6bb95cc45cd7 ...", "sameNativeConversation": true, "launchLog": "bash-f84135aa-9a7.log" },
+    { "backend": "codex", "advSessionId": 42045, "argv": "codex ... -m gpt-6.1-sol ... resume 01a13335-6b1a-71a2-bfea-279da4044d57", "sameNativeConversation": true, "launchLog": "bash-efe55885-393.log" }
+  ],
+  "puiShape": "The PUI ended-session route opens a pane running `psu --resume <adv id>` with no --agent (apps/operator/lib/pui-resume.integration.test.ts header); these runs used that argv headless, on the staging operator.",
+  "observations": [
+    "The ~/.local/bin/psu shim resolves the RELEASE launcher (papercusp-release) unless PAPERCUSP_PSU_LAUNCHER, PAPERCUSP_CANONICAL_TREE or PAPERCUSP_INTEGRATION_ROOT is set, so an owner's bare `psu --resume` gets this behaviour only once green main carries it.",
+    "First codex source attempt (adv 42037, gpt-6.1-sol:low) showed only spinner output for >300s before it was stopped; the retry with gpt-6.1-sol:xhigh completed. Not diagnosed further here.",
+    "PUI-shape claude resume printed 'persona re-render unavailable (unsupported-agent)' and resumed without --system-prompt-file."
+  ],
+  "logDir": "papercusp/.papercusp/scratch (gitignored launch logs named above)"
+}

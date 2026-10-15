@@ -129,11 +129,14 @@ describe('evaluateCapabilityEnvelope — dedicated acceptance judge', () => {
   const judge = (capability: string, toolName = 't') =>
     evaluateCapabilityEnvelope({ toolName, capabilities: [capability], ctx: { role: 'judge' } });
 
-  it('denies every implementation mutation surface while leaving read + scorecard coordination open', () => {
-    for (const capability of ['capability:fs-write', 'capability:bash', 'capability:git']) {
+  it('denies broad implementation, memory, and search while leaving narrow evidence reads open', () => {
+    for (const capability of ['capability:fs-write', 'capability:bash', 'capability:git', 'memory:read', 'search:read']) {
       expect(judge(capability).withinEnvelope, capability).toBe(false);
     }
     expect(judge('capability:fs-read', 'capability:read').withinEnvelope).toBe(true);
+    expect(judge('capability:git-evidence:read', 'capability:git-evidence').withinEnvelope).toBe(true);
+    expect(judge('memory:search:read', 'memory:search').withinEnvelope).toBe(true);
+    expect(judge('sessions:read', 'sessions:read').withinEnvelope).toBe(true);
     expect(judge('coord:write', 'scorecards:emit').withinEnvelope).toBe(true);
   });
 });

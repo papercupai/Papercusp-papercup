@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "work-on-everything-rubric-evidence-hardening R-6 live refusal drill (post decoder-fix deploy)",
+  "framework": "operational",
+  "plan": "work-on-everything-rubric-evidence-hardening-2026-09-20",
+  "acceptanceBar": "R-6",
+  "specClause": "rubric-improvement-verification@9",
+  "workItem": "WI-10002130",
+  "evidencePlane": "live",
+  "runtime": "operator :3070 build d740fc3802 (carries the continuity-probes.ts projection decoder fix, marker 'classifyProjectionBody(textItems)')",
+  "command": [
+    "node scripts/mcp-call.mjs scorecards:evaluate --json-file r6-neg.args.json --port 3070  # the R-6 probe's own 15-key rating set; goal-mode-foundation = { rating: 'pass', evidence: 'narrative only' }; projection pick ['ok','error']",
+    "node scripts/mcp-call.mjs scorecards:evaluate --json-file r6-pos.args.json --port 3070  # same set; goal-mode-foundation = { rating: 'unknown', evidenceRef: 'tool:scorecards:evaluate', evidenceKind: 'tool', attribution: 'instrument', unknownReason: 'instrument-unavailable', nextEvidenceAction }; projection pick ['ok','error']",
+    "node scripts/mcp-call.mjs rubrics:get '{\"rubricRef\":\"work-on-everything-stewardship-health\",\"detail\":\"full\",\"payloadTier\":\"full\"}' --port 3070",
+    "docs:get { slugs: ['agent-insights/work-on-everything-stewardship-health-grading-runbook'], harness: 'papercusp' }"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T17:41:17.757Z",
+  "finishedAt": "2026-10-02T17:41:40.000Z",
+  "recordedBy": "su-d5eaa301-8b78-4d15-a539-00f2803ddfd7",
+  "summary": "Fresh drill on the running operator after :3070 began serving d740fc3802, the build that fixes the projected-probe decoder the 2026-09-30 independent grader hit (it rated R-6 degraded because the emit gate reported the declared structured probe STALE). scorecards:evaluate refuses the R-6 probe's own stewardship rating set, whose goal-mode-foundation rating is prose-only, and the error names evidenceRef; the projected result is exactly {ok:false,error:...}, so $.ok = false equals the declared expectation. The fully enveloped positive control is accepted ({ok:true}). The rubric's methodRef names the grading runbook, and the runbook carries the envelope, ownership, trend-identity and instrument-provenance guidance. No drill call writes a scorecard (scorecards:evaluate is the non-writing handler). mcp-call exits 5 on the refusal by design (the tool answered ok:false); that refusal is the expected outcome.",
+  "assertions": [
+    {
+      "id": "marker-1-2-narrative-only-refused-naming-evidenceRef",
+      "passed": true,
+      "evidence": "17:41:17Z: projected probe returned {\"ok\":false,\"error\":\"Work on everything rating 'goal-mode-foundation' requires evidenceRef, evidenceKind, and attribution; legacy prose-only evidence is readable but cannot be regraded without an evidence envelope\"}; $.ok = false equals the declared expectation."
+    },
+    {
+      "id": "marker-3-positive-control-accepted",
+      "passed": true,
+      "evidence": "17:41:18Z: the same 15-key set with goal-mode-foundation graded unknown under a full envelope returned {\"ok\":true} (no error field)."
+    },
+    {
+      "id": "marker-4-6-runbook-guidance",
+      "passed": true,
+      "evidence": "17:41:40Z: the runbook body (13,750 chars) contains 'Evidence envelope and attribution', 'Criterion ownership', 'Trend identity', 'Registered instrument provenance', 'positiveControlRef' and 'nextEvidenceAction' (1 each). The negative-control term 'ZZ-no-such-section-QQ' is absent (0)."
+    },
+    {
+      "id": "marker-7-methodRef-names-runbook",
+      "passed": true,
+      "evidence": "17:41:19Z: rubrics:get read methodRef 'work-on-everything-stewardship-health-grading-runbook' at revision 42, status active."
+    }
+  ]
+}

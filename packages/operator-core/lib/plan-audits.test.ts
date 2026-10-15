@@ -12,16 +12,25 @@
  * machine's real workspace: the guard has to keep holding on a box where `sidestage`
  * does not exist.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+
+// These fixtures exercise real Git repositories, not the shared host's sidecar.
+// Keep ambient operator routing from spawning background services in this suite.
+vi.mock('./fleet/git-via-sidecar', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./fleet/git-via-sidecar')>()),
+  gitSidecarEnabled: () => false,
+}));
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  __repoCitationAsyncGitReadsForTests,
   __repoCitationSyncSpawnsForTests,
   __repoCitationTrackingCacheStatsForTests,
   __resetRepoCitationTrackingCacheForTests,
   prewarmRepoCitationTracking,
+  measureCitationBlobsAtHead,
   citationBlobSha,
   citationBlobShaAt,
   foldEffectiveItemAudits,
@@ -85,6 +94,88 @@ describe('activation audit accumulated source coverage', () => {
         'mapping_id_reused', 'mapping_source_refs_dropped',
       ]);
     }
+  });
+
+  const removedBarMapping = (): ActivationAuditPayload => {
+    const previous = payload(1);
+    previous.mappings = [{
+      id: 'M-004', sourceRefs: ['session_turn:codex:carry-0:1'],
+      requirement: 'Lessons enter candidate review', planTargets: ['R-4', 'P-008'],
+      disposition: 'covered',
+    }];
+    return previous;
+  };
+
+  it('retires a target the current plan no longer contains and records the retirement', () => {
+    const previous = removedBarMapping();
+    const incoming = payload(0);
+    incoming.mappings = [{ ...previous.mappings[0], planTargets: ['P-008', 'D-043'], disposition: 'rejected' }];
+    const merged = mergeActivationAuditCoverage(previous, incoming, {
+      deadTargets: [{ mappingId: 'M-004', target: 'R-4' }],
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    expect(merged.retiredTargets).toEqual([{ mappingId: 'M-004', target: 'R-4' }]);
+    expect(merged.activation.mappings[0]).toMatchObject({ disposition: 'rejected', planTargets: ['P-008', 'D-043'] });
+    expect(merged.activation.rejectedOrSuperseded).toContain(
+      'M-004 target R-4 retired: absent from the current plan revision');
+  });
+
+  it('still refuses dropping a live target, even beside a dead one or a dead target of another mapping', () => {
+    const previous = removedBarMapping();
+    const incoming = payload(0);
+    incoming.mappings = [{ ...previous.mappings[0], planTargets: ['D-043'], disposition: 'rejected' }];
+    const merged = mergeActivationAuditCoverage(previous, incoming, {
+      deadTargets: [{ mappingId: 'M-004', target: 'R-4' }, { mappingId: 'M-009', target: 'P-008' }],
+    });
+    expect(merged.ok).toBe(false);
+    if (!merged.ok) {
+      expect(merged.conflicts).toEqual([{
+        mappingId: 'M-004', code: 'mapping_targets_dropped', detail: 'M-004 drops prior plan target(s): P-008',
+      }]);
+    }
+    expect(mergeActivationAuditCoverage(previous, incoming).ok).toBe(false);
+  });
+
+  // WI-10006324: a plan that drops a provenance-declared item must stay re-auditable.
+  const withDroppedItemProvenance = (): ActivationAuditPayload => {
+    const previous = payload(1);
+    previous.itemProvenance = [
+      { itemId: 'P-015', kind: 'derived', from: ['R-7', 'D-012'], note: 'added after a degraded grade' },
+      { itemId: 'P-016', kind: 'agent-added', reason: 'follow-up probe' },
+    ];
+    return previous;
+  };
+
+  it('retires a carried itemProvenance declaration whose item is no longer live, and records it', () => {
+    const merged = mergeActivationAuditCoverage(withDroppedItemProvenance(), payload(0), {
+      liveItemIds: ['P-001', 'P-016'],
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    expect(merged.retiredItemProvenance).toEqual(['P-015']);
+    expect(merged.activation.itemProvenance?.map((d) => d.itemId)).toEqual(['P-016']);
+    expect(merged.activation.rejectedOrSuperseded).toContain(
+      'itemProvenance for P-015 retired: P-015 is dropped or absent from the current plan revision');
+  });
+
+  it('never retires a declaration the caller submits, and carries everything when liveItemIds is omitted', () => {
+    const incoming = payload(0);
+    incoming.itemProvenance = [{ itemId: 'P-015', kind: 'agent-added', reason: 'still wanted' }];
+    const submitted = mergeActivationAuditCoverage(withDroppedItemProvenance(), incoming, {
+      liveItemIds: ['P-001', 'P-016'],
+    });
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    expect(submitted.retiredItemProvenance).toEqual([]);
+    expect(submitted.activation.itemProvenance).toContainEqual(
+      { itemId: 'P-015', kind: 'agent-added', reason: 'still wanted' });
+
+    const unscoped = mergeActivationAuditCoverage(withDroppedItemProvenance(), payload(0));
+    expect(unscoped.ok).toBe(true);
+    if (!unscoped.ok) return;
+    expect(unscoped.retiredItemProvenance).toEqual([]);
+    expect(unscoped.activation.itemProvenance?.map((d) => d.itemId)).toEqual(['P-015', 'P-016']);
   });
 });
 
@@ -253,10 +344,15 @@ describe('resolveCitation — trackedness of verifying citations (EI-21729074760
     expect(resolveCitation(code('src/unknown.ts'), resolvingDeps(null))).toEqual({ ok: true });
   });
 
-  it('gates only verifying citation kinds', () => {
-    const deps = resolvingDeps(false);
-    expect(resolveCitation({ kind: 'doc', path: 'docs/design.md' }, deps)).toEqual({ ok: true });
-    expect(resolveCitation({ kind: 'none', reason: 'operational-only item' }, deps)).toEqual({ ok: true });
+  it('requires trackedness for repo-file docs without making them verifying citations', () => {
+    expect(resolveCitation({ kind: 'doc', path: 'docs/design.md' }, resolvingDeps(false))).toMatchObject({
+      ok: false,
+      reason: 'file_untracked',
+    });
+    expect(resolveCitation({ kind: 'doc', path: 'docs/design.md' }, resolvingDeps(true))).toEqual({ ok: true });
+    expect(resolveCitation({ kind: 'doc', ref: '/internal/docs/design', reason: 'PG-canonical doc' }, resolvingDeps(false)))
+      .toEqual({ ok: true });
+    expect(resolveCitation({ kind: 'none', reason: 'operational-only item' }, resolvingDeps(false))).toEqual({ ok: true });
   });
 });
 
@@ -571,25 +667,41 @@ describe('repoCitationDeps — containment is unchanged', () => {
 });
 
 describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
-  it('distinguishes tracked and untracked files in the selected repository', () => {
+  it('distinguishes tracked and untracked files in the selected repository after async prewarm', async () => {
     const trackedRoot = path.join(workspaceRoot, 'tracked-repo');
     fs.mkdirSync(trackedRoot, { recursive: true });
     fs.writeFileSync(path.join(trackedRoot, 'tracked.ts'), 'export const tracked = true;\n');
+    fs.mkdirSync(path.join(trackedRoot, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(trackedRoot, 'docs', 'tracked.md'), '# Tracked doc\n');
     git(trackedRoot, 'init', '-q');
-    git(trackedRoot, 'add', '--', 'tracked.ts');
+    git(trackedRoot, 'add', '--', 'tracked.ts', 'docs/tracked.md');
     fs.writeFileSync(path.join(trackedRoot, 'untracked.ts'), 'export const untracked = true;\n');
+    fs.writeFileSync(path.join(trackedRoot, 'docs', 'untracked.md'), '# Untracked doc\n');
 
+    await prewarmRepoCitationTracking([trackedRoot], [
+      code('tracked.ts'),
+      code('untracked.ts'),
+      { kind: 'doc', path: 'docs/tracked.md' },
+      { kind: 'doc', path: 'docs/untracked.md' },
+    ]);
     const deps = repoCitationDeps(trackedRoot);
     expect(deps.isTracked?.('tracked.ts')).toBe(true);
     expect(deps.isTracked?.('untracked.ts')).toBe(false);
+    expect(deps.isTracked?.('docs/tracked.md')).toBe(true);
+    expect(deps.isTracked?.('docs/untracked.md')).toBe(false);
     expect(resolveCitation(code('tracked.ts'), deps)).toEqual({ ok: true });
     expect(resolveCitation(code('untracked.ts'), deps)).toMatchObject({
       ok: false,
       reason: 'file_untracked',
     });
+    expect(resolveCitation({ kind: 'doc', path: 'docs/tracked.md' }, deps)).toEqual({ ok: true });
+    expect(resolveCitation({ kind: 'doc', path: 'docs/untracked.md' }, deps)).toMatchObject({
+      ok: false,
+      reason: 'file_untracked',
+    });
   });
 
-  it('reuses one tracked-file snapshot across resolver contexts and reloads it when the Git index changes', () => {
+  it('reuses one tracked-file snapshot across resolver contexts and reloads it when the Git index changes', async () => {
     const trackedRoot = path.join(workspaceRoot, 'tracked-cache-repo');
     fs.mkdirSync(trackedRoot, { recursive: true });
     fs.writeFileSync(path.join(trackedRoot, 'tracked.ts'), 'export const tracked = true;\n');
@@ -599,6 +711,7 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
 
     __resetRepoCitationTrackingCacheForTests();
     try {
+      await prewarmRepoCitationTracking([trackedRoot], [code('tracked.ts'), code('newly-tracked.ts')]);
       expect(repoCitationDeps(trackedRoot).isTracked?.('tracked.ts')).toBe(true);
       // A NEW deps object shares the index snapshot instead of spawning Git once
       // per citation/root-selection/gate-evaluation context.
@@ -606,6 +719,7 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
       expect(__repoCitationTrackingCacheStatsForTests()).toEqual({ roots: 1, loads: 1 });
 
       git(trackedRoot, 'add', '--', 'newly-tracked.ts');
+      await prewarmRepoCitationTracking([trackedRoot], [code('newly-tracked.ts')]);
       expect(repoCitationDeps(trackedRoot).isTracked?.('newly-tracked.ts')).toBe(true);
       expect(__repoCitationTrackingCacheStatsForTests()).toEqual({ roots: 1, loads: 2 });
     } finally {
@@ -614,8 +728,132 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
   });
 });
 
+// proof-freshness-pinned-candidate-2026-10-06 P-019 (D-001): the ship gate measures cited
+// blobs at the committed HEAD of each top-level repository, so a peer's UNCOMMITTED edit to
+// a cited file is invisible while a COMMITTED change reads stale.
+describe('measureCitationBlobsAtHead — committed measurement commit M (P-019)', () => {
+  const initRepo = (repo: string): void => {
+    git(repo, 'init', '-q');
+    git(repo, 'config', 'user.email', 'plan-audits-test@example.com');
+    git(repo, 'config', 'user.name', 'Plan Audits Test');
+  };
+
+  it('measures the committed blob at HEAD and ignores an uncommitted edit', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-measure-'));
+    const cited = path.join(root, 'src', 'cited.ts');
+    const citedDoc = path.join(root, 'docs', 'guide.md');
+    const committed = 'export const cited = "committed";\n';
+    const committedDoc = '# Committed guide\n';
+    try {
+      fs.mkdirSync(path.dirname(cited), { recursive: true });
+      fs.mkdirSync(path.dirname(citedDoc), { recursive: true });
+      fs.writeFileSync(cited, committed);
+      fs.writeFileSync(citedDoc, committedDoc);
+      initRepo(root);
+      git(root, 'add', '--', 'src/cited.ts', 'docs/guide.md');
+      git(root, 'commit', '-qm', 'committed bytes');
+      const head = git(root, 'rev-parse', 'HEAD').trim();
+      fs.writeFileSync(cited, 'export const cited = "peer uncommitted edit";\n');
+      fs.writeFileSync(citedDoc, '# Peer uncommitted edit\n');
+
+      const docCitation: AuditCitation = { kind: 'doc', path: 'docs/guide.md' };
+      const measured = await measureCitationBlobsAtHead([code('src/cited.ts'), docCitation], repoCitationDeps(root));
+      expect(measured.blobs.get('src/cited.ts')).toBe(gitBlobSha(committed));
+      expect(measured.blobs.get('docs/guide.md')).toBe(gitBlobSha(committedDoc));
+      expect(measured.commits.get('src/cited.ts')).toBe(head);
+      expect(measured.commits.get('docs/guide.md')).toBe(head);
+
+      // Once committed, the same edit IS what M measures.
+      const edited = 'export const cited = "now committed";\n';
+      fs.writeFileSync(cited, edited);
+      const editedDoc = '# Now committed\n';
+      fs.writeFileSync(citedDoc, editedDoc);
+      git(root, 'commit', '-qam', 'commit the edit');
+      const after = await measureCitationBlobsAtHead([code('src/cited.ts'), docCitation], repoCitationDeps(root));
+      expect(after.blobs.get('src/cited.ts')).toBe(gitBlobSha(edited));
+      expect(after.blobs.get('docs/guide.md')).toBe(gitBlobSha(editedDoc));
+      expect(after.commits.get('src/cited.ts')).toBe(git(root, 'rev-parse', 'HEAD').trim());
+      expect(after.commits.get('docs/guide.md')).toBe(git(root, 'rev-parse', 'HEAD').trim());
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('measures an uncommitted new file as null (not a committed file at M)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-measure-new-'));
+    try {
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'src', 'old.ts'), 'export const old = 1;\n');
+      initRepo(root);
+      git(root, 'add', '--', 'src/old.ts');
+      git(root, 'commit', '-qm', 'base');
+      fs.writeFileSync(path.join(root, 'src', 'new.ts'), 'export const fresh = 1;\n');
+
+      const measured = await measureCitationBlobsAtHead([code('src/new.ts')], repoCitationDeps(root));
+      expect(measured.blobs.has('src/new.ts')).toBe(true);
+      expect(measured.blobs.get('src/new.ts')).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a submodule citation at the gitlink the superproject HEAD pins, with no sync Git child', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-measure-sub-'));
+    const childRoot = path.join(root, 'child');
+    const superprojectRoot = path.join(root, 'superproject');
+    const pinned = 'export const pinned = true;\n';
+    __resetRepoCitationTrackingCacheForTests();
+    try {
+      fs.mkdirSync(path.join(childRoot, 'src'), { recursive: true });
+      fs.mkdirSync(superprojectRoot, { recursive: true });
+      fs.writeFileSync(path.join(childRoot, 'src', 'index.ts'), pinned);
+      initRepo(childRoot);
+      initRepo(superprojectRoot);
+      git(childRoot, 'add', '--', 'src/index.ts');
+      git(childRoot, 'commit', '-qm', 'child source');
+      git(superprojectRoot, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', childRoot, 'libs/child');
+      git(superprojectRoot, 'commit', '-qm', 'pin child');
+      const head = git(superprojectRoot, 'rev-parse', 'HEAD').trim();
+
+      // The child moves on (committed inside the submodule) but the superproject gitlink is
+      // NOT bumped: M is the superproject HEAD, so the pinned bytes are what it measures.
+      const sub = path.join(superprojectRoot, 'libs', 'child');
+      git(sub, 'config', 'user.email', 'plan-audits-test@example.com');
+      git(sub, 'config', 'user.name', 'Plan Audits Test');
+      fs.writeFileSync(path.join(sub, 'src', 'index.ts'), 'export const pinned = false;\n');
+      git(sub, 'commit', '-qam', 'unpinned child commit');
+
+      // COLD cache, deliberately: on the live shared tree the parent index moves between
+      // the prewarm and the gate read, so the warm-snapshot shortcut misses. A synchronous
+      // gitlink climb then forked one `git ls-files` per citation (P-005 real-plan probe:
+      // 66 sync spawns for 66 citations). The climb must stay off the request thread.
+      __resetRepoCitationTrackingCacheForTests();
+      const citation = code('libs/child/src/index.ts');
+      const spawnsBefore = __repoCitationSyncSpawnsForTests();
+      const measured = await measureCitationBlobsAtHead(
+        [citation, code('libs/child/src/index.ts'), code('.gitmodules')],
+        repoCitationDeps(superprojectRoot),
+      );
+      expect(measured.blobs.get('libs/child/src/index.ts')).toBe(gitBlobSha(pinned));
+      expect(measured.commits.get('libs/child/src/index.ts')).toBe(head);
+      expect(__repoCitationSyncSpawnsForTests()).toBe(spawnsBefore);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('measures nothing for deps without `locate`, so callers keep the working-tree fingerprint', async () => {
+    const measured = await measureCitationBlobsAtHead([code('src/x.ts')], {
+      statFile: () => ({ isFile: true }),
+      readFile: () => 'x',
+    });
+    expect(measured.blobs.size).toBe(0);
+    expect(measured.commits.size).toBe(0);
+  });
+});
+
 describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270017)', () => {
-  it('reads the cited blob from the pinned commit instead of the moving worktree', () => {
+  it('reads the cited blob from the pinned commit instead of the moving worktree', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-commit-'));
     const citedPath = path.join(root, 'src', 'cited.ts');
     const oldBody = 'export const cited = "old";\n';
@@ -638,15 +876,47 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
       const deps = repoCitationDeps(root);
       const citation = code('src/cited.ts');
       expect(citationBlobSha(citation, deps)).toBe(gitBlobSha(newBody));
-      expect(citationBlobShaAt(citation, oldSha, deps)).toBe(gitBlobSha(oldBody));
-      expect(citationBlobShaAt(citation, newSha, deps)).toBe(gitBlobSha(newBody));
-      expect(citationBlobShaAt(citation, 'f'.repeat(40), deps)).toBeNull();
+      expect(await citationBlobShaAt(citation, oldSha, deps)).toBe(gitBlobSha(oldBody));
+      expect(await citationBlobShaAt(citation, newSha, deps)).toBe(gitBlobSha(newBody));
+      expect(await citationBlobShaAt(citation, 'f'.repeat(40), deps)).toBeNull();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('resolves a cited blob through the superproject gitlink at audited SHA (EI-22580796784944702)', () => {
+  it('surfaces an operational Git failure instead of treating it as a missing audited citation', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-git-failure-'));
+    const citedPath = path.join(root, 'src', 'cited.ts');
+    const fakeGitDir = path.join(root, 'fake-bin');
+    try {
+      fs.mkdirSync(path.dirname(citedPath), { recursive: true });
+      fs.writeFileSync(citedPath, 'export const cited = true;\n');
+      git(root, 'init', '-q');
+      git(root, 'config', 'user.email', 'plan-audits-test@example.com');
+      git(root, 'config', 'user.name', 'Plan Audits Test');
+      git(root, 'add', '--', 'src/cited.ts');
+      git(root, 'commit', '-qm', 'cited source');
+      const auditedSha = git(root, 'rev-parse', 'HEAD').trim();
+
+      fs.mkdirSync(fakeGitDir);
+      const fakeGit = path.join(fakeGitDir, 'git');
+      fs.writeFileSync(fakeGit, '#!/bin/sh\nprintf \'synthetic Git transport failure\\n\' >&2\nexit 42\n');
+      fs.chmodSync(fakeGit, 0o755);
+      const previousPath = process.env.PATH;
+      process.env.PATH = `${fakeGitDir}${path.delimiter}${previousPath ?? ''}`;
+      try {
+        await expect(citationBlobShaAt(code('src/cited.ts'), auditedSha, repoCitationDeps(root)))
+          .rejects.toMatchObject({ name: 'CitationGitReadError', code: 'citation_git_read_unavailable' });
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a cited blob through the superproject gitlink at audited SHA (EI-22580796784944702)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-submodule-'));
     const childRoot = path.join(root, 'chat-protocol');
     const superprojectRoot = path.join(root, 'superproject');
@@ -684,7 +954,7 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
       const citation = code('libs/generic/chat-protocol/src/index.ts');
       expect(resolveCitation(citation, deps)).toEqual({ ok: true });
       expect(citationBlobSha(citation, deps)).toBe(gitBlobSha(citedBody));
-      expect(citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
+      expect(await citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -694,7 +964,7 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
   // 28% of real main-thread work in the window that stalled the first native plan-popup to
   // this resolver's synchronous `git` children. After the async prewarm, the tracked and
   // gitlink answers come from the warm index snapshots, and commit-addressed lookups are
-  // memoized — so a repeated acceptance evaluation forks nothing on the event loop.
+  // memoized — so a repeated acceptance evaluation launches no additional Git reads.
   it('answers tracked + gitlink checks from an async prewarm and memoizes commit-addressed lookups', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-prewarm-'));
     const childRoot = path.join(root, 'child');
@@ -726,13 +996,16 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
       expect(deps.isTracked?.('libs/child/src/index.ts')).toBe(true);
       expect(__repoCitationSyncSpawnsForTests()).toBe(0);
 
-      // First commit-addressed lookup forks (ls-tree + rev-parse); the same lookup from a
-      // NEW resolver context is served from the immutable memo with no further spawn.
-      expect(citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
-      const afterFirst = __repoCitationSyncSpawnsForTests();
-      expect(afterFirst).toBe(2);
-      expect(citationBlobShaAt(citation, auditedSha, repoCitationDeps(superprojectRoot))).toBe(gitBlobSha(citedBody));
-      expect(__repoCitationSyncSpawnsForTests()).toBe(afterFirst);
+      // First commit-addressed lookup reads ls-tree + rev-parse asynchronously; the same
+      // lookup from a NEW resolver context is served from the immutable memo.
+      const beforeLookup = __repoCitationAsyncGitReadsForTests();
+      expect(await citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
+      const afterFirst = __repoCitationAsyncGitReadsForTests();
+      expect(afterFirst - beforeLookup).toBe(2);
+      expect(__repoCitationSyncSpawnsForTests()).toBe(0);
+      expect(await citationBlobShaAt(citation, auditedSha, repoCitationDeps(superprojectRoot))).toBe(gitBlobSha(citedBody));
+      expect(__repoCitationAsyncGitReadsForTests()).toBe(afterFirst);
+      expect(__repoCitationSyncSpawnsForTests()).toBe(0);
     } finally {
       __resetRepoCitationTrackingCacheForTests();
       fs.rmSync(root, { recursive: true, force: true });
@@ -846,12 +1119,14 @@ describe('resolveCitation — sibling repair suggestion on a miss (EI-2212949146
 });
 
 describe('per-item audit provenance (plan D-006/D-007)', () => {
-  it('stores a Git-compatible blob sha for code evidence only', () => {
+  it('stores blob hashes for repository files but keeps PG-canonical docs opaque', () => {
     expect(gitBlobSha('hello\n')).toBe('ce013625030ba8dba906f756967f9e9ca394464a');
     const deps = repoCitationDeps(repoRoot);
     const citation = code('apps/operator/in-repo.ts');
     expect(citationBlobSha(citation, deps)).toBe(gitBlobSha('export const inRepo = 1;\n'));
-    expect(citationBlobSha({ kind: 'doc', path: 'apps/operator/in-repo.ts' }, deps)).toBeNull();
+    expect(citationBlobSha({ kind: 'doc', path: 'apps/operator/in-repo.ts' }, deps))
+      .toBe(gitBlobSha('export const inRepo = 1;\n'));
+    expect(citationBlobSha({ kind: 'doc', ref: '/internal/docs/design', reason: 'PG-canonical doc' }, deps)).toBeNull();
   });
 
   it('folds newest entries per item across partial passes', () => {
@@ -934,6 +1209,21 @@ describe('per-item audit provenance (plan D-006/D-007)', () => {
           auditedSha: 'abcdef1234567',
           auditedAt: '2026-08-20T12:00:00.000Z',
           itemTextHash: planItemTextHash('requirement'),
+        },
+      ]),
+    ).toEqual([expect.objectContaining({ itemId: 'P-001', code: 'missing_blob_sha' })]);
+  });
+
+  it('rejects a fresh repo-file doc citation without its blob hash', () => {
+    expect(
+      validatePersistedAuditEntries([
+        {
+          itemId: 'P-001',
+          verdict: 'not-code',
+          citations: [{ kind: 'doc', path: 'docs/guide.md' }],
+          auditedSha: 'abcdef1234567',
+          auditedAt: '2026-08-20T12:00:00.000Z',
+          itemTextHash: planItemTextHash('publish guide'),
         },
       ]),
     ).toEqual([expect.objectContaining({ itemId: 'P-001', code: 'missing_blob_sha' })]);
@@ -1025,5 +1315,55 @@ describe('independentSiblingRepos — a checkout directly under $HOME (EI-221889
     expect(parent).toBe(homeRoot);
     const abs = path.resolve(parent!, 'Restart', 'apps/web/lib/sheets.ts');
     expect(fs.readFileSync(abs, 'utf8')).toContain('sheets');
+  });
+});
+
+/**
+ * WI-10005009: git-sync rewrites .git/index on every sweep, and a half-written index makes
+ * both the tracked-file snapshot and `ls-files --error-unmatch` answer "not tracked" for a
+ * committed file. A citation to that file would then be refused as untracked. isTracked must
+ * fall back to HEAD's tree, and must not promote an untracked file while doing so.
+ */
+describe('repoCitationDeps — torn index (WI-10005009)', () => {
+  const tornRepo = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-torn-index-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', [
+        '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t',
+        '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args,
+      ], { stdio: 'pipe' });
+    git('init', '-q');
+    fs.writeFileSync(path.join(dir, 'tracked.ts'), 'export const x = 1;\n');
+    git('add', 'tracked.ts');
+    git('commit', '-q', '-m', 'seed');
+    fs.writeFileSync(path.join(dir, 'untracked.ts'), 'export const y = 2;\n');
+    const index = path.join(dir, '.git', 'index');
+    const bytes = fs.readFileSync(index);
+    fs.writeFileSync(index, bytes.subarray(0, Math.floor(bytes.length / 2)));
+    return dir;
+  };
+
+  it('keeps a committed file tracked, and an untracked one untracked, under a half-written index', async () => {
+    const dir = tornRepo();
+    try {
+      // Calibration: the raw index read really does misreport, so this case is not vacuous.
+      let rawTracked = true;
+      try {
+        execFileSync('git', ['-C', dir, 'ls-files', '--error-unmatch', '--', 'tracked.ts'], { stdio: 'ignore' });
+      } catch {
+        rawTracked = false;
+      }
+      expect(rawTracked).toBe(false);
+
+      await prewarmRepoCitationTracking([dir], [code('tracked.ts'), code('untracked.ts')]);
+      const deps = repoCitationDeps(dir);
+      // isTracked is optional on the deps type; require it, so the negative case below
+      // cannot pass vacuously through an absent reader.
+      expect(deps.isTracked).toBeTypeOf('function');
+      expect(deps.isTracked?.('tracked.ts')).toBe(true);
+      expect(deps.isTracked?.('untracked.ts')).not.toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

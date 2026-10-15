@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import type { ImprovementCandidate } from './policy';
+import { toolErrorFingerprint } from './tool-error-classifier';
 import {
   parseRepeatedToolErrorKey,
   extractSampleFromBody,
@@ -63,12 +64,20 @@ describe('extractSampleFromBody', () => {
 describe('deriveToolErrorWatchdogKey', () => {
   it('appends the fingerprint to a fingerprinted class that lacks one (the P-012 migration)', () => {
     expect(deriveToolErrorWatchdogKey(ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody })))
-      .toBe('repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected');
+      .toBe(`repeated-tool-error:plans:new:caller:${toolErrorFingerprint(extractSampleFromBody(callerBody))}`);
   });
 
   it('migrates a legacy bare STRUCTURAL key too', () => {
     expect(deriveToolErrorWatchdogKey(ei({ id: 'EI-2', watchdogKey: 'repeated-tool-error:plans:list:structural', body: structuralBody })))
-      .toBe('repeated-tool-error:plans:list:structural:column-initiative-does-not-exist');
+      .toBe(`repeated-tool-error:plans:list:structural:${toolErrorFingerprint(extractSampleFromBody(structuralBody))}`);
+  });
+
+  it('upgrades the old first-six-token fingerprint to the full-message digest', () => {
+    expect(deriveToolErrorWatchdogKey(ei({
+      id: 'EI-legacy-prefix',
+      watchdogKey: 'repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected',
+      body: callerBody,
+    }))).toBe(`repeated-tool-error:plans:new:caller:${toolErrorFingerprint(extractSampleFromBody(callerBody))}`);
   });
 
   it('leaves rate-limit COARSE (never fingerprinted)', () => {
@@ -80,7 +89,9 @@ describe('deriveToolErrorWatchdogKey', () => {
 
   it('is idempotent — a key that already carries a fingerprint is left alone', () => {
     expect(deriveToolErrorWatchdogKey(ei({
-      id: 'EI-4', watchdogKey: 'repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected', body: callerBody,
+      id: 'EI-4',
+      watchdogKey: `repeated-tool-error:plans:new:caller:${toolErrorFingerprint(extractSampleFromBody(callerBody))}`,
+      body: callerBody,
     }))).toBeNull();
   });
 
@@ -104,7 +115,8 @@ describe('recomputeWatchdogKeys', () => {
     const d = deps([ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody })]);
     const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, d);
     expect(res.dryRun).toBe(true);
-    expect(res.changed).toEqual([{ id: 'EI-1', oldKey: 'repeated-tool-error:plans:new:caller', newKey: 'repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected' }]);
+    expect(res.changed).toEqual([{ id: 'EI-1', oldKey: 'repeated-tool-error:plans:new:caller',
+      newKey: `repeated-tool-error:plans:new:caller:${toolErrorFingerprint(extractSampleFromBody(callerBody))}` }]);
     expect(d.writes).toEqual([]);
   });
 
@@ -116,8 +128,8 @@ describe('recomputeWatchdogKeys', () => {
     const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, d, { dryRun: false });
     expect(res.changed).toHaveLength(2);
     expect(d.writes).toEqual([
-      { id: 'EI-1', newKey: 'repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected' },
-      { id: 'EI-2', newKey: 'repeated-tool-error:plans:list:structural:column-initiative-does-not-exist' },
+      { id: 'EI-1', newKey: `repeated-tool-error:plans:new:caller:${toolErrorFingerprint(extractSampleFromBody(callerBody))}` },
+      { id: 'EI-2', newKey: `repeated-tool-error:plans:list:structural:${toolErrorFingerprint(extractSampleFromBody(structuralBody))}` },
     ]);
   });
 
@@ -125,14 +137,14 @@ describe('recomputeWatchdogKeys', () => {
     const d = deps([
       // EI-1 would migrate INTO the key EI-2 already holds.
       ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody }),
-      ei({ id: 'EI-2', watchdogKey: 'repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected', body: callerBody }),
+      ei({ id: 'EI-2', watchdogKey: `repeated-tool-error:plans:new:caller:${toolErrorFingerprint(extractSampleFromBody(callerBody))}`, body: callerBody }),
     ]);
     const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, d, { dryRun: false });
     expect(res.changed).toEqual([]);
     expect(res.collisions).toEqual([{
       id: 'EI-1',
       oldKey: 'repeated-tool-error:plans:new:caller',
-      newKey: 'repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected',
+      newKey: `repeated-tool-error:plans:new:caller:${toolErrorFingerprint(extractSampleFromBody(callerBody))}`,
       heldBy: 'EI-2',
     }]);
     expect(d.writes).toEqual([]);
@@ -142,7 +154,7 @@ describe('recomputeWatchdogKeys', () => {
     const d = deps([
       ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:memory:search:rate-limit', body: 'x.\n\nSample: rate limit reached' }),
       ei({ id: 'EI-2', body: structuralBody }), // no watchdogKey → not scanned
-      ei({ id: 'EI-3', watchdogKey: 'repeated-tool-error:plans:list:structural:column-initiative-does-not-exist', body: structuralBody }), // already migrated
+      ei({ id: 'EI-3', watchdogKey: `repeated-tool-error:plans:list:structural:${toolErrorFingerprint(extractSampleFromBody(structuralBody))}`, body: structuralBody }), // already migrated
     ]);
     const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, d, { dryRun: false });
     expect(res.scanned).toBe(2); // EI-2 excluded (no key)
@@ -154,7 +166,9 @@ describe('recomputeWatchdogKeys', () => {
     const first = deps([ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller', body: callerBody })]);
     await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, first, { dryRun: false });
     // After the first pass the live store holds the new key; a second pass sees it migrated.
-    const second = deps([ei({ id: 'EI-1', watchdogKey: 'repeated-tool-error:plans:new:caller:invalid-args-note-too-big-expected', body: callerBody })]);
+    const second = deps([ei({ id: 'EI-1',
+      watchdogKey: `repeated-tool-error:plans:new:caller:${toolErrorFingerprint(extractSampleFromBody(callerBody))}`,
+      body: callerBody })]);
     const res = await recomputeWatchdogKeys(deriveToolErrorWatchdogKey, second, { dryRun: false });
     expect(res.changed).toEqual([]);
     expect(second.writes).toEqual([]);

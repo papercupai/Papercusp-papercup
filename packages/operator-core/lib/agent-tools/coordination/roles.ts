@@ -67,6 +67,12 @@ export const COORD_ROLES = [
   // file/shell tools (so it deliberately stays out of SU_ROLES); the matching
   // synthesized principal grants live in role-principal-caps.ts.
   'release-fixer',
+  // The MERGE-RESOLVER — a launch-blueprint role whose conflict protocol uses
+  // native coordination and work-item tools alongside its git-sync resource
+  // lock. Its synthesized principal carries only coord/work-item/feature/lock
+  // capabilities (role-principal-caps.ts); this shared role set is the other
+  // dispatch gate for its declared tools and its lifecycle/capture reporting.
+  'merge-resolver',
   // The CONTENT-FIXER — another launch-blueprint role whose repair protocol is
   // coordinated work: orient, hold/checkpoint/complete its repair item, and
   // escalate when the quarantined content cannot be fixed safely. Its
@@ -130,6 +136,18 @@ export const WORK_ITEM_LIFECYCLE_ROLES = [...COORD_ROLES, ...EVIDENCE_JUDGE_ROLE
 export const QUEEN_PLACEMENT_ROLES = COORD_ROLES.filter(
   (r) => r !== 'cup' && r !== 'papercup' && r !== 'papercup-deep' && r !== 'kettle',
 );
+
+/**
+ * Roles that may own and drive their OWN virtual desktops
+ * (agent-multi-desktops-grid-2026-10-06 D-013): the placement roles plus the generic
+ * worker `cup`, which is the role that actually does GUI work. Still excluded: the
+ * read-mostly papercup / papercup-deep / kettle (AUTH INVARIANT in roles.test.ts).
+ *
+ * This gates the computer:*_desktop tools as a whole. Equipping a whole POT with a
+ * shared desktop stays a placement act: those handlers re-check QUEEN_PLACEMENT_ROLES
+ * on the `pot` path, so a cup can start desktops for itself but not for its pot.
+ */
+export const DESKTOP_AGENT_ROLES = [...QUEEN_PLACEMENT_ROLES, 'cup' as const];
 
 /**
  * pot-rename D-007 map (old role id → canonical new id) — the same mapping

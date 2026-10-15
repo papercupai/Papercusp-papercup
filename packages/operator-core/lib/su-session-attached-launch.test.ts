@@ -1,12 +1,25 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   chat: vi.fn(), read: vi.fn(), bind: vi.fn(), bootstrap: vi.fn(), engine: vi.fn(), host: vi.fn(),
   ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(), rpc: vi.fn(),
-  resume: vi.fn(), rehydrate: vi.fn(), registry: vi.fn(),
+  resume: vi.fn(), rehydrate: vi.fn(), registry: vi.fn(), owner: vi.fn(), recordOwner: vi.fn(),
+  callOwner: vi.fn(), forwardable: vi.fn(),
+}));
+// WI-10003879: the cross-worker relay is proven for real in
+// su-session-owner-routing.integration.test.ts; here only the launch's
+// decision (forward vs attach locally) is under test.
+vi.mock('./cluster-owner-rpc', async (orig) => ({
+  ...(await orig<typeof import('./cluster-owner-rpc')>()),
+  callOwnerProcess: (...args: unknown[]) => mocks.callOwner(...args),
+}));
+vi.mock('./su-session-owner-routing', async (orig) => ({
+  ...(await orig<typeof import('./su-session-owner-routing')>()),
+  isForwardableOwner: (...args: unknown[]) => mocks.forwardable(...args),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'workspace' }));
 vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
@@ -19,7 +32,8 @@ vi.mock('./adv-sessions', async (orig) => ({
 vi.mock('./native-session-handles', () => ({ nativeSessionHandleForAdvSession: vi.fn() }));
 vi.mock('./su-session-host', () => ({ getRegisteredSuSessionHost: mocks.host, rehydrateRegisteredSuSessionHost: mocks.rehydrate }));
 vi.mock('./su-session-resume', () => ({ prepareStructuredSuResume: mocks.resume }));
-vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, bindSuSessionToAdvSession: mocks.bind, persistSuSessionDescriptor: mocks.persist }));
+vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, bindSuSessionToAdvSession: mocks.bind, persistSuSessionDescriptor: mocks.persist,
+  readSuSessionHostOwner: mocks.owner, recordSuSessionHostOwner: mocks.recordOwner }));
 vi.mock('./su-session-claude-engine', () => ({ startClaudeSuEngine: mocks.engine }));
 vi.mock('./su-session-rpc-engine', () => ({ startSuRpcEngine: mocks.rpc }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ bootstrapSu: { handler: mocks.bootstrap } }));
@@ -31,7 +45,7 @@ vi.mock('./su-session-client-lease', () => ({
   suClientLeaseConfig: () => ({ ttlMs: 30_000, renewMs: 10_000, sweepMs: 5_000, initialMs: 60_000 }),
   superviseSuClientLease: vi.fn(() => () => undefined),
 }));
-import { LAUNCH_STALL_REPORT_MS, SLOW_LAUNCH_STAGE_MS, claudeEngineIdentityForCwd, launchAttachedSuSession,
+import { LATE_STALL_REPORT_MS, LAUNCH_STALL_REPORT_MS, SLOW_LAUNCH_STAGE_MS, claudeEngineIdentityForCwd, launchAttachedSuSession,
   launchStageTracer, logLaunchTrace, type LaunchTraceLevel } from './su-session-attached-launch';
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
 
@@ -48,6 +62,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.chat.mockResolvedValue({ ok: true, data: { archived_at: null, su_runtime_class: 'su-session' } });
   mocks.read.mockResolvedValue(null);
+  mocks.owner.mockResolvedValue(null);
+  mocks.recordOwner.mockResolvedValue(true);
   mocks.resume.mockRejectedValue(new Error('Reconnect requires a saved native session'));
   mocks.bind.mockResolvedValue({ status: 'bound' });
   mocks.bootstrap.mockImplementation(async () => Response.json(boot));
@@ -202,7 +218,7 @@ describe('attached launch authority', () => {
 
     it('recomputes the identity from the saved directory on resume', async () => {
       mocks.registry.mockResolvedValue({ projects: [{ slug: 'project', path: checkout }] });
-      mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine' });
+      mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine', cwd: fresh });
       mocks.rehydrate.mockResolvedValue({ snapshot: () => ({ executorAttached: false, streamReady: false, terminal: true }) });
       mocks.resume.mockResolvedValue({ boot: { ...boot, cwd: fresh }, nativeSession: { backend: 'claude', sessionId: 'saved-native' },
         binding: { operation: 'attached', backend: 'claude', advSessionId: 18, ownerId: 'su-engine', workspaceId: 'workspace', harnessSlug: 'project', planSlug: null },
@@ -210,6 +226,8 @@ describe('attached launch authority', () => {
       await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'identity-resume' });
       expect(mocks.bootstrap).not.toHaveBeenCalled();
       expect(mocks.engine.mock.calls[0][3]).toMatchObject({ resume: true, identity: 'coding-assistant' });
+      expect(mocks.resume).toHaveBeenCalledWith(expect.objectContaining({ cwd: fresh }),
+        expect.objectContaining({ identity: 'coding-assistant', stage: expect.any(Function) }));
     });
   });
 
@@ -368,13 +386,102 @@ describe('attached launch authority', () => {
   });
 });
 
+// WI-10003879: the :3070 operator runs several cluster workers. The engine
+// lives in the worker that attached it, so the launch must say which worker
+// that is, and a re-attach landing elsewhere must run on that worker.
+describe('engine ownership across cluster workers', () => {
+  const remoteOwner = { pid: 99_999, hostId: 'host-a', nonce: 'nonce-a', recordedAt: '2026-10-05T00:00:00.000Z' };
+
+  it('records this worker as the owner before a fresh launch returns', async () => {
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'owner-recorded' });
+    expect(response.status).toBe(200);
+    expect(mocks.recordOwner).toHaveBeenCalledWith(18, expect.objectContaining({
+      pid: process.pid, hostId: expect.any(String), nonce: expect.any(String), recordedAt: expect.any(String),
+    }), 'workspace');
+    // Recorded once the engine exists, so a sibling's first snapshot already finds the owner.
+    expect(mocks.engine.mock.invocationCallOrder[0]).toBeLessThan(mocks.recordOwner.mock.invocationCallOrder[0]);
+    expect(mocks.callOwner).not.toHaveBeenCalled();
+  });
+
+  // agent-chat-pty P-003, 2026-10-05: recording the owner is real I/O, so an
+  // engine that fails at once rejects `ready` while the launch is still
+  // writing. The launch's exit bookkeeping handles that failure; it must not
+  // escape as an unhandled rejection in the meantime (observeReadiness).
+  it('an engine that fails at once is handled, not left unhandled, while its owner is written', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      mocks.recordOwner.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(true), 25)));
+      const base = mocks.engine();
+      // Rejected when the engine starts, not when the mock is set up.
+      mocks.engine.mockImplementation(() => ({ ...base, ready: Promise.reject(new Error('engine exited during initialization')) }));
+      const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'fails-at-once' });
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => expect(mocks.reconcile).toHaveBeenCalledWith(expect.objectContaining({ expected: false })));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('runs a re-attach on the worker that holds the engine instead of starting a second one', async () => {
+    mocks.owner.mockResolvedValue(remoteOwner);
+    mocks.forwardable.mockReturnValue(true);
+    mocks.callOwner.mockResolvedValue({ ok: true, result: { status: 'ok', httpStatus: 200, body: { status: 'ok', advSessionId: 18, ready: true } } });
+    const attach = { ...input, agent_chat_id: 'owned-elsewhere' };
+    const response = await launchAttachedSuSession(request(), attach);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-Papercusp-Su-Session-Served-By')).toBe('forwarded:99999');
+    expect(await response.json()).toEqual({ status: 'ok', advSessionId: 18, ready: true });
+    expect(mocks.callOwner).toHaveBeenCalledWith(expect.objectContaining({
+      targetPid: 99_999, kind: 'su-session-attach', payload: { input: attach, hostId: 'host-a', nonce: 'nonce-a' },
+    }));
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.engine).not.toHaveBeenCalled();
+    expect(mocks.recordOwner).not.toHaveBeenCalled();
+  });
+
+  it.each(['owner_gone', 'no_handler', 'not_clustered'])('attaches locally when the owner is unreachable for good (%s)', async (code) => {
+    mocks.owner.mockResolvedValue(remoteOwner);
+    mocks.forwardable.mockReturnValue(true);
+    mocks.callOwner.mockResolvedValue({ ok: false, code, message: 'gone' });
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: `owner-${code}` });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('X-Papercusp-Su-Session-Served-By')).toBeNull();
+    expect(mocks.engine).toHaveBeenCalledOnce();
+    expect(mocks.recordOwner).toHaveBeenCalledWith(18, expect.objectContaining({ pid: process.pid }), 'workspace');
+  });
+
+  it('starts nothing and says retry when a live owner does not answer', async () => {
+    mocks.owner.mockResolvedValue(remoteOwner);
+    mocks.forwardable.mockReturnValue(true);
+    mocks.callOwner.mockResolvedValue({ ok: false, code: 'timeout', message: 'no reply in 60000ms' });
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'owner-slow' });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'su_session_owner_unreachable', retryable: true });
+    expect(mocks.bootstrap).not.toHaveBeenCalled();
+    expect(mocks.engine).not.toHaveBeenCalled();
+  });
+
+  it('attaches locally when the recorded owner is this worker or another service', async () => {
+    mocks.owner.mockResolvedValue(remoteOwner);
+    mocks.forwardable.mockReturnValue(false);
+    const response = await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'owner-not-forwardable' });
+    expect(response.status).toBe(200);
+    expect(mocks.callOwner).not.toHaveBeenCalled();
+    expect(mocks.engine).toHaveBeenCalledOnce();
+  });
+});
+
 describe('launch stage tracer (a stalled launch names its step)', () => {
   afterEach(() => { vi.useRealTimers(); });
 
   it('reports the step a launch is stuck in once the stall deadline passes', () => {
     vi.useFakeTimers();
     const lines: string[] = [];
-    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line));
+    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line), () => Date.now());
     trace.stage('read-durable-session');
     trace.stage('bootstrap');
     vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS - 1);
@@ -385,10 +492,57 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
     trace.end();
   });
 
+  it('says when the stall report itself ran late, and only then', () => {
+    vi.useFakeTimers();
+    // The injected clock runs ahead of the timer queue: the report is due at
+    // the deadline but the process could not run it for 9s, as observed in
+    // WI-10006559. A report just under the lateness threshold keeps the plain line.
+    let clock = 1_000_000;
+    const lines: string[] = [];
+    const late = launchStageTracer('ws:h:late', (line) => lines.push(line), () => clock);
+    late.stage('bootstrap');
+    clock += LAUNCH_STALL_REPORT_MS + 9_186;
+    vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
+    expect(lines).toEqual([`[su-launch] ws:h:late not finished after ${LAUNCH_STALL_REPORT_MS + 9_186}ms; `
+      + `stalled in stage=bootstrap for ${LAUNCH_STALL_REPORT_MS + 9_186}ms; this report ran 9186ms late (event loop delayed)`]);
+    late.end();
+
+    clock = 2_000_000;
+    lines.length = 0;
+    const prompt = launchStageTracer('ws:h:prompt', (line) => lines.push(line), () => clock);
+    clock += LAUNCH_STALL_REPORT_MS + LATE_STALL_REPORT_MS - 1;
+    vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
+    expect(lines).toEqual([`[su-launch] ws:h:prompt not finished after ${LAUNCH_STALL_REPORT_MS + LATE_STALL_REPORT_MS - 1}ms; `
+      + `stalled in stage=read-chat for ${LAUNCH_STALL_REPORT_MS + LATE_STALL_REPORT_MS - 1}ms`]);
+    prompt.end();
+  });
+
+  it('does not label a wall-clock jump as event-loop delay', () => {
+    vi.useFakeTimers();
+    let wallClock = 1_000_000;
+    let monotonicClock = 10_000.25;
+    const wallNow = vi.spyOn(Date, 'now').mockImplementation(() => wallClock);
+    const monotonicNow = vi.spyOn(performance, 'now').mockImplementation(() => monotonicClock);
+    const lines: string[] = [];
+    try {
+      const trace = launchStageTracer('ws:h:wall-clock', (line) => lines.push(line));
+      trace.stage('bootstrap');
+      wallClock += LAUNCH_STALL_REPORT_MS + 9_186;
+      monotonicClock += LAUNCH_STALL_REPORT_MS + 0.6;
+      vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
+      expect(lines).toEqual([`[su-launch] ws:h:wall-clock not finished after ${LAUNCH_STALL_REPORT_MS + 1}ms; `
+        + `stalled in stage=bootstrap for ${LAUNCH_STALL_REPORT_MS + 1}ms`]);
+      trace.end();
+    } finally {
+      monotonicNow.mockRestore();
+      wallNow.mockRestore();
+    }
+  });
+
   it('reports slow finished steps with their duration and stays quiet for fast ones', () => {
     vi.useFakeTimers();
     const lines: string[] = [];
-    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line));
+    const trace = launchStageTracer('ws:h:chat', (line) => lines.push(line), () => Date.now());
     vi.advanceTimersByTime(10);
     trace.stage('bootstrap');
     vi.advanceTimersByTime(SLOW_LAUNCH_STAGE_MS);
@@ -402,7 +556,7 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
   it('marks a stall as warn and a slow finished step as info', () => {
     vi.useFakeTimers();
     const seen: Array<[string, LaunchTraceLevel]> = [];
-    const trace = launchStageTracer('ws:h:chat', (line, level) => seen.push([line, level]));
+    const trace = launchStageTracer('ws:h:chat', (line, level) => seen.push([line, level]), () => Date.now());
     trace.stage('bootstrap');
     vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
     trace.stage('engine-start');
@@ -419,7 +573,7 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     try {
-      const trace = launchStageTracer('ws:h:chat');
+      const trace = launchStageTracer('ws:h:chat', undefined, () => Date.now());
       trace.stage('bootstrap');
       vi.advanceTimersByTime(SLOW_LAUNCH_STAGE_MS + 450);
       trace.stage('engine-start');

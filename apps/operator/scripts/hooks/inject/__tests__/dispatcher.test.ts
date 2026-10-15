@@ -466,7 +466,10 @@ describe('fail-silent: EXIT 0 AND EMPTY STDOUT (D-001 invariant 1)', () => {
         args: ['--client=claude', '--event=UserPromptSubmit'],
         stdin: JSON.stringify({ prompt: 'hi' }),
         // Reserved-by-convention discard port: nothing listens, connect fails fast.
-        env: { PAPERCUSP_SID: 's', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9' },
+        // The proxy fallback (WI-10005007) is pointed at a dead port too: a loopback
+        // pin that is refused is retried on the MCP proxy, which on a dev box is a
+        // LIVE operator — without this the case would quietly measure the real one.
+        env: { PAPERCUSP_SID: 's', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9', PAPERCUSP_MCP_PROXY_PORT: '9' },
       },
       {
         // EI-19989482108652654: the 8 cases above are all absorbed by dispatch()'s
@@ -490,6 +493,26 @@ describe('fail-silent: EXIT 0 AND EMPTY STDOUT (D-001 invariant 1)', () => {
       expect(res.stdout).toBe('');
     });
   }
+
+  it('loopback pin refused -> the turn is served by the MCP proxy instead (WI-10005007)', async () => {
+    // A staging-pinned session (PAPERCUSP_OPERATOR_URL=:3170) whose pin is down
+    // used to get NOTHING at turn start: no CTRL, no orientation, no memory, and
+    // no ACK-ON-PROOF token, so an in-place identity activation could not apply.
+    const op = fakeOperator({ text: 'VIA-PROXY' });
+    const base = await op.start();
+    running = op;
+    const proxyPort = new URL(base).port;
+    const res = await runCli(['--client=claude', '--event=UserPromptSubmit'], JSON.stringify({ prompt: 'hi' }), {
+      PAPERCUSP_SID: 'sid-fallback',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9',
+      PAPERCUSP_MCP_PROXY_PORT: proxyPort,
+    });
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain('VIA-PROXY');
+    expect(op.received).toHaveLength(1);
+    expect(op.received[0]?.url).toBe('/api/agent-mcp/turn-start-memory');
+    expect(op.received[0]?.body.owner).toBe('sid-fallback');
+  });
 
   it('operator SLOWER than the port wall -> exit 0, no output', async () => {
     // mid-turn's wall is 1.5s; answer at 4s. The turn must proceed un-augmented

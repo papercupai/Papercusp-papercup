@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-4/R-5 live local: five real agent desktops provisioned over MCP appear as labelled thumbnail tiles on the Desktops page (This computer), one opens live watch-only, all release cleanly",
+  "framework": "shell",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    "-c",
+    "provision 5 agent desktops via MCP computer:desktop; computer:list_desktops; GET each thumbnail; drive /desktops?desktopHost=local with tauri-agent-tools (tiles, thumbnail images, open watch:<id>, canvas + status); release all 5"
+  ],
+  "startedAt": "2026-10-06T11:07:11.000Z",
+  "finishedAt": "2026-10-06T11:24:00.000Z",
+  "exitCode": 0,
+  "summary": "verify-tauri-headless run 20261006T110711Z-2221749 verdict=pass (passed=3 failed=0 blocked=0 skipped=0), isolated DB + seed, isolated sidecar health sha dccbbe2105. Five agent-scoped xvfb-local desktops were provisioned over MCP with distinct ids and displays (:110..:114); the roster listed all 5; every thumbnail returned 200 image/jpeg; the Desktops page (This computer) rendered 5 labelled tiles with decoded 480x360 thumbnails; opening one gave a live 1024x768 canvas with status 'connected · watch-only'; all 5 released. This is the LOCAL half of plan D-017. The real hosted-VM scenario is deferred to EI-25225008797935576 and is NOT claimed here.",
+  "assertions": [
+    { "id": "provision-five-distinct-agent-desktops", "passed": true, "evidence": "E2E_PROVISION x5: scope agent, distinct desktopSessionId, displays :110..:114, 1024x768; E2E_IDS lists 5 ids." },
+    { "id": "roster-covers-all", "passed": true, "evidence": "E2E_LIST kind xvfb-local scope agent; E2E_ROSTER_COVERS_ALL 5." },
+    { "id": "thumbnail-per-desktop", "passed": true, "evidence": "E2E_THUMB x5: HTTP 200 image/jpeg, 6157-6162 bytes." },
+    { "id": "grid-tiles-labelled", "passed": true, "evidence": "E2E_TILES: 5 tiles, each 'Agent su-16da39cf-…', 'ready · 1024×768', last-active time, Watch; E2E_THUMB_IMGS 480x360 x5." },
+    { "id": "open-live-watch-only", "passed": true, "evidence": "E2E_LIVE_URL /desktops?desktopHost=local&desktop=watch:405ee51f-…; E2E_LIVE_CANVAS 1024x768; E2E_LIVE_TEXT contains 'connected · watch-only' and '5 desktops · 0/2 live'." },
+    { "id": "release-all", "passed": true, "evidence": "E2E_RELEASE x5: released true, 'desktop torn down.'" }
+  ],
+  "plan": "agent-multi-desktops-grid-2026-10-06",
+  "bars": ["R-4", "R-5"],
+  "evidencePlane": "live",
+  "measuredBy": "su-16da39cf-6e87-45f1-9c6f-7fa8915f021d (WI-10006486)",
+  "run": "20261006T110711Z-2221749",
+  "artifactDir": "~/.local/state/verification-harness/verify-tauri-headless/20261006T110711Z-2221749",
+  "sourceLog": ".papercusp/scratch/bash-d466e8ee-882.log (capability:bash task 0muwkqh3oau1z7wv0rr)",
+  "screenshots": [".papercusp/scratch/p007-e2e/grid.png", ".papercusp/scratch/p007-e2e/live.png"],
+  "desktopSessionIds": [
+    "405ee51f-5ecd-4121-8c6e-a791c2938a41",
+    "c37080c2-e2f8-4295-b425-a1e3269e97ea",
+    "bad5a68e-c63b-4871-8898-c91fc8f70300",
+    "f4cb7927-7569-43c1-9d9f-aa862f99267e",
+    "424bcc41-dac7-4f2f-a298-6dbbbf30043f"
+  ],
+  "companionTestRuns": {
+    "apps/operator/e2e/desktop-grid.spec.ts": 20838185,
+    "apps/operator/e2e/desktop-grid-local.spec.ts": 20838186,
+    "apps/operator/e2e/desktop-render-matrix.spec.ts": 20838184
+  },
+  "falsifierBasis": "Broken if any provisioned desktop is missing from the roster or the grid, a tile has no thumbnail or no owner label, the opened viewer is not connected, or a release leaves a desktop running.",
+  "notClaimed": "A real hosted VM (published host artifact, two agents, takeover, admission refusal on the VM) — EI-25225008797935576."
+}

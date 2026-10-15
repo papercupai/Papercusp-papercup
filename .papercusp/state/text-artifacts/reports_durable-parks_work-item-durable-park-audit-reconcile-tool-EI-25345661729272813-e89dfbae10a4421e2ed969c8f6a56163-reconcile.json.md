@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25345661729272813-e89dfbae10a4421e2ed969c8f6a56163-reconcile.json"
+updated_at: 1791697878985
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-25345661729272813:e89dfbae10a4421e2ed969c8f6a56163",
+  "inputSha256": "e89dfbae10a4421e2ed969c8f6a561631409f9fe98c6c91f160e4f1ff20d7608",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-11T05:51:18.985Z",
+  "actor": "su-61a88fd2-510d-4ca6-8a71-fde8957fb3bc",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-25345661729272813",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "5aafc65fb41d67055544ec4a92b38eb46c76f462262b68269c24e8f090d56988",
+      "observedParkFingerprint": "5aafc65fb41d67055544ec4a92b38eb46c76f462262b68269c24e8f090d56988",
+      "reasonCode": "review-completed",
+      "evidence": "Evaluator su-61a88fd2 re-read EI-25345661729272813, its recurrence comment #1163297, terminal EI-25315999254091150, and WI-10006825#completion on 2026-10-11. Workspace-scoped adv_sessions row36647 matches reporter su-ca487a14/native01a1167f and saved launch_argv includes --account=auto. WI-10006825 records the carry-refresh saved-launchArgv repair plus its 21/21 regression result at2edeaaeff7; current sessions.ts:1779-1790 and tests:309-326 preserve auto despite false provider hint. The cluster class has a source repair, but this historical report has no measured invocation/native-runtime repair proof. Evaluation is complete; reopening normal triage is justified, terminal duplicate/fixed status is not asserted. Durable evaluator review: EI-25345661729272813#1173610. Server-source inspection identifies the prior refusal as a failed server-side authority read before dispatch; no authority bypass or provider change is requested.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25345661729272813-e89dfbae10a4421e2ed969c8f6a56163-reconcile.json"
+}

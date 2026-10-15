@@ -1,4 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS lint guard, imported for its scanner predicates.
@@ -46,6 +49,34 @@ describe('lint:no-hand-rolled-cli-entry — predicate controls', () => {
   });
 });
 
+describe('lint:no-hand-rolled-cli-entry — build-output pruning', () => {
+  it('excludes dist-* and storybook-static trees while scanning real source', () => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-cli-entry-scan-'));
+    const guard = 'if (import.meta.url === pathToFileURL(process.argv[1]).href) main();';
+    const paths = [
+      'apps/operator/src/live.mjs',
+      'apps/operator/dist-devhost/server.mjs',
+      'apps/operator/dist-hosted-control-plane/serve.mjs',
+      'apps/operator/storybook-static/assets/story.mjs',
+      'libs/generic/papergrid/grid-core/storybook-static/assets/story.mjs',
+    ];
+    try {
+      for (const rel of paths) {
+        const file = join(root, rel);
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, guard, 'utf8');
+      }
+
+      const result = scanTree({ root, sourceRoots: ['apps', 'libs'] });
+      expect(result.everyGuard.map((hit: { rel: string }) => hit.rel)).toEqual([
+        'apps/operator/src/live.mjs',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('lint:no-hand-rolled-cli-entry — repository ratchet', () => {
   let repositoryScan: ReturnType<typeof scanTree>;
 
@@ -56,6 +87,10 @@ describe('lint:no-hand-rolled-cli-entry — repository ratchet', () => {
   it('has no unallowlisted guard and no stale baseline entry', () => {
     const result = repositoryScan;
     expect(result.violations.map((hit: { rel: string; line: number; kind: string }) => `${hit.rel}:${hit.line}:${hit.kind}`)).toEqual([]);
+    expect(result.exemptions.map((hit: { rel: string; kind: string }) => [hit.rel, hit.kind])).toEqual([
+      ['scripts/reviewer-operator-assert.mjs', 'file-url-to-path'],
+    ]);
+    expect(result.exemptions.every((hit: { reason?: string }) => Boolean(hit.reason?.trim()))).toBe(true);
     expect(result.stale).toEqual([]);
     expect(result.staleExemptions).toEqual([]);
   });

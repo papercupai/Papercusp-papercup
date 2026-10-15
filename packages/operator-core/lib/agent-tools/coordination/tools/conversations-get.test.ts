@@ -225,6 +225,19 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       dispatch: null as ConsultDispatchSummary | null,
     });
 
+    it('exposes an unmeasured routing result and remedy separately from the no-responder lifecycle', async () => {
+      const result = { verdict: 'relevance_unmeasured', reason: 'evidence_unavailable',
+        hint: 'This does not prove no expert exists.', remaining_candidates: [] };
+      getM.mockResolvedValue(detail('c-unmeasured', { kind: 'consult', state: 'open' }));
+      consultM.mockResolvedValue(new Map([['c-unmeasured', {
+        ...consultRow('c-unmeasured'), state: 'no_qualified_responder', request_result: result,
+      }]]));
+      const reply = (await body({ id: 'c-unmeasured' })).results[0];
+      expect(reply.consult.state).toBe('no_qualified_responder');
+      expect(reply.consult.result).toEqual(result);
+      expect(reply.consult.result.verdict).not.toBe('no_qualified_responder');
+    });
+
     it('surfaces WHY each answering-session launch failed once a dispatch walk is recorded (WI-10003197)', async () => {
       const dispatch = summarizeConsultDispatch([
         {

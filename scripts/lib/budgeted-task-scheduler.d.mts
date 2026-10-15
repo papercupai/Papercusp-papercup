@@ -9,6 +9,124 @@ export interface TaskBudgetInput {
   pidsReserve?: number | string;
 }
 
+export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, input: {
+  task: string; attempt: string; cwd: string; command: string[]; originalCommand?: string | null;
+  startedAtMs: number; finishedAtMs: number; exitCode: number | null; signal: string | null;
+  error: string | null; captureComplete: boolean; stdout: Buffer; stderr: Buffer;
+  before?: Array<{ path: string; sha256: string }> | null;
+  after?: Array<{ path: string; sha256: string }> | null;
+  processTrace?: { out: string; rootPid: number | null } | null;
+}): { root: string; receipt: { ref: string; sha256: string; byteLength: number };
+  logs: Record<'stdout' | 'stderr', { ref: string; sha256: string; byteLength: number }>;
+  observation: { kind: 'affected-task-native-execution'; sourceInputsUnchanged: boolean;
+    orderedChainQualified: false; runtimeClosure: 'unmeasured'; operationalAcceptance: false;
+    steps: never[]; gaps: string[];
+    processTrace: { scope: string; gaps: string[];
+      streams: Array<{ processIdentity: string; pid: number; role: string; scope: string;
+        observedByteLength: number; captureComplete: boolean;
+        artifact: { ref: string; sha256: string; byteLength: number } }>;
+      events: Array<{ [key: string]: unknown; artifact: { ref: string; sha256: string; byteLength: number } }> };
+    execution: { command: string[]; cwd: string; startedAtMs: number; finishedAtMs: number;
+      childWallMs: number; exitCode: number | null; signal: string | null; error: string | null;
+      captureComplete: boolean; logs: Record<'stdout' | 'stderr', { ref: string; sha256: string; byteLength: number }> } } };
+
+export interface BudgetedTaskComparisonInput {
+  selection: { kind: "full-gate"; coverage: "complete"; unenumerated: string[];
+    originalRef: string; originalSha256: string; files: string[];
+    fileOccurrences?: Array<{ task: string; step: number | null; command: string;
+      file: string; kind: "test-file" | "check-input" }> };
+  source: { commit: string; receiptSha256: string; dependencySha256: string;
+    runtimeClosureSha256: string; files: Array<{ path: string; sha256: string }> };
+  tasks: Array<{ id: string; files: string[] }>;
+  baseline: TaskBudgetInput;
+  candidate: TaskBudgetInput;
+  envelope: { hardMemoryMb: number; pidsMax: number; heapMb: number };
+  estimates: Array<{ task: string; ms: number; originalRef: string; originalSha256: string }>;
+}
+export interface BudgetedTaskComparisonManifest extends BudgetedTaskComparisonInput {
+  schemaVersion: 1;
+  kind: "budgeted-task-comparison";
+  order: string[];
+  fileSetSha256: string;
+  manifestSha256: string;
+}
+export interface BudgetedTaskComparisonCohort {
+  side: "baseline" | "candidate";
+  repeat: number;
+  runId: string;
+  originalRef: string;
+  originalSha256: string;
+  manifestSha256: string;
+  sourceUnchanged: boolean;
+  sourceReceiptSha256: string;
+  dependencySha256: string;
+  runtimeClosureSha256: string;
+  policy: TaskBudgetInput;
+  envelope: BudgetedTaskComparisonInput["envelope"];
+  wallMs: number;
+  acquiredWaitsMs: number[];
+  executionWallMs: number;
+  memory: { pairedSamples: number; maxAnonPerAllocatedWorkerMb: number; oomKills: number };
+  stats: { memoryReadings: number; lastMemAvailableMb: number; observedMaxWorkers: number;
+    observedMaxTasks: number; observedMaxMemoryMb: number };
+  /** Actual scheduler START order, not the declaration-ordered result array. */
+  children: Array<{ task: string; lane: "primary" | "reserved"; files: string[];
+    code: number; signal: string | null; childWallMs: number; resultLine: string;
+    originalRef: string; originalSha256: string; expectedCgroup: string; runGroup: string;
+    deadlineEpochMs: number; cgroupObservations: Array<{ pid: number; cgroupPath: string;
+      runGroup: string; deadlineEpochMs: number | string; vitestFork?: boolean; phase?: string }> }>;
+}
+export function prepareBudgetedTaskComparison(input: BudgetedTaskComparisonInput): BudgetedTaskComparisonManifest;
+export function evaluateBudgetedTaskComparison(manifest: BudgetedTaskComparisonManifest,
+  cohorts: BudgetedTaskComparisonCohort[]): { assertions: Array<{ name: string; passed: boolean }>;
+    baselineWallMs: number | null; candidateWallMs: number | null; ratio: number | null;
+    operationalAcceptance: false; fileSetSha256: string | null };
+export interface BudgetedTaskComparisonArtifactPins {
+  manifest: { ref: string; sha256: string };
+  source: { ref: string };
+  dependencies: { ref: string };
+  runtimeClosure: { ref: string };
+  cohorts: Array<{ ref: string; sha256: string }>;
+}
+export interface BudgetedTaskCommandPreparationPins {
+  mode: "command-preparation";
+  repositoryRoot: string;
+  selection: { ref: string; sha256: string };
+  commands: Array<{ task: string; step: number | null;
+    receipt: { ref: string; sha256: string };
+    /** Required only for a receipt pin referring to an original native voice JSONL transcript. */
+    nativeEvent?: { sessionId: string; eventId: string };
+    logs: Record<"stdout" | "stderr" | "beforeStdout" | "afterStdout", { ref: string; sha256: string }> &
+      Partial<Record<"beforeStderr" | "afterStderr", { ref: string; sha256: string }>> }>;
+  /** ORIGINAL parent binds all lifecycle/test occurrences; standalone passes cannot qualify a chain. */
+  chains?: Array<{ task: string; receipt: { ref: string; sha256: string };
+    logs: Record<"stdout" | "stderr", { ref: string; sha256: string }>;
+    steps: Array<{ phase: "pre" | "test" | "post"; step: number | null;
+      format: "command-preparation" | "node-test" | "vitest-json";
+      receipt: { ref: string; sha256: string };
+      logs?: Record<"stdout" | "stderr" | "report", { ref: string; sha256: string }> }> }>;
+}
+export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
+  pins: BudgetedTaskCommandPreparationPins): Promise<{ mode: "command-preparation";
+    selection: unknown; commands: Array<{ task: string; step: number | null;
+      kind: "command-check" | "npm-lifecycle"; check?: string; script?: string; command: string;
+      inputs: Array<{ path: string; sha256: string }>; fileOccurrences: unknown[];
+      receipt: { ref: string; sha256: string }; childWallMs: number | null; scriptsExecuted: number;
+      startedAtMs: number; finishedAtMs: number;
+      scriptOrder: string[]; diagnostics?: { filesChecked: number; errors: number; warnings: number; hints: number };
+      nativeEvent?: { sessionId: string; eventId: string }; nativeExecutionWallMs?: number;
+      durationScope?: "discovery-and-command"; voiceResult?: { clientTools: number } }>;
+    originalArtifactsResolved: true; currentDeclaredInputsMatched: true;
+    chains: Array<{ task: string; receipt: { ref: string; sha256: string }; steps: unknown[];
+      startedAtMs: number; finishedAtMs: number; orderedOccurrencesQualified: true }>;
+    orderedChainQualified: boolean;
+    orderedChainCoverage: { population: string[]; qualified: string[]; missing: string[] };
+    runtimeClosure: "unmeasured";
+    operationalAcceptance: false; populationSha256: string }>;
+export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
+  pins: BudgetedTaskComparisonArtifactPins): Promise<{ manifest: BudgetedTaskComparisonManifest;
+    cohorts: BudgetedTaskComparisonCohort[]; originalArtifactsResolved: true; populationSha256: string }>;
+
 export interface ResolvedTaskBudget {
   workerBudget: number;
   memoryBudgetMb: number;
@@ -215,6 +333,47 @@ export function readTaskCgroupPidsEventMax(input?: {
   cgroupRoot?: string;
 }): number | null;
 
+/** THIS task cgroup's memory use; each field is null when its file is unreadable. */
+export interface TaskCgroupMemoryUsage {
+  /** memory.stat `anon`: the non-reclaimable demand. */
+  anonMb: number | null;
+  /** memory.peak: the cumulative high-water mark, INCLUDING reclaimable page cache. */
+  peakMb: number | null;
+  /** memory.events `oom_kill`: cumulative over the cgroup's life. */
+  oomKills: number | null;
+}
+
+export function readTaskCgroupMemoryUsage(input?: {
+  readFile?: (path: string, encoding: string) => string | Buffer;
+  procCgroupPath?: string;
+  cgroupRoot?: string;
+}): TaskCgroupMemoryUsage | null;
+
+export interface CgroupMemoryObservation {
+  samples: number;
+  /** Sampled maximum, so a LOWER bound on the true anon peak. */
+  maxAnonMb: number | null;
+  peakMb: number | null;
+  /** oom_kill delta over this run (not the cgroup's lifetime count). */
+  oomKills: number | null;
+  pairedSamples?: number;
+  /** Maximum sampled anon / active scheduler grant. Not a resident-fork count. */
+  maxAnonPerAllocatedWorkerMb?: number | null;
+}
+
+export function createCgroupMemoryObserver(input?: {
+  read?: () => TaskCgroupMemoryUsage | null;
+}): {
+  sample(): void;
+  summary(): CgroupMemoryObservation;
+  withWorkers<T>(workers: number, run: () => T | Promise<T>): Promise<T>;
+};
+
+export function formatCgroupMemoryObservedMarker(
+  summary: CgroupMemoryObservation,
+  input?: { observedMaxWorkers?: number | null },
+): string;
+
 export function pidsEventRefusalDelta(input: {
   start: number | null;
   end: number | null;
@@ -272,7 +431,7 @@ export function admissibleWorkersForMemory(input: {
  * mutex every scheduler invocation acquires.
  */
 export interface AdmissionNoticeInfo {
-  kind: 'queued' | 'granted';
+  kind: 'queued' | 'granted' | 'yielded';
   /** Present on `queued`: how long this acquisition has been waiting so far. */
   elapsedMs?: number;
   /** Present on `granted`: how long this acquisition ended up queued. */
@@ -344,8 +503,8 @@ export function readTaskDeadlineEpochMs(
 export const TASK_DEADLINE_REFUSAL_MARKER: 'TASK_DEADLINE_REFUSAL';
 
 /**
- * `knownEstimateMs`/`knownTasks` are a LOWER BOUND over tasks with duration history;
- * `unknownTasks` is reported beside them so the sum is never read as a total.
+ * `knownEstimateMs` is a history-based lane-aware wall projection, not summed work
+ * or a guaranteed lower bound. Unknown tasks contribute zero and are reported separately.
  */
 export function formatTaskDeadlineRefusal(input: {
   remainingMs: number;

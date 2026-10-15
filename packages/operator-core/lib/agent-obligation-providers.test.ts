@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   GATE_CODE_OWNERSHIP,
   buildAgentObligationAgenda,
+  fleetStaffingObligations,
+  type FleetStaffingProviderInput,
   independentVerificationObligation,
   ownerReportObligation,
   planPlacementObligation,
@@ -26,6 +28,8 @@ import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools
 import { AGENT_OBLIGATION_SCHEMA_VERSION, formatAgentObligationLine } from './agent-obligations';
 import { projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
 import { deliveredGoalPlacementRows } from './goal-placement-turn-receipts';
+import type { FleetUnderStaffedEvaluation } from './fleet/under-staffed-alert';
+import { inboxWakeKey } from './agent-tools/coordination/inbox-wake';
 
 const NOW = '2026-09-05T20:00:00.000Z';
 const base = { workspaceId: 'ws', ownerId: 'su-goal', observedAt: NOW, sourceGeneration: 'rev-42' };
@@ -39,6 +43,8 @@ describe('scope-aware goal planning obligations', () => {
       review: { schemaVersion: 1, goalId: 'goal-1', disposition,
         rationale: 'Measured missing recovery coverage.', evidenceRefs: ['work-item:WI-fixture'],
         planRefs: [], ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover failed checkout' } : {}),
+        ...(disposition === 'existing-plans-sufficient' || disposition === 'no-eligible-work'
+          ? { coverage: [{ need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/checkout' }] } : {}),
         portfolioFingerprint: goalPlanningPortfolioFingerprint(value), reviewedAt: NOW },
       authorities: { papercusp: { allowed: true, reason: 'caller-goal-owns-pot', ownerGoalId: 'goal-1', ownerGoalTitle: 'Goal' } },
     } } };
@@ -56,6 +62,72 @@ describe('scope-aware goal planning obligations', () => {
   });
   it('accepts a current supported sufficient-plan review without an idea quota', () => {
     expect(goalPlanningObligation(input('existing-plans-sufficient'))).toMatchObject({ status: 'satisfied', applicableDemand: 0 });
+  });
+  // P-009 (goal-holder-plans-ideation-truthful-reports-2026-10-03): measured
+  // 2026-10-01..03, 18 of 24 reviews said existing-plans-sufficient and no holder
+  // wrote a plan. A no-new-plan review now discharges only with a passing map.
+  it('keeps the nudge due when a no-new-plan review carries no coverage map', () => {
+    const unbacked = input('existing-plans-sufficient');
+    delete (known(unbacked).review as { coverage?: unknown }).coverage;
+    expect(goalPlanningObligation(unbacked)).toMatchObject({
+      status: 'due', title: 'Back the no-new-plan review with a coverage map', applicableDemand: 1, ruleRevision: 'goal-planning-needed-v4',
+    });
+  });
+  it('keeps the nudge due when a 3+ item cluster maps to no plan, and names it', () => {
+    const uncovered = input('existing-plans-sufficient');
+    known(uncovered).review!.coverage = [
+      { need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/checkout' },
+      { need: 'stale loop wakes', itemRefs: ['WI-4', 'WI-5', 'WI-6'] },
+    ];
+    const obligation = goalPlanningObligation(uncovered);
+    expect(obligation).toMatchObject({ status: 'due', title: 'Write a plan for the uncovered need', applicableDemand: 1 });
+    expect(obligation.reason).toContain('stale loop wakes');
+    expect(obligation.reason).toContain('plans:new');
+  });
+  // WI-10006710 (measured 2026-10-06, goal 60d3a8 epoch 21): the 12:19:30Z
+  // existing-plans-sufficient review cited three worklist plans and omitted a ready,
+  // unplaced one with open goal work. Nothing flagged it, and that plan then got no
+  // start, staffing or recorded hold for the rest of the tenure.
+  describe('unplaced worklist plans must be accounted for by a no-new-plan review', () => {
+    function withWorklist(entries: GoalPortfolioBrief['worklist'], coverage?: Array<{ need: string; itemRefs: string[]; planRef?: string; justification?: string }>) {
+      const value = input('existing-plans-sufficient'); const state = known(value);
+      state.portfolio!.worklist = entries;
+      if (coverage) state.review!.coverage = coverage;
+      state.review!.portfolioFingerprint = goalPlanningPortfolioFingerprint(state.portfolio!);
+      return value;
+    }
+    it('keeps the nudge due and names each uncited unplaced or blocked plan', () => {
+      const obligation = goalPlanningObligation(withWorklist([
+        worklistPlan(placement('working', 'none'), 'checkout'),
+        worklistPlan(placement('unplaced', 'launch-plan-fleet'), 'orphan-plan'),
+        worklistPlan(placement('blocked', 'resolve-plan-blockers'), 'stuck-plan'),
+      ]));
+      expect(obligation).toMatchObject({ status: 'due', title: 'Account for every unplaced worklist plan', applicableDemand: 2 });
+      expect(obligation.reason).toContain('plan:papercusp/orphan-plan (unplaced)');
+      expect(obligation.reason).toContain('plan:papercusp/stuck-plan (blocked)');
+      expect(obligation.reason).not.toContain('plan:papercusp/checkout');
+    });
+    it('discharges once the coverage map cites the plan', () => {
+      expect(goalPlanningObligation(withWorklist(
+        [worklistPlan(placement('unplaced', 'launch-plan-fleet'), 'orphan-plan')],
+        [
+          { need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/checkout' },
+          { need: 'orphan work, held until checkout lands', itemRefs: ['WI-7'], planRef: 'plan:papercusp/orphan-plan' },
+        ],
+      ))).toMatchObject({ status: 'satisfied' });
+    });
+    it('demands nothing for placed, owner-walled or terminal worklist plans', () => {
+      expect(goalPlanningObligation(withWorklist([
+        worklistPlan(placement('working', 'none'), 'busy'),
+        worklistPlan(placement('owner-walled', 'none'), 'walled'),
+        worklistPlan(placement('terminal', 'none'), 'finished'),
+      ]))).toMatchObject({ status: 'satisfied' });
+    });
+  });
+  it('accepts an explicitly empty map for no-eligible-work', () => {
+    const none = input('no-eligible-work');
+    known(none).review!.coverage = [];
+    expect(goalPlanningObligation(none)).toMatchObject({ status: 'satisfied' });
   });
   it('reviews the standing frontier instead of equating terminal plans with goal completion', () => {
     const value = input(); const state = known(value);
@@ -272,6 +344,8 @@ function portfolio(worklist: GoalPortfolioBrief['worklist'], degradedReasons: st
       unmeasuredPricedSpend: false,
       spentCentsAt: '2026-09-05T19:55:00.000Z',
       spentCentsSource: 'goal-lineage-rollup',
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
       budgetWindowSec: null,
     },
     tripwires: [],
@@ -306,6 +380,8 @@ function launch(overrides: Partial<GoalLaunchResolution> = {}): GoalLaunchResolu
       unmeasuredPricedSpend: false,
       spentCentsAt: '2026-09-05T19:55:00.000Z',
       spentCentsSource: 'goal-lineage-rollup',
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
     },
     refusal: null,
     degraded: false,
@@ -472,7 +548,7 @@ describe('turn-start sink fit for a due placement row', () => {
         status: 'known', value: { portfolio: portfolio([plan]), launch: launch(), alert: null, evidenceRef: 'placement:fixture' },
       } },
       independentVerification: [{ ...base, sourceGeneration: LIVE_GENERATION, planSlug: SLUG, read: { status: 'known', value: {
-        gate: { buildProvenance: { sha: null, version: 'test' }, satisfied: false, code: 'acceptance_bar_contract_not_ready' as never,
+        gate: { satisfied: false, code: 'acceptance_bar_contract_not_ready' as never,
           message: 'refused', rubricId: 'acceptance-plan-a', gradedBy: null },
         evidenceRef: 'gate:acceptance_bar_contract_not_ready', reviewAgeMs: 3_600_000, gradeable: true,
       } } }],
@@ -695,6 +771,8 @@ describe('plan placement preserves canonical launch evidence', () => {
               unmeasuredPricedSpend: false,
               spentCentsAt: null,
               spentCentsSource: null,
+              interactiveUsageFreshnessStatus: null,
+              interactiveUsageLastIngestedAtMs: null,
             },
             degraded: true,
             degradedReasons: ['budget ceiling not enforced — no platform spend snapshot'],
@@ -791,6 +869,67 @@ describe('plan placement preserves canonical launch evidence', () => {
     expect(result).toMatchObject({ status: 'not-applicable', applicableDemand: 0 });
     expect(result.action).toBeUndefined();
   });
+
+  describe('owner-walled plans create no placement demand (WI-10005657)', () => {
+    const wall = { kind: 'owner' as const, itemIds: ['P-003'] };
+    const walled = (slug = 'plan-a') => worklistPlan(placement('owner-walled', 'none', { wall }), slug);
+    const observe = (worklist: GoalPortfolioBrief['worklist'], alert: ReturnType<typeof planAlert> | null = null) =>
+      planPlacementObligation(planInput(knownPlacement({
+        portfolio: portfolio(worklist), launch: launch(), alert, evidenceRef: 'cohort:owner-walled',
+      })));
+
+    it('treats a worklist of only owner-walled plans as zero demand with no launch mandate', () => {
+      const result = observe([walled()]);
+      expect(result).toMatchObject({ status: 'not-applicable', applicableDemand: 0 });
+      expect(result.episode).toBe(`owner-walled:${base.sourceGeneration}`);
+      expect(result.reason).toContain('plan:papercusp/plan-a (P-003)');
+      expect(result.action).toBeUndefined();
+    });
+
+    it('keeps the wall quiet when the cohort watchdog alert names the walled plan', () => {
+      // The watchdog legitimately sees an unstaffed started plan; the wall is the more
+      // specific writer, so this must neither conflict nor re-mandate a launch.
+      const result = observe([walled()], planAlert('started-plan-no-live-targeting-fleet'));
+      expect(result).toMatchObject({ status: 'not-applicable', applicableDemand: 0 });
+      expect(result.measurementFailure).toBeUndefined();
+      expect(result.action).toBeUndefined();
+    });
+
+    it('does not let a wall starve a later eligible plan, and does not count the wall as its demand', () => {
+      const laterLaunch = placement('unplaced', 'launch-plan-fleet', {
+        reconciliation: {
+          consistent: false,
+          action: 'launch-plan-fleet',
+          reason: 'canonical repair: launch-plan-fleet',
+          toolCall: {
+            tool: 'fleet:launch-on-plan',
+            args: { name: 'plan-b-fleet', plan: 'plan-b', harness: 'papercusp', leader: 'spawn', headless: true },
+          },
+        },
+      });
+      const result = observe([walled('plan-a'), worklistPlan(laterLaunch, 'plan-b')],
+        planAlert('started-plan-no-live-targeting-fleet'));
+      expect(result).toMatchObject({
+        status: 'due',
+        applicableDemand: 1,
+        action: { tool: 'fleet:launch-on-plan', args: { plan: 'plan-b' } },
+      });
+      expect(result.measurementFailure).toBeUndefined();
+    });
+
+    it('CONTROL: the same plan without the wall is still demand, and its alert still conflicts', () => {
+      // Positive controls — without these the three tests above would also pass if
+      // every `blocked`/`working` plan were silently treated as walled.
+      const blocked = observe([worklistPlan(placement('blocked', 'resolve-plan-blockers'))]);
+      expect(blocked.applicableDemand).toBe(1);
+      expect(blocked.episode).not.toMatch(/^owner-walled:/);
+      expect(blocked.status).not.toBe('not-applicable');
+      expect(observe([worklistPlan(placement('working', 'none')), worklistPlan(placement('unplaced', 'launch-plan-fleet'), 'plan-b')],
+        planAlert('started-plan-no-live-targeting-fleet'))).toMatchObject({
+        status: 'unknown', measurementFailure: { code: 'plan-placement-writer-conflict' },
+      });
+    });
+  });
 });
 
 describe('frozen provider matrix: owner reporting (6 opportunities)', () => {
@@ -864,7 +1003,7 @@ describe('frozen provider matrix: independent verification (6 opportunities)', (
     // review-routing-through-relevance-router-2026-09-26 D-001: plans:set-plan-status
     // → shipped IS the recruiter. The action must name that call so a reader does
     // not pick a grader off coord:presence and message it directly.
-    for (const code of ['acceptance_ungraded', 'self_graded_only'] as const) {
+    for (const code of ['acceptance_ungraded', 'self_graded_only', 'independent_verification_missing'] as const) {
       const action = independentVerificationObligation(verifyInput(known(gate(false, code)))).action;
       expect(action).toMatchObject({
         kind: 'delegate',
@@ -902,7 +1041,13 @@ describe('frozen provider matrix: independent verification (6 opportunities)', (
     // Without this, a Record that somehow enumerated nothing would make every
     // assertion below pass VACUOUSLY — the it.each would simply run zero cases.
     expect(ownershipCodes.length).toBeGreaterThanOrEqual(20);
-    expect(ownershipCodes.filter(([, owner]) => owner === 'grader')).toHaveLength(2);
+    // WI-6554700010008529: independent_verification_missing joined acceptance_ungraded and
+    // self_graded_only — a recruited grader is the D-005 independent verifier.
+    expect(ownershipCodes.filter(([, owner]) => owner === 'grader').map(([code]) => code).sort()).toEqual([
+      'acceptance_ungraded',
+      'independent_verification_missing',
+      'self_graded_only',
+    ]);
   });
 
   it.each(ownershipCodes)('%s (%s) routes by ownership, and only a grader gap delegates', (code, owner) => {
@@ -976,7 +1121,6 @@ describe('shared agenda composition', () => {
             status: 'known',
             value: {
               gate: {
-                buildProvenance: { sha: null, version: 'test' },
                 satisfied: false,
                 code: 'acceptance_rubric_missing',
                 message: 'author the rubric',
@@ -1042,6 +1186,19 @@ describe('frozen provider matrix: waiting-on (P-011)', () => {
     // A hand-retyped key does not rendezvous — so the key must survive the hop
     // into evidence too, where a successor recovers it.
     expect(row!.evidence[0]!.ref).toBe('event-await:work-item:done:WI-10002222');
+  });
+
+  it("does not report this session's standing inbox-wake as a blocking dependency", () => {
+    const rows = waitingOnObligations(
+      waitingInput({
+        status: 'known',
+        value: [awaitRow({ key: inboxWakeKey(base.ownerId), timeoutAt: null })],
+      }),
+    );
+
+    expect(rows.every((row) => row.status !== 'blocked')).toBe(true);
+    expect(rows.map((row) => formatAgentObligationLine(row, 'action')).join('\n'))
+      .not.toContain(`[BLOCKED] Awaiting ${inboxWakeKey(base.ownerId)}`);
   });
 
   it('ranks a SILENTLY-expiring await above a waking one and says so in the title', () => {
@@ -1128,5 +1285,107 @@ describe('frozen provider matrix: waiting-on (P-011)', () => {
     expect(new Set(rows.map((row) => row.episode)).size).toBe(2);
     expect(rows[1]!.reason).toContain('no deadline');
     expect(rows[1]!.dueAt).toBeUndefined();
+  });
+});
+
+describe('frozen provider matrix: fleet staffing (P-005 / D-030)', () => {
+  type Evaluation = FleetUnderStaffedEvaluation;
+  const staffingInput = (read: FleetStaffingProviderInput['read']): FleetStaffingProviderInput => ({ ...base, read });
+  const evaluation = (over: Partial<Evaluation> = {}): Evaluation => ({
+    alert: true,
+    current: 0,
+    target: 3,
+    shortfall: 3,
+    held: false,
+    notHeldBecause: 'supervise-not-granted',
+    topUpRule: null,
+    repair: 'fleet:headcount-target { target, supervise:true }',
+    reason: '0 of 3 target worker(s) are productive (short 3).',
+    ...over,
+  });
+  const known = (fleetSlug: string, e: Evaluation | null, unknownReason?: string) =>
+    staffingInput({
+      status: 'known',
+      value: [{ fleetSlug, evaluation: e, ...(unknownReason ? { unknownReason } : {}) }],
+    });
+
+  it('reports a failed read as ONE unknown row, never as "leads no under-staffed fleet"', () => {
+    const rows = fleetStaffingObligations(staffingInput({ status: 'unknown', failure }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('unknown');
+    expect(rows[0]!.applicableDemand).toBe(0);
+    expect(rows[0]!.reason).toBe(failure.detail);
+    expect(rows[0]!.measurementFailure).toEqual(failure);
+  });
+
+  it('emits nothing when the session leads no active fleet', () => {
+    expect(fleetStaffingObligations(staffingInput({ status: 'known', value: [] }))).toEqual([]);
+  });
+
+  it('makes an unheld EMPTY fleet a high-priority due repair that names the fleet and the tool', () => {
+    const [row] = fleetStaffingObligations(known('fleet-empty', evaluation()));
+    expect(row!.family).toBe('fleet-staffing');
+    expect(row!.status).toBe('due');
+    expect(row!.priority).toBe('high');
+    expect(row!.applicableDemand).toBe(1);
+    expect(row!.title).toContain('fleet-empty');
+    expect(row!.title).toContain('short 3 of 3');
+    expect(row!.action).toMatchObject({ kind: 'repair', tool: 'fleet:headcount-target', targetRef: 'fleet:fleet-empty' });
+    expect(row!.evidence[0]!.ref).toBe('fleet:fleet-empty');
+  });
+
+  it('keeps a partly-staffed unheld fleet due, at normal priority', () => {
+    const [row] = fleetStaffingObligations(known('fleet-thin', evaluation({ current: 1, shortfall: 2 })));
+    expect(row!.status).toBe('due');
+    expect(row!.priority).toBe('normal');
+  });
+
+  it('stays due when whether the governor holds the fleet is UNKNOWN: nothing confirms a restore', () => {
+    const [row] = fleetStaffingObligations(known('fleet-unsure', evaluation({ held: null, notHeldBecause: null })));
+    expect(row!.status).toBe('due');
+  });
+
+  it('emits no row for a held fleet below target: the governor is already restoring it', () => {
+    expect(fleetStaffingObligations(known('fleet-held', evaluation({ held: true, notHeldBecause: null })))).toEqual([]);
+  });
+
+  it('emits no row for a fleet at target', () => {
+    expect(
+      fleetStaffingObligations(known('fleet-full', evaluation({ alert: false, current: 3, shortfall: 0 }))),
+    ).toEqual([]);
+  });
+
+  it('titles a zero-worker fleet with no target by that cause, not by a shortfall', () => {
+    const [row] = fleetStaffingObligations(
+      known('fleet-untargeted', evaluation({ target: null, shortfall: null, notHeldBecause: 'no-target' })),
+    );
+    expect(row!.title).toBe('Fleet fleet-untargeted has no workers and no headcount target');
+  });
+
+  it('makes an unmeasured fleet an UNKNOWN row that points at the brief, not a due repair', () => {
+    const [row] = fleetStaffingObligations(known('fleet-dark', null, 'the live roster could not be read'));
+    expect(row!.status).toBe('unknown');
+    expect(row!.applicableDemand).toBe(0);
+    expect(row!.reason).toBe('the live roster could not be read');
+    expect(row!.action).toMatchObject({ tool: 'fleet:leader-brief', targetRef: 'fleet:fleet-dark' });
+  });
+
+  it('keys the episode on the fleet and its cause, so a re-render is the same obligation and a new cause is not', () => {
+    const first = fleetStaffingObligations(known('fleet-a', evaluation()))[0]!;
+    const again = fleetStaffingObligations({
+      ...known('fleet-a', evaluation()),
+      sourceGeneration: 'rev-43',
+      observedAt: '2026-09-05T20:30:00.000Z',
+    })[0]!;
+    const newCause = fleetStaffingObligations(known('fleet-a', evaluation({ notHeldBecause: 'top-up-rule' })))[0]!;
+    expect(again.episode).toBe(first.episode);
+    expect(again.id).toBe(first.id);
+    expect(newCause.episode).not.toBe(first.episode);
+  });
+
+  it('reaches the shared agenda as a due row', () => {
+    const agenda = buildAgentObligationAgenda({ fleetStaffing: known('fleet-agenda', evaluation()) }, NOW);
+    expect(agenda.primary[0]?.family).toBe('fleet-staffing');
+    expect(agenda.evaluations.map((entry) => entry.status)).toEqual(['due']);
   });
 });

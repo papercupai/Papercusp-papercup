@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-007 e2e (ticket-integrations suite leg, isolated Tauri desktop): Settings → Integrations lists Linear and Asana as connectable; a source updates live, its config writes, /admin/admission shows it",
+  "framework": "shell",
+  "command": [
+    "env",
+    "PAPERCUSP_SID=system-gui-e2e-surface-scheduled-run",
+    "TAURI_SURFACE_VERIFY_SUITE_LEGS=ticket-integrations:1:scripts/tauri-surface-verify-ticket-integrations.sh",
+    "bash",
+    "scripts/tauri-surface-verify-suite.sh"
+  ],
+  "startedAt": "2026-10-06T15:14:10.000Z",
+  "finishedAt": "2026-10-06T15:18:59.000Z",
+  "exitCode": 0,
+  "summary": "The registered ticket-integrations leg of scripts/tauri-surface-verify-suite.sh ran through scripts/verify-tauri-headless.sh with VERIFY_TAURI_ISOLATED_DB=1 (throwaway migrated Postgres, workspace verify-tauri-isolated-90), under the identity the daily scheduled run now uses (WI-10006730). Verifier run 20261006T151413Z-2808415 ended HARNESS_RESULT verdict=pass (passed=3 failed=0); the leg printed P007_TAURI_SURFACE_VERIFY_OK leg=ticket-integrations; the suite printed P008_TAURI_SURFACE_SUITE_OK legs=1 and exited 0. All six steps passed in the real desktop webview: page and nav link, both providers listed with Connect buttons plus a negative control, a live-inserted source appearing without a reload, the What-syncs panel calling the real containers route, a config PATCH clearing the missing-config line live and persisting, and the /admin/admission Ticket sources row linking back. Screenshots: /tmp/pcv-ticket-integrations-20261006T151829Z/{integrations,admin-ticket-sources}.png. Verifier evidence: ~/.local/state/verification-harness/verify-tauri-headless/20261006T151413Z-2808415.",
+  "assertions": [
+    { "id": "page-renders-from-registry", "passed": true, "evidence": "VERIFY_STEP: page rendered at /settings/integrations; VERIFY_STEP: settings nav links to the page; no [role=alert] on the page." },
+    { "id": "every-registered-ticket-provider-listed", "passed": true, "evidence": "VERIFY_STEP: providers rendered: [\"asana\",\"github-issues\",\"linear\"] (one [data-provider] card per registered OAuth provider)." },
+    { "id": "linear-and-asana-connectable", "passed": true, "evidence": "VERIFY_STEP: Connect Linear and Connect Asana offered (a button with each exact label exists)." },
+    { "id": "negative-control-unregistered-provider", "passed": true, "evidence": "VERIFY_STEP: negative control: an unregistered provider is not reported ([data-provider=\"not-a-registered-provider\"] reads false)." },
+    { "id": "source-appears-live", "passed": true, "evidence": "VERIFY_STEP: seeded source 724bf515-5747-4877-9e51-29dff3507e11; VERIFY_STEP: seeded source appeared live, without reload; row says: Needs teams and a harness to store tickets in before it can sync." },
+    { "id": "containers-route-fallback", "passed": true, "evidence": "VERIFY_STEP: URL state: ?source=724bf515-…; panel: Couldn't list this account's teams and projects: host.fetch: no access token for source … You can still enter ids below. Teams (ids, comma-separated)." },
+    { "id": "config-write-clears-missing-config-live", "passed": true, "evidence": "VERIFY_STEP: PATCH ok, missingConfig []; VERIFY_STEP: missing-config line cleared live; persisted config: {\"teamIds\": [\"team-verify\"], \"harnessSlug\": \"papercusp\", \"accountLabel\": \"Verify Org\"}." },
+    { "id": "admin-ticket-sources-row", "passed": true, "evidence": "VERIFY_STEP: admin Ticket sources row + Configure link ok (href /settings/integrations?source=<id>&panel=scope)." }
+  ],
+  "plan": "linear-asana-task-sync-2026-10-05",
+  "planItem": "P-007",
+  "specId": "AUTO-BAR-R-7-P-007",
+  "workItemId": "WI-10006367",
+  "evidencePlane": "tree",
+  "testLayer": "e2e",
+  "legScript": "scripts/tauri-surface-verify-ticket-integrations.sh",
+  "suiteScript": "scripts/tauri-surface-verify-suite.sh"
+}

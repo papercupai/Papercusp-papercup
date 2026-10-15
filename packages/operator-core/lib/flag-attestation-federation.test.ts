@@ -33,6 +33,7 @@ function attestation(label: string, pid: number): ProcessFlagAttestation {
       cacheAgeMs: null,
       ttlMs: 5_000,
       ttlRemainingMs: 0,
+      loadError: null,
     },
     process: {
       role: 'operator',

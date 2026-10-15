@@ -26,6 +26,9 @@ use std::sync::{Arc, Mutex};
 const NOTIF_HISTORY_CAP: usize = 50;
 /// Submitted command-palette lines retained for Up/Down recall this process.
 const PALETTE_HISTORY_CAP: usize = 50;
+/// pui-chat-first-ux D-029: from this share of the context window used, the
+/// footer's context field turns into a warning.
+pub const CONTEXT_WARN_USED_PERCENT: u8 = 80;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingSuTurn {
@@ -39,6 +42,25 @@ pub struct PendingSuTurn {
     pub command: Option<Value>,
     pub uncertain: bool,
     pub error: Option<String>,
+    /// pui-chat-first-ux P-026 / D-025: the `model[:effort]` spec picked in
+    /// /model for this turn. The engine applies it before running the turn;
+    /// `None` keeps the model the session already runs on.
+    pub model: Option<String>,
+    /// D-026: the approvals mode picked with /approvals or Shift+Tab for this
+    /// turn. `None` keeps the mode the session already runs in.
+    pub approvals: Option<String>,
+}
+
+/// `model[:effort]` with any effort suffix removed, the Rust twin of the
+/// server's `splitModelSpec` (agent-config-constants.ts): only a known effort
+/// level counts as a suffix, so `provider/model:tag` names keep their tag.
+pub fn spec_without_effort(spec: &str) -> &str {
+    // Same set as MODEL_EFFORT_LEVELS in agent-config-constants.ts.
+    const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+    match spec.rsplit_once(':') {
+        Some((model, effort)) if !model.is_empty() && EFFORTS.contains(&effort.to_ascii_lowercase().as_str()) => model,
+        _ => spec,
+    }
 }
 
 /// Fallback Cupboard kind order for legacy workers that do not return
@@ -50,6 +72,20 @@ pub const CUPBOARD_KINDS: [&str; 5] = ["all", "harness", "blueprint", "pack", "p
 /// appends one line per event (its sequence, the cursor and replay head it met,
 /// and the event itself, clipped). A replay/dedupe fault is otherwise invisible:
 /// the screen shows only the merged result (WI-10004184). Off by default.
+fn su_event_trace_body(event: &crate::su_session::SuSessionEvent) -> String {
+    let mut body = match event {
+        crate::su_session::SuSessionEvent::Transcript { phase, turn_id, role, channel, content, .. } =>
+            format!("Transcript phase={phase:?} role={role:?} turn={turn_id:?} channel={channel:?} content={content:?}"),
+        _ => format!("{event:?}"),
+    };
+    if body.len() > 600 {
+        let mut cut = 600;
+        while !body.is_char_boundary(cut) { cut -= 1; }
+        body.truncate(cut);
+    }
+    body
+}
+
 fn trace_su_event(
     event: &crate::su_session::SuSessionEvent,
     sequence: u64,
@@ -63,14 +99,7 @@ fn trace_su_event(
     else {
         return;
     };
-    let mut body = format!("{event:?}");
-    if body.len() > 600 {
-        let mut cut = 600;
-        while !body.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        body.truncate(cut);
-    }
+    let body = su_event_trace_body(event);
     let line = format!("seq={sequence} last={last_sequence} head={replay_head} {body}\n");
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         use std::io::Write;
@@ -101,12 +130,26 @@ pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 /// answers (P-021): sending a message opens setup, which offers the cloud path.
 pub const SETUP_DISCONNECTED_LABEL: &str =
     "not connected to an operator · send a message to open setup";
+/// Shared by the pending-launch status and the reviewed first-send guard.
+pub const SETUP_MODEL_UNAVAILABLE_NOTE: &str =
+    "Selected model is no longer available for this backend.";
 /// How long a chat-first quick start may wait behind the chat (the message
 /// echoed, "Starting Claude…" above it) before the setup form opens on the
 /// live reason (`App::chat_first_quiet_wait`, pui-chat-first-ux P-012).
 pub const CHAT_FIRST_QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+/// pui-chat-first-ux P-027 (G-11): how long a Ctrl+C keeps the exit armed.
+/// Claude Code and Codex both quit on a second Ctrl+C pressed soon after the
+/// first, and both show a "press Ctrl+C again" line in the meantime.
+pub const CHAT_CTRL_C_EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 pub const CHAT_DISCONNECTED_HINT: &str = "Not connected — press i and send a message to open setup, where l signs in to Papercusp cloud.";
 pub const SETUP_UNREACHABLE_NOTE: &str = "Nothing answered at that address. For a local setup, install and start the separate Papercusp Server package from your Papercusp release download page, then press r. The desktop app is optional; l signs in to cloud and h uses a remote host.";
+/// Setup's note when the operator answered earlier in this launch and has
+/// stopped answering (P-028, WI-10006466): it is most likely restarting, so
+/// installing anything is the wrong advice.
+pub const SETUP_STOPPED_ANSWERING_NOTE: &str = "The operator at that address answered earlier and has stopped answering; it may be restarting. Press r to try again.";
+/// How often a pending chat-first quick start re-checks an operator that
+/// stopped answering, inside `CHAT_FIRST_QUIET_WAIT`.
+pub const CHAT_FIRST_IDENTITY_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What the run-loop should do after handling one event.
 /// (No `Eq`: `VoiceChan(VoiceCmd)` carries a `serde_json::Value` for prefs
@@ -347,6 +390,8 @@ pub enum Action {
         chat_id: String,
         load_token: u64,
     },
+    /// Re-fetch only this pot's conversation list for /resume (P-027 G-12).
+    RefreshAgentChatList { harness: String },
     /// Abort the local native-chat stream; the dropped transport propagates
     /// cancellation to the operator and the bubble becomes retryable.
     CancelChat,
@@ -2069,6 +2114,16 @@ pub struct App {
     /// `pui workbench`. Unlike `pinned` this is not a dock pane: Context
     /// still follows the bound chat rather than the Sentinel roster.
     pub chat_first: bool,
+    /// This chat is the main pane of the bare-`pui` chat workbench (P-030),
+    /// with the side panes beside it. Its footer then names the key that hides
+    /// and shows them (D-033), since nothing else on screen does.
+    pub chat_workbench_pane: bool,
+    /// This `pui hud` is the chat workbench's side pane (pui-chat-first-ux
+    /// D-034, `--side-pane`). The side column is far narrower than the full
+    /// board's 80×20 minimum, so below it the pane draws the compact summary
+    /// ([`App::compact_side`]) and blocks only below
+    /// `ui::COMPACT_MIN_COLS`×`ui::COMPACT_MIN_ROWS`.
+    pub side_pane: bool,
     /// The directory `pui` was started in (pui-chat-first-ux P-010). The
     /// default chat's `/resume` lists only conversations started here, the
     /// way Claude Code and Codex scope resume to the project directory.
@@ -2207,6 +2262,23 @@ pub struct App {
     /// quiet wait (`chat_first_quiet_wait`, P-012): past
     /// `CHAT_FIRST_QUIET_WAIT` the setup form opens on the live reason.
     pub chat_first_autostart_since: Option<std::time::Instant>,
+    /// The operator answered an identity check at least once in this launch.
+    /// A later "nothing answered" is then an operator that stopped answering
+    /// (most often restarting), not a computer without Papercusp (P-028,
+    /// WI-10006466): the quick start keeps waiting and retries instead of
+    /// opening setup on the first failed check.
+    pub operator_answered: bool,
+    /// When the pending chat-first quick start next re-checks an operator
+    /// that stopped answering (`on_tick`, `CHAT_FIRST_IDENTITY_RETRY`).
+    pub chat_first_identity_retry_at: Option<std::time::Instant>,
+    /// pui-chat-first-ux P-027 (G-11): when a Ctrl+C in the chat-first message
+    /// box last armed the exit. A second Ctrl+C inside
+    /// `CHAT_CTRL_C_EXIT_WINDOW` quits; any other key disarms it.
+    pub chat_ctrl_c_armed: Option<std::time::Instant>,
+    /// pui-chat-first-ux P-027 (G-3): when a first Esc on a chat-first draft
+    /// armed the clear. A second Esc inside `CHAT_CTRL_C_EXIT_WINDOW` clears
+    /// the draft (Claude Code's double Esc); any other key disarms it.
+    pub chat_esc_armed: Option<std::time::Instant>,
     /// The operator's project list has answered at least once. Until then an
     /// unknown default project means "not loaded yet", not "no such project".
     pub harnesses_loaded: bool,
@@ -2223,6 +2295,19 @@ pub struct App {
     /// Optional launch-time posture for the next fresh SU session. The menu is
     /// projected from the server's canonical mode registry.
     pub chat_mode: Option<String>,
+    /// pui-chat-first-ux P-026 / D-025: a `model[:effort]` picked in /model
+    /// for a live bound session. It rides on the next owner turn (taken into
+    /// `PendingSuTurn.model` at dispatch) and the footer names it until then.
+    pub su_next_model: Option<String>,
+    /// WI-10006644: the pending turn whose send is retrying a busy operator.
+    /// Only shown while it names the current pending turn.
+    pub su_operator_busy: Option<String>,
+    /// D-026: an approvals mode picked with /approvals or Shift+Tab. It rides
+    /// on the next owner turn (taken into `PendingSuTurn.approvals`).
+    pub su_next_approvals: Option<String>,
+    /// D-028: the owner just answered a tool approval No, so the empty message
+    /// box asks what the engine should do instead, until the next message.
+    pub su_tell_instead: bool,
     /// Fleet/seat context inherited from the PUI process launch. A remote PUI
     /// uses these on every fresh SU session so bootstrap-su consumes the same
     /// delegated seat a remote psu launch would.
@@ -2613,6 +2698,9 @@ pub struct App {
     /// one half of this behaviour's falsifier, and this representation is what
     /// makes it unfalsifiable-by-construction rather than merely untested.
     pub chat_undo: Vec<String>,
+    /// Large pastes shown as `[Pasted text #k +N lines]` in the draft and
+    /// joined back in when the turn is sent (P-027 G-7).
+    pub paste_chips: crate::paste_chips::PasteChips,
     pub chat_scroll: u16,
     pub chat_streaming: bool,
     /// When the running turn started running (pui-chat-first-ux P-019). Set on
@@ -2715,6 +2803,9 @@ pub struct App {
     /// Enter did nothing — for a pot that had them (P-005 review, P-007).
     /// Keyed by harness so a pot switch reads as loading again.
     pub agent_chats_loaded_for: Option<String>,
+    /// Why the last conversation-list fetch for `harness` failed (P-027 G-12),
+    /// shown in /resume instead of an endless "Loading…".
+    pub agent_chats_list_error: Option<String>,
     /// advSessionIds this process has already issued an adopt/reattach for.
     ///
     /// P-010 requires restart reconciliation to "prevent duplicate panes /
@@ -2859,6 +2950,8 @@ impl App {
             view_state_restore_pending: true,
             pinned: None,
             chat_first: false,
+            chat_workbench_pane: false,
+            side_pane: false,
             chat_details: None,
             chat_tools_expanded: false,
             chat_slash_selected: 0,
@@ -2908,12 +3001,20 @@ impl App {
             require_session_setup: false,
             chat_first_autostart: false,
             chat_first_autostart_since: None,
+            operator_answered: false,
+            chat_first_identity_retry_at: None,
+            chat_ctrl_c_armed: None,
+            chat_esc_armed: None,
             harnesses_loaded: false,
             session_setup_accepted: false,
             chat_model: None,
             chat_effort: None,
             chat_account: None,
             chat_mode: None,
+            su_next_model: None,
+            su_operator_busy: None,
+            su_next_approvals: None,
+            su_tell_instead: false,
             su_launch_fleet: None,
             su_launch_seat: None,
             account_rows: Vec::new(),
@@ -3064,6 +3165,7 @@ impl App {
             chat_history_idx: None,
             chat_draft: String::new(),
             chat_undo: Vec::new(),
+            paste_chips: Default::default(),
             chat_scroll: 0,
             chat_streaming: false,
             chat_turn_started: None,
@@ -3093,6 +3195,7 @@ impl App {
             su_launch_refusal: None,
             su_session_inventory: Vec::new(),
             agent_chats_loaded_for: None,
+            agent_chats_list_error: None,
             launch_cwd: crate::su_session::launch_cwd(),
             su_adopted_sessions: BTreeSet::new(),
             su_command_counter: 0,
@@ -3320,6 +3423,11 @@ impl App {
             }
         }
         self.finish_chat_turn();
+        if !pending_draft {
+            // P-025: an accepted turn failed; show why under its prompt. A
+            // pending draft never reached the transcript, so the note covers it.
+            crate::models::ChatMessage::push_turn_error(&mut self.chat_messages, message);
+        }
         self.su_active_command_id = None;
         self.last_error = Some(message.to_string());
         self.session_note = Some(if !pending_draft {
@@ -3349,6 +3457,9 @@ impl App {
             .filter(|m| {
                 !(m.streaming
                     || m.role == "undelivered"
+                    // P-025: a failed-turn row is pui's record of an engine
+                    // refusal, never a message either side sent.
+                    || m.role == "error"
                     || m.role == "assistant" && m.content.trim().is_empty())
             })
             .map(|m| (m.role.clone(), m.content.clone()))
@@ -3759,14 +3870,20 @@ impl App {
                     entry.backend,
                 )
             })?;
-        self.su_adopted_sessions
-            .insert(adv_session_id)
-            .then(|| Action::AttachSuSession {
-                harness: self.harness.clone(),
-                chat_id,
-                adv_session_id,
-                backend,
-            })
+        if !self.su_adopted_sessions.insert(adv_session_id) {
+            return None;
+        }
+        // WI-10006770: the engine is the adopted session's, as on the picker
+        // path. Without this a refused restore of a Codex conversation fell
+        // back to the operator's configured default and read "Claude could
+        // not start".
+        self.su_backend = Some(backend);
+        Some(Action::AttachSuSession {
+            harness: self.harness.clone(),
+            chat_id,
+            adv_session_id,
+            backend,
+        })
     }
 
     pub fn reset_agent_chat_binding(&mut self) {
@@ -4104,6 +4221,13 @@ impl App {
                             .su_pending_turn
                             .as_ref()
                             .is_some_and(|pending| pending.error.is_none()) => {}
+                    // P-025: Claude's engine reports `waiting-for-owner` while
+                    // its approval or question card is open and `running` once
+                    // it closes. That is a pause inside the turn: ending the
+                    // turn here stamped "Worked for" under the waiting tool row
+                    // and could send a queued draft into the running turn.
+                    crate::su_session::SuSessionLifecycleState::WaitingForOwner
+                        if self.card_state.focused().is_some() => {}
                     crate::su_session::SuSessionLifecycleState::Ready
                     | crate::su_session::SuSessionLifecycleState::WaitingForOwner
                     | crate::su_session::SuSessionLifecycleState::Interrupted
@@ -4232,7 +4356,12 @@ impl App {
                             } else if answered {
                                 ToolOutcome::Ok
                             } else {
-                                ToolOutcome::Failed("SU-session tool failed".into())
+                                // P-025: the ✗ on the row already says it
+                                // failed and the `⎿` result line carries the
+                                // reason (stock Claude/Codex show exactly
+                                // that). A fixed sentence here was an extra,
+                                // internal-jargon line under every failure.
+                                ToolOutcome::Failed(String::new())
                             };
                             break;
                         }
@@ -4297,6 +4426,9 @@ impl App {
                     descriptor.backend_extension = extension;
                 }
             }
+            // D-031: a newer operator's event type. Its sequence was applied
+            // above; the body means nothing to this PUI.
+            crate::su_session::SuSessionEvent::Unrecognized { .. } => {}
             crate::su_session::SuSessionEvent::Error {
                 message,
                 recoverable,
@@ -4319,6 +4451,12 @@ impl App {
                         // The failed turn was already accepted: nothing to
                         // retry, and the next message goes to this session.
                         self.finish_chat_turn();
+                        // P-025: say what failed under the prompt, as stock
+                        // CLIs do; the status line alone is hidden chat-first.
+                        crate::models::ChatMessage::push_turn_error(
+                            &mut self.chat_messages,
+                            &message,
+                        );
                         self.su_active_command_id = None;
                         self.last_error = Some(format!("SU-session: {message}"));
                         self.session_note = Some(
@@ -4781,6 +4919,65 @@ impl App {
         Action::CancelChat
     }
 
+    /// pui-chat-first-ux P-027 (G-11): Ctrl+C in the chat-first message box
+    /// works the way it does in Claude Code and Codex instead of quitting at
+    /// once and losing the draft. A draft is cleared first; it stays in ↑
+    /// history, so it is never lost. With an empty box a running reply is
+    /// stopped. Otherwise the first press arms the exit and only a second
+    /// press inside `CHAT_CTRL_C_EXIT_WINDOW` quits. Clearing a draft arms the
+    /// exit too, so Ctrl+C twice still leaves pui, as in Codex.
+    fn chat_first_ctrl_c(&mut self) -> Action {
+        if !self.chat_input.is_empty() {
+            let draft = self.chat_input.clone();
+            self.chat_history_push(&draft);
+            self.chat_clear_input();
+            self.chat_ctrl_c_armed = Some(std::time::Instant::now());
+            return Action::Render;
+        }
+        if self.chat_streaming {
+            self.chat_ctrl_c_armed = None;
+            return self.interrupt_chat_turn();
+        }
+        if self.chat_ctrl_c_exit_armed() {
+            self.should_quit = true;
+            return Action::Quit;
+        }
+        self.chat_ctrl_c_armed = Some(std::time::Instant::now());
+        Action::Render
+    }
+
+    /// pui-chat-first-ux P-027 (G-3): Esc in the chat-first box with nothing
+    /// running. An empty box ignores it. A draft needs a second Esc inside the
+    /// window to clear (Claude Code's double Esc), so one stray Esc never
+    /// loses typing; the cleared draft stays in ↑ history.
+    fn chat_first_esc(&mut self) -> Action {
+        if self.chat_input.is_empty() {
+            self.chat_esc_armed = None;
+            return Action::Render;
+        }
+        if self.chat_esc_clear_armed() {
+            let draft = self.chat_input.clone();
+            self.chat_history_push(&draft);
+            self.chat_clear_input();
+            self.chat_esc_armed = None;
+            return Action::Render;
+        }
+        self.chat_esc_armed = Some(std::time::Instant::now());
+        Action::Render
+    }
+
+    /// A first Esc on a draft has armed the clear and its window is open.
+    pub(crate) fn chat_esc_clear_armed(&self) -> bool {
+        self.chat_esc_armed
+            .is_some_and(|armed| armed.elapsed() < CHAT_CTRL_C_EXIT_WINDOW)
+    }
+
+    /// A Ctrl+C has armed the exit and its window is still open.
+    pub(crate) fn chat_ctrl_c_exit_armed(&self) -> bool {
+        self.chat_ctrl_c_armed
+            .is_some_and(|armed| armed.elapsed() < CHAT_CTRL_C_EXIT_WINDOW)
+    }
+
     fn chat_clear_input(&mut self) {
         self.chat_input.clear();
         self.chat_cursor = 0;
@@ -4815,6 +5012,77 @@ impl App {
                 self.show_help = true;
                 Action::Render
             }
+            // P-026: the same pickers as `m`/`e`; a running conversation takes
+            // the pick from its next turn (commit_session_picker).
+            SlashKind::Model => {
+                self.open_model_picker();
+                Action::Render
+            }
+            SlashKind::Effort => {
+                self.open_effort_picker();
+                Action::Render
+            }
+            // P-025: the `b` picker; a bound conversation shows every row
+            // disabled with "Open a new conversation to change it" (/clear).
+            SlashKind::Backend => {
+                self.open_backend_picker();
+                Action::Render
+            }
+            SlashKind::Status => {
+                let line = self.chat_status_report();
+                self.chat_toast("info", line);
+                Action::Render
+            }
+            SlashKind::Approvals => self.open_approvals_picker(),
+            // pui-chat-first-ux P-027 (G-4): a new conversation, as in Claude
+            // Code and Codex. The running engine is ended the way /exit ends
+            // it, so the old conversation stays resumable from /resume; the
+            // next Enter starts a fresh one on the defaults.
+            SlashKind::Clear => {
+                let end = self.su_session_running().then(|| {
+                    self.su_session_control(crate::su_session::SuSessionControl::End {
+                        reason: Some("owner started a new conversation (/clear)".into()),
+                    })
+                });
+                let had_conversation = self.agent_chat_id.is_some();
+                self.reset_agent_chat_binding();
+                if had_conversation {
+                    self.chat_toast(
+                        "info",
+                        "New conversation. The last one is in /resume.".into(),
+                    );
+                }
+                end.unwrap_or(Action::Render)
+            }
+            // P-027 (G-4): Claude takes "/compact" as a message in the same
+            // session (Agent SDK slash commands). Codex and OMP compact on
+            // their own near the limit; pui says so instead of sending text the
+            // engine would read as a question.
+            SlashKind::Compact => {
+                if !self.su_session_running() {
+                    self.chat_toast("info", "There is no conversation to compact yet.".into());
+                    return Action::Render;
+                }
+                let backend = self.su_session.as_ref().map(|s| s.backend());
+                if backend != Some(crate::su_session::SuSessionBackend::Claude) {
+                    let engine = backend
+                        .map(|b| b.label())
+                        .unwrap_or("This engine");
+                    self.chat_toast(
+                        "info",
+                        format!(
+                            "{engine} compacts the conversation on its own near its limit; pui cannot start it by hand."
+                        ),
+                    );
+                    return Action::Render;
+                }
+                if self.chat_streaming {
+                    self.chat_toast("info", "Wait for the reply to finish, then /compact.".into());
+                    return Action::Render;
+                }
+                self.dispatch_chat_turn("/compact".into())
+                    .unwrap_or(Action::Render)
+            }
             SlashKind::Details => {
                 self.chat_details = Some(!self.chat_details_visible());
                 Action::Render
@@ -4847,8 +5115,22 @@ impl App {
             // single-session chat does not have: its Enter ran
             // `zellij action new-pane` and failed "There is no active session!".
             SlashKind::Resume if self.chat_first => {
+                // P-027 G-12: if the list has not arrived (a failed or lost
+                // startup fetch), /resume fetches it again; the picker shows
+                // "Loading…" until it lands or fails.
+                let loaded =
+                    self.agent_chats_loaded_for.as_deref() == Some(self.harness.as_str());
+                if !loaded {
+                    self.agent_chats_list_error = None;
+                }
                 self.open_conversation_picker();
-                Action::Render
+                if loaded {
+                    Action::Render
+                } else {
+                    Action::RefreshAgentChatList {
+                        harness: self.harness.clone(),
+                    }
+                }
             }
             SlashKind::Resume => {
                 self.session_switcher = Some(SessionSwitcher {
@@ -4896,11 +5178,19 @@ impl App {
             return Action::Render;
         }
         self.chat_leave_history_for_edit();
-        let previous = self.chat_input[..self.chat_cursor]
-            .char_indices()
-            .next_back()
-            .map(|(offset, _)| offset)
-            .unwrap_or(0);
+        // A paste chip goes whole (P-027 G-7): eating only its `]` would leave
+        // a label that no longer expands and reads like real text.
+        let previous = match self
+            .paste_chips
+            .chip_len_ending(&self.chat_input[..self.chat_cursor])
+        {
+            Some(len) => self.chat_cursor - len,
+            None => self.chat_input[..self.chat_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(offset, _)| offset)
+                .unwrap_or(0),
+        };
         self.chat_input
             .replace_range(previous..self.chat_cursor, "");
         self.chat_cursor = previous;
@@ -4914,7 +5204,11 @@ impl App {
             return Action::Render;
         };
         self.chat_leave_history_for_edit();
-        let end = self.chat_cursor + ch.len_utf8();
+        let len = self
+            .paste_chips
+            .chip_len_starting(&self.chat_input[self.chat_cursor..])
+            .unwrap_or(ch.len_utf8());
+        let end = self.chat_cursor + len;
         self.chat_input.replace_range(self.chat_cursor..end, "");
         self.chat_cursor_input_len = self.chat_input.len();
         Action::Render
@@ -5011,7 +5305,14 @@ impl App {
         // typed line with an arbitrary amount of text in one keystroke, and it
         // is the one composer edit a human cannot walk back with Backspace.
         self.chat_snapshot_for_undo();
-        self.chat_insert_text(text);
+        // P-027 G-7: a large paste becomes a one-line chip, as in Claude Code,
+        // instead of filling the screen; `dispatch_chat_turn` sends the text.
+        if crate::paste_chips::PasteChips::should_collapse(text) {
+            let label = self.paste_chips.collapse(text);
+            self.chat_insert_text(&label);
+        } else {
+            self.chat_insert_text(text);
+        }
     }
 
     /// Stash the current composer contents so the next `Ctrl-Z` can restore it.
@@ -5096,6 +5397,12 @@ impl App {
     /// reads the conversation's persisted class (P-013) and is not reproducible
     /// by eye at a second call site.
     fn dispatch_chat_turn(&mut self, draft: String) -> Option<Action> {
+        // An acknowledgement toast describes the owner's last action ("Your
+        // next message starts a Codex conversation."); once a message goes out
+        // it is stale, and pui toasts never expire on their own (D-027).
+        if self.toast_is_ack {
+            self.toast = None;
+        }
         if self.require_session_setup
             && !self.session_setup_accepted
             && self.agent_chat_id.is_none()
@@ -5105,8 +5412,9 @@ impl App {
                 return Some(self.chat_first_quick_start(draft));
             }
             self.open_session_setup();
+            let message = self.paste_chips.expand(&draft);
             if let Some(setup) = self.session_setup.as_mut() {
-                setup.message = draft;
+                setup.message = message;
             }
             return Some(Action::CheckSessionSetup);
         }
@@ -5128,7 +5436,11 @@ impl App {
                 self.chat_input = pending.draft.clone();
             }
         }
-        let submitted = self.attachments.attach_to_prompt(&draft);
+        // P-027 G-7: paste chips stay in the draft (composer, history, undo);
+        // the engine gets the pasted text.
+        let submitted = self
+            .attachments
+            .attach_to_prompt(&self.paste_chips.expand(&draft));
         if submitted.trim().is_empty() && !reconciling {
             return None;
         }
@@ -5173,7 +5485,12 @@ impl App {
                 command: None,
                 uncertain: false,
                 error: None,
+                // P-026: the /model pick rides on this turn. A refusal keeps it
+                // on the pending turn, so a retry asks for the same model.
+                model: self.su_next_model.take(),
+                approvals: self.su_next_approvals.take(),
             });
+            self.su_tell_instead = false;
             if clear_composer {
                 self.chat_clear_input();
             }
@@ -5342,11 +5659,38 @@ impl App {
     /// input hold both read this, so they cannot disagree. A pinned dock pane
     /// is sized by its layout, never by the owner, so it never blocks. Nor does
     /// chat-first: one wrapped transcript and a composer have no side rails to
-    /// clip, so it stays usable in any terminal `claude` would run in.
+    /// clip, so it stays usable in any terminal `claude` would run in. The
+    /// chat workbench's side pane blocks only below the compact minimum
+    /// (D-034); between that and the full minimum it draws the compact view.
     pub fn too_small(&self) -> bool {
-        self.pinned.is_none()
+        if self.pinned.is_some() || self.chat_first {
+            return false;
+        }
+        let (cols, rows) = self.viewport;
+        if self.side_pane {
+            crate::ui::too_small_for_compact(cols, rows)
+        } else {
+            crate::ui::too_small(cols, rows)
+        }
+    }
+
+    /// Whether the side pane is showing its compact summary (D-034): a
+    /// `--side-pane` HUD below the full board's minimum but at or above the
+    /// compact one. The summary is read-only, so input is held while it shows
+    /// ([`App::input_held`]), exactly as under the too-small view: no key
+    /// changes a board the owner cannot see.
+    pub fn compact_side(&self) -> bool {
+        self.side_pane
+            && self.pinned.is_none()
             && !self.chat_first
+            && !self.too_small()
             && crate::ui::too_small(self.viewport.0, self.viewport.1)
+    }
+
+    /// Input is held (all but quit) while the screen is the too-small view or
+    /// the side pane's read-only compact summary.
+    pub fn input_held(&self) -> bool {
+        self.too_small() || self.compact_side()
     }
 
     /// Chat-first (P-001) owns exactly two surfaces: the conversation and its
@@ -5397,6 +5741,16 @@ impl App {
             ..
         } = &action
         {
+            // D-028: No on a tool approval stops the turn; the message box then
+            // asks what to do instead, and is where the keys go next.
+            let declined_approval = self.card_state.focused().is_some_and(|c| c.approval.is_some())
+                && payload.as_ref().and_then(|p| p.get("picks")) == Some(&serde_json::json!(["no"]));
+            if declined_approval {
+                self.su_tell_instead = true;
+                if self.chat_first {
+                    self.chat_composing = true;
+                }
+            }
             let summary = self
                 .card_state
                 .focused()
@@ -5428,6 +5782,16 @@ impl App {
         );
 
         match code {
+            // D-028: on a tool approval Esc is option 3 (No) and Shift+Tab is
+            // option 2 (Yes, don't ask again), the keys Claude Code uses.
+            KeyCode::Esc if self.card_state.approval_pick("no").is_some() => {
+                let resp = self.card_state.approval_pick("no").expect("checked above");
+                self.card_finish(resp)
+            }
+            KeyCode::BackTab if self.card_state.approval_pick("always").is_some() => {
+                let resp = self.card_state.approval_pick("always").expect("checked above");
+                self.card_finish(resp)
+            }
             KeyCode::Esc => {
                 // Esc declines when the card allows it, else cancels the run
                 // (the brain's tool resolves {action:'cancel'}).
@@ -6269,6 +6633,33 @@ impl App {
         self.account_rows = rows;
     }
 
+    /// Whether `/resume` lists `chat`. pui-chat-first-ux P-010: the default
+    /// chat lists only the conversations started in this directory (plus the
+    /// open one); the workbench keeps the whole pot inventory.
+    fn chat_in_resume_scope(&self, chat: &crate::agent_chats::AgentChatSummary) -> bool {
+        !self.chat_first
+            || self.agent_chat_id.as_deref() == Some(chat.id.as_str())
+            || crate::su_session::session_in_directory(
+                self.su_session_inventory
+                    .iter()
+                    .find(|entry| entry.agent_chat_id == chat.id)
+                    .and_then(|entry| entry.cwd.as_deref()),
+                self.launch_cwd.as_deref(),
+            )
+    }
+
+    /// pui-chat-first-ux P-031 (G-12): an empty chat-first conversation
+    /// offers `/resume` when this directory has an earlier conversation, read
+    /// from the same list `/resume` shows (and only once that list loaded).
+    pub fn chat_first_offers_resume(&self) -> bool {
+        self.chat_first
+            && self.agent_chats_loaded_for.as_deref() == Some(self.harness.as_str())
+            && self.agent_chat_summaries.iter().any(|chat| {
+                self.agent_chat_id.as_deref() != Some(chat.id.as_str())
+                    && self.chat_in_resume_scope(chat)
+            })
+    }
+
     /// Open the conversation picker: the EXISTING PG-backed Agent Chat
     /// conversations, nothing else. It deliberately synthesises no "new
     /// <role> · <backend> session" rows — the old picker built a role ×
@@ -6280,24 +6671,7 @@ impl App {
     pub fn open_conversation_picker(&mut self) {
         use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
         let mut options: Vec<PickerOption> = Vec::new();
-        let chat_first = self.chat_first;
-        let launch_cwd = self.launch_cwd.as_deref();
-        let inventory = &self.su_session_inventory;
-        let active_chat_id = self.agent_chat_id.as_deref();
-        let in_scope = |chat: &&crate::agent_chats::AgentChatSummary| {
-            // pui-chat-first-ux P-010: the default chat lists only the
-            // conversations started in this directory (plus the open one).
-            // The workbench keeps the whole pot inventory.
-            !chat_first
-                || active_chat_id == Some(chat.id.as_str())
-                || crate::su_session::session_in_directory(
-                    inventory
-                        .iter()
-                        .find(|entry| entry.agent_chat_id == chat.id)
-                        .and_then(|entry| entry.cwd.as_deref()),
-                    launch_cwd,
-                )
-        };
+        let in_scope = |chat: &&crate::agent_chats::AgentChatSummary| self.chat_in_resume_scope(chat);
         options.extend(
             self.agent_chat_summaries
                 .iter()
@@ -6374,6 +6748,18 @@ impl App {
                     hint: self.launch_cwd.clone(),
                     disabled: true,
                 }
+            } else if let Some(error) = self.agent_chats_list_error.as_deref() {
+                // P-027 G-12: say why, and how to retry, instead of "Loading…"
+                // that never ends.
+                PickerOption {
+                    id: "chat:error".into(),
+                    label: "Could not load earlier conversations".into(),
+                    hint: Some(format!(
+                        "{} · Esc, then /resume to try again",
+                        error.lines().next().unwrap_or(error)
+                    )),
+                    disabled: true,
+                }
             } else {
                 PickerOption {
                     id: "chat:loading".into(),
@@ -6435,9 +6821,46 @@ impl App {
     /// hardcoded tier list, which would be a second copy of a server-owned truth
     /// and would diverge silently the moment the workspace tiers change.
     pub fn open_model_picker(&mut self) {
+        // WI-10006652: a live conversation whose engine has reported its own
+        // models lists THOSE; the tier menu below is for a launch.
+        if let Some(opts) = self.engine_model_picker_options() {
+            self.session_picker = Some(crate::session_config::SessionPicker::new(
+                crate::session_config::PickerAxis::Model,
+                opts,
+            ));
+            return;
+        }
         // The EFFECTIVE menu as the SERVER computed it — the pui does not merge
         // override-vs-baseline itself (D-022 §1).
-        let tiers = self.operator_config.tiers.clone();
+        let chat = self.session_setup.is_none();
+        // P-026: a live bound session switches from its next turn, so its
+        // picker is limited to its own engine's tiers just like the setup form.
+        let live = self
+            .su_session
+            .as_ref()
+            .filter(|session| chat && session.is_live());
+        // WI-10006652: before the first message the chat still knows the engine
+        // that message starts on, so it is limited the same way.
+        let pick_backend = self
+            .session_setup
+            .as_ref()
+            .map(|setup| setup.backend)
+            .or_else(|| live.map(|session| session.backend()))
+            .or_else(|| chat.then(|| self.chat_engine()));
+        let mut tiers = self.operator_config.tiers.clone();
+        if chat {
+            // A chat user is offered only tiers that run on this engine, and
+            // never sees their `when` notes: those are fleet routing config
+            // ("[owner 2026-09-03] all tiers → …"), not model descriptions.
+            // The setup form keeps every tier, disabled with a reason.
+            if let Some(backend) = pick_backend {
+                tiers.retain(|tier| Self::tier_runs_on(tier, backend));
+            }
+            for tier in &mut tiers {
+                tier.when = None;
+                tier.backend = None;
+            }
+        }
         // The chat pane IS the `operator` surface, so that is the default it
         // inherits when we send no model.
         let surface_default = self
@@ -6446,19 +6869,53 @@ impl App {
             .as_ref()
             .and_then(|a| a.config.surface_models.get("operator").cloned());
         let mut opts = crate::session_config::model_options(&tiers, surface_default.as_deref());
-        if let Some(setup) = &self.session_setup {
-            opts[0].label = "Server default model".into();
+        if let (true, None, Some(backend)) = (chat, live, pick_backend) {
+            // The surface default names a model for another engine (the
+            // operator surface defaults to a Claude model): say whose default
+            // this conversation gets instead of naming one it will not run.
+            let foreign_default = surface_default.as_deref().is_some_and(|spec| {
+                self.operator_config
+                    .tiers
+                    .iter()
+                    .any(|tier| tier.spec == spec && !Self::tier_runs_on(tier, backend))
+            });
+            if foreign_default {
+                opts[0].label = format!("{} default model", backend.label());
+            }
+            opts[0].hint = Some(format!(
+                "Your first message starts the conversation; /model then lists the models {} offers.",
+                backend.label()
+            ));
+        }
+        if let Some(pick_backend) = pick_backend {
+            if let Some(session) = live {
+                // "Keep" clears any pending switch, so it names the model the
+                // session RUNS — never the pending pick it would discard.
+                let running = session.descriptor.as_ref().and_then(|d| d.model.clone());
+                opts[0].label = match &running {
+                    Some(spec) => format!("Keep the current model ({spec})"),
+                    None => "Keep the current model".into(),
+                };
+                let running = running.as_deref().map(spec_without_effort);
+                let pending = self.su_next_model.as_deref().map(spec_without_effort);
+                for option in opts.iter_mut().skip(1) {
+                    let tier = Some(spec_without_effort(&option.id));
+                    if tier == running {
+                        option.label.push_str(" · current");
+                    } else if tier == pending {
+                        option.label.push_str(" · next turn");
+                    }
+                }
+            } else if !chat {
+                opts[0].label = "Server default model".into();
+            }
             for (option, tier) in opts.iter_mut().skip(1).zip(&tiers) {
-                if tier.backend.as_deref().is_some_and(|backend| {
-                    backend != setup.backend.as_str()
-                        && !(backend == "claude-code"
-                            && setup.backend == crate::su_session::SuSessionBackend::Claude)
-                }) {
+                if !Self::tier_runs_on(tier, pick_backend) {
                     option.disabled = true;
                     option.hint = Some(format!(
                         "This tier uses {}; choose a {} tier.",
                         tier.backend.as_deref().unwrap_or("another backend"),
-                        setup.backend.label()
+                        pick_backend.label()
                     ));
                 }
             }
@@ -6469,10 +6926,109 @@ impl App {
         ));
     }
 
+    /// Whether a routing tier can run on `backend`. A tier with no backend
+    /// runs anywhere; `claude-code` is the Claude engine's wire name.
+    fn tier_runs_on(
+        tier: &crate::session_config::ModelTier,
+        backend: crate::su_session::SuSessionBackend,
+    ) -> bool {
+        tier.backend.as_deref().map_or(true, |name| {
+            name == backend.as_str()
+                || (name == "claude-code"
+                    && backend == crate::su_session::SuSessionBackend::Claude)
+        })
+    }
+
+    /// WI-10006652: /model rows for a live bound conversation from the models
+    /// its engine reported on the descriptor. `None` (no live session, a setup
+    /// form open, or an engine that has not answered yet) keeps the tier menu.
+    fn engine_model_picker_options(&self) -> Option<Vec<crate::session_config::PickerOption>> {
+        if self.session_setup.is_some() {
+            return None;
+        }
+        let session = self.su_session.as_ref().filter(|session| session.is_live())?;
+        let descriptor = session.descriptor.as_ref()?;
+        if descriptor.models.is_empty() {
+            return None;
+        }
+        let mut opts = crate::session_config::engine_model_options(&descriptor.models);
+        // "Keep" clears any pending switch, so it names the model the session
+        // RUNS — never the pending pick it would discard.
+        if let Some(spec) = descriptor.model.as_deref() {
+            opts[0].label = format!("Keep the current model ({spec})");
+        }
+        let running = descriptor.model.as_deref().map(spec_without_effort);
+        let pending = self.su_next_model.as_deref().map(spec_without_effort);
+        for (option, model) in opts.iter_mut().skip(1).zip(&descriptor.models) {
+            let names = [Some(model.id.as_str()), model.resolved_model.as_deref()];
+            if running.is_some() && names.contains(&running) {
+                option.label.push_str(" · current");
+            } else if pending.is_some() && pending == Some(model.id.as_str()) {
+                option.label.push_str(" · next turn");
+            }
+        }
+        Some(opts)
+    }
+
+    /// P-025 / D-027: an engine pick in chat-first starts the next
+    /// conversation on that engine. An open conversation is ended the way
+    /// /clear ends it, so it stays in /resume. Chat-first never draws
+    /// `session_note`, so the result is a toast.
+    fn chat_first_pick_backend(&mut self, id: &str, label: &str) -> Action {
+        use crate::su_session::{SuSessionBackend, SuSessionControl};
+        let backend = match id {
+            "codex" => SuSessionBackend::Codex,
+            "omp" => SuSessionBackend::Omp,
+            _ => SuSessionBackend::Claude,
+        };
+        self.session_picker = None;
+        let bound = self.agent_chat_id.is_some() || self.su_session.is_some();
+        let current = self.su_session.as_ref().map(|session| session.backend());
+        if bound && current == Some(backend) {
+            self.chat_toast(
+                "info",
+                format!("This conversation already runs on {label}."),
+            );
+            return Action::Render;
+        }
+        let end = (bound && self.su_session_running()).then(|| {
+            self.su_session_control(SuSessionControl::End {
+                reason: Some(format!(
+                    "owner picked {label} for a new conversation (/backend)"
+                )),
+            })
+        });
+        if bound {
+            self.reset_agent_chat_binding();
+        }
+        // A model spec belongs to its engine; keep a `--model` pick when the
+        // engine does not change.
+        let effective = self
+            .su_backend
+            .or_else(|| self.configured_su_backend())
+            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
+        if effective != backend {
+            self.chat_model = None;
+        }
+        self.su_backend = Some(backend);
+        self.chat_toast(
+            "info",
+            if bound {
+                format!("New conversation on {label}. The last one is in /resume.")
+            } else {
+                format!("Your next message starts a {label} conversation.")
+            },
+        );
+        end.unwrap_or(Action::Render)
+    }
+
     pub fn open_backend_picker(&mut self) {
         use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
         use crate::su_session::SuSessionBackend;
-        let bound = self.session_setup.is_none()
+        // Chat-first switches by starting a new conversation (D-027), so its
+        // rows stay selectable while one is open.
+        let bound = !self.chat_first
+            && self.session_setup.is_none()
             && (self.agent_chat_id.is_some() || self.su_session.is_some());
         let options = [
             SuSessionBackend::Claude,
@@ -6575,10 +7131,64 @@ impl App {
                 return Action::Render;
             }
             Ok((id, label)) => {
-                // Backend/model/effort/account/mode are launch-time choices: a
-                // bound conversation's engine already runs with its own and no
-                // turn carries them. Route the pick to the in-PUI New SU session
-                // form instead of claiming it applied to this conversation.
+                // D-026: an approvals pick belongs to the running conversation
+                // and rides on its next owner turn, never on a launch setup.
+                if axis == crate::session_config::PickerAxis::Approvals {
+                    self.session_picker = None;
+                    self.choose_approvals(&id);
+                    return Action::Render;
+                }
+                // pui-chat-first-ux P-026 / D-025: a live bound session switches
+                // model and effort from its next turn (the owner turn carries
+                // the spec), so these picks stay on this conversation rather
+                // than opening a new session.
+                let live_model = self
+                    .su_session
+                    .as_ref()
+                    .filter(|session| session.is_live())
+                    .map(|session| session.descriptor.as_ref().and_then(|d| d.model.clone()));
+                if let (None, Some(current)) = (self.session_setup.as_ref(), live_model) {
+                    use crate::session_config::PickerAxis;
+                    if matches!(axis, PickerAxis::Model | PickerAxis::Effort) {
+                        self.session_picker = None;
+                        let base = self.su_next_model.clone().or(current.clone());
+                        let next = match axis {
+                            PickerAxis::Model => crate::session_config::model_pick(&id),
+                            _ => match (crate::session_config::effort_pick(&id), base) {
+                                (Some(effort), Some(base)) => {
+                                    Some(format!("{}:{effort}", spec_without_effort(&base)))
+                                }
+                                (Some(_), None) => {
+                                    self.session_note = Some(
+                                        "Pick a model first; this session has not named the model it runs on."
+                                            .to_string(),
+                                    );
+                                    return Action::Render;
+                                }
+                                (None, base) => base.map(|b| spec_without_effort(&b).to_string()),
+                            },
+                        };
+                        self.su_next_model = next.filter(|spec| Some(spec) != current.as_ref());
+                        self.session_note = Some(match (&self.su_next_model, &current) {
+                            (Some(spec), _) => format!("Next turn uses {spec}."),
+                            (None, Some(running)) => format!("Keeping {running}."),
+                            (None, None) => "Keeping the current model.".to_string(),
+                        });
+                        return Action::Render;
+                    }
+                }
+                // P-025 / D-027: chat-first has no setup form to send an engine
+                // pick to (the message box is the whole app).
+                if self.chat_first
+                    && self.session_setup.is_none()
+                    && axis == crate::session_config::PickerAxis::Backend
+                {
+                    return self.chat_first_pick_backend(&id, &label);
+                }
+                // Backend/account/mode are launch-time choices: a bound
+                // conversation's engine already runs with its own and no turn
+                // carries them. Route the pick to the in-PUI New SU session form
+                // instead of claiming it applied to this conversation.
                 let applies_to_new_session = self.session_setup.is_none()
                     && !matches!(axis, crate::session_config::PickerAxis::Conversation)
                     && (self.agent_chat_id.is_some() || self.su_session.is_some());
@@ -6609,7 +7219,8 @@ impl App {
                             setup.account = session_config::chat_account_pick(&id)
                         }
                         PickerAxis::Mode => setup.mode = session_config::mode_pick(&id),
-                        PickerAxis::Conversation => return Action::Render,
+                        // Handled above: approvals never touch a launch setup.
+                        PickerAxis::Conversation | PickerAxis::Approvals => return Action::Render,
                     }
                     setup.note = Some(if applies_to_new_session {
                         format!("Applies to a new session: {label}. Review launches it; Esc keeps the current one.")
@@ -6620,6 +7231,8 @@ impl App {
                     return Action::Render;
                 }
                 match axis {
+                    // Handled at the top of the Ok arm (D-026).
+                    crate::session_config::PickerAxis::Approvals => {}
                     crate::session_config::PickerAxis::Conversation => {
                         if let Some(chat_id) = id.strip_prefix("chat:") {
                             let role = self
@@ -6822,12 +7435,22 @@ impl App {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "unknown".into());
         let cost = self
-            .agent_chat_usage
-            .cost_usd_cents
-            .map(|value| format!("${:.4}", value / 100.0))
+            .chat_session_cost_usd()
+            .map(|value| format!("${value:.4}"))
             .unwrap_or_else(|| "unknown".into());
+        // P-029 / D-029: context used/window once the engine measured it.
+        let context = self
+            .su_usage()
+            .and_then(|u| Some((u.context_tokens?, u.context_window?, u.context_left_percent()?)))
+            .map(|(used, window, left)| format!("context {used}/{window} ({left}% left)"))
+            .or_else(|| {
+                self.su_usage()
+                    .and_then(|u| u.context_tokens)
+                    .map(|used| format!("context {used}/unknown"))
+            })
+            .unwrap_or_else(|| "context unknown".into());
         Some(format!(
-            "usage in {input} / out {output} / cost {cost} / context unknown"
+            "usage in {input} / out {output} / cost {cost} / {context}"
         ))
     }
 
@@ -6846,29 +7469,243 @@ impl App {
         if self.backend_identity_error.is_some() {
             return "Not connected · send a message to set up PUI".to_string();
         }
-        let mut fields = vec![self.chat_model_label(), self.chat_directory_label()];
-        // The Agent Chat contract has no context-consumption measurement yet,
-        // so context use is left out rather than printed as "unknown".
-        if let Some(cents) = self.agent_chat_usage.cost_usd_cents {
-            fields.push(format!("${:.2}", cents / 100.0));
+        // P-029 / D-029: model · approvals · directory · context left · cost.
+        // Context and cost appear only once the engine measured them; they are
+        // never inferred from transcript length or model defaults.
+        let mut fields = vec![self.chat_model_label()];
+        if let Some(approvals) = self.current_approvals() {
+            fields.push(approvals);
+        }
+        fields.push(self.chat_directory_label());
+        if let Some(warning) = self.chat_context_warning() {
+            fields.push(warning);
+        } else if let Some(left) = self.su_usage().and_then(|u| u.context_left_percent()) {
+            fields.push(format!("{left}% context left"));
+        }
+        if let Some(cost) = self.chat_session_cost_usd() {
+            fields.push(format!("${cost:.2}"));
         }
         fields.join(" · ")
     }
 
+    /// D-029/D-031: what the engine measured for the open conversation.
+    pub(crate) fn su_usage(&self) -> Option<&crate::su_session::SuSessionUsage> {
+        self.su_session
+            .as_ref()
+            .and_then(|s| s.descriptor.as_ref())
+            .and_then(|d| d.usage.as_ref())
+    }
+
+    /// Running session cost: the engine's own figure first, then the Agent
+    /// Chat ledger's. `None` when neither measured it (Codex reports none).
+    fn chat_session_cost_usd(&self) -> Option<f64> {
+        self.su_usage()
+            .and_then(|u| u.cost_usd)
+            .or_else(|| self.agent_chat_usage.cost_usd_cents.map(|cents| cents / 100.0))
+    }
+
+    /// D-029: from 80% of the context window used, the footer's context field
+    /// becomes a warning. Only Claude compacts on request (P-027 G-4), so only
+    /// its warning names /compact; Codex and OMP compact on their own.
+    pub fn chat_context_warning(&self) -> Option<String> {
+        let left = self.su_usage()?.context_left_percent()?;
+        let used = 100u8.saturating_sub(left);
+        if used < CONTEXT_WARN_USED_PERCENT {
+            return None;
+        }
+        let claude = self.su_session.as_ref().map(|s| s.backend())
+            == Some(crate::su_session::SuSessionBackend::Claude);
+        Some(if claude {
+            format!("Context {used}% full: /compact")
+        } else {
+            format!("Context {used}% full")
+        })
+    }
+
+    /// D-029/D-031: the agent's todo/plan list to show above the message box.
+    /// Hidden when there is none, and once every item is done and the turn
+    /// has ended.
+    pub fn chat_plan_checklist(&self) -> Option<&[crate::su_session::SuPlanItem]> {
+        let plan = self
+            .su_session
+            .as_ref()
+            .and_then(|s| s.descriptor.as_ref())
+            .and_then(|d| d.plan.as_deref())?;
+        if plan.is_empty() || (!self.chat_streaming && plan.iter().all(|i| i.is_completed())) {
+            return None;
+        }
+        Some(plan)
+    }
+
     /// pui-chat-first-ux P-021: the dim text an empty message box shows.
     pub fn chat_placeholder(&self) -> String {
+        if self.su_tell_instead {
+            // D-028: after No, stock Claude Code and Codex wait for what to do instead.
+            return format!("Tell {} what to do instead", self.chat_engine_label());
+        }
         format!("Message {}", self.chat_engine_label())
     }
 
     /// The engine this conversation runs on, in product words ("Claude").
+    /// D-026: the approvals mode the engine reports now, if it has one.
+    fn current_approvals(&self) -> Option<String> {
+        self.su_session
+            .as_ref()
+            .and_then(|s| s.descriptor.as_ref())
+            .and_then(|d| d.approvals.clone())
+    }
+
+    /// D-026: OMP has no approval-mode RPC, so /approvals and Shift+Tab say so
+    /// instead of storing a pick its engine would refuse.
+    fn approvals_unavailable(&mut self) -> bool {
+        if self.chat_engine_label() != "OMP" {
+            return false;
+        }
+        self.chat_toast("warn", "/approvals is not available for OMP; it always asks.".into());
+        true
+    }
+
+    /// pui-chat-first-ux P-027 (G-6) / D-026: /approvals opens a three-row
+    /// picker with the current mode marked, as Codex's /approvals does.
+    pub(crate) fn open_approvals_picker(&mut self) -> Action {
+        if self.approvals_unavailable() {
+            return Action::Render;
+        }
+        let current = self.current_approvals();
+        let pending = self.su_next_approvals.clone();
+        let mut picker = crate::session_config::SessionPicker::new(
+            crate::session_config::PickerAxis::Approvals,
+            crate::session_config::approvals_options(current.as_deref(), pending.as_deref()),
+        );
+        let marked = pending.or(current);
+        if let Some(index) = crate::session_config::APPROVALS_MODES
+            .iter()
+            .position(|(mode, _)| Some(*mode) == marked.as_deref())
+        {
+            picker.sel = index;
+        }
+        self.session_picker = Some(picker);
+        Action::Render
+    }
+
+    /// D-026: Shift+Tab steps to the next approvals mode, as in Claude Code.
+    pub(crate) fn cycle_approvals(&mut self) -> Action {
+        if self.approvals_unavailable() {
+            return Action::Render;
+        }
+        let modes = crate::session_config::APPROVALS_MODES;
+        let base = self
+            .su_next_approvals
+            .clone()
+            .or_else(|| self.current_approvals())
+            .unwrap_or_else(|| "ask".into());
+        let index = modes
+            .iter()
+            .position(|(mode, _)| *mode == base)
+            .map_or(0, |i| (i + 1) % modes.len());
+        self.choose_approvals(modes[index].0);
+        Action::Render
+    }
+
+    /// Store `next` as the mode the next owner turn carries (D-026), or clear
+    /// the pending pick when `next` is already the running mode.
+    fn choose_approvals(&mut self, next: &str) {
+        let Some((next, about)) = crate::session_config::APPROVALS_MODES
+            .iter()
+            .copied()
+            .find(|(mode, _)| *mode == next)
+        else {
+            return;
+        };
+        let current = self.current_approvals();
+        self.su_next_approvals = (current.as_deref() != Some(next)).then(|| next.to_string());
+        let when = if self.su_next_approvals.is_some() { "from your next message" } else { "already on" };
+        self.chat_toast(
+            "info",
+            format!("Approvals: {next} ({about}), {when}. Shift+Tab for the next mode."),
+        );
+    }
+
     fn chat_engine_label(&self) -> &'static str {
+        self.chat_engine().label()
+    }
+
+    fn chat_engine(&self) -> crate::su_session::SuSessionBackend {
         self.su_session
             .as_ref()
             .map(|session| session.backend())
             .or(self.su_backend)
             .or(self.configured_su_backend())
             .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND)
-            .label()
+    }
+
+    /// `pui --model` / `--account` (P-026, D-023): what a new conversation
+    /// starts on, read exactly as the model and account pickers read it.
+    pub fn apply_chat_launch_choice(&mut self, model: Option<&str>, account: Option<&str>) {
+        if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+            self.chat_model = crate::session_config::model_pick(model);
+        }
+        if let Some(account) = account.map(str::trim).filter(|account| !account.is_empty()) {
+            self.chat_account = crate::session_config::chat_account_pick(account);
+        }
+    }
+
+    /// `/status` (P-026, D-023 G-14): the model, account and engine this
+    /// conversation RUNS on. A bound session reports its own descriptor, not
+    /// the launch picks it no longer reads.
+    pub fn chat_status_report(&self) -> String {
+        let session = self.su_session.as_ref();
+        let backend = session
+            .map(|s| s.backend())
+            .or(self.su_backend)
+            .or(self.configured_su_backend())
+            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
+        let account = session
+            .and_then(|s| s.descriptor.as_ref())
+            .and_then(|d| d.account_route.as_deref())
+            .map(str::trim)
+            .filter(|route| !route.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                crate::session_config::account_label(self.chat_account.as_deref(), backend)
+            });
+        let state = match session {
+            Some(s) if s.is_live() => "running",
+            Some(_) => "not running",
+            None if self.agent_chat_id.is_some() => "not running",
+            None => "new",
+        };
+        // D-026: name the approvals mode when the engine has one.
+        let approvals = match (self.current_approvals(), self.su_next_approvals.as_deref()) {
+            (Some(now), Some(next)) => format!(" · approvals {now} · next turn: {next}"),
+            (None, Some(next)) => format!(" · approvals next turn: {next}"),
+            (Some(now), None) => format!(" · approvals {now}"),
+            (None, None) => String::new(),
+        };
+        // P-029 / D-029: context used/window and the session cost, once the
+        // engine measured them; nothing is printed for an unmeasured value.
+        let mut measured = String::new();
+        if let Some(usage) = self.su_usage() {
+            match (usage.context_tokens, usage.context_window, usage.context_left_percent()) {
+                (Some(used), Some(window), Some(left)) => {
+                    measured.push_str(&format!(" · context {used}/{window} ({left}% left)"))
+                }
+                (Some(used), _, _) => measured.push_str(&format!(" · context {used} tokens")),
+                _ => {}
+            }
+        }
+        if let Some(cost) = self.chat_session_cost_usd() {
+            measured.push_str(&format!(" · cost ${cost:.2}"));
+        }
+        format!(
+            "Model {} · account {} · engine {}{}{} · conversation {}",
+            self.chat_model_label(),
+            account,
+            backend.label(),
+            approvals,
+            measured,
+            state
+        )
     }
 
     /// The model that last answered, else the one picked for the next turn,
@@ -6878,13 +7715,26 @@ impl App {
             let model = model.trim();
             (!model.is_empty() && !model.eq_ignore_ascii_case("unknown")).then(|| model.to_string())
         };
-        self.chat_messages
+        let running = self
+            .chat_messages
             .iter()
             .rev()
             .filter_map(|m| m.provenance.as_ref())
             .find_map(|p| known(&p.model))
+            .or_else(|| {
+                self.su_session
+                    .as_ref()
+                    .and_then(|s| s.descriptor.as_ref())
+                    .and_then(|d| d.model.as_deref())
+                    .and_then(known)
+            })
             .or_else(|| self.chat_model.as_deref().and_then(known))
-            .unwrap_or_else(|| self.chat_engine_label().to_string())
+            .unwrap_or_else(|| self.chat_engine_label().to_string());
+        // P-026: a /model pick applies from the next turn; say so until then.
+        match self.su_next_model.as_deref() {
+            Some(next) => format!("{running} · next turn: {next}"),
+            None => running,
+        }
     }
 
     /// The launch directory, with the home prefix shortened to `~` as in a
@@ -6913,6 +7763,89 @@ impl App {
             })
     }
 
+    /// pui-chat-first-ux P-024: the line under the transcript while a turn
+    /// runs, shaped like Claude Code's: a moving spinner, what the engine is
+    /// doing, how long it has taken, roughly how much it has written, and how
+    /// to stop it. Repainted on every idle tick (`on_tick`).
+    pub fn chat_working_line(&self, now: std::time::Instant) -> String {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let elapsed = self
+            .chat_turn_started
+            .or(self.chat_first_autostart_since.filter(|_| self.chat_first_autostart))
+            .map(|started| now.saturating_duration_since(started))
+            .unwrap_or_default();
+        let frame = FRAMES[(elapsed.as_millis() / 250) as usize % FRAMES.len()];
+        let engine = self.chat_engine_label();
+        let reply = self
+            .chat_messages
+            .last()
+            .filter(|m| m.role == "assistant" && m.streaming);
+        let written = reply.map_or(0, |m| m.content.chars().count() + m.reasoning.chars().count());
+        let tools = reply.map_or(0, |m| m.tools.len());
+        let awaiting_approval = reply.is_some_and(|m| m.tools.iter().any(|t| t.needs_approval));
+        let key = if self.chat_composing { "Esc" } else { "Ctrl+X" };
+        // An open card means the engine is blocked on the user, not working.
+        // SU sessions deliver approvals and questions as cards, not as
+        // `needs_approval` tools on the reply, so the line used to keep saying
+        // "Thinking" under an approval card. Like Claude Code under a
+        // permission prompt, nothing moves while it waits: no spinner and no
+        // ticking timer, so the screen holds still until the user answers.
+        if let Some(card) = self.card_state.focused() {
+            let phase = if card.approval.is_some() || card.prompt.trim_start().starts_with("Allow ") {
+                "Waiting for your approval"
+            } else {
+                "Waiting for your answer"
+            };
+            return format!("· {phase} ({key} to interrupt)");
+        }
+        if awaiting_approval {
+            return format!("· Waiting for your approval ({key} to interrupt)");
+        }
+        let starting = self.chat_first_autostart || match self.su_session.as_ref() {
+            Some(session) => matches!(
+                session.lifecycle,
+                crate::su_session::SuSessionLifecycleState::Starting
+                    | crate::su_session::SuSessionLifecycleState::Resuming
+            ),
+            // The engine is still being launched for this message.
+            None => self.su_pending_turn.is_some(),
+        };
+        let operator_busy = self.su_pending_turn.as_ref().is_some_and(|turn| {
+            self.su_operator_busy.as_deref() == Some(turn.command_id.as_str())
+        });
+        let phase = if operator_busy {
+            "Papercusp is busy; still trying to send your message".to_string()
+        } else if starting && elapsed.as_secs() >= 5 {
+            format!("Still starting {engine}; your message will send when it is ready")
+        } else if starting {
+            format!("Starting {engine}")
+        } else if written == 0 && tools == 0 {
+            "Thinking".to_string()
+        } else {
+            "Working".to_string()
+        };
+        let secs = elapsed.as_secs();
+        let mut detail = if secs < 60 {
+            format!("{secs}s")
+        } else {
+            format!("{}m {:02}s", secs / 60, secs % 60)
+        };
+        if tools > 0 {
+            detail.push_str(&format!(" · {tools} tool{}", if tools == 1 { "" } else { "s" }));
+        }
+        if written > 0 {
+            // Characters / 4 is the usual English estimate; "~" says it is one.
+            let tokens = written.div_ceil(4);
+            let shown = if tokens >= 1000 {
+                format!("{:.1}k", tokens as f64 / 1000.0)
+            } else {
+                tokens.to_string()
+            };
+            detail.push_str(&format!(" · ↓ ~{shown} tokens"));
+        }
+        format!("{frame} {phase}… ({detail} · {key} to interrupt)")
+    }
+
     /// The one plain sentence the default chat shows for a failure (R-03):
     /// what went wrong and the single next step. The raw text can carry
     /// session ids, reconciliation states and operator addresses, so it stays
@@ -6931,23 +7864,55 @@ impl App {
                 "It is not clear whether {engine} received your message; press Enter to check."
             ));
         }
+        // P-024: the bounded send waits (main.rs await_su_send_readiness) name
+        // what was slow; they must not fall through to "stopped before it was
+        // ready", which claims the engine died when it may still be starting.
+        if raw.contains("did not become ready within") {
+            return Some(format!(
+                "{engine} is taking too long to start; your message is kept, {retry}."
+            ));
+        }
+        // pui-chat-first-ux P-031 (G-13): each failure names the step that
+        // fixes it, not just the subsystem to look at.
+        // WI-10006644: the operator accepted the connection and stayed silent
+        // past the retry budget. It is running, so restarting it (and every
+        // other session on it) is the wrong advice; a refused connection is
+        // handled below with the start-the-server step.
+        if raw.contains("operator was busy and did not answer") {
+            return Some(format!(
+                "Papercusp is busy and did not answer; your message is kept, {retry}."
+            ));
+        }
         let sentence = if raw.contains("/login")
             || raw.contains("not logged in")
             || raw.contains("authentication")
             || raw.contains("401")
         {
-            format!("{engine} is not signed in; sign in to {engine}, then {retry}.")
+            // Engines sign in where they run: on the operator's computer,
+            // which is this one for a local install (setup help: "Provider
+            // login belongs on the operator host").
+            let login = match self.chat_engine() {
+                crate::su_session::SuSessionBackend::Claude => "run claude and type /login",
+                crate::su_session::SuSessionBackend::Codex => "run codex login",
+                crate::su_session::SuSessionBackend::Omp => "run omp and type /login",
+            };
+            format!(
+                "{engine} is not signed in; in a terminal on the computer running Papercusp, {login}, then {retry}."
+            )
         } else if let Some(reason) = self.su_launch_refusal.as_deref() {
             // The operator answered and refused to start the engine
             // (WI-10004158): not a lost connection, and its reason names the
             // owner's next step (an account or model to choose).
             let reason = reason.trim().trim_end_matches('.');
             format!("{engine} could not start: {reason}. Then {retry}.")
-        } else if self.su_connection_error.is_some()
-            || raw.contains("connection refused")
+        } else if raw.contains("connection refused")
             || raw.contains("error sending request")
             || raw.contains("unreachable")
         {
+            // The request to the operator itself failed: the engine was never
+            // reached, so naming the engine sent the owner to the wrong place.
+            format!("PUI cannot reach Papercusp; start Papercusp Server, then {retry}.")
+        } else if self.su_connection_error.is_some() {
             // Opening or reaching the session failed. An engine that died
             // mid-start also closes its event stream, but that is the
             // "before it was ready" case below, not a lost connection.
@@ -6969,6 +7934,19 @@ impl App {
             format!("{engine} stopped; {retry}.")
         };
         Some(sentence)
+    }
+
+    /// WI-10006626 (parity row 23): under a usage-limit failure line, the step
+    /// that continues now, as stock Claude Code adds `/usage-credits`. In
+    /// chat-first, `/backend` starts the next message on the picked engine in
+    /// a new conversation and the limited one stays in /resume (D-027,
+    /// `chat_first_pick_backend`). Account is a launch-time choice with no
+    /// in-chat route, so it is not offered. The workbench keeps a bound
+    /// conversation's engine, so it gets no hint.
+    pub fn turn_error_next_step(&self, error: &str) -> Option<&'static str> {
+        (self.chat_first && crate::models::is_usage_limit(error)).then_some(
+            "Wait for the reset, or type /backend to continue on another engine in a new conversation.",
+        )
     }
 
     /// Settings tab (P10): store the operator feature flags as a sorted Vec (the
@@ -7906,6 +8884,43 @@ impl App {
             .is_some_and(|path| !path.is_empty())
     }
 
+    fn model_offered_by_backend(
+        &self,
+        model: &str,
+        backend: crate::su_session::SuSessionBackend,
+    ) -> bool {
+        self.operator_config.tiers.iter().any(|tier| {
+            tier.spec == model
+                && tier
+                    .loop_capability
+                    .as_ref()
+                    .is_none_or(|cap| cap.executable)
+                && tier.backend.as_deref().is_none_or(|tier_backend| {
+                    tier_backend == backend.as_str()
+                        || (tier_backend == "claude-code"
+                            && backend == crate::su_session::SuSessionBackend::Claude)
+                })
+        })
+    }
+
+    /// Warn on an unsupported new-chat launch model as soon as the operator's
+    /// catalog arrives, instead of waiting until the owner sends their first
+    /// message and opens Session Setup. A bound conversation owns its own
+    /// model, and an open setup form has the same check in `setup_blocker()`.
+    pub fn pending_chat_model_blocker(&self) -> Option<&'static str> {
+        if self.session_setup.is_some() || self.su_session.is_some() || self.agent_chat_id.is_some()
+        {
+            return None;
+        }
+        self.operator_config.agent.as_ref()?;
+        let model = self.chat_model.as_deref()?;
+        let backend = self
+            .su_backend
+            .or(self.configured_su_backend())
+            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND);
+        (!self.model_offered_by_backend(model, backend)).then_some(SETUP_MODEL_UNAVAILABLE_NOTE)
+    }
+
     pub fn setup_blocker(&self) -> Option<String> {
         let setup = self.session_setup.as_ref()?;
         if self.chat_streaming || self.su_pending_turn.is_some() {
@@ -7920,7 +8935,11 @@ impl App {
             if crate::http::RendezvousFailure::of_status_line(error)
                 == Some(crate::http::RendezvousFailure::Unreachable)
             {
-                return Some(SETUP_UNREACHABLE_NOTE.into());
+                return Some(if self.operator_answered {
+                    SETUP_STOPPED_ANSWERING_NOTE.into()
+                } else {
+                    SETUP_UNREACHABLE_NOTE.into()
+                });
             }
             return Some(format!("Operator unavailable: {error}"));
         }
@@ -7966,21 +8985,12 @@ impl App {
             let Some(config) = self.operator_config.agent.as_ref() else {
                 return Some("Waiting for current runtime configuration.".into());
             };
-            if setup.model.as_ref().is_some_and(|model| {
-                !self.operator_config.tiers.iter().any(|tier| {
-                    &tier.spec == model
-                        && tier
-                            .loop_capability
-                            .as_ref()
-                            .is_none_or(|cap| cap.executable)
-                        && tier.backend.as_deref().is_none_or(|backend| {
-                            backend == setup.backend.as_str()
-                                || (backend == "claude-code"
-                                    && setup.backend == crate::su_session::SuSessionBackend::Claude)
-                        })
-                })
-            }) {
-                return Some("Selected model is no longer available for this backend.".into());
+            if setup
+                .model
+                .as_ref()
+                .is_some_and(|model| !self.model_offered_by_backend(model, setup.backend))
+            {
+                return Some(SETUP_MODEL_UNAVAILABLE_NOTE.into());
             }
             if setup
                 .effort
@@ -8352,12 +9362,13 @@ impl App {
     fn chat_first_quick_start(&mut self, draft: String) -> Action {
         self.open_session_setup();
         let clear_composer = self.chat_input == draft;
+        let message = self.paste_chips.expand(&draft);
         let Some(setup) = self.session_setup.as_mut() else {
             // `open_session_setup` refused (a turn is still in flight) and
             // left its reason in `session_note`; the draft stays composed.
             return Action::Render;
         };
-        setup.message = draft;
+        setup.message = message;
         self.chat_first_autostart = true;
         self.chat_first_autostart_since = Some(std::time::Instant::now());
         // P-012: the message shows in the transcript while the session starts
@@ -8392,7 +9403,9 @@ impl App {
             &setup.project
         };
         let settling = if self.backend_identity_error.is_some() {
-            false
+            // An operator that answered earlier in this launch is re-checked
+            // (`on_tick`) rather than shown as missing (P-028, WI-10006466).
+            self.operator_answered
         } else if self.backend_identity.is_none() {
             true
         } else if !self.harnesses.iter().any(|p| &p.slug == project) {
@@ -8451,12 +9464,44 @@ impl App {
         if let Some(action) = self.drain_queued_turn() {
             return action;
         }
+        // P-024: a running turn's working line moves (spinner frame, elapsed
+        // seconds), so each idle tick repaints while a turn is in flight.
+        let mut idle = if self.chat_streaming {
+            Action::Render
+        } else {
+            Action::None
+        };
+        // P-027 (G-11): the "Press Ctrl+C again to exit" hint leaves the screen
+        // when its window closes. A stale hint would promise an exit that the
+        // next Ctrl+C no longer performs (it only arms again).
+        if self.chat_ctrl_c_armed.is_some() && !self.chat_ctrl_c_exit_armed() {
+            self.chat_ctrl_c_armed = None;
+            idle = Action::Render;
+        }
+        if self.chat_esc_armed.is_some() && !self.chat_esc_clear_armed() {
+            self.chat_esc_armed = None;
+            idle = Action::Render;
+        }
+        // P-028 (WI-10006466): a pending quick start whose operator stopped
+        // answering re-checks it until the quiet wait runs out; then setup
+        // opens on the reason and a repaint shows it.
+        if let Some(at) = self.chat_first_identity_retry_at {
+            if !self.chat_first_autostart || self.backend_identity_error.is_none() {
+                self.chat_first_identity_retry_at = None;
+            } else if self.chat_first_quiet_wait().is_none() {
+                self.chat_first_identity_retry_at = None;
+                return Action::Render;
+            } else if std::time::Instant::now() >= at {
+                self.chat_first_identity_retry_at = None;
+                return Action::CheckSessionSetup;
+            }
+        }
         let Some(refresh) = self.session_browser.launch_refresh.as_mut() else {
-            return Action::None;
+            return idle;
         };
         if refresh.ticks_until_next > 0 {
             refresh.ticks_until_next -= 1;
-            return Action::None;
+            return idle;
         }
         refresh.step += 1;
         match LaunchRefresh::GAPS.get(refresh.step) {
@@ -10538,8 +11583,9 @@ impl App {
         }
         match ev {
             Event::Paste(text) => {
-                // Held like keys while the blocking too-small view shows.
-                if self.too_small() {
+                // Held like keys while the blocking too-small view (or the side
+                // pane's read-only compact summary) shows.
+                if self.input_held() {
                     return Action::None;
                 }
                 // Text-entry overlays consume the paste as DATA. Newlines are
@@ -11738,10 +12784,19 @@ impl App {
                         }
                         self.backend_identity = Some(identity);
                         self.backend_identity_error = None;
+                        self.operator_answered = true;
+                        self.chat_first_identity_retry_at = None;
                     }
                     Err(error) => {
                         self.backend_identity = None;
                         self.backend_identity_error = Some(error);
+                        // An operator that answered before and stops now is
+                        // usually restarting: a pending quick start re-checks
+                        // it (`on_tick`) while its quiet wait lasts.
+                        if self.chat_first_autostart && self.operator_answered {
+                            self.chat_first_identity_retry_at =
+                                Some(std::time::Instant::now() + CHAT_FIRST_IDENTITY_RETRY);
+                        }
                     }
                 }
                 self.try_chat_first_autostart().unwrap_or(Action::Render)
@@ -11910,10 +12965,16 @@ impl App {
                 self.session_note = Some(format!("SU-session command {status}"));
                 Action::Render
             }
+            Event::SuSendOperatorBusy { command_id } => {
+                self.su_operator_busy = Some(command_id);
+                Action::Render
+            }
             Event::SuTurnPrepared {
                 command_id,
                 command,
             } => {
+                // The operator answered: the send is no longer waiting on it.
+                self.su_operator_busy = None;
                 if let Some(pending) = self
                     .su_pending_turn
                     .as_mut()
@@ -11968,6 +13029,7 @@ impl App {
                 message,
                 uncertain,
             } => {
+                self.su_operator_busy = None;
                 if self
                     .su_pending_turn
                     .as_ref()
@@ -12086,6 +13148,23 @@ impl App {
                 self.agent_chat_usage = crate::agent_chats::AgentChatUsage::default();
                 Action::Render
             }
+            Event::AgentChatListLoaded { harness, summaries } => {
+                if harness == self.harness {
+                    self.agent_chat_summaries = summaries;
+                    self.agent_chats_loaded_for = Some(harness);
+                    self.agent_chats_list_error = None;
+                    self.refresh_open_conversation_picker();
+                }
+                Action::Render
+            }
+            Event::AgentChatListFailed { harness, message } => {
+                if harness == self.harness {
+                    self.agent_chats_list_error = Some(message.clone());
+                    self.refresh_open_conversation_picker();
+                }
+                self.last_error = Some(format!("native agent chat: {message}"));
+                Action::Render
+            }
             Event::AgentChatLoaded {
                 harness,
                 chat_id,
@@ -12130,6 +13209,7 @@ impl App {
                     self.agent_chat_role = role;
                     self.agent_chat_summaries = summaries;
                     self.agent_chats_loaded_for = Some(harness.clone());
+                    self.agent_chats_list_error = None;
                     self.chat_messages = messages;
                     self.chat_focus = None;
                     self.su_rendered_owner_turns = owner_turn_ids.into_iter().collect();
@@ -12278,7 +13358,7 @@ impl App {
     /// still reaches the terminal.
     pub fn on_mouse(&mut self, m: crossterm::event::MouseEvent) -> Action {
         use crossterm::event::{MouseButton, MouseEventKind};
-        if self.too_small() {
+        if self.input_held() {
             return Action::None;
         }
         let at = (m.column, m.row);
@@ -12333,6 +13413,17 @@ impl App {
             }
             _ => Action::None,
         }
+    }
+
+    /// Whether the event loop must draw a `Render` now instead of coalescing
+    /// it. Draw coalescing (WI-10006651) defers a plain `Render` while more
+    /// input is queued, but a mouse selection cannot wait: the release copies
+    /// the text a DRAWN frame showed (`a_selection_never_drawn_copies_nothing`),
+    /// so a press, drag and release that arrive in one burst would copy nothing
+    /// (WI-10006861). Drags arrive at pointer pace, so drawing each one costs
+    /// what it did before coalescing; key bursts still coalesce.
+    pub fn draw_now(&self, queue_empty: bool) -> bool {
+        queue_empty || self.mouse_selection.is_some()
     }
 
     /// The key to NAME in a hint for a subview/facet cycle.
@@ -12616,8 +13707,9 @@ impl App {
         // Below the supported size the screen is the blocking too-small view
         // (PUBLIC_RELEASE_UX.md): q and Ctrl-C still quit, as they do from
         // navigation, and every other key is held so nothing the owner cannot
-        // see (the draft above all) changes underneath it.
-        if self.too_small() {
+        // see (the draft above all) changes underneath it. The side pane's
+        // compact summary (D-034) is read-only, so it holds keys the same way.
+        if self.input_held() {
             let ctrl_c = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
             if code == KeyCode::Char('q') || ctrl_c {
                 self.should_quit = true;
@@ -13445,8 +14537,25 @@ impl App {
         if self.operator_input_active() && self.chat_composing {
             let ctrl_c = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
             if ctrl_c {
+                if self.chat_first {
+                    return self.chat_first_ctrl_c();
+                }
                 self.should_quit = true;
                 return Action::Quit;
+            }
+            // Any other key in the box disarms a pending Ctrl+C exit, so a
+            // Ctrl+C typed after real work starts the two-press count again.
+            // The same holds for a pending Esc clear and any key but Esc.
+            self.chat_ctrl_c_armed = None;
+            if code != KeyCode::Esc {
+                self.chat_esc_armed = None;
+            }
+            // A toast names Esc as its dismiss key and pui toasts never expire,
+            // so every Esc in the message box also clears it, on top of whatever
+            // that Esc does below (WI-10004807: the warning for an unknown
+            // `/command` stayed on screen until N or a tab switch).
+            if code == KeyCode::Esc {
+                self.toast = None;
             }
             // pui-chat-first-ux P-004: the permission prompt is answered the way
             // Claude Code's is — y/1/Enter allow, n/2/Esc deny — whenever the
@@ -13560,6 +14669,21 @@ impl App {
                 KeyCode::Esc if self.chat_streaming && !self.su_nothing_to_interrupt() => {
                     self.interrupt_chat_turn()
                 }
+                // pui-chat-first-ux P-027 (G-3): in chat-first the message box
+                // is the whole app, so with nothing running Esc stays in it, as
+                // in Claude Code and Codex. A read-only conversation still
+                // leaves the box: its title routes the owner "Esc, then
+                // s:Sessions" to start a new one.
+                KeyCode::Esc
+                    if self.chat_first
+                        && self.su_dispatch_decision().target
+                            != crate::su_session::SuDispatchTarget::ReadOnly =>
+                {
+                    self.chat_first_esc()
+                }
+                // D-026 (P-027 G-6): Shift+Tab steps the approvals mode, as in
+                // Claude Code.
+                KeyCode::BackTab if self.chat_first => self.cycle_approvals(),
                 KeyCode::Esc => {
                     self.chat_composing = false;
                     Action::Render
@@ -13617,6 +14741,14 @@ impl App {
                 // while the composer is focused, so the contract's "when the
                 // composer is focused" needs no separate focus test.
                 KeyCode::Char('@') => self.open_file_picker(),
+                // P-027 (parity checklist row 13): Alt+P opens the model
+                // picker, as in Claude Code, instead of typing a "p".
+                KeyCode::Char('p') | KeyCode::Char('P')
+                    if self.chat_first && mods.contains(KeyModifiers::ALT) =>
+                {
+                    self.open_model_picker();
+                    Action::Render
+                }
                 KeyCode::Char(c) => self.chat_insert_text(&c.to_string()),
                 _ => Action::None,
             };
@@ -15681,6 +16813,44 @@ mod tests {
         }
     }
 
+    /// P-024 / P-011: under an open SU approval card the working line says it
+    /// is waiting for the user and holds still. It used to read "Thinking"
+    /// with a moving spinner and timer, so it misreported the state and the
+    /// screen kept changing under the card.
+    #[test]
+    fn su_open_card_working_line_waits_for_the_user_and_holds_still() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.chat_streaming = true;
+        let start = std::time::Instant::now();
+        app.chat_turn_started = Some(start);
+        let running = app.chat_working_line(start + std::time::Duration::from_millis(300));
+        assert!(running.contains("… (0s"), "{running}");
+        assert!(!running.contains("Waiting for your"), "{running}");
+
+        open_approval_card(&mut app, 1, "alpha", "echo ALPHA");
+        let first = app.chat_working_line(start + std::time::Duration::from_millis(300));
+        let later = app.chat_working_line(start + std::time::Duration::from_secs(7));
+        assert!(first.contains("Waiting for your approval"), "{first}");
+        assert!(!first.contains("Thinking"), "{first}");
+        assert_eq!(first, later, "the line must not move while the card waits");
+
+        close_card(&mut app, 2, "alpha");
+        let resumed = app.chat_working_line(start + std::time::Duration::from_secs(7));
+        assert!(resumed.contains("(7s"), "{resumed}");
+
+        let mut question = su_event_base("card", 3);
+        question["turnId"] = json!("turn-1");
+        question["phase"] = json!("opened");
+        question["card"] = json!({"correlationId":"q1","prompt":"Which branch?","createdAt":3,
+            "presentation":{"kind":"radio","options":[{"id":"0","label":"main"}]}});
+        app.apply_su_session_event(su_event(question));
+        let asking = app.chat_working_line(start + std::time::Duration::from_secs(8));
+        assert!(asking.contains("Waiting for your answer"), "{asking}");
+    }
+
     /// P-015: Approve collapses the card to one "Approved" row at once, and
     /// neither a repeat while it is in flight nor a repeat just after the
     /// server closes it can answer the next card. A DIFFERENT key answers the
@@ -15815,6 +16985,8 @@ mod tests {
             command: None,
             uncertain: false,
             error: None,
+            model: None,
+            approvals: None,
         });
         app.chat_streaming = true;
         let mut ready = su_event_base("lifecycle", 1);
@@ -15915,6 +17087,7 @@ mod tests {
         let question =
             |prompt: &str| json!({"questions":[{"question":prompt,"options":[{"label":"Tests"}]}]});
         // (call id, tool name, input, card resolution or None, isError, expected)
+        #[allow(clippy::type_complexity)] // one row per case, read in place
         let cases: Vec<(&str, &str, Value, Option<&str>, bool, ToolOutcome)> = vec![
             (
                 "skip",
@@ -15954,7 +17127,7 @@ mod tests {
                 question("Bad schema?"),
                 None,
                 true,
-                ToolOutcome::Failed("SU-session tool failed".into()),
+                ToolOutcome::Failed(String::new()),
             ),
             (
                 "bash-declined",
@@ -15962,7 +17135,7 @@ mod tests {
                 json!({"command":"ls"}),
                 Some("declined"),
                 true,
-                ToolOutcome::Failed("SU-session tool failed".into()),
+                ToolOutcome::Failed(String::new()),
             ),
         ];
         for (call, name, input, resolution, is_error, expected) in cases {
@@ -17018,6 +18191,87 @@ mod tests {
         assert_eq!(a.session_picker.as_ref().unwrap().options.len(), 1);
     }
 
+    /// WI-10006652 (P-032 probe 16): a fresh chat's /model, before the first
+    /// message, listed every routing tier with its internal `when` note
+    /// ("[owner 2026-09-03] all tiers → …"), and on Codex every row was a
+    /// Claude or OMP tier the conversation could not run.
+    fn routing_tiers() -> Vec<crate::session_config::ModelTier> {
+        let note = |mut t: crate::session_config::ModelTier, backend: &str| {
+            t.when = Some("[owner 2026-09-03] all tiers → Claude Opus 5 xhigh".into());
+            t.backend = Some(backend.into());
+            t
+        };
+        vec![
+            note(tier("deep", "claude-opus-5:xhigh"), "claude-code"),
+            note(tier("ox-alpha", "openrouter/stealth/ox-alpha:max"), "omp"),
+            tier("any", "house-default"),
+        ]
+    }
+
+    fn picker_rows(a: &App) -> Vec<(String, String, Option<String>, bool)> {
+        a.session_picker
+            .as_ref()
+            .expect("picker opens")
+            .options
+            .iter()
+            .map(|o| (o.id.clone(), o.label.clone(), o.hint.clone(), o.disabled))
+            .collect()
+    }
+
+    #[test]
+    fn a_fresh_codex_chat_model_picker_offers_no_other_engines_tiers_or_routing_notes() {
+        let mut a = app_with_tiers(routing_tiers());
+        a.su_backend = Some(crate::su_session::SuSessionBackend::Codex);
+        a.open_model_picker();
+        let rows = picker_rows(&a);
+        let ids: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![crate::session_config::MODEL_INHERIT, "house-default"],
+            "only tiers that run on Codex (or anywhere) are offered"
+        );
+        for (_, label, hint, disabled) in &rows {
+            assert!(!disabled, "{label} is selectable");
+            let text = format!("{label} {}", hint.as_deref().unwrap_or(""));
+            assert!(!text.contains("[owner"), "routing note leaked: {text}");
+        }
+        assert!(
+            rows[0].2.as_deref().is_some_and(|hint| hint.contains("Codex")),
+            "the default row says the engine's own models come with the conversation: {:?}",
+            rows[0].2
+        );
+    }
+
+    #[test]
+    fn a_fresh_claude_chat_model_picker_keeps_claude_tiers_without_routing_notes() {
+        let mut a = app_with_tiers(routing_tiers());
+        a.su_backend = Some(crate::su_session::SuSessionBackend::Claude);
+        a.open_model_picker();
+        let rows = picker_rows(&a);
+        let ids: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                crate::session_config::MODEL_INHERIT,
+                "claude-opus-5:xhigh",
+                "house-default"
+            ]
+        );
+        assert!(rows.iter().all(|r| !r.3 && r.2.as_deref().map_or(true, |h| !h.contains("[owner"))));
+    }
+
+    #[test]
+    fn the_setup_form_model_picker_still_shows_every_tier_with_its_reason() {
+        let mut a = app_with_tiers(routing_tiers());
+        a.open_session_setup();
+        a.session_setup.as_mut().unwrap().backend = crate::su_session::SuSessionBackend::Codex;
+        a.open_model_picker();
+        let rows = picker_rows(&a);
+        assert_eq!(rows.len(), 4, "inherit + all three tiers");
+        assert!(rows[1].3 && rows[2].3, "Claude and OMP tiers are disabled on Codex");
+        assert!(!rows[3].3);
+    }
+
     #[test]
     fn open_model_picker_refreshes_when_server_config_arrives() {
         let mut a = App::new();
@@ -17336,6 +18590,8 @@ mod tests {
         a.chat_first = true;
         a.launch_cwd = Some("/work/app".into());
         a.agent_chat_summaries = vec![chat_summary_for("chat-earlier")];
+        // The list has arrived; an unloaded one is re-fetched (P-027 G-12).
+        a.agent_chats_loaded_for = Some(a.harness.clone());
         let mut earlier = inventory_row_for(
             "chat-earlier",
             crate::su_session::SuSessionReconciliation::EndedArchived,
@@ -17433,6 +18689,37 @@ mod tests {
         a.chat_first = false;
         a.open_conversation_picker();
         assert_eq!(a.session_picker.as_ref().unwrap().options.len(), 3);
+    }
+
+    /// pui-chat-first-ux P-031 (G-12): a new conversation offers `/resume`
+    /// exactly when `/resume` would list an earlier one in this directory,
+    /// and says nothing before the list has loaded.
+    #[test]
+    fn chat_first_offers_resume_only_when_this_directory_has_an_earlier_conversation() {
+        let mut row = inventory_row_for(
+            "here",
+            crate::su_session::SuSessionReconciliation::EndedArchived,
+        );
+        row.cwd = Some("/work/app".into());
+        let mut a = App::new();
+        a.chat_first = true;
+        a.launch_cwd = Some("/work/app".into());
+        a.agent_chat_summaries = vec![chat_summary_for("here")];
+        a.su_session_inventory = vec![row];
+        assert!(!a.chat_first_offers_resume(), "not before the list loaded");
+        a.agent_chats_loaded_for = Some(a.harness.clone());
+        assert!(a.chat_first_offers_resume());
+        a.agent_chat_id = Some("here".into());
+        assert!(
+            !a.chat_first_offers_resume(),
+            "the open conversation is not an earlier one"
+        );
+        a.agent_chat_id = None;
+        a.launch_cwd = Some("/work/other".into());
+        assert!(!a.chat_first_offers_resume(), "another directory's chat");
+        a.launch_cwd = Some("/work/app".into());
+        a.chat_first = false;
+        assert!(!a.chat_first_offers_resume(), "the workbench has its own list");
     }
 
     /// P-007 (P-005 review, step 5): /resume opened right after relaunch,
@@ -17759,7 +19046,7 @@ mod tests {
         assert!(!a.chat_shortcuts_open);
         assert!(a.chat_composing, "the first Esc only closes the list");
         a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        assert!(!a.chat_composing);
+        assert!(a.chat_composing, "P-027 (G-3): Esc never leaves the chat-first box");
     }
 
     /// P-018: Up/Down are message history while typing, so PgUp/PgDn scroll
@@ -17977,6 +19264,246 @@ mod tests {
         a
     }
 
+    #[test]
+    fn unsupported_launch_model_is_reported_before_first_message_and_still_blocked() {
+        let mut app = chat_first_app();
+        app.operator_config.agent = None;
+        app.apply_chat_launch_choice(Some("model-not-offered"), None);
+        assert_eq!(
+            app.pending_chat_model_blocker(),
+            None,
+            "wait for the live catalog"
+        );
+
+        let mut config = app.operator_config.clone();
+        config.tiers = vec![tier("quick", "haiku")];
+        config.agent = Some(
+            serde_json::from_value(json!({
+                "effectiveBackend":"claude-code",
+                "binaries":{"claude":"/test/claude"}
+            }))
+            .unwrap(),
+        );
+        app.set_operator_config(config);
+
+        assert_eq!(app.chat_model.as_deref(), Some("model-not-offered"));
+        assert!(app.session_setup.is_none());
+        assert_eq!(
+            app.pending_chat_model_blocker(),
+            Some(SETUP_MODEL_UNAVAILABLE_NOTE),
+            "the server's catalog should diagnose the launch pick before the first message"
+        );
+        app.apply_chat_launch_choice(Some("haiku"), None);
+        assert_eq!(
+            app.pending_chat_model_blocker(),
+            None,
+            "an offered model is accepted"
+        );
+        app.apply_chat_launch_choice(Some("model-not-offered"), None);
+
+        app.chat_input = "hello".into();
+        app.chat_cursor = app.chat_input.len();
+        assert_eq!(
+            app.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::CheckSessionSetup
+        );
+        assert_eq!(
+            app.setup_blocker().as_deref(),
+            Some(SETUP_MODEL_UNAVAILABLE_NOTE)
+        );
+        assert!(
+            app.su_pending_turn.is_none(),
+            "the invalid model is blocked before dispatch"
+        );
+    }
+
+    /// P-025: chat-first Esc stays in the message box (P-027), so `/backend`
+    /// is how a bare `pui` user picks Codex or OMP for a new conversation.
+    #[test]
+    fn chat_first_backend_command_picks_the_engine_for_a_new_conversation() {
+        use crate::session_config::PickerAxis;
+        let mut a = chat_first_app();
+        a.chat_input = "/backend".into();
+        a.chat_cursor = a.chat_input.len();
+        assert!(matches!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        ));
+        assert!(a.chat_input.is_empty(), "the command text is consumed");
+        let picker = a
+            .session_picker
+            .as_ref()
+            .expect("the backend picker opened");
+        assert_eq!(picker.axis, PickerAxis::Backend);
+        assert!(
+            picker.options.iter().all(|option| !option.disabled),
+            "no conversation is bound yet, so every engine is selectable"
+        );
+        // The engine it would start on anyway keeps a `--model` pick.
+        a.chat_model = Some("sonnet".into());
+        let _ = pick(&mut a, PickerAxis::Backend, "claude");
+        assert_eq!(a.chat_model.as_deref(), Some("sonnet"));
+
+        a.open_backend_picker();
+        let _ = pick(&mut a, PickerAxis::Backend, "codex");
+        assert!(a.session_picker.is_none());
+        assert_eq!(
+            a.su_backend,
+            Some(crate::su_session::SuSessionBackend::Codex)
+        );
+        assert_eq!(a.chat_model, None, "a Claude model spec does not carry to Codex");
+        assert_eq!(
+            a.toast.as_ref().map(|t| t.message.as_str()),
+            Some("Your next message starts a Codex conversation.")
+        );
+
+        // Once a message goes out the acknowledgement is stale.
+        a.chat_input = "hi".into();
+        a.chat_cursor = a.chat_input.len();
+        let _ = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.toast.is_none());
+    }
+
+    /// D-027: with a conversation open, a chat-first engine pick ends it the
+    /// way /clear does (it stays in /resume) and the next message starts on
+    /// the picked engine. Picking the engine it already runs on changes nothing.
+    #[test]
+    fn chat_first_backend_pick_on_an_open_conversation_starts_a_new_one() {
+        use crate::session_config::PickerAxis;
+        use crate::su_session::SuSessionBackend;
+        let mut a = chat_first_app_on_live_session("haiku");
+        a.chat_first = true;
+        let running = a.su_session.as_ref().map(|s| s.backend()).unwrap();
+
+        a.open_backend_picker();
+        assert!(
+            a.session_picker
+                .as_ref()
+                .unwrap()
+                .options
+                .iter()
+                .all(|option| !option.disabled),
+            "chat-first switches by starting a new conversation"
+        );
+        let same = running.label().to_ascii_lowercase();
+        let _ = pick(&mut a, PickerAxis::Backend, &same);
+        assert!(
+            a.su_session.is_some(),
+            "the same engine keeps the conversation"
+        );
+
+        let other = if running == SuSessionBackend::Omp {
+            "codex"
+        } else {
+            "omp"
+        };
+        a.open_backend_picker();
+        let _ = pick(&mut a, PickerAxis::Backend, other);
+        assert!(a.su_session.is_none() && a.agent_chat_id.is_none());
+        assert_eq!(
+            a.su_backend.map(|b| b.label().to_ascii_lowercase()).as_deref(),
+            Some(other)
+        );
+        assert!(a
+            .toast
+            .as_ref()
+            .unwrap()
+            .message
+            .ends_with("The last one is in /resume."));
+    }
+
+    /// P-027 (G-11): Ctrl+C with a draft clears it and keeps it in ↑ history;
+    /// only a second Ctrl+C quits (Codex parity). Before this, the first
+    /// Ctrl+C quit pui and lost the draft.
+    #[test]
+    fn chat_first_ctrl_c_clears_the_draft_before_it_quits() {
+        let mut a = chat_first_app();
+        a.chat_input = "half a thought".into();
+        a.chat_cursor = a.chat_input.len();
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Render);
+        assert!(!a.should_quit, "the first Ctrl+C must not quit with a draft");
+        assert!(a.chat_input.is_empty());
+        assert_eq!(a.chat_cursor, 0);
+        assert_eq!(
+            a.chat_history.last().map(String::as_str),
+            Some("half a thought"),
+            "the cleared draft is recoverable with ↑"
+        );
+        assert!(a.chat_ctrl_c_exit_armed());
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Quit);
+        assert!(a.should_quit);
+    }
+
+    /// P-027 (G-11): on an empty box one Ctrl+C only arms the exit. Typing
+    /// disarms it, and an arm older than the window does not count.
+    #[test]
+    fn chat_first_ctrl_c_on_an_empty_box_needs_a_second_press() {
+        let mut a = chat_first_app();
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Render);
+        assert!(!a.should_quit);
+        assert!(a.chat_ctrl_c_exit_armed());
+        a.on_key(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert!(!a.chat_ctrl_c_exit_armed(), "a typed key disarms the exit");
+        assert_eq!(a.chat_input, "h");
+        // This Ctrl+C clears the "h"; it does not quit.
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Render);
+        assert!(!a.should_quit);
+        // An expired arm is not a first press, and the tick clears it.
+        a.chat_ctrl_c_armed = std::time::Instant::now().checked_sub(CHAT_CTRL_C_EXIT_WINDOW);
+        assert!(!a.chat_ctrl_c_exit_armed());
+        assert_eq!(a.on_tick(), Action::Render, "the stale hint is repainted away");
+        assert!(a.chat_ctrl_c_armed.is_none());
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Render);
+        assert!(!a.should_quit);
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Quit);
+        assert!(a.should_quit);
+    }
+
+    /// P-027 (G-3): with nothing running, Esc keeps the chat-first box. One
+    /// Esc on a draft only arms the clear; a second clears it into ↑ history.
+    #[test]
+    fn chat_first_esc_stays_in_the_box_and_double_esc_clears_the_draft() {
+        let mut a = chat_first_app();
+        assert_eq!(a.on_key(KeyCode::Esc, KeyModifiers::NONE), Action::Render);
+        assert!(a.chat_composing, "Esc on an empty box must not leave it");
+        for c in "keep".chars() {
+            a.on_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(a.chat_composing);
+        assert_eq!(a.chat_input, "keep", "one Esc never loses typing");
+        assert!(a.chat_esc_clear_armed());
+        // A typed key in between disarms the clear.
+        a.on_key(KeyCode::Char('!'), KeyModifiers::NONE);
+        assert!(!a.chat_esc_clear_armed());
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(a.chat_input, "keep!");
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(a.chat_input.is_empty(), "the second Esc clears the draft");
+        assert!(a.chat_composing);
+        assert_eq!(a.chat_history.last().map(String::as_str), Some("keep!"));
+        // An expired arm is not a first Esc.
+        a.on_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        a.chat_esc_armed = std::time::Instant::now().checked_sub(CHAT_CTRL_C_EXIT_WINDOW);
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(a.chat_input, "x");
+    }
+
+    /// P-027 (G-11): with an empty box, Ctrl+C stops a running reply (as in
+    /// Claude Code and Codex) instead of quitting.
+    #[test]
+    fn chat_first_ctrl_c_stops_a_running_reply_before_it_quits() {
+        let mut a = chat_first_app();
+        a.chat_streaming = true;
+        assert_eq!(
+            a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Action::CancelChat
+        );
+        assert!(!a.should_quit);
+        assert!(!a.chat_ctrl_c_exit_armed());
+    }
+
     /// Owner #783 (Claude Code / Codex parity): the first Enter in chat-first
     /// sends the message into a new session on the defaults — no three-step
     /// form in between.
@@ -18040,6 +19567,394 @@ mod tests {
             b.session_setup.as_ref().unwrap().account.as_deref(),
             Some("acct-7")
         );
+    }
+
+    /// A chat-first app bound to a live Claude session running `model`.
+    fn chat_first_app_on_live_session(model: &str) -> App {
+        let mut a = chat_first_app();
+        a.set_operator_config(OperatorConfig {
+            tiers: vec![tier("quick", "haiku"), tier("deep", "opus:high")],
+            ..Default::default()
+        });
+        a.agent_chat_id = Some("chat-1".into());
+        a.set_su_session_binding(su_binding());
+        let session = a.su_session.as_mut().unwrap();
+        session.lifecycle = crate::su_session::SuSessionLifecycleState::Running;
+        session.descriptor = Some(serde_json::from_value(json!({
+            "identity": {"agentChatId":"chat-1", "advSessionId":7, "backend":"claude", "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"},
+            "lifecycle":"ready", "runtimeGeneration":1, "role":"su", "model": model, "carry":"warm", "modes":[],
+            "capabilities": {"commands": {"resume":{"state":"supported","implementation":"native"}, "fork":{"state":"unsupported","reason":"provider does not expose fork"}}, "features": {}},
+            "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+        })).unwrap());
+        a
+    }
+
+    fn pick(a: &mut App, axis: crate::session_config::PickerAxis, id: &str) -> Action {
+        let picker = a.session_picker.as_mut().expect("a picker is open");
+        assert_eq!(picker.axis, axis);
+        let index = picker
+            .options
+            .iter()
+            .position(|option| option.id == id)
+            .unwrap_or_else(|| panic!("no {id} option"));
+        picker.sel = index;
+        a.commit_session_picker()
+    }
+
+    /// WI-10006652: once the engine has reported its own models, /model on a
+    /// live conversation lists THOSE (the Claude SDK catalog here) instead of
+    /// the workspace's routing tiers: no tier names, no tier `when` notes, and
+    /// every row settable. A pick still rides on the next owner turn.
+    #[test]
+    fn a_live_session_model_picker_lists_the_engines_own_models() {
+        use crate::session_config::PickerAxis;
+        let mut a = chat_first_app_on_live_session("claude-sonnet-5");
+        a.operator_config.tiers[0].when =
+            Some("[owner 2026-09-03] all tiers → Claude Opus 5 xhigh; trivial work".into());
+        let rows = |a: &App| -> Vec<(String, Option<String>, bool)> {
+            a.session_picker
+                .as_ref()
+                .expect("a picker is open")
+                .options
+                .iter()
+                .map(|option| (option.label.clone(), option.hint.clone(), option.disabled))
+                .collect()
+        };
+
+        // Before the engine answers, the tier menu is the fallback.
+        a.open_model_picker();
+        assert!(rows(&a)[1].0.starts_with("quick — "), "{:?}", rows(&a));
+
+        a.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().models =
+            serde_json::from_value(json!([
+                {"id":"default","label":"Default (recommended)","description":"Opus 5 with 1M context · Best for everyday, complex tasks","resolvedModel":"claude-opus-5[1m]","isDefault":true},
+                {"id":"sonnet","label":"Sonnet","description":"Sonnet 5 · Efficient for routine tasks","resolvedModel":"claude-sonnet-5"},
+                {"id":"haiku","label":"Haiku","description":"Haiku 4.5 · Fastest for quick answers"}
+            ]))
+            .unwrap();
+        a.open_model_picker();
+        let listed = rows(&a);
+        assert_eq!(
+            listed.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+            vec![
+                "Keep the current model (claude-sonnet-5)",
+                "Default (recommended)",
+                "Sonnet · current",
+                "Haiku",
+            ]
+        );
+        assert_eq!(listed[2].1.as_deref(), Some("Sonnet 5 · Efficient for routine tasks"));
+        assert!(listed.iter().all(|row| !row.2), "every engine row is settable: {listed:?}");
+        assert!(
+            listed.iter().all(|row| !row.0.contains("[owner")
+                && !row.1.as_deref().unwrap_or("").contains("[owner")
+                && !row.0.contains("quick")),
+            "no routing tier name or note: {listed:?}"
+        );
+
+        assert!(matches!(pick(&mut a, PickerAxis::Model, "haiku"), Action::Render));
+        assert_eq!(a.su_next_model.as_deref(), Some("haiku"));
+        assert_eq!(a.session_note.as_deref(), Some("Next turn uses haiku."));
+        a.open_model_picker();
+        assert_eq!(rows(&a)[3].0, "Haiku · next turn");
+        // Keep discards the pending pick.
+        assert!(matches!(pick(&mut a, PickerAxis::Model, crate::session_config::MODEL_INHERIT), Action::Render));
+        assert_eq!(a.su_next_model, None);
+    }
+
+    /// pui-chat-first-ux P-026 / D-025: on a live bound session a model or
+    /// effort pick does not open a new session. It rides on the next owner
+    /// turn, the footer says so until then, and dispatch hands it to that turn.
+    #[test]
+    fn a_live_session_model_pick_rides_on_the_next_owner_turn() {
+        use crate::session_config::PickerAxis;
+        let mut a = chat_first_app_on_live_session("haiku");
+
+        // `/model` from the composer opens the picker (Claude Code parity).
+        a.chat_input = "/model".into();
+        a.chat_cursor = a.chat_input.len();
+        assert!(matches!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        ));
+        assert!(a.chat_input.is_empty(), "the command text is consumed");
+        assert!(a.su_pending_turn.is_none(), "nothing was sent");
+        let labels: Vec<String> = a
+            .session_picker
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .map(|option| option.label.clone())
+            .collect();
+        assert_eq!(labels[0], "Keep the current model (haiku)");
+        assert!(labels[1].ends_with(" · current"), "{labels:?}");
+
+        assert!(matches!(pick(&mut a, PickerAxis::Model, "opus:high"), Action::Render));
+        assert!(a.session_picker.is_none());
+        assert!(a.session_setup.is_none(), "a model pick never opens the new-session form");
+        assert_eq!(a.su_next_model.as_deref(), Some("opus:high"));
+        assert_eq!(a.session_note.as_deref(), Some("Next turn uses opus:high."));
+        assert_eq!(a.chat_model_label(), "haiku · next turn: opus:high");
+
+        // An effort pick composes onto the PENDING model, not the running one.
+        a.session_picker = Some(crate::session_config::SessionPicker::new(
+            PickerAxis::Effort,
+            crate::session_config::effort_options(&["low".to_string(), "max".to_string()]),
+        ));
+        pick(&mut a, PickerAxis::Effort, "max");
+        assert_eq!(a.su_next_model.as_deref(), Some("opus:max"));
+
+        // Reopened, "Keep" still names the running model and the pending tier
+        // is marked; choosing Keep discards the pending switch.
+        a.open_model_picker();
+        let picker = a.session_picker.as_ref().unwrap();
+        assert_eq!(picker.options[0].label, "Keep the current model (haiku)");
+        assert!(picker.options[2].label.ends_with(" · next turn"), "{:?}", picker.options[2]);
+        pick(&mut a, PickerAxis::Model, crate::session_config::MODEL_INHERIT);
+        assert_eq!(a.su_next_model, None);
+        assert_eq!(a.session_note.as_deref(), Some("Keeping haiku."));
+        assert_eq!(a.chat_model_label(), "haiku");
+
+        // Picking the model the session already runs is not a switch.
+        a.open_model_picker();
+        pick(&mut a, PickerAxis::Model, "haiku");
+        assert_eq!(a.su_next_model, None);
+
+        // Dispatch moves the pick onto the owner turn and clears it.
+        a.open_model_picker();
+        pick(&mut a, PickerAxis::Model, "opus:high");
+        a.chat_input = "hi".into();
+        a.chat_cursor = a.chat_input.len();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let pending = a.su_pending_turn.as_ref().expect("the turn is pending");
+        assert_eq!(pending.content, "hi");
+        assert_eq!(pending.model.as_deref(), Some("opus:high"));
+        assert_eq!(a.su_next_model, None);
+    }
+
+    /// A live Claude session whose engine reports approvals mode `mode`.
+    fn chat_first_app_with_approvals(mode: &str) -> App {
+        let mut a = chat_first_app_on_live_session("haiku");
+        a.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().approvals = Some(mode.into());
+        a
+    }
+
+    fn toast_text(a: &App) -> String {
+        a.toast.as_ref().map(|t| t.message.clone()).unwrap_or_default()
+    }
+
+    fn set_usage(a: &mut App, tokens: u64, window: u64, cost: Option<f64>) {
+        a.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().usage =
+            Some(crate::su_session::SuSessionUsage {
+                context_tokens: Some(tokens),
+                context_window: Some(window),
+                cost_usd: cost,
+                ..Default::default()
+            });
+    }
+
+    fn set_plan(a: &mut App, items: &[(&str, &str)]) {
+        a.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().plan = Some(
+            items
+                .iter()
+                .map(|(text, status)| crate::su_session::SuPlanItem {
+                    text: (*text).into(),
+                    status: (*status).into(),
+                })
+                .collect(),
+        );
+    }
+
+    /// pui-chat-first-ux P-029 / D-029: the footer reads model · approvals ·
+    /// directory · context left · cost, and nothing unmeasured.
+    #[test]
+    fn footer_shows_approvals_context_left_and_cost_once_measured() {
+        let mut a = chat_first_app_with_approvals("auto-edit");
+        let before = a.chat_status_line();
+        assert!(before.contains(" · auto-edit · "), "{before}");
+        assert!(!before.contains("context"), "unmeasured context is left out: {before}");
+
+        set_usage(&mut a, 50_000, 200_000, Some(1.234));
+        let line = a.chat_status_line();
+        assert!(line.ends_with(" · 75% context left · $1.23"), "{line}");
+        assert!(a.chat_context_warning().is_none());
+        let status = a.agent_chat_usage_label().unwrap();
+        assert!(status.contains("cost $1.2340"), "{status}");
+        assert!(status.contains("context 50000/200000 (75% left)"), "{status}");
+        let report = a.chat_status_report();
+        assert!(
+            report.contains(" · approvals auto-edit · context 50000/200000 (75% left) · cost $1.23 · conversation"),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn footer_warns_from_eighty_percent_of_the_context_used() {
+        let mut a = chat_first_app_with_approvals("ask");
+        set_usage(&mut a, 159_000, 200_000, None);
+        assert!(a.chat_context_warning().is_none(), "79.5% used is 21% left, 79% used");
+        set_usage(&mut a, 170_000, 200_000, None);
+        let warning = a.chat_context_warning().expect("85% used warns");
+        assert!(warning.starts_with("Context 85% full"), "{warning}");
+        let line = a.chat_status_line();
+        assert!(line.contains(&warning) && !line.contains("context left"), "{line}");
+        assert!(!line.contains('$'), "no cost was measured: {line}");
+    }
+
+    /// D-029: the checklist shows while there is work left or the turn runs,
+    /// and hides once every item is done and the turn has ended.
+    #[test]
+    fn plan_checklist_hides_once_everything_is_done_and_the_turn_ended() {
+        let mut a = chat_first_app_with_approvals("ask");
+        assert!(a.chat_plan_checklist().is_none(), "no plan yet");
+        set_plan(&mut a, &[("Read", "completed"), ("Fix", "in_progress")]);
+        assert_eq!(a.chat_plan_checklist().map(|p| p.len()), Some(2));
+        set_plan(&mut a, &[("Read", "completed"), ("Fix", "completed")]);
+        a.chat_streaming = true;
+        assert!(a.chat_plan_checklist().is_some(), "still shown while the turn runs");
+        a.chat_streaming = false;
+        assert!(a.chat_plan_checklist().is_none());
+        set_plan(&mut a, &[]);
+        assert!(a.chat_plan_checklist().is_none());
+    }
+
+    /// pui-chat-first-ux P-027 (G-6) / D-026: `/approvals` opens a three-row
+    /// picker with the running mode marked; the pick rides on the next owner
+    /// turn, and dispatch hands it to that turn and clears it.
+    #[test]
+    fn approvals_picker_marks_the_current_mode_and_the_pick_rides_on_the_next_turn() {
+        use crate::session_config::PickerAxis;
+        let mut a = chat_first_app_with_approvals("ask");
+
+        a.chat_input = "/approvals".into();
+        a.chat_cursor = a.chat_input.len();
+        assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render));
+        assert!(a.su_pending_turn.is_none(), "opening the picker sends nothing");
+        let picker = a.session_picker.as_ref().expect("the approvals picker is open");
+        assert_eq!(picker.axis, PickerAxis::Approvals);
+        let labels: Vec<&str> = picker.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["ask (current)", "auto-edit", "read-only"]);
+        assert!(picker.options.iter().all(|o| o.hint.is_some()), "every row has a one-line description");
+        assert_eq!(picker.sel, 0, "the cursor starts on the running mode");
+
+        pick(&mut a, PickerAxis::Approvals, "read-only");
+        assert!(a.session_picker.is_none());
+        assert!(a.session_setup.is_none(), "an approvals pick never opens the new-session form");
+        assert_eq!(a.su_next_approvals.as_deref(), Some("read-only"));
+        assert!(toast_text(&a).contains("read-only"), "{}", toast_text(&a));
+        assert!(toast_text(&a).contains("from your next message"), "{}", toast_text(&a));
+        let status = a.chat_status_report();
+        assert!(status.contains(" · approvals ask · next turn: read-only"), "{status}");
+
+        // Reopened, the pending pick is marked and selected.
+        a.open_approvals_picker();
+        let picker = a.session_picker.as_ref().unwrap();
+        assert_eq!(picker.options[2].label, "read-only (next message)");
+        assert_eq!(picker.sel, 2);
+        // Choosing the running mode discards the pending pick.
+        pick(&mut a, PickerAxis::Approvals, "ask");
+        assert_eq!(a.su_next_approvals, None);
+        assert!(toast_text(&a).contains("already on"), "{}", toast_text(&a));
+
+        // Dispatch moves the pick onto the owner turn and clears it.
+        a.open_approvals_picker();
+        pick(&mut a, PickerAxis::Approvals, "auto-edit");
+        a.chat_input = "hi".into();
+        a.chat_cursor = a.chat_input.len();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let pending = a.su_pending_turn.as_ref().expect("the turn is pending");
+        assert_eq!(pending.approvals.as_deref(), Some("auto-edit"));
+        assert_eq!(a.su_next_approvals, None);
+        assert!(pending.model.is_none(), "an approvals pick does not switch the model");
+    }
+
+    /// D-026: Shift+Tab in the composer steps ask -> auto-edit -> read-only ->
+    /// ask, starting from the mode the engine reports, as in Claude Code.
+    #[test]
+    fn shift_tab_cycles_the_approvals_mode_from_the_running_one() {
+        let mut a = chat_first_app_with_approvals("auto-edit");
+        a.chat_composing = true;
+        a.on_key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.su_next_approvals.as_deref(), Some("read-only"));
+        assert!(toast_text(&a).contains("Shift+Tab for the next mode"), "{}", toast_text(&a));
+        a.on_key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.su_next_approvals.as_deref(), Some("ask"));
+        // Back round to the running mode: nothing is pending any more.
+        a.on_key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.su_next_approvals, None);
+        assert!(toast_text(&a).contains("already on"), "{}", toast_text(&a));
+        assert!(a.su_pending_turn.is_none(), "cycling never sends a message");
+        assert!(
+            a.chat_status_report().contains(" · approvals auto-edit · conversation"),
+            "{}",
+            a.chat_status_report()
+        );
+    }
+
+    /// P-027 (parity checklist row 13): Alt+P in the message box opens the
+    /// model picker, as in Claude Code, and types nothing; a plain p still types.
+    #[test]
+    fn alt_p_opens_the_model_picker_and_types_nothing() {
+        let mut a = chat_first_app_on_live_session("haiku");
+        a.chat_composing = true;
+        a.on_key(KeyCode::Char('p'), KeyModifiers::ALT);
+        let picker = a.session_picker.as_ref().expect("Alt+P opens the model picker");
+        assert_eq!(picker.axis, crate::session_config::PickerAxis::Model);
+        assert!(a.chat_input.is_empty(), "Alt+P types nothing: {:?}", a.chat_input);
+        a.session_picker = None;
+        a.on_key(KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(a.chat_input, "p");
+    }
+
+    /// D-026: OMP has no approval-mode RPC, so /approvals and Shift+Tab say so
+    /// and store nothing its engine would refuse.
+    #[test]
+    fn approvals_is_refused_for_omp_without_storing_a_pick() {
+        let mut a = chat_first_app();
+        a.su_backend = Some(crate::su_session::SuSessionBackend::Omp);
+        a.chat_input = "/approvals".into();
+        a.chat_cursor = a.chat_input.len();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.session_picker.is_none());
+        assert!(toast_text(&a).contains("not available for OMP"), "{}", toast_text(&a));
+        a.chat_composing = true;
+        a.on_key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.su_next_approvals, None);
+        assert!(!a.chat_status_report().contains("approvals"));
+    }
+
+    /// pui-chat-first-ux P-026 / D-023: `pui --model`/`--account` set what a new
+    /// conversation starts on; `/status` reports what a bound one RUNS on.
+    #[test]
+    fn launch_choice_and_status_report_the_model_and_account() {
+        let mut fresh = chat_first_app();
+        fresh.apply_chat_launch_choice(Some("opus:high"), Some("auto"));
+        assert_eq!(fresh.chat_model.as_deref(), Some("opus:high"));
+        assert_eq!(fresh.chat_account.as_deref(), Some("auto"));
+        fresh.apply_chat_launch_choice(None, Some("  "));
+        assert_eq!(fresh.chat_account.as_deref(), Some("auto"), "blank keeps the choice");
+        let status = fresh.chat_status_report();
+        assert!(status.starts_with("Model opus:high · account auto · engine "), "{status}");
+        assert!(status.ends_with("conversation new"), "{status}");
+
+        let mut live = chat_first_app_on_live_session("haiku");
+        live.chat_account = Some("default".into());
+        live.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().account_route =
+            Some("work".into());
+        live.su_next_model = Some("opus:high".into());
+        live.chat_input = "/status".into();
+        live.chat_cursor = live.chat_input.len();
+        assert!(matches!(
+            live.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        ));
+        let toast = live.toast.as_ref().expect("/status shows a toast");
+        assert_eq!(
+            toast.message,
+            "Model haiku · next turn: opus:high · account work · engine Claude · conversation running"
+        );
+        assert!(live.su_pending_turn.is_none(), "nothing was sent");
     }
 
     /// pui-chat-first-ux P-012: Enter moves the message into the transcript
@@ -18198,6 +20113,72 @@ mod tests {
         );
     }
 
+    /// pui-chat-first-ux P-028 (WI-10006466): two Codex legs of the parity
+    /// battery (/tmp/pui-p028d-codex, /tmp/pui-p028f-codex) showed "Starting
+    /// Codex…" and then, 3.5s later, setup's "Nothing answered at that address.
+    /// … install … the Papercusp Server package", because one identity
+    /// re-check at the first send failed while the staging operator was
+    /// unreachable. An operator that answered earlier in this launch is re-checked
+    /// behind the chat instead; a first run where nothing ever answered still
+    /// opens setup at once.
+    #[test]
+    fn chat_first_quick_start_rechecks_an_operator_that_stopped_answering() {
+        use crate::http::{RendezvousError, RendezvousFailure};
+        let down = RendezvousError::new(RendezvousFailure::Unreachable, "http://127.0.0.1:3170", "refused")
+            .status_line();
+        let started = |answered_before: bool| {
+            let mut a = chat_first_app();
+            let identity = a.backend_identity.take().unwrap();
+            if answered_before {
+                a.update(Event::BackendIdentity(Ok(identity.clone())));
+                assert!(a.operator_answered);
+                // Still being re-checked when the first message is sent.
+                a.backend_identity = None;
+            }
+            a.chat_input = "hello".into();
+            assert_eq!(
+                a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+                Action::CheckSessionSetup
+            );
+            assert_eq!(a.update(Event::BackendIdentity(Err(down.clone()))), Action::Render);
+            (a, identity)
+        };
+
+        // Answered at launch, down at the first send: keep waiting, re-check.
+        let (mut a, identity) = started(true);
+        assert_eq!(a.chat_first_quiet_wait().as_deref(), Some("Starting Claude…"));
+        assert!(a.chat_first_autostart);
+        assert_eq!(a.setup_blocker().as_deref(), Some(SETUP_STOPPED_ANSWERING_NOTE));
+        assert!(a.chat_first_identity_retry_at.is_some(), "a re-check is armed");
+        assert_eq!(a.on_tick(), Action::None, "not due yet");
+        a.chat_first_identity_retry_at =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+        assert_eq!(a.on_tick(), Action::CheckSessionSetup, "the due re-check runs");
+        assert!(a.chat_first_identity_retry_at.is_none());
+        // The operator is back: the waiting message starts.
+        let action = a.update(Event::BackendIdentity(Ok(identity)));
+        assert!(
+            matches!(action, Action::OpenSuSession { initial_turn: Some(ref text), .. } if text == "hello"),
+            "got {action:?}"
+        );
+
+        // Still down when the quiet wait runs out: setup opens on the reason,
+        // which names a restart, not an install.
+        let (mut b, _) = started(true);
+        b.chat_first_autostart_since = std::time::Instant::now().checked_sub(CHAT_FIRST_QUIET_WAIT);
+        assert_eq!(b.chat_first_quiet_wait(), None);
+        assert_eq!(b.on_tick(), Action::Render, "the form is repainted");
+        assert!(b.chat_first_identity_retry_at.is_none(), "no more re-checks");
+        let note = b.setup_blocker().unwrap();
+        assert!(note.contains("stopped answering") && !note.contains("install"), "{note}");
+
+        // Nothing ever answered: the ordinary first run opens setup at once.
+        let (c, _) = started(false);
+        assert_eq!(c.chat_first_quiet_wait(), None);
+        assert!(c.chat_first_identity_retry_at.is_none());
+        assert_eq!(c.setup_blocker().as_deref(), Some(SETUP_UNREACHABLE_NOTE));
+    }
+
     /// The quiet wait is for conditions that clear by themselves. A loaded
     /// list without the project needs the owner, and a wait longer than
     /// `CHAT_FIRST_QUIET_WAIT` must say why: both open the form, and Esc
@@ -18263,8 +20244,8 @@ mod tests {
     #[test]
     fn chat_first_slash_menu_runs_a_command_instead_of_sending() {
         let mut a = chat_first_app();
-        a.chat_input = "/e".into();
-        a.chat_cursor = 2;
+        a.chat_input = "/ex".into();
+        a.chat_cursor = 3;
         assert!(matches!(
             a.on_key(KeyCode::Down, KeyModifiers::NONE),
             Action::Render
@@ -18314,6 +20295,10 @@ mod tests {
             Action::Render
         ));
         assert!(a.chat_input.is_empty(), "Esc dismisses the command");
+        assert!(
+            a.toast.is_none(),
+            "the same Esc dismisses the warning that names /nope (WI-10004807)"
+        );
         // Text with a space is a message, not a command.
         a.chat_input = "/tmp is full".into();
         a.chat_cursor = a.chat_input.len();
@@ -18322,6 +20307,25 @@ mod tests {
             Action::Render
         ));
         assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "/tmp is full");
+    }
+
+    #[test]
+    fn chat_first_esc_in_an_empty_message_box_dismisses_the_toast() {
+        // WI-10004807: toasts have no expiry, so the message box's own Esc
+        // must clear one too. Since P-027 (G-3) that Esc keeps the box.
+        let mut a = chat_first_app();
+        a.chat_toast("warn", "something to dismiss".into());
+        assert!(a.chat_input.is_empty());
+        assert!(a.toast.is_some());
+        assert!(matches!(
+            a.on_key(KeyCode::Esc, KeyModifiers::NONE),
+            Action::Render
+        ));
+        assert!(
+            a.chat_composing,
+            "the message box's own Esc branch handled the key and kept the box"
+        );
+        assert!(a.toast.is_none(), "Esc dismissed the toast");
     }
 
     #[test]
@@ -18417,6 +20421,64 @@ mod tests {
     /// pui-chat-first-ux P-003: an engine that dies while starting (the
     /// stream-error path) reads as one plain sentence with the retry step; the
     /// raw "SU-session: …" text is kept for the details view only.
+    /// P-024: the bounded send waits name what was slow instead of claiming
+    /// the engine stopped (P-023's "Claude stopped before it was ready").
+    #[test]
+    fn chat_first_slow_send_failures_say_what_was_slow() {
+        for (raw, expected) in [
+            (
+                "Session did not become ready within 60s. Draft retained.",
+                "Claude is taking too long to start; your message is kept, press Enter to send your message again.",
+            ),
+            (
+                // WI-10006644: a stalled operator is running; never advise a restart.
+                "The operator was busy and did not answer for 20s. Draft retained.",
+                "Papercusp is busy and did not answer; your message is kept, press Enter to send your message again.",
+            ),
+        ] {
+            let mut a = chat_first_app();
+            a.chat_input = "hello".into();
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+            a.update(Event::SuSessionOpened(su_binding()));
+            a.agent_chat_id = Some("chat-1".into());
+            a.update(Event::SuSessionStreamError {
+                chat_id: "chat-1".into(),
+                message: raw.into(),
+            });
+            assert_eq!(a.chat_failure_sentence().as_deref(), Some(expected), "{raw}");
+        }
+    }
+
+    /// pui-chat-first-ux P-031 (G-13): a missing engine login names the
+    /// command that signs that engine in, not just "sign in to Claude".
+    #[test]
+    fn chat_first_missing_login_says_how_to_sign_in() {
+        use crate::su_session::SuSessionBackend;
+        for (backend, step) in [
+            (SuSessionBackend::Claude, "run claude and type /login"),
+            (SuSessionBackend::Codex, "run codex login"),
+            (SuSessionBackend::Omp, "run omp and type /login"),
+        ] {
+            let mut a = chat_first_app();
+            a.su_backend = Some(backend);
+            a.chat_input = "hello".into();
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+            a.update(Event::SuSessionError(
+                "open SU session: 401 Unauthorized: Not logged in · Please run /login".into(),
+            ));
+            let label = backend.label();
+            // The retry clause depends on whether the draft became a pending
+            // turn (the existing retry tests cover it); this test is the step.
+            let sentence = a.chat_failure_sentence().unwrap_or_default();
+            assert!(
+                sentence.starts_with(&format!(
+                    "{label} is not signed in; in a terminal on the computer running Papercusp, {step}, then "
+                )),
+                "{label}: {sentence}"
+            );
+        }
+    }
+
     #[test]
     fn chat_first_startup_failure_is_one_plain_sentence() {
         let mut a = chat_first_app();
@@ -18458,6 +20520,31 @@ mod tests {
             .chat_raw_failure()
             .is_some_and(|raw| raw.contains("attached_engine_start_failed")));
 
+        // WI-10006770: a restored (adopted) Codex conversation whose attach
+        // the operator refuses names Codex, not the configured default engine.
+        let mut c = chat_first_app();
+        c.agent_chat_id = Some("chat-codex".into());
+        c.su_session_inventory = vec![inventory_row_for(
+            "chat-codex",
+            crate::su_session::SuSessionReconciliation::Attached,
+        )];
+        assert!(matches!(
+            c.adopt_bound_su_session(),
+            Some(Action::AttachSuSession {
+                backend: crate::su_session::SuSessionBackend::Codex,
+                ..
+            })
+        ));
+        c.update(Event::SuSessionRefused {
+            code: "attached_engine_start_failed".into(),
+            message: "The saved Codex SU configuration is not ready: AGENTS.md is missing".into(),
+        });
+        let sentence = c.chat_failure_sentence().unwrap_or_default();
+        assert!(
+            sentence.starts_with("Codex could not start: The saved Codex SU configuration is not ready"),
+            "{sentence}"
+        );
+
         let mut b = chat_first_app();
         b.chat_input = "hello".into();
         b.on_key(KeyCode::Enter, KeyModifiers::NONE);
@@ -18466,7 +20553,7 @@ mod tests {
         ));
         assert_eq!(
             b.chat_failure_sentence().as_deref(),
-            Some("PUI lost its connection to Claude; press Enter to send your message again.")
+            Some("PUI cannot reach Papercusp; start Papercusp Server, then press Enter to send your message again.")
         );
         // A later successful open clears the refusal with the connection error.
         a.update(Event::SuSessionOpened(su_binding()));
@@ -18858,6 +20945,61 @@ mod tests {
         );
     }
 
+    /// P-027 (G-4): /clear ends the running engine (resumable, as after
+    /// /exit) and unbinds the chat, so the next message starts a new one.
+    #[test]
+    fn clear_ends_the_engine_and_starts_a_new_conversation() {
+        let mut a = app_with_running_su_session();
+        a.chat_messages.push(ChatMessage::user("old message"));
+        match a.run_slash_command("clear") {
+            Action::SendSuSessionCommand { chat_id, command, .. } => {
+                assert_eq!(chat_id, "chat-1");
+                assert_eq!(command["type"], "end");
+            }
+            other => panic!("/clear must end the running engine, got {other:?}"),
+        }
+        assert!(!a.should_quit, "/clear does not quit pui");
+        assert!(a.agent_chat_id.is_none(), "the chat is unbound");
+        assert!(a.su_session.is_none());
+        assert!(a.chat_messages.is_empty(), "the transcript starts empty");
+        assert!(a.toast.as_ref().unwrap().message.contains("/resume"));
+        // With nothing bound it is just a fresh box, and says nothing.
+        let mut fresh = App::new();
+        fresh.toast = None;
+        assert_eq!(fresh.run_slash_command("clear"), Action::Render);
+        assert!(fresh.toast.is_none());
+    }
+
+    /// P-027 (G-4): /compact goes to a Claude engine as "/compact" and is
+    /// refused in plain words for an engine that cannot take it.
+    #[test]
+    fn compact_sends_the_command_to_claude_and_explains_elsewhere() {
+        let mut a = app_with_running_su_session();
+        assert_eq!(
+            a.su_session.as_ref().unwrap().backend(),
+            crate::su_session::SuSessionBackend::Claude
+        );
+        a.run_slash_command("compact");
+        assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "/compact");
+
+        let mut codex = app_with_running_su_session();
+        codex
+            .su_session
+            .as_mut()
+            .unwrap()
+            .identity
+            .as_mut()
+            .unwrap()
+            .backend = crate::su_session::SuSessionBackend::Codex;
+        assert_eq!(codex.run_slash_command("compact"), Action::Render);
+        assert!(codex.su_pending_turn.is_none(), "nothing is sent to Codex");
+        assert!(codex.toast.as_ref().unwrap().message.contains("on its own"));
+
+        let mut idle = App::new();
+        assert_eq!(idle.run_slash_command("compact"), Action::Render);
+        assert!(idle.toast.as_ref().unwrap().message.contains("no conversation"));
+    }
+
     #[test]
     fn detach_with_nothing_running_says_so_and_does_not_quit() {
         let mut a = App::new();
@@ -18959,6 +21101,8 @@ mod tests {
             command: None,
             uncertain: false,
             error: None,
+            model: None,
+            approvals: None,
         });
         let error_at = |sequence: u64, message: &str| {
             let mut event = su_event_base("error", sequence);
@@ -18991,10 +21135,130 @@ mod tests {
         );
     }
 
+    /// P-025: an approval card pauses the turn. Claude's engine reports
+    /// waiting-for-owner while its card is open (P-025 frames, 2026-10-06,
+    /// showed "Worked for 8s" under the waiting Update row); the turn must
+    /// keep running until the engine really settles.
+    #[test]
+    fn su_waiting_for_owner_under_an_open_card_pauses_the_turn() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        let lifecycle = |sequence: u64, previous: &str, state: &str| {
+            let mut event = su_event_base("lifecycle", sequence);
+            event["previousState"] = json!(previous);
+            event["state"] = json!(state);
+            event["runtimeGeneration"] = json!(1);
+            su_event(event)
+        };
+        app.apply_su_session_event(lifecycle(1, "ready", "running"));
+        assert!(app.chat_streaming);
+        let mut card = su_event_base("card", 2);
+        card["turnId"] = json!("turn-1");
+        card["phase"] = json!("opened");
+        card["card"] = json!({"correlationId":"approve-1","prompt":"Allow Update(calc.js)?",
+            "createdAt":2,"presentation":{"kind":"radio","options":[{"id":"yes","label":"Approve"}]}});
+        app.apply_su_session_event(su_event(card));
+        app.apply_su_session_event(lifecycle(3, "running", "waiting-for-owner"));
+        assert!(
+            app.chat_streaming,
+            "an open approval card pauses the turn; it does not end it"
+        );
+        let mut closed = su_event_base("card", 4);
+        closed["turnId"] = json!("turn-1");
+        closed["phase"] = json!("closed");
+        closed["correlationId"] = json!("approve-1");
+        closed["resolution"] = json!("submitted");
+        app.apply_su_session_event(su_event(closed));
+        app.apply_su_session_event(lifecycle(5, "waiting-for-owner", "running"));
+        assert!(app.chat_streaming);
+        // With no card open, waiting-for-owner is the real end of the turn.
+        app.apply_su_session_event(lifecycle(6, "running", "waiting-for-owner"));
+        assert!(!app.chat_streaming);
+    }
+
+    /// pui-chat-first-ux D-028: a tool approval answers with Claude Code's
+    /// keys. Esc is No (option 3), Shift+Tab is "Yes, don't ask again"
+    /// (option 2), and after No the empty message box asks what to do instead.
+    #[test]
+    fn su_tool_approval_takes_claude_code_keys() {
+        let approval_card = |sequence: u64, id: &str| {
+            let mut card = su_event_base("card", sequence);
+            card["turnId"] = json!("turn-1");
+            card["phase"] = json!("opened");
+            card["card"] = json!({"correlationId": id, "prompt": "Do you want to make this edit to calc.js?",
+                "createdAt": 2, "approval": {"title": "Update(calc.js)",
+                    "question": "Do you want to make this edit to calc.js?", "body": ["- a", "+ b"]},
+                "presentation": {"kind": "radio", "options": [
+                    {"id": "yes", "label": "Yes"},
+                    {"id": "always", "label": "Yes, and allow all edits this session"},
+                    {"id": "no", "label": "No, and tell Claude what to do instead"}]}});
+            su_event(card)
+        };
+        let picks = |action: Action| match action {
+            Action::CardRespond { payload, .. } => payload.and_then(|p| p.get("picks").cloned()),
+            _ => None,
+        };
+        for (key, expected) in [(KeyCode::BackTab, "always"), (KeyCode::Esc, "no"), (KeyCode::Char('1'), "yes")] {
+            let mut app = App::new();
+            app.agent_chat_id = Some("chat-1".into());
+            app.set_su_session_binding(su_binding());
+            app.apply_su_session_event(approval_card(1, "approve-1"));
+            assert!(app.card_state.asks_about("Update(calc.js)"));
+            let waiting = app.chat_working_line(std::time::Instant::now());
+            assert!(waiting.contains("Waiting for your approval"), "{waiting}");
+            let action = app.on_key(key, KeyModifiers::NONE);
+            assert_eq!(picks(action), Some(json!([expected])), "{key:?}");
+            assert_eq!(
+                app.chat_placeholder().starts_with("Tell "),
+                expected == "no",
+                "only No asks what to do instead: {}",
+                app.chat_placeholder()
+            );
+        }
+    }
+
     /// REGRESSION (P-012 diag10). An interrupted Claude turn ends with two
     /// RECOVERABLE errors after the runtime is back at waiting-for-owner. They
     /// must not orphan the binding: the follow-up goes to the same attached
     /// session, never through a second launch.
+    #[test]
+    fn su_failed_accepted_turn_leaves_its_reason_in_the_transcript() {
+        // P-025: Codex reported each failed turn as task_complete.error; pui
+        // ended the turn with no reply and no row, so four turns read as
+        // silence. The reason must be in the transcript, and never in the
+        // history the next turn sends.
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.chat_messages
+            .push(crate::models::ChatMessage::user("hi"));
+        app.chat_streaming = true;
+        let mut event = su_event_base("error", 1);
+        event["scope"] = json!("turn");
+        event["code"] = json!("other");
+        event["message"] = json!(
+            r#"{"type":"error","status":400,"error":{"message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}"#
+        );
+        event["recoverable"] = json!(true);
+        app.apply_su_session_event(su_event(event));
+
+        assert!(!app.chat_streaming, "the failed turn ends");
+        let row = app
+            .chat_messages
+            .iter()
+            .find(|m| m.role == "error")
+            .expect("a failed turn leaves a row");
+        assert_eq!(
+            row.content,
+            "API Error 400: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+        );
+        assert!(app
+            .chat_history_for_send()
+            .iter()
+            .all(|(role, _)| role != "error"));
+    }
+
     #[test]
     fn su_recoverable_turn_error_keeps_the_runtime_attached() {
         let mut app = App::new();
@@ -19086,6 +21350,21 @@ mod tests {
     /// record, then the engine replays the conversation. Each replayed reply
     /// must land under its own question, not after every saved question, and a
     /// saved turn the replay never reaches still shows, last.
+    #[test]
+    fn su_event_trace_keeps_owner_phase_and_turn_before_truncating_content() {
+        let mut event = su_event_base("transcript", 1);
+        event["phase"] = json!("completed");
+        event["turnId"] = json!("owner-turn-1");
+        event["role"] = json!("owner");
+        event["channel"] = json!("text");
+        event["content"] = json!("界".repeat(800));
+        let trace = su_event_trace_body(&su_event(event));
+        assert!(trace.contains("phase=\"completed\""));
+        assert!(trace.contains("role=\"owner\""));
+        assert!(trace.contains("turn=\"owner-turn-1\""));
+        assert!(trace.len() <= 600);
+    }
+
     #[test]
     fn su_replay_puts_each_reply_under_its_restored_owner_turn() {
         let mut app = App::new();
@@ -19295,10 +21574,11 @@ mod tests {
     }
 
     /// WI-10004247: Esc on a just-reopened chat, while the engine restores
-    /// the saved conversation, leaves the message box. Nothing is running, so
-    /// no interrupt goes to the resuming engine.
+    /// the saved conversation, sends no interrupt: nothing is running. Since
+    /// P-027 (G-3) it also keeps the chat-first message box, as with any Esc
+    /// that has nothing to stop.
     #[test]
-    fn chat_first_esc_while_restoring_leaves_the_box_without_interrupting() {
+    fn chat_first_esc_while_restoring_keeps_the_box_without_interrupting() {
         // Opening: no session bound yet, the open request is in flight.
         let mut opening = chat_first_app();
         opening.agent_chat_id = Some("chat-1".into());
@@ -19307,7 +21587,7 @@ mod tests {
         opening.chat_composing = true;
         let action = opening.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(action, Action::Render, "no interrupt while the session opens");
-        assert!(!opening.chat_composing, "Esc leaves the message box while opening");
+        assert!(opening.chat_composing, "Esc keeps the message box while opening");
 
         // Starting: the real reopened-Claude window (WI-10004247) — the
         // engine reported `starting` when Esc arrived, before `resuming`.
@@ -19326,7 +21606,7 @@ mod tests {
         starting.chat_composing = true;
         let action = starting.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(action, Action::Render, "no interrupt while the engine starts");
-        assert!(!starting.chat_composing, "Esc leaves the message box while starting");
+        assert!(starting.chat_composing, "Esc keeps the message box while starting");
 
         let mut a = chat_first_app();
         a.agent_chat_id = Some("chat-1".into());
@@ -19340,7 +21620,7 @@ mod tests {
         a.chat_composing = true;
         let action = a.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(action, Action::Render, "no interrupt while restoring");
-        assert!(!a.chat_composing, "Esc leaves the message box");
+        assert!(a.chat_composing, "Esc keeps the message box");
 
         // Calibration: once an owner turn is in flight, Esc stops it.
         a.chat_composing = true;
@@ -22016,6 +24296,34 @@ mod tests {
         }
     }
 
+    /// consult-backed-parking-2026-10-12 P-012 (R-11/R-25): every backend's
+    /// ended session reopens through `psu --resume <id>` in its own cwd, and the
+    /// pane is HELD on exit (no `close_on_exit`), so a psu resume refusal stays
+    /// readable in the pane instead of vanishing with it.
+    #[test]
+    fn resume_spec_reopens_every_backend_and_holds_the_pane_on_exit() {
+        let a = App::new();
+        for agent in ["claude", "codex", "omp"] {
+            let spec = a
+                .resume_spec(&ended_resumable_entry(agent))
+                .unwrap_or_else(|| panic!("{agent}: expected a resume spec"));
+            assert_eq!(spec.argv, vec!["psu", "--resume", "42"], "{agent}");
+            assert_eq!(spec.cwd.as_deref(), Some("/repo"), "{agent}");
+            assert_eq!(spec.title.as_deref(), Some(format!("resume · {agent}").as_str()));
+            assert!(!spec.close_on_exit, "{agent}: a refusal must stay visible");
+            match a.resolve_agent_route(&ended_resumable_entry(agent)) {
+                AgentRoute::Resume { spec: routed } => {
+                    assert_eq!(routed.argv, spec.argv, "{agent}");
+                }
+                other => panic!("{agent}: expected Resume, got {other:?}"),
+            }
+        }
+        // No launch record → nothing to resume.
+        let mut bare = ended_resumable_entry("omp");
+        bare.adv_session_id = None;
+        assert!(a.resume_spec(&bare).is_none());
+    }
+
     #[test]
     fn route_menu_when_dead_and_not_resumable() {
         let a = App::new();
@@ -23192,6 +25500,29 @@ mod tests {
     }
 
     #[test]
+    fn view_state_loaded_before_data_preserves_selection_until_lists_arrive() {
+        let mut a = App::new();
+        a.update(Event::ViewStateLoaded(ViewState {
+            tab: Some("Plans".into()),
+            harness: Some("saved-pot".into()),
+            plan_sel: 1,
+            ..Default::default()
+        }));
+        assert_eq!(a.tab, Tab::Plans);
+        assert_eq!(a.harness, "saved-pot");
+        assert_eq!(*a.active_harness.lock().unwrap(), "saved-pot");
+        assert_eq!(a.plan_sel, 1);
+
+        a.update(Event::Plans(vec![plan("a"), plan("b")]));
+        assert_eq!(a.plan_sel, 1);
+        assert_eq!(a.selected_plan().unwrap().slug, "b");
+        a.update(Event::Plans(vec![plan("a")]));
+        assert_eq!(a.plan_sel, 0);
+        assert_eq!(a.selected_plan().unwrap().slug, "a");
+        assert_eq!(a.harness, "saved-pot");
+    }
+
+    #[test]
     fn view_state_loaded_after_navigation_preserves_the_current_view() {
         let mut a = App::new();
         a.update(key('6', KeyModifiers::NONE));
@@ -23571,6 +25902,47 @@ mod tests {
         assert!(!a.too_small());
     }
 
+    /// D-034: the chat workbench's side-pane HUD draws its compact summary
+    /// between the compact and the full minimum, blocks only below the compact
+    /// one, and is the full board once the pane is big enough (Alt+z).
+    #[test]
+    fn a_side_pane_hud_is_compact_until_it_fits_the_full_board() {
+        let mut a = App::new();
+        a.side_pane = true;
+        for (w, h) in [(30, 18), (70, 47), (28, 10), (79, 40), (200, 19)] {
+            a.update(Event::Resize(w, h));
+            assert!(!a.too_small(), "{w}x{h}");
+            assert!(a.compact_side(), "{w}x{h}");
+            assert!(a.input_held(), "{w}x{h}");
+        }
+        for (w, h) in [(27, 30), (60, 9)] {
+            a.update(Event::Resize(w, h));
+            assert!(a.too_small(), "{w}x{h}");
+            assert!(!a.compact_side(), "{w}x{h}");
+        }
+        a.update(Event::Resize(92, 23));
+        assert!(!a.too_small() && !a.compact_side() && !a.input_held());
+        // The plain workbench HUD keeps the full minimum.
+        a.side_pane = false;
+        a.update(Event::Resize(30, 18));
+        assert!(a.too_small() && !a.compact_side());
+    }
+
+    /// The compact summary is read-only: q still quits, every other key is
+    /// held so nothing changes on a board the owner cannot see.
+    #[test]
+    fn the_compact_side_pane_holds_keys_but_still_quits_on_q() {
+        let mut a = App::new();
+        a.side_pane = true;
+        a.update(Event::Resize(30, 18));
+        let tab = a.tab;
+        a.on_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(a.tab, tab);
+        assert!(!a.should_quit);
+        a.on_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(a.should_quit);
+    }
+
     /// q and Ctrl-C still quit from the blocking view, as they do from navigation.
     #[test]
     fn too_small_still_quits_on_q_and_ctrl_c() {
@@ -23917,6 +26289,8 @@ mod tests {
             command: None,
             uncertain: true,
             error: Some("connection lost".into()),
+            model: None,
+            approvals: None,
         });
         app.chat_streaming = false;
 
@@ -26631,6 +29005,93 @@ mod tests {
         assert_eq!(c.chat_input, "q");
     }
 
+    /// P-027 G-12 (parity checklist row 22): the /resume picker sat on
+    /// "Loading earlier conversations…" because the list request failed and
+    /// nothing told the picker. A failure now shows a plain row with the reason,
+    /// /resume retries the list, and a list-only refresh never changes the open
+    /// conversation.
+    #[test]
+    fn resume_shows_a_failed_list_and_retries_without_touching_the_open_chat() {
+        let mut a = App::new();
+        a.chat_first = true;
+        a.agent_chat_id = Some("chat-open".into());
+
+        let action = a.run_slash_command("resume");
+        assert_eq!(
+            action,
+            Action::RefreshAgentChatList { harness: a.harness.clone() },
+            "an unloaded list is fetched again"
+        );
+        let label = |a: &App| a.session_picker.as_ref().unwrap().options[0].label.clone();
+        assert_eq!(label(&a), "Loading earlier conversations…");
+
+        let harness = a.harness.clone();
+        a.update(Event::AgentChatListFailed {
+            harness: harness.clone(),
+            message: "could not determine directory membership for SU session inventory; /resume to retry (codex-chat: connection reset; 0/1 required probes succeeded; task errors: none)".into(),
+        });
+        assert_eq!(label(&a), "Could not load earlier conversations");
+        let hint = a.session_picker.as_ref().unwrap().options[0].hint.clone().unwrap();
+        assert!(
+            hint.contains("could not determine directory membership")
+                && hint.contains("/resume"),
+            "{hint}"
+        );
+
+        a.session_picker = None;
+        assert!(matches!(
+            a.run_slash_command("resume"),
+            Action::RefreshAgentChatList { .. }
+        ));
+        assert_eq!(label(&a), "Loading earlier conversations…", "a retry clears the error");
+
+        a.update(Event::AgentChatListLoaded {
+            harness,
+            summaries: Vec::new(),
+        });
+        assert_eq!(label(&a), "No earlier conversations in this directory");
+        assert_eq!(a.agent_chat_id.as_deref(), Some("chat-open"));
+        a.session_picker = None;
+        assert_eq!(a.run_slash_command("resume"), Action::Render, "a loaded list is reused");
+    }
+
+    /// P-027 G-7 (parity checklist row 16): a 40-line paste filled the whole
+    /// composer. It now shows as Claude Code's chip, Backspace removes the
+    /// chip whole, and the engine still receives every pasted line.
+    #[test]
+    fn a_large_paste_collapses_to_a_chip_and_the_turn_sends_its_text() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(key('i', KeyModifiers::NONE));
+        assert!(a.chat_composing);
+        let body = (1..=40)
+            .map(|i| format!("pasted line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for c in "see ".chars() {
+            a.update(key(c, KeyModifiers::NONE));
+        }
+        a.update(Event::Paste(body.clone()));
+        assert_eq!(a.chat_input, "see [Pasted text #1 +39 lines]");
+
+        a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        assert_eq!(a.chat_input, "see ", "Backspace removes the chip whole");
+
+        a.update(Event::Paste("two\nlines".into()));
+        assert_eq!(a.chat_input, "see two\nlines", "a small paste stays inline");
+        a.chat_input = "see ".into();
+        a.chat_cursor = a.chat_input.len();
+        a.chat_cursor_input_len = a.chat_input.len();
+
+        a.update(Event::Paste(body.clone()));
+        let chip = "see [Pasted text #2 +39 lines]";
+        assert_eq!(a.chat_input, chip);
+        a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        let pending = a.su_pending_turn.as_ref().expect("Enter sends the turn");
+        assert_eq!(pending.content, format!("see {body}"), "the engine gets the text");
+        assert_eq!(pending.draft, chip, "the draft keeps the chip");
+    }
+
     #[test]
     fn composer_recalls_history_and_takes_a_paste_as_one_edit() {
         fn arrow(code: KeyCode) -> Event {
@@ -29122,6 +31583,54 @@ mod mouse_tests {
             Action::Render
         );
         assert!(a.toast.is_none());
+    }
+
+    /// WI-10006861: press, drag and release in ONE input burst. The event loop
+    /// coalesces a `Render` while input is queued unless `draw_now` says
+    /// otherwise; replaying that decision, the selection is still drawn, so the
+    /// release copies. Before the fix every render here was deferred and the
+    /// release found no frame (the P-018 PTY case read 'no OSC 52 write').
+    #[test]
+    fn a_drag_in_one_input_burst_still_copies() {
+        let mut a = chat_first_app(2);
+        let screen = rows(&draw(&a));
+        let (row, line) = screen
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.contains("answer 1"))
+            .expect("the reply is on screen");
+        let col = line[..line.find("answer 1").unwrap()].chars().count() as u16;
+        let row = row as u16;
+        let end = col + "answer 1".len() as u16 - 1;
+        // Plain renders still coalesce while input is queued.
+        assert!(!a.draw_now(false));
+        assert!(a.draw_now(true));
+
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+        ] {
+            let at = if matches!(kind, MouseEventKind::Down(_)) {
+                col
+            } else {
+                end
+            };
+            assert_eq!(a.update(mouse(kind, at, row)), Action::Render);
+            // More of the burst is queued (queue_empty = false).
+            if a.draw_now(false) {
+                draw(&a);
+            }
+        }
+        let Action::CopyToClipboard { sequence } =
+            a.update(mouse(MouseEventKind::Up(MouseButton::Left), end, row))
+        else {
+            panic!("a drag delivered in one burst must still copy");
+        };
+        use base64::Engine as _;
+        let payload = base64::engine::general_purpose::STANDARD.encode("answer 1");
+        assert!(sequence.contains(&payload), "{sequence:?}");
+        // The selection is over: renders coalesce again.
+        assert!(!a.draw_now(false));
     }
 
     /// Without a frame that showed the selection there is nothing to read.

@@ -1,9 +1,12 @@
 /**
- * work-items-events — settled-item events through the await-event primitive
+ * work-items-events — terminal-lifecycle events through the await-event primitive
  * (await-event-primitive-2026-06-05 P-012/P-013, D-006 #4/#5).
  *
- * When a work-item SETTLES (feature → passed/deprecated; issue →
- * resolved/closed) two event families fire:
+ * When a work-item reaches a terminal lifecycle state (feature →
+ * passed/deprecated; issue → resolved/closed) two event families fire. This
+ * lifecycle signal is independent of completionAuthority: a terminal row can
+ * still have proposed or otherwise unsettled completion evidence. The done
+ * event includes completionAuthority so consumers can distinguish those cases.
  *
  *   `work-item:done:<id>` — the children-done / delegated-work signal: the
  *   delegator (assignedBy) and the parent chunk's claimant are notified; any
@@ -32,6 +35,7 @@ import {
   blockingEdgeReader,
   ISSUE_TERMINAL_STATUSES,
   readSettleEdges,
+  reconcileClearedDependencyBlockedState,
   type BlockingEdgeReader,
   type SettleEdges,
 } from './work-item-blocking';
@@ -63,6 +67,7 @@ import type { InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import type { BatchResolveItem } from './agent-tools/coordination/escalations';
 import { parseAgenticPlanExecutionTarget, type AgenticPlanExecutionTarget } from './agentic-plan-execution-target';
 import { trackDetached } from './detached-imports';
+import { activeExternalBlockers } from './external-blockers';
 import type { assignAndWakeActionableWorkItems } from './agent-tools/coordination/actionable-work-item-dispatch';
 
 /**
@@ -191,6 +196,18 @@ async function defaultDuplicateAdmissionCheck(workItemId: string): Promise<boole
   return isWorkItemDuplicateAdmitted(workItemId);
 }
 
+/** WI-10005020: true when the item still has an unsatisfied `blocks` edge. A blocked→open
+ * restore (an external-blocker clear, or the legacy work-item-ref migration) of such a row
+ * would otherwise announce work that no claim can take. */
+type UnresolvedDependencyCheck = (wi: WorkItem) => Promise<boolean>;
+
+/** Lazy for the same documented work-items import cycle as the admission floor. */
+async function defaultUnresolvedDependencyCheck(wi: WorkItem): Promise<boolean> {
+  const { readUnresolvedDepBlockers } = await import('./work-items');
+  if (typeof readUnresolvedDepBlockers !== 'function') return false;
+  return (await readUnresolvedDepBlockers(wi.id, wi.harness ?? undefined)).length > 0;
+}
+
 /** Resolve the plan-lane guard lazily so the lifecycle event module keeps its documented
  * work-items import cycle safe. Claimable events are best-effort notifications; the guard's
  * own fail-open contract is preserved if a plan read is unavailable. */
@@ -245,7 +262,10 @@ const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
 export function emitWorkItemClaimableEvent(
   wi: WorkItem,
   reason: 'created' | 'admitted' | 'released' | 'unblocked' | 'requeued',
-  deps: Pick<SettledEventsDeps, 'emit' | 'planItemLaneBlockReason' | 'duplicateAdmissionCheck'> = {},
+  deps: Pick<
+    SettledEventsDeps,
+    'emit' | 'planItemLaneBlockReason' | 'duplicateAdmissionCheck' | 'unresolvedDependencyCheck'
+  > = {},
 ): void {
   // D-005: observation-lane rows are captured reflections, not work-queue material. Keep
   // the broad wake on the same floor as scheduler:get_next and fleet placement.
@@ -269,6 +289,16 @@ export function emitWorkItemClaimableEvent(
         return;
       }
       if (!admitted) return;
+      const checkDependencies = deps.unresolvedDependencyCheck ?? defaultUnresolvedDependencyCheck;
+      let dependencyBlocked = false;
+      try {
+        dependencyBlocked = await checkDependencies(wi);
+      } catch (e) {
+        // Parity guard, not a lifecycle floor: a failed read must not strand a genuinely
+        // claimable event; the scheduler's claim floor remains authoritative.
+        failSoft(`claimable-dependency-check for ${wi.id}`, e);
+      }
+      if (dependencyBlocked) return;
       if (mayHavePlanItemLinkage(wi)) {
         const check = deps.planItemLaneBlockReason ?? defaultPlanItemLaneBlockReason;
         let blocked: PlanItemLaneBlock | null = null;
@@ -588,6 +618,9 @@ export interface SettledEventsDeps {
   /** WI-22699169150878155: injectable parity check so claimable lifecycle events do not
    * advertise a row whose linked plan-item lane is blocked/owner-gated/terminal. */
   planItemLaneBlockReason?: PlanItemLaneBlockReason;
+  /** WI-10005020 (D-008 #4b): parity check so a claimable event never advertises a row whose
+   * `blocks` dependency edges are still unsatisfied (the scheduler's claim floor excludes it). */
+  unresolvedDependencyCheck?: UnresolvedDependencyCheck;
   getItem?: typeof getWorkItem;
   listOut?: BlockingEdgeReader['listOut'];
   listIn?: BlockingEdgeReader['listIn'];
@@ -608,6 +641,12 @@ export interface SettledEventsDeps {
   reconcileCriticalWorkItemAlert?: (wi: WorkItem) => Promise<void>;
   /** Stable-agent successor dispatch; production resolves the shared composite lazily. */
   dispatchActionable?: typeof assignAndWakeActionableWorkItems;
+  restoreBlockedDependent?: (item: WorkItem, clearedById: string) => Promise<WorkItem | null>;
+}
+
+async function defaultRestoreBlockedDependent(item: WorkItem, clearedById: string): Promise<WorkItem | null> {
+  const outcome = await reconcileClearedDependencyBlockedState(item, clearedById);
+  return outcome === 'cleared' ? getWorkItem(item.id, item.harness ?? undefined) : item;
 }
 
 /** The terminal work-item row carries this token until its matching done fire
@@ -767,6 +806,8 @@ async function emitUnblockedForClearedEdges(
   listInMany: BlockingEdgeReader['listInMany'],
   dispatchActionable: typeof assignAndWakeActionableWorkItems,
   duplicateAdmissionCheck?: DuplicateAdmissionCheck,
+  restoreBlockedDependent = defaultRestoreBlockedDependent,
+  unresolvedDependencyCheck = defaultUnresolvedDependencyCheck,
 ): Promise<void> {
   // Dedup dsts — a duplicate src→dst edge must not double-emit for one dependent.
   const dsts = [...new Map(dstRefs.map((r) => [refKey(r), r])).values()];
@@ -805,7 +846,7 @@ async function emitUnblockedForClearedEdges(
   };
 
   for (const dstRef of dsts) {
-    const dependent = itemFor(dstRef);
+    let dependent = itemFor(dstRef);
     if (!dependent || isSettledWorkItem(dependent)) continue;
 
     const stillBlocked = (edgesByDst.get(refKey(dstRef)) ?? []).some((be) => {
@@ -815,6 +856,15 @@ async function emitUnblockedForClearedEdges(
       return Boolean(blocker && !isSettledWorkItem(blocker)); // still genuinely blocked
     });
     if (stillBlocked) continue;
+
+    if (dependent.state === 'blocked') {
+      dependent = await restoreBlockedDependent(dependent, clearedById);
+      if (!dependent || dependent.state === 'blocked' || isSettledWorkItem(dependent)) continue;
+    }
+    if (activeExternalBlockers(dependent.payload).length > 0) continue;
+    // The edge snapshot above is only a fast precheck. The canonical floor also
+    // distinguishes successful completion from abandonment on success-only edges.
+    if (await unresolvedDependencyCheck(dependent)) continue;
 
     const execution = dependent.assignee ? null : planRunExecutionTarget(dependent.payload);
     let dispatchFailure: unknown = null;
@@ -826,6 +876,12 @@ async function emitUnblockedForClearedEdges(
           harness: execution.appHarnessSlug,
           summary: `${dependent.id} became actionable after ${clearedById} settled`,
           source: 'system:plan-run-successor-dispatch',
+          // WI-10004815: `dependent` is a snapshot read before this call. The
+          // plan-lane restore (system:plan-run-lane-dispatch) can assign and
+          // wake the same stable agent inside that window. The claim inside the
+          // dispatch is the real check, so only the writer whose claim actually
+          // assigns the row spends the wake; a retained row is not woken twice.
+          wakeRetained: false,
         });
         if (!dispatched.ok) {
           dispatchFailure = new Error(
@@ -1004,7 +1060,7 @@ export async function emitUnblockedOnEdgeRemoved(
   clearedById: string,
   deps: Pick<
     SettledEventsDeps,
-    'emit' | 'getItem' | 'listIn' | 'listInMany' | 'dispatchActionable' | 'duplicateAdmissionCheck'
+    'emit' | 'getItem' | 'listIn' | 'listInMany' | 'dispatchActionable' | 'duplicateAdmissionCheck' | 'restoreBlockedDependent' | 'unresolvedDependencyCheck'
   > = {},
 ): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
@@ -1018,6 +1074,8 @@ export async function emitUnblockedOnEdgeRemoved(
       resolveListInMany(deps),
       deps.dispatchActionable ?? defaultDispatchActionable,
       deps.duplicateAdmissionCheck,
+      deps.restoreBlockedDependent,
+      deps.unresolvedDependencyCheck,
     );
   } catch (e) {
     failSoft(`unlink-unblocked-event for ${clearedById}`, e);
@@ -1114,13 +1172,14 @@ export async function emitWorkItemDoneEvent(
   const completionIntentId = completionEventIntentIdOf(wi);
   await emit({
     key: `work-item:done:${wi.id}`,
-    summary: `${wi.id} settled → ${wi.state}: ${wi.title}`,
+    summary: `${wi.id} reached terminal state '${wi.state}' (completion authority: ${wi.completionAuthority ?? 'unknown'}): ${wi.title}`,
     payload: workItemEventPayload({
       id: wi.id,
       state: wi.state,
       kind: wi.kind,
       harness: wi.harness,
       title: wi.title,
+      completionAuthority: wi.completionAuthority,
       ...(completionIntentId ? { completionIntentId } : {}),
     }),
     to: [...notifyDone],
@@ -1245,6 +1304,8 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
       listInMany,
       deps.dispatchActionable ?? defaultDispatchActionable,
       deps.duplicateAdmissionCheck,
+      deps.restoreBlockedDependent,
+      deps.unresolvedDependencyCheck,
     );
   } catch (e) {
     failSoft(`settled unblocked-loop for ${wi.id}`, e);

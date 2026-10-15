@@ -39,6 +39,11 @@ import {
 } from './ptt-capture';
 import { f32ToWav } from './f32-to-wav';
 import { transcribeChunk } from '@papercusp/operator-core/lib/voice-engines/whisper';
+import {
+  isFullAgentEngineUnavailable,
+  isWakeEngineUnavailable,
+  releaseUnavailableMessage,
+} from '@papercusp/operator-core/lib/voice-release-availability';
 import { startEnergyVadCapture } from './energy-vad-capture';
 import { PlayoutLedger, type CaptureWindow } from './capture-window';
 import {
@@ -46,6 +51,174 @@ import {
   type PapercupVoiceTransport,
 } from '@papercusp/operator-core/lib/papercup-voice-turn-adapter';
 import type { VoiceTurnEvent } from '@papercusp/chat-protocol';
+import { splitSpeechText } from '@papercusp/operator-core/lib/voice-turn-sentences';
+import { prepareForReading } from '@papercusp/operator-core/lib/voice-engines/prepareForTTS';
+import { createVoiceOutputPlayback as createOutputPlayback } from '@papercusp/operator-core/lib/voice-output-playback';
+
+export interface ReadingState {
+  readingId: string | null;
+  status: 'idle' | 'starting' | 'playing' | 'paused' | 'completed' | 'stopped' | 'error';
+  position: number;
+  total: number;
+  error?: string;
+  warnings: string[];
+}
+let readingState: ReadingState = { readingId: null, status: 'idle', position: 0, total: 0, warnings: [] };
+const readingListeners = new Set<(state: ReadingState) => void>();
+let readingRuntime: { abort: AbortController; browser: boolean; audio?: HTMLAudioElement; resume?: () => void } | null = null;
+export function getReadingState(): ReadingState { return { ...readingState, warnings: [...readingState.warnings] }; }
+export function subscribeReadingState(listener: (state: ReadingState) => void): () => void {
+  readingListeners.add(listener);
+  return () => { readingListeners.delete(listener); };
+}
+function updateReading(patch: Partial<ReadingState>): void {
+  readingState = { ...readingState, ...patch };
+  for (const listener of readingListeners) listener(getReadingState());
+}
+export function stopReading(): void {
+  if (!readingRuntime) return;
+  readingRuntime.abort.abort();
+  readingRuntime.audio?.pause();
+  readingRuntime.resume?.();
+  readingRuntime = null;
+  playoutLedger.close();
+  if (['starting', 'playing', 'paused'].includes(readingState.status)) updateReading({ status: 'stopped' });
+}
+export function controlReading(readingId: string, action: 'pause' | 'resume' | 'stop' | 'status'): ReadingState {
+  if (readingId !== readingState.readingId) throw new Error('This reading is no longer active in this tab.');
+  if (action === 'stop') stopReading();
+  else if (action === 'pause' && readingRuntime && ['starting', 'playing'].includes(readingState.status)) {
+    readingRuntime.audio?.pause();
+    if (readingRuntime.browser && typeof window !== 'undefined') window.speechSynthesis?.pause?.();
+    playoutLedger.close();
+    updateReading({ status: 'paused' });
+  } else if (action === 'resume' && readingRuntime && readingState.status === 'paused') {
+    const runtime = readingRuntime;
+    updateReading({ status: 'playing' });
+    playoutLedger.open();
+    if (runtime.browser && typeof window !== 'undefined') window.speechSynthesis?.resume?.();
+    void runtime.audio?.play().catch(error => {
+      if (readingRuntime !== runtime || runtime.abort.signal.aborted) return;
+      stopReading(); updateReading({ status: 'error', error: String(error) });
+    });
+    runtime.resume?.();
+    runtime.resume = undefined;
+  }
+  return getReadingState();
+}
+
+/** Output only: never starts voice mode, a full-agent connection or a microphone. */
+export function startReading(text: string, options: { allowCloud?: boolean; format?: 'text' | 'markdown'; coverage?: { complete: boolean; warnings: string[] } } = {}): ReadingState {
+  if (typeof window === 'undefined') throw new Error('Reading requires an output app tab.');
+  if (isVoiceOutputMuted()) throw new Error('Spoken output is muted. Unmute the speaker to start reading.');
+  if (realtimeSession) throw new Error('Finish the active voice conversation before starting a reading.');
+  const leader = getVoiceLeaderState();
+  if (leader.available && !leader.isLeader) throw new Error('This tab is not the active audio player. Start reading in the active player tab.');
+  const source = prepareForReading(text, options.format).text;
+  if (!source) throw new Error('No readable text selected.');
+  stopSpeechPlayback();
+  const browser = loadVoicePrefsClient().ttsEngine === 'browser';
+  const runtime = { abort: new AbortController(), browser } as NonNullable<typeof readingRuntime>;
+  readingRuntime = runtime;
+  updateReading({ readingId: crypto.randomUUID(), status: 'starting', position: 0, total: source.length, error: undefined, warnings: options.coverage?.warnings ?? [] });
+  const rate = config.rate;
+  const waitForResume = async () => {
+    if (readingState.status === 'paused' && !runtime.abort.signal.aborted) await new Promise<void>(resolve => { runtime.resume = resolve; });
+  };
+  const play = async (audio: HTMLAudioElement) => {
+    audio.playbackRate = rate;
+    await waitForResume();
+    if (runtime.abort.signal.aborted) return;
+    runtime.audio = audio;
+    updateReading({ status: 'playing' });
+    playoutLedger.open();
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        runtime.abort.signal.removeEventListener('abort', cancel);
+        audio.onended = audio.onerror = null;
+        playoutLedger.close();
+        error ? reject(error) : resolve();
+      };
+      const cancel = () => { audio.pause(); finish(); };
+      runtime.abort.signal.addEventListener('abort', cancel, { once: true });
+      audio.onended = () => finish();
+      audio.onerror = () => finish(new Error('Speech audio could not be played.'));
+      void audio.play().catch(error => finish(error));
+    });
+    runtime.audio = undefined;
+  };
+  void (async () => {
+    if (browser) {
+      if (!window.speechSynthesis) throw new Error('Browser speech is unavailable. Choose a supported engine in voice settings.');
+      const name = voiceForRole('system:operator');
+      const voice = window.speechSynthesis.getVoices().find(candidate => candidate.name === name);
+      if (!voice) throw new Error('The selected browser voice is unavailable. Choose a voice in settings.');
+      if (!options.allowCloud && !voice.localService) throw new Error('This browser voice uses a remote service. Select a local voice or explicitly allow cloud speech.');
+      for (const chunk of splitSpeechText(source, { maxChars: 4000, maxUtf8Bytes: 4000 })) {
+        await waitForResume();
+        if (runtime.abort.signal.aborted) return;
+        updateReading({ status: 'playing' });
+        playoutLedger.open();
+        recentSpokenTtsLedger.record(chunk);
+        await new Promise<void>((resolve, reject) => {
+          const utterance = new SpeechSynthesisUtterance(chunk);
+          utterance.voice = voice; utterance.rate = rate;
+          const cancel = () => { window.speechSynthesis.cancel(); resolve(); };
+          runtime.abort.signal.addEventListener('abort', cancel, { once: true });
+          utterance.onend = () => { runtime.abort.signal.removeEventListener('abort', cancel); playoutLedger.close(); resolve(); };
+          utterance.onerror = () => { runtime.abort.signal.removeEventListener('abort', cancel); playoutLedger.close(); reject(new Error('Browser speech failed.')); };
+          window.speechSynthesis.speak(utterance);
+        });
+        if (runtime.abort.signal.aborted) return;
+        updateReading({ position: readingState.position + chunk.length });
+      }
+    } else {
+      const response = await fetch('/api/agent-mcp/operator-tts', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, signal: runtime.abort.signal,
+        body: JSON.stringify({ operation: 'read', text: source, allowCloud: options.allowCloud === true }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error ?? `Speech returned ${response.status}.`);
+      }
+      if (!response.body) throw new Error('Speech returned no audio stream.');
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let completed = false;
+      try {
+        while (!runtime.abort.signal.aborted) {
+          await waitForResume();
+          if (runtime.abort.signal.aborted) return;
+          const next = await reader.read();
+          buffer += decoder.decode(next.value, { stream: !next.done });
+          let newline: number;
+          while ((newline = buffer.indexOf('\n')) >= 0) {
+            const record = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
+            if (record.type === 'error' || !record.ok) throw new Error(record.error ?? 'Reading failed.');
+            if (record.type === 'completed') { completed = true; continue; }
+            if (record.type !== 'chunk' || record.start !== readingState.position || record.end !== record.start + record.text.length || record.text !== source.slice(record.start, record.end)) throw new Error('Reading source/progress mismatch.');
+            const bytes = Uint8Array.from(atob(record.audioBase64), char => char.charCodeAt(0));
+            recentSpokenTtsLedger.record(record.text);
+            const url = URL.createObjectURL(new Blob([bytes], { type: record.contentType }));
+            try { await play(new Audio(url)); } finally { URL.revokeObjectURL(url); }
+            if (runtime.abort.signal.aborted) return;
+            updateReading({ position: record.end });
+          }
+          if (next.done) break;
+        }
+        if (!completed || buffer.trim() || readingState.position !== source.length) throw new Error('Reading ended before the source was complete.');
+      } finally { await reader.cancel().catch(() => {}); }
+    }
+    if (readingRuntime === runtime && !runtime.abort.signal.aborted) { readingRuntime = null; updateReading({ status: 'completed' }); }
+  })().catch(error => {
+    if (readingRuntime !== runtime || runtime.abort.signal.aborted) return;
+    runtime.abort.abort(); readingRuntime = null;
+    playoutLedger.close();
+    updateReading({ status: 'error', error: error instanceof Error ? error.message : String(error) });
+  });
+  return getReadingState();
+}
 
 /**
  * Canonical event observer for the local/browser Papercup path. The hosted
@@ -232,6 +405,9 @@ export function isVoiceOutputMuted(): boolean {
 
 /** Mute/unmute spoken (TTS) responses; broadcasts so the toggle UI re-syncs. */
 export function setVoiceOutputMuted(muted: boolean): void {
+  // Muting silences the reply that is already playing too, not only the next
+  // one (R-4 output mute, WI-10004760). speak() alone only gates new replies.
+  if (muted) stopSpeechPlayback();
   if (typeof localStorage === 'undefined') return;
   try {
     localStorage.setItem(wsLocalKey(OUTPUT_MUTED_KEY), muted ? '1' : '0');
@@ -585,10 +761,6 @@ export function initVoiceMode(): void {
   // VoiceButton renders immediately, and the user-perceived "Connecting…"
   // status appears within ~100ms of paint instead of blocking it.
   const runDeferred = () => {
-    // Prime the TTS engine cache so the first speak() routes through
-    // the user's chosen engine instead of defaulting to Browser TTS.
-    void fetchPreferredEngine();
-
     // Restore last mode from config so navigation preserves user choice.
     // Skip if state.mode is already non-off (init may run again on hot reload).
     // An isolated verifier must never re-open a persisted microphone mode,
@@ -1076,6 +1248,10 @@ async function startWakeWordGateInner(prefs: any): Promise<boolean> {
     );
     return false;
   }
+  if (isWakeEngineUnavailable(engine)) {
+    void emitVoiceToast('error', releaseUnavailableMessage(engine));
+    return false;
+  }
   try {
     if (engine === 'porcupine') {
       const bootR = await fetch('/api/agent-mcp/operator-picovoice-bootstrap').catch(() => null);
@@ -1190,6 +1366,15 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
     // see a startup "[voice] realtime start failed at stage=prefs" warning
     // on a cold tab; 30s leaves headroom without affecting a real hang.
     const prefs = loadVoicePrefsClient();
+    // Preserve legacy preferences, but never silently route a selected
+    // unsupported full-agent provider through local microphone capture.
+    // Release scope (voice-final-public-release-2026-10-01#D-005) covers every
+    // engine in the shared release list, Gemini included.
+    if (isFullAgentEngineUnavailable(prefs.fullAgentEngine)) {
+      setVoiceMode('off');
+      void emitVoiceToast('error', releaseUnavailableMessage(String(prefs.fullAgentEngine)));
+      return true; // Handled: suppress the caller's local-STT fallback.
+    }
     // Pull idle-timeout pref so both EL and Realtime paths can use it.
     if (typeof prefs.fullAgentIdleTimeoutMin === 'number') {
       idleTimeoutMs = Math.max(0, prefs.fullAgentIdleTimeoutMin) * 60_000;
@@ -1723,6 +1908,12 @@ async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
   // up Whisper once for the command utterance, then return to gating.
   const engine = prefs.wakeWordEngine ?? 'off';
   if (engine === 'off') return false;
+  if (isWakeEngineUnavailable(engine)) {
+    // Visible refusal; the caller keeps its non-gated path, as it already does
+    // when a Picovoice key is missing.
+    void emitVoiceToast('error', releaseUnavailableMessage(engine));
+    return false;
+  }
 
   if (engine === 'porcupine') {
     // Porcupine needs a Picovoice access key.
@@ -2735,6 +2926,17 @@ if (
     // flip it — headless verification needs this seam (WI-4838 live-verify).
     setMode: (m: VoiceMode) => setVoiceMode(m),
     getState: () => getVoiceState(),
+    // D-006 synthetic round trips (voice-final-public-release-2026-10-01):
+    // drive the real reply-playback path (speak → synth → Audio) and its
+    // barge-in stop without needing a brain reply first.
+    speak: (t: string) => speak(t, 'system:operator', 'polite', { force: true }),
+    // R-4 lifecycle legs: a NON-forced reply takes the same gates an agent reply
+    // does (voice off, output mute, realtime, leader), which `speak` above skips.
+    reply: (t: string) => speak(t),
+    outputMuted: () => isVoiceOutputMuted(),
+    cancel: () => cancelAllSpeech(),
+    // The TTS engine the next reply will use, as the client sees the synced prefs.
+    ttsEngine: () => readPreferredEngine(),
   };
 }
 
@@ -2755,6 +2957,18 @@ export function speak(
   // Dev test seam: record the reply text regardless of the gates below (we want
   // the brain's reply even on a tab that won't emit TTS). See __lastSpokenForTest.
   __lastSpokenForTest = { text, role, at: Date.now() };
+  // Local Papercup replies are produced by the same `speak()` seam used by
+  // typed text. Keep the canonical sentence/completion events observational;
+  // the existing queue and TTS behavior remain untouched. An instant ack can
+  // leave the turn open so the substantive response records its own sentence
+  // and end-to-end latency. This runs BEFORE the output gates below: a reply
+  // that is muted, gated by voice-off, or silenced on a follower tab is still
+  // the turn's answer, so the turn completes instead of being recorded as
+  // interrupted by the next one (WI-10006893).
+  if (localCanonicalAdapter.activeTurnId) {
+    localCanonicalAdapter.assistantSentence(text);
+    if (!options.preserveAwaitingResponse) localCanonicalAdapter.complete();
+  }
   if (!state.supported) {
     silenceSpeak('tts-unsupported', text);
     return;
@@ -2805,20 +3019,12 @@ export function speak(
       return;
     }
   } catch { /* leader module not yet loaded — fall through and speak */ }
+  if (readingRuntime) { silenceSpeak('reading-active', text); return; }
   synthQueue.push({
     text,
     role,
     preserveAwaitingResponse: options.preserveAwaitingResponse === true,
   });
-  // Local Papercup replies are produced by the same `speak()` seam used by
-  // typed text. Keep the canonical sentence/completion events observational;
-  // the existing queue and TTS behavior remain untouched. An instant ack can
-  // leave the turn open so the substantive response records its own sentence
-  // and end-to-end latency.
-  if (localCanonicalAdapter.activeTurnId) {
-    localCanonicalAdapter.assistantSentence(text);
-    if (!options.preserveAwaitingResponse) localCanonicalAdapter.complete();
-  }
   // Cap queue depth: drop the oldest items beyond MAX so newer (more
   // relevant) utterances win. Critical when a stuck TTS engine + a
   // chatty caller (background scanner during always-on voice) would
@@ -2840,6 +3046,7 @@ function processSynthQueue(): void {
     return;
   }
   isSynthSpeaking = true;
+  const playbackGeneration = adapterPlaybackGeneration;
   playoutLedger.open(); // our voice is audible from here until the queue drains
   // Record only after all speak() gates have passed and this utterance is
   // selected for playout. Web Speech has no capture window, so it compares
@@ -2862,13 +3069,8 @@ function processSynthQueue(): void {
   // no audio at all (owner-reported PTT "no response"). Only an EXPLICIT
   // 'browser' pref uses Web Speech now; every adapter engine is honored on
   // utterance #1, not just from the second reply once the async cache warmed.
-  if (adapterEngineCache === null) {
-    try {
-      adapterEngineCache = loadVoicePrefsClient().ttsEngine ?? 'kokoro';
-      adapterEngineCacheAt = Date.now();
-    } catch { /* prefs unreadable → keep null, old fallback applies */ }
-  }
-  const cachedEngine = adapterEngineCache; // sync read; resolved above / by prior fetch
+  // WI-10006826: read the prefs on EVERY utterance (see readPreferredEngine).
+  const cachedEngine = readPreferredEngine();
   const useBrowser =
     cachedEngine === 'browser' ||
     (cachedEngine === null && window.speechSynthesis && state.hasWebSpeechTTS);
@@ -2881,8 +3083,12 @@ function processSynthQueue(): void {
       const v = voices.find((vv) => vv.name === voiceName);
       if (v) utt.voice = v;
     }
-    utt.onend = () => { processSynthQueue(); };
-    utt.onerror = () => { processSynthQueue(); };
+    utt.onend = () => {
+      if (playbackGeneration === adapterPlaybackGeneration) processSynthQueue();
+    };
+    utt.onerror = () => {
+      if (playbackGeneration === adapterPlaybackGeneration) processSynthQueue();
+    };
     window.speechSynthesis.speak(utt);
     // Kick off prefs fetch in the background so the next utterance can
     // route correctly once we know the user's pick.
@@ -2891,83 +3097,162 @@ function processSynthQueue(): void {
   }
 
   // Adapter route — Kokoro / ElevenLabs / OpenAI / Cartesia via the
-  // server-side TTS preview endpoint (keys never leave the server).
-  void synthViaAdapter(next.text, next.role).finally(() => processSynthQueue());
+  // bounded full-reply route (keys never leave the server).
+  void synthViaAdapter(next.text, next.role, playbackGeneration).finally(() => {
+    if (playbackGeneration === adapterPlaybackGeneration) processSynthQueue();
+  });
 }
 
 let adapterAudio: HTMLAudioElement | null = null;
-let adapterEngineCache: string | null = null;
-let adapterEngineCacheAt = 0;
+// Keep every provider request within operator-voice-proxy-helpers.MAX_TEXT_CHARS.
+// Requests are sequential, so long replies have bounded provider/backpressure
+// behavior while retaining every character.
+const MAX_TTS_SEGMENT_CHARS = 4000;
+let adapterPlaybackGeneration = 0;
+let adapterSynthesisAbort: AbortController | null = null;
+let adapterAudioCancel: (() => void) | null = null;
 
-async function fetchPreferredEngine(): Promise<string> {
-  // Cache the prefs lookup for 30s so a chatty caller doesn't hammer the
-  // prefs route once per utterance.
-  const now = Date.now();
-  if (adapterEngineCache && now - adapterEngineCacheAt < 30_000) return adapterEngineCache;
-  const prefs = loadVoicePrefsClient();
-  adapterEngineCache = prefs.ttsEngine ?? 'kokoro';
-  adapterEngineCacheAt = now;
-  return adapterEngineCache;
+function splitTtsText(text: string): string[] {
+  const chunks: string[] = [];
+  let offset = 0;
+
+  while (text.length - offset > MAX_TTS_SEGMENT_CHARS) {
+    const window = text.slice(offset, offset + MAX_TTS_SEGMENT_CHARS);
+    let boundary = 0;
+    const paragraphBreak = window.lastIndexOf('\n\n');
+    if (paragraphBreak >= 0) boundary = Math.max(boundary, paragraphBreak + 2);
+    const lineBreak = window.lastIndexOf('\n');
+    if (lineBreak >= 0) boundary = Math.max(boundary, lineBreak + 1);
+    const sentenceBreak = Math.max(
+      window.lastIndexOf('. '),
+      window.lastIndexOf('! '),
+      window.lastIndexOf('? '),
+    );
+    if (sentenceBreak >= 0) boundary = Math.max(boundary, sentenceBreak + 2);
+    const wordBreak = Math.max(window.lastIndexOf(' '), window.lastIndexOf('\t'));
+    if (wordBreak >= 0) boundary = Math.max(boundary, wordBreak + 1);
+
+    const length = boundary || MAX_TTS_SEGMENT_CHARS;
+    chunks.push(text.slice(offset, offset + length));
+    offset += length;
+  }
+
+  if (offset < text.length || chunks.length === 0) chunks.push(text.slice(offset));
+  return chunks;
 }
 
-async function synthViaAdapter(text: string, role: string): Promise<void> {
+/**
+ * The user's selected TTS engine, read fresh from the client prefs cache.
+ *
+ * WI-10006826: this used to be cached for 30s, and a boot-time prime ran before
+ * VoicePrefsSyncBridge hydrated the prefs, so it cached the default 'kokoro'.
+ * A user who chose ElevenLabs heard Kokoro for the first 30s after opening the
+ * app, and an engine change in Settings took up to 30s to apply. The cache
+ * saved nothing: loadVoicePrefsClient() is a synchronous in-memory read.
+ * Returns null only when the prefs are unreadable (old browser fallback).
+ */
+function readPreferredEngine(): string | null {
+  try {
+    return loadVoicePrefsClient().ttsEngine ?? 'kokoro';
+  } catch {
+    return null;
+  }
+}
+
+async function fetchPreferredEngine(): Promise<string> {
+  return readPreferredEngine() ?? 'kokoro';
+}
+
+async function synthViaAdapter(text: string, role: string, playbackGeneration: number): Promise<void> {
   let engine = await fetchPreferredEngine();
   // 'browser' isn't synthable here (no speechSynthesis); coerce to kokoro.
   if (engine === 'browser') engine = 'kokoro';
   const voiceId = voiceForEngineRole(engine, role);
   try {
-    const r = await fetch('/api/agent-mcp/operator-tts-preview', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ engine, text, voiceId }),
-    });
-    if (!r.ok) {
-      // The TTS route itself failed — no audio bytes exist to play.
-      dispatchSpeechPlaybackToast(
-        `Couldn't generate speech (${engine} returned ${r.status}) — the reply is in the chat.`,
-      );
-      return;
+    for (const segment of splitTtsText(text)) {
+      if (playbackGeneration !== adapterPlaybackGeneration) return;
+      const controller = new AbortController();
+      adapterSynthesisAbort = controller;
+      try {
+        const r = await fetch('/api/agent-mcp/operator-tts', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ engine, text: segment, voiceId }),
+          signal: controller.signal,
+        });
+        if (playbackGeneration !== adapterPlaybackGeneration) return;
+        if (!r.ok) {
+          dispatchSpeechPlaybackToast(
+            "Couldn't generate speech (" + engine + ' returned ' + r.status + ') — the reply is in the chat.',
+          );
+          return;
+        }
+
+        const result = await r.json() as { audioBase64?: unknown; contentType?: unknown };
+        if (playbackGeneration !== adapterPlaybackGeneration) return;
+        if (typeof result.audioBase64 !== 'string' || result.audioBase64.length === 0) {
+          dispatchSpeechPlaybackToast(
+            "Couldn't generate speech (" + engine + ' returned no audio) — the reply is in the chat.',
+          );
+          return;
+        }
+        const binary = atob(result.audioBase64);
+        const audioBuffer = new ArrayBuffer(binary.length);
+        const audioBytes = new Uint8Array(audioBuffer);
+        for (let index = 0; index < binary.length; index++) {
+          audioBytes[index] = binary.charCodeAt(index);
+        }
+        const contentType = typeof result.contentType === 'string' ? result.contentType : 'audio/wav';
+        const blob = new Blob([audioBuffer], { type: contentType });
+        const url = URL.createObjectURL(blob);
+        if (adapterAudio) {
+          try { adapterAudio.pause(); } catch {}
+          try { URL.revokeObjectURL(adapterAudio.src); } catch {}
+        }
+        const a = new Audio(url);
+        adapterAudio = a;
+        await new Promise<void>((resolve) => {
+          // onerror and play()'s rejection can BOTH fire for one segment; settle
+          // once so a single failure yields one toast and one revoke.
+          let settled = false;
+          let cancelAudio: () => void = () => {};
+          const settle = (failure?: string): void => {
+            if (settled) return;
+            settled = true;
+            if (adapterAudioCancel === cancelAudio) adapterAudioCancel = null;
+            if (adapterAudio === a) adapterAudio = null;
+            try { URL.revokeObjectURL(url); } catch { /* ignore */ }
+            if (failure) dispatchSpeechPlaybackToast(failure);
+            resolve();
+          };
+          cancelAudio = () => settle();
+          adapterAudioCancel = cancelAudio;
+          a.onended = () => settle();
+          a.onerror = () => settle("The spoken reply couldn't be played — the reply is in the chat.");
+          void a.play().catch((err: unknown) => {
+            // Autoplay policy is the one recoverable case and needs its own words:
+            // the browser refused because no user gesture has unlocked audio yet.
+            // "Check your speakers" would send the user hunting the wrong problem.
+            const name = err instanceof Error ? err.name : '';
+            const autoplayBlocked = /NotAllowedError|SecurityError/i.test(
+              `${name} ${err instanceof Error ? err.message : String(err)}`,
+            );
+            settle(
+              autoplayBlocked
+                ? 'Audio is blocked until you interact with the window — click anywhere, then try again.'
+                : "The spoken reply couldn't be played — the reply is in the chat.",
+            );
+          });
+        });
+      } finally {
+        if (adapterSynthesisAbort === controller) adapterSynthesisAbort = null;
+      }
     }
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    if (adapterAudio) {
-      try { adapterAudio.pause(); } catch {}
-      try { URL.revokeObjectURL(adapterAudio.src); } catch {}
-    }
-    const a = new Audio(url);
-    adapterAudio = a;
-    await new Promise<void>((resolve) => {
-      // onerror and play()'s rejection can BOTH fire for one utterance; settle
-      // once so a single failure yields a single toast and a single revoke.
-      let settled = false;
-      const settle = (failure?: string): void => {
-        if (settled) return;
-        settled = true;
-        try { URL.revokeObjectURL(url); } catch { /* ignore */ }
-        if (failure) dispatchSpeechPlaybackToast(failure);
-        resolve();
-      };
-      a.onended = () => settle();
-      a.onerror = () => settle("The spoken reply couldn't be played — the reply is in the chat.");
-      void a.play().catch((err: unknown) => {
-        // Autoplay policy is the one recoverable case and needs its own words:
-        // the browser refused because no user gesture has unlocked audio yet.
-        // "Check your speakers" would send the user hunting the wrong problem.
-        const name = err instanceof Error ? err.name : '';
-        const autoplayBlocked = /NotAllowedError|SecurityError/i.test(
-          `${name} ${err instanceof Error ? err.message : String(err)}`,
-        );
-        settle(
-          autoplayBlocked
-            ? 'Audio is blocked until you interact with the window — click anywhere, then try again.'
-            : "The spoken reply couldn't be played — the reply is in the chat.",
-        );
-      });
-    });
   } catch (e) {
+    if (playbackGeneration !== adapterPlaybackGeneration) return;
     // Never swallow: the queue keeps flowing either way, but the user is told.
     dispatchSpeechPlaybackToast(
-      `Speech playback failed (${e instanceof Error ? e.name : 'error'}) — the reply is in the chat.`,
+      'Speech playback failed (' + (e instanceof Error ? e.name : 'error') + ') — the reply is in the chat.',
     );
   }
 }
@@ -2976,12 +3261,29 @@ async function synthViaAdapter(text: string, role: string): Promise<void> {
  * Cancel any in-progress speech and clear the queue. Used for barge-in
  * and when voice mode is turned off.
  */
-export function cancelAllSpeech(): void {
+export function cancelAllSpeech(options: { preserveReading?: boolean } = {}): void {
+  // A React bridge subscription can disconnect while Suspense hides its tree.
+  // Original narration belongs to the shared player, not that subscription.
+  if (options.preserveReading && readingRuntime) return;
   // Barge-in / mode-off terminates any local canonical turn still awaiting a
   // substantive answer. The existing audio cancellation semantics are kept.
   if (localCanonicalAdapter.activeTurnId) localCanonicalAdapter.interrupt('user');
+  stopSpeechPlayback();
+}
+
+/**
+ * Stop the audible reply: drop queued sentences and silence whatever engine is
+ * playing, WITHOUT touching the voice turn. Output mute uses this (R-4,
+ * WI-10004760): muting must silence the reply already playing, but it is not a
+ * barge-in, so the turn and its answer in the chat stay intact.
+ */
+function stopSpeechPlayback(): void {
+  stopReading();
   synthQueue = [];
   isSynthSpeaking = false;
+  adapterPlaybackGeneration += 1;
+  adapterSynthesisAbort?.abort();
+  adapterSynthesisAbort = null;
   // BARGE-IN CLOSES THE INTERVAL TOO (WI-954890). The old code cleared
   // isSynthSpeaking here and left synthQuietSince untouched, so a CANCELLED reply
   // started no cooldown at all — the constant's own comment claimed "processSynthQueue
@@ -2996,14 +3298,36 @@ export function cancelAllSpeech(): void {
       /* ignore */
     }
   }
+  const cancelAdapterAudio = adapterAudioCancel;
+  adapterAudioCancel = null;
   if (adapterAudio) {
     try { adapterAudio.pause(); } catch {}
-    try { URL.revokeObjectURL(adapterAudio.src); } catch {}
+    if (!cancelAdapterAudio) {
+      try { URL.revokeObjectURL(adapterAudio.src); } catch {}
+    }
     adapterAudio = null;
   }
+  cancelAdapterAudio?.();
   if (state.status === 'speaking') {
     setState({ status: state.mode === 'off' ? 'off' : 'idle', speakingRole: null });
   }
+}
+
+/** Output-only consumer of the maintained TTS/settings surface. Unlike voice
+ * mode, creating this player never acquires a microphone. Its lifetime belongs
+ * to the caller, so obsolete responses cannot enter the global speech queue. */
+export function createVoiceOutputPlayback(
+  requestSpeech: (text: string, engine: string, voiceId: string | null, signal: AbortSignal) => Promise<Blob>,
+  onStatus: (status: 'idle' | 'loading' | 'playing' | 'unavailable') => void,
+) {
+  return createOutputPlayback(requestSpeech, onStatus, {
+    isMuted: isVoiceOutputMuted,
+    settings: () => {
+      const engine = loadVoicePrefsClient().ttsEngine ?? 'kokoro';
+      return { engine, rate: config.rate, voiceId: engine === 'browser'
+        ? voiceForRole('system:operator') : voiceForEngineRole(engine, 'system:operator') };
+    },
+  });
 }
 
 /**

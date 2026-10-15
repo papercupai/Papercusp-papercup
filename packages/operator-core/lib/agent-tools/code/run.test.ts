@@ -1,12 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { encode } from '@papercusp/result-encoding';
 import { applyResultDoor, beginResultDoorAggregate, resetResultDoorAggregatesForTests } from '../../result-door';
+import { parseScratchReference } from '../../scratch-reference';
+import { safeScratchFilesystemPath } from '../../scratch-uri';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 
 // ── Mocks for the CAPTURE wiring (code-recipes-2026-06-21 P-003) ─────────────
 // maybeCaptureRecipe lazy-imports these; replace them so no PG / embedder /
 // registry is touched and we can assert captureRecipe was invoked on success.
-const { captureRecipeMock, recordRecipeRunMock, normalizeExecutionTraceMock, normalizedTrace } = vi.hoisted(() => {
+const {
+  captureRecipeMock,
+  recordRecipeRunMock,
+  normalizeExecutionTraceMock,
+  resolveLiveBoundRefsMock,
+  resolvePresenceFleetMock,
+  normalizedTrace,
+} = vi.hoisted(() => {
   const trace = {
     schemaVersion: 1 as const,
     backend: 'server' as const,
@@ -22,6 +35,15 @@ const { captureRecipeMock, recordRecipeRunMock, normalizeExecutionTraceMock, nor
     captureRecipeMock: vi.fn<typeof import('./capture-recipe').captureRecipe>(async () => null),
     recordRecipeRunMock: vi.fn(async () => {}),
     normalizeExecutionTraceMock: vi.fn(async () => trace),
+    resolveLiveBoundRefsMock: vi.fn(async () => ({
+      workspaces: [],
+      fleets: [],
+      plans: ['workspace-host-deferred-spend-reconciliation-2026-09-07'],
+      harnesses: ['alpha'],
+      items: ['WI-live'],
+      resources: ['resource-live'],
+    })),
+    resolvePresenceFleetMock: vi.fn(async () => ({ fleetSlug: null, fleetRole: null })),
     normalizedTrace: trace,
   };
 });
@@ -35,12 +57,29 @@ vi.mock('../../code-recipes-store', async (importOriginal) => ({
 vi.mock('../../orchestration-trace', () => ({
   normalizeExecutionTrace: normalizeExecutionTraceMock,
 }));
+vi.mock('../../recipe-authority', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveLiveBoundRefs: resolveLiveBoundRefsMock,
+}));
+vi.mock('../coordination/presence-fleet', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolvePresenceFleet: resolvePresenceFleetMock,
+}));
+vi.mock('../locks/su-lock-store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getTxPool: () => orgSqlMock,
+}));
 // ── Mocks for the WI-1411 per-inner-call rebinding wiring ────────────────────
 // withWorkspace/synthesizeDispatchPrincipal/runWithWorkspaceIfConcrete would
 // otherwise open a real PG transaction — replace them with spies so
 // bindInnerDispatch's own branch logic (crossWorkspace / hop / fast-path) is
 // what's under test, not a live database.
-const { withWorkspaceMock, synthesizeDispatchPrincipalMock, runWithWorkspaceIfConcreteMock } = vi.hoisted(() => ({
+const {
+  withWorkspaceMock,
+  synthesizeDispatchPrincipalMock,
+  runWithWorkspaceIfConcreteMock,
+  orgSqlMock,
+} = vi.hoisted(() => ({
   withWorkspaceMock: vi.fn(async (workspaceId: string, fn: (tx: unknown) => unknown) => fn({ __tx: workspaceId })),
   synthesizeDispatchPrincipalMock: vi.fn(async (tx: unknown, spawnCtx: { workspaceId: string; role: string }) => ({
     slug: `system:${spawnCtx.role}`,
@@ -49,10 +88,13 @@ const { withWorkspaceMock, synthesizeDispatchPrincipalMock, runWithWorkspaceIfCo
     __tx: tx,
   })),
   runWithWorkspaceIfConcreteMock: vi.fn(async (_workspaceId: string | undefined, fn: () => unknown) => fn()),
+  // fallback-observations uses the admin pool's Sql value as a callable tag.
+  // Keep it local and inert so this suite cannot reach a real Postgres client.
+  orgSqlMock: Object.assign(vi.fn(async () => []), { __admin: true }),
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  getOrgPg: () => ({ sql: { __admin: true } }),
+  getOrgPg: () => ({ sql: orgSqlMock }),
   withWorkspace: withWorkspaceMock,
 }));
 vi.mock('../../workspace-als', async (importOriginal) => ({
@@ -124,6 +166,28 @@ describe('code:run registration (B-CX-2A)', () => {
     }
   });
 
+  it('documents explicit held-item attribution before multi-claim shell dispatch', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('If you hold multiple work-items');
+    expect(scriptDescription).toContain('work-item you currently hold');
+    expect(scriptDescription).toContain('tools.capability.bash({ command, work_item_id: "WI-1234" })');
+    expect(scriptDescription).toContain('`work_item_id_required` before dispatch');
+    expect(scriptDescription).toContain('a single held claim can remain implicit');
+  });
+
+  it('distinguishes code:run dynamic dispatch from the outer tools.invoke wrapper', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('There is no tools.invoke shortcut in this sandbox');
+    expect(scriptDescription).toContain('dynamic dispatch is tools.tools.invoke({ name, args })');
+    expect(scriptDescription).toContain('or use tools.ns.verb(args) directly');
+  });
+
   it('documents JavaScript escaping for shell backslash-zero commands', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
@@ -142,6 +206,18 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('Nested tool calls return their typed result root');
     expect(scriptDescription).toContain('read `result.output`, `result.exit_code`, and `result.status`');
     expect(scriptDescription).toContain('do not read `result.content[0].text`');
+    expect(scriptDescription).toContain('`dev:pg_query`, query results expose `result.rows`, `result.fields`, and `result.rowCount`');
+    expect(scriptDescription).toContain('relation descriptions expose `result.columns`, `result.indexes`, and `result.constraints`');
+  });
+
+  it('documents bounded read-only results recovered after a script timeout', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('timeoutSettledReadRecovery.calls');
+    expect(scriptDescription).toContain('omittedReadCount');
+    expect(scriptDescription).toContain('Write results are never included in timeout recovery');
   });
 
   it('documents JavaScript escaping for literal shell backslashes', () => {
@@ -209,6 +285,16 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('quoted stdin, a heredoc, or an argument');
   });
 
+  it('documents quote-safe inline Python -c commands', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('For inline Python `-c`');
+    expect(scriptDescription).toContain("String.raw`journalctl -u app.service | python3 -c 'import sys;");
+    expect(scriptDescription).toContain('prevents `compile_error` before bash is dispatched');
+  });
+
   it('documents that scripts are plain JavaScript rather than TypeScript', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
@@ -216,6 +302,15 @@ describe('code:run registration (B-CX-2A)', () => {
       '';
     expect(scriptDescription).toContain('Plain JavaScript body only');
     expect(scriptDescription).toContain('TypeScript annotations such as `: any` are not supported');
+  });
+
+  it('documents the recursive execution doors excluded from the script facade', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('tools.code.run');
+    expect(scriptDescription).toContain('tools.orchestrate.run');
   });
 
   it('lets malformed shell text reach the VM compile error instead of static arg preflight', async () => {
@@ -244,6 +339,30 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(payload.ok).toBe(false);
     expect(payload.error).toMatch(/^compile_error:/);
     expect(payload.argPreflight).toBeUndefined();
+  });
+
+  it('accepts a quote-safe inline Python -c command as valid JavaScript', async () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+    const script =
+      "const command = String.raw`journalctl -u app.service | python3 -c 'import sys; print(\"ts\", sys.stdin.readline().strip())'`;\n" +
+      'return { command };';
+    const res = await tool.fn(
+      { script },
+      {
+        log: () => {},
+        workspaceId: 'ws-test',
+        harnessSlug: 'alpha',
+        role: 'su',
+        isSuperuser: true,
+        uiClientId: 'su-test',
+      } as never,
+    );
+    const payload = JSON.parse(String((res as { content: { text: string }[] }).content[0].text));
+    expect(payload.ok).toBe(true);
+    expect(payload.summary).toEqual({
+      command: `journalctl -u app.service | python3 -c 'import sys; print("ts", sys.stdin.readline().strip())'`,
+    });
   });
 
   it('documents colon-only namespace conversion and preserves underscores within segments', () => {
@@ -342,6 +461,50 @@ describe('code:run → explicit final media (P-027 / D-021)', () => {
     expect(payload.summary).toEqual({ rendered: true });
     expect(payload.state).toEqual({ cursor: 2 });
     expect(String(res.content[0].text)).not.toContain('aGVsbG8=');
+  });
+
+  it('keeps a small script return visible when store replay state exceeds the result door', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-code-run-result-door-'));
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    try {
+      const res = (await codeRun().fn(
+        {
+          script:
+            `store('full', { rows: Array.from({ length: 12 }, (_, index) => String(index).padEnd(600, 'x')) }); ` +
+            `return { marker: 'small-script-return', count: 3 };`,
+        },
+        mkCtx(),
+      )) as unknown as Parameters<typeof applyResultDoor>[0];
+      const source = JSON.parse(String(res.content[0].text)) as {
+        state?: { full?: { rows?: string[] } };
+      };
+      expect(source.state?.full?.rows).toHaveLength(12);
+      expect(source.state?.full?.rows?.every((row) => row.length === 600)).toBe(true);
+      const genericDoor = applyResultDoor(res, {
+        toolName: 'diagnostic:get',
+        workspaceId: 'ws-test',
+        runId: '99999999-3333-4333-8444-555555555555',
+      });
+      expect(JSON.parse(String(genericDoor.content[0].text)).summary).toBeUndefined();
+      const doored = applyResultDoor(res, {
+        toolName: 'code:run',
+        workspaceId: 'ws-test',
+        runId: '99999999-2222-4333-8444-555555555555',
+      });
+      const payload = JSON.parse(String(doored.content[0].text)) as {
+        summary?: { marker?: string; count?: number };
+        _projection?: { truncated?: boolean };
+      };
+
+      expect(payload.summary).toEqual({ marker: 'small-script-return', count: 3 });
+      expect(payload._projection?.truncated).toBe(true);
+      expect(doored._meta?.resultDoor).toMatchObject({ truncated: true, spillUri: expect.any(String) });
+    } finally {
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 
   it('rejects invalid final media without placing a non-text item on the wire', async () => {
@@ -455,6 +618,13 @@ describe('code:run → recipe capture (P-003)', () => {
     expect(input.workspaceId).toBe('ws-test');
     expect(input.title).toBe('add');
     expect(input.executionTrace).toBe(normalizedTrace);
+    expect(input.recommendationContext).toEqual({
+      workspace: 'ws-test',
+      harness: 'alpha',
+      plan: 'workspace-host-deferred-spend-reconciliation-2026-09-07',
+      items: ['WI-live'],
+      resources: ['resource-live'],
+    });
     expect(payload.callRecords).toBeUndefined();
   });
 
@@ -667,6 +837,97 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     expect(shapeCodeRunSummary(result)).toBe(result);
   });
 
+  it('spills the original summary and returns an owner-scoped recovery cursor when shaping omits data', async () => {
+    const scratchRoot = mkdtempSync(join(tmpdir(), 'code-run-summary-spill-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
+    try {
+      const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+      if (!tool) throw new Error('code:run not registered');
+      const res = await tool.fn(
+        {
+          script:
+            'return { records: Array.from({ length: 24 }, (_, index) => ({ ' +
+            'id: index, detail: `record-${index}-${"x".repeat(500)}` })) };',
+        },
+        {
+          log: () => {},
+          workspaceId: 'ws-test',
+          harnessSlug: 'alpha',
+          role: 'su',
+          isSuperuser: true,
+          uiClientId: 'su-test',
+        } as never,
+      );
+      const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text) as {
+        summary: { records: unknown[] };
+        summaryNotice: {
+          truncated: true;
+          rawSummaryCursor: {
+            status: string;
+            args?: { uri: string };
+            byteCount?: number;
+            sha256?: string;
+          };
+        };
+      };
+
+      expect(payload.summaryNotice.truncated).toBe(true);
+      expect(payload.summaryNotice.rawSummaryCursor.status).toBe('available');
+      const uri = payload.summaryNotice.rawSummaryCursor.args?.uri;
+      expect(uri).toBeTruthy();
+      const reference = parseScratchReference(readFileSync(safeScratchFilesystemPath(uri!)));
+      expect(reference).not.toBeNull();
+      expect(reference!.manifest).toMatchObject({
+        audience: 'owner',
+        ownerId: 'owner-x',
+        byteCount: payload.summaryNotice.rawSummaryCursor.byteCount,
+        sha256: payload.summaryNotice.rawSummaryCursor.sha256,
+        bodyOffsetInPayload: 0,
+      });
+      expect(JSON.parse(reference!.payload.toString('utf8'))).toEqual({
+        records: Array.from({ length: 24 }, (_, index) => ({
+          id: index,
+          detail: `record-${index}-${'x'.repeat(500)}`,
+        })),
+      });
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      rmSync(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves source array counts in TOON while marking omitted entries (EI-24966800800754357)', () => {
+    const summary = {
+      union: Array.from({ length: 16 }, (_, index) => `D-${String(index + 1).padStart(3, '0')}`),
+      rows: Array.from({ length: 40 }, (_, index) => ({
+        id: `row-${index + 1}`,
+        detail: `row-${index + 1}-${'x'.repeat(500)}`,
+      })),
+    };
+    const shaped = shapeCodeRunSummary({ summary }) as {
+      summary: { union: unknown[]; rows: unknown[] };
+      summaryNotice: {
+        arraysTruncated: number;
+        arrayOriginalLengths: Record<string, number>;
+      };
+    };
+    const toon = encode(shaped.summary, 'toon');
+
+    expect(shaped.summaryNotice.arraysTruncated).toBe(2);
+    expect(shaped.summaryNotice.arrayOriginalLengths).toMatchObject({
+      'summary.union': 16,
+      'summary.rows': 40,
+    });
+    expect(shaped.summary.union).toHaveLength(16);
+    expect(shaped.summary.rows).toHaveLength(40);
+    expect(shaped.summary.union).toContain('[omitted]');
+    expect(shaped.summary.rows).toContain('[omitted]');
+    expect(toon).toMatch(/union\[16\]/);
+    expect(toon).toMatch(/rows\[40\]/);
+  });
+
   it('bounds nested strings and arrays while preserving scalar marker fields', async () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     if (!tool) throw new Error('code:run not registered');
@@ -694,7 +955,8 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
 
     expect(payload.ok).toBe(true);
     expect(payload.summary).toMatchObject({ markerCount: 1, lineCount: 81, returnedChars: 54822 });
-    expect(payload.summary.lines.length).toBeLessThan(81);
+    expect(payload.summary.lines).toHaveLength(81);
+    expect(payload.summary.lines).toContain('[omitted]');
     // EI-21254588525256811: this used to assert `line.length <= 360` — the projection ladder's
     // internal rung CONSTANT, not a contract. Pinning it is what hid the defect: the ladder
     // stopped at the first rung that fit, so it returned ~11% of the budget it was entitled to
@@ -775,25 +1037,27 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
         ),
       );
 
-    it('keeps a bounded prefix instead of collapsing to an empty result', () => {
-      const shaped = shapeCodeRunSummary({ summary: rows() }) as {
-        summary: unknown[];
+    it('keeps retained rows in a count-bearing wrapper instead of collapsing to an empty result', () => {
+      const shaped = shapeCodeRunSummary({ summary: rows() }) as unknown as {
+        summary: { __truncatedArray: true; originalLength: number; items: unknown[] };
         summaryNotice: { omittedItems: number };
       };
 
-      expect(Array.isArray(shaped.summary)).toBe(true);
-      expect(shaped.summary.length).toBeGreaterThan(0);
+      expect(shaped.summary).toMatchObject({ __truncatedArray: true, originalLength: 200 });
+      expect(shaped.summary.items.length).toBeGreaterThan(0);
       expect(JSON.stringify(shaped.summary).length).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
     });
 
-    it('discloses the dropped rows instead of reporting nothing was omitted', () => {
-      const shaped = shapeCodeRunSummary({ summary: rows() }) as {
-        summary: unknown[];
+    it('discloses the original row count and dropped rows instead of reporting nothing was omitted', () => {
+      const shaped = shapeCodeRunSummary({ summary: rows() }) as unknown as {
+        summary: { originalLength: number; items: unknown[] };
         summaryNotice: { omittedItems: number };
       };
 
-      // The old envelope said 0 — indistinguishable from a complete result.
-      expect(shaped.summaryNotice.omittedItems).toBeGreaterThanOrEqual(200 - shaped.summary.length);
+      expect(shaped.summary.originalLength).toBe(200);
+      expect(shaped.summaryNotice.omittedItems).toBeGreaterThanOrEqual(
+        shaped.summary.originalLength - shaped.summary.items.length,
+      );
     });
 
     // CONTROL. Both assertions above must be able to fail. The pre-fix value is literally `[]`
@@ -979,9 +1243,14 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     };
 
     expect(shaped.summaryNotice).toMatchObject({ truncated: true });
-    expect(shaped.summary.launched.length).toBeLessThan(launched.length);
-    expect(shaped.summary.launched.length).toBeGreaterThan(0);
-    for (const [index, row] of shaped.summary.launched.entries()) {
+    expect(shaped.summary.launched).toHaveLength(launched.length);
+    expect(shaped.summary.launched.some((row) => typeof row === 'string')).toBe(true);
+    const retained = shaped.summary.launched.filter(
+      (row): row is { result: { content: Array<{ text: string }> } } =>
+        typeof row === 'object' && row !== null && 'result' in row,
+    );
+    expect(retained.length).toBeGreaterThan(0);
+    for (const [index, row] of retained.entries()) {
       expect(row.result.content[0]?.text).toContain(`"bash_id":"bash-${index}"`);
       expect(row.result.content[0]?.text).toContain(`"task_id":"task-${index}"`);
     }
@@ -1013,7 +1282,8 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     };
 
     expect(shaped.summary.invocations.rows.length).toBeGreaterThan(0);
-    expect(shaped.summary.invocations.rows.length).toBeLessThan(rows.length);
+    expect(shaped.summary.invocations.rows).toHaveLength(rows.length);
+    expect(shaped.summary.invocations.rows.some((row) => typeof row === 'string')).toBe(true);
     expect(shaped.summary.invocations.rows[0]).toMatchObject({
       id: 'id-0',
       invoked_at: 0,
@@ -1057,7 +1327,8 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
           'P305_VERDICT verdict=fail',
         ]),
       );
-      expect(shaped.summary.evidence.length).toBeLessThan(lines.length);
+      expect(shaped.summary.evidence).toHaveLength(lines.length);
+      expect(shaped.summary.evidence).toContain('[omitted]');
       expect(JSON.stringify(shaped.summary).length).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
       expect(shaped.summaryNotice.paths).toContain('summary.evidence');
     });
@@ -1343,6 +1614,15 @@ describe('code:run → timeoutSec foreground contract (EI-21636457492876715)', (
     expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: maxTimeoutSec + 1 }).success).toBe(false);
     expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: 120 }).success).toBe(false);
   });
+
+  it('publishes the same foreground ceiling in the exposed argument schema', () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+    const timeoutSec = (tool?.inputSchema as {
+      properties?: { timeoutSec?: { maximum?: number } };
+    })?.properties?.timeoutSec;
+
+    expect(timeoutSec?.maximum).toBe(FOREGROUND_TIMEOUT_CEILING_MS / 1000);
+  });
 });
 
 describe('code:run → response-safe postprocessing budget', () => {
@@ -1432,6 +1712,18 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     expect(captureRecipeMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['code.run', 'return await tools.code.run({ script: "return 1;" });'],
+    ['orchestrate.run', 'return await tools.orchestrate.run({});'],
+  ])('explains why recursive execution ref %s is excluded', async (unknownRef, script) => {
+    const res = await codeRun().fn({ script }, mkCtx());
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.ok).toBe(false);
+    expect(payload.unknownRefs).toContain(unknownRef);
+    expect(payload.facadeHelp.note).toContain('deliberately excluded from this facade');
+    expect(payload.facadeHelp.note).toContain('Keep the sequence in this outer script');
+  });
+
   it.each(['workItems.notARealMethod', 'work_items.notARealMethod', 'work_items:notARealMethod'])(
     'returns typed signatures for an unknown member under the %s namespace spelling',
     (unknownRef) => {
@@ -1449,6 +1741,18 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
       expect(help.namespaces).toBeUndefined();
     },
   );
+
+  it('distinguishes the root tools.call helper from a missing call verb in the tools namespace', () => {
+    const tools = [wiTool('tools:invoke', 'Dynamic tool dispatcher')] as never;
+    const help = buildFacadeHelp(['tools.call'], tools, new Set(['tools:invoke']));
+
+    expect(help.note).toContain('universal helper is on the ROOT object');
+    expect(help.note).toContain('use `tools.call("ns:verb", args)`');
+    expect(help.note).toContain('`tools.tools.call(...)` is a missing `call` verb');
+    expect(help.note).toContain('`tools.tools.invoke({ name, args })`');
+    expect(help.signatures).toContain('  call(toolName: string, args?: unknown): Promise<unknown>;');
+    expect(help.signatures).toContain('invoke(args?: {}): Promise<unknown>;');
+  });
 
   // EI-23783922587988483: EI-7677 bounded the unknown-NAMESPACE branch but left the unknown-VERB
   // branch (the far more common shape) rendering every signature in the namespace — measured 67,864
@@ -1664,7 +1968,7 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
       outerCtx as never,
       echoNext,
     )) as { workspaceId: string; tx: unknown };
-    expect(result.tx).toEqual({ __admin: true });
+    expect(result.tx).toBe(orgSqlMock);
     expect(result.workspaceId).toBe('ws-bee');
     expect(withWorkspaceMock).not.toHaveBeenCalled(); // admin path bypasses the app-role tx
   });
@@ -2019,12 +2323,16 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     expect(shaped.warning).toBeUndefined();
   });
 
-  // EI-7784: `ok:true` alone is misleading when a write-effect call dispatched fine but reported
-  // its OWN ok:false (EI-7669's okFalseMutations) — the top-level `partial` flag + the
-  // okFalseWarning are the two structured/human-readable signals a caller must check alongside
-  // `ok`, not instead of relying on `ok` meaning "nothing went wrong".
-  it('ok:true with an okFalse mutation carries partial:true + a prominent okFalseWarning naming the tool', () => {
-    const okFalseResult = { ok: false, error: 'completion_integrity_required' };
+  // EI-7784: `ok:true` alone is misleading when a write-effect call dispatched without throwing
+  // but reported its own ok:false. Its error result may describe only the last stage of a
+  // multi-operation write, so the warning must preserve uncertainty about earlier effects.
+  it('ok:true with an okFalse mutation carries partial:true + an effect-uncertainty warning naming the tool', () => {
+    const okFalseResult = {
+      ok: false,
+      error: 'later command failed',
+      partial: true,
+      mutations: { count: 2, byTool: { 'capability:bash': 2 } },
+    };
     const shaped = shapeMutationEcho({
       ...base,
       dryRun: false,
@@ -2037,7 +2345,10 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     expect(shaped.ok).toBe(true); // the script itself completed — this is exactly the misleading bit
     expect(shaped.partial).toBe(true);
     expect(shaped.okFalseWarning).toEqual(expect.stringContaining('work_items:set_state'));
-    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('did NOT take effect'));
+    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('reported ok:false'));
+    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('effects may be partial or absent'));
+    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('verify their effects before retrying'));
+    expect(shaped.okFalseWarning).not.toEqual(expect.stringContaining('did NOT take effect'));
     expect(shaped.okFalseMutations).toEqual([
       { tool: 'work_items:set_state', args: { id: 'WI-1', state: 'resolved' }, result: okFalseResult },
     ]);

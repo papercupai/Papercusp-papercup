@@ -22,13 +22,39 @@ PUI leaves it alone; its own sessions still use the `psu` in this release. Set
 `PUI_HOME` or `PUI_BIN_DIR` to choose other (absolute) locations. If
 `~/.local/bin` is not on your `PATH`, add it.
 
-Before unpacking, you can check the archive against the `SHA256SUMS` published
-beside it (`sha256sum -c SHA256SUMS --ignore-missing`, or
-`shasum -a 256 -c SHA256SUMS --ignore-missing` on macOS). If a `.minisig`
+Before unpacking, download the checksum file linked beside the archive and
+check it with `sha256sum -c pui-<version>-<target>.tar.gz.sha256`, or
+`shasum -a 256 -c pui-<version>-<target>.tar.gz.sha256` on macOS. Older releases
+use a file named `SHA256SUMS`. If a `.minisig`
 signature is published, verify it with `minisign -V -m <archive>` and the
 publisher's public key.
 
-## What PUI needs
+## Connect to your cloud desktop from your console
+
+The download includes **psu**, the Papercusp launcher, and its private Node
+runtime. After installing, open your terminal (a WSL2 Linux console on Windows)
+and run:
+
+```sh
+psu --connect-login --connect
+```
+
+Sign in in your browser, select your cloud workspace, then choose Claude,
+Codex, OMP or Papercusp PUI in the launcher. The agents run on your cloud
+desktop. After signing in, you can also choose a CLI directly:
+
+```sh
+psu --connect --agent=claude
+psu --connect --agent=codex
+psu --connect --agent=omp
+pui --connect
+```
+
+The last command opens Papercusp PUI on the selected cloud workspace.
+Linux and macOS use their own platform archives; Windows uses the Linux
+x86_64 archive inside WSL2.
+
+## Local server and first launch
 
 PUI is a client. It needs a Papercusp server to run agents, but it does not
 need the desktop app. For a local setup, get the separate **Papercusp Server**

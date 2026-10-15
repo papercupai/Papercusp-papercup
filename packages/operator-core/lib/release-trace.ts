@@ -451,9 +451,30 @@ function classifyFixCommitContainment(
 /** EI-210996: recognize a producer death from evidence written by systemd, not by the
  * checkpoint process that may have been SIGKILLed. Candidate matching prevents a stale
  * finished-unit log from contaminating a newer exact-SHA trace. */
-function checkpointRunTerminalInconclusive(input: Pick<ReleaseTraceInput, 'position' | 'gate'>) {
+function currentCheckpointTerminalEvidence(input: Pick<ReleaseTraceInput, 'position' | 'gate'>) {
   const checkpointRun = input.gate.checkpointRunInFlight ?? input.position.gate.checkpointRunInFlight;
   const evidence = checkpointRun?.terminalEvidence;
+  if (!evidence) return null;
+  // The manual unit's stable symlink survives scheduled runs, including another run of
+  // the SAME SHA. Candidate matching alone cannot associate that old exit with the
+  // current logical qualifier. Keep the raw evidence available, but never steer from
+  // it after a newer durable verdict or inconclusive attempt.
+  const laterAttempts = [
+    input.position.gate.verdictObservedAtMs,
+    input.gate.inconclusive?.observedAtMs,
+    input.position.gate.inconclusive?.observedAtMs,
+  ].filter((at): at is number => typeof at === 'number' && Number.isFinite(at));
+  const latestAttempt = laterAttempts.length ? Math.max(...laterAttempts) : null;
+  if (latestAttempt != null &&
+      (typeof evidence.observedAtMs !== 'number' || !Number.isFinite(evidence.observedAtMs) || evidence.observedAtMs < latestAttempt)) {
+    return null;
+  }
+  return evidence;
+}
+
+function checkpointRunTerminalInconclusive(input: Pick<ReleaseTraceInput, 'position' | 'gate'>) {
+  const checkpointRun = input.gate.checkpointRunInFlight ?? input.position.gate.checkpointRunInFlight;
+  const evidence = currentCheckpointTerminalEvidence(input);
   return checkpointRun?.active === false && checkpointRun.terminalMarker === false && evidence?.abnormal === true &&
     sameSha(input.position.targetSha, evidence.candidate)
     ? evidence
@@ -483,7 +504,7 @@ function checkpointRunCancelledNoProducer(input: Pick<ReleaseTraceInput, 'positi
  */
 function checkpointAuthorityConsumed(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): ReleaseTraceConsumedAuthority | null {
   const checkpointRun = input.gate.checkpointRunInFlight ?? input.position.gate.checkpointRunInFlight;
-  const evidence = checkpointRun?.terminalEvidence;
+  const evidence = currentCheckpointTerminalEvidence(input);
   const targetSha = input.position.targetSha;
   if (checkpointRun?.active !== false || evidence?.abnormal !== true || !targetSha || !sameSha(targetSha, evidence.candidate)) {
     return null;

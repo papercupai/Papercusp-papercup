@@ -7,6 +7,7 @@
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
 import { decide, decidePerFile, findMockCastEscapesInText } from '../../../../scripts/check-mock-cast-escape.mjs';
@@ -210,7 +211,7 @@ describe('the --json CLI report', () => {
       targetCount: number;
       verdict: string;
       increases: unknown[];
-      byFile: Record<string, unknown>;
+      byFile: Record<string, unknown[]>;
     };
     try {
       report = JSON.parse(guard.stdout) as typeof report;
@@ -221,7 +222,15 @@ describe('the --json CLI report', () => {
     expect(report.count).toBeGreaterThanOrEqual(0);
     expect(report.baselineCount).toBeGreaterThanOrEqual(0);
     expect(report.targetCount).toBeGreaterThanOrEqual(0);
-    expect(report.increases).toEqual([]);
+    const baseline = JSON.parse(readFileSync(path.join(REPO_ROOT, '.mock-cast-escape-baseline.json'), 'utf8'));
+    const current = Object.fromEntries(Object.entries(report.byFile).map(([file, hits]) => [file, hits.length]));
+    const decision = baseline.byFile
+      ? decidePerFile({ current, baseline: baseline.byFile })
+      : decide({ count: report.count, baselineCount: baseline.count });
+    expect(Object.values(current).reduce((sum, count) => sum + count, 0)).toBe(report.count);
+    expect(report.baselineCount).toBe(baseline.count);
+    expect(report.increases).toEqual(decision.increases ?? []);
+    expect(report.verdict).toBe(decision.verdict);
     expect(report.verdict).toMatch(/^(?:fail-file-increase|fail-exceeds|ok-ratchet-files|ok-below-files|ok-ratchet|ok-below|ok)$/);
     expect(guard.status, guard.output).toBe(report.verdict.startsWith('fail-') ? 1 : 0);
   }, 240_000);

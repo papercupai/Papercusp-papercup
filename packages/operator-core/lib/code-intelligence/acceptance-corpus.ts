@@ -25,8 +25,8 @@ import type { CodeIntelBackend, CodeIntelIntent } from './contracts.ts';
  * The commit the ground truth below was measured against.
  * Re-pin this together with any fixture re-measurement.
  */
-export const CORPUS_BASELINE_COMMIT = 'e443b3026823fd8b5ff23d9d22b27d61606a3464';
-export const CORPUS_BASELINE_MEASURED_AT = '2026-09-04T17:47:50Z';
+export const CORPUS_BASELINE_COMMIT = '2cf44c1d91fbb036ed0c8b8008adc8095abc50ef';
+export const CORPUS_BASELINE_MEASURED_AT = '2026-10-12T00:19:52Z';
 
 /**
  * A location this corpus asserts exists in the tree, ONE-indexed.
@@ -177,7 +177,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'libs/generic/scheduled-registry/src/index.ts',
-        line1: 338,
+        line1: 459,
         symbolOnLine: 'export function managedSetInterval',
       },
     ],
@@ -207,12 +207,12 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-        line1: 319,
+        line1: 337,
         symbolOnLine: 'impl AsyncRead for IpcStream',
       },
       {
         path: 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
-        line1: 335,
+        line1: 353,
         symbolOnLine: 'impl AsyncWrite for IpcStream',
       },
     ],
@@ -234,12 +234,12 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'packages/operator-core/lib/voice-node/local-whisper-service.ts',
-        line1: 406,
+        line1: 411,
         symbolOnLine: 'await managedSpawn',
       },
       {
         path: 'packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts',
-        line1: 347,
+        line1: 355,
         symbolOnLine: 'await managedSpawn',
       },
     ],

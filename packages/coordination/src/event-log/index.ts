@@ -10,6 +10,7 @@
 export * from '@papercusp/pubsub-substrate/event-log';
 export {
   PgCoordLog,
+  parseBody,
   ensureCoordEventLogTable,
   DEFAULT_COORD_WORKSPACE,
   type PgCoordLogOptions,

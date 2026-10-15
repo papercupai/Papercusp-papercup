@@ -22,6 +22,7 @@
  * recent wakes' notes survive a clear so a cold successor still sees the trajectory.
  */
 import { z } from 'zod';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { defineTool } from '@papercusp/agent-mcp';
 import { withPgContentionRetry } from '@papercusp/coordination/event-log';
 import { DbCallDeadlineError } from '@papercusp/db-org';
@@ -33,9 +34,9 @@ import { dependsOnSpec } from '../../freshness/tool-schema';
 import {
   lintUncheckedExternalClaims,
   lintUncheckedImperativeActions,
-  lintRelativeScratchPaths,
   RELATIVE_SCRATCH_ADVISORY,
   mergeCarryRows,
+  checkpointRowsMode,
   parseCarryNote,
   renderCarryNote,
   renderCheckLine,
@@ -51,6 +52,8 @@ import {
   rescueTaggedCarryNoteBlob,
   detectCarryNoteRescueSignals,
   CARRY_ROW_SOFT_CAPS,
+  FALSIFIER_MISSING_NOTE,
+  checksMissingFalsifier,
   CARRY_TEXT_SOFT_CAP,
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_ROW_ID_MAX,
@@ -64,8 +67,10 @@ import {
   splitCarryNoteWalls,
   withCarryNoteChecks,
   withCarryNoteWalls,
+  withStableCarryRowIds,
   type CarryArgRepair,
 } from '../../carry-note';
+import { filterTrackedRelativeScratchPaths } from '../checkpoint-relative-scratch';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getSessionBrief } from '../../session-brief';
@@ -95,6 +100,7 @@ import { uncoveredAbsencePremises } from '../../premises-claim-port';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { unresolvedPlanDecisionRefs } from '../coordination/decision-ref-advisory';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import type { FleetZeroWorkersVerdict } from '../../fleet/fleet-zero-workers-guard';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/store';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
@@ -105,6 +111,7 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
@@ -145,7 +152,11 @@ class FrozenCarryCheckpointError extends Error {
 function frozenLoopCarryViolation(text: string | null | undefined): FrozenCarryViolationPayload | null {
   if (!text?.trim()) return null;
   return frozenLineageCarryViolationPayload(
-    evaluateFrozenLineageCarryText({ surface: 'loop-checkpoint', text }),
+    evaluateFrozenLineageCarryText({
+      surface: 'loop-checkpoint',
+      text,
+      target: resolveHomeGateVerdictTarget(),
+    }),
   );
 }
 
@@ -321,23 +332,21 @@ const CARRY_ALIAS_FIELD = z
   .optional();
 
 const EXECUTABLE_PROBE_SHAPE =
-  "Executable `probe` shape (choose ONE target): `{ kind:'tool', tool:'<direct read-only tool>', args:{...}, schemaRevision:'live', expect:{ path:'$.state', op:'eq', value:'green' } }` or `{ kind:'state-cell', cell:'<registered cell>', as:'<reader>', schemaRevision:'<revision>', expect:{ path:'$.state', op:'eq', value:'green' } }`. " +
-  '`kind`, the matching target (`tool` or `cell`), `schemaRevision`, and `expect` are required; `args` defaults to `{}` for tool probes. ' +
-  '`probe:{ expect:... }` has no executable target — omit `probe` and put the human command in `recheck`.';
+  "`{kind:'tool',tool,args?,schemaRevision,expect}` or `{kind:'state-cell',cell,as,schemaRevision,expect}`. Required: kind, target, schemaRevision, expect; args defaults to `{}`. " +
+  '`probe:{ expect:... }` has no target; omit `probe` and use `recheck` for a human command.';
 
 export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    'Read/write/clear COLD su loop carry-note. The carry mode belongs to loop:arm (`carry:\'cold\'|\'warm\'`); loop:checkpoint does not accept a `carry` argument. Read { read:true, ownerId?, harness? }; write { did,left,insight,next }, { note }, or { checkpoint }; blank/null clears. ' +
-    "Default rowsMode:'merge' preserves rows; rowsMode:'replace' retires rows (empty list with replace clears). Probe rows use kind:'tool' or kind:'state-cell', args, schemaRevision. Returns note metadata, walls, checks.",
+    "COLD carry-note. Read {read:true,ownerId?,harness?}; write {did,left,insight,next}, {note} or {checkpoint}. Clips are reported. carry mode belongs to loop:arm; loop:checkpoint does not accept a `carry` argument. rowsMode:'merge' preserves; rowsMode:'replace' retires; empty list with replace clears. `confirmShrink` is accepted by `work_items:checkpoint` only.",
   guidance: {
     when:
-      "COLD: save facts; pair with work_items:checkpoint. carry mode belongs to loop:arm, not loop:checkpoint — do not retry a rejected `carry` argument here. Add same-line [turn:<session>@<iso-ts>] refs; never invent a ref. Mark [self-imposed], [peer:<sid>], or [inferred]. Default merge mode preserves them; rowsMode:'replace' retires rows. Probe kind:'tool' or kind:'state-cell' with args/schemaRevision. Before `session:request-compaction`, if `next` names an immediately runnable action, execute it (or another bounded progress read): writing this checkpoint alone is not post-note progress; `cold-successor-no-progress` refuses compaction. Scheduled loop fire/compaction is the narrow boundary exception.",
-    notWhen: "WARM (carry:'warm', default) use live transcript; work_items:checkpoint for state.",
+      "COLD: pair facts with work_items:checkpoint. Same-line [turn:<session>@<iso-ts>] refs; never invent a ref; label [self-imposed]. The default merge mode preserves them; rowsMode:'replace' retires rows. Before session:request-compaction, advance an immediately runnable action or do a bounded progress read; writing this checkpoint alone is not post-note progress. cold-successor-no-progress may refuse; scheduled fire/compaction is a narrow boundary exception. carry mode belongs to loop:arm, not loop:checkpoint; do not retry a rejected `carry` argument here. See /internal/docs/agent-insights/loop-wake-turn-deaths-recorded-as-delivered. " + EXECUTABLE_PROBE_SHAPE,
+    notWhen: "WARM: use live transcript; work_items:checkpoint for state.",
     chaining:
       'Retune: read loop:status, then ' +
-      "then loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes.",
+      "loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes.",
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',
@@ -396,7 +405,9 @@ export default defineTool({
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .nullish()
-        .describe('What this wake accomplished (concrete progress).'),
+        .describe(
+          `What this wake accomplished (concrete progress). Input is accepted up to ${CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE} characters, but persisted text is capped at ${CARRY_TEXT_SOFT_CAP}; any clipped text is listed in the response's repairs.`,
+        ),
       left: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
@@ -584,6 +595,14 @@ export default defineTool({
                   CARRY_ROW_SOFT_CAPS.recheck,
                   'Concrete probe to run before relying on the claim.',
                 ).optional(),
+                falsifier: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.falsifier,
+                  'Result that would mean this claim is FALSE (as facts:assert `falsifier`). A probe says how to look; this says what refutes it.',
+                ).optional(),
+                sampleAdequate: z
+                  .boolean()
+                  .optional()
+                  .describe('`false` = probed, but the sample could not discriminate the claim from its negation; renders ? not ✓.'),
                 verified: carryRowTextSchema(
                   CARRY_ROW_SOFT_CAPS.verified,
                   'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +
@@ -687,58 +706,49 @@ export default defineTool({
         )
         .optional()
         .describe(
-          'Carried CHECKS — claims about EXTERNAL STATE as {claim, recheck, verified?, contested?} rows (compact claim strings ' +
+          'Durable storage is capped at 12 check rows. This input accepts up to 48 rows as a hard validation/normalization ' +
+            'ceiling; an accepted array size is not a persistence promise. Carried CHECKS are claims about EXTERNAL STATE ' +
+            'as {claim, recheck, verified?, contested?} rows (compact claim strings ' +
             'are accepted and mapped to {claim}; the non-owner analog ' +
             'of walls; renders a ## Checks section every wake). `verified` is a STRING (evidence, ≤300 chars), never ' +
             'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
-            'relying on it. If its evidence contains STILL RUNNING, pending, outstanding, in-flight, unverified, or ' +
+            'relying on it. There is no caller-supplied `sinceMs` field here: that timestamp is server-owned carry metadata, ' +
+            'inherited for existing claims and stamped for new claims. Do not copy `sinceMs` from work_items:checkpoint rows. ' +
+            'If its evidence contains STILL RUNNING, pending, outstanding, in-flight, unverified, or ' +
             'awaiting while the claim asserts a completed/healthy state, the writer downgrades it to `contested` and ' +
             'reports the repair; when the claim itself asserts that unresolved state, the evidence remains VERIFIED. ' +
             'Use `contested` to force an explicit warning; contested rows render ⚠ and require a re-check. ' +
             'Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
-            'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
-            "kept (dropped claims come back as `checksDropped`). The default rowsMode:'merge' preserves omitted rows " +
-            'up to the row cap — on overflow the write REFUSES (naming the rows that would be evicted) unless ' +
-            "confirmRetire:true is also set, in which case supplied rows win and evicted rows are named in " +
-            '`checksDropped`; PREDICTED yields before VERIFIED only while seats remain, so supplying ≥ the cap ' +
-            "evicts EVERY unmatched carried row; pass rowsMode:'replace' + confirmRetire:true to retire them " +
-            'explicitly instead; [] clears under replace.',
+            'semantics as walls: omitted rows and [] preserve the carried set under either rowsMode. ' +
+            'Retire individual rows with retireIds; confirmRetire never authorizes omission or cap eviction. ' +
+            'An overflow refuses the row write and saves the narrative with prior rows intact, including legacy over-cap rows.',
         ),
       dependsOn: dependsOnSpec('carry-note'),
       rowsMode: z
         .enum(['replace', 'merge'])
         .optional()
         .describe(
-          "How a supplied walls/checks list combines with the carried set. 'merge' (default) — rows UPSERT by `id` " +
+          'Durable caps are 12 walls and 12 checks. The arrays may accept up to 48 rows each for validation/normalization; ' +
+            'accepted input size is not a persistence promise. How a supplied walls/checks list combines with the carried ' +
+            "set. 'merge' (default) — rows UPSERT by `id` " +
             '(else by exact claim text) and unmentioned rows SURVIVE, so adding/updating ONE row needs only that ' +
-            'row — but only UP TO THE ROW CAP: merge is non-destructive while the union fits, not unconditionally. ' +
-            'If the union would OVERFLOW the cap, the write is REFUSED (naming every carried row that would be ' +
-            "evicted in `checksDropped`/`wallsDropped`) unless `confirmRetire:true` is also set, in which case " +
-            'supplied rows win and PREDICTED rows yield before VERIFIED ones — a supplied list that alone fills ' +
-            "the cap evicts every carried row, evidence or not. 'replace' makes the list the new set; to retire " +
-            "or edit ONE row use `retireIds` or a row's `replaces` instead of a full resend. Under 'merge' a [] " +
-            'list is a no-op, never a clear.',
+            "row. 'replace' also preserves omitted rows: retirement always requires `retireIds`. " +
+            'At the cap, an overflowing row write is refused while its narrative is saved with carried rows intact. ' +
+            'To edit ONE row use its stable id or `replaces`; to close it use `retireIds`. An empty list is a no-op.',
         ),
       retireIds: z
         .array(z.string().min(1).max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE))
         .max((CARRY_NOTE_MAX_WALLS + CARRY_NOTE_MAX_CHECKS) * CARRY_CAP_HARD_MULTIPLE)
         .optional()
         .describe(
-          'Retire carried walls/checks by [#id] or exact claim in this same write, under either rowsMode — no ' +
+          'Retire carried walls/checks by stable [#id] in this same write, under either rowsMode — no ' +
             'full resend. Reported as `wallsRetired`/`checksRetired`; unmatched refs as `unmatchedRowRefs`.',
         ),
       confirmRetire: z
         .boolean()
         .optional()
         .describe(
-          "Confirms a deliberate row retirement. Under rowsMode:'replace' (EI-21503907176334936): when the " +
-            'supplied lists would RETIRE carried rows, the write is REFUSED before anything is stored unless this ' +
-            'is true — the refusal names every row that would have been dropped. Under rowsMode:\'merge\' ' +
-            '(EI-21849813048365808): when the union would exceed the durable row cap, the write is likewise ' +
-            'REFUSED (naming every row the cap would evict) unless this is true, in which case the cap\'s own ' +
-            'PREDICTED-before-VERIFIED eviction proceeds in this same call — a one-call alternative to a separate ' +
-            "rowsMode:'replace' resend. Set it only for a deliberate retirement/eviction (or a deliberate [] clear " +
-            "under replace); an ordinary merge that fits under the cap never needs it.",
+          'Compatibility field. Does not authorize dropping omitted rows or cap eviction; name each closed row in `retireIds`.',
         ),
       expectedHash: z
         .string()
@@ -862,14 +872,22 @@ export default defineTool({
     // well-formed but frozen note. Track whether the probe itself failed (vs. genuinely
     // resolved "no active routine") so the response below can say so out loud.
     let routineProbeFailed = false;
-    const armedRoutine = await getLoopStatus(ownerId).catch((e) => {
+    const routineProbe = await withBoundedTimeout(() => getLoopStatus(ownerId), {
+      fallback: null,
+      timeoutMs: CONTINUATION_READ_BUDGET_MS,
+      label: 'loop:checkpoint armed-routine scope probe',
+    });
+    const armedRoutine = routineProbe.value;
+    observeFallback('routine-capability-read', { eligible: 1, applied: routineProbe.degraded ? 0 : 1,
+      reason: routineProbe.degraded ? 'armed-scope-unavailable' : 'applied', scope: 'loop-checkpoint-scope' });
+    if (routineProbe.degraded) {
       routineProbeFailed = true;
+      const reason = routineProbe.errorMessage ?? routineProbe.reason ?? 'unknown bounded-read failure';
       console.warn(
         '[loop:checkpoint] getLoopStatus probe failed while resolving carry-note scope (fail-open, WI-2148):',
-        e as Error,
+        routineProbe.error ?? new Error(reason),
       );
-      return null;
-    });
+    }
     const activeRoutine = armedRoutine?.active === true;
     const activeRoutineHarness = activeRoutine ? armedRoutine.harnessSlug : null;
     // Only meaningful when the probe failure could actually have changed the outcome: a
@@ -1061,8 +1079,18 @@ export default defineTool({
       // walls/checks, not just note metadata. Parse rows from the exact stored note
       // before returning so callers can enumerate the full set before choosing a
       // destructive rowsMode:'replace' write.
-      const { walls } = splitCarryNoteWalls(note);
-      const { checks } = splitCarryNoteChecks(note);
+      const { body: noteWithoutWalls, walls } = splitCarryNoteWalls(note);
+      const { body: noteBody, checks } = splitCarryNoteChecks(noteWithoutWalls);
+      // WI-6554700010008923: the rows above are the SAME rows serialized inside the
+      // stored note's `## Walls` / `## Checks` sections, so returning both shipped
+      // every row twice. Measured over 848 loop notes (2026-10-12): rows are 73% of
+      // the 199 notes whose body alone fits the per-result cap, and 82% of reads were
+      // spilled past it. Return the prose body once and the rows once, structured.
+      // `contentHash` and `length` still describe the FULL stored note, so an unchanged
+      // attestation or a hash comparison is unaffected; a note with no rows is
+      // returned byte-identically. A caller that writes this body back as a raw `note`
+      // loses nothing: absent `## Walls` / `## Checks` rows carry forward from storage.
+      const rowsSplitOut = note !== null && (walls.length > 0 || checks.length > 0);
       return {
         content: [
           {
@@ -1101,7 +1129,10 @@ export default defineTool({
                   }
                 : {}),
               ownerId,
-              note,
+              note: rowsSplitOut ? noteBody : note,
+              ...(rowsSplitOut
+                ? { noteRowsOmitted: 'note omits its Walls/Checks sections; those rows are walls[]/checks[] below. contentHash and length describe the full stored note.' }
+                : {}),
               contentHash: note === null ? null : shortCarryHash(note),
               updatedAtMs: current.updatedAtMs,
               length: note?.length ?? 0,
@@ -1115,6 +1146,53 @@ export default defineTool({
           },
         ],
       };
+    }
+
+    // P-005 / D-030 (7): a fleet-leader monitor cannot record a quiet wake (no
+    // monitorDelta) while the fleet it leads has zero productive workers. Bounded and
+    // fail-OPEN: an unmeasured fleet is allowed with a warning, never refused on a guess.
+    let fleetZeroWorkersWarning: string | undefined;
+    if (workspaceId && args.monitorDelta !== true) {
+      const guard = await withBoundedTimeout(
+        async () =>
+          (await import('../../fleet/fleet-zero-workers-guard')).checkFleetZeroWorkers({
+            workspaceId,
+            ownerId,
+            monitorDelta: false,
+          }),
+        {
+          fallback: { action: 'allow' } as FleetZeroWorkersVerdict,
+          timeoutMs: 3_000,
+          label: 'loop:checkpoint fleet_zero_workers',
+        },
+      );
+      // `value` can be absent only under a test double of withBoundedTimeout; the real
+      // helper returns the work's verdict or the fallback. Absent is read as allow, the
+      // same way the other bounded reads in this handler treat a missing value.
+      const verdict: FleetZeroWorkersVerdict | undefined = guard.value;
+      if (guard.degraded) {
+        fleetZeroWorkersWarning = `fleet_zero_workers not checked (${guard.reason ?? 'error'}); the checkpoint was allowed.`;
+      } else if (verdict?.action === 'refuse') {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'fleet_zero_workers',
+                message: verdict.message,
+                fleet: verdict.fleetSlug,
+                repairs: verdict.repairs,
+                harness,
+                ownerId,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      } else {
+        fleetZeroWorkersWarning = verdict?.warning;
+      }
     }
 
     // EI-18833865002636933 — rescue-by-parse of a MALFORMED structured write. Seen live:
@@ -1187,7 +1265,15 @@ export default defineTool({
       if (typeof v === 'string') fields[key] = truncateCarryField(v, CARRY_TEXT_SOFT_CAP, key, repairs);
     }
     const capRows = <
-      T extends { id?: string; claim: string; recheck?: string; verified?: string; observed?: string; contested?: string },
+      T extends {
+        id?: string;
+        claim: string;
+        recheck?: string;
+        falsifier?: string;
+        verified?: string;
+        observed?: string;
+        contested?: string;
+      },
     >(
       rows: T[] | undefined,
       label: string,
@@ -1213,6 +1299,13 @@ export default defineTool({
         out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `${label}[${i}].claim`, repairs);
         if (typeof out.recheck === 'string')
           out.recheck = truncateCarryField(out.recheck, CARRY_ROW_SOFT_CAPS.recheck, `${label}[${i}].recheck`, repairs);
+        if (typeof out.falsifier === 'string')
+          out.falsifier = truncateCarryField(
+            out.falsifier,
+            CARRY_ROW_SOFT_CAPS.falsifier,
+            `${label}[${i}].falsifier`,
+            repairs,
+          );
         // A ✓ is an affirmative claim. If its evidence contradicts that claim,
         // preserve the exact evidence but store it as contested so neither the
         // carry note nor a wake can present it as settled. Do this BEFORE capping
@@ -1304,7 +1397,9 @@ export default defineTool({
     })();
     // P-016 / EI-212678: persist owner-attribution caveats in the carry note so
     // a later cold wake cannot mistake the response-only lint for authority.
-    const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ownerId);
+    const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ownerId, {
+      currentTurnStamp: sentinelTurn ?? undefined,
+    });
     const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
     const enforcedBaseNote = ownerEnforcement.unverified
       ? markUnverifiedOwnerAttribution(anchoredBaseNote)
@@ -1330,7 +1425,9 @@ export default defineTool({
     }
     // P-013: replace stays the DEFAULT — it is the only way to retire a stale row, and
     // silently switching every existing caller to merge would make a clear impossible.
-    const rowsMode = args.rowsMode ?? 'merge';
+    // A narrative replacement never retires evidence by omission. The existing
+    // retireIds/replaces resolver is the only row-removal boundary.
+    const rowsMode = checkpointRowsMode(args.rowsMode);
 
     // WI-6813: the walls/checks merge runs INSIDE the row's locked transaction (the
     // `transform` seam), not out here. The caller-side read → merge → write it
@@ -1382,6 +1479,9 @@ export default defineTool({
               mode: rowsMode,
               retire: args.retireIds,
             });
+            merged.note = withStableCarryRowIds(merged.note);
+            merged.walls = splitCarryNoteWalls(merged.note).walls;
+            merged.checks = splitCarryNoteChecks(merged.note).checks;
             captured.merged = merged;
             const legacyChecksOverCap = priorChecksOverCapCount(priorNote);
             // EI-21503907176334936: under replace, retirement must be CONFIRMED, not
@@ -1390,7 +1490,7 @@ export default defineTool({
             // behind an ok:true. Refuse here — inside the locked txn, so nothing is
             // written — unless the caller asked for the retirement explicitly.
             if (
-              rowsMode === 'replace' &&
+              args.rowsMode === 'replace' &&
               args.confirmRetire !== true &&
               (merged.droppedWalls.length > 0 || merged.droppedChecks.length > 0)
             ) {
@@ -1412,14 +1512,9 @@ export default defineTool({
               // refusal on every single write once the carried set filled up, and the
               // only advertised fix was a two-step dance — a plain rowsMode:'replace'
               // resend of the FULL current set to retire rows, then retry the merge.
-              // Give confirmRetire:true the SAME meaning it already has under
-              // rowsMode:'replace': an explicit, one-call opt-in to let the row cap's
-              // own PREDICTED-before-VERIFIED yielding (computed above by
-              // mergeCarryRows/upsertOntoPrior) actually commit instead of refusing.
-              // The DEFAULT (confirmRetire omitted/false) is completely unchanged: a
-              // merge overflow still refuses and names every row it would have
-              // evicted, so an ordinary additive write is exactly as safe as before.
-              if (args.confirmRetire !== true && (merged.droppedWalls.length > 0 || !normalizingLegacyChecks)) {
+              // P-007: a compatibility confirmation never authorizes cap eviction.
+              // Preserve the prior rows and report the supplied rows that did not fit.
+              if (merged.droppedWalls.length > 0 || merged.droppedChecks.length > 0) {
                 // EI-22377179869127416: the ROW CAP and the NARRATIVE are two separate
                 // commitments, and only the rows are in conflict here. Refusing the whole
                 // write took the did/left/insight/next prose down with it — the note this
@@ -1431,8 +1526,7 @@ export default defineTool({
                 //
                 // So persist the narrative with the carried rows UNTOUCHED, and still refuse
                 // the ROW write loudly below (same error code, same retryable contract, same
-                // named rows) — nothing about the row conflict becomes silent, and the two
-                // prior escapes (confirmRetire here, or a confirmed replace) are unchanged.
+                // named rows). Closing individual rows by ID is the only retirement path.
                 captured.mergeRefused = {
                   droppedWalls: merged.droppedWalls,
                   droppedChecks: merged.droppedChecks,
@@ -1534,11 +1628,10 @@ export default defineTool({
                   "rowsMode:'merge' would exceed the durable row cap and evict the carried rows named above, so the " +
                   'carried rows were left exactly as they were and your supplied rows were NOT added. The ' +
                   'did/left/insight/next note DID commit, so a cold successor reads this turn, not a stale one. ' +
-                  'To land the rows too: retry with confirmRetire:true to let the cap\'s own PREDICTED-before-VERIFIED ' +
-                  'eviction proceed (the rows above are exactly what would go, and carried rows yield evidence-last). ' +
+                  'confirmRetire:true cannot authorize cap eviction. ' +
                   "If you were RE-WORDING a carried row, retry with that row only plus `replaces: '<its [#id] or " +
                   "exact old claim>'` — an edit is not an addition. To make room for a genuinely new row, retry " +
-                  "with `retireIds: ['<[#id] or exact claim>']` for the row(s) you no longer need. Neither needs a " +
+                  "with `retireIds: ['<stable row id>']` for the row(s) you no longer need. Neither needs a " +
                   'full resend.',
               }),
             },
@@ -1576,9 +1669,9 @@ export default defineTool({
                 wallsDropped: error.droppedWalls,
                 checksDropped: error.droppedChecks,
                 message:
-                  "rowsMode:'replace' would RETIRE the carried rows named above and confirmRetire was not true — " +
-                  'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
-                  'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
+                  'The proposed composition would drop carried rows. NOTHING was written. ' +
+                  'Close individual rows with retireIds naming their stable IDs, then retry. ' +
+                  'Omission and confirmRetire never authorize retirement.',
               }),
             },
           ],
@@ -1629,7 +1722,34 @@ export default defineTool({
       const verifyRead = await getLoopCarryNoteWithMeta({ harness, ownerId, workspaceId }).catch(() => ({
         note: null,
         updatedAtMs: null,
+        readFailed: true,
       }));
+      // A store read failure is not evidence that the cold reader cannot see the
+      // committed note. Keep it distinct from a successful read of a missing or
+      // different row so callers do not retry a write that may already have landed.
+      if (verifyRead.readFailed === true) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'checkpoint_verify_unavailable',
+                retryable: true,
+                writePersisted: true,
+                verified: null,
+                harness,
+                ownerId,
+                length: stored.length,
+                contentHash: shortCarryHash(stored),
+                message:
+                  'The carry-note write committed, but the cold-reader verification query could not read the store. Visibility is unknown; do not repeat the write blindly. Re-read with loop:checkpoint { read: true } and compare contentHash before retrying.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
       if (verifyRead.note !== stored) {
         verifyError =
           `checkpoint_verify_failed — the write did not read back via the reader path a cold wake ` +
@@ -1709,18 +1829,16 @@ export default defineTool({
     // a carried claim with no probe (the phantom-re-anchor shape). Never blocks.
     const probeText = [...checks.map(renderCheckLine), ...walls.map(renderWallLine)].join('\n');
     const uncheckedClaims = hasNoteWrite ? lintUncheckedExternalClaims(narrativeBody, probeText) : [];
+    // EI-23771449112267271: warn-only — a ✓ row WRITTEN IN THIS CALL with no falsifier (same contract
+    // as facts:assert `recheckMissing`). Scoped to supplied rows so legacy carried rows never nag.
+    const falsifierMissingRows = checksMissingFalsifier(effectiveChecks ?? []);
 
     // R-6(b): a relative `scratchpad/...` reference is unresolvable to the next wake —
     // the session scratchpad is absolute and per-session, so the successor re-derives an
     // artifact that is already on disk. Advisory + fail-open, like every sibling here.
-    const relativeScratchRefs = (() => {
-      if (!hasNoteWrite) return [];
-      try {
-        return lintRelativeScratchPaths(narrativeBody);
-      } catch {
-        return []; // advisory lint must never cost the checkpoint write
-      }
-    })();
+    const relativeScratchRefs = hasNoteWrite
+      ? await filterTrackedRelativeScratchPaths(narrativeBody, { workspaceId, harness })
+      : [];
 
     // EI-20079511619330371: a carry-note's `left`/`next` is read as an
     // instruction at wake time, even though its singleton/shared-state
@@ -1921,9 +2039,10 @@ export default defineTool({
         // Re-wake guarantee (turn-end-tracking.isRewakeGuaranteed): is ending
         // THIS turn safe, or would an autonomous session silently halt? A CLOSED
         // gate that says "settle" is FALSE COMFORT when no re-wake exists — it
-        // must escalate to self-compact / arm-a-wake. Excludes the always-armed
-        // coord:inbox-wake keepalive (liveness, not a deliberate wake for this
-        // work). Best-effort; unknown ⇒ null → base guidance (non-breaking).
+        // must escalate to self-compact / arm-a-wake. Use the turn-end predicate
+        // to exclude unbounded/silently-expiring waits and the standing inbox
+        // keepalive while retaining explicit bounded inbox waits. Best-effort;
+        // unknown ⇒ null → base guidance (non-breaking).
         let rewakeGuaranteed: boolean | null = null;
         let activeInboxWakeAwait: boolean | null = null;
         let nextWakeFresh: boolean | null = null;
@@ -1931,30 +2050,53 @@ export default defineTool({
         let activeLoopGoal: string | null = null;
         let activeLoopRewakeBlockedReason: ActiveLoopRewakeBlockedReason | null = null;
         try {
-          const [{ isRewakeGuaranteed }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] = await Promise.all(
-            [import('../../turn-end-tracking'), import('../../events/await/store'), import('../../modes/store')],
+          const [
+            { isRewakeGuaranteed, awaitGuaranteesRewake },
+            { listActiveAwaits, INBOX_WAKE_KEY_PREFIX },
+            { getModes },
+            { probeWakeReachability },
+          ] = await Promise.all(
+            [
+              import('../../turn-end-tracking'),
+              import('../../events/await/store'),
+              import('../../modes/store'),
+              import('../../events/await/wake-reachability'),
+            ],
           );
-          const [loop, awaits, modes] = await Promise.all([
+          const [loop, awaits, modes, reachability] = await Promise.all([
             getLoopStatus(ownerId).catch(() => null),
             listActiveAwaits(ownerId).catch(() => []),
             workspaceId ? getModes(workspaceId, ownerId).catch(() => []) : Promise.resolve([]),
+            probeWakeReachability(ownerId).catch(() => null),
           ]);
           activeLoopIntervalSec = loop?.active ? loop.intervalSec : null;
           activeLoopGoal = loop?.active ? loop.goal : null;
           const currentTurn = await resolveCurrentTurnStamp(ownerId).catch(() => null);
-          const loopWake = classifyLoopNextWake(loop);
+          const loopWake = classifyLoopNextWake(loop, Date.now(), reachability?.reachable);
           activeLoopRewakeBlockedReason =
             loop?.active && !loopWake.guaranteed && loopWake.reason !== 'no-active-loop' ? loopWake.reason : null;
           activeInboxWakeAwait = awaits.some((a) => a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX));
+          const activeNonInboxAwaitCount = awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length;
+          const guaranteedAwaitCount = awaits.filter((a) => awaitGuaranteesRewake(a, INBOX_WAKE_KEY_PREFIX)).length;
           rewakeGuaranteed = isRewakeGuaranteed({
             autonomousModeActive: modes.some((m) => modeImpliesAutonomy(m.mode)),
             machineTurn: currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface',
             loopActive: loopWake.guaranteed,
-            activeAwaitCount: awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length,
+            activeAwaitCount: guaranteedAwaitCount,
           });
           // A loop can guarantee another turn without guaranteeing a fresh
-          // context. Only cold carry sheds the transcript on settle.
-          nextWakeFresh = loopWake.guaranteed ? loop?.carry === 'cold' : null;
+          // context. A deliberate await can wake the same session before a cold
+          // loop fires, so cold carry proves freshness only when it is the sole
+          // wake source; otherwise the next wake's freshness is unknown. An
+          // unbounded non-inbox wait can still preempt it, as can a bounded inbox
+          // wait, even though only the latter guarantees a continuation itself.
+          nextWakeFresh = loopWake.guaranteed
+            ? loop?.carry === 'cold'
+              ? activeNonInboxAwaitCount === 0 && guaranteedAwaitCount === 0
+                ? true
+                : null
+              : false
+            : null;
         } catch {
           rewakeGuaranteed = null;
           nextWakeFresh = null;
@@ -1967,8 +2109,8 @@ export default defineTool({
         // proxy — so advice and refusal cannot disagree. Best-effort; unknown ⇒ null.
         let selfCompactionAvailable: boolean | null = null;
         try {
-          const { selfCompactionAvailability } = await import('../../events/await/psu-pty-discovery');
-          selfCompactionAvailable = selfCompactionAvailability(ownerId).available;
+          const { selfCompactionAvailabilityAsync } = await import('../../events/await/psu-pty-discovery');
+          selfCompactionAvailable = (await selfCompactionAvailabilityAsync(ownerId)).available;
         } catch {
           selfCompactionAvailable = null;
         }
@@ -2133,6 +2275,8 @@ export default defineTool({
             ...(args.monitorDelta === true
               ? { monitorDelta: { recorded: monitorDeltaRoutinesStamped, requested: true } }
               : {}),
+            /** P-005 / D-030 (7): the zero-workers guard could not measure, so it allowed. */
+            ...(fleetZeroWorkersWarning ? { fleetZeroWorkersWarning } : {}),
             ...(verifiedWaitTakeoverRows.length > 0 ? { verifiedWaitTakeovers: verifiedWaitTakeoverRows } : {}),
             /** P-013: which row semantics this write actually ran under, so a caller
              *  never has to infer it from the counts. Present only when it was NOT the
@@ -2145,7 +2289,7 @@ export default defineTool({
               ? {
                   rowsModeNote:
                     "rowsMode:'merge' treats an empty list as a NO-OP, not a clear — the carried rows are " +
-                    "untouched. To clear, re-send with rowsMode:'replace' and [].",
+                    "untouched. To clear, use rowsMode:'replace' with `retireIds` naming each closed row.",
                 }
               : {}),
             /**
@@ -2170,15 +2314,12 @@ export default defineTool({
                           `before this merge. The write normalized that legacy state to the cap, keeping supplied ` +
                           `rows first and evidence-bearing carried rows before predicted rows. This was legacy state, ` +
                           `not your mistake. Future additive writes that would exceed the cap are refused; retire ` +
-                          `stale rows explicitly with rowsMode:'replace' and confirmRetire:true.`
-                        : `CAP EVICTION, confirmed via confirmRetire:true: rowsMode:'merge' UNIONED your ` +
+                          `stale rows individually with retireIds naming their stable IDs.`
+                        : `The proposed rowsMode:'merge' composition UNIONED your ` +
                           `${effectiveChecks?.length ?? 0} row(s) onto the carried set, the union exceeded the ` +
                           `${CARRY_NOTE_MAX_CHECKS}-row cap, and ${droppedChecks.length} CARRIED row(s) were ` +
-                          `evicted from the tail (supplied rows are kept first, PREDICTED rows yield before ` +
-                          `VERIFIED ones). This is the actual eviction computed for this confirmed write; an earlier ` +
-                          `refusal with different supplied rows or carried state may name a different drop set. To ` +
-                          `avoid future evictions: retire rows you no longer need in a separate plain write ` +
-                          `(rowsMode:'replace'), or pass no \`checks\` at all to leave the stored rows untouched.`
+                          `excluded from that proposed composition. Carried rows must be preserved; close rows ` +
+                          `individually with retireIds naming their stable IDs before adding replacements.`
                       : `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
                         `claim(s) were not in this write and are now gone. To restore: re-send them (a re-sent claim ` +
                         `inherits its prior recheck/verified). To AVOID this next time, pass rowsMode:'merge' — ` +
@@ -2194,8 +2335,9 @@ export default defineTool({
               ? {
                   unmatchedRowRefs: unmatchedRowRefs.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                   unmatchedRowRefsNote:
-                    'These `replaces`/`retireIds` refs named no carried row (match is by [#id] or EXACT claim ' +
-                    'text). An unmatched `replaces` row was written as a new row; an unmatched retire removed nothing.',
+                    'These refs named no carried row. retireIds requires a stable row ID; replaces also accepts ' +
+                    'exact claim text for an edit. An unmatched replaces row was written as a new row; ' +
+                    'an unmatched retirement removed nothing.',
                 }
               : {}),
             /** Same contract for WALLS — and a dropped wall is worse than a dropped check:
@@ -2206,14 +2348,11 @@ export default defineTool({
                   wallsDropped: droppedWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                   wallsDroppedNote:
                     rowsMode === 'merge'
-                      ? `CAP EVICTION, confirmed via confirmRetire:true: rowsMode:'merge' UNIONED your ` +
+                      ? `The proposed rowsMode:'merge' composition UNIONED your ` +
                         `${effectiveWalls?.length ?? 0} row(s) onto the carried set, the union exceeded the ` +
                         `${CARRY_NOTE_MAX_WALLS}-row cap, and ${droppedWalls.length} CARRIED owner-gated ` +
-                        `commitment(s) were evicted from the tail (supplied rows are kept first). This is the actual ` +
-                        `eviction computed for this confirmed write; an earlier refusal with different supplied rows ` +
-                        `or carried state may name a different drop set. To avoid future evictions: retire ` +
-                        `rows you no longer need in a separate plain write (rowsMode:'replace'), or pass no ` +
-                        '`walls` at all to leave the stored rows untouched.'
+                        `commitment(s) were excluded from that proposed composition. Carried walls must be ` +
+                        'preserved; close individual walls with retireIds naming their stable IDs.'
                       : `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
                         `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
                         `pass no \`walls\` at all, or use rowsMode:'merge' so unmentioned rows survive.`,
@@ -2292,6 +2431,9 @@ export default defineTool({
                     lines: uncheckedClaims,
                   },
                 }
+              : {}),
+            ...(falsifierMissingRows.length > 0
+              ? { falsifierMissing: { flagged: true, note: FALSIFIER_MISSING_NOTE, rows: falsifierMissingRows } }
               : {}),
             ...(absenceClaims.length > 0
               ? {

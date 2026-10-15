@@ -177,9 +177,14 @@ async function defaultClaimListing(
   }
 }
 
-async function defaultResolveOwner(): Promise<HiveOwnerIdentity> {
+async function defaultResolveOwner(
+  identityMode?: 'authoring' | 'load-only',
+): Promise<HiveOwnerIdentity> {
   const { resolveLocalAnnounceIdentity } = await import('./sync/hyperbee/local-announce-identity');
-  const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: '0'.repeat(64) });
+  const id = await resolveLocalAnnounceIdentity({
+    logCoreKeyHex: '0'.repeat(64),
+    ...(identityMode ? { identityMode } : {}),
+  });
   return {
     githubLogin: id.githubLogin,
     githubUserId: id.githubUserId,
@@ -276,6 +281,135 @@ export async function republishHiveAfterMemberAdd(
   );
 }
 
+async function defaultLoadPubkey(ws: string, slug: string): Promise<string | null> {
+  return (await import('./identity/hive-keypair')).loadHivePubkey(ws, slug).catch(() => null);
+}
+
+/** The registry entries that belong to hive `potId` (by slug or hive_slug) and have a GitHub remote. */
+export function hiveMemberEntries(projects: readonly ProjectEntry[], potId: string): ProjectEntry[] {
+  return projects.filter(
+    (p) =>
+      (p.slug === potId || p.hive_slug === potId) &&
+      typeof p.github_remote === 'string' &&
+      p.github_remote.length > 0,
+  );
+}
+
+/**
+ * The one-click `papercusp://harness?...` member-JOIN links of a hive, over the HIVE
+ * federation topic. The single builder behind the directory announce
+ * (publishListingForMeta) and the read-only resolveHiveMemberJoinLinks, so the link a
+ * test rig mints is byte-identical to the one the product announces. Empty when the
+ * hive has no identity pubkey (a topic-less link is not joinable).
+ */
+export function formatHiveMemberJoinLinks(input: HiveMemberJoinInput): string[] {
+  return formatHiveMemberJoinEntries(input).map((e) => e.link);
+}
+
+export interface HiveMemberJoinInput {
+  potId: string;
+  members: readonly ProjectEntry[];
+  hivePubkey: string | null;
+  owner: HiveOwnerIdentity | null;
+}
+
+/** formatHiveMemberJoinLinks with the registry slug of the member each link joins. */
+export function formatHiveMemberJoinEntries(
+  input: HiveMemberJoinInput,
+): Array<{ slug: string; link: string }> {
+  const { potId, members, hivePubkey, owner } = input;
+  if (!hivePubkey) return [];
+  const hiveTopicHex = topicAsHex(deriveHiveFederationTopic(hivePubkey));
+  const entries: Array<{ slug: string; link: string }> = [];
+  for (const m of members) {
+    const parsed = m.github_remote ? parseGithubUrl(m.github_remote) : null;
+    if (!parsed || typeof m.github_repository_id !== 'number') continue;
+    // D-047/D-048 (shared-hive join blocker): a member-JOIN link must point at a real MEMBER
+    // repo a fresh joiner can `git clone`, NEVER the hive HOME itself. A hive built from <repo>
+    // has hive slug <repo>-hive which is GIST-BACKED (NOT a GitHub repo) — emitting a link with
+    // github=<owner>/<repo>-hive made EVERY fresh joiner's `git clone …/<repo>-hive.git` 404, so
+    // the joiner never booted onto the swarm topic → 0 cross-machine federation (the live blocker;
+    // non-deterministic because the good <repo> link + this bad one both landed in memberLinks and
+    // the picker took whichever enumerated first). The hive home is the federation identity, not a
+    // cloneable member — skip it (by slug AND by a repo-name == hive-slug belt).
+    if (m.slug === potId || parsed.repo === potId) continue;
+    entries.push({
+      slug: m.slug,
+      link: formatHarnessLink({
+        topic: hiveTopicHex,
+        github: `${parsed.owner}/${parsed.repo}`,
+        repoOwner: parsed.owner,
+        repoName: parsed.repo,
+        repoId: m.github_repository_id,
+        // A3 (EI-18788176839043286): publish the repoKey this member's pot-git
+        // store is ACTUALLY named, so the joiner adopts it instead of deriving
+        // its own and landing on a store nobody else is talking to.
+        repoKey: canonicalRepoKey(m),
+        // D-007: thread the verified owner binding so a direct-link joiner can
+        // seed hive_directory_cache at join (re-verified channel-2 there). hivePubkey
+        // is required (the joiner re-derives the topic from it; the link topic is a
+        // one-way hash). The three channel-1 fields are all-or-nothing in
+        // formatHarnessLink; `attestationGistId` is NOT (WI-38345) — an owner whose
+        // gist create 422'd passes '' here and still publishes a usable binding.
+        ...(owner
+          ? {
+              hivePubkey,
+              ownerDevicePubkey: owner.devicePubkey,
+              ownerGithubUserId: owner.githubUserId,
+              attestationGistId: owner.attestationGistId,
+            }
+          : {}),
+      }),
+    });
+  }
+  return entries;
+}
+
+/**
+ * WI-10006697: the member-JOIN links of an EXISTING hive, built exactly as the directory
+ * announce builds them (same deps, same formatHiveMemberJoinLinks), with no side effect:
+ * no announce, no Cupboard publish, no meta write. The capacity rig's p2p-join-soak mints
+ * its JOIN_BODY from this (scripts/agent-capacity/vm/mint-join-body.ts) instead of a
+ * scratch script that hard-coded the pot identity. `ownerBound` is false when the owner
+ * identity could not be resolved: the links then lack the D-007 binding and a joiner falls
+ * back to the announce beacon. Being a read, the default owner resolver is LOAD-ONLY: it
+ * reads the cached, keychain-verified device identity and never creates or repairs one
+ * (authoring mode, the announce path's default, took >30s outside the operator).
+ */
+export async function resolveHiveMemberJoinLinks(
+  opts: { workspaceId: string; potSlug: string },
+  deps: Pick<PublishCreatedHiveDeps, 'loadPubkey' | 'loadRegistry' | 'resolveOwner'> = {},
+): Promise<{
+  links: string[];
+  members: Array<{ slug: string; link: string }>;
+  hivePubkey: string | null;
+  ownerBound: boolean;
+}> {
+  const loadPubkey = deps.loadPubkey ?? defaultLoadPubkey;
+  const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
+  const resolveOwner = deps.resolveOwner ?? (() => defaultResolveOwner('load-only'));
+  const hivePubkey = await loadPubkey(opts.workspaceId, opts.potSlug).catch(() => null);
+  const reg = await loadRegistry(opts.workspaceId).catch(() => ({ projects: [] as ProjectEntry[] }));
+  let owner: HiveOwnerIdentity | null = null;
+  try {
+    owner = await resolveOwner();
+  } catch {
+    owner = null;
+  }
+  const members = formatHiveMemberJoinEntries({
+    potId: opts.potSlug,
+    members: hiveMemberEntries(reg.projects, opts.potSlug),
+    hivePubkey,
+    owner,
+  });
+  return {
+    links: members.map((m) => m.link),
+    members,
+    hivePubkey,
+    ownerBound: Boolean(owner && hivePubkey),
+  };
+}
+
 /** The shared announce + Cupboard + local-binding legs (steps 2–6). */
 async function publishListingForMeta(
   meta: HiveDirectoryMeta & { visibility: Exclude<HiveVisibility, 'private'> },
@@ -301,22 +435,14 @@ async function publishListingForMeta(
 
   // 3 — enrichment: identity pubkey + member repos + one-click member links over
   //     the HIVE federation topic (the joiner clones the repo + joins that topic).
-  const loadPubkey =
-    deps.loadPubkey ??
-    (async (ws: string, slug: string) =>
-      (await import('./identity/hive-keypair')).loadHivePubkey(ws, slug).catch(() => null));
+  const loadPubkey = deps.loadPubkey ?? defaultLoadPubkey;
   const hivePubkey = await loadPubkey(opts.workspaceId, meta.potId).catch(() => null);
   const memberRepos = await deriveMemberRepos(opts.workspaceId, meta.potId).catch(
     () => [] as string[],
   );
 
   const reg = await loadRegistry(opts.workspaceId).catch(() => ({ projects: [] as ProjectEntry[] }));
-  const members = reg.projects.filter(
-    (p) =>
-      (p.slug === meta.potId || p.hive_slug === meta.potId) &&
-      typeof p.github_remote === 'string' &&
-      p.github_remote.length > 0,
-  );
+  const members = hiveMemberEntries(reg.projects, meta.potId);
 
   const hiveTopicHex = hivePubkey ? topicAsHex(deriveHiveFederationTopic(hivePubkey)) : null;
 
@@ -336,49 +462,7 @@ async function publishListingForMeta(
     owner = null;
   }
 
-  const memberLinks: string[] = [];
-  if (hiveTopicHex) {
-    for (const m of members) {
-      const parsed = m.github_remote ? parseGithubUrl(m.github_remote) : null;
-      if (!parsed || typeof m.github_repository_id !== 'number') continue;
-      // D-047/D-048 (shared-hive join blocker): a member-JOIN link must point at a real MEMBER
-      // repo a fresh joiner can `git clone`, NEVER the hive HOME itself. A hive built from <repo>
-      // has hive slug <repo>-hive which is GIST-BACKED (NOT a GitHub repo) — emitting a link with
-      // github=<owner>/<repo>-hive made EVERY fresh joiner's `git clone …/<repo>-hive.git` 404, so
-      // the joiner never booted onto the swarm topic → 0 cross-machine federation (the live blocker;
-      // non-deterministic because the good <repo> link + this bad one both landed in memberLinks and
-      // the picker took whichever enumerated first). The hive home is the federation identity, not a
-      // cloneable member — skip it (by slug AND by a repo-name == hive-slug belt).
-      if (m.slug === meta.potId || parsed.repo === meta.potId) continue;
-      memberLinks.push(
-        formatHarnessLink({
-          topic: hiveTopicHex,
-          github: `${parsed.owner}/${parsed.repo}`,
-          repoOwner: parsed.owner,
-          repoName: parsed.repo,
-          repoId: m.github_repository_id,
-          // A3 (EI-18788176839043286): publish the repoKey this member's pot-git
-          // store is ACTUALLY named, so the joiner adopts it instead of deriving
-          // its own and landing on a store nobody else is talking to.
-          repoKey: canonicalRepoKey(m),
-          // D-007: thread the verified owner binding so a direct-link joiner can
-          // seed hive_directory_cache at join (re-verified channel-2 there). hivePubkey
-          // is required (the joiner re-derives the topic from it; the link topic is a
-          // one-way hash). The three channel-1 fields are all-or-nothing in
-          // formatHarnessLink; `attestationGistId` is NOT (WI-38345) — an owner whose
-          // gist create 422'd passes '' here and still publishes a usable binding.
-          ...(owner && hivePubkey
-            ? {
-                hivePubkey,
-                ownerDevicePubkey: owner.devicePubkey,
-                ownerGithubUserId: owner.githubUserId,
-                attestationGistId: owner.attestationGistId,
-              }
-            : {}),
-        }),
-      );
-    }
-  }
+  const memberLinks = formatHiveMemberJoinLinks({ potId: meta.potId, members, hivePubkey, owner });
 
   // 4 — directory announce (the content authority, D-004).
   let announced = false;

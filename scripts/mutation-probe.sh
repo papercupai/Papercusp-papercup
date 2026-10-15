@@ -45,6 +45,21 @@
 #                             [--sweep-lock-held | --accept-sweep-race]
 #                             [--fake-destructive]
 #                             [--i-know-this-deletes --sandbox-root <dir>]
+#                             [--relocation auto|overlay|mirror]
+#
+# COPY-OUT RELOCATION (--relocation, default auto). How the mutant is shown to
+# the guard without touching the tracked file:
+#   overlay  each post-baseline guard run executes in a private mount namespace
+#            (bwrap) with the mutant bind-mounted over the subject's OWN path, so
+#            every route to it — direct, sibling module, alias, package
+#            specifier — reaches the mutant. Nothing outside the namespace (the
+#            tree, git-sync, peers) ever sees it. Needs bwrap + user namespaces.
+#   mirror   the mutant is written into a symlink mirror of the worktree (flat
+#            scratch copy outside a worktree). A test that reaches the subject
+#            through a SIBLING module can load the ORIGINAL and false-SURVIVE
+#            (EI-24799401310241778); kept for hosts where overlay is unavailable.
+#   auto     overlay when bwrap can bind here, else mirror (logged).
+# Every verdict line names the one used: relocation=overlay|mirror|flat.
 #
 # HISTORICAL MODE — prove a guard catches the version that actually preceded a
 # fix, without guessing that HEAD is still pre-fix (git-sync commits the tree
@@ -145,9 +160,10 @@
 #   Either flag may also be passed proactively for a subject the heuristic does
 #   not flag — they only ever ADD protection.
 #
-#   {} in --test is replaced by the path of the MUTATED COPY (copy-out mode)
-#   or by the tracked path itself (--in-tree mode), so the same --test string
-#   works in both.
+#   {} in --test is replaced by the path the guard must read: the subject's own
+#   path under --in-tree and under the copy-out OVERLAY (where the mutant is
+#   visible there), or the MUTATED COPY's scratch path under the mirror, so the
+#   same --test string works in every mode.
 #
 #   {} is REQUIRED in copy-out mode (without it the test would run against the
 #   untouched original and every mutant would falsely "survive") and OPTIONAL
@@ -190,6 +206,27 @@
 #     --test 'PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/verify-tauri-headless-bind-retry.test.ts'
 #
 # EXIT CODES
+#
+# PROVENANCE AND REPLAY
+#   Guard rows carry execution_details.mutation: invocation id, leg, mode,
+#   subject, expression/commit, before/after hashes, diff and literal testCommand.
+#   PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=auto (default) waits until the deployed
+#   reader accepts the descriptor. always is for a verified compatible reader;
+#   never deliberately leaves linkage unverified. Read the withholding log.
+#   Find probe rows with testing:runs { source:'mutation-probe' } or exact
+#   testRunIds:[N]. Replay the recorded testCommand, preserving its {} subject
+#   pointer and inline environment, against the recorded subject and mutation.
+#   Historical descriptors also retain historicalControls: mustBeAbsent,
+#   positiveControls, calibrationCommand and optional subjectMustBehave.
+#   Replay those original settings; older rows cannot reconstruct missing ones.
+#   An unchanged-test survivor followed by a descriptor-linked catch is refused
+#   at binding with mutation_reaim_unjustified; supply structured
+#   reaimJustification { survivorTestRunIds, reason } naming every prior survivor
+#   and a concrete reason for re-aiming.
+#   Detection covers ledgered mutant-leg rows; legacy rows have unknown linkage.
+#   Historical fixed-path guards that ignore the snapshot produce INCONCLUSIVE
+#   (exit 2, guard-ignores-subject); use copy-out for import-based guards.
+#
 #   0  the probe reached its expected verdict (default: the mutant was CAUGHT)
 #   1  the probe reached the opposite verdict — your guard is weaker than you think
 #   2  misuse / the probe could not be run soundly (e.g. a no-op or
@@ -228,7 +265,9 @@
 # mutant. For a recognized test runner, exit 1 is caught only when its output
 # includes assertion-level failure evidence; a setup-hook failure can exit 1
 # while every assertion is skipped. Plain non-test guards (for example grep)
-# retain the exit-1 convention. Every other nonzero exit is a harness error.
+# retain the exit-1 convention. Cargo/libtest exit 101 is caught only with
+# executed, named test failures and a matching failed summary. Compilation,
+# setup and empty selection are never caught. Other exits are harness errors.
 #
 # Bash reads a script incrementally. A peer edit while a long baseline guard is
 # running can shift the reader's offset and turn a later diagnostic string into
@@ -247,6 +286,29 @@ fi
 trap 'rm -f -- "$MUTATION_PROBE_FROZEN_SOURCE"' EXIT
 
 set -uo pipefail
+
+# Preserve the actual argv before option parsing normalizes or consumes it.
+# Operational evidence uses this machine-readable record to replay the exact
+# mutation, subject, guard command, and options rather than a mutable driver
+# script's prose description.
+ORIGINAL_ARGS=("$@")
+ORIGINAL_CWD="$(pwd -P)"
+RUNNER_SOURCE_ABSOLUTE="${MUTATION_PROBE_SOURCE_PATH:-$(realpath -e "$0")}"
+RUNNER_ROOT="$(git -C "$(dirname "$RUNNER_SOURCE_ABSOLUTE")" rev-parse --show-toplevel 2>/dev/null || true)"
+RUNNER_SOURCE_PATH="$RUNNER_SOURCE_ABSOLUTE"
+REPLAY_CWD="$ORIGINAL_CWD"
+RUNNER_COMMIT=""
+if [ -n "$RUNNER_ROOT" ]; then
+  case "$RUNNER_SOURCE_ABSOLUTE" in
+    "$RUNNER_ROOT"/*) RUNNER_SOURCE_PATH="${RUNNER_SOURCE_ABSOLUTE#"$RUNNER_ROOT"/}" ;;
+  esac
+  case "$ORIGINAL_CWD" in
+    "$RUNNER_ROOT") REPLAY_CWD="." ;;
+    "$RUNNER_ROOT"/*) REPLAY_CWD="${ORIGINAL_CWD#"$RUNNER_ROOT"/}" ;;
+  esac
+  RUNNER_COMMIT="$(git -C "$RUNNER_ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
+RUNNER_SHA256="$(sha256sum -- "$MUTATION_PROBE_FROZEN_SOURCE" | awk '{print $1}')"
 
 readonly PROG="mutation-probe"
 
@@ -269,6 +331,14 @@ HISTORICAL_MODE=0
 DELETES_ACK=0
 FAKE_DESTRUCTIVE=0
 SANDBOX_ROOT=""
+# bwrap args mounting a PRIVATE tmpfs over each vite config temp dir inside the
+# --sandbox-root sandbox (EI-25217198562906119); filled in at sandbox preflight.
+SANDBOX_TMPFS_ARGS=()
+# Copy-out relocation strategy (EI-24799401310241778): auto = overlay when bwrap
+# can bind on this host, else the repo mirror; overlay/mirror force one.
+RELOCATION="auto"
+RELOCATION_USED=""
+OVERLAY_DEST=""
 FAKE_BIN=""
 DESTRUCTIVE_LOG=""
 
@@ -367,6 +437,21 @@ mutation_probe_fallback_safe_tool() {
   esac
 }
 
+mutation_probe_ptool() {
+  local token_file="${PAPERCUSP_MCP_TOKEN_FILE:-}"
+  # A managed workspace may set PAPERCUSP_HOME to a workspace-local token
+  # rejected by the selected operator. Match mcp-call's shared host credential
+  # unless the caller supplied an explicit session token file.
+  if [ -z "$token_file" ] && [ -n "${HOME:-}" ] && [ -r "$HOME/.papercusp/superuser-token" ]; then
+    token_file="$HOME/.papercusp/superuser-token"
+  fi
+  if [ -n "$token_file" ]; then
+    PAPERCUSP_MCP_TOKEN_FILE="$token_file" ptool "$@"
+  else
+    ptool "$@"
+  fi
+}
+
 ptool_json() {
   # Surface the tool's own stderr on failure (WI-10002758). Discarding it
   # turned a crisp dispatch refusal (e.g. projection_invalid) into the opaque
@@ -381,7 +466,7 @@ ptool_json() {
   [ -n "$harness_scope" ] || { log "ptool $tool requires an explicit Papercusp harness scope; set PAPERCUSP_TEST_RUN_HARNESS or HARNESS_SLUG"; return 1; }
   ptool_scope=(--workspace="$workspace_scope" --harness="$harness_scope")
   err_file="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-ptool.XXXXXX")" || return 1
-  result="$(printf '%s' "$args" | ptool "${ptool_scope[@]}" "$tool" --json - --projection "$projection" 2>"$err_file")"
+  result="$(printf '%s' "$args" | mutation_probe_ptool "${ptool_scope[@]}" "$tool" --json - --projection "$projection" 2>"$err_file")"
   rc=$?
   if [ "$rc" -ne 0 ] &&
     mutation_probe_fallback_safe_tool "$tool" &&
@@ -392,7 +477,7 @@ ptool_json() {
     temp_dir="${TMPDIR:-/tmp}"
     fallback_err_file="$(mktemp "$temp_dir/mutation-probe-ptool-fallback.XXXXXX")" || fallback_err_file=""
     if [ -n "$fallback_err_file" ]; then
-      fallback_result="$(printf '%s' "$args" | ptool "${ptool_scope[@]}" "$tool" --url=http://127.0.0.1:3170 --json - --projection "$projection" 2>"$fallback_err_file")"
+      fallback_result="$(printf '%s' "$args" | mutation_probe_ptool "${ptool_scope[@]}" "$tool" --url=http://127.0.0.1:3170 --json - --projection "$projection" 2>"$fallback_err_file")"
       fallback_rc=$?
       if [ "$fallback_rc" -eq 0 ] && [ -n "$fallback_result" ]; then
         log "ptool $tool timed out on local :3070/:9071; recovered once through staging :3170"
@@ -414,7 +499,7 @@ ptool_json() {
 }
 
 verify_sweep_fence() {
-  local lock_root lock_path queue_args presence_json owner_id queue_json file_lock_id heartbeat_args heartbeat_json
+  local lock_root lock_path queue_args presence_json owner_id queue_json file_lock_id heartbeat_args heartbeat_json heartbeat_excerpt
   local superproject_root harness_scope resource lock_list_args lock_list_json minimum_resource_ms
   [ -n "${PAPERCUSP_SID:-}" ] || die "--sweep-lock-held requires the active Papercusp session id (PAPERCUSP_SID); use copy-out mode instead."
   [ "$GUARD_MAX_SEC" -gt 0 ] && [ "$GUARD_MAX_SEC" -le 600 ] \
@@ -440,8 +525,11 @@ verify_sweep_fence() {
   # A real pick: dispatch refuses an empty projection ('{}') as projection_invalid.
   heartbeat_json="$(ptool_json locks:heartbeat "$heartbeat_args" '{"pick":["results[].lock_id","results[].extended"]}')" \
     || die "could not extend the verified file lock; refusing an unverified in-tree mutation."
-  printf '%s' "$heartbeat_json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const id=process.argv[1];const walk=v=>{if(!v)return false;if(typeof v==="string"){try{return walk(JSON.parse(v))}catch{return false}}if(Array.isArray(v))return v.some(walk);if(typeof v==="object"){if(v.lock_id===id&&v.extended===true)return true;return Object.values(v).some(walk)}return false};if(!walk(JSON.parse(s)))process.exit(1)}catch{process.exit(2)}})' "$file_lock_id" \
-    || die "the file-lock heartbeat did not confirm ownership; refusing an unverified in-tree mutation."
+  if ! printf '%s' "$heartbeat_json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const id=process.argv[1];const walk=v=>{if(!v)return false;if(typeof v==="string"){try{return walk(JSON.parse(v))}catch{return false}}if(Array.isArray(v))return v.some(walk);if(typeof v==="object"){if(v.lock_id===id&&v.extended===true)return true;return Object.values(v).some(walk)}return false};if(!walk(JSON.parse(s)))process.exit(1)}catch{process.exit(2)}})' "$file_lock_id"; then
+    heartbeat_excerpt="$(printf '%s' "$heartbeat_json" | node -e 'let s="";process.stdin.setEncoding("utf8");process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(s.replace(/\s+/g," ").slice(0,400)))')"
+    log "file-lock heartbeat response did not confirm ownership (first 400 chars): $heartbeat_excerpt"
+    die "the file-lock heartbeat did not confirm ownership; refusing an unverified in-tree mutation."
+  fi
   log "verified this session's live file lock for $lock_path"
 
   # EI-24712906810240170: the file lock IS the whole sweep fence, in every repository.
@@ -499,6 +587,7 @@ while [ $# -gt 0 ]; do
     --fake-destructive)    FAKE_DESTRUCTIVE=1; shift ;;
     --i-know-this-deletes) DELETES_ACK=1;      shift ;;
     --sandbox-root) SANDBOX_ROOT="${2:-}"; shift 2 || die "--sandbox-root needs a value" ;;
+    --relocation)   RELOCATION="${2:-}";   shift 2 || die "--relocation needs a value" ;;
     # Print the whole header block, bounded by where it actually ends rather
     # than by a hardcoded line number — the previous '2,70p' silently truncated
     # mid-section every time the header grew, which is how --help ends up
@@ -522,6 +611,10 @@ done
 FILE="$(cd "$(dirname "$FILE")" 2>/dev/null && pwd)/$(basename "$FILE")"
 [ -f "$FILE" ] || die "could not resolve --file to an absolute path: $FILE"
 case "$EXPECT" in caught|survived) ;; *) die "--expect must be 'caught' or 'survived'" ;; esac
+case "$RELOCATION" in auto|overlay|mirror) ;; *) die "--relocation must be 'auto', 'overlay' or 'mirror'" ;; esac
+if [ "$RELOCATION" != "auto" ] && [ "$IN_TREE" -eq 1 ]; then
+  die "--relocation only applies to copy-out mode; --in-tree mutates the tracked file in place and relocates nothing"
+fi
 
 if [ -n "$AGAINST_COMMIT" ] || [ -n "$AGAINST_LAST_WITHOUT" ] || [ -n "$MUST_BE_ABSENT" ] || [ -n "$CALIBRATION_CMD" ] || [ "${#POSITIVE_CONTROLS[@]}" -gt 0 ]; then
   HISTORICAL_MODE=1
@@ -530,6 +623,7 @@ fi
 if [ "$HISTORICAL_MODE" -eq 1 ]; then
   [ -z "$MUTATE" ] || die "--mutate cannot be combined with historical mode; historical mode supplies the before-fix snapshot"
   [ "$IN_TREE" -eq 0 ] || die "historical mode is always copy-out; drop --in-tree"
+  [ "$RELOCATION" = "auto" ] || die "--relocation applies to mutation copy-out only; historical mode relocates its frozen snapshots itself"
   [ -z "$SWEEP_ACK" ] || die "--sweep-lock-held / --accept-sweep-race only apply to --in-tree mutation mode"
   [ -n "$AGAINST_COMMIT" ] || [ -n "$AGAINST_LAST_WITHOUT" ] || die "historical mode needs exactly one of --against-commit or --against-last-without"
   [ -z "$AGAINST_COMMIT" ] || [ -z "$AGAINST_LAST_WITHOUT" ] || die "pick exactly one of --against-commit or --against-last-without"
@@ -567,16 +661,38 @@ fi
 # command without it runs against the untouched original, the mutant always "survives", and the
 # probe reports your guard as weak when it is fine. Refuse rather than emit that false verdict.
 #
+# COPY-OUT UNDER AN EXPLICIT `--relocation overlay`: NOT load-bearing, so not required
+# (EI-24818519111680142). The overlay binds the mutant OVER the subject's own path inside a
+# private mount namespace, so GUARD_SUBJECT resolves to "$FILE" rather than a scratch copy
+# (see the relocation block below) and the substitution is the same no-op it is in-tree. The
+# distinction that makes this safe is DOWNGRADE, not visibility: `--relocation auto` silently
+# falls back to the repo mirror when bwrap cannot bind on this host, and under mirror/flat `{}`
+# is the only thing naming the mutant — so auto KEEPS the requirement. An explicit
+# `--relocation overlay` cannot downgrade; it dies instead, so reaching a guard run at all
+# proves the mutant is at the subject's own path. Do not widen this to `auto`.
+#
 # IN-TREE: the tracked file itself IS the mutant, so the substitution is a no-op and a command
 # that never names the path is perfectly sound. That is the NORMAL shape here — in-tree mode
 # exists precisely for subjects whose path is not overridable (a suite importing it by a fixed
 # path), which is the same reason the test cannot accept a `{}` to begin with. Demanding the
 # marker anyway forced callers to thread a dummy `PROBE_FILE={}` env var that nothing reads.
-if [ "$IN_TREE" -eq 0 ]; then
+if [ "$IN_TREE" -eq 0 ] && [ "$RELOCATION" != "overlay" ]; then
   case "$TEST_CMD" in
     *"{}"*) ;;
-    *) die "--test must contain {} (where the mutated COPY's path is substituted). If your test cannot take a path — e.g. it imports its subject by a fixed path — use --in-tree, where {} is optional." ;;
+    *) die "--test must contain {} (where the mutated COPY's path is substituted) under --relocation ${RELOCATION} — auto can fall back to the repo mirror, where {} is the only thing naming the mutant. If your test cannot take a path — e.g. it imports its subject by a fixed path — pass --relocation overlay, which binds the mutant over the subject's own path so {} is not needed (requires bwrap), or use --in-tree, where {} is optional." ;;
   esac
+fi
+
+# EI-25654051948437355: a Playwright CLI --reporter REPLACES every reporter in the
+# project's playwright.config, including the harness_shared.test_runs ledger
+# reporter. The probe still prints a verdict, but `mutant_ledger=none` and no row
+# exists to bind as spec evidence, so the whole (often ~10 min) probe has to be
+# re-run. Refuse before any snapshot or mutation. The exit-code verdict does not
+# need the ledger, so a caller who only wants the verdict can opt out.
+if [ "${MUTATION_PROBE_ALLOW_REPORTER_OVERRIDE:-}" != "1" ]; then
+  if [[ "$TEST_CMD" == *playwright* ]] && [[ "$TEST_CMD" =~ (^|[[:space:]])--reporter([=[:space:]]|$) ]]; then
+    die "--test passes a Playwright --reporter, which REPLACES the configured reporters including the test_runs ledger reporter: the probe would report mutant_ledger=none and leave no row to bind. Drop --reporter (the configured reporters already print progress), or set MUTATION_PROBE_ALLOW_REPORTER_OVERRIDE=1 if you only need the exit-code verdict."
+  fi
 fi
 
 # capability:bash foreground calls terminate the WHOLE child process tree when
@@ -699,7 +815,8 @@ if [ "$IN_TREE" -eq 1 ]; then
     die "--in-tree requires a tracked checkout for mutation admission"
   ADMISSION_ROOT="$(realpath -e "$ADMISSION_ROOT")" || die "cannot resolve mutation checkout"
   ADMISSION_KEY="$(printf '%s' "$ADMISSION_ROOT" | sha256sum | cut -d' ' -f1)"
-  ADMISSION_DIR="/tmp/papercusp-mutation-probe-$(id -u)-$ADMISSION_KEY"
+  ADMISSION_BASE="${PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT:-/tmp}"
+  ADMISSION_DIR="$ADMISSION_BASE/papercusp-mutation-probe-$(id -u)-$ADMISSION_KEY"
   mkdir -p -m 700 "$ADMISSION_DIR" || die "cannot create probe admission directory"
   PROBE_MANIFEST="$ADMISSION_DIR/original.manifest"
   exec {PROBE_ADMISSION_FD}>"$ADMISSION_DIR/admission.lock"
@@ -715,7 +832,10 @@ if [ "$IN_TREE" -eq 1 ]; then
   fi
 fi
 BASE="$SCRATCH/$(basename "$FILE").orig"
-cp "$FILE" "$BASE" || die "could not snapshot $FILE"
+# -p keeps the subject's mtime on BASE so an in-tree restore puts it back with the bytes.
+# plans:bind-spec-evidence refuses a run whose measured files changed after it started
+# (EI-24826121815486916), and a restored subject is byte-identical to what the baseline ran.
+cp -p "$FILE" "$BASE" || die "could not snapshot $FILE"
 
 # Keep a whitespace-normalized snapshot as well. A mis-escaped expression can
 # change bytes without changing any non-whitespace token (for example, by
@@ -729,7 +849,7 @@ tr -d '[:space:]' < "$BASE" > "$BASE_NON_WHITESPACE" || die "could not normalize
 # claim this script makes is decided against this, never against `git status`
 # (on a swept tree a clean status means the sweep ran, not that the file is
 # unmodified — CLAUDE.md documents this at length).
-ORIG_SUM="$(git hash-object "$FILE")"
+ORIG_SUM="$(git hash-object "$FILE")" || die "could not measure the original source digest"
 readonly BASE BASE_NON_WHITESPACE ORIG_SUM
 
 # The subject's own extension, preserved onto every RELOCATED snapshot path.
@@ -780,13 +900,24 @@ finish() {
   # exact mutant generated from BASE; otherwise a blind copy would erase a peer
   # edit. Hash into scratch and read it without command substitution so a
   # signal cannot interrupt nested hash parsing inside this trap.
-  local now tree_conflict=0
+  local now="" tree_conflict=0 measurement_failed=0
   if git hash-object "$FILE" > "$SCRATCH/current.sha" 2>/dev/null; then
-    IFS= read -r now < "$SCRATCH/current.sha" || now="MISSING"
+    IFS= read -r now < "$SCRATCH/current.sha" || measurement_failed=1
   else
-    now="MISSING"
+    measurement_failed=1
   fi
-  if [ "$now" = "$ORIG_SUM" ]; then
+  if [[ ! "$now" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    measurement_failed=1
+  fi
+  if [ "$measurement_failed" -eq 1 ]; then
+    RESTORE_STATUS="integrity-unverified"
+    log "source integrity UNVERIFIED: the digest command or scratch write failed; no source change has been measured."
+    log "Preserving recovery snapshots at $SCRATCH; no restore was attempted."
+    printf 'MUTATION_PROBE_TREE_RESULT status=integrity-unverified target=%s source_sha=%s current_sha=unknown\n' \
+      "${TARGET_MODE:-unknown}" "$ORIG_SUM"
+    printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s phase=integrity reason=digest-unavailable\n' \
+      "$EXPECT" "${TARGET_MODE:-unknown}"
+  elif [ "$now" = "$ORIG_SUM" ]; then
     RESTORE_STATUS="verified-identical"
     log "tree integrity: VERIFIED — $FILE is byte-identical to its pre-probe state"
   elif [ "$IN_TREE" = "1" ] && [ "$PROBE_MUTATION_APPLIED" = "1" ] &&
@@ -794,7 +925,7 @@ finish() {
     # The only bytes on disk are the probe's own mutant, so restoring BASE is
     # safe. The caller's path lock remains the serialization boundary for this
     # in-tree write.
-    if cp -- "$BASE" "$FILE" 2>/dev/null &&
+    if cp -p -- "$BASE" "$FILE" 2>/dev/null &&
         git hash-object "$FILE" > "$SCRATCH/restored.sha" 2>/dev/null &&
         IFS= read -r now < "$SCRATCH/restored.sha" && [ "$now" = "$ORIG_SUM" ]; then
       RESTORE_STATUS="verified-identical"
@@ -828,6 +959,11 @@ finish() {
   if [ -n "$CHILD" ]; then
     kill_tree "$CHILD"
   fi
+  if [ "$measurement_failed" -eq 1 ]; then
+    # Keep an in-tree admission manifest conservative until integrity can be
+    # measured. A failed measurement cannot authorize restoration or cleanup.
+    exit 2
+  fi
   if [ "$tree_conflict" -eq 1 ]; then
     trap - EXIT
     exit 3
@@ -849,6 +985,62 @@ finish() {
 trap 'finish "$?"' EXIT
 trap 'finish 130' INT
 trap 'finish 143' TERM
+# A writable TMPDIR does not establish that npm's independent, host-stable
+# mutex root can allocate its metadata. Check both before spending a baseline,
+# and use the existing root resolver rather than deriving a second lock domain.
+if ! node --input-type=module - "$SCRATCH" "$FILE" "$TEST_CMD" "$(dirname -- "$MUTATION_PROBE_SOURCE_PATH")/lib/fs-mutex.mjs" <<'JS'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [scratch, subject, guard, mutexModule] = process.argv.slice(2);
+let rootKind = 'scratch';
+function checkRoot(root, copySubject) {
+  mkdirSync(root, { recursive: true });
+  const probe = mkdtempSync(join(root, '.mutation-probe-preflight-'));
+  try {
+    if (copySubject) copyFileSync(subject, join(probe, 'source'));
+    writeFileSync(join(probe, 'metadata'), 'mutation-probe scratch allocation control\n');
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+}
+try {
+  // A native CommonJS import bypasses Vitest's module transforms. Propagating
+  // the committed-source loader through NODE_OPTIONS therefore refuses the
+  // intentional mutant before any assertion runs (EI-26005614073216227).
+  // Keep that boundary strict; diagnose the incompatible command before its
+  // expensive baseline, and preserve the explicit-import launcher route.
+  const nodeGuard = /\b(?:node|npm|npx|pnpm)(?:\s|$)/.test(guard);
+  let inheritedLoader = nodeGuard && String(process.env.NODE_OPTIONS ?? '').includes('committed-source-loader.mjs');
+  if (/\b(?:npm|pnpm)\s+run\s+test:file\b/.test(guard)) {
+    const packagePath = join(process.cwd(), 'package.json');
+    if (existsSync(packagePath)) {
+      const script = JSON.parse(readFileSync(packagePath, 'utf8')).scripts?.['test:file'];
+      inheritedLoader ||= typeof script === 'string' && script.includes('NODE_OPTIONS=')
+        && script.includes('committed-source-loader.mjs');
+    }
+  }
+  if (/\.(?:cjs|cts)$/.test(subject) && inheritedLoader) {
+    console.error('MUTATION_PROBE_RESULT verdict=harness-error phase=preflight reason=commonjs-committed-loader');
+    console.error('mutation-probe: the guard propagates the committed-source loader into CommonJS test workers, which would refuse the mutant before assertions. Keep the loader strict. Use the maintained launcher-only route: node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs <test path>, with no committed-source loader in inherited NODE_OPTIONS; the router still runs its restricted-source preflight.');
+    process.exit(2);
+  }
+  checkRoot(scratch, true);
+  const managedGuard = /\b(?:npm|npx|pnpm|bun)(?:\s|$)|(?:^|[\s/])(?:test-files\.mjs|npm-install-safe\.mjs|pc-heavy\.sh)(?:\s|$)/.test(guard);
+  if (managedGuard && process.env.PAPERCUSP_DISABLE_FS_MUTEX !== '1') {
+    rootKind = 'fs-mutex';
+    const { resolveFsMutexLockRoot } = await import(pathToFileURL(mutexModule).href);
+    checkRoot(resolveFsMutexLockRoot(), false);
+  }
+} catch (error) {
+  console.error(`MUTATION_PROBE_RESULT verdict=harness-error phase=preflight reason=scratch-unavailable root=${rootKind} errorCode=${error.code ?? 'unknown'}`);
+  console.error(`mutation-probe: scratch allocation preflight failed: ${error.message}`);
+  process.exitCode = 2;
+}
+JS
+then
+  die "guard preflight failed; no baseline guard was started"
+fi
 if [ "$IN_TREE" -eq 1 ]; then
   printf '%s\0%s\0%s\0%s\0' "$ADMISSION_ROOT" "$FILE" "$BASE" "$$" >"$PROBE_MANIFEST" ||
     die "cannot publish original-byte mutation snapshot"
@@ -869,14 +1061,28 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
   CURRENT_SNAPSHOT="$SCRATCH/current.snapshot"
   cp -p "$BASE" "$CURRENT_SNAPSHOT" || die "could not freeze the current snapshot"
 
-  GIT_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null)" \
-    || die "--against-commit / --against-last-without requires --file to be inside a Git worktree"
+  GIT_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>"$SCRATCH/git-root.err")" \
+    || die "--against-commit / --against-last-without requires --file to be inside a Git worktree: $(head -3 "$SCRATCH/git-root.err" 2>/dev/null)"
   case "$FILE" in
     "$GIT_ROOT"/*) REL_FILE="${FILE#"$GIT_ROOT"/}" ;;
     *) die "--file is not inside the Git worktree root: $GIT_ROOT" ;;
   esac
-  git -C "$GIT_ROOT" ls-files --error-unmatch -- "$REL_FILE" >/dev/null 2>&1 \
-    || die "historical mode requires a tracked --file; Git has no path '$REL_FILE' in $GIT_ROOT"
+  # "Tracked" means the path is in HEAD's tree, read from the object store.
+  # Never ask the index here (WI-10004910): git-sync rewrites .git/index on
+  # every sweep, and a half-written index makes `ls-files --error-unmatch`
+  # exit 1 with "did not match" for a tracked path, byte-for-byte the
+  # signature of a genuinely untracked one (a zero-byte index exits 128), so
+  # no exit-code or stderr filter can tell the two apart. Refs and objects are
+  # written atomically, so this read cannot see a half-written state. It is
+  # also the precondition historical mode really has: a staged-but-never-
+  # committed file has no history to compare against.
+  git -C "$GIT_ROOT" --literal-pathspecs ls-tree -z --full-tree --name-only HEAD -- "$REL_FILE" \
+      >"$SCRATCH/head-tree.out" 2>"$SCRATCH/head-tree.err" \
+    || die "git could not read HEAD's tree in $GIT_ROOT, so whether '$REL_FILE' is committed is UNKNOWN (a git read failure, not an untracked file): $(head -3 "$SCRATCH/head-tree.err" 2>/dev/null)"
+  HEAD_ENTRY=""
+  IFS= read -r -d '' HEAD_ENTRY <"$SCRATCH/head-tree.out" || true
+  [ "$HEAD_ENTRY" = "$REL_FILE" ] \
+    || die "historical mode requires a --file committed at HEAD; HEAD's tree has no path '$REL_FILE' in $GIT_ROOT (an untracked or staged-but-uncommitted file has no history to compare against)"
 
   if [ -n "$AGAINST_COMMIT" ]; then
     HISTORICAL_SHA="$(git -C "$GIT_ROOT" rev-parse --verify "${AGAINST_COMMIT}^{commit}" 2>/dev/null)" \
@@ -1005,6 +1211,58 @@ SHIM
   log "fake-destructive: shims installed ($FAKE_BIN); intercepted calls -> $DESTRUCTIVE_LOG"
 fi
 
+# EI-25217198562906119: the temp dir vite writes its bundled config into, one per
+# vite/vitest config tracked under each given git root (submodules included):
+# <config's nearest node_modules>/.vite-temp, as vite's loadConfigFromBundledFile
+# resolves it. Configs with no node_modules up to their root are skipped (vite
+# then writes beside the config, which no scoped allowance can cover).
+sandbox_vite_temp_dirs() {
+  local root cfg dir
+  for root in "$@"; do
+    [ -n "$root" ] || continue
+    git -C "$root" ls-files --recurse-submodules -z -- \
+        ':(glob)**/vitest*.config.*' ':(glob)**/vite.config.*' 2>/dev/null \
+      | while IFS= read -r -d '' cfg; do
+          dir="$(dirname "$root/$cfg")"
+          while :; do
+            if [ -d "$dir/node_modules" ]; then
+              # Committed-source clones can alias node_modules or .vite-temp
+              # into another checkout. Mount the physical target exactly once:
+              # bubblewrap cannot create mountpoints through those aliases.
+              realpath -m "$dir/node_modules/.vite-temp"
+              break
+            fi
+            if [ "$dir" = "$root" ] || [ "$dir" = "/" ]; then break; fi
+            dir="$(dirname "$dir")"
+          done
+        done
+  done | sort -u
+}
+
+# EI-25217198562906119: under --sandbox-root a guard that writes anywhere outside
+# the writable binds dies with EROFS before measuring anything, and the bare
+# "BASELINE FAILED" that follows reads as "your guard is broken". When the log
+# shows a read-only refusal, name the sandbox as the cause and the route around it.
+sandbox_readonly_hint() {
+  local log_file="$1" label="$2" hits
+  [ "$DELETES_ACK" -eq 1 ] || return 0
+  hits="$(grep -E 'EROFS|Read-only file system' "$log_file" 2>/dev/null | head -5)"
+  [ -n "$hits" ] || return 0
+  log "SANDBOX READ-ONLY WRITE: the $label tried to WRITE outside the --sandbox-root sandbox, and the read-only / refused it (EROFS). This is the SANDBOX, not your guard — nothing was measured:
+$hits
+
+      Writable inside the sandbox: $SANDBOX_ROOT, $SCRATCH (also \$TMPDIR), and a
+      private tmpfs over each vite config temp dir (node_modules/.vite-temp).
+
+      Usual cause: \`npm run test:file\` runs through pc-heavy (/run/user/$(id -u)/pc-heavy-slots)
+      and npm-install-safe (/tmp/pcv/fs-mutex-locks); both write host state the
+      sandbox forbids. Call the test router DIRECTLY instead; mutation-probe.sh
+      acquires npm-install-safe's reader lease outside bwrap and passes its
+      verified marker through, so the router reuses that lease:
+          --test 'node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs <path>'
+      If the guard itself writes elsewhere, point it at \$TMPDIR or under $SANDBOX_ROOT."
+}
+
 if [ "$DELETES_ACK" -eq 1 ]; then
   command -v bwrap >/dev/null 2>&1 \
     || die "--i-know-this-deletes needs bwrap (bubblewrap) for its read-only sandbox and this host has none. Use --fake-destructive instead."
@@ -1014,6 +1272,27 @@ if [ "$DELETES_ACK" -eq 1 ]; then
       REFUSING to run destructive code unsandboxed. Use --fake-destructive instead."
   fi
   log "sandbox: guard runs will execute under bwrap — / read-only; writable: $SANDBOX_ROOT + $SCRATCH"
+  # EI-25217198562906119 (measured 2026-10-06): vitest bundles its config into
+  # <nearest node_modules>/.vite-temp BEFORE collecting a single test, so under
+  # the read-only / every vitest guard died in its baseline with EROFS — the
+  # direct test router included. Give each such dir a PRIVATE tmpfs: the bundler
+  # gets its scratch write, and a mutant can reach nothing on the host there.
+  # bwrap cannot create a mountpoint under the read-only /, so the (gitignored,
+  # empty) dirs are created first, out here.
+  sandbox_git_roots=()
+  for sandbox_from in "$PWD" "$(dirname "$FILE")"; do
+    sandbox_root_dir="$(git -C "$sandbox_from" rev-parse --show-superproject-working-tree 2>/dev/null)"
+    [ -n "$sandbox_root_dir" ] || sandbox_root_dir="$(git -C "$sandbox_from" rev-parse --show-toplevel 2>/dev/null)"
+    [ -n "$sandbox_root_dir" ] && sandbox_git_roots+=("$sandbox_root_dir")
+  done
+  while IFS= read -r sandbox_vite_temp; do
+    [ -n "$sandbox_vite_temp" ] || continue
+    mkdir -p "$sandbox_vite_temp" 2>/dev/null || continue
+    SANDBOX_TMPFS_ARGS+=(--tmpfs "$sandbox_vite_temp")
+  done < <(sandbox_vite_temp_dirs ${sandbox_git_roots[@]+"${sandbox_git_roots[@]}"})
+  if [ "${#SANDBOX_TMPFS_ARGS[@]}" -gt 0 ]; then
+    log "sandbox: private tmpfs over $(( ${#SANDBOX_TMPFS_ARGS[@]} / 2 )) vite config temp dir(s) (node_modules/.vite-temp)"
+  fi
 fi
 
 # EI-22133917471532652 (2026-09-02): pc-heavy allocates its after-ready
@@ -1049,6 +1328,60 @@ propagate_test_run_scope() {
   if [ -n "$workspace_scope" ]; then
     export PAPERCUSP_WORKSPACE_ID="$workspace_scope"
   fi
+}
+
+# ── does the guard's test_runs row actually EXIST? (WI-10006245) ──────────────
+# A caught mutant is only bindable evidence if the ledger holds its FAIL row.
+# The Vitest ledger reporter is fail-soft (D-007): a write that times out or is
+# refused is swallowed. Three concurrent overlay probes (2026-10-06) printed
+# verdict=caught while no mutant row ever landed, and nothing said so until a
+# bind found nothing. So each guard phase names a receipt file
+# (PAPERCUSP_TEST_RUN_RECEIPT_FILE); the reporter appends one JSON line per row
+# it tried to write, and this summary travels on MUTATION_PROBE_RESULT:
+#   none                     no ledger writer ran (a non-Vitest guard, or a
+#                            runner that executes outside this process tree)
+#   test_runs:<id>[,<id>]    every row landed — bind from these ids
+#   missing:<reason>         rows were attempted and NONE landed
+#   unconfirmed:<reason>     an INSERT timed out; persistence is unresolved
+#   partial:<ids>;missing:<n>:<reason>
+#   partial:<ids>;unconfirmed:<n>:<reason>
+# Per file the settled outcome wins (inserted > failed > timeout): a flush that
+# timed out can still land and append its own `inserted` line before exit.
+test_run_receipt_file() {
+  printf '%s/test-run-receipts.%s.jsonl' "$SCRATCH" "$1"
+}
+
+summarize_ledger_receipts() {
+  local file="$1"
+  if [ ! -s "$file" ]; then
+    printf 'none'
+    return 0
+  fi
+  node -e '
+    const fs = require("fs");
+    const rank = { inserted: 3, failed: 2, timeout: 1 };
+    const best = new Map();
+    for (const line of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let r;
+      try { r = JSON.parse(line); } catch { continue; }
+      if (!r || typeof r.filePath !== "string" || !rank[r.outcome]) continue;
+      const prev = best.get(r.filePath);
+      if (!prev || rank[r.outcome] > rank[prev.outcome]) best.set(r.filePath, r);
+    }
+    const clean = (s) => String(s).replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 80);
+    const rows = [...best.values()];
+    const ids = rows.filter((r) => r.outcome === "inserted").map((r) => clean(r.id));
+    const lost = rows.filter((r) => r.outcome !== "inserted");
+    const pending = lost.find((r) => r.outcome === "timeout");
+    const unresolved = pending || lost[0];
+    const disposition = pending ? "unconfirmed" : "missing";
+    const reason = unresolved ? clean(unresolved.outcome + "_" + (unresolved.reason || "unknown")) : "";
+    if (!rows.length) process.stdout.write("none");
+    else if (!lost.length) process.stdout.write("test_runs:" + ids.join(","));
+    else if (!ids.length) process.stdout.write(disposition + ":" + reason);
+    else process.stdout.write("partial:" + ids.join(",") + ";" + disposition + ":" + lost.length + ":" + reason);
+  ' "$file" 2>/dev/null || printf 'unreadable'
 }
 
 # ── the in-tree DIRTY-WINDOW ceiling (EI-23809205858633494) ──────────────────
@@ -1093,23 +1426,218 @@ if [ "$IN_TREE" -eq 1 ]; then
   fi
 fi
 
+# MUTATION DESCRIPTOR (plan mutation-probe-evidence-value-2026-10-11, P-001; field
+# set D-003). Once per invocation the probe records WHAT it tested — subject path,
+# mode, the literal --mutate expression or the full historical commit, before/after
+# subject hashes, a bounded unified diff and a hash of the --test template — and
+# exports it to every guard leg as PAPERCUSP_MUTATION_DESCRIPTOR. The test-run
+# reporter completes it per row (leg, test-file hash) at execution_details.mutation,
+# so a bound proof can be audited and re-run, and a later catch can be linked to an
+# earlier survivor of the same unchanged test.
+#
+# Expand-then-contract (D-001, D-006): the deployed reader parses execution_details
+# strictly, so a row carrying a key it does not know reads as unproven. In `auto`
+# (the default) the export is therefore WITHHELD until the operator that serves
+# :3070 contains the descriptor parser — its /api/health sha → the libs/test-config
+# gitlink at that sha → src/mutation-descriptor.ts present in that submodule commit.
+# Any step that cannot be resolved withholds (fail closed, logged), so the export
+# turns on by itself the first time main deploys the parser.
+# PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=always|never overrides the check.
+MUTATION_DESCRIPTOR_JSON=""
+MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS=2000
+MUTATION_DESCRIPTOR_MAX_DIFF_CHARS=8000
+
+mutation_descriptor_reader_ready() {
+  local url sha repo link parser_entry
+  case "${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" in
+    always) MUTATION_DESCRIPTOR_GATE="forced on (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=always)"; return 0 ;;
+    never) MUTATION_DESCRIPTOR_GATE="forced off (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never)"; return 1 ;;
+    auto) ;;
+    *) die "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT must be auto, always or never (got: '${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT}')" ;;
+  esac
+  url="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL:-http://127.0.0.1:3070/api/health}"
+  sha="$(curl -s -m 3 "$url" 2>/dev/null | tr -d '\n' | sed -n 's/.*"sha":"\([0-9a-f]\{7,40\}\)".*/\1/p')"
+  if [ -z "$sha" ]; then
+    MUTATION_DESCRIPTOR_GATE="withheld: the deployed reader's build sha is unreadable at $url"
+    return 1
+  fi
+  repo="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO:-$RUNNER_ROOT}"
+  link="$(git -C "$repo" rev-parse --verify -q "$sha:libs/test-config" 2>/dev/null)"
+  if [ -z "$link" ]; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha has no resolvable libs/test-config gitlink in $repo"
+    return 1
+  fi
+  if ! git -C "$repo/libs/test-config" cat-file -e "$link^{commit}" 2>/dev/null; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) reader commit object is unavailable in $repo/libs/test-config"
+    return 1
+  fi
+  if ! parser_entry="$(git -C "$repo/libs/test-config" ls-tree "$link" -- src/mutation-descriptor.ts 2>/dev/null)"; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) reader tree is unreadable in $repo/libs/test-config"
+    return 1
+  fi
+  if [ -z "$parser_entry" ]; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) predates the descriptor parser (D-001)"
+    return 1
+  fi
+  # D-009: exercise the exact deployed parser before exporting an additive key.
+  if ! git -C "$repo/libs/test-config" show "$link:src/mutation-descriptor.ts" > "$SCRATCH/mutation-reader.ts" 2>/dev/null; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha (libs/test-config ${link:0:10}) descriptor parser blob is unreadable in $repo/libs/test-config"
+    return 1
+  fi
+  if ! MPD_READER="$SCRATCH/mutation-reader.ts" node --experimental-strip-types --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const reader = await import(pathToFileURL(process.env.MPD_READER).href);
+    const sample = { schemaVersion: 1, probeInvocationId: "reader-check-0001", mode: "copy-out",
+      subjectPath: "reader-check", mutateExpression: "s/old/new/", againstCommit: null,
+      subjectBeforeSha256: "a".repeat(64), subjectAfterSha256: "b".repeat(64),
+      mutantDiff: "", mutantDiffTruncated: false, testCommandSha256: "c".repeat(64),
+      testCommand: "test -f {}" };
+    const historical = { ...sample, mode: "historical", mutateExpression: null,
+      againstCommit: "a".repeat(40), historicalControls: { mustBeAbsent: "fixed",
+        positiveControls: ["stable"], calibrationCommand: "test -f {}" } };
+    process.exit([sample, historical].every(value => reader.parseMutationInvocationDescriptor?.(value)) ? 0 : 1);
+  ' > /dev/null 2> "$SCRATCH/mutation-reader.err"; then
+    MUTATION_DESCRIPTOR_GATE="withheld: deployed reader $sha does not accept the replayable testCommand/historicalControls (D-009)"
+    return 1
+  fi
+  MUTATION_DESCRIPTOR_GATE="on: deployed reader $sha parses execution_details.mutation"
+  return 0
+}
+
+# build_mutation_descriptor <mode> <subject-path> <expression|''> <commit|''> <before> <after>
+build_mutation_descriptor() {
+  local mode="$1" subject="$2" expression="$3" commit="$4" before="$5" after="$6"
+  MUTATION_DESCRIPTOR_GATE=""
+  if ! mutation_descriptor_reader_ready; then
+    log "mutation descriptor $MUTATION_DESCRIPTOR_GATE — guard rows will carry no execution_details.mutation"
+    return 0
+  fi
+  if [ "${#expression}" -gt "$MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS" ]; then
+    log "mutation descriptor withheld: the --mutate expression is ${#expression} characters (limit $MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS) and is never recorded truncated"
+    return 0
+  fi
+  if [ "${#TEST_CMD}" -gt 8000 ]; then
+    die "the --test template exceeds the replayable descriptor limit (8000 characters); use a maintained guard script"
+  fi
+  if [ "$mode" = historical ]; then
+    local control
+    [ "${#MUST_BE_ABSENT}" -le 1024 ] || die "--must-be-absent exceeds the descriptor limit (1024 characters)"
+    [ "${#POSITIVE_CONTROLS[@]}" -le 32 ] || die "historical descriptor accepts at most 32 --positive-control literals"
+    for control in "${POSITIVE_CONTROLS[@]}"; do
+      [ "${#control}" -le 1024 ] || die "--positive-control exceeds the descriptor limit (1024 characters)"
+    done
+    [ "${#CALIBRATION_CMD}" -le 8000 ] || die "--calibration exceeds the replayable descriptor limit (8000 characters)"
+    [ "${#SUBJECT_MUST_BEHAVE}" -le 8000 ] || die "--subject-must-behave exceeds the replayable descriptor limit (8000 characters)"
+  fi
+  diff -u --label "a/$subject" --label "b/$subject" "$before" "$after" > "$SCRATCH/mutation-descriptor.diff" 2>/dev/null
+  MUTATION_DESCRIPTOR_JSON="$(
+    MPD_MODE="$mode" MPD_SUBJECT="$subject" MPD_EXPR="$expression" MPD_COMMIT="$commit" \
+    MPD_BEFORE="$before" MPD_AFTER="$after" MPD_DIFF="$SCRATCH/mutation-descriptor.diff" \
+    MPD_TEST="$TEST_CMD" MPD_MAX_DIFF="$MUTATION_DESCRIPTOR_MAX_DIFF_CHARS" \
+    MPD_ABSENT="$MUST_BE_ABSENT" MPD_CALIBRATION="$CALIBRATION_CMD" MPD_BEHAVIOR="$SUBJECT_MUST_BEHAVE" node -e '
+      const fs = require("fs"), crypto = require("crypto"), e = process.env;
+      const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+      const max = Number(e.MPD_MAX_DIFF);
+      const full = fs.readFileSync(e.MPD_DIFF, "utf8");
+      process.stdout.write(JSON.stringify({
+        schemaVersion: 1,
+        probeInvocationId: crypto.randomUUID(),
+        mode: e.MPD_MODE,
+        subjectPath: e.MPD_SUBJECT,
+        mutateExpression: e.MPD_EXPR || null,
+        againstCommit: e.MPD_COMMIT || null,
+        subjectBeforeSha256: sha(fs.readFileSync(e.MPD_BEFORE)),
+        subjectAfterSha256: sha(fs.readFileSync(e.MPD_AFTER)),
+        mutantDiff: full.slice(0, max),
+        mutantDiffTruncated: full.length > max,
+        testCommandSha256: sha(e.MPD_TEST),
+        testCommand: e.MPD_TEST,
+        ...(e.MPD_MODE === "historical" ? { historicalControls: {
+          mustBeAbsent: e.MPD_ABSENT,
+          positiveControls: process.argv.slice(1),
+          calibrationCommand: e.MPD_CALIBRATION,
+          ...(e.MPD_BEHAVIOR ? { subjectMustBehave: e.MPD_BEHAVIOR } : {}),
+        } } : {}),
+      }));
+    ' "${POSITIVE_CONTROLS[@]}" 2>"$SCRATCH/mutation-descriptor.err"
+  )" || MUTATION_DESCRIPTOR_JSON=""
+  if [ -z "$MUTATION_DESCRIPTOR_JSON" ]; then
+    printf 'MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=build-failed target=%s\n' "$FILE"
+    die "mutation descriptor could not be built after reader admission ($(head -1 "$SCRATCH/mutation-descriptor.err" 2>/dev/null)); no mutation verdict is valid"
+  fi
+  MUTATION_PROBE_INVOCATION_ID="$(printf '%s' "$MUTATION_DESCRIPTOR_JSON" | sed -n 's/.*"probeInvocationId":"\([^"]*\)".*/\1/p')"
+  log "mutation descriptor $MUTATION_DESCRIPTOR_GATE; probeInvocationId=$MUTATION_PROBE_INVOCATION_ID mode=$mode subject=$subject"
+}
+
+# Repository-relative subject path when the subject lies inside a Git worktree.
+mutation_descriptor_subject_path() {
+  local top physical
+  top="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true)"
+  # git reports the physical toplevel; compare against the physical subject path.
+  physical="$(cd "$(dirname "$FILE")" 2>/dev/null && pwd -P)/$(basename "$FILE")"
+  case "$physical" in
+    "$top"/*) [ -n "$top" ] && printf '%s' "${physical#"$top"/}" && return 0 ;;
+  esac
+  printf '%s' "$FILE"
+}
+
 # Run a guard in an interruptible child and preserve its output for the
 # machine-readable verdict below. The phase marker lets a guard's own test
 # fixture skip an intentionally slow baseline setup without weakening the
 # production command shape; it is also useful to test that the baseline and
 # mutant really went through the same invocation path.
 run_guard() {
-  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed
+  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper
+  local -a sandbox_lock_prefix=()
   for attempt in 1 2; do
     log "running $label: $cmd"
+    # A retried attempt must not inherit the first attempt's receipts.
+    rm -f "$(test_run_receipt_file "$phase")"
     (
       export PAPERCUSP_MUTATION_PHASE="$phase"
+      export PAPERCUSP_TEST_RUN_RECEIPT_FILE="$(test_run_receipt_file "$phase")"
       # A deliberate baseline/mutant result is falsifiability evidence, not a
       # measurement of the repository's health. Keep the marker scoped to the
       # supervised child so it reaches every test process without leaking into
       # the caller's environment.
       export PAPERCUSP_MUTATION_PROBE=1
       export PAPERCUSP_MUTATION_MODE="$HISTORICAL_MODE"
+      # P-001: one descriptor per invocation, identical on every leg; a caller's
+      # stale value must never ride along when this invocation withheld its own.
+      if [ -n "$MUTATION_DESCRIPTOR_JSON" ]; then
+        export PAPERCUSP_MUTATION_DESCRIPTOR="$MUTATION_DESCRIPTOR_JSON"
+      else
+        unset PAPERCUSP_MUTATION_DESCRIPTOR
+      fi
+      # WI-10004898: a copy-out guard records from the .git-less mirror, so the
+      # test_runs reporter could never prove the run clean (every row landed
+      # commit=NULL, worktree_dirty=true, which spec freshness rates unknown).
+      # Name the ORIGIN checkout so the reporter snapshots that instead: the
+      # mirror is the origin's files plus this probe's own scratch subject. A
+      # shared-tree origin is still dirty; a clean clone of one commit (for
+      # example a `lint:as-committed --keep` tree) now records that commit, clean.
+      if [ "${TARGET_MODE:-}" = "copy-out" ] && [ -n "${COPY_OUT_ROOT:-}" ] && [ -n "${COPY_OUT_REL:-}" ]; then
+        export PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT="$COPY_OUT_ROOT"
+      fi
+      # WI-10004952: an in-tree guard mutates the subject IN the checkout, so the
+      # reporter's porcelain snapshot always saw it and every in-tree row landed
+      # worktree_dirty=true, even from a pristine as-committed clone. Name the
+      # subject (absolute) so the reporter exempts exactly that one path; any other
+      # dirt, and a shared-tree origin, still record dirty.
+      if [ "$IN_TREE" -eq 1 ]; then
+        export PAPERCUSP_MUTATION_PROBE_SUBJECT="$FILE"
+      fi
+      # EI-24799401310241778: every post-baseline run of an OVERLAY probe executes
+      # in a private mount namespace where the scratch copy is bound over the
+      # subject's own path. Inside it the checkout reads exactly like an in-tree
+      # probe's (only the subject differs), so the reporter gets the same
+      # one-path exemption. The baseline stays OUTSIDE: it is the unmutated
+      # reference the whole verdict is measured against.
+      overlay_args=()
+      if [ "${RELOCATION_USED:-}" = "overlay" ] && [ "$phase" != "baseline" ]; then
+        overlay_args=(--bind "$TARGET" "$OVERLAY_DEST")
+        export PAPERCUSP_MUTATION_PROBE_SUBJECT="$FILE"
+      fi
       # See the DIRTY-WINDOW ceiling above. Exported for BOTH phases in in-tree
       # mode and never for the mutant alone: the baseline and the mutant have to
       # go through the same invocation path, or the comparison the whole verdict
@@ -1140,12 +1668,33 @@ run_guard() {
         # writable zone. Parent-held fds (the >"$output" redirect) pass through.
         export TMPDIR="$SCRATCH"
         printf '%s\n' "$cmd" >"$SCRATCH/guard-cmd.sh"
+        sandbox_lock_prefix=()
+        if [[ "$cmd" == *"scripts/test-files.mjs"* ]]; then
+          # test-files.mjs normally takes this repo's reader lease itself. Its
+          # lock root is host state, though, and / is read-only inside bwrap.
+          # Acquire the same lease on the host first; npm-install-safe passes
+          # the verified repo marker to bwrap, and test-files.mjs reuses that
+          # held lease instead of trying to mkdir under the sandbox's /tmp.
+          npm_lock_wrapper="$RUNNER_ROOT/scripts/npm-install-safe.mjs"
+          [ -n "$RUNNER_ROOT" ] && [ -f "$npm_lock_wrapper" ] \
+            || die "the direct test-files.mjs router needs the repository's npm-install-safe reader wrapper outside the read-only sandbox"
+          sandbox_lock_prefix=(node "$npm_lock_wrapper" --repo-root "$RUNNER_ROOT" --exec-under-lock --)
+        fi
         # --dev replaces /dev, hiding subjects stored in a tmpfs TMPDIR under /dev/shm.
         # Preserve that source tree read-only before granting the two writable binds.
-        exec ${guard_prefix[@]+"${guard_prefix[@]}"} \
+        # Keep the timeout inside the lease wrapper. A timed-out bwrap child
+        # then exits while npm-install-safe remains alive to release its reader.
+        exec ${sandbox_lock_prefix[@]+"${sandbox_lock_prefix[@]}"} \
+          ${guard_prefix[@]+"${guard_prefix[@]}"} \
           bwrap --ro-bind / / --dev /dev --ro-bind-try /dev/shm /dev/shm --proc /proc \
           --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
+          ${SANDBOX_TMPFS_ARGS[@]+"${SANDBOX_TMPFS_ARGS[@]}"} \
+          ${overlay_args[@]+"${overlay_args[@]}"} \
           --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
+      fi
+      if [ "${#overlay_args[@]}" -gt 0 ]; then
+        exec ${guard_prefix[@]+"${guard_prefix[@]}"} \
+          bwrap --dev-bind / / "${overlay_args[@]}" --die-with-parent -- bash -c "$cmd"
       fi
       if [ "${#guard_prefix[@]}" -gt 0 ]; then
         exec "${guard_prefix[@]}" bash -c "$cmd"
@@ -1158,6 +1707,16 @@ run_guard() {
     rc=$?
     CHILD=""
     guard_elapsed=$(( SECONDS - guard_started ))
+    # The committed-source loader can replace the intentional overlay in a
+    # test-spawned child with HEAD. Its router notice means this leg measured
+    # different bytes, even when a parent module-load control sees the overlay.
+    # Refuse before either exit code can become a falsifiability verdict.
+    if grep -Eq '^TEST_FILE_RESULT[[:space:]].*childSubstituted=[1-9][0-9]*([[:space:]]|$)|^TEST_FILE_CHILD_SUBSTITUTED count=[1-9][0-9]*([[:space:]]|$)' "$output"; then
+      cat "$output"
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=-1 guard_exit=%d child_source_substituted=yes phase=%s\n' \
+        "$EXPECT" "${TARGET_MODE:-pre-mutation}" "$rc" "$phase"
+      die "the $label run substituted committed source in a test-spawned child. This leg did not exercise the requested source bytes; neither caught nor survived is established. Keep the committed-source boundary and use a guard that directly exercises the subject."
+    fi
     # 124 is `timeout`'s own "I killed it" status; 137 is what it returns when
     # --kill-after had to escalate to SIGKILL (MEASURED 2026-09-20 — NOT 124, as
     # the coreutils docs read at a glance). 137 is AMBIGUOUS on its own: the
@@ -1219,8 +1778,23 @@ run_guard() {
 # pattern set if a new runner's misuse message surfaces the same way; keep
 # additions narrow (a literal runner diagnostic, not a word that could appear
 # in genuine test output) so this cannot false-flag a real catch.
-RUNNER_MISUSE_ERE='No test files found|Unknown option|: command not found'
+# WI-10006604: `npm run test:file` waits on scripts/npm-install-safe.mjs's fs-mutex while a
+# peer installs; on timeout it prints NPM_INSTALL_SAFE_ERROR and exits 1 before a single test
+# runs (no TEST_FILE_RESULT line), which was scored "MUTANT CAUGHT" — a manufactured proof.
+RUNNER_MISUSE_ERE='No test files found|Unknown option|: command not found|NPM_INSTALL_SAFE_ERROR'
+# WI-6554700010010581: these markers are matched anywhere in the captured output,
+# and that output routinely QUOTES text that is not a runner diagnostic. A Vitest
+# toContain/toBe failure prints the whole subject string, so a subject file with a
+# comment like `cargo: command not found` turned a measured catch into
+# harness-error (and an earlier test worked around the same self-match in its own
+# source instead of here). Misuse means the runner never executed assertions, so
+# a run that carries MEASURED assertion-failure evidence (a reporter record,
+# Vitest's failed-test count, or libtest's named failures) cannot be misuse: such
+# a run reports no misuse hits, and the assertion-evidence leg scores it.
 detect_runner_misuse() {
+  if detect_assertion_failure_evidence "$1" >/dev/null; then
+    return 0
+  fi
   grep -Eo "$RUNNER_MISUSE_ERE" "$1" 2>/dev/null | sort -u | head -3 | tr '\n' ' '
 }
 
@@ -1236,8 +1810,11 @@ detect_runner_misuse() {
 # return 1 and print why the known test run is inconclusive when it is not;
 # return 2 when the output is not a recognized test-run format.
 detect_assertion_failure_evidence() {
-  local result_line summary
-  if grep -Fq 'TEST_FILE_ASSERTION_FAILURE file=' "$1" 2>/dev/null; then
+  local result_line summary cargo_rc
+  # Line-anchored like record-run.ts's parser: the router emits the record at
+  # column 0, while an assertion diff that merely QUOTES it is indented/prefixed.
+  # detect_runner_misuse trusts this evidence, so an echoed copy must not count.
+  if grep -Eq '^TEST_FILE_ASSERTION_FAILURE file=' "$1" 2>/dev/null; then
     printf '%s' 'test-file-assertion-failure'
     return 0
   fi
@@ -1245,6 +1822,29 @@ detect_assertion_failure_evidence() {
   result_line="$(grep -E '^[[:space:]]*TEST_FILE_RESULT[[:space:]]' "$1" 2>/dev/null | tail -1)"
   if [ -n "$result_line" ]; then
     printf '%s' 'no-assertion-failure-evidence'
+    return 1
+  fi
+
+  # Cargo uses 101 for BOTH a failed test and a compilation/setup failure.
+  # Pair named failures with their own libtest run/summary, rather than crediting
+  # a stale failed line from a different binary or an arbitrary exit 101.
+  cargo_rc=0
+  sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null | awk '
+    /^running [0-9]+ tests?$/ { running=$2; named=0 }
+    /^test .+ \.\.\. FAILED$/ { if (running > 0) named++ }
+    /^test result: (ok|FAILED)\./ {
+      recognized=1
+      if ($3 == "FAILED." && running > 0 && named > 0 && $6 > 0 && named == $6) caught=1
+      running=0; named=0
+    }
+    /^error: (could not compile|failed to |could not execute|process didn.t exit successfully)/ { broken=1 }
+    END { if (caught && !broken) exit 0; if (recognized) exit 1; exit 2 }
+  ' || cargo_rc=$?
+  if [ "$cargo_rc" -eq 0 ]; then
+    printf '%s' 'cargo-libtest-failed-tests'
+    return 0
+  elif [ "$cargo_rc" -eq 1 ]; then
+    printf '%s' 'no-cargo-executed-test-failures'
     return 1
   fi
 
@@ -1269,7 +1869,22 @@ detect_assertion_failure_evidence() {
     return 1
   fi
 
+  # The router may abort in setup before it emits TEST_FILE_RESULT (for
+  # example, when its admission ledger cannot connect). Startup/progress
+  # still identifies a test run; do not mistake its exit 1 for a plain shell
+  # guard detecting the mutant. This also protects historical-mode scoring.
+  if grep -Eq '^[[:space:]]*TEST_FILE_(ROUTE|PROGRESS|PROVENANCE|SCOPE_PREFLIGHT)[[:space:]]' "$1" 2>/dev/null; then
+    printf '%s' 'test-runner-aborted-before-result'
+    return 1
+  fi
+
   return 2
+}
+
+# Exit 101 never inherits the plain guard exit-1 convention or evidence from
+# another runner. Both current-mutant and historical modes use the same rule.
+is_assertion_failure_exit() {
+  [ "$1" -eq 1 ] || { [ "$1" -eq 101 ] && [ "$2" = cargo-libtest-failed-tests ]; }
 }
 
 # EI-20451290782193791 (measured 2026-08-14, reproduced 2026-09-05): the
@@ -1299,7 +1914,15 @@ detect_assertion_failure_evidence() {
 # Emits nothing when the guard prints no count summary at all (a `grep -q` or
 # plain-node guard), so a non-test guard can never trip it.
 detect_zero_selection() {
-  local line
+  local line cargo_empty
+  cargo_empty="$(sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null | awk '
+    /^test result: ok\./ { seen=1; if ($4 > 0) passed=1 }
+    END { if (seen && !passed) print "cargo-libtest-zero-passed" }
+  ')"
+  if [ -n "$cargo_empty" ]; then
+    printf '%s' "$cargo_empty"
+    return 0
+  fi
   # Vitest may print "Tests closed successfully ..." AFTER its count summary.
   # Diagnostic prose is not a zero-test result and must not replace that summary.
   line="$(sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null \
@@ -1333,6 +1956,7 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
 
   TARGET_MODE="historical:$HISTORICAL_SHA"
   readonly TARGET_MODE
+  build_mutation_descriptor historical "$REL_FILE" "" "$HISTORICAL_SHA" "$CURRENT_SNAPSHOT" "$HISTORICAL_SNAPSHOT"
   CURRENT_GUARD_LOG="$SCRATCH/current-guard.log"
   CALIBRATION_CURRENT_LOG="$SCRATCH/calibration-current.log"
   CALIBRATION_HISTORICAL_LOG="$SCRATCH/calibration-historical.log"
@@ -1404,6 +2028,13 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     exit 2
   fi
 
+  CURRENT_ZERO_SELECTION="$(detect_zero_selection "$CURRENT_GUARD_LOG")"
+  if [ -n "$CURRENT_ZERO_SELECTION" ]; then
+    printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=%d historical_exit=-1 zero_selection=%s\n' \
+      "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$CURRENT_ZERO_SELECTION"
+    die "the current snapshot guard selected no passing tests; refusing to score the historical source"
+  fi
+
   CALIBRATION_CURRENT_RC=0
   if run_snapshot_command calibration-current "current snapshot calibration" "$CURRENT_SNAPSHOT" "$CALIBRATION_CMD" "$CALIBRATION_CURRENT_LOG"; then
     :
@@ -1434,7 +2065,7 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
   fi
 
   HISTORICAL_MISUSE_HITS="$(detect_runner_misuse "$HISTORICAL_GUARD_LOG")"
-  if [ "$HISTORICAL_RC" -eq 1 ] && [ -n "$HISTORICAL_MISUSE_HITS" ]; then
+  if { [ "$HISTORICAL_RC" -eq 1 ] || [ "$HISTORICAL_RC" -eq 101 ]; } && [ -n "$HISTORICAL_MISUSE_HITS" ]; then
     log "the historical guard's own output shows a runner-MISUSE marker, not an assertion failure: ${HISTORICAL_MISUSE_HITS}"
     printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s runner_misuse=%s\n' \
       "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "${HISTORICAL_MISUSE_HITS// /,}"
@@ -1452,24 +2083,101 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
       Inspect the captured guard output above for the exact runner message."
   fi
   HISTORICAL_ASSERTION_EVIDENCE='exit-code-only'
-  if [ "$HISTORICAL_RC" -eq 1 ]; then
+  if [ "$HISTORICAL_RC" -eq 1 ] || [ "$HISTORICAL_RC" -eq 101 ]; then
     if HISTORICAL_ASSERTION_EVIDENCE="$(detect_assertion_failure_evidence "$HISTORICAL_GUARD_LOG")"; then
       :
     else
       HISTORICAL_ASSERTION_EVIDENCE_RC=$?
       if [ "$HISTORICAL_ASSERTION_EVIDENCE_RC" -eq 1 ]; then
-        log "the historical test run exited 1 without assertion-level failure evidence: ${HISTORICAL_ASSERTION_EVIDENCE}"
+        log "the historical test run exited $HISTORICAL_RC without assertion-level failure evidence: ${HISTORICAL_ASSERTION_EVIDENCE}"
         printf 'MUTATION_PROBE_RESULT mode=historical verdict=inconclusive expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s assertion_evidence=%s\n' \
           "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "$HISTORICAL_ASSERTION_EVIDENCE"
-        die "the historical guard exited 1, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the historical mutation was caught. Inspect the captured historical guard output and rerun only after the assertions execute."
+        die "the historical guard exited $HISTORICAL_RC, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the historical mutation was caught. Inspect the captured historical guard output and rerun only after the assertions execute."
       fi
       HISTORICAL_ASSERTION_EVIDENCE='exit-code-only'
     fi
   fi
-  if [ "$HISTORICAL_RC" -eq 1 ]; then
+  if is_assertion_failure_exit "$HISTORICAL_RC" "$HISTORICAL_ASSERTION_EVIDENCE"; then
     VERDICT="caught"
     log "VERDICT: HISTORICAL SOURCE CAUGHT (guard exited $HISTORICAL_RC) — the guard is falsifiable against the selected before-fix source ✓"
   elif [ "$HISTORICAL_RC" -eq 0 ]; then
+    # ── consumption control (EI-25263495315968521, WI-10006508) ─────────────
+    # A guard that imports its subject by a FIXED path never reads `{}`. It
+    # then passes against the historical snapshot because it never saw it,
+    # and the probe used to report SURVIVED ("your guard is weaker than you
+    # think") about a guard that was never measured. Before that verdict, run
+    # the guard once against a POISONED snapshot: it carries none of the
+    # positive controls and throws/exits on load. A guard that consumes `{}`
+    # fails there; one that still passes is not reading the subject at all.
+    POISONED_SNAPSHOT="$SCRATCH/poisoned.snapshot"
+    case "$SNAPSHOT_EXT" in
+      .ts|.tsx|.mts|.cts|.js|.jsx|.mjs|.cjs)
+        printf 'throw new Error("mutation-probe consumption control: this poisoned subject must never load");\n' > "$POISONED_SNAPSHOT" ;;
+      .sh|.bash)
+        printf 'echo "mutation-probe consumption control: poisoned subject" >&2\nexit 97\n' > "$POISONED_SNAPSHOT" ;;
+      .py)
+        printf 'raise SystemExit("mutation-probe consumption control: poisoned subject")\n' > "$POISONED_SNAPSHOT" ;;
+      *)
+        printf 'MUTATION_PROBE_POISONED_SUBJECT\n' > "$POISONED_SNAPSHOT" ;;
+    esac
+    for control in "${POSITIVE_CONTROLS[@]}"; do
+      if grep -Fq -- "$control" "$POISONED_SNAPSHOT"; then
+        : > "$POISONED_SNAPSHOT"
+        break
+      fi
+    done
+    CONSUMPTION_LOG="$SCRATCH/consumption-control.log"
+    CONSUMPTION_RC=0
+    if run_snapshot_command consumption-control "consumption control (poisoned snapshot)" "$POISONED_SNAPSHOT" "$TEST_CMD" "$CONSUMPTION_LOG"; then
+      :
+    else
+      CONSUMPTION_RC=$?
+    fi
+    if [ "$CONSUMPTION_RC" -eq 0 ]; then
+      log "VERDICT: INCONCLUSIVE — the guard also PASSED against a poisoned snapshot, so it never read {}"
+      printf 'MUTATION_PROBE_RESULT mode=historical verdict=inconclusive expected=%s target=%s current_exit=%d historical_exit=%d consumption_exit=%d against_commit=%s reason=guard-ignores-subject\n' \
+        "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CONSUMPTION_RC" "$HISTORICAL_SHA"
+      die "the guard passed against the historical snapshot AND against a poisoned snapshot that cannot load and carries none of your positive controls. It is not reading the file {} names, so 'survived' would be a verdict about a source it never saw.
+
+      LIKELY CAUSE: the guard imports or reads the subject by a FIXED path (an
+      \`import ... from './<subject>'\` or a hard-coded repo path) instead of the
+      path substituted for {}. Make the subject path overridable (an env var
+      defaulting to the real path, e.g. PROBE_SUBJECT={}) and pass it from --test."
+    fi
+    # A failure only proves consumption when it came FROM the poisoned subject
+    # (rubric acceptance-mutation-probe-evidence-value-2026-10-11 R-3 rev 6,
+    # vetting conv-mv47e8jr): the poison's own sentinel in the output, a
+    # recognized assertion failure, or the plain-guard exit-1 convention the
+    # historical leg already applies. A timeout, a missing dependency or a
+    # crash elsewhere fails the same run without saying anything about `{}`.
+    CONSUMPTION_EVIDENCE='exit-code-only'
+    if grep -Fq -e 'mutation-probe consumption control' -e 'MUTATION_PROBE_POISONED_SUBJECT' "$CONSUMPTION_LOG" 2>/dev/null; then
+      CONSUMPTION_EVIDENCE='poison-sentinel'
+    else
+      CONSUMPTION_DETECT_RC=0
+      CONSUMPTION_DETECTED="$(detect_assertion_failure_evidence "$CONSUMPTION_LOG")" || CONSUMPTION_DETECT_RC=$?
+      if [ "$CONSUMPTION_DETECT_RC" -eq 0 ]; then
+        CONSUMPTION_EVIDENCE="$CONSUMPTION_DETECTED"
+      elif [ "$CONSUMPTION_DETECT_RC" -eq 1 ]; then
+        CONSUMPTION_EVIDENCE='no-assertion-failure-evidence'
+      fi
+    fi
+    CONSUMPTION_PROVEN=0
+    case "$CONSUMPTION_EVIDENCE" in
+      poison-sentinel|test-file-assertion-failure) CONSUMPTION_PROVEN=1 ;;
+      no-assertion-failure-evidence) ;;
+      *) if is_assertion_failure_exit "$CONSUMPTION_RC" "$CONSUMPTION_EVIDENCE"; then CONSUMPTION_PROVEN=1; fi ;;
+    esac
+    if [ "$CONSUMPTION_PROVEN" -ne 1 ]; then
+      log "VERDICT: INCONCLUSIVE — the guard failed against a poisoned snapshot (exit $CONSUMPTION_RC) but the failure carries no evidence it came from {} (consumption_evidence=$CONSUMPTION_EVIDENCE)"
+      printf 'MUTATION_PROBE_RESULT mode=historical verdict=inconclusive expected=%s target=%s current_exit=%d historical_exit=%d consumption_exit=%d against_commit=%s reason=consumption-unproven consumption_evidence=%s\n' \
+        "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CONSUMPTION_RC" "$HISTORICAL_SHA" "$CONSUMPTION_EVIDENCE"
+      die "the guard passed against the historical snapshot, then failed against the poisoned snapshot with exit $CONSUMPTION_RC — but its output shows neither the poison's sentinel nor an assertion failure, and the exit is not the plain-guard assertion convention (1). A timeout, a missing dependency or a crash elsewhere fails that run without proving the guard read {}, so 'survived' would still be unproven.
+
+      Inspect $CONSUMPTION_LOG. If the guard crashed for an environment reason,
+      fix that and rerun; if it does read {}, make its failure an assertion."
+    fi
+    log "consumption control: the guard FAILED against a poisoned snapshot (exit $CONSUMPTION_RC, consumption_evidence=$CONSUMPTION_EVIDENCE), so it does read {}"
     VERDICT="survived"
     log "VERDICT: HISTORICAL SOURCE SURVIVED (guard exited 0) — the guard does NOT constrain this historical source ✗"
   else
@@ -1578,6 +2286,60 @@ if [ "$IN_TREE" = "1" ]; then
   TARGET="$FILE"
 else
   TARGET_MODE="copy-out"
+  # --- copy-out relocation, preferred form: a private mount OVERLAY -----------
+  # (EI-24799401310241778, measured 2026-10-01) The repo mirror below symlinks
+  # every non-subject entry back to the origin. Node and Vite REALPATH a module
+  # before resolving its relative imports, so a SIBLING that is a symlink in the
+  # mirror resolves to the origin tree and its `./subject` import loads the
+  # ORIGINAL file. A test whose assertion path runs through such a sibling then
+  # passes against the mutant: a false SURVIVED. Measured on
+  # inference-gateway/credential-store.ts (reached via request-kernel.ts):
+  # copy-out SURVIVED, the same mutation in-tree CAUGHT. The module-load control
+  # cannot see it, because the test ALSO imports {} directly, so the mirrored
+  # mutant does load; it is just not the copy the assertions exercise.
+  #
+  # Materialising the importers instead does not scale: credential-store.ts
+  # alone has ~8,500 transitive relative importers, and no file set can redirect
+  # a bare package specifier, a path alias or an absolute path.
+  #
+  # The overlay removes the relocation instead of repairing it. Each post-
+  # baseline guard run executes in a private MOUNT NAMESPACE (bwrap) in which the
+  # mutant copy is bind-mounted over the subject's own path. Every route to the
+  # subject — direct, sibling, alias, package specifier, symlinked directory —
+  # reaches the mutant, and siblings, `__dirname` roots and `.git` stay real. The
+  # bind is invisible outside the namespace, so git-sync, peers and the tracked
+  # file never see it: copy-out's no-dirty-window property is unchanged.
+  #
+  # Falls back to the repo mirror when bwrap cannot bind on this host (no user
+  # namespaces), saying so, and every verdict line names the relocation used.
+  if [ "$RELOCATION" != "mirror" ]; then
+    OVERLAY_DEST="$(realpath -e -- "$FILE" 2>/dev/null || true)"
+    mkdir -p "$SCRATCH/overlay" || die "could not create the overlay scratch dir"
+    TARGET="$SCRATCH/overlay/$(basename "$FILE")"
+    cp "$FILE" "$TARGET" || die "could not stage the probe copy"
+    # Positive control, not just "bwrap ran": inside the namespace the subject's
+    # own path must be the SAME inode as the scratch copy, or the bind did not
+    # take and every verdict would be scored against the original.
+    if [ -n "$OVERLAY_DEST" ] && command -v bwrap >/dev/null 2>&1 \
+       && bwrap --dev-bind / / --bind "$TARGET" "$OVERLAY_DEST" --die-with-parent -- \
+            bash -c '[ "$(stat -Lc %d:%i -- "$1")" = "$(stat -Lc %d:%i -- "$2")" ]' _ "$TARGET" "$OVERLAY_DEST" \
+            2>"$SCRATCH/overlay-preflight.err"; then
+      RELOCATION_USED="overlay"
+      log "copy-out: overlay relocation — post-baseline guard runs see the mutant AT $FILE inside a private mount namespace (bwrap); the tracked file and every peer still see the original"
+    else
+      if [ "$RELOCATION" = "overlay" ]; then
+        die "--relocation overlay was requested, but bwrap could not bind the scratch copy over $FILE on this host (user namespaces may be disabled):
+      $(head -3 "$SCRATCH/overlay-preflight.err" 2>/dev/null)
+      Drop --relocation to fall back to the repo mirror, or use the fenced --in-tree tier."
+      fi
+      log "⚠️  overlay relocation unavailable on this host ($(head -1 "$SCRATCH/overlay-preflight.err" 2>/dev/null || echo 'bwrap missing')) — falling back to the repo mirror."
+      log "⚠️  The mirror can report a false SURVIVED when the test reaches the subject through a sibling module (EI-24799401310241778)."
+      rm -f -- "$TARGET"
+      OVERLAY_DEST=""
+    fi
+  fi
+fi
+if [ "$TARGET_MODE" = "copy-out" ] && [ "$RELOCATION_USED" != "overlay" ]; then
   COPY_OUT_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true)"
   # A submodule can import hoisted dependencies from its superproject. Preserve
   # that enclosing path hierarchy too; mirroring only the inner Git root makes
@@ -1601,16 +2363,73 @@ else
     build_repo_mirror "$COPY_OUT_ROOT" "$COPY_OUT_REL" "$COPY_OUT_MIRROR" \
       || die "could not build the copy-out repo mirror under $COPY_OUT_MIRROR"
     TARGET="$COPY_OUT_MIRROR/$COPY_OUT_REL"
+    RELOCATION_USED="mirror"
     log "copy-out: relocating into a repo mirror — $COPY_OUT_ROOT symlinked into $COPY_OUT_MIRROR (.git excluded), mutant at its own repo-relative path $COPY_OUT_REL"
   else
     # Not inside a worktree, so there is no repo shape to mirror. Flat
     # relocation, exactly as before — the copy-baseline gate below still
     # refuses a relocation that breaks the subject.
     TARGET="$SCRATCH/$(basename "$FILE")"
+    RELOCATION_USED="flat"
   fi
   cp "$FILE" "$TARGET" || die "could not stage the probe copy"
 fi
-readonly TARGET_MODE
+[ -n "$RELOCATION_USED" ] || RELOCATION_USED="none"
+readonly TARGET_MODE RELOCATION_USED OVERLAY_DEST
+# What {} names in every post-baseline guard run. Under the overlay the mutant is
+# visible AT the subject's own path, so {} stays the real path; a relocated copy
+# is named by its scratch path.
+if [ "$RELOCATION_USED" = "overlay" ]; then
+  GUARD_SUBJECT="$FILE"
+else
+  GUARD_SUBJECT="$TARGET"
+fi
+readonly GUARD_SUBJECT
+
+# Validate the expression and its exact output before either baseline guard.
+# Recheck the applied mutant below: stateful Perl expressions must not turn a
+# valid preflight into an ineffective mutation after the baseline has run.
+verify_mutation_bytes() {
+  local candidate="$1"
+  if cmp -s "$candidate" "$BASE"; then
+    die "the --mutate expression changed NOTHING (mutant is byte-identical to the original).
+      A no-op mutation makes any guard look weak. Fix the expression and re-run.
+
+      MOST COMMON CAUSE: --mutate is a PERL expression (applied as perl -pi -e), so
+      ( ) { } + ? . * are REGEX METACHARACTERS on the PATTERN side, not literal text.
+      This bites hardest on the normal use of this script — mutating source code —
+      because a natural-looking mutation of a conditional or a call matches nothing:
+
+          WRONG:  's|if (x > 0) {|if (false) {|'
+                        ^      ^ ^   ( ) capture a group, { starts a quantifier,
+                                     so this searches for 'if x > 0 ' and misses.
+          RIGHT:  's|if \(x > 0\) \{|if (false) {|'
+
+      Only the PATTERN (left) side needs escaping — the replacement is literal."
+  fi
+  tr -d '[:space:]' < "$candidate" > "$SCRATCH/mutant.non-whitespace" || die "could not normalize the mutant"
+  if cmp -s "$SCRATCH/mutant.non-whitespace" "$BASE_NON_WHITESPACE"; then
+    die "the --mutate expression changed ONLY WHITESPACE (non-whitespace content is unchanged).
+      A whitespace-only mutation can leave behavior unchanged and make any guard
+      look weak. Inspect the mutation expression, then fix it so it
+      changes the intended non-whitespace token and re-run."
+  fi
+}
+
+if ! perl -Mstrict -pe "$MUTATE" "$BASE" > "$SCRATCH/preflight-mutant" 2>"$SCRATCH/strict-err"; then
+  die "the --mutate expression does not compile under 'use strict' — refusing before mutating anything.
+      perl said: $(head -3 "$SCRATCH/strict-err" 2>/dev/null)
+
+      MOST COMMON CAUSE: a bare \$name in the REPLACEMENT half. perl INTERPOLATES
+      the replacement, so \$name there is a PERL VARIABLE — and if it is undefined
+      it becomes silently EMPTY (that exact silent-empty widened a delete loop to
+      'for d in /*' on 2026-08-15). If you meant the literal text \$name — e.g. the
+      subject is a SHELL script and \$name is one of ITS variables — escape it on
+      the replacement side too: s/match/\\\$name/. Special vars (\$1, \$&) are fine."
+fi
+verify_mutation_bytes "$SCRATCH/preflight-mutant"
+if [ "$IN_TREE" -eq 1 ]; then MUTATION_DESCRIPTOR_MODE=in-tree; else MUTATION_DESCRIPTOR_MODE=copy-out; fi
+build_mutation_descriptor "$MUTATION_DESCRIPTOR_MODE" "$(mutation_descriptor_subject_path)" "$MUTATE" "" "$BASE" "$SCRATCH/preflight-mutant"
 
 # A nonzero baseline means the command did not establish a runnable, healthy
 # guard before the mutation. Scoring the mutant's later nonzero exit as
@@ -1619,11 +2438,18 @@ BASE_CMD="${TEST_CMD//\{\}/$FILE}"
 BASELINE_LOG="$SCRATCH/baseline.log"
 MUTANT_LOG="$SCRATCH/mutant.log"
 BASELINE_RC=0
+# Check the in-tree session/lock fence before an expensive baseline can run.
+# Keep the second check immediately before mutation to refresh the lease and
+# catch a lock that changed while the baseline was running.
+if [ "$IN_TREE" -eq 1 ] && [ "$SWEEP_ACK" = "lock-held" ]; then
+  verify_sweep_fence
+fi
 if run_guard baseline "baseline guard" "$BASE_CMD" "$BASELINE_LOG"; then
   :
 else
   BASELINE_RC=$?
   log "BASELINE FAILED (guard exited $BASELINE_RC) — refusing to score the mutant"
+  sandbox_readonly_hint "$BASELINE_LOG" "baseline guard"
   printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1\n' \
     "$EXPECT" "$TARGET_MODE" "$BASELINE_RC"
   exit 2
@@ -1674,7 +2500,7 @@ fi
 # not that a mutation was caught (there isn't one yet). In-tree mode never
 # relocates the subject at all, so this check applies to copy-out only.
 if [ "$TARGET_MODE" = "copy-out" ]; then
-  COPY_BASELINE_CMD="${TEST_CMD//\{\}/$TARGET}"
+  COPY_BASELINE_CMD="${TEST_CMD//\{\}/$GUARD_SUBJECT}"
   COPY_BASELINE_LOG="$SCRATCH/copy-baseline.log"
   COPY_BASELINE_RC=0
   if run_guard copy-baseline "unmutated-copy baseline guard" "$COPY_BASELINE_CMD" "$COPY_BASELINE_LOG"; then
@@ -1682,8 +2508,26 @@ if [ "$TARGET_MODE" = "copy-out" ]; then
   else
     COPY_BASELINE_RC=$?
     log "COPY-BASELINE FAILED (guard exited $COPY_BASELINE_RC against the UNMUTATED relocated copy) — refusing to score the mutant"
-    printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1 copy_baseline_exit=%d\n' \
-      "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$COPY_BASELINE_RC"
+    sandbox_readonly_hint "$COPY_BASELINE_LOG" "unmutated-copy baseline guard"
+    printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1 copy_baseline_exit=%d relocation=%s\n' \
+      "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$COPY_BASELINE_RC" "$RELOCATION_USED"
+    if [ "$RELOCATION_USED" = "overlay" ]; then
+      die "the guard failed inside the overlay namespace against an UNMUTATED copy bound over $FILE, even though the SAME guard passed outside it (baseline_exit=$BASELINE_RC, this run's exit=$COPY_BASELINE_RC).
+
+      There is no mutation applied yet, so this is the NAMESPACE, not a caught
+      mutant. The overlay keeps every path, sibling and .git real, so the usual
+      causes are things a private mount namespace changes:
+
+        - the guard needs privilege (sudo / setuid) — no_new_privs blocks it;
+        - the guard writes to the subject path itself (the bound copy is a
+          scratch file, so writes land there, not in the tree);
+        - the guard depends on a process started OUTSIDE the namespace that
+          reads the subject (a long-running server, a systemd service unit).
+
+      Inspect the captured guard output above (copy-baseline phase). FIX:
+      --relocation mirror relocates the copy instead of overlaying it, or run
+      the probe with --in-tree."
+    fi
     die "the guard failed against an UNMUTATED copy relocated to $TARGET, even though the SAME guard passed in-tree (baseline_exit=$BASELINE_RC, this run's exit=$COPY_BASELINE_RC).
 
       This is almost always the RELOCATION breaking the subject, not a caught
@@ -1714,27 +2558,6 @@ if [ "$TARGET_MODE" = "copy-out" ]; then
   fi
 fi
 
-# --- pre-flight the mutation under perl strict -------------------------------
-# On a THROWAWAY copy, deliberately BEFORE the dirty window below (this block
-# may use command substitution; the dirty window must not). perl s///
-# INTERPOLATES the REPLACEMENT half, and an UNDEFINED perl variable there is
-# silently empty — that silent-empty is how an escaped-match-side probe's
-# replacement became 'for d in ""/*' == 'for d in /*' and destroyed ~370GB on
-# 2026-08-15 (EI-20566003853444873). Under -Mstrict an undeclared $name is a
-# COMPILE error instead, so the trap fires loudly before anything is mutated.
-cp "$BASE" "$SCRATCH/strict-check" || die "could not stage the strict-check copy"
-if ! perl -Mstrict -pe "$MUTATE" "$SCRATCH/strict-check" >/dev/null 2>"$SCRATCH/strict-err"; then
-  die "the --mutate expression does not compile under 'use strict' — refusing before mutating anything.
-      perl said: $(head -3 "$SCRATCH/strict-err" 2>/dev/null)
-
-      MOST COMMON CAUSE: a bare \$name in the REPLACEMENT half. perl INTERPOLATES
-      the replacement, so \$name there is a PERL VARIABLE — and if it is undefined
-      it becomes silently EMPTY (that exact silent-empty widened a delete loop to
-      'for d in /*' on 2026-08-15). If you meant the literal text \$name — e.g. the
-      subject is a SHELL script and \$name is one of ITS variables — escape it on
-      the replacement side too: s/match/\\\$name/. Special vars (\$1, \$&) are fine."
-fi
-
 # Keep an exact in-tree mutant snapshot outside the dirty window. Cleanup may
 # restore the tracked file only if it still matches this byte-for-byte result.
 if [ "$IN_TREE" -eq 1 ]; then
@@ -1743,9 +2566,6 @@ if [ "$IN_TREE" -eq 1 ]; then
   PROBE_MUTANT_SUM="$(git hash-object "$PROBE_MUTANT_FILE")" ||
     die "could not hash the expected in-tree mutant snapshot"
 fi
-
-MUTANT_NON_WHITESPACE="$SCRATCH/$(basename "$FILE").mutant.non-whitespace"
-readonly MUTANT_NON_WHITESPACE
 
 # --- apply the mutation -----------------------------------------------------
 if [ "$IN_TREE" -eq 1 ] && [ "$SWEEP_ACK" = "lock-held" ]; then
@@ -1777,35 +2597,7 @@ diff -u -- "$BASE" "$TARGET" | sed -n '1,40p' || true
 # the "mutant" is identical to the original, so the guard passes, and the
 # probe reports "the guard did not catch it" — a FALSE weakness verdict from a
 # probe that never actually mutated anything. Refuse rather than report it.
-if cmp -s "$TARGET" "$BASE"; then
-  die "the --mutate expression changed NOTHING (mutant is byte-identical to the original).
-      A no-op mutation makes any guard look weak. Fix the expression and re-run.
-
-      MOST COMMON CAUSE: --mutate is a PERL expression (applied as perl -pi -e), so
-      ( ) { } + ? . * are REGEX METACHARACTERS on the PATTERN side, not literal text.
-      This bites hardest on the normal use of this script — mutating source code —
-      because a natural-looking mutation of a conditional or a call matches nothing:
-
-          WRONG:  's|if (x > 0) {|if (false) {|'
-                        ^      ^ ^   ( ) capture a group, { starts a quantifier,
-                                     so this searches for 'if x > 0 ' and misses.
-          RIGHT:  's|if \(x > 0\) \{|if (false) {|'
-
-      Only the PATTERN (left) side needs escaping — the replacement is literal."
-fi
-
-# A mutation that changes only whitespace is just as unsound as a byte-identical
-# mutation for falsifiability: it can leave the subject's behavior unchanged
-# while making a guard appear weak. Keep this check language-agnostic and
-# conservative; callers must choose a mutation that changes a non-whitespace
-# token before the guard is scored.
-tr -d '[:space:]' < "$TARGET" > "$MUTANT_NON_WHITESPACE" || die "could not normalize the mutant"
-if cmp -s "$MUTANT_NON_WHITESPACE" "$BASE_NON_WHITESPACE"; then
-  die "the --mutate expression changed ONLY WHITESPACE (non-whitespace content is unchanged).
-      A whitespace-only mutation can leave behavior unchanged and make any guard
-      look weak. Inspect the mutation diff above, then fix the expression so it
-      changes the intended non-whitespace token and re-run."
-fi
+verify_mutation_bytes "$TARGET"
 # A mutant that no longer PARSES is the same false-verdict class as the two
 # checks above, wearing a far more convincing costume. The guard does fail --
 # but it fails because the subject stopped being a loadable program, not
@@ -1895,18 +2687,35 @@ fi
 log "mutant applied: ${ORIG_SUM:0:8} -> changed ($TARGET_MODE)"
 
 # --- run the guard against the mutant --------------------------------------
-CMD="${TEST_CMD//\{\}/$TARGET}"
+CMD="${TEST_CMD//\{\}/$GUARD_SUBJECT}"
 run_guard mutant "mutant guard" "$CMD" "$MUTANT_LOG"
 TEST_RC=$?
+BASELINE_LEDGER="$(summarize_ledger_receipts "$(test_run_receipt_file baseline)")"
+COPY_BASELINE_LEDGER="$(summarize_ledger_receipts "$(test_run_receipt_file copy-baseline)")"
+MUTANT_LEDGER="$(summarize_ledger_receipts "$(test_run_receipt_file mutant)")"
+# A caught mutant still needs its passing controls to be ledger-backed. Preserve
+# each control's write outcome before finish removes the scratch receipts.
+for phase in baseline copy-baseline; do
+  phase_ledger="$BASELINE_LEDGER"
+  [ "$phase" != "copy-baseline" ] || phase_ledger="$COPY_BASELINE_LEDGER"
+  case "$phase_ledger" in
+    missing:*|unconfirmed:*|partial:*|unreadable)
+      log "⚠️  $phase ledger: $phase_ledger — the passing control has incomplete test_runs evidence; do not claim ledger-backed baseline proof from its exit status." ;;
+  esac
+done
+case "$MUTANT_LEDGER" in
+  missing:*|unconfirmed:*|partial:*|unreadable)
+    log "⚠️  mutant ledger: $MUTANT_LEDGER — the guard ran, but these receipts do not confirm complete test_runs evidence (WI-10006245). A timed-out INSERT may still have landed: reconcile the exact run group in the ledger before replaying, and bind only from a confirmed mutant FAIL row." ;;
+esac
 
 # A guard is falsifiable when it FAILS on the mutant. Report the verdict in
 # those terms rather than leaking the raw exit code, because "the probe
 # succeeded" and "the test passed" mean OPPOSITE things here and conflating
 # them is its own error class. Exit 1 is the test/guard failure convention;
-# exit 2 (for example, a shell syntax error) and every other nonzero status
-# mean the harness did not produce a trustworthy verdict.
+# Cargo/libtest exit 101 requires executed-test evidence; other nonzero
+# statuses mean the harness did not produce a trustworthy verdict.
 MUTANT_MISUSE_HITS="$(detect_runner_misuse "$MUTANT_LOG")"
-if [ "$TEST_RC" -eq 1 ] && [ -n "$MUTANT_MISUSE_HITS" ]; then
+if { [ "$TEST_RC" -eq 1 ] || [ "$TEST_RC" -eq 101 ]; } && [ -n "$MUTANT_MISUSE_HITS" ]; then
   log "the mutant guard's own output shows a runner-MISUSE marker, not an assertion failure: ${MUTANT_MISUSE_HITS}"
   printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s runner_misuse=%s\n' \
     "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "${MUTANT_MISUSE_HITS// /,}"
@@ -1931,16 +2740,16 @@ if [ "$TEST_RC" -eq 1 ] && [ -n "$MUTANT_MISUSE_HITS" ]; then
 fi
 
 MUTANT_ASSERTION_EVIDENCE='exit-code-only'
-if [ "$TEST_RC" -eq 1 ]; then
+if [ "$TEST_RC" -eq 1 ] || [ "$TEST_RC" -eq 101 ]; then
   if MUTANT_ASSERTION_EVIDENCE="$(detect_assertion_failure_evidence "$MUTANT_LOG")"; then
     :
   else
     MUTANT_ASSERTION_EVIDENCE_RC=$?
     if [ "$MUTANT_ASSERTION_EVIDENCE_RC" -eq 1 ]; then
-      log "the mutant test run exited 1 without assertion-level failure evidence: ${MUTANT_ASSERTION_EVIDENCE}"
+      log "the mutant test run exited $TEST_RC without assertion-level failure evidence: ${MUTANT_ASSERTION_EVIDENCE}"
       printf 'MUTATION_PROBE_RESULT verdict=inconclusive expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s\n' \
         "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE"
-      die "the mutant guard exited 1, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the mutation was caught. Inspect the captured guard output and rerun only after the assertions execute."
+      die "the mutant guard exited $TEST_RC, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the mutation was caught. Inspect the captured guard output and rerun only after the assertions execute."
     fi
     MUTANT_ASSERTION_EVIDENCE='exit-code-only'
   fi
@@ -1968,8 +2777,18 @@ if [ "$TARGET_MODE" = "copy-out" ] && [ "$TEST_RC" -eq 0 ]; then
       cp -- "$SCRATCH/mutant-before-load-check" "$TARGET" \
         || die "cannot restore scratch mutant after module-load control"
       if [ "$LOAD_RC" -eq 0 ] || ! grep -Fq "$LOAD_MARKER" "$LOAD_LOG"; then
-        printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=%d module_loaded=no\n' \
-          "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC"
+        printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=%d module_loaded=no relocation=%s\n' \
+          "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$RELOCATION_USED"
+        if [ "$RELOCATION_USED" = "overlay" ]; then
+          die "the mutated module was not loaded by --test: the copy bound over $FILE threw a distinctive marker, but the same guard did not fail with that marker.
+
+      Under the overlay EVERY route to $FILE inside the namespace reaches the
+      copy, so the guard either never loads this module at all, or loads it in
+      a process started OUTSIDE the namespace (a daemon, a systemd service
+      unit, a server the test talks to). A survived verdict would be false.
+      Point --test at a command that loads the subject itself, or use the
+      fenced --in-tree tier."
+        fi
         die "the mutated module was not loaded by --test: the scratch copy threw a distinctive marker, but the same guard did not fail with that marker.
 
       A symlinked test/config in the copy-out mirror may resolve imports against
@@ -1981,12 +2800,18 @@ if [ "$TARGET_MODE" = "copy-out" ] && [ "$TEST_RC" -eq 0 ]; then
   esac
 fi
 
-if [ "$TEST_RC" -eq 1 ]; then
+if is_assertion_failure_exit "$TEST_RC" "$MUTANT_ASSERTION_EVIDENCE"; then
   VERDICT="caught"
   log "VERDICT: MUTANT CAUGHT (guard exited $TEST_RC) — the guard is falsifiable ✓"
 elif [ "$TEST_RC" -eq 0 ]; then
   VERDICT="survived"
   log "VERDICT: MUTANT SURVIVED (guard exited 0) — the guard does NOT constrain this mutation ✗"
+  if [ "$RELOCATION_USED" = "mirror" ] || [ "$RELOCATION_USED" = "flat" ]; then
+    # EI-24799401310241778: a relocated copy can survive for a reason that is
+    # not the guard's — a sibling that realpaths back to the origin loads the
+    # ORIGINAL subject. The overlay has no such route; say which one ran.
+    log "⚠️  relocation=$RELOCATION_USED: a test that reaches the subject through a SIBLING module (or an alias/package specifier) loads the ORIGINAL file here, so this survival may be the relocation's, not the guard's. Re-run where bwrap can bind (--relocation overlay) or with the fenced --in-tree tier before calling the guard weak."
+  fi
 else
   VERDICT="harness-error"
   log "VERDICT: HARNESS ERROR (guard exited $TEST_RC) — no falsifiability verdict is sound"
@@ -1996,8 +2821,85 @@ fi
 # as evidence. 'ok' means the mutant was confirmed to still be a loadable
 # program, so a caught verdict is about the assertions; 'unchecked*' means no
 # checker applied to this subject and the caught verdict carries that caveat.
-printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s\n' \
-  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE"
+# Each phase's ledger summary survives scratch cleanup. The mutation verdict
+# describes assertions; missing ledger evidence remains a separate limitation.
+printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s relocation=%s baseline_ledger=%s copy_baseline_ledger=%s mutant_ledger=%s\n' \
+  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE" "$RELOCATION_USED" "$BASELINE_LEDGER" "$COPY_BASELINE_LEDGER" "$MUTANT_LEDGER"
+
+# One JSON record per probe, copyable into an operational evidence artifact's
+# `mutationProbes` array. argv is the exact vector received by this invocation;
+# runnerCommit + runnerSha256 pin the executed script bytes to Git history.
+# Preserve the bounded descriptor-reader settings too: argv alone loses an
+# explicit export override and can silently withhold linkage on replay.
+REPLAY_RECORD="$(
+  MUTATION_PROBE_RUNNER_PATH="$RUNNER_SOURCE_PATH" \
+  MUTATION_PROBE_RUNNER_SHA256="$RUNNER_SHA256" \
+  MUTATION_PROBE_RUNNER_COMMIT="$RUNNER_COMMIT" \
+  MUTATION_PROBE_REPLAY_CWD="$REPLAY_CWD" \
+  MUTATION_PROBE_VERDICT="$VERDICT" \
+  MUTATION_PROBE_EXPECTED="$EXPECT" \
+  MUTATION_PROBE_TARGET="$TARGET_MODE" \
+  MUTATION_PROBE_BASELINE_EXIT="$BASELINE_RC" \
+  MUTATION_PROBE_GUARD_EXIT="$TEST_RC" \
+  MUTATION_PROBE_MUTANT_PARSE="$MUTANT_PARSE" \
+  MUTATION_PROBE_ASSERTION_EVIDENCE="$MUTANT_ASSERTION_EVIDENCE" \
+  MUTATION_PROBE_RELOCATION="$RELOCATION_USED" \
+  MUTATION_PROBE_BASELINE_LEDGER="$BASELINE_LEDGER" \
+  MUTATION_PROBE_COPY_BASELINE_LEDGER="$COPY_BASELINE_LEDGER" \
+  MUTATION_PROBE_MUTANT_LEDGER="$MUTANT_LEDGER" \
+  MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT="${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" \
+  MUTATION_PROBE_REPLAY_READER_HEALTH_URL="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL:-http://127.0.0.1:3070/api/health}" \
+  MUTATION_PROBE_REPLAY_READER_REPO="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO:-$RUNNER_ROOT}" \
+  MUTATION_PROBE_REPLAY_HARNESS="${PAPERCUSP_TEST_RUN_HARNESS:-${HARNESS_SLUG:-${PAPERCUSP_HARNESS_SLUG:-}}}" \
+  perl -MJSON::PP -MEncode=decode,FB_CROAK,LEAVE_SRC -e '
+    # Perl receives argv and environment values as bytes. Decode text before
+    # JSON::PP encodes it; otherwise UTF-8 is encoded a second time as mojibake.
+    @ARGV = map { decode("UTF-8", $_, FB_CROAK | LEAVE_SRC) } @ARGV;
+    my %text_env;
+    for my $key (qw(
+      MUTATION_PROBE_RUNNER_PATH MUTATION_PROBE_RUNNER_SHA256
+      MUTATION_PROBE_RUNNER_COMMIT MUTATION_PROBE_REPLAY_CWD
+      MUTATION_PROBE_VERDICT MUTATION_PROBE_EXPECTED MUTATION_PROBE_TARGET
+      MUTATION_PROBE_BASELINE_EXIT MUTATION_PROBE_GUARD_EXIT
+      MUTATION_PROBE_MUTANT_PARSE MUTATION_PROBE_ASSERTION_EVIDENCE
+      MUTATION_PROBE_RELOCATION MUTATION_PROBE_BASELINE_LEDGER
+      MUTATION_PROBE_COPY_BASELINE_LEDGER MUTATION_PROBE_MUTANT_LEDGER
+      MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT MUTATION_PROBE_REPLAY_READER_HEALTH_URL
+      MUTATION_PROBE_REPLAY_READER_REPO MUTATION_PROBE_REPLAY_HARNESS
+    )) {
+      # %ENV is tied: storing decoded text there turns it back into bytes.
+      $text_env{$key} = decode("UTF-8", $ENV{$key}, FB_CROAK | LEAVE_SRC);
+    }
+    print encode_json({
+      schemaVersion => 1,
+      runnerPath => $text_env{MUTATION_PROBE_RUNNER_PATH},
+      runnerSha256 => $text_env{MUTATION_PROBE_RUNNER_SHA256},
+      runnerCommit => $text_env{MUTATION_PROBE_RUNNER_COMMIT},
+      cwd => $text_env{MUTATION_PROBE_REPLAY_CWD},
+      argv => \@ARGV,
+      environment => {
+        PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT => $text_env{MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT},
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL => $text_env{MUTATION_PROBE_REPLAY_READER_HEALTH_URL},
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO => $text_env{MUTATION_PROBE_REPLAY_READER_REPO},
+        PAPERCUSP_TEST_RUN_HARNESS => $text_env{MUTATION_PROBE_REPLAY_HARNESS},
+      },
+      result => {
+        verdict => $text_env{MUTATION_PROBE_VERDICT},
+        expected => $text_env{MUTATION_PROBE_EXPECTED},
+        target => $text_env{MUTATION_PROBE_TARGET},
+        baselineExit => 0 + $text_env{MUTATION_PROBE_BASELINE_EXIT},
+        guardExit => 0 + $text_env{MUTATION_PROBE_GUARD_EXIT},
+        mutantParse => $text_env{MUTATION_PROBE_MUTANT_PARSE},
+        assertionEvidence => $text_env{MUTATION_PROBE_ASSERTION_EVIDENCE},
+        relocation => $text_env{MUTATION_PROBE_RELOCATION},
+        baselineLedger => $text_env{MUTATION_PROBE_BASELINE_LEDGER},
+        copyBaselineLedger => $text_env{MUTATION_PROBE_COPY_BASELINE_LEDGER},
+        mutantLedger => $text_env{MUTATION_PROBE_MUTANT_LEDGER},
+      },
+    });
+  ' -- "${ORIGINAL_ARGS[@]}"
+)" || die "could not serialize the exact mutation-probe replay record"
+printf 'MUTATION_PROBE_EVIDENCE_JSON=%s\n' "$REPLAY_RECORD"
 
 [ "$VERDICT" = "harness-error" ] && exit 2
 [ "$VERDICT" = "$EXPECT" ] || exit 1

@@ -89,21 +89,30 @@ vi.mock('./FrameScreenTrackView', () => ({
 // Swarm→Fleet routed title from the THE_HIVE flag hook (restore-pot-lexicon P-006).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
-import AdvFramesTab, { type DeployedFrameRow } from './AdvFramesTab';
+// `desktops.local` — this computer's agent desktops, counted for the D-011 link.
+const localRoster = vi.hoisted(() => ({
+  rows: [] as Array<{ id: string }>,
+  error: null as Error | null,
+  queries: [] as string[],
+}));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: ({ queryName }: { queryName: string }) => {
+    localRoster.queries.push(queryName);
+    return { data: localRoster.rows, loading: false, error: localRoster.error };
+  },
+}));
+
+import AdvFramesTab, { LOCAL_DESKTOPS_HREF, type DeployedFrameRow } from './AdvFramesTab';
 
 const FRAMES: DeployedFrameRow[] = [
   { slug: 'alpha', frame: { id: 'f1', host: 'alpha.host', target: 'hetzner' }, desktop: { displays: 2 } },
   { slug: 'beta', frame: { id: 'f2', host: 'beta.host', target: 'hetzner' }, desktop: false },
 ];
 
-function stubFrames(payload: unknown, opts: { fail?: boolean; localDesktops?: unknown[] } = {}) {
+function stubFrames(payload: unknown, opts: { fail?: boolean } = {}) {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
-      // Order matters: '/api/deploy/local-desktops' also contains '/api/deploy/'.
-      if (String(url).includes('/api/deploy/local-desktops')) {
-        return { ok: true, status: 200, json: async () => ({ desktops: opts.localDesktops ?? [] }) };
-      }
       if (String(url).includes('/api/deploy/frames')) {
         if (opts.fail) return { ok: false, status: 502, json: async () => ({}) };
         return { ok: true, status: 200, json: async () => payload };
@@ -113,20 +122,6 @@ function stubFrames(payload: unknown, opts: { fail?: boolean; localDesktops?: un
   );
 }
 
-/** A local desktop row as GET /api/deploy/local-desktops returns it (P-004). */
-const localDesktop = (over: Record<string, unknown> = {}) => ({
-  id: 'ds-1',
-  slug: 'alpha',
-  kind: 'xvfb-local',
-  scope: 'pot',
-  scopeRef: 'alpha',
-  display: 110,
-  displayRaw: ':110',
-  state: 'ready',
-  viewerMode: 'none',
-  viewerActor: null,
-  ...over,
-});
 
 /** Fire an SSE event into the captured per-slug stream (inside act). */
 function fireSse(slug: string, kind: 'thumb' | 'status', payload: Record<string, unknown>) {
@@ -149,6 +144,9 @@ beforeEach(() => {
   nuqsState.drive = false;
   for (const k of Object.keys(nuqsSetters)) delete nuqsSetters[k];
   sseSources.clear();
+  localRoster.rows = [];
+  localRoster.error = null;
+  localRoster.queries = [];
   stubFrames({ frames: FRAMES });
 });
 
@@ -334,119 +332,60 @@ describe('AdvFramesTab — enlarged panel', () => {
   });
 });
 
-describe('AdvFramesTab — local desktops (P-004)', () => {
-  it('renders a tile for a local desktop from the registry roster', async () => {
-    stubFrames({ frames: FRAMES }, { localDesktops: [localDesktop()] });
+describe('AdvFramesTab — this computer’s desktops live on the Desktops page (D-011)', () => {
+  it('links to Desktops › This computer with the count from desktops.local', async () => {
+    localRoster.rows = [{ id: 'ds-1' }, { id: 'ds-2' }];
+    stubFrames({ frames: FRAMES });
     render(<AdvFramesTab />);
-    const tile = await screen.findByLabelText('alpha :110 (local xvfb-local)');
-    expect(tile).toBeTruthy();
-    // The summary is one joined string ("2 frames · 0 live displays · 1 local
-    // desktop"), so match the segment rather than the whole node's text.
-    expect(screen.getByText(/1 local desktop/)).toBeTruthy();
+    expect(localRoster.queries).toContain('desktops.local');
+    const link = await screen.findByRole('link', { name: /2 agent desktops on this computer/ });
+    expect(link.getAttribute('href')).toBe(LOCAL_DESKTOPS_HREF);
+    expect(LOCAL_DESKTOPS_HREF).toBe('/desktops?desktopHost=local');
+    // The frames half keeps its own summary, with no local count folded in.
+    expect(screen.getByText('2 frames · 0 live displays')).toBeTruthy();
   });
 
-  it('shows local desktops even with NO deployed frames — the dev-box case', async () => {
-    // Before P-004 the whole tile region was gated behind rows.length > 0, so a
-    // machine with local desktops and no frames showed the empty state. This is
-    // the regression control for that.
-    stubFrames({ frames: [] }, { localDesktops: [localDesktop()] });
-    render(<AdvFramesTab />);
-    expect(await screen.findByLabelText('alpha :110 (local xvfb-local)')).toBeTruthy();
-    expect(screen.queryByText(/No deployed frames and no local desktops/)).toBeNull();
+  it('renders NO local tiles and never polls the old roster route', async () => {
+    localRoster.rows = [{ id: 'ds-1' }];
+    stubFrames({ frames: FRAMES });
+    const { container } = render(<AdvFramesTab />);
+    await screen.findByText('2 frames · 0 live displays');
+    expect(container.querySelector('[aria-label="Local desktops"]')).toBeNull();
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes('/api/deploy/local-desktops')),
+    ).toBe(false);
   });
 
-  it('still shows the empty state when there are neither frames nor local desktops', async () => {
-    stubFrames({ frames: [] }, { localDesktops: [] });
+  it('points at the Desktops page from the empty state on a box with no frames', async () => {
+    stubFrames({ frames: [] });
     render(<AdvFramesTab />);
-    expect(await screen.findByText(/No deployed frames and no local desktops/)).toBeTruthy();
+    expect(await screen.findByText(/No deployed frames\./)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Desktops page' }).getAttribute('href')).toBe(
+      LOCAL_DESKTOPS_HREF,
+    );
+    // No count when there are none — the link still offers the page.
+    expect(screen.getByRole('link', { name: /Desktops on this computer/ })).toBeTruthy();
   });
 
-  it('clicking a local tile selects it with the local: key prefix', async () => {
-    stubFrames({ frames: FRAMES }, { localDesktops: [localDesktop()] });
+  it('a failing local roster only hides the count, never the frames view', async () => {
+    localRoster.error = new Error('down');
+    localRoster.rows = [{ id: 'ds-1' }];
+    stubFrames({ frames: FRAMES });
     render(<AdvFramesTab />);
-    const tile = await screen.findByLabelText('alpha :110 (local xvfb-local)');
-    fireEvent.click(tile);
-    // The prefix is what keeps a local :110 distinct from a frame's :110.
-    expect(nuqsSetters.frame).toHaveBeenCalledWith('local:alpha:110');
+    expect(await screen.findByText('2 frames · 0 live displays')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /Desktops on this computer/ })).toBeTruthy();
   });
 
-  it('a local selection drives the VNC view with target="local"', async () => {
-    nuqsState.frame = 'local:alpha:110';
-    nuqsState.live = true;
-    // drive=true: the P-013 ladder tries the screen TRACK first for watch, and
-    // VNC is the input path — so takeover is what mounts FrameVncView.
-    nuqsState.drive = true;
-    stubFrames({ frames: FRAMES }, { localDesktops: [localDesktop()] });
-    render(<AdvFramesTab />);
-    const view = await screen.findByTestId('vnc-view');
-    expect(view.getAttribute('data-target')).toBe('local');
-    // …and the prefix was stripped: slug is 'alpha', NOT 'local:alpha'.
-    expect(view.getAttribute('data-slug')).toBe('alpha');
-    expect(view.getAttribute('data-display')).toBe('110');
-  });
-
-  it('a local selection in WATCH (not drive) mode skips the screen-track wait and mounts VNC directly', async () => {
-    // Regression control for EI-21881516933069798: a local Xvfb desktop is not
-    // a deployed frame and can never publish the holepunch screen track
-    // FrameScreenTrackView waits on, so trying it first only pays its 8s
-    // FIRST_FRAME_TIMEOUT_MS for a guaranteed fallback. VNC must mount
-    // immediately in plain watch mode (drive=false), and the screen-track view
-    // must never appear at all.
-    nuqsState.frame = 'local:alpha:110';
-    nuqsState.live = true;
-    nuqsState.drive = false;
-    stubFrames({ frames: FRAMES }, { localDesktops: [localDesktop()] });
-    render(<AdvFramesTab />);
-    const view = await screen.findByTestId('vnc-view');
-    expect(view.getAttribute('data-target')).toBe('local');
-    expect(view.getAttribute('data-drive')).toBe('false');
-    expect(screen.queryByTestId('screentrack-view')).toBeNull();
-  });
-
-  it('a FRAME selection is unaffected — negative control for the prefix parsing', async () => {
+  it('a frame selection still drives the frame VNC view', async () => {
     nuqsState.frame = 'alpha:2';
     nuqsState.live = true;
     nuqsState.drive = true;
-    stubFrames({ frames: FRAMES }, { localDesktops: [localDesktop()] });
+    stubFrames({ frames: FRAMES });
     render(<AdvFramesTab />);
     const view = await screen.findByTestId('vnc-view');
     expect(view.getAttribute('data-target')).toBe('frame');
     expect(view.getAttribute('data-slug')).toBe('alpha');
-  });
-
-  it('surfaces the cross-process viewer indicator on a watched local desktop', async () => {
-    stubFrames(
-      { frames: FRAMES },
-      { localDesktops: [localDesktop({ viewerMode: 'takeover', viewerActor: 'user:a' })] },
-    );
-    const { container } = render(<AdvFramesTab />);
-    const tile = await screen.findByLabelText('alpha :110 (local xvfb-local)');
-    // The indicator comes from the registry's viewer columns, so it reports a
-    // viewer attached from ANOTHER operator process too — which the old
-    // in-process session map could not see.
-    const watch = tile.querySelector('.pc-frames__chip-watch');
-    expect(watch, 'a watched local desktop must show the viewer indicator').not.toBeNull();
-    expect(watch!.getAttribute('data-drive')).toBe('true');
-    // CONTROL: an unwatched desktop shows no indicator, so the assertion above
-    // is not just finding a chip that is always present.
-    cleanup();
-    stubFrames({ frames: FRAMES }, { localDesktops: [localDesktop()] });
-    render(<AdvFramesTab />);
-    const quiet = await screen.findByLabelText('alpha :110 (local xvfb-local)');
-    expect(quiet.querySelector('.pc-frames__chip-watch')).toBeNull();
-    expect(container).toBeTruthy();
-  });
-
-  it('a failing local roster degrades to zero local desktops, not a broken tab', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (url: string) => {
-        if (String(url).includes('/api/deploy/local-desktops')) throw new Error('down');
-        return { ok: true, status: 200, json: async () => ({ frames: FRAMES }) };
-      }),
-    );
-    render(<AdvFramesTab />);
-    // The frames half still renders.
-    expect(await screen.findByText('2 frames · 0 live displays')).toBeTruthy();
+    expect(view.getAttribute('data-display')).toBe('2');
   });
 });

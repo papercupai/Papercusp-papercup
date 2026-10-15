@@ -34,10 +34,9 @@
  * token_index is UNIQUE(workspace_id, harness_slug) as in head.)
  */
 import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { createFreshTestDb } from '@papercusp/test-config/pg';
 // eslint-disable-next-line import/no-relative-packages -- run the real boot-path migration runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
@@ -82,25 +81,25 @@ const clientOpts = {
 } as const;
 
 export async function createOrgTestDb(): Promise<OrgTestDb> {
-  const containerUri = await getTestPg();
-  const dbName = `org_${randomBytes(5).toString('hex')}`;
-
-  const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
+  // The shared lifecycle stamps a managed marker and routes cleanup through the
+  // bounded drop lane, so interrupted test runs remain safely discoverable.
+  const db = await createFreshTestDb({ prefix: 'org' });
+  const dbName = db.name;
+  const u = new URL(db.url);
   try {
-    await maint.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await maint.end({ timeout: 5 });
+    const boot = postgres(db.url, { max: 1, onnotice: () => {} });
+    try {
+      await boot.unsafe(FRAMEWORK_PREREQS_DDL);
+      // The migration set is self-contained (000-baseline.sql + 107+), so this
+      // builds the complete schema and throws loudly on any real failure.
+      await applyPendingMigrations({ client: boot, sqlDir: SQL_DIR });
+    } finally {
+      await boot.end({ timeout: 5 }).catch(() => {});
+    }
+  } catch (error) {
+    await db.drop().catch(() => {});
+    throw error;
   }
-
-  const u = new URL(containerUri);
-  u.pathname = `/${dbName}`;
-  const boot = postgres(u.toString(), { max: 1, onnotice: () => {} });
-  await boot.unsafe(FRAMEWORK_PREREQS_DDL);
-  // The migration set is now self-contained (000-baseline.sql + 107+): empty→head
-  // builds the COMPLETE schema, so this throws loudly on any real failure rather than
-  // silently leaving a partial prefix (self-contained-migration-baseline-2026-06-02).
-  await applyPendingMigrations({ client: boot, sqlDir: SQL_DIR });
-  await boot.end({ timeout: 5 });
 
   const host = u.hostname;
   const port = u.port;
@@ -110,14 +109,7 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
   const cleanup = async () => {
     await appSql.end({ timeout: 5 }).catch(() => {});
     await adminSql.end({ timeout: 5 }).catch(() => {});
-    const m = postgres(containerUri, { max: 1, onnotice: () => {} });
-    try {
-      await m.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-    } catch {
-      /* best-effort */
-    } finally {
-      await m.end({ timeout: 5 });
-    }
+    await db.drop().catch(() => {});
   };
 
   return { appSql, adminSql, cleanup };

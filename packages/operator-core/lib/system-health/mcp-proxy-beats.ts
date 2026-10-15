@@ -16,8 +16,24 @@ export const CHEAP_REPEATING_BEAT_PATHS: readonly string[] = [
   '/api/agent-mcp/turn-start-memory',
 ];
 
+/**
+ * Synchronous native-tool security checks fail closed when unavailable. They may be retried
+ * on the next tool invocation, but must not spend the restart-sized MCP retry window first.
+ */
+export const FAST_FAIL_PRECHECK_PATHS: readonly string[] = [
+  '/api/agent-mcp/restricted-egress-check',
+];
+
+function pathWithoutQuery(url: string): string {
+  return (url.split('?')[0] ?? '').replace(/\/+$/, '');
+}
+
 /** True when `url` names a high-frequency beat whose replacement is scheduled. */
 export function isCheapRepeatingBeat(url: string): boolean {
-  const path = (url.split('?')[0] ?? '').replace(/\/+$/, '');
-  return CHEAP_REPEATING_BEAT_PATHS.includes(path);
+  return CHEAP_REPEATING_BEAT_PATHS.includes(pathWithoutQuery(url));
+}
+
+/** True when a fail-closed preflight should be surfaced promptly after a brief retry. */
+export function isFastFailPrecheck(url: string): boolean {
+  return FAST_FAIL_PRECHECK_PATHS.includes(pathWithoutQuery(url));
 }

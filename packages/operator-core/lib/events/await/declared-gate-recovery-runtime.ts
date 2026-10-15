@@ -240,6 +240,7 @@ export function declaredGateRecoveryPayload(
       : { inactive: result.reason }),
     next_verb: result.nextVerb,
     evidence: {
+      checked_at_ms: e.checkedAtMs,
       declared_by: e.declaredBy,
       generation_state: e.generationState,
       catalog: e.catalogMembership,
@@ -251,7 +252,7 @@ export function declaredGateRecoveryPayload(
       reasons: e.reasons,
     },
     ...(action ? { action } : {}),
-    rule: 'A timeout stays a timeout until the exact key fires with a matching generation and expected condition; follow next_verb, never treat this wake as the gate opening.',
+    rule: 'Evidence, including owner_liveness, is a point-in-time snapshot measured at evidence.checked_at_ms; re-read current ownership before acting on an older snapshot. A timeout stays a timeout until the exact key fires with a matching generation and expected condition; follow next_verb, never treat this wake as the gate opening.',
   };
 }
 

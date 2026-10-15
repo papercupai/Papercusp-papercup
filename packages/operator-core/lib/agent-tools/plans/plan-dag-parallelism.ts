@@ -7,6 +7,64 @@ import {
   getDependencyPolicy,
   type DependencyPolicyFinding,
 } from '../../scheduler/dependency-invariants';
+import type { CodeIntelSourceEvidence } from '../../code-intelligence/contracts';
+import type { PlanItemCoverage } from '../../plan-item-coverage';
+
+export interface PlanCodeScope {
+  symbol: string;
+  file: string;
+  paths?: string[];
+  taskPaths: { itemId: string; paths: string[] }[];
+}
+
+/** P-013: source-backed suggestions only. This reader cannot claim or assign work. */
+export function nativePlanGraphAdvice(items: readonly Pick<PlanItem, 'id' | 'storedStatus' | 'blockedBy'>[], scope: PlanCodeScope,
+  evidence: CodeIntelSourceEvidence | undefined, coverage: ReadonlyMap<string, PlanItemCoverage>, slug: string,
+  fileClaims: { status: 'measured' | 'unknown'; held: readonly { path: string; owner: string; intent: string; coordinationDomain?: string }[] } = { status: 'unknown', held: [] }) {
+  const active = items.filter(item => !['done', 'dropped'].includes(item.storedStatus));
+  const byId = new Map(active.map(item => [item.id, item]));
+  const tasks = scope.taskPaths.filter(task => byId.has(task.itemId));
+  const ownsPath = (path: string) => tasks.filter(task => task.paths.includes(path)).map(task => task.itemId);
+  const ordering: { producer: string; consumer: string; sourcePath: string; targetPath: string; kind: string }[] = [];
+  const measured = evidence?.graphScope.basis === 'compiler-project' && Boolean(evidence.sourceScope.sourceFingerprint);
+  if (measured) {
+    for (const edge of evidence!.relationships) {
+      if (edge.origin !== 'compiler' || edge.knowledge === 'unknown' || !edge.source || !edge.target
+        || !['callers', 'callees', 'impact', 'imports'].includes(edge.kind)) continue;
+      const sources = evidence!.sourceScope.supportingFiles;
+      if (![edge.source, edge.target].every(site => sources.some(source => source.path === site.site.path
+        && source.contentHash === site.contentHash && source.representation === 'full-source'))) continue;
+      for (const consumer of ownsPath(edge.source.site.path)) for (const producer of ownsPath(edge.target.site.path)) {
+        if (producer !== consumer && !ordering.some(pair => pair.producer === producer && pair.consumer === consumer)) {
+          ordering.push({ producer, consumer, sourcePath: edge.source.site.path, targetPath: edge.target.site.path, kind: edge.kind });
+        }
+      }
+    }
+  }
+  const remaining = new Set(active.map(item => item.id));
+  const proposedOrder: string[] = [];
+  while (remaining.size) {
+    const ready = active.filter(item => remaining.has(item.id)
+      && !item.blockedBy.some(id => remaining.has(id))
+      && !ordering.some(edge => edge.consumer === item.id && remaining.has(edge.producer)));
+    if (!ready.length) break;
+    for (const item of ready) { remaining.delete(item.id); proposedOrder.push(item.id); }
+  }
+  const overlaps: { items: string[]; paths: string[] }[] = [];
+  for (let i = 0; i < tasks.length; i++) for (let j = i + 1; j < tasks.length; j++) {
+    if (tasks[i].itemId === tasks[j].itemId) continue;
+    const paths = [...new Set(tasks[i].paths.filter(path => tasks[j].paths.includes(path)))];
+    if (paths.length) overlaps.push({ items: [tasks[i].itemId, tasks[j].itemId], paths });
+  }
+  return { status: measured ? 'measured' as const : 'unknown' as const,
+    sourceFingerprint: evidence?.sourceScope.sourceFingerprint ?? null,
+    scope: { repositoryId: evidence?.sourceScope.repositoryId ?? null, paths: evidence?.sourceScope.paths ?? [], taskPaths: tasks },
+    ordering, proposedOrder: remaining.size ? [] : proposedOrder, cyclesOrConflicts: [...remaining], overlaps,
+    ownership: tasks.map(task => ({ itemId: task.itemId, coverage: coverage.get(`${slug}#${task.itemId}`) ?? null })),
+    fileClaims,
+    limitations: ['Static source dependencies are advisory; runtime execution and complete dependency coverage are unknown.',
+      'Ownership comes from the current claim read. Re-read it before acting; assignments and file locks remain authoritative.'] };
+}
 
 const TERMINAL_STATUSES = new Set<ItemStatus>(['done', 'dropped']);
 
@@ -183,14 +241,21 @@ function itemSearchText(item: PlanItem): string {
  * `criticalPathDepth` counts only non-terminal items, so completed setup does
  * not keep making a mature plan look artificially deep.
  */
-export function analyzePlanDagParallelism(planItems: readonly PlanItem[]): PlanDagParallelismDiagnostics {
+export function analyzePlanDagParallelism(
+  planItems: readonly PlanItem[],
+  planItemIds?: readonly string[],
+): PlanDagParallelismDiagnostics {
   const items = [...planItems];
   const byId = new Map(items.map((item) => [item.id, item]));
   const resolved = resolveEffectiveStatusForItems(items);
   const resolvedById = new Map(resolved.items.map((item) => [item.id, item]));
   const cycleMembers = new Set(resolved.cycleMembers);
   const danglingItems = new Set(resolved.missingRefs.map((entry) => entry.itemId));
-  const nonTerminalItems = resolved.items.filter((item) => !TERMINAL_STATUSES.has(item.storedStatus));
+  // Resolve against the complete DAG before narrowing the claimed lane. An
+  // out-of-scope dependency still blocks its consumer until it is terminal.
+  const scope = planItemIds === undefined ? null : new Set(planItemIds);
+  const nonTerminalItems = resolved.items.filter((item) =>
+    !TERMINAL_STATUSES.has(item.storedStatus) && (!scope || scope.has(item.id)));
   const nonTerminalIds = new Set(nonTerminalItems.map((item) => item.id));
   const readyItems = nonTerminalItems.filter(
     (item) => item.effectiveStatus === 'todo' && item.unresolvedBlockers.length === 0 && !item.needsHuman,

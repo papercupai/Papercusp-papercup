@@ -21,6 +21,7 @@ import {
   type TriggerDispatchDeps,
 } from './binding-engine';
 import type { ScheduledPlanFireRefusal, ScheduledPlanFireStartedResult } from '../harness/routines/plan-run-action';
+import { readTriggerPlanRunPayload } from './plan-run-payload';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -87,7 +88,7 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.goals WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.plan_runs WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
   await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
@@ -99,7 +100,7 @@ beforeEach(async () => {
             ${`---\nslug: ${PLAN}\n---\n# Triage event`}, 'trigger-plan-v1',
             ${JSON.stringify([{ id: 'P-001', text: 'Handle trigger payload', status: 'todo' }])}::text::jsonb)`;
   const sources = await sql<Array<{ id: string }>>`
-    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+    INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES (${WS}, 'gmail', 'connected') RETURNING id`;
   sourceId = sources[0].id;
   const bindings = await sql<Array<{ id: string }>>`
@@ -199,6 +200,9 @@ describe('external trigger durable dispatch', () => {
         operations: [{
           id: consumer.operationId, version: '1', target: { kind: 'work-item', itemKind: 'feature' },
           execution: { kind: 'agent', role: 'worker' },
+          // An agent work-item operation must pin the worker identity it will bind
+          // (validate.ts operation-unpinned-agent; same fixture fix as WI-10008190).
+          policy: { identity: { kind: 'identity', ref: `${consumer.harness}-worker`, revision: '1.0.0', contentHash: 'c'.repeat(64) } },
           inputSchema: { type: 'object', required: [consumer.field], additionalProperties: false,
             properties: { [consumer.field]: { type: typeof consumer.value === 'number' ? 'integer' : 'string' },
               trigger: { type: 'object' } } },
@@ -233,6 +237,16 @@ describe('external trigger durable dispatch', () => {
     const eventItemIds = triggerRows.map((row) => row.outcome.blueprintOperation.target.id);
     expect(new Set(eventItemIds).size).toBe(2);
     for (const consumer of consumers) {
+      // A routine fire is admitted only for an ACTIVE routine row with this id
+      // (operation-routine-admission.ts); the fixture predates that check.
+      await sql`
+        INSERT INTO harness_shared.routines
+          (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template, concurrency, active)
+        VALUES (${`routine:${consumer.harness}`}, ${WS}, ${consumer.harness}, ${consumer.harness}, 'cron',
+                ${JSON.stringify({ costCapCents: 200 })}::text::jsonb, 'system:blueprint-operation',
+                ${JSON.stringify({ operationHarnessSlug: consumer.harness, operationId: consumer.operationId })}::text::jsonb,
+                'skip', true)
+        ON CONFLICT (id) DO NOTHING`;
       const first = await runBlueprintOperationAction({
         workspaceId: WS, installSlug: consumer.harness, routineId: `routine:${consumer.harness}`,
         workflowId: `routine-fire:${consumer.harness}:first`, triggerConfig: {},
@@ -492,12 +506,19 @@ describe('external trigger durable dispatch', () => {
       succeeded: 0,
       failed: 1,
     });
-    const failed = await sql<Array<{ status: string; error: string }>>`
-      SELECT status, error FROM harness_shared.trigger_runs
+    const failed = await sql<Array<{ status: string; error: string; plan_run_ref: string | null }>>`
+      SELECT status, error, plan_run_ref FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    // The run launched before its dispatch failed, so the receipt names it and whoever
+    // executes the still-queued work-item can read the payload (WI-6554700010010446).
     expect(failed[0]).toMatchObject({
       status: 'failed',
       error: 'external_trigger_agentic_dispatch_failed:target_absent',
+      plan_run_ref: '9001',
+    });
+    await expect(readTriggerPlanRunPayload(sql, WS, 9001)).resolves.toMatchObject({
+      triggerRunId,
+      externalId: 'dispatch-1',
     });
 
     await expect(dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork })).resolves.toMatchObject({
@@ -796,6 +817,11 @@ describe('external trigger durable dispatch', () => {
       retryEscalationMsgId: 'esc-trigger-retry-1',
     });
     expect(openEscalation).toHaveBeenCalledTimes(1);
+    // WI-6554700010010397: the escalation carries the classifier's cause, not only the code.
+    expect(openEscalation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ body: expect.stringContaining('Cause: no live adopting session') }),
+    );
 
     // Parked means paced: an immediate routine tick does not hot-loop or consume
     // the queued successful replay.
@@ -877,6 +903,57 @@ describe('external trigger durable dispatch', () => {
     ]);
   });
 
+  it('expires a never-attempted run older than maxAgeSeconds instead of dispatching it (WI-10004920)', async () => {
+    const triggerArgs = (suffix: string) => ({
+      trigger: {
+        key: 'ext:gmail:message.received', source: 'gmail', event: 'message.received',
+        sourceId: 'source-fixture', externalId: `aged-${suffix}`, occurredAt: null,
+        datatypeId: 'email-message', dedupeKey: `gmail:aged-${suffix}`,
+        payload: { id: `aged-${suffix}`, subject: 'Queued while the drain was paused' },
+      },
+    });
+    // Backlog that piled up while the dispatcher was off: never attempted, 2 days old.
+    const backlogId = await seedTriggerRun({ args: triggerArgs('backlog') });
+    // Same age, but dispatch already began — its retry policy, not the age window, governs it.
+    const startedId = await seedTriggerRun({ status: 'failed', attempts: 1, args: triggerArgs('started') });
+    // A custom, tighter window on the binding: 1h. A 2h-old fresh run is past it.
+    const customId = await seedTriggerRun({ args: triggerArgs('custom') });
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET triggered_at = CASE WHEN id = ${customId} THEN now() - interval '2 hours'
+                                 ELSE now() - interval '2 days' END,
+             next_attempt_at = now() - interval '1 second'
+       WHERE workspace_id = ${WS} AND id IN (${backlogId}, ${startedId}, ${customId})`;
+
+    const runPlan = vi.fn().mockRejectedValue(new Error('plan launch unavailable'));
+    const first = await dispatchPendingTriggerRuns(sql, { runPlan, staleAfterSeconds: 60 });
+    // Default window (24h): the backlog row expires, the already-started row is still claimed,
+    // and the 2h-old row is inside the default window so it is claimed too.
+    expect(first.triggerRunIds).not.toContain(backlogId);
+    expect(first.triggerRunIds).toContain(startedId);
+    const backlog = await sql<Array<{ status: string; error: string | null; attempts: number }>>`
+      SELECT status, error, attempts FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${backlogId}`;
+    expect(backlog[0]).toMatchObject({ status: 'skipped', attempts: 0 });
+    expect(backlog[0].error).toMatch(/^external_trigger_stale/);
+
+    // A stored custom window is honoured: reset the 2h-old row to never-attempted and tighten to 1h.
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET status = 'pending', attempts = 0, error = NULL, next_attempt_at = now() - interval '1 second'
+       WHERE workspace_id = ${WS} AND id = ${customId}`;
+    await sql`
+      UPDATE harness_shared.trigger_bindings
+         SET storm_policy = COALESCE(storm_policy, '{}'::jsonb) || '{"maxAgeSeconds": 3600}'::jsonb
+       WHERE workspace_id = ${WS} AND id = ${bindingId}`;
+    const second = await dispatchPendingTriggerRuns(sql, { runPlan, staleAfterSeconds: 60 });
+    expect(second.triggerRunIds).not.toContain(customId);
+    const custom = await sql<Array<{ status: string; error: string | null }>>`
+      SELECT status, error FROM harness_shared.trigger_runs WHERE workspace_id = ${WS} AND id = ${customId}`;
+    expect(custom[0].status).toBe('skipped');
+    expect(custom[0].error).toMatch(/^external_trigger_stale/);
+  });
+
   it('passes the complete Calendar-upcoming trigger input into the meeting-prep plan run', async () => {
     const args = {
       trigger: {
@@ -942,6 +1019,8 @@ describe('create-work-item direct Email dispatch (P-018)', () => {
       title: 'Email draft proposal',
       description: 'A draft-only reply proposal from Gmail.',
       tier: 'generic-kind',
+      nature: 'work',
+      audience: 'human', // D-007: a person decides whether a draft is sent
       workItemKind: EMAIL_DRAFT_PROPOSAL_KIND,
       payloadSchema: EMAIL_DRAFT_PAYLOAD_SCHEMA,
       authoritativeWriter: 'papercusp',
@@ -1368,7 +1447,7 @@ describe('social platform dispatch (P-028 simulated acceptance)', () => {
 
   async function seedSocialChain(): Promise<{ triggerRunId: string; bindingId: string }> {
     const sources = await sql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, cursor)
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, status, cursor)
       VALUES (${WS}, 'bluesky', 'connected', ${JSON.stringify({ seq: 4821 })}::text::jsonb)
       RETURNING id`;
     const bindings = await sql<Array<{ id: string }>>`

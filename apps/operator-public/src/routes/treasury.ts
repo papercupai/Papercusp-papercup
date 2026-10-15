@@ -45,7 +45,9 @@ import {
 } from '@papercusp/operator-core/lib/p2p/commerce-events.ts';
 import type { Env } from '../env.ts';
 import { AuthError, isCupboardOperator, resolveGithubBearer } from '../auth.ts';
-import { getSettlementBatch, type StoredSettlementBatch } from '../settlement-batch-store.ts';
+import { getSettlementBatch, retainedBatchUsageNonces, type StoredSettlementBatch } from '../settlement-batch-store.ts';
+import { listChannelUsageReceipts } from '../usage-receipt-store.ts';
+import { getWalletBinding } from '../wallet-binding-store.ts';
 import {
   appendCommerceEvent,
   nextCommerceEventSequence,
@@ -57,13 +59,14 @@ import {
   listSafeDeployments,
   recordSafeDeployment,
   recordTreasuryTransfer,
+  reserveTreasuryTransfer,
   type StoredSafeDeployment,
 } from '../treasury-store.ts';
 import {
   createViemSafeTreasuryAdapter,
   type SafeTreasuryAdapter,
 } from '../treasury-adapter.ts';
-import { resolveSplitConfig } from './settlements.ts';
+import { resolveSplitConfig, resolveUsageSplitManifest } from './settlements.ts';
 import { transferGateVerdict } from '../transfer-gate-store.ts';
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
@@ -238,6 +241,10 @@ function receiptFromBatch(batch: StoredSettlementBatch): SettlementReceipt {
     providerCostMicros: BigInt(batch.providerCostMicros),
     distributableMicros: BigInt(batch.distributableMicros),
     allocationsMicros,
+    ...(batch.componentAllocationsMicros !== undefined ? {
+      componentAllocationsMicros: Object.fromEntries(Object.entries(batch.componentAllocationsMicros)
+        .map(([author, amount]) => [author, BigInt(amount)])),
+    } : {}),
     daoTreasury: batch.daoTreasury,
     splitManifestHash: batch.splitManifestHash,
     receiptHash: batch.receiptHash,
@@ -359,6 +366,8 @@ export function treasuryRoute(
     if (!auth.ok) return c.json({ error: 'unauthorized', reason: auth.reason }, 401);
     const channelId = c.req.param('channelId');
     const batchId = c.req.param('batchId');
+    const scope = c.req.query('scope') ?? 'treasury';
+    if (scope !== 'treasury' && scope !== 'components') return c.json({ error: 'invalid_payout_scope' }, 400);
 
     const availability = adapterFor(c.env, options.adapter);
     if (!availability.ok) return c.json({ error: availability.code, detail: availability.detail }, 503);
@@ -382,9 +391,17 @@ export function treasuryRoute(
       );
     }
 
+    const nonces = new Set(await retainedBatchUsageNonces(c.env.DB, batchId));
+    const receipts = (await listChannelUsageReceipts(c.env.DB, channelId)).filter((receipt) => nonces.has(receipt.usageNonce));
+    if (receipts.length !== batch.voucherDigests.length || nonces.size !== receipts.length ||
+        receipts.some((receipt) => !batch.voucherDigests.includes(receipt.voucherDigest))) {
+      return c.json({ error: 'retained_vouchers_mismatch' }, 409);
+    }
+    const receiptSplit = resolveUsageSplitManifest(receipts, split.manifest);
+    if (!receiptSplit.ok) return c.json({ error: 'reconciliation_failed', detail: receiptSplit.detail }, 409);
     const reconciled = reconcileSettlement({
       receipt: receiptFromBatch(batch),
-      splitManifest: split.manifest,
+      splitManifest: receiptSplit.manifest,
     });
     if (!reconciled.ok) {
       return c.json({ error: 'reconciliation_failed', code: reconciled.code, detail: reconciled.detail }, 409);
@@ -401,13 +418,32 @@ export function treasuryRoute(
       );
     }
 
+    let routingConfig = policy.config;
+    const componentPayees: Record<string, { walletAddress: string; chainId: number }> = {};
+    if (scope === 'components') {
+      const recipients = parseList(c.env.TREASURY_COMPONENT_RECIPIENTS);
+      if (recipients.length === 0 || recipients.some((recipient) => !ADDRESS.test(recipient))) {
+        return c.json({ error: 'component_policy_unconfigured', detail: 'component payout needs an owner-configured recipient allowlist' }, 503);
+      }
+      for (const [author, amount] of Object.entries(reconciled.reconciliation.componentAllocationsMicros ?? {})) {
+        if (amount === 0n) continue;
+        const binding = await getWalletBinding(c.env.DB, author);
+        if (!binding || binding.chainId !== routingConfig.chainId) {
+          return c.json({ error: 'component_wallet_unverified', payeeId: author }, 409);
+        }
+        componentPayees[author] = binding;
+      }
+      routingConfig = { ...routingConfig, roles: { ...routingConfig.roles,
+        settlement: { ...routingConfig.roles.settlement, allowedRecipients: recipients } } };
+    }
     const plan = planTreasuryRouting({
-      config: policy.config,
+      config: routingConfig,
       deployment,
       reconciliation: reconciled.reconciliation,
       token: policy.config.roles.settlement.allowedTokens[0]!,
       role: 'settlement',
-      routedShares: policy.routedShares,
+      routedShares: scope === 'components' ? ['component'] : policy.routedShares,
+      componentPayees,
       mainnetCapitalApproved: policy.mainnetCapitalApproved,
     });
     if (!plan.ok) return c.json({ error: 'routing_refused', code: plan.code, detail: plan.detail }, 409);
@@ -430,11 +466,35 @@ export function treasuryRoute(
       // Re-read before submitting. The unique index stops a double RECORD; only
       // this check stops a double SUBMISSION, and a duplicate transfer is money
       // that has already left the Safe by the time the index refuses the row.
-      const existing = await getTreasuryTransferForShare(c.env.DB, transfer.settlementReceiptHash, transfer.share);
+      const transferKey = transfer.payeeId ?? transfer.share;
+      const existing = await getTreasuryTransferForShare(c.env.DB, transfer.settlementReceiptHash, transfer.share, transfer.payeeId);
       if (existing) {
-        alreadyRouted.push(transfer.share);
+        if (existing.submissionState === 'pending') {
+          return c.json({ error: 'treasury_transfer_pending', payeeId: transfer.payeeId,
+            transferId: existing.transferId, detail: 'submission is reserved; reconcile its chain outcome before retrying' }, 409);
+        }
+        alreadyRouted.push(transferKey);
         routed.push(existing);
         continue;
+      }
+
+      const transferRecord = {
+        transferId: `tt-${transfer.settlementReceiptHash.slice(0, 32)}-${transfer.share}${transfer.payeeId !== undefined ? `-${encodeURIComponent(transfer.payeeId)}` : ''}`,
+        batchId: batch.batchId, channelId, principalId: auth.principalId,
+        settlementId: reconciled.reconciliation.settlementId,
+        receiptHash: transfer.settlementReceiptHash,
+        splitManifestHash: reconciled.reconciliation.splitManifestHash,
+        share: transfer.share, payeeId: transfer.payeeId, role: transfer.role,
+        chainId: deployment.chainId, safeAddress: deployment.safeAddress,
+        rolesModuleAddress: deployment.rolesModuleAddress, token: transfer.token,
+        recipient: transfer.recipient, amountMicros: transfer.amountMicros,
+        safeTxHash: transfer.safeTxHash, nowMs,
+      };
+      // The conditional insert elects exactly one sender across concurrent
+      // requests and Worker instances. Reservations survive unknown outcomes.
+      if (!await reserveTreasuryTransfer(c.env.DB, transferRecord)) {
+        return c.json({ error: 'treasury_transfer_pending', payeeId: transfer.payeeId,
+          transferId: transferRecord.transferId }, 409);
       }
 
       let receipt;
@@ -463,37 +523,23 @@ export function treasuryRoute(
       // never treated as a reason to pretend the transfer did not happen.
       const proof = await recordTreasuryProof(c.env.DB, adapter, {
         streamId: treasuryStream(channelId),
+        channelId,
+        payer: batch.principalId,
         transfer,
         reconciliation: reconciled.reconciliation,
         deployment,
         transaction: receipt,
         nowMs,
-      });
-      if (!proof.ok) unprovenTransfers.push(transfer.share);
+      }).catch((error: unknown) => ({ ok: false as const, detail: error instanceof Error ? error.message : String(error) }));
+      if (!proof.ok) unprovenTransfers.push(transferKey);
 
       const stored = await recordTreasuryTransfer(c.env.DB, {
-        transferId: `tt-${transfer.settlementReceiptHash.slice(0, 32)}-${transfer.share}`,
-        batchId: batch.batchId,
-        channelId,
-        principalId: auth.principalId,
-        settlementId: reconciled.reconciliation.settlementId,
-        receiptHash: transfer.settlementReceiptHash,
-        splitManifestHash: reconciled.reconciliation.splitManifestHash,
-        share: transfer.share,
-        role: transfer.role,
-        chainId: deployment.chainId,
-        safeAddress: deployment.safeAddress,
-        rolesModuleAddress: deployment.rolesModuleAddress,
-        token: transfer.token,
-        recipient: transfer.recipient,
-        amountMicros: transfer.amountMicros,
-        safeTxHash: transfer.safeTxHash,
+        ...transferRecord,
         transactionHash: receipt.transactionHash,
         blockNumber: receipt.blockNumber,
         proofEventId: proof.ok ? proof.event.eventId : null,
-        nowMs,
       });
-      if (!stored.ok) alreadyRouted.push(transfer.share);
+      if (!stored.ok) alreadyRouted.push(transferKey);
       routed.push(stored.transfer);
     }
 
@@ -533,6 +579,8 @@ function transferJson(transfer: Awaited<ReturnType<typeof listBatchTreasuryTrans
   return {
     transferId: transfer.transferId,
     share: transfer.share,
+    ...(transfer.payeeId !== undefined ? { payeeId: transfer.payeeId } : {}),
+    submissionState: transfer.submissionState,
     role: transfer.role,
     token: transfer.token,
     recipient: transfer.recipient,
@@ -561,6 +609,8 @@ async function recordTreasuryProof(
   adapter: SafeTreasuryAdapter,
   input: {
     readonly streamId: string;
+    readonly channelId: string;
+    readonly payer: string;
     readonly transfer: Parameters<typeof buildTreasuryTransferEvent>[0]['transfer'];
     readonly reconciliation: Parameters<typeof buildTreasuryTransferEvent>[0]['reconciliation'];
     readonly deployment: SafeDeploymentRecord;
@@ -570,7 +620,7 @@ async function recordTreasuryProof(
 ): Promise<{ ok: true; event: CommerceEvent } | { ok: false; detail: string }> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const sequence = await nextCommerceEventSequence(db, input.streamId);
-    const unsigned = buildTreasuryTransferEvent({
+    const transferEvent = buildTreasuryTransferEvent({
       streamId: input.streamId,
       issuer: adapter.automationSigner,
       sequence,
@@ -580,6 +630,8 @@ async function recordTreasuryProof(
       deployment: input.deployment,
       transaction: input.transaction,
     });
+    const unsigned = { ...transferEvent, payload: { ...transferEvent.payload,
+      channelId: input.channelId, payer: input.payer, payoutStatus: 'submitted' } };
     const signature = await adapter.signTreasuryProof(commerceEventSigningBytes(unsigned));
     const appended = await appendCommerceEvent(db, { ...unsigned, signature }, input.nowMs);
     if (appended.ok) return { ok: true, event: appended.event.event };

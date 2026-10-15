@@ -3,6 +3,8 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { CHECKPOINT_SMALL_RUN_MAX_G } from '../../release/checkpoint-memory-admission';
+import { checkpointScopeMemoryMaxGForGreenCmd } from '../../systemd-scope';
 import {
   CHECKPOINT_FORKS_BY_MODE,
   checkpointScopeMemoryMaxG,
@@ -92,5 +94,28 @@ describe('green-checkpoint scope memory cap', () => {
 
     expect(Number(shared![1])).toBe(CHECKPOINT_FORKS_BY_MODE.shared);
     expect(Number(reserved![1])).toBe(CHECKPOINT_FORKS_BY_MODE.reserved);
+  });
+});
+
+// WI-10006274: a foreign pot's gate runs its own suite, not the Vitest fork runner, so it must
+// not reserve the fork-heap cap; otherwise three large runs defer it on the shared budget.
+describe('green-checkpoint scope memory cap by suite', () => {
+  const reservedEnv = { PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE: 'reserved' } as NodeJS.ProcessEnv;
+
+  it('keeps the fork-derived cap for the operator-home default suite and any Vitest command', () => {
+    const full = checkpointScopeMemoryMaxG(reservedEnv);
+    expect(checkpointScopeMemoryMaxGForGreenCmd(null, reservedEnv)).toBe(full);
+    expect(checkpointScopeMemoryMaxGForGreenCmd('  ', reservedEnv)).toBe(full);
+    expect(checkpointScopeMemoryMaxGForGreenCmd('npm run test:affected', reservedEnv)).toBe(full);
+    expect(checkpointScopeMemoryMaxGForGreenCmd('npx vitest run', reservedEnv)).toBe(full);
+  });
+
+  it('requests strictly less, and at most the small-run size, for a non-Vitest suite', () => {
+    const full = checkpointScopeMemoryMaxG(reservedEnv);
+    for (const cmd of ['npm test', 'node --test', 'npm run build']) {
+      const g = checkpointScopeMemoryMaxGForGreenCmd(cmd, reservedEnv);
+      expect(g).toBeLessThan(full);
+      expect(g).toBeLessThanOrEqual(CHECKPOINT_SMALL_RUN_MAX_G);
+    }
   });
 });

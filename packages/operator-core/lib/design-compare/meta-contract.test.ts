@@ -35,6 +35,31 @@ import { createRaster, encodePng } from './corpus/synthesize';
 
 const requireCjs = createRequire(import.meta.url);
 
+it('loads a TypeScript Lost Pixel config through the real runtime esbuild consumer', async () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), 'lost-pixel-runtime-config-'));
+  try {
+    const lostPixelRequire = createRequire(requireCjs.resolve('lost-pixel/package.json'));
+    const esbuild = lostPixelRequire('esbuild') as {
+      version: string;
+      transformSync: (input: string, options: { loader: string }) => { code: string };
+    };
+    expect(esbuild.version).toBe('0.28.2');
+    expect(esbuild.transformSync('const threshold: number = 0.02;', { loader: 'ts' }).code)
+      .toContain('const threshold = 0.02');
+    const configPath = path.join(fixture, 'lostpixel.config.ts');
+    writeFileSync(configPath, [
+      'const threshold: number = 0.02;',
+      'export default { compareEngine: "pixelmatch", threshold, storybookShots: false };',
+    ].join('\n'));
+    const helper = requireCjs('lost-pixel/dist/configHelper.js') as {
+      loadProjectConfigFile: (file: string) => Promise<Record<string, unknown>>;
+    };
+    await expect(helper.loadProjectConfigFile(configPath)).resolves.toEqual({
+      compareEngine: 'pixelmatch', threshold: 0.02, storybookShots: false,
+    });
+  } finally { rmSync(fixture, { recursive: true, force: true }); }
+});
+
 interface ShotItem {
   id: string;
   shotName: string;

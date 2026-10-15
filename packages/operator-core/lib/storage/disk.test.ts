@@ -1,9 +1,147 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { dirSizeBytes, dirSizeBytesAsync, listDiskRootChildren, type DiskWalkBudget } from './disk';
+import {
+  dirSizeBytes,
+  dirSizeBytesAsync,
+  gatherProtectedSessionIdentity,
+  listDiskRootChildren,
+  listDiskRootChildrenAsync,
+  type DiskWalkBudget,
+} from './disk';
+import { planSessionDirGc, type SessionDirCandidate } from '../session-dir-gc';
+
+// Hermetic: never read this host's live PTY sockets from a unit test.
+vi.mock('../events/await/psu-pty-discovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../events/await/psu-pty-discovery')>()),
+  listLiveHostsAsync: async () => [],
+}));
+
+describe('Storage prune gatherProtectedSessionIdentity — OWNERSHIP (WI-6554700010010238)', () => {
+  // Answers each query by its relation + filter, so the assertion is about WHICH
+  // rows feed the ownership allow-list, not about query order.
+  const fakeSql = async (strings: TemplateStringsArray): Promise<Array<Record<string, unknown>>> => {
+    const q = strings.join('?');
+    if (q.includes('coord_presence')) return [{ owner_id: 'su-live' }];
+    if (q.includes('event_awaits')) return [];
+    if (q.includes('adv_sessions')) {
+      return q.includes('ended_at IS NULL') ? [] : [{ id: 7, coord_owner_id: 'su-ended-mine' }];
+    }
+    if (q.includes('spawned_agents')) {
+      return q.includes('finished_at IS NULL') ? [] : [{ spawn_id: 'bee-1', session_owner: 'su-bee-owner' }];
+    }
+    throw new Error(`unexpected query: ${q}`);
+  };
+
+  it('owns everything this database launched (any state) and nothing another install launched', async () => {
+    const gather = await gatherProtectedSessionIdentity(fakeSql);
+    expect(gather.ok).toBe(true);
+    const owned = gather.identity.owned;
+    expect(owned).toBeDefined();
+    expect([...owned!.ownerIds].sort()).toEqual(['bee-1', 'su-bee-owner', 'su-ended-mine', 'su-live']);
+    expect([...owned!.sessionKeys]).toEqual(['7']);
+    // An ENDED session is owned but not protected: it stays collectable here.
+    expect(gather.identity.ownerIds.has('su-ended-mine')).toBe(false);
+  });
+
+  it('a prune plan keeps a foreign dir and still collects its own ended dir', async () => {
+    const gather = await gatherProtectedSessionIdentity(fakeSql);
+    const now = 10_000_000_000;
+    const mk = (keyKind: 'owner' | 'session', key: string): SessionDirCandidate => ({
+      path: `/tmp/${key}`, keyKind, key, mtimeMs: 0,
+    });
+    const mine = mk('owner', 'su-ended-mine');
+    const mineCodex = mk('session', '7');
+    const foreign = mk('owner', 'su-foreign');
+    const foreignCodex = mk('session', '99');
+    const plan = planSessionDirGc({
+      candidates: [mine, mineCodex, foreign, foreignCodex],
+      protectedIdentity: gather.identity,
+      nowMs: now,
+      retentionMs: 1,
+      unarchivedPaths: new Set(),
+    });
+    expect(plan.keptForeign).toEqual([foreign, foreignCodex]);
+    expect(plan.remove).toEqual([mine, mineCodex]);
+  });
+
+  it('fails closed: a failed read returns ok:false so prune refuses to delete', async () => {
+    const gather = await gatherProtectedSessionIdentity(async () => { throw new Error('pg down'); });
+    expect(gather.ok).toBe(false);
+  });
+});
+
+describe('bounded disk attribution', () => {
+  it('times out an individual child without hiding a later sibling or exceeding the shared budget', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-attribution-time-'));
+    try {
+      const slow = join(root, 'a-slow');
+      mkdirSync(slow);
+      for (let i = 0; i < 8; i++) writeFileSync(join(slow, String(i)), Buffer.alloc(100));
+      const later = join(root, 'z-later.bin');
+      writeFileSync(later, Buffer.alloc(1024));
+      for (const scan of [listDiskRootChildren, listDiskRootChildrenAsync]) {
+        let clock = 1000;
+        const now = vi.spyOn(Date, 'now').mockImplementation(() => ++clock);
+        try {
+          const result = await scan({ roots: [root], maxChildScanMs: 3, budget: { deadlineMs: 10_000 } });
+          expect(result.truncated).toBe(true);
+          expect(result.entries.find((entry) => entry.path === slow)).toMatchObject({ sizeTruncated: true });
+          expect(result.entries.find((entry) => entry.path === later)).toMatchObject({ sizeBytes: 1024 });
+          expect(clock).toBeLessThan(10_000);
+        } finally { now.mockRestore(); }
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('reports a capped child as a lower bound without hiding a later large sibling', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-attribution-cap-'));
+    try {
+      const largeTree = join(root, 'a-capped');
+      mkdirSync(largeTree);
+      for (let i = 0; i < 4; i++) writeFileSync(join(largeTree, String(i)), Buffer.alloc(100));
+      const later = join(root, 'z-later.bin');
+      writeFileSync(later, Buffer.alloc(1024));
+      for (const scan of [listDiskRootChildren, listDiskRootChildrenAsync]) {
+        const result = await scan({ roots: [root], maxEntriesPerChild: 2 });
+        expect(result.truncated).toBe(true);
+        expect(result.entries.find((entry) => entry.path === largeTree)).toMatchObject({ sizeTruncated: true });
+        expect(result.entries.find((entry) => entry.path === later)).toMatchObject({ sizeBytes: 1024 });
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('does not let a broken child link hide a later sibling in the cooperative scan', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-attribution-unreadable-'));
+    try {
+      symlinkSync(join(root, 'absent'), join(root, 'a-broken'));
+      writeFileSync(join(root, 'z-later.bin'), Buffer.alloc(1024));
+      const result = await listDiskRootChildrenAsync({ roots: [root] });
+      expect(result.truncated).toBe(true);
+      expect(result.entries.find((entry) => entry.path === join(root, 'z-later.bin'))).toMatchObject({ sizeBytes: 1024 });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('does not follow sibling or nested symlinks, including cycles', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-attribution-'));
+    try {
+      const store = join(root, 'store');
+      mkdirSync(store);
+      writeFileSync(join(store, 'payload'), Buffer.alloc(100));
+      symlinkSync(store, join(root, 'alias'));
+      symlinkSync(root, join(store, 'cycle'));
+      const result = await listDiskRootChildrenAsync({ roots: [root], followSymlinks: false });
+      expect(result.truncated).toBe(false);
+      expect(result.entries.find((e) => e.path === store)?.sizeBytes).toBe(100);
+      expect(result.entries.find((e) => e.path === join(root, 'alias'))?.sizeBytes).toBe(0);
+      const budget: DiskWalkBudget = { deadlineMs: Date.now() + 1000 };
+      await dirSizeBytesAsync(store, 1, budget, false);
+      expect(budget.truncated).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 /**
  * Recurrence guard for EI-6045: the synchronous recursive disk-sizing walk must

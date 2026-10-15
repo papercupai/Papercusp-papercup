@@ -115,6 +115,53 @@ describe('spawnProcMesh formation failure is typed (EI-115)', () => {
 });
 
 describe('local perf peer boot', () => {
+  it('auto-compacts a local corpus without reaching the PostgreSQL receipt census (WI-10007125)', async () => {
+    const flagEnv = 'PAPERCUSP_FLAG_PAPERCUSP_SUBSTRATE_LOG_SNAPSHOT';
+    const previousFlag = process.env[flagEnv];
+    process.env[flagEnv] = '1';
+    const testnet = await createTestnet(3);
+    const root = mkdtempSync(join(tmpdir(), 'p2p-perf-child-compaction-'));
+    const logs: string[] = [];
+    const bootstrap = (testnet.bootstrap as Array<{ host: string; port: number }>).map((b) => ({
+      host: b.host,
+      port: b.port,
+    }));
+    const child = spawnPeerChild(
+      {
+        role: 'writer',
+        workspaceId: 'ws-p2p-perf-child-compaction',
+        harnessSlug: 'perf-proc',
+        root,
+        bootstrap,
+        peerIndex: 0,
+        count: 1200,
+        rate: 0,
+        snapshotWaitMs: 15_000,
+      },
+      (line) => logs.push(line),
+    );
+    try {
+      expect(await child.waitFor('ready', 30_000), child.diagnostics()).toMatchObject({ evt: 'ready' });
+      child.send('go');
+      expect(await child.waitFor('writer-done', 30_000), child.diagnostics()).toBeTruthy();
+      child.send('wait-snapshot');
+      const snapshot = await child.waitFor('snapshot-ready', 30_000);
+      expect(snapshot, child.diagnostics()).toBeTruthy();
+      expect(snapshot!.error, logs.join('\n')).toBeUndefined();
+      // Include the producer's boot-history cause: a bare null-index assertion hid
+      // the strict no-PG stub's getOrgPg failure in the original D006 sweep.
+      expect(snapshot!.index, logs.join('\n')).toBeGreaterThan(0);
+      expect(logs.filter((line) => line.includes('log compaction failed'))).toEqual([]);
+      await expect(child.stopAndCollect(30_000)).resolves.toMatchObject({ evt: 'result' });
+    } finally {
+      if (!child.exited) child.kill();
+      await testnet.destroy();
+      rmSync(root, { recursive: true, force: true });
+      if (previousFlag === undefined) delete process.env[flagEnv];
+      else process.env[flagEnv] = previousFlag;
+    }
+  }, 90_000);
+
   it('does not record PG-backed re-key invalidation on a usable local child', async () => {
     const testnet = await createTestnet(3);
     const root = mkdtempSync(join(tmpdir(), 'p2p-perf-peer-child-'));

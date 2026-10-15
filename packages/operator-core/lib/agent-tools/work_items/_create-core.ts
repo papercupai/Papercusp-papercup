@@ -21,7 +21,9 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, isDeprecatedWorkItemKind, setWorkItemState, ensureClaimHoldAttribution, familyOf, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
+import { isTerminalItemStatus } from '../../fleet-drained-events';
 import type { PlanItemStamp } from '../../plan-items/convert';
+import { getPlanItemRow } from '../plans/source';
 import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
 import { reportSemanticDedupProbeUnavailable } from './semantic-dedup-probe-alarm';
@@ -142,6 +144,8 @@ export interface CreateOneWorkItemArgs {
    *  For single-host system filers (gates, routines, seeders) — NOT for producers
    *  whose rows federate in from other machines (see condition-upsert.ts header). */
   conditionKey?: string;
+  /** Reuse the original condition filing even after closure; for immutable revision identities. */
+  conditionReplay?: 'include-terminal';
   /**
    * Owner-directive provenance (directive-visibility-and-ownership-2026-09-22,
    * P-005): `harness_shared.owner_directives.id` this work-item is being created
@@ -170,7 +174,7 @@ export interface CreateOneWorkItemCtx {
 
 export interface WorkItemDedupCoverage {
   lexical: 'ok' | 'unavailable' | 'skipped';
-  semantic: 'ok' | 'unavailable' | 'skipped';
+  semantic: 'ok' | 'partial' | 'unavailable' | 'skipped';
   degraded: boolean;
 }
 
@@ -423,6 +427,7 @@ async function appendWorkItemOccurrence(
 interface PlanItemIdentity {
   planSlug: string;
   itemId: string;
+  harnessSlug?: string;
 }
 
 interface PlanItemCollisionRow {
@@ -447,7 +452,61 @@ function readPlanItemIdentity(raw: unknown): PlanItemIdentity | null {
   const value = raw as Record<string, unknown>;
   const planSlug = typeof value.plan_slug === 'string' ? value.plan_slug.trim() : '';
   const itemId = typeof value.item_id === 'string' ? value.item_id.trim() : '';
-  return planSlug && itemId ? { planSlug, itemId } : null;
+  const harnessSlug = typeof value.harness_slug === 'string' ? value.harness_slug.trim() : '';
+  return planSlug && itemId
+    ? { planSlug, itemId, ...(harnessSlug ? { harnessSlug } : {}) }
+    : null;
+}
+
+async function validatePlanItemReferences(
+  workspaceId: string | undefined,
+  identities: readonly PlanItemIdentity[],
+): Promise<{ error: string; message: string } | null> {
+  for (const identity of identities) {
+    let plan;
+    try {
+      plan = await getPlanItemRow(identity.planSlug, {
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(identity.harnessSlug ? { harnessSlug: identity.harnessSlug } : {}),
+      });
+    } catch {
+      return {
+        error: 'plan_item_status_unavailable',
+        message:
+          'could not verify plan item ' +
+          identity.planSlug +
+          '#' +
+          identity.itemId +
+          ' status; no work-item was created',
+      };
+    }
+    const item = plan?.items.find((candidate) => candidate.id === identity.itemId);
+    if (!item) {
+      return {
+        error: 'plan_item_not_found',
+        message:
+          'plan item ' +
+          identity.planSlug +
+          '#' +
+          identity.itemId +
+          ' was not found in the resolved plan scope; verify its slug, item id, and harness',
+      };
+    }
+    if (isTerminalItemStatus(item.status)) {
+      return {
+        error: 'terminal_plan_item',
+        message:
+          'cannot create a work-item for terminal plan item ' +
+          identity.planSlug +
+          '#' +
+          identity.itemId +
+          ' (status=' +
+          item.status +
+          '); choose an open plan item or create unrelated work without this plan link',
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -595,6 +654,21 @@ export async function createOneWorkItem(
   args: CreateOneWorkItemArgs,
   ctx: CreateOneWorkItemCtx,
 ): Promise<CreateOneWorkItemResult> {
+  if (args.conditionReplay === 'include-terminal') {
+    const workspaceId = args.workspace?.trim() || (ctx.workspaceId !== '*' ? ctx.workspaceId : undefined);
+    const key = args.conditionKey?.trim();
+    if (!key || !workspaceId) return { ok: false, error: 'condition_replay_scope_required',
+      message: 'conditionReplay requires conditionKey and a concrete workspace.' };
+    const { withConditionReplayLock } = await import('../../coord/condition-upsert');
+    return withConditionReplayLock(workspaceId, key, () => createOneWorkItemCore(args, ctx));
+  }
+  return createOneWorkItemCore(args, ctx);
+}
+
+async function createOneWorkItemCore(
+  args: CreateOneWorkItemArgs,
+  ctx: CreateOneWorkItemCtx,
+): Promise<CreateOneWorkItemResult> {
   try {
     if (isDeprecatedWorkItemKind(args.kind)) {
       return {
@@ -636,6 +710,9 @@ export async function createOneWorkItem(
     // screens below have nothing to screen, and a recurring detector's steady-state
     // re-fire stays one indexed read + one refresh write.
     const conditionKey = args.conditionKey?.trim() || undefined;
+    if (args.conditionReplay && (!conditionKey || !workspaceId)) {
+      return { ok: false, error: 'condition_replay_scope_required', message: 'conditionReplay requires conditionKey and a concrete workspace.' };
+    }
     // EI-21827949941920236: an urgent condition-keyed filing is itself the
     // durable detector signal that must reach the queue when the semantic probe
     // is unavailable. The condition upsert still provides deterministic
@@ -646,6 +723,7 @@ export async function createOneWorkItem(
         title: args.title,
         summary: args.summary,
         workspaceId,
+        includeTerminal: args.conditionReplay === 'include-terminal',
       });
       if (incumbent) {
         // The incumbent may live under a normalized (pot-home) harness — retry
@@ -715,6 +793,7 @@ export async function createOneWorkItem(
       !args.force || Boolean(args.requireCompleteDedupCoverage) || Boolean(args.goalDedupGate);
     let semanticLeg: WorkItemDedupCoverage['semantic'] = issueAdmission ? 'skipped' : 'skipped';
     let lexicalLeg: WorkItemDedupCoverage['lexical'] = issueAdmission ? 'skipped' : 'skipped';
+    let recentCoverageReadable = false;
     let similarOpen: SemanticDupeCandidate[] | undefined;
     let burstCandidates: SemanticDupeCandidate[] = [];
     // P-001 (silent-intake-central-resolution-2026-09-01): hard-band semantic hits that
@@ -731,19 +810,8 @@ export async function createOneWorkItem(
       // (the gate's whole point is "the probe actually ran"), not only issue-family.
       if (issueAdmission || args.goalDedupGate) {
         semanticLeg = dupes ? 'ok' : 'unavailable';
-        // EI-22170937574367219: every failure path in semantic-dupe-guard.ts was
-        // silent (fail-open by design, but with no publisher) — the only signal was
-        // whichever agent happened to hit the goal-gate's dedup_unavailable refusal.
-        // Fire-and-forget, deduplicated (bumps one open escalation's repeat count
-        // rather than spamming); never awaited on the create's hot path.
-        if (semanticLeg === 'unavailable') {
-          // Resolve through the shared scope helper, not `args.harness ?? ctx.harnessSlug`:
-          // a raw `*` is TRUTHY but is not a registered harness, so it would tag this
-          // escalation with a slug that resolves to nothing and read as a clean empty result.
-          void reportSemanticDedupProbeUnavailable({
-            harnessSlug: resolveConcreteHarnessSlug(args.harness, ctx) ?? undefined,
-          }).catch(() => {});
-        }
+        // Publish after the index-coverage and lexical checks below. A non-null
+        // semantic result alone does not establish complete index coverage.
       }
       if (dupes && dupes.soft.length > 0) {
         burstCandidates = dupes.soft;
@@ -776,9 +844,13 @@ export async function createOneWorkItem(
         summary: args.summary,
         harness: args.harness ?? ctx.harnessSlug ?? undefined,
       });
-      if (recentDupes && recentDupes.length > 0) {
+      recentCoverageReadable = recentDupes?.coverage.complete === true;
+      if (semanticLeg === 'ok' && recentDupes && !recentDupes.coverage.complete) {
+        semanticLeg = 'partial';
+      }
+      if (recentDupes && recentDupes.candidates.length > 0) {
         const seen = new Set((similarOpen ?? []).map((c) => c.id));
-        const fresh = recentDupes.filter((c) => !seen.has(c.id));
+        const fresh = recentDupes.candidates.filter((c) => !seen.has(c.id));
         if (fresh.length > 0) similarOpen = [...(similarOpen ?? []), ...fresh];
       }
     }
@@ -811,6 +883,16 @@ export async function createOneWorkItem(
       : args.goalDedupGate
         ? { lexical: 'skipped', semantic: semanticLeg, degraded: semanticLeg !== 'ok' }
         : undefined;
+    if (shouldScreen && dedupCoverage) {
+      void reportSemanticDedupProbeUnavailable({
+        harnessSlug: resolveConcreteHarnessSlug(args.harness, ctx) ?? undefined,
+        // A null recent-census verdict means disabled/timed-out/unreadable,
+        // even when the independent semantic query returned hits. Preserve an
+        // existing coverage episode until the index census is measured too.
+        coverage: { ...dedupCoverage,
+          semantic: semanticLeg === 'ok' && !recentCoverageReadable ? 'unknown' : semanticLeg },
+      }).catch(() => {});
+    }
     // P-002 (silent-intake-central-resolution-2026-09-01, D-001): the DRAIN
     // degraded-coverage refusal is retired — a degraded probe files anyway, with
     // the degradation stamped on the row (payload.dedupCoverage below). The
@@ -819,8 +901,8 @@ export async function createOneWorkItem(
     // P-004 (goal-mode-design-intent-hardening-2026-08-16): a GOAL-mode create whose
     // dedup probe could not actually run fails CLOSED instead of open. The WI-39373
     // relapse this hardens against: the probes RAN but semantic coverage was
-    // 'unavailable' — the ONLY leg that catches a reworded title — so the duplicate
-    // was admitted with a degraded marker stamped where nobody looks. Unlike DRAIN
+    // 'unavailable' or 'partial' — the ONLY leg that catches a reworded title — so
+    // the duplicate was admitted with a degraded marker stamped where nobody looks. Unlike DRAIN
     // above, force:true remains an explicit escape for work that must land now; the
     // coverage verdict + any candidates still come back on the result either way.
     if (
@@ -833,11 +915,14 @@ export async function createOneWorkItem(
         ok: false,
         error: 'dedup_unavailable',
         message:
-          `goal-mode create requires a LIVE dedup probe and the semantic leg is down ` +
+          `goal-mode create requires complete dedup coverage; semantic coverage is ${dedupCoverage.semantic} ` +
           `(lexical=${dedupCoverage.lexical}, semantic=${dedupCoverage.semantic}) — a reworded ` +
-          `duplicate cannot be screened, which is how WI-39373 relapsed. No work-item was ` +
-          `created, and your finding is NOT lost: this is usually transient — retry the ` +
-          `identical call in ~10s; if it keeps failing, re-call with force:true to file now ` +
+          `duplicate cannot be fully screened, which is how WI-39373 relapsed. No work-item was ` +
+          `created, and your finding is NOT lost. ` +
+          (dedupCoverage.semantic === 'partial'
+            ? `Recent OPEN rows are unembedded or the 50-row census is capped; retry after that changes. `
+            : `This is usually transient — retry the identical call in ~10s. `) +
+          `If coverage remains incomplete, re-call with force:true to file now ` +
           `(the degraded coverage is then recorded on the item). See \`disposition\`.`,
         ...(similarOpen ? { similarOpen } : {}),
         ...(issueAdmission ? { admissionIdentity: identity } : {}),
@@ -1115,6 +1200,13 @@ export async function createOneWorkItem(
       'auto-attributed at create (EI-18698328828208444): payload._claimHold was set directly ' +
         'in work_items:create\'s payload arg with no claim_hold_by/held_open_by — stamped to the creator.',
     );
+    // Raw create payloads bypass setWorkItemClaimHold. Apply the same contract guard
+    // before creating a new durable park; a lease-only payload retains its own semantics.
+    if (payloadFinal && String(payloadFinal._claimHold) === 'true' &&
+        (payloadFinal.claim_hold_by || !payloadFinal.held_open_by)) {
+      const { assertDurableParkReleaseContract } = await import('../../durable-park-release-contract');
+      assertDurableParkReleaseContract(payloadFinal.claim_hold_release);
+    }
     // EI-19390496242545842: `targetPlanItem` (the `plan_item:{slug,item}` create arg) used
     // to write ONLY the coord_links coverage edge below — but work_items:complete's
     // plan-item auto-flip (synchronizeFinishWork → finishPlanStamp) reads a SEPARATE
@@ -1155,8 +1247,24 @@ export async function createOneWorkItem(
         }
       : payloadWithPlanStamp;
     const planItemIdentities = new Map<string, PlanItemIdentity>();
+    const planItemStatusIdentities = new Map<string, PlanItemIdentity>();
+    const registerPlanItemStatusIdentity = (identity: PlanItemIdentity) => {
+      const scopedIdentity = {
+        ...identity,
+        ...(identity.harnessSlug ?? planItemStampHarness
+          ? { harnessSlug: identity.harnessSlug ?? planItemStampHarness }
+          : {}),
+      };
+      const key = JSON.stringify([
+        scopedIdentity.harnessSlug ?? '',
+        scopedIdentity.planSlug,
+        scopedIdentity.itemId,
+      ]);
+      planItemStatusIdentities.set(key, scopedIdentity);
+    };
     const stampedPlanItem = readPlanItemIdentity(payloadForCreate?.plan_item);
     if (stampedPlanItem) {
+      registerPlanItemStatusIdentity(stampedPlanItem);
       planItemIdentities.set(`${stampedPlanItem.planSlug}#${stampedPlanItem.itemId}`, stampedPlanItem);
     }
     if (args.targetPlanItem?.slug && args.targetPlanItem.itemId) {
@@ -1165,9 +1273,15 @@ export async function createOneWorkItem(
         itemId: args.targetPlanItem.itemId.trim(),
       };
       if (targetPlanItem.planSlug && targetPlanItem.itemId) {
+        registerPlanItemStatusIdentity(targetPlanItem);
         planItemIdentities.set(`${targetPlanItem.planSlug}#${targetPlanItem.itemId}`, targetPlanItem);
       }
     }
+    const invalidPlanItem = await validatePlanItemReferences(
+      workspaceId,
+      [...planItemStatusIdentities.values()],
+    );
+    if (invalidPlanItem) return { ok: false, ...invalidPlanItem };
     const planItemCollision = await findOpenPlanItemCollision(workspaceId, [...planItemIdentities.values()]);
     if (planItemCollision) {
       return {

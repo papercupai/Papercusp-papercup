@@ -26,6 +26,7 @@ export interface ListToastsInput {
   limit?: number;
   since?: number;
   slug?: string | null;
+  level?: 'default' | 'info' | 'success' | 'warning' | 'error' | 'loading';
 }
 
 interface DbRow {
@@ -47,9 +48,10 @@ export async function listToasts(input: ListToastsInput = {}): Promise<{ toasts:
   const slugClause = input.slug && SLUG_RE.test(input.slug) ? input.slug : null;
 
   const { db } = getOrgPg();
-  const where = slugClause
-    ? and(gte(t.createdAt, since), eq(t.harnessSlug, slugClause))
-    : gte(t.createdAt, since);
+  const conditions = [gte(t.createdAt, since)];
+  if (slugClause) conditions.push(eq(t.harnessSlug, slugClause));
+  if (input.level) conditions.push(eq(t.level, input.level));
+  const where = and(...conditions);
   const rows = (await db
     .select({
       id: t.id,

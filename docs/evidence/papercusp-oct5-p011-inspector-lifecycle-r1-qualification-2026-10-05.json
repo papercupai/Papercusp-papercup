@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "p011-inspector-lifecycle-qualification-v1",
+  "workItem": "WI-10006124",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "status": "supporting-sampler-source-and-isolated-lifecycle-guards-only",
+  "implementation": {
+    "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+    "bytes": 101906,
+    "sha256": "72fb01e2df0e50b3bcddd64d18003bf5b92566b02367267165ef876ff7f63a7a"
+  },
+  "behavior": [
+    "The existing PAPERCUSP_P011_COUNTER_PID selector retains scalar behavior and also accepts an explicit list of at most eight distinct safe integer PIDs. No new config key, service, tool or worker-count setting.",
+    "Each selected target must belong to the exact maintained main/descendant ancestry and executable entry. The sampler reuses the maintained collectRequestWorkerWindow callback seam for per-target unforced PSS/allocation and exact HTTP/query/process/build/role joins.",
+    "Inspectors are acquired and released per PID with OS lifetime, executable, entry and parent pins. Preexisting inspectors are detached without closing their listener. Partial acquisition is included in cleanup, one close/detach failure does not skip another target, and reused PIDs are never closed.",
+    "Scalar sidecar observations retain their prior counter/IPC path; multiple selections require identified request-only roles. Legacy report samples remain first-PID observations. Unsampled workers, evicted request rings and census residue remain explicitly unknown.",
+    "Cleanup errors preserve the original sampler error in the terminal failure and report."
+  ],
+  "reused": [
+    "Existing scalar counter selector",
+    "Existing PID-bound CDP client, listener census and closeInspector verification",
+    "Existing descendant census and collectRequestWorkerWindow",
+    "Existing canonical integration runner and evidence bindings"
+  ],
+  "newDurableSurfaces": [],
+  "verification": {
+    "command": "env -u PAPERCUSP_P011_LIVE_PID PAPERCUSP_HARNESS_SLUG=papercusp npm run test:file -- packages/operator-core/lib/service-memory-live-baseline.integration.test.ts -- --testNamePattern='sampler target inspector lifecycle'",
+    "testRunId": 20745369,
+    "ledgerStatus": "pass",
+    "harness": "papercusp",
+    "workspace": "papercusp-workspace",
+    "commitSha": "8bb88cd105a8eb8e15eecb61ba284418cefe6d09",
+    "worktreeDirty": true,
+    "passed": 7,
+    "failed": 0,
+    "filteredOrOptInSkipped": 48,
+    "actualBoundary": "Two new isolated real Node processes, one with a preexisting dynamic-port inspector and one opened by this sampler using SIGUSR1. Each CDP counter read verified the exact PID. Cleanup closed only the probe-owned inspector; the preexisting endpoint remained reachable. Both processes were reaped. This is an inspector lifecycle guard, not a shared operator workload or production cluster observation.",
+    "counterexamples": [
+      "Malformed, duplicate, empty, oversized or noninteger explicit selections",
+      "Ancestry cycle",
+      "Second target attach failure after signalling",
+      "Unobserved probe-opened endpoint",
+      "PID reuse before cleanup",
+      "Close and detach exceptions with continued cleanup of another target"
+    ],
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "namedFiles": 1,
+      "actualErrors": 0,
+      "exitCode": 0
+    },
+    "bindings": [
+      {
+        "id": 23929,
+        "workItemId": "WI-10006124"
+      },
+      {
+        "id": 23930,
+        "workItemId": "WI-10004890"
+      }
+    ],
+    "logs": [
+      {
+        "path": "/tmp/su-7db4f-p011-inspector-lifecycle-r1.log",
+        "bytes": 23504,
+        "sha256": "c7e854452180fad500ba8a2b53ae99e4cca01f7ba4991bd11c3ea2f0448d20dc"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-inspector-lifecycle-types-r1.log",
+        "bytes": 1790,
+        "sha256": "be433920fb3bcd2ecd350240a0f875b77a44af5589d027e277bd2d53b1af30e2"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-inspector-lifecycle-r2.log",
+        "bytes": 23382,
+        "sha256": "19e46b0ab28781cc5b2b1f697842962b1724c140118b0276a316f90897a91eae"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-inspector-lifecycle-types-r2.log",
+        "bytes": 1065,
+        "sha256": "d0ed9cfa1f5e947040106db614618e3551927ebe0e7e0f877eef456751a22fe1"
+      }
+    ]
+  },
+  "sourceFingerprints": {
+    "scope": "Five named post-run source identities only; full executed graph remains unknown",
+    "files": [
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "bytes": 66663,
+        "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+      },
+      {
+        "path": "packages/operator-core/lib/background-workers.ts",
+        "bytes": 10151,
+        "sha256": "2c4c31597075252183391b9a4b68ffb7bb2bde033448bc337c5ee5d59d2e1008"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+        "bytes": 29262,
+        "sha256": "d72752978db0773b83d5347bcb39f5bbae33a997754ac8abf9354fe11222f6ea"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/build-stamp.ts",
+        "bytes": 5163,
+        "sha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e"
+      }
+    ]
+  },
+  "preservedIntermediate": {
+    "testRunId": 20745298,
+    "tests": "5 pass, 48 filtered",
+    "typecheck": "One fake client cast error; corrected before final 7-test run. Original typecheck log remains failed."
+  },
+  "priorQualification": {
+    "path": "docs/evidence/papercusp-oct5-p011-multi-target-window-r1-qualification-2026-10-05.json",
+    "bytes": 6129,
+    "sha256": "6ecd708dbcbe5b5f0f06137107e68e47d5c37977700e1736d6b886f1ade03d21",
+    "qualification": "All nine original links matched before this edit. This new sampler edit supersedes that qualification's source-file identity; its 15-test result remains historical."
+  },
+  "limits": [
+    "No shared staging or deployed runtime window was executed",
+    "No original cache/request/expiry producer or matrix replay",
+    "No configured six-worker change or production worker/clone census",
+    "No native allocation-owner, retained graph or physical-savings claim",
+    "No full executed-source graph or all-eight-source disposition",
+    "Whole P011@2/D-021, independent acceptance and shipment remain open",
+    "Existing native owner-origin affirmation remains pending; no duplicate ask, activation, authorization-audit rewrite or LIVE_GATE_OPS"
+  ]
+}

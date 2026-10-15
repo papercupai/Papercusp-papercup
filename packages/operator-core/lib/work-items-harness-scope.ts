@@ -29,9 +29,12 @@ export interface HarnessScopeMismatch {
  * Reproduced live 2026-08-03: `work_items:get { ids:['WI-1'], harness:'hello-world-hive' }`
  * returns the `papercusp` row and echoes `harness:'papercusp'` back in its own response.
  *
- * This is reachable in practice rather than theoretically because `WI-<n>` ids are NOT
- * globally unique: D-008 (migration `142-work-items-unify.sql`) mints them from
- * `harness_shared.work_item_seq`, a PER-DATABASE sequence that STARTs at 1. So
+ * This was reachable in practice rather than theoretically because `WI-<n>` ids are NOT
+ * globally unique: D-008 (migration `142-work-items-unify.sql`) minted them from
+ * `harness_shared.work_item_seq`, a PER-DATABASE sequence that STARTs at 1, and a
+ * database that has never federated still does (scope-unique-identifiers-2026-07-26
+ * D-005/D-006 give a federated database its own node slot; within one workspace an id now
+ * names one row, P-011/P-012). So
  * `WI-1`/`WI-2`/`WI-3` exist in every long-lived store, and a fresh or recovered store
  * mints exactly those first — which is how an id minted against one store came to
  * resolve onto an unrelated two-week-old plan item in another.

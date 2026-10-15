@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "p011-staging-inbox-read-v1",
+  "status": "observed",
+  "beforeHealth": {
+    "sha": "4bfd135beb",
+    "version": "0.0.0",
+    "bundleStale": null
+  },
+  "afterHealth": {
+    "sha": "4bfd135beb",
+    "version": "0.0.0",
+    "bundleStale": null
+  },
+  "tool": "coord:inbox",
+  "endpoint": "http://127.0.0.1:3170",
+  "request": {
+    "directed": true,
+    "limit": 1,
+    "max_body_chars": 0,
+    "include_ambient": false,
+    "include_intents": false
+  },
+  "startedAtUnixSeconds": 1791017335.983562,
+  "endedAtUnixSeconds": 1791017339.1840138,
+  "exitCode": 0,
+  "responseKeys": [
+    "owner_id",
+    "summary",
+    "entries",
+    "recent",
+    "injection",
+    "context_gauge"
+  ],
+  "responseOk": null,
+  "responseEntryCount": 1,
+  "allocationOwner": "unknown",
+  "servingRequestAssignment": "unknown",
+  "limits": [
+    "Sanctioned authenticated read on loaded staging; no fixture write or message send.",
+    "Read response shape only; no allocation or causal-owner conclusion."
+  ]
+}

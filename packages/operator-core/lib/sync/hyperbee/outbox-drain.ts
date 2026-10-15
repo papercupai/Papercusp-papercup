@@ -512,6 +512,9 @@ export interface EpochEncryptCapability {
 }
 
 export interface DrainOptions {
+  /** Stop starting new row appends after lifecycle shutdown. An append already
+   * in progress still records its delivery receipt before the pass settles. */
+  signal?: AbortSignal;
   /** Max rows to drain this pass. Default `DEFAULT_DRAIN_BATCH`. */
   batch?: number;
   /** Clock override (epoch ms) — for the drained_at stamp + GC cutoff. Tests
@@ -731,6 +734,7 @@ export async function drainOutboxOnce(
   const fanoutTimeoutMs = opts.fanoutTimeoutMs ?? FANOUT_ROW_TIMEOUT_MS;
   let drained = 0;
   for (const r of rows) {
+    if (opts.signal?.aborted) break;
     // WI-3896: a row the caller's consecutive-stage-timeout counter has already
     // quarantined — skip it BEFORE any potentially-hanging stage so later rows
     // in this same batch are never blocked by it. Left undrained ON PURPOSE.
@@ -846,6 +850,12 @@ export async function drainOutboxOnce(
       // observability-only stall log, so ONE genuinely-hung append can't wedge
       // this pass for the full pass-level DRAIN_PASS_TIMEOUT_MS — see this row's
       // consecutive-timeout handling in `startOutboxDrain`'s `drainSafely`.
+      // stop() may have run while SELECT or epoch encryption was awaiting.
+      // Leave this row pending instead of starting a post-shutdown append.
+      if (opts.signal?.aborted) {
+        attempt.finish('abandoned');
+        break;
+      }
       const appendStage = `hypercore-append (row id=${r.id} table=${r.table_name})`;
       await raceRowStage(
         r.id,
@@ -1222,8 +1232,10 @@ export function startOutboxDrain(
   // WI-3896 poison-row quarantine state. `rowTimeoutCounts` counts CONSECUTIVE
   // stage timeouts per row id (a different row's timeout doesn't touch another
   // row's count); once a row crosses `rowQuarantineThreshold` it moves into
-  // `quarantinedIds` (permanent for this process — threaded into every future
-  // `drainOutboxOnce` call so that row is skipped before any hanging stage).
+  // `quarantinedIds` until persistence is confirmed. Thereafter the SQL batch
+  // exclusion is authoritative, so clearing quarantined_at through the runbook
+  // also permits a retry in this SAME process (EI-26001567781414812). A failed
+  // persistence keeps the local fallback; no row is falsely marked drained.
   const rowTimeoutCounts = new Map<string, number>();
   const quarantinedIds = new Set<string>();
   const rowTimeoutMs = opts._rowTimeoutMs ?? ROW_STAGE_TIMEOUT_MS;
@@ -1526,6 +1538,7 @@ export function startOutboxDrain(
       do {
         runAgain = false;
         const drainOpts: DrainOptions = {};
+        drainOpts.signal = drainAdmissionAbort.signal;
         if (batch !== undefined) drainOpts.batch = batch;
         if (fanout !== undefined) drainOpts.fanout = fanout;
         if (opts.onDiagnosticEvent !== undefined) drainOpts.onDiagnosticEvent = opts.onDiagnosticEvent;
@@ -1629,8 +1642,8 @@ export function startOutboxDrain(
         // WI-3896: a SINGLE row's stage (epoch-encrypt/append) timed out — bound
         // well under passTimeoutMs so this is caught + attributed to the exact
         // row LONG before the pass-level watchdog would even fire. Count
-        // CONSECUTIVE occurrences for this SAME row id; quarantine (permanent
-        // skip) once it crosses the threshold so later rows stop being blocked.
+        // CONSECUTIVE occurrences for this SAME row id; quarantine until an
+        // explicit manual clear so later rows stop being blocked.
         const key = String(e.rowId);
         const n = (rowTimeoutCounts.get(key) ?? 0) + 1;
         if (n >= rowQuarantineThreshold) {
@@ -1643,13 +1656,22 @@ export function startOutboxDrain(
           // 45s stage timeouts before re-quarantining, every single restart,
           // forever). Best-effort + fire-and-forget: a write failure here must
           // never block the drain loop — the in-memory `quarantinedIds` add
-          // above already protects THIS process's passes regardless.
-          void pg`
+          // above protects THIS process until RETURNING confirms the durable
+          // exclusion. Do not keep both copies indefinitely: a DB clear must
+          // permit retry without restarting the process. No receipt (including
+          // a missing row) keeps the local fallback fail-closed.
+          void pg<Array<{ id: string | number }>>`
             UPDATE harness_shared.substrate_outbox
                SET quarantined_at = ${Date.now()}
              WHERE id = ${e.rowId}
+               AND workspace_id = ${handle.workspaceId}
+               AND harness_slug = ${handle.harnessSlug}
+               AND drained_at IS NULL
                AND quarantined_at IS NULL
-          `.catch((persistErr: unknown) => {
+            RETURNING id
+          `.then((persisted) => {
+            if (persisted.some((r) => String(r.id) === key)) quarantinedIds.delete(key);
+          }).catch((persistErr: unknown) => {
             console.error(
               `[outbox-drain] WI-3896 quarantine: failed to PERSIST quarantined_at for row ` +
                 `id=${e.rowId} (in-memory quarantine still applies for this process; a restart ` +
@@ -1659,11 +1681,10 @@ export function startOutboxDrain(
           });
           const detail =
             `outbox-drain for ${wantPayload}: row id=${e.rowId} (stage '${e.stage}') timed out ` +
-            `${n}× consecutively and is now QUARANTINED (permanently skipped — left undrained ON ` +
+            `${n}× consecutively and is now QUARANTINED (skipped until manual clear — left undrained ON ` +
             `PURPOSE, never falsely marked drained_at) so it can no longer wedge every row behind ` +
-            `it. Root-cause + manually clear via the runbook once resolved (WI-3896 class — check ` +
-            `whether this was LOAD-induced, in which case re-checking under lower host load first ` +
-            `is worth trying before assuming permanent poison).`;
+            `it. Diagnose the named stage and manually clear via the runbook once resolved ` +
+            `(WI-3896 class; the timeout identifies the stage, not its underlying cause).`;
           console.error(`[outbox-drain] WI-3896 quarantine: ${detail}`);
           escalateStall('drain_row_quarantined', detail, rowTimeoutMs * n);
         } else {
@@ -1735,33 +1756,9 @@ export function startOutboxDrain(
     if (!stopped) await maybeDetectOrphanTail();
   }
 
-  // mig 645 (WI-3896 follow-up): seed `quarantinedIds` from any ALREADY-persisted
-  // quarantine (a prior process, before this restart, stamped `quarantined_at`)
-  // so a fresh boot doesn't have to re-discover + re-time-out (3× 45s) the SAME
-  // poison row it already root-caused-as-poison last time. Best-effort: read
-  // RESILIENTLY via to_jsonb (mirrors the drain SELECT above) so a pre-645
-  // outbox / a fake test `pg` with no `quarantined_at` handling degrades to
-  // "nothing pre-seeded" rather than throwing at boot.
-  void (async () => {
-    try {
-      const seeded = await pg<Array<{ id: string | number }>>`
-        SELECT id FROM harness_shared.substrate_outbox
-         WHERE workspace_id = ${handle.workspaceId}
-           AND harness_slug = ${handle.harnessSlug}
-           AND drained_at IS NULL
-           AND (to_jsonb(substrate_outbox.*) ->> 'quarantined_at') IS NOT NULL`;
-      for (const r of seeded) quarantinedIds.add(String(r.id));
-      if (seeded.length > 0) {
-        console.warn(
-          `[outbox-drain] seeded ${seeded.length} already-persisted quarantined row id(s) for ` +
-            `${wantPayload} from a prior process (WI-3896 follow-up — no re-discovery needed).`,
-        );
-      }
-    } catch {
-      // best-effort — a probe fault must never block boot; worst case this
-      // process re-discovers + re-quarantines the same poison row itself.
-    }
-  })();
+  // Persisted quarantine is excluded directly by drainOutboxOnce's SQL on
+  // every pass, including the first. Do not copy those ids into the local
+  // fallback: that would outlive a manual DB clear (EI-26001567781414812).
 
   // Immediate catch-up drain.
   void drainSafely();

@@ -216,6 +216,8 @@ describe('retractScorecard', () => {
         auditIssueId: 'EI-AUDIT',
         auditor: 'su-1',
         auditedAt: '2026-08-14T23:00:00.000Z',
+        dispatchReservation: { key: 'grading-audit:EI-SUBJECT', reservedAt: '2026-08-14T22:00:01.000Z' },
+        lastDispatchReservation: { key: 'grading-audit:EI-SUBJECT', reservedAt: '2026-08-14T22:00:01.000Z' },
       },
     };
 

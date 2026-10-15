@@ -19,6 +19,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { disarmPlanSchedule } from './arm-plan-schedule';
 import { autoPauseOnCostBreach } from './plan-run-cost';
 import { routineStorageSlug } from '../../pot-membership';
+import { retireRunInstancePlan } from './retire-run-instance-plan';
+import { NON_TERMINAL_PLAN_STATUSES } from '@papercusp/plan-parser';
 // The orphan threshold has ONE definition; this module drives the same reclaim on the
 // tick rather than re-deciding what "orphaned" means (see sweepOrphanedPlanRuns below).
 import { PLAN_RUN_ORPHAN_FAIL_MS } from '../../agent-tools/plans/runs';
@@ -38,7 +40,23 @@ export interface ReconcileResult {
 }
 
 /**
- * Settle every running scheduled run whose work_items have all terminated.
+ * A scheduled run the orphan sweep force-failed carries `status='failed'` with NO
+ * `outcome`: the sweep saw no progress for PLAN_RUN_ORPHAN_FAIL_MS and released the
+ * template's concurrency slot, but it never saw the work finish. Every other settler
+ * (reconcile, `recordScheduledFireFailure`) writes an outcome, and no manual verb sets
+ * `failed`, so this pair is the orphan signature.
+ *
+ * Its open work-items are NOT dropped — they are real requests (a bug-triage run's item is
+ * one user report). An executor may still pick one up late: a recoverable dispatch failure
+ * keeps the item queued for its target and the trigger keeps retrying (binding-engine.ts).
+ * So the orphan verdict is provisional, and reconcile records the real outcome once those
+ * work-items terminate (WI-6554700010010446).
+ */
+const ORPHAN_SIGNATURE_STATUS = 'failed';
+
+/**
+ * Settle every running scheduled run whose work_items have all terminated, and re-settle an
+ * orphan-failed run (see ORPHAN_SIGNATURE_STATUS) once its work_items have all terminated.
  * `harnessSlug` optionally scopes the pass to one harness.
  */
 export async function reconcileScheduledPlanRuns(
@@ -54,15 +72,19 @@ export async function reconcileScheduledPlanRuns(
       workspace_id: string;
       instance_plan_slug: string | null;
       launched_at: string | number | null;
+      status: string;
     }>
   >`
-    SELECT id, harness_slug, plan_slug, workspace_id, instance_plan_slug, launched_at
+    SELECT id, harness_slug, plan_slug, workspace_id, instance_plan_slug, launched_at, status
       FROM harness_shared.plan_runs
-     WHERE run_type = 'scheduled' AND status = 'running' ${harnessFilter}
+     WHERE run_type = 'scheduled'
+       AND (status = 'running' OR (status = ${ORPHAN_SIGNATURE_STATUS} AND outcome IS NULL))
+       ${harnessFilter}
   `;
 
   const settled: ReconcileResult['settled'] = [];
   for (const run of running) {
+    const orphaned = run.status === ORPHAN_SIGNATURE_STATUS;
     const wis = await db<Array<{ status: string }>>`
       SELECT status FROM harness_shared.harness_features_consolidated
        WHERE harness_slug = ${run.harness_slug}
@@ -70,6 +92,9 @@ export async function reconcileScheduledPlanRuns(
     `;
     // Still in flight — leave it running.
     if (wis.length > 0 && !wis.every((w) => TERMINAL.includes(w.status))) continue;
+    // An orphan is re-settled only on evidence that its work finished. With no work-items
+    // there is nothing new to learn, so the sweep's verdict stands.
+    if (orphaned && wis.length === 0) continue;
 
     // Zero work-items is success ONLY for a genuinely item-less (prose) plan. An
     // instance that still has open items but no work-items means promotion never
@@ -107,25 +132,33 @@ export async function reconcileScheduledPlanRuns(
     //
     // plan_runs stores the raw install slug while harness_plans is Hive-scoped. Resolve
     // the latter with the same mapping used by plan-run-action before updating it.
+    //
+    // Retire through `retireRunInstancePlan`, never a bare `UPDATE … status='superseded'`:
+    // that left every never-promoted `plan_items` row open forever (28 phantom-open items
+    // on 10 superseded instances, WI-10005040). The helper closes the items with the status.
     if (run.instance_plan_slug) {
       const planStorageSlug = await routineStorageSlug(run.harness_slug, run.workspace_id);
-      await db`
-        UPDATE harness_shared.harness_plans
-           SET status = 'superseded'
-         WHERE workspace_id = ${run.workspace_id}
-           AND harness_slug = ${planStorageSlug}
-           AND plan_slug = ${run.instance_plan_slug}
-           AND template_slug = ${run.plan_slug}
-           AND status = 'active'
-      `;
+      await retireRunInstancePlan(db, {
+        workspaceId: run.workspace_id,
+        planStorageSlug,
+        instanceSlug: run.instance_plan_slug,
+        templateSlug: run.plan_slug,
+        outcome,
+      });
     }
 
-    await db`
+    // Guarded on the state this pass read, so a concurrent settler that already wrote a
+    // real outcome wins and is never overwritten.
+    const written = await db<Array<{ id: number }>>`
       UPDATE harness_shared.plan_runs
          SET status = ${status}, outcome = ${outcome}, finished_at = ${now}, updated_at = ${now}
-             ${unpromoted ? db`, result_summary = ${'promotion never completed: the instance has open items but the run minted no work-items'}` : db``}
+             ${unpromoted ? db`, note = ${'promotion never completed: the instance has open items but the run minted no work-items'}` : db``}
+             ${orphaned ? db`, note = ${'orphan verdict superseded: every work-item terminated after the orphan sweep failed this run'}` : db``}
        WHERE id = ${run.id}
+         AND ${orphaned ? db`status = ${ORPHAN_SIGNATURE_STATUS} AND outcome IS NULL` : db`status = 'running'`}
+       RETURNING id
     `;
+    if (written.length === 0) continue;
     settled.push({ runId: run.id, harnessSlug: run.harness_slug, planSlug: run.plan_slug, outcome });
   }
   return { reconciled: settled.length, settled };
@@ -185,7 +218,10 @@ async function countOpenInstanceItems(
  *
  * Ordering: callers reconcile FIRST and sweep the residue, so a genuinely-finished run is
  * settled with a real `outcome` and only the true orphans are force-failed (status only —
- * the same shape `sweepPlanRuns` writes).
+ * the same shape `sweepPlanRuns` writes). Leaving `outcome` NULL is deliberate: it marks the
+ * verdict provisional, and reconcile replaces it with the real outcome if the run's
+ * work-items terminate later (see ORPHAN_SIGNATURE_STATUS). The sweep never touches those
+ * work-items.
  */
 export async function sweepOrphanedPlanRuns(
   opts: { sql?: Sql; harnessSlug?: string; now?: number } = {},
@@ -195,13 +231,91 @@ export async function sweepOrphanedPlanRuns(
   const harnessFilter = opts.harnessSlug ? db`AND harness_slug = ${opts.harnessSlug}` : db``;
   const rows = await db<Array<{ id: number }>>`
     UPDATE harness_shared.plan_runs
-       SET status = 'failed', updated_at = ${now}
+       SET status = ${ORPHAN_SIGNATURE_STATUS}, updated_at = ${now},
+           note = COALESCE(note, ${`orphaned: no progress for ${PLAN_RUN_ORPHAN_FAIL_MS / 60_000} min; provisional until its work-items terminate`})
      WHERE run_type = 'scheduled'
        AND status = 'running'
        AND updated_at < ${now - PLAN_RUN_ORPHAN_FAIL_MS} ${harnessFilter}
     RETURNING id
   `;
   return { failed: rows.length };
+}
+
+/**
+ * Converge every SETTLED scheduled run's instance plan to the ledger — WI-6554700010009851.
+ *
+ * Retiring the instance inline is only one writer's habit. `reconcileScheduledPlanRuns` and
+ * `recordScheduledFireFailure` do it; the status-only settlers do not —
+ * `sweepOrphanedPlanRuns` above, `sweepPlanRuns` on the `plans:runs` read, and a manual
+ * `plans:run-status` archive. Each of those leaves a `<template>@run-<token>` instance
+ * live under a run that is already `failed`/`archived`. Measured 2026-10-13: 18 such
+ * instances (7 `active`, 10 `ready`, 1 `draft`), the oldest from 2026-08-12. Patching
+ * every settler would leave the next one to forget, so this sweep owns the invariant
+ * instead: a settled run's instance is retired, whoever settled it.
+ *
+ * It holds back while any of the run's work-items is still non-terminal. An
+ * orphan-failed run can still have an open work-item that a late executor picks up. Its
+ * completion reflects `done` onto the plan item, and that must land on a live instance,
+ * not one the sweep already superseded. Once those work-items terminate, the next tick
+ * retires the instance.
+ *
+ * Drives from the (small) set of non-terminal instance plans, not the run ledger.
+ */
+export async function retireSettledRunInstances(
+  opts: { sql?: Sql; harnessSlug?: string } = {},
+): Promise<{ retired: number; itemsClosed: number }> {
+  const db = opts.sql ?? getOrgPg().sql;
+  const harnessFilter = opts.harnessSlug ? db`AND r.harness_slug = ${opts.harnessSlug}` : db``;
+  const nonTerminal: string[] = [...NON_TERMINAL_PLAN_STATUSES];
+  const rows = await db<
+    Array<{
+      id: number;
+      harness_slug: string;
+      workspace_id: string;
+      plan_slug: string;
+      instance_plan_slug: string;
+      status: string;
+      outcome: string | null;
+    }>
+  >`
+    SELECT r.id, r.harness_slug, r.workspace_id, r.plan_slug, r.instance_plan_slug, r.status, r.outcome
+      FROM harness_shared.harness_plans p
+      JOIN harness_shared.plan_runs r
+        ON r.workspace_id = p.workspace_id
+       AND r.instance_plan_slug = p.plan_slug
+       AND r.plan_slug = p.template_slug
+     WHERE p.template_slug IS NOT NULL
+       AND p.status = ANY(${nonTerminal})
+       AND r.run_type = 'scheduled'
+       AND r.status IN ('done', 'failed', 'archived') ${harnessFilter}
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.harness_features_consolidated f
+          WHERE f.harness_slug = r.harness_slug
+            AND f.payload -> 'plan_run' ->> 'runId' = r.id::text
+            AND NOT (f.status = ANY(${TERMINAL}))
+       )
+  `;
+  let retired = 0;
+  let itemsClosed = 0;
+  for (const run of rows) {
+    const outcome: RunOutcome =
+      run.outcome === 'success' || run.outcome === 'partial' || run.outcome === 'failed'
+        ? run.outcome
+        : run.status === 'done'
+          ? 'success'
+          : 'failed';
+    const planStorageSlug = await routineStorageSlug(run.harness_slug, run.workspace_id);
+    const r = await retireRunInstancePlan(db, {
+      workspaceId: run.workspace_id,
+      planStorageSlug,
+      instanceSlug: run.instance_plan_slug,
+      templateSlug: run.plan_slug,
+      outcome,
+    });
+    if (r.retired) retired += 1;
+    itemsClosed += r.itemsClosed;
+  }
+  return { retired, itemsClosed };
 }
 
 /** Default consecutive-failure threshold before a schedule auto-pauses (D-011). */
@@ -267,7 +381,7 @@ export async function autoPauseOnFailureStreak(opts: {
  */
 export async function reconcileAndGovern(
   opts: { sql?: Sql; harnessSlug?: string; failureStreakK?: number } = {},
-): Promise<{ reconciled: number; paused: string[]; orphaned: number }> {
+): Promise<{ reconciled: number; paused: string[]; orphaned: number; instancesRetired: number }> {
   const db = opts.sql ?? getOrgPg().sql;
   const { settled } = await reconcileScheduledPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
   const paused: string[] = [];
@@ -301,5 +415,14 @@ export async function reconcileAndGovern(
   // template's whole schedule via concurrency='skip'.
   const orphaned = await sweepOrphanedPlanRuns({ sql: db, harnessSlug: opts.harnessSlug });
 
-  return { reconciled: settled.length, paused, orphaned: orphaned.failed };
+  // Last of all: retire the instance of every run settled by a status-only writer — the
+  // orphan sweep just above, `sweepPlanRuns` on the read path, a manual archive.
+  const instances = await retireSettledRunInstances({ sql: db, harnessSlug: opts.harnessSlug });
+
+  return {
+    reconciled: settled.length,
+    paused,
+    orphaned: orphaned.failed,
+    instancesRetired: instances.retired,
+  };
 }

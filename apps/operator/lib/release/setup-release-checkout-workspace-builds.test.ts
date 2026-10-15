@@ -59,7 +59,7 @@ const BLOCK = extractRuntimeBuildBlock();
 
 function extractSidecarPostInstallRuntimeBuildBlock(): string {
   return SIDECAR_SCRIPT.match(
-    /# POST-INSTALL RUNTIME BUILDS[^\n]*\n([\s\S]*?)# END POST-INSTALL RUNTIME BUILDS/,
+    /# RUNTIME WORKSPACE DEPENDENCIES[^\n]*\n([\s\S]*?)# END POST-INSTALL RUNTIME BUILDS/,
   )?.[1] ?? '';
 }
 
@@ -225,6 +225,8 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     const packageRoot = join(root, 'libs/generic/sse');
     const ompRoot = join(root, 'packages/omp-plugin');
     const trace = join(root, 'npm-trace');
+    const readerMarker = join(root, 'reader-active');
+    const leaseTrace = join(root, 'lease-trace');
     mkdirSync(fakeBin, { recursive: true });
     mkdirSync(packageRoot, { recursive: true });
     mkdirSync(ompRoot, { recursive: true });
@@ -234,7 +236,23 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
       [
         "#!/usr/bin/env node",
         "import { spawnSync } from 'node:child_process';",
-        "const result = spawnSync('npm', process.argv.slice(2), { stdio: 'inherit' });",
+        "import { existsSync, writeFileSync, unlinkSync, appendFileSync } from 'node:fs';",
+        "const args = process.argv.slice(2);",
+        "let result;",
+        "if (args[0] === '--repo-root') {",
+        "  if (args[1] !== process.cwd()) throw new Error('reader uses wrong repository');",
+        "  args.splice(0, 2);",
+        "}",
+        "if (args[0] === '--exec-under-lock') {",
+        "  if (args[1] !== '--') throw new Error('reader command separator missing');",
+        "  writeFileSync(process.env.RUNTIME_READER_MARKER, 'read');",
+        "  appendFileSync(process.env.RUNTIME_LEASE_TRACE, 'reader:start\\n');",
+        "  try { result = spawnSync(args[2], args.slice(3), { stdio: 'inherit' }); }",
+        "  finally { unlinkSync(process.env.RUNTIME_READER_MARKER); appendFileSync(process.env.RUNTIME_LEASE_TRACE, 'reader:end\\n'); }",
+        "} else {",
+        "  if (existsSync(process.env.RUNTIME_READER_MARKER)) throw new Error('writer attempted during prepared runtime builds');",
+        "  result = spawnSync('npm', args, { stdio: 'inherit' });",
+        "}",
         'process.exit(result.status ?? 1);',
       ].join('\n'),
     );
@@ -261,32 +279,36 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
         'set -euo pipefail',
         'trace_npm() { printf "%s|%s\\n" "$PWD" "$(printf "%s" "$1" | tr "\\n" " ")" >> "$NPM_TRACE"; }',
         'case "$*" in',
-        '  "install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/omp")',
+        '  "install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/web --workspace=@papercusp/operator-vite --workspace=@papercusp/omp --workspace=@papercusp/sse")',
         '    trace_npm "$*"',
+        '    test ! -e "$RUNTIME_READER_MARKER"',
+        '    mkdir -p "$PWD/libs/generic/sse/node_modules/typescript"',
+        '    printf "typescript-6.0.3\\n" > "$PWD/libs/generic/sse/node_modules/PINNED_TOOLCHAIN"',
+        '    printf \'{"version":"6.0.3"}\\n\' > "$PWD/libs/generic/sse/node_modules/typescript/package.json"',
         '    ;;',
         '  "--workspace=@papercusp/omp exec -- node -e "*)',
         '    trace_npm "$*"',
+        '    test -f "$RUNTIME_READER_MARKER"',
+        '    test -f "$PWD/libs/generic/sse/node_modules/PINNED_TOOLCHAIN"',
         '    printf "  ✓ @papercusp/omp: build command owns toolchain validation\\n"',
         '    ;;',
         '  "--workspace @papercusp/omp run build")',
         '    trace_npm "$*"',
+        '    test -f "$RUNTIME_READER_MARKER"',
+        '    [ "${FAIL_RUNTIME_BUILD:-0}" != 1 ] || exit 9',
         '    mkdir -p "$PWD/packages/omp-plugin/dist"',
         '    printf "rebuilt-native\\n" > "$PWD/packages/omp-plugin/dist/native-client.cjs"',
         '    printf "rebuilt-extension\\n" > "$PWD/packages/omp-plugin/dist/native-extension.mjs"',
         '    printf "rebuilt-cli\\n" > "$PWD/packages/omp-plugin/dist/cli.js"',
         '    ;;',
-        '  "install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/sse")',
-        '    trace_npm "$*"',
-        '    mkdir -p "$PWD/libs/generic/sse/node_modules/typescript"',
-        '    printf "typescript-6.0.3\\n" > "$PWD/libs/generic/sse/node_modules/PINNED_TOOLCHAIN"',
-        '    printf \'{"version":"6.0.3"}\\n\' > "$PWD/libs/generic/sse/node_modules/typescript/package.json"',
-        '    ;;',
         '  "--workspace=@papercusp/sse exec -- node -e "*)',
         '    trace_npm "$*"',
+        '    test -f "$RUNTIME_READER_MARKER"',
         '    printf "  ✓ @papercusp/sse: TypeScript 6.0.3 satisfies ~6.0.0\\n"',
         '    ;;',
         '  "--workspace @papercusp/sse run build")',
         '    trace_npm "$*"',
+        '    test -f "$RUNTIME_READER_MARKER"',
         '    mkdir -p "$PWD/libs/generic/sse/dist"',
         '    printf "rebuilt-after-install\\n" > "$PWD/libs/generic/sse/dist/index.js"',
         '    ;;',
@@ -302,28 +324,40 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
       [
         '#!/usr/bin/env bash',
         'set -euo pipefail',
-        `REPO_ROOT=${JSON.stringify(root)}`,
+        'REPO_ROOT="$TEST_RUNTIME_REPO_ROOT"',
+        // The block also carries two REAL-REPO environment probes that a fake REPO_ROOT cannot
+        // satisfy and that are not this test's subject (the npm trace of the runtime builds):
+        //   - the Playwright runtime preflight (EI-25537398622311917): sources the REAL
+        //     bundle-host-common.sh — kept real, so its NATIVE_PKGS contract is still exercised —
+        //     then probes playwright-core via `node --input-type=module - "$REPO_ROOT"`;
+        //   - prepare_vite_native_toolchain: `node --input-type=module -e '…' "$REPO_ROOT"`, which
+        //     takes the repo fs-mutex and resolves vite/rolldown from the real install.
+        // Stub ONLY the `--input-type=module` form both use; plain `node` calls still run for real.
+        'WEB_DIR="$TEST_REAL_WEB_DIR"',
+        'node() { if [[ "${1:-}" == --input-type=module ]]; then [[ "${2:-}" == - ]] && cat >/dev/null; return 0; fi; command node "$@"; }',
+        'run_sidecar_cached_package() { "$@"; }',
         SIDECAR_POST_INSTALL_BLOCK,
       ].join('\n'),
     );
 
     const run = spawnSync('bash', [runner], {
-      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}`, NPM_TRACE: trace },
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}`, NPM_TRACE: trace,
+        TEST_RUNTIME_REPO_ROOT: root, TEST_REAL_WEB_DIR: resolve(REPO_ROOT, 'apps/operator'),
+        RUNTIME_READER_MARKER: readerMarker, RUNTIME_LEASE_TRACE: leaseTrace },
       encoding: 'utf8',
     });
     expect(run.status, run.stderr).toBe(0);
     const traceLines = readFileSync(trace, 'utf8').trim().split('\n');
-    expect(traceLines).toHaveLength(6);
+    expect(traceLines).toHaveLength(5);
     expect(traceLines[0]).toBe(
-      `${root}|install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/omp`,
+      `${root}|install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/web --workspace=@papercusp/operator-vite --workspace=@papercusp/omp --workspace=@papercusp/sse`,
     );
     expect(traceLines[1]).toContain(`${root}|--workspace=@papercusp/omp exec -- node -e `);
     expect(traceLines[2]).toBe(`${root}|--workspace @papercusp/omp run build`);
-    expect(traceLines[3]).toBe(
-      `${root}|install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/sse`,
-    );
-    expect(traceLines[4]).toContain(`${root}|--workspace=@papercusp/sse exec -- node -e `);
-    expect(traceLines[5]).toBe(`${root}|--workspace @papercusp/sse run build`);
+    expect(traceLines[3]).toContain(`${root}|--workspace=@papercusp/sse exec -- node -e `);
+    expect(traceLines[4]).toBe(`${root}|--workspace @papercusp/sse run build`);
+    expect(readFileSync(leaseTrace, 'utf8').trim().split('\n')).toEqual(['reader:start', 'reader:end']);
+    expect(existsSync(readerMarker)).toBe(false);
     expect(readFileSync(join(packageRoot, 'node_modules/PINNED_TOOLCHAIN'), 'utf8')).toBe(
       'typescript-6.0.3\n',
     );
@@ -333,6 +367,22 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     expect(readFileSync(join(ompRoot, 'dist/native-client.cjs'), 'utf8')).toBe('rebuilt-native\n');
     expect(readFileSync(join(ompRoot, 'dist/native-extension.mjs'), 'utf8')).toBe('rebuilt-extension\n');
     expect(readFileSync(join(ompRoot, 'dist/cli.js'), 'utf8')).toBe('rebuilt-cli\n');
+
+    // A compiler failure must unwind the reader and propagate, without a
+    // dependency reify/retry that would try to upgrade the held reader.
+    writeFileSync(trace, '');
+    writeFileSync(leaseTrace, '');
+    const failed = spawnSync('bash', [runner], {
+      env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH ?? ''}`, NPM_TRACE: trace,
+        TEST_RUNTIME_REPO_ROOT: root, TEST_REAL_WEB_DIR: resolve(REPO_ROOT, 'apps/operator'),
+        RUNTIME_READER_MARKER: readerMarker, RUNTIME_LEASE_TRACE: leaseTrace, FAIL_RUNTIME_BUILD: '1' },
+      encoding: 'utf8',
+    });
+    expect(failed.status).not.toBe(0);
+    expect(failed.stderr).toContain('prepared runtime workspace build failed for @papercusp/omp');
+    expect(readFileSync(trace, 'utf8').split('\n').filter(line => line.includes('|install '))).toHaveLength(1);
+    expect(readFileSync(leaseTrace, 'utf8').trim().split('\n')).toEqual(['reader:start', 'reader:end']);
+    expect(existsSync(readerMarker)).toBe(false);
   });
 
   it('skips a package present before an older rollback pin registered it as a workspace', () => {

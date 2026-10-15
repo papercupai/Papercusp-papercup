@@ -24,6 +24,8 @@
  * agents learn to ignore, which is how a working detector stops working.
  */
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // __dirname = <repo>/apps/operator/scripts/hooks/cc/__tests__ — six levels down.
@@ -34,19 +36,40 @@ const DETECTOR = resolve(ROOT, 'scripts/check-behavioural-strands.mjs');
 type Seam = { seam: string; before: number; after: number };
 type ControlFlow = { seam: string; function: string; reason: string };
 type OutputValue = { property: string; before: string; after: string; reason?: string };
+type PackageScriptValue = { property: string; before: string; after: string };
+type Injection = {
+  member: string;
+  owner: string;
+  source: string;
+  before: number;
+  after: number;
+  siblings: string[];
+};
 type Detector = {
+  invokedInjectedMembers: (before: string, after: string, file?: string) => Injection[];
   increasedSeams: (before: string, after: string, file?: string) => Seam[];
   changedSeamControlFlow: (before: string, after: string, file?: string) => ControlFlow[];
   diffOutputValues: (before: string, after: string, file?: string) => OutputValue[];
+  diffPackageScriptValues: (before: string, after: string) => PackageScriptValue[] | null;
+  hasPackageScriptAssertion: (text: string, names: string[], fileName?: string) => boolean;
   repoForPath: (rel: string, subs: string[]) => { submodule: string | null; cwd: string; relPath: string };
   submodulePaths: () => string[];
+  candidateSkipReason: (rel: string) => string | null;
 };
 type Hook = {
   nudgeFor: (p: string, deps?: Record<string, unknown>) => Promise<string | null>;
   isCandidateFile: (p: string) => boolean;
   formatNudge: (
     rel: string,
-    seamsOrTriggers: Seam[] | { seams?: Seam[]; controlFlow?: ControlFlow[]; values?: OutputValue[] },
+    seamsOrTriggers:
+      | Seam[]
+      | {
+          seams?: Seam[];
+          controlFlow?: ControlFlow[];
+          values?: OutputValue[];
+          scriptValues?: PackageScriptValue[];
+          injections?: Injection[];
+        },
     opts?: { baseSha?: string | null; submodule?: string | null },
   ) => string;
   isDirectCliInvocation: (entryPath?: string) => boolean;
@@ -80,6 +103,26 @@ const CONTROL_FLOW_AFTER = `
       if (!spec.satisfiesReadiness) continue;
       if (evidence.ready) break;
     }
+  }
+`;
+// EI-23824032487848760 — the measured shape: a factory-built local deps bundle whose OPTIONAL
+// member gains an invoker. Nothing about a call COUNT on an imported/injected-param seam changes,
+// so only the injected-member trigger sees it.
+const INJECTED_DEPS = `
+  export interface WatchdogDeps {
+    now: () => number;
+    escalateGiveUp: (id: string) => Promise<void>;
+    reconcileStrandedLatch?: (id: string) => Promise<void>;
+  }
+`;
+const INJECTED_BEFORE = `${INJECTED_DEPS}
+  export async function tick(opts) { const deps = makeDeps(opts); await deps.escalateGiveUp('a'); }
+`;
+const INJECTED_AFTER = `${INJECTED_DEPS}
+  export async function tick(opts) {
+    const deps = makeDeps(opts);
+    await deps.escalateGiveUp('a');
+    await (deps.reconcileStrandedLatch ?? fallback)('a');
   }
 `;
 const OUTPUT_BEFORE = 'export function write(rollup){ return { spentCents: rollup.potCents }; }';
@@ -179,6 +222,76 @@ describe('behavioural-strand nudge — fires on the real trap', () => {
     expect(out).toContain('spentCents');
     expect(out).toContain('rollup.potCents');
     expect(out).toContain('toHaveProperty');
+  });
+
+  it('FIRES when a package script string changes, naming its stable key and anchored detector command', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'package.json');
+    const before = JSON.stringify({ scripts: { 'test:file': 'node old-runner.mjs' } });
+    const after = JSON.stringify({ scripts: { 'test:file': 'node new-runner.mjs' } });
+    const { deps } = await depsFor(abs, before, after);
+    const out = await hook.nudgeFor(abs, deps);
+    expect(out).not.toBeNull();
+    expect(out).toContain('PACKAGE-SCRIPT STRAND RISK');
+    expect(out).toContain('scripts["test:file"]');
+    expect(out).toContain('node old-runner.mjs');
+    expect(out).toContain('node new-runner.mjs');
+    expect(out).toContain('--files=package.json');
+    expect(out).toContain('regex assertion');
+    expect(out).not.toContain('ANOTHER workspace');
+  });
+
+  it('FIRES when an OPTIONAL Deps member gains an invoker, naming the member and its siblings (EI-23824032487848760)', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
+    const { deps } = await depsFor(abs, INJECTED_BEFORE, INJECTED_AFTER);
+    const out = await hook.nudgeFor(abs, deps);
+    expect(out).not.toBeNull();
+    expect(out).toContain('INJECTED-MEMBER STRAND RISK');
+    expect(out).toContain('reconcileStrandedLatch on WatchdogDeps');
+    expect(out).toContain('invoked 0× → 1×');
+    // The sibling members are the join key the CLI matches partial fixtures on.
+    expect(out).toContain('siblings: escalateGiveUp, now');
+    // It is a same-workspace class, so it must not claim the stranded fixtures are in ANOTHER workspace.
+    expect(out).not.toContain('are in a DIFFERENT one');
+    expect(out).toContain('vitest-fail-on-console');
+    expect(out).toContain('check-behavioural-strands.mjs');
+  });
+
+  it('CONTROL: the same file edited with the member invocation count UNCHANGED produces nothing', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
+    const { deps } = await depsFor(abs, INJECTED_AFTER, `${INJECTED_AFTER}\n// edited`);
+    expect(await hook.nudgeFor(abs, deps)).toBeNull();
+  });
+
+  it('degrades to silence — not a crash — when the loaded detector predates invokedInjectedMembers', async () => {
+    const hook = await loadHook();
+    const abs = resolve(ROOT, 'packages/operator-core/lib/x.ts');
+    const { deps } = await depsFor(abs, INJECTED_BEFORE, INJECTED_AFTER);
+    const real = await loadDetector();
+    const { invokedInjectedMembers: _omitted, ...older } = real;
+    void _omitted;
+    expect(await hook.nudgeFor(abs, { ...deps, loadDetector: async () => older })).toBeNull();
+  });
+
+  it('keeps the other triggers’ wording unchanged when an injection rides along with a call-count increase', async () => {
+    const hook = await loadHook();
+    const out = hook.formatNudge(
+      'a/b.ts',
+      {
+        seams: [{ seam: 's.m', before: 1, after: 2 }],
+        injections: [
+          { member: 'opt', owner: 'XDeps', source: 'interface', before: 0, after: 1, siblings: ['a', 'b'] },
+        ],
+      },
+      { baseSha: 'abc1234' },
+    );
+    expect(out).toContain('SEAM CALL-COUNT INCREASE');
+    expect(out).not.toContain('INJECTED-MEMBER STRAND RISK');
+    // …while the injection is still named, and the cross-workspace explanation still applies.
+    expect(out).toContain('opt on XDeps');
+    expect(out).toContain('ANOTHER workspace');
   });
 });
 
@@ -287,7 +400,69 @@ describe('behavioural-strand nudge — candidate filter', () => {
   it('excludes a non-source file outright', async () => {
     const hook = await loadHook();
     expect(hook.isCandidateFile('README.md')).toBe(false);
-    expect(hook.isCandidateFile('package.json')).toBe(false);
+    expect(hook.isCandidateFile('package.json')).toBe(true);
+    expect(hook.isCandidateFile('packages/x/package.json')).toBe(true);
+    expect(hook.isCandidateFile('node_modules/pkg/package.json')).toBe(false);
+  });
+
+  it('accepts JavaScript sources — scripts/*.mjs and hooks hold shared seams too (WI-10004906)', async () => {
+    const hook = await loadHook();
+    expect(hook.isCandidateFile('scripts/lib/test-pass-reuse.mjs')).toBe(true);
+    expect(hook.isCandidateFile('scripts/legacy.cjs')).toBe(true);
+    expect(hook.isCandidateFile('apps/web/src/Widget.jsx')).toBe(true);
+    expect(hook.isCandidateFile('scripts/lib/not-checked.d.mts')).toBe(false);
+    expect(hook.isCandidateFile('scripts/__tests__/a.test.mjs')).toBe(false);
+  });
+
+  it('agrees with the DETECTOR path by path — the hook copy cannot drift from candidateSkipReason', async () => {
+    // The hook keeps its own copy of the filter (it decides before loading TypeScript), so
+    // this is the pin: a widening made in the detector and not here — the WI-10004906 shape —
+    // fails this test instead of silently narrowing the nudge.
+    const [hook, detector] = await Promise.all([loadHook(), loadDetector()]);
+    const paths = [
+      'libs/generic/search/src/hybrid.ts',
+      'packages/operator-core/lib/x.tsx',
+      'packages/x/lib/y.mts',
+      'packages/x/lib/y.cts',
+      'scripts/lib/test-pass-reuse.mjs',
+      'scripts/legacy.cjs',
+      'apps/operator/scripts/hooks/cc/hook.js',
+      'apps/web/src/Widget.jsx',
+      'packages/operator-core/lib/__tests__/helpers.ts',
+      'packages/operator-core/lib/x.test.ts',
+      'packages/operator-core/lib/x.spec.tsx',
+      'scripts/__tests__/a.test.mjs',
+      'packages/x/lib/a.spec.cjs',
+      'packages/operator-core/lib/x.d.ts',
+      'scripts/lib/not-checked.d.mts',
+      'packages/x/index.d.cts',
+      'node_modules/pkg/index.ts',
+      'packages/operator-core/dist/x.js',
+      '.papercusp/scratch/probe.mts',
+      'papercup-release/apps/x.ts',
+      'README.md',
+      'package.json',
+      'packages/x/package.json',
+      'node_modules/pkg/package.json',
+      'scripts/run.sh',
+    ];
+    for (const p of paths) {
+      expect(hook.isCandidateFile(p), p).toBe(detector.candidateSkipReason(p) === null);
+    }
+  });
+
+  it('the shipped --self-test passes (the installed hook is self-consistent)', () => {
+    // The installed copy runs `--self-test`, not this suite. WI-10004906 widened the filter
+    // and left a stale 'skips non-TS' self-test case red while every vitest case was green;
+    // nothing in the gate ran it. The required-field sibling already pins its own this way.
+    const out = execFileSync(process.execPath, [HOOK, '--self-test'], { encoding: 'utf8' });
+    expect(out).toContain('self-test passed');
+  });
+
+  it('the measured regex assertion reads the script key the detector joins on', async () => {
+    const detector = await loadDetector();
+    const source = readFileSync(resolve(ROOT, 'scripts/npm-install-safe.test.mjs'), 'utf8');
+    expect(detector.hasPackageScriptAssertion(source, ['test:file'], 'scripts/npm-install-safe.test.mjs')).toBe(true);
   });
 });
 
@@ -304,4 +479,52 @@ describe('behavioural-strand nudge — never runs main() on import', () => {
     expect(hook.isDirectCliInvocation('/repo/node_modules/vitest/dist/worker.js')).toBe(false);
     expect(hook.isDirectCliInvocation(undefined)).toBe(false);
   });
+});
+
+// WI-6554700010008923 (oversized-tool-results-reduction-2026-10-12#P-008): hook output
+// bypasses the result door, so an identical nudge repeated per Edit lands in context
+// in full each time. Measured: two Edits to one file in one batch printed the ~2 KB
+// block twice.
+describe('behavioural-strand nudge — one session sees an identical block once', () => {
+  type Dedupe = {
+    shouldEmitNudge: (sessionId: unknown, filePath: string, msg: string, opts?: { stateDir?: string }) => boolean;
+  };
+  const withStateDir = async (fn: (hook: Dedupe, stateDir: string) => void | Promise<void>) => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const stateDir = mkdtempSync(resolve(tmpdir(), 'strand-nudge-dedupe-'));
+    try {
+      await fn((await import(`file://${HOOK}`)) as unknown as Dedupe, stateDir);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  };
+
+  it('emits the first time and suppresses the identical block for the same file and session', () =>
+    withStateDir((hook, stateDir) => {
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK', { stateDir })).toBe(false);
+    }));
+
+  it('re-emits when the block CHANGES (a different seam set is news)', () =>
+    withStateDir((hook, stateDir) => {
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK v1', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK v2', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK v2', { stateDir })).toBe(false);
+    }));
+
+  it('never suppresses across files or across sessions', () =>
+    withStateDir((hook, stateDir) => {
+      expect(hook.shouldEmitNudge('sess-1', '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-1', '/r/b.ts', 'BLOCK', { stateDir })).toBe(true);
+      expect(hook.shouldEmitNudge('sess-2', '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+    }));
+
+  it('fails OPEN: no usable session id always emits', () =>
+    withStateDir((hook, stateDir) => {
+      for (const bad of [undefined, '', '../escape', 42]) {
+        expect(hook.shouldEmitNudge(bad, '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+        expect(hook.shouldEmitNudge(bad, '/r/a.ts', 'BLOCK', { stateDir })).toBe(true);
+      }
+    }));
 });

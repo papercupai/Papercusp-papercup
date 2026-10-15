@@ -42,6 +42,7 @@
  * reader, so the arithmetic is unit-testable without a host, a PG, or a cut.
  */
 import type { Sql } from 'postgres';
+import { automaticToolInvocationPredicate } from './agent-tools/sessions/automatic-tool-names';
 import { readPriorRespawnOutcome, type PriorRespawn } from './carry-respawn-outcome';
 
 /** A measured blind window: what the carry doc could not have seen. */
@@ -198,12 +199,13 @@ export async function readCarryBlindWindow(
     const sql = opts.sql ?? (await import('@papercusp/db-org')).getOrgPg().sql;
     const cutAt = new Date(cutAtMs).toISOString();
     const ws = opts.workspaceId?.trim() ? opts.workspaceId.trim() : null;
+    const automatic = automaticToolInvocationPredicate(sql, 't');
     // ONE round-trip: the snapshot call, then the calls that landed between it
     // and the cut. Both legs ride tool_invocations_coord_owner_idx
     // (coord_owner_id, invoked_at DESC).
     const rows = (await sql`
       WITH snapshot AS (
-        SELECT invoked_at
+        SELECT invoked_at, args_json
           FROM harness_shared.tool_invocations
          WHERE coord_owner_id = ${ownerId}
            AND tool_name = 'session:request-compaction'
@@ -225,6 +227,17 @@ export async function readCarryBlindWindow(
          WHERE t.coord_owner_id = ${ownerId}
            AND t.invoked_at > s.invoked_at
            AND t.invoked_at <= ${cutAt}::timestamptz
+           AND NOT ${automatic}
+           -- The successful outer dispatcher settles after its inner snapshot.
+           -- Its identical arguments already went into that carry; count every
+           -- other wrapper, including failed or unrecognized ones, normally.
+           AND NOT COALESCE((
+             t.tool_name = 'tools:invoke'
+             AND t.status = 'ok'
+             AND t.args_json->>'name' = 'session:request-compaction'
+             AND s.args_json IS NOT NULL
+             AND COALESCE(t.args_json->'args', '{}'::jsonb) = s.args_json
+           ), false)
            ${ws ? sql`AND t.workspace_id = ${ws}` : sql``}
       )
       SELECT s.invoked_at AS snapshot_at, a.calls_after, a.last_call_at, a.last_tool

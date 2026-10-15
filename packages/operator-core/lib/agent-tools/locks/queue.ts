@@ -15,11 +15,11 @@ import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/h
 export default defineTool({
   name: 'locks:queue',
   description:
-    'Read active locks and pending waiters. Active rows include lock_id for locks:release. This is a workspace-global diagnostic: omit harness. Omit coordination_domain to scan every checkout; pass a physical repository root to scope one checkout. Filter overlapping paths: omit paths for all rows, while paths:[] matches nothing. external_paths accepts absolute current-user home or XDG_RUNTIME_DIR files; managed Papercusp repository files resolve to their physical repository domain + repo-relative key, while ordinary files use @external/home/* or @external/runtime/* keys, matching locks:acquire. Optionally filter by owner or include_completed=true for terminal waiters from the last 24h.',
+    'Read active locks and pending waiters. Active rows include lock_id for locks:release. This is a workspace-global diagnostic: omit harness. Omit coordination_domain to scan every checkout; pass a physical repository root to scope one checkout. Filter overlapping paths: omit paths for all rows, while paths:[] matches nothing. external_paths accepts absolute current-user home or XDG_RUNTIME_DIR files; managed Papercusp repository files resolve to their physical repository domain + repo-relative key, while ordinary files use @external/home/* or @external/runtime/* keys, matching locks:acquire. external_paths may cover at most one managed repository per request; query each repository separately and do not mix managed files with ordinary home/runtime files. Optionally filter by owner or include_completed=true for terminal waiters from the last 24h.',
   guidance: {
     when: 'Diagnostics — "what are the other agents doing?" or "why am I blocked?". Cheap, MVCC read.',
     notWhen: 'Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.',
-    chaining: 'Workspace-global diagnostic — omit harness; omit coordination_domain for every checkout or pass a physical repository root for one checkout. Omit paths for all rows or pass exact paths (paths:[] is intentionally empty); optionally filter owner?/include_completed?. For a home or XDG_RUNTIME_DIR file locked via locks:acquire external_paths, pass the same absolute path as external_paths here; it resolves to the same repository-relative or reserved external key. Release a held row with its returned lock_id via locks:release; paths alone is not a release selector.',
+    chaining: 'Workspace-global: omit harness. Omit coordination_domain for every checkout or pass one physical repository root. Omit paths for all rows; paths:[] matches none. Filter owner/include_completed as needed. For absolute HOME/XDG_RUNTIME_DIR files use external_paths; query one managed repository per request and separately from ordinary home/runtime files. Release with the returned lock_id; paths are not a release selector.',
     seeAlso: [
       'locks:list (named-resource holders, not file-lock contention)',
       'coord:roster { view:"live" } (what the other agents are doing overall)',
@@ -65,7 +65,7 @@ export default defineTool({
       .max(50)
       .optional()
       .describe(
-        'absolute files below the current user home or XDG_RUNTIME_DIR; managed Papercusp repository files use their repository-domain identity, while ordinary files map to @external/home/* or @external/runtime/* keys — the same mapping locks:acquire uses — then merge into the paths filter',
+        'absolute files below the current user home or XDG_RUNTIME_DIR; managed files may cover at most one managed repository per request (query each repository separately, and do not mix managed files with ordinary home/runtime files). Managed Papercusp repository files use their repository-domain identity, while ordinary files map to @external/home/* or @external/runtime/* keys — the same mapping locks:acquire uses — then merge into the paths filter',
       ),
     owner: z.string().optional(),
     include_completed: z.boolean().optional(),

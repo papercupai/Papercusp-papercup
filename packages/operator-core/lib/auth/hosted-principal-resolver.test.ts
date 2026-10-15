@@ -5,6 +5,7 @@ import { hostedPermissionsForMembership } from './hosted-role-permissions';
 import type { HostedSession } from './hosted-session';
 import {
   createHostedPrincipalResolver,
+  createHostedChannelPrincipalResolver,
   hostedSessionAuthorizationState,
   type HostedPrincipalResolverDependencies,
 } from './hosted-principal-resolver';
@@ -123,6 +124,42 @@ function harness(options: {
 
   return { deps, resolve: createHostedPrincipalResolver(deps), headers: new Headers() };
 }
+
+describe('authenticated connector session authority', () => {
+  const channel = () => ({ controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
+    organizationId: TENANT_A.organizationId, customerWorkspaceId: TENANT_A.workspaceId,
+    hostId: 'host-1', routeLabel: 'alpha', generation: 1, transport: 'websocket' as const,
+    state: 'active' as const, kind: 'session' as const, userId: TENANT_A.userId,
+    hostedSessionId: SESSION_ID, audience: 'workspace-operator', expiresAt: NOW });
+
+  it('uses the consumed channel session and fresh membership without a cookie', async () => {
+    const f = harness({ session: session({ workspaceId: TENANT_A.workspaceId }) });
+    const resolve = createHostedChannelPrincipalResolver(f.deps, channel());
+    expect(await resolve()).toMatchObject({ ok: true, principal: {
+      userId: TENANT_A.userId, sessionId: SESSION_ID, selectedWorkspaceId: TENANT_A.workspaceId } });
+    f.deps.membershipAuthority.resolveActive = async () => null;
+    expect(await resolve()).toMatchObject({ ok: false, reason: 'membership_not_active' });
+  });
+
+  it.each(['userId', 'hostedSessionId', 'organizationId', 'customerWorkspaceId',
+    'controlPlaneWorkspaceId', 'audience', 'kind', 'state', 'transport'])(
+    'refuses a mismatched %s binding', async key => {
+      const f = harness({ session: session({ workspaceId: TENANT_A.workspaceId }) });
+      const changed = { ...channel(), [key]: 'foreign' };
+      expect((await createHostedChannelPrincipalResolver(f.deps, changed as ReturnType<typeof channel>)()).ok).toBe(false);
+    });
+
+  it('pins channel input and denies revocation, rotation and store faults', async () => {
+    const f = harness({ session: session({ workspaceId: TENANT_A.workspaceId }) });
+    const input = channel(); const resolve = createHostedChannelPrincipalResolver(f.deps, input);
+    input.userId = TENANT_B.userId;
+    expect((await resolve()).ok).toBe(true);
+    f.deps.sessionStore.resolve = async () => null;
+    expect((await resolve()).ok).toBe(false);
+    f.deps.sessionStore.resolve = async () => { throw new Error('private database failure'); };
+    expect(await resolve()).toEqual({ ok: false, reason: 'authority_unavailable' });
+  });
+});
 
 describe('hosted principal resolver', () => {
   it('requires a control-plane workspace id', () => {

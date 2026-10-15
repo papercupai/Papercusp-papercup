@@ -32,6 +32,7 @@ import {
   judgeFile,
   looksLikeEmittedOutput,
   proseShaped,
+  regexSourceToAlternatives,
   regexSourceToLiteral,
   resolveSubjectFiles,
 } from '../../../scripts/check-vacuous-negative-assertions.mjs';
@@ -67,6 +68,55 @@ describe('extractNegativeLiterals', () => {
       'plain banner text',
       'some phrase here',
       'a template phrase',
+    ]);
+  });
+});
+
+// WI-6554700010009190. Each synthetic literal below ALSO appears in an expected value, so the
+// real lint, which scans this file too, reads it as fixture evidence rather than a dead guard.
+describe('Testing Library absence queries and regex alternation', () => {
+  it('splits a plain-branch alternation, and refuses real regex power, an empty or an escaped bar', () => {
+    expect(regexSourceToAlternatives('Real graded run|92% opus')).toEqual(['Real graded run', '92% opus']);
+    expect(regexSourceToAlternatives('plain words')).toBeNull();
+    expect(regexSourceToAlternatives('a\\d|b')).toBeNull();
+    expect(regexSourceToAlternatives('a||b')).toBeNull();
+    expect(regexSourceToAlternatives('a\\|b')).toBeNull();
+  });
+
+  it('reads absence queries by copy, and skips case-insensitive and fuzzy matchers', () => {
+    const text = [
+      `expect(screen.queryByText('the old banner text')).toBeNull();`,
+      `expect(within(dialog).queryByLabelText(/old field label/)).not.toBeInTheDocument();`,
+      `expect(screen.queryByRole('button', { name: 'Old button label' })).toBeNull();`,
+      `expect(screen.queryByText(/case blind banner/i)).toBeNull();`,
+      `expect(screen.queryByText('fuzzy banner text', { exact: false })).toBeNull();`,
+      `expect(screen.queryByRole('dialog')).toBeNull();`,
+    ].join('\n');
+    expect(extractNegativeLiterals(text).map((n) => [n.kind, n.lit])).toEqual([
+      ["expect(queryByText('…')).toBeNull()", 'the old banner text'],
+      ['expect(queryByLabelText(/…/)).not.toBeInTheDocument()', 'old field label'],
+      ["expect(queryByRole(…, { name: '…' })).toBeNull()", 'Old button label'],
+    ]);
+  });
+
+  const negative = `it('x', () => {\n  expect(screen.queryByText(/Old summary claim text|Gone banner one here/)).toBeNull();\n});`; // vacuous-negative-ok: synthetic fixture input
+  const lit = 'Old summary claim text|Gone banner one here';
+
+  it('POSITIVE CONTROL: flags an alternation as DRIFTED when every branch is gone and one was reworded', () => {
+    const found = judge(negative, 'return <p>New summary claim text</p>;');
+    expect(found).toEqual([expect.objectContaining({ lit, verdict: 'DRIFTED', fragment: ' summary claim text' })]);
+  });
+
+  it('stays silent while ANY branch is still producible: the guard can fail through it', () => {
+    expect(judge(negative, 'return <p>New summary claim text</p>; const b = "Gone banner one here";')).toEqual([]);
+  });
+
+  it('reads a getByText presence query as the positive pin that makes a rename a RENAMED ratchet', () => {
+    const text = `it('x', () => {\n  expect(screen.getByText('New summary claim text')).toBeTruthy();\n  expect(screen.queryByText('Old summary claim text')).toBeNull();\n});`; // vacuous-negative-ok: synthetic fixture input
+    const src = 'return <p>New summary claim text</p>;';
+    expect(judge(text, src)).toEqual([expect.objectContaining({ verdict: 'RENAMED' })]);
+    expect(judge(text.replace(`expect(screen.getByText('New summary claim text')).toBeTruthy();`, ''), src)).toEqual([
+      expect.objectContaining({ lit: 'Old summary claim text', verdict: 'DRIFTED' }),
     ]);
   });
 });

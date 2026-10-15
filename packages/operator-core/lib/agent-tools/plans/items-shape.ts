@@ -82,6 +82,13 @@ export function shapePlansItems(data: unknown, tier: ItemsTier): unknown {
       plan: r.plan ?? null,
       id: item.id ?? null,
       status: item.effectiveStatus ?? null,
+      /** scope-unique-identifiers P-003: the workspace-unique work-item id this item
+       *  resolves through. Null when unlinked or when several qualify; `workItemIds`
+       *  then names them (sent only when there is more than one). */
+      workItemId: typeof r.workItemId === "string" ? r.workItemId : null,
+      ...(Array.isArray(r.workItemIds) && r.workItemIds.length > 1
+        ? { workItemIds: r.workItemIds as string[] }
+        : {}),
       importance: item.importance ?? null,
       needsHuman: item.needsHuman === true,
       text: clip(item.text, c.text),

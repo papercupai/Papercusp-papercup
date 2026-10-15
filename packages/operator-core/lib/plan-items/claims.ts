@@ -715,6 +715,28 @@ export async function listClaimsForPlan(
   return rows.map(claimFromDb);
 }
 
+/** Bounded exact-workspace owner endpoints across every harness/plan, including
+ * lapsed rows. Read one beyond the caller's census bound to detect overflow;
+ * claim_id and lease timestamps describe state, not the transitions between reads. */
+export async function listClaimsForOwner(
+  workspaceId: string, owner: string, limit = 201,
+): Promise<PlanItemClaim[]> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 201) {
+    throw new Error('claim read limit must be an integer between 1 and 201');
+  }
+  const { sql } = getOrgPg();
+  const rows = await sql<ClaimDbRow[]>`
+    SELECT workspace_id, harness_slug, plan_slug, item_id, claim_id, owner,
+           owner_label, owner_name, intent, liveness_mode, ttl_sec, acquired_ts, expires_ts,
+           last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
+      FROM harness_shared.plan_item_claims
+     WHERE workspace_id = ${workspaceId} AND owner = ${owner}
+     ORDER BY harness_slug, plan_slug, item_id
+     LIMIT ${limit}
+  `;
+  return rows.map(claimFromDb);
+}
+
 /** Delete lapsed claims (a GC convenience — acquire already steals them lazily). Returns count.
  *  EI-8997: a lapsed claim whose holder shows fresh tool activity is BUSY, not dead —
  *  the sweep skips it (same grace as the acquire steal-guard), so a GC pass can never

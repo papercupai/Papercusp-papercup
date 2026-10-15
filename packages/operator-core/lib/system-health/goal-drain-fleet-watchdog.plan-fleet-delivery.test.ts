@@ -72,6 +72,9 @@ const plan = (targetingFleets: GoalPlanFleetCohort['plans'][number]['targetingFl
 /** A goal held by one LIVE holder (su-a) and one ENDED holder (su-gone), with a healthy drain fleet. */
 function deps(cohort: GoalPlanFleetCohort): Partial<GoalDrainFleetSweepDeps> {
   return {
+    // Canonical condition-rail producer cases cover the independent broadcast.
+    // This suite counts the legacy directed holder message and its wake only.
+    rail: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) },
     readGoals: vi.fn(async () => ({
       goals: [
         { goalId: 'g-1', workspaceId: 'ws', title: 'ship it', createdAtMs: NOW - GOAL_DRAIN_FLEET_KICKOFF_GRACE_MS * 2, drainFleet: 'drain-1' },
@@ -89,6 +92,9 @@ function deps(cohort: GoalPlanFleetCohort): Partial<GoalDrainFleetSweepDeps> {
     flagEnabled: vi.fn(async () => true),
     now: () => NOW,
     readPlanFleetCohort: vi.fn(async () => cohort),
+    // This suite exercises plan-fleet delivery, not the independent pull-stall
+    // census. Keep that reader hermetic instead of touching the sentinel SQL.
+    readPullStallAlerts: vi.fn(async () => []),
   };
 }
 

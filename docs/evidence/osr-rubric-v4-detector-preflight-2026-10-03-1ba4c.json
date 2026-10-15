@@ -1,0 +1,270 @@
+{
+  "schemaVersion": 1,
+  "kind": "rubric-vetting-detector-map",
+  "workItem": "WI-10004113",
+  "subject": {
+    "rubricRef": "acceptance-open-source-release-2026-09-29",
+    "revision": 4,
+    "criteriaHash": "738dfcf89e589682d7f6dddebf4bc75cb249d0ec72aec3f21dc8275bbc2cde4b",
+    "planRevision": 87
+  },
+  "priorFailedAudits": [
+    {
+      "target": "EI-24943082036486574",
+      "audit": "EI-24943408159562742",
+      "defectClass": "Narrative evidence lacked exact independently repeatable calls and expected observations."
+    },
+    {
+      "target": "EI-24943853135451090",
+      "audit": "EI-24944242673034351",
+      "defectClass": "The universal structured-check claim supplied only three of eight file probes and omitted distinct BAR detectors in shared files."
+    }
+  ],
+  "claim": "All tests-bound BARs in immutable revision 4 have an explicit mapping to the assertions for their automated source-guard obligations. The map also enumerates supplemental manual, live and finished-build obligations. Source guards alone do not discharge those obligations or establish product acceptance.",
+  "populationDerivation": {
+    "tool": "rubrics:get",
+    "args": {"rubricRef": "acceptance-open-source-release-2026-09-29", "revision": 4, "detail": "full"},
+    "barSelector": "results[0].rubric.criteria.filter(c => c.check.kind === 'tests')",
+    "fileSelector": "unique selected criteria[].check.files[]",
+    "expectedTestsBoundBars": ["R-2", "R-3", "R-6", "R-7", "R-8", "R-9", "R-10", "R-12", "R-14", "R-16", "R-21", "R-23"],
+    "expectedFiles": [
+      "packages/operator-core/lib/anthropic-auth-policy.test.ts",
+      "packages/operator-core/lib/inference-gateway/spawn-env.test.ts",
+      "packages/operator-core/lib/license-gate.test.ts",
+      "papercusp-desktop/test/appimage-gpl-guard.test.js",
+      "packages/operator-core/lib/source-preview-public.test.ts",
+      "packages/operator-core/lib/source-preview-export.test.ts",
+      "packages/operator-core/lib/source-preview-gate.test.ts",
+      "packages/operator-core/lib/auth/hosted-entitlements.test.ts"
+    ]
+  },
+  "probes": [
+    {
+      "id": "vitest-bound-files",
+      "tool": "testing:run",
+      "args": {
+        "harness": "papercusp",
+        "files": [
+          "packages/operator-core/lib/anthropic-auth-policy.test.ts",
+          "packages/operator-core/lib/inference-gateway/spawn-env.test.ts",
+          "packages/operator-core/lib/license-gate.test.ts",
+          "packages/operator-core/lib/source-preview-public.test.ts",
+          "packages/operator-core/lib/source-preview-export.test.ts",
+          "packages/operator-core/lib/source-preview-gate.test.ts",
+          "packages/operator-core/lib/auth/hosted-entitlements.test.ts"
+        ]
+      },
+      "expected": "Every requested file executes at least one actual test. All files pass, with zero failures and skips. Read the assertion bodies named below; green counts alone are not detector adequacy. This command is a replay recipe, not an assertion that this continuation re-ran banked tests.",
+      "existingEvidence": "WI-10004113 checkpoint 1afecd61ae70: ledger 20649889/20649913/20649914 (65 tests) and 20652924..20652927 (69 tests). Independent second audit separately ran the three-file subset with ledger 20659123..20659125."
+    },
+    {
+      "id": "node-appimage-bound-file",
+      "tool": "capability:bash",
+      "args": {
+        "command": "node --test papercusp-desktop/test/appimage-gpl-guard.test.js",
+        "cwd": ".",
+        "work_item_id": "WI-10004113",
+        "timeout": 120000
+      },
+      "files": ["papercusp-desktop/test/appimage-gpl-guard.test.js"],
+      "expected": "exit_code 0; node:test tests=7, pass=7, fail=0, cancelled=0, skipped=0. The actual extracted build-script snippets reject planted GPL libraries while preserving allowed libraries/plugins.",
+      "existingEvidence": "docs/evidence/osr-r6-appimage-gpl-guard-baseline-2026-10-03-1ba4c.json; command and observed result are recorded there; paired mutant artifact demonstrates two caught failures."
+    }
+  ],
+  "bars": [
+    {
+      "barKey": "R-2",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/anthropic-auth-policy.test.ts",
+          "lines": [12, 30],
+          "assertions": ["expect(subscriptionRelayAllowed(r, env)).toBe(false)", "expect(subscriptionRelayAllowed(r, env)).toBe(true)", "expect(subscriptionRelayAllowed(r, env)).toBe(allowed)"],
+          "positiveControl": "All four relays remain allowed outside public profiles; exact own-account opt-in '1' enables them, while 'true', '0', and empty remain denied.",
+          "falsifier": "Any default public relay allowed, non-exact opt-in accepted, or all relay behavior gutted fails these paired controls."
+        },
+        {
+          "file": "packages/operator-core/lib/inference-gateway/spawn-env.test.ts",
+          "lines": [19, 38],
+          "assertions": ["assert.deepEqual(gatewaySpawnEnv(true, { accountId: 'acct-1' }), {})", "own-accounts opt-in restores the route", "dogfood build keeps the gateway route"],
+          "positiveControl": "The same gateway spawn function yields a gateway URL under exact own-account opt-in and dogfood profile.",
+          "falsifier": "Public reinjection or a deleted/always-disabled gateway fails."
+        }
+      ],
+      "supplementalObligations": "Live published build's baked public profile, user-supplied API-key/unmodified CLI behavior and complete credential-free final-cut scan; these unit guards do not establish finished-build behavior or R-24 provenance."
+    },
+    {
+      "barKey": "R-3",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/license-gate.test.ts",
+          "lines": [50, 107],
+          "assertions": ["const exitCode = main(argv, root)", "expect(result.exitCode).toBe(1)", "expect(result.exitCode).toBe(0)", "expect(result.exitCode).toBe(2)", "LICENSE_GATE_RESULT status=fail", "LICENSE_GATE_RESULT status=pass", "LICENSE_GATE_RESULT status=undetermined"],
+          "positiveControl": "Real main() with measured MIT lockfile returns 0/pass and a nonempty measured graph.",
+          "falsifier": "Strict GPL acceptance, false success for empty npm/unmeasured Cargo, or report-only exit-zero laundering changes expected codes/statuses."
+        }
+      ],
+      "supplementalObligations": "Read actual D-002 npm/Cargo gate wiring and distinguish the report-only finished-installer leg."
+    },
+    {
+      "barKey": "R-6",
+      "detectors": [
+        {
+          "file": "papercusp-desktop/test/appimage-gpl-guard.test.js",
+          "lines": [19, 159],
+          "assertions": ["assert.ok(start >= 0", "assert.equal(result.status, 1)", "assert.equal(result.status, 0, result.stderr)", "assert.deepEqual(fs.readdirSync(fx.plugins).sort(), [...keep].sort())", "GPL plugin removal must precede the closure copy", "assert.deepEqual(libs, ['libglib-2.0.so.0', 'libwebp.so.7'])", "assert.equal(result.status, 1, `${lib} should fail the guard`)"],
+          "positiveControl": "Allowed LGPL/permissive media libraries pass; retained plugins/libglib/libwebp/PNG loader remain. Snippet markers must exist and ordering is asserted.",
+          "falsifier": "GPL codec/non-media library reaching AppDir without exit 1, missing drops, or deleting the mechanism fails the extracted real-script controls."
+        }
+      ],
+      "supplementalObligations": "A guard suite is not a new distributed installer scan; WI-10004075 retains the next real cut verification."
+    },
+    {
+      "barKey": "R-7",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/source-preview-public.test.ts",
+          "lines": [83, 99, 214, 273],
+          "assertions": [".toThrow(/preview repository/)", ".toThrow(/private repository/)", "'https://github.com/Papercusp/papercusp-app.git')).not.toThrow()", "for (const confirm of [false, true])", ".rejects.toThrow(/not an export commit/)", "stdout.trim()).toBe(head)", "pushed: true, parent: null, commit: fx.commit"],
+          "positiveControl": "Allowed public remote passes; a real fixture export is successfully pushed to a local bare repository.",
+          "falsifier": "Crossed/private target accepted or foreign non-lineage head changed in dry-run/confirmed mode fails; an entirely broken push also fails positive controls."
+        }
+      ],
+      "supplementalObligations": "R-22 still owns actual public launch identity/gate receipts."
+    },
+    {
+      "barKey": "R-8",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/source-preview-public.test.ts",
+          "lines": [214, 254],
+          "assertions": ["pushed: true, parent: null, commit: fx.commit", "pushed: true, parent: first, commit: head", "expect(remoteGit(['rev-parse', 'main^'])).toBe(first)", "pushed: true, parent: contributed", "expect(remoteGit(['merge-base', '--is-ancestor', contributed, 'main']) ).toBe('')"],
+          "positiveControl": "First push succeeds, later changed content actually reaches remote, and contributor history survives.",
+          "falsifier": "Force/history replacement or dropping the previous/contributor parent fails exact remote ancestry assertions."
+        }
+      ],
+      "supplementalObligations": "Fixture ancestry is a source behavior guard, not a remote launch observation."
+    },
+    {
+      "barKey": "R-9",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/source-preview-public.test.ts",
+          "lines": [104, 143],
+          "assertions": ["expect(manifest).toMatchObject({ target: 'public', source: { commit: fx.commit } })", "for (const p of PUBLIC_DESKTOP_SHIPPED) expect(existsSync(join(out, p)), p).toBe(true)", "for (const p of PUBLIC_DESKTOP_DROPPED) expect(existsSync(join(out, p)), p).toBe(false)"],
+          "positiveControl": "Actual exported desktop README and Cargo.toml fixture paths exist; manifest points to requested source commit and generated/local desktop paths remain excluded.",
+          "falsifier": "Omitting the desktop shell or substituting an empty/nonfunctional export fails presence plus manifest controls."
+        }
+      ],
+      "supplementalObligations": "The shipped/dropped fixture populations are defined in source-preview.fixture.ts; inspect them when reviewing scope."
+    },
+    {
+      "barKey": "R-10",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/source-preview-export.test.ts",
+          "lines": [73, 103],
+          "assertions": ["for (const p of SHIPPED) expect(files, p).toContain(p)", "for (const p of DROPPED) expect(files, p).not.toContain(p)", "expect(readFileSync(join(out, path), 'utf8'), path).toBe(body)", "expect(preview).toEqual(installer)", "expect(installerListing(mono)).toContain('node_modules/leftpad/index.js')", "expect(installer).not.toContain('libs/papercusp/plugins/gitnexus-bridge/index.ts')", "expect(installer).toContain('libs/papercusp/plugins/markdown-preview/papercusp.json')"],
+          "positiveControl": "Both internal-doc sentinels retain exact bytes; operator/sibling plugin and installer-only node_modules controls survive.",
+          "falsifier": "Trimmed class leaks, allowed docs disappear, installer selection diverges, or all selection is gutted fails positive/negative parity assertions."
+        },
+        {
+          "file": "packages/operator-core/lib/source-preview-public.test.ts",
+          "lines": [104, 143],
+          "assertions": ["expect(readFileSync(join(out, path), 'utf8'), path).toBe(body)", "for (const p of DROPPED.filter((d) => !d.startsWith('papercusp-desktop/'))) expect(existsSync(join(out, p)), p).toBe(false)", "libs/papercusp/plugins/markdown-preview/papercusp.json"],
+          "positiveControl": "PUBLIC export retains the same two doc roots and surviving sibling plugin with exact bytes.",
+          "falsifier": "PUBLIC-only leaking or over-trimming fails its separate export assertions."
+        }
+      ],
+      "supplementalObligations": "Actual finished installer plugin/tool population must still exclude gitnexus-bridge/gitnexus tools. Source-selection tests do not measure final installer bytes."
+    },
+    {
+      "barKey": "R-12",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/source-preview-public.test.ts",
+          "lines": [104, 122, 204, 209],
+          "assertions": ["expect(readFileSync(join(out, 'LICENSE'), 'utf8')).toBe(readFileSync(PUBLIC_LICENSE_PATH, 'utf8'))", "expect(readme).toContain('Papercusp is source-available')", "expect(readme).not.toMatch(/\\b(?:OSI[ -]approved|open[ -]source)\\b/i)", ".toThrow(/not the Elastic License 2.0/)", "expect(readLicense(PUBLIC_LICENSE_PATH)).toMatch(/^Elastic License 2\\.0/)"],
+          "positiveControl": "Successful export has exact ELv2 bytes, MANIFEST, NOTICE, third-party notices and explicit source-available wording; real public LICENSE is accepted.",
+          "falsifier": "MIT/wrong/missing LICENSE or generated OSI/open-source wording fails; missing exporter fails positive byte/control assertions."
+        }
+      ],
+      "supplementalObligations": "Inspect pinned exported product metadata; R-22 additionally measures published/release wording."
+    },
+    {
+      "barKey": "R-14",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/source-preview-gate.test.ts",
+          "lines": [85, 182],
+          "assertions": ["expect(v.results.map((r) => [r.name, r.status])).toEqual([", "expect(v).toMatchObject({ ok: true, exitCode: 0 })", "expect(v).toMatchObject({ ok: false, exitCode: 1 })", "expect(v).toMatchObject({ ok: false, exitCode: 2 })", "expect(accepted).toMatchObject({ ok: true, exitCode: 0 })", "expect(changed).toMatchObject({ ok: false, exitCode: 1 })", "expect(JSON.stringify(v)).not.toContain(FP_SECRET)"],
+          "positiveControl": "All four named detectors must execute/clean; an exact reviewed false-positive hash is accepted. Changed hash, planted token and extra-scanner finding are refused.",
+          "falsifier": "Absent/crashed/unparsable/unmeasured detectors passing, unreviewed findings accepted, or non-exact false-positive match fails; dead scanners cannot establish absence."
+        }
+      ],
+      "supplementalObligations": "Run actual pinned launch gate with complete finding ledger; verify each real-credential finding's rotation record. These source controls do not prove rotation or a final clean population."
+    },
+    {
+      "barKey": "R-16",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/auth/hosted-entitlements.test.ts",
+          "lines": [224, 280, 375, 418],
+          "assertions": ["assignmentId: 'assignment:org-1'", "auditReceiptIds: ['audit:bundle', 'audit:assignment']", "reason: 'no_active_assignment'", "reason: 'ambiguous_active_assignments'", "reason: 'bundle_not_found'", "reason: 'bundle_inactive'", "reason: 'invalid_assignment_record'", "expect(checkHostedEntitlement(value(), gate)).toMatchObject({", "reason: 'invalid_gate_input'"],
+          "positiveControl": "An active exact organization/bundle assignment resolves with provenance and allowed entitlement gate controls; disallowed gates refuse.",
+          "falsifier": "Resolver accepts missing/ambiguous/inactive/malformed authority or entitlement checker permits invalid/over-limit inputs; always-refusing resolver fails active entitled controls."
+        }
+      ],
+      "supplementalObligations": "Resolver guard only: inventory active cloud operations, trace persisted/signed authority, and probe each actual serving boundary for refusal/no protected bytes and an entitled success. An unused correct resolver is explicitly insufficient; serving evidence remains open."
+    },
+    {
+      "barKey": "R-21",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/source-preview-public.test.ts",
+          "lines": [144, 171, 192, 202],
+          "assertions": ["for (const name of PUBLIC_COMMUNITY_FILES)", "expect(readFileSync(join(out, 'CONTRIBUTING.md'), 'utf8')).toMatch(/Contributor License Agreement/)", "expect(readFileSync(join(out, 'CLA.md'), 'utf8')).toMatch(/Contributor License Agreement/)", "expect(existsSync(join(out, '.github/workflows/cla.yml'))).toBe(true)", "expect(cla).toMatch(/pull_request_target/)", "expect(cla).not.toMatch(/actions\\/checkout/)", "expect(readCommunityFiles(dirname(PUBLIC_LICENSE_PATH)).map((f) => f.name)).toEqual(PUBLIC_COMMUNITY_FILES)"],
+          "positiveControl": "Exported files equal maintained community files; actual CLA workflow has required privileged trigger and never checks out PR code; real community population is readable.",
+          "falsifier": "CLA/contribution files omitted, empty, mutated or unsafe checkout introduced fails distinct file/workflow assertions."
+        }
+      ],
+      "supplementalObligations": "Read actual launch CONTRIBUTING/CLA/workflow bytes and source-of-truth PR route at R-22 identity; fixture copying does not prove remote contents."
+    },
+    {
+      "barKey": "R-23",
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/source-preview-export.test.ts",
+          "lines": [108, 185],
+          "assertions": ["expect(manifest.source.commit).toBe(fx.commit)", "expect(manifest.submodules).toEqual([{ path: 'libs/papercusp', sha: fx.subCommit }])", ".rejects.toThrow(/unresolvable gitlink libs\\/papercusp/)", "expect(receipt.source.commit).toBe(ref)", "expect(readFileSync(join(target, 'package-lock.json'), 'utf8')).toBe(pinnedLock)", "expect(existsSync(join(target, 'node_modules'))).toBe(false)", "expect(state()).toEqual(before)"],
+          "positiveControl": "Export resolves pinned superproject/gitlink objects and preserves exact source/lock bytes while the integration checkout deliberately differs; before state positively contains staged/uncommitted divergence.",
+          "falsifier": "Working-tree/index/dependency reuse, unresolved gitlinks silently accepted, or source/index/branch/head mutated fails actual pinned-object/invariance assertions."
+        },
+        {
+          "file": "packages/operator-core/lib/source-preview-public.test.ts",
+          "lines": [104, 107, 229, 236],
+          "assertions": ["expect(manifest).toMatchObject({ target: 'public', source: { commit: fx.commit } })", "pushed: true, parent: first, commit: head", "expect(remoteGit(['show', 'main:apps/operator/src/index.ts'])).toBe('export const x = 3;')"],
+          "positiveControl": "PUBLIC materialization/push includes source commit identity and updated source bytes, with preserved remote ancestry.",
+          "falsifier": "PUBLIC route publishes a different source snapshot or loses its pinned commit/content linkage."
+        }
+      ],
+      "supplementalObligations": "Inspect pinned exporter/materializer and applicable spawn/exec cut scripts for object operations and Governor registry/admission. Actual cuts/builds additionally need isolated dependency-install provenance and shared-tree invariance. This map does not invent a Governor detector or final build receipt."
+    }
+  ],
+  "unboundLiveBars": {
+    "population": ["R-1", "R-4", "R-5", "R-11", "R-13", "R-15", "R-17", "R-18", "R-19", "R-20", "R-22", "R-24"],
+    "inspection": "Read each immutable criterion's method and driftMarkers. Explicit instrumentKey:none declares manual observation, never a measured instrument pass. Their exact populations/identities/positive controls and unknown semantics remain acceptance obligations.",
+    "knownCriticalOpenProof": ["R-15 actual distributed finished installer assets/signature/hash chain/Syft finding dispositions", "R-16 active serving operation coverage and entitled/non-entitled controls", "R-24 hosted credential selector/producer/delivery provenance coverage and allowed customer controls"],
+    "r24AuxiliaryGuard": "hosted-runtime.test.ts ledger20659088 passed10/failed0/skipped0 UNIT; it is not a revision-4 tests binding and does not establish the complete R-24 live population. Binding rows23365..23368 remain unknown history pending honest metadata correction."
+  },
+  "preflightContract": {
+    "requirements": [
+      "Derive BAR and file populations from immutable rubric revision4 and require exact equality with this map.",
+      "Each tests-bound BAR has exactly its bound file set, an explicit falsifier and a positive control; repeated files do not collapse different BARs.",
+      "Every named assertion snippet still occurs in its canonical bound file; inspect the surrounding test body to judge behavior, since substring existence alone is not a detector verdict.",
+      "Replay file population from the two probe recipes equals the derived eight files; never route node:test through the Vitest-only testing:run tool.",
+      "Supplemental live/manual/finished-build obligations are explicit and cannot be erased by source test passes.",
+      "Preflight starts no new test process and does not change rubric meaning or ratings. Independent audit is a separate decision."
+    ],
+    "expected": "revision4/hash match; 12 BARs, 8 files, no missing/extra BAR/file/probe entries, no missing assertion tokens, and all supplemental obligations retained."
+  }
+}

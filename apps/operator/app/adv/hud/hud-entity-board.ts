@@ -419,6 +419,8 @@ export interface HudGoalInput {
   id: string;
   title: string;
   status: string;
+  standing?: boolean;
+  goalPackage?: { ref: string } | null;
   /** Server-derived activity status; notably `dormant` for holderless active goals. */
   effectiveStatus?: string | null;
   deactivated?: boolean | null;

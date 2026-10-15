@@ -42,6 +42,7 @@ import {
 } from './reference-store';
 import type { CompareResult } from './contract';
 import type { RatifiedReference, ReferenceRetraction } from './ratification';
+import { withPgRetry } from '../pg-transient-retry';
 
 /**
  * The minimum surface this store needs from a `postgres` client — a tagged
@@ -197,6 +198,13 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
     strings: TemplateStringsArray,
     ...values: unknown[]
   ): Promise<T[]> => getSql()<T>(strings, ...values);
+  // The completion gate reaches the store through these reads. A postgres-js
+  // CONNECT_TIMEOUT is raised in the connect phase before the queued SELECT
+  // reaches Postgres, so the repository's narrow retry is safe here and avoids
+  // turning a brief connection blip into a failed terminal completion. Keep
+  // mutations on `sql` directly; this retry wrapper is for reads only.
+  const read = <T>(query: () => Promise<T[]>): Promise<T[]> =>
+    withPgRetry(query, { label: 'design-compare-reference-store-read' });
   const now = options.now ?? (() => Date.now());
 
   return {
@@ -204,7 +212,7 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
       // DISTINCT on the metadata projection rather than decoding payloads: the
       // gate only needs the ids, and a reference with eight revisions must not
       // read as eight references.
-      const rows = await sql<{ reference_id: string }>`
+      const rows = await read(() => sql<{ reference_id: string }>`
         SELECT DISTINCT metadata->>'referenceId' AS reference_id
           FROM harness_shared.harness_design_artifacts
          WHERE harness_slug = ${scope.harnessSlug}
@@ -212,12 +220,12 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
            AND kind         = ${RATIFIED_REFERENCE_ARTIFACT_KIND}
            AND metadata->>'referenceId' IS NOT NULL
          ORDER BY reference_id ASC
-      `;
+      `);
       return rows.map((r) => r.reference_id);
     },
 
     async listRevisions(scope: ReferenceScope): Promise<readonly StoredReferenceRow[]> {
-      const rows = await sql<ArtifactRow>`
+      const rows = await read(() => sql<ArtifactRow>`
         SELECT id, harness_slug, feature_id, payload, metadata, created_ts
           FROM harness_shared.harness_design_artifacts
          WHERE harness_slug = ${scope.harnessSlug}
@@ -225,7 +233,7 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
            AND kind         = ${RATIFIED_REFERENCE_ARTIFACT_KIND}
            AND metadata->>'referenceId' = ${scope.referenceId}
          ORDER BY (metadata->>'revision')::int ASC
-      `;
+      `);
       return rows.map(toRow);
     },
 
@@ -263,13 +271,13 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
         readonly retraction?: ReferenceRetraction;
       },
     ): Promise<void> {
-      const rows = await sql<ArtifactRow>`
+      const rows = await read(() => sql<ArtifactRow>`
         SELECT id, harness_slug, feature_id, payload, metadata, created_ts
           FROM harness_shared.harness_design_artifacts
          WHERE harness_slug = ${scope.harnessSlug}
            AND id           = ${artifactId}
            AND kind         = ${RATIFIED_REFERENCE_ARTIFACT_KIND}
-      `;
+      `);
       const existing = rows[0];
       if (!existing) {
         throw new ReferenceStoreError(
@@ -304,7 +312,7 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
     },
 
     async listEvidence(scope: ReferenceScope): Promise<readonly StoredEvidenceRef[]> {
-      const rows = await sql<EvidenceRow>`
+      const rows = await read(() => sql<EvidenceRow>`
         SELECT id, payload
           FROM harness_shared.harness_design_artifacts
          WHERE harness_slug = ${scope.harnessSlug}
@@ -312,7 +320,7 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
            AND kind         = ${COMPARE_RESULT_ARTIFACT_KIND}
            AND payload->'reference'->>'referenceId' = ${scope.referenceId}
          ORDER BY created_ts ASC
-      `;
+      `);
       return rows.map(toEvidenceRef);
     },
 
@@ -339,7 +347,7 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
     },
 
     async listEvidenceResults(scope: ReferenceScope): Promise<readonly StoredEvidenceRow[]> {
-      const rows = await sql<EvidenceResultRow>`
+      const rows = await read(() => sql<EvidenceResultRow>`
         SELECT id, harness_slug, feature_id, payload, created_ts
           FROM harness_shared.harness_design_artifacts
          WHERE harness_slug = ${scope.harnessSlug}
@@ -347,7 +355,7 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
            AND kind         = ${COMPARE_RESULT_ARTIFACT_KIND}
            AND payload->'reference'->>'referenceId' = ${scope.referenceId}
          ORDER BY created_ts ASC
-      `;
+      `);
       return rows.map((r) => ({
         result: readJson<CompareResult>(r.payload),
         harnessSlug: r.harness_slug,

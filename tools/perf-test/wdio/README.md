@@ -70,6 +70,13 @@ publisher stores these as `run_id` and `workspace_id`. A named profile leaves
 `git_sha` empty because the WDIO checkout HEAD may differ from every component
 under test; unnamed runs retain that checkout correlation. Record the shell,
 SPA and API hashes alongside the run log for exact reproduction.
+Each launcher allocates a fresh `results/measures-<uuid>.jsonl` before preflight
+and logs its exact path. Spec workers inherit that collection through the
+internal `PAPERCUSP_PERF_MEASURES_PATH` environment value; a new launcher replaces
+any inherited value. Concurrent runs, including runs sharing a profile name,
+cannot reset or publish each other's measures. Failed publishes retain their
+own file for recovery. The former shared `results/measures.jsonl` is never read
+or cleared by this runner.
 On Linux, a named run using a private `PAPERCUSP_HOME` must also set
 `PAPERCUSP_DEV_API_TARGET` to the target port (for example, `3170`). The runner
 checks the private IPC PID and socket before measuring and again before
@@ -79,6 +86,17 @@ The receipt publisher reads `PAPERCUSP_HOME/superuser-token`, with
 A private fixture home must contain the credential of its selected API; keep
 that injected credential outside the repository. A missing scoped credential
 does not fall back to a different operator's credential.
+
+When WDIO is an assertion inside `VERIFY_TAURI_ISOLATED_DB=1
+scripts/verify-tauri-headless.sh -- ...`, pin `VERIFY_TAURI_SOURCE_REF` to a full
+commit and supply the verifier's tested source inputs. Build the release GUI
+from that frozen source and set `TAURI_APP_PATH` to its complete packaged tree.
+Its packaged SPA must contain the exact bytes in `VERIFY_TAURI_SPA_DIST`.
+The runner uses the verifier's private origin, display, workspace and profile;
+before starting the driver it checks the source receipt, binary provenance,
+SPA content and `/api/health` build identity. It repeats those checks before
+publishing and refuses a changed build. A named `PAPERCUSP_PERF_RUN_ID` remains
+required for the private IPC lifetime and receipt checks.
 
 ## Architecture vs the in-process `/tests` page
 

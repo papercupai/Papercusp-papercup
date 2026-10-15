@@ -54,6 +54,8 @@ function record(outcome: DecisionOutcome, over: Partial<DecisionCallRecord> = {}
     consumer: 'memory-injection',
     surface: null,
     subjectIds: ['mem-1', 'mem-2'],
+    hostLoad: { busyMs: 37.4, utilization: 0.18 },
+    transportLatencyMs: 21.6,
     ...over,
   };
 }
@@ -172,6 +174,28 @@ describe('toDecisionLedgerEntry', () => {
     const e = toDecisionLedgerEntry(record(rejected));
     expect(e).toMatchObject({ inconclusiveReason: 'rejected', httpStatus: 422, inconclusiveDetail: null });
     expect(JSON.stringify(e)).not.toContain('4417');
+  });
+
+  it('records the host load as rounded busy ms and utilization (P-001: attribute a timeout to host or provider)', () => {
+    expect(toDecisionLedgerEntry(record(answered))).toMatchObject({ loopBusyMs: 37, loopUtilization: 0.18 });
+    // The worker-measured provider time rides along, rounded; an impossible value is not measured.
+    expect(toDecisionLedgerEntry(record(answered)).transportLatencyMs).toBe(22);
+    expect(toDecisionLedgerEntry(record(answered, { transportLatencyMs: -3 })).transportLatencyMs).toBeNull();
+    expect(toDecisionLedgerEntry(record(answered, { transportLatencyMs: null })).transportLatencyMs).toBeNull();
+  });
+
+  it('host load not measured is NULL, never a fake zero', () => {
+    expect(toDecisionLedgerEntry(record(answered, { hostLoad: null }))).toMatchObject({
+      loopBusyMs: null,
+      loopUtilization: null,
+    });
+  });
+
+  it('an out-of-range host load is stored as not measured, per field', () => {
+    const bad = toDecisionLedgerEntry(record(answered, { hostLoad: { busyMs: -5, utilization: 1.4 } }));
+    expect(bad).toMatchObject({ loopBusyMs: null, loopUtilization: null });
+    const nan = toDecisionLedgerEntry(record(answered, { hostLoad: { busyMs: 12, utilization: Number.NaN } }));
+    expect(nan).toMatchObject({ loopBusyMs: 12, loopUtilization: null });
   });
 
   it('a keyless call is still an auditable entry (no status, no detail invented)', () => {

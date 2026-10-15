@@ -54,16 +54,30 @@ import {
 
 const probeReturning = (verdict: MailboxVerdict): MailboxProbe => vi.fn(async () => verdict);
 
-function fakeSmtpServer(replies: string[]) {
+function fakeSmtpServer(replies: string[], opts: { splitAt?: string } = {}) {
   const server = new EventEmitter();
   const writes: string[] = [];
+  const emitReply = (reply: string): void => {
+    const bytes = Buffer.from(`${reply}\r\n`);
+    const marker = opts.splitAt ? Buffer.from(opts.splitAt, 'utf8') : null;
+    const markerOffset = marker ? bytes.indexOf(marker) : -1;
+    if (marker && marker.length > 1 && markerOffset >= 0) {
+      const boundary = markerOffset + 1;
+      setTimeout(() => {
+        server.emit('data', bytes.subarray(0, boundary));
+        setTimeout(() => server.emit('data', bytes.subarray(boundary)), 0);
+      }, 0);
+      return;
+    }
+    setTimeout(() => server.emit('data', bytes), 0);
+  };
   const socket = Object.assign(server, {
     setTimeout: vi.fn(),
     destroy: vi.fn(),
     write: (line: string) => {
       writes.push(line.replace(/\r\n$/, ''));
       const reply = replies.shift();
-      if (reply) setTimeout(() => server.emit('data', Buffer.from(`${reply}\r\n`)), 0);
+      if (reply) emitReply(reply);
       return true;
     },
   }) as unknown as Socket;
@@ -96,6 +110,23 @@ describe('probeMailbox SMTP envelope', () => {
     ]);
     expect(verdict).toEqual({ status: 'undeliverable', reason: 'mailbox-rejected', detail: '550 5.1.1 user unknown' });
     expect(verdictBlocks(verdict)).toBe(true);
+  });
+
+  it('preserves a multibyte SMTP reply split across data events', async () => {
+    const smtp = fakeSmtpServer([
+      '250 mx.example.test',
+      '250 sender accepted',
+      '550 5.1.1 boîte introuvable',
+    ], { splitAt: 'î' });
+    smtpMocks.resolveMx.mockResolvedValue([{ priority: 10, exchange: 'mx.example.test' }]);
+
+    const verdict = await probeMailbox('jobs@greenerwave.com');
+
+    expect(verdict).toEqual({
+      status: 'undeliverable',
+      reason: 'mailbox-rejected',
+      detail: '550 5.1.1 boîte introuvable',
+    });
   });
 
   it('treats a MAIL FROM sender-domain refusal as unknown, not a dead recipient', async () => {

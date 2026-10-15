@@ -30,14 +30,26 @@ const workScope = vi.hoisted(() => ({
   })),
 }));
 const premisePort = vi.hoisted(() => ({ get: vi.fn() }));
+const explicitAssigneeM = vi.hoisted(() => ({
+  resolve: vi.fn(async (raw: string, callerOwnerId: string, _workspaceId?: string | null) =>
+    ({ ok: true as const, ownerId: raw.trim() === 'self' ? callerOwnerId : raw.trim() }) as
+      | { ok: true; ownerId: string }
+      | { ok: false; code: string; message: string; candidates?: string[] },
+  ),
+}));
 const forceGuard = vi.hoisted(() => ({
   verdict: { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } } as any,
 }));
 const pilotReceipts = vi.hoisted(() => ({ persistBinding: vi.fn() }));
-vi.mock('../coordination/identity', () => ({
+vi.mock('../coordination/identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/identity')>()),
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
   resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
+}));
+vi.mock('../coordination/recipient-resolve', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/recipient-resolve')>()),
+  resolveExplicitAgentOwnerId: explicitAssigneeM.resolve,
 }));
 //
 // PARTIAL mock (importOriginal), deliberately — NOT a hand-listed factory. A hand-listed factory
@@ -92,6 +104,24 @@ vi.mock('./release-force-guard', () => ({
   notifyForceTransition: vi.fn(async () => {}),
   recordForceTransitionAudit: vi.fn(async () => {}),
 }));
+// green-main-cycle-time-2026-10-08 P-013 (D-028(4)): the real gate-singleton decision runs;
+// only its two reads (condition_key, the claimant's re-wake verdict) are faked, so this file
+// stays hermetic and pins the wiring — guard before mutation, keyed on the CLAIMANT.
+const gateSingleton = vi.hoisted(() => ({
+  conditionKey: null as string | null,
+  rewake: { guaranteed: true, reason: null } as import('../loop/next-wake').LoopNextWakeVerdict,
+  readRewake: vi.fn((_claimant: string) => undefined),
+}));
+vi.mock('./gate-singleton-claim-guard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./gate-singleton-claim-guard')>()),
+  defaultGateSingletonClaimReader: () => ({
+    readConditionKey: async () => gateSingleton.conditionKey,
+    readRewake: async (claimant: string) => {
+      gateSingleton.readRewake(claimant);
+      return gateSingleton.rewake;
+    },
+  }),
+}));
 vi.mock('../../pilot-participant-receipts', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   persistPilotParticipantBindingReceipt: (...args: unknown[]) => pilotReceipts.persistBinding(...args),
@@ -139,6 +169,10 @@ const body = async (args: unknown) => ((await tool.handler(args as never, {} as 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  explicitAssigneeM.resolve.mockImplementation(async (raw, callerOwnerId) => ({
+    ok: true,
+    ownerId: raw.trim() === 'self' ? callerOwnerId : raw.trim(),
+  }));
   OWNER_REGISTRY.ids = [];
   identity.ownerId = 'me';
   identity.workspaceId = 'ws-1';
@@ -156,11 +190,57 @@ beforeEach(() => {
   releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null);
   premisePort.get.mockReset().mockResolvedValue(null);
   pilotReceipts.persistBinding.mockReset();
+  gateSingleton.conditionKey = null;
+  gateSingleton.rewake = { guaranteed: true, reason: null };
+});
+
+describe('work_items:claim gate-red singleton guard (green-main-cycle-time-2026-10-08 P-013, D-028(4))', () => {
+  it('refuses a gate-red-streak singleton before mutation when the CLAIMANT has no guaranteed re-wake', async () => {
+    gateSingleton.conditionKey = 'gate-red-streak:papercup';
+    gateSingleton.rewake = { guaranteed: false, reason: 'no-active-loop' };
+    const b = await body({ id: 'EI-red', assignee: 'bee-7' });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      id: 'EI-red',
+      error: 'gate_singleton_requires_long_lived_owner',
+      conditionKey: 'gate-red-streak:papercup',
+      claimant: 'bee-7',
+      rewakeReason: 'no-active-loop',
+    });
+    expect(b.results[0].hint).toMatch(/loop:arm/);
+    expect(b.results[0].hint).toMatch(/frozen-repair-leg:/);
+    // The verdict is read for the assignee the item would land on, not the caller ('me').
+    expect(gateSingleton.readRewake).toHaveBeenCalledWith('bee-7');
+    expect(claimM).not.toHaveBeenCalled();
+    expect(fleetAdmission.notify).not.toHaveBeenCalled();
+  });
+
+  it('admits the frozen-repair-convergence singleton for a claimant with a guaranteed re-wake', async () => {
+    gateSingleton.conditionKey = 'frozen-repair-convergence:papercup';
+    gateSingleton.rewake = { guaranteed: true, reason: null };
+    const b = await body({ id: 'EI-conv' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-conv' });
+    expect(gateSingleton.readRewake).toHaveBeenCalledWith('me');
+    expect(claimM).toHaveBeenCalledOnce();
+  });
+
+  it('never guards a per-leg frozen-repair-leg item, even for a claimant with no loop (D-028(2))', async () => {
+    gateSingleton.conditionKey = 'frozen-repair-leg:papercup:packages/x/a.test.ts';
+    gateSingleton.rewake = { guaranteed: false, reason: 'no-active-loop' };
+    const b = await body({ id: 'EI-leg' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-leg' });
+    expect(gateSingleton.readRewake).not.toHaveBeenCalled();
+    expect(claimM).toHaveBeenCalledOnce();
+  });
 });
 
 describe('work_items:claim idempotent-completion opt-in (EI-21593186656422114)', () => {
   it('declares idempotent:true so a committed-but-slow claim surfaces success, not a false timeout', () => {
     expect((tool as { idempotent?: boolean }).idempotent).toBe(true);
+  });
+
+  it('allows up to 120 seconds for a successful claim and its advisory reads (EI-25882027630574649)', () => {
+    expect((tool as { timeoutSec?: number }).timeoutSec).toBe(120);
   });
 });
 
@@ -170,6 +250,25 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } });
     expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined, fromHolder: identity.ownerId });
+  });
+
+  it('reclaims a signed judge alias with the exact stored bare holder as its CAS predecessor', async () => {
+    const session = 'su-851c1a7a-8ea6-4c70-afeb-472e957fd3d8';
+    identity.ownerId = `system:judge/${session}`;
+    getM.mockResolvedValue(issueItem({ assignee: session }));
+    const ctx = { uiClientId: session, principal: { slug: 'system:judge', authMethod: 'spawn-url', trust: 'trusted' } };
+    await tool.handler({ id: 'WI-1' } as never, ctx as never);
+    expect(claimM).toHaveBeenCalledWith('WI-1', identity.ownerId, { harness: undefined, fromHolder: session });
+    expect(assessForceM).not.toHaveBeenCalled();
+  });
+
+  it('does not widen a bearer client reclaim CAS to the bare session holder', async () => {
+    const session = 'su-851c1a7a-8ea6-4c70-afeb-472e957fd3d8';
+    identity.ownerId = `system:judge/${session}`;
+    getM.mockResolvedValue(issueItem({ assignee: session }));
+    const ctx = { uiClientId: session, principal: { slug: 'system:judge', authMethod: 'bearer', trust: 'trusted' } };
+    await tool.handler({ id: 'WI-1' } as never, ctx as never);
+    expect(claimM).toHaveBeenCalledWith('WI-1', identity.ownerId, { harness: undefined, fromHolder: identity.ownerId });
   });
 
   it('mints a canonical pilot binding only after a caller-owned claim lands', async () => {
@@ -976,6 +1075,20 @@ describe('work_items:claim short-form owner ids (EI-23701433507513915)', () => {
     const b = await body({ id: 'WI-GONE', assignee: 'su-deadbeef' });
 
     expect(b.results[0]).toMatchObject({ ok: false, error: 'assignee_short_form_unresolved' });
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
+  it('refuses an arbitrary unknown full assignee before claiming', async () => {
+    explicitAssigneeM.resolve.mockResolvedValue({
+      ok: false,
+      code: 'assignee_unknown',
+      message: 'No known owner matches noop-do-not-use.',
+    });
+
+    const b = await body({ id: 'WI-UNKNOWN-ASSIGNEE', assignee: 'noop-do-not-use' });
+
+    expect(explicitAssigneeM.resolve).toHaveBeenCalledWith('noop-do-not-use', 'me', 'ws-1');
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-UNKNOWN-ASSIGNEE', error: 'assignee_unknown' });
     expect(claimM).not.toHaveBeenCalled();
   });
 });

@@ -41,14 +41,67 @@ describe('external condition reachability', () => {
 
   it('uses an announcement fire when the unconditional latch is unavailable', async () => {
     const reachability = await readEventConditionReachability('fleet:test:gate', {
+      requireSpecificCondition: true,
       now: new Date(NOW),
       inspect: async () => ({
-        announcements: [{ firedAt: '2026-08-27T11:30:00.000Z', supersededAt: null }] as never,
+        announcements: [{ firedAt: '2026-08-27T11:30:00.000Z', firedReason: 'event', supersededAt: null }] as never,
         waiters: [],
         deliveries: [],
         fireLatch: null,
         composedRoot: null,
       }),
+    });
+    expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
+  });
+
+  it('does not treat an expired announcement timestamp as a successful condition fire', async () => {
+    const reachability = await readEventConditionReachability('fleet:test:gate', {
+      now: new Date(NOW),
+      inspect: async () => ({
+        announcements: [{
+          firedAt: '2026-08-27T11:59:59.000Z',
+          firedReason: 'expired',
+          expiresTs: '2026-08-27T11:59:59.000Z',
+          supersededAt: null,
+          cancelledAt: null,
+        }] as never,
+        waiters: [],
+        deliveries: [],
+        fireLatch: null,
+        composedRoot: null,
+      }),
+    });
+
+    expect(reachability).toMatchObject({
+      verdict: 'impossible',
+      basis: 'expired-registration',
+      authoritative: true,
+    });
+    expect(reachability.evidence).toContain('registration expired');
+  });
+
+  it.each([
+    'work-item:claimable', 'release:deployed', 'release:deployed:abc123',
+    'coord:inbox-wake:park-owner', 'fleet:item-completed:test', 'work-item:unblocked',
+    'work-item:unblocked:*',
+  ])('keeps a fired broad or incomplete trigger unverified for a specific condition: %s', async (trigger) => {
+    const inspect = async () => ({
+      announcements: [{ firedAt: '2026-08-27T11:30:00.000Z', firedReason: 'event', supersededAt: null }] as never,
+      waiters: [], deliveries: [], fireLatch: null, composedRoot: null,
+    });
+    // The ordinary reachability reader still reports the wake itself truthfully.
+    expect((await readEventConditionReachability(trigger, { inspect })).basis).toBe('fired');
+    const condition = await readEventConditionReachability(trigger, { inspect, requireSpecificCondition: true });
+    expect(condition).toMatchObject({ verdict: 'unknown', authoritative: false });
+    expect(condition.basis).not.toBe('fired');
+    expect(condition.evidence).toContain('specific release condition');
+  });
+
+  it('accepts an exact required subject key without requiring an announcement', async () => {
+    const reachability = await readEventConditionReachability('work-item:unblocked:WI-specific', {
+      requireSpecificCondition: true,
+      inspect: async () => ({ announcements: [], waiters: [], deliveries: [], composedRoot: null,
+        fireLatch: { lastFiredAt: '2026-08-27T11:30:00.000Z' } as never }),
     });
     expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
   });
@@ -68,6 +121,7 @@ describe('external condition reachability', () => {
           {
             causalGeneration: 1,
             firedAt: '2026-08-27T11:30:00.000Z',
+            firedReason: 'event',
             supersededAt: '2026-08-27T11:45:00.000Z',
           },
         ] as never,
@@ -155,5 +209,106 @@ describe('external condition reachability', () => {
     expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'missing-registration', authoritative: false });
     expect(loadComposedRoot).toHaveBeenCalledWith(395);
     expect(loadComposedRootAnchor).not.toHaveBeenCalled();
+  });
+
+  describe('predicate-watch keys (EI-25832685839560534)', () => {
+    const PREDICATE_ID = '42b3467b-b631-44a3-99bd-3d3a9a994da7';
+    const PREDICATE_KEY = `predicate:${PREDICATE_ID}`;
+    const emptyInspect = async () => ({
+      announcements: [],
+      waiters: [],
+      deliveries: [],
+      fireLatch: null,
+      composedRoot: null,
+    });
+
+    it('treats an active predicate watch on the exact key as a live producer', async () => {
+      const loadPredicateWatch = vi.fn(async () => ({ eventKey: PREDICATE_KEY, active: true }));
+      const reachability = await readEventConditionReachability(PREDICATE_KEY, {
+        now: new Date(NOW),
+        inspect: emptyInspect,
+        loadPredicateWatch,
+      });
+
+      expect(reachability).toMatchObject({ verdict: 'reachable', basis: 'live-resolver', authoritative: true });
+      expect(loadPredicateWatch).toHaveBeenCalledWith(PREDICATE_ID);
+    });
+
+    it('keeps an inactive predicate watch unknown', async () => {
+      const reachability = await readEventConditionReachability(PREDICATE_KEY, {
+        now: new Date(NOW),
+        inspect: emptyInspect,
+        loadPredicateWatch: async () => ({ eventKey: PREDICATE_KEY, active: false }),
+      });
+
+      expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'missing-registration', authoritative: false });
+    });
+
+    it('does not accept a row whose event key differs from the awaited key', async () => {
+      const reachability = await readEventConditionReachability(PREDICATE_KEY, {
+        now: new Date(NOW),
+        inspect: emptyInspect,
+        loadPredicateWatch: async () => ({ eventKey: 'predicate:some-other-id', active: true }),
+      });
+
+      expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'missing-registration' });
+    });
+
+    it('keeps a missing predicate watch row unknown', async () => {
+      const reachability = await readEventConditionReachability(PREDICATE_KEY, {
+        now: new Date(NOW),
+        inspect: emptyInspect,
+        loadPredicateWatch: async () => null,
+      });
+
+      expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'missing-registration' });
+    });
+
+    it('never loads a predicate watch for a non-predicate key or a bare prefix', async () => {
+      const loadPredicateWatch = vi.fn(async () => ({ eventKey: 'predicate:', active: true }));
+      for (const key of ['composed-root:395', 'predicate:']) {
+        const reachability = await readEventConditionReachability(key, {
+          now: new Date(NOW),
+          inspect: emptyInspect,
+          loadComposedRoot: async () => null,
+          loadComposedRootAnchor: async () => null,
+          loadPredicateWatch,
+        });
+        expect(reachability.verdict).toBe('unknown');
+      }
+      expect(loadPredicateWatch).not.toHaveBeenCalled();
+    });
+
+    it('lets an active predicate watch satisfy requireSpecificCondition, and only an active one', async () => {
+      const live = await readEventConditionReachability(PREDICATE_KEY, {
+        now: new Date(NOW),
+        inspect: emptyInspect,
+        loadPredicateWatch: async () => ({ eventKey: PREDICATE_KEY, active: true }),
+        requireSpecificCondition: true,
+      });
+      expect(live).toMatchObject({ verdict: 'reachable', basis: 'live-resolver' });
+
+      const inactive = await readEventConditionReachability(PREDICATE_KEY, {
+        now: new Date(NOW),
+        inspect: emptyInspect,
+        loadPredicateWatch: async () => ({ eventKey: PREDICATE_KEY, active: false }),
+        requireSpecificCondition: true,
+      });
+      expect(inactive).toMatchObject({ verdict: 'unknown', basis: 'unmeasured' });
+      expect(inactive.evidence).toContain('subject-bound evidence is required');
+    });
+
+    it('fails soft to unmeasured when the predicate watch lookup throws', async () => {
+      const reachability = await readEventConditionReachability(PREDICATE_KEY, {
+        now: new Date(NOW),
+        inspect: emptyInspect,
+        loadPredicateWatch: async () => {
+          throw new Error('pg down');
+        },
+      });
+
+      expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'unmeasured', authoritative: false });
+      expect(reachability.evidence).toContain('pg down');
+    });
   });
 });

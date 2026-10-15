@@ -134,6 +134,38 @@ const ALLOWLIST: Record<string, Classification> = {
       'presence-tied reader/reaper treats scope_ref as the current holder. Rebinding it would wrongly transfer a ' +
       'display lease (and would corrupt pot/workspace refs), so callers explicitly resolve or re-register the scope.',
   },
+  'trigger_sources.scope_ref': {
+    status: 'exempt',
+    reason:
+      'Migration 1324 EXPAND-phase compat VIEW over data_sources (SELECT * FROM harness_shared.data_sources), kept ' +
+      'only so the deployed release still resolves the old table name; same column, same exemption as ' +
+      'data_sources.scope_ref below. Remove this entry when the CONTRACT migration drops the view.',
+  },
+  'data_sources.scope_ref': {
+    status: 'exempt',
+    reason:
+      "enterprise-data-sources-2026-10-01 D-010 (migration 1317; table renamed from trigger_sources by 1324): the " +
+      "data-source CORPUS-scope reference — a pot " +
+      "slug, non-null iff scope='pot' (data_sources_scope_ref_chk) and NULL for scope='personal'|'organization'. " +
+      'It is a configuration selector naming which pot a connector ingests into, never an ownerId/sid; the ' +
+      'personal owner lives in owner_user_id (a human user id). No presence-tied reader/reaper keys on it, and ' +
+      'rebinding it would corrupt the pot ref. Same class as desktop_sessions.scope_ref.',
+  },
+  'governance_policy_layers.scope_ref': {
+    status: 'exempt',
+    reason:
+      'papercusp-enterprise-readiness-roadmap-2026-10-09 P-005 (migration 1497): the governance-policy LAYER scope, ' +
+      "paired with level='organization'|'department'|'workspace' and unique per (level, scope_ref). It holds an org, " +
+      'department or workspace id, never an agent ownerId/sid. No presence-tied reader/reaper keys on it, and ' +
+      'rebinding it would move a policy layer onto the wrong tenant. Same class as data_sources.scope_ref.',
+  },
+  'governance_policy_layer_versions.scope_ref': {
+    status: 'exempt',
+    reason:
+      'Migration 1497 append-only versioned evidence of governance_policy_layers: a historical copy of the ' +
+      'layer scope (org/department/workspace id) at each version. It is provenance, not a current-holder claim, ' +
+      'so rewriting it would falsify the audit record. Same exemption as governance_policy_layers.scope_ref.',
+  },
   'agent_activity.owner_id': {
     status: 'exempt',
     reason: 'append-only activity LOG (who did what, when) — not a current-holder claim any reader treats as live.',

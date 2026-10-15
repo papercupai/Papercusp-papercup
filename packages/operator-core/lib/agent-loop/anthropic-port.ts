@@ -277,6 +277,9 @@ export interface AnthropicPortOpts {
   rawStream?: (
     params: Record<string, unknown>,
     signal?: AbortSignal,
+    /** The routing the default stream uses (priority, account pin, owner), so an injected
+     * stream can vary by it too (WI-6554700010009845; same class as EI-19448665215423873). */
+    route?: { priority?: string; account?: string; ownerId?: string },
   ) => Promise<AnthropicMessageStream> | AnthropicMessageStream;
 }
 
@@ -347,7 +350,7 @@ export function createAnthropicPort(opts: AnthropicPortOpts = {}): ModelPort {
       let raw: AnthropicMessageStream;
       try {
         raw = opts.rawStream
-          ? await opts.rawStream(params, req.signal)
+          ? await opts.rawStream(params, req.signal, { priority: req.priority, account: req.account, ownerId: req.ownerId })
           : await defaultRawStream(params, req.priority, req.account, req.ownerId, req.signal);
       } catch (e) {
         yield { type: 'error', message: e instanceof Error ? e.message : String(e) };

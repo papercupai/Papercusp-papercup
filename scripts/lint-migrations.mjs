@@ -72,7 +72,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
-import { resolveScriptPgUrl } from "./lib/pg-url.mjs";
+import { describePgUrlResolution, resolveScriptPgUrl } from "./lib/pg-url.mjs";
 import { selectExplicitBasenames } from "./lib/explicit-files.mjs";
 import {
   isLiveCodeAt,
@@ -1174,8 +1174,9 @@ export function reservationFilenameMismatches(
 }
 
 async function fetchReservationState() {
-  // env → .env.local → embedded-pg discovery file → native :5432 dev fallback.
-  const url = resolveScriptPgUrl().url;
+  // env → apps/operator/.env.local → embedded-pg discovery file → native :5432 dev fallback.
+  const resolution = resolveScriptPgUrl();
+  const url = resolution.url;
 
   const postgres = (await import("postgres")).default;
   const sql = postgres(url, {
@@ -1192,6 +1193,10 @@ async function fetchReservationState() {
     return {
       reservations,
       appliedFilenames: new Set(applied.map((row) => String(row.filename))),
+      // Named in every reservation finding: a red read from the WRONG database (a desktop
+      // sidecar via the discovery file) is otherwise indistinguishable from a real one
+      // (EI-25622462074429450).
+      checkedAgainst: describePgUrlResolution(resolution),
     };
   } finally {
     await sql.end({ timeout: 2 }).catch(() => {});
@@ -1421,7 +1426,7 @@ async function main() {
     .filter(Boolean)
     .map((n) => Number.parseInt(n, 10));
   try {
-    const { reservations, appliedFilenames } = await fetchReservationState();
+    const { reservations, appliedFilenames, checkedAgainst } = await fetchReservationState();
     const reserved = new Set(reservations.map((row) => Number(row.num)));
     const unreserved = unreservedNumbers(fileNums, reserved);
     if (unreserved.length) {
@@ -1429,6 +1434,7 @@ async function main() {
       console.error(
         `✗ migration number(s) ≥${ENFORCED_FROM} on disk without a reservation row (use db:next-migration): ${unreserved.join(", ")}`,
       );
+      console.error(`  checked against: ${checkedAgainst}`);
     }
     // The guard on the frozen-exemption list: every entry must ACTUALLY be
     // applied. An entry that is not applied is still editable, so it must be
@@ -1461,6 +1467,7 @@ async function main() {
           `   ${mismatch.file}: number ${mismatch.num} is reserved for ${mismatch.reservedFilename ?? "<null>"}`,
         );
       }
+      console.error(`  checked against: ${checkedAgainst}`);
     }
   } catch (e) {
     console.log(

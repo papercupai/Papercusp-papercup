@@ -79,8 +79,8 @@ export function shapePlansList(
     const r = (row ?? {}) as Record<string, unknown>;
     const { open, done } = openDoneCounts(r.itemCounts);
     const lifecycle =
-      r.lifecycle && typeof r.lifecycle === "object"
-        ? (r.lifecycle as Record<string, unknown>)
+      r.derivedLifecycle && typeof r.derivedLifecycle === "object"
+        ? (r.derivedLifecycle as Record<string, unknown>)
         : null;
     const contradiction =
       lifecycle?.contradiction && typeof lifecycle.contradiction === "object"

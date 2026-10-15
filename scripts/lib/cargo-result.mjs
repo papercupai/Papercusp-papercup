@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 
 const GIB = 1024 ** 3;
 const AFFECTED_CARGO_WORKSPACE = '@papercusp/desktop';
@@ -41,6 +41,168 @@ export function shouldRunAffectedCargoSuite({
     runAll === true ||
     new Set(affectedWorkspaceNames ?? []).has(AFFECTED_CARGO_WORKSPACE)
   );
+}
+
+/**
+ * Resolve the harness/workspace a cargo test_runs row is attributed to (WI-10006828).
+ *
+ * The native reporter used to insert rows with NULL harness_slug and workspace_id, so no
+ * Rust test result could ever be bound as spec proof (`plans:bind-spec-evidence` matches a
+ * row by harness, and a NULL row is invisible to every workspace-scoped reader). This mirrors
+ * the vitest reporter's precedence EXACTLY — `resolveTestRunHarnessSlug` /
+ * `resolveTestRunWorkspaceId` in libs/test-config/src/admin-test-runs-reporter.ts — so a row
+ * from either framework lands in the same scope for the same env. It is a copy, not an import,
+ * because this file must stay dependency-free (see the header); the guard test pins the two
+ * precedence lists against each other.
+ *
+ * green-checkpoint rebuilds its children's env from an allowlist that keeps none of these
+ * keys, so gate rows stay unattributed by design — that exclusion is preserved, not undone.
+ */
+export function resolveCargoTestRunScope(env = process.env) {
+  return {
+    harnessSlug:
+      env.PAPERCUSP_TEST_RUN_HARNESS ||
+      env.HARNESS_SLUG ||
+      env.PAPERCUSP_HARNESS_SLUG ||
+      null,
+    workspaceId:
+      env.PAPERCUSP_TEST_RUN_WORKSPACE ||
+      env.PAPERCUSP_WORKSPACE_ID ||
+      env.PAPERCUSP_WORKSPACE ||
+      null,
+  };
+}
+
+const CARGO_TEST_RUN_SOURCES = new Set(['ci', 'local', 'admin-ui', 'mutation-probe']);
+
+/**
+ * The ledger `source` for a cargo row — the vitest reporter's `resolveTestRunSource`, mirrored
+ * (WI-10006828). Without it a mutation probe around a Rust test recorded its deliberately
+ * failing mutant as an ordinary `local` failure, so no cargo test could ever supply the
+ * mutation evidence spec-test adequacy demands, and the mutant polluted repository-health reads.
+ */
+export function resolveCargoTestRunSource(env = process.env) {
+  if (env.PAPERCUSP_MUTATION_PROBE === '1') return 'mutation-probe';
+  const override = env.PAPERCUSP_TEST_RUN_SOURCE;
+  if (override && CARGO_TEST_RUN_SOURCES.has(override)) return override;
+  return env.CI ? 'ci' : 'local';
+}
+
+/**
+ * WI-10006990: the Cargo writer must report every attempted ledger insert to
+ * the mutation probe. A timeout is distinct because the query may still land;
+ * a completed query without a returned id is never claimed as inserted.
+ * @param {{filePath: string, status: string, returnedId?: unknown, error?: unknown}} input
+ * @returns {{filePath: string, status: string, outcome: 'inserted', id: string}
+ *   | {filePath: string, status: string, outcome: 'timeout' | 'failed', reason: string}}
+ */
+export function cargoTestRunReceipt({ filePath, status, returnedId, error } = {}) {
+  if (returnedId !== undefined && returnedId !== null) {
+    return { filePath, status, outcome: 'inserted', id: String(returnedId) };
+  }
+
+  const reason = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : 'insert_returned_no_id';
+  return {
+    filePath,
+    status,
+    outcome: reason.startsWith('pg_insert_timeout') ? 'timeout' : 'failed',
+    reason: reason.slice(0, 200),
+  };
+}
+
+/**
+ * The probe's phase (`baseline`/`mutant`) for a cargo row, mirroring `resolveMutationProbePhase`.
+ * Null outside a probe — never an invented phase.
+ */
+export function resolveCargoMutationPhase(env = process.env) {
+  if (env.PAPERCUSP_MUTATION_PROBE !== '1') return null;
+  return env.PAPERCUSP_MUTATION_PHASE?.trim() || null;
+}
+
+/** Mirrors `MAX_RECORDED_FAILED_CASES` / `isRecordedCaseTitle` in libs/test-config/src/execution-details.ts. */
+const MAX_CARGO_FAILED_CASES = 64;
+const MAX_CARGO_CASE_TITLE_CHARS = 2_048;
+function isCargoCaseTitle(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_CARGO_CASE_TITLE_CHARS
+    && value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/**
+ * A COMPLETE `execution_details` record (schemaVersion 1) for one cargo row (WI-10006849).
+ * The contract parser (`parseTestRunExecutionDetails`) is strict: a partial record — the bare
+ * `{ mutationPhase }` WI-10006828 wrote — parses as malformed, and the spec evaluator then treats
+ * the run as having NO measured failing case, so no cargo mutation run could ever establish
+ * falsifiability. `failedCaseTitles` carries cargo's own test path (`tests::name`), the identity
+ * a spec binding declares in `adequacy.testCases`. `worktree` is the provenance the reporter
+ * MEASURED around the run (`cargoWorktreeProvenance`, WI-10006860); without one the record is
+ * fail-safe dirty, never an unmeasured claim of a clean tree.
+ */
+export function buildCargoExecutionDetails({
+  root, filePath, passed = 0, failed = 0, skipped = 0, collectionFailed = false,
+  failedCaseTitles = [], passedCaseTitles = [], testLayer, harnessSlug = null, workspaceId = null, env = process.env,
+  worktree = UNMEASURED_CARGO_WORKTREE,
+}) {
+  const titles = collectionFailed
+    ? []
+    : [...new Set(failedCaseTitles.filter(isCargoCaseTitle))].slice(0, Math.min(MAX_CARGO_FAILED_CASES, failed));
+  const passingTitles = collectionFailed
+    ? []
+    : [...new Set(passedCaseTitles.filter(isCargoCaseTitle))]
+      .filter((title) => !titles.includes(title)).slice(0, Math.min(MAX_CARGO_FAILED_CASES, passed));
+  return {
+    schemaVersion: 1,
+    root,
+    filePath,
+    runGroupId: null,
+    workspaceId,
+    harnessSlug,
+    testNamePattern: null,
+    passed,
+    failed,
+    skipped,
+    collectionFailed,
+    ...(titles.length > 0 ? { failedCaseTitles: titles } : {}),
+    ...(passingTitles.length > 0 ? { passedCaseTitles: passingTitles } : {}),
+    ...(testLayer === 'unit' || testLayer === 'integration' ? { testLayer } : {}),
+    mutationPhase: resolveCargoMutationPhase(env),
+    commitSha: worktree.commitSha,
+    worktreeDirty: worktree.worktreeDirty,
+    ...(worktree.worktreeDirty ? { worktreeDirtyReason: worktree.worktreeDirtyReason } : {}),
+  };
+}
+
+/** The provenance of a run nobody snapshotted: dirty, with no commit (WI-10006860). */
+export const UNMEASURED_CARGO_WORKTREE = Object.freeze({
+  commitSha: null,
+  worktreeDirty: true,
+  worktreeDirtyReason: 'the worktree was not snapshotted around the cargo run',
+});
+
+/**
+ * WI-10006860: the worktree provenance of one cargo run, from git snapshots taken immediately
+ * before and after it. `harness_shared.test_runs.worktree_dirty` is NOT NULL DEFAULT false, so a
+ * reporter that omits the column claims every run — in-tree mutants included — came from a clean
+ * tree, and spec freshness then rates the run current. `describeDirt` is the vitest reporter's
+ * own `describeWorktreeDirt` (same semantics: unreadable HEAD or status, a moved HEAD, or any
+ * porcelain line is dirt), injected so both frameworks answer one question one way. A missing
+ * snapshot or a throwing describer is dirty, never clean.
+ */
+export function cargoWorktreeProvenance({ before, after, describeDirt, resolveCommit = (commit) => commit }) {
+  if (!before || !after || typeof describeDirt !== 'function') return UNMEASURED_CARGO_WORKTREE;
+  let reason;
+  try {
+    reason = describeDirt(before, after);
+  } catch (err) {
+    reason = `worktree snapshot comparison failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  const commitSha = resolveCommit(after.commit ?? before.commit ?? null) ?? null;
+  return reason === null
+    ? { commitSha, worktreeDirty: false, worktreeDirtyReason: null }
+    : { commitSha, worktreeDirty: true, worktreeDirtyReason: reason };
 }
 
 /**
@@ -928,14 +1090,87 @@ export function stripCargoTerminalControlSequences(output) {
  * @returns {CargoTestResult[]}
  */
 export function parseCargoTestResultLines(output) {
-  /** @type {CargoTestResult[]} */
+  return parseCargoMeasuredTestResults(output).map(({ name, outcome }) => ({ name, outcome }));
+}
+
+/** Cargo's target announcement, rather than a caller claim, supplies the layer.
+ * Keep stdout/stderr in arrival order: concatenating them after exit loses the
+ * association between a target and its result lines. Unannounced/doc tests have
+ * no measured layer. The legacy result parser supplies matching counts for callers
+ * that need only counts. */
+export function parseCargoMeasuredTestResults(output, { root, targets = [] } = {}) {
   const results = [];
-  const re = /^test (\S+) \.\.\. (ok|FAILED|ignored)\s*$/gm;
-  let match;
-  const normalized = stripCargoTerminalControlSequences(output);
-  while ((match = re.exec(normalized))) {
-    results.push({ name: match[1], outcome: match[2] });
+  const lines = stripCargoTerminalControlSequences(output).split('\n');
+  // Stable Cargo build messages bind each executable to its actual source.
+  // Hash-suffixed binary names alone cannot distinguish identical target names
+  // in different workspace packages. Never choose the first ambiguous match.
+  const artifacts = new Map();
+  for (const line of lines) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const message = JSON.parse(line);
+      if (message.reason === 'compiler-artifact' && typeof message.executable === 'string' &&
+          typeof message.target?.src_path === 'string') {
+        artifacts.set(resolve(message.executable), message.target.src_path);
+      }
+    } catch { /* ordinary libtest output is not a build message */ }
   }
+  let target = {};
+  let inFailureOutput = false;
+  const frames = [];
+  const flushOuter = () => {
+    if (frames.length) results.push(...frames[0].results);
+    frames.length = 0;
+  };
+  for (const line of lines) {
+    const announcement = /^\s*Running (.+) \((.+)\)\s*$/.exec(line);
+    if (announcement || /^\s*Doc-tests\s/.test(line)) {
+      flushOuter();
+      inFailureOutput = false;
+      target = {};
+      if (announcement) {
+        const label = announcement[1];
+        const executable = announcement[2];
+        const testLayer = label.startsWith('unittests ') ? 'unit'
+          : label.startsWith('tests/') ? 'integration' : undefined;
+        if (testLayer) target.testLayer = testLayer;
+        const sourceLabel = label.replace(/^unittests /, '');
+        const binaryName = basename(executable).replace(/-[a-f0-9]+(?:\.exe)?$/, '');
+        const candidates = targets.filter(t => typeof t.name === 'string' &&
+          t.name.replace(/-/g, '_') === binaryName && typeof t.src_path === 'string' &&
+          t.src_path.split(sep).join('/').endsWith('/' + sourceLabel));
+        const sourcePath = artifacts.get(resolve(executable)) ??
+          (candidates.length === 1 ? candidates[0].src_path : undefined);
+        if (root && sourcePath) {
+          const path = relative(root, sourcePath).split(sep).join('/');
+          if (path && path !== '..' && !path.startsWith('../')) target.testFilePath = path;
+        }
+      }
+      continue;
+    }
+    if (/^---- .+ stdout ----$/.test(line)) inFailureOutput = true;
+    if (/^test result:/.test(line)) {
+      // Child libtest harnesses inherit stdout. Their closing summary pops only
+      // the child frame; the parent's target/layer remains in force.
+      const frame = frames.pop();
+      if (frame && frames.length === 0) results.push(...frame.results);
+      if (frames.length === 0) target = {};
+      inFailureOutput = false;
+      continue;
+    }
+    if (inFailureOutput) continue;
+    if (/^running \d+ tests?\s*$/.test(line)) {
+      frames.push({ target: { ...target }, results: [] });
+      continue;
+    }
+    const match = /^test (\S+) \.\.\. (ok|FAILED|ignored)(,[^\r\n]*)?[ \t]*$/.exec(line);
+    if (match && (match[3] === undefined || match[2] === 'ignored')) {
+      const frame = frames.at(-1);
+      (frame?.results ?? results).push({ name: match[1], outcome: match[2], ...(frame?.target ?? target) });
+    }
+  }
+  // Preserve completed case lines if the outer binary crashes before its summary.
+  flushOuter();
   return results;
 }
 

@@ -96,6 +96,22 @@ describe('clampForWire', () => {
 });
 
 describe('runLoopChatTurn', () => {
+  it('forwards early failed-request identity and awaits the capture hook even with terminal events deferred', async () => {
+    const request = { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-chat-failed' } };
+    const { port } = scriptedPort([[{ type: 'provider_request', request, servedAccount: 'account-one' },
+      { type: 'error', message: 'provider failed' }]]);
+    const { sink, events } = recordingSink();
+    const captured: unknown[] = [];
+    const result = await runLoopChatTurn({ chatId: 'c', workspaceId: 'w', system: '', transcript: [turn('user', 'hi')],
+      port, sink, deferTerminalEvent: true, onProviderRequest: async info => { captured.push(info); } });
+    expect(captured).toEqual([{ stepIndex: 0, request, servedAccount: 'account-one' }]);
+    expect(events.find(e => e.name === 'provider_request')?.data).toEqual({ type: 'provider_request', stepIndex: 0, request, servedAccount: 'account-one' });
+    expect(events.some(e => ['step_end', 'done', 'error'].includes(e.name))).toBe(false);
+    expect(result.providerRequests).toEqual(captured);
+    expect(result.stepCount).toBe(0);
+    expect(result.stopReason).toBe('error');
+    expect(result.costUsd).toBe(0);
+  });
   it('streams a text turn: native wire events + totals for persistence', async () => {
     const { port, requests } = scriptedPort([
       textStop('hello from the loop', { inputTokens: 11, outputTokens: 4 }),
@@ -352,6 +368,65 @@ function mkRow(over: Partial<LoopSessionRow> = {}): LoopSessionRow {
 }
 
 describe('P-009 session resume + persist', () => {
+  it('never starts compaction after the main request capture failed', async () => {
+    const { store, saves } = fakeSessions(null);
+    const request = { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-main-failed' } };
+    const { port, requests } = scriptedPort([[{ type: 'provider_request', request }], textStop('must not dispatch')]);
+    const { sink } = recordingSink();
+    const result = await runLoopChatTurn({ chatId: 'c', workspaceId: 'ws', system: '',
+      transcript: [turn('user', 'x'.repeat(250_000)), turn('assistant', 'old answer'), turn('user', 'recent')],
+      port, sink, sessions: store, onProviderRequest: async () => { throw new Error('capture unavailable'); } });
+    expect(requests).toHaveLength(1);
+    expect(saves).toHaveLength(0);
+    expect(result.errorMessage).toBe('capture unavailable');
+    expect(result.providerRequests).toEqual([{ stepIndex: 0, request }]);
+  });
+  it.each([false, true])('captures compaction identity before terminal delivery (deferred=%s)', async deferred => {
+    const { store, saves } = fakeSessions(null);
+    const request = { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-compaction' } };
+    const response = { provider: 'openrouter', id: 'gen-compaction', reportedCostUsd: 0.001 };
+    const { port, requests } = scriptedPort([textStop('answer', { inputTokens: 10, outputTokens: 3 }),
+      [{ type: 'provider_request', request, servedAccount: 'local-account' }, { type: 'text_delta', text: 'summary' },
+        { type: 'stop', reason: 'end_turn', usage: { inputTokens: 8, outputTokens: 2 }, providerResponse: response }]]);
+    const { sink, events } = recordingSink();
+    const captured: unknown[] = [];
+    const result = await runLoopChatTurn({ chatId: 'compaction-chat', workspaceId: 'ws', system: '',
+      transcript: [turn('user', 'x'.repeat(250_000)), turn('assistant', 'old answer'), turn('user', 'recent')],
+      port, sink, sessions: store, ownerId: 'owned-chat', deferTerminalEvent: deferred,
+      onProviderRequest: async info => {
+        expect(events.some(e => ['done', 'error'].includes(e.name))).toBe(false);
+        captured.push(structuredClone(info));
+      } });
+    expect(captured).toEqual([{ stepIndex: 1, purpose: 'compaction', request, servedAccount: 'local-account' }]);
+    expect(result.providerRequests).toEqual(captured);
+    expect(result.compactionProviderResponse).toEqual(response);
+    expect(result.tokensIn).toBe(18);
+    expect(result.tokensOut).toBe(5);
+    expect(requests[1].ownerId).toBe('owned-chat');
+    expect(saves[0].summary).toBe('summary');
+    expect(events.filter(e => e.name === 'provider_request')[0].data).toMatchObject({ purpose: 'compaction' });
+    if (deferred) expect(events.some(e => ['done', 'error'].includes(e.name))).toBe(false);
+    else expect(events.at(-1)?.data).toMatchObject({ type: 'done', usage: { inputTokens: 18, outputTokens: 5 } });
+  });
+
+  it.each([false, true])('fails visibly on compaction capture rejection even when persistence degrades (deferred=%s)', async deferred => {
+    const { store, saves } = fakeSessions(null);
+    const request = { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-compaction-failed' } };
+    const { port } = scriptedPort([textStop('answer'), [{ type: 'provider_request', request },
+      { type: 'text_delta', text: 'must not be pulled' }]]);
+    const { sink, events } = recordingSink();
+    const result = await runLoopChatTurn({ chatId: 'c', workspaceId: 'ws', system: '',
+      transcript: [turn('user', 'x'.repeat(250_000)), turn('assistant', 'old answer'), turn('user', 'recent')],
+      port, sink, sessions: store, deferTerminalEvent: deferred,
+      onProviderRequest: async () => { throw new Error('durable capture unavailable'); } });
+    expect(result.errorMessage).toContain('durable capture unavailable');
+    expect(result.stopReason).toBe('error');
+    expect(result.providerRequests).toEqual([{ stepIndex: 1, purpose: 'compaction', request }]);
+    expect(result.compactionProviderResponse).toBeUndefined();
+    expect(saves).toHaveLength(0);
+    expect(events.some(e => e.name === 'done')).toBe(false);
+    expect(events.filter(e => e.name === 'error')).toHaveLength(deferred ? 0 : 1);
+  });
   const storedMessages = [
     { role: 'user' as const, content: [{ type: 'text' as const, text: 'q1' }] },
     {

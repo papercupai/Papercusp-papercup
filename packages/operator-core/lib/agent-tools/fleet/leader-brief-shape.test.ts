@@ -224,6 +224,43 @@ function largeBrief() {
   };
 }
 
+// P-007 / R-17: the silent members `headcount.current` excluded must survive shaping.
+describe('leader-brief shaping keeps silentMembers', () => {
+  it('keeps measured silent members on every tier, capping the id list at 8', () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `su-quiet-${i}`);
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeLeaderBrief(
+        {
+          ok: true,
+          summary: {
+            fleet: 'f',
+            silentMembers: { status: 'measured', ownerIds: ids, thresholdMs: 1_200_000, paused: false },
+          },
+        },
+        tier,
+      ) as Record<string, any>;
+      expect(out.summary.silentMembers).toEqual({
+        status: 'measured',
+        ownerIds: ids.slice(0, 8),
+        ownerIdsTruncated: 10,
+        thresholdMs: 1_200_000,
+        paused: false,
+      });
+    }
+  });
+
+  it('keeps an unknown silent-member read with its reason instead of dropping it', () => {
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: { fleet: 'f', silentMembers: { status: 'unknown', reason: 'execution or await leg unreadable' } },
+      },
+      'trimmed',
+    ) as Record<string, any>;
+    expect(out.summary.silentMembers).toEqual({ status: 'unknown', reason: 'execution or await leg unreadable' });
+  });
+});
+
 describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
   it('keeps the owner-directive root distinct and strips diagnostic targetRef from its action', () => {
     const out = shapeLeaderBrief({
@@ -663,7 +700,7 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     };
 
     expect(out.summary.headcount.countEvidence.productive?.contract.population.id).toBe(
-      'live-roster-recent-execution-intersection',
+      'live-roster-non-silent-intersection',
     );
     expect(out.summary.headcount.countEvidence.liveRoster?.contract.population.id).toBe('fleet-live-launch-roster');
     expect(out.summary.headcount.countEvidence.transactionWorkerReady?.contract.population.id).toBe(
@@ -752,6 +789,44 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       fleetHeadcountVsExecutableFrontierAlertReason: expect.stringContaining('executableWidth=2'),
       fleetHeadcountVsExecutableFrontierAlertFalsifier: { tool: 'fleet:leader-brief' },
     });
+  });
+
+  // P-005 / D-030 step 5: the under-staff alarm must reach the leader at every
+  // tier — the summary flag, the reason and the read-only falsifier.
+  const UNDER_STAFFED = {
+    fleetUnderStaffedAlertReason:
+      '0 of 3 target worker(s) are productive (short 3). Target 3 is recorded but supervise was never ' +
+      'granted, so the governor does not hold it. Repair: fleet:headcount-target { target, supervise:true }.',
+    fleetUnderStaffedAlertFalsifier: {
+      tool: 'fleet:assignments',
+      check: "fleet:assignments { fleet: 'short-fleet' }",
+      measurement: 'each live member and the work-item it holds right now',
+      kills: '3 or more members are live and each holds a claim',
+    },
+  };
+
+  it('keeps the under-staff alert, its reason and falsifier in the trimmed projection', () => {
+    const out = shapeLeaderBrief(
+      { ok: true, summary: { fleet: 'short-fleet', members: 1, fleetUnderStaffedAlert: true }, ...UNDER_STAFFED },
+      'trimmed',
+    ) as Record<string, unknown>;
+    expect(out.summary).toMatchObject({ fleetUnderStaffedAlert: true });
+    expect(out).toMatchObject({
+      fleetUnderStaffedAlertReason: expect.stringContaining('0 of 3 target worker(s)'),
+      fleetUnderStaffedAlertFalsifier: { tool: 'fleet:assignments' },
+    });
+  });
+
+  it('keeps the under-staff alert, its reason and falsifier when emergency shaping drops rows', () => {
+    const input = { ...largeBrief(), ...UNDER_STAFFED };
+    (input.summary as Record<string, unknown>).fleetUnderStaffedAlert = true;
+
+    const out = shapeLeaderBrief(input, 'trimmed') as Record<string, unknown>;
+
+    expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed', emergency: true });
+    expect(out.summary).toMatchObject({ fleetUnderStaffedAlert: true });
+    expect(out.fleetUnderStaffedAlertReason).toEqual(expect.stringContaining('0 of 3 target worker(s)'));
+    expect(out.fleetUnderStaffedAlertFalsifier).toMatchObject({ tool: 'fleet:assignments' });
   });
 
   it('keeps the measured dependency ranking and its population contract together', () => {
@@ -1305,5 +1380,27 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     });
     expect(out.membersTruncated).toMatchObject({ total: 53, shown: 0 });
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+});
+
+describe('P-004 / R-4 stalled-item rotation survives shaping', () => {
+  it('keeps the named item, its age, the ready count and the required action, plus the summary count', () => {
+    const requiredAction = 'require ONE accountable action: finish, split, record a real blocker, or release';
+    const out = shapeLeaderBrief({
+      ok: true,
+      summary: { fleet: 'fdr', stalled_item: 1 },
+      members: [{
+        agentId: 'su-busy',
+        stalledItem: {
+          item: 'WI-77', itemTitle: 'week-old item', noAdvanceMin: 45,
+          advancedAt: '2026-07-10T11:15:00.000Z', advanceSignal: 'claim_acquired_at',
+          readyWaiting: 2, requiredAction,
+        },
+      }],
+    }, 'trimmed') as Record<string, any>;
+    expect(out.summary.stalled_item).toBe(1);
+    expect(out.members[0].stalledItem).toMatchObject({
+      item: 'WI-77', noAdvanceMin: 45, advancedAt: '2026-07-10T11:15:00.000Z', readyWaiting: 2, requiredAction,
+    });
   });
 });

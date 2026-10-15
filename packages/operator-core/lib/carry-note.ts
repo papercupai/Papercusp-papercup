@@ -52,6 +52,13 @@ import {
 } from './freshness';
 import { resolveCurrentTokens } from './freshness/resolvers';
 import { stampDeclaredDeps } from './freshness/stamp';
+import type { DepStamp } from './freshness/index';
+import {
+  mergeCarryRefStampsIntoDeps,
+  parseCarryRefStamps,
+  reconcileCarryRefStamps,
+  stampCarryRefs,
+} from './carry-ref-stamps';
 
 /**
  * First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
@@ -115,6 +122,11 @@ export interface CheckEntry {
   claim: string;
   /** A concrete probe a successor runs to falsify/confirm the claim before relying on it. */
   recheck?: string;
+  /** EI-23771449112267271: the concrete result or observation that means this claim is FALSE
+   *  and must be retracted or corrected — the same contract `facts:assert`'s `falsifier` ships.
+   *  A probe says how to LOOK; only a falsifier says what would mean you are WRONG, so without
+   *  one any non-contradicting observation reads as confirmation. */
+  falsifier?: string;
   /** Optional typed, schema-versioned replay probe. `recheck` remains the human
    * explanation; this envelope is data-only and is validated by checkpoint writers. */
   probe?: ContinuityProbe;
@@ -214,7 +226,43 @@ export const CHECKPOINT_BODY_CAP_CHARS = 32000;
  * must not re-create is EI-18723223344390510, where a nested row quietly dropped
  * fields and destroyed a verified check's evidence with no signal.
  */
-export const CARRY_ROW_SOFT_CAPS = { claim: 500, recheck: 300, verified: 300, observed: 300, contested: 300 } as const;
+export const CARRY_ROW_SOFT_CAPS = {
+  claim: 500,
+  recheck: 300,
+  falsifier: 300,
+  verified: 300,
+  observed: 300,
+  contested: 300,
+} as const;
+
+/** EI-23771449112267271: prefix the writer stamps on evidence recorded with
+ *  `sampleAdequate: false` — "probed, but the sample could not discriminate the claim from its
+ *  negation". The evidence is kept as CONTEXT on a `?` row (see {@link CheckEntry.observed}), never
+ *  as a ✓, and the prefix is what keeps that state visible at the point of reading. */
+export const SAMPLE_INCONCLUSIVE_PREFIX = 'sample inconclusive: ';
+
+/** Warn-only advisory text for a VERIFIED row that carries no `falsifier` — the same contract
+ *  `facts:assert` enforces with `recheckMissing`. A probe says how to LOOK; only a falsifier says
+ *  what would mean the claim is WRONG, so a ✓ without one cannot expose an inadequate sample. */
+export const FALSIFIER_MISSING_NOTE =
+  'Verified (✓) check row(s) carry no `falsifier`. A probe alone says how to look, never what would mean the ' +
+  'claim is FALSE, so any non-contradicting sample reads as confirmation. Add `falsifier` (the concrete result ' +
+  'that means the claim is false and must be retracted or corrected); if you probed but the sample could not ' +
+  'discriminate (e.g. both samples sat on the same side of the boundary the claim is about), pass ' +
+  '`sampleAdequate:false` so the row renders ? instead of ✓. Advisory only — the write was accepted.';
+
+/** Labels (`#id`, else a clipped claim) of VERIFIED rows with no falsifier — drives the warn-only
+ *  `falsifierMissing` advisory on both checkpoint writers. Never refuses a write. */
+export function checksMissingFalsifier(checks: ReadonlyArray<CheckEntry & { sampleAdequate?: boolean }>): string[] {
+  const out: string[] = [];
+  for (const c of checks) {
+    // `sampleAdequate:false` rows are already downgraded to `?` by the normalizer — not a ✓ to flag.
+    if (c.sampleAdequate === false || !(c.verified ?? '').trim() || (c.falsifier ?? '').trim()) continue;
+    const id = sanitizeCarryRowId(c.id);
+    out.push(id ? `#${id}` : c.claim.trim().slice(0, 80));
+  }
+  return out;
+}
 
 /** Soft cap on each narrative field (`did`/`left`/`insight`/`next`), same contract. */
 export const CARRY_TEXT_SOFT_CAP = 8000;
@@ -278,6 +326,18 @@ const VERIFICATION_COVERAGE_DISCLAIMER_PATTERNS: ReadonlyArray<RegExp> = [
 const CLAIM_EXPLICIT_COVERAGE_LIMIT_RE =
   /\b(?:not|never|uncovered|out[-\s]?of[-\s]?scope|partial(?:ly)?|excluded|excludes)\b[^\n.!?;]{0,120}\b(?:covered|included|exercised|tested|checked|verified|validated|measured|scope)\b|\b(?:needs?|wants?|requires?)\s+(?:a\s+)?(?:fresh\s+)?re[-\s]?check\b/i;
 
+/**
+ * A quoted JSON disposition key is structured cohort metadata, not a prose
+ * disclaimer that the verified claim lacks coverage.
+ */
+function isStructuredCoverageDispositionKey(text: string, match: RegExpExecArray): boolean {
+  const before = text.slice(Math.max(0, match.index - 1), match.index);
+  if (!/["'\x60]\s*$/.test(before)) return false;
+
+  const after = text.slice(match.index + match[0].length);
+  return /^\s*["'\x60]?\s*:\s*\S/.test(after);
+}
+
 /** Return a coverage disclaimer that makes a complete ✓ unsafe, if any. */
 function findVerificationCoverageDisclaimer(
   evidence: string,
@@ -290,7 +350,9 @@ function findVerificationCoverageDisclaimer(
     // completed negative measurement such as `no uncovered lockfiles` (or
     // `zero/none uncovered lockfiles`) proves the opposite and must remain a
     // VERIFIED row; the generic disclaimer matcher cannot infer that itself.
-    if (match?.[0] && !isNegatedVerificationConflict(evidence, match)) return match[0];
+    if (!match?.[0]) continue;
+    if (isStructuredCoverageDispositionKey(evidence, match)) continue;
+    if (!isNegatedVerificationConflict(evidence, match)) return match[0];
   }
   return null;
 }
@@ -544,6 +606,17 @@ function isNegatedVerificationConflict(text: string, match: RegExpExecArray): bo
 function isHistoricalVerificationTransition(text: string, match: RegExpExecArray): boolean {
   const before = text.slice(0, match.index);
   const after = text.slice(match.index + match[0].length);
+
+  // A past-tense lifecycle snapshot with an explicit start time is historical
+  // context, not proof that the unresolved state is still live. Keep the
+  // standalone `was pending` case strict (it may still describe a live verdict),
+  // while treating `was in-flight since <timestamp>` as a completed/earlier
+  // observation. This is deliberately bounded to the timestamped `since` form
+  // so affirmative `is in-flight` and `was pending` contradictions remain loud.
+  if (/^(?:was|were)\s+(?:in[-\s]?flight|pending|running|queued|awaiting|outstanding|unverified)\b/i.test(match[0])
+    && /^\s+[^.!?;\n]{0,120}\bsince\s+[^.!?;\n]+/i.test(after)) {
+    return true;
+  }
 
   const lastOpening = Math.max(before.lastIndexOf('('), before.lastIndexOf('['));
   const lastClosing = Math.max(before.lastIndexOf(')'), before.lastIndexOf(']'));
@@ -1096,7 +1169,7 @@ export function normalizeFlattenedContinuityProbeRow(row: unknown): unknown {
   if (source.probe !== undefined) return inferNestedProbeKind(row, source);
 
   const kind = source.kind;
-  const targetKey = kind === 'tool' ? 'tool' : kind === 'state-cell' ? 'cell' : null;
+  const targetKey = kind === 'tool' ? 'tool' : kind === 'state-cell' ? 'cell' : kind === 'sql' ? 'sql' : null;
   if (!targetKey) return row;
 
   // These are the required fields for both discriminated probe variants;
@@ -1108,7 +1181,9 @@ export function normalizeFlattenedContinuityProbeRow(row: unknown): unknown {
   const probeKeys =
     kind === 'tool'
       ? ['tool', 'args', 'projection', 'schemaRevision', 'expect']
-      : ['cell', 'as', 'schemaRevision', 'expect'];
+      : kind === 'sql'
+        ? ['sql', 'maxRows', 'allowUnscoped', 'schemaRevision', 'expect']
+        : ['cell', 'as', 'schemaRevision', 'expect'];
   const normalized = { ...source };
   for (const key of probeKeys) {
     if (!Object.prototype.hasOwnProperty.call(normalized, key)) continue;
@@ -1242,15 +1317,17 @@ function priorRowForIncoming<T extends { id?: string; claim: string }>(
 /**
  * P-025 (review-system-rework-reduction-2026-09-23) — does `ref` name this carried row?
  * A ref is the row's stable id (bare, `#id` or `[#id]`, exactly as the note renders it)
- * or its exact trimmed claim text. Claim text is accepted because most carried rows
- * have no id: requiring one would leave exactly the rows this exists for unreachable.
+ * for retirement. Exact trimmed claim text remains an edit alias and a retirement
+ * fallback only for legacy rows that have not yet been assigned an ID.
  */
-function carryRowMatchesRef(row: { id?: string; claim: string }, ref: string): boolean {
+function carryRowMatchesRef(row: { id?: string; claim: string }, ref: string, allowClaimEdit = false): boolean {
   const trimmed = ref.trim();
   if (!trimmed) return false;
   const id = sanitizeCarryRowId(row.id);
   const refAsId = trimmed.replace(/^\[?#/, '').replace(/\]$/, '');
-  return (id !== null && id === refAsId) || row.claim.trim() === trimmed;
+  // Once a row has an ID, wording is never a retirement authority. Exact claim
+  // aliases remain only for legacy rows that have not yet been migrated.
+  return (id !== null && id === refAsId) || ((id === null || allowClaimEdit) && row.claim.trim() === trimmed);
 }
 
 /** A stable id for a row that is being edited by `replaces` and has none. Derived from
@@ -1324,8 +1401,16 @@ export function resolveCarryRowRefs<
     const bound = new Set<number>();
     return supplied.map((row) => {
       const { replaces, ...rest } = row;
-      if (replaces === undefined || !replaces.trim()) return rest;
-      const index = prior.findIndex((p, i) => !bound.has(i) && carryRowMatchesRef(p, replaces));
+      if (replaces === undefined || !replaces.trim()) {
+        // Compatibility for unchanged claim-only updates after the writer minted
+        // an ID. Never infer an identity for rewording or an ambiguous claim.
+        if (!sanitizeCarryRowId(rest.id)) {
+          const matches = prior.filter((p) => sanitizeCarryRowId(p.id) && p.claim.trim() === rest.claim.trim());
+          if (matches.length === 1) return { ...rest, id: matches[0]!.id };
+        }
+        return rest;
+      }
+      const index = prior.findIndex((p, i) => !bound.has(i) && carryRowMatchesRef(p, replaces, true));
       if (index < 0) {
         unmatched.push(replaces.trim());
         return rest;
@@ -1394,6 +1479,7 @@ export function parseWallLine(line: string): WallEntry | null {
  *  of growing the claim by one marker per wake. */
 export function renderCheckLine(c: CheckEntry): string {
   const recheck = (c.recheck ?? '').trim();
+  const falsifier = (c.falsifier ?? '').trim();
   const verified = (c.verified ?? '').trim();
   const observed = (c.observed ?? '').trim();
   const contested = (c.contested ?? '').trim();
@@ -1407,8 +1493,8 @@ export function renderCheckLine(c: CheckEntry): string {
   return `- ${marker} ${scope ? `${renderProbeScopeMarker(scope)} ` : ''}${
     id ? `[#${id}] ` : ''
   }${stripProbeScopeMarker(c.claim.trim())}${recheck ? ` — re-check: ${recheck}` : ''}${
-    probe ? ` — probe: ${probe}` : ''
-  }${evidence ? ` — evidence: ${evidence}` : ''}${since}`;
+    falsifier ? ` — falsifier: ${falsifier}` : ''
+  }${probe ? ` — probe: ${probe}` : ''}${evidence ? ` — evidence: ${evidence}` : ''}${since}`;
 }
 
 /**
@@ -1423,7 +1509,8 @@ export function renderCheckLine(c: CheckEntry): string {
  */
 const CHECK_LINE_RE = new RegExp(
   `^-\\s+(?:([✓?⚠])\\s+)?(?:${PROBE_SCOPE_MARKER_RE.source}\\s+)?(?:\\[#([A-Za-z0-9._:-]{1,40})\\]\\s+)?(.+?)` +
-    `(?:\\s+—\\s+re-check:\\s+(.+?))?(?:\\s+—\\s+probe:\\s+([A-Za-z0-9_-]+))?` +
+    `(?:\\s+—\\s+re-check:\\s+(.+?))?(?:\\s+—\\s+falsifier:\\s+(.+?))?` +
+    `(?:\\s+—\\s+probe:\\s+([A-Za-z0-9_-]+))?` +
     `(?:\\s+—\\s+evidence:\\s+(.+?))?(?:\\s+\\(since\\s+([^)]+)\\))?\\s*$`,
 );
 
@@ -1464,9 +1551,11 @@ export function parseCheckLine(line: string): CheckEntry | null {
   if (id) out.id = id;
   const recheck = (m[4] ?? '').trim();
   if (recheck) out.recheck = recheck;
-  const probe = decodeContinuityProbe((m[5] ?? '').trim());
+  const falsifier = (m[5] ?? '').trim();
+  if (falsifier) out.falsifier = falsifier;
+  const probe = decodeContinuityProbe((m[6] ?? '').trim());
   if (probe) out.probe = probe;
-  const evidence = (m[6] ?? '').trim();
+  const evidence = (m[7] ?? '').trim();
   if (evidence) {
     // The rendered marker is the authority tier. In particular, `?` evidence is
     // deliberately context ABOUT an unverified claim and commonly says "pending"
@@ -1477,8 +1566,8 @@ export function parseCheckLine(line: string): CheckEntry | null {
     else if (m[1] === '⚠' || findVerificationConflict(evidence, claim)) out.contested = evidence;
     else out.verified = evidence;
   }
-  if (m[7]) {
-    const t = Date.parse(m[7]);
+  if (m[8]) {
+    const t = Date.parse(m[8]);
     if (Number.isFinite(t)) out.sinceMs = t;
   }
   return out;
@@ -1775,6 +1864,27 @@ export function withCarryNoteChecks(body: string, checks: CheckEntry[]): string 
   return parts.join('\n\n');
 }
 
+/** Give every persisted checkpoint row a durable identity. Keep this at checkpoint
+ * writer boundaries: parsing/rendering historical notes remains lossless, while
+ * a rewrite promotes old id-less rows without restamping evidence or age. */
+export function withStableCarryRowIds(note: string): string {
+  const { body: withoutWalls, walls } = splitCarryNoteWalls(note);
+  const { body, checks } = splitCarryNoteChecks(withoutWalls);
+  const taken = new Set<string>();
+  for (const row of [...walls, ...checks]) {
+    const id = sanitizeCarryRowId(row.id);
+    if (id) taken.add(id);
+  }
+  const identify = <T extends { id?: string; claim: string }>(rows: T[], kind: string): T[] =>
+    rows.map((row) => {
+      if (sanitizeCarryRowId(row.id)) return row;
+      const id = mintCarryRowId(`${kind}:${row.claim}`, taken);
+      taken.add(id);
+      return { ...row, id };
+    });
+  return withCarryNoteWalls(withCarryNoteChecks(body, identify(checks, 'check')), identify(walls, 'wall'));
+}
+
 /** Normalize an incoming checks write against the prior set — same contract as
  *  {@link normalizeWallEntries}: trim + drop blank claims, dedup by claim, preserve
  *  the ORIGINAL sinceMs for a claim that already stood, inherit recheck/verified
@@ -1785,6 +1895,9 @@ export function normalizeCheckEntries(
     id?: string;
     claim: string;
     recheck?: string;
+    falsifier?: string;
+    /** `false` = probed, but the sample could not discriminate the claim from its negation. */
+    sampleAdequate?: boolean;
     verified?: string;
     observed?: string;
     contested?: string;
@@ -1808,6 +1921,7 @@ export function normalizeCheckEntries(
     const existing = priorRowForIncoming(e, prior, priorByKey);
     const id = sanitizeCarryRowId(e.id) ?? existing?.id;
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
+    const falsifier = (e.falsifier ?? existing?.falsifier ?? '').trim();
     const probe = e.probe ?? existing?.probe;
     // An explicit evidence field is an update, including an empty string that
     // deliberately clears inherited evidence. Exactly one authority slot survives:
@@ -1836,6 +1950,17 @@ export function normalizeCheckEntries(
       contested = '';
     }
     if (e.verified !== undefined) observed = '';
+    // EI-23771449112267271: a probe whose SAMPLE could not discriminate the claim from its
+    // negation is not verification — the evidence stays visible as CONTEXT on a `?` row
+    // (never ✓), tagged so the successor sees the state at the badge. Same downgrade shape as
+    // the contradiction check below; the state lives in the text so render→parse stays stable.
+    if (e.sampleAdequate === false) {
+      const evidence = verified || observed;
+      if (evidence && !evidence.startsWith(SAMPLE_INCONCLUSIVE_PREFIX)) {
+        observed = `${SAMPLE_INCONCLUSIVE_PREFIX}${evidence}`;
+        verified = '';
+      }
+    }
     const conflict = findVerificationConflict(verified, claim);
     if (conflict) {
       contested = verified;
@@ -1862,6 +1987,7 @@ export function normalizeCheckEntries(
       ...(id ? { id } : {}),
       claim,
       ...(recheck ? { recheck } : {}),
+      ...(falsifier ? { falsifier } : {}),
       ...(probe ? { probe } : {}),
       ...(contested ? { contested } : {}),
       ...(verified ? { verified } : {}),
@@ -1891,6 +2017,9 @@ export function patchExistingCheckEntries(
     id?: string;
     claim: string;
     recheck?: string;
+    falsifier?: string;
+    /** `false` = probed, but the sample could not discriminate the claim from its negation. */
+    sampleAdequate?: boolean;
     verified?: string;
     observed?: string;
     contested?: string;
@@ -1964,6 +2093,15 @@ export function patchExistingCheckEntries(
  *     `sinceMs` it had inherited, and the old wording reads to the drop-report as a
  *     carried claim that vanished. Both were observed live, twice.
  */
+/** Omitted carried rows survive a replace-style checkpoint unless each
+ * retirement is named. Writers resolving refs before merging omit retireIds. */
+export function checkpointRowsMode(
+  requested: 'replace' | 'merge' | undefined,
+  retireIds?: readonly string[],
+): 'replace' | 'merge' {
+  return requested === 'replace' && retireIds !== undefined ? 'replace' : 'merge';
+}
+
 export function mergeCarryRows(opts: {
   /** The AUTHORITATIVE prior note. Inside a `transform` this is the locked row's. */
   priorNote: string | null | undefined;
@@ -2023,7 +2161,8 @@ export function mergeCarryRows(opts: {
    */
   mode?: 'replace' | 'merge';
   /**
-   * P-025 — carried rows to RETIRE in this same write, named by `[#id]` or exact claim,
+   * P-025 — carried rows to RETIRE in this same write, named by `[#id]` (exact claim
+   * remains a compatibility fallback only for legacy rows without IDs),
    * across walls and checks. Valid under either mode, so dropping one row no longer
    * requires a full `'replace'` re-send. Retired rows are reported in
    * `retiredWalls`/`retiredChecks`, NOT in `droppedWalls`/`droppedChecks`.
@@ -2888,6 +3027,15 @@ export async function setCarryNoteWithPrior(
      */
     transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
     /**
+     * personal-data-reader-set-labels P-012 / D-006: replace the note about to be
+     * stored with what may be shared (a sealed stub when the writer holds a
+     * restricted disclosure). Runs AFTER `guard` and `transform` — so the guards
+     * judge the authored text, not the stub — and BEFORE journaling, so neither the
+     * note nor its journal entry keeps the text. It receives this transaction, so
+     * the sealed row commits or rolls back with the note. Not called for a clear.
+     */
+    seal?: (tx: Sql | TransactionSql, note: string) => Promise<string>;
+    /**
      * Optimistic-CAS baseline for a replace/patch. `undefined` keeps the legacy
      * unconditional write contract; `null` asserts that no note existed. The
      * comparison runs after SELECT FOR UPDATE and before guard/transform, so a
@@ -2896,6 +3044,13 @@ export async function setCarryNoteWithPrior(
     expectedHash?: string | null;
     /** Internal: use the bounded admin-pool transaction for su loop writes. */
     bounded?: boolean;
+    /**
+     * P-002 / D-006: version stamps for the references the incoming note cites
+     * (`stampCarryRefs`). Persisted beside the declared stamps under `deps.refs` and
+     * reconciled against the note actually stored (see `reconcileCarryRefStamps`).
+     * `undefined` keeps prior stamps the stored note still cites.
+     */
+    refStamps?: readonly DepStamp[];
   },
 ): Promise<SetCarryNoteResult> {
   const journalEnabled = opts?.journal ?? true;
@@ -2960,7 +3115,8 @@ export async function setCarryNoteWithPrior(
     // write must not transform — and BEFORE journaling, so the ring records what was
     // actually stored rather than the caller's pre-merge draft.
     const effectiveNote = opts?.transform ? opts.transform(priorNote, note) : note;
-    const trimmed = (effectiveNote ?? '').trim();
+    let trimmed = (effectiveNote ?? '').trim();
+    if (trimmed && opts?.seal) trimmed = (await opts.seal(tx, trimmed)).trim();
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
     const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now, opts?.workItem) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;
@@ -2974,7 +3130,15 @@ export async function setCarryNoteWithPrior(
       };
     }
     // Unspecified ⇒ carry the prior declaration forward (see the `deps` opt doc).
-    const depsCol = depsSpecified ? (opts?.deps ?? null) : priorDeps;
+    const declaredDepsCol = depsSpecified ? (opts?.deps ?? null) : priorDeps;
+    // P-002 / D-006: reference stamps ride beside the declared stamps under `deps.refs`.
+    // A sealed note keeps none — the stamps would name what the sealed text cited.
+    const sealedAway = opts?.seal !== undefined && trimmed !== (effectiveNote ?? '').trim();
+    const depsCol = mergeCarryRefStampsIntoDeps(
+      declaredDepsCol,
+      sealedAway ? [] : reconcileCarryRefStamps(noteCol, opts?.refStamps, priorDeps),
+      priorDeps,
+    );
 
     if (noteCol === null && journal.length === 0) {
       // Nothing to store (cleared with no surviving journal) — delete the row.
@@ -3314,10 +3478,16 @@ export async function setLoopCarryNoteWithPrior(
     depsOpt = { deps: stamped.payload };
     if (stamped.warnings.length > 0) stampWarnings = stamped.warnings;
   }
+  // P-002: stamp the references the note cites, resolved in the session's concrete
+  // workspace (the loop scope itself is pinned to the coord workspace).
+  const refWs = concreteWorkspaceIdOrNull(ref.workspaceId);
+  const refStamps = refWs && typeof note === 'string' && note.trim()
+    ? await stampCarryRefs({ text: note, workspaceId: refWs, harness: ref.harness })
+    : undefined;
   const result = await setCarryNoteWithPrior(
     { scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() },
     note,
-    { ...substrateOpts, ...depsOpt, bounded: true },
+    { ...substrateOpts, ...depsOpt, ...(refStamps ? { refStamps } : {}), bounded: true },
   );
   if (stampWarnings) result.depsWarnings = stampWarnings;
   // WI-6974: the loop carry-note (note + walls + checks) is Orders-panel content,
@@ -3423,6 +3593,32 @@ export async function getLoopCarryNoteDeps(ref: LoopCarryNoteRef): Promise<Decla
     return parseDeclaredDeps(rows[0]?.deps);
   } catch {
     return null;
+  }
+}
+
+/**
+ * P-002 (carry-recheck-and-governed-memory-2026-10-14, D-006): the loop note's REFERENCE
+ * version stamps (`deps.refs`, written by `setLoopCarryNoteWithPrior`), read from the SAME
+ * row {@link getLoopCarryNoteDeps} selects, together with that row's note so a caller can
+ * keep only the stamps the note it is actually delivering still cites. A blank note or a
+ * failed read yields no stamps — never a guessed baseline.
+ */
+export async function getLoopCarryNoteRefStamps(
+  ref: LoopCarryNoteRef,
+): Promise<{ note: string | null; stamps: DepStamp[] }> {
+  const scope = loopScope(ref.harness, ref.ownerId);
+  try {
+    const rows = await boundedPgReadTxn<{ deps: unknown; note: string | null }[]>(
+      (tx) => tx`
+      SELECT deps, note FROM harness_shared.carry_notes
+       WHERE scope = ${scope} AND note IS NOT NULL
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`,
+    );
+    const note = rows[0]?.note ?? null;
+    if (!(note ?? '').trim()) return { note: null, stamps: [] };
+    return { note, stamps: parseCarryRefStamps(rows[0]?.deps) };
+  } catch {
+    return { note: null, stamps: [] };
   }
 }
 

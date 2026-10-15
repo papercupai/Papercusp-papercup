@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 const catalog = vi.hoisted(() => [] as Array<Record<string, any>>);
@@ -20,6 +20,7 @@ vi.mock('./cell-registry', () => ({
 import {
   CONTINUITY_PROBE_MAX_PER_WAKE,
   CONTINUITY_PROBE_RESULT_MAX_BYTES,
+  CONTINUITY_PROBE_TIMEOUT_MS,
   collectContinuityProbeSources,
   continuityProbeRevision,
   continuityProbeSchema,
@@ -34,9 +35,105 @@ import {
   type ContinuityProbeSource,
 } from './continuity-probes';
 import { renderCarryNote } from './carry-note';
-import { LIMITS } from './agent-tools/limits';
+import { LIMITS, RUBRIC_PROBE_MAX_PER_EMIT } from './agent-tools/limits';
+import { CRITERION_PROBE_TIMEOUT_MS, evaluateCriterionProbeChecks, normalizeCriterionProbeChecks, validateCriterionCheckPaths } from './rubrics-criterion-checks';
+import { rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 
 const LONG_READ_TOOL = `test:${'x'.repeat(167 - 'test:'.length)}`;
+
+describe('criterion ALL probes', () => {
+  const check = (all: unknown[]) => ({ kind: 'probe' as const, all });
+  const evaluate = (all: unknown[], dispatchTool: (name: string, args: Record<string, unknown>) => Promise<unknown>, rating = 'pass') =>
+    evaluateCriterionProbeChecks({ criteria: [{ key: 'proof', check: check(all) }], ratings: { proof: { rating } }, dispatchTool });
+
+  it('keeps the single-probe shape and rejects empty, ambiguous and oversized groups', () => {
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'probe', probe: readProbe() }).success).toBe(true);
+    for (const value of [check([]), { ...check([readProbe()]), probe: readProbe() }, { kind: 'probe' }, check(Array(9).fill(readProbe()))]) {
+      expect(rubricCriterionCheckSchema.safeParse(value).success).toBe(false);
+    }
+  });
+
+  it('preserves every child and requires both populated evidence and zero failures', async () => {
+    const rows = readProbe({ expect: { path: '$.count', op: 'eq', value: 3 } });
+    const verdict = readProbe({ expect: { path: '$.failed', op: 'eq', value: 0 } });
+    const success = await evaluate([rows, verdict], async () => ({ count: 3, failed: 0 }));
+    expect(success).toMatchObject({ ok: true, checkRuns: { proof: { kind: 'probe', verdict: 'pass', all: [
+      { probe: rows, observed: 3, verdict: 'pass', executed: true },
+      { probe: verdict, observed: 0, verdict: 'pass', executed: true },
+    ] } } });
+    // Zero failures over missing runs must never become a vacuous green.
+    const absent = await evaluate([rows, verdict], async () => ({ count: 0, failed: 0 }));
+    expect(absent).toMatchObject({ ok: false, error: 'probe_contradicted', run: { all: [{ verdict: 'fail' }, { verdict: 'pass' }] } });
+    const honest = await evaluate([rows, verdict], async () => ({ count: 0, failed: 0 }), 'fail');
+    expect(honest).toMatchObject({ ok: true, checkRuns: { proof: { verdict: 'fail', all: [{ observed: 0 }, { observed: 0 }] } } });
+  });
+
+  it('validates every child before dispatch, including a schema-stale or write target', async () => {
+    const dispatch = vi.fn(async () => ({ state: 'green' }));
+    for (const invalid of [readProbe({ schemaRevision: 'old' }), readProbe({ tool: 'status:write' }), { ...readProbe(), args: { wrong: true } }]) {
+      expect(await evaluate([readProbe(), invalid], dispatch)).toMatchObject({ ok: false, error: 'probe_invalid' });
+    }
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('pins each writer live sentinel before persistence and preserves legacy single probes', () => {
+    const legacy = { key: 'single', check: { kind: 'probe' as const, probe: readProbe({ schemaRevision: 'live' }) } };
+    expect(normalizeCriterionProbeChecks([legacy])[0]).toBe(legacy);
+    const all = normalizeCriterionProbeChecks([{ key: 'set', check: check([readProbe({ schemaRevision: 'live' }), readProbe()]) }])[0];
+    expect(all.check.all).toEqual([readProbe(), readProbe()]);
+    expect(validateCriterionCheckPaths([{ key: 'set', check: check([readProbe({ schemaRevision: 'old' })]) }]).ok).toBe(false);
+  });
+
+  it('refuses an unjudgeable child without borrowing its sibling result', async () => {
+    const next = readProbe({ args: { id: 'unreadable' } });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await evaluate([readProbe(), next], async (_name, args) => {
+        if (args.id === 'unreadable') throw new Error('ledger unavailable');
+        return { state: 'green' };
+      });
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('ledger unavailable'));
+      expect(result).toMatchObject({ ok: false, error: 'probe_run_failed' });
+    } finally { warning.mockRestore(); }
+  });
+
+  it('rejects the shared batch cap across criteria at write time and before execution', async () => {
+    // Each group stays within its own 8-child limit; together they exceed the per-emit cap, which
+    // is derived here so the case keeps exceeding it when the cap moves.
+    const groups = Math.floor(RUBRIC_PROBE_MAX_PER_EMIT / 8) + 1;
+    const criteria = Array.from({ length: groups }, (_, i) => ({ key: `g${i}`, check: check(Array(8).fill(readProbe())) }));
+    expect(groups * 8).toBeGreaterThan(RUBRIC_PROBE_MAX_PER_EMIT);
+    expect(validateCriterionCheckPaths(criteria).ok).toBe(false);
+    const dispatch = vi.fn(async () => ({ state: 'green' }));
+    const ratings = Object.fromEntries(criteria.map((c) => [c.key, { rating: 'pass' }]));
+    expect(await evaluateCriterionProbeChecks({ criteria, ratings, dispatchTool: dispatch })).toMatchObject({ ok: false, error: 'probe_invalid' });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects single and ALL rubric probes that independent judges cannot read', () => {
+    const target = catalog.find(tool => tool.expose.mcp.name === 'status:read')!;
+    target.agentRoles = ['su'];
+    const probe = readProbe();
+    // Continuity probes outside rubric grading retain their ordinary read-only contract.
+    expect(continuityProbeSchema.safeParse(probe).success).toBe(true);
+    for (const binding of [{ kind: 'probe' as const, probe }, check([probe])]) {
+      expect(validateCriterionCheckPaths([{ key: 'proof', check: binding }])).toMatchObject({
+        ok: false,
+        scopeFailures: [{ criterionKey: 'proof', reason: expect.stringContaining('independent judge role') }],
+      });
+    }
+    target.agentRoles = ['su', 'judge'];
+    for (const binding of [{ kind: 'probe' as const, probe }, check([probe])]) {
+      expect(validateCriterionCheckPaths([{ key: 'proof', check: binding }]).ok).toBe(true);
+    }
+  });
+
+  it('validates schema currentness for single rubric probes before persistence', () => {
+    expect(validateCriterionCheckPaths([{ key: 'proof', check: {
+      kind: 'probe', probe: readProbe({ schemaRevision: 'old' }),
+    } }]).ok).toBe(false);
+  });
+});
 
 function projected(name: string, effect: 'read' | 'write' = 'read', properties: Record<string, unknown> = {}) {
   return {
@@ -225,6 +322,8 @@ describe('continuity probe wake replay', () => {
     const probes = ['fresh', 'stale', 'error'].map((id, i) => source(readProbe({ args: { id } }), i));
     const batch = await runContinuityProbeBatch(probes, { dispatchTool });
     expect(batch.results.map((result) => result.status)).toEqual(['fresh', 'stale', 'error']);
+    // The tool's own error text rides on the diagnostic, so an unjudgeable probe says why.
+    expect(batch.results[2]?.diagnostic).toMatchObject({ code: 'tool_error', message: expect.stringMatching(/returned an error: failed$/) });
     expect(batch.results.map((result) => result.source)).toEqual(probes.map((row) => row.source));
     expect(batch.executed).toBe(3);
   });
@@ -337,6 +436,102 @@ describe('continuity probe wake replay', () => {
       { dispatchTool },
     );
     expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true, observed: false });
+  });
+
+  // WI-10005537: a rubric probe on dev:pipeline_position with no projection
+  // (expect $.servingRuntimes[0].containsChange) was refused result_too_large
+  // because the WHOLE body (~20KB+) was charged against the budget, though the
+  // predicate reads one boolean. scorecards:emit fails closed on that refusal,
+  // so no independent acceptance card could be filed for the plan.
+  it('judges a small selected value inside a body larger than the result budget', async () => {
+    const body = (containsChange: boolean) => ({
+      servingRuntimes: [{ runtime: 'release-operator', method: 'blob', containsChange }],
+      stages: Array.from({ length: 40 }, (_, i) => ({ stage: `s${i}`, detail: 'd'.repeat(600) })),
+    });
+    expect(JSON.stringify(body(true)).length).toBeGreaterThan(CONTINUITY_PROBE_RESULT_MAX_BYTES);
+    const probe = readProbe({ expect: { path: '$.servingRuntimes[0].containsChange', op: 'eq', value: true } });
+    const run = async (containsChange: boolean) =>
+      runContinuityProbeBatch([source(probe)], {
+        dispatchTool: vi.fn(async () => ({ content: [{ type: 'text', text: JSON.stringify(body(containsChange)) }] })),
+      });
+
+    expect((await run(true)).results[0]).toMatchObject({ status: 'fresh', executed: true, observed: true });
+    // Falsifier: the same oversized shape must still read STALE when the value differs,
+    // so the fix cannot pass by treating any large body as a match.
+    expect((await run(false)).results[0]).toMatchObject({ status: 'stale', executed: true, observed: false });
+  });
+});
+
+// EI-24809550207915153: the batch hard-coded the 2.5s wake budget for every caller, so a
+// scorecard criterion probe on dev:pipeline_position (measured p50 ~3s, p95 ~28s) was
+// refused unjudgeable on most emits and no independent acceptance card could be filed.
+describe('continuity probe dispatch budget', () => {
+  const SLOW_READ_MS = 3_000;
+  const slowDispatch = (delayMs = SLOW_READ_MS) =>
+    vi.fn(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ content: [{ type: 'text', text: '{"state":"green"}' }] }), delayMs),
+        ),
+    );
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('keeps the wake budget by default and names it when a read overruns', async () => {
+    expect(SLOW_READ_MS).toBeGreaterThan(CONTINUITY_PROBE_TIMEOUT_MS);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pending = runContinuityProbeBatch([source(readProbe())], { dispatchTool: slowDispatch() });
+    await vi.advanceTimersByTimeAsync(SLOW_READ_MS);
+    const batch = await pending;
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`exceeded ${CONTINUITY_PROBE_TIMEOUT_MS}ms`));
+    warn.mockRestore();
+    expect(batch.limits.timeoutMs).toBe(CONTINUITY_PROBE_TIMEOUT_MS);
+    expect(batch.results[0]).toMatchObject({ status: 'error', executed: true, diagnostic: { code: 'timeout' } });
+    expect(batch.results[0].diagnostic?.message).toContain(`${CONTINUITY_PROBE_TIMEOUT_MS}ms budget`);
+  });
+
+  it('honours a caller budget, so the same slow read is judged instead of refused', async () => {
+    const pending = runContinuityProbeBatch([source(readProbe())], {
+      dispatchTool: slowDispatch(),
+      timeoutMs: 10_000,
+    });
+    await vi.advanceTimersByTimeAsync(SLOW_READ_MS);
+    const batch = await pending;
+    expect(batch.limits.timeoutMs).toBe(10_000);
+    expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true });
+  });
+
+  it('uses the full 60s grading budget for criterion probes by default', async () => {
+    expect(CRITERION_PROBE_TIMEOUT_MS).toBe(60_000);
+    const pending = evaluateCriterionProbeChecks({
+      criteria: [{ key: 'r-9', check: { kind: 'probe', probe: readProbe() } as never }],
+      ratings: { 'r-9': { rating: 'pass' } },
+      dispatchTool: slowDispatch(CRITERION_PROBE_TIMEOUT_MS - 1),
+    });
+    await vi.advanceTimersByTimeAsync(CRITERION_PROBE_TIMEOUT_MS - 1);
+    const evaluation = await pending;
+    expect(evaluation).toMatchObject({ ok: true, checkRuns: { 'r-9': { verdict: 'pass', status: 'fresh' } } });
+  });
+
+  it('still fails a criterion probe closed when it overruns its grading budget', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pending = evaluateCriterionProbeChecks({
+      criteria: [{ key: 'r-9', check: { kind: 'probe', probe: readProbe() } as never }],
+      ratings: { 'r-9': { rating: 'pass' } },
+      dispatchTool: slowDispatch(),
+      probeTimeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(SLOW_READ_MS);
+    const evaluation = await pending;
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceeded 1000ms'));
+    warn.mockRestore();
+    expect(evaluation).toMatchObject({ ok: false, error: 'probe_run_failed', criterionKey: 'r-9' });
+    expect(evaluation.ok === false && 'detail' in evaluation ? evaluation.detail : '').toContain('1000ms budget');
   });
 });
 

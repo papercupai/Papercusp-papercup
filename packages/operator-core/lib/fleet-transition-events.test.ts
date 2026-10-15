@@ -8,9 +8,11 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkItem } from './work-items';
+import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
 import {
   announceFleetClaimReleased,
   announceFleetItemCompleted,
+  claimReleasedDisposition,
   detectFleetTransitions,
   emitFleetClaimReleasedEvent,
   emitFleetItemCompletedEvent,
@@ -113,6 +115,35 @@ describe('detectFleetTransitions', () => {
         to: 'recorded',
         from: 'live',
         claimCount: 3,
+      },
+    ]);
+  });
+
+  it('does not report member-left while a healthy engine loop will wake the member', () => {
+    const prev = indexObservations([member({ sessionState: 'live', wakeable: true, claimCount: 2 })]);
+    expect(
+      detectFleetTransitions(prev, [
+        member({ sessionState: 'recorded', wakeable: false, claimCount: 2, loopMonitorState: 'waiting' }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('reports member-left if the healthy engine loop disappears while recorded claims remain', () => {
+    const prev = indexObservations([
+      member({ sessionState: 'recorded', wakeable: false, claimCount: 2, loopMonitorState: 'waiting' }),
+    ]);
+    expect(
+      detectFleetTransitions(prev, [
+        member({ sessionState: 'recorded', wakeable: false, claimCount: 2, loopMonitorState: null }),
+      ]),
+    ).toEqual([
+      {
+        kind: 'member-left',
+        fleetSlug: 'push-not-poll',
+        agentId: 'su-a',
+        to: 'recorded',
+        from: 'recorded',
+        claimCount: 2,
       },
     ]);
   });
@@ -361,6 +392,30 @@ describe('emitFleetTransitionEdge', () => {
     });
   });
 
+  it('suppresses a member-left wake when a healthy engine loop exists before delivery', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const currentMemberObservation = vi.fn(async () => ({
+      sessionState: 'recorded' as const,
+      wakeable: false,
+      claimCount: 2,
+      loopMonitorState: 'waiting' as const,
+    }));
+    emitFleetTransitionEdge(
+      {
+        kind: 'member-left',
+        fleetSlug: 'push-not-poll',
+        agentId: 'su-a',
+        from: 'live',
+        to: 'recorded',
+        claimCount: 2,
+      },
+      { emit, currentMemberObservation },
+    );
+    await settle();
+    expect(currentMemberObservation).toHaveBeenCalledWith('push-not-poll', 'su-a');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('suppresses member-left if claims are gone before delivery', async () => {
     const emit = vi.fn().mockResolvedValue(undefined);
     emitFleetTransitionEdge(
@@ -599,6 +654,85 @@ describe('the work-item co-fires', () => {
     await settle();
     expect(emit.mock.calls[0][0].key).toBe('fleet:claim-released:push-not-poll');
     expect(emit.mock.calls[0][0].payload).toMatchObject({ id: 'WI-1', priorAssignee: 'su-a' });
+  });
+
+  // EI-23773284013147023: a released claim is a TRANSITION, not an instruction. The leader
+  // acts from this payload/summary, so the verdict must travel WITH the event — an item
+  // released while BLOCKED must never read as free work.
+  describe('claim-released disposition (EI-23773284013147023)', () => {
+    const fire = async (item: Parameters<typeof emitFleetClaimReleasedEvent>[1]) => {
+      const emit = vi.fn().mockResolvedValue(undefined);
+      emitFleetClaimReleasedEvent('push-not-poll', item, 'su-a', { emit });
+      await settle();
+      return emit.mock.calls[0][0] as { summary: string; payload: Record<string, unknown> };
+    };
+
+    it.each([
+      ['open', 'replaceable'],
+      ['failing', 'replaceable'],
+      ['blocked', 'held'],
+      ['needs-human', 'held'],
+      ['done', 'not-replaceable'],
+      ['wip', 'not-replaceable'],
+    ] as const)('classifies a release from %s as %s', (state, disposition) => {
+      expect(claimReleasedDisposition(state)).toBe(disposition);
+    });
+
+    it('classifies a missing/blank state as unknown rather than guessing', () => {
+      expect(claimReleasedDisposition(undefined)).toBe('unknown');
+      expect(claimReleasedDisposition(null)).toBe('unknown');
+      expect(claimReleasedDisposition('  ')).toBe('unknown');
+    });
+
+    it('carries state, disposition and the plan slug in the payload', async () => {
+      const ev = await fire({ id: 'WI-9', state: 'blocked', sourcePlanSlug: 'some-plan', harness: 'papercusp' });
+      expect(ev.payload).toMatchObject({
+        id: 'WI-9',
+        state: 'blocked',
+        disposition: 'held',
+        sourcePlanSlug: 'some-plan',
+      });
+    });
+
+    it('a BLOCKED release LEADS its summary with the do-not-re-place verdict and names the plan', async () => {
+      const ev = await fire({ id: 'WI-9', state: 'blocked', sourcePlanSlug: 'some-plan' });
+      // The verdict is the first clause after the holder — a leader skimming only the head of
+      // the wake must not be able to read this as re-placeable work.
+      expect(ev.summary).toMatch(/released by su-a while blocked — NOT re-placeable work/);
+      expect(ev.summary).toContain('do NOT re-place it');
+      expect(ev.summary).toContain("plan some-plan's Decisions");
+      expect(ev.summary).not.toContain('back to the pool');
+    });
+
+    it('a needs-human release is held too, and omits the plan clause when there is no plan', async () => {
+      const ev = await fire({ id: 'WI-9', state: 'needs-human' });
+      expect(ev.payload.disposition).toBe('held');
+      expect(ev.summary).toContain('while needs-human — NOT re-placeable work');
+      expect(ev.summary).not.toContain('Decisions');
+    });
+
+    it('an OPEN release keeps the original "back to the pool" wording', async () => {
+      const ev = await fire({ id: 'WI-9', state: 'open' });
+      expect(ev.payload.disposition).toBe('replaceable');
+      expect(ev.summary).toBe('fleet push-not-poll: WI-9 released by su-a — back to the pool');
+    });
+
+    it('a settled/other-state release is flagged not-replaceable and points at work_items:get', async () => {
+      const ev = await fire({ id: 'WI-9', state: 'done' });
+      expect(ev.payload.disposition).toBe('not-replaceable');
+      expect(ev.summary).toContain('in state done — not claimable from the pool');
+      expect(ev.summary).toContain('work_items:get');
+    });
+
+    it('a caller that supplies no state keeps the legacy wording and a null state', async () => {
+      const ev = await fire({ id: 'WI-9' });
+      expect(ev.payload).toMatchObject({ state: null, disposition: 'unknown', sourcePlanSlug: null });
+      expect(ev.summary).toBe('fleet push-not-poll: WI-9 released by su-a — back to the pool');
+    });
+
+    it('reads "replaceable" from the scheduler CLAIM_STATES_ALLOWLIST so the two cannot drift', () => {
+      for (const s of CLAIM_STATES_ALLOWLIST) expect(claimReleasedDisposition(s)).toBe('replaceable');
+    });
   });
 
   it('emits fleet:<slug>:item-completed carrying the settling state and holder', async () => {

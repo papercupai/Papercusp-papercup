@@ -1,8 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, it } from 'vitest';
-import { generate } from '../../../scripts/gen-declarations.ts';
+import { describe, expect, it, vi } from 'vitest';
+import { generate, runDeclarationCli } from '../../../scripts/gen-declarations.ts';
 
 type Compile = (repoRoot: string, config: string, outDir: string) => void;
 
@@ -62,7 +62,10 @@ describe('gen:declarations transactional publish', () => {
     });
   });
 
-  it('publishes only the selected enrolled output while preserving every sibling', () => {
+  it.each([
+    { form: 'equals', args: ['--files=input.mjs'] },
+    { form: 'spaced', args: ['--files', 'input.mjs'] },
+  ])('publishes only the selected enrolled output while preserving every sibling ($form CLI)', ({ args }) => {
     withFixture(({ root, declaration }) => {
       const siblingSource = join(root, 'sibling.mjs');
       const siblingDeclaration = join(root, 'sibling.d.mts');
@@ -78,7 +81,9 @@ describe('gen:declarations transactional publish', () => {
         writeFileSync(join(outDir, 'sibling.d.mts'), 'export declare const sibling: true;\n');
       };
 
-      generate(root, 'tsconfig.declarations.json', compile, ['input.mjs']);
+      runDeclarationCli(args, {
+        generateImpl: (selection) => generate(root, 'tsconfig.declarations.json', compile, selection),
+      });
 
       expect(readFileSync(declaration, 'utf8')).toContain('export declare const answer: 42;');
       expect(readFileSync(siblingDeclaration, 'utf8')).toBe('// sibling last-good bytes\n');
@@ -100,5 +105,43 @@ describe('gen:declarations transactional publish', () => {
       expect(compiled).toBe(false);
       expect(readFileSync(declaration, 'utf8')).toBe(original);
     });
+  });
+});
+
+describe('gen:declarations CLI validation', () => {
+  it.each([
+    { args: ['--files'], error: /requires a non-empty/ },
+    { args: ['--files='], error: /requires a non-empty/ },
+    { args: ['--files', '--check'], error: /requires a non-empty/ },
+    { args: ['--files=input.mjs,'], error: /requires a non-empty/ },
+    { args: ['--files', ',input.mjs'], error: /requires a non-empty/ },
+    { args: ['--file=input.mjs'], error: /unknown declaration-generator argument/ },
+    { args: ['--files=input.mjs', 'unexpected'], error: /unknown declaration-generator argument/ },
+    { args: ['--check', '--unknown'], error: /unknown declaration-generator argument/ },
+    { args: ['--check', '--files=input.mjs'], error: /only valid for generation/ },
+    { args: ['--files', 'input.mjs', '--check'], error: /only valid for generation/ },
+  ])('refuses $args before either operation can change output', ({ args, error }) => {
+    const generateImpl = vi.fn();
+    const checkImpl = vi.fn();
+    expect(() => runDeclarationCli(args, { generateImpl, checkImpl })).toThrow(error);
+    expect(generateImpl).not.toHaveBeenCalled();
+    expect(checkImpl).not.toHaveBeenCalled();
+  });
+
+  it('preserves the explicit full-generation and check modes', () => {
+    const generateImpl = vi.fn();
+    const checkImpl = vi.fn();
+    runDeclarationCli([], { generateImpl, checkImpl });
+    expect(generateImpl).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(checkImpl).not.toHaveBeenCalled();
+    runDeclarationCli(['--check'], { generateImpl, checkImpl });
+    expect(checkImpl).toHaveBeenCalledOnce();
+    expect(generateImpl).toHaveBeenCalledOnce();
+  });
+
+  it('combines repeated selectors across both supported forms', () => {
+    const generateImpl = vi.fn();
+    runDeclarationCli(['--files=input.mjs,sibling.mjs', '--files', 'another.mjs'], { generateImpl });
+    expect(generateImpl).toHaveBeenCalledExactlyOnceWith(['input.mjs', 'sibling.mjs', 'another.mjs']);
   });
 });

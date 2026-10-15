@@ -6,6 +6,7 @@
  * (`acked`) or a loud pre-capture refusal (`refused`).
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../../test/_pg-helpers';
@@ -14,7 +15,11 @@ import { stampProbe } from './federation-probe';
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../../../libs/papercusp/libs/db/sql');
 const CREATION_MIGRATION = join(SQL_DIR, '544-federation-probes.sql');
-const CAPTURED_ONLY_MIGRATION = join(SQL_DIR, '917-federation-probes-captured-only-contract.sql.DRAFT');
+// Armed under WI-6554700010008620; the .DRAFT fallback keeps the test valid in a checkout cut before arming.
+const CAPTURED_ONLY_MIGRATION_ARMED = join(SQL_DIR, '917-federation-probes-captured-only-contract.sql');
+const CAPTURED_ONLY_MIGRATION = existsSync(CAPTURED_ONLY_MIGRATION_ARMED)
+  ? CAPTURED_ONLY_MIGRATION_ARMED
+  : `${CAPTURED_ONLY_MIGRATION_ARMED}.DRAFT`;
 
 let db: FreshPgDb;
 

@@ -25,6 +25,7 @@
  * routines unsupervised. Registered only when `bootstrap.ts` imports this module.
  */
 import { DBOS, DBOSClient, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { observeFallback } from '../degradation/fallback-observations';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 import {
@@ -57,6 +58,7 @@ import {
   SYSTEM_TARGET_PREFIX,
   type SystemActionResult,
 } from '../harness/routines/system-actions';
+import { restrictedTreeSkipReason } from '../harness/routines/restricted-tree-skip';
 import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import {
   CRITICAL_PROBE_MS,
@@ -71,8 +73,14 @@ import {
 } from './pool-pressure';
 import { activeWorkspaceId } from '../workspace-registry';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
-import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from './routine-tick-overlap-guard';
+import {
+  anotherRoutinesTickInFlight,
+  ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS,
+  type OverlapCheckDeps,
+} from './routine-tick-overlap-guard';
 import { CaplessAdaptiveController } from '../resource-governor/controller';
+import { computeNextFire, expandOccurrences, type ScheduleTrigger } from '../harness/routines/schedule-next';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { HEALTH_ANALYSIS_SCHEMA_VERSION, type HealthVerdict } from '../resource-governor/health-analysis';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
@@ -83,9 +91,29 @@ import { dbosStarted, withDbosIdleTxGrace } from './bootstrap';
 
 // 6-field crontab (seconds). Default: every 30s, matching the legacy ticker.
 const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * * *';
+// WI-10000846: the sweep tick has its own schedule, offset 15s from dispatch so the two passes
+// do not open their PG work at the same instant.
+const SWEEP_TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_SWEEP_CRONTAB || '15,45 * * * * *';
 const operatorBase = operatorApiBase;
 const ROUTINE_FIRE_WORKFLOW_NAME = 'routineFire';
 let routineFireDbosClient: Promise<DBOSClient> | null = null;
+
+type LearningLoopHealthSweepReport = import('../harness/routines/learning-loop-health-sweep').LearningLoopHealthSweepReport;
+
+/** Return the sweep report from the DBOS step so operation_outputs retains it durably. */
+export async function learningLoopHealthSweepDbosStep(
+  sweep: () => Promise<LearningLoopHealthSweepReport> = async () => {
+    const { learningLoopHealthSweepWithEvidence } = await import('../harness/routines/learning-loop-health-sweep');
+    return learningLoopHealthSweepWithEvidence();
+  },
+): Promise<LearningLoopHealthSweepReport> {
+  const report = await sweep();
+  for (const r of report.escalations) {
+    if (r.outcome === 'debounced') continue;
+    console.warn(`[learning-loop-health] ${r.outcome}: ${r.blueprintId} (${r.status}) — ${r.reason.slice(0, 160)}`);
+  }
+  return report;
+}
 
 function routineFirePrimaryAppVersion(): string {
   return (
@@ -214,6 +242,8 @@ export function orderDueRoutinesByAge<T extends DueRoutine>(due: readonly T[]): 
 export interface RoutineDispatchQueueDecision {
   readonly queueName: string;
   readonly inFlight: number;
+  /** Caller-supplied demand floor for this queue this epoch (0 = none; WI-10006946). */
+  readonly minimumWindow: number;
   readonly desiredWindow: number;
   readonly effectiveWindow: number;
   readonly controllerAvailableStarts: number;
@@ -255,6 +285,125 @@ export function createRoutineDispatchController(): CaplessAdaptiveController {
 }
 
 const routineDispatchController = createRoutineDispatchController();
+
+/**
+ * WI-10006946: the demand-derived liveness floor for the routines-critical lane.
+ *
+ * The adaptive window is process-local and cold-starts at 1, `elevated` pool readings
+ * hold it, and `critical` ones halve it. Measured 2026-10-06 on the tower bg-host it sat
+ * at 4-7 for long stretches (it restarts about every 30 min), while the lane's cron
+ * demand needed about 8 concurrent fires: 74 git-sync routines on a 10-minute cron are
+ * ~7.5 fires/min at a 45 s mean run. Supply (6.2 fires/min) fell below demand, the
+ * backlog reached 31 overdue routines, and skip-old dropped their missed slots.
+ *
+ * Little's law gives the concurrency the lane needs to keep up: fires per unit time x
+ * slot occupancy. Starts happen only on scheduler ticks, so a freed slot idles until the
+ * next tick and occupancy rounds the mean run up to whole ticks. The result is bounded by
+ * the lane's routine count (one routine cannot have two fires in flight). The window
+ * never sits below this floor under `ok`/`elevated`; `critical` pressure still clamps
+ * the lane to one in-flight start in evaluateRoutineDispatchEpoch.
+ */
+export function criticalLaneDemandFloor(input: {
+  /** Occurrences in the next hour, summed over every active cron routine in the lane. */
+  readonly firesPerHour: number;
+  /** Active cron routines in the lane. */
+  readonly routineCount: number;
+  /** Measured mean started->completed run of recent lane fires; null when none finished. */
+  readonly meanRunMs: number | null;
+  /** Scheduler tick period. */
+  readonly tickMs: number;
+}): number {
+  const routineCount = Math.max(0, Math.floor(Number.isFinite(input.routineCount) ? input.routineCount : 0));
+  const firesPerHour = Number.isFinite(input.firesPerHour) && input.firesPerHour > 0 ? input.firesPerHour : 0;
+  if (routineCount === 0 || firesPerHour === 0) return 0;
+  const tickMs = Number.isFinite(input.tickMs) && input.tickMs > 0 ? input.tickMs : 30_000;
+  const runMs =
+    input.meanRunMs !== null && Number.isFinite(input.meanRunMs) && input.meanRunMs > 0 ? input.meanRunMs : tickMs;
+  const slotMs = Math.ceil(runMs / tickMs) * tickMs;
+  const concurrency = (firesPerHour / 3_600_000) * slotMs;
+  return Math.min(routineCount, Math.max(1, Math.ceil(concurrency - 1e-9)));
+}
+
+/** Tick period derived from the scheduler's own crontab (env-overridable), not restated. */
+function routinesTickPeriodMs(nowMs: number): number {
+  const first = computeNextFire({ cron: TICK_CRONTAB }, new Date(nowMs));
+  const second = first ? computeNextFire({ cron: TICK_CRONTAB }, first) : null;
+  const period = first && second ? second.getTime() - first.getTime() : NaN;
+  return Number.isFinite(period) && period > 0 ? period : 30_000;
+}
+
+/** Measurement window for the lane's mean fire run time. */
+const CRITICAL_LANE_RUN_WINDOW_MS = 15 * 60_000;
+/** Demand changes on install/uninstall scale, so it is re-read at most this often. */
+const CRITICAL_LANE_DEMAND_TTL_MS = 5 * 60_000;
+
+/**
+ * Read the routines-critical lane's demand: its active durable cron population (same
+ * filter as listDueCronRoutines, minus the due gate, classified by queueForRoutine) and
+ * the mean run of its fires that completed in the last 15 minutes (index on completed_at).
+ */
+export async function readCriticalLaneDemand(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  nowMs: number,
+): Promise<{ firesPerHour: number; routineCount: number; meanRunMs: number | null }> {
+  const routines = await sql<{ target_role: string; install_slug: string | null; trigger_config: unknown }[]>`
+    SELECT target_role, install_slug, trigger_config
+      FROM harness_shared.routines
+     WHERE active = TRUE
+       AND trigger_kind = 'cron'
+       AND tier = 'durable'
+       AND target_role LIKE ${`${SYSTEM_TARGET_PREFIX}%`}`;
+  const from = new Date(nowMs);
+  const to = new Date(nowMs + 3_600_000);
+  let routineCount = 0;
+  let firesPerHour = 0;
+  for (const row of routines) {
+    if (queueForRoutine(row.target_role, row.install_slug) !== ROUTINES_CRITICAL_QUEUE) continue;
+    const cfg = (row.trigger_config ?? null) as ScheduleTrigger | null;
+    routineCount += 1;
+    // Half-open [now, now+1h): drop an occurrence landing exactly on the far edge.
+    firesPerHour += expandOccurrences(cfg, from, to).filter((at) => at.getTime() < to.getTime()).length;
+  }
+  const [run] = await sql<{ mean_run_ms: number | string | null }[]>`
+    SELECT avg(completed_at - started_at_epoch_ms)::float8 AS mean_run_ms
+      FROM dbos.workflow_status
+     WHERE completed_at > ${nowMs - CRITICAL_LANE_RUN_WINDOW_MS}
+       AND queue_name = ${ROUTINES_CRITICAL_QUEUE}
+       AND name = 'routineFire'
+       AND status IN ('SUCCESS', 'ERROR')
+       AND started_at_epoch_ms IS NOT NULL`;
+  const meanRunMs = run?.mean_run_ms === null || run?.mean_run_ms === undefined ? null : Number(run.mean_run_ms);
+  return { firesPerHour, routineCount, meanRunMs: Number.isFinite(meanRunMs) ? meanRunMs : null };
+}
+
+const criticalLaneDemandCache = pinModuleState('@papercusp/operator-core.routines-critical-demand-floor', () => ({
+  floor: 0,
+  readAtMs: 0,
+}));
+
+/**
+ * The cached, fail-soft floor used by routinesTick. It is refreshed at most every
+ * CRITICAL_LANE_DEMAND_TTL_MS and never under critical pool pressure (the last value
+ * stands; the epoch clamps the lane to one start then anyway). A failed read keeps the
+ * last floor: an instrument on the dispatch path must never break dispatch.
+ */
+export async function criticalLaneDemandFloorFor(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  pressure: PoolPressure,
+  nowMs: number,
+): Promise<number> {
+  const cache = criticalLaneDemandCache;
+  const fresh = cache.readAtMs > 0 && nowMs - cache.readAtMs < CRITICAL_LANE_DEMAND_TTL_MS;
+  if (fresh || pressure === 'critical') return cache.floor;
+  try {
+    const demand = await readCriticalLaneDemand(sql, nowMs);
+    cache.floor = criticalLaneDemandFloor({ ...demand, tickMs: routinesTickPeriodMs(nowMs) });
+  } catch (err) {
+    console.warn(`[routines-tick] critical-lane demand read failed; keeping floor=${cache.floor}:`, err);
+  }
+  cache.readAtMs = nowMs;
+  return cache.floor;
+}
 
 /**
  * Read actual queued/running routine-fire occupancy from DBOS's partial in-flight
@@ -371,6 +520,8 @@ export function evaluateRoutineDispatchEpoch(input: {
   readonly activeQueues: readonly string[];
   readonly controller?: CaplessAdaptiveController;
   readonly atMs?: number;
+  /** Per-queue demand floors (WI-10006946); critical pressure still clamps the critical lane. */
+  readonly minimumWindowByQueue?: Readonly<Record<string, number>>;
 }): RoutineDispatchAdmissionEpoch {
   const atMs = Math.max(0, Math.floor(input.atMs ?? Date.now()));
   const active = new Set(input.activeQueues);
@@ -378,12 +529,17 @@ export function evaluateRoutineDispatchEpoch(input: {
     (queueName) => active.has(queueName) || (input.inFlightByQueue[queueName] ?? 0) > 0,
   );
   const controller = input.controller ?? routineDispatchController;
+  const floorFor = (queueName: string): number => {
+    const value = input.minimumWindowByQueue?.[queueName];
+    return value !== undefined && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  };
   const decision = controller.step({
     verdict: routinePoolHealthVerdict(input.pressure, input.probeMs, atMs),
     classes: queues.map((queueName) => ({
       admissionClass: queueName,
       inFlight: Math.max(0, Math.floor(input.inFlightByQueue[queueName] ?? 0)),
       demand: { databaseConnections: 1 },
+      minimumWindow: floorFor(queueName),
     })),
     atMs,
   });
@@ -408,6 +564,7 @@ export function evaluateRoutineDispatchEpoch(input: {
         return Object.freeze({
           queueName,
           inFlight,
+          minimumWindow: floorFor(queueName),
           desiredWindow: lane.desiredWindow,
           effectiveWindow: lane.effectiveWindow,
           controllerAvailableStarts: lane.availableStarts,
@@ -667,6 +824,30 @@ async function routineFireImpl(
     } else if (targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {
       const action = targetRole.slice(SYSTEM_TARGET_PREFIX.length);
       const entry = getSystemActionEntry(action);
+      // WI-10005745 (D-012): an action that executes integration-tree code is skipped while a
+      // restricted session's writes are held in that tree. The verdict is a step so a replay takes
+      // the same branch; the skip is recorded on the routine row, never silent.
+      if (entry?.executesIntegrationTreeCode) {
+        const skip = await DBOS.runStep(() => restrictedTreeSkipReason(action, entry), {
+          name: `system:${action}:restricted-hold`,
+        });
+        if (skip) {
+          console.warn(`[routines] ${skip} (routine ${routineId})`);
+          await DBOS.runStep(
+            async () => {
+              const { sql } = getOrgPg();
+              await sql`
+                UPDATE harness_shared.routines
+                   SET metadata = COALESCE(metadata, '{}'::jsonb)
+                         || jsonb_build_object('last_skip_reason', ${skip.slice(0, 600)}::text, 'last_skip_at', now()::text),
+                       updated_at = now()
+                 WHERE id = ${routineId}`.catch(() => {});
+            },
+            { name: `system:${action}:restricted-hold-record` },
+          );
+          return;
+        }
+      }
       const systemActionCtx = {
         installSlug,
         workspaceId,
@@ -701,9 +882,13 @@ async function routineFireImpl(
             );
             return;
           }
+          const softError = actionResult?.softError;
           await DBOS.runStep(
             async () => {
-              await sql`
+              // WI-10005164: same step name and count either way, so replay is unchanged.
+              if (softError) await recordRunnerLastError(sql, routineId, softError);
+              else
+                await sql`
                 UPDATE harness_shared.routines
                    SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
                        updated_at = now()
@@ -742,7 +927,10 @@ async function routineFireImpl(
             const { sql } = getOrgPg();
             try {
               const result = await fn(systemActionCtx);
-              await sql`
+              // WI-10005164: a fail-soft sub-pass failure is recorded, not cleared.
+              if (result?.softError) await recordRunnerLastError(sql, routineId, result.softError);
+              else
+                await sql`
                 UPDATE harness_shared.routines
                    SET metadata = COALESCE(metadata, '{}'::jsonb) - 'last_error' - 'last_error_at' - 'last_error_source',
                        updated_at = now()
@@ -858,6 +1046,25 @@ export const routineFireWorkflow = idempotentRegisterWorkflow(ROUTINE_FIRE_WORKF
  * `next_fire_at = infinity` while its turn runs; skipping this pass strands it until the next
  * non-shed tick (the 20–70 minute gaps measured in EI-21859486764076047).
  */
+/**
+ * WI-10005164: record a system action's fail-soft `softError` as the routine's
+ * runner-sourced `last_error` (the same keys a throw writes), so the next clean
+ * fire's source-scoped clear removes it. Best-effort, like the other writes here.
+ */
+async function recordRunnerLastError(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  routineId: string,
+  softError: string,
+): Promise<void> {
+  const msg = softError.slice(0, 600);
+  await sql`
+    UPDATE harness_shared.routines
+       SET metadata = COALESCE(metadata, '{}'::jsonb)
+             || jsonb_build_object('last_error', ${msg}::text, 'last_error_at', now()::text, 'last_error_source', 'runner'),
+           updated_at = now()
+     WHERE id = ${routineId}`.catch(() => {});
+}
+
 async function runLoopRebaseSweep(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
   await DBOS.runStep(
     async () => {
@@ -880,6 +1087,40 @@ async function runLoopRebaseSweep(sql: ReturnType<typeof getOrgPg>['sql']): Prom
 }
 
 /** The scheduled tick: list due routines, claim + enqueue feedback-paced deduped fires. */
+/**
+ * EI-9935 overlap probe for ONE scheduled tick workflow. Keyed by workflow name so the dispatch
+ * tick and the sweep tick (WI-10000846) each shed only on a concurrent pass of THEMSELVES — a slow
+ * sweep pass must never make the dispatch tick skip.
+ */
+function routineTickOverlapProbe(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workflowName: 'routinesTick' | 'routinesSweepTick',
+): OverlapCheckDeps {
+  return {
+    queryInFlight: (selfId, cutoffEpochMs) =>
+      sql.begin(async (tx) => {
+        // The overlap probe is a read-only guard, not routine work. Keep its
+        // server-side statement budget below the caller deadline so a
+        // checked-out connection cannot remain occupied after the guard has
+        // already fail-softed.
+        await tx.unsafe(`SET LOCAL statement_timeout = ${ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS}`);
+        return tx<{ workflow_uuid: string }[]>`
+          SELECT workflow_uuid FROM dbos.workflow_status
+           WHERE name = ${workflowName}
+             AND status = 'PENDING'
+             AND workflow_uuid <> ${selfId}
+             AND started_at_epoch_ms IS NOT NULL
+             AND started_at_epoch_ms > ${cutoffEpochMs}
+           LIMIT 1`;
+      }),
+  };
+}
+
+/**
+ * The DISPATCH tick: pool probe, overlap guard, then claim + start every admitted due routine.
+ * Nothing else. Periodic sweeps live in routinesSweepTickImpl (WI-10000846) — anything added
+ * after the fire loop here delays every dispatch slot by its own runtime.
+ */
 async function routinesTickImpl(): Promise<void> {
   // WI-3351: routinesTick is the LIGHTWEIGHT scheduler. Heavy periodic jobs
   // shed in tick-load-shed.ts, and routine bodies can self-gate; shedding this
@@ -898,22 +1139,26 @@ async function routinesTickImpl(): Promise<void> {
   // Fail-soft: poolPressure() returns 'ok' on any probe error (never shed on no signal).
   //
   // EI-11171 CRITICAL-ROUTINE FLOOR: a critical shed no longer goes fully dark. The original
-  // bare `return` here skipped the ENTIRE fire loop below — including git-sync, which is fired
-  // into the protected ROUTINES_CRITICAL_QUEUE precisely so it can NEVER be starved (its
-  // starvation froze every commit + deploy for 7h on 2026-06-23). Shedding it too silently
-  // re-armed that exact incident class. Instead we set `poolCritical` and fall through to a
+  // bare `return` here skipped the ENTIRE fire loop below — including git-sync and the bounded
+  // deterministic admission fail-open, which use ROUTINES_CRITICAL_QUEUE so a pool shed cannot
+  // starve commit persistence or the pending-admission floor. Shedding them too silently
+  // re-armed those incident classes. Instead we set `poolCritical` and fall through to a
   // MINIMAL pass: fire ONLY critical-queue routines (shouldFireUnderPoolShed), then return
   // before the heavy sweeps. Non-critical fires and heavy sweeps remain shed;
-  // the liveness-critical loop-rebase pass below also survives the shed.
+  // the liveness-critical loop-rebase pass (now in routinesSweepTickImpl) also survives the shed.
   const pool = await poolPressure();
   const poolProbeMs = lastPoolProbeMs();
   const poolCritical = pool === 'critical';
+  // Measure the admission policy chosen, not a claim about successful routine execution
+  // or the cause of the probe latency. A critical decision retains only the safety floor.
+  observeFallback('routine-scheduler-admission', { eligible: 1, applied: poolCritical ? 0 : 1,
+    reason: poolCritical ? 'critical-floor-only' : 'applied', scope: 'dispatch' });
   if (poolCritical) {
     const shedCount = recordPoolShed();
     const probeRawMs = lastPoolProbeRawMs();
     const loopP99DiscountMs = lastPoolProbeLoopDelayMs();
     console.warn(
-      `[routines-tick] slow pool probe — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync floor, EI-11171/P-006/W4); pool-shed #${shedCount}`,
+      `[routines-tick] slow pool probe — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync + bounded admission fail-open floors, EI-11171/P-006/W4); pool-shed #${shedCount}`,
       {
         probeRawMs,
         probeNetMs: Math.max(0, probeRawMs - loopP99DiscountMs),
@@ -943,24 +1188,7 @@ async function routinesTickImpl(): Promise<void> {
   // directly. Fail-soft + stale-safe (see routine-tick-overlap-guard.ts).
   if (
     !poolCritical &&
-    (await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', {
-      queryInFlight: (selfId, cutoffEpochMs) =>
-        sql.begin(async (tx) => {
-          // The overlap probe is a read-only guard, not routine work. Keep its
-          // server-side statement budget below the caller deadline so a
-          // checked-out connection cannot remain occupied after the guard has
-          // already fail-softed.
-          await tx.unsafe(`SET LOCAL statement_timeout = ${ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS}`);
-          return tx<{ workflow_uuid: string }[]>`
-            SELECT workflow_uuid FROM dbos.workflow_status
-             WHERE name = 'routinesTick'
-               AND status = 'PENDING'
-               AND workflow_uuid <> ${selfId}
-               AND started_at_epoch_ms IS NOT NULL
-               AND started_at_epoch_ms > ${cutoffEpochMs}
-             LIMIT 1`;
-        }),
-    }))
+    (await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', routineTickOverlapProbe(sql, 'routinesTick')))
   ) {
     console.warn(`[routines-tick] SKIPPED — another routinesTick invocation already in flight (EI-9935 overlap guard)`);
     return;
@@ -970,14 +1198,19 @@ async function routinesTickImpl(): Promise<void> {
   // routineFire workflow fan-out — one prior-cohort health epoch reads indexed
   // DBOS in-flight rows before claim/start, then the loop spends only its credit.
   const dispatchEpoch = await DBOS.runStep(
-    async () =>
-      evaluateRoutineDispatchEpoch({
+    async () => {
+      const atMs = Date.now();
+      // WI-10006946: the critical lane never drops below its cron demand under ok/elevated.
+      const criticalFloor = await criticalLaneDemandFloorFor(sql, pool, atMs);
+      return evaluateRoutineDispatchEpoch({
         pressure: pool,
         probeMs: poolProbeMs,
         inFlightByQueue: await readRoutineFireInFlightByQueue(sql),
         activeQueues: due.map((routine) => queueForRoutine(routine.targetRole, routine.installSlug)),
-        atMs: Date.now(),
-      }),
+        atMs,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: criticalFloor },
+      });
+    },
     { name: 'routine-dispatch-feedback-epoch' },
   );
   const queueAdmission = new Map(dispatchEpoch.queues.map((item) => [item.queueName, item]));
@@ -985,8 +1218,8 @@ async function routinesTickImpl(): Promise<void> {
   const loggedWithheldQueues = new Set<string>();
   const dueByAge = orderDueRoutinesByAge(due);
   for (const r of dueByAge) {
-    // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY the protected
-    // critical-queue routines (git-sync); everything else sheds with the heavy sweeps below.
+    // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY protected
+    // critical-queue routines (git-sync and bounded admission fail-open); everything else sheds.
     if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
     const queueName = queueForRoutine(r.targetRole, r.installSlug);
     // EI-224330 stage 2: admission is checked BEFORE claim, from the epoch's
@@ -1000,7 +1233,8 @@ async function routinesTickImpl(): Promise<void> {
         console.warn(
           `[routines-tick] HELD ${queueName} dispatch — feedback epoch has ` +
             `window=${admission?.effectiveWindow ?? 0}, inFlight=${admission?.inFlight ?? 0}, ` +
-            `available=0, pool=${dispatchEpoch.pressure} (${dispatchEpoch.probeMs}ms); ` +
+            `available=0, pool=${dispatchEpoch.pressure} (${dispatchEpoch.probeMs}ms), ` +
+            `demandFloor=${admission?.minimumWindow ?? 0}; ` +
             `unclaimed routines remain due for the next epoch (EI-224330)`,
         );
       }
@@ -1014,19 +1248,25 @@ async function routinesTickImpl(): Promise<void> {
       // executors race every tick and one must lose quietly), so the classifier stays silent
       // unless the row has been due far longer than any race could explain. Fail-soft and not
       // awaited: an instrument on the fire hot path must never delay or break dispatch.
-      const verdict = classifyClaimSkip(
-        {
-          id: r.id,
-          name: r.name,
-          installSlug: r.installSlug,
-          nextFireAt: r.nextFireAt ?? null,
-          lastFiredAt: r.lastFiredAt ?? null,
-        },
-        Date.now(),
-      );
-      if (verdict.state === 'unclaimable') {
-        console.warn(`[routines-tick] UNCLAIMABLE ROUTINE — ${verdict.reason}`);
-        void recordUnclaimableRoutine(sql, r.id, verdict);
+      // WI-10005062: this instrument threw (a non-Date lastFiredAt) and, unguarded, aborted
+      // the whole tick — every later due routine went undispatched. It must stay fail-soft.
+      try {
+        const verdict = classifyClaimSkip(
+          {
+            id: r.id,
+            name: r.name,
+            installSlug: r.installSlug,
+            nextFireAt: r.nextFireAt ?? null,
+            lastFiredAt: r.lastFiredAt ?? null,
+          },
+          Date.now(),
+        );
+        if (verdict.state === 'unclaimable') {
+          console.warn(`[routines-tick] UNCLAIMABLE ROUTINE — ${verdict.reason}`);
+          void recordUnclaimableRoutine(sql, r.id, verdict);
+        }
+      } catch (e) {
+        console.warn(`[routines-tick] claim-skip classifier failed for '${r.name}' (non-fatal): ${String(e)}`);
       }
       continue;
     }
@@ -1063,6 +1303,44 @@ async function routinesTickImpl(): Promise<void> {
       // Already enqueued/active for this routine — collapse (back-pressure).
       if (!/Duplicat/i.test(String(e))) throw e;
     }
+  }
+  // WI-10000846: DISPATCH ENDS HERE. Nothing may follow the fire loop in this tick — periodic
+  // work goes in routinesSweepTickImpl below.
+}
+
+/**
+ * WI-10000846 / WI-10006946: the periodic sweeps, split out of routinesTick into their OWN
+ * scheduled workflow.
+ *
+ * They used to run inline after the fire loop, so a routinesTick pass took as long as every
+ * sweep combined (measured 2026-10-06 20:10-21:10Z: 107 ticks, 40 of them overlap-guard skips;
+ * working passes p50 15s, p90 61s, max 414s, against a 30s crontab). The EI-9935 overlap guard
+ * then discarded the next tick, and a discarded tick dispatches NOTHING — so the fire rate was
+ * capped by the sweeps' runtime instead of by the feedback-epoch admission meant to govern it.
+ * Git-sync on the protected critical lane ran minutes late (the 21:00:00Z slot of one hive
+ * started 21:02:33Z; an 18-minute gap after a bg-host restart).
+ *
+ * This tick keeps the semantics the tail had: the EI-11171 critical-pool floor (loop-rebase
+ * only, then return), loop-rebase first, then the sweeps in their original order. Its overlap
+ * guard is keyed on its OWN workflow name, so a slow sweep pass sheds only the next sweep pass.
+ */
+async function routinesSweepTickImpl(): Promise<void> {
+  if (shouldShedSchedulerTickUnderLoopPressure()) {
+    console.warn(`[routines-sweep-tick] SKIPPED — event loop pressure, shedding sweep tick`);
+    return;
+  }
+  const { sql } = getOrgPg();
+  // Probe only: the dispatch tick owns pool-shed accounting (recordPoolShed and the durable shed
+  // event), so this second probe must not double-count sheds.
+  const poolCritical = (await poolPressure()) === 'critical';
+  if (
+    !poolCritical &&
+    (await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', routineTickOverlapProbe(sql, 'routinesSweepTick')))
+  ) {
+    console.warn(
+      `[routines-sweep-tick] SKIPPED — another routinesSweepTick invocation already in flight (EI-9935 overlap guard)`,
+    );
+    return;
   }
 
   // EI-11171 critical-routine floor (cont.): heavy sweeps stay shed, but loop completion-rebase
@@ -1110,6 +1388,35 @@ async function routinesTickImpl(): Promise<void> {
     console.warn(`[coord-program] accepted root launch scan failed: ${error instanceof Error ? error.message : error}`);
   }
 
+  // WI-10006859 / D-017: an accepted AGENT operation needs its applied worker
+  // launched. Claim + launch run inside ONE step so a replayed tick reuses the
+  // recorded result instead of spawning again; the claim's conditional UPDATE
+  // makes a re-executed step skip receipts it already placed. Fail-soft.
+  try {
+    const [{ FLAGS }, { getFlag }] = await Promise.all([
+      import('@papercusp/flags'),
+      import('@papercusp/flags/server'),
+    ]);
+    if (await getFlag(FLAGS.BLUEPRINT_AGENT_OPERATION_PLACEMENT, activeWorkspaceId())) {
+      const { placeAcceptedAgentOperations, launchAgentOperationWorker } =
+        await import('../blueprint/operation-agent-placement');
+      const placed = await DBOS.runStep(
+        () => placeAcceptedAgentOperations(sql, { launch: launchAgentOperationWorker }),
+        { name: 'accepted-agent-operation-placement' },
+      );
+      if (placed.claimed > 0) {
+        console.warn(
+          `[agent-operation-placement] claimed ${placed.claimed}, launched ${placed.launched}` +
+            (placed.failed.length
+              ? `; failed: ${placed.failed.map((f) => `${f.workItemId} (receipt ${f.receiptId}): ${f.detail}`).join('; ')}`
+              : ''),
+        );
+      }
+    }
+  } catch (error) {
+    console.warn(`[agent-operation-placement] placement pass failed: ${error instanceof Error ? error.message : error}`);
+  }
+
   // EI-19408412473830336: auto-resolve leg for the loop-death / loop-lifecycle-death
   // watchdog escalations opened above (via reconcileLoopRoutines's terminateDeadLoop /
   // classifyLoopLifecycleTurn paths) — see reconcile-loop-routines.ts's module-header
@@ -1120,16 +1427,22 @@ async function routinesTickImpl(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
-        const { reconcileDeadLoopEscalations, reconcileLoopLifecycleDeathEscalations } =
-          await import('../harness/routines/reconcile-loop-routines');
-        const [deadLoop, lifecycleDeath] = await Promise.all([
+        const {
+          reconcileDeadLoopEscalations,
+          reconcileLoopLifecycleDeathEscalations,
+          reconcileLoopNoTurnWedgeEscalations,
+        } = await import('../harness/routines/reconcile-loop-routines');
+        // WI-6554700010012153: the no-turn wedge watchdog shares the lifecycle leg's predicate.
+        const [deadLoop, lifecycleDeath, noTurnWedge] = await Promise.all([
           reconcileDeadLoopEscalations({ sql }),
           reconcileLoopLifecycleDeathEscalations({ sql }),
+          reconcileLoopNoTurnWedgeEscalations({ sql }),
         ]);
-        if (deadLoop.resolved > 0 || lifecycleDeath.resolved > 0) {
+        if (deadLoop.resolved > 0 || lifecycleDeath.resolved > 0 || noTurnWedge.resolved > 0) {
           console.warn(
             `[loop-watchdog-escalation-reconcile] auto-resolved ${deadLoop.resolved} loop-death + ` +
-              `${lifecycleDeath.resolved} loop-lifecycle-death escalation(s) this pass`,
+              `${lifecycleDeath.resolved} loop-lifecycle-death + ${noTurnWedge.resolved} loop-no-turn-wedge ` +
+              `escalation(s) this pass`,
           );
         }
       } catch (e) {
@@ -1320,6 +1633,43 @@ async function routinesTickImpl(): Promise<void> {
       };
     },
     { name: 'su-ideate-ungraded-sweep' },
+  );
+
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-17: the WEEKLY OWNER GRADING
+  // SAMPLE. The sweep above nudges the Mug to grade; nothing put routed ideas in front
+  // of the HUMAN, so agent grades were never calibrated against owner judgement. Once
+  // per ~7d (debounced on the shared pot_watchdog_fires ledger) this sends the owner a
+  // small stratified sample of owner-ungraded ideation ideas to grade. Fail-soft;
+  // tuning/kill switch: PAPERCUSP_SCOUT_WEEKLY_GRADING_SAMPLE_SIZE (<= 0 disables).
+  await DBOS.runStep(
+    async () => {
+      const { weeklyGradingSampleSweep } = await import('../scout/weekly-grading-sample');
+      const res = await weeklyGradingSampleSweep();
+      if (res.outcome === 'sent' || res.outcome === 'error') {
+        console.warn(`[weekly-grading-sample] ${res.outcome}: ${res.workspaceId} ${res.weekKey} — ${res.reason}`);
+      }
+      // Returned (not void) so operation_outputs records each run's verdict, including a
+      // fail-soft error that would otherwise look identical to a healthy debounced run.
+      return { ranAtMs: Date.now(), ...res };
+    },
+    { name: 'scout-weekly-grading-sample' },
+  );
+
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-005 / R-9: IDEATION BACKLOG ADJUDICATION.
+  // Every ideation-origin work-item gets a recorded keep/merge/drop disposition
+  // (payload.ideaDisposition), and up to ADJUDICATION_CLOSE_BATCH still-open merge/drop
+  // ideas are retired through setWorkItemState. Incremental: a recorded disposition is
+  // never rewritten. Fail-soft; kill switch: PAPERCUSP_SCOUT_IDEATION_ADJUDICATION=0.
+  await DBOS.runStep(
+    async () => {
+      const { ideationBacklogAdjudicationSweep } = await import('../scout/ideation-backlog-adjudication');
+      const res = await ideationBacklogAdjudicationSweep();
+      if (res.outcome === 'error' || res.closeFailures > 0) {
+        console.warn(`[ideation-adjudication] ${res.outcome}: ${res.workspaceId} closeFailures=${res.closeFailures} — ${res.reason ?? ''}`);
+      }
+      return { ranAtMs: Date.now(), ...res };
+    },
+    { name: 'scout-ideation-backlog-adjudication' },
   );
 
   // WI-1574 (2026-07-02): the ready-plan AUTOSTART sweep — the missing CONSUMER of
@@ -1865,17 +2215,11 @@ async function routinesTickImpl(): Promise<void> {
   // the Learning tab). The Scout/Blender leg sat paused this way for 5 days with a
   // correct, unread verdict the whole time. Same watchdog-sweep house pattern,
   // its own 24h debounce ledger (source 'learning-loop-health').
-  await DBOS.runStep(
-    async () => {
-      const { learningLoopHealthSweep } = await import('../harness/routines/learning-loop-health-sweep');
-      const results = await learningLoopHealthSweep();
-      for (const r of results) {
-        if (r.outcome === 'debounced') continue;
-        console.warn(`[learning-loop-health] ${r.outcome}: ${r.blueprintId} (${r.status}) — ${r.reason.slice(0, 160)}`);
-      }
-    },
-    { name: 'learning-loop-health-sweep' },
-  );
+  // DBOS persists runStep return values in operation_outputs. Keep the concrete
+  // workspace and every classifier candidate/outcome with the same durable tick
+  // record so a later investigation can distinguish an empty healthy read from
+  // a wrong-workspace read or a candidate that was classified but not escalated.
+  await DBOS.runStep(learningLoopHealthSweepDbosStep, { name: 'learning-loop-health-sweep' });
 
   // EI-19342686127995790: the INTERPRETER for the new-file tsc reds the baseline gate
   // observes on its hot path. The gate recomputes that finding ~9x/hour (every agent's
@@ -1919,11 +2263,12 @@ async function routinesTickImpl(): Promise<void> {
     async () => {
       try {
         const { reconcileAndGovern } = await import('../harness/routines/reconcile-plan-runs');
-        const { reconciled, paused, orphaned } = await reconcileAndGovern();
-        if (reconciled > 0 || paused.length > 0 || orphaned > 0) {
+        const { reconciled, paused, orphaned, instancesRetired } = await reconcileAndGovern();
+        if (reconciled > 0 || paused.length > 0 || orphaned > 0 || instancesRetired > 0) {
           console.warn(
             `[plan-run-reconcile] tick settled ${reconciled} scheduled run(s)` +
               (orphaned > 0 ? `, reclaimed ${orphaned} orphaned run(s)` : '') +
+              (instancesRetired > 0 ? `, retired ${instancesRetired} settled-run instance plan(s)` : '') +
               (paused.length ? `, auto-paused ${paused.length} schedule(s): ${paused.join(', ')}` : ''),
           );
         }
@@ -1958,7 +2303,7 @@ async function routinesTickImpl(): Promise<void> {
 
   // platform-to-app-data-producer-2026-08-30 P-005 (D-001): the app data
   // producer's reconcile sweep. For each configured (owner, app) mapping it
-  // asks the APP where its cursor is (D-002), reads canonical personal_documents
+  // asks the APP where its cursor is (D-002), reads canonical documents
   // rows after it (D-004), and POSTs them through the SAME mapper the live push
   // sink uses, so push and reconcile cannot produce divergent app rows.
   //
@@ -2036,3 +2381,9 @@ const routinesTickWorkflow = idempotentRegisterWorkflow('routinesTick', () =>
 
 // Scheduled fn must also be a registered workflow. Default skip-missed mode.
 DBOS.registerScheduled(routinesTickWorkflow, { name: 'routinesTick', crontab: TICK_CRONTAB });
+
+// WI-10000846: sweeps run on their own schedule so a slow sweep can never cost a dispatch slot.
+const routinesSweepTickWorkflow = idempotentRegisterWorkflow('routinesSweepTick', () =>
+  DBOS.registerWorkflow(routinesSweepTickImpl, { name: 'routinesSweepTick' }),
+);
+DBOS.registerScheduled(routinesSweepTickWorkflow, { name: 'routinesSweepTick', crontab: SWEEP_TICK_CRONTAB });

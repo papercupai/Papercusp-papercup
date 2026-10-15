@@ -187,6 +187,73 @@ describe('gate-store (real PG)', () => {
     expect(await closeGateByToolUseId({ workspaceId: ws, sessionId: 's5', toolUseId: 'toolu_x' })).toBe(0);
   });
 
+  describe('suppressed_ask + declared deadline (WI-10005039, migration 1339)', () => {
+    const DECIDE_BY = '2026-10-09T12:00:00.000Z';
+
+    it('admits kind suppressed_ask / source agent and round-trips decide_by + default_if_unanswered through listPendingGates', async () => {
+      const { outcome } = await openOrTouchGate({
+        workspaceId: ws,
+        sessionId: 'sup-s1',
+        client: 'claude',
+        kind: 'suppressed_ask',
+        refId: 'sup-ref-1',
+        question: 'Ship now or hold?',
+        source: 'agent',
+        decideBy: new Date(DECIDE_BY),
+        defaultIfUnanswered: 'ship at the deadline',
+      });
+      expect(outcome).toBe('opened');
+
+      const [row] = await listPendingGates({ workspaceId: ws, sessionId: 'sup-s1' });
+      expect(row).toMatchObject({ kind: 'suppressed_ask', source: 'agent', closed_at: null });
+      // Regression for the silent drop: the INSERT never wrote these and the SELECT never read
+      // them, so a declared deadline was invisible to plans:attention and the reaper alike.
+      expect(new Date(row!.decide_by as string).toISOString()).toBe(DECIDE_BY);
+      expect(row!.default_if_unanswered).toBe('ship at the deadline');
+    });
+
+    it('a watcher/hook re-observation with NO deadline cannot erase a declared one', async () => {
+      await openOrTouchGate({
+        workspaceId: ws,
+        sessionId: 'sup-s2',
+        client: 'claude',
+        kind: 'suppressed_ask',
+        refId: 'sup-ref-2',
+        question: 'Q?',
+        source: 'agent',
+        decideBy: DECIDE_BY,
+        defaultIfUnanswered: { choice: 'proceed' },
+      });
+      const again = await openOrTouchGate({
+        workspaceId: ws,
+        sessionId: 'sup-s2',
+        client: 'claude',
+        kind: 'suppressed_ask',
+        refId: 'sup-ref-2',
+        source: 'agent',
+      });
+      expect(again.outcome).toBe('already_open');
+
+      const [row] = await listPendingGates({ workspaceId: ws, sessionId: 'sup-s2' });
+      expect(new Date(row!.decide_by as string).toISOString()).toBe(DECIDE_BY);
+      expect(row!.default_if_unanswered).toEqual({ choice: 'proceed' });
+    });
+
+    it('CONTROL: a plain gate opened without a deadline reads NULL for both columns', async () => {
+      await openOrTouchGate({
+        workspaceId: ws,
+        sessionId: 'sup-s3',
+        client: 'claude',
+        kind: 'ask',
+        refId: 'plain-ref',
+        source: 'watcher',
+      });
+      const [row] = await listPendingGates({ workspaceId: ws, sessionId: 'sup-s3' });
+      expect(row!.decide_by).toBeNull();
+      expect(row!.default_if_unanswered).toBeNull();
+    });
+  });
+
   it('listPendingGates scopes by workspace and orders oldest-first by default', async () => {
     await openOrTouchGate({
       workspaceId: ws,

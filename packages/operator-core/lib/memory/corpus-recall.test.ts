@@ -43,6 +43,58 @@ const wi = (over: Partial<CorpusHit> = {}): CorpusHit => ({
 
 const QUERY = 'why did the http2 transport change on the sse endpoint';
 
+describe('complete knowledge context', () => {
+  it('retains the known Report when broad plan matches would consume its budget', () => {
+    const report: CorpusHit = { source: 'report',sourceId: 'warm-report',scope: 'papercusp',
+      excerpt: 'warmquartz diagnostic snapshot recovery evidence. Retain the snapshot.',
+      score: .04,rankers: ['lexical'] };
+    const broadPlans: CorpusHit[] = ['amber','cobalt','jade','zephyr'].map(token => ({
+      source: 'plan',sourceId: `papercusp:${token}`,scope: 'harness:papercusp',
+      excerpt: 'Ordinary background. '.repeat(20) + `${token} diagnostic snapshot recovery evidence.`,
+      score: .02,rankers: ['lexical'],
+    }));
+    const result = selectCorpusLines({ hits: [report,...broadPlans],
+      queryText: 'warmquartz diagnostic',harnessSlugs: ['papercusp'] });
+    expect(result.lines[0].handle.ref).toBe('report:warm-report');
+    expect(result.lines.some(line => line.line.includes('Retain the snapshot'))).toBe(true);
+    expect(result.dropped.some(drop => drop.reason === 'budget-exhausted')).toBe(true);
+  });
+
+  it('retains prerequisite context and resolves all three source kinds', () => {
+    const hits: CorpusHit[] = [
+      { source: 'plan',sourceId: 'papercusp:repair',scope: 'harness:papercusp',excerpt: 'http2 transport repair',score: .03 },
+      { source: 'doc',sourceId: 'harness:papercusp:repair',scope: 'harness:papercusp',
+        excerpt: 'Prerequisite: retain the snapshot. Apply the http2 transport recovery.',
+        highlight: 'http2 transport',score: .03,meta: { section: 'Recovery' } },
+      { source: 'report',sourceId: 'R1',scope: 'papercusp',excerpt: 'http2 transport incident evidence',score: .03 },
+    ];
+    const selected = selectCorpusLines({ hits,queryText: QUERY,harnessSlugs: ['papercusp'],budgetChars: 2000 });
+    expect(selected.lines).toHaveLength(3);
+    expect(selected.lines.map(l=>l.handle.kind).sort()).toEqual(['doc','plan','report']);
+    const block = renderCorpusBlock(selected.lines)!;
+    expect(block).toContain('retain the snapshot');
+    expect(block).toContain('plans:get');
+    expect(block).toContain('docs:get');
+    expect(selected.lines.find(l=>l.handle.kind === 'doc')?.handle.resolve)
+      .toBe('docs:get {"slugs":["repair"],"harness":"papercusp"}');
+    expect(block).toContain('reports:get');
+    expect(block).toContain('dated evidence');
+    expect(selectCorpusLines({ hits,queryText: QUERY,ambientExcludedRefs: new Set(['report:R1']) }).lines
+      .some(l=>l.handle.ref === 'report:R1')).toBe(false);
+  });
+
+  it('selects maintained guidance ahead of conflicting dated evidence within a single slot', () => {
+    const report: CorpusHit = { source: 'report',sourceId: 'R1',excerpt: 'http2 transport: discard the snapshot',
+      score: .04,rankers: ['lexical','embeddings'] };
+    const doc: CorpusHit = { source: 'doc',sourceId: 'papercusp-engineering:repair',scope: 'operator',
+      excerpt: 'http2 transport: retain the snapshot',score: .01,rankers: ['lexical'] };
+    const result = selectCorpusLines({ hits: [report,doc],queryText: QUERY,maxItems: 1 });
+    expect(result.lines[0].handle.kind).toBe('doc');
+    expect(result.lines[0].line).toContain('retain the snapshot');
+    expect(result.lines[0].handle.resolve).toBe('docs:get {"slugs":["repair"],"harness":"engineering"}');
+  });
+});
+
 describe('corpusTerms', () => {
   it('drops stopwords and short tokens but keeps id-shaped ones', () => {
     const terms = corpusTerms('Why does WI-6512 block P-008 and the D-037 decision?');

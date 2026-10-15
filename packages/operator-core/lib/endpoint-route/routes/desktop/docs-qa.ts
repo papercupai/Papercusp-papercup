@@ -37,9 +37,6 @@
 import { sseResponse } from '@papercusp/sse';
 import { defineTool } from '@papercusp/agent-mcp';
 import { searchDocs } from '@papercusp/docs-engine';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { engineeringAdapter } from '../../../agent-tools/docs/_engineering-adapter';
 import { runAgentChat, type RunAgentChatOptions } from '../../../agent-chat-stream';
 import { surfaceBackend, surfaceModel } from '../../../agent-config';
@@ -47,6 +44,7 @@ import { claudeSignedIn, codexSignedIn, ompSignedIn } from '../../../agent-auth-
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { readSystemPrincipal } from '../../../system-principal';
 import { operatorApiBase } from '../../../operator-api-base';
+import { readSuperuserToken } from '../../../superuser-token';
 
 const NOT_FOUND = () => new Response(null, { status: 404 });
 
@@ -76,14 +74,9 @@ export type DocsQaMcpConfig = {
   mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
 };
 
+/** Shared reader: honours PAPERCUSP_HOME and the 16-char floor (WI-10006617). */
 function readDocsQaSuperuserToken(): string | null {
-  try {
-    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
-    const token = readFileSync(tokenPath, 'utf8').trim();
-    return token.length >= 16 ? token : null;
-  } catch {
-    return null;
-  }
+  return readSuperuserToken();
 }
 
 /**

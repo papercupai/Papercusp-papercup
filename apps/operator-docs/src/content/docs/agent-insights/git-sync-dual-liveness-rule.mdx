@@ -49,7 +49,7 @@ The spawner-sidecar path must preserve the same semantics: its `idleTimeoutMs` i
 
 ## Resource-ownership clock
 
-`git-sync-action.ts` gives each fire a unique owner such as `system:git-sync:<uuid>`, acquires the per-harness and extra resources under that owner, and refreshes them every 60 seconds against a 600-second TTL.
+`git-sync-action.ts` gives each fire a unique owner such as `system:git-sync:<pid>:<uuid>`, acquires the per-harness and extra resources under that owner, and refreshes them every 60 seconds against a 600-second TTL.
 
 The heartbeat has four required properties:
 
@@ -60,6 +60,16 @@ The heartbeat has four required properties:
 
 A stable owner shared by cron and manual `git-sync:run` is incorrect: same-owner acquisition coalesces into a refresh, so two distinct fires could enter concurrently. The UUID owner makes the second fire take the foreign-owner conflict path and skip.
 
+## Abort and child-exit boundary
+
+An action timeout requests cancellation; it does not prove that a Git child has exited. While tracked Git executions remain unresolved, `recordTimeoutActivity` reports the error with `active:true` and `completed_at:null`. Lease renewal continues until those executions settle. Cleanup then stops renewal, records the terminal error while the fire still owns its leases, and releases the resources.
+
+A non-timeout pipeline rejection has the same boundary. The maintained protected-path preflight runs Git commands in parallel with `Promise.all`; one rejection can propagate while another tracked command remains unresolved. The generic error marker therefore also stays active until cleanup observes that remaining work settle. Cleanup preserves the original pipeline error.
+
+This marker is a safety boundary: `routines:list` derives its execution verdict and `safe_to_restart` from activity. Publishing `active:false` at the cancellation deadline or the first parallel rejection would describe a still-running child as idle. The deferred-child timeout and parallel generic-error resolve/reject cases in `git-sync-action.test.ts` reproduced both errors in EI-25430105870893148 and guard the pending and terminal states.
+
+An inactive marker is also not an independent resource-release receipt. Correlate its exact per-fire owner with the resource hold and require the sanctioned drain before restarting. A refreshed acquisition timestamp measures a lease refresh, not the full age of a hold.
+
 ## Recurrence guards
 
 Keep all of these tests when the runner, sidecar, lock store, or routine wrapper changes:
@@ -68,6 +78,7 @@ Keep all of these tests when the runner, sidecar, lock store, or routine wrapper
 - `git-sync-checkpoint-resume.test.ts`: an endlessly chatty child is still killed by the absolute hard ceiling.
 - `git-via-sidecar.test.ts`: the sidecar refreshes its idle deadline on output and kills a silent child at the idle deadline.
 - `git-sync-action.test.ts`: every held resource is renewed after 60 seconds with the same owner and 600-second TTL, renewal stops before release, and a concurrent fire gets a distinct owner and cannot enter.
+- `git-sync-action.test.ts`: timeouts and parallel generic errors retain an active marker and renewable leases until tracked Git settles, then publish terminal activity before releasing resources.
 
 ## Operator evidence
 

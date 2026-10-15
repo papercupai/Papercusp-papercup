@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R2 lexical recall counterexample with a copied production source",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file", "packages/operator-core/lib/agent-tools/search/sources.ts",
+    "--mutate", "s/return token;/return null;/",
+    "--test", "PAPERCUSP_OPERATOR_URL=http://127.0.0.1:3070 PAPERCUSP_SOURCES_SUBJECT={} npm run test:file -- packages/operator-core/lib/agent-tools/search/sources.integration.test.ts -- --testNamePattern=EI-24045346484356708"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T15:56:43.886Z",
+  "finishedAt": "2026-10-01T15:59:57.343685Z",
+  "summary": "Six selected real-Postgres assertions passed against production and its unmodified copy. Disabling compactLiteralToken in the copied source caused two assertion failures, with four selected assertions still passing. The guarded probe caught the regression and verified production source bytes unchanged.",
+  "assertions": [
+    {
+      "id": "production-and-relocated-baselines-pass",
+      "passed": true,
+      "evidence": "Production:6 passed,0 failed; unmodified copied source:6 passed,0 failed. Both collected61 cases and excluded55 outside the selected EI-24045346484356708 group. This proves six unique assertions, not twelve."
+    },
+    {
+      "id": "disabled-literal-recall-causes-assertion-failures",
+      "passed": true,
+      "evidence": "Mutant:2 failed,4 passed,55 excluded. The windowed-fill positive control expected one substring statement and observed zero. The compact-token recall assertion expected ['codex:sess-compact-token:1'] and observed []. Both emitted TEST_FILE_ASSERTION_FAILURE."
+    },
+    {
+      "id": "probe-catches-regression-without-mutating-production",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=test-file-assertion-failure. Tree-integrity verification reported production sources.ts byte-identical to its pre-probe state."
+    }
+  ],
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10004474",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 5,
+  "evidencePlane": "source",
+  "measurement": {
+    "sourcePath": "packages/operator-core/lib/agent-tools/search/sources.ts",
+    "sourceSha256": "81e897a68c4692cbfa2189dc8b057cc42304f3a1ff780486bbef616eb43f1314",
+    "testPath": "packages/operator-core/lib/agent-tools/search/sources.integration.test.ts",
+    "testSha256": "031c8c7757180c4d16b5d6c5ceff6ba602ba646e8e2b35002d4f55e22cad05fe",
+    "capturedLogSha256": "718376c1585fb9b5b40e85794be55ff4dc140227b53c88f11749b823f18b0811",
+    "baselineStartedAt": "2026-10-01T15:56:43.886Z",
+    "relocatedBaselineStartedAt": "2026-10-01T15:58:09.684Z",
+    "mutantStartedAt": "2026-10-01T15:59:18.893Z",
+    "finishedAtBasis": "Final captured probe log mtime, read after the process exited0. Admission time before the first baseline is not included."
+  },
+  "residualUnknowns": [
+    "This is a source-plane counterexample, not an installed serving-runtime mutation or a new live latency measurement.",
+    "The focused Vitest rows were unscoped; they are not claimed as harness-scoped ledger receipts. Register only this exact committed artifact through testing:record-run.",
+    "The source test file was uncommitted during this run. Artifact registration does not retroactively turn that conventional run into a clean run or repair binding18827.",
+    "The probe's parser field is unchecked; actual module execution is evidenced by two assertion failures and four passing selected cases.",
+    "Hook-schema counterexample and full R2 adequacy remain separate obligations."
+  ]
+}

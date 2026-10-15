@@ -44,6 +44,21 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveGoalActivity } from '../goals/activity';
+
+const CONDITION_PREFIX = 'alarm:goal-edit-claim:';
+type GoalEditClaimIdentity = Pick<GoalEditClaimAlert, 'workspaceId' | 'goalId' | 'agentId'>;
+function editClaimConditionKey(identity: GoalEditClaimIdentity): string {
+  return CONDITION_PREFIX + encodeURIComponent(JSON.stringify([identity.workspaceId, identity.goalId, identity.agentId]));
+}
+async function readOpenEditClaimConditionKeys(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith(CONDITION_PREFIX))
+    .map(condition => condition.condition_key);
+}
 
 /** Near-real-time: the 28-minute measured staleness gap closes to ≤~2 min. The
  *  steady-state query is a pkey range scan over rows written since the last tick,
@@ -107,7 +122,7 @@ export interface GoalEditClaimAlert {
 export function groupEditClaims(rows: readonly EditClaimRowLike[]): GoalEditClaimAlert[] {
   const byKey = new Map<string, GoalEditClaimAlert & { fileSet: Set<string> }>();
   for (const row of rows) {
-    const key = `${row.workspaceId}:${row.goalId}:${row.agentId}`;
+    const key = editClaimConditionKey(row);
     const existing = byKey.get(key);
     if (!existing) {
       byKey.set(key, {
@@ -149,6 +164,13 @@ export interface GoalEditClaimSweepDeps {
   /** Emit goal:edit-claim:<goalId> so parked waiters (graders) fire immediately. */
   emitEditClaim: (alert: GoalEditClaimAlert) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
+  rail?: AlarmAttentionDeps;
+  readOpenConditionKeys: () => Promise<string[]>;
+  /** A violation is permanent for this goal run. Silence, mode exit and pause are
+   * not recovery; only an exact measured terminal goal status ends the episode. */
+  readGoalState: (workspaceId: string, goalId: string) => Promise<{
+    workspaceId: string; goalId: string; status: string;
+  } | null>;
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -331,6 +353,13 @@ function sweepDeps(sql: Sql, overrides: Partial<GoalEditClaimSweepDeps>): GoalEd
     notify: defaultNotify,
     emitEditClaim: defaultEmitEditClaim,
     flagEnabled: defaultFlagEnabled,
+    readOpenConditionKeys: readOpenEditClaimConditionKeys,
+    readGoalState: async (workspaceId, goalId) => {
+      const [row] = await sql<{ workspace_id: string; id: string; status: string }[]>`
+        SELECT workspace_id, id, status FROM harness_shared.goals
+         WHERE workspace_id = ${workspaceId} AND id = ${goalId}`;
+      return row ? { workspaceId: row.workspace_id, goalId: row.id, status: row.status } : null;
+    },
     ...overrides,
   };
 }
@@ -352,6 +381,12 @@ export async function runGoalEditClaimSweepOnce(
   const { rows, ledgerMaxId } = await deps.readNewEditClaims(sinceLedgerId);
   const nextSinceLedgerId = advanceHighWaterMark(rows, ledgerMaxId);
   const alerts = groupEditClaims(rows);
+  const keys = new Set(alerts.map(editClaimConditionKey));
+  try {
+    for (const key of await deps.readOpenConditionKeys()) keys.add(key);
+  } catch (e) {
+    console.warn(`[goal-edit-claim-watchdog] condition read failed (non-fatal): ${String(e)}`);
+  }
   let alerted = 0;
   const graderMap =
     alerts.length > 0
@@ -362,6 +397,16 @@ export async function runGoalEditClaimSweepOnce(
         )
       : new Map<string, string[]>();
   for (const alert of alerts) {
+    try {
+      const event = { conditionKey: editClaimConditionKey(alert), oneShot: true,
+        summary: `Goal-mode owner ${alert.agentId} claimed an edit on goal '${alert.goalId}'`,
+        body: `Workspace ${alert.workspaceId}; files: ${alert.files.join(', ')}. ` +
+          'never-implements remains falsified for this goal run; only measured terminal goal closure ends this condition.' };
+      if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+      else await broadcastSevereEvent(event);
+    } catch (e) {
+      console.warn(`[goal-edit-claim-watchdog] condition broadcast failed (non-fatal): ${String(e)}`);
+    }
     try {
       await deps.escalate(alert);
       alerted += 1;
@@ -383,6 +428,25 @@ export async function runGoalEditClaimSweepOnce(
       console.warn(
         `[goal-edit-claim-watchdog] event emit failed for ${alert.goalId}/${alert.agentId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
       );
+    }
+  }
+  for (const key of keys) {
+    if (!key.startsWith(CONDITION_PREFIX)) continue;
+    let identity: unknown;
+    try {
+      identity = JSON.parse(decodeURIComponent(key.slice(CONDITION_PREFIX.length)));
+    } catch { continue; /* An unknown key is not measured goal recovery. */ }
+    if (!Array.isArray(identity) || identity.length !== 3 ||
+        !identity.every(part => typeof part === 'string' && part.length > 0)) continue;
+    const [workspaceId, goalId] = identity;
+    try {
+      const state = await deps.readGoalState(workspaceId, goalId);
+      if (state && state.workspaceId === workspaceId && state.goalId === goalId &&
+          resolveGoalActivity({ status: state.status }).terminal) {
+        await resolveAlarm(key, 'goal-edit-claim-watchdog', deps.rail);
+      }
+    } catch (e) {
+      console.warn(`[goal-edit-claim-watchdog] recovery read failed (non-fatal): ${String(e)}`);
     }
   }
   return { scanned: rows.length, alerted, skipped: false, nextSinceLedgerId };

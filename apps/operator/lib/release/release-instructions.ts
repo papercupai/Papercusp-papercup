@@ -98,7 +98,9 @@ You can also ask an agent to raise or lower how much context it holds before it 
 
 ### Don't like something about Papercusp?
 
-Ask an agent to change it. Papercusp has its own source code, so it can build your change and switch you to it live. The version switcher at the top picks which build you're running. If something breaks, click **Release** to go back to the installed version (or press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1</kbd>–<kbd>5</kbd>).
+In Papercusp GUI, open the command palette and choose **Report a problem** (or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, <kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> on macOS). Describe what went wrong in one sentence, then choose **Review** to see exactly what will be sent. Recent log lines are optional and off by default; nothing is sent until you choose **Send**.
+
+Want a change rather than reporting a problem? Ask an agent to build it. Papercusp has its own source code, so it can build your change and switch you to it live. The version switcher at the top picks which build you're running. If something breaks, click **Release** to go back to the installed version (or press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1</kbd>–<kbd>5</kbd>).
 
 - **Dev**: your working copy, including uncommitted edits.
 - **Staging**: everyone's merged work, committed automatically in the background.

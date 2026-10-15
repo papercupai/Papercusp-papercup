@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Product shaping current-build walkthrough",
+  "framework": "operational",
+  "command": [
+    "ptool",
+    "plans:audit",
+    "--url=http://127.0.0.1:3170",
+    "--json=-",
+    "harness=papercusp",
+    "slug=idea-to-spec-product-shaping-2026-10-09",
+    "phase=shaping"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-09T20:42:27.811109+00:00",
+  "finishedAt": "2026-10-09T20:42:33.216147+00:00",
+  "summary": "Authenticated staging MCP shaping audit on measured build 42ead3e6b0: ready-for-review, advisory, original request refs preserved, no structural diagnostics. This is current-build proof; final release R-4 remains open.",
+  "assertions": [
+    {
+      "id": "stable-current-build",
+      "passed": true,
+      "evidence": "GET :3170/api/health returned sha42ead3e6b0 before and after the authenticated MCP call; endpoint health uses top-level sha."
+    },
+    {
+      "id": "read-only-shaping-route",
+      "passed": true,
+      "evidence": "plans:audit returned ok:true, phase:shaping, dryRun:true and preview:true."
+    },
+    {
+      "id": "authored-walkthrough-ready",
+      "passed": true,
+      "evidence": "Canonical owner-request walkthrough returned ready-for-review and diagnostics:[], diagnosticsOmitted:0."
+    },
+    {
+      "id": "original-owner-source-context",
+      "passed": true,
+      "evidence": "Reviewer context preserves original priority turn6 and self/AUTO authorization turn11; generated requirements are not substituted for owner context."
+    },
+    {
+      "id": "advisory-boundary",
+      "passed": true,
+      "evidence": "Response explicitly reports advisory:true, semanticCompleteness:not-measured and sourceContentVerified:false."
+    },
+    {
+      "id": "scenario-trace-and-overflow",
+      "passed": true,
+      "evidence": "SC-001 maps to R-1 and P-001/P-002; traceOmitted:3, briefIsExcerpt:true, and a canonical-section read pointer expose the bounded preview."
+    },
+    {
+      "id": "independent-review-and-full-verification",
+      "passed": true,
+      "evidence": "Reviewer instructions retain independent review and full verification; source syntax alone does not verify source content or authorship."
+    }
+  ],
+  "runtimeRole": "staging-operator",
+  "evidencePlane": "current-build",
+  "sourceCommit": "42ead3e6b0",
+  "healthBefore": {
+    "observedAt": "2026-10-09T20:42:27.811109+00:00",
+    "endpoint": "http://127.0.0.1:3170/api/health",
+    "response": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "42ead3e6b0",
+      "version": "0.0.0",
+      "ts": "2026-10-09T20:42:27.810Z"
+    }
+  },
+  "healthAfter": {
+    "observedAt": "2026-10-09T20:42:33.216147+00:00",
+    "endpoint": "http://127.0.0.1:3170/api/health",
+    "response": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "42ead3e6b0",
+      "version": "0.0.0",
+      "ts": "2026-10-09T20:42:33.215Z"
+    }
+  },
+  "toolCall": {
+    "name": "plans:audit",
+    "args": {
+      "harness": "papercusp",
+      "slug": "idea-to-spec-product-shaping-2026-10-09",
+      "phase": "shaping"
+    },
+    "url": "http://127.0.0.1:3170",
+    "response": {
+      "ok": true,
+      "slug": "idea-to-spec-product-shaping-2026-10-09",
+      "phase": "shaping",
+      "dryRun": true,
+      "preview": true,
+      "productShaping": {
+        "status": "ready-for-review",
+        "advisory": true,
+        "semanticCompleteness": "not-measured",
+        "sourceContentVerified": false,
+        "brief": {
+          "audience": "Avi and plan authors translating high-level product ideas into implementable requirements",
+          "problem": "A precise and testable spec can omit a user scenario or describe an unsupported interpretation of the original idea.",
+          "outcome": "Authors and reviewers can inspect the intended experience, assumptions and scenario-to-requirement-to-work trace before implementation."
+        },
+        "trace": [
+          {
+            "scenarioId": "SC-001",
+            "requirementIds": [
+              "R-1"
+            ],
+            "planItemIds": [
+              "P-001",
+              "P-002"
+            ],
+            "linksAreExcerpt": false
+          },
+          {
+            "scenarioId": "SC-002",
+            "requirementIds": [
+              "R-2"
+            ],
+            "planItemIds": [
+              "P-001",
+              "P-003"
+            ],
+            "linksAreExcerpt": false
+          },
+          {
+            "scenarioId": "SC-003",
+            "requirementIds": [
+              "R-2"
+            ],
+            "planItemIds": [
+              "P-001",
+              "P-003"
+            ],
+            "linksAreExcerpt": false
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsOmitted": 0,
+        "overflowRead": "Read the full canonical Product shaping section with plans:get; the brief, trace and diagnostics here are excerpts.",
+        "reviewerBrief": {
+          "sourceRefs": [
+            "session_turn:codex:01a120e1-c3d3-7aa2-a875-39fa83a3926c:6",
+            "session_turn:codex:01a120e1-c3d3-7aa2-a875-39fa83a3926c:11"
+          ],
+          "planSection": "Product shaping",
+          "readFullContext": "plans:get { slug, heading:\"Product shaping\" }; read each original source via sessions:read before reviewing requirements.",
+          "instructions": [
+            "Read the original source turns and relevant current-product context BEFORE reading generated requirements. Source syntax is checked here; source content and authorship are not verified by this preview.",
+            "Reconstruct the intended experience independently. Compare it with the brief, concrete scenarios and requirements; report omissions, contradictions, unsupported additions and material ambiguous choices with exact references.",
+            "Keep assumptions distinct from owner requests. Investigate routine technical choices yourself; ask only material product questions with a recommended answer.",
+            "Use the existing independent review route. These structural diagnostics do not prove semantic completeness or owner approval; full verification remains unchanged."
+          ],
+          "sourceRefsOmitted": 0
+        },
+        "scaffold": null,
+        "next": "Shape the product before requirements/tasks: record audience, current problem, intended outcome, non-goals and original source refs. Walk concrete user scenarios including relevant failure/recovery and boundaries; keep observed facts, assumptions and material product choices distinct. Investigate existing behavior and recommend defaults; ask only about consequential product choices, never engineering methodology. Map scenarios to R-N requirements and their existing Design BAR-to-work map. Use plans:audit phase:shaping for advisory gaps and the original-intent reviewer brief; save edits with plans:set-content. Full verification remains unchanged.",
+        "briefIsExcerpt": true,
+        "traceOmitted": 3
+      }
+    }
+  },
+  "limits": [
+    "Structural authoring advice does not establish semantic intent fidelity.",
+    "The three maintained pilot examples are synthetic; no live reduction in defects, owner corrections or cost is measured.",
+    "Final release-operator artifact evidence and independent final acceptance remain open."
+  ]
+}

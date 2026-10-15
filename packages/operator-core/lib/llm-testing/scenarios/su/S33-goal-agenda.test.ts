@@ -275,12 +275,14 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect(goal.ownerReport).toEqual(recovery.ownerReport);
   });
 
-  it('restores real planning demand if the no-demand review is absent or stale', () => {
-    for (const condition of ['absent', 'stale'] as const) {
+  it('restores real planning demand if the no-demand review is absent, stale or lacks valid coverage', () => {
+    for (const condition of ['absent', 'stale', 'missing-coverage', 'uncovered-need'] as const) {
       const inputs = s33NoDemandInputs();
       if (inputs.goalPlanning.read.status !== 'known') throw new Error('Expected known review source');
       if (condition === 'absent') inputs.goalPlanning.read.value.review = null;
-      else inputs.goalPlanning.read.value.review!.reviewedAt = '2026-09-13T18:00:00.000Z';
+      else if (condition === 'stale') inputs.goalPlanning.read.value.review!.reviewedAt = '2026-09-13T18:00:00.000Z';
+      else if (condition === 'missing-coverage') delete inputs.goalPlanning.read.value.review!.coverage;
+      else inputs.goalPlanning.read.value.review!.coverage = [{ need: 'Unmapped recurring work', itemRefs: ['WI-93301', 'WI-93302'] }];
       const agenda = buildAgentObligationAgenda(inputs, '2026-09-13T20:00:00.000Z');
       expect(agenda.primary).toEqual(expect.arrayContaining([
         expect.objectContaining({ family: 'planning-needed', status: 'due' }),

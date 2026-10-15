@@ -42,6 +42,8 @@
  * autoApplyBlockedBy:'live-agents' (Requirements).
  */
 
+import { createHash } from 'node:crypto';
+
 /** Work-item states that mean "successfully finished" (reflect-rules maps these
  *  to plan-item `done`). Subset of TERMINAL_WORK_ITEM_STATES (convert.ts). */
 export const DONE_WORK_ITEM_STATES: ReadonlySet<string> = new Set(['passed', 'resolved', 'done']);
@@ -110,6 +112,9 @@ export interface CleanupFinding {
   autoApply: boolean;
   autoApplyBlockedBy: 'live-agents' | 'judgment-call' | null;
   evidence: CleanupEvidenceRef[];
+  /** Stable gathered-source identity, carried on the existing evidence ledger.
+   * The scan clock is excluded so another day does not require another decision. */
+  evidenceBasis?: string[];
   /** Canonical write payload for findings whose action needs state outside the
    *  plan row. It is deliberately scan-time data: the dispatcher only receives
    *  a freshly re-verified finding, so the worklist value and CAS version are
@@ -120,6 +125,8 @@ export interface CleanupFinding {
     planRef: string;
     worklist: string[];
     expectedVersion: number;
+    /** Automatic risk grants cannot choose a plan for an owner-selected goal. */
+    ownerSelectionRequired?: boolean;
   };
 }
 
@@ -198,6 +205,7 @@ export interface CleanupScanInputs {
     goalId: string;
     refs: string[];
     version: number;
+    ownerSelectionRequired?: boolean;
   } | null;
 }
 
@@ -251,7 +259,7 @@ function mkFinding(
   liveAgentOwners: string[],
 ): CleanupFinding {
   const provable = fields.confidence === 'provable';
-  const liveBlocked = provable && liveAgentOwners.length > 0;
+  const liveBlocked = liveAgentOwners.length > 0;
   const evidence = [...fields.evidence];
   if (liveBlocked) {
     evidence.push({
@@ -272,7 +280,7 @@ function mkFinding(
     to: fields.to,
     confidence: fields.confidence,
     autoApply: provable && !liveBlocked,
-    autoApplyBlockedBy: !provable ? 'judgment-call' : liveBlocked ? 'live-agents' : null,
+    autoApplyBlockedBy: liveBlocked ? 'live-agents' : !provable ? 'judgment-call' : null,
     evidence: fields.evidence.length === evidence.length ? fields.evidence : evidence,
   };
 }
@@ -335,6 +343,7 @@ export function scanForCleanupFindings(
           planRef,
           worklist: goalWorklist.refs,
           expectedVersion: goalWorklist.version,
+          ...(goalWorklist.ownerSelectionRequired ? { ownerSelectionRequired: true } : {}),
         },
       };
       enlistRankByFindingId.set(finding.findingId, rank);
@@ -508,6 +517,25 @@ export function scanForCleanupFindings(
     }
   }
 
+  const ordered = (values: unknown[]) => values.map((value) => JSON.stringify(value)).sort();
+  for (const finding of findings) {
+    const plan = inputs.plans.find((candidate) => candidate.planSlug === finding.planSlug &&
+      candidate.harnessSlug === finding.harnessSlug);
+    if (!plan) continue;
+    // Include dependency truth and claims as well as the plan edit generation.
+    // Human-readable age notes intentionally do not participate in identity.
+    const source = [
+      plan.workspaceId, plan.harnessSlug, plan.planSlug, plan.title, plan.status,
+      plan.opStatus, plan.opPriority, plan.archived, plan.updatedAtMs, plan.nowState, plan.nowNext,
+      ordered(plan.items.map((item) => [item.id, item.text, item.status, [...item.blockedBy].sort()])),
+      ordered(inputs.linkedWorkItems.filter((link) => link.planSlug === plan.planSlug)
+        .map((link) => [link.itemId, link.workItemId, link.state, link.terminal, link.hasCompletion, link.link])),
+      ordered(inputs.claims.filter((claim) => claim.planSlug === plan.planSlug)
+        .map((claim) => [claim.itemId, claim.owner, claim.expiresAtMs, claim.holderAlive])),
+      finding.kind === 'enlist-plan' ? inputs.goalWorklist : null,
+    ];
+    finding.evidenceBasis = [`cleanup-source:${createHash('sha256').update(JSON.stringify(source)).digest('hex')}`];
+  }
   const kindOrder = new Map(CLEANUP_FINDING_KINDS.map((k, i) => [k, i]));
   return findings.sort(
     (a, b) => {

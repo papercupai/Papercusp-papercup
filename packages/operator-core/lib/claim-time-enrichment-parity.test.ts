@@ -9,23 +9,23 @@
  * Every miss was silent: a claim that skipped a guard looked exactly like a claim
  * that passed one.
  *
- * ⚠ WHAT THIS TEST DOES AND DOES NOT PROVE. It is a WIRING check, not a
- * behavioural one: it proves each surface can reach each guard, not that the
- * guard fires correctly — those are the ports' own tests. That is the right scope
- * here, because the defect being guarded was never a broken guard; it was a guard
- * that was never called at all. Do not "strengthen" this by asserting on rendered
- * warning text: the four surfaces deliberately render some legs differently
+ * ⚠ WHAT THIS TEST DOES AND DOES NOT PROVE. It is a structural wiring check, not a
+ * behavioural one: it parses each surface and requires an invocation for every
+ * registered implementation (or the shared builder), not an import, comment, or
+ * string containing its name. Dedicated handler tests exercise the runtime paths;
+ * port tests prove each guard's behavior. Do not "strengthen" this by asserting on
+ * rendered warning text: the four surfaces deliberately render some legs differently
  * (claim_next emits premises as `brief.rendered`, get_next emits the whole brief),
  * and pinning that here would fail on a legitimate presentation change.
  *
- * ⚠ WHY SOURCE INSPECTION RATHER THAN INVOCATION. Invoking the four tools would
- * need the full claim substrate (org PG, leases, identity) stood up per surface —
- * an integration test whose failure mode is "the fixture broke", which is exactly
- * the shape that gets quarantined and then silently stops guarding. Reading the
- * source asks the one question that actually regressed, and cannot be flaked by
- * infrastructure. The permanent controls below keep it honest.
+ * ⚠ WHY AST INSPECTION HERE. Re-running all four full claim tools would need the
+ * claim substrate (org PG, leases, identity) stood up per surface. Existing handler
+ * tests exercise those runtime paths with focused fixtures. This test checks the
+ * complementary structural invariant, without treating an import as a call. The
+ * permanent controls below keep the AST check falsifiable.
  */
 import { describe, expect, it } from 'vitest';
+import * as ts from 'typescript';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CLAIM_TIME_ENRICHMENT_LEGS, type ClaimTimeEnrichmentLeg } from './claim-time-enrichment';
@@ -34,8 +34,8 @@ const LIB = __dirname;
 
 /**
  * The exported port function that IS each leg. A surface satisfies a leg by
- * calling this directly, or by delegating to `buildClaimTimeEnrichment` (which
- * the first test proves calls all six).
+ * calling this directly, or by delegating to `buildClaimTimeEnrichment` (the shared
+ * port test below checks that it invokes every registered implementation).
  *
  * ⚠ Adding a member to CLAIM_TIME_ENRICHMENT_LEGS without adding it here fails
  * the exhaustiveness check below — deliberately. That failure is the reminder to
@@ -53,6 +53,7 @@ const LEG_IMPLEMENTATION: Record<ClaimTimeEnrichmentLeg, string> = {
   planItemLanded: 'getClaimTimePlanItemLanded',
   siblingPathOverlap: 'getClaimTimeSiblingPathOverlap',
   sourceCitation: 'getClaimTimeSourceCitation',
+  taskBrief: 'getClaimTimeTaskBrief',
 };
 
 /** Every surface that hands an agent a claimed item and is therefore obliged to warn it. */
@@ -65,8 +66,23 @@ const CLAIM_SURFACES: Record<string, string> = {
 
 const DELEGATES_TO_PORT = 'buildClaimTimeEnrichment';
 
+function calledFunctions(source: string): Set<string> {
+  const file = ts.createSourceFile('claim-surface.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const called = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      if (ts.isIdentifier(node.expression)) called.add(node.expression.text);
+      else if (ts.isPropertyAccessExpression(node.expression)) called.add(node.expression.name.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return called;
+}
+
 function attachesLeg(source: string, leg: ClaimTimeEnrichmentLeg): boolean {
-  return source.includes(DELEGATES_TO_PORT) || source.includes(LEG_IMPLEMENTATION[leg]);
+  const calls = calledFunctions(source);
+  return calls.has(DELEGATES_TO_PORT) || calls.has(LEG_IMPLEMENTATION[leg]);
 }
 
 describe('claim-time enrichment parity (WI-41182)', () => {
@@ -79,11 +95,9 @@ describe('claim-time enrichment parity (WI-41182)', () => {
 
   it('the shared port attaches every registered leg', () => {
     const port = readFileSync(join(LIB, 'claim-time-enrichment.ts'), 'utf8');
-    for (const leg of CLAIM_TIME_ENRICHMENT_LEGS) {
-      expect(port, `the port must call ${LEG_IMPLEMENTATION[leg]} for leg "${leg}"`).toContain(
-        LEG_IMPLEMENTATION[leg],
-      );
-    }
+    const calls = calledFunctions(port);
+    const missing = CLAIM_TIME_ENRICHMENT_LEGS.filter((leg) => !calls.has(LEG_IMPLEMENTATION[leg]));
+    expect(missing, 'the shared port must invoke every registered implementation').toEqual([]);
   });
 
   it.each(Object.entries(CLAIM_SURFACES))('%s attaches every registered leg', (surface, path) => {
@@ -110,26 +124,36 @@ describe('claim-time enrichment parity (WI-41182)', () => {
      * pre-fix shape — a surface attaching every leg but one.
      *
      * ⚠ DERIVED from the registry, deliberately, rather than a hand-written list of
-     * imports. This fixture is a description of CLAIM_TIME_ENRICHMENT_LEGS, and a
-     * hand-maintained second copy of a registry drifts from it: the literal version
-     * of this fixture failed the moment a seventh leg was registered, reporting the
-     * new leg as "missing" from a control whose only intended omission was
-     * planContradiction. Building it from the registry keeps the control asserting
-     * the one thing it is for — that `attachesLeg` returns false for a leg a surface
-     * does not attach — without needing an edit every time the leg set grows.
+     * calls. This fixture describes CLAIM_TIME_ENRICHMENT_LEGS, and a hand-maintained
+     * second copy drifts. Building it from the registry keeps the control asserting
+     * that `attachesLeg` detects exactly one omitted call without needing an edit
+     * every time the leg set grows.
      */
     const OMITTED_LEG: ClaimTimeEnrichmentLeg = 'planContradiction';
-    const SURFACE_MISSING_ONE_LEG = CLAIM_TIME_ENRICHMENT_LEGS.filter((leg) => leg !== OMITTED_LEG)
-      .map((leg) => `import { ${LEG_IMPLEMENTATION[leg]} } from './${leg}-port';`)
-      .join('\n');
+    const implementedLegs = CLAIM_TIME_ENRICHMENT_LEGS.filter((leg) => leg !== OMITTED_LEG).map(
+      (leg) => LEG_IMPLEMENTATION[leg],
+    );
+    const SURFACE_MISSING_ONE_LEG = [
+      ...implementedLegs.map((implementation) => `import { ${implementation} } from './claim-leg-port';`),
+      'async function attach(subject: unknown) {',
+      ...implementedLegs.map((implementation) => `  await ${implementation}({ workItem: subject });`),
+      '}',
+    ].join('\n');
 
     it('rejects a surface that omits a leg', () => {
       const missing = CLAIM_TIME_ENRICHMENT_LEGS.filter((leg) => !attachesLeg(SURFACE_MISSING_ONE_LEG, leg));
       expect(missing).toEqual([OMITTED_LEG]);
     });
 
+    it('does not mistake an imported implementation for an invocation', () => {
+      const importOnly = `import { ${LEG_IMPLEMENTATION.planDecisions} } from './plan-decisions-port';`;
+      expect(attachesLeg(importOnly, 'planDecisions')).toBe(false);
+    });
+
     it('accepts a surface that delegates the whole set to the port', () => {
-      const delegating = `import { ${DELEGATES_TO_PORT} } from './claim-time-enrichment';`;
+      const delegating =
+        `import { ${DELEGATES_TO_PORT} } from './claim-time-enrichment';\n` +
+        `async function attach(subject: unknown) { return ${DELEGATES_TO_PORT}({ workItem: subject }); }`;
       const missing = CLAIM_TIME_ENRICHMENT_LEGS.filter((leg) => !attachesLeg(delegating, leg));
       expect(missing).toEqual([]);
     });

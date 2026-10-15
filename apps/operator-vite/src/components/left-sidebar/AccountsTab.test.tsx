@@ -6,6 +6,9 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 const H = vi.hoisted(() => ({
   accounts: [] as unknown[],
   loading: false,
+  error: null as Error | null,
+  failureReason: null as Error | null,
+  invalidate: vi.fn(),
   expanded: null as string | null,
   setExpanded: vi.fn(),
   forced: new Set<string>(),
@@ -20,7 +23,7 @@ const H = vi.hoisted(() => ({
 
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: () => ({ data: H.accounts, loading: H.loading, error: null }),
+  useSyncQuery: () => ({ data: H.accounts, loading: H.loading, error: H.error, failureReason: H.failureReason, invalidate: H.invalidate }),
 }));
 
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
@@ -107,6 +110,9 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   H.accounts = [ACCOUNT];
   H.loading = false;
+  H.error = null;
+  H.failureReason = null;
+  H.invalidate.mockReset();
   H.expanded = null;
   H.setExpanded = vi.fn((next: string | null) => {
     H.expanded = next;
@@ -128,6 +134,40 @@ afterEach(() => {
 });
 
 describe('AccountsTab', () => {
+  it('reports an unreadable pool and lets the reader retry instead of claiming it is empty', () => {
+    H.accounts = [];
+    H.error = new Error('operator_unreachable');
+    render(<AccountsTab active />);
+    expect(screen.getByRole('alert').textContent).toContain('Could not load accounts');
+    expect(screen.queryByText('No accounts in the pool yet.')).toBeNull();
+    expect(screen.queryByText('0/0')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(H.invalidate).toHaveBeenCalledOnce();
+  });
+
+  it('reports failed attempts while the transport is still retrying', () => {
+    H.accounts = [];
+    H.loading = true;
+    H.failureReason = new Error('operator_timeout');
+    render(<AccountsTab active />);
+    expect(screen.getByRole('alert').textContent).toContain('Could not load accounts');
+    expect(screen.queryByText('No accounts in the pool yet.')).toBeNull();
+  });
+
+  it('keeps previously loaded rows visible while declaring a refresh failure', () => {
+    H.error = new Error('operator_unreachable');
+    render(<AccountsTab active />);
+    expect(screen.getByText('Opus Primary')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('Showing previously loaded accounts');
+  });
+
+  it('claims an empty pool only after a successful empty read', () => {
+    H.accounts = [];
+    render(<AccountsTab active />);
+    expect(screen.getByText('No accounts in the pool yet.')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   it('renders the compact pool summary, row facts, usage meters, and steering actions', () => {
     render(<AccountsTab active />);
 

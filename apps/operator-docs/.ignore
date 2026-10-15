@@ -1,0 +1,15 @@
+# ripgrep / fd ignore — GENERATED output only (EI-25828526343827983).
+#
+# Read by ripgrep and fd, not by git. The Astro build output is already gitignored
+# (root .gitignore), but ripgrep applies an anchored pattern from an ignore file
+# ABOVE the search root only to that root's immediate children. So the root entry
+# `apps/operator-docs/dist/` was skipped when an agent searched from `apps`, and a
+# routine `rg -n -F <identifier> apps packages libs` returned ~300 MB of minified
+# HTML from here (measured 2026-10-13, ripgrep 14.1.0 and 14.1.1).
+#
+# A .ignore in THIS directory is read whenever a walk enters it, so it holds from
+# the repo root, `apps`, and `apps/operator-docs` alike. A file named explicitly
+# on the command line is still searched. Pinned by
+# packages/operator-core/lib/code-intelligence/ripgrep-generated-trees-ignore.test.ts.
+/dist/
+/.astro/

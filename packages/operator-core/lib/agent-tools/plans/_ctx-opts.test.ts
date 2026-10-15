@@ -41,4 +41,13 @@ describe('ctxToPlanSourceOpts', () => {
     expect(await ctxToPlanSourceOpts({ harnessSlug: 'web' })).toEqual({ harnessSlug: 'web' });
     expect(await ctxToPlanSourceOpts({ harnessSlug: '  web  ' })).toEqual({ harnessSlug: 'web' });
   });
+
+  it.each(['*', HOME, 'web'])('retains the admitted concrete workspace for harness %s', async harnessSlug => {
+    expect(await ctxToPlanSourceOpts({ harnessSlug, workspaceId: '  private-plan-workspace  ' }))
+      .toEqual({ harnessSlug: harnessSlug === '*' ? HOME : harnessSlug, workspaceId: 'private-plan-workspace' });
+  });
+
+  it.each(['*', '', '   '])('omits an unbound workspace %j instead of treating it as a concrete PG key', async workspaceId => {
+    expect(await ctxToPlanSourceOpts({ harnessSlug: HOME, workspaceId })).toEqual({ harnessSlug: HOME });
+  });
 });

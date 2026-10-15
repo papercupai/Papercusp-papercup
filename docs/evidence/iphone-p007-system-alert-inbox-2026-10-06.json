@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "plan": "iphone-public-release-2026-08-11",
+  "planItem": "P-007",
+  "workItem": "WI-10004734",
+  "clause": "AUTO-REQ-M-001-P-007@2",
+  "behavior": "A device attention feed that carries only systemAlerts (empty work-item and group layers) must keep those alerts through the shared Rust/UniFFI decode, so the app can show them instead of the all-clear state a genuinely empty feed produces (EI-24766495996412373).",
+  "repo": {
+    "checkout": "papercup-rust-mobile",
+    "rootHarnessSlug": "papercup-rust-mobile",
+    "head": "1b4c208314dfbe0db672b4b7da4c1dd5265e877f",
+    "worktreeNote": "crates/papercup-core/tests/client_test.rs carried an uncommitted peer rustfmt reformat of the relay/fallback tests at run time; the two attention tests below were not part of that diff."
+  },
+  "sourcePaths": [
+    "crates/papercup-core/src/types.rs",
+    "crates/papercup-core/src/client.rs"
+  ],
+  "testPaths": [
+    "crates/papercup-core/tests/client_test.rs"
+  ],
+  "runs": [
+    {
+      "testRunId": 20860458,
+      "test": "attention_preserves_system_alerts_when_other_layers_are_empty",
+      "status": "pass",
+      "role": "behavior under test: an alert-only feed keeps its systemAlerts through decoding"
+    },
+    {
+      "testRunId": 20860460,
+      "test": "attention_empty_workitems_ok",
+      "status": "pass",
+      "role": "contrast case: a feed with no alerts and no work decodes to empty system_alerts"
+    },
+    {
+      "testRunId": 20860459,
+      "test": "attention_decodes_groups_workitems_and_counts",
+      "status": "pass",
+      "role": "neighbouring decode coverage, not bound to this clause"
+    }
+  ],
+  "framework": "cargo (integration test against a wiremock device API)",
+  "ranAt": "2026-10-06T21:28:33Z",
+  "ledger": "harness_shared.test_runs (source local, harness papercusp)",
+  "command": "report-cargo-tests over papercup-rust-mobile crates/papercup-core with filter attention_, PAPERCUSP_CARGO_DISK_ALARM_PERCENT_FLOOR_BYPASS_GB=60 (cargo target volume at 99% use, 95 GiB free)",
+  "testLayer": "integration",
+  "oracle": "Hand-authored JSON fixtures served by wiremock at /api/device/attention (bearer-token matched, expect(1)). The alert-only test asserts the decoded feed keeps exactly one system alert with id, kind, severity, title and body equal to the fixture literals, alongside empty work items and zero group count, with an unknown additive field (futureMetadata) tolerated. The contrast test asserts a feed without systemAlerts decodes to empty system_alerts. Expected values are literals in the test, not output of the code under test.",
+  "mutation": {
+    "runner": "scripts/mutation-probe.sh",
+    "runnerCommit": "b9e3e4bb3ac95d16cf69fdf29cfb2e922ace9fd9",
+    "relocation": "overlay (mutant applied to a copy-out overlay of papercup-rust-mobile; the tracked file was never modified)",
+    "subject": "crates/papercup-core/src/types.rs",
+    "mutant": "pub system_alerts: Vec<AttentionSystemAlert>  ->  #[serde(skip)] pub system_alerts: Vec<AttentionSystemAlert>  (the decoder drops systemAlerts, which is the EI-24766495996412373 defect class)",
+    "guard": "report-cargo-tests over crates/papercup-core -- --test client_test attention_preserves",
+    "verdict": "caught",
+    "baselineExit": 0,
+    "guardExit": 101,
+    "assertionEvidence": "cargo-libtest-failed-tests: panicked at crates/papercup-core/tests/client_test.rs:1189:5, assertion left == right failed, left 0, right 1 (feed.system_alerts.len())",
+    "runs": [
+      { "testRunId": 20862476, "status": "pass", "role": "baseline on the unmutated tree" },
+      { "testRunId": 20862478, "status": "pass", "role": "baseline on the unmutated overlay copy" },
+      { "testRunId": 20862480, "status": "fail", "role": "mutant: the guard fails when the decoder drops systemAlerts" }
+    ],
+    "ledger": "harness_shared.test_runs (source mutation-probe; hidden from testing:runs unless source:'mutation-probe' is passed)",
+    "log": "papercusp/.papercusp/scratch/bash-59f2a7c8-9ae.log",
+    "ranAt": "2026-10-06T21:40:07Z",
+    "note": "The probe printed mutant_ledger=none because report-cargo-tests.mjs writes no receipt file; the rows above were read from the ledger directly."
+  },
+  "scopeLimit": "This proves the shared Rust decode layer preserves an alert-only feed. The Swift needs-attention verdict over that feed is covered separately by ios/PapercupTests/AttentionFeedTests.swift (testSystemAlertOnlyFeedNeedsAttention, testEmptyLegacyFeedIsAllClear), which ran in macOS CI run 37524303501 and is not bound by this record."
+}

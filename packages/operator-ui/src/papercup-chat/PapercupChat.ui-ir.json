@@ -48,7 +48,7 @@
                     "why-raw": "react-markdown is the one markdown engine (parity rows md-*); the IR has no markdown kind",
                     "engine": "react-markdown + remark-gfm + remarkWorkRefs",
                     "rawHtml": "inert (no rehype-raw, no dangerouslySetInnerHTML) on BOTH hosts — D-005",
-                    "links": "URL-scheme allowlist https: mailto: only — D-005",
+                    "links": "URL-scheme allowlist http: https: mailto: plus canonical /docs anchor hrefs; other relative routes and image sources stay inert — D-005",
                     "images": "off; owner host may opt in — D-005",
                     "tables": "public=inert owner=render — D-005",
                     "workRefs": "WI-/P-/EI- refs → HydratedWorkRefPill; public=inert owner=render"

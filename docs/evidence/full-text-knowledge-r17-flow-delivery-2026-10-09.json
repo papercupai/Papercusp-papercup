@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Full-text knowledge R-17: verified event-to-action report and owner delivery",
+  "framework": "operational",
+  "command": [
+    "ptool reports:get --url=http://127.0.0.1:3170 --json - (report rpt_6f97e121-a020-4078-a834-43c9ba65739d)",
+    "Recompute SHA-256 and inspect the complete reports:get body_md for the diagram, seven trigger rows, scope and authority explanations",
+    "coord:send to human; receipt coord-send-34834df8a365dd241614244da60f0bfba9976aa39035385594ceef361f4c650d"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-09T10:52:00.000Z",
+  "finishedAt": "2026-10-09T10:54:17.238Z",
+  "summary": "Verified the complete owner-visible Reports edition, all seven event-to-action explanations, and the original human-channel delivery receipt for R-17. Final-release acceptance is tracked by R-15; channel delivery and reading acknowledgement have distinct meanings.",
+  "evidencePlane": "live",
+  "testLayer": "e2e",
+  "target": {
+    "planSlug": "full-text-knowledge-retrieval-2026-10-08",
+    "workItemId": "WI-10007679",
+    "specId": "AUTO-BAR-R-17-P-008",
+    "specRevision": 2,
+    "specFingerprint": "93e034d97fd6a3db7813c7f7eea2282f4688a5f6c9327388cb3f68131ee56a99"
+  },
+  "report": {
+    "reportId": "rpt_6f97e121-a020-4078-a834-43c9ba65739d",
+    "path": "/reports?sel=rpt_6f97e121-a020-4078-a834-43c9ba65739d",
+    "visibility": "owner",
+    "bodyBytes": 4882,
+    "bodySha256": "51bae90b57310da9d480a974443231fe1e3c2b9db244e41dd210f611137fd662",
+    "readback": "/tmp/knowledge-continuation-flow-readback-20261009.json"
+  },
+  "delivery": {
+    "receiptId": "coord-send-34834df8a365dd241614244da60f0bfba9976aa39035385594ceef361f4c650d",
+    "to": ["human"],
+    "ok": true,
+    "bodyTruncated": false,
+    "bodyAuthoredChars": 471,
+    "bodyDeliveredChars": 471,
+    "acknowledgedByAvi": false
+  },
+  "assertions": [
+    {
+      "id": "complete-owner-visible-report-readback",
+      "passed": true,
+      "evidence": "Current :3170 reports:get returned the full 4882-byte body_md, owner visibility and report deep link. Recomputed body SHA-256 equals the stored 51bae90b57310da9d480a974443231fe1e3c2b9db244e41dd210f611137fd662."
+    },
+    {
+      "id": "complete-event-to-action-flow",
+      "passed": true,
+      "evidence": "Readback preserves the Mermaid fence and seven trigger rows: plan edit, procedure authoring, report publication, owner turn, tool call, retrieval failure, compaction recovery. The prose distinguishes indexing from context selection and states access, novelty, authority, memory and degradation behavior."
+    },
+    {
+      "id": "owner-channel-delivery",
+      "passed": true,
+      "evidence": "coord:send returned ok:true for human at 2026-10-09T10:54:17.238Z, receipt coord-send-34834df8a365dd241614244da60f0bfba9976aa39035385594ceef361f4c650d; all 471 authored characters were delivered without truncation, including the current report link. This is a channel-delivery receipt, not a reading acknowledgement."
+    },
+    {
+      "id": "shipment-status-honesty",
+      "passed": true,
+      "evidence": "Both report and delivered message explicitly keep deployed acceptance open. Retained native test 20952897 is labelled current-build implementation proof, and R-15 exact deployed-artifact acceptance is not claimed."
+    }
+  ],
+  "disclosures": [],
+  "relatedAcceptance": {
+    "shipment": {
+      "specId": "AUTO-BAR-R-15-P-008",
+      "status": "pending",
+      "description": "Final deployed-artifact verification belongs to R-15."
+    },
+    "planCertification": {
+      "planSlug": "full-text-knowledge-retrieval-2026-10-08",
+      "status": "pending",
+      "description": "Plan certification and runtime/evaluator convergence are assessed through their own evidence."
+    },
+    "readingAcknowledgement": {
+      "status": "unmeasured",
+      "description": "R-17 verifies delivery through the human channel. The receipt records no acknowledgement that Avi read the report."
+    }
+  }
+}

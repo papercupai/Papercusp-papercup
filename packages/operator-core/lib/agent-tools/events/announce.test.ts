@@ -114,6 +114,7 @@ vi.mock('../../harness/routines/monitor-policy', async (importOriginal) => ({
 
 import emit from './emit';
 import awaitTool from './await';
+import { getPresence } from '../coordination/presence';
 import { buildAnnouncedKey, defaultAnnounceScope, announcementVisibleTo, normalizeEventKey } from '../../events/await/announce-key';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { registerAnnouncement, registerAwait, findAnnouncementsForKey, findNearMissKeys } from '../../events/await/store';
@@ -173,6 +174,28 @@ describe('events:emit { announce: true }', () => {
       }),
     );
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
+  });
+  it('requires an explicit ref when presence lacks the selected fleet', async () => {
+    vi.mocked(getPresence).mockResolvedValueOnce({ currentPlanSlug: null } as Awaited<ReturnType<typeof getPresence>>);
+    await expect(emitHandler({
+      event: 'unscoped-fleet-gate',
+      announce: true,
+      announceScope: 'fleet',
+    }, {})).rejects.toThrow(/needs a slug.*presence carries no fleet/);
+
+    const explicit = parse(await emitHandler({
+      event: 'explicit-fleet-gate',
+      announce: true,
+      announceScope: 'fleet',
+      announceScopeRef: 'named-fleet',
+    }, {}));
+    expect(explicit.scope).toEqual({ kind: 'fleet', ref: 'named-fleet' });
+  });
+  it('documents when announceScopeRef can default from presence', () => {
+    const description = emit.args.shape.announceScopeRef.description ?? '';
+    expect(description).toContain('matching fleet or plan slug');
+    expect(description).toContain('when available');
+    expect(description).toContain('harness scope always requires an explicit slug');
   });
   it('honors an explicit global scope (no prefix)', async () => {
     const out = parse(await emitHandler({ event: 'migration-freeze-lifted', announce: true, announceScope: 'global' }, {}));

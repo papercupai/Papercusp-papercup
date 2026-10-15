@@ -324,14 +324,15 @@ export function countPendingInterrupts(entries: readonly InterruptEnvelopeLike[]
 export const CONTINUATION_CEILING_PCT = 60;
 
 /**
- * Render the cold-carry retune with the fields loop:arm needs on a fresh or
+ * Render a carry retune with the fields loop:arm needs on a fresh or
  * schema-strict call. The active-loop values are included when the caller has
  * them; otherwise the agent is directed to read loop:status before invoking
  * the command so it does not copy an incomplete carry-only example.
  */
-function coldLoopRetuneCommand(
+function loopRetuneCommand(
   intervalSec: number | null | undefined,
   goal: string | null | undefined,
+  carry: 'warm' | 'cold',
 ): string {
   if (
     typeof intervalSec === 'number' &&
@@ -340,9 +341,9 @@ function coldLoopRetuneCommand(
     typeof goal === 'string' &&
     goal.trim().length > 0
   ) {
-    return 'loop:arm { intervalSec: ' + intervalSec + ', goal: ' + JSON.stringify(goal) + ", carry: 'cold' }";
+    return 'loop:arm { intervalSec: ' + intervalSec + ', goal: ' + JSON.stringify(goal) + ", carry: '" + carry + "' }";
   }
-  return "read loop:status, then call loop:arm { intervalSec: <status.intervalSec>, goal: <status.goal>, carry: 'cold' }";
+  return `read loop:status, then call loop:arm { intervalSec: <status.intervalSec>, goal: <status.goal>, carry: '${carry}' }`;
 }
 
 export interface ContinuationGateInputs {
@@ -402,6 +403,8 @@ export type ActiveLoopRewakeBlockedReason =
   | 'max-duration-unverifiable'
   | 'max-duration-exhausted'
   | 'fire-starved'
+  /** The current owner wake-route probe found no channel that can deliver a fresh turn. */
+  | 'wake-unreachable'
   /** P-013 / EI-24023838400909760: the loop's most recent fire PARKED undelivered
    *  (e.g. a cold fire with no injectable psu host), so the next fire on the same
    *  path is expected to park too. */
@@ -473,7 +476,8 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   const activeLoopRewakeBlockedReason = inputs.activeLoopRewakeBlockedReason ?? null;
   const selfCompactionAvailable = inputs.selfCompactionAvailable ?? null;
   const fleetWindDownLoopEndAuthorized = inputs.fleetWindDownLoopEndAuthorized ?? null;
-  const coldRetune = coldLoopRetuneCommand(inputs.activeLoopIntervalSec, inputs.activeLoopGoal);
+  const coldRetune = loopRetuneCommand(inputs.activeLoopIntervalSec, inputs.activeLoopGoal, 'cold');
+  const warmRetune = loopRetuneCommand(inputs.activeLoopIntervalSec, inputs.activeLoopGoal, 'warm');
   let guidance = shouldContinue
     ? `continuation gate OPEN (${contextPct}% context, no unread inbox): you MAY run the next unit in this turn IF it is already scoped — but FIRST flush (every held work-item claim checkpointed, P-002). Re-evaluate this gate at the next unit boundary.`
     : `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. Checkpoint what you hold and end the turn; the next wake re-opens the gate.`;
@@ -531,7 +535,9 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
           : activeLoopRewakeBlockedReason === 'max-duration-exhausted'
             ? 'its next attempted fire would exceed maxDurationSec'
             : activeLoopRewakeBlockedReason === 'fire-starved'
-              ? 'it is fire-starved (zero fires despite at least two expected opportunities and an overdue nextFireAt)'
+              ? 'it is fire-starved (zero fires since the arm despite at least three expected opportunities, while its turn sits parked with no nextFireAt or its concrete nextFireAt is overdue)'
+              : activeLoopRewakeBlockedReason === 'wake-unreachable'
+                ? 'the current owner reachability probe found no delivery route for a fresh turn'
               : activeLoopRewakeBlockedReason === 'last-fire-parked'
                 ? 'its most recent fire PARKED undelivered (loop:status lastWakeStatus/lastWakeError), so the next fire on the same path is expected to park too'
                 : activeLoopRewakeBlockedReason === 'last-fire-no-loop-turn'
@@ -551,11 +557,13 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
       `ending the turn now would SILENTLY HALT the session. Do NOT just end it — `;
     const remedy = activeLoopDiagnosis
       ? `DO NOT read this as "no armed loop" or blindly arm a second one. Read loop:status and repair the EXISTING loop state; ` +
-        (activeLoopRewakeBlockedReason === 'fire-starved' || activeLoopRewakeBlockedReason === 'last-fire-parked'
-          ? 'restore its routine/wake path and re-check delivery before settling. '
-          : activeLoopRewakeBlockedReason === 'last-fire-no-loop-turn'
-            ? 'inspect and repair the existing delivery-to-turn path, then confirm a loop-origin turn before settling. '
-          : 'if continuation is still intended, deliberately re-arm that same owner loop with the intended cadence, goal, and dead-man bounds. ') +
+        (activeLoopRewakeBlockedReason === 'wake-unreachable'
+          ? 'restore an owner wake route (inbox-wake, injectable host, or resumable session) and re-check reachability before settling. '
+          : activeLoopRewakeBlockedReason === 'fire-starved' || activeLoopRewakeBlockedReason === 'last-fire-parked'
+            ? 'restore its routine/wake path and re-check delivery before settling. '
+            : activeLoopRewakeBlockedReason === 'last-fire-no-loop-turn'
+              ? 'inspect and repair the existing delivery-to-turn path, then confirm a loop-origin turn before settling. '
+              : 'if continuation is still intended, deliberately re-arm that same owner loop with the intended cadence, goal, and dead-man bounds. ') +
         (selfCompactionAvailable === true
           ? 'Self-compaction can carry this turn forward once, but it does not repair the loop.'
           : selfCompactionAvailable === false
@@ -581,24 +589,69 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
       fleetWindDownLoopEndAuthorized === true
     ) &&
     rewakeGuaranteed === true &&
-    nextWakeFresh === false
+    nextWakeFresh === false &&
+    contextPct != null &&
+    contextPct >= ceilingPct &&
+    selfCompactionAvailable !== true
   ) {
-    // EI-20223970530333577: a WARM loop guarantees another wake but does not
-    // shed context. Treating those two properties as equivalent told a 91%-full
-    // loop to end for a "fresh" wake that could never arrive; Codex then tried
-    // session:request-compaction, which structurally has no psu-pty host. The
-    // executable boundary is: persist the carry-note, retune this already-armed
-    // loop to cold, then settle. Cold-loop settle is accepted by the compaction
-    // tool once the carry-note exists, but no extra call is required here.
+    // A cold retune is only a fresh-context remedy when a live, usable psu-pty
+    // host can trigger or verify the successor. With no host (or an unknown
+    // host result), a still-live hostless session can park on the cold wake.
+    // Keep the known warm path reachable and state plainly that it retains the
+    // existing context until the session is relaunched through a managed host.
+    const hostAvailability = selfCompactionAvailable === false ? 'unavailable' : 'unverified';
+    guidance =
+      `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
+      `⚠ The guaranteed next wake is WARM and will retain this context. Fresh-context delivery is ${hostAvailability}: ` +
+      `a cold wake from this still-live session may park, and session:request-compaction cannot be relied on to start a fresh successor. ` +
+      `Do not retune this warm loop to cold or end expecting a fresh-context boundary. ` +
+      `Write loop:checkpoint { did, left, insight, next }; keep the existing warm path, or relaunch through a managed psu-pty host before relying on cold carry.`;
+  } else if (
+    !shouldContinue &&
+    !(
+      selfCompactionAvailable === false &&
+      contextPct != null &&
+      contextPct >= CONTEXT_GAUGE_CRITICAL_PCT &&
+      fleetWindDownLoopEndAuthorized === true
+    ) &&
+    rewakeGuaranteed === true &&
+    nextWakeFresh === false &&
+    contextPct != null &&
+    contextPct >= ceilingPct
+  ) {
+    // A WARM loop guarantees another turn but does not shed context. Only a
+    // confirmed host-backed session can safely retune it to cold: a hostless
+    // cold wake can park without a fresh successor (EI-24836531791426051).
     guidance =
       `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
       `⚠ The guaranteed next wake is WARM and will retain this over-ceiling context. ` +
       `Write loop:checkpoint { did, left, insight, next }, then retune the existing loop with ` +
       coldRetune +
       " and end the turn; the cold wake starts from that durable carry-note. " +
-      (selfCompactionAvailable === false
-        ? `Do not call session:request-compaction: this session has no live psu-pty host and it would refuse with no_live_pty_host.`
-        : `A host-backed session may alternatively use session:request-compaction.`);
+      `A live psu-pty host is available to carry-respawn this session; session:request-compaction is also available.`;
+  } else if (
+    !shouldContinue &&
+    !(
+      selfCompactionAvailable === false &&
+      contextPct != null &&
+      contextPct >= CONTEXT_GAUGE_CRITICAL_PCT &&
+      fleetWindDownLoopEndAuthorized === true
+    ) &&
+    rewakeGuaranteed === true &&
+    nextWakeFresh === true &&
+    selfCompactionAvailable !== true
+  ) {
+    // An already-cold setting is not delivery proof. If host support is absent
+    // or unknown, retain the reachable warm path until a managed host can own
+    // the fresh successor boundary.
+    const hostAvailability = selfCompactionAvailable === false ? 'unavailable' : 'unverified';
+    guidance =
+      `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
+      `⚠ The active loop is configured for COLD carry, but fresh-context delivery is ${hostAvailability}; ` +
+      `a cold wake from this still-live session may park without a fresh successor. ` +
+      `Write loop:checkpoint { did, left, insight, next }, then restore the reachable warm path with ` +
+      warmRetune +
+      `; that preserves this context and does not reset it. Relaunch through a managed psu-pty host before relying on cold carry.`;
   }
 
   return {

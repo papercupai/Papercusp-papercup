@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "p011-staging-worker-metadata-guards-v1",
+  "workItem": "EI-24917607035361603",
+  "scope": "Canonical helper regression verification; current-build runtime acceptance and shipment remain open.",
+  "rootCause": {
+    "layer": "bundle_host_workers gate bookkeeping",
+    "finding": "Candidate 75e965a93682 set BUNDLE_HOST_GATE_META_DIR without creating it. The first copied worker was published before its source-list append failed.",
+    "historicalComparison": {
+      "failedCandidate": "75e965a93682",
+      "preparedCaller": "8398399a57",
+      "procedure": "git show each candidate's apps/operator/bin/bundle-host.sh; fixed-string search BUNDLE_HOST_GATE_META_DIR",
+      "observation": "Failed candidate has the variable and append-related readers but no mkdir; later caller has mkdir."
+    },
+    "detectorFailure": "The maintained real-worker fixture previously did not request gate metadata, so it never exercised the missing-directory boundary.",
+    "durableFix": "WI-10005745 creates metadata inside the shared helper and reports explicit directory/append errors.",
+    "alternative": "A runtime worker or esbuild compiler failure caused the first-worker refusal.",
+    "distinguishingTest": "The registered test mutates a disposable copy of the current helper by replacing only metadata mkdir with true; same source workers, strict shell and missing metadata path.",
+    "predictions": {
+      "hypothesis": "Without mkdir, first copied worker exists, second is absent, source bookkeeping refuses before any esbuild invocation. With the maintained helper, source records and all worker metafiles exist.",
+      "alternative": "Removing only metadata mkdir would not account for the exact first-copy boundary; a worker/compiler failure would remain on the repaired path."
+    },
+    "actualObservation": "Both arms behaved as predicted for missing metadata; repaired helper and real plain-Node worker runtime passed."
+  },
+  "sourceHashes": {
+    "apps/operator/bin/bundle-host-common.sh": "44ea4f7d868a11d696a0117a3071539c7627c1d989fcbaa89b0c3be83dc03652",
+    "packages/operator-core/lib/worker-scripts-bundled.test.ts": "f1a0bf82948b0716d3bc45cdf1ac01eb9a7393bbe027fc8a01092c7608395e4d"
+  },
+  "verification": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/test-files.mjs packages/operator-core/lib/worker-scripts-bundled.test.ts",
+    "ledgerId": 20601411,
+    "startedAt": "2026-10-03T01:16:55.130Z",
+    "finishedAt": "2026-10-03T01:17:25.430Z",
+    "head": "bf103e93e02125046c0b7c00e7da804b772c2189",
+    "testsPassed": 20,
+    "testsFailed": 0,
+    "testsSkipped": 0,
+    "provenance": "Named test path local-dirty (+58/-4), router stamped. Full transitive graph is unknown.",
+    "log": {
+      "path": "/tmp/su-7db4f-staging-worker-metadata-guards-r2.log",
+      "sha256": "b0dac544a4ca91656afc15cb1b7e3b8aec752585dff84b04b0100e4c8c5e96b6"
+    },
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/worker-scripts-bundled.test.ts",
+      "errors": 0,
+      "path": "/tmp/su-7db4f-staging-worker-metadata-types-r2.log",
+      "sha256": "19dbdbdfdf8267a664727331b791b39b7fea3a946d749ebe22b0dc93dcb423ca"
+    },
+    "contentLint": {
+      "ran": 9,
+      "flagged": 0,
+      "exitCode": 0
+    }
+  },
+  "assertions": [
+    {
+      "id": "missing-directory",
+      "passed": true,
+      "evidence": "Real helper creates missing metadata and the same build exercises the plain-Node workers."
+    },
+    {
+      "id": "source-population",
+      "passed": true,
+      "evidence": "Copied-source list equals script-derived copied-worker population; metafile count and inputs cover script-derived bundled-worker population."
+    },
+    {
+      "id": "mkdir-refusal",
+      "passed": true,
+      "evidence": "A file obstructing the directory produces exit 1 and an explicit FATAL naming the metadata path."
+    },
+    {
+      "id": "append-refusal",
+      "passed": true,
+      "evidence": "A directory obstructing copied-sources.txt produces exit 1 and an explicit FATAL naming the source and bookkeeping path."
+    },
+    {
+      "id": "causal-control",
+      "passed": true,
+      "evidence": "Disposable helper without only mkdir copies the first worker, fails before the second, reports the append failure and leaves metadata absent."
+    }
+  ],
+  "distinctCallerFailure": {
+    "description": "The earlier full caller reached all workers then failed a separate UNIT-to-real-Postgres restricted-hold census boundary.",
+    "originalLog": "/tmp/su-7db4f-staging-worker-caller-r1.log",
+    "fixOwner": "WI-10005745",
+    "savedVerification": "Peer fallback log /tmp/wi5745/fallback.log independently reread: 15 passed, 0 skipped. Router HEAD moved; transitive provenance unknown.",
+    "replayed": false
+  },
+  "limitations": [
+    "No staging refresh or production restart was performed by this receipt.",
+    "Loaded standalone identity, P-011 independent acceptance, P-010, R8/R9 and final shipment are not established.",
+    "Historical compiler binding affected by helper edits remains qualified as historical; no old matrix or completed-child test was replayed."
+  ]
+}

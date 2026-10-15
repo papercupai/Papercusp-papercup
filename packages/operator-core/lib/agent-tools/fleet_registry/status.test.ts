@@ -12,7 +12,37 @@ const h = vi.hoisted(() => ({
   resolveAgentIdentity: vi.fn(),
   executingOwnersSince: vi.fn(),
   getLoopStatuses: vi.fn(),
+  // P-007 / R-17: pending event_awaits rows for the silence rule's await leg.
+  awaitRows: [] as { subscriber_id: string; event_key: string }[],
 }));
+
+// P-007 / R-17: the headcount `current` read goes through readFleetMemberSilence,
+// whose await leg queries harness_shared.event_awaits. Answer ONLY that query from
+// the fixture; every other query is delegated to the real getOrgPg untouched, so
+// the pre-existing legs behave exactly as before this double existed. The real pool
+// is resolved LAZILY: in this test env `actual.getOrgPg()` itself throws, and calling
+// it eagerly would fail the event_awaits leg too (→ null partition → unknown count).
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  type Pg = ReturnType<typeof actual.getOrgPg>;
+  return {
+    ...actual,
+    getOrgPg: (...args: Parameters<typeof actual.getOrgPg>) => {
+      let real: Pg | undefined;
+      const realPg = (): Pg => (real ??= actual.getOrgPg(...args));
+      const realSql = () =>
+        realPg().sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>;
+      const sql = (strings: TemplateStringsArray, ...values: unknown[]) =>
+        strings.join('$').includes('harness_shared.event_awaits')
+          ? Promise.resolve(h.awaitRows)
+          : realSql()(strings, ...values);
+      const sqlProxy = new Proxy(sql, { get: (_t, p) => Reflect.get(realSql(), p) });
+      return new Proxy({} as Pg, {
+        get: (_t, p) => (p === 'sql' ? sqlProxy : Reflect.get(realPg() as object, p)),
+      });
+    },
+  };
+});
 
 vi.mock('../../agent-fleets-store', async () => {
   const actual =
@@ -93,6 +123,7 @@ import statusTool, {
 } from './status';
 import type { FleetRosterEntry } from '../../fleet/fleet-roster';
 import { fleetSlugFromName } from '../../agent-fleets-store';
+import { FLEET_LEADER_MISSING_GRACE_MS } from '../../scheduler/fleet-scope-admission';
 
 const CTX = { workspaceId: 'ws', role: 'operator' } as never;
 const parse = (res: { content?: { text: string }[]; data?: unknown }) =>
@@ -159,6 +190,7 @@ beforeEach(() => {
   // An empty map is a MEASURED "no loop rows for these owners", not a failed read —
   // so the healthy-payload tests above stay byte-identical (no degraded leg).
   h.getLoopStatuses.mockResolvedValue(new Map());
+  h.awaitRows = [];
 });
 
 describe('fleet:status', () => {
@@ -298,6 +330,40 @@ describe('fleet:status', () => {
     });
   });
 
+  // P-007 / R-17: a heartbeat-only member holding just the inbox-wake keepalive is
+  // silent and does not count; a member parked on a declared await does count.
+  it('excludes a silent member from current and counts a member parked on a declared await', async () => {
+    h.getFleetHeadcountTarget.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: 'rocket',
+      enabled: true,
+      target: 3,
+      config: {},
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    h.liveFleetMemberIds.mockResolvedValueOnce(['su-busy', 'su-waiting', 'su-quiet']);
+    h.executingOwnersSince.mockResolvedValueOnce(new Set(['su-busy']));
+    h.awaitRows = [
+      { subscriber_id: 'su-waiting', event_key: 'work-item:done:WI-1' },
+      { subscriber_id: 'su-quiet', event_key: 'coord:inbox-wake:su-quiet' },
+    ];
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.headcount).toMatchObject({
+      enabled: true,
+      target: 3,
+      current: 2,
+      shortfall: 1,
+      underStrength: true,
+      verdict: 'under-strength',
+      basis: { kind: 'agent-origin-execution-attested', liveRosterMembers: 3, executingMembers: 2 },
+    });
+    expect(out.degradedLegs ?? []).not.toContain('headcountExecuting');
+  });
+
   // WI-2034624: `su-prior-transaction-live` is deliberately ABSENT from
   // `workerReadyMemberIds` and present in the execution attestation — the exact
   // shape the old transaction-scoped intersection dropped.
@@ -424,6 +490,13 @@ describe('fleet:status', () => {
           sessionState: 'live',
         },
       ],
+      leaderLiveness: {
+        ownerId: 'su-leader',
+        presenceRow: true,
+        recordedLive: false,
+        sessionState: 'ended',
+        complete: true,
+      },
       degradedLegs: [],
     });
 
@@ -440,6 +513,93 @@ describe('fleet:status', () => {
     expect(out.leaderLive).toBe(false);
     expect(out.leaderSessionState).toBe('ended');
     expect(out.leaderVacant).toBe(true);
+    expect(out.leadershipBlockage).toEqual({
+      reason: 'registered-leader-ended',
+      leaderOwnerId: 'su-leader',
+      liveMemberCount: 1,
+    });
+  });
+
+  it('reports complete leader absence with the persisted succession grace clock', async () => {
+    const nowMs = 1_800_000_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+    const missingSinceMs = nowMs - 2 * 60_000;
+    h.getFleet.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: 'rocket',
+      title: 'Rocket Fleet',
+      description: 'Handles the rocket lane',
+      owner: 'su-owner',
+      leaderOwnerId: 'su-leader',
+      leaderMissingSinceMs: missingSinceMs,
+      colorScheme: 'forest',
+      lastLaunchTransaction: null,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [{
+        agentId: 'su-member',
+        agentRole: 'su',
+        fleetRole: 'member',
+        alive: true,
+        sessionState: 'live',
+      }],
+      leaderLiveness: {
+        ownerId: 'su-leader',
+        presenceRow: false,
+        recordedLive: false,
+        sessionState: null,
+        complete: true,
+      },
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.leaderVacant).toBe(true);
+    expect(out.leaderVacancy).toEqual({
+      state: 'complete-absence',
+      vacant: true,
+      livenessComplete: true,
+      recordedLive: false,
+      missingSinceMs,
+      graceMs: FLEET_LEADER_MISSING_GRACE_MS,
+      graceRemainingMs: FLEET_LEADER_MISSING_GRACE_MS - 2 * 60_000,
+    });
+    expect(out.leadershipBlockage).toEqual({
+      reason: 'registered-leader-missing',
+      leaderOwnerId: 'su-leader',
+      liveMemberCount: 1,
+    });
+  });
+
+  it('treats a completely verified recorded-live leader as present, not vacant', async () => {
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [],
+      leaderLiveness: {
+        ownerId: 'su-leader',
+        presenceRow: false,
+        recordedLive: true,
+        sessionState: 'recorded',
+        complete: true,
+      },
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.leaderLive).toBe(true);
+    expect(out.leaderSessionState).toBe('recorded');
+    expect(out.leaderVacant).toBe(false);
+    expect(out.leaderVacancy).toMatchObject({
+      state: 'leader-live',
+      vacant: false,
+      livenessComplete: true,
+      recordedLive: true,
+      missingSinceMs: null,
+      graceRemainingMs: null,
+    });
   });
 
   it('does not present a durable leader with no presence row as live', async () => {
@@ -470,6 +630,47 @@ describe('fleet:status', () => {
     // Missing presence is not enough evidence to seize leadership on a read.
     expect(out.leaderSessionState).toBeNull();
     expect(out.leaderVacant).toBe(false);
+    expect(out).not.toHaveProperty('leadershipBlockage');
+  });
+
+  // EI-24962274233684871: a parked (wakeable, between-turns) or draining leader
+  // holds its seat. It must not read vacant / registered-leader-missing.
+  it.each(['parked', 'draining'])('reports a %s registered leader as present, not missing', async (state) => {
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [{
+        agentId: 'su-member',
+        agentRole: 'su',
+        fleetRole: 'member',
+        alive: true,
+        sessionState: 'live',
+      }],
+      leaderEntry: {
+        agentId: 'su-leader',
+        agentRole: 'su',
+        fleetRole: 'leader',
+        fleetSlug: 'rocket',
+        alive: true,
+        sessionState: state,
+        heartbeatFresh: true,
+        lastActiveSecAgo: 30,
+      },
+      leaderLiveness: {
+        ownerId: 'su-leader',
+        presenceRow: true,
+        recordedLive: false,
+        sessionState: state,
+        complete: true,
+      },
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.leader).toMatchObject({ agentId: 'su-leader', sessionState: state });
+    expect(out.leaderLive).toBe(true);
+    expect(out.leaderVacant).toBe(false);
+    expect(out.leaderVacancy).toMatchObject({ state: 'leader-live', vacant: false });
+    expect(out).not.toHaveProperty('leadershipBlockage');
   });
 
   it('uses a leader liveness-only enrichment without changing the queried fleet census', async () => {

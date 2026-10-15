@@ -55,6 +55,13 @@ export default defineTool({
     .object({
       slug: z.string().min(1).optional().describe('a single harness slug (n=1 shorthand for slugs:[slug])'),
       slugs: z.array(z.string().min(1)).min(1).max(100).optional().describe('harness slugs to read (1–100)'),
+      workspace: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          'Per-call workspace scope (superuser only). An unscoped superuser session (workspaceId "*") must pass this to open the workspace transaction; scoped sessions ignore it and use their session workspace.',
+        ),
     })
     .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
       message: 'pass `slug` (one) or `slugs` (many)',

@@ -59,6 +59,10 @@ describe('locks:queue tool metadata', () => {
     expect(tool.args.safeParse({ external_paths: ['/home/x/.config/y.list'] }).success).toBe(true);
     expect(tool.description).toContain('external_paths');
     expect(tool.guidance?.chaining).toContain('external_paths');
+    expect(tool.description).toContain('at most one managed repository per request');
+    expect(tool.guidance?.chaining).toContain('at most one managed repository per request');
+    const shape = (tool.args as unknown as { shape: { external_paths: { description?: string } } }).shape;
+    expect(shape.external_paths.description).toContain('at most one managed repository per request');
   });
 
   it('keeps ptool JSON responses parseable when the queue snapshot exceeds the result door', () => {

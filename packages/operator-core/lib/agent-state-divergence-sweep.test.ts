@@ -73,7 +73,8 @@ function mockSqlTag(rows: unknown[] = []) {
 }
 
 describe('loadRecentCalls', () => {
-  it('excludes automatic hook/system/UI rows while retaining agent-authored behavior', async () => {
+  it('excludes hook-origin activity:report rows before the retry threshold while retaining agent calls', async () => {
+    const hookOriginFixture = { tool_name: 'activity:report', call_origin: 'hook' };
     const { sql, calls, originPredicate } = mockSqlTag();
     await loadRecentCalls({
       workspaceId: 'test-workspace',
@@ -101,6 +102,9 @@ describe('loadRecentCalls', () => {
       'coord:glance',
       'coord:inbox',
     ]));
+    // activity:report appears in the legacy-name fallback for NULL-origin
+    // rows, but an explicit hook origin must never enter the agent population.
+    expect(originValues).not.toContain(hookOriginFixture.call_origin);
     expect(queryCall.values).toContain(originPredicate);
     const query = Array.from(queryCall.strings).join(' ');
     expect(query).toContain('i.args_json, i.metadata_json, i.call_origin');

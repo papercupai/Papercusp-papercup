@@ -67,4 +67,32 @@ describe('renderLlamaServerUnit', () => {
     // The extra-flags line sits INSIDE the ExecStart continuation, before --alias.
     expect(unit.indexOf('--jinja')).toBeLessThan(unit.indexOf('--alias'));
   });
+
+  it('renders start-time GPU fit as its own continuation line after -ngl (WI-10006354)', () => {
+    const unit = renderLlamaServerUnit({
+      alias: 'maxwell1500/ornith-35b:IQ3_M',
+      weightsPath: '/blobs/sha256-x',
+      host: '127.0.0.1',
+      port: 11436,
+      parallelSlots: 2,
+      ctxTotal: 180224,
+      kvCacheType: 'q8_0',
+      flashAttn: true,
+      gpuLayers: 'auto',
+      fit: 'on',
+      fitTargetMiB: 1024,
+      logPath: '/log',
+    });
+    expect(unit).toContain('  -ngl auto \\\n  --fit on --fit-target 1024 \\\n  -np 2 -c 180224 \\\n');
+  });
+
+  it('writes no fit flags when fit is undeclared, and no --fit-target without --fit', () => {
+    const base = {
+      alias: 'a', weightsPath: '/w', host: '127.0.0.1', port: 1, parallelSlots: 1, ctxTotal: 4096,
+      kvCacheType: 'f16', flashAttn: false, logPath: '/log',
+    };
+    expect(renderLlamaServerUnit({ ...base, gpuLayers: 999 })).not.toContain('--fit');
+    expect(renderLlamaServerUnit({ ...base, fitTargetMiB: 512 })).not.toContain('--fit');
+    expect(renderLlamaServerUnit({ ...base, fit: 'off' })).toContain('  --fit off \\\n');
+  });
 });

@@ -15,7 +15,7 @@
  *     setInterval(async …) double-processed pending peers).
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +28,8 @@ import { buildAnnounce, type SignedAnnounce } from '../announce';
 import { _resetCacheForTests } from '../corestore';
 import { _clearRegistryForTests } from '../projection';
 import { _resetBootHistoryForTests, listBootHistory } from '../boot-history';
+import * as hivePolicyStore from '../../../hive-policy-store';
+import * as federatedPotScope from '../../../federated-pot-scope';
 
 /**
  * Keep this suite hermetic. Production resolves re-key dependencies
@@ -39,6 +41,16 @@ function bootHarnessSubstrate(opts: BootHarnessOpts) {
 }
 
 const cleanups: Array<() => void | Promise<void>> = [];
+
+beforeEach(() => {
+  // WI-10007530: these fixtures have no PG policy store, and since the merge pass stopped
+  // swallowing a failed policy read (so a failure leaves the pass unapplied and retryable),
+  // the unit real-PG guard failed EVERY pass here. Model a successful absent-policy read —
+  // the same stub boot.test.ts uses — rather than reintroducing the swallow.
+  const policyRead = vi.spyOn(hivePolicyStore, 'getHivePolicyCached').mockResolvedValue(null);
+  const rosterRead = vi.spyOn(federatedPotScope, 'listHiveMembersForLocalPot').mockResolvedValue([]);
+  cleanups.push(() => { policyRead.mockRestore(); rosterRead.mockRestore(); });
+});
 
 afterEach(async () => {
   while (cleanups.length) {
@@ -242,9 +254,21 @@ describe('merge-pass watchdog (WI-10003427)', () => {
     });
     cleanups.push(() => handle.close());
     const logCoreKey = 'ef'.repeat(32);
-    expect(await handle.onAnnounce(await validAnnounce(logCoreKey))).toEqual({ admit: true });
-    // Wait well past the threshold: timers armed for the settled pass/admission must be cleared.
-    await new Promise((r) => setTimeout(r, 400));
+    const announce = await validAnnounce(logCoreKey);
+    // WI-10007519: fake ONLY the watchdogs' clock. The pass's real I/O still runs at real speed,
+    // so a healthy pass that is merely SLOW on a loaded box can no longer cross the threshold by
+    // wall-clock alone (CI, 1 of 32 runs: merge_stalled + announce_admission_stalled +
+    // merge_stall_cleared at "0s", stage 'drain-admissions'). Time past the threshold is advanced
+    // explicitly, AFTER the pass settles — which is the property under test: timers armed for a
+    // settled pass/admission are cleared, so nothing fires once time does pass.
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      expect(await handle.onAnnounce(announce)).toEqual({ admit: true });
+      // Well past the 150ms threshold AND its doubled re-arm.
+      await vi.advanceTimersByTimeAsync(400);
+    } finally {
+      vi.useRealTimers();
+    }
     const scope = { workspaceId: 'ws-watchdog-2', harnessSlug: 'watchdog-2' };
     expect(
       listBootHistory({ ...scope, kinds: ['merge_stalled', 'merge_stall_cleared', 'announce_admission_stalled'] }),

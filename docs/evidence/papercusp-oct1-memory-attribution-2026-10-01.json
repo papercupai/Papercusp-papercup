@@ -1,0 +1,261 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "kind": "intermediate-memory-attribution",
+  "measurement": {
+    "start": "2026-10-01T16:01:32.200435+00:00",
+    "end": "2026-10-01T16:01:38.842741+00:00",
+    "services": [
+      {
+        "unit": "papercusp-dev-api.service",
+        "mainBefore": "3194993",
+        "mainAfter": "3194993",
+        "cgroupMiB": 16087.3,
+        "groups": {
+          "direct:host": {
+            "count": 8,
+            "pssMiB": 9672.529999999999
+          },
+          "direct:esbuild": {
+            "count": 1,
+            "pssMiB": 158.65
+          },
+          "direct:systemd-run": {
+            "count": 5,
+            "pssMiB": 5.68
+          },
+          "direct:node-MainThread": {
+            "count": 2,
+            "pssMiB": 174.76999999999998
+          }
+        },
+        "stableTop": [
+          {
+            "pid": 1207776,
+            "role": "host",
+            "scope": ".",
+            "pssMiB": 2243.5,
+            "deltaMiB": 180.04
+          },
+          {
+            "pid": 518097,
+            "role": "host",
+            "scope": ".",
+            "pssMiB": 1821.01,
+            "deltaMiB": 27.19
+          },
+          {
+            "pid": 1871192,
+            "role": "host",
+            "scope": ".",
+            "pssMiB": 1796.36,
+            "deltaMiB": 7.02
+          }
+        ],
+        "changedPids": 2,
+        "missed": 0,
+        "profiles": [
+          {
+            "pid": 1207776,
+            "ageSec": 96,
+            "file": "~/.papercusp/heap-snapshots/heap-sampling-1790870402489-pid1207776-rss_2094mb.heapprofile",
+            "sampledLiveMiB": 786.1,
+            "topSites": [
+              [
+                "parse",
+                513.1
+              ],
+              [
+                "DataRow",
+                49.7
+              ],
+              [
+                "toString",
+                23.5
+              ],
+              [
+                "(anonymous)",
+                18.4
+              ]
+            ]
+          },
+          {
+            "pid": 518097,
+            "ageSec": 114,
+            "file": "~/.papercusp/heap-snapshots/heap-sampling-1790870385310-pid518097-rss_1847mb.heapprofile",
+            "sampledLiveMiB": 677.4,
+            "topSites": [
+              [
+                "parse",
+                443.7
+              ],
+              [
+                "DataRow",
+                31.8
+              ],
+              [
+                "toString",
+                19.8
+              ],
+              [
+                "(anonymous)",
+                18.2
+              ]
+            ]
+          }
+        ]
+      },
+      {
+        "unit": "papercusp-staging-api.service",
+        "mainBefore": "0",
+        "mainAfter": "0",
+        "cgroupMiB": 37.3,
+        "groups": {
+          "direct:flock": {
+            "count": 1,
+            "pssMiB": 0.11
+          },
+          "direct:node-MainThread": {
+            "count": 1,
+            "pssMiB": 11.91
+          },
+          "direct:bash": {
+            "count": 1,
+            "pssMiB": 0.31
+          },
+          "direct:host": {
+            "count": 1,
+            "pssMiB": 10.26
+          },
+          "direct:git": {
+            "count": 2,
+            "pssMiB": 8.08
+          }
+        },
+        "stableTop": [],
+        "changedPids": 7,
+        "missed": 0,
+        "profiles": []
+      },
+      {
+        "unit": "papercusp-bg-host.service",
+        "mainBefore": "1649158",
+        "mainAfter": "1649158",
+        "cgroupMiB": 11286.9,
+        "groups": {
+          "direct:host": {
+            "count": 1,
+            "pssMiB": 4048.46
+          },
+          "direct:esbuild": {
+            "count": 1,
+            "pssMiB": 21.61
+          },
+          "direct:node-MainThread": {
+            "count": 1,
+            "pssMiB": 12
+          },
+          "direct:bash": {
+            "count": 1,
+            "pssMiB": 3.86
+          },
+          "direct:git": {
+            "count": 2,
+            "pssMiB": 193.97
+          },
+          "direct:find": {
+            "count": 1,
+            "pssMiB": 0.8
+          }
+        },
+        "stableTop": [
+          {
+            "pid": 1649158,
+            "role": "host",
+            "scope": ".",
+            "pssMiB": 4048.46,
+            "deltaMiB": -283.8
+          },
+          {
+            "pid": 2206780,
+            "role": "esbuild",
+            "scope": ".",
+            "pssMiB": 21.61,
+            "deltaMiB": -0.22
+          },
+          {
+            "pid": 410538,
+            "role": "node-MainThread",
+            "scope": ".",
+            "pssMiB": 12,
+            "deltaMiB": 0
+          }
+        ],
+        "changedPids": 3,
+        "missed": 1,
+        "profiles": [
+          {
+            "pid": 1649158,
+            "ageSec": 702,
+            "file": "~/.papercusp/heap-snapshots/heap-sampling-1790869797474-pid1649158-rss_3924mb.heapprofile",
+            "sampledLiveMiB": 401.7,
+            "topSites": [
+              [
+                "parse",
+                64.1
+              ],
+              [
+                "DataRow",
+                58
+              ],
+              [
+                "(anonymous)",
+                25.6
+              ],
+              [
+                "update",
+                23.2
+              ]
+            ]
+          }
+        ]
+      }
+    ],
+    "limits": [
+      "Six-second paired PSS window under ordinary moving workload, not equivalent idle/controlled load or leak proof.",
+      "Profile selfSize is sampled live allocation since profiler armed, not total heap/native/PSS.",
+      "Recursive cgroup descendant census; vanished/unreadable processes reported as missed."
+    ]
+  },
+  "status": "attribution-incomplete",
+  "followUp": {
+    "window": ["2026-10-01T18:12:29.506086+00:00", "2026-10-01T18:12:36.890495+00:00"],
+    "kind": "ordinary-moving-workload-census",
+    "censusEvidence": ".papercusp/scratch/bash-eb35f0f3-fd2.log",
+    "profileEvidence": ".papercusp/scratch/bash-6abdfdae-3ca.log",
+    "inspectorInventoryEvidence": ".papercusp/scratch/bash-b8173659-73e.log",
+    "services": [
+      {"unit": "papercusp-dev-api.service", "mainPid": 3194993, "directHosts": 8, "processPssKiB": 7381355, "cgroupBytes": 9268580352, "anonBytes": 7535022080, "fileBytes": 1161596928, "kernelBytes": 565587968, "missedProcesses": []},
+      {"unit": "papercusp-staging-api.service", "mainPid": 179003, "directHosts": 1, "processPssKiB": 2992679, "cgroupBytes": 4276285440, "anonBytes": 3075379200, "fileBytes": 1106620416, "kernelBytes": 91947008, "missedProcesses": [952325]},
+      {"unit": "papercusp-bg-host.service", "mainPid": 3240705, "directHosts": 1, "processPssKiB": 8769997, "cgroupBytes": 26326523904, "anonBytes": 10801618944, "fileBytes": 15294521344, "kernelBytes": 230010880, "missedProcesses": [952187]}
+    ],
+    "profiles": [
+      {"pid": 179003, "file": "~/.papercusp/heap-snapshots/heap-sampling-1790878374954-pid179003-rss_2943mb.heapprofile", "sha256": "9583c25a932bf5ad9cb185a4980e732a188af4f26a3fc28961ac76d07d9d7a11", "sampledLiveBytes": 1404890256, "parseSampledBytes": 1220641312},
+      {"pid": 3240705, "file": "~/.papercusp/heap-snapshots/heap-sampling-1790878398334-pid3240705-rss_10074mb.heapprofile", "sha256": "af4feab5e7ce15a3fa31b8ea9fc63fcc001335648f4ce08d6eedbc4c21c81507", "sampledLiveBytes": 732668624, "parseSampledBytes": 230455496, "dataRowSampledBytes": 98946600, "applyRecordingWinnerSampledBytes": 79184032}
+    ],
+    "storedPayloadSample": {"population": "Newest 500 work_items rows in papercusp-workspace/papercusp, including observation lane", "rows": 500, "storedPayloadBytes": 1268416, "payloadJsonTextBytes": 2585626, "maxPayloadJsonTextBytes": 52824, "method": "Read-only aggregate over MATERIALIZED newest-500 sample with pg_column_size(payload) and octet_length(payload::text)", "limits": "Payload storage/text size is not actual bounded-list wire size or retained-process memory."},
+    "limits": ["No matched idle/intervention comparison or leak proof.", "PSS is kernel KiB; cgroup includes file/cache/kernel memory and descendants.", "Sampling selfSize is sampled live allocation, not full heap, native memory or retainer ownership.", "Current MainPID inspectors were absent; no process signal, profiler reset or full snapshot was attempted.", "Profile artifacts have existing bounded retention and may be pruned; source evidence references and hashes remain."]
+  },
+  "interpretation": {
+    "sampledAllocation": "Existing topAllocationSites writer aggregates V8 sampling-node selfSize by function/url/line. Sampled live allocation is not PSS, total heap or leak proof.",
+    "comparability": "Staging MainPID=0 and changing PIDs; no stable staging comparison. Six-second moving ordinary-workload window cannot establish idle or leak baseline.",
+    "rootCause": "Unmeasured. Parser and DataRow sampled allocations are investigation leads; ownership and retained-state mechanism still required."
+  },
+  "remaining": [
+    "Equivalent idle and ordinary-workload PSS/heap/native baselines.",
+    "Map sampled allocation stacks to owning cache or retained query results.",
+    "Strongest supported reduction or falsifiable non-defect dispositions.",
+    "Functionality, lifecycle and tail-latency guards plus bound proof."
+  ]
+}

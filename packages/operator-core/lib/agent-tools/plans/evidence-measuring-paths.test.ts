@@ -109,10 +109,19 @@ describe('packMeasuringClauses', () => {
     const packed = pack([row({ source_paths: [EDITED, ...many] })]);
     expect(packed.callsElided).toBe(1);
     expect(packed.clauses[0].remeasure.call).toBeUndefined();
+    // The read is narrowed to the one binding: a specIds-only full read returns every
+    // binding of the clause (oversized-tool-results-reduction-2026-10-12 P-006).
     expect(packed.clauses[0].remeasure.measurementFrom).toEqual({
       tool: 'plans:get-spec-evidence',
-      args: { harness: 'papercusp', slug: 'plan-a', specIds: ['RSR-P-016-A'], detail: 'full' },
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        specIds: ['RSR-P-016-A'],
+        bindingIds: [packed.clauses[0].remeasure.bindingId],
+        detail: 'full',
+      },
     });
+    expect(packed.clauses[0].remeasure.measurementFrom?.args.bindingIds).toEqual(packed.clauses[0].bindingIds.slice(0, 1));
   });
 
   it('a hot file measured by many clauses fits the result cap, and the limit is reported', () => {

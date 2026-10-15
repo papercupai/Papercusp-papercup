@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   resolveAgentIdentity,
+  verifiedSpawnSessionAlias,
   SUPERUSER_FALLBACK_CLIENT_ID,
   isEphemeralMcpCallIdentity,
   type AgentIdentity,
@@ -26,10 +27,16 @@ import {
   commentWorkItem,
   explainIssueClaimFloors,
   getWorkItem,
+  readNonAgentWorkCategory,
   readUnresolvedDepBlockers,
   type ClaimFloorAttribution,
   type UnresolvedDepBlocker,
 } from '../../work-items';
+import { notAgentWorkClaimHint } from '../../work-nature/not-agent-work-hint';
+import {
+  reproductionValidationBrief,
+  verificationTaskConflict,
+} from '../../harness/improvements/agent-review-policy';
 import { mintForceTakeoverAdmission } from '../../issues-engineer';
 import { lookupWorkItem } from './_lookup';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -43,6 +50,8 @@ import {
   renderFleetDependencyEscape,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
+import { changeKindsArg, changeKindReasonArg, type ChangeKind } from '../../change-kind-catalog';
+import { declareChangeKinds } from '../../work-item-change-kinds';
 import {
   authorshipRevalidationWarning,
   getClaimTimeAuthorshipRevalidationHint,
@@ -84,7 +93,8 @@ import {
   type PilotParticipantBindingReceipt,
   type PilotParticipantRole,
 } from '../../pilot-participant-receipts';
-import { canonicalizeAssigneeOwnerId, resolveHolderOwnerId } from '../../work-item-holder-identity';
+import { canonicalizeAssigneeOwnerId, holderIsCaller, resolveHolderOwnerId } from '../../work-item-holder-identity';
+import { resolveExplicitAgentOwnerId } from '../coordination/recipient-resolve';
 
 interface ClaimItem {
   id: string;
@@ -235,6 +245,7 @@ export function blockedClaimWarning(blockers: readonly UnresolvedDepBlocker[] | 
 export function concurrencyClaimWarning(
   verdict: ClaimConcurrencyVerdict | null | undefined,
   claimedId: string,
+  targetOwnerId: string,
   dispatchedAssignee?: string | null,
 ): string | null {
   if (!verdict?.blocked) return null;
@@ -258,9 +269,15 @@ export function concurrencyClaimWarning(
     `scheduler:get_next WILL now refuse to serve ${serveSubject} (concurrencyBlocked), so do not read this ` +
     `success as "the queue agrees ${subject} ${isDispatch ? 'has' : 'have'} capacity". Either release/complete a held item ` +
     '(work_items:release / work_items:complete), or — if this lane genuinely needs more than ' +
-    'one item at a time — raise the cap deliberately with scheduler:set_claim_spec ' +
-    '{ limits: { maxConcurrentClaims: N } } rather than accumulating past it one claim at a time. ' +
-    `A PARKED item still counts: it retains taken_by; ${subject} must account for it under ${possessive} cap.`
+    'one item at a time — raise the per-target cap deliberately. First read the existing spec with ' +
+    `scheduler:get_claim_spec { cupId: '${targetOwnerId}' }, then preserve it in ` +
+    `scheduler:set_claim_spec { cupId: '${targetOwnerId}', spec: { ...current.spec, ` +
+    'limits: { ...current.spec.limits, maxConcurrentClaims: N } } }. The write requires exactly one ' +
+    'target selector (cupId or fleet) and a full replacement spec; limits belongs inside spec. ' +
+    'Do not accumulate past the cap one claim at a time. ' +
+    `A PARKED item still counts (it retains taken_by), UNLESS it is blocked/needs-human with an active ` +
+    `external blocker recorded by work_items:set_blocker — that hold stays ${possessive} but frees ${possessive} slot ` +
+    `(P-010). Record the blocker instead of releasing an item ${subject} still own${isDispatch ? 's' : ''}.`
   );
 }
 
@@ -270,7 +287,7 @@ export function concurrencyClaimWarning(
  * error (claim_conflict + holder, not_found, or not_claimable) rather than a
  * phantom "not found".
  */
-async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellReader | null): Promise<BulkItemResult> {
+async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellReader | null, verifiedCallerAlias: string | null): Promise<BulkItemResult> {
   const claimerDefault = identity.ownerId;
   // EI-9274: a literal `'self'` assignee is treated identically to an OMITTED one
   // (resolved to the caller) — including for the implicit-identity guards below, so
@@ -306,10 +323,16 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // here with a typed reason naming the fix. Left to the claimWorkItem backstop it came back
   // null, which this path reported as a phantom claim conflict. A full id, a non-su identity,
   // and any other value pass through byte-identical, with no lookup.
-  if (it.assignee) {
+  if (it.assignee !== undefined) {
     const canonical = await canonicalizeAssigneeOwnerId(it.assignee, { workspaceId: identity.workspaceId ?? null });
     if (!canonical.ok) return { ok: false, id: it.id, error: canonical.code, hint: canonical.message };
-    if (canonical.expandedFrom !== null) it.assignee = canonical.ownerId;
+    const resolved = await resolveExplicitAgentOwnerId(
+      canonical.ownerId,
+      identity.ownerId,
+      identity.workspaceId ?? null,
+    );
+    if (!resolved.ok) return { ok: false, id: it.id, error: resolved.code, hint: resolved.message };
+    it.assignee = resolved.ownerId;
   }
   const claimer = it.assignee ?? claimerDefault;
   if (it.pilotRole && claimer !== claimerDefault) {
@@ -390,6 +413,21 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     });
     if (!scope.allowed) return workScopeRefusal(scope, { id: it.id });
   }
+  // green-main-cycle-time-2026-10-08 P-013, D-028(4): a gate-red singleton
+  // (gate-red-streak: / frozen-repair-convergence:) is claimable only by an owner whose claim
+  // outlives its turn — a guaranteed re-wake, the verdict loop:status reports. Checked for
+  // the CLAIMANT, before mutation. Per-leg frozen-repair-leg: items are never guarded.
+  {
+    const [{ checkGateSingletonClaim, defaultGateSingletonClaimReader }, { activeWorkspaceId }] = await Promise.all([
+      import('./gate-singleton-claim-guard'),
+      import('../../workspace-registry'),
+    ]);
+    const refusal = await checkGateSingletonClaim(
+      { id: it.id, harness: claimScopeHarness, claimant: claimer },
+      defaultGateSingletonClaimReader(identity.workspaceId ?? activeWorkspaceId()),
+    );
+    if (refusal) return { ok: false, id: it.id, ...refusal };
+  }
   const admission = await admitWorkItemForFleetTarget({
     target: claimer,
     workItemId: it.id,
@@ -428,7 +466,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         `${admission.reason}. The claim was refused before mutation. ` +
         // EI-21906739799895413: pass the refused id so the remedy renders an EXECUTABLE
         // fence-preserving widen rather than describing one.
-        `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, null, it.id)}` +
+        `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, null, it.id, it.harness)}` +
       (dependencyEscape ? ` ${renderFleetDependencyEscape(dependencyEscape)}` : ''),
     };
   }
@@ -453,8 +491,11 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // it prefixes; an ambiguous or unknown prefix stays as stored, so authority never widens.
   // The CAS below still compares the RAW stored string, which is what `taken_by` holds.
   const storedHolder = preClaimItem?.assignee?.trim() || undefined;
+  const holderOptions = { workspaceId: identity.workspaceId ?? null, verifiedCallerAlias };
   const currentHolder = storedHolder
-    ? await resolveHolderOwnerId(storedHolder, { workspaceId: identity.workspaceId ?? null })
+    ? await holderIsCaller(storedHolder, identity.ownerId, holderOptions)
+      ? identity.ownerId
+      : await resolveHolderOwnerId(storedHolder, holderOptions)
     : undefined;
   // The caller's OWN legacy short-form claim: widen the CAS by exactly that stored string
   // (`fromHolder`) so the self re-claim lands — and rewrites `taken_by` to the full id —
@@ -688,6 +729,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       planItemLanded,
       siblingPathOverlapResult,
       sourceCitationResult,
+      taskBriefResult,
     ] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
@@ -840,13 +882,16 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             : null;
         })
         .catch(() => null),
+      import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
+        workItem, harness: workItem.harness ?? it.harness, workspaceId: identity.workspaceId,
+      })).catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     // A named assignee means the warning is being read by the dispatching caller, not the
     // assignee whose capacity was measured. Pass that identity through so the prose cannot
     // make the leader think its own lane changed (EI-21731818164781453).
     const dispatchedAssignee = claimer !== claimerDefault ? claimer : null;
-    const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id, dispatchedAssignee);
+    const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id, claimer, dispatchedAssignee);
     const suggestedWatches = suggestedWatchesForItemBlockers({
       itemId: it.id,
       blockers: workItem.externalBlockers,
@@ -884,10 +929,14 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       : null;
     const planContradictionWarn = planItemContradictionWarning(planContradiction, workItem.id ?? it.id);
     const planItemLandedWarn = planItemLandedWarning(planItemLanded, workItem.id ?? it.id);
+    // bug-queue-legitimacy D-006: the same validation-only label scheduler:get_next
+    // emits, derived from the claimed row, ahead of the bulky workItem echo.
+    const reproductionValidation = reproductionValidationBrief(workItem);
     return hint
       ? {
           ok: true,
           id: it.id,
+          ...(reproductionValidation ? { reproductionValidation } : {}),
           workItem,
           ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
@@ -939,10 +988,12 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(pathHintsResult ?? {}),
           ...(siblingPathOverlapResult ?? {}),
           ...(sourceCitationResult ?? {}),
+          ...(taskBriefResult ?? {}),
         }
       : {
           ok: true,
           id: it.id,
+          ...(reproductionValidation ? { reproductionValidation } : {}),
           workItem,
           ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
@@ -987,6 +1038,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(pathHintsResult ?? {}),
           ...(siblingPathOverlapResult ?? {}),
           ...(sourceCitationResult ?? {}),
+          ...(taskBriefResult ?? {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.
@@ -1040,6 +1092,23 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             'check its admission/origin/auditVerdict directly (dev:pg_query) rather than retrying the takeover blind.'),
     };
   }
+  // P-007 / D-021: claimWorkItem refuses a verification task to its own reporter or
+  // implementer. That refusal is PERMANENT for this claimant (waiting or retrying cannot
+  // clear it), so name it rather than letting it read as a peer conflict or a gate.
+  const verificationRole = current ? verificationTaskConflict(current.payload, claimer) : null;
+  if (verificationRole) {
+    return {
+      ok: false,
+      id: it.id,
+      error: 'verification_conflict',
+      role: verificationRole,
+      workItem: current,
+      hint:
+        `${it.id} is a verification task and ${claimer} is its ${verificationRole}. ` +
+        'Verification must be done by an independent agent, never the reporter or the implementer, ' +
+        'so this refusal is permanent for you: leave it for a verifier and pick other work.',
+    };
+  }
   const failure = classifyClaimFailure(current, claimer);
   if (failure.reason === 'not_found') {
     return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
@@ -1091,6 +1160,31 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // Reuse the per-id oracle rather than re-deriving admission here. This is advisory
   // and fail-soft: a diagnostic read must never change the refusal or turn a read
   // outage into a fabricated floor.
+  // P-009 / D-024: the feature-family claim UPDATE gates on the CATEGORY half of the work
+  // predicate (nature 'work' AND audience 'agent'). A record, document, event or human-audience
+  // row (e.g. an email-draft-proposal) is never claimable, by id or otherwise, so name it:
+  // unlike the admission floors below, waiting or retrying cannot help. Diagnostic only and
+  // fail-soft; a read outage falls through to the generic refusal, never to a grant.
+  const categoryHarness = current?.harness ?? it.harness;
+  if (current && current.family !== 'issue' && categoryHarness) {
+    let category: { nature: string; audience: string | null } | null = null;
+    try {
+      category = await readNonAgentWorkCategory(it.id, categoryHarness);
+    } catch {
+      category = null;
+    }
+    if (category) {
+      return {
+        ok: false,
+        id: it.id,
+        error: 'not_agent_work',
+        workItem: current,
+        nature: category.nature,
+        audience: category.audience,
+        hint: notAgentWorkClaimHint(category.nature, category.audience),
+      };
+    }
+  }
   let claimFloor: ClaimFloorAttribution | null = null;
   if (current?.family === 'issue') {
     const issueHarness = current.harness ?? it.harness;
@@ -1151,7 +1245,7 @@ export default defineTool({
   guidance: {
     when: 'Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness/lifecycle floors, not fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.',
     notWhen:
-      '`claim_conflict` means a live peer holds it: coordinate, do not retry. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed.',
+      '`claim_conflict` means a live peer holds it: coordinate, do not retry. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person\'s job.',
     chaining:
       'work_items:list → claim → set_state → release/close. No heartbeat; platform calls refresh liveness. During long local-only work, checkpoint (EI-6772).',
     seeAlso: [
@@ -1166,8 +1260,14 @@ export default defineTool({
   // commits before a transport timeout, surface that completed claim instead
   // of making the caller retry an already-landed write.
   idempotent: true,
+  // EI-25882027630574649: claim-time advisory reads can exceed the default
+  // 60s handler budget even when the idempotent claim succeeds. Match the
+  // 120s server deadline that ptool now allows for direct and wrapped calls.
+  timeoutSec: 120,
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  // Admit the research task's claim door without adding researcher to the
+  // general coordination/placement role set.
+  agentRoles: [...COORD_ROLES, 'researcher'],
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-claim shorthand: the work-item id'),
@@ -1194,12 +1294,14 @@ export default defineTool({
             reason: z.string().max(500).optional(),
             pilotRole: z.enum(PILOT_PARTICIPANT_ROLES).optional(),
             directiveRef: z.number().int().positive().optional(),
+            changeKinds: changeKindsArg().optional(),
+            changeKindReason: changeKindReasonArg().optional(),
           }),
         )
         .min(1)
         .max(200)
         .optional()
-        .describe('claim many work-items at once — each { id, assignee?, harness?, force?, reason? }'),
+        .describe('claim many work-items at once — each { id, assignee?, harness?, force?, reason?, changeKinds? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / ids / items that omit one'),
       force: z
         .boolean()
@@ -1226,6 +1328,10 @@ export default defineTool({
         .describe(
           'owner-directive provenance (orders id): bind this already-existing item to the directive you are claiming it to carry out. Write-once — a claim on an item already bound to a DIFFERENT directive still claims, and reports directiveBindWarning rather than re-pointing it. Use work_items:create { directiveRef } instead when the item does not exist yet.',
         ),
+      // change-kind-declared-proof P-001 (D-001): default for the inline id / every id in `ids`;
+      // recorded only for items whose claim succeeds.
+      changeKinds: changeKindsArg().optional(),
+      changeKindReason: changeKindReasonArg().optional(),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id } for one, or { ids:[…] } / items:[{ id }] for many',
@@ -1275,9 +1381,51 @@ export default defineTool({
               directiveRef: args.directiveRef,
             },
           ];
-    const env = await runBulk(list, (it) => claimOne(it, ident, reader), {
+    const verifiedCallerAlias = ctx.principal?.authMethod === 'spawn-url' && ctx.principal.trust === 'trusted'
+      ? verifiedSpawnSessionAlias(ctx, ident.ownerId) : null;
+    // change-kind-declared-proof P-001 (D-001): per-item kinds (an item's own, else the
+    // top-level default), keyed by the requested id runBulk echoes on each result.
+    const declaredById = new Map<string, { kinds: ChangeKind[]; reason?: string }>();
+    const declare = (id: string, kinds: ChangeKind[] | undefined, reason: string | undefined) => {
+      if (kinds?.length) declaredById.set(id, { kinds, reason });
+    };
+    if (args.items?.length) {
+      for (const it of args.items) declare(it.id, it.changeKinds ?? args.changeKinds, it.changeKindReason ?? args.changeKindReason);
+    } else {
+      for (const it of list) declare(it.id, args.changeKinds, args.changeKindReason);
+    }
+    const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias), {
       keyOf: (it) => ({ id: it.id }),
     });
+    const env = declaredById.size
+      ? {
+          ...claimed,
+          results: await Promise.all(
+            claimed.results.map(async (r) => {
+              const declared = typeof r.id === 'string' ? declaredById.get(r.id) : undefined;
+              if (!declared) return r;
+              if (!r.ok) {
+                return {
+                  ...r,
+                  changeKinds: { recorded: false as const, error: 'changeKinds were not recorded: the claim did not succeed.' },
+                };
+              }
+              const featureId = (r.workItem as { id?: string } | undefined)?.id ?? (r.id as string);
+              return {
+                ...r,
+                changeKinds: await declareChangeKinds({
+                  workspaceId: ident.workspaceId ?? ctx.workspaceId ?? 'default',
+                  featureId,
+                  kinds: declared.kinds,
+                  step: 'claim',
+                  declaredBy: ident.ownerId,
+                  reason: declared.reason ?? null,
+                }),
+              };
+            }),
+          ),
+        }
+      : claimed;
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
     // D-006): piggyback a targeted memory recall for the just-claimed item(s)
     // on the response — deadline-bounded, epoch-deduped (port 'claim'),

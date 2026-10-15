@@ -122,6 +122,8 @@ export async function buildMcpPrelude(
   input: PreludeInput,
 ): Promise<PreludeResult | null> {
   if (!injectionEnabled()) return null;
+  const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
+  if (!await sessionAllowsAmbientContext({ ownerId: input.sessionId, workspaceId: input.workspaceId })) return null;
 
   // Resolve harness slug — URL param first (per-session), then sync
   // detection. The async registry-lookup path stays unwired here;

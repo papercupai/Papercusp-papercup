@@ -257,6 +257,7 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
           cohort: 'post-epoch',
           seededAt: '2026-09-06T00:00:00.000Z',
           seededBy: 'seed-author',
+          rubricSlug: 'acceptance-subject-plan',
         },
       }),
     ).toThrow(/already adopted an acceptance BAR contract.*missing its server-owned barContract/);
@@ -269,6 +270,41 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
         subjectPlan: { adoptionEpoch: null },
       }).started,
     ).toBe(false);
+  });
+
+  it('allows authoring an unstarted successor while another rubric remains pinned', () => {
+    const { barContract: _contract, barSetHash: _setHash, ...successor } = started();
+    const next = { ...successor, criteria: [criterion({ method: 'Successor replication procedure.' })] };
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-successor',
+      storedTemplateData: successor,
+      nextTemplateData: next,
+      subjectPlan: {
+        adoptionEpoch: 1,
+        cohort: 'post-epoch',
+        seededAt: '2026-09-06T00:00:00.000Z',
+        seededBy: 'seed-author',
+        rubricSlug: 'acceptance-subject-plan',
+      },
+    });
+    expect(result.started).toBe(false);
+    expect(result.data).not.toHaveProperty('barContract');
+    expect(result.data.criteria).toEqual(next.criteria);
+  });
+
+  it.each([undefined, null, '', '   '])('keeps an unknown seeded rubric pin fail-closed (%s)', (rubricSlug) => {
+    const { barContract: _contract, barSetHash: _setHash, ...orphaned } = started();
+    expect(() => guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-successor',
+      storedTemplateData: orphaned,
+      nextTemplateData: orphaned,
+      subjectPlan: {
+        adoptionEpoch: 1,
+        seededAt: '2026-09-06T00:00:00.000Z',
+        seededBy: 'seed-author',
+        rubricSlug,
+      },
+    })).toThrow(/missing its server-owned barContract/);
   });
 
   // A cohort backfill stamps acceptance_bar_epoch/_cohort onto plans it never seeded
@@ -375,6 +411,51 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
       { method: 'Run the new structured check.', barProvenance: criterion().barProvenance },
     ]);
     expect(result.data.barContract).toMatchObject({ subjectPlanRevision: 8, seededBy: 'seed-author' });
+  });
+
+  it('stamps a newly added BAR at amendment time and attributes it to the authenticated amender', () => {
+    const now = '2026-10-15T09:20:00.000Z';
+    const stored = started();
+    const added = criterion({
+      key: 'r-2',
+      title: 'Second outcome',
+      model: 'The second outcome holds.',
+      barKey: 'R-2',
+      barHash: 'c'.repeat(64),
+      barProvenance: {
+        lifecycle: 'pre-implementation',
+        declaredAt: '2030-01-01T00:00:00.000Z',
+        declaredBy: 'spoofed-caller',
+      },
+    });
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: stored,
+      nextTemplateData: { ...stored, criteria: [...stored.criteria, added] },
+      subjectPlan: {
+        status: 'active',
+        revision: 8,
+        adoptionEpoch: 1,
+        cohort: 'legacy-backfilled',
+        seededAt: contract.seededAt,
+        seededBy: 'seed-author',
+      },
+      actorId: 'authenticated-amendment-author',
+      amendment: {
+        actorId: 'authenticated-amendment-author',
+        reason: 'Add the newly discovered outcome.',
+      },
+      now,
+    });
+
+    expect(result.changes).toContainEqual({ barKey: 'R-2', kind: 'added', fields: ['bar'] });
+    const newCriterion = (result.data.criteria as Array<Record<string, unknown>>)
+      .find((candidate) => candidate.barKey === 'R-2');
+    expect(newCriterion?.barProvenance).toEqual({
+      lifecycle: 'legacy-backfilled',
+      declaredAt: now,
+      declaredBy: 'authenticated-amendment-author',
+    });
   });
 
   it('accepts a meaning change only with the canonical amendment capability', () => {

@@ -1,0 +1,240 @@
+{
+  "schemaVersion": "p011-host-global-atomic-fence-evidence-v1",
+  "workItem": "EI-25181611831349662",
+  "status": "isolated-storage-and-handler-compatibility-verified",
+  "change": "Existing host-global registry declarations now enforce cross-domain exclusion on resource lease INSERT and renewal, including raw SQL and callers using legacy domains.",
+  "reuse": "Existing locks package migration runner, agent_resource_registry.coordination_domain_kind, registry row version, agent_resource_locks and registered integration suites. No new service, tool, domain or caller identity.",
+  "rootCause": {
+    "layer": "Resource storage write boundary",
+    "observation": "Without migration031, four canonical cases granted conflicting cross-domain leases. With031, two stale stronger-isolation snapshots still committed conflicting leases.",
+    "fix": "031 adds a declaration-scoped trigger and resource lookup index. Forward032 replaces its SELECT FOR UPDATE gate with a value-preserving registry UPDATE; stronger-isolation snapshots now abort with40001 before a second lease commits.",
+    "detector": "The registered integration suite now covers store APIs, raw legacy INSERTs, controlled uncommitted writer blocking, lease renewal, same-owner cross-domain upgrade, repeatable-read and serializable snapshots, alongside scope/expiry/capacity/drain controls."
+  },
+  "verification": {
+    "command": "node scripts/with-test-pg.mjs --isolated-runtime -- npm run test:file -- packages/operator-core/lib/agent-tools/locks/__tests__/resource-atomic-semaphore.integration.test.ts packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+    "exitCode": 0,
+    "passed": 24,
+    "skipped": 0,
+    "scope": "Disposable PostgreSQL and maintained private runtime. Actual database storage plus existing restart handler with external restart preflights/process body mocked. No service signaled.",
+    "provenance": "Final named test paths stamped at5a4989743e; atomic test dirty, registration test clean. Receipts below are post-run named-file hashes. Full import graph and pre-fix test-source bytes were not frozen.",
+    "priorResults": [
+      {
+        "name": "Initial setup",
+        "exitCode": 2,
+        "passed": 0,
+        "skipped": 10,
+        "qualification": "All-skipped run is not pass evidence."
+      },
+      {
+        "name": "Corrected setup, before cross-domain guard",
+        "exitCode": 1,
+        "failed": 4,
+        "passed": 6,
+        "skipped": 0
+      },
+      {
+        "name": "Migration031 storage guards",
+        "exitCode": 0,
+        "passed": 12,
+        "skipped": 0
+      },
+      {
+        "name": "Migration031 handler compatibility",
+        "exitCode": 0,
+        "passed": 22,
+        "skipped": 0
+      },
+      {
+        "name": "Stale snapshot regression under031",
+        "exitCode": 1,
+        "failed": 2,
+        "passed": 12,
+        "skipped": 0,
+        "observation": "Both repeatable-read and serializable promises resolved instead of rejecting; conflicting lease committed."
+      }
+    ],
+    "ledger": "No native test-ledger id claimed. Existing reporter selects HARNESS_ADMIN_DATABASE_URL, which the maintained harness points at its disposable database.",
+    "summaries": [
+      {
+        "path": "/tmp/su-7db4f-host-domain-atomic-before-r1.log",
+        "lines": [
+          "TEST_FILE_ALL_SKIPPED requested=1 executed=1 matched=1 testsExecuted=0 testsSkipped=10 status=not-measured reason=every-collected-test-was-skipped — this run executed NO tests, so it is not evidence that anything passed. Find the gate that skipped them (an unset env flag, `describe.skipIf`, `.skip`) and rerun. Refusing to report a TEST_FILE_RESULT verdict for a run that measured nothing.",
+          "Tests  10 skipped (10)"
+        ]
+      },
+      {
+        "path": "/tmp/su-7db4f-host-domain-atomic-before-r2.log",
+        "lines": [
+          "Tests  4 failed | 6 passed (10)",
+          "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=3cb2dc57de uncommittedPaths=1/1 provenance=unknown startedAt=2026-10-06T01:46:47.339Z skippedTests=0"
+        ]
+      },
+      {
+        "path": "/tmp/su-7db4f-host-domain-atomic-after-r1.log",
+        "lines": [
+          "Tests  12 passed (12)",
+          "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=f8e69422e6 uncommittedPaths=1/1 provenance=unknown startedAt=2026-10-06T01:49:31.005Z skippedTests=0"
+        ]
+      },
+      {
+        "path": "/tmp/su-7db4f-host-domain-atomic-compat-r1.log",
+        "lines": [
+          "Tests  22 passed (22)",
+          "TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=6366827a06 uncommittedPaths=0/2 provenance=stamped startedAt=2026-10-06T01:51:03.591Z skippedTests=0"
+        ]
+      },
+      {
+        "path": "/tmp/su-7db4f-host-domain-snapshot-before-r1.log",
+        "lines": [
+          "Tests  2 failed | 12 passed (14)",
+          "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=5a4989743e uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-06T01:54:07.637Z skippedTests=0"
+        ]
+      },
+      {
+        "path": "/tmp/su-7db4f-host-domain-atomic-final-r1.log",
+        "lines": [
+          "Tests  24 passed (24)",
+          "TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=5a4989743e uncommittedPaths=1/2 provenance=stamped startedAt=2026-10-06T01:56:15.235Z skippedTests=0"
+        ]
+      },
+      {
+        "path": "/tmp/su-7db4f-host-domain-atomic-types-final-r1.log",
+        "lines": [
+          "TSC_SERVICE used=1 checked=1 named=1 typeReferencing=0 importers=0 errors=0 queuedMs=2917 checkMs=541 snapshotAgeMs=541",
+          "(shared typecheck service: judged your files, files referencing their exported types, and their direct importers — not the whole project. A transitive importer is judged by the bare run; PAPERCUSP_TSC_SERVICE=0 forces the full compile.)",
+          "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean at=2026-10-06T01:57:04.434Z head=5a4989743e"
+        ]
+      }
+    ]
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/locks/__tests__/resource-atomic-semaphore.integration.test.ts",
+    "exitCode": 0,
+    "namedFiles": 1,
+    "namedErrors": 0
+  },
+  "cleanup": {
+    "execSessionsTerminal": [
+      "9128:exit2",
+      "1885:exit1",
+      "39097:exit0",
+      "4243:exit0",
+      "35339:exit1",
+      "80079:exit0"
+    ],
+    "privatePgDirectories": [
+      {
+        "path": "/tmp/papercusp-test-pg-xGc9d0",
+        "exists": false
+      },
+      {
+        "path": "/tmp/papercusp-test-pg-JItmpX",
+        "exists": false
+      },
+      {
+        "path": "/tmp/papercusp-test-pg-XBBIgw",
+        "exists": false
+      },
+      {
+        "path": "/tmp/papercusp-test-pg-RsUceL",
+        "exists": false
+      },
+      {
+        "path": "/tmp/papercusp-test-pg-7YiQQm",
+        "exists": false
+      },
+      {
+        "path": "/tmp/papercusp-test-pg-qSQ4N7",
+        "exists": false
+      }
+    ],
+    "fileLocksReleasedBeforeRuns": true
+  },
+  "testHarnessRepair": {
+    "workItem": "EI-25192639607333252",
+    "change": "dbLive bootstraps the locks side database before its availability query and propagates setup errors in the maintained isolated runtime."
+  },
+  "limits": [
+    "Native loaded migration/handler/cache attribution, live foreign-owner body refusal, wholefleet exclusion and pending alias review/cleanup remain open.",
+    "Trigger applies to resources already declared host-global; independent tree/workspace resource namespaces are retained.",
+    "The stronger-isolation fence creates a new registry MVCC row version while preserving stored registry values. No performance or physical-memory saving is claimed.",
+    "Original R3 unknown joins, R4 failure, fullP011@2/D021, all-worker/full-graph/native physical acceptance, P010R8/R9 and shipment remain open.",
+    "No old producer/profiler/R5 replay for recovery; no shared restart or explicit live migration was invoked. LIVE_GATE_OPS remained stopped."
+  ],
+  "documentation": [
+    "https://www.postgresql.org/docs/current/xfunc-volatility.html",
+    "https://www.postgresql.org/docs/current/transaction-iso.html"
+  ],
+  "receipts": [
+    {
+      "path": "libs/papercusp/packages/locks/src/sql/031-host-global-resource-exclusion.sql",
+      "bytes": 2771,
+      "sha256": "1a4359a8afc9550b49a1d6e85b3c1b00ab795b05f3d9e9faa1bf6cc129bd5247"
+    },
+    {
+      "path": "libs/papercusp/packages/locks/src/sql/032-host-global-resource-snapshot-fence.sql",
+      "bytes": 2084,
+      "sha256": "404d3af63a19bdcfaa2ffe90fbf89486d19a40fb1254e1949a4d11b87d62ed4e"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/__tests__/resource-atomic-semaphore.integration.test.ts",
+      "bytes": 15470,
+      "sha256": "f0f742ecae3293c793554eec6799875f6c14a0df78aef719ce8c44ab5f7c7be8"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+      "bytes": 15382,
+      "sha256": "3d47a981628ef962646be1e304ace9c13ad4259b48a58e7e1c71d7afccca8b0c"
+    },
+    {
+      "path": "libs/papercusp/packages/locks/src/resource-lock-store.ts",
+      "bytes": 45792,
+      "sha256": "804e8d9b0c3ed40eee6982af51f6014561990d9709ca4dbcc08a87e4d6c50a78"
+    },
+    {
+      "path": "libs/papercusp/packages/locks/src/su-lock-store.ts",
+      "bytes": 64133,
+      "sha256": "caa0e47a4903e387fc718582c18336040208cd054b599a47427c8c43978708dd"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "bytes": 15664,
+      "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+    },
+    {
+      "path": "/tmp/su-7db4f-host-domain-atomic-before-r1.log",
+      "bytes": 633656,
+      "sha256": "c1cbd600803f6bffb388f024ce44b4e68bb715577ca330d5cfb85ec29e6c1c72"
+    },
+    {
+      "path": "/tmp/su-7db4f-host-domain-atomic-before-r2.log",
+      "bytes": 640562,
+      "sha256": "fa77cdd662f38f03191d73b95f907a377fb63c0528a9c34906f464f2f71101c2"
+    },
+    {
+      "path": "/tmp/su-7db4f-host-domain-atomic-after-r1.log",
+      "bytes": 630404,
+      "sha256": "e4c25b6413f08fd9f0c747544cf3f02b8bfea011faf2f48633c3ddc15346ad73"
+    },
+    {
+      "path": "/tmp/su-7db4f-host-domain-atomic-compat-r1.log",
+      "bytes": 630509,
+      "sha256": "e21fa72c49cfd4b131face6924964c0905cafaeb7b9c0f7f923c9279f00d24dd"
+    },
+    {
+      "path": "/tmp/su-7db4f-host-domain-snapshot-before-r1.log",
+      "bytes": 635811,
+      "sha256": "a975ef8eec38af250066d9cc20d5cda6cd671565ff6bfe00e9fb1448f991aac0"
+    },
+    {
+      "path": "/tmp/su-7db4f-host-domain-atomic-final-r1.log",
+      "bytes": 633307,
+      "sha256": "4599be81c48932944c7521a4c9fc087c111f0db7b60b6ca984b56ae734aa7359"
+    },
+    {
+      "path": "/tmp/su-7db4f-host-domain-atomic-types-final-r1.log",
+      "bytes": 1116,
+      "sha256": "b1d3ba539ead4f61928b54cef3bf579810799debac7742e2075737806baaf02c"
+    }
+  ]
+}

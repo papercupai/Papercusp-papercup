@@ -687,6 +687,27 @@ interface ScopeLintRow {
 }
 
 /**
+ * A bounded list query may report its own truncation bit. When a claim names
+ * the count returned by that one response and says "no truncation", explicit
+ * `truncated=0`/`false` evidence answers the claim directly, even if the query
+ * itself has a result limit. Keep the exception response-local: broader
+ * population, location, or time claims still need a probe wide enough to see
+ * that scope.
+ */
+function hasExplicitResultNoTruncationEvidence(claim: string, verified: string): boolean {
+  const describesReturnedResult =
+    /\breturned\s+\d+\s+(?:messages?|rows?|records?|items?|entries?|results?)\b[^.!?;\n]{0,40}\bno\s+truncation\b/i.test(
+      claim,
+    );
+  const explicitZeroTruncation = /\btruncated\b["']?\s*[:=]\s*(?:0|false)\b/i.test(verified);
+  const expandsBeyondResponse =
+    /\b(?:across|throughout|anywhere|everywhere|today|so\s+far|ever)\b|\b(?:workspace|system|corpus|population)\b/i.test(
+      claim,
+    );
+  return describesReturnedResult && explicitZeroTruncation && !expandsBeyondResponse;
+}
+
+/**
  * Advisory lint: find `✓ VERIFIED` rows whose claim is quantified over more
  * than the recheck can observe. Advisory ONLY — never blocks a write.
  *
@@ -706,10 +727,12 @@ export function detectScopeOverreach(
   for (const row of rows ?? []) {
     const claim = (row?.claim ?? '').trim();
     if (!claim) continue;
-    if (!(row?.verified ?? '').trim()) continue;
+    const verified = (row?.verified ?? '').trim();
+    if (!verified) continue;
     if (isPrescriptiveClaim(claim)) continue;
     const q = findClaimQuantifier(claim);
     if (!q) continue;
+    if (hasExplicitResultNoTruncationEvidence(claim, verified)) continue;
     const analysis = analyzeProbeScope(row?.recheck);
     const scope = analysis.scope;
     if (!scope) continue;

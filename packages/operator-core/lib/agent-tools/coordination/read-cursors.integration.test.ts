@@ -171,6 +171,7 @@ describe('read-cursors PgReadCursorStore (PG) — ackAndAdvance against the real
       expect(await ackAndRead(owner, surface, { confirmedToken: 'tok-1' })).toEqual({
         committed: { gen: 1 },
         baseline: false,
+        unconfirmedPending: { gen: 2 },
       });
       expect(await readRow(owner, surface)).toEqual({ committed: { gen: 1 }, pending: null });
 
@@ -178,6 +179,7 @@ describe('read-cursors PgReadCursorStore (PG) — ackAndAdvance against the real
       expect(await ackAndRead(owner, surface, { confirmedToken: null })).toEqual({
         committed: { gen: 1 },
         baseline: false,
+        unconfirmedPending: { gen: 3 },
       });
     });
 

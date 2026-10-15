@@ -80,7 +80,7 @@ export interface TextCollector {
    * failure path that appends a reason and resolves without ever spawning, then
    * the spawn on the success path. Null/undefined is a no-op, so an un-piped fd
    * needs no guard. Attaching more than one stream is allowed and interleaves
-   * them, which is only ever what you want for a merged stdout+stderr capture.
+   * their decoded text; each stream keeps its own UTF-8 decoder state.
    */
   attach(stream: NodeJS.ReadableStream | null | undefined): void;
   /** Bytes decoded off the stream so far — excludes {@link append} text. */
@@ -96,49 +96,69 @@ export interface TextCollector {
  */
 export function createTextCollector(
   stream?: NodeJS.ReadableStream | null,
-  options: { maxChars?: number } = {},
+  options: { maxChars?: number; onDecodedText?: (text: string) => void; retainText?: boolean } = {},
 ): TextCollector {
   const maxChars = options.maxChars;
+  const retainText = options.retainText !== false;
   if (maxChars !== undefined && (!Number.isInteger(maxChars) || maxChars < 1)) {
     throw new RangeError('maxChars must be a positive integer');
   }
-  const decoder = new StringDecoder('utf8');
+  const decoders = new Map<NodeJS.ReadableStream, StringDecoder>();
   let acc = '';
   let flushed = false;
   let bytes = 0;
+  const notifyDecoded = (text: string): void => {
+    if (text.length > 0) options.onDecodedText?.(text);
+  };
   const trimTail = (): void => {
-    if (maxChars === undefined || acc.length <= maxChars) return;
+    if (!retainText || maxChars === undefined || acc.length <= maxChars) return;
     acc = acc.slice(-maxChars);
     // A UTF-16 slice can start at the low half of an emoji; drop that half.
     const first = acc.charCodeAt(0);
     if (first >= 0xdc00 && first <= 0xdfff) acc = acc.slice(1);
   };
 
-  const onData = (chunk: Buffer | string): void => {
+  const onData = (chunk: Buffer | string, decoder: StringDecoder): void => {
     if (typeof chunk === 'string') {
       // An encoding was set on the stream, so Node already decoded it — and it
       // did so with its OWN StringDecoder, which is boundary-safe. Re-decoding
       // would be wrong; take the string as given.
-      acc += chunk;
-      trimTail();
+      if (retainText) {
+        acc += chunk;
+        trimTail();
+      }
       bytes += Buffer.byteLength(chunk);
+      flushed = false;
+      notifyDecoded(chunk);
       return;
     }
     bytes += chunk.length;
-    acc += decoder.write(chunk);
-    trimTail();
+    const decoded = decoder.write(chunk);
+    if (retainText) {
+      acc += decoded;
+      trimTail();
+    }
     flushed = false;
+    notifyDecoded(decoded);
   };
 
   const collector: TextCollector = {
     append(text: string): void {
-      acc += text;
-      trimTail();
+      if (retainText) {
+        acc += text;
+        trimTail();
+      }
     },
     text(): string {
       if (!flushed) {
-        acc += decoder.end();
-        trimTail();
+        for (const decoder of decoders.values()) {
+          const trailing = decoder.end();
+          if (retainText) {
+            acc += trailing;
+            trimTail();
+          }
+          notifyDecoded(trailing);
+        }
         flushed = true;
       }
       return acc;
@@ -151,7 +171,27 @@ export function createTextCollector(
       return acc;
     },
     attach(s: NodeJS.ReadableStream | null | undefined): void {
-      s?.on('data', onData);
+      if (!s) return;
+      let decoder = decoders.get(s);
+      if (!decoder) {
+        decoder = new StringDecoder('utf8');
+        decoders.set(s, decoder);
+      }
+      s.on('data', (chunk: Buffer | string) => onData(chunk, decoder!));
+      if (options.onDecodedText) {
+        // Flush only the ending stream. Another attached stream may still have
+        // an incomplete UTF-8 sequence in flight.
+        const flush = (): void => {
+          const trailing = decoder!.end();
+          if (retainText) {
+            acc += trailing;
+            trimTail();
+          }
+          notifyDecoded(trailing);
+        };
+        s.once('end', flush);
+        s.once('close', flush);
+      }
     },
     get bytes(): number {
       return bytes;

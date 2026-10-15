@@ -1,0 +1,1093 @@
+{
+  "schemaVersion": 1,
+  "subjectPlan": "consult-backed-parking-2026-10-12",
+  "workItem": "WI-6554700010009934",
+  "repairOf": {
+    "attestation": "EI-25837629819345331",
+    "failedAudit": "EI-26034687869449907",
+    "rubricRevision": 7,
+    "criteriaHash": "f5791d4aea7691f26291ed4bda2ee80ad89695b1af85b83b2d80a9e2337732c8",
+    "applicationCritique": {
+      "conversation": "conv-request-c2e14e3746e22af1c64ed9bb554ab353548aa1c577f1653b95b7255017af859c",
+      "post": 1183030,
+      "revision": 8,
+      "verdict": "not-yet-attestable"
+    },
+    "currentApplicationCritique": {
+      "posts": [
+        1183120,
+        1183121
+      ],
+      "revision": 9,
+      "verdict": "not-yet-attestable",
+      "repairDecision": "D-024",
+      "amendmentApproval": "thread-post:1183136",
+      "gaps": [
+        "F1 deadline bounds",
+        "F2 real target model menu",
+        "F3 completing PUI port and broken-pane control",
+        "F4 positive host acknowledgement table"
+      ]
+    }
+  },
+  "currentRubric": {
+    "ref": "acceptance-consult-backed-parking-2026-10-12",
+    "revision": 10,
+    "criteriaHash": "f18f2e230a4080a3cd338fb611ab8d26dc034ffc4df62bcaff4fad0fd8fdbf32",
+    "barSetHash": "6f07041d56ae4e40f4534cbf912d1466fdbdc15f9d59ff8b96865b42e3d1680b",
+    "subjectPlanRevision": 67
+  },
+  "sourceCommit": "2ee93add213a76f562140b9107f8b7a80242d42d",
+  "sourcePinStatus": "All 18 file SHA256 values were rechecked against immutable sourceCommit 2ee93add213a76f562140b9107f8b7a80242d42d and canonical HEAD 978ec1ba9d5be8b80ae7fb687307b233965e4914 on 2026-10-15; all matched. This static detector map does not claim a new test execution or native-live verdict.",
+  "files": [
+    {
+      "path": "apps/operator/lib/psu-pty-host-kickoff-activity.test.ts",
+      "sha256": "26cfa6f5ee45511dc9945316eb811711a9e3f56abb008eaf1ad5de6eaf178786",
+      "blob": "be11afcaace67cd2c2b10d711882966a4a1d0969",
+      "pin": "committed"
+    },
+    {
+      "path": "apps/operator/lib/psu-pty-host.integration.test.ts",
+      "sha256": "6f3bd2ca524715e34865402fa3ea54a0dc743f454da323fe327e1f1c9080d121",
+      "blob": "8bf69b4b9123aad36e64d4de62ae7d0fdd03ff6c",
+      "pin": "committed"
+    },
+    {
+      "path": "apps/operator/lib/psu-pui-resume.test.ts",
+      "sha256": "ac72ff5f3ccab5aaa091e5bdca135e0e2debb4d13ce7fe1a8ad69e41298e0f7f",
+      "blob": "afcad55721df9ae2760c24cd43a67a7df3301d8a",
+      "pin": "committed"
+    },
+    {
+      "path": "apps/operator/lib/psu-resume-cross-backend.test.ts",
+      "sha256": "df747e8304ea3cc6300ae3dc81cb5e147c3c1d66b10490e6d9b9f50fb188a086",
+      "blob": "58494cae9f33931760d9e606f4bca71541c38660",
+      "pin": "committed"
+    },
+    {
+      "path": "apps/operator/lib/pui-resume.integration.test.ts",
+      "sha256": "aece8af71475529ea3f740c3599f040f6737caa3076626308d8e0aa2193ca39f",
+      "blob": "e8787e37e4b0581d0c65001cc3c60159210d30aa",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/consult/reply.test.ts",
+      "sha256": "64aab0ace8e3bab0b7fc7094ee0d897a4c0f6e33db2f69e3d45c406a0b85d2fe",
+      "blob": "0820217f589acd30191f0cec959e7a0bf6e2e791",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/work_items/set_blocker.test.ts",
+      "sha256": "95eb126aaea7f8ca4e0386f2b65e5209b53c13975d3db1988039e542d724c363",
+      "blob": "2e100e1bf4b504c7a26d69eb0aed81f1794d5ac7",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+      "sha256": "caff04a3dbef17ebbfe7783c5ad4722ec969d5a9bf8956b63a39f8639087183f",
+      "blob": "76dcadac3c503481854876218255e1157713c560",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/consult-routing-health.test.ts",
+      "sha256": "531d5b1002e6cdb023a8a3879704c230fc7e172a7f99766042d92653346be16f",
+      "blob": "8b203f9aee2f0658a11345576b3080543b829fb5",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+      "sha256": "e659cd3db05801ddb30c73d1627fe23c42418b6e0b721c767422484b9e52d4d5",
+      "blob": "37d6e698e11b6fab70c1fb799fff414cce82926b",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/park-delivery.test.ts",
+      "sha256": "b3481f544f4deaae67482497dfd1d027540ea3f0c6c24ae3d01576c46cf20ca2",
+      "blob": "38d0d0799e31c6d792a809b4e54b976b96a684fb",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/park-door.test.ts",
+      "sha256": "6efb8cedb1fb12bc4d54432dee20a2979c6b8e0971d5fdb433c58f8793457ee4",
+      "blob": "401d208914cd3bff37c945357ecfddc03ef287d0",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/park-resolver.test.ts",
+      "sha256": "1979117383a119f1a2bd34b99ea694c688f2ca6de28f1664032696798d21204e",
+      "blob": "ae2d226d9c6cf563f339041f162151a65e8e780f",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/park.integration.test.ts",
+      "sha256": "408364a2bf766fdb5af135a42531f0196efedfe37b7010dff90d6b8e9a033221",
+      "blob": "e7730996ce12b4b09c3b48114429be7791df25f9",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/doc-claims/park-door-guidance.test.ts",
+      "sha256": "7841108c4ef3ab6c94e0ca2d3271befa18f29778c050e41aa06ab87155523c47",
+      "blob": "3cf09c445b6c77f3115cdf45becc90e09fe7fa8b",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+      "sha256": "ed611cd2f027a869ebf4938adced7c60f370fed0fec1f40ad3e7d46bc5a04a23",
+      "blob": "c5308fd636c1ec6ec733458d7a8bcdf2236bfbc5",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-su.test.ts",
+      "sha256": "f1ce4d6e23a29da7ee929b3656ca5ede05a2e77f46f05f918f58f51f75ac1d8c",
+      "blob": "3f32ff0beff911780737ce8020f9c00e6d2bf296",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/pre-pinned-owner-conflicts.test.ts",
+      "sha256": "9d1432883ebc6fee3385288115142a4acce4f03fc568aa1a7781db538c843efd",
+      "blob": "9cec0aea0e15354bc3194ad995e6245f0d228ca3",
+      "pin": "committed"
+    }
+  ],
+  "criteria": [
+    {
+      "key": "r-1",
+      "intent": {
+        "request": "Consults end with nobody answering even though experts were selected; Codex experts can never be launched.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:11"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+          "testCase": "a live or ended Codex source uses the maintained isolated port on its own backend",
+          "assertion": "The selected Codex source reaches an isolated answering identity instead of being skipped."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+          "testCase": "launches a fresh briefed session for an untracked native source instead of refusing",
+          "assertion": "dispatched=true, operation=brief, one spawned distinct answering owner, and the kickoff contains the cited expert turn."
+        }
+      ],
+      "notes": "D-005,D-008,D-019,D-020; unit evidence does not replace the forced organic probe.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-2",
+      "intent": {
+        "request": "Reports said no qualified agent existed when qualified agents were selected but could not be launched.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:11"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+          "testCase": "every selectee exhausted — the honest terminal is no_launchable_responder, settled NOW rather than left to expiry",
+          "assertion": "All selected owners reached; API verdict/state and durable consult_state are no_launchable_responder."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+          "testCase": "below_floor (pure-floor min:0): still opens + persists the verdict (D-003 honesty feed), no wake",
+          "assertion": "No selected expert yields no_qualified_responder in API and storage."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/consult-routing-health.test.ts",
+          "testCase": "partitions explicit intents and terminal receipts without confusing lifecycle or launch attempts",
+          "assertion": "Seeded unlaunchable and unavailable requests occupy distinct outcome buckets, with expected totals."
+        }
+      ],
+      "notes": "The storage writer, caller result, and routing-health reader are separate instruments.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-3",
+      "intent": {
+        "request": "Make park a wrapper around get_feedback that wakes the parked agent with the reply.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:0",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:25"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/work_items/set_blocker.test.ts",
+          "testCase": "R-3 refuses a product-decision park missing %s before opening or persisting anything",
+          "assertion": "Both it.each legs omit defaultIfUnanswered or decideBy; refusal plus zero consult, wake, notice, owner question, payload write, or lifecycle write."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-door.test.ts",
+          "testCase": "refuses a deadline outside 15..1440 minutes or unparseable",
+          "assertion": "14 minutes, 1441 minutes, a past deadline and an unparseable value each return park_deadline_out_of_bounds."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-door.test.ts",
+          "testCase": "accepts the deadline bounds inclusively",
+          "assertion": "Both the 15-minute and 1440-minute bounds are accepted."
+        }
+      ],
+      "notes": "D-002 and D-024 preserve required default/deadline fields and inclusive 15..1440-minute bounds; the 60-minute default choice does not silently supply a missing required deadline.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-4",
+      "intent": {
+        "request": "An objection should also provide an alternative solution.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:3",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:16"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/consult/reply.test.ts",
+          "testCase": "refuses a stance-less reviewer reply before anything is posted",
+          "assertion": "A decision-review reply without stance is refused before posting."
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/consult/reply.test.ts",
+          "testCase": "accepts support, no-view and each valid objection basis, and stores the stance with the post",
+          "assertion": "Positive controls exercise valid stance-bearing replies and persisted stance."
+        }
+      ],
+      "notes": "",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-5",
+      "intent": {
+        "request": "Handle objections through the cascade and let the parked agent proceed when nobody objects.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:3",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:16",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:21"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "a silent park at its deadline proceeds, clears its blocker and records peer review, never owner approval",
+          "assertion": "verdict=proceed; action order record-outcome/clear-blocker/emit-verdict; clear and payload recordedAs=peer-review."
+        }
+      ],
+      "notes": "D-002,D-004; unit resolver, separate from R9 database floor.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-6",
+      "intent": {
+        "request": "How will the result go back to the parked agent?",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:21"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "every outcome emits a payload with the verdict, the default, the alternative and the consult",
+          "assertion": "Four real resolver fixtures exercise proceed, consider-alternative, owner-deciding, owner-decided; each payload exists and names verdict, consultId, defaultAction and applicable alternative."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "the verdict event key is per consult",
+          "assertion": "The production event-key function produces the exact per-consult wake key."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "forwards the exact $verdict payload to the parker verdict event",
+          "assertion": "runParkTriggers table covers all five verdicts including adopted, asserting exact event key and complete payload, recorded outcome, clear/no-clear, ask/no-ask and no cascade calls. Expectations are literal independently specified values, not derived from the resolver under test."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park.integration.test.ts",
+          "testCase": "persisted owner answer settles the park and a later peer reply cannot override it",
+          "assertion": "Production verdict emit fires the real awaited-event row with owner-decided payload and owner text; later peer reply leaves a newly registered await unfired."
+        }
+      ],
+      "notes": "",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-7",
+      "intent": {
+        "request": "Make sure the reply actually reaches the parked agent.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:21"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park-delivery.test.ts",
+          "testCase": "re-wakes a parked agent with no turn ten minutes after the verdict",
+          "assertion": "The grace-expired positive fixture produces re-wake."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-delivery.test.ts",
+          "testCase": "a turn after the verdict means delivered — no re-wake",
+          "assertion": "A later turn suppresses the retry, distinct from a pre-verdict turn."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-delivery.test.ts",
+          "testCase": "re-wake records rewakeAttemptedAt",
+          "assertion": "The dependency wrapper performs and records the wake."
+        }
+      ],
+      "notes": "Ten-minute constant and before-grace controls in same file.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-8",
+      "intent": {
+        "request": "Parking feels safer for unsure agents, so adherence comes from making park the wrapper.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:0"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/doc-claims/park-door-guidance.test.ts",
+          "testCase": "the live guidance of every surface names the park door, its default and its deadline (calibration)",
+          "assertion": "All four production guidance surfaces are nonempty and name park/default/deadline."
+        },
+        {
+          "file": "packages/operator-core/lib/doc-claims/park-door-guidance.test.ts",
+          "testCase": "CONTROL: a surface that names the door but drops the required default is caught",
+          "assertion": "A negative mutation of a real surface yields an explicit finding."
+        },
+        {
+          "file": "packages/operator-core/lib/doc-claims/park-door-guidance.test.ts",
+          "testCase": "CONTROL: a missing surface is reported, not skipped",
+          "assertion": "Deleted/gutted guidance cannot pass by absence."
+        }
+      ],
+      "notes": "The projected su blocker section has its own positive nonempty read assertion.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-9",
+      "intent": {
+        "request": "Carry the plan to shipped with working behavior.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:25"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park.integration.test.ts",
+          "testCase": "adopt-alternative: an objection with an alternative wakes the parker, adopting it settles the park as peer review",
+          "assertion": "Real database consult/blocker/wake rows show the objection and adopted resolution."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park.integration.test.ts",
+          "testCase": "silent-proceed: with no objection the deadline sweep proceeds with the default, clears the blocker and wakes the parker",
+          "assertion": "Real database expiry sweep clears the blocker and creates the parker wake."
+        }
+      ],
+      "notes": "D-013; real Postgres floor.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-10",
+      "intent": {
+        "request": "psu --resume onto a different model backend is not working; make it work reliably across claude, codex and omp.",
+        "sourceRefs": [
+          "session_turn:claude:8a2e6ec3-72a8-4bbb-bf45-e804ed2b99d1:7"
+        ]
+      },
+      "detectors": [],
+      "notes": "Explicit manual live criterion. Do not substitute the stub picker/unit suite: six ordered real-backend delivered session_ports rows, native transcript marker evidence, and staging SHA are required by D-007/D-009/D-014. Final nine-path D021 live matrix remains unrun at census preparation. instrumentKey none is a non-executable manual-provenance marker, never a registered machine check or a claim of runnable proof.",
+      "classification": "explicit-manual-live"
+    },
+    {
+      "key": "r-11",
+      "intent": {
+        "request": "Resume must also work in the Papercusp PUI, which wraps the backend's own TUI and can keep the session's original backend.",
+        "sourceRefs": [
+          "session_turn:claude:8a2e6ec3-72a8-4bbb-bf45-e804ed2b99d1:7"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "apps/operator/lib/psu-pui-resume.test.ts",
+          "testCase": "the cross-backend escape is the LAST row, so Enter never leaves the original backend",
+          "assertion": "Default picker retains native backend."
+        },
+        {
+          "file": "apps/operator/lib/pui-resume.integration.test.ts",
+          "testCase": "psu --resume of an ended %s session spawns that backend once, in its cwd, on its own transcript",
+          "assertion": "All three backends launch once with expected native resume target and existing prior conversation."
+        },
+        {
+          "file": "apps/operator/lib/pui-resume.integration.test.ts",
+          "testCase": "the resumed %s backend owns the terminal: its conversation is on screen and typed input reaches it",
+          "assertion": "All three real PTY fixtures assert prior conversation screen text, backend READY, and echoed typed input."
+        }
+      ],
+      "notes": "D-006; stubs/PTY regression proof does not replace R10 live native backends.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-12",
+      "intent": {
+        "request": "Consults end with nobody answering even though experts were selected; Codex experts can never be launched.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:11"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+          "testCase": "an exhausted allowlist is the terminal verdict, with every rank recorded as evidence",
+          "assertion": "Every model rank has a failure reason and no launch is claimed."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
+          "testCase": "an exhausted walk reports ZERO deliveries — which is what every caller already cascades on",
+          "assertion": "The production reach wrapper reports zero deliveries and nonempty dispatch attempt evidence."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+          "testCase": "every selectee exhausted — the honest terminal is no_launchable_responder, settled NOW rather than left to expiry",
+          "assertion": "The production multi-selectee orchestrator reaches both selected experts and persists the terminal verdict only after exhaustion."
+        }
+      ],
+      "notes": "Rev7 was under-bound: the integration file was not in R12 check.files. Applied additive amendment to rev8 binds it and adds the integration layer. Both model-rank and selected-expert scopes are required.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-13",
+      "intent": {
+        "request": "Make park a wrapper around get_feedback that wakes the parked agent with the reply.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:0",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:25"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/work_items/set_blocker.test.ts",
+          "testCase": "R-13 opens the decision-review consult and persists its ref before the set_blocker call returns",
+          "assertion": "Real park-door helper under handler call opens one consult with caller/cascade identity, registers setter/event wake, persists consult ref, and sends one notice; no direct owner question."
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/work_items/set_blocker.test.ts",
+          "testCase": "R-13 leaves no blocker when the decision-review consult cannot be opened",
+          "assertion": "Opening failure produces no payload/lifecycle/wake/notice side effects."
+        }
+      ],
+      "notes": "Committed handler assertion requires the work item, FYI (low importance) summary and the consult reference in the notice body.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-14",
+      "intent": {
+        "request": "Make park a wrapper around get_feedback that wakes the parked agent with the reply.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:0",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:25"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/work_items/set_blocker.test.ts",
+          "testCase": "R-14 preserves the %s owner-authority topic at the set_blocker consult boundary",
+          "assertion": "All four topics spend/destructive/publish/security are passed to the opened consult cascade; the handler returns its persisted park."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "an owner-authority park at its deadline never proceeds; it becomes one owner question with both options",
+          "assertion": "Real owner-authority fixture yields owner-deciding and no clear-blocker; ordinary silent-proceed positive control remains in the same bound suite."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park.integration.test.ts",
+          "testCase": "persisted owner-authority survives park creation and expiry: no clear, exactly one owner question with both options",
+          "assertion": "Validated openDecisionReviewPark used by set_blocker writes ownerAuthorityTopic through actual SQL routing; real load must recover it and expiry/repeated triggers must leave blocker active. Production owner-question seam is invoked, not replaced with a no-op."
+        }
+      ],
+      "notes": "R14 grades no automatic proceed; R17 grades the one question/options.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-15",
+      "intent": {
+        "request": "An objection should also provide an alternative solution.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:3",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:16"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/agent-tools/consult/reply.test.ts",
+          "testCase": "refuses an objection with no alternative, no hazard evidence and no owner-authority topic",
+          "assertion": "Malformed objection is refused before posting."
+        },
+        {
+          "file": "packages/operator-core/lib/agent-tools/consult/reply.test.ts",
+          "testCase": "accepts support, no-view and each valid objection basis, and stores the stance with the post",
+          "assertion": "Alternative, hazard evidence, and owner-authority valid fixtures are accepted and persist their stance."
+        }
+      ],
+      "notes": "D-003.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-16",
+      "intent": {
+        "request": "Handle objections through the cascade and let the parked agent proceed when nobody objects.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:3",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:16",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:21"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "an objection wakes the parked agent with consider-alternative and blocks proceed",
+          "assertion": "Standing objection emits consider-alternative."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "adopting the alternative settles the park as peer review and clears the blocker",
+          "assertion": "Adoption positively settles and clears."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "a rebuttal advances the cascade holding both positions, once, without dropping the objection",
+          "assertion": "Rebuttal advances exactly once with both positions and standing objection preserved."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "forwards both rebuttal positions to the cascade without waking or clearing the parker",
+          "assertion": "Actual runParkTriggers must pass all four literal default/rebuttal/objection/alternative values to advanceCascade exactly once and must not emit/clear/ask."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park.integration.test.ts",
+          "testCase": "persisted rebuttal forwards both positions once without waking or clearing the parker",
+          "assertion": "Real persisted objection and parker rebuttal load through the adapter; advanceCascade transport is explicitly stubbed and exact arguments checked. Real outcome persistence prevents duplicate advance; real verdict await remains pending and blocker active."
+        }
+      ],
+      "notes": "",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-17",
+      "intent": {
+        "request": "Handle objections through the cascade and let the parked agent proceed when nobody objects.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:3",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:16",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:21"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "a standing objection with exhausted reviewers becomes one owner question with both options",
+          "assertion": "Exhausted-review fixture yields an owner question carrying both options."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "an owner-authority park at its deadline never proceeds; it becomes one owner question with both options",
+          "assertion": "Owner-authority fixture has both options."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "the owner question is asked exactly once",
+          "assertion": "Repeated settled-question resolution does nothing."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "forwards exactly the two owner options for $reason",
+          "assertion": "Application table requires exact question/options for exhausted disagreement and owner authority and forbids clear/advance."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park.integration.test.ts",
+          "testCase": "persisted owner-authority survives park creation and expiry: no clear, exactly one owner question with both options",
+          "assertion": "Production askOwner seam receives exact two options once; real SQL retains ownerConversationId and ownerQuestionOpened; repeated expiry and direct trigger cannot ask again."
+        }
+      ],
+      "notes": "Partitioned from R14 deadline authorization.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-18",
+      "intent": {
+        "request": "Handle objections through the cascade and let the parked agent proceed when nobody objects.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:3",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:16",
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:21"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "an owner answer before any peer reply resolves to owner-decided with the owner text",
+          "assertion": "Early owner text is retained in owner-decided outcome."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "an owner answer after peer replies overrides a standing objection",
+          "assertion": "Later owner answer settles despite objection."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "no later peer reply overrides an owner decision",
+          "assertion": "Post-owner peer reply produces no new action."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "forwards the exact $verdict payload to the parker verdict event",
+          "assertion": "The owner-decided application leg verifies exact ownerText, owner recordedAs and clear provenance."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park.integration.test.ts",
+          "testCase": "persisted owner answer settles the park and a later peer reply cannot override it",
+          "assertion": "Production pollParkOwnerAnswers persists an externally supplied first owner answer, real blocker clears and real await fires owner-decided. A second answer is refused; later peer reply cannot override owner text or fire a new await."
+        }
+      ],
+      "notes": "Positive settlement and no-override controls share the bound suite.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-19",
+      "intent": {
+        "request": "How will the result go back to the parked agent?",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:21"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "a support reply before the deadline emits nothing",
+          "assertion": "Intermediate support has no emit-verdict action."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "a second reply on an already-notified objection emits nothing",
+          "assertion": "Repeat intermediate reply causes no new wake."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-resolver.test.ts",
+          "testCase": "an intermediate reply applies nothing (no wake)",
+          "assertion": "The real apply wrapper performs no side effects for an intermediate reply."
+        }
+      ],
+      "notes": "Positive control in same bound file: applies a silent-proceed decision in order: record, clear the blocker, emit the verdict. Existing clean caught no-wake mutant retained; no rerun is claimed here.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-20",
+      "intent": {
+        "request": "Make sure the reply actually reaches the parked agent.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:21"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park-delivery.test.ts",
+          "testCase": "an ended session is resumed instead of re-woken",
+          "assertion": "Ended parker yields resume rather than wake."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-delivery.test.ts",
+          "testCase": "a resume that throws is recorded as failed, and the next check notifies the owner",
+          "assertion": "Real dependency wrapper invokes resume and records failure; later check surfaces it."
+        }
+      ],
+      "notes": "Existing delivery checkpoint/resume path remains the production seam.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-21",
+      "intent": {
+        "request": "Make sure the reply actually reaches the parked agent.",
+        "sourceRefs": [
+          "session_turn:claude:4065dd5b-bd45-4315-9b5f-c1907901712d:21"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "packages/operator-core/lib/consult/park-delivery.test.ts",
+          "testCase": "a failed resume notifies the owner with the park ref",
+          "assertion": "Failure fixture yields notification with exact park reference."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-delivery.test.ts",
+          "testCase": "the notification names the parker, the verdict and the failure",
+          "assertion": "Notification identifies responsible parker, verdict, and cause."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-delivery.test.ts",
+          "testCase": "notifies the owner only once",
+          "assertion": "Already-notified control prevents repeats."
+        }
+      ],
+      "notes": "Successful-delivery and successful-resume positive controls in same file.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-22",
+      "intent": {
+        "request": "psu --resume onto a different model backend is not working; make it work reliably across claude, codex and omp.",
+        "sourceRefs": [
+          "session_turn:claude:8a2e6ec3-72a8-4bbb-bf45-e804ed2b99d1:7"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "apps/operator/lib/psu-resume-cross-backend.test.ts",
+          "testCase": "covers exactly the six ordered pairs among the launcher's backends",
+          "assertion": "The pair population is exactly the six ordered cross-backend pairs."
+        },
+        {
+          "file": "apps/operator/lib/psu-resume-cross-backend.test.ts",
+          "testCase": "a %s source picked onto %s resolves to a session port, never a refusal",
+          "assertion": "Each ordered pair resolves target choices; inspect the parameterized cases and assertions, not an aggregate pass count."
+        },
+        {
+          "file": "apps/operator/lib/psu-resume-cross-backend.test.ts",
+          "testCase": "the real %s→%s picker offers selectable target-specific model rows (R-22)",
+          "assertion": "All six ordered pairs call real chooseResumeTarget with Codex/OMP catalog fixtures and Claude aliases; selectable model rows exist, actual prompt choice returns the chosen target/model and operation=port."
+        }
+      ],
+      "notes": "D-007/D-009/D-014/D-024; actual interactive model menu, not only backend resolution. Native target CLI proof remains R10.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-23",
+      "intent": {
+        "request": "psu --resume onto a different model backend is not working; make it work reliably across claude, codex and omp.",
+        "sourceRefs": [
+          "session_turn:claude:8a2e6ec3-72a8-4bbb-bf45-e804ed2b99d1:7"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "apps/operator/lib/psu-resume-cross-backend.test.ts",
+          "testCase": "refuses an untracked (raw native) session and names the cause",
+          "assertion": "Untracked source is refused with cause before target launch."
+        },
+        {
+          "file": "apps/operator/lib/psu-resume-cross-backend.test.ts",
+          "testCase": "refuses a tracked Claude source whose transcript file is missing",
+          "assertion": "Missing transcript is refused with the cause."
+        },
+        {
+          "file": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+          "testCase": "refuses a source-identity port while that identity is bound to a live session",
+          "assertion": "Production route refuses owner-bound source before preparation."
+        }
+      ],
+      "notes": "Positive native/archive-backed source controls exist in the same cross-backend test file.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-24",
+      "intent": {
+        "request": "psu --resume onto a different model backend is not working; make it work reliably across claude, codex and omp.",
+        "sourceRefs": [
+          "session_turn:claude:8a2e6ec3-72a8-4bbb-bf45-e804ed2b99d1:7"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "apps/operator/lib/psu-pty-host.integration.test.ts",
+          "testCase": "publishes a managed session-port negative parent proof for %s before acknowledgement and cleanup",
+          "assertion": "child-exit parameter leg records target child exited before persistence; missing-native-marker leg proves seed-refusal path with an OMP fixture."
+        },
+        {
+          "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/pre-pinned-owner-conflicts.test.ts",
+          "testCase": "reports a live bound source session as a blocking conflict (the measured 409 cause)",
+          "assertion": "Exact source owner live binding is blocked."
+        },
+        {
+          "file": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
+          "testCase": "refuses a source-identity port while that identity is bound to a live session",
+          "assertion": "Route refusal happens before target preparation."
+        },
+        {
+          "file": "apps/operator/lib/psu-pty-host-kickoff-activity.test.ts",
+          "testCase": "codex: finds the activity row after the marker past 256 KiB, including a truncated marker",
+          "assertion": "Production Codex reader finds the later real activity row despite long-tail/truncated marker."
+        },
+        {
+          "file": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-su.test.ts",
+          "testCase": "accepts a prepared auto account when the codex target resolves to unpinned gateway routing",
+          "assertion": "Prepared auto account is accepted at actual bootstrap."
+        },
+        {
+          "file": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-su.test.ts",
+          "testCase": "refuses a launch whose account drifted from the prepared auto request, before reserving a target",
+          "assertion": "Prepared-account drift is refused before target reservation."
+        },
+        {
+          "file": "apps/operator/lib/psu-pty-host.integration.test.ts",
+          "testCase": "publishes managed %s session-port parent proof before HTTP ack and handles %s acknowledgement (EI-259750)",
+          "assertion": "Nine host cases cross claude/codex/omp with accepted/unknown/refused acknowledgement; accepted finishes cleanly after native proof, unknown preserves child/process and native persistence, explicit refusal kills and fails with its reason."
+        }
+      ],
+      "notes": "Four causes retain separate detectors. Cause (1) also requires all nine positive acknowledgement controls; broad teardown of healthy or unknown-ack children must fail. The OMP refusal fixture is not relabeled as a Codex reader proof.",
+      "classification": "tests-bound"
+    },
+    {
+      "key": "r-25",
+      "intent": {
+        "request": "Resume must also work in the Papercusp PUI, which wraps the backend's own TUI and can keep the session's original backend.",
+        "sourceRefs": [
+          "session_turn:claude:8a2e6ec3-72a8-4bbb-bf45-e804ed2b99d1:7"
+        ]
+      },
+      "detectors": [
+        {
+          "file": "apps/operator/lib/psu-pui-resume.test.ts",
+          "testCase": "a cross-backend pick of an unresumable tracked session is refused with its cause before launch",
+          "assertion": "Cross-backend picker refusal occurs before launching."
+        },
+        {
+          "file": "apps/operator/lib/pui-resume.integration.test.ts",
+          "testCase": "a cross-backend pick of a session with no source transcript exits non-zero with its cause and spawns nothing",
+          "assertion": "Real launcher failure yields a clear cause and zero backend launches."
+        },
+        {
+          "file": "apps/operator/lib/pui-resume.integration.test.ts",
+          "testCase": "a refused cross-backend pick shows its cause on the terminal and opens no backend",
+          "assertion": "Real PTY screen contains the refusal cause, no backend launch, and no READY pane."
+        },
+        {
+          "file": "apps/operator/lib/pui-resume.integration.test.ts",
+          "testCase": "a resumable cross-backend source completes into a conversation and usable PUI pane (R-25)",
+          "assertion": "Real launcher and PTY port a Codex fixture to Claude: one target launch in source cwd, prior conversation and typed input on screen, bootstrap and delivered persisted proof, actual native transcript contains prior conversation."
+        },
+        {
+          "file": "apps/operator/lib/pui-resume.integration.test.ts",
+          "testCase": "CONTROL: a port target that exits before opening its pane fails visibly and cannot pass as completion (R-25)",
+          "assertion": "Broken target exits nonzero, emits BROKEN_PANE_CONTROL, never shows READY, and submits failed delivery with exit/persist/seed reason."
+        }
+      ],
+      "notes": "Completing cross-backend PUI proof exercises production launcher/host/PTY with deterministic backend and operator fixtures. Credentialed native proof remains the final D-021 matrix, which is not claimed here.",
+      "classification": "tests-bound"
+    }
+  ],
+  "replay": {
+    "rubric": {
+      "tool": "rubrics:get",
+      "args": {
+        "rubricRef": "acceptance-consult-backed-parking-2026-10-12",
+        "detail": "full"
+      },
+      "precondition": "Require revision10 and criteriaHash f18f2e230a4080a3cd338fb611ab8d26dc034ffc4df62bcaff4fad0fd8fdbf32, matching currentRubric; if moved, do not silently substitute."
+    },
+    "committedSourceReader": {
+      "tool": "capability:git-evidence",
+      "dispatch": "tools:invoke",
+      "args": {
+        "op": "readFileAtCommit",
+        "rootHarnessSlug": "papercusp",
+        "commitSha": "2ee93add213a76f562140b9107f8b7a80242d42d",
+        "path": "<exact files[].path>",
+        "byte_offset": 0,
+        "byte_limit": 4096
+      },
+      "continuation": "Decode canonical base64 data and follow the returned next_cursor args through eof. Verify SHA256 against files[].sha256; read criteria[].detectors[].testCase and its assertion in that exact file. A missing case or an assertion that cannot detect its drift is a failing detector. All 18 pins are committed."
+    },
+    "decisionReader": {
+      "tool": "plans:get",
+      "args": {
+        "slug": "consult-backed-parking-2026-10-12",
+        "harness": "papercusp",
+        "mode": "full",
+        "heading": "Decisions"
+      },
+      "precondition": "Require plan revision67/contentHash fba8a27181b2e562ebdb0666c3444a1d753aaa0a33b455c3b034b1d7ec2ce204. If the response is bounded, select each exact D-001 through D-024 with decisionId, or follow the returned source reference; never treat the excerpt as the complete decision corpus."
+    },
+    "source": "git show <sourceCommit>:<files[].path>; verify SHA256 and Git blob id against files[]; read each named detector and assertion.",
+    "tests": "PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- <bound files>; integration/live classes require their maintained runtime route. A static detector census is not a claim that all tests or the live matrix ran."
+  },
+  "decisionTrace": {
+    "source": {
+      "tool": "plans:get",
+      "args": {
+        "slug": "consult-backed-parking-2026-10-12",
+        "harness": "papercusp",
+        "heading": "Decisions"
+      },
+      "planRevision": 67,
+      "contentHash": "fba8a27181b2e562ebdb0666c3444a1d753aaa0a33b455c3b034b1d7ec2ce204"
+    },
+    "decisions": {
+      "D-001": [
+        "r-3",
+        "r-8",
+        "r-13"
+      ],
+      "D-002": [
+        "r-3",
+        "r-5",
+        "r-9"
+      ],
+      "D-003": [
+        "r-4",
+        "r-15"
+      ],
+      "D-004": [
+        "r-5",
+        "r-14",
+        "r-17",
+        "r-18"
+      ],
+      "D-005": [
+        "r-1",
+        "r-2",
+        "r-12"
+      ],
+      "D-006": [
+        "r-11",
+        "r-25"
+      ],
+      "D-007": [
+        "r-10",
+        "r-22",
+        "r-23",
+        "r-24"
+      ],
+      "D-008": [
+        "r-1",
+        "r-2",
+        "r-12"
+      ],
+      "D-009": [
+        "r-10",
+        "r-22",
+        "r-23",
+        "r-24"
+      ],
+      "D-010": [
+        "r-10",
+        "r-11"
+      ],
+      "D-011": [
+        "r-12",
+        "r-13",
+        "r-14",
+        "r-15",
+        "r-16",
+        "r-17",
+        "r-18",
+        "r-19",
+        "r-20",
+        "r-21",
+        "r-22",
+        "r-23",
+        "r-24",
+        "r-25"
+      ],
+      "D-012": [
+        "r-1",
+        "r-3",
+        "r-4",
+        "r-5",
+        "r-6",
+        "r-7",
+        "r-10",
+        "r-11",
+        "r-12",
+        "r-13",
+        "r-14",
+        "r-15",
+        "r-16",
+        "r-17",
+        "r-18",
+        "r-19",
+        "r-20",
+        "r-21",
+        "r-22",
+        "r-23",
+        "r-24",
+        "r-25"
+      ],
+      "D-013": [
+        "r-3",
+        "r-4",
+        "r-6",
+        "r-9",
+        "r-13",
+        "r-14",
+        "r-15",
+        "r-16"
+      ],
+      "D-014": [
+        "r-10",
+        "r-11"
+      ],
+      "D-015": [
+        "r-2",
+        "r-5",
+        "r-8",
+        "r-9",
+        "r-10",
+        "r-11",
+        "r-14",
+        "r-17",
+        "r-23",
+        "r-24",
+        "r-25"
+      ],
+      "D-016": [
+        "r-24"
+      ],
+      "D-017": [
+        "r-8",
+        "r-9",
+        "r-24"
+      ],
+      "D-018": [],
+      "D-019": [
+        "r-1"
+      ],
+      "D-020": [
+        "r-1"
+      ],
+      "D-021": [
+        "r-10"
+      ],
+      "D-022": [
+        "r-12"
+      ],
+      "D-023": [
+        "r-6",
+        "r-10",
+        "r-14",
+        "r-16",
+        "r-17",
+        "r-18"
+      ],
+      "D-024": [
+        "r-3",
+        "r-22",
+        "r-24",
+        "r-25"
+      ]
+    },
+    "notes": {
+      "D-009": "Explicitly rejects running credentialed target CLIs in CI. R10 deliberately uses manual-provenance per live native transcripts and session_ports rows; picker/unit fixtures cannot replace it.",
+      "D-018": "Clause lifecycle/revision procedure, not a new product behavior. Re-read active current spec revisions and preserve carried evidence.",
+      "D-021": "Matrix remains last evidence step after launcher/host edits land. R24 unit/integration proof is independent.",
+      "D-022": "Supported additive rev8 amendment binds actual multi-selectee integration detector; BAR behavior unchanged.",
+      "D-023": "One supported additive rev9 amendment binds application and real-Postgres owner-authority/answer/rebuttal detectors; R10 remains honestly manual-provenance and no live feature verdict is inferred.",
+      "D-024": "Approved revision10 binds inclusive deadline bounds, real selectable model menus, completing PUI/broken-pane controls and positive acknowledgement recovery; all existing BAR outcomes and live proof obligations remain."
+    }
+  },
+  "limitations": [
+    "No final acceptance verdict is asserted by this detector map.",
+    "The final D021 live nine-path matrix has not run.",
+    "Current proof bindings invalidated by rev8/rev9/rev10 amendments must be refreshed before certification.",
+    "Independent current-revision vetting and grading-integrity audit remain required.",
+    "In persisted rebuttal coverage cascade transport is stubbed; production persistence, blocker status and verdict awaits are real. External owner-answer reads are supplied by the test; production owner-question creation and answer persistence are real.",
+    "The static 18-file committed pin check is not a test pass or a native-live verdict; historical run evidence must be read from its exact test-run ledger selectors."
+  ]
+}

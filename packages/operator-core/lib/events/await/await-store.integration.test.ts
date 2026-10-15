@@ -17,6 +17,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 
 const store = await import('./store');
+const { reconcileInterestEventAwaits } = await import('../../interest-auto-arm');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
 describe('event_awaits + event_wake_deliveries (real PG)', () => {
@@ -167,6 +168,63 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(history.find((row) => row.id === second.id)?.cancelled_at).not.toBeNull();
   });
 
+  it.each([
+    ['unfiltered', null],
+    ['filtered', { result: { equals: 'ready' } }],
+  ])('auto-arm preserves the original bounded %s wait identity, deadline and predicate', async (name, payloadFilter) => {
+    const subscriberId = `su-preserve-explicit-${name}`;
+    const eventKey = `work-item:done:source-${name}`;
+    const manual = await store.registerAwait({
+      subscriberId, eventKey, timeoutSec: 3600, timeoutBehavior: 'expire', payloadFilter,
+      note: 'explicit source wait', wakeHandle: { kind: 'plan-run', runId: 9 },
+    });
+    const out = await reconcileInterestEventAwaits(
+      { ownerId: subscriberId, eventKeys: [eventKey], boundTo: { kind: 'work-item-blocked', ref: `WI-${name}` }, note: 'blocked-item-holder auto-arm' },
+      { captureHandle: async () => ({ handle: { kind: 'plan-run', runId: 10 }, note: 'reachable' }), listActive: store.listActiveAwaits, register: store.registerAwait, cancel: store.cancelAwait },
+    );
+    expect(out.await_ids).toEqual([manual.id]);
+    expect(await store.listActiveAwaits(subscriberId)).toEqual([manual]);
+  });
+
+  it.each([
+    ['unfiltered', null],
+    ['filtered', { result: { equals: 'ready' } }],
+  ])('preserves a bounded %s wait registered after the reconciliation snapshot', async (name, payloadFilter) => {
+    const subscriberId = `su-preserve-late-${name}`;
+    const eventKey = `work-item:done:late-${name}`;
+    let manual: Awaited<ReturnType<typeof store.registerAwait>>;
+    const out = await reconcileInterestEventAwaits(
+      { ownerId: subscriberId, eventKeys: [eventKey], boundTo: { kind: 'work-item-blocked', ref: `WI-late-${name}` }, note: 'blocked-item-holder auto-arm' },
+      {
+        captureHandle: async () => ({ handle: { kind: 'plan-run', runId: 10 }, note: 'reachable' }),
+        listActive: async (ownerId) => {
+          const snapshot = await store.listActiveAwaits(ownerId);
+          manual = await store.registerAwait({ subscriberId, eventKey, timeoutSec: 3600, payloadFilter, note: 'late explicit wait' });
+          return snapshot;
+        },
+        register: store.registerAwait, cancel: store.cancelAwait,
+      },
+    );
+    expect(out.await_ids).toEqual([manual!.id]);
+    expect(await store.listActiveAwaits(subscriberId)).toEqual([manual!]);
+  });
+
+  it('concurrent preservation registrations reuse the original deadline without inserting replacements', async () => {
+    const subscriberId = 'su-preserve-concurrent';
+    const eventKey = 'work-item:done:concurrent-source';
+    const manual = await store.registerAwait({ subscriberId, eventKey, timeoutSec: 3600, note: 'explicit source wait' });
+    const registered = await Promise.all(Array.from({ length: 6 }, () => store.registerAwait({
+      subscriberId, eventKey, boundTo: { kind: 'work-item-blocked', ref: 'WI-concurrent' },
+      ...{ preserveExplicitWait: true },
+    })));
+    expect(registered.every((row) => row.id === manual.id && row.expiresTs === manual.expiresTs)).toBe(true);
+    expect(await store.listActiveAwaits(subscriberId)).toEqual([manual]);
+    const history = await db.adminSql<{ id: number }[]>`
+      SELECT id FROM harness_shared.event_awaits WHERE subscriber_id = ${subscriberId} AND event_key = ${eventKey}
+    `;
+    expect(history.map((row) => Number(row.id))).toEqual([manual.id]);
+  });
+
   it('keeps filtered predicates and fleet benches distinct from ordinary exact dedup', async () => {
     const subscriberId = 'su-exact-special-surfaces';
     const eventKey = 'exact:special:surfaces';
@@ -249,6 +307,26 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(recent[0]).toMatchObject({ awaitId: target.id, payload, summary: 'composed verdict' });
   });
 
+  it('lists recent deliveries only from the coordination workspace', async () => {
+    const subscriberId = 'su-workspace-scoped-delivery-history';
+    const awaited = await store.registerAwait({ subscriberId, eventKey: 'workspace-scope:local' });
+    await store.insertDeliveries({ awaits: [awaited], summary: 'local delivery' });
+
+    const foreign = await db.adminSql`
+      INSERT INTO harness_shared.event_wake_deliveries (
+        workspace_id, await_id, subscriber_id, event_key, summary, status
+      )
+      VALUES ('ws-other', ${awaited.id}, ${subscriberId}, 'workspace-scope:foreign', 'foreign delivery', 'parked')
+      RETURNING id
+    `;
+
+    const recent = await store.listRecentDeliveries(subscriberId, 10, awaited.id);
+
+    expect(recent).toHaveLength(1);
+    expect(recent[0]).toMatchObject({ awaitId: awaited.id, summary: 'local delivery' });
+    expect(recent.map((delivery) => delivery.id)).not.toContain(Number(foreign[0].id));
+  });
+
   it('a newer loop fire drops older pending/parked wakes from the same loop instance', async () => {
     const awaited = await store.registerAwait({
       subscriberId: 'su-loop-supersession',
@@ -322,6 +400,115 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(ours.filter((d) => d.subscriberId.startsWith(`${prefix}-fresh-`))).toHaveLength(4);
 
     for (const delivery of ours) await store.markDeliveryDropped(delivery.id, 'test cleanup');
+    await db.adminSql`
+      DELETE FROM harness_shared.event_wake_deliveries
+       WHERE subscriber_id LIKE ${`${prefix}-%`}
+    `;
+  });
+
+  it('rotates the aged-retry reserve after a parked delivery is rechecked', async () => {
+    const prefix = 'su-fair-rotation';
+    const oldSubscriber = `${prefix}-old`;
+    const nextSubscriber = `${prefix}-next`;
+    const oldAwait = await store.registerAwait({ subscriberId: oldSubscriber, eventKey: 'fair:rotation:old' });
+    const nextAwait = await store.registerAwait({ subscriberId: nextSubscriber, eventKey: 'fair:rotation:next' });
+    await store.insertDeliveries({ awaits: [oldAwait], summary: 'first aged retry' });
+    await store.insertDeliveries({ awaits: [nextAwait], summary: 'next aged retry' });
+
+    const old = (await store.listRecentDeliveries(oldSubscriber, 1))[0];
+    const next = (await store.listRecentDeliveries(nextSubscriber, 1))[0];
+    expect(old).toBeDefined();
+    expect(next).toBeDefined();
+
+    // Both retries are already due and old enough for the starvation reserve.
+    // The older delivery wins once, then its recheck time advances past the other
+    // retry. It must not reclaim the reserved slot solely because created_at is old.
+    await db.adminSql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET attempts = 1,
+             status = 'parked',
+             last_error = 'subscriber is currently uninjectable',
+             created_at = CASE
+               WHEN id = ${old.id} THEN now() - interval '10 minutes'
+               ELSE now() - interval '9 minutes'
+             END,
+             next_attempt_at = now() - interval '5 minutes'
+       WHERE id = ANY(${[old.id, next.id]})
+    `;
+
+    const [first] = await store.claimDueDeliveries({ limit: 1 });
+    expect(first.id).toBe(old.id);
+    await store.markDeliveryParked(first.id, 'still uninjectable', 0);
+
+    const [second] = await store.claimDueDeliveries({ limit: 1 });
+    expect(second.id).toBe(next.id);
+
+    await store.markDeliveryDropped(first.id, 'test cleanup');
+    await store.markDeliveryDropped(second.id, 'test cleanup');
+    await db.adminSql`
+      DELETE FROM harness_shared.event_wake_deliveries
+       WHERE subscriber_id LIKE ${`${prefix}-%`}
+    `;
+  });
+
+  it('reserves a bounded slot for a loop retry ahead of a larger non-loop retry backlog', async () => {
+    const prefix = 'su-fair-loop-reserve';
+    const loopSubscriber = `${prefix}-loop`;
+    const loopAwait = await store.registerAwait({
+      subscriberId: loopSubscriber,
+      eventKey: 'fair:loop-reserve',
+    });
+    await store.insertDeliveries({
+      awaits: [loopAwait],
+      source: 'loop:rt_test_loop',
+      summary: 'loop self-wake',
+    });
+
+    const nonLoopAwaits = await Promise.all(
+      Array.from({ length: 30 }, (_, index) =>
+        store.registerAwait({
+          subscriberId: `${prefix}-work-${index}`,
+          eventKey: `fair:loop-reserve:work:${index}`,
+        }),
+      ),
+    );
+    await store.insertDeliveries({ awaits: nonLoopAwaits, source: 'work-items', summary: 'work retry' });
+
+    const seeded = await db.adminSql<{ id: number; subscriber_id: string }[]>`
+      SELECT id, subscriber_id
+        FROM harness_shared.event_wake_deliveries
+       WHERE subscriber_id LIKE ${`${prefix}-%`}
+    `;
+    const loopId = seeded.find((row) => row.subscriber_id === loopSubscriber)?.id;
+    expect(loopId).toBeDefined();
+    // Narrow for the SQL template below: postgres.js has no overload for an `undefined` parameter.
+    if (loopId === undefined) throw new Error('the loop delivery was not seeded');
+    expect(seeded).toHaveLength(31);
+
+    // The work-item retries are older by created_at, so the old single global
+    // reserve would fill a 25-row batch before reaching the loop wake. The loop
+    // lane gets its own one-row reserve; ordinary retries retain their reserve.
+    await db.adminSql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET attempts = 1,
+             status = 'parked',
+             last_error = 'subscriber is currently uninjectable',
+             created_at = CASE
+               WHEN id = ${loopId} THEN now() - interval '9 minutes'
+               ELSE now() - interval '10 minutes'
+             END,
+             next_attempt_at = CASE
+               WHEN id = ${loopId} THEN now() - interval '1 day'
+               ELSE now() - interval '5 minutes'
+             END
+       WHERE id = ANY(${seeded.map((row) => row.id)})
+    `;
+
+    const claimed = await store.claimDueDeliveries({ limit: 25 });
+    expect(claimed.map((delivery) => delivery.id)).toContain(loopId);
+    expect(claimed).toHaveLength(25);
+
+    for (const delivery of claimed) await store.markDeliveryDropped(delivery.id, 'test cleanup');
     await db.adminSql`
       DELETE FROM harness_shared.event_wake_deliveries
        WHERE subscriber_id LIKE ${`${prefix}-%`}
@@ -489,6 +676,34 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     const fired1b = await store.fireAwaitsForKey({ eventKey: key });
     await store.insertDeliveries({ awaits: fired1b, summary: 'seen-pending' });
 
+    // A loop uses the same standing key but reading the inbox does not execute
+    // its iteration. Both pending and host-parked loop work must survive cleanup.
+    for (const summary of ['loop-pending', 'loop-parked']) {
+      const loopAwaits = await store.fireAwaitsForKey({ eventKey: key });
+      // Distinct source routines avoid the legitimate older-loop supersession.
+      const routineId = 'fixture-' + summary;
+      await store.insertDeliveries({ awaits: loopAwaits, summary, source: 'loop:' + routineId, payload: { routineId } });
+    }
+    const loopRows = await store.listRecentDeliveries('su-settle', 10);
+    expect(loopRows.find(d => d.summary === 'loop-pending')?.status).toBe('pending');
+    expect(loopRows.find(d => d.summary === 'loop-parked')?.status).toBe('pending');
+    await store.markDeliveryParked(loopRows.find(d => d.summary === 'loop-parked')!.id, 'host accepted', 60_000);
+
+    // WI-6554700010009881: a work-item dispatch rides the same standing key, but the
+    // assignment it carries is not a coord message — a bulk inbox read never shows it.
+    // Pending and host-parked dispatch wakes must both survive the settle.
+    for (const summary of ['dispatch-pending', 'dispatch-parked']) {
+      const dispatchAwaits = await store.fireAwaitsForKey({ eventKey: key });
+      await store.insertDeliveries({
+        awaits: dispatchAwaits,
+        summary,
+        source: 'system:plan-run-direct-dispatch',
+        payload: { kind: 'actionable-work-item-dispatch', workItemIds: ['WI-' + summary] },
+      });
+    }
+    const dispatchRows = await store.listRecentDeliveries('su-settle', 10);
+    await store.markDeliveryParked(dispatchRows.find(d => d.summary === 'dispatch-parked')!.id, 'host accepted', 60_000);
+
     // A peer's own standing wake, fired at the same moment — must NEVER be touched by
     // MY settle call (subscriber_id-scoped, like ackDelivery).
     const peerKey = `${store.INBOX_WAKE_KEY_PREFIX}su-settle-peer`;
@@ -511,8 +726,12 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(mine.find((d) => d.summary === 'seen-pending')).toMatchObject({ status: 'delivered', channel: 'coalesced' });
     expect(mine.find((d) => d.summary === 'seen-parked')).toMatchObject({ status: 'delivered', channel: 'coalesced' });
     expect(mine.find((d) => d.summary === 'post-cutoff')).toMatchObject({ status: 'pending' });
+    expect(mine.find((d) => d.summary === 'loop-pending')).toMatchObject({ status: 'pending' });
+    expect(mine.find((d) => d.summary === 'loop-parked')).toMatchObject({ status: 'parked' });
+    expect(mine.find((d) => d.summary === 'dispatch-pending')).toMatchObject({ status: 'pending' });
+    expect(mine.find((d) => d.summary === 'dispatch-parked')).toMatchObject({ status: 'parked' });
 
-    const peer = await store.listRecentDeliveries('su-settle-peer', 10);
+    const peer =await store.listRecentDeliveries('su-settle-peer', 10);
     expect(peer.find((d) => d.summary === 'peer-untouched')).toMatchObject({ status: 'pending' });
 
     // Idempotence: re-settling the same (now-empty) window finds nothing left to do.
@@ -542,9 +761,93 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     const sql = h.sql as import('postgres').Sql;
     await sql`UPDATE harness_shared.event_wake_deliveries SET next_attempt_at = now() - interval '1 hour' WHERE id = ${w.id}`;
     expect(await store.recoverStuckDeliveries({ olderThanMs: 5 * 60_000 })).toBeGreaterThanOrEqual(1);
+    // A verdict-less recovered row is visible as recovered, not as an ordinary
+    // untouched retry (WI-10008205).
+    const [recovered] = await sql<{ status: string; last_error: string | null }[]>`
+      SELECT status, last_error FROM harness_shared.event_wake_deliveries WHERE id = ${w.id}
+    `;
+    expect(recovered).toEqual({ status: 'pending', last_error: store.RECOVERED_STUCK_DELIVERING_ERROR });
     const reclaimed = (await store.claimDueDeliveries({ limit: 10 })).filter((x) => x.id === w.id);
     expect(reclaimed).toHaveLength(1);
     await store.markDeliveryDelivered(w.id, 'inbox');
+  });
+
+  it('stuck-delivering recovery keeps an existing last_error (psu-host acceptance marker)', async () => {
+    const fired = await store
+      .registerAwait({ subscriberId: 'su-10-accepted', eventKey: 'stuck:accepted:k' })
+      .then(() => store.fireAwaitsForKey({ eventKey: 'stuck:accepted:k' }));
+    await store.insertDeliveries({ awaits: fired });
+    const [w] = (await store.claimDueDeliveries({ limit: 10 })).filter((x) => x.subscriberId === 'su-10-accepted');
+    const sql = h.sql as import('postgres').Sql;
+    // The pump reads this prefix to avoid a duplicate wake; recovery must not hide it.
+    await sql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET next_attempt_at = now() - interval '1 hour', last_error = 'psu-host accepted: pending commit'
+       WHERE id = ${w.id}
+    `;
+    expect(await store.recoverStuckDeliveries({ olderThanMs: 5 * 60_000 })).toBeGreaterThanOrEqual(1);
+    const [row] = await sql<{ status: string; last_error: string | null }[]>`
+      SELECT status, last_error FROM harness_shared.event_wake_deliveries WHERE id = ${w.id}
+    `;
+    expect(row).toEqual({ status: 'pending', last_error: 'psu-host accepted: pending commit' });
+    await store.markDeliveryDropped(w.id, 'test cleanup');
+  });
+
+  it('a recovered stuck delivery outranks older parked retries, for a bounded number of attempts', async () => {
+    const prefix = 'su-recovered-rank';
+    const sql = h.sql as import('postgres').Sql;
+    const subs = { p1: `${prefix}-parked-1`, p2: `${prefix}-parked-2`, r: `${prefix}-recovered` };
+    for (const [key, subscriberId] of Object.entries(subs)) {
+      const a = await store.registerAwait({ subscriberId, eventKey: `recovered:rank:${key}` });
+      await store.insertDeliveries({ awaits: [a], summary: key });
+    }
+    const ours = (await store.claimDueDeliveries({ limit: 25 })).filter((d) => d.subscriberId.startsWith(`${prefix}-`));
+    expect(ours).toHaveLength(3);
+    const id = (subscriberId: string) => ours.find((d) => d.subscriberId === subscriberId)!.id;
+    await store.markDeliveryParked(id(subs.p1), 'subscriber is currently uninjectable', 0);
+    await store.markDeliveryParked(id(subs.p2), 'subscriber is currently uninjectable', 0);
+    // Both parked retries are due EARLIER than the recovered row, so ordering by
+    // due time alone (the pre-fix behaviour) would claim them both first.
+    await sql`UPDATE harness_shared.event_wake_deliveries SET created_at = now() - interval '2 hours', next_attempt_at = now() - interval '60 minutes' WHERE id = ${id(subs.p1)}`;
+    await sql`UPDATE harness_shared.event_wake_deliveries SET created_at = now() - interval '2 hours', next_attempt_at = now() - interval '50 minutes' WHERE id = ${id(subs.p2)}`;
+    // The recovered row: claimed (delivering), its host died, and no verdict was written.
+    await sql`UPDATE harness_shared.event_wake_deliveries SET created_at = now() - interval '2 hours', next_attempt_at = now() - interval '10 minutes' WHERE id = ${id(subs.r)}`;
+    expect(await store.recoverStuckDeliveries({ olderThanMs: 5 * 60_000 })).toBeGreaterThanOrEqual(1);
+
+    // Hold every other test's due row out of the window so only ours compete.
+    const foreign = await sql<{ id: number }[]>`
+      UPDATE harness_shared.event_wake_deliveries
+         SET next_attempt_at = next_attempt_at + interval '1 day'
+       WHERE status IN ('pending', 'parked') AND next_attempt_at <= now()
+         AND subscriber_id NOT LIKE ${`${prefix}-%`}
+      RETURNING id
+    `;
+    try {
+      // limit 2: slot 1 is the oldest-aged-retry reserve (parked-1); slot 2 must be
+      // the recovered row, not the older-due parked-2.
+      const claimed = await store.claimDueDeliveries({ limit: 2 });
+      expect(claimed.map((d) => d.subscriberId).sort()).toEqual([subs.p1, subs.r].sort());
+
+      // Bound: past RECOVERED_PRIORITY_MAX_ATTEMPTS the recovered row is an ordinary
+      // aged retry again, so the older-due parked rows win both slots.
+      await sql`UPDATE harness_shared.event_wake_deliveries SET status = 'parked' WHERE id IN (${id(subs.p1)}, ${id(subs.p2)})`;
+      await sql`
+        UPDATE harness_shared.event_wake_deliveries
+           SET status = 'pending', attempts = 3, last_error = ${store.RECOVERED_STUCK_DELIVERING_ERROR}
+         WHERE id = ${id(subs.r)}
+      `;
+      const bounded = await store.claimDueDeliveries({ limit: 2 });
+      expect(bounded.map((d) => d.subscriberId).sort()).toEqual([subs.p1, subs.p2].sort());
+    } finally {
+      if (foreign.length > 0) {
+        await sql`
+          UPDATE harness_shared.event_wake_deliveries
+             SET next_attempt_at = next_attempt_at - interval '1 day'
+           WHERE id IN ${sql(foreign.map((f) => f.id))}
+        `;
+      }
+      await sql`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id LIKE ${`${prefix}-%`}`;
+    }
   });
 
   it('timeouts: wake-behavior awaits fire as TIMEOUT; expire-behavior awaits lapse silently', async () => {
@@ -632,6 +935,12 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(meter.length).toBeGreaterThan(0);
     const delivered = meter.find((m) => m.subscriberId === 'su-6' && m.status === 'delivered');
     expect(delivered).toMatchObject({ channel: 'plan-run-resume', count: 1 });
+    // P-006 / D-005: the meter splits by turn proof; a fresh turn-capable delivery is awaiting.
+    expect(delivered).toHaveProperty('turnProof', 'awaiting');
+    // ...and the per-delivery read (events:status's seam) carries the same proof + deadline.
+    const [row] = await store.listRecentDeliveries('su-6', 1);
+    expect(row).toMatchObject({ status: 'delivered', turnProof: 'awaiting', turnStartedAt: null });
+    expect(row!.pickupDeadlineAt).not.toBeNull();
   });
 
   it('is single-workspace by construction: no caller can scope a row to a different namespace (WI-3575, formerly the live WI-40 regression)', async () => {
@@ -861,5 +1170,139 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
 
     expect(fired.map((row) => row.id)).toEqual([awaited.id]);
     expect(await store.listActiveAwaits('su-rescue-ordinary-key')).toEqual([]);
+  });
+
+  // ── P-006 slice 2 (WI-10008157, D-004): the pickup sweep's SQL half ──────────────────────
+
+  /** Register → fire → queue → claim → deliver one wake; returns the delivery id. */
+  async function deliveredWake(subscriberId: string, eventKey: string, channel: Parameters<typeof store.markDeliveryDelivered>[1]) {
+    const a = await store.registerAwait({ subscriberId, eventKey });
+    const fired = await store.fireAwaitsForKey({ eventKey });
+    await store.insertDeliveries({ awaits: fired, payload: { k: eventKey }, summary: `wake for ${eventKey}` });
+    const mine = (await store.claimDueDeliveries({ limit: 100 })).filter((w) => w.awaitId === a.id);
+    expect(mine).toHaveLength(1);
+    await store.markDeliveryDelivered(mine[0].id, channel);
+    return mine[0].id;
+  }
+
+  async function proofRow(id: number) {
+    const rows = await db.adminSql<Array<Record<string, unknown>>>`
+      SELECT turn_proof, turn_started_at, pickup_deadline_at, pickup_escalated_at, source, status
+        FROM harness_shared.event_wake_deliveries WHERE id = ${id}`;
+    return rows[0];
+  }
+
+  async function toolCall(owner: string, tool: string, origin: string, offsetSec: number, args: object = {}) {
+    await db.adminSql`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status,
+         coord_owner_id, call_origin, args_json, invoked_at)
+      VALUES (${h.ws}, 'papercusp', 'test', ${tool}, 'su', 'spawn-x', 'w', 'ok',
+              ${owner}, ${origin}, ${JSON.stringify(args)}::text::jsonb,
+              now() + make_interval(secs => ${offsetSec}))`;
+  }
+
+  it('observeAwaitingTurnProofs: only a turn-only call AFTER delivery proves a turn (P-006 slice 2)', async () => {
+    const sub = 'su-turn-proof-observe';
+    const id = await deliveredWake(sub, 'turn-proof:observe', 'psu-socket-inject');
+    expect(await proofRow(id)).toMatchObject({ turn_proof: 'awaiting', status: 'delivered' });
+
+    // None of these is a turn: before delivery, the compaction retry stream, lifecycle and
+    // status-line hooks. Each was measured firing for sessions that ran no turn.
+    await toolCall(sub, 'work_items:get', 'agent', -60);
+    await toolCall(sub, 'session:request-compaction', 'agent', 5);
+    await toolCall(sub, 'activity:report', 'hook', 5, { kind: 'lifecycle', summary: '▶ session started' });
+    await toolCall(sub, 'coord:glance', 'hook', 5, { display_only: true });
+    await toolCall(sub, 'coord:emit', 'system', 5);
+    await store.observeAwaitingTurnProofs();
+    expect((await proofRow(id)).turn_proof).toBe('awaiting');
+
+    // A tool-use hook IS a turn (it fires for native tools, which write no agent row).
+    const hookSub = 'su-turn-proof-hook';
+    const hookId = await deliveredWake(hookSub, 'turn-proof:hook', 'resume-headless');
+    await toolCall(hookSub, 'activity:report', 'hook', 3, { phase: 'post' });
+
+    // An agent call after delivery IS a turn, stamped with the FIRST qualifying call.
+    await toolCall(sub, 'work_items:get', 'agent', 20);
+    await toolCall(sub, 'coord:inbox', 'agent', 40);
+    const n = await store.observeAwaitingTurnProofs();
+    expect(n).toBeGreaterThanOrEqual(2);
+
+    const observed = await proofRow(id);
+    expect(observed.turn_proof).toBe('observed');
+    const delivered = await db.adminSql<Array<{ gap: number }>>`
+      SELECT extract(epoch FROM (turn_started_at - delivered_at))::float AS gap
+        FROM harness_shared.event_wake_deliveries WHERE id = ${id}`;
+    expect(delivered[0].gap).toBeGreaterThan(15);
+    expect(delivered[0].gap).toBeLessThan(25);
+    expect((await proofRow(hookId)).turn_proof).toBe('observed');
+  });
+
+  it('listExpiredPickups + settleExpiredPickup: not-picked-up re-queues ONCE for host recovery', async () => {
+    const sub = 'su-turn-proof-expire';
+    const id = await deliveredWake(sub, 'turn-proof:expire', 'psu-socket-inject');
+    const fresh = await deliveredWake(sub, 'turn-proof:fresh', 'psu-socket-inject');
+    await db.adminSql`
+      UPDATE harness_shared.event_wake_deliveries
+         SET delivered_at = now() - interval '20 minutes', pickup_deadline_at = now() - interval '10 minutes'
+       WHERE id = ${id}`;
+
+    const expired = (await store.listExpiredPickups()).filter((r) => r.subscriberId === sub);
+    // The still-open window is not expired; the closed one is, with its routing fields.
+    expect(expired.map((r) => r.id)).toEqual([id]);
+    expect(expired[0]).toMatchObject({ eventKey: 'turn-proof:expire', channel: 'psu-socket-inject', source: null });
+    expect(expired[0].pickupDeadlineAtMs).toBeLessThan(Date.now());
+    expect((await proofRow(fresh)).turn_proof).toBe('awaiting');
+
+    const first = await store.settleExpiredPickup({ id, proof: 'not-picked-up', escalate: true });
+    expect(first.settled).toBe(true);
+    expect(first.requeuedDeliveryId).not.toBeNull();
+    const original = await proofRow(id);
+    expect(original.turn_proof).toBe('not-picked-up');
+    expect(original.pickup_escalated_at).not.toBeNull();
+
+    const requeued = await db.adminSql<Array<Record<string, unknown>>>`
+      SELECT o.await_id = r.await_id AS same_await, o.event_key = r.event_key AS same_key,
+             o.subscriber_id = r.subscriber_id AS same_sub, o.payload = r.payload AS same_payload,
+             r.status, r.source, r.turn_proof
+        FROM harness_shared.event_wake_deliveries o, harness_shared.event_wake_deliveries r
+       WHERE o.id = ${id} AND r.id = ${first.requeuedDeliveryId}`;
+    expect(requeued[0]).toEqual({
+      same_await: true,
+      same_key: true,
+      same_sub: true,
+      same_payload: true,
+      status: 'pending',
+      source: 'pickup-escalation',
+      turn_proof: null,
+    });
+
+    // Settling is one-shot: the row is no longer awaiting, so no second settle and no second re-queue.
+    expect(await store.settleExpiredPickup({ id, proof: 'not-picked-up', escalate: true })).toEqual({
+      settled: false,
+      requeuedDeliveryId: null,
+    });
+
+    // The re-queue itself never escalates again, even if its host is still blocked.
+    const mine = (await store.claimDueDeliveries({ limit: 100 })).filter((w) => w.id === first.requeuedDeliveryId);
+    expect(mine).toHaveLength(1);
+    await store.markDeliveryDelivered(mine[0].id, 'psu-socket-inject');
+    await db.adminSql`
+      UPDATE harness_shared.event_wake_deliveries SET pickup_deadline_at = now() - interval '1 minute'
+       WHERE id = ${mine[0].id}`;
+    const second = await store.settleExpiredPickup({ id: mine[0].id, proof: 'not-picked-up', escalate: true });
+    expect(second).toEqual({ settled: true, requeuedDeliveryId: null });
+    expect(await proofRow(mine[0].id)).toMatchObject({ turn_proof: 'not-picked-up', pickup_escalated_at: null });
+  });
+
+  it('settleExpiredPickup observed stamps the host-reported turn start and never re-queues', async () => {
+    const id = await deliveredWake('su-turn-proof-host', 'turn-proof:host', 'psu-socket-inject');
+    const startedMs = Date.now() - 5_000;
+    const res = await store.settleExpiredPickup({ id, proof: 'observed', turnStartedAtMs: startedMs, escalate: true });
+    expect(res).toEqual({ settled: true, requeuedDeliveryId: null });
+    const row = await proofRow(id);
+    expect(row.turn_proof).toBe('observed');
+    expect(new Date(row.turn_started_at as string).getTime()).toBe(startedMs);
+    expect(row.pickup_escalated_at).toBeNull();
   });
 });

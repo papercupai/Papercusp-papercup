@@ -16,7 +16,10 @@
  * ## Fail-safe posture
  *
  * Everything here is best-effort and degrades to "proceed with the install":
- *  - no git available (packaged app) → no commit date → no downgrade check, install runs;
+ *  - no git available (packaged app) → the dates come from the build-time manifest
+ *    (`SOURCE_PROVENANCE_BASENAME`); a package built before the manifest existed has no
+ *    commit date → no downgrade check, install runs (WI-6554700010010534: that is how a
+ *    2026-10-07 desktop build overwrote newer hooks on 2026-10-13);
  *  - no existing stamp (first install, or one predating this code) → install runs;
  *  - unreadable/corrupt stamp → install runs.
  *
@@ -93,8 +96,9 @@ export async function readInstallStamp(destDir: string): Promise<InstallStamp | 
  * an unrelated commit can move a checkout's HEAD without changing the hooks that
  * are about to overwrite the machine-wide copy.
  *
- * Best-effort: returns `{}` when git is unavailable (packaged app), the dir is not a
- * repo, no requested path has history, or the call fails.
+ * When git has no answer (a packaged app ships no repository), the same question is
+ * answered from the build-time manifest beside the source (`readSourceProvenanceManifest`).
+ * Best-effort: returns `{}` when neither git nor a manifest can date the source.
  */
 export async function resolveSourceGitProvenance(
   sourceDir: string,
@@ -110,7 +114,7 @@ export async function resolveSourceGitProvenance(
       timeout: 5_000,
     });
     const [sha, committedAt] = String(stdout).trim().split('\n');
-    if (!sha) return {};
+    if (!sha) return readSourceProvenanceManifest(sourceDir, paths);
     const committedMs = committedAt ? Date.parse(committedAt) : NaN;
     return {
       sourceSha: sha,
@@ -119,8 +123,69 @@ export async function resolveSourceGitProvenance(
         : committedAt || undefined,
     };
   } catch {
+    return readSourceProvenanceManifest(sourceDir, paths);
+  }
+}
+
+/**
+ * Basename of the provenance manifest a PACKAGED hook source carries (WI-6554700010010534).
+ * A packaged app ships no repository, so `resolveSourceGitProvenance` cannot date its
+ * hooks and the downgrade guard used to fail open: a 2026-10-07 desktop build overwrote
+ * hooks a newer canonical tree had installed. `build-desktop-sidecar.sh` runs
+ * `apps/operator/scripts/write-hook-source-provenance.mjs`, which records here what git
+ * would have answered at build time.
+ */
+export const SOURCE_PROVENANCE_BASENAME = '.source-provenance.json';
+
+/** One commit as git reported it at build time. */
+export type SourceProvenanceCommit = { sha: string; committedAt: string };
+
+export type SourceProvenanceManifest = {
+  schemaVersion: 1;
+  /** Last commit touching the source directory (answers a call without `paths`). */
+  directory?: SourceProvenanceCommit;
+  /** Basename → last commit touching that file (answers a call with `paths`). */
+  files?: Record<string, SourceProvenanceCommit>;
+};
+
+function provenanceCommit(value: unknown): { sha: string; ms: number } | null {
+  if (!value || typeof value !== 'object') return null;
+  const { sha, committedAt } = value as Partial<SourceProvenanceCommit>;
+  const ms = typeof committedAt === 'string' ? Date.parse(committedAt) : NaN;
+  return typeof sha === 'string' && sha && Number.isFinite(ms) ? { sha, ms } : null;
+}
+
+/**
+ * What `resolveSourceGitProvenance` would have answered for `sourceDir`, read from its
+ * build-time manifest: with `paths`, the latest commit touching any of those basenames
+ * (git's "last commit touching these paths"); without, the directory's last commit.
+ * Returns `{}` when there is no usable manifest or no requested path is recorded.
+ */
+export async function readSourceProvenanceManifest(
+  sourceDir: string,
+  paths?: readonly string[],
+): Promise<{ sourceSha?: string; sourceCommittedAt?: string }> {
+  let manifest: Partial<SourceProvenanceManifest>;
+  try {
+    const parsed: unknown = JSON.parse(
+      await fs.readFile(path.join(sourceDir, SOURCE_PROVENANCE_BASENAME), 'utf8'),
+    );
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    manifest = parsed as Partial<SourceProvenanceManifest>;
+  } catch {
     return {};
   }
+  let latest: { sha: string; ms: number } | null = null;
+  if (paths && paths.length > 0) {
+    const files = manifest.files && typeof manifest.files === 'object' ? manifest.files : {};
+    for (const p of paths) {
+      const commit = provenanceCommit(files[path.basename(p)]);
+      if (commit && (!latest || commit.ms > latest.ms)) latest = commit;
+    }
+  } else {
+    latest = provenanceCommit(manifest.directory);
+  }
+  return latest ? { sourceSha: latest.sha, sourceCommittedAt: new Date(latest.ms).toISOString() } : {};
 }
 
 /**

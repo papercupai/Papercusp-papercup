@@ -30,6 +30,8 @@ export {
   prepareNestedProjection,
 } from './nested-dispatch';
 export type { PreparedNestedProjection } from './nested-dispatch';
+export { describeSourceMaterialization } from './materialization-audit';
+export type { SourceMaterializationAudit } from './materialization-audit';
 
 /**
  * Named result views — schema-stable recovery capsules (P-001 of

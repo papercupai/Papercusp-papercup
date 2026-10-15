@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   evaluateAppScope,
+  evaluateAppScopeChain,
   grantedToolCapabilities,
   hardDenyReason,
   scopeEntryMatches,
@@ -34,6 +35,91 @@ function row(over: Partial<AppScopeRow> = {}): AppScopeRow {
 
 const harnessList: AppScopeTool = { name: 'harness:list', capabilities: ['harness:read'] };
 const plansGet: AppScopeTool = { name: 'plans:get', capabilities: ['plans:read'], acceptsHarness: true };
+
+describe('evaluateAppScopeChain — restrictive parent/token explanation', () => {
+  const now = new Date('2026-10-01T12:00:00Z');
+  const input = { tool: plansGet, args: {}, workspaceId: WS, now };
+  const parent = row({ id: 'parent', scopes: { tools: ['plans:get'] } });
+  const child = row({ id: 'child', scopes: { tools: ['plans:*'] } });
+
+  it('permits the shared grant and reports both governing rows without raw grants', () => {
+    expect(evaluateAppScopeChain(input, [parent, child])).toEqual({
+      verdict: { allow: true }, listable: true, blockingScopeId: null, blockingScopeIndex: null,
+      decisions: [
+        { scopeId: 'parent', scopeIndex: 0, verdict: { allow: true } },
+        { scopeId: 'child', scopeIndex: 1, verdict: { allow: true } },
+      ],
+    });
+  });
+
+  it('a broader child cannot override an ancestor denial', () => {
+    const result = evaluateAppScopeChain({ ...input, tool: { ...plansGet, name: 'plans:list' } }, [parent, child]);
+    expect(result).toMatchObject({ verdict: { allow: false, code: 'tool_not_in_scope' }, listable: false, blockingScopeId: 'parent' });
+    expect(result.decisions).toMatchObject([
+      { scopeId: 'parent', verdict: { allow: false } },
+      { scopeId: 'child', verdict: { allow: true } },
+    ]);
+  });
+
+  it('a restricted child cannot be widened by an allowed parent', () => {
+    expect(evaluateAppScopeChain(input, [child, { ...parent, id: 'restricted', scopes: { tools: ['plans:list'] } }]))
+      .toMatchObject({ verdict: { allow: false, code: 'tool_not_in_scope' }, listable: false, blockingScopeId: 'restricted' });
+  });
+
+  it('an empty chain refuses invocation and listing', () => {
+    expect(evaluateAppScopeChain(input, [])).toEqual({
+      verdict: { allow: false, code: 'key_unknown', reason: 'no app scope rows were supplied' },
+      listable: false, blockingScopeId: null, blockingScopeIndex: null, decisions: [],
+    });
+  });
+
+  it('attributes a narrowed token when its loaded row retains the parent app id', () => {
+    const sharedIdToken = { ...parent, scopes: { tools: ['plans:list'] } };
+    const result = evaluateAppScopeChain(input, [parent, sharedIdToken]);
+    expect(result).toMatchObject({
+      verdict: { allow: false, code: 'tool_not_in_scope' },
+      blockingScopeId: 'parent', blockingScopeIndex: 1,
+      decisions: [
+        { scopeId: 'parent', scopeIndex: 0, verdict: { allow: true } },
+        { scopeId: 'parent', scopeIndex: 1, verdict: { allow: false } },
+      ],
+    });
+  });
+
+  it('uses one decision instant for the exact expiry boundary and retains all denials', () => {
+    const result = evaluateAppScopeChain(input, [
+      { ...parent, expires_at: now }, { ...child, expires_at: now },
+    ]);
+    expect(result.blockingScopeId).toBe('parent');
+    expect(result.decisions).toMatchObject([
+      { scopeId: 'parent', verdict: { allow: false, code: 'key_expired' } },
+      { scopeId: 'child', verdict: { allow: false, code: 'key_expired' } },
+    ]);
+  });
+
+  it('lists a harness-deferred chain while invocation still requires a harness', () => {
+    const limited = { ...parent, scopes: { tools: ['plans:*'], harnesses: ['approved'] } };
+    expect(evaluateAppScopeChain(input, [limited, child])).toMatchObject({
+      verdict: { allow: false, code: 'harness_required_by_scope' }, listable: true, blockingScopeId: 'parent',
+    });
+    expect(evaluateAppScopeChain({ ...input, args: { harness: 'approved' } }, [limited, child]).verdict).toEqual({ allow: true });
+  });
+
+  it.each([
+    { revoked_at: now }, { expires_at: now }, { paused_at: now },
+    { scopes: { tools: ['harness:list'] } },
+  ])('a listing deferral never hides a later token refusal: %j', (restriction) => {
+    const limited = { ...parent, scopes: { tools: ['plans:*'], harnesses: ['approved'] } };
+    const result = evaluateAppScopeChain(input, [limited, { ...child, ...restriction }]);
+    expect(result.listable).toBe(false);
+    expect(result.decisions[1].verdict.allow).toBe(false);
+  });
+
+  it('a grant chain never overrides the platform hard deny', () => {
+    expect(evaluateAppScopeChain({ ...input, tool: { name: 'dev:restart', capabilities: [] } }, [parent, child]))
+      .toMatchObject({ verdict: { allow: false, code: 'hard_denied' }, listable: false });
+  });
+});
 
 function decide(tool: AppScopeTool, args: unknown = {}, r: AppScopeRow = row(), extra: { workspaceId?: string | null; harnessSlug?: string } = {}) {
   return evaluateAppScope({ tool, args, workspaceId: 'workspaceId' in extra ? extra.workspaceId : WS, harnessSlug: extra.harnessSlug }, r);

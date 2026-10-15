@@ -166,7 +166,9 @@ describe('social starter trigger packs (P-026)', () => {
         if (binding.source.kind !== 'external') continue;
         // The sourceKind IS the platform id — the adapters' own `platformId`
         // marker and the `ext:<kind>:` key are the same string.
-        expect(getSocialPlatform(binding.source.sourceKind), binding.id).toBeDefined();
+        // Social starter packs are provider-pinned, never portable datatype sources.
+        expect(binding.source.sourceKind, binding.id).toEqual(expect.any(String));
+        expect(getSocialPlatform(binding.source.sourceKind!), binding.id).toBeDefined();
         // A binding added without widening the target's accepted key would
         // otherwise pass validation and then deliver a payload the plan's own
         // input schema rejects at run time.

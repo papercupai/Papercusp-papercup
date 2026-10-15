@@ -1,0 +1,84 @@
+---
+title: Snapshots and backups
+description: Understand workspace backups, project snapshots and safe recovery before changing data.
+documents:
+  - packages/operator-core/lib/agent-tools/backup/snapshot_create.ts
+  - packages/operator-core/lib/agent-tools/backup/restore.ts
+  - packages/operator-core/lib/agent-tools/backup/restore-clone.ts
+---
+
+Use this guide to protect work before a risky change and decide how to
+recover it. The result should be a completed backup with a known scope and
+an observed recovery check, before you approve replacing live data.
+
+A snapshot records state at a point in time. Before relying on one, establish
+**what it contains, where it is stored, and how it will be restored**.
+
+## Choose the right recovery mechanism
+
+These are different operations:
+
+| Mechanism | Purpose | What to check |
+| --- | --- | --- |
+| Source-control history | Recover committed project source | Which repository and revision contain the work |
+| Workspace backup | Recover workspace state before a risky operation | Included paths/data, snapshot receipt and restore procedure |
+| Portable project snapshot | Capture or move a supported project's state | Whether your installation exposes that workflow and what is excluded |
+| Cloud-machine snapshot | Recover a hosted machine or disk | Provider, workspace host, storage and lifecycle permissions |
+
+Do not treat these as interchangeable. In particular, a saved agent
+conversation, a plan marked done, or a source commit does not prove the
+workspace database is backed up.
+
+## Before a risky change
+
+Ask the agent to identify the appropriate backup operation and confirm the
+restore scope. The maintained `backup:snapshot_create` tool creates a
+**workspace backup** before destructive work; it is not a generic portable
+harness export or a marketplace publish command.
+
+Have the agent record:
+
+1. The workspace and data being protected.
+2. The snapshot or backup receipt.
+3. Whether creation finished successfully or is still running.
+4. The exact restore operation and its consequences.
+5. How recovery will be verified.
+
+“Backup started” is not “backup complete.” A still-running receipt must be
+reconciled before you rely on it.
+
+## Restore carefully
+
+A restore may overwrite newer state or stop a running service. Verify the
+target, preserve work created since the snapshot, and confirm the operation
+before replacing live data. When a safe clone/preview restore is available,
+use it to test recovery first.
+
+After restoring, inspect the project's actual state and run its normal
+verification. Do not assume a successful restore receipt means the app's
+behavior is correct.
+
+## Practice recovery before an emergency
+
+Ask which paths and databases are included, which are excluded, and where the
+backup is stored. Compare its completion time with the latest work that must
+be protected. An old successful backup is not proof that today's changes are
+safe.
+
+Where a clone restore is supported, restore into the separate destination,
+inspect representative files and records, and run the project's normal
+checks. Record that observed recovery result before replacing the live
+workspace. Do not test a restore by overwriting production without approval.
+
+## Sharing is a separate decision
+
+Not every backup is portable, secret-redacted or safe to publish. Do not share
+workspace backups simply because template/plugin listings are available in the
+Cupboard. Check the supported snapshot workflow, included secrets, private
+source/data and destination before any export or publication.
+
+If a snapshot/export option is absent in your installation, ask for the
+supported backup route instead of following an unverified CLI example.
+
+See [Workspaces and agents](/docs/workspaces-and-agents) and
+[Troubleshooting](/docs/troubleshooting).

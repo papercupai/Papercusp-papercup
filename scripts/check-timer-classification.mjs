@@ -220,6 +220,7 @@ export const CLIENT_TS_FILES = new Set([
   'apps/operator/app/admin/testing/_lib/vitals-recorder.ts',
   'apps/operator/lib/ui/use-ui-presence.ts',
   'apps/operator-vite/src/lib/video/camera-capture.ts',
+  'apps/operator/e2e/_keyboard-input.ts',
   'packages/operator-core/lib/operator-window-sync.ts',
   'packages/operator-core/lib/voice-engines/deepgram.ts',
 ]);

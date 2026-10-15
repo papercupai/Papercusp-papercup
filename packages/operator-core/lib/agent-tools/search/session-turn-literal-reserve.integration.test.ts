@@ -16,7 +16,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { runSessionSearchIndexBuildOnce } from '../../session-search-index-build';
 import {
   composeSessionTurnTiers,
@@ -43,6 +43,7 @@ beforeAll(async () => {
   await applyMigrationForTest(sql, path.join(SQL_DIR, '501-session-turns.sql'));
   await applyMigrationForTest(sql, path.join(SQL_DIR, '794-session-turns-provenance-at-ingest.sql'));
   await applyMigrationForTest(sql, path.join(SQL_DIR, '1273-session-turns-trigram-exact-fuzzy-index.sql'));
+  await applyDisclosureLedgerForTest(sql); // D-006 reader rule (WI-10005570)
   // Exact turns are OLD; fuzzy-only turns are NEWER, so a newest-first slotter that ignored tier
   // precedence would fill a small page with fuzzy rows.
   await sql`

@@ -1,7 +1,7 @@
 /**
  * workspace-for-harness.test.ts — resolveWorkspaceForHarness (the WI-148-aware
  * derive-or-throw shared by docs/* + plan-attribution). Unit: the underlying
- * fill_workspace_id_from_projects is stubbed so the wrapper's contract (honor an
+ * registry fallback is stubbed so the wrapper's contract (honor an
  * explicit ws, derive otherwise, THROW on unresolvable — never a silent 'default')
  * is exercised without a live registry / PG.
  *
@@ -10,8 +10,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const fill = vi.fn();
-vi.mock('../agent-tools/plans/source', () => ({
-  fill_workspace_id_from_projects: (slug: string | undefined) => fill(slug),
+vi.mock('@papercusp/db-org', () => ({
+  withWorkspace: async (_scope: string, read: (sql: () => Promise<unknown[]>) => unknown) => read(async () => []),
+}));
+vi.mock('../harness-core', () => ({
+  resolveWorkspaceForHarnessSlug: (slug: string) => fill(slug),
 }));
 
 import { resolveWorkspaceForHarness } from './workspace-for-harness';
@@ -33,8 +36,8 @@ describe('resolveWorkspaceForHarness', () => {
 
   it('derives the workspace from the harness when none is passed', async () => {
     fill.mockResolvedValue('papercusp-workspace');
-    expect(await resolveWorkspaceForHarness('papercusp')).toBe('papercusp-workspace');
-    expect(fill).toHaveBeenCalledWith('papercusp');
+    expect(await resolveWorkspaceForHarness('test-harness')).toBe('papercusp-workspace');
+    expect(fill).toHaveBeenCalledWith('test-harness');
   });
 
   it('falls back to derive when the explicit workspaceId is blank', async () => {

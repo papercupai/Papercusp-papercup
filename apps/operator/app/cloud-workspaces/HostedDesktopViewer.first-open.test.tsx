@@ -7,12 +7,19 @@
  * the viewer only constructs noVNC after `await import("@novnc/novnc")`. On a
  * cold page that chunk is still downloading when KasmVNC's version greeting
  * arrives, and the relay channel dropped it; noVNC then waits for a greeting
- * that already came. This file holds the import open, as a cold chunk does.
+ * that already came. This file delivers the greeting at the import's await
+ * boundary, before RFB construction. Keep noVNC's dynamic imports real: Vitest
+ * 4.1.8 leaks real exports to overlapping mocked imports, even with synchronous
+ * factories (EI-25590151938600382). Control the existing static adapter instead.
  */
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
-import { buildDesktopDataRelay } from "./hosted-desktop-viewer-protocol";
+import {
+  buildDesktopDataRelay,
+  type HostedDesktopViewerMode,
+} from "./hosted-desktop-viewer-protocol";
+import * as kasmvnc from "./kasmvnc-rfb";
 
 const H = vi.hoisted(() => {
   class FakeSocket {
@@ -29,6 +36,20 @@ const H = vi.hoisted(() => {
 
     constructor(readonly url: string) {
       H.sockets.push(this);
+      const desktopSessionId = new URL(url).searchParams.get("desktopSessionId")!;
+      // connect() assigns the relay handlers synchronously, then awaits import.
+      // This microtask answers before that await can construct RFB, even when
+      // the module is already cached. Record the ordering instead of assuming it.
+      queueMicrotask(() => {
+        const messages = H.earlyMessages.get(desktopSessionId);
+        if (!messages) return;
+        H.earlyMessages.delete(desktopSessionId);
+        H.earlyDeliveries.push({
+          desktopSessionId,
+          rfbInstances: H.AttachingRFB.instances.length,
+        });
+        for (const data of messages) this.emit("message", { data });
+      });
     }
 
     addEventListener(type: string, listener: (event: unknown) => void): void {
@@ -89,29 +110,33 @@ const H = vi.hoisted(() => {
     _sendMouse(): void {}
   }
 
-  let releaseNoVnc = () => {};
-  const noVncLoaded = new Promise<void>((resolve) => {
-    releaseNoVnc = resolve;
-  });
-
   return {
     AttachingRFB,
     FakeSocket,
     fetch: vi.fn(),
     sockets: [] as FakeSocket[],
-    noVncLoaded,
-    releaseNoVnc: () => releaseNoVnc(),
+    earlyMessages: new Map<string, string[]>(),
+    earlyDeliveries: [] as Array<{
+      desktopSessionId: string;
+      rfbInstances: number;
+    }>,
   };
-});
-
-vi.mock("@novnc/novnc", async () => {
-  await H.noVncLoaded;
-  return { default: H.AttachingRFB };
 });
 
 import { HostedDesktopViewer } from "./HostedDesktopViewer";
 
+const adaptRfb = kasmvnc.kasmvncRfbClass;
+
 beforeEach(() => {
+  H.sockets.length = 0;
+  H.AttachingRFB.instances.length = 0;
+  H.earlyMessages.clear();
+  H.earlyDeliveries.length = 0;
+  // Both viewers import real noVNC; only construction uses the handshake fake.
+  // Retain the real KasmVNC subclass adapter around that fake.
+  vi.spyOn(kasmvnc, "kasmvncRfbClass").mockImplementation(() =>
+    adaptRfb(H.AttachingRFB as unknown as Parameters<typeof adaptRfb>[0]),
+  );
   H.fetch.mockImplementation(() =>
     Promise.resolve(
       new Response(JSON.stringify({ ok: true, ticket: `ht_${"a".repeat(43)}` }), {
@@ -126,44 +151,111 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-it("connects when the desktop's greeting arrives before noVNC has loaded", async () => {
-  const onStateChange = vi.fn();
-  render(
-    <HostedDesktopViewer
-      workspaceId="customer-workspace-1"
-      hostId="host-1"
-      routeLabel="workspace-relay"
-      desktopSessionId="desktop-1"
-      onStateChange={onStateChange}
-    />,
-  );
-  await waitFor(() => expect(H.sockets).toHaveLength(1));
-  const socket = H.sockets[0]!;
-
-  // The host answers while noVNC's chunk is still downloading.
-  act(() => {
-    socket.emit("message", {
-      data: JSON.stringify({
-        type: "desktop.ready",
-        action: "watch",
-        inputAllowed: false,
-      }),
-    });
-    socket.emit("message", {
-      data: buildDesktopDataRelay(new TextEncoder().encode("RFB 003.008\n")),
-    });
-  });
+it("resolves overlapping noVNC imports to the same real constructor without a viewer", async () => {
+  const modules = await Promise.all([
+    import("@novnc/novnc"),
+    import("@novnc/novnc"),
+  ]);
+  expect(typeof modules[0]!.default).toBe("function");
+  expect(modules[0]!.default).not.toBe(H.AttachingRFB);
+  expect(modules[1]!.default).toBe(modules[0]!.default);
+  expect(kasmvnc.kasmvncRfbClass).not.toHaveBeenCalled();
   expect(H.AttachingRFB.instances).toHaveLength(0);
-
-  H.releaseNoVnc();
-  await waitFor(() => expect(H.AttachingRFB.instances).toHaveLength(1));
-  await waitFor(() =>
-    expect(H.AttachingRFB.instances[0]!.received).toEqual(["RFB 003.008\n"]),
-  );
-  await waitFor(() =>
-    expect(onStateChange).toHaveBeenLastCalledWith("connected"),
-  );
 });
+
+function scheduleEarlyGreeting(
+  desktopSessionId: string,
+  mode: HostedDesktopViewerMode,
+  inputAllowed: boolean,
+  greeting = "RFB 003.008\n",
+) {
+  H.earlyMessages.set(desktopSessionId, [
+    JSON.stringify({ type: "desktop.ready", action: mode, inputAllowed }),
+    buildDesktopDataRelay(new TextEncoder().encode(greeting)),
+  ]);
+}
+
+it.each([
+  { mode: "watch", inputAllowed: false, viewOnly: true },
+  { mode: "takeover", inputAllowed: false, viewOnly: true },
+  { mode: "takeover", inputAllowed: true, viewOnly: false },
+] as const)(
+  "preserves $mode inputAllowed=$inputAllowed when the greeting arrives before noVNC constructs the viewer",
+  async ({ mode, inputAllowed, viewOnly }) => {
+    const onStateChange = vi.fn();
+    scheduleEarlyGreeting("desktop-1", mode, inputAllowed);
+    render(
+      <HostedDesktopViewer
+        workspaceId="customer-workspace-1"
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        desktopSessionId="desktop-1"
+        mode={mode}
+        onStateChange={onStateChange}
+      />,
+    );
+    await waitFor(() => expect(H.AttachingRFB.instances).toHaveLength(1));
+    await waitFor(() =>
+      expect(onStateChange).toHaveBeenLastCalledWith("connected"),
+    );
+    expect(H.earlyDeliveries).toEqual([
+      { desktopSessionId: "desktop-1", rfbInstances: 0 },
+    ]);
+    expect(H.AttachingRFB.instances[0]!.received).toEqual(["RFB 003.008\n"]);
+    expect(H.AttachingRFB.instances[0]!.viewOnly).toBe(viewOnly);
+  },
+);
+
+it.each([
+  { firstMode: "watch", firstInputAllowed: true },
+  { firstMode: "takeover", firstInputAllowed: false },
+] as const)(
+  "connects simultaneous $firstMode/$firstInputAllowed and granted takeover viewers with independent early greetings",
+  async ({ firstMode, firstInputAllowed }) => {
+    const firstState = vi.fn();
+    const secondState = vi.fn();
+    scheduleEarlyGreeting("desktop-1", firstMode, firstInputAllowed);
+    scheduleEarlyGreeting("desktop-2", "takeover", true, "RFB 003.007\n");
+    render(
+      <>
+        <HostedDesktopViewer
+          workspaceId="customer-workspace-1"
+          hostId="host-1"
+          routeLabel="workspace-relay"
+          desktopSessionId="desktop-1"
+          mode={firstMode}
+          onStateChange={firstState}
+        />
+        <HostedDesktopViewer
+          workspaceId="customer-workspace-1"
+          hostId="host-1"
+          routeLabel="workspace-relay"
+          desktopSessionId="desktop-2"
+          mode="takeover"
+          onStateChange={secondState}
+        />
+      </>,
+    );
+    await waitFor(() => expect(H.AttachingRFB.instances).toHaveLength(2));
+    await waitFor(() => {
+      expect(firstState).toHaveBeenLastCalledWith("connected");
+      expect(secondState).toHaveBeenLastCalledWith("connected");
+    });
+    expect(H.earlyDeliveries).toEqual([
+      { desktopSessionId: "desktop-1", rfbInstances: 0 },
+      { desktopSessionId: "desktop-2", rfbInstances: 0 },
+    ]);
+    const [first, second] = H.AttachingRFB.instances;
+    expect(first!.received).toEqual(["RFB 003.008\n"]);
+    expect(second!.received).toEqual(["RFB 003.007\n"]);
+    expect(first!.viewOnly).toBe(true);
+    expect(second!.viewOnly).toBe(false);
+    act(() => H.sockets[1]!.emit("close", { code: 1006, reason: "" }));
+    expect(second!.viewOnly).toBe(true);
+    expect(firstState).toHaveBeenLastCalledWith("connected");
+  },
+);

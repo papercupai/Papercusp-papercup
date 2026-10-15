@@ -12,7 +12,11 @@
  */
 
 import os from 'node:os';
+import type { PresenceRecord } from '../../../agent-tools/coordination/presence';
 import { createHash } from 'node:crypto';
+import { requireAllowedOriginOr403 } from '../../cors';
+import { readCookie } from '../../cookies';
+import { SESSION_COOKIE } from '../../../auth';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { SearchFilters, RecencyRank, MatchProvenance } from '@papercusp/search';
 import type { TranscriptTurnHit } from '../../../adv-session-search';
@@ -25,6 +29,7 @@ import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
   getAdvSessionInWorkspace,
+  getLatestActiveAdvSessionByOwner,
   listAdvSessions,
   listEndedAdvSessions,
   listPendingWorkbenchLaunches,
@@ -43,6 +48,7 @@ import {
   dedupeEndedAgainstActive,
   pendingLaunchesToRosterEntries,
   startingLaunchesToRosterEntries,
+  readStartingLaunchLogHints,
   dedupeStartingAgainstActive,
 } from '../../../adv-roster';
 // Pure recency-param parsing (WI-5097) + the pure id-search half (WI-37204 —
@@ -58,7 +64,15 @@ import {
 import { gatherOnDesktopSessions } from '../../../desktop-window-liveness';
 import { setOnDesktopWindowsCache, type WindowsDesktopWindow } from '../../../windows-desktop-windows';
 import { readOmpConfig } from '../../../omp-config';
-import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '../../../session-port/types';
+import {
+  SESSION_PORT_BACKENDS,
+  SESSION_PORT_PROTOCOL_VERSION,
+  SESSION_PORT_SUPPORTED_PAIRS,
+  SESSION_PORT_TRANSFORM_VERSION,
+  isSessionPortBackend,
+} from '../../../session-port/types';
+import { evidenceIncarnationOwnedBy } from '../../../session-port/source';
+export { evidenceIncarnationOwnedBy } from '../../../session-port/source';
 import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import {
   classifySessionPortFailure,
@@ -156,7 +170,7 @@ async function startRematerializeJob({
           import('@papercusp/orchestrator/session-launch-dirs'),
         ]);
         if (sessionClaudeConfigDir(stamp.owner) === stamp.session_root) {
-          ensureInteractiveClaudeConfig({ sid: stamp.owner });
+          await ensureInteractiveClaudeConfig({ sid: stamp.owner });
         }
       } catch (e) {
         console.warn(`[rematerialize] interactive-config seed failed for ${sessionId}: ${(e as Error)?.message ?? e}`);
@@ -178,9 +192,11 @@ type SessionPortRequestBody = {
   transformVersion?: unknown;
   workspace?: unknown;
   sourceAdvSessionId?: unknown;
+  sourceNativeSessionId?: unknown;
   targetBackend?: unknown;
   targetModel?: unknown;
   targetAccount?: unknown;
+  targetOwnerId?: unknown;
   contextSize?: unknown;
   launchContext?: unknown;
   expectedSourceHash?: unknown;
@@ -194,37 +210,6 @@ function json(body: unknown, status = 200): Response {
 
 /** A claude/codex native session uuid — the only shape `/adv/sessions/resumable?sessionId=` resolves. */
 const RESUMABLE_NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * WI-10003198: the transcript a session port reads, when the consult's evidence
- * names an EARLIER incarnation of the tracked source rather than its row's
- * current native session.
- *
- * A carry-respawn rewrites its owner's adv_sessions row in place (same row id,
- * new session_id), so every earlier incarnation has no row of its own — and the
- * router routinely picks exactly those, because they hold the matched turns.
- * The port used to refuse them outright ("must name this exact source
- * session"). An earlier incarnation belongs to the row when session_turns
- * records the row's coord owner as that session's latest owner — the same
- * bridge resolveResumeTarget uses — and then the port reads THAT transcript.
- * Anything else is still refused.
- */
-export async function evidenceIncarnationOwnedBy(
-  sql: import('postgres').Sql,
-  sourceRow: { coordOwnerId: string | null },
-  sessionId: string,
-): Promise<boolean> {
-  if (!sourceRow.coordOwnerId) return false;
-  const [latest] = await sql<Array<{ owner: string }>>`
-    SELECT t.owner
-      FROM harness_shared.session_turns t
-     WHERE t.session_id = ${sessionId}
-       AND t.owner IS NOT NULL
-     ORDER BY t.ingested_at DESC
-     LIMIT 1
-  `;
-  return latest?.owner === sourceRow.coordOwnerId;
-}
 
 function sessionPortProtocolError(version: unknown, transformVersion: unknown): Response | null {
   if (version === SESSION_PORT_PROTOCOL_VERSION && transformVersion === SESSION_PORT_TRANSFORM_VERSION) return null;
@@ -253,8 +238,10 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     return { response: json({ ok: false, error: 'sourceAdvSessionId must be a positive integer' }, 400) } as const;
   }
   const targetBackend = body.targetBackend;
-  if (targetBackend !== 'codex' && targetBackend !== 'omp') {
-    return { response: json({ ok: false, error: 'V1 targetBackend must be codex|omp' }, 400) } as const;
+  // Keep this refusal's wording: launchers that meet an operator without
+  // /port/capabilities read the accepted target list back out of it.
+  if (!isSessionPortBackend(targetBackend)) {
+    return { response: json({ ok: false, error: `targetBackend must be ${SESSION_PORT_BACKENDS.join('|')}` }, 400) } as const;
   }
   const normalizedContextSize = normalizeSuContextSize(body.contextSize);
   if (!normalizedContextSize.ok) {
@@ -275,11 +262,49 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   await store.assertSessionPortStorageReady();
   const trackedRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
   if (!trackedRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
+  service.resolveSessionPortTargetOwner(trackedRow.coordOwnerId ?? '', body.targetOwnerId);
+  // consult-backed-parking-2026-10-12#P-010 (D-009): a port that continues the
+  // source coordination identity is refused by bootstrap-su while that identity
+  // is still bound to a live session. Run bootstrap-su's own read here, before
+  // egress and preparation, so psu --resume names the running source instead of
+  // failing a prepared port with a launch-internal 409. Isolated-owner ports
+  // (consult) bind a fresh identity and are unaffected.
+  // Fail-SOFT, unlike bootstrap-su: this is an early preview of a refusal the
+  // launch still enforces, so a failed read must neither block the resume nor
+  // surface a database error as a live-source conflict.
+  if (body.targetOwnerId === undefined && trackedRow.coordOwnerId) {
+    const { readPrePinnedOwnerBindings, describeLiveSourceRefusal } = await import('../agent-mcp/pre-pinned-owner-conflicts');
+    const bindings = await readPrePinnedOwnerBindings(trackedRow.coordOwnerId).catch(() => null);
+    if (bindings && bindings.conflicts.length > 0) {
+      return {
+        response: json({
+          ok: false,
+          code: 'source_session_still_live',
+          error: describeLiveSourceRefusal({
+            sourceAdvSessionId,
+            ownerId: trackedRow.coordOwnerId,
+            targetBackend,
+            bindings,
+          }),
+        }, 409),
+      } as const;
+    }
+  }
   // The row whose transcript this port reads. Normally the tracked row itself;
-  // for an evidence span in an earlier carry-respawn incarnation, the same row
+  // for a selected native session or evidence span in an earlier incarnation, the same row
   // re-pointed at that incarnation's native session (see
   // evidenceIncarnationOwnedBy). Identity, workspace and plan stay the row's.
-  let sourceRow = trackedRow;
+  const sourceNativeId = trackedRow.agent === 'omp' ? trackedRow.ompThreadId ?? trackedRow.sessionId : trackedRow.sessionId;
+  let sourceRow = { ...trackedRow, sessionId: sourceNativeId };
+  if (body.sourceNativeSessionId !== undefined) {
+    const selectedId = typeof body.sourceNativeSessionId === 'string' ? body.sourceNativeSessionId.trim() : '';
+    if (!selectedId || (selectedId !== sourceNativeId &&
+        (!RESUMABLE_NATIVE_SESSION_ID_RE.test(selectedId) ||
+         !(await evidenceIncarnationOwnedBy(getOrgPg().sql as unknown as import('postgres').Sql, trackedRow, selectedId))))) {
+      return { response: json({ ok: false, error: 'sourceNativeSessionId must name the current source session or an earlier incarnation of its owner and backend' }, 400) } as const;
+    }
+    sourceRow = { ...sourceRow, sessionId: selectedId, ...(trackedRow.agent === 'omp' ? { ompThreadId: selectedId } : {}) };
+  }
   let evidenceSpan: import('../../../session-port/service').SessionPortEvidenceSpan | undefined;
   if (body.consultEvidenceSpan != null) {
     const raw = body.consultEvidenceSpan;
@@ -288,6 +313,9 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     }
     const value = raw as { sessionId?: unknown; turnIndices?: unknown; contextTurns?: unknown };
     const sessionId = typeof value.sessionId === 'string' ? value.sessionId.trim() : '';
+    if (body.sourceNativeSessionId !== undefined && sessionId !== sourceRow.sessionId) {
+      return { response: json({ ok: false, error: 'consultEvidenceSpan must match sourceNativeSessionId' }, 400) } as const;
+    }
     const turnIndices = Array.isArray(value.turnIndices) ? [...new Set(value.turnIndices)] : [];
     const contextTurns = value.contextTurns;
     if (!sessionId || turnIndices.length < 1 || turnIndices.length > 12 ||
@@ -296,7 +324,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       return { response: json({ ok: false, error: 'consultEvidenceSpan must name this exact source session, 1–12 valid turn indices, and a context window from 0–8' }, 400) } as const;
     }
     const { sql } = getOrgPg();
-    if (sessionId !== trackedRow.sessionId) {
+    if (sessionId !== sourceNativeId) {
       if (!RESUMABLE_NATIVE_SESSION_ID_RE.test(sessionId) ||
           !(await evidenceIncarnationOwnedBy(sql as unknown as import('postgres').Sql, trackedRow, sessionId))) {
         return {
@@ -308,13 +336,13 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
           }, 400),
         } as const;
       }
-      sourceRow = { ...trackedRow, sessionId };
+      sourceRow = { ...trackedRow, sessionId, ...(trackedRow.agent === 'omp' ? { ompThreadId: sessionId } : {}) };
     }
     const indexed = await sql<Array<{ turn_idx: number; timestamp: string | Date | null; speaker: string; text: string }>>`
       SELECT t.turn_idx, t.ts AS timestamp, t.speaker, t.text
         FROM harness_shared.session_turns t
        WHERE (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
-         AND t.source_kind = 'claude'
+         AND t.source_kind = ${sourceRow.agent}
          AND t.session_id = ${sessionId}
          AND t.turn_idx = ANY(${turnIndices as number[]}::int[])
     `;
@@ -366,9 +394,10 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     home: os.homedir(),
   });
   if (budget.level === 'refuse') throw new Error('target launch prompt already exhausts the selected context window');
-  const stableSource = await service.acquireTrackedClaudeSource(sourceRow);
+  const stableSource = await service.acquireTrackedSessionSource(sourceRow);
   const modelProvider = targetBackend === 'codex'
     ? 'openai'
+    : targetBackend === 'claude' ? 'anthropic'
     : (targetModel?.includes('/') ? targetModel.split('/')[0] : 'omp-configured-provider');
   const inspection = service.inspectAcquiredSessionPort({
     sourceRow,
@@ -382,6 +411,7 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       availableInputTokens: budget.availableInputTokens,
       contextSize,
       launchContextHash: createHash('sha256').update(launchContextText).digest('hex'),
+      ...(body.targetOwnerId === undefined ? {} : { ownerId: body.targetOwnerId as string }),
     },
     currentInstruction: typeof body.currentInstruction === 'string' ? body.currentInstruction : null,
     ...(evidenceSpan ? { evidenceSpan } : {}),
@@ -632,9 +662,47 @@ const focus = defineTool({
 const closeWindow = defineTool({
   method: 'POST',
   path: '/adv/sessions/close-window',
-  auth: 'loopback',
-  async handler(req) {
-    const body = await parseControlBody(req);
+  // Managed browser stops must resolve cookie scope. The loopback-only tier
+  // deliberately drops principals and cannot authorize this mixed surface.
+  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
+  async handler(req, ctx) {
+    const csrf = requireAllowedOriginOr403(req);
+    if (csrf) return csrf;
+    const parsed = await parseJsonBody(req);
+    const hasSessionCookie = readCookie(req, SESSION_COOKIE) !== undefined;
+    // requirePrincipal also supports credential-free native loopback. A
+    // presented invalid session must not inherit that native fallback.
+    if (hasSessionCookie && ctx.principal?.authMethod !== 'cookie-session') {
+      return json({ ok: false, error: 'invalid session cookie' }, 401);
+    }
+    if ('ownerId' in parsed || 'managedSessionId' in parsed || hasSessionCookie || ctx.principal?.kind === 'user' || req.headers.has('x-papercusp-hosted-user-id')) {
+      const { activeWorkspaceId } = await import('../../../workspace-registry');
+      const { findLiveHostAsync, hostSupports, shutdownViaPty } = await import('../../../events/await/psu-pty-discovery');
+      const ownerId = typeof parsed.ownerId === 'string' ? parsed.ownerId.trim() : '';
+      const id = parsed.managedSessionId;
+      if (parsed.confirmed !== true || !ownerId || typeof id !== 'number' || !Number.isInteger(id) || id <= 0 || typeof parsed.expectedStartedAt !== 'string' || 'pid' in parsed || 'windowId' in parsed) {
+        return json({ ok: false, error: 'confirmed owner and managed session identity are required' }, 400);
+      }
+      const workspaceId = ctx.principal?.workspaceId ?? activeWorkspaceId();
+      const row = await getAdvSessionInWorkspace(Number(id), workspaceId);
+      if (!row || row.coordOwnerId !== ownerId || row.endedAt != null || row.startedAt !== parsed.expectedStartedAt) return json({ ok: false, error: 'stale or foreign session' }, 403);
+      const latest = await getLatestActiveAdvSessionByOwner(ownerId);
+      if (latest?.id !== row.id || latest.startedAt !== row.startedAt) return json({ ok: false, error: 'stale session selection' }, 409);
+      const host = await findLiveHostAsync(ownerId);
+      if (!host || host.advSessionId !== String(row.id)) return json({ ok: false, error: 'managed session host unavailable' }, 409);
+      if (!hostSupports(host, 'shutdown-identity')) return json({ ok: false, error: 'this session does not support a confirmed stop' }, 422);
+      const rechecked = await getAdvSessionInWorkspace(Number(id), workspaceId);
+      if (rechecked?.startedAt !== row.startedAt || rechecked.endedAt != null || rechecked.coordOwnerId !== ownerId) {
+        return json({ ok: false, error: 'session incarnation changed' }, 409);
+      }
+      const outcome = await shutdownViaPty(ownerId, {
+        reason: 'Confirmed stop from the portal roster',
+        expectedHost: { startedAt: host.startedAt, advSessionId: String(row.id) },
+      });
+      if (outcome !== 'sent') return json({ ok: false, ownerId, error: outcome }, outcome === 'refused-stale-host' ? 409 : 422);
+      return json({ ok: true, ownerId, managedSessionId: row.id, sessionStartedAt: row.startedAt, status: 'stop-requested' });
+    }
+    const body = parsed as { id?: number; pid?: number; windowId?: string | null };
     const latestRow =
       typeof body.id === 'number' && body.id > 0 ? await getAdvSession(body.id) : null;
     const wid = await resolveSessionWindowId(body, latestRow);
@@ -1334,6 +1402,39 @@ const searchTranscripts = defineTool({
  * `psu --resume` picker, which `cd`s to each row's cwd and resumes the
  * agent there.
  */
+/** Current owner budget is authoritative on resume; launch argv is only the
+ * fallback when no runtime budget exists. Reuse the seeded model/role policy
+ * for legacy launches without an explicit flag instead of the native window. */
+async function compactionLimitForResumeRow(
+  session: { coordOwnerId?: string | null; launchArgv?: unknown },
+  model?: string | null,
+  presenceOverride?: (Pick<PresenceRecord, 'compactionLimit'> & { fleetRole: string | null }) | null,
+): Promise<number> {
+  const [{ getPresence }, { defaultCompactionLimitForSpec, clampCompactionLimit, modelSpecFromArgv }, { parseLaunchCompactionLimitArgv }] = await Promise.all([
+    import('../../../agent-tools/coordination/presence'),
+    import('../../../agent-config-constants'),
+    import('../../../model-context-budget.mjs'),
+  ]);
+  const presence = presenceOverride !== undefined
+    ? presenceOverride
+    : session.coordOwnerId ? await getPresence(session.coordOwnerId) : null;
+  const current = presence?.compactionLimit;
+  if (typeof current === 'number' && Number.isFinite(current) && current > 0) return Math.floor(current);
+  // Fleet labels are an independent authoritative projection; the base
+  // presence record does not contain them. Never revive stale launch labels.
+  const fleetRole = presenceOverride !== undefined
+    ? presenceOverride?.fleetRole
+    : session.coordOwnerId
+      ? (await (await import('../../../agent-tools/coordination/presence-fleet')).fetchPresenceFleet([session.coordOwnerId])).get(session.coordOwnerId)?.fleetRole
+      : null;
+  const fleetMember = fleetRole === 'member';
+  const spec = model ?? modelSpecFromArgv(session.launchArgv);
+  const recorded = parseLaunchCompactionLimitArgv(session.launchArgv);
+  return recorded != null
+    ? clampCompactionLimit(recorded, spec, { fleetMember })
+    : defaultCompactionLimitForSpec(spec, { fleetMember });
+}
+
 const resumable = defineTool({
   method: 'GET',
   path: '/adv/sessions/resumable',
@@ -1352,13 +1453,24 @@ const resumable = defineTool({
     // authority the consult dispatcher already resolved its source with, so psu
     // and the dispatcher cannot disagree about which row a transcript belongs to.
     const requestedSessionId = (searchParams.get('sessionId') ?? '').trim();
-    let exactBySession: { id: number; ownerId: string | null; requestedSessionId: string } | null = null;
+    const requestedAgentId = (searchParams.get('agentId') ?? '').trim();
+    let exactBySession: { id: number; ownerId: string | null; requestedSessionId?: string; requestedAgentId?: string } | null = null;
     if (exactRowId == null && RESUMABLE_NATIVE_SESSION_ID_RE.test(requestedSessionId)) {
       const { resolveResumeTarget } = await import('../../../agent-launch-core');
       const target = await resolveResumeTarget({ sessionId: requestedSessionId });
       if (target.ok) {
         exactBySession = { id: target.advSessionId, ownerId: target.ownerId, requestedSessionId };
       }
+    } else if (exactRowId == null && requestedAgentId) {
+      // Reuse the launch/resume authority: it selects the newest registration
+      // and follows carry lineage, independently of the picker's recent window.
+      if (!/^su-[a-z0-9-]+$/i.test(requestedAgentId)) {
+        return json({ error: 'invalid_agent_id' }, 400);
+      }
+      const { resolveResumeTarget } = await import('../../../agent-launch-core');
+      const target = await resolveResumeTarget({ agentId: requestedAgentId });
+      if (!target.ok) return json({ sessions: [] }, 200);
+      exactBySession = { id: target.advSessionId, ownerId: target.ownerId, requestedAgentId };
     }
     const exactId = exactRowId ?? exactBySession?.id ?? null;
     const sessions = await listResumableSessions(Number.isFinite(limit) && limit > 0 ? limit : 30, { exactId });
@@ -1372,7 +1484,11 @@ const resumable = defineTool({
     // after the move-sessions-off-disk-to-DB change — those sessions ARE resumable,
     // they just need rematerializing first). The picker keeps a session that is on
     // disk OR archived, and rematerializes an archived one on selection.
-    const archivedIds = new Set<string>();
+    const archivedKeys = new Set<string>();
+    const archiveKeyFor = (s: (typeof sessions)[number]): string | null => {
+      const archiveSessionId = s.agent === 'omp' ? s.ompThreadId : s.sessionId;
+      return s.agent && archiveSessionId ? `${s.agent}:${archiveSessionId}` : null;
+    };
     try {
       // Lazy: session-archive fails LOUD at import when zstd is unavailable —
       // keep that off this module's load path (mirrors the rematerialize route).
@@ -1380,9 +1496,11 @@ const resumable = defineTool({
       const store = pgSessionArchiveStore();
       await Promise.all(
         sessions.map(async (s) => {
-          // Only claude/codex sessions are keyed by a session_id in the archive;
-          // omp resumes by thread name and is never ghost-filtered by the picker.
-          if (!s.sessionId || (s.agent !== 'claude' && s.agent !== 'codex')) return;
+          // Claude/codex archives are keyed by session_id; OMP archives are keyed by
+          // omp_thread_id because OMP rows intentionally have no session_id.
+          const archiveAgent = s.agent;
+          const archiveSessionId = s.agent === 'omp' ? s.ompThreadId : s.sessionId;
+          if (!archiveSessionId || (archiveAgent !== 'claude' && archiveAgent !== 'codex' && archiveAgent !== 'omp')) return;
           try {
             // Read the stamp with the SAME key the writer writes. The archive
             // ref built at archive-at-death carries no workspaceId, so every row
@@ -1396,8 +1514,8 @@ const resumable = defineTool({
             // 2026-07-13 owner bug it was added to fix. Omitting the argument
             // defaults to WS_DEFAULT, which is also how /adv/sessions/rematerialize
             // already reads (and why restoring worked while detection did not).
-            const stamp = await store.readStamp(s.agent, s.sessionId);
-            if (stamp) archivedIds.add(s.sessionId);
+            const stamp = await store.readStamp(archiveAgent, archiveSessionId);
+            if (stamp) archivedKeys.add(`${archiveAgent}:${archiveSessionId}`);
           } catch {
             /* best-effort per session — a read failure just leaves hasArchive false */
           }
@@ -1406,14 +1524,34 @@ const resumable = defineTool({
     } catch {
       /* archive module unavailable ⇒ no enrichment (every hasArchive stays false) */
     }
-    const enriched = sessions.map((s) => ({
-      ...s,
-      hasArchive: s.sessionId ? archivedIds.has(s.sessionId) : false,
+    // One bounded read per existing projection, rather than queries per row.
+    const codexOwnerIds = [...new Set(sessions.filter((s) => s.agent === 'codex' && s.coordOwnerId).map((s) => s.coordOwnerId!))];
+    const [{ listPresence }, { fetchPresenceFleet }] = await Promise.all([
+      import('../../../agent-tools/coordination/presence'),
+      import('../../../agent-tools/coordination/presence-fleet'),
+    ]);
+    const [presenceRows, fleetMemberships] = await Promise.all([
+      codexOwnerIds.length ? listPresence({ ownerIds: codexOwnerIds }) : Promise.resolve([]),
+      fetchPresenceFleet(codexOwnerIds),
+    ]);
+    const presenceByOwner = new Map(presenceRows.map((p) => [p.ownerId, p]));
+    const enriched = await Promise.all(sessions.map(async (s) => {
+      const archiveKey = archiveKeyFor(s);
+      return {
+        ...s,
+        hasArchive: Boolean(archiveKey && archivedKeys.has(archiveKey)),
+        ...(s.agent === 'codex' ? {
+          compactionLimit: await compactionLimitForResumeRow(s, null, {
+            compactionLimit: presenceByOwner.get(s.coordOwnerId ?? '')?.compactionLimit ?? null,
+            fleetRole: fleetMemberships.get(s.coordOwnerId ?? '')?.fleetRole ?? null,
+          }),
+        } : {}),
+      };
     }));
     return new Response(
       JSON.stringify({
         sessions: enriched,
-        // Present only when a `sessionId` lookup resolved a row, so an older
+        // Present only when a `sessionId` or `agentId` lookup resolved a row, so an older
         // psu (or a miss) reads exactly the response it always did.
         ...(exactBySession ? { exact: exactBySession } : {}),
       }),
@@ -1472,7 +1610,7 @@ const ensureClaudeConfig = defineTool({
       });
     }
     const { ensureInteractiveClaudeConfig } = await import('../../../interactive-claude-config');
-    const { configDir, repaired } = ensureInteractiveClaudeConfig({ sid: owner });
+    const { configDir, repaired } = await ensureInteractiveClaudeConfig({ sid: owner });
     return new Response(JSON.stringify({ ok: true, owner, configDir, repaired }), {
       status: 200,
       headers: JSON_HEADERS,
@@ -1542,7 +1680,7 @@ const ensureCodexHome = defineTool({
         headers: JSON_HEADERS,
       });
     }
-    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }] =
+    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfigAsync }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }, { sessionAllowsAmbientContext }] =
       await Promise.all([
         import('../../../adv-sessions'),
         import('../../../su-persona-render'),
@@ -1552,14 +1690,119 @@ const ensureCodexHome = defineTool({
         import('../../../agent-tools/coordination/control-anchor'),
         import('../../../model-context-budget.mjs'),
         import('../../../role-launch-spec'),
+        import('../../../inference-gateway/spawn-env'),
+        import('../../../events/await/wake-executor'),
+        import('../../../capability-envelope/session-confinement-store')
+          .then(() => import('../../../capability-envelope/session-confinement-port')),
       ]);
-    const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(owner));
+    const rawRecord = await readSuLaunchSpecByOwner(owner);
+    const persistedRecord = parseSuLaunchSpecRecord(rawRecord);
     const sessionRow = await getAdvSession(advSessionId);
     if (sessionRow?.coordOwnerId && sessionRow.coordOwnerId !== owner) {
       return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'owner-mismatch' }), {
         status: 200,
         headers: JSON_HEADERS,
       });
+    }
+    // A role receipt is not an SU receipt. Parsing it as one drops role and
+    // acceptedOperation, then the SU rebuild replaces its restricted grants.
+    // Recover accepted workers from the immutable item, and ordinary roles
+    // from their recorded launch, through the same restricted compiler/writer.
+    if (sessionRow?.role && sessionRow.role !== 'su') {
+      const saved = rawRecord && typeof rawRecord === 'object'
+        ? rawRecord as Record<string, unknown> : {};
+      const { flagValueFromArgv, modelSpecFromArgv } = await import('../../../agent-config-constants');
+      const harnessSlug = typeof saved.harnessSlug === 'string' ? saved.harnessSlug
+        : !sessionRow.feature ? flagValueFromArgv(sessionRow.launchArgv, 'harness') : null;
+      if (!harnessSlug || !sessionRow.sessionId || sessionRow.agent !== 'codex' || sessionRow.coordOwnerId !== owner) {
+        return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'role-home-preserved' }),
+          { status: 200, headers: JSON_HEADERS });
+      }
+      const recordedModel = modelSpecFromArgv(sessionRow.launchArgv);
+      if (!sessionRow.feature) {
+        if ((saved.role && saved.role !== sessionRow.role)
+          || flagValueFromArgv(sessionRow.launchArgv, 'role') !== sessionRow.role || !recordedModel) {
+          return new Response(JSON.stringify({ ok: false, error: 'role_launch_provenance_unavailable' }),
+            { status: 409, headers: JSON_HEADERS });
+        }
+        const { existsSync, readFileSync } = await import('node:fs');
+        const { join, isAbsolute } = await import('node:path');
+        const { parse } = await import('@iarna/toml');
+        const { codexHomeForSessionKey } = await import('@papercusp/orchestrator/session-launch-dirs');
+        let stateHome: unknown = saved.codexSqliteHome;
+        const configPath = join(codexHomeForSessionKey(advSessionId), 'config.toml');
+        if (stateHome === undefined && existsSync(configPath)) {
+          try { stateHome = parse(readFileSync(configPath, 'utf8')).sqlite_home; } catch { /* refuse below */ }
+        }
+        if (typeof stateHome !== 'string' || !isAbsolute(stateHome) || stateHome.includes('\0')) {
+          return new Response(JSON.stringify({ ok: false, error: 'role_state_binding_unavailable' }),
+            { status: 409, headers: JSON_HEADERS });
+        }
+      }
+      const { resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } =
+        await import('../../../blueprint/operation-worker-binding');
+      const { resolveProjectDir } = await import('../../../spawn-config');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const accepted = sessionRow.feature ? await resolveAcceptedOperationWorkerBinding({
+        sql: getOrgPg().sql, workspaceId: sessionRow.workspaceId, harnessSlug,
+        workItemId: sessionRow.feature, role: sessionRow.role,
+        repoDir: await resolveProjectDir(harnessSlug, sessionRow.workspaceId) ?? '',
+      }) : null;
+      if (sessionRow.feature && !accepted) {
+        return new Response(JSON.stringify({ ok: true, repaired: false, reason: 'role-home-preserved' }),
+          { status: 200, headers: JSON_HEADERS });
+      }
+      const selection = accepted ? selectAcceptedOperationWorkerModel(accepted,
+        typeof body.model === 'string' ? body.model : null, 'codex') : null;
+      const { buildRoleLaunchSpec } = await import('../../../role-launch-spec');
+      const spec = await buildRoleLaunchSpec({
+        role: sessionRow.role, workspaceId: sessionRow.workspaceId, harnessSlug,
+        featureId: sessionRow.feature, operatorBaseUrl: new URL(req.url).origin,
+        ...(saved.mcpTarget === 'spawn-host' ? { mcpTarget: 'spawn-host' as const } : {}),
+        acceptedOperation: accepted && selection ? { ...accepted, modelSelection: selection } : accepted,
+        ...(!accepted && Array.isArray(saved.stack) ? { stack: saved.stack as string[] } : {}),
+        launchIdentity: { sid: owner, nativeSessionId: sessionRow.sessionId },
+      });
+      const { admitIdentityActivation } = await import('../../../cupboard/identity-activation-gate-io');
+      const funding = await admitIdentityActivation({
+        stack: spec.stack, repoDir: spec.cwd, workspaceId: sessionRow.workspaceId,
+      });
+      if (!funding.ok) {
+        return new Response(JSON.stringify({ ok: false, error: 'identity_activation_refused', refused: funding.refused }),
+          { status: 402, headers: JSON_HEADERS });
+      }
+      const route = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow.launchArgv, owner));
+      const { writeRoleCodexHomeAsync } = await import('../../../role-codex-home');
+      const home = await writeRoleCodexHomeAsync({
+        sessionKey: advSessionId, preserveExisting: true, sid: owner,
+        recordedSqliteHome: typeof saved.codexSqliteHome === 'string' ? saved.codexSqliteHome : null,
+        mcpUrl: spec.mcpUrl, promptText: spec.promptText,
+        model: selection?.model ?? recordedModel ?? persistedRecord?.model ?? CODEX_DEFAULT_MODEL,
+        codexGatewayAuto: route.requireGatewayProvider === true || body.requireGatewayProvider === true,
+        codexGatewayAccountId: route.codexGatewayAccountId,
+        codexGatewayPriority: sessionRow.role,
+        headless: body.headless === true || sessionRow.launchArgv?.includes('--headless') === true, trustDir: spec.cwd,
+      });
+      const binding = accepted ? {
+        kind: 'blueprint-operation-worker', workItemId: accepted.workItemId,
+        operationId: accepted.operationId, specificationRevision: accepted.specificationRevision,
+        pin: accepted.pin, identity: accepted.identity, requiredTools: accepted.requiredTools,
+        ...(accepted.modelPolicy ? { modelPolicy: accepted.modelPolicy, modelSelection: selection } : {}),
+      } : null;
+      if (!(await recordSuLaunchSpec(advSessionId, owner, {
+        ...saved, v: 1, workspaceId: sessionRow.workspaceId, harnessSlug, role: sessionRow.role,
+        acceptedOperation: binding, stack: spec.stack,
+        codexSqliteHome: home.sqliteHome,
+        specificationRevision: spec.specificationRevision, stateRevision: spec.stateRevision,
+        specificationArtifact: spec.specificationArtifact,
+      }))) throw new Error('repaired role launch specification receipt was not persisted');
+      await requestSessionIdentityActivation({
+        ownerId: owner, workspaceId: sessionRow.workspaceId,
+        revision: { specificationRevision: spec.specificationRevision, stateRevision: spec.stateRevision },
+        attribution: { actorId: owner, principalId: owner, sessionId: owner }, source: 'restart', restart: true,
+      });
+      return new Response(JSON.stringify({ ok: true, owner, advSessionId, repaired: true,
+        role: sessionRow.role, acceptedOperation: Boolean(accepted) }), { status: 200, headers: JSON_HEADERS });
     }
     const record = persistedRecord ?? fallbackCodexLaunchSpecFromAdvSession(sessionRow, owner);
     // Fail SOFT like persona-refresh: the caller's only sane response to any of
@@ -1597,19 +1840,31 @@ const ensureCodexHome = defineTool({
       model: repairModel,
       modelSource: requestedModel ? 'inherited' as const : 'configured-default' as const,
     } : record;
-    const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfig({
+    const modelChanged = repairRecord.model !== record.model ||
+      repairRecord.modelSource !== record.modelSource;
+    // Carry refreshes have no rollout provider hint and send the legacy flag
+    // as false. Preserve the saved launch route instead of treating that
+    // absence of a hint as a request to switch to the local login.
+    const gatewayInputs = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow?.launchArgv, owner));
+    const repairGatewayAuto = gatewayInputs.requireGatewayProvider === true || body.requireGatewayProvider === true;
+    const denyAmbientContext = !(await sessionAllowsAmbientContext({ ownerId: owner, workspaceId: record.workspaceId }));
+    const repairCompactionLimit = await compactionLimitForResumeRow({ coordOwnerId: owner, launchArgv: sessionRow?.launchArgv }, repairModel);
+    const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfigAsync({
       sessionKey: advSessionId,
       mcpUrl,
       sid: owner,
       model: repairModel,
       token: readSuperuserToken(),
-      codexGatewayAuto: body.requireGatewayProvider === true,
-      codexGatewayPriority: body.requireGatewayProvider === true ? 'su' : null,
+      codexGatewayAccountId: gatewayInputs.codexGatewayAccountId,
+      codexGatewayAuto: repairGatewayAuto,
+      codexGatewayPriority: repairGatewayAuto || gatewayInputs.codexGatewayAccountId ? 'su' : null,
       headless: repairHeadless,
+      compactionLimit: repairCompactionLimit,
       trustDir: null, // the home's inherited trust tables already cover the cwd
       projectDir: sessionRow?.cwd,
       promptText,
       recoverMissingHome: sessionRow?.coordOwnerId === owner,
+      ...(denyAmbientContext ? { denyAmbientContext: true } : {}),
     });
     let rebuilt;
     // agent-economy-flywheel P-016 (D-012): a repair is a restart. An unfunded
@@ -1671,26 +1926,34 @@ const ensureCodexHome = defineTool({
         contextSize: record.contextSize, personaTier: record.personaTier,
         model: repairModel, stack: [], modes: [],
       });
-      const recovered = ensureConfig(connection.mcpUrl, pinned.promptText);
+      const recovered = await ensureConfig(connection.mcpUrl, pinned.promptText);
+      // Model selection is independent of instruction activation. Preserve the
+      // pinned identity while recording the model this resume actually chose.
+      if (modelChanged && !(await recordSuLaunchSpec(advSessionId, owner, repairRecord))) {
+        throw new Error('repaired Codex model receipt was not persisted');
+      }
       return new Response(JSON.stringify({
         ok: true, owner, advSessionId, ...recovered,
         reason: 'pinned-source-stale',
         preservedSpecificationRevision: pinned.specificationRevision,
       }), { status: 200, headers: JSON_HEADERS });
     }
-    const r = ensureConfig(rebuilt.spec.mcpUrl, rebuilt.promptText);
-    if (r.promptRepaired) {
+    const r = await ensureConfig(rebuilt.spec.mcpUrl, rebuilt.promptText);
+    if (r.promptRepaired || modelChanged) {
       const artifact = rebuilt.artifact;
-      const updatedRecord = {
+      const updatedRecord = r.promptRepaired ? {
         ...repairRecord,
         stack: artifact.stack,
         specificationRevision: artifact.specificationRevision,
         stateRevision: artifact.stateRevision,
         specificationArtifact: artifact.specificationArtifact,
-      };
-      if (!(await recordSuLaunchSpec(null, owner, updatedRecord))) {
+      } : repairRecord;
+      if (!(await recordSuLaunchSpec(advSessionId, owner, updatedRecord))) {
         throw new Error('repaired Codex launch specification receipt was not persisted');
       }
+    }
+    if (r.promptRepaired) {
+      const artifact = rebuilt.artifact;
       await requestSessionIdentityActivation({
         ownerId: owner,
         workspaceId: record.workspaceId,
@@ -1891,8 +2154,14 @@ const roster = defineTool({
     // THIRD tier. Deliberately not folded into `pending` — the pui panes that
     // tier, and these sessions already own a terminal. Rows whose session has
     // come online are dropped so presence renders it exactly once.
+    // EI-24748208098755918: log diagnostics are read off the event loop first;
+    // the mapper itself does no file I/O.
     const starting = dedupeStartingAgainstActive(
-      startingLaunchesToRosterEntries(startingRows, host),
+      startingLaunchesToRosterEntries(
+        startingRows,
+        host,
+        await readStartingLaunchLogHints(startingRows),
+      ),
       active,
     );
 
@@ -2005,6 +2274,25 @@ const onDesktopWindows = defineTool({
     return new Response(JSON.stringify({ status: 'ok', count: windows.length }), {
       status: 200,
       headers: JSON_HEADERS,
+    });
+  },
+});
+
+/** Capability advertisement: which source→target pairs THIS build can port.
+ * The launcher reads it before building its resume picker, so it offers only
+ * targets the serving operator accepts instead of failing after the pick
+ * (WI-6554700010011137). Static and side-effect free — no auth-sensitive data. */
+const sessionPortCapabilities = defineTool({
+  method: 'GET',
+  path: '/adv/sessions/port/capabilities',
+  auth: 'loopback',
+  async handler() {
+    return json({
+      ok: true,
+      protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+      transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+      backends: SESSION_PORT_BACKENDS,
+      pairs: SESSION_PORT_SUPPORTED_PAIRS,
     });
   },
 });
@@ -2316,4 +2604,4 @@ const sessionPortDelivery = defineTool({
   },
 });
 
-export default [list, focus, closeWindow, rename, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, ensureCodexHome, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];
+export default [list, focus, closeWindow, rename, alive, state, search, ended, searchTranscripts, resumable, rematerialize, rematerializeStatus, ensureClaudeConfig, ensureCodexHome, roster, markLaunched, agentDetail, onDesktopWindows, sessionPortCapabilities, sessionPortInspect, sessionPortPrepare, sessionPortStatus, sessionPortDelivery];

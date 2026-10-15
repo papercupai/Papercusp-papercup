@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildBoundedPriorAttemptBrief,
   collectPriorAttempts,
@@ -355,6 +355,46 @@ describe('resolvePriorAttemptRefs (P-017 raw drill-down)', () => {
     );
     expect(resolved!.records.map((record) => record.rawRef)).toEqual(['WI-9#checkpoint']);
     expect(resolved!.unresolved).toEqual(['WI-9#comment:404']);
+  });
+
+  it('recovers an exact older comment while rejecting other threads, unadmitted items and invalid ids', async () => {
+    const archive = {
+      id: 1, thread_id: 'issue-thread-WI-9', author_id: 'su-original',
+      body: `Original archive: ${'preserved λ '.repeat(400)}`.trimEnd(), created_ts: '2026-08-20T08:00:00Z',
+    };
+    const posts = Array.from({ length: 14 }, (_, index) => ({
+      ...archive, id: index + 2, body: `Later post ${index + 2}`,
+    }));
+    const thread = vi.fn(async (_id: string, limit: number) => ({
+      posts: posts.slice(-limit), total: 15, topics: [], createdAt: archive.created_ts,
+    }));
+    const threadPost = vi.fn(async ({ postId }: { workspaceId: string; postId: number }) =>
+      postId === 1 ? archive : postId === 404 ? { ...archive, id: 404, thread_id: 'another-thread' } : null,
+    );
+    const refs = ['WI-9#comment:1', 'WI-9#comment:1', 'WI-9#comment:404',
+      'WI-other#comment:1', 'WI-9#comment:1junk', 'WI-9#comment:9007199254740992'];
+    const resolved = await resolvePriorAttemptRefs(
+      { ...pointer, rawRefs: refs }, { ...deps, thread, threadPost } as never,
+    );
+    expect(thread).toHaveBeenCalledWith('WI-9', 12, 'papercusp');
+    expect(resolved?.records).toHaveLength(1);
+    expect(resolved?.records[0]).toMatchObject({
+      rawRef: 'WI-9#comment:1', text: archive.body, actor: archive.author_id, at: archive.created_ts,
+    });
+    expect(resolved?.unresolved).toEqual(refs.slice(2));
+    expect(threadPost.mock.calls.map(([input]) => input.postId)).toEqual([1, 404]);
+    expect(threadPost.mock.calls.every(([input]) => Boolean(input.workspaceId))).toBe(true);
+  });
+
+  it('returns unknown when an exact comment read fails instead of declaring the saved source missing', async () => {
+    const post = { id: 2, thread_id: 'issue-thread-WI-9', author_id: 'su-original',
+      body: 'Later post', created_ts: '2026-08-20T08:00:00Z' };
+    const resolved = await resolvePriorAttemptRefs({ ...pointer, rawRefs: ['WI-9#comment:1'] }, {
+      ...deps,
+      thread: async () => ({ posts: [post], total: 14, topics: [], createdAt: post.created_ts }),
+      threadPost: async () => { throw new Error('exact post store unavailable'); },
+    } as never);
+    expect(resolved).toBeNull();
   });
 
   it('stamps the fingerprint it resolved against so a caller can detect history moving under it', async () => {

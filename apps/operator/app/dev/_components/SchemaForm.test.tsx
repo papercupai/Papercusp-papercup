@@ -89,6 +89,33 @@ describe('<SchemaForm /> field routing', () => {
     expect(onChange).toHaveBeenCalledWith({ tags: ['x', 'y'] });
   });
 
+  it.each([false, true])('preserves arrays and null for nullable activity workspaceIds (null first: %s)', nullFirst => {
+    const array = { type: 'array', items: { type: 'string' } };
+    const nil = { type: 'null' };
+    const onChange = vi.fn();
+    const schema = { type: 'object', properties: { workspaceIds: { anyOf: nullFirst ? [nil, array] : [array, nil] } } };
+    const view = render(<SchemaForm schema={schema} value={{ workspaceIds: ['selected'] }} onChange={onChange} />);
+    const control = screen.getByRole('textbox') as HTMLTextAreaElement;
+    expect(control.tagName).toBe('TEXTAREA');
+    expect(control.value).toBe('["selected"]');
+    fireEvent.change(control, { target: { value: '["neighbor"]' } });
+    expect(onChange).toHaveBeenLastCalledWith({ workspaceIds: ['neighbor'] });
+    fireEvent.change(control, { target: { value: 'null' } });
+    expect(onChange).toHaveBeenLastCalledWith({ workspaceIds: null });
+    view.rerender(<SchemaForm schema={schema} value={{ workspaceIds: null }} onChange={onChange} />);
+    expect(control.value).toBe('null');
+    fireEvent.change(control, { target: { value: '' } });
+    expect(onChange).toHaveBeenLastCalledWith({ workspaceIds: undefined });
+  });
+
+  it('uses typed JSON for a heterogeneous union rather than converting values to strings', () => {
+    const onChange = renderForm({ type: 'object', properties: { choice: { anyOf: [{ type: 'string' }, { type: 'number' }] } } });
+    const control = screen.getByRole('textbox');
+    expect(control.tagName).toBe('TEXTAREA');
+    fireEvent.change(control, { target: { value: '7' } });
+    expect(onChange).toHaveBeenLastCalledWith({ choice: 7 });
+  });
+
   it('renders a multi-line textarea for long-ish string keys (description)', () => {
     const onChange = renderForm({ type: 'object', properties: { description: { type: 'string' } } }, {});
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement;

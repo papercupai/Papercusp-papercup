@@ -32,6 +32,8 @@ import {
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
+const DEV_HOST_SCRIPT = resolve(__dirname, '../../../papercusp-desktop/bin/dev-operator-ifneeded.sh');
+const devHostSrc = readFileSync(DEV_HOST_SCRIPT, 'utf8');
 
 describe('EI-11641 — verify-tauri-headless exempts the isolated sidecar from the 3200 MiB request-worker limit', () => {
   it('is the right script (guards a vacuous suite)', () => {
@@ -70,5 +72,15 @@ describe('EI-11641 — verify-tauri-headless exempts the isolated sidecar from t
 
   it('lets the operator override the limit via VERIFY_TAURI_MEMORY_LIMIT_MB', () => {
     expect(src).toMatch(/MEMORY_LIMIT_MB="\$\{VERIFY_TAURI_MEMORY_LIMIT_MB:-\d+\}"/);
+  });
+
+  it('refuses an isolated source root that would silently fall back to the unbundled tsx host', () => {
+    const sourceRootGuard = devHostSrc.match(
+      /if \[ -n "\$DEV_SOURCE_ROOT" \] && \[ -z "\$DEV_HOST_ENTRY" \]; then([\s\S]*?)\nfi/,
+    )?.[1];
+    expect(sourceRootGuard).toBeTruthy();
+    expect(sourceRootGuard).toContain('PAPERCUSP_DEV_HOST_ENTRY');
+    expect(sourceRootGuard).toContain('apps/operator/bin/bundle-host.sh');
+    expect(sourceRootGuard).toMatch(/exit 1/);
   });
 });

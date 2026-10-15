@@ -6,7 +6,12 @@
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { expect, test } from "./_egress";
-import { readHostedHttp1AcceptanceConfig } from "./_hosted-http1-config";
+import {
+  readHostedHttp1AcceptanceConfig,
+  readHostedWorkspaceAcceptanceBinding,
+  readHostedWorkspaceAcceptanceIdentity,
+  type HostedWorkspaceAcceptanceIdentity,
+} from "./_hosted-http1-config";
 
 const acceptance = readHostedHttp1AcceptanceConfig();
 test.use({ egressAllowedOrigins: [acceptance.origin] });
@@ -29,6 +34,8 @@ test("real hosted workspace PTY, files, resume and desktop watch/takeover", asyn
 }, testInfo) => {
   const hostId = required("HOST_ID");
   const workspaceId = required("WORKSPACE_ID");
+  const organizationId = required("ORGANIZATION_ID");
+  const target = { hostId, workspaceId, organizationId };
   const workspaceRoot = required("WORKSPACE_ROOT");
   const desktopId = required("DESKTOP_SESSION_ID");
   expect(posix.isAbsolute(workspaceRoot)).toBe(true);
@@ -52,6 +59,37 @@ test("real hosted workspace PTY, files, resume and desktop watch/takeover", asyn
   let roster: DesktopEntry[] = [];
   const ready: Array<{ resumed: boolean; role: string }> = [];
   const desktopGrants: Array<{ action: string; inputAllowed: boolean }> = [];
+  const boundFrames: unknown[] = [];
+  let identity: HostedWorkspaceAcceptanceIdentity | undefined;
+  let generation: number | undefined;
+  const bindings: ReturnType<typeof readHostedWorkspaceAcceptanceBinding>[] = [];
+  evidence.connectorBindings = bindings;
+  const channelExpectations = [
+    { kind: "pty", role: "controller" },
+    { kind: "pty", role: "controller" },
+    { kind: "desktop", role: "observer" },
+    { kind: "desktop", role: "controller" },
+  ] as const;
+  const assertJoinedChannels = () => {
+    if (!identity || !bindings.length || boundFrames.length > channelExpectations.length)
+      throw new Error("hosted acceptance channel has not been joined to the target");
+    boundFrames.forEach((frame, index) => {
+      readHostedWorkspaceAcceptanceBinding(frame, identity!, target,
+        { ...channelExpectations[index], generation });
+    });
+  };
+  const verifyChannel = async (
+    index: number,
+    kind: "pty" | "desktop",
+    role: "controller" | "observer",
+  ) => {
+    await expect.poll(() => boundFrames.length, { timeout: 20_000 }).toBe(index + 1);
+    if (!identity) throw new Error("hosted acceptance browser identity is missing");
+    const binding = readHostedWorkspaceAcceptanceBinding(boundFrames[index], identity, target,
+      { kind, role, generation });
+    generation ??= binding.generation;
+    bindings.push(binding);
+  };
 
   // Observe real frames without retaining ticket URLs, file contents, screen
   // pixels or unrelated terminal output in the receipt.
@@ -65,7 +103,9 @@ test("real hosted workspace PTY, files, resume and desktop watch/takeover", asyn
       } catch {
         return;
       }
-      if (message.type === "pty.output" && typeof message.data === "string") {
+      if (message.type === "session.bound") {
+        boundFrames.push(message);
+      } else if (message.type === "pty.output" && typeof message.data === "string") {
         terminalOutput = (
           terminalOutput + Buffer.from(message.data, "base64").toString("utf8")
         ).slice(-32_768);
@@ -103,6 +143,8 @@ test("real hosted workspace PTY, files, resume and desktop watch/takeover", asyn
   });
   const pty = session.locator("textarea.xterm-helper-textarea");
   const run = async (command: string, marker: string) => {
+    // Also guard failure cleanup: a misbound reconnect must never receive rm.
+    assertJoinedChannels();
     terminalOutput = "";
     await pty.focus();
     await page.keyboard.insertText(command);
@@ -136,16 +178,19 @@ test("real hosted workspace PTY, files, resume and desktop watch/takeover", asyn
       const body = await response.json();
       return {
         status: response.status,
-        workspaceId: body.session?.workspaceId,
+        body,
       };
     });
-    expect(auth).toEqual({ status: 200, workspaceId });
+    expect(auth.status).toBe(200);
+    identity = readHostedWorkspaceAcceptanceIdentity(auth.body, target);
+    evidence.browserIdentity = identity;
     await expect(session).toHaveCount(1);
     await expect(session).toBeVisible();
     await session.getByRole("button", { name: "Connect", exact: true }).click();
     await expect.poll(() => ready.length, { timeout: 30_000 }).toBe(1);
     expect(ready[0]).toEqual({ resumed: false, role: "controller" });
     connected = true;
+    await verifyChannel(0, "pty", "controller");
     await run(
       `P031_STATE=${shellQuote(nonce)}; ${emit("EXEC")}`,
       marker("EXEC"),
@@ -157,6 +202,7 @@ test("real hosted workspace PTY, files, resume and desktop watch/takeover", asyn
       .fill(".");
     await session.getByRole("button", { name: "List", exact: true }).click();
     await expect(session).toContainText(/Listed \d+ entries in \./);
+    assertJoinedChannels();
     uploadAttempted = true;
     await session.getByLabel("Upload workspace file").setInputFiles({
       name: filename,
@@ -193,6 +239,7 @@ test("real hosted workspace PTY, files, resume and desktop watch/takeover", asyn
     await expect.poll(() => ready.length, { timeout: 30_000 }).toBe(2);
     expect(ready[1]).toEqual({ resumed: true, role: "controller" });
     connected = true;
+    await verifyChannel(1, "pty", "controller");
     await run("printf 'P031_STATE_%s\\n' \"$P031_STATE\"", marker("STATE"));
     evidence.ptyResumedWithState = true;
 
@@ -215,6 +262,7 @@ test("real hosted workspace PTY, files, resume and desktop watch/takeover", asyn
     });
     await expect(watch).toHaveCount(1);
     await watch.click();
+    await verifyChannel(2, "desktop", "observer");
     const viewer = page.getByRole("region", {
       name: `Desktop viewer for ${label}`,
       exact: true,
@@ -264,6 +312,7 @@ test("real hosted workspace PTY, files, resume and desktop watch/takeover", asyn
     await page
       .getByRole("button", { name: `Take over ${label}`, exact: true })
       .click();
+    await verifyChannel(3, "desktop", "controller");
     await assertViewer(true);
     await expect
       .poll(() => desktopBytes, { timeout: 15_000 })

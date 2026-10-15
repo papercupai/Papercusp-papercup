@@ -64,11 +64,11 @@ export default function ScheduledRoutinesPane({ onSelect }: { onSelect?: (slug: 
     return { rangeStartMs: now, rangeEndMs: now + 30 * 24 * 60 * 60 * 1000 };
   }, []);
 
-  const { data, loading } = useSyncQuery<ScheduledOccurrenceRow>({
+  const { data, loading, error, invalidate } = useSyncQuery<ScheduledOccurrenceRow>({
     queryName: 'plans.scheduledOccurrences',
     args: window,
   });
-  const occ = useMemo(() => data ?? [], [data]);
+  const occ = useMemo(() => error ? [] : data ?? [], [data, error]);
 
   const routines: RoutineRow[] = useMemo(() => {
     const byPlan = new Map<string, RoutineRow>();
@@ -98,11 +98,16 @@ export default function ScheduledRoutinesPane({ onSelect }: { onSelect?: (slug: 
 
   return (
     <div className="pc-routines">
-      <div className="pc-routines__summary">
+      {!error && <div className="pc-routines__summary">
         <span>{routines.length} scheduled</span>
         <span>{activeCount} active</span>
-      </div>
-      {routines.length === 0 ? (
+      </div>}
+      {error ? (
+        <div className="pc-sched-cal__error" role="alert">
+          <span>Scheduled routines are unavailable.</span>
+          <button type="button" onClick={() => invalidate()} disabled={loading}>Try again</button>
+        </div>
+      ) : routines.length === 0 ? (
         <div className="pc-routines__empty">
           {loading ? 'Loading routines…' : 'No routines scheduled in the next 30 days.'}
         </div>

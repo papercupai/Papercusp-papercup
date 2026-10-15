@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "work-queue-bulk-cleanup P-002 current proof: the three owner-dismissed stale review runs are terminal with nothing left waiting on the owner",
+  "framework": "operational",
+  "command": [
+    "sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-F|", "-v", "ON_ERROR_STOP=1",
+    "-f", "docs/evidence/work-queue-bulk-cleanup-p002-stale-runs-settled-2026-10-06.sql"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T10:37:22Z",
+  "finishedAt": "2026-10-06T10:37:22Z",
+  "summary": "Read-only SQL (BEGIN TRANSACTION READ ONLY) over the live papercusp database, workspace papercusp-workspace. All three runs named in the owner's 2026-10-01 'Dismiss all three' decision exist, are phase=complete (the phase settleRunPhase derives from their rows), and hold zero item rows / findings outside the terminal outcome sets. A positive control shows the same open-row predicate matches 221 other runs, so the zero is a measurement, not an empty instrument.",
+  "assertions": [
+    {
+      "id": "p002-population",
+      "passed": true,
+      "evidence": "S1: 3 of the 3 target run ids are present in harness_shared.attention_bulk_runs (workspace papercusp-workspace)."
+    },
+    {
+      "id": "p002-inbox-bulk-ef1590f9-settled",
+      "passed": true,
+      "evidence": "S2: bulk-ef1590f9-6abe-4072-9389-8857864d2b90 inbox-resolve phase=complete; 158 item rows, 0 open (outcome NULL or outside auto_resolved|dismissed), 144 dismissed."
+    },
+    {
+      "id": "p002-plan-cleanup-bulk-7d35ee41-settled",
+      "passed": true,
+      "evidence": "S2: bulk-7d35ee41-f64f-4150-8e12-35524c481213 plan-cleanup phase=complete; 24 findings, 0 open (outside auto_applied|accepted|dismissed), 13 dismissed."
+    },
+    {
+      "id": "p002-plan-cleanup-bulk-bc6d1eeb-settled",
+      "passed": true,
+      "evidence": "S2: bulk-bc6d1eeb-5609-4881-8731-029b5b102682 plan-cleanup phase=complete; 32 findings, 0 open, 26 dismissed."
+    },
+    {
+      "id": "p002-positive-control",
+      "passed": true,
+      "evidence": "S3: the identical open-item predicate returns 221 runs with at least one open item elsewhere in the workspace (e.g. failed runs holding 200 open rows), so the instrument detects open rows when they exist."
+    }
+  ],
+  "plan": "work-queue-bulk-cleanup-remediation-2026-10-01",
+  "clauses": ["AUTO-BAR-R-1-P-002"],
+  "workItems": ["WI-10004720"],
+  "evidencePlane": "live",
+  "takenAt": "2026-10-06T10:37:22Z",
+  "measuredBy": "su-d5db68ea-f13a-43b1-9b40-909f7528e55b",
+  "promise": "P-002 / activation requirement M-002: dismiss the three stale review runs per the owner decision through the product per-row path, then confirm each run settles to a terminal phase (WI-10004720).",
+  "reproduce": {
+    "sql": "docs/evidence/work-queue-bulk-cleanup-p002-stale-runs-settled-2026-10-06.sql",
+    "command": "sudo -n -u postgres psql -d papercusp -At -F'|' -v ON_ERROR_STOP=1 -f docs/evidence/work-queue-bulk-cleanup-p002-stale-runs-settled-2026-10-06.sql",
+    "output": "docs/evidence/work-queue-bulk-cleanup-p002-stale-runs-settled-2026-10-06.out.txt",
+    "outputSha256Prefix": "fd11fa0a8f04d8dd1127",
+    "sqlSha256Prefix": "0f286b98c81165af59b4"
+  },
+  "writers": [
+    "settleRunPhase (packages/operator-core/lib/attention/bulk-run-store.ts) — derives attention_bulk_runs.phase from item rows (inbox-resolve) or findings rows (plan-cleanup)",
+    "dismissal pass docs/evidence/wi-10004720-dismiss-stale-runs.sh — product routes /api/admin/attention-bulk-resolve dismiss-item and /api/admin/plan-cleanup dismiss-finding (2026-10-01)"
+  ],
+  "disclosures": [
+    "This proves the CURRENT state of the three runs; the product-route dismissal itself happened on 2026-10-01 and is recorded on P-002's note and WI-10004720, not re-run here.",
+    "The 2026-10-01 note recorded 143 inbox rows dismissed in the pass (1 manual + 142 scripted); the run now shows 144 dismissed rows. The plan-cleanup counts (13 and 26) match the note exactly."
+  ],
+  "couldNotDetermine": [
+    "The origin of the 144th dismissed inbox row (dismissed before or outside the 2026-10-01 scripted pass). The open count is 0 either way."
+  ]
+}

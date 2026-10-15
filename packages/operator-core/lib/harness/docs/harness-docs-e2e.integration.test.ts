@@ -24,7 +24,10 @@ const readMigration = (f: string) =>
     .filter((line) => !/^\s*\\/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
     .join('\n');
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, repo: '' }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql, repo: '',
+  stewardDocs: [] as Array<{ docId: string; sourceFile?: string }>,
+}));
 
 // Keep this fixture independent of db-org's generated-schema barrel. The docs flow only
 // needs getOrgPg; the bootstrap imported by operator-core also touches generated tables,
@@ -60,6 +63,12 @@ vi.mock('../workspace-for-harness', () => ({
   resolveWorkspaceForHarness: async (_h: string, ws?: string) => ws ?? 'default',
 }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: async () => ({}) }));
+vi.mock('./doc-steward-dispatch', () => ({
+  dispatchDocStewardForDrift: async (_h: string, _w: string, docs: typeof h.stewardDocs) => {
+    h.stewardDocs = docs;
+    return [];
+  },
+}));
 
 const { recordGeneratedDoc } = await import('./provenance');
 const { buildMergedDocs } = await import('./merged-read');
@@ -353,5 +362,46 @@ describe('harness-docs full flow', () => {
     expect(sweep).not.toBeNull();
     expect(await getDocRecord('demo', 'guides/movable.md')).toBeNull();
     expect((await getDocRecord('demo', 'archive/movable.md'))?.status).toBe('fresh');
+  });
+
+  it('tracks a public file-authoritative source through actual PG, git-sync review and steward routing without a second body', async () => {
+    mkdirSync(join(repo, '.papercusp'), { recursive: true });
+    mkdirSync(join(repo, 'manual'), { recursive: true });
+    writeFileSync(join(repo, '.papercusp/docs.json'), JSON.stringify({
+      root: 'docs', sources: { 'public-manual': 'manual' },
+    }));
+    const body = '---\ntitle: Public quickstart\ndocuments: src/setup.ts\n---\n# Start a task\n';
+    writeFileSync(join(repo, 'manual/quickstart.mdx'), body);
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'add namespaced public manual']);
+    const docId = 'public-manual/quickstart.mdx';
+    const anchored = await anchorManualDoc({ harnessSlug: 'demo', docId, verify: true });
+    expect(anchored.ok).toBe(true);
+    // upsertDocRecord stores COALESCE(content, '') for metadata-only FS rows.
+    // HarnessDocRecord itself intentionally does not expose the prose column.
+    const storedBody = async () => (await h.sql<{ content: string }[]>`
+      SELECT content FROM harness_shared.harness_docs
+       WHERE workspace_id = 'default' AND harness_slug = 'demo' AND doc_id = ${docId}
+    `)[0]?.content;
+    expect(await storedBody()).toBe('');
+    expect((await buildMergedDocs('demo', { activePath: docId })).content).toBe(body);
+    expect(await anchorManualDoc({ harnessSlug: 'demo', docId, content: '# Duplicate' }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('file_authoritative_source') });
+    expect(await recordGeneratedDoc({ harnessSlug: 'demo', docId }))
+      .toMatchObject({ ok: false, error: expect.stringContaining('file_authoritative_source') });
+    const before = git(['rev-parse', 'HEAD']);
+    writeFileSync(join(repo, 'src/setup.ts'), 'export const setup = 99;\n');
+    git(['add', '-A']);
+    git(['commit', '-q', '-m', 'setup workflow changed']);
+    await runDocFreshnessSweepAfterSync({
+      harnessSlug: 'demo', workspaceId: 'default', repoRoot: repo,
+      prevSha: before, headSha: git(['rev-parse', 'HEAD']),
+    });
+    expect((await getDocRecord('demo', docId))?.status).toBe('review');
+    expect(h.stewardDocs.find((doc) => doc.docId === docId)?.sourceFile).toBe('manual/quickstart.mdx');
+    expect(readFileSync(join(repo, 'manual/quickstart.mdx'), 'utf8')).toBe(body);
+    expect(await storedBody()).toBe('');
+    await verifyManualDoc('demo', docId);
+    expect((await getDocRecord('demo', docId))?.status).toBe('fresh');
   });
 });

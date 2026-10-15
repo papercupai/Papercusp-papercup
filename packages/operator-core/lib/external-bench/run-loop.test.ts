@@ -83,7 +83,7 @@ test('the causal-isolation PAIR: external-bench (spine ON) vs coding-solo (spine
 test('instantiateBenchHarness conforms to the InstantiateBenchHarness port type + names the matched-pair blueprint ids', () => {
   const port: InstantiateBenchHarness = instantiateBenchHarness; // compile-time conformance
   assert.equal(typeof port, 'function');
-  assert.equal(FULL_SPINE_BLUEPRINT, 'external-bench');
+  assert.equal(FULL_SPINE_BLUEPRINT, 'su');
   assert.equal(SINGLE_WORKER_BLUEPRINT, 'coding-solo');
 });
 

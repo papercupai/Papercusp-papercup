@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native expired pairing recovery and fresh pairing",
+  "command": [
+    "tools/ios-ci.py:simulator",
+    "--paired-ui",
+    "PapercupUITests/PairFlowUITests/testPublicExpiredPairThenFreshPair"
+  ],
+  "startedAt": "2026-10-14T17:57:35.559518Z",
+  "finishedAt": "2026-10-14T18:05:07.463927Z",
+  "exitCode": 0,
+  "summary": "The maintained native Mac VM iPhone simulator runner passed 60 unit tests, 5 UI smoke tests, and the selected expired-pair/fresh-pair UI test with zero failures and zero skips. The expired code displayed recovery guidance, ordinary relaunch remained unpaired, a fresh code paired and showed the authorized Operator tab, and a subsequent Keychain relaunch retained the paired state. All 279 declared native artifacts were rehashed from the retained archive with zero mismatches; the disposable fixture and private inputs were removed and cleanup was verified.",
+  "assertions": [
+    {
+      "id": "PapercupUITests/PairFlowUITests/testPublicExpiredPairThenFreshPair",
+      "passed": true,
+      "evidence": "paired-ui-summary.json records 1 passed, 0 failed, 0 skipped; paired-ui.log records Executed 1 test, with 0 failures."
+    },
+    {
+      "id": "native phase counts",
+      "passed": true,
+      "evidence": "unit-1-summary.json records 60 passed, 0 failed, 0 skipped; ui-smoke-summary.json records 5 passed, 0 failed, 0 skipped."
+    },
+    {
+      "id": "retained native artifact integrity",
+      "passed": true,
+      "evidence": "local-artifact-verification.json rehashed all 279 result.json artifacts directly from native-artifacts.tar.gz; mismatches is empty."
+    },
+    {
+      "id": "fixture cleanup",
+      "passed": true,
+      "evidence": "The fixture runtime receipt records processCleanupVerified, cloudCleanupVerified and cleanupVerified true. Guest private pair inputs, fixture HOME and both fixture ports were absent after shutdown."
+    }
+  ],
+  "workItemId": "WI-10004735",
+  "sourceWorkItemId": "WI-10007213",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "spec": "AUTO-BAR-R-2-P-008@2",
+  "repository": "papercup-rust-mobile (canonical independent mobile repository)",
+  "sourceCommitAtExecution": "4b14e898f859cce93794f48ac1d47c3cb42bec7c",
+  "sourceDirtyAtExecution": true,
+  "sourceFingerprint": "62ce9c5f3cb16700fcedb03e123d313eafeff3f0bce39bacc7e64b6831aae5b5",
+  "retainedEvidence": {
+    "root": ".papercusp/evidence/WI-10004735-expiry-corrected-20261014T1755Z",
+    "pathBase": "Operating account home directory; retained evidence is outside the staging checkout.",
+    "archive": "native-artifacts.tar.gz",
+    "archiveSha256": "f763c86e6593842d60d4c5304387b4bc7a61935b33a0f982f4f9e4875de34426",
+    "archiveBytes": 7055360,
+    "verificationFile": "local-artifact-verification.json",
+    "verifiedArtifactCount": 279,
+    "mismatches": [],
+    "nativeJobId": "0mv8ex61tlb20yi1331"
+  },
+  "toolchain": {
+    "xcode": "Xcode 16.4 Build 16F6",
+    "simulatorSDK": "18.5",
+    "simulatorRuntime": "iOS 18.6 (22G86)",
+    "device": "iPhone 16 Pro x86_64",
+    "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"
+  },
+  "disclosedGaps": [
+    "This is a selected P-008 expiry/recovery subset; broader P-008 rows remain open.",
+    "The source copy used for this historical simulator run retained dirty guest Git metadata; this receipt is not clean signed-release admission.",
+    "Simulator evidence does not measure physical cellular radio, production APNs delivery, Bluetooth hardware or battery endurance.",
+    "No App Store, TestFlight or final shipment claim is made."
+  ]
+}

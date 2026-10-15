@@ -321,6 +321,9 @@ export async function computeGraderExclusions(
        WHERE cs.workspace_id = ${workspaceId}
          AND cs.responder_id IS NOT NULL
          AND cs.state IN ('active', 'closed_answered', 'graduated')
+         -- P-007 / D-004: critiquing a plan's bars is not implementing them, so a
+         -- bar-critique responder stays eligible to grade that plan's acceptance rubric.
+         AND COALESCE(cs.routing->>'policy', '') <> 'bar-critique'
          AND (cs.origin_task_ref = ${planSlug}
            OR cs.origin_task_ref IN (SELECT feature_id FROM harness_shared.work_items
                                       WHERE workspace_id = ${workspaceId} AND source_plan_slug = ${planSlug}))

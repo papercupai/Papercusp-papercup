@@ -38,6 +38,18 @@
  * rows on this harness) as unattributed — several are deliberate policy-tier human gates, not
  * corruption. Always read via `readWorkItemClaimHoldProvenance` (checks both), never
  * `readWorkItemHeldOpenBy` alone, when auditing why a row is held.
+ *
+ * Plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 D-009 — `clear` with
+ * `reconcile` is the AGENT DOOR to the evidence-based durable-park clearer
+ * (`runWorkItemDurableParkReconciliation`). Before it, that clearer was reachable only
+ * through the `work-item-durable-park-audit` system action with a `mode:'reconcile'`
+ * payload, and `routines:fire` takes no payload — so a park whose release condition had
+ * been met (65 of 108 live parks measured 2026-10-10 had no typed trigger the event
+ * resolver could fire) had no clearer any agent could reach except `force:true`, which
+ * skips the fingerprint/evidence contract entirely. The reconcile path needs no force:
+ * its authority is the evidence plus a compare-and-set on the park's control-state
+ * fingerprint, recorded as a `work_items:durable_park:clear` audit receipt. Never clear
+ * a park by age or by the parker's death (plan D-018/D-022/D-023 of the UBP lineage).
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -49,7 +61,58 @@ import {
   readWorkItemClaimHoldProvenance,
   looksLikePolicyGate,
 } from '../../work-items';
+import {
+  DURABLE_PARK_CLEAR_REASON_CODES,
+  durableParkFingerprint,
+  durableParkSingleReconcileRunId,
+  planDurableParkClear,
+  readDurableParkControlRow,
+  runWorkItemDurableParkReconciliation,
+  type DurableParkReconcileOutcome,
+} from '../../work-items-durable-park-audit';
 import { lookupWorkItem } from './_lookup';
+
+/** What to do next for each non-clearing reconcile outcome (returned beside the verbatim outcome). */
+const RECONCILE_HINTS: Record<Exclude<DurableParkReconcileOutcome, 'cleared'>, string> = {
+  'stale-fingerprint':
+    'The park control state changed since that fingerprint was read. Re-read with reconcile.dryRun:true, re-check ' +
+    'your evidence against the CURRENT park, then retry with the new observedParkFingerprint.',
+  assigned:
+    'The item is claimed (takenBy). A park is never cleared from under a live holder — coordinate with the holder.',
+  'unverified-condition':
+    'The park\'s release condition/trigger contradicts itself (pause/completion/resume), so condition-satisfied ' +
+    'cannot be verified against it. Use the reason code your evidence actually supports.',
+  'not-durable-park': 'claim_hold_by is present but _claimHold is not true — the row is not excluded; nothing to clear.',
+  'already-cleared':
+    'No durable park (claim_hold_by) is present — nothing to clear. A held_open lease, if any, is untouched.',
+  missing: 'No row with this id in this workspace/harness.',
+};
+
+const reconcileArg = z
+  .object({
+    reasonCode: z
+      .enum(DURABLE_PARK_CLEAR_REASON_CODES)
+      .describe(
+        'why the park may end: condition-satisfied (its stated release condition is met) | duplicate-terminal | ' +
+          'review-completed | typed-blocker-resolved | operator-directed (needs ownerOverride:true)',
+      ),
+    evidence: z
+      .string()
+      .trim()
+      .min(1)
+      .max(4000)
+      .describe('concrete, re-checkable proof the condition holds (a sha + containment check, a terminal item id, …) — never age or parker death'),
+    expectedParkFingerprint: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional()
+      .describe('observedParkFingerprint from a dryRun read; omitted ⇒ dry run (nothing is written)'),
+    dryRun: z.boolean().optional().describe('preview the outcome and return observedParkFingerprint; writes nothing'),
+  })
+  .describe(
+    'with clear:true, settle a DURABLE PARK on evidence instead of force: fingerprint compare-and-set + audit receipt ' +
+      '(plan D-009). Read first (dryRun), then re-call with expectedParkFingerprint. A coexisting held_open lease survives.',
+  );
 
 // EI-18672701535825889 / WI-5946: looksLikePolicyGate moved to work-items.ts so
 // work_items:claim's claim-hold guard (claim.ts) shares the SAME predicate instead of a
@@ -62,11 +125,11 @@ export default defineTool({
   profile: 'engineer',
   description:
     'Hold a work-item OPEN without releasing your claim: stamps you as held_open_by (+ reason), excludes it from ' +
-    'claim_next/scheduler self-select, and makes a terminal transition (done/resolved/closed/dropped) by anyone ELSE ' +
-    'refuse until you clear it. { id, reason } to hold; { id, clear:true } to lift. Clearing another agent\'s hold ' +
-    'needs force:true (leader override). ⚠ THIS HOLD IS A LEASE, NOT A PERMANENT FENCE: the WI-4531 dead-owner reaper ' +
-    'lifts it once you are dead past grace, so the item re-enters self-select when your session ends. To fence ' +
-    'anything that must OUTLIVE your session (an owner-gated item, a policy decision), use release { claimHold:true } ' +
+    'claim_next/scheduler self-select, and refuses a terminal transition by anyone ELSE until you clear it. ' +
+    '{ id, reason } to hold; { id, clear:true } to lift (another agent\'s hold needs force:true). A durable park ' +
+    'whose release condition is met: { id, clear:true, reconcile:{ reasonCode, evidence } } — evidence + fingerprint ' +
+    'CAS, no force. ⚠ THIS HOLD IS A LEASE: the WI-4531 dead-owner reaper lifts it once you are dead past grace. A ' +
+    'fence that must OUTLIVE your session (an owner-gated item, a policy decision) needs release { claimHold:true } ' +
     // P-011 prompt-weight: the burn_down audit pointer moved to the free `returns`, beside
     // the not_holder refusal that names the same two conventions (EI-22083648545226771).
     '— a durable PARK (claim_hold_by) no reaper touches.',
@@ -88,7 +151,13 @@ export default defineTool({
       'is refused for a policy-tier reason; a policy-tier reason is also exempt from the reaper, but do NOT rely on ' +
       'reason wording for durability — park it), work_item_unreadable (a READ failure, not a missing item: retry ' +
       'rather than re-filing), clear_failed, hold_failed. Auditing why a row is held? read work_items:burn_down\'s ' +
-      'parked reason — it checks both conventions.',
+      'parked reason — it checks both conventions. Reconcile (plan D-009): dry run → { ok, dryRun:true, outcome, ' +
+      'wouldClear, observedParkFingerprint, ownerOverrideRequired, park }; apply → { ok, outcome, held, clearedFrom, ' +
+      'observedParkFingerprint, preservedLease, runId, artifactPath }. outcome is the reconciler\'s verbatim verdict: ' +
+      'cleared | already-cleared (ok) | stale-fingerprint | assigned | unverified-condition | not-durable-park | ' +
+      'missing (ok:false, error reconcile_<outcome>, + hint). Identical input replays the recorded run. Refusals: ' +
+      'policy_gate_requires_owner_override, operator_directed_requires_owner_override, reconcile_scope_unresolved, ' +
+      'reconcile_failed.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -106,9 +175,11 @@ export default defineTool({
           'REQUIRED (in addition to force) to clear a hold whose reason names a policy-tier gate (a D-NNN decision id, ' +
             'triageDecision:"gate", or "policy-tier") — force:true alone refuses it (EI-18672701535825889).',
         ),
+      reconcile: reconcileArg.optional(),
       harness: z.string().max(80).optional().describe('harness the item lives under (else resolved from the item)'),
     })
-    .refine((a) => a.clear === true || Boolean(a.reason), { message: 'pass { reason } to hold, or { clear:true } to lift' }),
+    .refine((a) => a.clear === true || Boolean(a.reason), { message: 'pass { reason } to hold, or { clear:true } to lift' })
+    .refine((a) => !a.reconcile || a.clear === true, { message: 'reconcile settles a park — pass it with clear:true' }),
   result: z
     .object({
       ok: z.boolean().optional(),
@@ -147,6 +218,124 @@ export default defineTool({
     // not_holder check, no force required), silently clearing another agent's park.
     const provenance = readWorkItemClaimHoldProvenance(item.payload);
     const prior = provenance.heldOpen ?? provenance.parked;
+    const ok = (payload: Record<string, unknown>) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ id: args.id, ...payload }) }],
+    });
+    if (args.clear && args.reconcile) {
+      // D-009: settle a DURABLE PARK on evidence. No `force` and no not_holder check — the
+      // authority is the evidence plus the fingerprint CAS, and the parker is routinely gone.
+      // The two owner-authority gates still apply to the WRITE (a dry run only reads).
+      const rc = args.reconcile;
+      const park = provenance.parked;
+      const policyGated = Boolean(park && park.by !== ident.ownerId && looksLikePolicyGate(park.reason));
+      const ownerOverrideRequired = policyGated || rc.reasonCode === 'operator-directed';
+      const workspaceId = ident.workspaceId ?? null;
+      const harnessSlug = item.harness ?? null;
+      if (!workspaceId || !harnessSlug) {
+        return fail({
+          error: 'reconcile_scope_unresolved',
+          hint: `Could not resolve ${!workspaceId ? 'your workspace' : `the harness of ${args.id}`} — the reconciler is workspace+harness scoped. Pass harness explicitly or retry from a workspace-bound session.`,
+        });
+      }
+      let row: Awaited<ReturnType<typeof readDurableParkControlRow>>;
+      try {
+        row = await readDurableParkControlRow({ workspaceId, harnessSlug, id: item.id });
+      } catch (err) {
+        return fail({
+          error: `work_item_unreadable — could not read the park control state of '${args.id}' (${err instanceof Error ? err.message : String(err)}). This is a READ FAILURE: retry.`,
+        });
+      }
+      if (!row) return fail({ error: 'reconcile_missing', outcome: 'missing', hint: RECONCILE_HINTS.missing });
+      const observedParkFingerprint = durableParkFingerprint({ state: row.state, takenBy: row.takenBy, payload: row.payload });
+      const parkView = park
+        ? { by: park.by, reason: park.reason, at: park.at, releaseCondition: (row.payload as { claim_hold_release?: unknown } | null)?.claim_hold_release ?? null }
+        : null;
+      if (rc.dryRun || !rc.expectedParkFingerprint) {
+        const plan = planDurableParkClear(row, {
+          id: row.id,
+          expectedParkFingerprint: rc.expectedParkFingerprint ?? observedParkFingerprint,
+          reasonCode: rc.reasonCode,
+          evidence: rc.evidence,
+        });
+        return ok({
+          ok: true,
+          dryRun: true,
+          outcome: plan.outcome,
+          // An owner-gated row only clears WITH ownerOverride; reporting wouldClear:true without it
+          // made a batch settler read "cleared" and then hit policy_gate_requires_owner_override.
+          wouldClear: plan.outcome === 'cleared' && (!ownerOverrideRequired || args.ownerOverride === true),
+          observedParkFingerprint,
+          expectedParkFingerprint: rc.expectedParkFingerprint ?? null,
+          preservedLease: plan.preservedLease,
+          takenBy: plan.takenBy,
+          ownerOverrideRequired,
+          park: parkView,
+          next:
+            plan.outcome === 'cleared'
+              ? `Nothing written. To apply, re-call with reconcile.expectedParkFingerprint:"${observedParkFingerprint}" (no dryRun)${ownerOverrideRequired ? ' and ownerOverride:true (owner sign-off only)' : ''}.`
+              : RECONCILE_HINTS[plan.outcome],
+        });
+      }
+      if (policyGated && !args.ownerOverride) {
+        return fail({
+          error: 'policy_gate_requires_owner_override',
+          heldBy: park?.by ?? null,
+          reason: park?.reason ?? null,
+          convention: 'claim_hold (durable park)',
+          hint: `${args.id} is parked for a policy-tier reason — evidence alone does not lift an owner gate. Pass ownerOverride:true only with genuine owner sign-off (EI-18672701535825889).`,
+        });
+      }
+      if (rc.reasonCode === 'operator-directed' && !args.ownerOverride) {
+        return fail({
+          error: 'operator_directed_requires_owner_override',
+          hint: 'reasonCode operator-directed asserts an owner/operator instruction; pass ownerOverride:true with that sign-off cited in evidence, or use the reason code your evidence supports.',
+        });
+      }
+      const decision = {
+        id: row.id,
+        expectedParkFingerprint: rc.expectedParkFingerprint,
+        reasonCode: rc.reasonCode,
+        evidence: rc.evidence,
+      };
+      const runId = durableParkSingleReconcileRunId({ workspaceId, harnessSlug, actor: ident.ownerId, decision });
+      let result: Awaited<ReturnType<typeof runWorkItemDurableParkReconciliation>>;
+      try {
+        result = await runWorkItemDurableParkReconciliation({
+          workspaceId,
+          harnessSlug,
+          actor: ident.ownerId,
+          decisions: [decision],
+          runId,
+        });
+      } catch (err) {
+        return fail({ error: `reconcile_failed — ${err instanceof Error ? err.message : String(err)}`, runId });
+      }
+      const r = result.rows[0];
+      if (!r) return fail({ error: 'reconcile_failed — the reconciler returned no row for the decision', runId });
+      if (r.outcome === 'cleared') {
+        await sendMessage(ident, {
+          to: ['*'],
+          summary: `🔓 ${args.id} durable park CLEARED by ${ident.ownerId} on evidence (${rc.reasonCode}${park ? `; was parked by ${park.by}` : ''}) — ${rc.evidence.slice(0, 120)}`,
+          harnessSlug,
+          extra: { auto: true, lifecycle: 'durable_park_reconcile', work_item: args.id, runId },
+        }).catch(() => {});
+      }
+      const settled = r.outcome === 'cleared' || r.outcome === 'already-cleared';
+      return ok({
+        ok: settled,
+        outcome: r.outcome,
+        ...(settled ? {} : { error: `reconcile_${r.outcome}`, hint: RECONCILE_HINTS[r.outcome as Exclude<DurableParkReconcileOutcome, 'cleared'>] }),
+        ...(r.outcome === 'already-cleared' ? { hint: RECONCILE_HINTS['already-cleared'] } : {}),
+        held: r.outcome === 'cleared' ? r.preservedLease : undefined,
+        clearedFrom: r.outcome === 'cleared' ? (park?.by ?? null) : undefined,
+        observedParkFingerprint: r.observedParkFingerprint,
+        expectedParkFingerprint: r.expectedParkFingerprint,
+        preservedLease: r.preservedLease,
+        takenBy: r.takenBy,
+        runId: result.runId,
+        artifactPath: result.artifactPath,
+      });
+    }
     if (args.clear) {
       if (prior && prior.by !== ident.ownerId) {
         if (looksLikePolicyGate(prior.reason) && !args.ownerOverride) {

@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-013 live resume oracle counterexample: when a cross-backend psu --resume does not deliver the conversation, the session_ports oracle records the port as failed with its cause, never as delivered",
+  "framework": "operational",
+  "command": [
+    "psu --resume <source adv id> --agent <target backend>  (the same live oracle as the P-013 matrix: harness_shared.session_ports status plus the launcher's native-transcript seed verification)",
+    "SELECT id, source_backend, target_backend, status, error, prepared_at, failed_at, delivered_at FROM harness_shared.session_ports WHERE workspace_id='papercusp-workspace' AND status='failed' AND prepared_at > now() - interval '3 days'  (re-read 2026-10-13 ~04:01Z)"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-10-11T19:56:24.404Z",
+  "finishedAt": "2026-10-13T03:01:12.657Z",
+  "summary": "Counterexample for consult-backed-parking-2026-10-12 R-10 (P-013 matrix receipt docs/evidence/cbp-p013-live-resume-matrix-receipt-2026-10-13.json, testRunId 21171242). It shows the live oracle is not vacuous: in four real cross-backend resume attempts where the conversation was NOT delivered, the oracle recorded status=failed with the cause and no delivered_at. One of these (e6222ed0, 2026-10-11, before the P-010 fix) is R-24 measured cause (2): the target bootstrap was refused with HTTP 409 because the owner was already bound to a live adv session. Two (73a4d578, 8ccdeb24, 2026-10-11) aborted seed submission on a quota block. One (1a0587f1, 2026-10-13, inside the P-013 run) failed because two concurrent resumes of one source shared a coord identity and the pty-host single-continuation guard refused the second; re-run sequentially, that pair delivered as 4d15634c. Each assertion below is the R-10 delivery claim for one attempt, and each fails, so this run exits 1.",
+  "assertions": [
+    {
+      "id": "pre-fix-claude-to-codex-owner-bound-409",
+      "passed": false,
+      "evidence": "session_ports e6222ed0-0a0b-4927-adff-98fe874accce: source adv 39975 (claude) -> codex, target adv null, status failed, prepared 2026-10-11T19:56:24.404Z, failed 19:56:24.585Z, delivered_at null. error: 'target bootstrap/spawn failed after preparation: POST /api/agent-mcp/console/bootstrap-su (HTTP 409) - owner_id su-bc44ac7e-de9c-4270-8222-fbc9da93161b is already bound to live adv session 39975 - pre-pinned owners must be fresh'. This is R-24 measured cause (2), before the P-010 fix."
+    },
+    {
+      "id": "pre-fix-claude-to-codex-seed-not-submitted-quota-1",
+      "passed": false,
+      "evidence": "session_ports 73a4d578-7912-48c0-8a8f-4fcf990f225c: source adv 40619 (claude) -> target adv 40844 (codex), status failed, prepared 2026-10-11T20:29:11.895Z, failed 20:29:22.330Z, delivered_at null. error: 'session-port seed was not submitted (submit-verification-aborted-quota-blocked)'."
+    },
+    {
+      "id": "pre-fix-claude-to-codex-seed-not-submitted-quota-2",
+      "passed": false,
+      "evidence": "session_ports 8ccdeb24-3682-4ff6-9286-a954d0fa1694: source adv 40584 (claude) -> target adv 40847 (codex), status failed, prepared 2026-10-11T20:41:23.259Z, failed 20:41:39.217Z, delivered_at null. error: 'session-port seed was not submitted (submit-verification-aborted-quota-blocked)'."
+    },
+    {
+      "id": "p013-run-omp-to-claude-concurrent-identity-refused",
+      "passed": false,
+      "evidence": "session_ports 1a0587f1-667f-4c31-a04e-3a8f3c1d0a57: source adv 42036 (omp) -> target adv 42043 (claude), status failed, prepared 2026-10-13T03:01:09.487Z, failed 03:01:12.657Z, delivered_at null. error: 'managed pty unavailable before session-port seed delivery'. Disclosed and excluded in the P-013 matrix receipt; the identity-sharing behaviour is filed as EI-25832331831534474."
+    }
+  ],
+  "provenance": {
+    "evidencePlane": "staging-operator",
+    "oracle": "harness_shared.session_ports status/error/delivered_at, written by the session-port service (packages/operator-core/lib/session-port/service.ts) and the canonical launcher apps/operator/scripts/psu-launcher.mjs",
+    "plan": "consult-backed-parking-2026-10-12",
+    "items": ["P-013", "P-010"],
+    "workItem": "WI-6554700010009500",
+    "specs": [
+      "consult-backed-parking-2026-10-12#AUTO-BAR-R-10-P-013@4",
+      "consult-backed-parking-2026-10-12#AUTO-BAR-R-10-P-010@4",
+      "consult-backed-parking-2026-10-12#SPEC-P-013@1"
+    ],
+    "pairedPassingRun": "testRunId 21171242 (docs/evidence/cbp-p013-live-resume-matrix-receipt-2026-10-13.json)",
+    "recordedBy": "su-a2d144e1-4576-4511-8c32-3bf4de08bd29"
+  },
+  "disclosures": [
+    "These are observed faults, not an injected mutation. They show the oracle reports non-delivery as failed; they do not by themselves isolate which code change fixed which cause. Per-cause regression proof is R-24's committed tests and mutation probes.",
+    "The three 2026-10-11 rows ran on the code before the P-010 fixes, at a build not recorded in the row; the 2026-10-13 row ran on staging :3170 build 3e8525d881.",
+    "The quota-block failures (73a4d578, 8ccdeb24) are not one of R-24's four measured causes; they are included only because the oracle correctly recorded them as failed."
+  ]
+}

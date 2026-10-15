@@ -22,8 +22,10 @@
  * — a feature inserted afterward is AUTO-drained by the live loop: the REAL
  * migration-102 capture trigger enqueues an outbox row, the LISTEN/poll loop the
  * seam started picks it up, `handle.append` carries it to the own log, and the
- * row's `drained_at` is stamped. A negative control confirms the loop is scoped:
- * a row for a DIFFERENT (workspace, harness) is left undrained.
+ * row's `drained_at` is stamped. LISTEN and managed-poll delivery are exercised
+ * independently; foreign workspace/harness rows and disabled wakes are controls.
+ * Every write follows completion of the initial empty catch-up SELECT, so that
+ * startup work cannot masquerade as a live wake.
  *
  * Real: testcontainer Postgres, the verbatim capture+fill migrations, the real
  * `wireOutboxForHarness` → `startOutboxDrain` loop. Stood in: the corestore/swarm
@@ -36,8 +38,14 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
+import {
+  configureScheduledRegistry,
+  listManaged,
+  resetScheduledRegistry,
+  type TimerHandle,
+} from '@papercusp/scheduled-registry';
 import { wireOutboxForHarness } from '../wire-outbox';
-import type { OutboxDrainHandle } from '../outbox-drain';
+import { DEFAULT_POLL_MS, startOutboxDrain, type StartDrainOptions } from '../outbox-drain';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { makeFakeBootedHandle } from './fake-booted-handle';
 
@@ -217,97 +225,201 @@ async function pollUntil<T>(
   }
 }
 
-describe('EI-521 — wireOutboxForHarness brings the drain loop ONLINE and auto-drains a captured write', () => {
-  it(
-    'a feature written AFTER wireOutboxForHarness is auto-drained by the loop (no manual drainOutboxOnce)',
-    async () => {
-      const db: FreshPgDb = await createFreshPgDb('ei521drain');
-      cleanups.push(() => db.cleanup());
-      await setupSchema(db.sql);
+const POLL_TIMER = 'hyperbee-outbox-drain-poll';
+const OWN_PAYLOAD = `${WORKSPACE_ID}::${HARNESS_SLUG}`;
+const OTHER_HARNESS = 'other-harness';
+const OTHER_WORKSPACE = 'ws-other';
+type WakeMode = 'listen' | 'poll' | 'disabled';
+type DiagnosticEvent = Parameters<NonNullable<StartDrainOptions['onDiagnosticEvent']>>[0];
 
-      const { handle, appended } = makeFakeBootedHandle({
-        workspaceId: WORKSPACE_ID,
-        harnessSlug: HARNESS_SLUG,
-      });
-
-      // THE SEAM under test: the real wiring bootSingleHarness invokes. Returns
-      // the live drain handle (LISTEN + poll). Stop it in cleanup (the fake
-      // handle's registerCloseHook is a no-op, so we hold the stopper directly).
-      const drain: OutboxDrainHandle = await wireOutboxForHarness(handle, db.sql);
-      cleanups.push(() => drain.stop());
-
-      const lenBefore = handle.ownLog.length;
-
-      // Write a local feature → the REAL capture trigger enqueues an outbox row.
-      // (Inserted AFTER wiring, so only the live loop — NOT the boot-time catch-up
-      // drain — can drain it: exactly the joined-member runtime path.)
-      await db.sql`
-        INSERT INTO harness_shared.harness_features_consolidated
-          (harness_slug, feature_id, title, status, attempts, origin, ts, created_ts, updated_ts)
-        VALUES (${HARNESS_SLUG}, 'F-ei521-1', 'EI-521 send-side', 'todo', 0, 'local', 1001, 1001, 1001)
-      `;
-
-      // The trigger enqueued it scoped to the handle's (workspace, harness).
-      const enqueued = await outboxRow(db.sql, 'F-ei521-1');
-      expect(enqueued, 'capture trigger did not enqueue the feature').toBeTruthy();
-      expect(enqueued.workspace_id).toBe(WORKSPACE_ID);
-      expect(enqueued.harness_slug).toBe(HARNESS_SLUG);
-
-      // NO manual drain — the live loop must drain it on its own (NOTIFY or poll).
-      const drained = await pollUntil(
-        async () => {
-          const r = await outboxRow(db.sql, 'F-ei521-1');
-          return r && r.drained_at != null ? r : undefined;
+/** Keep the real boot/drain seam, replacing only its external wake resources. */
+async function wireFixture(db: FreshPgDb, mode: WakeMode) {
+  const fake = makeFakeBootedHandle({ workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG });
+  const selections: number[] = [];
+  const notifications: string[] = [];
+  const stages: DiagnosticEvent[] = [];
+  let listenReady = false;
+  const drain = await wireOutboxForHarness(fake.handle, db.sql, {
+    startOutboxDrain: (handle, pg, options) => {
+      const observedPg = new Proxy(pg, {
+        apply(target, thisArg, args) {
+          const query = Reflect.apply(target, thisArg, args);
+          if (Array.isArray(args[0]) && args[0].join('').includes('WITH priority AS')) {
+            return query.then((rows: unknown[]) => {
+              selections.push(rows.length);
+              return rows;
+            });
+          }
+          return query;
         },
-        { timeoutMs: 10_000, intervalMs: 150 },
-      );
-
-      expect(
-        drained,
-        'the feature was never auto-drained — wireOutboxForHarness did not bring the drain loop online (EI-521)',
-      ).toBeTruthy();
-      // The op actually reached the own log (the drain appended it, log grew).
-      expect(appended.length, 'drain marked drained_at but never appended to the log').toBeGreaterThan(0);
-      expect(handle.ownLog.length).toBeGreaterThan(lenBefore);
+      });
+      return startOutboxDrain(handle, observedPg, {
+        ...options,
+        // The server's shared hub connects to the admin database, not this
+        // freshly-created fixture database. Subscribe to the actual writer DB.
+        listen: async (channel, onNotify) => {
+          if (mode !== 'listen') return () => undefined;
+          const subscription = await pg.listen(channel, (payload) => {
+            notifications.push(payload);
+            onNotify(payload);
+          });
+          listenReady = true;
+          return () => { void subscription.unlisten(); };
+        },
+        // Poll tests retain the production cadence; other modes cannot be
+        // rescued by a poll when their LISTEN assertion is broken.
+        ...(mode === 'poll' ? {} : { pollMs: 0 }),
+        diagnosticsEnabled: true,
+        onDiagnosticEvent: (event) => { stages.push(event); },
+      });
     },
-    30_000,
-  );
+  });
+  cleanups.push(() => drain.stop());
 
-  it(
-    'NEGATIVE CONTROL: the loop is scoped — a row for a DIFFERENT (workspace, harness) is NOT drained',
-    async () => {
-      const db: FreshPgDb = await createFreshPgDb('ei521scope');
-      cleanups.push(() => db.cleanup());
-      await setupSchema(db.sql);
+  expect(await pollUntil(() => selections.length > 0, { timeoutMs: 5000, intervalMs: 25 })).toBe(true);
+  expect(selections).toEqual([0]);
+  // Let the empty pass settle before inserting; the SELECT must have completed,
+  // not merely been submitted while the test races ahead to its INSERT.
+  await new Promise<void>((done) => setImmediate(done));
+  if (mode === 'listen') {
+    expect(await pollUntil(() => listenReady, { timeoutMs: 5000, intervalMs: 25 })).toBe(true);
+  }
+  return { ...fake, selections, notifications, stages };
+}
 
-      // Map a SECOND, unrelated harness slug onto a different workspace.
-      const OTHER_SLUG = 'other-harness';
-      await db.sql`
-        INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id, created_ts, updated_ts)
-        VALUES ('p-other', 'Other', 'active', ${OTHER_SLUG}, 'ws-other', 0, 0)
-      `;
+async function freshFixture(prefix: string) {
+  const db = await createFreshPgDb(prefix);
+  cleanups.push(() => db.cleanup());
+  await setupSchema(db.sql);
+  return db;
+}
 
-      const { handle } = makeFakeBootedHandle({ workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG });
-      const drain = await wireOutboxForHarness(handle, db.sql);
-      cleanups.push(() => drain.stop());
+async function insertFeature(sql: postgres.Sql, key: string, harnessSlug = HARNESS_SLUG) {
+  await sql`
+    INSERT INTO harness_shared.harness_features_consolidated
+      (harness_slug, feature_id, title, status, attempts, origin, ts, created_ts, updated_ts)
+    VALUES (${harnessSlug}, ${key}, 'EI-521 send-side', 'todo', 0, 'local', 1001, 1001, 1001)
+  `;
+}
 
-      // Write under the OTHER harness — the wired loop must ignore it.
-      await db.sql`
-        INSERT INTO harness_shared.harness_features_consolidated
-          (harness_slug, feature_id, title, status, attempts, origin, ts, created_ts, updated_ts)
-        VALUES (${OTHER_SLUG}, 'F-other-1', 'not mine', 'todo', 0, 'local', 1002, 1002, 1002)
-      `;
+/** Each foreign row differs in exactly ONE scope dimension. */
+async function insertForeignRows(sql: postgres.Sql) {
+  await sql`
+    INSERT INTO harness_shared.projects (id, name, status, slug, workspace_id, created_ts, updated_ts)
+    VALUES ('p-other', 'Other', 'active', ${OTHER_HARNESS}, ${WORKSPACE_ID}, 0, 0)
+  `;
+  await insertFeature(sql, 'F-other-harness', OTHER_HARNESS);
+  await sql`UPDATE harness_shared.projects SET workspace_id = ${OTHER_WORKSPACE} WHERE slug = ${HARNESS_SLUG}`;
+  await insertFeature(sql, 'F-other-workspace');
+  await sql`UPDATE harness_shared.projects SET workspace_id = ${WORKSPACE_ID} WHERE slug = ${HARNESS_SLUG}`;
+}
 
-      // Give the loop ample time (well past the poll cadence) to (wrongly) drain it.
-      await new Promise((r) => setTimeout(r, 1500));
-      const other = await outboxRow(db.sql, 'F-other-1');
-      expect(other, 'other harness row should exist').toBeTruthy();
-      expect(other.harness_slug).toBe(OTHER_SLUG);
-      expect(
-        other.drained_at,
-        "the drain loop drained another harness's row — its (workspace, harness) scoping is broken",
-      ).toBeNull();
-    },
-    30_000,
-  );
+async function expectForeignRowsUndrained(sql: postgres.Sql) {
+  expect(await outboxRow(sql, 'F-other-harness')).toMatchObject({
+    workspace_id: WORKSPACE_ID, harness_slug: OTHER_HARNESS, drained_at: null,
+  });
+  expect(await outboxRow(sql, 'F-other-workspace')).toMatchObject({
+    workspace_id: OTHER_WORKSPACE, harness_slug: HARNESS_SLUG, drained_at: null,
+  });
+}
+
+async function expectDelivered(db: FreshPgDb, fixture: Awaited<ReturnType<typeof wireFixture>>, key: string) {
+  const drained = await pollUntil(async () => {
+    const row = await outboxRow(db.sql, key);
+    return row?.drained_at != null ? row : undefined;
+  }, { timeoutMs: 10_000, intervalMs: 25 });
+  expect(drained, JSON.stringify({
+    selections: fixture.selections, notifications: fixture.notifications, stages: fixture.stages,
+    timers: listManaged().filter((timer) => timer.name === POLL_TIMER),
+  })).toMatchObject({ workspace_id: WORKSPACE_ID, harness_slug: HARNESS_SLUG });
+  expect(fixture.appended).toHaveLength(1);
+  expect(fixture.handle.ownLog.length).toBe(1);
+  expect(fixture.selections).toContain(1);
+  expect(fixture.stages).toEqual(expect.arrayContaining([
+    expect.objectContaining({ stage: 'hypercore-append' }),
+    expect.objectContaining({ stage: 'mark-drained' }),
+  ]));
+}
+
+describe('EI-521 — wireOutboxForHarness brings the drain loop ONLINE and auto-drains a captured write', () => {
+  it('LISTEN-only: a post-startup captured write reaches append and drained_at without polling', async () => {
+    const db = await freshFixture('ei521listen');
+    const fixture = await wireFixture(db, 'listen');
+    expect(listManaged().find((timer) => timer.name === POLL_TIMER)).toBeUndefined();
+    await insertFeature(db.sql, 'F-listen');
+    await expectDelivered(db, fixture, 'F-listen');
+    expect(fixture.notifications).toEqual([OWN_PAYLOAD]);
+  }, 30_000);
+
+  it('POLL-only: the registered production-cadence tick drains a captured write with NOTIFY dropped', async () => {
+    const callbacks = new Map<TimerHandle, { fire: () => void; intervalMs: number }>();
+    // Vitest intentionally suppresses default real background intervals. Use
+    // the maintained registry backend, exercising its registered callback (not
+    // drainOutboxOnce) without moving PG's socket/timeout clocks.
+    cleanups.push(() => resetScheduledRegistry());
+    configureScheduledRegistry({
+      setIntervalImpl: (fire, intervalMs) => {
+        const timer: TimerHandle = { unref: () => undefined };
+        callbacks.set(timer, { fire, intervalMs });
+        return timer;
+      },
+      clearIntervalImpl: (timer) => { callbacks.delete(timer); },
+    });
+    const db = await freshFixture('ei521poll');
+    const fixture = await wireFixture(db, 'poll');
+    const timer = listManaged().find((entry) => entry.name === POLL_TIMER);
+    expect(timer).toMatchObject({ intervalMs: DEFAULT_POLL_MS, fires: 0, lastFireAt: null });
+    expect(callbacks.size).toBe(1);
+    const [tick] = callbacks.values();
+    expect(tick.intervalMs).toBe(DEFAULT_POLL_MS);
+    await insertForeignRows(db.sql);
+    await insertFeature(db.sql, 'F-poll');
+    expect(await outboxRow(db.sql, 'F-poll')).toMatchObject({ drained_at: null });
+    expect(fixture.selections).toEqual([0]);
+    expect(fixture.appended).toHaveLength(0);
+
+    tick.fire();
+    await expectDelivered(db, fixture, 'F-poll');
+    expect(fixture.notifications).toEqual([]);
+    expect(listManaged().find((entry) => entry.name === POLL_TIMER)).toMatchObject({
+      fires: 1, lastFireAt: expect.any(Number), lastError: null,
+    });
+    await expectForeignRowsUndrained(db.sql);
+  }, 30_000);
+
+  it('SCOPE CONTROL: foreign harness and workspace NOTIFYs do not wake the live listener', async () => {
+    const db = await freshFixture('ei521scope');
+    const fixture = await wireFixture(db, 'listen');
+    await insertForeignRows(db.sql);
+    expect(await pollUntil(() => fixture.notifications.length === 2, {
+      timeoutMs: 5000, intervalMs: 25,
+    })).toBe(true);
+    expect(fixture.notifications).toEqual(expect.arrayContaining([
+      `${WORKSPACE_ID}::${OTHER_HARNESS}`, `${OTHER_WORKSPACE}::${HARNESS_SLUG}`,
+    ]));
+    await new Promise<void>((done) => setImmediate(done));
+    expect(fixture.selections).toEqual([0]);
+    expect(fixture.appended).toHaveLength(0);
+    await expectForeignRowsUndrained(db.sql);
+
+    // Prove the negative control used a functioning listener, then check that
+    // a matching wake still cannot select either foreign row.
+    await insertFeature(db.sql, 'F-own-after-foreign');
+    await expectDelivered(db, fixture, 'F-own-after-foreign');
+    await expectForeignRowsUndrained(db.sql);
+  }, 30_000);
+
+  it('DISABLED-WAKE CONTROL: startup catch-up cannot drain a later write without LISTEN or poll', async () => {
+    const db = await freshFixture('ei521disabled');
+    const fixture = await wireFixture(db, 'disabled');
+    await insertFeature(db.sql, 'F-disabled');
+    await new Promise((done) => setTimeout(done, 150));
+    expect(await outboxRow(db.sql, 'F-disabled')).toMatchObject({
+      workspace_id: WORKSPACE_ID, harness_slug: HARNESS_SLUG, drained_at: null,
+    });
+    expect(fixture.selections).toEqual([0]);
+    expect(fixture.appended).toHaveLength(0);
+    expect(fixture.notifications).toEqual([]);
+    expect(listManaged().find((timer) => timer.name === POLL_TIMER)).toBeUndefined();
+  }, 30_000);
 });

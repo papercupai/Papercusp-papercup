@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "SPEC-P-001: every P-001 design question has its own recorded plan Decision before the first P-002 code commit",
+  "framework": "shell",
+  "command": [
+    "bash",
+    "-c",
+    "dev:pg_query: SELECT d, min(seq), to_timestamp(min(created_at)/1000.0) FROM harness_shared.plan_revisions CROSS JOIN unnest(ARRAY['D-002','D-003','D-004','D-005','D-006','D-009','D-010','D-011','D-012','D-013']) d WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND plan_slug='agent-multi-desktops-grid-2026-10-06' AND content_snapshot LIKE '%### ' || d || ' %' GROUP BY d; then TZ=UTC git log --reverse --since=2026-10-06T00:00:00Z --format='%cd %h' -- packages/operator-core/lib/agent-tools/computer packages/operator-core/lib/desktop (first P-002 code commit), and git log --since=2026-10-06T06:00:00Z --until=2026-10-06T06:51:02Z over the same paths (must be empty)"
+  ],
+  "startedAt": "2026-10-06T14:12:30.000Z",
+  "finishedAt": "2026-10-06T14:14:00.000Z",
+  "exitCode": 0,
+  "summary": "Oracle is independent of the implementation: the plan's own revision history (harness_shared.plan_revisions, first revision whose body contains each '### D-NNN' heading) against the git commit time of the first P-002 code change. All P-001 design questions map to a Decision recorded no later than 2026-10-06T06:45:22.120Z. The first P-002 code commit is c6aa3f758519329d5f54f52ec79035cbb26e967f at 2026-10-06T06:51:03Z (desktop-lease.ts re-key, new desktop-names.ts, desktop-session-registry.ts). No commit touched packages/operator-core/lib/agent-tools/computer or packages/operator-core/lib/desktop between 06:00Z and 06:51:02Z. D-012 and D-013 (refinements of D-004 and D-006) were also recorded before that commit.",
+  "assertions": [
+    { "id": "q1-per-agent-identity", "passed": true, "evidence": "Question: per-agent desktop identity (registry scope 'agent' keyed by ownerId + agent-chosen name; migration needed?). Answered by D-003, first recorded at plan revision seq 20, 2026-10-06T06:34:10.678Z." },
+    { "id": "q2-lease-map-rekey", "passed": true, "evidence": "Question: re-key the in-process lease Map while keeping pot-shared and hosted-workspace desktops working. Answered by D-004 (seq 22, 06:34:11.191Z), refined by D-012 (seq 34, 06:45:21.712Z)." },
+    { "id": "q3-resolution-order", "passed": true, "evidence": "Question: capability:computer resolution order. Answered by D-005 (seq 23, 06:34:11.397Z)." },
+    { "id": "q4-ownership-rule", "passed": true, "evidence": "Question: ownership rule (an agent drives its own and its pot's shared desktops). Answered by D-005 (seq 23, 06:34:11.397Z)." },
+    { "id": "q5-grid-ui", "passed": true, "evidence": "Question: the grid UI for cloud and local, built on the current cloud Desktops page. Answered by D-009 (seq 27, 06:34:12.313Z)." },
+    { "id": "q6-swarm-view-reevaluation", "passed": true, "evidence": "Question: re-evaluate the old local Swarm live view (AdvFramesTab). Method fixed by D-002 (seq 14, 06:12:26.311Z); outcome recorded as D-011 (seq 29, 06:34:12.736Z)." },
+    { "id": "q7-local-live-transport", "passed": true, "evidence": "Question: local live transport (KasmVNC vs x11vnc tickets). Answered by D-010 (seq 28, 06:34:12.521Z)." },
+    { "id": "provisioning-door", "passed": true, "evidence": "P-002 defers its verb choice to P-001 ('extend computer:provision_desktop or a sibling verb, per P-001'). Answered by D-006 (seq 24, 06:34:11.616Z), refined by D-013 (seq 36, 06:45:22.120Z)." },
+    { "id": "all-before-first-p002-commit", "passed": true, "evidence": "Latest decision timestamp 06:45:22.120Z < first P-002 code commit c6aa3f7585 at 06:51:03Z; no commit on the P-002 paths in 06:00:00Z..06:51:02Z." }
+  ],
+  "plan": "agent-multi-desktops-grid-2026-10-06",
+  "specs": ["SPEC-P-001"],
+  "evidencePlane": "tree"
+}

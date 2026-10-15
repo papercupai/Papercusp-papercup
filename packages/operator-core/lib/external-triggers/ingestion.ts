@@ -35,6 +35,11 @@ export interface CanonicalExternalEvent extends NormalizedExternalEvent {
   sourceId: string;
   datatypeId: string;
   dedupeKey: string;
+  /**
+   * The provider deleted the object. A sink that keeps a copy removes it instead of
+   * storing `payload` as a new version.
+   */
+  deleted?: boolean;
 }
 
 export interface IngestExternalTriggerInput {
@@ -48,6 +53,8 @@ export interface IngestExternalTriggerInput {
   normalize(payload: unknown): Record<string, unknown> | Promise<Record<string, unknown>>;
   occurredAt?: string | null;
   dedupeKey?: string;
+  /** The provider deleted the object (CanonicalExternalEvent.deleted). */
+  deleted?: boolean;
   additionalSinks?: ExternalTriggerSink[];
 }
 
@@ -86,10 +93,26 @@ function assertKeySegments(source: string, event: string): void {
 }
 
 /**
+ * Provider IDs are only unique within a datatype. Legacy delivery rows keep
+ * their `${source}:${externalId}` key, so the first replay after this change
+ * can deliver once again; subsequent replays use this datatype-scoped key.
+ */
+function defaultDedupeKey(source: string, datatypeId: string, externalId: string): string {
+  return `${source}:${datatypeId}:${externalId}`;
+}
+
+/**
  * How long a 'pending' delivery claim is honoured before a replay may reclaim
  * it. Sink deliveries complete in seconds; a claim this old was orphaned.
  */
 export const PENDING_DELIVERY_LEASE_SECONDS = 15 * 60;
+
+/** The sink whose ledger row carries the event payload (see claimDelivery). */
+export const PAYLOAD_BEARING_SINK_KIND = 'event-bus';
+
+export function storesDeliveryPayload(sink: Pick<ExternalTriggerSink, 'kind'>): boolean {
+  return sink.kind === PAYLOAD_BEARING_SINK_KIND;
+}
 
 function sinkIdentity(sink: Pick<ExternalTriggerSink, 'kind' | 'ref'>): string {
   return `${required(sink.kind, 'sink_kind')}\u0000${required(sink.ref, 'sink_ref')}`;
@@ -99,8 +122,36 @@ async function claimDelivery(
   sql: postgres.Sql,
   event: CanonicalExternalEvent,
   sink: Pick<ExternalTriggerSink, 'kind' | 'ref'>,
+  legacyDedupeKey?: string,
 ): Promise<{ row: DeliveryRow; shouldDeliver: boolean }> {
-  const payload = JSON.stringify(event.payload);
+  // The payload is stored ONCE per event, on the event-bus row (WI-10004921): that is
+  // the row trigger_runs.delivery_id points at and the only one anything reads back.
+  // Every other sink row is pure dedupe/outcome ledger — a retry re-delivers the
+  // in-memory event, never a stored copy — so storing it there quadrupled the table.
+  const payload = storesDeliveryPayload(sink) ? JSON.stringify(event.payload) : null;
+  // Keep already-delivered rows idempotent across the key-format change. Rows
+  // created before datatype-scoped defaults used source:externalId. Move only
+  // the row for this datatype; a sibling datatype may legitimately share that
+  // legacy key and must get its own new row. Explicit adapter keys bypass this.
+  if (legacyDedupeKey && legacyDedupeKey !== event.dedupeKey) {
+    await sql`
+      UPDATE harness_shared.trigger_deliveries AS legacy
+         SET dedupe_key = ${event.dedupeKey}, updated_at = now()
+       WHERE legacy.workspace_id = ${event.workspaceId}
+         AND legacy.source_id = ${event.sourceId}
+         AND legacy.dedupe_key = ${legacyDedupeKey}
+         AND legacy.datatype_id = ${event.datatypeId}
+         AND legacy.sink_kind = ${sink.kind}
+         AND legacy.sink_ref = ${sink.ref}
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.trigger_deliveries AS current
+            WHERE current.workspace_id = ${event.workspaceId}
+              AND current.source_id = ${event.sourceId}
+              AND current.dedupe_key = ${event.dedupeKey}
+              AND current.sink_kind = ${sink.kind}
+              AND current.sink_ref = ${sink.ref}
+         )`;
+  }
   const inserted = await sql<DeliveryRow[]>`
     INSERT INTO harness_shared.trigger_deliveries
       (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload,
@@ -238,9 +289,10 @@ export async function ingestExternalTriggerEvent(
     datatypeId,
     externalId,
     occurredAt: input.occurredAt ?? null,
-    dedupeKey: required(input.dedupeKey ?? `${source}:${externalId}`, 'dedupe_key'),
+    dedupeKey: required(input.dedupeKey ?? defaultDedupeKey(source, datatypeId, externalId), 'dedupe_key'),
     payload,
     workspaceId,
+    ...(input.deleted === true ? { deleted: true } : {}),
   };
 
   const emit = deps.emit ?? emitAwaitedEvent;
@@ -261,6 +313,7 @@ export async function ingestExternalTriggerEvent(
           occurredAt: normalized.occurredAt ?? null,
           datatypeId: normalized.datatypeId,
           dedupeKey: normalized.dedupeKey,
+          ...(normalized.deleted ? { deleted: true } : {}),
           payload: normalized.payload,
         },
       });
@@ -297,7 +350,8 @@ export async function ingestExternalTriggerEvent(
 
   const deliveries: ExternalTriggerDeliveryResult[] = [];
   for (const sink of sinks) {
-    const claim = await claimDelivery(sql, canonical, sink);
+    const legacyDedupeKey = input.dedupeKey === undefined ? `${source}:${externalId}` : undefined;
+    const claim = await claimDelivery(sql, canonical, sink, legacyDedupeKey);
     if (!claim.shouldDeliver) {
       deliveries.push({
         sinkKind: sink.kind,

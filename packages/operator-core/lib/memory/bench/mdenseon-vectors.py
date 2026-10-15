@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import resource
 import shutil
+import subprocess
 import time
 
 import numpy as np
@@ -437,14 +438,296 @@ def qualify_incumbent_reference(native_file, out_file):
         json.dump(report, handle)
 
 
+def validate_boundary_request(request):
+    """Fail before weights are loaded; never relax a measured compatibility gate."""
+    if (request.get("formatVersion") != 1 or request.get("model") != MODEL
+            or request.get("revision") != REVISION
+            or request.get("thresholds") != {"minimumCosine": VECTOR_COSINE_FLOOR,
+                                             "maximumAbsoluteError": VECTOR_MAX_ABS_ERROR,
+                                             "ranking": "exact"}
+            or request.get("execution") != {"dtype": "fp32", "intraOpThreads": 4,
+                                            "interOpThreads": 1, "maxLength": 8192}):
+        raise ValueError("boundary identity or fixed gate drift")
+    cases = request.get("cases", [])
+    identifiers = [case["id"] for case in cases]
+    required = {"short-query", "short-document", "unicode", "code", "whitespace", "empty", "full-8192", "over-limit"}
+    if len(set(identifiers)) != len(identifiers) or set(identifiers) != required:
+        raise ValueError("boundary case population incomplete or duplicated")
+    for case in cases:
+        if case.get("kind") not in ("query", "document") or not isinstance(case.get("text"), str):
+            raise ValueError("boundary text/prompt identity missing")
+        if not isinstance(case.get("untruncatedTokens"), int) or case["untruncatedTokens"] < 2:
+            raise ValueError("boundary token measurement missing")
+    lengths = {case["id"]: case["untruncatedTokens"] for case in cases}
+    if lengths["full-8192"] != 8192 or lengths["over-limit"] <= 8192:
+        raise ValueError("8192/over-limit must be real untruncated token lengths")
+    batches = request.get("batches", [])
+    if {b.get("id") for b in batches} != {"padded", "mixed-length"} or len(batches) != 2:
+        raise ValueError("boundary batch population incomplete")
+    for batch in batches:
+        if len(batch.get("caseIds", [])) < 2 or any(i not in required for i in batch["caseIds"]):
+            raise ValueError("unknown or non-batch boundary case")
+    for asset in request.get("assets", []):
+        if (not isinstance(asset.get("path"), str) or not isinstance(asset.get("bytes"), int)
+                or len(asset.get("sha256", "")) != 64):
+            raise ValueError("boundary asset pin missing")
+    if not request.get("assets") or not request.get("snapshot") or not request.get("export"):
+        raise ValueError("boundary reference/export pins missing")
+    return request
+
+
+def freeze_boundary_request(directory, out_file):
+    """New input contract only; reuse the qualified export and pinned snapshot."""
+    snapshot = Path(snapshot_download(MODEL, revision=REVISION, local_files_only=True)).resolve()
+    root = Path(directory).resolve()
+    tokenizer = load_pinned_tokenizer(snapshot)
+    count = lambda text: len(tokenizer(text, truncation=False)["input_ids"])
+    # Binary search publisher-tokenized text, not synthetic input_ids or a
+    # tokenizer-only maximum claim. Execution rechecks these counts per cell.
+    low, high = 1, 8192
+    while low < high:
+        mid = (low + high) // 2
+        if count("document: " + "token " * mid) < 8192:
+            low = mid + 1
+        else:
+            high = mid
+    full = "token " * low
+    if count("document: " + full) != 8192:
+        raise ValueError("cannot construct exact publisher-tokenized8192 text")
+    texts = [("short-query", "query", "parity smoke"),
+             ("short-document", "document", "deterministic boundary validation"),
+             ("unicode", "query", "résumé 東京 naïve façade عربي 👩🏽‍💻 e\u0301"),
+             ("code", "document", "def lookup(key):\n    return cache.get(key, None)\n// λ := 日本語"),
+             ("whitespace", "query", " \t\r\n  "), ("empty", "document", ""),
+             ("full-8192", "document", full), ("over-limit", "document", full + "token " * 64)]
+    cases = [{"id": identifier, "kind": kind, "text": text,
+              "untruncatedTokens": count(f"{kind}: {text}")} for identifier, kind, text in texts]
+    assets = []
+    for base, names in [(snapshot, ["config.json", "tokenizer.json", "tokenizer_config.json", "model.safetensors"]),
+                        (root, ["config.json", "tokenizer.json", "tokenizer_config.json", "export-manifest.json"] +
+                         [str(p.relative_to(root)) for p in (root / "onnx").iterdir() if p.is_file()]),
+                        (Path(__file__).parent, ["mdenseon-vectors.py", "mdenseon_config.py"])]:
+        for name in names:
+            asset = base / name
+            assets.append({"path": str(asset), "sha256": file_sha256(asset), "bytes": asset.stat().st_size})
+    request = validate_boundary_request({"formatVersion": 1, "model": MODEL, "revision": REVISION,
+        "snapshot": str(snapshot), "export": str(root), "assets": assets, "cases": cases,
+        "execution": {"dtype": "fp32", "intraOpThreads": 4, "interOpThreads": 1, "maxLength": 8192},
+        "thresholds": {"minimumCosine": VECTOR_COSINE_FLOOR, "maximumAbsoluteError": VECTOR_MAX_ABS_ERROR, "ranking": "exact"},
+        "batches": [{"id": "padded", "caseIds": ["short-query", "unicode", "code", "whitespace", "empty"]},
+                    {"id": "mixed-length", "caseIds": ["short-query", "full-8192"]}]})
+    with Path(out_file).open("x") as handle:
+        json.dump(request, handle, indent=2)
+    print("boundary request frozen", file_sha256(out_file), flush=True)
+
+
+def boundary_gpu_memory(device):
+    """Timestamp device capacity near inference; never infer historical pressure."""
+    if device != "cuda":
+        return {"status": "not-applicable"}
+    measured_at_ns = time.time_ns()
+    try:
+        result = subprocess.run(["nvidia-smi", "--query-gpu=index,memory.total,memory.used,memory.free",
+                                 "--format=csv,noheader,nounits"], capture_output=True, text=True,
+                                timeout=5, check=True)
+        rows = [row.strip().split(",") for row in result.stdout.strip().splitlines()]
+        devices = [{"index": int(row[0]), "totalMiB": float(row[1]),
+                    "usedMiB": float(row[2]), "freeMiB": float(row[3])} for row in rows]
+        if not devices or any(row["freeMiB"] < 0 or row["totalMiB"] <= 0 for row in devices):
+            raise ValueError("invalid GPU memory query")
+        return {"status": "measured", "measuredAtEpochNs": measured_at_ns, "devices": devices}
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError) as error:
+        return {"status": "unknown", "measuredAtEpochNs": measured_at_ns,
+                "error": {"name": type(error).__name__, "message": str(error)[:1000]}}
+
+
+def boundary_infer(session, inputs, destination, metadata):
+    """Persist independent proof BEFORE a candidate can fail; retain its cause."""
+    reference_path = destination / (metadata["cell"]["id"] + ".reference.json")
+    with reference_path.open("x") as handle:
+        json.dump(metadata, handle)
+    try:
+        return session.run(["last_hidden_state"], inputs)[0]
+    except Exception as error:
+        device = "cuda" if "CUDAExecutionProvider" in metadata.get("sessionProviders", []) else "cpu"
+        failure_memory = boundary_gpu_memory(device)
+        profile = Path(session.end_profiling())
+        failure = {**metadata, "status": "inference-failed", "actual8192Completed": False,
+                   "gpuMemoryAfterFailure": failure_memory,
+                   "referenceFile": {"path": str(reference_path), "sha256": file_sha256(reference_path)},
+                   "error": {"name": type(error).__name__, "message": str(error)},
+                   "profile": {"path": str(profile), "sha256": file_sha256(profile)}}
+        with (destination / (metadata["cell"]["id"] + ".failure.json")).open("x") as handle:
+            json.dump(failure, handle)
+        raise
+
+
+def assert_boundary_provider(session, provider, cuda_tf32):
+    """Verify the effective runtime recipe, including precision, before inference."""
+    if not session.get_providers() or session.get_providers()[0] != provider:
+        raise ValueError(f"session silently fell back: {session.get_providers()}")
+    if provider == "CUDAExecutionProvider":
+        effective = session.get_provider_options().get(provider, {}).get("use_tf32")
+        if cuda_tf32 not in ("0", "1") or effective != cuda_tf32:
+            raise ValueError(f"CUDA precision recipe not honored: requested {cuda_tf32}, effective {effective}")
+
+
+def select_boundary_cells(request, selected_cell):
+    """A batch diagnostic measures its single baselines in the same process."""
+    singles = [{"id": "single-" + case["id"], "caseIds": [case["id"]]} for case in request["cases"]]
+    cells = singles + request["batches"]
+    promised = [cell["id"] for cell in cells]
+    if not selected_cell:
+        return cells, promised
+    selected = [cell for cell in cells if cell["id"] == selected_cell]
+    if len(selected) != 1:
+        raise ValueError("diagnostic selection requires one declared cell")
+    if len(selected[0]["caseIds"]) == 1:
+        return selected, promised
+    baselines = {cell["caseIds"][0]: cell for cell in singles}
+    return [baselines[identifier] for identifier in selected[0]["caseIds"]] + selected, promised
+
+
+def measure_boundaries(request_file, device, out_directory, selected_cell=None, cuda_tf32=None):
+    """Actual graph vs independently loaded PyTorch, one immutable file/cell.
+
+    Python CUDA is a separately named recipe, never evidence that Node's
+    worker used CUDA. Profiling proves which kernels ran, not mere registry.
+    """
+    import onnxruntime as ort
+    from transformers import AutoModel
+
+    # CUDA's implicit TF32 default missed the fixed fp32 vector tolerance in
+    # a paired actual-device probe. Keep explicit TF32-on as a distinct arm.
+    if device == "cuda" and cuda_tf32 is None:
+        cuda_tf32 = "0"
+    request = validate_boundary_request(json.loads(Path(request_file).read_text()))
+    cells, promised_cells = select_boundary_cells(request, selected_cell)
+    for asset in request["assets"]:
+        if Path(asset["path"]).stat().st_size != asset["bytes"] or file_sha256(asset["path"]) != asset["sha256"]:
+            raise ValueError("boundary source/reference/export fingerprint drift")
+    destination = Path(out_directory)
+    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    provider = "CUDAExecutionProvider" if device == "cuda" else "CPUExecutionProvider"
+    if provider not in ort.get_available_providers():
+        raise ValueError(f"required provider absent: {provider}")
+    options = ort.SessionOptions()
+    options.intra_op_num_threads, options.inter_op_num_threads = 4, 1
+    options.enable_profiling = True
+    options.profile_file_prefix = str(destination / "ort-profile")
+    providers = [(provider, {"use_tf32": str(cuda_tf32)})] if device == "cuda" and cuda_tf32 is not None else [provider]
+    session = ort.InferenceSession(str(Path(request["export"]) / "onnx/model.onnx"),
+                                   sess_options=options, providers=providers)
+    session.disable_fallback()
+    assert_boundary_provider(session, provider, cuda_tf32)
+    snapshot = Path(request["snapshot"])
+    reference_tokenizer = load_pinned_tokenizer(snapshot)
+    actual_tokenizer = load_pinned_tokenizer(Path(request["export"]))
+    model = AutoModel.from_pretrained(snapshot, config=load_pinned_config(snapshot),
+                                    attn_implementation="eager", local_files_only=True).eval()
+    cases = {case["id"]: case for case in request["cases"]}
+    singles = {}
+    all_vector_gates_passed = True
+    for cell in cells:
+        started = time.perf_counter()
+        texts = [f"{cases[i]['kind']}: {cases[i]['text']}" for i in cell["caseIds"]]
+        actual = actual_tokenizer(texts, padding=True, truncation=True, max_length=8192, return_tensors="np")
+        reference = reference_tokenizer(texts, padding=True, truncation=True, max_length=8192, return_tensors="pt")
+        for name in ("input_ids", "attention_mask"):
+            if not np.array_equal(actual[name], reference[name].numpy()):
+                raise ValueError(f"independent tokenizer mismatch: {cell['id']} {name}")
+        lengths = actual["attention_mask"].sum(axis=1).astype(int).tolist()
+        if lengths != [min(8192, cases[i]["untruncatedTokens"]) for i in cell["caseIds"]]:
+            raise ValueError("actual boundary tokens differ from frozen counts")
+        ref_start = time.perf_counter()
+        with torch.no_grad():
+            hidden = model(**{name: reference[name] for name in ("input_ids", "attention_mask")}).last_hidden_state.numpy()
+        expected = normalized_cls(hidden)
+        del hidden
+        reference_ms = (time.perf_counter() - ref_start) * 1000
+        actual_start = time.perf_counter()
+        inputs = {name: actual[name].astype(np.int64) for name in ("input_ids", "attention_mask")}
+        metadata = {"formatVersion": 1, "cell": cell, "requestSha256": file_sha256(request_file),
+                    "deviceRecipe": f"python-ort-{device}-fp32-tf32-{cuda_tf32 if cuda_tf32 is not None else 'default'}",
+                    "sessionProviders": session.get_providers(), "providerOptions": session.get_provider_options(),
+                    "inputShapeActuallySubmitted": list(inputs["input_ids"].shape), "tokenLengths": lengths,
+                    "tokenIdsEqual": True, "inputIds": inputs["input_ids"].tolist(),
+                    "gpuMemoryBeforeInference": boundary_gpu_memory(device),
+                    "referenceVectors": expected.tolist(), "referenceMs": reference_ms}
+        vectors = normalized_cls(boundary_infer(session, inputs, destination, metadata))
+        inference_ms = (time.perf_counter() - actual_start) * 1000
+        comparison = compare_vectors(vectors, expected, cell["caseIds"])
+        passed = comparison["minimumCosine"] >= VECTOR_COSINE_FLOOR and comparison["maximumAbsoluteError"] <= VECTOR_MAX_ABS_ERROR
+        batch_comparison = None
+        if len(cell["caseIds"]) == 1:
+            singles[cell["caseIds"][0]] = vectors[0]
+        else:
+            batch_comparison = compare_vectors(vectors, np.asarray([singles[i] for i in cell["caseIds"]]), cell["caseIds"])
+            passed = passed and batch_comparison["minimumCosine"] >= VECTOR_COSINE_FLOOR and batch_comparison["maximumAbsoluteError"] <= VECTOR_MAX_ABS_ERROR
+        all_vector_gates_passed = all_vector_gates_passed and bool(passed)
+        report = {**metadata,
+                  "inputShapeActuallyInferred": list(inputs["input_ids"].shape), "tokenLengths": lengths,
+                  "tokenIdsEqual": True, "inputIds": inputs["input_ids"].tolist(),
+                  "referenceVectors": expected.tolist(), "actualVectors": vectors.tolist(),
+                  "referenceParity": comparison, "singleBatchParity": batch_comparison,
+                  "passedFixedVectorGates": bool(passed), "inferenceMs": inference_ms,
+                  "referenceMs": reference_ms, "wallMs": (time.perf_counter() - started) * 1000,
+                  "versions": {p: package_version(p) for p in ["torch", "transformers", "onnxruntime", "tokenizers"]}}
+        with (destination / (cell["id"] + ".json")).open("x") as handle:
+            json.dump(report, handle)
+        print("boundary cell", cell["id"], lengths, "fixed gates", passed, flush=True)
+    profile = Path(session.end_profiling())
+    nodes = [event for event in json.loads(profile.read_text()) if event.get("cat") == "Node" and event.get("args", {}).get("provider")]
+    providers = sorted({event["args"]["provider"] for event in nodes})
+    if provider not in providers or (device == "cuda" and not any(event["args"].get("provider") == provider
+            and event["args"].get("op_name") in ("MatMul", "Gemm", "Attention", "FusedMatMul") for event in nodes)):
+        raise ValueError(f"profiling does not prove requested compute provider: {providers}")
+    ordered = [case["id"] for case in request["cases"] if case["id"] in singles]
+    actual_vectors = np.asarray([singles[i] for i in ordered])
+    reference_vectors = np.asarray([json.loads((destination / ("single-" + i + ".json")).read_text())["referenceVectors"][0] for i in ordered])
+    # Stable ordering over the same eight frozen inputs, including near ties.
+    ranks = lambda vectors: np.argsort(-(vectors @ vectors.T), axis=1, kind="stable").tolist()
+    ranking_equal = ranks(actual_vectors) == ranks(reference_vectors)
+    summary = {"formatVersion": 1, "requestSha256": file_sha256(request_file),
+               "deviceRecipe": metadata["deviceRecipe"], "providerOptions": session.get_provider_options(),
+               "actualProviderVerifiedByProfile": True, "providersWithExecutedKernels": providers,
+               "profile": {"path": str(profile), "sha256": file_sha256(profile)},
+               "rankingsEqual": ranking_equal, "passedFixedVectorGates": all_vector_gates_passed,
+               "diagnosticOnly": bool(selected_cell), "fullPopulationCompatible": bool(not selected_cell and all_vector_gates_passed and ranking_equal),
+               "notChecked": [identifier for identifier in promised_cells if identifier not in [cell["id"] for cell in cells]],
+               "actualRankings": ranks(actual_vectors), "referenceRankings": ranks(reference_vectors),
+               "peakRssMB": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+               "cells": [cell["id"] for cell in cells]}
+    with (destination / "summary.json").open("x") as handle:
+        json.dump(summary, handle, indent=2)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out")
     parser.add_argument("--export-onnx", help="New local Transformers.js model directory")
     parser.add_argument("--validate-onnx", help="Validate and finalize an existing ONNX export")
     parser.add_argument("--reference-native", help="Qualify incumbent native results against pinned Python ONNX/tokenizer reference")
+    parser.add_argument("--freeze-boundaries", help="Freeze new input/batch cells using an existing pinned export")
+    parser.add_argument("--boundary-request", help="Measure actual graph inference against independently tokenized pinned PyTorch")
+    parser.add_argument("--boundary-device", choices=["cpu", "cuda"], default="cpu")
+    parser.add_argument("--boundary-cell", help="One declared diagnostic cell plus its single-input batch baselines, never full-population proof")
+    parser.add_argument("--boundary-cuda-tf32", choices=["0", "1"], help="Explicit separately identified CUDA arithmetic recipe")
     parser.add_argument("--corpus", choices=["memory", "prose", "both"], default="both")
     args = parser.parse_args()
+    if args.freeze_boundaries:
+        if not args.out:
+            parser.error("--freeze-boundaries requires --out")
+        freeze_boundary_request(args.freeze_boundaries, args.out)
+        return
+    if args.boundary_request:
+        if not args.out:
+            parser.error("--boundary-request requires a new --out directory")
+        torch.set_num_threads(4)
+        torch.set_num_interop_threads(1)
+        measure_boundaries(args.boundary_request, args.boundary_device, args.out,
+                           args.boundary_cell, args.boundary_cuda_tf32)
+        return
     if args.reference_native:
         if not args.out:
             parser.error("--reference-native requires --out")

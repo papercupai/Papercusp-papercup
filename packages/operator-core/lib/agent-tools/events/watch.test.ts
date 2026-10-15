@@ -17,9 +17,44 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async () => ({ handle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 }, note: 'resumable' })),
 }));
+// WI-10005697: the await store is faked as a tiny IN-MEMORY ROW STORE rather than a pair
+// of canned answers, so "register the identical standing watch twice" is a real
+// idempotency assertion driven end-to-end through the handler. The fake lives in the
+// vi.mock factory on purpose — installing it per-test via mockImplementation would need an
+// `as never` cast, which raises the shrink-only lint:mock-cast-escape ratchet.
+const fakeStore = vi.hoisted(() => {
+  const rows: Array<Record<string, unknown>> = [];
+  return { rows, reset: () => void (rows.length = 0) };
+});
 vi.mock('../../events/await/store', () => ({
-  registerAwait: vi.fn(async (i: Record<string, unknown>) => ({ id: 1, eventKey: i.eventKey, once: i.once, minSleepSec: i.minSleepSec, urgency: i.urgency, expiresTs: null, timeoutBehavior: i.timeoutBehavior })),
+  registerAwait: vi.fn(async (i: Record<string, unknown>) => {
+    const row = {
+      id: fakeStore.rows.length + 1,
+      eventKey: i.eventKey,
+      once: i.once,
+      minSleepSec: i.minSleepSec ?? null,
+      urgency: i.urgency ?? false,
+      expiresTs: null,
+      timeoutBehavior: i.timeoutBehavior,
+      payloadFilter: i.payloadFilter ?? null,
+    };
+    fakeStore.rows.push(row);
+    return row;
+  }),
   cancelAwait: vi.fn(async () => true),
+  // Identity mirrors the finder's SQL: event key + canonical payload filter + wake floor
+  // + urgency, over standing deadline-free rows.
+  findMatchingActiveStandingWatch: vi.fn(
+    async (q: Record<string, unknown>) =>
+      fakeStore.rows.find(
+        (r) =>
+          r.once === false &&
+          r.eventKey === q.eventKey &&
+          JSON.stringify(r.payloadFilter ?? null) === JSON.stringify(q.payloadFilter ?? null) &&
+          (r.minSleepSec ?? null) === (q.minSleepSec ?? null) &&
+          (r.urgency ?? false) === (q.urgency ?? false),
+      ) ?? null,
+  ),
 }));
 vi.mock('../../events/await/engine', () => ({
   startAwaitSweeper: vi.fn(),
@@ -54,6 +89,17 @@ vi.mock('../../events/await/predicate-watch', () => ({
   registerPredicateWatch: vi.fn(async (i: Record<string, unknown>) => ({ ...i, intervalSec: i.intervalSec ?? 60, lastEval: null, active: true })),
   startPredicateWatchPoller: vi.fn(),
   evalPredicateWatch: vi.fn(async () => ({ fired: false, matched: false, deactivated: false })),
+  resolvePredicateToolEffect: (projected: { effect?: unknown; effectForCall?: (args: unknown) => unknown }, args: unknown) => {
+    if (projected.effectForCall) {
+      try {
+        const effect = projected.effectForCall(args);
+        return effect === 'read' || effect === 'write' ? effect : 'unknown';
+      } catch {
+        return 'unknown';
+      }
+    }
+    return projected.effect === 'read' || projected.effect === 'write' ? projected.effect : 'unknown';
+  },
   // P-004 dedup: default no match — the individual dedup tests below override this.
   findMatchingActivePredicateWatch: vi.fn(async () => null),
 }));
@@ -64,7 +110,7 @@ vi.mock('../coordination/event-subscriptions', () => ({ subscribeEventKey: vi.fn
 
 import watch from './watch';
 import { lookupByMcpName, toArgsJsonSchema } from '@papercusp/agent-mcp';
-import { registerAwait, cancelAwait } from '../../events/await/store';
+import { registerAwait, cancelAwait, findMatchingActiveStandingWatch } from '../../events/await/store';
 import { deliverToSpecificAwaits } from '../../events/await/engine';
 import { registerPredicateWatch, evalPredicateWatch, findMatchingActivePredicateWatch } from '../../events/await/predicate-watch';
 import { subscribeTopic } from '../coordination/topics';
@@ -78,7 +124,12 @@ const call = async (args: Record<string, unknown>) => {
   return JSON.parse(res.content[0].text);
 };
 
-beforeEach(() => vi.clearAllMocks());
+// WI-10005697: the in-memory fake await store (vi.mock factory above) persists across
+// tests, and its row ids are observable in assertions, so it resets with the mocks.
+beforeEach(() => {
+  vi.clearAllMocks();
+  fakeStore.reset();
+});
 
 describe('watch routing', () => {
   it('wake:false (default) → inject path: a standing topic subscription, no await', async () => {
@@ -261,6 +312,38 @@ describe('WI-4014 Part 2: targetKind routing (wake:false only)', () => {
   });
 });
 
+describe('EI-25370968486651341: payload-filter validation before registration', () => {
+  const validate = compileJsonSchema(toArgsJsonSchema('watch:create', watch.args as never));
+
+  it.each([
+    { all: [{ harness: 'papercusp' }, 'note', 'prose'] },
+    { any: [false] },
+    { all: [{ not: { some: { require: 1, of: [null] } } }] },
+    { some: { require: 0, of: [{ kind: 'bug' }] } },
+  ])('rejects malformed recursive filters in both the callable and published schemas: %j', (payload_filter) => {
+    const args = { pattern: 'work-item:claimable', wake: true, once: false, payload_filter };
+    expect(watch.args.safeParse(args).success).toBe(false);
+    expect(validate(args)).toBe(false);
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('accepts and registers the scoped fleet filter without changing its contents', async () => {
+    const payload_filter = {
+      all: [
+        { harness: { equals: 'papercusp' } },
+        { any: [{ kind: { in: ['bug', 'change', 'task'] } }, { id: 'WI-1' }] },
+        { not: { state: 'done' } },
+      ],
+    };
+    const args = { pattern: 'work-item:claimable', wake: true, once: false, payload_filter };
+    expect(watch.args.safeParse(args).success).toBe(true);
+    expect(validate(args)).toBe(true);
+    const out = await call(args);
+    expect(out.watch.payload_filter).toEqual(payload_filter);
+    expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toEqual(payload_filter);
+  });
+});
+
 describe('P-008 predicate watch routing', () => {
   const predicate = { tool: 'work_items:list', path: 'counts.open', op: 'gt', value: 5 };
 
@@ -337,8 +420,39 @@ describe('P-008 predicate watch routing', () => {
     expect(registerPredicateWatch).not.toHaveBeenCalled();
   });
 
+  it('allows an argument-classified read call on a tool whose default effect is write', async () => {
+    const effectForCall = vi.fn((args: unknown) => (args as { op?: string }).op === 'get' ? 'read' : 'write');
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'write', effectForCall } as never);
+    const readArgs = { op: 'get' };
+    const predicate = {
+      tool: 'release:repair-queue',
+      args: readArgs,
+      path: 'repairQueue.admissionPrecheck.status',
+      op: 'ne',
+      value: 'running',
+    };
+
+    await call({ pattern: 'repair queue precheck', wake: true, predicate });
+
+    expect(effectForCall).toHaveBeenCalledWith(readArgs);
+    expect(registerPredicateWatch).toHaveBeenCalledWith(expect.objectContaining({ tool: 'release:repair-queue', args: readArgs }));
+  });
+
+  it('still refuses an argument-classified write call before anything registers', async () => {
+    const effectForCall = vi.fn((args: unknown) => (args as { confirm?: boolean }).confirm ? 'write' : 'read');
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'write', effectForCall } as never);
+    const writeArgs = { op: 'admit', confirm: true };
+    const writePredicate = { ...predicate, tool: 'release:repair-queue', args: writeArgs };
+
+    await expect(call({ pattern: 'repair queue admission', wake: true, predicate: writePredicate })).rejects.toThrow(/effect=write/);
+
+    expect(effectForCall).toHaveBeenCalledWith(writeArgs);
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(registerPredicateWatch).not.toHaveBeenCalled();
+  });
+
   it('happy path: await registers FIRST on the synthetic key, then the watch row, then ONE inline eval', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
     const out = await call({ pattern: 'open backlog high', wake: true, predicate, interval_sec: 30 });
     const awaitArg = vi.mocked(registerAwait).mock.calls[0][0] as Record<string, unknown>;
     expect(String(awaitArg.eventKey)).toMatch(/^predicate:[0-9a-f-]{36}$/);
@@ -355,8 +469,8 @@ describe('P-008 predicate watch routing', () => {
   });
 
   it('an inline first-eval ERROR unwinds the await and throws (no dangling waiter)', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
-    vi.mocked(evalPredicateWatch).mockResolvedValueOnce({ fired: false, matched: false, deactivated: false, error: 'role gate: denied' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
+    vi.mocked(evalPredicateWatch).mockResolvedValueOnce({ fired: false, matched: false, deactivated: false, error: 'role gate: denied' });
     await expect(call({ pattern: 'b', wake: true, predicate })).rejects.toThrow(/inline first eval.*role gate/s);
     expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 1, subscriberId: 'su-watcher' });
   });
@@ -373,7 +487,7 @@ describe('P-004 predicate watch dedupe (EI-8998)', () => {
   };
 
   it('an identical active predicate JOINS the existing poller — no new row, no inline eval', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
     vi.mocked(findMatchingActivePredicateWatch).mockResolvedValueOnce(existingRow as never);
     const out = await call({ pattern: 'open backlog high', wake: true, predicate, interval_sec: 30 });
 
@@ -388,7 +502,7 @@ describe('P-004 predicate watch dedupe (EI-8998)', () => {
   });
 
   it('joining a row that is ALREADY true fires the new subscriber immediately, without a key-wide emit', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
     vi.mocked(findMatchingActivePredicateWatch).mockResolvedValueOnce({ ...existingRow, lastEval: true, lastValue: 9 } as never);
     const out = await call({ pattern: 'open backlog high', wake: true, predicate, interval_sec: 30 });
 
@@ -400,7 +514,7 @@ describe('P-004 predicate watch dedupe (EI-8998)', () => {
   });
 
   it('the dedup lookup is scoped by workspace/role/harness/tool/args/path/op/value/interval/once', async () => {
-    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as never);
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'read' } as ReturnType<typeof lookupByMcpName>);
     await call({ pattern: 'open backlog high', wake: true, predicate, interval_sec: 30 });
     expect(findMatchingActivePredicateWatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -414,5 +528,71 @@ describe('P-004 predicate watch dedupe (EI-8998)', () => {
         once: true,
       }),
     );
+  });
+});
+
+describe('WI-10005697: standing pattern watch dedupe', () => {
+  // The motivating key on purpose: 'work-item:claimable' carries both a '-' and a ':',
+  // the separators normalizeEventKey() strips. The finder compares the key EXACTLY for
+  // that reason, and this case fails if that ever regresses to a normalized compare.
+  const claimable = { pattern: 'work-item:claimable', wake: true, once: false, payload_filter: { id: 'WI-1' } };
+
+  it('the drained-lane contract is IDEMPOTENT: the identical standing watch twice yields ONE row + a deduped marker', async () => {
+    const first = await call({ ...claimable });
+    const second = await call({ ...claimable });
+
+    expect(registerAwait).toHaveBeenCalledTimes(1); // the second registration inserted nothing
+    expect(fakeStore.rows).toHaveLength(1);
+    expect(first.deduped).toBeUndefined();
+    expect(second.deduped).toMatchObject({ joined_watch_id: first.watch.id });
+    expect(second.watch.id).toBe(first.watch.id);
+    expect(second.watch.payload_filter).toMatchObject({ id: 'WI-1' });
+  });
+
+  it('CALIBRATION: a DIFFERING payload_filter is a different watch and still gets its own row', async () => {
+    const a = await call({ ...claimable, payload_filter: { id: 'WI-1' } });
+    const b = await call({ ...claimable, payload_filter: { id: 'WI-2' } });
+
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+    expect(fakeStore.rows).toHaveLength(2);
+    expect(a.deduped).toBeUndefined();
+    expect(b.deduped).toBeUndefined();
+    expect(b.watch.id).not.toBe(a.watch.id);
+  });
+
+  it('CALIBRATION: a differing wake floor / urgency is a different watch and still gets its own row', async () => {
+    await call({ ...claimable });
+    await call({ ...claimable, min_sleep_sec: 600 });
+    await call({ ...claimable, urgency: true });
+
+    expect(registerAwait).toHaveBeenCalledTimes(3);
+    expect(fakeStore.rows).toHaveLength(3);
+  });
+
+  it('the dedupe identity is scoped by subscriber + key + payload filter + floor + urgency', async () => {
+    await call({ ...claimable, min_sleep_sec: 120, urgency: true });
+    expect(findMatchingActiveStandingWatch).toHaveBeenCalledWith({
+      subscriberId: 'su-watcher',
+      eventKey: 'work-item:claimable',
+      payloadFilter: { id: 'WI-1' },
+      minSleepSec: 120,
+      urgency: true,
+    });
+  });
+
+  it('a ONE-SHOT wake is OUT of scope — it is consumed by its fire, so the dedupe never runs', async () => {
+    await call({ pattern: 'feature:settled', wake: true, once: true });
+    await call({ pattern: 'feature:settled', wake: true, once: true });
+
+    expect(findMatchingActiveStandingWatch).not.toHaveBeenCalled();
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+  });
+
+  it('a DEADLINE-bearing standing watch is OUT of scope — its expiry is per-registration state', async () => {
+    await call({ ...claimable, timeout_sec: 600 });
+    await call({ ...claimable, timeout_sec: 600 });
+
+    expect(findMatchingActiveStandingWatch).not.toHaveBeenCalled();
+    expect(registerAwait).toHaveBeenCalledTimes(2);
   });
 });

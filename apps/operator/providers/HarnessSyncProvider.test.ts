@@ -34,11 +34,64 @@ const {
   reportIpcAssertionTimeout,
   useIpcCarriesFetch,
   resolveHarnessSyncTransport,
+  reportSyncTransportFallback,
 } = await import("./HarnessSyncProvider");
 
 beforeEach(() => {
   invoke.mockReset();
   syncMetrics.__resetForTests();
+});
+
+describe('reportSyncTransportFallback', () => {
+  it('delivers hosted transport outcomes to the authenticated hosted browser ingress', async () => {
+    vi.stubGlobal('window', {
+      __PAPERCUSP_HOSTED_BROWSER__: {
+        version: 1, controlPlaneWorkspaceId: 'control-plane',
+        restEndpoint: '/api/hosted/browser', sseEndpoint: '/api/hosted/browser/sse',
+        workspaceHostEndpoints: {
+          connection: '/api/hosted/browser/workspace-hosts/connection',
+          provision: '/api/hosted/browser/workspace-hosts/provision',
+          action: '/api/hosted/browser/workspace-hosts/action',
+        },
+      },
+    });
+    const fetch = vi.fn(async () => new Response(null, { status: 202 }));
+    vi.stubGlobal('fetch', fetch);
+    reportSyncTransportFallback('browser-sync-transport', {
+      eligible: 1, applied: 1, reason: 'applied', scope: 'SSE',
+    });
+    expect(fetch).toHaveBeenCalledWith('/api/hosted/browser/fallback-observation', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ kind: 'fallback-observation', payload: {
+        source: 'sync-transport', mechanism: 'browser-sync-transport', eligible: 1,
+        applied: 1, reason: 'applied', scope: 'SSE',
+      } }),
+    }));
+  });
+
+  it('uses the existing local ingress and sends only typed counts and transport names', async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 202 }));
+    vi.stubGlobal('fetch', fetch);
+    reportSyncTransportFallback('browser-sync-transport', {
+      eligible: 1, applied: 0, reason: 'preferred-unavailable', scope: 'SSE',
+      ...{ message: 'secret', url: '/private' },
+    });
+    await Promise.resolve();
+    expect(fetch).toHaveBeenCalledWith('/api/desktop/telemetry-report', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'fallback-observation', payload: {
+        source: 'sync-transport', mechanism: 'browser-sync-transport', eligible: 1, applied: 0,
+        reason: 'preferred-unavailable', scope: 'SSE',
+      } }),
+    });
+  });
+
+  it('does not reject into the sync caller when local diagnostics are unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+    expect(() => reportSyncTransportFallback('browser-sync-transport', {
+      eligible: 1, applied: 1, reason: 'applied', scope: 'SSE',
+    })).not.toThrow();
+    await Promise.resolve();
+  });
 });
 
 afterEach(() => {
@@ -99,6 +152,42 @@ describe('resolveMaxInFlightFetches', () => {
 });
 
 describe('assertIpcCarriesFetch (D-047)', () => {
+  it('observes renderer timers during a pending reply and releases both timers on receipt', async () => {
+    vi.useFakeTimers();
+    let resolve!: (value: { client: string }) => void;
+    invoke.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const assertion = assertIpcCarriesFetch();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(syncMetrics.snapshot().ipcAssertion![0].renderer).toMatchObject({ timerTicks: 5, stopReason: null });
+    resolve({ client: 'connected' });
+    expect(await assertion).toBe(true);
+    expect(syncMetrics.snapshot().ipcAssertion![0].renderer).toMatchObject({ timerTicks: 5, stopReason: 'reply' });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bounds an unanswered invoke probe and retains the deadline when its reply arrives later', async () => {
+    vi.useFakeTimers();
+    let resolve!: (value: { client: string }) => void;
+    invoke.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const assertion = assertIpcCarriesFetch();
+    await vi.advanceTimersByTimeAsync(30_000);
+    const expired = syncMetrics.snapshot().ipcAssertion![0].renderer!;
+    expect(expired.stopReason).toBe('deadline');
+    expect(vi.getTimerCount()).toBe(0);
+    resolve({ client: 'connected' });
+    expect(await assertion).toBe(true);
+    expect(syncMetrics.snapshot().ipcAssertion![0].renderer).toEqual(expired);
+  });
+
+  it('releases the renderer probe when invoke rejects', async () => {
+    vi.useFakeTimers();
+    invoke.mockRejectedValue(new Error('native failure'));
+    expect(await assertIpcCarriesFetch()).toBe(false);
+    expect(syncMetrics.snapshot().ipcAssertion![0]).toMatchObject({ error: 'native failure',
+      renderer: { stopReason: 'reply' } });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('dispatches the startup IPC assertion without waiting for another module load', async () => {
     invoke.mockResolvedValue({ client: 'connected' });
     const assertion = assertIpcCarriesFetch();
@@ -130,6 +219,21 @@ describe('assertIpcCarriesFetch (D-047)', () => {
     expect(completed.completedAtMs).toBeGreaterThanOrEqual(completed.invokeCompletedAtMs!);
     expect(pending[0].invokeCompletedAtMs).toBeNull();
     expect(pending[0].completedAtMs).toBeNull();
+  });
+
+  it('translates native snapshot time onto the page clock without folding it into invoke duration', async () => {
+    invoke.mockResolvedValue({ client: 'connected',
+      snapshotStartedAtUnixMs: performance.timeOrigin + 250, snapshotDurationMs: 0.75 });
+    await expect(assertIpcCarriesFetch()).resolves.toBe(true);
+    expect(syncMetrics.snapshot().ipcAssertion![0]).toMatchObject({
+      nativeStartedAtMs: 250, nativeDurationMs: 0.75, client: 'connected',
+    });
+  });
+
+  it('keeps native timing absent for an older shell response', async () => {
+    invoke.mockResolvedValue({ client: 'connected' });
+    await expect(assertIpcCarriesFetch()).resolves.toBe(true);
+    expect(syncMetrics.snapshot().ipcAssertion![0].nativeDurationMs).toBeUndefined();
   });
 
   it('is true ONLY for a connected IPC client', async () => {

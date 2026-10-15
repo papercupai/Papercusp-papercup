@@ -31,7 +31,8 @@ import { z } from 'zod';
 import { defineTool, readJsonResult } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { readIssueClaimability } from '../../scheduler/get-next';
+import { performance } from 'node:perf_hooks';
+import { readIssueClaimability, type IssueClaimabilityReadStage } from '../../scheduler/get-next';
 import { formatLowSeverityShare } from '../../scheduler/admitted-composition-format';
 import { planItemLaneBlockReason } from '../../scheduler/plan-item-lane-guard';
 import { filingGraceSec } from '../../work-items';
@@ -52,13 +53,86 @@ import {
   type CountEvidenceBundle,
   type CountExactness,
 } from '../../count-evidence-contract';
+import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 
-const ISSUE_KINDS = ['bug', 'change', 'task'] as const;
+// P-009 / D-022: the issue-family routing list has ONE definition; this tool only routes
+// by it (the claimability decision is the work predicate inside get-next's issue path).
+const ISSUE_KINDS = ISSUE_FAMILY_ROUTE_KINDS;
 
 export interface ClaimableHarnessScope {
   requested: string;
   resolved: string;
   resolution: 'requested' | 'hive-home';
+}
+
+/**
+ * EI-23772523186892689: the caller-effective spec vs the spec the caller's FLEET stores.
+ * A per-agent (`cup`) claim-spec row always outranks the fleet-inherited one, so a fleet
+ * leader/member holding such a row reads a count for a lane that is NOT their fleet's —
+ * and `claimableCallerScope` alone only said peers' COUNTS may differ, never that they may
+ * be on a different SPEC. That framing invited reading a 0 as "my fleet has no work" and
+ * rewriting a correct fleet claim spec (the destructive remedy).
+ */
+export interface CallerFleetSpecComparison {
+  fleetSlug: string;
+  callerSpecId: string;
+  /** The fleet's stored spec id; null when the fleet's sentinel row could not be read. */
+  fleetSpecId: string | null;
+  fleetSpecRevision: number | null;
+  /** true = different specs; false = same spec id; null = the fleet's spec was unreadable. */
+  diverges: boolean | null;
+}
+
+async function compareCallerSpecToFleet(args: {
+  workspaceId: string | undefined;
+  ownerId: string;
+  callerSpecId: string;
+}): Promise<CallerFleetSpecComparison | undefined> {
+  if (!args.workspaceId) return undefined;
+  try {
+    const { latestFleetMembership } = await import('../../fleet-membership-store');
+    const membership = await latestFleetMembership(args.workspaceId, args.ownerId);
+    const fleetSlug = membership?.fleetSlug;
+    // Not in a fleet (or an explicit leave): a per-agent spec has no fleet to diverge from.
+    if (!fleetSlug) return undefined;
+    const resolved = await resolveFleetClaimSpec({ spec: fleetSlug, workspaceId: args.workspaceId }).catch(
+      () => null,
+    );
+    // Only a match on the fleet-slug namespace is THIS fleet's spec; a specId/revN hit would
+    // be some other fleet's row wearing a coincident name.
+    if (!resolved || resolved.matchedBy !== 'fleet-slug') {
+      return { fleetSlug, callerSpecId: args.callerSpecId, fleetSpecId: null, fleetSpecRevision: null, diverges: null };
+    }
+    const fleetSpecId = resolved.record.spec.specId ?? null;
+    return {
+      fleetSlug,
+      callerSpecId: args.callerSpecId,
+      fleetSpecId,
+      fleetSpecRevision: resolved.record.revision,
+      diverges: fleetSpecId === null ? null : fleetSpecId !== args.callerSpecId,
+    };
+  } catch {
+    // A comparison that could not be made is simply absent — never a reason to fail the read.
+    return undefined;
+  }
+}
+
+function describeCallerFleetSpecNote(c: CallerFleetSpecComparison | undefined): string {
+  if (!c || c.diverges === false) return '';
+  if (c.diverges === null) {
+    return (
+      ` ⚠ CALLER SPEC MAY DIFFER FROM YOUR FLEET'S: this count is the caller-effective lane (a per-agent spec ` +
+      `'${c.callerSpecId}' that overrides fleet '${c.fleetSlug}'), and that fleet's own spec could not be read. ` +
+      `Read the fleet lane with spec:'${c.fleetSlug}' before concluding anything about its backlog.`
+    );
+  }
+  return (
+    ` ⚠ CALLER SPEC ≠ YOUR FLEET'S SPEC: this count is the caller-effective lane — a per-agent spec ` +
+    `'${c.callerSpecId}' that overrides fleet '${c.fleetSlug}' (spec '${c.fleetSpecId}'` +
+    `${c.fleetSpecRevision !== null ? ` rev ${c.fleetSpecRevision}` : ''}). It says NOTHING about that fleet's ` +
+    `claimable backlog: a 0 here does not mean the fleet has no work, and is no reason to rewrite its claim spec. ` +
+    `Read the fleet lane with spec:'${c.fleetSlug}'.`
+  );
 }
 
 export default defineTool({
@@ -76,9 +150,9 @@ export default defineTool({
     //     kind='bug' filter matches ZERO rows and reads exactly like a drained queue.
     //   · An unrecognized or ambiguous `spec` returns { ok:false, error, candidates } — never a silent
     //     whole-backlog fallback, which would look like a suddenly-huge lane.
-    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `queueControl` separates active claims, hold-open leases, durable parks, and agent review (overlapping axes); `sampleExcluded` adds provenance, age, and UNPARK-condition detail without changing legacy floor fields.",
+    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. These review fields differ: `excludedSample.agentReview` samples rows blocked from ordinary issue claims and can include `revision-requested` reviews; it is not the pending-review queue. `excludedSample.queueControl.agentReview` lists pending reviewer candidates only. `queueControl` also separates active claims, hold-open leases, and durable parks; `sampleExcluded` adds provenance, age, and UNPARK-condition detail without changing legacy floor fields.",
   guidance: {
-    when: "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. SSOT, not raw SQL or the claimable view.",
+    when: "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. Work-predicate SSOT; not raw SQL/view.",
     notWhen:
       "Taking an item → work_items:claim / claim_next / scheduler:get_next (this only reports). Feature-family (F-…) claimability, or a backlog incl. gated rows → work_items:list. `includeObservations` is intentionally unsupported: observation-lane rows are never claimable. Curate them with work_items:list/work_items:search { includeObservations:true }, or pass sampleExcluded here to inspect them under the observationLane exclusion floor.",
     chaining:
@@ -177,7 +251,7 @@ export default defineTool({
       .max(10)
       .optional()
       .describe(
-        'also return `excludedSample`: up to this many ids PER FLOOR (taken/claimHold/needsHuman/…, same overlapping-bucket semantics as excludedBreakdown) — the ROW-LEVEL diagnostic companion to the counts, answering "which items" instead of just "how many" without raw SQL. Omit to skip (cheaper — one extra bounded query per call when set).',
+        'Valid values are 1 through 10 (maximum 10 ids per floor). Also return `excludedSample`: up to this many ids PER FLOOR (taken/claimHold/needsHuman/…, same overlapping-bucket semantics as excludedBreakdown) — the ROW-LEVEL diagnostic companion to the counts, answering "which items" instead of just "how many" without raw SQL. Omit to skip (cheaper — one extra bounded query per call when set).',
       ),
   }),
   async handler(args, ctx) {
@@ -238,6 +312,8 @@ export default defineTool({
       state: 'active',
       reason: null,
     };
+    // EI-23772523186892689: set only when a per-agent spec overrides the caller's fleet spec.
+    let callerFleetSpec: CallerFleetSpecComparison | undefined;
     if (args.spec) {
       const resolved = await resolveFleetClaimSpec({ spec: args.spec, workspaceId: ws }).catch(() => undefined);
       if (resolved === undefined) {
@@ -348,6 +424,15 @@ export default defineTool({
           ...(callerRecord.fleetSlug ? { fleetSlug: callerRecord.fleetSlug } : {}),
           matchedBy: 'caller-effective',
         };
+        // A per-agent row outranks the fleet-inherited one; say so when the caller leads or
+        // belongs to a fleet whose own spec is therefore NOT the lane this count describes.
+        if (callerRecord.source === 'cup') {
+          callerFleetSpec = await compareCallerSpecToFleet({
+            workspaceId: ws,
+            ownerId: assignee,
+            callerSpecId: callerRecord.spec.specId,
+          });
+        }
         if (callerRecord.source === 'fleet' && callerRecord.fleetSlug) {
           const pause = await readFleetPauseState(
             {
@@ -390,11 +475,36 @@ export default defineTool({
     // reached a caller and was read as a claim-path defect. A read failure THROWS here
     // rather than degrading to a partial or zeroed reading: "could not measure" must not
     // masquerade as "measured none" when the answer drives a drain/wind-down call.
-    const { breakdown, rows: claimableRows, sample: excludedSample, admitted } = await readIssueClaimability(
-      filter,
-      { harness, states, assignee, rigAvailable: args.rigAvailable, spec },
-      { limit, breakdownOnly: args.breakdownOnly, sampleLimit: args.sampleExcluded },
-    );
+    const readStartedAt = performance.now();
+    const readStageMs: Partial<Record<IssueClaimabilityReadStage, number>> = {};
+    let reading;
+    try {
+      reading = await readIssueClaimability(
+        filter,
+        { harness, states, assignee, rigAvailable: args.rigAvailable, spec },
+        {
+          limit,
+          breakdownOnly: args.breakdownOnly,
+          sampleLimit: args.sampleExcluded,
+          onStageTiming: (stage, elapsedMs) => {
+            readStageMs[stage] = elapsedMs;
+          },
+        },
+      );
+    } catch (error) {
+      try {
+        ctx.log(`[work_items:claimable:timing] ${JSON.stringify({
+          level: 'warn',
+          outcome: 'error',
+          readElapsedMs: Math.max(0, Math.round(performance.now() - readStartedAt)),
+          readStageMs,
+        })}`);
+      } catch {
+        // Diagnostic logging must not alter claimability failure behavior.
+      }
+      throw error;
+    }
+    const { breakdown, rows: claimableRows, sample: excludedSample, admitted } = reading;
 
     // EI-21834285144372521: `readIssueClaimability`'s SQL floors (ALL_ISSUE_CLAIM_FLOORS_PASS)
     // have no notion of a plan's PROSE owner-gate ("owner-gated" / "hard-deferred" / … in an
@@ -417,17 +527,30 @@ export default defineTool({
     // lane". Omitted per-row when null, so an ordinary block reads exactly as it does today.
     const ownerGateExcluded: Array<{ id: string; plan: string; reason: string; staleBlockedHint?: string }> = [];
     const claimable: typeof claimableRows = [];
+    const planLaneGuardStartedAt = performance.now();
+    let planLinkedRowsChecked = 0;
+    let blockedPlanRows = 0;
+    let slowestPlanGuardMs = 0;
+    let slowestPlanGuardRowId: string | undefined;
     for (const row of claimableRows) {
       if (!row.plan) {
         claimable.push(row);
         continue;
       }
+      planLinkedRowsChecked += 1;
       // Fails OPEN like every sibling guard in plan-item-lane-guard.ts: a lookup error here
       // must never turn a real claimable row into a false exclusion.
+      const rowGuardStartedAt = performance.now();
       const block = await planItemLaneBlockReason({ id: row.id, harness, family: 'issue', payload: null }).catch(
         () => null,
       );
+      const rowGuardElapsedMs = Math.max(0, Math.round(performance.now() - rowGuardStartedAt));
+      if (rowGuardElapsedMs > slowestPlanGuardMs) {
+        slowestPlanGuardMs = rowGuardElapsedMs;
+        slowestPlanGuardRowId = row.id;
+      }
       if (block) {
+        blockedPlanRows += 1;
         ownerGateExcluded.push({
           id: row.id,
           plan: row.plan,
@@ -437,6 +560,24 @@ export default defineTool({
       } else {
         claimable.push(row);
       }
+    }
+    try {
+      ctx.log(`[work_items:claimable:timing] ${JSON.stringify({
+        level: 'info',
+        outcome: 'ok',
+        readElapsedMs: Math.max(0, Math.round(performance.now() - readStartedAt)),
+        readStageMs,
+        planLaneGuard: {
+          elapsedMs: Math.max(0, Math.round(performance.now() - planLaneGuardStartedAt)),
+          rowsScanned: claimableRows.length,
+          planLinkedRowsChecked,
+          blockedPlanRows,
+          slowestPlanGuardMs,
+          ...(slowestPlanGuardRowId ? { slowestPlanGuardRowId } : {}),
+        },
+      })}`);
+    } catch {
+      // Diagnostic logging must never change claimability output.
     }
     // Exact when the whole matched population fit in this page (claimable.length < limit, or
     // the SQL count already equalled the page); a monotonic UNDER-correction (never negative,
@@ -575,6 +716,9 @@ export default defineTool({
         callerRelative: true,
         filingGraceSeconds,
         peerReadinessMayDiffer: filingGraceSeconds > 0,
+        /** EI-23772523186892689: present only when a per-agent spec overrides the caller's
+         * fleet spec — names BOTH lanes so a fleet leader cannot read this count as the fleet's. */
+        ...(callerFleetSpec ? { fleetSpecComparison: callerFleetSpec } : {}),
       },
       /** The authoritative count: rows passing spec_match AND every claim floor, MINUS any
        *  plan-linked row this page found to be owner-gated in plan prose (EI-21834285144372521;
@@ -635,6 +779,9 @@ export default defineTool({
         (fleetWindingDown
           ? ` ⚠ FLEET WINDING DOWN${fleetControl.reason ? `: ${fleetControl.reason}` : ''} — the caller-effective spec is still reported above, but fleet control blocks NEW work, so claimableCount/rows are forced to zero; matchedByFilter is diagnostic only.`
           : '') +
+        // EI-23772523186892689: like WI-7316 below, this changes the reader's CONCLUSION about
+        // an empty result (it is a different lane's count), so it leads the warning block.
+        describeCallerFleetSpecNote(callerFleetSpec) +
         // WI-7316: leads the warning block on purpose — it is the only one that changes the
         // reader's CONCLUSION about an empty result rather than qualifying a number in it.
         staleBlockedNote +

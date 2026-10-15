@@ -6,6 +6,8 @@ import {
   FROZEN_REPAIR_CONVERGENCE_HOLD_MS,
   FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP,
   FROZEN_REPAIR_CONVERGENCE_ROUND_CAP,
+  FROZEN_REPAIR_ROUND_GATE_ID_CAP,
+  frozenRepairRoundExecution,
   createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
   describeUnreadableFrozenCandidateRepairQueue,
@@ -17,6 +19,7 @@ import {
   frozenRepairHeadAwaitsVerification,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
+  settleFrozenRepairAdmission,
   markFrozenRepairAgeEscalated,
   markFrozenRepairExhausted,
   markFrozenRepairFixerDead,
@@ -97,6 +100,43 @@ describe('frozen-candidate repair queue', () => {
     expect(
       parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pinned)))?.admissionPrecheck,
     ).toMatchObject({ sourceCommit: C2 });
+    // P-007 (green-main-cycle-time-2026-10-08#D-037): the radius partition survives the queue
+    // round-trip; a malformed one rejects the record rather than silently re-admitting its files.
+    const radius = {
+      status: 'measured' as const,
+      reason: 'ok',
+      detail: '1 workspace(s)',
+      guarded: ['lib/near.test.ts'],
+      reportOnly: ['lib/red-leg.test.ts'],
+      legs: { 'lib/near.test.ts': '@t/a', 'lib/red-leg.test.ts': '@t/b' },
+    };
+    const withRadius = {
+      ...pending,
+      admissionPrecheck: {
+        ...pending.admissionPrecheck!,
+        files: ['lib/a.test.ts', 'lib/near.test.ts', 'lib/red-leg.test.ts'],
+        totalCount: 3,
+        radius,
+      },
+    };
+    expect(
+      parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(withRadius)))?.admissionPrecheck?.radius,
+    ).toEqual(radius);
+    for (const bad of [
+      { ...radius, status: 'maybe' },
+      { ...radius, reason: '' },
+      { ...radius, guarded: ['lib/not-in-files.test.ts'] },
+      { ...radius, reportOnly: ['lib/near.test.ts'] },
+      { ...radius, status: 'skipped' },
+      { ...radius, legs: { 'lib/near.test.ts': '' } },
+      { ...radius, legs: [] },
+    ]) {
+      expect(
+        parseFrozenCandidateRepairQueue({ ...withRadius, admissionPrecheck: { ...withRadius.admissionPrecheck, radius: bad } })
+          ?.admissionPrecheck,
+        JSON.stringify(bad),
+      ).toBeUndefined();
+    }
     const admitted = markFrozenRepairAdmitted(parsed!, {
       atMs: T0 + 3,
       actor: 'su-test',
@@ -159,6 +199,40 @@ describe('frozen-candidate repair queue', () => {
     const malformed = parseFrozenCandidateRepairQueue({ ...queue, admissions: [{ ...admission, patch: { ...patch, sha256: 'bad' } }] });
     expect(malformed?.admissions?.[0]).toMatchObject({ mode: 'committed-patch' });
     expect(malformed?.admissions?.[0]).not.toHaveProperty('patch');
+  });
+
+  it("carries a newer build's admission keys through parse and persist (WI-6554700010009930)", () => {
+    const patch = { commit: C1, parent: C, sha256: 'f'.repeat(64) };
+    const admission = {
+      atMs: T0 + 1, actor: 'su-test', source: { ref: C2, sha: C2 },
+      fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+      blobs: { 'lib/a.test.ts': C1 }, mode: 'committed-patch' as const, patch,
+      reason: 'explicit reviewed missing-capture repair',
+    };
+    const raw = JSON.parse(JSON.stringify(markFrozenRepairAdmitted(fresh(), admission)));
+    raw.admissions[0].futureAudit = { reviewer: 'su-next' };
+    const parsed = parseFrozenCandidateRepairQueue(raw);
+    expect(parsed?.admissions?.[0]).toMatchObject({ futureAudit: { reviewer: 'su-next' }, mode: 'committed-patch', patch });
+    const reread = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(parsed)));
+    expect(reread?.admissions?.[0]).toHaveProperty('futureAudit', { reviewer: 'su-next' });
+    // A key the parser read and rejected stays dropped (the malformed-patch case above).
+    raw.admissions[0].patch = { ...patch, sha256: 'bad' };
+    expect(parseFrozenCandidateRepairQueue(raw)?.admissions?.[0]).not.toHaveProperty('patch');
+  });
+
+  it('round-trips exact consumed hunk identities without consuming a later row', () => {
+    const admission = {
+      atMs: T0 + 100, actor: 'su-test', source: { ref: C2, sha: C2 },
+      fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+      blobs: { 'lib/a.test.ts': C1 }, mode: 'hunk-exact' as const,
+      hunks: { 'lib/a.test.ts': { applied: 1, agents: ['su-test'] } }, ledgerRowIds: [11],
+    };
+    const queue = markFrozenRepairAdmitted(fresh(), admission);
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(parsed?.admissions?.[0]?.ledgerRowIds).toEqual([11]);
+    expect(parsed?.admissions?.[0]?.ledgerRowIds).not.toContain(12);
+    const legacy = parseFrozenCandidateRepairQueue({ ...queue, admissions: [{ ...admission, ledgerRowIds: undefined }] });
+    expect(legacy?.admissions?.[0]).not.toHaveProperty('ledgerRowIds');
   });
 
   it('persists the first red as an unassigned serialized queue without moving C', () => {
@@ -1615,9 +1689,10 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
       failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
       nowMs: T0 + 1_000,
     });
+    // P-007 (#D-040): lib/b.test.ts is newly red; a red at the candidate has no admission to own it.
     expect(second.convergenceRounds).toEqual([
       { round: 1, head: C, failingCount: 1, atMs: T0 },
-      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000 },
+      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000, attributions: [{ entry: 'test-file:lib/b.test.ts', basis: 'none', admissions: [] }] },
     ]);
   });
 
@@ -1696,6 +1771,29 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
     expect(parsed!.convergenceRounds).toEqual([{ round: 1, head: C, failingCount: 5, atMs: T0 }]);
   });
 
+  it("a newer build's keys on a round survive this build's read-modify-write (WI-6554700010009930)", () => {
+    // The live incident: an older parser rebuilt rounds from a fixed key list, so every write
+    // from the older build stripped the `executed` record the newer gate had appended. A key
+    // this build does not know must ride through parse -> mutate -> persist -> parse unchanged.
+    const futureRound = { round: 1, head: C, failingCount: 5, atMs: T0, futureEvidence: { files: 3 } };
+    const parsed = parseFrozenCandidateRepairQueue({ ...readyToVerify(), convergenceRounds: [futureRound] });
+    expect(parsed!.convergenceRounds![0]).toEqual(futureRound);
+    const next = markFrozenRepairVerificationRed(parsed!, { repairHead: C, failingTests: [], nowMs: T0 + 1_000 });
+    const reread = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(next)));
+    expect(reread!.convergenceRounds![0]).toEqual(futureRound);
+    // The round THIS build appended carries no invented key.
+    expect(reread!.convergenceRounds).toHaveLength(2);
+    expect(reread!.convergenceRounds![1]).not.toHaveProperty('futureEvidence');
+  });
+
+  it('a round key the parser read and REJECTED is never revived by the carry-forward', () => {
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...readyToVerify(),
+      convergenceRounds: [{ round: 1, head: C, failingCount: 5, atMs: T0, executed: 'not-a-record' }],
+    });
+    expect(parsed!.convergenceRounds).toEqual([{ round: 1, head: C, failingCount: 5, atMs: T0 }]);
+  });
+
   it('summarizes a converging cycle: monotonic shrink to a smaller set', () => {
     const queue = readyToVerify({
       failingTests: ['lib/a.test.ts'],
@@ -1767,6 +1865,140 @@ describe('P-013 / D-007 — convergence rounds + the owner-visible off switch', 
     expect(decideFrozenConvergenceCycleEntry({ flagEnabled: true, hasOpenQueue: true })).toEqual(
       decideFrozenConvergenceCycleEntry({ flagEnabled: false, hasOpenQueue: true }),
     );
+  });
+});
+
+describe('WI-10007489 — each red round records the radius it EXECUTED', () => {
+  function readyToVerify(overrides: Partial<FrozenCandidateRepairQueue> = {}): FrozenCandidateRepairQueue {
+    return { ...fresh(), phase: 'ready-to-verify', attempts: 1, fixerSpawnId: 'spawn-1', ...overrides };
+  }
+
+  const targeted = frozenRepairRoundExecution({
+    mode: 'targeted',
+    fileKeys: ['lib/b.test.ts', 'lib/a.test.ts', 'lib/a.test.ts'],
+    gateIds: ['lint:tsc', 'operator-core:test'],
+    radiusMode: 'repair-ledger',
+  });
+
+  it('the builder counts de-duplicated files and digests them independent of order', () => {
+    expect(targeted).toMatchObject({
+      mode: 'targeted',
+      fileCount: 2,
+      gateIds: ['lint:tsc', 'operator-core:test'],
+      radiusMode: 'repair-ledger',
+    });
+    expect(targeted.filesDigest).toMatch(/^[0-9a-f]{16}$/);
+    const reordered = frozenRepairRoundExecution({
+      mode: 'targeted',
+      fileKeys: ['lib/a.test.ts', 'lib/b.test.ts'],
+    });
+    expect(reordered.filesDigest).toBe(targeted.filesDigest);
+    // A different set must not collide with this one, or the digest proves nothing.
+    const other = frozenRepairRoundExecution({ mode: 'targeted', fileKeys: ['lib/a.test.ts'] });
+    expect(other.filesDigest).not.toBe(targeted.filesDigest);
+  });
+
+  it('an empty file set records a ZERO count and no digest; an uncounted full run records no count', () => {
+    const empty = frozenRepairRoundExecution({ mode: 'targeted', fileKeys: [] });
+    expect(empty.fileCount).toBe(0);
+    expect(empty.filesDigest).toBeUndefined();
+    const full = frozenRepairRoundExecution({ mode: 'full' });
+    // Absent, never 0: a full run whose files were not counted did not run zero files.
+    expect(Object.hasOwn(full, 'fileCount')).toBe(false);
+    expect(full).toEqual({ mode: 'full', gateIds: [] });
+  });
+
+  it('gate ids are capped so the persisted row stays bounded', () => {
+    const many = Array.from({ length: FROZEN_REPAIR_ROUND_GATE_ID_CAP + 9 }, (_, i) => `gate-${i}`);
+    const record = frozenRepairRoundExecution({ mode: 'targeted', gateIds: many });
+    expect(record.gateIds).toHaveLength(FROZEN_REPAIR_ROUND_GATE_ID_CAP);
+    expect(record.gateIds[0]).toBe('gate-0');
+  });
+
+  it('a repair-head red stores the executed radius on the round it appends', () => {
+    const next = markFrozenRepairVerificationRed(readyToVerify(), {
+      repairHead: C,
+      failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+      nowMs: T0 + 1_000,
+      executed: targeted,
+    });
+    expect(next.convergenceRounds).toEqual([
+      { round: 1, head: C, failingCount: 1, atMs: T0 },
+      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000, executed: targeted, attributions: [{ entry: 'test-file:lib/b.test.ts', basis: 'none', admissions: [] }] },
+    ]);
+  });
+
+  it('a superseded red and an opening candidate red record it too', () => {
+    const admitted = markFrozenRepairAdmitted(readyToVerify(), {
+      atMs: T0 + 500,
+      actor: 'su-peer',
+      source: { ref: 'staging', sha: C1 },
+      fromRepairHead: C,
+      toRepairHead: C1,
+      paths: ['lib/a.ts'],
+      unchanged: [],
+      blobs: {},
+    });
+    const superseded = recordFrozenRepairSupersededRed(admitted, {
+      measuredHead: C,
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0 + 1_000,
+      executed: frozenRepairRoundExecution({ mode: 'full' }),
+    });
+    expect(superseded.convergenceRounds?.at(-1)?.executed).toEqual({ mode: 'full', gateIds: [] });
+
+    // The gate's opening red: a ready-to-test candidate measured red by the full suite.
+    const readyToTest = createFrozenCandidateQueue({
+      candidate: C,
+      base: BASE,
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0,
+    });
+    const opened = markFrozenCandidateVerificationRed(readyToTest, {
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0 + 2_000,
+      executed: frozenRepairRoundExecution({ mode: 'full' }),
+    });
+    expect(opened.convergenceRounds).toEqual([
+      { round: 1, head: C, failingCount: 1, atMs: T0 + 2_000, executed: { mode: 'full', gateIds: [] } },
+    ]);
+  });
+
+  it('the executed record survives a persist + parse round trip', () => {
+    const next = markFrozenRepairVerificationRed(readyToVerify(), {
+      repairHead: C,
+      failingTests: ['lib/a.test.ts'],
+      nowMs: T0 + 1_000,
+      executed: targeted,
+    });
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(next)));
+    expect(parsed?.convergenceRounds?.at(-1)?.executed).toEqual(targeted);
+  });
+
+  it('LEGACY: a round with no executed record parses unchanged and gains no field', () => {
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...readyToVerify(),
+      convergenceRounds: [{ round: 1, head: C, failingCount: 3, atMs: T0 }],
+    });
+    expect(parsed?.convergenceRounds).toEqual([{ round: 1, head: C, failingCount: 3, atMs: T0 }]);
+    expect(Object.hasOwn(parsed!.convergenceRounds![0]!, 'executed')).toBe(false);
+  });
+
+  it('a malformed executed record is dropped while its ROUND is kept', () => {
+    const parsed = parseFrozenCandidateRepairQueue({
+      ...readyToVerify(),
+      convergenceRounds: [
+        { round: 1, head: C, failingCount: 3, atMs: T0, executed: { mode: 'partial', gateIds: [] } },
+        { round: 2, head: C, failingCount: 2, atMs: T0 + 1, executed: { mode: 'full', gateIds: 'lint:tsc' } },
+        { round: 3, head: C, failingCount: 1, atMs: T0 + 2, executed: { mode: 'full', fileCount: -1, gateIds: [] } },
+        { round: 4, head: C, failingCount: 1, atMs: T0 + 3, executed: { mode: 'full', filesDigest: 'NOT-HEX', gateIds: [] } },
+      ],
+    });
+    expect(parsed).not.toBeNull();
+    expect(parsed!.convergenceRounds!.map((round) => round.round)).toEqual([1, 2, 3, 4]);
+    expect(parsed!.convergenceRounds!.slice(0, 3).every((round) => round.executed === undefined)).toBe(true);
+    // A bad digest alone is stripped; the rest of the record is still evidence.
+    expect(parsed!.convergenceRounds![3]!.executed).toEqual({ mode: 'full', gateIds: [] });
   });
 });
 
@@ -2122,15 +2354,48 @@ describe('WI-10000741 / D-014 — a red measured behind a mid-suite admission is
       failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
       nowMs: T0 + 1_000,
     });
+    // P-007 (#D-040): measured at the candidate, so su-peer's later admission is NOT blamed.
     expect(next.convergenceRounds).toEqual([
       { round: 1, head: C, failingCount: 1, atMs: T0 },
-      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000 },
+      { round: 2, head: C, failingCount: 2, atMs: T0 + 1_000, attributions: [{ entry: 'test-file:lib/b.test.ts', basis: 'none', admissions: [] }] },
     ]);
     expect(next.failingTests).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
     expect(next.signature?.map((entry) => entry.id)).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
     // Every signature entry says WHERE it was measured — the superseded head, never the newer one.
     expect(next.signature?.every((entry) => entry.measuredHead === C)).toBe(true);
     expect(next.updatedAtMs).toBe(T0 + 1_000);
+  });
+
+  it('reports a manual-lineage trend when no automated fixer was dispatched', () => {
+    const manualAdmission = markFrozenRepairAdmitted(
+      { ...fresh(), phase: 'ready-to-verify', attempts: 0, fixerSpawnId: null },
+      {
+        atMs: T0 + 500,
+        actor: 'su-manual',
+        source: { ref: 'staging', sha: C1 },
+        fromRepairHead: C,
+        toRepairHead: C1,
+        paths: ['lib/a.ts'],
+        unchanged: [],
+        blobs: {},
+      },
+    );
+    const recorded = recordFrozenRepairSupersededRed(manualAdmission, {
+      measuredHead: C,
+      failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+      nowMs: T0 + 1_000,
+    });
+    const cell = projectFrozenRepairConvergenceCell(
+      buildFrozenRepairConvergenceGateHealth(recorded, T0 + 2_000),
+    );
+
+    expect(recorded.attempts).toBe(0);
+    expect(cell).toMatchObject({
+      unmeasured: false,
+      admissionRounds: 2,
+      converging: false,
+      code: 'not-converging',
+    });
   });
 
   it("leaves everything the admission owns untouched: phase, repairHead, admissions, fixer fields, attempts", () => {
@@ -2198,5 +2463,61 @@ describe('WI-10000741 / D-014 — a red measured behind a mid-suite admission is
     expect(() =>
       recordFrozenRepairSupersededRed(queue, { measuredHead: C, failingTests: [], nowMs: Number.NaN }),
     ).toThrow(/nowMs/);
+  });
+});
+
+describe('settleFrozenRepairAdmission — what a missed door write means (WI-10006866)', () => {
+  // The door's entry: hunk-exact, wall-clock atMs, built onto the fresh queue's head C.
+  const door = {
+    atMs: T0 + 10, actor: 'su-door', source: { ref: 'staging', sha: C1 },
+    fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+    blobs: { 'lib/a.test.ts': C1 }, mode: 'hunk-exact' as const,
+  };
+  // What a concurrent repair-queue read writes when it reconciles the row from the ref:
+  // no mode, the synthetic 2000-01-01 commit date, provenance stamped.
+  const reconciled = {
+    atMs: 946_684_800_000, actor: 'su-door', source: { ref: 'staging', sha: C1 },
+    fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+    blobs: { 'lib/a.test.ts': C1 }, provenance: 'reconciled-from-ref' as const,
+  };
+
+  it('adopts a reconciled rebuild of the SAME admission: persisted, door entry replaces it', () => {
+    // The measured 2026-10-06 shape: the row is already at the admission because a reader
+    // reconciled it; the door's CAS missed. Retracting here is what created ref-behind-row.
+    const row = { ...markFrozenRepairAdmitted(fresh(), reconciled), updatedAtMs: T0 + 1 };
+    const out = settleFrozenRepairAdmission(row, door);
+    expect(out.kind).toBe('adopt-reconciled');
+    expect(out.queue?.repairHead).toBe(C2);
+    expect(out.queue?.admissions).toHaveLength(1);
+    expect(out.queue?.admissions?.[0]).toEqual(door);
+    expect(out.queue?.admissions?.[0]).not.toHaveProperty('provenance');
+    expect(out.queue?.updatedAtMs).toBeGreaterThanOrEqual(door.atMs);
+    expect(out.queue?.lastAdmittedAtMs).toBe(door.atMs);
+    // The writer persists JSON, so the settled row must survive a parse round trip.
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(out.queue)))?.repairHead).toBe(C2);
+  });
+
+  it('a row that already carries the door entry is recorded, and returns the fresh row ITSELF (no write)', () => {
+    const row = markFrozenRepairAdmitted(fresh(), door);
+    const out = settleFrozenRepairAdmission(row, door);
+    expect(out.kind).toBe('recorded');
+    expect(out.queue).toBe(row);
+  });
+
+  it('a row still at the parent (an unrelated writer won the CAS) gets the admission applied', () => {
+    const row = { ...fresh(), updatedAtMs: T0 + 5 };
+    const out = settleFrozenRepairAdmission(row, door);
+    expect(out.kind).toBe('apply');
+    expect(out.queue?.repairHead).toBe(C2);
+    expect(out.queue?.admissions?.at(-1)).toEqual(door);
+  });
+
+  it('diverged rows are NOT reported as persisted: another head, an unledgered head, another parent', () => {
+    const elsewhere = { ...fresh(), repairHead: C1 };
+    expect(settleFrozenRepairAdmission(elsewhere, door)).toMatchObject({ kind: 'diverged', queue: null });
+    const unledgered = { ...markFrozenRepairAdmitted(fresh(), door), admissions: [] };
+    expect(settleFrozenRepairAdmission(unledgered, door)).toMatchObject({ kind: 'diverged', queue: null });
+    const otherParent = markFrozenRepairAdmitted({ ...fresh(), repairHead: C1 }, { ...reconciled, fromRepairHead: C1 });
+    expect(settleFrozenRepairAdmission(otherParent, door)).toMatchObject({ kind: 'diverged', queue: null });
   });
 });

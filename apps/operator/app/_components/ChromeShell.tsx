@@ -24,6 +24,7 @@ import { NotificationCenter } from './NotificationCenter';
 import { RecentActionsCenter } from './RecentActionsCenter';
 import { AnimatedPapercuspCup } from './AnimatedPapercuspCup';
 import RouteLink from './RouteLink';
+import { Tooltip } from '@/app/harness/Tooltip';
 import { PuiLauncherButton } from './PuiLauncherButton';
 import { PLAN_DASHBOARD_PARAM } from './plans/PlanDashboardHost';
 // ConsoleLauncherButton is intentionally NOT imported: the global "+" terminal
@@ -32,7 +33,7 @@ import { PLAN_DASHBOARD_PARAM } from './plans/PlanDashboardHost';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
-import { isChromeShellNavActive } from './chrome-shell-nav';
+import { isChromeShellNavActive, isDaoWorkspacePath, productWorkspaceHref } from './chrome-shell-nav';
 import { isChromelessPath, isPortalEmbedLocation } from '@papercusp/operator-core/lib/chromeless-routes';
 // OracleDock + TutorialButton remain RETIRED (design-simplification-2026-07-09
 // P-003; see _retired/legacy-web-chats/RESTORE.md). OperatorChatSidebar was
@@ -154,7 +155,23 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
   const onAdv = isChromeShellNavActive(pathname, '/adv');
   const opsIsCurrent = onAdv && !searchParams.has(PLAN_DASHBOARD_PARAM);
   const onRes = isChromeShellNavActive(pathname, '/res');
+  const onDao = isDaoWorkspacePath(pathname);
+  const [operationsHref, setOperationsHref] = useState('/adv');
+  const [daoHref, setDaoHref] = useState('/daos');
+  const workspaceSearch = searchParams.toString();
+  useEffect(() => {
+    // Remember each product independently, including its selected pot/DAO/tab.
+    // Storage failure must not remove either product's navigation.
+    try {
+      const location = pathname + (workspaceSearch ? '?' + workspaceSearch : '');
+      if (onAdv) sessionStorage.setItem('papercusp.workspace.operations', location);
+      if (onDao) sessionStorage.setItem('papercusp.workspace.dao', location);
+      setOperationsHref(productWorkspaceHref(sessionStorage.getItem('papercusp.workspace.operations'), 'operations'));
+      setDaoHref(productWorkspaceHref(sessionStorage.getItem('papercusp.workspace.dao'), 'dao'));
+    } catch { /* Webview storage may be unavailable; canonical routes still work. */ }
+  }, [pathname, workspaceSearch, onAdv, onDao]);
   const testingFlag = useFlag(FLAGS.TESTING);
+  const reportsLibraryFlag = useFlag(FLAGS.REPORTS_LIBRARY);
   const resFlag = useFlag(FLAGS.RES_ALLOCATION);
   const operatorChatSidebarFlag = useFlag(FLAGS.OPERATOR_CHAT_SIDEBAR);
   const t = useLexicon();
@@ -184,13 +201,19 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
     if (typeof ResizeObserver === 'undefined') {
       return () => header.classList.remove('pc-header--compact');
     }
+    let resizeFrame: number | null = null;
     const observer = new ResizeObserver((entries) => {
       const ownEntry = entries.find((entry) => entry.target === header);
-      syncCompactState(ownEntry?.contentRect.width ?? header.getBoundingClientRect().width);
+      const width = ownEntry?.contentRect.width ?? header.getBoundingClientRect().width;
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+      // Compact mode changes the observed header's height. Mutate after
+      // observer delivery so that change cannot trigger a resize-loop error.
+      resizeFrame = requestAnimationFrame(() => { resizeFrame = null; syncCompactState(width); });
     });
     observer.observe(header);
     return () => {
       observer.disconnect();
+      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
       header.classList.remove('pc-header--compact');
     };
   }, [chromeless]);
@@ -287,11 +310,22 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
               <span className="pc-header-cta-label">OPS</span>
             </span>
           ) : (
-            <RouteLink href="/adv" className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
-              <span className="pc-header-cta-orb" aria-hidden="true">
-                <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
-              </span>
-              <span className="pc-header-cta-label">OPS</span>
+            <Tooltip label="Papercusp operations">
+              <RouteLink href={onAdv ? '/adv' : operationsHref} className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
+                <span className="pc-header-cta-orb" aria-hidden="true">
+                  <BrainMark className="pc-header-cta-logo pc-header-cta-logo--adv" />
+                </span>
+                <span className="pc-header-cta-label">OPS</span>
+              </RouteLink>
+            </Tooltip>
+          )}
+          {onDao ? (
+            <span className="pc-header-cta pc-header-cta--mission is-current" aria-label="DAO Management (current page)" aria-current="page">
+              <span className="pc-header-cta-label">DAO Management</span>
+            </span>
+          ) : (
+            <RouteLink href={daoHref} className="pc-header-cta pc-header-cta--mission" aria-label="DAO Management" {...mainNavJumpGateProps}>
+              <span className="pc-header-cta-label">DAO Management</span>
             </RouteLink>
           )}
           {/* RES — the workspace-scoped Resources section: hand account pools +
@@ -356,6 +390,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
               the thing. aria-label stays "Cloud Workspaces" so the accessible
               name is unchanged and the existing test still pins it. */}
           <RouteLink href="/cloud-workspaces" aria-label="Cloud Workspaces" {...navLinkProps('/cloud-workspaces')}>Workspaces</RouteLink>
+          <RouteLink href="/dao" {...navLinkProps('/dao')}>DAOs</RouteLink>
           {testingFlag ? (
             <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
           ) : null}
@@ -363,6 +398,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
               ask 2026-07-10): the navbar link pointed at /rubrics, a route the
               live Vite operator never registered, so it errored. Rubrics &
               scorecards now live in Learning → Verify → Rubrics (AdvShell). */}
+          {reportsLibraryFlag && <RouteLink href="/reports" {...navLinkProps('/reports')}>Reports</RouteLink>}
           <RouteLink href="/support" {...navLinkProps('/support')}>Support</RouteLink>
           <RouteLink href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</RouteLink>
           {/* Admin link intentionally NOT rendered — reachable only by URL /admin */}
@@ -399,7 +435,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
           prefixes) skip ChromeShell entirely so the sidebar is absent
           there too — desired, those routes are embedded inside other
           pages that already host the sidebar. */}
-      {operatorChatSidebarFlag && <OperatorChatSidebar faces={chatFaces} />}
+      {operatorChatSidebarFlag && !onDao && <OperatorChatSidebar faces={chatFaces} />}
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );

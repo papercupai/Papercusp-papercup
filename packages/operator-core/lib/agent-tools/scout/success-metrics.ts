@@ -219,7 +219,7 @@ export async function runSuccessMetrics(
             hostStartedAt: null,
             bootHeadSha: null,
             scoutCodeHash: null,
-            staleHost: true,
+            staleHost: null,
           }),
         )
       : undefined;
@@ -236,7 +236,7 @@ export async function runSuccessMetrics(
 export default defineTool({
   name: 'blender:success-metrics',
   description:
-    "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the rubric's own declared window (default: its 48h-rolling `window`; or a sinceMs/watermarkRef override), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Also returns resolvedWindow + runningGeneration (parity evidence; staleHost:true = scout loop not proven to run deployedSha's code). verdict='pass' only when every bar passes; 'incomplete' if evidence is missing; 'fail' on regression.",
+    "Read-only Blender done-check over LIVE ledgers. Returns six PASS/FAIL/UNKNOWN bars: rubric-grounded routes, zero score-0 cycles, cycle errors <5% over the rubric's own declared window (default: its 48h-rolling `window`; or a sinceMs/watermarkRef override), per-cycle ledger reconciliation, attributed grade→typed revision, and recent lens diversity. Also returns resolvedWindow + runningGeneration parity evidence: staleHost:false means the build match is proven, true means a mismatch is proven, and null means the comparison is unavailable. verdict='pass' only when every bar passes; 'incomplete' if evidence is missing; 'fail' on regression.",
   capability: 'curation:read',
   guidance: {
     when: 'Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live.',

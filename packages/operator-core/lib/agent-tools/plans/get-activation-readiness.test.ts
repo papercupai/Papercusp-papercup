@@ -94,6 +94,7 @@ describe('previewPlanStartConsult', () => {
     expect(result).toMatchObject({
       outcome: 'proceed_with_excerpts',
       excerpts: [{ ownerId: 'peer-dead', excerpt: 'prior attempt' }],
+      productShaping: { advisory: true, status: 'missing', semanticCompleteness: 'not-measured' },
     });
     expect(M.buildQueryEmbedderResolved).toHaveBeenCalledTimes(1);
     expect(M.planStartConsult).toHaveBeenCalledWith(params, expect.any(Object));
@@ -102,6 +103,7 @@ describe('previewPlanStartConsult', () => {
         workspaceId: 'workspace-a',
         requesterId: 'su-reader',
         question: 'plan query',
+        telemetry: expect.objectContaining({ caller: 'plans:activation-preview', policy: 'consult-default', buildSha: expect.any(String) }),
       },
       expect.any(Object),
     );
@@ -121,11 +123,28 @@ describe('previewPlanStartConsult', () => {
 
     const result = await previewPlanStartConsult(params);
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       outcome: 'unavailable',
       error: 'consult_preview_unavailable',
       message: 'Consult candidate preview could not be evaluated (embedder unavailable).',
+      productShaping: { advisory: true, status: 'missing', reviewerBrief: { sourceRefs: [] } },
     });
     expect(M.planStartConsult).not.toHaveBeenCalled();
+  });
+
+  it('keeps the original-intent review available even when consult routing is unavailable', async () => {
+    M.buildQueryEmbedderResolved.mockRejectedValue(new Error('embedder unavailable'));
+    const sourceRef = 'session_turn:codex:original:1';
+    const planContent = '## Product shaping\n```product-shaping\n' + JSON.stringify({
+      audience: 'Collaborators', problem: 'Readers can accidentally publish', outcome: 'Readers retain read access without publishing',
+      nonGoals: ['Role administration'], sourceRefs: [sourceRef], context: [], scenarios: [], considerations: [],
+    }) + '\n```';
+    const result = await previewPlanStartConsult({ ...params, planContent });
+    expect(result).toMatchObject({ outcome: 'unavailable', productShaping: {
+      status: 'incomplete', advisory: true, sourceContentVerified: false,
+      reviewerBrief: { sourceRefs: [sourceRef], planSection: 'Product shaping' },
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'normal_journey_missing' })]),
+    } });
+    expect(result.productShaping?.reviewerBrief.instructions[0]).toContain('BEFORE');
   });
 });

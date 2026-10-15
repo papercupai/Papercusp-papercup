@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Preassigned authenticated account enters tutorial before workspace bootstrap",
+  "framework": "playwright",
+  "command": [
+    "playwright",
+    "test",
+    "--config=playwright.config.ts",
+    "e2e/portal-product-tutorial-served.spec.ts",
+    "--grep=preassigned authorized workspace",
+    "--reporter=line,json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-08T09:11:39.460Z",
+  "finishedAt": "2026-10-08T09:12:04.856092Z",
+  "summary": "One maintained served Playwright case passed with zero skips, failures or flaky tests. A genuine WorkOS TEST account with a real privately admitted tenant-owned workspace and maintained hosted session rotation enters the guide before domain bootstrap; lesson navigation persists after reload. Candidate acceptance only.",
+  "assertions": [
+    {
+      "id": "authenticated-preassigned-session",
+      "passed": true,
+      "evidence": "served-preassigned-session-precondition: sessionStatus200, tenantMatchesAdmission=true, workspaceMatchesAdmission=true; exact attachment in immutable report92fc5039."
+    },
+    {
+      "id": "guide-before-bootstrap-persistence-no-domain-writes",
+      "passed": true,
+      "evidence": "served-preassigned-guide-evidence: candidate uSMlQPEL_wWlZ0lEH2VZ4-20261008063732869-1751893-80024631, sourceRootDigest c7ed6c3736614f62ec424e3e8bd5a3d71ddd1725857f29374cf2d84addf02ca1; real hosted session selected by maintained store, guide-before-bootstrap and planning lesson after reload; only POST /api/hosted/browser/onboarding/tutorial-progress observed. Private database and inert provider transport; no destination/provisioning journey. Exact attachment in immutable report92fc5039."
+    }
+  ],
+  "playwrightStats": {
+    "startTime": "2026-10-08T09:11:39.460Z",
+    "duration": 25396.092,
+    "expected": 1,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "source": {
+    "portalHeadAtExecution": "4e4bacd13159ecdbbd27e78432406440e9712610",
+    "fixtureAndTestCommittedAtExecution": true,
+    "fixtureCheckout": "/tmp/tutorial-preassigned-immutable-4e4bacd1-20261008T0910",
+    "fixtureTrackedFilesCleanAtExecution": true,
+    "operatorRuntimeCommit": "32da80c9fa",
+    "operatorHealthStatus": 200,
+    "files": {
+      "e2e/hosted-test-user.ts": "9aa2573305daec1804633b8e8569c8e4169b1a8c155815d2ecd241903e11b907",
+      "e2e/portal-product-tutorial-served.spec.ts": "27186843e1d699f7b79879e378c0030ccabd6d4d12e3aad0226fa348147c2a85"
+    }
+  },
+  "provenance": {
+    "report": "/tmp/tutorial-preassigned-immutable-report-20261008T0914.json",
+    "reportSha256": "92fc5039b7a548e3f78c275e66700155022833b49287adfc08dee0f212d4decb",
+    "log": "/tmp/tutorial-preassigned-immutable-served-20261008T0914.log",
+    "priorWorkingTreeReport": "/tmp/tutorial-preassigned-diagnostic-report-20261008T0839-rotation.json",
+    "priorWorkingTreeReportSha256": "83c689605daab04e2169b098c48b5a02cfa6d5e01dd42e0e19d09ae02632b18b",
+    "originalTestCount": 1,
+    "derivedAssertionCount": 2
+  },
+  "limitations": [
+    "Candidate served artifact uSMlQ; no production promotion",
+    "Fixture/test run from clean immutable Portal commit 4e4bacd1; served application remains retained candidate uSMlQ",
+    "Private database and inert provider provisioning transport; no real workspace VM destination",
+    "No native screen-reader, full catalogue destination, spoken voice or shipment acceptance"
+  ],
+  "failureDiagnosis": {
+    "priorReport": "/tmp/tutorial-preassigned-diagnostic-report-20261008T0836.json",
+    "measuredCode": "operator_surface_requires_local_profile",
+    "rootCause": "Fixture attempted an unmounted Portal workspace-selection HTTP route; hosted passthrough correctly refused it.",
+    "fix": "Create the preassigned fixture session using production HostedSessionStore.rotate within withHostedServiceContext after real tenant ownership verification."
+  }
+}

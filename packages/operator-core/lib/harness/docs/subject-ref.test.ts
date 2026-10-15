@@ -31,6 +31,21 @@ describe('parseSubjectRef', () => {
     expect(parseSubjectRef('a/b.ts')).toEqual({ kind: 'path', globs: ['a/b.ts'] });
   });
 
+  // WI-6554700010008908: a scoped plan ref used to fall through to the path branch, so
+  // lint:insight-citations filesystem-checked it and reported a valid decision citation
+  // as a stale file (security/hosted-workspace-reverse-connector, workspace-host-threat-model).
+  it('parses scoped plan item/decision refs as plan, not path', () => {
+    expect(parseSubjectRef('byoc-cloud-workspaces-gcp-aws-azure-2026-08-22#D-143')).toEqual({
+      kind: 'plan',
+      ref: 'byoc-cloud-workspaces-gcp-aws-azure-2026-08-22#D-143',
+    });
+    expect(parseSubjectRef('  some-plan#P-004 ')).toEqual({ kind: 'plan', ref: 'some-plan#P-004' });
+    // Not a plan ref: a path with a fragment, an unscoped item id, a bad suffix.
+    expect(parseSubjectRef('docs/a.md#P-1')).toEqual({ kind: 'path', globs: ['docs/a.md#P-1'] });
+    expect(parseSubjectRef('P-004')).toEqual({ kind: 'path', globs: ['P-004'] });
+    expect(parseSubjectRef('some-plan#X-4')).toEqual({ kind: 'path', globs: ['some-plan#X-4'] });
+  });
+
   it('returns null on blank, degrades a malformed `::` to the file part', () => {
     expect(parseSubjectRef('')).toBeNull();
     expect(parseSubjectRef('   ')).toBeNull();
@@ -62,6 +77,15 @@ describe('parseDocumentsField', () => {
     expect(refs).toContainEqual({ kind: 'path', globs: ['docs/**', 'a.ts', 'b.ts'] });
   });
 
+  it('keeps plan refs out of the collapsed path globs (string and object forms)', () => {
+    const refs = parseDocumentsField(['src/a.ts', 'some-plan#D-12', { plan: 'other-plan#P-003' }]);
+    expect(refs).toEqual([
+      { kind: 'path', globs: ['src/a.ts'] },
+      { kind: 'plan', ref: 'some-plan#D-12' },
+      { kind: 'plan', ref: 'other-plan#P-003' },
+    ]);
+  });
+
   it('returns [] for null/empty (unanchored)', () => {
     expect(parseDocumentsField(null)).toEqual([]);
     expect(parseDocumentsField(undefined)).toEqual([]);
@@ -75,6 +99,7 @@ describe('stringify round-trips', () => {
       { kind: 'path', globs: ['src/a.ts'] },
       { kind: 'symbol', file: 'src/a.ts', name: 'fn' },
       { kind: 'feature', ref: 'F-1' },
+      { kind: 'plan', ref: 'some-plan#D-12' },
     ];
     for (const c of cases) {
       const round = parseSubjectRef(stringifySubjectRef(c));

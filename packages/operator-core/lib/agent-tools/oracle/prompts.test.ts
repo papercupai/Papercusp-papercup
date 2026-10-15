@@ -20,12 +20,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const buildMemoryContextBlockMock = vi.fn<(opts: unknown) => Promise<string | null>>();
+const { loadPersonaMock } = vi.hoisted(() => ({ loadPersonaMock: vi.fn(() => {
+  throw new Error('prompt-assembly: oracle.persona.md not found (runtime-only image)');
+}) }));
 
 // This suite owns memory placement, not the independently-covered tool catalog.
-// Keep the real persona/playbook readers while isolating catalog registration
+// Keep the real playbook reader while simulating pruned persona assets and isolating catalog registration
 // from the deliberately narrow dependency graph below.
 vi.mock('../../prompt-assembly', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../prompt-assembly')>()),
+  loadRolePersona: loadPersonaMock,
   renderToolsCatalog: vi.fn(() => ''),
 }));
 
@@ -50,11 +54,37 @@ vi.mock('../../memory/injection', () => ({
   buildMemoryContextBlock: (opts: unknown) => buildMemoryContextBlockMock(opts),
 }));
 
-import { composeOraclePrompt } from './prompts';
+import { composeOraclePrompt, readOracleConfig } from './prompts';
+import { readOperatorState, writeOperatorState } from '../../operator-state-pg';
+const personaCallsDuringImport = loadPersonaMock.mock.calls.length;
 
 beforeEach(() => {
+  loadPersonaMock.mockClear();
+  vi.mocked(readOperatorState).mockImplementation(async (key: string) => {
+    if (key === 'operator_oracle_prompt') return { content: 'You are the Oracle.' };
+    if (key === 'operator_oracle_memory') return { content: '' };
+    return null;
+  });
+  vi.mocked(writeOperatorState).mockClear();
   buildMemoryContextBlockMock.mockReset();
   buildMemoryContextBlockMock.mockResolvedValue(null);
+});
+
+describe('runtime-only Oracle boot asset closure', () => {
+  it('imports the registry module without reading missing persona assets', () => {
+    expect(personaCallsDuringImport).toBe(0);
+  });
+  it('uses persisted configuration without consulting the pruned default persona', async () => {
+    expect((await readOracleConfig()).prompt).toBe('You are the Oracle.');
+    expect(loadPersonaMock).not.toHaveBeenCalled();
+    expect(writeOperatorState).not.toHaveBeenCalled();
+  });
+  it('fails explicitly only when an unconfigured Oracle actually needs the missing persona', async () => {
+    vi.mocked(readOperatorState).mockResolvedValue(null);
+    await expect(readOracleConfig()).rejects.toThrow(/oracle.persona.md not found/);
+    expect(loadPersonaMock).toHaveBeenCalledWith('oracle');
+    expect(writeOperatorState).not.toHaveBeenCalled();
+  });
 });
 
 describe('composeOraclePrompt — memory injection', () => {

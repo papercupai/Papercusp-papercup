@@ -21,7 +21,7 @@ import {
   listRecentDeliveries,
   wakeMeter,
 } from '../../events/await/store';
-import { wakeChannelInvokesTurn, type KeyFireRow } from '../../events/await/types';
+import { wakeChannelInvokesTurn, type DeliveryRow, type KeyFireRow } from '../../events/await/types';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import {
   announcementExpectedVerdict as expectedVerdict,
@@ -40,6 +40,138 @@ const EVENTS_SCOPE_NOTE =
   'Workspace-global read surface: scope comes from request context and caller identity; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected).';
 
 const STATUS_WAKE_PAYLOAD_MAX_CHARS = 2_000;
+const EXACT_EVENT_HISTORY_ROW_LIMIT = 10;
+const EXACT_EVENT_INSPECTION_MAX_CHARS = 5_000;
+const EXACT_EVENT_STATUS_TEXT_MAX_CHARS = 256;
+const EXACT_EVENT_STATUS_JSON_MAX_CHARS = 512;
+const EXACT_EVENT_STATUS_SUCCESSOR_LIMIT = 5;
+
+/**
+ * P-006 / D-005: the LATER seam that reports pickup. `turn_invoked` says only that the channel
+ * could start a turn and `status: 'delivered'` only that the delivery reached it; `turn_proof`
+ * says whether a turn actually STARTED (host-attested | observed = yes; not-picked-up = the
+ * window expired with no turn; awaiting = still inside the window; superseded = rode another
+ * delivery; null = booked before migration 1441, unknown). The deadline is shown only while it
+ * can still change the answer.
+ */
+export function turnProofFields(d: Pick<DeliveryRow, 'turnProof' | 'turnStartedAt' | 'pickupDeadlineAt'>): {
+  turn_proof: DeliveryRow['turnProof'];
+  turn_started_at: string | null;
+  pickup_deadline_at?: string | null;
+} {
+  return {
+    turn_proof: d.turnProof,
+    turn_started_at: d.turnStartedAt,
+    ...(d.turnProof === 'awaiting' ? { pickup_deadline_at: d.pickupDeadlineAt } : {}),
+  };
+}
+
+type EventInspectionHistoryGroup = 'declarations' | 'waiters' | 'wake_outcomes';
+
+type EventInspectionHistoryWindow = {
+  loaded_rows: number;
+  shown: number;
+  omitted_loaded: number;
+  more_available: boolean;
+};
+
+type BoundedEventInspection = {
+  [key: string]: unknown;
+  declarations: unknown[];
+  waiters: unknown[];
+  wake_outcomes: unknown[];
+  history_window: {
+    limit: number;
+    declarations: EventInspectionHistoryWindow;
+    waiters: EventInspectionHistoryWindow;
+    wake_outcomes: EventInspectionHistoryWindow;
+  };
+  recovery?: unknown;
+};
+
+function boundedStatusText(value: string | null | undefined, maxChars: number) {
+  const text = value ?? null;
+  if (text == null || text.length <= maxChars) {
+    return { value: text, truncated: false, originalChars: text?.length ?? 0 };
+  }
+  return {
+    value: `${text.slice(0, maxChars)}…`,
+    truncated: true,
+    originalChars: text.length,
+  };
+}
+
+function boundedStatusJson(value: unknown, maxChars: number) {
+  if (value == null) return { value: null, truncated: false, originalChars: 0 };
+  const serialized = JSON.stringify(value) ?? 'null';
+  if (serialized.length <= maxChars) {
+    return { value, truncated: false, originalChars: serialized.length };
+  }
+  return {
+    value: {
+      preview: serialized.slice(0, maxChars),
+      truncated: true,
+      original_chars: serialized.length,
+    },
+    truncated: true,
+    originalChars: serialized.length,
+  };
+}
+
+function eventHistoryWindow(loadedRows: number, shown: number): EventInspectionHistoryWindow {
+  const omittedLoaded = Math.max(0, loadedRows - shown);
+  return {
+    loaded_rows: loadedRows,
+    shown,
+    omitted_loaded: omittedLoaded,
+    more_available: omittedLoaded > 0,
+  };
+}
+
+function fitEventInspectionToBudget(inspection: BoundedEventInspection): void {
+  const groups: EventInspectionHistoryGroup[] = ['declarations', 'waiters', 'wake_outcomes'];
+  const serializedEnvelope = () => JSON.stringify({ ok: true, event_inspection: inspection });
+
+  while (serializedEnvelope().length > EXACT_EVENT_INSPECTION_MAX_CHARS) {
+    let largestGroup: EventInspectionHistoryGroup | null = null;
+    let largestOldestRowChars = -1;
+    for (const group of groups) {
+      const rows = inspection[group];
+      if (rows.length === 0) continue;
+      const oldestRowChars = JSON.stringify(rows[rows.length - 1]).length;
+      if (oldestRowChars > largestOldestRowChars) {
+        largestGroup = group;
+        largestOldestRowChars = oldestRowChars;
+      }
+    }
+    if (largestGroup == null) break;
+
+    const rows = inspection[largestGroup];
+    rows.pop();
+    const window = inspection.history_window[largestGroup];
+    window.shown = rows.length;
+    window.omitted_loaded += 1;
+    window.more_available = true;
+  }
+
+  if (serializedEnvelope().length <= EXACT_EVENT_INSPECTION_MAX_CHARS || inspection.recovery == null) return;
+
+  const recovery = inspection.recovery as Record<string, unknown>;
+  const serializedRecovery = JSON.stringify(recovery) ?? 'null';
+  inspection.recovery = {
+    truncated: true,
+    original_chars: serializedRecovery.length,
+    ...(typeof recovery.event === 'string' ? { event: recovery.event.slice(0, 200) } : {}),
+    ...(typeof recovery.announcement_id === 'number' ? { announcement_id: recovery.announcement_id } : {}),
+    ...(typeof recovery.generation === 'number' ? { generation: recovery.generation } : {}),
+    ...(typeof recovery.classification === 'string' ? { classification: recovery.classification } : {}),
+    ...(recovery.next_verb != null ? { next_verb: recovery.next_verb } : {}),
+  };
+  if (serializedEnvelope().length > EXACT_EVENT_INSPECTION_MAX_CHARS) {
+    const compactRecovery = inspection.recovery as Record<string, unknown>;
+    delete compactRecovery.next_verb;
+  }
+}
 
 function statusWakePayload(payload: unknown): Record<string, unknown> {
   const serialized = JSON.stringify(payload) ?? 'null';
@@ -158,7 +290,7 @@ export async function resolveAnnouncementOwnership(
 export default defineTool({
   name: 'events:status',
   description:
-    `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter. ${EVENTS_SCOPE_NOTE}`,
+    `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Exact-key history is a bounded recent window; history_window reports omitted rows. Optionally include the fleet-wide wake meter. Evidence-only judges may inspect only their own awaits and recent wakes; exact-key inspection and the fleet-wide meter are unavailable. ${EVENTS_SCOPE_NOTE}`,
   guidance: {
     when: 'Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).',
     notWhen: `Reading your message stream — that is coord:inbox. Following an area — topics:feed. ${EVENTS_SCOPE_NOTE}`,
@@ -172,7 +304,7 @@ export default defineTool({
   capability: 'coord:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'judge'],
   args: z.object({
     meter: z.boolean().optional().describe('Include the wake meter (per-agent counts by status/channel, 24h; events:await is single-workspace by design, so this is fleet-wide, not scoped to your workspace).'),
     await_id: z.number().int().positive().optional().describe('Filter active awaits and recent wake deliveries to the id returned by events:await. A targeted recent delivery includes its payload (capped at 2000 characters). Mutually exclusive with `event`.'),
@@ -180,6 +312,12 @@ export default defineTool({
     after_generation: z.number().int().nonnegative().optional().describe('Your cached declaration generation for `event`. The response says whether it is stale and how to resync.'),
   }),
   async handler(args, ctx) {
+    // The judge's evidence lane is caller-scoped: its default view and await_id
+    // path read only rows keyed by identity.ownerId. Exact event-key inspection
+    // and the meter cross that boundary, so reject them before any store reads.
+    if (ctx.role === 'judge' && (args.event != null || args.meter === true)) {
+      throw new Error('events:status — the evidence-only judge may inspect its own awaits only; exact-key inspection and fleet-meter access are unavailable.');
+    }
     if (args.await_id != null && args.event != null) {
       throw new Error('events:status — await_id and event are mutually exclusive; use await_id to inspect one registration or event to inspect one key.');
     }
@@ -225,6 +363,14 @@ export default defineTool({
     const currentAnnouncement = eventHistory?.announcements.find((a) => !a.supersededAt) ?? null;
     const fireLatch = eventHistory?.fireLatch ?? null;
     const composedRoot = eventHistory?.composedRoot ?? null;
+    const inspectionAnnouncements = eventHistory
+      ? [
+          ...(currentAnnouncement ? [currentAnnouncement] : []),
+          ...eventHistory.announcements.filter((a) => a.id !== currentAnnouncement?.id),
+        ].slice(0, EXACT_EVENT_HISTORY_ROW_LIMIT)
+      : [];
+    const inspectionWaiters = eventHistory?.waiters.slice(0, EXACT_EVENT_HISTORY_ROW_LIMIT) ?? [];
+    const inspectionDeliveries = eventHistory?.deliveries.slice(0, EXACT_EVENT_HISTORY_ROW_LIMIT) ?? [];
     const authoritativeGeneration = currentAnnouncement?.causalGeneration ?? null;
     const resyncRequired = args.after_generation != null && args.after_generation !== authoritativeGeneration;
     const resyncReason = args.after_generation == null
@@ -236,8 +382,11 @@ export default defineTool({
           : args.after_generation > authoritativeGeneration
             ? 'consumer_ahead'
             : 'in_sync';
+    const ownershipRows = currentAnnouncement && !inspectionAnnouncements.some((a) => a.id === currentAnnouncement.id)
+      ? [...inspectionAnnouncements, currentAnnouncement]
+      : inspectionAnnouncements;
     const announcementOwnership = eventHistory
-      ? await resolveAnnouncementOwnership(eventHistory.announcements, identity.workspaceId)
+      ? await resolveAnnouncementOwnership(ownershipRows, identity.workspaceId)
       : new Map<number, AnnouncementOwnership>();
     // declared-gate-recovery-contract-2026-09-21 (R-001/R-003): the current
     // declaration's deterministic classification + exact next verb, from the SAME
@@ -300,30 +449,41 @@ export default defineTool({
                 advice: `This key has genuinely fired ${fireLatch.fireCount}× (most recently ${fireLatch.lastFiredAt}${fireLatch.lastFiredBy ? ` by ${fireLatch.lastFiredBy}` : ''}) but was never declared via events:emit { announce:true } — do NOT read current_state:'fired_undeclared' as "never happened". If you were about to conclude this gate never opened, it did; check waiters[]/wake_outcomes[] below or last_fired_at for when.`,
               }
             : {}),
-          declarations: eventHistory.announcements.map((a) => ({
-            ...(announcementOwnership.has(a.id)
-              ? {
-                  bound_to: a.boundTo ?? null,
-                  declared_by_liveness: announcementOwnership.get(a.id)!.declaredByLiveness,
-                  live_successor_ids: announcementOwnership.get(a.id)!.liveSuccessorIds,
-                  ...(announcementOwnership.get(a.id)!.staleOwner ? { stale_owner: true } : {}),
-                }
-              : {}),
-            generation: a.causalGeneration ?? null,
-            logical_gate: a.logicalGateKey ?? null,
-            state: announcementState(a),
-            declared_at: a.createdAt,
-            declared_by: a.subscriberId,
-            note: a.note,
-            expected: a.expectedCondition ?? null,
-            expected_verdict: expectedVerdict(a),
-            actual_sha: payloadSha(a.firedPayload),
-            fired_at: a.firedAt,
-            fired_by: a.firedBy ?? null,
-            cancelled_at: a.cancelledAt,
-            superseded_at: a.supersededAt ?? null,
-          })),
-          waiters: eventHistory.waiters.map((a) => ({
+          declarations: inspectionAnnouncements.map((a) => {
+            const ownership = announcementOwnership.get(a.id);
+            const note = boundedStatusText(a.note, EXACT_EVENT_STATUS_TEXT_MAX_CHARS);
+            const expected = boundedStatusJson(a.expectedCondition ?? null, EXACT_EVENT_STATUS_JSON_MAX_CHARS);
+            const liveSuccessorIds = ownership?.liveSuccessorIds ?? [];
+            return {
+              ...(ownership
+                ? {
+                    bound_to: a.boundTo ?? null,
+                    declared_by_liveness: ownership.declaredByLiveness,
+                    live_successor_ids: liveSuccessorIds.slice(0, EXACT_EVENT_STATUS_SUCCESSOR_LIMIT),
+                    ...(liveSuccessorIds.length > EXACT_EVENT_STATUS_SUCCESSOR_LIMIT
+                      ? { live_successor_ids_truncated: true }
+                      : {}),
+                    ...(ownership.staleOwner ? { stale_owner: true } : {}),
+                  }
+                : {}),
+              generation: a.causalGeneration ?? null,
+              logical_gate: a.logicalGateKey ?? null,
+              state: announcementState(a),
+              declared_at: a.createdAt,
+              declared_by: a.subscriberId,
+              note: note.value,
+              ...(note.truncated ? { note_truncated: true, note_chars: note.originalChars } : {}),
+              expected: expected.value,
+              ...(expected.truncated ? { expected_truncated: true, expected_chars: expected.originalChars } : {}),
+              expected_verdict: expectedVerdict(a),
+              actual_sha: payloadSha(a.firedPayload),
+              fired_at: a.firedAt,
+              fired_by: a.firedBy ?? null,
+              cancelled_at: a.cancelledAt,
+              superseded_at: a.supersededAt ?? null,
+            };
+          }),
+          waiters: inspectionWaiters.map((a) => ({
             await_id: a.id,
             subscriber_id: a.subscriberId,
             policy: a.policy,
@@ -342,19 +502,30 @@ export default defineTool({
             cancelled_at: a.cancelledAt,
             expires_ts: a.expiresTs,
           })),
-          wake_outcomes: eventHistory.deliveries.map((d) => ({
-            delivery_id: d.id,
-            subscriber_id: d.subscriberId,
-            status: d.status,
-            channel: d.channel,
-            /** Derived from channel; inbox/coalesced/suppressed do not invoke a turn. */
-            turn_invoked: wakeChannelInvokesTurn(d.channel),
-            attempts: d.attempts,
-            source: d.source,
-            last_error: d.lastError,
-            created_at: d.createdAt,
-            delivered_at: d.deliveredAt,
-          })),
+          wake_outcomes: inspectionDeliveries.map((d) => {
+            const lastError = boundedStatusText(d.lastError, EXACT_EVENT_STATUS_TEXT_MAX_CHARS);
+            return {
+              delivery_id: d.id,
+              subscriber_id: d.subscriberId,
+              status: d.status,
+              channel: d.channel,
+              /** Derived from channel; inbox/coalesced/suppressed do not invoke a turn. */
+              turn_invoked: wakeChannelInvokesTurn(d.channel),
+              ...turnProofFields(d),
+              attempts: d.attempts,
+              source: d.source,
+              last_error: lastError.value,
+              ...(lastError.truncated ? { last_error_truncated: true, last_error_chars: lastError.originalChars } : {}),
+              created_at: d.createdAt,
+              delivered_at: d.deliveredAt,
+            };
+          }),
+          history_window: {
+            limit: EXACT_EVENT_HISTORY_ROW_LIMIT,
+            declarations: eventHistoryWindow(eventHistory.announcements.length, inspectionAnnouncements.length),
+            waiters: eventHistoryWindow(eventHistory.waiters.length, inspectionWaiters.length),
+            wake_outcomes: eventHistoryWindow(eventHistory.deliveries.length, inspectionDeliveries.length),
+          },
           ...(recovery ? { recovery } : {}),
           resync: {
             required: resyncRequired,
@@ -368,6 +539,7 @@ export default defineTool({
           },
         }
       : null;
+    if (eventInspection) fitEventInspectionToBudget(eventInspection as BoundedEventInspection);
     return {
       content: [
         {
@@ -414,6 +586,7 @@ export default defineTool({
                     channel: d.channel,
                     /** Derived from channel; status='delivered' alone is not a turn receipt. */
                     turn_invoked: wakeChannelInvokesTurn(d.channel),
+                    ...turnProofFields(d),
                     attempts: d.attempts,
                     last_error: d.lastError,
                     created_at: d.createdAt,

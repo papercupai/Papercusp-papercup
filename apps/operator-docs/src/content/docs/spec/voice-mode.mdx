@@ -4,22 +4,25 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Voice mode
-description: Browser-side voice runtime for app-level + Operator-panel voice control. STT/TTS across a selectable engine matrix (Web Speech, local Whisper/Kokoro, ElevenLabs, OpenAI, Deepgram, Cartesia).
+title: "Voice mode"
+description: "Browser-side voice runtime for app-level + Operator-panel voice control. STT/TTS across a selectable engine matrix (Web Speech, local Whisper/Kokoro, ElevenLabs, OpenAI, Deepgram, Cartesia)."
+type: Insight
+discovered: 2026-10-08
+status: active
+documents:
+  - "apps/operator/app/_components/voice/voice-mode.ts"
+  - "apps/operator/app/_components/voice/VoiceButton.tsx"
+  - "apps/operator/app/settings/voice/page.tsx"
+  - "packages/operator-core/lib/voice-node/operator-voice-session.ts"
+  - "packages/operator-core/lib/voice-node/operator-voice-host.ts"
+  - "packages/operator-core/lib/voice-node/operator-voice-bus.ts"
+plans:
+  - "universal-voice-interface-2026-06-05"
+  - "silence-nudge-reliability-2026-05-14"
+  - "voice-production-test-coverage-2026-06-01"
+  - "voice-modality-spike-2026-05-13"
 sidebar:
   order: 25
-plans:
-  - universal-voice-interface-2026-06-05
-  - silence-nudge-reliability-2026-05-14
-  - voice-production-test-coverage-2026-06-01
-  - voice-modality-spike-2026-05-13
-documents:
-  - apps/operator/app/_components/voice/voice-mode.ts
-  - apps/operator/app/_components/voice/VoiceButton.tsx
-  - apps/operator/app/settings/voice/page.tsx
-  - packages/operator-core/lib/voice-node/operator-voice-session.ts
-  - packages/operator-core/lib/voice-node/operator-voice-host.ts
-  - packages/operator-core/lib/voice-node/operator-voice-bus.ts
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -85,7 +88,7 @@ So utterances go to:
 Voice mode is **not** Web-Speech-only. STT, TTS, and the realtime full-agent shell each route through a selectable engine, chosen from `/settings/voice` and read from voice-prefs at init:
 
 - **STT** (`prefs.sttEngine`): `web-speech` (browser `SpeechRecognition`) or `voicemode` (local Whisper server at `http://localhost:2022`). Each path falls back to wake-word Web-Speech listening if its engine is unavailable. **`deepgram` is currently non-functional** (2026-07-09 voice-engine slim-down deleted `lib/voice-engines/deepgram.ts`, but the `deepgram` option is still offered in `/settings/voice` and still selectable as `prefs.sttEngine`): both the always-on and PTT capture paths in `voice-mode.ts` now detect `sttEngine === 'deepgram'` and silently degrade to the free wake-word/voicemode path instead of streaming — no error, no cloud call, just a console warning. Tracked as WI-3510 (remove the dead option from settings, or reintroduce the engine).
-- **TTS** (`prefs.ttsEngine`, via `fetchPreferredEngine()`, default `kokoro`): `kokoro` (local), `openai`, `elevenlabs`, `cartesia`, or `browser` (Web Speech `SpeechSynthesis`). The adapter route POSTs to `/api/agent-mcp/operator-tts-preview`; each engine has its own per-role voice pool (`voiceForEngineRole`).
+- **TTS** (`prefs.ttsEngine`, via `fetchPreferredEngine()`, default `kokoro`): `kokoro` (local), `openai`, `elevenlabs`, `cartesia`, or `browser` (Web Speech `SpeechSynthesis`). Desktop adapter playback POSTs sequential chunks of at most 4000 characters to `/api/agent-mcp/operator-tts`; the 200-character `operator-tts-preview` route remains for settings samples and short side-channel narration. Each engine has its own per-role voice pool (`voiceForEngineRole`).
 - **Full-agent realtime** (`prefs.fullAgentEngine`): `elevenlabs-conv` (ElevenLabs Conversational AI) or `openai-realtime`.
 
 Because the local (Voicemode/Whisper + Kokoro) and cloud engines cover runtimes that lack Web Speech (e.g. the WebKitGTK desktop webview), the runtime sets `supported: true` unconditionally — the `is-unsupported` / `cursor: not-allowed` degraded button state exists but is never reached in practice. Web Speech is one path among several, not a requirement, and server-side routes back several engines, so this is **not** a purely in-browser, no-backend runtime.

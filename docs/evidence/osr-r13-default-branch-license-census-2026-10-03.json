@@ -1,0 +1,1952 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Public repository default-branch license census",
+  "framework": "operational",
+  "command": [
+    "node --import tsx scripts/source-preview.mjs licenses"
+  ],
+  "startedAt": "2026-10-03T14:02:38.388Z",
+  "finishedAt": "2026-10-03T14:03:45.115Z",
+  "exitCode": 0,
+  "evidencePlane": "live",
+  "summary": "49 public repositories; 0 license failures; population stable",
+  "assertions": [
+    {
+      "id": "complete-stable-population",
+      "passed": true,
+      "evidence": "Both population reads followed every next-page link to a terminal page. Exact page receipts are in pagination; both repository/default-branch populations must agree."
+    },
+    {
+      "id": "actual-default-branch-license-bytes",
+      "passed": true,
+      "evidence": "Every repository is enumerated in rows with its measured default-branch commit, root license blob and SHA-256. Any missing/unreadable/unreviewed/mismatched license fails this assertion; full errors remain on the affected row."
+    },
+    {
+      "id": "exported-submodule-population-accounted",
+      "passed": true,
+      "evidence": "Every MANIFEST.json submodule is mapped through the exact source-commit .gitmodules. Public members occur in rows; the five excluded private repositories were individually read and confirmed private."
+    }
+  ],
+  "pagination": {
+    "first": [
+      {
+        "endpoint": "orgs/Papercusp/repos?type=public&per_page=100&page=1",
+        "size": 49,
+        "next": null
+      }
+    ],
+    "last": [
+      {
+        "endpoint": "orgs/Papercusp/repos?type=public&per_page=100&page=1",
+        "size": 49,
+        "next": null
+      }
+    ]
+  },
+  "rows": [
+    {
+      "repo": "Papercusp/git-graph",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "44a92ccb8955ee9c759d5f1c993307182d5938e4",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/git-graph/blob/44a92ccb8955ee9c759d5f1c993307182d5938e4/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/agent-chat",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "6f1c643a8d8739d77694cc812f23f59d449edb6c",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/agent-chat/blob/6f1c643a8d8739d77694cc812f23f59d449edb6c/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/ui-primitives",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "2f703d5fbaaebbe70768b4227a4d41894c811896",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/ui-primitives/blob/2f703d5fbaaebbe70768b4227a4d41894c811896/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/papergrid",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "6d87fa95bd785ecc909cafa08aece3cf3d95135f",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/papergrid/blob/6d87fa95bd785ecc909cafa08aece3cf3d95135f/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/sync",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "ceaade8012b0def980f526fdb63cd3eff12cd046",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/sync/blob/ceaade8012b0def980f526fdb63cd3eff12cd046/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/token-kit",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "0a2c7214d928c8b330a7ae9584876089e2781634",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/token-kit/blob/0a2c7214d928c8b330a7ae9584876089e2781634/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/chat-protocol",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "b2fc63914c09dd98940751b822c56665003c1901",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/chat-protocol/blob/b2fc63914c09dd98940751b822c56665003c1901/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/sse",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "09207052a16452aaceb8e82014612acc62c6d47f",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/sse/blob/09207052a16452aaceb8e82014612acc62c6d47f/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/rerank",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "2b524c6823c8f3421c0145fba2ba237e40d0edb3",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/rerank/blob/2b524c6823c8f3421c0145fba2ba237e40d0edb3/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/search-core",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "8ad5eea53e35981d2cf39dbe15bbe592ba959831",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/search-core/blob/8ad5eea53e35981d2cf39dbe15bbe592ba959831/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/tooldef",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "78e87521e238ddab18cdf186c65a226ca8f8e252",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/tooldef/blob/78e87521e238ddab18cdf186c65a226ca8f8e252/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/rrf",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "b503d82c6718c4d10f1ea71ab8602b707b3c5bf8",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/rrf/blob/b503d82c6718c4d10f1ea71ab8602b707b3c5bf8/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/embedded-pg-discovery",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "7507623ec33be15c22c7760801d83abb61fe8aed",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/embedded-pg-discovery/blob/7507623ec33be15c22c7760801d83abb61fe8aed/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/rate-limit",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "7ab0f6f3ac7b528dbebca8e00188ac346f2dcc44",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/rate-limit/blob/7ab0f6f3ac7b528dbebca8e00188ac346f2dcc44/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/ipc-framing",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "a61ae06e479fda913857e16dadcab153f665002d",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/ipc-framing/blob/a61ae06e479fda913857e16dadcab153f665002d/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/ipc-endpoint-server",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "0b9c8cdbde032f4ddc8d79f0d5bc4df0ca3be697",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/ipc-endpoint-server/blob/0b9c8cdbde032f4ddc8d79f0d5bc4df0ca3be697/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/desktop-ipc",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "1f73520aee8a247a2971d039475c452e92cfa2c0",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/desktop-ipc/blob/1f73520aee8a247a2971d039475c452e92cfa2c0/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/search",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "b1b81f63554fe58fa5e0729c7d88808040201895",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/search/blob/b1b81f63554fe58fa5e0729c7d88808040201895/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/memory",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "bf898f485a0f04e80f0ac311cb7ef2b937ca7cb1",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/memory/blob/bf898f485a0f04e80f0ac311cb7ef2b937ca7cb1/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/tooldef-http",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "1e776922513bfcf341abe01d10b95d4822d96062",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/tooldef-http/blob/1e776922513bfcf341abe01d10b95d4822d96062/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/testing-shell",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "ae4a222548daf6826a7f5624a0fa502424de8979",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/testing-shell/blob/ae4a222548daf6826a7f5624a0fa502424de8979/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/test-config",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "3683ab921586bbc39e49e292181ce9b16b504128",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/test-config/blob/3683ab921586bbc39e49e292181ce9b16b504128/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/papercusp-worker",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "c8353d901859d5da515ef8e56f5cd9ab481d3062",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/papercusp-worker/blob/c8353d901859d5da515ef8e56f5cd9ab481d3062/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/blueprints",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "c114637aad67f31a52b93d208707c5624e44b217",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/blueprints/blob/c114637aad67f31a52b93d208707c5624e44b217/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/dock-workbench",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "a0a29e6dfa00a9d17db53881cd6578f37075da99",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/dock-workbench/blob/a0a29e6dfa00a9d17db53881cd6578f37075da99/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/control-mutation",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "99eb2720e47f8cc2728a2f85848a4c6d8ac860de",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/control-mutation/blob/99eb2720e47f8cc2728a2f85848a4c6d8ac860de/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/rules",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "208319fc1d5649d022558d7ffb85a86ed9134e7b",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/rules/blob/208319fc1d5649d022558d7ffb85a86ed9134e7b/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/debounce-coalesce",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "af2b759574e528dc95a1ab827b6c551a7d8c3fe8",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/debounce-coalesce/blob/af2b759574e528dc95a1ab827b6c551a7d8c3fe8/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/cache",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "298f64046967195530aeb37d71e8b6abcf3498e4",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/cache/blob/298f64046967195530aeb37d71e8b6abcf3498e4/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/failure-detector",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "b18000f367fc512cd22e81763b7b1f01ef454e35",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/failure-detector/blob/b18000f367fc512cd22e81763b7b1f01ef454e35/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/tauri-release-kit",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "81db900755c85057e750652c9a7a07c74a6738ad",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/tauri-release-kit/blob/81db900755c85057e750652c9a7a07c74a6738ad/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/resumable-download",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "1eaf7b7311497bea41c1fe69942b404ad59db740",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/resumable-download/blob/1eaf7b7311497bea41c1fe69942b404ad59db740/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/templates",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "76a9a38c2ec8fa452e17c9c3a19ef7ccb35825df",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/templates/blob/76a9a38c2ec8fa452e17c9c3a19ef7ccb35825df/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/knowledge-packs",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "ea2a618ebbb86d03d54b30248b3485fe461501d0",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/knowledge-packs/blob/ea2a618ebbb86d03d54b30248b3485fe461501d0/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/.github",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "287127256b7c45eb1856a022f768ada18d4e2d33",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/.github/blob/287127256b7c45eb1856a022f768ada18d4e2d33/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/model-pricing",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "280fe2b34345913d5632379278ae8fd5c01b5d96",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/model-pricing/blob/280fe2b34345913d5632379278ae8fd5c01b5d96/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/card-stack",
+      "defaultBranch": "main",
+      "metadataSpdx": "Apache-2.0",
+      "head": "66fe6981418eefd3283877f088a81459de77fc5c",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+          "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+          "license": "Apache-2.0",
+          "url": "https://github.com/Papercusp/card-stack/blob/66fe6981418eefd3283877f088a81459de77fc5c/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/sidestage",
+      "defaultBranch": "staging",
+      "metadataSpdx": "NOASSERTION",
+      "head": "f2b429fc8ece63a5117727a8044e46aa13cecae8",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/sidestage/blob/f2b429fc8ece63a5117727a8044e46aa13cecae8/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/sidestage-mobile",
+      "defaultBranch": "main",
+      "metadataSpdx": "MIT",
+      "head": "ed6a994b25882208ab5f954bdb48f8fdad0fa1fe",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "6e4db39f5aa2838537fefe1b558e684bbdc13d43",
+          "sha256": "84ea0f54f720885e4e0a6d2e45baca5a7d6e30aa26db12eabbeda4b3b48c3ea7",
+          "license": "MIT",
+          "url": "https://github.com/Papercusp/sidestage-mobile/blob/ed6a994b25882208ab5f954bdb48f8fdad0fa1fe/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/drawer-stack",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "ac78788019efd425b0fb44e0f5bd8119ba545fbd",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/drawer-stack/blob/ac78788019efd425b0fb44e0f5bd8119ba545fbd/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/cart-drawer",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "55016ae17495deea2895952c5f740bb02c7bae20",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/cart-drawer/blob/55016ae17495deea2895952c5f740bb02c7bae20/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/data-fetch",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "dfe7c2b5d8ebdc6a27e913097970aaf3401c4439",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/data-fetch/blob/dfe7c2b5d8ebdc6a27e913097970aaf3401c4439/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/scout-chat",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "954ce84c51f6b631125dd47ded29665127ff4f96",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/scout-chat/blob/954ce84c51f6b631125dd47ded29665127ff4f96/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/scout-runtime",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "d0e099c05bb38e853bb4c697162eb395bdcf073a",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/scout-runtime/blob/d0e099c05bb38e853bb4c697162eb395bdcf073a/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/plans",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "6d6716c3f6f60ca4303a2463a8be73ef5ef1b823",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/plans/blob/6d6716c3f6f60ca4303a2463a8be73ef5ef1b823/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/recipes",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "596139754bb1fa7ec8d26128de8cba88aaddb063",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/recipes/blob/596139754bb1fa7ec8d26128de8cba88aaddb063/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/goals",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "98ba495e325b2fbf4c0cf4f1fd29692e5a5ceb07",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/goals/blob/98ba495e325b2fbf4c0cf4f1fd29692e5a5ceb07/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/papercusp-app",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/papercusp-app/blob/3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c/LICENSE"
+        }
+      ],
+      "errors": []
+    },
+    {
+      "repo": "Papercusp/cupboard-actions",
+      "defaultBranch": "main",
+      "metadataSpdx": "NOASSERTION",
+      "head": "637d7f83c8063445980a21b16d4594848c8763ca",
+      "licenses": [
+        {
+          "path": "LICENSE",
+          "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+          "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+          "license": "ELv2",
+          "url": "https://github.com/Papercusp/cupboard-actions/blob/637d7f83c8063445980a21b16d4594848c8763ca/LICENSE"
+        }
+      ],
+      "errors": []
+    }
+  ],
+  "licenseTexts": {
+    "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6": "                                 Apache License\n                           Version 2.0, January 2004\n                        http://www.apache.org/licenses/\n\n   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION\n\n   1. Definitions.\n\n      \"License\" shall mean the terms and conditions for use, reproduction,\n      and distribution as defined by Sections 1 through 9 of this document.\n\n      \"Licensor\" shall mean the copyright owner or entity authorized by\n      the copyright owner that is granting the License.\n\n      \"Legal Entity\" shall mean the union of the acting entity and all\n      other entities that control, are controlled by, or are under common\n      control with that entity. For the purposes of this definition,\n      \"control\" means (i) the power, direct or indirect, to cause the\n      direction or management of such entity, whether by contract or\n      otherwise, or (ii) ownership of fifty percent (50%) or more of the\n      outstanding shares, or (iii) beneficial ownership of such entity.\n\n      \"You\" (or \"Your\") shall mean an individual or Legal Entity\n      exercising permissions granted by this License.\n\n      \"Source\" form shall mean the preferred form for making modifications,\n      including but not limited to software source code, documentation\n      source, and configuration files.\n\n      \"Object\" form shall mean any form resulting from mechanical\n      transformation or translation of a Source form, including but\n      not limited to compiled object code, generated documentation,\n      and conversions to other media types.\n\n      \"Work\" shall mean the work of authorship, whether in Source or\n      Object form, made available under the License, as indicated by a\n      copyright notice that is included in or attached to the work\n      (an example is provided in the Appendix below).\n\n      \"Derivative Works\" shall mean any work, whether in Source or Object\n      form, that is based on (or derived from) the Work and for which the\n      editorial revisions, annotations, elaborations, or other modifications\n      represent, as a whole, an original work of authorship. For the\n      purposes of this License, Derivative Works shall not include works\n      that remain separable from, or merely link (or bind by name) to the\n      interfaces of, the Work and Derivative Works thereof.\n\n      \"Contribution\" shall mean any work of authorship, including the\n      original version of the Work and any modifications or additions\n      to that Work or Derivative Works thereof, that is intentionally\n      submitted to Licensor for inclusion in the Work by the copyright owner\n      or by an individual or Legal Entity authorized to submit on behalf of\n      the copyright owner. For the purposes of this definition, \"submitted\"\n      means any form of electronic, verbal, or written communication sent\n      to the Licensor or its representatives, including but not limited to\n      communication on electronic mailing lists, source code control systems,\n      and issue tracking systems that are managed by, or on behalf of, the\n      Licensor for the purpose of discussing and improving the Work, but\n      excluding communication that is conspicuously marked or otherwise\n      designated in writing by the copyright owner as \"Not a Contribution.\"\n\n      \"Contributor\" shall mean Licensor and any individual or Legal Entity\n      on behalf of whom a Contribution has been received by Licensor and\n      subsequently incorporated within the Work.\n\n   2. Grant of Copyright License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      copyright license to reproduce, prepare Derivative Works of,\n      publicly display, publicly perform, sublicense, and distribute the\n      Work and such Derivative Works in Source or Object form.\n\n   3. Grant of Patent License. Subject to the terms and conditions of\n      this License, each Contributor hereby grants to You a perpetual,\n      worldwide, non-exclusive, no-charge, royalty-free, irrevocable\n      (except as stated in this section) patent license to make, have made,\n      use, offer to sell, sell, import, and otherwise transfer the Work,\n      where such license applies only to those patent claims licensable\n      by such Contributor that are necessarily infringed by their\n      Contribution(s) alone or by combination of their Contribution(s)\n      with the Work to which such Contribution(s) was submitted. If You\n      institute patent litigation against any entity (including a\n      cross-claim or counterclaim in a lawsuit) alleging that the Work\n      or a Contribution incorporated within the Work constitutes direct\n      or contributory patent infringement, then any patent licenses\n      granted to You under this License for that Work shall terminate\n      as of the date such litigation is filed.\n\n   4. Redistribution. You may reproduce and distribute copies of the\n      Work or Derivative Works thereof in any medium, with or without\n      modifications, and in Source or Object form, provided that You\n      meet the following conditions:\n\n      (a) You must give any other recipients of the Work or\n          Derivative Works a copy of this License; and\n\n      (b) You must cause any modified files to carry prominent notices\n          stating that You changed the files; and\n\n      (c) You must retain, in the Source form of any Derivative Works\n          that You distribute, all copyright, patent, trademark, and\n          attribution notices from the Source form of the Work,\n          excluding those notices that do not pertain to any part of\n          the Derivative Works; and\n\n      (d) If the Work includes a \"NOTICE\" text file as part of its\n          distribution, then any Derivative Works that You distribute must\n          include a readable copy of the attribution notices contained\n          within such NOTICE file, excluding those notices that do not\n          pertain to any part of the Derivative Works, in at least one\n          of the following places: within a NOTICE text file distributed\n          as part of the Derivative Works; within the Source form or\n          documentation, if provided along with the Derivative Works; or,\n          within a display generated by the Derivative Works, if and\n          wherever such third-party notices normally appear. The contents\n          of the NOTICE file are for informational purposes only and\n          do not modify the License. You may add Your own attribution\n          notices within Derivative Works that You distribute, alongside\n          or as an addendum to the NOTICE text from the Work, provided\n          that such additional attribution notices cannot be construed\n          as modifying the License.\n\n      You may add Your own copyright statement to Your modifications and\n      may provide additional or different license terms and conditions\n      for use, reproduction, or distribution of Your modifications, or\n      for any such Derivative Works as a whole, provided Your use,\n      reproduction, and distribution of the Work otherwise complies with\n      the conditions stated in this License.\n\n   5. Submission of Contributions. Unless You explicitly state otherwise,\n      any Contribution intentionally submitted for inclusion in the Work\n      by You to the Licensor shall be under the terms and conditions of\n      this License, without any additional terms or conditions.\n      Notwithstanding the above, nothing herein shall supersede or modify\n      the terms of any separate license agreement you may have executed\n      with Licensor regarding such Contributions.\n\n   6. Trademarks. This License does not grant permission to use the trade\n      names, trademarks, service marks, or product names of the Licensor,\n      except as required for reasonable and customary use in describing\n      the origin of the Work and reproducing the content of the NOTICE file.\n\n   7. Disclaimer of Warranty. Unless required by applicable law or\n      agreed to in writing, Licensor provides the Work (and each\n      Contributor provides its Contributions) on an \"AS IS\" BASIS,\n      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or\n      implied, including, without limitation, any warranties or conditions\n      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A\n      PARTICULAR PURPOSE. You are solely responsible for determining the\n      appropriateness of using or redistributing the Work and assume any\n      risks associated with Your exercise of permissions under this License.\n\n   8. Limitation of Liability. In no event and under no legal theory,\n      whether in tort (including negligence), contract, or otherwise,\n      unless required by applicable law (such as deliberate and grossly\n      negligent acts) or agreed to in writing, shall any Contributor be\n      liable to You for damages, including any direct, indirect, special,\n      incidental, or consequential damages of any character arising as a\n      result of this License or out of the use or inability to use the\n      Work (including but not limited to damages for loss of goodwill,\n      work stoppage, computer failure or malfunction, or any and all\n      other commercial damages or losses), even if such Contributor\n      has been advised of the possibility of such damages.\n\n   9. Accepting Warranty or Additional Liability. While redistributing\n      the Work or Derivative Works thereof, You may choose to offer,\n      and charge a fee for, acceptance of support, warranty, indemnity,\n      or other liability obligations and/or rights consistent with this\n      License. However, in accepting such obligations, You may act only\n      on Your own behalf and on Your sole responsibility, not on behalf\n      of any other Contributor, and only if You agree to indemnify,\n      defend, and hold each Contributor harmless for any liability\n      incurred by, or claims asserted against, such Contributor by reason\n      of your accepting any such warranty or additional liability.\n\n   END OF TERMS AND CONDITIONS\n\n   Copyright 2026 Papercusp\n\n   Licensed under the Apache License, Version 2.0 (the \"License\");\n   you may not use this file except in compliance with the License.\n   You may obtain a copy of the License at\n\n       http://www.apache.org/licenses/LICENSE-2.0\n\n   Unless required by applicable law or agreed to in writing, software\n   distributed under the License is distributed on an \"AS IS\" BASIS,\n   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n   See the License for the specific language governing permissions and\n   limitations under the License.\n",
+    "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2": "Elastic License 2.0\n\nURL: https://www.elastic.co/licensing/elastic-license\n\n## Acceptance\n\nBy using the software, you agree to all of the terms and conditions below.\n\n## Copyright License\n\nThe licensor grants you a non-exclusive, royalty-free, worldwide,\nnon-sublicensable, non-transferable license to use, copy, distribute, make\navailable, and prepare derivative works of the software, in each case subject to\nthe limitations and conditions below.\n\n## Limitations\n\nYou may not provide the software to third parties as a hosted or managed\nservice, where the service provides users with access to any substantial set of\nthe features or functionality of the software.\n\nYou may not move, change, disable, or circumvent the license key functionality\nin the software, and you may not remove or obscure any functionality in the\nsoftware that is protected by the license key.\n\nYou may not alter, remove, or obscure any licensing, copyright, or other notices\nof the licensor in the software. Any use of the licensor’s trademarks is subject\nto applicable law.\n\n## Patents\n\nThe licensor grants you a license, under any patent claims the licensor can\nlicense, or becomes able to license, to make, have made, use, sell, offer for\nsale, import and have imported the software, in each case subject to the\nlimitations and conditions in this license. This license does not cover any\npatent claims that you cause to be infringed by modifications or additions to\nthe software. If you or your company make any written claim that the software\ninfringes or contributes to infringement of any patent, your patent license for\nthe software granted under these terms ends immediately. If your company makes\nsuch a claim, your patent license ends immediately for work on behalf of your\ncompany.\n\n## Notices\n\nYou must ensure that anyone who gets a copy of any part of the software from you\nalso gets a copy of these terms.\n\nIf you modify the software, you must include in any modified copies of the\nsoftware prominent notices stating that you have modified the software.\n\n## No Other Rights\n\nThese terms do not imply any licenses other than those expressly granted in\nthese terms.\n\n## Termination\n\nIf you use the software in violation of these terms, such use is not licensed,\nand your licenses will automatically terminate. If the licensor provides you\nwith a notice of your violation, and you cease all violation of this license no\nlater than 30 days after you receive that notice, your licenses will be\nreinstated retroactively. However, if you violate these terms after such\nreinstatement, any additional violation of these terms will cause your licenses\nto terminate automatically and permanently.\n\n## No Liability\n\n*As far as the law allows, the software comes as is, without any warranty or\ncondition, and the licensor will not be liable to you for any damages arising\nout of these terms or the use or nature of the software, under any kind of\nlegal claim.*\n\n## Definitions\n\nThe **licensor** is the entity offering these terms, and the **software** is the\nsoftware the licensor makes available under these terms, including any portion\nof it.\n\n**you** refers to the individual or entity agreeing to these terms.\n\n**your company** is any legal entity, sole proprietorship, or other kind of\norganization that you work for, plus all organizations that have control over,\nare under the control of, or are under common control with that\norganization. **control** means ownership of substantially all the assets of an\nentity, or the power to direct its management and policies by vote, contract, or\notherwise. Control can be direct or indirect.\n\n**your licenses** are all the licenses granted to you for the software under\nthese terms.\n\n**use** means anything you do with the software requiring one of your licenses.\n\n**trademark** means trademarks, service marks, and similar rights.\n",
+    "84ea0f54f720885e4e0a6d2e45baca5a7d6e30aa26db12eabbeda4b3b48c3ea7": "MIT License\n\nCopyright (c) 2026 SideStage contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.\n"
+  },
+  "plan": "open-source-release-2026-09-29",
+  "specId": "AUTO-BAR-R-13-P-012",
+  "specRevision": 4,
+  "workItemId": "WI-10003960",
+  "repairWorkItemId": "WI-10005996",
+  "decisionRefs": [
+    "open-source-release-2026-09-29#D-003",
+    "open-source-release-2026-09-29#D-011",
+    "open-source-release-2026-09-29#D-019",
+    "open-source-release-2026-09-29#D-023"
+  ],
+  "observedCliSource": {
+    "path": "scripts/source-preview.mjs",
+    "sha256": "ed3f5bcccca0198c2105587113e0ab18a0b4bc8db5f950db80ed17f142355d7f",
+    "workingDirectory": ".",
+    "scope": "Current local source; exact clean unit proof is recorded separately. The live API observations are timestamped above."
+  },
+  "beforeControl": {
+    "command": [
+      "node --import tsx scripts/source-preview.mjs licenses --json <evidence-output>"
+    ],
+    "startedAt": "2026-10-03T13:24:18.325Z",
+    "finishedAt": "2026-10-03T13:26:36.779Z",
+    "exitCode": 1,
+    "summary": "49 public repositories; 2 license failures; population stable",
+    "rows": [
+      {
+        "repo": "Papercusp/git-graph",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "44a92ccb8955ee9c759d5f1c993307182d5938e4",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/git-graph/blob/44a92ccb8955ee9c759d5f1c993307182d5938e4/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/agent-chat",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "6f1c643a8d8739d77694cc812f23f59d449edb6c",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/agent-chat/blob/6f1c643a8d8739d77694cc812f23f59d449edb6c/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/ui-primitives",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "2f703d5fbaaebbe70768b4227a4d41894c811896",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/ui-primitives/blob/2f703d5fbaaebbe70768b4227a4d41894c811896/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/papergrid",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "6d87fa95bd785ecc909cafa08aece3cf3d95135f",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/papergrid/blob/6d87fa95bd785ecc909cafa08aece3cf3d95135f/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/sync",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "ceaade8012b0def980f526fdb63cd3eff12cd046",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/sync/blob/ceaade8012b0def980f526fdb63cd3eff12cd046/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/token-kit",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "0a2c7214d928c8b330a7ae9584876089e2781634",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/token-kit/blob/0a2c7214d928c8b330a7ae9584876089e2781634/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/chat-protocol",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "b2fc63914c09dd98940751b822c56665003c1901",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/chat-protocol/blob/b2fc63914c09dd98940751b822c56665003c1901/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/sse",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "09207052a16452aaceb8e82014612acc62c6d47f",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/sse/blob/09207052a16452aaceb8e82014612acc62c6d47f/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/rerank",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "2b524c6823c8f3421c0145fba2ba237e40d0edb3",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/rerank/blob/2b524c6823c8f3421c0145fba2ba237e40d0edb3/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/search-core",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "8ad5eea53e35981d2cf39dbe15bbe592ba959831",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/search-core/blob/8ad5eea53e35981d2cf39dbe15bbe592ba959831/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/tooldef",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "78e87521e238ddab18cdf186c65a226ca8f8e252",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/tooldef/blob/78e87521e238ddab18cdf186c65a226ca8f8e252/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/rrf",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "b503d82c6718c4d10f1ea71ab8602b707b3c5bf8",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/rrf/blob/b503d82c6718c4d10f1ea71ab8602b707b3c5bf8/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/embedded-pg-discovery",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "7507623ec33be15c22c7760801d83abb61fe8aed",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/embedded-pg-discovery/blob/7507623ec33be15c22c7760801d83abb61fe8aed/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/rate-limit",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "7ab0f6f3ac7b528dbebca8e00188ac346f2dcc44",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/rate-limit/blob/7ab0f6f3ac7b528dbebca8e00188ac346f2dcc44/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/ipc-framing",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "a61ae06e479fda913857e16dadcab153f665002d",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/ipc-framing/blob/a61ae06e479fda913857e16dadcab153f665002d/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/ipc-endpoint-server",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "0b9c8cdbde032f4ddc8d79f0d5bc4df0ca3be697",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/ipc-endpoint-server/blob/0b9c8cdbde032f4ddc8d79f0d5bc4df0ca3be697/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/desktop-ipc",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "1f73520aee8a247a2971d039475c452e92cfa2c0",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/desktop-ipc/blob/1f73520aee8a247a2971d039475c452e92cfa2c0/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/search",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "b1b81f63554fe58fa5e0729c7d88808040201895",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/search/blob/b1b81f63554fe58fa5e0729c7d88808040201895/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/memory",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "bf898f485a0f04e80f0ac311cb7ef2b937ca7cb1",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/memory/blob/bf898f485a0f04e80f0ac311cb7ef2b937ca7cb1/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/tooldef-http",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "1e776922513bfcf341abe01d10b95d4822d96062",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/tooldef-http/blob/1e776922513bfcf341abe01d10b95d4822d96062/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/testing-shell",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "ae4a222548daf6826a7f5624a0fa502424de8979",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/testing-shell/blob/ae4a222548daf6826a7f5624a0fa502424de8979/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/test-config",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "847d343704409ef2f51d1c337bf088413780461e",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/test-config/blob/847d343704409ef2f51d1c337bf088413780461e/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/papercusp-worker",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "c8353d901859d5da515ef8e56f5cd9ab481d3062",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/papercusp-worker/blob/c8353d901859d5da515ef8e56f5cd9ab481d3062/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/blueprints",
+        "defaultBranch": "main",
+        "metadataSpdx": "NOASSERTION",
+        "head": "c114637aad67f31a52b93d208707c5624e44b217",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/blueprints/blob/c114637aad67f31a52b93d208707c5624e44b217/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/dock-workbench",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "a0a29e6dfa00a9d17db53881cd6578f37075da99",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/dock-workbench/blob/a0a29e6dfa00a9d17db53881cd6578f37075da99/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/control-mutation",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "99eb2720e47f8cc2728a2f85848a4c6d8ac860de",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/control-mutation/blob/99eb2720e47f8cc2728a2f85848a4c6d8ac860de/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/rules",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "208319fc1d5649d022558d7ffb85a86ed9134e7b",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/rules/blob/208319fc1d5649d022558d7ffb85a86ed9134e7b/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/debounce-coalesce",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "af2b759574e528dc95a1ab827b6c551a7d8c3fe8",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/debounce-coalesce/blob/af2b759574e528dc95a1ab827b6c551a7d8c3fe8/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/cache",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "298f64046967195530aeb37d71e8b6abcf3498e4",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/cache/blob/298f64046967195530aeb37d71e8b6abcf3498e4/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/failure-detector",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "b18000f367fc512cd22e81763b7b1f01ef454e35",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/failure-detector/blob/b18000f367fc512cd22e81763b7b1f01ef454e35/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/tauri-release-kit",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "81db900755c85057e750652c9a7a07c74a6738ad",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/tauri-release-kit/blob/81db900755c85057e750652c9a7a07c74a6738ad/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/resumable-download",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "1eaf7b7311497bea41c1fe69942b404ad59db740",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/resumable-download/blob/1eaf7b7311497bea41c1fe69942b404ad59db740/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/templates",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "76a9a38c2ec8fa452e17c9c3a19ef7ccb35825df",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/templates/blob/76a9a38c2ec8fa452e17c9c3a19ef7ccb35825df/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/knowledge-packs",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "ea2a618ebbb86d03d54b30248b3485fe461501d0",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/knowledge-packs/blob/ea2a618ebbb86d03d54b30248b3485fe461501d0/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/.github",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "287127256b7c45eb1856a022f768ada18d4e2d33",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/.github/blob/287127256b7c45eb1856a022f768ada18d4e2d33/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/model-pricing",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "280fe2b34345913d5632379278ae8fd5c01b5d96",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/model-pricing/blob/280fe2b34345913d5632379278ae8fd5c01b5d96/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/card-stack",
+        "defaultBranch": "main",
+        "metadataSpdx": "Apache-2.0",
+        "head": "66fe6981418eefd3283877f088a81459de77fc5c",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "2d238659b63358ae9390f875f651f0038a8ac5de",
+            "sha256": "7c4f4fcf23e5115436efed67085ae341630ddad8a40db63dda3b542dac1c69e6",
+            "license": "Apache-2.0",
+            "url": "https://github.com/Papercusp/card-stack/blob/66fe6981418eefd3283877f088a81459de77fc5c/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/sidestage",
+        "defaultBranch": "staging",
+        "metadataSpdx": "NOASSERTION",
+        "head": "6392ba4128bbca18f57afb73ca0480c3523d0cf5",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/sidestage/blob/6392ba4128bbca18f57afb73ca0480c3523d0cf5/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/sidestage-mobile",
+        "defaultBranch": "main",
+        "metadataSpdx": "MIT",
+        "head": "ed6a994b25882208ab5f954bdb48f8fdad0fa1fe",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "6e4db39f5aa2838537fefe1b558e684bbdc13d43",
+            "sha256": "84ea0f54f720885e4e0a6d2e45baca5a7d6e30aa26db12eabbeda4b3b48c3ea7",
+            "license": "MIT",
+            "url": "https://github.com/Papercusp/sidestage-mobile/blob/ed6a994b25882208ab5f954bdb48f8fdad0fa1fe/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/drawer-stack",
+        "defaultBranch": "main",
+        "metadataSpdx": "NOASSERTION",
+        "head": "ac78788019efd425b0fb44e0f5bd8119ba545fbd",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/drawer-stack/blob/ac78788019efd425b0fb44e0f5bd8119ba545fbd/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/cart-drawer",
+        "defaultBranch": "main",
+        "metadataSpdx": "NOASSERTION",
+        "head": "55016ae17495deea2895952c5f740bb02c7bae20",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/cart-drawer/blob/55016ae17495deea2895952c5f740bb02c7bae20/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/data-fetch",
+        "defaultBranch": "main",
+        "metadataSpdx": "NOASSERTION",
+        "head": "dfe7c2b5d8ebdc6a27e913097970aaf3401c4439",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/data-fetch/blob/dfe7c2b5d8ebdc6a27e913097970aaf3401c4439/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/scout-chat",
+        "defaultBranch": "main",
+        "metadataSpdx": "NOASSERTION",
+        "head": "954ce84c51f6b631125dd47ded29665127ff4f96",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/scout-chat/blob/954ce84c51f6b631125dd47ded29665127ff4f96/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/scout-runtime",
+        "defaultBranch": "main",
+        "metadataSpdx": "NOASSERTION",
+        "head": "d0e099c05bb38e853bb4c697162eb395bdcf073a",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/scout-runtime/blob/d0e099c05bb38e853bb4c697162eb395bdcf073a/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/plans",
+        "defaultBranch": "main",
+        "metadataSpdx": "NOASSERTION",
+        "head": "6d6716c3f6f60ca4303a2463a8be73ef5ef1b823",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/plans/blob/6d6716c3f6f60ca4303a2463a8be73ef5ef1b823/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/recipes",
+        "defaultBranch": "main",
+        "metadataSpdx": "NOASSERTION",
+        "head": "596139754bb1fa7ec8d26128de8cba88aaddb063",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/recipes/blob/596139754bb1fa7ec8d26128de8cba88aaddb063/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/goals",
+        "defaultBranch": "main",
+        "metadataSpdx": null,
+        "head": "ce6b45a9189b5f15c1e6bf750247567d35d981fa",
+        "licenses": [],
+        "errors": [
+          "default branch has no root license file"
+        ]
+      },
+      {
+        "repo": "Papercusp/papercusp-app",
+        "defaultBranch": "main",
+        "metadataSpdx": "NOASSERTION",
+        "head": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+        "licenses": [
+          {
+            "path": "LICENSE",
+            "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+            "sha256": "48255018b41fc0e965b1115af7e6779bc218bb8a6747d561da800d5022622aa2",
+            "license": "ELv2",
+            "url": "https://github.com/Papercusp/papercusp-app/blob/3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c/LICENSE"
+          }
+        ],
+        "errors": []
+      },
+      {
+        "repo": "Papercusp/cupboard-actions",
+        "defaultBranch": "main",
+        "metadataSpdx": null,
+        "head": "367edea41439ed08f471094bfcc18febe1a0d93c",
+        "licenses": [],
+        "errors": [
+          "default branch has no root license file"
+        ]
+      }
+    ],
+    "rawArtifactSha256": "8e38395da8b896d6e4a59b5c02c0575805aae7bd0a529842cb6c72bd9e5fa5bb",
+    "scope": "Actual pre-repair live/default-branch observations; first formatter used object assertion evidence. Preserve as historical counterexample, not as a current pass."
+  },
+  "repairReceipts": [
+    {
+      "repo": "Papercusp/goals",
+      "defaultBranch": "main",
+      "branch": "osr-r13-license-2026-10-03-1ba4c",
+      "commit": "f82b340494e37d47ce58636da023dbf02c13082d",
+      "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+      "pullRequest": 1,
+      "url": "https://github.com/Papercusp/goals/pull/1"
+    },
+    {
+      "repo": "Papercusp/cupboard-actions",
+      "defaultBranch": "main",
+      "commit": "637d7f83c8063445980a21b16d4594848c8763ca",
+      "gitBlob": "809108b857ffd2c2a93cafc5b69e496f3b6ace04",
+      "url": "https://github.com/Papercusp/cupboard-actions/blob/main/LICENSE"
+    }
+  ],
+  "goalsPullRequest": {
+    "url": "https://github.com/Papercusp/goals/pull/1",
+    "head": "f82b340494e37d47ce58636da023dbf02c13082d",
+    "requiredCheck": "cupboard-verify",
+    "checkRunUrls": [
+      "https://github.com/Papercusp/goals/actions/runs/37126601793/job/111213033810",
+      "https://github.com/Papercusp/goals/actions/runs/37126597490/job/111213019890"
+    ],
+    "checkConclusion": "success",
+    "merged": true,
+    "mergeCommit": "98ba495e325b2fbf4c0cf4f1fd29692e5a5ceb07"
+  },
+  "exportedSubmodulePopulation": {
+    "manifestGitBlob": "9bee27080779d4dabda0d844cf468ee3609a422b",
+    "manifestSha256": "7a0f8743917d4f457b2f2d96a169a01b99833ef4b712f76a287cec2be287dcd9",
+    "sourceCommit": "d20b360237373f31326a9ba287086b625dd8624d",
+    "sourceRegistryGitBlob": "082043397c534195d3f58709a42395372cdcf6ee",
+    "sourceRegistrySha256": "c1b771258cd2d8abbe39b744afb05a03710e17ada0dbb719c3eaede5b598f002",
+    "entries": [
+      {
+        "path": "libs/agent-chat",
+        "exportedCommit": "2e2de7639c654d7e26b7a0733cc3790bad015205",
+        "repo": "Papercusp/agent-chat",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/cache",
+        "exportedCommit": "4c32764ecf742eead930c346f3a4f73f630c6e41",
+        "repo": "Papercusp/cache",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/card-stack",
+        "exportedCommit": "7c0dec78a9fa0d6553bf6908bb06a9e81f153496",
+        "repo": "Papercusp/card-stack",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/chat-protocol",
+        "exportedCommit": "4b17dcaec785f86747ffc0b3ce593de78322c4ad",
+        "repo": "Papercusp/chat-protocol",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/control-mutation",
+        "exportedCommit": "ae8d65376c178d3f89b56bc4918af7f1736c83c0",
+        "repo": "Papercusp/control-mutation",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/debounce-coalesce",
+        "exportedCommit": "7f5be7375cc9420b3f446724542a70d1b382c953",
+        "repo": "Papercusp/debounce-coalesce",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/desktop-ipc",
+        "exportedCommit": "bdee3b752a4be2dba93439a03d3825b395b2e48f",
+        "repo": "Papercusp/desktop-ipc",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/dock-workbench",
+        "exportedCommit": "b2cc3751bdd90ac4c24995271b8e6d97d71ab1f5",
+        "repo": "Papercusp/dock-workbench",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/embedded-pg-discovery",
+        "exportedCommit": "1dc55adb817f6e5ab75fb64f3703d1773972a8c5",
+        "repo": "Papercusp/embedded-pg-discovery",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/failure-detector",
+        "exportedCommit": "3edf6df7f3e4bcd2a0abaac863bd1e8a57410cb2",
+        "repo": "Papercusp/failure-detector",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/git-graph",
+        "exportedCommit": "a19025b74001cb510258c8de9cb20faa605f6616",
+        "repo": "Papercusp/git-graph",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/ipc-endpoint-server",
+        "exportedCommit": "8c9d16efec9a6da86556ec9ebb122ade4d84fd43",
+        "repo": "Papercusp/ipc-endpoint-server",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/ipc-framing",
+        "exportedCommit": "82a623665508fbf907fdf5c6fc8cb3b980f6ea85",
+        "repo": "Papercusp/ipc-framing",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/memory",
+        "exportedCommit": "b301f060a6c8494dc43ef90d712fd80726218e4c",
+        "repo": "Papercusp/memory",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/model-pricing",
+        "exportedCommit": "a854eb0cc88ca64e0cc68130fe97217f701ada06",
+        "repo": "Papercusp/model-pricing",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/papergrid",
+        "exportedCommit": "b5a9d8c264ef9476eb1184d274f00cc161c36601",
+        "repo": "Papercusp/papergrid",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/plan-parser",
+        "exportedCommit": "2492e7011c5b693324233a6c0130607694749a4c",
+        "repo": "Papercusp/plan-parser",
+        "publicAtCensus": false
+      },
+      {
+        "path": "libs/generic/rate-limit",
+        "exportedCommit": "aabd6edd33e5f1dbf0c437d3a21f0cbf79881852",
+        "repo": "Papercusp/rate-limit",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/rerank",
+        "exportedCommit": "670332d5a41ca83a3fff013dffc646ae2bc89e94",
+        "repo": "Papercusp/rerank",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/resumable-download",
+        "exportedCommit": "e3c6c87e5a89803d91f5254d742702a3500c8fac",
+        "repo": "Papercusp/resumable-download",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/rrf",
+        "exportedCommit": "c0a44046b76f169ea7b5bec267b8db5cfb776f26",
+        "repo": "Papercusp/rrf",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/rules",
+        "exportedCommit": "d1bd7540fac6e09e1d9ec9a2cc74e2b4a13b7310",
+        "repo": "Papercusp/rules",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/search",
+        "exportedCommit": "8f866234346bc3f26b4aa1a5413edfaebe80314d",
+        "repo": "Papercusp/search",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/search-core",
+        "exportedCommit": "3edb2d87f18ffb797a5430a1b3704bde1af89e14",
+        "repo": "Papercusp/search-core",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/sse",
+        "exportedCommit": "2a1ca663b9acd87f09c4139037a95a45c56db16c",
+        "repo": "Papercusp/sse",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/sync",
+        "exportedCommit": "9a48c472929b44c095f031e9aa24ce86616f2b57",
+        "repo": "Papercusp/sync",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/tauri-release-kit",
+        "exportedCommit": "de8b89d6ee245baa9caf600b4998e21d67c593b3",
+        "repo": "Papercusp/tauri-release-kit",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/token-kit",
+        "exportedCommit": "02eea9fd505ef8271d49b122ca7c115fe5af7501",
+        "repo": "Papercusp/token-kit",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/tooldef",
+        "exportedCommit": "7fca396a0ef7d81010ceddbb8f71756cf024495c",
+        "repo": "Papercusp/tooldef",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/tooldef-http",
+        "exportedCommit": "859806f8b7a88b69970e615f6373301d788200e8",
+        "repo": "Papercusp/tooldef-http",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/generic/ui-primitives",
+        "exportedCommit": "826a55ea0394ac43774338689bbe238cbd10106d",
+        "repo": "Papercusp/ui-primitives",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/papercusp",
+        "exportedCommit": "c8da1a3476756bcf171e592876e66719f613c583",
+        "repo": "Papercusp/papercusp",
+        "publicAtCensus": false
+      },
+      {
+        "path": "libs/papercusp-db",
+        "exportedCommit": "d4d3da8a9a42453ad179e1e3d56bc697ab9867ce",
+        "repo": "Papercusp/papercup-db",
+        "publicAtCensus": false
+      },
+      {
+        "path": "libs/papercusp-shared",
+        "exportedCommit": "f6622fd6df1e01ed020e7be5bc6cf902410bbac1",
+        "repo": "Papercusp/papercup-shared",
+        "publicAtCensus": false
+      },
+      {
+        "path": "libs/test-config",
+        "exportedCommit": "2fcab943fd54434a0f3111337eab7764c465d7a3",
+        "repo": "Papercusp/test-config",
+        "publicAtCensus": true
+      },
+      {
+        "path": "libs/testing-shell",
+        "exportedCommit": "54009dddd7fae504eb35115ef85938476dbd2951",
+        "repo": "Papercusp/testing-shell",
+        "publicAtCensus": true
+      },
+      {
+        "path": "papercusp-desktop",
+        "exportedCommit": "30549970f3bcb193b6b1cf19db1e106531d2a047",
+        "repo": "Papercusp/papercusp-desktop",
+        "publicAtCensus": false
+      }
+    ],
+    "privateRepositoryObservations": [
+      {
+        "repo": "Papercusp/plan-parser",
+        "private": true,
+        "defaultBranch": "main",
+        "id": 1254928770
+      },
+      {
+        "repo": "Papercusp/papercusp",
+        "private": true,
+        "defaultBranch": "main",
+        "id": 1221955891
+      },
+      {
+        "repo": "Papercusp/papercup-db",
+        "private": true,
+        "defaultBranch": "main",
+        "id": 1223572266
+      },
+      {
+        "repo": "Papercusp/papercup-shared",
+        "private": true,
+        "defaultBranch": "main",
+        "id": 1223572209
+      },
+      {
+        "repo": "Papercusp/papercusp-desktop",
+        "private": true,
+        "defaultBranch": "main",
+        "id": 1223568154
+      }
+    ],
+    "publicRepositoryCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+    "manifestRecheckedAt": "2026-10-03T14:08:30.018314+00:00"
+  },
+  "limitations": [
+    "This proves the measured GitHub public licensing population and current published export roster during the stated observation window. It does not establish finished installer licensing, release source alignment, customer credentials, paid-operation enforcement, or shipment.",
+    "The existing 2026-09-30 47-repository metadata artifact remains historical; it was not overwritten or reused as current proof.",
+    "The census accepts exact reviewed license text; a new or changed license body refuses until reviewed."
+  ],
+  "cleanUnitVerification": {
+    "status": "pending",
+    "previousSnapshot": "ada36a0b2830b437686b5d684adbedd1adbf6a84",
+    "failedTestRunId": 20701527,
+    "previousResult": {
+      "passed": 10,
+      "failed": 1,
+      "skipped": 0
+    },
+    "correction": "Unknown license text still refuses as unreviewed; known-policy violation labels now require a recognized license. Preserve the failed clean run and obtain a new exact committed 11-test proof.",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE=papercusp-workspace npm run lint:as-committed -- --ref=<exact-ref> test:file --any -- packages/operator-core/lib/source-preview-repository-licenses.test.ts"
+  }
+}

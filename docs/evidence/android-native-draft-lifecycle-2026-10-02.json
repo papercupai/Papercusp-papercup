@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android rejected draft Settings and same-scope re-pair lifecycle",
+  "framework": "operational",
+  "command": ["android/gradlew", "-p", "android", ":app:connectedDebugAndroidTest", "-Pandroid.testInstrumentationRunnerArguments.class=com.papercuspai.operator.mobile.OperatorChatScreenTest"],
+  "commandCwd": "papercup-rust-mobile",
+  "startedAt": "2026-10-02T19:27:01.521114Z",
+  "finishedAt": "2026-10-02T19:29:14.360916Z",
+  "timestampBasis": "Native log filesystem creation time through retained host/lint report modification time.",
+  "exitCode": 0,
+  "summary": "Six maintained actual Compose/JNI cases passed, including real AppRoot Settings/manual PairScreen recovery, activity recreation, and different-workspace/server isolation; 33 debug and 33 release JVM cases and release lint passed.",
+  "scope": "Owned fresh API36/16KB debug emulator through HTTP response fixtures and actual native PairScreen/JNI. Partial P002/P003/P006 contribution only. Not actual server JWT expiry/revocation, complete eight-case isolated/hosted automatic run, signed candidate, physical phone, Play or public-install acceptance.",
+  "workItems": ["WI-10005614", "WI-10004768", "WI-10004770", "WI-10004773"],
+  "repository": "papercup-rust-mobile",
+  "containingSourceCommit": "f1799b48a9ed37f2c5102aa30280392719f80c7d",
+  "sourceStatusAtVerification": "Product/test files were edited before execution, automatically committed afterward and byte-matched at readback; this is not a signed release build manifest.",
+  "nativeTests": [
+    "unauthorizedSendKeepsDraftWithoutInventingAPersistedTurn",
+    "forbiddenSendKeepsDraftWithoutInventingAPersistedTurn",
+    "rejectedDraftSurvivesSettingsRoundTrip",
+    "rejectedDraftSurvivesSameScopeRepairAndActivityRecreation",
+    "repairToAnotherWorkspaceDoesNotExposePreviousDraft",
+    "repairToAnotherServerDoesNotExposePreviousDraft"
+  ],
+  "testCounts": {
+    "native": {"executed": 6, "failed": 0, "errors": 0, "skipped": 0},
+    "debugJvm": {"executed": 33, "failed": 0, "errors": 0, "skipped": 0},
+    "releaseJvm": {"executed": 33, "failed": 0, "errors": 0, "skipped": 0},
+    "releaseLintErrors": 0,
+    "pairedProofBarrierControls": 43,
+    "liveFixtureGuards": 36,
+    "isolatedRuntimeStubControls": 8,
+    "ciMutationControls": 32,
+    "ciRunnerMutationControls": 15
+  },
+  "countBasis": "JUnit testcase nodes and failure/error/skipped nodes in retained XML; lint issue severity Error/Fatal; maintained guard scripts report their actual enumerated fixture populations. Guard counts are fixture tests, not native/server journeys.",
+  "otherCommands": [
+    ["android/gradlew", "-p", "android", ":app:testDebugUnitTest", ":app:testReleaseUnitTest", ":app:lintRelease"],
+    ["bash", "tools/tests/run-android-checks-test.sh"],
+    ["bash", "tools/tests/android-ci-contract-test.sh"]
+  ],
+  "sourceFiles": [
+    {"path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/MainActivity.kt", "sha256": "2d9ec406c9485780dfaae59f22abd31f2a04cd8c08f56c40e60a027495e15638"},
+    {"path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/OperatorChatScreen.kt", "sha256": "a0fda70c5069a35c9649b411bc3f9c61dae545e169d6550de1b9c0f319a3fb3d"},
+    {"path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/OperatorChatScreenTest.kt", "sha256": "ea8027b17abf01111a4f9b183fb961a2bd237daa370782b100472acaa4cd3160"},
+    {"path": "papercup-rust-mobile/tools/run-android-checks.sh", "sha256": "89dd4265a9cd6f5b8f4db8c561c8f5753596cec686c9630d480c2bc3fec76102"},
+    {"path": "papercup-rust-mobile/tools/tests/run-android-checks-test.sh", "sha256": "ff7d8edb6297f8dfb0183c8b11a43de0ecdd6eaf979dd703811f0a3ed018c16d"},
+    {"path": "papercup-rust-mobile/docs/BUILD.md", "sha256": "2c6ce5c01d6bca64e675bc3da24959fc664455648cc426d53989c476a8f46ada"}
+  ],
+  "rawEvidenceRoot": "papercup-rust-mobile/android/app/build/ci-evidence/draft-lifecycle-20261002-1918",
+  "rawEvidence": [
+    {"path": "baseline.log", "sha256": "423864473f51389bd475e477cdcf4243713a1b6803b7c3fa181910d598ea93d2"},
+    {"path": "baseline-results/debug/TEST-android-wi10005614(AVD) - 16-_app-.xml", "sha256": "0083358d58413594bf4621b62b61fa9ce83edbc383df9d975965ec669ea489af"},
+    {"path": "baseline-corrected-fixture.log", "sha256": "222b23168ad9cc48feb2e6736b4f373eca84f4918e941ba754cffb36ea51870b"},
+    {"path": "baseline-corrected-fixture-results/debug/TEST-android-wi10005614(AVD) - 16-_app-.xml", "sha256": "98b5962f057e8ea4e0c06ba1fec3a8929c0266d890741fbe8315644d6904f7a7"},
+    {"path": "fixed-native.log", "sha256": "e81d7d2250c117daf73319bdffa6b0acec3dd0581d623b380d7d8ab20389e1ac"},
+    {"path": "fixed-native-results/debug/TEST-android-wi10005614(AVD) - 16-_app-.xml", "sha256": "fef4432751fc6fdc0a5a8e07a05344fb082781dd7f983559736bd449b98b87c1"},
+    {"path": "host-unit-lint.log", "sha256": "5f9ab42f7c441b75c693f6ab67cf1387a5b897ef7e130f3b9ace4a4dc573f5f2"},
+    {"path": "lint-results-release.xml", "sha256": "31e3e5033f774aeea04b9226764173f32bd534fd8a5b0e25c147ef03d6c34e06"},
+    {"path": "runner-guards.log", "sha256": "f939f0a5e60d607ba8bbce17bd68dc4aa9c25dacdfc8204b6d5a6fe05c684e28"},
+    {"path": "ci-guards.log", "sha256": "132faf20a88082e76b6cefbbea51bb2f378194c644a77978c1d7a63ff7562d92"},
+    {"path": "tested-app-debug.apk", "sha256": "666b8d45dacbfa404c0a66a1140043f79d08361e94c22e0a5141bd5861944d69"},
+    {"path": "tested-app-debug-androidTest.apk", "sha256": "899a9648f729d3b7df0bd46fb382a99ff51590e97e9ab003358c4caf859a20e0"}
+  ],
+  "emulator": {"api": 36, "pageSizeBytes": 16384, "ownedAvd": "android-wi10005614", "serial": "emulator-5586"},
+  "cleanup": {"serviceStopped": true, "ownedAvdAndIniRemoved": true, "ownedEmulatorDisconnected": true, "storedFixturePairingClearedByEachTest": true},
+  "rootCauseVerification": {
+    "contractVersion": 2,
+    "hypothesis": "OperatorChatScreen owns its composer in local remember; actual shell route changes and null-credential re-pair dispose that state.",
+    "alternativeHypothesis": "The rejected send never restores its draft, or PairScreen recovery fails before a fresh paired shell appears.",
+    "distinguishingTest": "Reach and assert the restored auth-rejected draft; navigate the real Settings branch, then return directly or manually re-pair to the same server/workspace, and inspect EditableText. Repeat after moving draft ownership above route/pairing disposal.",
+    "testProcedure": "Maintained OperatorChatScreenTest class on owned API36/16KB emulator; unchanged product corrected-fixture baseline followed by fixed source run. Cross-server/workspace controls and explicit fresh-token retry use real JNI through MockWebServer.",
+    "predictedObservations": {
+      "hypothesis": "Draft is present immediately after rejection but empty after Settings or successful same-scope re-pair; hoisted scoped saved state retains it, including activity recreation.",
+      "alternativeHypothesis": "Initial restored-draft assertion or pairing/shell return fails before the post-transition composer assertion."
+    },
+    "actualObservation": "Corrected baseline: 4 pass and 2 fail with empty EditableText after Settings and successful same-scope re-pair. Fixed: all 6 pass, including same-scope recreation, no automatic replay, fresh-token explicit retry, and empty draft across different workspace/server.",
+    "testResult": "Confirmed lifecycle disposal; native 6/6 pass, JVM 33 debug + 33 release pass, release lint zero errors; guard suites pass.",
+    "evidenceRefs": ["baseline-corrected-fixture-results/debug/TEST-android-wi10005614(AVD) - 16-_app-.xml", "fixed-native-results/debug/TEST-android-wi10005614(AVD) - 16-_app-.xml"],
+    "harnessAudit": "First attempt: lazy Forget action was uncomposed; fixed maintained fixture with performScrollToNode before click. Second baseline isolated product loss. Each attempt retains separate logs/XML; preflight checks clean pairing, notification grant, emulator boot/API36/16KB. Reply fixture returns persisted history so success does not depend on a transient bubble. No unchanged rerun after diagnosis."
+  },
+  "assertions": [
+    {"id": "native-fixtures", "passed": true, "evidence": "Six actual Compose/JNI tests executed without failure/error/skip; two corrected-baseline lifecycle losses become passes. Real shell Settings/manual PairScreen transitions and recreation are covered, but server JWT verifier is not."},
+    {"id": "scope-and-explicit-retry", "passed": true, "evidence": "Same server/workspace preserves draft through new token/device identity; different workspace/server presents empty EditableText; navigation/pairing sends nothing until explicit retry, using the fresh token."},
+    {"id": "host-units-and-lint", "passed": true, "evidence": "Retained JUnit reports contain 33 debug and 33 release testcase nodes, no failures/errors/skips; release lint reports zero Error/Fatal issues."},
+    {"id": "automatic-barrier-guards", "passed": true, "evidence": "Paired proof barrier 43 refusal/acceptance controls, live fixture guards 36, isolated runtime stubs 8, CI mutation controls 32 and runner mutations 15 pass. Exact eight-case actual isolated/hosted execution remains required."},
+    {"id": "cleanup", "passed": true, "evidence": "Each native fixture clears only its owned stored device; service android-wi10005614 inactive/dead, AVD and ini absent, emulator-5586 absent from adb inventory."}
+  ]
+}

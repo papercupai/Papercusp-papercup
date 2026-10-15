@@ -1,0 +1,299 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Independent Android CI full native acceptance",
+  "framework": "operational",
+  "command": [
+    "systemctl",
+    "--user",
+    "start",
+    "papercusp-android-ci.service"
+  ],
+  "startedAt": "2026-10-09T14:49:34.705333+00:00",
+  "finishedAt": "2026-10-09T15:14:52.215708+00:00",
+  "exitCode": 0,
+  "summary": "Maintained independent local-systemd executor passed host,31 unpaired connected cases and the selected paired six-feature JNI journey. Authenticated device readback and JNI saw both seeded chat roles in the paired workspace. Exact source/counterpart/APK/JUnit proof,162 retained artifact hashes, admission and cleanup were verified. Existing timer activated after full pass. Signing, hosted cloud, physical phone and Play remain separate release lanes.",
+  "sourceCommit": "21ac990c2ae804ac031d4fafb457595d59e64bb3",
+  "sourceDirty": false,
+  "sourceFingerprint": "b6b44c49d585a4f1872212cafbb1fe6ae26de1f9a2ca16acbe137116f24f8f2c",
+  "operatorCommit": "f4002b0d2aae0d20aacd496bac28f8da21555529",
+  "execution": {
+    "attemptId": "20261009T144934Z-8de92164",
+    "status": "passed",
+    "executor": "local-systemd",
+    "receipts": [
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T144934Z-8de92164/result.json",
+        "sha256": "7f013eee008e507983b578a1fde29333b43c497e936f8b6d60af85cac1d32f36"
+      },
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T144934Z-8de92164/paired/result.json",
+        "sha256": "093674f672513e0d45ccbb4c8ec5b362ec0594cbc7cfd82ea1beca33aca51be0"
+      },
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T144934Z-8de92164/paired-runtime/result.json",
+        "sha256": "37fa1e5b562eb2c2b99b123c1832c7cafea9c35d07f8fb3d3fd99da460257848"
+      }
+    ]
+  },
+  "phases": [
+    {
+      "name": "operator-freshness",
+      "exitCode": 0,
+      "sha256": "e345257763fdc3eb868af7b11f74cd16b67817229ebabb4c09b7556877e209c9"
+    },
+    {
+      "name": "rust-preflight",
+      "exitCode": 0,
+      "sha256": "71898dff3c6432efdb734448f5be423843b12dd8075283501aad41600c41899c"
+    },
+    {
+      "name": "emulator-preflight",
+      "exitCode": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "avd-space-preflight",
+      "exitCode": 0,
+      "sha256": "983065491c2547c9a0914773d984b78ff95657af52b4ee06d1e505b52a16946c"
+    },
+    {
+      "name": "host",
+      "exitCode": 0,
+      "sha256": "5c5afefc13dfd8fa7cbfe034e3c4d9787cd9f708a8c5c938fcc1fe7a76e5788b"
+    },
+    {
+      "name": "boot",
+      "exitCode": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "connected",
+      "exitCode": 0,
+      "sha256": "74a6e1073519161a661e3049c445c3735006c8af15f16e756d4a11fea8973b24"
+    },
+    {
+      "name": "paired",
+      "exitCode": 0,
+      "sha256": "b48916210d1753de2c3ed3035650692d789b55db116dc4ae1e8077bff9fc439f"
+    },
+    {
+      "name": "verify-paired",
+      "exitCode": 0,
+      "sha256": "1af66d046fbc0def56a8e30437bf8571c1a1a372d3cdc62cc09a8eeea63e26c1"
+    },
+    {
+      "name": "operator-freshness-end",
+      "exitCode": 0,
+      "sha256": "e345257763fdc3eb868af7b11f74cd16b67817229ebabb4c09b7556877e209c9"
+    },
+    {
+      "name": "ci-admission",
+      "exitCode": 0,
+      "sha256": "b79de4d9a9f1e9c08c2c743711e264412dfae2a6b1194915f8665d120c5f5157"
+    }
+  ],
+  "native": {
+    "runId": "5a56ffe5710042069538fd2c5f90d65f",
+    "selection": "features",
+    "fixtureReadback": {
+      "workspaceId": "android-live-scope-5a56ffe5710042069538fd2c5f90d65f",
+      "deviceReadbackPassed": true,
+      "turnCount": 2
+    },
+    "journey": {
+      "runId": "5a56ffe5710042069538fd2c5f90d65f",
+      "journeyCompleted": true,
+      "enrollmentBrowserStubbed": true,
+      "currentStage": "completed",
+      "deviceId": "a583ebbb-6494-4721-943a-eaa942736926",
+      "workspaceId": "android-live-scope-5a56ffe5710042069538fd2c5f90d65f",
+      "enrollmentIntentObserved": true,
+      "authenticatedRequestPassed": true,
+      "returnedToPairedShell": true,
+      "activityRecreated": true,
+      "chatStatePassed": true,
+      "plansStatePassed": true,
+      "fleetStatePassed": true,
+      "workspacePotStatePassed": true,
+      "diagnosticsStatePassed": true,
+      "inboxScopedReadPassed": true,
+      "inboxSystemAlertCount": 1,
+      "attentionApprovalsStatePassed": true,
+      "featureExpectedState": {
+        "chatTurns": 2,
+        "plans": 0,
+        "fleetAvailability": "0 available · 0 agents",
+        "pots": 0,
+        "workspaceId": "android-live-scope-5a56ffe5710042069538fd2c5f90d65f",
+        "workspaceName": "android-live-scope-5a56ffe5710042069538fd2c5f90d65f",
+        "standingCandidates": 0
+      },
+      "credentialsCleared": true
+    },
+    "unpairedJUnit": {
+      "testCount": 31,
+      "failuresErrorsSkips": 0,
+      "reports": [
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T144934Z-8de92164/unpaired-native-results/debug/TEST-papercusp-ci-9e287fbc1b2c(AVD) - 16-_app-.xml",
+          "sha256": "aca6ca405e7b04dcb0597d3216b2dc33e7eb68cd65f70b3f8268976f2e33c1b1"
+        }
+      ]
+    },
+    "pairedJUnit": {
+      "testCount": 1,
+      "failuresErrorsSkips": 0,
+      "reports": [
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T144934Z-8de92164/paired/native-results/TEST-papercusp-ci-9e287fbc1b2c(AVD) - 16-_app-.xml",
+          "sha256": "f575c3d0b72cd75204fe3944daa021010d9e3ffbf7663fac427eb56720990b1f"
+        }
+      ]
+    },
+    "selectedTest": "sixFeatureJourneysMatchOwnedOperatorState",
+    "artifacts": [
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T144934Z-8de92164/paired/app-debug.apk",
+        "sha256": "894e5fd35ad7bbaa5c8c0d90c2d5fcde0b56aa07c7d4b8bb253fd9684578038d"
+      },
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T144934Z-8de92164/paired/app-debug-androidTest.apk",
+        "sha256": "d275227b97e18180a97f4b63dbf0297e0345d6b3825cb6430d36acb5a4748d1c"
+      }
+    ]
+  },
+  "provenance": {
+    "runtimeHealth": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "f4002b0d2a",
+      "version": "0.0.0",
+      "ts": "2026-10-09T15:13:46.252Z"
+    },
+    "operatorSourceCommit": "f4002b0d2aae0d20aacd496bac28f8da21555529",
+    "bundleSha256": "bfb3671f94b849388f332850195c25b17d5175847570aed1d1da524288a17f02",
+    "retainedArtifactCount": 162,
+    "retainedArtifactHashMismatches": [],
+    "finalSourceIdentityMatched": true,
+    "cachedProofExactMatch": true
+  },
+  "cleanup": {
+    "emulatorCleanupVerified": true,
+    "ownedFixtureCleanupVerified": true,
+    "credentialsCleared": true,
+    "hostCleanupVerified": true,
+    "nativeProcessCleanupVerified": true,
+    "privatePortClosed": true,
+    "ownedAvdDirectoriesRemaining": []
+  },
+  "ciAdmission": {
+    "schemaVersion": 1,
+    "phase": "ci",
+    "result": "pass",
+    "sourceCommit": "21ac990c2ae804ac031d4fafb457595d59e64bb3",
+    "sourceDirty": false,
+    "passedAt": "2026-10-09T15:14:41Z",
+    "runner": "tools/android-ci.py"
+  },
+  "timer": {
+    "unit": "papercusp-android-ci.timer",
+    "activatedAfterFullPass": true,
+    "observedAt": "2026-10-09T15:21:20.286705+00:00",
+    "NextElapseUSecMonotonic": "4d 1h 7min 51.429067s",
+    "ActiveState": "active",
+    "SubState": "waiting",
+    "UnitFileState": "enabled"
+  },
+  "assertions": [
+    {
+      "id": "host",
+      "passed": true,
+      "evidence": "Actual host phase exit0; retained host.log SHA2565c5afefc13dfd8fa7cbfe034e3c4d9787cd9f708a8c5c938fcc1fe7a76e5788b."
+    },
+    {
+      "id": "31-connected-no-failure-error-skip",
+      "passed": true,
+      "evidence": "Retained unpaired JUnit contains31 testcase nodes,0 failure/error/skip and no suite problems; reportSHA256aca6ca405e7b04dcb0597d3216b2dc33e7eb68cd65f70b3f8268976f2e33c1b1."
+    },
+    {
+      "id": "paired-six-feature-JNI",
+      "passed": true,
+      "evidence": "Exact selected sixFeatureJourneysMatchOwnedOperatorState passed; paired JUnit1 testcase,0 failure/error/skip; reportSHA256f575c3d0b72cd75204fe3944daa021010d9e3ffbf7663fac427eb56720990b1f. Native journey completed in matching run/workspace; all six state witnesses passed."
+    },
+    {
+      "id": "authenticated-two-turn-readback",
+      "passed": true,
+      "evidence": "Native receipt featureChatFixtureBasis has deviceReadbackPassedtrue and turnCount2 in owned workspace; native chatStatePassedtrue and featureExpectedState.chatTurns2. Authenticated pre-native guard validates both exact seeded roles/texts."
+    },
+    {
+      "id": "exact-source-counterpart-APK-JUnit-proof",
+      "passed": true,
+      "evidence": "Maintained verify-paired phase exit0 verifies source fingerprints, prepared operatorf4002b0d health/bundle, retained app/test APK digests, exact selected JUnit and complete owned journey/cleanup; verifier logSHA2561af66d046fbc0def56a8e30437bf8571c1a1a372d3cdc62cc09a8eeea63e26c1."
+    },
+    {
+      "id": "162-retained-artifact-hashes",
+      "passed": true,
+      "evidence": "Recomputed SHA256 for every162 artifact record in exact144934Z result.json and observed zero mismatches; receiptSHA2567f013eee008e507983b578a1fde29333b43c497e936f8b6d60af85cac1d32f36."
+    },
+    {
+      "id": "CI-admission-current-source",
+      "passed": true,
+      "evidence": "ci-admission phase exit0 and admission JSON resultpass/sourceCommit21ac990c2ae804ac031d4fafb457595d59e64bb3/sourceDirtyfalse; final source identity exactly matches the initial committed source/fingerprint."
+    },
+    {
+      "id": "exact-week-success-cache",
+      "passed": true,
+      "evidence": "success.json equals the exact full run receipt; maintained cached_proof with measured current source identity and counterpart returned that exact receipt. Maintained controls reject changed source/counterpart, missing/failed phases and changed/missing artifacts."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "emulatorCleanupVerified, owned fixture cleanupVerified, credentialsCleared, hostCleanupVerified and nativeProcessCleanupVerified all true; private port43707 is closed and no owned android-ci-avd directories remain."
+    },
+    {
+      "id": "existing-timer-enabled-active-waiting",
+      "passed": true,
+      "evidence": "After full pass, systemctl start activated the existing papercusp-android-ci.timer; fresh systemctl show reports UnitFileStateenabled/ActiveStateactive/SubStatewaiting and finite next elapse. No running service was restarted."
+    }
+  ],
+  "rootCause": {
+    "workItem": "EI-25511519706362927",
+    "layer": "device operator conversation routes",
+    "cause": "Ambient desktop workspace was used instead of the verified paired device principal workspace for conversation read/write/history and dispatch. Native read returned0 instead of2 seeded turns.",
+    "fix": "Reuse verified principal workspace with existing scoped conversation services and dispatch; validate authenticated populated fixture before instrumentation.",
+    "recurrenceGuard": "32 conventional device-revival-routes tests and maintained readback positive/empty/foreign/stale+cleanup controls passed as checkpointed before the real run.",
+    "distinguishingObservation": "Prior134359Z native returned0 instead2; corrected144934Z authenticated device read and JNI both observed2 paired-workspace turns.",
+    "priorRejectionEvidence": "docs/evidence/android-independent-ci-rejection-2026-10-09.json"
+  },
+  "githubActions": {
+    "workflowFile": "ci.yml",
+    "liveWorkflowState": "deleted",
+    "observedAt": "2026-10-09T15:18:35Z",
+    "androidExecution": "independent local-systemd"
+  },
+  "acceptanceBoundary": {
+    "independentCIExecutionPassed": true,
+    "fullSelectedNativePass": true,
+    "signedCandidate": false,
+    "hostedCloudJourneys": false,
+    "physicalPhone": false,
+    "googlePlay": false,
+    "featurePopulations": {
+      "chatTurns": 2,
+      "plans": 0,
+      "fleetAvailability": "0 available · 0 agents",
+      "pots": 0,
+      "workspaceId": "android-live-scope-5a56ffe5710042069538fd2c5f90d65f",
+      "workspaceName": "android-live-scope-5a56ffe5710042069538fd2c5f90d65f",
+      "standingCandidates": 0
+    }
+  },
+  "migrationRefs": [
+    "WI-10007209",
+    "android-public-release-2026-10-01#P-016",
+    "android-public-release-2026-10-01#D-022",
+    "android-public-release-2026-10-01#D-023",
+    "android-public-release-2026-10-01#D-024"
+  ]
+}

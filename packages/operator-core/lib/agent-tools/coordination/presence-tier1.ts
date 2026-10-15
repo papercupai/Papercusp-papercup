@@ -29,10 +29,11 @@
  * mergeTier1) are unit-tested; fetchPresenceTier1 is the IO seam.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { getAllWakeModeOverrides, getDefaultWakeMode, type WakeMode } from './wake-mode';
+import { getDefaultWakeMode, getWakeModeOverridesFor, type WakeMode } from './wake-mode';
 import { planItemRef } from '../../issue-blocks-merge';
 import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
 import { TERMINAL_STATUSES as FEATURE_TERMINAL_STATUSES } from '../../dbos/frontier-readiness';
+import { isLifecycleIntent } from './presence-intent';
 
 /**
  * A held work-item stops occupying its plan item once it is DONE — in either family.
@@ -111,7 +112,28 @@ export interface PresenceTier1 {
    *  strips it before the join spread, so the raw timestamp never rides an emitted
    *  row (the PRESENCE_DROPPED_FIELDS discipline). */
   turnPartLastAt?: string;
+  /** P-010 (derived-status-not-hand-written-2026-10-12#D-006): the owner's most recently
+   *  taken NON-TERMINAL held work item — the source of a derived intent when the owner
+   *  has no fresh declaration. Derivation INPUT only: mergeTier1 folds it into
+   *  intent/intentSource/intentDerivedFrom and {@link stripDerivationInputs} removes it
+   *  before any join spread, so it never rides an emitted row. Absent when the owner
+   *  holds nothing non-terminal. */
+  heldWorkIntent?: HeldWorkIntent;
 }
+
+/** P-010: the held work item a derived intent is built from. */
+export interface HeldWorkIntent {
+  workItemId: string;
+  title: string | null;
+  /** `<plan_slug>#<item_id>` when the work item carries a `payload.plan_item` stamp. */
+  planItemRef?: string;
+}
+
+/** P-010: where a roster row's `intent` came from (see {@link deriveIntent}). */
+export type IntentSource = 'declared' | 'derived';
+
+/** P-010: the work item behind a 'derived' intent; undefined for any other source. */
+export type IntentDerivedFrom = { workItemId: string; planItemRef?: string } | undefined;
 
 /** The join-derived half of the enrichment (everything except the record-derived
  *  lastActiveSecAgo + its derived intentStale). */
@@ -227,6 +249,87 @@ export function computeIntentDivergent(
   return intentAgeSec - lastActiveSecAgo > thresholdSec;
 }
 
+/** P-010: one held work-item row, as fetchPresenceTier1's work-item join reads it. */
+export interface HeldWorkRow {
+  taken_by: string;
+  feature_id: string;
+  status: string | null;
+  plan_slug: string | null;
+  item_id: string | null;
+  title: string | null;
+  taken_at: string | Date | null;
+}
+
+/**
+ * Pure (#D-006 point 3): each owner's derived-intent source — its most recently taken
+ * NON-TERMINAL held work item. Ties on taken_at (and unparseable/absent timestamps,
+ * which sort oldest) break on the larger id, so the derived text is byte-stable across
+ * reads of an unchanged owner (the delta/etag contract, D-005/D-006). Owners holding
+ * only terminal items get no entry.
+ */
+export function selectHeldWorkIntents(rows: readonly HeldWorkRow[]): Map<string, HeldWorkIntent> {
+  const best = new Map<string, { row: HeldWorkRow; takenMs: number }>();
+  for (const r of rows) {
+    if (r.status != null && WORK_ITEM_TERMINAL_STATUSES.has(r.status)) continue;
+    const parsedMs = r.taken_at == null ? Number.NaN : new Date(r.taken_at).getTime();
+    const takenMs = Number.isNaN(parsedMs) ? Number.NEGATIVE_INFINITY : parsedMs;
+    const cur = best.get(r.taken_by);
+    if (!cur || takenMs > cur.takenMs || (takenMs === cur.takenMs && r.feature_id > cur.row.feature_id)) {
+      best.set(r.taken_by, { row: r, takenMs });
+    }
+  }
+  const out = new Map<string, HeldWorkIntent>();
+  for (const [owner, { row }] of best) {
+    out.set(owner, {
+      workItemId: row.feature_id,
+      title: row.title,
+      ...(row.plan_slug && row.item_id ? { planItemRef: planItemRef(row.plan_slug, row.item_id) } : {}),
+    });
+  }
+  return out;
+}
+
+/** P-010: a derived intent clips the work-item title so one long title cannot bloat
+ *  every roster read (#D-006 point 5). */
+export const DERIVED_INTENT_TITLE_MAX = 160;
+
+/**
+ * Pure: the intent a roster row reports (derived-status-not-hand-written-2026-10-12#D-006).
+ *
+ * An explicit declaration wins while it is FRESH: usable (not blank, the placeholder, or a
+ * lifecycle label — {@link isLifecycleIntent}) and no older than `thresholdSec`. An unknown
+ * age counts as fresh, because staleness is never asserted without a measurement. When the
+ * declaration is not fresh and the owner holds a non-terminal work item, the row reports
+ * that item instead, as `'<title> (<id>[ · <plan>#<item>])'`, marked 'derived'.
+ *
+ * With nothing held, the declared text is passed through untouched (even a stale one —
+ * intentStale / intentDivergent already say so), and its source is 'declared' only when it
+ * is usable; an unusable string reports source null.
+ */
+export function deriveIntent(
+  declared: string | null | undefined,
+  intentAgeSec: number | null,
+  held: HeldWorkIntent | undefined,
+  thresholdSec: number,
+): { intent: string | null; intentSource: IntentSource | null; intentDerivedFrom?: IntentDerivedFrom } {
+  const usable = !isLifecycleIntent(declared);
+  const fresh = usable && (intentAgeSec == null || intentAgeSec <= thresholdSec);
+  if (fresh || !held) {
+    return { intent: declared ?? null, intentSource: usable ? 'declared' : null };
+  }
+  const refs = held.planItemRef ? `${held.workItemId} · ${held.planItemRef}` : held.workItemId;
+  const title = (held.title ?? '').trim();
+  const clipped =
+    title.length > DERIVED_INTENT_TITLE_MAX ? `${title.slice(0, DERIVED_INTENT_TITLE_MAX - 1)}…` : title;
+  return {
+    intent: clipped ? `${clipped} (${refs})` : refs,
+    intentSource: 'derived',
+    intentDerivedFrom: held.planItemRef
+      ? { workItemId: held.workItemId, planItemRef: held.planItemRef }
+      : { workItemId: held.workItemId },
+  };
+}
+
 /** P-011: is the transcript-freshness leg on? Fail-soft to OFF (skip the leg, keep
  *  the presence-only derivation) when flag infra is unavailable — early boot and
  *  unit tests must not fail the roster over an enrichment leg. */
@@ -275,11 +378,14 @@ export async function fetchPresenceTier1(
         status: string | null;
         plan_slug: string | null;
         item_id: string | null;
+        title: string | null;
+        taken_at: string | Date | null;
       }[]
     >`
       SELECT taken_by, feature_id, status,
              payload->'plan_item'->>'plan_slug' AS plan_slug,
-             payload->'plan_item'->>'item_id'   AS item_id
+             payload->'plan_item'->>'item_id'   AS item_id,
+             title, taken_at
         FROM harness_shared.work_items
        WHERE taken_by = ANY(${ownerIds}::text[])`,
     sql<{ session_owner: string; model_tier: string | null }[]>`
@@ -295,7 +401,9 @@ export async function fetchPresenceTier1(
          AND fired_at IS NULL AND cancelled_at IS NULL
          AND (expires_ts IS NULL OR expires_ts > now())
        ORDER BY subscriber_id, created_at DESC`,
-    getAllWakeModeOverrides(),
+    // Owner-scoped like its siblings (WI-10005228): a PK probe for this roster's
+    // owners, not every override ever written.
+    getWakeModeOverridesFor(ownerIds),
     getDefaultWakeMode(),
     // P-011: freshest assistant-authored part per owner. workspace_id='default' is the
     // CORPUS namespace literal, deliberately not a tenant id (session-ingest.ts hardcodes
@@ -324,6 +432,7 @@ export async function fetchPresenceTier1(
   const claimsByOwner = new Map(claims.map((r) => [r.owner, r.items ?? []]));
   const workItemClaimsByOwner = new Map<string, string[]>();
   const planItemRefsByOwner = new Map<string, Set<string>>();
+  const heldWorkByOwner = selectHeldWorkIntents(workItemClaims);
   for (const r of workItemClaims) {
     const held = workItemClaimsByOwner.get(r.taken_by);
     if (held) held.push(r.feature_id);
@@ -355,6 +464,7 @@ export async function fetchPresenceTier1(
     const turnPartLastAt = turnPartByOwner.get(ownerId);
     const claimedItems = claimsByOwner.get(ownerId) ?? [];
     const workItems = workItemClaimsByOwner.get(ownerId) ?? [];
+    const heldWorkIntent = heldWorkByOwner.get(ownerId);
     out.set(ownerId, {
       claimedItems,
       claimCount: deriveUnifiedClaimCount(claimedItems, workItems),
@@ -372,19 +482,25 @@ export async function fetchPresenceTier1(
       // Conditional so the field is ABSENT (not undefined) when no recent part exists —
       // exactOptionalPropertyTypes treats those differently, and absent is the contract.
       ...(turnPartLastAt != null ? { turnPartLastAt } : {}),
+      ...(heldWorkIntent ? { heldWorkIntent } : {}),
     });
   }
   return out;
 }
 
-/** P-011: drop the derivation-input timestamp from a join before spreading it onto an
- *  emitted row (the PRESENCE_DROPPED_FIELDS discipline — raw churning timestamps stay
- *  off the wire). Shared by mergeTier1 and the fleet/hive rosters so no spread site
+/** Drop the derivation INPUTS from a join before spreading it onto an emitted row (the
+ *  PRESENCE_DROPPED_FIELDS discipline): P-011's raw transcript-part timestamp, and
+ *  P-010's held-work-item source of a derived intent (mergeTier1 folds it into
+ *  `intent`). Shared by mergeTier1 and the fleet/hive rosters so no spread site
  *  re-invents it and forgets. */
-export function stripTurnPartLastAt(
+export function stripDerivationInputs(
   join: PresenceTier1Joins | undefined,
-): Omit<Partial<PresenceTier1Joins>, 'turnPartLastAt'> {
-  const { turnPartLastAt: _dropped, ...rest } = (join ?? {}) as Partial<PresenceTier1Joins>;
+): Omit<Partial<PresenceTier1Joins>, 'turnPartLastAt' | 'heldWorkIntent'> {
+  const {
+    turnPartLastAt: _droppedTurnPart,
+    heldWorkIntent: _droppedHeldWork,
+    ...rest
+  } = (join ?? {}) as Partial<PresenceTier1Joins>;
   return rest;
 }
 
@@ -394,11 +510,17 @@ export function stripTurnPartLastAt(
  * lastActiveSecAgo only; the join fields stay absent.
  */
 export function mergeTier1<
-  T extends { ownerId: string; lastActiveAt: string | null; intentDeclaredAt?: string | null },
+  T extends {
+    ownerId: string;
+    lastActiveAt: string | null;
+    intentDeclaredAt?: string | null;
+    intent?: string | null;
+  },
 >(
   records: T[],
   joins: Map<string, PresenceTier1Joins>,
   nowMs: number,
+  intentStaleSec: number = INTENT_STALE_SEC,
 ): Array<
   T & {
     lastActiveSecAgo: number | null;
@@ -406,6 +528,9 @@ export function mergeTier1<
     intentStale: boolean | null;
     intentAgeSec: number | null;
     intentDivergent: boolean | null;
+    intent: string | null;
+    intentSource: IntentSource | null;
+    intentDerivedFrom?: IntentDerivedFrom;
   } & Partial<PresenceTier1Joins>
 > {
   return records.map((r) => {
@@ -418,15 +543,23 @@ export function mergeTier1<
       nowMs,
     );
     const intentAgeSec = computeLastActiveSecAgo(r.intentDeclaredAt ?? null, nowMs);
+    // P-010 (#D-006): a held work item stands in for a missing or stale declaration.
+    // intentAgeSec (when the TEXT was declared) is the age that matters here, not
+    // lastActiveSecAgo: an active agent can still be running on an hours-old declaration.
+    const derived = deriveIntent(r.intent, intentAgeSec, join?.heldWorkIntent, intentStaleSec);
     return {
       ...r,
-      ...stripTurnPartLastAt(join),
+      ...stripDerivationInputs(join),
       // Derived AFTER the joins spread so neither the record nor a join can shadow it.
       lastActiveSecAgo,
       lastActiveSource,
       intentStale: computeIntentStale(lastActiveSecAgo),
       intentAgeSec,
       intentDivergent: computeIntentDivergent(intentAgeSec, lastActiveSecAgo),
+      intent: derived.intent,
+      intentSource: derived.intentSource,
+      // Absent (not undefined) unless derived, so `pick` keeps the common row unchanged.
+      ...(derived.intentDerivedFrom ? { intentDerivedFrom: derived.intentDerivedFrom } : {}),
     };
   });
 }

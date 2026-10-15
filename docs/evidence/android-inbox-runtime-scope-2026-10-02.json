@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-24838078197928629",
+  "scope": "Current-build Rust API contract only; no native, signed-candidate or Play acceptance",
+  "fixCommit": "e6311ed90b2e5b680db67ef7a883cbe7f11053f4",
+  "containingRuntime": {
+    "runtime": "staging-operator",
+    "buildSha": "4b7011b31d",
+    "pipelineReceipt": "/tmp/android-inbox-scope-pipeline-20261002-0459.json",
+    "containsChange": true
+  },
+  "focusedRouteSuite": {
+    "ok": true,
+    "runId": "ab2edf12-98fb-4b28-a3d8-9f4271b1a13a",
+    "root": "~/papercupai-workspace/papercusp",
+    "passed": 24,
+    "failed": 0,
+    "skipped": 0,
+    "files": 1,
+    "failures": [],
+    "failuresTruncated": false,
+    "durationMs": 36,
+    "byFile": {
+      "packages/operator-core/lib/endpoint-route/__tests__/device-revival-routes.test.ts": {
+        "passed": 24,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20478569
+      }
+    },
+    "testRunIds": [
+      20478569
+    ],
+    "rootSource": "requested"
+  },
+  "live": {
+    "command": [
+      "cargo",
+      "test",
+      "-p",
+      "papercup-core",
+      "--test",
+      "live_smoke",
+      "live_p0_contract_smoke",
+      "--",
+      "--ignored",
+      "--nocapture"
+    ],
+    "startedAt": "2026-10-02T05:02:42.106157+00:00",
+    "finishedAt": "2026-10-02T05:03:20.925485+00:00",
+    "runtime": "http://127.0.0.1:3170",
+    "sourceCommit": "679f848e7fc8ca484f1725ec0f98071d9b64eea2",
+    "sourceDirty": false,
+    "sourceFingerprints": {
+      "tools/run-android-checks.sh": "d35c43fb29fd46137db380c374d7c0d7f36b686a38eec18b32f8713d2ed8d01f",
+      "crates/papercup-core/tests/live_smoke.rs": "3f50afec01bf3062a9f2a6643144c9eb217a5553482639919cc25edef1c996ef"
+    },
+    "exitCode": 0,
+    "cleanupVerified": true,
+    "errors": []
+  },
+  "liveCounts": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  },
+  "evidenceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/live-contract-20261002-0501/result.json",
+      "sha256": "ab0b544647e78812ec75b0b742f66b2ed4ed34ec0b69b9b19f9955b63a9903ba"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/live-contract-20261002-0501/cargo-test.log",
+      "sha256": "ebe0d892031050313412fb3bc53da6a2f6cf6cfd7f80938fb0f9eb796a13bce1"
+    }
+  ],
+  "diagnostic": {
+    "observedReason": "canonical_dispatch_failed",
+    "code": "harness_required",
+    "source": "papercusp-staging-api.service journal 2026-10-02 04:24:06\u201311 UTC, distilled via code:run"
+  },
+  "guard": "device/attention satisfies the real canonical harness gate while preserving the paired workspace",
+  "openRelatedRecovery": "WI-10005298",
+  "sourceFiles": [
+    "packages/operator-core/lib/endpoint-route/routes/device/attention.ts",
+    "packages/operator-core/lib/endpoint-route/__tests__/device-revival-routes.test.ts"
+  ]
+}

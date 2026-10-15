@@ -14,6 +14,7 @@
  * cannot show you, because both of them look like success.
  */
 import { describe, expect, it } from 'vitest';
+import { stripCommentsOnly } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 import {
   assessGraphHealth,
@@ -38,6 +39,32 @@ import {
 const GUARD = 'scripts/check-lint-guard-reachability.mjs';
 const DETECTOR = 'apps/operator/lib/release/prompt-divergence.ts';
 const DETECTOR_TEST = 'apps/operator/lib/release/prompt-divergence.test.ts';
+
+describe('sidecar spawn-plan execution edges', () => {
+  const worker = 'packages/operator-core/lib/release/admission-fix-precheck-worker-bin.ts';
+  const caller = 'packages/operator-core/lib/release/admission-fix-precheck-managed.ts';
+  const anchored = 'const moduleDir = dirname(fileURLToPath(import.meta.url));';
+  const graph = (source: string) => buildImportGraph({
+    files: [worker, caller], readFile: file => file === caller ? source : '',
+    stripComments: stripCommentsOnly,
+  });
+
+  it('reaches the sibling worker passed to the maintained sidecar planner', () => {
+    const source = anchored + `\nreturn resolveSidecarSpawnPlan({
+      selfPath: options.selfPath ?? fileURLToPath(import.meta.url),
+      devScriptPath: join(options.moduleDirOverride ?? moduleDir, 'admission-fix-precheck-worker-bin.ts'),
+    });`;
+    expect([...graph(source).pathMentions.get(worker) ?? []]).toEqual([caller]);
+  });
+
+  it.each([
+    anchored + `\nconst inventory = { devScriptPath: join(moduleDir, 'admission-fix-precheck-worker-bin.ts') };`,
+    `const moduleDir = configuredDirectory; resolveSidecarSpawnPlan({ devScriptPath: join(moduleDir, 'admission-fix-precheck-worker-bin.ts') });`,
+    anchored + `\n// resolveSidecarSpawnPlan({ devScriptPath: join(moduleDir, 'admission-fix-precheck-worker-bin.ts') });`,
+  ])('rejects passive, unanchored and commented worker paths: %s', source => {
+    expect(graph(source).pathMentions.has(worker)).toBe(false);
+  });
+});
 
 describe('selectDetectorModules', () => {
   it('takes lib/release sources and excludes tests, declarations and other trees', () => {
@@ -442,6 +469,28 @@ describe('buildImportGraph', () => {
 
     expect([...(graph.pathMentions.get(DETECTOR) ?? [])]).toEqual([workflow]);
     expect(isExecutionPathMentionSource(workflow)).toBe(true);
+  });
+
+  it('treats shell commands as execution evidence but ignores shell comment-only path mentions', () => {
+    const caller = 'papercusp-desktop/bin/publish-release-instructions.sh';
+    const commentOnly = 'apps/operator/bin/old-release-command.sh';
+    const files = [DETECTOR, caller, commentOnly];
+    const bodies: Record<string, string> = {
+      [DETECTOR]: 'export const x = 1;',
+      [caller]: [
+        '#!/usr/bin/env bash',
+        '# historical caller apps/operator/lib/release/prompt-divergence.ts',
+        `npx tsx ${DETECTOR}`,
+      ].join('\n'),
+      [commentOnly]: [
+        '#!/usr/bin/env bash',
+        '# apps/operator/lib/release/prompt-divergence.ts was removed',
+      ].join('\n'),
+    };
+    const graph = buildImportGraph({ files, readFile: (f: string) => bodies[f] ?? '' });
+
+    expect([...(graph.pathMentions.get(DETECTOR) ?? [])]).toEqual([caller]);
+    expect(isExecutionPathMentionSource(caller)).toBe(true);
   });
 
   // The lookbehind that keeps the fix above from inventing an edge: the TAIL of a

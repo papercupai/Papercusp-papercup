@@ -1,0 +1,263 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-27 live battery (P-016 re-measure): Work-item search returns the target work item (by id) within its default result count for a query matching only text past the item's first 2,000 characters.",
+  "framework": "operational",
+  "command": [
+    "N=10 npx tsx .papercusp/scratch/rag-carry/p011-live-r27-battery.mts (the P-011 battery, unchanged; source embedded below as batterySource), against the live operator DB (native PG :5432, database papercusp)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T18:02:41Z",
+  "finishedAt": "2026-10-02T18:03:55.492Z",
+  "summary": "10 targets sampled by the battery's fixed rule, each queried only with text past its first 2,000 characters: 8 of 10 returned within the default result count. 7 of 10 within the trimmed page; 4 queries ran degraded (lexical leg only); by own vector only 1 of 10 reach the top 20. Named record: EI-19460048118267666 (4645 chars) queried with text at offset 3492 returned at rank 1 (within the trimmed page). Misses: EI-20029742330651200, EI-2048.",
+  "assertions": [
+    {
+      "id": "r27-target-returned-past-2000",
+      "statement": "Work-item search returns the target work item (by id) within its default result count for a query matching only text past the item's first 2,000 characters.",
+      "passed": true,
+      "evidence": "8 of 10 sampled targets returned within the default result count; named record EI-19460048118267666 (4645 chars) queried with text at offset 3492 returned at rank 1 (within the trimmed page). Population rate reported, not thresholded; misses listed in summary and rows."
+    }
+  ],
+  "note": "[self-imposed under AUTO; owner directive #970] Re-measured because binding 19186 went stale on freshness: its pinned libs/generic/search/src/chunks/vector-leg.ts (blob 9d7be5dd79) changed on 2026-10-02 under the D-046..D-048 consult chunk-leg work. This run measured superproject d8329b22fb, libs/generic/search 093bf1c098 (vector-leg.ts blob cd07636462). Raw output: .papercusp/scratch/rag-carry/p016b-oper-r27.log",
+  "supersedes": "operational binding 19186 (p016-live-r-27-battery.json, measured 2026-10-01)",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "planItem": "P-011 (re-measured live under P-016)",
+  "bar": "R-27",
+  "battery": {
+    "queryMode": "sentence",
+    "setup": null,
+    "population": null,
+    "summary": {
+      "at": "2026-10-02T18:03:55.492Z",
+      "n": 10,
+      "returned": 8,
+      "withinTrimmedPage": 7,
+      "degraded": 4,
+      "ownVectorInTop20": 1
+    },
+    "rows": [
+      {
+        "item": "EI-19460048118267666",
+        "chars": 4645,
+        "queryOffset": 3492,
+        "query": "Same mechanism, same rendering path, no new concept for agents to learn.",
+        "results": 50,
+        "returned": true,
+        "rank": 1,
+        "withinTrimmedPage": true,
+        "ownVectorRank": 18670,
+        "degraded": false,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      },
+      {
+        "item": "EI-22154166487566939",
+        "chars": 3538,
+        "queryOffset": 2655,
+        "query": "The legs after the post-legs marker are the github-bridge / P2P legs — a leg without a timeout is the obvious hypothesis, but I did not confirm it and it should be treated as UNVERIFIED.",
+        "results": 50,
+        "returned": true,
+        "rank": 1,
+        "withinTrimmedPage": true,
+        "ownVectorRank": 136,
+        "degraded": false,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      },
+      {
+        "item": "WI-199841",
+        "chars": 4679,
+        "queryOffset": 3128,
+        "query": "Every monitoring surface reading that field reports healthy during a total freeze.",
+        "results": 50,
+        "returned": true,
+        "rank": 1,
+        "withinTrimmedPage": true,
+        "ownVectorRank": 64299,
+        "degraded": false,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      },
+      {
+        "item": "EI-18889416741921988",
+        "chars": 3949,
+        "queryOffset": 3244,
+        "query": "- Probe now also captures location.href and document.readyState .",
+        "results": 50,
+        "returned": true,
+        "rank": 10,
+        "withinTrimmedPage": true,
+        "ownVectorRank": 42,
+        "degraded": true,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      },
+      {
+        "item": "EI-22175580395708679",
+        "chars": 4211,
+        "queryOffset": 2859,
+        "query": "If the clearer reads available or any pause-window field while the firer reads usage-wall/rate-limit state, that is the defect.",
+        "results": 50,
+        "returned": true,
+        "rank": 1,
+        "withinTrimmedPage": true,
+        "ownVectorRank": 263,
+        "degraded": false,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      },
+      {
+        "item": "EI-20029742330651200",
+        "chars": 4261,
+        "queryOffset": 3538,
+        "query": "- Whether ask 1 was in fact DECIDED off-ledger e.g.",
+        "results": 50,
+        "returned": false,
+        "rank": 0,
+        "withinTrimmedPage": false,
+        "ownVectorRank": 5059,
+        "degraded": true,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      },
+      {
+        "item": "EI-23147478781259538",
+        "chars": 3818,
+        "queryOffset": -1,
+        "query": "completion.verification is strict: use only the listed evidence keys; put test/typecheck/diff details in testsRun / testResult o",
+        "results": 50,
+        "returned": true,
+        "rank": 25,
+        "withinTrimmedPage": false,
+        "ownVectorRank": 1422,
+        "degraded": true,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      },
+      {
+        "item": "EI-20026326180084656",
+        "chars": 4146,
+        "queryOffset": -1,
+        "query": "Skip selfTest bodies before scanning — the property is \"the root the script OPERATES on\", and a self-test body provably is not that.",
+        "results": 50,
+        "returned": true,
+        "rank": 1,
+        "withinTrimmedPage": true,
+        "ownVectorRank": 1,
+        "degraded": false,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      },
+      {
+        "item": "EI-18684357744098956",
+        "chars": 3958,
+        "queryOffset": 2657,
+        "query": "In all three the failure is silent agreement with the null hypothesis, not a visible error.",
+        "results": 50,
+        "returned": true,
+        "rank": 1,
+        "withinTrimmedPage": true,
+        "ownVectorRank": 3343,
+        "degraded": false,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      },
+      {
+        "item": "EI-2048",
+        "chars": 4072,
+        "queryOffset": 2763,
+        "query": "No tool-manifest pin exists ~/.papercusp/tool-manifest.json absent , so this is a client-surfacing / unscoped- workspace= tools/list issue, not a server manifest.",
+        "results": 50,
+        "returned": false,
+        "rank": 0,
+        "withinTrimmedPage": false,
+        "ownVectorRank": 1288,
+        "degraded": true,
+        "semanticLeg": {
+          "status": "ran",
+          "candidates": 300,
+          "floored": 0,
+          "stage2Added": 0,
+          "callsRun": 2,
+          "callsFailed": 0,
+          "failures": [],
+          "blocked": null
+        }
+      }
+    ]
+  },
+  "batterySource": "// generic-rag-chunking P-011 R-27 live battery: work-item search (the working-tree\n// searchWorkItems behind work_items:search, default options) against the live\n// operator DB after the work_items chunk sync + embed. Sample: N non-observation\n// work items in the workspace whose summary is over 3,500 characters, in\n// md5(feature_id) order (fixed pseudo-random, no hand-picking). Query: one sentence\n// from the part past the first 2,000 characters that the 4 capped windows still\n// cover, whose opening words do not occur in the first 2,000 characters. Records the\n// target's rank in the fused result (default limit 50; the tool's shaped page shows\n// 20 rows on the trimmed tier and 40 on standard) and, so a miss can be told apart\n// from a missing row, the item's rank by its own parent vector alone.\nexport {};\nconst base = 'file://~/papercupai-workspace/papercusp/packages/operator-core/lib/';\nconst { installSearchDefaults } = await import(base + 'search/configure-search-defaults.ts');\nconst { buildQueryEmbedderResolved } = await import(base + 'agent-tools/search/embedder.ts');\nconst { WORK_ITEMS_CHUNK_SURFACE } = await import(base + 'search/chunks/registry.ts');\nconst { searchWorkItems } = await import(base + 'work-items.ts');\nconst { getOrgPg } = await import('@papercusp/db-org');\ninstallSearchDefaults();\n\nconst CUT = 2000;\nconst N = Number(process.env.N ?? 10);\nconst WS = 'papercusp-workspace';\nconst TRIMMED_PAGE = 20;\nconst sp = WORK_ITEMS_CHUNK_SURFACE.splitter as { size: number; overlap: number };\nconst covered = sp.size + (WORK_ITEMS_CHUNK_SURFACE.maxChunks! - 1) * (sp.size - sp.overlap);\nconst resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 20_000 });\nif (!resolved) throw new Error('no query embedder');\nconst { sql } = getOrgPg();\n\nconst items = await sql.unsafe<Array<{ id: string; harness: string; text: string }>>(\n  `SELECT w.feature_id AS id, w.harness_slug AS harness, w.summary AS text\n     FROM harness_shared.work_items w\n    WHERE w.workspace_id = $1 AND w.lane IS DISTINCT FROM 'observation'\n      AND length(w.summary) > 3500\n      AND EXISTS (SELECT 1 FROM harness_shared.text_chunks c\n                   WHERE c.surface = 'work_items' AND c.parent_key = ARRAY[w.harness_slug, w.feature_id]\n                     AND c.embedding IS NOT NULL)\n    ORDER BY md5(w.feature_id) LIMIT $2`,\n  [WS, N * 3],\n);\n\nasync function search(query: string) {\n  for (let attempt = 1; attempt <= 4; attempt++) {\n    const r = await searchWorkItems(query, {});\n    if (!r.retry && !r.legs?.degraded) return r;\n    if (attempt === 4) return r;\n    await new Promise((res) => setTimeout(res, Math.max(1000, r.retry?.afterMs ?? 3000)));\n  }\n  throw new Error('unreachable');\n}\n\nconst rows: Array<Record<string, unknown>> = [];\nfor (const t of items) {\n  if (rows.filter((r) => !r.skipped).length >= N) break;\n  const head = t.text.slice(0, CUT).toLowerCase();\n  const region = t.text.slice(CUT, Math.min(t.text.length, covered) - 50);\n  const sentences = region\n    .split(/(?<=[.!?])\\s+|\\n+/)\n    .map((s) => s.replace(/[`*_#>|[\\]()]/g, ' ').replace(/\\s+/g, ' ').trim())\n    .filter((s) => s.split(' ').length >= 8 && s.length <= 220 && !head.includes(s.toLowerCase().slice(0, 40)));\n  const query = sentences[Math.floor(sentences.length * 0.6)];\n  if (!query) {\n    rows.push({ item: t.id, skipped: 'no usable sentence' });\n    continue;\n  }\n  const vec = `[${(await resolved.embed(query)).join(',')}]`;\n  const [ownRank] = await sql.unsafe<Array<{ rank: number }>>(\n    `WITH r AS (SELECT feature_id, row_number() OVER (ORDER BY embedding <=> $2::vector) AS rank\n                  FROM harness_shared.work_items\n                 WHERE workspace_id = $1 AND embedding IS NOT NULL AND lane IS DISTINCT FROM 'observation')\n     SELECT rank::int FROM r WHERE feature_id = $3`,\n    [WS, vec, t.id],\n  );\n  const res = await search(query);\n  const i = res.items.findIndex((h: { id?: string }) => h.id === t.id);\n  rows.push({\n    item: t.id,\n    chars: t.text.length,\n    queryOffset: t.text.indexOf(query.split(' ').slice(0, 4).join(' ')),\n    query,\n    results: res.items.length,\n    returned: i >= 0,\n    rank: i + 1,\n    withinTrimmedPage: i >= 0 && i < TRIMMED_PAGE,\n    ownVectorRank: ownRank?.rank ?? null,\n    degraded: res.legs?.degraded ?? null,\n    semanticLeg: (res.legs as { semantic?: unknown } | undefined)?.semantic ?? null,\n  });\n}\nfor (const r of rows) console.log('ROW', JSON.stringify(r));\nconst done = rows.filter((r) => !r.skipped);\nconsole.log(\n  'SUMMARY',\n  JSON.stringify({\n    at: new Date().toISOString(),\n    n: done.length,\n    returned: done.filter((r) => r.returned).length,\n    withinTrimmedPage: done.filter((r) => r.withinTrimmedPage).length,\n    degraded: done.filter((r) => r.degraded).length,\n    ownVectorInTop20: done.filter((r) => typeof r.ownVectorRank === 'number' && (r.ownVectorRank as number) <= 20).length,\n  }),\n);\nprocess.exit(0);\n"
+}

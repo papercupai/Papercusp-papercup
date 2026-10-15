@@ -1,0 +1,152 @@
+{
+  "suite": "code-intel-engine-comparison",
+  "runId": "engine-comparison-2026-10-02",
+  "arms": [
+    "baseline-lsp-rg",
+    "gitnexus-installed",
+    "gitnexus-candidate",
+    "codebase-memory"
+  ],
+  "unionTasks": 5,
+  "perArm": [
+    {
+      "arm": "baseline-lsp-rg",
+      "tasks": 5,
+      "seeds": 1,
+      "scoredRows": 5,
+      "infraRows": 0,
+      "nonCompletedTasks": 0,
+      "models": [
+        "none-tool-only"
+      ],
+      "graderVersions": [
+        "gradeSites@selective-corpus-v1"
+      ],
+      "budgets": [
+        null
+      ],
+      "costPerTask": 0,
+      "callsPerTask": 4
+    },
+    {
+      "arm": "gitnexus-installed",
+      "tasks": 5,
+      "seeds": 1,
+      "scoredRows": 0,
+      "infraRows": 5,
+      "nonCompletedTasks": 5,
+      "models": [
+        "none-tool-only"
+      ],
+      "graderVersions": [
+        "gradeSites@selective-corpus-v1"
+      ],
+      "budgets": [
+        null
+      ],
+      "costPerTask": 0,
+      "callsPerTask": 0
+    },
+    {
+      "arm": "gitnexus-candidate",
+      "tasks": 5,
+      "seeds": 1,
+      "scoredRows": 0,
+      "infraRows": 5,
+      "nonCompletedTasks": 5,
+      "models": [
+        "none-tool-only"
+      ],
+      "graderVersions": [
+        "gradeSites@selective-corpus-v1"
+      ],
+      "budgets": [
+        null
+      ],
+      "costPerTask": 0,
+      "callsPerTask": 0
+    },
+    {
+      "arm": "codebase-memory",
+      "tasks": 5,
+      "seeds": 1,
+      "scoredRows": 5,
+      "infraRows": 0,
+      "nonCompletedTasks": 0,
+      "models": [
+        "none-tool-only"
+      ],
+      "graderVersions": [
+        "gradeSites@selective-corpus-v1"
+      ],
+      "budgets": [
+        null
+      ],
+      "costPerTask": 0,
+      "callsPerTask": 4
+    }
+  ],
+  "criteria": [
+    {
+      "id": "C1",
+      "criterion": "Same task set + same scoring denominator",
+      "status": "PASS",
+      "evidence": "all 4 arms cover the same 5 tasks; score on the union-N (infra/absent=false) via the same-denominator attribution headline."
+    },
+    {
+      "id": "C2",
+      "criterion": "Same model (telemetry-verified)",
+      "status": "NEEDS-EVIDENCE",
+      "evidence": "config modelId consistent (none-tool-only) — VERIFY per-arm from agent_usage_samples telemetry (a tier/route remap can silently serve a different model)."
+    },
+    {
+      "id": "C3",
+      "criterion": "Compute parity (iso-budget) or disclosed",
+      "status": "WARN",
+      "evidence": "NOT iso-budget (caps: null) — best-effort, no capability claim without compute-matching. Per-arm: baseline-lsp-rg: $0.00/task, 4.0 calls/task; gitnexus-installed: $0.00/task, 0.0 calls/task; gitnexus-candidate: $0.00/task, 0.0 calls/task; codebase-memory: $0.00/task, 4.0 calls/task."
+    },
+    {
+      "id": "C4",
+      "criterion": "Capability-under-claim actually exercised",
+      "status": "NEEDS-EVIDENCE",
+      "evidence": "verify the config exercises the claimed capability (e.g. coordination requires multiple agents communicating on the SAME task, not parallel different tasks)."
+    },
+    {
+      "id": "C5",
+      "criterion": "Same grader / env / exclusion policy",
+      "status": "NEEDS-EVIDENCE",
+      "evidence": "grader version consistent (gradeSites@selective-corpus-v1) — confirm identical docker images, FAIL_TO_PASS/PASS_TO_PASS, timeouts, and that the exclusion policy is reconciled into the C1 denominator."
+    },
+    {
+      "id": "C6",
+      "criterion": "Reliability / coverage parity",
+      "status": "WARN",
+      "evidence": "coverage gap (baseline-lsp-rg: 0 non-completed (0 infra rows); gitnexus-installed: 5 non-completed (5 infra rows); gitnexus-candidate: 5 non-completed (5 infra rows); codebase-memory: 0 non-completed (0 infra rows)). ASYMMETRIC — fix the infra + re-run, or count as false + disclose (done in the same-denominator headline)."
+    },
+    {
+      "id": "C7",
+      "criterion": "No contamination / leakage",
+      "status": "NEEDS-EVIDENCE",
+      "evidence": "confirm no solution/test-patch leakage into any agent context; same context budget + allowed-tools class (modulo the capability under test)."
+    },
+    {
+      "id": "C8",
+      "criterion": "Statistical validity (N, tiers, seeds)",
+      "status": "WARN",
+      "evidence": "SINGLE-SEED arm present (baseline-lsp-rg: 1 seed(s) × 5 tasks; gitnexus-installed: 1 seed(s) × 5 tasks; gitnexus-candidate: 1 seed(s) × 5 tasks; codebase-memory: 1 seed(s) × 5 tasks) — a single run is inside the noise band; ≥2 seeds required for a headline claim. Stratify + report per-tier."
+    },
+    {
+      "id": "C9",
+      "criterion": "Reference reproduces published number",
+      "status": "NEEDS-EVIDENCE",
+      "evidence": "verify the reference arm (gitnexus-installed) scores within noise of its published number, else the harness is miscalibrated."
+    },
+    {
+      "id": "C10",
+      "criterion": "Transparent reporting",
+      "status": "PASS",
+      "evidence": "emit WITH the per-instance matrix, per-arm model + $/task + calls/task, budget regime, infra-failure counts, seeds, and THIS audit table."
+    }
+  ],
+  "allClear": false
+}

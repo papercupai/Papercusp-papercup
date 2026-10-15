@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native public HTTPS actual assistant reply and ordinary Keychain relaunch",
+  "command": ["tools/ios-ci.py:ui_test", "public-chat-ui", "PapercupUITests/PairFlowUITests/testPairAndPairedNavigation"],
+  "startedAt": "2026-10-14T16:40:13.604853+00:00",
+  "finishedAt": "2026-10-14T16:43:29.315807+00:00",
+  "exitCode": 0,
+  "summary": "The already-executed maintained native XCUITest passed 1 selected test with zero failures or skips through the owned protected public HTTPS fixture. The test visibly paired, loaded authorized tabs, sent a fresh unique message to the actual operator, required its assistant reply and retained that reply after ordinary Keychain relaunch. All 61 declared artifact hashes and sizes were verified from the retained archive; actual reply and relaunch screenshots were reviewed. Both jobs are terminal exit0, private runtime/PG/input and owned tunnel/DNS are disposed, and the exclusive Mac VM lease is released. No native jobs were rerun.",
+  "assertions": [
+    {
+      "id": "PapercupUITests/PairFlowUITests/testPairAndPairedNavigation",
+      "passed": true,
+      "evidence": "public-chat-ui-summary.json records 1 passed, 0 failed, 0 skipped. The existing maintained test requires the current unique assistant reply and persisted credentials after ordinary app relaunch."
+    },
+    {
+      "id": "retained native artifact integrity",
+      "passed": true,
+      "evidence": "local-artifact-verification.json rehashed every one of the 61 result.json artifacts directly from native-artifacts.tar.gz; mismatches is empty."
+    },
+    {
+      "id": "owned fixture cleanup",
+      "passed": true,
+      "evidence": "runtime.json records processCleanupVerified, cloudCleanupVerified and cleanupVerified true at 2026-10-14T16:50:13.649Z. The fixture ledger is completed/exit0. Direct probes found control, host and connector PIDs absent, both private operator/ingress ports closed, private HOME and pair-payload removed; with-test-pg recorded runtimeRemoved and pgDataRemoved true."
+    }
+  ],
+  "workItemId": "WI-10004735",
+  "sourceWorkItemId": "WI-10007213",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "spec": "AUTO-BAR-R-2-P-008@2",
+  "repository": "papercup-rust-mobile (canonical independent mobile repository)",
+  "sourceCommitAtExecution": "4b14e898f859cce93794f48ac1d47c3cb42bec7c",
+  "sourceDirtyAtExecution": true,
+  "sourceFingerprint": "a27b8bc9cec096016510895cfd53dde164f9d55d0171ebc12712e1303b0acb85",
+  "canonicalSourceAtPreflight": {
+    "commit": "ee3522f75729eeafc5b9e6598e203877b4581bb4",
+    "dirty": false,
+    "fingerprint": "a27b8bc9cec096016510895cfd53dde164f9d55d0171ebc12712e1303b0acb85"
+  },
+  "sourceAdmission": "The reused compiled result, guest source and clean canonical mobile source fingerprints were equal at preflight. Guest Git metadata remained dirty at its older commit; that historical execution limitation remains explicit. This receipt does not admit a clean signed release candidate.",
+  "compiledResultSha256": "ef9de4f0cd29f22e650ebd36550b667152fdb83e50443dd2c2ad71c43c400f3b",
+  "maintainedInstruments": {
+    "runnerPath": "tools/ios-ci.py",
+    "runnerTestPath": "tools/tests/ios-ci-runner-test.py",
+    "testPath": "ios/PapercupUITests/PairFlowUITests.swift",
+    "resultGuardPath": "tools/build-scripts/check-xctest-summary.py",
+    "fixturePath": "packages/operator-core/lib/native-device-fixture.ts",
+    "fixtureTestPath": "packages/operator-core/lib/native-device-fixture.test.ts",
+    "receiptTimeFileHashes": {
+      "tools/ios-ci.py": "aed6cffc32c6767a3f684f551d601c163fece88dcc4fa72c36f65c44a23fb48f",
+      "tools/tests/ios-ci-runner-test.py": "f92dee5a5f20e1c6a08a1a6019ba0c0c4e07b62125779b19802979b6c01cb18c",
+      "ios/PapercupUITests/PairFlowUITests.swift": "14ea77b249d3168f243d37e780334aa926229f199b511b9d6e85a686d65cc0fd",
+      "tools/build-scripts/check-xctest-summary.py": "8093276f7f5d3526ec173784dce32dea8242782d80cbcb9865ede684e2d1d898"
+    }
+  },
+  "toolchain": {
+    "xcode": "Xcode 16.4 Build 16F6",
+    "simulatorSDK": "18.5",
+    "simulatorRuntime": "iOS 18.6 (22G86)",
+    "device": "iPhone 16 Pro x86_64",
+    "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"
+  },
+  "retainedEvidence": {
+    "root": ".papercusp/evidence/WI-10004735-public-chat-20261014T1640Z",
+    "pathBase": "Operating account home directory; retained evidence is outside the staging checkout.",
+    "archive": "native-artifacts.tar.gz",
+    "archiveSha256": "49a0faa71f597d84dd17891c1c9261d9d448fc1a07d7a2bb8e66a349e5ee514e",
+    "archiveBytes": 5396480,
+    "resultPath": "result.json",
+    "resultSha256": "c6ca9842838d2bc59f7791d169b048f13c75a4eb4f92ae3e3ab79be660c42b01",
+    "summaryPath": "public-chat-ui-summary.json",
+    "verificationFile": "local-artifact-verification.json",
+    "verifiedArtifactCount": 61,
+    "mismatches": [],
+    "integrityProcedure": "Verify archive and result hashes, then read each result artifact directly from the tar and compare its byte length and SHA256. This does not execute native tests.",
+    "nativeJobId": "0mv8c5lpercvm13yroa",
+    "fixtureJobId": "0mv8c2ajp1qyzgno11d",
+    "jobDisposition": "Both terminal completed/exit0. Do not rerun these completed jobs."
+  },
+  "screenshots": [
+    {
+      "label": "paired-chat-reply",
+      "file": "AE6316DA-DBAD-4AAB-9CE3-3BF76EB1BD26.png",
+      "review": "Actual unique assistant reply is visible beneath the freshly sent user message in the paired disposable workspace."
+    },
+    {
+      "label": "paired-keychain-relaunch",
+      "file": "900582B6-1639-4A8C-967B-2D81132D5B2D.png",
+      "review": "Ordinary relaunch retains the paired workspace and the same unique assistant reply with authorized tabs visible."
+    }
+  ],
+  "fixture": {
+    "sourceSha256": "f67cdc7e4005c3a5f5751191d679d56a2ac2c2ce44670987fef4ca58e0cf860e",
+    "readyAt": "2026-10-14T16:39:17.554Z",
+    "boundary": {
+      "/api/health": 404,
+      "/api/workspaces": 404,
+      "/api/device/desktop/mint-pair-token": 404,
+      "/api/device/heartbeat": 401
+    },
+    "cleanupVerified": true,
+    "finishedAt": "2026-10-14T16:50:13.649Z"
+  },
+  "disclosedGaps": [
+    "Historical exact-source development evidence with dirty guest Git metadata; no clean signed candidate admission.",
+    "Mac VM simulator public HTTPS evidence does not establish physical cellular radio or production APNs delivery.",
+    "No supported hosted-account entitlement or accepted BYOC cloud target acceptance claim.",
+    "No Xcode 26, signed IPA, App Store, TestFlight or final shipment claim.",
+    "Remaining P-008 expiry, offline/reconnect and workspace-isolation rows remain open; earlier retained subsets are not superseded."
+  ]
+}

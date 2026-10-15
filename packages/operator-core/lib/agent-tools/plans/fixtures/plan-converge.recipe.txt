@@ -1,0 +1,135 @@
+// Reuse the canonical evaluator, code-truth audit and certifier. Run code:run
+// with outer dryRun:false: THIS recipe owns its side-effect-free preview mode.
+const { planSlug, harness, classRef, auditItems } = inputs;
+const dryRun = inputs.dryRun !== false;
+// orchestrate:run refuses a return whose JSON.stringify exceeds its summary
+// budget (DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS; a test pins this copy to it).
+// Every return goes through fit(), which MEASURES the serialized result and
+// trims gap rows, then sub-objects, until it fits, counting what it omitted.
+// Aggregate counts always cover the full set.
+const SUMMARY_BUDGET = 1250;
+const MAX_GAPS = 5;
+const clip = value => {
+  if (value && typeof value === "object") {
+    const text = JSON.stringify(value);
+    return text.length > 240 ? text.slice(0, 240) + "…" : value;
+  }
+  return typeof value === "string" && value.length > 240 ? value.slice(0, 240) + "…" : value;
+};
+const brief = (value, keys) => {
+  if (!value || typeof value !== "object") return clip(value);
+  const out = {};
+  for (const key of keys) if (key in value) out[key] = clip(value[key]);
+  return out;
+};
+const size = value => JSON.stringify(value).length;
+const fit = result => {
+  for (const [list, omitted] of [["gaps", "gapsOmitted"], ["proposals", "proposalsOmitted"]]) {
+    while (size(result) > SUMMARY_BUDGET && Array.isArray(result[list]) && result[list].length > 0) {
+      result[list] = result[list].slice(0, -1);
+      result[omitted] = (result[omitted] || 0) + 1;
+    }
+  }
+  for (const key of ["evaluation", "audit", "certification", "filed"]) {
+    if (size(result) <= SUMMARY_BUDGET) break;
+    if (result[key] && typeof result[key] === "object") result[key] = { ok: result[key].ok, trimmed: true };
+  }
+  if (size(result) <= SUMMARY_BUDGET) return result;
+  const scalar = { summaryTrimmed: true };
+  for (const [key, value] of Object.entries(result)) {
+    if (value === null || ["boolean", "number"].includes(typeof value)) scalar[key] = value;
+    else if (typeof value === "string") scalar[key] = value.slice(0, 120);
+  }
+  return scalar;
+};
+const FAILURE_KEYS = ["ok", "error", "code", "message", "status", "reason"];
+const compactGaps = list => list.slice(0, MAX_GAPS).map(gap => ({ specId: gap.specId,
+  revision: gap.revision, classification: gap.classification, severity: gap.severity,
+  blockers: gap.blockers, action: gap.action, ...(gap.id ? { id: gap.id } : {}) }));
+if (!planSlug || !harness || !classRef || !Array.isArray(auditItems) || auditItems.length === 0) {
+  return { ok: false, error: "scope_and_reviewed_auditItems_required" };
+}
+const audit = await tools.plans.audit({
+  harness, slug: planSlug, phase: "completion", items: auditItems, dryRun,
+});
+if (audit.ok !== true || audit.partial || (audit.rejectedItemIds || []).length) {
+  return fit({ ok: false, phase: "code-truth",
+    audit: brief(audit, [...FAILURE_KEYS, "partial", "rejectedItemIds"]) });
+}
+// The certifier owns its authoritative evaluation and exact-replay card writer.
+// Audit first and select only reviewed implementations. A separate non-passing
+// plan evaluation stops subsequent certification in the orchestration wrapper;
+// do not issue that redundant pre-evaluation or weaken the fail-stop barrier.
+const reviewedItemIds = auditItems.filter(item => ["implemented", "not-code"].includes(item.verdict))
+  .map(item => item.itemId);
+const certification = reviewedItemIds.length > 0
+  ? await tools.plans.certifySpecClauses({ harness, slug: planSlug, classRef,
+    planItemIds: reviewedItemIds, includeDraft: true, dryRun,
+    acknowledgeExisting: inputs.acknowledgeExisting === true })
+  : { ok: true, skipped: "no-reviewed-implementation" };
+if (certification.ok !== true || (certification.counts && certification.counts.refused > 0)) {
+  return fit({ ok: false, phase: "certify",
+    certification: brief(certification, [...FAILURE_KEYS, "counts"]) });
+}
+// This final evaluation classifies the whole plan, including unreviewed items.
+// No certification or delivery gate follows a non-passing/uncertain receipt.
+const evaluation = await tools.plans.evaluateSpecTestAdequacy({
+  harness, slug: planSlug, classRef, includeDraft: true, detail: "full",
+});
+const rows = evaluation.rows ?? null;
+if (evaluation.ok !== true || !Array.isArray(rows)) {
+  return fit({ ok: false, phase: "evaluate", evaluation: brief(evaluation, FAILURE_KEYS) });
+}
+const proposals = [];
+for (const row of rows) {
+  if (typeof row.specId !== "string" || !Number.isInteger(row.specRevision) || row.specRevision < 1) {
+    return { ok: false, error: "invalid_clause_identity" };
+  }
+  const reviewed = auditItems.find(item => item.itemId === row.planItemId);
+  const blockers = [...(row.wouldBlock || [])];
+  if (!reviewed || !["implemented", "not-code"].includes(reviewed.verdict)) blockers.push("code-truth");
+  if (row.verdict === "pass" && blockers.length === 0) continue;
+  // Missing proof is not evidence of broken behavior. Only a reviewed missing
+  // implementation is critical. "outdated" is a conformance label; work-items
+  // retain their existing critical/major/minor/nit severity vocabulary.
+  const stale = blockers.includes("freshness") && row.ratings && row.ratings.freshness
+    && row.ratings.freshness.rating === "fail" && row.measurementEvidence
+    && row.measurementEvidence.selectedBindings > 0 && !blockers.includes("code-truth");
+  const classification = reviewed && reviewed.verdict === "missing" ? "critical"
+    : stale || blockers.length > 0 && blockers.every(value => value === "freshness") ? "outdated"
+    : blockers.length > 0 && blockers.every(value => value === "traceability") ? "minor" : "major";
+  const severity = classification === "outdated" ? "minor" : classification;
+  const conditionKey = `spec-gap:${harness}/${planSlug}/${row.specId}@${row.specRevision}`;
+  if (conditionKey.length > 200) return { ok: false, error: "condition_identity_too_long" };
+  proposals.push({ specId: row.specId, revision: row.specRevision, classification, severity,
+    conditionKey, blockers, planItemId: row.planItemId, verdict: row.verdict });
+}
+if (rows.length === 0) return { ok: false, error: "selected_clauses_empty" };
+const identity = dryRun ? null : await tools.coord.whoami({});
+const gapOwner = inputs.gapOwner || (identity && identity.ownerId);
+if (!dryRun && !gapOwner) return { ok: false, error: "gap_owner_required" };
+const gaps = [];
+for (const proposal of proposals) {
+  if (dryRun) { gaps.push({ ...proposal, action: "would-file" }); continue; }
+  const filed = await tools.workItems.create({ kind: "bug", harness, severity: proposal.severity,
+    title: `Spec conformance gap: ${planSlug}/${proposal.specId}@${proposal.revision}`,
+    summary: `${proposal.classification}: adequacy ${proposal.verdict}; blockers: ${proposal.blockers.join(", ")}.`,
+    assign_to: gapOwner, conditionKey: proposal.conditionKey, conditionReplay: "include-terminal",
+    links: [{ rel: "about", target_kind: "plan", target_ref: planSlug, target_harness: harness }],
+    payload: { specConformanceGap: { ...proposal, planSlug, harness, gapOwner } },
+  });
+  const outcome = filed.results && filed.results[0];
+  if (!filed.ok || !outcome || !outcome.ok || !outcome.workItem
+      || !(outcome.workItem.assignee || outcome.workItem.terminalOwner)
+      || (outcome.inlineLinkWarnings || []).length > 0) {
+    return fit({ ok: false, phase: "file", filed: brief(filed, FAILURE_KEYS),
+      gaps: compactGaps(gaps), gapsOmitted: Math.max(0, gaps.length - MAX_GAPS) });
+  }
+  gaps.push({ ...proposal, action: outcome.conditionUpsert ? "reused" : "filed", id: outcome.id || outcome.workItem.id });
+}
+const byClassification = {};
+for (const gap of gaps) byClassification[gap.classification] = (byClassification[gap.classification] || 0) + 1;
+return fit({ ok: true, dryRun, planSlug, evaluated: rows.length, nonPassing: gaps.length, byClassification,
+  audit: brief(audit, ["ok", "preview", "itemsAuditedThisPass", "partial", "rejectedItemIds"]),
+  certification: brief(certification, ["ok", "counts", "skipped"]),
+  gaps: compactGaps(gaps), gapsOmitted: Math.max(0, gaps.length - MAX_GAPS) });

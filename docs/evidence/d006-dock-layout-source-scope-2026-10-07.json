@@ -1,0 +1,398 @@
+{
+  "schemaVersion": 1,
+  "kind": "d006-dock-layout-focused-source-scope",
+  "workItem": "WI-10007236",
+  "parent": "WI-10006170",
+  "testRunId": 20904617,
+  "command": "PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/wi-10007236-dock-current-source-map.json PC_EXECUTED_SOURCE_MAP_RESULT=/tmp/wi-10007236-dock-current-source-flush.jsonl npm run test:file -- packages/operator-core/lib/dock-layouts.integration.test.ts",
+  "exitCode": 0,
+  "passed": 9,
+  "skipped": 0,
+  "log": {
+    "path": "/tmp/wi-10007236-dock-current.log",
+    "sha256": "70ed53e5b69383338574e26bb545b714a4f698df90c0bdfcc91a880f671751ba"
+  },
+  "rawSourceMap": {
+    "path": "/tmp/wi-10007236-dock-current-source-map.json",
+    "sha256": "faaab688b7698b7895a9264e1e8eab834aa2010bc8c6934d5e17c2ba1428ef38"
+  },
+  "limits": "Focused local/staging verdict only. Named file is clean; HEAD stayed c32be7a49c121330ce425be18836a07d73dfa6eb. Repository worktreeDirty=true. Captured worker-Vite original source scope is stable; actual config-loader and main-process source scopes remain unknown exactly as recorded below. No original full-environment replay, final P004/D006 acceptance, gate, promotion or shipment claim.",
+  "postRunCurrentness": {
+    "status": "changed-since-receipt",
+    "observedAt": "2026-10-07T19:20:08Z",
+    "scope": "Rehash of the 60 captured worker-Vite repository paths after preserving the focused pass. A subsequent source edit invalidates currentness without altering the stored run's original observations.",
+    "namedTestSha256": "4e1ca3761ef8f41cad5f3c35126742d32a9a3ef6bbd15db9e45e82ffb1f6684c",
+    "changedSources": [
+      {
+        "path": "libs/papercusp/libs/db/src/connection.ts",
+        "capturedSha256": "36e91adb45406aead8c6d0f7dfcadc2aae627f7c2d64c9dad4d77f5823d1bcce",
+        "runEndSha256": "36e91adb45406aead8c6d0f7dfcadc2aae627f7c2d64c9dad4d77f5823d1bcce",
+        "observedSha256": "3b9eba90c2ff65d8d9db405fd0bd65994ccc5643d99e7411e1447c20aaf6bcbf"
+      }
+    ],
+    "disposition": "Keep 20904617 as a qualified historical focused pass for the recorded bytes; do not claim current imported-source readiness or repeat an unchanged terminal fixture repair. Parent WI-10006170 retains final current-source/environment verification."
+  },
+  "measured": {
+    "workspaceName": "@papercusp/operator-core",
+    "recordedSha": "c32be7a49c121330ce425be18836a07d73dfa6eb",
+    "worktreeDirty": true,
+    "skipped": 0,
+    "diagnostics": [
+      {
+        "testFile": "packages/operator-core/lib/dock-layouts.integration.test.ts",
+        "state": "passed",
+        "sourceEvidence": {
+          "schemaVersion": "vite-collected-source-evidence-v1",
+          "scope": "repository-worker-vite-original-sources",
+          "status": "stable",
+          "sources": [
+            {
+              "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+              "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d",
+              "currentSha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+            },
+            {
+              "path": "libs/generic/module-singleton/src/index.ts",
+              "sha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf",
+              "currentSha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf"
+            },
+            {
+              "path": "libs/generic/resource-profile/src/index.ts",
+              "sha256": "db71390679a9901dc23e6e6dd21b31960b6c39ea37907983515589bb5036adf3",
+              "currentSha256": "db71390679a9901dc23e6e6dd21b31960b6c39ea37907983515589bb5036adf3"
+            },
+            {
+              "path": "libs/papercusp-db/src/index.ts",
+              "sha256": "b09c6dec8d40b1308137fbb7e1fbabb0e6fbff265b3754aa6b8d8c7822c4548c",
+              "currentSha256": "b09c6dec8d40b1308137fbb7e1fbabb0e6fbff265b3754aa6b8d8c7822c4548c"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+              "sha256": "172b9c568c883153904aa299527438183045ec5a71dd1f8ec72c205ce0b23545",
+              "currentSha256": "172b9c568c883153904aa299527438183045ec5a71dd1f8ec72c205ce0b23545"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/atomic-checkout.ts",
+              "sha256": "a128776cb36af1bb62141a82949218baf1f2b950b0f27fbcc9660a66086049e7",
+              "currentSha256": "a128776cb36af1bb62141a82949218baf1f2b950b0f27fbcc9660a66086049e7"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/budget-enforcement.ts",
+              "sha256": "a7d13c1a863b59cd045305a8f6143dac4b275e86a94b3d2e1138e2346012468a",
+              "currentSha256": "a7d13c1a863b59cd045305a8f6143dac4b275e86a94b3d2e1138e2346012468a"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/build-stamp.ts",
+              "sha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e",
+              "currentSha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/connect-retry.ts",
+              "sha256": "b6c510675b68a77b6b4e11f7a7d67d7f1655909e873cc28c2131def72f9e2794",
+              "currentSha256": "b6c510675b68a77b6b4e11f7a7d67d7f1655909e873cc28c2131def72f9e2794"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/connection.ts",
+              "sha256": "36e91adb45406aead8c6d0f7dfcadc2aae627f7c2d64c9dad4d77f5823d1bcce",
+              "currentSha256": "36e91adb45406aead8c6d0f7dfcadc2aae627f7c2d64c9dad4d77f5823d1bcce"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/goal-lineage.ts",
+              "sha256": "7f62d8cd25f0c601a0e7e19be16df391e7a4af5de6f12cf88b7340555a01d618",
+              "currentSha256": "7f62d8cd25f0c601a0e7e19be16df391e7a4af5de6f12cf88b7340555a01d618"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/goal-pots.ts",
+              "sha256": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023",
+              "currentSha256": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/index.ts",
+              "sha256": "7ad60b899c27dcb814c1ca441411c8b6f2709389cbf2fb3da46f920332a17e59",
+              "currentSha256": "7ad60b899c27dcb814c1ca441411c8b6f2709389cbf2fb3da46f920332a17e59"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/legacy-shim.ts",
+              "sha256": "f02fff0fe14010ae3161cdd9f0cc2bbf8be9cb399d912ca0b47f39b8b81bfaea",
+              "currentSha256": "f02fff0fe14010ae3161cdd9f0cc2bbf8be9cb399d912ca0b47f39b8b81bfaea"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/on-conflict-diagnostic.ts",
+              "sha256": "111498940bdd8cfa01ed2284b431ffe86aaf573408a4b4f05901b44435e83ec9",
+              "currentSha256": "111498940bdd8cfa01ed2284b431ffe86aaf573408a4b4f05901b44435e83ec9"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/pending-events.ts",
+              "sha256": "f701e0f194189bfeb6b1541fd29e8af333639d14ec72a0db9ef93fd9ecbf841c",
+              "currentSha256": "f701e0f194189bfeb6b1541fd29e8af333639d14ec72a0db9ef93fd9ecbf841c"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+              "sha256": "c5f438ed5f548a55f25a576e33ebdf4e854ec4d2836cf8b63a8d85559af7b3fc",
+              "currentSha256": "c5f438ed5f548a55f25a576e33ebdf4e854ec4d2836cf8b63a8d85559af7b3fc"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/routines-runtime.ts",
+              "sha256": "c7e6cb9db68640e5320066983d724a32ca3f28b592fdb70423e7c3544882bc26",
+              "currentSha256": "c7e6cb9db68640e5320066983d724a32ca3f28b592fdb70423e7c3544882bc26"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/schema/generated-relations.ts",
+              "sha256": "3470ac52e6abf888efd2f25f837adbe06b96a15a65fae0a39f78336162703ce6",
+              "currentSha256": "3470ac52e6abf888efd2f25f837adbe06b96a15a65fae0a39f78336162703ce6"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/schema/generated.ts",
+              "sha256": "c2ce1902183821c509ffd2a64b0b397f5291745881bddb323c8a734d2e08cec3",
+              "currentSha256": "c2ce1902183821c509ffd2a64b0b397f5291745881bddb323c8a734d2e08cec3"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/schema/index.ts",
+              "sha256": "42d5aacb53dad06d6529aaff49bd0a118a5e5c43ee4c1f61ba2cacfbfbec78ba",
+              "currentSha256": "42d5aacb53dad06d6529aaff49bd0a118a5e5c43ee4c1f61ba2cacfbfbec78ba"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/schema/zod.ts",
+              "sha256": "e8422b041db52155c23662fb2b39310e9b7679ac9829d0a18603133d72304290",
+              "currentSha256": "e8422b041db52155c23662fb2b39310e9b7679ac9829d0a18603133d72304290"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/store-identity.ts",
+              "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22",
+              "currentSha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/tenant-context.ts",
+              "sha256": "b1014e83c21ac1e182c4585f7f4c9a99754c263c5a5762d3c789dd1681cf9880",
+              "currentSha256": "b1014e83c21ac1e182c4585f7f4c9a99754c263c5a5762d3c789dd1681cf9880"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/with-serializable-retry.ts",
+              "sha256": "f4b3a385af72e5972a0a0d487625e07494c23acfdf03f7831c33b3476bbef7d4",
+              "currentSha256": "f4b3a385af72e5972a0a0d487625e07494c23acfdf03f7831c33b3476bbef7d4"
+            },
+            {
+              "path": "libs/papercusp/libs/db/src/workspace-context.ts",
+              "sha256": "6a8ecf343dece5f7b6d5757052a2c7485dd595faaa7cf22110421d8a596184b2",
+              "currentSha256": "6a8ecf343dece5f7b6d5757052a2c7485dd595faaa7cf22110421d8a596184b2"
+            },
+            {
+              "path": "libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js",
+              "sha256": "4eaaac7b3f637bc8e741bba91115063e3c3695d48ca92d2bc342c6627aeedbd2",
+              "currentSha256": "4eaaac7b3f637bc8e741bba91115063e3c3695d48ca92d2bc342c6627aeedbd2"
+            },
+            {
+              "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+              "sha256": "83aa1325c1b82f8072bcb8e0518d7bd0b18c0d81298bae772e6f6c3ea4243d59",
+              "currentSha256": "83aa1325c1b82f8072bcb8e0518d7bd0b18c0d81298bae772e6f6c3ea4243d59"
+            },
+            {
+              "path": "libs/test-config/src/baseline-schema-mutex.ts",
+              "sha256": "cc3aeb1eac667e6a930ecdd73bb67cacb6e26d13b22d961b61a0454dac84906f",
+              "currentSha256": "cc3aeb1eac667e6a930ecdd73bb67cacb6e26d13b22d961b61a0454dac84906f"
+            },
+            {
+              "path": "libs/test-config/src/console-noise-filter.ts",
+              "sha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888",
+              "currentSha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888"
+            },
+            {
+              "path": "libs/test-config/src/dedicated-native-pg.ts",
+              "sha256": "632af58d060b63f7f8edc7035b4bc2da845c9a8b86c24caa8eacb98e90824aad",
+              "currentSha256": "632af58d060b63f7f8edc7035b4bc2da845c9a8b86c24caa8eacb98e90824aad"
+            },
+            {
+              "path": "libs/test-config/src/executed-inputs-capture-setup.ts",
+              "sha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90",
+              "currentSha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90"
+            },
+            {
+              "path": "libs/test-config/src/executed-inputs-capture.ts",
+              "sha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba",
+              "currentSha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba"
+            },
+            {
+              "path": "libs/test-config/src/execution-details.ts",
+              "sha256": "d46d02d6f73d2fdc97429ad14bc68032215a32c10b31e2167acaca2ab91fab91",
+              "currentSha256": "d46d02d6f73d2fdc97429ad14bc68032215a32c10b31e2167acaca2ab91fab91"
+            },
+            {
+              "path": "libs/test-config/src/handle-leak-delta.ts",
+              "sha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c",
+              "currentSha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c"
+            },
+            {
+              "path": "libs/test-config/src/hermetic-tmpdir.ts",
+              "sha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7",
+              "currentSha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7"
+            },
+            {
+              "path": "libs/test-config/src/pg-container.ts",
+              "sha256": "4e9b5a70979f4c887c65ae6977587d19b8125bbcc2deeed1f12a6d5fff28a792",
+              "currentSha256": "4e9b5a70979f4c887c65ae6977587d19b8125bbcc2deeed1f12a6d5fff28a792"
+            },
+            {
+              "path": "libs/test-config/src/pg-migrate.ts",
+              "sha256": "c50cb9703f37624ec0ebf4e9bc474145584576e813e4a26a5aa244561bb3a49c",
+              "currentSha256": "c50cb9703f37624ec0ebf4e9bc474145584576e813e4a26a5aa244561bb3a49c"
+            },
+            {
+              "path": "libs/test-config/src/pg-reachability.ts",
+              "sha256": "0ffc84d4a04152b00de85ca8013daee7ba22a0b71b3790602d9922adfa5a85f2",
+              "currentSha256": "0ffc84d4a04152b00de85ca8013daee7ba22a0b71b3790602d9922adfa5a85f2"
+            },
+            {
+              "path": "libs/test-config/src/pg.ts",
+              "sha256": "d15bb4bfc08d286e8551acdc304f50dc6b7771617d90cc7e2bb9609223202d3b",
+              "currentSha256": "d15bb4bfc08d286e8551acdc304f50dc6b7771617d90cc7e2bb9609223202d3b"
+            },
+            {
+              "path": "libs/test-config/src/setup-fail-on-console.ts",
+              "sha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb",
+              "currentSha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb"
+            },
+            {
+              "path": "libs/test-config/src/setup-handle-leak-detector.ts",
+              "sha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8",
+              "currentSha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8"
+            },
+            {
+              "path": "libs/test-config/src/setup-hermetic-env.ts",
+              "sha256": "79503fce9ba73b0fa323a1b7680b58a8b4f985e098c9c63a7ca41c834db96dc9",
+              "currentSha256": "79503fce9ba73b0fa323a1b7680b58a8b4f985e098c9c63a7ca41c834db96dc9"
+            },
+            {
+              "path": "libs/test-config/src/setup-testing-library-timeout.ts",
+              "sha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274",
+              "currentSha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274"
+            },
+            {
+              "path": "libs/test-config/src/silenced-console-census.ts",
+              "sha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e",
+              "currentSha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e"
+            },
+            {
+              "path": "libs/test-config/src/substrate-circuit-breaker.ts",
+              "sha256": "24f499affb37e7160538628fe299771158d135cbb508c61a22e3a83c8eb90018",
+              "currentSha256": "24f499affb37e7160538628fe299771158d135cbb508c61a22e3a83c8eb90018"
+            },
+            {
+              "path": "libs/test-config/src/testcontainer-start-lock.ts",
+              "sha256": "d31290a5bcce3ef41b4ade3caf51158c18682cc47f5780ef8e4431a793ad4d9d",
+              "currentSha256": "d31290a5bcce3ef41b4ade3caf51158c18682cc47f5780ef8e4431a793ad4d9d"
+            },
+            {
+              "path": "libs/test-config/src/timer-leak-ledger.ts",
+              "sha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f",
+              "currentSha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f"
+            },
+            {
+              "path": "packages/operator-core/lib/_baseline-coord-fixture.ts",
+              "sha256": "e331f7f5596594488fb2608153cb2c28656a3b8bc3e2e011e711cd83164ab731",
+              "currentSha256": "e331f7f5596594488fb2608153cb2c28656a3b8bc3e2e011e711cd83164ab731"
+            },
+            {
+              "path": "packages/operator-core/lib/background-workers.ts",
+              "sha256": "6f44bb5794a88fa60af6e6041e0cb96543bc551b17289be567599c4c7a644735",
+              "currentSha256": "6f44bb5794a88fa60af6e6041e0cb96543bc551b17289be567599c4c7a644735"
+            },
+            {
+              "path": "packages/operator-core/lib/coverage-census/attribution/context.ts",
+              "sha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1",
+              "currentSha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1"
+            },
+            {
+              "path": "packages/operator-core/lib/coverage-census/attribution/setup-vitest.ts",
+              "sha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9",
+              "currentSha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9"
+            },
+            {
+              "path": "packages/operator-core/lib/detached-imports/index.ts",
+              "sha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d",
+              "currentSha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d"
+            },
+            {
+              "path": "packages/operator-core/lib/detached-imports/setup-vitest.ts",
+              "sha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526",
+              "currentSha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526"
+            },
+            {
+              "path": "packages/operator-core/lib/dock-layouts.integration.test.ts",
+              "sha256": "4e1ca3761ef8f41cad5f3c35126742d32a9a3ef6bbd15db9e45e82ffb1f6684c",
+              "currentSha256": "4e1ca3761ef8f41cad5f3c35126742d32a9a3ef6bbd15db9e45e82ffb1f6684c"
+            },
+            {
+              "path": "packages/operator-core/lib/dock-layouts.ts",
+              "sha256": "edacd39863130d7d3a81e31eb05197d2c99efbb27cb73305f542e86438b15b20",
+              "currentSha256": "edacd39863130d7d3a81e31eb05197d2c99efbb27cb73305f542e86438b15b20"
+            },
+            {
+              "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+              "sha256": "57e36bdf7525701a294e21e8eb7534babd5f2cc254c2c0b171c02d6242ee5fc6",
+              "currentSha256": "57e36bdf7525701a294e21e8eb7534babd5f2cc254c2c0b171c02d6242ee5fc6"
+            },
+            {
+              "path": "packages/operator-core/lib/long-lived-admin-pool.ts",
+              "sha256": "57b9cd53f0eb467bdd5ac44744fe649595baa86889ea9fd484430f75749896f9",
+              "currentSha256": "57b9cd53f0eb467bdd5ac44744fe649595baa86889ea9fd484430f75749896f9"
+            },
+            {
+              "path": "packages/operator-core/lib/resource-profile.ts",
+              "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+              "currentSha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+            },
+            {
+              "path": "packages/operator-core/test/_org-test-db.ts",
+              "sha256": "b3ba720026222bed7399209d78bddb9025ddddee060c70894b72878448769746",
+              "currentSha256": "b3ba720026222bed7399209d78bddb9025ddddee060c70894b72878448769746"
+            }
+          ],
+          "reasons": []
+        }
+      }
+    ],
+    "configSources": {
+      "schemaVersion": "vitest-config-disk-snapshots-v1",
+      "scope": "repository-vite-config-dependencies",
+      "basis": "reporter-init-disk",
+      "status": "unchanged",
+      "sources": [
+        {
+          "path": "packages/operator-core/vitest.integration.config.ts",
+          "sha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337",
+          "currentSha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337"
+        }
+      ],
+      "reasons": []
+    },
+    "configLoadedSources": {
+      "schemaVersion": "node-loaded-config-sources-v1",
+      "scope": "repository-vite-config-dependencies",
+      "basis": "node-load-hook",
+      "status": "unknown",
+      "sources": [
+        {
+          "path": "packages/operator-core/vitest.integration.config.ts",
+          "sha256": null,
+          "currentSha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337"
+        }
+      ],
+      "reasons": [
+        "config-node-load-capture-unavailable",
+        "config-original-load-unavailable:packages/operator-core/vitest.integration.config.ts"
+      ]
+    },
+    "mainProcessLoadedSources": {
+      "schemaVersion": "node-loaded-main-process-sources-v1",
+      "scope": "repository-node-main-process-sources",
+      "basis": "node-load-hook",
+      "status": "unknown",
+      "sources": [],
+      "reasons": [
+        "main-process-dependencies-unavailable",
+        "main-process-loaded-sources-unavailable",
+        "main-process-node-load-capture-unavailable"
+      ]
+    }
+  }
+}

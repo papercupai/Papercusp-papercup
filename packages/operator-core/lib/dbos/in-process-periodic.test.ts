@@ -261,6 +261,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'connection-pressure',
         'federation-drain-reconcile',
         'harness-status-sweep',
+        'host-contention-sampler',
         'kernel-leak-watchdog',
         'pot-epoch-key-reconcile',
         'learning-infra-health',
@@ -284,6 +285,8 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('harness-status-sweep')!.intervalMs).toBe(30_000);
     expect(byName.get('connection-pressure')!.intervalMs).toBe(30_000);
     expect(byName.get('service-health')!.intervalMs).toBe(60_000);
+    expect(byName.get('host-contention-sampler')!.intervalMs).toBe(60_000);
+    expect(byName.get('kernel-leak-watchdog')!.intervalMs).toBe(10 * 60_000);
     expect(byName.get('completion-ref-verify')!.intervalMs).toBe(60_000);
     expect(byName.get('spawn-reclaim-sweep')!.intervalMs).toBe(60_000);
     expect(byName.get('stale-claim-sweep')!.intervalMs).toBe(60_000);

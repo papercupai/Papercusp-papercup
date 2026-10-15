@@ -1,0 +1,52 @@
+START 2026-10-06T10:01:13Z
+PRE sidecar=2121735|1|Tue 2026-10-06 05:47:41 EDT|active|running
+PRE kokoro_start=Tue 2026-10-06 00:30:47 EDT
+PRE embed_device={"workspace_id":"papercusp-workspace","payload":{"updatedBy": "settings", "preference": "auto"},"updated_at":1791261047327}
+PRE gpu=23397 MiB, 722 MiB
+PRE_GPU_APP 8737, ~/.local/node25/bin/node, 1818 MiB
+PRE_GPU_APP 3351172, ~/.voicemode/services/kokoro/.venv/bin/python, 1020 MiB
+PRE_GPU_APP 1168414, /usr/local/lib/ollama/llama-server, 13788 MiB
+PRE_GPU_APP 2121735, node, 6312 MiB
+PRE ornith_after_stop=inactive
+COMPLETION_HTTP=200 after 305s at 10:06:36Z
+COMPLETION_MODEL="model":"maxwell1500/ornith-35b:IQ3_M"
+POST sidecar=2121735|1|Tue 2026-10-06 05:47:41 EDT|active|running
+POST kokoro_start=Tue 2026-10-06 00:30:47 EDT
+POST ornith=active
+POST gpu=22953 MiB, 1166 MiB
+POST_GPU_APP 8737, ~/.local/node25/bin/node, 1818 MiB
+POST_GPU_APP 3351172, ~/.voicemode/services/kokoro/.venv/bin/python, 1020 MiB
+POST_GPU_APP 2121735, node, 6312 MiB
+POST_GPU_APP 2866702, /usr/local/lib/ollama/llama-server, 13348 MiB
+SAMPLES_TOTAL=193
+SAMPLES_NON200=1
+SAMPLES_BAD_ACCOUNTING=0
+SAMPLES_OVER_15S=3
+SAMPLES_MAX_LATENCY_S=30.0022
+SAMPLES_P50_LATENCY_S=0.053461
+--- slowest 8 samples
+10:04:56	000 30.002202	ok
+10:07:08	200 22.008197	ok
+10:08:26	200 21.778615	ok
+10:04:10	200 14.312391	ok
+10:01:36	200 13.311704	ok
+10:05:29	200 3.823873	ok
+10:07:00	200 2.823272	ok
+10:06:42	200 2.642867	ok
+--- watchdog journal since 2026-10-06T10:01:13Z
+2026-10-06T06:05:15-04:00 <host> papercusp-script-snapshot.sh[3045220]: curl: (28) Operation timed out after 15002 milliseconds with 0 bytes received
+2026-10-06T06:05:15-04:00 <host> papercusp-script-snapshot.sh[3045176]: embed worker probe failed (1/2 consecutive) — not restarting yet
+--- gateway journal since 2026-10-06T10:01:13Z (ornith/audit/fail)
+2026-10-06T06:01:34-04:00 <host> env[2010253]: [inference-gateway:warn] inference-gateway: local backend 'ornith-llamaserver' answered 502 (upstream unreachable) — attempting cold start and on
+2026-10-06T06:01:34-04:00 <host> env[2010253]: [inference-gateway:info] inference-gateway: local backend 'ornith-llamaserver' (llama-ornith.service) is not answering — starting it on demand
+2026-10-06T06:01:36-04:00 <host> env[2010253]: [inference-gateway:info] inference-gateway: unit audit clean for 'ornith-llamaserver' — unit matches catalog 'ornith-35b-iq3m-llama-server' (para
+2026-10-06T06:02:26-04:00 <host> env[2010253]: [inference-gateway:warn] inference-gateway: live Codex model catalog unavailable for 'aviynw_3' — using last-known-good/local/static fallback (co
+2026-10-06T06:02:35-04:00 <host> env[2010253]: [inference-gateway:warn] inference-gateway: Codex OAuth account aviynw5_codex rejected refresh credentials; quarantined for 900s and failing over t
+2026-10-06T06:02:35-04:00 <host> env[2010253]: [inference-gateway:error] inference-gateway: codex OAuth upstream failed request=a8e2b63a-dba4-4798-b659-da92e0e1be47:13999 code=upstream-error on 
+2026-10-06T06:02:36-04:00 <host> env[2010253]: [inference-gateway:warn] inference-gateway: Codex OAuth account aviynw3_codex rejected refresh credentials; quarantined for 900s and failing over t
+2026-10-06T06:02:36-04:00 <host> env[2010253]: [inference-gateway:error] inference-gateway: codex OAuth upstream failed request=a8e2b63a-dba4-4798-b659-da92e0e1be47:13999 code=upstream-error on 
+2026-10-06T06:05:12-04:00 <host> env[2010253]: [inference-gateway:warn] inference-gateway: live Codex model catalog unavailable for 'aviynw2_codex' — using last-known-good/local/static fallbac
+2026-10-06T06:06:31-04:00 <host> env[2010253]: [inference-gateway:info] inference-gateway: local backend 'ornith-llamaserver' started on demand and is answering — routing resumed
+2026-10-06T06:08:26-04:00 <host> env[2010253]: [inference-gateway:warn] inference-gateway: live Codex model catalog unavailable for 'aviynw_3' — using last-known-good/local/static fallback (co
+2026-10-06T06:09:13-04:00 <host> env[2010253]: [inference-gateway:warn] inference-gateway: Codex OAuth account aviynw2_codex rejected refresh credentials; quarantined for 900s and failing over t
+END 2026-10-06T10:10:38Z

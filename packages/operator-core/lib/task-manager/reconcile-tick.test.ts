@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TaskRow, TaskState } from './types';
 import type { ScanResult } from './scan';
 import type { ScannedProcess } from './reconcile';
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { ramTmpRoot } from '@papercusp/orchestrator';
 
 const store = vi.hoisted(() => ({
   touched: [] as unknown[],
@@ -41,7 +45,63 @@ vi.mock('./store', () => ({
   residueTaskId: (p: string) => `u${p.replace(/[^a-z0-9]/g, '').slice(0, 12)}`,
 }));
 
-const { reconcileTick, resetNotifyDebounce } = await import('./reconcile-tick');
+const { reconcileTick, resetNotifyDebounce, cleanupEndedBrowserDirectory } = await import('./reconcile-tick');
+const { scanProcesses } = await import('./scan');
+
+describe('dead managed browser directory receipts', () => {
+  async function fixture() {
+    const cwd = await mkdtemp(join(ramTmpRoot(), 'pc-browser-'));
+    const task = row({ taskId: 'browser-cleanup-task', class: 'browser', scopeUnit: null,
+      pid: 2147483647, processIdentity: 'old-browser-identity', cwd,
+      detail: { browserSessionId: 'private-browser-id' } });
+    await writeFile(join(cwd, '.browser-task.json'), JSON.stringify({
+      taskId: task.taskId, browserSessionId: task.detail.browserSessionId, workspaceId: task.workspaceId,
+    }));
+    return { cwd, task };
+  }
+  it('removes only the matching directory after the exact kernel lifetime ends', async () => {
+    const { cwd, task } = await fixture();
+    try {
+      await cleanupEndedBrowserDirectory(task, () => task.processIdentity!);
+      expect(existsSync(cwd)).toBe(true);
+      await cleanupEndedBrowserDirectory(task, () => 'recycled-pid-identity');
+      expect(existsSync(cwd)).toBe(true);
+      await cleanupEndedBrowserDirectory(task, () => null);
+      expect(existsSync(cwd)).toBe(false);
+      await cleanupEndedBrowserDirectory(task, () => null); // Idempotent next tick.
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+  it('refuses mismatched task/workspace/session receipts and non-browser rows', async () => {
+    const { cwd, task } = await fixture();
+    try {
+      for (const changed of [{ taskId: 'other' }, { workspaceId: 'other' },
+        { detail: { browserSessionId: 'other' } }, { class: 'bash-job' as const }]) {
+        await cleanupEndedBrowserDirectory({ ...task, ...changed }, () => null);
+        expect(existsSync(cwd)).toBe(true);
+      }
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+  it('refuses a symlink even when it points at a matching receipt', async () => {
+    const { cwd, task } = await fixture(); const link = cwd + 'link';
+    try {
+      await symlink(cwd, link);
+      await cleanupEndedBrowserDirectory({ ...task, cwd: link }, () => null);
+      expect(existsSync(cwd)).toBe(true); expect(existsSync(link)).toBe(true);
+    } finally { await rm(link, { force: true }); await rm(cwd, { recursive: true, force: true }); }
+  });
+  it('keeps the receipt on a degraded scan, then cleans before terminal persistence on a healthy tick', async () => {
+    const { cwd, task } = await fixture();
+    try {
+      await reconcileTick({ listLive: async () => [task], graceMs: 0, notify: async () => {},
+        scan: () => scanResult([], { ownedTruncated: true }) });
+      expect(existsSync(cwd)).toBe(true);
+      expect(store.stranded).not.toContainEqual(expect.objectContaining({ taskId: task.taskId }));
+      await reconcileTick({ listLive: async () => [task], graceMs: 0, notify: async () => {}, scan: () => scanResult([]) });
+      expect(existsSync(cwd)).toBe(false);
+      expect(store.stranded).toContainEqual(expect.objectContaining({ taskId: task.taskId }));
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+});
 
 const OURS = '/user.slice/user@1000.service/papercusp.slice';
 
@@ -92,6 +152,7 @@ function scanResult(processes: ScannedProcess[], over: Partial<ScanResult> = {})
     userManagerRoot: '/user.slice/user@1000.service',
     ownedTruncated: false,
     foreignTruncated: false,
+    unlistedIdentityByPid: new Map(),
     ...over,
   };
 }
@@ -134,7 +195,7 @@ describe('reconcileTick — happy path', () => {
     expect(out.degraded).toBe(false);
   });
 
-  it('strands a row the kernel no longer has', async () => {
+  it('keeps a scoped row unresolved when systemd confirms nothing', async () => {
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'bbb222' })],
       scan: () => scanResult([]),
@@ -149,8 +210,43 @@ describe('reconcileTick — happy path', () => {
       // stranding, not about this host's live systemd state.
       checkScopesReleased: async () => new Set<string>(),
     });
-    expect(out.strandedCount).toBe(1);
-    expect(store.stranded[0]!.taskId).toBe('bbb222');
+    expect(out.strandedCount).toBe(0);
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['bbb222']);
+    expect(store.stranded).toHaveLength(0);
+  });
+
+  // WI-10005782: the scan's foreign display filter drops a wake executor's
+  // unconfined `claude -p --resume` turn (repo-less argv, operator's own service
+  // cgroup). The tick must hand the scan's unlisted identities to reconcile, or the
+  // live turn strands one grace period after spawn.
+  it('does NOT strand an unconfined row whose pid+identity the scan read but did not list', async () => {
+    const headless = row({
+      taskId: 'hdl001',
+      class: 'agent-session',
+      confined: false,
+      scopeUnit: null,
+      pid: 5151,
+      processIdentity: 'linux:b:5151',
+    });
+    const out = await reconcileTick({
+      listLive: async () => [headless],
+      scan: () => scanResult([], { unlistedIdentityByPid: new Map([[5151, 'linux:b:5151']]) }),
+      fs: memFs({}),
+      checkScopesReleased: async () => new Set<string>(),
+    });
+    expect(out.strandedCount).toBe(0);
+    expect(store.stranded).toHaveLength(0);
+
+    // Control: the same row with an empty map strands, so the assertion above is
+    // carried by the wiring and not by some other leniency.
+    const control = await reconcileTick({
+      listLive: async () => [headless],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      checkScopesReleased: async () => new Set<string>(),
+    });
+    expect(control.strandedCount).toBe(1);
+    expect(store.stranded.map((s) => s.taskId)).toEqual(['hdl001']);
   });
 
   it('persists an unaccounted group but reports it only after two scans confirm it', async () => {
@@ -315,7 +411,7 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
     expect(store.endedUnobserved).toEqual([expect.objectContaining({ taskId: 'ttt111' })]);
   });
 
-  it('still strands when checkScopesReleased confirms nothing', async () => {
+  it('keeps the scope unresolved when checkScopesReleased cannot confirm release', async () => {
     const checkScopesReleased = vi.fn(async () => new Set<string>());
     const out = await reconcileTick({
       listLive: async () => [row({ taskId: 'uuu222' })],
@@ -323,9 +419,63 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
       fs: memFs({}),
       checkScopesReleased,
     });
-    expect(out.strandedCount).toBe(1);
+    expect(out.strandedCount).toBe(0);
     expect(out.endedUnobservedCount).toBe(0);
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['uuu222']);
+    expect(store.stranded).toHaveLength(0);
     expect(store.endedUnobserved).toHaveLength(0);
+  });
+
+  it('refreshes cgroup metrics for a scoped row whose missing identity is still active in systemd', async () => {
+    const scopeUnit = 'pc-active111.scope';
+    const cgroupPath = `${OURS}/${scopeUnit}`;
+    const terminal = {
+      capturedAt: '2026-10-12T00:00:00.000Z',
+      scopeUnit,
+      cgroupPath,
+      invocationId: null,
+      loadState: 'loaded',
+      activeState: 'active',
+      serviceResult: null,
+      execMainCode: null,
+      execMainStatus: null,
+      memoryMaxBytes: null,
+      peakMemoryBytes: null,
+      peakMemorySource: 'unknown' as const,
+    };
+    const out = await reconcileTick({
+      listLive: async () => [row({
+        taskId: 'active111',
+        scopeUnit,
+        cgroupPath,
+        pid: 123,
+        processIdentity: 'linux:old-identity:123',
+      })],
+      scan: () => scanResult([]),
+      fs: memFs({
+        [`/sys/fs/cgroup${cgroupPath}/memory.current`]: '4096',
+        [`/sys/fs/cgroup${cgroupPath}/memory.peak`]: '8192',
+        [`/sys/fs/cgroup${cgroupPath}/cpu.stat`]: 'usage_usec 9876\n',
+        [`/sys/fs/cgroup${cgroupPath}/pids.current`]: '3',
+        [`/sys/fs/cgroup${cgroupPath}/pids.events`]: 'max 4\n',
+      }),
+      inspectTaskUnitTerminals: async () => new Map([[scopeUnit, terminal]]),
+    });
+
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['active111']);
+    expect(out.strandedCount).toBe(0);
+    expect(out.endedUnobservedCount).toBe(0);
+    expect(store.touched).toEqual([expect.objectContaining({
+      taskId: 'active111',
+      metrics: {
+        lastMemoryBytes: 4096,
+        cpuUsec: 9876,
+        pidsCurrent: 3,
+        pidsEventsMax: 4,
+      },
+    })]);
+    expect(store.touched[0]).not.toHaveProperty('pid');
+    expect(store.touched[0]).not.toHaveProperty('processIdentity');
   });
 
   it('only queries candidate units — rows whose scope IS visible in the scan are never asked about', async () => {
@@ -494,7 +644,7 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
       scan: () => scanResult([]),
       fs: memFs({}),
     });
-    expect(out.summary.stranded + out.summary.endedUnobserved).toBe(1);
+    expect(out.summary.stranded + out.summary.endedUnobserved + out.summary.unresolved).toBe(1);
   });
 });
 
@@ -537,7 +687,8 @@ describe('reconcileTick — refusing to act on a bad scan', () => {
       checkScopesReleased: async () => new Set<string>(), // hermetic — see 'strands a row the kernel no longer has'
     });
     expect(out.degraded).toBe(false);
-    expect(out.strandedCount).toBe(1);
+    expect(out.strandedCount).toBe(0);
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['fff667']);
   });
 
   it('STILL records positive confirmations on a degraded scan', async () => {
@@ -589,7 +740,8 @@ describe('reconcileTick — dryRun', () => {
       dryRun: true,
       checkScopesReleased: async () => new Set<string>(), // hermetic — see 'strands a row the kernel no longer has'
     });
-    expect(out.summary.stranded).toBe(1);
+    expect(out.summary.stranded).toBe(0);
+    expect(out.summary.unresolved).toBe(1);
     expect(store.stranded).toHaveLength(0);
     expect(store.touched).toHaveLength(0);
   });
@@ -679,5 +831,70 @@ describe('reconcileTick — notification discipline', () => {
     // The condition never closed, so this is ONE alarm — not five.
     expect(notify).toHaveBeenCalledOnce();
     expect(sent[0]!.summary).toContain('unaccounted cgroup(s)');
+  });
+});
+
+describe('reconcileTick — default scan yields its kernel IO (jev-memory-timeouts P-004)', () => {
+  // Every other test injects `scan`, so none of them exercises the default. This
+  // one does: the kernel is reachable ONLY through the async source, and the
+  // synchronous `fs` answers "empty slice". The old synchronous default ignores
+  // `asyncFs`, finds nothing, and strands the row; the nonblocking default finds
+  // the task's process and keeps it alive.
+  const scopeAbs = `/sys/fs/cgroup${OURS}/pc-ccc333.scope`;
+  function asyncKernel() {
+    const MGR = '/user.slice/user@1000.service';
+    const sliceAbs = `/sys/fs/cgroup${OURS}`;
+    const files: Record<string, string> = {
+      '/proc/999/cgroup': `0::${MGR}/papercusp-bg-host.service\n`,
+      [`${sliceAbs}/cgroup.procs`]: '',
+      [`${scopeAbs}/cgroup.procs`]: '42',
+      '/proc/42/cmdline': 'node\0worker',
+    };
+    const dirs: Record<string, string[]> = {
+      [`/sys/fs/cgroup${MGR}`]: ['papercusp.slice'],
+      [sliceAbs]: ['pc-ccc333.scope'],
+      [scopeAbs]: [],
+    };
+    const reads: string[] = [];
+    const asyncFs = {
+      readFile: async (p: string) => {
+        reads.push(p);
+        return files[p] ?? null;
+      },
+      readDir: async (p: string) => dirs[p] ?? [],
+      isDir: async (p: string) => p in dirs,
+    };
+    return { reads, asyncFs };
+  }
+
+  it('reads the cgroup tree through the async scanner when no scan is injected', async () => {
+    const { reads, asyncFs } = asyncKernel();
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'ccc333' })],
+      fs: memFs({}),
+      scanOptions: { selfPid: 999, asyncFs },
+      checkScopesReleased: async () => new Set<string>(),
+    });
+    expect(reads).toContain(`${scopeAbs}/cgroup.procs`);
+    expect(out.strandedCount).toBe(0);
+    expect(out.summary.alive).toBe(1);
+    expect(store.touched[0]).toMatchObject({ taskId: 'ccc333', pid: 42 });
+  });
+
+  it('control: the synchronous scanner on the same fixture keeps the row unresolved', async () => {
+    // Proves the fixture separates the two scanners. The row stays unresolved
+    // because the probe supplies no positive systemd release confirmation.
+    const { reads, asyncFs } = asyncKernel();
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'ccc333' })],
+      scan: scanProcesses,
+      fs: memFs({}),
+      scanOptions: { selfPid: 999, asyncFs },
+      checkScopesReleased: async () => new Set<string>(),
+    });
+    expect(reads).toEqual([]);
+    expect(out.strandedCount).toBe(0);
+    expect(out.result.unresolved.map((verdict) => verdict.taskId)).toEqual(['ccc333']);
+    expect(store.stranded).toHaveLength(0);
   });
 });

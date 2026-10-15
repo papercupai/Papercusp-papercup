@@ -9,8 +9,8 @@
     "docs/evidence/goal-brief-p007-trials-operational-probe-2026-09-29.mts"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-01T08:31:32.765Z",
-  "finishedAt": "2026-10-01T08:31:34.167Z",
+  "startedAt": "2026-10-02T18:29:56.966Z",
+  "finishedAt": "2026-10-02T18:29:58.037Z",
   "summary": "7/7 live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clause AUTO-BAR-R-7-P-007.",
   "assertions": [
     {
@@ -36,7 +36,7 @@
     {
       "id": "r7-negative-controls",
       "passed": true,
-      "evidence": "20095653=pass 20095654=pass 20095655=pass 20095657=pass 20095659=pass 20095661=pass 20095663=pass 20095664=pass (all at commit 1e46c027b5)"
+      "evidence": "20095653=pass 20095654=pass 20553650=pass 20095657=pass 20095659=pass 20095661=pass 20095663=pass 20553651=pass (all at commit 1e46c027b5,ed336ea0e0)"
     },
     {
       "id": "r7-caps-not-widened",
@@ -371,12 +371,12 @@
         "finished_at": "2026-09-29T12:26:04.273-04:00"
       },
       {
-        "id": 20095655,
+        "id": 20553650,
         "control": "terminal/no-demand after sufficient review + blocked-budget typed refusal (budget.unmeasured/exceeded, cap unchanged): goal-planning-obligation-proof.test.ts",
         "status": "pass",
         "file_path": "packages/operator-core/lib/goal-planning-obligation-proof.test.ts",
-        "commit_sha": "1e46c027b5323fab151ab6116ac12bbf31db4c2f",
-        "finished_at": "2026-09-29T12:26:05.633-04:00"
+        "commit_sha": "ed336ea0e0fa264b045d2071c92f5e43cb7e4fef",
+        "finished_at": "2026-10-02T14:29:07.628-04:00"
       },
       {
         "id": 20095657,
@@ -411,12 +411,12 @@
         "finished_at": "2026-09-29T12:27:31.366-04:00"
       },
       {
-        "id": 20095664,
+        "id": 20553651,
         "control": "absent vs wrong attribution: goal-launch-settings.test.ts",
         "status": "pass",
         "file_path": "packages/operator-core/lib/goal-launch-settings.test.ts",
-        "commit_sha": "1e46c027b5323fab151ab6116ac12bbf31db4c2f",
-        "finished_at": "2026-09-29T12:27:31.435-04:00"
+        "commit_sha": "ed336ea0e0fa264b045d2071c92f5e43cb7e4fef",
+        "finished_at": "2026-10-02T14:29:16.821-04:00"
       }
     ],
     "caps": {

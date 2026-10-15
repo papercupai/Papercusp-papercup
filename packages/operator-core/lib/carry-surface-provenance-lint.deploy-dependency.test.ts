@@ -22,8 +22,10 @@ describe('unprobed-deploy-dependency', () => {
     'R-3 needs main before it can be graded',
     'Waiting on the deploy to :3070, then re-grade R-1',
     'blocked on green main — resume after release:deployed',
+    'Wait for the release deployment before the maintenance window.',
     'Acceptance is pending deployment; nothing else to do',
     "can't grade R-3 until it lands on main",
+    'R-3 needs the fix to be deployed before it can be graded',
   ])('flags: %s', (line) => {
     expect(kinds(line)).toContain('unprobed-deploy-dependency');
   });
@@ -42,7 +44,34 @@ describe('unprobed-deploy-dependency', () => {
     // unrelated uses of "main"
     'the main risk is the parser; fix it first',
     'merged the main loop refactor',
+    'Wait for the release event before acquiring shared leases or reading refs.',
+    'Wait for resource:released:git-sync before acquiring shared leases or reading refs.',
   ])('does not flag: %s', (line) => {
+    expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
+  });
+
+  it('does not mistake a deployed-artifact code task for a release dependency', () => {
+    const line = 'AgenticMail and VirtualBox remediation sources are outside this repo; Kopia backup-lock/RPO work remains on WI-10004971. Do not attribute any of these failed services to the host freeze. Need implement a Papercusp-side deployed model-path prerequisite check with a recurrence guard; the unrelated host artifacts remain unresolved.';
+    expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
+  });
+
+  it('does not join a held gate transition to a later deployment disclaimer across a semicolon', () => {
+    const note =
+      'EI-25421911577420059 remains open and held by this session; no direct trace ties the historical stall to a cause. ' +
+      'EI-25233283196255077 remains held pending the other live gate owner\'s transition; no gate/deploy read was made.';
+    expect(kinds(note)).not.toContain('unprobed-deploy-dependency');
+
+    // Positive control: the same required/action and deployment vocabulary still fires
+    // when it appears in one uninterrupted clause.
+    expect(kinds('This item is pending deployment to main before grading.')).toContain(
+      'unprobed-deploy-dependency',
+    );
+  });
+
+  it('does not treat an unestablished deployment-skew explanation as a release dependency', () => {
+    const line =
+      'The triggering verifier exception and deployment-skew explanation remain unestablished. ' +
+      'Keep this item open and claim-held until exact retained evidence satisfies the release condition.';
     expect(kinds(line)).not.toContain('unprobed-deploy-dependency');
   });
 

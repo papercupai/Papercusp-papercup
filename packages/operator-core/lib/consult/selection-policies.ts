@@ -47,6 +47,15 @@ export const GRADING_INTEGRITY_AUDIT_POLICY = 'grading-integrity-audit';
 export const ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY = 'acceptance-bar-amendment-review';
 
 /**
+ * Pre-start critique of a plan's acceptance bars and spec clauses
+ * (verification-system-improvements-2026-10-10 P-007 / D-003 / D-004). plans:start
+ * counts closed-answered consults under this policy whose origin_task_ref is the plan
+ * slug, so get_feedback refuses one without that ref. A bar-critique responder stays
+ * eligible to grade the plan: critiquing the bars is not implementing them.
+ */
+export const BAR_CRITIQUE_POLICY = 'bar-critique';
+
+/**
  * Every other get_feedback consult (plan-start, goal kickoff, ad-hoc peer
  * consults). D-004 [owner 2026-08-30] deliberately LEAVES this at max 3: the
  * owner's 3→2 change is scoped to vetting and grading, and this constant is
@@ -65,6 +74,7 @@ export const SELECTION_POLICIES: Readonly<Record<string, SelectionBounds>> = Obj
   [ACCEPTANCE_GRADING_POLICY]: { min: 1, max: 2 },
   [GRADING_INTEGRITY_AUDIT_POLICY]: { min: 1, max: 1 },
   [ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY]: { min: 1, max: 1 },
+  [BAR_CRITIQUE_POLICY]: { min: 1, max: 2 },
 });
 
 /**
@@ -87,8 +97,10 @@ export function ensureSelectionPolicies(): void {
 /**
  * The global consult default, derived rather than restated.
  * consult-min-max-and-rubric-vetting-2026-08-17 D-003 [owner]: every consult
- * selects at least the best-available live candidate even below the relevance
- * floor (labelled via:'minimum'), so the minimum is 1 system-wide.
+ * has a default minimum of 1 and may fill it with the best-available selectable
+ * transcript candidate below the relevance floor (labelled via:'minimum').
+ * consult-expert-routing-2026-09-22 D-002 [owner] makes delivery a separate
+ * fork/convert session, so the source agent's liveness does not gate selection.
  */
 export const DEFAULT_MIN_RESPONDERS = SELECTION_POLICIES[CONSULT_DEFAULT_POLICY]!.min;
 /** The global consult cap — unchanged at 3 per D-004; see CONSULT_DEFAULT_POLICY. */

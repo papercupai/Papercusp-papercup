@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "kind": "manual-accessibility-evidence",
+  "name": "Cloud guide native speech controls and close at 200% zoom",
+  "workItemId": "WI-10007744",
+  "implementationWorkItemId": "WI-10007170",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "specId": "AUTO-BAR-R-12-P-010",
+  "specRevision": 7,
+  "observedAt": "2026-10-10T08:30:57.283Z",
+  "result": "Scoped native control-state verification; no automated test PASS or shipment claim",
+  "procedure": "Maintained Cloud beginner Playwright pause seam with private Xvfb, DBus and Orca. Warm-up debug pauses resumed to the intended beginner pause. Activate the application window, set native browser zoom to 200%, seed Mute guide focus through AT-SPI, send native Space, and independently read accessible name, pressed state, status text and Replay enabled state. Send native Space to unmute, then native Tab/Return for Stop speech and Replay speech. Seed Close guide focus, verify focus, send native Return, and verify Help receives focus with the guide and assistance absent.",
+  "observed": {
+    "browserZoomPercent": 200,
+    "mute": {
+      "nativeKey": "Space",
+      "accessibleName": "Unmute guide",
+      "pressed": true,
+      "replayEnabled": false,
+      "status": "Guide speech is muted."
+    },
+    "unmute": {
+      "nativeKey": "Space",
+      "accessibleName": "Mute guide",
+      "pressed": false,
+      "replayEnabled": true
+    },
+    "stop": {
+      "nativeKeys": "Tab, Return",
+      "focusedControlBeforeReturn": "Stop speech",
+      "status": "Speech is ready."
+    },
+    "replay": {
+      "nativeKeys": "Tab, Return",
+      "focusedControlBeforeReturn": "Replay speech",
+      "status": "Speech could not be played. The text remains available; use Replay speech to try again.",
+      "fixtureRefusesSpeech": true
+    },
+    "close": {
+      "nativeKey": "Return",
+      "focusedControlBeforeReturn": "Close guide",
+      "helpFocusedAfterClose": true,
+      "guideAndAssistanceAbsentAfterClose": true
+    },
+    "screenshotVisuallyInspected": true,
+    "sourceCustodyBeforeAndAfter": true
+  },
+  "sourceManifest": "docs/evidence/cloud-tutorial-native-manifest-2026-10-10.json",
+  "complements": "docs/evidence/cloud-tutorial-native-completed-2026-10-10.json",
+  "refs": [
+    { "path": "/dev/shm/tutorial-cloud-native-controls-e6e-20261010T0825.json", "sha256": "c67ec52941bfb88f2533f1897bef3db98a6bf02c632c94cf26298cac1fde5b83" },
+    { "path": "/dev/shm/tutorial-cloud-native-controls-e6e-20261010T0825-speech.log", "sha256": "cbbb1f7e0fe5c9762e80955c9c03746e1066c002b0109ef6cbea401b5bccc69d" },
+    { "path": "/dev/shm/tutorial-native-controls-e6e-20261010T0831.png", "sha256": "dd1f1d35f41131a91df82e81549586d4b57ed2b17267917248685ceb7f37e3ec" }
+  ],
+  "teardown": {
+    "taskId": "0mv24p6t3sbn227115x",
+    "scope": "pc-0mv24p6t3sbn227115x.service",
+    "verifiedEmpty": true,
+    "deliberatelyStopped": true,
+    "exitCode": 143,
+    "terminalAt": "2026-10-10T08:30:57.283Z"
+  },
+  "limitations": [
+    "The fixture refuses speech; visible replay failure is evidence of the control and text fallback, not provider audio.",
+    "AT-SPI seeds focus for Mute and Close; whole-application pure-Tab navigation was not exercised.",
+    "Human-heard speech, a human novice pilot, real-provider or native input voice, and production acceptance remain unverified.",
+    "This additive artifact does not rewrite the earlier completion artifact or renew an old evidence binding."
+  ]
+}

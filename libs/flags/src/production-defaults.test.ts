@@ -418,6 +418,9 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // personally arms it. Owner-authority does not consume a parking-watermark
   // slot. Count 34 → 35.
   "papercusp-standing-goal-boot-arm",
+  // P-011 / directive #1489: shared tutorial credential issuance stays held.
+  // Owner-authority security/spend flag; parking watermark is unchanged.
+  "papercusp-tutorial-voice-issuance",
   // 2026-10-01 (stripe-subscription-signup-2026-10-01 P-005, WI-10004478) —
   // deliberate owner-authority dark flag: with it OFF the hosted billing runtime
   // refuses an sk_live_/rk_live_ key (`live_mode_not_allowed`), so no composition
@@ -425,6 +428,9 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // and fully tested with this OFF. Owner-authority does not consume a
   // parking-watermark slot. Count 35 → 36.
   "papercusp-hosted-billing-live-mode",
+  // 2026-10-06 (slack-messages-to-bug-reports-2026-10-05 P-001) — papercusp-slack-org-connector
+  // LEFT this set: its legal-read gate is on record (enterprise-data-sources-2026-10-01
+  // D-029) and the owner approved switching it on (directive #1417).
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -802,7 +808,17 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // subscription billing (test mode ships live with it OFF). case:
     // 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK both
     // stay 12. Count 34 → 35.
-    expect(offCount).toBe(35);
+    // 2026-10-02 (enterprise-data-sources-2026-10-01 P-016, WI-10005052) —
+    // papercusp-slack-org-connector, the gate on the customer-owned Slack
+    // organization connector, held dark until a legal read of Slack's 2025 API
+    // terms is on record. case: 'owner-authority', so the parking subset and
+    // DARK_FLAGS_HIGH_WATERMARK both stay 12. Count 35 → 36.
+    // 2026-10-06 (slack-messages-to-bug-reports-2026-10-05 P-001) —
+    // papercusp-slack-org-connector GRADUATED to default-ON: the legal read is on record
+    // (enterprise-data-sources-2026-10-01 D-029) and the owner approved it (#1417).
+    // case was 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK
+    // both stay 12. Count 36 → 35.
+    expect(offCount).toBe(36);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {
@@ -847,6 +863,21 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
         `${key} must not be registered as a dark flag`,
       ).toBe(false);
     }
+  });
+
+  // git-sync-turn-scoped-commit-hold-2026-10-11 (acceptance bar R-5): the turn hold
+  // ships ON and its flag is the kill-switch. The git-sync action test mocks getFlag,
+  // so it cannot see the real default; this pins it at the source.
+  it("GIT_SYNC_TURN_HOLD ships default-ON and is never dark (git-sync turn hold R-5)", () => {
+    const key = FLAGS.GIT_SYNC_TURN_HOLD;
+    expect(
+      FLAG_DEFAULTS[key],
+      `${key} must default ON: git-sync holds a live session's mid-turn edits by default`,
+    ).toBe(true);
+    expect(
+      DARK_FLAGS.has(key),
+      `${key} must not be registered as a dark flag — it is a kill-switch, not a parked feature`,
+    ).toBe(false);
   });
 
   it("P2P + GITHUB_BRIDGE ship default-ON with STRUCTURAL inertness (FS-D5) — never dark", () => {

@@ -416,6 +416,68 @@ describe('github-egress WI-5738 — incremental scan, partial progress, exemptio
     expect(last).toBe(target); // fully drained — never a permanent refusal
   });
 
+  it('persists a DAG-safe scan cursor across ticks without pushing a side-branch commit', async () => {
+    const cursorWork = join(root, 'cursor-work');
+    const initCursorWork = await defaultRunGit(['init', '-q', '-b', 'main', cursorWork], root);
+    expect(initCursorWork.code, initCursorWork.stderr).toBe(0);
+    const common = await commitFile(cursorWork, 'base.txt', 'common base\n', 'common base');
+    const base = await commitFile(cursorWork, 'base.txt', 'remote base\n', 'remote base');
+    const sideStart = await defaultRunGit(['checkout', '-b', 'cursor-side', common], cursorWork);
+    expect(sideStart.code, sideStart.stderr).toBe(0);
+    const sideSha = await commitFile(cursorWork, 'cursor-side.txt', 'safe side history\n', 'cursor side');
+
+    const mainStart = await defaultRunGit(['checkout', '-b', 'cursor-main', base], cursorWork);
+    expect(mainStart.code, mainStart.stderr).toBe(0);
+    const merge = await defaultRunGit(
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'merge', '--no-ff', 'cursor-side', '-m', 'merge side history'],
+      cursorWork,
+    );
+    expect(merge.code, merge.stderr).toBe(0);
+    const target = (await defaultRunGit(['rev-parse', 'HEAD'], cursorWork)).stdout.trim();
+    const cursorStore = await ensurePotGitRepo('hive-bridge-cursor', 'repo-1');
+    const cursorStagingNsRef = namespaceRefPath(integrator, STAGING_REF);
+    await publishToStore(cursorStore, cursorWork, 'cursor-main', cursorStagingNsRef);
+
+    const cursorOrigin = join(root, 'cursor-origin.git');
+    const initCursorOrigin = await defaultRunGit(['init', '--bare', '-q', cursorOrigin], root);
+    expect(initCursorOrigin.code, initCursorOrigin.stderr).toBe(0);
+    const setRemoteBase = await defaultRunGit(
+      ['push', cursorOrigin, base + ':refs/heads/cursor-probe'],
+      cursorWork,
+    );
+    expect(setRemoteBase.code, setRemoteBase.stderr).toBe(0);
+
+    const first = await egressCanonicalRefs({
+      repoPath: cursorStore,
+      remoteUrl: cursorOrigin,
+      refs: [{ sha: target, remoteRef: 'refs/heads/cursor-probe' }],
+      maxScanFiles: 1,
+    });
+
+    expect(first.pushed).toEqual([]);
+    expect(first.scanProgress).toMatchObject({
+      version: 1,
+      baseSha: base,
+      targetSha: target,
+      lastScannedCommitSha: sideSha,
+    });
+    expect(await originSha(cursorOrigin, 'refs/heads/cursor-probe')).toBe(base);
+
+    const cursor = first.scanProgress;
+    if (!cursor) throw new Error('expected a persisted scan cursor after the first budget slice');
+    const second = await egressCanonicalRefs({
+      repoPath: cursorStore,
+      remoteUrl: cursorOrigin,
+      refs: [{ sha: target, remoteRef: 'refs/heads/cursor-probe' }],
+      maxScanFiles: 1,
+      scanProgress: cursor,
+    });
+
+    expect(second.pushed).toEqual([{ remoteRef: 'refs/heads/cursor-probe', from: base, to: target }]);
+    expect(second.scanProgress).toBeNull();
+    expect(await originSha(cursorOrigin, 'refs/heads/cursor-probe')).toBe(target);
+  });
+
   /**
    * EI-18655490965643060 recurrence guard. readScannableBlobs used to spawn
    * `cat-file -s` + `cat-file -p` PER BLOB, serially — so the scan cost 2xB

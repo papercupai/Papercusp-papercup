@@ -9,14 +9,18 @@
  * coord-channels-pg-port cutover.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
+import { emitAwaitedEvent } from '../../../events/await/engine';
+
+vi.mock('../../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn(async () => undefined) }));
 
 import { emitPlanEvent, emitPlanEventForCaller, readPlanEvents } from '../plan-events';
 import { configureCoordLog, resetCoordLog } from '../log';
 import planEventsTool from '../tools/plan-events';
 
 beforeEach(() => {
+  vi.clearAllMocks();
   configureCoordLog(new InMemoryCoordLog());
 });
 afterEach(() => {
@@ -48,7 +52,7 @@ describe('plan-events', () => {
 
   it('emitPlanEventForCaller resolves identity from ctx and falls back to "system"', async () => {
     // ctx with a resolvable power-user identity
-    await emitPlanEventForCaller(
+    const receipt = await emitPlanEventForCaller(
       { isPowerUser: true, uiClientId: 'pus-abcdefab-cdef-...', workspaceId: 'ws' },
       { planSlug: 'p1', event: 'now_updated' },
     );
@@ -56,6 +60,7 @@ describe('plan-events', () => {
     await emitPlanEventForCaller({}, { planSlug: 'p1', event: 'item_added', detail: 'P-001' });
     const events = await readPlanEvents();
     expect(events.map((e) => e.from)).toEqual(['pus-abcdefab-cdef-...', 'system']);
+    expect(receipt).toBe(events[0]?.msg_id);
   });
 
   it('readPlanEvents filters by since_ts / planSlugs / events', async () => {
@@ -102,7 +107,10 @@ describe('plan-events', () => {
     configureCoordLog(throwing);
     await expect(
       emitPlanEventForCaller({}, { planSlug: 'x', event: 'created' }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBeNull();
+    expect(emitAwaitedEvent).toHaveBeenCalledWith(expect.objectContaining({
+      payload: { planSlug: 'x', event: 'created' },
+    }));
   });
 });
 

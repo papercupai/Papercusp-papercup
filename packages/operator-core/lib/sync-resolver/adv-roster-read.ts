@@ -116,6 +116,7 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
     dedupeEndedAgainstActive,
     pendingLaunchesToRosterEntries,
     startingLaunchesToRosterEntries,
+    readStartingLaunchLogHints,
     dedupeStartingAgainstActive,
   } = await import('../adv-roster');
   const { listEndedAdvSessions, listPendingWorkbenchLaunches, listStartingTerminalLaunches } =
@@ -145,6 +146,15 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
     ),
   ]);
 
+  // EI-24748208098755918: the starting tier's log diagnostics are read here,
+  // asynchronously, instead of with readSync inside the mapper (a profiled
+  // 790 ms event-loop stall). Same shared deadline; a lapse costs only the
+  // hint text, never the starting cards themselves.
+  const startingHints = await withinBudget(
+    readStartingLaunchLogHints(startingRows),
+    'roster starting hints',
+  ).catch(() => undefined);
+
   const host = os.hostname();
   return {
     active,
@@ -154,7 +164,7 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
     // WI-6376: terminal-spawned launches inside their boot window, minus any
     // that already came online (presence wins — see the dedupe's doc).
     starting: dedupeStartingAgainstActive(
-      startingLaunchesToRosterEntries(startingRows, host),
+      startingLaunchesToRosterEntries(startingRows, host, startingHints),
       active,
     ),
     // Omitted entirely when every leg succeeded, so a healthy roster stays
@@ -165,6 +175,30 @@ async function readAdvRosterUncached(opts: ReadAdvRosterOptions = {}) {
 }
 
 export type RosterSnapshot = Awaited<ReturnType<typeof readAdvRosterUncached>>;
+
+/** The closed header needs living-session and ongoing-turn counts, machines and fleet colors,
+ * not session transcripts, checkpoints or ended-session history. Reuse the
+ * same snapshot so the badge and its expanded roster share lifecycle truth. */
+export function projectAdvRoster(snapshot: RosterSnapshot, view: 'full' | 'header' = 'full') {
+  if (view === 'full') return snapshot;
+  return {
+    // Keep both living and between-turn entries: the shared client predicate
+    // derives running and thinking independently, just as in the full roster.
+    active: snapshot.active.map((agent) => ({
+      ownerId: agent.ownerId,
+      sessionState: agent.sessionState,
+      liveness: agent.liveness,
+      loopArmed: agent.loopArmed,
+      transcriptFresh: agent.transcriptFresh,
+      thinking: agent.thinking,
+      machineLabel: agent.machineLabel,
+      isLocal: agent.isLocal,
+      fleetSlug: agent.fleetSlug,
+      fleetColor: agent.fleetColor,
+    })),
+    ...(snapshot.degradedFields ? { degradedFields: snapshot.degradedFields } : {}),
+  };
+}
 
 /**
  * Stale-while-revalidate cache for the fan-out above (EI-22091013068319789).

@@ -1,11 +1,35 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { isCliEntry } from './cli-entry';
+import { isBundledEntry, isCliEntry } from './cli-entry';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+describe('isBundledEntry', () => {
+  it('boots only the named bundle under the explicit bundled define', () => {
+    const argv = [...process.argv];
+    try {
+      process.argv[1] = '/runtime/serve.mjs';
+      expect(isBundledEntry('serve.mjs')).toBe(false);
+      vi.stubGlobal('__PAPERCUSP_BUNDLED_SIDECAR__', false);
+      expect(isBundledEntry('serve.mjs')).toBe(false);
+      vi.stubGlobal('__PAPERCUSP_BUNDLED_SIDECAR__', true);
+      expect(isBundledEntry('serve.mjs')).toBe(true);
+      expect(isCliEntry(pathToFileURL(process.argv[1]).href)).toBe(false);
+      process.argv[1] = '/runtime/other.mjs';
+      expect(isBundledEntry('serve.mjs')).toBe(false);
+      process.argv[1] = '/runtime/serve.mjs.bak';
+      expect(isBundledEntry('serve.mjs')).toBe(false);
+      process.argv.length = 1;
+      expect(isBundledEntry('serve.mjs')).toBe(false);
+    } finally {
+      process.argv = argv;
+      vi.unstubAllGlobals();
+    }
+  });
+});
 
 describe('isCliEntry', () => {
   it('returns true when the URL is the running entrypoint (non-bundled fallback)', () => {

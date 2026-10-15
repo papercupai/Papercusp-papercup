@@ -2,13 +2,15 @@
  * Unit tests for the write-time Pot-membership resolver (pot-membership-enforcement
  * -2026-07-20, P-005). Pure over an injected {@link PotLookup} — no PG.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   resolveWorkItemPot,
   isWorkspaceGlobalLabel,
   canonicalPotSlug,
   PotMembershipError,
   PLATFORM_POT_SLUG,
+  pgPotLookup,
+  classifyPotLookupError,
   type PotLookup,
 } from './pot-membership';
 
@@ -132,5 +134,104 @@ describe('resolveWorkItemPot', () => {
   it('resolves a real Pot even when the workspace also has a platform Pot (no false reject)', async () => {
     const got = await resolveWorkItemPot({ rawSlug: 'oddsmith-hive', workspaceId: WS, lookup: fakeLookup(potted) });
     expect(got).toBe('oddsmith-hive');
+  });
+});
+
+/**
+ * WI-10004845: the PG lookup used to read ANY DB error as "no such Pot". A transient
+ * error on the platform-Pot check therefore homed operator-scope issues to the non-pot
+ * `operator:<ws>` (14 rows in one second, 2026-09-25 20:37Z). The lookup is tri-state.
+ */
+describe('pgPotLookup tri-state (WI-10004845)', () => {
+  const pgError = (code?: string) => Object.assign(new Error(`pg ${code ?? 'reset'}`), code ? { code } : {});
+  const recordingSleep = () => {
+    const delays: number[] = [];
+    return { delays, sleep: async (ms: number) => void delays.push(ms) };
+  };
+
+  it('retries a transient error and answers from the measured result', async () => {
+    let calls = 0;
+    const { delays, sleep } = recordingSleep();
+    const onUnmeasured = vi.fn();
+    const lookup = pgPotLookup(WS, {
+      query: async () => {
+        calls += 1;
+        if (calls <= 2) throw pgError('57P01');
+        return true;
+      },
+      sleep,
+      onUnmeasured,
+    });
+    expect(await lookup.platformPot()).toBe(PLATFORM_POT_SLUG);
+    expect(calls).toBe(3);
+    expect(delays).toEqual([150, 450]);
+    expect(onUnmeasured).not.toHaveBeenCalled();
+  });
+
+  it('a missing pots relation (bare test schema) still fails open to "no platform Pot", without retrying', async () => {
+    let calls = 0;
+    const { delays, sleep } = recordingSleep();
+    const onUnmeasured = vi.fn();
+    const lookup = pgPotLookup(WS, {
+      query: async () => {
+        calls += 1;
+        throw pgError('42P01');
+      },
+      sleep,
+      onUnmeasured,
+    });
+    expect(await lookup.platformPot()).toBeNull();
+    expect(calls).toBe(1);
+    expect(delays).toEqual([]);
+    expect(onUnmeasured).not.toHaveBeenCalled();
+  });
+
+  it('an unanswered lookup homes operator scope to the platform Pot, not operator:<ws>, and reports it', async () => {
+    const onUnmeasured = vi.fn();
+    const lookup = pgPotLookup(WS, {
+      query: async () => {
+        throw pgError('ECONNRESET');
+      },
+      sleep: async () => {},
+      onUnmeasured,
+    });
+    expect(await resolveWorkItemPot({ rawSlug: null, workspaceId: WS, lookup })).toBe(PLATFORM_POT_SLUG);
+    expect(await resolveWorkItemPot({ rawSlug: 'operator', workspaceId: WS, lookup })).toBe(PLATFORM_POT_SLUG);
+    expect(onUnmeasured).toHaveBeenCalledTimes(2);
+    expect(onUnmeasured).toHaveBeenCalledWith({
+      workspaceId: WS,
+      slug: PLATFORM_POT_SLUG,
+      attempts: 3,
+      errorCode: 'ECONNRESET',
+      assumed: PLATFORM_POT_SLUG,
+    });
+  });
+
+  it('an unanswered lookup keeps an explicit slug instead of rejecting it as not-a-Pot', async () => {
+    const onUnmeasured = vi.fn();
+    const lookup = pgPotLookup(WS, {
+      query: async () => {
+        throw new Error('Connection terminated unexpectedly');
+      },
+      sleep: async () => {},
+      onUnmeasured,
+    });
+    expect(await resolveWorkItemPot({ rawSlug: 'portal', workspaceId: WS, lookup })).toBe('portal');
+    expect(onUnmeasured).toHaveBeenCalledWith(expect.objectContaining({ slug: 'portal', errorCode: null, assumed: 'portal' }));
+  });
+
+  it('a measured absence is still absence (fail open for an un-potted workspace)', async () => {
+    const onUnmeasured = vi.fn();
+    const lookup = pgPotLookup(WS, { query: async () => false, sleep: async () => {}, onUnmeasured });
+    expect(await lookup.platformPot()).toBeNull();
+    expect(await resolveWorkItemPot({ rawSlug: null, workspaceId: WS, lookup })).toBeNull();
+    expect(onUnmeasured).not.toHaveBeenCalled();
+  });
+
+  it('classifies only a missing/unreadable relation as a stable absence', () => {
+    for (const code of ['42P01', '3F000', '42501']) expect(classifyPotLookupError(pgError(code))).toBe('absent');
+    for (const error of [pgError('57P01'), pgError('53300'), pgError('57014'), pgError('ECONNRESET'), new Error('x'), null]) {
+      expect(classifyPotLookupError(error)).toBe('unknown');
+    }
   });
 });

@@ -12,6 +12,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { evaluatePlanStartReadiness } from './plan-input-validation';
 import { computeSpecSetHash } from './spec-clause-compiler';
 import { evaluatePlanSpecQuality } from './spec-quality';
+import { hashPlanContent } from './content-hash';
 import { evaluatePlanSpecQualityGate } from './plan-spec-quality-gate';
 import {
   metadataClause, metadataClauseWrite, metadataHarness, metadataInputSchema, metadataPlanSlug,
@@ -29,9 +30,17 @@ const stores = vi.hoisted(() => ({
   listClauses: vi.fn(),
   listRubrics: vi.fn(),
 }));
+const metadataSnapshot = '---\ntitle: Metadata fixture\nstatus: ready\n---\n## Items\n- **P-001** `todo` Accept events';
+vi.mock('./revisions', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./revisions')>(),
+  getPlanRevisionSnapshot: async () => ({ contentSnapshot: metadataSnapshot, contentSnapshotHash: hashPlanContent(metadataSnapshot) }),
+}));
 vi.mock('./source', async (importOriginal) => ({
   ...await importOriginal<typeof import('./source')>(),
-  readPlanBySlug: stores.readPlan,
+  readPlanBySlug: async (...args: Parameters<typeof stores.readPlan>) => {
+    const read = await stores.readPlan(...args);
+    return read ? { ...read, row: { ...read.row, contentHash: hashPlanContent(metadataSnapshot) } } : read;
+  },
   getPlanRow: stores.getPlanRow,
 }));
 vi.mock('./spec-clauses-store', async (importOriginal) => ({
@@ -142,6 +151,34 @@ describe('P-002 workflow measurements against frozen P-001 targets', () => {
       ok: true, classRef: 'plan-class-feature-ship', verdict: 'pass', scorecardDraft: { rubricRef: 'spec-quality' },
     } });
     expect(await evaluateTool.handler(args, context)).toEqual(first);
+  });
+
+  it('refuses a replay when expectedSpecSetHash differs from current clauses and returns no draft', async () => {
+    stores.readPlan.mockResolvedValue({
+      row: { items: [{ id: 'P-001' }], ...metadataInputSchema, templateData: { harness: 'fixture', attempts: 1 } },
+      parsed: { items: [{ id: 'P-001' }] },
+    });
+    stores.listRubrics.mockResolvedValue([{ classRef: 'plan-class-feature-ship' }]);
+    const expectedSpecSetHash = '0'.repeat(64);
+    const args = evaluateTool.args.parse({
+      harness: metadataHarness,
+      slug: metadataPlanSlug,
+      expectedSpecSetHash,
+    });
+
+    const result = await evaluateTool.handler(args, context);
+
+    expect(result).toMatchObject({ data: {
+      ok: false,
+      error: 'spec_set_hash_mismatch',
+      expectedSpecSetHash,
+      blockers: [expect.objectContaining({ check: 'clauses', state: 'blocked', code: 'spec_set_hash_mismatch' })],
+      wouldBlock: ['spec_set_hash_mismatch'],
+    } });
+    const data = (result as { data: { specSetHash?: unknown } }).data;
+    expect(data).toHaveProperty('specSetHash');
+    expect(data.specSetHash).not.toBe(expectedSpecSetHash);
+    expect(result).not.toHaveProperty('data.scorecardDraft');
   });
 
   it.each([

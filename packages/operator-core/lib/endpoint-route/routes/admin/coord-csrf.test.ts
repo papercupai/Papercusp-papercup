@@ -15,7 +15,13 @@ import { describe, expect, it, vi } from 'vitest';
 // (proxy-host-extras.ts:33). This CSRF test never queries it — a unit test must not open a live
 // pool [EI-19311807188719573].
 vi.mock('@papercusp/db-org', async (importOriginal) => {
-  const sql = Object.assign(async () => [], { unsafe: async () => [] });
+  const sql = Object.assign(async () => [], {
+    unsafe: async () => [],
+    // In-process tool dispatch queues telemetry for a debounced transaction.
+    // Keep this mock complete enough for that background flush so it does not
+    // emit a console warning into whichever later assertion happens to run.
+    begin: async (run: (tx: unknown) => Promise<unknown>) => run(sql),
+  });
   return {
     ...(await importOriginal<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql }),
@@ -43,6 +49,18 @@ function post(path: string, origin: string | null, body: unknown) {
 }
 
 describe('coord admin routes — CSRF backstop (requireAllowedOriginOr403)', () => {
+  it('admits the read-only wake-mode lookup and refuses its write shape', async () => {
+    const readReq = post('/admin/coord/wake-mode', null, { agent: 'su-read-only' });
+    const readRes = (await coordWrite.handler(readReq as never, { params: { verb: 'wake-mode' } } as never)) as Response;
+    expect(readRes.status).toBe(200);
+    expect(await readRes.json()).toMatchObject({ agent: 'su-read-only', mode: 'auto' });
+
+    const writeReq = post('/admin/coord/wake-mode', null, { agent: 'su-read-only', mode: 'manual' });
+    const writeRes = (await coordWrite.handler(writeReq as never, { params: { verb: 'wake-mode' } } as never)) as Response;
+    expect(writeRes.status).toBe(405);
+    expect(await writeRes.json()).toMatchObject({ error: { code: 'read_only_verb' } });
+  });
+
   it('POST /admin/coord/:verb refuses a cross-origin browser POST', async () => {
     const req = post('/admin/coord/resolve', 'https://evil.example', { msg_id: 'x' });
     const res = (await coordWrite.handler(req as never, { params: { verb: 'resolve' } } as never)) as Response;

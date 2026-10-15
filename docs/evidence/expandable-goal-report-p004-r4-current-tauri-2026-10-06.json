@@ -1,0 +1,742 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-004 current R-4 canonical GOAL expansion in isolated Tauri",
+  "framework": "shell",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "scripts/tauri-surface-verify-goal-report.mts"
+  ],
+  "runner": [
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "node",
+    "--import",
+    "tsx",
+    "scripts/tauri-surface-verify-goal-report.mts"
+  ],
+  "environment": {
+    "VERIFY_TAURI_ISOLATED_DB": "1",
+    "VERIFY_TAURI_ISOLATED_SEED": "ready",
+    "VERIFY_TAURI_REQUIRE_BUILT": "apps/operator/app/_components/chat/ReportBlockCard.tsx libs/generic/chat-cards/src/index.tsx apps/operator/app/globals.css",
+    "VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS": "Historical snapshot"
+  },
+  "exitCode": 0,
+  "startedAt": "2026-10-06T02:23:53Z",
+  "finishedAt": "2026-10-06T02:31:36Z",
+  "summary": "P-004 independent current-build native reproof passed prepare, boot and assertions with no skipped or reused phases. Durable attributed parent completed exit 0 after cleanup. Independent canonical serialization, reports:get body/hash, captured card, distinct successor preserving original pin, both 22-line visible censuses and ten source/test fingerprints matched. Inspected four screenshots and ten recording samples. Final D006 schema regression and feature acceptance/shipment remain separate and open.",
+  "assertions": [
+    {
+      "id": "native-harness",
+      "passed": true,
+      "evidence": "local-state:verification-harness/verify-tauri-headless/20261006T022357Z-3856281/result.json: prepare/boot/assert passed; no skipped/reused phases."
+    },
+    {
+      "id": "canonical-in-card-expansion",
+      "passed": true,
+      "evidence": "Independent canonical serialization, reports:get and captured card match 8661f1e0e6e5b783ccd529053f9c481179b6eb35d649d32b969b7b012a22e7a3; UTF-8 bytes=2346."
+    },
+    {
+      "id": "full-visible-snapshot",
+      "passed": true,
+      "evidence": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/original-visual-coverage.json: exact required/covered indices0-21, missing[]; inspected original-page-0.png, original-page-1.png and expanded.png."
+    },
+    {
+      "id": "successor-keeps-original-pin",
+      "passed": true,
+      "evidence": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/successor-control.json: distinct successor ID/hash; original body preserved; after-successor census indices0-21 and after-successor-page-2.png inspected."
+    },
+    {
+      "id": "recorded-native-journey",
+      "passed": true,
+      "evidence": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/journey.mp4: ffprobe77decodedframes,1920x1080,25.666667s; visually inspected samples0,8,16,24,32,40,48,56,64,72."
+    },
+    {
+      "id": "current-source-fingerprints",
+      "passed": true,
+      "evidence": "All ten declared manifest source/test paths rehashed and matched during independent audit."
+    },
+    {
+      "id": "terminal-cleanup",
+      "passed": true,
+      "evidence": "capability:bash_output task0muw21n0g13evm9zwoc returned completed, exit_code0, runningfalse; terminal 2026-10-06T02:31:36Z."
+    }
+  ],
+  "workItemId": "WI-10005952",
+  "planSlug": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03",
+  "specs": [
+    {
+      "specId": "AUTO-BAR-R-4-P-003",
+      "revision": 4,
+      "contentHash": "95992877ee0e4a3c92baff5cdd4f919001597fb7e5e19c4ed7018b60dfc9a420"
+    }
+  ],
+  "taskId": "0muw21n0g13evm9zwoc",
+  "runId": "20261006T022357Z-3856281",
+  "runtimeIdentity": {
+    "runtime": "desktop-shell",
+    "buildSha": "6858767ea6",
+    "shaSource": "isolated host health",
+    "pid": "4146600",
+    "origin": "http://127.0.0.1:33700",
+    "frozenSpa": "/tmp/verify-tauri-headless.EEDep1/spa",
+    "launchProvenance": "agent:su-b9ccbf0d-131b-4a64-aca3-90987d99d842:run:1791253436982643626-3856281-29702"
+  },
+  "sourceFingerprint": [
+    {
+      "path": "apps/operator/app/_components/chat/ReportBlockCard.tsx",
+      "sha256": "382746ba48f6111f54fde8b12621d149e3afd07812806f85b198387bb225d660"
+    },
+    {
+      "path": "libs/generic/chat-cards/src/index.tsx",
+      "sha256": "5f56cc2107d2d93c0e80967e07513e90bf745f14fb9832bfc21bfdb529a3c42a"
+    },
+    {
+      "path": "apps/operator/app/globals.css",
+      "sha256": "c291d56c0d5e2af85fd3f262193159a6cb266aec240180c95f812f085ee2e206"
+    },
+    {
+      "path": "packages/operator-core/lib/sync-resolver/index.ts",
+      "sha256": "b807e521699fe76abfb572c03a42badeae72de938b80609f8301ee482f0c8365"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/read-dispatch.ts",
+      "sha256": "3d2c1c8d8d9b94898d6ae150b487238e57f17e635761b9445f9c341c959ca5ca"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/read-dispatch.test.ts",
+      "sha256": "33426a3af59142f6ee2a14af701ab485213110a2c079b9486223e58d8952e79e"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/attention.cache.test.ts",
+      "sha256": "acc367b74e7d2111ec0cb86ab7ef0613e4ce0587b694f40debb2ceca6d6c0f3f"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-report-browser-probe.test.ts",
+      "sha256": "c238299e192c335924b628df8b83799554c6567c65678c2874446f52ca9bab1d"
+    },
+    {
+      "path": "packages/operator-core/test/fixtures/goal-owner-report.ts",
+      "sha256": "de851e71d8486f897e21ea7ef147748b3ccb1a0d7431b8f82af22f2960a0b89c"
+    },
+    {
+      "path": "scripts/tauri-surface-verify-goal-report.mts",
+      "sha256": "94c3959f18f51cbe5f73b1ee6331bab603a5909b3cd3237bef93060eb21bb60e"
+    }
+  ],
+  "observations": [
+    {
+      "name": "REPORT-PINNED-DETAIL-P003 original exact notification expansion",
+      "reportId": "rpt_0924f0d5-1194-4c69-97f4-7619c35dbe32",
+      "bodySha256": "8661f1e0e6e5b783ccd529053f9c481179b6eb35d649d32b969b7b012a22e7a3",
+      "workspaceId": "verify-tauri-isolated-90",
+      "goalId": "goal-expandable-reports",
+      "runtimeIdentity": {
+        "runtime": "desktop-shell",
+        "buildSha": "6858767ea6",
+        "shaSource": "isolated host health",
+        "pid": "4146600",
+        "origin": "http://127.0.0.1:33700",
+        "frozenSpa": "/tmp/verify-tauri-headless.EEDep1/spa",
+        "launchProvenance": "agent:su-b9ccbf0d-131b-4a64-aca3-90987d99d842:run:1791253436982643626-3856281-29702"
+      },
+      "sourceFingerprint": [
+        {
+          "path": "apps/operator/app/_components/chat/ReportBlockCard.tsx",
+          "sha256": "382746ba48f6111f54fde8b12621d149e3afd07812806f85b198387bb225d660"
+        },
+        {
+          "path": "libs/generic/chat-cards/src/index.tsx",
+          "sha256": "5f56cc2107d2d93c0e80967e07513e90bf745f14fb9832bfc21bfdb529a3c42a"
+        },
+        {
+          "path": "apps/operator/app/globals.css",
+          "sha256": "c291d56c0d5e2af85fd3f262193159a6cb266aec240180c95f812f085ee2e206"
+        },
+        {
+          "path": "packages/operator-core/lib/sync-resolver/index.ts",
+          "sha256": "b807e521699fe76abfb572c03a42badeae72de938b80609f8301ee482f0c8365"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/read-dispatch.ts",
+          "sha256": "3d2c1c8d8d9b94898d6ae150b487238e57f17e635761b9445f9c341c959ca5ca"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/read-dispatch.test.ts",
+          "sha256": "33426a3af59142f6ee2a14af701ab485213110a2c079b9486223e58d8952e79e"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/attention.cache.test.ts",
+          "sha256": "acc367b74e7d2111ec0cb86ab7ef0613e4ce0587b694f40debb2ceca6d6c0f3f"
+        },
+        {
+          "path": "packages/operator-core/lib/goal-report-browser-probe.test.ts",
+          "sha256": "c238299e192c335924b628df8b83799554c6567c65678c2874446f52ca9bab1d"
+        },
+        {
+          "path": "packages/operator-core/test/fixtures/goal-owner-report.ts",
+          "sha256": "de851e71d8486f897e21ea7ef147748b3ccb1a0d7431b8f82af22f2960a0b89c"
+        },
+        {
+          "path": "scripts/tauri-surface-verify-goal-report.mts",
+          "sha256": "94c3959f18f51cbe5f73b1ee6331bab603a5909b3cd3237bef93060eb21bb60e"
+        }
+      ],
+      "observedAt": "2026-10-06T02:30:49.727Z",
+      "recordingRef": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/journey.mp4",
+      "exactExpectedBody": "Goal goal-expandable-reports; workspace verify-tauri-isolated-90; snapshot observed at 2026-10-06T02:30:29.652Z\nSource evidence:\n- goal:goal-expandable-reports; revision=41ee0b62aa03e69e7843dbf2b3dc10e1138d5b439aa40292684d96ab1cf286e0; observed at=2026-10-06T02:30:29.202Z; measured at=2026-10-06T02:30:29.202Z; availability=value\n- legacy-spend; revision=unresolved; observed at=2026-10-06T02:30:29.647Z; measured at=unknown; availability=unknown; unknown: No registered GOAL source resolver for legacy-spend\nMOVED:\n- WI-completed; state=done; state observed at=2026-10-06T02:30:29.202Z; completion verified; evidence=receipt:complete-19\n  - Successful mutation: work_items:complete; receipt=receipt:complete-19; persisted at=2026-10-06T02:30:29.202Z\n- WI-observed; state=wip; state observed at=2026-10-06T02:30:29.202Z; completion unverified; evidence=none declared\n  - No successful mutation receipts declared; a state observation is not a mutation.\nCoverage: checked=WI-completed, WI-observed; unchecked=WI-unread; not applicable=WI-archived; residue=WI-unread\nUnknown: legacy-spend; reason=Historical cost coverage is incomplete.\nCOST:\nSpent=125.5 cents; budget=1000 cents; budget window=3600 seconds; coverage={\"measured\":true,\"lineageScope\":\"partial; legacy unpriced\"}\nSource=goal:goal-expandable-reports; revision=41ee0b62aa03e69e7843dbf2b3dc10e1138d5b439aa40292684d96ab1cf286e0; measured at=2026-10-06T02:30:29.202Z; read at=2026-10-06T02:30:29.647Z\nOWNER-WALLED:\n- WI-wall-1; exact action: Approve €50 for the isolated migration rehearsal.; decisions=D-001; artifacts=artifact:rehearsal; source revision=1b020139259a15792ac1f5181783bc3af3c9e437dbc74216f33f3a4f394ae94f\n- WI-wall-2; exact action: Choose retention of 7 days or 30 days for audit evidence.; decisions=D-002; artifacts=artifact:retention; source revision=872bf9fe933efd731cb6c83d263adeab7cba2cc935fac43e0c65b76cdf1794b1\n- WI-wall-3; exact action: Provide the service account with read access to project reports.; decisions=D-003; artifacts=artifact:access; source revision=084afbb7206cf9d14c412e46de4c478e1ffaa4383711bf881143f69f2924404b\nKILLED:\n- Historical disposition: WI-killed; stopped: duplicate surface; at=2026-10-06T02:30:29.202Z; evidence=decision:stop-3\nNEXT WAKE:\nKind=event; ref=fixture:report-progress; expected at=2026-10-06T02:35:29.202Z; evidence=await:1",
+      "visibleOwnerActions": [
+        "Approve €50 for the isolated migration rehearsal.",
+        "Choose retention of 7 days or 30 days for audit evidence.",
+        "Provide the service account with read access to project reports."
+      ],
+      "observedFieldCoverage": [
+        "exact canonical UTF-8 body",
+        "three exact owner actions",
+        "source observed/measured timestamps",
+        "cost measured/read timestamps",
+        "successful mutation receipt",
+        "historical kills",
+        "checked/unchecked/notApplicable/residue coverage",
+        "explicit unknown reasons",
+        "historical snapshot label",
+        "in-card expansion",
+        "zero fabricated plan rows",
+        "no parallel viewer"
+      ],
+      "explicitUnknownLabels": [
+        "No registered GOAL source resolver for legacy-spend",
+        "Historical cost coverage is incomplete."
+      ],
+      "result": "pass"
+    },
+    {
+      "name": "REPORT-PINNED-DETAIL-P003 successor/latest-lineage control",
+      "reportId": "rpt_0924f0d5-1194-4c69-97f4-7619c35dbe32",
+      "bodySha256": "8661f1e0e6e5b783ccd529053f9c481179b6eb35d649d32b969b7b012a22e7a3",
+      "workspaceId": "verify-tauri-isolated-90",
+      "goalId": "goal-expandable-reports",
+      "runtimeIdentity": {
+        "runtime": "desktop-shell",
+        "buildSha": "6858767ea6",
+        "shaSource": "isolated host health",
+        "pid": "4146600",
+        "origin": "http://127.0.0.1:33700",
+        "frozenSpa": "/tmp/verify-tauri-headless.EEDep1/spa",
+        "launchProvenance": "agent:su-b9ccbf0d-131b-4a64-aca3-90987d99d842:run:1791253436982643626-3856281-29702"
+      },
+      "sourceFingerprint": [
+        {
+          "path": "apps/operator/app/_components/chat/ReportBlockCard.tsx",
+          "sha256": "382746ba48f6111f54fde8b12621d149e3afd07812806f85b198387bb225d660"
+        },
+        {
+          "path": "libs/generic/chat-cards/src/index.tsx",
+          "sha256": "5f56cc2107d2d93c0e80967e07513e90bf745f14fb9832bfc21bfdb529a3c42a"
+        },
+        {
+          "path": "apps/operator/app/globals.css",
+          "sha256": "c291d56c0d5e2af85fd3f262193159a6cb266aec240180c95f812f085ee2e206"
+        },
+        {
+          "path": "packages/operator-core/lib/sync-resolver/index.ts",
+          "sha256": "b807e521699fe76abfb572c03a42badeae72de938b80609f8301ee482f0c8365"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/read-dispatch.ts",
+          "sha256": "3d2c1c8d8d9b94898d6ae150b487238e57f17e635761b9445f9c341c959ca5ca"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/read-dispatch.test.ts",
+          "sha256": "33426a3af59142f6ee2a14af701ab485213110a2c079b9486223e58d8952e79e"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/attention.cache.test.ts",
+          "sha256": "acc367b74e7d2111ec0cb86ab7ef0613e4ce0587b694f40debb2ceca6d6c0f3f"
+        },
+        {
+          "path": "packages/operator-core/lib/goal-report-browser-probe.test.ts",
+          "sha256": "c238299e192c335924b628df8b83799554c6567c65678c2874446f52ca9bab1d"
+        },
+        {
+          "path": "packages/operator-core/test/fixtures/goal-owner-report.ts",
+          "sha256": "de851e71d8486f897e21ea7ef147748b3ccb1a0d7431b8f82af22f2960a0b89c"
+        },
+        {
+          "path": "scripts/tauri-surface-verify-goal-report.mts",
+          "sha256": "94c3959f18f51cbe5f73b1ee6331bab603a5909b3cd3237bef93060eb21bb60e"
+        }
+      ],
+      "observedAt": "2026-10-06T02:30:54.855Z",
+      "recordingRef": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/journey.mp4",
+      "exactExpectedBody": "Goal goal-expandable-reports; workspace verify-tauri-isolated-90; snapshot observed at 2026-10-06T02:30:29.652Z\nSource evidence:\n- goal:goal-expandable-reports; revision=41ee0b62aa03e69e7843dbf2b3dc10e1138d5b439aa40292684d96ab1cf286e0; observed at=2026-10-06T02:30:29.202Z; measured at=2026-10-06T02:30:29.202Z; availability=value\n- legacy-spend; revision=unresolved; observed at=2026-10-06T02:30:29.647Z; measured at=unknown; availability=unknown; unknown: No registered GOAL source resolver for legacy-spend\nMOVED:\n- WI-completed; state=done; state observed at=2026-10-06T02:30:29.202Z; completion verified; evidence=receipt:complete-19\n  - Successful mutation: work_items:complete; receipt=receipt:complete-19; persisted at=2026-10-06T02:30:29.202Z\n- WI-observed; state=wip; state observed at=2026-10-06T02:30:29.202Z; completion unverified; evidence=none declared\n  - No successful mutation receipts declared; a state observation is not a mutation.\nCoverage: checked=WI-completed, WI-observed; unchecked=WI-unread; not applicable=WI-archived; residue=WI-unread\nUnknown: legacy-spend; reason=Historical cost coverage is incomplete.\nCOST:\nSpent=125.5 cents; budget=1000 cents; budget window=3600 seconds; coverage={\"measured\":true,\"lineageScope\":\"partial; legacy unpriced\"}\nSource=goal:goal-expandable-reports; revision=41ee0b62aa03e69e7843dbf2b3dc10e1138d5b439aa40292684d96ab1cf286e0; measured at=2026-10-06T02:30:29.202Z; read at=2026-10-06T02:30:29.647Z\nOWNER-WALLED:\n- WI-wall-1; exact action: Approve €50 for the isolated migration rehearsal.; decisions=D-001; artifacts=artifact:rehearsal; source revision=1b020139259a15792ac1f5181783bc3af3c9e437dbc74216f33f3a4f394ae94f\n- WI-wall-2; exact action: Choose retention of 7 days or 30 days for audit evidence.; decisions=D-002; artifacts=artifact:retention; source revision=872bf9fe933efd731cb6c83d263adeab7cba2cc935fac43e0c65b76cdf1794b1\n- WI-wall-3; exact action: Provide the service account with read access to project reports.; decisions=D-003; artifacts=artifact:access; source revision=084afbb7206cf9d14c412e46de4c478e1ffaa4383711bf881143f69f2924404b\nKILLED:\n- Historical disposition: WI-killed; stopped: duplicate surface; at=2026-10-06T02:30:29.202Z; evidence=decision:stop-3\nNEXT WAKE:\nKind=event; ref=fixture:report-progress; expected at=2026-10-06T02:35:29.202Z; evidence=await:1",
+      "visibleOwnerActions": [
+        "Approve €50 for the isolated migration rehearsal.",
+        "Choose retention of 7 days or 30 days for audit evidence.",
+        "Provide the service account with read access to project reports."
+      ],
+      "observedFieldCoverage": [
+        "exact canonical UTF-8 body",
+        "three exact owner actions",
+        "source observed/measured timestamps",
+        "cost measured/read timestamps",
+        "successful mutation receipt",
+        "historical kills",
+        "checked/unchecked/notApplicable/residue coverage",
+        "explicit unknown reasons",
+        "historical snapshot label",
+        "in-card expansion",
+        "zero fabricated plan rows",
+        "no parallel viewer"
+      ],
+      "explicitUnknownLabels": [
+        "No registered GOAL source resolver for legacy-spend",
+        "Historical cost coverage is incomplete."
+      ],
+      "result": "pass"
+    }
+  ],
+  "coverage": {
+    "population": [
+      "exact canonical UTF-8 body",
+      "three exact owner actions",
+      "source observed/measured timestamps",
+      "cost measured/read timestamps",
+      "successful mutation receipt",
+      "historical kills",
+      "checked/unchecked/notApplicable/residue coverage",
+      "explicit unknown reasons",
+      "historical snapshot label",
+      "in-card expansion",
+      "zero fabricated plan rows",
+      "no parallel viewer"
+    ],
+    "checked": [
+      "exact canonical UTF-8 body",
+      "three exact owner actions",
+      "source observed/measured timestamps",
+      "cost measured/read timestamps",
+      "successful mutation receipt",
+      "historical kills",
+      "checked/unchecked/notApplicable/residue coverage",
+      "explicit unknown reasons",
+      "historical snapshot label",
+      "in-card expansion",
+      "zero fabricated plan rows",
+      "no parallel viewer"
+    ],
+    "notChecked": [],
+    "notApplicable": [],
+    "residue": []
+  },
+  "recordingProbe": {
+    "programs": [],
+    "streams": [
+      {
+        "width": 1920,
+        "height": 1080,
+        "nb_read_frames": "77"
+      }
+    ],
+    "format": {
+      "duration": "25.666667"
+    }
+  },
+  "independentAudit": {
+    "auditor": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+    "observedAt": "2026-10-06T02:34:09.702Z",
+    "sourceChecks": [
+      {
+        "path": "apps/operator/app/_components/chat/ReportBlockCard.tsx",
+        "sha256": "382746ba48f6111f54fde8b12621d149e3afd07812806f85b198387bb225d660",
+        "actualSha256": "382746ba48f6111f54fde8b12621d149e3afd07812806f85b198387bb225d660"
+      },
+      {
+        "path": "libs/generic/chat-cards/src/index.tsx",
+        "sha256": "5f56cc2107d2d93c0e80967e07513e90bf745f14fb9832bfc21bfdb529a3c42a",
+        "actualSha256": "5f56cc2107d2d93c0e80967e07513e90bf745f14fb9832bfc21bfdb529a3c42a"
+      },
+      {
+        "path": "apps/operator/app/globals.css",
+        "sha256": "c291d56c0d5e2af85fd3f262193159a6cb266aec240180c95f812f085ee2e206",
+        "actualSha256": "c291d56c0d5e2af85fd3f262193159a6cb266aec240180c95f812f085ee2e206"
+      },
+      {
+        "path": "packages/operator-core/lib/sync-resolver/index.ts",
+        "sha256": "b807e521699fe76abfb572c03a42badeae72de938b80609f8301ee482f0c8365",
+        "actualSha256": "b807e521699fe76abfb572c03a42badeae72de938b80609f8301ee482f0c8365"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/read-dispatch.ts",
+        "sha256": "3d2c1c8d8d9b94898d6ae150b487238e57f17e635761b9445f9c341c959ca5ca",
+        "actualSha256": "3d2c1c8d8d9b94898d6ae150b487238e57f17e635761b9445f9c341c959ca5ca"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/read-dispatch.test.ts",
+        "sha256": "33426a3af59142f6ee2a14af701ab485213110a2c079b9486223e58d8952e79e",
+        "actualSha256": "33426a3af59142f6ee2a14af701ab485213110a2c079b9486223e58d8952e79e"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/attention.cache.test.ts",
+        "sha256": "acc367b74e7d2111ec0cb86ab7ef0613e4ce0587b694f40debb2ceca6d6c0f3f",
+        "actualSha256": "acc367b74e7d2111ec0cb86ab7ef0613e4ce0587b694f40debb2ceca6d6c0f3f"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-report-browser-probe.test.ts",
+        "sha256": "c238299e192c335924b628df8b83799554c6567c65678c2874446f52ca9bab1d",
+        "actualSha256": "c238299e192c335924b628df8b83799554c6567c65678c2874446f52ca9bab1d"
+      },
+      {
+        "path": "packages/operator-core/test/fixtures/goal-owner-report.ts",
+        "sha256": "de851e71d8486f897e21ea7ef147748b3ccb1a0d7431b8f82af22f2960a0b89c",
+        "actualSha256": "de851e71d8486f897e21ea7ef147748b3ccb1a0d7431b8f82af22f2960a0b89c"
+      },
+      {
+        "path": "scripts/tauri-surface-verify-goal-report.mts",
+        "sha256": "94c3959f18f51cbe5f73b1ee6331bab603a5909b3cd3237bef93060eb21bb60e",
+        "actualSha256": "94c3959f18f51cbe5f73b1ee6331bab603a5909b3cd3237bef93060eb21bb60e"
+      }
+    ],
+    "bodyHash": "8661f1e0e6e5b783ccd529053f9c481179b6eb35d649d32b969b7b012a22e7a3",
+    "bodyBytes": 2346,
+    "visibleCensus": [
+      {
+        "path": "original-visual-coverage.json",
+        "required": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21
+        ],
+        "covered": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21
+        ],
+        "missing": []
+      },
+      {
+        "path": "after-successor-visual-coverage.json",
+        "required": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21
+        ],
+        "covered": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21
+        ],
+        "missing": []
+      }
+    ],
+    "inspectedScreenshots": [
+      "original-page-0.png",
+      "original-page-1.png",
+      "expanded.png",
+      "after-successor-page-2.png"
+    ],
+    "recordingSamples": [
+      0,
+      8,
+      16,
+      24,
+      32,
+      40,
+      48,
+      56,
+      64,
+      72
+    ]
+  },
+  "rawArtifacts": [
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/after-navigation-browser-feed.json",
+      "sha256": "ffefe8abe560fad6633b25c08b6798c557450702bccf23afc1a87bbcdeb230f1"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/after-navigation-http-sync-feed.json",
+      "sha256": "f3d913af885a50f742c8da43df5b1b56b6f521815d4a7b7ece9fad6356ac46eb"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/after-navigation.json",
+      "sha256": "558d3c52dabc3e9df1c63f812c0d79966c6a81090b7ef6dcd9e627561984c986"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/after-navigation.png",
+      "sha256": "46414108459729fa8296c17f51df256bf54d8403f857083d3b5e117a722ec3bf"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/after-successor-page-0.png",
+      "sha256": "35226acebe43b5fd03bf8173a4ad6f5c2d38c43eb941ad3d7325ed7fd21c5bff"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/after-successor-page-1.png",
+      "sha256": "517defb5fba05c6e39899b28867181ae9641be6541a1dea28bd8ed949f317ef4"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/after-successor-page-2.png",
+      "sha256": "5185ec1b5098c5244c99744058ddbbba0ca5161afa2a03fa5eff8ca276b0abd3"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/after-successor-visual-coverage.json",
+      "sha256": "38712905b086a3f26bf52e06ba94b6fd5579b52fc38b4797a4c52d6598e1091e"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-convergence.json",
+      "sha256": "c0174bc3def49558139bd13d2c555c7e6f678f636311cedf4f3177c6b4f7d9ca"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-0.json",
+      "sha256": "f0e5367104cf0dc2375931e8891be8eaddba9ff302079b19f587388182f0695f"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-1.json",
+      "sha256": "c558a834f3fea1427f6606e1b12bb171b0abdb0c703881d84fc31eb86e1d7e89"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-10.json",
+      "sha256": "5041ff41a06df562fa5dcaed7615f27e699b1d3a1d4fa88c40640f2e2cbab03b"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-2.json",
+      "sha256": "6fc508795633aa060d0ba9fb3e71f4c382a706d4b1dbae285c4a929f88b40201"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-3.json",
+      "sha256": "d04b7fea83932c12de956987bd8c562b01c11c2918d150a747f48a769920235e"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-4.json",
+      "sha256": "b2872b9778b45ba1de7bb96d76dc073ba0bfa76d721a6bfbd28c5597490cd0e7"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-5.json",
+      "sha256": "ccbbaab0c7e29a98289fedaf1a5fd6b0db26804757b220e3b533953d8a8fc74d"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-6.json",
+      "sha256": "8581330dfda4b237adaa5f95a7df87598410969760c61f8e05a4c128a6c6c526"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-7.json",
+      "sha256": "21f57bcfd00d87ec4f740a8300d21486045e914a4da2e40e319b76a404c40167"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-8.json",
+      "sha256": "811b150ca6567c8490958c4216e09fb76898d2497e45df9adc672f2a71bf30d3"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight-9.json",
+      "sha256": "01bf82c65df5bed959b7059f1ec3bd72b0e5dd84c68e729a3c3d7c6db0595670"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/attention-preflight.json",
+      "sha256": "5041ff41a06df562fa5dcaed7615f27e699b1d3a1d4fa88c40640f2e2cbab03b"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/before-navigation.json",
+      "sha256": "cca31f199a7b8f272c2931f62b870350b342a34113a2504537a7868fd5dfdbc6"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/before-navigation.png",
+      "sha256": "7e184ecd6469b127d436cca874849625afb9a9ab17b9bd96b048ca0786f46dcc"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/captured-card.json",
+      "sha256": "b9de591691a6b5c6c2dcf12752d7771489821a62f90d86d312c2a31a7e2c7ab3"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/check-0.json",
+      "sha256": "56ca223e28721b4f75b3c918c8918455e39c29beeb5846a36eec4f58fe4c3aee"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/check-1.json",
+      "sha256": "8272525e2db97948506e3d00e5d93a1429c5dfd9c4e993f901a41d699f835b53"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/expanded.png",
+      "sha256": "f1f0f381b6d9e747344319d82b2762881f5c7bdd1fbb22bb5b629b476fec5fe1"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/fixture-wake-preflight.json",
+      "sha256": "0ad7ada7b5ab60f0d8c546ed8f5cc71a8875edf2ef935b46b35f7d35489e9f9e"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/journey.mp4",
+      "sha256": "97eb688c9e1b5d61f1559756e03faf8e380c0d37ee3806b98b6ad7223e5d1051"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/manifest.json",
+      "sha256": "5826445d92a05986413c25952615f296a05b61442a28aeb71d30e707f6201f81"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/navigation.json",
+      "sha256": "17e5237fc16f34bb54ff94f4c10fdddcbdbb8dc3241f5f22ba63ef3ef86644a9"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/notification.png",
+      "sha256": "46414108459729fa8296c17f51df256bf54d8403f857083d3b5e117a722ec3bf"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/original-page-0.png",
+      "sha256": "bcad46bc59d961f3bf97fb74c9ba5cf332b03ac8260ce3645fc3a2f101012d9e"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/original-page-1.png",
+      "sha256": "b558987471a7212bab2a60e9ab07bec4e1f7572d8da7b6993b38188e83c13f08"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/original-page-2.png",
+      "sha256": "6f2b96ea1feb06419f4099253f873f13f6635181cf4c5454a80734f2f54be15a"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/original-visual-coverage.json",
+      "sha256": "f41f45b1edaad92a97145e844889d1d408cbb3e91e3d25140eaee49d8dbd39cb"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/pinned-after-successor.png",
+      "sha256": "5185ec1b5098c5244c99744058ddbbba0ca5161afa2a03fa5eff8ca276b0abd3"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/published-fixture.json",
+      "sha256": "89394b9355f61e200639c685d720c6fd5620ba14e0180e6630d1b80673203f43"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/recording-audit-grid.png",
+      "sha256": "ea1be05a8d47df481e91982fb3f0c27e2be325aed9b144d4cc94deeb793b2915"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/recording-probe.json",
+      "sha256": "2a68135e972c52dd53c956439b895076167de8799779d4b07a915acce3cda80e"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/reports-get.json",
+      "sha256": "3e5f14953a8f73744b0d8f5d43d8192a822451df242ee850e2e3502ac1ee24f9"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/runtime-health.json",
+      "sha256": "a763ae44b9ca9d48a55fc83ed3b0c2ab28f8ed24268c231634e21c742ff0dfb5"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native/successor-control.json",
+      "sha256": "ed73769c5aff281051c6722db41d61970842bedfe3e2034b17a46bfccdec4a7e"
+    },
+    {
+      "path": "local-state:verification-harness/verify-tauri-headless/20261006T022357Z-3856281/result.json",
+      "sha256": "12aa3f6bc04b4c5cf991fdd205a66b7ef6fc4ea034d5b88c7ec5a2f8129b182f"
+    },
+    {
+      "path": "local-state:verification-harness/verify-tauri-headless/20261006T022357Z-3856281/plan.json",
+      "sha256": "4fd106326d25e8144f4dbc4aec54c650d48b3681f3e65a2a854c08ad2b77a9f7"
+    },
+    {
+      "path": "local-state:verification-harness/verify-tauri-headless/20261006T022357Z-3856281/contract.json",
+      "sha256": "d3b5687c047262a1f60133886ed2090e9c082b637a7b7a35194cdf2c14a22886"
+    },
+    {
+      "path": "local-state:verification-harness/verify-tauri-headless/20261006T022357Z-3856281/phases.jsonl",
+      "sha256": "47b41f6928c8ea8094602cd853b0186bca180a2eebe294c8296802255873191d"
+    }
+  ],
+  "rawArtifactResolver": {
+    "schemaVersion": 1,
+    "scheme": "local-state:",
+    "baseEnvironmentVariable": "XDG_STATE_HOME",
+    "fallback": {
+      "environmentVariable": "HOME",
+      "relativePath": ".local/state"
+    },
+    "resolution": "Strip local-state:, resolve under XDG_STATE_HOME or HOME/.local/state; verify SHA256 before consuming.",
+    "relativeRoot": "verification-harness/goal-report-tauri/20261006T023029Z-2528/phases/native",
+    "exampleCommand": [
+      "node",
+      "--input-type=module",
+      "-e",
+      "import {readFileSync} from 'node:fs';import {join} from 'node:path';import {createHash} from 'node:crypto';const d=JSON.parse(readFileSync('docs/evidence/expandable-goal-report-p004-r4-current-tauri-2026-10-06.json','utf8'));const b=process.env.XDG_STATE_HOME||join(process.env.HOME,'.local/state');for(const a of d.rawArtifacts){if(createHash('sha256').update(readFileSync(join(b,a.path.slice('local-state:'.length)))).digest('hex')!==a.sha256)throw Error('raw artifact hash mismatch');}console.log('raw artifacts verified');"
+    ]
+  },
+  "limits": [
+    "Current native proof is scoped to the declared ten source/test paths and actual frozen runtime; it does not certify the whole shared tree or shipped main.",
+    "Wrapper noted five newer frontend files outside the three required UI paths; required-path freshness and Historical snapshot containment passed.",
+    "Historical R4 proof artifact is preserved separately.",
+    "No final D006 integration verdict or full feature acceptance/shipment claim."
+  ]
+}

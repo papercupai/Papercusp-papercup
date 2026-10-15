@@ -97,6 +97,8 @@ describe('spawner sidecar circuit breaker', () => {
     expect(spawnSpy).toHaveBeenCalledTimes(spawnsAtTrip);
     expect(getSidecarBreakerState()).toMatchObject({ state: 'open', shortCircuited: 2 });
     expect(getSidecarBreakerState().retryAfterMs).toBeGreaterThan(0);
+    // A fail-closed reader rejects; the breaker cannot claim a local spawn happened.
+    expect(new SidecarCircuitOpenError(1000).message).not.toContain('local spawn is being used');
   });
 
   it('its own short-circuit rejections are COUNTED as fallbacks but never re-trip or extend the open window', async () => {

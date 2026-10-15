@@ -38,8 +38,11 @@
  *
  * WHY BOTH SIGNALS, AND WHY NO "RESULT LINE" SUPPRESSOR. The in-flight vocabulary
  * IS the writer's own statement that the result is unread — "still running",
- * "NOT yet diagnosed", "awaiting result". Adding a fuzzy result-detector on top
- * would buy nothing and could suppress a true positive, which is the worse failure
+ * "NOT yet diagnosed", "awaiting result". The standalone phrase "in-flight" is
+ * more ambiguous, so it only counts when attached to a run-like subject ("test run
+ * is in-flight"). This avoids treating unrelated compounds such as "in-flight
+ * store rebinding" as an unread run. Adding a fuzzy result-detector on top would
+ * buy nothing and could suppress a true positive, which is the worse failure
  * direction: an advisory that silently does not fire is indistinguishable from one
  * that had nothing to say.
  *
@@ -59,6 +62,11 @@
 const IN_FLIGHT_RE =
   /\b(?:launched|in[-\s]flight|still running|not yet diagnosed|not yet read|awaiting (?:the )?results?|pending results?|results? (?:are )?pending)\b/gi;
 
+const RUN_SUBJECT_BEFORE_IN_FLIGHT_RE =
+  /\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b(?:\W+\w+){0,4}\W*$/i;
+const RUN_SUBJECT_AFTER_IN_FLIGHT_RE =
+  /^\W*(?:(?:is|are|was|were|remains?|still|currently|actively)\W+){0,2}\b(?:run|test|suite|job|command|process|build|check|lint|typecheck)\b/i;
+
 /**
  * A reference to a run whose output lives somewhere OTHER than this note — the
  * thing that makes the prose above a prediction rather than a report.
@@ -67,6 +75,28 @@ const RUN_REF_RE = /(?:\/tmp\/\S+|\S+\.log\b|bash_id|run_in_background|bash_outp
 
 /** Cap on how many matched fragments are echoed back, so the note stays one line. */
 const MAX_SIGNALS = 3;
+
+/**
+ * An explicitly attributed historical quotation is evidence about an earlier
+ * report, not the writer's current admission. Keep ambiguous prose and quoted
+ * current reports actionable; this is deliberately not a result-line suppressor.
+ */
+function withoutHistoricalQuotations(text: string): string {
+  const quotes = /"[^"\n]*"|'[^'\n]*'|`[^`\n]*`|“[^”\n]*”|‘[^’\n]*’/g;
+  return text.replace(quotes, (quote: string, offset: number) => {
+    const start = Math.max(
+      text.lastIndexOf('\n', offset - 1),
+      text.lastIndexOf('.', offset - 1),
+      text.lastIndexOf(';', offset - 1),
+    ) + 1;
+    const attribution = text.slice(start, offset);
+    const historical = /\b(?:historical|(?:saved|recovered)\b[^.!?;\n]{0,100}\b(?:transcript|parts?\d*))\b/i;
+    const current = /\b(?:but|however|now|current(?:ly)?)\b/i;
+    return historical.test(attribution) && !current.test(attribution)
+      ? ' '.repeat(quote.length)
+      : quote;
+  });
+}
 
 export interface UnreadRunSignals {
   /** In-flight phrases this body used (deduped, lowercased, capped). */
@@ -81,10 +111,16 @@ export interface UnreadRunAdvisory {
   signals: UnreadRunSignals;
 }
 
-function collect(text: string, re: RegExp, lower: boolean): string[] {
+function collect(
+  text: string,
+  re: RegExp,
+  lower: boolean,
+  includeMatch?: (match: RegExpExecArray) => boolean,
+): string[] {
   const seen = new Set<string>();
   // A `g` regex carries lastIndex across calls; matchAll consumes a fresh clone.
   for (const m of text.matchAll(new RegExp(re.source, re.flags))) {
+    if (includeMatch && !includeMatch(m)) continue;
     // A path is greedy to a whitespace boundary, so it absorbs the sentence
     // punctuation that follows it — `/tmp/run.log.` rather than `/tmp/run.log`.
     // Echoing that back reads like a different (nonexistent) file, so trim it.
@@ -95,6 +131,36 @@ function collect(text: string, re: RegExp, lower: boolean): string[] {
     if (seen.size >= MAX_SIGNALS) break;
   }
   return [...seen];
+}
+
+function isRunScopedInFlight(text: string, index: number, length: number): boolean {
+  const previousBoundary = Math.max(
+    text.lastIndexOf('\n', index - 1),
+    text.lastIndexOf('.', index - 1),
+    text.lastIndexOf(';', index - 1),
+    text.lastIndexOf('!', index - 1),
+    text.lastIndexOf('?', index - 1),
+  );
+  const start = previousBoundary + 1;
+  const nextBoundaries = [
+    text.indexOf('\n', index + length),
+    text.indexOf('.', index + length),
+    text.indexOf(';', index + length),
+    text.indexOf('!', index + length),
+    text.indexOf('?', index + length),
+  ].filter((boundary) => boundary >= 0);
+  const end = nextBoundaries.length > 0 ? Math.min(...nextBoundaries) : text.length;
+  const before = text.slice(Math.max(start, index - 80), index);
+  const after = text.slice(index + length, Math.min(end, index + length + 80));
+  return RUN_SUBJECT_BEFORE_IN_FLIGHT_RE.test(before) || RUN_SUBJECT_AFTER_IN_FLIGHT_RE.test(after);
+}
+
+/** Negation immediately governing this status is not an unread admission.
+ * Keep the match local: a completed result elsewhere must not suppress a
+ * separate pending run, and `not yet read` is itself an affirmative signal. */
+function isNegatedRunStatus(text: string, index: number): boolean {
+  const before = text.slice(Math.max(0, index - 80), index);
+  return /\b(?:not|never|no longer|(?:is|are|was|were|has|have|had|did|does|do|can|could|would|should)n['’]t)\s+(?:(?:currently|actively|actually|still)\s+){0,2}["'`“‘]?\s*$/i.test(before);
 }
 
 /**
@@ -118,7 +184,12 @@ export function describeUnreadRun(
   const text = (body ?? '').trim();
   if (!text) return null;
 
-  const inFlight = collect(text, IN_FLIGHT_RE, true);
+  const inFlightText = withoutHistoricalQuotations(text);
+  const inFlight = collect(inFlightText, IN_FLIGHT_RE, true, (match) => {
+    if (isNegatedRunStatus(inFlightText, match.index)) return false;
+    if (!/^in[-\s]flight$/i.test(match[0])) return true;
+    return isRunScopedInFlight(inFlightText, match.index, match[0].length);
+  });
   if (inFlight.length === 0) return null;
   const runRefs = collect(text, RUN_REF_RE, false);
   if (runRefs.length === 0) return null;

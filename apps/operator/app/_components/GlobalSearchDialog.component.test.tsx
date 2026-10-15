@@ -23,7 +23,7 @@ import GlobalSearchDialog, { hitHref, renderHighlight } from './GlobalSearchDial
 // The engine's REAL headline options — imported, never re-typed, so the
 // renderer's marker is checked against the source of truth rather than against
 // another copy of the same assumption.
-import { HEADLINE_OPTS } from '@papercusp/operator-core/lib/agent-tools/search/sources';
+import { HEADLINE_OPTS } from '@papercusp/operator-core/lib/agent-tools/search/headline-options';
 
 afterEach(() => {
   cleanup();

@@ -23,7 +23,7 @@ beforeEach(() => {
   getEscalationM.mockResolvedValue({
     ok: true,
     data: { escalation: 'E', supervisorNotes: 'N', mtimeMs: 123 },
-  } as never);
+  });
 });
 
 describe('harness:escalation args schema (EI-7146)', () => {
@@ -42,6 +42,25 @@ describe('harness:escalation args schema (EI-7146)', () => {
   it('passes `phase` through with either name', async () => {
     await body({ harness: 'papercusp', phase: 'staging' });
     expect(getEscalationM).toHaveBeenCalledWith('papercusp', 'staging');
+  });
+
+  it('reports a reader failure instead of disguising it as an empty escalation', async () => {
+    getEscalationM.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      error: 'unknown project',
+    } as never);
+
+    const res = (await tool.handler({ slug: 'unknown' } as never, {} as never)) as {
+      content: [{ type: 'text'; text: string }];
+      isError?: boolean;
+    };
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(res.content[0].text)).toEqual({
+      ok: false,
+      status: 404,
+      error: 'unknown project',
+    });
   });
 
   it('rejects a call with neither `slug` nor `harness`', () => {

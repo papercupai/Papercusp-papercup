@@ -22,6 +22,7 @@
  *   lib/agent-tools/sessions/search-tool-part-caveat.test.ts
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { deferredSqlAnswer } from '../../../test/_fake-sql';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -59,11 +60,13 @@ interface ParsedResult {
  *  a positional-ordering regression before it shipped). */
 function makeTx(results: unknown[][]) {
   let i = 0;
-  const tx = vi.fn(async (..._args: unknown[]) => {
+  // deferredSqlAnswer: a result is handed out only when a query is AWAITED
+  // (never for an interpolated fragment); D-006 ledger reads take no slot.
+  const tx = vi.fn((..._args: unknown[]) => deferredSqlAnswer(_args, () => {
     const r = results[i] ?? [];
     i += 1;
     return r;
-  });
+  }));
   return {
     tx,
     sqlTexts: () =>
@@ -71,7 +74,7 @@ function makeTx(results: unknown[][]) {
   };
 }
 
-const TOOL_PART_PROBE = /session_turn_parts/;
+const TOOL_PART_PROBE_QUERY = /FROM harness_shared\.session_turn_parts p/;
 
 async function run(args: Record<string, unknown>, results: unknown[][]) {
   const { tx, sqlTexts } = makeTx(results);
@@ -102,17 +105,37 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
       [
         [], // main verbatim ILIKE over session_turns -> zero rows
         [{ session_count: '1', earliest: null }], // owner-scope aggregate: only this session, so no QUERY-MATCH-MISS caveat
-        [{ hits: '2' }], // NEW: session_turn_parts probe -> found twice
+        [{ tool_use_ready: true, tool_result_ready: true }], // both owner indexes are valid
+        [{ found: true }], // the existence probe stops at the first matching part
       ],
     );
 
     expect(parsed.total_hits).toBe(0);
-    expect(sqls.some((s) => TOOL_PART_PROBE.test(s))).toBe(true);
+    const partProbe = sqls.find((s) => TOOL_PART_PROBE_QUERY.test(s)) ?? '';
+    expect(sqls.filter((s) => TOOL_PART_PROBE_QUERY.test(s))).toHaveLength(1);
+    expect(partProbe).toMatch(/SELECT EXISTS\s*\(/i);
+    expect(partProbe).toContain("part_kind = 'tool_use'");
+    expect(partProbe).toContain("part_kind = 'tool_result'");
+    expect(partProbe).not.toMatch(/COUNT\s*\(/i);
     expect(parsed.zeroHitCaveat).toBeDefined();
     expect(parsed.zeroHitCaveat).toMatch(/FOUND, JUST NOT IN A TEXT TURN/);
-    expect(parsed.zeroHitCaveat).toMatch(/2 time\(s\)/);
+    expect(parsed.zeroHitCaveat).toMatch(/appears inside a tool call or tool result/);
     expect(parsed.zeroHitCaveat).toMatch(/tool call or tool result/);
     expect(parsed.zeroHitCaveat).not.toMatch(/UNVERIFIABLE, NOT ABSENT/); // refresh was fresh
+  });
+
+  it('skips the full-table fallback while the tool_result owner index is not ready', async () => {
+    const { parsed, sqls } = await run(
+      { session: 'self', mode: 'verbatim', query: 'P-006' },
+      [
+        [],
+        [{ session_count: '1', earliest: null }],
+        [{ tool_use_ready: true, tool_result_ready: false }],
+      ],
+    );
+
+    expect(sqls.some((s) => TOOL_PART_PROBE_QUERY.test(s))).toBe(false);
+    expect(parsed.zeroHitCaveat).toMatch(/TOOL-CONTENT NOT CHECKED/);
   });
 
   it('stays silent when the string genuinely does not occur anywhere, tool parts included', async () => {
@@ -121,11 +144,12 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
       [
         [],
         [{ session_count: '1', earliest: null }],
-        [{ hits: '0' }],
+        [{ tool_use_ready: true, tool_result_ready: true }],
+        [{ found: false }],
       ],
     );
 
-    expect(sqls.some((s) => TOOL_PART_PROBE.test(s))).toBe(true);
+    expect(sqls.some((s) => TOOL_PART_PROBE_QUERY.test(s))).toBe(true);
     expect(parsed.total_hits).toBe(0);
     expect(parsed.zeroHitCaveat).toBeUndefined();
   });
@@ -141,7 +165,7 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
       ],
     );
 
-    expect(sqls.some((s) => TOOL_PART_PROBE.test(s))).toBe(false);
+    expect(sqls.some((s) => TOOL_PART_PROBE_QUERY.test(s))).toBe(false);
     expect(parsed.total_hits).toBe(1);
     expect(parsed.zeroHitCaveat).toBeUndefined();
   });
@@ -157,7 +181,8 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
       [
         [],
         [{ session_count: '1', earliest: null }],
-        [{ hits: '1' }],
+        [{ tool_use_ready: true, tool_result_ready: true }],
+        [{ found: true }],
       ],
     );
 
@@ -173,7 +198,8 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
       [
         [],
         [{ session_count: '1', earliest: null }],
-        [{ hits: '0' }],
+        [{ tool_use_ready: true, tool_result_ready: true }],
+        [{ found: false }],
       ],
     );
 
@@ -184,12 +210,13 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
 
   it('is a best-effort probe — a failing query never breaks the search', async () => {
     let call = 0;
-    const tx = vi.fn(async (..._args: unknown[]) => {
+    const tx = vi.fn((..._args: unknown[]) => deferredSqlAnswer(_args, () => {
       call += 1;
       if (call === 1) return []; // main verbatim query
       if (call === 2) return [{ session_count: '1', earliest: null }]; // owner-scope aggregate
+      if (call === 3) return [{ tool_use_ready: true, tool_result_ready: true }]; // index readiness
       throw new Error('session_turn_parts unavailable');
-    });
+    }));
     const res = await (
       tool as unknown as {
         handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
@@ -199,6 +226,6 @@ describe('sessions:search — tool-part existence caveat (EI-21922997688425048)'
 
     expect(parsed.ok).toBe(true);
     expect(parsed.total_hits).toBe(0);
-    expect(parsed.zeroHitCaveat).toBeUndefined();
+    expect(parsed.zeroHitCaveat).toMatch(/TOOL-CONTENT NOT CHECKED/);
   });
 });

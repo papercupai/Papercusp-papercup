@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005600",
+  "parent": "WI-10004890",
+  "outcome": "failed",
+  "plane": "serving-artifact-private-operator-api-retainer-attempt",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-heap-retainers-r3-2026-10-02.json",
+    "bytes": 635145,
+    "sha256": "19683c1cdb7451c94ec8566a9f841dfa5d3a5309e664a8529658a357918a1eea"
+  },
+  "before": {
+    "pid": 3714133,
+    "startTicks": "1535541",
+    "cwd": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-2de667a848e7.oO6qs5/checkout/apps/operator",
+    "entry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-2de667a848e7.oO6qs5/checkout/apps/operator/dist-host/hono-host.mjs",
+    "hostDirectory": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-2de667a848e7.oO6qs5/checkout/apps/operator/dist-host",
+    "bundleSha256": "6101605bdb3ead4c57e7ebdf80c36a2fecf767fbe958a842be25b42d89abb178",
+    "buildSha": "2de667a848",
+    "observedAt": "2026-10-02T19:32:14.654Z",
+    "sources": [
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "sha256": "0709dfd1353e80cbba95c21872fdf0df8a951171ba9b61aad222d9c0fb6c72e3"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.d.mts",
+        "sha256": "0c17df47a4b327ebfea4a0ba04bf2eae4594c932dc195d69ef091333ab5bbbc4"
+      },
+      {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "sha256": "c01d6294e2f9f5683006bfa54e22c18160451c5d2125bbedf2244283fbeb75f5"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "sha256": "7f43ddd95a2c2fee4fcc8310698f3599f937b73bef708ae79de4af82672713eb"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      },
+      {
+        "path": "scripts/test-files.mjs",
+        "sha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d"
+      },
+      {
+        "path": "node_modules/@vscode/v8-heap-parser/pkg/nodejs/v8_heap_parser_bg.wasm",
+        "sha256": "20b097dba67b7b52c7c33e721059fb6c1118aebc942b682ad70432b7bf35262b"
+      }
+    ],
+    "sourceHead": "791289bd686fb8602c9335496b6307c4de1946ef",
+    "nativeControl": {
+      "executable": "/tmp/su-7db4f-v8-heap-native/bin/v8-heap",
+      "sha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24",
+      "upstreamCommit": "05edd8131a77790ab0e7bce2eedf5770d6bb83ae",
+      "version": "v8-heap-cli 0.1.0"
+    }
+  },
+  "test": {
+    "testRunId": 20554512,
+    "failed": 1,
+    "passed": 0,
+    "filteredSkipped": 17,
+    "layer": "integration",
+    "source": "local",
+    "exitCode": 1,
+    "provenance": "unknown: shared HEAD changed; eight before/after named source hashes match; full transitive source graph not recorded"
+  },
+  "measurement": {
+    "error": "Error: Heap retainer analysis failed at decode-bytes (RuntimeError)",
+    "diagnostic": {
+      "phase": "decode-bytes",
+      "inputBytes": 574822178,
+      "wasmMemoryBytes": 3760979968,
+      "panic": {
+        "kind": "unclassified",
+        "source": "",
+        "allocationBytes": 0,
+        "length": 0,
+        "index": 0
+      },
+      "wasmFrames": [
+        {
+          "functionIndex": 282,
+          "offset": "0x2667c"
+        },
+        {
+          "functionIndex": 44,
+          "offset": "0x13d2c"
+        }
+      ]
+    },
+    "snapshotBytes": 574822178,
+    "snapshotSha256": "4d4a20ddb56f35e7e0db5d2a98d76bd05071560acea553b0117435d02ec8ab66",
+    "nodes": 4885055,
+    "captureAndStreamCensusMs": 99147
+  },
+  "cleanup": {
+    "hostReaped": true,
+    "snapshotRemoved": true,
+    "temporarySnapshotPersisted": false
+  },
+  "allocatorControl": {
+    "definition": "Virtual allocator control; buffers are not populated, no snapshot bytes or physical-pressure claim.",
+    "rows": [
+      {
+        "request": 577023509,
+        "before": 1114112,
+        "after": 578158592,
+        "pointer": 1114120
+      },
+      {
+        "request": 1048576000,
+        "before": 578158592,
+        "after": 1626800128,
+        "pointer": 578137640
+      },
+      {
+        "request": 1610612736,
+        "before": 1626800128,
+        "after": 3237478400,
+        "pointer": 1626713648
+      },
+      {
+        "request": 1073741824,
+        "before": 3237478400,
+        "after": 3237478400,
+        "errorClass": "RuntimeError",
+        "frames": [
+          {
+            "functionIndex": 180,
+            "offset": "0x20c31"
+          }
+        ]
+      }
+    ]
+  },
+  "limits": [
+    "No native control executed: isolated-runtime helper correctly strips PAPERCUSP_* ambient vars; forwarding repaired afterward through explicit TEST_* input.",
+    "R3 frames282/44 differ from standalone export allocator frame180; no allocation/4GB/physical-pressure root cause proven.",
+    "No retaining-owner attribution, post-snapshot useful-row acceptance, production savings or shipment.",
+    "Forced snapshot GC/pause and automatic host profiler remain interventions."
+  ]
+}

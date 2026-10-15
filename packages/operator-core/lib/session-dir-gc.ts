@@ -57,9 +57,11 @@
  * unit-tested without PG or a filesystem; the sweep + gather wrap it with real fs
  * + PG reads. Server-only.
  */
-import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
+import { pinProtectsPath, readRetentionPins, readRetentionPinsAsync, type RetentionPin } from './storage/retention-pins';
 import { listLiveHostsAsync, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import {
   sessionClaudeRoot,
@@ -143,6 +145,31 @@ export interface ProtectedSessionIdentity {
    * kills live sessions.
    */
   degraded?: boolean;
+  /**
+   * WI-6554700010010238 — the identities THIS instance's own database has ever
+   * launched (`adv_sessions` owner + id in any state, spawned bees). Present ⇒
+   * the OWNERSHIP gate applies: a dir whose key is absent here was materialized
+   * by ANOTHER Papercusp install sharing this `$HOME` (measured: a packaged
+   * Papercusp Server beside the dev fleet archived ~24k dev-fleet sessions into
+   * its own embedded PG and deleted them, because "not protected in MY db" read
+   * as "dead"). This instance must neither archive nor collect such a dir.
+   * Deny-list protection answers "is it live?"; only this allow-list answers
+   * "is it MINE?". Absent ⇒ no gate (injected test sets only — the production
+   * gatherer always sets it, or sets `degraded`).
+   */
+  owned?: { ownerIds: Set<string>; sessionKeys: Set<string> };
+}
+
+/**
+ * Was this dir materialized by THIS instance (see `ProtectedSessionIdentity.owned`)?
+ * Pure. True when no ownership set was gathered (legacy/test callers).
+ */
+export function isOwnedByThisInstance(
+  c: Pick<SessionDirCandidate, 'keyKind' | 'key'>,
+  prot: ProtectedSessionIdentity,
+): boolean {
+  if (!prot.owned) return true;
+  return c.keyKind === 'owner' ? prot.owned.ownerIds.has(c.key) : prot.owned.sessionKeys.has(c.key);
 }
 
 /** A live PTY host is a stronger liveness witness than an adv row or a recent
@@ -179,6 +206,8 @@ export interface SessionDirGcPlan {
    * nothing at all. Retention alone would delete those 24h later.
    */
   keptUnarchived: SessionDirCandidate[];
+  /** Kept because ANOTHER install materialized it (WI-6554700010010238) — never ours to collect. */
+  keptForeign: SessionDirCandidate[];
 }
 
 /** Is this candidate's session live or resumable (→ never collect)? Pure. */
@@ -207,10 +236,12 @@ export function planSessionDirGc(opts: {
   unarchivedPaths?: ReadonlySet<string>;
 }): SessionDirGcPlan {
   const { candidates, protectedIdentity, nowMs, retentionMs, unarchivedPaths } = opts;
-  const plan: SessionDirGcPlan = { remove: [], keptProtected: [], keptFresh: [], keptUnarchived: [] };
+  const plan: SessionDirGcPlan = { remove: [], keptProtected: [], keptFresh: [], keptUnarchived: [], keptForeign: [] };
   for (const c of candidates) {
     if (isProtected(c, protectedIdentity)) {
       plan.keptProtected.push(c);
+    } else if (!isOwnedByThisInstance(c, protectedIdentity)) {
+      plan.keptForeign.push(c);
     } else if (nowMs - c.mtimeMs < retentionMs) {
       plan.keptFresh.push(c);
     } else if (unarchivedPaths?.has(c.path)) {
@@ -284,6 +315,8 @@ export interface SessionDirGcResult {
   keptFresh: number;
   /** Past retention but withheld: session files not yet in `session_archives`. */
   keptUnarchived: number;
+  /** Materialized by another install sharing this `$HOME` — left untouched (WI-6554700010010238). */
+  keptForeign: number;
   dryRun: boolean;
   errors: Array<{ path: string; error: string }>;
   /** Set when the sweep was ABORTED before removing anything (fail-closed). */
@@ -308,6 +341,8 @@ export function sweepStaleSessionDirs(opts: {
   dryRun?: boolean;
   /** See {@link planSessionDirGc}. Omitted ⇒ unguarded (legacy) removal. */
   unarchivedPaths?: ReadonlySet<string>;
+  /** Production supplies a snapshot read under the storage:pin mutex. */
+  retentionPins?: readonly RetentionPin[];
 }): SessionDirGcResult {
   const roots = opts.roots ?? defaultSessionDirRoots();
   const retentionMs = opts.retentionMs ?? DEFAULT_RETENTION_MS;
@@ -322,7 +357,16 @@ export function sweepStaleSessionDirs(opts: {
   });
   const removed: string[] = [];
   const errors: Array<{ path: string; error: string }> = [];
+  const read = opts.retentionPins ? { pins: opts.retentionPins, errors: [] } : readRetentionPins({ nowMs: opts.nowMs });
+  if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
+  let keptPinned = 0;
   for (const c of plan.remove) {
+    let physical = c.path;
+    try { physical = realpathSync(c.path); } catch { /* A missing candidate cannot have a physical alias. */ }
+    if (pinProtectsPath(c.path, read.pins, opts.nowMs) || pinProtectsPath(physical, read.pins, opts.nowMs)) {
+      keptPinned++;
+      continue;
+    }
     if (dryRun) {
       removed.push(c.path);
       continue;
@@ -340,9 +384,10 @@ export function sweepStaleSessionDirs(opts: {
   return {
     scanned: candidates.length,
     removed,
-    keptProtected: plan.keptProtected.length,
+    keptProtected: plan.keptProtected.length + keptPinned,
     keptFresh: plan.keptFresh.length,
     keptUnarchived: plan.keptUnarchived.length,
+    keptForeign: plan.keptForeign.length,
     dryRun,
     errors,
   };
@@ -360,6 +405,7 @@ export async function gatherProtectedSessionIdentity(): Promise<ProtectedSession
   const ownerIds = new Set<string>();
   const sessionKeys = new Set<string>();
   let degraded = false;
+  let owned: ProtectedSessionIdentity['owned'];
 
   // Live interactive/SU sessions — coord_presence is the primary roster.
   try {
@@ -414,13 +460,39 @@ export async function gatherProtectedSessionIdentity(): Promise<ProtectedSession
       `;
       for (const r of sessOfAwaiters) sessionKeys.add(String(r.id));
     }
+
+    // OWNERSHIP (WI-6554700010010238): every identity THIS database launched, in
+    // any state — the allow-list a foreign install's dirs are absent from. The
+    // archive table is deliberately NOT a source: a foreign install that already
+    // swept a dir would then "own" every owner it stole from.
+    const launched = await sql<Array<{ coord_owner_id: string | null; id: number }>>`
+      SELECT coord_owner_id, id FROM harness_shared.adv_sessions
+    `;
+    const spawned = await sql<Array<{ spawn_id: string | null; session_owner: string | null }>>`
+      SELECT spawn_id, session_owner FROM harness_shared.spawned_agents
+    `;
+    owned = { ownerIds: new Set(), sessionKeys: new Set() };
+    for (const r of launched) {
+      if (r.coord_owner_id) owned.ownerIds.add(r.coord_owner_id);
+      owned.sessionKeys.add(String(r.id));
+    }
+    for (const r of spawned) {
+      if (r.spawn_id) owned.ownerIds.add(r.spawn_id);
+      if (r.session_owner) owned.ownerIds.add(r.session_owner);
+    }
   } catch (e) {
     degraded = true;
+    owned = undefined;
     console.warn('[session-dir-gc] PG protected-set read failed:', (e as Error).message);
   }
 
   protectLivePtyHostHomes({ ownerIds, sessionKeys }, await listLiveHostsAsync());
-  return { ownerIds, sessionKeys, degraded };
+  if (owned) {
+    // Anything live/protected was launched here too (a live PTY host, a wake).
+    for (const id of ownerIds) owned.ownerIds.add(id);
+    for (const k of sessionKeys) owned.sessionKeys.add(k);
+  }
+  return { ownerIds, sessionKeys, degraded, ...(owned ? { owned } : {}) };
 }
 
 /**
@@ -510,6 +582,7 @@ export async function runSessionDirGc(
       keptProtected: 0,
       keptFresh: 0,
       keptUnarchived: 0,
+      keptForeign: 0,
       dryRun: opts.dryRun ?? false,
       errors: [],
       skipped: 'degraded-protected-set',
@@ -527,12 +600,17 @@ export async function runSessionDirGc(
     unarchivedPaths = await findUnarchivedSessionDirs(provisional.remove);
   }
 
-  return sweepStaleSessionDirs({
-    protectedIdentity,
-    candidates,
-    nowMs,
-    retentionMs,
-    dryRun: opts.dryRun,
-    unarchivedPaths,
+  return withFsMutex('papercusp-disk-retention', async () => {
+    const read = await readRetentionPinsAsync();
+    if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
+    return sweepStaleSessionDirs({
+      protectedIdentity,
+      candidates,
+      nowMs,
+      retentionMs,
+      dryRun: opts.dryRun,
+      unarchivedPaths,
+      retentionPins: read.pins,
+    });
   });
 }

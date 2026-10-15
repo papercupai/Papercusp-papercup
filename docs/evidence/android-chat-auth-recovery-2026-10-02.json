@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android Rust chat authentication rejection and fresh-pair recovery",
+  "framework": "cargo",
+  "command": ["cargo", "test", "--workspace", "--all-targets"],
+  "commandCwd": "papercup-rust-mobile",
+  "exitCode": 0,
+  "startedAt": "2026-10-02T18:24:45.932237+00:00",
+  "finishedAt": "2026-10-02T18:24:58.431432+00:00",
+  "summary": "Maintained Rust suite passed, including 60 client integration tests and two new 401/403 rejected-chat to fresh-pair recovery cases. cargo fmt and clippy also exited 0. One opt-in live smoke was ignored. Source/test bytes were stable during execution.",
+  "scope": "Host Rust client fixtures against real wiremock HTTP servers. Does not execute the server JWT verifier, Android native chat UI, hosted CI, signed candidate, physical phone, Play or public installation.",
+  "repository": "papercup-rust-mobile",
+  "headAtExecution": "ffe7ebada54440dda6b8c14d45e0eecb18b8e8a0",
+  "sourceDirtyAtExecution": true,
+  "sourceUnchangedDuringChecks": true,
+  "workItems": ["WI-10004768"],
+  "newTests": [
+    "operator_chat_401_recovers_after_repair_without_replaying_rejected_message",
+    "operator_chat_403_recovers_after_repair_without_replaying_rejected_message"
+  ],
+  "testCounts": {
+    "clientIntegration": {"passed": 60, "failed": 0, "ignored": 0},
+    "coreUnits": {"passed": 28, "failed": 0, "ignored": 0},
+    "androidAbiGuards": {"passed": 7, "failed": 0, "ignored": 0},
+    "bindingsUnits": {"passed": 4, "failed": 0, "ignored": 0},
+    "liveSmokeHarness": {"passed": 4, "failed": 0, "ignored": 1}
+  },
+  "ignoredTests": ["live_p0_contract_smoke requires an explicitly configured live runtime and pairing inputs; it did not execute in this invocation"],
+  "sourceFiles": [
+    {"path": "papercup-rust-mobile/Cargo.toml", "sha256": "665012b764bacfaa1587413645e560a69cd12f82c6eb2815974d952be57b46ad"},
+    {"path": "papercup-rust-mobile/Cargo.lock", "sha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81"},
+    {"path": "papercup-rust-mobile/crates/papercup-core/src/client.rs", "sha256": "acdee2304bb9ff0ec6412f0f5cdbc6ae306c569363067586bdd9a6712cc636fa"},
+    {"path": "papercup-rust-mobile/crates/papercup-core/src/types.rs", "sha256": "932eb532d8532109ee66189336bbe14c37883269e1ba0b417a5b8e0e5d7f6ad2"},
+    {"path": "papercup-rust-mobile/crates/papercup-core/tests/client_test.rs", "sha256": "cb84a1f5dbae86593f51e9698d6aede32e3d1d18bd98ed7193895a406b849550"}
+  ],
+  "fixtureContractSources": [
+    {"path": "packages/operator-core/lib/endpoint-route/routes/device/pair.ts", "sha256": "5f9987b7a01fb0ec5be2988161c35a5e417f8b9109aeb1dfa0fe37b8ee301ea8"},
+    {"path": "packages/operator-core/lib/endpoint-route/routes/device/operator-converse.ts", "sha256": "77533dcb35d273956178497b761512cf7a4937883938307d64f072114f5fc46e"},
+    {"path": "packages/operator-core/lib/endpoint-route/routes/device/_shared.ts", "sha256": "10d1a81f6c3ad53c62a74e8caabdca4f0c71487441b2b884573d7b5eadace5a1"},
+    {"path": "packages/operator-core/lib/auth/require-principal.ts", "sha256": "0ae64e40597b6df3af9a1d1addda1dc5bc03734dfb4cb0e025c627f84ece14b6"}
+  ],
+  "rawEvidence": [
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-recovery-20261002-1825/result.json", "sha256": "4dbd8af8c6b17191cd15ffbad7ccd29056ccb5353c906127726def900882e8d5"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-recovery-20261002-1825/00.log", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-recovery-20261002-1825/01.log", "sha256": "4b91f23b651495da5596977e3dc175f4fee606c07f6c77143f7eb6554af94422"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-recovery-20261002-1825/02.log", "sha256": "c9db832548837af772d47a40d8327927484b7ba849063558a95577f165ffacd7"}
+  ],
+  "assertions": [
+    {"id": "401-and-403-recovery", "passed": true, "evidence": "Both named maintained client tests reported ok; rejection emits no delta, preserves primary URL and issues exactly one request with no fallback traffic."},
+    {"id": "fresh-token-and-scope", "passed": true, "evidence": "Each test consumes the public pair response, constructs a fresh client with its replacement token and verifies its replacement workspace in the conversation read."},
+    {"id": "no-replay-after-repair", "passed": true, "evidence": "Exactly four requests: rejected POST, unauthenticated pair POST, fresh-token new-message POST and fresh-token thread GET. No rejected text is replayed and no fallback request occurs."},
+    {"id": "completed-stream-reconciliation", "passed": true, "evidence": "Fresh stream emits two ordered CRLF/Unicode deltas and done, then the read returns the matching user/assistant conversation turns."},
+    {"id": "maintained-suite-green", "passed": true, "evidence": "cargo test --workspace --all-targets exited 0; client suite 60 passed, 0 failed, 0 ignored; existing parser/fallback/ABI guards also passed. The opt-in live test remains explicitly ignored."},
+    {"id": "fmt-and-clippy", "passed": true, "evidence": "cargo fmt --all -- --check and cargo clippy --workspace --all-targets -- -D warnings both exited 0 in retained execution steps."},
+    {"id": "exact-source-stability", "passed": true, "evidence": "All five retained source/test fingerprints match before and after the checks. The uncommitted test edit at execution is disclosed; no committed-source claim is inferred from headAtExecution."}
+  ]
+}

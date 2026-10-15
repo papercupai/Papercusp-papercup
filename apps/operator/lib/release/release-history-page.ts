@@ -46,13 +46,15 @@
  *    would be BLANK exactly when someone needs it. The beacon is the only script,
  *    and it is best-effort: if it never runs, the page is still whole.
  *
- *    ONE deliberate exception, the Instructions [owner 2026-09-28 #868: "the
+ *    The Instructions [owner 2026-09-28 #868: "the
  *    instructions should come seperate from the release cut"]. They live on their
  *    own page, instructions.html, published by its own command — so a release cut
  *    or a site publish can never roll them back, and changing them needs no cut.
  *    The index embeds that page with a tiny same-origin loader; without
  *    JavaScript the section is a plain link to the same page. See
  *    renderInstructions() and renderInstructionsHtml().
+ *    The product picker also enhances its ordinary PUI download link from the
+ *    existing accepted PUI feed. Native radio tabs and the link work without JS.
  *
  *    (This is the one place I did not take the owner's suggested route verbatim —
  *    "we can use our same vditor to display the plan". Vditor is a browser editor
@@ -63,7 +65,7 @@
 
 import { marked } from 'marked';
 import type { ReleaseArtifact, ReleaseRow, ShippedItem, ShippedPlan } from './release-registry';
-import { groupItemsByPlan } from './release-registry';
+import { groupItemsByPlan, isListedArtifact } from './release-registry';
 import {
   HOLDING_PAGE_MARKER,
   PUBLISHED_CONTACT_EMAIL,
@@ -633,6 +635,26 @@ ul.items li .item-body { margin: .45rem 0 .35rem 1.1em; padding: .55rem .75rem; 
 .prose th { background: var(--surface-2); }
 .prose img { max-width: 100%; border-radius: var(--radius); }
 footer { color: var(--muted); font-size: .78rem; margin-top: 3.5rem; text-align: center; }
+.product-downloads { margin: 2rem 0; padding: 1.25rem; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); }
+.download-tabs { display: flex; flex-wrap: wrap; gap: .5rem; }
+.download-tabs > input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.download-tabs > label { padding: .65rem .9rem; cursor: pointer; border: 1px solid var(--border); border-radius: var(--radius); }
+.download-tabs > input:checked + label { color: var(--accent); border-color: var(--accent); background: var(--surface); }
+.download-tabs > input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 3px; }
+.download-panels { width: 100%; min-width: 0; }
+.download-panel { display: none; padding-top: 1rem; }
+#choose-server:checked ~ .download-panels #download-server,
+#choose-gui:checked ~ .download-panels #download-gui,
+#choose-psu:checked ~ .download-panels #download-psu,
+#choose-android:checked ~ .download-panels #download-android,
+#choose-iphone:checked ~ .download-panels #download-iphone { display: block; }
+.product-downloads h3 { font-size: 1.25rem; margin-top: .5rem; }
+.product-downloads p { overflow-wrap: anywhere; }
+.product-downloads .dl { display: block; overflow-x: auto; max-width: 100%; }
+.psu-platforms { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: 1rem; }
+.psu-platforms > section { min-width: 0; padding: 1rem; border: 1px solid var(--border-strong); border-radius: var(--radius); }
+.release-downloads { margin: 1rem 0; }
+.release-downloads > summary { cursor: pointer; color: var(--muted); }
 `;
 
 /**
@@ -810,7 +832,7 @@ function renderArtifacts(
   artifacts: ReleaseArtifact[],
   platformNotes: ReadonlyMap<string, string> = new Map(),
 ): string {
-  const real = artifacts.filter((a) => !a.name.endsWith('.sig'));
+  const real = artifacts.filter(isListedArtifact);
   if (real.length === 0) {
     return `<p class="empty">No downloadable artifacts recorded for this release.</p>`;
   }
@@ -1191,7 +1213,9 @@ function renderRelease(
     ${isCurrent ? '<span class="tag current">latest</span>' : ''}
   </div>
   <p class="meta">${meta.join(' · ')}</p>
+  <details class="release-downloads"><summary>Archived downloads for ${escapeHtml(row.version)}</summary>
   ${renderArtifacts(artifacts, platformNotes)}
+  </details>
   ${changelog}
   ${hasHotfixes ? renderHotfixChangelogs(card) : ''}
   <p><a class="detail-link" href="changes/${releaseHistoryStem(row.version, row.channel)}.html">Explore plans, completed work and verification →</a></p>
@@ -1267,6 +1291,72 @@ export function renderHoldingHtml(opts: PageOptions): string {
 }
 
 /** The whole history — every release, newest first. */
+/** Product choices reuse the recorded release artifacts; PUI retains its own accepted feed. */
+export function renderProductDownloads(releases: HydratedRelease[]): string {
+  const latest = new Map<string, { artifacts: ReleaseArtifact[]; version: string }>();
+  for (const release of releases) for (const artifact of release.row.artifacts) {
+    const key = `${artifact.product}:${artifact.platform}`;
+    if (!latest.has(key)) latest.set(key, { artifacts: [], version: release.row.version });
+    const slot = latest.get(key)!;
+    if (slot.version === release.row.version) slot.artifacts.push(artifact);
+  }
+  const product = (kind: ReleaseArtifact['product'], platform?: string, unavailable?: string) => {
+    const rows = [...latest.values()].flatMap(({ artifacts, version }) => artifacts
+      .filter(artifact => artifact.product === kind && (!platform || artifact.platform === platform)
+        && isListedArtifact(artifact)).map(artifact => ({ artifact, version })));
+    return rows.length ? rows.map(({ artifact, version }) =>
+      `<h4>${escapeHtml(artifact.platform)} · ${escapeHtml(version)}</h4>${renderDownloadTable([artifact])}`).join('\n')
+      : `<p>${unavailable ?? 'No download is published for this product yet.'}</p>`;
+  };
+  const choices = [['server', 'Desktop Server'], ['gui', 'Desktop GUI'], ['psu', 'PSU + PUI'],
+    ['android', 'Android'], ['iphone', 'iPhone']];
+  const panels: Record<string, string> = {
+    server: '<p>Run Papercusp on your computer. Desktop Server includes PSU and PUI; no separate console download is needed.</p>'
+      + product('server') + renderInstructions(),
+    gui: '<p>The desktop app connects to your Papercusp server or cloud desktop.</p>' + product('gui'),
+    psu: '<p>Connect to your Papercusp cloud desktop from your console. Launch PSU, select your cloud desktop and connect Claude, Codex, OMP, or the Papercusp TUI to it.</p>'
+      + '<p><strong>Already installed Desktop Server?</strong> PSU and PUI are included. Use the separate package below when connecting from another computer or using a cloud desktop without installing the server.</p>'
+      + '<div id="psu-downloads" class="psu-platforms">'
+      + '<section><h4>Linux</h4><div id="psu-linux"><p>See the verified Linux x86_64 package on the PSU + PUI download page.</p></div></section>'
+      + '<section><h4>Windows (WSL2)</h4><p><strong>Uses the same download as Linux.</strong> Install WSL2, open its Linux terminal, then install the Linux x86_64 package there. There is no separate Windows executable.</p><div id="psu-windows"></div></section>'
+      + '<section><h4>macOS</h4><div id="psu-mac-arm"><p>Apple Silicon: no verified standalone download is published yet.</p></div><div id="psu-mac-intel"><p>Intel: no verified standalone download is published yet.</p></div></section></div>'
+      + '<p><a href="pui/index.html">Download PSU bundled with PUI</a> · <a href="#download-server">Desktop Server downloads</a></p>'
+      + '<h4>Connect using the menus</h4><ol><li>Install the package for your computer, then run <code>psu</code>.</li><li>In <strong>Where should psu run?</strong>, select your cloud desktop. First time? Choose <strong>Papercusp cloud — sign in to use a hosted workspace</strong>, sign in in your browser, then select your desktop.</li><li>Choose Claude, Codex, OMP, or PUI (the Papercusp TUI) in the launcher.</li></ol>'
+      + '<p>For an installed local server, choose <strong>Local — this computer</strong>. Windows console packages run inside WSL2.</p>',
+    android: '<p>Install the Android app to connect from your phone.</p>' + product('mobile', 'android-universal', 'The previous Android builds were withdrawn. A replacement download is not published yet.'),
+    iphone: '<p>Connect from your iPhone. Follow the signing or TestFlight instructions supplied with the build; an unsigned IPA needs signing before installation.</p>' + product('mobile', 'ios-arm64', 'The previous iPhone builds were withdrawn. A replacement download is not published yet.'),
+  };
+  return `<section class="product-downloads" aria-labelledby="downloads-heading"><h2 id="downloads-heading">Downloads</h2>
+<p>Choose what you want to install.</p><div class="download-tabs" role="group" aria-label="Download product">
+${choices.map(([id, label]) => `<input type="radio" name="download-product" id="choose-${id}" value="${id}"${id === 'gui' ? ' checked' : ''}><label for="choose-${id}">${label}</label>`).join('\n')}
+<div class="download-panels">${choices.map(([id, label]) => `<section class="download-panel" id="download-${id}" aria-label="${label}"><h3>${label}</h3>${panels[id]}</section>`).join('\n')}</div></div></section>
+<script data-product-downloads>
+(function () {
+  function selectFromLink() { var id = location.hash.slice(1); var input = document.getElementById(id.replace('download-', 'choose-')); if (input && input.name === 'download-product') input.checked = true; }
+  selectFromLink(); window.addEventListener('hashchange', selectFromLink);
+  fetch('pui/latest.json').then(function (response) { if (!response.ok) throw new Error('unavailable'); return response.json(); }).then(function (manifest) {
+    var releases = manifest.artifacts || {}; if (!manifest.artifacts && manifest.target) releases[manifest.target] = manifest;
+    var platforms = [
+      ['linux-x86_64', 'psu-linux', 'Linux x86_64'],
+      ['linux-x86_64', 'psu-windows', 'Windows (WSL2)'],
+      ['macos-aarch64', 'psu-mac-arm', 'macOS Apple Silicon'],
+      ['macos-x86_64', 'psu-mac-intel', 'macOS Intel']
+    ];
+    platforms.forEach(function (platform) {
+      var target = platform[0];
+      var release = releases[target]; if (!release || release.target !== target || !/^[0-9]+\\.[0-9]+\\.[0-9]+(?:[+-][0-9A-Za-z.-]+)?$/.test(release.version) || !/^[a-f0-9]{64}$/.test(release.archiveSha256 || '')) return;
+      var expected = new URL('pui/' + release.version + '/pui-' + release.version + '-' + target + '.tar.gz', document.baseURI);
+      if (release.archiveUrl !== expected.href) return;
+      var list = document.createElement('div');
+      var row = document.createElement('p'); var link = document.createElement('a'); link.href = expected.href; link.textContent = 'Download ' + platform[2] + ' — PSU + PUI ' + release.version; row.appendChild(link); list.appendChild(row);
+      var checksum = document.createElement('p'); checksum.textContent = 'SHA-256: ' + release.archiveSha256; list.appendChild(checksum);
+      document.getElementById(platform[1]).replaceChildren(list);
+    });
+  }).catch(function () { /* The ordinary download link remains available. */ });
+})();
+</script>`;
+}
+
 export function renderIndexHtml(releases: HydratedRelease[], opts: PageOptions): string {
   // The Instructions section renders on EVERY index, including an empty one.
   // It is the page's standing "how to get started", not a property of a release
@@ -1286,11 +1376,11 @@ export function renderIndexHtml(releases: HydratedRelease[], opts: PageOptions):
       ? `<h1>Papercusp releases</h1>
 <p class="sub">No releases have been recorded yet.</p>
 ${renderVideo()}
-${renderInstructions()}`
+${renderProductDownloads(releases)}`
       : `<h1>Papercusp releases</h1>
 <p class="sub">Beta builds for testers. This page is unlisted — please don't share the link.</p>
 ${renderVideo()}
-${renderInstructions()}
+${renderProductDownloads(releases)}
 ${releaseSections.join('\n')}`;
 
   const footer = `<footer>Generated ${formatDate(opts.generatedAt)} · unlisted beta page</footer>`;
@@ -1330,7 +1420,7 @@ export function renderHistoryJson(releases: HydratedRelease[], opts: PageOptions
       pub_date: (r.row.publishedAt ?? r.row.cutAt).toISOString(),
       prerelease: r.row.channel !== 'stable',
       artifacts: r.row.artifacts
-        .filter((a) => !a.name.endsWith('.sig'))
+        .filter(isListedArtifact)
         .map((a) => ({
           product: a.product,
           platform: a.platform,
@@ -1340,6 +1430,7 @@ export function renderHistoryJson(releases: HydratedRelease[], opts: PageOptions
           url: a.url,
           size: a.size,
           sha256: a.sha256,
+          ...(a.desktopInterface ? { desktopInterface: a.desktopInterface } : {}),
         })),
     })),
   };

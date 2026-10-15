@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005465",
+  "parent": "WI-10004890",
+  "plane": "live-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-cache-selection-r2-2026-10-02.json",
+    "bytes": 119511,
+    "sha256": "551b1c3815dbf3eee0867c960aff55010d23a57d2c32d00af1f4ea6c1e0b418a"
+  },
+  "selection": {
+    "mode": "digests",
+    "targets": [
+      "51e5c41153e8ba1cb8e8fd171c6d1d0854bf7c6782b76193edba072c81b109e1",
+      "7f21d5dba0543350b09f1773e5e9832f2e525a3a47ac192683e968e9f561a8d5",
+      "ab29f30f86692b89b21c4bc0bdbb0d4b0eade1a0a2cbb85a1d6d620704f8e5da"
+    ],
+    "provenance": "Three protected digests from actual cache-selection-r1 sample0; exact matches observed on the same PID/build in this new cohort."
+  },
+  "test": {
+    "testRunId": 20527670,
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0,
+    "nativeLog": "/tmp/su-7db4f-p011-cache-selection-r2.log",
+    "namedPathClean": true,
+    "wholeTreeDirty": true
+  },
+  "guard": {
+    "testRunId": 20527589,
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Real private Node inspector; local dirty source at execution."
+  },
+  "runtime": {
+    "pid": 437037,
+    "buildSha": "94d75a58ff",
+    "startedAt": "2026-10-02T12:33:30.042Z",
+    "endedAt": "2026-10-02T12:33:46.434Z",
+    "cleanup": {
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true
+    }
+  },
+  "sources": {
+    "before": [
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "7e961d89d1610dc3cd22819b46554e26c42caff798b8bb056c69d4a90f3cbf04"
+      },
+      {
+        "path": "scripts/cdp-inspector.d.mts",
+        "sha256": "6fce8a82100b09e96d58618a6926b0ad4c0b7d505da947741f2322e76705b64f"
+      },
+      {
+        "path": "packages/operator-core/lib/cdp-inspector.test.ts",
+        "sha256": "fdf5aa16b239082d92995f5791c188a57897566a973379c5e744b62604010faa"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+        "sha256": "c4ce5c6d0b8ce3dace4d1b607b01699206481777c76cb4b86552405eaddca5ab"
+      }
+    ],
+    "after": [
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "7e961d89d1610dc3cd22819b46554e26c42caff798b8bb056c69d4a90f3cbf04"
+      },
+      {
+        "path": "scripts/cdp-inspector.d.mts",
+        "sha256": "6fce8a82100b09e96d58618a6926b0ad4c0b7d505da947741f2322e76705b64f"
+      },
+      {
+        "path": "packages/operator-core/lib/cdp-inspector.test.ts",
+        "sha256": "fdf5aa16b239082d92995f5791c188a57897566a973379c5e744b62604010faa"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+        "sha256": "c4ce5c6d0b8ce3dace4d1b607b01699206481777c76cb4b86552405eaddca5ab"
+      }
+    ],
+    "namedStable": true,
+    "fullGraph": "UNKNOWN",
+    "runtimeScope": "Local maintained reader evaluated in the PID-bound target. Runtime build and disk bundle integrity do not establish a full source graph."
+  },
+  "requests": 24,
+  "samples": [
+    {
+      "label": "idle-0-start",
+      "population": 376,
+      "checked": 3,
+      "scanned": 71,
+      "notChecked": 373,
+      "partial": 0,
+      "strings": [
+        442,
+        442,
+        442
+      ],
+      "observerMs": 2.1147789999376982,
+      "allTargetsMatched": true,
+      "selectedNotChecked": 0,
+      "scanComplete": false,
+      "keyDigestsMatch": true
+    },
+    {
+      "label": "idle-0-end",
+      "population": 377,
+      "checked": 3,
+      "scanned": 71,
+      "notChecked": 374,
+      "partial": 0,
+      "strings": [
+        442,
+        442,
+        442
+      ],
+      "observerMs": 1.0319310000631958,
+      "allTargetsMatched": true,
+      "selectedNotChecked": 0,
+      "scanComplete": false,
+      "keyDigestsMatch": true
+    },
+    {
+      "label": "ordinary-0-end",
+      "population": 377,
+      "checked": 3,
+      "scanned": 71,
+      "notChecked": 374,
+      "partial": 0,
+      "strings": [
+        442,
+        442,
+        442
+      ],
+      "observerMs": 1.3834780000615865,
+      "allTargetsMatched": true,
+      "selectedNotChecked": 0,
+      "scanComplete": false,
+      "keyDigestsMatch": true
+    },
+    {
+      "label": "idle-1-start",
+      "population": 377,
+      "checked": 3,
+      "scanned": 71,
+      "notChecked": 374,
+      "partial": 0,
+      "strings": [
+        442,
+        442,
+        442
+      ],
+      "observerMs": 1.07820999994874,
+      "allTargetsMatched": true,
+      "selectedNotChecked": 0,
+      "scanComplete": false,
+      "keyDigestsMatch": true
+    },
+    {
+      "label": "idle-1-end",
+      "population": 377,
+      "checked": 3,
+      "scanned": 71,
+      "notChecked": 374,
+      "partial": 0,
+      "strings": [
+        442,
+        442,
+        442
+      ],
+      "observerMs": 1.4247680001426488,
+      "allTargetsMatched": true,
+      "selectedNotChecked": 0,
+      "scanComplete": false,
+      "keyDigestsMatch": true
+    },
+    {
+      "label": "ordinary-1-end",
+      "population": 377,
+      "checked": 3,
+      "scanned": 71,
+      "notChecked": 374,
+      "partial": 0,
+      "strings": [
+        442,
+        442,
+        442
+      ],
+      "observerMs": 0.8560709999874234,
+      "allTargetsMatched": true,
+      "selectedNotChecked": 0,
+      "scanComplete": false,
+      "keyDigestsMatch": true
+    },
+    {
+      "label": "idle-2-start",
+      "population": 375,
+      "checked": 3,
+      "scanned": 71,
+      "notChecked": 372,
+      "partial": 0,
+      "strings": [
+        442,
+        442,
+        442
+      ],
+      "observerMs": 1.6513259999919683,
+      "allTargetsMatched": true,
+      "selectedNotChecked": 0,
+      "scanComplete": false,
+      "keyDigestsMatch": true
+    },
+    {
+      "label": "idle-2-end",
+      "population": 377,
+      "checked": 3,
+      "scanned": 71,
+      "notChecked": 374,
+      "partial": 0,
+      "strings": [
+        442,
+        442,
+        442
+      ],
+      "observerMs": 1.0628200001083314,
+      "allTargetsMatched": true,
+      "selectedNotChecked": 0,
+      "scanComplete": false,
+      "keyDigestsMatch": true
+    },
+    {
+      "label": "ordinary-2-end",
+      "population": 377,
+      "checked": 3,
+      "scanned": 71,
+      "notChecked": 374,
+      "partial": 0,
+      "strings": [
+        442,
+        442,
+        442
+      ],
+      "observerMs": 0.8279969999566674,
+      "allTargetsMatched": true,
+      "selectedNotChecked": 0,
+      "scanComplete": false,
+      "keyDigestsMatch": true
+    }
+  ],
+  "limits": [
+    "Existing global32768 entry/16384 object/depth8/200ms caps unchanged.",
+    "Every scanned map edge counts as work; all three matches observed after71 edges in each sample.",
+    "Selected values have442 logical string code units each and no traversal/depth/field flags; non-enumerable fields, symbols, function closures and proxies remain excluded.",
+    "Selected unknown key formats remain protected and unattributed.",
+    "Map population differs from prior page cohort; the two cohorts are not matched resource interventions.",
+    "No forced profiler/GC/cache mutation and no physical-savings or plan-acceptance claim."
+  ]
+}

@@ -13,9 +13,11 @@
 import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, existsSync, readdirSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { readSuperuserToken } from '../superuser-token';
 import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '../module-repo-root';
 import { randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 // A DEDICATED (non-reused) PG container for the smoke. The shared test-config
@@ -31,7 +33,7 @@ import { collectTrace } from './collector';
 import { distillTrace } from './distill';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, '../../../..');
+const REPO_ROOT = moduleRepoRoot(import.meta.url);
 const FAKE_AGENT = join(__dirname, 'fixtures/fake-agent.mjs');
 const PORT = Number(process.env.GYM_SMOKE_PORT ?? 3971);
 const HEX = randomBytes(4).toString('hex');
@@ -181,8 +183,7 @@ async function main(): Promise<void> {
     // 6. Start the pipeline EXPLICITLY (deterministic) via the admin route + the
     //    superuser bearer (elevates trust past the loopback allowlist). Token read
     //    from disk, never logged.
-    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
-    const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
+    const suToken = readSuperuserToken() ?? '';
     report.superuserTokenPresent = suToken.length > 0;
     const start = await fetch(`http://127.0.0.1:${PORT}/api/admin/dbos/pipeline/start?superuser=1`, {
       method: 'POST',

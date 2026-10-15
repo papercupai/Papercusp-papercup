@@ -116,11 +116,30 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
     expect(b.ok).toBe(false);
     expect(b.error).toMatch(/claim cap reached: you already hold 1\/1 concurrent claim\(s\)/);
     expect(b.error).toMatch(/held: EI-10058/);
+    // EI-23739078854372403: the refusal must name the sanctioned LEADER-owned lever and the
+    // EI-11796 rule that a parked/blocked claim still counts, so a member told to "pull other
+    // lane work while blocked" learns why it cannot and what would let it — instead of reading
+    // a bare wall and releasing a parked item it still owns (the single-fixer failure mode).
+    expect(b.error).toContain("scheduler:get_claim_spec { cupId: 'su-member' }");
+    expect(b.error).toContain(
+      "scheduler:set_claim_spec { cupId: 'su-member', spec: { ...current.spec, " +
+        'limits: { ...current.spec.limits, maxConcurrentClaims: N } } }',
+    );
+    expect(b.error).toContain('exactly one target selector (cupId or fleet) and a full replacement spec');
+    expect(b.error).not.toMatch(/scheduler:set_claim_spec \{ limits:/);
+    expect(b.error).toMatch(/LEADER raises your cap/);
+    // P-010 (plan D-010): a plain park still counts (EI-11796), but the refusal must name
+    // set_blocker as the lever that frees a slot for an item waiting on an external condition.
+    expect(b.error).toMatch(/plainly parked claim STILL counts \(EI-11796\)/);
+    expect(b.error).toContain('work_items:set_blocker — that frees its slot while you keep it');
+    expect(b.error).not.toMatch(/declaring a blocker does not buy a slot/);
+    expect(b.error).not.toMatch(/Already parked on a recorded blocker/);
     expect(b.diagnosis).toMatchObject({
       concurrencyBlocked: true,
       activeClaims: 1,
       maxConcurrentClaims: 1,
       heldIds: ['EI-10058'],
+      blockerParkedIds: [],
     });
     // The whole point: a concurrency-blocked miss must never reach — let alone report — the
     // pool/floor admissibility stats that misled the live incident this closes.

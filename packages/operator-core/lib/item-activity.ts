@@ -69,9 +69,67 @@ export interface ItemActivityClock {
   staleMs?: number;
 }
 
+/** Independent read facts; a reservation or missing observation is never work. */
+export interface ItemWorkEvidence {
+  reservation: { owner: string; claimedAt: string | null } | null;
+  recentItemWork: {
+    status: 'recent' | 'stale' | 'unknown';
+    at: string | null;
+    windowMs: number;
+    writer: 'work_items.last_progress_at';
+  };
+  waiting: { status: 'registered' | 'unknown'; refs: string[] };
+  nativeAttestation: { status: 'unknown'; reason: string };
+}
+
+/**
+ * Queue presentation reuses the item-progress writer, without interpreting its
+ * timestamp as native execution. Registered item waits are positive evidence;
+ * an empty/bounded wait read cannot establish that the session is idle.
+ */
+export function deriveItemWorkEvidence(
+  item: Pick<ItemActivityInput, 'takenBy' | 'takenAt' | 'lastProgressAt'> & {
+    registeredWaitRefs?: readonly string[];
+  },
+  clock: ItemActivityClock,
+): ItemWorkEvidence {
+  const owner = item.takenBy?.trim();
+  const takenAt = toMs(item.takenAt);
+  const progress = toMs(item.lastProgressAt);
+  const windowMs = clock.staleMs ?? STALE_MS;
+  const validProgress = progress !== null && progress <= clock.now
+    && (!owner || takenAt === null || progress >= takenAt);
+  const refs = [...new Set((item.registeredWaitRefs ?? []).map(ref => ref.trim()).filter(Boolean))];
+  return {
+    reservation: owner && owner.toLowerCase() !== 'unassigned'
+      ? { owner, claimedAt: takenAt === null ? null : new Date(takenAt).toISOString() } : null,
+    recentItemWork: {
+      status: !validProgress ? 'unknown' : clock.now - progress <= windowMs ? 'recent' : 'stale',
+      at: validProgress ? new Date(progress).toISOString() : null,
+      windowMs,
+      writer: 'work_items.last_progress_at',
+    },
+    waiting: { status: refs.length ? 'registered' : 'unknown', refs },
+    nativeAttestation: {
+      status: 'unknown',
+      reason: 'Owner-bound native execution was not attested by this item read',
+    },
+  };
+}
+
+/** Shared list/detail rendering, including truthful fallbacks for old responses. */
+export function formatItemWorkEvidence(evidence?: ItemWorkEvidence): string {
+  if (!evidence) return 'Work evidence unknown';
+  const progress = evidence.recentItemWork.status === 'recent' ? 'Recent item update'
+    : evidence.recentItemWork.status === 'stale' ? 'Older item update' : 'Item updates unknown';
+  return [evidence.reservation ? 'Reserved' : 'Unreserved', progress,
+    evidence.waiting.status === 'registered' ? 'Registered item wait' : 'Wait evidence unknown',
+    'Work attestation unknown'].join(' · ');
+}
+
 function toMs(v: ActivityTs): number | null {
   if (v == null) return null;
-  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'number') return Number.isFinite(new Date(v).getTime()) ? v : null;
   const t = (v instanceof Date ? v : new Date(v)).getTime();
   return Number.isFinite(t) ? t : null;
 }

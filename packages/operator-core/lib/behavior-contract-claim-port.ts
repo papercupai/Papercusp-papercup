@@ -22,6 +22,21 @@
  */
 
 import type { WorkItemBehaviorContract } from './agent-tools/plans/behavior-contract-resolver';
+import { pathsOfPayload } from './stale-path-hints-claim-port';
+import { governingConventions, type Convention } from './conventions/registry';
+
+/** Leave room in the result door for the claim receipt and its other hints. */
+export const CLAIM_CONTEXT_MAX_BYTES = 4_800;
+
+interface ClaimContext {
+  totalClauses: number;
+  shownClauses: number;
+  totalConventions: number | null;
+  conventions: Array<Pick<Convention, 'id' | 'title' | 'body' | 'source'>>;
+  conventionsReadFailed: boolean;
+  overflow: boolean;
+  readMore: Array<{ tool: string; args: Record<string, unknown> }>;
+}
 
 /** The subject fields this leg needs. A superset-tolerant shape, like its siblings. */
 export interface BehaviorContractClaimSubject {
@@ -33,7 +48,7 @@ export interface BehaviorContractClaimSubject {
 }
 
 export interface ClaimTimeBehaviorContract {
-  behaviorContract: WorkItemBehaviorContract;
+  behaviorContract: WorkItemBehaviorContract & { context: ClaimContext };
   behaviorContractNote: string;
 }
 
@@ -63,15 +78,70 @@ export async function getClaimTimeBehaviorContract(
     ...(workItem.sourcePlanItemIds ? { sourcePlanItemIds: workItem.sourcePlanItemIds } : {}),
   });
   if (!contract || contract.enforceable.length === 0) return null;
+  const paths = pathsOfPayload(workItem.payload) ?? [];
+  const conventionQuery = {
+    harness: harness ?? workItem.harness ?? '',
+    about: paths.join(' ').slice(0, 2_000) || null,
+    scopeRefs: [harness ?? workItem.harness ?? '', workItem.id],
+    limit: 20,
+  };
+  // A convention-store outage must not erase the independently resolved clauses.
+  const conventions = conventionQuery.harness
+    ? await governingConventions(conventionQuery).catch(() => null)
+    : null;
   const staleEdges = contract.groups.reduce((n, g) => n + g.staleEdges.length, 0);
-  return {
-    behaviorContract: contract,
+  const context: ClaimContext = {
+    totalClauses: contract.enforceable.length,
+    shownClauses: 0,
+    totalConventions: conventions ? conventions.counts.declared + conventions.counts.planDecisions : null,
+    conventions: [],
+    conventionsReadFailed: conventions === null,
+    overflow: true,
+    readMore: [],
+  };
+  const result: ClaimTimeBehaviorContract = {
+    behaviorContract: { ...contract, groups: [], enforceable: [], context },
     behaviorContractNote:
       `⚠ ADVISORY — this item is on the hook for ${contract.enforceable.length} behavior ` +
       `clause(s); satisfy them at their CURRENT revision or the completion gate will refuse` +
       (staleEdges > 0
         ? `. ${staleEdges} existing coverage claim(s) are pinned to a SUPERSEDED revision and must be re-proven`
         : '') +
-      '.',
+      '. Context is bounded; read context.readMore when context.overflow is true.',
   };
+  const fits = () => Buffer.byteLength(JSON.stringify(result), 'utf8') <= CLAIM_CONTEXT_MAX_BYTES;
+  // Keep each promise and falsifier intact. A partial falsifier changes the promise.
+  // Reserve the overflow pointers before admitting any body to the pack.
+  const firstGroup = contract.groups[0];
+  if (firstGroup) context.readMore.push({ tool: 'plans:get-specs', args: {
+    harness: conventionQuery.harness, slug: firstGroup.planSlug,
+  } });
+  context.readMore.push({ tool: 'conventions:governing', args: conventionQuery });
+  for (const clause of contract.enforceable) {
+    const group = contract.groups.find((g) => g.planSlug === clause.planSlug)!;
+    const existing = result.behaviorContract.groups.find((g) => g.planSlug === clause.planSlug);
+    if (!existing) result.behaviorContract.groups.push({ ...group, clauses: [], edges: [], staleEdges: [] });
+    const selectedGroup = result.behaviorContract.groups.find((g) => g.planSlug === clause.planSlug)!;
+    selectedGroup.clauses.push(clause);
+    result.behaviorContract.enforceable.push(clause);
+    context.shownClauses++;
+    if (!fits()) {
+      selectedGroup.clauses.pop();
+      result.behaviorContract.enforceable.pop();
+      context.shownClauses--;
+      if (!selectedGroup.clauses.length) result.behaviorContract.groups.pop();
+      context.readMore[0] = { tool: 'plans:get-specs', args: {
+        harness: conventionQuery.harness, slug: clause.planSlug,
+      } };
+      break;
+    }
+  }
+  for (const { id, title, body, source } of conventions?.conventions ?? []) {
+    context.conventions.push({ id, title, body, source });
+    if (!fits()) { context.conventions.pop(); break; }
+  }
+  context.overflow = context.shownClauses < context.totalClauses ||
+    context.totalConventions === null || context.conventions.length < context.totalConventions;
+  if (!context.overflow) context.readMore = [];
+  return result;
 }

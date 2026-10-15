@@ -1,11 +1,23 @@
 /**
- * ⚠ STATUS 2026-08-31 — UNWIRED, PARKED MID-BUILD (owner pause order on P-012).
+ * STATUS 2026-10-06 — WIRED AND RUNNING (gate-throughput-shift-left-2026-10-06, P-001).
  *
- *   This file: `packages/operator-core/lib/release/sync-batch-delta-check.ts`.
- *   It is PURE LOGIC ONLY and is imported by NOTHING. There is deliberately no
- *   `system:sync-batch-delta-check` action, no `register-system-actions.ts` import,
- *   no `TARGET_ROLE_SPEND` entry, no `BESPOKE_ACTIVE_SEEDS` entry and no seed
- *   script — so nothing can schedule or fire it. It is tsc-clean and inert.
+ *   This file is the PURE logic; the IO seams are `sync-batch-delta-check-deps.ts`, the
+ *   action is `../harness/routines/sync-batch-delta-check-action.ts`, and the durable
+ *   5-minute row is seeded by `seed-sync-batch-delta-check-routine.ts`. The old
+ *   "UNWIRED, PARKED MID-BUILD" banner that stood here was stale: every step of the
+ *   successor list below has landed. The list is kept as the wiring map.
+ *
+ *   What changed in P-001: the check no longer SKIPS under ordinary host load or
+ *   while a green-checkpoint suite runs — that skip silently dropped most batches on
+ *   this box, where load sits above 1.2x cores for most of the day. It now runs every
+ *   heavy leg at idle CPU/IO priority (`idlePriorityArgv`) and, under load or during a
+ *   gate run, with a REDUCED confirm/attribution budget (`evaluateCapacity`). It skips
+ *   only above a hard ceiling or when load is unreadable, and records per-tick
+ *   coverage with an alarm when coverage drops (`recordCoverageTick` /
+ *   `evaluateCoverage`). P-002: a confirmed red is ROUTED to the editing agent
+ *   (`pickRedAuthor`).
+ *
+ *   Wiring map (all landed):
  *
  *   STILL TO DO for a successor (in this order — steps 2-5 must land in ONE change,
  *   because `routine-classification.registry.test.ts` cross-checks the registry
@@ -84,7 +96,8 @@
  * Every leg is capped, and every cap fails toward doing LESS work:
  *   · host load over `cores * LOAD_SKIP_FACTOR`  ⇒ skip, record why, touch nothing;
  *   · green-checkpoint suite running             ⇒ skip (never fight the gate);
- *   · affected radius wider than the caps        ⇒ record `radius-too-wide`, run NOTHING;
+ *   · affected radius wider than the caps        ⇒ shrink to an older prefix; an
+ *     individually oversized commit is recorded as non-evaluated and skipped alone;
  *   · red confirmation                           ⇒ at most MAX_CONFIRM_RUNS single-file runs;
  *   · batch attribution                          ⇒ at most MAX_ATTRIBUTION_PROBES radius probes.
  *
@@ -94,19 +107,33 @@
  * (or with the item's claimant).
  */
 
+import type { KnownGoodPoint } from './known-good-freeze';
+
 // ── tunables (every default fails toward doing less work) ────────────────────
 
 /** Skip the whole run when `loadavg1 > cores * this`. 1.2 = "the box is already
  *  oversubscribed", which on this host means the gate or a fleet burst owns it. */
 export const LOAD_SKIP_FACTOR = 1.2;
 
+/** Above `cores * this` the tick SKIPS (P-001). Between LOAD_SKIP_FACTOR and this it
+ *  runs with REDUCED_BUDGET at idle priority — the old behaviour skipped there. */
+export const HARD_LOAD_CEILING_FACTOR = 3;
+
+/** How far before the oldest batch commit the edit ledger is searched. git-sync
+ *  commits on a ~10-minute cadence, so an edit can precede its sweep by that much. */
+export const EDITOR_LOOKBACK_MARGIN_MS = 30 * 60_000;
+
+/** Confirm/attribution budget under load or while a gate suite runs. */
+export const REDUCED_BUDGET = { maxConfirmRuns: 1, maxAttributionProbes: 3 } as const;
+
 /** Fix-or-revert SLA quoted in the filed work item, in minutes. Deliberately shorter
  *  than the hourly gate cycle: the whole point is to repair before the next
  *  checkpoint freezes a candidate on top of the break. */
 export const SYNC_DELTA_SLA_MINUTES = 60;
 
-/** Radius caps. A batch wider than any of these is recorded and NOT executed —
- *  a 71-workspace run is exactly the "burning the box" outcome this exists to avoid
+/** Radius caps. A prefix wider than any of these is narrowed to an older prefix.
+ *  An individually oversized commit is explicitly skipped without running it, so
+ *  a 71-workspace run can never become the "burning the box" outcome this avoids
  *  (the measured cost of an unscoped `test:affected`, EI-20812741760514969). */
 export interface RadiusCaps {
   /** Affected WORKSPACES the probe may select before the batch is refused. */
@@ -115,9 +142,28 @@ export interface RadiusCaps {
   maxPaths: number;
   /** Commits one run may fold into a batch window before it is refused. */
   maxCommits: number;
+  /** Exact runnable task commands the affected runner may select. Optional for
+   *  callers that override only the original three dimensions. */
+  maxTaskCommands?: number;
+  /** Repo-wide invariant guards, a separately visible subset of task commands. */
+  maxGuards?: number;
 }
 
-export const DEFAULT_RADIUS_CAPS: RadiusCaps = { maxWorkspaces: 3, maxPaths: 80, maxCommits: 40 };
+// Production coverage measured 2026-10-06 showed 15 of 17 radius refusals
+// affected 7–10 workspaces. Keep the bound below the observed 20-workspace
+// outlier while admitting those normal batches; the 80-path and 40-commit
+// ceilings still bound the other dimensions independently.
+// WI-10007175: the admitted 80-path prefix measured 10 workspaces, 64 task commands,
+// and 52 guards; its affected child repeatedly hit the 25-minute timeout. Keep the
+// admitted prefix below half those task/guard counts, and use the existing related
+// selector in the runner to narrow test files when its evidence allows.
+export const DEFAULT_RADIUS_CAPS = {
+  maxWorkspaces: 10,
+  maxPaths: 80,
+  maxCommits: 40,
+  maxTaskCommands: 32,
+  maxGuards: 26,
+} satisfies RadiusCaps;
 
 /** Single-file re-runs spent CONFIRMING a red before anything is filed. Root
  *  CLAUDE.md: a multi-file vitest invocation can abort during collection, so a
@@ -173,6 +219,20 @@ export interface SyncDeltaCursor {
   lastBatchCommits?: number;
   /** Reds this check is holding open and re-verifying. */
   openReds?: OpenRed[];
+  /** Per-tick coverage history + the low-coverage alarm state (P-001 / R-2). */
+  coverage?: SyncDeltaCoverage;
+  /** Commit cap LEARNED from leg timeouts (green-main-cycle-time-2026-10-08 P-011),
+   *  tighter than the static `RadiusCaps.maxCommits`. A leg that exhausts its time
+   *  budget halves it, so the next tick judges a smaller window instead of re-running
+   *  the identical prefix into the identical timeout (head-of-line blocking: the
+   *  cursor sat on one window for 24h, 0 of ~291 ticks evaluated). Each measured run
+   *  doubles it; it is dropped once it is back at the static cap. */
+  windowCommitCap?: number;
+  /** P-012 (green-main-cycle-time-2026-10-08): the newest commit whose batch check PASSED — both
+   *  legs ran green over its window and no red is held open. The gate's fresh cut freezes here
+   *  (known-good-freeze.ts) instead of at the bare tip. Carried unchanged by every run that does
+   *  not itself pass, so it only ever moves forward to a newer passing commit. */
+  lastPassed?: KnownGoodPoint;
 }
 
 // ── git-log parsing ──────────────────────────────────────────────────────────
@@ -275,7 +335,8 @@ export function tsFilesOf(paths: readonly string[]): string[] {
 export interface RadiusProbe {
   /** `AFFECTED_WS<TAB><name>` lines. */
   workspaces: string[];
-  /** `AFFECTED_GUARD<TAB><workspace><TAB><script>` lines, as `<workspace>:<script>`. */
+  /** `AFFECTED_GUARD<TAB><workspace><TAB><script><TAB><command>` lines, reduced to
+   *  `<workspace>:<script>` for cardinality checks. */
   guards: string[];
 }
 
@@ -340,7 +401,7 @@ export function parseAffectedProbe(stdout: string): AffectedProbe {
       workspaces.push(ws[1].trim());
       continue;
     }
-    const guard = /^AFFECTED_GUARD\t([^\t]+)\t(.+)$/.exec(line);
+    const guard = /^AFFECTED_GUARD\t([^\t]+)\t([^\t]+)(?:\t.*)?$/.exec(line);
     if (guard?.[1] && guard[2]) {
       guards.push(`${guard[1].trim()}:${guard[2].trim()}`);
       continue;
@@ -377,18 +438,21 @@ export type RadiusVerdict =
  * Should this batch window actually be EXECUTED?
  *
  * `nothing-selected` is a first-class PASS-BY-CONSTRUCTION, not a failure: a batch
- * of docs/plan edits legitimately selects zero workspaces, and running the suite for
- * it would be pure waste. It is reported separately from `radius-too-wide` because
+ * of docs/plan edits legitimately selects zero task commands and guards, and running
+ * the suite for it would be pure waste. A guard-only radius is still runnable even
+ * when it names no test workspace. `nothing-selected` is reported separately from `radius-too-wide` because
  * the two want opposite follow-ups (one advances the cursor happily, the other is a
  * measurement we declined to take).
  */
 export function evaluateRadius(input: {
-  probe: RadiusProbe;
+  probe: AffectedProbe;
   union: UnionedPaths;
   batchCount: number;
   caps?: RadiusCaps;
 }): RadiusVerdict {
   const caps = input.caps ?? DEFAULT_RADIUS_CAPS;
+  const maxTaskCommands = caps.maxTaskCommands ?? DEFAULT_RADIUS_CAPS.maxTaskCommands;
+  const maxGuards = caps.maxGuards ?? DEFAULT_RADIUS_CAPS.maxGuards;
   const { probe, union, batchCount } = input;
   if (union.truncated) {
     return {
@@ -413,11 +477,29 @@ export function evaluateRadius(input: {
         `exceeds maxWorkspaces=${caps.maxWorkspaces}`,
     };
   }
-  if (probe.workspaces.length === 0) {
+  if (probe.taskCommands.length > maxTaskCommands) {
+    return {
+      run: false,
+      reason: 'radius-too-wide',
+      detail:
+        `affected radius has workspaces=${probe.workspaces.length}, tasks=${probe.taskCommands.length}, ` +
+        `guards=${probe.guards.length}; exceeds maxTaskCommands=${maxTaskCommands}`,
+    };
+  }
+  if (probe.guards.length > maxGuards) {
+    return {
+      run: false,
+      reason: 'radius-too-wide',
+      detail:
+        `affected radius has workspaces=${probe.workspaces.length}, tasks=${probe.taskCommands.length}, ` +
+        `guards=${probe.guards.length}; exceeds maxGuards=${maxGuards}`,
+    };
+  }
+  if (probe.taskCommands.length === 0 && probe.guards.length === 0) {
     return {
       run: false,
       reason: 'nothing-selected',
-      detail: `${union.paths.length} changed path(s) select no test workspace`,
+      detail: `${union.paths.length} changed path(s) select no test task or invariant guard`,
     };
   }
   return { run: true, workspaces: probe.workspaces };
@@ -522,23 +604,290 @@ export function parseLoadavg1(raw: string): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-export type LoadVerdict = { skip: false } | { skip: true; reason: string };
+/** The budget one tick may spend confirming and attributing reds. */
+export interface CheckBudget {
+  maxConfirmRuns: number;
+  maxAttributionProbes: number;
+}
 
-/** Skip when the box is already oversubscribed. An UNREADABLE load (`null`) also
- *  skips: this check is optional work, so "I could not tell" resolves to not
- *  competing with the gate rather than to running anyway. */
-export function evaluateLoad(reading: LoadReading | null, factor = LOAD_SKIP_FACTOR): LoadVerdict {
+/**
+ * What a tick may do given host load and the gate.
+ *
+ * P-001 (gate-throughput-shift-left-2026-10-06): the old rule SKIPPED above
+ * `cores * LOAD_SKIP_FACTOR` and whenever a green-checkpoint suite ran. On this box
+ * load sits above that line for most of the day and the gate runs for hours, so the
+ * check judged almost nothing — exactly the per-commit signal it exists to provide.
+ * Every heavy leg now runs at idle CPU/IO priority (`idlePriorityArgv`), which is
+ * what actually keeps it from competing with the gate; load and the gate only shrink
+ * the confirm/attribution budget. The radius caps are NOT reduced, so no batch window
+ * is dropped as too wide because of load.
+ *
+ * Skips remain for two cases only: load above the hard ceiling (the box is genuinely
+ * saturated — even idle-priority children add memory and IO pressure) and an
+ * UNREADABLE load, which never runs blind.
+ */
+export type CapacityVerdict =
+  | { skip: true; reason: string }
+  | { skip: false; mode: 'full' | 'reduced'; reason?: string; budget: CheckBudget };
+
+export function evaluateCapacity(input: {
+  reading: LoadReading | null;
+  /** true / false / null (undetectable). Only `true` reduces the budget. */
+  gateRunning: boolean | null;
+  fullBudget: CheckBudget;
+  softFactor?: number;
+  hardFactor?: number;
+}): CapacityVerdict {
+  const soft = input.softFactor ?? LOAD_SKIP_FACTOR;
+  const hard = input.hardFactor ?? HARD_LOAD_CEILING_FACTOR;
+  const { reading } = input;
   if (!reading || !Number.isFinite(reading.load1) || !(reading.cores > 0)) {
     return { skip: true, reason: 'host-load-unreadable' };
   }
-  const ceiling = reading.cores * factor;
-  if (reading.load1 > ceiling) {
+  const hardCeiling = reading.cores * hard;
+  if (reading.load1 > hardCeiling) {
     return {
       skip: true,
-      reason: `host-load ${reading.load1.toFixed(2)} > ${ceiling.toFixed(2)} (cores ${reading.cores} x ${factor})`,
+      reason: `host-load ${reading.load1.toFixed(2)} > hard ceiling ${hardCeiling.toFixed(2)} (cores ${reading.cores} x ${hard})`,
     };
   }
-  return { skip: false };
+  const reasons: string[] = [];
+  const softCeiling = reading.cores * soft;
+  if (reading.load1 > softCeiling) {
+    reasons.push(`host-load ${reading.load1.toFixed(2)} > ${softCeiling.toFixed(2)}`);
+  }
+  if (input.gateRunning === true) reasons.push('green-checkpoint-running');
+  if (reasons.length === 0) return { skip: false, mode: 'full', budget: input.fullBudget };
+  return {
+    skip: false,
+    mode: 'reduced',
+    reason: reasons.join('; '),
+    budget: {
+      maxConfirmRuns: Math.min(input.fullBudget.maxConfirmRuns, REDUCED_BUDGET.maxConfirmRuns),
+      maxAttributionProbes: Math.min(input.fullBudget.maxAttributionProbes, REDUCED_BUDGET.maxAttributionProbes),
+    },
+  };
+}
+
+/** Wrap a heavy leg so it runs at the lowest CPU and IO priority. `nice -n 19`
+ *  yields CPU to every normal-priority process (the gate included); `ionice -c 3`
+ *  (idle class) only gets disk time when no one else wants it. Both are unprivileged.
+ *  This wrapper, not a load threshold, is what bounds the check's cost. */
+export function idlePriorityArgv(cmd: string, args: readonly string[]): { cmd: string; args: string[] } {
+  return { cmd: 'nice', args: ['-n', '19', 'ionice', '-c', '3', cmd, ...args] };
+}
+
+// ── coverage (P-001 / R-2) ───────────────────────────────────────────────────
+
+/** One scheduled coverage opportunity. */
+export type CoverageTickStatus = SyncBatchDeltaStatus | 'missed-opportunity';
+
+export interface CoverageTick {
+  atMs: number;
+  /** true = the scheduled opportunity judged its window (or confirmed nothing to judge). */
+  evaluated: boolean;
+  status: CoverageTickStatus;
+  /** Bounded reason/outcome for a non-evaluated tick. */
+  reason?: string;
+}
+
+export interface SyncDeltaCoverage {
+  ticks: CoverageTick[];
+  /** Epoch ms the low-coverage alarm was raised; absent while coverage is healthy. */
+  alarmOpenSinceMs?: number;
+}
+
+/** Coverage history kept on the cursor: 24h, bounded so the row cannot grow. */
+export const COVERAGE_RETENTION_MS = 24 * 60 * 60_000;
+export const COVERAGE_MAX_TICKS = 400;
+/** The durable sync-delta routine fires every five minutes. Coverage fills
+ *  opportunities that passed while an earlier invocation was still running. */
+export const COVERAGE_EXPECTED_INTERVAL_MS = 5 * 60_000;
+/** The alarm window, threshold and the minimum opportunities needed to judge it.
+ *  At the five-minute cadence 2h is 24 opportunities; 12 avoids judging before
+ *  the window has enough history while still counting slots missed by long fires. */
+export const COVERAGE_ALARM_WINDOW_MS = 2 * 60 * 60_000;
+export const COVERAGE_ALARM_THRESHOLD = 0.8;
+export const COVERAGE_ALARM_MIN_TICKS = 12;
+
+/** Statuses that mean the window WAS judged. `radius-too-wide` advances the cursor
+ *  without running anything, so it counts as NOT evaluated, the same as a skip. */
+const EVALUATED_STATUSES: ReadonlySet<SyncBatchDeltaStatus> = new Set([
+  'bootstrapped',
+  'up-to-date',
+  'nothing-selected',
+  'green',
+  'red',
+]);
+
+export function isEvaluatedStatus(status: SyncBatchDeltaStatus): boolean {
+  return EVALUATED_STATUSES.has(status);
+}
+
+export function recordCoverageTick(
+  prior: SyncDeltaCoverage | undefined,
+  tick: CoverageTick,
+): SyncDeltaCoverage {
+  const cutoff = tick.atMs - COVERAGE_RETENTION_MS;
+  const ticks = [...(prior?.ticks ?? []).filter((t) => t.atMs >= cutoff), tick].slice(-COVERAGE_MAX_TICKS);
+  return { ...(prior?.alarmOpenSinceMs !== undefined ? { alarmOpenSinceMs: prior.alarmOpenSinceMs } : {}), ticks };
+}
+
+/** Record a completed invocation plus schedule opportunities that passed while
+ *  there was no completed invocation to judge them. `tick.atMs` is captured at
+ *  action start; `observedUntilMs` is captured after it finishes. Routine-fire
+ *  deduplication suppresses cron starts while a previous action is still running,
+ *  so counting completions alone makes a long action erase those missed slots
+ *  from this detector's denominator.
+ */
+export function recordCoverageOpportunities(
+  prior: SyncDeltaCoverage | undefined,
+  tick: CoverageTick,
+  observedUntilMs: number,
+  intervalMs: number = COVERAGE_EXPECTED_INTERVAL_MS,
+): SyncDeltaCoverage {
+  const priorTicks = prior?.ticks ?? [];
+  const lastAtMs = priorTicks.at(-1)?.atMs;
+  if (
+    lastAtMs === undefined ||
+    !Number.isFinite(tick.atMs) ||
+    !Number.isFinite(observedUntilMs) ||
+    !Number.isFinite(intervalMs) ||
+    intervalMs <= 0 ||
+    tick.atMs <= lastAtMs ||
+    observedUntilMs < tick.atMs
+  ) {
+    return recordCoverageTick(prior, tick);
+  }
+
+  const cutoff = observedUntilMs - COVERAGE_RETENTION_MS;
+  const missedBetweenInvocations = Math.max(0, Math.round((tick.atMs - lastAtMs) / intervalMs) - 1);
+  const missedDuringInvocation = Math.max(0, Math.ceil((observedUntilMs - tick.atMs) / intervalMs) - 1);
+  const missed: CoverageTick[] = [];
+  const appendMissed = (originMs: number, count: number): void => {
+    const firstIndex = Math.max(
+      1,
+      count - COVERAGE_MAX_TICKS + 1,
+      Math.ceil((cutoff - originMs) / intervalMs),
+    );
+    for (let index = firstIndex; index <= count; index += 1) {
+      const atMs = originMs + index * intervalMs;
+      if (atMs >= cutoff && atMs < observedUntilMs) {
+        missed.push({ atMs, evaluated: false, status: 'missed-opportunity' });
+      }
+    }
+  };
+  appendMissed(lastAtMs, missedBetweenInvocations);
+  appendMissed(tick.atMs, missedDuringInvocation);
+
+  const base = prior ?? { ticks: [] };
+  return [...missed, tick]
+    .sort((a, b) => a.atMs - b.atMs)
+    .reduce((coverage, next) => recordCoverageTick(coverage, next), base);
+}
+
+export interface CoverageVerdict {
+  /** Ticks inside the window. */
+  total: number;
+  evaluated: number;
+  /** evaluated / total, or null when there are too few ticks to judge. */
+  ratio: number | null;
+  /** true = coverage is below the threshold on enough samples. */
+  low: boolean;
+}
+
+export function evaluateCoverage(
+  coverage: SyncDeltaCoverage | undefined,
+  nowMs: number,
+  opts?: { windowMs?: number; threshold?: number; minTicks?: number },
+): CoverageVerdict {
+  const windowMs = opts?.windowMs ?? COVERAGE_ALARM_WINDOW_MS;
+  const threshold = opts?.threshold ?? COVERAGE_ALARM_THRESHOLD;
+  const minTicks = opts?.minTicks ?? COVERAGE_ALARM_MIN_TICKS;
+  const inWindow = (coverage?.ticks ?? []).filter((t) => t.atMs > nowMs - windowMs && t.atMs <= nowMs);
+  const evaluated = inWindow.filter((t) => t.evaluated).length;
+  if (inWindow.length < minTicks) return { total: inWindow.length, evaluated, ratio: null, low: false };
+  const ratio = evaluated / inWindow.length;
+  return { total: inWindow.length, evaluated, ratio, low: ratio < threshold };
+}
+
+/** The coverage alarm's upsert identity — one open item, refreshed in place. */
+export const COVERAGE_ALARM_CONDITION_KEY = 'sync-delta-coverage-low';
+
+export function buildCoverageAlarm(verdict: CoverageVerdict, coverage: SyncDeltaCoverage): RedFinding {
+  const pct = verdict.ratio === null ? 'n/a' : `${Math.round(verdict.ratio * 100)}%`;
+  const reasons = new Map<string, number>();
+  for (const t of coverage.ticks.slice(-verdict.total)) {
+    if (!t.evaluated) {
+      const label = t.reason ? `${t.status} (${t.reason})` : t.status;
+      reasons.set(label, (reasons.get(label) ?? 0) + 1);
+    }
+  }
+  const breakdown = [...reasons.entries()].map(([s, n]) => `${s} x${n}`).join(', ') || '(none)';
+  return {
+    conditionKey: COVERAGE_ALARM_CONDITION_KEY,
+    title: `sync-batch delta check coverage low: ${pct} of ticks evaluated over 2h`,
+    body: [
+      `The per-sync check judged only ${verdict.evaluated} of ${verdict.total} ticks (${pct}) in the last 2h,`,
+      `below the ${Math.round(COVERAGE_ALARM_THRESHOLD * 100)}% floor. Breakage committed to staging in that window`,
+      'is NOT being caught at commit time; it will surface at the hourly gate instead.',
+      '',
+      `Non-evaluated opportunities by status: ${breakdown}.`,
+      'Read metadata.sync_delta with a workspace-scoped dev:pg_query; routines:list does not return it.',
+      '(lastSkipReason and coverage.ticks[].reason carry bounded skip diagnostics). A run of `skipped` with a hard-ceiling reason means the box is',
+      'saturated; `radius-too-wide` means batches exceed the radius caps; `leg-timeout` means a single',
+      'commit exhausted a leg time budget and was explicitly skipped.',
+      '`missed-opportunity` means a five-minute schedule slot passed without a completed check.',
+      '',
+      `Filed by \`system:sync-batch-delta-check\` (conditionKey \`${COVERAGE_ALARM_CONDITION_KEY}\`).`,
+    ].join('\n'),
+    paths: ['packages/operator-core/lib/release/sync-batch-delta-check.ts'],
+    assignee: null,
+    authorSource: 'none',
+  };
+}
+
+// ── author routing (P-002 / R-3) ─────────────────────────────────────────────
+
+/** One edit-ledger row: the newest recorded editor of a file. */
+export interface EditorHit {
+  file: string;
+  agent: string;
+  tsMs: number;
+}
+
+export type AuthorSource = 'edit-ledger:failing-file' | 'edit-ledger:batch' | 'trailer' | 'none';
+
+/**
+ * Who should be told about a confirmed red. Never `git blame`, never the commit
+ * subject — git-sync sweeps the whole tree under one identity (root CLAUDE.md).
+ *
+ * Order, strongest evidence first:
+ *   1. the newest ledgered editor of the FAILING FILE itself;
+ *   2. the newest ledgered editor of any path in the attributed batch;
+ *   3. the batch's `Papercusp-Agent` trailer;
+ *   4. nobody — the item files unassigned and says so.
+ *
+ * Only `system:` identities are excluded (a routine is not a person to route to).
+ */
+export function pickRedAuthor(input: {
+  failingFile: string;
+  batch: SyncBatch | null;
+  editors: readonly EditorHit[] | null;
+}): { agent: string | null; source: AuthorSource } {
+  const editors = (input.editors ?? []).filter((e) => e.agent && !e.agent.startsWith('system:'));
+  const newest = (hits: EditorHit[]): EditorHit | undefined => [...hits].sort((a, b) => b.tsMs - a.tsMs)[0];
+  const onFile = newest(editors.filter((e) => e.file === input.failingFile));
+  if (onFile) return { agent: onFile.agent, source: 'edit-ledger:failing-file' };
+  if (input.batch) {
+    const batchPaths = new Set(input.batch.paths);
+    const onBatch = newest(editors.filter((e) => batchPaths.has(e.file)));
+    if (onBatch) return { agent: onBatch.agent, source: 'edit-ledger:batch' };
+    if (input.batch.agent && !input.batch.agent.startsWith('system:')) {
+      return { agent: input.batch.agent, source: 'trailer' };
+    }
+  }
+  return { agent: null, source: 'none' };
 }
 
 // ── batch attribution ────────────────────────────────────────────────────────
@@ -613,6 +962,10 @@ export interface RedFinding {
   body: string;
   /** Paths the item is about — the failing file plus the introducing batch's paths. */
   paths: string[];
+  /** The agent the item is assigned to (P-002), or null to file it unassigned. */
+  assignee: string | null;
+  /** Where `assignee` came from — evidence, carried into the body. */
+  authorSource: AuthorSource;
 }
 
 /** Render the work-item a confirmed red becomes. Every field a triager needs is in
@@ -627,7 +980,10 @@ export function buildRedFinding(input: {
   slaMinutes?: number;
   /** Prior open-red record, when this is a REFRESH rather than a first filing. */
   prior?: OpenRed | null;
+  /** Who the item is routed to (P-002); absent ⇒ unassigned. */
+  author?: { agent: string | null; source: AuthorSource };
 }): RedFinding {
+  const author = input.author ?? { agent: null, source: 'none' as const };
   const sla = input.slaMinutes ?? SYNC_DELTA_SLA_MINUTES;
   const { failing, attribution, batches, leg } = input;
   const batch = attribution.batch;
@@ -672,6 +1028,10 @@ export function buildRedFinding(input: {
     '',
     attributionBlock,
     '',
+    author.agent
+      ? `Routed to: ${author.agent} (source: ${author.source}). The commit was NOT reverted or held — this is an alert.`
+      : 'Routed to: nobody — no ledgered editor or Papercusp-Agent trailer was found for this break. Claim it if it is yours.',
+    '',
     `SLA: fix or revert within ${sla} minutes.`,
     'Past that the hourly green-checkpoint freezes a candidate on top of this break, and every later',
     'red inherits its attribution — which is the failure this check exists to prevent.',
@@ -697,7 +1057,14 @@ export function buildRedFinding(input: {
   }
 
   const paths = [failing.file, ...(batch?.paths ?? [])].filter((p, i, a) => a.indexOf(p) === i).slice(0, 40);
-  return { conditionKey: conditionKeyForRed(failing.file), title, body: lines.join('\n'), paths };
+  return {
+    conditionKey: conditionKeyForRed(failing.file),
+    title,
+    body: lines.join('\n'),
+    paths,
+    assignee: author.agent,
+    authorSource: author.source,
+  };
 }
 
 // ── the orchestration (deps-injected, so it is unit-testable end to end) ─────
@@ -706,6 +1073,12 @@ export function buildRedFinding(input: {
  *  (`matched=0`, a route error, no terminal line) — deliberately distinct from
  *  `false`, because "undetermined" must never be filed as a red. */
 export type ConfirmVerdict = boolean | null;
+
+export interface SubprocessDiagnostic {
+  outcome: 'completed' | 'timeout' | 'output-buffer-limit' | 'spawn-error' | 'nonzero-exit';
+  durationMs: number | null;
+  exitCode: number | null;
+}
 
 export interface SyncBatchDeltaDeps {
   /** Read the durable cursor, or null when this check has never run here. */
@@ -727,19 +1100,168 @@ export interface SyncBatchDeltaDeps {
   /** Commits in `(sinceSha, HEAD]`, newest first; null when git could not be read. */
   listBatches(sinceSha: string): Promise<SyncBatch[] | null>;
   /** `affected-tests.mjs --print-affected` for a path set; null when the probe failed. */
-  probeRadius(paths: readonly string[]): Promise<RadiusProbe | null>;
+  probeRadius(paths: readonly string[]): Promise<AffectedProbe | null>;
   /** `affected-tests.mjs --changed-paths <paths>` — the actual run. `failing: null`
    *  on a red means the run named no files, i.e. UNDETERMINED. */
-  runAffected(paths: readonly string[]): Promise<{ ok: boolean; failing: FailingFile[] | null }>;
+  runAffected(paths: readonly string[]): Promise<{
+    ok: boolean;
+    failing: FailingFile[] | null;
+    diagnostic?: SubprocessDiagnostic;
+  }>;
   /** `lint-tsc.mjs --files=<files>`. */
-  runTsc(files: readonly string[]): Promise<{ ok: boolean; failing: string[] }>;
+  runTsc(files: readonly string[]): Promise<{
+    ok: boolean;
+    failing: string[];
+    diagnostic?: SubprocessDiagnostic;
+  }>;
   /** One file, in its OWN invocation (root CLAUDE.md's gate-triage rule).
    *  `true` = passed, `false` = failed, `null` = not measured. */
   confirmOne(file: string): Promise<ConfirmVerdict>;
-  /** File/refresh the deduped work item. */
-  fileRed(finding: RedFinding): Promise<{ ok: boolean; id?: string; adopted?: boolean; error?: string }>;
+  /** File/refresh the deduped work item (assigned to `finding.assignee` when set). */
+  fileRed(finding: RedFinding): Promise<{ ok: boolean; id?: string; adopted?: boolean; assignee?: string | null; error?: string; notificationError?: string }>;
+  /** Newest recorded editor per file from the edit-attribution ledger, since `sinceMs`
+   *  (P-002). null = unreadable; the red then routes by trailer or files unassigned. */
+  lookupEditors?(files: readonly string[], sinceMs: number): Promise<EditorHit[] | null>;
   now(): number;
   log(message: string): void;
+}
+
+/**
+ * File a red, routed to its author when one is known. An assignment the store
+ * refuses (an unresolvable owner id, a retired session) must never cost the red
+ * itself: the finding is re-filed unassigned, and the refusal is logged so the
+ * routing miss stays visible. Routing is an improvement on the signal, not a
+ * condition of it (D-002).
+ */
+export async function fileRoutedRed(
+  deps: Pick<SyncBatchDeltaDeps, 'fileRed' | 'log'>,
+  finding: RedFinding,
+): Promise<{ ok: boolean; id?: string; adopted?: boolean; assignee?: string | null; error?: string; notificationError?: string }> {
+  const res = await deps.fileRed(finding);
+  if (res.ok || !finding.assignee) return res;
+  deps.log(
+    `[sync-batch-delta] routing to ${finding.assignee} refused (${res.error ?? 'unknown'}); re-filing unassigned`,
+  );
+  return deps.fileRed({ ...finding, assignee: null });
+}
+
+/** R-8 measures pickup, not the count returned by wakeRecipients. The source refs
+ * identify the original filing and wake rows; missing/retained-away rows remain
+ * unknown. This is the same original-population contract used by the SLO evaluators. */
+export interface SyncRedDeliveryWindow {
+  workspaceId: string;
+  harnessSlug: string;
+  windowStartMs: number;
+  windowEndMs: number;
+  observedAtMs: number;
+  status: 'complete' | 'capped' | 'unavailable';
+  total: number | null;
+  rows: Array<{
+    workItemId: string;
+    batchSha: string | null;
+    authorId: string | null;
+    filingRef: string;
+    redFiledAtMs: number;
+    wakes: Array<{
+      ref: string;
+      workItemId: string;
+      recipientId: string;
+      queuedAtMs: number;
+      deliveredAtMs: number | null;
+      turnStartedAtMs: number | null;
+      turnProof: string | null;
+    }>;
+  }>;
+}
+
+export const SYNC_RED_DELIVERY_LIMIT_MS = 15 * 60_000;
+
+/** A closed, explicitly complete original population is necessary for healthy.
+ * A measured late pickup is broken even when another row is unknown. Legacy
+ * delivery-channel receipts (including inbox/coalesced) never prove a turn. */
+export function evaluateSyncRedDeliveryWindow(history: SyncRedDeliveryWindow) {
+  const stamp = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+  const text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+  const windowValid = text(history.workspaceId) && text(history.harnessSlug) &&
+    stamp(history.windowStartMs) && stamp(history.windowEndMs) &&
+    history.windowStartMs < history.windowEndMs && stamp(history.observedAtMs) &&
+    history.windowEndMs <= history.observedAtMs;
+  const complete = history.status === 'complete' && history.total === history.rows.length &&
+    history.rows.length > 0 && new Set(history.rows.map(r => r.workItemId)).size === history.rows.length &&
+    new Set(history.rows.map(r => r.filingRef)).size === history.rows.length;
+  const wakeRefs = new Set<string>();
+  const rows = history.rows.map(row => {
+    const unknown = (reason: string) => ({ workItemId: row.workItemId,
+      verdict: 'unknown' as const, elapsedMs: null, reason });
+    if (!windowValid || !text(row.workItemId) || !text(row.filingRef) ||
+        !row.batchSha || !/^[a-f0-9]{40}$/.test(row.batchSha) || !text(row.authorId) ||
+        !stamp(row.redFiledAtMs) || row.redFiledAtMs < history.windowStartMs ||
+        row.redFiledAtMs > history.windowEndMs) return unknown('Original filing identity or clock is missing.');
+    let invalid = false;
+    let measuredMiss = false;
+    const pickups: number[] = [];
+    for (const wake of row.wakes) {
+      if (!text(wake.ref) || wakeRefs.has(wake.ref) || wake.workItemId !== row.workItemId ||
+          wake.recipientId !== row.authorId || !stamp(wake.queuedAtMs) ||
+          wake.queuedAtMs < row.redFiledAtMs || wake.queuedAtMs > history.observedAtMs) {
+        invalid = true; continue;
+      }
+      wakeRefs.add(wake.ref);
+      if (wake.turnProof === 'not-picked-up' && history.observedAtMs - row.redFiledAtMs > SYNC_RED_DELIVERY_LIMIT_MS) {
+        measuredMiss = true;
+      }
+      if (wake.deliveredAtMs === null && wake.turnStartedAtMs === null) continue;
+      if (!stamp(wake.deliveredAtMs) || wake.deliveredAtMs < wake.queuedAtMs ||
+          wake.deliveredAtMs > history.observedAtMs) { invalid = true; continue; }
+      if (wake.turnStartedAtMs === null) continue;
+      if (!['observed', 'host-attested'].includes(wake.turnProof ?? '') ||
+          !stamp(wake.turnStartedAtMs) || wake.turnStartedAtMs < wake.deliveredAtMs ||
+          wake.turnStartedAtMs > history.observedAtMs) { invalid = true; continue; }
+      pickups.push(wake.turnStartedAtMs);
+    }
+    if (invalid) return unknown('Wake identity, chronology or pickup proof is invalid.');
+    if (pickups.length === 0) return measuredMiss
+      ? { workItemId: row.workItemId, verdict: 'broken' as const, elapsedMs: null, reason: 'Original measured missed pickup past the delivery limit.' }
+      : unknown('Queued/delivered is not pickup; original turn-start proof is absent.');
+    const elapsedMs = Math.min(...pickups) - row.redFiledAtMs;
+    return { workItemId: row.workItemId, verdict: elapsedMs <= SYNC_RED_DELIVERY_LIMIT_MS
+      ? 'healthy' as const : 'broken' as const, elapsedMs, reason: 'Original author pickup latency.' };
+  });
+  const verdict = rows.some(row => row.verdict === 'broken') ? 'broken' as const
+    : windowValid && complete && rows.every(row => row.verdict === 'healthy') ? 'healthy' as const : 'unknown' as const;
+  return { verdict, rows, assertions: [
+    { id: 'bounded-sync-red-delivery-window', passed: windowValid },
+    { id: 'complete-sync-red-delivery-population', passed: complete },
+    { id: 'original-author-pickup-proof', passed: rows.length > 0 && rows.every(row => row.verdict !== 'unknown') },
+    { id: 'author-delivery-at-most-15min', passed: verdict === 'healthy' },
+  ] };
+}
+
+/** Run the clocked detector on an original ledger snapshot through the maintained
+ * results writer. Fixtures only test this procedure; they are never live evidence.
+ * The caller supplies its complete archived join, including all missing pickups. */
+export async function executeSyncRedDeliveryWindow(history: SyncRedDeliveryWindow, args: {
+  projectDir: string; runtimeUnits: string[];
+}) {
+  const snapshot = structuredClone(history);
+  const { createHash } = await import('node:crypto');
+  const { executeOperationalRun } = await import('../agent-tools/testing/record-run');
+  const populationHash = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+  return executeOperationalRun({ filePath: 'packages/operator-core/lib/release/sync-batch-delta-check.ts',
+    name: 'Original sync-red author delivery latency', framework: 'operational',
+    command: ['executeSyncRedDeliveryWindow', snapshot.workspaceId, snapshot.harnessSlug,
+      String(snapshot.windowStartMs), String(snapshot.windowEndMs), populationHash], runtimeUnits: args.runtimeUnits,
+    run: async () => {
+      const result = evaluateSyncRedDeliveryWindow(snapshot);
+      return { exitCode: result.verdict === 'healthy' ? 0 : 1,
+        assertions: result.assertions.map(a => ({ ...a, evidence: `original_population_sha256=${populationHash}; verdict=${result.verdict}` })),
+        summary: `Original sync-red delivery population: ${snapshot.rows.length}; total=${snapshot.total}; ` +
+          `read=${snapshot.status}; verdict=${result.verdict}; original_population_sha256=${populationHash}; ` +
+          `elapsedMs=${result.rows.map(row => row.elapsedMs ?? 'unknown').join(',')}. ` +
+          'Caller snapshot provenance must be independently verified against its complete original filing/wake refs. ' +
+          'No fixture, queued/woken count, or current presence substitutes for original pickup proof.' };
+    },
+  }, { ...args, workspaceId: snapshot.workspaceId, harnessSlug: snapshot.harnessSlug });
 }
 
 export type SyncBatchDeltaStatus =
@@ -747,6 +1269,8 @@ export type SyncBatchDeltaStatus =
   | 'bootstrapped'
   | 'up-to-date'
   | 'radius-too-wide'
+  /** A single commit exhausted a leg's time budget: explicitly skipped, cursor advanced. */
+  | 'leg-timeout'
   | 'nothing-selected'
   | 'green'
   | 'red';
@@ -764,7 +1288,9 @@ export interface SyncBatchDeltaResult {
   status: SyncBatchDeltaStatus;
   /** Why, when the status alone does not say it. */
   reason?: string;
-  /** Commits in the window this run judged. */
+  /** Bounded subprocess outcome details when a verdict could not be measured. */
+  diagnostic?: string;
+  /** Commits consumed by this bounded prefix, including an explicit single-commit refusal. */
   batchCount: number;
   /** Unioned changed paths this run judged. */
   pathCount: number;
@@ -796,30 +1322,209 @@ const emptyResult = (status: SyncBatchDeltaStatus, reason?: string): SyncBatchDe
  * NEVER advances the cursor past a window it could not measure: every "I could not
  * tell" path returns `skipped` with the cursor untouched, so the next run judges
  * that window instead of it being silently skipped forever. The cursor advances
- * only after a leg actually ran — or after the window was deliberately refused as
- * too wide, because leaving it parked there would re-refuse the same (still-growing)
- * window forever and wedge the check permanently.
+ * only after a leg actually ran — or after one individually oversized commit was
+ * explicitly refused, because leaving it parked there would re-refuse the same
+ * (still-growing) window forever and wedge the check permanently.
+ *
+ * A leg that exhausts its time budget is the same wedge in a different costume
+ * (P-011: one window re-run into the same 25-minute timeout for 24h). It halves the
+ * learned `windowCommitCap` so the next tick judges a smaller prefix; a single commit
+ * that still exhausts the budget is explicitly skipped (`leg-timeout`). Typecheck
+ * reds are filed before the affected leg runs, so they survive its timeout.
  */
 export async function runSyncBatchDeltaCheck(
   deps: SyncBatchDeltaDeps,
   opts?: { caps?: RadiusCaps; maxConfirmRuns?: number; maxAttributionProbes?: number },
 ): Promise<SyncBatchDeltaResult> {
-  const caps = opts?.caps ?? DEFAULT_RADIUS_CAPS;
-  const maxConfirm = opts?.maxConfirmRuns ?? MAX_CONFIRM_RUNS;
-  const maxProbes = opts?.maxAttributionProbes ?? MAX_ATTRIBUTION_PROBES;
+  // Coverage is carried from the PRE-run cursor: some inner branches rebuild the
+  // cursor from scratch, which would otherwise drop the history.
+  let priorCoverage: SyncDeltaCoverage | undefined;
+  try {
+    priorCoverage = (await deps.readCursor())?.coverage;
+  } catch {
+    priorCoverage = undefined;
+  }
+  const startedAtMs = deps.now();
+  const result = await runSyncBatchDeltaTick(deps, opts);
+  try {
+    await recordCoverage(deps, priorCoverage, result, startedAtMs);
+  } catch {
+    // Coverage is an instrument, never a reason to fail the tick.
+  }
+  return result;
+}
 
-  // ── 1. never fight the gate ────────────────────────────────────────────────
-  const loadVerdict = evaluateLoad(deps.hostLoad(), LOAD_SKIP_FACTOR);
-  if (loadVerdict.skip) {
-    await recordSkip(deps, loadVerdict.reason);
-    deps.log(`[sync-batch-delta] skip: ${loadVerdict.reason}`);
-    return emptyResult('skipped', loadVerdict.reason);
+/** Append this tick to the coverage history and raise/clear the low-coverage alarm.
+ *  The alarm files only on the TRANSITION into low coverage, so a sustained low
+ *  period is one item, not one per tick. */
+async function recordCoverage(
+  deps: SyncBatchDeltaDeps,
+  prior: SyncDeltaCoverage | undefined,
+  result: SyncBatchDeltaResult,
+  startedAtMs: number,
+): Promise<void> {
+  const cursor = await deps.readCursor();
+  if (!cursor?.sha) return; // nothing to annotate before the first bootstrap
+  const now = deps.now();
+  const tickReason = [result.reason, result.diagnostic]
+    .filter((part): part is string => Boolean(part))
+    .join('; ')
+    .slice(0, 500);
+  let coverage = recordCoverageOpportunities(
+    prior,
+    {
+      atMs: startedAtMs,
+      evaluated: isEvaluatedStatus(result.status),
+      status: result.status,
+      ...(!isEvaluatedStatus(result.status) && tickReason ? { reason: tickReason } : {}),
+    },
+    now,
+  );
+  const verdict = evaluateCoverage(coverage, now);
+  if (verdict.low && coverage.alarmOpenSinceMs === undefined) {
+    const res = await deps.fileRed(buildCoverageAlarm(verdict, coverage));
+    if (res.ok) coverage = { ...coverage, alarmOpenSinceMs: now };
+    deps.log(`[sync-batch-delta] coverage low (${verdict.evaluated}/${verdict.total}) — alarm ${res.ok ? 'filed' : `failed: ${res.error}`}`);
+  } else if (!verdict.low && verdict.ratio !== null && coverage.alarmOpenSinceMs !== undefined) {
+    const { alarmOpenSinceMs: _cleared, ...rest } = coverage;
+    coverage = rest;
   }
-  if ((await deps.greenCheckpointRunning()) === true) {
-    await recordSkip(deps, 'green-checkpoint-running');
-    deps.log('[sync-batch-delta] skip: a green-checkpoint suite is running');
-    return emptyResult('skipped', 'green-checkpoint-running');
+  const nextCursor = { ...cursor, coverage };
+  if (result.status === 'skipped' && tickReason) {
+    nextCursor.lastSkipReason = tickReason;
+    nextCursor.lastSkipMs = now;
   }
+  await deps.writeCursor(nextCursor);
+}
+
+interface OldestPrefixSelection {
+  /** Selected in chronological order, beginning immediately after the cursor. */
+  commits: SyncBatch[];
+  /** Set only when the very oldest commit cannot fit the path cap by itself. */
+  oversizedCommit?: { batch: SyncBatch; pathCount: number };
+}
+
+/** Select the oldest contiguous prefix within the cheap path and commit caps.
+ * `listBatches` returns newest first; the cursor must stop at the last commit in
+ * this chronological prefix so any newer backlog remains available next tick. */
+function selectOldestBoundedPrefix(
+  batchesNewestFirst: readonly SyncBatch[],
+  caps: RadiusCaps,
+): OldestPrefixSelection {
+  const commits: SyncBatch[] = [];
+  const paths = new Set<string>();
+  for (let index = batchesNewestFirst.length - 1; index >= 0; index -= 1) {
+    const batch = batchesNewestFirst[index]!;
+    if (commits.length >= caps.maxCommits) break;
+    const newPaths = new Set<string>();
+    for (const changedPath of batch.paths) {
+      if (changedPath && !paths.has(changedPath)) newPaths.add(changedPath);
+    }
+    const nextPathCount = paths.size + newPaths.size;
+    if (nextPathCount > caps.maxPaths) {
+      if (commits.length === 0) {
+        return {
+          commits: [batch],
+          oversizedCommit: { batch, pathCount: unionBatchPaths([batch], caps.maxPaths).totalPaths },
+        };
+      }
+      break;
+    }
+    commits.push(batch);
+    for (const changedPath of newPaths) paths.add(changedPath);
+  }
+  return { commits };
+}
+
+/** A single commit that cannot fit the path or workspace radius — or that exhausts
+ * a leg's time budget on its own — is a bounded, non-evaluated disposition. Advance
+ * only over that commit and preserve the rest of the backlog for the next tick. */
+async function recordOversizedCommit(
+  deps: SyncBatchDeltaDeps,
+  cursor: SyncDeltaCursor,
+  batch: SyncBatch,
+  detail: string,
+  pathCount: number,
+  workspaces: string[],
+  stillOpen: OpenRed[],
+  filed: SyncBatchDeltaFiling[],
+  opts: {
+    status?: 'radius-too-wide' | 'leg-timeout';
+    cursorPatch?: Partial<SyncDeltaCursor>;
+    unconfirmed?: string[];
+    diagnostic?: string;
+  } = {},
+): Promise<SyncBatchDeltaResult> {
+  const status = opts.status ?? 'radius-too-wide';
+  const now = deps.now();
+  const reason = `commit ${batch.sha.slice(0, 12)} explicitly skipped without evaluation: ${detail}; remaining backlog retained`;
+  const next: SyncDeltaCursor = {
+    ...cursor,
+    ...opts.cursorPatch,
+    sha: batch.sha,
+    updatedAtMs: now,
+    lastSkipReason: `${status}: ${reason}`,
+    lastSkipMs: now,
+    lastBatchCommits: 1,
+    openReds: stillOpen,
+  };
+  await deps.writeCursor(next);
+  deps.log(`[sync-batch-delta] ${status}: ${reason}`);
+  return {
+    ...emptyResult(status, reason),
+    ...(opts.diagnostic ? { diagnostic: opts.diagnostic } : {}),
+    batchCount: 1,
+    pathCount,
+    workspaces,
+    filed,
+    unconfirmed: opts.unconfirmed ?? [],
+    cursor: next,
+  };
+}
+
+/** Outcomes that mean the leg ran out of its BUDGET (time or output), as opposed to
+ *  crashing or exiting without a verdict. These are the ones a smaller window can fix. */
+function isBudgetExhaustion(diagnostic: SubprocessDiagnostic | undefined): boolean {
+  return diagnostic?.outcome === 'timeout' || diagnostic?.outcome === 'output-buffer-limit';
+}
+
+function describeDiagnostic(diagnostic: SubprocessDiagnostic | undefined): string {
+  return diagnostic
+    ? `outcome=${diagnostic.outcome} durationMs=${diagnostic.durationMs ?? 'unknown'} exitCode=${diagnostic.exitCode ?? 'unknown'}`
+    : 'execution diagnostics unavailable';
+}
+
+/** The learned window cap after a MEASURED run: double it, and drop it once it is
+ *  back at the static cap (exported for the unit test of the growth curve). */
+export function grownWindowCommitCap(current: number | undefined, staticMaxCommits: number): number | undefined {
+  if (current === undefined) return undefined;
+  const doubled = Math.max(1, current) * 2;
+  return doubled >= staticMaxCommits ? undefined : doubled;
+}
+
+async function runSyncBatchDeltaTick(
+  deps: SyncBatchDeltaDeps,
+  opts?: { caps?: RadiusCaps; maxConfirmRuns?: number; maxAttributionProbes?: number },
+): Promise<SyncBatchDeltaResult> {
+  const caps = opts?.caps ?? DEFAULT_RADIUS_CAPS;
+
+  // ── 1. capacity: idle-priority legs always; load and the gate shrink the budget ──
+  const capacity = evaluateCapacity({
+    reading: deps.hostLoad(),
+    gateRunning: await deps.greenCheckpointRunning(),
+    fullBudget: {
+      maxConfirmRuns: opts?.maxConfirmRuns ?? MAX_CONFIRM_RUNS,
+      maxAttributionProbes: opts?.maxAttributionProbes ?? MAX_ATTRIBUTION_PROBES,
+    },
+  });
+  if (capacity.skip) {
+    await recordSkip(deps, capacity.reason);
+    deps.log(`[sync-batch-delta] skip: ${capacity.reason}`);
+    return emptyResult('skipped', capacity.reason);
+  }
+  if (capacity.mode === 'reduced') deps.log(`[sync-batch-delta] reduced budget: ${capacity.reason}`);
+  const maxConfirm = capacity.budget.maxConfirmRuns;
+  const maxProbes = capacity.budget.maxAttributionProbes;
 
   // ── 2. cursor ──────────────────────────────────────────────────────────────
   const head = await deps.headSha();
@@ -886,37 +1591,88 @@ export async function runSyncBatchDeltaCheck(
     return { ...emptyResult('up-to-date'), filed, cursor: next };
   }
 
-  const union = unionBatchPaths(batches, caps.maxPaths);
+  // A cap learned from earlier leg timeouts narrows the window below the static one.
+  const learnedCap = cursor.windowCommitCap;
+  const windowCaps: RadiusCaps =
+    learnedCap !== undefined && learnedCap < caps.maxCommits ? { ...caps, maxCommits: Math.max(1, learnedCap) } : caps;
+  let prefix = selectOldestBoundedPrefix(batches, windowCaps);
+  if (prefix.oversizedCommit) {
+    const { batch, pathCount } = prefix.oversizedCommit;
+    return recordOversizedCommit(
+      deps,
+      cursor,
+      batch,
+      `${pathCount} changed paths in this single commit exceeds maxPaths=${caps.maxPaths}`,
+      pathCount,
+      [],
+      stillOpen,
+      filed,
+    );
+  }
+  if (prefix.commits.length === 0) return emptyResult('skipped', 'radius-prefix-empty');
+
+  let selectedBatches = [...prefix.commits].reverse(); // newest first for attribution helpers
+  let union = unionBatchPaths(selectedBatches, caps.maxPaths);
   if (union.paths.length === 0) {
     const next: SyncDeltaCursor = {
       ...cursor,
-      sha: head,
+      sha: prefix.commits[prefix.commits.length - 1]!.sha,
       updatedAtMs: deps.now(),
-      lastBatchCommits: batches.length,
+      lastBatchCommits: selectedBatches.length,
       openReds: stillOpen,
     };
     await deps.writeCursor(next);
     return {
       ...emptyResult('nothing-selected', 'no changed paths'),
-      batchCount: batches.length,
+      batchCount: selectedBatches.length,
       filed,
       cursor: next,
     };
   }
 
   // ── 5. radius probe + the cap ──────────────────────────────────────────────
-  const probe = await deps.probeRadius(union.paths);
-  if (!probe) return emptyResult('skipped', 'radius-probe-failed');
-
-  const verdict = evaluateRadius({ probe, union, batchCount: batches.length, caps });
+  let probe: AffectedProbe = { workspaces: [], guards: [], taskCommands: [], derivation: null };
+  let verdict: RadiusVerdict;
+  for (;;) {
+    if (union.paths.length === 0) {
+      probe = { workspaces: [], guards: [], taskCommands: [], derivation: null };
+      verdict = { run: false, reason: 'nothing-selected', detail: 'oldest prefix has no changed paths' };
+      break;
+    }
+    const measured = await deps.probeRadius(union.paths);
+    if (!measured) return emptyResult('skipped', 'radius-probe-failed');
+    probe = measured;
+    verdict = evaluateRadius({ probe, union, batchCount: selectedBatches.length, caps });
+    if (verdict.run || verdict.reason !== 'radius-too-wide') break;
+    if (prefix.commits.length === 1) {
+      const batch = prefix.commits[0]!;
+      return recordOversizedCommit(
+        deps,
+        cursor,
+        batch,
+        `this single commit selects workspaces=${probe.workspaces.length}, tasks=${probe.taskCommands.length}, ` +
+          `guards=${probe.guards.length}; ${verdict.detail}`,
+        union.paths.length,
+        probe.workspaces,
+        stillOpen,
+        filed,
+      );
+    }
+    // Halving the chronological prefix bounds extra enumeration probes to
+    // floor(log2(maxCommits)) + 1 (six with the production cap of 40). The
+    // oldest commit stays at the front; newer work remains behind the cursor.
+    prefix = { commits: prefix.commits.slice(0, Math.max(1, Math.floor(prefix.commits.length / 2))) };
+    selectedBatches = [...prefix.commits].reverse();
+    union = unionBatchPaths(selectedBatches, caps.maxPaths);
+  }
   if (!verdict.run) {
     const next: SyncDeltaCursor = {
       ...cursor,
-      sha: head,
+      sha: prefix.commits[prefix.commits.length - 1]!.sha,
       updatedAtMs: deps.now(),
       lastSkipReason: verdict.reason,
       lastSkipMs: deps.now(),
-      lastBatchCommits: batches.length,
+      lastBatchCommits: selectedBatches.length,
       openReds: stillOpen,
     };
     await deps.writeCursor(next);
@@ -924,7 +1680,7 @@ export async function runSyncBatchDeltaCheck(
     return {
       status: verdict.reason,
       reason: verdict.detail,
-      batchCount: batches.length,
+      batchCount: selectedBatches.length,
       pathCount: union.paths.length,
       workspaces: probe.workspaces,
       filed,
@@ -933,99 +1689,199 @@ export async function runSyncBatchDeltaCheck(
     };
   }
 
-  // ── 6. execute the two legs ────────────────────────────────────────────────
+  // ── 6. execute the two legs — typecheck FIRST, and file its reds at once ───
   // Sequential on purpose: these are the two heaviest subprocesses on the box, and
   // running them concurrently would double the load the radius cap exists to bound.
-  const affected = await deps.runAffected(union.paths);
-  const tsFiles = tsFilesOf(union.paths);
-  const tsc = tsFiles.length > 0 ? await deps.runTsc(tsFiles) : { ok: true, failing: [] as string[] };
-
-  const candidates: Array<{ failing: FailingFile; leg: 'affected-tests' | 'lint-tsc' }> = [];
-  if (!affected.ok) {
-    if (affected.failing === null) {
-      // Red with no terminal break-set line ⇒ the run never reached its verdict.
-      // NOT MEASURED: do not advance, do not file. The next tick re-judges the window.
-      deps.log('[sync-batch-delta] affected run red but named no files — undetermined, cursor held');
-      return {
-        ...emptyResult('skipped', 'affected-run-undetermined'),
-        batchCount: batches.length,
-        pathCount: union.paths.length,
-        workspaces: probe.workspaces,
-        filed,
-      };
-    }
-    for (const f of affected.failing) candidates.push({ failing: f, leg: 'affected-tests' });
-  }
-  for (const f of tsc.failing) candidates.push({ failing: { file: f, workspace: null }, leg: 'lint-tsc' });
-
-  // ── 7. confirm, attribute, file ────────────────────────────────────────────
+  //
+  // tsc runs first and its reds are confirmed, attributed and filed BEFORE the
+  // affected leg starts (green-main-cycle-time-2026-10-08 P-011). The affected leg is
+  // the one that exhausts its 25-minute budget under load; when it ran first, an
+  // undetermined affected run returned early and DISCARDED a measured typecheck
+  // verdict, so a window with a heavy affected radius never surfaced a type error.
+  // Filing before the long leg also bounds a type error's time-to-red to the tsc
+  // budget, not tsc + affected.
   const unconfirmed: string[] = [];
   let probeBudget = maxProbes;
   const alreadyOpen = new Set(stillOpen.map((r) => r.path));
-
-  for (const cand of candidates) {
-    if (alreadyOpen.has(cand.failing.file)) continue;
-    if (cand.leg === 'affected-tests') {
-      if (confirmBudget <= 0) {
-        unconfirmed.push(cand.failing.file);
-        continue;
-      }
-      confirmBudget -= 1;
-      const v = await deps.confirmOne(cand.failing.file);
-      if (v === null || v === true) {
-        // undetermined, or green on its own — CLAUDE.md: never attribute a batch
-        // verdict to every file it named.
-        unconfirmed.push(cand.failing.file);
-        continue;
-      }
+  const commonResult = () => ({
+    batchCount: selectedBatches.length,
+    pathCount: union.paths.length,
+    workspaces: probe.workspaces,
+    filed,
+    unconfirmed,
+  });
+  /** Persist the cursor at the SAME sha with the reds held so far, so a later tick
+   *  re-verifies them instead of re-filing them. `updatedAtMs` is untouched: it
+   *  records the last ADVANCE, and this is not one. */
+  const holdCursor = async (patch: Partial<SyncDeltaCursor> = {}): Promise<SyncDeltaCursor> => {
+    const held: SyncDeltaCursor = { ...cursor, ...patch, openReds: stillOpen };
+    await deps.writeCursor(held);
+    return held;
+  };
+  /** A leg exhausted its budget on this window. A smaller window is the fix: halve the
+   *  learned cap so the next tick judges an older, smaller prefix. A SINGLE commit that
+   *  exhausts the budget cannot shrink further, so it is explicitly skipped and the
+   *  cursor advances past it (the oversized-commit disposition), instead of re-running
+   *  the identical window into the identical timeout forever. */
+  const shrinkWindowOnBudgetExhaustion = async (
+    leg: 'affected-tests' | 'lint-tsc',
+    diagnostic: string,
+  ): Promise<SyncBatchDeltaResult> => {
+    if (prefix.commits.length === 1) {
+      return recordOversizedCommit(
+        deps,
+        cursor,
+        prefix.commits[0]!,
+        `the ${leg} leg exhausted its budget on this single commit (${diagnostic})`,
+        union.paths.length,
+        probe.workspaces,
+        stillOpen,
+        filed,
+        { status: 'leg-timeout', cursorPatch: { windowCommitCap: 1 }, unconfirmed, diagnostic },
+      );
     }
+    const halved = Math.max(1, Math.floor(prefix.commits.length / 2));
+    const reason = `${leg}-budget-exhausted: window halved from ${prefix.commits.length} to ${halved} commit(s)`;
+    const held = await holdCursor({ windowCommitCap: halved, lastSkipReason: reason, lastSkipMs: deps.now() });
+    deps.log(`[sync-batch-delta] ${reason}; ${diagnostic}; cursor held`);
+    return { ...emptyResult('skipped', reason), ...commonResult(), diagnostic, cursor: held };
+  };
 
-    const attribution = await attributeIntroducingBatch({
-      batches,
-      failing: cand.failing,
-      probeBatch: async (paths) => {
-        if (probeBudget <= 0) return null;
-        probeBudget -= 1;
-        return deps.probeRadius(paths);
-      },
-      maxProbes: probeBudget,
-    });
-    const finding = buildRedFinding({ failing: cand.failing, attribution, batches, leg: cand.leg });
-    const res = await deps.fileRed(finding);
-    filed.push({
-      file: cand.failing.file,
-      conditionKey: finding.conditionKey,
-      introducedBy: attribution.batch?.sha ?? null,
-      ...(res.id ? { id: res.id } : {}),
-      ...(res.adopted ? { adopted: true } : {}),
-      ...(res.error ? { error: res.error } : {}),
-    });
-    stillOpen.push({
-      path: cand.failing.file,
-      workspace: cand.failing.workspace,
-      introducedBy: attribution.batch?.sha ?? null,
-      firstSeenMs: deps.now(),
-      confirmations: 1,
-    });
-    alreadyOpen.add(cand.failing.file);
+  const fileCandidates = async (
+    candidates: ReadonlyArray<{ failing: FailingFile; leg: 'affected-tests' | 'lint-tsc' }>,
+  ): Promise<void> => {
+    for (const cand of candidates) {
+      if (alreadyOpen.has(cand.failing.file)) continue;
+      if (cand.leg === 'affected-tests') {
+        if (confirmBudget <= 0) {
+          unconfirmed.push(cand.failing.file);
+          continue;
+        }
+        confirmBudget -= 1;
+        const v = await deps.confirmOne(cand.failing.file);
+        if (v === null || v === true) {
+          // undetermined, or green on its own — CLAUDE.md: never attribute a batch
+          // verdict to every file it named.
+          unconfirmed.push(cand.failing.file);
+          continue;
+        }
+      }
+
+      const attribution = await attributeIntroducingBatch({
+        batches: selectedBatches,
+        failing: cand.failing,
+        probeBatch: async (paths) => {
+          if (probeBudget <= 0) return null;
+          probeBudget -= 1;
+          return deps.probeRadius(paths);
+        },
+        maxProbes: probeBudget,
+      });
+      // P-002: route to the editing agent. Ledger rows are looked up from the oldest
+      // batch in the window (minus a margin: the edit precedes its sweep commit).
+      const oldestMs = selectedBatches.reduce<number | null>(
+        (m, b) => (b.committedAtMs === null ? m : m === null ? b.committedAtMs : Math.min(m, b.committedAtMs)),
+        null,
+      );
+      const lookupFiles = [cand.failing.file, ...(attribution.batch?.paths ?? [])];
+      let editors: EditorHit[] | null = null;
+      if (deps.lookupEditors) {
+        try {
+          editors = await deps.lookupEditors(lookupFiles, (oldestMs ?? deps.now()) - EDITOR_LOOKBACK_MARGIN_MS);
+        } catch {
+          editors = null;
+        }
+      }
+      const author = pickRedAuthor({ failingFile: cand.failing.file, batch: attribution.batch, editors });
+      const finding = buildRedFinding({
+        failing: cand.failing,
+        attribution,
+        batches: selectedBatches,
+        leg: cand.leg,
+        author,
+      });
+      const res = await fileRoutedRed(deps, finding);
+      filed.push({
+        file: cand.failing.file,
+        conditionKey: finding.conditionKey,
+        introducedBy: attribution.batch?.sha ?? null,
+        ...(res.id ? { id: res.id } : {}),
+        ...(res.adopted ? { adopted: true } : {}),
+        ...(res.error ? { error: res.error } : {}),
+      });
+      stillOpen.push({
+        path: cand.failing.file,
+        workspace: cand.failing.workspace,
+        introducedBy: attribution.batch?.sha ?? null,
+        firstSeenMs: deps.now(),
+        confirmations: 1,
+      });
+      alreadyOpen.add(cand.failing.file);
+    }
+  };
+
+  // 6a. typecheck
+  const tsFiles = tsFilesOf(union.paths);
+  const tsc = tsFiles.length > 0 ? await deps.runTsc(tsFiles) : { ok: true, failing: [] as string[] };
+  if (!tsc.ok && tsc.failing.length === 0) {
+    const diagnostic = describeDiagnostic(tsc.diagnostic);
+    if (isBudgetExhaustion(tsc.diagnostic)) return shrinkWindowOnBudgetExhaustion('lint-tsc', diagnostic);
+    // Crashed or exited without naming a file: NOT MEASURED, the next tick re-judges.
+    deps.log(`[sync-batch-delta] tsc run undetermined; ${diagnostic}; cursor held`);
+    const held = await holdCursor();
+    return { ...emptyResult('skipped', 'tsc-undetermined'), ...commonResult(), diagnostic, cursor: held };
+  }
+  const openBeforeTsc = stillOpen.length;
+  await fileCandidates(tsc.failing.map((file) => ({ failing: { file, workspace: null }, leg: 'lint-tsc' as const })));
+  // Persist the typecheck reds before the long leg, so a tick killed mid-affected-run
+  // (routine timeout, restart) re-verifies them next time instead of re-filing them.
+  if (stillOpen.length > openBeforeTsc) await holdCursor();
+
+  // 6b. affected tests
+  const affected = await deps.runAffected(union.paths);
+  if (!affected.ok) {
+    if (affected.failing === null || affected.failing.length === 0) {
+      // Missing or explicitly empty terminal break-set ⇒ no measured file-level verdict.
+      // NOT MEASURED: do not advance or call this green. The typecheck reds above are
+      // already filed and held; the window is re-judged (smaller, if the budget ran out).
+      const breakSet = affected.failing === null ? 'missing-terminal-break-set' : 'empty-terminal-break-set';
+      const diagnostic = describeDiagnostic(affected.diagnostic);
+      if (isBudgetExhaustion(affected.diagnostic)) return shrinkWindowOnBudgetExhaustion('affected-tests', diagnostic);
+      deps.log(`[sync-batch-delta] affected run undetermined (${breakSet}); ${diagnostic}; cursor held`);
+      const held = await holdCursor();
+      return { ...emptyResult('skipped', `affected-run-${breakSet}`), ...commonResult(), diagnostic, cursor: held };
+    }
+    // ── 7. confirm, attribute, file ──────────────────────────────────────────
+    await fileCandidates(affected.failing.map((failing) => ({ failing, leg: 'affected-tests' as const })));
   }
 
+  // Both legs measured this window: grow the learned cap back toward the static one.
+  const grownCap = grownWindowCommitCap(cursor.windowCommitCap, caps.maxCommits);
+  const judgedSha = prefix.commits[prefix.commits.length - 1]!.sha;
+  // P-012: a known-good point only when BOTH legs were green as run (an unconfirmed red is still
+  // a red leg) and nothing is held open — otherwise the previous known-good point is carried.
+  const passed = tsc.ok && affected.ok && filed.length === 0 && stillOpen.length === 0;
+  const lastPassed: KnownGoodPoint | undefined = passed
+    ? { sha: judgedSha, atMs: deps.now() }
+    : cursor.lastPassed;
   const next: SyncDeltaCursor = {
-    sha: head,
+    sha: judgedSha,
     updatedAtMs: deps.now(),
-    lastBatchCommits: batches.length,
+    lastBatchCommits: selectedBatches.length,
     openReds: stillOpen,
+    ...(grownCap !== undefined ? { windowCommitCap: grownCap } : {}),
+    ...(lastPassed ? { lastPassed } : {}),
   };
   await deps.writeCursor(next);
 
   const red = filed.length > 0;
   deps.log(
-    `[sync-batch-delta] ${batches.length} commit(s), ${union.paths.length} path(s), ` +
+    `[sync-batch-delta] ${selectedBatches.length} commit(s), ${union.paths.length} path(s), ` +
       `${probe.workspaces.length} workspace(s) -> ${red ? `${filed.length} red filed/refreshed` : 'green'}`,
   );
   return {
     status: red ? 'red' : 'green',
-    batchCount: batches.length,
+    batchCount: selectedBatches.length,
     pathCount: union.paths.length,
     workspaces: probe.workspaces,
     filed,

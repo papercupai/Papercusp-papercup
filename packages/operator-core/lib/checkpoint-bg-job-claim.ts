@@ -34,12 +34,12 @@
  */
 
 /**
- * Keyword-level match for a checkpoint that cites a background job/task as
- * evidence of in-flight or completed work. Deliberately broad (a false
- * positive only prompts a verification the reader should do anyway) rather
- * than trying to parse out a specific pid/log — the prose shape varies too
- * much to pattern-match precisely, and precision isn't the point: the point
- * is "don't trust this claim without checking."
+ * Match a checkpoint that cites detached/session-local execution as evidence of
+ * in-flight or completed work. A generic statement that a server-side operation
+ * may continue "in the background" is not enough: it does not imply a process
+ * owned by the checkpoint writer. A `task_id`/`bash_id` marker is different:
+ * count it only when a handle-shaped value follows, so an SQL column name alone
+ * is not a background-job claim.
  */
 /**
  * WI-38297 — WIDENED, because the original alternation MISSED the single most common
@@ -57,20 +57,32 @@
  *                                              WI-3578, 34 days       → MISSED
  *
  * So every pickup-path warning (work_items:get / claim / scheduler:get_next) stayed
- * silent on exactly the checkpoints whose promised result could never arrive. Added:
- * bare "in (the) background", and the `bash id` / `task id` job-handle forms — a
- * checkpoint citing a bash/task id is citing a reference that cannot outlive its
- * author's process, which is the whole point.
+ * silent on exactly the checkpoints whose promised result could never arrive. Added
+ * "running in (the) background" (the detached-execution wording in those checkpoints),
+ * and the `bash id` / `task id` forms when followed by a handle-shaped token — a
+ * checkpoint citing a native handle is citing a reference that cannot outlive its
+ * author's process, which is the whole point. A bare SQL column such as `RETURNING
+ * task_id` does not name such a handle. Generic "may continue in the background" wording
+ * is excluded because it also describes server-side deferred work, not only a
+ * writer-owned process.
  *
- * Widening is the right direction for THIS classifier specifically (see the header):
- * it is warn-only and deliberately broad, so a false positive costs a verification the
- * reader should do anyway, while a false negative costs a 17-day strand. The negative
+ * The detector is warn-only, but its warning names the writer's process/shell and asks
+ * for a live handle check. Keep it specific enough that generic background work does
+ * not send readers to inspect a nonexistent session-local job. The negative
  * controls that keep it honest ("this task is about…", "filed a follow-up job in the
  * queue") are pinned in checkpoint-bg-job-claim.test.ts and still hold — `task[_ -]?id`
  * cannot match "task identifier" (the trailing \b rejects it).
  */
 const BG_JOB_REFERENCE_RE =
-  /\b(?:bg\s*jobs?|background\s+(?:job|task|process|verification)s?|in\s+(?:the\s+)?background|run_in_background|bash[_\s-]?id|task[_\s-]?id|in[- ]?flight\s+(?:verification|job|task)s?)\b/i;
+  /\b(?:bg\s*jobs?|background\s+(?:job|task|process|verification)s?|(?:running|executing|launched|started)\s+in\s+(?:the\s+)?background|run_in_background|in[- ]?flight\s+(?:verification|job|task)s?)\b/i;
+
+// Native task IDs are generated handles (typically mixed letters and digits);
+// requiring the value after the label prevents a generic SQL `task_id` column
+// from being treated as an in-flight job. Bash IDs also include numeric PIDs.
+const TASK_JOB_HANDLE_RE =
+  /\btask[_\s-]?id\s*(?:[:=#]\s*)?(?:[a-z0-9_-]*[a-z][a-z0-9_-]*\d[a-z0-9_-]*|\d{4,})\b/i;
+const BASH_JOB_HANDLE_RE =
+  /\bbash[_\s-]?id\s*(?:[:=#]\s*)?(?:[a-z0-9_-]*[a-z][a-z0-9_-]*\d[a-z0-9_-]*|\d{4,})\b/i;
 
 export interface BgJobCheckpointWarning {
   /** True when the checkpoint text cites a background job/task as evidence. */
@@ -84,7 +96,12 @@ export function detectBgJobCheckpointClaim(
   checkpoint: string | null | undefined,
 ): BgJobCheckpointWarning {
   const text = (checkpoint ?? '').trim();
-  if (!text || !BG_JOB_REFERENCE_RE.test(text)) return { detected: false };
+  if (
+    !text ||
+    (!BG_JOB_REFERENCE_RE.test(text) && !TASK_JOB_HANDLE_RE.test(text) && !BASH_JOB_HANDLE_RE.test(text))
+  ) {
+    return { detected: false };
+  }
   return {
     detected: true,
     reason:

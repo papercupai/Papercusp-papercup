@@ -17,7 +17,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeNewApp, ensureGitignore, type NewAppArgs, type NewAppDeps } from './new-app';
+import newAppTool, { composeNewApp, ensureGitignore, type NewAppArgs, type NewAppDeps } from './new-app';
 import type { TemplateListing, TemplateGuide } from '../../cupboard/templates';
 
 const REF = 'papercusp-webapp';
@@ -133,6 +133,13 @@ describe('composeNewApp', () => {
     expect(payload.filesCopied).toEqual(
       expect.arrayContaining(['GUIDE.md', 'package.json', 'PROTOCOL.md']),
     );
+    // MCP validates this contract after the durable materialization. A mismatch
+    // would hide success from the caller and invite a duplicate create attempt.
+    const outputSchema = (newAppTool as unknown as {
+      result: { safeParse: (value: unknown) => { success: boolean } };
+    }).result;
+    expect(outputSchema.safeParse(payload).success).toBe(true);
+    expect(outputSchema.safeParse({ ...payload, filesCopied: payload.filesCopied.length }).success).toBe(false);
     expect(payload.template).toMatchObject({ ref: REF, id: LISTING.id });
     expect(payload.guideBranch).toBe('main');
     expect(payload.sourceCheckout).toEqual({ root: '/fake/checkout', sha: 'deadbeef', branch: 'main' });

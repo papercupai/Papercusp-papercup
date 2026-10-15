@@ -14,7 +14,7 @@ vi.mock('./spawner-ipc-client', () => ({
 }));
 vi.mock('./sidecar-exec-lifetime', () => ({ sidecarContainmentCurrent: mock.preflight, reapDeadSidecar: mock.reap }));
 
-import { isSidecarInfrastructureFault, runCommandViaSpawnerSidecar } from './git-via-sidecar';
+import { isSidecarInfrastructureFault, runCommandViaSpawnerSidecar, runGitStdinViaSpawnerSidecar } from './git-via-sidecar';
 
 const fence = { serverGeneration: 'original-server', connectionId: 'original-connection' };
 const capabilities = { processExecFence: fence, processExecContainment: { pid: 123, identity: 'original' } };
@@ -46,6 +46,9 @@ describe('cancellable process:exec caller', () => {
       cwd: '/tmp', timeoutMs: 5000, signal: controller.signal, onProgress,
     });
     await vi.waitFor(() => expect(mock.call).toHaveBeenCalledWith('process:exec', expect.anything(), expect.anything()));
+    expect(mock.call.mock.calls.find(([method]) => method === 'process:exec')?.[1]).toMatchObject({
+      callerLabel: 'git-via-sidecar.runCommandViaSpawnerSidecar',
+    });
     expect(onProgress).toHaveBeenCalledOnce();
     controller.abort();
     controller.abort();
@@ -58,6 +61,59 @@ describe('cancellable process:exec caller', () => {
     expect(settled).toBe(false);
     finish({ code: -1, stdout: '', stderr: 'aborted by caller' });
     expect(await run).toMatchObject({ code: -1, stderr: 'aborted by caller' });
+  });
+
+  it('labels stdin handoff executions with their static callsite identity', async () => {
+    mock.call.mockResolvedValue({ code: 0, stdoutBytes: 0, stderr: '' });
+
+    const result = await runGitStdinViaSpawnerSidecar([], '/tmp', '', 5000, {});
+
+    expect(result).toMatchObject({ code: 0, stdout: Buffer.alloc(0), stderr: '' });
+    expect(mock.call).toHaveBeenCalledWith('process:exec', expect.objectContaining({
+      callerLabel: 'git-via-sidecar.runGitStdinViaSpawnerSidecar',
+    }), expect.anything());
+  });
+
+  it('logs the child PID, elapsed time and timeout limits on a post-dispatch RPC timeout', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mock.call.mockImplementation((method: string, _params: unknown, opts?: {
+      onRequestId?: (id: number, connectionId: string) => void;
+      onPid?: (pid: number) => void;
+    }) => {
+      if (method === 'spawn:cancel') return Promise.resolve(capabilities);
+      if (method === 'process:exec') {
+        opts?.onRequestId?.(17, 'client-connection-17');
+        opts?.onPid?.(4242);
+        return Promise.reject(new Error('RPC request timeout: process:exec'));
+      }
+      if (method === 'process:drain') return Promise.resolve({ exitConfirmed: true, result: null });
+      throw new Error(`unexpected RPC ${method}`);
+    });
+
+    const result = await runCommandViaSpawnerSidecar('git', ['gc', '--prune=now'], {
+      timeoutMs: 5000,
+      idleTimeoutMs: 1000,
+      rpcTimeoutMs: 9000,
+      signal: new AbortController().signal,
+    });
+
+    expect(result.stderr).toContain('not replayed');
+    const fault = warning.mock.calls.find(([tag]) => tag === '[spawner-process-exec-fault]')?.[1] as
+      Record<string, unknown> | undefined;
+    expect(fault).toMatchObject({
+      event: 'rpc-timeout',
+      clientConnectionId: 'client-connection-17',
+      serverGeneration: fence.serverGeneration,
+      connectionId: fence.connectionId,
+      requestId: 17,
+      method: 'process:exec',
+      childPid: 4242,
+      childTimeoutMs: 5000,
+      childIdleTimeoutMs: 1000,
+      rpcTimeoutMs: 9000,
+    });
+    expect(fault?.elapsedMs).toEqual(expect.any(Number));
+    expect(fault?.elapsedMs).toBeGreaterThanOrEqual(0);
   });
 
   it('refuses dispatch without verified containment, so fallback cannot duplicate work', async () => {

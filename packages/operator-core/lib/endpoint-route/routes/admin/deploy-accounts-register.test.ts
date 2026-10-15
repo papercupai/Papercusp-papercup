@@ -5,7 +5,7 @@
  * so the Accounts tab refreshes after an add (P-002 UI wiring). The fs write +
  * account-pool logic are mocked; we assert what reaches registerAccount.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
   registerAccount: vi.fn((pool: { accounts: unknown[] }, input: Record<string, unknown>) => ({
@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   updateAccountPool: vi.fn(async (mutator: (p: { accounts: unknown[] }) => unknown) => mutator({ accounts: [] })),
   accountStatus: vi.fn(async () => [] as unknown[]),
   notifySyncInvalidate: vi.fn(),
+  gatewayFetch: vi.fn(),
   writeFile: vi.fn(),
   mkdir: vi.fn(),
   chmod: vi.fn(),
@@ -47,6 +48,9 @@ function lastRegisterInput() {
 }
 
 beforeEach(() => {
+  h.gatewayFetch.mockReset();
+  h.gatewayFetch.mockResolvedValue(new Response(JSON.stringify({ ok: true, changed: true, version: 7, accounts: ['aviynw_3'] })));
+  vi.stubGlobal('fetch', h.gatewayFetch);
   h.registerAccount.mockClear();
   h.updateAccountPool.mockClear();
   h.accountStatus.mockClear();
@@ -59,6 +63,10 @@ beforeEach(() => {
   h.mkdir.mockResolvedValue(undefined);
   h.chmod.mockReset();
   h.chmod.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su-c7b4c)', () => {
@@ -88,6 +96,70 @@ describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su
     expect(lastRegisterInput()?.credentialRef).toMatch(/^token:/);
   });
 
+  it('registers an Anthropic API key privately with API-key authentication, without returning the key', async () => {
+    const key = 'sk-ant-api03-test-console-credential';
+    const { status, body } = await post({
+      accountId: 'console-api', provider: 'claude', credentialType: 'api-key', value: key,
+    });
+    expect(status).toBe(200);
+    expect(lastRegisterInput()).toMatchObject({
+      id: 'console-api', provider: 'claude',
+      credentialRef: 'apikey:file:/tmp/test-papercusp/deploy-credentials/console-api.anthropic-api-key',
+    });
+    expect(h.writeFile).toHaveBeenCalledWith(
+      '/tmp/test-papercusp/deploy-credentials/console-api.anthropic-api-key', key, { mode: 0o600 },
+    );
+    expect(h.chmod).toHaveBeenCalledWith('/tmp/test-papercusp/deploy-credentials/console-api.anthropic-api-key', 0o600);
+    expect(h.gatewayFetch).toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain(key);
+  });
+
+  it('joins a line-wrapped Console key before storing it', async () => {
+    expect((await post({ accountId: 'wrapped-api', credentialType: 'api-key', value: 'sk-ant-api03-first\nsecond\n' })).status).toBe(200);
+    expect(h.writeFile).toHaveBeenCalledWith(expect.any(String), 'sk-ant-api03-firstsecond', { mode: 0o600 });
+  });
+
+  it('accepts user-scoped Anthropic API keys as API credentials', async () => {
+    const key = ['sk', 'ant', 'usr', 'test-user-scoped-key'].join('-');
+    const { status } = await post({ accountId: 'user-api', credentialType: 'api-key', value: key, anthropicWorkspaceId: 'wrkspc_user' });
+    expect(status).toBe(200);
+    expect(lastRegisterInput()?.credentialRef).toMatch(/^apikey:file:/);
+    expect(h.writeFile).toHaveBeenCalledWith(expect.any(String), key, { mode: 0o600 });
+    expect(lastRegisterInput()).toMatchObject({ anthropicWorkspaceId: 'wrkspc_user' });
+  });
+
+  it('refuses a user-scoped key without a workspace, and malformed workspace IDs, before storing a secret', async () => {
+    const key = ['sk', 'ant', 'usr', 'test-user-scoped-key'].join('-');
+    const missing = await post({ accountId: 'missing-workspace', credentialType: 'api-key', value: key });
+    expect(missing.status).toBe(400);
+    expect(missing.body?.error).toMatch(/require an Anthropic workspace ID/);
+    const invalid = await post({ accountId: 'invalid-workspace', credentialType: 'api-key', value: key, anthropicWorkspaceId: 'not-a-workspace' });
+    expect(invalid.status).toBe(400);
+    expect(h.writeFile).not.toHaveBeenCalled();
+  });
+
+  it.each([OAT, '{"claudeAiOauth":{"accessToken":"oauth"}}', 'not-an-api-key'])('refuses a non-Console credential in API-key mode', async value => {
+    const { status, body } = await post({ accountId: 'wrong-kind', credentialType: 'api-key', value });
+    expect(status).toBe(400);
+    expect(body?.error).toMatch(/Anthropic Console API key/);
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
+
+  it('requires explicit API-key mode rather than treating a Console key as a subscription', async () => {
+    const { status, body } = await post({ accountId: 'wrong-mode', value: 'sk-ant-api03-test' });
+    expect(status).toBe(400);
+    expect(body?.error).toMatch(/choose Anthropic API key/);
+    expect(h.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses API-key mode for Codex and unknown credential types before writing', async () => {
+    expect((await post({ accountId: 'wrong-provider', provider: 'codex', credentialType: 'api-key', value: 'sk-ant-api03-test' })).status).toBe(400);
+    expect((await post({ accountId: 'wrong-type', credentialType: 'unknown', value: OAT })).status).toBe(400);
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.registerAccount).not.toHaveBeenCalled();
+  });
+
   it('registers a Codex env credential without writing a token file', async () => {
     const { status } = await post({ accountId: 'codex-main', provider: 'codex', value: 'env:OPENAI_API_KEY' });
     expect(status).toBe(200);
@@ -114,11 +186,41 @@ describe('POST /api/admin/deploy-accounts/register — egress + invalidation (su
     );
   });
 
+  it('hot-applies an updated Codex account to the live gateway after saving it', async () => {
+    const { status, body } = await post({
+      accountId: 'aviynw_3',
+      provider: 'codex',
+      value: 'env:PAPERCUSP_TEST_OPENAI_KEY',
+    });
+    expect(status).toBe(200);
+    expect(h.gatewayFetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:8788/admin/reload',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(body?.gatewayReload).toEqual({ appliedLive: true, changed: true, version: 7 });
+  });
+
+  it('keeps a durable registration successful and reports when live apply fails', async () => {
+    h.gatewayFetch.mockRejectedValueOnce(new Error('connection refused'));
+    const { status, body } = await post({
+      accountId: 'aviynw_3',
+      provider: 'codex',
+      value: 'env:PAPERCUSP_TEST_OPENAI_KEY',
+    });
+    expect(status).toBe(200);
+    expect(body?.ok).toBe(true);
+    expect(body?.gatewayReload).toMatchObject({
+      appliedLive: false,
+      warning: expect.stringMatching(/next ~60s pool poll/),
+    });
+  });
+
   it('400s an invalid accountId without writing anything', async () => {
     const { status } = await post({ accountId: 'bad id!', value: OAT });
     expect(status).toBe(400);
     expect(h.registerAccount).not.toHaveBeenCalled();
     expect(h.notifySyncInvalidate).not.toHaveBeenCalled();
+    expect(h.gatewayFetch).not.toHaveBeenCalled();
   });
 
   // 2026-07-03 hardening: the two ways a paste goes wrong.

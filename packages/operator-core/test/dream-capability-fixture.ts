@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { getPilotCapabilityManifest } from '../lib/dream/capability-catalog';
 import { capabilityHash, capabilityUnitHash, type CapabilityPacket } from '../lib/dream/capability-contracts';
 import { CAPABILITY_DREAM_RESULT_VERSION, type CapabilityProposal } from '../lib/dream/capability-pass';
+import { CAPABILITY_EXTRACTION_RECIPE, CAPABILITY_SUMMARY_PROMPT } from '../lib/dream/capability-packets';
 import {
   capabilityContentVersion,
   capabilityPairKey,
@@ -84,8 +85,8 @@ export async function createDreamCapabilityFixture(workspaceId = 'ws-capability-
       manifestRevision: 'ledger-fixture-v1',
       sources,
       extraction: {
-        recipeVersion: 'scanned-anchors-and-radius-v2',
-        promptVersion: 'manifest-facets-v1',
+        recipeVersion: CAPABILITY_EXTRACTION_RECIPE,
+        promptVersion: CAPABILITY_SUMMARY_PROMPT,
         capturedAt: '2026-09-07T14:00:00Z',
         sourceCommit: null,
         dirty: true,

@@ -5,17 +5,27 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
+import { withNamedQueryDiagnosticContext, namedQueryStageTimings } from '../agent-tools/db-diagnostic-correlation-wiring';
+import { observeResolve, __resetResolveObservability } from './resolve-observability';
 
 const {
   readWorkItemsPageFromStoreMock,
   readWorkItemsSummaryFromStoreMock,
+  readWorkItemPresentationsMock,
   getEnrichedWorkItemMock,
   activeWorkspaceIdMock,
+  resolveDependencyGraphEdgesMock,
 } = vi.hoisted(() => ({
   readWorkItemsPageFromStoreMock: vi.fn(),
   readWorkItemsSummaryFromStoreMock: vi.fn(),
+  readWorkItemPresentationsMock: vi.fn(async () => new Map()),
   getEnrichedWorkItemMock: vi.fn(async (_h: string, _id: string) => null as unknown),
   activeWorkspaceIdMock: vi.fn(() => 'workspace-test'),
+  resolveDependencyGraphEdgesMock: vi.fn(async () => [] as unknown[]),
+}));
+
+vi.mock('./dependency-graph-edges', () => ({
+  resolveDependencyGraphEdges: resolveDependencyGraphEdgesMock,
 }));
 
 vi.mock('../endpoint-route/routes/harness/work-items', () => ({
@@ -33,6 +43,7 @@ vi.mock('./work-items-list-query', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./work-items-list-query')>()),
   readWorkItemsPageFromStore: readWorkItemsPageFromStoreMock,
   readWorkItemsSummaryFromStore: readWorkItemsSummaryFromStoreMock,
+  readWorkItemPresentations: readWorkItemPresentationsMock,
 }));
 
 describe('workItems P-006 (byHarness slim + detail)', () => {
@@ -51,6 +62,11 @@ describe('workItems P-006 (byHarness slim + detail)', () => {
       readWorkItemsSummaryFromStoreMock.mockResolvedValue([{ kind: 'totals', total: 0, matched: 0 }]);
       getEnrichedWorkItemMock.mockClear();
       activeWorkspaceIdMock.mockClear();
+      readWorkItemPresentationsMock.mockReset();
+      readWorkItemPresentationsMock.mockResolvedValue(new Map());
+      resolveDependencyGraphEdgesMock.mockReset();
+      resolveDependencyGraphEdgesMock.mockResolvedValue([]);
+      __resetResolveObservability();
     });
     afterEach(() => vi.resetModules());
 
@@ -116,6 +132,82 @@ describe('workItems P-006 (byHarness slim + detail)', () => {
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('workItems.detail', { harnessSlug: 'papercusp', id: 'WI-nope' })) as unknown[];
       expect(rows).toEqual([]);
+    });
+
+    it.each(['enrichment', 'presentation'] as const)('timeout logging identifies a pending detail %s stage before the read settles', async (leg) => {
+      let release!: () => void;
+      let entered!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      getEnrichedWorkItemMock.mockResolvedValue({ id: 'WI-7', summary: 'full item' });
+      if (leg === 'enrichment') {
+        getEnrichedWorkItemMock.mockImplementation(async () => {
+          entered();
+          await pending;
+          return { id: 'WI-7', summary: 'full item' };
+        });
+      } else {
+        readWorkItemPresentationsMock.mockImplementation(async () => {
+          entered();
+          await pending;
+          return new Map();
+        });
+      }
+      const { resolveNamedQueryV2: resolve } = await import('./index');
+      await withNamedQueryDiagnosticContext('workItems.detail', async requestId => {
+        const read = resolve('workItems.detail', { harnessSlug: 'papercusp', id: 'WI-7' });
+        try {
+          await ready;
+          const lines: string[] = [];
+          observeResolve({ name: 'workItems.detail', argsJson: '{}', elapsedMs: 10_000,
+            error: { name: 'QueryResolveTimeoutError', message: 'deadline' }, emit: line => lines.push(line) });
+          expect(lines).toHaveLength(1);
+          const diagnostic = JSON.parse(lines[0].split(' stages=')[1]);
+          expect(diagnostic.requestId).toBe(requestId);
+          expect(diagnostic.stages).toContainEqual(expect.objectContaining({
+            stage: `work-item-detail-${leg}`, outcome: 'pending', elapsedMs: expect.any(Number),
+          }));
+          if (leg === 'enrichment') expect(readWorkItemPresentationsMock).not.toHaveBeenCalled();
+        } finally {
+          release();
+          expect(await read).toMatchObject([{ id: 'WI-7', summary: 'full item' }]);
+        }
+        expect(namedQueryStageTimings()?.stages.every(stage => stage.outcome === 'fulfilled')).toBe(true);
+      });
+    });
+
+    it('dependency timeout diagnostics distinguish SQL from its completed imports without changing edge scope', async () => {
+      let release!: () => void;
+      let entered!: () => void;
+      const pending = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      const edges = [{ blockedId: 'WI-7', blockerId: null, blockerRef: 'EI-dangling' }];
+      resolveDependencyGraphEdgesMock.mockImplementation(async () => {
+        entered();
+        await pending;
+        return edges;
+      });
+      const { resolveNamedQueryV2: resolve } = await import('./index');
+      await withNamedQueryDiagnosticContext('workItems.depEdges', async requestId => {
+        const read = resolve('workItems.depEdges', { harnessSlug: 'papercusp', limit: 5000 });
+        try {
+          await ready;
+          const lines: string[] = [];
+          observeResolve({ name: 'workItems.depEdges', argsJson: '{}', elapsedMs: 10_000,
+            error: { name: 'QueryResolveTimeoutError', message: 'deadline' }, emit: line => lines.push(line) });
+          const diagnostic = JSON.parse(lines[0].split(' stages=')[1]);
+          expect(diagnostic).toMatchObject({ requestId, stages: [
+            { stage: 'work-item-dependencies-import', outcome: 'fulfilled' },
+            { stage: 'work-item-dependencies-sql', outcome: 'pending' },
+          ] });
+          expect(resolveDependencyGraphEdgesMock).toHaveBeenCalledWith(expect.anything(), {
+            workspaceId: 'workspace-test', harnessSlug: 'papercusp', limit: 5000,
+          });
+        } finally {
+          release();
+          expect(await read).toEqual(edges);
+        }
+      });
     });
   });
 });

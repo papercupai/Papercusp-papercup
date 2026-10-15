@@ -1,0 +1,160 @@
+{
+  "schemaVersion": "p008-owner-update-completion-v1",
+  "workItem": "WI-10002830",
+  "sampleRef": "docs/evidence/p008-owner-update-same-query-2026-10-01-fire99.json",
+  "sampleSha256": "4cebd274f32162b1cd92367ede8a1c844903374f3bb2c605ec791895bff0334b",
+  "backendPid": 3565425,
+  "applicationName": "pcusp:org-admin:p3240705",
+  "queryStart": "2026-10-01T17:48:12.265015Z",
+  "queryHash": "30af7b390b49a1d85cdb105be9582eb2",
+  "queryId": "-9170796359460262385",
+  "completion": {
+    "taskId": "0mupvijir1678503b4d",
+    "bashId": "9d90b027-ab5",
+    "exitCode": 0,
+    "receipt": {
+      "path": "/var/log/postgresql/postgresql-18-main.log",
+      "fileBytes": 49136710,
+      "tailStart": 32359494,
+      "tailBytes": 16777216,
+      "records": 23893,
+      "selected": 2,
+      "rows": [
+        {
+          "at": "2026-10-01T18:06:55.893000+00:00",
+          "recordSha256": "55b90249e5549c87323aea49a897fe61748fa457f6a123df8a31319b369315bf",
+          "bytes": 503,
+          "durationMs": 1123628.046,
+          "ownerUpdate": true,
+          "hasUnnest": true,
+          "hasWorkspaceGuard": true,
+          "hasSourceGuard": true,
+          "hasSessionGuard": true,
+          "hasOwnerGuard": true,
+          "hasParameterLabel": false,
+          "sourceKind": null,
+          "parameters": [],
+          "error": false
+        },
+        {
+          "at": "2026-10-01T18:06:55.893000+00:00",
+          "recordSha256": "de2f1f2ff7f963d61f6601a15031d9132e97448c01981eb0ebef76b0f856cd23",
+          "bytes": 2198,
+          "durationMs": null,
+          "ownerUpdate": false,
+          "hasUnnest": false,
+          "hasWorkspaceGuard": false,
+          "hasSourceGuard": false,
+          "hasSessionGuard": false,
+          "hasOwnerGuard": false,
+          "hasParameterLabel": true,
+          "sourceKind": "claude",
+          "parameters": [
+            {
+              "position": 1,
+              "chars": 1027,
+              "closedArray": false,
+              "sha256": "15fd1f7a866483e67239aeca4bc86c8a3cd17c97de38e7464fd7cb9f600715e0"
+            },
+            {
+              "position": 2,
+              "chars": 1027,
+              "closedArray": false,
+              "sha256": "4126f76a50f5d467e8e1ac9e6db2edc91491d6972d1e97599caaf57170f13cb7"
+            }
+          ],
+          "error": false
+        }
+      ]
+    }
+  },
+  "ingestion": {
+    "taskId": "0mupvnhf91aigkttkil",
+    "bashId": "6876726d-40b",
+    "exitCode": 0,
+    "receipt": {
+      "exitCode": 0,
+      "window": [
+        "2026-10-01T18:06:50Z",
+        "2026-10-01T18:21:00Z"
+      ],
+      "observed": 2614,
+      "parseErrors": 0,
+      "selected": 1,
+      "rows": [
+        {
+          "timestamp": "1790878462064784",
+          "pid": "3240705",
+          "invocation": "916091e2a71d4170bf73a5bad0e4e6c3",
+          "unit": "papercusp-bg-host.service",
+          "sha256": "07f7979eb51279af9a5523114ac6f6b2232c68e2628d304e72f0508027aa1515",
+          "chars": 919,
+          "hasPhaseMs": true,
+          "hasMetadataBackfills": true,
+          "phaseMs": {
+            "setup": 39.7,
+            "history": 1821.3,
+            "discovery": 222651.2,
+            "state": 9431.3,
+            "metadata": 287.8,
+            "decode": 80362.9,
+            "writes": 173919.3,
+            "metadataBackfill": 1126606.3,
+            "chats": 172.5,
+            "other": 104.6
+          },
+          "metadataBackfills": [
+            {
+              "sourceKind": "claude",
+              "operation": "sessionOwners",
+              "requested": 2985,
+              "startedAtMs": 1790876892252,
+              "durationMs": 1123667.8,
+              "status": "completed",
+              "updated": 3873
+            },
+            {
+              "sourceKind": "omp",
+              "operation": "sessionOwners",
+              "requested": 91,
+              "startedAtMs": 1790878178828,
+              "durationMs": 180.5,
+              "status": "completed",
+              "updated": 0
+            },
+            {
+              "sourceKind": "codex",
+              "operation": "sessionOwners",
+              "requested": 2710,
+              "startedAtMs": 1790878459133,
+              "durationMs": 1018.9,
+              "status": "completed",
+              "updated": 0
+            },
+            {
+              "sourceKind": "codex",
+              "operation": "codexAdvSessions",
+              "requested": 148,
+              "startedAtMs": 1790878460152,
+              "durationMs": 1739.2,
+              "status": "completed",
+              "updated": 1
+            }
+          ],
+          "durationMs": null,
+          "summary": "[session-ingest] +340 turn(s) +3118 part(s) from 154 file(s) + 0 chat turn(s) (8221 scanned, 0 error(s), 1615397ms) phases={\"setup\":39.7,\"history\":1821.3,\"discovery\":222651.2,\"state\":9431.3,\"metadata\":287.8,\"decode\":80362.9,\"writes\":173919.3,\"metadat"
+        }
+      ],
+      "omitted": 0
+    }
+  },
+  "sourceSha256": "81276d349520ea93952d19232ede4a677c75a23783984d3b12215177f4395789",
+  "fixtureSha256": "9f477fd79049d95749d27d868e8f84166236ae718629ae857b3d2c76fbe4729b",
+  "limits": [
+    "Natural SQL completion and bounded same-query interval; not the executed access plan.",
+    "Requested count is the observed 2985-session map; its complete values and live matching-turn distribution are unrecovered.",
+    "Only a three-second IO interval was sampled; no whole-query sustained wait decomposition or app-impact attribution.",
+    "Instrumentation fields were observed live; no immutable loaded-source or whole-import-graph provenance claim.",
+    "WI-10002830, R-8 and final shipment remain open."
+  ]
+}

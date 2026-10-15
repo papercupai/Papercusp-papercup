@@ -17,6 +17,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -104,6 +105,91 @@ describe('check-sidecar-fallback-reported guard', () => {
     const [first] = findUnreportedFallbacks(bad);
     expect(first?.line).toBeGreaterThan(0);
     expect(first?.call).toBe('runGitViaSpawnerSidecar');
+  });
+
+  it('accepts an injected callback whose production default calls the reporter', () => {
+    const source = `
+      function run(seams = {}) {
+        const report = seams.onFallback ?? ((e: unknown) => noteSidecarFallback('x', e));
+        try { return await runGitViaSpawnerSidecar(args, cwd); }
+        catch (e) { report(e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(0);
+    expect(findUnreportedFallbacks(source.replace('noteSidecarFallback', 'console.warn'))).toHaveLength(1);
+  });
+
+  it('accepts a const reporter alias in the governing lexical scope', () => {
+    const source = `
+      function run() {
+        const report = noteSidecarFallback;
+        try { return await runGitStdinViaSpawnerSidecar(args, cwd); }
+        catch (e) { report('x', e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(0);
+    expect(findUnreportedFallbacks(source.replace('const report =', 'let report ='))).toHaveLength(1);
+  });
+
+  it('does not trust an unrelated or shadowed callback with the same name', () => {
+    const source = `
+      const report = noteSidecarFallback;
+      function run(report) {
+        try { return await runGitViaSpawnerSidecar(args, cwd); }
+        catch (e) { report(e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(1);
+  });
+
+  it('does not count a reporter after the catch or inside an uncalled callback', () => {
+    const source = `
+      try { return await runGitViaSpawnerSidecar(args, cwd); }
+      catch (e) { const unused = () => noteSidecarFallback('x', e); }
+      noteSidecarFallback('other', new Error());
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(1);
+  });
+
+  it('recognizes the maintained watchdog callback and detects removal of its default reporter', () => {
+    const source = readFileSync(path.join(REPO_ROOT, 'packages/operator-core/lib/release/worktree-coverage-watchdog.ts'), 'utf8');
+    expect(findUnreportedFallbacks(source)).toHaveLength(0);
+    expect(findUnreportedFallbacks(source.replace("noteSidecarFallback('worktree-coverage', e)", 'console.warn(e)'))).toHaveLength(1);
+  });
+
+  // WI-10006774: an injected seam with a sidecar DEFAULT reaches the sidecar through an
+  // indirect callee — `(seams.viaSidecar ?? runGitViaSpawnerSidecar)(...)`. The callee is
+  // a ParenthesizedExpression, not an Identifier, and the guard used to skip it entirely,
+  // so swapping the reporter for console.warn passed. Each shape must be policed exactly
+  // like a direct call: FIRE without the reporter, stay QUIET with it.
+  it.each([
+    ['parenthesized ?? default', '(seams.viaSidecar ?? runGitViaSpawnerSidecar)(args, cwd)'],
+    ['parenthesized || default', '(seams.viaSidecar || runGitViaSpawnerSidecar)(args, cwd)'],
+    ['ternary branch', '(useLocal ? runLocal : runGitStdinViaSpawnerSidecar)(args, cwd)'],
+    ['type-asserted callee', '(runGitViaSpawnerSidecar as typeof runLocal)(args, cwd)'],
+    ['const alias of an indirect default', 'viaSidecar(args, cwd)'],
+  ])('polices an indirect sidecar callee: %s', (_label, call) => {
+    const source = `
+      async function run(seams = {}, useLocal = false) {
+        const viaSidecar = seams.viaSidecar ?? runGitViaSpawnerSidecar;
+        try { return await ${call}; }
+        catch (e) { console.warn(e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(1);
+    expect(findUnreportedFallbacks(source.replace('console.warn(e)', "noteSidecarFallback('x', e)"))).toHaveLength(0);
+  });
+
+  it('does not treat a let-bound or parameter callee as a sidecar call (no false positive)', () => {
+    const source = `
+      async function run(viaParam) {
+        let viaLet = runGitViaSpawnerSidecar;
+        viaLet = runLocal;
+        try { await viaLet(args, cwd); await viaParam(args, cwd); }
+        catch (e) { console.warn(e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(0);
   });
 });
 

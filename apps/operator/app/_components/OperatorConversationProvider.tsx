@@ -88,6 +88,7 @@ import {
   routeTranscript,
 } from "@papercusp/operator-core/lib/voice-cards/voice-card-router";
 import { postCardResponse } from "@papercusp/operator-core/lib/post-card-response";
+import { getOrCreateClientId } from "@papercusp/operator-core/lib/ui/client-id";
 import {
   loadVoicePrefsClient,
   subscribeVoicePrefsClient,
@@ -693,10 +694,11 @@ export function toConverseWireMessages(
 }
 
 const defaultGenerationFn: GenerationFn = async (req) => {
-  // Lazy import — avoids dragging the sessionStorage path into SSR.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { getOrCreateClientId } =
-    require("@papercusp/operator-core/lib/ui/client-id") as typeof import("@papercusp/operator-core/lib/ui/client-id");
+  // A static import (WI-10006911). This used to be a lazy `require()` carried
+  // over from the Next.js/webpack build, where it kept the sessionStorage path
+  // out of SSR. Under Vite the browser has no `require`, so EVERY brain turn
+  // threw "require is not defined" before its fetch. getOrCreateClientId is
+  // already SSR-safe (it returns '' when `window` is absent).
   const uiClientId = getOrCreateClientId();
   const res = await fetch("/api/agent-mcp/operator-converse", {
     method: "POST",

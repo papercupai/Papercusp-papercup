@@ -12,8 +12,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dispatchProjectedTool, listMcpProjections, type ProjectedTool, type ToolResult, type UnifiedToolContext } from '@papercusp/tooldef';
 import type { KickoffProofResult, SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
+import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC, EARLY_EXIT_PROBE_MS, HEADLESS_BOOT_RECEIPT_MS, KICKOFF_PROOF_WINDOW_MS, RESUME_VERIFY_TIMEOUT_MS } from '../../agent-kickoff/launch-budgets.mjs';
+import { INTERNAL_EXPECTED_SUCCESSOR_BINDING } from '../../agent-launch-core';
 
 const assembleRolePromptMock = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
@@ -21,7 +24,9 @@ vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
   assembleRolePrompt: (...args: unknown[]) => assembleRolePromptMock(...args),
 }));
 
-const goalContextSqlMock = vi.hoisted(() => vi.fn(async () => []));
+// Typed as a tagged-template sql (strings, ...values) so a test can install a
+// query-aware implementation without a cast (the reviewer-relaunch guard test).
+const goalContextSqlMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<unknown[]> => []));
 const goalLaunchResolveMock = vi.hoisted(() => vi.fn());
 const declareCouplingMock = vi.hoisted(() => vi.fn());
 vi.mock('../../coord/couplings', async (orig) => ({
@@ -70,7 +75,11 @@ const codexThreadWriterHolderMock = vi.hoisted(() =>
     reason: 'no-lock-file',
   })),
 );
-vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', () => ({
+const originalRoutingGuardMock = vi.hoisted(() => vi.fn());
+vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  ORIGINAL_CODEX_ROUTING_ENV: 'PAPERCUSP_ORIGINAL_CODEX_ROUTING',
+  assertOriginalCodexRouting: (...args: unknown[]) => originalRoutingGuardMock(...args),
   codexThreadWriterHolder: (...args: [string, string | null]) => codexThreadWriterHolderMock(...args),
 }));
 
@@ -89,6 +98,7 @@ vi.mock('../coordination/liveness-oracle', async (orig) => ({
 vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   findLiveHost: (ownerId: string) => findLiveHostMock(ownerId),
+  findLiveHostAsync: async (ownerId: string) => findLiveHostMock(ownerId),
   shutdownViaPty: (ownerId: string, opts?: unknown) => shutdownViaPtyMock(ownerId, opts),
 }));
 
@@ -107,6 +117,11 @@ vi.mock('../../modes/store', async (orig) => ({
 const gateWorkScopeMock = vi.hoisted(() => vi.fn());
 vi.mock('../../work-scope-policy', () => ({
   gateWorkScope: (...args: unknown[]) => gateWorkScopeMock(...args),
+}));
+const resolveAcceptedOperationWorkerBindingMock = vi.hoisted(() => vi.fn());
+vi.mock('../../blueprint/operation-worker-binding', () => ({
+  resolveAcceptedOperationWorkerBinding: (...args: unknown[]) =>
+    resolveAcceptedOperationWorkerBindingMock(...args),
 }));
 
 const listFactsMock = vi.hoisted(() => vi.fn());
@@ -299,7 +314,7 @@ const claimAgentLaunchMock = vi.fn(
     priorLaunchedBy: string | null;
   }> => ({ won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null }),
 );
-const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => {});
+const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown): Promise<boolean> => false);
 const releaseAgentLaunchClaimMock = vi.fn(async (_opts: unknown) => true);
 const waitForPtyHostGoneMock = vi.fn(async (_ownerId: unknown) => true);
 vi.mock('../../agent-launch-core', async (orig) => ({
@@ -315,7 +330,8 @@ vi.mock('../../agent-launch-core', async (orig) => ({
 
 const launchAgentModule = await import('./launch-agent');
 const launchAgent = launchAgentModule.default;
-const { goalHolderPlanFleetBypass } = launchAgentModule;
+const { goalHolderPlanFleetBypass, INTERNAL_LOOP_FIRE_ORIGIN, INTERNAL_SCOPED_INFERENCE_GATEWAY, INTERNAL_SCOPED_SESSION_CONFINEMENT,
+  INTERNAL_BACKEND_BIN_OVERRIDE } = launchAgentModule;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 const textOf = (res: unknown): string => (res as { content: Array<{ text: string }> }).content[0].text;
@@ -328,6 +344,7 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
   (mock.mock.calls[0][0] as unknown as { envelope: { env: Record<string, string> } }).envelope.env;
 
 beforeEach(() => {
+  originalRoutingGuardMock.mockReset();
   vi.clearAllMocks();
   goalLaunchResolveMock.mockReset();
   declareCouplingMock.mockReset().mockResolvedValue({ agentA: 'su-caller', agentB: 'su-verifier' });
@@ -386,6 +403,7 @@ beforeEach(() => {
   waitForPtyHostGoneMock.mockResolvedValue(true);
   getModesMock.mockResolvedValue([]);
   gateWorkScopeMock.mockResolvedValue({ allowed: true, reason: 'no-policy' });
+  resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
   listFactsMock.mockResolvedValue([]);
   getLoopStatusMock.mockResolvedValue(null);
   getFleetHeadcountTargetMock.mockResolvedValue(null);
@@ -406,8 +424,8 @@ describe('launch-tool routing guidance', () => {
     expect(launchAgent.guidance?.when).toContain('fleet or unfleeted');
     expect(launchAgent.guidance?.when).toContain('fleet:launch-on-plan');
     expect(launchAgent.guidance?.when).toContain('Duplicate screening never delays process launch');
-    expect(launchAgent.description).toContain('successful spawn proves only that a process opened');
-    expect(launchAgent.description).toContain('before claiming registration, a first turn, or a task claim');
+    expect(launchAgent.description).toMatch(/spawn is not proof of registration, a first turn, or a work claim/i);
+    expect(launchAgent.description).toContain('read launch verification');
     expect(launchAgent.description).not.toContain('starts working immediately');
     expect(launchAgent.guidance?.notWhen).toContain('capability:terminal');
   });
@@ -427,8 +445,74 @@ describe('launch-tool routing guidance', () => {
   });
 
   it('declares enough server budget for bounded headless launch verification (EI-22780156976598155)', () => {
-    expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBe(90);
+    expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBe(AGENT_LAUNCH_HANDLER_TIMEOUT_SEC);
     expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
+  });
+});
+
+describe('shared model alias preflight', () => {
+  it('echoes the same resolved tuple used for the actual launch', async () => {
+    const result = await launchAgent.handler({ model: 'sol 6.1', effort: 'xhigh', brief: 'Verify a lane' }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: {
+      requested: 'sol 6.1', agent: 'codex', model: 'gpt-6.1-sol:xhigh', effort: 'xhigh',
+    } } });
+    expect(spawnedCommand()).toContain('--agent=codex');
+    expect(spawnedCommand()).toContain('--model=gpt-6.1-sol:xhigh');
+  });
+
+  it('echoes the normalized Claude effort that reaches the command', async () => {
+    const result = await launchAgent.handler({ model: 'claude opus', effort: 'xhigh', brief: 'Verify a lane' }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: {
+      agent: 'claude', model: 'opus:max', effort: 'max',
+    } } });
+    expect(spawnedCommand()).toContain('--model=opus:max');
+  });
+
+  it('normalizes a member override before composing its command', async () => {
+    const result = await launchAgent.handler({ brief: 'Verify a lane', members: [{ model: 'claude opus', effort: 'xhigh' }] }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: {
+      requested: 'claude opus', agent: 'claude', model: 'opus:max', effort: 'max',
+    } } });
+    expect(spawnedCommand()).toContain('--model=opus:max');
+  });
+
+  it('preserves the requested default effort for a different member backend', async () => {
+    const result = await launchAgent.handler({ model: 'claude opus', effort: 'xhigh', brief: 'Verify a lane', members: [{ model: 'sol 6.1' }] }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: {
+      requested: 'sol 6.1', agent: 'codex', model: 'gpt-6.1-sol:xhigh', effort: 'xhigh',
+    } } });
+    expect(spawnedCommand()).toContain('--model=gpt-6.1-sol:xhigh');
+  });
+
+  it('echoes each effective member model for a heterogeneous batch', async () => {
+    const result = await launchAgent.handler({ model: 'claude opus', effort: 'xhigh', brief: 'Verify a lane',
+      members: [{ model: 'sol 6.1' }, { model: 'claude sonnet', effort: 'low' }] }, ctx);
+    expect(result).toMatchObject({ data: { modelResolution: null, memberModelResolutions: [
+      { requested: 'sol 6.1', agent: 'codex', model: 'gpt-6.1-sol:xhigh', effort: 'xhigh' },
+      { requested: 'claude sonnet', agent: 'claude', model: 'sonnet:low', effort: 'low' },
+    ] } });
+    const commands = spawnConsoleMock.mock.calls.map(
+      ([opts]) => (opts as { envelope: { greetingCmd: string } }).envelope.greetingCmd,
+    ).join('\n');
+    expect(commands).toContain('--model=gpt-6.1-sol:xhigh');
+    expect(commands).toContain('--model=sonnet:low');
+  });
+
+  it('accepts the same top-level model and effort shape as the fleet door', () => {
+    const parsed = launchAgent.args.safeParse({ brief: 'Verify a lane', model: 'sol 6.1', effort: 'xhigh' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.effort).toBe('xhigh');
+  });
+
+  it('returns candidates before placement for unknown and ambiguous aliases', async () => {
+    for (const [model, error] of [['mystery', 'unknown_model_alias'], ['6', 'ambiguous_model_alias']]) {
+      const result = await launchAgent.handler({ brief: 'Verify a lane', model }, ctx);
+      expect(result).toMatchObject({
+        isError: true,
+        data: { error, candidates: expect.arrayContaining([expect.objectContaining({ model: 'gpt-6-sol' })]) },
+      });
+    }
+    expect(goalLaunchResolveMock).not.toHaveBeenCalled();
   });
 });
 
@@ -539,7 +623,249 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
   });
 });
 
+const declareConfinementMock = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+vi.mock('../../capability-envelope/session-confinement-store', async original => ({
+  ...await original<typeof import('../../capability-envelope/session-confinement-store')>(),
+  declareSessionConfinement: declareConfinementMock,
+}));
+const scopedCeiling = { denyTools: [], denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint'],
+  imposedBy: 'benchmark-host', reason: 'one metered gateway' };
+describe('internal launch context provenance', () => {
+  it('carries a typed Docker boundary only from the private metered controller context', async () => {
+    const binding = { kind: 'docker-exec', command: '/tmp/private-current-container/codex', sha256: 'a'.repeat(64) };
+    const privateCtx = { workspaceId: 'ws-test', role: 'su',
+      [INTERNAL_SCOPED_INFERENCE_GATEWAY]: { baseURL: 'http://127.0.0.1:32101', token: 'b'.repeat(64) },
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: scopedCeiling,
+      [INTERNAL_BACKEND_BIN_OVERRIDE]: { codex: binding } } as never;
+    const result = await launchAgent.handler({ brief: 'Container task', harness: 'papercusp', agent: 'codex', headless: true }, privateCtx);
+    expect(isError(result)).toBe(false);
+    const env = spawnedEnv(spawnHeadlessMock);
+    expect(env.PAPERCUSP_BACKEND_BIN_CODEX).toBe(binding.command);
+    expect(JSON.parse(env.PAPERCUSP_NATIVE_CONTAINER_EXEC)).toEqual(binding);
+  });
+  it('refuses container authority without a private metered controller before opening a process', async () => {
+    const result = await launchAgent.handler({ brief: 'Container task', harness: 'papercusp', agent: 'codex', headless: true },
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_BACKEND_BIN_OVERRIDE]: {
+        codex: { kind: 'docker-exec', command: '/tmp/codex', sha256: 'a'.repeat(64) } } } as never);
+    expect(isError(result)).toBe(true);
+    expect(JSON.stringify(result)).toMatch(/private metered Codex/);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+  it('threads the private controller route only through a fresh supported host context', async () => {
+    const gateway = { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) };
+    const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway,
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: scopedCeiling,
+      [INTERNAL_BACKEND_BIN_OVERRIDE]: { codex: '/tmp/private-current-container/codex' } } as never;
+    const res = await launchAgent.handler({ brief: 'Private native task', harness: 'papercusp', agent: 'codex', headless: true }, privateCtx);
+    expect(isError(res)).toBe(false);
+    expect(JSON.parse(spawnedEnv(spawnHeadlessMock).PAPERCUSP_SCOPED_INFERENCE_GATEWAY)).toEqual(gateway);
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_BACKEND_BIN_CODEX).toBe('/tmp/private-current-container/codex');
+    expect(spawnedCommand(spawnHeadlessMock)).not.toContain(gateway.token);
+    expect(declareConfinementMock).toHaveBeenCalledWith({ ownerId: expect.stringMatching(/^su-/),
+      workspaceId: 'ws-test', confinement: scopedCeiling });
+    expect(declareConfinementMock.mock.invocationCallOrder.at(-1)).toBeLessThan(spawnHeadlessMock.mock.invocationCallOrder[0]);
+  });
+  // benchmark-coverage-frontierswe-v2-2026-10-10 D-026: the bench runner pins the CLI to a
+  // container-exec wrapper through a context symbol that no MCP argument can carry.
+  it('delivers a backend binary override to the headless child as PAPERCUSP_BACKEND_BIN_<AGENT>', async () => {
+    const res = await launchAgent.handler(
+      { brief: 'Container task', harness: 'papercusp', agent: 'codex', headless: true },
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_BACKEND_BIN_OVERRIDE]: { codex: '/tmp/papercusp-cexec-t/codex' } } as never,
+    );
+    expect(isError(res)).toBe(false);
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_BACKEND_BIN_CODEX).toBe('/tmp/papercusp-cexec-t/codex');
+  });
+  it.each([
+    ['a visible launch', { headless: false }, { codex: '/tmp/papercusp-cexec-t/codex' }, /fresh headless launch/],
+    ['an unknown agent', { headless: true }, { gemini: '/tmp/x/gemini' }, /unknown agent: gemini/],
+    ['a relative path', { headless: true }, { codex: 'cexec/codex' }, /absolute path/],
+  ])('refuses a backend binary override on %s before opening a process', async (_label, patch, override, message) => {
+    const res = await launchAgent.handler(
+      { brief: 'Container task', harness: 'papercusp', agent: 'codex', ...patch },
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_BACKEND_BIN_OVERRIDE]: override } as never,
+    );
+    expect(isError(res)).toBe(true);
+    expect(JSON.stringify(res)).toMatch(message);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+  it('a plain launch carries no backend override env', async () => {
+    const res = await launchAgent.handler(
+      { brief: 'Plain task', harness: 'papercusp', agent: 'codex', headless: true },
+      { workspaceId: 'ws-test', role: 'su' } as never,
+    );
+    expect(isError(res)).toBe(false);
+    expect(Object.keys(spawnedEnv(spawnHeadlessMock)).filter((k) => k.startsWith('PAPERCUSP_BACKEND_BIN_'))).toEqual([]);
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_NATIVE_CONTAINER_EXEC).toBeUndefined();
+  });
+  it('refuses missing or failed durable server tool confinement before opening a process', async () => {
+    const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]:
+      { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) } };
+    const args = { brief: 'Private task', harness: 'papercusp', agent: 'codex' as const, headless: true };
+    expect(isError(await launchAgent.handler(args, privateCtx as never))).toBe(true);
+    declareConfinementMock.mockRejectedValueOnce(new Error('store down'));
+    expect(isError(await launchAgent.handler(args, { ...privateCtx,
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: scopedCeiling } as never))).toBe(true);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+  // WI-6554700010008492: before this, a confinement passed WITHOUT a scoped gateway was
+  // silently dropped, so a blind reviewer launched "confined" ran with every tool.
+  it('installs a gateway-less session confinement before opening a process', async () => {
+    const denyOnly = { denyTools: ['plans:get'], imposedBy: 'blind-reviewer-mint', reason: 'blind review' };
+    const res = await launchAgent.handler({ brief: 'Blind review', harness: 'papercusp', headless: true },
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_SESSION_CONFINEMENT]: denyOnly } as never);
+    expect(isError(res)).toBe(false);
+    expect(declareConfinementMock).toHaveBeenCalledWith({ ownerId: expect.stringMatching(/^su-/),
+      workspaceId: 'ws-test', confinement: denyOnly });
+    expect(declareConfinementMock.mock.invocationCallOrder.at(-1)).toBeLessThan(spawnHeadlessMock.mock.invocationCallOrder[0]);
+  });
+  it('refuses a gateway-less confinement on a resumed identity before opening a process', async () => {
+    const denyOnly = { denyTools: ['plans:get'], imposedBy: 'blind-reviewer-mint', reason: 'blind review' };
+    const res = await launchAgent.handler({ brief: 'Blind review', harness: 'papercusp', resume: { agentId: 'su-a1a71' } } as never,
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_SESSION_CONFINEMENT]: denyOnly } as never);
+    expect(isError(res)).toBe(true);
+    expect(declareConfinementMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+  it('refuses private unsupported or multi-process launches before opening a process', async () => {
+    const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]:
+      { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) } } as never;
+    for (const args of [{ agent: 'claude' as const }, { agent: 'codex' as const, count: 2 },
+      { members: [{ agent: 'codex' as const }, { agent: 'codex' as const }] }]) {
+      const res = await launchAgent.handler({ brief: 'Refused', harness: 'papercusp', ...args }, privateCtx);
+      expect(isError(res)).toBe(true);
+    }
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+  it('does not set the private kickoff origin for ordinary callers', async () => {
+    const res = await launchAgent.handler({ brief: 'Ordinary agent work', harness: 'papercusp' }, ctx);
+    expect(isError(res)).toBe(false);
+    expect(spawnedEnv()).not.toHaveProperty('PAPERCUSP_INTERNAL_KICKOFF_ORIGIN');
+  });
+
+  it('threads loop-fire provenance only through the internal handler context', async () => {
+    const internalCtx = {
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      role: 'su',
+      [INTERNAL_LOOP_FIRE_ORIGIN]: 'loop-fire',
+    } as never;
+    const res = await launchAgent.handler(
+      { brief: 'Continue the loop from its checkpoint', harness: 'papercusp', headless: true },
+      internalCtx,
+    );
+    expect(isError(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_INTERNAL_KICKOFF_ORIGIN).toBe('loop-fire');
+  });
+});
+
+describe('GOAL admission receipt (EI-25166050736574344)', () => {
+  it('keeps the batch check separate from each final decision and persists a later member refusal', async () => {
+    goalLaunchResolveMock.mockResolvedValueOnce({
+      goalId: 'goal-1', settings: null, goalBrief: null, effective: {},
+      ceilings: { maxAgents: 6, maxPerFleet: 3 }, headcount: { total: 0, fleet: null },
+      headcountMeasurement: { measuredAt: 'preflight', populationComplete: true,
+        candidate: { total: 0, fleet: null }, counted: [], oracleEndedOwnerIds: [], excludedOwnerIds: [] },
+      budget: null, refusal: null, degraded: false, degradedReasons: [],
+    });
+    const final = { stage: 'final', goalId: 'goal-1', decision: 'admitted', headcount: { total: 5, fleet: null },
+      measurement: { measuredAt: 'final-first', populationComplete: false, counted: [], excludedOwnerIds: ['retained'] } };
+    const refused = { ...final, decision: 'refused', headcount: { total: 6, fleet: null },
+      measurement: { ...final.measurement, measuredAt: 'final-second' } };
+    spawnGovernedAgentProcessMock.mockImplementationOnce(async (_input, spawnProcess) => ({
+      ...await spawnProcess({ receiptId: 'WI-final-first', leaseId: 'lease-final-first' }),
+      admissionContext: { receiptId: 'WI-final-first' }, goalAdmission: final,
+    }));
+    spawnGovernedAgentProcessMock.mockImplementationOnce(async () => ({ status: 'error' as const, code: 409,
+      error: 'final seat already reserved', goalAdmission: refused }));
+    const result = await launchAgent.handler({ brief: 'Hermetic final receipt test', count: 2,
+      idempotencyKey: 'final-member-receipt' }, ctx);
+    const launch = dataOf(result)?.launch;
+    expect(launch).toMatchObject({
+      goalAdmission: { stage: 'batch-preflight', headcount: { total: 0, fleet: null } },
+      finalGoalAdmissions: [
+        { memberIndex: 0, receiptId: 'WI-final-first', admission: final, outcome: 'opened' },
+        { memberIndex: 1, receiptId: null, admission: refused, outcome: 'failed' },
+      ],
+    });
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.objectContaining({ finalGoalAdmissions: launch?.finalGoalAdmissions }),
+    }));
+  });
+
+  it.each([false, true])('persists the resolver measurement and unknown capacity on count failure=%s', async (countFailed) => {
+    const measurement = {
+      measuredAt: '2026-10-05 18:40:16+00', populationComplete: true,
+      candidate: { total: 5, fleet: null },
+      counted: Array.from({ length: 5 }, (_, index) => ({
+        ownerId: `original-counted-owner-${index}`, inFleet: false, basis: 'boot-grace',
+        heartbeatAt: null, briefUpdatedAt: '2026-10-05 18:40:16+00',
+      })),
+      oracleEndedOwnerIds: ['ended-owner'], excludedOwnerIds: ['replaced-owner'],
+    };
+    const resolution = {
+      goalId: 'goal-1', settings: null, goalBrief: null, effective: {},
+      ceilings: { maxAgents: 6, maxPerFleet: 3 },
+      headcount: { total: countFailed ? 0 : 5, fleet: null },
+      headcountMeasurement: countFailed ? null : measurement,
+      budget: null, refusal: null, degraded: countFailed,
+      degradedReasons: countFailed ? ['ceiling not enforced — headcount failed: fixture failure'] : [],
+    };
+    goalLaunchResolveMock.mockResolvedValueOnce(resolution);
+    const idempotencyKey = `admission-receipt-${countFailed}`;
+    const result = await launchAgent.handler({ brief: 'Hermetic receipt test', idempotencyKey }, ctx);
+    expect(isError(result)).toBe(false);
+    expect(goalLaunchResolveMock).toHaveBeenCalledTimes(1);
+    const expected = {
+      goalId: 'goal-1', requested: 1, ceilings: resolution.ceilings,
+      headcount: countFailed ? null : resolution.headcount,
+      measurement: resolution.headcountMeasurement,
+      capacityStatus: countFailed ? 'unenforced' : 'enforced',
+      degraded: countFailed, degradedReasons: resolution.degradedReasons,
+    };
+    expect(dataOf(result)?.launch).toMatchObject({ goalAdmission: expected });
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey, summary: expect.objectContaining({ goalAdmission: expect.objectContaining(expected) }),
+    }));
+  });
+});
+
 describe('published launch args schema', () => {
+  it('publishes the conditional non-empty brief requirement at the tool level', () => {
+    expect(launchAgent.description).toContain('`resume`/`fork` require a non-empty top-level `brief`');
+  });
+
+  it('publishes successor/restoreVisible mutual exclusion and the visible successor default', () => {
+    const published = listMcpProjections().find((tool) => /launch[-_:]?agent/i.test(tool.name));
+    expect(published).toBeDefined();
+    if (!published) throw new Error('capability:launch-agent was not registered in the MCP projection');
+
+    const schema = published.inputSchema as unknown as {
+      type?: string;
+      properties?: Record<string, { description?: string }>;
+      dependentSchemas?: Record<string, unknown>;
+    };
+    expect(schema.type).toBe('object');
+    expect(schema.dependentSchemas).toMatchObject({
+      successor: { not: { required: ['restoreVisible'] } },
+      restoreVisible: { not: { required: ['successor'] } },
+    });
+    expect(schema.properties?.successor?.description).toMatch(
+      /visible by default when `headless` is omitted or `false`/i,
+    );
+
+    expect(
+      launchAgent.args.safeParse({ successor: { agentId: 'su-a1a71' }, restoreVisible: true }).success,
+    ).toBe(false);
+    expect(
+      launchAgent.args.safeParse({ successor: { agentId: 'su-a1a71' }, restoreVisible: false }).success,
+    ).toBe(false);
+  });
+
   it('rejects plan with resume or successor before handler dispatch', () => {
     expect(launchAgent.args.safeParse({ plan: 'p', resume: { agentId: 'su-a1a71' } }).success).toBe(false);
     expect(launchAgent.args.safeParse({ plan: 'p', successor: { agentId: 'su-a1a71' } }).success).toBe(false);
@@ -617,6 +943,30 @@ describe('published launch args schema', () => {
     }
   });
 
+  it('keeps the declared launch deadline outside sequential child proof windows', () => {
+    expect(launchAgent.timeoutSec).toBe(AGENT_LAUNCH_HANDLER_TIMEOUT_SEC);
+    expect(launchAgent.timeoutSec! * 1000).toBeGreaterThan(
+      EARLY_EXIT_PROBE_MS + HEADLESS_BOOT_RECEIPT_MS + KICKOFF_PROOF_WINDOW_MS + RESUME_VERIFY_TIMEOUT_MS,
+    );
+  });
+
+  it('documents ordinary resume defaults separately from successor runtime overrides', () => {
+    const descriptions = (launchAgent.args as unknown as {
+      shape: Record<string, { description?: string }>;
+    }).shape;
+
+    expect(descriptions.resume.description).toContain('For ordinary in-place continuation, send `{ resume, brief }`');
+    expect(descriptions.resume.description).toContain('Leave `carry` out because it is rejected for resume/fork');
+    expect(descriptions.resume.description).toContain('Normally omit `account` and `model` too');
+    expect(descriptions.account.description).toContain('For ordinary in-place resume, omit it');
+    expect(descriptions.model.description).toContain('For ordinary in-place resume, omit it');
+    expect(descriptions.carry.description).toContain('Do not set it with in-place `resume`/`fork`');
+    expect(descriptions.successor.description).toContain('explicit fresh-context `account`, `model`, or `carry` settings');
+    expect(descriptions.agent.description).toContain('an explicit different backend requests a session port that retains the source identity');
+    expect(descriptions.agent.description).toContain('Live-source resumes automatically fork, so they cannot cross backends');
+    expect(descriptions.agent.description).toContain('A fork keeps the recorded backend');
+  });
+
   it('does not impose a local agent-count ceiling before governed admission', () => {
     expect(launchAgent.args.safeParse({ brief: 'wide governed fan-out', count: 64 }).success).toBe(true);
     expect(
@@ -685,6 +1035,67 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     });
   });
 
+  describe('accepted operation worker feature binding', () => {
+    const workItem = 'WI-10007113';
+    const matchingBinding = { workItemId: workItem };
+
+    it.each([undefined, 'WI-another-item'])(
+      'refuses a matching accepted-operation worker role when feature is %s before spawning',
+      async (feature) => {
+        resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(matchingBinding);
+        const res = await launchAgent.handler({
+          brief: 'complete the accepted operation',
+          harness: 'papercusp',
+          role: 'su',
+          workItem,
+          ...(feature ? { feature } : {}),
+        }, ctx);
+
+        expect(isError(res)).toBe(true);
+        expect(textOf(res)).toContain('requires feature to exactly match workItem');
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+        expect(spawnHeadlessMock).not.toHaveBeenCalled();
+        expect(resolveAcceptedOperationWorkerBindingMock).toHaveBeenCalledWith(expect.objectContaining({
+          workspaceId: 'ws-test',
+          harnessSlug: 'papercusp',
+          workItemId: workItem,
+          role: 'su',
+          roleMismatch: 'ignore',
+          repoDir: '/tmp/papercusp-ws',
+        }));
+      },
+    );
+
+    it('forwards the accepted operation work item as an explicit feature binding', async () => {
+      resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(matchingBinding);
+      const res = await launchAgent.handler({
+        brief: 'complete the accepted operation',
+        harness: 'papercusp',
+        role: 'su',
+        workItem,
+        feature: workItem,
+      }, ctx);
+
+      expect(isError(res), textOf(res)).toBe(false);
+      expect(spawnConsoleMock).toHaveBeenCalledOnce();
+      expect(spawnedCommand()).toContain('--feature=' + workItem);
+    });
+
+    it('keeps an unrelated work-item audit launch on the generic path', async () => {
+      resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
+      const res = await launchAgent.handler({
+        brief: 'audit the accepted operation independently',
+        harness: 'papercusp',
+        role: 'su',
+        workItem: 'EI-audit-1',
+      }, ctx);
+
+      expect(isError(res), textOf(res)).toBe(false);
+      expect(spawnConsoleMock).toHaveBeenCalledOnce();
+      expect(spawnedCommand()).not.toContain('--feature=');
+    });
+  });
+
   it('launches a visible agent whose FIRST TURN is the brief', async () => {
     const res = await launchAgent.handler({ brief: 'audit the release script' }, ctx);
 
@@ -747,11 +1158,24 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
       {
         brief: 'replace one fleet member',
         __respawnOwnerId: 'su-respawn-test-owner',
+        __respawnReplacesOwnerId: 'su-replaced-owner',
       } as never,
       ctx,
     );
 
     expect(spawnedCommand()).toContain('--owner-id=su-respawn-test-owner');
+    expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ replacesOwnerId: 'su-replaced-owner' }),
+    }), expect.any(Function));
+  });
+
+  it('reports degraded final goal registration through the launch notes', async () => {
+    spawnGovernedAgentProcessMock.mockImplementationOnce(async (_input, spawnProcess) => ({
+      ...await spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }),
+      goalAdmissionDegraded: ['fixture final goal registration unavailable'],
+    }));
+    const result = await launchAgent.handler({ brief: 'verify goal admission receipt' }, ctx);
+    expect(textOf(result)).toContain('fixture final goal registration unavailable');
   });
 
   it('refuses a launch with nothing to do (it would just sit idle)', async () => {
@@ -979,6 +1403,18 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(spawnedCommand()).toContain('--mode-subject=bug-drain');
     expect(spawnedCommand()).toContain("--mode-instructions='Do not file incidental defects.'");
     expect(spawnedCommand()).toContain('--mode-owner-directed');
+  });
+
+  it('withholds caller DRAIN mission and owner-directed provenance from a fresh fleet member', async () => {
+    getModesMock.mockResolvedValue([{ mode: 'drain', subject: 'leader-only', ownerDirected: true }]);
+    listFactsMock.mockResolvedValue([{ key: 'mode-instructions:drain', body: 'Lead the fleet as su-caller.' }]);
+    const result = await launchAgent.handler({ fleet: 'test-fleet', brief: 'Pull admitted member source work.' }, ctx);
+    expect(isError(result)).toBe(false);
+    expect(spawnedCommand()).toContain('--fleet=test-fleet');
+    expect(spawnedCommand()).toContain('--mode=drain');
+    expect(spawnedCommand()).not.toContain('--mode-subject');
+    expect(spawnedCommand()).not.toContain('--mode-instructions');
+    expect(spawnedCommand()).not.toContain('--mode-owner-directed');
   });
 
   it('allows an operator-scope caller to bind an explicit harness (WI-3329)', async () => {
@@ -1371,6 +1807,141 @@ describe('resume + fork (D-004/D-007)', () => {
     },
   };
 
+  describe('originalRouting custody contract', () => {
+    const uuid = '0123abcd-1234-5678-9abc-def012345678';
+    const source = { ...dead, agent: 'codex', sessionId: uuid, account: 'auto',
+      model: null, headless: false, binding: { ...dead.binding, sessionId: uuid } };
+    const pin = { ownerId: source.ownerId, advSessionId: source.advSessionId, sessionId: uuid,
+      codexHome: '/isolated/session-11', profileFingerprint: 'a'.repeat(64) };
+    const request = { resume: { sessionId: uuid }, originalRouting: pin, brief: 'continue original work' };
+
+    it('passes the custody pin through the governed exact resume without forking or changing account', async () => {
+      resolveResumeTargetMock.mockResolvedValue(source);
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(false);
+      expect(spawnedCommand()).toContain(`--resume=${uuid}`);
+      expect(spawnedCommand()).toContain('--account=auto');
+      expect(spawnedCommand()).not.toContain('--fork');
+      expect(spawnedCommand()).not.toContain('--model=');
+      expect(dataOf(result)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: source.ownerId });
+      expect(spawnConsoleMock.mock.calls[0]?.[0]).toMatchObject({
+        envelope: { env: { PAPERCUSP_ORIGINAL_CODEX_ROUTING: JSON.stringify(pin) } },
+      });
+      expect(originalRoutingGuardMock).toHaveBeenCalledTimes(3);
+      expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    });
+
+    it('reconciles an exact dead unended binding with terminal evidence before original routing', async () => {
+      const stale = { ...source, endedAt: null, endedBy: null };
+      const reconciled = { ...stale, endedAt: '2026-10-11T07:00:00.000Z', endedBy: 'reconciler' };
+      findLiveHostMock.mockReturnValue(null);
+      resolveResumeTargetMock.mockResolvedValueOnce(stale).mockResolvedValueOnce(stale).mockResolvedValue(reconciled);
+      resolveSessionStatesMock.mockResolvedValueOnce(new Map([[source.ownerId, { sessionState: 'ended' }]]));
+
+      const result = await launchAgent.handler(request, ctx);
+
+      expect(isError(result)).toBe(false);
+      expect(resolveSessionStatesMock).toHaveBeenCalledWith([{ ownerId: source.ownerId }], { hydratePerId: true });
+      expect(markAdvSessionEndedMock).toHaveBeenCalledWith(source.advSessionId, null, 'reconciler', {
+        expectedBinding: source.binding,
+        throwOnError: true,
+      });
+      expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+      expect(spawnedCommand()).toContain(`--resume=${uuid}`);
+      expect(spawnedCommand()).not.toContain('--fork');
+    });
+
+    it('refuses to reconcile an unended original when terminal evidence is not positive', async () => {
+      const stale = { ...source, endedAt: null, endedBy: null };
+      findLiveHostMock.mockReturnValue(null);
+      resolveResumeTargetMock.mockResolvedValue(stale);
+      resolveSessionStatesMock.mockResolvedValueOnce(new Map([[source.ownerId, { sessionState: 'unknown' }]]));
+
+      const result = await launchAgent.handler(request, ctx);
+
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('positive terminal evidence is required');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a changed original binding before terminal reconciliation', async () => {
+      const stale = { ...source, endedAt: null, endedBy: null };
+      resolveResumeTargetMock.mockResolvedValueOnce(stale).mockResolvedValue({
+        ...stale,
+        binding: { ...stale.binding, startedAt: '2026-07-11 10:00:00.123456+00' },
+      });
+
+      const result = await launchAgent.handler(request, ctx);
+
+      expect(isError(result)).toBe(true);
+      expect(textOf(result)).toContain('original custody or saved settings changed');
+      expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('retains the recorded restricted role in every original profile validation', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...source, role: 'judge' });
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(false);
+      expect(originalRoutingGuardMock).toHaveBeenCalledTimes(3);
+      for (const [record] of originalRoutingGuardMock.mock.calls) expect(record).toMatchObject({ role: 'judge' });
+    });
+
+    it.each([true, false])('inherits original placement without a request override (%s)', async (headless) => {
+      resolveResumeTargetMock.mockResolvedValue({ ...source, headless });
+      const result = await launchAgent.handler({ ...request }, ctx);
+      expect(isError(result)).toBe(false);
+      const chosen = headless ? spawnHeadlessMock : spawnConsoleMock;
+      expect(chosen).toHaveBeenCalledTimes(1);
+      expect(headless ? spawnConsoleMock : spawnHeadlessMock).not.toHaveBeenCalled();
+      expect(spawnedCommand(chosen).includes('--headless')).toBe(headless);
+      expect(request).not.toHaveProperty('headless');
+    });
+
+    it('refuses unknown original placement before opening a process', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...source, headless: undefined });
+      const result = await launchAgent.handler({ ...request }, ctx);
+      expect(isError(result)).toBe(true);
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it.each([{ fork: true }, { successor: { agentId: 'su-other' } }, { agent: 'claude' },
+      { model: 'gpt-6' }, { account: 'default' }, { extraArgs: ['--force'] }])(
+      'refuses request overrides before opening a process: %j', async (override) => {
+        const result = await launchAgent.handler({ ...request, ...override } as Parameters<typeof launchAgent.handler>[0], ctx);
+        expect(isError(result)).toBe(true);
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+      });
+
+    it('refuses a live original instead of automatically forking it', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...source, live: true });
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(true);
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    });
+
+    it('rechecks original custody before governed admission', async () => {
+      resolveResumeTargetMock.mockResolvedValueOnce(source).mockResolvedValue({ ...source, ownerId: 'su-other' });
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(true);
+      expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('rechecks the local profile after governed admission and before spawn', async () => {
+      resolveResumeTargetMock.mockResolvedValue(source);
+      originalRoutingGuardMock.mockImplementationOnce(() => {}).mockImplementationOnce(() => {})
+        .mockImplementationOnce(() => { throw new Error('profile changed'); });
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(true);
+      expect(spawnGovernedAgentProcessMock).toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('uses distinct governed admission keys for concurrent exact resumes', async () => {
     const secondDead = {
       ...dead,
@@ -1414,6 +1985,66 @@ describe('resume + fork (D-004/D-007)', () => {
     }
   });
 
+  it.each([false, true])('pins each fork reservation to its bootstrap identity (headless=%s)', async (headless) => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    goalLaunchResolveMock.mockResolvedValueOnce({
+      goalId: null, settings: null, effective: {}, refusal: null, budget: null, goalBrief: null,
+      ceilings: { maxAgents: 6, maxPerFleet: 3 }, headcount: { total: 5, fleet: null },
+      degraded: false, degradedReasons: [],
+    });
+    const result = await launchAgent.handler({
+      resume: { agentId: dead.ownerId }, fork: true, headless,
+      brief: 'branch the recovery', count: 2,
+    }, ctx);
+    expect(isError(result)).toBe(false);
+    const owners = spawnGovernedAgentProcessMock.mock.calls.map(([input]) =>
+      (input as { metadata: { targetOwnerId: string } }).metadata.targetOwnerId);
+    expect(owners).toHaveLength(2);
+    expect(new Set(owners).size).toBe(2);
+    const spawns = headless ? spawnHeadlessMock : spawnConsoleMock;
+    for (const [i, owner] of owners.entries()) {
+      expect(owner).toMatch(/^su-[0-9a-f-]{36}$/);
+      expect(owner).not.toBe(dead.ownerId);
+      expect(spawnGovernedAgentProcessMock.mock.calls[i][0]).toMatchObject({ owner });
+      const options = spawns.mock.calls[i][0] as { envelope: { greetingCmd: string }; coordOwnerId?: string };
+      expect(options.envelope.greetingCmd).toContain(`--owner-id=${owner}`);
+      if (headless) expect(options).toMatchObject({ coordOwnerId: owner });
+    }
+    expect(dataOf(result)?.launch).toMatchObject({ ownerIds: owners });
+    expect(goalLaunchResolveMock.mock.calls[0][0]).not.toHaveProperty('excludeOwnerIds');
+  });
+
+  it('excludes only the retained owner from the batch preflight for an in-place resume', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    goalLaunchResolveMock.mockResolvedValueOnce({
+      goalId: null, settings: null, effective: {}, refusal: null, budget: null, goalBrief: null,
+      ceilings: { maxAgents: 6, maxPerFleet: 3 }, headcount: { total: 5, fleet: null },
+      degraded: false, degradedReasons: [],
+    });
+    await launchAgent.handler({ resume: { agentId: dead.ownerId }, brief: 'resume at the ceiling' }, ctx);
+    expect(goalLaunchResolveMock).toHaveBeenCalledWith(expect.objectContaining({
+      count: 1, excludeOwnerIds: [dead.ownerId],
+    }));
+    expect(spawnGovernedAgentProcessMock).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ targetOwnerId: dead.ownerId }),
+    }), expect.any(Function));
+    expect(spawnedCommand()).not.toContain('--owner-id=');
+  });
+
+  it('preserves a started member and its claim when another member loses final goal admission', async () => {
+    spawnGovernedAgentProcessMock.mockImplementationOnce(async (_input, spawnProcess) =>
+      spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }));
+    spawnGovernedAgentProcessMock.mockResolvedValueOnce({
+      status: 'error', error: 'goal seat already reserved', code: 409,
+    });
+    const result = await launchAgent.handler({ brief: 'bounded batch', count: 2, idempotencyKey: 'partial-seat' }, ctx);
+    expect(spawnConsoleMock).toHaveBeenCalledOnce();
+    expect(dataOf(result)?.launch).toMatchObject({ opened: 1, failed: 1, partial: true });
+    expect(textOf(result)).toContain('goal seat already reserved');
+    expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
+    expect(recordAgentLaunchResultMock).toHaveBeenCalled();
+  });
+
   it('starts an identity-preserving fresh successor for an ended critical source', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue(dead);
@@ -1455,6 +2086,42 @@ describe('resume + fork (D-004/D-007)', () => {
       },
     });
     expect(textOf(res)).toContain("agent's first turn");
+  });
+
+  it('preserves a specialized source role and accepted-operation feature when starting a successor', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead,
+      role: 'crm-agent',
+      feature: 'WI-10007049',
+    });
+    renderCarryBriefTextMock.mockReturnValue('checkpoint: continue the accepted operation');
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-specialized-successor', successfulCalls: 1 }],
+      note: 'specialized successor verified',
+    });
+
+    const res = await launchAgent.handler(
+      {
+        successor: { agentId: 'su-a1a71' },
+        agent: 'claude',
+        model: 'sonnet',
+        headless: true,
+        brief: 'continue the accepted operation',
+      },
+      ctx,
+    );
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--role=crm-agent');
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--feature=WI-10007049');
+    expect(assembleRolePromptMock).toHaveBeenCalledWith(expect.objectContaining({
+      slug: 'papercusp',
+      role: 'crm-agent',
+    }));
   });
 
   it('starts an ended Codex cold-loop successor without resuming its critical transcript', async () => {
@@ -1698,11 +2365,44 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain('actual exit time remains unknown');
     });
 
-    it.each(['live', 'parked', 'recorded', 'draining', 'unknown', undefined])('refuses %s evidence without ending or spawning', async (sessionState) => {
+    it.each(['live', 'parked', 'recorded', 'draining', 'unknown', null, undefined])('refuses %s evidence without ending or spawning', async (sessionState) => {
       resolveSessionStatesMock.mockResolvedValue(new Map([[dead.ownerId, { sessionState }]]));
       const res = await launchAgent.handler(request, ctx);
       expect(isError(res)).toBe(true);
       expect(textOf(res)).toContain('positive terminal evidence is required');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
+    });
+
+    it.each([null, dead.endedAt])('an active native Codex writer blocks a successor with endedAt=%s before terminal reconciliation', async (endedAt) => {
+      resolveResumeTargetMock.mockResolvedValue({ ...stale, agent: 'codex', endedAt });
+      codexThreadWriterHolderMock.mockReturnValue({
+        held: true, pid: 12345, lockPath: '/tmp/codex/thread-writer-locks/native.lock',
+        sessionId: stale.sessionId, reason: 'held',
+      });
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('source session is still LIVE');
+      expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it.each([1, 2])('refuses a native Codex writer appearing after %s clear checks during preparation', async (clearChecks) => {
+      resolveResumeTargetMock.mockResolvedValue({ ...stale, agent: 'codex' });
+      codexThreadWriterHolderMock.mockReturnValue({
+        held: true, pid: 12345, lockPath: '/tmp/codex/thread-writer-locks/native.lock',
+        sessionId: stale.sessionId, reason: 'held',
+      });
+      for (let i = 0; i < clearChecks; i++) {
+        codexThreadWriterHolderMock.mockReturnValueOnce({
+          held: false, pid: null, lockPath: null, sessionId: stale.sessionId, reason: 'no-lock-file',
+        });
+      }
+      const res = await launchAgent.handler(request, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('active native Codex writer appeared');
       expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
       expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({ workspaceId: 'ws-test', idempotencyKey: 'successor-cas' });
@@ -1777,6 +2477,61 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(resolveSessionStatesMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
     });
+
+    it('requires exact workspace, harness, and positive terminal evidence for watchdog successors', async () => {
+      const scoped = { ...stale, workspaceId: 'ws-test', harnessSlug: 'papercusp' };
+      resolveResumeTargetMock.mockResolvedValue(scoped);
+      resolveSessionStatesMock.mockResolvedValue(new Map([[dead.ownerId, { sessionState: 'suspect' }]]));
+      const expected = {
+        ownerId: dead.ownerId,
+        advSessionId: dead.advSessionId,
+        workspaceId: 'ws-test',
+        harnessSlug: 'papercusp',
+        binding: dead.binding,
+        requirePositiveTerminalEvidence: true,
+      };
+      const internalCtx = {
+        workspaceId: 'ws-test',
+        harnessSlug: 'papercusp',
+        role: 'su',
+        [INTERNAL_EXPECTED_SUCCESSOR_BINDING]: expected,
+      } as never;
+      const res = await launchAgent.handler(
+        { successor: { agentId: dead.ownerId }, idempotencyKey: 'watchdog-positive-terminal' },
+        internalCtx,
+      );
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('predecessor liveness is suspect');
+      expect(textOf(res)).toContain('positive terminal evidence is required');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a watchdog source that moved to another workspace before dispatch', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...stale, workspaceId: 'other-workspace', harnessSlug: 'papercusp' });
+      const internalCtx = {
+        workspaceId: 'ws-test',
+        harnessSlug: 'papercusp',
+        role: 'su',
+        [INTERNAL_EXPECTED_SUCCESSOR_BINDING]: {
+          ownerId: dead.ownerId,
+          advSessionId: dead.advSessionId,
+          workspaceId: 'ws-test',
+          harnessSlug: 'papercusp',
+          binding: dead.binding,
+          requirePositiveTerminalEvidence: true,
+        },
+      } as never;
+      const res = await launchAgent.handler(
+        { successor: { agentId: dead.ownerId }, idempotencyKey: 'watchdog-workspace-binding' },
+        internalCtx,
+      );
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('expected workspace, harness, and incarnation binding');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
   });
 
   it('refuses an identity-preserving successor when the source is still live', async () => {
@@ -1843,6 +2598,55 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('re-attaches its ORIGINAL identity su-a1a71');
   });
 
+  it.each([
+    { label: 'retained resume', sourceLive: false, fork: false },
+    { label: 'explicit fork', sourceLive: false, fork: true },
+    { label: 'live-source auto-fork', sourceLive: true, fork: undefined },
+  ])('refuses a recruited acceptance reviewer $label before opening a process', async ({ sourceLive, fork }) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: sourceLive, endedAt: sourceLive ? null : dead.endedAt });
+    // The REAL guard runs against the mocked org PG: no review-target reservation
+    // names the reviewer's plan, and its first launch was by the grading sweep,
+    // so independence cannot be proved and the launch must refuse.
+    goalContextSqlMock.mockImplementation(async (...args: unknown[]) => {
+      const strings = args[0];
+      const text = Array.isArray(strings) ? strings.join('?') : '';
+      return text.includes('FROM harness_shared.adv_sessions') && text.includes('launch_parent_owner')
+        ? [{ launch_parent_owner: 'system:acceptance-grading-sweep' }]
+        : [];
+    });
+    try {
+      const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, ...(fork ? { fork: true } : {}),
+        independent: true, brief: 'continue grading' }, ctx);
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('reviewer_relaunch_breaks_independence');
+      expect(textOf(res)).toContain('recruited by system:acceptance-grading-sweep');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    } finally {
+      goalContextSqlMock.mockImplementation(async () => []);
+    }
+  });
+
+  it.each(['codex', 'omp'])('forwards an explicit %s→Claude conversion and its exact prepared-port verification source', async (sourceBackend) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: sourceBackend });
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, agent: 'claude',
+      model: 'sonnet:high', brief: 'continue under the same source owner' }, ctx);
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--agent=claude');
+    expect(spawnedCommand()).toContain('--resume=sid-dead');
+    expect(verifyResumeStartedMock).toHaveBeenCalledWith('su-a1a71', expect.objectContaining({
+      expectedSessionId: 'sid-dead', expectedPort: { sourceAdvSessionId: 11, targetBackend: 'claude' },
+    }));
+  });
+
+  it('keeps an explicit same-backend resume on the ordinary UUID verifier', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, agent: 'claude', brief: 'resume the same transcript' }, ctx);
+    const options = verifyResumeStartedMock.mock.calls.at(-1)?.[1];
+    expect(options).toMatchObject({ expectedSessionId: 'sid-dead' });
+    expect(options).not.toHaveProperty('expectedPort');
+  });
+
   it('resumes a tracked Codex row without native session_id by adv-session selector', async () => {
     const trackedCodex = {
       ...dead,
@@ -1906,7 +2710,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).not.toContain('launch verification DID NOT RUN');
   });
 
-  it('EI-21725123573114023: the owner-id guard is scoped to in-place resumes — an EXPLICIT fork of the same target still launches', async () => {
+  it('refuses a managed fork without the source coord identity required by tracked bootstrap', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, ownerId: null });
 
     const res = await launchAgent.handler(
@@ -1914,9 +2718,11 @@ describe('resume + fork (D-004/D-007)', () => {
       ctx,
     );
 
-    expect(isError(res)).toBe(false);
-    expect(spawnConsoleMock).toHaveBeenCalled();
-    expect(spawnedCommand()).toContain('--fork');
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('tracked fork is unavailable');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it("preserves the resumed target's durable fleet instead of inheriting the caller's fleet", async () => {
@@ -1933,6 +2739,22 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--fleet=target-fleet');
     expect(spawnedCommand()).not.toContain('--fleet=caller-fleet');
     expect(dataOf(res)?.launch).toMatchObject({ fleet: 'target-fleet', resumedOwnerId: 'su-a1a71' });
+  });
+
+  it('authorizes retirement clearing only on explicit exact resumes', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    const result = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'explicitly relaunch this identity' }, ctx);
+    expect(isError(result)).toBe(false);
+    expect(spawnedEnv().PSU_ALLOW_RETIRED_RESUME).toBe('1');
+  });
+
+  it.each([false, true])('does not authorize retirement clearing on a fresh launch or fork (fork=%s)', async (fork) => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    const result = await launchAgent.handler(fork
+      ? { resume: { agentId: 'su-a1a71' }, fork: true, brief: 'branch to a new identity' }
+      : { brief: 'start a new identity' }, ctx);
+    expect(isError(result)).toBe(false);
+    expect(spawnedEnv()).not.toHaveProperty('PSU_ALLOW_RETIRED_RESUME');
   });
 
   it('preserves resumed target membership when independent is supplied', async () => {
@@ -2193,7 +3015,120 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('FRESH identity');
   });
 
-  it('FORKS a Codex source with an active thread writer even when no pty host is registered', async () => {
+  it.each([5, 31])('fails closed for an explicit in-place resume when the source is LIVE (idle %s minutes)', async (idleMinutes) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    findLiveHostMock.mockReturnValue({
+      ownerId: 'su-a1a71',
+      pid: 42,
+      sock: '/run/host.sock',
+      bridgeTty: false,
+      launchedBy: 'su-caller',
+      lastActivityAt: Date.now() - idleMinutes * 60_000,
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, fork: false, brief: 'continue in place' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('Explicit `fork:false` is fail-closed');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('resumes a dormant source in place with explicit fork:false (headless=%s)', async (headless) => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    findLiveHostMock.mockReturnValue(null);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, headless, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(false);
+    const chosen = headless ? spawnHeadlessMock : spawnConsoleMock;
+    expect(spawnedCommand(chosen)).toContain('--resume=sid-dead');
+    expect(spawnedCommand(chosen)).not.toContain('--fork');
+    expect(dataOf(res)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: dead.ownerId });
+  });
+
+  it.each(['held', 'unknown'])('refuses strict in-place recovery with a %s Codex writer before admission', async (reason) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });
+    findLiveHostMock.mockReturnValue(null);
+    codexThreadWriterHolderMock.mockReturnValue({
+      held: reason === 'held', pid: reason === 'held' ? 9876 : null,
+      lockPath: '/tmp/writer.lock', sessionId: 'sid-dead', reason,
+    });
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([2, 3])('refuses strict recovery when the source becomes LIVE at resolve %s', async (atResolve) => {
+    let reads = 0;
+    resolveResumeTargetMock.mockImplementation(async () =>
+      ++reads >= atResolve ? { ...dead, live: true, endedAt: null } : dead,
+    );
+    findLiveHostMock.mockReturnValue(null);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('became LIVE during preparation');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses strict recovery when a host appears after governed admission', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    findLiveHostMock.mockReturnValueOnce(null).mockReturnValueOnce(null)
+      .mockReturnValue({ ownerId: dead.ownerId, pid: 42 });
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('became LIVE during preparation');
+    expect(spawnGovernedAgentProcessMock).toHaveBeenCalledTimes(1);
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses strict recovery when source custody changes before admission', async () => {
+    resolveResumeTargetMock.mockResolvedValueOnce(dead).mockResolvedValueOnce(dead)
+      .mockResolvedValue({ ...dead, advSessionId: 12 });
+    findLiveHostMock.mockReturnValue(null);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('source custody changed');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps strict agent-id recovery on the original transcript at critical pressure', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    findLiveHostMock.mockReturnValue(null);
+    fetchContextPressureMock.mockResolvedValue(new Map([[dead.ownerId, 'critical']]));
+    const res = await launchAgent.handler(
+      { resume: { agentId: dead.ownerId }, fork: false, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--resume=sid-dead');
+    expect(dataOf(res)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: dead.ownerId });
+    expect(clearContextEstimateMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unsupported managed Codex fork when a writer is active without a registered pty host', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex', live: false });
     findLiveHostMock.mockReturnValue(null);
     codexThreadWriterHolderMock.mockReturnValue({
@@ -2209,11 +3144,56 @@ describe('resume + fork (D-004/D-007)', () => {
       ctx,
     );
 
-    expect(isError(res)).toBe(false);
+    expect(isError(res)).toBe(true);
     expect(codexThreadWriterHolderMock).toHaveBeenCalledWith(expect.any(String), 'sid-dead');
-    expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
-    expect(textOf(res)).toContain('Codex reports an active writer');
-    expect(textOf(res)).toContain('FRESH identity');
+    expect(textOf(res)).toContain('tracked fork is unavailable');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['codex', 'omp'])('refuses explicit and protective managed %s forks before admission in either placement', async (agent) => {
+    for (const fork of [true, undefined]) {
+      for (const headless of [true, false]) {
+        resolveResumeTargetMock.mockResolvedValue({ ...dead, agent, live: fork === undefined, endedAt: null });
+        findLiveHostMock.mockReturnValue({ ownerId: dead.ownerId, pid: 42 });
+        const res = await launchAgent.handler(
+          { resume: { sessionId: dead.sessionId }, fork, headless, brief: 'branch the recovery' }, ctx,
+        );
+        expect(isError(res)).toBe(true);
+        expect(textOf(res)).toContain('tracked fork is unavailable');
+        expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+        expect(spawnHeadlessMock).not.toHaveBeenCalled();
+        expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it('refuses a managed Claude fork without a tracked source row before admission', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, advSessionId: null });
+    const res = await launchAgent.handler(
+      { resume: { sessionId: dead.sessionId }, fork: true, brief: 'branch the recovery' }, ctx,
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('tracked fork is unavailable');
+    expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])('retains a dormant Codex source with explicit fork:false (headless=%s)', async (headless) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });
+    findLiveHostMock.mockReturnValue(null);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: dead.sessionId }, fork: false, headless, brief: 'continue in place' }, ctx,
+    );
+    expect(isError(res)).toBe(false);
+    const command = spawnedCommand(headless ? spawnHeadlessMock : spawnConsoleMock);
+    expect(command).toContain('--resume=sid-dead');
+    expect(command).not.toContain('--fork');
+    expect(dataOf(res)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: dead.ownerId });
   });
 
   it('refuses visible restore when a Codex writer is active without a managed host', async () => {
@@ -2307,6 +3287,41 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(textOf(res)).toContain('omit `restoreVisible`');
       expect(textOf(res)).toContain('ordinary exact resume');
     }
+  });
+
+  it('does not promise guarded stale-headless recovery without agent provenance', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    findLiveHostMock.mockReturnValue({
+      ownerId: 'su-a1a71',
+      pid: 42,
+      sock: '/run/host.sock',
+      bridgeTty: false,
+      lastActivityAt: Date.now() - 31 * 60_000,
+    });
+    windowScopeVerdictMock.mockReturnValue('not-a-window');
+
+    const visibleRestore = await launchAgent.handler(
+      {
+        resume: { sessionId: 'sid-dead' },
+        brief: 'restore the session',
+        restoreVisible: true,
+      },
+      ctx,
+    );
+
+    expect(isError(visibleRestore)).toBe(true);
+    expect(textOf(visibleRestore)).toContain('explicitly agent-launched headless host with measured pty activity idle for at least 30 minutes');
+    expect(textOf(visibleRestore)).toContain('otherwise a still-live source is forked');
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+
+    const exactResume = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, brief: 'continue the recovery' },
+      ctx,
+    );
+
+    expect(isError(exactResume)).toBe(false);
+    expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
+    expect(dataOf(exactResume)?.launch).toMatchObject({ mode: 'fork' });
   });
 
   it('gracefully closes only a proven-windowless host, waits for it, then exact-resumes visibly', async () => {
@@ -2546,6 +3561,103 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
       }),
     );
   });
+});
+
+describe('launch result after the dispatch deadline', () => {
+  const projectLaunchForDispatch = (): ProjectedTool => ({
+    pluginName: 'operator-core',
+    description: 'launch-agent deadline regression fixture',
+    inputSchema: { type: 'object' },
+    capabilities: [],
+    expose: { mcp: { name: 'capability:launch-agent' } },
+    timeoutSec: 0.05,
+    // WI-10005222: the resolver is typed for launch-agent's concrete args; the
+    // projected fixture erases args to `unknown`, and a function parameter is
+    // contravariant, so the bare assignment is TS2322. Same erasure as the
+    // handler cast below.
+    abortCompletionReceipt: launchAgent.abortCompletionReceipt as ProjectedTool['abortCompletionReceipt'],
+    fn: async (input, dispatchContext) => {
+      const response = await (launchAgent.handler as unknown as (
+        args: unknown,
+        context: UnifiedToolContext,
+      ) => Promise<{ content: ToolResult['content']; data?: unknown; isError?: boolean }>)(input, dispatchContext);
+      return {
+        content: response.content,
+        structuredContent: response.data,
+        ...(response.isError ? { isError: true } : {}),
+      };
+    },
+  });
+
+  const dispatchLaunch = (idempotencyKey: string) => {
+    const dispatchContext = {
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      role: 'su',
+    } as unknown as UnifiedToolContext;
+    return dispatchProjectedTool(
+      projectLaunchForDispatch(),
+      'capability:launch-agent',
+      { brief: 'controlled deadline fixture', count: 2, idempotencyKey },
+      dispatchContext,
+      {},
+    );
+  };
+
+  it('surfaces the cached multi-launch summary when the handler returns after timeout', async () => {
+    const idempotencyKey = 'deadline-crossing-launch-test';
+    recordAgentLaunchResultMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      return true;
+    });
+
+    const result = await dispatchLaunch(idempotencyKey);
+
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey,
+        summary: expect.objectContaining({ opened: 2, failed: 0 }),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.result?.structuredContent).toMatchObject({
+      deduped: false,
+      launch: { opened: 2, failed: 0 },
+      completionReceipt: { status: 'recorded', effectRef: `agent-launch:${idempotencyKey}` },
+    });
+    expect(result.result?._meta?.abortCompletionReceipt).toMatchObject({
+      status: 'recorded',
+      effectRef: `agent-launch:${idempotencyKey}`,
+      attemptId: expect.any(String),
+    });
+  }, 10_000);
+
+  it('keeps the timeout when process openings have no confirmed durable summary', async () => {
+    recordAgentLaunchResultMock.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      return false;
+    });
+
+    const result = await dispatchLaunch('uncached-deadline-crossing-launch-test');
+
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatchObject({
+      code: 'timeout',
+      meta: {
+        abortCompletionReceipt: {
+          status: 'recovery-incomplete',
+          failures: ['missing-completion-receipt'],
+          attemptId: expect.any(String),
+        },
+      },
+    });
+  }, 10_000);
 });
 
 describe('failure reporting', () => {

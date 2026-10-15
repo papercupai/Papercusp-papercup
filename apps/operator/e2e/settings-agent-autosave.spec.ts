@@ -24,7 +24,7 @@
  * stamp the SAME header or the fixture reads/writes a different workspace's
  * config than the page (the dock.spec.ts workspace-resolution lesson).
  */
-import { test, expect, assertMounted, type APIRequestContext, type Page } from './_egress';
+import { test, expect, assertMounted, type Page } from './_egress';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -34,8 +34,6 @@ const SKIP_MSG_BLANK =
   '/settings/agent did not mount. Run against an HMR-enabled operator-vite ' +
   '(the playwright.config webServer) — a stale HMR-disabled :3055 serves a blank #root.';
 
-// The workspace the PAGE will use (fresh profile, no injected __PAPERCUSP_WS__).
-const WS_HEADERS = { 'x-papercusp-workspace': 'default' };
 
 // Debounce in page.tsx is 600ms — anything still unsaved after this window
 // was (correctly) never scheduled.
@@ -47,9 +45,31 @@ const SPEC_INPUT = 'input[aria-label="Tier 5 model spec"]';
 
 let originalConfig: Record<string, unknown> | null = null;
 
-async function getStoredConfig(request: APIRequestContext) {
-  const r = await request.get(`${baseURL}/api/agent-config`, { timeout: 15_000, headers: WS_HEADERS });
-  return ((await r.json()) as { config: Record<string, unknown> }).config;
+// The stored config is read and written through the PAGE's own fetch, never a
+// bare request fixture. The page's fetch carries the identity the backend
+// actually resolves the page against (its cookies, plus the workspace header
+// installWorkspaceHeaderFetch stamps); a request fixture carries neither. On a
+// fresh isolated rig the fixture therefore read a DIFFERENT store than the page
+// wrote: 0 tiers right after a committed, reload-visible save, while the two
+// "nothing persisted" tests passed vacuously against that other, empty store
+// (WI-10006792). A hardcoded or learned workspace header did not close the gap.
+async function getStoredConfig(page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate(async () => {
+    const r = await fetch('/api/agent-config');
+    if (!r.ok) throw new Error(`GET /api/agent-config -> ${r.status}`);
+    return ((await r.json()) as { config: Record<string, unknown> }).config;
+  });
+}
+
+async function putStoredConfig(page: Page, config: Record<string, unknown>): Promise<void> {
+  await page.evaluate(async (body) => {
+    const r = await fetch('/api/agent-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`POST /api/agent-config -> ${r.status}`);
+  }, config);
 }
 
 async function openPage(page: Page): Promise<boolean> {
@@ -72,49 +92,61 @@ async function editSpecAndBlur(page: Page, value: string) {
 test.describe.configure({ mode: 'serial' });
 
 test.describe('/settings/agent auto-save validation', () => {
-  test.beforeAll(async ({ request }) => {
-    originalConfig = await getStoredConfig(request).catch(() => null);
-    test.skip(originalConfig == null, 'agent-config API unreachable');
-    // Known baseline for the tier flow: default menu, no ceilings. Everything
-    // else (backend/cmd/models/surfaces) keeps the stack's real values.
-    await request.post(`${baseURL}/api/agent-config`, {
-      data: { ...originalConfig, tiers: [], tierCeilings: {} },
-      headers: { 'Content-Type': 'application/json', ...WS_HEADERS },
-    });
+  test.beforeAll(async ({ browser }) => {
+    const probe = await browser.newPage();
+    try {
+      // A page that fails to mount is left to each test's assertMounted, so a
+      // mount failure stays visible instead of turning into a skip here.
+      if (!(await openPage(probe))) return;
+      originalConfig = await getStoredConfig(probe).catch(() => null);
+      test.skip(originalConfig == null, 'agent-config API unreachable');
+      // Known baseline for the tier flow: default menu, no ceilings. Everything
+      // else (backend/cmd/models/surfaces) keeps the stack's real values.
+      await putStoredConfig(probe, { ...originalConfig, tiers: [], tierCeilings: {} });
+    } finally {
+      await probe.close();
+    }
   });
 
-  test.afterAll(async ({ request }) => {
+  test.afterAll(async ({ browser }) => {
     if (!originalConfig) return;
-    await request.post(`${baseURL}/api/agent-config`, {
-      data: originalConfig,
-      headers: { 'Content-Type': 'application/json', ...WS_HEADERS },
-    });
+    const restore = await browser.newPage();
+    try {
+      if (await openPage(restore)) await putStoredConfig(restore, originalConfig);
+    } finally {
+      await restore.close();
+    }
   });
 
-  test('mid-typing never persists (commit is blur-gated)', async ({ page, request }) => {
+  test('mid-typing never persists (commit is blur-gated)', async ({ page }) => {
     assertMounted(await openPage(page), SKIP_MSG_BLANK);
     const input = page.locator(SPEC_INPUT);
     await input.waitFor({ state: 'visible', timeout: 10_000 });
-    await expect(input).toHaveValue('opus:xhigh'); // default-menu baseline
+    // Default-menu baseline, read from the page rather than hardcoded: this
+    // test is about blur-gated commits, not about which model is the Tier 5
+    // default (that changed opus:xhigh -> opus[1m]:xhigh and stranded the
+    // literal; DEFAULT_MODEL_TIERS owns that value — WI-10006792).
+    await expect(input).toHaveValue(/^\S+:\S+$/);
+    const baseline = await input.inputValue();
     await input.click();
     await input.pressSequentially('fab'); // mid-word, still focused — no blur
     await page.waitForTimeout(SAVE_WINDOW_MS);
-    const cfg = await getStoredConfig(request);
+    const cfg = await getStoredConfig(page);
     expect(cfg.tiers).toEqual([]); // still the untouched default menu
     await page.keyboard.press('Escape'); // revert the draft
-    await expect(input).toHaveValue('opus:xhigh');
+    await expect(input).toHaveValue(baseline);
   });
 
-  test('an invalid spec is flagged inline and never persisted', async ({ page, request }) => {
+  test('an invalid spec is flagged inline and never persisted', async ({ page }) => {
     assertMounted(await openPage(page), SKIP_MSG_BLANK);
     await editSpecAndBlur(page, 'opush'); // bare unknown alias — the typo class
     await expect(page.getByRole('alert').filter({ hasText: 'not a known model alias' })).toBeVisible();
     await page.waitForTimeout(SAVE_WINDOW_MS);
-    const cfg = await getStoredConfig(request);
+    const cfg = await getStoredConfig(page);
     expect(cfg.tiers).toEqual([]); // nothing persisted, nothing wiped
   });
 
-  test('a valid edit commits on blur and survives reload', async ({ page, request }) => {
+  test('a valid edit commits on blur and survives reload', async ({ page }) => {
     assertMounted(await openPage(page), SKIP_MSG_BLANK);
     const saved = page.waitForResponse(
       (r) => r.url().includes('/api/agent-config') && r.request().method() === 'POST' && r.status() === 200,
@@ -124,20 +156,20 @@ test.describe('/settings/agent auto-save validation', () => {
     await saved;
     await page.reload({ waitUntil: 'load' });
     await expect(page.locator(SPEC_INPUT)).toHaveValue('fable:max', { timeout: 15_000 });
-    const cfg = await getStoredConfig(request);
+    const cfg = await getStoredConfig(page);
     const tiers = cfg.tiers as Array<{ name: string; spec: string }>;
     expect(tiers).toHaveLength(5);
     expect(tiers[4]).toMatchObject({ name: 'max', spec: 'fable:max' });
   });
 
-  test('WIPE REGRESSION: an invalid edit holds the stored value across reload', async ({ page, request }) => {
+  test('WIPE REGRESSION: an invalid edit holds the stored value across reload', async ({ page }) => {
     assertMounted(await openPage(page), SKIP_MSG_BLANK);
     await expect(page.locator(SPEC_INPUT)).toHaveValue('fable:max', { timeout: 15_000 });
     await editSpecAndBlur(page, 'opus:'); // mid-typed effort suffix — invalid
     await expect(page.getByRole('alert').filter({ hasText: 'invalid spec' })).toBeVisible();
     await page.waitForTimeout(SAVE_WINDOW_MS);
     // The store kept the last valid menu — the row was NOT deleted…
-    const cfg = await getStoredConfig(request);
+    const cfg = await getStoredConfig(page);
     const tiers = cfg.tiers as Array<{ spec: string }>;
     expect(tiers).toHaveLength(5);
     expect(tiers[4].spec).toBe('fable:max');

@@ -27,10 +27,58 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  *  can map a HANG to its own `memory_timeout` reason. */
 export type MemoryTimeoutScope = 'backend-operation' | 'request-budget';
 
+/** Closed phase vocabulary for timeout telemetry. Labels passed by callers are
+ * never persisted directly, because some callers may derive them from request
+ * context. */
+export type MemoryTimeoutPhase =
+  | 'availability'
+  | 'scope-resolution'
+  | 'memory-search'
+  | 'staleness'
+  | 'memory-leg'
+  | 'corpus-leg'
+  | 'shared-budget'
+  | 'other';
+
+/** Safe timeout fields stored alongside one failed recall; no error or request data. */
+export interface MemoryTimeoutTelemetry {
+  readonly scope: MemoryTimeoutScope;
+  readonly phase: MemoryTimeoutPhase;
+  readonly elapsedMs: number;
+}
+
+function timeoutPhaseForLabel(label: string): MemoryTimeoutPhase {
+  switch (label) {
+    case 'available()': return 'availability';
+    case 'hive-resolve': return 'scope-resolution';
+    case 'search': return 'memory-search';
+    case 'staleness': return 'staleness';
+    case 'memory leg': return 'memory-leg';
+    case 'corpus leg': return 'corpus-leg';
+    default: return 'other';
+  }
+}
+
+function elapsedSince(startedAt: number): number {
+  return Math.max(0, Math.round(Date.now() - startedAt));
+}
+
 export class MemoryTimeoutError extends Error {
-  constructor(message: string, readonly scope: MemoryTimeoutScope = 'backend-operation') {
+  readonly phase: MemoryTimeoutPhase;
+  readonly elapsedMs: number | null;
+
+  constructor(
+    message: string,
+    readonly scope: MemoryTimeoutScope = 'backend-operation',
+    phase?: MemoryTimeoutPhase,
+    elapsedMs: number | null = null,
+  ) {
     super(message);
     this.name = 'MemoryTimeoutError';
+    this.phase = phase ?? (scope === 'request-budget' ? 'shared-budget' : 'other');
+    this.elapsedMs = typeof elapsedMs === 'number' && Number.isFinite(elapsedMs)
+      ? Math.max(0, Math.round(elapsedMs))
+      : null;
   }
 }
 
@@ -164,12 +212,15 @@ export function withMemoryTimeout<T>(
   p: Promise<T>, label: string, timeoutMs: number, controller?: AbortController,
   scope: MemoryTimeoutScope = 'backend-operation',
 ): Promise<T> {
+  const startedAt = Date.now();
   trackUnderlyingMemoryWork(p);
   return new Promise<T>((resolve, reject) => {
     const signal = controller?.signal;
     const onAbort = () => { cleanup(); reject(signal?.reason); };
     const timer = Number.isFinite(timeoutMs) ? setTimeout(() => {
-      const error = new MemoryTimeoutError(`memory ${label} exceeded ${timeoutMs}ms`, scope);
+      const error = new MemoryTimeoutError(
+        `memory ${label} exceeded ${timeoutMs}ms`, scope, timeoutPhaseForLabel(label), elapsedSince(startedAt),
+      );
       controller?.abort(error);
       reject(error);
     }, timeoutMs) : undefined;
@@ -213,8 +264,11 @@ export function createMemoryWorkDeadline(timeoutMs: number, parent?: AbortSignal
   const onParentAbort = () => controller.abort(parent?.reason);
   if (parent?.aborted) onParentAbort();
   else parent?.addEventListener('abort', onParentAbort, { once: true });
-  const expiresAt = Date.now() + timeoutMs;
-  const expire = () => controller.abort(new MemoryTimeoutError(`memory block exceeded ${timeoutMs}ms`, 'request-budget'));
+  const startedAt = Date.now();
+  const expiresAt = startedAt + timeoutMs;
+  const expire = () => controller.abort(new MemoryTimeoutError(
+    `memory block exceeded ${timeoutMs}ms`, 'request-budget', 'shared-budget', elapsedSince(startedAt),
+  ));
   const timer = Number.isFinite(timeoutMs) ? setTimeout(expire, timeoutMs) : undefined;
   return {
     signal: controller.signal,
@@ -290,9 +344,10 @@ export function memoryWriteRetryBackoffMs(): number {
  *     / bad key) — retrying it just adds latency — so those propagate on the
  *     first attempt.
  *   - SKIPS the retry when the process was ALREADY in the degraded cooldown
- *     BEFORE this write (captured up front): a sustained / known-wedged backend
- *     should fail fast, not pile retries on. Only a FRESH (possibly transient)
- *     timeout is retried.
+ *     before the write workflow: a sustained / known-wedged backend should fail
+ *     fast, not pile retries on. Callers that run optional backend checks first
+ *     can pass `degradedAtStart` from before those checks, so an advisory timeout
+ *     in the same request does not suppress the fresh write's bounded retry.
  *   - Bounded (`memoryWriteMaxAttempts`, default 2) with a short backoff, so the
  *     worst-case wait (attempts × deadline + backoffs) stays well under the
  *     ~55–60s MCP transport cap.
@@ -306,14 +361,14 @@ export function memoryWriteRetryBackoffMs(): number {
 export async function withMemoryWriteRetry<T>(
   attempt: () => Promise<T>,
   label: string,
-  opts: { sleep?: (ms: number) => Promise<void> } = {},
+  opts: { sleep?: (ms: number) => Promise<void>; degradedAtStart?: boolean } = {},
 ): Promise<T> {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   // Snapshot the degraded state BEFORE the first attempt — this write's own
   // timeout will arm the latch (via withMemoryToolTimeout), so reading it after
   // would always look degraded. A process that was already degraded when the
   // write STARTED is a sustained wedge → fail fast, no retry.
-  const alreadyDegraded = isMemoryDegraded();
+  const alreadyDegraded = opts.degradedAtStart ?? isMemoryDegraded();
   const maxAttempts = memoryWriteMaxAttempts();
   let lastErr: unknown;
   for (let i = 0; i < maxAttempts; i++) {

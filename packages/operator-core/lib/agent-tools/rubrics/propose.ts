@@ -10,7 +10,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { proposeRubric, rubricCompleteness } from '../../rubrics';
+import { getRubric, proposeRubric, rubricCompleteness } from '../../rubrics';
+import { auditInstrumentBindings, unregisteredInstrumentRefusal } from '../../rubric-instrument-registry';
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import {
   rubricCriterionWindowSchema,
@@ -236,7 +237,7 @@ export const rubricsProposeArgs = refineEvenWithShapeIssues(
       .enum(RUBRIC_GRADING_AUTHORITIES)
       .optional()
       .describe(
-        "who may grade the plan this rubric governs. 'independent' (the DEFAULT when omitted, and the fail-closed one) requires a lineage-independent non-implementer to file the grading; 'owner-authorized' ALSO admits an owner-filed grading, for a plan the owner drove themselves and that an independence-only gate could therefore never satisfy. It never removes the independent route",
+        "For acceptance-kind plan/goal rubrics, controls who may file the acceptance grade: 'independent' (the default, fail-closed) requires a lineage-independent non-implementer; 'owner-authorized' also permits an owner-filed grade. It never removes the independent route. It does not control standard-kind terminal scorecards, which use the separate P-013 non-author grading-integrity audit. A standard-kind value may separately inform goal-rubric stewardship.",
       ),
     releaseGating: z
       .boolean()
@@ -406,6 +407,18 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
+    // test-rubric-unification-2026-10-12 P-005 (plan D-006): an instrument binding must name a
+    // REGISTERED instrument (or 'none'); a key carried unchanged from the stored revision of the
+    // same criterion is grandfathered and reported, so legacy rubrics stay re-proposable.
+    const priorRubric = await getRubric(args.rubricRef);
+    const instrumentAudit = auditInstrumentBindings({
+      prior: priorRubric?.criteria ?? [],
+      next: args.criteria ?? [],
+    });
+    const instrumentRefusal = unregisteredInstrumentRefusal(instrumentAudit);
+    if (instrumentRefusal) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(instrumentRefusal) }] };
+    }
     const rubric = await proposeRubric({
       rubricId: args.rubricRef,
       ...(args.kind ? { kind: args.kind } : {}),
@@ -497,6 +510,9 @@ export default defineTool({
             replicationSqlCheck,
             methodLint,
             ...(runtimeFindings.length ? { runtimeFindings } : {}),
+            ...(instrumentAudit.grandfathered.length
+              ? { grandfatheredInstruments: instrumentAudit.grandfathered }
+              : {}),
             statusOverride,
           }),
         },

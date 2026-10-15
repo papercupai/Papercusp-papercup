@@ -1,11 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ register: vi.fn(), failOpen: vi.fn(), workflowID: 'durable-promoter-test' }));
+const h = vi.hoisted(() => ({
+  register: vi.fn(),
+  failOpen: vi.fn(),
+  reap: vi.fn(async (_sql: unknown, _input: { workspaceId: string; reaperRunId: string; nowMs: number }) => [] as unknown[]),
+  // WI-10004725: the production fail-open wiring reads promoter liveness and, only when it is
+  // stale, runs the no-model pass. Healthy by default so the existing ticks skip it.
+  liveness: vi.fn(async (..._args: unknown[]) => ({ stale: false, reason: 'healthy' })),
+  promoter: vi.fn(async (_opts: Record<string, unknown>) => ({
+    runId: 'nm', batchSize: 0, flaggedPairs: 0, promoted: 0, merged: 0, held: 0, modelCalled: false,
+    tokensIn: 0, tokensOut: 0, censusBefore: 0, censusAfter: 0, writerCoverageGap: [] as string[],
+    deferredToModel: 0,
+  })),
+  workflowID: 'durable-promoter-test',
+}));
 vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: { get workflowID() { return h.workflowID; } } }));
 vi.mock('./system-actions', () => ({ registerSystemAction: h.register }));
+// The real getOrgPg() throws without a live operator DB; the production reaper wiring only
+// needs a handle to pass through to the (mocked) reaper, never one that is queried.
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: () => { throw new Error('unit test: no live operator DB'); } }),
+}));
+vi.mock('../../admission-runs-reaper', async (orig) => {
+  const actual = await orig<typeof import('../../admission-runs-reaper')>();
+  return { ...actual, reapStrandedAdmissionRuns: h.reap };
+});
 vi.mock('../../work-items-admission-promoter', async (orig) => {
   const actual = await orig<typeof import('../../work-items-admission-promoter')>();
-  return { ...actual, runWorkItemAdmissionFailOpen: h.failOpen };
+  return {
+    ...actual,
+    runWorkItemAdmissionFailOpen: h.failOpen,
+    readPromoterLiveness: h.liveness,
+    runWorkItemAdmissionPromoter: h.promoter,
+  };
 });
 
 const { admissionPromoterOptions, makeWorkItemAdmissionFailOpenAction, makeWorkItemAdmissionPromoterAction } =
@@ -180,6 +208,76 @@ describe('work-item admission routine actions', () => {
 
     expect(h.failOpen).toHaveBeenCalledTimes(1);
     expect(h.failOpen.mock.calls[0]![0]).toMatchObject({ scope: 'workspace', workspaceId: 'ws' });
+    // WI-10004726 P-008: the production tick also reaps stranded admission_runs,
+    // workspace-wide, never reaping its own run.
+    expect(h.reap).toHaveBeenCalledTimes(1);
+    expect(h.reap.mock.calls[0]![1]).toMatchObject({ workspaceId: 'ws', reaperRunId: 'f-prod' });
+  });
+
+  const healthyFailOpen = {
+    runId: 'f-reap',
+    autoPromoted: [],
+    autoPromotedByHarness: {},
+    heldByScope: {},
+    scope: 'workspace' as const,
+    liveness: {
+      stale: false,
+      reason: 'healthy',
+      active: true,
+      routineExists: true,
+      lastSuccessAtMs: 1,
+      ageMs: 1,
+      thresholdMs: 90,
+    },
+  };
+
+  it('reaps stranded admission_runs on every fail-open tick and names each reaped row in the tick log', async () => {
+    const reap = vi.fn(async () => [
+      { id: 'promoter-old', harnessSlug: 'papercusp', runKind: 'promoter-tick', startedAt: '2026-09-08T18:37:02.987Z' },
+      { id: 'park-old', harnessSlug: 'papercusp', runKind: 'durable-park-audit', startedAt: '2026-09-15T08:11:50.510Z' },
+    ]);
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run: async () => healthyFailOpen,
+      reap,
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    })(ctx);
+
+    expect(reap).toHaveBeenCalledWith(ctx, 'f-reap');
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('reaped-stranded=2 [promoter-tick:promoter-old,durable-park-audit:park-old]'),
+    );
+  });
+
+  it('logs reaped-stranded=0 on a clean tick, so a silent reaper is distinguishable from an idle one', async () => {
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run: async () => healthyFailOpen,
+      reap: vi.fn(async () => []),
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    })(ctx);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('reaped-stranded=0'));
+  });
+
+  it('a reaper failure never costs the tick its admissions, invalidation or log line', async () => {
+    const run = vi.fn(async () => healthyFailOpen);
+    const invalidate = vi.fn(async () => undefined);
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run,
+      reap: vi.fn(async () => { throw new Error('admission_runs locked'); }),
+      alarm: vi.fn(async () => undefined),
+      invalidate,
+      log,
+    })(ctx);
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('reaped-stranded=ERROR (admission_runs locked)'));
   });
 
   it('raises the liveness alarm only on a stale fail-open verdict', async () => {
@@ -284,5 +382,73 @@ describe('work-item admission routine actions', () => {
     const zeroLine = zeroLog.mock.calls[0]![0] as string;
     expect(zeroLine).toContain('held-by-scope=0');
     expect(zeroLine).not.toContain('papercusp=0');
+  });
+});
+
+// WI-10004725 (plan work-queue-bulk-cleanup-remediation-2026-10-01 P-007): pausing the model
+// promoter for LLM spend must not also stop the promotions that never needed a model.
+describe('fail-open tick: no-model pass while the model promoter is paused', () => {
+  const sweep = {
+    runId: 'f-nm',
+    autoPromoted: [],
+    autoPromotedByHarness: {},
+    heldByScope: {},
+    scope: 'workspace' as const,
+    liveness: { stale: true, reason: 'promoter routine is inactive', active: false, routineExists: true, lastSuccessAtMs: 1, ageMs: null, thresholdMs: 90 },
+    reviewMoot: { closed: 7, byHarness: { papercusp: 7 }, truncatedByLimit: false },
+  };
+
+  it('runs the deterministic pass BEFORE the sweep when the promoter is stale, and never calls a model', async () => {
+    h.liveness.mockResolvedValueOnce({ stale: true, reason: 'promoter routine is inactive' });
+    const order: string[] = [];
+    h.promoter.mockImplementationOnce(async (opts) => {
+      order.push('no-model');
+      // The pass must refuse to call a model even if something asked it to.
+      await expect((opts.llmCall as () => Promise<unknown>)()).rejects.toThrow(/never call a model/);
+      return { runId: 'nm-1', batchSize: 3, flaggedPairs: 1, promoted: 2, merged: 0, held: 1, modelCalled: false,
+        tokensIn: 0, tokensOut: 0, censusBefore: 0, censusAfter: 0, writerCoverageGap: [], deferredToModel: 1 };
+    });
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run: async () => { order.push('sweep'); return sweep; },
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    })(ctx);
+    expect(order).toEqual(['no-model', 'sweep']);
+    expect(h.promoter).toHaveBeenCalledTimes(1);
+    expect(h.promoter.mock.calls[0]![0]).toMatchObject({ noModel: true, harnessSlug: 'papercusp', workspaceId: 'ws' });
+    const line = log.mock.calls[0]![0] as string;
+    expect(line).toContain('no-model run=nm-1 promoted=2 merged=0 deferred-to-model=1');
+    expect(line).toContain('review-moot=7');
+  });
+
+  it('skips the pass when the model promoter is live (it runs the same path itself)', async () => {
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      run: async () => ({ ...sweep, reviewMoot: undefined }),
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    })(ctx);
+    expect(h.liveness).toHaveBeenCalledTimes(1);
+    expect(h.promoter).not.toHaveBeenCalled();
+    const line = log.mock.calls[0]![0] as string;
+    expect(line).toContain('no-model=skipped(promoter live)');
+    expect(line).toContain('review-moot=0');
+  });
+
+  it('a failing no-model pass never costs the tick its sweep, and the failure is logged', async () => {
+    const run = vi.fn(async () => sweep);
+    const log = vi.fn();
+    await makeWorkItemAdmissionFailOpenAction({
+      noModelPromote: async () => { throw new Error('pair read timed out'); },
+      run,
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    })(ctx);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0]![0]).toContain('no-model=ERROR (pair read timed out)');
   });
 });

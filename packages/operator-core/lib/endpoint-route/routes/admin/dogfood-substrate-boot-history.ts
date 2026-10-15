@@ -108,6 +108,9 @@ const VALID_KINDS_MAP: Record<BootHistoryKind, true> = {
   replication_repair_confirmed: true,
   replication_repair_confirmation_deferred: true,
   replication_repair_confirmation_abandoned: true,
+  // Sparse, keyed replication-detector transitions (boot-history.ts).
+  replication_episode_started: true,
+  replication_condition_ended: true,
 };
 const VALID_KINDS: ReadonlySet<string> = new Set(Object.keys(VALID_KINDS_MAP));
 

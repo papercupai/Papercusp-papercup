@@ -35,6 +35,7 @@ import { buildHarnessFeaturesProjection } from '../projections/harness-features'
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PeerLogOp } from '../peer-log';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   SUBSTRATE_OUTBOX_DDL,
@@ -59,6 +60,8 @@ const FRAMEWORK_ROLES_DDL = `
   END $r$;
 `;
 
+// Before this file's own afterEach, so the stub outlives substrate teardown (WI-6554700010008561).
+stubHivePolicyReadsForSuite();
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   while (cleanups.length) {
@@ -117,6 +120,7 @@ async function bootPeer(sql: postgres.Sql, workspaceRoot: string): Promise<Boote
     reverifyIntervalMs: 0,
     applyOverride: buildPeerApply(sql, undefined),
     loadRevokedOverride: async () => new Set(),
+    rekeyDepsOverride: null, // no re-key build through the live org-admin pool (WI-6554700010008561)
   });
   return handle;
 }

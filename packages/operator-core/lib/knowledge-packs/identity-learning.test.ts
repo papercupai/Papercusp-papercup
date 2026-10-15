@@ -33,7 +33,8 @@ describe('memory provenance uses the applied identity artifact', () => {
       { kind: 'first-party', ref: 'kernel' },
     ] });
     expect(await wornMemoryIdentityIds('writer', 'workspace')).toEqual(['worn-identity']);
-    expect(h.readLaunch).toHaveBeenCalledWith(h.sql, 'writer', 'workspace');
+    // WI-10004801: narrowed to the applied receipt, never the whole record.
+    expect(h.readLaunch).toHaveBeenCalledWith(h.sql, 'writer', 'workspace', [revision]);
     expect(h.appliedArtifact).toHaveBeenCalledWith(launch, revision);
   });
 

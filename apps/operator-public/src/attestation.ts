@@ -149,7 +149,7 @@ function derUtf8(value: Uint8Array): string | null {
   return new TextDecoder().decode(value.subarray(offset, offset + length));
 }
 
-interface CertLike {
+export interface CertLike {
   extension(oid: string): { value: Uint8Array } | undefined;
 }
 
@@ -216,8 +216,20 @@ export function verifyAttestationBundle(bundleJson: unknown, input: VerifyAttest
     return { ok: false, code: 'verification_failed' };
   }
 
-  // Everything below runs ONLY on a signature the Worker itself verified, so the
-  // statement bytes are authentic; policy decides whether they are about THIS listing.
+  return checkAttestationPolicy({ signerWorkflow, cert, payload }, input);
+}
+
+/**
+ * Policy half of the verification: runs ONLY on a signature the Worker itself
+ * verified, so the statement bytes are authentic; policy decides whether they are
+ * about THIS listing. Split out and exported so the certificate-extension checks
+ * (a genuine bundle cannot be forged into a non-public source repository) are
+ * testable against an edited certificate view without touching the signature leg.
+ */
+export function checkAttestationPolicy(
+  { signerWorkflow, cert, payload }: { signerWorkflow: string; cert: CertLike; payload: Uint8Array },
+  input: VerifyAttestationInput,
+): AttestationVerdict {
   const mismatch = (reason: AttestationPolicyReason): AttestationVerdict => ({ ok: false, code: 'policy_mismatch', reason });
 
   if (!signerWorkflow.startsWith(CUPBOARD_WORKFLOW_IDENTITY_PREFIX)) return mismatch('workflow_identity');

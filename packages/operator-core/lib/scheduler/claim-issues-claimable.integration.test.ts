@@ -32,7 +32,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
@@ -175,7 +175,7 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL); // base work_items + the hfc + engineer_issues views
-  await db.sql.unsafe(USER_TRUST_LIST_DDL); // the feature floor LEFT-JOINs the trust list
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // the feature floor LEFT-JOINs the trust list
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the readiness dep table
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   await db.sql.unsafe(`
@@ -336,14 +336,22 @@ describe('claimNextWorkItem fallback ladder — a kind-narrowed caller still wid
     expect(await claimOneKind('w-t1', 'feature')).toBe('F-exact');
   });
 
+  // Retired chunks are excluded by the STATUS floors, not by a kind case
+  // (enterprise-data-sources-2026-10-01 D-022 point 2): work_items:create rejects
+  // kind 'chunk' (no production caller passes allowDeprecatedChunk) and every live
+  // chunk row is terminal (done/passed/dropped, 63 rows measured 2026-10-02). These
+  // fixtures therefore seed chunks the way production holds them. An OPEN chunk is
+  // not a reachable state, so it is not a fixture here.
   it('retired chunks remain outside tier 2 after a feature-narrowed miss', async () => {
-    await seedFeature('RT-1', { createdTs: 100, kind: 'chunk' });
+    await seedFeature('RT-1', { createdTs: 100, kind: 'chunk', status: 'done' });
+    await seedFeature('RT-2', { createdTs: 101, kind: 'chunk', status: 'passed' });
+    await seedFeature('RT-3', { createdTs: 102, kind: 'chunk', status: 'dropped' });
     expect(await claimOneKind('w-t2', 'feature')).toBeNull();
   });
 
   it('retired chunks remain excluded even after their historical blocker settles', async () => {
-    await seedFeature('CH-blocker', { createdTs: 1, kind: 'chunk', status: 'wip' });
-    await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk' });
+    await seedFeature('CH-blocker', { createdTs: 1, kind: 'chunk', status: 'done' });
+    await seedFeature('CH-blocked', { createdTs: 50, kind: 'chunk', status: 'done' });
     await blockEdge(`${H}#CH-blocked`, `${H}#CH-blocker`, 'feature', 'feature');
     expect(await claimOneKind('w-t2b', 'feature')).toBeNull();
     await db.sql`UPDATE harness_shared.work_items SET status='passed' WHERE feature_id='CH-blocker'`;

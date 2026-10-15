@@ -83,6 +83,8 @@ import './run'; // registers code:run (after the mocks are hoisted)
 // the whole catalog (and its mock surface) for one schema.
 import '../improvements/capture';
 import '../plans/set-status';
+import '../work_items/claim';
+import '../pre-prompt-registry-config';
 
 const orchestration = (over: Record<string, unknown> = {}) => ({
   ok: true,
@@ -130,6 +132,20 @@ describe('code:run static arg preflight (EI-19449316000499177)', () => {
     runToolOrchestrationMock.mockResolvedValue(orchestration());
     validateMock.mockReset();
     validateMock.mockResolvedValue({ ok: true, issues: [], staticToolNames: [] });
+  });
+
+  it('normalizes registered positional work_items:claim rows before code:run preflight', async () => {
+    const { validateRecipeScriptAgainstCatalog } = await vi.importActual<
+      typeof import('../recipes/recipe-schema-validation')
+    >('../recipes/recipe-schema-validation');
+    validateMock.mockImplementation(validateRecipeScriptAgainstCatalog);
+
+    const result = await codeRun().fn({
+      script: 'return await tools.workItems.claim({ row: "EI-24779677812251161,,papercusp" });',
+    }, mkCtx());
+
+    expect(runToolOrchestrationMock).toHaveBeenCalledTimes(1);
+    expect(payloadOf(result)).not.toMatchObject({ error: 'script_invalid' });
   });
 
   it('shares the response deadline with preflight instead of giving a slow preflight a fresh worker budget', async () => {

@@ -9,8 +9,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { toast } from 'sonner';
 import { CupboardBlueprintForm } from '../CupboardBlueprintForm';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -63,6 +64,39 @@ describe('CupboardBlueprintForm', () => {
     await screen.findByRole('alert');
     expect(onCreated).not.toHaveBeenCalled();
     expect(mockFetch).not.toHaveBeenCalledWith('/api/harness/pots', expect.anything());
+  });
+
+  it('reports successful Pot creation without claiming to provision a fleet', async () => {
+    const user = userEvent.setup();
+    const onCreated = vi.fn();
+    vi.mocked(toast.success).mockClear();
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      if (url.includes('/api/cupboard/listings')) {
+        return new Response(
+          JSON.stringify({ listings: [{ id: 3, slug: 'x-bp', title: 'X BP', description: 'd', blueprint_kind: 'hive' }] }),
+          { status: 200 },
+        );
+      }
+      if (url.includes('/api/cupboard/install-blueprint')) {
+        return new Response(JSON.stringify({ ok: true, id: 'installed-x' }), { status: 200 });
+      }
+      if (url.includes('/api/harness/pots')) {
+        return new Response(JSON.stringify({ ok: true, project: { slug: 'my-x', path: '/my-x' }, waked: false }), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    render(<CupboardBlueprintForm onBack={vi.fn()} onCreated={onCreated} hiveLabel="Hive" />);
+
+    await user.type(screen.getByPlaceholderText(/research, writing/), 'x');
+    await user.click(await screen.findByText('X BP'));
+    await user.type(screen.getByPlaceholderText('my-hive'), 'my-x');
+    await user.click(screen.getByRole('button', { name: 'Create Hive' }));
+
+    await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledWith('my-x');
+      expect(toast.success).toHaveBeenCalledWith("Hive 'my-x' created from X BP.");
+    });
   });
 
   it('the Back button returns to the picker (onBack)', async () => {

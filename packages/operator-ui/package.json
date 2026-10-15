@@ -7,6 +7,16 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
+    "./browser-telemetry": {
+      "types": "./src/browser-telemetry.tsx",
+      "import": "./src/browser-telemetry.tsx",
+      "default": "./src/browser-telemetry.tsx"
+    },
+    "./onboarding": {
+      "types": "./src/onboarding/product-tutorial.tsx",
+      "import": "./src/onboarding/product-tutorial.tsx",
+      "default": "./src/onboarding/product-tutorial.tsx"
+    },
     "./package.json": "./package.json",
     ".": {
       "types": "./src/index.ts",
@@ -108,11 +118,13 @@
     "@papercusp/chat-protocol": "file:../../libs/generic/chat-protocol",
     "@papercusp/grid-core": "file:../../libs/generic/papergrid/grid-core",
     "@papercusp/module-singleton": "file:../../libs/generic/module-singleton",
+    "@papercusp/operator-core": "*",
     "@papercusp/sync": "file:../../libs/generic/sync",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@tanstack/react-virtual": "^3.13.23",
     "lucide-react": "^0.544.0",
     "nuqs": "^2.7.2",
+    "posthog-js": "^1.219.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   },

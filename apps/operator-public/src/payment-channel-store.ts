@@ -21,6 +21,8 @@ export type StoredPaymentChannelState =
 interface PaymentChannelRow {
   channel_id: string;
   principal_id: string;
+  payer_pubkey_base64: string | null;
+  payer_key_proof: string | null;
   rail: string;
   chain_id: number;
   stablecoin_address: string;
@@ -45,6 +47,9 @@ interface PaymentChannelRow {
 export interface StoredPaymentChannel {
   readonly channelId: string;
   readonly principalId: string;
+  /** Null only for legacy rows; these cannot admit new vouchers. */
+  readonly payerPubkeyBase64: string | null;
+  readonly payerKeyProof: string | null;
   readonly rail: 'evm-x402';
   readonly chainId: number;
   readonly stablecoinAddress: string;
@@ -65,6 +70,8 @@ export interface StoredPaymentChannel {
 export interface CreatePaymentChannelInput {
   readonly channelId: string;
   readonly principalId: string;
+  readonly payerPubkeyBase64: string;
+  readonly payerKeyProof: string;
   readonly adapter: PaymentChannelFundingAdapter;
   readonly fundingSource: PaymentChannelFundingSource;
   readonly escrowMicros: number;
@@ -94,6 +101,8 @@ function fromRow(row: PaymentChannelRow): StoredPaymentChannel {
   return {
     channelId: row.channel_id,
     principalId: row.principal_id,
+    payerPubkeyBase64: row.payer_pubkey_base64 ?? null,
+    payerKeyProof: row.payer_key_proof ?? null,
     rail: 'evm-x402',
     chainId: Number(row.chain_id),
     stablecoinAddress: row.stablecoin_address,
@@ -118,7 +127,7 @@ export async function getPaymentChannel(
 ): Promise<StoredPaymentChannel | null> {
   const row = await db
     .prepare(
-      `SELECT channel_id, principal_id, rail, chain_id, stablecoin_address,
+      `SELECT channel_id, principal_id, payer_pubkey_base64, payer_key_proof, rail, chain_id, stablecoin_address,
               settlement_contract_address, funding_source, funding_ref,
               wallet_address, escrow_micros, committed_micros, refunded_micros,
               state, open_tx_hash, open_block_number, close_tx_hash,
@@ -138,6 +147,8 @@ function sameTerms(
 ): boolean {
   return (
     channel.principalId === input.principalId &&
+    channel.payerPubkeyBase64 === input.payerPubkeyBase64 &&
+    channel.payerKeyProof === input.payerKeyProof &&
     channel.chainId === input.adapter.chainId &&
     channel.stablecoinAddress === input.adapter.stablecoinAddress &&
     channel.settlementContractAddress === input.adapter.settlementContractAddress &&
@@ -174,15 +185,17 @@ export async function createPaymentChannelOpening(
     await db
       .prepare(
         `INSERT INTO payment_channels
-         (channel_id, principal_id, rail, chain_id, stablecoin_address,
+         (channel_id, principal_id, payer_pubkey_base64, payer_key_proof, rail, chain_id, stablecoin_address,
           settlement_contract_address, funding_source, funding_ref,
           wallet_address, escrow_micros, committed_micros, refunded_micros,
           state, created_at_ms, updated_at_ms)
-         VALUES (?, ?, 'evm-x402', ?, ?, ?, ?, ?, ?, ?, 0, 0, 'opening', ?, ?)`,
+         VALUES (?, ?, ?, ?, 'evm-x402', ?, ?, ?, ?, ?, ?, ?, 0, 0, 'opening', ?, ?)`,
       )
       .bind(
         input.channelId,
         input.principalId,
+        input.payerPubkeyBase64,
+        input.payerKeyProof,
         input.adapter.chainId,
         input.adapter.stablecoinAddress,
         input.adapter.settlementContractAddress,

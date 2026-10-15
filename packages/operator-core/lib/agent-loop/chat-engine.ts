@@ -25,8 +25,8 @@
  */
 import type { TranscriptTurn } from '../agent-chats-data';
 import { splitModelSpec } from '../agent-config-constants';
-import type { ModelMessage, ModelPort, ModelUsage } from './model-port';
-import { runAgentLoop, stepCountIs, type ApprovalPort, type LoopStopReason, type LoopTool } from './loop';
+import type { ModelMessage, ModelPort, ModelProviderResponse, ModelUsage } from './model-port';
+import { copyProviderRequest, runAgentLoop, stepCountIs, type ApprovalPort, type LoopStopReason, type LoopTool, type LoopProviderRequestInfo } from './loop';
 import { createRoutedModelPort } from './provider-router';
 import { awaitLoopApprovalDecision, createLoopApproval } from './approval-store';
 import { maybeCompactSession } from './session-compaction';
@@ -88,6 +88,9 @@ export interface LoopChatTurnOpts {
   sessions?: LoopSessionStore;
   /** Let the route persist the transcript before exposing done/error. */
   deferTerminalEvent?: boolean;
+  /** Trusted capture seam; commercial admission supplies its own durable
+   * writer. A sink delivery alone is not proof of durable accounting. */
+  onProviderRequest?(info: LoopProviderRequestInfo): Promise<void>;
 }
 
 export interface LoopChatTurnResult {
@@ -103,6 +106,9 @@ export interface LoopChatTurnResult {
   /** Account that actually served the most recent model request, when the
    * gateway returned authoritative routing provenance. */
   servedAccount?: string;
+  providerRequests?: LoopProviderRequestInfo[];
+  /** One completed housekeeping report, separate from turn token estimates. */
+  compactionProviderResponse?: ModelProviderResponse;
 }
 
 /** Map the PG transcript (text turns) onto the loop's ModelMessage shape.
@@ -177,6 +183,8 @@ export function pgApprovalPort(args: {
  * like the legacy lane).
  */
 export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatTurnResult> {
+  const captureProviderRequest = opts.onProviderRequest;
+  let turnCaptureFailed = false;
   const port = opts.port ?? createRoutedModelPort();
   const approvals =
     opts.approvals ??
@@ -226,6 +234,9 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
 
   let doneMessages: ModelMessage[] | null = null;
   let doneUsage: ModelUsage | null = null;
+  // A completed model step is not the whole turn: compaction may still make
+  // a provider request whose capture must succeed before terminal delivery.
+  const terminalEvents: Array<{ name: 'done' | 'error'; data: Record<string, unknown> }> = [];
 
   const loop = runAgentLoop({
     port,
@@ -240,6 +251,10 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
     ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
     ...(opts.account !== undefined ? { account: opts.account } : {}),
     ...(opts.ownerId !== undefined ? { ownerId: opts.ownerId } : {}),
+    ...(captureProviderRequest ? { onProviderRequest: async (info: LoopProviderRequestInfo) => {
+      try { await captureProviderRequest(info); }
+      catch (error) { turnCaptureFailed = true; throw error; }
+    } } : {}),
   });
 
   try {
@@ -249,6 +264,7 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
         case 'text_delta':
         case 'reasoning_delta':
         case 'approval_resolved':
+        case 'provider_request':
           opts.sink.event(ev.type, ev);
           break;
         case 'tool_call':
@@ -283,25 +299,26 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
           result.costUsd = ev.usage.costUsd ?? 0;
           result.stepCount = ev.steps.length;
           if (ev.servedAccount) result.servedAccount = ev.servedAccount;
+          if (ev.providerRequests) result.providerRequests = ev.providerRequests;
           doneMessages = ev.messages;
           doneUsage = ev.usage;
           // Wire `done` = totals + finalText; the full messages snapshot is
           // NOT streamed (P-009 persists it — the pane re-reads the chat).
           if (!opts.deferTerminalEvent) {
-            opts.sink.event('done', {
+            terminalEvents.push({ name: 'done', data: {
               type: 'done',
               stopReason: ev.stopReason,
               finalText: ev.finalText,
               usage: ev.usage,
               stepCount: ev.steps.length,
               ...(ev.servedAccount ? { servedAccount: ev.servedAccount } : {}),
-            });
+            } });
           }
           break;
         case 'error':
           result.errorMessage = ev.message;
           if (!opts.deferTerminalEvent) {
-            opts.sink.event('error', { type: 'error', message: ev.message });
+            terminalEvents.push({ name: 'error', data: { type: 'error', message: ev.message } });
           }
           break;
       }
@@ -312,14 +329,16 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
     const message = e instanceof Error ? e.message : String(e);
     result.errorMessage = result.errorMessage ?? message;
     if (!opts.deferTerminalEvent) {
-      opts.sink.event('error', { type: 'error', message });
+      terminalEvents.push({ name: 'error', data: { type: 'error', message } });
     }
   }
 
   // ── P-009 persist: compact if over budget, then save the working set ────
   // Runs for EVERY done (error stops included — the user turn is real even
   // when the stream died) so the session never lags the transcript.
-  if (opts.sessions && doneMessages && doneUsage) {
+  if (opts.sessions && doneMessages && doneUsage && !turnCaptureFailed) {
+    let captureFailed = false;
+    let captureError: unknown;
     try {
       const compact = await maybeCompactSession({
         messages: doneMessages,
@@ -330,7 +349,21 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
         ...(opts.account !== undefined ? { account: opts.account } : {}),
+        ...(opts.ownerId !== undefined ? { ownerId: opts.ownerId } : {}),
+        stepIndex: result.stepCount,
+        onProviderRequest: async info => {
+          (result.providerRequests ??= []).push(copyProviderRequest(info));
+          try {
+            await captureProviderRequest?.(copyProviderRequest(info));
+          } catch (error) {
+            captureFailed = true;
+            captureError = error;
+            throw error;
+          }
+          opts.sink.event('provider_request', { type: 'provider_request', ...copyProviderRequest(info) });
+        },
       });
+      if (compact.summarizeProviderResponse) result.compactionProviderResponse = compact.summarizeProviderResponse;
       let turnUsage: ModelUsage = doneUsage;
       if (compact.summarizeUsage) {
         const s = compact.summarizeUsage;
@@ -355,6 +388,7 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
         result.tokensOut += s.outputTokens;
         if (s.costUsd !== undefined) result.costUsd += s.costUsd;
       }
+      doneUsage = turnUsage;
       await opts.sessions.saveTurn({
         chatId: opts.chatId,
         workspaceId: opts.workspaceId,
@@ -369,9 +403,21 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
         priced: turnUsage.costUsd !== undefined,
       });
     } catch {
+      if (captureFailed) {
+        const message = captureError instanceof Error ? captureError.message : String(captureError);
+        result.errorMessage = message;
+        result.stopReason = 'error';
+        terminalEvents.length = 0;
+        if (!opts.deferTerminalEvent) terminalEvents.push({ name: 'error', data: { type: 'error', message } });
+      }
       // Degraded persistence: the anchor mismatch on the next load falls back
       // to the text rebuild — never fail a completed turn over the store.
     }
+  }
+
+  for (const terminal of terminalEvents) {
+    opts.sink.event(terminal.name, { ...terminal.data,
+      ...(terminal.name === 'done' && doneUsage ? { usage: doneUsage } : {}) });
   }
 
   return result;

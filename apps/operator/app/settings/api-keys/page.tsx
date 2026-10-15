@@ -9,7 +9,6 @@ import { Button } from '@/app/harness/Button';
 import { useLexicon } from '@/lib/useLexicon';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import RouteLink from '@/app/_components/RouteLink';
-import { LazyDetails } from '@/app/_components/LazyDetails';
 
 interface MaskedCoreCredentials {
   anthropic_api_key: string | null;
@@ -122,10 +121,10 @@ export default function ApiKeysPage() {
       <section className="pc-settings-section">
         <h2>API keys — Core</h2>
         <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
-          These are raw provider keys, not account logins. Anthropic and Codex/OpenAI
-          <em> model access</em> comes from the default account under{' '}
-          <RouteLink href="/settings/deploy-accounts">Inference</RouteLink> — there is no
-          Anthropic key to set here. The OpenAI key below is for <em>embeddings</em>, which no
+          These keys configure service integrations. For Anthropic API keys, Claude subscriptions,
+          and Codex/OpenAI <em>model access</em>, add an account under{' '}
+          <RouteLink href="/settings/deploy-accounts">Inference</RouteLink>.
+          The OpenAI key below is for <em>embeddings</em>, which no
           subscription account can serve. GitHub PAT is needed only when publishing{' '}
           {t('pot', { plural: true, lower: true })} to the marketplace.
         </p>
@@ -172,8 +171,6 @@ export default function ApiKeysPage() {
           </div>
         </form>
       </section>
-
-      <SearchProvidersSection />
 
       <section className="pc-settings-section">
         <h2>Voice & cloud engines</h2>
@@ -380,145 +377,5 @@ function SecretField({
         </div>
       )}
     </FormField>
-  );
-}
-
-/* ─── Search-provider keys section ──────────────────────────────────── */
-
-interface ProviderField {
-  envVar: string;
-  masked: string | null;
-  isPrimary: boolean;
-}
-interface ProviderRow {
-  id: string;
-  label: string;
-  fields: ProviderField[];
-}
-interface ProvidersResponse {
-  providers: ProviderRow[];
-  updatedAt: number | null;
-}
-
-function SearchProvidersSection() {
-  const [data, setData] = useState<ProvidersResponse | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch('/api/credentials/search-providers', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((d) => setData(d as ProvidersResponse))
-      .catch((e) => setError(e?.message ?? String(e)));
-  }, []);
-
-  const onSave = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const values: Record<string, string | null> = {};
-      for (const [k, v] of Object.entries(drafts)) {
-        // Empty string after trim → null (clear); else use the value.
-        const trimmed = v.trim();
-        values[k] = trimmed.length > 0 ? trimmed : null;
-      }
-      const res = await fetch('/api/credentials/search-providers', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ values }),
-      });
-      const next = await res.json();
-      if (!res.ok) throw new Error((next && next.error) || `HTTP ${res.status}`);
-      setData(next as ProvidersResponse);
-      setDrafts({});
-      toast.success('Search-provider keys updated');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <section className="pc-settings-section">
-      <h2>Search providers</h2>
-      <p className="pc-settings-hint" style={{ marginBottom: 12 }}>
-        API keys for OMP&rsquo;s 14 web-search providers. Set the ones you actually use; the
-        orchestrator injects them into OMP&rsquo;s spawn env. OMP&rsquo;s search chain
-        falls through to whichever provider is configured.
-        See <RouteLink href="/settings/omp" style={{ color: 'var(--fg)' }}>OMP settings → providers.webSearch</RouteLink>{' '}
-        to set the preferred provider.
-      </p>
-      {error && (
-        <div className="pc-warn" role="alert" style={{ marginBottom: 12 }}>
-          {error}
-        </div>
-      )}
-      {!data && !error && <div style={{ color: 'var(--fg-mute)' }}>Loading…</div>}
-      {data && (
-        <div style={{ maxWidth: 640, display: 'grid', gap: 8 }}>
-          {data.providers.map((p) => (
-            <LazyDetails
-              key={p.id}
-              style={{ border: '1px solid var(--border)', borderRadius: 4, padding: '8px 12px' }}
-              summaryStyle={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between' }}
-              summary={
-                <>
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>{p.label}</span>
-                  <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
-                    {p.fields.some((f) => f.masked) ? 'Configured' : 'Not configured'}
-                  </span>
-                </>
-              }
-            >
-              <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
-                {p.fields.map((f) => (
-                  <div key={f.envVar} style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 2 }}>
-                    <label style={{ fontSize: 11, color: 'var(--fg-mute)', fontFamily: 'monospace' }}>
-                      {f.envVar}
-                      {f.isPrimary && <span style={{ marginLeft: 6, color: 'var(--fg-dim)' }}>(primary)</span>}
-                    </label>
-                    <input
-                      type="password"
-                      placeholder={f.masked ?? '—'}
-                      value={drafts[f.envVar] ?? ''}
-                      onChange={(e) => setDrafts((prev) => ({ ...prev, [f.envVar]: e.target.value }))}
-                      autoComplete="off"
-                      spellCheck={false}
-                      style={{
-                        padding: '6px 8px', fontSize: 12, fontFamily: 'monospace',
-                        background: 'var(--bg-1)', border: '1px solid var(--border)',
-                        borderRadius: 3, color: 'var(--fg)',
-                      }}
-                    />
-                  </div>
-                ))}
-              </div>
-            </LazyDetails>
-          ))}
-          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <Button
-              size="lg"
-              variant="primary"
-              onClick={onSave}
-              disabled={saving || Object.keys(drafts).length === 0}
-              style={{ padding: '6px 14px', fontSize: 13 }}
-            >
-              {saving ? 'Saving…' : `Save ${Object.keys(drafts).length} change${Object.keys(drafts).length === 1 ? '' : 's'}`}
-            </Button>
-            {Object.keys(drafts).length > 0 && (
-              <Button
-                size="lg"
-                onClick={() => setDrafts({})}
-                style={{ padding: '6px 14px', fontSize: 13 }}
-              >
-                Discard
-              </Button>
-            )}
-          </div>
-        </div>
-      )}
-    </section>
   );
 }

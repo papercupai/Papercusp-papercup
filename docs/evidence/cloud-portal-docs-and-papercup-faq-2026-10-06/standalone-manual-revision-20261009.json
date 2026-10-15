@@ -1,0 +1,407 @@
+{
+  "id": "standalone-manual-revision",
+  "stage": "passed",
+  "runtimeBuild": {
+    "sha": "bb0f15e166",
+    "measuredAt": "2026-10-09T00:13:52.952Z"
+  },
+  "observedAt": "2026-10-09T00:13:55.189Z",
+  "modelTargetOpenCount": 0,
+  "modelSendCount": 0,
+  "pages": [
+    "accounts-and-billing.mdx",
+    "agent-modes-and-fleets.mdx",
+    "cloud-workspaces.mdx",
+    "faq.mdx",
+    "harness-snapshots.mdx",
+    "harness-templates.mdx",
+    "index.mdx",
+    "plans-and-work.mdx",
+    "plugins.mdx",
+    "quickstart.mdx",
+    "remote-access.mdx",
+    "troubleshooting.mdx",
+    "using-the-app.mdx",
+    "voice.mdx",
+    "workspaces-and-agents.mdx"
+  ],
+  "observations": {
+    "before": {
+      "get": {
+        "results": [
+          {
+            "slug": "faq",
+            "found": true,
+            "content": "## What is a workspace?\n\nAlso asked as: Where does my work run? Is a workspace the same as a project?\n\nA workspace is the connected environment where agents do their work. A\nproject is the body of work you select within that environment. Check both\nnames before approving changes; selecting a different workspace does not\nautomatically move your project there.\n[Understand workspaces and agents](/docs/workspaces-and-agents).",
+            "bytes": 425,
+            "sliced": true
+          }
+        ],
+        "surface": "public",
+        "revision": "a3e687c05a5be898f1c4cd184a68e804b5d3cfd3d8f7c0254103c92479449bd5"
+      },
+      "search": {
+        "query": "What is a workspace?",
+        "tokenCount": 3,
+        "hitCount": 32,
+        "hits": [
+          {
+            "slug": "faq",
+            "url": "/docs/faq#what-is-a-workspace",
+            "title": "What is a workspace?",
+            "description": "Where does my work run? Is a workspace the same as a project?",
+            "score": 1005.989145608006,
+            "excerpt": "## What is a workspace? Also asked as: Where does my work run? Is a workspace the same as a project? A workspace is the connected environment where agents do their work. A project is the body of work you select within that environment. Ch…",
+            "heading": "what-is-a-workspace"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#what-should-i-check-before-deleting-a-workspace",
+            "title": "What should I check before deleting a workspace?",
+            "description": "Can I recover after deletion? Is deleting the same as stopping?",
+            "score": 4.770185224516952,
+            "excerpt": "## What should I check before deleting a workspace? Also asked as: Can I recover after deletion? Is deleting the same as stopping? Identify exactly what will be deleted, what may remain and who can perform the action. Establish a complete…",
+            "heading": "what-should-i-check-before-deleting-a-workspace"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#is-my-workspace-ready-when-its-card-appears",
+            "title": "Is my workspace ready when its card appears?",
+            "description": "Why can I see a workspace but not use it? Is provisioning finished?",
+            "score": 4.363940542901701,
+            "excerpt": "## Is my workspace ready when its card appears? Also asked as: Why can I see a workspace but not use it? Is provisioning finished? A card appearing is not proof that its host is connected and ready. Read the current provisioning and conne…",
+            "heading": "is-my-workspace-ready-when-its-card-appears"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#what-is-papercusp",
+            "title": "What is Papercusp?",
+            "description": "What does this app do? How do I use Papercusp?",
+            "score": 4.203031440469133,
+            "excerpt": "## What is Papercusp? Also asked as: What does this app do? How do I use Papercusp? Papercusp helps you plan work, run agents in a connected workspace and inspect their results. Start with one small task you can check, such as improving a…",
+            "heading": "what-is-papercusp"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#what-is-papercup",
+            "title": "What is Papercup?",
+            "description": "Who is the assistant? Can I ask the chat for help?",
+            "score": 3.7145002640907334,
+            "excerpt": "## What is Papercup? Also asked as: Who is the assistant? Can I ask the chat for help? Papercup is the assistant you can ask for explanations and help with work. Tell it which workspace and project you mean and what result you want. Its a…",
+            "heading": "what-is-papercup"
+          },
+          {
+            "slug": "cloud-workspaces",
+            "url": "/docs/cloud-workspaces",
+            "title": "Cloud workspaces",
+            "description": "Run workspace hosts on Papercusp Cloud or in your own Google Cloud project or AWS account, with only the access they need.",
+            "score": 3.5181900026801065,
+            "excerpt": "Use this guide to choose a hosting arrangement and connect a workspace where your agents can run. The result is a provisioned, connected host in the intended account, with its payer and access understood before you start work. A cloud work…"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#which-cloud-option-should-i-choose",
+            "title": "Which cloud option should I choose?",
+            "description": "What is managed hosting? What does bring your own cloud mean?",
+            "score": 3.1446570235131612,
+            "excerpt": "…option should I choose? Also asked as: What is managed hosting? What does bring your own cloud mean? **Use Papercusp's cloud** means Papercusp manages the host. **Bring your own cloud** uses your Google Cloud project or AWS account and re…",
+            "heading": "which-cloud-option-should-i-choose"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#how-do-i-know-a-task-is-finished",
+            "title": "How do I know a task is finished?",
+            "description": "What does done mean? Is a passing test proof that my change is live?",
+            "score": 2.8813682531290823,
+            "excerpt": "## How do I know a task is finished? Also asked as: What does done mean? Is a passing test proof that my change is live? Open the actual result and compare it with the agreed acceptance conditions. Read what changed, what was checked and …",
+            "heading": "how-do-i-know-a-task-is-finished"
+          }
+        ],
+        "surface": "public",
+        "revision": "a3e687c05a5be898f1c4cd184a68e804b5d3cfd3d8f7c0254103c92479449bd5",
+        "legs": {
+          "lexical": {
+            "status": "ran"
+          },
+          "semantic": {
+            "status": "not-run",
+            "reason": "public-manual lexical fallback"
+          }
+        }
+      }
+    },
+    "unchanged": {
+      "get": {
+        "results": [
+          {
+            "slug": "faq",
+            "found": true,
+            "content": "## What is a workspace?\n\nAlso asked as: Where does my work run? Is a workspace the same as a project?\n\nA workspace is the connected environment where agents do their work. A\nproject is the body of work you select within that environment. Check both\nnames before approving changes; selecting a different workspace does not\nautomatically move your project there.\n[Understand workspaces and agents](/docs/workspaces-and-agents).",
+            "bytes": 425,
+            "sliced": true
+          }
+        ],
+        "surface": "public",
+        "revision": "a3e687c05a5be898f1c4cd184a68e804b5d3cfd3d8f7c0254103c92479449bd5"
+      },
+      "search": {
+        "query": "What is a workspace?",
+        "tokenCount": 3,
+        "hitCount": 32,
+        "hits": [
+          {
+            "slug": "faq",
+            "url": "/docs/faq#what-is-a-workspace",
+            "title": "What is a workspace?",
+            "description": "Where does my work run? Is a workspace the same as a project?",
+            "score": 1005.989145608006,
+            "excerpt": "## What is a workspace? Also asked as: Where does my work run? Is a workspace the same as a project? A workspace is the connected environment where agents do their work. A project is the body of work you select within that environment. Ch…",
+            "heading": "what-is-a-workspace"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#what-should-i-check-before-deleting-a-workspace",
+            "title": "What should I check before deleting a workspace?",
+            "description": "Can I recover after deletion? Is deleting the same as stopping?",
+            "score": 4.770185224516952,
+            "excerpt": "## What should I check before deleting a workspace? Also asked as: Can I recover after deletion? Is deleting the same as stopping? Identify exactly what will be deleted, what may remain and who can perform the action. Establish a complete…",
+            "heading": "what-should-i-check-before-deleting-a-workspace"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#is-my-workspace-ready-when-its-card-appears",
+            "title": "Is my workspace ready when its card appears?",
+            "description": "Why can I see a workspace but not use it? Is provisioning finished?",
+            "score": 4.363940542901701,
+            "excerpt": "## Is my workspace ready when its card appears? Also asked as: Why can I see a workspace but not use it? Is provisioning finished? A card appearing is not proof that its host is connected and ready. Read the current provisioning and conne…",
+            "heading": "is-my-workspace-ready-when-its-card-appears"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#what-is-papercusp",
+            "title": "What is Papercusp?",
+            "description": "What does this app do? How do I use Papercusp?",
+            "score": 4.203031440469133,
+            "excerpt": "## What is Papercusp? Also asked as: What does this app do? How do I use Papercusp? Papercusp helps you plan work, run agents in a connected workspace and inspect their results. Start with one small task you can check, such as improving a…",
+            "heading": "what-is-papercusp"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#what-is-papercup",
+            "title": "What is Papercup?",
+            "description": "Who is the assistant? Can I ask the chat for help?",
+            "score": 3.7145002640907334,
+            "excerpt": "## What is Papercup? Also asked as: Who is the assistant? Can I ask the chat for help? Papercup is the assistant you can ask for explanations and help with work. Tell it which workspace and project you mean and what result you want. Its a…",
+            "heading": "what-is-papercup"
+          },
+          {
+            "slug": "cloud-workspaces",
+            "url": "/docs/cloud-workspaces",
+            "title": "Cloud workspaces",
+            "description": "Run workspace hosts on Papercusp Cloud or in your own Google Cloud project or AWS account, with only the access they need.",
+            "score": 3.5181900026801065,
+            "excerpt": "Use this guide to choose a hosting arrangement and connect a workspace where your agents can run. The result is a provisioned, connected host in the intended account, with its payer and access understood before you start work. A cloud work…"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#which-cloud-option-should-i-choose",
+            "title": "Which cloud option should I choose?",
+            "description": "What is managed hosting? What does bring your own cloud mean?",
+            "score": 3.1446570235131612,
+            "excerpt": "…option should I choose? Also asked as: What is managed hosting? What does bring your own cloud mean? **Use Papercusp's cloud** means Papercusp manages the host. **Bring your own cloud** uses your Google Cloud project or AWS account and re…",
+            "heading": "which-cloud-option-should-i-choose"
+          },
+          {
+            "slug": "faq",
+            "url": "/docs/faq#how-do-i-know-a-task-is-finished",
+            "title": "How do I know a task is finished?",
+            "description": "What does done mean? Is a passing test proof that my change is live?",
+            "score": 2.8813682531290823,
+            "excerpt": "## How do I know a task is finished? Also asked as: What does done mean? Is a passing test proof that my change is live? Open the actual result and compare it with the agreed acceptance conditions. Read what changed, what was checked and …",
+            "heading": "how-do-i-know-a-task-is-finished"
+          }
+        ],
+        "surface": "public",
+        "revision": "a3e687c05a5be898f1c4cd184a68e804b5d3cfd3d8f7c0254103c92479449bd5",
+        "legs": {
+          "lexical": {
+            "status": "ran"
+          },
+          "semantic": {
+            "status": "not-run",
+            "reason": "public-manual lexical fallback"
+          }
+        }
+      }
+    },
+    "changed": {
+      "get": {
+        "results": [
+          {
+            "slug": "faq",
+            "found": true,
+            "content": "## Standalone revision control\n\nThe standalone revision marker is STANDALONE-RED-5831.",
+            "bytes": 86,
+            "sliced": true
+          }
+        ],
+        "surface": "public",
+        "revision": "3a1d5ef7638465f552711a397b4faa2a2144b5bde8de47b33241ae978fe234d0"
+      },
+      "search": {
+        "query": "standalone revision marker",
+        "tokenCount": 3,
+        "hitCount": 4,
+        "hits": [
+          {
+            "slug": "faq",
+            "url": "/docs/faq#standalone-revision-control",
+            "title": "Standalone revision control",
+            "score": 36.43197225416904,
+            "excerpt": "## Standalone revision control The standalone revision marker is STANDALONE-RED-5831.",
+            "heading": "standalone-revision-control"
+          },
+          {
+            "slug": "harness-snapshots",
+            "url": "/docs/harness-snapshots",
+            "title": "Snapshots and backups",
+            "description": "Understand workspace backups, project snapshots and safe recovery before changing data.",
+            "score": 1.4785755140112191,
+            "excerpt": "… | Which repository and revision contain the work | | Workspace backup | Recover workspace state before a risky operation | Included paths/data, snapshot receipt and restore procedure …"
+          },
+          {
+            "slug": "troubleshooting",
+            "url": "/docs/troubleshooting",
+            "title": "Troubleshooting",
+            "description": "Resolve portal sign-in, workspace, agent-session and documentation problems safely.",
+            "score": 1.4778961223570573,
+            "excerpt": "…sk for the actual destination, artifact/revision and observed verification rather than repeatedly refreshing a different environment. ## Docs, project docs and search The public manual lives at [/docs/](/docs/). It is readable without sig…"
+          },
+          {
+            "slug": "plans-and-work",
+            "url": "/docs/plans-and-work",
+            "title": "Plans and work",
+            "description": "Turn a request into a durable plan, follow dependencies and decisions, and verify completion.",
+            "score": 1.4749592922098016,
+            "excerpt": "…uire the actual destination and serving revision. For a research or documentation task, require the delivered content and its checked sources. Keep unresolved follow-ups assigned rather than letting them disappear from the completion report…"
+          }
+        ],
+        "surface": "public",
+        "revision": "3a1d5ef7638465f552711a397b4faa2a2144b5bde8de47b33241ae978fe234d0",
+        "legs": {
+          "lexical": {
+            "status": "ran"
+          },
+          "semantic": {
+            "status": "not-run",
+            "reason": "public-manual lexical fallback"
+          }
+        }
+      }
+    },
+    "refreshed": {
+      "get": {
+        "results": [
+          {
+            "slug": "faq",
+            "found": true,
+            "content": "## Standalone revision control\n\nThe standalone revision marker is STANDALONE-BLUE-9274.",
+            "bytes": 87,
+            "sliced": true
+          }
+        ],
+        "surface": "public",
+        "revision": "4c5e9722ff2ae22fe5c8a3bb568f883be04fad7b35ff559ad9f607e5d15eb3c8"
+      },
+      "search": {
+        "query": "standalone revision marker",
+        "tokenCount": 3,
+        "hitCount": 4,
+        "hits": [
+          {
+            "slug": "faq",
+            "url": "/docs/faq#standalone-revision-control",
+            "title": "Standalone revision control",
+            "score": 36.42845110698215,
+            "excerpt": "## Standalone revision control The standalone revision marker is STANDALONE-BLUE-9274.",
+            "heading": "standalone-revision-control"
+          },
+          {
+            "slug": "harness-snapshots",
+            "url": "/docs/harness-snapshots",
+            "title": "Snapshots and backups",
+            "description": "Understand workspace backups, project snapshots and safe recovery before changing data.",
+            "score": 1.4785884178019284,
+            "excerpt": "… | Which repository and revision contain the work | | Workspace backup | Recover workspace state before a risky operation | Included paths/data, snapshot receipt and restore procedure …"
+          },
+          {
+            "slug": "troubleshooting",
+            "url": "/docs/troubleshooting",
+            "title": "Troubleshooting",
+            "description": "Resolve portal sign-in, workspace, agent-session and documentation problems safely.",
+            "score": 1.4779090245130642,
+            "excerpt": "…sk for the actual destination, artifact/revision and observed verification rather than repeatedly refreshing a different environment. ## Docs, project docs and search The public manual lives at [/docs/](/docs/). It is readable without sig…"
+          },
+          {
+            "slug": "plans-and-work",
+            "url": "/docs/plans-and-work",
+            "title": "Plans and work",
+            "description": "Turn a request into a durable plan, follow dependencies and decisions, and verify completion.",
+            "score": 1.4749721872540011,
+            "excerpt": "…uire the actual destination and serving revision. For a research or documentation task, require the delivered content and its checked sources. Keep unresolved follow-ups assigned rather than letting them disappear from the completion report…"
+          }
+        ],
+        "surface": "public",
+        "revision": "4c5e9722ff2ae22fe5c8a3bb568f883be04fad7b35ff559ad9f607e5d15eb3c8",
+        "legs": {
+          "lexical": {
+            "status": "ran"
+          },
+          "semantic": {
+            "status": "not-run",
+            "reason": "public-manual lexical fallback"
+          }
+        }
+      }
+    }
+  },
+  "ownedRootRemoved": true,
+  "schemaVersion": 1,
+  "scope": "Actual installed public/manual-source fallback using fifteen canonical public pages through docs-only MCP; disposable revisions, zero model sessions. Not Pagefind, docs worker dispatch, novice validation or final shipment.",
+  "testFile": "packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts",
+  "testFilter": "retrieves the canonical standalone bundle and refreshes its mounted revision without model calls",
+  "testLog": "/tmp/su73-standalone-manual-0013.log",
+  "testResult": {
+    "passed": 1,
+    "failed": 0,
+    "filteredOut": 46,
+    "exitCode": 0,
+    "sourceProvenance": "Local modified named test path. Runtime artifact pinned by bundle SHA-256; no clean source-commit claim."
+  },
+  "rawCasePath": "/tmp/pcv/su73-standalone-acceptance-lz07e4tm/evidence/standalone-manual-revision-d5a3628c-6d6b-4bce-b430-2c7a9f1da4f2/case.json",
+  "rawCaseSha256": "161f239faf9d0c9cd62f35b39fe6d5ac5a9ec961a59ca72f7231a2af0ba00fbb",
+  "requestHost": {
+    "bundleSha256": "65ed6320bfe3e0cd2bdfd73dab46e14f23e76c41de2cef545a4563ab88fdb167",
+    "exit": {
+      "code": null,
+      "signal": "SIGKILL",
+      "pid": 1594681,
+      "root": "/tmp/papercusp-test-runtime-W9J1Be/tmp/public-manual-owned-host-ZGMGgK",
+      "stoppedBySuite": true,
+      "measuredAt": "2026-10-09T00:13:55.111Z"
+    },
+    "isolatedRuntimeRemoved": true
+  },
+  "sourceCapture": {
+    "requestedMapPath": "/tmp/pcv/su73-standalone-acceptance-lz07e4tm/executed-source-map-0013.json",
+    "mapExists": false,
+    "inputsExists": false,
+    "qualification": "No executed-source map emitted; imported test-source coverage is unknown."
+  },
+  "remaining": [
+    "Pagefind revision propagation",
+    "Installed maintenance-worker behavior beyond retained controlled integration",
+    "Current product journeys, sensitive-guide review and model/privacy matrix",
+    "Three real novice participants, independent final acceptance and exact shipment"
+  ]
+}

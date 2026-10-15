@@ -10,9 +10,12 @@
  * the preview test cannot reach:
  *   - the IMPORT PAYLOAD promote builds carries the realized wave structure: per-
  *     feature `wave` stamps + the inter-wave `blocked_by` edges (applyInterWaveEdges
- *     turns a wave-level `blocked_by` into feature-level edges by title) + the
- *     `claims` extracted from the plan's inline VAL-* assertions;
- *   - VAL-* assertions are upserted into harness_plan_assertions (real PG);
+ *     turns a wave-level `blocked_by` into feature-level edges by title), and no
+ *     VAL-* `claims` — inline VAL-* blocks are retired and acceptance lives in the
+ *     plan's requirement contract (verification-system-improvements-2026-10-10
+ *     P-003, D-008);
+ *   - an apply over a plan that still carries an inline VAL-* block is REFUSED
+ *     with `val-block-retired` BEFORE any write (no import POST, no plan write);
  *   - the from_items plan items are flipped to `done` (real PG plan content);
  *   - the `## Promoted` block + the `draft → active` frontmatter flip are written
  *     back to the plan (real PG plan content).
@@ -54,12 +57,23 @@ import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness'
 const PARENT_HARNESS = operatorHomeHarnessSlug();
 const RUN = Math.random().toString(36).slice(2, 8);
 const SLUG = `zzz-promote-apply-${RUN}-2026-06-13`;
+// A second plan, identical but for one inline VAL-* block under P-001: the
+// retirement refusal's subject.
+const VAL_SLUG = `zzz-promote-apply-val-${RUN}-2026-06-13`;
 const TARGET = `zzz-promote-apply-target-${RUN}`;
+const SLUGS = [SLUG, VAL_SLUG];
 
-function planContent(): string {
+function planContent(slug: string, opts: { valBlock?: boolean } = {}): string {
+  const valBlock = opts.valBlock
+    ? `
+  - **[VAL-foundation-001]**
+    - **Verify:** \`npm run build\` passes
+    - **Evidence:** \`tests/build.test.ts\`
+    - **Status:** \`todo\``
+    : '';
   return `---
 title: Promote Apply Test
-slug: ${SLUG}
+slug: ${slug}
 created: 2026-06-13
 updated: 2026-06-13
 status: draft
@@ -75,11 +89,7 @@ status: draft
 
 ## Phase 3 — Live 2-machine hive-git drill (LIVE-G gate — in-process green != live green)
 
-- **P-001** \`todo\` Foundation work.
-  - **[VAL-foundation-001]**
-    - **Verify:** \`npm run build\` passes
-    - **Evidence:** \`tests/build.test.ts\`
-    - **Status:** \`todo\`
+- **P-001** \`todo\` Foundation work.${valBlock}
 
 ## Phase 2 — Preparation
 
@@ -124,14 +134,14 @@ const captured: CapturedImport[] = [];
 // of its outcome — re-running promote would hit already-done items (marked: []).
 let applyData: any;
 
-async function seedActivationAudit(): Promise<void> {
+async function seedActivationAudit(slug: string): Promise<void> {
   await admin`
     INSERT INTO harness_shared.plan_audits
       (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
        activation, audited_plan_revision_id, audited_plan_revision_seq,
        audited_plan_content_hash, items, findings)
     VALUES
-      (${PAPERCUSP_WORKSPACE_ID}, ${PARENT_HARNESS}, ${SLUG}, 1, 'su-test', 'activation',
+      (${PAPERCUSP_WORKSPACE_ID}, ${PARENT_HARNESS}, ${slug}, 1, 'su-test', 'activation',
        ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::text::jsonb,
        1, 1, ${'a'.repeat(64)}, '[]'::jsonb, '[]'::jsonb)
   `;
@@ -143,8 +153,11 @@ function makeCtx() {
     progress: () => {},
     metadata: () => {},
     signal: new AbortController().signal,
-    workspaceId: 'default',
-    principal: { kind: 'agent', slug: 'agent-promote-apply-test', workspaceId: 'default' },
+    // promote reads the source plan from the CALLER's scope (ctxToPlanSourceOpts,
+    // EI-21093090220973191), so the ctx workspace must be the one the plans are
+    // seeded in; a 'default' ctx reads plan_not_found.
+    workspaceId: PAPERCUSP_WORKSPACE_ID,
+    principal: { kind: 'agent', slug: 'agent-promote-apply-test', workspaceId: PAPERCUSP_WORKSPACE_ID },
   } as never;
 }
 
@@ -156,11 +169,27 @@ async function runPromote(args: Record<string, unknown>): Promise<{ data: any; i
   return { data: JSON.parse(res.content[0].text), isError: Boolean(res.isError) };
 }
 
+async function readPlanRow(slug: string): Promise<{ content: string; version: number }> {
+  const [row] = await admin<{ content: string; version: number }[]>`
+    SELECT content, version FROM harness_shared.harness_plans
+     WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${slug}
+  `;
+  return row;
+}
+
 beforeAll(async () => {
   fx = await setupPlanPgFixture();
   admin = fx.admin;
-  await seedPlan(admin, PAPERCUSP_WORKSPACE_ID, PARENT_HARNESS, SLUG, planContent());
-  await seedActivationAudit();
+  await seedPlan(admin, PAPERCUSP_WORKSPACE_ID, PARENT_HARNESS, SLUG, planContent(SLUG));
+  await seedActivationAudit(SLUG);
+  await seedPlan(
+    admin,
+    PAPERCUSP_WORKSPACE_ID,
+    PARENT_HARNESS,
+    VAL_SLUG,
+    planContent(VAL_SLUG, { valBlock: true }),
+  );
+  await seedActivationAudit(VAL_SLUG);
 
   // In-test stand-in for the /features/import route: capture the payload promote
   // POSTs and return deterministic allocated ids. The real mint + coord_links
@@ -200,23 +229,26 @@ beforeAll(async () => {
   // raw handler), so an omitted mark_items would read as undefined → no mark step.
   const r = await runPromote({ slug: SLUG, all_waves: true, apply: true, mark_items: true });
   applyData = r.data;
-  expect(r.isError).toBe(false);
+  // Carry the refusal body into the failure message: a bare `true !== false`
+  // hides which promote gate refused.
+  expect(r.isError, JSON.stringify(r.data)).toBe(false);
 }, 120_000);
 
 afterAll(async () => {
   if (prevApiBase === undefined) delete process.env.INTERNAL_API_BASE;
   else process.env.INTERNAL_API_BASE = prevApiBase;
   await new Promise<void>((r) => server?.close(() => r()));
-  await admin`DELETE FROM harness_shared.plan_audits WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${SLUG}`.catch(() => {});
-  await admin`DELETE FROM harness_shared.plan_revisions WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${SLUG}`.catch(() => {});
-  await admin`DELETE FROM harness_shared.harness_plans WHERE plan_slug = ${SLUG}`.catch(() => {});
-  await admin`DELETE FROM harness_shared.harness_plan_assertions WHERE plan_slug = ${SLUG}`.catch(() => {});
+  for (const slug of SLUGS) {
+    await admin`DELETE FROM harness_shared.plan_audits WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${slug}`.catch(() => {});
+    await admin`DELETE FROM harness_shared.plan_revisions WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${slug}`.catch(() => {});
+    await admin`DELETE FROM harness_shared.harness_plans WHERE plan_slug = ${slug}`.catch(() => {});
+  }
   await admin`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug = ${TARGET}`.catch(() => {});
   await fx.dispose();
 });
 
 describe('plans:promote APPLY path (apply:true, all_waves)', () => {
-  it('builds an import payload with wave stamps, inter-wave blocked_by edges, and VAL claims', async () => {
+  it('builds an import payload with wave stamps and inter-wave blocked_by edges, and no VAL claims', async () => {
     expect(applyData.ok).toBe(true);
     expect(applyData.mode).toBe('apply');
     expect(applyData.applied.feature_ids).toEqual(['F-PROMO-0', 'F-PROMO-1']);
@@ -240,8 +272,8 @@ describe('plans:promote APPLY path (apply:true, all_waves)', () => {
     expect(dependent.blocked_by).toEqual(['Foundation feature']);
     expect(foundation.blocked_by ?? []).toEqual([]);
 
-    // VAL-* claims threaded from the plan item the feature covers.
-    expect(foundation.claims).toEqual(['VAL-foundation-001']);
+    // VAL-* claims are retired (P-003): nothing threads a claim id onto a feature.
+    expect(foundation.claims ?? []).toEqual([]);
     expect(dependent.claims ?? []).toEqual([]);
 
     // Provenance carried through.
@@ -256,55 +288,47 @@ describe('plans:promote APPLY path (apply:true, all_waves)', () => {
     expect(dependent.needs_2_machine_rig).toBe(false);
   });
 
-  it('upserts the inline VAL-* assertion into harness_plan_assertions (real PG)', async () => {
-    const rows = await admin<{ val_id: string; item_id: string; verify_text: string; harness_slug: string }[]>`
-      SELECT val_id, item_id, verify_text, harness_slug
-        FROM harness_shared.harness_plan_assertions
-       WHERE plan_slug = ${SLUG}
-    `;
-    expect(rows).toHaveLength(1);
-    expect(rows[0].val_id).toBe('VAL-foundation-001');
-    expect(rows[0].item_id).toBe('P-001');
-    expect(rows[0].harness_slug).toBe(TARGET);
-    expect(rows[0].verify_text).toContain('npm run build');
-  });
-
-  // P-003 (D-002/D-005) — the invariant stated executably, as the recurrence guard
-  // for the whole CLASS rather than for one reproduction: NO imported feature may
-  // carry a claim id with no assertion row. Features live in the target harness DB
-  // and assertion rows in operator PG, so nothing but write ORDER enforces this;
-  // this fails if the order is ever reversed back to import-then-persist, or if a
-  // claim is ever threaded from an assertion that was not durably stored.
+  // P-003 (D-008) — the recurrence guard for VAL-* retirement. Inline VAL blocks are
+  // no longer stored anywhere, so a block left under a promoted item would be
+  // silently dropped if promote accepted it. It must refuse with the typed
+  // retirement code, and refuse BEFORE any write: the apply path imports features
+  // and rewrites the plan, so a late refusal would fire after real side effects.
   //
-  // It reads the REAL payload the handler POSTed and the REAL PG rows, so unlike a
-  // stubbed unit assertion it cannot pass by construction.
-  it('no imported feature carries a claim id whose assertion row is missing (P-003)', async () => {
-    const claimed = [
-      ...new Set(captured.flatMap((c) => c.features).flatMap((f) => f.claims ?? [])),
-    ];
-    // Calibration: if claims ever stop being threaded onto the payload, the
-    // dangling-set check below would pass VACUOUSLY and silently stop guarding
-    // anything. A guard that cannot fail is not a guard.
-    expect(claimed.length).toBeGreaterThan(0);
+  // It drives the REAL handler against a REAL seeded plan and reads the REAL plan
+  // row and the captured import stream, so it cannot pass by construction.
+  it('refuses an apply over a plan with an inline VAL-* block (val-block-retired) before any write', async () => {
+    const importsBefore = captured.length;
+    const before = await readPlanRow(VAL_SLUG);
+    // Calibration: the fixture really carries the block the gate must catch, so
+    // the refusal below is not vacuous.
+    expect(before.content).toContain('[VAL-foundation-001]');
 
-    const rows = await admin<{ val_id: string }[]>`
-      SELECT val_id
-        FROM harness_shared.harness_plan_assertions
-       WHERE plan_slug = ${SLUG}
-    `;
-    const persisted = new Set(rows.map((r) => r.val_id));
-    expect(claimed.filter((v) => !persisted.has(v))).toEqual([]);
+    const r = await runPromote({ slug: VAL_SLUG, all_waves: true, apply: true, mark_items: true });
+    expect(r.isError).toBe(true);
+    expect(r.data.ok).toBe(false);
+    expect(r.data.error).toBe('val-block-retired');
+    expect(r.data.items_with_val_blocks).toEqual(['P-001']);
+    expect(r.data.violations).toHaveLength(1);
+    expect(r.data.violations[0]).toMatchObject({
+      code: 'val-block-retired',
+      planItemId: 'P-001',
+      sourceValId: 'VAL-foundation-001',
+    });
+
+    // Nothing was written: no import POSTed, the plan row is untouched.
+    expect(captured.length).toBe(importsBefore);
+    const after = await readPlanRow(VAL_SLUG);
+    expect(Number(after.version)).toBe(Number(before.version));
+    expect(after.content).toBe(before.content);
+    expect(after.content).toMatch(/- \*\*P-001\*\* `todo`/);
+    expect(after.content).not.toContain('## Promoted');
   });
 
   it('marks the covered plan items done and writes back the ## Promoted block + draft→active (real PG)', async () => {
     // marked_items reported on the (single) apply result.
     expect((applyData.applied.marked_items as string[]).sort()).toEqual(['P-001', 'P-002']);
 
-    const [row] = await admin<{ content: string }[]>`
-      SELECT content FROM harness_shared.harness_plans
-       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${SLUG}
-    `;
-    const body = row.content;
+    const body = (await readPlanRow(SLUG)).content;
     // Items flipped to done.
     expect(body).toMatch(/- \*\*P-001\*\* `done`/);
     expect(body).toMatch(/- \*\*P-002\*\* `done`/);

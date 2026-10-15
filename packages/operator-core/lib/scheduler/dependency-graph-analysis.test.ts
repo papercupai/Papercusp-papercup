@@ -217,4 +217,50 @@ describe('dependency graph analysis', () => {
 
     expect(reverse).toEqual(forward);
   });
+
+  // WI-6554700010008326: the readiness-drift census analyzes every work_items row
+  // (~335K) against ~2.7K edges on the bg-host main thread. Tarjan visited and sorted
+  // every row twice and three passes each re-sorted the whole node set, blocking the
+  // event loop for 4-6s per tick. Every comparison in a whole-node sort reads two node
+  // identities, so the identity-read count measures how many whole-node passes ran
+  // without depending on wall-clock time. Measured on this input: ~9.4 reads per
+  // N*log2(N) before the fix and ~1.95 after it (one sort plus linear passes).
+  it('keeps whole-node passes to one sort on a large sparse graph', () => {
+    const N = 5_000;
+    const ref = (i: number) => `F-${String(i).padStart(6, '0')}`;
+    let identityReads = 0;
+    let seed = 7;
+    const order = Array.from({ length: N }, (_, i) => i);
+    for (let i = order.length - 1; i > 0; i -= 1) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      const j = seed % (i + 1);
+      [order[i], order[j]] = [order[j]!, order[i]!];
+    }
+    const nodes: DependencyGraphNodeInput[] = order.map((i) => {
+      const identity = id(ref(i));
+      return {
+        get id() {
+          identityReads += 1;
+          return identity;
+        },
+        terminal: i % 3 === 0,
+      };
+    });
+    const edges = [
+      edge(ref(1), ref(2)),
+      edge(ref(2), ref(4)),
+      edge(ref(4), ref(1)),
+      edge(ref(5), ref(1)),
+      edge(ref(7), ref(8)),
+    ];
+
+    const result = analyzeDependencyGraph({ nodes, edges });
+
+    expect(result.stronglyConnectedComponents.map((component) => component.members.map((m) => m.ref))).toEqual([
+      [ref(1), ref(2), ref(4)],
+    ]);
+    expect(strandedRefs(result)).toEqual([ref(1), ref(2), ref(4), ref(5)]);
+    expect(result.verdicts).toHaveLength(N);
+    expect(identityReads / (N * Math.log2(N))).toBeLessThan(4);
+  });
 });

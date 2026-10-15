@@ -262,6 +262,35 @@ describe('summarizeFreezeAndConverge', () => {
 });
 
 describe('buildGateRepairLatencyLedgerRow — R-7 durable latency ledger (EI-23420599799124840)', () => {
+  it('retains original admissions and pending head after retirement without mutable aliases', () => {
+    const admission = { atMs: T0 + 60_000, fromRepairHead: 'a', toRepairHead: 'b',
+      actor: 'agent', source: { ref: 'staging', sha: 'b' }, paths: ['p.ts'], unchanged: [], blobs: { 'p.ts': 'blob' } };
+    const disposition = deriveTickFreezeDisposition({ flagEnabled: true, nowMs: T0 + 120_000,
+      repairQueue: { candidate: 'a', repairHead: 'b', phase: 'ready-to-verify', openedAtMs: T0,
+        convergenceRounds: [{ round: 1, head: 'a', atMs: T0, failingCount: 1 }], admissions: [admission] } });
+    const row = buildGateRepairLatencyLedgerRow({ ...disposition, state: 'retired' }, T0 + 120_000)!;
+    admission.atMs++;
+    expect(row.detail.repairProgress!.admissionHistory).toEqual({ version: 1, repairHead: 'b',
+      admissions: [{ atMs: T0 + 60_000, fromRepairHead: 'a', toRepairHead: 'b' }] });
+    expect(row.status).toBe('retired');
+  });
+  it('preserves original round ordinals and clocks beyond the mutable queue lifetime', () => {
+    const rounds = [{ round: 1, head: 'a'.repeat(40), atMs: T0, failingCount: 4 },
+      { round: 3, head: 'b'.repeat(40), atMs: T0 + 60_000, failingCount: 2 }];
+    const disposition = deriveTickFreezeDisposition({ flagEnabled: true, nowMs: T0 + 120_000,
+      repairQueue: { candidate: 'a'.repeat(40), phase: 'awaiting-fixer', openedAtMs: T0, convergenceRounds: rounds } });
+    const row = buildGateRepairLatencyLedgerRow(disposition, T0 + 120_000)!;
+    expect(row.detail.repairProgress).toEqual({ phase: 'awaiting-fixer', rounds: [
+      { round: 1, head: 'a'.repeat(40), atMs: T0 }, { round: 3, head: 'b'.repeat(40), atMs: T0 + 60_000 },
+    ] });
+    rounds[1]!.atMs = T0 + 90_000;
+    expect(row.detail.repairProgress!.rounds[1]!.atMs).toBe(T0 + 60_000);
+  });
+  it('keeps an absent legacy round vector unmeasured instead of inventing empty history', () => {
+    const disposition = deriveTickFreezeDisposition({ flagEnabled: true, nowMs: T0 + 60_000,
+      repairQueue: { candidate: 'a'.repeat(40), phase: 'awaiting-fixer', openedAtMs: T0 } });
+    expect(buildGateRepairLatencyLedgerRow(disposition, T0 + 60_000)!.detail).not.toHaveProperty('repairProgress');
+  });
   const latency = {
     redToFixerSpawnMs: 4 * 60_000,
     fixToAdmitMs: 9 * 60_000,

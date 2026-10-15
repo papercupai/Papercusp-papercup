@@ -17,6 +17,8 @@ vi.mock('../_harness-scope', async (orig) => ({
   harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
 }));
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
+// WI-10008137: the draft-plan item-start gate has its own suite (draft-item-start-gate.test.ts).
+vi.mock('./draft-item-start-gate', () => ({ checkDraftItemStartGateLive: vi.fn(async () => null) }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
 }));
@@ -56,7 +58,7 @@ const cascade = vi.hoisted(() => ({
       action: 'Map the outstanding BAR to a live replacement item or amend the BAR.',
     },
   })),
-  restamp: vi.fn(async () => true),
+  restamp: vi.fn(async (): Promise<boolean | { stamped: boolean; activationAudit?: any }> => true),
 }));
 vi.mock('./plan-scope-cascade-deps', async (orig) => ({
   ...(await orig<typeof import('./plan-scope-cascade-deps')>()),
@@ -71,14 +73,14 @@ const body = async (args: Record<string, unknown>) =>
   ((await tool.handler(args as never, {} as never)) as { data: any }).data;
 
 /** A successful lock that resolved the plan's scope, as the real withPlanLock does. */
-function lockOk(fromStatus: string) {
+function lockOk(fromStatus: string, extraValue: Record<string, unknown> = {}) {
   lockM.mockImplementation(async (_ctx: unknown, _opts: unknown, mutate: unknown) => {
     const { value } = await (mutate as (b: string) => Promise<{ value: unknown }>)(
       `- **P-001** \`${fromStatus}\` outcome`,
     );
     return {
       kind: 'ok',
-      value,
+      value: { ...(value as Record<string, unknown>), ...extraValue },
       filePath: 'plan.md',
       scope: { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
     } as never;
@@ -102,6 +104,21 @@ describe('plans:set-status — a drop re-evaluates BAR readiness in the same wri
       codes: ['bar_snapshot_mapping_dropped_only'],
       nowStamped: true,
     });
+  });
+
+  it('returns the activation-audit notice from the follow-up BAR restamp write', async () => {
+    const earlierAudit = { currentPlanRevision: { planVersion: 13 } };
+    const latestAudit = { currentPlanRevision: { planVersion: 14 } };
+    lockOk('todo', { activationAudit: earlierAudit });
+    cascade.restamp.mockResolvedValueOnce({ stamped: true, activationAudit: latestAudit });
+
+    const out = await body({ slug: 'plan-a', item: 'P-001', status: 'dropped', note: 'moot' });
+
+    expect(out.results[0]).toMatchObject({
+      activationAudit: latestAudit,
+      barReadiness: { nowStamped: true },
+    });
+    expect(out.results[0].barReadiness).not.toHaveProperty('activationAudit');
   });
 
   it('a non-scope flip (todo → wip) does not re-evaluate readiness', async () => {

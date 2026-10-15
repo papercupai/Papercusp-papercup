@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Committed hosted account-only catalogue counterfactual after runtime-profile and Origin repair",
+  "framework": "playwright",
+  "workItemId": "WI-10007170",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "command": [
+    "Committed Portal4261e9a2 Vitest tests/guide-write-observer.test.ts tests/hosted-test-user-env.test.ts",
+    "Same retained N2Xz/Portal4332/operatorad00 Playwright e2e/portal-product-tutorial-served.spec.ts --grep 'authorized workspace=false'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-09T19:00:43.336Z",
+  "finishedAt": "2026-10-09T19:02:30.652Z",
+  "timestampBasis": "Earliest recorded case start and latest recorded case finish from shared LOCAL rows 20962169, 20962170 and 20962173. The browser case took 27.050 seconds; the terminal Playwright run reported 33.7 seconds including runner overhead.",
+  "assertions": [
+    {
+      "id": "committed-hosted-fixture-and-write-observer-guards",
+      "passed": true,
+      "evidence": "Two complete maintained Vitest suites passed 32 tests with zero skips at commit 4261e9a2d56426e0ea0ea41cddc3855a23364415; shared LOCAL rows 20962169 and 20962170. These are supporting guard suites, not 32 browser cases."
+    },
+    {
+      "id": "real-account-only-catalogue-destinations",
+      "passed": true,
+      "evidence": "The exact selected Playwright case 'served account-first product guide > real catalogue destinations and recovery with authorized workspace=false' passed on retained build N2XzKfcDR6heyhIkWRABU. Shared LOCAL row 20962173 and the saved observations enumerate 49 targets."
+    },
+    {
+      "id": "account-only-navigation-write-boundary",
+      "passed": true,
+      "evidence": "The passing case observed 133 writes restricted to tutorial-progress, notifications/refresh and onboarding/select-workspace. The retained observations and unchanged strict observer provide the oracle."
+    },
+    {
+      "id": "cancelled-workspace-selection-origin-counterfactual",
+      "passed": true,
+      "evidence": "26 expected navigation cancellations exercised the maintained follow-up helper. Its browser Origin reached the real hosted 404/no_workspace refusal instead of the missing-Origin 403/cross_origin_blocked response."
+    },
+    {
+      "id": "retained-runtime-and-test-source-custody",
+      "passed": true,
+      "evidence": "Test source 4261e9a2, artifact source 4332b773cffa62c5b07e4d64865f711732ce89f7 and operator ad00f10153495e74a963f05f8ca70a058552f1fe are identified separately. Shared rows have root=null; retained clean roots and 285 remapped workspace links independently qualify custody."
+    }
+  ],
+  "summary": "Two maintained suites passed32 tests0skips. One focused account-only browser case passed33.7s against the same retained runtime; 49targets and strict refusal policy verified. This is a diagnostic counterfactual, not full tutorial acceptance or production shipment.",
+  "source": {
+    "testCommit": "4261e9a2d56426e0ea0ea41cddc3855a23364415",
+    "testRoot": "/dev/shm/pcv/papercusp-lint-as-committed-4261e9a2d5-BXLBV9",
+    "operatorCommit": "ad00f10153495e74a963f05f8ca70a058552f1fe",
+    "operatorRoot": "/dev/shm/pcv/papercusp-lint-as-committed-ad00f10153-gaSRlw",
+    "artifactPortalCommit": "4332b773cffa62c5b07e4d64865f711732ce89f7",
+    "runtime": "/dev/shm/pcv/tutorial-current-hosted-20261009T1701/runtime",
+    "buildId": "N2XzKfcDR6heyhIkWRABU",
+    "release": {
+      "schemaVersion": 2,
+      "buildId": "N2XzKfcDR6heyhIkWRABU",
+      "release": "N2XzKfcDR6heyhIkWRABU-20261009181644271-962212-cd304995",
+      "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-4332b773cf-WsHaNB",
+      "publishedAt": "2026-10-09T18:16:44.271Z",
+      "sourceRootDigest": "ff3cf76b525ecfabba953ddc382521a90ff9e8b76c7ad638b7bff861f398d2dc"
+    },
+    "workspaceLinksRemapped": 285,
+    "worktreeDirty": false
+  },
+  "testRuns": [
+    {
+      "id": 20962169,
+      "file": "tests/hosted-test-user-env.test.ts",
+      "passed": 16,
+      "skipped": 0
+    },
+    {
+      "id": 20962170,
+      "file": "tests/guide-write-observer.test.ts",
+      "passed": 16,
+      "skipped": 0
+    },
+    {
+      "id": 20962173,
+      "file": "e2e/portal-product-tutorial-served.spec.ts",
+      "passed": 1,
+      "skipped": 0,
+      "durationSeconds": 33.7
+    }
+  ],
+  "ledgerQualification": "Shared LOCAL rows are attributed papercusp-workspace/papercusp, commit4261 and worktreeDirty:false; root fieldNULL, so source custody additionally comes from retained clean filesystem and exact remapped imports.",
+  "observations": {
+    "targets": [
+      "home",
+      "launcher",
+      "more",
+      "notifications",
+      "quick",
+      "search",
+      "desktops",
+      "workspaces",
+      "plans",
+      "inbox",
+      "workflows",
+      "brainstorm",
+      "create",
+      "scheduled",
+      "cupboard",
+      "overview",
+      "hud",
+      "work",
+      "conversations",
+      "frames",
+      "coord",
+      "agents",
+      "processes",
+      "sessions",
+      "papercup-chat",
+      "learning",
+      "insights",
+      "docs",
+      "mail",
+      "calendar",
+      "phone",
+      "health",
+      "prs",
+      "history",
+      "git",
+      "stats",
+      "testing",
+      "evals",
+      "dev",
+      "adv-settings",
+      "settings",
+      "account",
+      "accounts-dock",
+      "theme-layout",
+      "billing",
+      "cloud",
+      "support",
+      "voice",
+      "spoken-questions"
+    ],
+    "preassignedWorkspace": false,
+    "writeCount": 133,
+    "expectedNavigationCancellations": 26,
+    "allowedObservedWritePaths": [
+      "/api/hosted/browser/onboarding/tutorial-progress",
+      "/api/notifications/refresh",
+      "/api/hosted/browser/onboarding/select-workspace"
+    ],
+    "uncancelledWorkspaceSelection": {
+      "status": 404,
+      "errorCode": "no_workspace"
+    },
+    "cancelledWorkspaceSelectionRecheck": "Actual helper sends browser Origin and reaches known refusal;26observed navigationcancellations force this branch in the passing case."
+  },
+  "guards": {
+    "fixtureRoutePreflight": "Real no-cookie hosted401/session_cookie_missing required before providerTEST admission.",
+    "originCounterfactual": "Real Playwright APIRequestContext/HTTP/current exactOriginOr403: missingOrigin403/cross_origin_blocked versus helperOrigin404/no_workspace.",
+    "sameSourceDifferential": "LOCAL404/not_found versus HOSTED401/unauthorized/session_cookie_missing; paired1849JSONL retained."
+  },
+  "evidenceRefs": [
+    {
+      "path": "/dev/shm/pcv/tutorial-current-hosted-20261009T1701/guide-origin-clean-4261e9a2.log",
+      "sha256": "00f5935396681d200a3ce4be13437d2b2c80d374acae8542c368738784ec37d7"
+    },
+    {
+      "path": "/dev/shm/pcv/tutorial-current-hosted-20261009T1701/catalogue-hosted-origin-1902.log",
+      "sha256": "39d3e11edd58dcf1cc41a3d7b532e6da11b4e10342e4bc901000433a11accfa1"
+    },
+    {
+      "path": "/dev/shm/pcv/tutorial-current-hosted-20261009T1701/catalogue-hosted-origin-results-1902/portal-product-tutorial-se-3a6c8--authorized-workspace-false/served-catalogue-observations.json",
+      "sha256": "20ec218f344e91f9f744a03c5bd0c13051e8925337e6f0cf55eb73314f689eb3",
+      "qualification": "Finally attachment retains partial-observation label; terminalPASS log/ledger supplies verdict."
+    }
+  ],
+  "cleanup": {
+    "servedNative3759": "terminal0/drained",
+    "operatorNative60665": "deliberateSIGINTterminal1/drained",
+    "privatePostgres": "shutdown observed",
+    "portsAbsent": [
+      4371,
+      4372,
+      4373,
+      43861,
+      38789
+    ],
+    "fileLocks": "released after atomic edits"
+  },
+  "resolvedItems": [
+    "EI-25528652361895570",
+    "EI-25524648578912714"
+  ],
+  "ownedResidue": [
+    "EI-25529989273552076"
+  ],
+  "scope": "Only committed fixture+write-observer suites and focused account-only real49target journey on this retained artifact. Original true-case PASS preserved without replay. Excludes fullR17/R15, protectedvoice, native/novice, requiredaffected verdict and finalpromoted production shipment."
+}

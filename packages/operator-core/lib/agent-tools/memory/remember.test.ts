@@ -71,6 +71,10 @@ vi.mock('../../memory/ref-expand', () => ({
 vi.mock('../../knowledge-packs/identity-learning', () => ({
   wornMemoryIdentityIds: vi.fn(async () => ['test-identity']),
 }));
+vi.mock('../../agent-facts/store', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../agent-facts/store')>();
+  return { ...real, resolveFactFederationSlug: vi.fn(real.resolveFactFederationSlug) };
+});
 // P-009: remember.ts now asks resolveConflictJudge(); route it through the
 // anthropic-judge mocks below so these cases keep their meaning and never touch
 // the real Jev key store. The factory itself is pinned in conflict-judge.test.ts.
@@ -96,7 +100,13 @@ import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
 import { journalPendingWrite } from '../../memory/write-journal';
+import { isMemoryPaused } from '../../memory/memory-pause';
+import { wornMemoryIdentityIds } from '../../knowledge-packs/identity-learning';
 import { createAnthropicJudge, conflictJudgeAvailable } from '../../memory/anthropic-judge';
+import { resolveConflictJudge } from '../../memory/conflict-judge';
+import { resolveFactFederationSlug } from '../../agent-facts/store';
+import { getFlag } from '@papercusp/flags/server';
+import { resetMemoryDegradedForTest } from '../../memory/op-deadline';
 
 type FakeBackend = {
   name: string;
@@ -150,6 +160,67 @@ beforeEach(() => {
   vi.mocked(createAnthropicJudge).mockReturnValue(
     vi.fn(async () => ({ conflicts: [] })),
   );
+});
+
+describe('memory:remember — surfaced outcome wiring', () => {
+  const oldId = '11111111-1111-4111-8111-111111111111';
+  const newId = '22222222-2222-4222-8222-222222222222';
+  const ctx = { ...fakeCtx, uiClientId: 'outcome-reader' };
+  const priorConflict = process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK;
+  const priorDedup = process.env.PAPERCUSP_MEMORY_DEDUP;
+
+  beforeEach(() => {
+    process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK = 'off';
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'off';
+  });
+  afterAll(() => {
+    if (priorConflict === undefined) delete process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK;
+    else process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK = priorConflict;
+    if (priorDedup === undefined) delete process.env.PAPERCUSP_MEMORY_DEDUP;
+    else process.env.PAPERCUSP_MEMORY_DEDUP = priorDedup;
+  });
+
+  function outcomeQueries() {
+    const sql = vi.fn(async (..._args: unknown[]) => undefined);
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as unknown as ReturnType<typeof getOrgPg>);
+    return () => sql.mock.calls
+      .filter(([template]) => (template as TemplateStringsArray).join('').includes('WITH prior AS MATERIALIZED'))
+      .map(([, session, ids, outcome]) => ({ session, ids, outcome }));
+  }
+
+  it('records explicit citations as used after a successful remember, excluding bare UUIDs', async () => {
+    useBackend(fakeBackend([], [newId]));
+    const outcomes = outcomeQueries();
+    const result = await remember.handler({
+      content: `Source memory:${oldId}; repeated memory:${oldId}; unrelated ${newId}`,
+      kind: 'reference',
+    }, ctx);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: true, ids: [newId] });
+    expect(outcomes()).toEqual([{ session: 'outcome-reader', ids: [oldId], outcome: 'used' }]);
+  });
+
+  it.each([true, false])('records a supersession contradiction only when the validity close succeeds (%s)', async closed => {
+    const backend = fakeBackend([{ id: oldId, text: 'old preference' }], [newId]);
+    backend.invalidateEntry!.mockResolvedValue(closed);
+    useBackend(backend);
+    const outcomes = outcomeQueries();
+    const result = await remember.handler({ content: 'replacement preference', kind: 'feedback', supersede: oldId }, ctx);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: true, superseded: closed ? oldId : false });
+    expect(outcomes()).toEqual(closed
+      ? [{ session: 'outcome-reader', ids: [oldId], outcome: 'contradicted' }]
+      : []);
+  });
+
+  it('records no use when a cited-memory write is refused before saving', async () => {
+    const backend = fakeBackend([], [newId]);
+    backend.available.mockResolvedValue({ ok: false, reason: 'store unavailable' });
+    useBackend(backend);
+    const outcomes = outcomeQueries();
+    const result = await remember.handler({ content: `Source memory:${oldId}`, kind: 'reference' }, ctx);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false });
+    expect(backend.remember).not.toHaveBeenCalled();
+    expect(outcomes()).toEqual([]);
+  });
 });
 
 describe('memory:remember — conflict supersession (temporal-lite P-005)', () => {
@@ -738,6 +809,32 @@ describe('memory:remember — runbook-shape boundary nudge (EI-2032)', () => {
 });
 
 describe('memory:remember — anchor table wiring (P-015)', () => {
+  it('persists all five governed non-file anchor kinds after a successful remember', async () => {
+    const id = '77777777-7777-7777-7777-777777777777';
+    useBackend(fakeBackend([], [id]));
+    const sql = vi.fn(async () => undefined);
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as unknown as ReturnType<typeof getOrgPg>);
+    const res = await remember.handler({
+      content: 'WI-123 governed-memory-2026-10-14#D-007 fact:guard-rail:safe '
+        + 'session_turn:codex:host:session:42 report:rpt_12345678-1234-1234-1234-123456789abc',
+      kind: 'project',
+    }, fakeCtx);
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, ids: [id] });
+    await new Promise(resolve => setImmediate(resolve));
+    const calls = sql.mock.calls as unknown as [TemplateStringsArray, string, string[], string[]][];
+    const insert = calls.find(([template]) => template.join('').includes('INSERT INTO harness_shared.memory_anchors'));
+    expect(insert).toBeDefined();
+    expect(insert?.[1]).toBe(id);
+    const stored = insert![2].map((kind, index) => ({ kind, value: insert![3][index] }));
+    expect(stored).toEqual(expect.arrayContaining([
+      { kind: 'work-item', value: 'WI-123' },
+      { kind: 'decision', value: 'governed-memory-2026-10-14#D-007' },
+      { kind: 'fact', value: 'guard-rail:safe' },
+      { kind: 'session-turn', value: 'codex:host:session:42' },
+      { kind: 'report', value: 'rpt_12345678-1234-1234-1234-123456789abc' },
+    ]));
+  });
+
   it('hands the new memory ids + extracted anchors to the writer after a successful add', async () => {
     const b = fakeBackend([], ['77777777-7777-7777-7777-777777777777']);
     useBackend(b);
@@ -924,6 +1021,47 @@ describe('memory:remember — verbatim guard + dedup fall-through (GAP 7)', () =
     // fall-through write.
     expect((opts as { verbatim?: boolean }).verbatim).toBe(true);
   });
+
+  it('a dedup-search timeout does not suppress the fresh transient write retry', async () => {
+    const previousTimeout = process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS;
+    const previousDedup = process.env.PAPERCUSP_MEMORY_DEDUP;
+    const previousAttempts = process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS;
+    const previousBackoff = process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS;
+    process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS = '20';
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'on';
+    process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = '2';
+    process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS = '0';
+    resetMemoryDegradedForTest();
+
+    try {
+      const b = fakeBackend([], ['m-recovered']);
+      b.search.mockImplementation(() => new Promise(() => {}));
+      let writeCalls = 0;
+      b.remember.mockImplementation(() => {
+        writeCalls += 1;
+        return writeCalls === 1
+          ? new Promise(() => {})
+          : Promise.resolve({ ids: ['m-recovered'] });
+      });
+      useBackend(b);
+      vi.mocked(journalPendingWrite).mockResolvedValueOnce('journal-retry-test');
+
+      const res = await remember.handler({ content: 'a retryable project-memory fact', kind: 'project' }, fakeCtx);
+      expect(envelope(res)).toMatchObject({ ok: true, ids: ['m-recovered'] });
+      expect(b.search).toHaveBeenCalledTimes(1);
+      expect(b.remember).toHaveBeenCalledTimes(2);
+    } finally {
+      if (previousTimeout === undefined) delete process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS;
+      else process.env.PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS = previousTimeout;
+      if (previousDedup === undefined) delete process.env.PAPERCUSP_MEMORY_DEDUP;
+      else process.env.PAPERCUSP_MEMORY_DEDUP = previousDedup;
+      if (previousAttempts === undefined) delete process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS;
+      else process.env.PAPERCUSP_MEMORY_WRITE_MAX_ATTEMPTS = previousAttempts;
+      if (previousBackoff === undefined) delete process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS;
+      else process.env.PAPERCUSP_MEMORY_WRITE_RETRY_BACKOFF_MS = previousBackoff;
+      resetMemoryDegradedForTest();
+    }
+  });
 });
 
 // GAP 8: scope isolation. harness_slug + hive_slug together is rejected
@@ -1019,6 +1157,217 @@ describe('memory:remember — source attribution (EI-10358)', () => {
     expect(meta.source).toBe('agent');
     expect(meta.source_role).toBeUndefined();
     expect(meta.source_session).toBeUndefined();
+  });
+});
+
+describe('memory:remember pre-write deadlines (EI-24844815056615401)', () => {
+  it('returns without writing when user resolution stalls', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear();
+    vi.mocked(getSessionUserOrDefault).mockImplementationOnce(
+      () => new Promise<Awaited<ReturnType<typeof getSessionUserOrDefault>>>(() => {}),
+    );
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({
+        ok: false,
+        stored: false,
+        reason: 'memory_timeout',
+        step: 'user_resolution',
+      });
+      expect(journalPendingWrite).not.toHaveBeenCalled();
+      expect(b.remember).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('keeps the pause gate fail-open when its cached database read stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(isMemoryPaused).mockImplementationOnce(() => new Promise<boolean>(() => {}));
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: true, ids: ['memory-1'] });
+      expect(b.remember).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('fails closed when identity provenance stalls, before the journal or memory store', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear();
+    vi.mocked(wornMemoryIdentityIds).mockClear().mockImplementationOnce(
+      () => new Promise<string[]>(() => {}),
+    );
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler(
+        { content: 'a fact from a real session', kind: 'reference' },
+        {
+          principal: { workspaceId: 'ws-test' },
+          role: 'worker',
+          uiClientId: 'su-abc123',
+        } as unknown as Parameters<typeof remember.handler>[1],
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({
+        ok: false,
+        stored: false,
+        reason: 'memory_timeout',
+        step: 'identity_provenance',
+      });
+      expect(journalPendingWrite).not.toHaveBeenCalled();
+      expect(b.remember).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('continues with an unjournaled write when the best-effort journal insert stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear().mockImplementationOnce(
+      () => new Promise<string | null>(() => {}),
+    );
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: true, ids: ['memory-1'] });
+      expect(parsed.journaled).toBeUndefined();
+      expect(b.remember).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('continues writing when optional conflict-judge configuration stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_MEMORY_CONFLICT_CHECK', 'on');
+    vi.stubEnv('PAPERCUSP_MEMORY_DEDUP', 'off');
+    vi.mocked(resolveConflictJudge).mockImplementationOnce(
+      () => new Promise<Awaited<ReturnType<typeof resolveConflictJudge>>>(() => {}),
+    );
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: true, ids: ['memory-1'] });
+      expect(b.remember).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('fails closed when the federation egress flag stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear();
+    vi.mocked(getFlag).mockImplementationOnce(() => new Promise<boolean>(() => {}));
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler(
+        { content: 'a shareable memory fact', kind: 'project', shareable: true, harness_slug: 'papercusp' },
+        fakeCtx,
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: false, stored: false, reason: 'mem0_federation_disabled' });
+      expect(journalPendingWrite).not.toHaveBeenCalled();
+      expect(b.remember).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('fails closed when federation scope resolution stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(journalPendingWrite).mockClear();
+    vi.mocked(getFlag).mockResolvedValueOnce(true);
+    vi.mocked(resolveFactFederationSlug).mockImplementationOnce(
+      () => new Promise<string | null>(() => {}),
+    );
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler(
+        { content: 'a shareable memory fact', kind: 'project', shareable: true, harness_slug: 'papercusp' },
+        fakeCtx,
+      );
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({
+        ok: false,
+        stored: false,
+        reason: 'memory_timeout',
+        step: 'federation_scope',
+      });
+      expect(journalPendingWrite).not.toHaveBeenCalled();
+      expect(b.remember).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('continues writing when the optional content-free flag lookup stalls', async () => {
+    const b = fakeBackend([], ['memory-1']);
+    useBackend(b);
+    vi.mocked(resolveConflictJudge).mockResolvedValueOnce({
+      available: true,
+      backend: 'jev',
+      judge: vi.fn(async () => ({ conflicts: [] })),
+    });
+    vi.mocked(getFlag).mockImplementationOnce(() => new Promise<boolean>(() => {}));
+    vi.stubEnv('PAPERCUSP_MEMORY_TOOL_TIMEOUT_MS', '25');
+    vi.stubEnv('PAPERCUSP_MEMORY_CONFLICT_CHECK', 'on');
+    vi.stubEnv('PAPERCUSP_MEMORY_DEDUP', 'off');
+    vi.useFakeTimers();
+    try {
+      const resultPromise = remember.handler({ content: 'a normal memory fact', kind: 'project' }, fakeCtx);
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await resultPromise;
+      const parsed = JSON.parse((result as { content: { text: string }[] }).content[0].text);
+      expect(parsed).toMatchObject({ ok: true, ids: ['memory-1'] });
+      expect(b.remember).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
   });
 });
 

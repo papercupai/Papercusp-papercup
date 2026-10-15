@@ -1,0 +1,289 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "cwd": ".",
+  "workItemId": "EI-25610417244108487",
+  "relatedWorkItemIds": [
+    "EI-25604028797058995",
+    "EI-25608208328004035"
+  ],
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "retained-arm-cold-profiler-prerequisite",
+  "candidateAccepted": false,
+  "sourceCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+  "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+  "platform": "linux/arm64",
+  "rawProfile": {
+    "file": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck3-LJhPOF/profile.cpuprofile",
+    "sha256": "b1a0f89386e66a2405b68922c849570d66c9d312b044cfb34a3792fe37b27522",
+    "bytes": 55804,
+    "samples": 594,
+    "nodes": 267,
+    "uid": 1001,
+    "mode": 420,
+    "hostUid": 1000,
+    "persist": {
+      "created": false,
+      "bytes": 55804
+    }
+  },
+  "originalResult": {
+    "file": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck3-LJhPOF/result.json",
+    "sha256": "e59a991494598273b3845b4ddc0cef698f50d24c926660f9727ef5fc8b9399a9",
+    "status": "failed",
+    "error": "EACCES: permission denied, open '/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck3-LJhPOF/profile.cpuprofile'"
+  },
+  "ownership": {
+    "file": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck3-LJhPOF/.native-producer-owner-BgQCuv/ownership.json",
+    "sha256": "cfccb038c50da3fda3d1db9e4656b38c84d27bb7b518e75763ba1244f88ab24a",
+    "containerId": "c1bf24454a216d84e7af3b35ad5db9a7067b8e004408d935ef37c6c232e55534",
+    "removed": true,
+    "cleanupPending": false
+  },
+  "observation": {
+    "node": "v24.18.1",
+    "arch": "arm64",
+    "uid": 1001,
+    "target": {
+      "pid": 25,
+      "entry": "/tmp/p058-cold.mjs",
+      "argv": [
+        "--probe-target"
+      ],
+      "execArgv": [
+        "/opt/papercusp/sidecar/bin/node",
+        "/opt/papercusp/sidecar/bin/node",
+        "--inspect-wait=127.0.0.1:0"
+      ],
+      "startTicks": "43843519",
+      "listenerInode": "527073003",
+      "identity": "proc"
+    },
+    "captureMs": 1000,
+    "samples": 594,
+    "nodes": 267,
+    "applicationStartedAfterResume": true,
+    "startupResumed": true,
+    "targetSourceSampled": true,
+    "wrongPidRefused": true,
+    "wrongArgRefused": true,
+    "termination": {
+      "code": null,
+      "signal": "SIGTERM"
+    }
+  },
+  "enginePhases": {
+    "sha256": "6be8f76f29dc90fb5aba4737abfe61e5aa6b5110c40171f622d25d9f889c793b",
+    "rows": [
+      {
+        "phase": "begin",
+        "verb": "create",
+        "at": "2026-10-10T16:23:43.052Z"
+      },
+      {
+        "phase": "end",
+        "verb": "create",
+        "elapsedMs": 32991,
+        "at": "2026-10-10T16:24:16.043Z"
+      },
+      {
+        "phase": "begin",
+        "verb": "start",
+        "at": "2026-10-10T16:24:16.675Z"
+      },
+      {
+        "phase": "end",
+        "verb": "start",
+        "elapsedMs": 9018,
+        "at": "2026-10-10T16:24:25.693Z"
+      },
+      {
+        "phase": "begin",
+        "verb": "inspect",
+        "at": "2026-10-10T16:24:25.693Z"
+      },
+      {
+        "phase": "end",
+        "verb": "inspect",
+        "elapsedMs": 47,
+        "at": "2026-10-10T16:24:25.740Z"
+      },
+      {
+        "phase": "begin",
+        "verb": "rm",
+        "at": "2026-10-10T16:24:25.925Z"
+      },
+      {
+        "phase": "end",
+        "verb": "rm",
+        "elapsedMs": 118,
+        "at": "2026-10-10T16:24:26.043Z"
+      }
+    ]
+  },
+  "guestPhases": {
+    "sha256": "e0f2435e9d5a98c9aa13c6185407c240d4493897c3a410555a80525387dd81b8",
+    "rows": [
+      {
+        "phase": "guest-enter",
+        "at": "2026-10-10T16:24:20.032Z"
+      },
+      {
+        "phase": "collector-imported",
+        "at": "2026-10-10T16:24:21.672Z"
+      },
+      {
+        "phase": "target-listen",
+        "at": "2026-10-10T16:24:22.517Z"
+      },
+      {
+        "phase": "capture-start",
+        "at": "2026-10-10T16:24:22.575Z"
+      },
+      {
+        "phase": "capture-returned",
+        "at": "2026-10-10T16:24:25.148Z"
+      },
+      {
+        "phase": "target-terminate",
+        "at": "2026-10-10T16:24:25.188Z"
+      }
+    ]
+  },
+  "originalCollectorInputs": [
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/scripts/cpu-sample.mjs",
+      "target": "/opt/papercusp/sidecar/p058-cpu-sample.mjs",
+      "sha256": "c6a2d23604fc9ec1454233a2df1df9ef4eb4167cff3e3ac65fb96a202a43cb55"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/scripts/cdp-inspector.mjs",
+      "target": "/opt/papercusp/sidecar/cdp-inspector.mjs",
+      "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/scripts/lib/cpu-profile.mjs",
+      "target": "/opt/papercusp/sidecar/lib/cpu-profile.mjs",
+      "sha256": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/scripts/proc-guard.mjs",
+      "target": "/opt/papercusp/sidecar/proc-guard.mjs",
+      "sha256": "5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda"
+    }
+  ],
+  "name": "P-058 exact retained ARM cold profile no-replay recovery",
+  "command": [
+    "node",
+    "--input-type=module"
+  ],
+  "hostCommand": "node --input-type=module <<'P058_RECOVER'\nimport {readFileSync,statSync} from 'node:fs';\nimport {createHash} from 'node:crypto';\nimport {persistCpuProfile} from './scripts/cpu-sample.mjs';\nconst startedAt=new Date().toISOString();\nconst out='/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck3-LJhPOF';\nconst hash=b=>createHash('sha256').update(b).digest('hex');\nconst resultBytes=readFileSync(out+'/result.json'),r=JSON.parse(resultBytes);\nconst p=out+'/profile.cpuprofile',bytes=readFileSync(p),d=JSON.parse(bytes),before=statSync(p),obs=r.observation;\nconst expected='b1a0f89386e66a2405b68922c849570d66c9d312b044cfb34a3792fe37b27522';\nif(hash(bytes)!==expected)throw Error('Retained raw profile changed');\nconst saved=persistCpuProfile(p,bytes),after=statSync(p);\nconst ids=new Set(d.nodes.map(n=>n.id)),sampled=new Set(d.samples);\nconst checks={originalFailurePreserved:r.status==='failed'&&r.error.includes('EACCES')&&hash(readFileSync(out+'/result.json'))===hash(resultBytes),verifiedWithoutRewrite:!saved.created&&[before.ino,before.uid,before.mode,before.mtimeMs,before.ctimeMs].every((n,i)=>n===[after.ino,after.uid,after.mode,after.mtimeMs,after.ctimeMs][i])&&hash(readFileSync(p))===expected,countsMatch:d.samples.length===obs.samples&&d.nodes.length===obs.nodes,uniqueNodes:ids.size===d.nodes.length,samplesResolve:d.samples.every(id=>ids.has(id)),timingShape:d.timeDeltas.length===d.samples.length&&d.endTime>d.startTime,targetSourceSampled:d.nodes.some(n=>sampled.has(n.id)&&n.callFrame.url==='file:///tmp/p058-cold.mjs'),resumeAndCounterexamples:['startupResumed','applicationStartedAfterResume','wrongPidRefused','wrongArgRefused'].every(k=>obs[k]===true),armRuntime:obs.arch==='arm64'&&obs.node==='v24.18.1'&&obs.uid===1001,sigtermExit:obs.termination.code===null&&obs.termination.signal==='SIGTERM',originalInputsStable:r.testedInputsStable&&r.collectorInputsStable};\nconst ownBytes=readFileSync(r.owned.receiptFile),own=JSON.parse(ownBytes);checks.ownedCleanup=own.containerId==='c1bf24454a216d84e7af3b35ad5db9a7067b8e004408d935ef37c6c232e55534'&&own.removed===true&&own.cleanupPending===false;\nif(!Object.values(checks).every(Boolean))throw Error(JSON.stringify(checks));\nconsole.log(JSON.stringify({startedAt,finishedAt:new Date().toISOString(),out,checks,profile:{sha256:expected,bytes:bytes.length,samples:d.samples.length,nodes:d.nodes.length,uid:before.uid,mode:before.mode&0o777,hostUid:process.getuid(),persist:saved},originalResult:{sha256:hash(resultBytes),status:r.status,error:r.error},ownership:{file:r.owned.receiptFile,sha256:hash(ownBytes),containerId:own.containerId,removed:own.removed,cleanupPending:own.cleanupPending},producerStartedAt:r.startedAt,producerFinishedAt:r.finishedAt,sourceCommit:r.sourceCommit,imageId:r.imageId,platform:r.platform,collectorInputs:r.collectorInputs,observation:obs,enginePhases:{sha256:hash(readFileSync(out+'/engine-phases.jsonl')),rows:readFileSync(out+'/engine-phases.jsonl','utf8').trim().split('\\n').map(JSON.parse)},guestPhases:{sha256:hash(readFileSync(out+'/phases.jsonl')),rows:readFileSync(out+'/phases.jsonl','utf8').trim().split('\\n').map(JSON.parse)},persistSourceSha256:hash(readFileSync('scripts/cpu-sample.mjs'))}));\nP058_RECOVER",
+  "startedAt": "2026-10-10T16:37:31.982Z",
+  "finishedAt": "2026-10-10T16:37:32.405Z",
+  "exitCode": 0,
+  "summary": "Verified the exact retained guest-owned ARM cold profile using maintained create-or-verify persistence from host UID1000. Profile bytes,owner,mode,inode and write timestamps remained unchanged;12 qualification checks passed. Original wrapper FAIL remains intact. No producer replay.",
+  "recoveryTaskId": "0mv2matvy1txeydz1b7",
+  "priorReadOnlyQualificationTaskId": "0mv2lyqcn17xe5n11id",
+  "rawLogFile": ".papercusp/scratch/bash-d324af6e-049.log",
+  "rawLogSha256": "885ab4f2fa9b9dfa1dc112ca92fa8d880f967279592c68026b39d7103b2b0443",
+  "assertions": [
+    {
+      "id": "originalFailurePreserved",
+      "passed": true,
+      "evidence": "Original result remains failed/EACCES; exact SHA256 e59a991494598273b3845b4ddc0cef698f50d24c926660f9727ef5fc8b9399a9"
+    },
+    {
+      "id": "verifiedWithoutRewrite",
+      "passed": true,
+      "evidence": "persistCpuProfile returned created:false and unchanged exact metadata/bytes."
+    },
+    {
+      "id": "countsMatch",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    },
+    {
+      "id": "uniqueNodes",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    },
+    {
+      "id": "samplesResolve",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    },
+    {
+      "id": "timingShape",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    },
+    {
+      "id": "targetSourceSampled",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    },
+    {
+      "id": "resumeAndCounterexamples",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    },
+    {
+      "id": "armRuntime",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    },
+    {
+      "id": "sigtermExit",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    },
+    {
+      "id": "originalInputsStable",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    },
+    {
+      "id": "ownedCleanup",
+      "passed": true,
+      "evidence": "Exact retained result/profile/ownership readback met the named check in hostCommand."
+    }
+  ],
+  "sourceHashes": {
+    "scripts/cpu-sample.mjs": "d7809931a346f13ff5410220e821143089273bd9fc4ecb8f7ee0b7f480fd8b05",
+    "packages/operator-core/lib/cpu-sample.test.ts": "ac8d0ebbc8b080038a970f4d8eaba00e39a8b9f982d8958824d41fde6c933efc"
+  },
+  "regression": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/npm-install-safe.mjs --exec-under-lock -- node /home/builduser/papercupai-workspace/papercusp/node_modules/vitest/vitest.mjs run --root /home/builduser/papercupai-workspace/papercusp/packages/operator-core lib/cpu-sample.test.ts --reporter=verbose",
+    "result": "11 passed,0 failed,0 skipped",
+    "scope": "Canonical sampler suite including create/verify-readonly and mismatch-preserves-original guards."
+  },
+  "fixedProducerOutputContract": {
+    "command": "export PATH=/home/builduser/.local/node25/bin:$PATH\nnode --input-type=module <<'NODE'\nimport {readFile,writeFile,mkdtemp,readdir,chmod,appendFile} from 'node:fs/promises';\nimport {createHash} from 'node:crypto';\nconst root='/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706',source=root+'/source',overlay=root+'/host-external-overlay2-PSI5tW';\nconst sha=b=>createHash('sha256').update(b).digest('hex');\nconst sourceReceipt=JSON.parse(await readFile(root+'/source-receipt.json','utf8'));\nconst fixture=JSON.parse(await readFile('/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-fixture1/fixture.json','utf8'));\nconst overlayReceipt=JSON.parse(await readFile(overlay+'/result.json','utf8'));\nif(overlayReceipt.status!=='passed'||overlayReceipt.nativeFiles.length||sha(await readFile(overlay+'/inventory.json'))!==overlayReceipt.inventorySha256)throw Error('Unqualified overlay');\nconst prep=JSON.parse(await readFile(root+'/external-imports-preparation.json','utf8'));\nconst checkInputs=async()=>{for(const x of sourceReceipt.testedInputs)if(sha(await readFile(source+'/'+x.path))!==x.sha256)throw Error('Changed source input '+x.path);if(sha(await readFile(root+'/private-output/serve.mjs'))!==prep.serveSha256)throw Error('Changed frozen bundle');};await checkInputs();\nconst verifier=await readFile(source+'/papercusp-desktop/bin/verify-sidecar-bundle.sh','utf8');const start=verifier.indexOf('check_boot_import_closure() {'),end=verifier.indexOf('\\nif [[ \"$CROSS\"',start);if(start<0||end<0)throw Error('Missing frozen canonical helper');const helper=verifier.slice(start,end);if(!helper.includes('timeout: 60000')||!helper.includes('PAPERCUSP_BOOT_IMPORTS_OK'))throw Error('Canonical deadline/marker missing');\nconst binds=[];for(const entry of await readdir(overlay+'/node_modules')){const packages=entry.startsWith('@')?(await readdir(overlay+'/node_modules/'+entry)).map(n=>entry+'/'+n):[entry];for(const p of packages)binds.push('--mount','type=bind,source='+overlay+'/node_modules/'+p+',target=/opt/papercusp/sidecar/node_modules/'+p+',readonly');}\nconst collectorInputs=[{\"path\":\"/home/builduser/papercupai-workspace/papercusp/scripts/cpu-sample.mjs\",\"target\":\"/opt/papercusp/sidecar/p058-cpu-sample.mjs\",\"sha256\":\"d7809931a346f13ff5410220e821143089273bd9fc4ecb8f7ee0b7f480fd8b05\"},{\"path\":\"/home/builduser/papercupai-workspace/papercusp/scripts/cdp-inspector.mjs\",\"target\":\"/opt/papercusp/sidecar/cdp-inspector.mjs\",\"sha256\":\"bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112\"},{\"path\":\"/home/builduser/papercupai-workspace/papercusp/scripts/lib/cpu-profile.mjs\",\"target\":\"/opt/papercusp/sidecar/lib/cpu-profile.mjs\",\"sha256\":\"b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3\"},{\"path\":\"/home/builduser/papercupai-workspace/papercusp/scripts/proc-guard.mjs\",\"target\":\"/opt/papercusp/sidecar/proc-guard.mjs\",\"sha256\":\"5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda\"}];\nconst checkCollector=async()=>{for(const x of collectorInputs)if(sha(await readFile(x.path))!==x.sha256)throw Error('Changed collector input '+x.path);};await checkCollector();\nif(fixture.imageId!==\"sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921\"||fixture.platform!=='linux/arm64'||sha(helper)!==\"ffbd2d83808dd2129e6e8f8bcf770e4f1bd9799717a7d634d047a09b611fa3d9\"||overlayReceipt.inventorySha256!==\"978c0594cdaf5ae326406e2d562d3ab2e71befe0d10f9c70635fb50d3a10054c\")throw Error('Changed retained ARM fixture/helper/overlay');\nconst out=await mkdtemp(root+'/inspector-cold-precheck3-');await chmod(out,0o777);\nconst {runOwnedContainer,runCommand}=await import(source+'/papercusp-desktop/bin/lib/server-container.mjs');const {gunzipSync}=await import('node:zlib');\nconst result={schemaVersion:'p058-arm-inspector-cold-precheck/v1',workItemId:'EI-25604028797058995',ownerId:'su-0d2affd0-2198-4734-b54f-186234343375',sourceCommit:sourceReceipt.sourceCommit,imageId:fixture.imageId,platform:fixture.platform,collectorInputs,candidateAccepted:false,out,startedAt:new Date().toISOString()};\ntry{const owned=await runOwnedContainer({out,engine:'docker',imageId:fixture.imageId,platform:fixture.platform,timeoutMs:60000,args:['--read-only','--network','none','--user','1001:1001','--memory','2g','--pids-limit','256','--tmpfs','/tmp:rw,exec','--mount','type=bind,source='+out+',target=/p058-result',...binds,...collectorInputs.flatMap(x=>['--mount','type=bind,source='+x.path+',target='+x.target+',readonly'])],command:['/opt/papercusp/sidecar/bin/node','--input-type=module','-e',\"import {spawn} from 'node:child_process';import {once} from 'node:events';import {writeFileSync,appendFileSync} from 'node:fs';import {gzipSync} from 'node:zlib';\\nconst phase=name=>appendFileSync('/p058-result/phases.jsonl',JSON.stringify({phase:name,at:new Date().toISOString()})+'\\\\n');phase('guest-enter');const {captureCpuProfile,readInspectorProcessIdentity}=await import('/opt/papercusp/sidecar/p058-cpu-sample.mjs');phase('collector-imported');\\nconst entry='/tmp/p058-cold.mjs';writeFileSync(entry,'console.log(\\\"P058_COLD_STARTED\\\");while(true)Math.sqrt(Math.random());');\\nconst child=spawn(process.execPath,['--inspect-wait=127.0.0.1:0',entry,'--probe-target'],{stdio:['ignore','pipe','pipe']});const exited=once(child,'exit');let stdout='';child.stdout.on('data',x=>stdout+=String(x));\\nlet observation;try{const port=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('ARM waiting inspector timeout')),10000);child.once('error',e=>{clearTimeout(timer);reject(e)});child.stderr.on('data',x=>{const m=String(x).match(/ws:\\\\/\\\\/127\\\\.0\\\\.0\\\\.1:(\\\\d+)\\\\//);if(m){clearTimeout(timer);resolve(Number(m[1]));}});});phase('target-listen');if(stdout!=='')throw Error('Target ran before profiler setup');\\nlet wrongPidRefused=false,wrongArgRefused=false;try{readInspectorProcessIdentity({pid:process.pid,port,expectedEntry:entry,expectedArg:'--probe-target'});}catch(e){wrongPidRefused=e.message.includes('identity mismatch');}try{readInspectorProcessIdentity({pid:0,port,expectedEntry:entry,expectedArg:'--wrong-argument'});}catch(e){wrongArgRefused=e.message.includes('identity mismatch');}\\nphase('capture-start');const result=await captureCpuProfile({pid:0,startPort:port,attachExisting:true,procIdentity:true,resumeStartup:true,expectedEntry:entry,expectedArg:'--probe-target',durationMs:1000,deadlineMs:15000});\\nphase('capture-returned');writeFileSync('/p058-result/profile.cpuprofile',JSON.stringify(result.profile));const sampled=new Set(result.profile.samples),targetSourceSampled=result.profile.nodes.some(n=>sampled.has(n.id)&&n.callFrame.url==='file://'+entry);if(result.target.pid!==child.pid||!wrongPidRefused||!wrongArgRefused||!targetSourceSampled||!result.startupResumed||!stdout.includes('P058_COLD_STARTED'))throw Error('ARM cold identity/sample/resume proof failed');\\nobservation={node:process.version,arch:process.arch,uid:process.getuid(),target:result.target,captureMs:result.captureMs,samples:result.profile.samples.length,nodes:result.profile.nodes.length,applicationStartedAfterResume:true,startupResumed:result.startupResumed,targetSourceSampled,wrongPidRefused,wrongArgRefused,profileGzipBase64:gzipSync(JSON.stringify(result.profile)).toString('base64')};\\n}finally{phase('target-terminate');child.kill('SIGTERM');const exit=await exited;if(observation)observation.termination={code:exit[0],signal:exit[1]};}console.log(JSON.stringify(observation));\"]},async(c,a,o)=>{const at=Date.now();let stackPending=Promise.resolve();const stackTimer=a[0]==='create'?setTimeout(()=>{stackPending=runCommand('curl',['--max-time','4','--silent','--show-error','--unix-socket','/var/run/docker.sock','http://localhost/debug/pprof/goroutine?debug=2'],{timeout:5000}).then(raw=>writeFile(out+'/docker-create-stack.txt',raw,{mode:0o600})).catch(e=>appendFile(out+'/engine-phases.jsonl',JSON.stringify({phase:'daemon-stack-failed',error:e.message,at:new Date().toISOString()})+'\\n'));},5000):null;await appendFile(out+'/engine-phases.jsonl',JSON.stringify({phase:'begin',verb:a[0],at:new Date().toISOString()})+'\\n');try{return await runCommand(c,a,{...o,stream:false});}finally{clearTimeout(stackTimer);await stackPending;await appendFile(out+'/engine-phases.jsonl',JSON.stringify({phase:'end',verb:a[0],elapsedMs:Date.now()-at,at:new Date().toISOString()})+'\\n');}});const {output,...receipt}=owned;result.owned=receipt;result.observation=JSON.parse(output.trim());const gzip=Buffer.from(result.observation.profileGzipBase64,'base64'),raw=gunzipSync(gzip);delete result.observation.profileGzipBase64;const {persistCpuProfile}=await import(collectorInputs[0].path);result.profilePersistence=persistCpuProfile(out+'/profile.cpuprofile',raw);result.profileSha256=sha(raw);result.status='passed';}catch(e){result.status='failed';result.error=e.message;process.exitCode=1;}\nawait checkInputs();await checkCollector();result.testedInputsStable=true;result.collectorInputsStable=true;result.finishedAt=new Date().toISOString();await writeFile(out+'/result.json',JSON.stringify(result,null,2)+'\\n');console.log(JSON.stringify({resultFile:out+'/result.json',status:result.status,observation:result.observation,error:result.error,profileSha256:result.profileSha256}));\nNODE",
+    "executed": false,
+    "note": "Only the host output seam now calls persistCpuProfile; collector source hash updated to the tested maintained helper. Syntax checked; future producer recipe was not executed. Existing original engine60000ms limit preserved."
+  },
+  "reuse": "Extended scripts/cpu-sample.mjs existing save path; scripts/lib/cpu-profile.mjs remains the analysis implementation.",
+  "rootCauseVerification": {
+    "hypothesis": "Host writeFile opens the already-persisted guest-owned profile for writing and fails on UID mismatch.",
+    "alternativeHypothesis": "Guest capture failed or returned different/corrupt profile bytes.",
+    "distinguishingTest": "Read retained raw bytes; verify counts/shape/identity/resume/SIGTERM/cleanup; invoke fixed persistCpuProfile from actual host UID1000 on actual guest UID1001 file; compare SHA and metadata before/after.",
+    "predictedObservations": {
+      "hypothesis": "Readable valid exact guest bytes; create-or-verify succeeds without file changes; original result remains EACCES.",
+      "alternativeHypothesis": "Profile absent,invalid,mismatched or fails qualification."
+    },
+    "actualObservation": "12 checks pass;55804 identical bytes,594 samples,267 nodes;created:false;guest UID1001 and mode0644 unchanged;original wrapper result failed/EACCES unchanged."
+  },
+  "limitations": [
+    "Historical ARM capture used original sampler hashc6a2; recovery/persistence source usesd780. No fresh ARM producer execution atd780 is claimed.",
+    "This qualifies the small cold sampler prerequisite, not frozen full Server boot or final native acceptance.",
+    "Signing/publication,installed-native,detector and instance-transfer acceptance remain unmet.",
+    "Focused npm routing infrastructure residue EI-25611005722789077 remains owned/open."
+  ],
+  "evidenceSerialization": {
+    "serializer": "node scripts/lib/identity-leak-patterns.mjs --serialize-json",
+    "sourceArtifactSha256": "bf4da3b23e19be46ec0b3df598747dc68ff326d011734dcebac30dff21d94170",
+    "note": "Shared identity-safe serializer redacts local identity in exported string values only. Original measured profile, result, ownership and logs remain unchanged; retained raw references and their digests are preserved."
+  }
+}

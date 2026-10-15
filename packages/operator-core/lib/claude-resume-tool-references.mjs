@@ -8,11 +8,16 @@
  * path. Keep this plain ESM so both launch surfaces use the same name and
  * transcript rules.
  */
-import { readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const PAPERCUSP_MCP_TOOL_PREFIX = /^mcp__papercusp(?:-su|_su)__/i;
 const MISSING_TOOL_REFERENCE_RE =
   /^\s*API Error(?::\s*400|\s+400\b)[^\r\n]{0,300}\bTool reference\s+['"][^'"]+['"]\s+not found in available tools\b/im;
+const CONTEXT_LIMIT_RE =
+  /^\s*(?:Prompt is too long|Context limit reached(?:\s*·\s*\/clear to continue)?)\s*$/i;
+const ACCOUNT_WALL_RE =
+  /\b(?:credit balance is too low|insufficient credits)\b|^\s*API Error:\s*Request rejected \(429\)[^\r\n]{0,300}\b(?:your\s+)?account(?:['’]s)?\s+rate\s+limit\b/i;
 
 export const CLAUDE_TOOL_REFERENCE_POISON_TURNS = 3;
 /**
@@ -132,6 +137,10 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
   let trailingMissingToolReferenceTurns = 0;
   let lastMissingToolReferenceEvidence = null;
   let lastMissingToolReferenceName = null;
+  let trailingContextLimitTurns = 0;
+  let lastContextLimitEvidence = null;
+  let trailingAccountWallTurns = 0;
+  let lastAccountWallEvidence = null;
   let assistantTurnsSinceLastPrompt = 0;
 
   for (const line of String(jsonl ?? '').split(/\r?\n/)) {
@@ -145,8 +154,18 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     }
 
     collectPapercuspToolReferences(record, references);
+    // A native compaction replaces the rejected context. A new submitted
+    // prompt alone does not: a fork replays the same over-limit history.
+    if (record.type === 'system' && record.subtype === 'compact_boundary') {
+      trailingContextLimitTurns = 0;
+      lastContextLimitEvidence = null;
+    }
     if (isSubmittedPrompt(record)) {
       assistantTurnsSinceLastPrompt = 0;
+      // Account rejection belongs to that launch, not the copied source
+      // history: a new prompt can use a different funded account/backend.
+      trailingAccountWallTurns = 0;
+      lastAccountWallEvidence = null;
       continue;
     }
     const text = assistantText(record);
@@ -160,6 +179,13 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     trailingMissingToolReferenceTurns = evidence ? trailingMissingToolReferenceTurns + 1 : 0;
     lastMissingToolReferenceEvidence = evidence;
     lastMissingToolReferenceName = evidence ? missingToolReferenceName(evidence) : null;
+    const contextEvidence = synthetic && CONTEXT_LIMIT_RE.test(text) ? text.trim().slice(0, 200) : null;
+    trailingContextLimitTurns = contextEvidence ? trailingContextLimitTurns + 1 : 0;
+    lastContextLimitEvidence = contextEvidence;
+    const accountEvidence = synthetic && (record.error === 'billing_error' || record.error === 'rate_limit' || ACCOUNT_WALL_RE.test(text))
+      ? text.trim().slice(0, 200) : null;
+    trailingAccountWallTurns = accountEvidence ? trailingAccountWallTurns + 1 : 0;
+    lastAccountWallEvidence = accountEvidence;
   }
 
   const toolReferences = maxReferences === 0
@@ -170,6 +196,10 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     trailingMissingToolReferenceTurns,
     lastMissingToolReferenceEvidence,
     lastMissingToolReferenceName,
+    trailingContextLimitTurns,
+    lastContextLimitEvidence,
+    trailingAccountWallTurns,
+    lastAccountWallEvidence,
     assistantTurnsSinceLastPrompt,
     needsFreshContext: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
     poisoned: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_POISON_TURNS,
@@ -204,6 +234,153 @@ export function analyzeClaudeResumeTranscriptFile(filePath, options = {}) {
 /** Test seam for the bounded process-local transcript cache. */
 export function __resetClaudeResumeTranscriptCacheForTests() {
   transcriptCache.clear();
+}
+
+/**
+ * WI-10005612: a tracked FORK is a different CLI process with its own tool
+ * surface. It runs headless instead of interactive, under its own deny list and
+ * its own Papercusp seed. A `tool_reference` the source legitimately loaded
+ * (measured: native `EndConversation`, earlier `WaitForMcpServers`) can
+ * therefore be absent from the fork. The provider then rejects the fork's very
+ * first request with "Tool reference '<name>' not found in available tools",
+ * before the fork can answer anything. That made every source that ever ran a
+ * tool search unforkable, so an acceptance-grading consult exhausted its
+ * whole cascade.
+ *
+ * A reference only pre-loads a schema, so the fork's own seeded COPY of the
+ * transcript drops them:
+ * - inside a server tool-search result's `tool_references` array, entries are
+ *   removed (an empty search result is a valid shape; a text block there is not);
+ * - anywhere else in message content, a reference becomes a text marker.
+ * The source session's own transcript is never touched.
+ */
+export function neutralizeClaudeToolReferences(jsonl, options = {}) {
+  let rewritten = 0;
+  const names = new Set();
+  // Default: every reference (the fork seed). `nativeOnly` leaves Papercusp MCP
+  // references in place — a RESUME restores those into the launch seed instead.
+  const nativeOnly = options?.nativeOnly === true;
+  const isReference = (value) =>
+    value &&
+    typeof value === 'object' &&
+    value.type === 'tool_reference' &&
+    typeof value.tool_name === 'string' &&
+    (!nativeOnly || !PAPERCUSP_MCP_TOOL_PREFIX.test(value.tool_name));
+  const visit = (value, key) => {
+    if (Array.isArray(value)) {
+      let changed = false;
+      const out = [];
+      for (const item of value) {
+        if (isReference(item)) {
+          rewritten += 1;
+          names.add(item.tool_name);
+          changed = true;
+          if (key !== 'tool_references') {
+            out.push({ type: 'text', text: `[tool reference ${item.tool_name} was loaded here before this session was ${nativeOnly ? 'resumed' : 'forked'}]` });
+          }
+          continue;
+        }
+        const next = visit(item, null);
+        if (next !== item) changed = true;
+        out.push(next);
+      }
+      return changed ? out : value;
+    }
+    if (!value || typeof value !== 'object') return value;
+    let changed = false;
+    const out = {};
+    for (const [childKey, child] of Object.entries(value)) {
+      const next = visit(child, childKey);
+      if (next !== child) changed = true;
+      out[childKey] = next;
+    }
+    return changed ? out : value;
+  };
+  const lines = String(jsonl ?? '').split('\n').map((line) => {
+    if (!line.includes('"tool_reference"')) return line;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return line;
+    }
+    if (!record || typeof record !== 'object' || !record.message || typeof record.message !== 'object') return line;
+    const message = visit(record.message, 'message');
+    return message === record.message ? line : JSON.stringify({ ...record, message });
+  });
+  return { text: lines.join('\n'), rewritten, toolNames: [...names] };
+}
+
+/**
+ * Apply `neutralizeClaudeToolReferences` to every seeded `<sessionId>.jsonl`
+ * under a fork's own `projects/` dir (one per encoded-cwd subdir). Unreadable
+ * entries are skipped: the fork still gets the first-turn poison gate.
+ */
+export function neutralizeForkSeedToolReferences(projectsDir, sessionId, options = {}) {
+  const result = { files: 0, rewritten: 0, toolNames: [] };
+  if (!projectsDir || !sessionId) return result;
+  let entries;
+  try {
+    entries = readdirSync(projectsDir, { withFileTypes: true });
+  } catch {
+    return result;
+  }
+  const names = new Set();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const out = neutralizeToolReferencesInFile(join(projectsDir, entry.name, `${sessionId}.jsonl`), options);
+    if (out.rewritten === 0) continue;
+    result.files += 1;
+    result.rewritten += out.rewritten;
+    for (const name of out.toolNames) names.add(name);
+  }
+  result.toolNames = [...names];
+  return result;
+}
+
+/**
+ * Rewrite ONE transcript file in place (temp file + rename, so a reader never
+ * sees a half-written session). Unreadable/unparseable input is left alone.
+ */
+export function neutralizeToolReferencesInFile(file, options = {}) {
+  const none = { rewritten: 0, toolNames: [] };
+  if (!file) return none;
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return none;
+  }
+  const out = neutralizeClaudeToolReferences(text, options);
+  if (out.rewritten === 0) return none;
+  const tmp = `${file}.neutralize-${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, out.text);
+    renameSync(tmp, file);
+  } catch {
+    return none;
+  }
+  return { rewritten: out.rewritten, toolNames: out.toolNames };
+}
+
+/**
+ * Same-session RESUME (WI-10005612 only covered forks): the resumed CLI process
+ * has its own tool surface, so a NATIVE deferred tool the earlier process loaded
+ * through ToolSearch (measured: `ExitPlanMode`, `WaitForMcpServers`,
+ * `EndConversation`) can be absent from it, and the provider then 400s the very
+ * first replayed request — "Tool reference '<name>' not found in available
+ * tools" — and the loop pauses (EI-24890753013901545). A reference only
+ * pre-loads a schema, so drop the native ones before the process opens the
+ * transcript. Papercusp MCP references stay: the launch seed restores those.
+ * Call only while NO process holds the session (a resume spawn, not a live one).
+ */
+export function neutralizeResumeNativeToolReferences(projectsDir, sessionId) {
+  return neutralizeForkSeedToolReferences(projectsDir, sessionId, { nativeOnly: true });
+}
+
+/** File-level form of {@link neutralizeResumeNativeToolReferences}. */
+export function neutralizeResumeNativeToolReferencesInFile(file) {
+  return neutralizeToolReferencesInFile(file, { nativeOnly: true });
 }
 
 /** Append client-mangled names without changing the existing seed or order. */

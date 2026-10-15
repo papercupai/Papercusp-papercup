@@ -49,10 +49,12 @@ import {
 import { openForkPr, type OpenForkPrResult } from '../harness/open-fork-pr';
 import { parseRemote } from '../pr-host/github';
 import { getGhAuthToken } from '../identity/gh-token';
+import { intakeEndUserReport, type EndUserReportInput, type EndUserReportResult } from '../harness/improvements/end-user-intake';
+import { PLATFORM_POT_SLUG } from '../platform-pot-slug';
 
 // ── Shared shapes ──────────────────────────────────────────────────────────────
 
-export type ContributeKind = 'knowledge-pack' | 'pr';
+export type ContributeKind = 'knowledge-pack' | 'pr' | 'report';
 
 /**
  * The resolved self-pot member checkout the contribution operates over: the
@@ -86,6 +88,12 @@ export interface ContributeUpstreamInput {
   workspaceId?: string;
   /** Override the self-pot base slug (default `papercusp-platform`). */
   slug?: string;
+
+  /** P-015: an anonymous installed-app report, submitted only with explicit consent. */
+  report?: Pick<EndUserReportInput, 'text' | 'title' | 'reportContext'>;
+  /** Tests substitute canonical membership, never a different transport. */
+  hasCanonicalReportMembership?: (workspaceId: string) => Promise<boolean>;
+  intakeReport?: typeof intakeEndUserReport;
 
   // ── knowledge-pack path inputs ──
   /** Kebab-case pack id (becomes the Comb listing_ref). Required for kind:'knowledge-pack'. */
@@ -151,6 +159,21 @@ export type PublishPackOutcome =
  * fire), not an error.
  */
 export type ContributeUpstreamResult =
+  | {
+      ok: true;
+      kind: 'report';
+      localOnly: true;
+      result: EndUserReportResult;
+      summary: string;
+    }
+  | {
+      ok: true;
+      kind: 'report';
+      queued: true;
+      /** Local receipt only: existing federation still has to deliver it upstream. */
+      result: EndUserReportResult;
+      summary: string;
+    }
   | {
       ok: true;
       kind: ContributeKind;
@@ -306,6 +329,7 @@ export async function contributeUpstream(
   input: ContributeUpstreamInput,
 ): Promise<ContributeUpstreamResult> {
   const workspaceId = input.workspaceId ?? activeWorkspaceId();
+  if (input.kind === 'report') return contributeReport(input, workspaceId);
   const slug = input.slug ?? PLATFORM_SELF_POT_SLUG;
   const resolveMember = input.resolveSelfPotMember ?? defaultResolveSelfPotMember;
   const exportPack = input.exportPack ?? exportHiveLearningsToPack;
@@ -340,6 +364,54 @@ export async function contributeUpstream(
     return contributeKnowledgePack(input, member, { exportPack, publishPack });
   }
   return contributePr(input, member, { pushAndOpenPr, resolveGhToken, recordFeaturePr, workspaceId });
+}
+
+/** P-015 / D-050: reuse canonical-Pot issue CDC, not a new reporting channel. */
+async function contributeReport(input: ContributeUpstreamInput, workspaceId: string): Promise<ContributeUpstreamResult> {
+  const needs: string[] = [];
+  if (input.confirm !== true) needs.push('confirm');
+  if (!input.report?.text.trim()) needs.push('report');
+  const prepared = () => ({
+    ok: true as const, kind: 'report' as const, prepared: true as const, needs,
+    plan: { scope: `harness:${PLATFORM_POT_SLUG}`, transport: 'existing canonical-Pot federation' },
+    summary: 'Report not submitted. Explicit consent and canonical-Pot membership are required.',
+  });
+  // No capture (and hence no federated CDC write) before explicit consent.
+  if (needs.length) return prepared();
+  const hasMembership = input.hasCanonicalReportMembership ?? (async (ws: string) => {
+    const [{ bakedCanonicalHiveInvite }, { getHiveByPubkey }] = await Promise.all([
+      import('../harness/papercusp-hive-join'), import('../hive-store'),
+    ]);
+    const invite = bakedCanonicalHiveInvite();
+    return Boolean(invite && await getHiveByPubkey(ws, invite.pubkeyBase64));
+  });
+  try {
+    if (!await hasMembership(workspaceId)) {
+      needs.push('canonical-Pot membership');
+      return prepared();
+    }
+    const report = input.report!;
+    // Construct the allowed fields, rather than spreading caller data: scope and
+    // reporter identity cannot be supplied by an installed anonymous report.
+    const result = await (input.intakeReport ?? intakeEndUserReport)({
+      text: report.text, ...(report.title ? { title: report.title } : {}),
+      ...(report.reportContext ? { reportContext: report.reportContext } : {}),
+      scope: `harness:${PLATFORM_POT_SLUG}`, workspaceId,
+    });
+    if (result.routed !== 'work-item') {
+      return { ok: true, kind: 'report', localOnly: true, result,
+        summary: 'The note was stored locally; no upstream bug receipt is claimed.' };
+    }
+    if (!result.capture.ok || !(result.capture.issue?.id ?? result.capture.coalescedOnto?.id)) {
+      return { ok: false, kind: 'report', error: 'report_contribution_failed',
+        message: 'Shared intake did not return a successful local filing receipt; no federation delivery is claimed.' };
+    }
+    return { ok: true, kind: 'report', queued: true, result,
+      summary: 'Filed through the shared intake and queued for existing federation. Upstream receipt is not yet verified.' };
+  } catch (error) {
+    return { ok: false, kind: 'report', error: 'report_contribution_failed',
+      message: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 // ── kind: 'knowledge-pack' (the Comb path) ──────────────────────────────────────

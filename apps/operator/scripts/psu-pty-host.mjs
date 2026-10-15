@@ -41,12 +41,14 @@
 import { createRequire } from 'node:module';
 import { createHash, randomBytes } from 'node:crypto';
 import { constants as osConstants, homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 // Keep the interactive bootstrap independent of operator packages while using
 // the same dependency-free signature as the governed turn taxonomy.
 import { makeModelCapacityDetector } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
+import { isCodexWorkspaceDiscoveryTimeout } from '../../../packages/operator-core/lib/psu-launch-log.mjs';
+import { controlPlaneTempCandidates } from '../../../packages/operator-core/lib/control-plane-temp.mjs';
 import {
   AGENT_IDENTITY_SPEC_ENV,
   stageAgentIdentityTty,
@@ -58,6 +60,7 @@ import {
   unlinkSync,
   existsSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   chmodSync,
   renameSync,
@@ -71,8 +74,67 @@ import {
   readSync,
   statSync,
   writeSync,
+  promises as fsPromises,
 } from 'node:fs';
 import net from 'node:net';
+import { createTerminalOutput } from './psu-terminal-output.mjs';
+
+/**
+ * Serialize atomic discovery-file writes without blocking the PTY host's event
+ * loop on filesystem metadata. A slow rename must never stop stdin, PTY output,
+ * or control-socket handling. New writes replace a queued snapshot; the write
+ * already in flight is allowed to finish, then the newest snapshot is persisted.
+ * @param {{path:string,tempPath:string,writeFile?:Function,rename?:Function,onError?:Function}} options
+ */
+export function createAsyncAtomicFileWriter({
+  path,
+  tempPath,
+  writeFile = fsPromises.writeFile,
+  rename = fsPromises.rename,
+  onError = () => {},
+}) {
+  let queued = null;
+  let pending = null;
+  let closed = false;
+  const drain = async () => {
+    while (queued !== null) {
+      const payload = queued;
+      queued = null;
+      try {
+        await writeFile(tempPath, payload, { encoding: 'utf8', mode: 0o600 });
+        await rename(tempPath, path);
+      } catch (error) {
+        try { onError(error); } catch { /* diagnostics must not escape the writer */ }
+      }
+    }
+  };
+  const schedule = () => {
+    if (!pending) {
+      pending = drain().finally(() => {
+        pending = null;
+        if (queued !== null) schedule();
+      });
+    }
+    return pending;
+  };
+  return {
+    write(payload) {
+      if (closed) return false;
+      queued = String(payload);
+      schedule();
+      return true;
+    },
+    close() {
+      closed = true;
+      queued = null;
+      return this.whenIdle();
+    },
+    async whenIdle() {
+      while (pending) await pending;
+    },
+    get closed() { return closed; },
+  };
+}
 
 /** Environment fragments injected by launchers and tests need not carry every
  * ambient key that an application framework merges into NodeJS.ProcessEnv.
@@ -87,6 +149,75 @@ import net from 'node:net';
 export const HEADLESS_NORMALIZED_LOG_ENV = 'PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG';
 
 const require = createRequire(import.meta.url);
+
+/**
+ * Validate Codex's state storage in the process that will launch it. The
+ * operator materializes the home, but a temp companion may have disappeared
+ * before a fresh launch, resume, or carry reaches this host. SQLite code 14
+ * means an open failed; it is not evidence of a corrupt database.
+ *
+ * Recreate only missing directories. Probe actual create/write/sync access and
+ * open existing SQLite files without modifying them. Never reset session data.
+ * @param {{ env: EnvironmentMap, cwd?: string, args?: string[] }} options
+ * @returns {string|null} The checked state directory, or null for another backend.
+ */
+export function prepareCodexSqliteHome({ env, cwd = process.cwd(), args = [] }) {
+  if (env.PAPERCUSP_AGENT !== 'codex' || !env.CODEX_HOME) return null;
+  const parseToml = require('@iarna/toml').parse;
+  let configText = '';
+  try {
+    configText = readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8');
+  } catch (error) {
+    // A fresh Codex home can omit config.toml. Preserve every other read error,
+    // and parse outside this catch so malformed configuration still fails.
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const config = parseToml(configText);
+  let configured = config.sqlite_home;
+  // Explicit native config overrides win over config.toml and the environment.
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const assignment = arg === '-c' || arg === '--config'
+      ? args[++i]
+      : arg.startsWith('--config=') ? arg.slice('--config='.length) : null;
+    if (assignment && /^\s*sqlite_home\s*=/.test(assignment)) {
+      configured = parseToml(assignment).sqlite_home;
+    }
+  }
+  const raw = configured ?? env.CODEX_SQLITE_HOME ?? env.CODEX_HOME;
+  if (typeof raw !== 'string' || !raw.trim() || raw.includes('\0')) {
+    throw new Error('Codex SQLite preflight: sqlite_home must be a non-empty directory path');
+  }
+  const stateHome = resolve(cwd, raw);
+  let probePath = null;
+  let fd = null;
+  try {
+    mkdirSync(stateHome, { recursive: true, mode: 0o700 });
+    // Permission bits alone cannot detect a read-only mount, quota, or a full
+    // filesystem. Use an exclusive, private file and remove only our own probe.
+    const candidate = join(stateHome, `.papercusp-sqlite-probe-${randomBytes(12).toString('hex')}`);
+    fd = openSync(candidate, 'wx', 0o600);
+    probePath = candidate;
+    writeSync(fd, 'sqlite storage preflight\n');
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    unlinkSync(probePath);
+    probePath = null;
+    for (const name of readdirSync(stateHome)) {
+      if (!/_\d+\.sqlite(?:-wal|-shm)?$/.test(name)) continue;
+      fd = openSync(join(stateHome, name), 'r+');
+      closeSync(fd);
+      fd = null;
+    }
+    return stateHome;
+  } catch (error) {
+    throw new Error(`Codex SQLite storage is unavailable at ${stateHome} (${error.code ?? 'filesystem-error'}): ${error.message}. Existing databases were preserved.`, { cause: error });
+  } finally {
+    if (fd !== null) { try { closeSync(fd); } catch { /* preserve the original error */ } }
+    if (probePath) { try { unlinkSync(probePath); } catch { /* preserve the original error */ } }
+  }
+}
 
 /** This script's own directory — used to locate sibling scripts (the session-compacted
  *  emit CLI) and the checkout root. */
@@ -115,10 +246,45 @@ export function hashHostScript(path = HOST_SCRIPT_PATH) {
  *  inert here until the whole launcher restarts. Capturing the hash at load is what
  *  makes that detectable at all: it is the only value in the process that still
  *  describes the code actually executing after the file on disk moves on. */
-export const LOADED_HOST_CODE_VERSION = hashHostScript();
+// Reading a version has no effect when no PTY host uses the result. Let esbuild
+// discard it from helper-only imports; import.meta.url there is the large Hono
+// bundle, so retaining this unused read hashes the entire bundle during boot.
+// Standalone hosts still capture both versions at module evaluation time.
+export const LOADED_HOST_CODE_VERSION = /* @__PURE__ */ hashHostScript();
+
+/**
+ * Persist only this closed classification of the operator target. The full URL can
+ * contain credentials, paths, or query tokens and is never host-event evidence.
+ *
+ * @param {EnvironmentMap} [env]
+ * @returns {'direct-3170'|'other'|'unset'}
+ */
+export function operatorPinEvidence(env = process.env) {
+  const raw = typeof env?.PAPERCUSP_OPERATOR_URL === 'string'
+    ? env.PAPERCUSP_OPERATOR_URL.trim()
+    : '';
+  if (!raw) return 'unset';
+  try {
+    const url = new URL(raw);
+    const loopback = ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(url.hostname);
+    const path = url.pathname.replace(/\/+$/, '') || '/';
+    if (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      loopback &&
+      url.port === '3170' &&
+      ['/', '/api/mcp'].includes(path)
+    ) {
+      return 'direct-3170';
+    }
+  } catch {
+    // An invalid or non-local target is deliberately reduced to the fixed enum.
+  }
+  return 'other';
+}
+
 // The launcher supplies the long-lived carry/model callbacks. Replacing only
 // that sibling leaves this process on its old callbacks until it also adopts.
-const LOADED_LAUNCHER_CODE_VERSION = hashHostScript(LAUNCHER_SCRIPT_PATH);
+const LOADED_LAUNCHER_CODE_VERSION = /* @__PURE__ */ hashHostScript(LAUNCHER_SCRIPT_PATH);
 
 /** WI-38292: is this host or its launcher executing code older than disk?
  *  `stale` is true when either component's known hashes differ — an unreadable file
@@ -370,7 +536,7 @@ const KICKOFF_PROOF_TOKEN_RE = /^[a-f0-9]{48}$/i;
  *
  * @param {{persisted?: boolean, nativeRef?: string | null, reason?: string | null}} proof
  * @param {EnvironmentMap} [env]
- * @returns {{published: boolean, reason?: string}}
+ * @returns {{published: boolean, reason?: string, errorMessage?: string, errorCode?: string | null}}
  */
 export function publishKickoffProofReceipt(proof, env = process.env) {
   const rawPath = env?.[KICKOFF_PROOF_PATH_ENV];
@@ -463,8 +629,13 @@ export function publishKickoffProofReceipt(proof, env = process.env) {
     renameSync(tempPath, path);
     tempPath = null;
     return { published: true };
-  } catch {
-    return { published: false, reason: 'kickoff-proof-receipt-publish-failed' };
+  } catch (error) {
+    return {
+      published: false,
+      reason: 'kickoff-proof-receipt-publish-failed',
+      errorMessage: String(error?.message ?? error).slice(0, 500),
+      errorCode: typeof error?.code === 'string' ? error.code : null,
+    };
   } finally {
     if (tempFd != null) {
       try { closeSync(tempFd); } catch { /* best-effort */ }
@@ -566,12 +737,23 @@ const KICKOFF_MARKER_ECHO_POLL_MS = 25;
  * Confirm a fresh Codex kickoff reached the visible composer before Enter can
  * submit it. A backend frame proves the TUI rendered; child.write only proves
  * the host attempted input. Neither proves the composer accepted the marker.
+ *
+ * @param {{
+ *   read?: () => unknown,
+ *   text?: string,
+ *   timeoutMs?: number,
+ *   pollMs?: number,
+ *   headLossGraceMs?: number,
+ *   shouldCancel?: () => boolean,
+ *   onPending?: (state: { elapsedMs: number, observedChars: number, markerTailSeen: boolean }) => void,
+ * }} [options]
  */
-async function waitForPtyTextEcho({
+export async function waitForPtyTextEcho({
   read,
   text,
   timeoutMs = KICKOFF_MARKER_ECHO_TIMEOUT_MS,
   pollMs = KICKOFF_MARKER_ECHO_POLL_MS,
+  headLossGraceMs = KICKOFF_MARKER_ECHO_TIMEOUT_MS,
   shouldCancel = () => false,
   onPending = () => {},
 } = {}) {
@@ -584,15 +766,31 @@ async function waitForPtyTextEcho({
   let observedChars = 0;
   let markerTailSeen = false;
   let pendingReported = false;
+  let visible = '';
   while (true) {
     if (shouldCancel()) return { echoed: false, cancelled: true, elapsedMs: Date.now() - startedAt };
-    const visible = stripAnsi(String(read() ?? '')).replace(/[\r\n]/g, '');
+    visible = stripAnsi(String(read() ?? '')).replace(/[\r\n]/g, '');
     observedChars = Math.max(observedChars, visible.length);
     markerTailSeen ||= visible.includes(expected.slice(-12));
     if (visible.includes(expected)) {
       return { echoed: true, elapsedMs: Date.now() - startedAt, observedChars, markerTailSeen };
     }
+    // WI-10005331: a composer that word-wraps the marker at its only space renders
+    // every other byte in order; waiting cannot bring the break space back.
+    const markerWhitespaceLost = composerEchoMarkerWhitespaceLoss(expected, visible);
+    if (markerWhitespaceLost != null) {
+      return { echoed: true, markerWhitespaceLost, elapsedMs: Date.now() - startedAt, observedChars, markerTailSeen };
+    }
     const elapsedMs = Date.now() - startedAt;
+    // WI-10005331: the exact proof gets the first grace window. After it, a marker
+    // that lost only its head is this kickoff's own echo; waiting cannot complete it.
+    // The post-submit native proof already accepts the same loss (WI-10002745).
+    if (elapsedMs >= headLossGraceMs) {
+      const markerHeadLost = composerEchoMarkerHeadLoss(expected, visible);
+      if (markerHeadLost != null) {
+        return { echoed: true, markerHeadLost, elapsedMs, observedChars, markerTailSeen };
+      }
+    }
     if (!pendingReported && elapsedMs >= KICKOFF_MARKER_ECHO_TIMEOUT_MS) {
       pendingReported = true;
       onPending({ elapsedMs, observedChars, markerTailSeen });
@@ -601,7 +799,16 @@ async function waitForPtyTextEcho({
     if (remainingMs <= 0) break;
     await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(1, Number(pollMs) || 1), remainingMs)));
   }
-  return { echoed: false, reason: 'timeout', elapsedMs: Date.now() - startedAt, observedChars, markerTailSeen };
+  return {
+    echoed: false,
+    reason: 'timeout',
+    elapsedMs: Date.now() - startedAt,
+    observedChars,
+    markerTailSeen,
+    // Bounded evidence of WHICH bytes were missing: head loss, a dropped middle
+    // byte and a composer that never rendered the marker need different fixes.
+    visibleTail: visible.slice(-80),
+  };
 }
 
 /**
@@ -666,8 +873,28 @@ function nativeTranscriptRoot(agent, env, home) {
 // alphabet. `coord-inject:owner` is valid; a narrower host-only parser falsely
 // reports its native carry as missing provenance.
 const LEADING_TURN_ORIGIN_RE = /^⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧$/;
+
+/** WI-10005628: Claude Code stores a large bracketed paste in its native transcript
+ * as `\n\n<pasted_content id="3e9a">\n⟦turn-origin:…⟧\n…\n</pasted_content id="3e9a">\n`.
+ * Every scripted kickoff typed through the PTY arrives in that wrapper, so the
+ * first line is empty and the marker proof never matched: the host declared the
+ * kickoff unverified and killed a child that was already working (54 kills on
+ * 2026-10-02 from 16:00Z, freshly elected goal holders among them). Same grammar
+ * as the canonical PASTE_WRAPPER_SOURCE in
+ * packages/operator-core/lib/turn-provenance/envelope-grammar.ts (WI-10002461),
+ * pinned by envelope-grammar-cross-language.test.ts. WHOLE-PROMPT ONLY: words
+ * outside the paste leave the text unchanged. */
+const PASTE_WRAPPER_RE = /^\s*<pasted_content id="([A-Za-z0-9_-]{1,64})">\r?\n?([\s\S]*?)\r?\n?<\/pasted_content id="\1">\s*$/;
+
+/** The pasted text when `text` is entirely one Claude Code paste block; otherwise `text`. */
+export function unwrapWholePaste(text) {
+  const value = String(text ?? '');
+  const m = PASTE_WRAPPER_RE.exec(value);
+  return m ? m[2] : value;
+}
+
 export function leadingTurnOriginMarker(text) {
-  const firstLine = String(text ?? '').replace(/\r\n?/g, '\n').split('\n', 1)[0].trim();
+  const firstLine = unwrapWholePaste(text).replace(/\r\n?/g, '\n').split('\n', 1)[0].trim();
   return LEADING_TURN_ORIGIN_RE.test(firstLine)
     ? firstLine
     : null;
@@ -752,17 +979,126 @@ export function truncatedTurnOriginMarkerLoss(
   return null;
 }
 
-/** The smallest truncation of `marker` that starts any string in `row`
- * (walked to a bounded depth), or null. */
-function truncatedMarkerLossInRow(marker, row, depth = 0) {
-  if (typeof row === 'string') return truncatedTurnOriginMarkerLoss(marker, row);
-  if (!row || typeof row !== 'object' || depth > 8) return null;
-  let best = null;
-  for (const value of Array.isArray(row) ? row : Object.values(row)) {
-    const lost = truncatedMarkerLossInRow(marker, value, depth + 1);
-    if (lost != null && (best == null || lost < best)) best = lost;
+/** WI-10005331: the pre-submit composer echo loses leading marker bytes the same
+ * way the native transcript does (WI-10002745). Measured 2026-10-02: Codex resolver
+ * su-df88c37b echoed 49 of 50 marker characters with the tail visible, the exact
+ * proof could never match, and the host waited ~557s and then dropped the kickoff,
+ * so inbox-resolve run bulk-bf4040d6 failed with every item undecided.
+ *
+ * Returns how many leading characters of `marker` were lost when `visible` holds a
+ * proper suffix of it that keeps at least `minNonceChars` nonce characters and the
+ * closing bracket; otherwise null (including when the exact marker is present, which
+ * the exact proof owns). Unlike truncatedTurnOriginMarkerLoss the suffix may sit
+ * anywhere in `visible`: the echo tap holds only output written after this kickoff's
+ * own write, so its leading bytes are composer chrome rather than a transcript row
+ * that could quote another injection, and the nonce tail is this injection's own
+ * random value. The suffix must start the text or follow chrome: when the nearest
+ * preceding non-space character could belong to a marker, the echo is either another
+ * nonce that shares this tail or a marker that lost a MIDDLE byte (which the
+ * post-submit proof rejects), so it is refused. Pure and exported for tests. */
+export function composerEchoMarkerHeadLoss(
+  marker,
+  visible,
+  { minNonceChars = TRUNCATED_MARKER_MIN_NONCE_CHARS } = {},
+) {
+  const exact = String(marker ?? '');
+  if (!LEADING_TURN_ORIGIN_RE.test(exact)) return null;
+  const text = String(visible ?? '');
+  if (text.includes(exact)) return null;
+  const minSuffixLength = minNonceChars + 1; // nonce tail + closing bracket
+  for (let lost = 1; lost <= exact.length - minSuffixLength; lost++) {
+    const suffix = exact.slice(lost);
+    for (let at = text.indexOf(suffix); at !== -1; at = text.indexOf(suffix, at + 1)) {
+      const before = text.slice(0, at).trimEnd();
+      if (!before || !/[⟦⟧A-Za-z0-9:._@-]$/u.test(before)) return lost;
+    }
   }
-  return best;
+  return null;
+}
+
+/** WI-10005331: the composer word-wraps a long kickoff, and a wrap that lands on the
+ * marker's only space renders the two halves on separate rows with the break space
+ * omitted. The echo tap strips ANSI and row breaks, so the visible text holds every
+ * other marker byte in order. Measured 2026-10-02 15:11:07Z on a host already running
+ * the head-loss fix: visibleTail `⟦turn-origin:fleet-kickoffnonce:b413517be82f7380⟧`
+ * (49 of 50 characters, the space missing), and the kickoff was dropped after ~586s.
+ *
+ * Returns how many of `marker`'s whitespace characters are missing when `visible`
+ * holds the marker with only its whitespace changed (dropped, or padded to the row
+ * end, which counts 0 lost); otherwise null, including when the exact marker is
+ * present (the exact proof owns that case). Only turn-origin markers qualify: their
+ * random nonce keeps the whitespace-insensitive match specific to this injection.
+ * Any non-whitespace loss (a dropped head or middle byte) does not match. Pure and
+ * exported for tests. */
+export function composerEchoMarkerWhitespaceLoss(marker, visible) {
+  const exact = String(marker ?? '');
+  if (!LEADING_TURN_ORIGIN_RE.test(exact)) return null;
+  const text = String(visible ?? '');
+  if (text.includes(exact)) return null;
+  const pattern = exact
+    .split(/\s+/u)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('\\s*');
+  const match = new RegExp(pattern, 'u').exec(text);
+  if (!match) return null;
+  const whitespaceIn = (value) => (value.match(/\s/gu) ?? []).length;
+  return Math.max(0, whitespaceIn(exact) - whitespaceIn(match[0]));
+}
+
+/** Read the user-message content from Claude, Codex, or OMP native row shapes. */
+function nativeUserPromptContent(row) {
+  const payload = row?.payload && typeof row.payload === 'object' ? row.payload : null;
+  let content;
+  if (row?.type === 'user' && row?.message?.role === 'user') content = row.message.content;
+  else if (row?.type === 'response_item' && payload?.type === 'message' && payload?.role === 'user') {
+    content = payload.content;
+  } else if (row?.type === 'message' && row?.role === 'user') content = row.content;
+  else if (row?.message?.role === 'user') content = row.message.content;
+  else return null;
+  if (Array.isArray(content)) {
+    // Claude resume writes interrupted tool results as fresh user rows.
+    // Tool output must neither end the first-task scan nor certify a marker;
+    // genuine user text in a mixed row still owns that prompt's proof barrier.
+    const promptBlocks = content.filter((block) => block?.type !== 'tool_result');
+    return promptBlocks.length ? promptBlocks : null;
+  }
+  return content;
+}
+
+/** Flatten native user text blocks without reading metadata or assistant rows. */
+function nativeUserPromptText(content, depth = 0) {
+  if (typeof content === 'string') return content;
+  if (!content || typeof content !== 'object' || depth > 8) return '';
+  if (Array.isArray(content)) return content.map((part) => nativeUserPromptText(part, depth + 1)).join('');
+  if (typeof content.text === 'string') return content.text;
+  if (typeof content.content === 'string' || Array.isArray(content.content)) {
+    return nativeUserPromptText(content.content, depth + 1);
+  }
+  return '';
+}
+
+/** Codex stores its injected AGENTS.md launch context as a user row before the
+ * first task prompt. It is setup context, not a submitted task turn. */
+/** WI-10005628: Claude Code records a local slash command typed before the kickoff
+ * (the host's `/mcp` reconnect, `/clear`, …) as user rows ahead of the first task
+ * prompt: an `isMeta` `<local-command-caveat>` row, then `<command-name>/mcp…` and
+ * `<local-command-stdout>…`. They are not task turns. Treating the caveat as "the
+ * first fresh task prompt" ended the scan before the real kickoff row (measured
+ * su-fbcd9de3 20:11:08Z: the auditor was working 7s later and was still killed). */
+const CLAUDE_LOCAL_COMMAND_ROW_RE =
+  /^\s*<(?:local-command-caveat|command-name|command-message|command-args|local-command-stdout|local-command-stderr)>/;
+function isClaudeLocalCommandRow(row, text) {
+  return row?.isMeta === true || CLAUDE_LOCAL_COMMAND_ROW_RE.test(String(text ?? ''));
+}
+
+function isNativeLaunchContextPrompt(text, agent) {
+  const normalized = String(text ?? '').replace(/\r\n?/g, '\n').trim();
+  if (normalized.startsWith('# AGENTS.md instructions\n')) return true;
+  // WI-10006270: Codex resume writes a separate environment setup user row
+  // after AGENTS.md and before the kickoff. It must not end the first-task
+  // proof scan. Only a complete standalone block is setup; owner text around
+  // the tags, incomplete blocks, and other backends remain task prompts.
+  return agent === 'codex' && /^<environment_context>\n[\s\S]*\n<\/environment_context>$/.test(normalized);
 }
 
 /** The ONE native-transcript scan behind marker and exact-prompt proofs.
@@ -820,19 +1156,28 @@ function scanNativeTranscriptMarker({
         const st = statSync(path);
         if (st.size < (markerBytes?.length ?? 1) || st.size > 64 * 1024 * 1024) continue;
         const body = readFileSync(path, 'utf8');
+        let firstFreshTruncatedProof = null;
         for (const line of body.split(/\r?\n/)) {
-          if (needle && !line.includes(needle)) continue;
           let row;
           try { row = JSON.parse(line); }
           catch { continue; }
+          let userPromptText = null;
           if (expectedPrompt) {
             if (row?.type !== 'user' || row?.message?.role !== 'user' ||
-                typeof row?.message?.content !== 'string' ||
-                row.message.content.replace(/\r\n?/g, '\n').trimEnd() !== expectedPrompt) continue;
+                typeof row?.message?.content !== 'string') continue;
+            // WI-10005628: a long typed prompt lands wrapped in a paste block.
+            const nativePrompt = row.message.content.replace(/\r\n?/g, '\n').trimEnd();
+            if (nativePrompt !== expectedPrompt &&
+                unwrapWholePaste(nativePrompt).trimEnd() !== expectedPrompt) continue;
+          } else {
+            const userContent = nativeUserPromptContent(row);
+            if (userContent == null) continue;
+            userPromptText = nativeUserPromptText(userContent);
+            if (isNativeLaunchContextPrompt(userPromptText, agent)) continue;
+            if (isClaudeLocalCommandRow(row, userPromptText)) continue;
           }
-          const lostChars = expectedPrompt ? 0 : (allowTruncated ? truncatedMarkerLossInRow(marker, row) : 0);
-          if (lostChars == null) continue;
           const rawTimestamp = row?.timestamp ?? row?.time ?? row?.createdAt ?? row?.created_at;
+          let rowIsFresh = false;
           if (rawTimestamp != null) {
             let rowTimestampMs = typeof rawTimestamp === 'number'
               ? rawTimestamp
@@ -840,16 +1185,44 @@ function scanNativeTranscriptMarker({
             if (Number.isFinite(rowTimestampMs) && rowTimestampMs > 0 && rowTimestampMs < 10_000_000_000) {
               rowTimestampMs *= 1_000; // numeric Unix seconds
             }
-            if (Number.isFinite(rowTimestampMs) && rowTimestampMs >= sinceMs) return { nativeRef: path, lostChars };
+            if (Number.isFinite(rowTimestampMs) && rowTimestampMs > 0) rowIsFresh = rowTimestampMs >= sinceMs;
             // An explicitly old or malformed row must never fall back to the
             // file's mtime; a later metadata append cannot refresh its proof.
+            else continue;
+          } else {
+            // Legacy native rows without their own timestamp are usable only when
+            // the transcript itself was created after this injection began.
+            rowIsFresh = Number.isFinite(st.birthtimeMs) && st.birthtimeMs >= sinceMs;
+          }
+          if (!rowIsFresh) continue;
+          if (expectedPrompt) return { nativeRef: path, lostChars: 0 };
+
+          // The first fresh task prompt is the primary proof. If its marker lost
+          // its head but kept this injection's nonce, only the immediately
+          // following fresh user prompt may upgrade that degraded proof with
+          // the exact marker. Any other prompt closes that upgrade window, so a
+          // later unrelated user turn cannot certify this injection.
+          const promptMarker = leadingTurnOriginMarker(userPromptText);
+          // Managed session ports prove a checksum line in the submitted seed,
+          // distinct from its leading turn-origin marker. Keep this within the
+          // same first fresh user prompt and native-id fence; arbitrary text,
+          // inline quotations and later user/assistant echoes are not proof.
+          if (/^\[PAPERCUSP SESSION PORT CHECKSUM [a-f0-9]{64}\]$/.test(marker) &&
+              unwrapWholePaste(userPromptText).replace(/\r\n?/g, '\n')
+                .split('\n').some((line) => line.trim() === marker)) {
+            return { nativeRef: path, lostChars: 0 };
+          }
+          if (promptMarker === marker) return { nativeRef: path, lostChars: 0 };
+          const lostChars = truncatedTurnOriginMarkerLoss(marker, unwrapWholePaste(userPromptText));
+          if (lostChars != null) {
+            if (firstFreshTruncatedProof) return allowTruncated ? firstFreshTruncatedProof : null;
+            firstFreshTruncatedProof = { nativeRef: path, lostChars };
             continue;
           }
-          // Legacy native rows without their own timestamp are usable only when
-          // the transcript itself was created after this injection began. An
-          // existing transcript's mtime can move for unrelated row types.
-          if (Number.isFinite(st.birthtimeMs) && st.birthtimeMs >= sinceMs) return { nativeRef: path, lostChars };
+          if (firstFreshTruncatedProof) return allowTruncated ? firstFreshTruncatedProof : null;
+          break;
         }
+        if (allowTruncated && firstFreshTruncatedProof) return firstFreshTruncatedProof;
       } catch {
         /* a concurrently-rotated transcript is simply not proof yet */
       }
@@ -902,6 +1275,7 @@ const NATIVE_TURN_TAIL_BYTES = 256 * 1024;
 const NATIVE_ISOLATED_ROOT_ENV = Object.freeze({
   codex: 'CODEX_HOME',
   claude: 'CLAUDE_CONFIG_DIR',
+  omp: 'PI_CONFIG_DIR',
 });
 
 /**
@@ -986,6 +1360,23 @@ export function classifyClaudeTranscriptRow(row, { receivedAtMs, nowMs }) {
   return ok ? 'turn-completed' : 'turn-started';
 }
 
+/** OMP's tool-use stop is an intermediate message, not a turn boundary.
+ * @param {any} row
+ * @param {{receivedAtMs: number, nowMs: number}} ctx
+ * @returns {TurnRowVerdict}
+ */
+export function classifyOmpTranscriptRow(row, { receivedAtMs, nowMs }) {
+  const message = row?.message;
+  if (row?.type !== 'message') return 'ignore';
+  if (message?.role === 'user') return 'turn-started';
+  if (message?.role !== 'assistant' || typeof message.stopReason !== 'string') return 'ignore';
+  if (['tooluse', 'tool_use', 'tool_calls'].includes(message.stopReason.toLowerCase())) return 'ignore';
+  const at = Date.parse(row.timestamp);
+  const ok = Number.isFinite(at) && at >= receivedAtMs && at <= nowMs
+    && typeof row.id === 'string' && row.id.length > 0;
+  return ok ? 'turn-completed' : 'turn-started';
+}
+
 /**
  * The registered row classifiers, by agent. Absent ⇒ unsupported backend.
  *
@@ -1008,6 +1399,7 @@ export function classifyClaudeTranscriptRow(row, { receivedAtMs, nowMs }) {
 export const TURN_ROW_CLASSIFIERS = Object.freeze({
   codex: classifyCodexTranscriptRow,
   claude: classifyClaudeTranscriptRow,
+  omp: classifyOmpTranscriptRow,
 });
 
 /**
@@ -1030,73 +1422,309 @@ export function nativeTurnVerifierSupport(agent, env = process.env) {
   if (!agent || !TURN_ROW_CLASSIFIERS[agent] || !key) {
     return { supported: false, reason: 'no-classifier' };
   }
-  if (!env?.[key]) return { supported: false, reason: 'no-isolated-root' };
+  if (!env?.[key] && !(agent === 'omp' && env?.PI_CODING_AGENT_DIR)) {
+    return { supported: false, reason: 'no-isolated-root' };
+  }
+  if (agent === 'omp' && !env?.PI_CODING_AGENT_DIR && String(env?.PI_CONFIG_DIR) === '.omp') {
+    return { supported: false, reason: 'no-isolated-root' };
+  }
   return { supported: true, reason: null };
 }
 
-/** Read a bounded, complete tail from one transcript under the backend's
- * isolated root. This is shared by the turn-boundary and launch-activity
- * probes so neither can accidentally certify another live session. */
-function readIsolatedNativeTranscriptWindow({ agent, env = process.env, transcriptPath, home = homedir() }) {
-  if (!nativeTurnVerifierSupport(agent, env).supported || !transcriptPath) return null;
+/** Open one transcript under the backend's isolated root, behind the shared
+ * containment, symlink and regular-file guards. Both native readers below go
+ * through this, so neither can accidentally certify another live session.
+ * Returns an open fd the caller MUST close, or null. */
+function openIsolatedNativeTranscript({ agent, env = process.env, transcriptPath, home = homedir(), onFailure }) {
+  // Keep the binding that was actually measured alongside a refusal. These
+  // fields are diagnostic only: they never select a root or relax the gate.
+  const transcriptBinding = {
+    sourceTranscriptPath: typeof transcriptPath === 'string' ? transcriptPath.slice(0, 4096) : null,
+    configuredIsolatedRoot: null,
+    status: 'unverifiable',
+  };
+  const fail = (reason, evidence = {}) => {
+    onFailure?.({ reason, ...evidence, transcriptBinding: { ...transcriptBinding } });
+    return null;
+  };
+  const support = nativeTurnVerifierSupport(agent, env);
+  if (!support.supported) return fail(support.reason ?? 'native-verifier-unsupported');
+  if (!transcriptPath) return fail('missing-transcript-path');
   let fd;
   try {
     const rootDir = nativeTranscriptRoot(agent, env, home);
-    if (!rootDir) return null;
-    const root = realpathSync(rootDir);
-    const path = realpathSync(transcriptPath);
+    if (!rootDir) return fail('missing-isolated-root');
+    transcriptBinding.configuredIsolatedRoot = rootDir.slice(0, 4096);
+    let root;
+    try { root = realpathSync(rootDir); }
+    catch (error) { return fail('isolated-root-unavailable', { errorCode: error?.code ?? 'filesystem-error' }); }
+    let path;
+    try { path = realpathSync(transcriptPath); }
+    catch (error) { return fail('transcript-unavailable', { errorCode: error?.code ?? 'filesystem-error' }); }
     const rel = relative(root, path);
-    if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel) || !path.endsWith('.jsonl')) return null;
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const contained = Boolean(rel) && rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
+    transcriptBinding.status = contained ? 'contained' : 'outside';
+    if (!contained) return fail('transcript-outside-isolated-root');
+    if (!path.endsWith('.jsonl')) return fail('transcript-not-jsonl');
+    try { fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
+    catch (error) { return fail('transcript-open-failed', { errorCode: error?.code ?? 'filesystem-error' }); }
     const info = fstatSync(fd);
-    if (!info.isFile() || info.size === 0) return null;
+    if (!info.isFile() || info.size === 0) {
+      closeSync(fd);
+      fd = undefined;
+      return fail('transcript-not-regular-or-empty', { fileSize: info.size, regularFile: info.isFile() });
+    }
+    return { fd, info };
+  } catch (error) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* already closed */ }
+    }
+    return fail('transcript-inspection-failed', { errorCode: error?.code ?? 'filesystem-error' });
+  }
+}
+
+/** Read a bounded, complete TAIL from one isolated transcript. Used by the
+ * turn-boundary probe, which only needs the newest rows. */
+function readIsolatedNativeTranscriptWindow(options) {
+  const opened = openIsolatedNativeTranscript(options);
+  if (!opened) return null;
+  const { fd, info } = opened;
+  try {
     const length = Math.min(info.size, NATIVE_TURN_TAIL_BYTES);
     const bytes = Buffer.alloc(length);
     const read = readSync(fd, bytes, 0, length, info.size - length);
     let tailBytes = bytes.subarray(0, read);
     if (!tailBytes.length || tailBytes[tailBytes.length - 1] !== 0x0a) return null; // newest row is being written
-    let firstByteOffset = info.size - length;
     if (info.size > length) {
       const firstNewline = tailBytes.indexOf(0x0a);
       if (firstNewline < 0) return null; // the first complete row is outside the bounded window
       tailBytes = tailBytes.subarray(firstNewline + 1);
-      firstByteOffset += firstNewline + 1;
     }
     const rows = [];
     let cursor = 0;
     while (cursor < tailBytes.length) {
       const newline = tailBytes.indexOf(0x0a, cursor);
       if (newline < 0) return null;
-      const startOffset = firstByteOffset + cursor;
-      const endOffset = firstByteOffset + newline + 1;
       const line = tailBytes.subarray(cursor, newline).toString('utf8');
-      if (line.trim()) rows.push({ row: JSON.parse(line), startOffset, endOffset });
+      if (line.trim()) rows.push(JSON.parse(line));
       cursor = newline + 1;
     }
-    return {
-      rows,
-      firstCompleteRowOffset: rows[0]?.startOffset ?? null,
-      fileIdentity: `${info.dev}:${info.ino}`,
-      size: info.size,
-    };
+    return rows;
   } catch {
     return null;
   } finally {
-    if (fd !== undefined) closeSync(fd);
+    closeSync(fd);
   }
 }
 
-/** Read rows from the bounded native window without exposing its byte metadata. */
+/** Read parsed rows from the bounded native tail window. */
 function readIsolatedNativeTranscriptRows(options) {
-  const window = readIsolatedNativeTranscriptWindow(options);
-  return window ? window.rows.map(({ row }) => row) : null;
+  return readIsolatedNativeTranscriptWindow(options);
+}
+
+/** WI-10007526: a carry snapshot cannot replace a native owner turn accepted
+ * while that carry was being prepared. Use the existing isolated, exact-file
+ * reader; a PTY input epoch alone misses input already submitted before recycle.
+ * This is a preservation guard, not an owner-provenance or authorization stamp.
+ */
+export function carryNativeOwnerInputFreshness({
+  agent, env = process.env, transcriptPath, systemPromptAddendum, home = homedir(),
+}) {
+  const builtAt = /Carry document built at (\d{4}-\d\d-\d\dT[^\s]+Z)/.exec(String(systemPromptAddendum ?? ''))?.[1];
+  if (!builtAt) return { status: 'not-applicable', reason: 'no-snapshot-clock' };
+  const snapshotAtMs = Date.parse(builtAt);
+  if (!Number.isFinite(snapshotAtMs)) return { status: 'unverifiable', reason: 'invalid-snapshot-clock' };
+  let scanOpenFailure = null;
+  const scan = readIsolatedNativeTranscriptForward({
+    agent,
+    env,
+    transcriptPath,
+    home,
+    onFailure: (evidence) => { scanOpenFailure = evidence; },
+  });
+  // A partial row or scan ceiling is unknown, never proof of no later input.
+  if (!scan || scan.nextOffset !== scan.size) {
+    return {
+      status: 'unverifiable',
+      reason: 'native-input-read-incomplete',
+      snapshotAtMs,
+      scan: scan
+        ? {
+            reason: scan.scanFailure ?? 'scan-incomplete',
+            size: scan.size,
+            nextOffset: scan.nextOffset,
+            bytesRead: scan.bytesRead,
+            requestedBytes: scan.requestedBytes,
+          }
+        : scanOpenFailure ?? { reason: 'native-transcript-unavailable' },
+    };
+  }
+  let latestOwnerInputAtMs = null;
+  try {
+    for (const { text } of scan.lines) {
+      if (!/"role"\s*:\s*"user"/.test(text)) continue;
+      const row = JSON.parse(text);
+      const content = nativeUserPromptContent(row);
+      if (content == null) continue;
+      const prompt = nativeUserPromptText(content);
+      if (!prompt.trim() || isNativeLaunchContextPrompt(prompt, agent) ||
+          isClaudeLocalCommandRow(row, prompt) || leadingTurnOriginMarker(prompt)) continue;
+      const atMs = Date.parse(row.timestamp);
+      if (!Number.isFinite(atMs)) return { status: 'unverifiable', reason: 'native-input-clock-missing', snapshotAtMs };
+      if (atMs > snapshotAtMs) latestOwnerInputAtMs = Math.max(latestOwnerInputAtMs ?? 0, atMs);
+    }
+  } catch {
+    return { status: 'unverifiable', reason: 'native-input-read-invalid', snapshotAtMs };
+  }
+  return latestOwnerInputAtMs == null
+    ? { status: 'current', snapshotAtMs }
+    : { status: 'superseded', reason: 'owner-input-after-carry-snapshot', snapshotAtMs, latestOwnerInputAtMs };
+}
+
+/** WI-10004982: how far one launch-activity probe call reads FORWARD. It
+ * matches the 64 MiB cap of the marker proof scan, so any transcript whose
+ * marker the proof could find is one this probe can also read from the start. */
+export const NATIVE_KICKOFF_SCAN_BYTES = 64 * 1024 * 1024;
+
+/** Read COMPLETE rows FORWARD from a row boundary of one isolated transcript.
+ * `fromOffset` must be 0 or the end offset of an earlier complete row; the
+ * byte before it is checked to be a newline, so a stale or wrong offset is
+ * refused rather than parsed mid-row. A trailing row still being written is
+ * left out (it is not evidence yet) and `nextOffset` stops before it. Lines
+ * are returned unparsed so a caller can prefilter cheaply. */
+export function readIsolatedNativeTranscriptForward({
+  agent,
+  env = process.env,
+  transcriptPath,
+  home = homedir(),
+  fromOffset = 0,
+  maxBytes = NATIVE_KICKOFF_SCAN_BYTES,
+  readSyncFn = readSync,
+  onFailure,
+}) {
+  const fail = (reason, evidence = {}) => {
+    onFailure?.({ reason, ...evidence });
+    return null;
+  };
+  if (!Number.isSafeInteger(fromOffset) || fromOffset < 0 || !(maxBytes > 0)) return fail('invalid-scan-configuration');
+  const opened = openIsolatedNativeTranscript({ agent, env, transcriptPath, home, onFailure });
+  if (!opened) return null;
+  const { fd, info } = opened;
+  try {
+    if (fromOffset > info.size) return fail('transcript-shrank-under-anchor', { fileSize: info.size });
+    const lead = fromOffset > 0 ? 1 : 0;
+    const start = fromOffset - lead;
+    const length = Math.min(info.size - start, maxBytes + lead);
+    const bytes = Buffer.alloc(length);
+    // A synchronous read may legally return fewer bytes than requested. Complete
+    // the fstat-sized snapshot with positioned reads; a shrinking file still
+    // fails closed after the bounded reads stop making progress.
+    let bytesRead = 0;
+    while (bytesRead < length) {
+      const count = readSyncFn(fd, bytes, bytesRead, length - bytesRead, start + bytesRead);
+      if (!Number.isSafeInteger(count) || count <= 0) break;
+      bytesRead += count;
+    }
+    const view = bytes.subarray(0, bytesRead);
+    if (lead && view[0] !== 0x0a) return fail('transcript-anchor-not-row-boundary', { fileSize: info.size });
+    const lines = [];
+    let cursor = lead;
+    let endedOnNewline = true;
+    while (cursor < view.length) {
+      const newline = view.indexOf(0x0a, cursor);
+      if (newline < 0) {
+        endedOnNewline = false;
+        break; // still being written, or past the bound
+      }
+      const text = view.subarray(cursor, newline).toString('utf8');
+      if (text.trim()) lines.push({ text, startOffset: start + cursor, endOffset: start + newline + 1 });
+      cursor = newline + 1;
+    }
+    const nextOffset = start + cursor;
+    let scanFailure = null;
+    if (nextOffset !== info.size) {
+      scanFailure = info.size > start + length
+        ? 'scan-limit'
+        : bytesRead < length
+          ? 'short-read'
+          : endedOnNewline
+            ? 'scan-incomplete'
+            : 'unterminated-row';
+    }
+    return { lines, fileIdentity: `${info.dev}:${info.ino}`, size: info.size, nextOffset, bytesRead, requestedBytes: length, scanFailure };
+  } catch (error) {
+    return fail('transcript-read-failed', { errorCode: error?.code ?? 'filesystem-error' });
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Is this native row the kickoff PROMPT itself?
+ *
+ * WI-10004982: for claude this must be the real `type:'user'` prompt row.
+ * Claude also copies the prompt into other rows: `last-prompt` bookkeeping
+ * rows (measured on transcript 98404f60: rows 14, 21 and 34, written before
+ * AND after the reply) and a `queue-operation` row when the prompt is queued
+ * behind a running turn. Binding to a queued copy would count the PREVIOUS
+ * turn's assistant row as this kickoff's activity. Codex keeps the original
+ * any-row match, because no codex copy written after the turn is measured. */
+export function kickoffMarkerPromptRow(agent, row, markerText) {
+  if (!markerText) return false;
+  if (agent === 'omp') {
+    return row?.type === 'message' && row?.message?.role === 'user'
+      && nativeUserPromptText(row.message.content).includes(markerText);
+  }
+  if (agent === 'claude') {
+    if (row?.type !== 'user' || row.isMeta) return false;
+    const content = row.message?.content;
+    if (typeof content === 'string') return content.includes(markerText);
+    if (!Array.isArray(content) || content.some((block) => block?.type === 'tool_result')) return false;
+    return content.some((block) => typeof block?.text === 'string' && block.text.includes(markerText));
+  }
+  try { return JSON.stringify(row).includes(markerText); }
+  catch { return false; }
+}
+
+/** Does this native row prove the model started working? */
+function kickoffModelActivityRow(agent, row) {
+  if (agent === 'codex') {
+    if (row?.type === 'event_msg' &&
+      ['task_started', 'task_complete', 'turn_completed'].includes(row.payload?.type)) {
+      return true;
+    }
+    return row?.type === 'response_item' && row.payload?.type === 'message' && row.payload?.role === 'assistant';
+  }
+  if (agent === 'omp') return row?.type === 'message' && row?.message?.role === 'assistant';
+  return row?.type === 'assistant';
 }
 
 /** A plain launch's marker proves submission. A native task-start or assistant
  * row AFTER that exact marker proves model activity, including a short turn
  * that completed before the marker scan returned. PTY output is not used as
- * execution proof when this isolated transcript is available. */
-function nativeKickoffTurnActivityAfterMarker({
+ * execution proof when this isolated transcript is available.
+ *
+ * WI-10004982: this reads FORWARD from the prompt row. It used to read only
+ * the last 256 KiB, but a fresh Claude session writes rows far larger than
+ * that right after the reply (measured: `instructions` 276 KB, then
+ * `prompt_snapshot` rows of 168 KB and 258 KB). The window then started PAST
+ * the reply, bound to a later `last-prompt` copy of the marker, saw no
+ * assistant row, and the host re-sent the kickoff 40 s later as a duplicate
+ * turn. Now the first call scans from the file start to the first real prompt
+ * row and records it in `anchor`. Later calls re-check that exact row, then read
+ * only the bytes not yet scanned (`anchor.scannedEndOffset`), so the cost stays
+ * flat as the transcript grows.
+ *
+ * A `started:true` answer does not advance the cursor, so repeated calls keep
+ * answering true. Every unreadable or inconsistent case returns
+ * `available:false`, which keeps the existing retry path.
+ *
+ * @typedef {{fileIdentity: string | null, markerStartOffset: number | null,
+ *   markerEndOffset: number | null, scannedEndOffset: number | null}} KickoffMarkerAnchor
+ * @param {{agent?: string, env?: EnvironmentMap, transcriptPath?: string | null,
+ *   marker?: string | null, markerLostChars?: number, anchor?: KickoffMarkerAnchor | null,
+ *   home?: string, maxScanBytes?: number}} options
+ * @returns {{available: boolean, started: boolean}} */
+export function nativeKickoffTurnActivityAfterMarker({
   agent,
   env = process.env,
   transcriptPath,
@@ -1104,61 +1732,73 @@ function nativeKickoffTurnActivityAfterMarker({
   markerLostChars = 0,
   anchor = null,
   home = homedir(),
+  maxScanBytes = NATIVE_KICKOFF_SCAN_BYTES,
 }) {
-  if (!['codex', 'claude'].includes(agent) || !marker) return { available: false, started: false };
-  const window = readIsolatedNativeTranscriptWindow({ agent, env, transcriptPath, home });
-  if (!window) return { available: false, started: false };
+  const unavailable = { available: false, started: false };
+  if (!['codex', 'claude', 'omp'].includes(agent) || !marker) return unavailable;
   const markerText = markerLostChars > 0 ? marker.slice(markerLostChars) : marker;
-  const rowsAfter = (entries) => {
-    for (const { row } of entries) {
-      if (agent === 'codex') {
-        if (row?.type === 'event_msg' &&
-          ['task_started', 'task_complete', 'turn_completed'].includes(row.payload?.type)) {
-          return true;
-        }
-        if (row?.type === 'response_item' && row.payload?.type === 'message' && row.payload?.role === 'assistant') {
-          return true;
-        }
-      } else if (row?.type === 'assistant') {
-        return true;
+  // The nonce tail is ASCII, so it prefilters raw lines no matter how the
+  // backend escaped the brackets; the parsed row is then checked exactly.
+  const prefilter = /([0-9a-f]{8,})⟧$/i.exec(markerText)?.[1] ?? markerText;
+  const readOptions = { agent, env, transcriptPath, home };
+  try {
+    if (anchor?.fileIdentity) {
+      const { markerStartOffset, markerEndOffset } = anchor;
+      if (!Number.isSafeInteger(markerStartOffset) || !Number.isSafeInteger(markerEndOffset) ||
+          markerEndOffset <= markerStartOffset) {
+        return unavailable;
       }
+      // Refuse unless the same file still holds the same prompt row.
+      const head = readIsolatedNativeTranscriptForward({
+        ...readOptions, fromOffset: markerStartOffset, maxBytes: markerEndOffset - markerStartOffset,
+      });
+      if (!head || head.fileIdentity !== anchor.fileIdentity || head.lines.length !== 1 ||
+          head.lines[0].endOffset !== markerEndOffset ||
+          !kickoffMarkerPromptRow(agent, JSON.parse(head.lines[0].text), markerText)) {
+        return unavailable;
+      }
+      const from = Math.max(markerEndOffset, Number.isSafeInteger(anchor.scannedEndOffset) ? anchor.scannedEndOffset : 0);
+      const rest = readIsolatedNativeTranscriptForward({ ...readOptions, fromOffset: from, maxBytes: maxScanBytes });
+      if (!rest || rest.fileIdentity !== anchor.fileIdentity) return unavailable;
+      for (const line of rest.lines) {
+        const row = JSON.parse(line.text);
+        const userContent = nativeUserPromptContent(row);
+        if (userContent != null && !row.isMeta && !isNativeLaunchContextPrompt(nativeUserPromptText(userContent), agent)) {
+          return unavailable;
+        }
+        if (kickoffModelActivityRow(agent, row)) return { available: true, started: true };
+      }
+      anchor.scannedEndOffset = rest.nextOffset;
+      return { available: true, started: false };
     }
-    return false;
-  };
 
-  if (anchor?.fileIdentity) {
-    const markerEndOffset = anchor.markerEndOffset;
-    if (window.fileIdentity !== anchor.fileIdentity || !Number.isFinite(markerEndOffset) || window.size < markerEndOffset) {
-      return { available: false, started: false };
-    }
-    // Every complete row in this tail is after the proven marker row. Keep the
-    // bounded read, but no longer require the old marker itself to be present.
-    if (window.firstCompleteRowOffset != null && window.firstCompleteRowOffset >= markerEndOffset) {
-      return { available: true, started: rowsAfter(window.rows) };
-    }
-    // The window still overlaps the marker row; re-anchor there before using
-    // any later activity, and refuse if the file no longer contains that row.
-    const markerIndex = window.rows.findIndex(({ row, endOffset }) => {
-      if (endOffset !== markerEndOffset) return false;
-      try { return JSON.stringify(row).includes(markerText); }
-      catch { return false; }
-    });
-    if (markerIndex < 0) return { available: false, started: false };
-    return { available: true, started: rowsAfter(window.rows.slice(markerIndex + 1)) };
-  }
-
-  for (let index = 0; index < window.rows.length; index += 1) {
-    let serialized;
-    try { serialized = JSON.stringify(window.rows[index].row); }
-    catch { return { available: false, started: false }; }
-    if (!serialized.includes(markerText)) continue;
+    const scan = readIsolatedNativeTranscriptForward({ ...readOptions, fromOffset: 0, maxBytes: maxScanBytes });
+    if (!scan) return unavailable;
+    const markerIndex = scan.lines.findIndex(({ text }) =>
+      text.includes(prefilter) && kickoffMarkerPromptRow(agent, JSON.parse(text), markerText));
+    if (markerIndex < 0) return unavailable;
+    const markerLine = scan.lines[markerIndex];
     if (anchor) {
-      anchor.fileIdentity = window.fileIdentity;
-      anchor.markerEndOffset = window.rows[index].endOffset;
+      anchor.fileIdentity = scan.fileIdentity;
+      anchor.markerStartOffset = markerLine.startOffset;
+      anchor.markerEndOffset = markerLine.endOffset;
+      anchor.scannedEndOffset = null;
     }
-    return { available: true, started: rowsAfter(window.rows.slice(index + 1)) };
+    for (const line of scan.lines.slice(markerIndex + 1)) {
+      const row = JSON.parse(line.text);
+      const userContent = nativeUserPromptContent(row);
+      if (userContent != null && !row.isMeta && !isNativeLaunchContextPrompt(nativeUserPromptText(userContent), agent)) {
+        // Another owner/model turn cannot certify the accepted marker's turn.
+        return unavailable;
+      }
+      if (kickoffModelActivityRow(agent, row)) return { available: true, started: true };
+    }
+    if (anchor) anchor.scannedEndOffset = scan.nextOffset;
+    return { available: true, started: false };
+  } catch {
+    // A malformed complete row is not evidence either way.
+    return unavailable;
   }
-  return { available: false, started: false };
 }
 
 /** A queued kickoff retry may wait behind the original turn. At the final
@@ -1198,6 +1838,146 @@ export function nativeTurnCompletedInTranscript({
     else if (verdict === 'turn-started') completed = false;
   }
   return completed;
+}
+
+/** Normalized execution evidence, independent of provider error wording.
+ * Tool calls remain active until their matching result; PTY repaint is not progress.
+ * @param {any[]} rows
+ * @param {{agent: string, receivedAtMs?: number, nowMs?: number}} options
+ */
+export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs = Date.now() }) {
+  const classify = TURN_ROW_CLASSIFIERS[agent];
+  let phase = 'unknown';
+  let turnStartedAt = null;
+  let lastProgressAt = null;
+  const pendingTools = new Set();
+  if (!classify || !Number.isFinite(receivedAtMs)) return { phase, turnStartedAt, lastProgressAt, pendingTools: 0 };
+  for (const row of rows) {
+    const at = Date.parse(row?.timestamp);
+    if (!Number.isFinite(at) || at < receivedAtMs || at > nowMs) continue;
+    const verdict = classify(row, { receivedAtMs, nowMs });
+    const message = row?.message;
+    const failed = agent === 'codex'
+      ? row?.type === 'event_msg' && ['turn_aborted', 'turn_failed', 'task_failed'].includes(row.payload?.type)
+      : agent === 'claude'
+        ? row?.isApiErrorMessage === true || row?.type === 'system' && row?.subtype === 'api_error'
+        : row?.type === 'message' && message?.role === 'assistant'
+          && ['error', 'aborted'].includes(String(message.stopReason).toLowerCase());
+    if (failed || verdict === 'turn-completed') {
+      phase = failed ? 'failed' : 'settled';
+      // An aborted model does not prove its external tool effects stopped.
+      // Keep unmatched calls visible until their results arrive.
+      if (!failed) pendingTools.clear();
+      lastProgressAt = at;
+      continue;
+    }
+    if (verdict === 'turn-started') {
+      // Claude/OMP user rows prove acceptance, not model execution. Their
+      // first assistant/tool record supplies positive work evidence; gateway
+      // operation leases cover silent reasoning before that record lands.
+      phase = agent === 'codex' ? 'running' : 'unknown';
+      turnStartedAt = agent === 'codex' ? at : null;
+      pendingTools.clear();
+      lastProgressAt = at;
+    }
+    if (agent === 'codex' && row?.type === 'response_item' && phase === 'unknown') {
+      // A bounded transcript tail may evict task_started while retaining
+      // response_item rows. They prove native work began, but not its exact
+      // start time, so keep the phase positive without inventing a timestamp.
+      phase = 'running';
+    }
+    if ((agent === 'claude' || agent === 'omp') && message?.role === 'assistant') {
+      phase = 'running';
+      turnStartedAt ??= at;
+    }
+    const payload = row?.payload;
+    if (agent === 'codex' && row?.type === 'response_item') {
+      if (['function_call', 'custom_tool_call'].includes(payload?.type) && payload?.call_id) pendingTools.add(payload.call_id);
+      if (['function_call_output', 'custom_tool_call_output'].includes(payload?.type) && payload?.call_id) pendingTools.delete(payload.call_id);
+      if (phase === 'running') lastProgressAt = at;
+    } else if ((agent === 'claude' || agent === 'omp') && Array.isArray(message?.content)) {
+      for (const block of message.content) {
+        if (['tool_use', 'toolCall'].includes(block?.type) && block?.id) pendingTools.add(block.id);
+        if (block?.type === 'tool_result' && block?.tool_use_id) pendingTools.delete(block.tool_use_id);
+      }
+      if (message.role === 'toolResult' && message.toolCallId) pendingTools.delete(message.toolCallId);
+      if (phase === 'running') lastProgressAt = at;
+    }
+  }
+  return { phase, turnStartedAt, lastProgressAt, pendingTools: pendingTools.size };
+}
+
+/**
+ * Preserve a verified running turn when a bounded transcript tail no longer
+ * contains its start row. The caller must scope `previous` to the same child
+ * generation and submission floor; terminal observations always win. This is
+ * deliberately one-way: missing or unreadable evidence cannot create a
+ * running verdict, but it also cannot erase positive evidence already seen for
+ * the current turn.
+ * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}|null} previous
+ * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}} current
+ */
+export function retainRunningNativeExecution(previous, current) {
+  if (previous?.phase !== 'running' || current.phase !== 'unknown') return current;
+  return {
+    ...current,
+    phase: 'running',
+    turnStartedAt: previous.turnStartedAt,
+    lastProgressAt: current.lastProgressAt ?? previous.lastProgressAt,
+  };
+}
+
+/** Read only this child's isolated current transcript. Missing/partial proof is unknown.
+ * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number}} options
+ */
+export function nativeLatestExecution({ agent, env = process.env, receivedAtMs = 0, nowMs = Date.now() }) {
+  const transcriptPath = newestNativeTranscriptPath(agent, env);
+  const rows = transcriptPath && readIsolatedNativeTranscriptRows({ agent, env, transcriptPath });
+  return {
+    ...(rows ? nativeExecutionFromRows(rows, { agent, receivedAtMs, nowMs })
+      : { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 }),
+    observedAt: nowMs,
+  };
+}
+
+/** Positive native work always vetoes a quiet-PTY inject. Unknown evidence
+ * retains the existing bounded prompt gate; it is never certified as idle.
+ * @param {{phase?: string, pendingTools?: number} | null | undefined} execution
+ */
+export function nativeExecutionBlocksInjection(execution) {
+  return execution?.phase === 'running' || Number(execution?.pendingTools) > 0;
+}
+
+/** A native prompt row proves acceptance only. Reuse the anchored forward
+ * reader to require actual model activity, and fence every poll to its child.
+ * @param {{probe: () => {available: boolean, started: boolean}, isCurrent: () => boolean,
+ *   timeoutMs?: number, pollMs?: number}} options
+ */
+export async function waitForNativeTurnStart({ probe, isCurrent, timeoutMs = 10_000, pollMs = 50 }) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    if (!isCurrent()) return { started: false, reason: 'superseded-child' };
+    if (probe().started && isCurrent()) return { started: true, reason: 'native-turn-started' };
+    if (Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))));
+  } while (true);
+  return { started: false, reason: 'native-turn-start-unverified' };
+}
+
+/** Observe the exact current child's writer, never the launch argv or a cached
+ * predecessor. Missing evidence is unknown, including while the child is parked.
+ * @param {number|null|undefined} childPid
+ * @param {((pid:number)=>string|null)|null|undefined} resolveNativeId
+ * @returns {string|null}
+ */
+export function currentNativeSessionId(childPid, resolveNativeId) {
+  if (!Number.isSafeInteger(childPid) || childPid <= 0 || !resolveNativeId) return null;
+  try {
+    const id = resolveNativeId(childPid);
+    return typeof id === 'string' ? id.trim() || null : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Return the newest regular native transcript beneath this session's ISOLATED
@@ -1547,6 +2327,30 @@ export function carryTurnProofRequiresNativeId(agent) {
   return String(agent ?? '').trim().toLowerCase() !== 'codex';
 }
 
+/** WI-6554700010009740: does the native turn-start proof, not the generic
+ * submit verifier, own this carry's delivery verdict? Since c727419b0a the
+ * verifier requires native confirmation for a tagged turn and reports
+ * `submit-verification-exhausted` when the exact row has not persisted by its
+ * deadline. A production carry already runs the stronger proof
+ * (verifyNativeTurnStartWithRetry: one CR, then a fresh epoch), so treating
+ * that exhaustion as a terminal drop skipped the EI-21561923024113260 retries.
+ * Only the exhaustion of a submitted, native-verifiable, non-drill carry
+ * defers; human input, quota and every other reason keep their verdict. Pure.
+ * @param {object} [opts]
+ * @param {string} [opts.drillId]
+ * @param {boolean} [opts.delivered]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.nativeSubmitted] the tagged carry's CR reached this child
+ */
+export function carryExhaustionDefersToNativeProof({
+  drillId = '',
+  delivered = false,
+  reason = '',
+  nativeSubmitted = false,
+} = {}) {
+  return !drillId && !delivered && nativeSubmitted && reason === 'submit-verification-exhausted';
+}
+
 /** Is a carry failure safe to retry on a freshly minted child? Only transient
  * fresh-child failures qualify. Missing provenance/native-id is deterministic,
  * owner input must never be overwritten, and drills remain one-shot.
@@ -1556,6 +2360,7 @@ export function carryTurnProofRequiresNativeId(agent) {
  * @param {string|null} [opts.proofReason]
  * @param {number} [opts.retryCount]
  * @param {number} [opts.maxRetries]
+ * @param {boolean} [opts.unboundPastWindow] the failed child outlived its id window
  */
 export function shouldRetryCarryOnFreshEpoch({
   drillId = '',
@@ -1563,13 +2368,81 @@ export function shouldRetryCarryOnFreshEpoch({
   proofReason = null,
   retryCount = 0,
   maxRetries = 1,
+  unboundPastWindow = false,
 } = {}) {
   if (drillId || retryCount >= maxRetries) return false;
   if (reason === 'never-settled' ||
       reason === 'no-startup-ready-marker' ||
-      reason === 'no-startup-ready-marker-last-resort-failed') return true;
+      reason === 'no-startup-ready-marker-last-resort-failed' ||
+      // A restart can outlast both bounded /mcp attempts on this child. The
+      // fresh epoch reuses the same shared verifier rather than adding a loop.
+      reason === 'carry-mcp-unavailable' ||
+      // WI-10005106: a Codex child stuck at its `Starting` footer is a per-child
+      // state; a fresh child usually boots in seconds.
+      reason === 'codex-startup-still-starting' ||
+      // P-005 (D-003): the exact child never exposed its native id within its
+      // spawn-anchored window (healthy p99 5.6s). That is a per-child startup
+      // wedge (the update menu was the measured one), not a deterministic
+      // contract failure: a fresh child mints its own id. A shorter CALLER
+      // deadline yields the same reason on a young child that may still bind
+      // (EI-25344556501316035), so only a child past its window is replaced.
+      (reason === 'successor-native-id-missing' && unboundPastWindow)) return true;
   return reason === 'turn-start-unverified' &&
     (proofReason === 'native-turn-marker-timeout' || proofReason === 'native-turn-prompt-timeout');
+}
+
+/** P-005 / D-003: how long a Codex child may run before its native id must be
+ *  discoverable through the exact-child writer-lock oracle. The window is
+ *  anchored to the child's SPAWN, not to each caller's deadline: pre-fix every
+ *  wake turn waited a fresh 600s carry budget on a child that could never bind,
+ *  so one wedged child held the inject mutex for 45 min while its sender retried
+ *  the same delivery as `pending-delivery-id` every 2s. Measured basis (103
+ *  confirmed carry bindings since 2026-10-07): the lock appears p50 1.1s, p90
+ *  2.8s, p99 5.6s after respawn, so 120s is ~20x the p99. Only id DISCOVERY is
+ *  bounded by this; the operator re-anchor report (p99 545s) keeps its budget. */
+export const UNBOUND_CHILD_WINDOW_MS = 120_000;
+
+/** @param {Record<string, string | undefined>} [env] */
+export function unboundChildWindowMs(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_UNBOUND_CHILD_WINDOW_MS, UNBOUND_CHILD_WINDOW_MS);
+}
+
+/** P-005(c): is the CURRENT child provably unable to bind? True only when this
+ *  child owes a binding, has outlived its spawn-anchored window, and a fresh
+ *  probe of the exact-child oracle still finds no native id. The probe makes it
+ *  self-healing: a child whose id appears later (an owner dismissed a menu)
+ *  stops being refused on the next delivery. Pure; exported for tests.
+ * @param {{bindingOwed?: boolean, childStartedAtMs?: number, nowMs?: number,
+ *   windowMs?: number, probedNativeId?: string | null}} [opts] */
+export function isUnbindableChild({
+  bindingOwed = false,
+  childStartedAtMs = 0,
+  nowMs = Date.now(),
+  windowMs = UNBOUND_CHILD_WINDOW_MS,
+  probedNativeId = null,
+} = {}) {
+  if (!bindingOwed || !(childStartedAtMs > 0)) return false;
+  return nowMs - childStartedAtMs >= windowMs && !probedNativeId;
+}
+
+/** P-005(c) / D-007 (d): how the host answers a delivery id it has already
+ *  accepted. A `pending` turn/reset retry to a child that is NOW unbindable is
+ *  refused as `deferred-successor-unbindable`, exactly like a first delivery: the
+ *  accepted copy can sit on the busy gate or the carry re-arm long after the child
+ *  crossed its window, and answering `pending-delivery-id` let the sender re-poll
+ *  it forever (measured 2026-10-10: zero refusals on 33 wedged hosts, all of them
+ *  re-polling pending). Completed and cancelled retries keep their idempotent
+ *  answer, and the refusal does not cancel the accepted copy: if the child binds
+ *  later and it writes, the dedup turns the sender's next retry into a duplicate.
+ *  `unbindable` is called only when it can change the answer (it probes). Pure.
+ * @param {{duplicateState?: string | null, mode?: string, unbindable: () => boolean}} input
+ * @returns {'not-duplicate' | 'refuse-unbindable' | 'short-circuit'} */
+export function duplicateDeliveryVerdict({ duplicateState, mode, unbindable }) {
+  if (!duplicateState) return 'not-duplicate';
+  if (duplicateState === 'pending' && (mode === 'turn' || mode === 'reset') && unbindable()) {
+    return 'refuse-unbindable';
+  }
+  return 'short-circuit';
 }
 
 /** After writing an injected TURN's text, the host sends the submit Enter (CR)
@@ -1663,15 +2536,12 @@ const TURN_INJECT_BUSY_CAP_MS = Number(process.env.PAPERCUSP_PSU_PTY_BUSY_CAP_MS
  *  prompt. Too short and the carry text lands in the clearing/animating TUI;
  *  the clear itself is fast, so this is a repaint budget, not a compute one. */
 const CLEAR_SETTLE_MS = Number(process.env.PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS) || 1_500;
-/** How long a RECYCLE waits for the killed child to actually exit before it
- *  spawns the fresh one, so we never double-spawn into a still-dying pty
- *  (su-cold-auto-mode P-004b). Fail-safe: on cap we spawn anyway (the old pid is
- *  being torn down regardless). */
+/** How long RECYCLE allows a graceful exit before escalating to SIGKILL.
+ *  A signal request never authorizes spawning a successor; the predecessor's
+ *  exit notification remains the lifetime fence (su-cold-auto-mode P-004b). */
 const RECYCLE_KILL_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_KILL_MS) || 5_000;
-/** After the graceful recycle signal's cap, give the forced process-tree kill a
- * short bounded hand-off window to report the pty child exit before spawning its
- * successor. SIGKILL itself is the lifetime fence; this wait only lets node-pty
- * reap the leader cleanly when it can. */
+/** Diagnostic window after a hard kill. A late exit is reported as pending,
+ *  then awaited; expiry must never create a second child under the same SID. */
 const RECYCLE_FORCE_KILL_WAIT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_FORCE_KILL_WAIT_MS) || 1_000;
 
 /**
@@ -1699,10 +2569,212 @@ const RECYCLE_CARRY_INJECT_BUDGET_MS =
  *  requeue when an attempt defers fast. */
 const RECYCLE_CARRY_RETRY_BACKOFF_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS) || 3_000;
-/** Native transcript proof can lag a freshly painted TUI even after the
- *  verifier's raw-CR retry. Give the carry one fresh child epoch to retry the
- *  whole submission before recording a terminal drop. This is intentionally
- *  bounded: a persistent backend/transcript failure must remain loud. */
+/** WI-10004943 (d): hard ceiling on how long a fresh Codex LAUNCH KICKOFF is held
+ *  past its ordinary budget while the Codex footer positively reads `Starting`.
+ *  The footer means the TUI is alive and its composer is still unavailable (MCP
+ *  servers booting), so dropping the kickoff at the 600s budget threw the session's
+ *  first turn away and left it idle at its prompt. Measured in production: the
+ *  footer read `Starting` for 10-20 minutes before the session frame appeared.
+ *  30 minutes covers that with margin. Measured from the start of the kickoff
+ *  attempt, not from the end of the ordinary budget. Env-overridable. */
+const CODEX_STARTING_KICKOFF_HOLD_CEILING_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS) || 1_800_000;
+/** WI-10005106: how long a recycle CARRY child may sit at the Codex `Starting`
+ *  footer before the host stops waiting on it and retries the carry on a fresh
+ *  child epoch (only while such a retry remains; the last attempt holds like a
+ *  launch kickoff instead). Measured 2026-10-01 from ~/.papercusp/psu-pty event
+ *  logs: over 3,368 Codex boots, footer-to-frame was p50 3s, p99 296s; of the 41
+ *  boots slower than 120s, 28 were slower than 600s, so a child that is still
+ *  `Starting` after a few minutes is usually stuck. A fresh successor booted at
+ *  p50 1s, p90 3s (42 of 43 under 300s). Every one of the 59 carry/kickoff drops
+ *  had at least 3 other sessions' Codex children booting in under 60s inside the
+ *  same window, so the stuck state belongs to the child, not to a shared outage:
+ *  replacing the child fixes it, while waiting cost 10-50 minutes. Env-overridable. */
+const CODEX_CARRY_STARTING_STUCK_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS) || 180_000;
+/** WI-10004943: how many times a plain fresh Codex LAUNCH KICKOFF may replace a
+ *  child still at the `Starting` footer after CODEX_CARRY_STARTING_STUCK_MS (the
+ *  same measured threshold, same env override) before its last attempt falls back
+ *  to the (d) hold. Measured 2026-10-01: the hold alone rescued 0 of 3 stuck
+ *  launches in 36h (all still `Starting` at the hold ceiling), while a fresh child
+ *  boots in seconds (see CODEX_CARRY_STARTING_STUCK_MS). Per-host override:
+ *  PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES; `0` turns the replacement off. */
+const CODEX_LAUNCH_STARTING_FRESH_CHILD_RETRIES = 1;
+
+/** WI-10004943: the per-host retry budget for a launch kickoff's fresh-child
+ *  replacement. A missing, empty, or malformed value keeps the default; an explicit
+ *  integer >= 0 wins, so `0` is the kill switch. Pure; exported for tests.
+ * @param {unknown} value
+ * @param {number} [fallback]
+ */
+export function codexLaunchStartingRetryMax(value, fallback = CODEX_LAUNCH_STARTING_FRESH_CHILD_RETRIES) {
+  if (value === undefined || value === null || String(value).trim() === '') return fallback;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
+/** WI-10004943: should an undelivered launch kickoff be retried on a fresh child?
+ *  Only a plain fresh Codex launch qualifies: a managed kickoff (session-port seed)
+ *  has a native-transcript proof that owns its own timeout and child kill, and a
+ *  resume/fork may already be running a turn. Only the stuck `Starting` footer
+ *  qualifies, because that state belongs to the child: every measured drop had other
+ *  sessions' Codex children booting in under 60s alongside it. Pure; exported for tests.
+ * @param {object} [opts]
+ * @param {string} [opts.agent]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.managedKickoff]
+ * @param {boolean} [opts.isResume]
+ * @param {number} [opts.retryCount]
+ * @param {number} [opts.maxRetries]
+ * @param {boolean} [opts.unboundPastWindow] the failed child outlived its id window
+ */
+export function shouldRetryLaunchKickoffOnFreshChild({
+  agent = '',
+  reason = '',
+  managedKickoff = false,
+  isResume = false,
+  retryCount = 0,
+  maxRetries = 0,
+  unboundPastWindow = false,
+} = {}) {
+  if (managedKickoff || isResume || retryCount >= maxRetries) return false;
+  if (String(agent ?? '').trim().toLowerCase() !== 'codex') return false;
+  // P-005 (D-003): a host-code-adopted carry and a fresh Codex launch bind
+  // through this kickoff. An unbound child past its spawn-anchored window is
+  // the same per-child wedge as on the carry path, so it gets a fresh child.
+  return reason === 'codex-startup-still-starting' ||
+    (reason === 'successor-native-id-missing' && unboundPastWindow);
+}
+
+/** EI-24818010361425604: how many times one launch kickoff may follow its owner
+ *  into the successor of a same-host respawn. One: a successor that is itself
+ *  replaced before its kickoff lands is a respawn loop, not a delivery problem. */
+export const LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX = 1;
+
+/** EI-24818010361425604: should an undelivered launch kickoff be re-delivered to
+ *  the successor of a same-host respawn? `superseded` means THIS host replaced the
+ *  child the kickoff targeted (a managed carry-respawn, a loop recycle) while the
+ *  kickoff was in flight. The owner continues in the successor, so the kickoff
+ *  belongs there; publishing `kickoff-not-submitted:superseded` instead makes the
+ *  launching parent kill the task, successor included. Measured 2026-10-02
+ *  20:44Z: a resumed Codex thread's first turn tripped native auto-compaction,
+ *  the PreCompact bridge turned it into a managed carry-respawn 1s after the
+ *  kickoff was written, and capability:launch-agent stopped the healthy successor.
+ *  A host that is tearing down has no successor, and a managed kickoff's native
+ *  transcript proof owns its own verdict and child kill. Pure; exported for tests.
+ * @param {object} [opts]
+ * @param {string} [opts.reason]
+ * @param {boolean} [opts.managedKickoff]
+ * @param {boolean} [opts.hostShuttingDown]
+ * @param {number} [opts.redeliveries]
+ * @param {number} [opts.maxRedeliveries]
+ */
+export function shouldRedeliverLaunchKickoffAfterRespawn({
+  reason = '',
+  managedKickoff = false,
+  hostShuttingDown = false,
+  redeliveries = 0,
+  maxRedeliveries = LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX,
+} = {}) {
+  if (managedKickoff || hostShuttingDown) return false;
+  if (redeliveries >= maxRedeliveries) return false;
+  return reason === 'superseded';
+}
+
+/** EI-25925116860039557: native transcript proof shows that the USER turn was
+ *  recorded. It does not show that the provider accepted the turn. Measured
+ *  2026-10-14 on su-d648b4f9: turn-delivered (confirmed native) at 03:01:27.290Z,
+ *  then "You've hit your weekly limit" latched the quota detector at
+ *  03:01:29.810Z. The launch had already published success, so the fleet got a
+ *  registered member that deferred every wake for 75 minutes. A wall that
+ *  latches within this window after delivery means the kickoff never ran. */
+export const KICKOFF_QUOTA_REJECTION_GRACE_MS = 10_000;
+export const KICKOFF_QUOTA_REJECTION_POLL_MS = 250;
+
+/** Hold a persisted kickoff's success receipt until `deliveredAtMs + graceMs`,
+ *  and stop early when the quota detector latches. `rejected:true` means the
+ *  provider answered the kickoff with a usage-limit wall. Polling is used
+ *  because the detector exposes only a level, not an edge. Pure apart from the
+ *  injected clock and sleep; exported for tests.
+ * @param {object} opts
+ * @param {() => boolean} opts.isQuotaBlocked
+ * @param {number} opts.deliveredAtMs
+ * @param {number} [opts.graceMs]
+ * @param {number} [opts.pollMs]
+ * @param {() => number} [opts.now]
+ * @param {(ms: number) => Promise<void>} [opts.sleep]
+ * @param {() => boolean} [opts.shouldStop]
+ * @returns {Promise<{ rejected: boolean, waitedMs: number, stopped: boolean }>}
+ */
+export async function awaitKickoffQuotaRejection({
+  isQuotaBlocked,
+  deliveredAtMs,
+  graceMs = KICKOFF_QUOTA_REJECTION_GRACE_MS,
+  pollMs = KICKOFF_QUOTA_REJECTION_POLL_MS,
+  now = Date.now,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  shouldStop = () => false,
+} = {}) {
+  const startMs = Number(now());
+  const fromMs = Number.isFinite(Number(deliveredAtMs)) ? Number(deliveredAtMs) : startMs;
+  const windowMs = Number(graceMs) > 0 ? Number(graceMs) : KICKOFF_QUOTA_REJECTION_GRACE_MS;
+  const stepMs = Number(pollMs) > 0 ? Number(pollMs) : KICKOFF_QUOTA_REJECTION_POLL_MS;
+  const deadlineMs = fromMs + windowMs;
+  for (;;) {
+    const atMs = Number(now());
+    const waitedMs = Math.max(0, atMs - fromMs);
+    let blocked = false;
+    try {
+      blocked = isQuotaBlocked() === true;
+    } catch {
+      blocked = false;
+    }
+    if (blocked) return { rejected: true, waitedMs, stopped: false };
+    if (shouldStop()) return { rejected: false, waitedMs, stopped: true };
+    if (atMs >= deadlineMs) return { rejected: false, waitedMs, stopped: false };
+    await sleep(Math.min(stepMs, deadlineMs - atMs));
+  }
+}
+
+/** WI-10004943: the Codex `Starting` options for one launch-kickoff attempt. While a
+ *  fresh-child retry remains, give up early on a child still at `Starting` after
+ *  `stuckMs` so the host can replace it (the WI-10005106 carry remedy). The last
+ *  attempt, and any launch that cannot be retried, keeps the (d) hold for the frame.
+ *  Pure; exported for tests.
+ * @param {object} [opts]
+ * @param {string} [opts.agent]
+ * @param {boolean} [opts.managedKickoff]
+ * @param {boolean} [opts.isResume]
+ * @param {number} [opts.retryCount]
+ * @param {number} [opts.maxRetries]
+ * @param {number} [opts.stuckMs]
+ * @param {number} [opts.holdCeilingMs]
+ */
+export function launchKickoffCodexStartingOptions({
+  agent = '',
+  managedKickoff = false,
+  isResume = false,
+  retryCount = 0,
+  maxRetries = 0,
+  stuckMs = CODEX_CARRY_STARTING_STUCK_MS,
+  holdCeilingMs = CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
+} = {}) {
+  const retryRemains = shouldRetryLaunchKickoffOnFreshChild({
+    agent,
+    managedKickoff,
+    isResume,
+    retryCount,
+    maxRetries,
+    reason: 'codex-startup-still-starting',
+  });
+  return retryRemains
+    ? { codexStartingStuckMs: stuckMs }
+    : { codexStartingHoldCeilingMs: holdCeilingMs };
+}
+/** Native transcript proof or MCP readiness can lag a freshly painted TUI.
+ * Give the carry one fresh child epoch to retry the whole submission before
+ * recording a terminal drop. Each epoch uses the existing bounded two-attempt
+ * MCP verifier; persistent failures remain loud. */
 const CARRY_PROOF_RETRY_MAX = 1;
 /** A backend readiness marker is the strongest proof that its composer exists,
  * but it is not a permanent liveness dependency. UI chrome changes across CLI
@@ -1806,6 +2878,56 @@ export function eventLogPathForOwner(ownerId, dir = PSU_PTY_DIR) {
   return join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
 }
 
+/** Keep the PTY spawn receipt useful for route diagnosis without persisting
+ * credentials, account headers, URL userinfo, query strings, fragments, or
+ * arbitrary path segments that could contain a token. */
+function sanitizeSpawnEndpoint(value) {
+  if (typeof value !== 'string' || value.length > 2048) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    const safePath = /^\/(?:api\/)?v\d+(?:beta\d*)?\/?$/i.test(url.pathname)
+      ? url.pathname.replace(/\/$/, '')
+      : '';
+    return url.origin + safePath;
+  } catch {
+    return null;
+  }
+}
+
+function safeSpawnProvider(value) {
+  if (typeof value !== 'string') return null;
+  const provider = value.trim();
+  return /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(provider) ? provider : null;
+}
+
+function ptySpawnRouteSnapshot(env) {
+  const rawAgent = String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase();
+  const agent = ['claude', 'codex', 'omp'].includes(rawAgent) ? rawAgent : null;
+  const rawMode = String(env.PAPERCUSP_ACCOUNT_ROUTING_MODE ?? '').trim().toLowerCase();
+  const routeMode = ['default', 'auto', 'pin'].includes(rawMode) ? rawMode : null;
+  let provider = null;
+  let endpoint = null;
+
+  if (agent === 'codex') {
+    try {
+      const home = typeof env.CODEX_HOME === 'string' ? env.CODEX_HOME : '';
+      if (home) {
+        const config = require('@iarna/toml').parse(readFileSync(join(home, 'config.toml'), 'utf8'));
+        provider = safeSpawnProvider(config.model_provider);
+        endpoint = sanitizeSpawnEndpoint(config.model_providers?.[provider]?.base_url);
+      }
+    } catch {
+      // Telemetry must not turn a successful PTY spawn into a failed launch.
+    }
+  } else if (agent === 'claude') {
+    provider = 'anthropic';
+    endpoint = sanitizeSpawnEndpoint(env.ANTHROPIC_BASE_URL);
+  }
+
+  return { agent, routeMode, provider, endpoint };
+}
+
 /** Size cap for the per-owner event log — front-truncated (oldest rows dropped)
  *  on breach, same spirit as the turn-provenance ledger compaction. */
 const EVENT_LOG_MAX_BYTES = 256 * 1024;
@@ -1884,6 +3006,11 @@ export function readLinuxStartupCounters(pid, readFile = readFileSync) {
   };
 }
 
+function isLinuxCodexProcess(counters) {
+  return Boolean(counters &&
+    (counters.comm === 'codex' || counters.comm?.startsWith('codex-')));
+}
+
 /** Resolve the Rust Codex runtime behind the npm/node launcher that owns the
  * PTY. The launcher stays alive for the whole session, so sampling its PID
  * produces a confident but irrelevant zero-IO trace. Linux exposes a cheap,
@@ -1902,7 +3029,7 @@ export function resolveLinuxCodexStartupPid(rootPid, {
     if (!current || seen.has(current.pid)) continue;
     seen.add(current.pid);
     const counters = readCounters(current.pid, readFile);
-    if (counters && (counters.comm === 'codex' || counters.comm?.startsWith('codex-'))) {
+    if (isLinuxCodexProcess(counters)) {
       return current.pid;
     }
     if (current.depth >= maxDepth) continue;
@@ -1944,21 +3071,34 @@ export function startCodexStartupProcessTrace({
   const startedAt = now();
   let samples = 0;
   let targetPid = null;
+  // WI-10008169: the terminal row names the process that was TRACED, not the
+  // live target. When the Codex child exits before stop() (host-cleanup after
+  // a short-lived child), the next tick clears targetPid; reporting that null
+  // threw away the very pid the samples describe.
+  let tracedPid = null;
   let stopped = false;
   let timer;
   const sample = () => {
     if (stopped) return;
     const elapsedMs = now() - startedAt;
     let counters = targetPid === null ? null : readCounters(targetPid);
-    if (targetPid === null || counters === null) {
+    // The launcher can initially inherit a Codex comm, then exec Node while
+    // retaining its PID. A readable cached PID is not proof it is still Codex.
+    if (!isLinuxCodexProcess(counters)) {
       const resolved = resolveTargetPid(pid, { readCounters });
-      if (Number.isInteger(resolved) && resolved > 0 && resolved !== targetPid) {
+      counters = Number.isInteger(resolved) && resolved > 0 ? readCounters(resolved) : null;
+      if (isLinuxCodexProcess(counters)) {
+        if (resolved !== targetPid) {
+          emit(ownerId, 'codex-startup-process-target-selected', { rootPid: pid, pid: resolved, elapsedMs });
+        }
         targetPid = resolved;
-        emit(ownerId, 'codex-startup-process-target-selected', { rootPid: pid, pid: targetPid, elapsedMs });
+      } else {
+        targetPid = null;
+        counters = null;
       }
-      counters = targetPid === null ? null : readCounters(targetPid);
     }
     if (counters) {
+      tracedPid = targetPid;
       samples++;
       emit(ownerId, 'codex-startup-process-sample', { elapsedMs, rootPid: pid, ...counters });
     }
@@ -1969,7 +3109,7 @@ export function startCodexStartupProcessTrace({
     stopped = true;
     if (timer) clear(timer);
     emit(ownerId, 'codex-startup-process-trace-ended', {
-      rootPid: pid, pid: targetPid, elapsedMs: now() - startedAt, samples, reason,
+      rootPid: pid, pid: tracedPid, elapsedMs: now() - startedAt, samples, reason,
     });
   };
   sample();
@@ -1978,6 +3118,336 @@ export function startCodexStartupProcessTrace({
     timer.unref?.();
   }
   return stop;
+}
+
+/* WI-10004943 (b): evidence for WHY a Codex child sits at its `Starting` footer.
+ * Codex starts a fresh CODEX_HOME/log/codex-tui.log at every launch (measured
+ * 2026-10-01: in every su-codex-home, log/'s mtime equals the file's first
+ * line), so the stuck child's own log is destroyed by the very respawn that
+ * replaces it, and the 30s startup trace ends long before a 180-600s stall is
+ * declared. Snapshot the evidence at the drop instead: the log tail plus the
+ * child's process tree, where Codex's MCP servers live, with each process's
+ * state and kernel wait channel. Host events reach a shared store, so every
+ * string is bounded and credential-shaped values are redacted. */
+const SNAPSHOT_SECRET_KEY = '[A-Za-z0-9_.-]*(?:token|secret|passw(?:or)?d|api[-_]?key|authorization|cookie|credential)[A-Za-z0-9_.-]*';
+const SNAPSHOT_SECRET_FLAG_RE = new RegExp(`^--?${SNAPSHOT_SECRET_KEY}$`, 'i');
+const SNAPSHOT_SECRET_PAIR_RE = new RegExp(`(${SNAPSHOT_SECRET_KEY})(\\s*[=:]\\s*)("[^"]*"|'[^']*'|[^\\s,;&"']+)`, 'gi');
+
+export function redactSnapshotText(text, maxChars = 240) {
+  const s = String(text ?? '')
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 <redacted>')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abprs]-[A-Za-z0-9-]{10,})/g, '<redacted>')
+    .replace(SNAPSHOT_SECRET_PAIR_RE, '$1$2<redacted>');
+  return s.length > maxChars ? `${s.slice(0, maxChars)}…` : s;
+}
+
+/** argv -> one bounded, redacted string. A credential-named flag also redacts
+ * the separate argument that follows it (`--token abc`). */
+export function redactSnapshotArgv(argv, { maxArgs = 6, maxChars = 200 } = {}) {
+  const out = [];
+  let redactNext = false;
+  for (let i = 0; i < argv.length; i++) {
+    if (out.length >= maxArgs) {
+      out.push(`…+${argv.length - i}`);
+      break;
+    }
+    const arg = String(argv[i]);
+    if (redactNext) {
+      out.push('<redacted>');
+      redactNext = false;
+      continue;
+    }
+    if (SNAPSHOT_SECRET_FLAG_RE.test(arg)) redactNext = true;
+    out.push(redactSnapshotText(arg, 120));
+  }
+  return redactSnapshotText(out.join(' '), maxChars);
+}
+
+function readProcText(readFile, path) {
+  try {
+    return String(readFile(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+const PROC_NET_TCP_STATES = {
+  '01': 'ESTABLISHED', '02': 'SYN_SENT', '03': 'SYN_RECV', '04': 'FIN_WAIT1',
+  '05': 'FIN_WAIT2', '06': 'TIME_WAIT', '07': 'CLOSE', '08': 'CLOSE_WAIT',
+  '09': 'LAST_ACK', '0A': 'LISTEN', '0B': 'CLOSING',
+};
+
+/** Decode a /proc/net/tcp{,6} address ("0100007F:23C3") to "127.0.0.1:9155".
+ * The kernel prints each 32-bit word in host (little-endian) byte order.
+ * @param {string} value */
+export function decodeProcNetAddress(value) {
+  const [hex = '', portHex = ''] = String(value).split(':');
+  const port = Number.parseInt(portHex, 16);
+  /** @param {string} w */
+  const wordBytes = (w) => [w.slice(6, 8), w.slice(4, 6), w.slice(2, 4), w.slice(0, 2)].map((b) => Number.parseInt(b, 16));
+  if (/^[0-9A-Fa-f]{8}$/.test(hex)) return `${wordBytes(hex).join('.')}:${port}`;
+  if (/^[0-9A-Fa-f]{32}$/.test(hex)) {
+    const bytes = [0, 8, 16, 24].flatMap((i) => wordBytes(hex.slice(i, i + 8)));
+    if (bytes.slice(0, 10).every((b) => b === 0) && bytes[10] === 255 && bytes[11] === 255) {
+      return `${bytes.slice(12).join('.')}:${port}`;
+    }
+    const groups = [];
+    for (let i = 0; i < 16; i += 2) groups.push(((bytes[i] << 8) | bytes[i + 1]).toString(16));
+    return `[${groups.join(':')}]:${port}`;
+  }
+  return String(value).slice(0, 64);
+}
+
+/**
+ * Socket inventory of one process (WI-10005178): which TCP peers it holds, in what
+ * state, plus a unix-socket count. A Codex child stuck at "Starting" logs nothing
+ * and is recycled within minutes, so the snapshot is the only place this evidence
+ * can be caught. Reads the process's fd links and its OWN network namespace's
+ * /proc/<pid>/net tables, parsed once per namespace via `netCache`. Never throws;
+ * null when the fd list is unreadable.
+ * @param {number} pid
+ * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, netCache?: Map<string, { tcp: Map<string, { remote: string, state: string }>, unix: Set<string> }>, maxTcp?: number }} [options]
+ */
+export function collectProcSockets(pid, {
+  readFile = readFileSync,
+  readDir = readdirSync,
+  readLink = readlinkSync,
+  netCache = new Map(),
+  maxTcp = 8,
+} = {}) {
+  let fds;
+  try {
+    fds = readDir(`/proc/${pid}/fd`).map(String);
+  } catch {
+    return null;
+  }
+  const inodes = new Set();
+  for (const fd of fds) {
+    let target;
+    try {
+      target = String(readLink(`/proc/${pid}/fd/${fd}`));
+    } catch {
+      continue;
+    }
+    const match = /^socket:\[(\d+)\]$/.exec(target);
+    if (match) inodes.add(match[1]);
+  }
+  if (inodes.size === 0) return { total: 0, tcp: [], unix: 0, other: 0 };
+  let nsKey = `pid:${pid}`;
+  try {
+    nsKey = String(readLink(`/proc/${pid}/ns/net`));
+  } catch {
+    // Unknown namespace: parse this process's tables uncached.
+  }
+  let tables = netCache.get(nsKey);
+  if (!tables) {
+    tables = { tcp: new Map(), unix: new Set() };
+    for (const name of ['tcp', 'tcp6']) {
+      const text = readProcText(readFile, `/proc/${pid}/net/${name}`) ?? '';
+      for (const line of text.split('\n').slice(1)) {
+        const cols = line.trim().split(/\s+/);
+        if (cols.length < 10) continue;
+        tables.tcp.set(cols[9], {
+          remote: decodeProcNetAddress(cols[2]),
+          state: PROC_NET_TCP_STATES[cols[3]] ?? cols[3],
+        });
+      }
+    }
+    const unixText = readProcText(readFile, `/proc/${pid}/net/unix`) ?? '';
+    for (const line of unixText.split('\n').slice(1)) {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length >= 7) tables.unix.add(cols[6]);
+    }
+    netCache.set(nsKey, tables);
+  }
+  /** @type {Map<string, { remote: string, state: string, count: number }>} */
+  const tcp = new Map();
+  let tcpCount = 0;
+  let unix = 0;
+  for (const inode of inodes) {
+    const entry = tables.tcp.get(inode);
+    if (entry) {
+      tcpCount += 1;
+      const key = `${entry.remote} ${entry.state}`;
+      const prior = tcp.get(key);
+      if (prior) prior.count += 1;
+      else tcp.set(key, { ...entry, count: 1 });
+    } else if (tables.unix.has(inode)) {
+      unix += 1;
+    }
+  }
+  const peers = [...tcp.values()].sort((a, b) => b.count - a.count);
+  return {
+    total: inodes.size,
+    tcp: peers.slice(0, maxTcp),
+    ...(peers.length > maxTcp ? { tcpTruncated: peers.length - maxTcp } : {}),
+    unix,
+    other: inodes.size - tcpCount - unix,
+  };
+}
+
+/** Walk the descendants of `rootPid` breadth-first. Children are read from
+ * EVERY thread's /proc/PID/task/TID/children: the kernel lists a child under the
+ * thread that forked it, and Codex (a multithreaded Rust runtime) forks its MCP
+ * servers from worker threads, so the main thread's list alone is empty
+ * (measured on a live Codex: 156 threads, main-thread children empty, three
+ * worker threads holding all of them). */
+/** @typedef {(path: string, encoding: 'utf8') => string | Buffer} SnapshotReadFile */
+/** @typedef {(path: string) => ReadonlyArray<unknown>} SnapshotReadDir */
+/** @typedef {(path: string, maxBytes: number) => ({ text: string, size: number, truncatedHead: boolean } | null)} SnapshotReadTail */
+/** @typedef {{ path: string, present: false } | { path: string, present: true, bytes: number, totalLinesInTail: number, lastTs: string | null, tail: string[] }} CodexTuiLogTail */
+
+/**
+ * @param {number | undefined} rootPid
+ * @param {{ readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, maxDepth?: number, maxProcs?: number }} [options]
+ */
+export function collectCodexStuckProcessTree(rootPid, {
+  readFile = readFileSync,
+  readDir = readdirSync,
+  readLink = readlinkSync,
+  maxDepth = 5,
+  maxProcs = 20,
+} = {}) {
+  const procs = [];
+  const netCache = new Map();
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return { procs, truncated: false };
+  const queue = [{ pid: rootPid, ppid: null, depth: 0 }];
+  const seen = new Set();
+  let truncated = false;
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || seen.has(current.pid)) continue;
+    seen.add(current.pid);
+    if (procs.length >= maxProcs) {
+      truncated = true;
+      break;
+    }
+    const stat = readProcText(readFile, `/proc/${current.pid}/stat`);
+    if (stat === null) continue;
+    const open = stat.indexOf('(');
+    const close = stat.lastIndexOf(')');
+    if (open < 0 || close < open) continue;
+    const wchan = readProcText(readFile, `/proc/${current.pid}/wchan`)?.trim() ?? null;
+    const cmdline = readProcText(readFile, `/proc/${current.pid}/cmdline`);
+    let threads = null;
+    let tids = [String(current.pid)];
+    try {
+      const listed = readDir(`/proc/${current.pid}/task`).map(String).filter((t) => /^\d+$/.test(t));
+      if (listed.length > 0) {
+        tids = listed;
+        threads = listed.length;
+      }
+    } catch {
+      // Fall back to the main thread's own child list.
+    }
+    procs.push({
+      pid: current.pid,
+      ppid: current.ppid,
+      depth: current.depth,
+      comm: stat.slice(open + 1, close).slice(0, 64),
+      state: stat.slice(close + 2).trim().split(/\s+/)[0] || null,
+      wchan: wchan && wchan !== '0' ? wchan.slice(0, 64) : null,
+      threads,
+      cmd: cmdline ? redactSnapshotArgv(cmdline.split('\0').filter(Boolean)) : null,
+      sockets: collectProcSockets(current.pid, { readFile, readDir, readLink, netCache }),
+    });
+    if (current.depth >= maxDepth) continue;
+    for (const tid of tids) {
+      const children = readProcText(readFile, `/proc/${current.pid}/task/${tid}/children`) ?? '';
+      for (const token of children.trim().split(/\s+/)) {
+        const childPid = Number(token);
+        if (Number.isInteger(childPid) && childPid > 0 && !seen.has(childPid)) {
+          queue.push({ pid: childPid, ppid: current.pid, depth: current.depth + 1 });
+        }
+      }
+    }
+  }
+  return { procs, truncated };
+}
+
+/** Last `maxBytes` of a file as utf8 text, or null when it cannot be read.
+ * @param {string} path
+ * @param {number} maxBytes
+ * @returns {{ text: string, size: number, truncatedHead: boolean } | null}
+ */
+export function readFileTail(path, maxBytes) {
+  let fd;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, Math.max(0, maxBytes));
+    const buffer = Buffer.alloc(length);
+    const read = readSync(fd, buffer, 0, length, size - length);
+    return { text: buffer.subarray(0, read).toString('utf8'), size, truncatedHead: size > length };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+}
+
+const CODEX_LOG_TS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)/;
+
+/** The tail of the CURRENT child's codex-tui.log, which covers only this
+ * child's startup because Codex starts the file fresh at launch.
+ * @param {string | undefined} codexHome
+ * @param {{ readTail?: SnapshotReadTail, maxLines?: number, maxLineChars?: number, maxBytes?: number }} [options]
+ * @returns {CodexTuiLogTail | null}
+ */
+export function readCodexTuiLogTail(codexHome, {
+  readTail = readFileTail,
+  maxLines = 30,
+  maxLineChars = 240,
+  maxBytes = 64 * 1024,
+} = {}) {
+  if (!codexHome) return null;
+  const path = join(String(codexHome), 'log', 'codex-tui.log');
+  const raw = readTail(path, maxBytes);
+  if (!raw) return { path, present: false };
+  const lines = stripAnsi(String(raw.text)).split('\n').filter((line) => line.trim());
+  // A tail cut mid-file starts with a partial line.
+  if (raw.truncatedHead) lines.shift();
+  const tail = lines.slice(-maxLines).map((line) => redactSnapshotText(line, maxLineChars));
+  const lastTs = [...lines].reverse().map((line) => line.match(CODEX_LOG_TS_RE)?.[1]).find(Boolean) ?? null;
+  return { path, present: true, bytes: raw.size, totalLinesInTail: lines.length, lastTs, tail };
+}
+
+/** One bounded, never-throwing snapshot of a Codex child stuck at `Starting`.
+ * @param {{ rootPid?: number, codexHome?: string, platform?: string, readFile?: SnapshotReadFile, readDir?: SnapshotReadDir, readLink?: (path: string) => unknown, readTail?: SnapshotReadTail, startupOutput?: string, screenDims?: { rows?: number, cols?: number } }} [options]
+ */
+export function collectCodexStartingStuckSnapshot({
+  rootPid,
+  codexHome,
+  platform = process.platform,
+  readFile = readFileSync,
+  readDir = readdirSync,
+  readLink = readlinkSync,
+  readTail = readFileTail,
+  // WI-10005178: the pty output the `Starting` verdict was read from.
+  startupOutput,
+  // The child's PTY size, so the footer is read off the same grid it painted.
+  screenDims,
+} = {}) {
+  try {
+    const tree = platform === 'linux'
+      ? collectCodexStuckProcessTree(rootPid, { readFile, readDir, readLink })
+      : { procs: [], truncated: false };
+    return {
+      rootPid: Number.isInteger(rootPid) ? rootPid : null,
+      procs: tree.procs,
+      procsTruncated: tree.truncated,
+      log: readCodexTuiLogTail(codexHome, { readTail }),
+      footer: codexStartingFooterEvidence(startupOutput, { dims: screenDims }),
+    };
+  } catch (error) {
+    return { rootPid: Number.isInteger(rootPid) ? rootPid : null, error: hostErrorEvidence(error) };
+  }
 }
 
 /** Small, non-secret error identity for durable host events. Exception messages can
@@ -2030,9 +3500,39 @@ export function appendSharedDrillLedgerEvent(ownerId, kind, extra = {}, dir = PS
   }
 }
 
-/** Control-socket path for an ownerId. Pure. */
-export function socketPathFor(ownerId) {
-  return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`);
+/** Keep discovery in its configured directory, but bound Unix socket addresses
+ * by bytes. Deep isolated roots and long owner keys exceed sun_path before the
+ * native child starts. The discovery record remains the socket authority. */
+export function socketPathFor(ownerId, dir = PSU_PTY_DIR) {
+  const key = sanitizeKey(ownerId);
+  const original = join(dir, `${key}.sock`);
+  if (Buffer.byteLength(original) <= 100) return original;
+  const namespace = createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 16);
+  const userNamespace = 'pc-' + (process.getuid?.() ?? 'user');
+  const hashedKey = createHash('sha256').update(key).digest('hex').slice(0, 48) + '.sock';
+  for (const root of controlPlaneTempCandidates('socket')) {
+    const shortDir = join(root, userNamespace, namespace);
+    const named = join(shortDir, key + '.sock');
+    if (Buffer.byteLength(named) <= 100) return named;
+    const hashed = join(shortDir, hashedKey);
+    if (Buffer.byteLength(hashed) <= 100) return hashed;
+  }
+  throw new Error('psu-pty-host: no writable temp root fits a private Unix socket path');
+}
+
+function ensureControlSocketDir(sock) {
+  const dir = dirname(sock);
+  if (dir === PSU_PTY_DIR) return;
+  // Both levels are private to this Unix user. Refuse a pre-existing symlink
+  // or foreign/public directory rather than taking over its sockets.
+  for (const path of [dirname(dir), dir]) {
+    try { mkdirSync(path, { mode: 0o700 }); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const stat = lstatSync(path);
+    if (!stat.isDirectory() || stat.isSymbolicLink() ||
+        (process.getuid && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0)
+      throw new Error('psu-pty-host: refusing unsafe control socket directory');
+  }
 }
 
 /** Discovery-metadata path for an ownerId. Pure. */
@@ -2044,7 +3544,39 @@ export function metaPathFor(ownerId) {
  *  orders. A FILE, not an env var: the successor is spawned by the shim's bash
  *  loop, not by us, so we cannot put anything in its environment. Pure. */
 export function handoffPathFor(ownerId) {
-  return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.handoff.json`);
+  return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}${HOST_HANDOFF_FILE_SUFFIX}`);
+}
+
+/** WI-6554700010008431: the handoff's file suffix. It ALSO ends in `.json`, so it
+ *  shares the directory with the `<key>.json` discovery records — see
+ *  isDiscoveryRecordFileName for why that matters. */
+export const HOST_HANDOFF_FILE_SUFFIX = '.handoff.json';
+
+/**
+ * WI-6554700010008431: the ONE predicate for "is this psu-pty directory entry a host
+ * discovery record" (`metaPathFor` → `<key>.json`). Every lister and every sweeper of the
+ * directory must use it, never a bare `endsWith('.json')`.
+ *
+ * Measured 2026-10-11: `pruneDead()` (run at EVERY host start) took a just-written
+ * `<owner>.handoff.json` for a discovery record, found no `pid` in it, judged the "host"
+ * dead and unlinked it. When another host started inside the ~1s between a predecessor
+ * writing its handoff and the re-exec'd launcher reading it, the successor found no
+ * orders, logged nothing, and cold-booted without its carry (11 of 211 adoptions,
+ * clustered in adoption batches, where host starts are densest). The operator-side janitor
+ * (psu-pty-discovery.ts isDiscoveryRecordFileName) mirrors this; keep the two in lockstep —
+ * psu-pty-dir-async-sweeps.test.ts pins the mirror against `handoffPathFor`.
+ * @param {string} name a directory entry name (not a path)
+ */
+export function isDiscoveryRecordFileName(name) {
+  return typeof name === 'string' && name.endsWith('.json') && !name.endsWith(HOST_HANDOFF_FILE_SUFFIX);
+}
+
+/** WI-6554700010008431: second rail — a parsed record is a discovery record only if it
+ *  carries the discovery fields (`pid` / `sock`). Any other JSON that lands in the
+ *  directory (a future sidecar nobody added to the name predicate) is then left alone
+ *  instead of being "pruned" as a dead host. */
+export function looksLikeDiscoveryRecord(rec) {
+  return !!rec && typeof rec === 'object' && ('pid' in rec || 'sock' in rec);
 }
 
 /**
@@ -2071,10 +3603,15 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_SID',
   'PAPERCUSP_AGENT',
   'PAPERCUSP_ADV_SESSION_ID',
+  // Keep the proven launcher actor through host-code adoption. Without it,
+  // the successor advertises human-owned provenance and quota recovery refuses.
+  'PAPERCUSP_LAUNCHED_BY',
   HEADLESS_NORMALIZED_LOG_ENV,
   'PAPERCUSP_WORKSPACE',
   'PAPERCUSP_HARNESS_SLUG',
   'PAPERCUSP_PROFILE',
+  // A successor must remain in the predecessor's explicit mutex domain.
+  'PAPERCUSP_FS_MUTEX_LOCK_DIR',
   'PAPERCUSP_FLEET_SLUG',
   'PAPERCUSP_FLEET_ROLE',
   'PAPERCUSP_ACCOUNT_ID',
@@ -2142,8 +3679,23 @@ export function writeHostHandoff(ownerId, record) {
 function readHostHandoffFile(
   p,
   expectedOwnerId,
-  { maxAgeMs = 120_000, now = Date.now, isAlive = pidAlive } = {},
+  { maxAgeMs = 120_000, now = Date.now, isAlive = pidAlive, onReject = null, expectedParentPid = null } = {},
 ) {
+  // WI-6554700010008431: every refusal below CONSUMES the orders, so a refusal
+  // that says nothing turns a carry-respawn into a bare cold boot with no trace
+  // of why (2 of 15 P-012 adoptions: the successor booted the ordinary flow and
+  // its codex sat idle until an outside wake). `onReject` names the reason; the
+  // ordinary no-file cold launch is NOT a rejection and stays silent.
+  const reject = (reason, detail = {}) => {
+    if (typeof onReject === 'function') {
+      try {
+        onReject({ reason, path: p, ...detail });
+      } catch {
+        /* a diagnostic sink must never change the adoption verdict */
+      }
+    }
+    return null;
+  };
   let raw;
   try {
     raw = readFileSync(p, 'utf8');
@@ -2159,19 +3711,34 @@ function readHostHandoffFile(
   try {
     rec = JSON.parse(raw);
   } catch {
-    return null;
+    return reject('unparseable', { ownerId: expectedOwnerId ?? null });
   }
-  if (!rec || typeof rec !== 'object') return null;
-  if (expectedOwnerId && rec.ownerId && rec.ownerId !== expectedOwnerId) return null;
+  if (!rec || typeof rec !== 'object') {
+    return reject('unparseable', { ownerId: expectedOwnerId ?? null });
+  }
+  const recOwnerId = typeof rec.ownerId === 'string' ? rec.ownerId : null;
+  const base = {
+    ownerId: recOwnerId ?? expectedOwnerId ?? null,
+    fromPid: rec.fromPid ?? null,
+    mode: rec.mode ?? null,
+  };
+  if (expectedOwnerId && rec.ownerId && rec.ownerId !== expectedOwnerId) {
+    return reject('owner-mismatch', { ...base, expectedOwnerId });
+  }
+  if (expectedParentPid != null && rec.parentPid !== expectedParentPid) {
+    return reject('parent-mismatch', { ...base, expectedParentPid, actualParentPid: rec.parentPid ?? null });
+  }
   // A LIVE writer means we are not its successor — that host is running and owns
   // the session, and acting on its argv would put a second child behind a live
   // discovery key. No self-exemption: a process is never its own successor, so
   // `fromPid === process.pid` is refused by the same rule rather than waved past
   // it (the exemption also made this guard untestable, which is how it was found).
-  if (rec.fromPid && isAlive(rec.fromPid)) return null;
+  if (rec.fromPid && isAlive(rec.fromPid)) return reject('predecessor-alive', base);
   const age = now() - Date.parse(rec.createdAt ?? '');
-  if (!Number.isFinite(age) || age < 0 || age > maxAgeMs) return null;
-  if (!Array.isArray(rec.args) || rec.args.length === 0) return null;
+  if (!Number.isFinite(age) || age < 0 || age > maxAgeMs) {
+    return reject('stale', { ...base, ageMs: Number.isFinite(age) ? age : null, maxAgeMs });
+  }
+  if (!Array.isArray(rec.args) || rec.args.length === 0) return reject('no-args', base);
   return rec;
 }
 
@@ -2188,7 +3755,7 @@ function readHostHandoffFile(
  * accept). A rejected record is still consumed: leaving it behind means the next
  * launch re-litigates the same stale orders.
  * @param {string} ownerId
- * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean}} [opts]
+ * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null, expectedParentPid?: number | null}} [opts]
  */
 export function readHostHandoff(ownerId, opts = {}) {
   return readHostHandoffFile(handoffPathFor(ownerId), ownerId, opts);
@@ -2205,10 +3772,21 @@ export function readHostHandoff(ownerId, opts = {}) {
  * Refuse an ambiguous parent match: selecting the newest file would recreate
  * the same cross-session identity split this handoff path is meant to prevent.
  * @param {number} parentPid
- * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean}} [opts]
+ * @param {{ownerId?: string | null, maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null}} [opts]
  */
 export function readHostHandoffForParentPid(parentPid, opts = {}) {
   if (!Number.isInteger(parentPid) || parentPid <= 0) return null;
+  // Host adoption carries PAPERCUSP_SID, so the handoff has a deterministic
+  // owner-keyed path. Read that one file directly instead of scanning every
+  // socket, event log, and discovery record in ~/.papercusp/psu-pty. The
+  // parent-PID check remains mandatory and consumes mismatched orders.
+  const ownerId = typeof opts.ownerId === 'string' ? opts.ownerId.trim() : '';
+  if (ownerId) {
+    return readHostHandoffFile(handoffPathFor(ownerId), ownerId, {
+      ...opts,
+      expectedParentPid: parentPid,
+    });
+  }
   let names;
   try {
     names = readdirSync(PSU_PTY_DIR);
@@ -2229,6 +3807,18 @@ export function readHostHandoffForParentPid(parentPid, opts = {}) {
       }
     } catch {
       /* a malformed file is not evidence for this parent */
+    }
+  }
+  if (candidates.length > 1 && typeof opts.onReject === 'function') {
+    try {
+      opts.onReject({
+        reason: 'ambiguous-parent',
+        parentPid,
+        candidateCount: candidates.length,
+        ownerIds: candidates.map((c) => c.ownerId),
+      });
+    } catch {
+      /* a diagnostic sink must never change the adoption verdict */
     }
   }
   if (candidates.length !== 1) return null;
@@ -2369,20 +3959,22 @@ function ensureDir() {
 }
 
 /** Read every discovery file; annotate each with `alive`. Skips unreadable. */
-export function listHosts() {
+export function listHosts(dir = PSU_PTY_DIR) {
   const out = [];
   let names;
   try {
-    names = readdirSync(PSU_PTY_DIR);
+    names = readdirSync(dir);
   } catch {
     return out;
   }
   for (const f of names) {
-    if (!f.endsWith('.json')) continue;
+    // WI-6554700010008431: never a bare endsWith('.json') — the handoff sidecar matches it.
+    if (!isDiscoveryRecordFileName(f)) continue;
     try {
-      const meta = JSON.parse(readFileSync(join(PSU_PTY_DIR, f), 'utf8'));
+      const meta = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+      if (!looksLikeDiscoveryRecord(meta)) continue;
       meta.alive = pidAlive(meta.pid) && !!meta.sock && existsSync(meta.sock);
-      meta.metaPath = join(PSU_PTY_DIR, f);
+      meta.metaPath = join(dir, f);
       out.push(meta);
     } catch {
       /* skip unreadable */
@@ -2391,9 +3983,10 @@ export function listHosts() {
   return out;
 }
 
-/** Remove discovery files + sockets whose host process is gone. */
-export function pruneDead() {
-  for (const m of listHosts()) {
+/** Remove discovery files + sockets whose host process is gone. Only ever touches
+ *  what listHosts admits as a discovery record (WI-6554700010008431). */
+export function pruneDead(dir = PSU_PTY_DIR) {
+  for (const m of listHosts(dir)) {
     if (pidAlive(m.pid)) continue;
     for (const p of [m.sock, m.metaPath]) {
       try {
@@ -2435,6 +4028,98 @@ export function reportOwnerHumanTurn(now = Date.now()) {
       .finally(() => clearTimeout(t));
   } catch {
     /* presence reporting must never disturb the terminal */
+  }
+}
+
+/**
+ * WI-6554700010011967: tell the operator this agent is quota-starved, so the
+ * operator can fire `fleet:member-quota-starved:<slug>` for its fleet leader. Before
+ * this the starvation verdict stayed a host-local event, and the leader only
+ * learned of it when presence decayed to `suspect` 40+ min later.
+ * Fire-and-forget with a short abort: the returned promise resolves true on a 2xx
+ * response and false otherwise, and never rejects (tests await it; the host does
+ * not).
+ */
+export function reportQuotaStarvation(
+  ownerId,
+  signal,
+  { env = process.env, fetchImpl = globalThis.fetch, timeoutMs = 1500 } = {},
+) {
+  const agent = typeof ownerId === 'string' ? ownerId.trim() : '';
+  if (!agent || typeof fetchImpl !== 'function') return Promise.resolve(false);
+  try {
+    const rawBase =
+      typeof env?.PAPERCUSP_OPERATOR_URL === 'string' ? env.PAPERCUSP_OPERATOR_URL.trim() : '';
+    const rawWs = typeof env?.PAPERCUSP_WORKSPACE === 'string' ? env.PAPERCUSP_WORKSPACE.trim() : '';
+    const workspace = rawWs || 'default';
+    const url = new URL('/api/admin/psu-pty/quota-starvation', rawBase || 'http://127.0.0.1:3270');
+    url.searchParams.set('workspace', workspace);
+    const accountId =
+      typeof env?.PAPERCUSP_ACCOUNT_ID === 'string' && env.PAPERCUSP_ACCOUNT_ID.trim()
+        ? env.PAPERCUSP_ACCOUNT_ID.trim()
+        : null;
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+    if (typeof t.unref === 'function') t.unref();
+    return Promise.resolve()
+      .then(() =>
+        fetchImpl(url.toString(), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...(signal ?? {}), ownerId: agent, workspace, accountId }),
+          signal: ac.signal,
+        }),
+      )
+      .then((res) => Boolean(res?.ok))
+      .catch(() => false)
+      .finally(() => clearTimeout(t));
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
+/**
+ * Read the effective per-agent wake mode through the loopback admin coord
+ * read-only verb. A missing route, failed request, or malformed response is
+ * deliberately `null`: carry-rearm must retain its payload unless the server
+ * confirms that automatic wakes are enabled.
+ */
+export async function readEffectiveWakeMode(
+  ownerId,
+  { env = process.env, fetchImpl = globalThis.fetch, timeoutMs = 1500 } = {},
+) {
+  const agent = typeof ownerId === 'string' ? ownerId.trim() : '';
+  if (!agent || typeof fetchImpl !== 'function') return null;
+  const rawBase = typeof env?.PAPERCUSP_OPERATOR_URL === 'string'
+    ? env.PAPERCUSP_OPERATOR_URL.trim()
+    : '';
+  let url;
+  try {
+    url = new URL('/api/admin/coord/wake-mode', rawBase || 'http://127.0.0.1:3270').toString();
+  } catch {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 1500));
+  if (typeof timeout.unref === 'function') timeout.unref();
+  try {
+    const response = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      // The admin route rejects mode/reason writes on this read-only verb.
+      body: JSON.stringify({ agent }),
+      signal: controller.signal,
+    });
+    if (!response?.ok) return null;
+    const result = await response.json();
+    return result?.ok === true && (result.mode === 'auto' || result.mode === 'manual')
+      ? result.mode
+      : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -2882,6 +4567,197 @@ export function makeOwnerComposerGate({ capMs = DEFAULT_IDLE_WAIT_CAP_MS, now = 
 }
 
 /**
+ * psu-process-free-parking-2026-10-06 P-016: how long a Claude child must sit
+ * idle at its prompt before the host PARKS it (SIGKILLs the CLI to free its
+ * ~215 MB while the host, socket and terminal stay up; D-002). 15 minutes:
+ * long enough that an attended session the owner is reading is not parked
+ * under them, short enough that an idle fleet sheds its CLI memory. A park
+ * costs no tokens inside the 1h prompt-cache TTL and ~1 s of wake latency
+ * (D-018/D-025 of agent-capacity-and-cost-gcp-2026-09-30).
+ */
+export const DEFAULT_PARK_IDLE_MS = 15 * 60_000;
+
+/**
+ * Resolve the park threshold from PAPERCUSP_PSU_PARK_IDLE_MS. Unset/blank or
+ * unparseable falls back to the default (the feature ships ON); an explicit
+ * `0` is the kill-switch. Pure; exported for tests.
+ * @param {Record<string, string | undefined>} [env]
+ */
+export function parkIdleMsFromEnv(env = process.env) {
+  const raw = env?.PAPERCUSP_PSU_PARK_IDLE_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_PARK_IDLE_MS;
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_PARK_IDLE_MS;
+  return Math.floor(n);
+}
+
+/**
+ * Count the live descendant processes of `rootPid` from /proc (one ppid map
+ * built from every /proc/<pid>/stat, then a walk down from the root). The park
+ * policy refuses while the CLI has ANY descendant: a running background shell,
+ * an in-flight hook or a stdio MCP server is work a SIGKILL of the tree would
+ * destroy. Returns null when the count cannot be taken (no /proc, unreadable
+ * root), and the policy FAILS CLOSED on null. Exported for tests (procRoot and
+ * the fs readers are injectable).
+ * @param {number} rootPid
+ * @param {{ procRoot?: string, readdir?: (p: string) => string[], readFile?: (p: string, enc: 'utf8') => string }} [opts]
+ * @returns {number | null}
+ */
+export function countProcessDescendants(
+  rootPid,
+  { procRoot = '/proc', readdir = readdirSync, readFile = readFileSync } = {},
+) {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return null;
+  let entries;
+  try {
+    entries = readdir(procRoot);
+  } catch {
+    return null;
+  }
+  const childrenOf = new Map();
+  let sawRoot = false;
+  for (const name of entries) {
+    if (!/^\d+$/.test(name)) continue;
+    let stat;
+    try {
+      stat = readFile(`${procRoot}/${name}/stat`, 'utf8');
+    } catch {
+      continue; // exited between readdir and read — not a descendant any more
+    }
+    // `pid (comm) state ppid …` — comm may contain spaces or ')', so split
+    // after the LAST ')'.
+    const close = stat.lastIndexOf(')');
+    if (close < 0) continue;
+    const fields = stat.slice(close + 2).split(' ');
+    const ppid = Number(fields[1]);
+    const pid = Number(name);
+    if (pid === rootPid) sawRoot = true;
+    if (!Number.isInteger(ppid)) continue;
+    if (!childrenOf.has(ppid)) childrenOf.set(ppid, []);
+    childrenOf.get(ppid).push(pid);
+  }
+  if (!sawRoot) return null;
+  let count = 0;
+  const stack = [...(childrenOf.get(rootPid) ?? [])];
+  const seen = new Set();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    count++;
+    for (const kid of childrenOf.get(pid) ?? []) stack.push(kid);
+  }
+  return count;
+}
+
+/**
+ * psu-process-free-parking-2026-10-06 P-016: should the host park its child
+ * NOW? Every refusal names its reason (reported on the host event so "why
+ * didn't it park" is a read, not a guess). Ordered cheapest-first; the caller
+ * only pays for the /proc descendant walk when every other gate passed (pass a
+ * `descendants` thunk). Pure; exported for tests.
+ *
+ * @param {{
+ *   idleMs: number,
+ *   agent?: string | null,
+ *   now: number,
+ *   lastActivityAt: number,
+ *   childPromptReady: boolean,
+ *   parked?: boolean,
+ *   busy?: boolean,
+ *   quotaBlocked?: boolean,
+ *   composerPending?: boolean,
+ *   resumable?: boolean,
+ *   descendants: () => number | null,
+ * }} input
+ * @returns {{ park: boolean, reason: string, idleForMs?: number, descendants?: number | null }}
+ */
+export function parkVerdict({
+  idleMs,
+  agent = null,
+  now,
+  lastActivityAt,
+  childPromptReady,
+  parked = false,
+  busy = false,
+  quotaBlocked = false,
+  composerPending = false,
+  resumable = true,
+  descendants,
+}) {
+  if (!(Number.isFinite(idleMs) && idleMs > 0)) return { park: false, reason: 'disabled' };
+  if (String(agent ?? '').trim().toLowerCase() !== 'claude') {
+    return { park: false, reason: 'agent-not-parkable' };
+  }
+  if (parked) return { park: false, reason: 'already-parked' };
+  if (busy) return { park: false, reason: 'busy' };
+  // D-005: a quota-walled Claude TUI can hold a submission it auto-continues at
+  // the reset ("continuing automatically at 1pm"). That pending turn lives only
+  // in the CLI's memory, so a SIGKILL would drop it silently. Stay resident
+  // until the wall clears; the reset turn then runs and the child parks after.
+  if (quotaBlocked) return { park: false, reason: 'quota-wait' };
+  if (!resumable) return { park: false, reason: 'no-resumable-session-id' };
+  if (!childPromptReady) return { park: false, reason: 'prompt-not-ready' };
+  if (composerPending) return { park: false, reason: 'composer-pending' };
+  const idleForMs = Math.max(0, now - (Number(lastActivityAt) || 0));
+  if (idleForMs < idleMs) return { park: false, reason: 'not-idle-long-enough', idleForMs };
+  const n = typeof descendants === 'function' ? descendants() : null;
+  if (n === null || n === undefined) {
+    return { park: false, reason: 'descendants-unknown', idleForMs, descendants: null };
+  }
+  if (n > 0) return { park: false, reason: 'child-has-descendants', idleForMs, descendants: n };
+  return { park: true, reason: 'idle', idleForMs, descendants: 0 };
+}
+
+/**
+ * psu-process-free-parking P-017: the id of the newest top-level Claude
+ * transcript in a PER-SESSION config dir (`<configDir>/projects/<cwd>/<id>.jsonl`).
+ * An in-TUI `/clear` starts a new conversation under a new id that the launch
+ * argv never learns, so resuming the argv's id alone could revive the wrong
+ * conversation. Only trusted when the config dir is this session's isolation
+ * dir (its path names `ownerId`): in a shared dir the newest file can belong to
+ * another session. Returns null when it cannot tell. Exported for tests.
+ * @param {string | null | undefined} configDir
+ * @param {{ ownerId?: string | null, readdir?: (p: string) => string[], stat?: (p: string) => { mtimeMs: number, isFile: () => boolean } }} [opts]
+ * @returns {{ id: string, mtimeMs: number } | null}
+ */
+export function newestSessionTranscriptId(
+  configDir,
+  { ownerId = null, readdir = readdirSync, stat = statSync } = {},
+) {
+  if (!configDir || !ownerId || !String(configDir).includes(String(ownerId))) return null;
+  const projects = `${configDir}/projects`;
+  let dirs;
+  try {
+    dirs = readdir(projects);
+  } catch {
+    return null;
+  }
+  /** @type {{ id: string, mtimeMs: number } | null} */
+  let best = null;
+  for (const dir of dirs) {
+    let files;
+    try {
+      files = readdir(`${projects}/${dir}`);
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.endsWith('.jsonl')) continue;
+      let st;
+      try {
+        st = stat(`${projects}/${dir}/${file}`);
+      } catch {
+        continue;
+      }
+      if (!st.isFile()) continue;
+      if (!best || st.mtimeMs > best.mtimeMs) best = { id: file.slice(0, -'.jsonl'.length), mtimeMs: st.mtimeMs };
+    }
+  }
+  return best;
+}
+
+/**
  * Session activity tracker (agent-liveness-heartbeat-hardening-2026-06-12
  * P-006): the OUTPUT-side sibling of makeIdleGate. The pty stream is a true
  * mid-turn signal — a generating agent repaints its TUI constantly — so
@@ -3006,12 +4882,14 @@ export function shutdownRefusalReason({
  * @param {number} [opts.quietMs]
  * @param {number} [opts.capMs]
  * @param {() => number} [opts.now]
+ * @param {() => {phase?: string, pendingTools?: number} | null} [opts.nativeExecution]
  */
 export function makeAgentBusyGate({
   lastOutputAt,
   quietMs = OUTPUT_QUIET_MS,
   capMs = TURN_INJECT_BUSY_CAP_MS,
   now = Date.now,
+  nativeExecution = () => null,
 } = {}) {
   const getLast = typeof lastOutputAt === 'function' ? lastOutputAt : () => 0;
   return {
@@ -3031,8 +4909,11 @@ export function makeAgentBusyGate({
      *    agent's native turn genuinely completed (see the `verifiedBoundary?.()`
      *    call below). The bare `= null` default alone made gen:declarations infer
      *    the LITERAL type `null`, which rejected every real caller — including
-     *    this file's own at the codex carry and verified-boundary sites. */
-    async waitAtPrompt(overrideCapMs, verifiedBoundary = null) {
+     *    this file's own at the codex carry and verified-boundary sites.
+     *  @param {(() => boolean) | null} [abortBoundary] predicate that makes an
+     *    in-flight inject obsolete. It exits the wait without claiming the
+     *    prompt is safe; the caller must return without writing. */
+    async waitAtPrompt(overrideCapMs, verifiedBoundary = null, abortBoundary = null) {
       const effectiveCapMs = overrideCapMs ?? capMs;
       const deadline = now() + effectiveCapMs;
       // EI-19480099650947832: track the LONGEST quiet window actually observed,
@@ -3048,13 +4929,23 @@ export function makeAgentBusyGate({
       // Re-check in case the agent keeps emitting during the wait.
       // eslint-disable-next-line no-constant-condition
       while (true) {
-        if (verifiedBoundary?.()) {
+        // A retry that became obsolete because its original native turn started
+        // must be canceled even while that turn is still busy. This predicate
+        // never declares the prompt safe; its caller returns without writing.
+        let shouldAbort = false;
+        try { shouldAbort = abortBoundary?.() === true; } catch { /* fail closed: keep waiting */ }
+        if (shouldAbort) return { deferred: false, boundary: 'abort-before-write' };
+
+        const nativeBusy = nativeExecutionBlocksInjection(nativeExecution());
+        if (!nativeBusy && verifiedBoundary?.()) {
           await new Promise((resolve) => setImmediate(resolve));
-          if (verifiedBoundary()) return { deferred: false, boundary: 'native-turn-complete' };
+          if (!nativeExecutionBlocksInjection(nativeExecution()) && verifiedBoundary()) {
+            return { deferred: false, boundary: 'native-turn-complete' };
+          }
         }
         const quietFor = this.quietForMs();
         if (quietFor > maxQuietForMs) maxQuietForMs = quietFor;
-        if (quietFor >= quietMs) {
+        if (!nativeBusy && quietFor >= quietMs) {
           // EI-22806311344295685: an expired timer can run before libuv's poll
           // phase drains an already-buffered node-pty onData callback. Yield to
           // the check phase once, then re-read the output timestamp; otherwise
@@ -3076,7 +4967,9 @@ export function makeAgentBusyGate({
           await new Promise((resolve) => setImmediate(resolve));
           const confirmedQuietFor = this.quietForMs();
           if (confirmedQuietFor > maxQuietForMs) maxQuietForMs = confirmedQuietFor;
-          if (confirmedQuietFor >= quietMs) return { deferred: false };
+          if (confirmedQuietFor >= quietMs && !nativeExecutionBlocksInjection(nativeExecution())) {
+            return { deferred: false };
+          }
         }
         if (now() >= deadline) return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs };
         // P-004 (the part that IS a real defect): recompute the sleep from the
@@ -3088,7 +4981,7 @@ export function makeAgentBusyGate({
         // the cap — the next pass reads the fresh value and sleeps properly
         // (10, 1490, 1500, 1500, …). So this is a micro-correction, NOT the
         // false-defer fix; see D-005 for the retraction of that claim.
-        const need = Math.max(0, quietMs - this.quietForMs());
+        const need = nativeBusy ? 100 : Math.max(0, quietMs - this.quietForMs());
         const wait = Math.min(need, Math.max(0, deadline - now()));
         await new Promise((r) => setTimeout(r, Math.max(10, wait)));
       }
@@ -3116,16 +5009,17 @@ export function makeAgentBusyGate({
 /**
  * Carry-respawn drill RE-ARM controller (EI-12754, the leader-concurred re-arm
  * leg deferred out of the EI-12655 diff). A carry-respawn DRILL refused at the
- * busy-gate bail used to terminally drop on the FIRST refusal — correct for a
- * wake `turn` (the durable inbox stands for the next natural turn) but lossy
- * for a drill, whose whole point is the cut. This schedules exactly ONE
- * deferred retry at the next settled turn:
+ * busy-gate bail used to terminally drop after its single re-armed window —
+ * correct for a wake `turn` (the durable inbox stands for the next natural
+ * turn) but lossy for a drill, whose whole point is the cut. This schedules a
+ * deferred retry loop across safe-boundary windows:
  *
  *   - same clean-boundary discipline (the retry re-acquires the inject mutex
  *     and re-waits the SAME agent-busy gate — no timer polling of its own, the
  *     gate's quiet check is the settle detector; D-006 never-kill-mid-turn holds);
- *   - once-only per drillId (a permanently-busy session drops LOUD on the
- *     re-armed attempt instead of looping);
+ *   - one actual lifecycle cut per drillId; busy windows are re-polled without
+ *     holding the inject mutex, and the host's age-derived attempt budget keeps
+ *     a permanently-busy drill bounded;
  *   - every path emits a durable event: 'carry-drill-rearm-queued' when the
  *     retry is scheduled (non-terminal — op:'report'/'verify' ignore it), then
  *     either recycle()'s own terminal delivered/dropped events, or a terminal
@@ -3170,11 +5064,14 @@ export function makeCarryRearmController({
   //
   // Defaulting to null preserves the existing unit callers that construct this
   // controller with `recycle` alone.
-  /** @type {null | ((message: any, ctx: {drillId: string, mode: string, key: string}) => Promise<{delivered: boolean, reason?: string} | void>)} */
+  /** @type {null | ((message: any, ctx: {drillId: string, mode: string, key: string}) => Promise<{delivered: boolean, reason?: string, retryable?: boolean} | void>)} */
   performDelivery = null,
   emitEvent, // (kind, extra) => void — writes BOTH the per-owner host log + shared ledger
   capMs = TURN_INJECT_BUSY_CAP_MS * 2,
   maxProductionAttempts = Number.POSITIVE_INFINITY,
+  // The host derives this finite drill budget from the existing freshness and
+  // re-arm windows. Keep the factory's standalone default conservative.
+  maxDrillAttempts = 1,
   // Production retries are unbounded. When staged owner input is already
   // known, yield to the host's timers/input events instead of spinning only
   // through immediately-resolved promise microtasks.
@@ -3193,8 +5090,24 @@ export function makeCarryRearmController({
   // Age may not expire a production continuation. Epoch supersession MUST:
   // an obsolete request must neither suppress wakes nor replace its successor.
   isSuperseded = (_msg) => false,
+  // Production carry-respawns are admitted only when the effective per-owner
+  // wake mode is explicitly `auto`. Null/throws fail closed and leave the carry
+  // pending for a paced re-read; non-carry wake modes keep their own delivery
+  // policy and are not gated here.
+  readWakeMode = async () => 'auto',
+  wakeModeRetryMs = 30_000,
+  waitWakeModeRetry = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 }) {
   const pending = new Set();
+  // A host teardown must close the detached re-arm loop before the PTY and its
+  // delivery dedup table disappear. Without this boundary, a production carry
+  // can remain pending forever after child-exit: the retry is waiting on a gate
+  // that can never settle, and later loop wakes are suppressed by
+  // pendingCount(). The async retry still observes this flag when an injected
+  // wait eventually resolves, so disposal is safe even when a gate cannot be
+  // cancelled synchronously.
+  let disposed = false;
+  const settledMessages = new WeakSet();
   // EI-18681914950138372: a SEPARATE tracking set, covering the carry-respawn's
   // FIRST delivery attempt — from the moment the host accepts the message
   // through to that attempt's conclusion (delivered / dropped / handed off to
@@ -3217,6 +5130,8 @@ export function makeCarryRearmController({
   // instead of being terminally dropped (see schedule() below).
   const latest = new Map();
   const pendingMessages = new Map();
+  const wasSettled = (msg) => msg != null && (typeof msg === 'object' || typeof msg === 'function') &&
+    settledMessages.has(msg);
   /**
    * P-005: the re-arm now covers EVERY gated mode, so the non-drill sentinel
    * must be namespaced BY MODE.
@@ -3226,32 +5141,100 @@ export function makeCarryRearmController({
    * reported 'duplicate'/'superseded' by the other and never delivered —
    * re-creating the exact drop this item removes, disguised as correct dedupe.
    * Drills still dedupe per drillId, which is already unique.
-   */
+  */
   const rearmModeOf = (msg) => String(msg?.mode || 'carry-respawn');
+  const carryWakeModePauseReason = async (msg) => {
+    if (rearmModeOf(msg) !== 'carry-respawn') return null;
+    let currentMode = null;
+    try {
+      currentMode = await readWakeMode(msg);
+    } catch {
+      // Unreadable mode is not evidence of auto; preserve the pending carry.
+    }
+    if (currentMode === 'auto') return null;
+    return currentMode === 'manual' ? 'wake-mode-manual' : 'wake-mode-unavailable';
+  };
   const keyFor = (msg) => {
     const drillId = String(msg?.drillId || '');
     return drillId || `${NON_DRILL_REARM_KEY}:${rearmModeOf(msg)}`;
   };
-  const settle = (key, outcome) => {
-    const messages = [...(pendingMessages.get(key) ?? [])];
-    onSettlement(messages, outcome);
+  const settle = (key, outcome, messagesOverride = null) => {
+    const messages = messagesOverride ?? [...(pendingMessages.get(key) ?? [])];
+    const unsettled = messages.filter((msg) => !wasSettled(msg));
+    if (!unsettled.length) return false;
+    for (const msg of unsettled) {
+      if (msg != null && (typeof msg === 'object' || typeof msg === 'function')) settledMessages.add(msg);
+    }
+    onSettlement(unsettled, outcome);
+    return true;
+  };
+  const terminalDropFor = (msg, reason, deliveryIds = []) => {
+    const drillId = String(msg?.drillId || '');
+    const isDrill = Boolean(drillId);
+    const mode = rearmModeOf(msg);
+    const kind = isDrill
+      ? 'carry-drill-carry-dropped'
+      : mode === 'carry-respawn' ? 'respawn-carry-dropped' : 'wake-rearm-dropped';
+    const extra = isDrill
+      ? {
+          drillId,
+          sessionClass: msg?.sessionClass ?? '',
+          reason,
+          rearmed: true,
+          maxAttempts: maxDrillAttempts,
+          quietMs: null,
+          verifier: 'not-observed',
+        }
+      : {
+          mode,
+          reason,
+          rearmed: true,
+          ...(deliveryIds.length ? { deliveryIds } : {}),
+        };
+    return { kind, extra, isDrill };
   };
   return {
-    /** Live count of carry-respawns either awaiting their first delivery
-     *  attempt's outcome OR a re-armed retry (diagnostics/tests, and the input
-     *  to shouldDeferWakeForPendingRespawn). */
-    pendingCount() {
-      return pending.size + inFlight.size;
+    /** Live count of accepted first attempts and re-armed retries.
+     *  Filter carry-respawn for wake arbitration: the controller also owns
+     *  turn retries, which must never suppress themselves as pending carries.
+     *  @param {string | null} [mode]
+     */
+    pendingCount(mode = null) {
+      if (mode == null) return pending.size + inFlight.size;
+      return [...pending].filter((key) => rearmModeOf(latest.get(key)) === mode).length +
+        [...inFlight].filter((msg) => rearmModeOf(msg) === mode).length;
     },
     /** Whether a message is still owned by the detached re-arm loop. */
     isPendingMessage(msg) {
       const key = keyFor(msg);
       return pendingMessages.get(key)?.has(msg) === true;
     },
+    /**
+     * Refresh an already-queued retry only when the same delivery is still the
+     * current payload. A later distinct delivery may have superseded it, so a
+     * delayed duplicate of the older id must never roll the re-arm backwards.
+     * Keep the original receipt time: retrying the delivery updates its snapshot,
+     * not its age or ordering against a newer host generation.
+     */
+    refreshPendingMessage(msg) {
+      if (disposed) return false;
+      const key = keyFor(msg);
+      const deliveryId = String(msg?.deliveryId ?? '');
+      if (!deliveryId || !pending.has(key)) return false;
+      const current = latest.get(key);
+      if (String(current?.deliveryId ?? '') !== deliveryId) return false;
+      latest.set(key, {
+        ...current,
+        ...msg,
+        receivedAtMs: current.receivedAtMs,
+      });
+      return true;
+    },
     /** EI-18681914950138372: call the MOMENT a carry-respawn control message is
      *  accepted by the host, before it enters its own busy-gate wait — marks it
      *  in-flight so a wake arriving during that wait is correctly deferred. */
     beginFirstAttempt(msg) {
+      if (disposed) return;
       inFlight.add(msg);
     },
     /** EI-18681914950138372: call exactly once, when that first attempt has
@@ -3264,13 +5247,24 @@ export function makeCarryRearmController({
       inFlight.delete(msg);
     },
     /**
-     * Schedule the one-shot retry for a busy-gate-refused carry-respawn drill.
-     * Returns 'queued' when scheduled, 'duplicate' when a retry for this drillId
-     * is already pending (the caller should terminally drop instead), or
+     * Schedule the re-poll loop for a busy-gate-refused carry-respawn. A drill
+     * still performs one lifecycle cut; it may need multiple safe-boundary
+     * windows before that cut is safe. Returns 'queued' when scheduled,
+     * 'duplicate' when a loop for this drillId is already pending, or
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
     schedule(msg) {
+      if (disposed) {
+        const key = keyFor(msg);
+        if (!wasSettled(msg)) {
+          const deliveryIds = msg?.deliveryId ? [String(msg.deliveryId)] : [];
+          const terminal = terminalDropFor(msg, 'host-ending', deliveryIds);
+          emitEvent(terminal.kind, terminal.extra);
+          settle(key, { delivered: false, reason: 'host-ending' }, [msg]);
+        }
+        return 'closed';
+      }
       const drillId = String(msg?.drillId || '');
       const isDrill = !!drillId;
       // Drills dedupe per-drillId; a production respawn (no drillId) dedupes
@@ -3289,8 +5283,8 @@ export function makeCarryRearmController({
         // 00:28:00 ran on fruitlessly for another 14 minutes. The newest
         // request is strictly the better one to deliver (newer carry document,
         // newer receivedAtMs, so it also survives the staleness guard longer),
-        // so the in-flight re-poll ADOPTS it. A DRILL still dedupes terminally:
-        // a drill is a one-shot test whose whole point is that single shot.
+        // so the in-flight re-poll ADOPTS it. A DRILL still dedupes by drillId:
+        // one drill has one lifecycle cut, so a duplicate control is refused.
         if (isDrill) return 'duplicate';
         pendingMessages.get(key)?.add(msg);
         latest.set(key, msg);
@@ -3310,10 +5304,16 @@ export function makeCarryRearmController({
       const droppedKind = isDrill
         ? 'carry-drill-carry-dropped'
         : mode === 'carry-respawn' ? 'respawn-carry-dropped' : 'wake-rearm-dropped';
+      const maxAttempts = isDrill ? maxDrillAttempts : maxProductionAttempts;
+      let finalPromptQuietMs = null;
+      let verifierReason = 'not-observed';
+      const dropDiagnostics = () => isDrill
+        ? { maxAttempts, quietMs: finalPromptQuietMs, verifier: verifierReason }
+        : {};
       // Drill rows carry drillId + sessionClass (P-020 correlation); a production
       // row is keyed by `mode` instead — never a fabricated/empty drillId.
       const extra = isDrill
-        ? { drillId, sessionClass: msg.sessionClass ?? '', reason: 'busy-gate-expired', capMs }
+        ? { drillId, sessionClass: msg.sessionClass ?? '', reason: 'busy-gate-expired', capMs, maxAttempts }
         : {
           mode,
           reason: 'busy-gate-expired',
@@ -3342,13 +5342,12 @@ export function makeCarryRearmController({
         // dropped 'busy-gate-expired'). Instead it RE-POLLS across successive
         // windows — RELEASING the inject mutex between attempts so coord/loop
         // wakes to this session are never wedged — until the agent idles and
-        // the carry is delivered. Production has no age-based drop; drills
-        // remain bounded by their one-shot contract.
+        // the carry is delivered. Drills use the same safe-boundary re-poll,
+        // bounded by their freshness age and host-derived attempt budget.
         // Production compaction is a MUST-DELIVER continuation. A live session
         // may spend longer than the historical 30-minute stale/attempt budget
         // in one continuously-rendering turn; dropping the carry then strands
         // the session at its context ceiling. Drills remain bounded experiments.
-        const maxAttempts = isDrill ? 1 : maxProductionAttempts;
         // EI-19480099650947832: carried onto every terminal row so a drop says
         // WHY it could never fire — see waitAtPrompt's maxQuietForMs comment.
         let observedMaxQuietMs = 0;
@@ -3357,7 +5356,7 @@ export function makeCarryRearmController({
         const dropSuperseded = (candidate) => {
           if (!isSuperseded(candidate)) return false;
           emitEvent(droppedKind, {
-            ...extra, rearmed: true, reason: 'superseded',
+            ...extra, ...dropDiagnostics(), rearmed: true, reason: 'superseded',
             observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
           });
           settle(key, { delivered: false, reason: 'superseded' });
@@ -3367,17 +5366,25 @@ export function makeCarryRearmController({
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             attemptsMade = attempt + 1;
             const release = await acquireInject();
+            if (disposed) {
+              release();
+              return;
+            }
             // EI-19480099650947832: re-read the payload EVERY attempt — a later
             // request-compaction may have superseded it since the last one, and
             // the freshest carry document is always the right one to deliver.
             const current = latest.get(key) ?? msg;
             let deferred = false;
+            let deliveryDeferred = false;
+            let wakeModePauseReason = null;
             try {
+              if (disposed) return;
               // Check BEFORE waiting on the successor's output. Otherwise an
               // obsolete retry can retain pending wake suppression indefinitely.
               if (dropSuperseded(current)) return;
               if (waitIdle) {
                 const idle = await waitIdle();
+                if (disposed) return;
                 if (dropSuperseded(latest.get(key) ?? current)) return;
                 if (idle?.deferred) {
                   deferReason = idle.reason || 'owner-input-cap';
@@ -3387,6 +5394,7 @@ export function makeCarryRearmController({
               }
               if (hasPendingOwnerInput()) {
                 const clear = waitForOwnerInputClear ? await waitForOwnerInputClear() : null;
+                if (disposed) return;
                 if (dropSuperseded(latest.get(key) ?? current)) return;
                 if (clear?.deferred || hasPendingOwnerInput()) {
                   deferReason = clear?.reason || 'owner-input-cap';
@@ -3395,23 +5403,42 @@ export function makeCarryRearmController({
                 }
                 deferReason = 'busy-gate-expired';
               }
-              const atPrompt = await waitAtPrompt(capMs, current);
-              if (dropSuperseded(latest.get(key) ?? current)) return;
-              // The owner may have started composing during the prompt wait.
-              if (hasPendingOwnerInput()) {
-                // Re-enter through the composer wait AND a fresh prompt check.
-                // Enter may have started a new owner turn: the prompt proof we
-                // observed before that input is no longer a safe cut boundary.
-                deferReason = 'owner-input-cap';
-                await yieldAfterDefer();
-                continue;
+              // Check immediately before and after the potentially long prompt
+              // wait. A manual flip or a failed read pauses this retry without
+              // consuming the carry or holding the inject mutex.
+              let atPrompt = null;
+              wakeModePauseReason = await carryWakeModePauseReason(current);
+              if (disposed) return;
+              if (wakeModePauseReason) deferReason = wakeModePauseReason;
+              if (!wakeModePauseReason) {
+                atPrompt = await waitAtPrompt(capMs, current);
+                if (disposed) return;
+                if (Number.isFinite(atPrompt?.quietMs)) finalPromptQuietMs = atPrompt.quietMs;
+                if (typeof atPrompt?.verifier === 'string' && atPrompt.verifier) {
+                  verifierReason = atPrompt.verifier;
+                }
+                if (dropSuperseded(latest.get(key) ?? current)) return;
+                // The owner may have started composing during the prompt wait.
+                if (hasPendingOwnerInput()) {
+                  // Re-enter through the composer wait AND a fresh prompt check.
+                  // Enter may have started a new owner turn: the prompt proof we
+                  // observed before that input is no longer a safe cut boundary.
+                  deferReason = 'owner-input-cap';
+                  await yieldAfterDefer();
+                  continue;
+                }
+                if (Number.isFinite(atPrompt?.maxQuietForMs) && atPrompt.maxQuietForMs > observedMaxQuietMs) {
+                  observedMaxQuietMs = atPrompt.maxQuietForMs;
+                }
+                wakeModePauseReason = await carryWakeModePauseReason(latest.get(key) ?? current);
+                if (disposed) return;
+                if (wakeModePauseReason) deferReason = wakeModePauseReason;
               }
-              deferred = !!atPrompt.deferred;
-              deferReason = 'busy-gate-expired';
-              if (Number.isFinite(atPrompt?.maxQuietForMs) && atPrompt.maxQuietForMs > observedMaxQuietMs) {
-                observedMaxQuietMs = atPrompt.maxQuietForMs;
+              if (!wakeModePauseReason) {
+                deferred = !!atPrompt?.deferred;
+                deferReason = 'busy-gate-expired';
               }
-              if (!deferred) {
+              if (!wakeModePauseReason && !deferred) {
                 // EI-19480099650947832: re-read ONCE MORE at the delivery point.
                 // `current` was read before the wait, and a supersede can land at
                 // ANY await — including the one we just returned from. This is
@@ -3425,6 +5452,7 @@ export function makeCarryRearmController({
                 if (isDrill && isStale(deliver)) {
                   emitEvent(droppedKind, {
                     ...extra,
+                    ...dropDiagnostics(),
                     rearmed: true,
                     reason: 'carry-stale',
                     observedMaxQuietMs,
@@ -3440,14 +5468,25 @@ export function makeCarryRearmController({
                     drillId,
                     sessionClass: deliver.sessionClass ?? '',
                   });
-                const outcome = result ?? { delivered: false, reason: 'recycle-outcome-unavailable' };
-                // R-1: the newly-covered modes had NO terminal row on this path.
-                // A performDelivery that returned delivered:false (the turn
-                // verifier aborted or exhausted) settled silently — the one
-                // outcome the re-arm exists to make impossible. carry-respawn
-                // keeps its existing recycle-side rows (renaming would orphan
-                // the drill ledger), and drills keep their P-020 shape.
-                if (performDelivery && !isDrill && mode !== 'carry-respawn') {
+              if (disposed) return;
+              const outcome = result ?? { delivered: false, reason: 'recycle-outcome-unavailable' };
+              if (performDelivery && !isDrill && mode !== 'carry-respawn'
+                && !outcome.delivered && outcome.retryable) {
+                // A turn re-arm can reach its verified prompt while a higher-priority
+                // carry-respawn still owns the next write. That is an ordering deferral,
+                // not a terminal delivery failure: keep the delivery ID pending and retry
+                // after a paced gap so the carry-respawn can finish without losing the loop
+                // wake or spinning on the already-quiet prompt.
+                deferReason = String(outcome.reason ?? 'delivery-deferred');
+                deliveryDeferred = true;
+              }
+              // R-1: the newly-covered modes had NO terminal row on this path.
+              // A performDelivery that returned delivered:false (the turn
+              // verifier aborted or exhausted) settled silently — the one
+              // outcome the re-arm exists to make impossible. carry-respawn
+              // keeps its existing recycle-side rows (renaming would orphan
+              // the drill ledger), and drills keep their P-020 shape.
+              if (!deliveryDeferred && performDelivery && !isDrill && mode !== 'carry-respawn') {
                   emitEvent(outcome.delivered ? 'wake-rearm-delivered' : droppedKind, {
                     ...extra,
                     rearmed: true,
@@ -3457,8 +5496,10 @@ export function makeCarryRearmController({
                     ...terminalIds(),
                   });
                 }
+              if (!deliveryDeferred) {
                 settle(key, outcome);
                 return;
+              }
               }
             } finally {
               // Release BETWEEN attempts — never hold the gated-inject mutex
@@ -3466,9 +5507,32 @@ export function makeCarryRearmController({
               // whole (potentially many-window) wait.
               release();
             }
-            // Deferred: the agent stayed mid-turn past the cap. Production
-            // carries continue to the next window; drills fall out after their
-            // one shot.
+            if (wakeModePauseReason) {
+              // Do not spin on an unavailable admin read or stage a carry that
+              // was already accepted. Release first, then re-read at a paced
+              // interval so owner wakes can still acquire the shared mutex.
+              try {
+                await waitWakeModeRetry(wakeModeRetryMs, wakeModePauseReason);
+              } catch {
+                // A test/custom waiter failure must not turn a pause into a
+                // terminal drop; preserve the payload and retain the cadence.
+                await new Promise((resolve) => setTimeout(resolve, wakeModeRetryMs));
+              }
+              continue;
+            }
+            if (deliveryDeferred) {
+              // A retryable pre-write ordering block is already beyond the prompt gate;
+              // poll at the same bounded cadence used for wake-mode recovery.
+              try {
+                await waitWakeModeRetry(wakeModeRetryMs);
+              } catch {
+                await new Promise((resolve) => setTimeout(resolve, wakeModeRetryMs));
+              }
+              continue;
+            }
+            // Deferred: the agent stayed mid-turn past the cap. Both production
+            // carries and drills may continue to another safe-boundary window;
+            // drills stop at their freshness or attempt budget.
             // EI-19480099650947832: re-read AGAIN here — a supersede that landed
             // DURING this attempt must not be killed off by the staleness of the
             // message this attempt happened to start with. That is the whole
@@ -3476,6 +5540,7 @@ export function makeCarryRearmController({
             if (isDrill && isStale(latest.get(key) ?? current)) {
               emitEvent(droppedKind, {
                 ...extra,
+                ...dropDiagnostics(),
                 rearmed: true,
                 reason: 'carry-stale',
                 observedMaxQuietMs,
@@ -3485,16 +5550,17 @@ export function makeCarryRearmController({
               return;
             }
           }
-          // A drill's single shot deferred, or a production respawn exhausted the
-          // anti-spin cap without ever idling — terminal, loud.
+          // A drill exhausted its bounded retry budget, or production exhausted
+          // the optional anti-spin cap without ever idling — terminal, loud.
           emitEvent(droppedKind, {
-            ...extra, rearmed: true, reason: deferReason,
+            ...extra, ...dropDiagnostics(), rearmed: true, reason: deferReason,
             observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
           });
           settle(key, { delivered: false, reason: deferReason });
         } catch (error) {
           emitEvent(droppedKind, {
             ...extra,
+            ...dropDiagnostics(),
             rearmed: true,
             reason: 'rearm-error',
             detail: String(error?.message ?? error).slice(0, 200),
@@ -3508,6 +5574,40 @@ export function makeCarryRearmController({
         }
       })();
       return 'queued';
+    },
+    /**
+     * Close all detached re-arm work when this PTY host is ending. Every
+     * accepted message receives one terminal settlement so its delivery dedup
+     * slot cannot strand a future loop wake. The method is idempotent; a retry
+     * already blocked inside an injected wait will notice `disposed` when that
+     * wait returns and exit without recycling a dead child.
+     */
+    dispose(reason = 'host-ending') {
+      if (disposed) return false;
+      disposed = true;
+      const messagesByKey = new Map();
+      for (const [key, messages] of pendingMessages) {
+        messagesByKey.set(key, new Set(messages));
+      }
+      for (const msg of inFlight) {
+        const key = keyFor(msg);
+        const messages = messagesByKey.get(key) ?? new Set();
+        messages.add(msg);
+        messagesByKey.set(key, messages);
+      }
+      for (const [key, messages] of messagesByKey) {
+        const list = [...messages];
+        if (!list.some((msg) => !wasSettled(msg))) continue;
+        const deliveryIds = list.map((msg) => msg?.deliveryId).filter(Boolean).map(String);
+        const terminal = terminalDropFor(list[0], reason, deliveryIds);
+        emitEvent(terminal.kind, terminal.extra);
+        settle(key, { delivered: false, reason }, list);
+      }
+      pending.clear();
+      inFlight.clear();
+      latest.clear();
+      pendingMessages.clear();
+      return true;
     },
   };
 }
@@ -3546,6 +5646,8 @@ export function makeCarryRearmController({
  * @param {() => number} [opts.lastInputAt]
  * @param {() => boolean} [opts.isQuotaBlocked]
  * @param {() => boolean} [opts.isSubmitted] exact native-transcript proof of this turn
+ * @param {boolean} [opts.requireNativeConfirmation] repaint cannot confirm a tagged turn
+ * @param {number} [opts.inputAtStart] owner-input baseline captured before the first write
  * @param {number} [opts.quietMs]
  * @param {number} [opts.pollMs]
  * @param {number} [opts.polls]
@@ -3561,6 +5663,8 @@ export function makeSubmitVerifier({
   lastInputAt = () => 0,
   isQuotaBlocked = () => false,
   isSubmitted = () => false,
+  requireNativeConfirmation = false,
+  inputAtStart: inputBaseline,
   quietMs = SUBMIT_VERIFY_QUIET_MS,
   pollMs = SUBMIT_VERIFY_POLL_MS,
   polls = SUBMIT_VERIFY_POLLS,
@@ -3575,9 +5679,10 @@ export function makeSubmitVerifier({
   return {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
      *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | 'quota-blocked' | null;
-     *  exhausted = no output was observed after the maximum resubmits). */
+     *  exhausted = native proof is missing at the deadline, or the legacy
+     *  output-only recovery budget was spent without output). */
     async verify() {
-      const inputAtStart = getIn() || 0;
+      const inputAtStart = inputBaseline ?? (getIn() || 0);
       let resubmits = 0;
       let outputObservedAfterResubmit = false;
       let outputAtLastResubmit = null;
@@ -3586,13 +5691,13 @@ export function makeSubmitVerifier({
       let i = 0;
       const quotaAbort = () => ({ polls: i, resubmits, aborted: 'quota-blocked', exhausted: false });
       const notifyExhausted = () => {
-        // A resubmit can legitimately wake a previously silent turn. Once any
-        // output is observed after a resubmit, this verifier must never turn a
-        // later quiet interval into a host-killing exhaustion signal.
+        // Preserve the legacy output-only heuristic for unsupported input.
+        // A tagged native-verifiable turn instead needs its exact user row;
+        // composer repaint cannot suppress an unconfirmed verdict.
         if (
           exhaustionNotified ||
-          outputObservedAfterResubmit ||
-          resubmits < maxResubmits
+          (!requireNativeConfirmation &&
+            (outputObservedAfterResubmit || resubmits < maxResubmits))
         ) {
           return;
         }
@@ -3631,8 +5736,12 @@ export function makeSubmitVerifier({
           return { polls: i + 1, resubmits, aborted: null, exhausted: false, confirmed: 'native' };
         }
         const quietFor = now() - outputAtPoll;
-        if (quietFor < quietMs) continue; // output flowing — a turn is running
+        if (quietFor < quietMs) continue; // avoid CRs while the terminal is active
         if (resubmits >= maxResubmits) {
+          // Native persistence can lag the TUI. Spend the remaining proof
+          // window without another CR; a repaint is neither acceptance nor
+          // permission to stop checking the exact turn.
+          if (requireNativeConfirmation) continue;
           notifyExhausted();
           break;
         }
@@ -3652,8 +5761,12 @@ export function makeSubmitVerifier({
       }
       // If the bounded poll window ends on the final resubmit, there is no
       // following iteration to observe a quiet poll. Treat the window itself as
-      // exhausted, but keep the same output-after-resubmit suppression rule.
+      // exhausted; only the legacy heuristic suppresses this on output.
       if (isQuotaBlocked()) return quotaAbort();
+      if ((getIn() || 0) > inputAtStart) return { polls: i, resubmits, aborted: 'human-input' };
+      if (isSubmitted()) {
+        return { polls: i, resubmits, aborted: null, exhausted: false, confirmed: 'native' };
+      }
       if (i >= polls) notifyExhausted();
       return { polls: i, resubmits, aborted: null, exhausted };
     },
@@ -3707,6 +5820,53 @@ export function submitVerificationFailureReason(result) {
   return null;
 }
 
+/** WI-10004926: human text for each startup-turn drop reason, printed inside
+ *  the parentheses of the `<label> DROPPED for <owner> (...)` stderr receipt.
+ *  `submit-verification-aborted-<why>` is handled by prefix in
+ *  describeStartupTurnDropReason; any other unmapped reason is still NAMED
+ *  (WI-10004919: an unnamed reason hid a 75s frame-budget drop behind the
+ *  generic text). */
+export const STARTUP_TURN_DROP_REASON_TEXT = Object.freeze({
+  'no-startup-ready-marker-last-resort-failed':
+    'the child never emitted its startup-ready marker AND the last-resort attempt found no prompt',
+  'no-startup-ready-marker': 'the child never emitted its startup-ready marker',
+  'kickoff-marker-echo-unconfirmed': 'the exact Codex kickoff marker never appeared in the composer echo',
+  'submit-verification-exhausted': 'submit verification exhausted without observing output after a resubmit',
+  'fresh-child-owner-input': 'the owner used the fresh child before its carry prompt was submitted',
+  'resume-compaction-timeout':
+    'Claude resume compaction recovery timed out before a standalone composer prompt appeared',
+  'codex-backend-frame-not-observed':
+    'the Codex session frame, a Ready footer or model header, never appeared in its backend-frame budget',
+  'codex-startup-still-starting': 'the Codex footer still read Starting, MCP servers booting, at the kickoff deadline',
+  'never-settled': 'the child never settled to its prompt',
+});
+
+/** @param {string} dropReason @returns {string} */
+export function describeStartupTurnDropReason(dropReason) {
+  const reason = String(dropReason ?? '');
+  if (Object.hasOwn(STARTUP_TURN_DROP_REASON_TEXT, reason)) return STARTUP_TURN_DROP_REASON_TEXT[reason];
+  if (reason.startsWith('submit-verification-aborted-')) {
+    return `submit verification aborted (${reason.slice('submit-verification-aborted-'.length)})`;
+  }
+  return `the child never settled to its prompt [reason ${reason}]`;
+}
+
+/** WI-10004926: the ONE writer of the startup-turn drop receipt.
+ *  packages/operator-core/lib/acceptance-grader.ts parses this exact line with
+ *  `$`-anchored regexes (LAUNCHER_QUOTA_KICKOFF_DROP_RE,
+ *  LAUNCHER_KICKOFF_DROP_RE). Keep the parenthesised tail
+ *  `within <N>ms over <N> attempt(s))` LAST. Anything appended inside or after
+ *  it silently stops grader drop detection;
+ *  apps/operator/lib/psu-pty-host-drop-line-contract.test.ts pins this.
+ *  @param {{ label: string, ownerId: string, dropReason: string, budgetMs: number, attempts: number }} drop
+ *  @returns {string} */
+export function formatStartupTurnDroppedLine({ label, ownerId, dropReason, budgetMs, attempts }) {
+  return (
+    `psu-pty-host: ${label} DROPPED for ${ownerId} (${describeStartupTurnDropReason(dropReason)} ` +
+    `within ${budgetMs}ms over ${attempts} attempt(s))\n`
+  );
+}
+
 /** WI-1386682 (1): does this pty screen text show Claude Code's OWN
  *  usage-wall copy (weekly or 5-hour)? This is the missing half of
  *  WI-1378748's fix — that item stopped a wake exhaustion from being
@@ -3740,6 +5900,8 @@ const CLAUDE_QUOTA_LIMIT_BANNER_PATTERNS = [
   /weekly limit/i,
   /5-hour limit/i,
   /usage limit/i,
+  // Captured gateway 429 from the routed BAR reviewer (EI-24930415587482619).
+  /usage credits are required for long context requests/i,
   /you'?ve reached your fable(?:\s+\d+(?:\.\d+)?)?\s+limit\b/i,
   /\blimit\b[^\n]{0,60}\breset(?:s|ting)?\b/i,
 ];
@@ -3750,9 +5912,11 @@ const CLAUDE_QUOTA_LIMIT_BANNER_PATTERNS = [
  *  WI-2140984. Widen only against captured raw text from a REAL codex wall,
  *  and re-check the new pattern against `codex`'s own strings first. */
 const CODEX_QUOTA_LIMIT_BANNER_PATTERNS = [
-  /you'?ve hit your usage limit/i,
+  // EI-25341697637763590: native quota errors use U+2019 in “You’ve”.
+  // Keep the whole-sentence match while accepting either apostrophe.
+  /you['’]?ve hit your usage limit/i,
   /usage limit reached/i,
-  /you'?ve reached your workspace credit limit/i,
+  /you['’]?ve reached your workspace credit limit/i,
   /your workspace is out of credits/i,
 ];
 
@@ -3958,6 +6122,83 @@ export function quotaLimitBannerVisible(text, agent = '') {
 /** WI-10003875: how often a LATCHED quota block re-consults its corroborator. */
 export const QUOTA_CORROBORATE_TTL_MS = 15_000;
 
+/** WI-6554700010008412: how long past the provider's stated reset a latch is
+ *  held before it expires, so a reset rendered to the minute is not probed
+ *  seconds early. */
+export const QUOTA_RESET_GRACE_MS = 60_000;
+
+/** D-014: first probe of a latched codex wall, doubling per failed probe up to
+ *  the max. A failed probe is one ~3s errored turn, so even a multi-day wall
+ *  costs a few probes a day. */
+export const QUOTA_PROBE_BASE_MS = 30 * 60_000;
+export const QUOTA_PROBE_MAX_MS = 4 * 60 * 60_000;
+
+const QUOTA_RESET_MONTHS = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11,
+};
+
+/** WI-6554700010008412: the reset instant a quota wall states on screen, or
+ *  null. Codex copy only ("... or try again at Oct 14th, 2026 8:24 PM." /
+ *  "try again in 2 days 3 hours 5 minutes."). Codex renders the absolute form
+ *  in the machine's local time, which this host shares with its child. The
+ *  LAST statement in `text` wins (the newest wall). A reset that is not in the
+ *  future at `nowMs` is ignored, so a mis-parse or a replayed old wall can
+ *  never open the gate early; null keeps the old fail-closed level. Pure;
+ *  exported for tests. */
+export function parseQuotaResetAtMs(text, agent = '', nowMs = Date.now()) {
+  if (String(agent ?? '').trim().toLowerCase() !== 'codex') return null;
+  const flat = stripAnsi(String(text ?? '')).replace(/\s+/g, ' ');
+  const starts = [...flat.matchAll(/try again (at|in) /gi)];
+  if (starts.length === 0) return null;
+  const last = starts[starts.length - 1];
+  const tail = flat.slice((last.index ?? 0) + last[0].length, (last.index ?? 0) + last[0].length + 80);
+  const now = Number(nowMs);
+  if (!Number.isFinite(now)) return null;
+  let at = null;
+  if (last[1].toLowerCase() === 'at') {
+    const m = tail.match(
+      /^(?:([A-Za-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?,? (?:(\d{4}),? )?)?(\d{1,2}):(\d{2}) ?([AaPp])\.?[Mm]\b/,
+    );
+    if (!m) return null;
+    const base = new Date(now);
+    let month = base.getMonth();
+    let day = base.getDate();
+    let year = base.getFullYear();
+    if (m[1]) {
+      const mo = QUOTA_RESET_MONTHS[/** @type {keyof typeof QUOTA_RESET_MONTHS} */ (m[1].slice(0, m[1].toLowerCase().startsWith('sept') ? 4 : 3).toLowerCase())];
+      if (mo === undefined) return null;
+      month = mo;
+      day = Number(m[2]);
+      if (m[3]) year = Number(m[3]);
+    }
+    let hour = Number(m[4]) % 12;
+    if (m[6].toLowerCase() === 'p') hour += 12;
+    const minute = Number(m[5]);
+    if (minute > 59 || Number(m[4]) > 12 || Number(m[4]) < 1) return null;
+    at = new Date(year, month, day, hour, minute, 0, 0).getTime();
+    // A bare time already past means tomorrow; a dated reset without a year
+    // already past means next year. An explicit year is taken as stated.
+    if (!m[1] && at <= now) at += 24 * 60 * 60 * 1000;
+    else if (m[1] && !m[3] && at <= now) at = new Date(year + 1, month, day, hour, minute, 0, 0).getTime();
+  } else {
+    const unitMs = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 };
+    let total = 0;
+    let rest = tail;
+    for (;;) {
+      const m = rest.match(/^,? ?(?:and )?(\d+) ?(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b/i);
+      if (!m) break;
+      const u = m[2].toLowerCase();
+      const key = u.startsWith('d') ? 'd' : u.startsWith('h') ? 'h' : u.startsWith('m') ? 'm' : 's';
+      total += Number(m[1]) * unitMs[key];
+      rest = rest.slice(m[0].length);
+    }
+    if (total <= 0) return null;
+    at = now + total;
+  }
+  return Number.isFinite(at) && at > now ? at : null;
+}
+
 /** The rendered text of one Claude Code transcript row: assistant/user text
  *  blocks, tool_use inputs and tool_result bodies — everything the TUI can
  *  echo onto the screen. Pure; exported for tests. */
@@ -4073,12 +6314,32 @@ export function makeQuotaBlockDetector({
   corroborate = /** @type {null | ((match: { matched: boolean, pattern: string | null, excerpt: string | null }) => string)} */ (null),
   corroborateTtlMs = QUOTA_CORROBORATE_TTL_MS,
   onDismiss = /** @type {null | ((dismissed: { matched: boolean, pattern: string | null, excerpt: string | null, blockedSinceMs: number | null }) => unknown)} */ (null),
+  resetGraceMs = QUOTA_RESET_GRACE_MS,
+  probeBaseMs = QUOTA_PROBE_BASE_MS,
+  probeMaxMs = QUOTA_PROBE_MAX_MS,
+  onExpire = /** @type {null | ((expired: { matched: boolean, pattern: string | null, excerpt: string | null, blockedSinceMs: number | null, resetAtMs: number | null, reason: 'stated-reset' | 'probe', probe: number | null }) => unknown)} */ (null),
 } = {}) {
+  /** D-014: credits can return before the stated reset (2026-10-11: stated
+   *  Oct 14, back by 04:25Z Oct 11), and nothing else tells a walled codex host.
+   *  So a codex latch also releases on a backed-off probe: one deferred wake goes
+   *  through; a wall still in place repaints and re-latches. Claude is exempt:
+   *  its TUI auto-continues at the reset and has the transcript corroborator. */
+  const probing = String(agent ?? '').trim().toLowerCase() === 'codex';
+  let probes = 0;
+  /** @type {number | null} */
+  let lastExpiryAtMs = null;
   let buffer = '';
   let blocked = false;
   let awaitingSubmit = deferUntilSubmit;
   /** @type {number | null} */
   let blockedSinceMs = null;
+  /** WI-6554700010008412: the provider's own stated reset ("try again at
+   *  Oct 14th, 2026 8:24 PM"), parsed once from the screen while latched.
+   *  A walled idle TUI writes too little to evict the banner and every wake
+   *  is deferred while blocked, so without this the latch outlived the wall
+   *  forever. null = no reset stated/parsed: the old fail-closed level. */
+  /** @type {number | null} */
+  let resetAtMs = null;
   let lastMatch = { matched: false, pattern: null, excerpt: null };
   /** @type {{ atMs: number, value: string } | null} */
   let verdict = null;
@@ -4090,6 +6351,40 @@ export function makeQuotaBlockDetector({
    *  Anything else ('walled', 'unknown', a throw) keeps today's fail-closed
    *  level. Without a corroborator this is exactly the old `() => blocked`. */
   const isBlockedNow = () => {
+    // Expire at the provider's stated reset. Drop the stale window too, so the
+    // same static bytes cannot re-latch it; a wall that is still up repaints a
+    // fresh banner on the next turn and latches again with its new reset.
+    const expiryAt = blocked ? now() : 0;
+    const dueReset = blocked && resetAtMs != null && expiryAt >= resetAtMs + resetGraceMs;
+    // A non-finite base disables probing (the cap must not re-enable it).
+    const probeMs = Number.isFinite(probeBaseMs) ? Math.min(probeBaseMs * 2 ** probes, probeMaxMs) : Infinity;
+    const dueProbe = blocked && !dueReset && probing && blockedSinceMs != null &&
+      Number.isFinite(probeMs) && expiryAt >= blockedSinceMs + probeMs;
+    if (dueReset || dueProbe) {
+      const expired = {
+        ...lastMatch,
+        blockedSinceMs,
+        resetAtMs,
+        reason: /** @type {'stated-reset' | 'probe'} */ (dueReset ? 'stated-reset' : 'probe'),
+        probe: dueProbe ? probes + 1 : null,
+      };
+      probes = dueProbe ? probes + 1 : 0;
+      lastExpiryAtMs = expiryAt;
+      buffer = '';
+      blocked = false;
+      blockedSinceMs = null;
+      resetAtMs = null;
+      verdict = null;
+      lastMatch = { matched: false, pattern: null, excerpt: null };
+      if (typeof onExpire === 'function') {
+        try {
+          onExpire(expired);
+        } catch {
+          /* a failed trace must not re-latch or break the gate */
+        }
+      }
+      return false;
+    }
     if (!blocked || typeof corroborate !== 'function') return blocked;
     const t = now();
     if (!verdict || t - verdict.atMs >= corroborateTtlMs) {
@@ -4129,9 +6424,17 @@ export function makeQuotaBlockDetector({
       if (buffer.length > capBytes) buffer = buffer.slice(-capBytes);
       const hit = quotaLimitBannerMatch(buffer, agent);
       if (hit.matched) lastMatch = hit;
+      // The reset clause can arrive in a later chunk than the matched words,
+      // so keep trying until one parses. Parsed once: the text is static, and
+      // a relative "in 2 hours" re-read later would drift.
+      if (hit.matched && resetAtMs == null) resetAtMs = parseQuotaResetAtMs(buffer, agent, now());
       if (hit.matched === blocked) return null;
       blocked = hit.matched;
       blockedSinceMs = blocked ? now() : null;
+      if (!blocked) resetAtMs = null;
+      // A wall that returns right after a probe is that probe failing: keep backing
+      // off. One that returns long after is a new episode and starts over.
+      if (blocked && (lastExpiryAtMs == null || now() - lastExpiryAtMs > probeMaxMs)) probes = 0;
       verdict = null;
       return blocked ? 'detected' : 'cleared';
     },
@@ -4146,20 +6449,141 @@ export function makeQuotaBlockDetector({
      *  is pending, instead of advertising quotaBlocked to the operator. */
     snapshot: () => {
       const quotaBlocked = isBlockedNow();
-      return { quotaBlocked, quotaBlockedSinceMs: blockedSinceMs };
+      return { quotaBlocked, quotaBlockedSinceMs: blockedSinceMs, quotaResetAtMs: resetAtMs };
     },
+    /** The parsed provider reset for the current latch, or null. */
+    resetAtMs: () => resetAtMs,
     /** WI-2140984: WHICH pattern last matched, and the text around it — so a
      *  `quota-block-detected` row says what was actually on screen and a false
      *  positive is diagnosable from the event log alone. */
     lastMatch: () => lastMatch,
-    /** Reset to a fresh, un-walled state. Call on recycle: a fresh child has
-     *  no screen history and cannot inherit the old child's wall. */
-    reset() {
+    /** Reset for the replacement child's launch mode. A fresh process can
+     * replay a resumed transcript even when the original launch was fresh. */
+    reset({ deferUntilSubmit: nextDeferUntilSubmit = deferUntilSubmit } = {}) {
+      deferUntilSubmit = nextDeferUntilSubmit;
       buffer = '';
       blocked = false;
       awaitingSubmit = deferUntilSubmit;
       blockedSinceMs = null;
+      resetAtMs = null;
+      probes = 0;
+      lastExpiryAtMs = null;
       verdict = null;
+      lastMatch = { matched: false, pattern: null, excerpt: null };
+    },
+  };
+}
+
+/** Codex's own copy when its IN-MEMORY ChatGPT login can no longer be refreshed
+ *  (parked-agent-census-resumption-and-root-cause-2026-10-09 P-004). Every psu
+ *  codex CODEX_HOME/auth.json is a symlink to the one shared ~/.codex/auth.json,
+ *  and refresh tokens are single-use. When another session rotates the shared
+ *  token, a long-lived child keeps the spent token in memory and fails every
+ *  turn with this copy. A fresh child re-reads the shared file and works.
+ *  Measured 2026-10-10: 46 parked codex sessions sat on this error for 2+ days.
+ *  The native refresh strings are taken verbatim from the codex-cli 0.162.1
+ *  binary (`strings` on vendor/x86_64-unknown-linux-musl/bin/codex); the 401
+ *  pattern pins the Responses API's missing-bearer rejection copy. Widen only
+ *  against provider copy read the same way. */
+// `\s*` between words: the TUI wraps long errors and the ANSI strip can join
+// wrapped words without a space. A model quoting this copy in its own prose
+// can also match; the operator bounds auth recoveries per owner, so a false
+// positive costs at most a rare identity-preserving respawn.
+const CODEX_AUTH_FAILURE_PATTERNS = [
+  /your\s*access\s*token\s*could\s*not\s*be\s*refreshed/i,
+  /please\s*log\s*out\s*and\s*sign\s*in\s*again/i,
+  /\b401\s*Unauthorized\s*:\s*Missing\s*bearer\s*or\s*basic\s*authentication\b/i,
+];
+const CLAUDE_AUTH_FAILURE_PATTERNS = [
+  /OAuth\s*token\s*revoked\s*[·.]?\s*Please\s*run\s*\/login/i,
+  /Login\s*expired\s*[·.]?\s*Please\s*run\s*\/login/i,
+];
+
+/** Match the backend's own auth-failure copy; retain the existing export for callers. */
+export function codexAuthFailureMatch(text, agent = '') {
+  const a = String(agent ?? '').trim().toLowerCase();
+  const patterns = a === 'codex' ? CODEX_AUTH_FAILURE_PATTERNS : a === 'claude' ? CLAUDE_AUTH_FAILURE_PATTERNS : [];
+  const visible = String(text ?? '');
+  for (const re of patterns) {
+    const m = re.exec(visible);
+    if (m) {
+      const start = Math.max(0, m.index - 80);
+      return {
+        matched: true,
+        pattern: re.source,
+        excerpt: visible.slice(start, m.index + m[0].length + 80).replace(/\s+/g, ' ').trim(),
+      };
+    }
+  }
+  return { matched: false, pattern: null, excerpt: null };
+}
+
+/** A quoted error is not a provider failure. Only a matching synthetic/API-error
+ * row in THIS session's native transcript corroborates a Claude auth wall. */
+export function claudeAuthTranscriptVerdict(rows) {
+  if (!Array.isArray(rows)) return 'unknown';
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (row?.type !== 'assistant' && row?.type !== 'user') continue;
+    if (!codexAuthFailureMatch(claudeTranscriptRowText(row), 'claude').matched) continue;
+    return claudeRowIsApiError(row) ? 'walled' : 'echo';
+  }
+  return 'unknown';
+}
+
+/** Bounded like the quota window, so new real output evicts the error and the
+ *  level clears without timers. */
+const AUTH_BLOCK_BUFFER_CHARS = 8_192;
+
+/** P-004: auth-failure detector, the quota detector's twin. Feed it the same
+ *  raw pty bytes. `isBlocked()` reports whether codex's auth-failure copy is in
+ *  the recent screen. A resumed or forked child repaints its old transcript,
+ *  including old errors, so with `deferUntilSubmit` the detector arms only at
+ *  the first standalone submit keystroke. A recycle must call `reset()`: the
+ *  fresh child has its own login state. Pure (no timers, no I/O). */
+export function makeAuthBlockDetector({
+  capBytes = AUTH_BLOCK_BUFFER_CHARS,
+  agent = '',
+  now = Date.now,
+  deferUntilSubmit = false,
+  corroborate = /** @type {null | (() => string)} */ (null),
+} = {}) {
+  let buffer = '';
+  let blocked = false;
+  let awaitingSubmit = deferUntilSubmit;
+  /** @type {number | null} */
+  let blockedSinceMs = null;
+  let lastMatch = { matched: false, pattern: null, excerpt: null };
+  return {
+    /** Returns 'detected' | 'cleared' on a level change, else null. */
+    observe(chunk) {
+      if (awaitingSubmit) return null;
+      buffer = `${buffer}${String(chunk ?? '')}`;
+      if (buffer.length > capBytes) buffer = buffer.slice(-capBytes);
+      let hit = codexAuthFailureMatch(buffer, agent);
+      if (hit.matched && typeof corroborate === 'function') {
+        let verified = false;
+        try { verified = corroborate() === 'walled'; } catch { /* unavailable transcript is not a credential verdict */ }
+        if (!verified) hit = { matched: false, pattern: null, excerpt: null };
+      }
+      if (hit.matched) lastMatch = hit;
+      if (hit.matched === blocked) return null;
+      blocked = hit.matched;
+      blockedSinceMs = blocked ? now() : null;
+      return blocked ? 'detected' : 'cleared';
+    },
+    observeInput(input) {
+      if (awaitingSubmit && /^[\r\n]+$/.test(String(input))) awaitingSubmit = false;
+    },
+    isBlocked: () => blocked,
+    snapshot: () => ({ authBlocked: blocked, authBlockedSinceMs: blockedSinceMs }),
+    lastMatch: () => lastMatch,
+    reset({ deferUntilSubmit: nextDeferUntilSubmit = deferUntilSubmit } = {}) {
+      deferUntilSubmit = nextDeferUntilSubmit;
+      buffer = '';
+      blocked = false;
+      awaitingSubmit = deferUntilSubmit;
+      blockedSinceMs = null;
       lastMatch = { matched: false, pattern: null, excerpt: null };
     },
   };
@@ -4238,6 +6662,55 @@ export function decodeDeliveryId(o) {
   return deliveryId !== undefined ? { deliveryId } : {};
 }
 
+/** Decode additive cancellation metadata on an existing `turn` envelope. Old
+ * hosts ignore these fields and still deduplicate the original deliveryId. */
+function decodeInboxWakeCancellation(o) {
+  const hasDeliveryIds = Object.prototype.hasOwnProperty.call(o ?? {}, 'cancelDeliveryIds');
+  const hasHandledIds = Object.prototype.hasOwnProperty.call(o ?? {}, 'handledMsgIds');
+  if (!hasDeliveryIds && !hasHandledIds) return {};
+  const validIds = (value) =>
+    Array.isArray(value) && value.length > 0 && value.length <= 64 &&
+    value.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 200) &&
+    new Set(value).size === value.length;
+  if (!validIds(o.cancelDeliveryIds) || !validIds(o.handledMsgIds)) return { cancelEnvelopeInvalid: true };
+  return {
+    cancelDeliveryIds: o.cancelDeliveryIds.map((id) => id.slice(0, 200)),
+    handledMsgIds: o.handledMsgIds.map((id) => id.slice(0, 200)),
+  };
+}
+
+/** The turn-provenance ledger's default TTL; delayed wake prompts must not
+ *  reach a live TUI after the nonce can no longer be verified. */
+export const WAKE_PROVENANCE_MAX_AGE_MS = 600_000;
+
+/** Parse the ledger issue time off a v1 envelope. Missing is the legacy sender
+ *  path and stays backward-compatible; a present but malformed value is kept
+ *  explicit so a new sender cannot accidentally bypass the age fence. */
+function decodeProvenanceIssueTime(o) {
+  if (!Object.prototype.hasOwnProperty.call(o ?? {}, 'provenanceIssuedAtMs')) return {};
+  const provenanceIssuedAtMs = o.provenanceIssuedAtMs;
+  if (
+    typeof provenanceIssuedAtMs === 'number' &&
+    Number.isFinite(provenanceIssuedAtMs) &&
+    provenanceIssuedAtMs > 0
+  ) return { provenanceIssuedAtMs };
+  return { provenanceTimestampInvalid: true };
+}
+
+/** Pure + injectable clock so the receipt and pre-write fences can be tested
+ *  at the exact 600s ledger boundary. Legacy messages without a timestamp pass. */
+export function checkWakeProvenanceAge(message, {
+  maxAgeMs = WAKE_PROVENANCE_MAX_AGE_MS,
+  nowMs = Date.now(),
+} = {}) {
+  if (message?.provenanceTimestampInvalid) return { checked: true, expired: true, ageMs: null };
+  const issuedAtMs = message?.provenanceIssuedAtMs;
+  if (issuedAtMs == null) return { checked: false, expired: false, ageMs: null };
+  if (!Number.isFinite(issuedAtMs) || issuedAtMs <= 0) return { checked: true, expired: true, ageMs: null };
+  const ageMs = nowMs - issuedAtMs;
+  return { checked: true, expired: ageMs < 0 || ageMs > maxAgeMs, ageMs };
+}
+
 /** Parse the additive quota-recovery descriptor carried only by a durable
  * mode:recycle wake. Every identity is repeated and cross-checked here: a
  * mutated operation id or owner must degrade to an ordinary recycle, never
@@ -4264,11 +6737,15 @@ export function decodeQuotaRecovery(o) {
     operationId !== o?.deliveryId ||
     recoveryOwnerId !== o?.ownerId
   ) return {};
-  return { quotaRecovery: { operationId, ownerId: recoveryOwnerId, startedAtMs } };
+  // P-004: the same recycle recovers a dead codex login ('auth'). The cause is
+  // diagnostic only; anything unrecognised is the original quota recovery.
+  const cause = q.cause === 'auth' ? 'auth' : 'quota';
+  return { quotaRecovery: { operationId, ownerId: recoveryOwnerId, startedAtMs, cause } };
 }
 
 /** Parse a control payload into { mode, data, gated }. A non-envelope payload is
- *  a legacy idle-gated turn. Pure — exported for tests. */
+ *  a legacy idle-gated turn; an unsupported explicit envelope is never input.
+ *  Pure — exported for tests. */
 export function decodeControl(payload) {
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload);
   try {
@@ -4277,6 +6754,7 @@ export function decodeControl(payload) {
       o &&
       o.v === 1 &&
       (o.mode === 'turn' ||
+        o.mode === 'delivery-cancel' ||
         o.mode === 'raw' ||
         o.mode === 'osc' ||
         o.mode === 'reset' ||
@@ -4284,6 +6762,7 @@ export function decodeControl(payload) {
         o.mode === 'carry-respawn' ||
         o.mode === 'compact' ||
         o.mode === 'shutdown' ||
+        o.mode === 'hooks-observe' ||
         o.mode === 'mcp-reconnect')
     ) {
       // SHUTDOWN (WI-6638): wind this session down and EXIT. psu is `exec`'d
@@ -4300,9 +6779,31 @@ export function decodeControl(payload) {
           mode: 'shutdown',
           data: String(o.data ?? ''),
           force: o.force === true,
+          ...('expectedStartedAt' in o ? { expectedStartedAt: o.expectedStartedAt } : {}),
           gated: false,
           ...decodeOwnerIdentity(o),
         };
+      // A direct subscriber ACK is a control request, not an agent turn. Old
+      // hosts never receive this additive mode unless they advertise support.
+      if (o.mode === 'delivery-cancel')
+        return {
+          mode: 'delivery-cancel',
+          data: '',
+          gated: false,
+          ...decodeOwnerIdentity(o),
+          ...decodeDeliveryId(o),
+        };
+      if (o.mode === 'hooks-observe') return {
+        mode: 'hooks-observe', data: '', gated: true,
+        observationVersion: o.observationVersion,
+        ownerId: o.ownerId,
+        expectedAdvSessionId: o.expectedAdvSessionId,
+        expectedNativeSessionId: o.expectedNativeSessionId,
+        expectedHostStartedAt: o.expectedHostStartedAt,
+        expectedChildGeneration: o.expectedChildGeneration,
+        expectedHostCodeVersion: o.expectedHostCodeVersion,
+        expiresAtMs: o.expiresAtMs,
+      };
       if (o.mode === 'raw')
         return { mode: 'raw', data: String(o.data ?? ''), gated: false, ...decodeOwnerIdentity(o) };
       // osc = recolor escape bytes for the terminal DISPLAY (not the agent) —
@@ -4327,6 +6828,7 @@ export function decodeControl(payload) {
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
+          ...decodeProvenanceIssueTime(o),
         };
       if (o.mode === 'recycle')
         return {
@@ -4336,6 +6838,7 @@ export function decodeControl(payload) {
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
+          ...decodeProvenanceIssueTime(o),
           ...decodeQuotaRecovery(o),
         };
       // carry-respawn (deterministic-context-carry P-018): a clean-boundary
@@ -4356,6 +6859,7 @@ export function decodeControl(payload) {
           ...decodeFireIdentity(o),
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
+          ...decodeProvenanceIssueTime(o),
         };
       // compact — RETIRED (P-022): still DECODED so a stale pre-cutover sender's
       // message reaches the handler's loud drop instead of falling through to the
@@ -4383,7 +6887,19 @@ export function decodeControl(payload) {
         ...decodeFireIdentity(o),
         ...decodeOwnerIdentity(o),
         ...decodeDeliveryId(o),
+        ...decodeProvenanceIssueTime(o),
+        ...decodeInboxWakeCancellation(o),
+        ...(o.requireNativeTurnStart === true ? { requireNativeTurnStart: true,
+          expectedChildGeneration: o.expectedChildGeneration, expectedHostStartedAt: o.expectedHostStartedAt } : {}),
       };
+    }
+    // EI-25920487778813638 / review1181823: a newer diagnostic mode sent to
+    // this host must not become a chat turn (or press Enter on an owner draft).
+    // Keep legacy text/ordinary JSON, but fail closed once BOTH wire markers
+    // identify an attempted control envelope, including unsupported versions.
+    if (o && typeof o === 'object' && !Array.isArray(o) &&
+        Object.hasOwn(o, 'v') && Object.hasOwn(o, 'mode')) {
+      return { mode: 'unsupported-control', data: '', gated: false, ...decodeOwnerIdentity(o) };
     }
   } catch {
     /* not an envelope — fall through to legacy */
@@ -4395,10 +6911,138 @@ export function decodeControl(payload) {
  *  turn: text + CR). Pure — kept for tests / one-shot external callers. NOTE the
  *  host no longer writes a turn in one shot; see controlWrites. */
 export function controlBytes(decoded) {
+  if (decoded.mode === 'unsupported-control' || decoded.mode === 'hooks-observe') return '';
   return decoded.mode === 'raw' ? decoded.data : `${decoded.data}\r`;
 }
 
 // ── mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13) ─────────
+
+/** Exact current-process observation, never a reload or an agent turn. */
+export function hooksObservationIdentityMatches(request, current) {
+  return request.observationVersion === 1 && typeof request.ownerId === 'string' && !!request.ownerId &&
+    typeof request.expectedNativeSessionId === 'string' && !!request.expectedNativeSessionId &&
+    request.ownerId === current.ownerId &&
+    String(request.expectedAdvSessionId ?? '') !== '' &&
+    String(request.expectedAdvSessionId) === String(current.advSessionId) &&
+    request.expectedNativeSessionId === current.nativeSessionId &&
+    typeof request.expectedHostCodeVersion === 'string' && !!request.expectedHostCodeVersion &&
+    request.expectedHostCodeVersion === current.hostCodeVersion &&
+    Number.isFinite(request.expectedHostStartedAt) && request.expectedHostStartedAt === current.hostStartedAt &&
+    Number.isInteger(request.expectedChildGeneration) && request.expectedChildGeneration === current.childGeneration;
+}
+
+export function codexHooksObservationScreen(raw, dims) {
+  const rows = renderTerminalScreen(raw, dims).map((row) => row.trimEnd());
+  const heading = rows.some((row) => /^\s*(?:[│╭─ ]*)?(?:Hooks|Hook browser)\s*(?:[│─]*)$/i.test(row));
+  const dismiss = rows.some((row) => /\b(?:esc|escape)\b.*\b(?:close|back|cancel)\b/i.test(row));
+  const prompts = rows.map((row, index) => ({ row, index })).filter(({ row }) => /^\s*[›❯>](?:\s|$)/.test(row));
+  const footerIndex = rows.findLastIndex((row) => codexStatusFooterState(row) === 'ready');
+  const emptyComposer = !heading && prompts.length === 1 && /^\s*[›❯>]\s*$/.test(prompts[0].row) &&
+    footerIndex > prompts[0].index && footerIndex - prompts[0].index <= 4;
+  const commandOffered = rows.some((row) => /^\s*[›❯>]?\s*\/hooks\s+.*\b(?:view|show|manage|inspect)\b.*\bhooks?\b/i.test(row));
+  return { rows, browser: heading && dismiss, emptyComposer, commandOffered,
+    fullPaint: /\x1b\[2J/.test(raw) };
+}
+
+/** Capture request lifetime BEFORE admission; custody alone cannot authorize
+ * an expired/disconnected observation or reset its owner-input epoch. */
+export function makeHooksObservationAdmission(request, { now = Date.now, ownerEpoch = () => 0 } = {}) {
+  const epoch = ownerEpoch();
+  const receivedAt = now();
+  const deadline = request.expiresAtMs;
+  let closed = false;
+  return { close: () => { closed = true; }, alive: () => !closed &&
+    Number.isFinite(deadline) && deadline > receivedAt && deadline - receivedAt <= 30_000 &&
+    now() < deadline,
+    ownerUnchanged: () => ownerEpoch() === epoch };
+}
+
+/** A failed lease recovers only from a later full paint in the same child.
+ * Startup output predates our draft and cannot authorize owner-input replay. */
+export function makeHooksObservationRecovery({ request, identity, tap, screenDims, takeQueued }) {
+  let released = false;
+  tap.reset();
+  return {
+    reset: tap.reset,
+    close: tap.close,
+    canClean: () => !released && hooksObservationIdentityMatches(request, identity()),
+    takeReady: () => {
+      if (released) return [];
+      if (!hooksObservationIdentityMatches(request, identity())) return null;
+      const view = codexHooksObservationScreen(tap.read(), screenDims());
+      if (!view.fullPaint || !view.emptyComposer) return null;
+      released = true;
+      tap.close();
+      return takeQueued();
+    },
+  };
+}
+
+/** Bounded viewport observation. It cannot certify all hooks, enabled policy,
+ * nested dispatch, or P003. Every write revalidates exact custody. Cleanup is
+ * state-driven: a second Escape is permitted only after a fresh browser paint. */
+export async function runCodexHooksObservation({ request, identity, canStart, interrupted,
+  write, readTap, resetTap, readCurrent, screenDims, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  now = Date.now, timeoutMs = 3000, crDelayMs = 200, admissionAlive = () => true }) {
+  const same = () => admissionAlive() && hooksObservationIdentityMatches(request, identity());
+  const screen = (raw) => codexHooksObservationScreen(raw, screenDims());
+  if (!same()) return { ok: false, reason: 'stale-observation-identity', inputReleased: true };
+  const startingScreen = screen(readCurrent());
+  if (!canStart() || !startingScreen.fullPaint || !startingScreen.emptyComposer)
+    return { ok: false, reason: 'observation-not-at-empty-composer', inputReleased: true };
+  let commandWritten = false;
+  let submitted = false;
+  let observed = null;
+  let reason = 'observation-paint-unavailable';
+  const guardedWrite = (bytes, cleanup = false) => {
+    if (!same() || (!cleanup && interrupted())) return false;
+    write(bytes); return true;
+  };
+  const waitFor = async (predicate) => {
+    const deadline = now() + timeoutMs;
+    while (now() < deadline) {
+      if (!same()) return null;
+      const view = screen(readTap());
+      if (view.fullPaint && predicate(view)) return view;
+      await sleep(25);
+    }
+    return null;
+  };
+  resetTap();
+  if (!guardedWrite('/hooks')) return { ok: false, reason: 'observation-interrupted', inputReleased: true };
+  commandWritten = true;
+  await sleep(crDelayMs);
+  // A missing/disabled slash command must never submit `/hooks` to a model.
+  const offered = await waitFor((view) => view.commandOffered);
+  if (offered && guardedWrite('\r')) {
+    submitted = true;
+    observed = await waitFor((view) => view.browser);
+    if (observed) reason = interrupted() ? 'observation-interrupted' : 'observed';
+  } else reason = interrupted() ? 'observation-interrupted' : 'hooks-command-unavailable';
+  let inputReleased = false;
+  if (same() && !submitted && commandWritten) {
+    // Only our known, unsubmitted command occupies the leased composer.
+    resetTap();
+    guardedWrite('\x15', true);
+    inputReleased = !!await waitFor((view) => view.emptyComposer);
+  } else if (same()) {
+    let view = screen(readTap());
+    if (view.fullPaint && view.emptyComposer) inputReleased = true;
+    for (let level = 0; !inputReleased && level < 2 && view.fullPaint && view.browser; level++) {
+      resetTap();
+      if (!guardedWrite('\x1b', true)) break;
+      const next = await waitFor((paint) => paint.emptyComposer || paint.browser);
+      if (!next) break;
+      view = next;
+      inputReleased = view.emptyComposer;
+    }
+  }
+  return { ok: !!observed && inputReleased && reason === 'observed', reason: !same() ?
+    'stale-observation-identity' : !inputReleased ? 'observation-cleanup-unconfirmed' : reason,
+    inputReleased, identity: same() ? identity() : null,
+    ...(observed ? { visibleRows: observed.rows, coverage: { scope: 'fresh-hook-browser-viewport',
+      complete: false, notMeasured: ['offscreen-hooks', 'managed-policy', 'nested-dispatch', 'operation-terminal-proof'] } } : {}) };
+}
 //
 // A Claude Code self-re-exec (auto-update relaunch / TUI fullscreen switch)
 // severs the session's HTTP-MCP transport: tools vanish, and the armed loop's
@@ -4774,6 +7418,113 @@ export function makeHeadlessCodexModelChoiceStateMachine({
   };
 }
 
+export const CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS = 600_000;
+export const CODEX_STARTUP_UPDATE_DIALOG_ESCAPE_KEY = '\x1b';
+const CODEX_STARTUP_UPDATE_DIALOG_BUFFER_CHARS = 32_768;
+
+export function managedCodexStartupUpdateDialogEnabled(env = process.env) {
+  return String(env?.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex';
+}
+
+/** WI-10008156: the root-level `-c` override that stops Codex rendering its
+ * optional startup update menu in a managed child at all. Measured 2026-10-10:
+ * 79 of the 81 homes behind a stuck `Starting` snapshot lacked
+ * `check_for_update_on_startup = false` in config.toml. Homes created before
+ * the role-codex-home fix are patched in place on resume and never rebuilt.
+ * An argv override reaches every child this host spawns (launch, resume, each
+ * respawn), whatever state the home's config is in. The Escape dismissal
+ * stays as the backstop. */
+export const CODEX_STARTUP_UPDATE_CHECK_OVERRIDE = 'check_for_update_on_startup=false';
+
+/** Prepend CODEX_STARTUP_UPDATE_CHECK_OVERRIDE to a managed Codex child's argv.
+ * Pure. Applies only when the agent is Codex AND the command is the Codex
+ * binary itself (the bin test of the launcher's codexManagedDaemonArgs), so a
+ * wrapper or another program run under PAPERCUSP_AGENT=codex never receives a
+ * foreign `-c`. Argv that already sets the key is returned unchanged, so an
+ * explicit caller choice always wins.
+ * @param {{command: string, args: readonly string[], env?: EnvironmentMap}} target
+ * @returns {string[]}
+ */
+export function withManagedCodexStartupConfig({ command, args, env = process.env }) {
+  const list = Array.isArray(args) ? [...args] : [];
+  if (!managedCodexStartupUpdateDialogEnabled(env)) return list;
+  if (!/(^|[\\/])codex(?:\.exe|\.cmd)?$/.test(String(command ?? ''))) return list;
+  for (let i = 0; i < list.length; i++) {
+    const arg = String(list[i] ?? '');
+    const assignment = arg === '-c' || arg === '--config'
+      ? String(list[i + 1] ?? '')
+      : arg.startsWith('--config=') ? arg.slice('--config='.length) : null;
+    if (assignment !== null && /^\s*check_for_update_on_startup\s*=/.test(assignment)) return list;
+  }
+  return ['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE, ...list];
+}
+
+/** Watch the current VT screen for Codex's exact optional update menu. Reading
+ * the rendered screen avoids matching old transcript/scrollback text. The
+ * caller owns the child-identity check and sends the returned Escape once. */
+export function makeManagedCodexStartupUpdateDialogStateMachine({
+  enabled = true,
+  startupMs = CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS,
+  now = () => Date.now(),
+  screenDims = { rows: 24, cols: 80 },
+} = {}) {
+  const clock = typeof now === 'function' ? now : () => Date.now();
+  const windowMs = positiveNumber(startupMs, CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS);
+  const startedAt = clock();
+  let phase = enabled ? 'watching' : 'disabled';
+  let observed = '';
+  const snapshot = (action = 'none') => ({ action, phase, active: phase === 'watching' });
+  const visibleRows = () => {
+    const dims = typeof screenDims === 'function' ? screenDims() : screenDims;
+    return renderTerminalScreen(observed, dims)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+  };
+  const normalizeRow = (line) => line
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .replace(/^\[?\d+\]?\s*[.)]?\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return {
+    observe(chunk, at = clock()) {
+      if (phase !== 'watching') return snapshot();
+      if (at - startedAt >= windowMs) {
+        phase = 'expired';
+        observed = '';
+        return snapshot('expired');
+      }
+      observed = `${observed}${String(chunk ?? '')}`.slice(-CODEX_STARTUP_UPDATE_DIALOG_BUFFER_CHARS);
+      const rows = visibleRows().map(normalizeRow);
+      const heading = rows.findIndex((row) => row.startsWith('update available'));
+      // WI-10008156: Codex 0.162.x renders the first choice as
+      // `Update now (runs \`npm install -g @openai/codex\`)`. An exact-equality
+      // match never fired on it (496 of 496 stuck snapshots since 2026-10-07).
+      // Accept a parenthetical suffix, but keep labels exact otherwise so that
+      // `skip` never matches `skip until next version`.
+      const isChoice = (row, label) => row === label || row.startsWith(`${label} (`);
+      const rowIndex = (label) => rows.findIndex((row, index) => index > heading && isChoice(row, label));
+      const updateNow = rowIndex('update now');
+      const skip = rowIndex('skip');
+      const skipUntilNextVersion = rowIndex('skip until next version');
+      if (heading < 0 || updateNow <= heading || skip <= updateNow || skipUntilNextVersion <= skip) {
+        return snapshot();
+      }
+      phase = 'complete';
+      observed = '';
+      return snapshot('send-escape');
+    },
+    complete() {
+      if (phase === 'watching') {
+        phase = 'complete';
+        observed = '';
+      }
+      return snapshot();
+    },
+    status: () => ({ phase, active: phase === 'watching', startedAt, expiresAt: startedAt + windowMs }),
+  };
+}
+
 /**
  * Claude can still show its first-run wizard to a headless launch even when
  * the persisted config says onboarding is complete. A human can press Enter
@@ -4783,10 +7534,16 @@ export function makeHeadlessCodexModelChoiceStateMachine({
  * window.
  */
 export const HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS = 30_000;
-// A fresh headless Claude kickoff must either reach the real composer or fail
-// inside the detached launcher's 30s receipt window. Reserve the remaining
-// time for native-transcript proof; never type into a quiet welcome/menu screen.
+// A fresh headless Claude kickoff must either reach the real composer or take
+// the bounded unseen-composer fallback inside its readiness budget. Native
+// transcript proof runs after submission under its own timeout; never type into
+// a quiet welcome/menu screen.
 export const HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS = 20_000;
+// Keep time inside the kickoff readiness budget for the ordinary prompt gate
+// after an unseen composer expires. Native transcript proof has its own window
+// after submission; this reserve prevents the readiness fallback from being
+// discovered only after the kickoff attempt has already timed out.
+export const HEADLESS_CLAUDE_KICKOFF_PROMPT_RESERVE_MS = 5_000;
 const HEADLESS_CLAUDE_ONBOARDING_BUFFER_CHARS = 32_768;
 const HEADLESS_CLAUDE_THEME_PROMPT_RE =
   /(?:\b(?:choose|select|pick)\b[\s\S]{0,160}\btheme\b|\btheme\b[\s\S]{0,160}\b(?:dark|light|system)\b)/i;
@@ -4808,6 +7565,23 @@ export function headlessClaudeOnboardingStartupMs(env = process.env) {
     env?.PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS,
     HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS,
   );
+}
+
+/** Bound the onboarding observation window for an initial kickoff so its
+ * unseen-composer fallback has time to pass through the ordinary prompt gate. */
+export function headlessClaudeKickoffOnboardingStartupMs(
+  env = process.env,
+  kickoffBudgetMs = HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS,
+) {
+  const budgetMs = Math.max(1, Math.floor(positiveNumber(
+    kickoffBudgetMs,
+    HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS,
+  )));
+  const promptReserveMs = Math.min(HEADLESS_CLAUDE_KICKOFF_PROMPT_RESERVE_MS, budgetMs - 1);
+  return Math.max(1, Math.min(
+    headlessClaudeOnboardingStartupMs(env),
+    budgetMs - promptReserveMs,
+  ));
 }
 
 /**
@@ -4832,11 +7606,13 @@ export function makeHeadlessClaudeOnboardingStateMachine({
   const startedAt = clock();
   let phase = enabled ? 'theme' : 'disabled';
   let observed = '';
+  let promptSeen = false;
 
   const snapshot = (action = 'none', prompt = null) => ({
     action,
     prompt,
     phase,
+    promptSeen,
     active: phase === 'theme' || phase === 'security',
     complete: phase === 'complete',
     expired: phase === 'expired',
@@ -4850,8 +7626,8 @@ export function makeHeadlessClaudeOnboardingStateMachine({
   };
 
   const observe = (chunk, at = clock()) => {
-    if (phase === 'disabled' || phase === 'complete' || phase === 'expired') return snapshot();
-    if (at - startedAt >= windowMs) return expire(at);
+    if (phase === 'disabled' || phase === 'complete') return snapshot();
+    if (phase !== 'expired' && at - startedAt >= windowMs) return expire(at);
 
     observed = `${observed}${String(chunk ?? '')}`;
     if (observed.length > HEADLESS_CLAUDE_ONBOARDING_BUFFER_CHARS) {
@@ -4859,12 +7635,26 @@ export function makeHeadlessClaudeOnboardingStateMachine({
     }
     const visible = stripAnsi(observed);
 
+    if (phase === 'expired') {
+      // The launch may reach the fallback gate just before a delayed menu paint.
+      // Keep observing only to fail closed if a recognized onboarding prompt
+      // appears before the ordinary gate authorizes the first write.
+      if (HEADLESS_CLAUDE_THEME_PROMPT_RE.test(visible) ||
+          HEADLESS_CLAUDE_SECURITY_PROMPT_RE.test(visible)) {
+        promptSeen = true;
+        observed = '';
+      }
+      return snapshot();
+    }
+
     if (phase === 'theme' && HEADLESS_CLAUDE_THEME_PROMPT_RE.test(visible)) {
+      promptSeen = true;
       phase = 'security';
       observed = '';
       return snapshot('submit', 'theme');
     }
     if (phase === 'security' && HEADLESS_CLAUDE_SECURITY_PROMPT_RE.test(visible)) {
+      promptSeen = true;
       phase = 'complete';
       observed = '';
       return snapshot('submit', 'security');
@@ -4890,6 +7680,7 @@ export function makeHeadlessClaudeOnboardingStateMachine({
       active: phase === 'theme' || phase === 'security',
       complete: phase === 'complete',
       expired: phase === 'expired',
+      promptSeen,
       startedAt,
       expiresAt: startedAt + windowMs,
       bufferedChars: observed.length,
@@ -4971,7 +7762,10 @@ export function makeClaudeResumeCompactionRecoveryStateMachine({
   const clock = typeof now === 'function' ? now : () => Date.now();
   const detectionWindowMs = positiveNumber(startupMs, CLAUDE_RESUME_COMPACTION_STARTUP_MS);
   const recoveryWindowMs = positiveNumber(recoveryMs, CLAUDE_RESUME_COMPACTION_RECOVERY_MS);
-  const startedAt = clock();
+  // Host setup can precede the child's first PTY frame by an unbounded amount
+  // under startup delay. Start the bounded menu-detection window with observed
+  // child output, so a late first frame still gets inspected before expiry.
+  let detectionStartedAt = null;
   let phase = enabled ? 'watching' : 'disabled';
   let recoveryStartedAt = 0;
   let observed = '';
@@ -4992,7 +7786,11 @@ export function makeClaudeResumeCompactionRecoveryStateMachine({
   });
 
   const expireIfNeeded = (at = clock()) => {
-    if (phase === 'watching' && at - startedAt >= detectionWindowMs) {
+    if (
+      phase === 'watching' &&
+      detectionStartedAt !== null &&
+      at - detectionStartedAt >= detectionWindowMs
+    ) {
       phase = 'watch-expired';
       observed = '';
       return snapshot('expired');
@@ -5006,6 +7804,7 @@ export function makeClaudeResumeCompactionRecoveryStateMachine({
   };
 
   const observe = (chunk, at = clock()) => {
+    if (phase === 'watching' && detectionStartedAt === null) detectionStartedAt = at;
     const expiration = expireIfNeeded(at);
     if (expiration.action === 'expired') return expiration;
     if (phase === 'disabled' || phase === 'watch-expired' || phase === 'ready' || phase === 'timed-out') {
@@ -5058,8 +7857,10 @@ export function makeClaudeResumeCompactionRecoveryStateMachine({
     recoveryStarted: () => recoveryStartedAt > 0,
     status: () => ({
       ...snapshot(),
-      startedAt,
-      detectionExpiresAt: startedAt + detectionWindowMs,
+      // EI-25217214806027261: this read an unbound `startedAt` (ReferenceError on every
+      // status() call); the machine's own clock is detectionStartedAt.
+      startedAt: detectionStartedAt,
+      detectionExpiresAt: detectionStartedAt === null ? null : detectionStartedAt + detectionWindowMs,
       recoveryExpiresAt: recoveryStartedAt ? recoveryStartedAt + recoveryWindowMs : null,
       bufferedChars: observed.length,
     }),
@@ -5163,27 +7964,337 @@ function codexStatusFooterState(visible) {
   if (status.endsWith('ready')) return 'ready';
   return status;
 }
-function codexReadyStatusFooterObserved(visible) {
+function codexReadyStatusFooterObserved(output, dims) {
   // Codex v0.157 can leave the header at `model: loading` even after the
   // session is ready. The footer is the positive, post-model-choice signal;
   // its `Starting` form is painted while MCP startup is still in flight.
-  return codexStatusFooterState(visible) === 'ready';
+  return codexFooterStateFromOutput(output, dims) === 'ready';
+}
+
+/** WI-10005178: a minimal synchronous VT screen model, for reading TUI chrome as
+ * the terminal SHOWS it. stripAnsi() flattens a byte stream, which is wrong for a
+ * differential renderer: Codex (ratatui) repaints only the cells that changed and
+ * positions each run with CUP. Measured 2026-10-02T02:03Z and 02:16Z on recycle
+ * children (su-46569c12, su-3b465e67, codex-starting-stuck-snapshot rawTail): the
+ * footer went from `Starting · GPT-6-Luna max · Context 100% left` to Ready as
+ * `ESC[14;3H Re ESC[14;6H dy …`, skipping the unchanged `a`. The flattened
+ * stream's last COMPLETE footer was still `Starting`, so a ready child was judged
+ * stuck and dropped after ~3 minutes. Replaying the cursor motion onto a grid
+ * gives back `Ready · …`.
+ *
+ * Covers the motion, erase, insert/delete and scroll subset a TUI uses, plus the
+ * alternate screen. SGR, modes, OSC/DCS strings and terminal queries change no
+ * cells and are skipped. A code point is one cell, except the common East Asian
+ * wide and emoji ranges (two); combining marks are dropped. Returns one string
+ * per row with trailing blanks trimmed. Pure and exported for tests. */
+const TERMINAL_WIDE_RE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{1f300}-\u{1f64f}\u{1f900}-\u{1f9ff}\u{20000}-\u{3fffd}]/u;
+const TERMINAL_ZERO_WIDTH_RE = /[̀-ͯ​-‏⃐-⃿︀-️]/u;
+const TERMINAL_CSI_RE = /\x1b\[([0-?]*)([ -/]*)([@-~])/y;
+export function renderTerminalScreen(output, { rows = 24, cols = 80 } = {}) {
+  const R = Math.max(1, Math.min(500, Math.floor(Number(rows)) || 24));
+  const C = Math.max(1, Math.min(1000, Math.floor(Number(cols)) || 80));
+  const blankRow = () => new Array(C).fill(' ');
+  const blankScreen = () => Array.from({ length: R }, blankRow);
+  let screen = blankScreen();
+  let row = 0;
+  let col = 0;
+  let top = 0;
+  let bottom = R - 1;
+  let wrapPending = false;
+  let saved = { row: 0, col: 0 };
+  let mainScreen = null;
+  const clampRow = (r) => Math.min(R - 1, Math.max(0, r));
+  const clampCol = (c) => Math.min(C - 1, Math.max(0, c));
+  const scrollUp = (n, from = top, to = bottom) => {
+    for (let k = 0; k < Math.min(n, to - from + 1); k += 1) {
+      screen.splice(from, 1);
+      screen.splice(to, 0, blankRow());
+    }
+  };
+  const scrollDown = (n, from = top, to = bottom) => {
+    for (let k = 0; k < Math.min(n, to - from + 1); k += 1) {
+      screen.splice(to, 1);
+      screen.splice(from, 0, blankRow());
+    }
+  };
+  const lineFeed = () => {
+    if (row === bottom) scrollUp(1);
+    else row = clampRow(row + 1);
+  };
+  const eraseCells = (r, from, to) => {
+    for (let c = Math.max(0, from); c <= Math.min(C - 1, to); c += 1) screen[r][c] = ' ';
+  };
+  const put = (ch, width) => {
+    if (wrapPending) {
+      col = 0;
+      lineFeed();
+      wrapPending = false;
+    }
+    if (width === 2 && col === C - 1) {
+      screen[row][col] = ' ';
+      col = 0;
+      lineFeed();
+    }
+    screen[row][col] = ch;
+    if (width === 2 && col + 1 < C) screen[row][col + 1] = '';
+    const end = col + width - 1;
+    if (end >= C - 1) {
+      col = C - 1;
+      wrapPending = true;
+    } else {
+      col = end + 1;
+    }
+  };
+  const s = String(output ?? '');
+  let i = 0;
+  while (i < s.length) {
+    const code = s.codePointAt(i);
+    if (code === 0x1b) {
+      const next = s[i + 1];
+      if (next === undefined) break;
+      if (next === '[') {
+        TERMINAL_CSI_RE.lastIndex = i;
+        const m = TERMINAL_CSI_RE.exec(s);
+        if (!m) {
+          i += 2;
+          continue;
+        }
+        i = TERMINAL_CSI_RE.lastIndex;
+        const [, params, intermediates, final] = m;
+        if (intermediates) continue; // e.g. DECSCUSR `ESC[0 q`: no cell changes
+        if (/^[<=>?]/.test(params)) {
+          // Private modes touch no cells, except switching to/from the alternate screen.
+          if (params[0] === '?' && (final === 'h' || final === 'l')
+            && params.slice(1).split(';').some((p) => p === '1049' || p === '1047' || p === '47')) {
+            if (final === 'h' && !mainScreen) {
+              mainScreen = { screen, row, col, top, bottom };
+              screen = blankScreen();
+              top = 0;
+              bottom = R - 1;
+            } else if (final === 'l' && mainScreen) {
+              ({ screen, row, col, top, bottom } = mainScreen);
+              mainScreen = null;
+            }
+            wrapPending = false;
+          }
+          continue;
+        }
+        if (final === 'm') continue; // SGR
+        const ps = params.split(';').map((p) => (/^\d+$/.test(p) ? Number(p) : null));
+        const n = (k) => (ps[k] > 0 ? ps[k] : 1);
+        const mode = ps[0] ?? 0;
+        wrapPending = false;
+        switch (final) {
+          case 'H': case 'f': row = clampRow(n(0) - 1); col = clampCol(n(1) - 1); break;
+          case 'A': row = clampRow(row - n(0)); break;
+          case 'B': case 'e': row = clampRow(row + n(0)); break;
+          case 'C': case 'a': col = clampCol(col + n(0)); break;
+          case 'D': col = clampCol(col - n(0)); break;
+          case 'E': row = clampRow(row + n(0)); col = 0; break;
+          case 'F': row = clampRow(row - n(0)); col = 0; break;
+          case 'G': case '`': col = clampCol(n(0) - 1); break;
+          case 'd': row = clampRow(n(0) - 1); break;
+          case 'J':
+            if (mode === 0) {
+              eraseCells(row, col, C - 1);
+              for (let r = row + 1; r < R; r += 1) eraseCells(r, 0, C - 1);
+            } else if (mode === 1) {
+              eraseCells(row, 0, col);
+              for (let r = 0; r < row; r += 1) eraseCells(r, 0, C - 1);
+            } else if (mode === 2) {
+              for (let r = 0; r < R; r += 1) eraseCells(r, 0, C - 1);
+            }
+            break;
+          case 'K':
+            if (mode === 0) eraseCells(row, col, C - 1);
+            else if (mode === 1) eraseCells(row, 0, col);
+            else eraseCells(row, 0, C - 1);
+            break;
+          case 'X': eraseCells(row, col, col + n(0) - 1); break;
+          case '@': {
+            const cells = screen[row];
+            cells.splice(col, 0, ...new Array(Math.min(n(0), C - col)).fill(' '));
+            cells.length = C;
+            break;
+          }
+          case 'P': {
+            const cells = screen[row];
+            const k = Math.min(n(0), C - col);
+            cells.splice(col, k);
+            cells.push(...new Array(k).fill(' '));
+            break;
+          }
+          case 'L': if (row >= top && row <= bottom) { scrollDown(n(0), row, bottom); col = 0; } break;
+          case 'M': if (row >= top && row <= bottom) { scrollUp(n(0), row, bottom); col = 0; } break;
+          case 'S': scrollUp(n(0)); break;
+          case 'T': if (ps.length <= 1) scrollDown(n(0)); break; // the 5-param form is mouse tracking
+          case 'r': {
+            const t = Math.min(n(0), R) - 1;
+            const b = ps[1] > 0 ? Math.min(ps[1], R) - 1 : R - 1;
+            if (t < b) {
+              top = t;
+              bottom = b;
+            } else {
+              top = 0;
+              bottom = R - 1;
+            }
+            row = 0;
+            col = 0;
+            break;
+          }
+          case 's': if (!params) saved = { row, col }; break;
+          case 'u': if (!params) ({ row, col } = saved); break;
+          default: break; // queries (`6n`, `c`) and anything else that paints nothing
+        }
+        continue;
+      }
+      if (next === ']' || next === 'P' || next === '_' || next === '^' || next === 'X') {
+        // OSC ends at BEL or ST; DCS, APC, PM and SOS end at ST.
+        let j = i + 2;
+        while (j < s.length) {
+          if (next === ']' && s[j] === '\x07') { j += 1; break; }
+          if (s[j] === '\x1b' && s[j + 1] === '\\') { j += 2; break; }
+          j += 1;
+        }
+        i = j;
+        continue;
+      }
+      if (next === '7') saved = { row, col };
+      else if (next === '8') ({ row, col } = saved);
+      else if (next === 'M') {
+        if (row === top) scrollDown(1);
+        else row = clampRow(row - 1);
+      } else if (next === 'D') lineFeed();
+      else if (next === 'E') { col = 0; lineFeed(); }
+      else if (next === 'c') {
+        screen = blankScreen();
+        row = 0;
+        col = 0;
+        top = 0;
+        bottom = R - 1;
+        saved = { row: 0, col: 0 };
+        mainScreen = null;
+      }
+      if ('78MDEc'.includes(next)) wrapPending = false;
+      // `ESC ( B`, `ESC # 8` and other intermediate forms carry one more byte.
+      i += /[ -/]/.test(next) ? 3 : 2;
+      continue;
+    }
+    if (code < 0x20 || code === 0x7f) {
+      if (code === 0x0d) {
+        col = 0;
+        wrapPending = false;
+      } else if (code === 0x0a || code === 0x0b || code === 0x0c) {
+        lineFeed();
+        wrapPending = false;
+      } else if (code === 0x08) {
+        col = Math.max(0, col - 1);
+        wrapPending = false;
+      } else if (code === 0x09) {
+        col = Math.min(C - 1, (Math.floor(col / 8) + 1) * 8);
+      }
+      i += 1;
+      continue;
+    }
+    const ch = String.fromCodePoint(code);
+    i += ch.length;
+    // C1 controls and combining marks occupy no cell.
+    if ((code >= 0x80 && code < 0xa0) || TERMINAL_ZERO_WIDTH_RE.test(ch)) continue;
+    put(ch, TERMINAL_WIDE_RE.test(ch) ? 2 : 1);
+  }
+  return screen.map((cells) => cells.join('').replace(/ +$/, ''));
+}
+
+/** WI-10005178: the Codex footer state as the terminal shows it. The rendered
+ * screen decides; the flattened stream is only the fallback for a screen that
+ * holds no complete footer (the bounded startup buffer trimmed the full paint and
+ * left only cell diffs), the one case the screen cannot decide. Pass the child's
+ * PTY size: a CUP beyond the rendered grid is clamped onto the wrong cell.
+ * @param {unknown} output
+ * @param {{ rows?: number, cols?: number }} [dims]
+ * @returns {string | null} */
+export function codexFooterStateFromOutput(output, dims) {
+  const raw = String(output ?? '');
+  return codexStatusFooterState(renderTerminalScreen(raw, dims).join('\n'))
+    ?? codexStatusFooterState(stripAnsi(raw));
+}
+
+/** WI-10005178: the screen text a `codex-startup-still-starting` verdict was read
+ * from. Measured 2026-10-02T01:40-01:44Z (su-6a2603be, codex home session-32862):
+ * the dropped child's own codex-tui.log shows session init, MCP resolution and the
+ * model websocket warmup all complete within ~6s of spawn, yet the host judged its
+ * footer `Starting` for 3m16s. Two readings fit that (WI-10004943 H1/H2): Codex
+ * genuinely kept painting `Starting` (an MCP server still booting, e.g. the
+ * OAuth-only `tsenta`), or a partial repaint wrote only the new status word so the
+ * last COMPLETE footer the regex can match is a stale `Starting`. This evidence
+ * separates them: `readyAfterLastFooter` true with state `starting` is the stale-read
+ * signature; `mcpLines` names a server Codex was still waiting on. Bounded and
+ * redacted, because host events reach a shared store. */
+export function codexStartingFooterEvidence(output, { maxMatches = 4, tailChars = 600, maxLineChars = 160, dims } = {}) {
+  if (typeof output !== 'string') return null;
+  const visible = stripAnsi(output);
+  // Resolved 2026-10-02 (H2): `state` is now the screen-rendered verdict the host
+  // acts on; `streamState` keeps the flattened-stream reading it replaced.
+  const footerRow = new RegExp(CODEX_STATUS_FOOTER_RE.source);
+  const screenFooter = renderTerminalScreen(output, dims).findLast((r) => footerRow.test(r)) ?? null;
+  const matches = [...visible.matchAll(CODEX_STATUS_FOOTER_RE)];
+  const last = matches.at(-1) ?? null;
+  const afterLast = last ? visible.slice(last.index + last[0].length) : visible;
+  const line = (text) => redactSnapshotText(String(text).replace(/\s+/g, ' ').trim(), maxLineChars);
+  // Control bytes made visible so a cursor-positioned partial repaint can be read.
+  const visibleControls = (text) => Array.from(text, (ch) => {
+    const code = ch.charCodeAt(0);
+    if (code === 0x1b) return '⎋';
+    if (code === 0x0a) return '\n';
+    return code < 0x20 || code === 0x7f ? `^${String.fromCharCode(code ^ 0x40)}` : ch;
+  }).join('');
+  return {
+    state: codexFooterStateFromOutput(output, dims),
+    streamState: codexStatusFooterState(visible),
+    screenFooter: screenFooter === null ? null : line(screenFooter),
+    footerMatchCount: matches.length,
+    lastMatches: matches.slice(-maxMatches).map((m) => ({
+      status: m[1],
+      fromEnd: visible.length - m.index,
+      text: line(m[0]),
+    })),
+    readyAfterLastFooter: /ready/i.test(afterLast),
+    startingAfterLastFooter: /starting/i.test(afterLast),
+    mcpLines: visible.split(/\r\n|\r|\n/).filter((l) => /\bMCP\b/i.test(l)).slice(-3).map(line),
+    visibleChars: visible.length,
+    rawTail: redactSnapshotText(visibleControls(output.slice(-tailChars)), tailChars * 2),
+  };
 }
 export function headlessClaudeKickoffReadiness({
   enabled = false,
   requireInitialOutput = false,
   promptReady = false,
+  onboardingExpired = false,
+  onboardingPromptSeen = false,
 } = {}) {
   if (!enabled || !requireInitialOutput) return 'ordinary-gate';
-  return promptReady ? 'composer-ready' : 'wait-for-composer';
+  if (promptReady) return 'composer-ready';
+  // WI-10005472: the onboarding watcher saw neither a theme/security wizard nor
+  // the composer for its whole startup window. That is the signature of a child
+  // whose startup paint landed before this host's listener attached (the class
+  // the startupMarkerMissing last resort documents): the TUI sits healthy at a
+  // composer the byte stream never showed. Waiting longer cannot change that, so
+  // defer to the ordinary busy gate, exactly as the next wake inject would.
+  // Measured 2026-10-01/02: 24 of 24 headless-claude-composer-not-ready carry
+  // drops had onboarding expired; 0 of 1775 delivered carries did.
+  return onboardingExpired && !onboardingPromptSeen
+    ? 'composer-unseen-ordinary-gate'
+    : 'wait-for-composer';
 }
 
-export function startupOutputReady(agent, output) {
+/** @param {*} agent @param {*} output
+ *  @param {{ rows?: number, cols?: number }} [dims] the child's PTY size (WI-10005178) */
+export function startupOutputReady(agent, output, dims) {
   const visible = stripAnsi(output);
   const normalized = String(agent ?? '').toLowerCase();
   if (normalized === 'omp') return /\bomp\s+v\d/i.test(visible);
   if (normalized === 'codex') {
-    const footerState = codexStatusFooterState(visible);
+    const footerState = codexFooterStateFromOutput(output, dims);
     if (footerState !== null) return footerState === 'ready';
     return /\d{1,3}%\s*context left/i.test(visible);
   }
@@ -5228,12 +8339,12 @@ export function codexTuiStartObserved(output) {
  * has already trimmed away: the whole buffer then counts as post-probe.
  * Pure and exported for tests. */
 const CODEX_SESSION_MODEL_RE = /model:\s+(?!loading\b)[^\s│]/;
-export function codexSessionFrameObserved(output, { probeAlreadySeen = false } = {}) {
+export function codexSessionFrameObserved(output, { probeAlreadySeen = false, dims } = {}) {
   const raw = String(output ?? '');
   const probeAt = raw.lastIndexOf('\x1b[6n');
   if (probeAt < 0 && !probeAlreadySeen) return false;
-  const visible = stripAnsi(probeAt < 0 ? raw : raw.slice(probeAt + '\x1b[6n'.length));
-  return CODEX_SESSION_MODEL_RE.test(visible) || codexReadyStatusFooterObserved(visible);
+  const afterProbe = probeAt < 0 ? raw : raw.slice(probeAt + '\x1b[6n'.length);
+  return CODEX_SESSION_MODEL_RE.test(stripAnsi(afterProbe)) || codexReadyStatusFooterObserved(afterProbe, dims);
 }
 
 /** If the Codex first frame is never observed (a future Codex that stops
@@ -5519,10 +8630,27 @@ export function shouldReapDetachedPtyScopeResidue({
 export function mcpServerRowStatus(line, name) {
   const l = String(line ?? '');
   if (!l.includes(name)) return null;
-  if (/\b(disconnected|failed|error|needs authentication|connecting|pending|retrying)\b/i.test(l))
+  if (/\b(disconnected|failed|error|needs authentication|connecting|pending|retrying|disabled)\b/i.test(l))
     return 'not-connected';
+  // Status glyphs Claude paints in front of a list row (✘ failed, ◯ connecting).
+  if (/[✘✗◯]/u.test(l)) return 'not-connected';
   if (/\bconnected\b/i.test(l)) return 'connected';
+  // WI-10006598: Claude 2.1.289 paints a healthy list row as `✔ papercusp
+  // 27 tools` — a check glyph and a tool count, no word "connected".
+  if (/[✔✓]/u.test(l) || /\d+\s*tools?\b/i.test(l)) return 'connected';
   return 'unknown';
+}
+
+/** Is the /mcp dialog showing the single-server DETAIL view for `name`? Claude
+ *  can open /mcp straight into it (header `Papercusp MCP Server`, then action
+ *  rows such as `1. Authenticate  2. Reconnect  3. Disable`), so there is no
+ *  list row to select (WI-10006598). Ink may drop inter-word gaps, so compare
+ *  case-insensitively with whitespace removed. Pure — exported for tests. */
+export function mcpDialogShowsServerDetail(visible, name) {
+  const header = `${String(name ?? '')}mcpserver`.replace(/\s+/gu, '').toLowerCase();
+  return String(visible ?? '')
+    .split('\n')
+    .some((l) => l.replace(/\s+/gu, '').toLowerCase().includes(header));
 }
 
 /** Does the freshest paint read as "`name` is connected"? Two shapes exist:
@@ -5539,10 +8667,14 @@ export function mcpConnectedVerdict(visible, name) {
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
     const rowSt = mcpServerRowStatus(l, name);
-    if (rowSt) return rowSt === 'connected';
+    // A line that merely NAMES the server (the cwd header, the .mcp.json
+    // diagnostics path) is not a verdict; keep scanning (WI-10006598).
+    if (rowSt === 'connected') return true;
+    if (rowSt === 'not-connected') return false;
     if (/\bstatus\b/i.test(l)) {
       if (/\b(disconnected|failed|error|connecting|pending|retrying|needs authentication)\b/i.test(l)) return false;
-      if (/\bconnected\b/i.test(l)) return true;
+      if (/status:?\s*[✘✗◯]/iu.test(l)) return false;
+      if (/\bconnected\b/i.test(l) || /status:?\s*[✔✓]/iu.test(l)) return true;
     }
   }
   return false;
@@ -5553,6 +8685,64 @@ export function mcpConnectedVerdict(visible, name) {
 export function headlessRoleKickoffRequiresMcp({ agent, role, headless, hasKickoff, isResume }) {
   return agent === 'claude' && Boolean(role) && headless === true &&
     hasKickoff === true && isResume !== true;
+}
+
+/** Defaults of runMcpReconnectMacro, shared with its worst-case bound. Typed
+ *  as plain numbers: an inferred literal type would leak into the generated
+ *  .d.mts as `crDelayMs?: 150` and reject every caller's own budget.
+ *  @typedef {{ crDelayMs: number, settleMs: number, paintBudgetMs: number,
+ *    reconnectBudgetMs: number, maxArrows: number, closeWaitMs: number }} McpReconnectMacroBudgets
+ *  @type {Readonly<McpReconnectMacroBudgets>} */
+export const MCP_RECONNECT_MACRO_DEFAULTS = Object.freeze({
+  crDelayMs: 150,
+  settleMs: 300,
+  paintBudgetMs: 8_000,
+  reconnectBudgetMs: 20_000,
+  maxArrows: 40,
+  closeWaitMs: 400,
+});
+
+/** A headless role has exactly one (role-scoped) MCP server, so the list and
+ *  the detail view hold a handful of rows; 8 arrows is ample and keeps the
+ *  verify inside the parent's kickoff-proof window (WI-10006598). */
+export const HEADLESS_ROLE_MCP_MAX_ARROWS = 8;
+export const HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS = 2;
+
+/** Upper bound on one runMcpReconnectMacro run with these options. The waits
+ *  poll every 150 ms, so each bounded wait may overrun by one poll.
+ *  @param {Partial<McpReconnectMacroBudgets>} [overrides] */
+export function mcpReconnectMacroWorstCaseMs(overrides = {}) {
+  const o = { ...MCP_RECONNECT_MACRO_DEFAULTS, ...overrides };
+  const poll = 150;
+  return (
+    o.crDelayMs +
+    o.paintBudgetMs + poll +
+    o.settleMs + // first-frame settle
+    o.maxArrows * o.settleMs + o.settleMs + // (3) select the server row, Enter
+    o.maxArrows * o.settleMs + // (4) select the Reconnect action
+    o.reconnectBudgetMs + poll + // (5) connected wait
+    3 * (o.closeWaitMs + poll) // closeOut: up to three Esc waits
+  );
+}
+
+/** Worst case of the fresh headless-role MCP verify that gates a kickoff. The
+ *  parent's KICKOFF_PROOF_WINDOW_MS must exceed it, or the parent gives up and
+ *  deletes the receipt before the host can report a refusal. */
+export function headlessRoleMcpVerifyWorstCaseMs() {
+  return HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS *
+    mcpReconnectMacroWorstCaseMs({ maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS });
+}
+
+/** WI-10006598: the host refused a headless kickoff, but its negative receipt
+ *  never reached the detached caller (the caller timed out and removed the
+ *  request, so publication failed). Nobody will reap this process and it can
+ *  never become the requested agent, so the host must end itself instead of
+ *  idling as a zombie that dedupes every relaunch. Pure — exported for tests. */
+export function unreportedKickoffRefusalStrandsHost({ delivered, headless, receipt }) {
+  if (delivered === true || headless !== true) return false;
+  if (!receipt || receipt.published !== false) return false;
+  // No request at all: the caller never opted in to the receipt handshake.
+  return receipt.reason !== 'kickoff-proof-request-missing';
 }
 
 /** Reuse the existing closed-loop /mcp walker, with one bounded second chance
@@ -5604,21 +8794,17 @@ export async function runMcpReconnectMacro({
   readTap,
   resetTap,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  crDelayMs = 150,
-  settleMs = 300,
-  paintBudgetMs = 8_000,
-  reconnectBudgetMs = 20_000,
-  maxArrows = 40,
+  crDelayMs = MCP_RECONNECT_MACRO_DEFAULTS.crDelayMs,
+  settleMs = MCP_RECONNECT_MACRO_DEFAULTS.settleMs,
+  paintBudgetMs = MCP_RECONNECT_MACRO_DEFAULTS.paintBudgetMs,
+  reconnectBudgetMs = MCP_RECONNECT_MACRO_DEFAULTS.reconnectBudgetMs,
+  maxArrows = MCP_RECONNECT_MACRO_DEFAULTS.maxArrows,
+  closeWaitMs = MCP_RECONNECT_MACRO_DEFAULTS.closeWaitMs,
 }) {
   const ESC = '\x1b';
   const DOWN = '\x1b[B';
   const CR = '\r';
   const visible = () => stripAnsi(readTap());
-  const closeOut = async () => {
-    write(ESC);
-    await sleep(150);
-    write(ESC);
-  };
   const waitFor = async (test, budgetMs) => {
     const until = Date.now() + budgetMs;
     for (;;) {
@@ -5627,6 +8813,24 @@ export async function runMcpReconnectMacro({
       if (Date.now() >= until) return null;
       await sleep(150);
     }
+  };
+  const squash = (v) => v.replace(/\s+/gu, '').toLowerCase();
+  const dialogDismissed = (v) => squash(v).includes('mcpdialogdismissed');
+  const rewindOpen = (v) =>
+    squash(v).includes('nothingtorewindto') || v.split('\n').some((l) => /^rewind$/i.test(l.trim()));
+  // WI-10006598: Esc from the detail view goes BACK to the list and Esc from
+  // the list closes the dialog, so the number of Escs needed varies. A blind
+  // second Esc at an empty prompt opens Rewind and leaves it on screen, so
+  // send the second only while the dialog is still up, and close a Rewind
+  // that opened anyway.
+  const closeOut = async () => {
+    resetTap();
+    write(ESC);
+    if (await waitFor(dialogDismissed, closeWaitMs)) return;
+    resetTap();
+    write(ESC);
+    const after = await waitFor((v) => dialogDismissed(v) || rewindOpen(v), closeWaitMs);
+    if (after && rewindOpen(after)) write(ESC);
   };
   const targetRowStatus = (v) => {
     const lines = v.split('\n');
@@ -5660,8 +8864,11 @@ export async function runMcpReconnectMacro({
   resetTap();
   write(CR);
 
-  // (2) painted?
-  const painted = await waitFor((v) => v.includes(serverName), paintBudgetMs);
+  // (2) painted? (a list row naming the server, or the detail-view header)
+  const painted = await waitFor(
+    (v) => v.includes(serverName) || mcpDialogShowsServerDetail(v, serverName),
+    paintBudgetMs,
+  );
   if (!painted) {
     await closeOut();
     return { ok: false, step: 'open-dialog', detail: `'${serverName}' never painted within ${paintBudgetMs}ms` };
@@ -5669,27 +8876,51 @@ export async function runMcpReconnectMacro({
   if (directReconnectSucceeded(painted)) {
     return { ok: true, step: 'direct-reconnected', detail: 'Claude /mcp confirmed this server reconnected' };
   }
-  if (targetRowStatus(painted) === 'connected') {
+  // The first match can arrive before the rest of the dialog; judge the
+  // shape off the whole first frame (the tap is not reset here).
+  await sleep(settleMs);
+  const frame = visible();
+  if (directReconnectSucceeded(frame)) {
+    return { ok: true, step: 'direct-reconnected', detail: 'Claude /mcp confirmed this server reconnected' };
+  }
+  const alreadyConnected = async () => {
     await closeOut();
-    return { ok: true, step: 'already-connected', detail: 'target row reads connected — nothing to heal' };
+    return { ok: true, step: 'already-connected', detail: 'target reads connected — nothing to heal' };
+  };
+  if (targetRowStatus(frame) === 'connected' || mcpConnectedVerdict(frame, serverName)) {
+    return alreadyConnected();
   }
 
-  // (3) cursor onto the target row
-  const onTarget = () => mcpDialogRowSelected(visible(), (l) => l.includes(serverName));
-  let selected = onTarget();
-  for (let i = 0; !selected && i < maxArrows; i++) {
-    resetTap();
-    write(DOWN);
-    await sleep(settleMs);
-    selected = onTarget();
+  // (3) cursor onto the target row — skipped when /mcp opened straight into
+  // the server's detail view (WI-10006598): there is no row to select, and
+  // the action rows below belong to the target already.
+  let inDetail = mcpDialogShowsServerDetail(frame, serverName);
+  if (!inDetail) {
+    const onTarget = () => mcpDialogRowSelected(visible(), (l) => l.includes(serverName));
+    let selected = onTarget();
+    for (let i = 0; !selected && i < maxArrows; i++) {
+      resetTap();
+      write(DOWN);
+      await sleep(settleMs);
+      const v = visible();
+      // The server can finish connecting while we navigate.
+      if (mcpConnectedVerdict(v, serverName)) return alreadyConnected();
+      if (mcpDialogShowsServerDetail(v, serverName)) {
+        inDetail = true;
+        break;
+      }
+      selected = onTarget();
+    }
+    if (!selected && !inDetail) {
+      await closeOut();
+      return { ok: false, step: 'select-server', detail: `cursor never reached '${serverName}' in ${maxArrows} downs` };
+    }
+    if (selected) {
+      resetTap();
+      write(CR);
+      await sleep(settleMs);
+    }
   }
-  if (!selected) {
-    await closeOut();
-    return { ok: false, step: 'select-server', detail: `cursor never reached '${serverName}' in ${maxArrows} downs` };
-  }
-  resetTap();
-  write(CR);
-  await sleep(settleMs);
 
   // (4) a reconnect action row (if this version paints one)
   if (/\breconnect\b/i.test(visible())) {
@@ -5779,6 +9010,19 @@ export function turnCoalesceKey(data, routineId, ownerId) {
     .split('\n')
     .find((l) => l.trim().length > 0);
   return `${ownerPrefix}${(first ?? '').trim().slice(0, 300)}`;
+}
+
+function turnCoalesceMetadata(message) {
+  return {
+    ...(message.routineId && message.fireNumber != null
+      ? { routineId: message.routineId, fireNumber: message.fireNumber }
+      : {}),
+    // Keep the freshness proof bound to the text when a later wake folds into
+    // this waiter. Null explicitly clears a prior sender's timestamp for legacy
+    // messages, which remain compatible and are not freshness-checked.
+    provenanceIssuedAtMs: message.provenanceIssuedAtMs ?? null,
+    ...(message.provenanceTimestampInvalid ? { provenanceTimestampInvalid: true } : {}),
+  };
 }
 
 /** Render the delivered turn text, annotating how many duplicates folded in.
@@ -5880,7 +9124,7 @@ export const DELIVERY_DEDUP_TTL_MS = 30 * 60_000;
  * `isDuplicate` opportunistically sweeps expired entries on every call (bounded cost —
  * only iterates while there is something to evict); pure factory, exported for tests. */
 export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.now } = {}) {
-  const entries = new Map(); // deliveryId -> { state: 'pending'|'completed', at }
+  const entries = new Map(); // deliveryId -> { state, at, cancelRequested?, writeStarted?, handledMsgIds? }
   const sweep = (t) => {
     for (const [k, entry] of entries) {
       if (t - entry.at > ttlMs) entries.delete(k);
@@ -5897,7 +9141,7 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     state(id) {
       return getState(id);
     },
-    /** True when `id` is pending or completed within the TTL. `id` may be
+    /** True when `id` is retained within the TTL, including refused writes. `id` may be
      *  undefined/empty (a message with no delivery row) — always false then, so
      *  callers can pass it through unconditionally. */
     isDuplicate(id) {
@@ -5907,13 +9151,101 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     markPending(id) {
       if (!id) return;
       const current = entries.get(id);
-      if (current?.state === 'completed') return;
-      entries.set(id, { state: 'pending', at: now() });
+      if (current?.state === 'completed' || current?.state === 'cancelled' || current?.state === 'superseded' || current?.writeStarted) return;
+      entries.set(id, { ...current, state: 'pending', at: now() });
     },
     /** Record the point at which the gated pipeline committed its delivery. */
     markCompleted(id) {
       if (!id) return;
+      if (['cancelled', 'superseded'].includes(entries.get(id)?.state)) return;
       entries.set(id, { state: 'completed', at: now() });
+    },
+    /** A written but unconfirmed turn belongs to a child that no longer exists.
+     * Preserve its original TTL and suppress repasting without claiming success. */
+    markSuperseded(id) {
+      const current = entries.get(id);
+      if (current?.state !== 'pending') return;
+      entries.set(id, { ...current, state: 'superseded', writeStarted: true });
+    },
+    /** Request cancellation for exact pending IDs. This is not a receipt: the
+     *  gate pipeline must still observe the request at its atomic first-write
+     *  boundary before the caller may settle the durable wake as suppressed. */
+    requestCancel(ids, handledMsgIds, reserveUnknown = false) {
+      const deliveryIds = Array.isArray(ids) ? [...new Set(ids)] : [];
+      const messageIds = Array.isArray(handledMsgIds) ? [...new Set(handledMsgIds)] : [];
+      if (!deliveryIds.length || (!messageIds.length && !reserveUnknown) || deliveryIds.some((id) => typeof id !== 'string' || !id)) {
+        return { status: 'invalid' };
+      }
+      const t = now();
+      sweep(t);
+      const current = deliveryIds.map((id) => entries.get(id));
+      if (current.some((entry) => !entry)) {
+        // An explicit subscriber ACK can race ahead of the original host
+        // injection. Reserve its ID so a later arrival cannot become a fresh write.
+        if (reserveUnknown && deliveryIds.length === 1 && !current[0]) {
+          entries.set(deliveryIds[0], { state: 'cancelled', at: t, writeStarted: true, handledMsgIds: [] });
+          return { status: 'cancelled', deliveryIds, handledMsgIds: [] };
+        }
+        return { status: 'unknown' };
+      }
+      if (current.every((entry) => entry.state === 'cancelled')) {
+        return { status: 'cancelled', deliveryIds, handledMsgIds: [...new Set(current.flatMap((entry) => entry.handledMsgIds ?? []))] };
+      }
+      if (current.some((entry) => entry.state === 'cancelled')) return { status: 'conflict' };
+      if (current.some((entry) => entry.state === 'completed')) return { status: 'completed' };
+      if (current.some((entry) => entry.writeStarted)) return { status: 'writing' };
+      for (const entry of current) {
+        entry.cancelRequested = true;
+        entry.handledMsgIds = [...new Set([...(entry.handledMsgIds ?? []), ...messageIds])];
+        entry.at = t;
+      }
+      return { status: 'requested', deliveryIds, handledMsgIds: messageIds };
+    },
+    /** Atomic last check immediately before the first PTY byte. If every ID in
+     *  this coalesced turn has an outstanding cancel request, none of its text
+     *  is written. A partial request fails open and commits the whole turn. */
+    beginWrite(ids) {
+      const deliveryIds = Array.isArray(ids) ? [...new Set(ids)] : [];
+      const current = deliveryIds.map((id) => entries.get(id));
+      if (current.length > 0 && current.every((entry) => entry?.state === 'cancelled')) {
+        return {
+          status: 'cancelled',
+          deliveryIds,
+          handledMsgIds: [...new Set(current.flatMap((entry) => entry.handledMsgIds ?? []))],
+        };
+      }
+      if (
+        current.length > 0 &&
+        current.every((entry) => entry?.state === 'pending' && !entry.writeStarted && entry.cancelRequested)
+      ) {
+        const handledMsgIds = [...new Set(current.flatMap((entry) => entry.handledMsgIds ?? []))];
+        const t = now();
+        for (const id of deliveryIds) {
+          entries.set(id, { state: 'cancelled', at: t, writeStarted: true, handledMsgIds });
+        }
+        return { status: 'cancelled', deliveryIds, handledMsgIds };
+      }
+      const t = now();
+      for (const entry of current) {
+        if (entry?.state !== 'pending') continue;
+        entry.writeStarted = true;
+        entry.cancelRequested = false;
+        entry.at = t;
+      }
+      return { status: 'write' };
+    },
+    markCancelled(id, handledMsgIds) {
+      if (!id) return;
+      const current = entries.get(id);
+      if (current?.state === 'completed') return;
+      entries.set(id, {
+        ...current,
+        state: 'cancelled',
+        at: now(),
+        writeStarted: true,
+        cancelRequested: false,
+        handledMsgIds: [...new Set(handledMsgIds ?? current?.handledMsgIds ?? [])],
+      });
     },
     /** A terminal failed/deferred pipeline is eligible for a later retry. */
     clearPending(id) {
@@ -5929,6 +9261,23 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
       return entries.size;
     },
   };
+}
+
+/** Decide how the detached host pipeline settles one delivery ID.
+ * A busy-gate deferral remains pending only when the re-arm controller still
+ * owns that exact delivery; folded IDs that the re-arm does not own stay
+ * retryable. */
+export function deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery = false) {
+  if (deliveryOutcome?.reason === 'cancelled-before-write') return 'cancelled';
+  if (
+    deliveryOutcome?.ok === true &&
+    (deliveryOutcome.reason === 'delivered' || deliveryOutcome.reason === 'quota-recovery-delivered')
+  ) {
+    return 'completed';
+  }
+  if (deliveryOutcome?.reason === 'deferred-busy-gate' && rearmOwnsDelivery) return 'pending';
+  if (deliveryOutcome?.reason === 'native-turn-start-unverified') return 'pending';
+  return 'clear';
 }
 
 /**
@@ -5984,11 +9333,14 @@ export function makeInjectMutex({
   onStuck = () => {},
 } = {}) {
   let tail = Promise.resolve();
+  let pending = 0;
   return {
+    pendingCount: () => pending,
     /** Resolve to a release() fn once the lock is free (FIFO), or once the
      *  watchdog force-releases a wedged holder (see the doc block above).
      *  Caller MUST call the returned release(). */
     async acquire() {
+      pending++;
       const prev = tail;
       /** The `resolve` of `tail`, captured synchronously by the executor below.
        *  Annotated, and initialised to the explicit `undefined` that a bare
@@ -6044,7 +9396,8 @@ export function makeInjectMutex({
           forceTimer.unref?.();
         }
       });
-      return release; // caller releases → frees the next FIFO waiter
+      let released = false;
+      return () => { if (!released) { released = true; pending--; release(); } };
     },
   };
 }
@@ -6104,8 +9457,8 @@ export function makeStaleFireGuard() {
 
 /** EI-18109211232286833: is a `carry-respawn` control message too stale to
  *  deliver? `receivedAtMs` is the moment this host first decoded the message
- *  (stamped once in `conn.on('end')`, reused unchanged across the one
- *  `makeCarryRearmController` retry), so this measures TOTAL elapsed wait —
+ *  (stamped once in `conn.on('end')`, reused unchanged across every
+ *  `makeCarryRearmController` re-poll attempt), so this measures TOTAL elapsed wait —
  *  original busy-gate wait plus the re-arm's — not a per-attempt window.
  *  Pure + injectable clock (matches this file's style, e.g. makeStaleFireGuard
  *  above); exported for unit tests. A message with no `receivedAtMs` (a
@@ -6177,6 +9530,7 @@ export function shouldDeferWakeForPendingRespawn(mode, pendingRespawnCount) {
  *  Claude Code TUI's paste detector (the CR becomes a literal newline and the
  *  turn never submits). Pure — exported for tests. */
 export function controlWrites(decoded, crDelayMs = TURN_SUBMIT_CR_DELAY_MS) {
+  if (decoded.mode === 'unsupported-control' || decoded.mode === 'hooks-observe') return [];
   // raw (force-interrupt byte) and osc (recolor bytes) are both ONE immediate
   // verbatim write — no idle gate, no submit CR.
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return [{ data: decoded.data, delayMs: 0 }];
@@ -6261,6 +9615,7 @@ export function bracketedPasteFrame(text) {
  *  @param {{ bracketedPaste?: boolean }} [opts]
  */
 export function controlWritesForAgent(decoded, agent, env = process.env, opts = {}) {
+  if (decoded.mode === 'unsupported-control' || decoded.mode === 'hooks-observe') return [];
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return controlWrites(decoded);
   if (decoded.mode === 'reset') return resetWritesForAgent(decoded, agent, env, opts);
   const normalized = String(agent || '').trim().toLowerCase();
@@ -6411,10 +9766,177 @@ export function submitVerifyQuietMs(env = process.env) {
   return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS, SUBMIT_VERIFY_QUIET_MS);
 }
 
+/** EI-25930229050142968: hard bounds on the standalone-Enter recovery of ONE
+ *  unconfirmed machine submission (EI-25878022553042846). SUBMIT_VERIFY_MAX_CR
+ *  caps only the backoff MULTIPLIER, so the recovery count was unbounded: one
+ *  session pressed Enter 393 times over 3.5h. While its nativeStartPending record
+ *  stayed live, every later wake was deferred (`deferred-native-turn-start` /
+ *  `native-turn-start-pending`), and a fleet leader went silent for ~2h.
+ *  Session-env tunable; the module default is the fallback. */
+export const SUBMIT_RECOVERY_MAX_RESUBMITS = 8;
+export const SUBMIT_RECOVERY_MAX_AGE_MS = 30 * 60_000;
+/** @param {EnvironmentMap} [env] @returns {number} */
+export function submitRecoveryMaxResubmits(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_RECOVERY_MAX_CR, SUBMIT_RECOVERY_MAX_RESUBMITS);
+}
+/** @param {EnvironmentMap} [env] @returns {number} */
+export function submitRecoveryMaxAgeMs(env = process.env) {
+  return positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_RECOVERY_MAX_AGE_MS, SUBMIT_RECOVERY_MAX_AGE_MS);
+}
+
+/** One recovery-tick decision for an unconfirmed machine submission. Pure —
+ *  exported for tests (EI-25930229050142968).
+ *  - `wait`: output is not quiet yet, or the previous Enter's retry window is open.
+ *  - `resubmit`: press one standalone Enter. `counted` is false while the provider
+ *    is quota/auth-blocked: a blocked provider rejects every Enter, so those
+ *    presses say nothing about the composer and never spend the budget.
+ *  - `exhausted`: retire the record. Either `maxResubmits` counted Enters were
+ *    made and the last one received its full retry window (`max-resubmits`), or
+ *    the submission is older than `maxAgeMs` (`max-age`, which also covers a TUI
+ *    that is never quiet long enough to receive an Enter). Neither fires while
+ *    the provider is blocked.
+ *  @param {{ resubmits?: number, countedResubmits?: number, submittedAtMs?: number,
+ *    lastResubmitAtMs?: number, lastOutputAtMs?: number, now?: number, quietMs: number,
+ *    retryCap: number, maxResubmits: number, maxAgeMs?: number, providerBlocked?: boolean }} input
+ *  @returns {{ action: 'wait' | 'resubmit' | 'exhausted', retryMs: number, counted: boolean,
+ *    reason: 'max-resubmits' | 'max-age' | null }} */
+export function decidePendingSubmissionRecovery({ resubmits = 0, countedResubmits = 0, submittedAtMs = 0,
+  lastResubmitAtMs = 0, lastOutputAtMs = 0, now = Date.now(), quietMs, retryCap, maxResubmits,
+  maxAgeMs = Number.POSITIVE_INFINITY, providerBlocked = false }) {
+  const retryMs = quietMs * Math.min(2 ** Math.min(resubmits, 20), retryCap);
+  if (!providerBlocked && submittedAtMs > 0 && now - submittedAtMs >= maxAgeMs) {
+    return { action: 'exhausted', retryMs, counted: false, reason: 'max-age' };
+  }
+  if (now - lastOutputAtMs < quietMs || now - lastResubmitAtMs < retryMs) {
+    return { action: 'wait', retryMs, counted: false, reason: null };
+  }
+  if (providerBlocked) return { action: 'resubmit', retryMs, counted: false, reason: null };
+  if (countedResubmits >= maxResubmits) return { action: 'exhausted', retryMs, counted: false, reason: 'max-resubmits' };
+  return { action: 'resubmit', retryMs, counted: true, reason: null };
+}
+
+/** Retire one unconfirmed submission so later wakes can inject again. Every
+ *  delivery id coalesced onto `pending` is removed from `pendingById` and
+ *  tombstoned as superseded, so a durable retry of that id is refused
+ *  (`deferred-native-turn-start-superseded`) instead of pasting the text a second
+ *  time. Pure over its arguments — exported for tests (EI-25930229050142968).
+ *  @param {Map<string, unknown>} pendingById
+ *  @param {unknown} pending
+ *  @param {{ markSuperseded(id: string): void }} dedup
+ *  @returns {string[]} the retired delivery ids */
+export function retirePendingSubmission(pendingById, pending, dedup) {
+  const retired = [];
+  for (const [id, entry] of pendingById) {
+    if (entry !== pending) continue;
+    dedup.markSuperseded(id);
+    retired.push(id);
+  }
+  for (const id of retired) pendingById.delete(id);
+  return retired;
+}
+
 /** Absolute path to the session-compacted emit CLI (a sibling script, built by the
  *  event-await-discoverability plan / P-103). The host resolves it relative to itself so
  *  the same path works from the staging AND release checkouts. */
 export const SESSION_COMPACTED_EMIT_ENTRY = join(HOST_SCRIPT_DIR, 'emit-session-compacted.ts');
+
+/** EI-24961854655864836: authenticate the successor before submitting its work.
+ * A failed first report may confirm through the launcher's existing durable retry.
+ * The bounded wait never treats submission/transcript proof as identity authority.
+ * @param {{nativeId?: string | null, readNativeId?: () => string | null,
+ * report?: (id: string, options: {onConfirmed: (id?: string) => void}) => any,
+ * isCurrent?: () => boolean, timeoutMs?: number, pollMs?: number,
+ * alreadyConfirmed?: boolean, discoveryTimeoutMs?: number}} options
+ * `discoveryTimeoutMs` (P-005 / D-003) bounds only the search for a missing
+ * native id. Once the id is known, the operator report keeps `timeoutMs`: a late
+ * id found at the edge of the window must still be able to confirm.
+ */
+export async function waitForRespawnBinding({
+  nativeId = null, readNativeId = () => null, report = () => false,
+  isCurrent = () => true, timeoutMs = 2_000, pollMs = 50, alreadyConfirmed = false,
+  discoveryTimeoutMs = Infinity,
+}) {
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  const discoveryDeadline = startedAt + Math.max(0, discoveryTimeoutMs);
+  let confirmed = alreadyConfirmed && Boolean(nativeId);
+  let reporting = false;
+  while (isCurrent()) {
+    if (!nativeId) {
+      try { nativeId = readNativeId(); } catch { /* next bounded startup check */ }
+    }
+    if (nativeId && !reporting && !confirmed) {
+      reporting = true;
+      const expectedId = nativeId;
+      const onConfirmed = (id = expectedId) => {
+        if (id === expectedId && isCurrent()) confirmed = true;
+      };
+      void Promise.resolve().then(() => isCurrent() ? report(expectedId, { onConfirmed }) : false)
+        .then((ok) => { if (ok === true) onConfirmed(); }, () => {});
+    }
+    if (confirmed) return { ok: true, nativeId, reason: 'successor-reanchor-confirmed' };
+    const left = (nativeId ? deadline : Math.min(deadline, discoveryDeadline)) - Date.now();
+    if (left <= 0) return {
+      ok: false, nativeId,
+      reason: nativeId ? 'successor-reanchor-unconfirmed' : 'successor-native-id-missing',
+    };
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, left)));
+  }
+  return { ok: false, nativeId, reason: 'superseded' };
+}
+
+/**
+ * Complete the existing carry lifecycle after native delivery and mapping are
+ * proven. Codex assigns its id at startup: use the exact isolated rollout from
+ * native proof, never "latest" (which can still be the critical predecessor).
+ * @param {{ownerId: string, agent?: string, nativeId?: string | null,
+ *   proof?: {persisted?: boolean, nativeRef?: string | null} | null,
+ *   alreadyReported?: boolean,
+ *   report?: (nativeId: string, options: {onConfirmed: () => void}) => any,
+ *   isCurrent?: () => boolean,
+ *   emit?: typeof fireSessionCompactedEvent, timeoutMs?: number}} options
+ */
+export async function announceVerifiedCarryRespawn({
+  ownerId, agent, nativeId = null, proof = null, alreadyReported = false,
+  report = () => false, emit = fireSessionCompactedEvent, timeoutMs = 2_000,
+  isCurrent = () => true,
+}) {
+  if (!proof?.persisted) return { announced: false, nativeId, reason: 'native-turn-unverified' };
+  if (!nativeId && agent === 'codex' && proof.nativeRef) {
+    nativeId = /^rollout-.*-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i
+      .exec(basename(proof.nativeRef))?.[1] ?? null;
+  }
+  if (!ownerId || !nativeId) return { announced: false, nativeId, reason: 'successor-native-id-missing' };
+  let reported = alreadyReported;
+  let announced = false;
+  const announce = () => {
+    if (announced || !isCurrent()) return;
+    emit(ownerId, 'carry-respawn', { nativeId });
+    announced = true;
+  };
+  const onConfirmed = () => {
+    reported = true;
+    try { announce(); } catch { /* fail-soft even after the foreground wait */ }
+  };
+  let timer;
+  try {
+    if (!reported) {
+      const confirmed = await Promise.race([
+        Promise.resolve().then(() => report(nativeId, { onConfirmed })),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+      ]) === true;
+      reported ||= confirmed;
+    }
+    if (!reported) return { announced: false, nativeId, reason: 'successor-reanchor-unconfirmed' };
+    if (!isCurrent()) return { announced: false, nativeId, reason: 'successor-carry-superseded' };
+    announce();
+    return { announced: true, nativeId, reason: 'native-turn-and-reanchor-verified' };
+  } catch {
+    return { announced: false, nativeId, reason: 'successor-reanchor-or-emit-failed' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 /**
  * Fire the server-side `session:compacted:<owner>` event (event-await-discoverability
@@ -6561,9 +10083,10 @@ export function injectTurn(sock, text, ownerId) {
  * Only launcher-managed URLs may heal, using the existing provenance marker shared
  * with ptool. An explicit target stays authoritative even when its server is down:
  * a refusal does not authorize moving a current-build session to stable code.
- * A managed pin is replaced only when it REFUSES the connection. A slow or erroring
- * operator stays authoritative. The replacement is the local MCP proxy, and only when it
- * answers /api/health. Mutates `env` in place and returns `{ from, to }` when it
+ * A managed pin is replaced only when it refuses connections or its /api/mcp route
+ * is confirmed missing. A slow/erroring service and a live MCP endpoint stay
+ * authoritative. The replacement is the local MCP proxy, and it must answer both
+ * /api/health and /api/mcp. Mutates `env` in place and returns `{ from, to }` when it
  * healed, otherwise null. Never throws.
  *
  * @param {EnvironmentMap} env
@@ -6634,8 +10157,15 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
     const proxy = `http://127.0.0.1:${proxyPort}`;
 
     let refused = false;
+    let pinAnsweredHealth = false;
     try {
-      await fetchImpl(`${pinned}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+      const health = await fetchImpl(`${pinned}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+      pinAnsweredHealth = true;
+      try {
+        await health?.body?.cancel?.();
+      } catch {
+        /* a small health response is already sufficient */
+      }
     } catch (err) {
       // undici reports a refused connect as TypeError('fetch failed') whose cause
       // carries the socket errno. A timeout surfaces as AbortError/TimeoutError and
@@ -6643,11 +10173,50 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
       const code = err?.cause?.code ?? err?.code;
       refused = code === 'ECONNREFUSED' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH';
     }
-    if (!refused) return null;
+    let mcpRouteMissing = false;
+    if (!refused && pinAnsweredHealth) {
+      try {
+        // A stale launcher URL can point at a healthy HTTP service that is not
+        // the operator. GET is side-effect free: a real Streamable HTTP endpoint
+        // may answer 405 (or open its event stream), while a missing route is 404.
+        const route = await fetchImpl(`${pinned}/api/mcp`, {
+          method: 'GET',
+          headers: { accept: 'text/event-stream' },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        mcpRouteMissing = route?.status === 404;
+        try {
+          await route?.body?.cancel?.();
+        } catch {
+          /* releasing a probe stream must not alter the route verdict */
+        }
+      } catch (err) {
+        const code = err?.cause?.code ?? err?.code;
+        refused = code === 'ECONNREFUSED' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH';
+      }
+    }
+    if (!refused && !mcpRouteMissing) return null;
 
     try {
       const h = await fetchImpl(`${proxy}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
       if (!h?.ok) return null;
+      try {
+        await h.body?.cancel?.();
+      } catch {
+        /* a small health response is already sufficient */
+      }
+      const mcp = await fetchImpl(`${proxy}/api/mcp`, {
+        method: 'GET',
+        headers: { accept: 'text/event-stream' },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const proxyMcpRouteExists = mcp?.status !== 404;
+      try {
+        await mcp?.body?.cancel?.();
+      } catch {
+        /* releasing a probe stream must not alter the route verdict */
+      }
+      if (!proxyMcpRouteExists) return null;
     } catch {
       return null;
     }
@@ -6656,24 +10225,63 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
     // rediscover (psu-launcher.mjs OPERATOR_URL_PROVENANCE_ENV; a literal because the
     // host cannot import the launcher without an import cycle).
     env.PAPERCUSP_OPERATOR_URL_PROVENANCE = 'psu-launcher';
-    return { from: pinned, to: proxy };
+    return mcpRouteMissing
+      ? { from: pinned, to: proxy, route: 'mcp-route-missing' }
+      : { from: pinned, to: proxy };
   } catch {
     return null;
   }
 }
 
 /**
- * D-424 (plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22, P-326): the process the pty
- * actually runs for the agent child.
- *
- * With no {@link AGENT_IDENTITY_SPEC_ENV} in the child env (desktop, dev — every launch that is
- * not a hosted workspace host) this is exactly `command args env`, unchanged. On a hosted host
- * the operator sets that spec: psu stays the service-user supervisor and only the agent CLI
- * crosses to the customer workspace account — staged over a non-TTY hop, then run under a
- * remote TTY (`ssh -tt`) so the TUI, ^C and window resizes behave as they do locally. The spec
- * env var itself never crosses (the stage's env allowlist excludes it). A staging failure throws
- * a NAMED refusal; there is deliberately no fall back to running the agent as the service user.
- *
+ * Native ID identified by this child's argv. Forced IDs win over the resumed
+ * source; an unforced fork's new ID is unknown. Shared with the launcher so
+ * each carry/recycle/park spawn follows the same identity precedence.
+ * @param {string[]} [args]
+ * @returns {string|null}
+ */
+export function nativeSessionIdFromLaunchArgs(args = []) {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const argStrs = args.map((a) => String(a ?? ""));
+  for (let i = 0; i < argStrs.length; i++) {
+    const a = argStrs[i];
+    if (a === "--session-id" && uuid.test(argStrs[i + 1] ?? ""))
+      return argStrs[i + 1];
+    if (a.startsWith("--session-id=")) {
+      const v = a.slice("--session-id=".length);
+      if (uuid.test(v)) return v;
+    }
+  }
+  if (argStrs.includes("--fork-session")) return null;
+  for (let i = 0; i < argStrs.length; i++) {
+    const a = argStrs[i];
+    if ((a === "--resume" || a === "resume") && uuid.test(argStrs[i + 1] ?? ""))
+      return argStrs[i + 1];
+    if (a.startsWith("--resume=")) {
+      const v = a.slice("--resume=".length);
+      if (uuid.test(v)) return v;
+    }
+  }
+  return null;
+}
+
+/** Recompute the explicit HTTP carrier without stamping Claude ancestry.
+ * @param {EnvironmentMap} env
+ * @param {string[]} args
+ * @returns {EnvironmentMap}
+ */
+export function applyNativeSessionEnv(env, args) {
+  const nativeId = nativeSessionIdFromLaunchArgs(args);
+  if (nativeId) env.PAPERCUSP_NATIVE_SESSION_ID = nativeId;
+  else delete env.PAPERCUSP_NATIVE_SESSION_ID;
+  return env;
+}
+
+/**
+ * D-424: select the PTY child and stage a hosted identity when configured.
+ * Without a hosted spec, command/args remain unchanged. The cloned environment
+ * carries this spawn's native ID and discards stale operator-host hints.
+ * Staging failures propagate without falling back to the service user.
  * @param {{command: string, args: string[], env: Record<string,string|undefined>, cwd?: string}} target
  * @param {{stage?: typeof stageAgentIdentityTty}} [deps]
  * @returns {{command: string, args: string[], env: Record<string,string|undefined>}}
@@ -6684,6 +10292,8 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
   // hint over the operator URL explicitly handed to that child. Keep the host
   // environment untouched and sanitize on EVERY child spawn, including recycle.
   const childEnv = { ...env };
+  // args is the actual new child argv, including carry/recycle/park rotations.
+  applyNativeSessionEnv(childEnv, args);
   if (childEnv.PAPERCUSP_OPERATOR_URL) {
     delete childEnv.PAPERCUSP_OPERATOR_BASE;
     delete childEnv.PAPERCUSP_HONO_PORT;
@@ -6720,15 +10330,25 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
  * @param {{renderedHash?: string}} [o.sessionPort] { renderedHash } for the managed seed
  * @param {(proof:any)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
+ * @param {{nativeId?:string|null,drillId?:string|null,sessionClass?:string|null,launchContextPath?:string|null}|null} [o.adoptedCarryRespawn] host-code adoption of a carry;
+ *   its kickoff must prove the late native id and re-anchor before it announces completion
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
+ * @param {((file:string, args:string[], options:object, realSpawn:(file:string, args:string[], options:object)=>any)=>any)|null} [o.spawnPty]
+ *   pty spawn override (tests: inject a resume failure); null = the real pty.spawn
  * @param {()=>object} [o.reapScopeResidue] exact-session-cgroup cleanup (tests)
  * @param {string} [o.normalizedLogPath] optional headless grep-safe log path; normally
  *   supplied through {@link HEADLESS_NORMALIZED_LOG_ENV} in `o.env`
- * @param {(args:string[])=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
- * @param {(args:string[])=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
- * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
+ * @param {(args:string[], options:{agent?:string, personaFile?:string|null})=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
+ * @param {(args:string[], options:{systemPromptAddendum:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
+ * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
+ * @param {(args:string[], options:{nativeId:string|null})=>({args:string[], nativeId:string}|null)} [o.mintQuotaResumeArgs]
+ * @param {(args:string[])=>string[]} [o.prepareChildArgs]
+ *   mint the argv that resumes a parked child (null = not resumable, never park)
+ * @param {(options?: {routeMode?: 'auto'})=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint or quota recovery
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
+ * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
+ * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
  * @param {(env: EnvironmentMap)=>Promise<{from:string,to:string}|null>} [o.healOperatorPin]
@@ -6736,6 +10356,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {()=>number} [o.parentPidFn] injectable parent-pid probe
  * @param {number} [o.activityPersistMs] discovery activity refresh interval
  * @param {number} [o.nativePersistenceTimeoutMs] managed kickoff persistence deadline
+ * @param {(...args:any[])=>any} [o.mcpReconnectMacro] injectable carry MCP reconnect macro
  */
 export function hostThroughPty(o) {
   const {
@@ -6752,6 +10373,14 @@ export function hostThroughPty(o) {
     // standalone host + existing tests behavior-identical (same args, no anchor).
     mintRecycleArgs = (a) => ({ args: a, nativeId: null }),
     mintCarryRespawnArgs = (a) => mintRecycleArgs(a),
+    // psu-process-free-parking-2026-10-06 P-017: the argv that resumes a PARKED
+    // child as the same conversation (launcher: mintParkResumeArgs). The default
+    // returns null, i.e. "not resumable", so a host the launcher did not wire
+    // never parks.
+    mintParkResumeArgs = () => null,
+    // Quota changes credentials, not the native conversation.
+    mintQuotaResumeArgs = null,
+    prepareChildArgs = (a) => a,
     // The launcher owns the authenticated operator repair route. Invoke it at
     // the carry boundary so an archived Codex home cannot make every successor
     // attempt fail before minting its AGENTS.md prompt.
@@ -6767,6 +10396,8 @@ export function hostThroughPty(o) {
       reason: "not-wired",
     }),
     onRespawn = () => {},
+    resolveRespawnNativeId = null,
+    emitCompacted = fireSessionCompactedEvent,
     // WI-38292: hand the session to a FRESH launcher process instead of respawning
     // the CLI child inside this stale one. Injected like the mints, and for a
     // second reason beyond launcher-agnosticism: only the launcher knows whether
@@ -6797,14 +10428,44 @@ export function hostThroughPty(o) {
     kickoff = null,
     kickoffFile = null,
     sessionPort = null,
+    adoptedCarryRespawn = null,
     onKickoffPersisted = async () => {},
     onSpawn = () => {},
     nativePersistenceTimeoutMs = Number(
       env.PAPERCUSP_SESSION_PORT_PERSIST_TIMEOUT_MS,
     ) || 30_000,
+    mcpReconnectMacro = runMcpReconnectMacro,
     signalSource = process,
     reapScopeResidue = reapDetachedPtyScopeResidue,
+    // psu-process-free-parking-2026-10-06 P-019: injectable pty spawn so a test
+    // can make ONE resume fail (fork EAGAIN/ENOMEM is the realistic cause on a
+    // box parking agents to free memory) and prove the delivery is held, not
+    // lost. Receives the real spawn as its 4th argument. null = pty.spawn.
+    spawnPty = null,
   } = o;
+  let adoptedCarryDrillTerminalRecorded = false;
+  const recordAdoptedCarryDrillEvent = (kind, extra = {}) => {
+    const drillId = typeof adoptedCarryRespawn?.drillId === 'string'
+      ? adoptedCarryRespawn.drillId.trim()
+      : '';
+    if (!drillId) return false;
+    const row = {
+      drillId,
+      sessionClass: adoptedCarryRespawn.sessionClass ?? null,
+      nativeId: adoptedCarryRespawn.nativeId ?? null,
+      launchContextPath: adoptedCarryRespawn.launchContextPath ?? null,
+      ...extra,
+    };
+    appendHostEvent(ownerId, kind, row);
+    appendSharedDrillLedgerEvent(ownerId, kind, row);
+    return true;
+  };
+  const recordAdoptedCarryDrillTerminal = (kind, extra = {}) => {
+    if (adoptedCarryDrillTerminalRecorded) return false;
+    const recorded = recordAdoptedCarryDrillEvent(kind, extra);
+    if (recorded) adoptedCarryDrillTerminalRecorded = true;
+    return recorded;
+  };
   if (kickoff && kickoffFile) throw new Error('plain kickoff and managed kickoff file are mutually exclusive');
   const managedKickoff = kickoffFile
     ? (() => {
@@ -6821,13 +10482,35 @@ export function hostThroughPty(o) {
   const carryProofRetryMax = Number.isFinite(configuredCarryProofRetryMax) && configuredCarryProofRetryMax >= 0
     ? Math.floor(configuredCarryProofRetryMax)
     : CARRY_PROOF_RETRY_MAX;
+  const publishKickoffProof = (proof) => {
+    const result = publishKickoffProofReceipt(proof, env);
+    if (!result.published && result.reason !== 'kickoff-proof-request-missing') {
+      appendHostEvent(ownerId, 'kickoff-proof-receipt-publication-failed', {
+        persisted: proof.persisted === true,
+        reason: result.reason,
+        errorMessage: result.errorMessage ?? null,
+        errorCode: result.errorCode ?? null,
+      });
+    }
+    return result;
+  };
   let managedKickoffDisposition = null;
   const acknowledgeManagedKickoff = (proof) => {
     if (!managedKickoff) return Promise.resolve();
     if (!managedKickoffDisposition) {
       // First terminal outcome wins. Child exit and persistence verification can
       // race; sharing one promise prevents delivered→failed double transitions.
-      managedKickoffDisposition = Promise.resolve().then(() => onKickoffPersisted(proof));
+      managedKickoffDisposition = Promise.resolve().then(() => {
+        // The detached parent consumes this receipt; the session-port HTTP ack
+        // alone cannot prove delivery to it. Publish before that potentially slow
+        // ack, under the same first-terminal guard as the child-exit failure.
+        publishKickoffProof({
+          persisted: proof.persisted === true,
+          nativeRef: proof.persisted === true ? proof.nativeRef ?? null : null,
+          reason: proof.persisted === true ? null : proof.error ?? 'session-port-kickoff-not-persisted',
+        });
+        return onKickoffPersisted(proof);
+      });
     }
     return managedKickoffDisposition;
   };
@@ -6837,6 +10520,13 @@ export function hostThroughPty(o) {
   const reexecCode = reexecExitCodeFrom(env);
   const stdin = o.io?.stdin ?? process.stdin;
   const stdout = o.io?.stdout ?? process.stdout;
+  // Diagnostics share the screen's POSIX TTY in interactive launches. A direct
+  // stderr.write can block input even when screen output is asynchronous.
+  const diagnosticOutput = createTerminalOutput({
+    stdout: process.stderr,
+    onError: (error) => appendHostEvent(ownerId, 'terminal-diagnostic-output-failed', hostErrorEvidence(error)),
+  });
+  const writeTerminalDiagnostic = (text) => diagnosticOutput.write(text);
   const onExit = o.onExit ?? ((code) => process.exit(code ?? 0));
   const bridgeTty = o.bridgeTty ?? !!(stdin.isTTY && typeof stdin.setRawMode === 'function');
   /** P-006: ROUTINE defer diagnostics go through here, never bare stderr — see
@@ -6845,7 +10535,7 @@ export function hostThroughPty(o) {
   const writeHostDiagnostic = (text) => {
     if (!shouldWriteHostDiagnostic({ bridgeTty, env })) return false;
     try {
-      process.stderr.write(text);
+      writeTerminalDiagnostic(text);
       return true;
     } catch {
       /* never let a diagnostic write break the session */
@@ -6865,7 +10555,7 @@ export function hostThroughPty(o) {
     pty = require('@lydell/node-pty');
   } catch (e) {
     appendHostEvent(ownerId, 'pty-load-failed', hostErrorEvidence(e));
-    process.stderr.write(
+    writeTerminalDiagnostic(
       `psu: failed to load @lydell/node-pty (${e.message}); falling back to a plain launch is the caller's job.\n`,
     );
     throw e;
@@ -6873,6 +10563,7 @@ export function hostThroughPty(o) {
 
   pruneDead();
   const sock = socketPathFor(ownerId);
+  ensureControlSocketDir(sock);
   const metaPath = metaPathFor(ownerId);
   // A stale socket from a crashed prior session of the SAME owner would block
   // bind; remove it (pruneDead already cleared dead ones, but be defensive).
@@ -6913,24 +10604,87 @@ export function hostThroughPty(o) {
   // argv (every respawn mints from it), so it cannot say whether the current
   // child carries a persona flag; coldResetModeForAgent needs exactly that.
   let liveChildArgs = args;
+  let childGeneration = 0;
+  let childStartedAtMs = 0;
+  // Reset on every successful spawn; a predecessor's completion cannot
+  // certify a newly resumed child before that child has executed a turn.
+  let lastMachineTurnSubmittedAtMs = 0;
+  let ownerComposerGate;
+  let ownerStopRequested = false;
+  // The first discovery write observes execution before the rest of the host
+  // is wired. Initialize its retained state before that synchronous write.
+  let nativeExecutionFence = null;
+  let lastNativeExecution = null;
+  // WI-10005178: the child's PTY size, so its cursor-positioned output can be
+  // replayed onto the same grid (renderTerminalScreen). onResize keeps the child
+  // at these dims too.
+  const childScreenDims = () => ({
+    cols: sanePtyDim(stdout.columns, 80, 1000),
+    rows: sanePtyDim(stdout.rows, 24, 500),
+  });
   const spawnChild = (spawnArgs = args) => {
-    liveChildArgs = spawnArgs;
-    const target = resolveAgentPtyTarget({ command, args: spawnArgs, env, cwd });
-    return pty.spawn(target.command, target.args, {
+    spawnArgs = prepareChildArgs(spawnArgs);
+    // WI-10008156: every managed Codex child skips the startup update check.
+    // liveChildArgs below keeps the caller's argv, so park/recycle mints never
+    // see (or duplicate) this host-owned override.
+    const target = resolveAgentPtyTarget({
+      command, args: withManagedCodexStartupConfig({ command, args: spawnArgs, env }), env, cwd,
+    });
+    prepareCodexSqliteHome({ env: target.env, cwd, args: target.args });
+    const ptyOptions = {
       name: ptyName,
-      cols: sanePtyDim(stdout.columns, 80, 1000),
-      rows: sanePtyDim(stdout.rows, 24, 500),
+      ...childScreenDims(),
       cwd,
       env: target.env,
+    };
+    const realSpawn = (file, argv, options) => pty.spawn(file, argv, options);
+    const spawned = spawnPty
+      ? spawnPty(target.command, target.args, ptyOptions, realSpawn)
+      : realSpawn(target.command, target.args, ptyOptions);
+    appendHostEvent(ownerId, 'pty-spawned', {
+      childPid: Number.isInteger(spawned.pid) ? spawned.pid : null,
+      ...ptySpawnRouteSnapshot(target.env),
     });
+    // Only a child that actually started owns the live argv: a failed spawn
+    // must not rewrite what the next park/recycle mint reads.
+    liveChildArgs = spawnArgs;
+    childGeneration++;
+    childStartedAtMs = Date.now();
+    lastMachineTurnSubmittedAtMs = 0;
+    return spawned;
   };
   let child;
   try {
     child = spawnChild();
   } catch (e) {
     appendHostEvent(ownerId, 'pty-spawn-failed', { command, ...hostErrorEvidence(e) });
-    process.stderr.write(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
+    writeTerminalDiagnostic(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
     throw e;
+  }
+  let terminalOutputError = null;
+  let terminateTerminalOutput = null;
+  const terminalOutput = createTerminalOutput({
+    stdout,
+    pause: () => child.pause?.(),
+    resume: () => child.resume?.(),
+    onError: (error) => {
+      terminalOutputError = error;
+      appendHostEvent(ownerId, 'terminal-output-failed', hostErrorEvidence(error));
+      terminateTerminalOutput?.();
+    },
+  });
+  if (adoptedCarryRespawn) {
+    appendHostEvent(ownerId, 'host-code-adoption-child-started', {
+      mode: 'carry-respawn',
+      nativeId: adoptedCarryRespawn.nativeId ?? null,
+      agent: env.PAPERCUSP_AGENT ?? null,
+      kickoffPresent: typeof kickoff === 'string' && kickoff.length > 0,
+      kickoffBytes: typeof kickoff === 'string' ? Buffer.byteLength(kickoff, 'utf8') : 0,
+      argsCount: Array.isArray(liveChildArgs) ? liveChildArgs.length : null,
+      kickoffFilePresent: Boolean(kickoffFile),
+      childPid: Number.isInteger(child.pid) ? child.pid : null,
+    });
+    recordAdoptedCarryDrillEvent('carry-drill-respawned');
   }
   let stopStartupTrace = startCodexStartupProcessTrace({
     agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
@@ -6939,13 +10693,13 @@ export function hostThroughPty(o) {
     const acknowledgement = onSpawn();
     void Promise.resolve(acknowledgement).catch((error) => {
       appendHostEvent(ownerId, 'resume-finalization-report-failed', hostErrorEvidence(error));
-      process.stderr.write(
+      writeTerminalDiagnostic(
         `psu: child spawned under pty, but its resume finalization report failed: ${error?.message ?? error}\n`,
       );
     });
   } catch (error) {
     appendHostEvent(ownerId, 'resume-finalization-callback-failed', hostErrorEvidence(error));
-    process.stderr.write(
+    writeTerminalDiagnostic(
       `psu: child spawned under pty, but its resume finalization callback failed: ${error?.message ?? error}\n`,
     );
   }
@@ -6959,6 +10713,9 @@ export function hostThroughPty(o) {
   // request is an idempotent ok instead of a second kill. Unlike `recycling` this is
   // terminal — nothing clears it, because the host is on its way out.
   let shuttingDown = false;
+  // WI-10004943 (d): set by cleanup() once the host has torn down, so a kickoff
+  // HELD for a Codex frame (minutes) stops waiting instead of polling a dead host.
+  let hostCleanedUp = false;
   // EI-18665672258948707: the moment (Date.now()) THIS host last successfully
   // spawned a fresh child via recycleChild — the supersession clock a queued
   // carry-respawn is checked against right before delivery (isCarryRespawnSuperseded).
@@ -6972,6 +10729,9 @@ export function hostThroughPty(o) {
   // verifier cannot let later injections create another unbounded CR window.
   let submitVerifyExhausted = false;
   let terminateSubmitVerifyExhaustion = () => false;
+  // WI-10006598: assigned once cleanup exists (beside the submit-exhaustion
+  // terminator); ends a headless host whose kickoff refusal went unreported.
+  let terminateUnreportedKickoffRefusal = () => false;
 
   // Output taps (mcp-transport-resilience P-003): live subscribers to the
   // child's raw output bytes — the mcp-reconnect macro reads the TUI screen
@@ -7002,6 +10762,9 @@ export function hostThroughPty(o) {
   // Only actual owner input advances this epoch; terminal capability replies
   // cannot invalidate an untouched successor's first-prompt readiness.
   let ownerInputGeneration = 0;
+  // A pending machine composer belongs to its original input generation.
+  // Owner edits and raw control writes both revoke permission to submit it.
+  let composerInputGeneration = 0;
   // WI-1386682 (1): quota-wall detector, fed the same raw bytes as `activity`
   // (wireChildData below). A stable object with its own reset() — unlike
   // childStartupOutput/childStartupReady this is not reassigned per recycle,
@@ -7031,6 +10794,28 @@ export function hostThroughPty(o) {
         matchedExcerpt: dismissed.excerpt,
         blockedSinceMs: dismissed.blockedSinceMs,
       }),
+    // WI-6554700010008412: the provider's stated reset passed; the next
+    // deferred wake is let through and re-latches if the wall is still up.
+    onExpire: (expired) =>
+      appendHostEvent(ownerId, expired.reason === 'probe' ? 'quota-block-probe-released' : 'quota-block-expired-at-reset', {
+        agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+        matchedPattern: expired.pattern,
+        blockedSinceMs: expired.blockedSinceMs,
+        resetAtMs: expired.resetAtMs,
+        probe: expired.probe,
+      }),
+  });
+  // P-004: codex auth-failure twin. Same resume/fork replay deferral as quota:
+  // a resumed transcript repaints its old errors before any new request.
+  const authBlockDetector = makeAuthBlockDetector({
+    agent: env.PAPERCUSP_AGENT,
+    deferUntilSubmit: args.some((arg) => ['resume', 'fork', '--resume', '--fork-session'].includes(arg)),
+    corroborate: env.PAPERCUSP_AGENT === 'claude'
+      ? () => claudeAuthTranscriptVerdict(readIsolatedNativeTranscriptRows({
+          agent: 'claude', env, home: homedir(),
+          transcriptPath: newestNativeTranscriptPath('claude', env, homedir()),
+        }))
+      : null,
   });
   // The interactive Codex CLI remains under the owner's control. Classify its
   // transient capacity copy for the durable event stream without retrying or
@@ -7050,8 +10835,10 @@ export function hostThroughPty(o) {
         agent: String(env.PAPERCUSP_AGENT ?? '') || null,
       };
       appendHostEvent(ownerId, 'quota-block-starvation', extra);
+      // Tell the fleet leader now, not when presence decays to suspect.
+      void reportQuotaStarvation(ownerId, extra, { env });
       try {
-        process.stderr.write(
+        writeTerminalDiagnostic(
           `psu-pty-host: QUOTA BLOCK STARVATION for ${ownerId} — ` +
             `${signal.ageMs}ms blocked with ${signal.attemptedGatedInjections} gated ` +
             `injection attempt(s) and zero successful deliveries; health signal recorded\n`,
@@ -7080,6 +10867,12 @@ export function hostThroughPty(o) {
   // per-child choice watcher until a real turn is submitted, not merely until
   // the first ready frame is painted.
   let activeHeadlessCodexModelChoice = null;
+  let activeManagedCodexStartupUpdateDialog = null;
+  // WI-10005472: the current child's onboarding watcher, so the kickoff gate can
+  // tell "composer not seen YET" from "composer never seen in the whole window".
+  let activeHeadlessClaudeOnboarding = null;
+  let launchKickoffAttemptStartedAtMs = 0;
+  let launchKickoffAttemptBudgetMs = 0;
   let childStartupFirstOutputAt = 0;
   // EI-24141825238362808: the child's own bracketed-paste mode, tracked over ALL
   // output (not only startup) so turn text is framed only while the TUI has it on.
@@ -7107,6 +10900,13 @@ export function hostThroughPty(o) {
   // win a race against injectTurnAtPrompt(). Fresh launches seed their first
   // turn as a CLI positional argument and do not pass through this gate.
   const launchKickoff = managedKickoff?.text ?? kickoff;
+  if (adoptedCarryRespawn && !launchKickoff) {
+    recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+      reason: 'missing-first-turn-text',
+      attempts: 0,
+      outputSeen: childStartupOutput.length > 0,
+    });
+  }
   const claudeResumeCompactionEnabled =
     Boolean(launchKickoff) && String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'claude';
   const claudeResumeCompaction = makeClaudeResumeCompactionRecoveryStateMachine({
@@ -7122,7 +10922,7 @@ export function hostThroughPty(o) {
       recoveryMs: claudeResumeCompactionRecoveryMs(env),
     });
     try {
-      process.stderr.write(
+      writeTerminalDiagnostic(
         `psu-pty-host: Claude resume compaction recovery timed out for ${ownerId}; ` +
           `the scripted kickoff will be dropped rather than written into an unresolved menu.\n`,
       );
@@ -7162,7 +10962,12 @@ export function hostThroughPty(o) {
     // convert one durable, headless account:auto wake into the existing recycle
     // path and then verify pickup by delivery id. Older hosts lack the cap and
     // therefore retain the old defer-only behavior.
-    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'quota-recovery'],
+    // 'auth-recovery' (parked-agent-census P-004): this host publishes
+    // authBlocked and resets it on recycle, so the operator may recycle a
+    // headless child whose in-memory login is dead.
+    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+      ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
+      ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
     // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
@@ -7183,18 +10988,26 @@ export function hostThroughPty(o) {
     // "unknown version", never to "up to date".
     hostCodeVersion: LOADED_HOST_CODE_VERSION,
   };
+  // WI-6554700010013215: discovery persistence is off the PTY host's event
+  // loop. The old synchronous writeFileSync+renameSync path was observed in
+  // D-state inside __start_renaming, stopping keystrokes and PTY output while
+  // the filesystem completed metadata work. The writer keeps atomic rename
+  // semantics and coalesces periodic activity snapshots.
+  const metadataWriter = createAsyncAtomicFileWriter({
+    path: metaPath,
+    tempPath: `${metaPath}.${process.pid}.tmp`,
+    onError: () => {},
+  });
   const writeMeta = () => {
     try {
-      // WI-3455: ATOMIC (tmp + rename). A plain in-place writeFileSync gives a
-      // reader a window on a truncated/partial document — and the operator-side
-      // janitor (pruneDeadDiscoveryFiles) DELETES a file it reads as corrupt,
-      // i.e. a lost race here used to cost a LIVE host its discovery key.
-      // rename(2) on the same fs is atomic, so readers only ever see a complete
-      // json. The tmp name is pid-scoped so two hosts racing the same key never
-      // corrupt each other's staging file.
-      const tmp = `${metaPath}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot() }));
-      renameSync(tmp, metaPath);
+      metadataWriter.write(JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
+        ...authBlockDetector.snapshot(),
+        ...(env.PAPERCUSP_AGENT === 'codex' ? {
+          nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
+          childGeneration,
+        } : {}),
+        execution: currentNativeExecution(),
+      }));
     } catch {
       /* best-effort — discovery degrades to the base contract */
     }
@@ -7209,7 +11022,7 @@ export function hostThroughPty(o) {
   const launchOsc = fleetOscFromEnv(env);
   if (launchOsc) {
     try {
-      stdout.write(launchOsc);
+      terminalOutput.write(launchOsc);
     } catch {
       /* best-effort — a recolor must never break the session */
     }
@@ -7230,13 +11043,16 @@ export function hostThroughPty(o) {
   // would silently trample a live successor's registration).
   let rebindControlSocket = () => {}; // assigned after the server exists below
   let lastHealNoticeAt = 0;
-  const selfHealTick = () => {
-    const m = readDiscoveryMeta(ownerId);
+  const selfHealTick = async () => {
+    let m = null;
+    try { m = JSON.parse(await fsPromises.readFile(metaPath, 'utf8')); } catch { /* missing/corrupt metadata is reasserted */ }
+    if (metadataWriter.closed) return false;
     if (m && m.pid && m.pid !== process.pid && pidAlive(m.pid) && pidLooksLikePsuHost(m.pid)) {
       return false; // a newer LIVE host owns the key — stand down, don't fight
     }
     const metaMine = !!(m && m.pid === process.pid);
-    const sockOnDisk = existsSync(sock);
+    const sockOnDisk = await fsPromises.access(sock).then(() => true, () => false);
+    if (metadataWriter.closed) return false;
     if (metaMine && sockOnDisk) return true;
     writeMeta();
     if (!sockOnDisk) rebindControlSocket();
@@ -7248,7 +11064,7 @@ export function hostThroughPty(o) {
         socketRebound: !sockOnDisk,
       });
       try {
-        process.stderr.write(
+        writeTerminalDiagnostic(
           `psu-pty-host: discovery re-asserted for ${ownerId} ` +
             `(json ${metaMine ? 'ok' : 'rewritten'}, sock ${sockOnDisk ? 'ok' : 'rebound'}) — ` +
             `it was removed while this host was live\n`,
@@ -7259,17 +11075,38 @@ export function hostThroughPty(o) {
     }
     return true;
   };
-  const activityTimer = setInterval(() => {
-    let ownKey = true;
+  // psu-process-free-parking-2026-10-06 P-017: the park policy rides this
+  // existing tick (D-002: no new timer). Assigned once the park machinery below
+  // exists; a no-op until then.
+  let parkTick = () => {};
+  let pendingSubmissionTick = () => {};
+  let quotaRecoveryTick = () => {};
+  let activityTickPending = false;
+  const activityTimer = setInterval(async () => {
+    if (activityTickPending || metadataWriter.closed) return;
+    activityTickPending = true;
     try {
-      ownKey = selfHealTick();
-    } catch {
-      /* self-heal is best-effort — never break the activity persist */
-    }
-    const snap = activity.snapshot();
-    if (ownKey && (snap.lastActivityAt ?? 0) > lastPersisted) {
-      lastPersisted = snap.lastActivityAt ?? 0;
-      writeMeta();
+      let ownKey = true;
+      try {
+        ownKey = await selfHealTick();
+      } catch {
+        /* self-heal is best-effort — never break the activity persist */
+      }
+      if (metadataWriter.closed) return;
+      const snap = activity.snapshot();
+      if (ownKey) {
+        lastPersisted = snap.lastActivityAt ?? 0;
+        writeMeta();
+        pendingSubmissionTick();
+        quotaRecoveryTick();
+      }
+      try {
+        parkTick();
+      } catch {
+        /* a park decision must never break the activity persist */
+      }
+    } finally {
+      activityTickPending = false;
     }
   }, activityPersistMs);
   if (typeof activityTimer.unref === 'function') activityTimer.unref();
@@ -7278,7 +11115,7 @@ export function hostThroughPty(o) {
   // A quiet terminal line can still contain unsubmitted owner text. Keep that
   // state separate from the mid-keystroke clock so a wake never appends its
   // provenance envelope to a staged human line.
-  const ownerComposerGate = makeOwnerComposerGate({
+  ownerComposerGate = makeOwnerComposerGate({
     capMs: positiveNumber(env.PAPERCUSP_PSU_PTY_IDLE_CAP_MS, DEFAULT_IDLE_WAIT_CAP_MS),
   });
   // Separate scanner over the SAME stdin stream (WI-38156). It must be fed every
@@ -7301,7 +11138,7 @@ export function hostThroughPty(o) {
     if (!wedge) return;
     appendHostEvent(ownerId, 'owner-composer-wedge-suspected', wedge);
     try {
-      process.stderr.write(
+      writeTerminalDiagnostic(
         `psu-pty-host: COMPOSER WEDGE SUSPECTED for ${ownerId} — ${wedge.consecutiveDefers} consecutive ` +
           `wake deferrals against an unchanged ${pendingLength}-char staged line, ` +
           `${
@@ -7379,7 +11216,7 @@ export function hostThroughPty(o) {
       consecutiveDefers,
     });
     try {
-      process.stderr.write(
+      writeTerminalDiagnostic(
         `psu-pty-host: COMPOSER WEDGE CLEARED for ${ownerId} — discarded a ${pendingLength}-char staged ` +
           (brokenBy === 'wake-loss'
             ? `line after ${consecutiveDefers} consecutive wakes were thrown away against it. `
@@ -7393,10 +11230,34 @@ export function hostThroughPty(o) {
     return true;
   };
   let machineTurnActive = false;
+  let hooksObservationActive = false;
+  let hooksObservationInputHeld = false;
+  let hooksObservationRecovery = null;
   // Latest owner-visible machine submit into THIS child. The ordinary Codex
   // native-boundary probe rejects any older task_complete record, preventing a
   // previous turn from certifying a new turn that has only just been submitted.
-  let lastMachineTurnSubmittedAtMs = 0;
+  // WI-10004943: when the first machine turn write into THIS child STARTED.
+  // backend-session-frame-observed reports the gap to it, which separates a
+  // Codex that became ready on its own (frame long after any write, or before
+  // one) from a frame that the typed input itself provoked (frame within
+  // moments of a write made while the footer still read `Starting`).
+  let lastMachineTurnWriteStartedAtMs = 0;
+  // WI-10004943: what the host could see at the instant a machine turn began
+  // writing. Without it, a turn that lands after a 20-minute `Starting` footer
+  // cannot tell "the write waited for readiness" from "the write caused it":
+  // the deciding facts are computed here and were previously discarded.
+  const turnWriteContext = (writeStartedAt) => {
+    const context = {
+      writeStartedAt: new Date(writeStartedAt).toISOString(),
+      msSinceBackendFirstFrame: childBackendFirstFrameAt > 0
+        ? writeStartedAt - childBackendFirstFrameAt
+        : null,
+    };
+    if (String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex') {
+      context.codexFooterAtWrite = codexFooterStateFromOutput(childStartupOutput, childScreenDims());
+    }
+    return context;
+  };
   let queuedOwnerInput = [];
   // Mid-turn inject gate (coord-wake-mid-turn-2026-06-30): reads the SAME
   // lastOutputAt the activity tracker records on every `child.onData` below, so a
@@ -7409,7 +11270,29 @@ export function hostThroughPty(o) {
     lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
     quietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS, OUTPUT_QUIET_MS),
     capMs: turnInjectBusyCapMs,
+    nativeExecution: currentNativeExecution,
   });
+  // A machine submit and real owner input both advance the observation floor.
+  // The host/process and child generation travel with the snapshot so readers
+  // can reject predecessor observations after a resume or host replacement.
+  function currentNativeExecution() {
+    const receivedAtMs = Math.max(childStartedAtMs,
+      Number(activity.snapshot().lastInputAt ?? 0), lastMachineTurnSubmittedAtMs);
+    const fence = `${childGeneration}:${receivedAtMs}`;
+    const observed = nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env, receivedAtMs });
+    const execution = nativeExecutionFence === fence
+      ? retainRunningNativeExecution(lastNativeExecution, observed)
+      : observed;
+    nativeExecutionFence = fence;
+    lastNativeExecution = execution;
+    return {
+      ...execution,
+      ownerId, hostPid: process.pid, childPid: child.pid ?? null,
+      childGeneration, receivedAtMs,
+      ownerInputPending: Boolean(ownerComposerGate?.hasPending()),
+      ownerStopRequested,
+    };
+  }
   // WI-1941: recycle carry-inject retry budget + backoff (per-session tunable,
   // like the busy cap above). The fresh cold child gets this long to reach its
   // prompt across retried waitAtPrompt() attempts before the carry is dropped.
@@ -7460,6 +11343,12 @@ export function hostThroughPty(o) {
       terminateOnExhaustion = submitExhaustionTerminatesHost(label),
       text = '',
       submittedAtMs = Date.now(),
+      // The initial attempt covers input during the paste. A deliberate
+      // re-verification after keyboard idle supplies a fresh input baseline,
+      // while submittedAtMs stays pinned to the native transcript boundary.
+      inputAtStart = submittedAtMs,
+      // WI-10004943: turnWriteContext() captured when the write STARTED.
+      writeContext = null,
     } = {},
   ) => {
     const marker = leadingTurnOriginMarker(text);
@@ -7468,7 +11357,9 @@ export function hostThroughPty(o) {
     const verifier = makeSubmitVerifier({
       lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
       lastInputAt: () => activity.snapshot().lastInputAt ?? 0,
+      inputAtStart,
       isQuotaBlocked: () => quotaBlockDetector.isBlocked(),
+      requireNativeConfirmation: nativeProofAvailable,
       isSubmitted: () => nativeProofAvailable && Boolean(findNativeTranscriptMarker({
         agent: env.PAPERCUSP_AGENT,
         env,
@@ -7513,7 +11404,9 @@ export function hostThroughPty(o) {
           ),
           outputObservedAfterResubmit,
         };
-        if (terminateOnExhaustion && !quotaBlockDetector.isBlocked()) {
+        // Missing native proof is an uncertain written turn, not proof that
+        // the child is dead. Managed startup's stronger proof owns its timeout.
+        if (terminateOnExhaustion && !nativeProofAvailable && !quotaBlockDetector.isBlocked()) {
           terminateSubmitVerifyExhaustion(details);
           return;
         }
@@ -7523,11 +11416,11 @@ export function hostThroughPty(o) {
         // used to write, and says plainly that the session was left running.
         appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
           ...details,
-          reason: 'max-resubmits-without-output',
+          reason: nativeProofAvailable ? 'native-submission-unconfirmed' : 'max-resubmits-without-output',
           terminated: false,
         });
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: ${label} submit unconfirmed for ${ownerId} after ` +
               `${resubmits} resubmit CRs — wake not delivered, session left running (WI-1378748)\n`,
           );
@@ -7537,40 +11430,18 @@ export function hostThroughPty(o) {
       },
     });
     const result = await verifier.verify();
-    if (result.aborted === 'quota-blocked') {
+    if (result.aborted) {
       appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
         label,
         polls: result.polls,
         resubmits: result.resubmits,
-        reason: 'quota-blocked',
+        reason: result.aborted,
         terminated: false,
       });
     } else if (!result.aborted && !result.exhausted) {
-      // P-007 — THE SUCCESS ROW, and the reason it did not exist before.
-      //
-      // Every other appendHostEvent kind in this host (51 distinct spellings,
-      // enumerated from source 2026-09-22) is a failure, drop, expiry, refusal,
-      // retry or lifecycle marker. The failure side of wake delivery was
-      // therefore fully instrumented while the DENOMINATOR was absent, so a
-      // delivery success rate was not computable at all — and with no rate, no
-      // fix to this path (P-003's verifier included) could be shown to work
-      // rather than merely asserted. That is the gap this row closes.
-      //
-      // The predicate is the verifier's OWN settled verdict, not a
-      // re-derivation of it: `aborted === null && exhausted === false` is
-      // reachable only by falling out of the poll window with output still
-      // flowing (`quietFor < quietMs` -> continue), or after a resubmit that
-      // demonstrably woke the turn. notifyExhausted() early-returns while
-      // `resubmits < maxResubmits`, so an ordinary quiet gap cannot set
-      // `exhausted`.
-      //
-      // Counting anything looser would invert the metric. In particular a bare
-      // `!result.aborted` folds the EXHAUSTED case — max resubmits with no
-      // output, i.e. the wake provably not delivered — into the numerator, so
-      // the reported delivery rate would climb as delivery actually failed.
-      // `aborted === 'human-input'` is excluded for the opposite reason: the
-      // owner typing mid-verify makes delivery genuinely undecidable here, and
-      // an undecidable case must not be counted as a success.
+      // Tagged supported turns require their exact native user row. Legacy
+      // untagged/unsupported input retains output-only verification; never
+      // mistake that weaker receipt for native acknowledgement.
       appendHostEvent(ownerId, 'turn-delivered', {
         label,
         polls: result.polls,
@@ -7579,6 +11450,7 @@ export function hostThroughPty(o) {
         // R-1(c)'s attempts > 1 detector is otherwise vacuous for turn delivery.
         attempts: 1 + result.resubmits,
         ...(result.confirmed ? { confirmed: result.confirmed } : {}),
+        ...(writeContext ? { write: writeContext } : {}),
       });
     }
     return result;
@@ -7592,7 +11464,8 @@ export function hostThroughPty(o) {
    * verifies the submit actually started a turn (WI-2930). Bails if a recycle
    * supersedes the child mid-flight.
    *
-   * Two callers: the RECYCLE carry-note (WI-1941) and the launch KICKOFF
+   * Callers include the RECYCLE carry-note (WI-1941), deferred turn re-arm,
+   * and the launch KICKOFF
    * (agent-launch-resume-primitives-2026-07-12 P-011/D-008) — a resumed or
    * forked session boots IDLE at its prompt with no first turn, and nothing
    * roster-gated can reach it (its presence rows were reaped when it died, so
@@ -7615,10 +11488,23 @@ export function hostThroughPty(o) {
     freshChildOwnerInputGeneration = null,
     abortBeforeWrite = null,
     prepareBeforeWrite = null,
+    onSubmitted = null,
+    // WI-10004943 (d): when set (ms, measured from this call), a kickoff whose
+    // budget expires while the Codex footer still reads `Starting` is HELD for
+    // the session frame up to this ceiling instead of being dropped.
+    codexStartingHoldCeilingMs = null,
+    // WI-10005106: when set (ms, measured from this call), give up EARLY on a
+    // child whose Codex footer still reads `Starting` at this point, with the
+    // ordinary `codex-startup-still-starting` drop. For a caller that can retry
+    // on a fresh child epoch (the recycle carry-note), so a stuck child is
+    // replaced in minutes instead of being waited on for the whole budget.
+    codexStartingStuckMs = null,
   }) => {
     if (!text) return { delivered: false, reason: 'no-text', attempts: 0 };
     const injectChild = child; // bail if a newer recycle supersedes this one
-    const deadline = Date.now() + budgetMs;
+    const injectStartedAt = Date.now();
+    // Mutable only by the WI-10004943 Codex `Starting` hold below.
+    let deadline = injectStartedAt + budgetMs;
     let attempts = 0;
     let dropReason = 'never-settled';
     const freshChildWasInterrupted = () =>
@@ -7627,23 +11513,137 @@ export function hostThroughPty(o) {
     const codexMarkerKickoffRequiresFrame = () =>
       requireInitialOutput &&
       verifyKickoffMarkerEcho &&
-      childBackendTuiStartedAt > 0 &&
       String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex';
-    const startupReadinessProven = () =>
-      codexMarkerKickoffRequiresFrame() ? childBackendFirstFrameAt > 0 : childStartupReady;
+    // A fresh marked Codex kickoff requires positive backend-frame evidence
+    // even before its banner arrives. A delayed banner cannot authorize the
+    // marker-only last resort through the absence of startup observations.
     const codexStartupExplicitlyStarting = () =>
       String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
-      codexStatusFooterState(stripAnsi(childStartupOutput)) === 'starting';
+      codexFooterStateFromOutput(childStartupOutput, childScreenDims()) === 'starting';
+    // A painted model proves that the session frame exists, but its composer
+    // can still be unavailable while MCP startup paints a Starting footer.
+    const startupReadinessProven = () =>
+      !codexStartupExplicitlyStarting() &&
+      (codexMarkerKickoffRequiresFrame() ? childBackendFirstFrameAt > 0 : childStartupReady);
     const startupFallbackCanAuthorize = () =>
       !codexMarkerKickoffRequiresFrame() &&
       !codexStartupExplicitlyStarting() &&
       childStartupFallbackElapsed();
+    // WI-10005106: the `Starting` stuck threshold (see codexStartingStuckMs).
+    // Only a positive `Starting` footer on the SAME child counts; a child that
+    // never painted a footer keeps the ordinary budget and drop reasons.
+    const codexStartingStuckAt =
+      Number(codexStartingStuckMs) > 0 ? injectStartedAt + Number(codexStartingStuckMs) : 0;
+    let codexStartingStuckReported = false;
+    const codexStartingStuck = () => {
+      if (
+        codexStartingStuckAt <= 0 ||
+        !requireInitialOutput ||
+        codexStartingHeldAt > 0 ||
+        Date.now() < codexStartingStuckAt ||
+        child !== injectChild ||
+        freshChildWasInterrupted() ||
+        !codexStartupExplicitlyStarting()
+      ) {
+        return false;
+      }
+      if (!codexStartingStuckReported) {
+        codexStartingStuckReported = true;
+        appendHostEvent(ownerId, 'codex-starting-stuck-early-drop', {
+          label,
+          elapsedMs: Math.max(0, Date.now() - injectStartedAt),
+          stuckMs: Number(codexStartingStuckMs),
+          budgetMs,
+        });
+      }
+      return true;
+    };
+    let codexFrameWaitExtendedReported = false;
     const codexBackendFrameWaitExpired = () => {
       if (!codexMarkerKickoffRequiresFrame() || childBackendFirstFrameAt > 0) return false;
       const waitStartedAt = childBackendTuiStartedAt || childStartupFirstOutputAt;
-      return waitStartedAt > 0 &&
+      const budgetSpent = waitStartedAt > 0 &&
         Date.now() - waitStartedAt >= startupMarkerFallbackMs *
           (CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER + 1);
+      // WI-10004919: this budget exists for a frame that is NEVER observed (a
+      // Codex that stops painting it, or bytes that beat the listener). A footer
+      // that positively reads `Starting` is the opposite case: the TUI is alive
+      // and still booting its MCP servers. Measured: v0.159.3 sat in `Starting`
+      // for 86.2s, the 75s budget dropped the kickoff 11s before the Ready frame,
+      // and the resolver idled at its prompt until the run watchdog stranded it.
+      // Keep waiting under the kickoff's own deadline; if it is still Starting
+      // there, the drop reason is `codex-startup-still-starting`.
+      if (budgetSpent && codexStartupExplicitlyStarting()) {
+        if (!codexFrameWaitExtendedReported) {
+          codexFrameWaitExtendedReported = true;
+          appendHostEvent(ownerId, 'launch-kickoff-backend-frame-wait-extended', {
+            reason: 'codex-footer-starting',
+            elapsedMs: Math.max(0, Date.now() - waitStartedAt),
+            remainingMs: Math.max(0, deadline - Date.now()),
+          });
+        }
+        return false;
+      }
+      return budgetSpent;
+    };
+    // WI-10004943 (d): the ordinary budget expired, but the Codex footer still
+    // positively reads `Starting`, so the TUI is alive and its composer is not
+    // available yet. Dropping here discarded the session's first turn, and it
+    // then idled at its prompt (production: `Starting` for 10-20 minutes, then
+    // the frame). HOLD instead: extend the deadline once, to the caller's
+    // ceiling. The hold is self-limiting: once the footer leaves `Starting`
+    // without a frame, codexBackendFrameWaitExpired() ends the wait with the
+    // ordinary `codex-backend-frame-not-observed` drop, and owner input ends it
+    // through freshChildWasInterrupted().
+    const holdCeilingAt =
+      Number(codexStartingHoldCeilingMs) > 0
+        ? injectStartedAt + Math.max(budgetMs, Number(codexStartingHoldCeilingMs))
+        : 0;
+    let codexStartingHeldAt = 0;
+    const holdForCodexStartingFooter = () => {
+      if (
+        codexStartingHeldAt > 0 ||
+        holdCeilingAt <= 0 ||
+        !requireInitialOutput ||
+        Date.now() >= holdCeilingAt ||
+        child !== injectChild ||
+        freshChildWasInterrupted() ||
+        !codexStartupExplicitlyStarting()
+      ) {
+        return false;
+      }
+      codexStartingHeldAt = Date.now();
+      deadline = holdCeilingAt;
+      appendHostEvent(ownerId, 'kickoff-held-for-codex-frame', {
+        label,
+        budgetMs,
+        holdCeilingMs: holdCeilingAt - injectStartedAt,
+        elapsedMs: codexStartingHeldAt - injectStartedAt,
+        remainingMs: Math.max(0, holdCeilingAt - codexStartingHeldAt),
+      });
+      return true;
+    };
+    // Model setup can repaint Starting after a Ready frame, including after
+    // the short marker has echoed. Keep that staged prefix and wait under the
+    // existing child/deadline gates instead of dropping or pasting it again.
+    const waitForCodexStartupAtWrite = async (phase) => {
+      if (!requireInitialOutput || !codexStartupExplicitlyStarting()) return null;
+      appendHostEvent(ownerId, 'kickoff-waiting-for-codex-startup', {
+        label, phase, elapsedMs: Math.max(0, Date.now() - injectStartedAt),
+        remainingMs: Math.max(0, deadline - Date.now()),
+      });
+      while (
+        codexStartupExplicitlyStarting() &&
+        child === injectChild && !hostCleanedUp && !shuttingDown &&
+        !freshChildWasInterrupted() && !codexStartingStuck() &&
+        (Date.now() < deadline || holdForCodexStartingFooter())
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
+      }
+      if (child !== injectChild) return 'superseded';
+      if (hostCleanedUp || shuttingDown) return 'host-ended';
+      if (freshChildWasInterrupted()) return 'fresh-child-owner-input';
+      return codexStartupExplicitlyStarting() ? 'codex-startup-still-starting' : null;
     };
     try {
       // A scripted resume/port begins this task before wireChildData() is
@@ -7657,7 +11657,9 @@ export function hostThroughPty(o) {
         !freshChildWasInterrupted() &&
         !startupFallbackCanAuthorize() &&
         !codexBackendFrameWaitExpired() &&
-        Date.now() < deadline
+        !codexStartingStuck() &&
+        !hostCleanedUp && !shuttingDown &&
+        (Date.now() < deadline || holdForCodexStartingFooter())
       ) {
         const recoveryState = claudeResumeCompaction.tick();
         if (recoveryState.timedOut) {
@@ -7666,6 +11668,26 @@ export function hostThroughPty(o) {
           break;
         }
         await new Promise((r) => setTimeout(r, Math.min(25, Math.max(1, deadline - Date.now()))));
+      }
+      if (codexStartingHeldAt > 0) {
+        const frameObserved = startupReadinessProven();
+        appendHostEvent(ownerId, 'kickoff-codex-frame-hold-ended', {
+          label,
+          outcome: frameObserved
+            ? 'frame-observed'
+            : hostCleanedUp
+              ? 'host-ended'
+              : freshChildWasInterrupted()
+              ? 'owner-input'
+              : codexStartupExplicitlyStarting()
+                ? 'ceiling-still-starting'
+                : 'footer-left-starting',
+          heldMs: Math.max(0, Date.now() - codexStartingHeldAt),
+        });
+        // Released by the frame: give delivery a fresh ordinary budget, never
+        // past the ceiling. Every other outcome drops below as before.
+        if (frameObserved) deadline = Math.min(holdCeilingAt, Date.now() + budgetMs);
+        else if (hostCleanedUp) return { delivered: false, reason: 'host-ended', attempts };
       }
       // The inner delivery loop below owns the common drop/diagnostic path. Do
       // not return or break from this outer try block when the recovery machine
@@ -7694,8 +11716,10 @@ export function hostThroughPty(o) {
         requireInitialOutput && !startupReadinessProven() && !startupFallbackReady;
       if (startupMarkerMissing) dropReason = 'no-startup-ready-marker';
       let lastResortSpent = false;
+      let composerUnseenFallbackRecorded = false;
       // eslint-disable-next-line no-constant-condition
       while (true) {
+        if (hostCleanedUp || shuttingDown) return { delivered: false, reason: 'host-ended', attempts };
         if (startupMarkerMissing) {
           // A bounded last resort is for a MISSED readiness marker. It must
           // not overrule Codex's explicit Starting footer, which says its
@@ -7715,7 +11739,10 @@ export function hostThroughPty(o) {
           dropReason = 'fresh-child-owner-input';
           break;
         }
-        if (codexBackendFrameWaitExpired()) {
+        // The startup loop can also end at the overall kickoff deadline before
+        // the banner-relative frame timer expires. A missing frame still
+        // forbids input; terminal marker fallback cannot authorize this child.
+        if (codexMarkerKickoffRequiresFrame() && childBackendFirstFrameAt <= 0) {
           const waitStartedAt = childBackendTuiStartedAt || childStartupFirstOutputAt;
           appendHostEvent(ownerId, 'launch-kickoff-backend-frame-timeout', {
             elapsedMs: waitStartedAt > 0 ? Math.max(0, Date.now() - waitStartedAt) : null,
@@ -7742,7 +11769,17 @@ export function hostThroughPty(o) {
           enabled: headlessClaudeOnboardingEnabled(env),
           requireInitialOutput,
           promptReady: childPromptReady,
+          onboardingExpired: activeHeadlessClaudeOnboarding?.status().expired === true,
+          onboardingPromptSeen: activeHeadlessClaudeOnboarding?.status().promptSeen === true,
         });
+        if (claudeKickoffReadiness === 'composer-unseen-ordinary-gate' && !composerUnseenFallbackRecorded) {
+          composerUnseenFallbackRecorded = true;
+          appendHostEvent(ownerId, 'headless-claude-composer-unseen-ordinary-gate', {
+            label,
+            attempts,
+            startupOutputChars: childStartupOutput.length,
+          });
+        }
         const freshPromptReady = freshChildOwnerInputGeneration !== null &&
           (codexMarkerKickoffRequiresFrame()
             ? childBackendFirstFrameAt > 0
@@ -7759,13 +11796,22 @@ export function hostThroughPty(o) {
           ? { deferred: false }
           : claudeKickoffReadiness === 'composer-ready'
             ? { deferred: false }
-            : claudeKickoffReadiness === 'wait-for-composer'
+          : claudeKickoffReadiness === 'wait-for-composer'
               ? { deferred: true, reason: 'headless-claude-composer-not-ready' }
-              : await agentBusyGate.waitAtPrompt();
+              : await agentBusyGate.waitAtPrompt(
+                claudeKickoffReadiness === 'composer-unseen-ordinary-gate'
+                  ? Math.max(0, deadline - Date.now())
+                  : undefined,
+                null,
+                abortBeforeWrite,
+              );
         if (claudeKickoffReadiness === 'wait-for-composer') {
           dropReason = 'headless-claude-composer-not-ready';
         }
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+        if (atPrompt.boundary === 'abort-before-write') {
+          return { delivered: false, reason: 'first-turn-started', attempts };
+        }
         if (!atPrompt.deferred) {
           // The menu can be painted while the ordinary quiet gate is settling.
           // Re-check immediately before the first byte so a stale quiet reading
@@ -7797,15 +11843,73 @@ export function hostThroughPty(o) {
             return { delivered: false, reason: 'first-turn-started', attempts };
           }
           if (prepareBeforeWrite) {
-            const prepared = await prepareBeforeWrite();
+            const prepared = await prepareBeforeWrite({ deadline });
             if (!prepared.ok) {
               return { delivered: false, reason: prepared.reason ?? 'prewrite-rejected', attempts };
             }
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+            if (freshChildWasInterrupted()) return { delivered: false, reason: 'fresh-child-owner-input', attempts };
+            // A local command such as Claude's `/mcp` can report success before
+            // the command turn has returned to its prompt. The busy verdict
+            // above predates that command, so re-establish settlement only for
+            // preparations that actually issued a local command.
+            if (prepared.settleAfterPreparation === true) {
+              const settled = await agentBusyGate.waitAtPrompt(
+                Math.max(0, deadline - Date.now()),
+                null,
+                abortBeforeWrite,
+              );
+              if (settled.boundary === 'abort-before-write') {
+                return { delivered: false, reason: 'first-turn-started', attempts };
+              }
+              if (settled.deferred) {
+                dropReason = 'prewrite-agent-busy';
+                break;
+              }
+              if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+            }
+          }
+          // Preparation can itself wait (for example, a role MCP reconnect).
+          // Recheck both menu machines and the composer at the actual write
+          // boundary so a menu painted during that wait cannot receive text.
+          const recoveryAtWrite = await waitForClaudeResumeCompaction(deadline);
+          if (!recoveryAtWrite.ready) {
+            dropReason = recoveryAtWrite.reason;
+            break;
+          }
+          if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+          if (hostCleanedUp || shuttingDown) return { delivered: false, reason: 'host-ended', attempts };
+          const claudeKickoffReadinessAtWrite = headlessClaudeKickoffReadiness({
+            enabled: headlessClaudeOnboardingEnabled(env),
+            requireInitialOutput,
+            promptReady: childPromptReady,
+            onboardingExpired: activeHeadlessClaudeOnboarding?.status().expired === true,
+            onboardingPromptSeen: activeHeadlessClaudeOnboarding?.status().promptSeen === true,
+          });
+          if (claudeKickoffReadinessAtWrite === 'wait-for-composer') {
+            dropReason = 'headless-claude-composer-not-ready';
+            break;
+          }
+          // The backend banner may arrive while the ordinary busy gate or
+          // preparation is pending. Recheck the frame at the actual byte write.
+          if (codexMarkerKickoffRequiresFrame() && childBackendFirstFrameAt <= 0) {
+            dropReason = 'codex-backend-frame-not-observed';
+            break;
+          }
+          const startupWaitAtWrite = await waitForCodexStartupAtWrite('first-byte');
+          if (startupWaitAtWrite) {
+            if (startupWaitAtWrite !== 'codex-startup-still-starting') {
+              return { delivered: false, reason: startupWaitAtWrite, attempts };
+            }
+            dropReason = startupWaitAtWrite;
+            break;
           }
           // The text is the first step; later steps are delayed submit CRs, so
           // readiness is captured now, not after them.
           const turnWriteStartedAt = Date.now();
+          const composerGenerationAtWrite = composerInputGeneration;
+          lastMachineTurnWriteStartedAtMs = turnWriteStartedAt;
+          const kickoffWriteContext = turnWriteContext(turnWriteStartedAt);
           const turnWriteAuthorizedBy = codexMarkerKickoffRequiresFrame()
             ? 'backend-session-frame'
             : childPromptReady
@@ -7832,10 +11936,20 @@ export function hostThroughPty(o) {
             );
           }
           let markerEchoFailureReason = null;
+          let submissionObserved = false;
           for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
             const step = steps[stepIndex];
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+            if (hostCleanedUp || shuttingDown) return { delivered: false, reason: 'host-ended', attempts };
+            const startupWaitAtStep = await waitForCodexStartupAtWrite(`step-${stepIndex}`);
+            if (startupWaitAtStep) {
+              if (startupWaitAtStep !== 'codex-startup-still-starting') {
+                return { delivered: false, reason: startupWaitAtStep, attempts };
+              }
+              markerEchoFailureReason = startupWaitAtStep;
+              break;
+            }
             const chunks = ptyWriteChunks(step.data);
             const marker = stepIndex === 0 && verifyKickoffMarkerEcho
               ? leadingTurnOriginMarker(text)
@@ -7846,8 +11960,16 @@ export function hostThroughPty(o) {
               for (let i = 0; i < chunks.length; i++) {
                 try {
                   quotaBlockDetector.observeInput(chunks[i]);
+                  authBlockDetector.observeInput(chunks[i]);
                   child.write(chunks[i]);
-                  if (chunks[i].includes('\r')) activeHeadlessCodexModelChoice?.complete();
+                  if (chunks[i].includes('\r')) {
+                    activeHeadlessCodexModelChoice?.complete();
+                    if (!submissionObserved) {
+                      submissionObserved = true;
+                      onSubmitted?.({ child: injectChild, submittedAtMs: turnWriteStartedAt,
+                        composerGenerationAtWrite });
+                    }
+                  }
                 } catch {
                   /* the child may have exited under us */
                 }
@@ -7893,6 +12015,7 @@ export function hostThroughPty(o) {
                 reason: echoProof.reason,
                 observedChars: echoProof.observedChars,
                 markerTailSeen: echoProof.markerTailSeen,
+                visibleTail: echoProof.visibleTail ?? null,
                 budgetMs: Math.max(0, deadline - turnWriteStartedAt),
               });
               markerEchoFailureReason = 'kickoff-marker-echo-unconfirmed';
@@ -7902,6 +12025,11 @@ export function hostThroughPty(o) {
               appendHostEvent(ownerId, 'launch-kickoff-marker-echo-confirmed', {
                 elapsedMs: echoProof.elapsedMs,
                 markerChars: marker.length,
+                // WI-10005331: non-null when only a head-truncated marker echoed.
+                markerHeadLost: echoProof.markerHeadLost ?? null,
+                // WI-10005331: non-null when the marker echoed with only its
+                // whitespace changed (a composer wrap at the marker's space).
+                markerWhitespaceLost: echoProof.markerWhitespaceLost ?? null,
               });
             }
           }
@@ -7912,10 +12040,11 @@ export function hostThroughPty(o) {
             dropReason = markerEchoFailureReason;
             break;
           }
-          lastMachineTurnSubmittedAtMs = Date.now();
+          lastMachineTurnSubmittedAtMs = turnWriteStartedAt;
           // The submit CR has reached this child. Do not answer a model menu
           // painted during the asynchronous proof wait as a startup choice.
           activeHeadlessCodexModelChoice?.complete();
+          activeManagedCodexStartupUpdateDialog?.complete();
           if (requireInitialOutput) {
             // WI-10002745: record which readiness gate authorized this first
             // write, timed from when the text bytes were written. A kickoff
@@ -7932,6 +12061,9 @@ export function hostThroughPty(o) {
                 : null,
               promptReady: childPromptReady,
               startupReady: childStartupReady,
+              ...(kickoffWriteContext.codexFooterAtWrite !== undefined
+                ? { codexFooterAtWrite: kickoffWriteContext.codexFooterAtWrite }
+                : {}),
             });
           }
           if (child !== injectChild) {
@@ -7941,6 +12073,7 @@ export function hostThroughPty(o) {
             terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
             text,
             submittedAtMs: turnWriteStartedAt,
+            writeContext: kickoffWriteContext,
           });
           if (child !== injectChild) {
             return { delivered: false, reason: 'superseded', attempts };
@@ -7991,6 +12124,8 @@ export function hostThroughPty(o) {
               terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
               text,
               submittedAtMs: turnWriteStartedAt,
+              inputAtStart: activity.snapshot().lastInputAt ?? 0,
+              writeContext: kickoffWriteContext,
             });
           }
           if (child !== injectChild) {
@@ -8011,6 +12146,7 @@ export function hostThroughPty(o) {
             break;
           }
           activeHeadlessCodexModelChoice?.complete();
+          activeManagedCodexStartupUpdateDialog?.complete();
           return { delivered: true, attempts };
         }
         // Deferred: the child is still mid-boot / mid-turn. Retry until the
@@ -8026,47 +12162,168 @@ export function hostThroughPty(o) {
       /* an unexpected inject error still falls through to the drop trace */
     }
     if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+    if (dropReason === 'codex-startup-still-starting' || dropReason === 'codex-backend-frame-not-observed') {
+      // WI-10004943 (b), WI-10007305: capture what the stuck child was waiting on while it is
+      // still alive. The respawn this drop leads to starts a fresh codex-tui.log
+      // in the same CODEX_HOME, so this is the last chance to see its log.
+      try {
+        const snapshot = collectCodexStartingStuckSnapshot({
+          rootPid: child?.pid,
+          codexHome: env.CODEX_HOME,
+          startupOutput: childStartupOutput,
+          screenDims: childScreenDims(),
+        });
+        appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', { label, reason: dropReason, ...snapshot });
+      } catch {
+        /* diagnostic only */
+      }
+    }
     try {
       onDrop();
     } catch {
       /* the drop trace must never break the session */
     }
+    // WI-10004943: an early `Starting` drop is armed only for a caller that
+    // replaces the child and retries (the carry's fresh epoch, the launch
+    // kickoff's fresh child), so it is not terminal. It must not print the
+    // DROPPED receipt: the acceptance grader treats `launch kickoff DROPPED`
+    // with no first-turn progress as a dead judge, and would retire one whose
+    // retry is about to land. A caller whose retry cannot run prints it.
+    const earlyStuck = codexStartingStuckReported && dropReason === 'codex-startup-still-starting';
     appendHostEvent(ownerId, 'startup-turn-dropped', {
       label,
       reason: dropReason,
       attempts,
       budgetMs,
+      elapsedMs: Math.max(0, Date.now() - injectStartedAt),
+      ...(earlyStuck ? { earlyStuck: true } : {}),
     });
+    if (!earlyStuck) writeStartupTurnDroppedLine({ label, dropReason, budgetMs, attempts });
+    return { delivered: false, reason: dropReason, attempts, ...(earlyStuck ? { earlyStuck: true } : {}) };
+  };
+
+  // WI-10004926: the ONE writer of the parsed DROPPED receipt, pinned to the
+  // acceptance-grader parser by apps/operator/lib/psu-pty-host-drop-line-contract.test.ts.
+  // WI-10004943 adds a caller: a launch kickoff whose fresh-child retry cannot run.
+  const writeStartupTurnDroppedLine = ({ label, dropReason, budgetMs, attempts }) => {
     try {
-      process.stderr.write(
-        `psu-pty-host: ${label} DROPPED for ${ownerId} (${
-          dropReason === 'no-startup-ready-marker-last-resort-failed'
-            ? 'the child never emitted its startup-ready marker AND the last-resort attempt found no prompt'
-            : dropReason === 'no-startup-ready-marker'
-              ? 'the child never emitted its startup-ready marker'
-                : dropReason === 'kickoff-marker-echo-unconfirmed'
-                  ? 'the exact Codex kickoff marker never appeared in the composer echo'
-                  : dropReason === 'submit-verification-exhausted'
-                    ? 'submit verification exhausted without observing output after a resubmit'
-                : dropReason.startsWith('submit-verification-aborted-')
-                  ? `submit verification aborted (${dropReason.slice('submit-verification-aborted-'.length)})`
-                    : dropReason === 'fresh-child-owner-input'
-                      ? 'the owner used the fresh child before its carry prompt was submitted'
-                      : dropReason === 'resume-compaction-timeout'
-                        ? 'Claude resume compaction recovery timed out before a standalone composer prompt appeared'
-              : 'the child never settled to its prompt'
-        } ` +
-          `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
-      );
+      writeTerminalDiagnostic(formatStartupTurnDroppedLine({ label, ownerId, dropReason, budgetMs, attempts }));
     } catch {
       /* never let a diagnostic write break the host */
     }
-    return { delivered: false, reason: dropReason, attempts };
   };
 
   // Scripted fresh launches and resumes share the managed first-turn seam;
   // prompts stay out of argv. Only a fresh Codex thread can use startup proof
   // instead of output silence. Resume/fork may already be running a turn.
+  let launchKickoffSettled = !launchKickoff;
+  let carryBindingChild = null;
+  let carryBindingNativeId = null;
+  let confirmedCarryChild = null;
+  let confirmedCarryNativeId = null;
+  // P-005 / D-003: the id-discovery window is anchored to the target child's
+  // spawn, so every caller (carry, kickoff, wake turn, re-arm) shares one bound.
+  const unboundWindowMs = unboundChildWindowMs(env);
+  const currentChildPastUnboundWindow = () =>
+    childStartedAtMs > 0 && Date.now() - childStartedAtMs >= unboundWindowMs;
+  let stuckSnapshotChild = null;
+  const prepareCarryBinding = async (nativeId, deadline, alreadyConfirmed = false) => {
+    const target = child;
+    const targetStartedAtMs = childStartedAtMs;
+    if (carryBindingChild !== target) carryBindingNativeId = nativeId;
+    else if (nativeId) carryBindingNativeId = nativeId;
+    carryBindingChild = target;
+    const result = await waitForRespawnBinding({
+      nativeId,
+      readNativeId: () => resolveRespawnNativeId?.(target.pid) ?? null,
+      report: onRespawn,
+      isCurrent: () => child === target && !hostCleanedUp && !shuttingDown,
+      alreadyConfirmed: alreadyConfirmed || (confirmedCarryChild === target && confirmedCarryNativeId === nativeId),
+      timeoutMs: Math.max(0, deadline - Date.now()),
+      discoveryTimeoutMs: targetStartedAtMs > 0
+        ? Math.max(0, targetStartedAtMs + unboundWindowMs - Date.now())
+        : Infinity,
+    });
+    appendHostEvent(ownerId, result.ok ? 'respawn-binding-confirmed' : 'respawn-binding-unconfirmed', {
+      nativeId: result.nativeId, reason: result.reason,
+      ...(!result.ok && result.reason === 'successor-native-id-missing' && targetStartedAtMs > 0
+        ? { childAgeMs: Date.now() - targetStartedAtMs, windowMs: unboundWindowMs }
+        : {}),
+    });
+    if (!result.ok && result.reason === 'successor-native-id-missing' && stuckSnapshotChild !== target &&
+        env.PAPERCUSP_AGENT === 'codex' && child === target && !hostCleanedUp && !shuttingDown) {
+      // One snapshot per child: the evidence does not change between attempts,
+      // and a wedged child used to write one per failed wake (105 in a row).
+      stuckSnapshotChild = target;
+      // WI-10007305: binding can time out before injectTurnAtPrompt reaches its
+      // Starting drop. Preserve this exact child's evidence before a replacement
+      // truncates its native log; identity remains a separate, fail-closed gate.
+      const snapshot = collectCodexStartingStuckSnapshot({
+        rootPid: target.pid,
+        codexHome: env.CODEX_HOME,
+        startupOutput: childStartupOutput,
+        screenDims: childScreenDims(),
+      });
+      appendHostEvent(ownerId, 'codex-starting-stuck-snapshot', {
+        label: 'respawn binding', reason: result.reason, ...snapshot,
+      });
+    }
+    if (child === target && result.nativeId) carryBindingNativeId = result.nativeId;
+    if (result.ok) {
+      confirmedCarryChild = target;
+      confirmedCarryNativeId = result.nativeId;
+    }
+    return result;
+  };
+  // EI-25344556501316035: an initial discovery deadline can expire before
+  // Codex assigns its id. The same child still owes its authoritative binding;
+  // later work must retry that exact-child lookup before writing any input.
+  const prepareCurrentCarryBinding = (deadline) =>
+    carryBindingChild === child && confirmedCarryChild !== child
+      ? prepareCarryBinding(carryBindingNativeId, deadline)
+      : Promise.resolve({ ok: true });
+  // P-005(c): every bounded fresh-child retry is spent and the current child
+  // still has no native id. Admitting a turn here only ACKs it into a pipeline
+  // that cannot write, which the sender re-polls as `pending-delivery-id`
+  // forever. Re-probe the exact-child oracle on every call (self-healing).
+  let unbindableRefusalChild = null;
+  const currentChildUnbindable = () => {
+    if (!resolveRespawnNativeId || carryBindingChild !== child || confirmedCarryChild === child) return false;
+    if (carryBindingNativeId) return false;
+    let probedNativeId = null;
+    try { probedNativeId = resolveRespawnNativeId(child.pid) ?? null; } catch { probedNativeId = null; }
+    return isUnbindableChild({
+      bindingOwed: true,
+      childStartedAtMs,
+      nowMs: Date.now(),
+      windowMs: unboundWindowMs,
+      probedNativeId,
+    });
+  };
+  // P-005(c) / D-003: the one refusal for a turn/reset to an unbindable child,
+  // shared by a first delivery and a pending duplicate (D-007 (d)). The event is
+  // written once per child so the operator's host-tail judge sees it.
+  const refuseUnbindableDelivery = (mode, phase) => {
+    if (unbindableRefusalChild !== child) {
+      unbindableRefusalChild = child;
+      appendHostEvent(ownerId, 'successor-unbindable-refused', {
+        mode,
+        phase,
+        childAgeMs: Date.now() - childStartedAtMs,
+        windowMs: unboundWindowMs,
+      });
+      try {
+        writeHostDiagnostic(
+          `psu-pty-host: ${ownerId} child pid ${child.pid} has no native id after ` +
+            `${Math.round((Date.now() - childStartedAtMs) / 1000)}s; refusing ${mode} deliveries ` +
+            'as deferred-successor-unbindable until it binds\n',
+        );
+      } catch {
+        /* diagnostic only */
+      }
+    }
+    return { ok: false, reason: 'deferred-successor-unbindable' };
+  };
   if (launchKickoff) {
     const requireRoleMcp = headlessRoleKickoffRequiresMcp({
       agent: env.PAPERCUSP_AGENT,
@@ -8081,55 +12338,212 @@ export function hostThroughPty(o) {
       Boolean(leadingTurnOriginMarker(launchKickoff));
     void (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
-      const r = await injectTurnAtPrompt({
-        text: launchKickoff,
-        label,
-        ...(headlessClaudeOnboardingEnabled(env)
-          ? { budgetMs: Math.min(recycleCarryInjectBudgetMs, HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS) }
-          : {}),
-        requireInitialOutput: true,
-        verifyKickoffMarkerEcho,
-        prepareBeforeWrite: requireRoleMcp ? async () => {
-          const tap = makeOutputTap();
+      const isResumeLaunch = args.some((arg) => arg === 'resume' || arg === 'fork');
+      const kickoffBudgetMs = headlessClaudeOnboardingEnabled(env)
+        ? Math.min(recycleCarryInjectBudgetMs, HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS)
+        : recycleCarryInjectBudgetMs;
+      // WI-10004943: a plain fresh Codex launch whose child is still at the
+      // `Starting` footer after the stuck threshold gets a fresh child and the
+      // same kickoff (the WI-10005106 carry remedy). The (d) hold alone rescued
+      // 0 of 3 such launches; the last attempt still holds.
+      const freshChildRetry = {
+        agent: env.PAPERCUSP_AGENT,
+        managedKickoff: Boolean(managedKickoff),
+        isResume: isResumeLaunch,
+        maxRetries: codexLaunchStartingRetryMax(env.PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES),
+      };
+      let freshChildRetries = 0;
+      const injectLaunchKickoff = () => {
+        launchKickoffAttemptStartedAtMs = Date.now();
+        launchKickoffAttemptBudgetMs = kickoffBudgetMs;
+        // WI-10007230: owner input can cancel carry before its prewrite hook.
+        // Bind the already-spawned child independently, then share this exact
+        // report with the submission gate rather than superseding its retry.
+        // A fresh Codex role also needs its native id registered before its
+        // first provider request: accepted operations attest against that id.
+        // Reuse the exact-child carry gate instead of racing a detached hook.
+        const needsInitialBinding = !isResumeLaunch &&
+          env.PAPERCUSP_AGENT === 'codex' && Boolean(resolveRespawnNativeId);
+        const carryBinding = (adoptedCarryRespawn || needsInitialBinding) &&
+          (adoptedCarryRespawn?.nativeId || resolveRespawnNativeId)
+          ? prepareCarryBinding(adoptedCarryRespawn?.nativeId ?? null, Date.now() + kickoffBudgetMs)
+          : null;
+        return injectTurnAtPrompt({
+          text: launchKickoff,
+          label,
+          budgetMs: kickoffBudgetMs,
+          requireInitialOutput: true,
+          verifyKickoffMarkerEcho,
+          ...launchKickoffCodexStartingOptions({
+            ...freshChildRetry,
+            retryCount: freshChildRetries,
+            stuckMs: positiveNumber(
+              env.PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS,
+              CODEX_CARRY_STARTING_STUCK_MS,
+            ),
+            // WI-10004943 (d): hold, don't drop, while the Codex footer reads Starting.
+            holdCeilingMs: positiveNumber(
+              env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS,
+              CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
+            ),
+          }),
+          prepareBeforeWrite: async ({ deadline }) => {
+            if (carryBinding) {
+              const binding = await carryBinding;
+              if (!binding.ok) return binding;
+              if (adoptedCarryRespawn) adoptedCarryRespawn.nativeId = binding.nativeId;
+            }
+            if (!requireRoleMcp) return { ok: true };
+            const tap = makeOutputTap();
+            try {
+              const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
+                serverName: 'papercusp',
+                write: (bytes) => child.write(bytes),
+                readTap: tap.read,
+                resetTap: tap.reset,
+                maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS,
+              }), HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS);
+              appendHostEvent(ownerId, result.ok ? 'launch-role-mcp-ready' : 'launch-role-mcp-unavailable', {
+                step: result.step,
+                attempts: result.attempts,
+                detail: result.detail,
+              });
+              return {
+                ok: result.ok,
+                reason: 'role-mcp-unavailable',
+                settleAfterPreparation: result.ok,
+              };
+            } finally {
+              tap.close();
+            }
+          },
+          // Read per attempt, so a replacement child is judged against the owner
+          // input generation current at its own kickoff.
+          freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' && !isResumeLaunch
+            ? ownerInputGeneration
+            : null,
+          // The managed kickoff's native transcript proof owns its failure
+          // timeout and child kill. Do not let the generic submit verifier tear
+          // down the host before that proof can observe a late marker.
+          terminateOnSubmitVerifyExhaustion: !managedKickoff,
+        });
+      };
+      let r = await injectLaunchKickoff();
+      while (
+        !r.delivered &&
+        shouldRetryLaunchKickoffOnFreshChild({
+          ...freshChildRetry,
+          reason: r.reason,
+          retryCount: freshChildRetries,
+          unboundPastWindow: currentChildPastUnboundWindow(),
+        })
+      ) {
+        freshChildRetries += 1;
+        appendHostEvent(ownerId, 'launch-kickoff-fresh-child-retry', {
+          label,
+          reason: r.reason,
+          attempt: freshChildRetries,
+          maxRetries: freshChildRetry.maxRetries,
+        });
+        let replaced;
+        if (hostCleanedUp || shuttingDown) {
+          replaced = { spawned: false, reason: 'host-shutting-down' };
+        } else {
           try {
-            const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
-              serverName: 'papercusp',
-              write: (bytes) => child.write(bytes),
-              readTap: tap.read,
-              resetTap: tap.reset,
-            }));
-            appendHostEvent(ownerId, result.ok ? 'launch-role-mcp-ready' : 'launch-role-mcp-unavailable', {
-              step: result.step,
-              attempts: result.attempts,
-              detail: result.detail,
-            });
-            return { ok: result.ok, reason: 'role-mcp-unavailable' };
-          } finally {
-            tap.close();
+            replaced = await recycleChild('', { freshChildOnly: true });
+          } catch (error) {
+            replaced = { spawned: false, reason: `threw:${String(error?.message ?? error).slice(0, 120)}` };
           }
-        } : null,
-        freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' &&
-          !args.some((arg) => arg === 'resume' || arg === 'fork')
-          ? ownerInputGeneration
-          : null,
-        // The managed kickoff's native transcript proof owns its failure
-        // timeout and child kill. Do not let the generic submit verifier tear
-        // down the host before that proof can observe a late marker.
-        terminateOnSubmitVerifyExhaustion: !managedKickoff,
-      });
+        }
+        if (!replaced?.spawned) {
+          appendHostEvent(ownerId, 'launch-kickoff-fresh-child-failed', {
+            label,
+            reason: replaced?.reason ?? 'no-recycle-result',
+            attempt: freshChildRetries,
+          });
+          // The early drop skipped the parsed DROPPED receipt on the promise of
+          // this retry. The retry cannot run, so the drop is terminal after all.
+          if (r.earlyStuck) {
+            writeStartupTurnDroppedLine({ label, dropReason: r.reason, budgetMs: kickoffBudgetMs, attempts: r.attempts });
+          }
+          break;
+        }
+        r = await injectLaunchKickoff();
+      }
+      launchKickoffAttemptStartedAtMs = 0;
+      launchKickoffAttemptBudgetMs = 0;
+      // EI-24818010361425604: a same-host respawn replaced the child while this
+      // kickoff was in flight, so the owner now lives in the successor. Wait on
+      // the inject mutex (a gated respawn holds it through kill + spawn + carry
+      // inject, so the carry turn lands first), then give the successor the
+      // kickoff. A duplicate is possible when the carry tail already quoted the
+      // kickoff; losing it, and having the parent kill the successor over a
+      // terminal negative receipt, is the failure this replaces.
+      let respawnRedeliveries = 0;
+      while (
+        !r.delivered &&
+        shouldRedeliverLaunchKickoffAfterRespawn({
+          reason: r.reason,
+          managedKickoff: Boolean(managedKickoff),
+          hostShuttingDown: hostCleanedUp || shuttingDown,
+          redeliveries: respawnRedeliveries,
+        })
+      ) {
+        respawnRedeliveries += 1;
+        appendHostEvent(ownerId, 'launch-kickoff-respawn-redelivery', {
+          label,
+          attempt: respawnRedeliveries,
+          maxRedeliveries: LAUNCH_KICKOFF_RESPAWN_REDELIVERY_MAX,
+        });
+        let releaseInject = null;
+        try {
+          releaseInject = await injectMutex.acquire();
+        } catch {
+          // Never block the redelivery on the mutex itself; the injector's own
+          // prompt and busy gates still order it after the carry turn.
+          releaseInject = null;
+        }
+        try {
+          r = hostCleanedUp || shuttingDown
+            ? { delivered: false, reason: 'host-shutting-down', attempts: 0 }
+            : await injectLaunchKickoff();
+        } finally {
+          releaseInject?.();
+        }
+      }
       if (!managedKickoff) {
         if (!r.delivered) {
+          recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+            reason: r.reason ?? 'kickoff-not-submitted',
+            attempts: r.attempts,
+            budgetMs: kickoffBudgetMs,
+            outputSeen: childStartupOutput.length > 0,
+          });
           // An opted-in detached caller must receive a terminal negative receipt
           // even when the PTY submission never started. Otherwise the parent
           // waits out its proof window and cannot distinguish "not submitted"
           // from a host that died before it could report.
-          publishKickoffProofReceipt({
+          const receipt = publishKickoffProof({
             persisted: false,
             nativeRef: null,
             reason: `kickoff-not-submitted:${r.reason ?? 'unknown'}`,
-          }, env);
+          });
+          // WI-10006598: a refusal the caller can no longer hear leaves an
+          // idle headless session nobody reaps. End the host instead.
+          if (unreportedKickoffRefusalStrandsHost({
+            delivered: false,
+            headless: env.PAPERCUSP_PSU_HEADLESS === '1',
+            receipt,
+          })) {
+            terminateUnreportedKickoffRefusal({
+              kickoffReason: r.reason ?? 'unknown',
+              receiptReason: receipt?.reason ?? null,
+              receiptErrorCode: receipt?.errorCode ?? null,
+            });
+          }
           return;
         }
+        const kickoffDeliveredAtMs = Date.now();
         let proof;
         try {
           proof = await verifyNativeTurnStartWithRetry({
@@ -8164,15 +12578,79 @@ export function hostThroughPty(o) {
             nativeRef: proof.nativeRef ?? null,
           });
         }
+        // EI-25925116860039557: a recorded user turn can still be rejected by the
+        // provider with a usage-limit wall. Delay the success receipt until the
+        // grace window after delivery has passed. A wall that latches in that
+        // window makes this a refused launch, the same outcome as a wall that was
+        // already visible when the kickoff was submitted.
+        if (proof.persisted === true && !adoptedCarryRespawn) {
+          const quotaVerdict = await awaitKickoffQuotaRejection({
+            isQuotaBlocked: () => quotaBlockDetector.isBlocked(),
+            deliveredAtMs: kickoffDeliveredAtMs,
+            graceMs: positiveNumber(
+              env.PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS,
+              KICKOFF_QUOTA_REJECTION_GRACE_MS,
+            ),
+            shouldStop: () => hostCleanedUp || shuttingDown,
+          });
+          if (quotaVerdict.rejected) {
+            const kickoffReason = 'provider-quota-rejected';
+            appendHostEvent(ownerId, 'launch-kickoff-quota-rejected', {
+              waitedMs: quotaVerdict.waitedMs,
+              nativeRef: proof.nativeRef ?? null,
+              agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+            });
+            recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+              reason: kickoffReason,
+              attempts: r.attempts,
+              budgetMs: kickoffBudgetMs,
+              outputSeen: childStartupOutput.length > 0,
+              nativeRef: proof.nativeRef ?? null,
+            });
+            try {
+              writeTerminalDiagnostic(
+                `psu: kickoff REJECTED: the provider answered the launch kickoff with a usage-limit wall ` +
+                  `${quotaVerdict.waitedMs}ms after delivery. This account cannot run the member. ` +
+                  `Relaunch with account:'auto' (gateway pool with failover) or pin another account.\n`,
+              );
+            } catch {
+              /* diagnostics are best-effort */
+            }
+            const receipt = publishKickoffProof({
+              persisted: false,
+              nativeRef: proof.nativeRef ?? null,
+              reason: `kickoff-not-submitted:${kickoffReason}`,
+            });
+            if (unreportedKickoffRefusalStrandsHost({
+              delivered: false,
+              headless: env.PAPERCUSP_PSU_HEADLESS === '1',
+              receipt,
+            })) {
+              terminateUnreportedKickoffRefusal({
+                kickoffReason,
+                receiptReason: receipt?.reason ?? null,
+                receiptErrorCode: receipt?.errorCode ?? null,
+              });
+            }
+            return;
+          }
+        }
         // Publish the native transcript verdict before any caller-facing
         // handling. The detached parent owns the placeholder and uses this
         // receipt as the only authority for whether its kickoff ran.
-        publishKickoffProofReceipt({
+        publishKickoffProof({
           persisted: proof.persisted === true,
           nativeRef: proof.nativeRef ?? null,
           reason: proof.persisted ? null : proof.reason,
-        }, env);
+        });
         if (!proof.persisted) {
+          recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+            reason: proof.reason ?? 'turn-start-unverified',
+            attempts: r.attempts,
+            budgetMs: kickoffBudgetMs,
+            outputSeen: childStartupOutput.length > 0,
+            nativeRef: proof.nativeRef ?? null,
+          });
           const proofUnavailable =
             proof.reason === 'missing-leading-turn-origin' ||
             proof.reason === 'unsupported-backend';
@@ -8182,7 +12660,7 @@ export function hostThroughPty(o) {
             proofUnavailable,
           });
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               proofUnavailable
                 ? `psu: kickoff submitted but UNVERIFIED — native execution proof is unavailable ` +
                   `(${proof.reason}); never claiming delivered.\n`
@@ -8201,13 +12679,53 @@ export function hostThroughPty(o) {
           }
           return;
         }
+        if (adoptedCarryRespawn) {
+          const adoptedCarryChild = child;
+          const adoptedAnnouncement = await announceVerifiedCarryRespawn({
+            ownerId,
+            agent: env.PAPERCUSP_AGENT,
+            nativeId: adoptedCarryRespawn.nativeId ?? null,
+            proof,
+            alreadyReported: confirmedCarryChild === adoptedCarryChild,
+            report: onRespawn,
+            emit: emitCompacted,
+            timeoutMs: respawnReportTimeoutMs,
+            isCurrent: () => child === adoptedCarryChild && !recycling && !shuttingDown && !hostCleanedUp,
+          });
+          const adoptedNativeId = adoptedAnnouncement.nativeId ?? adoptedCarryRespawn.nativeId ?? null;
+          appendHostEvent(ownerId, 'respawn-carry-delivered', {
+            mode: 'carry-respawn',
+            nativeId: adoptedNativeId,
+            outputSeen: childStartupOutput.length > 0,
+            turnStartVerified: true,
+            nativeRef: proof.nativeRef ?? null,
+            adopted: true,
+          });
+          recordAdoptedCarryDrillTerminal('carry-drill-carry-delivered', {
+            nativeId: adoptedNativeId,
+            attempts: r.attempts,
+            budgetMs: kickoffBudgetMs,
+            outputSeen: childStartupOutput.length > 0,
+            nativeRef: proof.nativeRef ?? null,
+            adopted: true,
+          });
+          if (!adoptedAnnouncement.announced) {
+            appendHostEvent(ownerId, 'respawn-compaction-unannounced', {
+              nativeId: adoptedNativeId,
+              reason: adoptedAnnouncement.reason,
+              adopted: true,
+            });
+          }
+        }
         // The marker proves submission, not execution. When an isolated native
         // transcript is available, only a task-start/assistant row after this
         // marker proves the turn ran; PTY output may have arrived before marker
         // proof returned and must not become a late sampling baseline.
         const readLastOutputAt = () => activity.snapshot().lastOutputAt ?? 0;
         const kickoffMarker = leadingTurnOriginMarker(launchKickoff);
-        const kickoffMarkerAnchor = { fileIdentity: null, markerEndOffset: null };
+        const kickoffMarkerAnchor = {
+          fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null,
+        };
         const nativeTurnActivity = kickoffMarker && proof.nativeRef &&
           nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported
           ? () => nativeKickoffTurnActivityAfterMarker({
@@ -8274,7 +12792,7 @@ export function hostThroughPty(o) {
           });
         }
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             turnStart.started
               ? `psu: kickoff delivered — verified the exact provenance marker in the native transcript` +
                 `${modelRetried ? ' (model turn started only after one in-session retry)' : ''}.\n`
@@ -8328,28 +12846,39 @@ export function hostThroughPty(o) {
           renderedHash: managedKickoff.renderedHash,
           nativeRef: proof.nativeRef,
         });
-        process.stderr.write(
+        writeTerminalDiagnostic(
           `psu: session port delivered — verified the exact seed checksum in the target native transcript.\n`,
         );
       } catch (error) {
         appendHostEvent(ownerId, 'session-port-delivery-ack-failed', hostErrorEvidence(error));
-        process.stderr.write(`psu: session-port delivery acknowledgement failed: ${error?.message ?? error}\n`);
-        if (!quotaBlockDetector.isBlocked()) {
+        writeTerminalDiagnostic(`psu: session-port delivery acknowledgement failed: ${error?.message ?? error}\n`);
+        if (error?.code === 'session_port_ack_outcome_unknown') {
+          // Native persistence is already verified. A late/unknown operator
+          // acknowledgement must not turn that physical proof into a child kill.
+          // Keep the server disposition unconfirmed; do not replay the mutation
+          // or publish a delivered acknowledgement on this path.
+          appendHostEvent(ownerId, 'session-port-delivery-ack-pending', hostErrorEvidence(error));
+          writeTerminalDiagnostic('psu: native seed is persisted; operator acknowledgement remains unconfirmed. The target stays alive.\n');
+        } else if (!quotaBlockDetector.isBlocked()) {
           try { child.kill(); } catch { /* already exited */ }
         }
       }
     })().catch((error) => {
       appendHostEvent(ownerId, 'managed-kickoff-failed', hostErrorEvidence(error));
       if (!managedKickoff) {
-        publishKickoffProofReceipt({
+        publishKickoffProof({
           persisted: false,
           nativeRef: null,
           reason: 'launch-kickoff-error',
-        }, env);
+        });
       }
-      try { process.stderr.write(`psu: managed kickoff failed: ${error?.message ?? error}\n`); }
+      try { writeTerminalDiagnostic(`psu: managed kickoff failed: ${error?.message ?? error}\n`); }
       catch { /* diagnostics are best-effort */ }
       try { child.kill(); } catch { /* already exited */ }
+    }).finally(() => {
+      // psu-process-free-parking P-017: a park must never cut off a first
+      // prompt that is still waiting to be typed.
+      launchKickoffSettled = true;
     });
   }
 
@@ -8361,6 +12890,30 @@ export function hostThroughPty(o) {
   // pipeline is pending and after it commits, so a retry cannot inject a second
   // real turn while an early ACK is still only acceptance.
   const deliveryDedup = makeDeliveryDedup();
+  const nativeStartPending = new Map();
+  const nativeStartProof = (pending) => {
+    if (pending.child !== child) return { available: false, started: false };
+    const nativeRef = findNativeTranscriptMarker({ agent: env.PAPERCUSP_AGENT, env,
+      marker: pending.marker, sinceMs: pending.submittedAtMs });
+    if (pending.submissionOnly) return { available: true, started: Boolean(nativeRef) };
+    return nativeRef ? nativeKickoffTurnActivityAfterMarker({ agent: env.PAPERCUSP_AGENT, env,
+      transcriptPath: nativeRef, marker: pending.marker, anchor: pending.anchor })
+      : { available: false, started: false };
+  };
+  const reconcileNativeStartPending = ({ supersededOnly = false } = {}) => {
+    for (const [id, pending] of nativeStartPending) {
+      if (pending.child !== child) {
+        deliveryDedup.markSuperseded(id);
+        nativeStartPending.delete(id);
+        appendHostEvent(ownerId, 'native-turn-start-superseded', { deliveryId: id, childGeneration });
+      } else if (!supersededOnly && nativeStartProof(pending).started) {
+        deliveryDedup.markCompleted(id);
+        nativeStartPending.delete(id);
+        appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: id, childGeneration });
+      }
+    }
+    return nativeStartPending.size > 0;
+  };
   // EI-8822: serialize the gated-inject critical section so a wake `turn` and a
   // session:request-compaction `/compact` freed at the SAME clean boundary can't
   // both pass the at-prompt gate and interleave their bytes into one pty input
@@ -8378,7 +12931,7 @@ export function hostThroughPty(o) {
         waitedMs,
       });
       try {
-        process.stderr.write(
+        writeTerminalDiagnostic(
           phase === 'force-release'
             ? `psu-pty-host: inject-mutex FORCE-RELEASED for ${ownerId} after ${waitedMs}ms — ` +
                 `a prior gated inject never reached its release; every gated inject since has been ` +
@@ -8391,12 +12944,148 @@ export function hostThroughPty(o) {
       }
     },
   });
+  // EI-25878022553042846: a provider error can consume the initial Enter
+  // while the machine text remains staged. The bounded verifier then ends,
+  // and delivery-ID retries correctly refuse to paste that text a second time.
+  // Resume ONLY the standalone Enter, using the existing discovery tick and
+  // inject mutex. Native acceptance stops retries even if the provider is still
+  // failing; quota/auth banners are not evidence of an unsubmitted composer.
+  let pendingSubmissionRetryActive = false;
+  const pendingSubmissionRecovery = (submittedAtMs, composerGenerationAtWrite) => ({
+    submittedAtMs, composerGenerationAtWrite, lastResubmitAtMs: Date.now(), resubmits: 0, countedResubmits: 0, stopped: false,
+  });
+  // EI-25930229050142968: a recovery that can no longer succeed must release
+  // the record. A live nativeStartPending entry defers every later wake, so a
+  // stopped-but-retained record silences the session until a respawn.
+  const retireUnconfirmedSubmission = (deliveryId, pending, reason, extra = {}) => {
+    pending.submissionRecovery.stopped = true;
+    const retired = retirePendingSubmission(nativeStartPending, pending, deliveryDedup);
+    appendHostEvent(ownerId, 'pending-submit-recovery-exhausted', {
+      deliveryId, retiredDeliveryIds: retired, reason, childGeneration,
+      resubmits: pending.submissionRecovery.resubmits, ...extra,
+    });
+    try {
+      writeTerminalDiagnostic(
+        `psu-pty-host: gave up re-submitting machine turn ${deliveryId} for ${ownerId} (${reason}, ` +
+          `${pending.submissionRecovery.resubmits} recovery Enters, no native receipt). Its text may still sit ` +
+          `in the composer; later wakes are no longer deferred behind it (EI-25930229050142968).\n`,
+      );
+    } catch {
+      /* never let a diagnostic write break the host */
+    }
+  };
+  const retryPendingSubmissions = async () => {
+    if (pendingSubmissionRetryActive || !nativeStartPending.size || deliveriesInFlight > 0) return;
+    pendingSubmissionRetryActive = true;
+    let release;
+    try {
+      release = await injectMutex.acquire();
+      if (hostCleanedUp || shuttingDown || parked || deliveriesInFlight > 0) return;
+      reconcileNativeStartPending();
+      const seen = new Set();
+      for (const [deliveryId, pending] of nativeStartPending) {
+        if (seen.has(pending)) continue;
+        seen.add(pending);
+        const recovery = pending.submissionRecovery;
+        if (!recovery || recovery.stopped || pending.child !== child) continue;
+        // Submission and execution are different receipts. A persisted user
+        // row with a failed/slow model call MUST NOT receive another Enter.
+        if (findNativeTranscriptMarker({ agent: env.PAPERCUSP_AGENT, env,
+          marker: pending.marker, sinceMs: pending.submittedAtMs })) {
+          // Submitted, but no native turn activity ever followed. Never press
+          // Enter here; once the age bound passes, stop deferring later wakes
+          // behind a turn that is not going to start (EI-25930229050142968).
+          const ageMs = Date.now() - recovery.submittedAtMs;
+          if (!quotaBlockDetector.isBlocked() && !authBlockDetector.isBlocked() &&
+            ageMs >= submitRecoveryMaxAgeMs(env)) {
+            retireUnconfirmedSubmission(deliveryId, pending, 'max-age-submitted-without-turn', { ageMs });
+          }
+          continue;
+        }
+        const lostComposer = ownerStopRequested ||
+          recovery.composerGenerationAtWrite !== composerInputGeneration ||
+          recovery.submittedAtMs !== lastMachineTurnWriteStartedAtMs ||
+          Number(activity.snapshot().lastInputAt ?? 0) > recovery.submittedAtMs ||
+          ownerComposerGate.hasPending();
+        if (lostComposer) {
+          appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
+            deliveryId, reason: 'pending-composer-ownership-lost', terminated: false,
+          });
+          // The composer is no longer the machine's to submit, so no later Enter
+          // can confirm this record. Retaining it deferred every wake until a
+          // carry-respawn (EI-25930229050142968).
+          retireUnconfirmedSubmission(deliveryId, pending, 'pending-composer-ownership-lost');
+          continue;
+        }
+        if (machineTurnActive || nativeExecutionBlocksInjection(currentNativeExecution())) continue;
+        const quotaBlocked = quotaBlockDetector.isBlocked();
+        const authBlocked = authBlockDetector.isBlocked();
+        const now = Date.now();
+        const decision = decidePendingSubmissionRecovery({
+          resubmits: recovery.resubmits, countedResubmits: recovery.countedResubmits,
+          submittedAtMs: recovery.submittedAtMs, lastResubmitAtMs: recovery.lastResubmitAtMs,
+          lastOutputAtMs: Number(activity.snapshot().lastOutputAt ?? 0), now,
+          quietMs: submitVerifyQuietMs(env),
+          retryCap: positiveNumber(env.PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR, SUBMIT_VERIFY_MAX_RESUBMITS),
+          maxResubmits: submitRecoveryMaxResubmits(env), maxAgeMs: submitRecoveryMaxAgeMs(env),
+          providerBlocked: quotaBlocked || authBlocked,
+        });
+        if (decision.action === 'wait') continue;
+        if (decision.action === 'exhausted') {
+          retireUnconfirmedSubmission(deliveryId, pending, decision.reason ?? 'max-resubmits', {
+            countedResubmits: recovery.countedResubmits, ageMs: now - recovery.submittedAtMs,
+          });
+          continue;
+        }
+        // No await between the ownership/receipt checks and this write: an
+        // owner keystroke cannot race the decision. Never rewrite the payload.
+        child.write('\r');
+        recovery.lastResubmitAtMs = now;
+        recovery.resubmits++;
+        if (decision.counted) recovery.countedResubmits++;
+        appendHostEvent(ownerId, 'submit-verify-recovery-resubmit', {
+          deliveryId, childGeneration, resubmits: recovery.resubmits,
+          countedResubmits: recovery.countedResubmits, quotaBlocked, authBlocked,
+        });
+      }
+    } finally {
+      release?.();
+      pendingSubmissionRetryActive = false;
+    }
+  };
+  pendingSubmissionTick = () => {
+    void retryPendingSubmissions().catch(error => appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
+      reason: 'pending-submit-recovery-error', terminated: false, ...hostErrorEvidence(error),
+    }));
+  };
   // WI-5510: per-loop-instance last-delivered fire number — the delivery-side
   // half of the stale-fire guard (see makeStaleFireGuard's doc block). One
   // guard per host process is correct: this host serves exactly ONE ownerId
   // for its whole lifetime (D-006), so it needs no owner-keyed map, only a
   // loop-instance-keyed (routineId) one.
   const staleFireGuard = makeStaleFireGuard();
+  const rejectWakeProvenance = (message, phase) => {
+    const freshness = checkWakeProvenanceAge(message);
+    if (!freshness.checked || !freshness.expired) return null;
+    const reason = message?.provenanceTimestampInvalid || freshness.ageMs == null
+      ? 'invalid-timestamp'
+      : freshness.ageMs < 0
+        ? 'future-timestamp'
+        : 'expired';
+    appendHostEvent(ownerId, 'wake-provenance-rejected', {
+      phase,
+      reason,
+      mode: message?.mode ?? null,
+      addressedOwnerId: message?.ownerId ?? null,
+      deliveryId: message?.deliveryId ?? null,
+      routineId: message?.routineId ?? null,
+      fireNumber: message?.fireNumber ?? null,
+      provenanceIssuedAtMs: message?.provenanceIssuedAtMs ?? null,
+      ageMs: freshness.ageMs,
+      maxAgeMs: WAKE_PROVENANCE_MAX_AGE_MS,
+    });
+    return 'provenance-' + reason;
+  };
   // EI-12754: one-shot deferred retry for busy-gate-refused carry-respawn
   // drills. The retry window defaults to 2× the live-inject cap (a busy turn
   // that outran the first 3-minute wait gets one more, longer chance to settle);
@@ -8412,6 +13101,10 @@ export function hostThroughPty(o) {
     env.PAPERCUSP_PSU_PTY_CARRY_STALE_MS,
     CARRY_RESPAWN_MAX_AGE_MS,
   );
+  // Give a drill enough re-arm windows to use its existing freshness horizon.
+  // isStale still refuses a cut after that horizon; this count also bounds a
+  // legacy drill message that lacks receivedAtMs and therefore cannot age out.
+  const carryDrillRearmAttempts = Math.max(1, Math.ceil(carryRespawnMaxAgeMs / carryRearmCapMs));
   /**
    * P-003/P-005: reasons the native turn verifier is unavailable that have
    * already been reported durably for this host process. The predicate below is
@@ -8466,6 +13159,7 @@ export function hostThroughPty(o) {
         agent,
         env,
         completedAtOrAfterMs: Math.max(
+          childStartedAtMs,
           Number(activity.snapshot().lastInputAt ?? 0),
           lastMachineTurnSubmittedAtMs,
         ),
@@ -8479,7 +13173,11 @@ export function hostThroughPty(o) {
     waitIdle: bridgeTty ? () => idleGate.waitIdle() : null,
     hasPendingOwnerInput: () => ownerComposerGate.hasPending(),
     waitForOwnerInputClear: bridgeTty ? () => ownerComposerGate.waitClear() : null,
-    waitAtPrompt: (cap, msg) => agentBusyGate.waitAtPrompt(cap, verifiedBoundaryFor(msg).boundary),
+    waitAtPrompt: async (cap, msg) => {
+      const { boundary, support } = verifiedBoundaryFor(msg);
+      const result = await agentBusyGate.waitAtPrompt(cap, boundary);
+      return { ...result, verifier: support.reason ?? 'supported' };
+    },
     recycle: (data, opts) => recycleChild(data, opts),
     // P-005 / D-004: dispatch a re-armed delivery by mode. Only the modes with
     // a verified single-call delivery primitive are registered; anything else
@@ -8490,16 +13188,47 @@ export function hostThroughPty(o) {
         // would kill the child and destroy the very turn being delivered.
         const text = String(message?.data ?? '');
         if (!text) return { delivered: false, reason: 'no-text' };
-        return injectTurnAtPrompt({
+        const marker = leadingTurnOriginMarker(text);
+        const nativeProofAvailable = Boolean(marker) &&
+          nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
+        let nativeSubmission = null;
+        const outcome = await injectTurnAtPrompt({
           text,
           label: 'turn re-arm',
           promptAlreadyVerified: true,
           terminateOnSubmitVerifyExhaustion: false,
           submitVerificationRequired: true,
+          onSubmitted: (submission) => {
+            if (nativeProofAvailable) nativeSubmission = { ...submission, marker, submissionOnly: true,
+              submissionRecovery: pendingSubmissionRecovery(submission.submittedAtMs, submission.composerGenerationAtWrite) };
+          },
+          prepareBeforeWrite: async ({ deadline }) => {
+            if (shouldDeferWakeForPendingRespawn(mode, carryRearm.pendingCount('carry-respawn'))) {
+              appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', {
+                reason: 'carry-respawn-pending', phase: 'pre-write', rearmed: true,
+              });
+              return { ok: false, reason: 'carry-respawn-pending' };
+            }
+            if (reconcileNativeStartPending()) {
+              return { ok: false, reason: 'native-turn-start-pending' };
+            }
+            return prepareCurrentCarryBinding(deadline);
+          },
         });
+        // A submitted tagged wake can persist its native row after the bounded
+        // verifier expires. Retain its exact write context for late proof;
+        // neither this retry nor a later socket delivery may paste it again.
+        if (!outcome.delivered && nativeSubmission?.child === child) {
+          return { ...outcome, reason: 'native-turn-start-unverified', nativeSubmission };
+        }
+        return !outcome.delivered &&
+          ['carry-respawn-pending', 'native-turn-start-pending'].includes(outcome.reason)
+          ? { ...outcome, retryable: true }
+          : outcome;
       }
       return recycleChild(message?.data, {
         systemPromptAddendum: message?.systemPromptAddendum ?? '',
+        sourceTranscriptPath: message?.sourceTranscriptPath ?? null,
         drillId,
         sessionClass: message?.sessionClass ?? '',
       });
@@ -8512,11 +13241,19 @@ export function hostThroughPty(o) {
       for (const message of messages) {
         const deliveryId = message?.deliveryId;
         if (!deliveryId) continue;
-        if (outcome?.delivered) deliveryDedup.markCompleted(deliveryId);
-        else deliveryDedup.clearPending(deliveryId);
+        if (outcome?.delivered) {
+          deliveryDedup.markCompleted(deliveryId);
+          nativeStartPending.delete(deliveryId);
+        } else if (outcome?.nativeSubmission?.child === child) {
+          nativeStartPending.set(deliveryId, outcome.nativeSubmission);
+          deliveryDedup.markPending(deliveryId);
+        } else {
+          deliveryDedup.clearPending(deliveryId);
+        }
       }
     },
     capMs: carryRearmCapMs,
+    maxDrillAttempts: carryDrillRearmAttempts,
     // Age expiry is drill-only. A newer child supersedes production carries
     // too, and must retire their pending wake suppression without another cut.
     isStale: (msg) =>
@@ -8524,6 +13261,506 @@ export function hostThroughPty(o) {
     isSuperseded: (msg) =>
       isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs),
   });
+
+  // ── Process-free parking (psu-process-free-parking-2026-10-06 P-017) ───────
+  // An idle Claude child is SIGKILLed to free its memory while this host, its
+  // control socket, discovery file and terminal stay up (D-002). The first
+  // owner keystroke, control-socket delivery or recycle brings it back on the
+  // SAME conversation (mintParkResumeArgs). While parked, `child` is a stand-in
+  // with no pid: nothing can signal a recycled pid, and killing the stand-in
+  // ends the session through the ordinary child-exit path (so shutdown, a
+  // host signal and an orphaned terminal all behave exactly as with a live
+  // child).
+  const parkIdleMs = parkIdleMsFromEnv(env);
+  const parkResumeWaitMs = positiveNumber(env.PAPERCUSP_PSU_PARK_RESUME_WAIT_MS, 60_000);
+  let parked = false;
+  /** @type {Promise<boolean> | null} */
+  let parkPromise = null;
+  /** @type {Promise<{ unparked: boolean, reason: string }> | null} */
+  let unparkPromise = null;
+  let parkedAtMs = 0;
+  let lastUnparkAtMs = 0;
+  /** @type {{ args: string[], nativeId: string } | null} */
+  let parkResume = null;
+  let deliveriesInFlight = 0;
+  let lastParkDeferReason = null;
+  /** Owner keystrokes typed while parked, replayed once the resumed prompt is up. */
+  const heldOwnerInput = [];
+  let heldOwnerInputBytes = 0;
+  const HELD_OWNER_INPUT_CAP_BYTES = 4096;
+  // P-019: control deliveries that arrived while a resume FAILED. Running one
+  // would write into the pid-less stand-in and silently lose a turn the host
+  // already ACKed (WI-10005134), so each waits here for the next successful
+  // resume. A retry timer (backing off from PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS)
+  // keeps trying while anything is held; the host ending releases them as
+  // undeliverable so the sender's dedup slot clears.
+  /** @type {Array<(outcome: { ok: boolean, reason: string }) => void>} */
+  const heldDeliveryWaiters = [];
+  const HELD_DELIVERY_CAP = 64;
+  const parkUnparkRetryMs = positiveNumber(env.PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS, 5_000);
+  const PARK_UNPARK_RETRY_MAX_MS = 5 * 60_000;
+  /** @type {NodeJS.Timeout | null} */
+  let unparkRetryTimer = null;
+  let unparkRetryAttempt = 0;
+  // WI-10006574: a resumed CLI that EXITS before its prompt (e.g. `--resume`
+  // finding no transcript) is a failed resume, not the session ending. While
+  // a resume waits for its prompt, the child-exit handler hands such an exit
+  // here: the stand-in comes back, held work stays held and the retry runs.
+  // Only PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX consecutive such exits end the
+  // session (with `child-unpark-abandoned`), since an agent that cannot be
+  // resumed would otherwise retry forever behind a live-looking host.
+  /** @type {{ child: unknown, resume: { args: string[], nativeId: string }, trigger: string } | null} */
+  let resumeAwaitingPrompt = null;
+  let resumedChildExitStreak = 0;
+  const parkResumeExitMax = positiveNumber(env.PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX, 3);
+  const parkInProgress = () => parked || parkPromise !== null || unparkPromise !== null;
+  const releaseHeldDeliveries = (outcome) => {
+    for (const release of heldDeliveryWaiters.splice(0)) release(outcome);
+  };
+  const cancelUnparkRetry = () => {
+    if (unparkRetryTimer) clearTimeout(unparkRetryTimer);
+    unparkRetryTimer = null;
+  };
+  const makeParkedChild = () => {
+    const listeners = [];
+    let exitEvent = null;
+    const fire = (fn) => setImmediate(() => {
+      try {
+        fn(exitEvent);
+      } catch {
+        /* a listener must never break another */
+      }
+    });
+    return {
+      pid: undefined,
+      write() {},
+      resize() {},
+      onData() {
+        return { dispose() {} };
+      },
+      onExit(fn) {
+        if (exitEvent) fire(fn);
+        else listeners.push(fn);
+        return { dispose() {} };
+      },
+      // Asynchronous like node-pty's own exit event, so a teardown that records
+      // its signal before killing (WI-38054) still wins the race.
+      kill(signal = 'SIGHUP') {
+        if (exitEvent) return;
+        exitEvent = {
+          exitCode: 0,
+          signal: typeof signal === 'string' ? (osConstants.signals[signal] ?? 0) : Number(signal) || 0,
+        };
+        for (const fn of listeners.splice(0)) fire(fn);
+      },
+    };
+  };
+  const mintResumeForPark = () => {
+    try {
+      const configDir = env.CLAUDE_CONFIG_DIR || null;
+      const newest = newestSessionTranscriptId(configDir, { ownerId });
+      const base = mintParkResumeArgs(liveChildArgs, { agent: env.PAPERCUSP_AGENT });
+      if (!base || !Array.isArray(base.args) || !base.nativeId) return null;
+      if (newest && newest.id !== base.nativeId) {
+        const switched = mintParkResumeArgs(liveChildArgs, {
+          agent: env.PAPERCUSP_AGENT,
+          nativeId: newest.id,
+        });
+        if (switched && Array.isArray(switched.args) && switched.nativeId) {
+          return { ...switched, switchedFrom: base.nativeId };
+        }
+      }
+      return base;
+    } catch {
+      return null;
+    }
+  };
+  const clearParkedState = (trigger, extra = {}) => {
+    const parkedForMs = parkedAtMs ? Date.now() - parkedAtMs : null;
+    parked = false;
+    parkedAtMs = 0;
+    parkResume = null;
+    lastUnparkAtMs = Date.now();
+    baseMeta.parked = false;
+    baseMeta.parkedAt = null;
+    return { trigger, parkedForMs, ...extra };
+  };
+  /** Swap the (dead) child for the pid-less stand-in and publish the parked
+   *  state. Shared by a park and by WI-10006574's re-park of a resumed CLI
+   *  that exited before its prompt. Synchronous, so a child-exit handler can
+   *  run it before anything else observes the dead child as current. */
+  const installParkedStandIn = (resume) => {
+    if (normalizedLog) normalizedLog.flush();
+    childStartupOutput = '';
+    childStartupReady = false;
+    childPromptReady = false;
+    childStartupFirstOutputAt = 0;
+    childBracketedPaste = false;
+    childBracketedPasteTail = '';
+    childBackendTuiStartedAt = 0;
+    childBackendFirstFrameAt = 0;
+    lastMachineTurnWriteStartedAtMs = 0;
+    quotaBlockDetector.reset();
+    authBlockDetector.reset();
+    ownerComposerGate.markSubmitted();
+    child = makeParkedChild();
+    wireChildExit();
+    parked = true;
+    parkedAtMs = Date.now();
+    parkResume = resume;
+    baseMeta.parked = true;
+    baseMeta.parkedAt = parkedAtMs;
+    // A dead pid is recycled within hours here; never advertise one.
+    baseMeta.ptyPid = null;
+    writeMeta();
+  };
+  const parkChild = async (verdict) => {
+    const resume = mintResumeForPark();
+    if (!resume) return false;
+    const parkedChild = child;
+    const childPid = Number.isInteger(parkedChild?.pid) ? parkedChild.pid : null;
+    // `recycling` makes the child-exit handler ignore THIS kill: a park is not
+    // the session ending, and the operator must never see it as one (D-002).
+    recycling = true;
+    try {
+      stopStartupTrace('park');
+      const dead = new Promise((res) => {
+        try {
+          parkedChild.onExit(() => res(true));
+        } catch {
+          res(true);
+        }
+      });
+      killPtyProcessTree(parkedChild, 'SIGKILL');
+      const exited = await Promise.race([
+        dead,
+        new Promise((res) => setTimeout(() => res(false), RECYCLE_FORCE_KILL_WAIT_MS * 5)),
+      ]);
+      installParkedStandIn(resume);
+      try {
+        // The killed TUI left its terminal modes (mouse reporting, bracketed
+        // paste) armed; reset them so a mouse move is not read as a keystroke.
+        if (bridgeTty) {
+          const handoff = respawnTerminalHandoffBytes({
+            rows: sanePtyDim(stdout.rows, 0, 500) || undefined,
+            separator: false,
+          });
+          if (handoff) terminalOutput.write(handoff);
+        }
+        terminalOutput.write(
+          `\r\n[psu] Agent parked after ${Math.round((verdict.idleForMs ?? parkIdleMs) / 60_000)} min idle ` +
+            `to free memory. Type, or send it a message, to resume the same conversation.\r\n`,
+        );
+      } catch {
+        /* the notice is advisory */
+      }
+      appendHostEvent(ownerId, 'child-parked', {
+        idleForMs: verdict.idleForMs ?? null,
+        childPid,
+        exited,
+        nativeId: resume.nativeId,
+        switchedFrom: resume.switchedFrom ?? null,
+      });
+      return true;
+    } finally {
+      recycling = false;
+    }
+  };
+  parkTick = () => {
+    if (parkInProgress() || hostCleanedUp || shuttingDown || recycling) return;
+    const now = Date.now();
+    const snap = activity.snapshot();
+    const lastActivityAt = Math.max(
+      snap.lastActivityAt ?? 0,
+      lastRespawnAtMs,
+      lastUnparkAtMs,
+      baseMeta.startedAt ?? 0,
+    );
+    const busy =
+      deliveriesInFlight > 0 ||
+      machineTurnActive ||
+      carryRearm.pendingCount() > 0 ||
+      !launchKickoffSettled;
+    const verdict = parkVerdict({
+      idleMs: parkIdleMs,
+      agent: env.PAPERCUSP_AGENT,
+      now,
+      lastActivityAt,
+      childPromptReady,
+      parked,
+      busy,
+      quotaBlocked: quotaBlockDetector.isBlocked(),
+      authBlocked: authBlockDetector.isBlocked(),
+      composerPending: ownerComposerGate.hasPending(),
+      // Only pay for the transcript-dir scan once the child is idle enough to
+      // park; before that the verdict refuses on idleness anyway.
+      resumable: now - lastActivityAt >= parkIdleMs ? mintResumeForPark() !== null : true,
+      descendants: () => countProcessDescendants(child?.pid),
+    });
+    if (!verdict.park) {
+      // Report WHY an idle child was not parked, once per reason change, so
+      // "why is this idle agent still holding memory" is a read, not a guess.
+      const idleFor = now - lastActivityAt;
+      if (
+        parkIdleMs > 0 &&
+        idleFor >= parkIdleMs &&
+        verdict.reason !== lastParkDeferReason &&
+        !['disabled', 'agent-not-parkable', 'already-parked', 'not-idle-long-enough'].includes(verdict.reason)
+      ) {
+        appendHostEvent(ownerId, 'child-park-deferred', {
+          reason: verdict.reason,
+          idleForMs: idleFor,
+          descendants: verdict.descendants ?? null,
+        });
+      }
+      lastParkDeferReason = verdict.reason;
+      return;
+    }
+    lastParkDeferReason = null;
+    parkPromise = parkChild(verdict)
+      .catch((error) => {
+        appendHostEvent(ownerId, 'child-park-failed', hostErrorEvidence(error));
+        return false;
+      })
+      .finally(() => {
+        parkPromise = null;
+      });
+  };
+  /** P-019: while a failed resume leaves owner input or deliveries held, try
+   *  again on a backoff (base, 2x, 4x … capped at 5 min). Idempotent. */
+  const scheduleUnparkRetry = () => {
+    if (unparkRetryTimer || hostCleanedUp || shuttingDown || !parked) return;
+    if (!heldDeliveryWaiters.length && !heldOwnerInput.length) return;
+    const delayMs = Math.min(parkUnparkRetryMs * 2 ** unparkRetryAttempt, PARK_UNPARK_RETRY_MAX_MS);
+    unparkRetryAttempt++;
+    unparkRetryTimer = setTimeout(() => {
+      unparkRetryTimer = null;
+      void unparkChild('retry');
+    }, delayMs);
+    // The control socket keeps the host alive; the retry must not.
+    unparkRetryTimer.unref?.();
+  };
+  /**
+   * WI-10006574: called by the child-exit handler for every genuine exit of
+   * the current child. Returns true when the exit was a resumed CLI dying
+   * before its prompt and the stand-in has been restored (the host lives on);
+   * false when the exit must end the session as usual — any other exit, a
+   * host already ending, or the PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX-th
+   * consecutive early exit (recorded as `child-unpark-abandoned` first).
+   */
+  const reparkResumedChildExit = (exited, exitCode, signal) => {
+    const pending = resumeAwaitingPrompt;
+    if (!pending || pending.child !== exited || childPromptReady) return false;
+    resumeAwaitingPrompt = null;
+    if (hostCleanedUp || shuttingDown) return false;
+    resumedChildExitStreak++;
+    const evidence = {
+      trigger: pending.trigger,
+      reason: 'resumed-child-exited',
+      exitCode: Number.isInteger(exitCode) ? exitCode : null,
+      signal: signalNameFromCode(signal),
+      streak: resumedChildExitStreak,
+      nativeId: pending.resume.nativeId,
+      childPid: Number.isInteger(exited?.pid) ? exited.pid : null,
+    };
+    if (resumedChildExitStreak >= parkResumeExitMax) {
+      appendHostEvent(ownerId, 'child-unpark-abandoned', { ...evidence, max: parkResumeExitMax });
+      try {
+        terminalOutput.write(
+          `\r\n[psu] The agent exited ${resumedChildExitStreak} times in a row while resuming; ending the session.\r\n`,
+        );
+      } catch {
+        /* advisory */
+      }
+      return false;
+    }
+    try {
+      stopStartupTrace('resume-exited');
+    } catch {
+      /* diagnostic only */
+    }
+    installParkedStandIn(pending.resume);
+    appendHostEvent(ownerId, 'child-unpark-failed', { ...evidence, attempt: unparkRetryAttempt });
+    try {
+      terminalOutput.write(
+        `\r\n[psu] The agent exited while resuming (exit ${evidence.exitCode ?? evidence.signal ?? '?'}); ` +
+          `still parked, will retry.\r\n`,
+      );
+    } catch {
+      /* advisory */
+    }
+    scheduleUnparkRetry();
+    return true;
+  };
+  /**
+   * Bring a parked child back on the same conversation. Single-flight: every
+   * trigger that arrives while a resume is in progress shares it. Resolves once
+   * the resumed TUI shows its prompt (or the wait cap passes — the delivery
+   * gates downstream still guard the write). On failure the child stays parked
+   * and a retry is scheduled while anything is held (P-019).
+   * @param {string} trigger
+   */
+  const unparkChild = (trigger) => {
+    if (unparkPromise) return unparkPromise;
+    if (!parked && !parkPromise) return Promise.resolve({ unparked: false, reason: 'not-parked' });
+    /** @type {Promise<{ unparked: boolean, reason: string }>} */
+    let attempt;
+    // The single-flight slot is cleared by IDENTITY, after the assignment below.
+    // A `finally` inside the async body is not enough: a resume that fails
+    // synchronously (a spawn that throws before any await) runs that finally
+    // BEFORE `unparkPromise = …` executes, leaving the failed promise in the
+    // slot for good, so every later retry/keystroke/delivery silently re-reads
+    // the stale failure (found by P-019's failing-first test).
+    const releaseSlot = () => {
+      if (unparkPromise === attempt) unparkPromise = null;
+    };
+    attempt = (async () => {
+      const startedAt = Date.now();
+      try {
+        if (parkPromise) await parkPromise;
+        if (!parked) return { unparked: false, reason: 'not-parked' };
+        if (hostCleanedUp || shuttingDown) return { unparked: false, reason: 'host-ending' };
+        const resume = parkResume;
+        if (!resume) {
+          appendHostEvent(ownerId, 'child-unpark-failed', { trigger, reason: 'no-resume-args' });
+          scheduleUnparkRetry();
+          return { unparked: false, reason: 'no-resume-args' };
+        }
+        let resumed;
+        try {
+          const deferUntilSubmit = env.PAPERCUSP_AGENT === 'codex' &&
+            resume.args.some((arg) => ['resume', 'fork', '--resume', '--fork-session'].includes(arg));
+          quotaBlockDetector.reset({ deferUntilSubmit });
+          authBlockDetector.reset({ deferUntilSubmit });
+          resumed = spawnChild(resume.args);
+        } catch (error) {
+          appendHostEvent(ownerId, 'child-unpark-failed', {
+            trigger,
+            reason: 'spawn-failed',
+            attempt: unparkRetryAttempt,
+            ...hostErrorEvidence(error),
+          });
+          scheduleUnparkRetry();
+          return { unparked: false, reason: 'spawn-failed' };
+        }
+        cancelUnparkRetry();
+        child = resumed;
+        stopStartupTrace = startCodexStartupProcessTrace({
+          agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
+        });
+        const details = clearParkedState(trigger, { nativeId: resume.nativeId });
+        baseMeta.ptyPid = child.pid;
+        writeMeta();
+        // Armed before the exit wiring, so an exit before the prompt re-parks
+        // instead of ending the session (WI-10006574).
+        resumeAwaitingPrompt = { child: resumed, resume, trigger };
+        try {
+          wireChildData();
+          wireChildExit();
+          activity.touchOutput();
+          const deadline = Date.now() + parkResumeWaitMs;
+          while (!childPromptReady && child === resumed && !hostCleanedUp && Date.now() < deadline) {
+            await new Promise((res) => setTimeout(res, 100));
+          }
+        } finally {
+          if (resumeAwaitingPrompt?.child === resumed) resumeAwaitingPrompt = null;
+        }
+        if (child !== resumed && parked) {
+          // The resumed CLI exited before its prompt and the exit handler put
+          // the stand-in back; held work waits for the retry it scheduled.
+          scheduleUnparkRetry();
+          return { unparked: false, reason: 'resumed-child-exited' };
+        }
+        if (hostCleanedUp) return { unparked: false, reason: 'host-ending' };
+        // The backoff and the early-exit run both restart only once a resume
+        // actually comes back, so repeated early exits keep backing off.
+        unparkRetryAttempt = 0;
+        if (childPromptReady) resumedChildExitStreak = 0;
+        appendHostEvent(ownerId, 'child-unparked', {
+          ...details,
+          childPid: Number.isInteger(resumed.pid) ? resumed.pid : null,
+          promptReady: childPromptReady,
+          latencyMs: Date.now() - startedAt,
+        });
+        if (child === resumed && heldOwnerInput.length) {
+          const replay = heldOwnerInput.splice(0);
+          heldOwnerInputBytes = 0;
+          for (const chunk of replay) forwardOwnerInput(chunk);
+        }
+        // Deliveries held by an earlier failed resume run now, in arrival order
+        // (each re-enters the inject mutex). If the resumed child already died,
+        // the host is ending and cleanup releases them as undeliverable.
+        if (child === resumed) releaseHeldDeliveries({ ok: true, reason: 'resumed' });
+        return { unparked: true, reason: 'resumed' };
+      } catch (error) {
+        // Anything unexpected past the spawn (writeMeta, wiring) must not leave
+        // a rejected promise in callers that only branch on `unparked`.
+        appendHostEvent(ownerId, 'child-unpark-failed', { trigger, reason: 'error', ...hostErrorEvidence(error) });
+        scheduleUnparkRetry();
+        return { unparked: false, reason: 'error' };
+      }
+    })();
+    unparkPromise = attempt;
+    attempt.then(releaseSlot, releaseSlot);
+    return attempt;
+  };
+  /** Owner bytes typed while parked: keep the real keystrokes for replay, drop
+   *  the terminal's own replies (they answered the dead TUI), and resume. */
+  const holdOwnerInputWhileParked = (input, ownerTyped) => {
+    if (!ownerTyped) return;
+    const bytes = Buffer.byteLength(input, 'utf8');
+    if (heldOwnerInputBytes + bytes <= HELD_OWNER_INPUT_CAP_BYTES) {
+      heldOwnerInput.push(input);
+      heldOwnerInputBytes += bytes;
+    }
+    if (!unparkPromise) {
+      try {
+        terminalOutput.write('\r\n[psu] Resuming the agent…\r\n');
+      } catch {
+        /* advisory */
+      }
+    }
+    void unparkChild('owner-input');
+  };
+  /** Every control-socket delivery resumes a parked child before its gates run
+   *  (never refused: the host accepted it, WI-10005134), and counts as busy so
+   *  the policy cannot park the child out from under it. A FAILED resume holds
+   *  the delivery until a later resume succeeds (P-019): running it against the
+   *  pid-less stand-in would drop it without a trace. */
+  const deliverAfterUnpark = async (mode, run) => {
+    deliveriesInFlight++;
+    try {
+      if (mode !== 'osc' && parkInProgress()) {
+        const resume = await unparkChild(`control:${mode}`);
+        if (!resume.unparked && parked) {
+          if (resume.reason === 'host-ending' || hostCleanedUp || shuttingDown) {
+            return { ok: false, reason: 'host-ending' };
+          }
+          if (heldDeliveryWaiters.length >= HELD_DELIVERY_CAP) {
+            appendHostEvent(ownerId, 'parked-delivery-refused', {
+              mode,
+              reason: 'held-delivery-cap',
+              held: heldDeliveryWaiters.length,
+            });
+            return { ok: false, reason: 'unpark-failed' };
+          }
+          /** @type {Promise<{ ok: boolean, reason: string }>} */
+          const released = new Promise((res) => heldDeliveryWaiters.push(res));
+          appendHostEvent(ownerId, 'parked-delivery-held', {
+            mode,
+            reason: resume.reason,
+            held: heldDeliveryWaiters.length,
+          });
+          scheduleUnparkRetry();
+          const outcome = await released;
+          if (!outcome.ok) return outcome;
+        }
+      }
+      return await run();
+    } finally {
+      deliveriesInFlight--;
+    }
+  };
 
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
   // we inject it into the pty (a wake turn / a force-interrupt control byte).
@@ -8557,7 +13794,7 @@ export function hostThroughPty(o) {
           maxBytes: MAX_CONTROL_PAYLOAD_BYTES,
         });
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: control payload REJECTED for ${ownerId} ` +
               `(${payloadBytes} bytes > ${MAX_CONTROL_PAYLOAD_BYTES} byte cap)\n`,
           );
@@ -8598,7 +13835,7 @@ export function hostThroughPty(o) {
         const rejectExtra = { reason: 'ownerId-mismatch', mode: msg.mode, expected: ownerId, got: msg.ownerId };
         appendHostEvent(ownerId, 'control-payload-rejected', rejectExtra);
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: control payload REJECTED for ${ownerId} — addressed to ${msg.ownerId} ` +
               `(mode:${msg.mode}); refusing to run another agent's turn/identity in this session (EI-153)\n`,
           );
@@ -8606,6 +13843,76 @@ export function hostThroughPty(o) {
           /* diagnostic only */
         }
         return { ok: false, reason: 'ownerId-mismatch' };
+      }
+      // Refuse before coalescing, idle/composer gates or any PTY writes. The
+      // socket NACK and durable event distinguish unsupported control from an
+      // accepted diagnostic; no capability is advertised by this prerequisite.
+      if (msg.mode === 'unsupported-control') {
+        appendHostEvent(ownerId, 'control-payload-rejected', {
+          reason: 'unsupported-control-envelope', bytes: payload.length,
+        });
+        return { ok: false, reason: 'unsupported-control-envelope' };
+      }
+      if ((hooksObservationActive || hooksObservationInputHeld) && msg.mode === 'raw')
+        return { ok: false, reason: 'observation-input-lease-held' };
+      if (msg.mode === 'hooks-observe') {
+        if (env.PAPERCUSP_AGENT !== 'codex') return { ok: false, reason: 'observation-unsupported-backend' };
+        const admission = makeHooksObservationAdmission(msg, { ownerEpoch: () => ownerInputGeneration });
+        conn.once('close', admission.close);
+        conn.once('error', admission.close);
+        // Refuse a busy admission rather than queue an observation that could
+        // outlive its requester behind a long-running turn or carry.
+        if (!admission.alive() || injectMutex.pendingCount() > 0)
+          return { ok: false, reason: 'observation-admission-unavailable' };
+        const identity = () => ({ ownerId, advSessionId: baseMeta.advSessionId,
+          nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
+          hostStartedAt: baseMeta.startedAt, childGeneration, hostCodeVersion: baseMeta.hostCodeVersion });
+        if (!hooksObservationIdentityMatches(msg, identity()))
+          return { ok: false, reason: 'stale-observation-identity' };
+        const release = await injectMutex.acquire();
+        const tap = makeOutputTap();
+        const ownerEpoch = ownerInputGeneration;
+        let observationLeased = false;
+        try {
+          if (!admission.alive() || !admission.ownerUnchanged()) return { ok: false, reason: 'observation-admission-expired' };
+          if (hooksObservationActive || hooksObservationInputHeld || machineTurnActive || nativeStartPending.size ||
+            carryRearm.pendingCount('carry-respawn') || ownerComposerGate.hasPending() ||
+            nativeExecutionBlocksInjection(currentNativeExecution()))
+            return { ok: false, reason: 'observation-input-busy' };
+          const initial = codexHooksObservationScreen(childStartupOutput, childScreenDims());
+          if (!initial.fullPaint || !initial.emptyComposer) return { ok: false, reason: 'observation-not-at-empty-composer' };
+          const execution = currentNativeExecution();
+          if (execution.phase !== 'settled' || !Number.isFinite(execution.observedAt) ||
+            Date.now() - execution.observedAt > 10_000)
+            return { ok: false, reason: 'observation-native-boundary-unverified' };
+          hooksObservationActive = true;
+          hooksObservationInputHeld = true;
+          observationLeased = true;
+          const result = await runCodexHooksObservation({ request: msg, identity,
+            admissionAlive: admission.alive,
+            canStart: () => !ownerComposerGate.hasPending() && !nativeExecutionBlocksInjection(currentNativeExecution()),
+            interrupted: () => !admission.ownerUnchanged() || ownerInputGeneration !== ownerEpoch,
+            write: (bytes) => child.write(bytes), readTap: tap.read, resetTap: tap.reset,
+            readCurrent: () => childStartupOutput, screenDims: () => childScreenDims(),
+            crDelayMs: turnSubmitCrDelayForAgent('codex', env) });
+          hooksObservationInputHeld = !result.inputReleased;
+          appendHostEvent(ownerId, 'hooks-observation-result', result);
+          if (result.inputReleased) {
+            hooksObservationActive = false;
+            const ownerInput = queuedOwnerInput; queuedOwnerInput = [];
+            for (const input of ownerInput) forwardOwnerInput(input);
+          }
+          return result;
+        } finally {
+          hooksObservationActive = false;
+          if (observationLeased && hooksObservationInputHeld) {
+            hooksObservationRecovery?.close();
+            hooksObservationRecovery = makeHooksObservationRecovery({ request: msg, identity, tap,
+              screenDims: childScreenDims,
+              takeQueued: () => { const pending = queuedOwnerInput; queuedOwnerInput = []; return pending; } });
+          } else tap.close();
+          release();
+        }
       }
       // WI-2141435: the guard above calls appendHostEvent ONLY on its reject path, so
       // its silence cannot distinguish "no violations" from "structurally blind to this
@@ -8640,15 +13947,130 @@ export function hostThroughPty(o) {
           /* a detector must never be able to affect delivery */
         }
       }
+      // EI-16685: a handled inbox wake may ask to cancel the exact durable
+      // delivery while it is still behind the host's gates. This stays on the
+      // existing mode:'turn' envelope so older hosts ignore the additive fields
+      // and their deliveryId dedup remains the fail-open behavior.
+      if (msg.mode === 'turn' && (msg.cancelEnvelopeInvalid || msg.cancelDeliveryIds)) {
+        if (
+          msg.cancelEnvelopeInvalid ||
+          msg.ownerId !== ownerId ||
+          !msg.deliveryId ||
+          !Array.isArray(msg.cancelDeliveryIds) ||
+          !msg.cancelDeliveryIds.includes(msg.deliveryId) ||
+          !Array.isArray(msg.handledMsgIds) ||
+          msg.handledMsgIds.length === 0
+        ) {
+          appendHostEvent(ownerId, 'delivery-cancellation-refused', {
+            reason: 'invalid-cancellation-envelope',
+            deliveryId: msg.deliveryId ?? null,
+          });
+          return { ok: false, reason: 'cancel-envelope-invalid' };
+        }
+        const cancellation = deliveryDedup.requestCancel(msg.cancelDeliveryIds, msg.handledMsgIds);
+        if (cancellation.status === 'requested') {
+          appendHostEvent(ownerId, 'delivery-cancellation-requested', {
+            deliveryIds: cancellation.deliveryIds,
+            handledMsgIds: cancellation.handledMsgIds,
+          });
+          return { ok: true, reason: 'cancel-requested' };
+        }
+        if (cancellation.status === 'cancelled') {
+          return { ok: true, reason: 'cancelled-before-write' };
+        }
+        const refusalReason = {
+          invalid: 'cancel-envelope-invalid',
+          unknown: 'delivery-unknown',
+          conflict: 'delivery-cancellation-conflict',
+          completed: 'delivery-already-committed',
+          writing: 'delivery-already-writing',
+        }[cancellation.status] ?? 'delivery-cancellation-refused';
+        appendHostEvent(ownerId, 'delivery-cancellation-refused', {
+          reason: refusalReason,
+          deliveryIds: msg.cancelDeliveryIds,
+          handledMsgIds: msg.handledMsgIds,
+        });
+        return { ok: false, reason: refusalReason };
+      }
+      if (msg.mode === 'delivery-cancel') {
+        if (!msg.ownerId || msg.ownerId !== ownerId || !msg.deliveryId) {
+          appendHostEvent(ownerId, 'delivery-cancellation-refused', {
+            reason: 'invalid-direct-ack-cancellation',
+            deliveryId: msg.deliveryId ?? null,
+            source: 'subscriber-ack',
+          });
+          return { ok: false, reason: 'cancel-envelope-invalid' };
+        }
+        const cancellation = deliveryDedup.requestCancel([msg.deliveryId], [], true);
+        if (cancellation.status === 'requested') {
+          appendHostEvent(ownerId, 'delivery-cancellation-requested', {
+            deliveryIds: cancellation.deliveryIds,
+            handledMsgIds: [],
+            source: 'subscriber-ack',
+          });
+          return { ok: true, reason: 'cancel-requested' };
+        }
+        if (cancellation.status === 'cancelled') {
+          appendHostEvent(ownerId, 'delivery-cancelled-before-write', {
+            deliveryIds: cancellation.deliveryIds,
+            handledMsgIds: [],
+            bytesWritten: 0,
+            source: 'subscriber-ack',
+          });
+          return { ok: true, reason: 'cancelled-before-write' };
+        }
+        const refusalReason = {
+          invalid: 'cancel-envelope-invalid',
+          unknown: 'delivery-unknown',
+          conflict: 'delivery-cancellation-conflict',
+          completed: 'delivery-already-committed',
+          writing: 'delivery-already-writing',
+        }[cancellation.status] ?? 'delivery-cancellation-refused';
+        appendHostEvent(ownerId, 'delivery-cancellation-refused', {
+          reason: refusalReason,
+          deliveryIds: [msg.deliveryId],
+          handledMsgIds: [],
+          source: 'subscriber-ack',
+        });
+        return { ok: false, reason: refusalReason };
+      }
+      const receiveProvenanceRejection = rejectWakeProvenance(msg, 'receive');
+      if (receiveProvenanceRejection) return { ok: false, reason: receiveProvenanceRejection };
       // EI-19311270129974785: a RETRY of a delivery this host has already accepted
       // is short-circuited before any mode-specific state mutation. Pending means
-      // the detached pipeline has not committed a write yet; completed means the
-      // original delivery reached its commitment point. A terminal failed/deferred
+      // delivery remains unconfirmed (either gated or already written); completed
+      // means the original delivery reached its commitment point. A terminal failed/deferred
       // pipeline clears pending below so a later retry remains eligible.
       // Absent/empty deliveryId (a one-shot raw/osc/compact/mcp-reconnect call, or a
       // pre-fix sender) makes this a no-op — unchanged behavior.
+      // Reconcile child replacement before looking up this ID: a previous
+      // turn's context may already have been retired by a different delivery.
+      // The shared dedup tombstone survives both paths and refuses a repaste.
+      reconcileNativeStartPending({ supersededOnly: true });
       const duplicateState = deliveryDedup.state(msg.deliveryId);
       if (duplicateState) {
+        if (duplicateState === 'superseded') {
+          return { ok: false, reason: 'deferred-native-turn-start-superseded' };
+        }
+        const pendingStart = nativeStartPending.get(msg.deliveryId);
+        if (duplicateState === 'pending' && pendingStart && nativeStartProof(pendingStart).started) {
+          deliveryDedup.markCompleted(msg.deliveryId);
+          nativeStartPending.delete(msg.deliveryId);
+          appendHostEvent(ownerId, 'native-turn-start-confirmed', { deliveryId: msg.deliveryId, childGeneration });
+          return { ok: true, reason: 'duplicate-delivery-id' };
+        }
+        if (duplicateState === 'cancelled') {
+          appendHostEvent(ownerId, 'duplicate-cancelled-delivery-id', { deliveryId: msg.deliveryId });
+          return { ok: true, reason: 'cancelled-before-write' };
+        }
+        // D-007 (d): a pending retry to a now-unbindable child is refused, not
+        // re-ACKed as pending-delivery-id (which the sender re-polls forever).
+        if (
+          duplicateDeliveryVerdict({ duplicateState, mode: msg.mode, unbindable: currentChildUnbindable }) ===
+          'refuse-unbindable'
+        ) {
+          return refuseUnbindableDelivery(msg.mode, 'duplicate-pending');
+        }
         // EI-21428742689578243: `accepted` means the FIRST copy can wait behind
         // the host's busy/composer gates for minutes. During that wait the durable
         // pump retries the SAME delivery id, and executeWake rehydrates its text
@@ -8663,12 +14085,14 @@ export function hostThroughPty(o) {
             ? turnCoalesceKey(msg.data, msg.routineId, ownerId)
             : null;
         const pendingLoopMetadata =
-          msg.routineId && msg.fireNumber != null
-            ? { routineId: msg.routineId, fireNumber: msg.fireNumber }
-            : undefined;
+          msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
         const refreshedPendingTurn =
           pendingLoopKey != null
             ? turnCoalescer.refresh(pendingLoopKey, msg.data, pendingLoopMetadata)
+            : false;
+        const refreshedPendingCarryRespawn =
+          duplicateState === 'pending' && msg.mode === 'carry-respawn' && !msg.drillId
+            ? carryRearm.refreshPendingMessage(msg)
             : false;
         const duplicateReason =
           duplicateState === 'pending' ? 'pending-delivery-id' : 'duplicate-delivery-id';
@@ -8676,6 +14100,7 @@ export function hostThroughPty(o) {
           state: duplicateState,
           mode: msg.mode,
           refreshedPendingTurn,
+          refreshedPendingCarryRespawn,
         });
         try {
           writeHostDiagnostic(
@@ -8686,6 +14111,13 @@ export function hostThroughPty(o) {
           /* diagnostic only */
         }
         return { ok: true, reason: duplicateReason };
+      }
+      // P-005(c) / D-003: refuse BEFORE the ACK and before markPending. The
+      // `deferred-` prefix is load-bearing: wake-executor's parkOnHostDeferral
+      // parks only `deferred-*` refusals; any other ok:false falls through to
+      // resume-headless, a second process on this live session.
+      if ((msg.mode === 'turn' || msg.mode === 'reset') && currentChildUnbindable()) {
+        return refuseUnbindableDelivery(msg.mode, 'admission');
       }
       // SHUTDOWN (WI-6638) — wind this session down and EXIT, closing its tab.
       //
@@ -8698,6 +14130,11 @@ export function hostThroughPty(o) {
       // guard is consulted. A system reaper may not kill these; only the session
       // itself may exit. This signals nothing but our OWN child.
       if (msg.mode === 'shutdown') {
+        // A socket name is owner-stable and can be reused by a replacement host.
+        // Check its incarnation here, before any accepted shutdown side effect.
+        if (msg.expectedStartedAt !== undefined && msg.expectedStartedAt !== baseMeta.startedAt) {
+          return { ok: false, reason: 'shutdown-refused:stale-host' };
+        }
         if (shuttingDown) return { ok: true, reason: 'already-shutting-down' };
         const refusal = shutdownRefusalReason({
           launchedBy: env.PAPERCUSP_LAUNCHED_BY,
@@ -8717,7 +14154,7 @@ export function hostThroughPty(o) {
           forced: msg.force === true,
         });
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: SHUTDOWN accepted for ${ownerId}${msg.data ? ` — ${msg.data}` : ''}; ` +
               `winding the session down and closing this terminal.\n`,
           );
@@ -8769,7 +14206,7 @@ export function hostThroughPty(o) {
       // loop's next attempt have the idle window uncontested. Scoped to
       // `mode:'turn'` only — reset/recycle/mcp-reconnect stay unaffected;
       // they are already explicit operator/owner actions, not routine wakes.
-      if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount())) {
+      if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount('carry-respawn'))) {
         const dropExtra = { reason: 'carry-respawn-pending' };
         appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', dropExtra);
         // This is an internal delivery-ordering decision, not an agent-facing
@@ -8779,7 +14216,7 @@ export function hostThroughPty(o) {
         return { ok: false, reason: 'deferred-carry-respawn-pending' };
       }
       // EI-18109211232286833: stamp the receipt time ONCE, here, so both this
-      // delivery attempt and its one makeCarryRearmController retry (which
+      // delivery attempt and its makeCarryRearmController re-poll loop (which
       // reuses this same `msg` object — see carryRearm.schedule below) measure
       // TOTAL elapsed wait against isCarryRespawnStale, not a per-attempt one.
       if (msg.mode === 'carry-respawn' && msg.receivedAtMs == null) {
@@ -8797,10 +14234,7 @@ export function hostThroughPty(o) {
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
       const coalesceKey = msg.mode === 'turn' ? turnCoalesceKey(msg.data, msg.routineId, ownerId) : null;
-      const coalesceMetadata =
-        msg.routineId && msg.fireNumber != null
-          ? { routineId: msg.routineId, fireNumber: msg.fireNumber }
-          : undefined;
+        const coalesceMetadata = msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
       const coalescedDeliveryIds = new Set(msg.deliveryId ? [msg.deliveryId] : []);
       const claimCoalesced = () => {
         const claimed = coalesceKey != null ? turnCoalescer.claim(coalesceKey) : null;
@@ -8848,7 +14282,7 @@ export function hostThroughPty(o) {
       // just above, which already returns immediately. Run the entire
       // mutex+gate+delivery pipeline as a detached background continuation;
       // every outcome it reaches (deferred/dropped/delivered/error) is already
-      // durably recorded via appendHostEvent()/process.stderr.write() calls
+      // durably recorded via appendHostEvent()/writeTerminalDiagnostic() calls
       // inside it, exactly as a caller under the OLD bare-close-is-`true`
       // protocol would have had to learn it — from the durable event log or
       // the pty's own output, never from this ACK.
@@ -8860,7 +14294,6 @@ export function hostThroughPty(o) {
       // line. Ungated raw/osc bypass it — a force-interrupt byte must land
       // immediately (mid-turn), and osc writes the display, not the input line.
       const releaseInject = msg.gated ? await injectMutex.acquire() : null;
-      let deferMutexRelease = false;
       const deferForOwnerInput = (reason) => {
         const pendingLength = ownerComposerGate.pendingLength();
         const extra = {
@@ -8888,6 +14321,7 @@ export function hostThroughPty(o) {
         return { ok: false, reason: 'deferred-owner-input' };
       };
       try {
+        if (hooksObservationInputHeld) return { ok: false, reason: 'observation-cleanup-unconfirmed' };
         if (msg.gated) {
           // (1) Human keystroke gate (P-013): don't corrupt a line the user is
           // mid-typing. Only meaningful when there IS a bridged terminal a human
@@ -8969,8 +14403,15 @@ export function hostThroughPty(o) {
             // turn-mode siblings of any spelling, confirming the whole non-respawn
             // half of this gate was invisible. `mode` carries what the old
             // kind-name encoded, so this is one row per defer, never two.
-            appendHostEvent(ownerId, 'busy-gate-expired', {
+            const correlatedDrillId = msg.mode === 'carry-respawn' && typeof msg.drillId === 'string'
+              ? msg.drillId.trim()
+              : '';
+            const drillCorrelation = correlatedDrillId
+              ? { drillId: correlatedDrillId, sessionClass: msg.sessionClass ?? '' }
+              : {};
+            const busyGateEvent = {
               mode: msg.mode,
+              ...drillCorrelation,
               capMs: turnInjectBusyCapMs,
               observedMaxQuietMs: Number.isFinite(atPrompt?.maxQuietForMs) ? atPrompt.maxQuietForMs : null,
               quietMs: Number.isFinite(atPrompt?.quietMs) ? atPrompt.quietMs : null,
@@ -8979,7 +14420,14 @@ export function hostThroughPty(o) {
               // indistinguishable from one on a genuinely busy agent, which is
               // what made the codex-only wiring invisible for so long.
               verifier: verifierSupport.reason ?? 'supported',
-            });
+            };
+            appendHostEvent(ownerId, 'busy-gate-expired', busyGateEvent);
+            // Drill metrics must share the drill ID used by the terminal drop;
+            // otherwise the later verifier cannot join the measurement to its
+            // drill even when the owner event log still retains this row.
+            if (correlatedDrillId) {
+              appendSharedDrillLedgerEvent(ownerId, 'busy-gate-expired', busyGateEvent);
+            }
             // EI-12655 (fix b, leader-concurred rider: "expired must FAIL LOUD")
             // + EI-12754 (the re-arm leg deferred out of that diff) + WI-5368/
             // WI-5530: a carry-respawn refused here previously vanished with ZERO
@@ -9131,43 +14579,6 @@ export function hostThroughPty(o) {
             }
           }
         }
-        // WI-5510: STALE-FIRE GUARD. Once a message has passed every gate above
-        // and is ABOUT to be delivered, check + commit it against the last fire
-        // number this host has delivered for its loop instance (routineId).
-        // Placed here — after the busy-gate wait, before any write/recycle —
-        // because this is the true "about to deliver" moment: a message that was
-        // still gate-waiting while a LATER fire for the same loop already cleared
-        // its own wait and delivered is exactly the stale-mid-turn-flush race
-        // this guard exists to close (see makeStaleFireGuard's doc block). Only
-        // messages carrying BOTH `routineId` + `fireNumber` (a loop-fire wake
-        // from a WI-5510-aware sender) are guarded; an ordinary coord wake or
-        // owner-typed injection (neither field set) always admits, unaffected.
-        if (msg.fireNumber != null && msg.routineId) {
-          const verdict = staleFireGuard.admit(msg.routineId, msg.fireNumber);
-          if (!verdict.admit) {
-            const dropExtra = {
-              routineId: msg.routineId,
-              fireNumber: msg.fireNumber,
-              lastDelivered: verdict.lastDelivered,
-              mode: msg.mode,
-            };
-            appendHostEvent(ownerId, 'stale-fire-dropped', dropExtra);
-            try {
-              process.stderr.write(
-                `psu-pty-host: STALE fire #${msg.fireNumber} DROPPED for ${ownerId} ` +
-                  `(routine ${msg.routineId} already delivered fire #${verdict.lastDelivered}; ` +
-                  `mode:${msg.mode}) — superseded by a later fire, never written\n`,
-              );
-            } catch {
-              /* diagnostic only */
-            }
-            // Same coalesce-slot hygiene as the busy-gate defer path just above —
-            // a dropped waiter must release any same-source turn folded into it,
-            // never black-hole it; a later arrival starts a fresh cycle.
-            claimCoalesced();
-            return { ok: false, reason: 'stale-fire-dropped' };
-          }
-        }
         // EI-18109211232286833: CARRY-RESPAWN STALENESS GUARD. Placed here —
         // after every gate wait, immediately before the delivery it would
         // otherwise perform — because this is the true "about to deliver"
@@ -9205,7 +14616,7 @@ export function hostThroughPty(o) {
           appendHostEvent(ownerId, 'respawn-carry-dropped', dropExtra);
           appendSharedDrillLedgerEvent(ownerId, 'respawn-carry-dropped', dropExtra);
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               superseded
                 ? `psu-pty-host: SUPERSEDED carry-respawn DROPPED for ${ownerId} ` +
                     `(a later respawn already fired at ${lastRespawnAtMs}, this message arrived ` +
@@ -9244,7 +14655,10 @@ export function hostThroughPty(o) {
               operationId: msg.quotaRecovery.operationId,
               recoveryOwnerId: msg.quotaRecovery.ownerId,
               startedAtMs: msg.quotaRecovery.startedAtMs,
-              accountRoutingMode: "auto",
+              cause: msg.quotaRecovery.cause ?? "quota",
+              // Quota recovery is gated on gateway auto-routing; auth recovery
+              // is not (any route re-reads the shared auth file).
+              accountRoutingMode: msg.quotaRecovery.cause === "auth" ? null : "auto",
             });
             const recovery = await recycleChild(msg.data, {
               quotaRecovery: msg.quotaRecovery,
@@ -9266,6 +14680,7 @@ export function hostThroughPty(o) {
           const recycleResult = await recycleChild(msg.data, {
             systemPromptAddendum:
               msg.mode === "carry-respawn" ? msg.systemPromptAddendum : "",
+            sourceTranscriptPath: msg.sourceTranscriptPath ?? null,
             drillId: msg.mode === "carry-respawn" ? msg.drillId : "",
             sessionClass: msg.mode === "carry-respawn" ? msg.sessionClass : "",
           });
@@ -9289,7 +14704,7 @@ export function hostThroughPty(o) {
             hint: 'stale pre-P-022 sender still running (EI-16190) — find and restart it',
           });
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: mode:compact DROPPED for ${ownerId} — retired by P-022 (carry-respawn is the only ` +
                 `context cut); a stale pre-cutover sender is still running (EI-16190): find and restart that process\n`,
             );
@@ -9355,22 +14770,36 @@ export function hostThroughPty(o) {
         // new line after the envelope is written but before its CR, recreating
         // the same interleaving this composer gate prevents at the front door.
         const machineTurn = bridgeTty && (msg.mode === 'turn' || msg.mode === 'reset');
-        if (machineTurn) {
-          if (ownerComposerGate.hasPending()) {
-            // WI-38257: a staged line that has stopped tracking a person must not be
-            // able to defer wakes forever. Checked BEFORE the wait, because the wait
-            // is what burns the cap — that is where the 112s of dead agent came from.
-            if (!breakComposerWedgeIfConfirmed()) {
-              const clear = await ownerComposerGate.waitClear();
-              if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
-            }
+        if (machineTurn && ownerComposerGate.hasPending()) {
+          // WI-38257: a staged line that has stopped tracking a person must not be
+          // able to defer wakes forever. Check before spending the wait budget.
+          if (!breakComposerWedgeIfConfirmed()) {
+            const clear = await ownerComposerGate.waitClear();
+            if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
           }
-          machineTurnActive = true;
-          queuedOwnerInput = [];
+        }
+        // EI-23247679868236430: admission happened before any mutex/gate wait.
+        // A carry can become pending during those waits; recheck at the final
+        // boundary before writing bytes or latching the owner-input lease.
+        if (shouldDeferWakeForPendingRespawn(msg.mode, carryRearm.pendingCount('carry-respawn'))) {
+          claimCoalesced();
+          appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', {
+            reason: 'carry-respawn-pending', phase: 'pre-write',
+          });
+          return { ok: false, reason: 'deferred-carry-respawn-pending' };
+        }
+        if (msg.mode === 'turn' || msg.mode === 'reset') {
+          const binding = await prepareCurrentCarryBinding(Date.now() + recycleCarryInjectBudgetMs);
+          if (!binding.ok) {
+            claimCoalesced();
+            return { ok: false, reason: binding.reason };
+          }
         }
         // P-001a: claim the coalesce slot at delivery — later same-key arrivals
         // start a fresh cycle (they'll gate on the turn this write starts). The
         // claimed newest text replaces this waiter's own, annotated with the count.
+        // Claim before the freshness and stale-fire fences so both inspect the
+        // exact text + issue time that will be written.
         let deliver = msg;
         if (coalesceKey != null) {
           const claimed = claimCoalesced();
@@ -9385,26 +14814,101 @@ export function hostThroughPty(o) {
             };
           }
         }
+        const preWriteProvenanceRejection = rejectWakeProvenance(deliver, 'pre-write');
+        if (preWriteProvenanceRejection) {
+          return { ok: false, reason: preWriteProvenanceRejection };
+        }
+        if (msg.mode === 'turn') {
+          if (ownerStopRequested) return { ok: false, reason: 'deferred-owner-stop' };
+          if (reconcileNativeStartPending()) return { ok: false, reason: 'deferred-native-turn-start' };
+          if (deliver.requireNativeTurnStart &&
+            (deliver.expectedHostStartedAt !== baseMeta.startedAt || deliver.expectedChildGeneration !== childGeneration)) {
+            return { ok: false, reason: 'stale-execution-generation' };
+          }
+          if (deliver.requireNativeTurnStart && (!deliver.deliveryId || !leadingTurnOriginMarker(deliver.data)
+            || !nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported)) {
+            return { ok: false, reason: 'native-turn-start-unavailable' };
+          }
+        }
+        // WI-5510: commit the latest coalesced fire only after the provenance
+        // fence, immediately before the pty write. An expired text cannot move
+        // the high-water mark and block its fresh retry.
+        if (deliver.fireNumber != null && deliver.routineId) {
+          const verdict = staleFireGuard.admit(deliver.routineId, deliver.fireNumber);
+          if (!verdict.admit) {
+            const dropExtra = {
+              routineId: deliver.routineId,
+              fireNumber: deliver.fireNumber,
+              lastDelivered: verdict.lastDelivered,
+              mode: deliver.mode,
+            };
+            appendHostEvent(ownerId, 'stale-fire-dropped', dropExtra);
+            try {
+              writeTerminalDiagnostic(
+                `psu-pty-host: STALE fire #${deliver.fireNumber} DROPPED for ${ownerId} ` +
+                  `(routine ${deliver.routineId} already delivered fire #${verdict.lastDelivered}; ` +
+                  `mode:${deliver.mode}) — superseded by a later fire, never written\n`,
+              );
+            } catch {
+              /* diagnostic only */
+            }
+            return { ok: false, reason: 'stale-fire-dropped' };
+          }
+        }
+        if (machineTurn) {
+          machineTurnActive = true;
+          queuedOwnerInput = [];
+        }
         // Deliver as ordered steps: a turn writes its text, THEN the submit CR as
         // a separate keystroke after a settle (controlWrites). A one-shot text+CR
         // burst is swallowed by the TUI's paste detector — the turn never submits
         // and the human has to press Enter.
         let machineTurnSubmitted = false;
+        let firstInputWrite = true;
         const turnWriteStartedAt = Date.now();
+        const composerGenerationAtWrite = composerInputGeneration;
+        // WI-10004943: snapshot BEFORE the first byte, so a frame the write
+        // provokes cannot be mistaken for readiness that preceded it.
+        const injectWriteContext = msg.mode === 'turn' || msg.mode === 'reset'
+          ? turnWriteContext(turnWriteStartedAt)
+          : null;
+        if (injectWriteContext) lastMachineTurnWriteStartedAtMs = turnWriteStartedAt;
         try {
           for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env, {
             bracketedPaste: childBracketedPaste,
           })) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
-            if (msg.mode !== 'osc') quotaBlockDetector.observeInput(step.data);
+            if (firstInputWrite && msg.mode === 'turn') {
+              firstInputWrite = false;
+              const writeCommit = deliveryDedup.beginWrite([...coalescedDeliveryIds]);
+              if (writeCommit.status === 'cancelled') {
+                appendHostEvent(ownerId, 'delivery-cancelled-before-write', {
+                  deliveryIds: writeCommit.deliveryIds,
+                  handledMsgIds: writeCommit.handledMsgIds,
+                  bytesWritten: 0,
+                });
+                return {
+                  ok: true,
+                  reason: 'cancelled-before-write',
+                  deliveryIds: writeCommit.deliveryIds,
+                  handledMsgIds: writeCommit.handledMsgIds,
+                };
+              }
+            }
+            if (msg.mode !== 'osc') {
+              if (msg.mode === 'raw' && step.data) composerInputGeneration++;
+              quotaBlockDetector.observeInput(step.data);
+              authBlockDetector.observeInput(step.data);
+            }
             sink.write(step.data);
             if ((msg.mode === 'turn' || msg.mode === 'reset') && step.data.includes('\r')) {
               activeHeadlessCodexModelChoice?.complete();
             }
           }
           if (msg.mode === 'turn' || msg.mode === 'reset') {
-            lastMachineTurnSubmittedAtMs = Date.now();
+            lastMachineTurnSubmittedAtMs = turnWriteStartedAt;
             activeHeadlessCodexModelChoice?.complete();
+            activeManagedCodexStartupUpdateDialog?.complete();
           }
           machineTurnSubmitted = machineTurn;
         } finally {
@@ -9417,6 +14921,7 @@ export function hostThroughPty(o) {
               ownerComposerGate.observe(input);
               try {
                 quotaBlockDetector.observeInput(input);
+                authBlockDetector.observeInput(input);
                 child.write(input);
               } catch {
                 /* child exit is handled by the normal host cleanup path */
@@ -9428,34 +14933,48 @@ export function hostThroughPty(o) {
         // verified like the compact writes above (raw = control bytes and osc =
         // display bytes have no submit to verify).
         if (msg.mode === 'turn' || msg.mode === 'reset') {
-          // EI-18679050054551625 / WI-5872 follow-up: verifySubmitted()'s poll
-          // loop sleeps a FULL pollMs (default 5000ms, env
-          // PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS) before its very first
-          // check, and can run up to `polls` iterations resubmitting a CR —
-          // it is a best-effort confirm-and-resubmit safety net, not a
-          // precondition for a truthful "delivered" ack (the actual write
-          // above already landed). Awaiting it here before acking meant the
-          // ACK protocol's round-trip always exceeded injectIntoHost()'s
-          // default 2000ms client timeout for every turn/reset delivery —
-          // observed as 9/10 psu-pty-host-turn.integration.test.ts cases red,
-          // each timing out at ~2000-2200ms despite the write having actually
-          // succeeded (confirmed via trace instrumentation: the handler
-          // reaches verifySubmitted and never returns before the client
-          // gives up). Ack "delivered" now; let verify+resubmit run as a
-          // background continuation, same pattern as the recycle/carry-
-          // respawn fix above — the inject mutex stays held
-          // (deferMutexRelease) until it finishes, preserving the "gate wait
-          // -> pty write -> submit verify" one-at-a-time invariant.
-          deferMutexRelease = true;
-          const releaseAfterVerify = releaseInject;
-          void verifySubmitted(`${msg.mode} inject`, {
+          if (deliver.requireNativeTurnStart) {
+            const marker = leadingTurnOriginMarker(deliver.data);
+            if (!marker || !nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported) {
+              return { ok: false, reason: 'native-turn-start-unavailable' };
+            }
+            const target = child;
+            const pending = { child: target, marker, submittedAtMs: turnWriteStartedAt,
+              submissionRecovery: pendingSubmissionRecovery(turnWriteStartedAt, composerGenerationAtWrite),
+              anchor: { fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null } };
+            nativeStartPending.set(deliver.deliveryId, pending);
+            const proof = await waitForNativeTurnStart({ probe: () => nativeStartProof(pending),
+              isCurrent: () => child === target && !ownerStopRequested,
+              timeoutMs: positiveNumber(env.PAPERCUSP_PSU_PTY_NATIVE_START_TIMEOUT_MS, 10_000) });
+            appendHostEvent(ownerId, proof.started ? 'native-turn-start-confirmed' : 'native-turn-start-unverified', {
+              deliveryId: deliver.deliveryId, childGeneration, reason: proof.reason,
+            });
+            if (!proof.started) return { ok: false, reason: 'native-turn-start-unverified' };
+            nativeStartPending.delete(deliver.deliveryId);
+            return { ok: true, reason: 'delivered' };
+          }
+          // The socket already ACKed acceptance before this detached pipeline.
+          // Keep its IDs and mutex pending until submission verification settles.
+          // An uncertain tagged write must not be rewritten: its native user
+          // row can arrive later, as on a slow first request after a recycle.
+          const marker = leadingTurnOriginMarker(deliver.data);
+          const nativeProofAvailable = Boolean(marker) &&
+            nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
+          if (nativeProofAvailable) {
+            const pending = { child, marker, submittedAtMs: turnWriteStartedAt, submissionOnly: true,
+              submissionRecovery: pendingSubmissionRecovery(turnWriteStartedAt, composerGenerationAtWrite) };
+            for (const id of coalescedDeliveryIds) nativeStartPending.set(id, pending);
+          }
+          const result = await verifySubmitted(`${msg.mode} inject`, {
             text: deliver.data,
             submittedAtMs: turnWriteStartedAt,
-          })
-            .catch(() => {})
-            .finally(() => {
-              if (releaseAfterVerify) releaseAfterVerify();
-            });
+            writeContext: injectWriteContext,
+          });
+          const failure = submitVerificationFailureReason(result);
+          if (failure) {
+            return { ok: false, reason: nativeProofAvailable ? 'native-turn-start-unverified' : failure };
+          }
+          for (const id of coalescedDeliveryIds) nativeStartPending.delete(id);
         }
         return { ok: true, reason: 'delivered' };
       } catch (err) {
@@ -9477,14 +14996,9 @@ export function hostThroughPty(o) {
         // ACK below as a real outcome instead of a bare successful-looking close.
         return { ok: false, reason: 'error', error: String((err && err.message) || err).slice(0, 300) };
       } finally {
-        // EI-8822: always free the inject mutex — on success, an early return
-        // (defer/recycle/compact), OR a throw — so one inject never wedges the
-        // queue behind an unreleased lock. EI-18679050054551625: skip it here
-        // when deferMutexRelease is set — the turn/reset verify-in-background
-        // or recycle/carry-respawn-in-background continuation above owns
-        // releasing it once that continuation actually finishes, so the mutex
-        // still covers the full "gate wait -> write/recycle -> verify" span.
-        if (!deferMutexRelease && releaseInject) releaseInject();
+        // Cover the complete gate → write → verification interval, including
+        // failures, while the independent socket ACK remains immediate.
+        if (releaseInject) releaseInject();
       }
       };
       // EI-19311270129974785 / F03: the early ACK is only an acceptance
@@ -9496,23 +15010,23 @@ export function hostThroughPty(o) {
       // its own try/catch/finally above already handles every expected outcome
       // and durably records it; this outer .catch exists only so a genuinely
       // unexpected throw can never surface as an unhandled promise rejection.
-      void runGatedDelivery()
+      void deliverAfterUnpark(msg.mode, runGatedDelivery)
         .then((deliveryOutcome) => {
           if (!coalescedDeliveryIds.size) return;
           for (const deliveryId of coalescedDeliveryIds) {
-            if (
-              deliveryOutcome?.ok === true &&
-              (deliveryOutcome.reason === "delivered" ||
-                deliveryOutcome.reason === "quota-recovery-delivered")
-            ) {
+            const rearmOwnsDelivery =
+              deliveryId === msg.deliveryId &&
+              deliveryOutcome?.reason === 'deferred-busy-gate' &&
+              carryRearm.isPendingMessage(msg);
+            const settlement = deliveryDedupSettlement(deliveryOutcome, rearmOwnsDelivery);
+            if (settlement === 'completed') {
               deliveryDedup.markCompleted(deliveryId);
-            } else if (
-              msg.mode === "carry-respawn" &&
-              deliveryOutcome?.reason === "deferred-busy-gate"
-            ) {
-              // carryRearm.schedule() owns a live retry outside this promise; keep
-              // the ID pending so a client retry cannot race that re-arm.
-              if (carryRearm.isPendingMessage(msg)) deliveryDedup.markPending(deliveryId);
+            } else if (settlement === 'cancelled') {
+              deliveryDedup.markCancelled(deliveryId, deliveryOutcome?.handledMsgIds);
+            } else if (settlement === 'pending') {
+              // carryRearm owns the original ID outside this promise. Keep it
+              // pending so a client retry cannot race the turn or carry re-arm.
+              deliveryDedup.markPending(deliveryId);
             } else {
               deliveryDedup.clearPending(deliveryId);
             }
@@ -9525,7 +15039,7 @@ export function hostThroughPty(o) {
             ...hostErrorEvidence(err),
           });
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: gated delivery pipeline threw for ${ownerId}: ` +
                 `${String((err && err.message) || err).slice(0, 300)}\n`,
             );
@@ -9572,7 +15086,7 @@ export function hostThroughPty(o) {
   });
   server.on('error', (e) => {
     appendHostEvent(ownerId, 'control-socket-error', hostErrorEvidence(e));
-    process.stderr.write(`psu: control socket error: ${e.message}\n`);
+    writeTerminalDiagnostic(`psu: control socket error: ${e.message}\n`);
   });
   // Tight umask around bind so the node is never even briefly world-accessible,
   // then pin 0600 (owner-only). Shared by the initial bind and the WI-3455
@@ -9609,7 +15123,7 @@ export function hostThroughPty(o) {
           listenControlSocket();
         } catch (e) {
           appendHostEvent(ownerId, 'control-socket-rebind-failed', hostErrorEvidence(e));
-          process.stderr.write(`psu: control socket re-bind failed: ${e.message}\n`);
+          writeTerminalDiagnostic(`psu: control socket re-bind failed: ${e.message}\n`);
         }
       });
     } catch {
@@ -9622,22 +15136,43 @@ export function hostThroughPty(o) {
   // listeners are per-process). onStdin/onResize below read the live `child`
   // closure, so they need no re-wiring.
   wireChildData = () => {
+    // Congestion belongs to the outer terminal, not the child. A recycled or
+    // unparked child must inherit it until the same writer emits drain.
+    if (terminalOutput.blocked) child.pause?.();
     // WI-41386: one guard per child — it carries partial-escape state, so a
     // respawn must not inherit the dead child's tail.
     const scrollbackGuard = makeScrollbackGuard();
+    const startupDialogChild = child;
+    const startupDialogChildPid = Number.isInteger(startupDialogChild.pid) ? startupDialogChild.pid : null;
+    let bootstrapFailureRecorded = false;
     modelCapacityDetector?.reset();
     if (headlessClaudeOnboardingExpiryTimer) {
       clearTimeout(headlessClaudeOnboardingExpiryTimer);
       headlessClaudeOnboardingExpiryTimer = null;
     }
+    const kickoffOnboardingWindowActive = Boolean(launchKickoff) &&
+      headlessClaudeOnboardingEnabled(env) &&
+      launchKickoffAttemptStartedAtMs > 0;
+    const configuredOnboardingStartupMs = kickoffOnboardingWindowActive
+      ? headlessClaudeKickoffOnboardingStartupMs(env, launchKickoffAttemptBudgetMs)
+      : headlessClaudeOnboardingStartupMs(env);
+    const onboardingStartupMs = kickoffOnboardingWindowActive
+      ? Math.max(1, configuredOnboardingStartupMs - Math.max(0, Date.now() - launchKickoffAttemptStartedAtMs))
+      : configuredOnboardingStartupMs;
     const headlessClaudeOnboarding = makeHeadlessClaudeOnboardingStateMachine({
       enabled: headlessClaudeOnboardingEnabled(env),
-      startupMs: headlessClaudeOnboardingStartupMs(env),
+      startupMs: onboardingStartupMs,
     });
+    activeHeadlessClaudeOnboarding = headlessClaudeOnboarding;
     const headlessCodexModelChoice = makeHeadlessCodexModelChoiceStateMachine({
       enabled: headlessCodexModelChoiceEnabled(env),
     });
     activeHeadlessCodexModelChoice = headlessCodexModelChoice;
+    const managedCodexStartupUpdateDialog = makeManagedCodexStartupUpdateDialogStateMachine({
+      enabled: managedCodexStartupUpdateDialogEnabled(env),
+      screenDims: () => childScreenDims(),
+    });
+    activeManagedCodexStartupUpdateDialog = managedCodexStartupUpdateDialog;
     let codexModelChoiceConfirmTimer = null;
     const confirmExistingModel = (selection) => {
       if (codexModelChoiceConfirmTimer) clearTimeout(codexModelChoiceConfirmTimer);
@@ -9656,16 +15191,44 @@ export function hostThroughPty(o) {
         if (result.action === 'expired') {
           appendHostEvent(ownerId, 'headless-claude-onboarding-expired', {
             phase: result.phase,
-            startupMs: headlessClaudeOnboardingStartupMs(env),
+            startupMs: onboardingStartupMs,
+            promptSeen: result.promptSeen,
           });
         }
-      }, headlessClaudeOnboardingStartupMs(env));
+      }, onboardingStartupMs);
       if (typeof headlessClaudeOnboardingExpiryTimer.unref === 'function') {
         headlessClaudeOnboardingExpiryTimer.unref();
       }
     }
     child.onData((d) => {
       const raw = typeof d === 'string' ? d : String(d);
+      const updateDialog = managedCodexStartupUpdateDialog.observe(raw);
+      if (updateDialog.action === 'send-escape') {
+        const identityMatches = child === startupDialogChild &&
+          (startupDialogChildPid === null || startupDialogChild.pid === startupDialogChildPid);
+        if (!identityMatches || hostCleanedUp || shuttingDown) {
+          appendHostEvent(ownerId, 'codex-startup-update-dialog-escape-skipped', {
+            agent: 'codex',
+            observedChildPid: startupDialogChildPid,
+            currentChildPid: Number.isInteger(child.pid) ? child.pid : null,
+          });
+        } else {
+          try {
+            startupDialogChild.write(CODEX_STARTUP_UPDATE_DIALOG_ESCAPE_KEY);
+            appendHostEvent(ownerId, 'codex-startup-update-dialog-escape-sent', {
+              agent: 'codex',
+              childPid: startupDialogChildPid,
+              startupWindowMs: CODEX_STARTUP_UPDATE_DIALOG_STARTUP_MS,
+            });
+          } catch (error) {
+            appendHostEvent(ownerId, 'codex-startup-update-dialog-escape-failed', {
+              agent: 'codex',
+              childPid: startupDialogChildPid,
+              error: String(error?.message ?? error).slice(0, 200),
+            });
+          }
+        }
+      }
       const codexModelChoice = headlessCodexModelChoice.observe(raw);
       if (codexModelChoice.action === 'select-existing') {
         try {
@@ -9695,6 +15258,19 @@ export function hostThroughPty(o) {
       childBracketedPasteTail = `${childBracketedPasteTail}${raw}`.slice(-BRACKETED_PASTE_TAIL_CHARS);
       childStartupOutput += raw;
       if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);
+      // Persist only a classified pre-frame failure, never arbitrary terminal
+      // text or a later turn quoting an earlier error. Accumulation handles
+      // native diagnostics split across PTY chunks; the guard resets per child.
+      if (!bootstrapFailureRecorded && !childBackendFirstFrameAt &&
+          env.PAPERCUSP_AGENT === 'codex' && isCodexWorkspaceDiscoveryTimeout(childStartupOutput)) {
+        bootstrapFailureRecorded = true;
+        appendHostEvent(ownerId, 'backend-bootstrap-failed', {
+          agent: 'codex', stage: 'account/read', reason: 'workspace-routing-discovery-timeout',
+          gatewayRequested: env.PAPERCUSP_CODEX_GATEWAY === '1' || Boolean(env.PAPERCUSP_ACCOUNT_ID),
+          accountPinPresent: Boolean(env.PAPERCUSP_ACCOUNT_ID),
+          msAfterFirstOutput: Date.now() - childStartupFirstOutputAt,
+        });
+      }
       if (
         !childBackendTuiStartedAt &&
         String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
@@ -9713,12 +15289,18 @@ export function hostThroughPty(o) {
       if (
         childBackendTuiStartedAt &&
         !childBackendFirstFrameAt &&
-        codexSessionFrameObserved(childStartupOutput, { probeAlreadySeen: true })
+        codexSessionFrameObserved(childStartupOutput, { probeAlreadySeen: true, dims: childScreenDims() })
       ) {
         childBackendFirstFrameAt = Date.now();
         appendHostEvent(ownerId, 'backend-session-frame-observed', {
           agent: 'codex',
           msAfterTuiStart: childBackendFirstFrameAt - childBackendTuiStartedAt,
+          // WI-10004943: null = no machine turn was ever written before the
+          // frame. A small value means the frame may have been PROVOKED by
+          // that write rather than signalling readiness on its own.
+          msSinceMachineTurnWriteStarted: lastMachineTurnWriteStartedAtMs > 0
+            ? childBackendFirstFrameAt - lastMachineTurnWriteStartedAtMs
+            : null,
         });
       }
       const onboarding = headlessClaudeOnboarding.observe(raw);
@@ -9769,7 +15351,7 @@ export function hostThroughPty(o) {
         // identified theme screen turns readiness off until its Security screen
         // receives the second CR; otherwise every healthy launch would wait for
         // the full expiry window even when no wizard is present.
-        childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput);
+        childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput, childScreenDims());
       }
       // Codex can paint a composer before the model offer. Submission, above,
       // disarms the watcher; a ready frame alone does not.
@@ -9809,6 +15391,27 @@ export function hostThroughPty(o) {
                 agent: String(env.PAPERCUSP_AGENT ?? '') || null,
                 matchedPattern: hit.pattern,
                 matchedExcerpt: hit.excerpt,
+                resetAtMs: quotaBlockDetector.resetAtMs(),
+              }
+            : {},
+        );
+      }
+      // P-004: auth-failure twin, fed ANSI-stripped text (codex styles and
+      // wraps its error lines). Publish the edge at once, like quota.
+      const authTransition = authBlockDetector.observe(stripAnsi(raw) ?? '');
+      if (authTransition) {
+        writeMeta();
+        const hit = authTransition === 'detected' ? authBlockDetector.lastMatch() : null;
+        appendHostEvent(
+          ownerId,
+          authTransition === 'detected' ? 'auth-block-detected' : 'auth-block-cleared',
+          hit
+            ? {
+                agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+                accountId: env.PAPERCUSP_ACCOUNT_ID || null,
+                confirmedProviderFailure: env.PAPERCUSP_AGENT === 'claude',
+                matchedPattern: hit.pattern,
+                matchedExcerpt: hit.excerpt,
               }
             : {},
         );
@@ -9832,7 +15435,7 @@ export function hostThroughPty(o) {
       if (normalizedLog) normalizedLog.push(raw);
       // Everything else — readiness above, the output taps below — keeps seeing
       // the RAW stream; only what reaches the owner's terminal is guarded.
-      stdout.write(scrollbackGuard.filter(raw));
+      terminalOutput.write(scrollbackGuard.filter(raw));
       // P-003: feed any live output taps (mcp-reconnect macro screen reads).
       if (outputTaps.size > 0) {
         for (const t of outputTaps) {
@@ -9873,8 +15476,10 @@ export function hostThroughPty(o) {
     // only definite line-affecting input advances this interruption epoch.
     if (freshChildOwnerInterruptionDetector.sawOwnerInput(input)) {
       ownerInputGeneration++;
+      composerInputGeneration++;
     }
-    if (ownerInputDetector.sawOwnerInput(input)) {
+    const ownerTyped = ownerInputDetector.sawOwnerInput(input);
+    if (ownerTyped) {
       idleGate.touch();
       activity.touchInput();
       // owner-presence-human-turn-signal-2026-07-11 P-003: a real human keystroke into
@@ -9882,6 +15487,33 @@ export function hostThroughPty(o) {
       // bridgeTty so only a genuine interactive TTY (never a headless piped session)
       // reports. Socket-injected agent wakes bypass stdin, so they never reach here.
       if (bridgeTty) reportOwnerHumanTurn();
+    }
+    // psu-process-free-parking P-017: no child to type into while parked —
+    // hold the keystrokes, resume, and replay them at the resumed prompt.
+    if (parkInProgress()) {
+      holdOwnerInputWhileParked(input, ownerTyped);
+      return;
+    }
+    forwardOwnerInput(input);
+  };
+  /** Owner bytes → the child (or the post-submit queue while a machine turn
+   *  owns the line). Shared by the live bridge and the parked-input replay. */
+  function forwardOwnerInput(input) {
+    if (hooksObservationActive) { queuedOwnerInput.push(input); return; }
+    if (hooksObservationInputHeld) {
+      const pending = hooksObservationRecovery?.takeReady() ?? null;
+      if (pending === null) {
+        // Explicit owner cleanup stays available; text remains held until a
+        // fresh complete composer paint. Machine envelopes cannot use this path.
+        if (hooksObservationRecovery?.canClean() && ['\x1b', '\x15', '\x03'].includes(input)) {
+          hooksObservationRecovery.reset(); child.write(input); return;
+        }
+        queuedOwnerInput.push(input);
+        return;
+      }
+      hooksObservationInputHeld = false;
+      hooksObservationRecovery = null;
+      for (const held of pending) forwardOwnerInput(held);
     }
     if (bridgeTty) {
       if (machineTurnActive) {
@@ -9891,14 +15523,18 @@ export function hostThroughPty(o) {
         return;
       }
       ownerComposerGate.observe(input);
+      if (input.includes('\x03') || input === '\x1b') ownerStopRequested = true;
+      else if (input.includes('\r') || input.includes('\n')) ownerStopRequested = false;
     }
+    if (input.includes('\r') || input.includes('\n')) activeManagedCodexStartupUpdateDialog?.complete();
     try {
       quotaBlockDetector.observeInput(input);
+      authBlockDetector.observeInput(input);
       child.write(input);
     } catch {
       /* ignore */
     }
-  };
+  }
   stdin.on('data', onStdin);
 
   // terminal resize (SIGWINCH) -> pty resize
@@ -9934,9 +15570,27 @@ export function hostThroughPty(o) {
      *  already on disk by the time this is set, and `go` is what actually leaves. */
     let reexecRequested = null;
     const cleanup = (code, signal = null) => {
+      hooksObservationRecovery?.close();
       if (cleaned) return;
       cleaned = true;
+      hostCleanedUp = true;
+      // Stop accepting snapshots immediately. Finish the one atomic write in
+      // flight before removing the key, so it cannot resurrect a dead host.
+      const metadataClosed = metadataWriter.close();
       stopStartupTrace('host-cleanup');
+      // P-019: nothing held for a resume can run now; release it as
+      // undeliverable so each sender's dedup slot clears instead of hanging.
+      cancelUnparkRetry();
+      releaseHeldDeliveries({ ok: false, reason: 'host-ending' });
+      // A deferred carry/loop wake is detached from this cleanup call and may
+      // be blocked in its prompt gate. Close that controller before killing the
+      // child so every accepted delivery gets a terminal host-ending outcome
+      // and no retry can later target the dead PTY.
+      try {
+        carryRearm.dispose('host-ending');
+      } catch (error) {
+        appendHostEvent(ownerId, 'carry-rearm-cleanup-failed', hostErrorEvidence(error));
+      }
       const endedSignal = signal ?? teardownSignal;
       // A PTY leader can exit before its descendants. Reap the group while its
       // forkpty pgid is still unambiguous, then remove our signal listeners.
@@ -9964,7 +15618,7 @@ export function hostThroughPty(o) {
             });
           }
           if (residue?.killedPids?.length || residue?.failedPids?.length) {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: session scope cleanup for ${ownerId} killed ` +
                 `${residue.killedPids?.length ?? 0} detached descendant(s)` +
                 `${residue.failedPids?.length ? `; ${residue.failedPids.length} kill(s) failed` : ''}\n`,
@@ -9975,7 +15629,7 @@ export function hostThroughPty(o) {
           // session-end record. Surface the residue failure without stranding exit.
           appendHostEvent(ownerId, 'session-scope-cleanup-failed', hostErrorEvidence(error));
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: session scope cleanup failed for ${ownerId}: ${error?.message ?? error}\n`,
             );
           } catch {
@@ -10009,7 +15663,7 @@ export function hostThroughPty(o) {
             rows: sanePtyDim(stdout.rows, 0, 500) || undefined,
             separator: false,
           });
-          if (handoff) stdout.write(handoff);
+          if (handoff) terminalOutput.write(handoff);
         } catch {
           /* a closing terminal is best-effort — cleanup must still finish */
         }
@@ -10064,29 +15718,42 @@ export function hostThroughPty(o) {
       // successor's re-bound socket node. unref() instead: the server stops
       // holding the event loop open (so an embedding process — a test — can
       // exit) and process exit reaps the fd WITHOUT unlinking the path.
-      const registered = readDiscoveryMeta(ownerId);
-      const ownedByOther = !!(registered && registered.pid && registered.pid !== process.pid);
-      if (ownedByOther) {
-        try {
-          server.unref();
-        } catch {
-          /* ignore */
-        }
-      } else {
-        try {
-          server.close();
-        } catch {
-          /* ignore */
-        }
-        for (const p of [sock, metaPath]) {
+      const releaseDiscovery = () => {
+        const registered = readDiscoveryMeta(ownerId);
+        const ownedByOther = !!(registered && registered.pid && registered.pid !== process.pid);
+        if (ownedByOther) {
           try {
-            if (existsSync(p)) unlinkSync(p);
+            server.unref();
           } catch {
             /* ignore */
           }
+        } else {
+          try {
+            server.close();
+          } catch {
+            /* ignore */
+          }
+          for (const p of [sock, metaPath]) {
+            try {
+              if (existsSync(p)) unlinkSync(p);
+            } catch {
+              /* ignore */
+            }
+          }
         }
-      }
-      const finishExit = () => {
+      };
+      const finishExit = async () => {
+        await metadataClosed;
+        releaseDiscovery();
+        const [screenDrained, diagnosticsDrained] = await Promise.all([
+          terminalOutput.finish(), diagnosticOutput.finish(),
+        ]);
+        if (!screenDrained) {
+          appendHostEvent(ownerId, 'terminal-output-drain-timeout', { timeoutMs: 1000 });
+        }
+        if (!diagnosticsDrained) {
+          appendHostEvent(ownerId, 'terminal-diagnostic-output-drain-timeout', { timeoutMs: 1000 });
+        }
         // WI-38292: an ADOPTING exit is not the session ending — it is the same
         // session continuing in a fresh process that loaded current host code. It
         // must therefore leave by a different door: `onExit` records an ended
@@ -10113,7 +15780,7 @@ export function hostThroughPty(o) {
           error: `target child exited (${code ?? 0}) before native session-port persistence was verified`,
         }).catch((error) => {
           appendHostEvent(ownerId, 'session-port-failure-ack-failed', hostErrorEvidence(error));
-          try { process.stderr.write(`psu: session-port failure acknowledgement failed: ${error?.message ?? error}\n`); }
+          try { writeTerminalDiagnostic(`psu: session-port failure acknowledgement failed: ${error?.message ?? error}\n`); }
           catch { /* diagnostics are best-effort */ }
         }).finally(finishExit);
       } else if (managedKickoffDisposition) {
@@ -10122,6 +15789,8 @@ export function hostThroughPty(o) {
         finishExit();
       }
     };
+    terminateTerminalOutput = () => cleanup(1, 'SIGHUP');
+    if (terminalOutputError) terminateTerminalOutput();
     // WI-41044: a verifier window that reaches its CR cap without observing any
     // output after a resubmit is a stranded submit, not a recoverable quiet
     // interval. End the whole managed host so the discovery key, socket, and
@@ -10139,9 +15808,24 @@ export function hostThroughPty(o) {
       };
       appendHostEvent(ownerId, 'submit-verify-exhausted', extra);
       try {
-        process.stderr.write(
+        writeTerminalDiagnostic(
           `psu-pty-host: ${extra.label} submit verification exhausted for ${ownerId} ` +
             `after ${extra.resubmits ?? '?'} resubmit CRs — terminating host (WI-41044)\n`,
+        );
+      } catch {
+        /* diagnostic only */
+      }
+      cleanup(1, 'SIGTERM');
+      return true;
+    };
+    terminateUnreportedKickoffRefusal = (details = {}) => {
+      if (cleaned) return false;
+      appendHostEvent(ownerId, 'kickoff-refusal-unreported-terminating', details);
+      try {
+        writeTerminalDiagnostic(
+          `psu-pty-host: kickoff not submitted (${details.kickoffReason ?? 'unknown'}) and the ` +
+            `refusal receipt could not be published (${details.receiptReason ?? 'unknown'}) for ` +
+            `${ownerId} — terminating headless host (WI-10006598)\n`,
         );
       } catch {
         /* diagnostic only */
@@ -10160,6 +15844,9 @@ export function hostThroughPty(o) {
       thisChild.onExit(({ exitCode, signal }) => {
         if (recycling) return; // an intended recycle kill — respawn re-wires; host lives on
         if (child !== thisChild) return; // a superseded child that died late — ignore
+        // WI-10006574: a resumed CLI dying before its prompt is a failed resume —
+        // the stand-in is back and the host lives on, unless the run hit its cap.
+        if (reparkResumedChildExit(thisChild, exitCode, signal)) return;
         // WI-38054: `signal` MUST be read here. node-pty reports a signal death as
         // { exitCode: 0, signal: N } — MEASURED in this tree: SIGHUP -> {"exitCode":0,"signal":1}.
         // Destructuring only exitCode (as this did) throws away the sole evidence that
@@ -10181,12 +15868,24 @@ export function hostThroughPty(o) {
       carryText,
       {
         systemPromptAddendum = '',
+        sourceTranscriptPath = null,
         drillId = '',
         sessionClass = '',
         quotaRecovery = null,
         carryProofRetryCount = 0,
+        // WI-10004943: spawn a fresh child on the launch argv and return without
+        // a first prompt; the launch closure re-delivers its own kickoff.
+        freshChildOnly = false,
       } = {},
     ) => {
+      const resumeQuotaConversation = quotaRecovery?.cause !== 'auth' && Boolean(quotaRecovery) &&
+        env.PAPERCUSP_AGENT === 'codex' && typeof mintQuotaResumeArgs === 'function';
+      const recoveryChild = child;
+      const recoveryOwnerInputGeneration = ownerInputGeneration;
+      const quotaOwnerBoundary = () => resumeQuotaConversation &&
+        (child !== recoveryChild || ownerInputGeneration !== recoveryOwnerInputGeneration ||
+          ownerComposerGate.hasPending() || ownerStopRequested ||
+          nativeExecutionBlocksInjection(currentNativeExecution()));
       const settleQuotaRecovery = (delivered, reason, extra = {}) => {
         if (quotaRecovery) {
           appendHostEvent(
@@ -10196,6 +15895,7 @@ export function hostThroughPty(o) {
               operationId: quotaRecovery.operationId,
               recoveryOwnerId: quotaRecovery.ownerId,
               startedAtMs: quotaRecovery.startedAtMs,
+              cause: quotaRecovery.cause ?? 'quota',
               reason,
               ...extra,
             },
@@ -10204,12 +15904,30 @@ export function hostThroughPty(o) {
         return { delivered, reason };
       };
       if (recycling) return settleQuotaRecovery(false, 'recycle-already-running');
+      if (quotaOwnerBoundary()) return settleQuotaRecovery(false, 'owner-input-or-native-work');
       recycling = true;
       // WI-5075 observability: the drill-only rows below made a WATCHDOG-initiated
       // carry-respawn (no drillId) completely invisible in the per-owner event log
       // — the P-018 successor-kill loop left ZERO durable trace outside journalctl.
       // Non-drill respawns now always leave generic respawned/failed/carry rows.
-      const respawnMode = systemPromptAddendum ? 'carry-respawn' : 'recycle';
+      const respawnMode = systemPromptAddendum
+        ? 'carry-respawn'
+        : freshChildOnly
+          ? 'launch-fresh-child'
+          : 'recycle';
+      const carrySourceTranscript = systemPromptAddendum
+        ? sourceTranscriptPath || newestNativeTranscriptPath(env.PAPERCUSP_AGENT, env)
+        : null;
+      const preserveNewerOwnerInput = () => {
+        if (!systemPromptAddendum || drillId) return null;
+        const freshness = carryNativeOwnerInputFreshness({
+          agent: env.PAPERCUSP_AGENT, env, transcriptPath: carrySourceTranscript, systemPromptAddendum,
+        });
+        if (freshness.status === 'current' || freshness.status === 'not-applicable') return null;
+        appendHostEvent(ownerId, 'respawn-carry-dropped', { mode: respawnMode, ...freshness });
+        recycling = false;
+        return settleQuotaRecovery(false, freshness.reason);
+      };
       // WI-38292: a respawn replaces the CLI child but NOT this host process, so a
       // host fix committed after this process booted stays inert here — the live
       // reproduction was a continuation fix (d351ee3084) that a running host simply
@@ -10247,14 +15965,18 @@ export function hostThroughPty(o) {
             loaded: hostCode.loaded,
             onDisk: hostCode.onDisk,
             launcher: hostCode.launcher ?? null,
+            // Store the closed enum only. The direct target URL may carry credentials.
+            operatorPin: operatorPinEvidence(env),
             // ADDITIVE — absent on rows written by older hosts, so a reader must
             // treat `undefined` as "not recorded", never as false.
             adoptable,
-            willAdopt: adoptable && !quotaRecovery,
+            willAdopt: adoptable && !quotaRecovery && !freshChildOnly,
             notAdoptingReason: adoptable
               ? quotaRecovery
                 ? 'quota-recovery'
-                : null
+                : freshChildOnly
+                  ? 'launch-fresh-child'
+                  : null
               : bridgeTty
                 ? 'interactive-tty'
                 : !onReexec
@@ -10284,6 +16006,31 @@ export function hostThroughPty(o) {
       // strictly better than a lost session — but it is RECORDED, never silent, so
       // a persistently-failing refresh is diagnosable instead of looking like the
       // bug this fixes.
+      // A quota recovery is admitted only for an operator-authorized auto
+      // route. The predecessor can still have loaded the default provider:
+      // repairing its file after startup does not change that live process.
+      // Restore and inspect the successor's route BEFORE stopping its writer.
+      if (quotaRecovery && quotaRecovery.cause !== 'auth' && env.PAPERCUSP_AGENT === 'codex') {
+        let autoRouteReady = false;
+        try {
+          const repaired = await ensureCodexHome({ routeMode: 'auto' });
+          const config = require('@iarna/toml').parse(readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8'));
+          const provider = config.model_providers?.['papercusp-codex-gateway'];
+          autoRouteReady = repaired?.ok === true && config.model_provider === 'papercusp-codex-gateway' &&
+            provider?.wire_api === 'responses' && provider.requires_openai_auth === false &&
+            provider.http_headers?.['x-papercusp-owner'] === ownerId &&
+            !provider.http_headers?.['x-papercusp-account'];
+        } catch {
+          // A failed repair leaves the current child alive and the wake retryable.
+        }
+        if (!autoRouteReady) {
+          recycling = false;
+          return settleQuotaRecovery(false, 'codex-auto-route-unavailable');
+        }
+        env.PAPERCUSP_ACCOUNT_ROUTING_MODE = 'auto';
+        env.PAPERCUSP_CODEX_GATEWAY = '1';
+        delete env.PAPERCUSP_ACCOUNT_ID;
+      }
       let personaFile = null;
       let personaRefreshReason = null;
       // Only claude has a `--system-prompt-file` to swap (codex carries its
@@ -10332,7 +16079,7 @@ export function hostThroughPty(o) {
         try {
           if (!recycleChild.identityActivationRefusedWarned) {
             recycleChild.identityActivationRefusedWarned = true;
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: carry-respawn refused for ${ownerId}: a priced Cupboard identity on this ` +
                 `session has no funds behind it. Fund it or detach it, then respawn ` +
                 `(further refusals logged to the event log only)\n`,
@@ -10346,20 +16093,40 @@ export function hostThroughPty(o) {
       }
       let recycleArgs;
       let nativeId;
+      let respawnReported = false;
       let launchContextPath = null;
       let freshChildOwnerInputGeneration = null;
       try {
+        // Route/persona refresh can yield to a real owner keystroke. Recheck
+        // before minting a replacement, then again before stopping the writer.
+        if (quotaOwnerBoundary()) {
+          recycling = false;
+          return settleQuotaRecovery(false, 'owner-input-or-native-work');
+        }
         if (
           systemPromptAddendum &&
           String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex'
         ) {
+          let homeEnsureFailure = null;
           try {
-            await ensureCodexHome();
+            const repaired = await ensureCodexHome();
+            homeEnsureFailure = repaired?.failure ?? null;
+            if ((env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'auto' || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'pin') && repaired?.ok !== true)
+              throw new Error('Codex selected route could not be restored before carry');
           } catch {
-            /* mintCarryRespawnArgs remains the final fail-soft fallback */
+            if (env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'auto' || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'pin') {
+              recycling = false;
+              appendHostEvent(ownerId, 'respawn-failed', { mode: respawnMode, reason: 'codex-route-unavailable',
+                ...(homeEnsureFailure ? { homeEnsureFailure } : {}) });
+              return settleQuotaRecovery(false, 'codex-route-unavailable');
+            }
           }
         }
-        const minted = systemPromptAddendum
+        const minted = resumeQuotaConversation
+          ? mintQuotaResumeArgs(liveChildArgs, {
+              nativeId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
+            })
+          : systemPromptAddendum
           ? mintCarryRespawnArgs(args, {
               systemPromptAddendum,
               ownerId,
@@ -10368,7 +16135,8 @@ export function hostThroughPty(o) {
               codexHome: env.CODEX_HOME,
             })
           : mintRecycleArgs(args, { agent: env.PAPERCUSP_AGENT, personaFile });
-        recycleArgs = minted.args;
+        if (!minted) throw new Error('quota recovery requires the exact native conversation');
+        recycleArgs = prepareChildArgs(minted.args);
         nativeId = minted.nativeId;
         launchContextPath = minted.launchContextPath ?? null;
         // Codex's carry mint adds a visible, non-user-authored lineage marker.
@@ -10402,7 +16170,7 @@ export function hostThroughPty(o) {
           // mint gap). The event-log row above still records every attempt.
           if (!recycleChild.argvBuildFailWarned) {
             recycleChild.argvBuildFailWarned = true;
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: carry-respawn argv build failed for ${ownerId}: ${e.message} ` +
                 `(further identical failures logged to the event log only)\n`,
             );
@@ -10442,7 +16210,10 @@ export function hostThroughPty(o) {
       // never fires the session-compacted event. Reformatting it silently turns that
       // guard's indexOf into -1, which reads as the guard passing rather than failing.
       const allowInteractive = interactiveAdoptionOptIn();
-      if (!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive })) {
+      // A launch fresh child (WI-10004943) stays in-process too: the launch closure
+      // that asked for it still owes the kickoff and its proof receipt, and a
+      // re-exec would end that closure before either is published.
+      if (!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive }) && !freshChildOnly) {
         let hostCode = { stale: false };
         try {
           hostCode = hostCodeStalenessFn();
@@ -10472,6 +16243,13 @@ export function hostThroughPty(o) {
             mode: respawnMode,
             command,
             args: recycleArgs,
+            // EI-23076695727837648: the first turn is NOT in recycleArgs. The
+            // in-process path injects carryText after spawn (injectTurnAtPrompt),
+            // and this predecessor exits before it would. Without this field the
+            // successor boots on the carry document and then sits idle until an
+            // unrelated loop fire or wake (measured 3-48 min, 11 of 11 adoptions
+            // on one goal holder). The launcher successor seeds it as its kickoff.
+            firstTurnText: typeof carryText === 'string' && carryText.length > 0 ? carryText : null,
             cwd,
             nativeId: nativeId ?? null,
             advSessionId: advSessionId ?? env.PAPERCUSP_ADV_SESSION_ID ?? null,
@@ -10494,6 +16272,11 @@ export function hostThroughPty(o) {
             sessionClass: sessionClass || null,
           });
           if (handoffPath) {
+            const ownerInputRefusal = preserveNewerOwnerInput();
+            if (ownerInputRefusal) {
+              try { unlinkSync(handoffPath); } catch { /* no successor may adopt stale orders */ }
+              return ownerInputRefusal;
+            }
             appendHostEvent(ownerId, 'host-code-adopting', {
               mode: respawnMode,
               loaded: hostCode.loaded,
@@ -10501,6 +16284,9 @@ export function hostThroughPty(o) {
               launcher: hostCode.launcher ?? null,
               handoffPath,
               nativeId: nativeId ?? null,
+              firstTurnPresent: typeof carryText === 'string' && carryText.length > 0,
+              firstTurnBytes: typeof carryText === 'string' ? Buffer.byteLength(carryText, 'utf8') : 0,
+              handoffArgumentCount: Array.isArray(recycleArgs) ? recycleArgs.length : null,
             });
             // The launcher successor owns the adoption report and the
             // session-compacted event. Do not announce from this predecessor:
@@ -10529,12 +16315,35 @@ export function hostThroughPty(o) {
       const priorDisableAutoCompact = env.DISABLE_AUTO_COMPACT;
       const priorDisableCompact = env.DISABLE_COMPACT;
       try {
+        // No await between the final native-input read and predecessor stop.
+        // Persona/argv preparation above may have accepted a newer owner turn.
+        const ownerInputRefusal = preserveNewerOwnerInput();
+        if (ownerInputRefusal) return ownerInputRefusal;
+        if (quotaOwnerBoundary()) {
+          recycling = false;
+          return settleQuotaRecovery(false, 'owner-input-or-native-work');
+        }
         stopStartupTrace('recycle');
-        const dead = new Promise((res) => {
+        const predecessorPid = child.pid;
+        const predecessorStopStartedAt = Date.now();
+        let predecessorExitObserved = false;
+        let predecessorExitCode = null;
+        let predecessorExitSignal = null;
+        appendHostEvent(ownerId, 'respawn-predecessor-stop-started', {
+          mode: respawnMode,
+          predecessorPid,
+          gracefulWaitMs: RECYCLE_KILL_TIMEOUT_MS,
+        });
+        const dead = new Promise((res, reject) => {
           try {
-            child.onExit(() => res());
-          } catch {
-            res();
+            child.onExit((event) => {
+              predecessorExitObserved = true;
+              predecessorExitCode = Number.isInteger(event?.exitCode) ? event.exitCode : null;
+              predecessorExitSignal = signalNameFromCode(event?.signal);
+              res();
+            });
+          } catch (error) {
+            reject(error);
           }
         });
         try {
@@ -10553,12 +16362,39 @@ export function hostThroughPty(o) {
           // owner/SID — the cold-respawn duplicate-continuation failure. The
           // process group is this host's pty scope, so SIGKILL is the smallest
           // durable predecessor fence and also catches ordinary descendants.
+          appendHostEvent(ownerId, 'respawn-predecessor-force-kill', {
+            mode: respawnMode,
+            predecessorPid,
+            signal: 'SIGKILL',
+            elapsedMs: Date.now() - predecessorStopStartedAt,
+          });
           killPtyProcessTree(child, 'SIGKILL');
           await Promise.race([
             dead,
             new Promise((resolve) => setTimeout(resolve, RECYCLE_FORCE_KILL_WAIT_MS)),
           ]);
+          if (!predecessorExitObserved) {
+            appendHostEvent(ownerId, 'respawn-predecessor-stop-pending', {
+              mode: respawnMode,
+              predecessorPid,
+              signal: 'SIGKILL',
+              elapsedMs: Date.now() - predecessorStopStartedAt,
+            });
+            // node-pty may deliver its exit callback after the diagnostic cap,
+            // and a process blocked in the kernel can retain a queued SIGKILL.
+            // Keep the old child and recycling fence until exit is observed.
+            await dead;
+          }
         }
+        appendHostEvent(ownerId, 'respawn-predecessor-stop-finished', {
+          mode: respawnMode,
+          predecessorPid,
+          forceKillRequested: !exitedGracefully,
+          exitObserved: predecessorExitObserved,
+          exitCode: predecessorExitCode,
+          signal: predecessorExitSignal,
+          elapsedMs: Date.now() - predecessorStopStartedAt,
+        });
         // Finish any visible text and discard a dangling escape sequence before
         // the successor child starts writing to the same companion artifact.
         if (normalizedLog) normalizedLog.flush();
@@ -10574,9 +16410,15 @@ export function hostThroughPty(o) {
         childBracketedPasteTail = '';
         childBackendTuiStartedAt = 0;
         childBackendFirstFrameAt = 0;
-        // WI-1386682 (1): a fresh child has no screen history and cannot
-        // inherit the old child's wall.
-        quotaBlockDetector.reset();
+        lastMachineTurnWriteStartedAtMs = 0;
+        // Reset against the successor's actual mode, not the host's original
+        // argv. Quota recovery preserves the native transcript and repaints
+        // its old errors before its first request (EI-25950082740366890).
+        const deferUntilSubmit = env.PAPERCUSP_AGENT === 'codex' &&
+          (resumeQuotaConversation || recycleArgs.some((arg) =>
+            ['resume', 'fork', '--resume', '--fork-session'].includes(arg)));
+        quotaBlockDetector.reset({ deferUntilSubmit });
+        authBlockDetector.reset({ deferUntilSubmit });
         // Composer state belongs to the child that was just killed. Carrying a
         // staged-line bit across this hard process boundary can make every wake
         // to the healthy successor defer forever, even though that successor's
@@ -10606,7 +16448,7 @@ export function hostThroughPty(o) {
             rows: sanePtyDim(stdout.rows, 0, 500) || undefined,
             separator: env.PAPERCUSP_PSU_PTY_RESPAWN_SEPARATOR !== '0',
           });
-          if (handoff) stdout.write(handoff);
+          if (handoff) terminalOutput.write(handoff);
         } catch {
           /* the terminal bridge is advisory — never let it break the respawn */
         }
@@ -10622,7 +16464,12 @@ export function hostThroughPty(o) {
             appendHostEvent(
               ownerId,
               healed.route === 'staging-proxy' ? 'operator-pin-routed' : 'operator-pin-healed',
-              { ...healed, mode: respawnMode },
+              {
+                from: operatorPinEvidence({ PAPERCUSP_OPERATOR_URL: healed.from }),
+                to: operatorPinEvidence({ PAPERCUSP_OPERATOR_URL: healed.to }),
+                ...(healed.route === 'staging-proxy' ? { route: 'staging-proxy' } : {}),
+                mode: respawnMode,
+              },
             );
           }
         } catch {
@@ -10632,6 +16479,20 @@ export function hostThroughPty(o) {
         stopStartupTrace = startCodexStartupProcessTrace({
           agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
         });
+        // P-017: a recycle that reaches a PARKED host had no live child to kill
+        // (the stand-in exited at once); the fresh child ends the park.
+        if (parked) {
+          heldOwnerInput.length = 0;
+          heldOwnerInputBytes = 0;
+          cancelUnparkRetry();
+          unparkRetryAttempt = 0;
+          appendHostEvent(ownerId, 'child-unparked', {
+            ...clearParkedState('recycle', { nativeId: nativeId ?? null }),
+            childPid: Number.isInteger(child.pid) ? child.pid : null,
+          });
+          // P-019: deliveries held by a failed resume ride the fresh child.
+          releaseHeldDeliveries({ ok: true, reason: 'recycled' });
+        }
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug
         // recurs). The launcher callback also repairs the authoritative
@@ -10642,7 +16503,9 @@ export function hostThroughPty(o) {
           let reportTimer;
           let reportTimedOut = false;
           try {
-            const report = Promise.resolve().then(() => onRespawn(nativeId));
+            const report = Promise.resolve().then(() => onRespawn(nativeId)).then((confirmed) => {
+              if (!reportTimedOut) respawnReported = confirmed === true;
+            });
             await Promise.race([
               report,
               new Promise((resolve) => {
@@ -10697,7 +16560,7 @@ export function hostThroughPty(o) {
           else env.DISABLE_COMPACT = priorDisableCompact;
         }
         try {
-          process.stderr.write(`psu-pty-host: recycle spawn failed for ${ownerId}: ${e.message}\n`);
+          writeTerminalDiagnostic(`psu-pty-host: recycle spawn failed for ${ownerId}: ${e.message}\n`);
         } catch {
           /* never let a diagnostic write break the host */
         }
@@ -10777,16 +16640,38 @@ export function hostThroughPty(o) {
           personaRefreshed: Boolean(personaFile),
         });
       }
-      // P-022: session:compacted:<owner> used to fire from the /compact handler's
-      // completion path; with native compaction retired, a successful
-      // carry-respawn IS this member's context cut — fire the same event here so
-      // peers' `events:await { event: "session:compacted:<owner>" }` stays a live
-      // surface instead of a key nothing emits anymore.
-      if (respawnMode === 'carry-respawn') {
-        fireSessionCompactedEvent(ownerId, 'carry-respawn', { nativeId });
-      }
+      // Spawn is not a completed carry. Codex has no minted native id yet
+      // and can stay at Starting without accepting its carry. Announcing here
+      // refreshed the predecessor's estimate and woke peers before delivery.
       recycling = false;
+      // WI-10004943: a launch fresh child has no carry. Report the spawn; the
+      // launch closure delivers its kickoff and publishes the proof receipt.
+      if (freshChildOnly) return { delivered: false, reason: 'fresh-child-spawned', spawned: true };
+      // Native ownership follows the live child even when its carry is absent
+      // or cancelled by owner input. Keep the existing exact-child resolver
+      // and trusted report as the only authority (WI-10007230).
+      // A Codex recycle also starts a fresh native session even though it is
+      // not a carry-respawn. Re-anchor that owner→native mapping before the
+      // successor can submit its first prompt or accept a later wake. Quota
+      // conversation recovery resumes the existing native session, so it does
+      // not rotate the mapping.
+      const needsNativeReanchor = respawnMode === 'carry-respawn' ||
+        (respawnMode === 'recycle' && !resumeQuotaConversation &&
+          env.PAPERCUSP_AGENT === 'codex' && Boolean(resolveRespawnNativeId));
+      const respawnBinding = needsNativeReanchor && (nativeId || resolveRespawnNativeId)
+        ? prepareCarryBinding(nativeId, Date.now() + recycleCarryInjectBudgetMs, respawnReported)
+        : null;
       if (!carryText) {
+        if (respawnBinding) {
+          const binding = await respawnBinding;
+          if (!binding.ok) return settleQuotaRecovery(false, binding.reason);
+          nativeId = binding.nativeId;
+          respawnReported = true;
+        }
+        if (resumeQuotaConversation) {
+          appendHostEvent(ownerId, 'quota-recovery-resumed', { nativeId, cause: 'quota' });
+          return { delivered: false, spawned: true, reason: 'conversation-resumed' };
+        }
         if (drillId) {
           const dropExtra = {
             drillId,
@@ -10813,6 +16698,12 @@ export function hostThroughPty(o) {
         // recreate a stale discovery file after cleanup removed it.
         if (!cleaned) writeMeta();
       };
+      // WI-6554700010009740: record whether this tagged carry's CR reached the
+      // child, so the native proof below can own an exhausted verifier verdict.
+      const carryNativeProofAvailable = !drillId &&
+        Boolean(leadingTurnOriginMarker(carryText)) &&
+        nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
+      let carryNativeSubmission = null;
       let carryResult = await injectTurnAtPrompt({
         text: carryText,
         label: drillId ? `carry-drill ${drillId} first prompt` : 'recycle carry-note',
@@ -10820,9 +16711,73 @@ export function hostThroughPty(o) {
         // Apply the same backend-aware boot proof as a scripted resume/port.
         requireInitialOutput: true,
         freshChildOwnerInputGeneration,
+        // WI-10005106: a child stuck at the Codex `Starting` footer is replaced
+        // early while a fresh-epoch retry remains; the LAST attempt holds for the
+        // frame instead (the WI-10004943 (d) launch-kickoff behaviour), because
+        // dropping it there leaves the session idle without its carry.
+        ...(!drillId && carryProofRetryCount < carryProofRetryMax
+          ? {
+              codexStartingStuckMs: positiveNumber(
+                env.PAPERCUSP_PSU_PTY_CODEX_CARRY_STARTING_STUCK_MS,
+                CODEX_CARRY_STARTING_STUCK_MS,
+              ),
+            }
+          : !drillId
+            ? {
+                codexStartingHoldCeilingMs: positiveNumber(
+                  env.PAPERCUSP_PSU_PTY_CODEX_STARTING_HOLD_CEILING_MS,
+                  CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
+                ),
+              }
+            : {}),
         // Decide whether a failed fresh epoch is retryable before recording a
         // terminal carry drop; a retry must not increment the drop counter.
         onDrop: () => {},
+        onSubmitted: (submission) => {
+          if (carryNativeProofAvailable) carryNativeSubmission = submission;
+        },
+        // A recycled Claude su session can arrive while the native Papercusp
+        // MCP endpoint is still reconnecting. Keep the carry out of the composer
+        // until the closed-loop reconnect check proves papercusp-su ready.
+        prepareBeforeWrite: async ({ deadline }) => {
+          if (respawnBinding) {
+            const binding = await respawnBinding;
+            if (!binding.ok) return binding;
+            nativeId = binding.nativeId;
+            respawnReported = true;
+          }
+          if (!(respawnMode === 'carry-respawn' &&
+          String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'claude' &&
+          sessionClass === 'claude-su')) return { ok: true };
+          const tap = makeOutputTap();
+          try {
+            const result = await verifyHeadlessRoleMcp(() => mcpReconnectMacro({
+              serverName: 'papercusp-su',
+              write: (bytes) => child.write(bytes),
+              readTap: tap.read,
+              resetTap: tap.reset,
+            }));
+            appendHostEvent(
+              ownerId,
+              result.ok ? 'respawn-carry-mcp-ready' : 'respawn-carry-mcp-unavailable',
+              {
+                mode: respawnMode,
+                nativeId: nativeId ?? null,
+                serverName: 'papercusp-su',
+                step: result.step,
+                attempts: result.attempts,
+                detail: result.detail,
+              },
+            );
+            return {
+              ok: result.ok,
+              reason: 'carry-mcp-unavailable',
+              settleAfterPreparation: result.ok,
+            };
+          } finally {
+            tap.close();
+          }
+        },
       });
       const retryOnFreshEpoch = (reason, proofReason = null) => {
         if (!shouldRetryCarryOnFreshEpoch({
@@ -10831,6 +16786,7 @@ export function hostThroughPty(o) {
           proofReason,
           retryCount: carryProofRetryCount,
           maxRetries: carryProofRetryMax,
+          unboundPastWindow: currentChildPastUnboundWindow(),
         })) return null;
         appendHostEvent(ownerId, 'respawn-carry-fresh-epoch-retry', {
           mode: respawnMode,
@@ -10842,12 +16798,25 @@ export function hostThroughPty(o) {
         });
         return recycleChild(carryText, {
           systemPromptAddendum,
+          sourceTranscriptPath: carrySourceTranscript,
           drillId,
           sessionClass,
           quotaRecovery,
           carryProofRetryCount: carryProofRetryCount + 1,
         });
       };
+      if (carryExhaustionDefersToNativeProof({
+        drillId,
+        delivered: carryResult.delivered,
+        reason: carryResult.reason,
+        nativeSubmitted: carryNativeSubmission?.child === child,
+      })) {
+        // The verifier spent its CR budget without the exact native row. The
+        // turn-start proof below decides: a late row is delivered, a missing
+        // one is turn-start-unverified and gets one fresh epoch.
+        const { reason: _deferredReason, ...submittedCarry } = carryResult;
+        carryResult = { ...submittedCarry, delivered: true };
+      }
       if (!carryResult.delivered) {
         const retry = retryOnFreshEpoch(carryResult.reason);
         if (retry) return retry;
@@ -10908,7 +16877,7 @@ export function hostThroughPty(o) {
           }
           carryResult = { ...carryResult, delivered: false, reason: 'turn-start-unverified' };
           try {
-            process.stderr.write(
+            writeTerminalDiagnostic(
               `psu-pty-host: carry turn start UNVERIFIED for ${ownerId} ` +
                 `(native ${nativeId ?? 'unknown'}; ${turnStartProof.reason ?? 'marker timeout'}) — ` +
                 `recording a drop, never respawn-carry-delivered\n`,
@@ -10916,6 +16885,21 @@ export function hostThroughPty(o) {
           } catch {
             /* diagnostic only */
           }
+        }
+      }
+      if (respawnMode === 'carry-respawn' && !drillId && carryResult.delivered) {
+        const carryChild = child;
+        const announcement = await announceVerifiedCarryRespawn({
+          ownerId, agent: env.PAPERCUSP_AGENT, nativeId, proof: turnStartProof,
+          alreadyReported: respawnReported, report: onRespawn, emit: emitCompacted,
+          timeoutMs: respawnReportTimeoutMs,
+          isCurrent: () => child === carryChild && !recycling && !shuttingDown && !cleaned,
+        });
+        if (announcement.nativeId) nativeId = announcement.nativeId;
+        if (!announcement.announced) {
+          appendHostEvent(ownerId, 'respawn-compaction-unannounced', {
+            nativeId: nativeId ?? null, reason: announcement.reason,
+          });
         }
       }
       if (!carryResult.delivered) recordCarryDrop();
@@ -10989,6 +16973,62 @@ export function hostThroughPty(o) {
       );
     };
 
+    // A visible auto-routed Codex TUI does not need a fleet wake to recover.
+    // Reuse the discovery tick, inject mutex, native-work and composer gates.
+    // Resume once per child, bounded to two attempts per hour; a still-walled
+    // pool remains visible rather than becoming a respawn loop.
+    let automaticQuotaRecoveryActive = false;
+    let quotaRecoveryWindowAt = 0;
+    let quotaRecoveryAttempts = 0;
+    let quotaRecoveryAttemptedChild = null;
+    quotaRecoveryTick = () => {
+      if (automaticQuotaRecoveryActive || hostCleanedUp || shuttingDown || recycling || parked ||
+          deliveriesInFlight > 0 || env.PAPERCUSP_AGENT !== 'codex' ||
+          env.PAPERCUSP_ACCOUNT_ROUTING_MODE !== 'auto' || !mintQuotaResumeArgs ||
+          !quotaBlockDetector.isBlocked() || quotaRecoveryAttemptedChild === child ||
+          ownerComposerGate.hasPending() || ownerStopRequested) return;
+      const now = Date.now();
+      if (now - quotaRecoveryWindowAt >= 3_600_000) {
+        quotaRecoveryWindowAt = now;
+        quotaRecoveryAttempts = 0;
+      }
+      if (quotaRecoveryAttempts >= 2 || !currentNativeSessionId(child.pid, resolveRespawnNativeId)) return;
+      automaticQuotaRecoveryActive = true;
+      const target = child;
+      const generation = ownerInputGeneration;
+      void (async () => {
+        const release = await injectMutex.acquire();
+        try {
+          const boundary = await agentBusyGate.waitAtPrompt();
+          if (boundary.deferred || child !== target || generation !== ownerInputGeneration ||
+              ownerComposerGate.hasPending() || ownerStopRequested ||
+              !quotaBlockDetector.isBlocked() || deliveriesInFlight > 0 || hostCleanedUp) return;
+          quotaRecoveryAttempts++;
+          quotaRecoveryAttemptedChild = target;
+          const operationId = `quota-resume-${now}-${childGeneration}`;
+          appendHostEvent(ownerId, 'quota-recovery-started', {
+            operationId, recoveryOwnerId: ownerId, startedAtMs: now,
+            cause: 'quota', accountRoutingMode: 'auto', automatic: true,
+          });
+          const result = await recycleChild('', { quotaRecovery: { operationId, ownerId, startedAtMs: now, cause: 'quota' } });
+          // A transient repair refusal occurs BEFORE stopping the writer. It
+          // must not consume this child's only opportunity forever: the next
+          // discovery tick may use the remaining bounded recovery attempt.
+          // A successful resume, an owner boundary or a post-stop failure still
+          // retains the per-child fence and never replays the owner's prompt.
+          if (result?.delivered === false && result.reason === 'codex-auto-route-unavailable' && child === target) {
+            quotaRecoveryAttemptedChild = null;
+          }
+        } catch (error) {
+          appendHostEvent(ownerId, 'quota-recovery-dropped', { cause: 'quota', automatic: true,
+            reason: 'resume-failed', detail: String(error?.message ?? error).slice(0, 200) });
+        } finally {
+          release();
+          automaticQuotaRecoveryActive = false;
+        }
+      })();
+    };
+
     // Raw-mode keyboard Ctrl-C remains a byte forwarded to the target. A real
     // process SIGINT (outer terminal/executor interrupt) is teardown, just like
     // SIGHUP/SIGTERM: kill the whole forkpty group so no backend descendant can
@@ -11052,7 +17092,7 @@ export function hostThroughPty(o) {
         // below, which is aimed at the very terminal whose loss we are recording.
         appendHostEvent(ownerId, 'orphan-teardown', { why });
         try {
-          process.stderr.write(
+          writeTerminalDiagnostic(
             `psu-pty-host: session orphaned (${why}) for ${ownerId} — killing child + exiting\n`,
           );
         } catch {

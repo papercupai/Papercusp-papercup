@@ -106,6 +106,133 @@ function updateManifest(file: string, mutate: (manifest: any) => void): void {
   fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+type IosFixture = {
+  root: string;
+  state: string;
+  attempt: string;
+  resultFile: string;
+  latest: string;
+  manifest: string;
+  ipa: string;
+  commit: string;
+};
+
+function makeIosFixture(version = '0.0.9', distributionMethod = 'app-store-connect'): IosFixture {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ios-mobile-source-'));
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), 'ios-ci-state-'));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'test'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: root });
+  fs.writeFileSync(path.join(root, '.gitignore'), '/android/app/build/\n/ios/build/\n');
+  fs.writeFileSync(path.join(root, 'source.txt'), 'source\n');
+  execFileSync('git', ['add', '.gitignore', 'source.txt'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
+  const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+
+  const attempt = path.join(state, 'attempts', '20261010T120000Z-acde1234');
+  const exportDir = path.join(attempt, 'export');
+  fs.mkdirSync(exportDir, { recursive: true });
+  const ipa = path.join(exportDir, 'Papercusp.ipa');
+  const ipaRelativePath = path.relative(attempt, ipa).split(path.sep).join('/');
+  const ipaBytes = plausibleBytes('signed-ipa');
+  fs.writeFileSync(ipa, ipaBytes);
+  const manifest = path.join(attempt, 'candidate-manifest.json');
+  const installation = {
+    distributionMethod,
+    registeredDeviceCount: distributionMethod === 'release-testing' ? 2 : 0,
+    profileExpiresAt: '2027-01-01T00:00:00Z',
+    installationRoute: distributionMethod === 'release-testing' ? 'registered-device' : 'app-store-connect',
+  };
+  const finishedAt = '2026-10-10T12:01:00.000Z';
+  fs.writeFileSync(
+    manifest,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        sourceSha: commit,
+        version,
+        build: '41',
+        signed: true,
+        releaseVersion: version,
+        sourceCommit: commit,
+        sourceDirty: false,
+        builtAt: finishedAt,
+        installation,
+        artifacts: [{
+          kind: 'ipa',
+          path: ipaRelativePath,
+          size: ipaBytes.length,
+          sha256: createHash('sha256').update(ipaBytes).digest('hex'),
+        }],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  const signedExportLog = path.join(attempt, 'signed-export.log');
+  const archiveGuardLog = path.join(attempt, 'archive-guard.log');
+  fs.writeFileSync(signedExportLog, 'signed export passed\n');
+  fs.writeFileSync(archiveGuardLog, 'archive guard passed\n');
+  const receipt = (file: string, relativePath: string) => ({
+    path: relativePath,
+    size: fs.statSync(file).size,
+    sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex'),
+  });
+  const result = {
+    schemaVersion: 1,
+    executor: 'native-mac',
+    attempt,
+    startedAt: '2026-10-10T11:58:00.000Z',
+    finishedAt,
+    status: 'passed',
+    mode: 'signed',
+    distributionMethod,
+    pairedUI: false,
+    day: '2026-10-10',
+    buildNumber: '41',
+    source: { commit, dirty: false },
+    toolchain: { xcode: 'Xcode 26.0', iosSDK: '26.0', simulator: 'test' },
+    phases: [
+      { name: 'signed-export', exitCode: 0, status: 'passed', log: signedExportLog, sha256: receipt(signedExportLog, 'signed-export.log').sha256 },
+      { name: 'archive-guard', exitCode: 0, status: 'passed', log: archiveGuardLog, sha256: receipt(archiveGuardLog, 'archive-guard.log').sha256 },
+    ],
+    installation,
+    artifacts: [
+      receipt(manifest, 'candidate-manifest.json'),
+      receipt(ipa, ipaRelativePath),
+      receipt(signedExportLog, 'signed-export.log'),
+      receipt(archiveGuardLog, 'archive-guard.log'),
+    ],
+  };
+  const resultFile = path.join(attempt, 'result.json');
+  const latest = path.join(state, 'latest.json');
+  const resultText = `${JSON.stringify(result, null, 2)}\n`;
+  fs.writeFileSync(resultFile, resultText);
+  fs.writeFileSync(latest, resultText);
+  return { root, state, attempt, resultFile, latest, manifest, ipa, commit };
+}
+
+function updateIosResult(fixture: IosFixture, mutate: (result: any) => void): void {
+  const result = JSON.parse(fs.readFileSync(fixture.latest, 'utf8'));
+  mutate(result);
+  const text = `${JSON.stringify(result, null, 2)}\n`;
+  fs.writeFileSync(fixture.resultFile, text);
+  fs.writeFileSync(fixture.latest, text);
+}
+
+function refreshIosManifestReceipt(fixture: IosFixture): void {
+  updateIosResult(fixture, (result) => {
+    const receipt = result.artifacts.find((item: any) => item.path === 'candidate-manifest.json');
+    const bytes = fs.readFileSync(fixture.manifest);
+    receipt.size = bytes.length;
+    receipt.sha256 = createHash('sha256').update(bytes).digest('hex');
+  });
+}
+
+function noIosCiState(root: string): string {
+  return path.join(root, '.no-ios-ci-state');
+}
+
 describe('computeReleaseCompleteness — every desktop product×platform, not just GUI (WI-5515)', () => {
   const gui = (platform: string) => ({ product: 'gui' as const, platform });
   const server = (platform: string) => ({ product: 'server' as const, platform });
@@ -610,7 +737,7 @@ describe('provenanced Android artifacts — requested version + current source +
     const apkDir = path.join(root, 'android/app/build/outputs/apk/debug');
     fs.mkdirSync(apkDir, { recursive: true });
     fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), plausibleBytes('debug'));
-    expect(() => scanMobileArtifactSources(root, '0.0.9')).toThrow(/without .*provenance/i);
+    expect(() => scanMobileArtifactSources(root, '0.0.9', { iosCiState: noIosCiState(root) })).toThrow(/without .*provenance/i);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -620,7 +747,9 @@ describe('provenanced Android artifacts — requested version + current source +
       { src: fixture.apk, outName: 'Papercusp_0.0.9_android.apk' },
       { src: fixture.aab, outName: 'Papercusp_0.0.9_android.aab' },
     ]);
-    const found = scanMobileArtifacts(fixture.root, '0.0.9', 'desktop-v0.0.9-alpha');
+    const found = scanMobileArtifacts(fixture.root, '0.0.9', 'desktop-v0.0.9-alpha', {
+      iosCiState: noIosCiState(fixture.root),
+    });
     expect(found.map((artifact) => artifact.name).sort()).toEqual([
       'Papercusp_0.0.9_android.aab',
       'Papercusp_0.0.9_android.apk',
@@ -632,9 +761,9 @@ describe('provenanced Android artifacts — requested version + current source +
   it('rejects a foreign mobile product before it can produce Papercusp upload names', () => {
     const fixture = makeAndroidFixture();
     expect(() =>
-      scanMobileArtifactSources(fixture.root, '0.0.9', { productName: 'SideStage' }),
+      scanMobileArtifactSources(fixture.root, '0.0.9', { productName: 'SideStage', iosCiState: noIosCiState(fixture.root) }),
     ).toThrow(/only "Papercusp"/);
-    expect(scanMobileArtifactSources(fixture.root, '0.0.9').map(({ outName }) => outName)).toEqual([
+    expect(scanMobileArtifactSources(fixture.root, '0.0.9', { iosCiState: noIosCiState(fixture.root) }).map(({ outName }) => outName)).toEqual([
       'Papercusp_0.0.9_android.apk',
       'Papercusp_0.0.9_android.aab',
     ]);
@@ -649,35 +778,37 @@ describe('provenanced Android artifacts — requested version + current source +
 
   it('rejects requested-version, source-commit, and canonical-path drift', () => {
     const fixture = makeAndroidFixture();
-    expect(() => scanMobileArtifactSources(fixture.root, '0.0.10')).toThrow(/releaseVersion/);
+    const options = { iosCiState: noIosCiState(fixture.root) };
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.10', options)).toThrow(/releaseVersion/);
     updateManifest(fixture.manifest, (manifest) => {
       manifest.releaseVersion = '0.0.9';
       manifest.sourceCommit = 'f'.repeat(40);
     });
-    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/current HEAD/);
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', options)).toThrow(/current HEAD/);
     updateManifest(fixture.manifest, (manifest) => {
       manifest.sourceCommit = fixture.commit;
       manifest.artifacts.apk.path = 'android/app/build/outputs/apk/debug/app-debug.apk';
     });
-    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/canonical path/);
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', options)).toThrow(/canonical path/);
     fs.rmSync(fixture.root, { recursive: true, force: true });
   });
 
   it('rejects missing, resized, and hash-tampered members of the required pair', () => {
     const fixture = makeAndroidFixture();
     fs.rmSync(fixture.aab);
-    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/aab artifact is missing/);
+    const options = { iosCiState: noIosCiState(fixture.root) };
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', options)).toThrow(/aab artifact is missing/);
     fs.writeFileSync(fixture.aab, plausibleBytes('replacement-aab'));
-    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/aab sha256/);
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', options)).toThrow(/aab sha256/);
     fs.appendFileSync(fixture.apk, 'tampered');
-    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/apk size/);
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', options)).toThrow(/apk size/);
     fs.rmSync(fixture.root, { recursive: true, force: true });
   });
 
   it('rejects a manifest after tracked source changes', () => {
     const fixture = makeAndroidFixture();
     fs.appendFileSync(path.join(fixture.root, 'source.txt'), 'dirty\n');
-    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9')).toThrow(/source tree .* dirty/);
+    expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', { iosCiState: noIosCiState(fixture.root) })).toThrow(/source tree .* dirty/);
     fs.rmSync(fixture.root, { recursive: true, force: true });
   });
 
@@ -689,8 +820,141 @@ describe('provenanced Android artifacts — requested version + current source +
     fs.mkdirSync(path.dirname(rawApk), { recursive: true });
     fs.writeFileSync(ipa, plausibleBytes('ipa'));
     fs.writeFileSync(rawApk, plausibleBytes('unprovenanced'));
-    expect(scanMobileArtifactSources(root, '0.0.9', { skipAndroid: true })).toEqual([]);
+    expect(scanMobileArtifactSources(root, '0.0.9', { skipAndroid: true, iosCiState: noIosCiState(root) })).toEqual([]);
     fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe('signed native iOS artifacts — current source + App Store Connect + exact runner bytes', () => {
+  it('admits the signed App Store Connect IPA while --skip-android skips only Android', () => {
+    const fixture = makeIosFixture();
+    try {
+      const rawApk = path.join(fixture.root, 'android/app/build/outputs/apk/debug/app-debug.apk');
+      fs.mkdirSync(path.dirname(rawApk), { recursive: true });
+      fs.writeFileSync(rawApk, plausibleBytes('unprovenanced-android'));
+      expect(scanMobileArtifactSources(fixture.root, '0.0.9', {
+        skipAndroid: true,
+        iosCiState: fixture.state,
+      })).toEqual([{ src: fixture.ipa, outName: 'Papercusp_0.0.9_ios.ipa' }]);
+
+      const [artifact] = scanMobileArtifacts(fixture.root, '0.0.9', 'desktop-v0.0.9-alpha', {
+        skipAndroid: true,
+        iosCiState: fixture.state,
+      });
+      expect(artifact).toMatchObject({
+        product: 'mobile',
+        platform: 'ios-arm64',
+        name: 'Papercusp_0.0.9_ios.ipa',
+        url: 'desktop-v0.0.9-alpha/Papercusp_0.0.9_ios.ipa',
+        size: fs.statSync(fixture.ipa).size,
+        sha256: createHash('sha256').update(fs.readFileSync(fixture.ipa)).digest('hex'),
+      });
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+      fs.rmSync(fixture.state, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores raw unversioned IPAs and check-mode runner results', () => {
+    const fixture = makeIosFixture();
+    try {
+      const rawIpa = path.join(fixture.root, 'ios/build/export/Papercup.ipa');
+      fs.mkdirSync(path.dirname(rawIpa), { recursive: true });
+      fs.writeFileSync(rawIpa, plausibleBytes('raw-ipa'));
+      updateIosResult(fixture, (result) => {
+        result.mode = 'check';
+      });
+      expect(scanMobileArtifactSources(fixture.root, '0.0.9', {
+        skipAndroid: true,
+        iosCiState: fixture.state,
+      })).toEqual([]);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+      fs.rmSync(fixture.state, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects stale version and source provenance', () => {
+    const fixture = makeIosFixture();
+    const options = { skipAndroid: true, iosCiState: fixture.state };
+    try {
+      expect(() => scanMobileArtifactSources(fixture.root, '0.0.10', options)).toThrow(/requested version/);
+      fs.appendFileSync(path.join(fixture.root, 'source.txt'), 'next committed source\n');
+      execFileSync('git', ['add', 'source.txt'], { cwd: fixture.root });
+      execFileSync('git', ['commit', '-qm', 'next source'], { cwd: fixture.root });
+      expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', options)).toThrow(/does not match current HEAD/);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+      fs.rmSync(fixture.state, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a dirty mobile source tree', () => {
+    const fixture = makeIosFixture();
+    try {
+      fs.appendFileSync(path.join(fixture.root, 'source.txt'), 'uncommitted source\n');
+      expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', {
+        skipAndroid: true,
+        iosCiState: fixture.state,
+      })).toThrow(/iOS source tree .* dirty/);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+      fs.rmSync(fixture.state, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects tampered IPA bytes and paths outside the attempt', () => {
+    const fixture = makeIosFixture();
+    const options = { skipAndroid: true, iosCiState: fixture.state };
+    try {
+      fs.appendFileSync(fixture.ipa, 'tampered');
+      expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', options)).toThrow(/receipt size/);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+      fs.rmSync(fixture.state, { recursive: true, force: true });
+    }
+
+    const pathFixture = makeIosFixture();
+    try {
+      updateManifest(pathFixture.manifest, (manifest) => {
+        manifest.artifacts[0].path = '../outside.ipa';
+      });
+      refreshIosManifestReceipt(pathFixture);
+      expect(() => scanMobileArtifactSources(pathFixture.root, '0.0.9', {
+        skipAndroid: true,
+        iosCiState: pathFixture.state,
+      })).toThrow(/canonical export\/\*\.ipa path/);
+    } finally {
+      fs.rmSync(pathFixture.root, { recursive: true, force: true });
+      fs.rmSync(pathFixture.state, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects registered-device exports and latest/attempt result disagreement', () => {
+    const fixture = makeIosFixture('0.0.9', 'release-testing');
+    try {
+      expect(() => scanMobileArtifactSources(fixture.root, '0.0.9', {
+        skipAndroid: true,
+        iosCiState: fixture.state,
+      })).toThrow(/not public-release eligible/);
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+      fs.rmSync(fixture.state, { recursive: true, force: true });
+    }
+
+    const parityFixture = makeIosFixture();
+    try {
+      const latest = JSON.parse(fs.readFileSync(parityFixture.latest, 'utf8'));
+      latest.pairedUI = true;
+      fs.writeFileSync(parityFixture.latest, `${JSON.stringify(latest, null, 2)}\n`);
+      expect(() => scanMobileArtifactSources(parityFixture.root, '0.0.9', {
+        skipAndroid: true,
+        iosCiState: parityFixture.state,
+      })).toThrow(/does not match its attempt-local result/);
+    } finally {
+      fs.rmSync(parityFixture.root, { recursive: true, force: true });
+      fs.rmSync(parityFixture.state, { recursive: true, force: true });
+    }
   });
 });
 
@@ -752,7 +1016,9 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
         const withMobile = buildRunOpts([
           '--version', '0.0.21', '--bundle', '/tmp/desktop-bundle', '--mobile-root', root,
         ]);
-        expect(() => scanMobileArtifacts(withMobile.mobileRoot, withMobile.version, 'desktop-v0.0.21-alpha'))
+        expect(() => scanMobileArtifacts(withMobile.mobileRoot, withMobile.version, 'desktop-v0.0.21-alpha', {
+          iosCiState: noIosCiState(root),
+        }))
           .toThrow(/without .*provenance/i);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
@@ -865,7 +1131,8 @@ describe('validateRecordChangelog — fail closed on accidental changelog omissi
 
 describe('Android release producer/consumer source contract (D-004)', () => {
   const desktopDir = path.resolve(__dirname, '../../../../papercusp-desktop');
-  const mobileDir = path.resolve(__dirname, '../../../../../papercup-rust-mobile');
+  const mobileDir = process.env.PAPERCUSP_MOBILE_ROOT
+    ?? path.resolve(__dirname, '../../../../../papercup-rust-mobile');
 
   it('build-android deletes the old pair/manifest and writes provenance only after verification', () => {
     const script = fs.readFileSync(
@@ -1012,7 +1279,7 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
       fs.mkdirSync(bin, { recursive: true });
 
       const index = '<html><body><section class="rel" data-newest-release="1.2.3"><h2>1.2.3</h2><a href="work-items/WI-1.html">item</a><a href="changes/desktop-v1.2.3-alpha.html">Changes</a></section></body></html>\n';
-      const history = '{"releases":[{"version":"1.2.3"}]}\n';
+      const history = '{"releases":[{"version":"1.2.3","artifacts":[]}]}\n';
       const detail = '<html>detail</html>\n';
       fs.writeFileSync(path.join(site, 'index.html'), index);
       fs.writeFileSync(path.join(site, 'history.json'), history);

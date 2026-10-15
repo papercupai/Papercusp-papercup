@@ -18,6 +18,9 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { BenchReportBundle, BenchReportCall, BenchReportCoordEvent, BenchReportSpawnNode } from './report-schema';
 import { bundleFromRollouts, writeReportHtml } from './report-builder';
+import type { DbScope } from '../reproducibility/db';
+import type { PreregRecord } from '../reproducibility/schema';
+import { resolveRunReportAssignment } from '../reproducibility/store';
 
 /** Structural shapes of the store reads we consume (kept loose so real types satisfy them). */
 interface TaskRunResultRow {
@@ -33,10 +36,13 @@ interface TaskRunResultRow {
   generationError?: string | null;
   rolloutId?: string;
   modelId?: string;
+  preregHash?: string;
+  tokensCacheWrite?: number;
   tokensIn: number;
   tokensOut: number;
   tokensTotal: number;
   costUsd: number;
+  armMeta?: Record<string, unknown> | null;
   wallClockMs: number;
   turns?: number;
   failToPass?: Array<{ test: string; passed: boolean }> | null;
@@ -61,24 +67,44 @@ interface RolloutRow {
   createdAt?: string;
 }
 interface RunDetail {
+  /** The task set the bench run drew from — resolves each task's creation date (D-007). */
+  taskSetId?: string | null;
   coordEvents?: Array<{ ts?: number; kind?: string; agent?: string; taskId?: string | null; detail?: string }>;
   perTask?: Array<{ instanceId: string; cupId?: string; stopReason?: string; costUsd?: number }>;
 }
 
 export interface PgReportReaders {
+  getPrereg?: (runId: string) => Promise<PreregRecord | null>;
   listRunResults: (opts: { runId: string }) => Promise<TaskRunResultRow[]>;
   getRollout: (rolloutId: string) => Promise<RolloutRow | null>;
   getBenchRunDetail?: (id: string) => Promise<RunDetail | null>;
+  /**
+   * Task creation dates (ISO-8601) by task id, from the corpus the run drew from (plan
+   * benchmark-coverage-frontierswe-v2-2026-10-10 D-007). A task the corpus does not date maps to null,
+   * and the contamination policy reads it as unknown.
+   */
+  getTaskCreatedAt?: (taskSetId: string, taskIds: readonly string[]) => Promise<Record<string, string | null>>;
+}
+
+/** Default {@link PgReportReaders.getTaskCreatedAt}: the run's task set, loaded the same way the launcher loads it. */
+async function taskCreatedAtFromTaskSet(taskSetId: string, taskIds: readonly string[]): Promise<Record<string, string | null>> {
+  const { loadBenchTaskSet } = await import('../task-sets');
+  const tasks = await loadBenchTaskSet(taskSetId, [...taskIds]);
+  const out: Record<string, string | null> = {};
+  for (const t of tasks) out[t.instanceId] = t.createdAt ?? null;
+  return out;
 }
 
 /** Default readers — the real store functions (lazy-imported so a pure-fake test never loads PG). */
 async function defaultReaders(scope: { workspace?: string } = {}): Promise<PgReportReaders> {
   const [store, runStore] = await Promise.all([import('../reproducibility/store'), import('../run-store')]);
-  const ws = scope.workspace ? { workspace: scope.workspace } : {};
+  const ws: DbScope = scope.workspace ? { workspaceId: scope.workspace } : {};
   return {
+    getPrereg: (runId) => store.getPrereg({ runId }, ws),
     listRunResults: (opts) => store.listRunResults({ ...opts, ...ws }) as unknown as Promise<TaskRunResultRow[]>,
     getRollout: (id) => store.getRollout(id, ws) as unknown as Promise<RolloutRow | null>,
     getBenchRunDetail: (id) => runStore.getBenchRunDetail(id, ws) as unknown as Promise<RunDetail | null>,
+    getTaskCreatedAt: taskCreatedAtFromTaskSet,
   };
 }
 
@@ -110,8 +136,14 @@ export async function buildBundleFromPg(
   opts: { workspace?: string; readers?: PgReportReaders; extraCallLog?: BenchReportCall[] } = {},
 ): Promise<BenchReportBundle | null> {
   const readers = opts.readers ?? (await defaultReaders({ workspace: opts.workspace }));
-  const runResults = await readers.listRunResults({ runId });
-  if (!runResults.length) return null;
+  const [runResults, prereg] = await Promise.all([
+    readers.listRunResults({ runId }), readers.getPrereg ? readers.getPrereg(runId) : null,
+  ]);
+  const assignment = resolveRunReportAssignment(runResults.map(row => ({
+    runId: row.runId, suite: row.suite, arm: row.arm, preregHash: row.preregHash ?? '',
+    modelId: row.modelId ?? 'unknown', tokensCacheWrite: row.tokensCacheWrite,
+  })), prereg);
+  if (!runResults.length && !assignment.assignedTaskIds) return null;
 
   const rolloutIds = Array.from(new Set(runResults.map((r) => r.rolloutId).filter((x): x is string => !!x)));
   const rolloutList = (
@@ -120,17 +152,31 @@ export async function buildBundleFromPg(
 
   const detail = readers.getBenchRunDetail ? await readers.getBenchRunDetail(runId).catch(() => null) : null;
 
-  const arms = Array.from(new Set(runResults.map((r) => r.arm)));
+  const arms = [...(assignment.assignedArms ?? new Set(runResults.map((r) => r.arm)))];
   const models: Record<string, string> = {};
+  if (prereg && Array.isArray(prereg.config.arms)) for (const arm of prereg.config.arms) {
+    if (arm && typeof arm === 'object' && typeof arm.id === 'string' && typeof arm.model === 'string') models[arm.id] = arm.model;
+  }
   for (const ro of rolloutList) if (!models[ro.arm]) models[ro.arm] = ro.modelId;
   for (const rr of runResults) if (!models[rr.arm] && rr.modelId) models[rr.arm] = rr.modelId;
 
+  // D-007: an undatable corpus (no reader, no task set, a load failure) leaves taskCreatedAt undefined, which the
+  // contamination policy reports as 'contamination-unknown' — the honest reading, never a silent 'post-cutoff'.
+  const taskIds = [...new Set([...(assignment.assignedTaskIds ?? []), ...runResults.map((r) => r.taskId)])];
+  const taskCreatedAt = detail?.taskSetId && readers.getTaskCreatedAt && taskIds.length
+    ? await readers.getTaskCreatedAt(detail.taskSetId, taskIds).catch(() => undefined)
+    : undefined;
+
   return bundleFromRollouts({
+    taskCreatedAt,
     runId,
-    suite: runResults[0].suite,
-    createdAt: rolloutList[0]?.createdAt ?? runResults[0].createdAt ?? new Date().toISOString(),
+    suite: assignment.suite ?? runResults[0].suite,
+    createdAt: rolloutList[0]?.createdAt ?? runResults[0]?.createdAt ?? prereg?.createdAt ?? new Date().toISOString(),
     arms,
     models,
+    prereg: prereg ? { hash: prereg.preregHash, config: prereg.config, gitCommitSha: prereg.gitCommitSha } : undefined,
+    assignedTaskIds: assignment.assignedTaskIds,
+    assignedSeeds: assignment.assignedSeeds,
     runResults: runResults.map((rr) => ({
       taskId: rr.taskId,
       arm: rr.arm,
@@ -142,6 +188,7 @@ export async function buildBundleFromPg(
       generationError: rr.generationError ?? null,
       stopReason: rr.generationStatus,
       costUsd: rr.costUsd,
+      armMeta: rr.armMeta ?? null,
       tokensIn: rr.tokensIn,
       tokensOut: rr.tokensOut,
       tokensTotal: rr.tokensTotal,

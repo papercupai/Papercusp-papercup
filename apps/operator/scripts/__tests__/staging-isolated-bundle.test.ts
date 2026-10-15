@@ -8,8 +8,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer, type AddressInfo, type Server } from "node:net";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  getHarnessAdminUrlWithSource,
+  _resetHarnessAdminUrlCacheForTests,
+} from '../../../../packages/operator-core/lib/embedded-pg-discovery';
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
 const HELPER = join(REPO_ROOT, "apps/operator/bin/bundle-host-freshness.mjs");
@@ -22,7 +27,74 @@ const STAGING_SYNC_SCRIPT = join(
   "apps/operator/bin/release/sync-staging-checkout.sh",
 );
 
-describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated tree", () => {
+describe('managed service database selection', () => {
+  let discoveryRoot: string;
+  let discoveryServer: Server;
+  let discoveryPort: number;
+
+  beforeEach(async () => {
+    discoveryServer = createServer();
+    await new Promise<void>((resolve, reject) => {
+      discoveryServer.once('error', reject);
+      discoveryServer.listen(0, '127.0.0.1', resolve);
+    });
+    discoveryPort = (discoveryServer.address() as AddressInfo).port;
+    discoveryRoot = mkdtempSync(join(tmpdir(), 'staging-pg-discovery-'));
+    writeFileSync(join(discoveryRoot, 'embedded-pg.json'), JSON.stringify({
+      url: `postgresql://fixture:fixture@127.0.0.1:${discoveryPort}/papercusp`,
+      pid: process.pid,
+    }));
+    for (const name of ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL', 'PAPERCUSP_PG_PORT']) {
+      vi.stubEnv(name, '');
+    }
+    vi.stubEnv('PAPERCUSP_HOME', discoveryRoot);
+    vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', '0');
+    _resetHarnessAdminUrlCacheForTests();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    _resetHarnessAdminUrlCacheForTests();
+    rmSync(discoveryRoot, { recursive: true, force: true });
+    await new Promise<void>((resolve) => discoveryServer.close(() => resolve()));
+  });
+
+  const managedDropIns = [
+    join(DROPIN_ROOT, '50-staging-checkout.conf'),
+    join(REPO_ROOT, 'apps/operator/scripts/systemd/papercup-staging-sync.service.d/50-script-snapshot.conf'),
+    join(REPO_ROOT, 'apps/operator/scripts/systemd/papercup-embed-sidecar.service'),
+  ];
+
+  function applyManagedDiscoveryPolicy(dropIn: string) {
+    const checkout = readFileSync(dropIn, 'utf8');
+    const match = checkout.match(/^Environment=PAPERCUSP_SKIP_PG_DISCOVERY=(.*)$/m);
+    if (match) vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', match[1]);
+    _resetHarnessAdminUrlCacheForTests();
+  }
+
+  it.each(managedDropIns)('keeps %s on native PG when desktop discovery names another database', (dropIn) => {
+    const redirected = getHarnessAdminUrlWithSource();
+    expect(redirected.source).toBe('discovery-file');
+    expect(new URL(redirected.url).port).toBe(String(discoveryPort));
+
+    applyManagedDiscoveryPolicy(dropIn);
+    const managed = getHarnessAdminUrlWithSource();
+    expect(managed.source).toBe('native-fallback');
+    expect(new URL(managed.url).port).toBe('5432');
+  });
+
+  it.each(managedDropIns)('preserves an explicitly configured database over native fallback for %s', (dropIn) => {
+    applyManagedDiscoveryPolicy(dropIn);
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://fixture:fixture@localhost:24444/explicit');
+    _resetHarnessAdminUrlCacheForTests();
+    const configured = getHarnessAdminUrlWithSource();
+    expect(configured.source).toBe('env');
+    expect(new URL(configured.url).port).toBe('24444');
+    expect(new URL(configured.url).pathname).toBe('/explicit');
+  });
+});
+
+describe("staging systemd drop-ins keep the serving alias and runtime generation aligned", () => {
   const checkout = readFileSync(
     join(DROPIN_ROOT, "50-staging-checkout.conf"),
     "utf8",
@@ -32,15 +104,18 @@ describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated
     "utf8",
   );
 
-  it("points WorkingDirectory and PAPERCUSP_INTEGRATION_ROOT at papercusp-staging", () => {
+  it("points WorkingDirectory, SPA, and initial integration root at the stable alias", () => {
     expect(checkout).toContain(
-      "WorkingDirectory=%h/papercupai-workspace/papercusp-staging/apps/operator",
+      "WorkingDirectory=%h/papercupai-workspace/papercusp-staging.current/apps/operator",
     );
     expect(checkout).toContain(
-      "PAPERCUSP_INTEGRATION_ROOT=%h/papercupai-workspace/papercusp-staging",
+      "Environment=PAPERCUSP_INTEGRATION_ROOT=%h/papercupai-workspace/papercusp-staging.current",
+    );
+    expect(checkout).toContain(
+      "Environment=PAPERCUSP_SPA_DIST=%h/papercupai-workspace/papercusp-staging.current/apps/operator-vite/dist",
     );
     expect(checkout).not.toMatch(
-      /papercupai-workspace\/papercusp\/apps\/operator/,
+      /^WorkingDirectory=.*papercupai-workspace\/papercusp\/apps\/operator/m,
     );
   });
 
@@ -48,35 +123,67 @@ describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated
   // naming the edit tree made every working-tree reader on :3170 describe the clean
   // mirror, so dev:pipeline_position reported an uncommitted edit as clean and live.
   it("declares the canonical EDIT tree separately from the served mirror", () => {
-    const envValue = (name: string): string | null =>
-      checkout.match(new RegExp(`^Environment=${name}=(\\S+)\\s*$`, "m"))?.[1] ?? null;
+    const envValue = (name: string): string | null => {
+      const prefix = "Environment=" + name + "=";
+      return checkout
+        .split("\n")
+        .find((line) => line.startsWith(prefix))
+        ?.slice(prefix.length) ?? null;
+    };
     const served = envValue("PAPERCUSP_INTEGRATION_ROOT");
     const edited = envValue("PAPERCUSP_CANONICAL_TREE");
-    expect(served).toBe("%h/papercupai-workspace/papercusp-staging");
+    expect(served).toBe("%h/papercupai-workspace/papercusp-staging.current");
     expect(edited).toBe("%h/papercupai-workspace/papercusp");
     expect(edited).not.toBe(served);
   });
 
   it("builds from that same tree and enables proof-bound reuse before plain-node start", () => {
     expect(bundle).toContain("Environment=PAPERCUSP_BUNDLE_REUSE_FRESH=1");
+    // ExecStartPre builds from the stable alias under the shared staging-sync
+    // lock, through the lock-attribution helper when the generation ships it and
+    // through a bare shared flock otherwise (WI-10005456).
     expect(bundle).toContain(
-      "ExecStartPre=/usr/bin/flock -s /tmp/papercup-staging-sync.lock %h/papercupai-workspace/papercusp-staging/apps/operator/bin/bundle-host.sh",
+      `ExecStartPre=/usr/bin/bash -c 'root="%h/papercupai-workspace/papercusp-staging.current"; helper="$$root/apps/operator/scripts/systemd/staging-lock-attribution.sh"`,
+    );
+    expect(bundle).toContain(
+      'exec /usr/bin/bash "$$helper" api-pre /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh"',
+    );
+    expect(bundle).toContain(
+      'exec /usr/bin/flock -s /tmp/papercup-staging-sync.lock "$$root/apps/operator/bin/bundle-host.sh"',
+    );
+    expect(bundle).toContain(
+      'export PAPERCUSP_INTEGRATION_ROOT="$(cd ../.. && pwd -P)"',
     );
     expect(bundle).toContain("exec node dist-host/hono-host.mjs");
     expect(bundle).toContain("PAPERCUSP_BIND_HOST=127.0.0.1");
   });
 
-  it("blocks a bundle read until the in-place checkout finishes", () => {
+  it("builds and marks an isolated candidate ready before publishing the alias", () => {
     const sync = readFileSync(STAGING_SYNC_SCRIPT, "utf8");
-    const acquire = sync.indexOf('exec 9>"/tmp/papercup-staging-sync.lock"');
-    const setup = sync.indexOf('"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    expect(sync).toContain('STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"');
+    const acquire = sync.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"');
+    const prepare = sync.indexOf('prepare_staging_candidate "$target"');
+    const build = sync.indexOf(
+      'prebuild_staging_host_bundle "$SYNC_ROOT" "$bundle_script"',
+    );
+    const ready = sync.indexOf('mark_staging_candidate_ready "$target"');
+    const publish = sync.indexOf(
+      'publish_staging_generation "$STAGING_CANDIDATE_ROOT"',
+    );
     const downgrade = sync.indexOf("flock -s 9");
-    const prebuild = sync.indexOf('PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$STAGING_BUNDLE_SCRIPT"');
     expect(acquire).toBeGreaterThanOrEqual(0);
-    expect(setup).toBeGreaterThan(acquire);
-    expect(downgrade).toBeGreaterThan(setup);
-    expect(prebuild).toBeGreaterThan(downgrade);
-    expect(bundle).toContain("/usr/bin/flock -s /tmp/papercup-staging-sync.lock");
+    expect(prepare).toBeGreaterThan(acquire);
+    expect(sync).toContain(
+      'PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT"',
+    );
+    expect(sync).toContain('--release "$STAGING_CANDIDATE_ROOT"');
+    expect(build).toBeGreaterThan(prepare);
+    expect(ready).toBeGreaterThan(build);
+    expect(publish).toBeGreaterThan(ready);
+    expect(downgrade).toBeGreaterThan(publish);
+    expect(bundle).toContain(
+      "/usr/bin/flock -s /tmp/papercup-staging-sync.lock",
+    );
   });
 });
 
@@ -157,5 +264,72 @@ describe("bundle-host-freshness proof", () => {
     expect(run("stamp").status).toBe(0);
     writeFileSync(join(repo, "dist-host", "sql", "001.sql"), "select 2;\n");
     expect(run("check").status).not.toBe(0);
+  });
+
+  // EI-24867768475421999: a 2026-10-02 stamp failure logged only
+  // "[bundle-freshness] spawnSync git ETIMEDOUT", which named neither the git
+  // call nor how long it ran, and the missing proof then made staging-sync
+  // discard the whole generation.
+  it("names the failing git command, its elapsed time and its bound", () => {
+    const notRepo = mkdtempSync(join(tmpdir(), "bundle-freshness-norepo-"));
+    try {
+      const r = spawnSync(
+        process.execPath,
+        [HELPER, "stamp", "--repo-root", notRepo, "--entry", entry, "--outfile", outfile, "--manifest", manifest],
+        // The ceiling keeps git from discovering an enclosing repository when
+        // TMPDIR happens to sit inside a checkout.
+        { encoding: "utf8", env: { ...process.env, GIT_CEILING_DIRECTORIES: tmpdir() } },
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(
+        /\[bundle-freshness\] git rev-parse --show-toplevel failed after \d+ms \(timeout 30000ms\): exit 128/,
+      );
+    } finally {
+      rmSync(notRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds the cold-index status call separately from the plumbing hang guard", () => {
+    const bin = mkdtempSync(join(tmpdir(), "bundle-freshness-fakegit-"));
+    try {
+      // Fake git: rev-parse reports the requested root; status fails fast.
+      writeFileSync(
+        join(bin, "git"),
+        '#!/bin/sh\ncase "$3" in\n  rev-parse) printf \'%s\\n\' "$2" ;;\n  status) echo boom >&2; exit 2 ;;\n  *) exit 3 ;;\nesac\n',
+        { mode: 0o755 },
+      );
+      const r = spawnSync(
+        process.execPath,
+        [HELPER, "stamp", "--repo-root", repo, "--entry", entry, "--outfile", outfile, "--manifest", manifest],
+        { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` } },
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain(
+        "git status --porcelain=v1 --untracked-files=no --ignore-submodules=none failed after",
+      );
+      expect(r.stderr).toMatch(/\(timeout 300000ms\): exit 2 — boom/);
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("bundle-host freshness helper paths", () => {
+  const bundleHost = readFileSync(
+    join(REPO_ROOT, "apps/operator/bin/bundle-host.sh"),
+    "utf8",
+  );
+
+  it("passes relative or absolute paths unchanged to both freshness operations", () => {
+    // The verifier supplies an absolute dist-verify outfile. Prefixing PWD to
+    // that value creates an invalid double-rooted path and makes the optional
+    // freshness stamp fail open, so both check and stamp must pass the original
+    // arguments to the Node helper (which resolves relative paths itself).
+    expect(bundleHost.match(/--entry "\$ENTRY"/g)).toHaveLength(2);
+    expect(bundleHost.match(/--outfile "\$OUTFILE"/g)).toHaveLength(2);
+    expect(bundleHost.match(/--manifest "\$FRESH_MARKER"/g)).toHaveLength(2);
+    expect(bundleHost).not.toContain('--entry "$PWD/$ENTRY"');
+    expect(bundleHost).not.toContain('--outfile "$PWD/$OUTFILE"');
+    expect(bundleHost).not.toContain('--manifest "$PWD/$FRESH_MARKER"');
   });
 });

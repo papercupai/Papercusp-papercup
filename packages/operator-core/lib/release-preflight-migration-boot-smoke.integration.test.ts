@@ -40,7 +40,7 @@ import { copyFile, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 // Types come from the package's generated `src/index.d.ts` (EI-18804531117413708).
 // This was a verbatim copy of db-boot-migrate.ts's `@ts-expect-error` +
 // hand-written `ApplyPendingMigrations` cast; both are gone now that the real
@@ -73,6 +73,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -215,6 +216,7 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
     const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
     try {
       await admin.unsafe(`CREATE DATABASE "${seededDb}"`);
+      await markManagedTestDatabase(admin, seededDb);
     } finally {
       await admin.end({ timeout: 5 });
     }
@@ -333,6 +335,7 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
     const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
     try {
       await admin.unsafe(`CREATE DATABASE "${depDb}"`);
+      await markManagedTestDatabase(admin, depDb);
     } finally {
       await admin.end({ timeout: 5 });
     }

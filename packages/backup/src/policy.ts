@@ -42,12 +42,18 @@ export const SELF_EXCLUSION_RULES = [
   '.zz-recover-*', '.half-restored-*', '.audit-wipe-*',
 ];
 
-export const IGNORE_PATTERNS = [
+/** Rebuildable build/package artifacts; unlike self-exclusions these are caches. */
+export const REBUILDABLE_DIRECTORY_PATTERNS = [
   'node_modules', '.next', 'out', 'target', 'dist', 'build', '.turbo', '.cache',
   '.svelte-kit', '.nuxt', '.angular', '.vite', '.parcel-cache',
   '.yarn/cache', '.pnpm-store', '.bun',
   'coverage', '.nyc_output',
-  '__pycache__', '*.pyc', '.venv', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+  '__pycache__', '.venv', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+];
+
+export const IGNORE_PATTERNS = [
+  ...REBUILDABLE_DIRECTORY_PATTERNS,
+  '*.pyc',
   '.gradle', '.terraform',
   // Transactional writers use a `.tmp` suffix until an artifact is complete.
   // Never snapshot one: a failed PG dump used to leave a ~1GB

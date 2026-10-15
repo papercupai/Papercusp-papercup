@@ -36,7 +36,7 @@ export default defineTool({
     await exec('git', ['config', '--global', 'user.name', args.name], { timeout: 3000 });
     await exec('git', ['config', '--global', 'user.email', args.email], { timeout: 3000 });
     return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, name: args.name, email: args.email }) }],
+      data: { ok: true, name: args.name, email: args.email },
     };
   },
 });

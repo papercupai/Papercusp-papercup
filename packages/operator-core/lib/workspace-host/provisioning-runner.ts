@@ -44,12 +44,19 @@ import {
   type WorkspaceHostSpendSettlement,
 } from '@papercusp/deployment-driver';
 import { describeFetchError, isTransientNetworkError } from '../loopback-fetch';
-import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
+import {
+  resolveGcpWorkspaceHostManagedNetworkInventoryNames,
+  type GcpWorkspaceHostInventoryRequest,
+} from './gcp-provider';
+import type { AwsWorkspaceHostInventoryRequest } from './aws-safety';
+import { findWorkspaceHostCensusProfile, workspaceHostCensusProfile } from './census-profiles';
 import { workspaceHostSpecColumns } from './desired-spec-host-row';
 import {
-  censusGcpWorkspaceHostResources,
-  gcpWorkspaceHostLabelValue,
-  type GcpWorkspaceHostResourceCensus,
+  censusManagedWorkspaceHostResources,
+  type ManagedWorkspaceHostResourceObservation,
+  type WorkspaceHostInventoryEvidence,
+  type WorkspaceHostResourceCensus,
+  type WorkspaceHostResourceCensusInput,
 } from './gcp-safety';
 import {
   appendWorkspaceHostEvent,
@@ -64,10 +71,12 @@ import {
   updateWorkspaceHostOperation,
   upsertWorkspaceHost,
   upsertWorkspaceHostResourceCheckpoint,
+  WorkspaceHostIdSpentError,
 } from './observability-store';
 import {
   renderWorkspaceHostProvisionBootstrap,
   resolveWorkspaceHostProvisionBootstrapProfile,
+  type WorkspaceHostProvisionBootstrapReleaseOverride,
 } from './provision-bootstrap';
 import {
   workspaceHostReleaseClosurePointer,
@@ -143,9 +152,16 @@ export interface ControllerWorkspaceHostBootstrap {
 /** Resolve script and the closed signed-runtime identity from one trusted controller profile. */
 export async function resolveControllerWorkspaceHostBootstrap(
   hostId: string,
-  options: { statusChannel?: WorkspaceHostBootstrapStatusChannel } = {},
+  options: {
+    statusChannel?: WorkspaceHostBootstrapStatusChannel;
+    bootstrapReleaseOverride?: WorkspaceHostProvisionBootstrapReleaseOverride;
+  } = {},
 ): Promise<ControllerWorkspaceHostBootstrap> {
-  const profile = await resolveWorkspaceHostProvisionBootstrapProfile();
+  const profile = await resolveWorkspaceHostProvisionBootstrapProfile({
+    ...(options.bootstrapReleaseOverride
+      ? { bootstrapReleaseOverride: options.bootstrapReleaseOverride }
+      : {}),
+  });
   return {
     script: renderWorkspaceHostProvisionBootstrap(hostId, profile, options),
     runtimeRelease: workspaceHostRuntimeRelease(
@@ -160,6 +176,12 @@ export async function resolveControllerWorkspaceHostBootstrap(
 export async function renderControllerWorkspaceHostBootstrap(hostId: string): Promise<string> {
   return (await resolveControllerWorkspaceHostBootstrap(hostId)).script;
 }
+
+/**
+ * The desired revision a provision runs at when its input names none. Exported so the provision
+ * route's admission-time spent-id check (WI-10006929) evaluates the same revision the workflow will.
+ */
+export const WORKSPACE_HOST_PROVISION_DEFAULT_REVISION = 1;
 
 export class WorkspaceHostProvisioningRequestError extends Error {
   readonly problems: readonly string[];
@@ -284,6 +306,8 @@ export interface RunWorkspaceHostProvisioningInput {
   desiredRevision?: number;
   /** Test/adapter seam; production derives this from the same trusted profile as the script. */
   runtimeRelease?: WorkspaceHostRuntimeRelease;
+  /** Internal controller-selected release pin for this operation; not accepted by HTTP routes. */
+  bootstrapReleaseOverride?: WorkspaceHostProvisionBootstrapReleaseOverride;
   /**
    * Test seam for the controller-authored host bootstrap. Production resolves the controller's
    * own trusted release and SSH public key; see `provision-bootstrap.ts`. Consulted only when the
@@ -434,7 +458,7 @@ export type WorkspaceHostDestroyCanaryEvidence =
 export interface WorkspaceHostDestroyEvidenceResult {
   completionReceipt: WorkspaceHostCanaryCompletionReceipt;
   orphanCensus: WorkspaceHostCanaryOrphanCensus;
-  providerCensus: GcpWorkspaceHostResourceCensus;
+  providerCensus: WorkspaceHostResourceCensus;
   budgetEvidenceRef: string;
   preRunZeroBaseline: WorkspaceHostCanaryCostEvidence;
   manualDestroyReceipts: readonly WorkspaceHostManualDestroyReceipt[];
@@ -696,7 +720,7 @@ async function verifyLegacyDestroyPopulation(
   purpose: string,
 ): Promise<void> {
   const inventory = await inventoryProvider(input.provider).inventoryManagedResources(
-    deterministicInventoryRequest(
+    destroyInventoryRequest(
       input,
       target,
       target.resources.map((entry) => entry.resource),
@@ -708,7 +732,7 @@ async function verifyLegacyDestroyPopulation(
   // we are about to mutate is both present in the durable graph and uniquely identified by the
   // provider read; extra managed resources, missing rows, and mislabeled VM/disk resources all
   // fail closed before the first delete call.
-  const census = censusGcpWorkspaceHostResources({
+  const census = censusDestroyPopulation(target, {
     hostId: input.hostId,
     workspaceId: input.workspaceId,
     expected: target.resources.map((entry) => entry.resource),
@@ -721,7 +745,7 @@ async function verifyLegacyDestroyPopulation(
     throw new Error('legacy canary destroy requires a clean pre-delete provider identity census');
   }
 
-  const expectedPurpose = gcpWorkspaceHostLabelValue(purpose);
+  const expectedPurpose = workspaceHostCensusProfile(target.target).labelValue(purpose);
   const labelEnumerated = inventory.observed.filter((entry) =>
     ['vm', 'disk', 'snapshot'].includes(entry.resource.kind),
   );
@@ -781,8 +805,33 @@ function destroyResourceForStep(
   return resource;
 }
 
+/**
+ * The controller-independent inventory request the destroy census sends. GCP needs the deterministic
+ * shared-network names on top of the common scope; AWS reads every managed kind by tag, so its
+ * request is the common scope alone (`projectId` = the AWS account id).
+ */
+type WorkspaceHostInventoryRequest = GcpWorkspaceHostInventoryRequest | AwsWorkspaceHostInventoryRequest;
+
+interface WorkspaceHostInventorySnapshot {
+  complete: boolean;
+  observed: readonly ManagedWorkspaceHostResourceObservation[];
+  inventoryEvidence: readonly WorkspaceHostInventoryEvidence[];
+}
+
 interface WorkspaceHostInventoryProvider extends WorkspaceHostProvider {
-  inventoryManagedResources(request: GcpWorkspaceHostInventoryRequest): Promise<GcpWorkspaceHostInventorySnapshot>;
+  inventoryManagedResources(request: WorkspaceHostInventoryRequest): Promise<WorkspaceHostInventorySnapshot>;
+}
+
+/**
+ * Census one destroy population with the profile of the provider that owns it. The runner never
+ * judges a provider's resources by another provider's kinds or label keys: a host whose target has
+ * no census profile is refused before any provider call (see the destroy gate).
+ */
+function censusDestroyPopulation(
+  target: StoredWorkspaceHostDestroyTarget,
+  input: WorkspaceHostResourceCensusInput,
+): WorkspaceHostResourceCensus {
+  return censusManagedWorkspaceHostResources(input, workspaceHostCensusProfile(target.target));
 }
 
 function inventoryProvider(provider: WorkspaceHostProvider): WorkspaceHostInventoryProvider {
@@ -956,7 +1005,7 @@ export async function runWorkspaceHostProvisioning(
   const operationId = nonEmpty(input.operationId ?? randomUUID(), 'operationId');
   const hostId = nonEmpty(input.desired.hostId, 'desired.hostId');
   const controllerAuthority = input.controllerAuthority ?? DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY;
-  const desiredRevision = input.desiredRevision ?? 1;
+  const desiredRevision = input.desiredRevision ?? WORKSPACE_HOST_PROVISION_DEFAULT_REVISION;
   const store = controllerStore(input.store ?? DEFAULT_STORE, controllerAuthority, operationId);
 
   const requestProblems: string[] = [];
@@ -1005,7 +1054,12 @@ export async function runWorkspaceHostProvisioning(
         const statusChannel = input.provider.capabilities.lifecycle.bootstrapStatusChannel;
         const resolved = await resolveControllerWorkspaceHostBootstrap(
           hostId,
-          statusChannel ? { statusChannel } : {},
+          {
+            ...(statusChannel ? { statusChannel } : {}),
+            ...(input.bootstrapReleaseOverride
+              ? { bootstrapReleaseOverride: input.bootstrapReleaseOverride }
+              : {}),
+          },
         );
         hostBootstrapScript = resolved.script;
         runtimeRelease = resolved.runtimeRelease;
@@ -1072,7 +1126,8 @@ export async function runWorkspaceHostProvisioning(
   // No checkpoints means no provider mutation has been admitted for this operation. Persist the
   // exact desired spec before creating the operation/resource graph it governs.
   if (checkpoints.length === 0) {
-    await store.upsertHost({
+    try {
+      await store.upsertHost({
       // The spec-derived columns come from the ONE shared projection, so this row and the
       // one hosted admission writes before it can never describe different hosts.
       ...workspaceHostSpecColumns(input.desired),
@@ -1091,7 +1146,19 @@ export async function runWorkspaceHostProvisioning(
       observedRevision: 0,
       ...(runtimeRelease ? { runtimeRelease } : {}),
       controllerAuthority,
-    });
+      // WI-10006863: refuse a spent id BEFORE the row is rewritten. Without this the upsert set a
+      // destroyed host back to running/provisioning at revision 1, and only then did the fence
+      // in beginOperation refuse, leaving a retired host that claimed to be provisioning.
+      firstOperation: { operationId },
+      });
+    } catch (error) {
+      // A spent id is the caller's error (pick a new host id), never a transient one: retrying
+      // the same request can only be refused again.
+      if (error instanceof WorkspaceHostIdSpentError) {
+        throw new WorkspaceHostProvisioningRequestError([error.message]);
+      }
+      throw error;
+    }
   }
 
   await store.beginOperation({
@@ -1409,7 +1476,7 @@ function resourceLabel(resource: WorkspaceHostResourceRef): string {
  * be told apart from a genuine leak without re-deriving the whole run by hand.
  */
 function describeUncleanDestroyCensus(
-  providerCensus: GcpWorkspaceHostResourceCensus,
+  providerCensus: WorkspaceHostResourceCensus,
   orphanCensus: WorkspaceHostCanaryOrphanCensus | undefined,
   attempts: number,
   waitedMs: number,
@@ -1455,27 +1522,60 @@ function describeUncleanDestroyCensus(
   return `Workspace-host destroy ${which} census is not clean after ${attempts} read(s) over ${waitedMs}ms:${detail}`;
 }
 
+/**
+ * The destroy census's inventory request for this host's provider. AWS enumerates every managed kind
+ * by tag, so it needs only the account (the registered resources' parent, else the stored scope), the
+ * region and the workspace; GCP additionally names its deterministic shared-network identities.
+ */
+function destroyInventoryRequest(
+  input: RunWorkspaceHostDestroyInput,
+  target: StoredWorkspaceHostDestroyTarget,
+  destroyTargets: readonly WorkspaceHostResourceRef[],
+): WorkspaceHostInventoryRequest {
+  if (target.target === 'aws') {
+    const accountId =
+      destroyTargets.find((resource) => resource.parentProviderId)?.parentProviderId ?? target.desired.scope.id;
+    return {
+      projectId: nonEmpty(accountId, 'destroy census AWS account id'),
+      region: nonEmpty(target.desired.region, 'destroy census region'),
+      workspaceId: input.workspaceId,
+    };
+  }
+  return deterministicInventoryRequest(input, target, destroyTargets);
+}
+
 function deterministicInventoryRequest(
   input: RunWorkspaceHostDestroyInput,
   target: StoredWorkspaceHostDestroyTarget,
   destroyTargets: readonly WorkspaceHostResourceRef[],
 ): GcpWorkspaceHostInventoryRequest {
-  const names = (kind: string): string[] =>
+  const registeredNames = (kind: string): string[] =>
     destroyTargets
       .filter((resource) => resource.kind === kind)
       .map((resource) => resource.providerId)
       .sort();
-  const networks = names('network');
-  const subnetworks = names('subnetwork');
-  const firewalls = names('firewall');
-  const routers = names('router');
+  const deterministicKinds = ['network', 'subnetwork', 'firewall', 'router', 'nat'];
+  const needsDesiredIdentities = deterministicKinds.some((kind) => registeredNames(kind).length === 0);
+  const desiredNames = needsDesiredIdentities
+    ? resolveGcpWorkspaceHostManagedNetworkInventoryNames(target.desired)
+    : undefined;
+  const names = (kind: string, desired: readonly string[] = []): string[] =>
+    [...new Set([...registeredNames(kind), ...desired])].sort();
+  const networks = names('network', desiredNames?.networks);
+  const subnetworks = names('subnetwork', desiredNames?.subnetworks);
+  const firewalls = names('firewall', desiredNames?.firewalls);
+  const routers = names('router', desiredNames?.routers);
+  const inferredRouterName = destroyTargets.find((candidate) => candidate.kind === 'router')?.providerId ?? routers[0] ?? '';
   const natResources = destroyTargets.filter((resource) => resource.kind === 'nat');
-  const nats = natResources
-    .map((resource) => ({
-      routerName: destroyTargets.find((candidate) => candidate.kind === 'router')?.providerId ?? '',
-      name: resource.providerId,
-    }))
-    .sort((left, right) => left.name.localeCompare(right.name));
+  const natsByIdentity = new Map<string, { routerName: string; name: string }>();
+  for (const resource of natResources) {
+    const entry = { routerName: inferredRouterName, name: resource.providerId };
+    natsByIdentity.set(`${entry.routerName}:${entry.name}`, entry);
+  }
+  for (const entry of desiredNames?.nats ?? []) {
+    natsByIdentity.set(`${entry.routerName}:${entry.name}`, { ...entry });
+  }
+  const nats = [...natsByIdentity.values()].sort((left, right) => left.name.localeCompare(right.name));
   const missing = [
     ['network', networks],
     ['subnetwork', subnetworks],
@@ -1585,18 +1685,18 @@ async function finalizeDestroyEvidence(
   const pollMs = Math.max(1, Math.min(DESTROY_CENSUS_POLL_MS, Math.floor(settleMs / 4)));
   const censusStartedAtMs = Date.now();
   let observed: readonly { resource: WorkspaceHostResourceRef; tags: Readonly<Record<string, string>> }[] = [];
-  let providerCensus: GcpWorkspaceHostResourceCensus;
+  let providerCensus: WorkspaceHostResourceCensus;
   let orphanCensus: WorkspaceHostCanaryOrphanCensus;
   let attempts = 0;
   for (;;) {
     input.signal?.throwIfAborted();
     attempts += 1;
     const inventory = await inventoryProvider(input.provider).inventoryManagedResources(
-      deterministicInventoryRequest(input, target, destroyTargets),
+      destroyInventoryRequest(input, target, destroyTargets),
     );
     if (!inventory.complete) throw new Error('Provider managed-resource inventory is incomplete');
     observed = inventory.observed.map((entry) => ({ resource: entry.resource, tags: entry.labels }));
-    providerCensus = censusGcpWorkspaceHostResources({
+    providerCensus = censusDestroyPopulation(target, {
       hostId: input.hostId,
       workspaceId: input.canary.workspaceId,
       expected: [],
@@ -1655,7 +1755,7 @@ async function finalizeDestroyEvidence(
 
 interface WorkspaceHostOrdinaryDestroyEvidence {
   completedAt: string;
-  providerCensus: GcpWorkspaceHostResourceCensus;
+  providerCensus: WorkspaceHostResourceCensus;
   recoverability: {
     kind: 'snapshot' | 'backup' | 'none';
     label: string;
@@ -1699,16 +1799,16 @@ async function finalizeOrdinaryDestroy(
   const settleMs = input.censusSettleMs ?? DESTROY_CENSUS_SETTLE_MS;
   const pollMs = Math.max(1, Math.min(DESTROY_CENSUS_POLL_MS, Math.floor(settleMs / 4)));
   const startedAt = Date.now();
-  let providerCensus: GcpWorkspaceHostResourceCensus;
+  let providerCensus: WorkspaceHostResourceCensus;
   let attempts = 0;
   for (;;) {
     input.signal?.throwIfAborted();
     attempts += 1;
     const inventory = await inventoryProvider(input.provider).inventoryManagedResources(
-      deterministicInventoryRequest(input, target, destroyTargets),
+      destroyInventoryRequest(input, target, destroyTargets),
     );
     if (!inventory.complete) throw new Error('Provider managed-resource inventory is incomplete');
-    providerCensus = censusGcpWorkspaceHostResources({
+    providerCensus = censusDestroyPopulation(target, {
       hostId: input.hostId,
       workspaceId: input.workspaceId,
       expected: preserved,
@@ -1772,7 +1872,10 @@ export async function runWorkspaceHostDestroy(
     throw new WorkspaceHostProvisioningRequestError(['canary destroy requires disposition=discard']);
   }
 
-  const target = await baseStore.readTarget(workspaceId, hostId);
+  // WI-10007034: plan against the population as it stood when THIS operation began. A resumed turn
+  // (DBOS re-runs the step after a bg-host restart) otherwise sees its own confirmed deletions as
+  // unregistered, re-plans fewer steps, and beginOperation refuses the changed request.
+  const target = await baseStore.readTarget(workspaceId, hostId, undefined, { asOfOperationStart: operationId });
   if (!target) throw new WorkspaceHostProvisioningRequestError([`workspace host '${hostId}' was not found`]);
   if (target.id !== hostId || target.desired.hostId !== hostId) {
     throw new WorkspaceHostProvisioningRequestError(['stored workspace-host identity does not match destroy hostId']);
@@ -1791,11 +1894,23 @@ export async function runWorkspaceHostDestroy(
   if (target.observedState === 'absent') {
     throw new WorkspaceHostProvisioningRequestError(['workspace host is already absent']);
   }
-  if (target.resources.length === 0) {
-    throw new WorkspaceHostProvisioningRequestError(['workspace host has no registered provider resource population']);
+  if (target.resources.length === 0 && input.canary) {
+    throw new WorkspaceHostProvisioningRequestError([
+      'canary destroy requires a non-empty registered resource population for completion evidence; to recover an empty host, submit a discard destroy without the canary block and with a fresh operation id to run a census-only teardown',
+    ]);
   }
-  if (target.target !== 'gcp' || target.desired.target !== 'gcp' || input.provider.target !== 'gcp') {
-    throw new WorkspaceHostProvisioningRequestError(['production workspace-host destroy is implemented for GCP only']);
+  // A destroy is only as safe as its terminal census, so it is offered exactly for the providers that
+  // have a controller-independent census profile (GCP, AWS), and only when the stored host, its desired
+  // spec and the injected provider all name that same provider.
+  if (!findWorkspaceHostCensusProfile(target.target)) {
+    throw new WorkspaceHostProvisioningRequestError([
+      `production workspace-host destroy is not implemented for provider '${target.target}' (no controller-independent census)`,
+    ]);
+  }
+  if (target.desired.target !== target.target || input.provider.target !== target.target) {
+    throw new WorkspaceHostProvisioningRequestError([
+      'workspace-host destroy provider does not match the stored host provider',
+    ]);
   }
   if (input.connection.target !== target.target) {
     throw new WorkspaceHostProvisioningRequestError(['workspace-host connection target does not match stored host']);
@@ -1815,6 +1930,7 @@ export async function runWorkspaceHostDestroy(
         workspaceId,
         hostId,
         operationId,
+        provider: target.target,
         billing,
       });
     } catch (error) {
@@ -1830,6 +1946,11 @@ export async function runWorkspaceHostDestroy(
   // the host row to it, so `target.desiredRevision + 1` would name the NEXT revision: a different
   // plan identity than the persisted operation row, refused by beginOperation as a stale fence.
   const persistedPlan = (await baseStore.readOperationPlan(workspaceId, operationId)) as { planId?: unknown } | null;
+  const emptyPopulationCensusOnly =
+    target.resources.length === 0 &&
+    (persistedPlan === null ||
+      (typeof persistedPlan.planId === 'string' &&
+        persistedPlan.planId.startsWith('workspace-host-empty-destroy-census:')));
   const desiredRevision =
     input.desiredRevision ?? workspaceHostPlanDesiredRevision(persistedPlan?.planId) ?? target.desiredRevision + 1;
   const store = controllerDestroyStore(baseStore, controllerAuthority, operationId);
@@ -1855,19 +1976,29 @@ export async function runWorkspaceHostDestroy(
   } as const;
   let plan: WorkspaceHostPlan;
   try {
-    plan = bindWorkspaceHostPlanRevision(await input.provider.plan(
-      {
-        action: 'destroy',
-        operationId,
-        idempotencyKey: `workspace-host:${workspaceId}:${hostId}:revision:${desiredRevision}:${operationId}:destroy`,
-        host,
-        // A backup is already durable and verified above; asking the provider to preserve again
-        // would create an unrelated snapshot and make the recorded backup disposition untrue.
-        disposition: input.disposition === 'backup' ? 'discard' : input.disposition,
-        confirmation: input.confirmation,
-      },
-      context,
-    ), desiredRevision);
+    plan = emptyPopulationCensusOnly
+      ? bindWorkspaceHostPlanRevision({
+          planId: `workspace-host-empty-destroy-census:${operationId}`,
+          operationId,
+          target: target.target,
+          hostId,
+          generatedAt: new Date().toISOString(),
+          steps: [],
+          warnings: ['No resources are registered; only a complete clean provider census can retire this host.'],
+        }, desiredRevision)
+      : bindWorkspaceHostPlanRevision(await input.provider.plan(
+          {
+            action: 'destroy',
+            operationId,
+            idempotencyKey: `workspace-host:${workspaceId}:${hostId}:revision:${desiredRevision}:${operationId}:destroy`,
+            host,
+            // A backup is already durable and verified above; asking the provider to preserve again
+            // would create an unrelated snapshot and make the recorded backup disposition untrue.
+            disposition: input.disposition === 'backup' ? 'discard' : input.disposition,
+            confirmation: input.confirmation,
+          },
+          context,
+        ), desiredRevision);
   } catch (error) {
     // Same rule as the bootstrap seam: a transport failure while planning is not evidence that
     // the request is invalid, so it stays retryable rather than terminating the workflow.
@@ -1943,7 +2074,12 @@ export async function runWorkspaceHostDestroy(
   }
 
   for (let transition = 0; transition < MAX_CONTROLLER_TRANSITIONS_PER_REQUEST; transition += 1) {
-    const action = nextWorkspaceHostControllerAction(workflow, checkpoints);
+    // The shared workflow oracle deliberately rejects an empty destroy graph. This narrow runner
+    // path is different: it has no provider mutation to confirm and can complete only through the
+    // ordinary finalizer's complete, clean provider census below.
+    const action = emptyPopulationCensusOnly
+      ? ({ kind: 'complete', status: 'succeeded' } as const)
+      : nextWorkspaceHostControllerAction(workflow, checkpoints);
     if (action.kind === 'record-plan') {
       for (const resource of action.resources) {
         const providerResource = resource.deleteOnDestroy
@@ -2110,6 +2246,7 @@ export async function runWorkspaceHostDestroy(
           const census = workspaceHostResourceCensusOutcome({
             subject: { workspaceId, hostId },
             disposition: input.disposition,
+            provider: target.target,
             census: evidence?.providerCensus ?? ordinaryEvidence!.providerCensus,
           });
           await release.settle('resource-census', census.outcome, census.evidenceRefs);

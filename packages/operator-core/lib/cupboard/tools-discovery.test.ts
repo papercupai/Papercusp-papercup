@@ -21,6 +21,7 @@ import {
   buildToolProvenance,
   resolveToolEntries,
   schemaToText,
+  UNION_CONDITIONAL_HINT_MAX_CHARS,
   type ToolMetaIndex,
   unionConditionalHint,
 } from './tools-discovery';
@@ -315,10 +316,8 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(text).toContain('constraint:addressee (');
     expect(text).toContain('when from=contact => contactExternalId required');
     expect(text).toContain('when from!=contact => contactExternalId forbidden');
-    expect(text).toContain('when from=thread-participant => source required');
-    expect(text).toContain('when from!=thread-participant => source forbidden');
-    expect(text).toContain('when from=thread-participant => externalId required');
-    expect(text).toContain('when from!=thread-participant => externalId forbidden');
+    expect(text).toContain('when from=thread-participant => source,externalId required');
+    expect(text).toContain('when from!=thread-participant => source,externalId forbidden');
   });
 
   it('preserves explicit discriminator-dependent required and forbidden fields', () => {
@@ -345,6 +344,35 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(schemaToText({ anyOf: branches })).toContain(
       'when kind=undecidable => settledBy required; when kind!=undecidable => settledBy forbidden',
     );
+  });
+
+  it('groups matching branch requirements before the compact union-hint cap', () => {
+    const branches = [
+      {
+        additionalProperties: false,
+        required: ['kind', 'workItem'],
+        properties: { kind: { const: 'work-item' }, workItem: { type: 'string' } },
+      },
+      {
+        additionalProperties: false,
+        required: ['kind', 'fleet'],
+        properties: { kind: { const: 'fleet-leader' }, fleet: { type: 'string' } },
+      },
+      {
+        additionalProperties: false,
+        required: ['kind', 'turnRef', 'quote'],
+        properties: {
+          kind: { const: 'owner-turn' },
+          turnRef: { type: 'string' },
+          quote: { type: 'string' },
+        },
+      },
+    ];
+
+    const hint = unionConditionalHint(branches);
+    expect(hint).toContain('when kind=owner-turn => turnRef,quote required');
+    expect(hint).toContain('when kind!=owner-turn => turnRef,quote forbidden');
+    expect(hint.length).toBeLessThanOrEqual(UNION_CONDITIONAL_HINT_MAX_CHARS);
   });
 
   it('treats omitted fields as forbidden only for closed union branches', () => {
@@ -393,6 +421,67 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
 
     expect(unionConditionalHint(branches)).toBe('when mode=resubmit => harness forbidden');
     expect(schemaToText({ oneOf: branches })).toContain('when mode=resubmit => harness forbidden');
+  });
+
+  it('retains every conditional rule beyond the former four-relation cap', () => {
+    const operations = ['op-1', 'op-2', 'op-3', 'op-4', 'op-5', 'op-6'];
+    const branches = operations.map((operation, selectedIndex) => {
+      const properties: Record<string, unknown> = { op: { const: operation } };
+      const required = ['op'];
+      operations.forEach((_value, index) => {
+        const field = 'field' + (index + 1);
+        if (index === selectedIndex) {
+          properties[field] = { type: 'string' };
+          required.push(field);
+        } else {
+          properties[field] = { not: {} };
+        }
+      });
+      return { additionalProperties: false, required, properties };
+    });
+
+    const hint = unionConditionalHint(branches);
+    for (let index = 0; index < operations.length; index += 1) {
+      const selected = operations[index]!;
+      expect(hint).toContain(
+        'when op=' + selected + ' => field' + (index + 1) + ' required; when op!=' + selected +
+          ' => field' + (index + 1) + ' forbidden',
+      );
+    }
+    expect(hint).not.toContain('conditional branch rules omitted');
+    expect(hint.length).toBeLessThanOrEqual(UNION_CONDITIONAL_HINT_MAX_CHARS);
+  });
+
+  it('signals when conditional rules cannot fit instead of returning a partial contract', () => {
+    const longField = 'field'.repeat(300);
+    const hint = unionConditionalHint([
+      {
+        additionalProperties: false,
+        required: ['op', longField],
+        properties: { op: { const: 'write' }, [longField]: { type: 'string' } },
+      },
+      {
+        additionalProperties: false,
+        required: ['op'],
+        properties: { op: { const: 'read' }, [longField]: { not: {} } },
+      },
+    ]);
+
+    expect(hint).toBe('conditional branch rules omitted; request full schema');
+  });
+
+  it('signals when a discriminator has too many values for a complete conditional rule', () => {
+    const operations = Array.from({ length: 10 }, (_value, index) => 'op-' + index);
+    const branches = operations.map((operation, index) => ({
+      additionalProperties: false,
+      required: ['op'],
+      properties: {
+        op: { const: operation },
+        target: index === 0 ? { type: 'string' } : { not: {} },
+      },
+    }));
+
+    expect(unionConditionalHint(branches)).toBe('conditional branch rules omitted; request full schema');
   });
 
   describe('EI-13181: numeric/length bounds (same lossy-discovery class as EI-13164 — a min/max is dropped just like an enum was)', () => {

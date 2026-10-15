@@ -22,9 +22,9 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../test/_work-items-schema";
+import { applyClaimPathReadDeps, HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../test/_work-items-schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -65,6 +65,13 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('delegated-tasks');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // Creation and resolution emit/retire lifecycle events through the same
+  // substrate as claims. Provision the maintained schema rather than a local
+  // table slice that falls behind the event engine's next dependency.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  // Settled-event notification writers seal messages against the real privacy
+  // ledger even when the fixture contains no personal disclosures.
+  await applyDisclosureLedgerForTest(db.sql);
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
@@ -168,6 +175,115 @@ describe('createDelegatedTask — a delegated task IS a work_item (D-001)', () =
     const mine = await wi.listWorkItems({ assignedBy: dt.OPERATOR_COORD_OWNER, kind: 'task' });
     expect(mine.map((w) => w.id)).toEqual([task.id]);
   });
+});
+
+describe('delegated-task fixture — real schema failure controls', () => {
+  it('isolates missing event-await warnings from archive/resolve state and restores lifecycle retirement', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await db.sql`ALTER TABLE harness_shared.event_awaits RENAME TO event_awaits_unavailable`;
+    try {
+      const archived = await dt.createDelegatedTask({ title: 'missing archive', agentSessionId: 'missing-archive', origin: 'voice', backend: 'omp' });
+      const resolved = await dt.createDelegatedTask({ title: 'missing resolve', agentSessionId: 'missing-resolve', origin: 'voice', backend: 'omp' });
+      await vi.waitFor(() => expect(warn.mock.calls.some((args) => args.join(' ').includes('event_awaits'))).toBe(true));
+      expect(warn.mock.calls.every((args) => args.join(' ').includes('event_awaits'))).toBe(true);
+
+      // These adapters swallow lifecycle errors. Measure their actual state,
+      // rather than assuming the warning explains the historical open rows.
+      await dt.archiveDelegatedSession(archived.id);
+      await dt.resolveDelegatedTask(resolved.id, 'missing-resolve');
+      expect((await wi.getWorkItem(archived.id))?.state).toBe('dropped');
+      expect(await dt.findOpenDelegatedTask('missing-resolve')).toBeNull();
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.event_awaits_unavailable RENAME TO event_awaits`;
+      warn.mockRestore();
+    }
+
+    const restored = await dt.createDelegatedTask({ title: 'restored lifecycle', agentSessionId: 'restored-lifecycle', origin: 'voice', backend: 'omp' });
+    const binding = { kind: 'work-item-claim', ref: restored.id };
+    // A direct jsonb parameter invokes postgres.js's JSON serializer on the
+    // already serialized string. Pin this failure mode before using the same
+    // text intermediary as the maintained event store.
+    const [misencoded] = await db.sql<{ id: number; bound_to: unknown }[]>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, bound_to)
+      VALUES ('default', 'fixture-subscriber', 'fixture:misencoded', ${JSON.stringify(binding)}::jsonb)
+      RETURNING id, bound_to`;
+    expect(misencoded?.bound_to).toBe(JSON.stringify(binding));
+    await db.sql`DELETE FROM harness_shared.event_awaits WHERE id = ${misencoded!.id}`;
+    const [watch] = await db.sql<{ id: number; bound_to: unknown }[]>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, bound_to)
+      VALUES ('default', 'fixture-subscriber', 'fixture:lifecycle', ${JSON.stringify(binding)}::text::jsonb)
+      RETURNING id, bound_to`;
+    expect(watch?.bound_to).toEqual(binding);
+    await dt.resolveDelegatedTask(restored.id, 'restored-lifecycle');
+    expect(await dt.findOpenDelegatedTask('restored-lifecycle')).toBeNull();
+    const [retired] = await db.sql<{ cancelled_at: Date | null; cancel_reason: string | null }[]>`
+      SELECT cancelled_at, cancel_reason FROM harness_shared.event_awaits WHERE id = ${watch!.id}`;
+    expect(retired?.cancelled_at).not.toBeNull();
+    expect(retired?.cancel_reason).toBe('lifecycle-binding-retired');
+  }, 60_000);
+
+  it('reproduces the missing session-column warning and retrieves the real roster after restoration', async () => {
+    const adv = await import('./adv-sessions');
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
+      VALUES ('default', 'fixture-roster-owner', 'fixture-roster-session', 'su')`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await db.sql`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN ended_by TO ended_by_unavailable`;
+    try {
+      expect(await adv.listRecordedLiveSessions({ workspaceId: 'default', ownerIds: ['fixture-roster-owner'] })).toEqual([]);
+      expect(warn).toHaveBeenCalledWith('[adv-sessions] listRecordedLiveSessions failed:', expect.stringContaining('ended_by'));
+      expect(warn.mock.calls).toHaveLength(1);
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN ended_by_unavailable TO ended_by`;
+      warn.mockRestore();
+    }
+    const roster = await adv.listRecordedLiveSessions({ workspaceId: 'default', ownerIds: ['fixture-roster-owner'] });
+    expect(roster).toEqual([expect.objectContaining({ coordOwnerId: 'fixture-roster-owner', sessionId: 'fixture-roster-session', endedBy: null })]);
+  }, 60_000);
+
+  it('keeps completion fail-closed on a missing receipt column and resumes both adapters after restoration', async () => {
+    const claims = await import('./blueprint/operation-worker-binding');
+    const archived = await dt.createDelegatedTask({ title: 'receipt archive', agentSessionId: 'receipt-archive', origin: 'voice', backend: 'omp' });
+    const resolved = await dt.createDelegatedTask({ title: 'receipt resolve', agentSessionId: 'receipt-resolve', origin: 'voice', backend: 'omp' });
+    const [eventSchema] = await db.sql<{ relation: string | null }[]>`
+      SELECT to_regclass('harness_shared.event_awaits')::text AS relation`;
+    expect(eventSchema?.relation).toBe('harness_shared.event_awaits');
+
+    // Isolate the pre-write receipt guard from the separate event warning:
+    // the lifecycle schema stays present, and no SQL/read path is mocked.
+    await db.sql`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN ended_by TO ended_by_unavailable`;
+    try {
+      const read = await claims.readActiveOperationWorkerClaimBinding('default', dt.delegateAuthorId('receipt-resolve'));
+      expect(read).toEqual({ status: 'unavailable', reason: expect.stringMatching(/ended_by.*SQLSTATE 42703/) });
+      await expect(claims.readActiveOperationWorkerClaimBinding('default', dt.delegateAuthorId('receipt-resolve'), {
+        sql: db.sql, throwOnError: true,
+      })).rejects.toMatchObject({ code: '42703', message: expect.stringContaining('ended_by') });
+
+      await expect(wi.setWorkItemState(resolved.id, 'resolved', {
+        by: dt.delegateAuthorId('receipt-resolve'), completionRef: 'receipt-column negative control',
+      })).rejects.toThrow(/ended_by.*SQLSTATE 42703/);
+      await expect(wi.setWorkItemState(archived.id, 'closed', {
+        by: dt.OPERATOR_COORD_OWNER, completionRef: 'receipt-column negative control',
+      })).rejects.toThrow(/ended_by.*SQLSTATE 42703/);
+
+      // The best-effort adapters hide the refusal; their rows must remain open.
+      await dt.archiveDelegatedSession(archived.id);
+      await dt.resolveDelegatedTask(resolved.id, 'receipt-resolve');
+      expect((await wi.getWorkItem(archived.id))?.state).toBe('open');
+      expect((await dt.findOpenDelegatedTask('receipt-resolve'))?.id).toBe(resolved.id);
+      expect((await wi.getWorkItem(resolved.id))?.state).toBe('open');
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN ended_by_unavailable TO ended_by`;
+    }
+
+    expect(await claims.readActiveOperationWorkerClaimBinding('default', dt.OPERATOR_COORD_OWNER)).toEqual({ status: 'none' });
+    expect(await claims.readActiveOperationWorkerClaimBinding('default', dt.delegateAuthorId('receipt-resolve'))).toEqual({ status: 'none' });
+    await dt.archiveDelegatedSession(archived.id);
+    await dt.resolveDelegatedTask(resolved.id, 'receipt-resolve');
+    expect((await wi.getWorkItem(archived.id))?.state).toBe('dropped');
+    expect((await wi.getWorkItem(resolved.id))?.state).toBe('done');
+    expect(await dt.findOpenDelegatedTask('receipt-resolve')).toBeNull();
+  }, 60_000);
 });
 
 describe('subscribe→inject — a recorded turn pushes the completion to the operator (D-003)', () => {

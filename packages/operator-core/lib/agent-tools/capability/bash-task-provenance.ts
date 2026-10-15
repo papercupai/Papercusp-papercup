@@ -14,6 +14,7 @@ import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/i
 import { resolveOwnerGoal } from '../coordination/agent-goal-sources';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { readHeldWorkItems } from '../../carry-brief';
+import type { TaskRow } from '../../task-manager/types';
 
 export interface BashTaskProvenance {
   launchedBy: string;
@@ -22,6 +23,7 @@ export interface BashTaskProvenance {
   workItemId: string | null;
   planSlug: string | null;
   goalRef: string | null;
+  parentTaskId?: string;
 }
 
 interface BashTaskProvenanceDeps {
@@ -35,6 +37,7 @@ interface BashTaskProvenanceDeps {
    * surfaces cannot disagree about what an agent holds.
    */
   readHeldWorkItems: typeof readHeldWorkItems;
+  readParentTask?: (id: string) => Promise<TaskRow | null>;
 }
 
 export interface BashTaskProvenanceOptions {
@@ -45,12 +48,16 @@ export interface BashTaskProvenanceOptions {
    * against WI-10003976 (the declared goal) and counted in THAT item's loop-gate window.
    */
   explicitWorkItemId?: string | null;
+  /** A nested API launch must keep the durable caller's task tree. */
+  explicitParentTaskId?: string;
+  /** Launchers without an implicit goal contract must not guess among held items. */
+  requireExplicitForMultipleHeldItems?: boolean;
 }
 
 /** A caller-named work-item the resolver can positively show is not the caller's. */
 export class BashProvenanceRefusal extends Error {
   constructor(
-    readonly code: 'work_item_id_invalid' | 'work_item_not_held',
+    readonly code: 'work_item_id_invalid' | 'work_item_not_held' | 'work_item_id_required' | 'parent_task_invalid',
     message: string,
   ) {
     super(message);
@@ -95,6 +102,29 @@ export async function resolveBashTaskProvenance(
   }
 
   const explicit = options.explicitWorkItemId?.trim() || null;
+  let implicitHeldWorkItemId: string | null | undefined;
+  if (ownerId && !explicit && options.requireExplicitForMultipleHeldItems) {
+    let held: Array<{ id: string }> | null = null;
+    try {
+      const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? '';
+      held = await deps.readHeldWorkItems(ownerId, workspaceId, { limit: 2 });
+    } catch {
+      // A strict launcher needs a named item if its implicit attribution is unmeasured.
+    }
+    if (!held) {
+      throw new BashProvenanceRefusal(
+        'work_item_id_required',
+        'Held work-items could not be read; pass work_item_id explicitly for this launch.',
+      );
+    }
+    if (held && held.length > 1) {
+      throw new BashProvenanceRefusal(
+        'work_item_id_required',
+        'work_item_id is required when you hold multiple work-items; name the item this launch serves.',
+      );
+    }
+    if (held) implicitHeldWorkItemId = held[0]?.id ?? null;
+  }
   if (explicit) {
     if (!WORK_ITEM_ID_RE.test(explicit)) {
       throw new BashProvenanceRefusal(
@@ -116,13 +146,19 @@ export async function resolveBashTaskProvenance(
       if (held && !held.some((h) => h.id === explicit)) {
         throw new BashProvenanceRefusal(
           'work_item_not_held',
-          `work_item_id '${explicit}' is not one of your held work-items; claim it first or omit work_item_id.`,
+          `work_item_id '${explicit}' is not one of your currently held, non-terminal work-items. A direct by-id claim of a terminal item does not create an active hold; choose a held item or omit work_item_id.`,
         );
       }
     }
   }
 
-  let workItemId = explicit ?? (goalRef && WORK_ITEM_ID_RE.test(goalRef) ? goalRef : null);
+  let workItemId = explicit;
+  if (!workItemId) {
+    // A declared work-item goal can outlive its claim (including after it is done).
+    // Treat it as a candidate, not proof of current ownership; the live held-claim
+    // reader below validates it before task costs or loop attempts are attributed.
+    workItemId = implicitHeldWorkItemId !== undefined ? implicitHeldWorkItemId : null;
+  }
   // EI-21548894457555139: the goal ref is only SOMETIMES a work-item id. A fleet leader
   // or a plan-bound agent declares `fleet:<slug>` / `<plan>#P-NNN`, so the regex above
   // yields null and the task lands in the ledger unlinked — `processes:list` then cannot
@@ -135,17 +171,43 @@ export async function resolveBashTaskProvenance(
   // work-item association is worse than an absent one: absent reads as "unknown", while
   // wrong reads as fact and misattributes the cost and the provenance of the run. That
   // is the same principle this function's own doc comment already states.
-  if (!workItemId && ownerId) {
+  if (!workItemId && ownerId && implicitHeldWorkItemId === undefined) {
     try {
       const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? '';
-      const held = await deps.readHeldWorkItems(ownerId, workspaceId, { limit: 2 });
-      if (held.length === 1) workItemId = held[0].id;
+      const goalWorkItemId = goalRef && WORK_ITEM_ID_RE.test(goalRef) ? goalRef : null;
+      const held = await deps.readHeldWorkItems(ownerId, workspaceId, {
+        limit: goalWorkItemId ? EXPLICIT_HELD_SCAN_LIMIT : 2,
+      });
+      if (goalWorkItemId && held.some((item) => item.id === goalWorkItemId)) {
+        workItemId = goalWorkItemId;
+      } else if (held.length === 1) {
+        workItemId = held[0]!.id;
+      }
     } catch {
       // Provenance is fail-soft by contract — an unreadable claim never blocks the shell.
     }
   }
   const planMatch = goalRef?.match(/^(?:plan:)?(.+?)#P-\d+$/) ?? null;
   const principalFallback = ctx.principal?.slug?.trim() || 'capability:bash';
+  const parentTaskId = options.explicitParentTaskId;
+  if (parentTaskId !== undefined) {
+    // An explicit parent is a lifetime/ownership assertion. Unlike optional
+    // attribution above, an unreadable or foreign parent must refuse the fork.
+    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
+    let parent: TaskRow | null = null;
+    if (/^[0-9a-z]{4,64}$/.test(parentTaskId)) {
+      try {
+        const readParent = deps.readParentTask ?? (await import('../../task-manager/store')).getTask;
+        parent = await readParent(parentTaskId);
+      } catch { /* Unmeasured lineage cannot safely authorize a nested task. */ }
+    }
+    if (!ownerId || !workspaceId || !parent || parent.workspaceId !== workspaceId ||
+      parent.launchedBy !== ownerId || parent.harnessSlug !== harnessSlug ||
+      parent.workItemId !== workItemId || !['pending', 'running'].includes(parent.state) || parent.endedAt) {
+      throw new BashProvenanceRefusal('parent_task_invalid',
+        'parent_task_id must name a readable live task owned by this caller in the same workspace, harness and work-item.');
+    }
+  }
   return {
     launchedBy: ownerId ?? principalFallback,
     sessionId: ownerId,
@@ -153,5 +215,23 @@ export async function resolveBashTaskProvenance(
     workItemId,
     planSlug: planMatch?.[1] ?? null,
     goalRef,
+    ...(parentTaskId === undefined ? {} : { parentTaskId }),
   };
+}
+
+/**
+ * `capability:bash` is the common arbitrary-command launcher, so a declared goal
+ * is not enough to pick between multiple held items. Require the caller to name
+ * the item whose cost and slow-attempt history this command belongs to.
+ */
+export function resolveCapabilityBashTaskProvenance(
+  ctx: ResolveIdentityCtx,
+  harnessSlug: string | null,
+  deps: BashTaskProvenanceDeps = DEFAULT_BASH_PROVENANCE_DEPS,
+  options: BashTaskProvenanceOptions = {},
+): Promise<BashTaskProvenance> {
+  return resolveBashTaskProvenance(ctx, harnessSlug, deps, {
+    ...options,
+    requireExplicitForMultipleHeldItems: true,
+  });
 }

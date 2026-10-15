@@ -17,6 +17,7 @@ vi.mock('../../harness-registry', () => ({
 }));
 vi.mock('../../endpoint-route/routes/harness/project-docs', () => ({
   resolveDocsRoot: async (repoRoot: string) => `${repoRoot}/docs`,
+  resolveDocsSources: async () => ({}),
 }));
 
 import { resolveHarnessRepoRoot, resolveHarnessDocPaths } from './harness-repo';

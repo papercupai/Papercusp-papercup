@@ -1,0 +1,808 @@
+{
+  "schemaVersion": "p020-pinned-detector-evidence-v1",
+  "kind": "contract-source-inspection",
+  "workItem": "WI-10007984",
+  "historicalSuperprojectCommitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+  "successorRevision": 3,
+  "criteriaHash": "c233165aff1edcb861a98c3c2d12bca5e5455799d276fb3419ee188ccb3a0f87",
+  "files": [
+    {
+      "canonicalPath": "libs/generic/tooldef/src/capability-envelope-step.test.ts",
+      "commitSha": "2f9b505e7cdc1db089fcd4fb51fab4fe211c04f4",
+      "repositoryRelativePath": "src/capability-envelope-step.test.ts",
+      "submodulePath": "libs/generic/tooldef",
+      "blobSha": "6e1db0970088f9fe43b035cdbfc7d63867dce954",
+      "sha256": "af16d274d1e78c6d82673903f58dfc66f1a2cfe9b1a079b4ba3fc70994cb6a1d",
+      "bytes": 6472,
+      "observedCases": [
+        {
+          "line": 67,
+          "text": "it('short-circuits with capability_denied when the verdict is deny; handler not invoked', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "2f9b505e7cdc1db089fcd4fb51fab4fe211c04f4",
+        "path": "src/capability-envelope-step.test.ts",
+        "rootHarnessSlug": "papercusp/libs/generic/tooldef"
+      }
+    },
+    {
+      "canonicalPath": "libs/generic/tooldef/src/code-orchestration/persistent-kernel.test.ts",
+      "commitSha": "2f9b505e7cdc1db089fcd4fb51fab4fe211c04f4",
+      "repositoryRelativePath": "src/code-orchestration/persistent-kernel.test.ts",
+      "submodulePath": "libs/generic/tooldef",
+      "blobSha": "e14ed22756f276b1f9b740964b247ca7fd52d51f",
+      "sha256": "17fae034b8826bf53afd69500a8558f5f80a45c598147ac8d95bb7a6946e9881",
+      "bytes": 9925,
+      "observedCases": [
+        {
+          "line": 82,
+          "text": "it('fails closed for another owner/workspace scope and unknown restart handles', async () => {"
+        },
+        {
+          "line": 85,
+          "text": "const foreign = await runOrchestrationScript('return await tools.write.commit({});', facade({ write: { commit: call } }), {"
+        },
+        {
+          "line": 95,
+          "text": "it('rejects concurrent cells rather than interleaving state or dispatch contexts', async () => {"
+        },
+        {
+          "line": 174,
+          "text": "it('expires idle workers without claiming restart recovery', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "2f9b505e7cdc1db089fcd4fb51fab4fe211c04f4",
+        "path": "src/code-orchestration/persistent-kernel.test.ts",
+        "rootHarnessSlug": "papercusp/libs/generic/tooldef"
+      }
+    },
+    {
+      "canonicalPath": "libs/papercusp/packages/orchestrator/src/managed-capability-adoption.test.ts",
+      "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+      "repositoryRelativePath": "packages/orchestrator/src/managed-capability-adoption.test.ts",
+      "submodulePath": "libs/papercusp",
+      "blobSha": "6fdcbda7865faa7a573cd667e41df723c9d8e5b4",
+      "sha256": "e6c683b605c95c30326955110c0a7d5bb56540d797af670785f5de216846b305",
+      "bytes": 25269,
+      "observedCases": [
+        {
+          "line": 337,
+          "text": "it('leaves every owner-mandate restriction untouched by the adoption gate', () => {"
+        },
+        {
+          "line": 410,
+          "text": "it('ROLLBACK: the existing owner overrideKey still clears it', () => {"
+        },
+        {
+          "line": 509,
+          "text": "it('teaches the managed authority for every denied native name', () => {"
+        },
+        {
+          "line": 561,
+          "text": "it('looks up a single denied name, and answers null for one that is allowed', () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+        "path": "packages/orchestrator/src/managed-capability-adoption.test.ts",
+        "rootHarnessSlug": "papercusp/libs/papercusp"
+      }
+    },
+    {
+      "canonicalPath": "libs/papercusp/packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts",
+      "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+      "repositoryRelativePath": "packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts",
+      "submodulePath": "libs/papercusp",
+      "blobSha": "06afd63f2dc7d0738671ce95785d3c7a24bc3f95",
+      "sha256": "7bef57464d0d7c3732d0b9450fcd8dad7a0853cdb1c8aa2cb223a4f1383263bf",
+      "bytes": 19039,
+      "observedCases": [
+        {
+          "line": 340,
+          "text": "it('rejects pending recovery work and an exclusion without recorded decision authority', () => {"
+        },
+        {
+          "line": 357,
+          "text": "it('no declared managed authority anywhere in the inventory offers a local recovery grant', () => {"
+        },
+        {
+          "line": 372,
+          "text": "/(offline|local)[-_ ]?recovery|recovery[-_ ]?(grant|key|token)|allow[-_ ]?recovery/i.test(entry),"
+        },
+        {
+          "line": 380,
+          "text": "it('no rendered policy flag, on any client or surface, carries a recovery grant', () => {"
+        },
+        {
+          "line": 395,
+          "text": "/(offline|local)[-_]?recovery|recovery[-_]?(grant|key|token)|allow[-_]?recovery/i.test(flag),"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+        "path": "packages/orchestrator/src/managed-capability-matrix-real-client.integration.test.ts",
+        "rootHarnessSlug": "papercusp/libs/papercusp"
+      }
+    },
+    {
+      "canonicalPath": "libs/papercusp/packages/orchestrator/src/managed-capability-matrix.integration.test.ts",
+      "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+      "repositoryRelativePath": "packages/orchestrator/src/managed-capability-matrix.integration.test.ts",
+      "submodulePath": "libs/papercusp",
+      "blobSha": "645e03bbb85b0cd70932badaf682485ef60bd4b3",
+      "sha256": "22305d7160a4ed993c47f33f9b313d33c698f4b0ce65ef3c1845206cc1bef4ab",
+      "bytes": 10357,
+      "observedCases": [
+        {
+          "line": 85,
+          "text": "it('rejects forged matrix evidence at the real cutover admission boundary', () => {"
+        },
+        {
+          "line": 235,
+          "text": "it('does not gate an owner mandate \u2014 it has no managed replacement to accept', () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+        "path": "packages/orchestrator/src/managed-capability-matrix.integration.test.ts",
+        "rootHarnessSlug": "papercusp/libs/papercusp"
+      }
+    },
+    {
+      "canonicalPath": "libs/papercusp/packages/orchestrator/src/managed-capability-matrix.test.ts",
+      "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+      "repositoryRelativePath": "packages/orchestrator/src/managed-capability-matrix.test.ts",
+      "submodulePath": "libs/papercusp",
+      "blobSha": "e74ec1bbbfa93e5b85443d8af9997b837a9e22e1",
+      "sha256": "c4faaa9eb8a503f499cdc018477357924e6e7978935f7e9270279baf39c7cb77",
+      "bytes": 20446,
+      "observedCases": [
+        {
+          "line": 63,
+          "text": "it('declares NO scenario for an owner mandate \u2014 there is no replacement to accept', () => {"
+        },
+        {
+          "line": 367,
+          "text": "it('can scope an actual run without inventing undeclared resume/wake coverage', () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+        "path": "packages/orchestrator/src/managed-capability-matrix.test.ts",
+        "rootHarnessSlug": "papercusp/libs/papercusp"
+      }
+    },
+    {
+      "canonicalPath": "libs/papercusp/packages/orchestrator/src/managed-capability-policy.test.ts",
+      "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+      "repositoryRelativePath": "packages/orchestrator/src/managed-capability-policy.test.ts",
+      "submodulePath": "libs/papercusp",
+      "blobSha": "4ec29ec50fa8784ca409f8275ad55943463ea4a5",
+      "sha256": "0281790b1c23f265b08a2283e1c18fe56b657c469edee7ba788f3940f1d48056",
+      "bytes": 28591,
+      "observedCases": [
+        {
+          "line": 31,
+          "text": "it('resolves an IDENTICAL denied-name set on launch, resume and wake', () => {"
+        },
+        {
+          "line": 44,
+          "text": "it('re-arms the owner-desktop-notify deny on wake, not only at launch', () => {"
+        },
+        {
+          "line": 96,
+          "text": "it('clears the subagent restriction on the owner opt-in, and only that one', () => {"
+        },
+        {
+          "line": 129,
+          "text": "it('keeps the scheduling SKILLS for the interactive owner but not a headless agent', () => {"
+        },
+        {
+          "line": 252,
+          "text": "it('gates cutover restrictions ONLY \u2014 an owner mandate needs no replacement proof', () => {"
+        },
+        {
+          "line": 319,
+          "text": "it('never emits ENABLE_TOOL_SEARCH while ToolSearch is denied', () => {"
+        },
+        {
+          "line": 386,
+          "text": "it('CONTROL: the surface-parity detector FIRES when wake silently drops a restriction', () => {"
+        },
+        {
+          "line": 575,
+          "text": "it('emits no sandbox- or permission-weakening token on any client, surface or audience', () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+        "path": "packages/orchestrator/src/managed-capability-policy.test.ts",
+        "rootHarnessSlug": "papercusp/libs/papercusp"
+      }
+    },
+    {
+      "canonicalPath": "libs/papercusp/packages/orchestrator/src/managed-capability-retention.test.ts",
+      "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+      "repositoryRelativePath": "packages/orchestrator/src/managed-capability-retention.test.ts",
+      "submodulePath": "libs/papercusp",
+      "blobSha": "b559afd3efb287a4037f06050e2f3d8de1ef8d79",
+      "sha256": "2b687d47f9c987607b51cd8367d8cfaca3461e9b382e88c654395aaf851e119d",
+      "bytes": 17884,
+      "observedCases": [
+        {
+          "line": 136,
+          "text": "it('keeps out-of-taxonomy claims to the reviewed set, under an owner mandate only', () => {"
+        },
+        {
+          "line": 193,
+          "text": "it('records an applied owner mandate as a disablement of ITS family', () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "dfc7ffd47a82a23abfa2034cb8e9462315daee40",
+        "path": "packages/orchestrator/src/managed-capability-retention.test.ts",
+        "rootHarnessSlug": "papercusp/libs/papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/browser-session.e2e.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/browser-session.e2e.test.ts",
+      "submodulePath": null,
+      "blobSha": "90389444879c7b42890748159a43f71278ff1d50",
+      "sha256": "8e63546fc8f6ca9646a084bd7aa9664f2d18337166c766d8ad9b810afef79d40",
+      "bytes": 5941,
+      "observedCases": [
+        {
+          "line": 42,
+          "text": "it('preserves dynamic DOM and redirect location, refuses remote writes, returns real PNG and closes its process', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/browser-session.e2e.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/browser-session.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/browser-session.test.ts",
+      "submodulePath": null,
+      "blobSha": "e3a6ae8b64d70ef2191febbfc5940ad733a9380d",
+      "sha256": "e1df98db355607ae3e4d2fe9580c2162807831e6f46b65918d2a6b7f9448193f",
+      "bytes": 15575,
+      "observedCases": [
+        {
+          "line": 60,
+          "text": "it('refuses file and credential URLs before launching any browser', async () => {"
+        },
+        {
+          "line": 66,
+          "text": "it('denies another owner/workspace, closes explicitly, and reports ended handles unrecoverable', async () => {"
+        },
+        {
+          "line": 74,
+          "text": "it('refuses cached authority after a role/profile change before another navigation', async () => {"
+        },
+        {
+          "line": 92,
+          "text": "it('rejects overlapping calls, bounds media, and resets output between observations', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/browser-session.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/fetch-policy.integration.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/fetch-policy.integration.test.ts",
+      "submodulePath": null,
+      "blobSha": "849b1fb11f1e5627cd34b1574a9de7ae06292e23",
+      "sha256": "e1bdc1320f397863663413741ea71f585839bc9e88506dea4c6657fe3f920598",
+      "bytes": 3646,
+      "observedCases": [
+        {
+          "line": 81,
+          "text": "it('rejects the same loopback destination for confined work before the server sees it', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/fetch-policy.integration.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/fetch-policy.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/fetch-policy.test.ts",
+      "submodulePath": null,
+      "blobSha": "a021f8a6f1443339420657b7d437e0c28a460eec",
+      "sha256": "130d60ad8dc3393f038f3a1d83d1dac18c6a1b0cbad780a0ddbe93215a827ea2",
+      "bytes": 6484,
+      "observedCases": [
+        {
+          "line": 60,
+          "text": "it('rejects a private destination before any fetch effect', async () => {"
+        },
+        {
+          "line": 71,
+          "text": "it('rejects a mixed DNS answer set before connecting to the public member', async () => {"
+        },
+        {
+          "line": 100,
+          "text": "it('validates a redirect target before the redirected network effect', async () => {"
+        },
+        {
+          "line": 119,
+          "text": "it('strips credentials before a trusted cross-origin redirect', async () => {"
+        },
+        {
+          "line": 143,
+          "text": "it('refuses mutating methods and credential headers for confined callers before fetch', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/fetch-policy.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/fetch.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/fetch.test.ts",
+      "submodulePath": null,
+      "blobSha": "93c45eb9efe2ec290e50294d607f694a9eaebc32",
+      "sha256": "292e74f6aa72e888e75d861f682de5fa1111d572c9ebb2788434ff38ebf0ef81",
+      "bytes": 3311,
+      "observedCases": [
+        {
+          "line": 58,
+          "text": "it('rejects an oversized declared body before pulling it into memory', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/fetch.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts",
+      "submodulePath": null,
+      "blobSha": "704ac40aa20f5d8dcbc1f3b1ebcd2acc0646f254",
+      "sha256": "8abace6875d7e63a97ba9ec3a9f6e530647cb3cfb8eb9c8d07e0e20780dac6a0",
+      "bytes": 2363,
+      "observedCases": [
+        {
+          "line": 8,
+          "text": "it('retains kernel/browser state across fresh clients and refuses PTY without a private session bus', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/managed-capability-api.e2e.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/notebook.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/notebook.test.ts",
+      "submodulePath": null,
+      "blobSha": "cfea8df42967ae05f90003c9aadf6d88abbd4cc1",
+      "sha256": "20acafb62bc7ad9f2a96b991a91976922b82eed2610d6a9f0da2e55cdac57fb1",
+      "bytes": 20882,
+      "observedCases": [
+        {
+          "line": 273,
+          "text": "it('rejects an unknown cell, names the addresses that DO exist, and writes nothing', async () => {"
+        },
+        {
+          "line": 287,
+          "text": "it('rejects an out-of-range index rather than appending', async () => {"
+        },
+        {
+          "line": 389,
+          "text": "it('refuses a file that is not JSON', async () => {"
+        },
+        {
+          "line": 401,
+          "text": "it('refuses valid JSON that has no cells array', async () => {"
+        },
+        {
+          "line": 463,
+          "text": "it('takes the lock BEFORE reading, so a rejected notebook was still coordinated', async () => {"
+        },
+        {
+          "line": 476,
+          "text": "it('does not lock at all for an argument-only rejection', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/notebook.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/patch.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/patch.test.ts",
+      "submodulePath": null,
+      "blobSha": "b2b35251c05ccf7478bec34ccc1e31945d5ef918",
+      "sha256": "107beb642fdcbdcb9b7c76fe1cd181231a1e0c1574fa101cc587518619c7a544",
+      "bytes": 12584,
+      "observedCases": [
+        {
+          "line": 122,
+          "text": "it('rejects an identical old/new hunk before touching the filesystem', async () => {"
+        },
+        {
+          "line": 236,
+          "text": "it('holds the lock even for the rejected-hunk path, so validation cannot race a peer', async () => {"
+        },
+        {
+          "line": 271,
+          "text": "it('states that no file was written on a rejected hunk', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/patch.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/pty-resize.integration.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/pty-resize.integration.test.ts",
+      "submodulePath": null,
+      "blobSha": "81bcc0d18d18cb59ef7b36bedf7776504fe85d62",
+      "sha256": "c72905a16250e34c1eebf6c938b794529268c61973e86b05964b63c22e3ab9d3",
+      "bytes": 6989,
+      "observedCases": [
+        {
+          "line": 159,
+          "text": "it('changes stty dimensions in the same live child without replacing or ending the task', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/pty-resize.integration.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/pty.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/pty.test.ts",
+      "submodulePath": null,
+      "blobSha": "eea5a046b420e2ca796ba846c3cbd1db89fbd530",
+      "sha256": "250aee417b101b8586484bfb149ab5eb67f1301f2c2edce7a2f2f7e539f67685",
+      "bytes": 24805,
+      "observedCases": [
+        {
+          "line": 230,
+          "text": "it('re-authorizes write, resize, screen-read, and kill by task id under the current caller', async () => {"
+        },
+        {
+          "line": 318,
+          "text": "it('collapses cross-owner and malformed task rows to the same unknown_task_id result', async () => {"
+        },
+        {
+          "line": 335,
+          "text": "it('distinguishes an ended PTY from an unrecoverable lost live handle without starting a replacement', async () => {"
+        },
+        {
+          "line": 468,
+          "text": "it('owner side re-authorizes a forwarded request and executes it against its local handle', async () => {"
+        },
+        {
+          "line": 537,
+          "text": "it('reports a live-but-silent owner as retryable and leaves the session untouched', async () => {"
+        },
+        {
+          "line": 576,
+          "text": "it('on an unclustered host, settles a row whose owner pid died (restart) but not one whose owner still runs', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/pty.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/capability/read-byte-page-door-fit.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/capability/read-byte-page-door-fit.test.ts",
+      "submodulePath": null,
+      "blobSha": "7eab4451fb509cf5d699be297cc88c3bbc76bcb2",
+      "sha256": "106e8e50cea759d294b0a1eb9c67c75d13bd05337d2e3c2894cbe03e20fba508",
+      "bytes": 17152,
+      "observedCases": [
+        {
+          "line": 243,
+          "text": "it('refuses oversized scratch-reference line and raw windows before they spill recursively', async () => {"
+        },
+        {
+          "line": 333,
+          "text": "it('REFUSES rather than serving a page the door would truncate', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/capability/read-byte-page-door-fit.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/chat/ask_choice-autonomy.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/chat/ask_choice-autonomy.test.ts",
+      "submodulePath": null,
+      "blobSha": "0db491fee6d98305046e77f7a187dec0f0a825e5",
+      "sha256": "7580d8727aafb9be0e65a93dbf592bc2e6c55ba2f133aee2977665f3dcc652e3",
+      "bytes": 5862,
+      "observedCases": [
+        {
+          "line": 57,
+          "text": "it('gated \u2192 owner-queue, auto \u2192 bee-self', () => {"
+        },
+        {
+          "line": 127,
+          "text": "it(\"rung 'owner-queue' still blocks + escalates (the disarmed default is unchanged)\", async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/chat/ask_choice-autonomy.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/chat/ask_choice.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/chat/ask_choice.test.ts",
+      "submodulePath": null,
+      "blobSha": "858aadee9788ad12426d3b0c815621a5a61d0f38",
+      "sha256": "901e4ce28d3a439b81bc12643faaa3062811ddd411f4fab28ea9b7b40d83943e",
+      "bytes": 19493,
+      "observedCases": [
+        {
+          "line": 109,
+          "text": "it('documents the bounded text fields that otherwise reject route cards', () => {"
+        },
+        {
+          "line": 380,
+          "text": "it('bee + flag ON: spec gets the bounded timeout AND a routable agent-question escalation is written', async () => {"
+        },
+        {
+          "line": 447,
+          "text": "it('still rejects a non-array JSON string and plain garbage', () => {"
+        },
+        {
+          "line": 483,
+          "text": "it('rejects an empty options array with the actionable custom message, not the bare zod default', () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/chat/ask_choice.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/code/kernel-owner.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/code/kernel-owner.test.ts",
+      "submodulePath": null,
+      "blobSha": "713e092559762a0eb7d808c53f76cdbd8a04dd23",
+      "sha256": "c91c3dbcf4da96ba85208db696b764c9063e8e0446a1310c18e43a44f7b9df7f",
+      "bytes": 9096,
+      "observedCases": [
+        {
+          "line": 97,
+          "text": "it('refuses overlapping cells and lets a sibling close the active owner cell', async () => {"
+        },
+        {
+          "line": 121,
+          "text": "it('reports owner death, never launches a replacement, and distinguishes an unknown scope', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/code/kernel-owner.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/agent-tools/code/run-kernel.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/agent-tools/code/run-kernel.test.ts",
+      "submodulePath": null,
+      "blobSha": "68f006bef26b148db81b601a7f8e4561b656c8ad",
+      "sha256": "a3ef4d3cfd952387ff57499f3bef025f956b2d1ba40c14677ff73f63c3150522",
+      "bytes": 7343,
+      "observedCases": [
+        {
+          "line": 74,
+          "text": "it('reports timeout state loss and rejects another cell without replaying it', async () => {"
+        },
+        {
+          "line": 87,
+          "text": "it('binds status, close and execution to owner, workspace and harness', async () => {"
+        },
+        {
+          "line": 98,
+          "text": "it('uses unambiguous host-derived scope and rejects missing authenticated context', () => {"
+        },
+        {
+          "line": 104,
+          "text": "it('rejects caller-authored scopes and malformed lifecycle arguments', () => {"
+        },
+        {
+          "line": 110,
+          "text": "it('refuses dry-run operations without mutating or closing live state', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/agent-tools/code/run-kernel.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/events/await/resume-spawn-live.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/events/await/resume-spawn-live.test.ts",
+      "submodulePath": null,
+      "blobSha": "53c44a57f6f175c452e4407eae5fddbcf53a4765",
+      "sha256": "3dba9469cfb4c21493671106a3de4735987c412a8aa974fe94e868052a2ea39f",
+      "bytes": 9812,
+      "observedCases": [
+        {
+          "line": 54,
+          "text": "it('requires an existing exact transcript prefix and a new wake record', () => {"
+        },
+        {
+          "line": 65,
+          "text": "it('decodes the exact multiline wake from new native records and rejects malformed appended data', () => {"
+        },
+        {
+          "line": 146,
+          "text": "it('retains an exact private transcript pair and its wake witness independently of cleanup', () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/events/await/resume-spawn-live.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/managed-capability-disposition-contract.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/managed-capability-disposition-contract.test.ts",
+      "submodulePath": null,
+      "blobSha": "fdd8eb24592b39ee3a8004036971e645ab367d24",
+      "sha256": "dc8814e905ec29ed7aa1343a34aa88a1a5965d404b774a300d37034c5c7a94d4",
+      "bytes": 16327,
+      "observedCases": [
+        {
+          "line": 127,
+          "text": "it('rejects a cutover claim for an unsupported or intentionally retained interface', () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/managed-capability-disposition-contract.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/pty-bridge.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/pty-bridge.test.ts",
+      "submodulePath": null,
+      "blobSha": "3dd77c36d275f2318259d4f90691c6318288b851",
+      "sha256": "0a3c46274f3cdcfd327691bd412a3f49312ae45f16202365805890acf3f6fec4",
+      "bytes": 12720,
+      "observedCases": [
+        {
+          "line": 187,
+          "text": "it('keeps screen serialization geometry-correct after resize', async () => {"
+        },
+        {
+          "line": 302,
+          "text": "it('stamps ownerSid from the spawn env and never matches a foreign owner', async () => {"
+        },
+        {
+          "line": 325,
+          "text": "it('an UNTAGGED pty (no SID, e.g. a shell pane) still matches any owner \u2014 never stricter than pid-only', async () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/pty-bridge.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    },
+    {
+      "canonicalPath": "packages/operator-core/lib/result-door-encoding-contract.test.ts",
+      "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+      "repositoryRelativePath": "packages/operator-core/lib/result-door-encoding-contract.test.ts",
+      "submodulePath": null,
+      "blobSha": "f92a0400fb35641619e4f49c1510d4c65e2b0721",
+      "sha256": "29264745c87d30338c211a029dee87ad1713874b493308e7613252152062cd63",
+      "bytes": 31379,
+      "observedCases": [
+        {
+          "line": 192,
+          "text": "it('recovers authorized spilled media in a fresh process and reports lost volatile references honestly', () => {"
+        },
+        {
+          "line": 270,
+          "text": "const line = output.split('\\n').find(row => row.startsWith('MEDIA_RECOVERY_RESULT '));"
+        },
+        {
+          "line": 344,
+          "text": "it('keeps the JSON recovery pointer bounded while carrying page integrity and EOF rules', () => {"
+        },
+        {
+          "line": 362,
+          "text": "it('distinguishes byte-page and plaintext-line recovery modes without atob', () => {"
+        },
+        {
+          "line": 573,
+          "text": "it('rejects incomplete pages and inconsistent EOF metadata before JSON.parse', () => {"
+        }
+      ],
+      "judgeReplay": {
+        "op": "readFileAtCommit",
+        "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+        "path": "packages/operator-core/lib/result-door-encoding-contract.test.ts",
+        "rootHarnessSlug": "papercusp"
+      }
+    }
+  ],
+  "scope": "Historical detector source resolution and contract coverage only; no test execution or installed-client PASS.",
+  "historicalSourceProvenance": "Original meta-attestation served source 81c209358c expanded to its immutable full SHA; no current HEAD substitution. Submodule commits are the gitlinks recorded in that exact superproject tree.",
+  "inspectionMethod": "Operator read-only git cat-file/show at immutable pins; independent judge replays exact per-file capability:git-evidence readFileAtCommit args below, verifies blob hash/content and follows bounded cursors to EOF."
+}

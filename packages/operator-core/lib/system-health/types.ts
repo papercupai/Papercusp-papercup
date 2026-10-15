@@ -15,9 +15,12 @@
  */
 
 import type { PerfVerdict } from './perf-budgets';
+import type { DnsProbeResult } from './dns-probe';
 import type { PerfRegressionProducerHealth } from './perf-regression-rig';
 import type { GitSyncFailingLeg } from '../harness/git-sync/git-sync-escalation';
 import type { ScorecardFreshnessStatus } from '../scorecard-freshness';
+import type { AgentStrandHealth } from './agent-strand-census';
+import type { WorkspaceHostReliability } from '../workspace-host/observability-store';
 
 /**
  * A panel's health light. `unknown` = the source could not be read this tick
@@ -534,6 +537,27 @@ export interface DeployHealth {
   gitSyncMaxMissedIntervals?: number | null;
   /** The install that holds `gitSyncMaxMissedIntervals`. */
   gitSyncMissedIntervalsInstallSlug?: string | null;
+   /** WI-10006786: alarm candidates with missed_intervals > 0, worst first. Installs whose stale
+   *  completion clock is explained by a progressing in-flight fire are excluded: their scheduler
+   *  is waiting behind active work, not starved. The liveness alarm raises one signal PER install
+   *  from this list. Keying a single signal on the max alone let a long-dead install (every fire
+   *  `skipped` for weeks) hold the max and one open escalation forever, so a fresh starvation on any
+   *  other install deduped onto it unnamed. Optional: absent = a snapshot written before this field
+   *  existed (the alarm falls back to the max). */
+  gitSyncMissedIntervalsByInstall?: Array<{ installSlug: string; missedIntervals: number }>;
+  /** WI-10006867: active installs whose checkout has VANISHED — the last fire skipped with
+   *  `no_path` (registry entry gone, or its path no longer exists). These are EXCLUDED from
+   *  `gitSyncMissedIntervalsByInstall` / `gitSyncMaxMissedIntervals`: their `last_synced_at` froze
+   *  when the checkout went, so a missed-interval count there names the scheduler for a fault that
+   *  is not the scheduler's. `sinceMs` is the first `no_path` skip (missing-checkout.ts; null for a
+   *  row last skipped before that was recorded); `retireAtMs` is when that module retires the
+   *  routine (null when `sinceMs` is unknown). Optional: absent = a snapshot predating this field. */
+  gitSyncCheckoutMissingByInstall?: Array<{
+    installSlug: string;
+    path: string | null;
+    sinceMs: number | null;
+    retireAtMs: number | null;
+  }>;
   /** True when the git-sync routine read FAILED (the fail-soft catch fired), so a null
    *  `gitSyncMaxMissedIntervals` means "not observed", never "recovered". */
   gitSyncMissedIntervalsUnreadable?: boolean;
@@ -551,9 +575,9 @@ export interface DeployHealth {
   bgHostStartedAtMs: number | null;
   /** True when bg-host started BEFORE the currently-served deployment, so it cannot
    *  be executing the deployed code. `null` = NOT PROVEN EITHER WAY (an input was
-   *  unresolvable) — deliberately not `false`, mirroring `RunningGeneration.staleHost`'s
-   *  fail-toward-not-proven-fresh convention, so an unreadable host never renders a
-   *  false all-clear. */
+   *  unresolvable) — deliberately not `false`, matching the three-state
+   *  `RunningGeneration.staleHost` signal so an unreadable host never renders a false
+   *  all-clear. */
   bgHostCodeStale: boolean | null;
 }
 
@@ -690,6 +714,10 @@ export interface McpProxyHealth {
    * :3070 is not draining — the congestion-collapse precursor.
    */
   shed: number;
+  /** Distinct requests whose critical-continuation queue dwell reached the five-minute alarm floor. */
+  criticalContinuationQueueStalls: number;
+  /** Longest observed critical-continuation queue dwell in the lookback window (ms). */
+  criticalContinuationQueueMaxWaitMs: number;
   /** Count by raw `kind` — every kind the ledger carries, including ones no alarm class
    *  above consumes. Retained as the forensic catch-all, but note that a kind appearing
    *  ONLY here is a kind nothing can page on: if a new `recordProxyFailure` kind is
@@ -737,6 +765,8 @@ export interface HostPressureHealth {
 /** Infra — PG + gateway reachability + fresh host pressure + the per-thread perf
  *  verdict (F1/P-030) + the MCP tool-call transport SLO (W8/P-008). */
 export interface InfraHealth {
+  /** Existing hosted control-plane ledgers; independent of the analytics sink. */
+  hostedControlPlane?: WorkspaceHostReliability | null;
   pg: {
     version: string;
     total: number;
@@ -771,6 +801,11 @@ export interface InfraHealth {
    * NOT read the bg-host tick's in-process shed counter). OPTIONAL (deploy-skew-safe):
    * absent on an older projection ⇒ treated as no signal. null when PG is unreadable. */
   pool?: { probeMs: number; band: 'ok' | 'elevated' | 'critical' } | null;
+  /** Host DNS-resolution canary (WI-6554700010008585): canary names resolved through the system
+   *  resolver stub. `allFailed` drives the `dns-resolution-failing` liveness signal. OPTIONAL
+   *  (deploy-skew-safe); null/absent = the probe did not run this tick, which the alarm treats as
+   *  UNOBSERVED, never as recovered. */
+  dns?: DnsProbeResult | null;
   /** Disk pressure (health-tab-v2 P-011, mirrors the fedplane script's 90% warn):
    *  used% per watched mount (~/.papercusp + the repo volume, deduped by device).
    *  OPTIONAL + null when statfs is unavailable — never fabricated. */
@@ -903,6 +938,14 @@ export interface CoordinationHealth {
   /** Live members deliberately parked on a non-inbox events:await key — benched
    *  by design (idle-but-healthy), NOT stalled/abandoned. Informational only. */
   parkedMembers: number;
+  /**
+   * P-011(b) (plan parked-agent-census-resumption-and-root-cause-2026-10-09): sessions that
+   * cannot take a turn (wedged, by class) and autonomous claim holders with no wake source
+   * (stranded). Feeds the `agents-wedged` / `agents-stranded` liveness alarms. Optional because
+   * the snapshot is shared across builds: ABSENT means "not computed by the build that wrote this
+   * snapshot", which the alarm treats as unobserved, never as zero.
+   */
+  agentStrand?: AgentStrandHealth | null;
 }
 
 /**

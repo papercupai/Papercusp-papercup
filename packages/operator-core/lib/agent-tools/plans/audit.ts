@@ -34,17 +34,21 @@ import {
   CITATION_KINDS,
   citationBlobSha,
   citationBlobShaAt,
+  CitationGitReadError,
   getEffectiveItemAudits,
   getLatestActivationAudit,
   getPlanItemStatuses,
+  isRepoFileCitation,
   isVerifyingCitation,
   isCitationContextFailure,
   mergeActivationAuditCoverage,
   prepareAuditPassEntries,
   recordCurrentActivationAudit,
+  previewCurrentActivationAudit,
   recordPlanAudit,
   repoCitationContextForHarness,
   resolveCitation,
+  resolvePlanItemHomeHarness,
   summarizeCoverage,
   validateActivationAuditPlanTargets,
   type AuditCitation,
@@ -60,38 +64,39 @@ import {
 } from '../sessions/_shared';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import {
+  currentPlanItemIds,
   dbRefOriginLookup,
   evaluateActivationItemProvenance,
   itemProvenanceMissingProblems,
 } from '../../activation-item-provenance';
 import { persistDerivedDraftClauses } from '../../derive-draft-spec-clauses';
 import { detectUnderReadFromSource } from '../../activation-under-read';
+import { restrictedTurnSql } from '../../personal-vault/transcript-exclusion';
 import { assertSourceSpan } from '../../activation-source-span';
 import { setSpecClause } from './spec-clauses-store';
 import { getPlanRow } from './source';
 import {
   MAX_BAR_PROJECTION_EDGES,
+  acceptanceBarProjectionConflictDetail,
   unexpectedAcceptanceBarProjectionIds,
   validateAcceptanceBarSource,
-  acceptanceBarSourceContractProblems,
 } from '../../acceptance-bar-seed';
 import { parsePlan } from './parser';
 import { stagingFirstActivationProblems } from './staging-first-activation-guard';
+import { conformanceActivationVerdict } from '../../spec-conformance/activation-gate';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
+import { resolveActivationClassRef } from './activation-class-ref';
 import { previewPlanStartConsult } from './get-activation-readiness';
-import {
-  recoverHarnessFromSlugs,
-  requireUnambiguousSlugScope,
-  slugScopeErrorResult,
-} from './slug-scope';
+import { previewProductShaping } from './product-shaping';
+import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
 
 const citationPathSchema = z.string().min(1).describe(
   'Repo-relative path. No leading `/` or `~`, no `..` segments — a citation that needs one is not evidence.',
 );
 const citationOptionalFields = {
-  line: z.number().int().positive().optional().describe('Optional line number, validated against the file\'s ACTUAL length — a hallucinated line is refused.'),
+  line: z.number().int().positive().optional().describe('Optional line number; must exist in the cited file.'),
   symbol: z.string().min(1).optional().describe('Optional symbol that must literally appear in the cited file.'),
-  ref: z.string().min(1).optional().describe('Doc id — for a `doc` citation naming a PG-canonical doc rather than a tree file. Requires `reason` too.'),
+  ref: z.string().min(1).optional().describe('PG-canonical doc id for a `doc` citation; requires `reason`.'),
   reason: z.string().min(1).optional().describe('REQUIRED for kind `none`, and for a `doc` cited by `ref` alone: why this item has no code-resolvable artifact.'),
 };
 const citationSchema = z.union([
@@ -127,7 +132,7 @@ const itemSchema = z.object({
     'implemented (you READ the code that implements it — REQUIRES a resolving `code`/`test` citation; a `doc` citation cannot support this verdict) | not-code (a decision/doc/investigation — REQUIRES `note`, and is counted, because it exempts the item from code verification) | partial | missing | dropped (intentionally departed from — REQUIRES `note`). Per plan D-002 no verdict refuses a ship on its own; they RECORD. The ship-blocking question is the item\'s own status.',
   ),
   citations: z.array(citationSchema).max(20).optional(),
-  note: z.string().min(1).max(2000).optional().describe('Free note. REQUIRED when verdict is `dropped` — the intentional-departure reason (D-002): going against the plan is fine, going against it silently is not. Also REQUIRED when verdict is `not-code`: what the deliverable actually is, and why no code implements it.'),
+  note: z.string().min(1).max(2000).optional().describe('REQUIRED for `dropped`: explain the intentional departure (D-002). REQUIRED for `not-code`: name the deliverable and why it has no code implementation.'),
 });
 
 const findingSchema = z.object({
@@ -179,20 +184,26 @@ const itemProvenanceSchema = z.discriminatedUnion('kind', [
     kind: z.literal('agent-added'),
     reason: z.string().min(1).max(2000).describe('Why the agent added it; shown to the owner.'),
   }),
-]);
+]).meta({
+  // The compact discovery projection merges array-item union fields. Preserve
+  // this branch contract beside the schema so callers cannot combine fields
+  // from the `derived` and `agent-added` variants.
+  'x-papercusp-call-constraint':
+    'when kind=derived => from required; when kind!=derived => from forbidden; when kind=agent-added => note forbidden; when kind=agent-added => reason required; when kind!=agent-added => reason forbidden',
+});
 
 // RSR-P-008-A: the activation rules are reported alongside any shape defect.
 const argsSchema = refineEvenWithShapeIssues(z.object({
   slug: z.string().min(1).describe('The plan being audited.'),
   harness: harnessArg,
-  phase: z.enum(['completion', 'activation']).default('completion').describe(
-    '`completion` (default) audits implemented code. `activation` audits the source conversation before ready/active and records the exact current plan revision.',
+  phase: z.enum(['completion', 'activation', 'shaping']).default('completion').describe(
+    '`shaping` previews the product brief/scenario gaps and original-intent reviewer context without writes. `completion` (default) audits implemented code. `activation` records the source-conversation audit.',
   ),
   dryRun: z.boolean().default(false).describe(
     'Validate and preview the audit without recording an audit row, repair filing, derived spec clause, or plan event.',
   ),
   classRef: z.enum(PLAN_CLASS_RUBRIC_REFS).optional().describe(
-    'Activation phase only: the exact PlanClassRubricRef used by plans:evaluate-spec-quality. Required; never infer it from plan prose.',
+    'Activation: the plans:evaluate-spec-quality class; derived when omitted; must match the acceptance class. Ignored at completion.',
   ),
   items: z.array(itemSchema).min(1).max(200).optional().describe('Completion phase only: one entry per plan item audited.'),
   findings: z.array(findingSchema).max(50).optional().describe('Completion phase only: out-of-scope discoveries.'),
@@ -218,14 +229,8 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
   if (args.phase === 'activation') {
     // Whether coverage is required depends on whether this is the first audit.
     // The prior-audit lookup is async and belongs in the handler, so the input
-    // schema must admit omitted/empty arrays for carry-forward re-audits.
-    if (args.classRef === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['classRef'],
-        message: 'classRef is required for activation and must be the exact prior spec-quality evaluation class',
-      });
-    }
+    // schema must admit omitted/empty arrays for carry-forward re-audits. An omitted
+    // classRef is derived in the handler from the latest spec-quality evaluation (P-003).
     if (args.mappings && new Set(args.mappings.map((mapping) => mapping.id)).size !== args.mappings.length) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mappings'], message: 'mapping ids must be unique within an activation audit' });
     }
@@ -234,16 +239,24 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is completion-phase only` });
       }
     }
+  } else if (args.phase === 'shaping') {
+    for (const field of ['items', 'findings', 'auditedSha', 'sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef'] as const) {
+      if (args[field] !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is not used by the read-only shaping preview` });
+    }
   } else {
     if (!args.items) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['items'], message: 'items is required for phase:completion' });
     }
-    for (const field of ['sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef'] as const) {
+    // classRef is accepted and ignored here (with a result note) rather than refused (P-003).
+    for (const field of ['sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers'] as const) {
       if (args[field] !== undefined) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is activation-phase only` });
       }
     }
   }
+}).meta({
+  'x-papercusp-call-constraint':
+    'phase=shaping => read-only preview; audit payload fields forbidden. phase=activation => classRef derived if omitted; items, findings, auditedSha forbidden. phase=completion (including omitted phase) => items required; classRef ignored; sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
 });
 
 interface Problem {
@@ -264,7 +277,7 @@ function divergentCitationBlobShaProblems(entries: AuditItemEntry[]): Problem[] 
   for (const entry of entries) {
     if (entry.carriedFrom !== undefined) continue;
     for (const citation of entry.citations) {
-      if (!isVerifyingCitation(citation) || !citation.path || !citation.blobSha) continue;
+      if (!isRepoFileCitation(citation) || !citation.path || !citation.blobSha) continue;
       const path = citation.path.trim();
       if (!path) continue;
       const bySha = byPath.get(path) ?? new Map<string, Set<string>>();
@@ -305,14 +318,14 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record a plan audit. Activation: any nonempty `unresolvedBlockers` list refuses the audit and records nothing; map resolved conditions in `mappings`/`summary` instead. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs and previews readiness. BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or fenced `requirement` JSON plus Design map.",
+    "Activation: any nonempty `unresolvedBlockers` list refuses the audit and records nothing. Shaping previews product intent/scenario gaps without writes; completion checks actual code. BAR seeding needs requirement JSON and a Design map.",
   guidance: {
-    when: "Before ready/active, read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions. Author `## Requirements` with exact `**R-N — Title.** outcome` records (or a fenced `requirement` JSON block), map each R-N in Design's Bar-to-work table (`tree|deployed|live`); ordinary bullet lists do not satisfy the BAR parser. Use `activation`; before shipped use `completion` against ACTUAL CODE.",
+    when: "Before activation read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, follow-up. ## Requirements: **R-N — Title.** outcome; use a fenced `requirement` JSON block for METHOD/check/layers. Design needs a BAR-to-work map; ordinary bullet lists do not satisfy the BAR parser. Shape brief/scenarios/assumptions before specs; completion cites actual code.",
     returns:
-      "Activation returns { auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance { enforced, counts, unresolved }, barSeed, activationReadiness }. An item no owner-typed turn backs, and not declared in itemProvenance, refuses item_provenance_missing; a bad declaration refuses item_provenance_invalid; both name each item and record nothing. A plan whose earlier audits predate provenance records enforced:false instead, until every item resolves. Pending amendment/repair preserves the audit and requires rubrics:amend. Completion returns auditSeq, counts, coverage, and uncoveredItems; mixed errors return partial/problems/rejectedItemIds; batch-wide errors record nothing.",
-    notWhen: "Not mid-implementation; grade rubrics with scorecards:emit, decisions with plans:add-decision, and repair open activation mappings first.",
+      "Shaping: {productShaping}, advisory gaps/trace/reviewerBrief, not semantic proof. Activation: {auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance, barSeed, activationReadiness}; provenance gaps refuse. Completion: {auditSeq, coverage, uncoveredItems, partial, problems, rejectedItemIds}.",
+    notWhen: "Rubrics: scorecards:emit. Decisions: plans:add-decision.",
     chaining:
-      `Activation: sessions:search/read → repair omissions → audit → ready. Later edits preserve audit and return audited/current revision id/seq/contentHash. Re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')} need no re-audit. Completion: audit → rubric/scorecard → shipped.`,
+      `shaping → plans:set-content → independent review → activation → start. Edits preserve audited/current revision id/seq/contentHash; re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; not ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')}. completion → rubric/scorecard → shipped.`,
     seeAlso: [
       'plans:set-status (drop an item you intentionally departed from, with a reason)',
       'plans:set-plan-status (the completion gate that reads this audit)',
@@ -331,7 +344,8 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean().optional(),
-      phase: z.enum(['activation', 'completion']).optional(),
+      phase: z.enum(['activation', 'completion', 'shaping']).optional(),
+      productShaping: z.unknown().optional(),
       dryRun: z.boolean().optional(),
       preview: z.boolean().optional(),
       auditSeq: z.number().int().nonnegative().optional(),
@@ -345,6 +359,16 @@ export default defineTool({
       barSeedPendingAmendment: z.unknown().optional(),
       barSeedPendingRepair: z.unknown().optional(),
       activationReadiness: z.object({ consult: z.unknown() }).optional(),
+      // P-003: which class seeded the BARs, and whether the caller supplied it or it was
+      // derived from the plan's latest plans:evaluate-spec-quality card.
+      classRefResolution: z.object({
+        classRef: z.enum(PLAN_CLASS_RUBRIC_REFS),
+        source: z.enum(['supplied', 'derived']),
+        evaluationScorecardId: z.string().optional(),
+      }).optional(),
+      // WI-10008137: outcome of the plans:start run that follows a recorded
+      // activation audit on a draft plan (started, or plans:start's refusal).
+      autoStart: z.unknown().optional(),
       // Activation's owner-provenance check (itemProvenanceResult below); null
       // when no current plan was read. `returns` names this nested shape.
       itemProvenance: z
@@ -369,16 +393,12 @@ export default defineTool({
     // EI-22078133656298536: an audit already names an exact plan slug, so a
     // workspace-scoped operator call can recover its owning harness from the
     // canonical plan index instead of failing with an undiscoverable
-    // `harness_required`. This is a write, so an ambiguous slug remains
-    // fail-loud rather than choosing the most-recently-updated copy.
+    // `harness_required`. A slug present in >1 harness refuses (P-006: the
+    // decider itself refuses ambiguity, for reads and writes alike).
     const scope = resolveHarnessScope(args.harness, ctx);
     let sctx: typeof ctx & { harnessSlug: string };
     if (scope.kind === 'none') {
-      const recovered = await recoverHarnessFromSlugs(ctx, [args.slug]);
-      const decision = requireUnambiguousSlugScope(
-        recovered,
-        ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
-      );
+      const decision = await recoverHarnessFromSlugs(ctx, [args.slug]);
       if (decision.status !== 'resolved') return slugScopeErrorResult('plans:audit', decision);
       sctx = { ...ctx, harnessSlug: decision.harnessSlug };
       (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({
@@ -390,21 +410,32 @@ export default defineTool({
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     const dryRun = args.dryRun === true;
 
+    if (args.phase === 'shaping') {
+      const plan = await getPlanRow(args.slug, { harnessSlug });
+      if (!plan) return { data: { ok: false, slug: args.slug, phase: 'shaping', error: 'plan_not_found' } };
+      return { data: { ok: true, slug: args.slug, phase: 'shaping', dryRun: true, preview: true,
+        productShaping: previewProductShaping(plan.content) } };
+    }
+
     if (args.phase === 'activation') {
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
-      if (!args.classRef) {
+      const classResolution = await resolveActivationClassRef({
+        planSlug: args.slug, harnessSlug: harnessSlug ?? '', suppliedClassRef: args.classRef,
+      });
+      if (!classResolution.ok) {
         return { data: {
           ok: false as const,
           slug: args.slug,
           phase: 'activation' as const,
           error: 'activation_audit_invalid',
           problems: [{
-            code: 'class_ref_required',
-            detail: 'classRef must be the exact PlanClassRubricRef used by plans:evaluate-spec-quality; do not infer it from plan prose',
+            code: classResolution.code,
+            detail: classResolution.detail,
           }],
           message: 'Activation audits require the exact evaluated PlanClassRubricRef so the acceptance BAR seed preserves plan-class provenance.',
         } };
       }
+      const activationClassRef = classResolution.classRef;
       const submittedActivation: ActivationAuditPayload = {
         sourceRanges: (args.sourceRanges ?? []).map((range) => {
           // `sessions:list` exposes both the raw session id and the convenient
@@ -481,7 +512,24 @@ export default defineTool({
           } };
         }
       }
-      const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation);
+      const currentPlan = await getPlanRow(args.slug, {
+        workspaceId,
+        harnessSlug: harnessSlug ?? '',
+      });
+      // A prior target whose destination the current plan no longer contains (an R-N removed
+      // by a rubric amendment, a deleted item/decision/section) is dead: it may be retired,
+      // because keeping it could never pass the plan-target validation below. A malformed
+      // target is not "dead" — it never named a destination, so it stays a conflict.
+      const deadTargets = previousAudit?.activation && currentPlan
+        ? validateActivationAuditPlanTargets(previousAudit.activation, currentPlan.content)
+          .filter((problem) => problem.code !== 'invalid_plan_target')
+          .map(({ mappingId, target }) => ({ mappingId, target }))
+        : [];
+      const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation, {
+        deadTargets,
+        // WI-10006324: retire carried provenance for items the plan has since dropped.
+        ...(currentPlan ? { liveItemIds: currentPlanItemIds(currentPlan.content) } : {}),
+      });
       if (!merged.ok) {
         return { data: {
           ok: false as const,
@@ -499,10 +547,6 @@ export default defineTool({
       const sourceRanges = activation.sourceRanges;
       const mappings = activation.mappings;
 
-      const currentPlan = await getPlanRow(args.slug, {
-        workspaceId,
-        harnessSlug: harnessSlug ?? '',
-      });
       if (dryRun && !currentPlan) {
         return { data: {
           ok: false as const,
@@ -531,6 +575,24 @@ export default defineTool({
           } };
         }
       }
+      // spec-conformance-loop-2026-10-14 R-1: every requirement compiles to an
+      // executable check (done-when, falsifier, or approved unenforced declaration).
+      // Evaluated LAST, just before success/record, so every more specific
+      // diagnostic (source refs, provenance, BAR seed) is reported first.
+      const conformanceRefusal = (preview: boolean) => {
+        if (!currentPlan) return null;
+        const conformance = conformanceActivationVerdict(currentPlan.content);
+        if (conformance.ok) return null;
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          ...(preview ? { dryRun: true as const, preview: true as const } : {}),
+          error: conformance.error,
+          problems: conformance.problems,
+          message: conformance.message,
+        } };
+      };
 
       const sourceProblems: Problem[] = [];
       const sourceRefs: string[] = [];
@@ -740,6 +802,7 @@ export default defineTool({
             projectionIdentities,
           );
           if (unexpected.length > 0) {
+            const detail = acceptanceBarProjectionConflictDetail(unexpected);
             return { data: {
               ok: false as const,
               slug: args.slug,
@@ -749,36 +812,26 @@ export default defineTool({
               error: 'bar_projection_conflict' as const,
               problems: [{
                 code: 'bar_projection_conflict' as const,
-                detail: `stored BAR projection(s) are outside the exact current map: ${unexpected.join(', ')}`,
+                detail,
               }],
-              message: `1 BAR seed problem(s): stored BAR projection(s) are outside the exact current map: ${unexpected.join(', ')}`,
+              message: `1 BAR seed problem(s): ${detail}`,
             } };
           }
-          // P-003/P-029: mirror the writer's activation contract-completeness refusal.
-          // The writer judges only FRESH BARs; on a never-seeded post-epoch plan every
-          // BAR is fresh, so the parsed source is exactly what it judges. A seeded plan
-          // re-derives nothing fresh on re-audit (a meaning change routes to amendment),
-          // so the preview stays silent there exactly as the writer does.
-          const barGate = barGateRows[0]!;
-          if (barGate.acceptance_bar_rubric_slug == null &&
-              (barGate.acceptance_bar_cohort ?? 'post-epoch') === 'post-epoch') {
-            const contractProblems = acceptanceBarSourceContractProblems(barSource.bars, barSource.mappings);
-            if (contractProblems.length > 0) {
-              return { data: {
-                ok: false as const,
-                slug: args.slug,
-                phase: 'activation' as const,
-                dryRun: true as const,
-                preview: true as const,
-                error: contractProblems[0]!.code,
-                problems: contractProblems,
-                message:
-                  `${contractProblems.length} BAR seed problem(s): ` +
-                  `${contractProblems.map((problem) => problem.detail).join('; ')}`,
-              } };
-            }
-          }
+          // A pin may name a retired rubric while the writer is adopting an
+          // unstarted successor. Reuse its complete transactional decision;
+          // presence of a pin is not proof that every current BAR is preserved.
+          const seedPreview = await previewCurrentActivationAudit({
+            workspaceId, harnessSlug: harnessSlug ?? '', planSlug: args.slug,
+            createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
+            classRef: activationClassRef, activation,
+          });
+          if (!seedPreview.ok) return { data: {
+            ...seedPreview, slug: args.slug, phase: 'activation' as const,
+            dryRun: true as const, preview: true as const,
+          } };
         }
+        const previewConformance = conformanceRefusal(true);
+        if (previewConformance) return previewConformance;
         return { data: {
           ok: true as const,
           slug: args.slug,
@@ -789,6 +842,7 @@ export default defineTool({
           mappings: mappings.length,
           carriedMappings: merged.carriedMappingIds.length,
           carriedMappingIds: merged.carriedMappingIds,
+          ...(merged.retiredTargets.length ? { retiredTargets: merged.retiredTargets } : {}),
           coverageBaseAuditSeq: previousAudit?.auditSeq ?? null,
           sourceRefsResolved: resolutions.length,
           itemProvenance: itemProvenanceResult,
@@ -800,12 +854,14 @@ export default defineTool({
         } };
       }
 
+      const writeConformance = conformanceRefusal(false);
+      if (writeConformance) return writeConformance;
       const recorded = await recordCurrentActivationAudit({
         workspaceId,
         planSlug: args.slug,
         harnessSlug: harnessSlug ?? '',
         createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
-        classRef: args.classRef,
+        classRef: activationClassRef,
         activation,
         summary: args.summary ?? null,
       });
@@ -874,7 +930,11 @@ export default defineTool({
               // Liveness: an empty read is UNKNOWN, and the deriver fails open on it
               // (D-040's rule) — `setSpecClause` is the backstop that refuses a target the
               // plan does not actually have.
-              planItems: await getPlanItemStatuses(args.slug),
+              // WI-10005174: `harnessSlug` is only a candidate here; read the items
+              // of the harness that actually owns the plan.
+              planItems: await getPlanItemStatuses(args.slug, {
+                harnessSlug: await resolvePlanItemHomeHarness(args.slug, harnessSlug),
+              }),
               actorId: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
             },
             setSpecClause,
@@ -924,6 +984,9 @@ export default defineTool({
                  )
                  AND turns.turn_idx BETWEEN ${Math.min(...ranges.map((r) => r.fromTurn))}
                                         AND ${Math.max(...ranges.map((r) => r.toTurn))}
+                 -- D-006: the detector echoes uncited turn text back to the auditor, so a
+                 -- turn another agent recorded inside its disclosure window never enters it.
+                 AND NOT ${restrictedTurnSql(sql, 'turns', [resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId])}
                ORDER BY turns.source_kind, turns.session_id, turns.turn_idx
                LIMIT ${cap}`;
             // Over-fetches across gaps between ranges of the SAME session; detectUnderRead
@@ -1004,9 +1067,24 @@ export default defineTool({
           `revision ${recorded.auditedPlanRevision.seq}`,
       });
 
+      // WI-10008137: a draft plan activates at the end of its activation audit by
+      // running the real plans:start (start gate, dependencies, spec quality, consult).
+      // A refusal leaves it draft and is reported here; it never fails the audit.
+      const { autoStartAfterActivationAudit } = await import('./auto-start-after-audit');
+      const autoStart = await autoStartAfterActivationAudit({
+        slug: args.slug,
+        harness: harnessSlug,
+        planContent: currentPlan?.content,
+        start: async (startArgs) => {
+          const { default: startTool } = await import('./start');
+          return startTool.handler(startArgs as never, ctx as never);
+        },
+      });
+
       return { data: {
         ok: true as const,
         slug: args.slug,
+        autoStart,
         phase: 'activation' as const,
         auditSeq: recorded.audit.auditSeq,
         auditedPlanRevision: recorded.auditedPlanRevision,
@@ -1014,6 +1092,7 @@ export default defineTool({
         mappings: mappings.length,
         carriedMappings: merged.carriedMappingIds.length,
         carriedMappingIds: merged.carriedMappingIds,
+        ...(merged.retiredTargets.length ? { retiredTargets: merged.retiredTargets } : {}),
         coverageBaseAuditSeq: previousAudit?.auditSeq ?? null,
         sourceRefsResolved: resolutions.length,
         sourceRefsFromArchive: resolutions.filter((resolution) => resolution.source === 'archive').length,
@@ -1022,6 +1101,13 @@ export default defineTool({
         itemProvenance: itemProvenanceResult,
         derivedSpecClauses,
         activationReadiness,
+        classRefResolution: {
+          classRef: classResolution.classRef,
+          source: classResolution.source,
+          ...(classResolution.evaluationScorecardId
+            ? { evaluationScorecardId: classResolution.evaluationScorecardId }
+            : {}),
+        },
         ...(recorded.barSeed ? { barSeed: recorded.barSeed } : {}),
         ...(recorded.barSeedPendingAmendment
           ? { barSeedPendingAmendment: recorded.barSeedPendingAmendment }
@@ -1037,7 +1123,11 @@ export default defineTool({
     // The plan's real items. An empty read is ambiguous between "no such plan" and "the
     // index read failed", and BOTH must refuse: validating against an empty list would
     // accept every itemId, which is the opposite of this tool's job.
-    const planItems = await getPlanItemStatuses(args.slug);
+    // WI-10005174: scope to the plan's own harness; a same-slug plan in another harness
+    // would otherwise lend its item ids to this validation.
+    const planItems = await getPlanItemStatuses(args.slug, {
+      harnessSlug: await resolvePlanItemHomeHarness(args.slug, harnessSlug),
+    });
     if (planItems.length === 0) {
       return { data: {
         ok: false as const,
@@ -1115,6 +1205,7 @@ export default defineTool({
     const problems: Problem[] = [];
     const entries: AuditItemEntry[] = [];
     const seenItems = new Set<string>();
+    const workingTreeDrift = new Set<string>();
     let citationsChecked = 0;
 
     for (const it of args.items ?? []) {
@@ -1193,7 +1284,7 @@ export default defineTool({
           storedCitations.push(c);
           continue;
         }
-        if (isVerifyingCitation(c)) {
+        if (isRepoFileCitation(c)) {
           const blobSha = citationBlobSha(c, deps);
           if (!blobSha) {
             problems.push({
@@ -1216,7 +1307,21 @@ export default defineTool({
               storedCitations.push(c);
               continue;
             }
-            const auditedBlobSha = citationBlobShaAt(c, auditedSha, deps);
+            let auditedBlobSha: string | null;
+            try {
+              auditedBlobSha = await citationBlobShaAt(c, auditedSha, deps);
+            } catch (error) {
+              if (!(error instanceof CitationGitReadError)) throw error;
+              problems.push({
+                itemId: it.itemId,
+                code: 'citation_audited_sha_unavailable',
+                detail: `${c.kind} citation '${c.path ?? ''}' could not be checked against auditedSha ` +
+                  `'${auditedSha}' because the Git read failed; retry after the repository is available. ` +
+                  `${error.message}`,
+              });
+              storedCitations.push(c);
+              continue;
+            }
             if (!auditedBlobSha) {
               problems.push({
                 itemId: it.itemId,
@@ -1228,18 +1333,13 @@ export default defineTool({
               storedCitations.push(c);
               continue;
             }
-            if (auditedBlobSha !== blobSha) {
-              problems.push({
-                itemId: it.itemId,
-                code: 'citation_audited_sha_mismatch',
-                detail:
-                  `${c.kind} citation '${c.path ?? ''}' has current blobSha '${blobSha}' but auditedSha ` +
-                  `'${auditedSha}' carries '${auditedBlobSha}'; re-audit against a commit containing the ` +
-                  `cited bytes`,
-              });
-              storedCitations.push(c);
-              continue;
-            }
+            // P-019 (proof-freshness-pinned-candidate-2026-10-06 D-001): the audit records
+            // the COMMITTED bytes at auditedSha, which is what the ship gate re-measures
+            // (at its own measurement commit). A peer's uncommitted edit in the shared
+            // tree is reported, not refused: it is not evidence until it is committed.
+            if (auditedBlobSha !== blobSha) workingTreeDrift.add(c.path?.trim() ?? '');
+            storedCitations.push({ ...c, blobSha: auditedBlobSha });
+            continue;
           }
           storedCitations.push({ ...c, blobSha });
         } else {
@@ -1358,7 +1458,18 @@ export default defineTool({
         `items (or drop them with a reason); every other unlisted item already carried forward with ` +
         `its original provenance.`
       : null;
-    const resultNote = [partialNote, uncoveredNote].filter((note): note is string => Boolean(note)).join(' ');
+    const driftNote = workingTreeDrift.size > 0
+      ? `${workingTreeDrift.size} cited file(s) differ in the working tree from auditedSha ` +
+        `${(auditedSha ?? '').slice(0, 12)}: ${[...workingTreeDrift].slice(0, 5).join(', ')}` +
+        `${workingTreeDrift.size > 5 ? ` (+${workingTreeDrift.size - 5} more)` : ''}. The audit recorded the ` +
+        `committed bytes at auditedSha; the citations' line/symbol checks read the working tree. If the ` +
+        `uncommitted edits matter to these items, re-audit them after the edits are committed.`
+      : null;
+    const classRefIgnoredNote = args.classRef
+      ? `classRef '${args.classRef}' was ignored: it applies only to phase:'activation'.`
+      : null;
+    const resultNote = [partialNote, uncoveredNote, driftNote, classRefIgnoredNote]
+      .filter((note): note is string => Boolean(note)).join(' ');
 
     if (dryRun) {
       return { data: {

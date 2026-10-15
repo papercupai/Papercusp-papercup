@@ -18,6 +18,36 @@ import {
   CLAUDE_OWNER_DIALOG_RESULT_PREFIXES,
 } from './session-ingest';
 import { OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
+import { promptOriginHash } from './session-ingest';
+
+describe('short user decisions', () => {
+  const adapters = [
+    { name: 'claude', parse: parseClaudeLine, signal: classifyClaudeLine,
+      line: (text: string, role = 'user') => ({ type: role, timestamp: '2026-10-08T01:10:19.604Z', message: { role, content: text } }) },
+    { name: 'omp', parse: parseOmpLine, signal: classifyOmpLine,
+      line: (text: string, role = 'user') => ({ type: 'message', timestamp: '2026-10-08T01:10:19.604Z', message: { role, content: [{ type: 'text', text }] } }) },
+    { name: 'codex', parse: parseCodexLine, signal: classifyCodexLine,
+      line: (text: string, role = 'user') => ({ type: 'response_item', timestamp: '2026-10-08T01:10:19.604Z', payload: { type: 'message', role, content: [{ type: 'input_text', text }] } }) },
+    { name: 'codex history', parse: parseCodexLine, signal: classifyCodexLine,
+      line: (text: string, role = 'user') => role === 'user'
+        ? { session_id: 'short-history', ts: 1791421819.604, text }
+        : { type: 'response_item', payload: { type: 'message', role, content: [{ type: 'output_text', text }] } } },
+  ];
+  for (const adapter of adapters) {
+    it.each(['A', 'B', 'y', 'no', 'ok'])(`${adapter.name} retains and counts the user decision %s`, (decision) => {
+      const raw = ` ${decision}\r\n`;
+      const line = JSON.stringify(adapter.line(raw));
+      expect(adapter.parse(line)).toMatchObject({ speaker: 'user', text: decision, promptHash: promptOriginHash(raw) });
+      expect(adapter.signal(line)?.isPrompt).toBe(true);
+      expect(adapter.parse(line, { retainShortUserTurns: false })).toBeNull();
+    });
+    it(`${adapter.name} still excludes empty turns and short assistant acknowledgements`, () => {
+      expect(adapter.parse(JSON.stringify(adapter.line(' \r\n ')))).toBeNull();
+      expect(adapter.signal(JSON.stringify(adapter.line(' \r\n ')))?.isPrompt).toBe(false);
+      expect(adapter.parse(JSON.stringify(adapter.line('ok', 'assistant')))).toBeNull();
+    });
+  }
+});
 
 describe('textFromContent', () => {
   it('passes strings through and joins text-ish parts', () => {
@@ -251,8 +281,8 @@ describe('parseClaudeLine', () => {
     expect(long?.text.length).toBeLessThanOrEqual(8000);
   });
 
-  it('skips micro-turns', () => {
-    expect(parseClaudeLine(JSON.stringify({ type: 'user', message: { role: 'user', content: 'y' } }))).toBeNull();
+  it('skips short assistant acknowledgements', () => {
+    expect(parseClaudeLine(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'y' } }))).toBeNull();
   });
 });
 

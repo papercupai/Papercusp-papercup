@@ -21,14 +21,20 @@
  * names the review route — list the spec's review ids, claim one, grade it — and must not
  * certify a drain. The route reuses the existing doors (work_items:claimable's
  * `excludedSample.queueControl.agentReview`, improvements:agent-review, blender:grade-idea);
- * nothing new is claimed on the caller's behalf. The review door itself refuses a reviewer
- * who submitted the row, so the only exit this adds is spelled out: if the door returns
- * `claimed:false`, every pending review is the caller's own and the lane IS drained for them.
+ * nothing new is claimed on the caller's behalf. Review claims stay tied to explicit ids
+ * returned by the caller's scoped read. The harness-wide `claim-next` mode cannot preserve a
+ * fleet claim spec, so it must never be offered as a fallback here.
  *
  * `revision-requested` rows are NOT counted: they wait on their SUBMITTER's resubmission, which
  * a peer cannot perform, so they would advertise work the caller cannot do.
  *
- * PURE: no I/O, so both miss paths share one wording and one test pins it.
+ * Pending rows HELD by another agent (`taken_by` set and not the caller) are NOT counted
+ * either (EI-25949663083795915): improvements:agent-review refuses them with
+ * `claim-conflict` (holder !== reviewer), so `pendingAgentReview` means "pending AND
+ * claimable by this caller", and the advised sample ids carry the same predicate.
+ *
+ * PURE: no I/O, so both miss paths share one wording and a focused test pins the advice,
+ * including the bug reproduction gate.
  */
 
 /** The review-relevant subset of `IssueClaimExclusionBreakdown['queueControl']`. */
@@ -36,22 +42,35 @@ export interface ReviewQueueCounts {
   pendingAgentReview: number;
 }
 
+export const REVIEWABLE_MISS_IDS_AT = 'excludedSample.queueControl.agentReview[].id';
+
 export interface ReviewableMissRoute {
-  /** Spec-matched rows whose peer review is pending — work a non-submitter can do now. */
+  /** Spec-matched rows whose peer review is pending and that no OTHER agent holds — work a
+   *  non-submitter can claim now. */
   pendingAgentReview: number;
   /** Step 1: list the spec's pending-review ids (read-only). The ids are at
    *  `excludedSample.queueControl.agentReview[].id`, each with its `ledgerIdeaId`. */
   list: {
     tool: 'work_items:claimable';
-    args: { harness?: string; spec?: string; breakdownOnly: true; sampleExcluded: number };
-    idsAt: 'excludedSample.queueControl.agentReview[].id';
+    args: {
+      harness?: string;
+      spec?: string;
+      breakdownOnly: true;
+      sampleExcluded: number;
+      /** Dispatch-level projection keeps the bounded sample visible through the result door. */
+      projection: { pick: string[] };
+    };
+    idsAt: typeof REVIEWABLE_MISS_IDS_AT;
   };
-  /** Step 2: claim one listed id for review. */
-  claim: { tool: 'improvements:agent-review'; args: { mode: 'claim'; harness?: string } };
+  /** Step 2: bind one listed id to the required `id` argument before calling the review tool. */
+  claim: {
+    tool: 'improvements:agent-review';
+    mode: 'claim';
+    idFrom: typeof REVIEWABLE_MISS_IDS_AT;
+    harness?: string;
+  };
   /** Step 3: record the peer grade — this is what clears the review floor. */
   grade: { tool: 'blender:grade-idea'; ideaIdFrom: 'ledgerIdeaId' };
-  /** Fallback when the listed ids are all the caller's own or already taken. */
-  claimNext: { tool: 'improvements:agent-review'; args: { mode: 'claim-next'; harness?: string } };
 }
 
 export interface ReviewableMiss {
@@ -90,16 +109,22 @@ export function reviewableMiss(
         ...(spec ? { spec } : {}),
         breakdownOnly: true,
         sampleExcluded: REVIEWABLE_MISS_SAMPLE,
+        projection: { pick: ['excludedSample.queueControl.agentReview'] },
       },
-      idsAt: 'excludedSample.queueControl.agentReview[].id',
+      idsAt: REVIEWABLE_MISS_IDS_AT,
     },
-    claim: { tool: 'improvements:agent-review', args: { mode: 'claim', ...(harness ? { harness } : {}) } },
+    claim: {
+      tool: 'improvements:agent-review',
+      mode: 'claim',
+      idFrom: REVIEWABLE_MISS_IDS_AT,
+      ...(harness ? { harness } : {}),
+    },
     grade: { tool: 'blender:grade-idea', ideaIdFrom: 'ledgerIdeaId' },
-    claimNext: { tool: 'improvements:agent-review', args: { mode: 'claim-next', ...(harness ? { harness } : {}) } },
   };
   const listCall =
     `work_items:claimable { ${harness ? `harness:'${harness}', ` : ''}${spec ? `spec:'${spec}', ` : ''}` +
-    `breakdownOnly:true, sampleExcluded:${REVIEWABLE_MISS_SAMPLE} }`;
+    `breakdownOnly:true, sampleExcluded:${REVIEWABLE_MISS_SAMPLE}, ` +
+    'projection:{pick:["excludedSample.queueControl.agentReview"]} }';
   const message =
     `REVIEWABLE, NOT IDLE (WI-10004358): ${pending} spec-matched row(s) are held by PENDING PEER REVIEW. ` +
     'That floor never self-clears — it clears only when a non-submitter reviews and grades the row — ' +
@@ -107,10 +132,15 @@ export function reviewableMiss(
   const advice =
     `DO NOT STAND DOWN YET: review the ${pending} pending row(s) in your own spec. ` +
     `1) ${listCall} → ids at excludedSample.queueControl.agentReview[].id; ` +
-    `2) improvements:agent-review { mode:'claim', id${harness ? `, harness:'${harness}'` : ''} } on one you did not submit; ` +
-    '3) read the item, then blender:grade-idea { ideaId: <its ledgerIdeaId>, grade, feedback } — 4+ approves it into the ' +
-    'claimable pool, 3 or lower sends it back for revision. Then pull again. ' +
-    `If the review door returns claimed:false for every listed id and for mode:'claim-next', every pending review is your ` +
-    'own submission or already taken — only then is this lane drained for you, and the advice below applies.';
+    `2) For one listed id you did not submit, call improvements:agent-review { mode:'claim', id:<listed id>${harness ? `, harness:'${harness}'` : ''} }; ` +
+    '3) read the item, then blender:grade-idea { ideaId: <its ledgerIdeaId>, grade, feedback }. ' +
+    'A grade of 4+ approves only after its gates pass: bugs need an accepted current-build reproduction receipt. ' +
+    'Without one, a 4+ grade leaves the bug revision-requested/not-ready; record and verify the receipt before treating it as approved. ' +
+    'A grade of 3 or lower sends it back for revision. Then pull again. ' +
+    "If a claim returns claimed:false with reason 'agent-review-not-pending', discard that id and refresh the scoped claimability sample before trying another. The earlier list was a read-only snapshot, not a reservation; this refusal alone does not establish a selector defect. " +
+    `If improvements:agent-review returns claimed:false for every id in that scoped read, no review is available ` +
+    `from this bounded sample. Do not use claim-next: it scopes only to a harness and can claim review work outside ` +
+    `this fleet spec. The sample is capped at ${REVIEWABLE_MISS_SAMPLE} ids per floor, so it does not prove the full ` +
+    'pending-review population is exhausted; keep the lane open and re-read the scoped claimability view when its candidates change.';
   return { route, message, advice };
 }

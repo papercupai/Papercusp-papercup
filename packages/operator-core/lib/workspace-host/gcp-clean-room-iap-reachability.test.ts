@@ -174,6 +174,34 @@ describe("cloudNatCoversSubnetwork", () => {
     ).toBe(true);
   });
 
+  it.each([{ ranges: ["PRIMARY_IP_RANGE"] }, { ranges: ["PRIMARY_IP_RANGE", "LIST_OF_SECONDARY_IP_RANGES"] }])("accepts documented primary-range coverage $ranges for a VM without alias ranges", ({ ranges }) => {
+    expect(cloudNatCoversSubnetwork({
+      ...BASE_NAT,
+      subnetworks: [{ ...BASE_NAT.subnetworks[0], sourceIpRangesToNat: ranges }],
+    }, { subnetwork: "pc-test-subnet", region: "us-central1" })).toBe(true);
+  });
+
+  it("accepts documented primary-range coverage for all subnetworks in the observed region", () => {
+    expect(cloudNatCoversSubnetwork({
+      routerRegion: "us-central1",
+      sourceSubnetworkIpRangesToNat: "ALL_SUBNETWORKS_ALL_PRIMARY_IP_RANGES",
+    }, { subnetwork: "pc-test-subnet", region: "us-central1" })).toBe(true);
+  });
+
+  it.each(["wrong-region", "wrong-subnet", "secondary-only", "unmeasured-region"])("refuses primary-range NAT with %s", (mutation) => {
+    const candidate = {
+      ...BASE_NAT,
+      subnetworks: [{ ...BASE_NAT.subnetworks[0], sourceIpRangesToNat: ["PRIMARY_IP_RANGE"] }],
+    };
+    if (mutation === "wrong-region") candidate.region = "us-east1";
+    if (mutation === "secondary-only") candidate.subnetworks[0]!.sourceIpRangesToNat = ["LIST_OF_SECONDARY_IP_RANGES"];
+    if (mutation === "unmeasured-region") Object.assign(candidate, { region: undefined });
+    expect(cloudNatCoversSubnetwork(candidate, {
+      subnetwork: mutation === "wrong-subnet" ? "foreign-subnet" : "pc-test-subnet",
+      region: "us-central1",
+    })).toBe(false);
+  });
+
   it("rejects a disabled NAT", () => {
     expect(
       cloudNatCoversSubnetwork({ ...BASE_NAT, disabled: true }, {
@@ -201,7 +229,7 @@ describe("cloudNatCoversSubnetwork", () => {
     ).toBe(false);
   });
 
-  it("rejects a LIST_OF_SUBNETWORKS entry that does not allow all IP ranges", () => {
+  it("rejects a LIST_OF_SUBNETWORKS entry without a recognized primary coverage option", () => {
     expect(
       cloudNatCoversSubnetwork(
         {
@@ -215,6 +243,14 @@ describe("cloudNatCoversSubnetwork", () => {
 });
 
 describe("assertCloudNatEgressReachable", () => {
+  it("accepts documented primary-range coverage returned by a PUBLIC VM NAT before creating a private canary", () => {
+    expect(() => assertCloudNatEgressReachable([{
+      type: "PUBLIC", endpointTypes: ["ENDPOINT_TYPE_VM"], routerRegion: "us-central1",
+      sourceSubnetworkIpRangesToNat: "LIST_OF_SUBNETWORKS",
+      subnetworks: [{ name: "pc-test-subnet", sourceIpRangesToNat: ["PRIMARY_IP_RANGE"] }],
+    }], { projectId: "my-project", networkName: "my-network", subnetwork: "pc-test-subnet", region: "us-central1" })).not.toThrow();
+  });
+
   it("refuses an empty or mismatched NAT inventory with an actionable message", () => {
     expect(() =>
       assertCloudNatEgressReachable([], {

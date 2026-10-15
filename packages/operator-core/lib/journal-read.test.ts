@@ -23,6 +23,7 @@ import {
   clampLimit,
   classifyJournalctlFailure,
   collapseConsecutive,
+  defaultUnitCanonicalizer,
   decodeMacPriority,
   decodeMacTimestamp,
   decodeMessage,
@@ -35,11 +36,15 @@ import {
   JOURNAL_READ_DEFAULT_SINCE,
   JOURNAL_READ_MAX_LIMIT,
   normalizeJournalWindow,
+  resolveRelativeWindowInProcess,
+  UNIT_ID_CACHE_TTL_MS,
   parseMacLogJson,
   parseJournalJson,
   mergeJournalRecords,
-  readJournal,
+  readJournal as readJournalImpl,
+  type JournalScope,
   type JournalExec,
+  type UnitCanonicalizer,
 } from './journal-read';
 
 /** Build one journalctl `-o json` line. */
@@ -52,6 +57,15 @@ const execReturning = (stdout: string): JournalExec => async () => ({ stdout });
 /** Default probe stub for the cases that are not ABOUT unknown units — without
  *  it an empty-result case would shell out to a real `systemctl`. */
 const noUnknownUnits = async () => [];
+const keepRequestedUnitNames: UnitCanonicalizer = async (units) => units;
+
+// Most cases isolate journal parsing/diagnosis from systemd's external alias lookup.
+const readJournal = (
+  opts: Parameters<typeof readJournalImpl>[0],
+  exec?: Parameters<typeof readJournalImpl>[1],
+  probeUnits?: Parameters<typeof readJournalImpl>[2],
+  resolveWindow?: Parameters<typeof readJournalImpl>[3],
+) => readJournalImpl(opts, exec, probeUnits, resolveWindow, keepRequestedUnitNames);
 
 describe('buildJournalctlArgs', () => {
   it('normalizes compact relative lookbacks while preserving native timestamp grammar', () => {
@@ -207,6 +221,16 @@ describe('macOS unified-log backend', () => {
     expect(args[args.indexOf('--last') + 1]).toBe('40m');
     expect(args).toContain('--predicate');
     expect(args.join(' ')).not.toContain('journalctl');
+  });
+
+  it.each([
+    ['-10 min', '10m'],
+    ['-5 sec', '5s'],
+    ['-2 hrs', '2h'],
+  ])('translates signed spaced lookback %s into log show --last %s', (since, last) => {
+    const args = buildMacLogArgs({ units: ['papercup-bg-host.service'], since });
+    expect(args.slice(args.indexOf('--last'), args.indexOf('--last') + 2)).toEqual(['--last', last]);
+    expect(args).not.toContain('--start');
   });
 
   it('decodes Apple timestamps and messageType values onto the shared result scale', () => {
@@ -571,6 +595,214 @@ describe('readJournal', () => {
   });
 });
 
+describe('readJournal — all-journal unit selection', () => {
+  it.each<{ scope: JournalScope; messages: string[] }>([
+    { scope: 'user', messages: ['user scope marker'] },
+    { scope: 'system', messages: ['system scope marker'] },
+    { scope: 'all', messages: ['system scope marker', 'user scope marker'] },
+  ])('reads the requested unit in scope $scope', async ({ scope, messages }) => {
+    const unit = 'papercup-mcp-proxy-staging.service';
+    // journalctl -u selects system units unless --user remaps it. Without a
+    // scope flag, --user-unit adds the user-unit arm to the same OR query.
+    const exec: JournalExec = async (args) => {
+      const selects = (option: string) => args.some((arg, index) =>
+        arg === option && args[index + 1] === unit);
+      const rows: string[] = [];
+      if (!args.includes('--user') && selects('-u')) {
+        rows.push(jsonLine({ _SYSTEMD_UNIT: unit, MESSAGE: 'system scope marker' }));
+      }
+      if ((args.includes('--user') && selects('-u')) || selects('--user-unit')) {
+        rows.push(jsonLine({
+          _SYSTEMD_UNIT: 'user@1000.service',
+          _SYSTEMD_USER_UNIT: unit,
+          MESSAGE: 'user scope marker',
+          __REALTIME_TIMESTAMP: '1785110001000000',
+        }));
+      }
+      return { stdout: rows.join('\n') };
+    };
+    const out = await readJournal({ units: [unit], scope }, exec, noUnknownUnits);
+
+    expect(out.entries.map((entry) => entry.message)).toEqual(messages);
+    expect(out.entries.every((entry) => entry.unit === unit)).toBe(true);
+    expect(out.unitsUnknown).toEqual([]);
+    expect(out.matched).toBe(messages.length);
+  });
+});
+
+describe('readJournal — canonical systemd unit names', () => {
+  it('queries the systemd Id for an alias instead of returning a false clean zero', async () => {
+    const requestedUnit = 'papercup-bg-host.service';
+    const canonicalUnit = 'papercusp-bg-host.service';
+    const calls: string[][] = [];
+    const runSystemctl = vi.fn(async (_file: string, _args: string[]) => ({
+      stdout: `${canonicalUnit}\n`,
+      stderr: '',
+    }));
+    const exec: JournalExec = async (args) => {
+      calls.push(args);
+      return {
+        stdout: args.includes(canonicalUnit)
+          ? jsonLine({
+            _SYSTEMD_USER_UNIT: canonicalUnit,
+            MESSAGE: 'own_log_compaction completed',
+          })
+          : '',
+      };
+    };
+    const canonicalizeUnits = vi.fn((units: string[], scope: JournalScope) =>
+      defaultUnitCanonicalizer(units, scope, runSystemctl),
+    );
+    const out = await readJournalImpl(
+      { units: [requestedUnit], grep: 'own_log_compaction' },
+      exec,
+      noUnknownUnits,
+      async () => null,
+      canonicalizeUnits,
+    );
+
+    expect(canonicalizeUnits).toHaveBeenCalledWith([requestedUnit], 'user');
+    expect(runSystemctl).toHaveBeenCalledWith(
+      'systemctl',
+      ['--user', 'show', '-p', 'Id', '--value', requestedUnit],
+      { timeout: 3000 },
+    );
+    expect(calls[0]).toContain(canonicalUnit);
+    expect(out.command).toContain(canonicalUnit);
+    expect(out.units).toEqual([requestedUnit]);
+    expect(out.entries.map((entry) => entry.message)).toEqual(['own_log_compaction completed']);
+  });
+
+  it('keeps the requested name when the manager cannot supply a canonical Id', async () => {
+    const runSystemctl = vi.fn(async () => ({ stdout: '', stderr: '' }));
+    await expect(defaultUnitCanonicalizer(['gone.service'], 'user', runSystemctl))
+      .resolves.toEqual(['gone.service']);
+  });
+
+  it('resolves both journal managers when the caller asks for scope all', async () => {
+    const runSystemctl = vi.fn(async (_file: string, args: string[]) => ({
+      stdout: args[0] === '--user' ? 'user-alias.service\n' : 'system-alias.service\n',
+      stderr: '',
+    }));
+    await expect(defaultUnitCanonicalizer(['alias.service'], 'all', runSystemctl))
+      .resolves.toEqual(['user-alias.service', 'system-alias.service']);
+    expect(runSystemctl).toHaveBeenCalledTimes(2);
+  });
+
+  // WI-6554700010008328: each systemctl call is a fork of the multi-GB bg-host.
+  it('reuses a resolved Id instead of spawning systemctl on every read', async () => {
+    const runSystemctl = vi.fn(async () => ({ stdout: 'canonical.service\n', stderr: '' }));
+    await expect(defaultUnitCanonicalizer(['alias.service'], 'user', runSystemctl))
+      .resolves.toEqual(['canonical.service']);
+    await expect(defaultUnitCanonicalizer(['alias.service'], 'user', runSystemctl))
+      .resolves.toEqual(['canonical.service']);
+    expect(runSystemctl).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one in-flight lookup between concurrent reads of the same unit', async () => {
+    const runSystemctl = vi.fn(async () => ({ stdout: 'canonical.service\n', stderr: '' }));
+    const both = await Promise.all([
+      defaultUnitCanonicalizer(['alias.service'], 'user', runSystemctl),
+      defaultUnitCanonicalizer(['alias.service'], 'user', runSystemctl),
+    ]);
+    expect(both).toEqual([['canonical.service'], ['canonical.service']]);
+    expect(runSystemctl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cache a non-answer, so a unit installed later resolves at once', async () => {
+    const runSystemctl = vi.fn()
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockRejectedValueOnce(new Error('systemctl timed out'))
+      .mockResolvedValueOnce({ stdout: 'late.service\n', stderr: '' });
+    await expect(defaultUnitCanonicalizer(['late-alias.service'], 'user', runSystemctl))
+      .resolves.toEqual(['late-alias.service']);
+    await expect(defaultUnitCanonicalizer(['late-alias.service'], 'user', runSystemctl))
+      .resolves.toEqual(['late-alias.service']);
+    await expect(defaultUnitCanonicalizer(['late-alias.service'], 'user', runSystemctl))
+      .resolves.toEqual(['late.service']);
+    expect(runSystemctl).toHaveBeenCalledTimes(3);
+  });
+
+  it('asks systemd again once the cached Id is older than the TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-10-11T08:00:00Z'));
+      const runSystemctl = vi.fn()
+        .mockResolvedValueOnce({ stdout: 'old.service\n', stderr: '' })
+        .mockResolvedValueOnce({ stdout: 'new.service\n', stderr: '' });
+      await expect(defaultUnitCanonicalizer(['alias.service'], 'user', runSystemctl))
+        .resolves.toEqual(['old.service']);
+      vi.setSystemTime(Date.now() + UNIT_ID_CACHE_TTL_MS - 1);
+      await expect(defaultUnitCanonicalizer(['alias.service'], 'user', runSystemctl))
+        .resolves.toEqual(['old.service']);
+      vi.setSystemTime(Date.now() + 2);
+      await expect(defaultUnitCanonicalizer(['alias.service'], 'user', runSystemctl))
+        .resolves.toEqual(['new.service']);
+      expect(runSystemctl).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the user and system managers apart in the cache', async () => {
+    const runSystemctl = vi.fn(async (_file: string, args: string[]) => ({
+      stdout: args[0] === '--user' ? 'user-id.service\n' : 'system-id.service\n',
+      stderr: '',
+    }));
+    await expect(defaultUnitCanonicalizer(['shared.service'], 'user', runSystemctl))
+      .resolves.toEqual(['user-id.service']);
+    await expect(defaultUnitCanonicalizer(['shared.service'], 'system', runSystemctl))
+      .resolves.toEqual(['system-id.service']);
+    expect(runSystemctl).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * WI-6554700010008328: the window specs this module produces are resolved without
+ * spawning systemd-analyze. Parity with systemd was measured on 2026-10-11 for
+ * every accepted form (difference = the spawn's own latency, 10–13 ms); the
+ * fallbacks below are forms whose meaning only systemd can supply.
+ */
+describe('resolveRelativeWindowInProcess', () => {
+  const now = Date.parse('2026-10-11T08:00:00Z');
+
+  it.each([
+    ['-30 minutes', now - 30 * 60_000],
+    ['-10 min', now - 10 * 60_000],
+    ['-5m', now - 5 * 60_000],
+    ['-2h', now - 2 * 3_600_000],
+    ['-90s', now - 90_000],
+    ['2 hours ago', now - 2 * 3_600_000],
+    ['3 days ago', now - 3 * 86_400_000],
+    ['-1 w', now - 604_800_000],
+    ['@1791706800', 1_791_706_800_000],
+    ['@1791706800.5', 1_791_706_800_500],
+  ])('resolves %s in-process', (spec, expected) => {
+    expect(resolveRelativeWindowInProcess(spec, now)).toBe(expected);
+  });
+
+  it('round-trips every lookback normalizeJournalWindow produces', () => {
+    for (const shorthand of ['30m', '2h', '1d', '1w', '45 s', '-15m']) {
+      expect(resolveRelativeWindowInProcess(normalizeJournalWindow(shorthand), now))
+        .not.toBeUndefined();
+    }
+  });
+
+  it.each([
+    // systemd reads capital M as MONTHS, not minutes.
+    '-5 M',
+    '1 month ago',
+    'yesterday',
+    'today',
+    '-1h30min',
+    '2026-10-11 08:00:00 UTC',
+    '-5 msec',
+    '',
+  ])('leaves %j to systemd-analyze', (spec) => {
+    expect(resolveRelativeWindowInProcess(spec, now)).toBeUndefined();
+  });
+});
+
 /**
  * The trap this section guards: journalctl exits 0 with ZERO lines for a unit
  * that has never existed. So a typo'd unit name is byte-identical to a healthy,
@@ -683,6 +915,7 @@ describe('readJournal — a failed or timed-out read never reports matched:0', (
     expect(out.entries).toEqual([]);
     expect(out.journalAvailable).toBe(true); // a timeout is not "no journal at all"
   });
+
 });
 
 describe('defaultUnitLoadProbe', () => {

@@ -44,10 +44,13 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join, dirname, extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+import { stripCommentsAndStrings, stripCommentsOnly, stripSqlComments, stripSqlCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 import { selectExplicitBasenames } from './lib/explicit-files.mjs';
+import { extractSqlTemplates } from './check-partial-index-alignment.mjs';
+import { listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 /**
@@ -95,8 +98,13 @@ const SOURCE_SKIP_DIRS = new Set([
   'dist-host',
   'node_modules',
   'public',
+  'storybook-static',
   'target',
 ]);
+
+function isGeneratedSourcePath(file) {
+  return file.split('/').some((part) => SOURCE_SKIP_DIRS.has(part) || part.startsWith('dist-'));
+}
 
 /**
  * Migrations are immutable once applied, so historical files can never be fixed.
@@ -286,6 +294,26 @@ export function isEnforcedMigrationFile(file) {
  */
 export function isMigrationArtifactFile(file) {
   return file.endsWith('.sql') || PARKED_SUFFIXES.some((suffix) => file.endsWith(`.sql${suffix}`));
+}
+
+/**
+ * The artifacts the BLOCKING destructive-DDL scan enforces on, sorted by
+ * migration number: armed `NNN-*.sql` plus `.sql.PENDING-CODE-DEPLOY` (parking
+ * an applied migration must not evade the scan), never `.sql.DRAFT`. A draft is
+ * the authoring window: the runner never applies it, the PostToolUse nudge is
+ * what covers it, and only the draft dependency check below reads it. Enforcing
+ * DDL on it froze staging-sync on a committed draft (WI-6554700010008502).
+ *
+ * @param {string[]} files
+ * @returns {{ file: string, num: number }[]}
+ */
+export function selectDdlEnforcedArtifacts(files) {
+  return files
+    .filter((file) => !file.endsWith('.sql.DRAFT'))
+    .map((file) => ({ file, effective: effectiveMigrationName(file) }))
+    .filter(({ effective }) => isEnforcedMigrationFile(effective))
+    .map(({ file, effective }) => ({ file, num: Number.parseInt(effective.slice(0, effective.indexOf('-')), 10) }))
+    .sort((a, b) => a.num - b.num);
 }
 
 /** True when `file` is an enforced migration that has not been armed yet. */
@@ -858,36 +886,107 @@ function sourceCommentsMasked(text, file) {
   return sourceFileExtension(file) === '.sql' ? stripSqlComments(text) : stripCommentsOnly(text, file);
 }
 
-function sourceFilesForRepo() {
-  const files = [];
-
-  function walk(absDir) {
-    let entries;
-    try {
-      entries = readdirSync(absDir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink() || SOURCE_SKIP_DIRS.has(entry.name)) continue;
-      const abs = join(absDir, entry.name);
-      if (entry.isDirectory()) {
-        walk(abs);
-        continue;
-      }
-      const file = relative(resolve(__dirname, '..'), abs).split(sep).join('/');
-      if (!entry.isFile() || !isSourceFile(file) || file.startsWith(`${SQL_DIR_REL}/`)) continue;
-      const text = readScannedFile(abs, { allowMissing: true });
-      if (text !== null) files.push({ file, text });
-    }
-  }
-
+function sourceFilesForRepo({ columns = [], tables = [], unresolved = false } = {}) {
   const repoRoot = resolve(__dirname, '..');
-  for (const root of SOURCE_ROOTS) {
-    const abs = join(repoRoot, ...root.split('/'));
-    if (existsSync(abs)) walk(abs);
+  const files = [];
+  // Reuse the shared census: tracked plus new authoring files, excluding
+  // ignored build output, with its existing archive/submodule handling.
+  for (const file of listFilesIncludingUntracked(repoRoot).files) {
+    if (!SOURCE_ROOTS.some((root) => file.startsWith(`${root}/`))) continue;
+    if (!isSourceFile(file) || isGeneratedSourcePath(file) || file.startsWith(`${SQL_DIR_REL}/`)) continue;
+    const abs = join(repoRoot, file);
+    if (!statSync(abs, { throwIfNoEntry: false })?.isFile()) continue;
+    const text = readScannedFile(abs, { allowMissing: true });
+    if (text !== null && (!columns.length || columns.some((column) => text.includes(column))) &&
+      (!tables.length || unresolved || tables.some((table) => text.includes(table)))) {
+      files.push({ file, text });
+    }
   }
   return files;
+}
+
+// Keep each added column attached to its own ALTER statement. A second table
+// altered by the same migration does not acquire the first table's new columns.
+function addedColumnTables(sqlText) {
+  const code = stripComments(sqlText);
+  const result = new Map();
+  for (const statement of code.split(';')) {
+    const { tables, unresolved } = alterTargetsFor(statement);
+    if (unresolved.length || tables.length !== 1) continue;
+    for (const column of addedColumnsFor(statement)) {
+      if (!result.has(column)) result.set(column, new Set());
+      result.get(column).add(tables[0]);
+    }
+  }
+  return result;
+}
+
+function sqlStatements(unit) {
+  const masked = stripSqlCommentsAndStrings(unit.text, { preserveIdentifiers: true });
+  const units = [];
+  let start = 0;
+  for (let i = 0; i <= masked.length; i++) {
+    if (i < masked.length && masked[i] !== ';') continue;
+    units.push({ ...unit, text: unit.text.slice(start, i), srcIndex: unit.srcIndex.slice(start, i) });
+    start = i + 1;
+  }
+  return units;
+}
+
+/** SQL/template and table-definition scopes, reusing the existing SQL extractor
+ * and TypeScript parser. Never join a query or schema with its neighbouring one.
+ * Offsets stay in the original file so diagnostics still name the actual read. */
+function sourceDependencyUnits(source) {
+  const identityIndices = (start, end) => Array.from({ length: end - start }, (_, i) => start + i);
+  if (sourceFileExtension(source.file) === '.sql') {
+    return sqlStatements({ text: source.text, srcIndex: identityIndices(0, source.text.length) });
+  }
+  const units = extractSqlTemplates(source.text, source.file).flatMap(sqlStatements);
+  const sf = ts.createSourceFile(source.file, source.text, ts.ScriptTarget.Latest, true,
+    ts.getScriptKindFromFileName(source.file));
+  const seen = new Set();
+  const add = (node, schema = false, literal = false) => {
+    const start = node.getStart(sf) + (literal ? 1 : 0);
+    const end = node.end - (literal ? 1 : 0);
+    if (seen.has(`${start}:${end}`)) return;
+    seen.add(`${start}:${end}`);
+    const unit = { text: source.text.slice(start, end), srcIndex: identityIndices(start, end), schema };
+    if (!schema && ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      unit.text = '';
+      unit.srcIndex = [];
+      const append = (part) => {
+        if (ts.isBinaryExpression(part) && part.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+          append(part.left);
+          append(part.right);
+        } else if (ts.isStringLiteral(part) || ts.isNoSubstitutionTemplateLiteral(part)) {
+          const offset = part.getStart(sf) + 1;
+          unit.text += source.text.slice(offset, part.end - 1);
+          unit.srcIndex.push(...identityIndices(offset, part.end - 1));
+        } else {
+          unit.text += ' ? ';
+          unit.srcIndex.push(part.getStart(sf), part.getStart(sf), part.getStart(sf));
+        }
+      };
+      append(node);
+    }
+    if (schema) units.push(unit);
+    else if (/\b(?:SELECT|FROM|JOIN|UPDATE|INSERT|DELETE|WITH|ALTER|CREATE)\b/i.test(unit.text)) {
+      units.push(...sqlStatements(unit));
+    }
+  };
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const name = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text
+        : ts.isIdentifier(node.expression) ? node.expression.text : '';
+      if (/^(?:pgTable|sqliteTable|mysqlTable|table)$/.test(name)) add(node, true);
+      if (/^(?:unsafe|query|execute|exec)$/.test(name) && node.arguments[0]) add(node.arguments[0]);
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) add(node);
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) add(node, false, true);
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return units.sort((a, b) => (a.srcIndex[0] ?? 0) - (b.srcIndex[0] ?? 0));
 }
 
 /**
@@ -917,16 +1016,64 @@ export function findDraftColumnReferences(sqlText, sourceFiles = []) {
   // reads the dynamically-altered table. "I parsed 4 of 5 targets" is not "I know the targets"
   // — so the honest states are FULLY RESOLVED (qualify) or NOT (don't), with no middle.
   const qualifyingTables = unresolved.length > 0 ? [] : tables;
+  const columnTables = addedColumnTables(sqlText);
   const tableTokens = qualifyingTables.map((t) => new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(t)}(?![A-Za-z0-9_$])`, 'i'));
   const references = [];
+  const sourceMasks = new Map();
   for (const column of columns) {
-    const token = new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(column)}(?![A-Za-z0-9_$])`, 'i');
+    const token = new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(column)}(?![A-Za-z0-9_$])`, 'ig');
     for (const source of sourceFiles) {
       if (source.file.startsWith(`${SQL_DIR_REL}/`)) continue;
-      const masked = sourceCommentsMasked(source.text, source.file);
-      const match = token.exec(masked);
-      if (!match || match.index === undefined) continue;
+      if (isGeneratedSourcePath(source.file)) continue;
+      // Masking can only remove text. Prove raw relevance before asking the
+      // shared parser to mask an entire repository for a common column name.
+      if (source.text.search(token) < 0) continue;
+      if (tableTokens.length && !tableTokens.some((table) => table.test(source.text))) continue;
+      let masks = sourceMasks.get(source);
+      if (!masks) {
+        masks = { comments: sourceCommentsMasked(source.text, source.file), code: null };
+        sourceMasks.set(source, masks);
+      }
+      const masked = masks.comments;
+      const matches = [...masked.matchAll(token)];
+      if (!matches.length) continue;
       if (tableTokens.length && !tableTokens.some((t) => t.test(masked))) continue;
+      if (qualifyingTables.length) {
+        if (!masks.units) masks.units = sourceDependencyUnits(source);
+        const targets = [...(columnTables.get(column) ?? qualifyingTables)];
+        const targetTokens = targets.map((table) => new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(table)}(?![A-Za-z0-9_$])`, 'i'));
+        for (const unit of masks.units) {
+          const text = unit.schema ? sourceCommentsMasked(unit.text, source.file)
+            : stripSqlCommentsAndStrings(unit.text, { preserveIdentifiers: true });
+          const unresolvedSourceTarget = /\b(?:FROM|JOIN|UPDATE|INTO|TABLE)\s+\?/i.test(text);
+          if (!unresolvedSourceTarget && !targetTokens.some((table) => table.test(text))) continue;
+          const match = [...text.matchAll(token)].find((candidate) => !/\bAS\s+"?$/i.test(text.slice(0, candidate.index)));
+          if (!match) continue;
+          const index = unit.srcIndex[match.index] ?? 0;
+          references.push({ column, file: source.file, line: source.text.slice(0, index).split('\n').length });
+          break;
+        }
+        continue;
+      }
+      const isSql = sourceFileExtension(source.file) === '.sql';
+      // Reuse the canonical parser's offset-preserving masks to distinguish SQL
+      // in literals from TypeScript result types, fixture keys and row access.
+      // An AS alias names a result, not a column on the altered table. Never
+      // exempt the whole file: another query can still read the real column.
+      if (!isSql && masks.code === null) masks.code = stripCommentsAndStrings(source.text, source.file);
+      const inLiteral = (match) => !isSql &&
+        masks.code.slice(match.index, match.index + match[0].length).trim() === '';
+      const isAlias = (match) => (isSql || inLiteral(match)) &&
+        /\bAS\s+"?$/i.test(masked.slice(0, match.index));
+      const hasAlias = matches.some(isAlias);
+      const match = matches.find((candidate) => {
+        if (isAlias(candidate)) return false;
+        if (isSql || inLiteral(candidate)) return true;
+        const after = masked.slice(candidate.index + candidate[0].length);
+        if (/^\s*:(?!:)/.test(after)) return false;
+        return !(hasAlias && /\.\s*$/.test(masked.slice(0, candidate.index)));
+      });
+      if (!match) continue;
       references.push({
         column,
         file: source.file,
@@ -1247,6 +1394,7 @@ function main() {
     for (const f of selfTestFailures) console.error(`  - ${f}`);
     process.exit(1);
   }
+  console.error('check-migration-forward-compat: detector self-test passed');
 
   if (!existsSync(SQL_DIR)) {
     console.error(`check-migration-forward-compat: migrations dir not found: ${SQL_DIR}`);
@@ -1269,11 +1417,7 @@ function main() {
     process.exit(1);
   }
 
-  const inScope = all
-    .map((file) => ({ file, effective: effectiveMigrationName(file) }))
-    .filter(({ effective }) => isEnforcedMigrationFile(effective))
-    .map(({ file, effective }) => ({ file, num: Number.parseInt(effective.slice(0, effective.indexOf('-')), 10) }))
-    .sort((a, b) => a.num - b.num);
+  const inScope = selectDdlEnforcedArtifacts(all);
 
   const isAncestorOfHead = makeAncestorResolver();
   let frozenCandidateOpenedAt;
@@ -1321,8 +1465,16 @@ function main() {
   const draftOffenders = [];
   const draftFiles = all.filter(isDraftMigrationFile).sort();
   if (draftFiles.length > 0) {
-    const sourceFiles = sourceFilesForRepo();
-    for (const { file, text } of readScannedFiles(SQL_DIR, draftFiles, { allowMissing: true })) {
+    console.error('check-migration-forward-compat: collecting source inventory for parked migration dependencies');
+    const draftSources = readScannedFiles(SQL_DIR, draftFiles, { allowMissing: true });
+    const columns = [...new Set(draftSources.flatMap(({ text }) => addedColumnsFor(text)))];
+    const targetInfo = draftSources.map(({ text }) => alterTargetsFor(text));
+    const tables = [...new Set(targetInfo.flatMap(({ tables }) => tables))];
+    const unresolved = targetInfo.some(({ unresolved }) => unresolved.length > 0);
+    const sourceFiles = sourceFilesForRepo({ columns, tables, unresolved });
+    console.error(`check-migration-forward-compat: collected ${sourceFiles.length} relevant source files`);
+    for (const { file, text } of draftSources) {
+      console.error(`check-migration-forward-compat: checking parked migration ${file}`);
       const dependency = findDraftColumnReferences(text, sourceFiles);
       if (dependency.references.length > 0) draftOffenders.push({ file, ...dependency });
     }

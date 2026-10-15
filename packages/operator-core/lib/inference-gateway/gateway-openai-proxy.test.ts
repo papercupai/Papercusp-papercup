@@ -351,6 +351,40 @@ describe('accepted Codex provider attestation', () => {
     expect(record).toHaveBeenCalledOnce();
   });
 
+  it.each([true, false])('attests headerless OAuth SSE before exposing stream=%s success', async (stream) => {
+    const home = await makeCodexHome('chatgpt-headerless');
+    const cliAccounts = [{ accountId: 'chatgpt-headerless', home }];
+    const record = vi.fn(async (..._args: unknown[]) => undefined);
+    const completion = completedCodexResponse();
+    const wire = `event: response.completed\ndata: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`;
+    const cliRun = vi.fn(async () => ({ text: 'synthetic', inputTokens: 1, outputTokens: 1 }));
+    // A byte body avoids Fetch adding text/plain to a string Response: the real
+    // ChatGPT transport can omit Content-Type entirely (WI-284159).
+    const fetchImpl = vi.fn(async () => new Response(new Uint8Array(Buffer.from(wire)),
+      { status: 200 })) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map(account => ({
+        accountId: account.accountId, token: async () => '',
+      }))),
+      codexCliRun: cliRun, codexOAuthProxy: true, fetchImpl,
+      readAcceptedOperationModelPolicy: boundCodexRead,
+      recordAcceptedOperationModelAttestation: record,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    const response = await postResponses({ ...boundCodexRequest, stream }, { [OWNER_HEADER]: 'operation-worker' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain(stream ? 'text/event-stream' : 'application/json');
+    if (stream) expect(await response.text()).toBe(wire);
+    else expect(await response.json()).toEqual(completion.response);
+    expect(record).toHaveBeenCalledOnce();
+    expect(record.mock.calls[0]?.[1]).toMatchObject({ actualModel: 'gpt-5.6-sol',
+      providerResponseId: 'resp_bound_codex', usage: { inputTokens: 12, outputTokens: 3 } });
+    expect(cliRun).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['wait', 429, '30'],
     ['fail', 503, null],
@@ -643,6 +677,8 @@ describe('proxyOpenAi — happy path + header discipline', () => {
       'low', 'medium', 'high', 'xhigh', 'max',
     ]);
     expect(body.models?.some((m) => m.slug === 'gpt-6-astra')).toBe(true);
+    // WI-10005673: the gateway's own fallback rows must never claim a compaction hash.
+    expect(body.models?.filter((m) => 'comp_hash' in m)).toEqual([]);
     expect(body.models?.find((m) => m.slug === 'gpt-5.6-sol')?.supported_reasoning_levels).toContainEqual(
       expect.objectContaining({ effort: 'max' }),
     );
@@ -650,9 +686,9 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
   });
 
-  it('overlays the selected CLI account native model cache while retaining fallback reasoning levels', async () => {
+  it('awaits the selected CLI account native model cache while retaining fallback reasoning levels', async () => {
     let nativeOnlySlug = 'gpt-future';
-    const readNativeCache = vi.fn((home: string) => ({
+    const readNativeCache = vi.fn(async (home: string) => ({
       models: [
         {
           slug: 'gpt-6-astra',
@@ -739,8 +775,9 @@ describe('proxyOpenAi — happy path + header discipline', () => {
       // cannot catch a merge that lets the cache override live rows.
       JSON.stringify({
         models: [
-          { slug: 'gpt-5.6-sol', display_name: 'stale cache' },
-          { slug: 'gpt-6-sol', display_name: 'stale cache GPT-6-Sol' },
+          // comp_hash on both rows: a stale cache's hash must never be served (WI-10005673).
+          { slug: 'gpt-5.6-sol', display_name: 'stale cache', comp_hash: 'stale-cache-hash' },
+          { slug: 'gpt-6-sol', display_name: 'stale cache GPT-6-Sol', comp_hash: 'stale-cache-hash' },
         ],
       }),
     );
@@ -768,6 +805,7 @@ describe('proxyOpenAi — happy path + header discipline', () => {
             {
               slug: 'gpt-6-sol',
               display_name: 'Native GPT-6-Sol',
+              comp_hash: '3000',
               visibility: 'list',
               priority: 2,
               supported_reasoning_levels: [{ effort: 'ultra', description: 'Native ultra' }],
@@ -799,10 +837,18 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     const responses = await Promise.all([first, second]);
     expect(responses.map((response) => response.status)).toEqual([200, 200]);
     const bodies = (await Promise.all(responses.map((response) => response.json()))) as Array<{
-      models: Array<{ slug: string; display_name?: string }>;
+      models: Array<{ slug: string; display_name?: string; comp_hash?: string }>;
     }>;
     for (const body of bodies) {
       expect(body.models.find((model) => model.slug === 'gpt-6-sol')?.display_name).toBe('Native GPT-6-Sol');
+      // WI-10005673: comp_hash comes ONLY from the live catalog. A row the live catalog did not
+      // supply (fallback lineup or the stale pool-home cache) must carry no comp_hash at all,
+      // because Codex compacts before a turn whenever the hash differs from the previous turn's.
+      expect(body.models.find((model) => model.slug === 'gpt-6-sol')?.comp_hash).toBe('3000');
+      expect(body.models.find((model) => model.slug === 'gpt-5.6-sol')).toBeDefined();
+      expect(
+        body.models.filter((model) => model.slug !== 'gpt-6-sol' && model.comp_hash !== undefined),
+      ).toEqual([]);
       expect(body.models.some((model) => model.slug === 'gpt-6-luna')).toBe(true);
       expect(body.models.some((model) => model.slug === 'gpt-future')).toBe(true);
       expect(JSON.stringify(body)).not.toContain(accessToken);
@@ -990,7 +1036,120 @@ describe('proxyOpenAi — happy path + header discipline', () => {
   });
 });
 
+/**
+ * gateway-admission-congestion-only-2026-10-13 R-3 / P-003 — pace uploads, not open streams.
+ *
+ * Before P-003 the Codex provider-lane slot was taken around the WHOLE admitted handler,
+ * so a streamed response held it until its last byte. Here the upstream answers with SSE
+ * headers and one event, then holds the response open; while it is open the lane must
+ * report the slot free, and a second request must be admitted and complete.
+ */
+describe('proxyOpenAi — a streaming response does not hold the provider admission slot (R-3)', () => {
+  it('frees the Codex slot while the stream is open, admits a second request, then relays the rest', async () => {
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let upstreamCalls = 0;
+    await bootCodex((_req, res) => {
+      upstreamCalls += 1;
+      if (upstreamCalls === 1) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_open' } })}\n\n`);
+        void firstHeld.then(() => {
+          res.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_open' } })}\n\ndata: [DONE]\n\n`);
+        });
+        return;
+      }
+      ok(_req, res);
+    });
+
+    const first = await postResponses({ model: 'gpt-5.6-sol', input: 'hold me open', stream: true });
+    expect(first.status).toBe(200);
+    const reader = first.body!.getReader();
+    const decoder = new TextDecoder();
+    let relayed = '';
+    while (!relayed.includes('response.created')) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      relayed += decoder.decode(chunk.value, { stream: true });
+    }
+    expect(relayed).toContain('response.created');
+    expect(relayed, 'the first stream is still open').not.toContain('response.completed');
+
+    // The stream is open and no longer holds a slot.
+    const during = (await (await ask('/stats')).json()) as { codexAdmission: { running: number; queued: number } };
+    expect(during.codexAdmission).toMatchObject({ running: 0, queued: 0 });
+
+    // A second request is admitted and finishes while the first stream is still open.
+    const second = await postResponses({ model: 'gpt-5.6-sol', input: 'second' });
+    expect(second.status).toBe(200);
+    expect((await second.json()) as { ok?: boolean }).toMatchObject({ ok: true });
+
+    releaseFirst();
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      relayed += decoder.decode(chunk.value, { stream: true });
+    }
+    expect(relayed).toContain('response.completed');
+    expect(relayed).toContain('[DONE]');
+
+    const after = (await (await ask('/stats')).json()) as { codexAdmission: { running: number; queued: number } };
+    expect(after.codexAdmission).toMatchObject({ running: 0, queued: 0 });
+    expect(upstreamCalls).toBe(2);
+  });
+
+  // R-3 falsifier (3): the slot paces UPLOADS, so it must not be released before the
+  // request body has finished uploading. The stub upstream only runs its reply callback
+  // once the whole body has arrived, and then withholds every response byte. Until the
+  // first byte the slot must still be held. An implementation that freed the slot at
+  // admission (no upload pacing at all) reads running:0 here.
+  it('holds the Codex slot through the upload until the upstream sends its first response byte', async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    let bodyArrived!: (body: string) => void;
+    const arrived = new Promise<string>((resolve) => {
+      bodyArrived = resolve;
+    });
+    await bootCodex((req, res, body) => {
+      bodyArrived(body);
+      void answered.then(() => ok(req, res));
+    });
+
+    const payload = 'x'.repeat(256 * 1024);
+    const pending = postResponses({ model: 'gpt-5.6-sol', input: payload });
+    const uploaded = await arrived;
+    expect(uploaded.length, 'the upstream received the whole body').toBeGreaterThan(payload.length);
+
+    const held = (await (await ask('/stats')).json()) as { codexAdmission: { running: number } };
+    expect(held.codexAdmission.running, 'slot still held: upload done, no response byte yet').toBe(1);
+
+    answer();
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { ok?: boolean }).toMatchObject({ ok: true });
+    const after = (await (await ask('/stats')).json()) as { codexAdmission: { running: number; queued: number } };
+    expect(after.codexAdmission).toMatchObject({ running: 0, queued: 0 });
+  });
+});
+
 describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
+  it('observes the completed provider model and forwarded effort without treating the request model as serving proof', async () => {
+    await bootCodex((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify({ type: 'response.completed', response: {
+        id: 'resp-observed', model: 'provider-served-revision', status: 'completed', reasoning: { effort: 'high' },
+        usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens: 2 },
+      } })}\n\ndata: [DONE]\n\n`);
+    });
+    await (await postResponses({ model: 'gpt-5.6-sol', reasoning: { effort: 'high' }, input: 'private task', stream: true })).text();
+    const stats = await (await ask('/stats')).json() as import('./gateway').GatewayStats;
+    expect(stats.requestStages?.recent.at(-1)).toMatchObject({ model: 'gpt-5.6-sol', forwardedEffort: 'high',
+      providerIdentity: { responseId: 'resp-observed', model: 'provider-served-revision', effort: 'high', accountId: 'cdx-1' } });
+  });
   // Branch the upstream on the bearer token so cdx-1 is throttled but cdx-2 is healthy.
   const byBearer = (req: http.IncomingMessage, res: http.ServerResponse) => {
     const auth = String(req.headers['authorization'] ?? '');
@@ -1139,6 +1298,88 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(calls).toEqual(['/tmp/chatgpt-a', '/tmp/chatgpt-b']);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
     expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
+  });
+
+  // WI-6554700010009426: on 2026-10-12 a mass-resume herd drove ~8,900 codex OAuth TTFB/transport
+  // failures while the codex admission window kept EXPANDING (it only ever heard 429s and successes),
+  // so the gateway kept admitting full-body re-uploads onto a saturated uplink for ~35 min. An admitted
+  // OAuth attempt that dies on the wire must contract the codex window; clean traffic must not.
+  // WI-6554700010011426 replaced the WI-6554700010009426 "transport failure CONTRACTS"
+  // contract: one request is one unit of congestion pressure (plan D-001), so a
+  // lone failover leaves the window open and only sustained pressure contracts it.
+  it.each([
+    { label: 'a lone transport failure leaves the codex window open', aimd: undefined, contracts: false },
+    { label: 'sustained transport pressure still contracts the codex window', aimd: { decreaseThreshold: 1 }, contracts: true },
+  ])('admitted codex OAuth transport failure: $label', async ({ aimd, contracts }) => {
+    const cliAccounts = [
+      { accountId: 'oauth-a', home: await makeCodexHome('oauth-a') },
+      { accountId: 'oauth-b', home: await makeCodexHome('oauth-b') },
+    ];
+    let failNext = false;
+    const wire = `data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`;
+    const fetchImpl = vi.fn(async () => {
+      if (failNext) {
+        failNext = false;
+        throw Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } });
+      }
+      return new Response(wire, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct', token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexCliRun: async () => ({ text: 'unused', inputTokens: 1, outputTokens: 1 }),
+      codexOAuthProxy: true, fetchImpl,
+      selfHeal: { enabled: false },
+      ...(aimd ? { aimd } : {}),
+    });
+    port = await gw.listen(0);
+    const initial = gw.stats().codexAdmission.maxConcurrent;
+    const clean = await postResponses({ model: 'gpt-5.5', input: 'hi', stream: true });
+    expect(clean.status).toBe(200);
+    await clean.text();
+    expect(gw.stats().codexAdmission.maxConcurrent).toBe(initial);
+    failNext = true;
+    const res = await postResponses({ model: 'gpt-5.5', input: 'hi', stream: true });
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(gw.stats().egressFailsByAccount).not.toEqual({});
+    if (contracts) expect(gw.stats().codexAdmission.maxConcurrent).toBeLessThan(initial);
+    else expect(gw.stats().codexAdmission.maxConcurrent).toBe(initial);
+  });
+
+  it('a terminal out-of-usage (weekly-wall) codex 429 leaves the codex window unchanged (WI-6554700010011426)', async () => {
+    await bootCodex(
+      (_req, res) => {
+        res.writeHead(429, {
+          'content-type': 'application/json',
+          'x-codex-primary-used-percent': '100',
+          'x-codex-primary-window-minutes': '10080',
+          'x-codex-primary-reset-after-seconds': String(3 * 24 * 3600),
+        });
+        res.end(JSON.stringify({ error: { type: 'usage_limit_reached', message: 'usage limit reached' } }));
+      },
+      [codexAcct('cdx-walled')],
+      {
+        concurrency: 8,
+        aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 100 },
+        requestAbsorbMs: 0,
+        internalRetryDeadlineMs: 1,
+        bare429FailoverBackoffMs: 1,
+      },
+    );
+    const before = ((await (await ask('/stats')).json()) as { codexAdmission: { maxConcurrent: number } })
+      .codexAdmission.maxConcurrent;
+    expect((await postResponses({ model: 'gpt-x', input: 'hi' })).status).toBe(429);
+    const stats = (await (await ask('/stats')).json()) as {
+      codexAdmission: { maxConcurrent: number };
+      codexAimd: { decreases: number };
+    };
+    // FALSIFIER: the sibling test above ('Codex throttles shrink only the Codex
+    // admission controller') sends a TRANSIENT 429 with the same threshold of 1 and
+    // DOES contract; only the exhausted window differs here.
+    expect(stats.codexAimd.decreases).toBe(0);
+    expect(stats.codexAdmission.maxConcurrent).toBe(before);
   });
 
   it('a streaming ChatGPT CLI bridge failover carries final route metadata in response.completed', async () => {
@@ -1728,7 +1969,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
           headers: { 'content-type': 'application/json', 'retry-after': '20ms' },
         });
       }
-      return new Response('data: [DONE]\n\n', {
+      return new Response(`data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`, {
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
       });
@@ -1754,7 +1995,9 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
     );
     expect(res.status).toBe(200);
     expect(calls).toBe(2);
-    expect(await res.text()).toContain('[DONE]');
+    const body = await res.text();
+    expect(body).toContain('"type":"response.completed"');
+    expect(body).toContain('[DONE]');
   });
 
   it('OAuth absorb releases the provider admission slot while waiting, then re-enters and succeeds', async () => {
@@ -1774,7 +2017,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
           headers: { 'content-type': 'application/json', 'retry-after': retryAfter },
         });
       }
-      return new Response('data: [DONE]\n\n', {
+      return new Response(`data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`, {
         status: 200,
         headers: { 'content-type': 'text/event-stream' },
       });
@@ -1825,7 +2068,9 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
     const res = await pending;
     expect(res.status).toBe(200);
     expect(calls).toBe(3);
-    expect(await res.text()).toContain('[DONE]');
+    const body = await res.text();
+    expect(body).toContain('"type":"response.completed"');
+    expect(body).toContain('[DONE]');
   });
 
   it('a short upstream retry-after passes through unchanged (only the multi-hour horizon is capped)', async () => {
@@ -2143,6 +2388,32 @@ describe('proxyOpenAi — ChatGPT OAuth initial account selection (D-010 catcher
 });
 
 describe('proxyOpenAi — health and self-heal control-plane parity', () => {
+  it('routes automatically through a credit-backed full allowance and permits psu launch', async () => {
+    await bootCodex(ok, [codexAcct('credited'), codexAcct('depleted')]);
+    gw!.setAccountRateHints([
+      { accountId: 'credited', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000, usageCreditsAvailable: true },
+      { accountId: 'depleted', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000, usageCreditsAvailable: false },
+    ]);
+    const stats = gw!.stats();
+    expect(stats.codexHealthyAccounts).toBe(1);
+    expect(stats.codexEarliestRecoveryAt).toBe(0);
+    const { codexAutoPoolVerdict } = await import('../../../../apps/operator/scripts/psu-launcher.mjs');
+    expect(codexAutoPoolVerdict({ agent: 'codex', account: 'auto', stats }).kind).toBe('proceed');
+    const response = await postResponses({ model: 'gpt-6.1-sol', input: 'credit-backed automatic routing' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('credited');
+    await response.text();
+  });
+
+  it('preserves real pauses and never-metered exclusions despite available credits', async () => {
+    await bootCodex(ok, [codexAcct('paused'), { ...codexAcct('never-metered'), meteredPolicy: 'never' }]);
+    gw!.setAccountRateHints([
+      { accountId: 'paused', utilization7d: 1, pausedUntil: Date.now() + 60_000, usageCreditsAvailable: true },
+      { accountId: 'never-metered', utilization7d: 1, usageCreditsAvailable: true },
+    ]);
+    expect(gw!.stats().codexHealthyAccounts).toBe(0);
+  });
+
   it('surfaces the Codex pool denominator and earliest recovery horizon for launch preflight', () => {
     const now = Date.UTC(2026, 8, 5, 20, 0, 0);
     vi.useFakeTimers();
@@ -2924,7 +3195,9 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
       headers: { 'content-type': 'application/json', 'retry-after': retryAfter },
     });
   const sse200 = () =>
-    new Response('data: [DONE]\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    new Response(`data: ${JSON.stringify(completedCodexResponse())}\n\ndata: [DONE]\n\n`, {
+      status: 200, headers: { 'content-type': 'text/event-stream' },
+    });
   const accountOf = (init?: RequestInit) =>
     new Headers((init?.headers ?? {}) as HeadersInit).get('chatgpt-account-id') ?? '';
 
@@ -3004,7 +3277,9 @@ describe('proxyOpenAi — pool recovery horizon + store↔pool reconciliation (c
     const res = await postResponses({ model: 'gpt-5.5', input: 'recover via a', stream: true });
     const elapsedMs = Date.now() - before;
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain('[DONE]');
+    const body = await res.text();
+    expect(body).toContain('"type":"response.completed"');
+    expect(body).toContain('[DONE]');
     expect(aCalls).toBe(2);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
     // Slept ~150ms toward a's park expiry — NOT the 2s budget b's 2h reset would have forced.

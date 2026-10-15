@@ -1,0 +1,1175 @@
+{
+  "schema": "p017-backend-bakeoff/v1",
+  "plan": "gitnexus-deterministic-integration-2026-10-05",
+  "item": "P-017",
+  "workItem": "WI-10006297",
+  "generatedAt": "2026-10-06T17:25:55.157Z",
+  "generatedBy": "su-72f78fbb (.papercusp/scratch/p017-evidence.mts)",
+  "bench": {
+    "runDir": "~/.papercusp/bench/fair-comparison-2026-10/runs/2026-10-06",
+    "corpusCommit": "90e6465ad21b79142bac4853bb1c9c958f868f41",
+    "preregHash": "aa8ea6aa5a782c6b7592ea139ad6cce95a4a93f0aca9ea71b28dbf72cd932f3d",
+    "keyHash": "b555bb1df29884fb5f8eb00f2fabbd122a94fdd3656b3f44f64216c905f8941c",
+    "reps": 3,
+    "seed": 20261006,
+    "bars": {
+      "minReps": 3,
+      "maxFailureRate": 0.05,
+      "f1TieMargin": 0.05,
+      "cfeTieMargin": 0.02
+    },
+    "verdictsSha256": "792ae3dbe7a44f7a9658e6aa1b31081ca2858981d122cb373578236e8adfec03"
+  },
+  "licenceAndTelemetry": "source of truth: packages/operator-core/lib/code-intelligence/fair-comparison-admission.ts (verified LICENSE files and telemetry defaults per candidate, checked before running)",
+  "arms": [
+    {
+      "armId": "codebase-memory",
+      "version": "dev",
+      "licence": "permissive",
+      "intents": [
+        "callers",
+        "callees",
+        "impact",
+        "definition",
+        "symbol-search",
+        "text-search"
+      ],
+      "index": {
+        "ok": true,
+        "wallSec": 979,
+        "peakRssMiB": 19683,
+        "loadAvg1AtStart": 191.08,
+        "error": null
+      },
+      "footprint": {
+        "treeBytes": 1884648562,
+        "treeDeltaBytes": 148903,
+        "homeBytes": 3780878415
+      }
+    },
+    {
+      "armId": "codegraph",
+      "version": "1.6.2",
+      "licence": "permissive",
+      "intents": [
+        "callers",
+        "callees",
+        "impact",
+        "definition",
+        "symbol-search"
+      ],
+      "index": {
+        "ok": true,
+        "wallSec": 4091,
+        "peakRssMiB": 9001,
+        "loadAvg1AtStart": 182.95,
+        "error": null
+      },
+      "footprint": {
+        "treeBytes": 4455887272,
+        "treeDeltaBytes": 2571387613,
+        "homeBytes": 0
+      }
+    },
+    {
+      "armId": "codegraphcontext",
+      "version": "0.6.13",
+      "licence": "permissive",
+      "intents": [
+        "callers",
+        "callees",
+        "impact",
+        "definition",
+        "symbol-search",
+        "text-search"
+      ],
+      "index": {
+        "ok": false,
+        "wallSec": 14408,
+        "peakRssMiB": 0,
+        "loadAvg1AtStart": 198.21,
+        "error": "exit 124 (deadline: process group killed): No configuration file found. Using defaults.\nUsing database: kuzudb (source: auto-detect)\nForce re-indexing (--force flag detected)"
+      },
+      "footprint": {
+        "treeBytes": 1884439508,
+        "treeDeltaBytes": -60151,
+        "homeBytes": 285352779,
+        "note": "measured after the run ended 2026-10-06T16:32Z; index did NOT complete (exit 124 at the 4h deadline), so this is a partial-index footprint"
+      }
+    },
+    {
+      "armId": "gitnexus",
+      "version": "1.6.9",
+      "licence": "noncommercial",
+      "intents": [
+        "callers",
+        "callees",
+        "impact",
+        "definition",
+        "symbol-search"
+      ],
+      "index": {
+        "ok": true,
+        "wallSec": 2948,
+        "peakRssMiB": 12053,
+        "loadAvg1AtStart": 182.63,
+        "error": null
+      },
+      "footprint": {
+        "treeBytes": 10461635559,
+        "treeDeltaBytes": 8577135900,
+        "homeBytes": 2226100
+      }
+    },
+    {
+      "armId": "lsp-query",
+      "version": "typescript-language-server (vendored) / typescript 6.0.3",
+      "licence": "first-party",
+      "intents": [
+        "definition",
+        "references",
+        "symbol-search"
+      ],
+      "index": {
+        "ok": true,
+        "wallSec": 2,
+        "peakRssMiB": 511,
+        "loadAvg1AtStart": 177.97,
+        "error": null
+      },
+      "footprint": {
+        "treeBytes": 1884554927,
+        "treeDeltaBytes": 55268,
+        "homeBytes": 0
+      }
+    },
+    {
+      "armId": "no-third-party",
+      "version": "typescript 6.0.3",
+      "licence": "first-party",
+      "intents": [
+        "callers",
+        "callees",
+        "impact",
+        "definition",
+        "references",
+        "symbol-search"
+      ],
+      "index": {
+        "ok": true,
+        "wallSec": 177,
+        "peakRssMiB": 14264,
+        "loadAvg1AtStart": 182.17,
+        "error": null
+      },
+      "footprint": {
+        "treeBytes": 1884439808,
+        "treeDeltaBytes": -59851,
+        "homeBytes": 0
+      }
+    },
+    {
+      "armId": "rg",
+      "version": "rg rg",
+      "licence": "permissive",
+      "intents": [
+        "callers",
+        "callees",
+        "symbol-search",
+        "text-search"
+      ],
+      "index": {
+        "ok": true,
+        "wallSec": 0,
+        "peakRssMiB": 0,
+        "loadAvg1AtStart": 209.46,
+        "error": null
+      },
+      "footprint": {
+        "treeBytes": 1884499659,
+        "treeDeltaBytes": 0,
+        "homeBytes": 0
+      }
+    },
+    {
+      "armId": "trace-mcp",
+      "version": "3.34.6",
+      "licence": "permissive",
+      "intents": [
+        "callers",
+        "callees",
+        "impact",
+        "definition",
+        "references",
+        "symbol-search",
+        "text-search"
+      ],
+      "index": {
+        "ok": true,
+        "wallSec": 156,
+        "peakRssMiB": 1095,
+        "loadAvg1AtStart": 142.84,
+        "error": null
+      },
+      "footprint": {
+        "treeBytes": 1884436550,
+        "treeDeltaBytes": -63109,
+        "homeBytes": 359311802
+      }
+    }
+  ],
+  "footprintMethod": "du -sb. treeDeltaBytes = du(trees/<arm>) - du(trees/rg), where trees/rg is the unindexed copy of snapshot-90e6465ad21b; homeBytes = du(homes/<arm>), the arm HOME where an engine keeps its database or caches. Footprint is on-disk bytes after the timed run, including caches.",
+  "aggregates": [
+    {
+      "armId": "codebase-memory",
+      "licence": "permissive",
+      "reps": 3,
+      "declaresGraphIntents": true,
+      "coverage": 0.8571428571428571,
+      "failureRate": 0.05925925925925926,
+      "unadjudicated": 0,
+      "outcomeCounts": {
+        "correct": 46,
+        "partial": 63,
+        "wrong": 18,
+        "declined": 0,
+        "crashed": 6,
+        "timed-out": 2,
+        "stale-index": 0,
+        "undeclared": 21
+      },
+      "graphEffectiveF1": {
+        "median": 0.6333355889249221,
+        "min": 0.6333355889249221,
+        "max": 0.6333355889249221
+      },
+      "graphConfidentFalseEmptyRate": {
+        "median": 0.23076923076923078,
+        "min": 0.23076923076923078,
+        "max": 0.23076923076923078
+      },
+      "effectiveF1": {
+        "median": 0.6466681202701351,
+        "min": 0.6466681202701351,
+        "max": 0.6688903424923573
+      },
+      "precision": {
+        "median": 0.8165391156462585,
+        "min": 0.8165391156462585,
+        "max": 0.8208056478405317
+      },
+      "recall": {
+        "median": 0.6040664718838094,
+        "min": 0.593365565718507,
+        "max": 0.6040664718838094
+      },
+      "confidentFalseEmptyRate": {
+        "median": 0.15789473684210525,
+        "min": 0.15789473684210525,
+        "max": 0.16216216216216217
+      },
+      "absenceFalsePositiveRate": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "latencyMs": {
+        "median": 576.5022289999761,
+        "min": 114.46610799990594,
+        "max": 36426.21753500006
+      }
+    },
+    {
+      "armId": "codegraph",
+      "licence": "permissive",
+      "reps": 3,
+      "declaresGraphIntents": true,
+      "coverage": 0.7142857142857143,
+      "failureRate": 0,
+      "unadjudicated": 0,
+      "outcomeCounts": {
+        "correct": 33,
+        "partial": 87,
+        "wrong": 0,
+        "declined": 0,
+        "crashed": 0,
+        "timed-out": 0,
+        "stale-index": 0,
+        "undeclared": 36
+      },
+      "graphEffectiveF1": {
+        "median": 0.7523545409993924,
+        "min": 0.7523545409993924,
+        "max": 0.7523545409993925
+      },
+      "graphConfidentFalseEmptyRate": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "effectiveF1": {
+        "median": 0.7621237088912263,
+        "min": 0.7621237088912262,
+        "max": 0.7621237088912263
+      },
+      "precision": {
+        "median": 0.7747508861911037,
+        "min": 0.7747508861911037,
+        "max": 0.7747508861911038
+      },
+      "recall": {
+        "median": 0.8185994987220478,
+        "min": 0.8185994987220478,
+        "max": 0.8185994987220478
+      },
+      "confidentFalseEmptyRate": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "absenceFalsePositiveRate": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "latencyMs": {
+        "median": 1769.415717500262,
+        "min": 808.0795740000904,
+        "max": 14991.967933999375
+      }
+    },
+    {
+      "armId": "codegraphcontext",
+      "licence": "permissive",
+      "reps": 0,
+      "declaresGraphIntents": true,
+      "coverage": 0.8571428571428571,
+      "failureRate": 0,
+      "unadjudicated": 0,
+      "outcomeCounts": {
+        "correct": 0,
+        "partial": 0,
+        "wrong": 0,
+        "declined": 0,
+        "crashed": 0,
+        "timed-out": 0,
+        "stale-index": 0,
+        "undeclared": 0
+      },
+      "graphEffectiveF1": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "graphConfidentFalseEmptyRate": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "effectiveF1": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "precision": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "recall": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "confidentFalseEmptyRate": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "absenceFalsePositiveRate": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "latencyMs": {
+        "median": null,
+        "min": null,
+        "max": null
+      }
+    },
+    {
+      "armId": "gitnexus",
+      "licence": "noncommercial",
+      "reps": 3,
+      "declaresGraphIntents": true,
+      "coverage": 0.7142857142857143,
+      "failureRate": 0,
+      "unadjudicated": 0,
+      "outcomeCounts": {
+        "correct": 51,
+        "partial": 57,
+        "wrong": 12,
+        "declined": 0,
+        "crashed": 0,
+        "timed-out": 0,
+        "stale-index": 0,
+        "undeclared": 36
+      },
+      "graphEffectiveF1": {
+        "median": 0.7955516554215838,
+        "min": 0.7752464770003415,
+        "max": 0.7965929466226731
+      },
+      "graphConfidentFalseEmptyRate": {
+        "median": 0.11538461538461539,
+        "min": 0.11538461538461539,
+        "max": 0.11538461538461539
+      },
+      "effectiveF1": {
+        "median": 0.7767749501806483,
+        "min": 0.7620536958252477,
+        "max": 0.7775298863014382
+      },
+      "precision": {
+        "median": 0.8831597222222222,
+        "min": 0.8763888888888889,
+        "max": 0.8832516339869281
+      },
+      "recall": {
+        "median": 0.6906569782795274,
+        "min": 0.6762125338350828,
+        "max": 0.6917680893906384
+      },
+      "confidentFalseEmptyRate": {
+        "median": 0.1111111111111111,
+        "min": 0.1111111111111111,
+        "max": 0.1111111111111111
+      },
+      "absenceFalsePositiveRate": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "latencyMs": {
+        "median": 403.14647999964654,
+        "min": 21.434119999874383,
+        "max": 10647.953055999707
+      }
+    },
+    {
+      "armId": "lsp-query",
+      "licence": "first-party",
+      "reps": 3,
+      "declaresGraphIntents": false,
+      "coverage": 0.42857142857142855,
+      "failureRate": 0.7777777777777778,
+      "unadjudicated": 0,
+      "outcomeCounts": {
+        "correct": 3,
+        "partial": 0,
+        "wrong": 9,
+        "declined": 0,
+        "crashed": 42,
+        "timed-out": 0,
+        "stale-index": 0,
+        "undeclared": 102
+      },
+      "graphEffectiveF1": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "graphConfidentFalseEmptyRate": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "effectiveF1": {
+        "median": 0.05555555555555555,
+        "min": 0.05555555555555555,
+        "max": 0.05555555555555555
+      },
+      "precision": {
+        "median": 0.25,
+        "min": 0.25,
+        "max": 0.25
+      },
+      "recall": {
+        "median": 0.25,
+        "min": 0.25,
+        "max": 0.25
+      },
+      "confidentFalseEmptyRate": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "absenceFalsePositiveRate": {
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "latencyMs": {
+        "median": 11.567019500000242,
+        "min": 6.316103999997722,
+        "max": 1353.5030270000007
+      }
+    },
+    {
+      "armId": "no-third-party",
+      "licence": "first-party",
+      "reps": 3,
+      "declaresGraphIntents": true,
+      "coverage": 0.8571428571428571,
+      "failureRate": 0,
+      "unadjudicated": 0,
+      "outcomeCounts": {
+        "correct": 84,
+        "partial": 48,
+        "wrong": 9,
+        "declined": 0,
+        "crashed": 0,
+        "timed-out": 0,
+        "stale-index": 0,
+        "undeclared": 15
+      },
+      "graphEffectiveF1": {
+        "median": 0.8463701442176491,
+        "min": 0.8463701442176491,
+        "max": 0.8463701442176491
+      },
+      "graphConfidentFalseEmptyRate": {
+        "median": 0.07692307692307693,
+        "min": 0.07692307692307693,
+        "max": 0.07692307692307693
+      },
+      "effectiveF1": {
+        "median": 0.8654907982052162,
+        "min": 0.8654907982052159,
+        "max": 0.8654907982052162
+      },
+      "precision": {
+        "median": 0.86348837923306,
+        "min": 0.86348837923306,
+        "max": 0.86348837923306
+      },
+      "recall": {
+        "median": 0.8689244586723578,
+        "min": 0.8689244586723577,
+        "max": 0.868924458672358
+      },
+      "confidentFalseEmptyRate": {
+        "median": 0.047619047619047616,
+        "min": 0.047619047619047616,
+        "max": 0.047619047619047616
+      },
+      "absenceFalsePositiveRate": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "latencyMs": {
+        "median": 12038.107939000009,
+        "min": 6205.310952000087,
+        "max": 29708.085846
+      }
+    },
+    {
+      "armId": "rg",
+      "licence": "permissive",
+      "reps": 3,
+      "declaresGraphIntents": false,
+      "coverage": 0.5714285714285714,
+      "failureRate": 0,
+      "unadjudicated": 0,
+      "outcomeCounts": {
+        "correct": 42,
+        "partial": 45,
+        "wrong": 9,
+        "declined": 0,
+        "crashed": 0,
+        "timed-out": 0,
+        "stale-index": 0,
+        "undeclared": 60
+      },
+      "graphEffectiveF1": {
+        "median": 0.6098609980295109,
+        "min": 0.6098609980295108,
+        "max": 0.6098609980295109
+      },
+      "graphConfidentFalseEmptyRate": {
+        "median": 0.047619047619047616,
+        "min": 0.047619047619047616,
+        "max": 0.047619047619047616
+      },
+      "effectiveF1": {
+        "median": 0.665297407880483,
+        "min": 0.665297407880483,
+        "max": 0.665297407880483
+      },
+      "precision": {
+        "median": 0.6754698087277358,
+        "min": 0.6754698087277358,
+        "max": 0.6754698087277359
+      },
+      "recall": {
+        "median": 0.7774961026077098,
+        "min": 0.7774961026077098,
+        "max": 0.7774961026077098
+      },
+      "confidentFalseEmptyRate": {
+        "median": 0.07142857142857142,
+        "min": 0.07142857142857142,
+        "max": 0.07142857142857142
+      },
+      "absenceFalsePositiveRate": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "latencyMs": {
+        "median": 102.45066399998905,
+        "min": 70.04461800001445,
+        "max": 1150.823470000003
+      }
+    },
+    {
+      "armId": "trace-mcp",
+      "licence": "permissive",
+      "reps": 3,
+      "declaresGraphIntents": true,
+      "coverage": 1,
+      "failureRate": 0,
+      "unadjudicated": 0,
+      "outcomeCounts": {
+        "correct": 36,
+        "partial": 42,
+        "wrong": 78,
+        "declined": 0,
+        "crashed": 0,
+        "timed-out": 0,
+        "stale-index": 0,
+        "undeclared": 0
+      },
+      "graphEffectiveF1": {
+        "median": 0.3086024420357254,
+        "min": 0.30860244203572534,
+        "max": 0.3086024420357254
+      },
+      "graphConfidentFalseEmptyRate": {
+        "median": 0.6538461538461539,
+        "min": 0.6538461538461539,
+        "max": 0.6538461538461539
+      },
+      "effectiveF1": {
+        "median": 0.40288539278593843,
+        "min": 0.40288539278593843,
+        "max": 0.4028853927859385
+      },
+      "precision": {
+        "median": 0.46818822203437593,
+        "min": 0.46818822203437593,
+        "max": 0.46818822203437593
+      },
+      "recall": {
+        "median": 0.3034743788819876,
+        "min": 0.3034743788819875,
+        "max": 0.3034743788819876
+      },
+      "confidentFalseEmptyRate": {
+        "median": 0.5217391304347826,
+        "min": 0.5217391304347826,
+        "max": 0.5217391304347826
+      },
+      "absenceFalsePositiveRate": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "latencyMs": {
+        "median": 683.7675860000018,
+        "min": 42.80722800001968,
+        "max": 37784.52212400001
+      }
+    }
+  ],
+  "decisions": {
+    "A_preregAsWritten": {
+      "kind": "inconclusive",
+      "reason": "fewer than the preregistered repetitions: codegraphcontext"
+    },
+    "B_cgcExcluded": {
+      "kind": "drop-third-party",
+      "arm": "no-third-party",
+      "reason": "best graph effective-F1 0.846 (no-third-party); 1 arm(s) within 0.05 F1 / 0.02 CFE: no-third-party; chose no-third-party (first-party, F1 0.846, CFE 0.077)"
+    },
+    "C_cgcTotalFailure": {
+      "kind": "drop-third-party",
+      "arm": "no-third-party",
+      "reason": "best graph effective-F1 0.846 (no-third-party); 1 arm(s) within 0.05 F1 / 0.02 CFE: no-third-party; chose no-third-party (first-party, F1 0.846, CFE 0.077)"
+    },
+    "D_correctedKey_cgcExcluded": {
+      "kind": "drop-third-party",
+      "arm": "no-third-party",
+      "reason": "best graph effective-F1 0.851 (no-third-party); 1 arm(s) within 0.05 F1 / 0.02 CFE: no-third-party; chose no-third-party (first-party, F1 0.851, CFE 0.077)"
+    }
+  },
+  "keySensitivity": {
+    "defectiveSeeds": [
+      {
+        "site": "packages/operator-core/lib/acceptance-bar-amendment.ts:484",
+        "caseId": "impact-is-provenance-only",
+        "why": "barKeyOf is a local helper inside synchronizeAcceptanceBarRevision@362; it neither calls nor depends on isProvenanceOnlyReprojection (the only call, line 719, is in synchronizeAcceptanceBarRevision itself)"
+      },
+      {
+        "site": "packages/operator-core/lib/blueprint/compile-packages.ts:172",
+        "caseId": "impact-resolve-installed-event",
+        "why": "only is a local helper inside resolveStoredBlueprintPackage@169 that is CALLED on the same line as the subject (194: resolveInstalledEvent(request.ref, only('event'))); it is a callee, not upstream"
+      }
+    ],
+    "reportedByAnyArm": false,
+    "aggregatesWithCorrectedKey": [
+      {
+        "armId": "codebase-memory",
+        "graphEffectiveF1": 0.6356091774054072,
+        "graphCFE": 0.23076923076923078
+      },
+      {
+        "armId": "codegraph",
+        "graphEffectiveF1": 0.75432853709803,
+        "graphCFE": 0
+      },
+      {
+        "armId": "codegraphcontext",
+        "graphEffectiveF1": null,
+        "graphCFE": null
+      },
+      {
+        "armId": "gitnexus",
+        "graphEffectiveF1": 0.8009600401403132,
+        "graphCFE": 0.11538461538461539
+      },
+      {
+        "armId": "no-third-party",
+        "graphEffectiveF1": 0.8512560628966712,
+        "graphCFE": 0.07692307692307693
+      },
+      {
+        "armId": "trace-mcp",
+        "graphEffectiveF1": 0.3140108267544549,
+        "graphCFE": 0.6538461538461539
+      }
+    ]
+  },
+  "handAdjudication": {
+    "count": 66,
+    "rule": "see docs/evidence/gitnexus-p017-backend-bakeoff-2026-10-06.md#hand-adjudication",
+    "verdicts": [
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/acceptance-bar-amendment-orphan-clause.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top calls only runAmendment@122 (hop 3); the hop-1 call (126) is inside runAmendment"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/acceptance-bar-amendment-orphan-clause.test.ts:122",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): runAmendment calls synchronizeAcceptanceBarRevision (126), a hop-1 unit: hop 2"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/acceptance-bar-amendment-stable-identity.test.ts:194",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): canonical unit site: module top calls synchronizeAcceptanceBarRevision (194) and the subject (294-312): hop 1"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/acceptance-bar-amendment-stable-identity.test.ts:1",
+        "verdict": "alias",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): line 1 stands for the module top level (D-013)",
+        "aliasOf": "packages/operator-core/lib/acceptance-bar-amendment-stable-identity.test.ts:194"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/acceptance-bar-amendment-stable-identity.test.ts:158",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): amend calls synchronizeAcceptanceBarRevision (160): hop 2"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/acceptance-bar-amendment.ts:362",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): synchronizeAcceptanceBarRevision calls the subject (719): hop 1"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/acceptance-bar-amendment.ts:907",
+        "verdict": "neutral",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): the subject's own declaration"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/acceptance-bar-seed.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): no module-top call; the only call (1296) is inside seedAcceptanceBarsInTransaction@948"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/acceptance-bar-seed.ts:948",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): seedAcceptanceBarsInTransaction calls synchronizeAcceptanceBarRevision (1296): hop 2"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/agent-tools/plans/with-plan-lock.ts:411",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): withPlanLock calls synchronizeAcceptanceBarRevision (860): hop 2"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/rubrics.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): no module-top call; the only call (4943) is inside amendAcceptanceBarRubric@4277"
+      },
+      {
+        "caseId": "impact-is-provenance-only",
+        "site": "packages/operator-core/lib/rubrics.ts:4277",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): amendAcceptanceBarRubric calls synchronizeAcceptanceBarRevision (4943): hop 2"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/agent-identities/identity-preview.integration.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/agent-identities/identity-preview.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/agent-identities/identity-rule-subscriptions.integration.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/agent-identities/source.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/agent-identities/sync-hook-rules.integration.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/compile-packages.integration.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/compile-packages.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/package-doc-resources.integration.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/package-memory-driver.integration.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/package-memory-visibility.integration.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/project-to-pg.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/session-package-resources.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/code-recipes-store.integration.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/cupboard/blueprint-release.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/cupboard/event-cupboard-roundtrip.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/cupboard/install-blueprint-core.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top level does not call or pass the subject or any hop-1 unit (no static reference in the file; grep -rlw positive-controlled): the only referencing files are event-store, install-event-io(.test), compile-packages and agent-tools/cupboard/install-event"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/agent-tools/cupboard/install-event.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top does not call; the only reference (59) is inside handler@47"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/compile-packages.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top does not call; references are inside resolveStoredBlueprintPackage@169 and its callers"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/compile-packages.ts:169",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): resolveStoredBlueprintPackage calls the subject (194): hop 1"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/compile-packages.ts:221",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): resolveLocalBlueprintPackage calls resolveStoredBlueprintPackage (222): hop 2"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/blueprint/compile-packages.ts:230",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): vendoredBlueprintPackageResolver calls resolveStoredBlueprintPackage (235): hop 2"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/cupboard/event-store.ts:272",
+        "verdict": "neutral",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): the subject's own declaration"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/cupboard/install-event-io.test.ts:154",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): canonical unit site: module top calls installEventFromCupboard (154) and the subject (165, 256, 282): hop 1"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/cupboard/install-event-io.test.ts:1",
+        "verdict": "alias",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): line 1 stands for the module top level (D-013)",
+        "aliasOf": "packages/operator-core/lib/cupboard/install-event-io.test.ts:154"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "packages/operator-core/lib/cupboard/install-event-io.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top does not call; the only call (146) is inside installEventFromCupboard@121"
+      },
+      {
+        "caseId": "impact-resolve-installed-event",
+        "site": "papercusp-desktop/src-tauri/env-sidecars/staging/serve.mjs:48931",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): generated host bundle (@generated by apps/operator/bin/bundle-host.sh), a build artifact, not source"
+      },
+      {
+        "caseId": "impact-mark-spawn-offload-host",
+        "site": "apps/operator/bin/hono-host.ts:1",
+        "verdict": "alias",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): line 1 stands for the module top level, whose call (202) is the key site",
+        "aliasOf": "apps/operator/bin/hono-host.ts:202"
+      },
+      {
+        "caseId": "impact-mark-spawn-offload-host",
+        "site": "packages/operator-core/lib/fleet/git-via-sidecar.test.ts:113",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): canonical unit site: module top calls the subject (113, 119, 125, 132): hop 1"
+      },
+      {
+        "caseId": "impact-mark-spawn-offload-host",
+        "site": "packages/operator-core/lib/fleet/git-via-sidecar.test.ts:1",
+        "verdict": "alias",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): line 1 stands for the module top level (D-013)",
+        "aliasOf": "packages/operator-core/lib/fleet/git-via-sidecar.test.ts:113"
+      },
+      {
+        "caseId": "impact-mark-spawn-offload-host",
+        "site": "packages/operator-core/lib/fleet/git-via-sidecar.ts:145",
+        "verdict": "neutral",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): the subject's own declaration"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/agent-tools/plans/run-now.test.ts:40",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): canonical unit site: module top passes runScheduledPlanFire (hop 1) to vi.mocked (40), a callback-argument edge under the D-012 call model: hop 2. It is a mock, so this credits a static edge, not an executed path"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/agent-tools/plans/run-now.test.ts:1",
+        "verdict": "alias",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): line 1 stands for the module top level (D-013)",
+        "aliasOf": "packages/operator-core/lib/agent-tools/plans/run-now.test.ts:40"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/agent-tools/plans/run-now.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top does not call; the only call (68) is inside handler@51"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/agent-tools/plans/run-now.ts:51",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): handler calls runScheduledPlanFire (68): hop 2"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/blueprint/operation-admission.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top does not call; the only call (608) is inside acceptBlueprintPlanRunScoped@493"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/blueprint/operation-admission.ts:493",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): acceptBlueprintPlanRunScoped calls runScheduledPlanFire (608): hop 2"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/external-triggers/binding-engine.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top does not call; the only call (994) is inside dispatchPendingTriggerRuns@984"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/harness/routines/plan-run-action-fire-failure.test.ts:80",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): canonical unit site: module top calls runScheduledPlanFire (80) and the subject (125): hop 1"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/harness/routines/plan-run-action-fire-failure.test.ts:1",
+        "verdict": "alias",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): line 1 stands for the module top level (D-013)",
+        "aliasOf": "packages/operator-core/lib/harness/routines/plan-run-action-fire-failure.test.ts:80"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/harness/routines/plan-run-action.integration.test.ts:633",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): canonical unit site: module top calls runScheduledPlanFire (633 onward): hop 2"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/harness/routines/plan-run-action.integration.test.ts:1",
+        "verdict": "alias",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): line 1 stands for the module top level (D-013)",
+        "aliasOf": "packages/operator-core/lib/harness/routines/plan-run-action.integration.test.ts:633"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/harness/routines/plan-run-action.ts:777",
+        "verdict": "neutral",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): the subject's own declaration"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/harness/routines/plan-run-action.ts:929",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): handlePlanRun calls runScheduledPlanFire (943): hop 2"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/harness/routines/plan-run-promotion-outcomes.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): module top does not call; the call (71) is inside fire@70 and 58 is a type position inside seededSql"
+      },
+      {
+        "caseId": "impact-record-scheduled-fire-failure",
+        "site": "packages/operator-core/lib/harness/routines/plan-run-promotion-outcomes.test.ts:70",
+        "verdict": "valid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): fire calls runScheduledPlanFire (71): hop 2"
+      },
+      {
+        "caseId": "impact-pot-git-gc-tick-dynamic",
+        "site": "packages/operator-core/lib/harness/routines/hive-git-gc-action.test.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): no static reference to potGitGcTick; the test reaches it by action name through the registry, which the case defines as not a static edge"
+      },
+      {
+        "caseId": "impact-pot-git-gc-tick-dynamic",
+        "site": "packages/operator-core/lib/harness/routines/hive-git-gc-action.ts:1",
+        "verdict": "alias",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): line 1 stands for the module top level, whose registration (105) is the key site",
+        "aliasOf": "packages/operator-core/lib/harness/routines/hive-git-gc-action.ts:105"
+      },
+      {
+        "caseId": "impact-pot-git-gc-tick-dynamic",
+        "site": "packages/operator-core/lib/harness/routines/hive-git-gc-action.ts:36",
+        "verdict": "neutral",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): the subject's own declaration"
+      },
+      {
+        "caseId": "impact-pot-git-gc-tick-dynamic",
+        "site": "packages/operator-core/lib/harness/routines/register-system-actions.ts:1",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): a side-effect import (import './hive-git-gc-action', 495) loads the module; it neither calls nor passes potGitGcTick, and the case names the registration as the only static upstream edge"
+      },
+      {
+        "caseId": "impact-absent-clear-operator-sleep",
+        "site": "packages/operator-core/lib/operator-converse-tags.ts:609",
+        "verdict": "neutral",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): the subject's own declaration (absence case: nothing depends on it)"
+      },
+      {
+        "caseId": "definition-panel-registry-barrel",
+        "site": "apps/operator/app/harness/dock/panel-registry.ts:2",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): the PanelRegistry specifier of an `export { ... } from` barrel re-export; the case requires resolving through the barrel to the class (libs/generic/dock-workbench/src/panel-registry.ts:30). The auto run refused it on an internal valid/alias conflict"
+      },
+      {
+        "caseId": "symbol-claim-next-issue-work-item",
+        "site": "packages/operator-core/lib/scheduler/stop-the-line-floor.integration.test.ts:55",
+        "verdict": "alias",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): a destructured binding of the dynamically imported work-items export: the same symbol, not a distinct declaration",
+        "aliasOf": "packages/operator-core/lib/work-items.ts:8540"
+      },
+      {
+        "caseId": "symbol-claim-next-issue-work-item",
+        "site": "papercusp-desktop/src-tauri/env-sidecars/staging/serve.mjs:52907",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): generated host bundle (@generated by apps/operator/bin/bundle-host.sh), a build artifact, not source"
+      },
+      {
+        "caseId": "symbol-run-integrator-tick-same-name",
+        "site": "papercusp-desktop/src-tauri/env-sidecars/staging/serve.mjs:30244",
+        "verdict": "invalid",
+        "note": "hand(P-017 su-72f78fbb 2026-10-06): generated host bundle (@generated by apps/operator/bin/bundle-host.sh), a build artifact, not source"
+      }
+    ]
+  }
+}

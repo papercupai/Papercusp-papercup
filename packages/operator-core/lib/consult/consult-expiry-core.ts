@@ -37,7 +37,7 @@
  */
 import type { Sql } from 'postgres';
 import { consultParkKey, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
-import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
+import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting, type CascadeDispatch } from './cascade-core';
 import { appendAnswerFailureRecord, type AnswerFailureReason } from './consult-dispatch';
 import { GRADING_CASCADE_FLAVOR } from './grading-cascade';
 import { RUBRIC_VETTING_POLICY } from './selection-policies';
@@ -123,6 +123,10 @@ export interface ReviewWorkItemRequest {
 export interface SilentResponderCandidate {
   workspaceId: string;
   conversationId: string;
+  /** Requester follow-ups do not establish pickup by the answering session. */
+  requesterId?: string;
+  /** Knowledge source of the current slot; scopes terminal launch evidence. */
+  sourceOwnerId?: string;
   /** Null means dispatch never stamped an answering session. After the pickup
    * window, an empty thread is evidence of failed dispatch, not source silence. */
   answeringOwnerId: string | null;
@@ -146,7 +150,10 @@ function currentSelectionAnswerer(
     const ownerId = selected.answeringOwnerId;
     return {
       answeringOwnerId: typeof ownerId === 'string' && ownerId.trim() ? ownerId.trim() : null,
-      priorResponderIds: selections.slice(0, cursor).map((entry) => entry.ownerId),
+      priorResponderIds: [...new Set(selections.slice(0, cursor).flatMap((entry) => {
+        const answerer = typeof entry.answeringOwnerId === 'string' ? entry.answeringOwnerId.trim() : '';
+        return answerer ? [entry.ownerId, answerer] : [entry.ownerId];
+      }))],
     };
   } catch {
     return null;
@@ -154,6 +161,10 @@ function currentSelectionAnswerer(
 }
 
 export interface ExpirySweepDeps {
+  /** Resume a durably queued disposition's next launch. */
+  resumeCascadeDispatch?: (workspaceId: string, conversationId: string) => Promise<boolean>;
+  /** Resume a durably accepted routing row through the same production core. */
+  resumeRequest?: (workspaceId: string, conversationId: string) => Promise<boolean>;
   getSql: () => Sql;
   /** Latched `consult:reply:<conv>` emit → the (possibly parked) requester.
    * Prod binds emitAwaitedEvent per-row-workspace; best-effort there. */
@@ -171,13 +182,7 @@ export interface ExpirySweepDeps {
    * all, so the workspace rides on each call rather than on the binding's
    * scope). Absent ⇒ the advance still happens (cursor/responder/digest move)
    * but nobody is dispatched — tests only; prod MUST bind it. */
-  dispatch?: (opts: {
-    responder: string;
-    conversationId: string;
-    summary: string;
-    body: string;
-    workspaceId: string;
-  }) => Promise<{ woke: number; answeringOwnerId?: string | null }>;
+  dispatch?: (opts: Parameters<CascadeDispatch>[0] & { workspaceId: string }) => ReturnType<CascadeDispatch>;
   /** Durable requester alert for every stalled/expired lifecycle transition.
    * The caller supplies a deterministic replay key. A rejected alert blocks
    * the lifecycle write so the next sweep retries the same key. */
@@ -248,6 +253,33 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const nowIso = (deps.now ? deps.now() : new Date()).toISOString();
   const limit = deps.limit ?? EXPIRY_SWEEP_LIMIT;
 
+  if (deps.resumeCascadeDispatch) {
+    const pending = await sql<Array<{ workspace_id: string; conversation_id: string }>>`
+      SELECT workspace_id, conversation_id FROM harness_shared.consult_state
+       WHERE closed_at IS NULL AND state IN ('awaiting_responder', 'active')
+         AND routing #>> '{cascadeDispatch,version}' = '1'
+         AND (routing #>> '{cascadeDispatch,cursor}')::int = cascade_cursor
+         AND COALESCE((routing #>> '{cascadeDispatch,attempts}')::int, 0) < 3
+         AND COALESCE((routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${nowIso}::timestamptz
+       ORDER BY updated_at LIMIT ${Math.min(limit, 20)}`;
+    for (const row of pending) {
+      try { await deps.resumeCascadeDispatch(row.workspace_id, row.conversation_id); }
+      catch { /* persisted retry state is owned by the cascade continuation */ }
+    }
+  }
+
+  if (deps.resumeRequest) {
+    const pending = await sql<{ workspace_id: string; conversation_id: string }[]>`
+      SELECT workspace_id, conversation_id FROM harness_shared.consult_state
+      WHERE state = 'routing' AND closed_at IS NULL AND routing #>> '{request,version}' = '1'
+        AND COALESCE((routing #>> '{request,leaseUntil}')::timestamptz, '-infinity'::timestamptz) <= ${nowIso}::timestamptz
+      ORDER BY created_at LIMIT ${Math.min(limit, 20)}`;
+    for (const row of pending) {
+      try { await deps.resumeRequest(row.workspace_id, row.conversation_id); }
+      catch { /* bounded error/retry state is persisted by the request core */ }
+    }
+  }
+
   // Read the due rows WITH their cascade columns — the advance-vs-expire
   // branch is per row, so the bulk single-statement flip is gone. The CAS
   // guards below stand in for row locks (see module doc).
@@ -270,6 +302,9 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
          OR (state = 'awaiting_responder' AND exchanges_used = 0 AND expires_at IS NOT NULL
              AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2)
        )
+       AND NOT (routing #>> '{cascadeDispatch,version}' = '1'
+         AND (routing #>> '{cascadeDispatch,cursor}')::int = cascade_cursor
+         AND COALESCE((routing #>> '{cascadeDispatch,leaseUntil}')::timestamptz, '-infinity'::timestamptz) > ${nowIso}::timestamptz)
      ORDER BY expires_at
      LIMIT ${limit}
   `) as unknown as DueConsultRow[];
@@ -286,6 +321,8 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       return [{
         workspaceId: row.workspace_id,
         conversationId: row.conversation_id,
+        requesterId: row.requester_id,
+        sourceOwnerId: row.responder_id,
         answeringOwnerId: selection.answeringOwnerId,
         routedAt: timestampToIso(row.updated_at),
         ...(selection.priorResponderIds.length > 0 ? { priorResponderIds: selection.priorResponderIds } : {}),
@@ -455,7 +492,12 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
                        answered_by: answeredBy,
                      } as never)
                    : null
-               }::jsonb, outcome),
+               }::jsonb
+                 -- EI-23764501791910357: a requester's recorded proceed-reconciliation survives
+                 -- the terminal write (a NULL new outcome keeps the old one via the COALESCE).
+                 || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
+                         THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
+                         ELSE '{}'::jsonb END, outcome),
                closed_at = ${nowIso}::timestamptz,
                updated_at = ${nowIso}::timestamptz
          WHERE workspace_id = ${row.workspace_id}
@@ -669,7 +711,10 @@ async function convertReviewConsult(
                  work_item_id: workItemId,
                  review_kind: kind,
                  silent_responder: row.responder_id,
-               } as never)}::jsonb,
+               } as never)}::jsonb
+                 || CASE WHEN (outcome -> 'reconciliation') IS NOT NULL
+                         THEN jsonb_build_object('reconciliation', outcome -> 'reconciliation')
+                         ELSE '{}'::jsonb END,
                closed_at = ${nowIso}::timestamptz,
                updated_at = ${nowIso}::timestamptz
          WHERE workspace_id = ${row.workspace_id}

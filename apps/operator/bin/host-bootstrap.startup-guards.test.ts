@@ -17,9 +17,14 @@
  * name each guard. Crude, but it fails loudly the moment someone deletes a call site, which is
  * exactly the regression that went unnoticed for months.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
+import { withBoundedTimeout } from '@papercusp/operator-core/lib/bounded-timeout';
+import { dedupeInFlight } from '@papercusp/operator-core/lib/dedupe-in-flight';
+import { awaitBootMigrationGate } from '@papercusp/operator-core/lib/boot-migration-gate';
 
 const bootSrc = readFileSync(join(__dirname, 'host-bootstrap.ts'), 'utf8');
 const dbosWorkItemsContractSrc = readFileSync(
@@ -32,6 +37,30 @@ const agentToolsCatchallSrc = readFileSync(
   join(__dirname, '../../../packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts'),
   'utf8',
 );
+
+/** Executable calls only: comments and quoted examples cannot satisfy wiring. */
+function directCallPositions(source: string, name: string): number[] {
+  const file = ts.createSourceFile('host.ts', source, ts.ScriptTarget.Latest, true);
+  const positions: number[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+      && node.expression.text === name) positions.push(node.getStart(file));
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return positions;
+}
+
+describe('startup call-site detector', () => {
+  it('accepts return and fire-and-forget calls while rejecting comments and strings', () => {
+    expect(directCallPositions('function boot() { return runBootstrap(); }', 'runBootstrap'))
+      .toHaveLength(1);
+    expect(directCallPositions('function boot() { runBootstrap(); }', 'runBootstrap'))
+      .toHaveLength(1);
+    expect(directCallPositions('// runBootstrap();\nconst example = "runBootstrap();";', 'runBootstrap'))
+      .toEqual([]);
+  });
+});
 
 /** Each guard, with the module it lives in — both must appear at the boot site. */
 const STARTUP_GUARDS: Array<{ fn: string; module: string; catches: string }> = [
@@ -112,6 +141,22 @@ describe('host-bootstrap wires every startup guard', () => {
     expect(singletonGuard).toMatch(/startup validation deferred[\s\S]*?return;[\s\S]*?validateDeclaredSingletons\(\)/);
   });
 
+  it('skips declared-singleton validation on request-only hosts while retaining the background-owner check', () => {
+    const singletonGuard = bootSrc.slice(
+      bootSrc.indexOf("'@papercusp/operator-core/lib/startup/validate-declared-singletons'"),
+      bootSrc.indexOf('// [D-007 startup validation]'),
+    );
+    const requestOnlyCheck = singletonGuard.indexOf('if (requestOnlyHost())');
+    const freshInstallCheck = singletonGuard.indexOf('if (await isLikelyFreshInstallGap())');
+    const validation = singletonGuard.indexOf('const r = await validateDeclaredSingletons();');
+    const requestOnlyBranch = singletonGuard.slice(requestOnlyCheck, freshInstallCheck);
+
+    expect(requestOnlyCheck).toBeGreaterThan(-1);
+    expect(requestOnlyBranch).toMatch(/if\s*\(requestOnlyHost\(\)\)\s*\{[\s\S]*?startup validation skipped[\s\S]*?return;[\s\S]*?\}/);
+    expect(freshInstallCheck).toBeGreaterThan(requestOnlyCheck);
+    expect(validation).toBeGreaterThan(freshInstallCheck);
+  });
+
   it('defers bespoke active-seed validation during a fresh packaged install', () => {
     // The same empty-workspace window applies to the always-on seed backstop: before the
     // first project exists, every bespoke seed row is absent by construction. Established
@@ -141,7 +186,7 @@ describe('host-bootstrap fails the background plane closed on migration failure'
     // returns (which left the substrate down until a manual restart). It awaits
     // awaitBootMigrationGate, which only resolves on a clean result and retries in
     // place while failed — so the ordering below is still the fail-closed contract.
-    const gate = bootSrc.indexOf('await awaitBootMigrationGate({');
+    const gate = bootSrc.indexOf('await awaitBootMigrationGate({', bootSrc.indexOf('const gateHost = `${utilityHost'));
     const routingFailure = bootSrc.indexOf('markSubstrateBootRoutingFailed', gate);
     const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', gate);
     const backgroundStartup = bootSrc.indexOf('provisionSystemPrincipals', requestGate);
@@ -231,7 +276,8 @@ describe('background admission recovery loads the live kernel resolver before ro
     // boot); sibling named imports from the same module are fine (e.g. externalIngressHandler).
     expect(honoHostSrc).toMatch(/^import \{[^}]*\bhandler\b[^}]*\} from '\.\/host-handler';$/m);
     expect(honoHostSrc).not.toMatch(/^import type \{[^}]*\bhandler\b[^}]*\} from '\.\/host-handler';$/m);
-    expect(honoHostSrc).toContain('return runBootstrap();');
+    // Bootstrap callbacks may be fire-and-forget before the migration gate.
+    expect(directCallPositions(honoHostSrc, 'runBootstrap').length).toBeGreaterThan(0);
     const packagedHost = readFileSync(join(__dirname, 'serve.ts'), 'utf8');
     const handlerImport = packagedHost.indexOf('const { handler } = await import("./host-handler");');
     const bootstrapCall = packagedHost.indexOf('runBootstrap();', handlerImport);
@@ -255,7 +301,7 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     const dedupe = bootSrc.indexOf('return dedupeInFlight(', requestOnly);
     const store = bootSrc.indexOf('BOOTSTRAP_STATE.requestMigrationGateFlights', dedupe);
     const timeout = bootSrc.indexOf('const migrationAttempt = await withBoundedTimeout(', store);
-    const apply = bootSrc.indexOf('() => applyPendingMigrationsAtBoot()', timeout);
+    const apply = bootSrc.indexOf('(signal) => applyPendingMigrationsNow({ broadcast: false, signal })', timeout);
 
     expect(requestOnly).toBeGreaterThan(-1);
     expect(dedupe).toBeGreaterThan(requestOnly);
@@ -264,7 +310,7 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     expect(apply).toBeGreaterThan(timeout);
     expect(bootSrc).toContain('requestMigrationGateFlights: Map<string, Promise<void>>');
     expect(bootSrc).toContain('requestMigrationGateFlights: new Map()');
-    expect(bootSrc.match(/\(\) => applyPendingMigrationsAtBoot\(\)/g))
+    expect(bootSrc.match(/\(signal\) => applyPendingMigrationsNow\(\{ broadcast: false, signal \}\)/g))
       .toHaveLength(1); // the request-only single-flight body; the background owner goes through awaitBootMigrationGate
     expect(bootSrc.match(/applyAtBoot: applyPendingMigrationsAtBoot,/g)).toHaveLength(1);
   });
@@ -273,32 +319,29 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     const requestOnly = bootSrc.indexOf(
       'if (!backgroundWorkersEnabled()) {\n    // runBootstrap',
     );
-    const apply = bootSrc.indexOf('() => applyPendingMigrationsAtBoot()', requestOnly);
-    const result = bootSrc.indexOf('const migrationResult = migrationAttempt.value;', apply);
-    const failure = bootSrc.indexOf(
-      'if (!migrationResult || migrationResult.failed.length > 0)',
-      result,
-    );
+    const apply = bootSrc.indexOf('(signal) => applyPendingMigrationsNow({ broadcast: false, signal })', requestOnly);
+    const result = bootSrc.indexOf('return migrationAttempt.value;', apply);
+    const gate = bootSrc.indexOf('await awaitBootMigrationGate({', result);
     const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', apply);
 
     expect(requestOnly).toBeGreaterThan(-1);
     expect(apply).toBeGreaterThan(requestOnly);
     expect(result).toBeGreaterThan(apply);
-    expect(failure).toBeGreaterThan(result);
-    expect(requestGate).toBeGreaterThan(failure);
-    expect(bootSrc.slice(requestOnly, requestGate)).toMatch(
-      /if\s*\(!migrationResult\s*\|\|\s*migrationResult\.failed\.length\s*>\s*0\)[\s\S]*?throw new Error\(/,
-    );
+    expect(gate).toBeGreaterThan(result);
+    expect(requestGate).toBeGreaterThan(gate);
+    expect(bootSrc.slice(gate, requestGate)).toContain("plane: 'request'");
+    expect(bootSrc.slice(gate, requestGate)).toContain('applyRetry: applyBounded');
+    expect(bootSrc.slice(requestOnly, requestGate)).toContain('applyPendingMigrationsNow({ broadcast: false, signal })');
   });
 
-  it('bounds the request-only preflight and fails before listener startup when it stalls', () => {
+  it('bounds each request-only preflight and keeps listener startup behind in-place recovery', () => {
     const requestOnly = bootSrc.indexOf(
       'if (!backgroundWorkersEnabled()) {\n    // runBootstrap',
     );
     const timeout = bootSrc.indexOf('const migrationAttempt = await withBoundedTimeout(', requestOnly);
     const budget = bootSrc.indexOf('timeoutMs,', timeout);
-    const degraded = bootSrc.indexOf('if (migrationAttempt.degraded) {', timeout);
-    const timeoutFailure = bootSrc.indexOf('request-only migration preflight ${migrationAttempt.reason', degraded);
+    const degraded = bootSrc.indexOf("if (migrationAttempt.degraded && migrationAttempt.reason === 'error')", timeout);
+    const recovery = bootSrc.indexOf('await awaitBootMigrationGate({', degraded);
     const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', timeout);
 
     expect(bootSrc).toContain(
@@ -307,8 +350,83 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     expect(timeout).toBeGreaterThan(requestOnly);
     expect(budget).toBeGreaterThan(timeout);
     expect(degraded).toBeGreaterThan(budget);
-    expect(timeoutFailure).toBeGreaterThan(degraded);
-    expect(requestGate).toBeGreaterThan(timeoutFailure);
+    expect(recovery).toBeGreaterThan(degraded);
+    expect(requestGate).toBeGreaterThan(recovery);
+  });
+
+  it('cancels a timed-out attempt, single-flights both boot callers, and opens only after a fresh retry succeeds', async () => {
+    // Execute the production function's AST, with its actual timeout, single-
+    // flight and recovery helpers. Importing the entire host would boot shared
+    // services; only its lazy migration dependencies are replaced here.
+    const sourceFile = ts.createSourceFile('host-bootstrap.ts', bootSrc, ts.ScriptTarget.Latest, true);
+    const fn = sourceFile.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'waitForBootMigrationGate');
+    expect(fn).toBeDefined();
+    const compiled = ts.transpileModule(fn!.getText(sourceFile), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const aborted = vi.fn();
+    const atBoot = vi.fn(() => { throw new Error('request hosts must not use the once-per-process entry'); });
+    let attempts = 0;
+    const retry = vi.fn(async (options: { broadcast: boolean; signal: AbortSignal }) => {
+      attempts += 1;
+      if (attempts === 1) return new Promise<null>((resolve) => {
+        options.signal.addEventListener('abort', () => { aborted(); resolve(null); }, { once: true });
+      });
+      return attempts >= 10
+        ? { applied: 0, failed: [] }
+        : { applied: 0, failed: [{ file: 'pending.sql', error: 'backup still running' }] };
+    });
+    const mark = vi.fn();
+    const exported: { waitForBootMigrationGate?: (timeoutMs: number) => Promise<void> } = {};
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      runInNewContext(compiled, {
+        exports: exported,
+        backgroundWorkersEnabled: () => false,
+        BOOTSTRAP_STATE: { requestMigrationGateFlights: new Map() },
+        dedupeInFlight,
+        withBoundedTimeout,
+        require: (module: string) => {
+          if (module.endsWith('/db-boot-migrate')) return { applyPendingMigrationsAtBoot: atBoot, applyPendingMigrationsNow: retry };
+          if (module.endsWith('/boot-migration-gate')) return {
+            awaitBootMigrationGate,
+            raiseBootMigrationGateAlarm: vi.fn(),
+            clearBootMigrationGateAlarm: vi.fn(),
+          };
+          if (module.endsWith('/serving-host-identity')) return { hostIdentity: () => 'port-3270' };
+          if (module.endsWith('/sync/hyperbee/boot-gate')) return { markMigrationsAppliedForRequestGate: mark };
+          throw new Error(`Unexpected boot dependency: ${module}`);
+        },
+      });
+      const first = exported.waitForBootMigrationGate!(20_000);
+      const second = exported.waitForBootMigrationGate!(20_000);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(atBoot).not.toHaveBeenCalled();
+      expect(retry).toHaveBeenCalledTimes(1);
+      expect(aborted).toHaveBeenCalledTimes(1);
+      expect(mark).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(8 * 60_000);
+      expect(retry).toHaveBeenCalledTimes(9);
+      expect(mark).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.all([first, second]);
+      expect(retry).toHaveBeenCalledTimes(10);
+      expect(retry.mock.calls.every(([options]) => options.broadcast === false && options.signal instanceof AbortSignal)).toBe(true);
+      expect(mark).toHaveBeenCalledTimes(1);
+      // A genuinely later native listener must get a fresh, immediate proof,
+      // not the once-per-process null sentinel or a cached success.
+      await exported.waitForBootMigrationGate!(20_000);
+      expect(retry).toHaveBeenCalledTimes(11);
+      expect(mark).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+      error.mockRestore();
+      log.mockRestore();
+    }
   });
 
   it('fails closed when the request migration preflight rejects instead of serving anyway', () => {
@@ -420,16 +538,43 @@ describe('hono-host exposes a no-native-teardown desktop-dev recycle contract', 
 });
 
 describe('hono-host rejects persistent main-port conflicts before bootstrap', () => {
+  it.each([
+    { mode: 'primary host', env: {}, argv: [], probes: 1, exits: 1 },
+    { mode: 'import-only smoke', env: {}, argv: ['--papercusp-import-smoke'], probes: 0, exits: 0 },
+    { mode: 'R6 worker', env: { PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE: '1' }, argv: [], probes: 0, exits: 0 },
+    { mode: 'spawner sidecar', env: { PAPERCUSP_SPAWNER_SIDECAR_MODE: '1' }, argv: [], probes: 0, exits: 0 },
+  ])('handles an occupied HTTP port for the $mode', ({ env, argv, probes, exits }) => {
+    const available = vi.fn(() => false);
+    const exit = vi.fn();
+    const compiled = ts.transpileModule(honoHostPortPreflightSrc, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+    }).outputText;
+    runInNewContext(compiled, {
+      exports: {}, console: { error: vi.fn() },
+      process: { env: { PAPERCUSP_HONO_PORT: '3170', ...env }, argv, exit },
+      require: (name: string) => {
+        if (name === 'node:cluster') return { isPrimary: true };
+        if (name.endsWith('/port-availability')) return { portAvailableSync: available };
+        if (name.endsWith('/resolve-bind-host')) return { resolveBindHost: () => '127.0.0.1' };
+        throw new Error(`unexpected preflight import ${name}`);
+      },
+    }, { timeout: 1_000 });
+    expect(available).toHaveBeenCalledTimes(probes);
+    expect(exit).toHaveBeenCalledTimes(exits);
+    if (exits) expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it('runs the availability preflight before startCluster/runBootstrap and skips sidecars', () => {
     const preflightImport = honoHostSrc.indexOf("import './hono-host-port-preflight';");
     const bootstrapImport = honoHostSrc.indexOf("import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';");
     const clusterStart = honoHostSrc.indexOf('startCluster({');
-    const bootstrapCall = honoHostSrc.indexOf('return runBootstrap();');
+    const bootstrapCalls = directCallPositions(honoHostSrc, 'runBootstrap');
 
     expect(preflightImport).toBeGreaterThan(honoHostSrc.indexOf("import './boot-flag-store';"));
     expect(preflightImport).toBeLessThan(bootstrapImport);
     expect(clusterStart).toBeGreaterThan(preflightImport);
-    expect(bootstrapCall).toBeGreaterThan(preflightImport);
+    expect(bootstrapCalls.length).toBeGreaterThan(0);
+    for (const position of bootstrapCalls) expect(position).toBeGreaterThan(preflightImport);
     expect(honoHostPortPreflightSrc).toContain('portAvailableSync(port, hostname)');
     expect(honoHostPortPreflightSrc).toContain('fatal EADDRINUSE during pre-bootstrap port check');
     expect(honoHostPortPreflightSrc).toContain('cluster.isPrimary && !sidecarMode');
@@ -505,6 +650,11 @@ describe('host-bootstrap owns the packaged MCP proxy child lifecycle (EI-2110630
   })();
 
   it('tracks a non-detached child and registers a bounded graceful shutdown hook', () => {
+    // Keep the source window honest: if its end marker moves before the shutdown
+    // function, the negative child.unref assertion below would pass vacuously.
+    expect(lifecycleSrc.length).toBeGreaterThan(500);
+    expect(lifecycleSrc).toContain('async function stopPackagedMcpProxy');
+
     // The child handle must live in state that survives a MODULE SPLIT, not a
     // plain module-local. Both forms "track the child" on a single record, so
     // the original `let packagedMcpProxyProcess` assertion could not tell them

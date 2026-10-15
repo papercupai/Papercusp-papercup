@@ -95,8 +95,26 @@ export interface BenchRunCost {
   tokensIn: number;
   tokensOut: number;
   costUsd: number;
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
+  /** Source/billing observations travel through the existing attempt metadata. */
+  armMeta?: Record<string, unknown>;
   /** COUNT(DISTINCT run_id) — every agent run that touched the harness (coordination overhead included). */
   turns: number;
+  /** Known subtotal only; unknown usage must not support an efficiency claim. */
+  costUsdMeasurementMissing?: boolean;
+}
+
+/** Validate the same measurement at live budget decisions and final reporting.
+ * A valid known subtotal may still have incomplete terminal accounting. */
+export function hasValidBenchRunCost(cost: BenchRunCost): boolean {
+  if (!cost || typeof cost !== 'object') return false;
+  const count = (value: number) => Number.isSafeInteger(value) && value >= 0;
+  const tokens = [cost.tokensIn, cost.tokensOut,
+    cost.tokensCacheRead === undefined ? 0 : cost.tokensCacheRead,
+    cost.tokensCacheWrite === undefined ? 0 : cost.tokensCacheWrite];
+  return Number.isFinite(cost.costUsd) && cost.costUsd >= 0 && count(cost.turns) &&
+    tokens.every(count) && count(tokens.reduce((sum, value) => sum + value, 0));
 }
 
 /**
@@ -124,10 +142,12 @@ export type DriveDisposition =
 export interface DriveResult {
   disposition: DriveDisposition;
   detail?: string;
+  armMeta?: Record<string, unknown>;
 }
 
 /** The opaque handle the CREATE seam returns, threaded to feed/drive/cost/teardown. */
 export interface BenchHarnessHandle {
+  executionKind?: 'current-su' | 'historical-blueprint';
   /** The throwaway harness slug (scratch, unique per run). */
   slug: string;
   /** The single feature id seeded into it (the benchmark task). */
@@ -252,11 +272,12 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
   /** ONE attempt: CREATE → FEED → DRIVE → COST → TEARDOWN over a fresh handle. Never throws. */
   const oneAttempt = async (
     req: BenchHarnessRunRequest,
-  ): Promise<{ disposition: DriveDisposition; detail?: string; cost: BenchRunCost; handle: BenchHarnessHandle | null }> => {
+  ): Promise<{ disposition: DriveDisposition; detail?: string; armMeta?: Record<string, unknown>; cost: BenchRunCost; handle: BenchHarnessHandle | null }> => {
     const { blueprintId, task, checkout, budget } = req;
     let handle: BenchHarnessHandle | null = null;
     let disposition: DriveDisposition = 'error';
     let detail: string | undefined;
+    let armMeta: Record<string, unknown> | undefined;
 
     try {
       // CREATE → FEED → DRIVE.
@@ -265,6 +286,7 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
       const drive = await ops.driveToDone({ handle, budget, timeoutMs, pollMs, workspaceId: ws });
       disposition = drive.disposition;
       detail = drive.detail;
+      armMeta = drive.armMeta;
     } catch (e) {
       // An infra failure during create/feed/drive → 'error' telemetry (never a thrown exception). The
       // cost sum below still runs (any real spend before the failure is counted); teardown still runs.
@@ -275,7 +297,21 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
     // COST: always sum what was spent (even on a failure — real spend before a failure must be counted).
     let cost: BenchRunCost = { tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 };
     if (handle) {
-      cost = await ops.collectCost({ handle, workspaceId: ws }).catch(() => cost);
+      try {
+        const measured = await ops.collectCost({ handle, workspaceId: ws });
+        const count = (value: number) => Number.isSafeInteger(value) && value >= 0;
+        const validUsd = Number.isFinite(measured.costUsd) && measured.costUsd >= 0;
+        const invalid = !hasValidBenchRunCost(measured);
+        cost = { tokensIn: count(measured.tokensIn) ? measured.tokensIn : 0,
+          tokensOut: count(measured.tokensOut) ? measured.tokensOut : 0,
+          turns: count(measured.turns) ? measured.turns : 0, costUsd: validUsd ? measured.costUsd : 0,
+          ...(measured.tokensCacheRead !== undefined ? { tokensCacheRead: count(measured.tokensCacheRead) ? measured.tokensCacheRead : 0 } : {}),
+          ...(measured.tokensCacheWrite !== undefined ? { tokensCacheWrite: count(measured.tokensCacheWrite) ? measured.tokensCacheWrite : 0 } : {}),
+          ...(measured.armMeta ? { armMeta: measured.armMeta } : {}),
+          ...(invalid || measured.costUsdMeasurementMissing ? { costUsdMeasurementMissing: true } : {}) };
+      } catch {
+        cost = { ...cost, costUsdMeasurementMissing: true };
+      }
     }
 
     // TEARDOWN: best-effort — a teardown hiccup must not mask the run's outcome (mirrors hive-eval's
@@ -283,7 +319,7 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
     if (handle) {
       await ops.teardown({ handle, workspaceId: ws }).catch(() => {});
     }
-    return { disposition, detail, cost, handle };
+    return { disposition, detail, armMeta, cost, handle };
   };
 
   return {
@@ -311,6 +347,16 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
           tokensOut: summedCost.tokensOut + result.cost.tokensOut,
           costUsd: summedCost.costUsd + result.cost.costUsd,
           turns: summedCost.turns + result.cost.turns,
+          ...(summedCost.tokensCacheRead !== undefined || result.cost.tokensCacheRead !== undefined
+            ? { tokensCacheRead: (summedCost.tokensCacheRead ?? 0) + (result.cost.tokensCacheRead ?? 0) } : {}),
+          ...(summedCost.tokensCacheWrite !== undefined || result.cost.tokensCacheWrite !== undefined
+            ? { tokensCacheWrite: (summedCost.tokensCacheWrite ?? 0) + (result.cost.tokensCacheWrite ?? 0) } : {}),
+          ...(summedCost.armMeta || result.cost.armMeta ? { armMeta: { costAttempts: [
+            ...(Array.isArray(summedCost.armMeta?.costAttempts) ? summedCost.armMeta.costAttempts : [summedCost.armMeta ?? {}]),
+            result.cost.armMeta ?? {},
+          ] } } : {}),
+          ...(summedCost.costUsdMeasurementMissing || result.cost.costUsdMeasurementMissing
+            ? { costUsdMeasurementMissing: true } : {}),
         };
       }
 
@@ -320,10 +366,16 @@ export function liveBenchHarnessDriver(ops: BenchHarnessOps, opts: LiveBenchHarn
         tokensIn: summedCost.tokensIn,
         tokensOut: summedCost.tokensOut,
         costUsd: summedCost.costUsd,
+        ...(summedCost.tokensCacheRead !== undefined ? { tokensCacheRead: summedCost.tokensCacheRead } : {}),
+        ...(summedCost.tokensCacheWrite !== undefined ? { tokensCacheWrite: summedCost.tokensCacheWrite } : {}),
         turns: summedCost.turns,
         wallClockMs: ops.now() - startedAtMs,
         trajectoryRef: handle ? trajectoryRefFor(handle) : '',
         stopReason,
+        ...(result.armMeta || summedCost.armMeta || summedCost.costUsdMeasurementMissing ? { armMeta: {
+          ...summedCost.armMeta,
+          ...result.armMeta, ...(summedCost.costUsdMeasurementMissing ? { costUsdMeasurementMissing: true } : {}),
+        } } : {}),
         // `generationError` carries the failure detail for every NON-scored terminal (error / timeout /
         // infra-failed / transient) — these are all excluded from accuracy, and the detail explains why
         // (a 429/contention spawn, a wall-clock ceiling, a crash). A SCORED terminal (done / escalate /
@@ -413,14 +465,17 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
       const { stringify: stringifyYaml } = await import('yaml');
       const bpDir = join(checkout.dir, '.papercusp');
       mkdirSync(bpDir, { recursive: true });
-      writeFileSync(
-        join(bpDir, 'blueprint.yaml'),
-        stringifyYaml({ id: slug, extends: blueprintId }, { lineWidth: 100 }),
-        'utf8',
-      );
+      // Native su uses the maintained bootstrap, never a retired benchmark blueprint.
+      if (blueprintId !== 'su') {
+        writeFileSync(
+          join(bpDir, 'blueprint.yaml'),
+          stringifyYaml({ id: slug, extends: blueprintId }, { lineWidth: 100 }),
+          'utf8',
+        );
+      }
 
       const featureId = `xbench-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-      return { slug, featureId, worktreePath: checkout.dir };
+      return { slug, featureId, worktreePath: checkout.dir, executionKind: blueprintId === 'su' ? 'current-su' : 'historical-blueprint' };
     },
 
     async addFeature({ handle, task, workspaceId }) {
@@ -450,6 +505,9 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
     },
 
     async driveToDone({ handle, budget, timeoutMs, pollMs, workspaceId }) {
+      if (handle.executionKind === 'current-su') {
+        throw new Error('Current su treatment requires bindCurrentSuBenchHarness; retired director execution is not a fallback.');
+      }
       // DRIVE (the spawnInvokeOnce director-loop variant — P-009 pilot, confirmed at first run).
       //
       // ── WHY this variant (not `ensureFeaturePipeline`) ──────────────────────────────────────────────
@@ -528,11 +586,13 @@ export function liveBenchHarnessOps(opts: LiveBenchHarnessOpts): BenchHarnessOps
       // Read the live cost + bail if the iso-budget cap is already hit. Shared by the pre-decider and
       // pre-dispatch guards so a cap-blowing run never spawns another agent.
       const budgetExhausted = async (): Promise<boolean> => {
-        const cost = await readBenchRunCost(sql, handle.slug, workspaceId).catch(
-          () => ({ tokensIn: 0, tokensOut: 0, costUsd: 0, turns: 0 }),
+        const cost: BenchRunCost = await readBenchRunCost(sql, handle.slug, workspaceId).catch(
+          () => { throw new Error('Benchmark spend measurement is unavailable; refusing another agent spawn.'); },
         );
+        if (!hasValidBenchRunCost(cost)) throw new Error('Invalid benchmark spend measurement; refusing another agent spawn.');
+        if (cost.costUsdMeasurementMissing) throw new Error('Benchmark spend measurement is incomplete; refusing another agent spawn.');
         if (budget.maxUsd != null && cost.costUsd >= budget.maxUsd) return true;
-        if (budget.maxTokens != null && cost.tokensIn + cost.tokensOut >= budget.maxTokens) return true;
+        if (budget.maxTokens != null && cost.tokensIn + cost.tokensOut + (cost.tokensCacheRead ?? 0) + (cost.tokensCacheWrite ?? 0) >= budget.maxTokens) return true;
         return false;
       };
 
@@ -653,19 +713,25 @@ export async function readBenchRunCost(
   workspaceId: string,
 ): Promise<BenchRunCost> {
   const rows = await sql<
-    { tokens_in: string | null; tokens_out: string | null; cost_usd: string | null; turns: string | null }[]
+    { tokens_in: string | null; tokens_out: string | null; cost_usd: string | null; turns: string | null; missing_measurements: string | null }[]
   >`
     SELECT SUM(COALESCE(input_tokens, 0))::text  AS tokens_in,
            SUM(COALESCE(output_tokens, 0))::text AS tokens_out,
            SUM(COALESCE(cost_usd, 0))::text      AS cost_usd,
-           COUNT(DISTINCT run_id)::text          AS turns
+           COUNT(DISTINCT run_id)::text          AS turns,
+           COUNT(*) FILTER (WHERE input_tokens IS NULL OR output_tokens IS NULL OR cost_usd IS NULL)::text AS missing_measurements
       FROM harness_shared.agent_usage_samples
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}`;
   const r = rows[0];
+  const values = [r?.tokens_in, r?.tokens_out, r?.cost_usd, r?.turns].map(value => Number(value ?? 0));
+  const missing = Number(r?.missing_measurements ?? 0);
+  const invalid = !r || !values.every(n => Number.isFinite(n) && n >= 0) ||
+    ![values[0], values[1], values[3]].every(Number.isSafeInteger) ||
+    !Number.isSafeInteger(missing) || missing < 0 || missing > 0 ||
+    values[3] > 0 && [r.tokens_in, r.tokens_out, r.cost_usd].some(value => value === null);
+  const known = (index: number) => Number.isFinite(values[index]) && values[index] >= 0 ? values[index] : 0;
   return {
-    tokensIn: Number(r?.tokens_in ?? 0) || 0,
-    tokensOut: Number(r?.tokens_out ?? 0) || 0,
-    costUsd: Number(r?.cost_usd ?? 0) || 0,
-    turns: Number(r?.turns ?? 0) || 0,
+    tokensIn: known(0), tokensOut: known(1), costUsd: known(2), turns: known(3),
+    ...(invalid ? { costUsdMeasurementMissing: true } : {}),
   };
 }

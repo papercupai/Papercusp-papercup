@@ -4,26 +4,29 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Desktop workbench (/workbench)
-description: The top-level dockview shell — two GUI columns (main app + a Peers/Pots tab group) beside the glued native terminal. Layout persists to PG; Reset restores the seed.
+title: "Desktop workbench (/workbench)"
+description: "The top-level dockview shell — two GUI columns (main app + a Peers/Pots tab group) beside the glued native terminal. Layout persists to PG; Reset restores the seed."
+type: Insight
+discovered: 2026-10-13
+status: active
+documents:
+  - "apps/operator-vite/src/routes/workbench.tsx"
+  - "apps/operator-vite/src/components/workbench/WorkbenchVoicePanel.tsx"
+  - "apps/operator-vite/src/components/workbench/WorkbenchPotDirectoryPanel.tsx"
+  - "packages/operator-core/lib/dock-layouts.ts"
+  - "packages/operator-core/lib/tui-workbench-store.ts"
+  - "packages/operator-core/lib/dock-layouts.test.ts"
+  - "apps/operator/app/harness/dock/workbench-panels.test.tsx"
+  - "apps/operator-vite/src/components/workbench/WorkbenchVoicePanel.test.tsx"
+  - "apps/operator-vite/src/components/workbench/WorkbenchPotDirectoryPanel.test.tsx"
+plans:
+  - "desktop-workbench-shell-2026-06-05"
+  - "native-terminal-desktop-2026-06-06"
+  - "p2p-pot-directory-2026-06-06"
+  - "holepunch-video-shared-harnesses-2026-06-05"
+  - "holepunch-voice-channels-2026-06-05"
 sidebar:
   order: 3
-plans:
-  - desktop-workbench-shell-2026-06-05
-  - native-terminal-desktop-2026-06-06
-  - p2p-pot-directory-2026-06-06
-  - holepunch-video-shared-harnesses-2026-06-05
-  - holepunch-voice-channels-2026-06-05
-documents:
-  - apps/operator-vite/src/routes/workbench.tsx
-  - apps/operator-vite/src/components/workbench/WorkbenchVoicePanel.tsx
-  - apps/operator-vite/src/components/workbench/WorkbenchHiveDirectoryPanel.tsx
-  - packages/operator-core/lib/dock-layouts.ts
-  - packages/operator-core/lib/tui-workbench-store.ts
-  - packages/operator-core/lib/dock-layouts.test.ts
-  - apps/operator/app/harness/dock/workbench-panels.test.tsx
-  - apps/operator-vite/src/components/workbench/WorkbenchVoicePanel.test.tsx
-  - apps/operator-vite/src/components/workbench/WorkbenchHiveDirectoryPanel.test.tsx
 ---
 
 The **workbench** is the desktop's top-level dock shell

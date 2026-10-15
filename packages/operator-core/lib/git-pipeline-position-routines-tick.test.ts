@@ -8,6 +8,7 @@ import {
   dispatchedSweepMatcher,
   resetDispatchedSweepCache,
   NOT_BG_HOST_DISPATCHED,
+  operatorCoreLibDirFromModuleDir,
 } from './routines-dispatch-derivation';
 
 /**
@@ -175,6 +176,18 @@ describe('EI-19369080695408825: a new sweep is classified with no hand-edit', ()
     const matcher = dispatchedSweepMatcher();
     const uncovered = dispatchedSweepPaths().filter((p) => !matcher.test(p));
     expect(uncovered, `derived paths the catch-all regex fails to match:\n  ${uncovered.join('\n  ')}`).toEqual([]);
+  });
+
+  it('derives the set when the runtime module lives in the bundled host directory', () => {
+    // In the host bundle import.meta.url points at apps/operator/dist-host, while
+    // the source-only dispatcher stays under packages/operator-core/lib.
+    const bundleModuleDir = resolve(REPO_ROOT, 'apps/operator/dist-host');
+    const sourceLibDir = operatorCoreLibDirFromModuleDir(bundleModuleDir);
+
+    expect(sourceLibDir).toBe(resolve(REPO_ROOT, 'packages/operator-core/lib'));
+    const paths = dispatchedSweepPaths(undefined, undefined, sourceLibDir);
+    expect(paths.length).toBeGreaterThan(15);
+    expect(paths).toContain('packages/operator-core/lib/harness/routines/reconcile-loop-routines.ts');
   });
 
   it('degrades to matching NOTHING, never to matching everything', () => {

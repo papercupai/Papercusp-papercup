@@ -1,0 +1,616 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005452",
+  "parentWorkItem": "WI-10004890",
+  "planItem": "P-011",
+  "cohort": "operator-cache-entry-attribution-r2",
+  "evidencePlane": "live-current-build",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-cache-entries-r2-2026-10-02.json",
+    "bytes": 2896704,
+    "sha256": "53820a4bd1d20eea9759cb97d97bc5264fe1bb1d7c1cb81d8fcb1ec71c587c93"
+  },
+  "runtime": {
+    "pid": 3395097,
+    "buildSha": "61ea9e254d",
+    "startedAt": "2026-10-02T12:06:51.318Z",
+    "endedAt": "2026-10-02T12:07:02.885Z",
+    "incomplete": false,
+    "cleanup": {
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true
+    },
+    "healthBefore": {
+      "sha": "61ea9e254d",
+      "version": "0.0.0",
+      "at": "2026-10-02T12:06:51.499Z"
+    },
+    "healthAfter": {
+      "sha": "61ea9e254d",
+      "version": "0.0.0",
+      "at": "2026-10-02T12:07:02.681Z"
+    },
+    "bundle": {
+      "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-61ea9e254de3.4jhKOU/checkout/apps/operator/dist-host/hono-host.mjs",
+      "argvEntry": "dist-host/hono-host.mjs",
+      "diskSha256": "0560e38f5164501d13a8ac2486829eb81aa29376eb2d35c99169ab983631eef2",
+      "diskSha256After": "0560e38f5164501d13a8ac2486829eb81aa29376eb2d35c99169ab983631eef2"
+    }
+  },
+  "execution": {
+    "guard": {
+      "testRunId": 20526842,
+      "testsPassed": 9,
+      "testsSkipped": 0
+    },
+    "baseline": {
+      "testRunId": 20526985,
+      "testsPassed": 3,
+      "testsSkipped": 0,
+      "routerNamedTestPathPostRun": "clean",
+      "routerHead": "94d75a58ff"
+    },
+    "ledger": [
+      {
+        "id": 20526842,
+        "filePath": "packages/operator-core/lib/cdp-inspector.test.ts",
+        "status": "pass",
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "startedAt": "2026-10-02T11:58:31.086Z",
+        "finishedAt": "2026-10-02T11:58:33.605Z",
+        "runGroupId": null
+      },
+      {
+        "id": 20526985,
+        "filePath": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+        "status": "pass",
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "startedAt": "2026-10-02T12:06:50.909Z",
+        "finishedAt": "2026-10-02T12:07:03.111Z"
+      }
+    ],
+    "types": {
+      "namedFiles": 2,
+      "errors": 0
+    },
+    "logReceipts": [
+      {
+        "path": "/tmp/su-7db4f-p011-cache-entry-guard-r1.log",
+        "bytes": 4724,
+        "sha256": "4f79b7700cf11ecdd4d289c1a3bdc16967ec2d259904f48cb6a81d00a718df78"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-cache-entry-types-r1.log",
+        "bytes": 1180,
+        "sha256": "c6f7be232579e891fc0b4af9b08ae819e257b9899065e008290ec64e33370617"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-cache-entries-r2.log",
+        "bytes": 4079,
+        "sha256": "20d85657474431dbebb7bf00961d2facdfd68ba0de899b6c992b37ab46f3e382"
+      }
+    ]
+  },
+  "sourceQualification": {
+    "population": [
+      "scripts/cdp-inspector.mjs",
+      "scripts/cdp-inspector.d.mts",
+      "packages/operator-core/lib/cdp-inspector.test.ts",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts"
+    ],
+    "checked": [
+      "scripts/cdp-inspector.mjs",
+      "scripts/cdp-inspector.d.mts",
+      "packages/operator-core/lib/cdp-inspector.test.ts",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts"
+    ],
+    "notChecked": [],
+    "notApplicable": [],
+    "residue": [],
+    "before": {
+      "scripts/cdp-inspector.mjs": "2586fb844e7a268dbc0ecf8d140a0780cb03dac2fb57590d4254e84c531a8384",
+      "scripts/cdp-inspector.d.mts": "b9af90e17cf5b6ec04e07b8e92b316d2169f055b2f0fb97c1bc917ad5627663f",
+      "packages/operator-core/lib/cdp-inspector.test.ts": "f342cb4dfbd7284c8f6e25cc4e06a5fbadab3f3a19ec40750008d029f826d8b2",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "9c6b11d98bc857f1e9a370f7e355322669f10aee7b4e89a16c91c9f8aeed540d"
+    },
+    "after": {
+      "scripts/cdp-inspector.mjs": "2586fb844e7a268dbc0ecf8d140a0780cb03dac2fb57590d4254e84c531a8384",
+      "scripts/cdp-inspector.d.mts": "b9af90e17cf5b6ec04e07b8e92b316d2169f055b2f0fb97c1bc917ad5627663f",
+      "packages/operator-core/lib/cdp-inspector.test.ts": "f342cb4dfbd7284c8f6e25cc4e06a5fbadab3f3a19ec40750008d029f826d8b2",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "9c6b11d98bc857f1e9a370f7e355322669f10aee7b4e89a16c91c9f8aeed540d"
+    },
+    "namedSourcesUnchanged": true,
+    "fullTransitiveGraph": "unknown",
+    "servingSourceGraph": "unknown",
+    "scope": "Hashes pin only these named local reader/declaration/tests. Health and disk bundle identity are separate; they do not establish equivalence with all current staging source."
+  },
+  "observed": {
+    "samples": [
+      {
+        "label": "idle-0-start",
+        "population": 330,
+        "checked": 256,
+        "notChecked": 74,
+        "observerMs": 21.552519999910146,
+        "entries": 16170,
+        "objects": 3992,
+        "partialValues": 18,
+        "pssBytes": 3570642944,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 176,
+            "partialValues": 0,
+            "stringCodeUnits": 57340,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 54,
+            "partialValues": 2,
+            "stringCodeUnits": 267878,
+            "sharedEdges": 11
+          },
+          "coord:inbox": {
+            "checkedValues": 21,
+            "partialValues": 12,
+            "stringCodeUnits": 301422,
+            "sharedEdges": 0
+          },
+          "plans:attention": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 6630,
+            "sharedEdges": 4
+          },
+          "work_items:list": {
+            "checkedValues": 3,
+            "partialValues": 2,
+            "stringCodeUnits": 19863,
+            "sharedEdges": 0
+          },
+          "plans:get": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 4235,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-0-end",
+        "population": 331,
+        "checked": 256,
+        "notChecked": 75,
+        "observerMs": 14.61064400000032,
+        "entries": 15659,
+        "objects": 3920,
+        "partialValues": 17,
+        "pssBytes": 3571280896,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 177,
+            "partialValues": 0,
+            "stringCodeUnits": 61223,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 54,
+            "partialValues": 2,
+            "stringCodeUnits": 267878,
+            "sharedEdges": 11
+          },
+          "coord:inbox": {
+            "checkedValues": 21,
+            "partialValues": 12,
+            "stringCodeUnits": 301241,
+            "sharedEdges": 0
+          },
+          "plans:attention": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 6630,
+            "sharedEdges": 4
+          },
+          "work_items:list": {
+            "checkedValues": 2,
+            "partialValues": 1,
+            "stringCodeUnits": 8327,
+            "sharedEdges": 0
+          },
+          "plans:get": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 4235,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "ordinary-0-end",
+        "population": 332,
+        "checked": 256,
+        "notChecked": 76,
+        "observerMs": 18.15212799992878,
+        "entries": 15659,
+        "objects": 3920,
+        "partialValues": 17,
+        "pssBytes": 3571997696,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 177,
+            "partialValues": 0,
+            "stringCodeUnits": 61223,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 54,
+            "partialValues": 2,
+            "stringCodeUnits": 267878,
+            "sharedEdges": 11
+          },
+          "coord:inbox": {
+            "checkedValues": 21,
+            "partialValues": 12,
+            "stringCodeUnits": 301241,
+            "sharedEdges": 0
+          },
+          "plans:attention": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 6630,
+            "sharedEdges": 4
+          },
+          "work_items:list": {
+            "checkedValues": 2,
+            "partialValues": 1,
+            "stringCodeUnits": 8327,
+            "sharedEdges": 0
+          },
+          "plans:get": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 4235,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-1-start",
+        "population": 333,
+        "checked": 256,
+        "notChecked": 77,
+        "observerMs": 15.633928000112064,
+        "entries": 15659,
+        "objects": 3920,
+        "partialValues": 17,
+        "pssBytes": 3574586368,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 177,
+            "partialValues": 0,
+            "stringCodeUnits": 61223,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 54,
+            "partialValues": 2,
+            "stringCodeUnits": 267878,
+            "sharedEdges": 11
+          },
+          "coord:inbox": {
+            "checkedValues": 21,
+            "partialValues": 12,
+            "stringCodeUnits": 301241,
+            "sharedEdges": 0
+          },
+          "plans:attention": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 6630,
+            "sharedEdges": 4
+          },
+          "work_items:list": {
+            "checkedValues": 2,
+            "partialValues": 1,
+            "stringCodeUnits": 8327,
+            "sharedEdges": 0
+          },
+          "plans:get": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 4235,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-1-end",
+        "population": 334,
+        "checked": 256,
+        "notChecked": 78,
+        "observerMs": 18.006437000003643,
+        "entries": 15659,
+        "objects": 3920,
+        "partialValues": 17,
+        "pssBytes": 3571438592,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 177,
+            "partialValues": 0,
+            "stringCodeUnits": 61223,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 54,
+            "partialValues": 2,
+            "stringCodeUnits": 267878,
+            "sharedEdges": 11
+          },
+          "coord:inbox": {
+            "checkedValues": 21,
+            "partialValues": 12,
+            "stringCodeUnits": 301241,
+            "sharedEdges": 0
+          },
+          "plans:attention": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 6630,
+            "sharedEdges": 4
+          },
+          "work_items:list": {
+            "checkedValues": 2,
+            "partialValues": 1,
+            "stringCodeUnits": 8327,
+            "sharedEdges": 0
+          },
+          "plans:get": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 4235,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "ordinary-1-end",
+        "population": 334,
+        "checked": 256,
+        "notChecked": 78,
+        "observerMs": 17.45851899997797,
+        "entries": 15659,
+        "objects": 3920,
+        "partialValues": 17,
+        "pssBytes": 3571576832,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 177,
+            "partialValues": 0,
+            "stringCodeUnits": 61223,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 54,
+            "partialValues": 2,
+            "stringCodeUnits": 267878,
+            "sharedEdges": 11
+          },
+          "coord:inbox": {
+            "checkedValues": 21,
+            "partialValues": 12,
+            "stringCodeUnits": 301241,
+            "sharedEdges": 0
+          },
+          "plans:attention": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 6630,
+            "sharedEdges": 4
+          },
+          "work_items:list": {
+            "checkedValues": 2,
+            "partialValues": 1,
+            "stringCodeUnits": 8327,
+            "sharedEdges": 0
+          },
+          "plans:get": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 4235,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-2-start",
+        "population": 334,
+        "checked": 256,
+        "notChecked": 78,
+        "observerMs": 14.791272000060417,
+        "entries": 15659,
+        "objects": 3920,
+        "partialValues": 17,
+        "pssBytes": 3572436992,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 177,
+            "partialValues": 0,
+            "stringCodeUnits": 61223,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 54,
+            "partialValues": 2,
+            "stringCodeUnits": 267878,
+            "sharedEdges": 11
+          },
+          "coord:inbox": {
+            "checkedValues": 21,
+            "partialValues": 12,
+            "stringCodeUnits": 301241,
+            "sharedEdges": 0
+          },
+          "plans:attention": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 6630,
+            "sharedEdges": 4
+          },
+          "work_items:list": {
+            "checkedValues": 2,
+            "partialValues": 1,
+            "stringCodeUnits": 8327,
+            "sharedEdges": 0
+          },
+          "plans:get": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 4235,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-2-end",
+        "population": 339,
+        "checked": 256,
+        "notChecked": 83,
+        "observerMs": 16.841478000045754,
+        "entries": 15443,
+        "objects": 3888,
+        "partialValues": 17,
+        "pssBytes": 3573200896,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 178,
+            "partialValues": 0,
+            "stringCodeUnits": 61629,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 52,
+            "partialValues": 2,
+            "stringCodeUnits": 259949,
+            "sharedEdges": 11
+          },
+          "coord:inbox": {
+            "checkedValues": 22,
+            "partialValues": 12,
+            "stringCodeUnits": 301260,
+            "sharedEdges": 0
+          },
+          "plans:attention": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 6630,
+            "sharedEdges": 4
+          },
+          "work_items:list": {
+            "checkedValues": 2,
+            "partialValues": 1,
+            "stringCodeUnits": 8253,
+            "sharedEdges": 0
+          },
+          "plans:get": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 4235,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "ordinary-2-end",
+        "population": 339,
+        "checked": 256,
+        "notChecked": 83,
+        "observerMs": 12.722130000009201,
+        "entries": 15443,
+        "objects": 3888,
+        "partialValues": 17,
+        "pssBytes": 3573336064,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 178,
+            "partialValues": 0,
+            "stringCodeUnits": 61629,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 52,
+            "partialValues": 2,
+            "stringCodeUnits": 259949,
+            "sharedEdges": 11
+          },
+          "coord:inbox": {
+            "checkedValues": 22,
+            "partialValues": 12,
+            "stringCodeUnits": 301260,
+            "sharedEdges": 0
+          },
+          "plans:attention": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 6630,
+            "sharedEdges": 4
+          },
+          "work_items:list": {
+            "checkedValues": 2,
+            "partialValues": 1,
+            "stringCodeUnits": 8253,
+            "sharedEdges": 0
+          },
+          "plans:get": {
+            "checkedValues": 1,
+            "partialValues": 1,
+            "stringCodeUnits": 4235,
+            "sharedEdges": 0
+          }
+        }
+      }
+    ],
+    "http": {
+      "count": 24,
+      "statuses": [
+        200
+      ],
+      "rows": [
+        32
+      ]
+    }
+  },
+  "definitions": {
+    "stringCodeUnits": "Visited string edge lengths, not UTF-8/retained/physical bytes; strings may share storage.",
+    "sharedEdges": "Already visited object identities under this observation; assigned to the first observed value only.",
+    "population": "Native Map.size of the identified L1 map at each sample.",
+    "checked": "First bounded Map entries in current insertion order; not a representative random sample.",
+    "partialValues": "traversalLimited OR fieldsLimited OR depthLimited; excludes separately reported proxy/accessor/closure/symbol/non-enumerable gaps.",
+    "expiry": "Own data descriptor expiry time versus Date.now; generation-tag freshness is not evaluated.",
+    "pssBytes": "Kernel smaps_rollup Pss kB times 1024 for this main PID; ambient uncontrolled, no intervention."
+  },
+  "conclusion": {
+    "readerVerified": true,
+    "cachePopulationCoverage": "partial",
+    "physicalSavings": "not-measured",
+    "capacityRecommendation": "none",
+    "P011Acceptance": "open",
+    "independentAcceptance": "open",
+    "shipment": "open"
+  },
+  "limits": [
+    "First 256 entries examined; 74–83 additional map entries unexamined because population was 330–339, above the maintained per-cohort entry cap.",
+    "17–18 examined payloads traversal-limited; namespace sums are bounded logical observations.",
+    "Unknown key formats expose only key length and digest, without guessed namespace.",
+    "Main process only; request/response may be handled by sibling HTTP workers.",
+    "Ambient workload uncontrolled; idle means no probe HTTP requests.",
+    "No application cache reads/writes, LRU touches, GC, profiler or heap snapshot performed.",
+    "No attribution of historical compiler services, paired physical savings or useful-context parity.",
+    "R1 and R2 have different per-value quota division and live entry populations. Their observed payload counts cannot be compared as memory growth or savings."
+  ],
+  "next": "Use bounded pagination or protected digest selection on the existing reader for the remaining values and deeper individual inbox payloads, rather than increasing global aggregate caps. Inspect actual unknown-format key writers before inferring their namespaces. Preserve Audit6/P009 and pending canonical EIs."
+}

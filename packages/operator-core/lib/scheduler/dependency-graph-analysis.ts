@@ -160,6 +160,12 @@ function addToMultiMap<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   else map.set(key, [value]);
 }
 
+function addToSetMap<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
+  const set = map.get(key);
+  if (set) set.add(value);
+  else map.set(key, new Set([value]));
+}
+
 function endpointMessage(
   code: DependencyEndpointDefectCode,
   role: DependencyEndpointRole,
@@ -214,7 +220,19 @@ function makeEndpointDefect(
   };
 }
 
-function stronglyConnectedComponents(
+/**
+ * The CYCLIC strongly connected components of `waitsOn`: every SCC with more than one
+ * member, plus any single node that waits on itself. Sorted members, sorted components.
+ *
+ * Tarjan starts only from nodes that have at least one outgoing edge. A node with no
+ * outgoing edge cannot be on a cycle, so as a root it can only yield an acyclic singleton,
+ * which this function never returns; nodes it would have reached are still visited from
+ * the roots that do reach them. SCC membership is a property of the graph, not of the
+ * visit order, so the result is identical to a full traversal. The census graph is
+ * ~335K rows with ~2.7K edges, and visiting every row (twice per analysis) blocked the
+ * bg-host event loop for ~2s per readiness-drift tick (WI-6554700010008326).
+ */
+function cyclicStronglyConnectedComponents(
   nodes: ReadonlyMap<string, IndexedNode>,
   waitsOn: ReadonlyMap<string, ReadonlySet<string>>,
 ): string[][] {
@@ -250,11 +268,14 @@ function stronglyConnectedComponents(
       component.push(member);
       if (member === key) break;
     }
+    if (component.length === 1 && !(waitsOn.get(key)?.has(key) ?? false)) return;
     component.sort((a, b) => compareKeys(a, b, nodes));
     out.push(component);
   };
 
-  for (const key of [...nodes.keys()].sort((a, b) => compareKeys(a, b, nodes))) {
+  const roots: string[] = [];
+  for (const [key, blockers] of waitsOn) if (blockers.size > 0) roots.push(key);
+  for (const key of roots.sort((a, b) => compareKeys(a, b, nodes))) {
     if (!indices.has(key)) visit(key);
   }
   return out.sort((a, b) => compareKeys(a[0]!, b[0]!, nodes));
@@ -441,29 +462,26 @@ export function analyzeDependencyGraph(input: DependencyGraphInput): DependencyG
   // blocker endpoint is already terminal: those edges remain diagnostically
   // visible, but settlement means they cannot make the current graph impossible.
   // Readiness propagation below uses exact edges only.
+  //
+  // The adjacency maps are SPARSE: only nodes that touch an edge get an entry, and
+  // every reader treats a missing key as "no neighbours". The census graph is ~335K
+  // rows with ~2.7K edges, so four dense maps meant ~1.3M empty Sets per analysis
+  // (WI-6554700010008326).
   const structuralWaitsOn = new Map<string, Set<string>>();
   const activeStructuralWaitsOn = new Map<string, Set<string>>();
   const effectiveBlockers = new Map<string, Set<string>>();
   const dependants = new Map<string, Set<string>>();
-  for (const key of nodes.keys()) {
-    structuralWaitsOn.set(key, new Set());
-    activeStructuralWaitsOn.set(key, new Set());
-    effectiveBlockers.set(key, new Set());
-    dependants.set(key, new Set());
-  }
   for (const edge of resolvedEdges) {
-    structuralWaitsOn.get(edge.blocked.key)!.add(edge.blocker.key);
+    addToSetMap(structuralWaitsOn, edge.blocked.key, edge.blocker.key);
     if (!edge.blocked.input.terminal && !edge.blocker.input.terminal) {
-      activeStructuralWaitsOn.get(edge.blocked.key)!.add(edge.blocker.key);
+      addToSetMap(activeStructuralWaitsOn, edge.blocked.key, edge.blocker.key);
     }
     if (!edge.exact) continue;
-    effectiveBlockers.get(edge.blocked.key)!.add(edge.blocker.key);
-    dependants.get(edge.blocker.key)!.add(edge.blocked.key);
+    addToSetMap(effectiveBlockers, edge.blocked.key, edge.blocker.key);
+    addToSetMap(dependants, edge.blocker.key, edge.blocked.key);
   }
 
-  const structuralCyclicComponents = stronglyConnectedComponents(nodes, structuralWaitsOn).filter(
-    (component) => component.length > 1 || (structuralWaitsOn.get(component[0]!)?.has(component[0]!) ?? false),
-  );
+  const structuralCyclicComponents = cyclicStronglyConnectedComponents(nodes, structuralWaitsOn);
   const stronglyConnected: DependencyStronglyConnectedComponent[] = structuralCyclicComponents.map((component) => {
     const cycleKeys = findCyclePath(component, structuralWaitsOn, nodes);
     return {
@@ -472,9 +490,7 @@ export function analyzeDependencyGraph(input: DependencyGraphInput): DependencyG
     };
   });
 
-  const activeCyclicComponents = stronglyConnectedComponents(nodes, activeStructuralWaitsOn).filter(
-    (component) => component.length > 1 || (activeStructuralWaitsOn.get(component[0]!)?.has(component[0]!) ?? false),
-  );
+  const activeCyclicComponents = cyclicStronglyConnectedComponents(nodes, activeStructuralWaitsOn);
   const roots: RootSeed[] = [];
 
   activeCyclicComponents.forEach((component, index) => {
@@ -523,9 +539,13 @@ export function analyzeDependencyGraph(input: DependencyGraphInput): DependencyG
     });
   }
 
+  // One identity-ordered node list serves every per-node pass below; sorting the
+  // full node set once per pass cost ~3 sorts of ~335K rows per census.
+  const sortedNodes = [...nodes.values()].sort((a, b) => compareIdentity(a.input.id, b.input.id));
+
   // Authoritative external/impossibility roots are direct seeds. Reachable is
   // the default and unknown gets a separate closure below.
-  for (const node of [...nodes.values()].sort((a, b) => compareIdentity(a.input.id, b.input.id))) {
+  for (const node of sortedNodes) {
     if (node.input.rootVerdict === 'impossible') {
       roots.push({
         id: `condition:${node.key}`,
@@ -540,7 +560,7 @@ export function analyzeDependencyGraph(input: DependencyGraphInput): DependencyG
 
   const defectAnchors = new Set<string>();
   for (const root of roots) for (const key of root.seedPaths.keys()) defectAnchors.add(key);
-  for (const node of [...nodes.values()].sort((a, b) => compareIdentity(a.input.id, b.input.id))) {
+  for (const node of sortedNodes) {
     if (!node.input.storedBlocked || node.input.terminal || node.input.hasRegisteredResolver) continue;
     if (node.input.rootVerdict === 'impossible' || node.input.rootVerdict === 'unknown') continue;
     const hasLiveBlocker = [...(effectiveBlockers.get(node.key) ?? [])].some((key) => !nodes.get(key)?.input.terminal);
@@ -583,7 +603,6 @@ export function analyzeDependencyGraph(input: DependencyGraphInput): DependencyG
     }
   }
 
-  const sortedNodes = [...nodes.values()].sort((a, b) => compareIdentity(a.input.id, b.input.id));
   const verdicts: DependencyNodeVerdict[] = sortedNodes.map((node) => {
     const impossible = impossibleByNode.get(node.key);
     const terminal = Boolean(node.input.terminal);

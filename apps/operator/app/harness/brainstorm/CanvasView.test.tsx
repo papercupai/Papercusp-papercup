@@ -11,13 +11,14 @@
  *   - the loaded surface mounting (the dynamic Excalidraw child).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { toast } from 'sonner';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
-let syncResult: { data: unknown[] | undefined };
+let syncResult: { data: unknown[] | undefined; loading?: boolean; error?: Error | null };
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: () => ({ data: syncResult.data, loading: false, error: null, fetching: false, invalidate: vi.fn() }),
+  useSyncQuery: () => ({ data: syncResult.data, loading: syncResult.loading ?? false, error: syncResult.error ?? null, fetching: false, invalidate: vi.fn() }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@excalidraw/excalidraw/index.css', () => ({}));
@@ -27,16 +28,18 @@ vi.mock('@excalidraw/excalidraw', () => ({
   Excalidraw: ({
     initialData,
     validateEmbeddable,
+    onChange,
   }: {
     initialData: { appState?: { viewBackgroundColor?: string } };
     validateEmbeddable?: (link: string) => boolean | undefined;
+    onChange: (elements: unknown[], appState: Record<string, unknown>, files: Record<string, unknown>) => void;
   }) => (
     <div
       data-testid="excalidraw"
       data-bg={initialData?.appState?.viewBackgroundColor}
       data-twitter-policy={String(validateEmbeddable?.('https://platform.twitter.com/widgets.js'))}
       data-default-policy={String(validateEmbeddable?.('https://example.com/article'))}
-    />
+    ><button type="button" onClick={() => onChange([{ id: 'edited-element' }], {}, {})}>change canvas</button></div>
   ),
 }));
 
@@ -46,10 +49,42 @@ function row(over: Record<string, unknown> = {}) {
   return { harnessSlug: 'h', phase: 'staging', content: '', canvas: null, mindmap: null, updatedAt: 1, ...over };
 }
 
-beforeEach(() => { syncResult = { data: undefined }; });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+beforeEach(() => { syncResult = { data: undefined }; vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('CanvasView (brainstorm canvas layer)', () => {
+  it.each(['loading', 'failed'])('does not mount a writable empty scene while the initial Sync read is %s', async state => {
+    syncResult = { data: [], loading: state === 'loading', error: state === 'failed' ? new Error('private read denied') : null };
+    render(<CanvasView slug="h" />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText(/loading canvas/i)).toBeTruthy();
+    expect(screen.queryByTestId('excalidraw')).toBeNull();
+  });
+
+  it.each([403, 500])('reports a resolved HTTP %i save rejection', async status => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('private save denied', { status })));
+    syncResult = { data: [row()] };
+    render(<CanvasView slug="h" />);
+    await screen.findByRole('button', { name: 'change canvas' });
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'change canvas' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    expect(fetch).toHaveBeenCalledWith('/api/harness/h/brainstorm-canvas', expect.objectContaining({ method: 'PUT' }));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('private save denied'));
+  });
+
+  it('accepts a successful canvas save without a failure alert', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"ok":true}', { status: 200 })));
+    syncResult = { data: [row()] };
+    render(<CanvasView slug="h" />);
+    await screen.findByRole('button', { name: 'change canvas' });
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'change canvas' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it('shows the loading guard while the sync row is undefined', () => {
     syncResult = { data: undefined }; // still loading → loaded stays false
     render(<CanvasView slug="h" />);

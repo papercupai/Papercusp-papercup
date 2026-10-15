@@ -27,9 +27,13 @@ import { unmeasuredTripwireAdvisories } from '@papercusp/operator-core/lib/goals
 import {
   goalHolderPolicyProblem,
   goalHolderPolicySchema,
+  goalLaunchSettingsSchema,
 } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { validatePropertySchemaDeclaration } from '@papercusp/operator-core/lib/typed-properties-db';
 import { PLATFORM_POT_SLUG } from '@papercusp/operator-core/lib/platform-pot-slug';
+import { getBuildInfo } from '@papercusp/operator-core/lib/build-info';
+import { recordExpertiseRoutingInvocation } from '@papercusp/operator-core/lib/endpoint-route/telemetry';
+import { CONSULT_DEFAULT_POLICY } from '@papercusp/operator-core/lib/consult/selection-policies';
 import { isWildcardScopeToken } from '@papercusp/operator-core/lib/harness-slug';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
@@ -89,6 +93,11 @@ export default defineTool({
       .nonnegative()
       .optional()
       .describe('declared spend ceiling in cents — the number actuals are reported against'),
+    standing: z.boolean().optional().describe('A standing duty rather than a finite outcome; omitted remains false.'),
+    budgetWindowSec: z.number().int().positive().optional()
+      .describe('Trailing spend window in seconds; omitted remains a lifetime budget.'),
+    launchSettings: goalLaunchSettingsSchema.optional()
+      .describe('Complete launch settings for this new record. A top-level holder policy overrides only its holder key.'),
     parentId: z.string().min(1).optional().describe('parent goal id, for a sub-goal'),
     blockedBy: z
       .array(z.string().min(1).max(200))
@@ -239,7 +248,9 @@ export default defineTool({
     // here, ABSENCE is the thing being refused. Both are correct because the
     // two facts differ — the owner overruled requiring a criterion (WI-37604),
     // and no one has overruled requiring the holder answer.
-    const launchSettings = args.holder ? { holder: args.holder } : null;
+    const launchSettings = args.launchSettings || args.holder
+      ? { ...(args.launchSettings ?? {}), ...(args.holder ? { holder: args.holder } : {}) }
+      : null;
     const holderProblem = goalHolderPolicyProblem(launchSettings);
     if (holderProblem) return { data: null, degraded: true, degradedReasons: [holderProblem] };
 
@@ -317,7 +328,10 @@ export default defineTool({
               },
               {
                 route: (params) =>
-                  routeConsult(params, {
+                  routeConsult({ ...params, telemetry: {
+                    caller: 'goals:create', policy: CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha,
+                  } }, {
+                    recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
                     getSql: () => getOrgPg().sql,
                     embed,
                     embeddingProfile,
@@ -419,6 +433,8 @@ export default defineTool({
       body: args.body ?? null,
       parentId: args.parentId ?? null,
       budgetCents: args.budgetCents ?? null,
+      budgetWindowSec: args.budgetWindowSec ?? null,
+      standing: args.standing ?? false,
       status: args.status,
       killCriterion: args.killCriterion ?? null,
       tripwires: args.tripwires ?? null,
@@ -517,9 +533,10 @@ export default defineTool({
 
     // WI-10004424: a tripwire named like a platform metric that nothing will
     // measure. The goal is written either way; the author learns now instead of
-    // from a bar that never moves. goals:create sets no budget window, so the
-    // goal starts on a lifetime window.
-    const tripwireAdvisories = unmeasuredTripwireAdvisories(args.tripwires, { budgetWindowSec: null });
+    // from a bar that never moves. Use the same window persisted on the row.
+    const tripwireAdvisories = unmeasuredTripwireAdvisories(args.tripwires, {
+      budgetWindowSec: args.budgetWindowSec ?? null,
+    });
 
     return {
       data: {
@@ -529,6 +546,9 @@ export default defineTool({
         parent_id: args.parentId ?? null,
         blocked_by: blockedByApplied,
         budget_cents: args.budgetCents ?? null,
+        budget_window_sec: args.budgetWindowSec ?? null,
+        standing: args.standing ?? false,
+        launch_settings: launchSettings,
         kill_criterion: args.killCriterion ?? null,
         tripwires: args.tripwires ?? null,
         ...(tripwireAdvisories.length ? { tripwire_advisories: tripwireAdvisories } : {}),

@@ -38,6 +38,9 @@ import { operatorResolveExtends } from '../blueprint/installed-blueprints';
 import { potSlugsForHarnesses } from '../memory/hive-scope';
 import { identityGrantToolFailure, resolveIdentityGrantEnvelope, type IdentityGrantFailure } from './blueprint-envelopes';
 import { ROLE_ENVELOPES, type RoleEnvelope } from './policy';
+import {
+  identityRefusalContract, renderRefusalContract, shortRevision, type RefusalObservation,
+} from './identity-refusal-contract';
 // The door's identity lives in a module with no imports, so the kernel resolver's
 // catch can reach it when THIS module is what failed to load. Importing the same
 // constants here keeps one source of truth rather than a second copy to drift.
@@ -109,19 +112,32 @@ function object(value: unknown): Record<string, unknown> | null {
     ? value as Record<string, unknown> : null;
 }
 
+/**
+ * The receipt for one revision pair: the FIRST of `[record, ...identityHistory]`
+ * matching both revisions. A body read narrowed to that pair
+ * (identity-receipt-narrowing.ts, WI-10004801) must select the identical entry.
+ */
+export function selectAppliedReceipt(
+  raw: unknown,
+  revision: KernelExecutionRevision | null | undefined,
+): Record<string, unknown> | null {
+  const record = object(raw);
+  if (!record || !revision) return null;
+  const receipts = [record, ...(Array.isArray(record.identityHistory) ? record.identityHistory : [])];
+  return receipts.map(object).find((entry) =>
+    entry?.specificationRevision === revision.specificationRevision &&
+    entry?.stateRevision === revision.stateRevision) ?? null;
+}
+
 /** Exact receipt selection; do not select a newer desired artifact for execution. */
 export function appliedIdentityArtifact(
   raw: unknown,
   revision: KernelExecutionRevision | null | undefined,
+  replay: (value: unknown) => ResolvedAgentSpecification = replayAgentSpecification,
 ): ResolvedAgentSpecification | null {
-  const record = object(raw);
-  if (!record || !revision) return null;
-  const receipts = [record, ...(Array.isArray(record.identityHistory) ? record.identityHistory : [])];
-  const receipt = receipts.map(object).find((entry) =>
-    entry?.specificationRevision === revision.specificationRevision &&
-    entry?.stateRevision === revision.stateRevision);
-  if (!receipt?.specificationArtifact) return null;
-  const artifact = replayAgentSpecification(receipt.specificationArtifact);
+  const receipt = selectAppliedReceipt(raw, revision);
+  if (!revision || !receipt?.specificationArtifact) return null;
+  const artifact = replay(receipt.specificationArtifact);
   return artifact.specificationRevision === revision.specificationRevision ? artifact : null;
 }
 
@@ -174,12 +190,29 @@ export type IdentityArtifactResolution =
 export function resolveIdentityArtifact(
   record: Record<string, unknown>,
   applied: KernelExecutionRevision | null | undefined,
+  replay: (value: unknown) => ResolvedAgentSpecification = replayAgentSpecification,
 ): IdentityArtifactResolution {
+  // WI-10008237: when the applied receipt IS the record (no transition in
+  // flight — the common case), both replays below receive the SAME artifact
+  // object, and replay is a pure function of it. Replaying it once halves the
+  // canonical-hash work per resolution (the wedged sweep spent 44% of a bg-host
+  // main-thread window here). Only a successful replay is remembered; a throw
+  // propagates exactly as before. Sharing the result is already the contract:
+  // the fallback below assigns `artifact = current`.
+  const replayed = new Map<unknown, ResolvedAgentSpecification>();
+  const replayOnce = (value: unknown): ResolvedAgentSpecification => {
+    let spec = replayed.get(value);
+    if (!spec) {
+      spec = replay(value);
+      replayed.set(value, spec);
+    }
+    return spec;
+  };
   let artifact: ResolvedAgentSpecification | null;
   let current: ResolvedAgentSpecification | null;
   try {
-    artifact = appliedIdentityArtifact(record, applied);
-    current = record.specificationArtifact ? replayAgentSpecification(record.specificationArtifact) : null;
+    artifact = appliedIdentityArtifact(record, applied, replayOnce);
+    current = record.specificationArtifact ? replayOnce(record.specificationArtifact) : null;
     if (current && current.specificationRevision !== record.specificationRevision) {
       return { kind: 'stale-artifact', reason: 'record-revision-mismatch' };
     }
@@ -427,9 +460,14 @@ export async function validateIdentityInstallGrants(
   },
   readPolicy: PolicyReader = readIdentityGrantPolicy,
 ): Promise<readonly IdentityGrantFailure[]> {
+  // WI-10005197: the install-time refusal carries the same lift condition as the
+  // runtime kernel denial further down. `observed` is omitted on purpose — install
+  // time has no live policy revision to compare against, and the contract renders
+  // without it.
   const failure = (cause: IdentityGrantFailure['cause'], classRef: string | null, toolName?: string): IdentityGrantFailure => ({
     code: 'capability_unsatisfied', cause, classRef, ...(toolName ? { toolName } : {}),
     routes: ['operator-notify', 'suggest-provider', 'needs_human'],
+    refusal: identityRefusalContract(cause),
   });
   const classRefs = input.resolution.requirements.map((entry) => entry.classRef);
   if (!input.resolution.ok) return [failure('provider-unbound', classRefs[0] ?? null)];
@@ -489,15 +527,21 @@ function denial(
   classRef: string | null,
   toolName: string,
   policyRevision?: string | null,
+  observed?: RefusalObservation,
 ): KernelEnforcementResult {
+  // EI-23766133296678780: every denial carries what would lift it. The leading
+  // `Identity capability <class>: <cause> (<tool>)` is unchanged — the tool-error
+  // classifier keys on it — and the contract is appended after it.
+  const refusal = identityRefusalContract(cause, observed);
   const failure: IdentityGrantFailure = {
     code: 'capability_unsatisfied', cause, classRef, toolName,
     routes: ['operator-notify', 'suggest-provider', 'needs_human'],
+    refusal,
   };
   return {
     decision: 'deny', availability: 'available', applied: true,
     code: failure.code,
-    reason: `Identity capability ${classRef ?? '(unresolved)'}: ${cause} (${toolName})`,
+    reason: `Identity capability ${classRef ?? '(unresolved)'}: ${cause} (${toolName})${renderRefusalContract(refusal)}`,
     policyRevision,
     obligations: { capabilityUnsatisfied: failure },
   };
@@ -583,8 +627,29 @@ function staleArtifact(
   request: KernelEnforcementRequest,
   toolName: string = request.toolName,
   policyRevision?: string | null,
+  observed?: RefusalObservation,
 ): KernelEnforcementResult {
-  return denyUnlessRecoveryDoor(request, 'stale-artifact', null, toolName, policyRevision);
+  return denyUnlessRecoveryDoor(request, 'stale-artifact', null, toolName, policyRevision, observed);
+}
+
+/**
+ * The values a `stale-artifact` verdict compared, for its refusal contract: the
+ * applied/desired activation pair and the launch record's specification revision.
+ * `resolution` is the sub-reason `resolveIdentityArtifact` chose, or a site label
+ * where no resolution ran (no usable record, or an envelope that did not apply).
+ */
+function staleObservation(
+  state: IdentityGrantKernelState,
+  record: Record<string, unknown> | null,
+  resolution: string,
+): RefusalObservation {
+  const launch = typeof record?.specificationRevision === 'string' ? record.specificationRevision.slice(0, 8) : null;
+  return {
+    applied: shortRevision(state.activation?.applied ?? state.appliedRevision),
+    desired: shortRevision(state.activation?.desired),
+    launchSpec: launch,
+    resolution,
+  };
 }
 
 /**
@@ -611,6 +676,7 @@ function denyUnlessRecoveryDoor(
   classRef: string | null,
   toolName: string = request.toolName,
   policyRevision?: string | null,
+  observed?: RefusalObservation,
 ): KernelEnforcementResult {
   // Both the request's own name and the resolved MCP name are checked, and each
   // through the shared predicate — so the door opens whether the verb is named
@@ -633,7 +699,7 @@ function denyUnlessRecoveryDoor(
       ...(policyRevision !== undefined && policyRevision !== null ? { policyRevision } : {}),
     };
   }
-  return denial(cause, classRef, toolName, policyRevision);
+  return denial(cause, classRef, toolName, policyRevision, observed);
 }
 
 /**
@@ -660,6 +726,16 @@ function identityLaunchAuditStamp(
   return version?.sessionId && version.rowVersion
     ? { advSessionId: version.sessionId, xmin: version.rowVersion }
     : null;
+}
+
+/**
+ * WI-10007010: whether any provider binding in the policy reaches `toolName`.
+ * Such a tool is governed by its grant class; anything else is a platform tool
+ * the grant envelope never covers. Deliberately pot- and status-agnostic: a
+ * binding that reaches the tool in ANY state keeps it on the grant path.
+ */
+function providerReachable(policy: IdentityGrantPolicy, toolName: string): boolean {
+  return policy.bindings.some((binding) => (grantProviderToolReach(binding) ?? []).includes(toolName));
 }
 
 export async function checkIdentityGrantKernel(
@@ -717,7 +793,9 @@ export async function checkIdentityGrantKernel(
         request, 'no-launch-record', null, request.toolName, state.policyRevision,
       );
     }
-    return applied ? staleArtifact(request) : null;
+    return applied
+      ? staleArtifact(request, request.toolName, undefined, staleObservation(state, null, 'no-launch-record-body'))
+      : null;
   }
   // The decision itself lives in `resolveIdentityArtifact` (above) so the
   // WI-10002060 sweep can ask the same question instead of paraphrasing it.
@@ -727,18 +805,29 @@ export async function checkIdentityGrantKernel(
     // Cache miss: read the body. It is resolved AND keyed at the row version it
     // was read at, so a row updated between the header read and this one is
     // judged as one consistent snapshot rather than a header/body mix.
-    const loaded = await lazy.load();
+    //
+    // WI-10004801: only the receipt for `applied` is ever consulted
+    // (`selectAppliedReceipt`), so the body arrives with identityHistory
+    // narrowed to that pair in PostgreSQL instead of every retained ~1 MB
+    // artifact. No applied pair means no history is consulted at all.
+    const loaded = await lazy.load(applied ? [applied] : []);
     const full = object(loaded?.record);
     // The row vanished or stopped being an object between the two reads:
     // exactly the "no usable record" outcome the header path would have given.
-    if (!full) return applied ? staleArtifact(request) : null;
+    if (!full) {
+      return applied
+        ? staleArtifact(request, request.toolName, undefined, staleObservation(state, null, 'launch-record-unreadable'))
+        : null;
+    }
     record = full;
     version = version && loaded?.rowVersion
       ? { sessionId: version.sessionId, rowVersion: loaded.rowVersion }
       : undefined;
   }
   resolution ??= resolveIdentityArtifactForKernel(record, applied, version);
-  if (resolution.kind === 'stale-artifact') return staleArtifact(request);
+  if (resolution.kind === 'stale-artifact') {
+    return staleArtifact(request, request.toolName, undefined, staleObservation(state, record, resolution.reason));
+  }
   if (resolution.kind === 'ungoverned') {
     // D-007: no live session carries configuration.grants, so without this
     // every identity-bearing invocation would persist with no row reference and
@@ -796,7 +885,11 @@ export async function checkIdentityGrantKernel(
     const envelope = resolveIdentityGrantEnvelope({
       specification, appliedSpecificationRevision: specification.specificationRevision, ...policy,
     });
-    if (!envelope.applied) return staleArtifact(request, toolName, policy.policyRevision);
+    if (!envelope.applied) {
+      return staleArtifact(
+        request, toolName, policy.policyRevision, staleObservation(state, record, 'envelope-not-applied'),
+      );
+    }
     const failure = envelope.failures[0];
     // The runtime-chosen cause: `IdentityGrantFailure['cause']` spans both
     // break-glass causes, so this site can emit one. It must consult the
@@ -807,9 +900,23 @@ export async function checkIdentityGrantKernel(
       );
     }
     if (!envelope.allowedTools.includes(toolName)) {
-      return denyUnlessRecoveryDoor(
-        request, 'outside-ceiling', classRefs[0] ?? null, toolName, policy.policyRevision,
-      );
+      // WI-10007010: grant classes govern PROVIDER tools only — the envelope reaches
+      // nothing else — so a deny-all accepted-operation identity could otherwise call
+      // none of its own requiredTools (work_items:claim, memory:search, …). A required
+      // tool that no provider binding reaches is a platform tool: the host-owned
+      // receipt (checked above) plus every role ceiling authorize it. A
+      // provider-reachable tool still needs its grant.
+      const cause = accepted && !providerReachable(policy, toolName)
+        ? identityGrantToolFailure({
+            toolName, ceilings: policy.ceilings, tools: policy.tools,
+            protectedAdditions: policy.protectedAdditions,
+          })
+        : 'outside-ceiling';
+      if (cause) {
+        return denyUnlessRecoveryDoor(
+          request, cause, classRefs[0] ?? null, toolName, policy.policyRevision,
+        );
+      }
     }
   }
   // The accepted tool list narrows WHAT a role may call. A separate live

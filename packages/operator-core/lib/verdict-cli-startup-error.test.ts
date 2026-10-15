@@ -9,7 +9,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { createCipheriv, createHash, pbkdf2Sync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -622,11 +622,13 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
     }
   }, 60_000);
 
-  it('imports Chrome v11 encrypted cookies from the Linux cookie database', async () => {
+  it('imports Chrome v11 encrypted cookies through TMPDIR and removes the temporary copy', async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-chrome-cookie-import-'));
     const dataDir = join(fixtureRoot, 'data');
     const binDir = join(fixtureRoot, 'bin');
     const cookieDb = join(fixtureRoot, 'Cookies');
+    const cookieTempDir = join(fixtureRoot, 'cookie-tmp');
+    const copyPathRecord = join(fixtureRoot, 'cookie-copy-path');
     const hostKey = 'workatastartup.com';
     const cookieValue = 'fixture-v11-cookie-value';
     const chromeSecret = 'fixture-chrome-libsecret-password';
@@ -661,8 +663,26 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
       { maxBuffer: 32 * 1024 },
     );
 
+    const sqliteBinary = (await execFileAsync('which', ['sqlite3'])).stdout.trim();
+    await mkdir(cookieTempDir);
+    await writeFile(
+      join(binDir, 'sqlite3'),
+      `#!${process.execPath}
+const { writeFileSync } = require('node:fs');
+const { spawnSync } = require('node:child_process');
+writeFileSync(${JSON.stringify(copyPathRecord)}, process.argv[3]);
+const result = spawnSync(${JSON.stringify(sqliteBinary)}, process.argv.slice(2), { encoding: 'utf8' });
+process.stdout.write(result.stdout || '');
+process.stderr.write(result.stderr || '');
+process.exit(result.status ?? 1);
+`,
+      'utf8',
+    );
+    await chmod(join(binDir, 'sqlite3'), 0o755);
+
     const env = {
       ...process.env,
+      TMPDIR: cookieTempDir,
       PATH: `${binDir}${delimiter}${process.env.PATH ?? ''}`,
       VERDICT_DATA_DIR: dataDir,
       VERDICT_CHROME_COOKIE_DB: cookieDb,
@@ -682,6 +702,9 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
     try {
       const imported = await run('cookie-import', hostKey);
       expect(imported.stdout).toContain(`Imported 1 cookies for ${hostKey}`);
+      const copiedPath = await readFile(copyPathRecord, 'utf8');
+      expect(dirname(copiedPath)).toBe(cookieTempDir);
+      await expect(readFile(copiedPath)).rejects.toMatchObject({ code: 'ENOENT' });
 
       const cookies = await run('cookies', `https://${hostKey}/`);
       expect(cookies.stdout).toContain(`sid=${cookieValue}`);

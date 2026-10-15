@@ -79,6 +79,10 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   // peer_revoked '🚫' — it is a replacement, not an eviction.
   peer_log_superseded: '♻',
   replication_stalled: '🧊',
+  // Sparse keyed detector transitions (replication-liveness.ts): an episode opening,
+  // and its ending (recovery, detachment or removal — the detail says which).
+  replication_episode_started: '⏵',
+  replication_condition_ended: '⏹',
   replication_frozen: '❄',
   announce_admitted: '➕',
   announce_pending: '⏳',

@@ -85,5 +85,12 @@ describe('sessions:timeline owner — a cursor does not carry it (EI-22069000224
     const cursorDescription = schema.shape.cursor?.description ?? '';
     expect(cursorDescription).toMatch(/POSITION only/);
     expect(cursorDescription).toMatch(/re-send the same `owner` and filters/i);
+    expect(cursorDescription).toMatch(/pass it under this `cursor` argument/i);
+    expect(cursorDescription).toMatch(/`nextCursor` is the response field name, not an accepted argument key/i);
+    expect(Object.keys(schema.shape)).toContain('cursor');
+    expect(Object.keys(schema.shape)).not.toContain('nextCursor');
+    expect((timelineTool as unknown as { description: string }).description).toMatch(
+      /returned `nextCursor` value in the `cursor` argument/i,
+    );
   });
 });

@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ModelPort, ModelStreamEvent } from './model-port';
-import { textMessage } from './model-port';
+import { MODEL_PROVIDER_REQUEST_CAPTURE, textMessage } from './model-port';
 import {
   hasToolCall,
   runAgentLoop,
@@ -65,6 +65,134 @@ const callTool = (id: string, name: string, input: unknown): ModelStreamEvent[] 
 ];
 
 describe('runAgentLoop', () => {
+  it('awaits private server capture and keeps a failed admission visible across abort', async () => {
+    const abort = new AbortController(); let pulled = false;
+    const port: ModelPort = { async *stream() {
+      yield { type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model' },
+        [MODEL_PROVIDER_REQUEST_CAPTURE]: async () => { abort.abort(); throw new Error('private capture failed'); } };
+      pulled = true; yield { type: 'stop', reason: 'end_turn' };
+    } };
+    const events = await collect({ port, model: 'm', messages: [], signal: abort.signal });
+    expect(pulled).toBe(false);
+    expect(events.find(e => e.type === 'error')).toMatchObject({ message: 'private capture failed' });
+    expect(doneEvent(events).stopReason).toBe('error');
+    expect(Object.getOwnPropertySymbols(doneEvent(events).providerRequests![0])).toEqual([]);
+  });
+
+  it('does not hide a durable-capture rejection behind an overlapping abort', async () => {
+    const abort = new AbortController();
+    const { port } = scriptedPort([[{ type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model' } }]]);
+    const events = await collect({ port, model: 'm', messages: [], signal: abort.signal,
+      onProviderRequest: async () => { abort.abort(); throw new Error('capture failed'); } });
+    expect(events.find(e => e.type === 'error')).toMatchObject({ message: 'capture failed' });
+    expect(doneEvent(events).stopReason).toBe('error');
+    expect(doneEvent(events).providerRequests).toHaveLength(1);
+  });
+
+  it('copies only accounting identity fields, excluding extra provider metadata and charges', async () => {
+    const request = { provider: 'openrouter', modelId: 'vendor/model', apiKey: 'private-key',
+      response: { id: 'gen-whitelisted', reportedCostUsd: 100, raw: 'private-prompt' } };
+    const { port } = scriptedPort([[{ type: 'provider_request', request }, { type: 'error', message: 'failed' }]]);
+    const captured: unknown[] = [];
+    const events = await collect({ port, model: 'm', messages: [], onProviderRequest: async info => { captured.push(info); } });
+    expect(captured).toEqual([{ stepIndex: 0, request: { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-whitelisted' } } }]);
+    expect(JSON.stringify(doneEvent(events).providerRequests)).not.toMatch(/private|reportedCost/);
+  });
+  it('treats an adapter aborted stop as an incomplete request even without a parent abort', async () => {
+    const request = { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-provider-abort' } };
+    const { port } = scriptedPort([[{ type: 'provider_request', request },
+      { type: 'stop', reason: 'aborted', usage: { inputTokens: 4, outputTokens: 2, costUsd: 10 } }]]);
+    const done = doneEvent(await collect({ port, model: 'm', messages: [] }));
+    expect(done.stopReason).toBe('aborted');
+    expect(done.steps).toEqual([]);
+    expect(done.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(done.providerRequests).toEqual([{ stepIndex: 0, request }]);
+  });
+
+  it('keeps early observations isolated across steps and from event-consumer mutation', async () => {
+    const first = callTool('c', 'echo', {});
+    first.unshift({ type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/first', response: { id: 'gen-first' } } });
+    const second: ModelStreamEvent[] = [{ type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/second' } },
+      { type: 'error', message: 'lost second response' }];
+    const { port } = scriptedPort([first, second]);
+    const events: LoopEvent[] = [];
+    for await (const event of runAgentLoop({ port, model: 'm', messages: [], tools: [echoTool] })) {
+      events.push(event);
+      if (event.type === 'provider_request' && event.request.response) event.request.response.id = 'gen-consumer-mutated';
+    }
+    const done = doneEvent(events);
+    expect(done.steps).toHaveLength(1);
+    expect(done.providerRequests).toEqual([
+      { stepIndex: 0, request: { provider: 'openrouter', modelId: 'vendor/first', response: { id: 'gen-first' } } },
+      { stepIndex: 1, request: { provider: 'openrouter', modelId: 'vendor/second' } },
+    ]);
+  });
+  it.each(['error', 'eof', 'throw', 'aborted'] as const)('captures provider requests on %s without a completed step', async ending => {
+    const abort = new AbortController();
+    const request = { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-failed' } };
+    const port: ModelPort = { async *stream() {
+      yield { type: 'provider_request', request, servedAccount: 'account-one' };
+      if (ending === 'error') yield { type: 'error', message: 'failed' };
+      if (ending === 'throw') throw new Error('failed');
+      if (ending === 'aborted') { abort.abort(); await new Promise(() => {}); }
+    } };
+    const captured: unknown[] = [];
+    const events = await collect({ port, model: 'openrouter/vendor/model', messages: [], signal: abort.signal,
+      onProviderRequest: async info => { captured.push(info); } });
+    const done = doneEvent(events);
+    expect(done.steps).toEqual([]);
+    expect(done.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(done.providerRequests).toEqual([{ stepIndex: 0, request, servedAccount: 'account-one' }]);
+    expect(captured).toEqual(done.providerRequests);
+    expect(events.find(e => e.type === 'provider_request')).toEqual({ type: 'provider_request', stepIndex: 0, request, servedAccount: 'account-one' });
+    expect(done.stopReason).toBe(ending === 'aborted' ? 'aborted' : 'error');
+  });
+
+  it('awaits durable capture before the next provider pull and isolates callback mutation', async () => {
+    let captured = false;
+    const port: ModelPort = { async *stream() {
+      yield { type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-captured' } } };
+      expect(captured).toBe(true);
+      yield { type: 'stop', reason: 'end_turn' };
+    } };
+    const events = await collect({ port, model: 'm', messages: [], onProviderRequest: async info => {
+      await Promise.resolve(); captured = true;
+      info.request.response!.id = 'gen-mutated';
+    } });
+    expect(doneEvent(events).providerRequests?.[0]?.request.response?.id).toBe('gen-captured');
+    expect(doneEvent(events).steps[0]).not.toHaveProperty('providerResponse');
+  });
+
+  it('fails visibly and closes the provider if durable capture rejects', async () => {
+    let closed = false; let pulledAfterCapture = false;
+    const port: ModelPort = { async *stream() { try {
+      yield { type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-unsaved' } } };
+      pulledAfterCapture = true;
+      yield { type: 'stop', reason: 'end_turn' };
+    } finally { closed = true; } } };
+    const events = await collect({ port, model: 'm', messages: [], onProviderRequest: async () => { throw new Error('capture unavailable'); } });
+    expect(events.find(e => e.type === 'error')).toMatchObject({ message: 'capture unavailable' });
+    expect(doneEvent(events).stopReason).toBe('error');
+    expect(doneEvent(events).steps).toEqual([]);
+    expect(doneEvent(events).providerRequests).toHaveLength(1);
+    expect(pulledAfterCapture).toBe(false);
+    expect(closed).toBe(true);
+  });
+  it('keeps provider reports on their original steps without aggregating or carrying them forward', async () => {
+    const report = { provider: 'openrouter', id: 'gen-first', reportedCostUsd: 0.25 };
+    const first = callTool('c1', 'echo', { value: 'x' });
+    first[first.length - 1] = { type: 'stop', reason: 'tool_use',
+      usage: { inputTokens: 10, outputTokens: 5 }, providerResponse: report, servedAccount: 'account-one' };
+    const { port } = scriptedPort([first, textStop('done', { inputTokens: 3, outputTokens: 2 })]);
+    const events = await collect({ port, model: 'm1', messages: [], tools: [echoTool] });
+    const done = doneEvent(events);
+    expect(done.steps[0]).toMatchObject({ providerResponse: report, servedAccount: 'account-one' });
+    expect(done.steps[1]).not.toHaveProperty('providerResponse');
+    expect(done).not.toHaveProperty('providerResponse');
+    expect(done.usage).toEqual({ inputTokens: 13, outputTokens: 7 });
+    expect(events.find(e => e.type === 'step_end')).toMatchObject({ step: { providerResponse: report } });
+  });
+
   it('single text turn ends naturally with the final text and transcript', async () => {
     const { port } = scriptedPort([textStop('hello world', { inputTokens: 7, outputTokens: 3 })]);
     const events = await collect({

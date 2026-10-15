@@ -1614,6 +1614,54 @@ button.hud__pkgcard:focus-visible {
   white-space: nowrap;
 }
 
+/* Ongoing work shares the goal engine and the HUD's semantic palette. */
+.hud-ongoing__package { flex: 1 1 100%; min-width: 0; }
+.hud-ongoing {
+  container-type: inline-size;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.hud-ongoing__top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px; }
+.hud-ongoing__identity, .hud-ongoing__title, .hud-ongoing__actions { display: flex; align-items: center; gap: 8px; }
+.hud-ongoing__identity { min-width: 0; }
+.hud-ongoing__identity > svg { flex: none; color: var(--accent); }
+.hud-ongoing__title, .hud-ongoing__actions { flex-wrap: wrap; }
+.hud-ongoing h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.hud-ongoing h4 { margin: 0 0 8px; font-size: 11px; font-weight: 600; color: var(--fg-mute); }
+.hud-ongoing p { margin: 4px 0 0; font-size: 12px; color: var(--fg-mute); }
+.hud-ongoing__signals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--border); }
+.hud-ongoing__signals > div { min-width: 0; padding: 16px; }
+.hud-ongoing__signals > div + div { border-left: 1px solid var(--border); }
+.hud-ongoing__signals strong { font-size: 12px; font-weight: 500; }
+.hud-ongoing__foot, .hud-ongoing__compact-read { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 10px 16px; font-size: 11px; color: var(--fg-mute); }
+.hud-ongoing__foot { border-top: 1px solid var(--border); }
+.hud-ongoing--compact .hud-ongoing__top { padding-bottom: 4px; align-items: center; }
+.hud-ongoing__lanes { padding: 16px; border-top: 1px solid var(--border); }
+.hud-ongoing__lanes ol { margin: 12px 0 0; padding-left: 24px; }
+.hud-ongoing__lanes li { padding: 8px 0; font-size: 12px; }
+.hud-ongoing__plans { margin-top: 12px; }
+.hud-ongoing__error { color: var(--warn); font-size: 12px; }
+.hud-ongoing--detail .hud-ongoing__top { flex-direction: column; }
+.hud-ongoing--detail .hud-ongoing__signals { grid-template-columns: minmax(0, 1fr); }
+.hud-ongoing--detail .hud-ongoing__signals > div + div { border-left: 0; border-top: 1px solid var(--border); }
+@media (max-width: 700px) {
+  .hud-ongoing__top { flex-direction: column; gap: 12px; }
+  .hud-ongoing__signals { grid-template-columns: minmax(0, 1fr); }
+  .hud-ongoing__signals > div + div { border-left: 0; border-top: 1px solid var(--border); }
+  .hud-ongoing__actions { width: 100%; }
+}
+@container (max-width: 600px) {
+  .hud-ongoing__top { flex-direction: column; gap: 12px; }
+  .hud-ongoing__signals { grid-template-columns: minmax(0, 1fr); }
+  .hud-ongoing__signals > div + div { border-left: 0; border-top: 1px solid var(--border); }
+  .hud-ongoing__actions { width: 100%; }
+}
+
 /* ── Goal detail panel (goal-mode-2026-08-07 P-021) ────────────────────────
    The catch-up view opened from a goal card. Only tokens already in use on this
    surface — the css-tokens lint fails on an undefined one, and it reads raw

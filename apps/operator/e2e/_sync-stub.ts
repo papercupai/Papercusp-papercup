@@ -31,7 +31,10 @@ import { type Page } from '@playwright/test';
  * so it cannot also swallow `rest-query-batch` — if a spec still stubs the dead
  * batch route, that stays visibly unhit rather than being masked by this one.
  */
-const REST_QUERY_ROUTE = /\/api\/zero-harness\/rest-query\?/;
+const REST_QUERY_ROUTES = {
+  local: /\/api\/zero-harness\/rest-query\?/,
+  hosted: /\/api\/hosted\/browser\/rest-query\?/,
+};
 
 /**
  * Rows for one sync query. Return `undefined` for a query this spec does not
@@ -52,6 +55,8 @@ export type SyncRowsResolver = (
 ) => readonly unknown[] | undefined;
 
 export interface SyncQueryStub {
+  /** Deliver a fixture writer's invalidation through the real SSE subscriber. */
+  invalidate(name: string, args?: Record<string, unknown>): Promise<void>;
   /** How many `rest-query` requests this stub actually served. */
   readonly hits: number;
   /** Query names served, in request order (duplicates kept — refetches are real). */
@@ -75,11 +80,30 @@ export interface SyncQueryStub {
 export async function stubSyncQueries(
   page: Page,
   resolve: SyncRowsResolver,
+  options: { transport?: "local" | "hosted"; push?: boolean } = {},
 ): Promise<SyncQueryStub> {
   const names: string[] = [];
   const observed: string[] = [];
 
-  await page.route(REST_QUERY_ROUTE, async (route) => {
+  const endpoint = options.transport === "hosted" ? "/api/hosted/browser" : "/api/zero-harness";
+  if (options.push) {
+    // Keep the actual EventSource and SSEAdapter. Only the fixture's writer is
+    // fake, so its missing server invalidation must cross that same subscriber
+    // boundary rather than directly setting or clearing the query cache.
+    await page.addInitScript(({ endpoint }) => {
+      const NativeEventSource = window.EventSource;
+      const sources = new Set<EventSource>();
+      Object.assign(window, { __syncQueryFixtureSources: sources });
+      window.EventSource = new Proxy(NativeEventSource, {
+        construct(target, args) {
+          const source = Reflect.construct(target, args) as EventSource;
+          if (new URL(source.url, location.href).pathname === `${endpoint}/sse`) sources.add(source);
+          return source;
+        },
+      });
+    }, { endpoint });
+  }
+  await page.route(REST_QUERY_ROUTES[options.transport ?? "local"], async (route) => {
     const url = new URL(route.request().url());
     const name = url.searchParams.get('name') ?? '';
     let args: Record<string, unknown> = {};
@@ -106,6 +130,30 @@ export async function stubSyncQueries(
   });
 
   return {
+    async invalidate(name, args) {
+      if (!options.push) throw new Error('stubSyncQueries.invalidate requires push:true');
+      try {
+        await page.waitForFunction(() => {
+          const sources = (window as unknown as { __syncQueryFixtureSources?: Set<EventSource> }).__syncQueryFixtureSources;
+          return [...(sources ?? [])].some((source) => source.readyState !== EventSource.CLOSED);
+        });
+      } catch (error) {
+        const diagnostic = await page.evaluate(() => ({
+          visibility: document.visibilityState,
+          sources: [...((window as unknown as { __syncQueryFixtureSources?: Set<EventSource> }).__syncQueryFixtureSources ?? [])]
+            .map((source) => ({ url: source.url, readyState: source.readyState })),
+        })).catch((failure) => ({ unavailable: String(failure) }));
+        throw new Error(`SYNC_FIXTURE_PUSH_UNAVAILABLE query=${name} ${JSON.stringify(diagnostic)}`, { cause: error });
+      }
+      await page.evaluate(({ name, args }) => {
+        const sources = (window as unknown as { __syncQueryFixtureSources: Set<EventSource> }).__syncQueryFixtureSources;
+        for (const source of sources) {
+          if (source.readyState !== EventSource.CLOSED) source.dispatchEvent(new MessageEvent('invalidate', {
+            data: JSON.stringify({ name, args, tsMs: Date.now() }),
+          }));
+        }
+      }, { name, args });
+    },
     get hits() {
       return names.length;
     },
@@ -135,7 +183,7 @@ export async function stubSyncQueries(
     assertServed(...expectedNames: string[]) {
       if (names.length === 0) {
         throw new Error(
-          'sync stub was NEVER HIT: no GET /api/zero-harness/rest-query request was ' +
+          `sync stub was NEVER HIT: no GET ${endpoint}/rest-query request was ` +
             'intercepted. The app is not speaking the contract this stub answers, so every ' +
             'panel rendered from real (unstubbed) traffic. Check the route pattern against ' +
             'libs/generic/sync/src/server/http-routes.ts — note POST /rest-query-batch has ' +

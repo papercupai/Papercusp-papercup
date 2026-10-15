@@ -1,0 +1,305 @@
+Warning: truncated output (original token count: 21069)
+Total output lines: 1404
+
+{
+  "ok": true,
+  "accountId": "413781344298",
+  "resultKeys": [
+    "activePins",
+    "deprecatedPins",
+    "manifest",
+    "manifestUri",
+    "releaseGate",
+    "rollbackPins",
+    "sourceScan"
+  ],
+  "result": {
+    "releaseGate": {
+      "version": "workspace-host-release-gate-v1",
+      "accepted": true,
+      "manifest": {
+        "ok": true,
+        "expectedIdentity": "sha256:40d91eb39176ab0b3c9637c3b006b246640a0412beabe1782127b721e8c3b64e",
+        "errors": []
+      },
+      "compatibility": {
+        "compatible": true,
+        "matchedRule": {
+          "actions": [
+            "install",
+            "upgrade",
+            "rollback"
+          ],
+          "agentHomeBundleContractVersions": [
+            "papercusp-workspace-host-agent-home-bundle-v3"
+          ],
+          "architecture": "x86_64",
+          "bootstrapContractVersion": "papercusp-workspace-host-bootstrap-v2",
+          "maximumArtifactAgeDays": 30,
+          "provider": "aws",
+          "hostModel": "bootc-image",
+          "bootcBaseImage": "quay.io/centos-bootc/centos-bootc:stream10"
+        },
+        "issues": []
+      },
+      "failures": []
+    },
+    "sourceScan": {
+      "imageId": "ami-05a8be4f5e5e553f3",
+      "region": "us-east-1",
+      "buildManifestIdentity": "sha256:40d91eb39176ab0b3c9637c3b006b246640a0412beabe1782127b721e8c3b64e",
+      "releaseSha256": "4a42edc52b1383a6a3a2e99bc6bc0ae8bb9693544fff11bd01040a169c72119f",
+      "trusted": true,
+      "sbomSha256": "33f0240767122479f558da6cca619b26db642d1c1d29c8dd0ef9bc38d6424ff4",
+      "vulnerabilityFindings": 24724,
+      "vulnerabilityBySeverity": {
+        "High": 1171,
+        "Low": 6604,
+        "Medium": 16837,
+        "Negligible": 15,
+        "Unknown": 97
+      },
+      "vulnerabilityFixableBySeverity": {
+        "High": 86,
+        "Low": 26,
+        "Medium": 71,
+        "Unknown": 4
+      },
+      "vulnerabilityByEcosystem": {
+        "go-module": 125,
+        "npm": 2,
+        "rpm": 24597
+      },
+      "vulnerabilityByScope": {
+        "inherited-base-image": 24716,
+        "papercusp-bundled": 8
+      },
+      "vulnerabilityCriticalHighByScope": {
+        "inherited-base-image": 1171
+      },
+      "bundleCatalogedArtifacts": 584,
+      "secretFindings": 177,
+      "secretsByScope": {
+        "inherited-base-image": 10,
+        "papercusp-bundled": 167
+      },
+      "secretSample": [
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/deploy/default/deploy/ba788aca6416623719f8ee95caa95b4a1935f8cfa33c6ec92614fc783c45df16.0/etc/tpm2-tss/fapi-profiles/P_RSA3072SHA384.json",
+          "line": 94
+        },
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/deploy/default/deploy/ba788aca6416623719f8ee95caa95b4a1935f8cfa33c6ec92614fc783c45df16.0/etc/tpm2-tss/fapi-profiles/P_ECCP384SHA384.json",
+          "line": 87
+        },
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/deploy/default/deploy/ba788aca6416623719f8ee95caa95b4a1935f8cfa33c6ec92614fc783c45df16.0/opt/papercusp/releases/0.0.21-p012r70/doc-vector-seed/manifest.json",
+          "line": 1
+        },
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/deploy/default/deploy/ba788aca6416623719f8ee95caa95b4a1935f8cfa33c6ec92614fc783c45df16.0/opt/papercusp/releases/0.0.21-p012r70/doc-vector-seed/manifest.json",
+          "line": 1
+        },
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/deploy/default/deploy/ba788aca6416623719f8ee95caa95b4a1935f8cfa33c6ec92614fc783c45df16.0/opt/papercusp/releases/0.0.21-p012r70/doc-vector-seed/manifest.json",
+          "line": 1
+        },
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/deploy/default/deploy/ba788aca6416623719f8ee95caa95b4a1935f8cfa33c6ec92614fc783c45df16.0/opt/papercusp/releases/0.0.21-p012r70/doc-vector-seed/manifest.json",
+          "line": 1
+        },
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/deploy/default/deploy/ba788aca6416623719f8ee95caa95b4a1935f8cfa33c6ec92614fc783c45df16.0/opt/papercusp/releases/0.0.21-p012r70/doc-vector-seed/manifest.json",
+          "line": 1
+        },
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/deploy/default/deploy/ba788aca6416623719f8ee95caa95b4a1935f8cfa33c6ec92614fc783c45df16.0/opt/papercusp/releases/0.0.21-p012r70/doc-vector-seed/manifest.json",
+          "line": 1
+        },
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/deploy/default/deploy/ba788aca6416623719f8ee95caa95b4a1935f8cfa33c6ec92614fc783c45df16.0/opt/papercusp/releases/0.0.21-p012r70/doc-vector-seed/manifest.json",
+          "line": 1
+        },
+        {
+          "rule": "generic-api-key",
+          "file": "/mnt/backup/p012-publication-r70-contained/pc-ami-scan-R7AEyh/candidate/loop37p4/ostree/…18269 tokens truncated…49484242"
+          ]
+        }
+      ],
+      "rollbackPins": [],
+      "cleanAccountProof": {
+        "evidenceRef": "aws-ami-canary:i-0cd66f4c04226ca1c:d71bee60182c6c4c7bedf3258a589e49",
+        "accountId": "497149484242",
+        "region": "us-east-1",
+        "imageId": "ami-05a8be4f5e5e553f3",
+        "buildManifestIdentity": "sha256:40d91eb39176ab0b3c9637c3b006b246640a0412beabe1782127b721e8c3b64e",
+        "releaseVersion": "0.0.21-p012r70",
+        "releaseSha256": "4a42edc52b1383a6a3a2e99bc6bc0ae8bb9693544fff11bd01040a169c72119f",
+        "ssmOnline": true,
+        "bootstrapAttestationHealthy": true,
+        "serviceHealthy": true,
+        "publicIpv4Assigned": false,
+        "terminated": true,
+        "residualResourceIds": [],
+        "observedAt": "2026-10-08T16:18:03.419Z",
+        "fixtureId": "aws-ami-0.0.21-p012r70-ami-05a8be4f5e5e553f3",
+        "attestation": {
+          "contractVersion": "papercusp-workspace-host-bootstrap-v2",
+          "hostId": "aws-clean-ami-05a8be4f5e5e553f3",
+          "action": "install",
+          "hostModel": "bootc-image",
+          "bootcBaseImage": "quay.io/centos-bootc/centos-bootc:stream10",
+          "observedAt": "2026-10-08T16:13:26Z",
+          "status": "healthy",
+          "release": {
+            "version": "0.0.21-p012r70",
+            "source": "127.0.0.1:5096/papercusp/workspace-host@sha256:4a42edc52b1383a6a3a2e99bc6bc0ae8bb9693544fff11bd01040a169c72119f",
+            "imageDigest": "sha256:4a42edc52b1383a6a3a2e99bc6bc0ae8bb9693544fff11bd01040a169c72119f",
+            "signaturePolicyPath": "/etc/containers/policy.json",
+            "signatureVerified": true
+          },
+          "migration": {
+            "id": "999-personal-vault-import-failed-entries",
+            "applied": true
+          },
+          "runtime": {
+            "nodeMajor": 24,
+            "minimumNodeMajor": 24,
+            "psu": true,
+            "pui": true,
+            "agentLaunchers": {
+              "claude": true,
+              "codex": true,
+              "omp": true
+            },
+            "agentRuntimesVerifiedByBootstrap": false,
+            "agentRuntimesInstalledByBootstrap": false
+          },
+          "service": {
+            "name": "papercusp-workspace",
+            "user": "papercusp",
+            "group": "papercusp",
+            "bindHost": "127.0.0.1",
+            "port": 3070,
+            "active": true
+          },
+          "isolation": {
+            "workspaceUser": "papercusp-workspace",
+            "workspaceGroup": "papercusp-workspace",
+            "agentUser": "papercusp-agent",
+            "agentGroup": "papercusp-agent",
+            "runtimeRoot": "/opt/papercusp",
+            "stateRoot": "/var/lib/papercusp",
+            "workspaceRoot": "/srv/papercusp/workspaces",
+            "runtimeReadableByWorkspaceUser": false,
+            "runtimeWritableByWorkspaceUser": false,
+            "runtimeReadableByAgentUser": true,
+            "runtimeWritableByAgentUser": false,
+            "agentHomeReadableBySshUser": false,
+            "workspaceWritableByService": true,
+            "workspaceWritableBySshUser": true,
+            "workspaceWritableByAgentUser": true,
+            "sudo": false,
+            "serviceGroupMember": false,
+            "operatorIngress": "ssh-local-forward",
+            "updateMode": "bootc-atomic-image-swap"
+          },
+          "checks": [
+            {
+              "name": "node-runtime",
+              "ok": true
+            },
+            {
+              "name": "embedded-postgres-migration",
+              "ok": true
+            },
+            {
+              "name": "agent-cli-prerequisites",
+              "ok": true
+            },
+            {
+              "name": "pui-generation",
+              "ok": true
+            },
+            {
+              "name": "pui-operator-freshness",
+              "ok": true
+            },
+            {
+              "name": "loopback-service",
+              "ok": true
+            },
+            {
+              "name": "service-identity",
+              "ok": true
+            },
+            {
+              "name": "runtime-permissions",
+              "ok": true
+            },
+            {
+              "name": "workspace-identity",
+              "ok": true
+            },
+            {
+              "name": "workspace-acl",
+              "ok": true
+            },
+            {
+              "name": "privileged-conduits",
+              "ok": true
+            },
+            {
+              "name": "ssh-forwarding-policy",
+              "ok": true
+            },
+            {
+              "name": "workspace-ssh-authorized-keys",
+              "ok": true
+            },
+            {
+              "name": "agent-sandbox-userns",
+              "ok": true
+            },
+            {
+              "name": "bootc-base-image",
+              "ok": true
+            },
+            {
+              "name": "image-digest",
+              "ok": true
+            },
+            {
+              "name": "image-signature",
+              "ok": true
+            },
+            {
+              "name": "host-prepare-unit",
+              "ok": true
+            }
+          ]
+        }
+      },
+      "manifestIdentity": "sha256:73420c6303698a4b33a0670b942b295d451142d68a6a7f0a2d34ff6304a23402"
+    },
+    "manifestUri": "ssm://us-east-1/papercusp/workspace-host/ami/manifests/0.0.21-p012r70",
+    "activePins": [
+      {
+        "region": "us-east-1",
+        "imageId": "ami-05a8be4f5e5e553f3",
+        "version": "0.0.21-p012r70"
+      }
+    ],
+    "rollbackPins": [],
+    "deprecatedPins": []
+  }
+}

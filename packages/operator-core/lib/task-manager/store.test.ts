@@ -86,6 +86,28 @@ describe('reopenStrandedTask', () => {
 });
 
 describe('closeTask terminal event', () => {
+  it('retains the live ledger row and emits nothing when verifier cleanup fails, then retries before UPDATE', async () => {
+    const row = { task_id: 'cleanup-task', workspace_id: 'workspace-1', class: 'bash-job',
+      state: 'running', ended_at: null, launched_by: 'fixture' };
+    let updates = 0;
+    const sql = (async (strings: TemplateStringsArray) => {
+      if (strings.join('').includes('UPDATE harness_shared.task_ledger')) updates++;
+      return [row];
+    }) as unknown as Sql;
+    const emitTerminal = vi.fn();
+    const cleanupVerifierDirectories = vi.fn().mockRejectedValueOnce(new Error('cleanup IO failure'))
+      .mockImplementationOnce(async () => { expect(updates).toBe(0); });
+    const effects = { emitTerminal, cleanupVerifierDirectories };
+    await expect(closeTask('cleanup-task', { state: 'killed', exitCode: 137 }, sql, effects))
+      .rejects.toThrow('cleanup IO failure');
+    expect(updates).toBe(0);
+    expect(emitTerminal).not.toHaveBeenCalled();
+    await expect(closeTask('cleanup-task', { state: 'killed', exitCode: 137 }, sql, effects)).resolves.toBe(true);
+    expect(updates).toBe(1);
+    expect(cleanupVerifierDirectories).toHaveBeenCalledTimes(2);
+    expect(emitTerminal).toHaveBeenCalledOnce();
+  });
+
   it('emits the exact first terminal transition and never emits for an idempotent replay', async () => {
     const emitTerminal = vi.fn();
     const row = {
@@ -173,6 +195,43 @@ describe('listTasks pushes a label prefix into the query', () => {
 });
 
 describe('listTasks taskId filter', () => {
+  it('dispatch correlation binds the exact identity inside the workspace before a small LIMIT', async () => {
+    const { sql, calls, text } = recordingSql();
+    const dispatchCallId = "dispatch_%' OR true --";
+    await listTasks({ workspaceId: 'own-workspace', dispatchCallId, includeEnded: true, limit: 1 }, sql);
+    expect(text()).toContain("detail ->> 'dispatchCallId' = ?");
+    expect(text()).toContain('workspace_id = ?');
+    expect(text().indexOf("detail ->> 'dispatchCallId' = ?")).toBeLessThan(text().indexOf('LIMIT'));
+    expect(calls.flatMap((c) => c.args)).toContain(dispatchCallId);
+    expect(calls.flatMap((c) => c.args)).toContain('own-workspace');
+    expect(text()).not.toContain(dispatchCallId);
+    expect(text()).not.toMatch(/title\s*(=|LIKE)|dispatchCallId'\s+LIKE/i);
+    expect(calls.at(-1)?.args.at(-1)).toBe(1);
+  });
+
+  it('dispatch correlation leaves legacy unfiltered reads unchanged when identity is absent', async () => {
+    const { sql, text } = recordingSql();
+    await listTasks({ workspaceId: 'own-workspace', limit: 1 }, sql);
+    expect(text()).not.toContain('dispatchCallId');
+    expect(text()).toContain('workspace_id = ?');
+    expect(text()).toContain('ended_at IS NULL');
+  });
+
+  it('filters an exact identity batch before ordering and limiting', async () => {
+    const { sql, text } = recordingSql();
+    sql.array = vi.fn(() => 'bound-task-array') as unknown as typeof sql.array;
+    await listTasks({ workspaceId: 'ws-1', includeEnded: true, taskIds: ['older', 'recent'], limit: 2 }, sql);
+    expect(sql.array).toHaveBeenCalledWith(['older', 'recent'], 25);
+    expect(text()).toContain('task_id = ANY');
+    expect(text().indexOf('task_id = ANY')).toBeLessThan(text().indexOf('LIMIT'));
+  });
+
+  it('does not turn an empty identity batch into an unfiltered ledger read', async () => {
+    const { sql, calls } = recordingSql();
+    expect(await listTasks({ workspaceId: 'ws-1', taskIds: [] }, sql)).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
   it('emits an exact task_id predicate carrying the durable id as a bound parameter', async () => {
     const { sql, calls, text } = recordingSql();
     const taskId = 'task-to-kill';

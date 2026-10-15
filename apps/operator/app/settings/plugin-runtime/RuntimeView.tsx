@@ -63,7 +63,7 @@ export default function RuntimeView({ status: initial }: { status: RuntimeStatus
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         <Stat label="Loaded" value={status.loaded} />
         <Stat label="Load errors" value={status.errors} bad={status.errors > 0} />
         <Stat label="Initialized pairs" value={status.initializedPairs.length} />

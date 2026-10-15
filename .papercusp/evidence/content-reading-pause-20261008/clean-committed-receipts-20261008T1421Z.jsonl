@@ -1,0 +1,8 @@
+{"filePath":"packages/operator-core/lib/content-summary.test.ts","status":"pass","outcome":"inserted","id":"20934137"}
+{"filePath":"packages/operator-core/lib/inference-gateway/local-backend-gateway.test.ts","status":"pass","outcome":"inserted","id":"20934138"}
+{"filePath":"packages/operator-core/lib/content-intake.test.ts","status":"pass","outcome":"inserted","id":"20934139"}
+{"filePath":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/tts-synth.test.ts","status":"pass","outcome":"inserted","id":"20934140"}
+{"filePath":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-content-summary.test.ts","status":"pass","outcome":"inserted","id":"20934141"}
+{"filePath":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-voice-io.test.ts","status":"pass","outcome":"inserted","id":"20934142"}
+{"filePath":"packages/operator-core/lib/agent-tools/documents/read.integration.test.ts","status":"pass","outcome":"inserted","id":"20934143"}
+{"filePath":"apps/operator/app/_components/voice/voice-mode.test.ts","status":"pass","outcome":"inserted","id":"20934145"}

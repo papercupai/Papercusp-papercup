@@ -29,6 +29,9 @@ import { authorHivePolicy, type AuthorHivePolicyResult } from '../../../hive-pol
 import { getHivePolicy, type ResolvedHivePolicy } from '../../../hive-policy-store';
 import { coerceHivePolicyInput } from '../../../hive-policy-schema';
 import type { BindingClaimStatus } from '../../../harness/binding-types';
+import { resolveFederatedPotScope } from '../../../federated-pot-scope';
+import { requireAllowedOriginOr403 } from '../../cors';
+import { notifySyncInvalidate } from '../../../sync-sse';
 
 /** The claim-gate inputs resolved from the binding cache. */
 export interface ClaimGateRow {
@@ -50,6 +53,7 @@ export interface SetPolicyDeps {
     workspaceId: string;
     potHomeSlug: string;
     policy: import('../../../hive-policy-schema').HivePolicy;
+    expectedPolicyVersion?: number;
   }) => Promise<AuthorHivePolicyResult>;
 }
 
@@ -72,6 +76,8 @@ export async function runSetPolicy(
   if (!coerced.ok) {
     return { status: 400, body: { ok: false, error: coerced.error } };
   }
+  const expected = bodyObj.expectedPolicyVersion;
+  if (expected !== undefined && (!Number.isSafeInteger(expected) || Number(expected) < 0)) return { status: 400, body: { ok: false, error: 'expectedPolicyVersion must be a nonnegative safe integer' } };
 
   // 2. CLAIM GATE — viewer must be a claimant of a claimed Hive.
   const viewer = await deps.viewerGithubId();
@@ -89,12 +95,14 @@ export async function runSetPolicy(
   }
 
   // 3. AUTHOR — sign with the Hive key (owner Swarm only) + write (federates).
-  const result = await deps.author({ workspaceId, potHomeSlug, policy: coerced.policy });
+  const result = await deps.author({ workspaceId, potHomeSlug, policy: coerced.policy,
+    ...(expected !== undefined ? { expectedPolicyVersion: expected as number } : {}) });
   if (result.ok) {
     return { status: 200, body: { ok: true, policy: result.policy } };
   }
   switch (result.code) {
     case 'not_owner_swarm':
+    case 'policy_version_conflict':
       return { status: 409, body: { ok: false, error: result.code, detail: result.detail } };
     case 'no_owner_pubkey':
       return { status: 409, body: { ok: false, error: result.code, detail: result.detail } };
@@ -243,7 +251,9 @@ const post = defineTool({
   path: '/pot/:id/policy',
   auth: 'loopback',
   async handler(req, ctx) {
-    const potHomeSlug = ctx.params.id as string;
+    const originRefusal = requireAllowedOriginOr403(req);
+    if (originRefusal) return originRefusal;
+    const potHomeSlug = await resolveFederatedPotScope(activeWorkspaceId(), ctx.params.id as string);
     // WI-5321/WI-5061: resolve the caller's ambient workspaceId to whatever the
     // Hive's row + keypair are ACTUALLY stamped with (fast path: unchanged when
     // they already match) — same ambient-'default' family as authorHivePolicy's
@@ -253,6 +263,7 @@ const post = defineTool({
     const workspaceId = await resolveHiveWorkspaceId(activeWorkspaceId(), potHomeSlug);
     const body = await req.json().catch(() => null);
     const result = await runSetPolicy(workspaceId, potHomeSlug, body, realDeps);
+    if (result.status === 200) void notifySyncInvalidate('network.hiveDirectory', {}).catch(() => {});
     return Response.json(result.body, { status: result.status });
   },
 });
@@ -261,14 +272,19 @@ const get = defineTool({
   method: 'GET',
   path: '/pot/:id/policy',
   auth: 'public',
-  async handler(_req, ctx) {
-    const potHomeSlug = ctx.params.id as string;
+  async handler(req, ctx) {
+    const potHomeSlug = await resolveFederatedPotScope(activeWorkspaceId(), ctx.params.id as string);
     // WI-5321/WI-5061: same ambient-workspace resolution as the POST handler above —
     // a read under the ambient (wrong) partition would silently return { policy: null }
     // (permissive) instead of the Hive's real signed policy.
     const workspaceId = await resolveHiveWorkspaceId(activeWorkspaceId(), potHomeSlug);
     try {
       const policy = await getHivePolicy(workspaceId, potHomeSlug);
+      if (new URL(req.url).searchParams.get('editor') === 'true') {
+        const [viewer, gate, key] = await Promise.all([realViewerGithubId(), realReadClaimGate(workspaceId, potHomeSlug), loadHivePubkey(workspaceId, potHomeSlug)]);
+        const canEdit = viewer !== null && gate?.claimStatus === 'claimed' && gate.claimedGithubUserIds.includes(viewer) && key !== null;
+        return Response.json({ ok: true, policy, canEdit, refusal: canEdit ? null : 'Only a claimed organization’s owner on its signing device can save policy.' });
+      }
       // null ⇒ no policy set (permissive). Return a stable shape for the GUI.
       return Response.json({ ok: true, policy });
     } catch (e: unknown) {
@@ -281,4 +297,55 @@ const get = defineTool({
   },
 });
 
-export default [post, get];
+/** Cookie-less desktop projection; account gates remain in the maintained finance doors. */
+const finance = defineTool({
+  method: 'POST', path: '/pot/:id/finance', auth: 'loopback',
+  async handler(req, ctx) {
+    const refusal = requireAllowedOriginOr403(req); if (refusal) return refusal;
+    const { daoFinanceAction, runDaoFinance } = await import('../../../dao-finance');
+    const action = daoFinanceAction.safeParse(await req.json().catch(() => null));
+    if (!action.success) return Response.json({ ok: false, error: 'invalid_finance_action' }, { status: 400 });
+    const identity = await resolveLocalGithubIdentity();
+    if (identity.kind !== 'ok') return Response.json({ ok: false, error: 'gh_auth_required' }, { status: 401 });
+    const home = await resolveFederatedPotScope(activeWorkspaceId(), ctx.params.id as string);
+    const workspace = await resolveHiveWorkspaceId(activeWorkspaceId(), home);
+    const signed = await getHivePolicy(workspace, home);
+    try {
+      const result = await runDaoFinance({ policy: signed?.policy ?? {}, policyVersion: signed?.policyVersion ?? 0, actorId: `gh:${identity.githubUserId}`, action: action.data });
+      // Holder registers contain bigint ABI values; decimal strings preserve precision.
+      return new Response(JSON.stringify(result, (_key, value) => typeof value === 'bigint' ? String(value) : value), { headers: { 'content-type': 'application/json' } });
+    } catch (cause) { return Response.json({ ok: false, error: cause instanceof Error ? cause.message : 'Finance action refused.' }, { status: 409 }); }
+  },
+});
+
+const membershipRead = defineTool({
+  method: 'GET', path: '/pot/:id/membership', auth: 'loopback',
+  async handler(_req, ctx) {
+    const workspace = activeWorkspaceId();
+    const scope = await resolveFederatedPotScope(workspace, ctx.params.id as string);
+    const [{ listPendingJoins }, { isCanonicalHiveOwner }] = await Promise.all([import('../../../hive-pending-joins-store'), import('../../../hive-identity')]);
+    const [pending, identity, owner] = await Promise.all([listPendingJoins(workspace, scope), resolveLocalGithubIdentity(), isCanonicalHiveOwner(workspace, ctx.params.id as string).catch(() => false)]);
+    return Response.json({ ok: true, pending, canDecide: owner && identity.kind === 'ok' });
+  },
+});
+const membershipWrite = defineTool({
+  method: 'POST', path: '/pot/:id/membership', auth: 'loopback',
+  async handler(req, ctx) {
+    const refusal = requireAllowedOriginOr403(req); if (refusal) return refusal;
+    const tool = (await import('../../../agent-tools/pot/membership_decide')).default;
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return Response.json({ ok: false, error: 'invalid_membership_decision' }, { status: 400 });
+    const workspaceId = activeWorkspaceId();
+    const parsed = tool.args.safeParse({ ...body, pot: ctx.params.id, workspace: workspaceId });
+    if (!parsed.success) return Response.json({ ok: false, error: 'invalid_membership_decision' }, { status: 400 });
+    // Reuse the maintained canonical-owner, identity, scope and admission checks.
+    const result = await tool.handler(parsed.data, { workspaceId, role: 'operator', signal: ctx.signal } as never);
+    const text = 'content' in result ? result.content?.find(block => block.type === 'text')?.text : undefined;
+    const decision = 'data' in result ? result.data : text ? JSON.parse(text) : null;
+    if (!decision || typeof decision !== 'object' || !('ok' in decision)) return Response.json({ ok: false, error: 'membership_decision_unconfirmed' }, { status: 500 });
+    if (decision.ok) void notifySyncInvalidate('network.hiveDirectory', {}).catch(() => {});
+    return Response.json(decision, { status: decision.ok ? 200 : 403 });
+  },
+});
+
+export default [post, get, finance, membershipRead, membershipWrite];

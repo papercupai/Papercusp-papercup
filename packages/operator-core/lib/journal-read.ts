@@ -433,21 +433,16 @@ export function escapeMacPredicateString(value: string): string {
 /** Convert a journal-style relative window into `log show --last` grammar. */
 export function macLastWindow(value: string): string | null {
   const normalized = normalizeJournalWindow(value).trim();
-  const match = normalized.match(/^-?(\d+)\s+(seconds?|minutes?|hours?|days?|weeks?)(?:\s+ago)?$/i);
+  // Signed spaced abbreviations such as `-10 min` are already valid in
+  // journalctl's grammar, so normalizeJournalWindow deliberately preserves
+  // them. Translate those here too; otherwise the macOS backend mistakes the
+  // relative window for an absolute date and passes it to `log show --start`.
+  const match = normalized.match(
+    /^-?(\d+)\s+(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)(?:\s+ago)?$/i,
+  );
   if (!match) return null;
-  const suffix: Record<string, string> = {
-    second: 's',
-    seconds: 's',
-    minute: 'm',
-    minutes: 'm',
-    hour: 'h',
-    hours: 'h',
-    day: 'd',
-    days: 'd',
-    week: 'w',
-    weeks: 'w',
-  };
-  return `${match[1]}${suffix[match[2].toLowerCase()]}`;
+  const suffix: Record<string, string> = { s: 's', m: 'm', h: 'h', d: 'd', w: 'w' };
+  return `${match[1]}${suffix[match[2][0].toLowerCase()]}`;
 }
 
 /** Build the macOS unified-log predicate without moving filtering client-side. */
@@ -536,7 +531,12 @@ export function buildJournalctlArgs(opts: JournalReadOptions): string[] {
   const args: string[] = [...journalScopeArgs(scope)];
   args.push('--no-pager', '-o', 'json');
   args.push(`--output-fields=${JOURNAL_OUTPUT_FIELDS.join(',')}`);
-  for (const unit of opts.units ?? []) args.push('-u', unit);
+  for (const unit of opts.units ?? []) {
+    args.push('-u', unit);
+    // Without --user, -u selects only system units. In the all-journal
+    // stream, include the user-unit arm in journalctl's unit OR filter too.
+    if (scope === 'all') args.push('--user-unit', unit);
+  }
   if (opts.identifier) args.push('-t', opts.identifier);
   args.push('--since', normalizeJournalWindow(opts.since ?? JOURNAL_READ_DEFAULT_SINCE));
   if (opts.until) args.push('--until', normalizeJournalWindow(opts.until));
@@ -936,6 +936,115 @@ async function readJournalSlices(
 /** Resolves each requested unit to whether systemd knows it. */
 export type UnitLoadProbe = (units: string[], scope: JournalScope) => Promise<string[]>;
 
+/** Resolves requested systemd names to the Id journalctl records in the journal. */
+export type UnitCanonicalizer = (units: string[], scope: JournalScope) => Promise<string[]>;
+
+/**
+ * How long a RESOLVED alias→Id answer is reused before systemctl is asked again.
+ *
+ * Why a cache at all (WI-6554700010008328): every logs:read paid 1–4 `systemctl`
+ * spawns to canonicalize its units, and a spawn from the multi-GB bg-host is a
+ * synchronous fork whose cost scales with the parent's RSS — a saturation profile
+ * put the canonicalizer at ~10% of main-thread CPU. A unit's canonical Id only
+ * changes when unit files change and the manager reloads, so a short TTL bounds
+ * the staleness window to minutes. This is a process-local memo of an OS lookup,
+ * not durable state, so the Postgres storage policy does not apply.
+ */
+export const UNIT_ID_CACHE_TTL_MS = 5 * 60_000;
+const UNIT_ID_CACHE_MAX_ENTRIES = 256;
+
+interface UnitIdCacheEntry {
+  id: Promise<string>;
+  /** Null while the lookup is in flight; set only once it RESOLVED to an Id. */
+  expiresAtMs: number | null;
+}
+
+/**
+ * One memo per systemctl runner: an injected test seam never shares answers with
+ * the production runner or with another test's runner.
+ */
+const unitIdCaches = new WeakMap<ExecFileAsync, Map<string, UnitIdCacheEntry>>();
+
+function unitIdCacheFor(runSystemctl: ExecFileAsync): Map<string, UnitIdCacheEntry> {
+  let cache = unitIdCaches.get(runSystemctl);
+  if (!cache) {
+    cache = new Map();
+    unitIdCaches.set(runSystemctl, cache);
+  }
+  return cache;
+}
+
+/**
+ * Resolve one name to its Id. Returns null when systemd could not supply one, so
+ * the caller can keep its own name WITHOUT caching that non-answer: a unit that
+ * does not exist yet must resolve correctly the moment it is installed.
+ */
+async function lookupSystemdUnitId(
+  manager: '--user' | '--system',
+  unit: string,
+  runSystemctl: ExecFileAsync,
+): Promise<string | null> {
+  try {
+    const { stdout } = await runSystemctl(
+      'systemctl',
+      [manager, 'show', '-p', 'Id', '--value', unit],
+      { timeout: 3000 },
+    );
+    return stdout.trim() || null;
+  } catch {
+    // Keep the caller's name when systemd cannot resolve it. The existing
+    // unknown-unit probe remains responsible for making a confident unknown
+    // claim; a failed canonicalization is not evidence that the name is wrong.
+    return null;
+  }
+}
+
+async function systemdUnitId(
+  manager: '--user' | '--system',
+  unit: string,
+  runSystemctl: ExecFileAsync,
+  nowMs: () => number = Date.now,
+): Promise<string> {
+  const cache = unitIdCacheFor(runSystemctl);
+  const key = `${manager}\0${unit}`;
+  const hit = cache.get(key);
+  // An in-flight lookup is shared too, so N concurrent reads cost one spawn.
+  if (hit && (hit.expiresAtMs === null || hit.expiresAtMs > nowMs())) return hit.id;
+  if (cache.size >= UNIT_ID_CACHE_MAX_ENTRIES) cache.clear();
+
+  const entry: UnitIdCacheEntry = { id: Promise.resolve(unit), expiresAtMs: null };
+  entry.id = lookupSystemdUnitId(manager, unit, runSystemctl).then((id) => {
+    if (id === null) {
+      if (cache.get(key) === entry) cache.delete(key);
+      return unit;
+    }
+    entry.expiresAtMs = nowMs() + UNIT_ID_CACHE_TTL_MS;
+    return id;
+  });
+  cache.set(key, entry);
+  return entry.id;
+}
+
+/**
+ * Resolve aliases before journalctl's `-u` filter is built. systemctl accepts
+ * aliases but journal entries carry the canonical unit Id, so querying the
+ * alias directly can produce a confident false zero while the service is
+ * active and writing records.
+ */
+export async function defaultUnitCanonicalizer(
+  units: string[],
+  scope: JournalScope,
+  runSystemctl: ExecFileAsync = execFileAsync,
+): Promise<string[]> {
+  if (!units.length) return [];
+  const managers: Array<'--user' | '--system'> =
+    scope === 'all' ? ['--user', '--system'] : [scope === 'system' ? '--system' : '--user'];
+  const resolved = await Promise.all(units.map(async (unit) =>
+    Promise.all(managers.map((manager) => systemdUnitId(manager, unit, runSystemctl))),
+  ));
+  return [...new Set(resolved.flat())];
+}
+
 /** Does THIS systemd manager report the unit as not-found? Null ⇒ cannot tell. */
 async function unitIsUnknownTo(manager: '--user' | '--system', unit: string): Promise<boolean | null> {
   try {
@@ -984,7 +1093,49 @@ export type WindowResolver = (spec: string) => Promise<number | null>;
  * `--` guards a leading-dash spec ('-30 min'), which systemd-analyze would
  * otherwise read as its own option.
  */
+/**
+ * systemd time-span units resolved without a spawn. Case-SENSITIVE on purpose:
+ * systemd reads `M` as MONTHS and `m` as minutes, so only the exact lowercase
+ * tokens below are safe to evaluate in-process; anything else (months, years,
+ * `msec`, compound spans, calendar words) still goes to systemd-analyze.
+ */
+const RELATIVE_SPAN_MS: Record<string, number> = {
+  s: 1_000, sec: 1_000, secs: 1_000, second: 1_000, seconds: 1_000,
+  m: 60_000, min: 60_000, mins: 60_000, minute: 60_000, minutes: 60_000,
+  h: 3_600_000, hr: 3_600_000, hrs: 3_600_000, hour: 3_600_000, hours: 3_600_000,
+  d: 86_400_000, day: 86_400_000, days: 86_400_000,
+  w: 604_800_000, week: 604_800_000, weeks: 604_800_000,
+};
+
+/**
+ * Resolve the window specs this module itself produces (`-30 minutes`, the
+ * signed spaced `-10 min`, `2 hours ago`, `@<epoch>`) in-process, with the same
+ * arithmetic systemd uses (fixed-length days and weeks, no calendar math).
+ * Undefined ⇒ not a form we evaluate; ask systemd.
+ *
+ * Why (WI-6554700010008328): every grep read and every empty-result diagnosis
+ * spawned `systemd-analyze` 1–3 times, and a spawn from the multi-GB bg-host is
+ * a synchronous fork; a saturation profile put this path at ~22% of main-thread
+ * CPU.
+ */
+export function resolveRelativeWindowInProcess(
+  spec: string,
+  nowMs: number = Date.now(),
+): number | undefined {
+  const trimmed = spec.trim();
+  const epoch = /^@(\d+(?:\.\d+)?)$/.exec(trimmed);
+  if (epoch) return Math.round(Number(epoch[1]) * 1000);
+  const relative = /^(?:-(\d+)\s*([a-z]+)|(\d+)\s*([a-z]+)\s+ago)$/.exec(trimmed);
+  if (!relative) return undefined;
+  const amount = Number(relative[1] ?? relative[3]);
+  const unitMs = RELATIVE_SPAN_MS[relative[2] ?? relative[4]];
+  if (!unitMs || !Number.isSafeInteger(amount)) return undefined;
+  return nowMs - amount * unitMs;
+}
+
 export const defaultWindowResolver: WindowResolver = async (spec) => {
+  const inProcess = resolveRelativeWindowInProcess(spec);
+  if (inProcess !== undefined) return inProcess;
   try {
     const { stdout } = await execFileAsync('systemd-analyze', ['timestamp', '--', spec], {
       timeout: 3000,
@@ -1042,15 +1193,19 @@ export async function readJournal(
   exec?: JournalExec,
   probeUnits: UnitLoadProbe = defaultUnitLoadProbe,
   resolveWindow: WindowResolver = defaultWindowResolver,
+  canonicalizeUnits: UnitCanonicalizer = defaultUnitCanonicalizer,
 ): Promise<JournalReadResult> {
   const backend = journalBackendForPlatform(opts.platform);
   const limit = clampLimit(opts.limit);
-  const args = backend === 'macos-unified'
-    ? buildMacLogArgs({ ...opts, limit })
-    : backend === 'systemd'
-      ? buildJournalctlArgs({ ...opts, limit })
-      : [];
   const units = opts.units ?? [];
+  const scope = opts.scope ?? JOURNAL_DEFAULT_SCOPE;
+  const queryUnits = backend === 'systemd' ? await canonicalizeUnits(units, scope) : units;
+  const queryOpts = { ...opts, units: queryUnits };
+  const args = backend === 'macos-unified'
+    ? buildMacLogArgs({ ...queryOpts, limit })
+    : backend === 'systemd'
+      ? buildJournalctlArgs({ ...queryOpts, limit })
+      : [];
   const commandName = backend === 'macos-unified' ? 'log' : 'journalctl';
   const base = {
     matched: 0,
@@ -1203,10 +1358,10 @@ export async function readJournal(
   };
 
   const slices = backend === 'systemd'
-    ? await resolveWideJournalSlices(opts, resolveWindow)
+    ? await resolveWideJournalSlices(queryOpts, resolveWindow)
     : [];
   if (slices.length) {
-    const sliced = await readJournalSlices(opts, slices, limit, run);
+    const sliced = await readJournalSlices(queryOpts, slices, limit, run);
     if (sliced.failure) {
       const { kind, message } = sliced.failure;
       return {

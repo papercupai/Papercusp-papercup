@@ -30,6 +30,10 @@ const journal: JournalEntry[] = [
   entry({ entryId: 'pay-aug', occurredAtMs: Date.UTC(2026, 7, 31, 23, 59), externalRef: stripe('txn_0'), movement: { kind: 'customer-payment', grossCents: 999_999, feeCents: 0, taxCents: 0, daoCents: 0, refundReserveCents: 0 } }),
   entry({ entryId: 'pay-oct', occurredAtMs: Date.UTC(2026, 9, 1, 0, 0), externalRef: stripe('txn_9'), movement: { kind: 'customer-payment', grossCents: 777_777, feeCents: 0, taxCents: 0, daoCents: 0, refundReserveCents: 0 } }),
 ];
+// Positive live controls need distinct economic references in every private stream.
+for (const e of [...journal].filter((e) => e.movement !== 'dao-transfer' && e.occurredAtMs >= SEPT.fromMs && e.occurredAtMs < SEPT.untilMs)) {
+  journal.push({ ...e, entryId: `${e.entryId}-pair`, externalRef: stripe(`${'id' in e.externalRef ? e.externalRef.id : e.entryId}-pair`) });
+}
 const septEntries = journal.filter((e) => e.occurredAtMs >= SEPT.fromMs && e.occurredAtMs < SEPT.untilMs);
 
 const notMeasured = treasuryFigure(null, 'no on-chain Safe source yet (WI-10004708)');
@@ -40,6 +44,42 @@ function report(entries = journal) {
 }
 
 describe('transparency report (P-044)', () => {
+  it('folds a one-payment hour into the next window without exposing account or stream figures', () => {
+    const first = journal[0]!;
+    const second = { ...first, entryId: 'second', externalRef: stripe('second'), occurredAtMs: first.occurredAtMs + 3_600_000 };
+    const sparse = report([first]);
+    expect(sparse).toMatchObject({ revenueCents: 0, revenueByStream: {}, daoShareCents: 0, entryCount: 0, untilMs: SEPT.fromMs, disclosure: { status: 'folded', minimumPayments: 2, streams: {} } });
+    expect(sparse.accounts.every((a) => a.debitCents === 0 && a.creditCents === 0 && a.netCents === 0)).toBe(true);
+    expect(sparse.entriesRoot).toBe(report([]).entriesRoot);
+    const released = report([first, second]);
+    expect(released.entryCount).toBe(2);
+    expect(released.revenueCents).toBe(trialBalance([first, second], 'USD').accounts.find((a) => a.account === 'revenue')!.balanceCents);
+    expect(released.disclosure?.streams['customer-payment']?.payments).toBe(2);
+  });
+
+  it('keeps a sparse suffix private; duplicate references, another stream and another currency do not unlock it', () => {
+    const first = journal[0]!;
+    const pair = { ...first, entryId: 'pair', externalRef: stripe('pair') };
+    const later = { ...first, entryId: 'later', externalRef: stripe('later'), occurredAtMs: first.occurredAtMs + 3_600_000 };
+    const stable = report([first, pair]);
+    const sparse = report([first, pair, later]);
+    expect(sparse.revenueCents).toBe(stable.revenueCents);
+    expect(sparse.accounts).toEqual(stable.accounts);
+    expect(sparse.entriesRoot).toBe(stable.entriesRoot);
+    expect(sparse.entryCount).toBe(2);
+    expect(report([first, { ...first, entryId: 'duplicate' }]).entryCount).toBe(0);
+    expect(report([first, { ...pair, currency: 'EUR' }]).entryCount).toBe(0);
+    expect(report([first, journal[1]!]).entryCount).toBe(0);
+  });
+
+  it('keeps the current hour private even when it already has two payments', () => {
+    const first = journal[0]!;
+    const pair = { ...first, entryId: 'pair', externalRef: stripe('pair') };
+    const build = (asOfMs: number) => buildTransparencyReport({ workspaceId: 'ws', kind: 'live', entries: [first, pair], period: SEPT, asOfMs, provisional: true, treasury: notMeasured, latestAnchor: null });
+    expect(build(first.occurredAtMs + 1).entryCount).toBe(0);
+    expect(build(first.occurredAtMs + 3_600_000).entryCount).toBe(2);
+  });
+
   it("report totals equal the journal's trial balance over the same period", () => {
     const r = report();
     const tb = trialBalance(septEntries, 'USD');
@@ -94,6 +134,15 @@ const clean: StatementReconciliation['verdicts'] = [
 ];
 
 describe('monthly statement (P-044, D-028 §4–5)', () => {
+  it('retains exact reconciled monthly figures and the original signed shape for a sparse month', async () => {
+    const b = buildMonthlyStatement({ workspaceId: 'ws', entries: [journal[0]!], run: finalRun(clean), treasury: notMeasured, latestAnchor: anchor });
+    if (!b.ok) throw new Error('expected clean final statement');
+    expect(b.statement.report.entryCount).toBe(1);
+    expect(b.statement.report.revenueCents).toBeGreaterThan(0);
+    expect(b.statement.report).not.toHaveProperty('disclosure');
+    expect(await verifySignedStatement(await signStatement(b.statement, generatePrivateKey()))).toEqual({ ok: true });
+  });
+
   it('matches the reconciled journal: exactly the closed month, not provisional', () => {
     const b = buildMonthlyStatement({ workspaceId: 'ws', entries: journal, run: finalRun(clean), treasury: notMeasured, latestAnchor: anchor });
     expect(b.ok).toBe(true);
@@ -101,7 +150,7 @@ describe('monthly statement (P-044, D-028 §4–5)', () => {
     const r = b.statement.report;
     expect(r).toMatchObject({ kind: 'monthly-statement', provisional: false, month: '2026-09', fromMs: SEPT.fromMs, untilMs: SEPT.untilMs });
     // Same figures as the report over the same month: the statement IS the journal for September.
-    const live = report();
+    const { disclosure: _policy, ...live } = report();
     expect({ ...r, kind: 'live', provisional: true }).toEqual(live);
     expect(b.statement.reconciliation).toEqual({ runId: 'run-1', finishedAt: '2026-10-01T00:30:00.000Z', verdicts: clean });
     expect(b.digest).toBe(statementDigest(b.statement));

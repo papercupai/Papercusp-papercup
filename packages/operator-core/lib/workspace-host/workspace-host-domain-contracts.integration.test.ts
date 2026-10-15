@@ -27,11 +27,16 @@ vi.mock('../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 
 const {
   WorkspaceHostControllerFenceError,
+  WorkspaceHostIdSpentError,
   beginWorkspaceHostOperation,
   readWorkspaceHostControl,
+  WORKSPACE_HOST_FENCE_REFUSED_CODE,
   readWorkspaceHostDestroyTarget,
+  readWorkspaceHostIdSpent,
   recordWorkspaceHostObservation,
+  recordWorkspaceHostHealth,
   updateWorkspaceHostLifecycleState,
+  updateWorkspaceHostOperation,
   upsertWorkspaceHost,
   upsertWorkspaceHostConnection,
   upsertWorkspaceHostResourceCheckpoint,
@@ -258,6 +263,293 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
     expect(host).toEqual({ controller_id: 'controller-b', controller_fence: 2, desired_revision: 2 });
   });
 
+  // WI-10005307: a host whose FIRST provision failed was fenced forever. The first-operation
+  // exemption (a provision/restore may claim the revision its host row was written with) required
+  // "no prior operation", and the failed provision counted as one — so every retry, under a fresh
+  // operationId and the SAME controller authority, threw WorkspaceHostControllerFenceError while the
+  // API had already answered 202. Measured live on host-0f9b1ba8db30d143becc130a, 2026-10-02.
+  async function seedFirstProvision(hostId: string) {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const authority = { controllerId: 'controller-a', fence: 1 } as const;
+    await upsertWorkspaceHost({
+      ...hostInput(workspaceId, connectionId, hostId),
+      hostGeneration: 1,
+      desiredRevision: 1,
+      observedRevision: 0,
+      runtimeRelease: release,
+      controllerAuthority: authority,
+    });
+    const provision = (operationId: string) =>
+      beginWorkspaceHostOperation({
+        workspaceId,
+        operationId,
+        hostId,
+        action: 'provision',
+        desiredRevision: 1,
+        controllerAuthority: authority,
+      });
+    const finish = (operationId: string, status: 'succeeded' | 'failed') =>
+      updateWorkspaceHostOperation({
+        workspaceId,
+        operationId,
+        status,
+        percent: 100,
+        message: status,
+        controllerAuthority: authority,
+      });
+    await provision('prov-1');
+    return { workspaceId, provision, finish };
+  }
+
+  it('lets a failed first provision be retried under a new operation id at the same revision', async () => {
+    const { workspaceId, provision, finish } = await seedFirstProvision('host-retry-after-failed-first');
+
+    // Control: while the first provision is still in flight, a second one at the same revision is
+    // fenced — the exemption must not become "any number of concurrent first operations".
+    await expect(provision('prov-1-concurrent')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+
+    await finish('prov-1', 'failed');
+    await provision('prov-1-r2');
+
+    const operations = await db.adminSql<{ id: string; status: string; desired_revision: string }[]>`
+      SELECT id, status, desired_revision FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${workspaceId} AND host_id = 'host-retry-after-failed-first'
+      ORDER BY created_at, id
+    `;
+    // prov-1-concurrent's refusal is recorded (WI-10005312) and, never having run, did not fence
+    // the retry.
+    expect(operations.map((row) => [row.id, row.status, Number(row.desired_revision)])).toEqual([
+      ['prov-1', 'failed', 1],
+      ['prov-1-concurrent', 'failed', 1],
+      ['prov-1-r2', 'queued', 1],
+    ]);
+
+    // Control: the retry is now the in-flight first operation, so a third attempt is fenced again.
+    await expect(provision('prov-1-r3')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+  });
+
+  // WI-10006863: re-provisioning a destroyed host id rewrote its row (destroying/absent -> running,
+  // desired_revision 2 -> 1) BEFORE the fence refused the operation, so a retired host claimed to
+  // be provisioning. Measured on host-pc-p012-aws-20261006b's predecessor, 2026-10-06. The
+  // provision upsert now carries firstOperation and refuses a spent id without touching the row.
+  describe('first-operation guard on the host upsert (WI-10006863)', () => {
+    const authority = { controllerId: 'controller-a', fence: 1 } as const;
+    const provisionRow = (workspaceId: string, connectionId: string, hostId: string, operationId: string) =>
+      upsertWorkspaceHost({
+        ...hostInput(workspaceId, connectionId, hostId),
+        desiredState: 'running',
+        observedState: 'provisioning',
+        hostGeneration: 1,
+        desiredRevision: 1,
+        observedRevision: 0,
+        runtimeRelease: release,
+        controllerAuthority: authority,
+        firstOperation: { operationId },
+      });
+    const hostRow = async (workspaceId: string, hostId: string) => {
+      const [row] = await db.adminSql<{ desired_state: string; observed_state: string; desired_revision: string }[]>`
+        SELECT desired_state, observed_state, desired_revision FROM harness_shared.workspace_hosts
+        WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+      `;
+      return row && { ...row, desired_revision: Number(row.desired_revision) };
+    };
+
+    it('refuses a destroyed host id without rewriting its row', async () => {
+      const { workspaceId, provision, finish } = await seedFirstProvision('host-spent-after-destroy');
+      await finish('prov-1', 'succeeded');
+      await beginWorkspaceHostOperation({
+        workspaceId,
+        operationId: 'destroy-1',
+        hostId: 'host-spent-after-destroy',
+        action: 'destroy',
+        desiredRevision: 2,
+        controllerAuthority: authority,
+      });
+      await finish('destroy-1', 'succeeded');
+      await db.adminSql`
+        UPDATE harness_shared.workspace_hosts SET desired_state = 'absent', observed_state = 'absent'
+        WHERE workspace_id = ${workspaceId} AND id = 'host-spent-after-destroy'
+      `;
+      const before = await hostRow(workspaceId, 'host-spent-after-destroy');
+      expect(before?.desired_revision).toBe(2);
+
+      const connectionId = (await db.adminSql<{ connection_id: string }[]>`
+        SELECT connection_id FROM harness_shared.workspace_hosts
+        WHERE workspace_id = ${workspaceId} AND id = 'host-spent-after-destroy'
+      `)[0]!.connection_id;
+      const refusal = provisionRow(workspaceId, connectionId, 'host-spent-after-destroy', 'prov-2');
+      await expect(refusal).rejects.toBeInstanceOf(WorkspaceHostIdSpentError);
+      await expect(refusal).rejects.toThrow(/already used .*a new host needs a new id/);
+      expect(await hostRow(workspaceId, 'host-spent-after-destroy')).toEqual(before);
+      // Control: the fence agrees, so the guard refused nothing the fence would have admitted.
+      await expect(provision('prov-2')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+
+      // Control (the pre-fix write, kept permanently): the SAME upsert without firstOperation is
+      // admitted and resurrects the retired row. This is the bug; only the guard prevents it.
+      await upsertWorkspaceHost({
+        ...hostInput(workspaceId, connectionId, 'host-spent-after-destroy'),
+        desiredState: 'running',
+        observedState: 'provisioning',
+        hostGeneration: 1,
+        desiredRevision: 1,
+        observedRevision: 0,
+        runtimeRelease: release,
+        controllerAuthority: authority,
+      });
+      expect(await hostRow(workspaceId, 'host-spent-after-destroy')).toEqual({
+        desired_state: 'running',
+        observed_state: 'provisioning',
+        desired_revision: 1,
+      });
+    });
+
+    it('refuses an equal-revision id that already ran, and admits the retry of a failed first provision', async () => {
+      const ran = await seedFirstProvision('host-spent-same-revision');
+      await ran.finish('prov-1', 'succeeded');
+      const ranConnection = (await db.adminSql<{ connection_id: string }[]>`
+        SELECT connection_id FROM harness_shared.workspace_hosts
+        WHERE workspace_id = ${ran.workspaceId} AND id = 'host-spent-same-revision'
+      `)[0]!.connection_id;
+      await expect(
+        provisionRow(ran.workspaceId, ranConnection, 'host-spent-same-revision', 'prov-again'),
+      ).rejects.toBeInstanceOf(WorkspaceHostIdSpentError);
+
+      // Control: a failed first provision never brought the host into use (WI-10005307), so its
+      // retry, and a DBOS replay of the asking operation itself, both pass the guard.
+      const failed = await seedFirstProvision('host-retry-passes-guard');
+      await failed.finish('prov-1', 'failed');
+      const failedConnection = (await db.adminSql<{ connection_id: string }[]>`
+        SELECT connection_id FROM harness_shared.workspace_hosts
+        WHERE workspace_id = ${failed.workspaceId} AND id = 'host-retry-passes-guard'
+      `)[0]!.connection_id;
+      await provisionRow(failed.workspaceId, failedConnection, 'host-retry-passes-guard', 'prov-1-r2');
+      await failed.provision('prov-1-r2');
+      await provisionRow(failed.workspaceId, failedConnection, 'host-retry-passes-guard', 'prov-1-r2');
+      // ...while a DIFFERENT operation now meets prov-1-r2 as a counting prior and is refused.
+      await expect(
+        provisionRow(failed.workspaceId, failedConnection, 'host-retry-passes-guard', 'prov-1-r3'),
+      ).rejects.toBeInstanceOf(WorkspaceHostIdSpentError);
+    });
+
+    it('admits a brand-new host id', async () => {
+      const workspaceId = freshWorkspace();
+      const connectionId = await seedConnection(workspaceId);
+      await provisionRow(workspaceId, connectionId, 'host-brand-new', 'prov-new');
+      expect(await hostRow(workspaceId, 'host-brand-new')).toEqual({
+        desired_state: 'running',
+        observed_state: 'provisioning',
+        desired_revision: 1,
+      });
+    });
+
+    // WI-10006929: the provision route reads the same decision at admission so a spent id is a
+    // synchronous 422, not 202 followed by a failed operation. It must agree with the upsert guard
+    // on every state, and must let a replay of an existing operation through to the workflow.
+    it('admission read agrees with the upsert guard and passes a replay through', async () => {
+      const ask = (workspaceId: string, hostId: string, operationId?: string) =>
+        readWorkspaceHostIdSpent(workspaceId, hostId, {
+          ...(operationId ? { operationId } : {}),
+          desiredRevision: 1,
+        });
+
+      // Destroyed host (stored revision 2): spent, with or without a caller operation id.
+      const destroyed = await seedFirstProvision('host-admission-destroyed');
+      await destroyed.finish('prov-1', 'succeeded');
+      await beginWorkspaceHostOperation({
+        workspaceId: destroyed.workspaceId,
+        operationId: 'destroy-1',
+        hostId: 'host-admission-destroyed',
+        action: 'destroy',
+        desiredRevision: 2,
+        controllerAuthority: authority,
+      });
+      await destroyed.finish('destroy-1', 'succeeded');
+      const spentAfterDestroy = await ask(destroyed.workspaceId, 'host-admission-destroyed');
+      expect(spentAfterDestroy).toBeInstanceOf(WorkspaceHostIdSpentError);
+      expect(spentAfterDestroy?.desiredRevision).toBe(2);
+      expect(await ask(destroyed.workspaceId, 'host-admission-destroyed', 'prov-2')).toBeInstanceOf(
+        WorkspaceHostIdSpentError,
+      );
+      // ...and a replay of the operation that ran is the workflow's to answer, not admission's.
+      expect(await ask(destroyed.workspaceId, 'host-admission-destroyed', 'prov-1')).toBeNull();
+
+      // Same revision, already ran: spent; the guard agrees.
+      const ran = await seedFirstProvision('host-admission-ran');
+      await ran.finish('prov-1', 'succeeded');
+      expect(await ask(ran.workspaceId, 'host-admission-ran', 'prov-again')).toBeInstanceOf(WorkspaceHostIdSpentError);
+
+      // Failed first provision: its retry is admissible at admission exactly as at the guard.
+      const failed = await seedFirstProvision('host-admission-failed-first');
+      await failed.finish('prov-1', 'failed');
+      expect(await ask(failed.workspaceId, 'host-admission-failed-first', 'prov-1-r2')).toBeNull();
+      expect(await ask(failed.workspaceId, 'host-admission-failed-first')).toBeNull();
+
+      // A host id with no row at all is admissible.
+      expect(await ask(freshWorkspace(), 'host-admission-never-seen')).toBeNull();
+    });
+  });
+
+  // WI-10005312: a fenced begin rolled back the only write of the operation row, so a request
+  // already answered 202 had no row and its timeline could never show the failure.
+  it('records a fence refusal as a terminal row that never runs, holds authority, or hides live progress', async () => {
+    const hostId = 'host-refusal-recorded';
+    const { workspaceId, provision, finish } = await seedFirstProvision(hostId);
+
+    await expect(provision('prov-refused')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+    const [refused] = await db.adminSql<
+      { status: string; code: string | null; finished: boolean; controller_id: string | null; desired_revision: number }[]
+    >`
+      SELECT status, error->>'code' AS code, finished_at IS NOT NULL AS finished, controller_id, desired_revision
+      FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${workspaceId} AND id = 'prov-refused'
+    `;
+    expect(refused).toEqual({
+      status: 'failed',
+      code: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+      finished: true,
+      controller_id: 'controller-a',
+      desired_revision: 1,
+    });
+
+    // The refusal is newer than prov-1, yet the host's current progress is still the in-flight
+    // prov-1, because a refused request never ran on the host.
+    const control = await readWorkspaceHostControl(workspaceId);
+    expect(control).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'workspace', id: hostId, operation: expect.objectContaining({ id: 'prov-1' }) }),
+      ]),
+    );
+
+    // The refused row names the host's current controller AND revision, so only the refusal
+    // exclusion keeps it from passing the authority check and being "finished" as a success.
+    await expect(finish('prov-refused', 'succeeded')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+
+    // DBOS re-runs a failed step with the same input: once the fence clears, the retry of the
+    // refused id is admitted and replaces its refusal in place.
+    await finish('prov-1', 'failed');
+    await provision('prov-refused');
+    const [retried] = await db.adminSql<{ status: string; error: unknown; finished_at: Date | null }[]>`
+      SELECT status, error, finished_at FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${workspaceId} AND id = 'prov-refused'
+    `;
+    expect(retried).toEqual({ status: 'queued', error: null, finished_at: null });
+  });
+
+  it('still fences a same-revision provision after a succeeded first provision or a failed one under recovery', async () => {
+    const succeeded = await seedFirstProvision('host-first-succeeded');
+    await succeeded.finish('prov-1', 'succeeded');
+    await expect(succeeded.provision('prov-1-again')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+
+    const recovering = await seedFirstProvision('host-first-failed-recovering');
+    await recovering.finish('prov-1', 'failed');
+    await db.adminSql`
+      UPDATE harness_shared.workspace_host_operations SET recovery_state = 'recovering'
+      WHERE workspace_id = ${recovering.workspaceId} AND id = 'prov-1'
+    `;
+    await expect(recovering.provision('prov-1-r2')).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
+  });
+
   it('advances observed revision only through the fenced operation that produced the observation', async () => {
     const workspaceId = freshWorkspace();
     const connectionId = await seedConnection(workspaceId);
@@ -294,6 +586,112 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
     `;
     expect(host).toEqual({ desired_revision: 2, observed_revision: 2 });
+  });
+
+  it.each(['start', 'stop', 'restart'] as const)(
+    'clears the previous health attestation when a %s operation begins',
+    async (action) => {
+      const workspaceId = freshWorkspace();
+      const connectionId = await seedConnection(workspaceId);
+      const hostId = `host-health-${action}`;
+      const authority = { controllerId: 'controller-health', fence: 1 } as const;
+      const observedAt = '2026-10-02T00:00:00.000Z';
+      await upsertWorkspaceHost({
+        ...hostInput(workspaceId, connectionId, hostId),
+        desiredRevision: 1,
+        observedRevision: 1,
+        controllerAuthority: authority,
+      });
+      await recordWorkspaceHostHealth(workspaceId, {
+        hostId,
+        observedAt,
+        status: 'healthy',
+        checks: [{ name: 'compute-running', ok: true, detail: 'RUNNING' }],
+      });
+
+      const operationId = `operation-health-${action}`;
+      await beginWorkspaceHostOperation({
+        workspaceId,
+        operationId,
+        hostId,
+        action,
+        controllerAuthority: authority,
+      });
+      await recordWorkspaceHostObservation(
+        workspaceId,
+        {
+          host: { hostId, target: 'gcp', resources: [] },
+          state: action === 'stop' ? 'stopped' : 'running',
+          resources: [],
+          observedAt: '2026-10-02T00:01:00.000Z',
+          drift: [],
+        },
+        { operationId, controllerAuthority: authority },
+      );
+
+      const [host] = await db.adminSql<{
+        observed_state: string;
+        health_status: string | null;
+        health_attested_at: Date | string | null;
+        health_checks: unknown[];
+      }[]> `
+        SELECT observed_state, health_status, health_attested_at, health_checks
+        FROM harness_shared.workspace_hosts
+        WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+      `;
+      expect(host).toEqual({
+        observed_state: action === 'stop' ? 'stopped' : 'running',
+        health_status: null,
+        health_attested_at: null,
+        health_checks: [],
+      });
+      expect(await readWorkspaceHostControl(workspaceId)).toContainEqual(
+        expect.objectContaining({ kind: 'workspace', id: hostId, health: undefined }),
+      );
+    },
+  );
+
+  it('preserves health while a snapshot operation leaves provider liveness unchanged', async () => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = 'host-health-snapshot';
+    const authority = { controllerId: 'controller-health', fence: 1 } as const;
+    const observedAt = '2026-10-02T00:00:00.000Z';
+    await upsertWorkspaceHost({
+      ...hostInput(workspaceId, connectionId, hostId),
+      desiredRevision: 1,
+      observedRevision: 1,
+      controllerAuthority: authority,
+    });
+    await recordWorkspaceHostHealth(workspaceId, {
+      hostId,
+      observedAt,
+      status: 'healthy',
+      checks: [{ name: 'compute-running', ok: true, detail: 'RUNNING' }],
+    });
+
+    await beginWorkspaceHostOperation({
+      workspaceId,
+      operationId: 'operation-health-snapshot',
+      hostId,
+      action: 'snapshot',
+      controllerAuthority: authority,
+    });
+
+    const [host] = await db.adminSql<{
+      health_status: string | null;
+      health_attested_at: Date | string | null;
+      health_checks: unknown[];
+    }[]> `
+      SELECT health_status, health_attested_at, health_checks
+      FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+    `;
+    expect(host).toMatchObject({
+      health_status: 'healthy',
+      health_attested_at: expect.anything(),
+      health_checks: [{ name: 'compute-running', ok: true, detail: 'RUNNING' }],
+    });
   });
 
   it.each([
@@ -443,6 +841,48 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
     });
   });
 
+  // WI-10007034: a destroy whose step DBOS re-ran after a bg-host restart re-planned from the
+  // population its own deletions had already shrunk, and its changed request was refused.
+  it('reads the destroy population as of an operation start, ignoring that operation\'s own deletions', async () => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = 'host-destroy-resume';
+    const authority = { controllerId: 'controller-a', fence: 1 };
+    await upsertWorkspaceHost({ ...hostInput(workspaceId, connectionId, hostId), controllerAuthority: authority });
+    await beginWorkspaceHostOperation({
+      workspaceId, hostId, operationId: 'operation-provision', action: 'provision',
+      desiredRevision: 1, controllerAuthority: authority,
+    });
+    const vm = { target: 'gcp' as const, kind: 'vm' as const, providerId: 'vm-1', zone: 'us-central1-a' };
+    const disk = { target: 'gcp' as const, kind: 'disk' as const, providerId: 'disk-1', zone: 'us-central1-a' };
+    for (const [logicalKey, providerResource] of [['create-vm', vm], ['create-disk', disk]] as const) {
+      await upsertWorkspaceHostResourceCheckpoint({
+        workspaceId, hostId, operationId: 'operation-provision',
+        checkpoint: { logicalKey, state: 'applied', attempts: 1, providerResource },
+        controllerAuthority: authority,
+      });
+    }
+    await beginWorkspaceHostOperation({
+      workspaceId, hostId, operationId: 'operation-destroy', action: 'destroy', controllerAuthority: authority,
+    });
+    await upsertWorkspaceHostResourceCheckpoint({
+      workspaceId, hostId, operationId: 'operation-destroy',
+      checkpoint: { logicalKey: 'delete-vm-0', state: 'absent', attempts: 1, providerResource: vm },
+      controllerAuthority: authority,
+    });
+
+    const ids = async (options?: { asOfOperationStart?: string }) =>
+      (await readWorkspaceHostDestroyTarget(workspaceId, hostId, undefined, options))?.resources
+        .map((entry) => entry.resource.providerId)
+        .sort();
+    // Unscoped, the operation's own confirmed deletion unregisters the vm (WI-10005971 semantics).
+    await expect(ids()).resolves.toEqual(['disk-1']);
+    // As of the destroy's start, the population is what its first turn planned against.
+    await expect(ids({ asOfOperationStart: 'operation-destroy' })).resolves.toEqual(['disk-1', 'vm-1']);
+    // A LATER operation still sees the earlier destroy's confirmed deletion.
+    await expect(ids({ asOfOperationStart: 'operation-later' })).resolves.toEqual(['disk-1']);
+  });
+
   it('round-trips a fenced snapshot recovery point after the host becomes absent', async () => {
     const workspaceId = freshWorkspace();
     const connectionId = await seedConnection(workspaceId);
@@ -482,12 +922,14 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
     const [row] = await db.adminSql<{
       desired_state: string;
       observed_state: string;
+      desired_revision: number | string;
+      observed_revision: number | string;
       recoverability_kind: string;
       recoverability_label: string;
       recoverability_updated_at: Date;
     }[]>`
-      SELECT desired_state, observed_state, recoverability_kind, recoverability_label,
-             recoverability_updated_at
+      SELECT desired_state, observed_state, desired_revision, observed_revision,
+             recoverability_kind, recoverability_label, recoverability_updated_at
       FROM harness_shared.workspace_hosts
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
     `;
@@ -497,6 +939,10 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
       recoverability_kind: 'snapshot',
       recoverability_label: recoverability.label,
     });
+    // WI-10004969: the destroy converged on its operation's revision, so release.cleanup's
+    // absent-and-converged predicate (observed_revision === desired_revision) can pass.
+    expect(Number(row?.desired_revision)).toBe(2);
+    expect(Number(row?.observed_revision)).toBe(2);
     expect(row?.recoverability_updated_at.toISOString()).toBe(recoverability.updatedAt);
     await expect(readWorkspaceHostDestroyTarget(workspaceId, hostId)).resolves.toMatchObject({
       id: hostId,

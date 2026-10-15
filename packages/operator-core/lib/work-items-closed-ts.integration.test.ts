@@ -67,6 +67,25 @@ const KNOWN_INAPPLICABLE: KnownInapplicableMigration[] = [
       'The new condition_key column and its unique index are scoped by `harness_slug`, which ' +
       'this fixture does not build.',
   },
+  {
+    file: '1110-work-items-admission-flags-generated-columns.sql',
+    reason:
+      'This deliberately minimal fixture has no payload column, but 1110 derives generated ' +
+      'columns from payload and verifies them. The canonical live-shape fixture covers it.',
+  },
+  {
+    file: '1294-work-item-readiness-payload-projections.sql',
+    reason:
+      'This deliberately minimal fixture has no payload column, but 1294 derives STORED ' +
+      'readiness projections from payload. The canonical live-shape fixture covers it.',
+  },
+  {
+    file: '1308-work-items-severity-projection.sql',
+    reason:
+      'This deliberately minimal fixture has no payload column, but 1308 derives a STORED ' +
+      'severity_projection from payload and verifies it against payload. The canonical ' +
+      'live-shape fixture covers it.',
+  },
 ];
 
 const WS = 'ws-closed-ts';
@@ -130,6 +149,8 @@ describe('work_items.closed_ts (migration 698)', () => {
     await applyMigrationsForTest(sql, [
       '698-work-items-closed-ts.sql',
       '777-work-items-embedding-recipe-discriminator.sql',
+      '1135-work-items-epoch-ms-timestamp-guard.sql',
+      '1194-work-items-directive-ref.sql',
     ], {
       label: 'work-items-closed-ts',
       knownInapplicable: KNOWN_INAPPLICABLE,
@@ -287,6 +308,8 @@ describe('work_items.closed_ts (migration 698)', () => {
     await applyMigrationsForTest(sql, [
       '698-work-items-closed-ts.sql',
       '777-work-items-embedding-recipe-discriminator.sql',
+      '1135-work-items-epoch-ms-timestamp-guard.sql',
+      '1194-work-items-directive-ref.sql',
     ], {
       label: 're-apply',
       knownInapplicable: KNOWN_INAPPLICABLE,

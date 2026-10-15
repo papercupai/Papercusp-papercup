@@ -170,6 +170,8 @@ export async function leaseHeartbeatFailOpen(
 
 /** Max chars of child stderr to surface on a failed invoke (P-005). */
 const STDERR_SURFACE_LIMIT = 4000;
+/** A stderr line longer than this is a code frame or a dump, never the message (WI-10006694). */
+const STDERR_LINE_LIMIT = 400;
 /** Max chars of raw child stdout to carry across the invoke boundary for diagnostics. */
 export const RAW_STDOUT_TAIL_LIMIT = 2000;
 
@@ -225,10 +227,25 @@ function rawStdoutTail(stdout: string): string {
 export function formatInvokeStderr(role: string, exitCode: number, stderr: string): string | null {
   const trimmed = stderr.trim();
   if (exitCode === 0 || !trimmed) return null;
-  const body =
-    trimmed.length > STDERR_SURFACE_LIMIT
-      ? `${trimmed.slice(0, STDERR_SURFACE_LIMIT)}\n... [stderr truncated: ${trimmed.length} chars]`
-      : trimmed;
+  // WI-10006694: a throw inside a MINIFIED bundle prints a code frame whose "source line" is the
+  // whole bundle line (~100k chars). A head-only cut kept just that frame and dropped the Error
+  // message and stack (c1007k: the packaged merge-resolver's `Dynamic require of "process"` was
+  // invisible in serve.log). Elide over-long lines first, then keep the head AND the tail.
+  let cut = false;
+  let body = trimmed
+    .split('\n')
+    .map((line) => {
+      if (line.length <= STDERR_LINE_LIMIT) return line;
+      cut = true;
+      return `${line.slice(0, 160)} … [${line.length}-char line elided]`;
+    })
+    .join('\n');
+  if (body.length > STDERR_SURFACE_LIMIT) {
+    const half = Math.floor(STDERR_SURFACE_LIMIT / 2);
+    body = `${body.slice(0, half)}\n…\n${body.slice(-half)}`;
+    cut = true;
+  }
+  if (cut) body += `\n... [stderr truncated: ${trimmed.length} chars]`;
   return `[dbos-invoke] role=${role} exited ${exitCode} — stderr:\n${body}`;
 }
 

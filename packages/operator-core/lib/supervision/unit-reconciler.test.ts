@@ -20,6 +20,8 @@ import {
   _resetReconcilerState,
   checkRestartPolicyDrift,
   checkSilentCrashLoop,
+  censusUnregisteredFailedUnits,
+  _resetFailedUnitCensusForTests,
   BACKOFF_SEQUENCE_SEC,
   confirmFlapRestart,
   GIVE_UP_THRESHOLD,
@@ -35,6 +37,7 @@ import {
   extractBuildErrorDetail,
   extractRuntimeFailureDetail,
   stdoutFromExecError,
+  scopeToFailedProcess,
   type SystemctlUnitStatus,
   type ReconcilerDeps,
   type ReconcileAction,
@@ -1116,6 +1119,69 @@ describe('checkSilentCrashLoop (EI-10750 silent-crash-loop guard)', () => {
     // Only the {n:40} obs is still in-window; delta = 41 - 40 = 1, below threshold.
     expect(r.restartsInWindow).toBe(1);
     expect(r.escalate).toBe(false);
+  });
+});
+
+describe('censusUnregisteredFailedUnits (unregistered crash-loop reporting)', () => {
+  beforeEach(() => _resetFailedUnitCensusForTests());
+
+  function makeDeps(
+    units: Array<{ unit: string; active: string; transient: string }>,
+    getRestarts: () => number,
+  ) {
+    const execUser = vi.fn(async (args: string[]) => {
+      if (args[0] === 'list-units') {
+        return units.map(({ unit, active }) => `${unit} loaded ${active} ${active === 'failed' ? 'failed' : 'running'} ${unit}`).join('\n');
+      }
+      return units.map(({ unit, transient }) =>
+        `Id=${unit}\nLoadState=loaded\nTransient=${transient}\nNRestarts=${getRestarts()}`,
+      ).join('\n\n');
+    });
+    return { execUser, notify: vi.fn<ReconcilerDeps['notify']>(async () => {}) };
+  }
+
+  it('pages once when an unregistered service NRestarts rises by three within five minutes, then re-arms after the episode settles', async () => {
+    let nRestarts = 0;
+    const deps = makeDeps([{ unit: 'third-party.service', active: 'active', transient: 'no' }], () => nRestarts);
+    for (let i = 0; i <= 3; i++) {
+      nRestarts = i;
+      await censusUnregisteredFailedUnits(deps, [], () => {}, i * 60_000);
+    }
+    expect(deps.notify).toHaveBeenCalledTimes(1);
+    expect(deps.notify.mock.calls[0]?.[0].summary).toContain('third-party.service');
+    expect(deps.notify.mock.calls[0]?.[0].summary).toContain('systemd remains the restart authority');
+
+    nRestarts = 4;
+    await censusUnregisteredFailedUnits(deps, [], () => {}, 240_000);
+    expect(deps.notify).toHaveBeenCalledTimes(1);
+
+    await censusUnregisteredFailedUnits(deps, [], () => {}, 600_001);
+    for (let i = 5; i <= 7; i++) {
+      nRestarts = i;
+      await censusUnregisteredFailedUnits(deps, [], () => {}, 600_001 + (i - 4) * 60_000);
+    }
+    expect(deps.notify).toHaveBeenCalledTimes(2);
+  });
+
+  it('excludes transient and registered services from restart-rate alerts', async () => {
+    let nRestarts = 0;
+    const deps = makeDeps([
+      { unit: 'run-scoped.service', active: 'active', transient: 'yes' },
+      { unit: 'registered.service', active: 'active', transient: 'no' },
+    ], () => nRestarts);
+    for (let i = 0; i <= 3; i++) {
+      nRestarts = i;
+      await censusUnregisteredFailedUnits(deps, [{ unit: 'registered.service' }], () => {}, i * 60_000);
+    }
+    expect(deps.notify).not.toHaveBeenCalled();
+  });
+
+  it('preserves the failed-unit alert and latches it once per failure episode', async () => {
+    const deps = makeDeps([{ unit: 'retired.service', active: 'failed', transient: 'no' }], () => 7);
+    expect(await censusUnregisteredFailedUnits(deps, [], () => {}, 0)).toEqual(['retired.service']);
+    expect(await censusUnregisteredFailedUnits(deps, [], () => {}, 60_000)).toEqual(['retired.service']);
+    expect(deps.notify).toHaveBeenCalledTimes(1);
+    expect(deps.notify.mock.calls[0]?.[0].summary).toContain('FAILED on this host');
   });
 });
 
@@ -2515,5 +2581,154 @@ describe('EI-21232345359778222: exit 0 from a verdict-bearing unit is a complete
     // settles that, whatever the subject's verdict — so weakening the notification must not
     // strand the EI (the EI-19966318801100410 orphan this would otherwise reintroduce).
     expect(resolveGiveUpEi).toHaveBeenCalledWith({ unit: 'papercup-live-federation-gate' });
+  });
+});
+
+/**
+ * EI-24811958626062774 — papercup-staging-sync exited FATAL on every tick for 5+ hours and
+ * nothing said so. It fails in short self-clearing streaks most of the time (3 days: 30
+ * streaks, 14 of them one run), so a first-tick alarm would be noise. `notifyAfterDownMs`
+ * delays the report-only broadcast to a sustained episode and keeps short ones silent.
+ */
+describe('EI-24811958626062774: a delayed report-only alarm for a streaky episodic unit', () => {
+  const MIN = 60_000;
+  const DELAYED_ENTRY: SupervisionEntry = {
+    name: 'staging-sync',
+    layer: 'systemd-user',
+    unit: 'papercup-staging-sync',
+    criticality: 'important',
+    autoRestart: false,
+    episodic: true,
+    notifyAfterDownMs: 30 * MIN,
+  };
+  const st = (active: string): SystemctlUnitStatus => ({
+    unit: 'papercup-staging-sync.service',
+    load: 'loaded',
+    active,
+    sub: 'x',
+    description: '',
+  });
+  /** One ActiveState per 60s tick, threading flap state exactly as reconcileTick does. */
+  const run = (entry: SupervisionEntry, states: string[]) => {
+    let state = initialFlapState(entry.unit!);
+    const actions: ReconcileAction[] = [];
+    let now = 1_000_000;
+    for (const active of states) {
+      const r = decideReconcile({ entry, status: st(active), show: undefined, state, autoRestartFlagOn: true, now });
+      actions.push(r.action);
+      state = r.nextState;
+      now += MIN;
+    }
+    return { actions, state };
+  };
+  const notified = (actions: ReconcileAction[]) =>
+    actions.flatMap((a, i) => (a.kind === 'report-only' && a.notify ? [i] : []));
+
+  it('stays silent until the episode reaches the threshold, then announces exactly once', () => {
+    const { actions } = run(DELAYED_ENTRY, Array(45).fill('failed'));
+    // Tick 0 starts the clock; tick 30 is the first observation 30 min into the episode.
+    expect(notified(actions)).toEqual([30]);
+    expect(actions[30]).toMatchObject({ kind: 'report-only', reason: 'down-report-only', notify: true, downForMs: 30 * MIN });
+    expect(actions[0]).toMatchObject({ kind: 'report-only', notify: false, downForMs: 0 });
+  });
+
+  it('a streak that clears before the threshold produces NO broadcast at either end', () => {
+    // fail, re-run, fail, re-run, succeed: the 1-3 run streaks that are most of the history.
+    const states = [...Array(5).fill('failed'), 'activating', ...Array(4).fill('failed'), 'activating', 'inactive', 'inactive'];
+    const { actions, state } = run(DELAYED_ENTRY, states);
+    expect(notified(actions)).toEqual([]);
+    // The up-transition of an unannounced episode is not a recovery anyone was waiting for.
+    expect(actions.some((a) => a.kind === 'recovered' || a.kind === 'run-succeeded')).toBe(false);
+    expect(actions[11]).toEqual({ kind: 'healthy', unit: 'staging-sync' });
+    expect(state.downSince).toBeNull();
+    expect(state.downNotified).toBe(false);
+  });
+
+  it('CALIBRATION: an announced episode still ends in exactly one "recovered"', () => {
+    const { actions } = run(DELAYED_ENTRY, [...Array(31).fill('failed'), 'activating', 'inactive', 'inactive']);
+    expect(notified(actions)).toEqual([30]);
+    expect(actions[32]).toEqual({ kind: 'recovered', unit: 'staging-sync' });
+    expect(actions.filter((a) => a.kind === 'recovered')).toHaveLength(1);
+  });
+
+  it('the clock spans runs in flight: a long failing run does not restart it', () => {
+    // One failed tick, then a 40-minute run that also fails. The episode is 41 min old.
+    const { actions } = run(DELAYED_ENTRY, ['failed', ...Array(40).fill('activating'), 'failed']);
+    expect(notified(actions)).toEqual([41]);
+    expect(actions[41]).toMatchObject({ downForMs: 41 * MIN });
+  });
+
+  it('a second episode after a recovery gets a fresh clock and its own single alarm', () => {
+    const states = [...Array(31).fill('failed'), 'inactive', ...Array(31).fill('failed')];
+    const { actions } = run(DELAYED_ENTRY, states);
+    expect(notified(actions)).toEqual([30, 62]);
+  });
+
+  it('CALIBRATION: an entry WITHOUT the field keeps first-tick notify and its exact action shape', () => {
+    const plain: SupervisionEntry = { ...DELAYED_ENTRY, notifyAfterDownMs: undefined };
+    const { actions } = run(plain, ['failed', 'failed', 'inactive']);
+    expect(actions[0]).toEqual({ kind: 'report-only', unit: 'staging-sync', reason: 'down-report-only', notify: true });
+    expect(actions[2]).toEqual({ kind: 'recovered', unit: 'staging-sync' });
+  });
+
+  it("signalTermination: systemd's own start-timeout SIGTERM is a failure, not an intentional stop", () => {
+    expect(signalTermination({ result: 'timeout', execMainCode: 'killed', execMainStatus: 15 })).toBeUndefined();
+    // CALIBRATION: an operator's `systemctl stop` (Result=signal) is still recognised as a stop.
+    expect(signalTermination({ result: 'signal', execMainCode: 'killed', execMainStatus: 15 })).toEqual({ status: 15, signal: 'SIGTERM' });
+  });
+
+  // Shaped like the real `systemctl --user status papercup-staging-sync --lines=200` on
+  // 2026-10-01: older runs (pids 101/202) printed an npm echo and a different FATAL; the run
+  // that just failed (pid 1118840) printed the actionable FATAL.
+  const STATUS_FIXTURE = [
+    '× papercup-staging-sync.service - Papercusp staging tier auto-sync',
+    '     Loaded: loaded (/home/u/.config/systemd/user/papercup-staging-sync.service; static)',
+    '     Active: failed (Result: exit-code) since Thu 2026-10-01 17:34:26 EDT; 1min ago',
+    '    Process: 1118840 ExecStart=/usr/bin/bash /x/papercusp-script-snapshot.sh /x/sync-staging-checkout.sh (code=exited, status=1/FAILURE)',
+    '   Main PID: 1118840 (code=exited, status=1/FAILURE)',
+    'Oct 01 16:10:02 host bash[101]: > node -e "const { spawnSync } = require(\'node:child_process\'); if (e.code === \'ERR_MODULE_NOT_FOUND\') throw new TypeError(\'x\')"',
+    'Oct 01 16:16:06 host bash[202]: [staging-sync] 2026-10-01T16:16:06-04:00 FATAL: coordinated dev:restart was refused',
+    'Oct 01 17:34:26 host bash[1118840]: [staging-sync] 2026-10-01T17:34:26-04:00 FATAL: papercusp-staging-api.service WorkingDirectory must follow the stable staging alias',
+    "Oct 01 17:34:26 host systemd[4082]: papercup-staging-sync.service: Failed with result 'exit-code'.",
+  ].join('\n');
+
+  it('the failure detail comes from the run that failed, not the oldest run or an npm echo', () => {
+    const cause = summarizeSystemctlStatusCause(STATUS_FIXTURE);
+    expect(cause).toContain('WorkingDirectory must follow the stable staging alias');
+    expect(cause).not.toContain('node -e');
+    expect(cause).not.toContain('dev:restart was refused');
+  });
+
+  it('scopeToFailedProcess only narrows: no pid, or no tagged line, returns the excerpt unchanged', () => {
+    expect(scopeToFailedProcess(STATUS_FIXTURE, undefined)).toBe(STATUS_FIXTURE);
+    expect(scopeToFailedProcess(STATUS_FIXTURE, 'Process: 999 ExecStart=/x (code=exited, status=1/FAILURE)')).toBe(STATUS_FIXTURE);
+    expect(scopeToFailedProcess(STATUS_FIXTURE, 'Process: 1118840 ExecStart=/x (code=exited, status=1/FAILURE)').split('\n')).toHaveLength(1);
+  });
+
+  it('END-TO-END: 31 failed minutes on reconcileTick broadcast once, with duration and cause', async () => {
+    _resetReconcilerState();
+    let now = 1_000_000;
+    const notify = vi.fn(async (_opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => {});
+    const deps: ReconcilerDeps = {
+      execUser: async (args: string[]) =>
+        args[0] === 'list-units'
+          ? 'papercup-staging-sync.service loaded failed failed Papercusp staging tier auto-sync\n'
+          : args[0] === 'status'
+            ? STATUS_FIXTURE
+            : '',
+      now: () => now,
+      notify,
+      autoRestartFlagOn: async () => true,
+      registry: () => [DELAYED_ENTRY],
+      log: () => {},
+    };
+    for (let i = 0; i <= 31; i += 1) {
+      await reconcileTick(deps);
+      now += MIN;
+    }
+    const said = notify.mock.calls.map((c) => c[0].summary).filter((s) => s.includes('papercup-staging-sync'));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain('has been down for 30min');
+    expect(said[0]).toContain('WorkingDirectory must follow the stable staging alias');
   });
 });

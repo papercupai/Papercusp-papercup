@@ -1,0 +1,304 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "cargo",
+  "workItemId": "WI-10004768",
+  "planSlug": "android-public-release-2026-10-01",
+  "name": "P-002 Rust workspace renewal with corrected canonical per-case receipts",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    "scripts/report-cargo-tests.mjs",
+    "--manifest-path",
+    "/home/builduser/papercupai-workspace/papercup-rust-mobile/Cargo.toml"
+  ],
+  "environment": {
+    "CARGO_TARGET_DIR": "/dev/shm/android-p002-cargo-a64f4",
+    "PAPERCUP_REQUIRE_SECRET_STREAM_INTEROP": "1",
+    "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+    "PAPERCUSP_TEST_RUN_WORKSPACE": "papercusp-workspace",
+    "PAPERCUSP_TEST_RUN_RECEIPT_FILE": "/tmp/android-p002-workspace-fixed-0836Z.receipts.ndjson"
+  },
+  "commandCwd": "papercusp",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "5ad3b2094c46561319adf80711184ff582f440d8",
+  "sourceDirty": false,
+  "exitCode": 0,
+  "startedAt": "2026-10-07T08:35:33.271Z",
+  "finishedAt": "2026-10-07T08:35:55.605Z",
+  "summary": "136 distinct native cases passed, 0 failed, 1 live smoke ignored. 138 canonical rows include 137 distinct case rows and one aggregate. Inherited child output excluded; exact target-source identities are unique.",
+  "executedPassed": 136,
+  "failed": 0,
+  "ignored": [
+    "live_p0_contract_smoke"
+  ],
+  "ledgerRows": 138,
+  "ledgerStatuses": {
+    "pass": 137,
+    "skip": 1
+  },
+  "measuredLayers": {
+    "unit": 44,
+    "integration": 93,
+    "aggregate": 1
+  },
+  "executionDetailsValidation": {
+    "checked": 138,
+    "invalid": []
+  },
+  "testRunIds": [
+    20890324,
+    20890325,
+    20890326,
+    20890327,
+    20890328,
+    20890329,
+    20890330,
+    20890331,
+    20890332,
+    20890333,
+    20890334,
+    20890335,
+    20890336,
+    20890337,
+    20890338,
+    20890339,
+    20890340,
+    20890341,
+    20890342,
+    20890343,
+    20890344,
+    20890345,
+    20890346,
+    20890347,
+    20890348,
+    20890349,
+    20890350,
+    20890351,
+    20890352,
+    20890353,
+    20890354,
+    20890355,
+    20890356,
+    20890357,
+    20890358,
+    20890359,
+    20890360,
+    20890361,
+    20890362,
+    20890363,
+    20890364,
+    20890365,
+    20890366,
+    20890367,
+    20890368,
+    20890369,
+    20890370,
+    20890371,
+    20890372,
+    20890373,
+    20890374,
+    20890375,
+    20890376,
+    20890377,
+    20890378,
+    20890379,
+    20890380,
+    20890381,
+    20890382,
+    20890383,
+    20890384,
+    20890385,
+    20890386,
+    20890387,
+    20890388,
+    20890389,
+    20890390,
+    20890391,
+    20890392,
+    20890393,
+    20890394,
+    20890395,
+    20890396,
+    20890397,
+    20890398,
+    20890399,
+    20890400,
+    20890401,
+    20890402,
+    20890403,
+    20890404,
+    20890405,
+    20890406,
+    20890407,
+    20890408,
+    20890409,
+    20890410,
+    20890411,
+    20890412,
+    20890413,
+    20890414,
+    20890415,
+    20890416,
+    20890417,
+    20890418,
+    20890419,
+    20890420,
+    20890421,
+    20890422,
+    20890423,
+    20890424,
+    20890425,
+    20890426,
+    20890427,
+    20890428,
+    20890429,
+    20890430,
+    20890431,
+    20890432,
+    20890433,
+    20890434,
+    20890435,
+    20890436,
+    20890437,
+    20890438,
+    20890439,
+    20890440,
+    20890441,
+    20890442,
+    20890443,
+    20890444,
+    20890445,
+    20890446,
+    20890447,
+    20890448,
+    20890449,
+    20890450,
+    20890451,
+    20890452,
+    20890453,
+    20890454,
+    20890455,
+    20890456,
+    20890457,
+    20890458,
+    20890459,
+    20890460,
+    20890461
+  ],
+  "logs": [
+    {
+      "path": "/tmp/android-p002-workspace-fixed-0836Z.log",
+      "sha256": "aba1c6b98b8539b0a55895f62b0419ea2cee02de2e250411480711786fdf3728"
+    },
+    {
+      "path": "/tmp/android-p002-workspace-fixed-0836Z.receipts.ndjson",
+      "sha256": "9ee5d8c74115ee753bb4a45fcbe4722cd04bf25a34777a509c756863857f27a1"
+    },
+    {
+      "path": "/tmp/android-p002-workspace-fixed-0836Z.ledger.json",
+      "sha256": "954b3dfd67cbb089fd06fde6cb7cdb1c2949c291dc751a6042749e32c6b887cd"
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": "crates/papercup-core/src/client.rs",
+      "sha256": "e5b9797c67fba02e127d965b5aff0c6dcd10e05a0e15e29b2905ba87f8815a49",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-core/src/types.rs",
+      "sha256": "90f83ec5ad9775f47e5d0b45ff4ade126455325d974725d157e80e0ebed9bf0a",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-core/tests/client_test.rs",
+      "sha256": "38f2d3ae0f73e108355f9c10dd7d30681e794ef65a48f1d42753c781d857058b",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-core/tests/android_uniffi_abi_guard.rs",
+      "sha256": "f074dfe26940e2fe5e9c3d8ec8a8ab3f864803af82911148c9883090151c264e",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-bindings/src/papercup.udl",
+      "sha256": "49e62ade6cba7fb9a6e7ffe7605eb5a49ec08e79fc4d5aaa19959036ed1674ea",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "c72f591c4268cf1a8c480f0ebf4032d017b399151c307cffa9f7522a8e6a56f3",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt",
+      "sha256": "26b206496863829ba59e44f13119fda9ba3d2d48986c23cdd110c36b1acd7481",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/PlanItemsContractTest.kt",
+      "sha256": "a60cb2bf96373668097d2682e573cac3e56f2262db798c16d1d2144c89903643",
+      "matchesRunCommit": true
+    },
+    {
+      "path": "crates/papercup-bindings/src/lib.rs",
+      "sha256": "a55f0a7c9cff24eb7054f657e15faea1af16b3625b6230c5fe5cf7329829e6ea",
+      "matchesRunCommit": true
+    }
+  ],
+  "sourceBasis": "Reporter measured mobile checkout clean around execution. Listed source bytes independently compared after execution with measured commit; not a separate pre-run hash set.",
+  "reporterFiles": [
+    {
+      "path": "scripts/report-cargo-tests.mjs",
+      "sha256": "75b45eafd59228b068a945dd3dac977cabd93a426074adb802260c525d3afbbe"
+    },
+    {
+      "path": "scripts/lib/cargo-result.mjs",
+      "sha256": "a6aa2068aa5986629d38c757a6467a81ed3fc6c2d52d71f47f2e3ba62de8372d"
+    },
+    {
+      "path": "packages/operator-core/lib/__tests__/report-cargo-tests.test.ts",
+      "sha256": "93ff9ec64a33229cbf350000d32cb4fb5ad67529a2b6b51bf481e291cb499a1a"
+    }
+  ],
+  "reporterRepair": "EI-25303429161160065",
+  "supersedesRawRustProof": "docs/evidence/android-p002-workspace-renewal-2026-10-07.json",
+  "preservedSeparateEvidence": [
+    {
+      "path": "docs/evidence/android-p002-kotlin-host-2026-10-07.json",
+      "sha256": "b84ec3be5c1347970df29b4d60d373186167c95026012fdc34ef088f9c855be7",
+      "scope": "82 exact debug/release Kotlin host cases; preserved separately, not rerun by Cargo"
+    },
+    {
+      "path": "docs/evidence/android-native-exact-eight-current-2026-10-06.json",
+      "sha256": "1eae399cada1a41a8eaf41bf51df84ba4c98038829fc357a48daea39f218dd2e",
+      "scope": "Historical native8 and JNI25 scope; current renewal still owned by peer"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "rust-workspace-native-exit",
+      "passed": true,
+      "evidence": "Actual command exit0; aggregate execution_details passed136/failed0/skipped1."
+    },
+    {
+      "id": "canonical-ledger-case-identities",
+      "passed": true,
+      "evidence": "All138 stored execution_details parse; receipt file paths unique and match exact package/target sources; reentrant test row20890329 appears once."
+    },
+    {
+      "id": "mandatory-secret-stream-interop",
+      "passed": true,
+      "evidence": "Required environment enabled; BYOC3, rawNoise2, KAT5 passed."
+    }
+  ],
+  "notClaimed": [
+    "ignored live smoke executed",
+    "fresh Kotlin or JNI proof from this Cargo invocation",
+    "cross-root calibration readiness",
+    "P-002 acceptance",
+    "release shipment"
+  ]
+}

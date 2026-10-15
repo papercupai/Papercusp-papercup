@@ -1,0 +1,138 @@
+{
+  "id": "pagefind-manual-revision",
+  "modelCalls": 0,
+  "originalFaqSha256": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+  "inheritedBuildEnvironment": {
+    "NODE_ENV": "test",
+    "DEV": "1",
+    "PROD": "",
+    "SSR": "1",
+    "MODE": "test",
+    "BASE_URL": "/"
+  },
+  "lastBuild": {
+    "nodeEnv": "production",
+    "productionSearch": true,
+    "developmentWarning": false,
+    "childEnvironment": "{\"before\":\"production\",\"after\":\"production\"}",
+    "searchMarkup": "<site-search class=\"astro-upkerlyi astro-xnnsxea2\" data-translations=\"{&quot;placeholder&quot;:&quot;Search&quot;}\"> <button data-open-modal disabled aria-label=\"Search\" aria-keyshortcuts=\"Control+K\" class=\"astro-xnnsxea2\"> <svg aria-hidden=\"true\" class=\"astro-xnnsxea2 astro-mdhev3hl\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"currentColor\" style=\"--sl-icon-size: 1em;\"><path d=\"M21.71 20.29 18 16.61A9 9 0 1 0 16.61 18l3.68 3.68a.999.999 0 0 0 1.42 0 1 1 0 0 0 0-1.39ZM11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z\"/></svg> <span class=\"sl-hidden md:sl-block astro-xnnsxea2\" aria-hidden=\"true\">Search</span> <kbd class=\"sl-hidden md:sl-flex astro-xnnsxea2\" style=\"display: none;\"> <kbd class=\"astro-xnnsxea2\">Ctrl</kbd><kbd class=\"astro-xnnsxea2\">K</kbd> </kbd> </button> <dialog style=\"padding:0\" aria-label=\"Search\" class=\"astro-xnnsxea2\"> <div class=\"dialog-frame sl-flex astro-xnnsxea2\">  <button data-close-modal class=\"sl-flex md:sl-hidden astro-xnnsxea2\"> Cancel </button> <div class=\"search-container astro-xnnsxea2\"> <div id=\"starlight__search\" class=\"astro-xnnsxea2\"></div> </div> </div> </dialog> </site-search>"
+  },
+  "developmentControl": {
+    "nodeEnv": "test",
+    "productionSearch": false,
+    "developmentWarning": true,
+    "sourceSha256": "f9d31a98b884a6c812f2b382a8ca3ab91848edffeb7fcbb02d8c5c9714e235c5",
+    "servedHtmlSha256": "758a7c8be4f9518f12a74e89dce62e420eac901a5763fc34d4c5acde434dd017",
+    "pagefindEntrySha256": "619dee9bc99d5b0a17200e4d45c445a751a2eaa3addbd48e13daf0f15fa62b49"
+  },
+  "before": {
+    "nodeEnv": "production",
+    "productionSearch": true,
+    "developmentWarning": false,
+    "sourceSha256": "f9d31a98b884a6c812f2b382a8ca3ab91848edffeb7fcbb02d8c5c9714e235c5",
+    "servedHtmlSha256": "9ab881016948debf615b3d40182eb1648b9c7f2e00223f380f2a8c7bc0295f33",
+    "pagefindEntrySha256": "619dee9bc99d5b0a17200e4d45c445a751a2eaa3addbd48e13daf0f15fa62b49"
+  },
+  "searchCalibration": [
+    {
+      "query": "orchardrevisionredceee947357b344ae9390f2e23c3ddf03",
+      "count": 1,
+      "hits": [
+        {
+          "url": "/docs/faq.html",
+          "red": true,
+          "blue": false
+        }
+      ]
+    },
+    {
+      "query": "orchardrevisionblueceee947357b344ae9390f2e23c3ddf03",
+      "count": 15,
+      "hits": [
+        {
+          "url": "/docs/troubleshooting.html",
+          "red": false,
+          "blue": false
+        },
+        {
+          "url": "/docs/faq.html",
+          "red": true,
+          "blue": false
+        }
+      ]
+    },
+    {
+      "query": "\"orchardrevisionblueceee947357b344ae9390f2e23c3ddf03\"",
+      "count": 0,
+      "hits": []
+    },
+    {
+      "query": "unfindabletundra",
+      "count": 0,
+      "hits": []
+    }
+  ],
+  "after": {
+    "nodeEnv": "production",
+    "productionSearch": true,
+    "developmentWarning": false,
+    "sourceSha256": "6f7a430f559c7037d21fffcfcb6c6976117bcd7ba63e91caf818684db92debd4",
+    "servedHtmlSha256": "fda86e32a5cb424d1c7399543e2d4b00a479a1c35ebc24939310e13775f98b56",
+    "pagefindEntrySha256": "e744945ae6178b9f4e450451b041d8e6a0b32a23e8be15a65a59573bd3d3e393"
+  },
+  "browser": {
+    "sameOrigin": true,
+    "reusedContext": true,
+    "reload": true,
+    "before": {
+      "red": "found",
+      "blue": "absent"
+    },
+    "after": {
+      "blue": "found",
+      "red": "absent"
+    },
+    "resources": [
+      "/docs/pagefind/fragment/en_75ba307.pf_fragment",
+      "/docs/pagefind/fragment/en_d110789.pf_fragment",
+      "/docs/pagefind/fragment/en_f37e6f4.pf_fragment",
+      "/docs/pagefind/index/en_a4b7a7e.pf_index",
+      "/docs/pagefind/index/en_e2f8187.pf_index",
+      "/docs/pagefind/pagefind-entry.json?ts=1791507405099",
+      "/docs/pagefind/pagefind-entry.json?ts=1791507413949",
+      "/docs/pagefind/pagefind-worker.js",
+      "/docs/pagefind/pagefind.en_7bf09ca7de.pf_meta",
+      "/docs/pagefind/pagefind.en_aa8fcae219.pf_meta",
+      "/docs/pagefind/pagefind.js",
+      "/docs/pagefind/wasm.en.pagefind"
+    ]
+  },
+  "passed": true,
+  "stage": "search:red:absent",
+  "browserErrors": [],
+  "failedRequests": [],
+  "badResponses": [],
+  "privateCleanup": true,
+  "verification": {
+    "runnerExitCode": 0,
+    "testsPassed": 1,
+    "testsFailed": 0,
+    "testsSkipped": 0,
+    "runnerResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=ef868f4385 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-09T00:56:04.551Z skippedTests=0",
+    "scope": "Private copied canonical Astro/Starlight build, maintained postbuild packaging and production docs reader; same-origin warmed Chromium search after source revision. Final release and installed-worker freshness are not exercised."
+  },
+  "sourceProvenance": {
+    "testPath": "apps/operator/lib/public-docs-revision.integration.test.ts",
+    "testSha256": "f6b0be03e1a038820c6aa3b11ddaf60c48f50267d8ce80f108fcedfe5c694124",
+    "namedPathUncommitted": true,
+    "importedSourceCoverage": "UNKNOWN",
+    "runtime": "local current working tree"
+  },
+  "rawEvidence": {
+    "path": "/tmp/su73-pagefind-revision-0057.log",
+    "sha256": "b15ad897cb25d1e44c88aace6d3cf748484ce588d40b682adf35d03a8013ca73"
+  },
+  "reproduce": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/public-docs-revision.integration.test.ts"
+  ]
+}

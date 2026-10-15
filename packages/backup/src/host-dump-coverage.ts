@@ -58,8 +58,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 
 /**
  * Directory holding the host backup's `STATUS.json` receipt.
@@ -69,12 +69,15 @@ import { join } from 'node:path';
  * the pair cannot drift into a silent no-skip.
  */
 export const HOST_PG_DUMP_DIR_ENV = 'PAPERCUSP_HOST_PG_DUMP_DIR';
-// Moved off /mnt/data/Backup/db-dumps on 2026-09-05 (WI-2146225) in lockstep
-// with the shell default — see the note in papercusp-db-backup.sh. The old
-// value pointed at a directory the 2026-09-05 relocation abandoned, so a reader
-// that fell back to it found a STATUS.json frozen at the relocation instant and
-// concluded coverage from a receipt that had stopped being written.
-export const DEFAULT_HOST_PG_DUMP_DIR = '/mnt/backup/db-dumps';
+export const HOST_PG_DUMP_IN_PROGRESS_PREFIX = 'IN_PROGRESS.';
+export const HOST_PG_DUMP_IN_PROGRESS_SUFFIX = '.json';
+export const HOST_DUMP_IN_PROGRESS_MAX_AGE_SEC = 6 * 60 * 60;
+export const KOPIA_BACKUP_LOCK_PATH_ENV = 'KOPIA_BACKUP_LOCK_PATH';
+export const DEFAULT_KOPIA_BACKUP_LOCK_PATH = '/run/lock/papercusp/kopia-global.lock';
+// The current default moved to the cold-a dump volume under WI-6554700010014799
+// in lockstep with the shell producer — see its path-contract note. Keep the
+// legacy /mnt/backup/db-dumps tree protected; readers follow the producer here.
+export const DEFAULT_HOST_PG_DUMP_DIR = '/mnt/cold-a/Backup/db-dumps';
 
 /**
  * How recent the host dump must be for the hook to stand down.
@@ -105,12 +108,40 @@ export interface HostDumpCoverage {
   covered: boolean;
   /** Human-readable justification, logged verbatim to the workspace hook.log. */
   reason: string;
+  /** True when a fresh, live host writer is active; the hook must report degraded and not duplicate it. */
+  inProgress?: boolean;
+}
+
+export interface HostDumpInProgress {
+  pid: number;
+  processStartTicks: string;
+  startedAtEpoch: number;
+  phase: 'guard-queued' | 'guard-running' | 'host-backup';
+  source: 'guard' | 'guard-wait' | 'host-backup';
 }
 
 /** Absolute path to the host backup receipt. */
 export function hostDumpStatusPath(env: NodeJS.ProcessEnv = process.env): string {
   const dir = env[HOST_PG_DUMP_DIR_ENV]?.trim() || DEFAULT_HOST_PG_DUMP_DIR;
   return join(dir, 'STATUS.json');
+}
+
+/** PID-scoped active-writer receipt, beside STATUS.json. */
+export function hostDumpInProgressPath(
+  pid: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const dir = env[HOST_PG_DUMP_DIR_ENV]?.trim() || DEFAULT_HOST_PG_DUMP_DIR;
+  return join(dir, HOST_PG_DUMP_IN_PROGRESS_PREFIX + pid + HOST_PG_DUMP_IN_PROGRESS_SUFFIX);
+}
+
+/** Guard-owned receipt for the queued/running db-dump phase. */
+export function hostDumpGuardInProgressPath(
+  pid: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const lockPath = env[KOPIA_BACKUP_LOCK_PATH_ENV]?.trim() || DEFAULT_KOPIA_BACKUP_LOCK_PATH;
+  return lockPath + '.db-dump.' + pid + '.run';
 }
 
 /** Read + parse the host receipt. Any failure ⇒ null ⇒ the caller dumps. */
@@ -136,12 +167,21 @@ export function evaluateHostDumpCoverage(input: {
   /** `system_identifier` of the cluster the hook is about to dump; null when unprobeable. */
   targetSystemIdentifier: string | null;
   status: HostDumpStatus | null;
+  /** A process-validated marker takes precedence over a stale completion receipt. */
+  inProgress?: HostDumpInProgress | null;
   nowEpoch: number;
   maxAgeSec?: number;
 }): HostDumpCoverage {
-  const { database, targetSystemIdentifier, status, nowEpoch } = input;
+  const { database, targetSystemIdentifier, status, inProgress, nowEpoch } = input;
   const maxAgeSec = input.maxAgeSec ?? HOST_DUMP_MAX_AGE_SEC;
 
+  if (inProgress) {
+    return {
+      covered: false,
+      inProgress: true,
+      reason: `host backup is in progress (phase ${inProgress.phase}, pid ${inProgress.pid})`,
+    };
+  }
   if (!status) return { covered: false, reason: 'no host-dump receipt' };
   const runOk = status.ok === true;
 
@@ -210,6 +250,207 @@ export function evaluateHostDumpCoverage(input: {
 
 function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Read the host writer's bounded in-progress signal.
+ *
+ * The guard marker covers the period before papercusp-db-backup.sh can start;
+ * the shell script's marker covers direct/manual runs and the active dump.
+ * Legacy .wait markers are also understood during a rolling script update.
+ * Every marker must be recent and match a live, non-zombie /proc identity, so a
+ * SIGKILLed writer or a reused PID cannot suppress the workspace dump.
+ * Any read/parse ambiguity returns null and preserves the normal local-dump
+ * fallback.
+ */
+export async function readHostDumpInProgress(options: {
+  env?: NodeJS.ProcessEnv;
+  nowEpoch?: number;
+  maxAgeSec?: number;
+  procRoot?: string;
+} = {}): Promise<HostDumpInProgress | null> {
+  const env = options.env ?? process.env;
+  const nowEpoch = options.nowEpoch ?? Math.floor(Date.now() / 1000);
+  const maxAgeSec = options.maxAgeSec ?? HOST_DUMP_IN_PROGRESS_MAX_AGE_SEC;
+  const procRoot = options.procRoot ?? '/proc';
+  const candidates: HostDumpInProgress[] = [];
+
+  const dumpDir = dirname(hostDumpStatusPath(env));
+  const dumpEntries = await readdir(dumpDir).catch(() => []);
+  for (const entry of dumpEntries) {
+    const match = entry.match(/^IN_PROGRESS\.(\d+)\.json$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const marker = await readStructuredProgressMarker({
+      path: join(dumpDir, entry),
+      expectedPid: pid,
+      expectedPhase: 'host-backup',
+      source: 'host-backup',
+      nowEpoch,
+      maxAgeSec,
+      procRoot,
+    });
+    if (marker) candidates.push(marker);
+  }
+
+  const lockPath = env[KOPIA_BACKUP_LOCK_PATH_ENV]?.trim() || DEFAULT_KOPIA_BACKUP_LOCK_PATH;
+  const lockDir = dirname(lockPath);
+  const lockBase = basename(lockPath);
+  const lockEntries = await readdir(lockDir).catch(() => []);
+  const guardPrefix = lockBase + '.db-dump.';
+  for (const entry of lockEntries) {
+    if (!entry.startsWith(guardPrefix)) continue;
+    const runMatch = entry.slice(guardPrefix.length).match(/^(\d+)\.run$/);
+    if (runMatch) {
+      const pid = Number(runMatch[1]);
+      const marker = await readStructuredProgressMarker({
+        path: join(lockDir, entry),
+        expectedPid: pid,
+        expectedPhase: ['guard-queued', 'guard-running'],
+        source: 'guard',
+        nowEpoch,
+        maxAgeSec,
+        procRoot,
+      });
+      if (marker) candidates.push(marker);
+      continue;
+    }
+
+    // The waiter files predate the JSON run marker. Keep recognizing them until
+    // every host has the updated guard script; their mtime bounds the signal.
+    const waitMatch = entry.slice(guardPrefix.length).match(/^(\d+)\.wait$/);
+    if (!waitMatch) continue;
+    const pid = Number(waitMatch[1]);
+    const marker = await readLegacyGuardWaitMarker({
+      path: join(lockDir, entry),
+      expectedPid: pid,
+      nowEpoch,
+      maxAgeSec,
+      procRoot,
+    });
+    if (marker) candidates.push(marker);
+  }
+
+  candidates.sort((a, b) => b.startedAtEpoch - a.startedAtEpoch);
+  return candidates[0] ?? null;
+}
+
+async function readStructuredProgressMarker(input: {
+  path: string;
+  expectedPid: number;
+  expectedPhase: 'host-backup' | Array<'guard-queued' | 'guard-running'>;
+  source: 'guard' | 'host-backup';
+  nowEpoch: number;
+  maxAgeSec: number;
+  procRoot: string;
+}): Promise<HostDumpInProgress | null> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(input.path, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const row = parsed as Record<string, unknown>;
+    const pid = finiteNumber(row.pid);
+    const startedAtEpoch = finiteNumber(row.startedAtEpoch);
+    const processStartTicks =
+      typeof row.processStartTicks === 'string'
+        ? row.processStartTicks
+        : typeof row.processStartTicks === 'number'
+          ? String(row.processStartTicks)
+          : '';
+    const phase = typeof row.phase === 'string' ? row.phase : '';
+    const phaseValid =
+      input.expectedPhase === 'host-backup'
+        ? phase === 'host-backup'
+        : input.expectedPhase.includes(phase as 'guard-queued' | 'guard-running');
+    if (
+      pid !== input.expectedPid ||
+      pid <= 0 ||
+      !Number.isSafeInteger(pid) ||
+      startedAtEpoch === null ||
+      !isFreshProgressTimestamp(startedAtEpoch, input.nowEpoch, input.maxAgeSec) ||
+      !/^\d+$/.test(processStartTicks) ||
+      !phaseValid
+    ) {
+      return null;
+    }
+    const process = await readLinuxProcessIdentity(pid, input.procRoot);
+    if (!process || process.state === 'Z' || process.state === 'X' || process.state === 'x') return null;
+    if (process.startTicks !== processStartTicks) return null;
+    return {
+      pid,
+      processStartTicks,
+      startedAtEpoch,
+      phase: phase as HostDumpInProgress['phase'],
+      source: input.source,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readLegacyGuardWaitMarker(input: {
+  path: string;
+  expectedPid: number;
+  nowEpoch: number;
+  maxAgeSec: number;
+  procRoot: string;
+}): Promise<HostDumpInProgress | null> {
+  try {
+    const [contents, info] = await Promise.all([readFile(input.path, 'utf8'), stat(input.path)]);
+    const pid = Number(contents.trim());
+    const startedAtEpoch = Math.floor(info.mtimeMs / 1000);
+    if (
+      pid !== input.expectedPid ||
+      pid <= 0 ||
+      !Number.isSafeInteger(pid) ||
+      !isFreshProgressTimestamp(startedAtEpoch, input.nowEpoch, input.maxAgeSec)
+    ) {
+      return null;
+    }
+    const process = await readLinuxProcessIdentity(pid, input.procRoot, true);
+    if (!process || process.state === 'Z' || process.state === 'X' || process.state === 'x') return null;
+    const args = process.commandLine.split('\0').filter(Boolean);
+    const scriptPresent = args.some((arg) => basename(arg) === 'kopia-backup-guard.sh');
+    const labelIndex = args.indexOf('--label');
+    if (!scriptPresent || labelIndex < 0 || args[labelIndex + 1] !== 'db-dump') return null;
+    return {
+      pid,
+      processStartTicks: process.startTicks,
+      startedAtEpoch,
+      phase: 'guard-queued',
+      source: 'guard-wait',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isFreshProgressTimestamp(startedAtEpoch: number, nowEpoch: number, maxAgeSec: number): boolean {
+  const ageSec = nowEpoch - startedAtEpoch;
+  return startedAtEpoch > 0 && ageSec >= 0 && ageSec <= maxAgeSec;
+}
+
+async function readLinuxProcessIdentity(
+  pid: number,
+  procRoot: string,
+  readCommandLine = false,
+): Promise<{ state: string; startTicks: string; commandLine: string } | null> {
+  try {
+    const processDir = join(procRoot, String(pid));
+    const [rawStat, commandLine] = await Promise.all([
+      readFile(join(processDir, 'stat'), 'utf8'),
+      readCommandLine ? readFile(join(processDir, 'cmdline'), 'utf8') : Promise.resolve(''),
+    ]);
+    const closingParen = rawStat.lastIndexOf(')');
+    if (closingParen < 0) return null;
+    const fields = rawStat.slice(closingParen + 1).trim().split(/\s+/);
+    const state = fields[0] ?? '';
+    // /proc/<pid>/stat field 22 is starttime; after stripping pid+comm it is index 19.
+    const startTicks = fields[19] ?? '';
+    if (!state || !/^\d+$/.test(startTicks)) return null;
+    return { state, startTicks, commandLine };
+  } catch {
+    return null;
+  }
 }
 
 /**

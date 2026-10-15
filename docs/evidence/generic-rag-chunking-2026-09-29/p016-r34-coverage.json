@@ -1,0 +1,78 @@
+{
+    "bar": "R-34",
+    "schema": "operational-test-evidence/v1",
+    "verdict": "pass",
+    "planItem": "P-015",
+    "planSlug": "generic-rag-chunking-2026-09-29",
+    "zeroRead": null,
+    "measuredAt": "2026-10-01T14:32:42Z",
+    "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+    "measuredFor": "P-016 (WI-10003945)",
+    "coverageGate": {
+        "source": "harness_shared.embed_coverage_samples (latest row per surface; the table packages/operator-core/lib/search/coverage-gate.ts loadCoverageSnapshot reads)",
+        "surfaces": [
+            {
+                "surface": "harness_shared.doc_sections.embedding",
+                "observedAt": "2026-10-01T14:32:41.893+00:00",
+                "unembedded": 0,
+                "eligibleRows": 18902,
+                "embeddedRows": 18902
+            },
+            {
+                "surface": "harness_shared.session_turn_chunks.embedding",
+                "observedAt": "2026-10-01T14:32:41.893+00:00",
+                "unembedded": 0,
+                "eligibleRows": 1205390,
+                "embeddedRows": 1205390
+            },
+            {
+                "surface": "harness_shared.text_chunks.embedding",
+                "observedAt": "2026-10-01T14:32:41.893+00:00",
+                "unembedded": 0,
+                "eligibleRows": 83850,
+                "embeddedRows": 83850
+            }
+        ],
+        "workspace": "papercusp-workspace"
+    },
+    "sweepDrained": {
+        "method": "direct count of rows with embedding IS NULL, read in the same transaction as the samples above",
+        "tables": [
+            {
+                "rows": 22801,
+                "table": "harness_shared.text_chunks",
+                "surface": "plans",
+                "unembedded": 0
+            },
+            {
+                "rows": 25815,
+                "table": "harness_shared.text_chunks",
+                "surface": "operator_turns",
+                "unembedded": 0
+            },
+            {
+                "rows": 2685,
+                "table": "harness_shared.text_chunks",
+                "surface": "consult_questions",
+                "unembedded": 0
+            },
+            {
+                "rows": 32549,
+                "table": "harness_shared.text_chunks",
+                "surface": "work_items",
+                "unembedded": 0
+            },
+            {
+                "rows": 1205390,
+                "table": "harness_shared.session_turn_chunks",
+                "unembedded": 0
+            },
+            {
+                "rows": 18902,
+                "table": "harness_shared.doc_sections",
+                "unembedded": 0
+            }
+        ]
+    },
+    "verdictBasis": "gate samples zero AND direct counts zero at build time"
+}

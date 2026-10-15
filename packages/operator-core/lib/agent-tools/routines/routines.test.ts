@@ -20,17 +20,47 @@ import '../cell-registrations-wiring';
 // nothing to do with the assertions themselves. Typing the rest args as `unknown[]`
 // gives `.flat()` an `unknown[]`, which those guards narrow correctly. (WI-3616 drive-by:
 // these 5 were the entire operator-core typecheck overage, 228 vs baseline 224.)
-const { sqlMock, controlMock } = vi.hoisted(() => ({
-  sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
-  controlMock: vi.fn(async (spec: any, opts: any = {}) => {
-    const prev = await spec.capturePrev();
-    if (opts.dryRun) return { dryRun: true, applied: false, prev, preview: spec.describe?.(prev) };
-    const next = await spec.apply();
-    const verify = spec.verify ? await spec.verify(next) : undefined;
-    return { dryRun: false, applied: true, prev, next, verify, auditId: 'aud-1' };
-  }),
+const {
+  sqlMock,
+  controlMock,
+  resourceQueueMock,
+  deadPidMock,
+  lockTxnSqlMock,
+  resourcePoolBeginMock,
+  boundedOrgTxnMock,
+} = vi.hoisted(() => {
+  const sqlMock = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+  const lockTxnSqlMock = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+  return {
+    sqlMock,
+    controlMock: vi.fn(async (spec: any, opts: any = {}) => {
+      const prev = await spec.capturePrev();
+      if (opts.dryRun) return { dryRun: true, applied: false, prev, preview: spec.describe?.(prev) };
+      const next = await spec.apply();
+      const verify = spec.verify ? await spec.verify(next) : undefined;
+      return { dryRun: false, applied: true, prev, next, verify, auditId: 'aud-1' };
+    }),
+    resourceQueueMock: vi.fn(async (..._args: unknown[]) => ({
+      holders: [] as Array<{ owner: string; mode: 'shared' | 'exclusive'; status: 'held' | 'draining' }>,
+      draining: false,
+      queue: [],
+    })),
+    deadPidMock: vi.fn((_pid: number) => false),
+    lockTxnSqlMock,
+    resourcePoolBeginMock: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(lockTxnSqlMock)),
+    boundedOrgTxnMock: vi.fn(async (fn: (tx: unknown) => Promise<unknown>, _opts?: unknown) => fn(sqlMock)),
+  };
+});
+vi.mock('../locks/su-lock-store', () => ({
+  getTxPool: vi.fn(() => ({ begin: resourcePoolBeginMock }) as never),
+  readResourceQueue: resourceQueueMock,
 }));
+vi.mock('../locks/resource-acquire-wait', () => ({ isPidDefinitivelyDead: deadPidMock }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<Record<string, unknown>>()), getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('../../pg-bounded-txn', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  boundedOrgTxn: boundedOrgTxnMock,
+}));
 vi.mock('../../workspace-registry', async (orig) => ({ ...(await orig<Record<string, unknown>>()), activeWorkspaceId: () => 'default' }));
 vi.mock('../../harness/operator-home-harness', async (orig) => ({ ...(await orig<Record<string, unknown>>()), operatorHomeHarnessSlug: () => 'home-harness' }));
 vi.mock('../../harness/routines/cron', async (orig) => ({ ...(await orig<Record<string, unknown>>()), computeNextFireAt: vi.fn(() => new Date('2030-01-01T00:00:00Z')) }));
@@ -65,7 +95,8 @@ vi.mock('../../coord/gate-ownership', async (orig) => ({
   })),
 }));
 vi.mock('../../release-checkpoint-launch', () => ({
-  checkActiveCheckpointRun: vi.fn(() => ({
+  // WI-10005268: routines:set probes through the off-loop async form.
+  checkActiveCheckpointRunAsync: vi.fn(async () => ({
     active: false,
     unit: 'papercusp-green-checkpoint',
     systemd: { scope: 'user' as const, argv: [], load_state: 'loaded', known: true, invocation_id: null },
@@ -78,13 +109,13 @@ vi.mock('../../harness/routines/release-actions', () => ({
 import { computeNextFireAt } from '../../harness/routines/cron';
 import { readQualificationAdmission } from '../../release-checkpoint-config';
 import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
-import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
+import { checkActiveCheckpointRunAsync } from '../../release-checkpoint-launch';
 import { resolveIntegrationRoot } from '../../harness/routines/release-actions';
 import { readGateOwnership } from '../../coord/gate-ownership';
 const cronM = vi.mocked(computeNextFireAt);
 const admissionM = vi.mocked(readQualificationAdmission);
 const serializerM = vi.mocked(readCheckpointSerializerAuthority);
-const activeRunM = vi.mocked(checkActiveCheckpointRun);
+const activeRunM = vi.mocked(checkActiveCheckpointRunAsync);
 const rootM = vi.mocked(resolveIntegrationRoot);
 const gateOwnershipM = vi.mocked(readGateOwnership);
 
@@ -99,6 +130,7 @@ const {
   applyDerivedGitSyncHeadline,
 } = listModule;
 const setTool = (await import('./set')).default;
+const { TURN_HOLD_INTENT, RESTRICTED_HOLD_INTENT } = await import('../../personal-vault/git-sync-hold');
 
 type Out = { content?: { text: string }[]; data?: unknown };
 // routines:list returns a {data} envelope (context-trimming-tiers P-023);
@@ -108,8 +140,31 @@ const body = (o: unknown) => {
   return out.data !== undefined ? out.data : JSON.parse(out.content![0]!.text);
 };
 
+const gitSyncRoutineRow = (metadata: Record<string, unknown>) => ({
+  install_slug: 'home-harness',
+  name: 'git-sync',
+  trigger_kind: 'cron',
+  trigger_config: { cron: '0 */3 * * * *' },
+  target_role: 'system:git-sync',
+  active: true,
+  next_fire_at: new Date(Date.now() + 60_000),
+  last_fired_at: new Date(Date.now() - 60_000),
+  group_slug: null,
+  metadata,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  resourceQueueMock.mockReset();
+  resourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
+  lockTxnSqlMock.mockReset();
+  lockTxnSqlMock.mockResolvedValue([]);
+  resourcePoolBeginMock.mockReset();
+  resourcePoolBeginMock.mockImplementation(async (fn) => fn(lockTxnSqlMock));
+  boundedOrgTxnMock.mockReset();
+  boundedOrgTxnMock.mockImplementation(async (fn) => fn(sqlMock));
+  deadPidMock.mockReset();
+  deadPidMock.mockReturnValue(false);
   cronM.mockReturnValue(new Date('2030-01-01T00:00:00Z'));
   admissionM.mockResolvedValue({ status: 'clear' });
   serializerM.mockResolvedValue({ status: 'none', reason: 'routine-not-paused' });
@@ -127,7 +182,7 @@ beforeEach(() => {
     duplicates: [],
     thread: { status: 'not-applicable', reason: 'no owner' },
   } as never);
-  activeRunM.mockReturnValue({
+  activeRunM.mockResolvedValue({
     active: false,
     unit: 'papercusp-green-checkpoint',
     systemd: { scope: 'user', argv: [], load_state: 'loaded', known: true, invocation_id: null },
@@ -137,6 +192,232 @@ beforeEach(() => {
 });
 
 describe('routines:list', () => {
+  it('projects scheduled action, run creation, and current plan scan coverage separately', async () => {
+    const now = Date.now();
+    const scheduledRow = {
+      id: 'cleanup-routine',
+      install_slug: 'papercusp',
+      name: 'plan-cleanup-sweep',
+      trigger_kind: 'cron',
+      trigger_config: { cron: '17 41 9 * * *', max_plans: 100 },
+      target_role: 'system:plan-cleanup-sweep',
+      active: true,
+      next_fire_at: new Date(now + 60_000),
+      last_fired_at: new Date(now - 2 * 60 * 60_000),
+      group_slug: null,
+      metadata: null,
+    };
+    sqlMock
+      .mockResolvedValueOnce([scheduledRow])
+      .mockResolvedValueOnce([{
+        routine_id: 'cleanup-routine',
+        workflow_uuid: 'workflow-cleanup',
+        output: JSON.stringify({ json: { diagnostics: {
+          outcome: 'started', runId: 'run-1', phase: 'running', requested: 250, accepted: 100, truncated: 150,
+        } } }),
+        error: null,
+        completed_at_epoch_ms: String(now - 60 * 60_000),
+      }])
+      .mockResolvedValueOnce([{
+        install_slug: 'papercusp',
+        eligible_plan_count: '250',
+        scanned_plan_count: '250',
+        fresh_plan_count: '245',
+        freshness_window_days: '4',
+        freshness_max_plans: '100',
+        oldest_last_scanned_at: new Date(now - 4 * 24 * 60 * 60_000),
+        newest_last_scanned_at: new Date(now - 2 * 24 * 60 * 60_000),
+        latest_run_id: 'run-1',
+        latest_run_phase: 'running',
+        latest_run_created_at: new Date(now - 2 * 60 * 60_000),
+        latest_run_updated_at: new Date(now - 60 * 60_000),
+        latest_run_seed_plan_count: '100',
+        latest_run_requested_plan_count: '250',
+        latest_run_accepted_plan_count: '100',
+        latest_run_truncated_plan_count: '150',
+      }]);
+
+    const result = body(await listTool.handler(
+      { installSlug: 'papercusp', name: 'plan-cleanup-sweep' } as never,
+      { role: 'su' } as never,
+    ));
+    const health = result.routines[0]?.health;
+    expect(health.plan_cleanup_freshness).toMatchObject({
+      read_status: 'available',
+      execution: {
+        scheduled_claim_at: scheduledRow.last_fired_at.toISOString(),
+        action_result: { read_status: 'available', outcome: 'started', run_id: 'run-1', phase: 'running' },
+      },
+      latest_scheduled_run: {
+        run_id: 'run-1',
+        phase: 'running',
+        seed_plan_count: 100,
+        requested_plan_count: 250,
+        accepted_plan_count: 100,
+        truncated_plan_count: 150,
+      },
+      run_record_matches_action: true,
+      coverage: {
+        eligible_plan_count: 250,
+        scanned_plan_count: 250,
+        fresh_plan_count: 245,
+        stale_plan_count: 5,
+        never_scanned_plan_count: 0,
+        max_plans_per_run: 100,
+        freshness_window_ms: 4 * 24 * 60 * 60_000,
+        freshness_status: 'stale',
+      },
+    });
+    const trimmed = listTool.shape!.trimmed!({ count: result.count, routines: result.routines }, { args: {} } as never) as {
+      routines: Array<{ health: { plan_cleanup_freshness: { coverage: { freshness_status: string } } } }>;
+    };
+    expect(trimmed.routines[0]?.health.plan_cleanup_freshness.coverage.freshness_status).toBe('stale');
+    expect(boundedOrgTxnMock).toHaveBeenCalledTimes(2);
+    expect(boundedOrgTxnMock.mock.calls[1]?.[1]).toMatchObject({
+      acquireTimeoutMs: 5_000,
+      statementTimeoutMs: 5_000,
+      lockTimeoutMs: 750,
+      readOnly: true,
+    });
+    const freshnessCall = sqlMock.mock.calls[2]!;
+    const freshnessQuery = (freshnessCall[0] as TemplateStringsArray).join(' ');
+    expect(freshnessQuery).toContain('harness_shared.harness_plans');
+    expect(freshnessQuery).toContain('harness_shared.attention_bulk_runs');
+    expect(freshnessQuery).toContain("r.phase IN ('review', 'running', 'complete')");
+    expect(freshnessQuery).toContain('CEIL(c.eligible_plan_count::numeric / h.max_plans)');
+    expect(freshnessQuery).toContain('r.requested_by =');
+    expect(freshnessCall.slice(1)).toContain('system:plan-cleanup-sweep');
+  });
+
+  it('surfaces plan-cleanup coverage read failure as unavailable, never as zero uncovered plans', async () => {
+    sqlMock
+      .mockResolvedValueOnce([{
+        id: 'cleanup-routine',
+        install_slug: 'papercusp',
+        name: 'plan-cleanup-sweep',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '17 41 9 * * *' },
+        target_role: 'system:plan-cleanup-sweep',
+        active: true,
+        next_fire_at: null,
+        last_fired_at: new Date(),
+        group_slug: null,
+        metadata: null,
+      }])
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('coverage statement timeout'));
+
+    const result = body(await listTool.handler(
+      { installSlug: 'papercusp', name: 'plan-cleanup-sweep' } as never,
+      { role: 'su' } as never,
+    ));
+    expect(result.routines[0]?.health?.plan_cleanup_freshness).toMatchObject({
+      read_status: 'unavailable',
+      unavailable_reason: expect.stringContaining('coverage statement timeout'),
+      execution: {
+        action_result: { read_status: 'no_completed_result_in_8_day_window' },
+      },
+    });
+    expect(result.routines[0]?.health?.plan_cleanup_freshness).not.toHaveProperty('coverage');
+  });
+
+  it('keeps the plan-cleanup history query off unpinned routine listings', async () => {
+    sqlMock.mockResolvedValueOnce([{
+      id: 'cleanup-routine',
+      install_slug: 'papercusp',
+      name: 'plan-cleanup-sweep',
+      trigger_kind: 'cron',
+      trigger_config: { cron: '17 41 9 * * *' },
+      target_role: 'system:plan-cleanup-sweep',
+      active: true,
+      next_fire_at: null,
+      last_fired_at: null,
+      group_slug: null,
+      metadata: null,
+    }]);
+
+    const result = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+    expect(result.routines[0]?.health).toBeNull();
+  });
+
+  it('bounds the conditional DBOS read and returns unavailable when that phase times out', async () => {
+    sqlMock.mockResolvedValueOnce([{ ...gitSyncRoutineRow({}), install_slug: 'other-harness' }]);
+    boundedOrgTxnMock.mockRejectedValueOnce(Object.assign(new Error('statement timeout'), { code: '57014' }));
+    const metadata = vi.fn();
+
+    const result = body(await listTool.handler(
+      { installSlug: 'other-harness', name: 'git-sync' } as never,
+      { role: 'su', metadata } as never,
+    ));
+
+    expect(boundedOrgTxnMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        acquireTimeoutMs: 5_000,
+        statementTimeoutMs: 5_000,
+        lockTimeoutMs: 750,
+        readOnly: true,
+      }),
+    );
+    expect(result.routines[0]?.lastFire).toEqual({ unavailable: expect.stringContaining('statement timeout') });
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      routinesListPhases: expect.objectContaining({
+        schemaVersion: 'routines-list-phase-timings-v1',
+        lastFireLookupMs: expect.any(Number),
+        lastFireUnavailableCount: 1,
+      }),
+    }));
+  });
+
+  it('bounds stale git-sync queue reads and records a failed phase as unverified', async () => {
+    deadPidMock.mockReturnValue(true);
+    sqlMock.mockResolvedValueOnce([{
+      ...gitSyncRoutineRow({
+        git_sync_activity: {
+          active: true,
+          owner: 'system:git-sync:12345:fire',
+          owner_pid: 12345,
+        },
+      }),
+      install_slug: 'other-harness',
+    }]);
+    resourceQueueMock.mockRejectedValueOnce(Object.assign(new Error('statement timeout'), { code: '57014' }));
+    const metadata = vi.fn();
+
+    const result = body(await listTool.handler(
+      { installSlug: 'other-harness' } as never,
+      { role: 'su', metadata } as never,
+    ));
+
+    expect(resourcePoolBeginMock).toHaveBeenCalledTimes(1);
+    expect(lockTxnSqlMock).toHaveBeenCalledTimes(2);
+    const timeoutSetup = lockTxnSqlMock.mock.calls[1]?.[0] as TemplateStringsArray;
+    expect(timeoutSetup.join('')).toContain("set_config('statement_timeout'");
+    expect(timeoutSetup.join('')).toContain("set_config('lock_timeout'");
+    expect(resourceQueueMock).toHaveBeenCalledWith(
+      lockTxnSqlMock,
+      { coordinationDomain: 'default', resource: 'git-sync:other-harness' },
+    );
+    expect(result.routines[0]?.health).toMatchObject({
+      git_sync_freshness: {
+        execution: {
+          owner_reconciliation: {
+            status: 'unverified',
+            lock_state: 'unknown',
+          },
+        },
+      },
+    });
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      routinesListPhases: expect.objectContaining({
+        resourceQueueReadCount: 1,
+        resourceQueueReadFailures: 1,
+        resourceQueueReadMaxMs: expect.any(Number),
+      }),
+    }));
+  });
+
   it('derives degraded git-sync health when last_synced_at is older than three scheduled intervals', () => {
     const now = Date.parse('2026-08-27T18:00:00.000Z');
     cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
@@ -173,6 +454,7 @@ describe('routines:list', () => {
         progress_age_ms: null,
         holds_exclusive_locks: [],
         locks_reported: false,
+        owner_reconciliation: null,
       },
       safe_to_restart: false,
       safe_to_restart_reason:
@@ -217,14 +499,13 @@ describe('routines:list', () => {
         stuck: true,
       },
     });
-    expect(verdict.warning).toBe(
-      "A git-sync fire has been in flight for 34m (phase 'local-sync'); its last recorded progress was 34m ago. " +
-        'Scheduled ticks skip while it holds the git-sync lock, so nothing is being committed and the raw last_status ' +
-        'still describes the tick before it. There IS a live process holding that lock: inspect it before any ' +
-        'restart (safe_to_restart is false).',
-    );
-    // WI-10002019: a wedged fire is still a LIVE fire holding the exclusive lock, so the
-    // destructive action stays contraindicated even though this row needs intervention.
+    const warning = String(verdict.warning);
+    expect(warning).toContain("activity marker has been active for 34m (phase 'local-sync')");
+    expect(warning).toContain('owner PID and exclusive lease have not both been proven stale');
+    expect(warning).toContain('safe_to_restart is false');
+    expect(warning).not.toContain('There IS a live process holding that lock');
+    // WI-24822134605202882: a stale clock does not prove its recorded fire owner is dead.
+    // The destructive action stays contraindicated until both PID and lock evidence agree.
     expect(verdict).toMatchObject({ execution: { status: 'stuck' }, safe_to_restart: false });
   });
 
@@ -310,11 +591,11 @@ describe('routines:list', () => {
         safe_to_restart: false,
       });
       // Asserted by phrase rather than by the whole string: the load-bearing property is
-      // that the misleading "nothing has completed" wording is GONE and the live fire is
-      // named, not the exact prose. An exact-match assertion here strands on any reword.
+      // that an unresolved active marker keeps restart unsafe, not the exact prose.
       const warning = String(verdict.warning);
-      expect(warning).toContain('a fire IS in flight');
-      expect(warning).toContain('do not restart');
+      expect(warning).toContain('an active marker remains');
+      expect(warning).toContain('Owner liveness and lock state have not both been proven stale');
+      expect(warning).toContain('Keep the restart verdict unsafe');
       expect(warning).not.toContain('the raw last_status may describe an older successful tick');
     });
 
@@ -509,6 +790,142 @@ describe('routines:list', () => {
     });
   });
 
+  describe('EI-24822134605202882 per-fire owner reconciliation', () => {
+    const readFreshness = async (identity: Record<string, unknown>) => {
+      const now = Date.now();
+      cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+      sqlMock.mockResolvedValue([
+        gitSyncRoutineRow({
+          last_status: 'synced',
+          last_synced_at: now - 30 * 60_000,
+          git_sync_activity: {
+            active: true,
+            phase: 'local-sync',
+            started_at: now - 20 * 60_000,
+            updated_at: now - 10 * 60_000,
+            ...identity,
+          },
+        }),
+      ]);
+      const result = body(
+        await listTool.handler(
+          { installSlug: 'home-harness', name: 'git-sync' } as never,
+          { role: 'su' } as never,
+        ),
+      ) as { routines: Array<{ health: { git_sync_freshness: any } }> };
+      return result.routines[0]!.health.git_sync_freshness;
+    };
+
+    it('calls an active marker stale only when its dead owner has no exclusive resource lease', async () => {
+      const pid = 9_876_543;
+      const owner = `system:git-sync:${pid}:fire-1`;
+      deadPidMock.mockReturnValue(true);
+      resourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
+
+      const freshness = await readFreshness({ owner, owner_pid: pid });
+
+      expect(deadPidMock).toHaveBeenCalledWith(pid);
+      expect(resourceQueueMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ resource: 'git-sync:home-harness' }),
+      );
+      expect(freshness).toMatchObject({
+        execution: {
+          status: 'idle',
+          owner_reconciliation: {
+            status: 'stale',
+            owner_pid: pid,
+            lock_state: 'absent',
+            matching_owner_lock: false,
+          },
+        },
+        in_flight: { active: false, stale_marker: true },
+        safe_to_restart: true,
+      });
+    });
+
+    it('keeps a definitively dead marker unsafe while either matching or other exclusive lease remains', async () => {
+      const pid = 9_876_544;
+      const owner = `system:git-sync:${pid}:fire-2`;
+      for (const leaseOwner of [owner, `system:git-sync:${pid + 1}:newer-fire`]) {
+        deadPidMock.mockClear();
+        deadPidMock.mockReturnValue(true);
+        resourceQueueMock.mockClear();
+        resourceQueueMock.mockResolvedValue({
+          holders: [{ owner: leaseOwner, mode: 'exclusive', status: 'held' }],
+          draining: false,
+          queue: [],
+        });
+
+        const freshness = await readFreshness({ owner, owner_pid: pid });
+
+        expect(freshness.execution.owner_reconciliation).toMatchObject({
+          status: 'unverified',
+          owner_pid: pid,
+          lock_state: 'held',
+          matching_owner_lock: leaseOwner === owner,
+        });
+        expect(freshness.safe_to_restart).toBe(false);
+      }
+    });
+
+    it('keeps missing or mismatched per-fire identity unsafe without probing the PID or lock queue', async () => {
+      const pid = 9_876_545;
+      const malformedIdentities = [
+        { owner_pid: pid },
+        { owner: `system:git-sync:${pid}:fire-3` },
+        { owner: `system:git-sync:${pid + 1}:fire-3`, owner_pid: pid },
+      ];
+      for (const identity of malformedIdentities) {
+        deadPidMock.mockClear();
+        resourceQueueMock.mockClear();
+
+        const freshness = await readFreshness(identity);
+
+        expect(freshness.execution.owner_reconciliation).toMatchObject({
+          status: 'unverified',
+          lock_state: 'unknown',
+          matching_owner_lock: null,
+        });
+        expect(freshness.safe_to_restart).toBe(false);
+        expect(deadPidMock).not.toHaveBeenCalled();
+        expect(resourceQueueMock).not.toHaveBeenCalled();
+      }
+    });
+
+    it('keeps a live or unprovable PID unsafe and does not infer that the resource lease is absent', async () => {
+      const pid = 9_876_546;
+      deadPidMock.mockReturnValue(false);
+
+      const freshness = await readFreshness({ owner: `system:git-sync:${pid}:fire-4`, owner_pid: pid });
+
+      expect(freshness.execution.owner_reconciliation).toMatchObject({
+        status: 'unverified',
+        owner_pid: pid,
+        lock_state: 'not-checked',
+        matching_owner_lock: null,
+      });
+      expect(freshness.safe_to_restart).toBe(false);
+      expect(resourceQueueMock).not.toHaveBeenCalled();
+    });
+
+    it('keeps the marker unsafe when the dead owner is known but the resource queue cannot be read', async () => {
+      const pid = 9_876_547;
+      deadPidMock.mockReturnValue(true);
+      resourceQueueMock.mockRejectedValue(new Error('resource queue unavailable'));
+
+      const freshness = await readFreshness({ owner: `system:git-sync:${pid}:fire-5`, owner_pid: pid });
+
+      expect(freshness.execution.owner_reconciliation).toMatchObject({
+        status: 'unverified',
+        owner_pid: pid,
+        lock_state: 'unknown',
+        matching_owner_lock: null,
+      });
+      expect(freshness.safe_to_restart).toBe(false);
+    });
+  });
+
   // EI-21807573331912223. This test previously asserted `last_status: 'synced'` on a row
   // the tool had ALREADY judged degraded — i.e. it pinned the bug in place. A sibling that
   // disagrees is not a fix: git_sync_freshness carried the correct verdict throughout the
@@ -573,6 +990,137 @@ describe('routines:list', () => {
     expect((out.skipped_sample as string[])).toHaveLength(10);
     expect(out.warning).toContain('14 path(s) excluded');
     expect(out.warning).toContain('locked-path');
+  });
+
+  // WI-6554700010008512: a skip tick restamps last_skipped_at / last_skip_reason (shared with the
+  // stall and staleness alarms) but no longer clears the sweep's paths
+  // (SKIP_TICK_KEEPS_SWEEP_EXCLUSIONS), so the time and reason reported BESIDE those paths must
+  // come from the sweep that wrote them — never from a later tick.
+  describe('WI-6554700010008512: sweep paths keep the sweep stamp across skip ticks', () => {
+    const sweepAt = Date.parse('2026-10-11T09:00:00.000Z');
+    const tickAt = Date.parse('2026-10-11T09:45:00.000Z');
+
+    it('reports the sweep time and reason, not the later skip tick, beside the sweep paths', () => {
+      const out = deriveGitSyncExclusions({
+        last_status: 'skipped',
+        last_skip_reason: 'held_exclusive',
+        last_skipped_at: tickAt,
+        last_exclusions_at: sweepAt,
+        last_skipped_paths: ['superproject:packages/app/legacy.ts'],
+      });
+      expect(out).toMatchObject({
+        skipped_at: '2026-10-11T09:00:00.000Z',
+        skip_reason: 'locked-path',
+        skipped_count: 1,
+        sweep_at: '2026-10-11T09:00:00.000Z',
+      });
+      expect(out.warning).not.toContain('held_exclusive');
+    });
+
+    it('trusts the recorded reason when the sweep itself wrote it', () => {
+      const out = deriveGitSyncExclusions({
+        last_status: 'synced',
+        last_skip_reason: 'migration-reservation',
+        last_skipped_at: sweepAt,
+        last_exclusions_at: sweepAt,
+        last_skipped_paths: ['superproject:packages/app/legacy.ts'],
+      });
+      expect(out).toMatchObject({ skipped_at: '2026-10-11T09:00:00.000Z', skip_reason: 'migration-reservation' });
+    });
+
+    it('still reports the skip tick itself when the sweep left no paths', () => {
+      const out = deriveGitSyncExclusions({
+        last_status: 'skipped',
+        last_skip_reason: 'held_exclusive',
+        last_skipped_at: tickAt,
+        last_exclusions_at: sweepAt,
+        last_skipped_paths: [],
+      });
+      expect(out).toMatchObject({
+        skipped_at: '2026-10-11T09:45:00.000Z',
+        skip_reason: 'held_exclusive',
+        skipped_count: 0,
+      });
+    });
+  });
+
+  // WI-10006505: the fixture above uses strings, but git-sync-action persists GitSyncSkippedPath
+  // OBJECTS. `stringList` dropped every one, so the real row always read skipped_count: 0, and a
+  // migration-guard deferral was labelled with the writer's hard-coded 'locked-path'.
+  it('counts the OBJECT entries the writer actually persists and names each guard reason', () => {
+    const out = deriveGitSyncExclusions({
+      last_status: 'synced',
+      last_skip_reason: 'locked-path',
+      last_skipped_paths: [
+        { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: 'edit a' },
+        { scope: 'superproject', path: 'b.ts', reason: 'migration-dependency-fence', detail: 'fenced' },
+        { scope: 'libs/papercusp', path: 'libs/db/sql/1234-x.sql', reason: 'migration-reservation', detail: 'r' },
+      ],
+    });
+    expect(out).toMatchObject({
+      skipped_count: 3,
+      skipped_sample: ['superproject:a.ts', 'superproject:b.ts', 'libs/papercusp:libs/db/sql/1234-x.sql'],
+      skip_reason: 'locked-path, migration-dependency-fence, migration-reservation',
+    });
+    expect(out.warning).toContain('3 path(s) excluded');
+    expect(out.warning).toContain('release the corresponding file lock(s)');
+    expect(out.warning).toContain('next-migration.mjs');
+  });
+
+  it('does not tell a migration-guard-only deferral to release file locks', () => {
+    const out = deriveGitSyncExclusions({
+      last_status: 'synced',
+      last_skip_reason: 'locked-path',
+      last_skipped_paths: [{ scope: 'superproject', path: 'b.ts', reason: 'migration-dependency-fence', detail: 'f' }],
+    });
+    expect(out.skip_reason).toBe('migration-dependency-fence');
+    expect(out.warning).not.toContain('release the corresponding file lock(s)');
+  });
+
+  // git-sync-turn-scoped-commit-hold-2026-10-11 P-003: a turn hold is not a lock. It is
+  // reported with its holder and age, and its holder is never told to locks:release.
+  it('reports turn-held paths with holder and age, and never tells their holder to release a lock', () => {
+    const now = Date.parse('2026-10-11T05:00:00.000Z');
+    const out = deriveGitSyncExclusions(
+      {
+        last_status: 'synced',
+        last_skip_reason: 'locked-path',
+        last_skipped_paths: [
+          { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: TURN_HOLD_INTENT, heldSince: '2026-10-11T04:50:00.000Z' },
+          { scope: 'superproject', path: 'b.ts', owner: 'su-a', intent: TURN_HOLD_INTENT },
+          { scope: 'superproject', path: 'c.ts', owner: 'su-r', intent: RESTRICTED_HOLD_INTENT },
+        ],
+      },
+      null,
+      now,
+    );
+    expect(out.skip_reason).toBe('turn-hold, restricted-hold');
+    expect(out.turn_holds).toEqual({
+      count: 2,
+      holders: ['su-a'],
+      sample: [
+        { path: 'superproject:a.ts', holder: 'su-a', held_since: '2026-10-11T04:50:00.000Z', age_sec: 600 },
+        { path: 'superproject:b.ts', holder: 'su-a', held_since: null, age_sec: null },
+      ],
+      sample_truncated: false,
+      max_age_sec: 3600,
+    });
+    expect(out.warning).toContain("commit on the first sweep after their editor's turn ends");
+    expect(out.warning).toContain('personal disclosure');
+    expect(out.warning).not.toContain('release the corresponding file lock(s)');
+  });
+
+  it('still tells a real lock holder to release, beside a turn hold', () => {
+    const out = deriveGitSyncExclusions({
+      last_status: 'synced',
+      last_skipped_paths: [
+        { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: 'edit a' },
+        { scope: 'superproject', path: 'b.ts', owner: 'su-b', intent: TURN_HOLD_INTENT },
+      ],
+    });
+    expect(out.skip_reason).toBe('locked-path, turn-hold');
+    expect(out.warning).toContain('release the corresponding file lock(s)');
+    expect((out.turn_holds as { count: number }).count).toBe(1);
   });
 
   // The negative control for the test above: the block must still be EMITTED when nothing
@@ -1606,6 +2154,58 @@ describe('routines:list', () => {
     }, { args: {} } as never) as { routines: Array<Record<string, unknown>> };
     expect(bare.routines[0]).toHaveProperty('health', null);
     expect(bare.routines[0]).toHaveProperty('lastFiredAt', null);
+  });
+
+  it('EI-25418215735104183: bounds nested health strings, arrays, and the total trimmed routine rows', () => {
+    const lastError = 'spill evidence '.repeat(900);
+    const heldLocks = Array.from({ length: 35 }, (_, index) => `git-sync-lock-${index}`);
+    const routines = Array.from({ length: 12 }, (_, index) => ({
+      installSlug: 'papercusp',
+      name: `git-sync-${index}`,
+      cron: '0 */2 * * * *',
+      active: true,
+      nextFireAt: null,
+      group: 'release',
+      paused: null,
+      lastFiredAt: null,
+      lastFire: null,
+      health: {
+        last_error: lastError,
+        git_sync_freshness: {
+          execution: { holds_exclusive_locks: heldLocks },
+          safe_to_restart: false,
+        },
+      },
+    }));
+    // Before the bound, routines:list passed this nested health object through unchanged.
+    expect(JSON.stringify(routines[0]!.health).length).toBeGreaterThan(4_800);
+    const trimmed = listTool.shape!.trimmed!({ count: routines.length, routines }, { args: {} } as never) as {
+      count: number;
+      routines: Array<Record<string, unknown>>;
+    };
+    const firstHealth = trimmed.routines[0]!.health as {
+      last_error: string;
+      git_sync_freshness: {
+        execution: { holds_exclusive_locks: unknown[] };
+        safe_to_restart: boolean;
+      };
+    };
+    const locks = firstHealth.git_sync_freshness.execution.holds_exclusive_locks;
+
+    expect(firstHealth.last_error).toContain('[TRUNCATED +');
+    expect(firstHealth.last_error.length).toBeLessThanOrEqual(1_000);
+    expect(firstHealth.git_sync_freshness.safe_to_restart).toBe(false);
+    expect(locks).toHaveLength(21);
+    expect(locks.slice(0, 20)).toEqual(heldLocks.slice(0, 20));
+    expect(locks[20]).toMatchObject({ __papercusp_truncated__: true, reason: 'array-items', omitted: 15 });
+    expect(trimmed.routines.at(-1)).toMatchObject({
+      installSlug: '(truncated)',
+      name: expect.stringContaining('showing '),
+    });
+    expect(trimmed.count).toBe(routines.length);
+    expect(JSON.stringify(trimmed).length).toBeLessThanOrEqual(4_800);
+    expect(routines[0]!.health.last_error).toBe(lastError);
+    expect(routines[0]!.health.git_sync_freshness.execution.holds_exclusive_locks).toBe(heldLocks);
   });
 
   it('CONTROL: the PRE-FIX allowlist is caught — proving the guard above can fail', async () => {

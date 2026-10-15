@@ -2,6 +2,11 @@
  * build-info (WI-265) — the running checkout's sha + version for deploy-skew
  * diagnosability on /api/health. Tests the pure resolver via injected seams.
  */
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { build } from 'esbuild';
 import { describe, it, expect } from 'vitest';
 import { resolveBuildInfo } from './build-info';
 
@@ -130,14 +135,23 @@ describe('resolveBuildInfo', () => {
       expect(r).toEqual({ sha: 'bundle-sha', version: '1.2.3' });
     });
 
-    it('prefers PAPERCUSP_BUILD_SHA over the baked source SHA', () => {
+    it('prefers the baked source SHA over a stale PAPERCUSP_BUILD_SHA', () => {
       const r = resolveBuildInfo({
-        env: { PAPERCUSP_BUILD_SHA: 'deploy-sha' } as NodeJS.ProcessEnv,
+        env: { PAPERCUSP_BUILD_SHA: 'stale-env-sha' } as NodeJS.ProcessEnv,
         gitSha: () => 'checkout-head',
         bakedSha: 'bundle-sha',
         bundled: true,
       });
-      expect(r.sha).toBe('deploy-sha');
+      expect(r.sha).toBe('bundle-sha');
+    });
+
+    it('falls back to PAPERCUSP_BUILD_SHA when a bundled artifact has no baked SHA', () => {
+      const r = resolveBuildInfo({
+        env: { PAPERCUSP_BUILD_SHA: 'env-sha' } as NodeJS.ProcessEnv,
+        gitSha: () => 'checkout-head',
+        bundled: true,
+      });
+      expect(r.sha).toBe('env-sha');
     });
 
     it('does not borrow the current checkout SHA for an identity-less bundle', () => {
@@ -149,6 +163,75 @@ describe('resolveBuildInfo', () => {
       expect(r.sha).toBeNull();
     });
   });
+});
+
+describe('bundled /api/health build identity', () => {
+  it('serves the artifact SHA when the process environment contains an older SHA', async () => {
+    const root = resolve(__dirname, '../../..');
+    const healthRoute = resolve(root, 'packages/operator-core/lib/endpoint-route/routes/misc/health.ts');
+    const dir = mkdtempSync(join(tmpdir(), 'build-info-health-bundle-'));
+    const outfile = join(dir, 'health-host.mjs');
+    const bundleSha = 'bundle-sha-7f31c2';
+    try {
+      await build({
+        stdin: {
+          contents: [
+            "import { Hono } from 'hono';",
+            `import health from ${JSON.stringify(healthRoute)};`,
+            'const api = new Hono();',
+            'api.on(health.method, health.path, (c) => health.handler(c));',
+            'const root = new Hono();',
+            "root.route('/api', api);",
+            "const response = await root.request('/api/health');",
+            'console.log(JSON.stringify(await response.json()));',
+          ].join('\n'),
+          resolveDir: root,
+          sourcefile: 'bundled-health-identity.integration.ts',
+          loader: 'ts',
+        },
+        absWorkingDir: root,
+        bundle: true,
+        platform: 'node',
+        format: 'esm',
+        target: 'node22',
+        // defineTool only wraps route metadata; endpoint dispatch is outside
+        // this regression's scope. Keep the real health module and handler,
+        // while avoiding the unrelated full route-stack dependency graph.
+        plugins: [{
+          name: 'health-test-define-tool-shim',
+          setup(build) {
+            build.onResolve({ filter: /^@papercusp\/agent-mcp$/ }, (args) => ({
+              path: args.path,
+              namespace: 'health-test',
+            }));
+            build.onLoad({ filter: /.*/, namespace: 'health-test' }, () => ({
+              contents: 'export const defineTool = (definition) => definition;',
+              loader: 'js',
+            }));
+          },
+        }],
+        outfile,
+        define: {
+          __PAPERCUSP_BUNDLED_SIDECAR__: 'true',
+          __PAPERCUSP_BUNDLED_SOURCE_SHA__: JSON.stringify(bundleSha),
+        },
+      });
+
+      const child = spawnSync(process.execPath, [outfile], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: { ...process.env, PAPERCUSP_BUILD_SHA: 'stale-env-sha' },
+      });
+      expect(child.error).toBeUndefined();
+      expect(child.status, child.stderr).toBe(0);
+      const output = child.stdout.trim().split('\n').at(-1) ?? '';
+      const health = JSON.parse(output) as { ok?: boolean; sha?: string };
+      expect(health.ok).toBe(true);
+      expect(health.sha).toBe(bundleSha);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 /**

@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-36: the release operator (:3070) serves every R-36 chunking path",
+  "framework": "operational",
+  "command": [
+    "curl -s http://127.0.0.1:3070/api/health (read buildSha)",
+    "dev:pipeline_position { path } for each of: packages/operator-core/lib/search/chunks/registry.ts, libs/generic/search/src/chunks/engine.ts, libs/papercusp/libs/db/sql/1242-text-chunks.sql, libs/papercusp/libs/db/sql/1266-text-chunks-parent-key-stats.sql, libs/generic/search/src/chunks/vector-leg.ts -> servingRuntimes[runtime=release-operator].{containsChange,buildSha,buildShaSource,unknownReason}",
+    "for each submodule-backed path: git -C <submodule> rev-parse <mainPin>:<subpath> vs <stagingPin>:<subpath> (blob compare inside the pinned gitlink, D-036)",
+    "git -C <submodule> diff --name-only <mainPin> <stagingPin> | grep -E 'chunks/|text-chunks' (no chunk path changed between pins)",
+    "git show <releaseSha>:packages/operator-core/lib/work-items.ts | grep -c \"scan: 'exact'\" (and the same at staging as a positive control)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T13:27:50.000Z",
+  "finishedAt": "2026-10-01T13:29:27.829Z",
+  "summary": "Release operator :3070 health buildSha f52b2457ba. dev:pipeline_position reports release-operator containsChange true (buildShaSource health, no unknownReason) for all five R-36 paths. positions.deployed is false on the four submodule-backed paths only because the superproject commit that last touched each path is a later whole-submodule gitlink bump; inside each pinned gitlink the served blob equals staging's, and the submodule commits between the main and staging pins change no chunk path (D-036). work-items.ts carries the exact-scan arm on both release and staging (grep count 1 each).",
+  "assertions": [
+    {
+      "id": "r36-release-operator-serves-all-paths",
+      "passed": true,
+      "evidence": "release-operator containsChange true, buildSha f52b2457ba, buildShaSource health, unknownReason null for registry.ts, engine.ts, 1242-text-chunks.sql, 1266-text-chunks-parent-key-stats.sql and vector-leg.ts."
+    },
+    {
+      "id": "r36-submodule-blobs-equal-staging",
+      "passed": true,
+      "evidence": "engine.ts 06ebb1afd7a0 = 06ebb1afd7a0 (pins 0d81792090 / 81d717526d); vector-leg.ts 6cee1b04acc7 = 6cee1b04acc7 (same pins); 1242-text-chunks.sql ec443d4a07a9 = ec443d4a07a9 (pins f6f98d941b / 36409c631e); 1266-text-chunks-parent-key-stats.sql 405502035be5 = 405502035be5 (same pins). Submodule diffs main pin to staging pin: libs/generic/search 26 files, 0 chunk paths; libs/papercusp 52 files, 0 chunk paths."
+    },
+    {
+      "id": "r36-work-items-exact-scan-arm-served",
+      "passed": true,
+      "evidence": "git show f52b2457ba5907070230db84820b17a410cb66d4:packages/operator-core/lib/work-items.ts | grep -c \"scan: 'exact'\" = 1 (file 553,493 bytes); staging positive control = 1."
+    }
+  ],
+  "plan": "generic-rag-chunking-2026-09-29",
+  "bar": "R-36",
+  "spec": "AUTO-BAR-R-36-P-016",
+  "planItem": "P-016",
+  "decisions": ["D-034", "D-035", "D-036"],
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "details": {
+    "releaseOperator": {
+      "port": 3070,
+      "healthSha": "f52b2457ba",
+      "healthReadAt": "2026-10-01T13:29:27.829Z",
+      "fullSha": "f52b2457ba5907070230db84820b17a410cb66d4"
+    },
+    "pipelinePosition": [
+      { "path": "packages/operator-core/lib/search/chunks/registry.ts", "releaseOperator": { "containsChange": true, "buildSha": "f52b2457ba", "buildShaSource": "health", "unknownReason": null }, "positionsDeployed": true },
+      { "path": "libs/generic/search/src/chunks/engine.ts", "releaseOperator": { "containsChange": true, "buildSha": "f52b2457ba", "buildShaSource": "health", "unknownReason": null }, "positionsDeployed": false },
+      { "path": "libs/papercusp/libs/db/sql/1242-text-chunks.sql", "releaseOperator": { "containsChange": true, "buildSha": "f52b2457ba", "buildShaSource": "health", "unknownReason": null }, "positionsDeployed": false },
+      { "path": "libs/papercusp/libs/db/sql/1266-text-chunks-parent-key-stats.sql", "releaseOperator": { "containsChange": true, "buildSha": "f52b2457ba", "buildShaSource": "health", "unknownReason": null }, "positionsDeployed": false },
+      { "path": "libs/generic/search/src/chunks/vector-leg.ts", "releaseOperator": { "containsChange": true, "buildSha": "f52b2457ba", "buildShaSource": "health", "unknownReason": null }, "positionsDeployed": false }
+    ],
+    "positionsDeployedFalseExplained": "For the four submodule-backed paths positions.deployed is an ancestry fact on the superproject commit that last touched the path (vector-leg.ts: targetSha 8f866234346b, inMain false). That commit is a later gitlink bump of the whole submodule, not a change to these files. Containment is a content question, so the blob comparison is the reading (D-036).",
+    "workItemsContentCheck": { "path": "packages/operator-core/lib/work-items.ts", "release": 1, "stagingPositiveControl": 1, "releaseFileBytes": 553493 }
+  },
+  "note": "[self-imposed under AUTO, owner directives #970/#1180] Reshaped at 13:40Z into operational-test-evidence v1 for testing:record-run; measurements unchanged from 13:28Z."
+}

@@ -51,8 +51,6 @@
  * success and fails loudly otherwise, so an absence cannot masquerade as a match.
  */
 
-import { projectedToolSourceFile } from '@papercusp/tooldef';
-
 import { getBuildInfo } from './build-info';
 import {
   blobAtCommit,
@@ -65,6 +63,7 @@ import {
 } from './candidate-contains';
 import { realGit } from './git-pipeline-position';
 import { integrationRoot } from './release-deploy-launch';
+import { resolveToolSourceFile } from './tool-source-file';
 
 /** Why a verdict could not be reached. Enumerated, not prose — a caller branches on it. */
 export type StalenessUnknownReason =
@@ -125,8 +124,12 @@ export type PathStaleness =
   | { state: 'unknown'; relPath: string; reason: StalenessUnknownReason };
 
 export interface ToolSchemaStalenessDeps {
-  /** Resolve a tool name to the absolute file that defined it (tooldef's registry). */
-  sourceFileFor: (toolName: string) => string | null;
+  /**
+   * Resolve a tool name to the absolute file that defined it. Production uses
+   * {@link resolveToolSourceFile}, which also answers inside a bundle (P-002); it is
+   * async because the bundled case reads the bundle once.
+   */
+  sourceFileFor: (toolName: string) => string | null | Promise<string | null>;
   /** The build sha the running process was started from, or null. */
   deployedSha: () => string | null;
   /** Absolute repo root the relative path is computed against, and git runs in. */
@@ -315,7 +318,7 @@ export async function toolSchemaStaleness(
 ): Promise<ToolSchemaStaleness> {
   const treeRef = deps.treeRef ?? 'staging';
 
-  const sourceFile = deps.sourceFileFor(toolName);
+  const sourceFile = await deps.sourceFileFor(toolName);
   if (!sourceFile) return { state: 'unknown', reason: 'tool-source-unknown' };
 
   const deployedSha = deps.deployedSha();
@@ -376,7 +379,7 @@ export async function toolFailureStalenessHint(
   try {
     const repoRoot = overrides?.repoRoot ?? integrationRoot();
     const verdict = await toolSchemaStaleness(toolName, {
-      sourceFileFor: overrides?.sourceFileFor ?? projectedToolSourceFile,
+      sourceFileFor: overrides?.sourceFileFor ?? resolveToolSourceFile,
       deployedSha: overrides?.deployedSha ?? (() => getBuildInfo().sha),
       repoRoot,
       git: overrides?.git ?? gitReadForRepo(realGit, repoRoot),

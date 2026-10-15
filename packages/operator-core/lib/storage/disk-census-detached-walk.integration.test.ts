@@ -1,0 +1,161 @@
+/**
+ * The census du walk survives the caller that started it (WI-6554700010009855): real du,
+ * real processes, real files. A caller that stops waiting stands in for a bg-host restart
+ * mid-walk; the next caller must ADOPT the still-running walk rather than start a second
+ * one, and a walk killed mid-run must be relaunched rather than read as a result.
+ */
+import { spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { runDuTree } from './disk-consumer-census';
+import {
+  DetachedWalkAbandoned,
+  readWalkState,
+  runDetachedDuWalk,
+  TIMEOUT_EXIT_STATUS,
+  walkProcessAlive,
+  type WalkLauncher,
+} from './disk-census-detached-walk';
+
+const linux = process.platform === 'linux';
+let base: string;
+let tree: string;
+const floorBytes = 1;
+const maxDepth = 2;
+
+/** stdio ignored, so the walk holds no pipe to this process and keeps running after we stop waiting. */
+function countingLauncher(): { launch: WalkLauncher; launches: number[] } {
+  const launches: number[] = [];
+  const launch: WalkLauncher = async (cmd, args, meta) => {
+    launches.push(meta.attempt);
+    const child = spawn(cmd, args, { stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
+    if (child.pid == null) throw new Error('no pid');
+    return { pid: child.pid, taskId: null, confined: true };
+  };
+  return { launch, launches };
+}
+
+/** du that waits `seconds` before walking, so a test can act mid-walk. */
+const slowDu = (seconds: number) => (duArgs: string[]): [string, string[]] => [
+  'sh',
+  ['-c', `sleep ${seconds}; exec du "$@"`, 'slow-du', ...duArgs],
+];
+
+async function waitUntil(pred: () => Promise<boolean> | boolean, ms = 10_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await pred()) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error('condition not met in time');
+}
+
+beforeAll(() => {
+  base = mkdtempSync(join(tmpdir(), 'census-walk-int-'));
+  tree = join(base, 'tree');
+  for (const [rel, kb] of [
+    ['a/one.bin', 64],
+    ['a/b/two.bin', 128],
+    ['c/three.bin', 32],
+  ] as const) {
+    const path = join(tree, rel);
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(path, Buffer.alloc(kb * 1024, 7));
+  }
+});
+
+afterAll(() => {
+  rmSync(base, { recursive: true, force: true });
+});
+
+describe.skipIf(!linux)('detached census walk (real du, real processes)', () => {
+  it('measures exactly what the in-process walk measures', async () => {
+    const reference = await runDuTree(tree, { floorBytes, maxDepth });
+    const { launch, launches } = countingLauncher();
+    const run = await runDetachedDuWalk(tree, { dir: join(base, 'w-plain'), floorBytes, maxDepth, launch, pollMs: 50 });
+    expect(launches).toEqual([1]);
+    expect(run.exitCode).toBe(0);
+    expect(run.timedOut).toBe(false);
+    expect(run.summary.rootBytes).toBe(reference.summary.rootBytes);
+    expect(run.summary.consumers).toEqual(reference.summary.consumers);
+  });
+
+  it('keeps walking after its caller stops waiting, and the next caller adopts it instead of starting over', async () => {
+    const dir = join(base, 'w-adopt');
+    const reference = await runDuTree(tree, { floorBytes, maxDepth });
+    const first = countingLauncher();
+    await expect(
+      runDetachedDuWalk(tree, {
+        dir,
+        floorBytes,
+        maxDepth,
+        launch: first.launch,
+        command: slowDu(2),
+        pollMs: 50,
+        signal: AbortSignal.timeout(400),
+      }),
+    ).rejects.toBeInstanceOf(DetachedWalkAbandoned);
+    const state = await readWalkState(dir);
+    expect(state?.pid).toBeTypeOf('number');
+    // The caller is gone; the walk is not.
+    expect(walkProcessAlive(state!)).toBe(true);
+
+    const second = countingLauncher();
+    const run = await runDetachedDuWalk(tree, { dir, floorBytes, maxDepth, launch: second.launch, command: slowDu(2), pollMs: 50 });
+    expect(first.launches).toEqual([1]);
+    expect(second.launches).toEqual([]);
+    expect(run.summary.rootBytes).toBe(reference.summary.rootBytes);
+    expect(run.summary.consumers).toEqual(reference.summary.consumers);
+    expect(run.walkNote).toContain('survived 1 operator restart(s)');
+    expect((await readWalkState(dir))?.adoptions).toBe(1);
+  });
+
+  it('relaunches a walk killed mid-run instead of reading its partial output', async () => {
+    const dir = join(base, 'w-killed');
+    const reference = await runDuTree(tree, { floorBytes, maxDepth });
+    const first = countingLauncher();
+    await expect(
+      runDetachedDuWalk(tree, {
+        dir,
+        floorBytes,
+        maxDepth,
+        launch: first.launch,
+        command: slowDu(30),
+        // The orphaned sleep under timeout(1) ends within 3 s of the kill below.
+        timeoutMs: 3_000,
+        pollMs: 50,
+        signal: AbortSignal.timeout(300),
+      }),
+    ).rejects.toBeInstanceOf(DetachedWalkAbandoned);
+    const state = (await readWalkState(dir))!;
+    process.kill(state.pid!, 'SIGKILL');
+    await waitUntil(() => !walkProcessAlive(state));
+
+    const second = countingLauncher();
+    const run = await runDetachedDuWalk(tree, { dir, floorBytes, maxDepth, launch: second.launch, pollMs: 50 });
+    expect(second.launches).toEqual([2]);
+    expect(run.exitCode).toBe(0);
+    expect(run.summary.rootBytes).toBe(reference.summary.rootBytes);
+    expect(run.walkNote).toContain('relaunched 1 time(s)');
+  });
+
+  it('is bounded by timeout(1) inside the walk, not by the caller', async () => {
+    const { launch } = countingLauncher();
+    const run = await runDetachedDuWalk(tree, {
+      dir: join(base, 'w-timeout'),
+      floorBytes,
+      maxDepth,
+      launch,
+      command: slowDu(10),
+      timeoutMs: 1_000,
+      pollMs: 50,
+    });
+    expect(run.exitCode).toBe(TIMEOUT_EXIT_STATUS);
+    expect(run.timedOut).toBe(true);
+    expect(run.summary.rootBytes).toBeNull();
+  });
+});

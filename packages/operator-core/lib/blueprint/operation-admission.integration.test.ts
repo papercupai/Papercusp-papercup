@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { Sql } from 'postgres';
+import type { JSONValue, Sql } from 'postgres';
+import postgres from 'postgres';
+import { randomUUID } from 'node:crypto';
 import { blueprintHash, compileAgentSpecification, pinPackageInput, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { projectBlueprintToPg } from './project-to-pg';
@@ -8,12 +10,17 @@ import {
   blueprintOperationAcceptanceSubjectRef, cancelBlueprintOperation,
   getBlueprintOperationResult, getBlueprintOperationStatus, readAcceptedProgramRootGuard,
   submitBlueprintOperation,
+  OperationEventBodySchema,
 } from './operation-service';
 import { seedContentHash } from '../cupboard/rubric-store';
 import { getRubric, provisionPinnedRubric } from '../rubrics';
-import { getWorkItem, setWorkItemState } from '../work-items';
+import { createWorkItem, getWorkItem, setWorkItemState } from '../work-items';
+import type { ExternalRuntimeProducerBinding, ExternalRuntimeStoredOutcome } from './operation-worker-binding';
+import { CompletionVerificationEvidenceSchema } from '../coord-lifecycle/records';
 import { runWithWorkspace } from '../workspace-als';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
+import { runBlueprintOperationAction } from '../harness/routines/blueprint-operation-action';
 // Copy-out mutation probes load the program executor from its mirrored path.
 // The normal integration suite uses the tracked module.
 const {
@@ -55,6 +62,9 @@ let db: OrgTestDb;
 let sql: Sql;
 
 beforeAll(async () => {
+  // Compile fixture contracts before cloning PG: stale operation identity pins
+  // should fail once at preflight, not cascade into every program scenario.
+  definition('fixture-preflight');
   db = await createOrgTestDb();
   sql = db.adminSql;
   connection.sql = sql;
@@ -70,6 +80,92 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(async () => db?.cleanup(), 120_000);
 
+describe.each(['feature', 'change'] as const)('external voice canonical %s settlement (D037)', (kind) => {
+  let sequence = 0;
+  async function producer(owner = 'voice-runtime-owner') {
+    const completionEvidence = CompletionVerificationEvidenceSchema.parse({
+      filesChanged: [], filesDeleted: [], verifiedHow: 'trusted-phone-retained-records',
+      testsRun: 'Binding and retained transcript digest checks',
+      testResult: 'Stored completion and independently read transcript agree',
+    });
+    const id = `WI-external-voice-${kind}-${++sequence}`;
+    const binding: ExternalRuntimeProducerBinding = {
+      kind: 'external-runtime-producer', workspaceId, harnessSlug, storageHarnessSlug: harnessSlug,
+      workItemId: id, executionOwnerId: owner, ownerId: 'phone-customer',
+      callKey: `inbound:${id}`, callId: `call:${id}`, runId: `run:${id}`, jobId: `job:${id}`,
+      configurationSha256: 'a'.repeat(64), registeredAt: '2026-10-07T13:00:00Z',
+    };
+    const item = await runWithWorkspace(workspaceId, () => createWorkItem({
+      id, kind, title: `Voice producer ${id}`, harness: harnessSlug, workspaceId,
+      createdBy: owner, assignee: owner, assignedBy: owner, admission: 'auto',
+      payload: { externalRuntimeProducer: binding as unknown as JSONValue },
+    }));
+    const stored: ExternalRuntimeStoredOutcome = {
+      binding, endReason: 'completed', endedAt: '2026-10-07T13:01:00Z',
+      transcriptSegmentCount: 2, retainedSegmentCount: 2,
+      transcriptSha256: 'b'.repeat(64), retainedSha256: 'b'.repeat(64), contentDeleted: false,
+    };
+    const opts = { harness: item.harness!, by: owner, completionRef: `phone:${id}`,
+      completionEvidence: { ...completionEvidence, summary: 'Actual retained call verified' },
+      externalRuntimeAttempt: { binding, updatedTs: Date.parse(item.updatedAt),
+        readStoredOutcome: async () => stored } };
+    return { id, owner, item, binding, stored, opts };
+  }
+  it('derives normal committed authority from a verified call and reads back canonical attribution', async () => {
+    const p = await producer();
+    const settled = await runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts));
+    // Unified WorkItem maps the issue family's physical resolved state to done.
+    expect(settled?.state).toBe('done');
+    const read = await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!));
+    expect(read).toMatchObject({ terminalOwner: p.owner, terminalCompletionRef: `phone:${p.id}`,
+      completionAuthority: 'committed', payload: { _completionEvidence: {
+        verifiedHow: 'trusted-phone-retained-records', filesChanged: [], filesDeleted: [],
+        externalRuntimeVerification: { binding: p.binding,
+          transcript: { endedAt: p.stored.endedAt, segmentCount: 2, sha256: 'b'.repeat(64) } },
+      } } });
+    await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)))
+      .rejects.toThrow(/stale|terminal/);
+    const replay = await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!));
+    expect(replay?.terminalCompletionRef).toBe(read?.terminalCompletionRef);
+    expect(replay?.payload).toEqual(read?.payload);
+  }, 90_000);
+  it('refuses completion without trusted host verification or with worker-lost evidence', async () => {
+    const p = await producer();
+    const { externalRuntimeAttempt: _attempt, ...untrusted } = p.opts;
+    await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', untrusted)))
+      .rejects.toThrow('governed attributed');
+    p.stored.endReason = 'worker-lost';
+    await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)))
+      .rejects.toThrow('no verified complete');
+    expect((await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!)))?.terminalOwner).toBeNull();
+  }, 90_000);
+  it('does not manufacture a legacy null-authority completion for a system identity', async () => {
+    const p = await producer('system:voice-runtime');
+    await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)))
+      .rejects.toThrow('legacy or system');
+    expect((await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!)))?.terminalOwner).toBeNull();
+  }, 90_000);
+  it.each(['holder', 'epoch', 'binding', 'cancelled'] as const)('fences a %s change between trusted verification and the terminal write', async (change) => {
+    const p = await producer();
+    p.opts.externalRuntimeAttempt.readStoredOutcome = async () => {
+      await sql`UPDATE harness_shared.work_items SET
+        taken_by = CASE WHEN ${change === 'holder'} THEN 'replacement-voice-owner' ELSE taken_by END,
+        updated_ts = CASE WHEN ${change === 'epoch'} THEN updated_ts + 1 ELSE updated_ts END,
+        payload = CASE WHEN ${change === 'binding'} THEN jsonb_set(payload, '{externalRuntimeProducer,runId}', '"replacement-run"'::jsonb)
+                       WHEN ${change === 'cancelled'} THEN payload || '{"blueprintCancellation":{}}'::jsonb ELSE payload END
+        WHERE workspace_id = ${workspaceId} AND feature_id = ${p.id}`;
+      return p.stored;
+    };
+    let result;
+    try { result = await runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)); }
+    catch (error) { expect(String(error)).toMatch(/binding|attempt|holder|claim/); }
+    expect(result).toBeFalsy();
+    const read = await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!));
+    expect(read?.terminalOwner).toBeNull();
+    expect(read?.assignee).toBe(change === 'holder' ? 'replacement-voice-owner' : p.owner);
+  }, 90_000);
+});
+
 const definition = (version: string) => compileAgentSpecification({
   source: {
     id: 'program-child-pin', version, workItem: { kind: 'feature' },
@@ -79,6 +175,8 @@ const definition = (version: string) => compileAgentSpecification({
       id: 'leaf', version,
       target: { kind: 'work-item', itemKind: 'feature' },
       execution: { kind: 'agent', role: 'worker' },
+      policy: { identity: { kind: 'identity', ref: 'program-leaf-test-worker',
+        revision: '1.0.0', contentHash: 'c'.repeat(64) } },
       inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
       acceptance: { resultSchema: { type: 'object' } },
     }, {
@@ -95,6 +193,148 @@ const definition = (version: string) => compileAgentSpecification({
       acceptance: { resultSchema: { type: 'object' } },
     }],
   },
+});
+
+describe('scheduled native operation admission governance (WI-10007318)', () => {
+  let sequence = 0;
+  async function schedule(capCents?: number, concurrency = 'skip') {
+    const specification = definition('routine-governance-v1');
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: specification.configuration as Blueprint, specification });
+    const routineId = `native-governance-${++sequence}`;
+    const templateSlug = `daily-${routineId}`;
+    const triggerConfig = capCents === undefined ? {} : { costCapCents: capCents };
+    const payload = { harnessSlug, templateSlug, operationHarnessSlug: harnessSlug, operationId: 'leaf', input: {} };
+    await sql`INSERT INTO harness_shared.routines
+      (id, workspace_id, install_slug, name, trigger_kind, trigger_config, target_role, payload_template, concurrency, active)
+      VALUES (${routineId}, ${workspaceId}, ${harnessSlug}, ${templateSlug}, 'cron',
+        ${sql.json(triggerConfig)}, 'system:blueprint-operation', ${sql.json(payload)}, ${concurrency}, true)`;
+    await sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, title, content, content_hash, status, schedule_active)
+      VALUES (${workspaceId}, ${harnessSlug}, ${templateSlug}, 'Native daily', '# Native daily', 'h', 'active', true)`;
+    const fire = (key: string, client = sql, withoutGuard = false) => runBlueprintOperationAction({ workspaceId, installSlug: harnessSlug,
+      routineId, workflowId: `${routineId}:${key}`, triggerConfig, payloadTemplate: payload }, { sql: client,
+      submit: (db, input, internal) => submitBlueprintOperation(db, input, withoutGuard ? undefined : {
+        ...internal, beforeNewAdmission: async tx => {
+          await internal?.beforeNewAdmission?.(tx);
+          // Widen the NEW-admission critical section so a missing row lock is
+          // exposed by independent clients rather than a lucky query ordering.
+          await tx`SELECT pg_sleep(0.15)`;
+        },
+      }),
+    });
+    const controls = async () => {
+      const [r] = await sql<Array<{ active: boolean; schedule_active: boolean; reason: string | null }>>`
+        SELECT r.active, p.schedule_active, r.metadata->'pause'->>'reason' AS reason
+          FROM harness_shared.routines r JOIN harness_shared.harness_plans p
+            ON p.workspace_id = r.workspace_id AND p.plan_slug = ${templateSlug} AND p.harness_slug = ${harnessSlug}
+         WHERE r.workspace_id = ${workspaceId} AND r.id = ${routineId}`;
+      return r;
+    };
+    return { fire, controls, routineId };
+  }
+  function admitted(result: Awaited<ReturnType<typeof runBlueprintOperationAction>>) {
+    const handle = result.diagnostics?.blueprintOperation as import('./operation-service').BlueprintOperationHandle;
+    expect(handle?.target.kind).toBe('work-item');
+    return handle;
+  }
+  async function settle(handle: ReturnType<typeof admitted>) {
+    if (handle.target.kind !== 'work-item') throw new Error('expected direct worker');
+    await sql`UPDATE harness_shared.harness_features_consolidated SET status = 'done'
+      WHERE workspace_id = ${workspaceId} AND feature_id = ${handle.target.id}`;
+    const [item] = await sql<Array<{ payload: { blueprintOperation: JSONValue } }>>`
+      SELECT payload FROM harness_shared.work_items WHERE workspace_id = ${workspaceId} AND feature_id = ${handle.target.id}`;
+    return { id: handle.target.id, pin: item.payload.blueprintOperation, receiptId: handle.receiptId };
+  }
+  async function usage(item: Awaited<ReturnType<typeof settle>>, cost: number | null, options: {
+    bound?: boolean; stale?: boolean; lower?: boolean; duplicateSession?: boolean; missingAttestation?: boolean; missingSample?: boolean;
+  } = {}) {
+    const sessionId = `native-session-${++sequence}`;
+    const launchSpec = options.bound === false ? {} : { acceptedOperation: { pin: item.pin } };
+    for (let i = 0; i < (options.duplicateSession ? 2 : 1); i++) {
+      await sql`INSERT INTO harness_shared.adv_sessions
+        (workspace_id, mode, role, feature, agent, session_id, launch_spec, coord_owner_id)
+        VALUES (${workspaceId}, 'console', 'worker', ${item.id}, 'codex', ${sessionId},
+          ${sql.json(launchSpec)}, ${`worker-${sessionId}`})`;
+    }
+    const provenance = { grain: 'request', modelSource: 'transcript', ...(options.lower ? { costBound: 'lower' } : {}) };
+    if (options.bound !== false && !options.missingAttestation) {
+      const event = OperationEventBodySchema.parse({ kind: 'model-attestation', receiptId: item.receiptId,
+        workItemId: item.id, runId: null, ownerId: `worker-${sessionId}`, nativeSessionId: sessionId,
+        requestId: randomUUID(), providerResponseId: `response-${sessionId}`, backend: 'codex', provider: 'openai',
+        requestedModel: 'gpt-6.1-sol', actualModel: 'gpt-6.1-sol', forwardedEffort: 'medium', effortSource: 'forwarded-request',
+        usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokenBasis: 'inclusive' }, source: 'gateway' });
+      if (event.kind !== 'model-attestation') throw new Error('expected model attestation fixture');
+      await sql`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
+        VALUES (${workspaceId}, 'blueprint-operation', ${`receipt:${item.receiptId}`}, ${`model-${sessionId}`}, ${sql.json(event)})`;
+    }
+    if (!options.missingSample) await sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, session_id, ts, bucket_key, provider, model_class, source, cost_usd, cost_source, price_table_version, usage_provenance)
+      VALUES (${workspaceId}, ${sessionId}, 1000, ${sessionId}, 'openai', 'default', 'interactive',
+        ${cost}, 'estimated', ${options.stale ? 'old-table' : PRICE_TABLE_VERSION}, ${sql.json(provenance)})`;
+  }
+  it('serializes distinct concurrent fires, preserves exact replay and blocks an accepted worker until settlement', async () => {
+    const s = await schedule();
+    const clientA = postgres(db.adminDsn, { max: 2, prepare: false, onnotice: () => {} });
+    const clientB = postgres(db.adminDsn, { max: 2, prepare: false, onnotice: () => {} });
+    let results;
+    try {
+      results = await Promise.all([s.fire('a', clientA), s.fire('b', clientB)]);
+      const control = await schedule();
+      const unguarded = await Promise.all([control.fire('a', clientA, true), control.fire('b', clientB, true)]);
+      expect(unguarded.filter(r => r.diagnostics?.blueprintOperation)).toHaveLength(2);
+    } finally {
+      await Promise.all([clientA.end({ timeout: 1 }), clientB.end({ timeout: 1 })]);
+    }
+    expect(results.filter(r => r.diagnostics?.blueprintOperation)).toHaveLength(1);
+    expect(results.filter(r => r.diagnostics?.blueprintOperationAdmission)).toHaveLength(1);
+    const first = results.find(r => r.diagnostics?.blueprintOperation)!;
+    const handle = admitted(first);
+    const key = results[0] === first ? 'a' : 'b';
+    expect(await s.fire(key)).toEqual(first);
+    expect(await s.fire('c')).toMatchObject({ diagnostics: { blueprintOperationAdmission: {
+      reason: 'overlap', admitted: false, paused: false } } });
+    await settle(handle);
+    expect(admitted(await s.fire('d')).receiptId).not.toBe(handle.receiptId);
+  }, 90_000);
+  it('sums native usage once per session and excludes unrelated unbound spend', async () => {
+    const s = await schedule(200);
+    const item = await settle(admitted(await s.fire('a')));
+    await usage(item, 0.80, { duplicateSession: true });
+    await usage(item, 0.80);
+    await usage(item, 500, { bound: false });
+    admitted(await s.fire('b'));
+    expect(await s.controls()).toMatchObject({ active: true, schedule_active: true });
+  }, 90_000);
+  it('pauses both native controls on priced spend over the threshold before admitting another worker', async () => {
+    const s = await schedule(200);
+    const first = await s.fire('a');
+    await usage(await settle(admitted(first)), 2.004);
+    expect(await s.fire('b')).toMatchObject({ diagnostics: { blueprintOperationAdmission: {
+      admitted: false, paused: true, reason: 'cost-exceeded', costCents: 201 } } });
+    expect(await s.controls()).toMatchObject({ active: false, schedule_active: false,
+      reason: 'blueprint_operation_routine_cost-exceeded' });
+    expect(await s.fire('a')).toEqual(first); // receipt replay still works after pause
+    expect(await s.fire('c')).toMatchObject({ diagnostics: { blueprintOperationAdmission: { reason: 'inactive' } } });
+  }, 90_000);
+  it.each(['missing', 'null-price', 'unbound', 'stale-price', 'lower-bound', 'missing-attestation', 'missing-sample'] as const)(
+    'pauses unknown %s cost rather than treating it as zero', async variant => {
+      const s = await schedule(200);
+      const item = await settle(admitted(await s.fire('a')));
+      if (variant !== 'missing') await usage(item, variant === 'null-price' ? null : 0.01, {
+        bound: variant !== 'unbound', stale: variant === 'stale-price', lower: variant === 'lower-bound',
+        missingAttestation: variant === 'missing-attestation', missingSample: variant === 'missing-sample' });
+      expect(await s.fire('b')).toMatchObject({ diagnostics: { blueprintOperationAdmission: {
+        reason: 'cost-unknown', admitted: false, paused: true, costCents: null } } });
+      expect(await s.controls()).toMatchObject({ active: false, schedule_active: false });
+    }, 90_000);
+  it('fails closed on a worker concurrency policy not implemented by short routine workflows', async () => {
+    const s = await schedule(undefined, 'cancel-prev');
+    admitted(await s.fire('a'));
+    expect(await s.fire('b')).toMatchObject({ diagnostics: { blueprintOperationAdmission: {
+      reason: 'unsupported-concurrency', admitted: false, paused: true } } });
+    expect(await s.controls()).toMatchObject({ active: false, schedule_active: false });
+  }, 90_000);
 });
 
 describe('program child admission pins the root specification', () => {

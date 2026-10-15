@@ -12,6 +12,9 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
 
 const FAKE_TX = { __fakeTx: true } as const;
 
@@ -36,12 +39,15 @@ vi.mock('@papercusp/tooldef', () => ({
   matchResource: vi.fn(() => null),
   getPromptCatalog: vi.fn(() => []),
   lookupPrompt: vi.fn(() => undefined),
+  toArgsJsonSchema: vi.fn(() => ({ type: 'object', properties: {} })),
+  applyEntityRefEnums: vi.fn(),
 }));
 
-import { dispatch, unwrapDoubleEncodedArgs } from './server';
+import { dispatch, getPrompt, listPrompts, startServer, unwrapDoubleEncodedArgs } from './server';
 import { resolveBearer } from './auth';
 import { withWorkspace } from '@papercusp/db-org';
-import { lookup, standardValidate } from '@papercusp/tooldef';
+import { getCatalog, getPromptCatalog, lookup, lookupPrompt, standardValidate } from '@papercusp/tooldef';
+import type { ToolDefinition } from '@papercusp/tooldef';
 
 type AnyFn = ReturnType<typeof vi.fn>;
 
@@ -55,11 +61,11 @@ const principalA = {
 };
 
 let handler: AnyFn;
-function makeTool(over: Record<string, unknown> = {}) {
+function makeTool(over: Partial<ToolDefinition> = {}): ToolDefinition {
   handler = vi.fn(async (value: unknown, ctx: { principal: { workspaceId: string }; tx: unknown }) => ({
     data: { echoed: value, ws: ctx.principal.workspaceId, tx: ctx.tx },
   }));
-  return { name: 'test:echo', capability: 'test:read', args: {}, handler, ...over };
+  return { name: 'test:echo', description: 'echo', capability: 'test:read', tier: 'low', args: z.object({}), handler: handler as ToolDefinition['handler'], ...over };
 }
 
 beforeEach(() => {
@@ -67,24 +73,95 @@ beforeEach(() => {
   vi.mocked(standardValidate).mockReset();
   vi.mocked(resolveBearer).mockReset();
   vi.mocked(withWorkspace).mockClear();
+  vi.mocked(getCatalog).mockReturnValue([]);
+  vi.mocked(getPromptCatalog).mockReturnValue([]);
+  vi.mocked(lookupPrompt).mockReset();
   // Default: a known tool, a valid principal, args validate cleanly.
-  vi.mocked(lookup).mockReturnValue(makeTool() as never);
-  vi.mocked(resolveBearer).mockResolvedValue(principalA as never);
+  vi.mocked(lookup).mockReturnValue(makeTool());
+  vi.mocked(resolveBearer).mockResolvedValue(principalA);
   vi.mocked(standardValidate).mockResolvedValue({ ok: true, value: { x: 1 } } as never);
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
+
+describe('MCP capability discovery and prompts', () => {
+  it.each([
+    { label: 'explicit grant', capabilities: ['test:read'], allowedTools: undefined, visible: true },
+    { label: 'wildcard grant', capabilities: ['*'], allowedTools: undefined, visible: true },
+    { label: 'scoped wildcard', capabilities: ['*'], allowedTools: ['test:echo'], visible: true },
+    { label: 'excluded scoped wildcard', capabilities: ['*'], allowedTools: ['test:other'], visible: false },
+    { label: 'empty scoped wildcard', capabilities: ['*'], allowedTools: [], visible: false },
+    { label: 'allowlist without capability', capabilities: [], allowedTools: ['test:echo'], visible: false },
+  ])('tools/list respects $label', async ({ capabilities, allowedTools, visible }) => {
+    vi.stubEnv('TEST_MCP_BEARER', 'b');
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      capabilities: new Set(capabilities),
+      ...(allowedTools === undefined ? {} : { allowedTools: new Set(allowedTools) }),
+    });
+    vi.mocked(getCatalog).mockReturnValue([makeTool()]);
+    const registration = vi.spyOn(Server.prototype, 'setRequestHandler');
+    await startServer({ stdio: false, bearerEnv: 'TEST_MCP_BEARER' });
+    const list = registration.mock.calls.find(([schema]) => schema === ListToolsRequestSchema)![1];
+    const result = await list({ method: 'tools/list' } as never, {} as never);
+    expect(result).toMatchObject({ tools: visible ? [{ name: 'test:echo' }] : [] });
+    expect(resolveBearer).toHaveBeenCalledWith('b');
+  });
+
+  it.each([
+    { label: 'explicit grant', capabilities: ['test:read'], allowed: true },
+    { label: 'wildcard grant', capabilities: ['*'], allowed: true },
+    { label: 'missing grant', capabilities: [], allowed: false },
+  ])('prompt discovery and rendering respect $label', async ({ capabilities, allowed }) => {
+    vi.mocked(resolveBearer).mockResolvedValue({ ...principalA, capabilities: new Set(capabilities) });
+    const render = vi.fn(async () => ({ messages: [] }));
+    const prompt = { name: 'test:prompt', description: 'test', capability: 'test:read', tier: 'low' as const, render };
+    vi.mocked(getPromptCatalog).mockReturnValue([prompt]);
+    vi.mocked(lookupPrompt).mockReturnValue(prompt);
+    expect(await listPrompts('b')).toMatchObject({ ok: true, prompts: allowed ? [{ name: 'test:prompt' }] : [] });
+    const result = await getPrompt({ name: 'test:prompt', args: {}, bearer: 'b' });
+    if (allowed) {
+      expect(result).toMatchObject({ ok: true, result: { messages: [] } });
+      expect(withWorkspace).toHaveBeenCalledWith('ws-A', expect.any(Function));
+      expect(render).toHaveBeenCalledTimes(1);
+    } else {
+      expect(result).toMatchObject({ ok: false, error: { code: 'missing_capability' } });
+      expect(withWorkspace).not.toHaveBeenCalled();
+      expect(render).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a scoped wildcard principal cannot discover or render prompts', async () => {
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      capabilities: new Set(['*']),
+      allowedTools: new Set(['test:echo']),
+    });
+    const render = vi.fn();
+    const prompt = { name: 'test:prompt', description: 'test', capability: 'test:read', tier: 'low' as const, render };
+    vi.mocked(getPromptCatalog).mockReturnValue([prompt]);
+    vi.mocked(lookupPrompt).mockReturnValue(prompt);
+    expect(await listPrompts('b')).toEqual({ ok: true, prompts: [] });
+    expect(await getPrompt({ name: 'test:prompt', args: {}, bearer: 'b' }))
+      .toMatchObject({ ok: false, error: { code: 'tool_scope_only' } });
+    expect(withWorkspace).not.toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+  });
+});
 
 describe('dispatch — control flow', () => {
   it('unknown tool → unknown_tool, never resolves a bearer', async () => {
-    vi.mocked(lookup).mockReturnValue(undefined as never);
+    vi.mocked(lookup).mockReturnValue(undefined);
     const res = await dispatch({ toolName: 'nope', args: {}, bearer: 'b' });
     expect(res).toMatchObject({ ok: false, error: { code: 'unknown_tool' } });
     expect(resolveBearer).not.toHaveBeenCalled();
   });
 
   it('unresolvable bearer → invalid_bearer, never runs the handler', async () => {
-    vi.mocked(resolveBearer).mockResolvedValue(null as never);
+    vi.mocked(resolveBearer).mockResolvedValue(null);
     const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'bad' });
     expect(res).toMatchObject({ ok: false, error: { code: 'invalid_bearer' } });
     expect(handler).not.toHaveBeenCalled();
@@ -95,11 +172,80 @@ describe('dispatch — control flow', () => {
     vi.mocked(resolveBearer).mockResolvedValue({
       ...principalA,
       capabilities: new Set(['something:else']),
-    } as never);
+    });
     const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
     expect(res.ok).toBe(false);
     expect(res.error?.code).toBe('missing_capability');
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('enforces an exact PI tool allowlist even when capabilities include the wildcard', async () => {
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      capabilities: new Set(['*']),
+      allowedTools: new Set(['test:other']),
+    });
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'authorization_denied' } });
+    expect(res.error?.message).toContain('not allowed to call tool');
+    expect(handler).not.toHaveBeenCalled();
+    expect(withWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('allows an exact PI-listed tool after the allowlist check', async () => {
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      capabilities: new Set(['*']),
+      allowedTools: new Set(['test:echo']),
+    });
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+    expect(res.ok).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows an exact PI-listed tool with an explicit capability', async () => {
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      allowedTools: new Set(['test:echo']),
+    });
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+    expect(res.ok).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('an exact PI tool allowlist does not grant a missing capability', async () => {
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      capabilities: new Set(['something:else']),
+      allowedTools: new Set(['test:echo']),
+    });
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'missing_capability' } });
+    expect(handler).not.toHaveBeenCalled();
+    expect(withWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('an empty PI tool allowlist denies even a wildcard capability', async () => {
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      capabilities: new Set(['*']),
+      allowedTools: new Set<string>(),
+    });
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'authorization_denied' } });
+    expect(handler).not.toHaveBeenCalled();
+    expect(withWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('a wildcard grant runs an unscoped tool in the bearer workspace', async () => {
+    vi.mocked(resolveBearer).mockResolvedValue({
+      ...principalA,
+      capabilities: new Set(['*']),
+    });
+    const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
+    expect(res.ok).toBe(true);
+    expect(withWorkspace).toHaveBeenCalledWith('ws-A', expect.any(Function));
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it('invalid args → invalid_args, handler not run', async () => {
@@ -225,7 +371,7 @@ describe('dispatch — control flow', () => {
 
   it('handler throw → handler_error carrying the message', async () => {
     vi.mocked(lookup).mockReturnValue(
-      makeTool({ handler: vi.fn(async () => { throw new Error('boom'); }) }) as never,
+      makeTool({ handler: vi.fn(async () => { throw new Error('boom'); }) }),
     );
     const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
     expect(res.ok).toBe(false);
@@ -247,7 +393,7 @@ describe('dispatch — control flow', () => {
       },
     });
     vi.mocked(lookup).mockReturnValue(
-      makeTool({ handler: vi.fn(async () => { throw pgError; }) }) as never,
+      makeTool({ handler: vi.fn(async () => { throw pgError; }) }),
     );
 
     const res = await dispatch({ toolName: 'test:echo', args: {}, bearer: 'b' });
@@ -341,7 +487,7 @@ describe('dispatch — workspace isolation', () => {
   });
 
   it('a different principal moves the scope — proving it tracks the resolved principal, not the input', async () => {
-    vi.mocked(resolveBearer).mockResolvedValue({ ...principalA, workspaceId: 'ws-OTHER' } as never);
+    vi.mocked(resolveBearer).mockResolvedValue({ ...principalA, workspaceId: 'ws-OTHER' });
     await dispatch({ toolName: 'test:echo', args: { x: 1 }, bearer: 'b' });
     expect(vi.mocked(withWorkspace).mock.calls[0][0]).toBe('ws-OTHER');
   });

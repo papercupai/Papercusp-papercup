@@ -116,6 +116,10 @@ afterEach(async () => {
   resetCachedReadStatsForTests();
 });
 
+/** scope-unique-identifiers P-003: every row carries its linked work-item fields; these
+ *  fixtures have no coverage links, so the item resolves through nothing. */
+const UNLINKED = { workItemId: null, workItemIds: [] };
+
 describe("plans:items bounded limit", () => {
   it("accepts a positive bounded limit and rejects invalid values", () => {
     expect(tool.args.safeParse({ harness: "papercup", limit: 1 }).success).toBe(true);
@@ -150,7 +154,7 @@ describe("plans:items bounded limit", () => {
       data: { items: Array<{ plan: string; item: { id: string } }> };
     };
 
-    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }) }]);
+    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }), ...UNLINKED }]);
     expect(M.getPlanRow).toHaveBeenCalledWith("plan-a", expect.anything());
     expect(M.listPlanIndexRows).not.toHaveBeenCalled();
   });
@@ -164,7 +168,7 @@ describe("plans:items bounded limit", () => {
       data: { items: Array<{ plan: string; item: { id: string } }> };
     };
 
-    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }) }]);
+    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }), ...UNLINKED }]);
   });
 
   it("EI-21913867956922477: accepts the plural `ids` selector as a compatibility alias for itemIds", () => {
@@ -186,7 +190,7 @@ describe("plans:items bounded limit", () => {
       data: { items: Array<{ plan: string; item: { id: string } }> };
     };
 
-    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }) }]);
+    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }), ...UNLINKED }]);
   });
 
   it("EI-21913867956922477: itemIds wins when both itemIds and ids are supplied", async () => {
@@ -203,7 +207,7 @@ describe("plans:items bounded limit", () => {
       data: { items: Array<{ plan: string; item: { id: string } }> };
     };
 
-    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-001" }) }]);
+    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-001" }), ...UNLINKED }]);
   });
 
   it("keeps different itemIds selections in separate cache entries", async () => {

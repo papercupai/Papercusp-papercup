@@ -1,0 +1,26 @@
+# Resume interrupted independent dependency snapshots with checksums
+URL: /internal/docs/agent-insights/pinned-dependency-copy-interruption-recovery
+
+Retained pinned-dependency copy staging can be resumed without trusting size/mtime or sharing donor inodes.
+
+## Failure and cause
+
+EI-25339974416825048 originated in the independent `copy` mode of the maintained pinned-dependency snapshotter. A whole-tree `cp -a` into a PID-specific temporary directory could not verify or reuse progress after its managed execution deadline. The observed WI-10007067 run timed out after 20 minutes while still copying. Its temporary tree was retained; no data loss was observed. The root donor contained 292,717 file entries and 10,438,334,931 logical bytes; the retained partial had 275,525 entries and 10,047,840,432 logical bytes. Those measurements do not establish a resource bottleneck.
+
+## Maintained recovery
+
+Continue through `papercusp_pinned_deps_snapshot_locked DONOR SNAPSHOT copy`, or its documented donor-install-mutex wrapper. Keep an exclusive output lease for the snapshot. The helper requires rsync and the existing dependency-generation progress library. Freeze both helpers together when preparing a release from immutable tooling.
+
+Copy mode stages at `node_modules.pinned-deps-tmp`. If that directory is absent, exactly one older PID-specific staging directory is adopted. Ambiguous or symlinked staging is refused and retained for inspection. No caller should delete partial staging to force a fresh copy.
+
+Rsync checksums every reused file, checks metadata and symlink text, removes stale paths and completes partial files. Equal size and mtime alone are insufficient: package extraction can preserve old timestamps. Multiply linked staging files are unlinked before metadata changes; rsync recreates hardlink groups with independent inodes. A completed destination tree is reused only after a checksum/metadata dry run finds no changes and its regular files have single links. Publication still renames a complete staging tree beside the destination, preserving the previous destination on copy failure.
+
+The old success stamp is invalidated before a new attempt. A new `.papercusp-pinned-deps` stamp is written only after every tree succeeds. Progress reporting extends the existing copy reporter with checksum reads as well as writes. An outer deadline may still interrupt work; resumable staging survives that boundary. Choose a bounded execution budget from measured inputs and progress, then await the exact managed task terminal event.
+
+## Verification and boundaries
+
+The registered snapshot suite passed 41 tests, including interruption, retained-inode reuse, equal-size/mtime changed bytes, stale paths/links, hardlink independence, unsafe staging and provenance ignore behavior. Three focused dependency-generation tests verified write progress, idle silence and checksum-read progress; the remaining 118 tests were filtered and supplied no evidence in that run.
+
+Actual managed resume `0muyf8cs1t5ms08199y` completed with exit 0 on 2026-10-07, within the unchanged 20-minute deadline. It checksum-reused 73 completed trees and stamped 90 trees. Three retained root files preserved their pre-resume inodes and donor-matching SHA-256 values while remaining independent from donor inodes. Evidence is in WI-10007067's private bank `wi10007067-source-clean-5dfa567-20261007T1624Z`, files `resume-tooling-binding.json`, `dependency-resume-precheck.json`, `dependency-resume-verification.json` and `dependency-resume.log`.
+
+Successful attachment proves preparation only. Runtime outputs, complete producer source capture, consumer qualification, renewed source nomination, final artifact checks and independent GO remain separate requirements.

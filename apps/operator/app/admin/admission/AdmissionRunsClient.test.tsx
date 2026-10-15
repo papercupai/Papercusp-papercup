@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import type { ReactElement } from "react";
 import type { WorkItemAdmissionSnapshot } from "@papercusp/operator-core/lib/work-items-admission-promoter";
+import { WORK_ITEM_PRESENTATION_LABELS } from "@papercusp/operator-core/lib/work-item-presentation-contract";
 
 let syncResult: {
   data: WorkItemAdmissionSnapshot[] | undefined;
@@ -146,6 +147,11 @@ function payload(
       readiness: {
         schemaVersion: "work-item-readiness-projection-v1",
         measuredAt: "2026-08-26T15:00:00.000Z",
+        presentation: {
+          population: 10, unit: 'work-item rows', writer: 'readWorkItemReadinessProjection', classifier: 'deriveWorkItemPresentationStage', mutuallyExclusive: true,
+          counts: { observation: 0, candidate: 2, unknown: 1, 'accepted-ready': 1, 'accepted-active': 1, 'accepted-blocked': 2, 'verified-completion': 1, 'terminal-other': 2 },
+          remainingBugs: 4, verifiedCompletions: 1,
+        },
         scope: {
           workspaceId: "papercusp-workspace",
           harnessSlug: "papercusp",
@@ -169,6 +175,8 @@ function payload(
           admissionUnreviewed: 1,
           pendingAgentReview: 1,
           revisionRequestedAgentReview: 3,
+          revisionReproductionValidation: 1,
+          revisionContentAdoptionCandidates: 1,
           legacyRevisionException: 1,
           readinessAbsentLegacy: 4,
           readinessReady: 3,
@@ -320,13 +328,24 @@ describe("AdmissionRunsClient", () => {
 
     const readiness = screen.getByRole("region", { name: "Queue readiness" });
     expect(readiness.textContent).toContain(
-      "Partition precedence: terminal → active → revision → review → held → build-ready → unknown",
+      "Partition precedence: terminal → active → revision → review → held → claimable → unknown",
     );
-    expect(readiness.textContent).toContain("Build-ready1");
+    expect(readiness.textContent).toContain("Claimable by writer policy1");
+    const stages = screen.getByRole('region', { name: 'Accepted work and intake' });
+    // Labels come from the shared presentation contract the component renders, so a label
+    // rename there cannot leave this assertion hard-coding a string nothing renders any more.
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS.candidate}2`);
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS['accepted-ready']}1`);
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS['accepted-active']}1`);
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS['accepted-blocked']}2`);
+    expect(stages.textContent).toContain(`${WORK_ITEM_PRESENTATION_LABELS['verified-completion']}1`);
+    expect(stages.textContent).toContain('10 root issue-family work-item rows');
+    expect(stages.textContent).toContain('Writer: readWorkItemReadinessProjection');
+    expect(screen.getByRole('link', { name: 'bulk review report' }).getAttribute('href')).toBe('/inbox');
     expect(readiness.textContent).toContain("Never claimed5oldest 3.0d");
     expect(readiness.textContent).toContain("Verified completions · 30d1");
     expect(readiness.textContent).toContain("Duplicate occurrences · 30d3");
-    expect(readiness.textContent).toContain("Build-ready expected cost$2.50");
+    expect(readiness.textContent).toContain("Claimable expected cost$2.50");
     expect(readiness.textContent).toContain("Reason facets overlap by design");
     expect(readiness.textContent).toContain("Revision requested: 3");
     expect(readiness.textContent).toContain("Legacy revision exception: 1");

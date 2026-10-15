@@ -10,8 +10,9 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/get-shape.test.ts
  */
-import { describe, expect, it } from "vitest";
-import { shapePlansGet } from "./get-shape";
+import { describe, expect, it, vi } from "vitest";
+import { applyPayloadTier, PAYLOAD_TIER_HARD_CEILING_CHARS } from "@papercusp/tooldef";
+import { shapePlansGet, summarizeProofHistory } from "./get-shape";
 
 function envelope() {
   return {
@@ -38,7 +39,6 @@ function envelope() {
           body: `body ${i} ${"z".repeat(800)}`,
         })),
         linkedFeatures: { "P-001": { featureId: "F-1", status: "todo", harnessSlug: "h" } },
-        planItemTests: { "P-001": { covered: 1 } },
         blockingIssues: { "P-002": ["EI-9"] },
       },
       { ok: false, slug: "missing", error: "not_found" },
@@ -101,11 +101,10 @@ describe("shapePlansGet trimmed", () => {
     expect(r.decisionsTruncated).toMatchObject({ total: 12, shown: 8 });
   });
 
-  it("drops UI decoration maps loudly, keeps blockingIssues", () => {
+  it("drops the UI decoration map loudly, keeps blockingIssues", () => {
     expect(r.linkedFeatures).toBeUndefined();
-    expect(r.planItemTests).toBeUndefined();
     expect(r.trimmedOmitted).toMatchObject({
-      fields: ["linkedFeatures", "planItemTests"],
+      fields: ["linkedFeatures"],
     });
     expect(r.blockingIssues).toEqual({ "P-002": ["EI-9"] });
   });
@@ -142,6 +141,40 @@ describe("shapePlansGet standard", () => {
     expect(sec.body).toBe("b".repeat(30_000));
     expect(sec.body_truncated).toBeUndefined();
     expect(sec.body_full_chars).toBeUndefined();
+  });
+
+  it('keeps a 51-decision `heading: "Decisions"` read intact for the MCP result-door', () => {
+    const body = Array.from({ length: 51 }, (_, i) =>
+      `### D-${String(i + 1).padStart(3, "0")} Decision ${i + 1}\n\n${"decision-body-".repeat(55)}`,
+    ).join("\n\n");
+    const data = {
+      ok: true,
+      results: [
+        {
+          ok: true,
+          slug: "plan-with-51-decisions",
+          heading: "Decisions",
+          section: { heading: "Decisions", level: 2, body },
+        },
+      ],
+    };
+    const shape = {
+      trimmed: (value: unknown) => shapePlansGet(value, "trimmed"),
+      standard: (value: unknown) => shapePlansGet(value, "standard"),
+    };
+    const out = applyPayloadTier({
+      toolName: "plans:get",
+      shape,
+      response: { data },
+      tier: "full",
+      args: { slug: "plan-with-51-decisions", heading: "Decisions" },
+      deferHardCeilingToResultDoor: true,
+      log: vi.fn(),
+    });
+
+    expect(JSON.stringify(data).length).toBeGreaterThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    expect((out.data as typeof data).results[0]!.section.body).toBe(body);
+    expect(out.payloadProjection).toBeUndefined();
   });
 
   it("still caps an unmarked section body", () => {
@@ -273,5 +306,166 @@ describe("shapePlansGet: narrowed decision reads keep COMPLETE bodies (EI-215732
     expect(decisions).toHaveLength(1);
     expect(decisions[0]!.body).toBe("short");
     expect(decisions[0]!.body_truncated).toBeUndefined();
+  });
+});
+
+// oversized-tool-results-reduction-2026-10-12 P-006: shipReadiness carries the BAR
+// snapshot, whose bars[].proof.history re-listed every evidence row with raw
+// `details` (measured ~93% of a 1.5MB snapshot). Browse tiers summarize the rows.
+describe("shapePlansGet: shipReadiness proof history is summarized, verdict kept", () => {
+  function proofRow(id: number, specId: string, overall: string, reasons: string[], active = true) {
+    return {
+      id,
+      specId,
+      evidenceKind: "test",
+      activeAttempt: active,
+      details: { measurementPin: "m".repeat(2_000) },
+      currentness: { overall, staleReasons: reasons, unknownReasons: [], dimensions: { spec: overall } },
+    };
+  }
+  function shipEnvelope() {
+    return {
+      ok: true,
+      results: [
+        {
+          ok: true,
+          slug: "plan-x",
+          shipReadiness: {
+            satisfied: false,
+            code: "bar_snapshot_proof_stale",
+            repairAction: "rebind",
+            acceptanceBarContractSnapshot: {
+              contentHash: "h",
+              bars: [
+                {
+                  barKey: "R-1",
+                  readiness: { state: "blocked" },
+                  proof: {
+                    state: "stale",
+                    currentEvidence: 1,
+                    staleEvidence: 3,
+                    history: [
+                      proofRow(1, "S-1", "stale", ["spec-stale"]),
+                      proofRow(2, "S-2", "stale", ["spec-stale", "source-stale"]),
+                      proofRow(3, "S-1", "stale", ["spec-stale"]),
+                      proofRow(4, "S-3", "current", []),
+                      proofRow(5, "S-1", "stale", ["spec-stale"], false),
+                    ],
+                  },
+                },
+                { barKey: "R-2", proof: { state: "missing", currentEvidence: 0, staleEvidence: 0, history: [] } },
+              ],
+            },
+          },
+        },
+      ],
+    };
+  }
+  type Bar = { barKey: string; readiness?: unknown; proof: Record<string, unknown> };
+  const barsOf = (shaped: unknown) =>
+    ((shaped as { results: Array<{ shipReadiness: { acceptanceBarContractSnapshot: { bars: Bar[] } } }> })
+      .results[0]!.shipReadiness.acceptanceBarContractSnapshot.bars);
+
+  for (const tier of ["trimmed", "standard"] as const) {
+    it(`${tier}: replaces rows with an in-band summary of the ACTIVE rows`, () => {
+      const input = shipEnvelope();
+      const shaped = shapePlansGet(input, tier) as { results: Array<{ shipReadiness: Record<string, unknown> }> };
+      const sr = shaped.results[0]!.shipReadiness;
+      expect(sr.satisfied).toBe(false);
+      expect(sr.code).toBe("bar_snapshot_proof_stale");
+      expect(sr.repairAction).toBe("rebind");
+      const [bar] = barsOf(shaped);
+      expect(bar!.readiness).toEqual({ state: "blocked" });
+      expect(bar!.proof.history).toBeUndefined();
+      expect(bar!.proof.staleEvidence).toBe(3);
+      const summary = bar!.proof.historySummary as {
+        rows: number;
+        activeRows: number;
+        byCurrentness: Record<string, number>;
+        reasons: Array<{ reason: string; count: number; sampleSpecIds: string[]; sampleIds: unknown[] }>;
+        rowsCut: string;
+      };
+      expect(summary.rows).toBe(5);
+      expect(summary.activeRows).toBe(4);
+      expect(summary.byCurrentness).toEqual({ stale: 3, current: 1 });
+      expect(summary.reasons[0]).toEqual({
+        reason: "spec-stale",
+        count: 3,
+        sampleSpecIds: ["S-1", "S-2"],
+        sampleIds: [1, 2, 3],
+      });
+      expect(summary.reasons[1]).toMatchObject({ reason: "source-stale", count: 1, sampleIds: [2] });
+      expect(summary.rowsCut).toContain("TRUNCATED 5 proof rows");
+      expect(summary.rowsCut).toContain("payloadTier:'full'");
+      expect(JSON.stringify(shaped)).not.toContain("m".repeat(100));
+      // the caller's object is not mutated (one cached read serves every tier)
+      expect(input.results[0]!.shipReadiness.acceptanceBarContractSnapshot.bars[0]!.proof.history).toHaveLength(5);
+    });
+  }
+
+  // Second cut (2026-10-13): a default-tier body still spilled at the door, whose notice
+  // routes to payloadTier:'full', so callers escalated to 98-842KB reads. Falsifier: a long
+  // prose field survives in full, its length is lost, a short one is altered, the revision
+  // pins keep their rows, or the verdict changes.
+  for (const tier of ["trimmed", "standard"] as const) {
+    it(`${tier}: clips bar contract prose to a marked head and turns revision pins into counts`, () => {
+      const input = shipEnvelope();
+      const snap = input.results[0]!.shipReadiness.acceptanceBarContractSnapshot as unknown as Record<string, unknown> & {
+        bars: Array<Record<string, unknown>>;
+      };
+      snap.bars[0]!.requirement = "r".repeat(1_900);
+      snap.bars[0]!.method = "short method";
+      snap.bars[1]!.falsifier = "f".repeat(300);
+      snap.sourceRevisions = {
+        subjectPlan: 7,
+        rubricPlan: 3,
+        clauses: Array.from({ length: 40 }, (_, i) => ({ specId: `S-${i}`, revision: 1, contentHash: "h".repeat(64) })),
+        workContracts: [],
+        scorecardIds: ["sc-1", "sc-2"],
+      };
+      const shaped = shapePlansGet(input, tier) as {
+        results: Array<{ shipReadiness: { satisfied: boolean; code: string; acceptanceBarContractSnapshot: Record<string, unknown> } }>;
+      };
+      const sr = shaped.results[0]!.shipReadiness;
+      expect(sr.satisfied).toBe(false);
+      expect(sr.code).toBe("bar_snapshot_proof_stale");
+      const [bar0, bar1] = barsOf(shaped) as unknown as Array<Record<string, unknown>>;
+      expect(String(bar0!.requirement).length).toBeLessThanOrEqual(160);
+      expect(String(bar0!.requirement)).toMatch(/TRUNCATED/);
+      expect(bar0!.requirement_full_chars).toBe(1_900);
+      expect(bar0!.method).toBe("short method");
+      expect(bar0).not.toHaveProperty("method_full_chars");
+      expect(bar1!.falsifier_full_chars).toBe(300);
+      const outSnap = sr.acceptanceBarContractSnapshot;
+      expect(outSnap.proseCut).toContain("payloadTier:'full'");
+      const revisions = outSnap.sourceRevisions as Record<string, unknown>;
+      expect(revisions.subjectPlan).toBe(7);
+      expect(revisions.clauses).toEqual({ count: 40 });
+      expect(revisions.scorecardIds).toEqual({ count: 2 });
+      expect(revisions.workContracts).toEqual([]);
+      expect(revisions.rowsCut).toContain("payloadTier:'full'");
+      expect(JSON.stringify(shaped)).not.toContain("r".repeat(200));
+      // the caller's object is not mutated (one cached read serves every tier)
+      expect(snap.bars[0]!.requirement).toHaveLength(1_900);
+      expect((snap.sourceRevisions as { clauses: unknown[] }).clauses).toHaveLength(40);
+    });
+  }
+
+  it("leaves a bar with an empty history, and a verdict without a snapshot, untouched", () => {
+    const shaped = shapePlansGet(shipEnvelope(), "trimmed");
+    expect(barsOf(shaped)[1]!.proof.history).toEqual([]);
+    const unavailable = {
+      ok: true,
+      results: [{ ok: true, slug: "p", shipReadiness: { satisfied: false, unavailableReason: "resolver-unavailable" } }],
+    };
+    const out = shapePlansGet(unavailable, "trimmed") as { results: Array<{ shipReadiness: unknown }> };
+    expect(out.results[0]!.shipReadiness).toBe(unavailable.results[0]!.shipReadiness);
+  });
+
+  it("caps reason groups per bar and says how many were omitted", () => {
+    const rows = Array.from({ length: 11 }, (_, i) => proofRow(i, `S-${i}`, "stale", [`reason-${i}`]));
+    const summary = summarizeProofHistory(rows) as { reasons: unknown[]; reasonsOmitted?: number };
+    expect(summary.reasons).toHaveLength(8);
+    expect(summary.reasonsOmitted).toBe(3);
   });
 });

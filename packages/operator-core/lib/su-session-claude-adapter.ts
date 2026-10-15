@@ -14,6 +14,7 @@ import { basename, join } from 'node:path';
 import {
   assertNeverSuSession,
   type OpenCardSnapshot,
+  type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
@@ -23,7 +24,7 @@ import {
 
 import { getAdvSession } from './adv-sessions';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   injectIntoHostWithConfirmation,
   interruptViaPty,
   shutdownViaPty,
@@ -40,6 +41,7 @@ import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-sess
 import { SuOwnerTurnReceiptMatcher, type SuOwnerTurnReceiptRef } from './su-session-commands';
 import { findSessionTranscript } from './claude-sessions';
 import { gatewayServedAccountForOwner } from './compaction-usage';
+import { claudeAssistantUsage, claudeResultUsage, claudeTodoPlan } from './su-session-usage';
 import { createAgentTimelineParser } from './endpoint-route/routes/harness/streams';
 import type { TimelineLineParser } from './session-timeline-parsers';
 import {
@@ -69,10 +71,11 @@ export interface ClaudeSuRuntimeBinding {
 
 export type ClaudeNativeCommandVerdict =
   | { ok: true }
-  | { ok: false; code: string; message: string; retryable: boolean };
+  | ({ ok: false } & SuSessionRefusal);
 
 export interface ClaudeSuSessionControls {
-  ownerTurn(input: { ownerId: string; turnId: string; content: string }): Promise<ClaudeNativeCommandVerdict>;
+  /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<ClaudeNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<ClaudeNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -86,6 +89,8 @@ export interface ClaudeSuSessionControls {
 export interface ClaudeSuSessionDescriptorOptions {
   agentChatId: string;
   model?: string | null;
+  /** D-026: the approvals mode the engine launched in, when it has one. */
+  approvals?: SuApprovalsMode;
   accountRoute?: string | null;
   servedAccountReader?: SuSessionServedAccountReader;
   carry?: 'warm' | 'cold';
@@ -102,6 +107,11 @@ export interface CreateClaudeSuSessionAdapterOptions extends ClaudeSuSessionDesc
   runtimeReady?: () => boolean;
   ownerTurnCorrelation?: 'command' | 'transport';
   cardSource?: 'transcript' | 'transport';
+  /** Who reports a failed `result` record as an error event. The structured
+   * engine reports it itself (with the native errors and child stderr), so it
+   * sets 'transport'; reporting it here too gave every refused turn two error
+   * events, which PUI drew as two failure lines (pui-chat-first-ux P-025). */
+  resultErrorSource?: 'transcript' | 'transport';
   /** Saved owner turns for this session (production: loadSuOwnerTurnReceipts).
    * A replayed prompt takes its saved turn id; without them it gets a fresh one. */
   ownerTurnReceipts?: (identity: SuSessionDescriptor<'claude'>['identity']) => Promise<readonly SuOwnerTurnReceiptRef[]>;
@@ -173,7 +183,7 @@ function refused(code: string, message: string, retryable = true): Exclude<Claud
 function defaultControls(): ClaudeSuSessionControls {
   return {
     async ownerTurn({ ownerId, content }) {
-      const host = findLiveHost(ownerId);
+      const host = await findLiveHostAsync(ownerId);
       if (!host) return refused('runtime_unavailable', 'Claude has no live managed-PTY host');
       const delivered = await injectIntoHostWithConfirmation(host.sock, {
         mode: 'turn',
@@ -200,7 +210,7 @@ function defaultControls(): ClaudeSuSessionControls {
         : refused('interrupt_unavailable', 'Claude runtime could not be interrupted');
     },
     async resume({ ownerId }) {
-      return findLiveHost(ownerId)
+      return (await findLiveHostAsync(ownerId))
         ? { ok: true }
         : refused(
             'runtime_reconciliation_required',
@@ -256,11 +266,7 @@ export function claudeCapabilities(): SuSessionCapabilities {
         implementation: 'native',
         reason: 'Claude transcript records may include thinking blocks when the native runtime exposes them',
       },
-      usage: {
-        state: 'conditional',
-        implementation: 'native',
-        reason: 'Claude result records carry usage/cost metadata but the v1 SU-session event contract has no usage event',
-      },
+      usage: { state: 'supported', implementation: 'native' },
       compaction: {
         state: 'conditional',
         implementation: 'host',
@@ -272,8 +278,9 @@ export function claudeCapabilities(): SuSessionCapabilities {
         reason: 'PUI attached launches and resumptions use the native default permission policy; requests reach the owner as typed cards via canUseTool. Other managed engine callers must opt into toolApproval prompt.',
       },
       context: {
-        state: 'unsupported',
-        reason: 'the v1 SU-session contract carries no context event or descriptor field, so Claude context consumption stays inside the native runtime and never reaches the PUI',
+        state: 'conditional',
+        implementation: 'native',
+        reason: 'context used is reported from the first assistant message; the context window is known once a turn completes (result.modelUsage)',
       },
       modes: {
         state: 'conditional',
@@ -311,6 +318,7 @@ function commandRefusal(verdict: Exclude<ClaudeNativeCommandVerdict, { ok: true 
     code: verdict.code,
     message: verdict.message,
     retryable: verdict.retryable,
+    ...(verdict.liftsWhen ? { liftsWhen: verdict.liftsWhen } : {}),
   };
   return { status: 'refused', refusal };
 }
@@ -337,6 +345,7 @@ function descriptorFor(
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
+    ...(options.approvals ? { approvals: options.approvals } : {}),
     accountServed: null,
     accountRoute: options.accountRoute ?? null,
     carry: options.carry ?? 'warm',
@@ -419,6 +428,7 @@ export class ClaudeSuSessionAdapter {
   private lastErrorKey: string | null = null;
   private readonly transportCorrelatesTurns: boolean;
   private readonly transportHandlesCards: boolean;
+  private readonly transportReportsResultErrors: boolean;
   private streamingMessageId: string | null = null;
   private readonly textStreams = new Map<string, Map<number, ClaudeTextStream>>();
   private readonly servedAccountReader: SuSessionServedAccountReader;
@@ -434,6 +444,7 @@ export class ClaudeSuSessionAdapter {
     this.servedAccountReader = options.servedAccountReader ?? gatewayServedAccountForOwner;
     this.transportCorrelatesTurns = options.ownerTurnCorrelation === 'transport';
     this.transportHandlesCards = options.cardSource === 'transport';
+    this.transportReportsResultErrors = options.resultErrorSource === 'transport';
     this.ownerTurnReceipts = options.ownerTurnReceipts ?? null;
     this.controls ={ ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
@@ -639,6 +650,10 @@ export class ClaudeSuSessionAdapter {
       } as SuSessionEventInput<'claude'>);
     }
 
+    // D-029/D-031: context, token and cost measurements ride the descriptor.
+    const usage = claudeAssistantUsage(record) ?? claudeResultUsage(record, this.host.descriptor().model);
+    if (usage) this.host.updateUsage(usage);
+
     const recordId = firstString(record.uuid, record.id, record.message_id);
     if (!preserveLifecycle && recordIndicatesCompaction(record)) {
       this.host.transition('compacting', 'Claude native transcript compacted');
@@ -667,6 +682,8 @@ export class ClaudeSuSessionAdapter {
           type: 'tool', phase: 'started', turnId, callId, name,
           input: asJsonValue(entry.toolInput),
         } as SuSessionEventInput<'claude'>);
+        const plan = claudeTodoPlan(name, entry.toolInput);
+        if (plan) this.host.updatePlan(plan);
         if (name === 'AskUserQuestion' && !this.transportHandlesCards) {
           const card = cardFromClaudeQuestion(callId, turnId, entry.toolInput);
           if (card) {
@@ -697,7 +714,7 @@ export class ClaudeSuSessionAdapter {
 
     if (record.type === 'result') {
       const isError = record.is_error === true || String(record.subtype ?? '').toLowerCase().includes('error');
-      if (isError) {
+      if (isError && !this.transportReportsResultErrors) {
         const code = firstString(record.error_code, record.subtype) ?? 'claude_runtime_error';
         const message = firstString(record.result, record.error) ?? code;
         const key = `${code}\u0000${message}`;
@@ -791,7 +808,11 @@ export class ClaudeSuSessionAdapter {
         if (!this.transportCorrelatesTurns) this.currentTurnId = command.turnId;
         this.receiptMatcher.markUsed(command.turnId);
         context.transition('running', 'owner turn accepted');
-        verdict = await this.controls.ownerTurn({ ownerId, turnId: command.turnId, content: command.content });
+        verdict = await this.controls.ownerTurn({
+          ownerId, turnId: command.turnId, content: command.content,
+          ...(command.model ? { model: command.model } : {}),
+          ...(command.approvals ? { approvals: command.approvals } : {}),
+        });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
         break;
       case 'interrupt':

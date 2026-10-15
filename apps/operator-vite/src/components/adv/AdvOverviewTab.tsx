@@ -14,6 +14,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
+import { operatorUi } from '@papercusp/operator-ui/seam';
 import FleetRateControl from './FleetRateControl';
 import { isRunningAgent, type RosterAgent } from './AgentsRunningPill';
 
@@ -513,9 +514,11 @@ export function selectUnhealthyPanels(
 export default function AdvOverviewTab() {
   const potScope = useAdvScope();
   const lex = useLexicon();
-  // Writers only (parseAsString) — AdvShell owns the canonical enum parser, so
-  // writing a plain string round-trips identically. Mirrors AdvNowRunning.
-  const [, setActiveTab] = useQueryState('tab', parseAsString);
+  // Each host selects surfaces through its own URL key. Reuse the host seam
+  // rather than writing the desktop-only `tab` selector in the Portal.
+  const navigation = operatorUi().advNavigation;
+  const [, setDestination] = useQueryState(navigation?.param ?? 'tab', parseAsString);
+  const setActiveTab = (tab: string) => setDestination(navigation?.targets[tab] ?? tab);
   // Deep-link the inbox tier bar (Brief 21, ?inboxTier=) when a tile targets
   // the inbox. SEQUENTIAL awaits — the custom nuqs adapter merges each write
   // over the live search, so same-tick writes collide (see AdvShell).

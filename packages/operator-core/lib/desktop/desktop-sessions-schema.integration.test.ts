@@ -51,6 +51,10 @@ const MIGRATION_900 =
 const MIGRATION_1027 =
   process.env.PAPERCUSP_DESKTOP_KIND_KASMVNC_MIGRATION ??
   join(SQL_DIR, '1027-desktop-kind-kasmvnc.sql');
+// agent-multi-desktops-grid D-003: `name` + the live-scope index widened to include it.
+const MIGRATION_1386 =
+  process.env.PAPERCUSP_DESKTOP_SESSION_NAME_MIGRATION ??
+  join(SQL_DIR, '1386-desktop-session-name.sql');
 
 const WS = 'ws-desktop-sessions-test';
 
@@ -101,6 +105,7 @@ beforeAll(async () => {
   sql = db.sql;
   await applyMigrationForTest(sql, MIGRATION_900);
   await applyMigrationForTest(sql, MIGRATION_1027);
+  await applyMigrationForTest(sql, MIGRATION_1386);
 }, 180_000);
 
 afterAll(async () => {
@@ -156,6 +161,40 @@ describe('migration 900 — desktop_sessions registry', () => {
       await expect(
         insert({ workspace_id: 'ws-other', scope_ref: 'pot-tenant', display: ':906' }),
       ).resolves.not.toThrow();
+    });
+  });
+
+  describe('migration 1386 — many named desktops per agent (D-003)', () => {
+    it('ALLOWS one agent several live desktops with distinct names', async () => {
+      await insert({ scope: 'agent', scope_ref: 'agent-many', name: 'desktop-1', display: ':931' });
+      await insert({ scope: 'agent', scope_ref: 'agent-many', name: 'desktop-2', display: ':932' });
+      // The deployed-frame allocator's unnamed row coexists with the named ones.
+      await insert({ scope: 'agent', scope_ref: 'agent-many', name: null, kind: 'frame-slot', display: ':933' });
+    });
+
+    it('REJECTS a second live desktop under the same (agent, name)', async () => {
+      await insert({ scope: 'agent', scope_ref: 'agent-dupname', name: 'desktop-1', display: ':934' });
+      await expect(
+        insert({ scope: 'agent', scope_ref: 'agent-dupname', name: 'desktop-1', display: ':935' }),
+      ).rejects.toThrow(/desktop_sessions_live_scope_uq|duplicate key/i);
+    });
+
+    // CALIBRATION: unnamed rows (pots, frames) keep migration 900's one-live-row rule —
+    // a version of the index without COALESCE would admit two NULL-named rows here.
+    it('still REJECTS a second unnamed live row for one scope_ref', async () => {
+      await insert({ scope: 'agent', scope_ref: 'agent-frame', name: null, kind: 'frame-slot', display: ':936' });
+      await expect(
+        insert({ scope: 'agent', scope_ref: 'agent-frame', name: null, kind: 'frame-slot', display: ':937' }),
+      ).rejects.toThrow(/desktop_sessions_live_scope_uq|duplicate key/i);
+    });
+
+    it('REJECTS a name on a pot row, and a malformed name', async () => {
+      await expect(insert({ scope: 'pot', name: 'desktop-1', display: ':938' })).rejects.toThrow(
+        /desktop_sessions_name_scope_ck/,
+      );
+      await expect(
+        insert({ scope: 'agent', scope_ref: 'agent-badname', name: 'Bad Name', display: ':939' }),
+      ).rejects.toThrow(/desktop_sessions_name_format_ck/);
     });
   });
 

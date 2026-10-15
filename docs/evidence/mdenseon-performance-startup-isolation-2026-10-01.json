@@ -1,0 +1,949 @@
+{
+  "formatVersion": 1,
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItem": "WI-10004539",
+  "issue": "EI-24784676128638572",
+  "status": "controlled-five-block-CPU-performance-measured-and-verified; final-plan-acceptance-pending",
+  "controlledPerformanceReplacement": {
+    "decision": "mdenseon-adoption-measurements-2026-10-01#D-004",
+    "issue": "EI-24830817000496473",
+    "priorRunId": "performance-cpu-v6",
+    "priorTaskId": "0muq97prkq6ywtlpnl7",
+    "priorAcceptance": "diagnostic only: cancelled relevance inference overlapped performance-b2-gemma",
+    "overlap": { "start": "2026-10-02T01:47:15.828Z", "end": "2026-10-02T01:49:04.884Z", "sampleIntervals": 225, "sequenceRange": [158, 382], "latencyEffectMeasured": false },
+    "runId": "performance-cpu-v7",
+    "status": "completed exit 0; all fifteen controlled CPU receipts and the five-block summary verified",
+    "durableTaskId": "0muqcttoy1twa3cq2gm",
+    "deadline": "2026-10-02T14:39:07.723Z",
+    "admittedAt": "2026-10-02T02:54:16.311Z",
+    "controlledTerminalReceipt": {
+      "finishedAt": "2026-10-02T04:21:34.724Z",
+      "exitCode": 0,
+      "cells": 15,
+      "blocks": 5,
+      "samplesPerCell": 412,
+      "driverSha256": "06c167746b6c2581025ea3fc572fd0fbfdb33687aee57af549bf40607fc77a34",
+      "summarySha256": "a7ca1070c7b0b8a2c81f0a9a1dd12cbc8b2119eb56f6321a507612dc1a7b07a3",
+      "summaryBytes": 137130,
+      "verification": "verifyCompletedPerformanceRun passed: exact terminal driver and randomized schedule, every raw fingerprint, and rederived summary match. All fifteen retained sample files match report samples by sequence; each trace contains 412 client sends, requests and responses, with zero client/server errors. Six idle-timeout events are retained. Verification performs no inference.",
+      "controlledMeasurementComplete": true,
+      "modelAdoptionAuthorized": false,
+      "subsequentRelevanceRun": {
+        "taskId": "0muqglgxk1aw5s6h0dv",
+        "runId": "independent-relevance-v5",
+        "manifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+        "admittedAt": "2026-10-02T04:24:44.145Z",
+        "status": "completed exit 0; six relevance cells and rederived source-pair analysis verified",
+        "serializedLaunchVerified": true
+      }
+    },
+    "controlledCpuComparison": {
+      "sourceSummarySha256": "a7ca1070c7b0b8a2c81f0a9a1dd12cbc8b2119eb56f6321a507612dc1a7b07a3",
+      "estimator": "Median across the five fresh-process blocks of each within-block statistic. Not pooled percentiles, confidence intervals or significance tests.",
+      "latencyScope": "Warm HTTP/client/worker request latency, uncached; milliseconds.",
+      "throughputScope": "group wall time includes client/HTTP/worker plus collector bookkeeping; request latency stops before sample hashing/logging",
+      "resourceScope": "CPU process peak RSS includes JS/ONNX worker; GPU memory not applicable to verified CPU cells",
+      "gpuMemory": {
+        "status": "not-applicable",
+        "reason": "All fifteen declared and verified performance cells use CPU inference."
+      },
+      "arms": [
+        {
+          "armId": "mdenseon",
+          "blocks": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "warmMs": {
+            "query": {
+              "p50": 50.826217000001634,
+              "p95": 125.94546300000002,
+              "p99": 181.74385400000028
+            },
+            "document": {
+              "p50": 297.69570300000487,
+              "p95": 755.8347050000011,
+              "p99": 2001.5722289999976
+            }
+          },
+          "cachedMs": {
+            "query": {
+              "p50": 1.0798330000034184,
+              "p95": 2.379349999995611,
+              "p99": 2.379349999995611
+            },
+            "document": {
+              "p50": 1.033132000011392,
+              "p95": 2.425277999980608,
+              "p99": 2.425277999980608
+            }
+          },
+          "processToFirstResponseMs": 17158.837890625,
+          "firstQueryColdMs": 8344.197897,
+          "firstDocumentColdMs": 375.16377999999895,
+          "peakRssMiB": {
+            "median": 3456.6953125,
+            "range": [
+              3277.62890625,
+              3460.23046875
+            ]
+          },
+          "artifactBytes": 1262610859,
+          "requestGroupTextsPerSecond": [
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 10.8828329581317,
+              "range": [
+                4.424822221235056,
+                18.88009114401758
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 19.749678429872645,
+              "range": [
+                17.345462609163018,
+                22.01857971793752
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 19.115944097022457,
+              "range": [
+                9.622657210365166,
+                22.448245436858848
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 16.241289072473894,
+              "range": [
+                15.148066248111734,
+                23.7455448135765
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 19.707329910753742,
+              "range": [
+                12.030811159274014,
+                23.39900964313222
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 20.641500352106792,
+              "range": [
+                14.875231629487736,
+                22.976283301122937
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 3.6721127253340473,
+              "range": [
+                2.7671916765580713,
+                4.047170631712778
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 2.927803796712648,
+              "range": [
+                2.6476260030334187,
+                3.0730209183211303
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 2.7229152257697735,
+              "range": [
+                2.4730977627142865,
+                3.100188462704286
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 3.2713433161048266,
+              "range": [
+                3.022961389267695,
+                3.5064895763291966
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 3.328515868647238,
+              "range": [
+                3.1603762285465877,
+                3.368146142238928
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 3.2050928495496267,
+              "range": [
+                2.999407161714628,
+                3.5543347867410127
+              ]
+            }
+          ]
+        },
+        {
+          "armId": "gemma",
+          "blocks": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "warmMs": {
+            "query": {
+              "p50": 49.864206999998714,
+              "p95": 137.54685699999936,
+              "p99": 631.2677779999995
+            },
+            "document": {
+              "p50": 267.44954800000414,
+              "p95": 587.3651809999938,
+              "p99": 1304.0471510000061
+            }
+          },
+          "cachedMs": {
+            "query": {
+              "p50": 1.0282730000035372,
+              "p95": 1.6292930000054184,
+              "p99": 1.6292930000054184
+            },
+            "document": {
+              "p50": 0.9173700000101235,
+              "p95": 1.5829960000119172,
+              "p99": 1.5829960000119172
+            }
+          },
+          "processToFirstResponseMs": 11199.94140625,
+          "firstQueryColdMs": 2750.3128060000017,
+          "firstDocumentColdMs": 393.0038990000012,
+          "peakRssMiB": {
+            "median": 2573.75390625,
+            "range": [
+              2535.92578125,
+              2641.328125
+            ]
+          },
+          "artifactBytes": 1255326097,
+          "requestGroupTextsPerSecond": [
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 19.536479346978915,
+              "range": [
+                18.696522744978733,
+                23.077891993342565
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 21.392249270681802,
+              "range": [
+                20.284923583377577,
+                25.18141073886637
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 20.91772704704288,
+              "range": [
+                11.622089546578678,
+                22.067358922198657
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 21.529375361619103,
+              "range": [
+                19.749732921198646,
+                23.10742927731352
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 21.396259504308713,
+              "range": [
+                20.64110840868654,
+                23.649201928119414
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 21.77553356096959,
+              "range": [
+                20.16037164402743,
+                23.263816347041335
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 3.6659386161454033,
+              "range": [
+                3.2283937801158538,
+                4.318125974263023
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 3.2367198532949173,
+              "range": [
+                2.594537834661733,
+                3.2959068960354747
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 3.3142289418516917,
+              "range": [
+                2.904722890322206,
+                3.4147032583738177
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 4.02867365771941,
+              "range": [
+                3.737048214280726,
+                4.2002482387136455
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 4.089943445007818,
+              "range": [
+                3.50480189890754,
+                4.332509770748128
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 4.0162146402109355,
+              "range": [
+                3.670994121895745,
+                4.080080207522345
+              ]
+            }
+          ]
+        },
+        {
+          "armId": "harrier",
+          "blocks": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "warmMs": {
+            "query": {
+              "p50": 199.62282199999754,
+              "p95": 308.7506489999978,
+              "p99": 546.8532120000018
+            },
+            "document": {
+              "p50": 877.8653960000083,
+              "p95": 1757.6044450000045,
+              "p99": 2419.561658999999
+            }
+          },
+          "cachedMs": {
+            "query": {
+              "p50": 1.1906460000027437,
+              "p95": 2.1110339999722783,
+              "p99": 2.1110339999722783
+            },
+            "document": {
+              "p50": 0.9780759999994189,
+              "p95": 1.5178060000762343,
+              "p99": 1.5178060000762343
+            }
+          },
+          "processToFirstResponseMs": 17558.552978515625,
+          "firstQueryColdMs": 5272.284094999999,
+          "firstDocumentColdMs": 1184.842369,
+          "peakRssMiB": {
+            "median": 4438.8828125,
+            "range": [
+              4351.9921875,
+              4475.08203125
+            ]
+          },
+          "artifactBytes": 2104142056,
+          "requestGroupTextsPerSecond": [
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 5.052283766969165,
+              "range": [
+                3.934453747464707,
+                5.791411186344414
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 4.826677764767524,
+              "range": [
+                3.438604474249989,
+                5.755474142159545
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 4.908136448503776,
+              "range": [
+                4.4516131763897135,
+                6.262190699589274
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 4.455660102406892,
+              "range": [
+                4.234612415666525,
+                5.242914347078475
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 4.865022246608776,
+              "range": [
+                3.844105872645387,
+                4.948248219472111
+              ]
+            },
+            {
+              "kind": "query",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 4.608233958545007,
+              "range": [
+                3.7890234132014546,
+                5.28260771859449
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 1,
+              "median": 1.2722433080188247,
+              "range": [
+                0.9289487134275612,
+                1.3488634706546199
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 1,
+              "concurrency": 4,
+              "median": 0.9571905395374505,
+              "range": [
+                0.8162873412817012,
+                1.070975651952638
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 1,
+              "median": 0.9857224449438137,
+              "range": [
+                0.7743233378422778,
+                1.0287627767430934
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 4,
+              "concurrency": 4,
+              "median": 1.1937455391773957,
+              "range": [
+                1.1470473366420935,
+                1.2404495199837595
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 1,
+              "median": 1.185058070062973,
+              "range": [
+                1.1599686564006633,
+                1.3078387780949468
+              ]
+            },
+            {
+              "kind": "document",
+              "batchSize": 16,
+              "concurrency": 4,
+              "median": 1.2179214944478693,
+              "range": [
+                1.1632029842837912,
+                1.281164493544992
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "historicalPartialProgress": {
+      "observedAt": "2026-10-02T04:16:55Z",
+      "completedCells": 13,
+      "completeBlocks": 4,
+      "currentCell": "performance-b4-harrier",
+      "samplesPerCompletedCell": 412,
+      "verification": "All thirteen completed raw receipts bind the V7 manifest, owner and cell. Retained sample rows equal report samples by sequence, child PIDs are distinct, and constructed CPU execution is verified. Each completed trace contains 412 client sends, server requests and server responses, with zero client/server error events. Five idle-timeout events are retained across those traces; no failure or causal resource claim is inferred from them.",
+      "taskAttachment": "Exact task_id 0muqcttoy1twa3cq2gm successfully reattaches after restart using process_identity_and_cgroup; an added task prefix copied from compressed carry prose caused a caller error, corrected and retracted under EI-24837250650939095.",
+      "summaryPresent": false,
+      "fullPerformanceAcceptance": false
+    },
+    "firstVerifiedBlock": {
+      "block": 0,
+      "receipts": [
+        { "cell": "performance-b0-harrier", "sha256": "6aa2a24e17f40bca371e978567a9585093c61cf828a0a7935b5e5bf17248e46a", "bytes": 846209, "samples": 412, "pid": 3414861 },
+        { "cell": "performance-b0-mdenseon", "sha256": "6e4f2a708a4c968889cc2405295874019730b965fc2d2cc175de0c693b11a11d", "bytes": 520033, "samples": 412, "pid": 7379 },
+        { "cell": "performance-b0-gemma", "sha256": "4b51b8288ef540efa87d0213bd140ccbe3152b82bac53086fdefbc6559b6cbcf", "bytes": 490039, "samples": 412, "pid": 322503 }
+      ],
+      "verification": "Each raw receipt binds the V7 manifest and owner; retained sample rows equal report samples by sequence; distinct child PIDs and constructed CPU execution verified",
+      "fullPerformanceAcceptance": false
+    },
+    "priorTerminalReceipt": { "status": "completed", "exitCode": 0, "cells": 15, "blocks": 5, "samplesPerCell": 412, "summarySha256": "3131d0f3b94e5d0df1f43480c8cac147e81187f9b02b523486d80827862fb1c6", "summaryBytes": 137066, "clientServerErrorEvents": 0, "serverIdleTimeoutEvents": 6 },
+    "defectClosures": { "sourceDrift": "EI-24818909394662608 done; completion authority committed", "idleBoundaryTransport": "WI-10005060 done; completion authority committed", "performanceAcceptance": "WI-10004539 remains open and owned; V6 is diagnostic only", "historicalV4GapActor": "unobserved; no retrospective disk/resource attribution" },
+    "manifest": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v7.json", "sha256": "78f97d1b622d5507c80a44b9f2a0fe1b582897f94f14f671cfe08f302614bbc1", "bytes": 128183 },
+    "changedFields": ["runId", "frozenAt"],
+    "allOtherManifestFieldsIdentical": true,
+    "population": "All fifteen cells across the original five seeded randomized blocks; no outcome-based exclusions or mixed-manifest receipt relabelling",
+    "launchRecipe": "cache:validation/mdenseon-performance-WI10004539-20261001/launch-performance-v7-after-v6.sh",
+    "completionGuard": {
+      "source": "packages/operator-core/lib/memory/bench/sidecar-performance.ts",
+      "sourceSha256": "f02df776c9d2f68019423bd4799318bab552ed7d2148384ed4da6e0cdf8806a1",
+      "function": "verifyCompletedPerformanceRun",
+      "behavior": "Re-read completed driver, exact scheduled population, raw fingerprints and rederived aggregate before the next matrix can launch",
+      "tests": ["packages/operator-core/lib/memory/bench/sidecar-performance.test.ts", "packages/operator-core/lib/memory/bench/sidecar-performance.integration.test.ts"],
+      "suiteResult": "11 passed, 0 failed, 0 skipped; shared HEAD moved during the suite, so imported-source provenance was reported unknown",
+      "postCommitFocusedGuard": "1 passed, 0 failed; 6 unrelated tests excluded by testNamePattern",
+      "actualIncompletePreflight": "Refused running V6 before pc-heavy/model launch; V7 output root absent"
+    },
+    "activationReAudit": "Refused item_provenance_missing after complete source conversation reads; prior audit retained, owner-source acceptance proof remains open under P-009",
+    "fullPerformanceAcceptance": false,
+    "modelAdoptionAuthorized": false
+  },
+  "observedFailure": {
+    "attempt": "performance-cpu-v2",
+    "successfulCells": ["performance-b0-harrier", "performance-b0-mdenseon", "performance-b0-gemma"],
+    "rawSamplesPerSuccessfulCell": 412,
+    "failedCell": "performance-b1-mdenseon",
+    "failedAt": "2026-10-01T13:33:48.952Z",
+    "errorCode": "08P01",
+    "failureStage": "before cell preparation and samples",
+    "originalUnhandledPromiseOrigin": "not reproduced; do not claim backend readSetting lacked a catch"
+  },
+  "verifiedCause": {
+    "contract": "Local embedding evaluation is self-contained and requires no Postgres",
+    "origin": "embedder-eval-cli.ts statically imported memory/configure.ts for the optional OpenAI arm; configure imports execute initMemoryBackendSelection at module load",
+    "measurement": "Fresh Node startup opened two database connections even when the OpenAI arm was not requested",
+    "fix": "Import OpenAI configuration only inside the explicit OpenAI arm; performance children forbid real database acquisition",
+    "detectorFailure": "Existing in-process model/HTTP tests did not exercise the production CLI import graph without Vitest environment guards"
+  },
+  "verification": {
+    "test": "packages/operator-core/lib/memory/bench/embedder-eval-cli.integration.test.ts",
+    "procedure": "A fresh Node/tsx subprocess loads the CLI with VITEST removed and database URLs pointing to a local TCP server returning the recorded FATAL08P01 startup error. An intentional argument guard prevents artifact writes and inference; the subprocess remains alive long enough for import-time promises to start.",
+    "before": {"testRunId": 20393978, "connections": 2, "result": "failed zero-connection invariant"},
+    "after": {"testRunId": 20393985, "connections": 0, "result": "passed zero-connection invariant"},
+    "focusedPass": {
+      "runGroup": "49041260-b529-43c5-b9b0-13d3efbc9764",
+      "testRunIds": [20393984, 20393985, 20393986],
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        "packages/operator-core/lib/memory/bench/embedder-eval-cli.integration.test.ts",
+        "packages/operator-core/lib/memory/bench/sidecar-performance.integration.test.ts",
+        "packages/operator-core/lib/memory/bench/sidecar-performance.test.ts"
+      ]
+    },
+    "finalDriverPass": {
+      "recoveryRunId": "f53b6cb1-010a-4b3c-bccb-24cd566379c7",
+      "taskId": "0mupm2zgn5h8k9815ck",
+      "testedHead": "acfddd78b5",
+      "status": "pass",
+      "executedFiles": 3
+    },
+    "typecheck": {"namedFiles": 3, "typeReferencingFiles": 2, "errors": 0, "otherErrors": 0},
+    "distinguishingPrediction": {
+      "eagerOptionalConfiguration": "Moving the optional import removes both startup connections while the isolated HTTP route still admits all three model arms",
+      "databaseRequiredByLocalSidecar": "Removing the optional import leaves database connections or breaks the local HTTP route",
+      "actual": "Two connections become zero; real HTTP three-arm admission and collector guards pass"
+    }
+  },
+  "slowAttemptAudit": [
+    {"attempt": "v1", "defect": "Candidate-only builder map rejected incumbent HTTP requests", "fix": "Shared three-arm builder map plus driver population preflight", "guard": "Real HTTP/client admission of all three arms"},
+    {"attempt": "v2", "defect": "Unneeded operator database startup during local CLI measurement", "fix": "Lazy optional OpenAI import and database prohibition in performance children", "guard": "Fresh subprocess with unavailable Postgres and zero-connection invariant"},
+    {"attempt": "v3", "defect": "The collector discarded the nested fetch cause and frozen request identity", "fix": "Preserve both in the immutable failure receipt; EI-24788155955494594 committed done", "guard": "Real loopback socket-reset regression asserts UND_ERR_SOCKET and exact request identity", "originalTransportCause": "unknown", "testHead": "5c5dcc6ae8", "focusedTestsPassed": 12, "focusedFilesPassed": 3}
+  ],
+  "replacementRecipe": {
+    "runId": "performance-cpu-v3",
+    "manifestSha256": "96e4b21ec7c7361ad37fec45c99d8da2de386226ef0ed64de4a82381691c49c3",
+    "freezeAuditSha256": "26f130ba370a4498fe9096bbb6ae1afef4017def5354995120c632e32f9f6b56",
+    "sourceCommit": "19f6855b490e042516b152ad36610f8cb61be480",
+    "requestSha256": "c8b94379d002efce7ceaf5fa145af41994cc03023434b7562c7088c7d17234e1",
+    "performanceCells": 15,
+    "freshProcessBlocks": 5,
+    "device": "cpu",
+    "threads": {"intraOp": 4, "interOp": 1},
+    "sourceAndArtifactPreflight": "Every declared input, model artifact and worker fingerprint verified; only evaluator and collector changed",
+    "priorEvidence": "Three successful v2 cells, samples and failure logs remain immutable separate evidence. A changed cold-start recipe requires new cells; old receipts are not rebound to the new manifest.",
+    "fixedThresholdsChanged": false,
+    "modelAdoptionAuthorized": false
+  },
+  "resumedPerformanceRecipe": {
+    "runId": "performance-cpu-v4",
+    "status": "failed exit 1; one complete cell, one transport failure; no five-block performance acceptance",
+    "durableTaskId": "0mupymysdyf12r7nnrd",
+    "manifest": {
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v4.json",
+      "sha256": "1d32378329e3632b12a466282689cb07e2ca719dc9bb7f9095ebcfd0a1e0c5ee",
+      "bytes": 111182
+    },
+    "freezeAudit": {
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-v4-freeze-audit.json",
+      "sha256": "c9ba5196862685f8396075fb6a19c6e68f330d4765eb6012b97384895c1ede75",
+      "bytes": 3847
+    },
+    "changedInputs": ["evaluator", "loader", "collector"],
+    "performanceCells": 15,
+    "freshProcessBlocks": 5,
+    "requestSha256": "c8b94379d002efce7ceaf5fa145af41994cc03023434b7562c7088c7d17234e1",
+    "requestContract": {"warmSamples": 128, "rounds": 4, "batches": [1, 4, 16], "concurrency": [1, 4], "cachedSamples": 16, "serverConcurrency": 4},
+    "preflight": "Verified every selected input, model artifact and worker/runtime identity using existing manifest and arm validators; only the three named source pins changed from v3.",
+    "failureEvidence": "Nested transport causes and frozen request identity are retained; the driver does not enable the optional transport trace.",
+    "priorEvidence": "Original v2 successful cells, v3 failure, and cadence/trace diagnostics remain separate immutable evidence; none is rebound to this manifest.",
+    "fixedThresholdsChanged": false,
+    "modelAdoptionAuthorized": false
+  },
+  "resumedPerformanceOutcome": {
+    "finishedAt": "2026-10-01T20:12:19.992Z",
+    "exitCode": 1,
+    "completeCell": {
+      "id": "performance-b0-harrier",
+      "samples": 412,
+      "gridGroups": 12,
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v4/performance-b0-harrier.json",
+      "sha256": "6cba53c89b01c669675741030a5fb594e0033b1cd8283c4ec4b0321439966008"
+    },
+    "failedCell": {
+      "id": "performance-b0-mdenseon",
+      "completedResponseSamples": 172,
+      "phase": "batch-query-16x1",
+      "sequence": 172,
+      "errorCode": "ECONNRESET",
+      "gapAfterPreviousFullResponseMs": 9028.710170827515,
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v4/performance-b0-mdenseon.json.failure.json",
+      "sha256": "44d7b9d14d4e0790b74703c2ea7302b4d08b1037b4a881e0e6fe48012c7ec93b",
+      "samplePath": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v4/performance-b0-mdenseon.json.samples.jsonl",
+      "sampleSha256": "d2c090a3fc067e0fbc66a717c52a34b3583ba9ead681386e9d9a667deb5f4495",
+      "cause": "unknown; reset and response gap do not identify the closing actor",
+      "ownedDiagnosis": "WI-10005060"
+    },
+    "fullMatrixRetry": false,
+    "performanceComplete": false
+  },
+  "transportDiagnostic": {
+    "runId": "performance-transport-mdenseon-v1",
+    "selectedCell": "performance-b0-mdenseon",
+    "durableTaskId": "0mupz8qotdtt4lx1sre",
+    "status": "completed exit 0; transport cause unresolved",
+    "manifest": {
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-transport-mdenseon-v1.json",
+      "sha256": "9213b7f7919940e42b853f5b98e75649ed8ba6e6761ca612c672af9187120e64"
+    },
+    "freezeAudit": {
+      "path": "cache:validation/mdenseon-performance-WI10004539-20261001/transport-mdenseon-freeze-v1.json",
+      "sha256": "3eacb124937ef409a79aa6dbdd6d99f2dff287fb8ea147b29c2243d8332db733"
+    },
+    "method": "Existing CLI --transport-trace observer joins client sends to server idle/close lifecycle by TCP ports; same source, model, requests, CPU and thread recipe as v4.",
+    "outcome": {
+      "samples": 412,
+      "gridGroups": 12,
+      "traceEvents": 1325,
+      "clientSends": 412,
+      "serverRequests": 412,
+      "serverResponses": 412,
+      "idleTimeoutOrErrorEvents": 0,
+      "maximumSequentialResponseGapMs": 67.9078441086458,
+      "receiptPath": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-transport-mdenseon-v1/performance-b0-mdenseon.json",
+      "receiptSha256": "6ddcd922895ef9f91ce63a578e4f2341d7d1861d28a1a23dda66c0d70d189899",
+      "tracePath": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-transport-mdenseon-v1/performance-b0-mdenseon.json.transport.jsonl",
+      "traceSha256": "847a0a9f595d0472cea2827f7d4d7310a3ac41462916fbfd09905ce0101fb399"
+    },
+    "performanceComplete": false,
+    "limitation": "The diagnostic did not reproduce the original 9.03s response gap; it cannot prove the cause of that reset or fulfill the five-block performance bar."
+  },
+  "parentAdmissionRepair": {
+    "workItem": "WI-10005061",
+    "status": "locally verified and committed by automatic git-sync",
+    "source": "packages/operator-core/lib/memory/bench/sidecar-performance.ts",
+    "guard": "packages/operator-core/lib/memory/bench/sidecar-performance-admission.test.ts",
+    "mechanism": "Existing runGovernedOperation admits each serialized model child before spawn, retains its receipt until exit, forwards lineage to the PG-forbidden child, cancels failed starts and settles a bound successful receipt's measured peak RSS.",
+    "initialMemoryDemand": "Pinned artifact bytes, explicitly an estimate; measured peak RSS is recorded at settlement.",
+    "startupIsolation": "Governor setup is lazy and the admitting parent uses a dedicated client; model children keep PAPERCUSP_FORBID_REAL_PG=1.",
+    "committedSourceVerification": {
+      "observedHead": "ad184e821e67c905bc7976025833b62f2691daa1",
+      "guardCommit": "8505c109206b99249967b7cfa91a4adc00d19ccc",
+      "sourceSha256": "1a12b416ccaab95c9776885ccb24084d972eec26d10ed4a039f5ffd8543e40da",
+      "guardSha256": "c9b6902bd860e69a1d199e4df8293c95338e4aa2b74afb6922c590de3741d67f",
+      "verifiedHow": "Both HEAD blobs equal the local files and the source/guard SHA256 values retained with the passing focused verification; both paths have clean git status. This is current-build source evidence, not final-release evidence."
+    },
+    "focusedVerification": {
+      "recoveryRunId": "9bc8f169-0f4f-44c5-a78b-b46f30729763",
+      "ledgerRows": [20431735, 20431736, 20431737, 20431738, 20431741, 20431742],
+      "filesPassed": 6,
+      "skipCount": "not returned by router",
+      "provenance": "Local run overlapped HEAD 96a73d3d41 to 8a33b9bffc; both committed trees were identical. New regression was untracked during the run. Imported uncommitted source movement was not measured.",
+      "typecheckTask": "0muq00172edjitw1rci",
+      "typecheckErrors": 0,
+      "resourceGovernorBlockingCli": "passed"
+    },
+    "futureRecipeRequirement": "New full runs must pin the repaired source and permit the parent admission client to access Postgres. Historical v4 and diagnostic receipts keep their original source fingerprints."
+  },
+  "poolIdleRepair": {
+    "workItem": "WI-10005060",
+    "status": "synthetic causal class verified and corrected real-model diagnostic completed",
+    "runtime": { "node": "25.9.0", "builtinUndici": "7.24.4" },
+    "pairedControl": "Sequential pooled requests pass a blocked 10.5-second response-completion pause; the original concurrent batch topology reproduces ECONNRESET. The canonical guard joins the failed send, server idle timeout and client error by TCP port.",
+    "historicalLimit": "The original v4 closing actor and source of its nine-second gap were not observed. This reproduces and repairs the failure class; it does not attribute that historical gap to disk or establish its closing actor.",
+    "ruledOut": "Both the installed and actual built-in Undici sources select native timers for keep-alive; their fast timer clock is not the cause established by this test.",
+    "repair": "The collector awaits Promise-valued sample retention and the CLI uses fs.promises.appendFile, retaining evidence before advancing while allowing native idle socket callbacks to progress. Pooling, request counts, server timeouts and retry policy are unchanged.",
+    "focusedPair": { "runId": "3e0874f3-6930-4280-b0ec-181f4dcccb67", "testRunIds": [20436078], "passed": 2, "failed": 0, "skipped": 5 },
+    "fullAffectedVerification": {
+      "originalTimeoutRunId": "652781b2-3f36-4402-b318-29029744d318",
+      "detachedRecoveryRunId": "487f2652-e405-4e8f-a713-b376cc8c91f1",
+      "testRunIds": [20436118, 20436119, 20436121],
+      "filesPassed": 3,
+      "skipCount": "not returned by the detached router",
+      "scopedTypecheck": "requested files clean, zero errors; current-build tsc-service",
+      "provenance": "Saved exact detached command and terminal ledger recovered without launching duplicate tests. Local source edits were uncommitted; the router records named-test-path provenance and does not measure all imported worktree movement."
+    },
+    "sourcePins": {
+      "collectorSha256": "9c1dc085237a3709c652a9a4ebbf1d8d8c3635795e62521c8eafcc12735bc3f0",
+      "evaluatorSha256": "58ec56c40e61799ebf9f05d1ecc481818b607cdba62f46c1a7f17467b937d652",
+      "guardSha256": "5eaa609390644a6a2ce4d96b0876f0cceb67a82874fbd2cb3406b1f5c0d0908c"
+    }
+  },
+  "childLaunchRepair": {
+    "workItem": "EI-24813883590347330",
+    "rootCause": "runPerformanceChild inherited process.execArgv from a stdin/eval parent. The --input-type=module flag is invalid for its file-based TypeScript child, which exited before inference with ERR_INPUT_TYPE_NOT_ALLOWED.",
+    "repair": "Use the benchmark's existing explicit --import tsx file loader instead of inheriting parent eval or test-runner flags.",
+    "guard": "packages/operator-core/lib/memory/bench/sidecar-performance-admission.test.ts",
+    "verification": { "runId": "353b08d4-458d-4d77-8673-81c9058a3694", "testRunIds": [20437752], "passed": 6, "failed": 0, "skipped": 0, "scopedTypecheck": "requested source and guard clean, zero errors", "guardSha256": "f4349bb85ce0d2f95350b4940b356bf2a7e8676c45c075826ae37ba83763c024" },
+    "failedAttempt": {
+      "runId": "performance-transport-mdenseon-v2",
+      "manifestSha256": "ef7c23d5bd544249fc2298a245d678e04c4e22be5866b4b7ccb9189df752176d",
+      "log": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-transport-mdenseon-v2/performance-b0-mdenseon.json.log",
+      "inferenceStarted": false
+    }
+  },
+  "repairedTransportDiagnostic": {
+    "runId": "performance-transport-mdenseon-v3",
+    "selectedCell": "performance-b0-mdenseon",
+    "status": "completed exit 0; full selected cell retained and bound",
+    "manifest": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-transport-mdenseon-v3.json", "sha256": "0ad5032055882c922af19c553f4fe2a6c9e01511b453b5940c1fae04e5e4d460", "bytes": 111229 },
+    "audit": "cache:validation/mdenseon-performance-WI10004539-20261001/transport-mdenseon-freeze-v3.json",
+    "changedInputs": ["evaluator", "collector"],
+    "outcome": {
+      "samples": 412,
+      "retainedSamples": 412,
+      "gridGroups": 12,
+      "clientSends": 412,
+      "serverRequests": 412,
+      "serverResponses": 412,
+      "traceEvents": 1295,
+      "idleTimeoutOrErrorEvents": 0,
+      "maximumSequentialResponseGapMs": 8.534316000001127,
+      "raw": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-transport-mdenseon-v3/performance-b0-mdenseon.json", "sha256": "6164954ad28f95c8b609b104037e387804001a876203dfd13dc8c6c5b870e2e8", "bytes": 504277 },
+      "samplesArtifact": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-transport-mdenseon-v3/performance-b0-mdenseon.json.samples.jsonl", "sha256": "1f4e23e888b446860b0158d7d902590b83036280e65628da79bdda4bbc4fcf33", "bytes": 229523 },
+      "trace": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-transport-mdenseon-v3/performance-b0-mdenseon.json.transport.jsonl", "sha256": "ae24a825728b04a6c56ffba6dcadf6329eba81b741b8915860213b810827b28c", "bytes": 156481 },
+      "peakRssMiB": 3376.421875,
+      "gpuMemory": "not applicable to verified CPU cell",
+      "workerState": "alive, not disabled, no pending requests or recycling"
+    },
+    "preflight": "All selected source/input/artifact hashes, frozen CPU4x1 arm and worker/runtime identity verified before parent admission. Child retains PG prohibition and inherited governed receipt. Original request grid is unchanged.",
+    "modelPerformanceAcceptance": false
+  },
+  "correctedFullPerformanceRecipe": {
+    "runId": "performance-cpu-v5",
+    "status": "failed exit 1 at 2026-10-01T22:42:22Z after 11 of 15 cells; no full performance acceptance",
+    "durableTaskId": "0muq20t71176jtva1di",
+    "manifest": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v5.json", "sha256": "3f51a8e368a1e17482c2ed06130e893dbba2b3de41524f2139c1e7565c2895f1", "bytes": 111662 },
+    "audit": { "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-v5-freeze-audit.json", "sha256": "2ef523400d089a682dbb05f6c22cc397995b58cd88f9f06cde70dd7a9d367fad", "bytes": 2611 },
+    "changedInputs": ["evaluator", "collector"],
+    "transportTrace": true,
+    "cells": 15,
+    "freshProcessBlocks": 5,
+    "preflight": "Every selected input and all three arms' model/runtime artifacts were streamed and checked before launch. Parent admission, async retention, explicit child loader and their canonical guards are verified. The audit names each previous failure class and its guard.",
+    "sourceCommit": "0ce3904e0d4f04f4d383e39d146d1321e73bd95f",
+    "firstCompletedBlock": {
+      "block": 0,
+      "verifiedHow": "Each completed receipt binds the v5 manifest, owner and cell. Retained JSONL rows equal report.samples after joining by sequence. Each cell has 412 sends, requests and responses, zero client/server errors, 12 grid groups and verified CPU execution.",
+      "cells": [
+        { "id": "performance-b0-harrier", "samples": 412, "rawSha256": "afece85fe8022217bd5b39cb2a890d52c95043d7d6fd6d31d16f8c8479fbfe8d" },
+        { "id": "performance-b0-mdenseon", "samples": 412, "rawSha256": "89096869ec39d7d100c9edaa6802078a8fb3cd32a2da3d86c569a681229404f8" },
+        { "id": "performance-b0-gemma", "samples": 412, "rawSha256": "23960dd93fd660d936bd22c2b943c91cf3db1764acbaec57eac22707b83ea4b8" }
+      ],
+      "rawDirectory": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v5",
+      "fullComparisonComplete": false
+    },
+    "fixedThresholdsChanged": false,
+    "modelAdoptionAuthorized": false
+  },
+  "sourceIsolationRepair": {
+    "workItem": "EI-24818909394662608",
+    "status": "declared-executable launcher verified; complete executable runtime and replacement full matrix pending",
+    "observedFailure": {
+      "cell": "performance-b3-mdenseon",
+      "layer": "prepareMeasurementCell before inference",
+      "input": "libs/generic/memory/src/local-embedder-worker.ts",
+      "declaredSha256": "39eec98a15f58a83c753ddb0145932a78fa94754eb56e217027ddc544b3121f2",
+      "observedSha256": "da99aa129297a948657ace744a339875abc787a3c9d0cac1386bfb5181f13774",
+      "immutableCellLogSha256": "297a176414a3bc7307d65b767f9433b99fbec98157f29cf8d648c6748b30f85d",
+      "retainedSuccessfulCells": 11,
+      "fullSummaryProduced": false,
+      "newTransportResetObserved": false
+    },
+    "rootCause": "The driver spawned the evaluator from the live shared tree for every fresh cell, despite its manifest declaring an evaluator fingerprint. A legitimate source edit between cells caused the strict identity guard to stop the matrix. The fingerprint refusal was correct; executable source isolation was missing.",
+    "behavior": "runPerformanceChild launches the declared evaluator, supports declared runtimeLoader and runtimeTsconfig input references, and rechecks every cell input after queued admission and before spawn. Invalid or changed pins still refuse execution.",
+    "verification": {
+      "runId": "36388aba-71b6-4957-a7db-50af16b9a8f6",
+      "testRunIds": [20454573, 20454574],
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0,
+      "scopedTypecheck": "tsc-service: two changed files and measured related files clean, exit 0",
+      "recurrenceGuard": "Two real fresh synthetic children retain the original frozen worker bytes after the live source changes. A changed frozen worker refuses before spawn. Further guards cover evaluator drift during queued admission and declared loader/config references.",
+      "collectorSha256": "58ecfa0297cfe9ca11d6b8e09679fe7e0d145c426f6d7b243033d6e94a67aa5c",
+      "testSha256": "77d4d6f77cc4f424ba67e12cb908b35d5702437c84504be74e673b0c0dc86a72"
+    },
+    "privateSourceArtifact": {
+      "root": "cache:validation/mdenseon-performance-WI10004539-20261001/runtime-source-v1",
+      "sourceCommit": "09364fbb47734030fa639e00ca923e66652e6c63",
+      "submodules": 37,
+      "sourceFiles": 31403,
+      "sourceReceiptSha256": "893c0d8e4986567e804076b28403ac0ab658933961df121cfdf199f45fed958c",
+      "provenance": "Existing scripts/source-preview.mjs materializeCommit exports the committed tree and recorded submodule gitlinks. Two explicitly recorded, test-verified launcher source/test file versions are overlaid. The source commit is an ancestry anchor; exact executed bytes are identified by content hashes.",
+      "gitWorktreeCreated": false,
+      "dependencyGeneration": "v1-52a79f5301b4f403217bb09495982ff83af0febceb76b238b24bbef01a184c8d",
+      "dependencyMarkerSha256": "2943286afd69f2170b8de20059ec072460f38a5015d859889ac5be6167decacb",
+      "dependenciesMaterialized": true,
+      "completeExecutableRuntime": true
+    },
+    "runtimeQualification": {
+      "status": "copied CPU runtime and actual fresh mDenseOn child verified",
+      "contentQualification": {
+        "path": "cache:validation/mdenseon-performance-WI10004539-20261001/runtime-source-v1/runtime-content-qualification.json",
+        "sha256": "5fdbe90f9acb1e3e0f6d3a62ff494acdef484e3f447f111fe965764e660709ff",
+        "sourceRecordsChecked": 31403,
+        "dependencyRecordsChecked": 241451,
+        "nodeVersion": "v25.9.0",
+        "nodeSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "nativeIdentity": "Copied ONNX and Rust tokenizer bindings were loaded; loaded disk libraries and the kernel virtual mapping were identified by content. This is CPU evidence."
+      },
+      "modelCacheIdentity": "Gemma was independently copied from the original cache. The original Harrier cache path was absent; an existing private desktop dependency copy matched every declared graph, external-weight, tokenizer and config fingerprint and was independently copied into the frozen loader's cache. No model was downloaded or changed.",
+      "freshChild": {
+        "taskId": "0muq8u3gm1on0cie18s",
+        "exitCode": 0,
+        "manifestSha256": "cd96bac8a64d76a0bfde9b1036f93c3fd4ea154007a0675d9a415502d97c0b3c",
+        "receipt": {
+          "path": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-runtime-probe-v1/performance-b0-mdenseon.json",
+          "sha256": "6c42042e8da99f0d2854cff3bc1a02123c976561abf9146194bb7028d52ae7c7",
+          "bytes": 19482
+        },
+        "samples": 12,
+        "device": "cpu",
+        "intraOpThreads": 4,
+        "interOpThreads": 1,
+        "workerFallback": false,
+        "artifactLockReleased": true,
+        "diagnosticOnly": true,
+        "fullPerformanceAcceptance": false
+      },
+      "preRunAudit": "Preflight native/config/model paths before expensive work; classify the kernel virtual mapping separately from disk files; preserve verified content phases; verify exact donor fingerprints and reuse completed copies; retain immutable failed-attempt logs."
+    },
+    "reuse": "Uses the existing manifest input/parameter fields, performance child admission, source materializer and immutable dependency-generation independent copier. No additional service, tool, table or runtime configuration surface is introduced.",
+    "next": "Freeze and run a new full matching-route manifest against the qualified private runtime and original request grid. Preserve the historical V5 receipts and changed-source identity separately.",
+    "modelPerformanceAcceptance": false,
+    "fixedThresholdsChanged": false,
+    "modelAdoptionAuthorized": false
+  },
+  "limitations": [
+    "The precise promise that produced the original unhandled rejection was not reproduced",
+    "Synthetic startup and HTTP guards verify the harness; they do not fulfill the real-model five-block performance bar",
+    "The cause of the original actual Harrier transport reset remains unknown; the later passing trace diagnostic does not establish that cause",
+    "GPU inference has not been claimed",
+    "No production model, index, account or live release-gate operation was performed"
+  ]
+}

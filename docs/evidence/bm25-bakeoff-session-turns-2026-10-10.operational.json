@@ -1,0 +1,61 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "framework": "node",
+ "command": [
+  "npx",
+  "tsx",
+  "packages/operator-core/lib/search/bench/bm25-bakeoff-cli.ts",
+  "--corpus",
+  "session-turns",
+  "--methods",
+  "tsv_and,pgts",
+  "--out",
+  "docs/evidence/bm25-bakeoff-session-turns-2026-10-10.json"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-10-11T03:08:17.308Z",
+ "finishedAt": "2026-10-11T03:08:17.308Z",
+ "provenance": {
+  "sourceReport": "docs/evidence/bm25-bakeoff-session-turns-2026-10-10.json",
+  "sourceReportSha256": "2ca5327026673933a60f5a0e2d506f497229c33e3dabf953a2b8b9ff276d0ec0",
+  "benchCommit": "61040172e5089f9a7d122d0e761facf239eb2fed",
+  "serverVersion": "18.6 (Debian 18.6-1.pgdg13+2)",
+  "corpus": {
+   "key": "session-turns",
+   "queryForm": "first 12 words (body = the remaining words)",
+   "rows": 9289,
+   "source": "operator-db-copy"
+  },
+  "loadavg": {
+   "start": [
+    313.41,
+    226.11,
+    207.77
+   ],
+   "end": [
+    172.94,
+    207.99,
+    208.81
+   ],
+   "cores": 128
+  },
+  "evidencePlane": "live",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "commandRepresentation": "bm25-bakeoff-cli arguments for this corpus; --out names the committed copy of the run output"
+ },
+ "name": "BM25 session-turn known-item benchmark (R-11)",
+ "assertions": [
+  {
+   "id": "r-11-recall10-not-below-baseline-short",
+   "passed": true,
+   "evidence": "short: pgts recall@10 0.0366 vs tsv_and 0.0105, n 191 each, same run"
+  },
+  {
+   "id": "r-11-recall10-not-below-baseline-title",
+   "passed": true,
+   "evidence": "title: pgts recall@10 0.0995 vs tsv_and 0.0052, n 191 each, same run"
+  }
+ ],
+ "summary": "9289 rows, 191 queries; pgts recall@10 >= tsv_and on both query forms"
+}

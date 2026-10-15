@@ -9,13 +9,17 @@
  */
 import { describe, expect, it } from 'vitest';
 import { formatFailingFilesLine } from '../../../../scripts/lib/vitest-summary.mjs';
-import { parseConfirmOutput } from './sync-batch-delta-check-deps';
+import { knownGoodShaOf, parseConfirmOutput } from './sync-batch-delta-check-deps';
 import {
   conditionKeyForRed,
+  evaluateRadius,
+  grownWindowCommitCap,
+  parseAffectedProbe,
   parseFailingFilesLine,
   parseSyncBatches,
   runSyncBatchDeltaCheck,
   unionBatchPaths,
+  type AffectedProbe,
   type FailingFile,
   type RedFinding,
   type SyncBatch,
@@ -29,7 +33,17 @@ const SHA_B = 'b'.repeat(40);
 const SHA_C = 'c'.repeat(40);
 
 function makeBatch(overrides: Partial<SyncBatch> = {}): SyncBatch {
-  return { sha: SHA_C, committedAtMs: 1_700_000_000_000, agent: 'su-test', paths: ['packages/foo/src/a.ts'], ...overrides };
+  return { sha: SHA_B, committedAtMs: 1_700_000_000_000, agent: 'su-test', paths: ['packages/foo/src/a.ts'], ...overrides };
+}
+
+function makeProbe(overrides: Partial<AffectedProbe> = {}): AffectedProbe {
+  return {
+    workspaces: ['foo'],
+    guards: [],
+    taskCommands: [{ workspace: 'foo', command: 'npm run test' }],
+    derivation: null,
+    ...overrides,
+  };
 }
 
 interface FakeState {
@@ -53,7 +67,7 @@ function makeDeps(
     greenCheckpointRunning: async () => false,
     headSha: async () => SHA_B,
     listBatches: async () => [makeBatch()],
-    probeRadius: async () => ({ workspaces: ['foo'], guards: [] }),
+    probeRadius: async () => makeProbe(),
     runAffected: async () => ({ ok: true, failing: [] }),
     runTsc: async () => ({ ok: true, failing: [] }),
     confirmOne: async () => false,
@@ -104,6 +118,88 @@ describe('unionBatchPaths', () => {
   });
 });
 
+describe('parseAffectedProbe and evaluateRadius — production radius bounds', () => {
+  it('parses task commands and guards as separate measured cardinalities', () => {
+    const probe = parseAffectedProbe([
+      'AFFECTED_DERIVATION source=explicit changedPaths=80 workspaces=10 guards=52 tasks=64',
+      'AFFECTED_WS\toperator-core',
+      'AFFECTED_WS_CMD\toperator-core\tnpm run test:lane-pure --workspace @papercusp/operator-core',
+      'AFFECTED_GUARD\toperator-core\tlint:tsc\tnpm run lint:tsc -- --files=a.ts',
+    ].join('\n'));
+    expect(probe.taskCommands).toEqual([
+      { workspace: 'operator-core', command: 'npm run test:lane-pure --workspace @papercusp/operator-core' },
+    ]);
+    expect(probe.guards).toEqual(['operator-core:lint:tsc']);
+    expect(probe.derivation?.counts).toMatchObject({ changedPaths: 80, workspaces: 10, guards: 52, tasks: 64 });
+  });
+
+  it('accepts the observed 10-workspace ceiling and still refuses wider batches', () => {
+    const union = unionBatchPaths([makeBatch()], 80);
+    const accepted = evaluateRadius({
+      probe: makeProbe({ workspaces: Array.from({ length: 10 }, (_, i) => `ws-${i}`) }),
+      union,
+      batchCount: 1,
+    });
+    expect(accepted).toEqual({ run: true, workspaces: Array.from({ length: 10 }, (_, i) => `ws-${i}`) });
+
+    const refused = evaluateRadius({
+      probe: makeProbe({ workspaces: Array.from({ length: 11 }, (_, i) => `ws-${i}`) }),
+      union,
+      batchCount: 1,
+    });
+    expect(refused).toMatchObject({ run: false, reason: 'radius-too-wide' });
+  });
+
+  it('refuses the measured task-heavy radius and independently caps guards', () => {
+    const union = unionBatchPaths([makeBatch()], 80);
+    const observed = makeProbe({
+      workspaces: Array.from({ length: 10 }, (_, i) => `ws-${i}`),
+      taskCommands: Array.from({ length: 64 }, (_, i) => ({ workspace: `ws-${i}`, command: `npm run task-${i}` })),
+      guards: Array.from({ length: 52 }, (_, i) => `ws-${i}:guard-${i}`),
+    });
+    const tasksRefused = evaluateRadius({ probe: observed, union, batchCount: 1 });
+    expect(tasksRefused).toMatchObject({ run: false, reason: 'radius-too-wide' });
+    if (!tasksRefused.run) {
+      expect(tasksRefused.detail).toContain('tasks=64');
+      expect(tasksRefused.detail).toContain('guards=52');
+      expect(tasksRefused.detail).toContain('maxTaskCommands=32');
+    }
+
+    const guardsRefused = evaluateRadius({
+      probe: makeProbe({
+        taskCommands: Array.from({ length: 20 }, (_, i) => ({ workspace: 'foo', command: `npm run task-${i}` })),
+        guards: Array.from({ length: 27 }, (_, i) => `foo:guard-${i}`),
+      }),
+      union,
+      batchCount: 1,
+    });
+    expect(guardsRefused).toMatchObject({ run: false, reason: 'radius-too-wide' });
+    if (!guardsRefused.run) expect(guardsRefused.detail).toContain('maxGuards=26');
+  });
+
+  it('runs a guard-only radius instead of treating zero workspaces as no work', () => {
+    const verdict = evaluateRadius({
+      probe: makeProbe({
+        workspaces: [],
+        taskCommands: [{ workspace: 'root', command: 'npm run lint:root' }],
+        guards: ['root:lint:root'],
+      }),
+      union: unionBatchPaths([makeBatch()], 80),
+      batchCount: 1,
+    });
+    expect(verdict).toEqual({ run: true, workspaces: [] });
+  });
+
+  it('treats workspace names without runnable tasks or guards as nothing selected', () => {
+    const verdict = evaluateRadius({
+      probe: makeProbe({ taskCommands: [] }),
+      union: unionBatchPaths([makeBatch()], 80),
+      batchCount: 1,
+    });
+    expect(verdict).toMatchObject({ run: false, reason: 'nothing-selected' });
+  });
+});
+
 describe('runSyncBatchDeltaCheck — cursor discipline', () => {
   it('bootstraps the cursor at tip on first run (never scans history backwards)', async () => {
     const { deps, state } = makeDeps();
@@ -138,12 +234,14 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     expect(res.reason).toBe('host-load-unreadable');
   });
 
-  it('never fights the gate: skips while a green-checkpoint suite runs', async () => {
+  it('a running green-checkpoint suite REDUCES the budget instead of skipping (P-001)', async () => {
+    // The old rule skipped here; with the gate running for hours that judged almost
+    // nothing. Legs run at idle priority instead, so the window IS judged.
     const { deps, state } = makeDeps({ greenCheckpointRunning: async () => true }, { sha: SHA_A, updatedAtMs: 1 });
     const res = await runSyncBatchDeltaCheck(deps);
-    expect(res.status).toBe('skipped');
-    expect(res.reason).toBe('green-checkpoint-running');
-    expect(state.cursor?.sha).toBe(SHA_A);
+    expect(res.status).toBe('green');
+    expect(state.cursor?.sha).toBe(SHA_B);
+    expect(state.logs.some((l) => l.includes('reduced budget') && l.includes('green-checkpoint-running'))).toBe(true);
   });
 
   it('an undetermined affected run (red, no break-set line) holds the cursor', async () => {
@@ -153,19 +251,256 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     );
     const res = await runSyncBatchDeltaCheck(deps);
     expect(res.status).toBe('skipped');
-    expect(res.reason).toBe('affected-run-undetermined');
+    expect(res.reason).toBe('affected-run-missing-terminal-break-set');
     expect(state.cursor?.sha).toBe(SHA_A); // re-judged next tick
   });
 
-  it('a too-wide radius is refused but the cursor ADVANCES (a parked cursor would re-refuse forever)', async () => {
+  it('a single commit wider than the workspace cap is explicitly skipped without evaluating it', async () => {
     const { deps, state } = makeDeps(
-      { probeRadius: async () => ({ workspaces: ['a', 'b', 'c', 'd'], guards: [] }) },
+      {
+        probeRadius: async () => ({
+          workspaces: Array.from({ length: 11 }, (_, i) => `ws-${i}`),
+          guards: [],
+          taskCommands: [],
+          derivation: null,
+        }),
+      },
       { sha: SHA_A, updatedAtMs: 1 },
     );
     const res = await runSyncBatchDeltaCheck(deps);
     expect(res.status).toBe('radius-too-wide');
     expect(state.cursor?.sha).toBe(SHA_B);
-    expect(state.cursor?.lastSkipReason).toBe('radius-too-wide');
+    expect(state.cursor?.lastSkipReason).toContain('single commit');
+    expect(state.cursor?.lastSkipReason).toContain('maxWorkspaces=10');
+    expect(state.cursor?.coverage?.ticks.at(-1)?.evaluated).toBe(false);
+  });
+
+  it('judges the oldest path-bounded prefix and leaves the newer backlog behind the cursor', async () => {
+    let testedPaths: string[] = [];
+    const oldest = makeBatch({ sha: SHA_A, paths: ['oldest.ts'] });
+    const middle = makeBatch({ sha: SHA_B, paths: ['middle.ts'] });
+    const newest = makeBatch({ sha: SHA_C, paths: ['newest.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_C,
+        listBatches: async () => [newest, middle, oldest], // source order is newest first
+        runAffected: async (paths) => {
+          testedPaths = [...paths];
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, { caps: { maxWorkspaces: 10, maxPaths: 2, maxCommits: 10 } });
+
+    expect(res.status).toBe('green');
+    expect(res.batchCount).toBe(2);
+    expect(new Set(testedPaths)).toEqual(new Set(['oldest.ts', 'middle.ts']));
+    expect(state.cursor?.sha).toBe(SHA_B);
+    expect(state.cursor?.lastBatchCommits).toBe(2);
+  });
+
+  it('keeps the commit cap on the oldest side of a newer backlog', async () => {
+    const oldest = makeBatch({ sha: SHA_A, paths: ['same.ts'] });
+    const middle = makeBatch({ sha: SHA_B, paths: ['same.ts'] });
+    const newest = makeBatch({ sha: SHA_C, paths: ['same.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_C,
+        listBatches: async () => [newest, middle, oldest],
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, { caps: { maxWorkspaces: 10, maxPaths: 10, maxCommits: 2 } });
+
+    expect(res.status).toBe('green');
+    expect(res.batchCount).toBe(2);
+    expect(state.cursor?.sha).toBe(SHA_B);
+  });
+
+  it('shrinks a workspace-wide prefix until the oldest bounded prefix fits', async () => {
+    const probed: string[][] = [];
+    let testedPaths: string[] = [];
+    const oldest = makeBatch({ sha: SHA_A, paths: ['oldest.ts'] });
+    const middle = makeBatch({ sha: SHA_B, paths: ['middle.ts'] });
+    const newest = makeBatch({ sha: SHA_C, paths: ['newest.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_C,
+        listBatches: async () => [newest, middle, oldest],
+        probeRadius: async (paths) => {
+          probed.push([...paths]);
+          return paths.length > 1
+            ? makeProbe({ workspaces: ['ws-a', 'ws-b'] })
+            : makeProbe({ workspaces: ['ws-a'] });
+        },
+        runAffected: async (paths) => {
+          testedPaths = [...paths];
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, { caps: { maxWorkspaces: 1, maxPaths: 10, maxCommits: 10 } });
+
+    expect(res.status).toBe('green');
+    expect(probed).toHaveLength(2);
+    expect(probed[1]).toEqual(['oldest.ts']);
+    expect(testedPaths).toEqual(['oldest.ts']);
+    expect(state.cursor?.sha).toBe(SHA_A);
+  });
+
+  it('shrinks a task- and guard-heavy prefix before executing it', async () => {
+    const probed: string[][] = [];
+    let testedPaths: string[] = [];
+    const oldest = makeBatch({ sha: SHA_A, paths: ['oldest.ts'] });
+    const middle = makeBatch({ sha: SHA_B, paths: ['middle.ts'] });
+    const newest = makeBatch({ sha: SHA_C, paths: ['newest.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_C,
+        listBatches: async () => [newest, middle, oldest],
+        probeRadius: async (paths) => {
+          probed.push([...paths]);
+          return paths.length > 1
+            ? makeProbe({
+                taskCommands: Array.from({ length: 3 }, (_, i) => ({ workspace: 'foo', command: `npm run task-${i}` })),
+                guards: ['foo:guard-a', 'foo:guard-b'],
+              })
+            : makeProbe({
+                taskCommands: [{ workspace: 'foo', command: 'npm run task-a' }],
+                guards: ['foo:guard-a'],
+              });
+        },
+        runAffected: async (paths) => {
+          testedPaths = [...paths];
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, {
+      caps: { maxWorkspaces: 10, maxPaths: 10, maxCommits: 10, maxTaskCommands: 1, maxGuards: 1 },
+    });
+
+    expect(res.status).toBe('green');
+    expect(probed).toHaveLength(2);
+    expect(probed[1]).toEqual(['oldest.ts']);
+    expect(testedPaths).toEqual(['oldest.ts']);
+    expect(state.cursor?.sha).toBe(SHA_A);
+  });
+
+  it('advances past only a path-oversized oldest commit with an explicit non-evaluated reason', async () => {
+    let probes = 0;
+    const oversized = makeBatch({ sha: SHA_A, paths: Array.from({ length: 81 }, (_, i) => `path-${i}.ts`) });
+    const newer = makeBatch({ sha: SHA_B, paths: ['newer.ts'] });
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_B,
+        listBatches: async () => [newer, oversized],
+        probeRadius: async () => {
+          probes += 1;
+          return makeProbe();
+        },
+      },
+      { sha: 'd'.repeat(40), updatedAtMs: 1 },
+    );
+
+    const res = await runSyncBatchDeltaCheck(deps, { caps: { maxWorkspaces: 10, maxPaths: 80, maxCommits: 40 } });
+
+    expect(res.status).toBe('radius-too-wide');
+    expect(res.pathCount).toBe(81);
+    expect(res.reason).toContain(SHA_A.slice(0, 12));
+    expect(res.reason).toContain('maxPaths=80');
+    expect(state.cursor?.sha).toBe(SHA_A);
+    expect(state.cursor?.coverage?.ticks.at(-1)?.evaluated).toBe(false);
+    expect(probes).toBe(0);
+  });
+});
+
+describe('runSyncBatchDeltaCheck — known-good point (green-main-cycle-time P-012)', () => {
+  const failingFile: FailingFile = { workspace: 'foo', file: 'packages/foo/src/a.test.ts' };
+  const OLD_GOOD = { sha: SHA_C, atMs: 5 };
+
+  it('a fully green window records the judged commit as the known-good point', async () => {
+    const { deps, state } = makeDeps({ now: () => 42 }, { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD });
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('green');
+    expect(state.cursor?.lastPassed).toEqual({ sha: SHA_B, atMs: 42 });
+  });
+
+  it('a confirmed affected-tests red carries the previous known-good point', async () => {
+    const { deps, state } = makeDeps(
+      { runAffected: async () => ({ ok: false, failing: [failingFile] }), confirmOne: async () => false },
+      { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('red');
+    expect(state.cursor?.sha).toBe(SHA_B); // the cursor advances
+    expect(state.cursor?.lastPassed).toEqual(OLD_GOOD); // the known-good point does not
+  });
+
+  it('an UNCONFIRMED red is still a red leg: the window reports green but is not known-good', async () => {
+    const { deps, state } = makeDeps(
+      { runAffected: async () => ({ ok: false, failing: [failingFile] }), confirmOne: async () => null },
+      { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('green');
+    expect(state.cursor?.lastPassed).toEqual(OLD_GOOD);
+  });
+
+  it('a typecheck red carries the previous known-good point', async () => {
+    const { deps, state } = makeDeps(
+      { runTsc: async () => ({ ok: false, failing: ['packages/foo/src/a.ts'] }), confirmOne: async () => false },
+      { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    expect(state.cursor?.lastPassed).toEqual(OLD_GOOD);
+  });
+
+  it('a still-failing held-open red keeps a green window from becoming known-good', async () => {
+    const openRed = { path: failingFile.file, workspace: 'foo', introducedBy: SHA_C, firstSeenMs: 1, confirmations: 1 };
+    const { deps, state } = makeDeps(
+      { confirmOne: async () => false },
+      { sha: SHA_A, updatedAtMs: 1, openReds: [openRed], lastPassed: OLD_GOOD },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    expect(state.cursor?.sha).toBe(SHA_B);
+    expect(state.cursor?.openReds?.[0]?.path).toBe(failingFile.file);
+    expect(state.cursor?.lastPassed).toEqual(OLD_GOOD);
+  });
+
+  it('a held cursor (undetermined run) and an up-to-date tick both keep the known-good point', async () => {
+    const held = makeDeps(
+      { runAffected: async () => ({ ok: false, failing: null }) },
+      { sha: SHA_A, updatedAtMs: 1, lastPassed: OLD_GOOD },
+    );
+    expect((await runSyncBatchDeltaCheck(held.deps)).status).toBe('skipped');
+    expect(held.state.cursor?.lastPassed).toEqual(OLD_GOOD);
+
+    const idle = makeDeps({}, { sha: SHA_B, updatedAtMs: 1, lastPassed: OLD_GOOD });
+    expect((await runSyncBatchDeltaCheck(idle.deps)).status).toBe('up-to-date');
+    expect(idle.state.cursor?.lastPassed).toEqual(OLD_GOOD);
+  });
+
+  it('bootstrapping at the tip never claims the tip as known-good (nothing was judged)', async () => {
+    const { deps, state } = makeDeps();
+    expect((await runSyncBatchDeltaCheck(deps)).status).toBe('bootstrapped');
+    expect(state.cursor?.lastPassed).toBeUndefined();
+  });
+
+  it('knownGoodShaOf accepts only a full lowercase sha, never a ref or abbreviation', () => {
+    expect(knownGoodShaOf(SHA_B)).toBe(SHA_B);
+    expect(knownGoodShaOf('staging')).toBeNull();
+    expect(knownGoodShaOf(SHA_B.slice(0, 12))).toBeNull();
+    expect(knownGoodShaOf(SHA_B.toUpperCase())).toBeNull();
+    expect(knownGoodShaOf(null)).toBeNull();
+    expect(knownGoodShaOf(undefined)).toBeNull();
   });
 });
 
@@ -279,5 +614,199 @@ describe('parseConfirmOutput (deps leg)', () => {
   it('matched=0 and an absent line are BOTH undetermined (null), never false', () => {
     expect(parseConfirmOutput('TEST_FILE_ROUTE_ERROR requested=1 matched=0\nTEST_FILE_RESULT requested=1 matched=0 status=failed\n')).toBeNull();
     expect(parseConfirmOutput('vitest never reached its terminal line\n')).toBeNull();
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-011. Measured 2026-10-12: the cursor sat on ONE
+// window for 24h (0 of ~291 ticks evaluated) because the affected leg ran first, hit
+// its 25-minute timeout, and the early return discarded the typecheck verdict; the
+// next tick re-ran the identical window into the identical timeout.
+describe('runSyncBatchDeltaCheck — P-011 typecheck-first and budget-exhaustion window shrink', () => {
+  const C1 = '1'.repeat(40);
+  const C2 = '2'.repeat(40);
+  const C3 = '3'.repeat(40);
+  const C4 = '4'.repeat(40);
+  const START = 'f'.repeat(40);
+  const TYPE_ERROR_FILE = 'packages/foo/src/c1.ts';
+  const fourCommitsNewestFirst = () => [
+    makeBatch({ sha: C4, paths: ['packages/foo/src/c4.ts'] }),
+    makeBatch({ sha: C3, paths: ['packages/foo/src/c3.ts'] }),
+    makeBatch({ sha: C2, paths: ['packages/foo/src/c2.ts'] }),
+    makeBatch({ sha: C1, paths: [TYPE_ERROR_FILE] }),
+  ];
+  const affectedTimeout = {
+    ok: false,
+    failing: null,
+    diagnostic: { outcome: 'timeout' as const, durationMs: 1_501_514, exitCode: null },
+  };
+
+  it('files a typecheck red BEFORE the affected leg runs, and keeps it when that leg times out', async () => {
+    const calls: string[] = [];
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runTsc: async () => {
+          calls.push('tsc');
+          return { ok: false, failing: [TYPE_ERROR_FILE] };
+        },
+        runAffected: async () => {
+          calls.push('affected');
+          return affectedTimeout;
+        },
+        fileRed: async (f) => {
+          calls.push(`file:${f.conditionKey}`);
+          state.filed.push(f);
+          return { ok: true, id: 'WI-1' };
+        },
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+
+    const key = conditionKeyForRed(TYPE_ERROR_FILE);
+    expect(calls).toEqual(['tsc', `file:${key}`, 'affected']);
+    expect(res.filed.map((f) => f.file)).toEqual([TYPE_ERROR_FILE]);
+    expect(state.filed.map((f) => f.conditionKey)).toEqual([key]);
+    // Not measured ⇒ the cursor is held, but the typecheck red is HELD with it.
+    expect(res.status).toBe('skipped');
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.updatedAtMs).toBe(1);
+    expect(state.cursor?.openReds?.map((r) => r.path)).toEqual([TYPE_ERROR_FILE]);
+    expect(state.cursor?.coverage?.ticks.at(-1)?.evaluated).toBe(false);
+  });
+
+  it('halves the window on an affected timeout, so the next tick judges an older, smaller prefix', async () => {
+    let affectedPaths: string[] = [];
+    let affectedResult: Awaited<ReturnType<SyncBatchDeltaDeps['runAffected']>> = affectedTimeout;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runAffected: async (paths) => {
+          affectedPaths = [...paths];
+          return affectedResult;
+        },
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+
+    const first = await runSyncBatchDeltaCheck(deps);
+    expect(first.reason).toBe('affected-tests-budget-exhausted: window halved from 4 to 2 commit(s)');
+    expect(first.diagnostic).toBe('outcome=timeout durationMs=1501514 exitCode=unknown');
+    expect(affectedPaths).toHaveLength(4);
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.windowCommitCap).toBe(2);
+
+    // Still too slow at 2: halve again to 1.
+    const second = await runSyncBatchDeltaCheck(deps);
+    expect(affectedPaths).toHaveLength(2);
+    expect(new Set(affectedPaths)).toEqual(new Set([TYPE_ERROR_FILE, 'packages/foo/src/c2.ts']));
+    expect(second.reason).toBe('affected-tests-budget-exhausted: window halved from 2 to 1 commit(s)');
+    expect(state.cursor?.windowCommitCap).toBe(1);
+
+    // The smaller window measures: the cursor ADVANCES past the oldest commit only,
+    // and the learned cap grows back (1 -> 2) instead of resetting to the static 40.
+    affectedResult = { ok: true, failing: [] };
+    const third = await runSyncBatchDeltaCheck(deps);
+    expect(third.status).toBe('green');
+    expect(affectedPaths).toEqual([TYPE_ERROR_FILE]);
+    expect(state.cursor?.sha).toBe(C1);
+    expect(state.cursor?.windowCommitCap).toBe(2);
+  });
+
+  it('explicitly skips a SINGLE commit that exhausts the affected budget and advances past it', async () => {
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C1,
+        listBatches: async () => [makeBatch({ sha: C1, paths: [TYPE_ERROR_FILE] })],
+        runAffected: async () => affectedTimeout,
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('leg-timeout');
+    expect(res.diagnostic).toBe('outcome=timeout durationMs=1501514 exitCode=unknown');
+    expect(state.cursor?.sha).toBe(C1);
+    expect(state.cursor?.lastSkipReason).toContain('leg-timeout: commit 111111111111 explicitly skipped');
+    expect(state.cursor?.lastSkipReason).toContain('affected-tests leg exhausted its budget on this single commit');
+    expect(state.cursor?.windowCommitCap).toBe(1);
+    expect(state.cursor?.coverage?.ticks.at(-1)).toMatchObject({ evaluated: false, status: 'leg-timeout' });
+  });
+
+  it('a typecheck that exhausts its budget halves the window without spending the affected leg', async () => {
+    let affectedRuns = 0;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runTsc: async () => ({
+          ok: false,
+          failing: [],
+          diagnostic: { outcome: 'timeout', durationMs: 600_000, exitCode: null },
+        }),
+        runAffected: async () => {
+          affectedRuns += 1;
+          return { ok: true, failing: [] };
+        },
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(affectedRuns).toBe(0);
+    expect(res.reason).toBe('lint-tsc-budget-exhausted: window halved from 4 to 2 commit(s)');
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.windowCommitCap).toBe(2);
+  });
+
+  it('an undetermined affected run that did NOT exhaust its budget holds without shrinking the window', async () => {
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runAffected: async () => ({
+          ok: false,
+          failing: null,
+          diagnostic: { outcome: 'nonzero-exit', durationMs: 4_000, exitCode: 1 },
+        }),
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.reason).toBe('affected-run-missing-terminal-break-set');
+    expect(state.cursor?.sha).toBe(START);
+    expect(state.cursor?.windowCommitCap).toBeUndefined();
+  });
+
+  it('a held typecheck red is not re-filed by the next tick that re-reports it', async () => {
+    let affectedResult: Awaited<ReturnType<SyncBatchDeltaDeps['runAffected']>> = affectedTimeout;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => C4,
+        listBatches: async () => fourCommitsNewestFirst(),
+        runTsc: async () => ({ ok: false, failing: [TYPE_ERROR_FILE] }),
+        runAffected: async () => affectedResult,
+        // Re-verification of a held red is undetermined here, so it stays held
+        // without a refresh; the point is that the new tsc report is not a NEW filing.
+        confirmOne: async () => null,
+      },
+      { sha: START, updatedAtMs: 1 },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    affectedResult = { ok: true, failing: [] };
+    const second = await runSyncBatchDeltaCheck(deps);
+    expect(second.status).toBe('green');
+    expect(state.filed).toHaveLength(1);
+    expect(state.cursor?.openReds?.map((r) => r.path)).toEqual([TYPE_ERROR_FILE]);
+  });
+});
+
+describe('grownWindowCommitCap', () => {
+  it('doubles a learned cap after a measured run and drops it once back at the static cap', () => {
+    expect(grownWindowCommitCap(undefined, 40)).toBeUndefined();
+    expect(grownWindowCommitCap(1, 40)).toBe(2);
+    expect(grownWindowCommitCap(16, 40)).toBe(32);
+    expect(grownWindowCommitCap(20, 40)).toBeUndefined();
+    expect(grownWindowCommitCap(39, 40)).toBeUndefined();
   });
 });

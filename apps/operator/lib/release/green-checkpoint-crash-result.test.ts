@@ -114,6 +114,41 @@ describe('EI-21462448110688084: process-level fatal errors await terminal finali
     });
   });
 
+  it('keeps a rejected qualification diagnostic local without waking or retiring the incumbent run', async () => {
+    const result = {
+      ...buildTerminalFailureCheckpointResult({
+        candidate: 'repair-head',
+        error: new Error('scheduled qualification runner activation refused: conflict'),
+        runId: 'rejected-run',
+      }),
+      recorded: true,
+    };
+    const markers: string[] = [];
+    const emitInconclusive = vi.fn(async () => {});
+    const emitTerminalEvents = vi.fn(async () => {});
+    const retire = vi.fn(async () => {});
+
+    await emitTerminalCheckpointResult(result, {
+      record: async () => false,
+      writeHuman: () => {},
+      writeMarker: (line) => markers.push(line),
+      emitInconclusive,
+      emitTerminalEvents,
+      retire,
+    });
+
+    expect(markers).toHaveLength(1);
+    expect(JSON.parse(markers[0]!.slice(markers[0]!.indexOf('{')))).toMatchObject({
+      candidate: 'repair-head',
+      runId: 'rejected-run',
+      green: null,
+      recorded: false,
+    });
+    expect(emitInconclusive).not.toHaveBeenCalled();
+    expect(emitTerminalEvents).not.toHaveBeenCalled();
+    expect(retire).not.toHaveBeenCalled();
+  });
+
   it('does not exit until the typed-result finalizer completes', async () => {
     let finish!: (owned: boolean) => void;
     const finalize = vi.fn(
@@ -218,6 +253,23 @@ describe('EI-18850448565330905: buildCrashCheckpointResult never leaves a crash 
     expect(r.from).toBeNull();
     expect(r.candidate).toBe('abc123');
     expect(r.runId).toBe('run-1');
+  });
+
+  it('keeps an exhausted server_login_retry setup failure as no verdict', () => {
+    const error = Object.assign(
+      new Error('server_login_retry: database system is not yet accepting connections'),
+      { code: '08P01' },
+    );
+    const result = buildTerminalFailureCheckpointResult({
+      candidate: 'abc123',
+      error,
+      runId: 'run-retry-exhausted',
+    });
+
+    expect(result.green).toBeNull();
+    expect(result.advanced).toBe(false);
+    expect(result.reason).toBe('error');
+    expect(result.crashed).toBe(true);
   });
 
   /**
@@ -698,6 +750,68 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
     expect(unusable.reason).toBe('dependency-generation-unusable');
     expect(unusable.summary).toMatch(/repaired or republished/i);
     expect(unusable.summary).toMatch(/failing closed is correct/i);
+  });
+});
+
+describe('WI-10004849: dependency-generation exits 76/77 are infra, not crashes or code reds', () => {
+  it.each([
+    [77, 'DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT', 'disk-headroom'],
+    [76, 'DEPENDENCY_GENERATION_LOCK_TIMEOUT', 'infra-inconclusive'],
+  ])('preserves the typed infra refusal through the real argument-bearing command (exit %s)', (exitCode, marker, reason) => {
+    const result = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(
+        'node /repo/scripts/npm-install-safe.mjs --repo-root /repo/app --exec-under-lock -- ' +
+          'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo/app ' +
+          `--ensure-ref b3e519a1bfce --retain-as checkpoint-candidate exited ${exitCode}: ` +
+          `[dependency-generation] ${marker} avail=1 need=2`,
+      ),
+      runId: 'run-with-argv',
+    });
+
+    expect(result.reason).toBe(reason);
+    expect(result.green).toBeNull();
+    expect(result.crashed).toBeUndefined();
+    expect(result.summary).toContain('NO code verdict');
+  });
+
+  it('exit 77 (headroom) is disk-headroom and exit 76 (lock timeout) is infra-inconclusive', () => {
+    const headroom = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(
+        'bash /repo/apps/operator/bin/release/dependency-generation.sh exited 77: ' +
+          '[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT avail=1 need=2',
+      ),
+      runId: 'run-a',
+    });
+    const lock = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(
+        'bash /repo/apps/operator/bin/release/dependency-generation.sh exited 76: ' +
+          '[dependency-generation] DEPENDENCY_GENERATION_LOCK_TIMEOUT',
+      ),
+      runId: 'run-b',
+    });
+    expect(headroom.reason).toBe('disk-headroom');
+    expect(headroom.green).toBeNull();
+    expect(headroom.summary).toMatch(/NO code verdict/);
+    expect(lock.reason).toBe('infra-inconclusive');
+    expect(lock.green).toBeNull();
+    // green-main-cycle-time P-022: the typed blocker runGreenCheckpoint's one bounded retry keys on.
+    expect(headroom.preconditionBlocker).toBe('disk-headroom');
+    expect(lock.preconditionBlocker).toBe('copy-lock');
+  });
+
+  it('an unrelated dependency-generation exit stays on the crash path', () => {
+    const other = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error('bash /repo/apps/operator/bin/release/dependency-generation.sh exited 1: boom'),
+      runId: 'run-c',
+    });
+    expect(other.reason).not.toBe('disk-headroom');
+    expect(other.reason).not.toBe('infra-inconclusive');
+    // Never a precondition retry: an untyped exit stays on the crash path.
+    expect(other.preconditionBlocker).toBeUndefined();
   });
 });
 

@@ -131,6 +131,7 @@ beforeAll(async () => {
       '610-push-delivery.sql',
       '612-collision-hysteresis.sql',
       '614-adjacency-state.sql',
+      '1257-coord-entity-subscriptions-allow-muted.sql',
     ],
     { label: 'adjacency-cross-feed-io.integration.test.ts' },
   );

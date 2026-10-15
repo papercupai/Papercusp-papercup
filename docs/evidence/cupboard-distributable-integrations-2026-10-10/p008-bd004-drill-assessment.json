@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-4 live drill on the 0.2.0 packages assessed by the committed instrument: the BD004 Slack bug report travelled the installed Cupboard slack + bug-triage 0.2.0 packages end to end, was classified by an agent independent of the poster, and the removed in-app path stayed silent",
+  "framework": "operational",
+  "command": [
+    "Real Slack post by the parent plan's drill driver su-2a4e1f4a (slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08, BD004) into channel C0C8836LU5C at 2026-10-12T15:13:31Z, after confirming on :3170 that global slack 0.2.0 and @papercupai/bug-triage 0.2.0 were installed and the four bug-triage bindings were armed (receipt /tmp/su2a-bd004-post-1513.json, client_msg_id 4bef90a0-5f3f-4eba-bd04-202610121513)",
+    "Classification of plan run 1337's step WI-6554700010009135 by su-0dd6b9aa (not the poster): triggers:read-payload { planRunId: 1337 } then ticket:file { planRunId: 1337 } on :3170 build c1a293287b, which returned created:true",
+    "Measurement: readTriggerPackDrillRows + assessTriggerPackDrill from packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts (tested by trigger-pack-drill-evidence.test.ts), run by su-0dd6b9aa against the operator database (HARNESS_ADMIN_DATABASE_URL of papercup-dev-api, workspace papercusp-workspace) at 2026-10-12T15:21:09Z"
+  ],
+  "startedAt": "2026-10-12T15:21:09.393Z",
+  "finishedAt": "2026-10-12T15:21:09.513Z",
+  "exitCode": 0,
+  "summary": "Instrument verdict pass on 5 of 5 checks. Slack message ts 1791818011.918159 in C0C8836LU5C arrived on source f0566e25 (kind slack, as declared) connected through the installed slack package's provider setup, fired exactly one run (27de77d6, succeeded, plan run 1337) on the installed bug-triage binding 6f0084ec (installation 2e0593bb, channels [C0C8836LU5C]), and that run created Asana task 1219415599574122 in the installation's chosen project 1219381686283984. The removed in-app binding 7c3c95c0 was disarmed and ran zero times in the window 15:10Z-15:40Z.",
+  "assertions": [
+    {
+      "id": "package-socket-path",
+      "passed": true,
+      "evidence": "source f0566e25-ec24-4c51-8388-74ebf49fb6fc: kind slack (expected slack), credential_ref provider-setup:slack, status connected, last_error null"
+    },
+    {
+      "id": "chat-message-recorded",
+      "passed": true,
+      "evidence": "1 run(s) on the installed binding carry dedupe prefix connector:f0566e25-ec24-4c51-8388-74ebf49fb6fc:chat-message:C0C8836LU5C:1791818011.918159:"
+    },
+    {
+      "id": "one-run-from-installed-binding",
+      "passed": true,
+      "evidence": "binding 6f0084ec-7571-4751-bdc2-58146a156078 (plan bug-triage, installation 2e0593bb-17cc-4f27-bb68-5ef62cc9ea3c, armed true, channels [C0C8836LU5C]): 1 run(s) in window; 27de77d6-05c1-43c2-ab88-fbbcca77bcc0 succeeded, minted 1, replayed false, planRunId 1337"
+    },
+    {
+      "id": "one-ticket-in-chosen-project",
+      "passed": true,
+      "evidence": "ticket created 1219415599574122 in container 1219381686283984; installation destination 1219381686283984"
+    },
+    {
+      "id": "in-app-path-silent",
+      "passed": true,
+      "evidence": "in-app binding 7c3c95c0-fc75-4832-b66c-c493fefea789 (plan slack-classify-bug-2026-10-08) armed false; 0 run(s) in window"
+    }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": ["P-007"],
+  "specs": ["SPEC-R-4-P-007"],
+  "evidencePlane": "live",
+  "instrument": {
+    "path": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts",
+    "testPath": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.test.ts"
+  },
+  "drill": {
+    "workspaceId": "papercusp-workspace",
+    "sourceKind": "slack",
+    "channelId": "C0C8836LU5C",
+    "messageId": "1791818011.918159",
+    "sourceId": "f0566e25-ec24-4c51-8388-74ebf49fb6fc",
+    "installedBindingId": "6f0084ec-7571-4751-bdc2-58146a156078",
+    "inAppBindingId": "7c3c95c0-fc75-4832-b66c-c493fefea789",
+    "windowStart": "2026-10-12T15:10:00Z",
+    "windowEnd": "2026-10-12T15:40:00Z"
+  },
+  "ticket": {
+    "containerId": "1219381686283984",
+    "externalRef": "1219415599574122",
+    "url": "https://app.asana.com/1/1219197493738449/project/1219381686283984/task/1219415599574122"
+  },
+  "supersedes": "docs/evidence/cupboard-distributable-integrations-2026-10-10/p008-bd003-drill-assessment.json for AUTO-BAR-R-4-P-007: BD003 predates the move of Slack bug handling into the 0.2.0 packages and its binding 68b68066 is now disarmed; BD004 is the same drill shape on the current 0.2.0 install (binding 6f0084ec). BD003 stays as the historical record.",
+  "limitations": [
+    "The Slack message was posted by an inline one-shot action of the drill driver, not a committed sender; the instrument measures what the platform recorded after delivery, not the posting.",
+    "The classification was done by su-0dd6b9aa, the cupboard plan's implementer, not by the poster. It is independent of the drill author but not of the plan under acceptance.",
+    "The Asana task identity comes from the trigger run's recorded ticket filing; the instrument does not query Asana's API.",
+    "This drill posted in the chosen channel, so it does not exercise the non-chosen-channel case; that case is guarded by the ticket.ts channel check and its integration test (mutation probe R-4-P-007 in .papercusp/scratch/su-0dd6b-r357-reprove.sh)."
+  ]
+}

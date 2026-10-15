@@ -4,11 +4,13 @@
  *
  * Single global instance keyed off `window`, started lazily on first read.
  * Survives client-side navigation (the App Router never tears down the
- * browser window). Persists the buffer to localStorage every 5s + on
- * `visibilitychange`.
+ * browser window). Persists changed buffers to the maintained IndexedDB
+ * backend every 5s + on `visibilitychange`. Legacy localStorage is read only:
+ * WebKit's physical WAL can grow without bound despite a small logical quota.
  */
 
 import { PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
+import { createIndexedDbPersistence } from '@papercusp/kv-persist-indexeddb';
 
 export type PerfEventKind =
   | 'interaction'
@@ -44,6 +46,12 @@ const KNOWN_MEASURE_NAMES: ReadonlySet<string> = new Set<string>(
   Object.values(PERF_INTERACTIONS),
 );
 
+interface PerfSnapshot {
+  id: string;
+  v: number;
+  events: PerfEvent[];
+}
+
 interface RecorderState {
   events: PerfEvent[];
   listeners: Set<(events: PerfEvent[]) => void>;
@@ -51,6 +59,12 @@ interface RecorderState {
   flushTimer?: ReturnType<typeof setInterval>;
   started: boolean;
   consoleErrorOrig?: typeof console.error;
+  persistence: ReturnType<typeof createIndexedDbPersistence<PerfSnapshot>>;
+  ready: Promise<void>;
+  loaded: boolean;
+  restoreCancelled: boolean;
+  lastPersisted: string | null;
+  clear: () => void;
 }
 
 declare global {
@@ -59,12 +73,43 @@ declare global {
 
 function getState(): RecorderState {
   if (!window.__papercuspPerfRecorder) {
-    window.__papercuspPerfRecorder = {
+    const state: RecorderState = {
       events: loadFromStorage(),
       listeners: new Set(),
       observers: [],
       started: false,
+      persistence: createIndexedDbPersistence<PerfSnapshot>({
+        dbName: 'papercusp-perf-recorder',
+        storeName: 'buffers',
+        writeDebounceMs: 0,
+      }),
+      ready: Promise.resolve(),
+      loaded: false,
+      restoreCancelled: false,
+      lastPersisted: null,
+      clear: () => clearState(state),
     };
+    window.__papercuspPerfRecorder = state;
+    const initial = new Set(state.events);
+    state.ready = state.persistence.load().then((rows) => {
+      const snapshot = rows.find((row) => row.id === LS_KEY && row.v === 1);
+      if (state.restoreCancelled || !Array.isArray(snapshot?.events)) return;
+      // IndexedDB (including an empty buffer) supersedes the legacy entry.
+      // Preserve events collected while its asynchronous read was in flight.
+      const current = state.events.filter((event) => !initial.has(event));
+      state.lastPersisted = JSON.stringify(snapshot.events.slice(-MAX_EVENTS));
+      const merged = new Map([...snapshot.events, ...current].map((event) => [event.id, event]));
+      state.events = [...merged.values()].sort((a, b) => a.ts - b.ts).slice(-MAX_EVENTS);
+      // A delayed restore must not let the observer reuse a persisted event id.
+      const w = window as unknown as { __papercuspPerfSeq?: number };
+      w.__papercuspPerfSeq = Math.max(w.__papercuspPerfSeq ?? 0, eventSequence(state.events));
+      state.listeners.forEach((listener) => listener(state.events));
+    }).catch(() => {
+      // Preserve the in-memory/legacy buffer; never fall back to WAL writes.
+    }).then(() => {
+      state.loaded = true;
+      flushToStorage(state);
+    });
   }
   return window.__papercuspPerfRecorder;
 }
@@ -81,11 +126,30 @@ function loadFromStorage(): PerfEvent[] {
 }
 
 function flushToStorage(state: RecorderState) {
+  if (!state.loaded) return;
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify(state.events.slice(-MAX_EVENTS)));
+    const events = state.events.slice(-MAX_EVENTS);
+    const serialized = JSON.stringify(events);
+    if (serialized === state.lastPersisted) return;
+    state.persistence.save([{ id: LS_KEY, v: 1, events }]);
+    state.lastPersisted = serialized;
   } catch {
-    // localStorage full or unavailable — quietly drop, the in-memory buffer is fine
+    // Persistence unavailable — retain memory without writing localStorage.
   }
+}
+
+function clearState(state: RecorderState): void {
+  state.restoreCancelled = true;
+  state.events = [];
+  flushToStorage(state);
+  state.listeners.forEach((listener) => listener(state.events));
+}
+
+function eventSequence(events: PerfEvent[]): number {
+  return events.reduce((max, event) => {
+    const match = /^(?:ev|lt|ls|meas|cerr)-(\d+)(?:-|$)/.exec(event.id);
+    return match ? Math.max(max, Number.parseInt(match[1], 10)) : max;
+  }, 0);
 }
 
 function addEvent(state: RecorderState, ev: PerfEvent) {
@@ -119,12 +183,7 @@ export function startRecorder(): void {
   // counter), and seed it past the highest seq already in state.events
   // in case it was loaded from localStorage.
   const w = window as unknown as { __papercuspPerfSeq?: number };
-  const seedFromEvents = state.events.reduce((max, ev) => {
-    const m = /^(?:ev|lt|ls|meas|cerr)-(\d+)(?:-|$)/.exec(ev.id);
-    if (!m) return max;
-    const n = Number.parseInt(m[1], 10);
-    return Number.isFinite(n) && n > max ? n : max;
-  }, 0);
+  const seedFromEvents = eventSequence(state.events);
   if (typeof w.__papercuspPerfSeq !== 'number' || w.__papercuspPerfSeq < seedFromEvents) {
     w.__papercuspPerfSeq = seedFromEvents;
   }
@@ -294,10 +353,7 @@ export function getEvents(): PerfEvent[] {
 }
 
 export function clearEvents(): void {
-  const state = getState();
-  state.events = [];
-  flushToStorage(state);
-  state.listeners.forEach((l) => l(state.events));
+  getState().clear();
 }
 
 /** INP rating thresholds per web.dev/inp */

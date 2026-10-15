@@ -1,0 +1,15 @@
+{"t": 1791964631.3941708, "kind": "fio", "device": "pd-balanced", "job": "randread-4k-qd1", "iops": 2660, "mbps": 10.9, "clatP50us": 337.9, "clatP99us": 757.8}
+{"t": 1791964651.6897032, "kind": "fio", "device": "pd-balanced", "job": "randread-4k-qd32", "iops": 4006, "mbps": 16.4, "clatP50us": 8585.2, "clatP99us": 9240.6}
+{"t": 1791964671.9879122, "kind": "fio", "device": "pd-balanced", "job": "randread-32k-qd16", "iops": 3736, "mbps": 122.4, "clatP50us": 4292.6, "clatP99us": 5013.5}
+{"t": 1791964692.2896936, "kind": "fio", "device": "pd-balanced", "job": "randwrite-4k-qd32", "iops": 3735, "mbps": 15.3, "clatP50us": 8716.3, "clatP99us": 8978.4}
+{"t": 1791964712.6307309, "kind": "fio", "device": "pd-balanced", "job": "seqread-1m-qd8", "iops": 173, "mbps": 181.3, "clatP50us": 46399.5, "clatP99us": 47448.1}
+{"t": 1791964756.4003065, "kind": "fio", "device": "pd-ssd", "job": "randread-4k-qd1", "iops": 2558, "mbps": 10.5, "clatP50us": 346.1, "clatP99us": 864.3}
+{"t": 1791964776.6911762, "kind": "fio", "device": "pd-ssd", "job": "randread-4k-qd32", "iops": 8612, "mbps": 35.3, "clatP50us": 4014.1, "clatP99us": 4489.2}
+{"t": 1791964796.9882548, "kind": "fio", "device": "pd-ssd", "job": "randread-32k-qd16", "iops": 7711, "mbps": 252.7, "clatP50us": 2056.2, "clatP99us": 2605.1}
+{"t": 1791964817.2903783, "kind": "fio", "device": "pd-ssd", "job": "randwrite-4k-qd32", "iops": 8356, "mbps": 34.2, "clatP50us": 4014.1, "clatP99us": 4358.1}
+{"t": 1791964837.6152575, "kind": "fio", "device": "pd-ssd", "job": "seqread-1m-qd8", "iops": 241, "mbps": 252.7, "clatP50us": 33161.2, "clatP99us": 35389.4}
+{"t": 1791964872.982145, "kind": "fio", "device": "local-ssd", "job": "randread-4k-qd1", "iops": 7706, "mbps": 31.6, "clatP50us": 119.3, "clatP99us": 154.6}
+{"t": 1791964893.2732844, "kind": "fio", "device": "local-ssd", "job": "randread-4k-qd32", "iops": 179997, "mbps": 737.3, "clatP50us": 166.9, "clatP99us": 313.3}
+{"t": 1791964913.566699, "kind": "fio", "device": "local-ssd", "job": "randread-32k-qd16", "iops": 22502, "mbps": 737.4, "clatP50us": 864.3, "clatP99us": 1056.8}
+{"t": 1791964933.8559647, "kind": "fio", "device": "local-ssd", "job": "randwrite-4k-qd32", "iops": 100008, "mbps": 409.6, "clatP50us": 142.3, "clatP99us": 815.1}
+{"t": 1791964954.154486, "kind": "fio", "device": "local-ssd", "job": "seqread-1m-qd8", "iops": 704, "mbps": 737.7, "clatP50us": 11206.7, "clatP99us": 12386.3}

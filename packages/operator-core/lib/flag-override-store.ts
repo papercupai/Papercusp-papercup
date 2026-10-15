@@ -27,6 +27,7 @@
  */
 import { initFlagOverrideStore, isOverrideStoreConfigured } from '@papercusp/flags/server';
 import type { FlagKey } from '@papercusp/flags';
+import type { Sql, TransactionSql } from 'postgres';
 
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
@@ -46,6 +47,41 @@ export const FLAG_OVERRIDES_STATE_KEY = 'operator_flag_overrides';
  * existing workspace_id partition avoids a parallel store or schema migration.
  */
 export const GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID = '@global';
+
+/** Persisted authority for security-sensitive admission, held until commit.
+ * An absent global row refuses authority: neither legacy workspace overrides
+ * nor cached/default flags may authorize spending a server credential. This
+ * read never creates the global cutover marker as a side effect.
+ */
+export async function readGlobalFlagOverridesForUpdate(
+  tx: Sql | TransactionSql,
+): Promise<Partial<Record<FlagKey, boolean>> | null> {
+  if (typeof (tx as { begin?: unknown }).begin === 'function') {
+    throw new Error('flag_override_lock_requires_transaction');
+  }
+  const [row] = await tx<{ payload: unknown }[]>`
+    SELECT payload FROM harness_shared.operator_flag_overrides
+    WHERE workspace_id = ${GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID} FOR UPDATE`;
+  const payload = row?.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || Object.values(payload).some(value => typeof value !== 'boolean')) return null;
+  return payload as Partial<Record<FlagKey, boolean>>;
+}
+
+/** Fixed hosted-service policy bridge; retains the lock in caller transaction. */
+export async function readTutorialVoiceGlobalFlagsForUpdate(
+  tx: Sql | TransactionSql,
+): Promise<Partial<Record<FlagKey, boolean>> | null> {
+  if (typeof (tx as { begin?: unknown }).begin === 'function') {
+    throw new Error('flag_override_lock_requires_transaction');
+  }
+  const [row] = await tx<{ payload: unknown }[]>`
+    SELECT papercusp_auth.lock_tutorial_voice_global_flags() AS payload`;
+  const payload = row?.payload;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+    || Object.values(payload).some(value => typeof value !== 'boolean')) return null;
+  return payload as Partial<Record<FlagKey, boolean>>;
+}
 
 /**
  * PG NOTIFY channel announcing an override write to EVERY listening process
@@ -113,11 +149,20 @@ export function installFlagOverrideStore(): void {
       return globalOverrides ?? workspaceOverrides ?? {};
     },
     async set(key, enabled) {
+      const globalRow = await readOperatorState<Partial<Record<FlagKey, boolean>>>(
+        FLAG_OVERRIDES_STATE_KEY,
+        GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+      );
+      // WI-10005101: the FIRST global write IS the cutover — creating the '@global' row
+      // makes load() ignore every legacy workspace row from then on. Seed it from the
+      // active workspace's legacy row so the cutover carries those overrides forward
+      // instead of silently reverting them to code defaults. Measured 2026-10-01: a single
+      // flags:set at 2026-09-30 00:15Z dropped 12 owner-set overrides; 4 flipped ON→OFF
+      // (WATCHDOG_AUTO_CLOSE among them, so no watchdog item auto-closed for ~2 days).
+      // Only the absent-row case seeds — once '@global' exists, legacy rows stay unread.
       const current =
-        (await readOperatorState<Partial<Record<FlagKey, boolean>>>(
-          FLAG_OVERRIDES_STATE_KEY,
-          GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
-        )) ?? {};
+        globalRow ??
+        { ...((await readOperatorState<Partial<Record<FlagKey, boolean>>>(FLAG_OVERRIDES_STATE_KEY)) ?? {}) };
       if (enabled === null) delete current[key];
       else current[key] = enabled;
       await writeOperatorState(

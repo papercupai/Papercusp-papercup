@@ -1,0 +1,340 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exact hosted candidate account-first product guide journey",
+  "framework": "playwright",
+  "command": [
+    "playwright",
+    "test",
+    "--config=playwright.config.ts",
+    "e2e/portal-product-tutorial-served.spec.ts",
+    "--output=/tmp/tutorial-wi7292-served-pass-20261007T2315-results",
+    "--reporter=json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-07T23:05:07.430Z",
+  "finishedAt": "2026-10-07T23:05:15.820Z",
+  "summary": "Retained real hosted HTTPS candidate journey passed one Playwright test with zero skips, unexpected failures or flakes. Covers account-first entry, account v3 progress, billing Help, persisted pause/reload/resume, actual account-panel Help, workspace refusal and keyboard focus. This archive registers a completed run; it does not rerun it or claim production shipment, spoken voice, full-catalogue hosted acceptance, or an immutable complete linked dependency graph.",
+  "assertions": [
+    {
+      "id": "exact-served-artifact",
+      "passed": true,
+      "evidence": "Initial and final served HTML pinned build 1FBgI9aXAyP3WYrwvQzUQ; immutable release metadata was resolved during the real HTTPS journey."
+    },
+    {
+      "id": "verified-account-progress",
+      "passed": true,
+      "evidence": "Real WorkOS TEST verified account session and account-scoped v3 progress both returned 200; progress tenant matched admission and initial record was active/welcome, revision 0."
+    },
+    {
+      "id": "account-first-entry",
+      "passed": true,
+      "evidence": "Welcome to Papercusp appeared before Continue to Home; the active guide made only tutorial-progress writes before the destination handoff."
+    },
+    {
+      "id": "billing-contextual-help",
+      "passed": true,
+      "evidence": "Understand the bills heading received focus; contextual Help showed Papercusp subscription and model/provider usage explanation."
+    },
+    {
+      "id": "persisted-pause-reload-resume",
+      "passed": true,
+      "evidence": "Pause returned focus to Resume product guide; reload and resume returned focus to the persisted billing lesson; captured progress POST requests returned 200."
+    },
+    {
+      "id": "real-account-panel-help",
+      "passed": true,
+      "evidence": "Open account entered the real account panel with firstRun=deferred; contextual account Help was clickable inside the modal; resume returned focus to the account lesson."
+    },
+    {
+      "id": "workspace-permission-boundary",
+      "passed": true,
+      "evidence": "Plans link was absent without an authorized workspace; explanatory text appeared; the final authenticated session retained workspaceId=null."
+    },
+    {
+      "id": "small-viewport-keyboard-focus",
+      "passed": true,
+      "evidence": "390px viewport at 200% font size had no horizontal overflow; keyboard Enter on Skip guide returned focus to the visible connected Resume control in the Portal account dialog."
+    },
+    {
+      "id": "destination-write-boundary",
+      "passed": true,
+      "evidence": "Only documented empty-body POST notification refresh and select-workspace bootstrap requests occurred after destination entry; selection retained 403 operator_surface_requires_local_profile. No tutorial provisioning, billing or preference mutation occurred."
+    }
+  ],
+  "playwrightStats": {
+    "startTime": "2026-10-07T23:05:07.430Z",
+    "duration": 8390.765,
+    "expected": 1,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "safeAttachments": {
+    "skip-focus-lifecycle": {
+      "events": [
+        {
+          "tag": "BUTTON",
+          "label": null,
+          "text": "Skip guide"
+        },
+        {
+          "tag": "BUTTON",
+          "label": null,
+          "text": "Resume product guide",
+          "dialog": "Portal account"
+        },
+        {
+          "tag": "BUTTON",
+          "label": null,
+          "text": "Resume product guide",
+          "dialog": "Portal account"
+        }
+      ],
+      "active": {
+        "tag": "BUTTON",
+        "label": null,
+        "text": "Resume product guide"
+      },
+      "resumes": [
+        {
+          "focused": true,
+          "connected": true,
+          "visible": true,
+          "dialog": "Portal account"
+        }
+      ]
+    },
+    "served-product-guide-evidence": {
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "1FBgI9aXAyP3WYrwvQzUQ",
+        "release": "1FBgI9aXAyP3WYrwvQzUQ-20261007225422626-1891290-a862c85a",
+        "sourceRoot": "$PORTAL_SOURCE_ROOT",
+        "publishedAt": "2026-10-07T22:54:22.626Z",
+        "sourceRootDigest": "4ffc65b9af3b1a9b3fec0672dab029ec614d52826a7d9ef897deee2d03efbabb"
+      },
+      "journeyStartedAt": "2026-10-07T23:05:08.818Z",
+      "journeyFinishedAt": "2026-10-07T23:05:15.289Z",
+      "hostedAdmission": "WorkOS TEST verified account, workspace null",
+      "destination": "real account panel",
+      "writes": [
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": false,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/notifications/refresh",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": true,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/select-workspace",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": true,
+          "status": 403,
+          "errorCode": "operator_surface_requires_local_profile"
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/notifications/refresh",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": true,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/select-workspace",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": true,
+          "status": 403,
+          "errorCode": "operator_surface_requires_local_profile"
+        }
+      ]
+    },
+    "account-progress-preconditions": {
+      "attemptId": "81fef8ba-c897-4244-b918-0ef90daada8c",
+      "expectedBuild": "1FBgI9aXAyP3WYrwvQzUQ",
+      "origin": "https://localhost:4362",
+      "startedAt": "2026-10-07T23:05:08.818Z",
+      "progressEvidence": [
+        {
+          "phase": "verified-session",
+          "status": 200,
+          "tenantMatchesAdmission": true
+        },
+        {
+          "phase": "authenticated-precondition",
+          "status": 200,
+          "contentType": "application/json",
+          "error": null,
+          "recordPresent": true,
+          "version": 3,
+          "disposition": "active",
+          "currentLessonId": "welcome",
+          "revision": 0,
+          "tenantMatchesAdmission": true
+        }
+      ],
+      "writes": [
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": false,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/notifications/refresh",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": true,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/select-workspace",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": true,
+          "status": 403,
+          "errorCode": "operator_surface_requires_local_profile"
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/tutorial-progress",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": false,
+          "status": 200
+        },
+        {
+          "path": "/api/notifications/refresh",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": true,
+          "status": 200
+        },
+        {
+          "path": "/api/hosted/browser/onboarding/select-workspace",
+          "method": "POST",
+          "destinationEntered": true,
+          "emptyBody": true,
+          "status": 403,
+          "errorCode": "operator_surface_requires_local_profile"
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "rawReportPath": "/tmp/tutorial-wi7292-served-pass-20261007T2315.json",
+    "rawReportSha256": "1615a218a30cb4305dd62970218594477604a5cf9cb215aa4f6a9f15ddcd107d",
+    "testSourcePath": "portal:e2e/portal-product-tutorial-served.spec.ts",
+    "testSourceSha256": "6bd9e9e20a4b270fad3f1469f64bc8e2da46293d6d285ad43dd26ad21bf3fd4e",
+    "retainedRootUnitTestRun": 20911906,
+    "retainedPortalShellTestRun": 20911826,
+    "retainedPortalBrowserTestCount": 8,
+    "workItems": [
+      "WI-10007170",
+      "WI-10007280",
+      "WI-10007292"
+    ],
+    "productionPromoted": false,
+    "recordedFromExistingRun": true
+  }
+}

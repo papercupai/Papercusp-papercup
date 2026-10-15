@@ -20,7 +20,9 @@
  */
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
-import { escalateAlarm } from './alarm-attention';
+import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from './alarm-attention';
+
+export const POLL_SUSPECT_ALARM_CONDITION_KEY = 'alarm:poll-suspect';
 import { notifySyncInvalidate } from './sync-sse';
 import { flagPollSuspects, telemetryRollup, type PollSuspect } from './dev-data';
 
@@ -110,7 +112,7 @@ async function defaultEmitToast(t: { level: string; message: string; description
   void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
 }
 
-export interface PollSuspectScanDeps {
+export interface PollSuspectScanDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'resolve'> {
   /** Injectable for tests — defaults to a live cross-workspace telemetryRollup + flagPollSuspects. */
   loadSuspects?: () => Promise<PollSuspect[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
@@ -177,17 +179,22 @@ export async function runPollSuspectScanOnce(
         `[poll-suspect-alarm] toast emit failed (non-fatal, retries next tick): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+  if (suspects.length > 0) {
     // The detector already requires a sustained two-axis polling shape. Keep
     // its 24h announcement policy, but deliver it on the attention rail too so
     // a closed UI cannot hide a persistent waste/cost regression.
     await escalateAlarm(
       {
-        ...formatPollSuspectEscalation(fresh),
+        ...formatPollSuspectEscalation(suspects),
         cooldownMs: POLL_SUSPECT_ALERT_DEDUPE_MS,
         source: 'poll-suspect-alarm',
+        conditionKey: POLL_SUSPECT_ALARM_CONDITION_KEY,
       },
-      { notify: escalate, recentlyEscalated },
+      { notify: escalate, recentlyEscalated, broadcast: deps.broadcast },
     );
+  } else {
+    await resolveAlarm(POLL_SUSPECT_ALARM_CONDITION_KEY, 'poll-suspect-alarm', deps);
   }
   return { checked: suspects.length, alerted: fresh };
 }

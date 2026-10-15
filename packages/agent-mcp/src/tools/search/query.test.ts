@@ -2,8 +2,8 @@
  * search:query — PURE unit tests for the post-query shaping/sorting logic,
  * exercised directly.
  *
- * Focus (no live PG):
- *   - cross-kind `hits.sort` by score descending.
+ * Focus (no live PG; the BM25 branch is covered by query.integration.test.ts):
+ *   - cross-kind merge by in-kind position (RRF), not raw score (plan D-006).
  *   - `slice(limit)` truncation across kinds.
  *   - `degraded` present ONLY when ≥1 kind fell back to ILIKE.
  *   - `wantKind` filter (args.kinds restricts which kinds run).
@@ -68,20 +68,56 @@ const CTX = (tx: unknown) => ({
   log: vi.fn(),
 });
 
-describe('search:query — cross-kind sort by score desc', () => {
-  it('orders hits from all kinds by descending score', async () => {
+type Hit = { kind: string; id: string; score: number; kindScore: number; kindRank: number; snippet: string };
+
+/** The handler's declared return is the generic ToolResponse|ToolResult union; these tests
+ *  read search:query's own envelope fields, so narrow once here instead of at every read. */
+interface QueryResponse {
+  data: unknown;
+  degraded?: boolean;
+  degradedReasons?: string[];
+  engines?: Record<string, string>;
+}
+const asResponse = (res: unknown): QueryResponse => res as QueryResponse;
+
+describe('search:query — cross-kind merge by position (plan D-006)', () => {
+  it('interleaves kinds by in-kind position, whatever their score scales', async () => {
+    // goals carry BM25-sized scores, projects ts_rank-sized ones. A raw-score sort would
+    // hand every top slot to goals; position fusion alternates the two kinds.
+    const tx = makeTx({
+      goals: { fts: [12, 11, 10].map((rank, i) => ({ id: `g${i}`, title: `goal ${i}`, rank })) },
+      projects: { fts: [0.09, 0.08].map((rank, i) => ({ id: `p${i}`, slug: `proj${i}`, name: `project ${i}`, rank })) },
+    });
+    const res = asResponse(await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never));
+    const data = res.data as Hit[];
+    expect(data.map((h) => h.id)).toEqual(['g0', 'proj0', 'g1', 'proj1', 'g2']);
+    const scores = data.map((h) => h.score);
+    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+    expect(data[0]).toMatchObject({ kind: 'goals', kindScore: 12, kindRank: 1, score: 1 / 61 });
+    expect(data[1]).toMatchObject({ kind: 'projects', kindScore: 0.09, kindRank: 1, score: 1 / 61 });
+    expect(res.degraded).toBeUndefined();
+  });
+
+  it('breaks equal positions by kind order and reports each kind engine', async () => {
     const tx = makeTx({
       tasks: { fts: [{ harness_slug: 'h', feature_id: 'F-1', title: 'low task', summary: '', rank: 0.1 }] },
       goals: { fts: [{ id: 'g1', title: 'high goal', rank: 0.9 }] },
       projects: { fts: [{ id: 'p1', slug: 'proj', name: 'mid project', rank: 0.5 }] },
       audit: { fts: [{ id: 'a1', subject: 'subj', action: 'act', rank: 0.3 }] },
     });
-    const res = await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never);
-    const scores = (res.data as Array<{ score: number }>).map((h) => h.score);
-    expect(scores).toEqual([...scores].sort((a, b) => b - a));
-    expect(scores[0]).toBe(0.9);
-    expect((res.data as Array<{ kind: string }>)[0].kind).toBe('goals');
-    expect(res.degraded).toBeUndefined();
+    const res = asResponse(await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never));
+    expect((res.data as Hit[]).map((h) => h.kind)).toEqual(['tasks', 'goals', 'projects', 'audit']);
+    // The mock database has no BM25 index, so every kind ranks with ts_rank.
+    expect(res.engines).toEqual({ tasks: 'fts', goals: 'fts', projects: 'fts', audit: 'fts' });
+  });
+
+  it('keeps hits of different kinds that share an id', async () => {
+    const tx = makeTx({
+      goals: { fts: [{ id: 'same', title: 'goal', rank: 0.5 }] },
+      audit: { fts: [{ id: 'same', subject: 's', action: 'a', rank: 0.5 }] },
+    });
+    const res = asResponse(await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never));
+    expect((res.data as Hit[]).map((h) => `${h.kind}:${h.id}`)).toEqual(['goals:same', 'audit:same']);
   });
 });
 
@@ -96,10 +132,10 @@ describe('search:query — slice(limit) truncation', () => {
       rank: 0.5 - i * 0.05,
     }));
     const tx = makeTx({ goals: { fts: goalRows }, tasks: { fts: taskRows } });
-    const res = await tool.handler({ query: 'x', limit: 3 } as never, CTX(tx) as never);
+    const res = asResponse(await tool.handler({ query: 'x', limit: 3 } as never, CTX(tx) as never));
     expect((res.data as unknown[]).length).toBe(3);
-    // The 3 highest scores survive (goal rows score highest).
-    expect((res.data as Array<{ id: string }>).map((h) => h.id)).toEqual(['g0', 'g1', 'g2']);
+    // The 3 best positions survive: each kind's first hit, then the tasks' second.
+    expect((res.data as Array<{ id: string }>).map((h) => h.id)).toEqual(['h/F-0', 'g0', 'h/F-1']);
   });
 });
 
@@ -113,7 +149,7 @@ describe('search:query — wantKind filter', () => {
       if (k === 'goals') return Promise.resolve([{ id: 'g1', title: 'g', rank: 0.4 }]);
       return Promise.resolve([]);
     };
-    const res = await tool.handler({ query: 'x', kinds: ['goals'], limit: 25 } as never, CTX(tx) as never);
+    const res = asResponse(await tool.handler({ query: 'x', kinds: ['goals'], limit: 25 } as never, CTX(tx) as never));
     expect(new Set(visited)).toEqual(new Set(['goals']));
     expect((res.data as Array<{ kind: string }>).every((h) => h.kind === 'goals')).toBe(true);
   });
@@ -130,32 +166,32 @@ describe('search:query — FTS throws → ILIKE fallback per kind', () => {
       // goals FTS succeeds → no degraded reason for goals
       goals: { fts: [{ id: 'g1', title: 'ok goal', rank: 0.2 }] },
     });
-    const res = await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never);
+    const res = asResponse(await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never));
     expect(res.degraded).toBe(true);
     expect(res.degradedReasons).toContain('tasks_using_ilike_fallback');
     expect(res.degradedReasons).not.toContain('goals_using_ilike_fallback');
-    // The fallback task hit carries the hard-coded score 1 (highest), so it sorts first.
-    const taskHit = (res.data as Array<{ kind: string; score: number }>).find((h) => h.kind === 'tasks');
-    expect(taskHit?.score).toBe(1);
+    // ILIKE has no relevance: the fallback hit carries kindScore 1 and keeps its position.
+    const taskHit = (res.data as Hit[]).find((h) => h.kind === 'tasks');
+    expect(taskHit).toMatchObject({ id: 'h/F-9', kindScore: 1, kindRank: 1 });
+    expect(res.engines).toEqual({ tasks: 'ilike', goals: 'fts', projects: 'fts', audit: 'fts' });
   });
 
   it('degraded is absent when every kind uses FTS successfully', async () => {
     const tx = makeTx({ goals: { fts: [{ id: 'g1', title: 'g', rank: 0.5 }] } });
-    const res = await tool.handler({ query: 'x', kinds: ['goals'], limit: 25 } as never, CTX(tx) as never);
+    const res = asResponse(await tool.handler({ query: 'x', kinds: ['goals'], limit: 25 } as never, CTX(tx) as never));
     expect(res.degraded).toBeUndefined();
     expect((res as { degradedReasons?: unknown }).degradedReasons).toBeUndefined();
   });
 
-  it('audit fallback uses score 0.5 (its distinct ILIKE constant)', async () => {
+  it('audit fallback answers through ILIKE with its action: subject snippet', async () => {
     const tx = makeTx({
       audit: { fts: 'throw', ilike: [{ id: 'a1', subject: 's', action: 'act' }] },
     });
-    const res = await tool.handler({ query: 'x', kinds: ['audit'], limit: 25 } as never, CTX(tx) as never);
-    const auditHit = (res.data as Array<{ kind: string; score: number; snippet: string }>)[0];
-    expect(auditHit.kind).toBe('audit');
-    expect(auditHit.score).toBe(0.5);
-    expect(auditHit.snippet).toBe('act: s');
+    const res = asResponse(await tool.handler({ query: 'x', kinds: ['audit'], limit: 25 } as never, CTX(tx) as never));
+    const auditHit = (res.data as Hit[])[0];
+    expect(auditHit).toMatchObject({ kind: 'audit', kindScore: 1, kindRank: 1, score: 1 / 61, snippet: 'act: s' });
     expect(res.degradedReasons).toContain('audit_using_ilike_fallback');
+    expect(res.engines).toEqual({ audit: 'ilike' });
   });
 });
 
@@ -166,12 +202,13 @@ describe('search:query — per-kind isolation when BOTH legs fail (audit P-048)'
       goals: { fts: [{ id: 'g1', title: 'still here', rank: 0.7 }] },
     });
     // Pre-fix this REJECTED the whole handler (the fallback was unwrapped).
-    const res = await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never);
+    const res = asResponse(await tool.handler({ query: 'x', limit: 25 } as never, CTX(tx) as never));
     expect(res.degraded).toBe(true);
     expect(res.degradedReasons).toContain('tasks_unavailable');
     const kinds = (res.data as Array<{ kind: string }>).map((h) => h.kind);
     expect(kinds).toContain('goals');
     expect(kinds).not.toContain('tasks');
+    expect((res.engines as Record<string, string>).tasks).toBe('unavailable');
   });
 
 });

@@ -17,9 +17,9 @@
  * GENERIC by design: `recomputeWatchdogKeys(deriveKey, deps, opts)` takes a pure
  * `deriveKey(candidate) → newKey | null`, so any FUTURE key-shape change is just
  * a new deriver + one call — future dedup-key changes are safe.
- * `deriveToolErrorWatchdogKey` is THIS change's deriver: it recomputes the
- * fingerprint from each open caller/transient EI's STORED SAMPLE (its body) and
- * appends it, matching exactly what the live collector now produces.
+ * `deriveToolErrorWatchdogKey` recomputes the fingerprint from each open
+ * tool-error EI's STORED SAMPLE (its body) and appends it. It also upgrades the
+ * former first-six-token fingerprint shape to the full-message digest.
  *
  * PURE (no PG): the IO seam is `RecomputeDeps`. The live-PG deps + the
  * post-deploy CLI live in `apps/operator/scripts/recompute-watchdog-keys.ts`.
@@ -65,7 +65,7 @@ export function parseRepeatedToolErrorKey(key: string): ParsedToolErrorKey | nul
  * Pure: pull the representative error sample out of a watchdog tool-error EI
  * body. The collector writes "… Sample error: <msg>" (structural) or
  * "… Sample: <msg>" (transient/caller/rate-limit) as the LAST line; the
- * fingerprint is derived from the first tokens of that sample. Returns null when
+ * fingerprint is derived from that sample. Returns null when
  * no sample line is present.
  */
 export function extractSampleFromBody(body: string | null | undefined): string | null {
@@ -74,13 +74,12 @@ export function extractSampleFromBody(body: string | null | undefined): string |
 }
 
 /**
- * THIS change's deriver (P-012): for an OPEN tool-error EI whose key is a
- * now-fingerprinted class (`caller`/`transient`) but carries NO fingerprint yet,
- * recompute the fingerprint from the EI's stored sample and return the new,
- * fingerprinted key. Returns null (no migration) for:
+ * For an OPEN tool-error EI whose key is a fingerprinted class but carries no
+ * current full-message digest, recompute it from the stored sample. Returns null
+ * (no migration) for:
  *   - non-tool-error keys,
  *   - `rate-limit` (deliberately coarse — one capacity concern),
- *   - keys that already carry a fingerprint (structural, or already migrated),
+ *   - keys that already carry a current `md5-<hex>` fingerprint,
  *   - EIs whose body yields no derivable fingerprint.
  */
 export function deriveToolErrorWatchdogKey(candidate: ImprovementCandidate): string | null {
@@ -88,10 +87,10 @@ export function deriveToolErrorWatchdogKey(candidate: ImprovementCandidate): str
   if (typeof key !== 'string' || !key.startsWith(REPEATED_TOOL_ERROR_PREFIX)) return null;
   const parsed = parseRepeatedToolErrorKey(key);
   if (!parsed) return null;
-  // rate-limit is never fingerprinted; structural / already-fingerprinted keys
-  // already carry their fp → nothing to migrate.
+  // rate-limit is never fingerprinted. Old first-six-token keys are upgraded;
+  // current digests already match the collector's live key shape.
   if (!FINGERPRINTED_TOOL_ERROR_CLASSES.has(parsed.klass)) return null;
-  if (parsed.fingerprint) return null;
+  if (parsed.fingerprint && /^md5-[a-f0-9]{32}$/.test(parsed.fingerprint)) return null;
   const fp = toolErrorFingerprint(extractSampleFromBody(candidate.body));
   if (!fp) return null;
   const newKey = `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(parsed.tool, parsed.klass, fp)}`;

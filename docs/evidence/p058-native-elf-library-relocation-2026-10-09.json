@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-058 complete ELF consumer library relocation",
+  "framework": "node",
+  "command": [
+    "env",
+    "TMPDIR=/mnt/backup/portable-server-p058/elf-prune-regression-20261009/tmp",
+    "$HOME/.local/node25/bin/node",
+    "--test",
+    "--test-global-setup=papercusp-desktop/test/monorepo-host-preflight.mjs",
+    "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js",
+    "papercusp-desktop/test/server-container.test.js",
+    "papercusp-desktop/test/server-native-builder.test.js",
+    "papercusp-desktop/test/sidecar-stage-resume.test.js"
+  ],
+  "cwd": ".",
+  "startedAt": "2026-10-09T19:00:21.588Z",
+  "finishedAt": "2026-10-09T19:00:37.596Z",
+  "timestampSource": "Runner log creation and final write; Node summary duration 15916.273691 ms.",
+  "exitCode": 0,
+  "summary": "128 canonical Node tests passed with zero failures, cancellations or skips. Existing desktop global preflight ran; TMPDIR changes fixture storage only, without overriding the shared install mutex. The maintained Linux assembly helper now uses the complete target ELF census and relocates actual consumers to libraries already in the bundle. Native8 and native9 remain rejected. Native10 acceptance is a separate operation.",
+  "assertions": [
+    {
+      "id": "canonical-suite-128",
+      "passed": true,
+      "evidence": "Actual exit 0; tests=128, pass=128, fail=0, cancelled=0, skipped=0, todo=0; raw log SHA c38ea8efb538509145ac0f77d7fa7dbf950b90bc3b79e1d0e8d2e9cabcc8cca7."
+    },
+    {
+      "id": "native-consumers-relocate",
+      "passed": true,
+      "evidence": "Real compiled .node, .bare and extensionless ELF consumers load after renaming the payload and removing the donor directory. Removing the packaged libatomic fails each load. Header-only inspection Node is isolated from donor LD_LIBRARY_PATH; donor resolution remains available to ldd."
+    },
+    {
+      "id": "pgxs-relative-libpq",
+      "passed": true,
+      "evidence": "Real compiled PGXS-like executable first fails with the original /usr/local/pg-build/lib RUNPATH, then executes with result 47 after assembly and relocation. The external prefix is removed, ORIGIN is present, and removing packaged libpq causes failure."
+    },
+    {
+      "id": "existing-guards-preserved",
+      "passed": true,
+      "evidence": "Canonical suite retains complete ELF architecture/link containment, native loader/runpath, real pruned odiff importer plus pixelmatch, helper-byte-change receipt/resume, source/SPA binding, allocator, factory and publish/audit ordering controls."
+    }
+  ],
+  "workItemId": "EI-25528824429649441",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "source-regression",
+  "rawLogFile": "/mnt/backup/portable-server-p058/elf-prune-regression-20261009/tests6.log",
+  "rawLogSha256": "c38ea8efb538509145ac0f77d7fa7dbf950b90bc3b79e1d0e8d2e9cabcc8cca7",
+  "sourceHashes": {
+    "papercusp-desktop/bin/build-desktop-sidecar.sh": "4a11ce765325748fab20cd3b3e69d00736ed8e7fd55fd4cac9201550aed0b35a",
+    "papercusp-desktop/bin/verify-sidecar-bundle.sh": "78efda72efe92e24199d9049038691d3dc764a250d39fe25b369ef48178de2fa",
+    "papercusp-desktop/bin/lib/server-container.mjs": "fe6ca813fb06d6f33106265ffe2c47429321bae046159be85490563a78dc3434",
+    "papercusp-desktop/bin/lib/sidecar-stage-state.js": "7cdc6c1e95c892a3b5f0f53eece6d0890401508e94759864ef6f9bfde8bcc9fc"
+  },
+  "testHashes": {
+    "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js": "fd07c593c2950661bdc6d4b84fdcceecb5e7c148d744a3048563e668d6dde17b",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js": "e184378f81158192b4c3d68d95c43c9e7c5106cc8d737bf104ad0a64a2e5b47c",
+    "papercusp-desktop/test/server-container.test.js": "1fa11071f3c80c59c248815def5ffe473899f64e2dad82946b7f74e57ebd7ac2",
+    "papercusp-desktop/test/server-native-builder.test.js": "855df00a3fac236d25fcae6875e1a9f18237b0c07407cf1489f6cd5d9052238b",
+    "papercusp-desktop/test/sidecar-stage-resume.test.js": "9d66cb9c5765d9d2b4cfb9d4233a8faa7ecbd89a387056361c2c4ef865181e34"
+  },
+  "supportingOperationalChecks": [
+    {
+      "taskId": "0mv1c7oz6vc8mwp1mcd",
+      "command": ["node", "$HOME/p058-armbuild8/tooling-epoch4/producer/papercusp-desktop/bin/build-server-container.mjs", "native", "--config", "$HOME/p058-armbuild8/config/native9-relocation-diagnostic2.config.json"],
+      "startedAt": "2026-10-09T19:07:23.109Z",
+      "finishedAt": "2026-10-09T19:07:26.320Z",
+      "exitCode": 0,
+      "rawLogFile": "/mnt/backup/portable-server-p058/elf-prune-regression-20261009/native9-relocation-diagnostic2.log",
+      "rawLogSha256": "ab0e0d31ff68312777ccd34ae89ddd6b2f98e4f9f2f3e93b724c1bc32907ec86",
+      "scope": "Four copied consumers from rejected native9, with corresponding packaged libraries; copied root renamed after the real assembly helper ran. Original four files remain hash-identical. This is diagnostic proof, not qualification of native9 or native10.",
+      "observed": "ldd resolves all three PGXS libpq dependencies and the Bare libatomic dependency inside the relocated copy. pg_regress and pg_isolation_regress version probes return PostgreSQL 18.3 with exit 0. isolationtester has no --version option: its observed usage guard returns exit 1, explicitly expected. Removing packaged libatomic forces resolution outside the copy; negative control passes. Owner cleanup removed=true."
+    }
+  ]
+}

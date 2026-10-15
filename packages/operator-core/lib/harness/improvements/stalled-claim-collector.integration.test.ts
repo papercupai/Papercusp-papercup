@@ -115,6 +115,26 @@ describe('collectStalledClaimSignals — claim-hold exclusion (WI-3669 recurrenc
     expect(sigs[0]!.body).toContain('SCT-TEST-001');
   });
 
+  it('recent owner-wide activity does not mask stale item-scoped progress', async () => {
+    const owner = 'su-active-elsewhere';
+    await seedPresence(owner);
+    await seedBug('SCT-TEST-005', owner, 60, { status: 'wip' });
+    await fx.admin`
+      INSERT INTO harness_shared.agent_activity (workspace_id, owner_id, kind, summary, created_at)
+      VALUES (${WS}, ${owner}, 'tool', 'working elsewhere', now())`;
+    await fx.admin`
+      INSERT INTO harness_shared.tool_invocations
+        (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key,
+         status, coord_owner_id, goal_ref, invoked_at)
+      VALUES
+        (${WS}, ${H}, 'agent-mcp', 'work_items:get', 'operator', 's-watchdog-test',
+         'w-watchdog-test', 'ok', ${owner}, 'WI-OTHER', now())`;
+
+    const sigs = await collect();
+    expect(sigs).toHaveLength(1);
+    expect(sigs[0]!.body).toContain('SCT-TEST-005');
+  });
+
   it('does NOT flag a deliberately claim-held item (payload._claimHold: true)', async () => {
     await seedPresence('su-held-holder');
     await seedBug('SCT-TEST-002', 'su-held-holder', 60, { claimHold: true });

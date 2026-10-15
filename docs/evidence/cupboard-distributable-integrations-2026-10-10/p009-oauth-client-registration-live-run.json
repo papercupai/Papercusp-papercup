@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-009 live: the Asana card on Settings -> Integrations registers an OAuth client through the generic clientRegistrationRef form, enables Connect without revealing the secret, and offers the declared personal-access-token option",
+  "framework": "shell",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    ".papercusp/scratch/p009-fixtures/headless-p009.sh",
+    "(launched by .papercusp/scratch/p009-fixtures/launch-p009.sh with VERIFY_TAURI_ISOLATED_DB=1, VERIFY_TAURI_ISOLATED_SEED=ready, a private PAPERCUSP_HOME, VERIFY_TAURI_SOURCE_REF pinned and the acceptance inputs checked byte-identical to that ref)"
+  ],
+  "startedAt": "2026-10-11T11:14:25.335Z",
+  "finishedAt": "2026-10-11T11:43:50.847Z",
+  "exitCode": 0,
+  "summary": "verify-tauri-headless run 20261011T111424Z-2494115 verdict=pass (passed=3 failed=0 blocked=0 skipped=0), isolated DB and private PAPERCUSP_HOME, superproject c20d6c21f9, libs/papercusp 7c0fa73eec. Before registration the Asana card's OAuth client form read configured=false with Connect disabled and showed the redirect URI to paste into the vendor console, plus a Client ID text input and a masked Client secret input. After filling and saving the form on the page, the card read configured=true with Connect enabled, showed the client id and did not render the secret. The registration route answered 200 with configured:true and hasClientSecret:true; the registration landed in the private home's oauth-apps.json and the host's own registration file was byte-identical before and after (sha256 ec07b63d...). The card also offered the manifest-declared personal_access_token credential as a masked, unconfigured input.",
+  "assertions": [
+    { "id": "unregistered-form-before-save", "passed": true, "evidence": "BEFORE_REGISTRATION configured=false connect=disabled redirect=http://127.0.0.1:33720/api/oauth/callback inputs=Client ID:text|Client secret:password" },
+    { "id": "register-through-the-page-form", "passed": true, "evidence": "OK registered through the form (fields filled and Save clicked in the webview, not via a direct API call)." },
+    { "id": "connect-enabled-secret-not-shown", "passed": true, "evidence": "AFTER_REGISTRATION configured=true connect=enabled showsClientId=true secretOnPage=false" },
+    { "id": "registration-route-reads-back", "passed": true, "evidence": "REGISTRATION_READ 200 {ok:true, providerId:asana, oauthClient:{ref:asana, configured:true, clientId:p009client2365714998, hasClientSecret:true, redirectUri:http://127.0.0.1:33720/api/oauth/callback}} — the secret itself is never returned." },
+    { "id": "registration-stored-in-the-running-home-only", "passed": true, "evidence": "OK private registration file <private PAPERCUSP_HOME>/oauth-apps.json; OK host registration unchanged sha256=ec07b63de131c5ecd906dd1889751e8941766da57a2ed76186a08cf3488e550b (before == after)." },
+    { "id": "asana-personal-access-token-option", "passed": true, "evidence": "PAT_OPTION personal_access_token:false:password — the setup.credentials field declared in libs/papercusp/plugins/asana/papercusp.json renders as a masked, unconfigured input on the same card." }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": ["P-009"],
+  "specs": ["SPEC-R-2-P-009"],
+  "evidencePlane": "live",
+  "harnessRun": {
+    "harness": "verify-tauri-headless",
+    "runId": "20261011T111424Z-2494115",
+    "verdict": "pass",
+    "evidenceDir": "~/.local/state/verification-harness/verify-tauri-headless/20261011T111424Z-2494115",
+    "superprojectRef": "c20d6c21f9bc37ff4c2cf1b3ad9b65346b2d6572",
+    "packageRef": "libs/papercusp@7c0fa73eec95deabaa9db7b61b99d34cd7e03407",
+    "testedInputs": [
+      "apps/operator/app/settings/integrations/page.tsx",
+      "apps/operator/app/settings/integrations/ProviderOAuthClientForm.tsx",
+      "packages/operator-core/lib/endpoint-route/routes/user/provider-oauth-client.ts",
+      "packages/operator-core/lib/integrations/oauth-client-registration.ts",
+      "libs/papercusp/plugins/asana/papercusp.json"
+    ]
+  },
+  "limitations": [
+    "The registered client id/secret are test values; completing an Asana OAuth consent needs a browser sign-in at app.asana.com, which a headless run cannot give, so the token exchange is covered by the unit/integration tests, not here.",
+    "Saving a personal access token is not exercised live here: the run shows the option exists and is masked; the credential connect path (D-016) is exercised by the P-010 live run.",
+    "The first attempt (run 20261011T111319Z-2462500) aborted in prepare (operator-source-snapshot exit 1) because a tested input was uncommitted; the launcher waited for git-sync and the second attempt is the one recorded."
+  ]
+}

@@ -22,11 +22,13 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { readGateNonVerdictReasons } from '../../release/gate-fire-ledger';
 import {
   appendPipelineEvent,
   summarizePipelineWindow,
   recentPipelineEvents,
   findGreenCheckpointVerdictForCandidate,
+  readGatePipelineWindow,
   type PipelineEventKind,
 } from './pipeline-events';
 
@@ -56,7 +58,7 @@ describe('pipeline-events runtime — real Postgres', () => {
         status text NOT NULL,
         detail jsonb NOT NULL DEFAULT '{}'::jsonb,
         created_at timestamptz NOT NULL DEFAULT now(),
-        CONSTRAINT pipeline_events_kind_check CHECK (kind = ANY (ARRAY['git_sync'::text, 'merge_resolver'::text, 'content_fixer'::text, 'green_checkpoint'::text, 'deploy'::text, 'release_fixer'::text]))
+        CONSTRAINT pipeline_events_kind_check CHECK (kind = ANY (ARRAY['git_sync'::text, 'merge_resolver'::text, 'content_fixer'::text, 'green_checkpoint'::text, 'green_checkpoint_fire'::text, 'deploy'::text, 'release_fixer'::text]))
       );
     `);
   });
@@ -65,6 +67,118 @@ describe('pipeline-events runtime — real Postgres', () => {
   });
   beforeEach(async () => {
     await db.sql`TRUNCATE harness_shared.pipeline_events RESTART IDENTITY`;
+  });
+
+  it('counts non-verdict reasons over an exact complete day, deduplicating repeated fire outcomes', async () => {
+    const now = Date.UTC(2026, 9, 13, 12);
+    const insert = async (status: string, fire: string | null, at = now - 1000,
+      workspace = 'ws', install = SLUG, kind: PipelineEventKind = 'green_checkpoint') => {
+      await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES (${workspace}, ${install}, ${kind}, ${status},
+          ${JSON.stringify(fire === null ? {} : { gateFireId: fire })}::text::jsonb, ${new Date(at)})`;
+    };
+    for (let i = 0; i < 6; i++) {
+      await insert('skipped-joined-attempt', `joined-${i}`);
+      await insert('skipped-joined-attempt', `joined-${i}`);
+    }
+    await insert('skipped-memory-budget', null);
+    await insert('skipped-memory-budget', null);
+    await insert('skipped-joined-attempt', 'too-old', now - 86_400_001);
+    await insert('skipped-joined-attempt', 'future', now + 1);
+    await insert('skipped-joined-attempt', 'foreign-workspace', now, 'other');
+    await insert('skipped-joined-attempt', 'foreign-install', now, 'ws', 'other');
+    await insert('skipped-joined-attempt', 'anchor', now, 'ws', SLUG, 'green_checkpoint_fire');
+    await insert('not-green', 'red');
+    await insert('pure-proof-capture-pending', 'pending');
+    const result = await readGateNonVerdictReasons(db.sql, { workspaceId: 'ws', installSlug: SLUG }, now);
+    expect(result.reasons.map(({ reason, count }) => ({ reason, count }))).toEqual([
+      { reason: 'skipped-joined-attempt', count: 6 }, { reason: 'skipped-memory-budget', count: 2 },
+    ]);
+    expect(result).toMatchObject({ windowHours: 24, measuredAtMs: now, sinceMs: now - 86_400_000 });
+  });
+
+  it('counts failed or unmeasured joins while preserving identified live joins only in history (P-033)', async () => {
+    const now = Date.UTC(2026, 9, 13, 12);
+    const insert = async (status: string, detail: Record<string, unknown>) => {
+      await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES ('ws', ${SLUG}, 'green_checkpoint', ${status},
+          ${JSON.stringify(detail)}::text::jsonb, ${new Date(now - 1000)})`;
+    };
+    for (let i = 0; i < 10; i++) {
+      await insert('skipped-joined-attempt', {
+        gateFireId: `healthy-${i}`, attemptId: 'attempt-live', runnerId: 'runner-live', runnerLiveness: 'live',
+      });
+    }
+    for (const [fire, detail] of [
+      ['legacy', {}],
+      ['unknown', { attemptId: 'attempt-live', runnerId: 'runner-live', runnerLiveness: 'unknown' }],
+      ['dead', { attemptId: 'attempt-live', runnerId: 'runner-live', runnerLiveness: 'dead' }],
+      ['missing-runner', { attemptId: 'attempt-live', runnerLiveness: 'live' }],
+      ['missing-attempt', { runnerId: 'runner-live', runnerLiveness: 'live' }],
+      ['blank-runner', { attemptId: 'attempt-live', runnerId: ' ', runnerLiveness: 'live' }],
+    ] as const) {
+      await insert('skipped-joined-attempt', { gateFireId: fire, ...detail });
+      await insert('skipped-joined-attempt', { gateFireId: fire, ...detail });
+    }
+    await insert('error', { gateFireId: 'abort', runnerLiveness: 'live', runnerId: 'runner-live', attemptId: 'attempt-live' });
+    await insert('skipped-runner-liveness-unknown', { gateFireId: 'unmeasured' });
+
+    const result = await readGateNonVerdictReasons(db.sql, { workspaceId: 'ws', installSlug: SLUG }, now);
+    expect(result.reasons.map(({ reason, count }) => ({ reason, count }))).toEqual([
+      { reason: 'skipped-joined-attempt', count: 6 },
+      { reason: 'error', count: 1 },
+      { reason: 'skipped-runner-liveness-unknown', count: 1 },
+    ]);
+    const history = await db.sql`SELECT count(*)::int AS count FROM harness_shared.pipeline_events
+      WHERE workspace_id = 'ws' AND install_slug = ${SLUG} AND detail->>'gateFireId' LIKE 'healthy-%'`;
+    expect(history[0]?.count).toBe(10);
+  });
+
+  it('reads complete gate windows in one snapshot, scopes exactly and exposes spanning attempts', async () => {
+    const start = Date.parse('2026-10-05T10:00:00Z');
+    const end = Date.parse('2026-10-05T11:00:00Z');
+    const insert = async (workspace: string, install: string, kind: PipelineEventKind,
+      fire: string, at: number, status: string) => {
+      await db.sql`INSERT INTO harness_shared.pipeline_events
+        (workspace_id, install_slug, kind, status, detail, created_at)
+        VALUES (${workspace}, ${install}, ${kind}, ${status}, ${JSON.stringify({ gateFireId: fire })}::text::jsonb, ${new Date(at)})`;
+    };
+    for (const [workspace, install] of [['ws', SLUG], ['foreign', SLUG], ['ws', 'foreign']]) {
+      await insert(workspace!, install!, 'green_checkpoint_fire', 'complete', start + 10, 'fired');
+      await insert(workspace!, install!, 'green_checkpoint', 'complete', start + 20, 'advanced');
+    }
+    await insert('ws', SLUG, 'git_sync', 'noise', start + 30, 'synced');
+    await insert('ws', SLUG, 'green_checkpoint_fire', 'old-finished', start - 20, 'fired');
+    await insert('ws', SLUG, 'green_checkpoint', 'old-finished', start - 10, 'advanced');
+    const input = { windowStartMs: start, windowEndMs: end, nonTerminalStatuses: ['decision-pending'] };
+    const types = await db.sql`SELECT DISTINCT jsonb_typeof(detail) AS type FROM harness_shared.pipeline_events`;
+    expect(types.map((r) => r.type)).toEqual(['object']);
+    const target = { workspaceId: 'ws', installSlug: SLUG };
+    const complete = await readGatePipelineWindow(target, input, db.sql);
+    expect(complete).toMatchObject({ status: 'complete', total: 2 });
+    expect(complete.rows.map((r) => r.detail.gateFireId)).toEqual(['complete', 'complete']);
+    expect(await readGatePipelineWindow(target, { ...input, maxRows: 1 }, db.sql))
+      .toMatchObject({ status: 'capped', total: 2, rows: [expect.anything()] });
+    // Both boundaries lie inside this attempt: a simple created_at window would miss it.
+    await insert('ws', SLUG, 'green_checkpoint_fire', 'spanning', start - 50, 'fired');
+    await insert('ws', SLUG, 'green_checkpoint', 'spanning', start - 40, 'decision-pending');
+    await insert('ws', SLUG, 'green_checkpoint', 'spanning', end + 50, 'advanced');
+    const spanning = await readGatePipelineWindow(target, input, db.sql);
+    expect(spanning.total, JSON.stringify(spanning)).toBe(5);
+    expect(spanning.status).toBe('complete');
+    expect(spanning.rows.filter((r) => r.detail.gateFireId === 'spanning')).toHaveLength(3);
+    // A vanished fire cannot silently disappear from the population either.
+    await insert('ws', SLUG, 'green_checkpoint_fire', 'unfinished', start - 30, 'fired');
+    expect((await readGatePipelineWindow(target, input, db.sql)).total).toBe(6);
+  });
+
+  it('distinguishes a double-encoded fixture from the production text-to-jsonb writer', async () => {
+    const detail = JSON.stringify({ gateFireId: 'fixture-control' });
+    const rows = await db.sql`SELECT jsonb_typeof(${detail}::jsonb) AS inferred,
+      jsonb_typeof(${detail}::text::jsonb) AS production`;
+    expect(rows[0]).toMatchObject({ inferred: 'string', production: 'object' });
   });
 
   it('appends events and summarizes the trailing window per kind/status', async () => {

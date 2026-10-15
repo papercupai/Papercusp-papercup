@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import {
+  ADMISSION_CENSUS_LOCK_RETRY_BACKOFFS_MS,
   ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS,
   buildAdmissionShardPlan,
+  isLockNotAvailable,
   lexicalHardEdges,
   LEXICAL_PAIR_GROUP_CAP,
   partitionTextContextIds,
@@ -262,5 +264,23 @@ describe('withCensusStatementTimeout', () => {
     };
     const transactionHandle: Record<string, unknown> = { unsafe: async () => undefined };
     await expect(nestedBegin(transactionHandle)).rejects.toThrow(/is not a function/);
+  });
+});
+
+describe('census lock_not_available retry policy (WI-10004951)', () => {
+  it('retries only 55P03, never the statement_timeout the census sets on purpose', () => {
+    expect(isLockNotAvailable({ code: '55P03' })).toBe(true);
+    expect(isLockNotAvailable({ pgCode: '55P03' })).toBe(true);
+    expect(isLockNotAvailable({ code: '57014' })).toBe(false);
+    expect(isLockNotAvailable({ name: 'WorkspaceContendedError' })).toBe(false);
+    expect(isLockNotAvailable(new Error('canceling statement due to lock timeout'))).toBe(false);
+    expect(isLockNotAvailable(null)).toBe(false);
+  });
+
+  it('waits long enough to outlast a table-rewrite lock but stays bounded', () => {
+    const total = ADMISSION_CENSUS_LOCK_RETRY_BACKOFFS_MS.reduce((a, b) => a + b, 0);
+    // The 16:59Z refusal window was ~30s; the role lock_timeout is 15s per attempt.
+    expect(total).toBeGreaterThanOrEqual(60_000);
+    expect(total).toBeLessThan(ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS);
   });
 });

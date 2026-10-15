@@ -39,7 +39,7 @@ export interface PackedWakeText {
 
 const SEPARATOR = '\n\n';
 const HEADING = /^#{1,6}\s+\S/;
-const HIGH_PRIORITY_TITLE = /next action|## now\b|blocker|blocked on|wall|owner|directive/i;
+const HIGH_PRIORITY_TITLE = /next action|## now\b|blocker|blocked on|wall|owner|directive|carried (?:probe|reference) changes/i;
 /** Max chars of one section title quoted in the footer. */
 const TITLE_MAX = 60;
 

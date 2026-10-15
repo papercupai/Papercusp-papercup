@@ -1,0 +1,117 @@
+---
+rel_path: "evidence/originals/35176174c2a1d99cccfd64f0d7837cd00a345e942fdce1c63676d0b8b17f6ae0.json"
+updated_at: 1791229536454
+_body: "content"
+---
+
+{
+  "schemaVersion": 1,
+  "measuredAt": "2026-10-03T13:18:03.037509+00:00",
+  "workItem": "EI-24962734413502764",
+  "parentChange": "WI-10005966",
+  "nativeSession": "01a101d5-a51b-7d72-914c-e797e47bef3e",
+  "plane": "canonical focused tests and small private inspector, not serving-runtime acceptance",
+  "tests": [
+    {
+      "ok": true,
+      "runId": "d9db381f-1930-4471-ad85-f98848be90c8",
+      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "passed": 18,
+      "failed": 0,
+      "skipped": 15,
+      "files": 1,
+      "failures": [],
+      "failuresTruncated": false,
+      "durationMs": 1354,
+      "byFile": {
+        "packages/operator-core/lib/cdp-inspector.test.ts": {
+          "passed": 18,
+          "failed": 0,
+          "skipped": 15,
+          "collectionFailed": false,
+          "runId": 20700586
+        }
+      },
+      "testRunIds": [
+        20700586
+      ],
+      "rootSource": "requested"
+    },
+    {
+      "ok": true,
+      "runId": "ad41bf56-61d8-4535-99e6-676e3e2969b2",
+      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 133,
+      "files": 1,
+      "failures": [],
+      "failuresTruncated": false,
+      "durationMs": 8,
+      "byFile": {
+        "packages/operator-core/lib/service-memory-attribution.integration.test.ts": {
+          "passed": 5,
+          "failed": 0,
+          "skipped": 133,
+          "collectionFailed": false,
+          "runId": 20700585
+        }
+      },
+      "testRunIds": [
+        20700585
+      ],
+      "rootSource": "requested"
+    }
+  ],
+  "types": {
+    "path": "/tmp/su-7db4f-p011-snapshot-selection-types-r1.log",
+    "bytes": 3239,
+    "sha256": "f1b92eacf120af4db1da0ab2ad8dd152fd251b499a20fdeb9479209978e807b4"
+  },
+  "sources": [
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 50284,
+      "sha256": "dffda48f8b314346d5707cde6355c92ab348ded27412d9e4a53eb687b5d09e59"
+    },
+    {
+      "path": "scripts/cdp-inspector.d.mts",
+      "bytes": 14060,
+      "sha256": "9e00b62cbec6af9ef2cb1fd83e5d2b04b37cfd4ca411dc4595d6760819623c82"
+    },
+    {
+      "path": "packages/operator-core/lib/cdp-inspector.test.ts",
+      "bytes": 55354,
+      "sha256": "ab76d0b3e38f63e8b4658787ac922f99964adb9ab004f260042ac6f8dba1b726"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "bytes": 201224,
+      "sha256": "bba36ba90ea41a6a6edc813f00098e09aa55cbe5db8ee5e6107b371ebf65b186"
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "bytes": 29071,
+      "sha256": "3918249ea811b95ec308ab3be078ea6e64d23dd5646bc8314d4023feb24dd972"
+    }
+  ],
+  "preservedFailure": {
+    "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r1-2026-10-03.json",
+    "bytes": 761198,
+    "sha256": "dfdcfd16e7242cc1049c1dc2c0567bb8f040c4d2deb6580e0aa34dc662894a0d"
+  },
+  "originalCause": "UNCONFIRMED: R1 did not capture its post-summary FIFO",
+  "controlledReproduction": "Actual recordPgResult writer evicts named diagnostic after 32 new records; live inspector lookup loses the UUID. Selected exact metadata and WeakRefs retain the identity while decoded result is collected and mapped/response objects remain identifiable.",
+  "durableChange": "Extend existing readPinnedHeapObjectIds with caller-owned captureSnapshot callback. Bounded metadata/WeakRefs selected before capture without target dereference; request tuple set checked before costly capture; IDs read before stream summary; pre/post live registry metadata and separate write/summary times persisted; group always released.",
+  "costlyFailureAudit": [
+    "ordinary R3: false 1:1 query cardinality; exact one-to-many distinct tuples now guarded",
+    "retainers R1: mutable diagnostic FIFO read after expensive analysis; bounded weak selection and preflight conservation now guarded"
+  ],
+  "acceptanceLimits": [
+    "Full executed source graph UNKNOWN",
+    "Original R1 cause not retroactively proved",
+    "No native physical savings or worker-clone attribution proved",
+    "No full P011 acceptance or shipment claimed"
+  ]
+}
+

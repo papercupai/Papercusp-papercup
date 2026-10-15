@@ -31,6 +31,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '../../agent-chat-stream';
 import { surfaceBackend, surfaceModel } from '../../agent-config';
+import { superuserTokenPath } from '../../superuser-token';
 import {
   composeOraclePrompt,
   buildOracleMcpConfig,
@@ -91,7 +92,7 @@ async function oracleHandler(input: Args, ctx: ChatCtx) {
   if (!mcpConfig) {
     throw new Error(
       'Oracle not provisioned: missing system principal or superuser token. ' +
-        'POST /api/agent-mcp/provision first and ensure ~/.papercusp/superuser-token exists.',
+        `POST /api/agent-mcp/provision first and ensure ${superuserTokenPath()} exists.`,
     );
   }
 

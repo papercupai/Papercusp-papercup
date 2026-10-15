@@ -26,6 +26,11 @@ export function parseGithubRemote(remote: string): {
  * @returns {boolean}
  */
 export function isMirrorRemote(remote: string): boolean;
+/** Refuse bundle publication until its blueprint manifests exist in the public source repos. */
+export function validatePublishedBundleBlueprints(bundleFile: any, runGh: any): Promise<{
+    blueprints: number;
+    repositories: number;
+}>;
 /**
  * Recursively list files under dir as dir-relative paths (posix slashes).
  *

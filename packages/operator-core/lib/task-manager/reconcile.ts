@@ -22,7 +22,7 @@ import {
   type TaskRow,
   type TaskState,
 } from './types';
-import { isConsoleWindowScope, isVerifierScope } from './scope-class';
+import { isConsoleWindowScope, isTerminalWindowScope, isVerifierScope } from './scope-class';
 import type { ExemptReason, ProcessScope } from './scope-class';
 
 /** One process as the scanner observed it. */
@@ -45,6 +45,8 @@ export interface ScannedProcess {
    * structural rather than a list of process names.
    */
   scope: ProcessScope;
+  /** Window liveness for an owned VTE scope; unknown remains reportable residue. */
+  terminalWindowAlive?: boolean | null;
   /** Non-null exactly when `scope === 'exempt'`. */
   exemptReason: ExemptReason | null;
   /**
@@ -96,6 +98,8 @@ export interface OverdueVerdict {
 export interface ReconcileResult {
   alive: AliveVerdict[];
   stranded: StrandedVerdict[];
+  /** Scoped rows whose absence systemd has not confirmed as a release. */
+  unresolved: StrandedVerdict[];
   /**
    * Rows absent from the scan the SAME way `stranded` rows are, but for which
    * the caller independently confirmed (via `ReconcileOptions.releasedScopes`,
@@ -123,14 +127,14 @@ export interface ReconcileResult {
    */
   abandonedWindow: ResidueGroup[];
   /**
-   * A desktop terminal window WE opened for a human (`papercup-console-*.scope`).
+   * A human-owned desktop terminal window: a Papercup console scope, or a live VTE
+   * window nested in our slice with terminal-parent proof.
    *
-   * Its own class because it is structurally incapable of being anything else:
-   * `spawnConsole` hardcodes `taskScope: null`, so the scope can never acquire a
-   * ledger row, and `console-spawn.ts` is allowlisted from enrolment BY DESIGN
-   * ("the window is the unit of control"). Counted as `unaccounted` it produced a
-   * permanent alarm that could never clear no matter what anyone fixed — 7 scopes
-   * / 14 processes on this box, re-notified every 30 minutes (EI-20106565311448967).
+   * Papercup-created console scopes cannot acquire ledger rows because spawnConsole
+   * deliberately uses taskScope: null. A VTE scope inside our slice is included only
+   * when the scanner confirms its terminal parent is live; unknown stays unaccounted
+   * and a closed window goes to abandonedWindow. Counted as unaccounted, these
+   * human-owned open windows produced alarms that could not clear (EI-20106565311448967).
    *
    * REPORT-ONLY, and it is NOT persisted as residue: `unaccounted`'s contract is
    * "someone bypassed the chokepoint", and a console did the opposite — it took the
@@ -164,12 +168,22 @@ export interface ReconcileOptions {
    * This function stays PURE by construction (see the header) — it never asks
    * systemd itself. The caller (`reconcile-tick.ts`) queries it for exactly the
    * scope units that are about to strand and passes the confirmed-released
-   * subset here, which is what turns an otherwise-`stranded` verdict into
-   * `endedUnobserved` instead. Omitted or empty ⇒ every candidate strands, the
-   * pre-D-018 behavior — this option is additive, never a new way to LOSE a
-   * genuine escape.
+   * subset here, which is what turns an otherwise-unresolved scoped row into
+   * `endedUnobserved`. A scoped row absent from the process scan remains
+   * unresolved unless its unit is present in this set; missing/empty means no
+   * release was confirmed. Unscoped rows retain the stranded behavior.
    */
   releasedScopes?: ReadonlySet<string>;
+  /**
+   * pid → kernel identity for processes the scan READ but did not list
+   * (`ScanResult.unlistedIdentityByPid`, WI-10005782): out-of-slice processes
+   * whose argv carries no repo path, such as a wake executor's unconfined
+   * `claude -p --resume` turn. Consulted only when an unconfined row's identity
+   * is absent from `kernel`. A match needs the row's own pid AND its stored
+   * identity, so a recycled pid can never keep a dead row alive. Omitted ⇒ the
+   * row strands on absence, as before.
+   */
+  unlistedIdentityByPid?: ReadonlyMap<number, string>;
 }
 
 /**
@@ -183,14 +197,20 @@ function pushAbsent(
   releasedScopes: ReadonlySet<string> | undefined,
   stranded: StrandedVerdict[],
   endedUnobserved: EndedUnobservedVerdict[],
+  unresolved: StrandedVerdict[],
 ): void {
-  if (row.scopeUnit && releasedScopes?.has(row.scopeUnit)) {
+  if (!row.scopeUnit) {
+    stranded.push({ taskId: row.taskId, reason });
+  } else if (releasedScopes?.has(row.scopeUnit)) {
     endedUnobserved.push({
       taskId: row.taskId,
       reason: `${reason} — but systemd confirms scope ${row.scopeUnit} was released in good order (all its processes exited); the owning process most likely died before recording the exit`,
     });
   } else {
-    stranded.push({ taskId: row.taskId, reason });
+    unresolved.push({
+      taskId: row.taskId,
+      reason: `${reason} — systemd has not confirmed scope ${row.scopeUnit} was released`,
+    });
   }
 }
 
@@ -285,6 +305,7 @@ export function reconcile(
   const alive: AliveVerdict[] = [];
   const stranded: StrandedVerdict[] = [];
   const endedUnobserved: EndedUnobservedVerdict[] = [];
+  const unresolved: StrandedVerdict[] = [];
   const overdue: OverdueVerdict[] = [];
   const tooYoung: string[] = [];
   /** Scopes and pids claimed by a live ledger row — everything left over is residue. */
@@ -327,6 +348,19 @@ export function reconcile(
         pushOverdue(row, now, overdue);
         continue;
       }
+      // Present in the kernel but unlisted by the scan's display filter: still
+      // alive. Same pid AND same start time, so this cannot be a recycled pid.
+      if (row.pid != null && opts.unlistedIdentityByPid?.get(row.pid) === row.processIdentity) {
+        alive.push({
+          taskId: row.taskId,
+          pid: row.pid,
+          processIdentity: row.processIdentity,
+          pidsSeen: 1,
+          matchedBy: 'identity',
+        });
+        pushOverdue(row, now, overdue);
+        continue;
+      }
       // The row HAS an identity and the kernel does not have it. A pid match now
       // would be a recycled pid belonging to something else — refuse it outright
       // rather than "helpfully" keeping the row alive against a stranger.
@@ -339,6 +373,7 @@ export function reconcile(
           opts.releasedScopes,
           stranded,
           endedUnobserved,
+          unresolved,
         );
       }
       continue;
@@ -374,6 +409,7 @@ export function reconcile(
         opts.releasedScopes,
         stranded,
         endedUnobserved,
+        unresolved,
       );
     }
   }
@@ -396,12 +432,18 @@ export function reconcile(
     if (claimedPids.has(p.pid)) continue;
     const scope = scopeUnitOf(p);
     if (scope && claimedScopes.has(scope)) continue;
+    const ownedTerminalWindow = p.owned && isTerminalWindowScope(p.cgroupPath);
     if (isVerifierScope(p.cgroupPath)) verifierScopeProcs.push(p);
-    else if (p.scope === 'abandoned-window') abandonedWindowProcs.push(p);
-    // Before the `owned` test, because a console scope IS owned — that is exactly why
-    // it fell through to `unaccounted` and stuck there. Checked by scope NAME, which
-    // only our own builder mints; `scopeUnitOf` cannot see it (it resolves `pc-*` only).
-    else if (isConsoleWindowScope(p.cgroupPath)) consoleWindowProcs.push(p);
+    else if (
+      p.scope === 'abandoned-window' ||
+      (ownedTerminalWindow && p.terminalWindowAlive === false)
+    ) abandonedWindowProcs.push(p);
+    // Before the owned test: Papercup console scopes and verified live VTE scopes
+    // may be inside our slice without a pc-* ledger scope to claim them.
+    else if (
+      isConsoleWindowScope(p.cgroupPath) ||
+      (ownedTerminalWindow && p.terminalWindowAlive === true)
+    ) consoleWindowProcs.push(p);
     // EI-20185455308799001 — the enrolment race, given the same youth grace the ROW
     // paths above already get. A managed `pc-*` scope is minted BEFORE its
     // fire-and-forget enrolment insert commits, so a tick landing inside that window
@@ -427,6 +469,7 @@ export function reconcile(
     alive,
     stranded,
     endedUnobserved,
+    unresolved,
     unaccounted: groupResidue(unaccountedProcs),
     abandonedWindow: groupResidue(abandonedWindowProcs),
     consoleWindow: groupResidue(consoleWindowProcs),
@@ -449,6 +492,7 @@ function pushOverdue(row: TaskRow, now: number, out: OverdueVerdict[]): void {
 export function summarizeReconcile(r: ReconcileResult): {
   alive: number;
   stranded: number;
+  unresolved: number;
   /** D-018: unobserved-but-systemd-confirmed-clean endings. Counted separately
    *  from `stranded` so the escape/anomaly count is never inflated by routine
    *  shutdowns nobody happened to observe. */
@@ -473,6 +517,7 @@ export function summarizeReconcile(r: ReconcileResult): {
   return {
     alive: r.alive.length,
     stranded: r.stranded.length,
+    unresolved: r.unresolved.length,
     endedUnobserved: r.endedUnobserved.length,
     unaccounted: r.unaccounted.length,
     unaccountedPids: r.unaccounted.reduce((n, g) => n + g.pids.length, 0),

@@ -1,0 +1,235 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P-058 preserved ARM10 Docker-index and AMD8 Podman cross-engine publication preflight",
+  "command": [
+    "node",
+    "--input-type=module"
+  ],
+  "executedShellCommand": "set -euo pipefail\np058_preflight=/mnt/backup/portable-server-p058/amd-native-build8-20261009/publication-preflight1\ntest ! -e \"$p058_preflight\"\npython3 - <<'PY'\nimport os,pathlib\np=pathlib.Path('/mnt/backup/portable-server-p058/amd-native-build8-20261009')\nv=os.statvfs(p)\nassert v.f_bavail*v.f_frsize >= 16*1024**3, 'Private image import needs at least 16 GiB available before admission'\nPY\nmkdir \"$p058_preflight\"\nexport CONTAINERS_STORAGE_CONF=/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-storage.conf\nexport CONTAINERS_CONF=/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-containers.conf\nexport XDG_RUNTIME_DIR=/run/user/1000/p058-amd8-oci\np058_socket=/run/user/1000/p058-amd8-oci/p058-publication-preflight1.sock\ntest ! -e \"$p058_socket\"\npodman system service --time=1800 \"unix://$p058_socket\" > \"$p058_preflight/daemon.log\" 2>&1 &\np058_daemon_pid=$!\ntrap 'kill \"$p058_daemon_pid\" 2>/dev/null || true; wait \"$p058_daemon_pid\" 2>/dev/null || true' EXIT\nfor p058_i in $(seq 1 100); do\n  if test -S \"$p058_socket\"; then break; fi\n  kill -0 \"$p058_daemon_pid\"\n  sleep 0.1\ndone\ntest -S \"$p058_socket\"\nexport CONTAINER_HOST=\"unix://$p058_socket\"\nnode --input-type=module > \"$p058_preflight/preflight.log\" 2>&1 <<'NODE'\nimport assert from 'node:assert/strict';\nimport {readFile,writeFile} from 'node:fs/promises';\nimport {hashFile,publishServerContainers} from './papercusp-desktop/bin/lib/server-container.mjs';\nconst base='/mnt/backup/portable-server-p058/amd-native-build8-20261009';\nconst arm='/mnt/backup/portable-server-p058/elf-prune-regression-20261009';\nconst amd64Receipt=base+'/oci3/papercusp-server-amd64-c2b9e2f99075/build.json';\nconst arm64Receipt=arm+'/native10-oci1/papercusp-server-arm64-51ef824423af/build.json';\nconst arm64Archive=arm+'/native10-oci-image.docker.tar.zst';\nassert.equal(await hashFile(amd64Receipt),'cf4b760a2f761daad7fffea8510a3d482f51d14ec255856791a81d4ded557068');\nassert.equal(await hashFile(arm64Receipt),'81b163010e77e3394e231fab68a3ada245a28786ab9589a674acd022c4bef474');\nassert.equal(await hashFile(arm64Archive),'1bdd61733359fa105f0416bfe961876bdf2baf97371457fbeff71f142ce0d080');\nconst sourcePaths=['papercusp-desktop/bin/lib/server-container.mjs','papercusp-desktop/bin/build-server-container.mjs','papercusp-desktop/test/server-container.test.js'];\nconst sourceHashes=Object.fromEntries(await Promise.all(sourcePaths.map(async p=>[p,await hashFile(p)])));\nconst startedAt=new Date().toISOString();\nconsole.log('Starting verified archive-backed two-member local preflight '+startedAt);\nconst result=await publishServerContainers({engine:'podman',amd64Receipt,arm64Receipt,arm64Archive,preflightOnly:true});\nassert.equal(result.platforms.length,2);\nassert.equal(result.signed,false); assert.equal(result.published,false);\nassert.equal(result.sourceCommit,'58d5a1c744632d7bf72772a0f97e4c338ef0d04b');\nassert.equal(result.platforms[1].nativeImageId,'sha256:51ef824423af0ee1d68eb842832e49e324f14e3e39010a1198413c5aa998d124');\nassert.equal(result.platforms[1].imageId,'sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921');\nfor(const [p,h] of Object.entries(sourceHashes)) assert.equal(await hashFile(p),h);\nassert.equal(await hashFile(amd64Receipt),'cf4b760a2f761daad7fffea8510a3d482f51d14ec255856791a81d4ded557068');\nassert.equal(await hashFile(arm64Receipt),'81b163010e77e3394e231fab68a3ada245a28786ab9589a674acd022c4bef474');\nconst output=base+'/publication-preflight1/preflight.json';\nconst evidence={schemaVersion:1,kind:'papercusp-server-local-publication-preflight-evidence',scope:'archive-backed cross-engine import and both source-bound immutable member payload/full boot checks',startedAt,finishedAt:new Date().toISOString(),sourceHashes,sourceHashesStable:true,result};\nawait writeFile(output,JSON.stringify(evidence,null,2)+'\\n',{flag:'wx'});\nconsole.log(JSON.stringify({output,sha256:await hashFile(output),evidence}));\nNODE",
+  "cwd": ".",
+  "startedAt": "2026-10-10T06:23:00.455Z",
+  "finishedAt": "2026-10-10T06:31:38.778Z",
+  "exitCode": 0,
+  "exitCodeScope": "The confined payload shell exit recorded by systemd-scope-env-runner. The operator watcher and task ledger disagree; neither is represented as successful.",
+  "summary": "The maintained archive-backed publisher imported the original ARM10 Docker OCI index into Podman through verified manifest/config graph proof, retained both original build receipts and SBOMs, verified both immutable member payloads, and observed fresh full boots on AMD64 and ARM64. This is a local unsigned/unpublished preflight.",
+  "assertions": [
+    {
+      "id": "arm-index-resolves-through-verified-archive",
+      "passed": true,
+      "evidence": "Original ARM index sha256:51ef824423af0ee1d68eb842832e49e324f14e3e39010a1198413c5aa998d124 resolves through manifest sha256:cb2111f8b8a9da49d6b8ae8a5f0e5d600b29931e15b848dd5a31a25df06a7ef4 to config sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921; all nine archive blobs verified."
+    },
+    {
+      "id": "amd-source-bound-member-preserved",
+      "passed": true,
+      "evidence": "AMD8 image sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0 retained original build receipt cf4b760a2f761daad7fffea8510a3d482f51d14ec255856791a81d4ded557068 and SBOM 40f6b1a94af07946203b98fd85c74cdb43f04af559bf56614347a5faa618a955."
+    },
+    {
+      "id": "amd-full-boot",
+      "passed": true,
+      "evidence": "{\"schemaVersion\":1,\"imageId\":\"sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0\",\"platform\":\"linux/amd64\",\"sourceCommit\":\"58d5a1c744632d7bf72772a0f97e4c338ef0d04b\",\"verifiedAtUtc\":\"2026-10-10T06:27:06.453Z\",\"homeVerification\":{\"uid\":1001,\"gid\":1001,\"homeUid\":1001,\"homeGid\":1001,\"mode\":448,\"empty\":true,\"writable\":true},\"arch\":\"x64\",\"node\":\"v24.18.1\",\"ready\":{\"status\":200,\"body\":{\"ok\":true,\"ready\":true,\"dbos\":true,\"dbosEnabled\":true,\"ts\":\"2026-10-10T06:27:02.854Z\"}},\"health\":{\"status\":200,\"body\":{\"ok\":true,\"service\":\"papercusp-operator\",\"sha\":\"58d5a1c744632d7bf72772a0f97e4c338ef0d04b\",\"version\":\"0.0.26\",\"ts\":\"2026-10-10T06:27:02.866Z\"}},\"database\":{\"vectorReady\":true,\"schemaReady\":true,\"serverVersion\":\"18.3\"}}"
+    },
+    {
+      "id": "arm-full-boot",
+      "passed": true,
+      "evidence": "{\"schemaVersion\":1,\"imageId\":\"sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921\",\"platform\":\"linux/arm64\",\"sourceCommit\":\"58d5a1c744632d7bf72772a0f97e4c338ef0d04b\",\"verifiedAtUtc\":\"2026-10-10T06:31:36.173Z\",\"homeVerification\":{\"uid\":1001,\"gid\":1001,\"homeUid\":1001,\"homeGid\":1001,\"mode\":448,\"empty\":true,\"writable\":true},\"arch\":\"arm64\",\"node\":\"v24.18.1\",\"ready\":{\"status\":200,\"body\":{\"ok\":true,\"ready\":true,\"dbos\":true,\"dbosEnabled\":true,\"ts\":\"2026-10-10T06:31:32.809Z\"}},\"health\":{\"status\":200,\"body\":{\"ok\":true,\"service\":\"papercusp-operator\",\"sha\":\"58d5a1c744632d7bf72772a0f97e4c338ef0d04b\",\"version\":\"0.0.26\",\"ts\":\"2026-10-10T06:31:32.992Z\"}},\"database\":{\"vectorReady\":true,\"schemaReady\":true,\"serverVersion\":\"18.3\"}}"
+    },
+    {
+      "id": "current-source-and-immutable-receipts-stable",
+      "passed": true,
+      "evidence": "Producer checked before/after source and receipt hashes. Recovery read matched all three source files to desktop HEAD, both original receipts/SBOMs, the archive SHA256 and the new preflight receipt SHA256."
+    },
+    {
+      "id": "local-only-no-signing-or-publication",
+      "passed": true,
+      "evidence": "Result signed=false and published=false; preflightOnly returned before signer/registry/output publication branch."
+    }
+  ],
+  "counts": {
+    "passed": 6,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0
+  },
+  "workItemId": "EI-25571603357476023",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "taskId": "0mv20c4txh5v0tbspvi",
+  "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+  "evidencePlane": "preserved-local-immutable-oci-cross-engine-preflight",
+  "receiptPath": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/publication-preflight1/preflight.json",
+  "receiptSha256": "9953ed3aa5a9bbc98b1aeae1d0c1e11fb685535614183e6eb67a54b66a611368",
+  "logSha256": "9fde0f24e377235281e957abb03d3e3c754bdbbb544a1ac88913eadc0cb64693",
+  "sourceHashes": {
+    "papercusp-desktop/bin/lib/server-container.mjs": "a0a1b6617d74673f738f4ebfc5125201514298c37377a7db3a21ecae553d90b1",
+    "papercusp-desktop/bin/build-server-container.mjs": "1f0112779edb676fb2931c9461c7abff917d98bada6ce837fd430140efd752ce",
+    "papercusp-desktop/test/server-container.test.js": "b798979fb35b56b33776313c2ce870fcaca9239801117a97bad26b45e717368e"
+  },
+  "proof": {
+    "schemaVersion": 1,
+    "kind": "papercusp-server-local-publication-preflight-evidence",
+    "scope": "archive-backed cross-engine import and both source-bound immutable member payload/full boot checks",
+    "startedAt": "2026-10-10T06:23:00.455Z",
+    "finishedAt": "2026-10-10T06:31:38.778Z",
+    "sourceHashes": {
+      "papercusp-desktop/bin/lib/server-container.mjs": "a0a1b6617d74673f738f4ebfc5125201514298c37377a7db3a21ecae553d90b1",
+      "papercusp-desktop/bin/build-server-container.mjs": "1f0112779edb676fb2931c9461c7abff917d98bada6ce837fd430140efd752ce",
+      "papercusp-desktop/test/server-container.test.js": "b798979fb35b56b33776313c2ce870fcaca9239801117a97bad26b45e717368e"
+    },
+    "sourceHashesStable": true,
+    "result": {
+      "schemaVersion": 1,
+      "kind": "papercusp-server-publication-preflight",
+      "engine": "podman",
+      "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+      "signed": false,
+      "published": false,
+      "platforms": [
+        {
+          "platform": "linux/amd64",
+          "imageId": "sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0",
+          "nativeImageId": "sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0",
+          "nativeReceiptSha256": "cf4b760a2f761daad7fffea8510a3d482f51d14ec255856791a81d4ded557068",
+          "sbomSha256": "40f6b1a94af07946203b98fd85c74cdb43f04af559bf56614347a5faa618a955",
+          "importVerification": null,
+          "bootVerification": {
+            "schemaVersion": 1,
+            "imageId": "sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0",
+            "platform": "linux/amd64",
+            "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+            "verifiedAtUtc": "2026-10-10T06:27:06.453Z",
+            "homeVerification": {
+              "uid": 1001,
+              "gid": 1001,
+              "homeUid": 1001,
+              "homeGid": 1001,
+              "mode": 448,
+              "empty": true,
+              "writable": true
+            },
+            "arch": "x64",
+            "node": "v24.18.1",
+            "ready": {
+              "status": 200,
+              "body": {
+                "ok": true,
+                "ready": true,
+                "dbos": true,
+                "dbosEnabled": true,
+                "ts": "2026-10-10T06:27:02.854Z"
+              }
+            },
+            "health": {
+              "status": 200,
+              "body": {
+                "ok": true,
+                "service": "papercusp-operator",
+                "sha": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+                "version": "0.0.26",
+                "ts": "2026-10-10T06:27:02.866Z"
+              }
+            },
+            "database": {
+              "vectorReady": true,
+              "schemaReady": true,
+              "serverVersion": "18.3"
+            }
+          }
+        },
+        {
+          "platform": "linux/arm64",
+          "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+          "nativeImageId": "sha256:51ef824423af0ee1d68eb842832e49e324f14e3e39010a1198413c5aa998d124",
+          "nativeReceiptSha256": "81b163010e77e3394e231fab68a3ada245a28786ab9589a674acd022c4bef474",
+          "sbomSha256": "3afe1837f031fe191c93cfb949c784d1a7b9a310ec16f98837a82e74802e1633",
+          "importVerification": {
+            "archive": "/mnt/backup/portable-server-p058/elf-prune-regression-20261009/native10-oci-image.docker.tar.zst",
+            "archiveSha256": "1bdd61733359fa105f0416bfe961876bdf2baf97371457fbeff71f142ce0d080",
+            "receiptPath": "/mnt/backup/portable-server-p058/elf-prune-regression-20261009/native10-oci1/papercusp-server-arm64-51ef824423af/build.json",
+            "receiptSha256": "81b163010e77e3394e231fab68a3ada245a28786ab9589a674acd022c4bef474",
+            "imageId": "sha256:51ef824423af0ee1d68eb842832e49e324f14e3e39010a1198413c5aa998d124",
+            "platform": "linux/arm64",
+            "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+            "manifestDigest": "sha256:cb2111f8b8a9da49d6b8ae8a5f0e5d600b29931e15b848dd5a31a25df06a7ef4",
+            "configDigest": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+            "verifiedBlobCount": 9
+          },
+          "bootVerification": {
+            "schemaVersion": 1,
+            "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+            "platform": "linux/arm64",
+            "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+            "verifiedAtUtc": "2026-10-10T06:31:36.173Z",
+            "homeVerification": {
+              "uid": 1001,
+              "gid": 1001,
+              "homeUid": 1001,
+              "homeGid": 1001,
+              "mode": 448,
+              "empty": true,
+              "writable": true
+            },
+            "arch": "arm64",
+            "node": "v24.18.1",
+            "ready": {
+              "status": 200,
+              "body": {
+                "ok": true,
+                "ready": true,
+                "dbos": true,
+                "dbosEnabled": true,
+                "ts": "2026-10-10T06:31:32.809Z"
+              }
+            },
+            "health": {
+              "status": 200,
+              "body": {
+                "ok": true,
+                "service": "papercusp-operator",
+                "sha": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+                "version": "0.0.26",
+                "ts": "2026-10-10T06:31:32.992Z"
+              }
+            },
+            "database": {
+              "vectorReady": true,
+              "schemaReady": true,
+              "serverVersion": "18.3"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "regressionTestRunId": 20968794,
+  "taskAccountingDiscrepancy": {
+    "ownedWorkItemId": "EI-24806944538644209",
+    "payloadRunner": {
+      "status": "completed",
+      "exitCode": 0,
+      "at": "2026-10-10T06:31:38.819Z"
+    },
+    "operatorWatcher": {
+      "status": "failed",
+      "exitCode": 1,
+      "at": "2026-10-10T06:31:48.935Z"
+    },
+    "taskLedger": {
+      "state": "timed_out",
+      "exitCode": 0,
+      "configuredDeadline": "2026-10-10T07:07:41.067Z"
+    },
+    "durableLogPath": ".papercusp/scratch/bash-933b91db-ea9.log",
+    "durableLog": "\n[capability:bash] JOB END: status=completed exit=0 at 2026-10-10T06:31:38.819Z — this line was recorded by the transient-service runner; its file-backed sink survives loss of the operator host and is authoritative for durable output.\n\n[capability:bash] JOB END: status=failed exit=1 at 2026-10-10T06:31:48.935Z — this line marks the job reaching an OBSERVED terminal state; if it is ABSENT, no terminal marker has been durably recorded yet: the job may still be running, or it may have died before its close handler wrote JOB END. Check capability:bash_output/task ledger; recovery writes JOB DIED after a ledger-confirmed unobserved death.\n",
+    "measurementBasis": [
+      "packages/operator-core/lib/systemd-scope-env-runner.mjs:runDurablePayload records the shell close exit after pipes drain.",
+      "packages/operator-core/lib/agent-tools/capability/bash-jobs.ts:startBackground records the watcher close separately.",
+      "No re-import, rebuild, refreeze or export occurred during recovery."
+    ]
+  },
+  "disclosures": [
+    "Unsigned/unpublished; no trusted registry/signature or installed native journey acceptance.",
+    "The background task control plane is disputed, not a verified successful whole-task outcome. Local producer proof completed before the subsequent watcher error.",
+    "Historical rejected candidates remain rejected; this does not close P-058 or assert the combined release is shipped."
+  ]
+}

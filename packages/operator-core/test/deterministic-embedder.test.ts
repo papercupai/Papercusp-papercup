@@ -42,6 +42,10 @@ afterAll(() => setLocalEmbedEngineOverride(null));
 
 describe('installDeterministicEmbedder covers the sidecar-aware local cascade', () => {
   it('serves gemma, harrier and local builds from the fixture, at each space width, with no sidecar I/O', async () => {
+    // Vitest can reuse a process after isolating another file's module graph.
+    // Native dlopen mappings survive that isolation, so only newly mapped
+    // libraries can be attributed to installing or exercising this fixture.
+    const priorMappings = new Set(localModelLoadEvidence().onnxruntimeMappings);
     const fixture = await installDeterministicEmbedder();
     expect(hasLocalEmbedEngineOverride()).toBe(true);
     const before = fixture.calls();
@@ -58,7 +62,12 @@ describe('installDeterministicEmbedder covers the sidecar-aware local cascade', 
     // Positive control: every one of the six embeds was counted.
     expect(fixture.calls() - before).toBe(6);
     // Negative control: nothing above constructed a real local model.
-    expect(assertNoLocalModelLoaded('deterministic-embedder.test')).toEqual(localModelLoadEvidence());
+    const evidence = localModelLoadEvidence();
+    const fixtureEvidence = {
+      ...evidence,
+      onnxruntimeMappings: evidence.onnxruntimeMappings.filter(mapping => !priorMappings.has(mapping)),
+    };
+    expect(assertNoLocalModelLoaded('deterministic-embedder.test', fixtureEvidence)).toBe(fixtureEvidence);
   });
 
   it('reports the local engine available without importing transformers while the override is installed', async () => {

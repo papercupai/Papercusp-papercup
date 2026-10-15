@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "evidenceClass": "bounded-source-census-falsifier",
+  "workItemId": "WI-10007730",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "specId": "TUTORIAL-CATALOGUE-CENSUS",
+  "specRevision": 1,
+  "specFingerprint": "f731e4c1f44f446d4a4d546305fb54352aac50eaaef9b5613061cba740b956fd",
+  "observedAt": "2026-10-09T09:04:24Z",
+  "sourceCommit": "faf9288532247f1ccd68b62b31959fe27660f5af",
+  "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-faf9288532-IsKGPB",
+  "testPath": "packages/operator-core/lib/onboarding/product-tutorial-census.test.ts",
+  "selectedCase": "account-first tutorial source census > covers every maintained operator mount, including non-rail mounts",
+  "mutation": {
+    "subjectPath": "packages/operator-ui/src/surfaces/index.tsx",
+    "change": "Add tutorial-untaught-capability to the actual OPERATOR_SURFACES registry without adding a lesson, route or unavailable explanation to the maintained census.",
+    "relocation": "overlay",
+    "originalSha256": "b3515c87b75aaf18aa23a9d00eb3ca32d1ea575c96cde4955ddd2d73eb3cd8a9",
+    "mutantSha256": "d6f5bddcee643b63fc47b13c4e8169176445fdf42576887e8c05a4585eb82276",
+    "independentTsxParseDiagnostics": 0,
+    "result": "caught",
+    "treeIntegrity": "original registry byte-identical after probe"
+  },
+  "runs": [
+    { "testRunId": 20953003, "mutationPhase": "baseline", "status": "pass", "passed": 1, "failed": 0, "skipped": 3 },
+    { "testRunId": 20953006, "mutationPhase": "copy-baseline", "status": "pass", "passed": 1, "failed": 0, "skipped": 3 },
+    { "testRunId": 20953010, "mutationPhase": "mutant", "status": "fail", "passed": 0, "failed": 1, "skipped": 3 }
+  ],
+  "actualObservation": "The selected real registry-census equality assertion passes against both controls and fails only against the overlay containing tutorial-untaught-capability. All three other cases were collected but excluded by the exact name filter.",
+  "historicalControl": {
+    "testRunId": 20904078,
+    "source": "local",
+    "mutationPhase": null,
+    "sourceCommit": "e11bfe0265e71fcbbb8c542c83219f473d6cf4aa",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "preservedWithoutReplay": true,
+    "scope": "Normal full-file source-census verification; it is not mutation evidence."
+  },
+  "currentSourceMatch": {
+    "docs/evidence/account-first-tutorial-source-census.json": "f7e60664f987da99a2ea422ec2123fd55cc7be5465624edd480050ec49115fa0",
+    "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4",
+    "packages/operator-core/lib/onboarding/product-tutorial-census.test.ts": "412f53d621f5f158e121571eefb686e4892dfcd321b20b90e3b1c79b6112c9ec",
+    "packages/operator-ui/src/surfaces/index.tsx": "b3515c87b75aaf18aa23a9d00eb3ca32d1ea575c96cde4955ddd2d73eb3cd8a9"
+  },
+  "rawEvidence": [
+    "/tmp/tutorial-wi7730-census-mutation-20261009T0902.log",
+    "/tmp/tutorial-wi7730-census-ledger-20261009T0904.json"
+  ],
+  "scope": "Only the named source census and its missing-registry-entry guard. This does not verify hosted navigation, billing, voice, novice use, the full affected suite, production acceptance or shipment."
+}

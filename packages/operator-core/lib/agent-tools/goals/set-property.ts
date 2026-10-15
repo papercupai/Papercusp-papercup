@@ -24,6 +24,8 @@ import { ADMIN_COORD_UI_OWNER, resolveAgentIdentity } from '../coordination/iden
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { isGoalHolderAuthorityError } from '../../modes/goal-context';
 import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
+import { CANONICAL_WORKLIST_PROPERTY } from '../../goals/package-property-datatypes';
+import { backfillWorklistGoalAttribution } from '../../goals/worklist-attribution-backfill';
 
 const text = (payload: Record<string, unknown>, isError = false) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -63,6 +65,8 @@ export default defineTool({
       .describe(
         'CAS guard: the per-property version you last read; 0 = the property has no explicit value yet. A mismatch refuses as stale with the actual version.',
       ),
+    reason: z.string().trim().max(2000).optional()
+      .describe('Optional explanation saved with the value and its change history.'),
     confirmShrink: z
       .boolean()
       .optional()
@@ -112,10 +116,34 @@ export default defineTool({
       confirmShrink: args.confirmShrink,
       provenance,
       actorId,
+      reason: args.reason,
     });
     if (!result.ok) {
       const { ok: _ok, code, ...detail } = result;
       return text({ error: code, goalId: args.goalId, ...detail }, true);
+    }
+
+    // WI-10005246: a worklist edit is the moment plans JOIN the goal's ladder, so stamp the goal on
+    // rows of those plans that were created before the edit (NULL-only, never reparents, skips
+    // federation-owned rows). Best-effort in a savepoint: a stamping fault must not roll back or
+    // abort the owner's worklist write, but it is reported on the result, never swallowed.
+    let attributionBackfill: unknown = null;
+    if (args.property === CANONICAL_WORKLIST_PROPERTY &&
+        result.definition.collection?.source !== 'active-workspace-plans') {
+      const tx = ctx.tx as unknown as postgres.TransactionSql;
+      const run = (sql: postgres.Sql | postgres.TransactionSql) =>
+        backfillWorklistGoalAttribution(sql, {
+          workspaceId,
+          goalId: args.goalId,
+          worklist: result.entry.value,
+        });
+      try {
+        attributionBackfill = typeof tx.savepoint === 'function'
+          ? await tx.savepoint((sp) => run(sp))
+          : await run(tx);
+      } catch (error) {
+        attributionBackfill = { error: error instanceof Error ? error.message : String(error) };
+      }
     }
 
     const delta = renderPropertyDelta(args.property, result.priorValue, result.entry.value);
@@ -126,8 +154,22 @@ export default defineTool({
       event: 'property_changed',
       before: result.priorValue,
       after: result.entry.value,
-      detail: `[${provenance === 'owner-edit' ? 'owner' : actorId}] ${delta}`,
+      detail: `[${provenance === 'owner-edit' ? 'owner' : actorId}] ${delta}${args.reason ? ` — ${args.reason}` : ''}`,
     });
+
+    // Reuse the existing plan history rail for plans whose scope or rank changed.
+    // The property value/reason above remain the transactional source of truth.
+    if (result.definition.datatype === 'ordered-selection-policy') {
+      const { changedWorklistPlans } = await import('../../goals/worklist-console');
+      for (const change of changedWorklistPlans(result.priorValue, result.entry.value)) {
+        await emitPlanEventForCaller(ctx, {
+          planSlug: change.ref.slice(change.ref.indexOf('/') + 1), event: 'property_changed',
+          before: { goalId: args.goalId, ...change.before },
+          after: { goalId: args.goalId, ...change.after },
+          detail: `Goal worklist: ${change.ref} — ${change.label}${args.reason ? ` — ${args.reason}` : ''}`,
+        });
+      }
+    }
 
     return text({
       ok: true,
@@ -136,6 +178,7 @@ export default defineTool({
       version: result.entry.version,
       provenance,
       delta,
+      ...(attributionBackfill ? { attributionBackfill } : {}),
     });
   },
 });

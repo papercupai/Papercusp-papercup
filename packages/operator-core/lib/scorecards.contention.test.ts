@@ -56,6 +56,26 @@ describe('listScorecards primary read contention handling', () => {
     expect(fakeTx).toHaveBeenCalled();
   });
 
+  it('applies the internal typed-subject predicate to the primary SELECT', async () => {
+    await expect(listScorecards({ subjectRef: 'plan-alpha#SPEC-P-001@1', subjectKind: 'plan', limit: 1 })).resolves.toEqual([]);
+
+    const calls = fakeTx.mock.calls as unknown as Array<[TemplateStringsArray, ...unknown[]]>;
+    const fragments = calls.map(([strings, ...values]) => ({
+      sql: Array.from(strings).join('?'),
+      values,
+    }));
+    expect(fragments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sql: expect.stringContaining("scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ?"),
+        values: ['plan-alpha#SPEC-P-001@1'],
+      }),
+      expect.objectContaining({
+        sql: expect.stringContaining("scorecard.payload -> 'observation' -> 'subject' ->> 'kind' = ?"),
+        values: ['plan'],
+      }),
+    ]));
+  });
+
   it('retries raw PG contention and returns once the bounded read recovers', async () => {
     let attempts = 0;
     h.boundedPgReadTxn.mockImplementation(async () => {

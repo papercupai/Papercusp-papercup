@@ -230,3 +230,30 @@ describe('matchWindowIdInWmctrlOutput — full-title match (owner-hit 2026-07-11
     expect(matchWindowIdInWmctrlOutput(SAMPLE, '   ')).toBeNull();
   });
 });
+
+describe('X11 window commands stay off the operator main thread (WI-10005394 guard)', () => {
+  it('adv-session-windows.ts runs no synchronous child process outside comments', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./adv-session-windows.ts', import.meta.url), 'utf8');
+    const code = src
+      .split('\n')
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join('\n');
+    // Positive control: the module still shells out, so an empty match below is not vacuous.
+    expect(code).toMatch(/runX11Command\('wmctrl'/);
+    expect(code.match(/\b(?:spawnSync|execFileSync|execSync)\b/g) ?? []).toEqual([]);
+  });
+
+  it('accepts an async injected runner and awaits every step of the focus sequence', async () => {
+    const { focusWindowId } = await import('./adv-session-windows');
+    const calls: string[] = [];
+    const runCommand = async (command: string, args: string[]) => {
+      calls.push(`${command} ${args.join(' ')}`);
+      await new Promise((r) => setTimeout(r, 1));
+      if (command === 'xdotool' && args[0] === 'getactivewindow') return { status: 0, stdout: `${0x04200007}\n` };
+      return { status: 0, stdout: '' };
+    };
+    await expect(focusWindowId('0x04200007', { runCommand, settle: async () => {} })).resolves.toBe(true);
+    expect(calls).toEqual(['wmctrl -ia 0x04200007', 'xdotool getactivewindow']);
+  });
+});

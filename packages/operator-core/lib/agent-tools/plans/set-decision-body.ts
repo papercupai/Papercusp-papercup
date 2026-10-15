@@ -21,6 +21,8 @@ import { parsePlan, maskFences, normalizeDecisionBodyHeadings, type LegacyReason
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { neutralizeToolCallTags } from '../../text-safety';
+import { containsDeviationFence } from '../../spec-conformance/deviation';
+import { DEVIATION_FENCE_RESERVED_NOTE } from './add-decision';
 
 /**
  * Replace a decision's body. Locates the `### D-NNN` head line against the
@@ -138,6 +140,22 @@ export default defineTool({
     // repair call this editor is used to make). Non-destructive (cosmetic
     // full-width `＜` swap) — the edit still lands.
     const args = { ...rawArgs, body: neutralizeToolCallTags(rawArgs.body) };
+    // R-17 (spec-driven-tooling-integration-2026-10-05 P-028): the ```deviation fence is
+    // reserved to the plans:conformance deviation transaction. Guarding only the append
+    // would let an agent record a clean decision and then rewrite it into a forged
+    // approval (or edit an approval's recorded owner verdict), so the edit path refuses
+    // it too. Removing a fence (revoking) stays allowed: it only lowers authority.
+    if (containsDeviationFence(args.body)) {
+      return text(
+        {
+          error: 'deviation_fence_reserved',
+          slug: args.slug,
+          decisionId: args.decisionId,
+          message: DEVIATION_FENCE_RESERVED_NOTE,
+        },
+        true,
+      );
+    }
     // WI-42142 — the same decision-provenance leg plans:add-decision runs, for the
     // same reason: this tool overwrites the very body that tool appends, so guarding
     // only the append is a guard an agent clears by recording a clean decision and

@@ -1,11 +1,27 @@
 # Shared-host CPU performance policy — installation (WI-37533)
 
-`papercusp-host-performance.service` sets both cpufreq's governor and the
+papercusp-host-performance.service sets both cpufreq's governor and the
 independent `amd-pstate-epp` preference to `performance` on every CPU policy. It
-also reserves 18,000 × 2 MiB huge pages before PostgreSQL starts. The unit is a
+resolves the physical disk or disks backing `/` and selects mq-deadline when
+the kernel offers it. It verifies the scheduler read-back and fails if the root
+disk or scheduler control cannot be resolved, so an active unit cannot imply
+that the requested disk policy was skipped. It also reserves 18,000 × 2 MiB
+huge pages before PostgreSQL starts. The unit is a
 `RequiredBy` dependency of `postgresql@18-main.service`: if Linux cannot reserve
 all pages, it fails loud and PostgreSQL does not start with a silent
 `huge_pages=try` fallback.
+
+⚠ Because PostgreSQL `Requires=` this unit, stopping or restarting it stops or
+restarts the shared PostgreSQL too (WI-10004865: one `systemctl restart` caused a
+3.5-minute fleet-wide DB outage). The unit therefore sets `RefuseManualStop=yes`,
+so `systemctl stop|restart` is refused. To re-apply the policy after editing the
+script, re-install it and RELOAD — never restart:
+
+```bash
+sudo install -o root -g root -m 0755 papercusp-host-performance.sh \
+  /etc/systemd/system/papercusp-host-performance.sh
+sudo systemctl reload papercusp-host-performance.service
+```
 The shared development host has no battery and runs latency-sensitive PostgreSQL,
 Node, TypeScript and git work continuously; the stock `powersave` governor kept
 all 128 logical CPUs near base clock even though hardware boost was enabled.
@@ -30,20 +46,27 @@ systemctl is-enabled papercusp-host-performance.service
 systemctl is-active papercusp-host-performance.service
 for f in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do cat "$f"; done | sort -u
 for f in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do cat "$f"; done | sort -u
+ROOT_SOURCE="$(findmnt -nro SOURCE / | cut -d '[' -f 1)"
+lsblk --inverse --noheadings --raw --output KNAME,TYPE "$ROOT_SOURCE" |
+  awk '$2 == "disk" { print $1 }' |
+  while IFS= read -r disk; do printf '%s: ' "$disk"; cat "/sys/block/$disk/queue/scheduler"; done
 cat /proc/sys/vm/nr_hugepages
 sudo -u postgres psql -tAc "show shared_memory_size_in_huge_pages; show huge_pages; show huge_pages_status"
 ```
 
-Both CPU populations must contain only `performance`, `nr_hugepages` must be at
-least 18,000, and PostgreSQL must report `huge_pages=on` plus
+Both CPU populations must contain only `performance`, every root backing disk
+must show mq-deadline as the selected scheduler, `nr_hugepages` must be at least 18,000, and PostgreSQL
+must report `huge_pages=on` plus
 `huge_pages_status=on`. A live fragmented host may accept only part of the
 reservation; the service deliberately fails in that case. Reboot so allocation
 happens before PostgreSQL consumes ~32 GiB, then run
 `npx tsx scripts/pg-autotune.ts --apply` through the normal DB-resource drain.
 
-Roll back with
-`sudo systemctl disable --now papercusp-host-performance.service`, remove the two
-installed files, daemon-reload, and write the prior policy back through sysfs.
+Record each root disk's previous scheduler before a manual update. Roll back with
+`sudo systemctl disable papercusp-host-performance.service` (no `--now`: the stop is
+refused, and would stop PostgreSQL), remove the two installed files, daemon-reload,
+and write the prior CPU/EPP, huge-page and root scheduler settings back through
+sysfs. The oneshot stays nominally active until the next reboot, which is harmless.
 
 ---
 
@@ -121,6 +144,62 @@ session's service plane.
 sudo systemctl disable --now papercusp-user-manager-watchdog.timer
 sudo rm -f /etc/systemd/system/papercusp-user-manager-watchdog.{service,timer,sh}
 sudo systemctl daemon-reload
+```
+
+---
+
+# Operator boot-availability check — user-unit installation (WI-10006021)
+
+`papercusp-operator-boot-availability.{service,timer}` samples
+`http://127.0.0.1:3070/api/health` once a minute, starting 60 seconds after the
+user manager starts. It reads `user@1000.service`'s monotonic active-enter time,
+records the first healthy sample for that manager lifetime, and logs an
+`ALERT` if the endpoint is still unavailable after 10 minutes. The check runs
+from `timers.target` and has no ordering edge to `default.target`, so it can
+report an API job waiting on that target. It only observes availability; it
+does not restart the manager or operator unit. The separate root
+`papercusp-user-manager-watchdog` remains the recovery actor when the user
+manager itself is down.
+
+## Install or update
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+install -Dm0644 papercusp-operator-boot-availability.service \
+  "$HOME/.config/systemd/user/papercusp-operator-boot-availability.service"
+install -Dm0644 papercusp-operator-boot-availability.timer \
+  "$HOME/.config/systemd/user/papercusp-operator-boot-availability.timer"
+systemctl --user daemon-reload
+systemctl --user enable --now papercusp-operator-boot-availability.timer
+```
+
+## Verify
+
+```bash
+systemd-analyze --user verify \
+  "$HOME/.config/systemd/user/papercusp-operator-boot-availability.service" \
+  "$HOME/.config/systemd/user/papercusp-operator-boot-availability.timer"
+systemctl --user is-enabled papercusp-operator-boot-availability.timer
+systemctl --user is-active papercusp-operator-boot-availability.timer
+systemctl --user start papercusp-operator-boot-availability.service
+journalctl --user -u papercusp-operator-boot-availability.service --since "5 min ago" --no-pager
+```
+
+The first healthy line reports the elapsed time from `user@1000.service` start
+to the first successful health sample. If the timer's first healthy sample
+arrives after the 10-minute window, it says the startup window was not observed
+instead of presenting a late probe as the boot latency. If the endpoint remains
+unavailable at the deadline, the failed oneshot records an `ALERT` in the user
+journal. A successful sample clears the per-manager alert marker; restarting
+the user manager begins a new measurement.
+
+## Roll back
+
+```bash
+systemctl --user disable --now papercusp-operator-boot-availability.timer
+rm -f "$HOME/.config/systemd/user/papercusp-operator-boot-availability.service"
+rm -f "$HOME/.config/systemd/user/papercusp-operator-boot-availability.timer"
+systemctl --user daemon-reload
 ```
 
 ---
@@ -225,6 +304,19 @@ Verify the live unit resolves to this repo source and that its effective
 
 # Cloud Portal backend — installation (EI-21983147886595945)
 
+The canonical hosted launcher owns HTTP readiness and watchdog supervision.
+It extends the shared `systemd-readiness.ts` transport with one persistent
+`python3`/`libsystemd` sender in the service cgroup, instead of spawning a
+short-lived `systemd-notify --no-block` for every ping. The Linux host therefore
+needs Python 3 and `libsystemd` (both present on the supported systemd host).
+The Portal child receives no `NOTIFY_SOCKET` or `WATCHDOG_*` ownership variables;
+this avoids competing heartbeat senders without modifying its separate checkout.
+Readiness still requires HTTP success, watchdog pings still require a successful
+health probe, and unhealthy HTTP still withdraws the service. Neither the
+watchdog limit nor those health gates are disabled. The real-systemd integration
+suite checks manager-credited timestamps, blackhole withdrawal, and a negative
+control whose successful-looking attempts deliver no heartbeats.
+
 `papercusp-cloud-portal.service` supervises the Portal's built Next.js
 standalone production artifact on `127.0.0.1:3801`. Run `npm run build` in the
 Portal checkout first; the build uses a unique private `distDir`, moves the
@@ -324,26 +416,50 @@ measured bg-host generation writer's overlap with Docker's root device; a
 post-change Docker remeasurement is still needed to establish whether that
 overlap caused the container-start stall.
 
-All three drop-ins must be installed as symlinks so the checked-in contracts remain
-the source of truth.
+The 99-mcp-proxy.conf drop-in routes MCP clients minted by the background host
+through the separate `papercup-mcp-proxy-bg-host.service` (`:9271` → `:3271`).
+Since WI-6554700010008332 (2026-10-11) that pin covers only orchestrator/blueprint
+spawns such as release fixers, which must stay on bg-host's current build
+(WI-212675). Its `PAPERCUSP_BG_HOST_AGENTS_MCP_BASE=http://127.0.0.1:9071` line moves
+the SU sessions, resumes and console-launched agents bg-host starts to the live
+proxy; delete that line to return them to `:9271`.
+That proxy retries only upstream connection refusals, where the request has not
+reached the host; post-connect failures are surfaced so a write is never replayed
+after it may have run.
+
+Every drop-in named in this section must be installed as a symlink so the
+checked-in contracts remain the source of truth.
+
+On this Linux development host, the packaged `papercusp-server.service` can
+also start the cross-platform gateway fallback. When the dedicated
+`papercup-inference-gateway.service` is installed, its host-only override keeps
+that unit as the single `:8788` authority. The packaged base unit stays
+default-on, so Linux installations without the dedicated gateway retain their
+managed fallback.
 
 ## Install (one-time, on the shared development host)
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
 mkdir -p ~/.config/systemd/user/papercup-bg-host.service.d
+mkdir -p ~/.config/systemd/user/papercusp-server.service.d
 sudo install -d -m 0750 -o "$(id -un)" -g "$(id -gn)" /mnt/data/papercusp-dependency-generations
 ln -sfn "$(pwd)/papercup-bg-host.service.d/95-bundled-entry.conf" \
   ~/.config/systemd/user/papercup-bg-host.service.d/95-bundled-entry.conf
 ln -sfn "$(pwd)/papercup-bg-host.service.d/97-gateway-systemd-authority.conf" \
   ~/.config/systemd/user/papercup-bg-host.service.d/97-gateway-systemd-authority.conf
+ln -sfn "$(pwd)/papercusp-server.service.d/97-gateway-systemd-authority.conf" \
+  ~/.config/systemd/user/papercusp-server.service.d/97-gateway-systemd-authority.conf
 ln -sfn "$(pwd)/papercup-bg-host.service.d/98-dependency-generation-root.conf" ~/.config/systemd/user/papercup-bg-host.service.d/98-dependency-generation-root.conf
+ln -sfn "$(pwd)/papercup-bg-host.service.d/99-mcp-proxy.conf" ~/.config/systemd/user/papercup-bg-host.service.d/99-mcp-proxy.conf
+ln -sfn "$(pwd)/papercup-mcp-proxy-bg-host.service" ~/.config/systemd/user/papercup-mcp-proxy-bg-host.service
 systemctl --user daemon-reload
+systemctl --user enable --now papercup-mcp-proxy-bg-host.service
 ```
 
-Do not copy the drop-in or edit the generated service. Do not restart bg-host
-as part of this installation; activate it at the next coordinated/managed
-bg-host restart.
+Do not copy the drop-in or edit the generated service. Do not restart bg-host or
+papercusp-server as part of this installation; activate each override at its
+next coordinated/managed restart.
 
 The drop-in also carries `TimeoutStartSec=300`. That is not decoration and must not be
 dropped: `ExecStartPre` time counts against `TimeoutStartSec` for `Type=simple`, and the
@@ -358,6 +474,10 @@ load persists. Any unit that gains an `ExecStartPre` owns its start timeout too.
 
 ```bash
 node scripts/check-systemd-dropins-installed.mjs   # from the repo root
+systemctl --user is-enabled papercup-mcp-proxy-bg-host.service
+systemctl --user is-active papercup-mcp-proxy-bg-host.service
+systemctl --user show papercup-bg-host.service --property=DropInPaths --value \
+  | tr ' ' '\n' | grep 99-mcp-proxy.conf
 ```
 
 That is the authoritative check and it is the one to trust: it reads the unit's live
@@ -384,8 +504,11 @@ were all written as though it were active. None of them could see the host. See 
 Once loaded, the effective unit should show `bundle-host.sh` as `ExecStartPre` and
 `node dist-host/hono-host.mjs` as the final command, `TimeoutStartUSec=5min`, and retain
 the `PAPERCUSP_HONO_PORT=3271`, `PAPERCUSP_BACKGROUND_WORKERS=1`, and DBOS/routine
-assignments from the base unit. A configured drop-in is not proof that the running
-service has loaded it; verify after the next managed restart.
+assignments from the base unit. It should also show
+`PAPERCUSP_MCP_PROXY_BASE=http://127.0.0.1:9271`,
+`PAPERCUSP_MCP_PROXY_TARGET_PORT=3271` and
+`PAPERCUSP_BG_HOST_AGENTS_MCP_BASE=http://127.0.0.1:9071`. A configured drop-in is not proof that the
+running service has loaded it; verify after the next managed restart.
 
 ---
 
@@ -752,6 +875,21 @@ well past the live-federation-gate's own 4h `TimeoutStartSec` bound) is
 reaped, via `vmctl down <name>` (graceful in-guest poweroff, then SIGTERM,
 then SIGKILL — the same escalation `vmctl down` already uses), with a hard
 per-attempt timeout and a direct-kill fallback if `vmctl` itself can't run.
+After `vmctl down` succeeds the reaper waits up to 15s
+(`TESTVM_REAPER_VMCTL_EXIT_GRACE`) for QEMU to exit before escalating.
+
+**Opting an over-age VM out (WI-10006429, WI-10006611).** Two leases stop the
+reaper from touching an instance:
+
+- **Named-resource lease (the normal one).** A rig that holds
+  `linux-test-vm:<instance>` through `locks:acquire_resource` is skipped for as
+  long as that lease is live. The reaper reads it with
+  `scripts/mcp-call.mjs locks:list` once per over-age candidate. If the lease
+  plane cannot be read, the VM is deferred to the next sweep, not reaped, unless
+  it has run longer than 48h (`TESTVM_REAPER_LEASE_UNREADABLE_MAX_AGE_SECS`).
+- **File keep lease.** For a run with no Papercusp session to hold a lease, write
+  the epoch-seconds keep-until time into
+  `~/.local/state/papercusp/testvm-keep/<instance>` (capped at 48h).
 
 **Detection + reaping only** — this does not (and cannot) make a SIGKILLed
 launcher's `trap cleanup EXIT` fire; a sweeper is the durable second line of
@@ -1045,12 +1183,18 @@ cannot read at all. A named regression test pins it.
 - **Tier 1 — `.ssh` directories** (`KEYPERM_SSH_ROOTS`, default
   `/home /root /mnt/data/back`, depth `KEYPERM_SSH_MAXDEPTH`=6). Checks the
   directory mode *and* each contained key's mode; neither subsumes the other.
-  ~15s on this box. This is the tier that catches the 2026-09-03 shape.
+  It prunes the same configured vendored/cache/Gradle-intermediate directory-name globs as tier 2.
+  This is the tier that catches the 2026-09-03 shape.
 - **Tier 2 — content sweep outside `.ssh`** (`KEYPERM_DEEP_ROOTS`, default
-  `$HOME /mnt/data/back`). Catches an exported deploy key or a loose `.pem`.
-  Bounded by `KEYPERM_DEEP_TIMEOUT_S` and run at `nice 19` / `ionice -c 3`,
-  because this box routinely sits at load average 60+ and a probe that degrades
-  its host is a probe somebody disables.
+  `$HOME/papercupai-workspace $HOME/.config /mnt/data/back`). Catches an
+  exported deploy key or a loose `.pem`. The defaults also prune Android
+  Gradle's generated `intermediates` directories by name; workspace source and
+  configuration trees remain scanned.
+  Bounded by `KEYPERM_DEEP_TIMEOUT_S`; each deep sweep runs at `nice 10` /
+  `ionice -c 2 -n 7`, the lowest best-effort I/O priority that can still make
+  progress while the device is active. The service also uses `Nice=10`,
+  `CPUWeight=50`, and matching best-effort I/O settings to keep its CPU share
+  moderate without risking idle-class starvation.
 
 The unit runs **unprivileged**, so `/root` is unreadable and is reported as a
 named blind spot rather than counted as clean. A host that needs `/root` covered
@@ -1064,6 +1208,14 @@ ln -sf "$(pwd)/papercup-fedplane-key-permission.service" ~/.config/systemd/user/
 ln -sf "$(pwd)/papercup-fedplane-key-permission.timer"   ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now papercup-fedplane-key-permission.timer
+```
+
+After either symlinked unit file changes, rerun `systemctl --user daemon-reload`;
+systemd keeps the loaded definition until that command runs again. Before a
+qualifying full scan, check the active service properties with:
+
+```bash
+systemctl --user show papercup-fedplane-key-permission.service -p Nice -p CPUWeight -p IOSchedulingClass -p IOSchedulingPriority
 ```
 
 Verify: `systemctl --user list-timers papercup-fedplane-key-permission.timer`,
@@ -1140,11 +1292,12 @@ creates the directory and lock with shared-write permissions for either identity
 `db-backup.sh` and `backup-alert.sh` scripts are still managed under `~/.config/kopia/` and are
 outside this snapshot-serialization contract.
 
-The dedicated dump volume must be mounted persistently by filesystem UUID at /mnt/backup.
-Resolve the host UUID with blkid and add an /etc/fstab entry in the form:
-UUID=<filesystem-uuid> /mnt/backup ext4 defaults,nofail 0 2
-The database backup and hot snapshot units require this mount so they cannot write to the
-underlying mountpoint directory when the volume is absent.
+New database dumps live at /mnt/cold-a/Backup/db-dumps. The previous
+/mnt/backup/db-dumps tree is retained as legacy data; this relocation does not
+delete or prune it. Mount the cold-a filesystem persistently by UUID at /mnt/cold-a:
+UUID=<filesystem-uuid> /mnt/cold-a ext4 defaults,nofail 0 2
+The database backup, hot snapshot, and Kopia healthcheck units require the cold-a
+mount so they cannot write to or inspect an underlying mountpoint directory.
 
 ## Install (one-time, on a fresh machine)
 
@@ -1382,6 +1535,50 @@ Prerequisites the units assume: the app checkouts at
 `tree`), the injected `~/.papercusp/app-producer.env`, and `npx` on the
 user-manager PATH.
 
+## Platform connection (WI-10006978)
+
+Connecting these apps is a separate deployment step. Their tracked units select
+dedicated token files, `~/.papercusp/email-platform-token` and
+`~/.papercusp/calendar-platform-token`, instead of the app runtime's implicit
+superuser credential. Issue an approved scoped app/service key through
+`access:create`, then install its private output into the corresponding token
+file with owner-only permissions. Never copy a token into either repository.
+An unattended service key needs an approved spending cap; a zero cap permits
+non-LLM reads and refuses new LLM work.
+
+After the grant is approved and the token file exists, set the existing injected
+`app-producer.env` variables for each app (`EMAIL_` or `CALENDAR_` prefix):
+`PLATFORM_INVOKE_URL=http://127.0.0.1:3070/api/mcp`,
+`PLATFORM_WORKSPACE=papercusp-workspace`, and `PLATFORM_HARNESS=email` or
+`calendar`. The final app connection targets the green operator on `:3070`;
+current-build acceptance uses a separately configured isolated instance pointed
+at `:3170`. A connected-app key URL must omit `superuser`, `role`, and `harness`
+query parameters: the verified key determines authority, while the app sends
+its workspace/harness metadata through the existing invoker.
+
+Keep `PLATFORM_TOKEN` unset and do not override `PLATFORM_TOKEN_FILE` in the
+injected environment. systemd's EnvironmentFile overrides Environment defaults,
+so inspect the effective configuration without printing credential values before
+activation. With no invoke URL the apps stay disconnected; with a configured URL
+and a missing explicit token file they fail startup rather than fall back to a
+superuser token. Reload and restart only after provisioning, then verify through
+the real authenticated app people search. Final shipment evidence must come from
+the deployed green operator, separately from current-build checks.
+
+Phone voice producer admission uses the existing `work_items:create` surface:
+`{ phone_producer: { roomName: "<admitted room>" }, harness: "phone-app" }`.
+This mode accepts no caller-authored owner, runtime binding, payload or assignment.
+The caller must use a verified bearer service principal matching the sidecar's
+configured execution owner; connected-app grants are rechecked before writes.
+The operator requires injected `PHONE_PRODUCER_ADMISSION_ENDPOINT` (the trusted
+HTTPS `/platform/producer-admission` URL) and `PHONE_PRODUCER_TOKEN_FILE` (the
+private bridge token file). The latter reuses the sidecar's bridge credential
+setting; neither setting has a superuser or worker-secret fallback. Configure
+these outside the repository only after the scoped principal and bridge grant
+are approved. Missing configuration refuses admission. This entry creates the
+canonical producer binding; retained outcome settlement and live acceptance
+remain separate checks.
+
 ## Verify
 
 ```bash
@@ -1411,8 +1608,11 @@ unreachable-guest checks past the 600s boot grace — a COLD restart (QMP
 `quit`, wait for qemu to exit, `systemctl --user start`). It never sends
 `system_reset`, which re-enters the loop. At most one cold restart per hour.
 
-A rig operation that must not be interrupted holds restarts off (alerts still
-fire):
+The registered exclusive `mac-test-vm:aviweiss@127.0.0.1:2222` lease
+automatically withholds cold restarts while it is active; alerts still fire.
+The watchdog checks live exclusive rows across coordination domains and fails
+closed if it cannot read the lease state. For operations outside that lease, a
+manual hold still suppresses restarts:
 
 ```bash
 node ~/papercupai-workspace/papercusp/papercusp-desktop/bin/mac-vm-watchdog.mjs \
@@ -1491,3 +1691,44 @@ ssh aviweiss@172.31.44.2 'curl -s 127.0.0.1:18788/healthz | head -c 80; echo;
 systemctl --user disable --now papercusp-mac-vm-gateway-tunnel.service
 # and boot the VM operator with PAPERCUSP_RIG_GATEWAY_UPSTREAM= (empty) to use its own sign-in
 ```
+
+# VirtualBox kernel-update rebuild hook — reboot-residue D-004 (WI-10005993, WI-10006387)
+
+Oracle's `virtualbox-7.2` package ships **no kernel-update hook**. Without one, every
+kernel update leaves `vboxdrv` unbuilt for the new kernel, and VirtualBox is down after
+the next reboot until someone runs `vboxdrv.sh setup` by hand. That is exactly how the
+`7.0.0-34-generic` reboot took it down (reboot-residue-service-repairs-2026-10-03).
+`vboxdrv-rebuild.kernel-hook` runs `vboxdrv.sh setup <kver>` for each newly installed
+kernel. It **never exits non-zero**, because a failing kernel hook wedges dpkg (WI-38019);
+a failed build is reported on stderr and to syslog (`journalctl -t vboxdrv-rebuild`), with
+the build log in `/var/log/vboxdrv-rebuild-<kver>.log`. The image hook can fire before the
+headers are installed; the `header_postinst.d` copy runs it again once they are.
+
+Behaviour is pinned by `apps/operator/scripts/__tests__/vboxdrv-rebuild-kernel-hook.test.ts`,
+which executes the hook against stubs.
+
+## Install or update
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+sudo install -o root -g root -m 0755 vboxdrv-rebuild.kernel-hook \
+  /etc/kernel/postinst.d/vboxdrv-rebuild
+sudo install -o root -g root -m 0755 vboxdrv-rebuild.kernel-hook \
+  /etc/kernel/header_postinst.d/vboxdrv-rebuild
+```
+
+Install root-owned copies, not symlinks: dpkg runs these as root, so they must never
+execute from the user-writable shared checkout.
+
+## Verify
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+cmp vboxdrv-rebuild.kernel-hook /etc/kernel/postinst.d/vboxdrv-rebuild
+cmp vboxdrv-rebuild.kernel-hook /etc/kernel/header_postinst.d/vboxdrv-rebuild
+run-parts --test --arg="$(uname -r)" /etc/kernel/postinst.d | grep vboxdrv-rebuild
+modinfo -F vermagic vboxdrv   # first field must equal `uname -r`
+```
+
+Both `cmp` calls must be silent (exit 0). A difference means the installed hook has
+drifted from the reviewed copy, so re-run the install step.

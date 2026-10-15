@@ -1,0 +1,199 @@
+{
+  "schemaVersion": "p011-shared-worker-window-qualification-v1",
+  "workItem": "WI-10006124",
+  "rootBug": "EI-25177041329489394",
+  "parent": "WI-10004890",
+  "status": "bounded-corrected-staging-window-and-independent-reader-pass-full-P011-open",
+  "runtime": {
+    "buildSha": "d2a53e1154",
+    "containingDbSource": true,
+    "pid": 1731718,
+    "startTicks": "2678176",
+    "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+    "entrySha256": "89bd480d009b864b8420013b6b2255f535aab06893fc139924867eb8e30dcd03",
+    "entryAfterSha256": "89bd480d009b864b8420013b6b2255f535aab06893fc139924867eb8e30dcd03",
+    "role": {
+      "clusterRole": "primary",
+      "requestOnly": true,
+      "configuredSidecar": null,
+      "requestAssignment": "unknown",
+      "allocationOwner": "unknown"
+    },
+    "plane": "current-build operator-api; shared DB/workspace"
+  },
+  "verification": {
+    "producer": {
+      "testRunId": 20765798,
+      "ledgerHarness": "papercusp",
+      "ledgerWorkspace": "papercusp-workspace",
+      "ledgerStatus": "pass",
+      "passed": 1,
+      "filteredSkipped": 57,
+      "nativeExitCode": 0
+    },
+    "independentReader": {
+      "testRunId": 20765811,
+      "ledgerHarness": "papercusp",
+      "ledgerWorkspace": "papercusp-workspace",
+      "ledgerStatus": "pass",
+      "passed": 1,
+      "filteredSkipped": 274,
+      "nativeExitCode": 0,
+      "rawSha256Matches": true
+    },
+    "runnerHead": "3b04601c7b95f03db229b05b89c0bfec783fb60d",
+    "ledgerWorktreeDirty": true,
+    "fullExecutedSourceGraph": "unknown; named-source fences only",
+    "samples": 9,
+    "httpRequests": 24,
+    "assignedRequests": 10,
+    "unresolvedRequests": 14,
+    "selectedQueryRecords": 19,
+    "windows": [
+      {
+        "window": 0,
+        "status": "observed",
+        "httpRequests": 8,
+        "assignedRequests": 8,
+        "unresolvedRequests": 0,
+        "selectedQueryRecords": 16,
+        "sourceBuilds": [
+          "d2a53e1154"
+        ],
+        "pssChangeBytes": 1856512,
+        "allocatedBytes": 10745992,
+        "ancestryStatus": "observed"
+      },
+      {
+        "window": 1,
+        "status": "partial",
+        "httpRequests": 8,
+        "assignedRequests": 0,
+        "unresolvedRequests": 8,
+        "selectedQueryRecords": 0,
+        "sourceBuilds": [],
+        "pssChangeBytes": 439296,
+        "allocatedBytes": 35495344,
+        "ancestryStatus": "observed"
+      },
+      {
+        "window": 2,
+        "status": "partial",
+        "httpRequests": 8,
+        "assignedRequests": 2,
+        "unresolvedRequests": 6,
+        "selectedQueryRecords": 3,
+        "sourceBuilds": [
+          "d2a53e1154"
+        ],
+        "pssChangeBytes": 117760,
+        "allocatedBytes": 10495368,
+        "ancestryStatus": "observed"
+      }
+    ],
+    "operations": [],
+    "cleanup": {
+      "inspectors": [
+        {
+          "pid": 1731718,
+          "openedByProbe": true,
+          "result": {
+            "closed": true
+          }
+        }
+      ],
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true,
+      "counterIdentityPreserved": true
+    }
+  },
+  "rootCauseVerification": {
+    "hypothesis": "Pool hooks captured an unknown build stamp before host bootstrap installed its loaded-build resolver.",
+    "alternativeHypothesis": "A different HTTP worker, process lifetime or loaded build produced the failing query tuples.",
+    "distinguishingTest": "Constructor-order regression constructs the pool while resolver is unknown, then installs it and records a second query. Saved R2 separates source-build predicates from loaded/correlation predicates; corrected R3 checks saved actual query records.",
+    "predictedObservations": {
+      "hypothesis": "Historical null remains null; the later query and corrected serving-window sources carry the first known loaded stamp without changing pool/process identities.",
+      "alternativeHypothesis": "Changing only lazy source-stamp capture leaves mismatched process, lifetime or correlation-build predicates."
+    },
+    "actualObservation": "Before regression fails; after full DB38 tests pass. R2 sixteen selected query source stamps null with matching loaded/correlation identities. R3 nineteen selected query sources carry d2a53e1154; ten requests independently join, fourteen remain unresolved rather than guessed.",
+    "recurrenceGuard": "Canonical pool-bootstrap immutability regression and failed-window publication regression remain in the maintained DB/sampler suites."
+  },
+  "correction": {
+    "retractedClaim": "Producer test-ledger receipt is unscoped.",
+    "authoritativeEvidence": "Exact testing:runs row20765798 is papercusp-workspace/papercusp/pass despite runner unscoped warning. No row rebinding or producer replay occurred.",
+    "followUp": "EI-25179422238165412 self-owned runner warning defect"
+  },
+  "limitations": [
+    "One selected request-only primary; two descendants are unsampled.",
+    "Fourteen HTTP request identities lack selected terminal-ring query joins; eviction or cache behavior is not inferred.",
+    "Ancestry is serial bounded observation; complete serving-worker population and unsampled ancestor lifetime are unknown.",
+    "No GC, allocation profiler, heap snapshot or paired intervention was run.",
+    "Physical savings, native allocation ownership, real worker-clone coverage, all eight sources, full P011/D021 and final shipment remain open.",
+    "Original R1/R2 failures and older NOTMEASURED evidence remain immutable.",
+    "Pending native-origin owner question is unchanged; this run does not retroauthenticate historical owner input."
+  ],
+  "receiptLinks": [
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r3-2026-10-05.json",
+      "bytes": 372703,
+      "sha256": "5c6195b06d91f9112c2de914e5a75a253c1bba37966d6a732506bc1bf92a19a6"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r3-oracle-2026-10-05.json",
+      "bytes": 64509,
+      "sha256": "b2962b5b84ce33813cce555a3c85bd7d3ccc3f042d2f2f1cec989150e520c9ad"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "bytes": 105790,
+      "sha256": "c98d523e56b3ca856f3302ad0670df20a72bbd9ac076235631e4f384c68b0172"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 130473,
+      "sha256": "ce79590adee77ae446f11959ef4d1e5d26cf9fa6221272a80df5f5110d791a94"
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "bytes": 29673,
+      "sha256": "2566bd434b4ac2b720e5ea24727136ddd82e55fa063a4442fd06b5f4380e51c7"
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.test.ts",
+      "bytes": 26951,
+      "sha256": "9b22f0f37655ef6d84634bf8e29d0bf18ff45a0b946b0d393683e13c02307f95"
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 66663,
+      "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+    },
+    {
+      "path": "scripts/lib/identity-leak-patterns.mjs",
+      "bytes": 44163,
+      "sha256": "9ccce5c5ad56db19caa554f3ac03f00dcc831ea959566e013acec184926cd21d"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-bootstrap-query-build-r1-qualification-2026-10-05.json",
+      "bytes": 7045,
+      "sha256": "0a8f8d36c2e89c8c3fbba88179e9f60788bc0b702bca37a81152a31d21ce262b"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-shared-worker-window-r3.log",
+      "bytes": 26685,
+      "sha256": "2324717e6a551c3187c84e0b516220c08eeadaa63a933b03a23b80971ed19fac"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-shared-worker-window-r3-oracle.log",
+      "bytes": 95837,
+      "sha256": "770e2159fc98f11b3e8d7984b1641c0daf672965cc4c06131ed713477bc70972"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-bootstrap-staging-refresh-r1.log",
+      "bytes": 14006,
+      "sha256": "3a0d543cf263f7d97c4d5df2d9b0ced686d8c2931cf639a888b87f6fbe1a3a93"
+    }
+  ]
+}

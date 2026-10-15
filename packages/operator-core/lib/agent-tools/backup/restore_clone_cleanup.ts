@@ -22,6 +22,7 @@ export default defineTool({
     'Dry-run is the default; removal requires dryRun:false and is protected by restore-liveness ' +
     'and promotion-reference proofs.',
   capability: 'backup:write',
+  irreversible: true,
   guidance: {
     when: 'Clean up old restore-to-clone results after reviewing the preview.',
     notWhen: 'For recovery debris with .broken-* or .rolled-back-* names, use the scheduled recovery sweep.',

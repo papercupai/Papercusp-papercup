@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS,
   AWS_WORKSPACE_HOST_PERMISSION_ACTIONS,
   buildAwsWorkspaceHostProviderConnection,
   planAwsSdkCredentialProvider,
@@ -81,8 +82,8 @@ function client(
         evidenceRef: 'aws://kms/key/key-123',
       };
     },
-    async evaluatePermissions({ actions }) {
-      return actions.map((action) => ({ action, allowed: true, evidenceRef: `aws://iam/${action}` }));
+    async evaluatePermissions({ actions, imageKeyActions }) {
+      return [...actions, ...imageKeyActions].map((action) => ({ action, allowed: true, evidenceRef: `aws://iam/${action}` }));
     },
     async getServiceQuota(requirement) {
       return { ...requirement, value: 32, evidenceRef: `aws://quota/${requirement.quotaCode}` };
@@ -167,8 +168,44 @@ describe('AWS workspace-host credential onboarding', () => {
     expect(report.ok).toBe(true);
     expect(report.issues).toEqual([]);
     expect(report.identity?.accountId).toBe('123456789012');
-    expect(report.permissions).toHaveLength(AWS_WORKSPACE_HOST_PERMISSION_ACTIONS.length);
+    expect(report.permissions).toHaveLength(
+      AWS_WORKSPACE_HOST_PERMISSION_ACTIONS.length + AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS.length,
+    );
     expect(report.quotas).toEqual([{ ...quota, value: 32, evidenceRef: 'aws://quota/L-1216C47A' }]);
+  });
+
+  it('refuses a role that cannot use the AMI snapshot key through EC2 (WI-10006815)', async () => {
+    // The P-012 operator role held every lifecycle action but not these two, and each launch died
+    // at start with Client.InvalidKMSKey.InvalidState. The preflight must name them instead.
+    const report = await preflightAwsWorkspaceHostConnection(
+      request(),
+      client({
+        async evaluatePermissions({ actions, imageKeyActions }) {
+          return [
+            ...actions.map((action) => ({ action, allowed: true, evidenceRef: `aws://iam/${action}` })),
+            ...imageKeyActions.map((action) => ({ action, allowed: false, evidenceRef: `aws://iam/${action}`, reason: 'implicitDeny' })),
+          ];
+        },
+      }),
+    );
+    expect(report.ok).toBe(false);
+    expect(report.issues.map((issue) => [issue.code, issue.message])).toEqual(
+      AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS.map((action) => ['permission-denied', `Permission '${action}' is denied: implicitDeny`]),
+    );
+  });
+
+  it('refuses when the AMI-key actions were never evaluated (WI-10006815)', async () => {
+    const report = await preflightAwsWorkspaceHostConnection(
+      request(),
+      client({
+        async evaluatePermissions({ actions }) {
+          return actions.map((action) => ({ action, allowed: true, evidenceRef: `aws://iam/${action}` }));
+        },
+      }),
+    );
+    expect(report.issues.map((issue) => [issue.code, issue.message])).toEqual(
+      AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS.map((action) => ['permission-unverified', `Permission '${action}' was not evaluated.`]),
+    );
   });
 
   it('fails closed with actionable diagnostics for account, region, resource, permission, and quota defects', async () => {

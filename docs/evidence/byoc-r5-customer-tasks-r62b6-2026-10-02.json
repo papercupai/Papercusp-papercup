@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "byoc R-5: customer-authored Claude and OMP tasks on a clean-controller-created GCP host, release 0.0.21-p318r62b (run p318-r5-20261002-r62b6)",
+  "framework": "operational",
+  "command": ["systemctl", "--user", "start", "p318-r5-chain-6.service"],
+  "commandScript": ".papercusp/scratch/p318-r5-chain-6.sh",
+  "exitCode": 0,
+  "startedAt": "2026-10-02T10:40:00Z",
+  "finishedAt": "2026-10-02T11:11:11Z",
+  "summary": "su-9b75fa7c ran chain-6 end to end. bg-host was pinned to release 0.0.21-p318r62b. Provision C (operation 7e7e8bc6-6095-4088-99bd-7576fb67609a) was accepted with HTTP 202 and succeeded at 10:50:42Z, creating VM pc-host-pc-p318-r5-20261002-r62b6-d1627dc6-vm. Bootstrap succeeded at 10:56:57Z, and the canary returned HTTP 200 ready-for-destroy at 11:03:46Z. Two customer tasks then ran over SSH as the customer account papercusp-workspace. (1) Claude Code 2.1.287 wrote R5-CLAUDE.md (sha256 dadbdb42...6712) and committed be726424 as 'R5 Customer'; CLAUDE_TASK_EXIT=0, session 03ef53f0-daa3-4b76-80e8-ba7da8983d7e, cost 0.0379 USD; the credential was removed afterwards. (2) OMP 14.5.14 with hosted model anthropic/claude-haiku-4-5 wrote R5-OMP.md (sha256 1671f9ae...09fa3); OMP_TASK_EXIT=0; the credential was unset afterwards. A separate SSH session then confirmed both files and the commit were retained, with customer ownership, mode 660, and no sudo. The host was discarded: destroy operation p318-r5-r62b6-destroy-c-1 succeeded at 11:10:53Z, and the provider census for the run label reported 0 for instances, disks, networks, firewall rules, routers, addresses and snapshots. R5_CHAIN_DONE was logged at 11:11:11Z, and bg-host was restored to r63 at 11:13:15Z.",
+  "release": {
+    "version": "0.0.21-p318r62b",
+    "bundleSha256": "dea508a82409b4f3ba6273df398c044f4306034f42dc735f6b86c62dd01e4ab8",
+    "sourceSha": "3533167c19fe1efd9bb300badcd047ac3812feaf"
+  },
+  "run": {
+    "runLabel": "p318-r5-20261002-r62b6",
+    "provisionOperationId": "7e7e8bc6-6095-4088-99bd-7576fb67609a",
+    "vm": "pc-host-pc-p318-r5-20261002-r62b6-d1627dc6-vm",
+    "hostId": "host-pc-p318-r5-20261002-r62b6",
+    "workspaceId": "papercusp-workspace",
+    "destroyOperationId": "p318-r5-r62b6-destroy-c-1",
+    "chainLog": ".papercusp/scratch/p318-r5-chain.log",
+    "taskOutputs": [
+      ".papercusp/scratch/p318-r5-a6-claude-task.out",
+      ".papercusp/scratch/p318-r5-a6-omp-task.out",
+      ".papercusp/scratch/p318-r5-a6-retained.out"
+    ]
+  },
+  "observations": {
+    "claude": {
+      "version": "2.1.287 (Claude Code)",
+      "exit": 0,
+      "sessionId": "03ef53f0-daa3-4b76-80e8-ba7da8983d7e",
+      "commit": "be7264249fb545e418e9834484cf0ff27754b7e5",
+      "file": "R5-CLAUDE.md",
+      "fileSha256": "dadbdb42a6b9eb56c8a1bb3a51557d27fe9211462d48009c26330141c7d56712",
+      "credentialRemoved": true
+    },
+    "omp": {
+      "version": "omp/14.5.14",
+      "model": "anthropic/claude-haiku-4-5",
+      "exit": 0,
+      "file": "R5-OMP.md",
+      "fileSha256": "1671f9ae99b7864c2163420686b7e7593ae48266eee47a01c00eda1916909fa3",
+      "credentialUnset": true
+    },
+    "retainedAcrossSessions": true,
+    "customerSudo": "none (expected)",
+    "teardownCensus": {
+      "instances": 0,
+      "disks": 0,
+      "networks": 0,
+      "firewallRules": 0,
+      "routers": 0,
+      "addresses": 0,
+      "snapshots": 0
+    }
+  },
+  "assertions": [
+    {
+      "id": "auto-bar-r-5-p-318",
+      "passed": true,
+      "evidence": "On a clean-controller-created host, both Claude and OMP completed customer-authored tasks with exit 0 under the customer account. Each wrote its own file, and the Claude task committed it. The results survived into a separate SSH session. The forwarded credentials were removed or unset after use. There were no bootstrap, readiness or credential failures. The host was then discarded and the provider census was zero."
+    }
+  ],
+  "limitations": [
+    "OMP used a hosted Anthropic model (claude-haiku-4-5) through a forwarded OAuth token, because the host's local 0.5b model cannot make tool calls (fact p318-r5-omp-local-0.5b-cannot-tool-call).",
+    "Direct Codex was not exercised, as D-338 allows.",
+    "The host was discarded after the run, so retention was checked across SSH sessions, not across a host reboot.",
+    "bg-host needed 3 restart attempts to pin r62b before provisioning (WI-10004948/WI-10004957 lane). This does not affect the R-5 outcome."
+  ]
+}

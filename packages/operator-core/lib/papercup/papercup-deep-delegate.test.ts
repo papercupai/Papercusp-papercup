@@ -202,6 +202,7 @@ describe('delegateDeep — D-003 live papercup-deep lane', () => {
     });
     expect(deliverToDeep).toHaveBeenCalledTimes(1);
     expect(deliverToDeep.mock.calls[0][0]).toMatchObject({
+      workspaceId: WS,
       ownerId: 'role-deep-1',
       workItemId: 'WI-301',
       harness: 'papercup',

@@ -21,7 +21,7 @@ import {
   type ClientCredentialsStore,
   type ClientKeyRow,
 } from './client-credentials';
-import { enforceAppKeyScope } from './enforce';
+import { appKeyToolListFilter, enforceAppKeyScope } from './enforce';
 import { mintAccessToken, mintAppKey } from './key';
 import { accessTokenVerdictOf, appKeyVerdictOf, type AppKeyRow, type AppKeyScopes } from './store';
 import type { AppScopeRow } from './scope-policy';
@@ -283,5 +283,46 @@ describe('the dispatch seat applies the token scope on top of the client scope',
     expect(await call('plans:get', `app:${parent.id}/${'u'.repeat(16)}`)).toMatchObject({ code: 'app_scope:key_unknown' });
     expect(await call('plans:get', tokenSlug, false)).toMatchObject({ code: 'app_scope:key_unknown' });
     expect(await call('plans:get', `app:${parent.id}/`)).toMatchObject({ code: 'app_scope:key_unknown' });
+  });
+});
+
+describe('parent/token chain listing and invocation use the same restrictions', () => {
+  const parent: AppScopeRow = { id: 'p'.repeat(16), workspace_id: 'ws-1', scopes: { tools: ['plans:*'], harnesses: ['approved'] }, revoked_at: null, paused_at: null, expires_at: null };
+  const token: AppScopeRow = { ...parent, id: 't'.repeat(16), scopes: { tools: ['plans:get'] } };
+  const slug = `app:${parent.id}/${token.id}`;
+  const deps = (child: AppScopeRow | null) => ({
+    loadRow: async () => parent,
+    loadAccessTokenRow: async () => child,
+    lookupTool: (name: string) => ({ name, capabilities: [], acceptsHarness: true }),
+    now: () => NOW,
+  });
+  const request = (args: Record<string, unknown>) => ({
+    toolName: 'plans:get', capabilities: [], boundary: 'http', args,
+    ctx: { principal: { slug, workspaceId: 'ws-1' }, workspaceId: 'ws-1' },
+  }) as unknown as KernelEnforcementRequest;
+
+  it('a visible harness-deferred tool is invoked only with an approved harness', async () => {
+    const filter = await appKeyToolListFilter({ slug, workspaceId: 'ws-1' }, 'ws-1', deps(token));
+    expect(filter?.('plans:get')).toBe(true);
+    expect(filter?.('plans:list')).toBe(false);
+    expect(await enforceAppKeyScope(request({}), deps(token))).toMatchObject({ code: 'app_scope:harness_required_by_scope' });
+    expect(await enforceAppKeyScope(request({ harness: 'approved' }), deps(token))).toBeNull();
+    expect(await enforceAppKeyScope(request({ harness: 'outside' }), deps(token))).toMatchObject({ code: 'app_scope:harness_not_in_scope' });
+  });
+
+  it.each([
+    { revoked_at: NOW }, { expires_at: NOW }, { paused_at: NOW },
+  ])('hides and denies a child restriction behind a harness-deferred parent: %j', async (restriction) => {
+    const d = deps({ ...token, ...restriction });
+    const filter = await appKeyToolListFilter({ slug, workspaceId: 'ws-1' }, 'ws-1', d);
+    expect(filter?.('plans:get')).toBe(false);
+    expect(await enforceAppKeyScope(request({ harness: 'approved' }), d)).toMatchObject({ decision: 'deny' });
+  });
+
+  it('hides and denies a missing child row', async () => {
+    const d = deps(null);
+    const filter = await appKeyToolListFilter({ slug, workspaceId: 'ws-1' }, 'ws-1', d);
+    expect(filter?.('plans:get')).toBe(false);
+    expect(await enforceAppKeyScope(request({ harness: 'approved' }), d)).toMatchObject({ code: 'app_scope:key_unknown' });
   });
 });

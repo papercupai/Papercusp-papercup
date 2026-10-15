@@ -58,6 +58,7 @@
  * property the egress monitor depends on — see WI-6657.)
  */
 import path from "node:path";
+import { lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import type { Browser } from "webdriverio";
 // Relative, not `@papercusp/gui-readiness`, for the same reason app-mount.ts is:
 // this runner is deliberately outside the npm workspace, so a bare specifier is
@@ -229,6 +230,8 @@ export function buildWebVitalsBundle(): string {
                     id: element && typeof element.id === 'string' ? element.id.slice(0, 80) : null,
                     testId: element && element.getAttribute ? element.getAttribute('data-testid')?.slice(0, 80) || null : null,
                     className: element && typeof element.className === 'string' ? element.className.slice(0, 160) : null,
+                    startupCandidateMatches: window.__pcStartupStorageProbe?.renderCandidateMatches?.(element) ?? null,
+                    startupCandidates: window.__pcStartupStorageProbe?.renderCandidateMatchesBySelector?.(element) ?? null,
                     text: element && element.textContent ? element.textContent.trim().slice(0, 160) : null,
                     url: entry.url ? String(entry.url).slice(0, 240) : null,
                   } : null;
@@ -286,15 +289,60 @@ export function buildWebVitalsBundle(): string {
  * — FCP/LCP are buffered and arrive almost immediately — but a little slack keeps
  * the reading stable on a loaded box.
  */
+export { installStartupStorageProbe } from './startup-storage-probe';
+import type { installStartupStorageProbe } from './startup-storage-probe';
+
+/** Compile a standalone browser payload, including no tsx name helpers. */
+export function buildStartupStorageProbeScript(): string {
+  const esbuild = require('esbuild') as typeof import('esbuild');
+  return esbuild.buildSync({
+    stdin: { contents: "import { installStartupStorageProbe } from './startup-storage-probe'; installStartupStorageProbe();",
+      resolveDir: __dirname, loader: 'ts' },
+    bundle: true, platform: 'browser', format: 'iife', minify: true, keepNames: false, write: false,
+  }).outputFiles[0].text;
+}
+
+/** Refuse aliasing BEFORE a diagnostic write can change the baseline artifact.
+ * Installed app trees may link their entire SPA directory to a frozen build. */
+export function writeStartupStorageDiagnosticIndex(spaDirectory: string, baselineIndex: string, script: string): void {
+  const directory = path.resolve(spaDirectory);
+  const index = path.join(directory, 'index.html');
+  const baseline = statSync(baselineIndex);
+  const target = statSync(index);
+  if (realpathSync(directory) !== directory || lstatSync(index).isSymbolicLink() ||
+      (target.dev === baseline.dev && target.ino === baseline.ino)) {
+    throw new Error('Diagnostic SPA aliases its baseline; create an independent directory and index before writing');
+  }
+  const html = readFileSync(baselineIndex, 'utf8');
+  if (html.split('<head>').length !== 2 || /<\/script/i.test(script)) {
+    throw new Error('Diagnostic SPA requires one head and a standalone inline payload');
+  }
+  writeFileSync(index, html.replace('<head>',
+    '<head>\n<script data-p007-startup-storage-probe="r158">' + script + '</script>'));
+}
+
 export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
   fcpMs: number | null; lcpMs: number | null; attribution?: WebVitalsReading['attribution'];
 }) {
+  // Capture before IPC yields: timeOrigin aligns this document's performance
+  // clock with the external native diagnostic's epoch-ms read intervals.
+  const documentClock = { timeOriginMs: Number.isFinite(performance.timeOrigin) ? performance.timeOrigin : null,
+    capturedAtMs: performance.now() };
+  // Snapshot and restore before the following IPC await or popup interaction.
+  const storage = (window as unknown as {
+    __pcStartupStorageProbe?: ReturnType<typeof installStartupStorageProbe>;
+  }).__pcStartupStorageProbe?.stop() ?? null;
   const metrics = (window as unknown as {
     __sync_metrics__?: {
       snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null;
         ipcAssertion?: Array<{ startedAtMs: number; importReadyAtMs: number | null;
           invokeStartedAtMs: number | null; invokeCompletedAtMs: number | null;
-          completedAtMs: number | null; client: string | null }>;
+          completedAtMs: number | null; client: string | null; error?: string;
+          nativeStartedAtMs?: number; nativeDurationMs?: number;
+          renderer?: { unit: 'ms'; clock: 'performance.now'; intervalMs: number;
+            startedAtMs: number; lastObservedAtMs: number; timerTicks: number; maxGapMs: number;
+            gaps: Array<{ startedAtMs: number; completedAtMs: number; durationMs: number }>;
+            stoppedAtMs: number | null; stopReason: 'reply' | 'deadline' | null } }>;
         stages?: { recent: Array<{ stage: string; unit: 'ms'; durationMs: number; measuredAtMs: number;
           queryName?: string; traceId?: string }> } };
       queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string;
@@ -349,8 +397,13 @@ export async function readPageStartupTrace({ fcpMs, lcpMs, attribution }: {
     .sort((a, b) => b.duration - a.duration).slice(0, 12)
     .map((entry) => ({ path: new URL(entry.name, location.href).pathname, startMs: Math.round(entry.startTime),
       durationMs: Math.round(entry.duration), endMs: Math.round(entry.startTime + entry.duration), initiator: entry.initiatorType }));
+  const accountsImport = performance.getEntriesByName('accounts-tab-import', 'measure').at(-1);
   return {
-    readyState: document.readyState, resources, scheduler: snapshot?.scheduler ?? null,
+    documentClock, storage, readyState: document.readyState, resources, scheduler: snapshot?.scheduler ?? null,
+    startupImports: { accountsTab: accountsImport ? {
+      startMs: Math.round(accountsImport.startTime), durationMs: Math.round(accountsImport.duration),
+      endMs: Math.round(accountsImport.startTime + accountsImport.duration),
+    } : null },
     syncTrace: { unit: 'ms' as const, clock: 'performance.now' as const, startupQueries,
       planQueries: planQueries.map(compact), planStages },
     ...capturedAttribution,

@@ -6,6 +6,20 @@
 export const FLAGS_CHANGED_EVENT = "flags.changed";
 
 export const FLAGS = {
+  // reports-library-2026-09-15 P-004: owner-facing publishing, browsing and reading.
+  // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the shared
+  // tools/UI kill-switch, not a hidden rollout of otherwise finished work.
+  REPORTS_LIBRARY: "papercusp-reports-library",
+  // bm25-lexical-search-evoke-adoption-2026-10-10 P-005/P-009 (D-003 §4-5): lexical
+  // search ranks with pg_textsearch BM25 wherever the corpus's BM25 index exists.
+  // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the cutover
+  // kill-switch that restores the legacy ts_rank_cd ordering on every call site.
+  BM25_LEXICAL_RANKING: "papercusp-bm25-lexical-ranking",
+  // WI-6554700010009291 (owner directives #1759/#1764): capability:bash runs each command
+  // through `rtk rewrite`, so our own shell tool gets the same RTK output compression as
+  // Claude's native Bash hook. Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is
+  // the fleet-wide kill-switch that runs every capability:bash command verbatim.
+  CAPABILITY_BASH_RTK: "papercusp-capability-bash-rtk",
   // SNAPSHOTS retired (retire-snapshots-instance-spec-2026-06-09): the harness-
   // snapshot system + the Cupboard `kind=snapshot` path are gone; the reproducible
   // clone is now the lightweight InstanceSpec (capture/boot/vary, ungated). The
@@ -30,6 +44,13 @@ export const FLAGS = {
   // decideFrozenConvergenceCycleEntry): flipping it off stops new cycles opening and leaves
   // an in-flight convergence to finish, rather than stranding its repair worktree.
   RELEASE_FREEZE_AND_CONVERGE_DEFAULT: "papercusp-release-freeze-and-converge-default",
+  // app-agent-tasks-durable-execution-2026-10-06 D-017 / WI-10006859: the kill-switch for
+  // automatic applied-worker placement. Default ON (derived FLAG_DEFAULTS — deliberately NOT
+  // in DARK_FLAGS): ON is the shipped behaviour, where the routines tick launches one headless
+  // role session per accepted agent-execution blueprint operation (bounded: 4 per tick, 4 live
+  // per workspace, 3 attempts per receipt). OFF stops new launches; receipts stay accepted and
+  // are placed when it is turned back on. Without placement an accepted app operation never runs.
+  BLUEPRINT_AGENT_OPERATION_PLACEMENT: "papercusp-blueprint-agent-operation-placement",
   // machine-enforced-terminal-criteria-2026-09-05 (P-006/P-007, D-018): the ENFORCEMENT
   // kill-switch for item-scoped terminal criteria on work-item closes. Default ON (derived
   // FLAG_DEFAULTS — deliberately NOT in DARK_FLAGS): ON is the shipped behaviour, so the
@@ -308,6 +329,10 @@ export const FLAGS = {
   // allows the FIRST account unconditionally (fresh-install bootstrap); once
   // any active user exists, further signups require this flag.
   OPEN_SIGNUP: "papercusp-open-signup",
+  // WI-10006884 / voice-two-tier-elevenlabs-agent-2026-10-06 P-011:
+  // DEFAULT OFF — security/spend authority for the shared tutorial credential.
+  // Explicit persisted approval is required; owner directive #1489 holds release.
+  TUTORIAL_VOICE_ISSUANCE: "papercusp-tutorial-voice-issuance",
   // hive-from-github-url-2026-06-11 (P-011/P-012): gates the picker's GitHub-URL
   // entry — paste a repo URL → create a Hive from it (clone → blueprint detect →
   // hive home + member → visibility-gated auto-publish), join the existing hive
@@ -1110,6 +1135,15 @@ export const FLAGS = {
   // exactly as before this plan (no quarantine, no escalation) — the instant off-switch on
   // this shared commit path if the guard ever mis-quarantines a real, safe deletion.
   GIT_SYNC_DELETION_GUARD: "papercusp-git-sync-deletion-guard",
+  // git-sync-turn-scoped-commit-hold-2026-10-11 P-004: the runtime KILL-SWITCH for the
+  // turn-scoped commit hold — git-sync leaves out every path a live session natively edited
+  // during its CURRENT turn (edit_attribution_ledger newer than its last
+  // session_turn_journal turn end), so a multi-file change commits together after the turn
+  // ends instead of being swept half-done mid-turn. Bounded: a hold lifts at turn end,
+  // session end, or 60 min after the edit (D-001). ON by default (finished, a safety
+  // feature on the shared commit path). When OFF, the census has no turn-holds leg and
+  // git-sync sweeps exactly as before this plan.
+  GIT_SYNC_TURN_HOLD: "papercusp-git-sync-turn-hold",
   // github-bridge-hive-egress-2026-07-02 P-008: the hive P2P git <-> GitHub bridge —
   // on a BRIDGED hive's git-sync tick, ingress origin branches into the synthetic
   // github-origin namespace (admission-gated) + egress canonical refs FF-only to the
@@ -2206,6 +2240,15 @@ export const FLAGS = {
   // an attended :3170 verify, so leader/owner should give this one a further look). OFF ⇒ the
   // flat priority+aging queue (the reversible fallback).
   GATEWAY_PRIORITY_TIERS: "papercusp-gateway-priority-tiers",
+  // token-efficiency-prompts-cache-and-behavior-2026-10-11 P-015 (finishes WI-10005042, cache plan
+  // D-079): the gateway moves the per-session system TAIL (the part after PSU_CACHE_BOUNDARY:
+  // launch brief, provenance, mode section, instruction precedence) out of the system block to just
+  // after messages[0] block 0, wrapped as a system-authority <system-reminder>. Without it the
+  // per-session tail sits in FRONT of the ~110-138 KB CLAUDE.md block, so that cohort-identical
+  // block is re-written to cache on every su start. Stateless per request (R1); enforcement of
+  // modes/precedence stays in code. DEFAULT ON. OFF ⇒ the previous layout, byte-identical (the
+  // rollback). Env PAPERCUSP_GATEWAY_RELOCATE_SYSTEM_TAIL=1/0 still forces it on/off per host.
+  GATEWAY_RELOCATE_SYSTEM_TAIL: "papercusp-gateway-relocate-system-tail",
   // codex-gateway-oauth-proxy-2026-07-04 (WI-2198): gates the codex
   // ChatGPT-subscription OAuth STREAMING reverse-proxy — the gateway forwards a
   // codex-cli account's native Responses request to chatgpt.com/backend-api/codex with
@@ -2413,6 +2456,14 @@ export const FLAGS = {
   // would not function). OFF ⇒ feature-family-only claiming (the reversible fallback, but
   // note it would break this and any other issue-family-claiming autonomous fleet today).
   SCHEDULER_ISSUES_CLAIMABLE: "papercusp-scheduler-issues-claimable",
+  // green-main-cycle-time-2026-10-08 P-017 / D-032: red-gate inflow control. While a
+  // harness's gate has been red for 8h+ (an open gate-red-streak:<harness> condition item,
+  // the same population stop-the-line reads), scheduler:get_next serves a stable half of
+  // FLEET members a repair item (frozen-repair-leg: / sync-delta-red: conditions) before
+  // new backlog. A preference, not a floor: with no repair item claimable the member takes
+  // ordinary backlog. DEFAULT ON — reversible claim ordering, none of the dangerous set.
+  // OFF ⇒ get_next keeps its normal family order (stop-the-line's 24h floor is unaffected).
+  RED_INFLOW_REPAIR_FIRST: "papercusp-red-inflow-repair-first",
   // psu-in-desktop-builds-2026-06-23 C1: exposes the `psu` superuser CLI as an
   // END-USER feature in the shipped desktop builds (the discoverable launch
   // entry + forcing the scoped `user` profile). DEFAULT OFF — this is the
@@ -2464,12 +2515,12 @@ export const FLAGS = {
   // default-on — additive + reversible; OFF ⇒ a byte-identical passthrough (ungoverned, the
   // pre-P-002 behaviour). The kill-switch if admission ever mis-paces a hot path.
   EMBED_ADMISSION: "papercusp-embed-admission",
-  // enforce-system-on-generic-work-2026-06-29 P-006: the TEST-COMPLETION GATE on
-  // work_items:complete — a feature work-item moved to a terminal state must have its plan-derived
-  // test-requiring VALs passing (reuses the harness-test-rollup). DEFAULT ON (graduated 2026-07-04,
-  // dark-flag-age review EI-7280: the done-without-test watchdog P-009 confirmed zero false-refusal
-  // signals across every tick since activation — not in DARK_FLAGS). OFF ⇒ completion is
-  // byte-identical to today (the gate is never consulted). FAIL-OPEN even when ON.
+  // RETIRED CONSUMER (verification-system-improvements-2026-10-10 P-003): the VAL-* test-completion
+  // gate this flag switched (enforce-system-on-generic-work-2026-06-29 P-006) is no longer called by
+  // work_items:complete — the requirement contract (acceptance bars + spec clauses) replaced inline
+  // VAL-* assertions. The only remaining reference is the dead module
+  // packages/operator-core/lib/harness-test-gate.ts, whose deletion is pending owner action; delete
+  // this key in the same change. Flipping it has NO effect on completion.
   TEST_COMPLETION_GATE: "papercusp-test-completion-gate",
   // ratified-mockup-implementation-validation-2026-08-24 P-007: the DESIGN-EVIDENCE gate on
   // work_items:complete. When a work-item's feature has a ratified design reference, every
@@ -3190,7 +3241,7 @@ export const DARK_FLAGS: ReadonlyMap<
     {
       case: "incomplete",
       reason:
-        "owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.",
+        "owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — mobile pairing (phone notifications / remote control), auto-update channel. Telemetry consent shipped and is no longer preview-gated (optional-setup-items.ts). OFF ⇒ a fresh install never sees the remaining preview items (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.",
     },
   ],
   // TASK_MANAGER GRADUATED 2026-08-02 (WI-6844) on an explicit owner directive:
@@ -3217,6 +3268,10 @@ export const DARK_FLAGS: ReadonlyMap<
   // MUG_WARM_SESSION graduated 2026-07-02 (owner flip directive): default ON —
   // queen wakes prefer the wake-executor warm resume with deterministic rebirth.
   // owner-authority — a privilege / security / destructive / autonomy surface the owner ratifies
+  [FLAGS.TUTORIAL_VOICE_ISSUANCE, {
+    case: "owner-authority",
+    reason: "SECURITY/SPEND: WI-10006884 P-011 enables server minting against Papercusp's shared ElevenLabs tutorial credential. Directive #1489 holds voice release. Remain OFF until provider restrictions, admission, finality and reconciliation are verified and release is authorized; review on the existing DARK_FLAGS_OWNER_REVIEW_BY lane.",
+  }],
   [
     FLAGS.OPEN_SIGNUP,
     {
@@ -3230,7 +3285,7 @@ export const DARK_FLAGS: ReadonlyMap<
     {
       case: "owner-authority",
       reason:
-        "external-triggers-gmail-slack-2026-08-22 P-011: automatic Gmail sending is an outward-facing owner-authority action. The shipped gmail:create-draft tool has no send branch and remains live independently; OFF reserves the separate auto-send capability until the owner ratifies its review, recipient, and failure policy.",
+        "external-triggers-gmail-slack-2026-08-22 P-011: automatic Gmail sending is an outward-facing owner-authority action. Enforced by mail:reply's trigger-run path (capability-verbs/mail.ts replyToTriggerPlanRun), which refuses mode:'send' from a triggered run while this is OFF; drafting stays live independently. OFF reserves auto-send until the owner ratifies its review, recipient, and failure policy.",
     },
   ],
   [
@@ -3821,7 +3876,25 @@ export function darkFlagReviewLane(c: DarkCase): "parking" | "owner" {
 //     candidate for the next reviewer.
 // VERDICT: zero graduations; membership and watermark unchanged. `npm run audit:dark-flags`
 // was NOT re-run (host load1 ≈170 at review time). Next parking review 2026-10-06.
-export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-10-06";
+// ─── REVIEW 2026-10-06 (WI-10006316, D-021 tutorial verification) — re-derived
+// the current parking lane: parked 8 + incomplete 4 = 12/12. SUBSTRATE_LOG_SNAPSHOT
+// already graduated on 09-24; it is not an outstanding thirteenth entry.
+// Parked: CLOUDFLARE_PUBLISH, HARNESS_PHASES, DESIGN and TESTING retain their V1
+// cuts; THE_HIVE retains the public Pot lexicon; CONVERSATIONS_RAIL_TAB retains
+// the explicit owner-requested park; TEMPLATES_MARKETPLACE and RUBRICS_MARKETPLACE
+// retain the local-first v1/v2 marketplace boundary. No new graduation authority.
+// Incomplete: EXTERNAL_BENCH remains retired; ONBOARDING_PREVIEW_FEATURES still
+// gates mobile-pairing and update-channel preview inputs (telemetry already ships);
+// CAPABILITY_EXEC_SANDBOX still needs its live background-lifetime validation and
+// owner activation (existing WI-10002560 is now claimed); SUBSTRATE_SIDECAR still
+// has no completed replacement implementation. Zero new graduations this review.
+// Ran the maintained live audit (task 0muw7vo2qyx9g3c1s1e): its three CRITICAL
+// incomplete overrides remain confined to generic-test, as on 09-03. Their origin
+// is an accountable follow-up on WI-10006316; they are not assumed harmless or
+// used to justify defaults. PG + this process's env checked; PostHog not probed.
+// Membership, watermark and owner review clock unchanged. Renew only after this
+// substantive review; the production-defaults hard-deadline guard remains active.
+export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-10-20";
 export const DARK_FLAGS_OWNER_REVIEW_BY = "2026-10-01";
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //

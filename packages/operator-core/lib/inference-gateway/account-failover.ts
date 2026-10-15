@@ -185,6 +185,7 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
    *  codex-auto-route-all-walled-fail-fast-2026-09-05, P-008): a reading taken BEFORE the park says
    *  nothing about whether the park's cause has cleared. */
   const parkedAt = new Map<string, number>();
+  const parkCauses = new Map<string, AccountParkState['cause']>();
   /** Round-robin cursor — the NEXT index to consider, advanced on every `active()` so unpinned
    *  egress spreads across the whole pool instead of concentrating on one account. */
   let rrIdx = 0;
@@ -256,10 +257,18 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     exhaustedId: string,
     resetAt: number,
     keyOf?: (account: ActiveAccount) => number,
+    park?: Pick<AccountParkState, 'cause'>,
   ): ActiveAccount | null {
     const at = now();
-    exhaustedUntil.set(exhaustedId, resetAt > at ? resetAt : at + FIVE_HOURS_MS);
+    const previousUntil = exhaustedUntil.get(exhaustedId) ?? 0;
+    const previousCause = parkCauses.get(exhaustedId);
+    const until = Math.max(previousUntil, resetAt > at ? resetAt : at + FIVE_HOURS_MS);
+    // A concurrent short cooldown cannot erase a longer quota/auth/unknown park.
+    const cause = previousUntil > at && previousCause !== 'cooldown' && park?.cause === 'cooldown'
+      ? previousCause : park?.cause;
+    exhaustedUntil.set(exhaustedId, until);
     parkedAt.set(exhaustedId, at);
+    parkCauses.set(exhaustedId, cause);
     // Re-exhausted ⇒ no longer "freshly readmitted"; drop any stale early-readmit stamp so the next
     // rejoin's boundary is this new pause's expiry, not a prior readmit() (msSinceReadmit, WI-3151).
     readmittedAt.delete(exhaustedId);
@@ -288,7 +297,7 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     }
     log(
       'error',
-      `inference-gateway: '${exhaustedId}' exhausted and no other account has budget — egress pauses until reset`,
+      `inference-gateway: '${exhaustedId}' out of rotation (${parkCauses.get(exhaustedId) ?? 'unknown'}) and no other account is available — egress pauses until recovery`,
     );
     return null;
   }
@@ -321,6 +330,7 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     }
     exhaustedUntil.delete(accountId);
     parkedAt.delete(accountId);
+    parkCauses.delete(accountId);
     readmittedAt.set(accountId, at); // stamp the rejoin moment for the cold-rest probe (WI-3151)
     const why =
       reason === 'transport'
@@ -338,7 +348,8 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
   function parkState(accountId: string): AccountParkState | undefined {
     const until = exhaustedUntil.get(accountId);
     if (until === undefined || until <= now()) return undefined;
-    return { parkedAt: parkedAt.get(accountId) ?? 0, until };
+    const cause = parkCauses.get(accountId);
+    return { parkedAt: parkedAt.get(accountId) ?? 0, until, ...(cause ? { cause } : {}) };
   }
 
   /** The pool's RECOVERY HORIZON (codex-auto-route-all-walled-fail-fast-2026-09-05 P-001): the instant
@@ -414,6 +425,7 @@ export function createFailoverPool(entries: readonly ActiveAccount[], opts: Fail
     for (const id of [...exhaustedUntil.keys()]) if (!presentIds.has(id)) exhaustedUntil.delete(id);
     for (const id of [...readmittedAt.keys()]) if (!presentIds.has(id)) readmittedAt.delete(id);
     for (const id of [...parkedAt.keys()]) if (!presentIds.has(id)) parkedAt.delete(id);
+    for (const id of [...parkCauses.keys()]) if (!presentIds.has(id)) parkCauses.delete(id);
     rrIdx = rrIdx % live.length;
     log('info', `inference-gateway: account pool hot-reloaded → [${live.map((e) => e.accountId).join(', ')}]`);
   }

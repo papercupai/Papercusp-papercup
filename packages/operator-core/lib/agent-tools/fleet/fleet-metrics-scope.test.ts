@@ -5,6 +5,7 @@ import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { ResolvedFleetClaimSpec } from '../../scheduler/claim-spec-store';
 import type { FleetMetricScopeDeps } from './fleet-metrics-scope';
 import {
+  fleetMetricClaimFiltersUseSummary,
   resolveFleetMetricScope,
   selectFleetMetricCurrentItems,
   selectFleetMetricFlowEvents,
@@ -66,6 +67,13 @@ function deps(overrides: Partial<FleetMetricScopeDeps> = {}): FleetMetricScopeDe
 }
 
 describe('fleet metric scope resolver and query kernel', () => {
+  it('retains summaries when any current or historical claim predicate uses summary', () => {
+    const summary = { field: 'summary', op: 'word', value: 'relay' } as const;
+    expect(fleetMetricClaimFiltersUseSummary([{ field: 'id', op: '=', value: 'WI-1' }])).toBe(false);
+    expect(fleetMetricClaimFiltersUseSummary([{ not: { any: [{ all: [summary] }] } }])).toBe(true);
+    expect(fleetMetricClaimFiltersUseSummary([undefined])).toBe(false);
+  });
+
   it('resolves one current-spec fleet scope with canonical roster and membership writers', async () => {
     const result = await resolveFleetMetricScope(
       { workspaceId: 'ws', harness: 'papercusp', fleet: 'fleet-a', flowMode: 'current-spec' },
@@ -184,6 +192,21 @@ describe('fleet metric scope resolver and query kernel', () => {
       }),
     );
     expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('presence') });
+  });
+
+  it('preserves explicit unavailable behavior when psu-host discovery degrades', async () => {
+    const result = await resolveFleetMetricScope(
+      { workspaceId: 'ws', harness: 'papercusp', fleet: 'fleet-a', flowMode: 'current-spec' },
+      deps({
+        listFleetRosterDiagnosed: async () => ({ entries: [], degradedLegs: ['psuHosts'] }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'fleet_metrics_unavailable',
+      reason: 'current roster read degraded: psuHosts',
+      recoverVia: 'fleet:status { fleet }',
+    });
   });
 
   it('turns a datastore exception into an explicit unavailable envelope', async () => {

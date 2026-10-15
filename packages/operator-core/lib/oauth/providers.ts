@@ -8,7 +8,10 @@
  *   - introspect a pasted token (paste-PAT scope verification)
  *
  * Substrate platform-owners register providers at boot via
- * `~/.papercusp/oauth-apps.json` (clientId + clientSecret + scopes).
+ * `oauth-apps.json` under {@link papercuspRoot} (clientId + clientSecret + scopes).
+ * That is the ACTIVE WORKSPACE's root (`~/.papercusp-workspaces/<id>/.papercusp/`)
+ * whenever that directory exists; legacy `~/.papercusp/` is only the last-resort
+ * fallback, so a file placed there is silently never read on a workspace install.
  *
  * Spec: /docs/snapshots/oauth-integration#substrate-level-provider-config.
  */
@@ -216,7 +219,13 @@ export const GOOGLE_WORKSPACE_ALLOWED_SCOPES = [
   GOOGLE_YOUTUBE_FORCE_SSL_SCOPE,
 ] as const;
 
-export const GOOGLE_OAUTH_CLIENT_PATH = join(homedir(), '.config', 'papercusp', 'google-oauth-client.json');
+/**
+ * The well-known Google Desktop-client JSON path, resolved when it is read
+ * rather than at import, so it follows the process's current home directory.
+ */
+export function googleOAuthClientPath(): string {
+  return join(homedir(), '.config', 'papercusp', 'google-oauth-client.json');
+}
 
 export interface GoogleDesktopClientConfig {
   clientId: string;
@@ -349,7 +358,7 @@ export function googleOAuthRedirectUri(): string {
  * loudly so the operator does not silently expose an unknown provider.
  */
 export async function loadGoogleProviderFromDesktopClientFile(
-  path = GOOGLE_OAUTH_CLIENT_PATH,
+  path = googleOAuthClientPath(),
   redirectUri = googleOAuthRedirectUri(),
 ): Promise<OAuthProvider | null> {
   let raw: string;
@@ -760,13 +769,13 @@ async function readClientSecret(entry: OAuthAppsFile[string]): Promise<string> {
 }
 
 /**
- * Load oauth-apps.json from `$PAPERCUSP_HOME` (or `~/.papercusp`) and
- * register each provider. Idempotent — calling again replaces existing
+ * Load oauth-apps.json from {@link papercuspRoot} (`$PAPERCUSP_HOME`, else the
+ * active workspace's `.papercusp/`, legacy `~/.papercusp` last) and register each provider. Idempotent — calling again replaces existing
  * registrations.
  */
 export async function loadAndRegisterProvidersFromDisk(
   rootDir?: string,
-  googleClientPath: string | null = GOOGLE_OAUTH_CLIENT_PATH,
+  googleClientPath: string | null = googleOAuthClientPath(),
 ): Promise<string[]> {
   const { papercuspRoot } = await import('../papercusp-root');
   const root = rootDir ?? papercuspRoot();

@@ -72,6 +72,47 @@ describe('resolveTaskConfinement', () => {
     expect(c).toMatchObject({ confined: true, insideOperatorCgroup: true });
   });
 
+  it('uses the reconcile-observed path for an exact unaccounted task scope', () => {
+    const scopeUnit = 'pc-abc123.scope';
+    const observedPath = `${USER_MANAGER}/papercusp.slice/papercusp-sidecar.slice/${scopeUnit}`;
+    const c = resolveTaskConfinement(
+      {
+        taskId: 'abc123',
+        state: 'unaccounted',
+        confined: false,
+        scopeUnit,
+        class: 'other',
+        cgroupPath: observedPath,
+      },
+      operatorFs,
+    );
+
+    expect(c).toEqual({
+      confined: true,
+      cgroupPath: observedPath,
+      scopeUnit,
+      source: 'observed-at-reconcile',
+      insideOperatorCgroup: false,
+    });
+  });
+
+  it('does not infer a task scope when the unit ID differs from the residue ID', () => {
+    const scopeUnit = 'pc-other123.scope';
+    const c = resolveTaskConfinement(
+      {
+        taskId: 'abc123',
+        state: 'unaccounted',
+        confined: false,
+        scopeUnit,
+        class: 'other',
+        cgroupPath: `${USER_MANAGER}/papercusp.slice/papercusp-sidecar.slice/${scopeUnit}`,
+      },
+      operatorFs,
+    );
+
+    expect(c).toMatchObject({ confined: false, scopeUnit: null, source: 'recorded-at-spawn' });
+  });
+
   it('expands the systemd slice hierarchy rather than treating the name as one directory', () => {
     const c = resolveTaskConfinement({ confined: true, scopeUnit: 'pc-1.scope', class: 'bash-job' }, operatorFs);
     expect(c.cgroupPath).toBe(

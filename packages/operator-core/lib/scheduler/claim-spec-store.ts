@@ -12,13 +12,14 @@
  * and the id the Queen addresses a bee by). The store fns take an optional `sql` (dependency-injected
  * for tests); production passes getOrgPg().sql.
  */
-import { DbCallDeadlineError, getOrgPg } from '@papercusp/db-org';
+import { DbCallDeadlineError, getOrgPg, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec } from './claim-spec';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, appendIdsToClaimSpec, type ClaimSpec } from './claim-spec';
 import { buildP2pLaneFence } from './p2p-lane-fence';
-import { getNextWorkItem, type GetNextResult } from './get-next';
+import { getNextWorkItem, type GetNextResult, type ResolutionStepEvent } from './get-next';
 import { releaseWorkItem, type OrgSql, type WorkItem } from '../work-items';
 import { planItemLaneBlockReason, type PlanItemLaneBlock } from './plan-item-lane-guard';
+import { acceptanceReadinessHold } from './acceptance-readiness-hold';
 import { maybeEmitFleetIdleDrain } from './fleet-idle-drain';
 import { matchesWorkItemClaimSpec } from './claim-spec-match';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
@@ -26,8 +27,38 @@ import { recordClaimAttempt } from '../orchestrator/claim-audit';
 import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 import { ALL_TERMINAL_STATUSES } from '../work-item-blocking';
 import { RESOURCE_GOVERNOR_PARK_OWNER } from '../resource-governor/queue';
+import { activeExternalBlockers } from '../external-blockers';
 import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
+import type { RevisionAdoptionBrief } from '../harness/improvements/agent-review';
+import { SERVING_RUNTIMES } from '../serving-runtimes';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
+
+/** A shared stored policy must remain readable by every local API authority. */
+async function claimSpecConsumerCompatibilityErrors(spec: ClaimSpec): Promise<string[]> {
+  if (spec.revisionAdoption === undefined) return [];
+  const consumers = ['release-operator', 'staging-operator', 'bg-host'] as const;
+  const results = await Promise.all(consumers.map(async (runtime) => {
+    const port = SERVING_RUNTIMES[runtime].healthPort;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/api/health`, {
+        signal: AbortSignal.timeout(1_500),
+      });
+      const health = response.ok ? await response.json() as {
+        ok?: unknown; sha?: unknown;
+        claimSpec?: { specVersion?: unknown; revisionAdoption?: unknown };
+      } : null;
+      if (health?.ok === true && typeof health.sha === 'string' && health.sha.trim()
+          && health.claimSpec?.specVersion === spec.specVersion
+          && Array.isArray(health.claimSpec.revisionAdoption)
+          && health.claimSpec.revisionAdoption.includes(spec.revisionAdoption)) return null;
+      return `revisionAdoption consumer ${runtime} (${health?.sha ?? 'unknown build'}) has not attested support`;
+    } catch {
+      return `revisionAdoption consumer ${runtime} could not be qualified`;
+    }
+  }));
+  return results.filter((error): error is string => error !== null).map((error) =>
+    `${error}; retain the incumbent spec until all consuming API readers support this field`);
+}
 
 /**
  * EI-18694186565089433: the revision is stored TWICE — the `cup_claim_specs.revision`
@@ -58,6 +89,8 @@ export interface SetClaimSpecResult {
   ok: boolean;
   errors: string[];
   revision?: number;
+  /** The committed union returned by append mode, never a pre-write snapshot. */
+  spec?: ClaimSpec;
   /** WI-1564: set when the write is suspicious but not invalid — e.g. a
    *  hive-scoped spec landing under the legacy 'default' workspace partition,
    *  which the federation outbox-drain does not serve (the row strands). */
@@ -90,11 +123,54 @@ export interface SetClaimSpecResult {
  * real work. WI-1250584 fixed the terminal-status half of this same
  * mis-count (a governor receipt left in 'done'/'dropped'); this fixes the
  * still-active half (a receipt in 'wip' for an in-flight admission).
+ *
+ * P-010 (parked-agent-census-resumption-and-root-cause-2026-10-09 D-010): a held row that is
+ * PARKED ON A TYPED EXTERNAL BLOCKER does not count — see {@link isParkedOnExternalBlocker}.
+ * This returns the rows that DO count; {@link getHeldClaimsForBee} returns every held row
+ * with that classification attached, for surfaces that must still name the parked ones.
  */
 export async function getActiveClaimsForBee(
   args: { cupId: string; workspaceId?: string },
   sqlOverride?: OrgSql,
 ): Promise<{ id: string; kind: string }[]> {
+  return (await getHeldClaimsForBee(args, sqlOverride))
+    .filter((row) => !row.parkedOnExternalBlocker)
+    .map(({ id, kind }) => ({ id, kind }));
+}
+
+/**
+ * P-010 (plan D-010): true when a held row is parked on a typed external blocker, so it must
+ * NOT consume a concurrent-claim slot. BOTH must hold:
+ *
+ *   1. the row is `blocked` or `needs-human` — a `wip` row that carries a blocker still counts,
+ *      because its holder says it is working it; and
+ *   2. it carries at least one ACTIVE external blocker (work_items:set_blocker), read with the
+ *      REAL external-blockers parser — never a SQL re-spelling of it, which would drift.
+ *
+ * What still counts, on purpose (EI-11796's protection against unexplained parking): a plain
+ * claim-hold park with no typed blocker, and an item blocked only by a work-item `blocks` edge.
+ *
+ * Measured 2026-10-11 02:29Z: 56 of 188 holders held such a row (78 rows); 18 holders sat at a
+ * 2-claim cap only because of them, which is the 2/2 starvation the parked-agent census found.
+ */
+export function isParkedOnExternalBlocker(row: { status: string | null; externalBlockers?: unknown }): boolean {
+  if (row.status !== 'blocked' && row.status !== 'needs-human') return false;
+  return activeExternalBlockers({ externalBlockers: row.externalBlockers }).length > 0;
+}
+
+/** One held row with its P-010 classification — the shape {@link getHeldClaimsForBee} returns. */
+export type HeldClaimRow = { id: string; kind: string; parkedOnExternalBlocker: boolean };
+
+/**
+ * Every non-terminal row this bee holds (same predicate as before P-010), each classified by
+ * {@link isParkedOnExternalBlocker}. The ONE read behind {@link getActiveClaimsForBee} and
+ * {@link readClaimConcurrency}, so the counted set and the parked set cannot come from
+ * different queries.
+ */
+export async function getHeldClaimsForBee(
+  args: { cupId: string; workspaceId?: string },
+  sqlOverride?: OrgSql,
+): Promise<HeldClaimRow[]> {
   const sql = sqlOverride ?? getOrgPg().sql;
   const workspaces = [...new Set([args.workspaceId ?? DEFAULT_COORD_WORKSPACE, DEFAULT_COORD_WORKSPACE])];
   // NOTE: harness_shared.work_items's unified item id lives in `feature_id` (not `id` —
@@ -102,7 +178,8 @@ export async function getActiveClaimsForBee(
   // separate, unrelated legacy column that is null for issue-family rows). Aliased below so
   // every caller of this function sees the { id, kind } shape its name promises.
   const rows = (await sql`
-    SELECT feature_id AS id, item_kind AS kind
+    SELECT feature_id AS id, item_kind AS kind, status,
+           payload->'externalBlockers' AS external_blockers
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND taken_by = ${args.cupId}
@@ -110,8 +187,17 @@ export async function getActiveClaimsForBee(
        AND payload->>'claim_hold_by' IS DISTINCT FROM ${RESOURCE_GOVERNOR_PARK_OWNER}`) as Array<{
     id: string;
     kind: string;
+    status?: string | null;
+    external_blockers?: unknown;
   }>;
-  return rows;
+  return rows.map((row) => ({
+    id: row.id,
+    kind: row.kind,
+    parkedOnExternalBlocker: isParkedOnExternalBlocker({
+      status: row.status ?? null,
+      externalBlockers: row.external_blockers,
+    }),
+  }));
 }
 
 /** Thin count-only projection of {@link getActiveClaimsForBee} — kept for callers (and tests)
@@ -130,13 +216,25 @@ export async function countActiveClaimsForBee(
 export const DEFAULT_MAX_CONCURRENT_CLAIMS = 1;
 
 /**
- * EI-23227815561098131: the scheduler-only pool setup must finish well inside the
- * public get_next watchdog. These reads used to run directly on the max:2 pool, so
- * a queued connection acquisition could survive the outer timeout. This is a
- * confirmed source gap; whether it caused the reported live timeouts still requires
- * phase evidence from a failing request.
+ * EI-23227815561098131 / EI-24854976611251160: keep setup acquisition fast for a
+ * warm scheduler pool. Live phase evidence found setup-acquisition timeouts after
+ * idle gaps beyond the pool's default 30s idle-close threshold, but does not isolate
+ * connection establishment from BEGIN/SET LOCAL or pool queueing. First-use and
+ * post-idle setup get a larger finite acquisition allowance; SQL statement and
+ * lock deadlines remain at the warm 5s limit.
  */
 export const SCHEDULER_CLAIM_SETUP_BUDGET_MS = 5_000;
+export const SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS = 20_000;
+
+const schedulerClaimPoolLastAcquiredAtMs = new WeakMap<object, number>();
+
+function isColdSchedulerClaimPool(sql: OrgSql): boolean {
+  const lastAcquiredAtMs = schedulerClaimPoolLastAcquiredAtMs.get(sql as object);
+  if (lastAcquiredAtMs === undefined) return true;
+
+  const idleTimeoutMs = poolIdleTimeoutSec() * 1_000;
+  return idleTimeoutMs > 0 && Date.now() - lastAcquiredAtMs >= idleTimeoutMs;
+}
 
 /** The verdict {@link evaluateClaimConcurrency} returns — what every surface must report FROM. */
 export type ClaimConcurrencyVerdict = {
@@ -146,6 +244,12 @@ export type ClaimConcurrencyVerdict = {
   maxConcurrentClaims: number;
   /** The held item ids, so a refusal/alert can name exactly what to release. */
   heldIds: string[];
+  /**
+   * P-010 (plan D-010): held ids parked on a typed external blocker. They are STILL held but do
+   * NOT count toward `activeClaims`; every surface names them so they are never hidden. Empty
+   * when the caller passed a bare count (never fabricated).
+   */
+  blockerParkedIds: string[];
 };
 
 /**
@@ -175,8 +279,10 @@ export type ClaimConcurrencyVerdict = {
  * and the DECISION lives here, where every caller shares it.
  */
 export function evaluateClaimConcurrency(args: {
-  /** Either the held rows (preferred — yields `heldIds`) or a bare count. */
+  /** Either the COUNTED held rows (preferred — yields `heldIds`) or a bare count. */
   activeClaims: readonly { id: string }[] | number;
+  /** P-010: held rows parked on a typed external blocker — reported, never counted. */
+  blockerParked?: readonly { id: string }[];
   /** The resolved spec's limit; nullish ⇒ {@link DEFAULT_MAX_CONCURRENT_CLAIMS}. */
   maxConcurrentClaims?: number | null;
 }): ClaimConcurrencyVerdict {
@@ -188,6 +294,18 @@ export function evaluateClaimConcurrency(args: {
     activeClaims,
     maxConcurrentClaims,
     heldIds,
+    blockerParkedIds: (args.blockerParked ?? []).map((c) => c.id),
+  };
+}
+
+/** Split classified held rows into the verdict's counted and blocker-parked inputs. */
+function splitHeldClaims(rows: readonly HeldClaimRow[]): {
+  activeClaims: { id: string }[];
+  blockerParked: { id: string }[];
+} {
+  return {
+    activeClaims: rows.filter((r) => !r.parkedOnExternalBlocker).map((r) => ({ id: r.id })),
+    blockerParked: rows.filter((r) => r.parkedOnExternalBlocker).map((r) => ({ id: r.id })),
   };
 }
 
@@ -200,9 +318,9 @@ export async function readClaimConcurrency(
   args: { cupId: string; workspaceId?: string; maxConcurrentClaims?: number | null },
   sqlOverride?: OrgSql,
 ): Promise<ClaimConcurrencyVerdict> {
-  const activeClaims = await getActiveClaimsForBee({ cupId: args.cupId, workspaceId: args.workspaceId }, sqlOverride);
+  const held = await getHeldClaimsForBee({ cupId: args.cupId, workspaceId: args.workspaceId }, sqlOverride);
   return evaluateClaimConcurrency({
-    activeClaims,
+    ...splitHeldClaims(held),
     maxConcurrentClaims: args.maxConcurrentClaims,
   });
 }
@@ -245,8 +363,11 @@ export async function readClaimConcurrencyBatch(
   // counts here, which is exactly the row the presence layer's `load` can omit. Kept
   // identical to getActiveClaimsForBee's WHERE clause on purpose (EI-21902965465306743) —
   // do not hand-edit one without the other.
+  // P-010 (plan D-010): the same classification as getHeldClaimsForBee — status + the
+  // externalBlockers array, judged in JS by isParkedOnExternalBlocker.
   const rows = (await sql`
-    SELECT feature_id AS id, taken_by AS cup_id
+    SELECT feature_id AS id, taken_by AS cup_id, status,
+           payload->'externalBlockers' AS external_blockers
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND taken_by = ANY(${cupIds}::text[])
@@ -254,19 +375,28 @@ export async function readClaimConcurrencyBatch(
        AND payload->>'claim_hold_by' IS DISTINCT FROM ${RESOURCE_GOVERNOR_PARK_OWNER}`) as Array<{
     id: string;
     cup_id: string;
+    status?: string | null;
+    external_blockers?: unknown;
   }>;
 
-  const heldByCup = new Map<string, { id: string }[]>();
+  const heldByCup = new Map<string, HeldClaimRow[]>();
   for (const row of rows) {
     const list = heldByCup.get(row.cup_id) ?? [];
-    list.push({ id: row.id });
+    list.push({
+      id: row.id,
+      kind: '',
+      parkedOnExternalBlocker: isParkedOnExternalBlocker({
+        status: row.status ?? null,
+        externalBlockers: row.external_blockers,
+      }),
+    });
     heldByCup.set(row.cup_id, list);
   }
   for (const cupId of cupIds) {
     out.set(
       cupId,
       evaluateClaimConcurrency({
-        activeClaims: heldByCup.get(cupId) ?? [],
+        ...splitHeldClaims(heldByCup.get(cupId) ?? []),
         maxConcurrentClaims: args.maxConcurrentClaims,
       }),
     );
@@ -294,7 +424,10 @@ export async function setClaimSpec(
   args: {
     cupId: string;
     workspaceId?: string;
-    spec: unknown;
+    spec?: unknown;
+    appendIds?: string[];
+    /** Run the tool's existing admission oracle against the locked candidate. */
+    validateAppend?: (spec: ClaimSpec, harnessSlug: string | null) => Promise<{ errors: string[]; warning?: string }>;
     updatedBy?: string;
     /** P-016 (cross-machine-coord-parity): the hive HOME slug this spec federates
      *  under. Set ⇒ the spec rides that hive's peer-log (mig-438 WHEN gate) so a
@@ -305,8 +438,59 @@ export async function setClaimSpec(
   },
   sqlOverride?: OrgSql,
 ): Promise<SetClaimSpecResult> {
+  if (args.appendIds !== undefined) {
+    if (args.spec !== undefined || !args.cupId.startsWith('fleet:') || args.appendIds.length === 0 ||
+        args.appendIds.some((id) => typeof id !== 'string' || !id.trim())) {
+      return { ok: false, errors: ['appendIds requires a fleet target, nonempty ids, and no replacement spec'] };
+    }
+    const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
+    const sql = sqlOverride ?? getOrgPg().sql;
+    const ids = [...new Set(args.appendIds.map((id) => id.trim()))];
+    return await sql.begin(async (tx) => {
+      // An existing row is locked through validation + UPDATE. For first use,
+      // INSERT … DO NOTHING arbitrates a concurrent bootstrap, then the loser
+      // re-reads/locks the winner and unions its IDs instead of replacing them.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const rows = await tx<{ spec: unknown; revision: number; harness_slug: string | null }[]>`
+          SELECT spec, revision, harness_slug FROM harness_shared.cup_claim_specs
+           WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} FOR UPDATE`;
+        const prior = rows[0];
+        const seed = prior ? validateClaimSpec(prior.spec) : validateClaimSpec({
+          ...DEFAULT_CLAIM_SPEC,
+          specId: `${args.cupId}:id-cohort`,
+          view: { filter: { field: 'id', op: 'in', value: ids } },
+        });
+        if (!seed.ok || !seed.spec) return { ok: false, errors: seed.errors };
+        const merged = appendIdsToClaimSpec(seed.spec, ids);
+        if (!merged) return { ok: false, errors: ['appendIds requires an existing positive ID cohort; dynamic lanes need an explicit replacement spec'] };
+        const revision = (prior?.revision ?? 0) + 1;
+        const candidate = withColumnRevision(merged, revision);
+        const compatibilityErrors = await claimSpecConsumerCompatibilityErrors(candidate);
+        if (compatibilityErrors.length) return { ok: false, errors: compatibilityErrors };
+        // Keep the stored federation scope as well as all authored rank, limits,
+        // states and filter fences. Append is not a scope-rehome operation.
+        const potSlug = prior ? prior.harness_slug : args.potSlug ?? null;
+        const admission = await args.validateAppend?.(candidate, potSlug);
+        if (admission?.errors.length) return { ok: false, errors: admission.errors };
+        const stored = prior
+          ? await tx`
+              UPDATE harness_shared.cup_claim_specs
+                 SET spec = ${JSON.stringify(candidate)}::text::jsonb, revision = ${revision},
+                     id_only = ${isIdOnlySelector(candidate)}, updated_by = ${args.updatedBy ?? null}, updated_at = now()
+               WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} RETURNING revision`
+          : await tx`
+              INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, spec, revision, id_only, updated_by, harness_slug, updated_at)
+              VALUES (${ws}, ${args.cupId}, ${JSON.stringify(candidate)}::text::jsonb, ${revision}, ${isIdOnlySelector(candidate)}, ${args.updatedBy ?? null}, ${potSlug}, now())
+              ON CONFLICT (workspace_id, bee_id) DO NOTHING RETURNING revision`;
+        if (stored.length) return { ok: true, errors: [], revision, spec: candidate, ...(admission?.warning ? { warning: admission.warning } : {}) };
+      }
+      return { ok: false, errors: ['claim spec changed during bootstrap; retry appendIds against the current fleet row'] };
+    }) as unknown as SetClaimSpecResult;
+  }
   const v = validateClaimSpec(args.spec);
   if (!v.ok || !v.spec) return { ok: false, errors: v.errors };
+  const compatibilityErrors = await claimSpecConsumerCompatibilityErrors(v.spec);
+  if (compatibilityErrors.length) return { ok: false, errors: compatibilityErrors };
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
   const potSlug = args.potSlug ?? null;
@@ -569,6 +753,8 @@ export async function getNextForBee(args: {
   rigAvailable?: boolean;
   /** Abort the in-flight claim transaction when the scheduler caller's deadline fires. */
   signal?: AbortSignal;
+  /** Enable one bounded, target-PID wait snapshot for candidate feature tier 1. */
+  captureCandidateWait?: boolean;
   /** SCHEDULER_SPEC_CLAIM kill-switch: when true, ignore the bee's stored spec and use the
    *  DEFAULT ordering (== work_items:claim_next) — a no-breakage degrade. */
   ignoreStoredSpec?: boolean;
@@ -604,12 +790,21 @@ export async function getNextForBee(args: {
    * path, so it is called defensively.
    */
   onPlanLaneBlocked?: (block: PlanItemLaneBlock & { workItemId: string }) => void;
-  /** Exact last entered claim phase, for timeout attribution. Observability only. */
-  onClaimStep?: (step: string) => void;
-}): Promise<(GetNextResult & { specSource: ClaimSpecRecord['source'] }) | null> {
-  const claimStep = (step: string): void => {
+  /** Claim phase entry and duration for timeout attribution. Observability only. */
+  onClaimStep?: (step: string, event?: ResolutionStepEvent) => void;
+}): Promise<
+  | (GetNextResult & {
+      specSource: ClaimSpecRecord['source'];
+      /** P-007 Phase B (D-027): set only when a verifier-lane spec served verification work. */
+      verificationKind?: 'agent-review' | 'verification-task';
+      /** D-011 B: set only when a revisionAdoption:'first' spec served an adopted content revision. */
+      revisionAdoption?: RevisionAdoptionBrief;
+    })
+  | null
+> {
+  const claimStep = (step: string, event?: ResolutionStepEvent): void => {
     try {
-      args.onClaimStep?.(step);
+      args.onClaimStep?.(step, event);
     } catch {
       // A diagnostic observer must not affect admission or an already committed claim.
     }
@@ -654,15 +849,32 @@ export async function getNextForBee(args: {
   // candidate resolution and post-claim checks.
   let setup: Awaited<ReturnType<typeof readClaimSetup>>;
   if (claimSql) {
+    const coldPool = isColdSchedulerClaimPool(claimSql);
+    const acquireTimeoutMs = coldPool
+      ? SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS
+      : SCHEDULER_CLAIM_SETUP_BUDGET_MS;
+    let setupAcquired = false;
     try {
       claimStep('claim-setup-acquisition');
-      setup = await boundedOrgTxn((tx) => readClaimSetup(tx), {
-        client: claimSql,
-        signal: args.signal,
-        acquireTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
-        statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
-        lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
-      });
+      setup = await boundedOrgTxn(
+        (tx) => {
+          setupAcquired = true;
+          return readClaimSetup(tx);
+        },
+        {
+          client: claimSql,
+          acquirePool: 'scheduler-claim',
+          signal: args.signal,
+          acquireTimeoutMs,
+          // This is the scheduler's total setup-acquisition budget. The generic
+          // transaction wrapper's two default retries each restart that clock,
+          // turning a warm 5s cap into 15s plus backoff before the caller returns.
+          // An expired acquisition must surface once; the caller chooses retry.
+          acquireRetries: 0,
+          statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+          lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+        },
+      );
     } catch (error) {
       // Acquisition has no PostgreSQL SQLSTATE, but it is still the scheduler's own
       // bounded setup budget rather than evidence that PostgreSQL timed out. Preserve that
@@ -671,11 +883,16 @@ export async function getNextForBee(args: {
         throw new OrgTxnTimeoutError(
           '57014',
           error,
-          `scheduler:get_next claim setup could not acquire the dedicated scheduler-claim pool within ${SCHEDULER_CLAIM_SETUP_BUDGET_MS}ms; no claim was attempted`,
+          `scheduler:get_next claim setup could not finish acquisition/setup on the dedicated scheduler-claim pool within ${acquireTimeoutMs}ms (${coldPool ? 'first-use/idle' : 'warm'} path); no claim was attempted`,
           'caller-budget',
         );
       }
       throw error;
+    } finally {
+      // Record only after boundedOrgTxn entered its callback, which is after the
+      // connection and transaction setup completed. The shared pool still reaps
+      // idle backends; the timestamp only selects the next call's finite budget.
+      if (setupAcquired) schedulerClaimPoolLastAcquiredAtMs.set(claimSql as object, Date.now());
     }
   } else {
     setup = await readClaimSetup();
@@ -717,6 +934,61 @@ export async function getNextForBee(args: {
   // evaluateClaimConcurrency so they cannot answer differently.
   if (concurrency?.blocked) return null;
 
+  // P-007 Phase B (D-027): a verifier-lane spec never pulls implementation work. It is served
+  // pending agent reviews, then verification tasks, both through the conflict-checked writers.
+  if (record.spec.lane === 'verification') {
+    claimStep('verification-lane');
+    const { claimNextVerificationWork } = await import('../harness/improvements/agent-review');
+    const served = await claimNextVerificationWork({
+      verifier: args.cupId, harnessSlug: args.harness,
+      filter: record.spec.view.filter, workspaceId: args.workspaceId, signal: args.signal,
+    });
+    if (!served) {
+      if (args.checkIdleDrainOnMiss) maybeEmitFleetIdleDrain(args.cupId, args.workspaceId);
+      return null;
+    }
+    return {
+      workItem: served.workItem,
+      claimedUnder: { specId: record.spec.specId, revision: record.spec.revision },
+      specSource: record.source,
+      verificationKind: served.kind,
+    };
+  }
+
+  // D-011 B (bug-queue-legitimacy-and-actionable-validation-2026-10-10): an implementation
+  // spec that opts into revisionAdoption:'first' adopts ONE orphaned content revision before
+  // its ordinary claim. 'first' because the ordinary pool is never empty in practice (560
+  // claimable bugs measured 2026-10-11), so a miss-only leg would never fire. Only the D-008
+  // orphan proof admits an adoption; the spec's view.filter scopes discovery. A caller (or
+  // spec) narrowing `states` away from 'open' is honoured: adoption rows are open rows.
+  const effectiveStates = args.states ?? record.spec.states;
+  if (record.spec.revisionAdoption === 'first' && (!effectiveStates || effectiveStates.includes('open'))) {
+    claimStep('revision-adoption');
+    try {
+      const { adoptNextAgentReviewRevision } = await import('../harness/improvements/agent-review');
+      const adoption = await adoptNextAgentReviewRevision({
+        adopter: args.cupId,
+        harnessSlug: args.harness,
+        workspaceId: args.workspaceId,
+        filter: record.spec.view.filter,
+        signal: args.signal,
+      });
+      if (adoption.adopted && adoption.workItem && adoption.brief) {
+        return {
+          workItem: adoption.workItem,
+          claimedUnder: { specId: record.spec.specId, revision: record.spec.revision },
+          specSource: record.source,
+          revisionAdoption: adoption.brief,
+        };
+      }
+    } catch (error) {
+      // An aborted caller stops here. Any other adoption fault falls through to the ordinary
+      // claim: an opt-in leg must never take a member's whole pull down with it.
+      if (args.signal?.aborted) throw error;
+      claimStep('revision-adoption-failed');
+    }
+  }
+
   // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
   // edges + the coarse plan-WIDE reserved-lane floor, but nothing checks a linked
   // plan-item's own resolved effectiveStatus (blocked-by graph / cycles / the
@@ -754,7 +1026,7 @@ export async function getNextForBee(args: {
       },
       {
         harness: args.harness,
-        ...(claimSql ? { client: claimSql } : {}),
+        ...(claimSql ? { client: claimSql, acquirePool: 'scheduler-claim' } : {}),
         // WI-5261: thread the caller's already-resolved workspace through explicitly —
         // getNextWorkItem's tiers otherwise re-derive it via activeWorkspaceId(), which
         // depends on the AsyncLocalStorage request-scope still being intact this deep into
@@ -766,8 +1038,10 @@ export async function getNextForBee(args: {
         ...(args.excludeRedundant ? { excludeRedundant: true } : {}),
         ...(args.states ? { states: args.states } : {}),
         ...(args.rigAvailable ? { rigAvailable: true } : {}),
+        ...(args.captureCandidateWait ? { captureCandidateWait: true } : {}),
         ...('fleetSlug' in record && record.fleetSlug ? { fleetSlug: record.fleetSlug } : {}),
         signal: args.signal,
+        onResolutionStep: claimStep,
       },
     );
     if (!result) {
@@ -805,7 +1079,17 @@ export async function getNextForBee(args: {
       continue;
     }
     claimStep('plan-lane-check');
-    const blocked = await planItemLaneBlockReason(result.workItem);
+    const laneBlock = await planItemLaneBlockReason(result.workItem);
+    // P-002(b) (feature-drain-delivery-readiness…-2026-10-01, D-008 §5 / D-011): the SECOND
+    // post-claim verdict — an item bound to an incomplete acceptance requirement (draft
+    // clause, no METHOD, no check) is not handed out. The hold routes it behind the plan's
+    // repair task via a `blocks` edge, so the claim floor excludes it from then on; the
+    // bounce → audit → release below is shared, and `reason` tells the two holds apart.
+    if (!laneBlock) claimStep('acceptance-readiness-check');
+    const acceptanceHold = laneBlock
+      ? null
+      : await acceptanceReadinessHold(result.workItem, { by: args.cupId, workspaceId: args.workspaceId });
+    const blocked = laneBlock ?? acceptanceHold;
     if (!blocked) {
       claimStep('claim-audit');
       await auditClaimAttempt({
@@ -865,6 +1149,23 @@ export async function getNextForBee(args: {
     // (the audit + release below MUST still run), so a throw here is swallowed exactly like
     // every other observability call in this function.
     notifyPlanLaneBlocked(args.onPlanLaneBlocked, blocked, result.workItem.id);
+    const releaseBounced = () =>
+      releaseWorkItem(result.workItem.id, {
+        harness: args.harness,
+        expectedAssignee: args.cupId,
+        announceClaimable: false,
+      });
+    // P-002(b): an acceptance hold routes the item behind the plan's repair task with a
+    // `blocks` edge, and the dependency store REFUSES a new unresolved blocker behind an
+    // ACTIVE (still-claimed) dependant — so release FIRST, then route, then audit the routing
+    // outcome. The lane-block path keeps its audit-then-release order.
+    let acceptanceRouting: string | undefined;
+    if (acceptanceHold) {
+      claimStep('claim-release');
+      await releaseBounced();
+      claimStep('acceptance-repair-route');
+      acceptanceRouting = await acceptanceHold.routeAfterRelease();
+    }
     claimStep('claim-audit');
     await auditClaimAttempt({
       workspaceId: args.workspaceId,
@@ -874,7 +1175,7 @@ export async function getNextForBee(args: {
       outcome: 'lost',
       detail: {
         source: record.source,
-        reason: 'plan-lane-blocked',
+        reason: acceptanceHold ? 'acceptance-readiness-held' : 'plan-lane-blocked',
         // The lane guard's own verdict — which plan item held the row, and why. Without
         // this the count says churn happened but not which of the guard's three distinct
         // jobs (blocked-by graph, terminal-lane residue, owner-gate prose) produced it,
@@ -883,15 +1184,14 @@ export async function getNextForBee(args: {
         itemId: blocked.itemId,
         effectiveStatus: blocked.effectiveStatus,
         laneReason: blocked.reason,
+        ...(acceptanceRouting !== undefined ? { acceptanceRouting } : {}),
         family: result.workItem.family,
       },
     });
-    claimStep('claim-release');
-    await releaseWorkItem(result.workItem.id, {
-      harness: args.harness,
-      expectedAssignee: args.cupId,
-      announceClaimable: false,
-    });
+    if (!acceptanceHold) {
+      claimStep('claim-release');
+      await releaseBounced();
+    }
   }
   return null;
 }

@@ -21,6 +21,27 @@ function row(over: Record<string, unknown> = {}) {
   };
 }
 
+describe('shapePlansItems — linked work-item id (scope-unique-identifiers P-003)', () => {
+  for (const tier of ['trimmed', 'standard'] as const) {
+    it(`${tier} tier keeps workItemId on every row and sends workItemIds only when several qualify`, () => {
+      const out = shapePlansItems(
+        {
+          items: [
+            row({ workItemId: 'WI-10008272', workItemIds: ['WI-10008272'] }),
+            row({ item: { id: 'P-010', effectiveStatus: 'todo', importance: 'normal', text: 'x' }, workItemId: null, workItemIds: ['WI-3', 'WI-7'] }),
+            row({ item: { id: 'P-011', effectiveStatus: 'todo', importance: 'normal', text: 'y' } }),
+          ],
+        },
+        tier,
+      ) as { items: Record<string, unknown>[] };
+      expect(out.items[0]).toMatchObject({ id: 'P-009', workItemId: 'WI-10008272' });
+      expect(out.items[0]).not.toHaveProperty('workItemIds');
+      expect(out.items[1]).toMatchObject({ id: 'P-010', workItemId: null, workItemIds: ['WI-3', 'WI-7'] });
+      expect(out.items[2]).toMatchObject({ id: 'P-011', workItemId: null });
+    });
+  }
+});
+
 describe('shapePlansItems — coverageDivergence -> diverged', () => {
   it('trimmed tier surfaces diverged:true for a divergent row', () => {
     const out = shapePlansItems({ items: [row()] }, 'trimmed') as { items: Record<string, unknown>[] };

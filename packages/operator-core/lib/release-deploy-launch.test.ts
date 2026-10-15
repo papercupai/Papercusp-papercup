@@ -628,6 +628,26 @@ describe('launchDetachedDeploy', () => {
     const inner = r.argv[r.argv.length - 1]!;
     expect(inner).toMatch(/--deploy-commit deadbeef --force --execute/);
   });
+
+  it('WI-10005763 (D-012): a held restricted write refuses BEFORE spawning, trigger and force alike; nothing held spawns', async () => {
+    const held = {
+      error: 'restricted_write_held' as const,
+      hint: '1 held restricted write(s) in /repo (secret.ts). This action executes code from that tree with network access (D-012)',
+    };
+    for (const opts of [{ root: '/repo' }, { root: '/repo', force: true, commit: 'deadbeef' }]) {
+      const fn = fakeSpawn(0);
+      const fence = vi.fn(async (_roots: readonly string[]) => held);
+      const r = await launchDetachedDeploy(opts, fn, fence);
+      expect(fence).toHaveBeenCalledWith(['/repo']);
+      expect((fn as unknown as { calls: unknown[] }).calls).toHaveLength(0);
+      expect(r).toMatchObject({ launched: false, reason: 'restricted_write_held', restrictedHold: held });
+    }
+    // Control: the same call with nothing held reaches systemd-run.
+    const fn = fakeSpawn(0);
+    const r = await launchDetachedDeploy({ root: '/repo' }, fn, vi.fn(async () => null));
+    expect(r.launched).toBe(true);
+    expect((fn as unknown as { calls: unknown[] }).calls).toHaveLength(1);
+  });
 });
 
 /**

@@ -76,6 +76,13 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
 
   /** Deps that capture the resume spawn and feed an EXITED claude session row. */
   function resumeDeps(s: TestSession, over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
+    const deps = resumeDepsRaw(s, over);
+    // Hermetic owner election (WI-10008189): stamp the fixture row with its id and model
+    // "no successor", so the exited handle never reaches the real PG election read.
+    return { ...deps, ...tb.ownerElectionDeps(deps) };
+  }
+
+  function resumeDepsRaw(s: TestSession, over: Partial<ExecuteWakeDeps>): ExecuteWakeDeps {
     return {
       findPsuHost: tb.findPsuHostDep(),
       // no live socket → falls to the resume rung
@@ -216,7 +223,12 @@ describe('wake resume — C5 identity + C1 cross-agent isolation (EI-153)', () =
       writeFileSync(join(sessionsDir, `rollout-2026-06-08-${randomUUID()}.jsonl`), '{}\n');
     }
 
-    const codexDeps = (s: TestSession): ExecuteWakeDeps => ({
+    // Owner election made hermetic the same way as resumeDeps (WI-10008189).
+    const codexDeps = (s: TestSession): ExecuteWakeDeps => {
+      const deps = codexDepsRaw(s);
+      return { ...deps, ...tb.ownerElectionDeps(deps) };
+    };
+    const codexDepsRaw = (s: TestSession): ExecuteWakeDeps => ({
       findPsuHost: tb.findPsuHostDep(),
       getSession: async () =>
         ({

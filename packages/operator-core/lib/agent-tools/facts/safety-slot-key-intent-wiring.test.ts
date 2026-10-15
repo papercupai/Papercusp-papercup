@@ -62,11 +62,12 @@ function storedFact(input: AssertFactInput): AgentFact {
 type Receipt = {
   ok?: boolean;
   slotIntentWarning?: { slot: string; matchedPrefix: string; suggestedKey: string; note: string };
+  absenceWarning?: string;
 };
 
 async function assertAndRead(
   args: Record<string, unknown>,
-): Promise<{ receipt: Receipt; writtenKey: string | undefined }> {
+): Promise<{ receipt: Receipt; writtenKey: string | undefined; writtenBody: string | undefined }> {
   const result = (await assertTool.handler({ ...args } as never, {
     isSuperuser: true,
     uiClientId: 'su-test-slot-intent',
@@ -74,6 +75,7 @@ async function assertAndRead(
   return {
     receipt: JSON.parse(result.content[0].text) as Receipt,
     writtenKey: h.assertFact.mock.calls[0]?.[0]?.key,
+    writtenBody: h.assertFact.mock.calls[0]?.[0]?.body,
   };
 }
 
@@ -141,5 +143,44 @@ describe('facts:assert — safety-slot key-intent warning reaches the receipt', 
   it('CONTROL: an ordinary key that merely mentions a wall gets no warning', async () => {
     const { receipt } = await assertAndRead({ ...BASE, key: 'auth-401-is-not-an-owner-wall' });
     expect(receipt.slotIntentWarning).toBeUndefined();
+  });
+
+  it('does not treat generated guard-rail boilerplate as an authored absence claim', async () => {
+    const body = 'The result-door spill is complete and retains every expected row and evidence field.';
+    const { receipt, writtenBody } = await assertAndRead({
+      ...BASE,
+      key: 'result-door-spill-retains-evidence',
+      body,
+      slot: 'guard-rail',
+    });
+
+    expect(receipt.absenceWarning).toBeUndefined();
+    expect(writtenBody).toBe(`🛡️ GUARD RAIL — do not repeat: ${body}`);
+  });
+
+  it('does not warn on a normative must-not rule that mentions a result', async () => {
+    const body = 'Oversized metadata overflow must not refuse the result.';
+    const { receipt, writtenBody } = await assertAndRead({
+      ...BASE,
+      key: 'metadata-overflow-must-not-refuse-result',
+      body,
+      slot: 'guard-rail',
+    });
+
+    expect(receipt.absenceWarning).toBeUndefined();
+    expect(writtenBody).toBe(`🛡️ GUARD RAIL — do not repeat: ${body}`);
+  });
+
+  it('still warns when the guard-rail author actually makes an absence claim', async () => {
+    const body = 'No membership exists for this agent.';
+    const { receipt, writtenBody } = await assertAndRead({
+      ...BASE,
+      key: 'membership-absence-for-agent',
+      body,
+      slot: 'guard-rail',
+    });
+
+    expect(receipt.absenceWarning).toContain('"no" near "membership"');
+    expect(writtenBody).toBe(`🛡️ GUARD RAIL — do not repeat: ${body}`);
   });
 });

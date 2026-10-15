@@ -333,7 +333,17 @@ for (const file of TOOL_FILES) {
 // rubrics/amend-status.ts). MIGRATED TWO to `{ data }`: system-health/unack.ts and
 // saved_prompts/list.ts (single occurrence, no isError, tool name absent from every
 // *.test.ts). Real count 437 → 435; ceiling STAYS 436, leaving one slot.
-const BASELINE = 436;
+// 2026-10-05 (EI-24964470578970826, su-74b1b): current canonical suite reproduced
+// 437 > 436. Migrated flags:list and trust:list to the existing `{ data }` seam,
+// preserving full payload and workspace-resolution tests. Real count 437 → 435;
+// lower the ceiling to 435 rather than grandfathering new inline serializers.
+// 2026-10-14 (EI-25860806033862441): red at 442 vs 435. Since the 10-05 baseline,
+// ten tool files began matching and three stopped; migrated seven mechanical,
+// single-return handlers without error branches to `{ data }`: cupboard/publish-app,
+// pot/{membership_pending,moderation_queue}, quota/set-tool, setup/set_git_identity,
+// git_sync/send_green, and locks/cancel_wait. Real count 442 →435; keep the ceiling
+// at 435 so the new inline serializers are not grandfathered.
+const BASELINE = 435;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
   it('inline-JSON tool count does not grow past the baseline (prefer { data } / bulkContent)', () => {

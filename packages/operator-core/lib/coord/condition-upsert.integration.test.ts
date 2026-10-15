@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
@@ -108,12 +109,14 @@ vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
 const {
   upsertConditionWorkItem,
   CONDITION_UPSERT_MARKER,
+  adoptConditionIncumbent,
   reserveAcceptanceReviewTarget,
   settleAcceptanceReviewReservationsForPlan,
 } = await import('./condition-upsert');
 const { findConditionObject } = await import('./condition-object');
 const { setWorkItemState } = await import('../work-items');
 const { createOneWorkItem } = await import('../agent-tools/work_items/_create-core');
+const { productionStrandedAppTaskGuardDeps, runStrandedAppTaskGuard } = await import('../stranded-app-tasks');
 
 let db: FreshPgDb;
 let savedWsEnv: string | undefined;
@@ -151,6 +154,8 @@ beforeAll(async () => {
   db = await createFreshPgDb('condition-upsert');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe('ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS first_claimed_at timestamptz');
+  await db.sql.unsafe(readFileSync(resolve(SQL_DIR, '1219-blueprint-operation-invocations.sql'), 'utf8')).simple();
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
@@ -165,12 +170,16 @@ beforeAll(async () => {
   // The event tables come from the shared, audited event-substrate list (WI-10004700).
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'condition-upsert.integration',
+    // findConditionObjects LEFT JOINs the event_awaits_effective view (710); the
+    // substrate list carries it now (WI-10005224), so it is not repeated here.
     extra: [
       '741-work-items-condition-key-singleton.sql',
       '777-work-items-embedding-recipe-discriminator.sql',
       '1110-work-items-admission-flags-generated-columns.sql',
       '1135-work-items-epoch-ms-timestamp-guard.sql',
       '1194-work-items-directive-ref.sql',
+      '1294-work-item-readiness-payload-projections.sql',
+      '1308-work-items-severity-projection.sql',
     ],
   });
 }, 120_000);
@@ -179,6 +188,48 @@ afterAll(async () => {
   if (savedWsEnv === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
   else process.env.PAPERCUSP_WORKSPACE_ID = savedWsEnv;
   await db?.cleanup();
+});
+
+describe('stranded app-task production finding lifecycle', () => {
+  it('files one durable finding past the bound, refreshes it, and drops it with a reason after the task clears without executing it', async () => {
+    const now = new Date('2026-10-07T12:00:00Z');
+    const taskId = 'WI-STRANDED-PRODUCTION';
+    const key = `app-task-no-executor:${WS}/email/email-draft-proposal`;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (feature_id, workspace_id, harness_slug, title, status, item_kind, payload, created_ts)
+      VALUES (${taskId}, ${WS}, 'email', 'stranded production control', 'open',
+              'email-draft-proposal', ${db.sql.json({ triggerRef: 'binding:test' })},
+              ${now.getTime() - 2 * 3_600_000})`;
+    const deps = productionStrandedAppTaskGuardDeps({ workspaceId: WS, flagHarness: H, boundHours: 6 });
+    const sweep = (at: Date) => runStrandedAppTaskGuard({ ...deps,
+      fetchGroups: async () => (await import('../stranded-app-tasks')).fetchStrandedAppTaskGroups({
+        workspaceId: WS, boundHours: 6, now: at,
+      }),
+    }, { boundHours: 6, now: at });
+    expect(await sweep(now)).toMatchObject({ groups: 0, flagged: [], settled: [], errors: [] });
+    expect(await holdersOf(key)).toEqual([]);
+    const later = new Date(now.getTime() + 5 * 3_600_000);
+    const first = await sweep(later);
+    expect(first.errors).toEqual([]);
+    expect(first.flagged).toEqual([expect.objectContaining({ conditionKey: key, created: true, count: 1 })]);
+    const flagId = first.flagged[0].id;
+    const again = await sweep(later);
+    expect(again.errors).toEqual([]);
+    expect(again.flagged).toEqual([expect.objectContaining({ id: flagId, created: false })]);
+    expect(await holdersOf(key)).toEqual([flagId]);
+    expect(await openItemsFor(key)).toEqual([expect.objectContaining({ feature_id: flagId, occurrences: 2 })]);
+    await setWorkItemState(taskId, 'dropped', { harness: 'email', by: 'system:test', completionRef: 'stale draft no longer wanted; do not execute' });
+    expect(await sweep(later)).toMatchObject({ groups: 0, flagged: [], settled: [flagId], errors: [] });
+    const rows = await db.sql`
+      SELECT feature_id, status, taken_by, first_claimed_at, terminal_completion_ref
+        FROM harness_shared.work_items WHERE feature_id IN (${taskId}, ${flagId})`;
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.feature_id === taskId)).toMatchObject({ status: 'dropped', taken_by: null,
+      first_claimed_at: null, terminal_completion_ref: 'stale draft no longer wanted; do not execute' });
+    expect(rows.find((r) => r.feature_id === flagId)).toMatchObject({ status: 'dropped',
+      terminal_completion_ref: expect.stringContaining('condition cleared:') });
+  });
 });
 
 describe('upsertConditionWorkItem — the WI-39594 acceptance', () => {
@@ -242,6 +293,44 @@ describe('upsertConditionWorkItem — the WI-39594 acceptance', () => {
 });
 
 describe('createOneWorkItem { conditionKey } — the WI-39604 tool-path leg', () => {
+  it('reuses a closed immutable revision after its key is released, but separates revisions and workspaces', async () => {
+    const KEY = 'spec-conformance-gap:papercup/plan-a/SPEC-A@3';
+    const args = { kind: 'bug', title: 'SPEC-A revision 3 has no proof', harness: H,
+      severity: 'major' as const, conditionKey: KEY, conditionReplay: 'include-terminal' as const };
+    const first = await createOneWorkItem(args, ctx);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error('initial filing failed');
+    await setWorkItemState(first.workItem.id, 'dropped', { harness: H, by: 'system:condition-upsert',
+      completionRef: 'This exact revision was reviewed; retain the accountable disposition.' });
+    // Model the normal lifecycle key release explicitly, so history is essential.
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = NULL WHERE feature_id = ${first.workItem.id}`;
+    const second = await createOneWorkItem({ ...args, title: 'replay must not rewrite disposition' }, ctx);
+    expect(second.ok && second.workItem.id).toBe(first.workItem.id);
+    const [stored] = await db.sql`SELECT title, status, terminal_completion_ref FROM harness_shared.work_items WHERE feature_id = ${first.workItem.id}`;
+    expect(stored).toMatchObject({ title: args.title, status: 'dropped', terminal_completion_ref: expect.stringContaining('accountable disposition') });
+    const next = await createOneWorkItem({ ...args, title: 'SPEC-A revision 4', conditionKey: `${KEY.slice(0, -1)}4` }, ctx);
+    expect(next.ok && next.workItem.id).not.toBe(first.workItem.id);
+    expect(await adoptConditionIncumbent(KEY, { title: 'Other workspace revision 3',
+      workspaceId: 'other-converge-ws', includeTerminal: true })).toBeNull();
+    const rows = await db.sql`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND payload -> ${CONDITION_UPSERT_MARKER}::text ->> 'conditionKey' = ${KEY}`;
+    expect(rows).toHaveLength(1);
+  });
+
+  it('serializes concurrent immutable filings into exactly one durable row', async () => {
+    const conditionKey = 'spec-conformance-gap:papercup/plan-race/SPEC-A@1';
+    const outcomes = await Promise.all(Array.from({ length: 4 }, () => createOneWorkItem({
+      kind: 'bug', title: 'Concurrent revision identity', harness: H, severity: 'major',
+      conditionKey, conditionReplay: 'include-terminal',
+    }, ctx)));
+    expect(outcomes.every(outcome => outcome.ok)).toBe(true);
+    const ids = outcomes.map(outcome => outcome.ok ? outcome.workItem.id : null);
+    expect(new Set(ids).size).toBe(1);
+    const rows = await db.sql`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND payload -> ${CONDITION_UPSERT_MARKER}::text ->> 'conditionKey' = ${conditionKey}`;
+    expect(rows.map(row => row.feature_id)).toEqual([ids[0]]);
+  });
+
   const ctx = { ownerId: 'system:live-federation-gate', workspaceId: WS, harnessSlug: H };
 
   it('re-firing through the TOOL CORE twice yields ONE open item, refreshed to the newest reading (the gate-script contract)', async () => {
@@ -376,5 +465,72 @@ describe('settleAcceptanceReviewReservationsForPlan — EI-24654801606034099', (
     });
     expect(out.settled).toEqual([r.id]);
     expect(await statusOf(r.id!)).toBe('dropped');
+  });
+});
+
+// WI-10006637: reservations are keyed per rubric revision, but nothing closed an
+// older revision's reservation while the plan was still in review — WI-10006560
+// (rev14, graded by a non-claimant) sat open while the rubric was at rev23 and
+// suppressed recruitment. Reserving the current revision now settles the older,
+// UNHELD ones for the same (plan, rubric).
+describe('reserveAcceptanceReviewTarget settles superseded revisions — WI-10006637', () => {
+  const statusOf = async (id: string) =>
+    (await db.sql<{ status: string }[]>`SELECT status FROM harness_shared.work_items WHERE feature_id = ${id}`)[0]
+      ?.status;
+  const isTerminal = (status: string | undefined) =>
+    status !== undefined && (ANY_FAMILY_TERMINAL_STATES as readonly string[]).includes(status);
+  const target = (planSlug: string, revision: number | null, rubricId = `acceptance-${planSlug}`) => ({
+    workspaceId: WS,
+    harnessSlug: H,
+    planSlug,
+    rubricId,
+    revision,
+  });
+
+  it('reserving revision N drops an open, unheld older-revision reservation and keeps N open', async () => {
+    const old = await reserveAcceptanceReviewTarget(target('wi6637-basic', 14));
+    expect(old.superseded).toEqual({ settled: [], failed: [] });
+
+    const current = await reserveAcceptanceReviewTarget(target('wi6637-basic', 23));
+
+    expect(current.superseded).toEqual({ settled: [old.id], failed: [] });
+    expect(await statusOf(old.id!)).toBe('dropped');
+    expect(isTerminal(await statusOf(current.id!))).toBe(false);
+  });
+
+  it('leaves a HELD older reservation open — a holder may be mid-grade', async () => {
+    const held = await reserveAcceptanceReviewTarget(target('wi6637-held', 2));
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-wi6637-holder' WHERE feature_id = ${held.id!}`;
+
+    const current = await reserveAcceptanceReviewTarget(target('wi6637-held', 3));
+
+    expect(current.superseded.settled).toEqual([]);
+    expect(isTerminal(await statusOf(held.id!))).toBe(false);
+  });
+
+  it('is scoped to the same rubric and leaves legacy (null-revision) pins alone', async () => {
+    const otherRubric = await reserveAcceptanceReviewTarget(target('wi6637-scope', 1, 'acceptance-wi6637-other'));
+    const legacy = await reserveAcceptanceReviewTarget(target('wi6637-scope', null));
+
+    const current = await reserveAcceptanceReviewTarget(target('wi6637-scope', 5));
+
+    expect(current.superseded.settled).toEqual([]);
+    expect(isTerminal(await statusOf(otherRubric.id!))).toBe(false);
+    expect(isTerminal(await statusOf(legacy.id!))).toBe(false);
+  });
+
+  it('never settles a NEWER revision, and re-reserving the same revision is a no-op', async () => {
+    const newer = await reserveAcceptanceReviewTarget(target('wi6637-order', 9));
+    const older = await reserveAcceptanceReviewTarget(target('wi6637-order', 8));
+    expect(older.superseded.settled).toEqual([]);
+    expect(isTerminal(await statusOf(newer.id!))).toBe(false);
+
+    const again = await reserveAcceptanceReviewTarget(target('wi6637-order', 9));
+    expect(again.id).toBe(newer.id);
+    expect(again.superseded.settled).toEqual([older.id]);
+    expect(await reserveAcceptanceReviewTarget(target('wi6637-order', 9))).toMatchObject({
+      id: newer.id,
+      superseded: { settled: [], failed: [] },
+    });
   });
 });

@@ -53,6 +53,17 @@ const DEFAULT_OUT = resolve(HERE, '..', 'apps', 'operator', 'lib', '__fixtures__
 
 /** Per-agent capture rules, mirroring the classifier contracts under test. */
 const AGENTS = {
+  omp: {
+    isCompletion: (row) => row?.type === 'message' && row.message?.role === 'assistant'
+      && typeof row.message.stopReason === 'string'
+      && !['tooluse', 'tool_use', 'tool_calls'].includes(row.message.stopReason.toLowerCase()),
+    isTurnStart: (row) => row?.type === 'message' && row.message?.role === 'user',
+    discriminates: (window) => window.some(row => row?.message?.role === 'toolResult'),
+    discriminatorDescription: 'tool results that must not reset a completed native turn',
+    sanitize: (row) => ({ type: row.type, id: row.id, timestamp: row.timestamp,
+      ...(row.message ? { message: { role: row.message.role,
+        ...(row.message.stopReason ? { stopReason: row.message.stopReason } : {}) } } : {}) }),
+  },
   codex: {
     /** A row that certifies a completed turn. */
     isCompletion: (row) =>

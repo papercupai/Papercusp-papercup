@@ -13,15 +13,18 @@ import { describe, expect, it } from 'vitest';
 import {
   applyPick,
   applyResultProjection,
+  PICK_MISS_FAIL_OPEN_MAX_CHARS,
   parsePickPath,
   pickPathTail,
   pickRepairCandidates,
   projectionMaterializationFormat,
   proposePickRepairs,
+  renderJsonForLineOps,
 } from './apply';
 import { parseProjection } from './parse';
 import { nestedProjectionContext } from './nested-dispatch';
 import type { UnifiedToolContext } from '@papercusp/tooldef';
+import { senderBodyDeliveryDiagnostics } from '../agent-tools/coordination/tools/inbox-content-bounds';
 
 const textResult = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 
@@ -55,6 +58,23 @@ const reportOf = (r: { content?: unknown; _meta?: Record<string, unknown> }) =>
     linesOut: number;
     regexFlavor?: string;
   };
+
+describe('EI-25185987580518406 coordination send receipts', () => {
+  it.each([421, 700])('does not label a complete %i-character delivery receipt as omitted output', (chars) => {
+    const receipt = { results: [{ msg_id: 'already-persisted', ...senderBodyDeliveryDiagnostics('x'.repeat(chars)) }] };
+    const out = applyResultProjection(textResult(JSON.stringify(receipt)), spec({ pick: ['results[].msg_id'] }), { toolName: 'coord:send' });
+    expect(JSON.parse(bodyText(out))).toEqual({ results: [{ msg_id: 'already-persisted' }] });
+    expect(reportOf(out).notes.join('\n')).not.toContain('partial-result metadata');
+  });
+
+  it('keeps genuine partial receipt recovery read-only', () => {
+    const receipt = { results: [{ msg_id: 'already-persisted', _partial: true }] };
+    const out = applyResultProjection(textResult(JSON.stringify(receipt)), spec({ pick: ['results[].msg_id'] }), { toolName: 'coord:send' });
+    expect(reportOf(out).notes.join('\n')).toContain('coord:read');
+    expect(reportOf(out).notes.join('\n')).toContain('Do not repeat coord:send');
+    expect(reportOf(out).notes.join('\n')).not.toMatch(/re-call coord:send/i);
+  });
+});
 
 describe('projection materialization format', () => {
   it('keeps implicit TOON for line projections but uses JSON for structured picks', () => {
@@ -435,7 +455,28 @@ describe('applyResultProjection — safety contracts', () => {
     expect(JSON.parse(bodyText(out))).toEqual([{ id: 'a' }, { id: 'b' }]);
   });
 
-  it('drops structuredContent — and says so in the footer, not only in _meta', () => {
+  it('keeps only the projected JSON object in structuredContent', () => {
+    const source = { surface: 'public', hits: [{ title: 'FAQ', privateNoise: 'withheld' }], unselected: 'withheld' };
+    const out = applyResultProjection(
+      { ...textResult(JSON.stringify(source)), structuredContent: source },
+      spec({ pick: ['surface', 'hits[].title'] }),
+    );
+    expect(out.structuredContent).toEqual({ surface: 'public', hits: [{ title: 'FAQ' }] });
+    expect(out.structuredContent).toEqual(JSON.parse(bodyText(out)));
+    expect(JSON.stringify(out)).not.toContain('withheld');
+  });
+
+  it('wraps a projected array in the serializer\'s object envelope', () => {
+    const source = [{ id: 'a', noise: 'withheld' }, { id: 'b', noise: 'withheld' }];
+    const out = applyResultProjection(
+      { ...textResult(JSON.stringify(source)), structuredContent: { value: source } },
+      spec({ pick: ['[].id'] }),
+    );
+    expect(out.structuredContent).toEqual({ value: [{ id: 'a' }, { id: 'b' }] });
+    expect(JSON.stringify(out)).not.toContain('withheld');
+  });
+
+  it('drops structuredContent for a non-JSON line result and says so in the footer', () => {
     const withStructured = { ...textResult('a\nb\nc'), structuredContent: { everything: true } };
     const out = applyResultProjection(withStructured, spec({ pipe: [{ op: 'head', n: 1 }] }));
     expect(out.structuredContent).toBeUndefined();
@@ -740,13 +781,13 @@ describe('applyResultProjection — degraded results lead with the caveat (P-015
     expect(footer).not.toContain('REMOVED EVERYTHING');
   });
 
-  it('a non-degrading note (structuredContent dropped) stays BELOW the statistic', () => {
+  it('a non-degrading note (structuredContent replaced) stays BELOW the statistic', () => {
     const out = applyResultProjection(
       { content: [{ type: 'text' as const, text: JSON_BODY }], structuredContent: { big: true } },
       spec({ pick: ['results[].id'] }),
     );
     const footer = footerOf(out);
-    const noteAt = footer.indexOf('structuredContent dropped');
+    const noteAt = footer.indexOf('structuredContent replaced');
     const statAt = footer.indexOf('[projection:');
     expect(noteAt).toBeGreaterThan(statAt);
     // It is not a trust warning, so the saving is still a saving.
@@ -761,7 +802,7 @@ describe('applyResultProjection — degraded results lead with the caveat (P-015
     const notes = reportOf(out).notes;
     expect(notes.every((n) => typeof n === 'string')).toBe(true);
     expect(notes.some((n) => n.includes('matched nothing'))).toBe(true);
-    expect(notes.some((n) => n.includes('structuredContent dropped'))).toBe(true);
+    expect(notes.some((n) => n.includes('structuredContent replaced'))).toBe(true);
   });
 });
 
@@ -795,6 +836,32 @@ describe('applyResultProjection — array-root pick repair (EI-20720054720826414
     expect(footer).toContain('id → [].id');
     // The selection succeeded — a courtesy note, not a trust warning.
     expect(footer).toContain('saved)');
+  });
+
+  it('re-roots a keyed-array selector onto an array root when its row fields uniquely match', () => {
+    const source = [{ slug: 'papercusp', path: '/harness/papercusp', privateNoise: 'withheld' }];
+    const out = applyResultProjection(
+      textResult(JSON.stringify(source)),
+      spec({ pick: ['items[].slug', 'items[].path'] }),
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual([{ slug: 'papercusp', path: '/harness/papercusp' }]);
+    expect(footerOf(out)).toContain('items[].slug → [].slug');
+    expect(footerOf(out)).toContain('items[].path → [].path');
+    expect(footerOf(out)).toContain('array-root paths start at each row');
+  });
+
+  it('does not guess between a row field and a nested keyed-array field', () => {
+    const source = [{ slug: 'root', items: [{ slug: 'nested' }] }];
+    const out = applyResultProjection(
+      textResult(JSON.stringify(source)),
+      spec({ pick: ['items[].slug'] }),
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual(source);
+    expect(footerOf(out)).not.toContain('auto-adjusted');
+    expect(footerOf(out)).toContain('items[].slug → [].items[].slug | [].slug');
+    expect(footerOf(out)).toContain('more than one matches, so none was applied');
   });
 
   it('a repaired selection is NOT degraded: the verdict stays a tail footer', () => {
@@ -881,16 +948,47 @@ describe('applyResultProjection — structured-body and custom truncation disclo
       { toolName: 'work_items:list' },
     );
 
-    // The JSON was compact, so grep retained one rendered line and count
-    // correctly reports that line count. It must not pretend this is an
-    // item-level count of three matching rows.
-    expect(bodyText(out)).toBe('1');
+    // D-005: the compact JSON is re-rendered with indentation before the line
+    // operators run, so grep keeps the three `"state"` lines and count reports
+    // that RENDERED-LINE count. The footer must still say it is not an
+    // item-level count.
+    expect(bodyText(out)).toBe('3');
     const footer = footerOf(out);
     expect(footer).toContain('pipe applied directly to structured JSON');
     expect(footer).toContain('count` reports rendered line count, not matching item count');
     expect(footer).toContain('JSON on 1 line(s)');
+    expect(footer).toContain('2-space indentation');
     expect(footer).toContain('Use `pick` first');
     expect(reportOf(out).notes.join(' ')).toContain('rendered JSON lines');
+  });
+
+  // oversized-tool-results-reduction-2026-10-12#D-005 / WI-6554700010010307:
+  // over the compact rendering grep kept everything and head could not cut, so a
+  // pipe never reduced a JSON result.
+  it('lets grep select fields and head cut a compact JSON body (D-005)', () => {
+    const body = JSON.stringify({
+      results: [{ id: 'WI-1', workItem: { state: 'open', summary: 'x'.repeat(5_000) } }],
+    });
+    const grepped = applyResultProjection(
+      textResult(body),
+      spec({ pipe: [{ op: 'grep', pattern: '"state"' }] }),
+      { toolName: 'work_items:get' },
+    );
+    expect(bodyText(grepped).trim()).toBe('"state": "open",');
+
+    const headed = applyResultProjection(
+      textResult(body),
+      spec({ pipe: [{ op: 'head', n: 3 }] }),
+      { toolName: 'work_items:get' },
+    );
+    expect(bodyText(headed).split('\n')).toEqual(['{', '  "results": [', '    {']);
+  });
+
+  it('re-renders only the JSON item when the body has other text items (D-005)', () => {
+    expect(
+      renderJsonForLineOps([{ text: 'header line' }, { text: '{"a":1}' }], { parsed: { a: 1 }, itemIndex: 1 }),
+    ).toBe('header line\n\n{\n  "a": 1\n}');
+    expect(renderJsonForLineOps([{ text: '[1]' }], { parsed: [1], itemIndex: -1 })).toBe('[\n  1\n]');
   });
 
   it('warns on a generic _projection truncation marker before pick removes it', () => {
@@ -1214,5 +1312,147 @@ describe('pick repair primitives (WI-10002073)', () => {
     const out = proposePickRepairs(body, ['results[].id'], []);
     expect(out.repairs.size).toBe(0);
     expect(out.ambiguous.get('results[].id')).toEqual(['rows[].id', 'extras[].id']);
+  });
+});
+
+// ── EI-23774219620725180: a pick-miss on a LARGE body REFUSES with the key list ──
+//
+// The old behaviour failed open into the FULL body, so a caller who passed a
+// projection precisely BECAUSE the body was large paid the whole cost for a typo.
+describe('applyResultProjection — pick-miss REFUSAL on a large body (EI-23774219620725180)', () => {
+  // Shaped like the measured case: events:catalog has a real `families` key, the
+  // caller guessed leaf names (`name`) that do not exist.
+  const bigCatalog = JSON.stringify({
+    ok: true,
+    count: 40,
+    families: Array.from({ length: 40 }, (_, i) => ({
+      family: `fam-${i}`,
+      keyPatterns: Array.from({ length: 6 }, (_, k) => `family.${i}.pattern.${k}.${'x'.repeat(30)}`),
+      emitters: [`emitter-${i}`],
+    })),
+  });
+  const ROOT_KEYS = ['ok (boolean)', 'count (number)', 'families (array[40])'];
+
+  it('REFUSES: the 61KB-class body is withheld, the caller gets a bounded key list', () => {
+    expect(bigCatalog.length).toBeGreaterThan(PICK_MISS_FAIL_OPEN_MAX_CHARS * 2);
+    const out = applyResultProjection(
+      textResult(bigCatalog),
+      spec({ pick: ['families[].name', 'families[].keys'] }),
+    );
+    const body = bodyText(out);
+    // Bounded: a small fraction of the original, never the full dump.
+    expect(body.length).toBeLessThan(bigCatalog.length / 3);
+    expect(body).not.toContain('pattern.39.');
+    const refusal = JSON.parse(body) as Record<string, any>;
+    expect(refusal.projection_refused).toBe('pick_matched_nothing');
+    expect(refusal.requested_pick).toEqual(['families[].name', 'families[].keys']);
+    expect(refusal.body_chars_withheld).toBe(bigCatalog.length);
+    expect(refusal.root_keys).toEqual(ROOT_KEYS);
+  });
+
+  it('names the LEAF keys under the segment that DID match — the common typo (good prefix, bad leaf)', () => {
+    const out = applyResultProjection(textResult(bigCatalog), spec({ pick: ['families[].name'] }));
+    const refusal = JSON.parse(bodyText(out)) as Record<string, any>;
+    expect(refusal.near_misses).toEqual([
+      {
+        path: 'families[].name',
+        matchedPrefix: 'families[]',
+        keysThere: ['family (string)', 'keyPatterns (array[6])', 'emitters (array[1])'],
+      },
+    ]);
+  });
+
+  it('names the wrong-shape hint when a key is addressed on an ARRAY without `[]`', () => {
+    const out = applyResultProjection(textResult(bigCatalog), spec({ pick: ['families.family'] }));
+    const refusal = JSON.parse(bodyText(out)) as Record<string, any>;
+    expect(refusal.near_misses[0].matchedPrefix).toBe('families[]');
+    expect(refusal.near_misses[0].hint).toContain('families[].family');
+  });
+
+  it('stays LOUD: the degraded verdict still leads the content and says the body was withheld', () => {
+    const out = applyResultProjection(textResult(bigCatalog), spec({ pick: ['families[].name'] }));
+    const texts = textsOf(out);
+    expect(isVerdictText(texts[0])).toBe(true);
+    expect(texts[0]).toContain('matched NOTHING');
+    expect(texts[0]).toContain('WITHHELD');
+    expect(reportOf(out).notes.join(' ')).toContain('WITHHELD');
+  });
+
+  it('is never an EMPTY object — the refusal cannot be mistaken for a filter that worked', () => {
+    const out = applyResultProjection(textResult(bigCatalog), spec({ pick: ['zzz'] }));
+    const refusal = JSON.parse(bodyText(out)) as Record<string, unknown>;
+    expect(Object.keys(refusal).length).toBeGreaterThan(3);
+    expect(refusal).toHaveProperty('projection_refused');
+  });
+
+  it('a first segment that matches NOTHING reports root keys only (no near-miss to invent)', () => {
+    const out = applyResultProjection(textResult(bigCatalog), spec({ pick: ['nope.missing'] }));
+    const refusal = JSON.parse(bodyText(out)) as Record<string, unknown>;
+    expect(refusal).not.toHaveProperty('near_misses');
+    expect(refusal.root_keys).toEqual(ROOT_KEYS);
+  });
+
+  it('an ARRAY-root body is described by its ROW keys', () => {
+    const rows = JSON.stringify(
+      Array.from({ length: 60 }, (_, i) => ({ id: `WI-${i}`, title: 't'.repeat(60), state: 'open' })),
+    );
+    expect(rows.length).toBeGreaterThan(PICK_MISS_FAIL_OPEN_MAX_CHARS);
+    const out = applyResultProjection(textResult(rows), spec({ pick: ['zzz'] }));
+    const refusal = JSON.parse(bodyText(out)) as Record<string, unknown>;
+    expect(refusal.row_keys).toEqual(['id (string)', 'title (string)', 'state (string)']);
+    expect(refusal).not.toHaveProperty('root_keys');
+  });
+
+  it('a WRITE keeps its outcome observable even when the pick missed (the implicit retention survives)', () => {
+    const writeBody = JSON.stringify({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      detail: 'd'.repeat(PICK_MISS_FAIL_OPEN_MAX_CHARS + 500),
+    });
+    const out = applyResultProjection(textResult(writeBody), spec({ pick: ['nope'] }), {
+      effect: 'write',
+    });
+    const refusal = JSON.parse(bodyText(out)) as Record<string, any>;
+    expect(refusal.projection_refused).toBe('pick_matched_nothing');
+    expect(refusal.write_outcome_retained).toEqual({ ok: true, counts: { ok: 1, failed: 0 } });
+  });
+
+  it('CONTROL: a body AT OR UNDER the budget still fails open unprojected (cheaper than the refusal)', () => {
+    const small = JSON.stringify({ ok: true, rows: [{ id: 'a' }] });
+    expect(small.length).toBeLessThanOrEqual(PICK_MISS_FAIL_OPEN_MAX_CHARS);
+    const out = applyResultProjection(textResult(small), spec({ pick: ['nope'] }));
+    expect(JSON.parse(bodyText(out))).toEqual({ ok: true, rows: [{ id: 'a' }] });
+    expect(footerOf(out)).toContain('body left unprojected');
+    expect(footerOf(out)).not.toContain('WITHHELD');
+  });
+
+  it('CONTROL: a pick that MATCHES is untouched on a large body — the refusal is a miss-only branch', () => {
+    const out = applyResultProjection(textResult(bigCatalog), spec({ pick: ['families[].family'] }));
+    const body = JSON.parse(bodyText(out)) as { families: Array<{ family: string }> };
+    expect(body.families).toHaveLength(40);
+    expect(body.families[0]).toEqual({ family: 'fam-0' });
+    expect(bodyText(out)).not.toContain('projection_refused');
+  });
+
+  it('CONTROL: a PARTIAL miss on a large body still projects (only the all-miss refuses)', () => {
+    const out = applyResultProjection(
+      textResult(bigCatalog),
+      spec({ pick: ['families[].family', 'families[].name'] }),
+    );
+    const body = JSON.parse(bodyText(out)) as { families: Array<{ family: string }> };
+    expect(body.families).toHaveLength(40);
+    expect(bodyText(out)).not.toContain('projection_refused');
+    expect(footerOf(out)).toContain('matched nothing: families[].name');
+  });
+
+  it('CONTROL: the ambiguity hint (candidate spellings) still rides in the verdict on a refusal', () => {
+    const body = JSON.stringify({
+      rows: Array.from({ length: 50 }, (_, i) => ({ id: `r${i}`, pad: 'p'.repeat(40) })),
+      extras: Array.from({ length: 50 }, (_, i) => ({ id: `e${i}`, pad: 'p'.repeat(40) })),
+    });
+    const out = applyResultProjection(textResult(body), spec({ pick: ['results[].id'] }));
+    expect(footerOf(out)).toContain('WOULD match');
+    expect(footerOf(out)).toContain('rows[].id');
+    expect(footerOf(out)).toContain('WITHHELD');
   });
 });

@@ -571,7 +571,41 @@ export interface MicrosRollup {
   readonly settledCents: number;
   /** The rounding account: micros accrued but not yet a settled whole cent. */
   readonly roundingMicros: number;
+  /** Canonical decimal micro amounts when the integer projection has residue. */
+  readonly totalMicrosExact?: string;
+  readonly roundingMicrosExact?: string;
   readonly accrualIds: ReadonlySet<string>;
+  readonly accrualAmounts?: ReadonlyMap<string, string>;
+}
+
+/** Exact decimal arithmetic on the existing micro rail. No binary-float money
+ * arithmetic or fixed NUMERIC scale: even subnormal provider numbers survive.
+ * External contracts require this canonical form; PG numeric reads may have
+ * trailing zeroes and are normalized here. */
+export function parseMicrosDecimal(value: string): { coefficient: bigint; scale: number } {
+  if (typeof value !== 'string' || !/^(?:0|[1-9][0-9]{0,31})(?:\.[0-9]{1,324})?$/.test(value)) {
+    throw new Error('invalid exact micro amount');
+  }
+  const [whole, fraction = ''] = value.split('.');
+  return { coefficient: BigInt(whole! + fraction), scale: fraction.length };
+}
+export function formatMicrosDecimal(coefficient: bigint, scale: number): string {
+  if (coefficient < 0n || !Number.isInteger(scale) || scale < 0 || scale > 324) throw new Error('invalid exact micro amount');
+  const digits = coefficient.toString().padStart(scale + 1, '0');
+  if (scale === 0) return digits;
+  const fraction = digits.slice(-scale).replace(/0+$/, '');
+  return digits.slice(0, -scale) + (fraction ? '.' + fraction : '');
+}
+export function addMicrosDecimals(...values: string[]): string {
+  const amounts = values.map(parseMicrosDecimal);
+  const scale = Math.max(0, ...amounts.map(a => a.scale));
+  return formatMicrosDecimal(amounts.reduce((sum, a) => sum + a.coefficient * 10n ** BigInt(scale - a.scale), 0n), scale);
+}
+export function splitMicrosDecimal(value: string): { micros: number; exact: string } {
+  const { coefficient, scale } = parseMicrosDecimal(value);
+  const divisor = 10n ** BigInt(scale);
+  if (coefficient > BigInt(Number.MAX_SAFE_INTEGER) * divisor) throw new Error('micro amount exceeds safe integer range');
+  return { micros: Number(coefficient / divisor), exact: formatMicrosDecimal(coefficient, scale) };
 }
 
 export type RollupRejectionCode = 'invalid-micros' | 'duplicate-accrual' | 'invalid-rollup' | 'currency-mismatch';
@@ -593,22 +627,36 @@ export type AccrueResult = { ok: true; rollup: MicrosRollup; duplicate: boolean 
  * Accrue a per-use charge in micros. Idempotent on `accrualId` (a meter nonce):
  * a repeated accrual is a no-op reported as `duplicate`, never double-counted.
  */
-export function accrueMicros(rollup: MicrosRollup, input: { readonly accrualId: string; readonly micros: number }): AccrueResult {
+export function accrueMicros(rollup: MicrosRollup, input: { readonly accrualId: string; readonly micros: number; readonly microsExact?: string }): AccrueResult {
   if (typeof input.accrualId !== 'string' || input.accrualId.length === 0 || input.accrualId.length > 256) {
     return { ok: false, code: 'invalid-rollup', detail: 'accrualId must be a string of 1-256 characters' };
   }
-  if (typeof input.micros !== 'number' || !Number.isSafeInteger(input.micros) || input.micros <= 0) {
+  let amount: ReturnType<typeof splitMicrosDecimal>;
+  try { amount = splitMicrosDecimal(input.microsExact ?? String(input.micros)); }
+  catch { return { ok: false, code: 'invalid-micros', detail: 'invalid exact micro amount' }; }
+  if (!Number.isSafeInteger(input.micros) || amount.micros !== input.micros || amount.exact === '0'
+      || (input.microsExact !== undefined && amount.exact !== input.microsExact)) {
     return { ok: false, code: 'invalid-micros', detail: `micros must be a positive whole number, got ${String(input.micros)}` };
   }
-  if (rollup.accrualIds.has(input.accrualId)) return { ok: true, rollup, duplicate: true };
-  const totalMicros = rollup.totalMicros + input.micros;
-  if (!Number.isSafeInteger(totalMicros)) return { ok: false, code: 'invalid-micros', detail: 'roll-up total exceeds the safe integer range' };
+  if (rollup.accrualIds.has(input.accrualId)) {
+    const previous = rollup.accrualAmounts?.get(input.accrualId);
+    if (previous !== undefined && previous !== amount.exact) return { ok: false, code: 'invalid-micros', detail: 'accrual replay mismatch' };
+    return { ok: true, rollup, duplicate: true };
+  }
+  let total: ReturnType<typeof splitMicrosDecimal>; let rounding: ReturnType<typeof splitMicrosDecimal>;
+  try {
+    total = splitMicrosDecimal(addMicrosDecimals(rollup.totalMicrosExact ?? String(rollup.totalMicros), amount.exact));
+    rounding = splitMicrosDecimal(addMicrosDecimals(rollup.roundingMicrosExact ?? String(rollup.roundingMicros), amount.exact));
+  } catch { return { ok: false, code: 'invalid-micros', detail: 'roll-up total exceeds the safe integer range' }; }
   const accrualIds = new Set(rollup.accrualIds);
   accrualIds.add(input.accrualId);
+  const accrualAmounts = new Map(rollup.accrualAmounts); accrualAmounts.set(input.accrualId, amount.exact);
   return {
     ok: true,
     duplicate: false,
-    rollup: { ...rollup, totalMicros, roundingMicros: rollup.roundingMicros + input.micros, accrualIds },
+    rollup: { ...rollup, totalMicros: total.micros, roundingMicros: rounding.micros,
+      totalMicrosExact: total.exact.includes('.') ? total.exact : undefined,
+      roundingMicrosExact: rounding.exact.includes('.') ? rounding.exact : undefined, accrualIds, accrualAmounts },
   };
 }
 
@@ -664,6 +712,10 @@ export function settleRollupIntoJournal(journal: MoneyJournalState, rollup: Micr
       ...rollup,
       settledCents: rollup.settledCents + cents,
       roundingMicros: rollup.roundingMicros - cents * MICROS_PER_CENT,
+      roundingMicrosExact: rollup.roundingMicrosExact === undefined ? undefined
+        : formatMicrosDecimal(parseMicrosDecimal(rollup.roundingMicrosExact).coefficient
+          - BigInt(cents * MICROS_PER_CENT) * 10n ** BigInt(parseMicrosDecimal(rollup.roundingMicrosExact).scale),
+        parseMicrosDecimal(rollup.roundingMicrosExact).scale),
     },
   };
 }
@@ -673,6 +725,8 @@ export interface RollupInvariant {
   readonly totalMicros: number;
   readonly journalCents: number;
   readonly roundingMicros: number;
+  readonly totalMicrosExact?: string;
+  readonly roundingMicrosExact?: string;
   /** journalCents x 10,000 + roundingMicros = totalMicros, and the roll-up agrees with the journal on settled cents. */
   readonly holds: boolean;
 }
@@ -682,14 +736,23 @@ export function rollupInvariant(entries: readonly JournalEntry[], rollup: Micros
   const journalCents = entries
     .filter((entry) => entry.rollupId === rollup.rollupId)
     .reduce((sum, entry) => sum + entryTotalCents(entry), 0);
+  let exactHolds = false;
+  try {
+    const total = splitMicrosDecimal(rollup.totalMicrosExact ?? String(rollup.totalMicros));
+    const rounding = splitMicrosDecimal(rollup.roundingMicrosExact ?? String(rollup.roundingMicros));
+    exactHolds = total.micros === rollup.totalMicros && rounding.micros === rollup.roundingMicros
+      && addMicrosDecimals(String(journalCents * MICROS_PER_CENT), rounding.exact) === total.exact;
+  } catch { /* Invalid or overflowing exact amounts do not satisfy the identity. */ }
   return {
     rollupId: rollup.rollupId,
     totalMicros: rollup.totalMicros,
     journalCents,
     roundingMicros: rollup.roundingMicros,
+    totalMicrosExact: rollup.totalMicrosExact,
+    roundingMicrosExact: rollup.roundingMicrosExact,
     holds:
       journalCents * MICROS_PER_CENT + rollup.roundingMicros === rollup.totalMicros &&
       journalCents === rollup.settledCents &&
-      rollup.roundingMicros >= 0,
+      rollup.roundingMicros >= 0 && exactHolds,
   };
 }

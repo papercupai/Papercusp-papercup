@@ -85,6 +85,7 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
+import { observeFallback } from './degradation/fallback-observations';
 import { STALE_MS } from './liveness';
 import {
   FEATURE_NON_REQUEUE_STATES,
@@ -126,6 +127,12 @@ export const STALE_CLAIM_PARKED_GRACE_MS = 30 * 60 * 1000;
  * a never-seen-here holder is possibly-remote → SKIP, unless the claim is
  * anchored (taken_at NOT NULL) and older than this fallback — so a truly
  * abandoned row still frees after the presence-row TTL reap, just slowly.
+ *
+ * WI-10005136: past the fallback the holder must ALSO show no federated sign of
+ * life — no work_items row it holds or terminally owns was claimed or changed
+ * within the same window. Claim age alone let the mac-VM rig reap a LIVE tower
+ * holder's 24h-old claims on 2026-10-01 (WI-10004353 at 18:34Z, WI-10004436 at
+ * 21:29Z), and each reap federated back as a remote write.
  */
 export const STALE_CLAIM_UNKNOWN_HOLDER_FALLBACK_MS = 24 * 3600 * 1000;
 
@@ -483,12 +490,37 @@ export async function reclaimStaleWorkItemClaims(
              -- claim back to stop reclaim churn until its beat ages past that window.
              AND NOT EXISTS (SELECT 1 FROM parked_holder p WHERE p.alias = f.taken_by)
              AND ( EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = f.taken_by)
-                   -- Fallback anchor: taken_at, or updated_ts for a NULL-anchor claim
-                   -- (EI-2534 class) — an actively-driven remote item keeps refreshing
-                   -- updated_ts via federation, deferring the fallback; a truly
-                   -- abandoned one frees once the horizon lapses.
-                   OR (now() - COALESCE(f.taken_at, to_timestamp(f.updated_ts / 1000.0)))
-                        > make_interval(secs => ${unknownFallbackSec}) ) )
+                   -- Fallback anchor: taken_at, or fed_ts for a NULL-anchor claim
+                   -- (EI-2534 class) — an actively-driven item keeps advancing its
+                   -- content clock, deferring the fallback; a truly abandoned one frees
+                   -- once the horizon lapses. WI-10005935: fed_ts, not updated_ts —
+                   -- stamp_local_federated_write treats updated_ts as bookkeeping
+                   -- (WI-10002882), so embedding/settlement/admission rewrites advance it
+                   -- with no holder action at all. A NULL fed_ts (never stamped; none in
+                   -- production as of 2026-10-03) falls back to updated_ts, the old rule.
+                   OR ( (now() - COALESCE(f.taken_at, to_timestamp(COALESCE(f.fed_ts, f.updated_ts) / 1000.0)))
+                          > make_interval(secs => ${unknownFallbackSec})
+                        -- WI-10005928: only the node that last wrote the row judges a
+                        -- never-seen holder. A holder's real liveness (presence) never
+                        -- federates, and a parked holder makes no content writes, so a peer
+                        -- sees 24h of federated silence for a live agent: the mac-VM rig freed
+                        -- a parked tower holder's claims at 2026-10-03 08:40:37Z, one minute
+                        -- after that holder's last federated write (10-02 08:39Z) aged past
+                        -- the horizon, while its tower presence was heartbeating. The home
+                        -- node still frees an abandoned row.
+                        AND f.origin IS DISTINCT FROM 'remote'
+                        -- WI-10005136: claim AGE alone is not death. A live remote holder
+                        -- that has held one claim for >24h still claims, edits and closes
+                        -- OTHER rows, and those writes federate here; reaping it anyway
+                        -- re-opened the WI-1964 shredder for every long-held claim.
+                        AND NOT EXISTS (
+                          SELECT 1 FROM harness_shared.work_items w
+                           WHERE w.workspace_id = f.workspace_id
+                             AND (w.taken_by = f.taken_by OR w.terminal_owner = f.taken_by)
+                             -- WI-10005935: a CONTENT write (fed_ts) is a sign of life; a
+                             -- bookkeeping touch (updated_ts alone) is not.
+                             AND GREATEST(w.taken_at, to_timestamp(w.fed_ts / 1000.0))
+                                   > now() - make_interval(secs => ${unknownFallbackSec}) ) ) ) )
            -- (b) SPAWN-EXIT: a confirmed-terminal spawn's alias — no grace.
            OR EXISTS (SELECT 1 FROM dead_spawn ds WHERE ds.alias = f.taken_by)
            -- (c) STALLED (flag-gated): holder ALIVE but not progressing in the window.
@@ -496,31 +528,16 @@ export async function reclaimStaleWorkItemClaims(
            -- re-claim deliberately retains last_progress_at; when that timestamp is
            -- older than the new taken_at, COALESCE picked the old value and could
            -- reclaim the fresh claim before its grace window elapsed.
-           -- WI-6015 (EI-18691099450966094 trap c): last_progress_at is bumped
-           -- ONLY by an explicit work_items:checkpoint call, so a holder doing
-           -- substantial real work (edits, tool calls, tests) WITHOUT
-           -- checkpointing reads as "no progress" here forever — confirmed live:
-           -- a holder with 138 tool_invocations in the prior 8 minutes still had
-           -- last_progress_at NULL. Mirror the watchdog's already-landed EI-14763
-           -- holder_active guard (collectStalledClaimSignals) HERE, on the
-           -- actual reclaim action, not just the reporting signal: a holder with
-           -- ANY agent_activity/tool_invocations row inside the stalled window is
-           -- demonstrably working and must never be reclaimed as stalled, no
-           -- matter how stale last_progress_at/taken_at read.
+           -- A stall is item-scoped: last_progress_at records this item's
+           -- explicit progress, while taken_at gives a new claim its grace
+           -- window. agent_activity and tool_invocations are owner-wide activity
+           -- records, not proof that this item advanced; they may describe an
+           -- unrelated item or a control/tool call. Holder liveness is checked
+           -- separately by the DEAD leg above and must not suppress this stall.
            OR ( ${includeStalled ? sql`(
                   EXISTS (SELECT 1 FROM live_holder h WHERE h.alias = f.taken_by)
                   AND f.taken_by <> 'improvement-runner'
                   AND (now() - GREATEST(f.last_progress_at, f.taken_at)) > make_interval(secs => ${stalledSec})
-                  AND NOT EXISTS (
-                    SELECT 1 FROM harness_shared.agent_activity aa
-                     WHERE aa.owner_id = f.taken_by
-                       AND aa.created_at > now() - make_interval(secs => ${stalledSec})
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1 FROM harness_shared.tool_invocations ti
-                     WHERE ti.coord_owner_id = f.taken_by
-                       AND ti.invoked_at > now() - make_interval(secs => ${stalledSec})
-                  )
                 )` : sql`false`} )
          )
          FOR UPDATE OF f SKIP LOCKED
@@ -617,6 +634,7 @@ export async function reclaimStaleWorkItemClaims(
   // Fail-open is intentional: the work-item reclaim remains authoritative and
   // the lock TTL is the fallback if the side database is unavailable.
   if (rows.length > 0) {
+    let cleanupMeasured = 0;
     try {
       const [{ releaseReclaimedWorkItemLocks }, { readWorkItemPaths }] = await Promise.all([
         import('./work-item-lock-release'),
@@ -628,6 +646,10 @@ export async function reclaimStaleWorkItemClaims(
           paths: readWorkItemPaths(row.payload),
           goalRef: row.feature_id,
         });
+        observeFallback('work-item-lock-reclaim', { eligible: 1, applied: lockRelease.failures === 0 ? 1 : 0,
+          reason: lockRelease.failures === 0 ? 'applied' : 'targeted-release-failed', scope: 'stale-sweep' },
+        { workspaceId: row.workspace_id });
+        cleanupMeasured++;
         if (lockRelease.failures > 0) {
           console.warn(
             `[stale-claims] ${row.feature_id}: targeted lock release had ${lockRelease.failures} failure(s); claim reclaim continues with lock TTL fallback`,
@@ -635,6 +657,10 @@ export async function reclaimStaleWorkItemClaims(
         }
       }
     } catch (error) {
+      for (const row of rows.slice(cleanupMeasured)) {
+        observeFallback('work-item-lock-reclaim', { eligible: 1, applied: 0,
+          reason: 'cleanup-unavailable', scope: 'stale-sweep' }, { workspaceId: row.workspace_id });
+      }
       console.warn(
         `[stale-claims] targeted lock cleanup unavailable; claim reclaim continues with lock TTL fallback (${error instanceof Error ? error.message : String(error)})`,
       );
@@ -738,7 +764,19 @@ export async function reclaimStaleIssueClaims(
          -- federate, presence does not — never presume a never-seen-here assignee dead
          -- before the long-horizon fallback.
          AND ( EXISTS (SELECT 1 FROM known_holder k WHERE k.alias = e.assignee)
-               OR (now() - e.assigned_at) > make_interval(secs => ${unknownFallbackSec}) )
+               OR ( (now() - e.assigned_at) > make_interval(secs => ${unknownFallbackSec})
+                    -- WI-10005928: same origin rule as the feature leg — a peer never
+                    -- frees a never-seen assignee on a row another node last wrote.
+                    AND e.origin IS DISTINCT FROM 'remote'
+                    -- WI-10005136: same federated sign-of-life rule as the feature leg —
+                    -- a holder still claiming / editing / closing rows is not dead.
+                    AND NOT EXISTS (
+                      SELECT 1 FROM harness_shared.work_items w
+                       WHERE w.workspace_id = e.workspace_id
+                         AND (w.taken_by = e.assignee OR w.terminal_owner = e.assignee)
+                         -- WI-10005935: content clock (fed_ts), not bookkeeping updated_ts.
+                         AND GREATEST(w.taken_at, to_timestamp(w.fed_ts / 1000.0))
+                               > now() - make_interval(secs => ${unknownFallbackSec}) ) ) )
          FOR UPDATE OF e SKIP LOCKED
     )
     UPDATE harness_shared.engineer_issues e

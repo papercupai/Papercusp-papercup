@@ -9,6 +9,9 @@
  *   owner   — the desktop / TUI / device surfaces of the workspace owner: the
  *             curated operator working set (ALL_AGENT_MCP_TOOLS) over the
  *             `superuser=1` MCP mount with the on-disk superuser token.
+ *   owner + customer-run — owner prompt trust, but the CLI process runs as the
+ *             hosted customer OS identity. It gets the customer-safe owned-loop
+ *             toolset over an exact, short-lived PI bearer; never the disk token.
  *   public  — the browser-reachable portal behind its per-user boundary: the
  *             OWNED-loop capability DOORS (`capability:*` + the task facades —
  *             OWNED_LOOP_TOOL_SELECTION, the same set the agent-chats seam gave
@@ -32,6 +35,8 @@ export const AGENT_MCP_TOOL_PREFIX = 'mcp__agentmcp__';
 
 /** The deep-delegation lane as the brain's allowed-tools name. */
 export const DELEGATE_DEEP_TOOL = `${AGENT_MCP_TOOL_PREFIX}voice:delegate_deep`;
+/** Both Papercup brains use the same read-only public-manual scope on docs tools. */
+export const PUBLIC_MANUAL_TOOLS = ['docs:search', 'docs:get'].map((name) => `${AGENT_MCP_TOOL_PREFIX}${name}`);
 
 /** Roles whose toolset carries the deep-delegation tool. */
 const DEEP_DELEGATING_ROLES: ReadonlySet<string> = new Set(['papercup']);
@@ -39,8 +44,14 @@ const DEEP_DELEGATING_ROLES: ReadonlySet<string> = new Set(['papercup']);
 export interface SelectConverseToolsInput {
   role: string;
   hostTrust: ConverseHostTrust;
-  /** The public host's door names in colon form (capabilityToolNames(
-   *  OWNED_LOOP_TOOL_SELECTION)). Called only on public trust. */
+  modality?: 'text' | 'voice';
+  /** Standard is retained for same-build latency comparisons. Voice defaults to slim. */
+  voiceProfile?: 'standard' | 'slim';
+  supportsVoice?: (name: string) => boolean;
+  /** The owner host deliberately runs the brain under the hosted customer OS identity. */
+  agentRunsAsCustomer?: boolean;
+  /** The customer-safe door names in colon form (capabilityToolNames(
+   *  OWNED_LOOP_TOOL_SELECTION)). Used on public trust and customer-run owner sessions. */
   publicDoorNames: () => readonly string[];
 }
 
@@ -59,11 +70,19 @@ function dedupe(names: readonly string[]): readonly string[] {
  */
 export function selectConverseTools(input: SelectConverseToolsInput): readonly string[] {
   const deep = DEEP_DELEGATING_ROLES.has(input.role) ? [DELEGATE_DEEP_TOOL] : [];
-  if (input.hostTrust === 'owner') {
-    return dedupe([...ALL_AGENT_MCP_TOOLS, ...deep]);
-  }
-  const doors = input.publicDoorNames().map(toAllowedToolName);
-  return dedupe([...doors, ...INTERACTIVE_CHAT_TOOLS, ...deep]);
+  const manual = input.role === 'papercup' || input.role === 'papercup-deep' ? PUBLIC_MANUAL_TOOLS : [];
+  const selected = input.hostTrust === 'owner' && !input.agentRunsAsCustomer
+    ? dedupe([...ALL_AGENT_MCP_TOOLS, ...deep, ...manual])
+    : dedupe([...input.publicDoorNames().map(toAllowedToolName), ...INTERACTIVE_CHAT_TOOLS, ...deep, ...manual]);
+  if (input.modality !== 'voice') return selected;
+  // The same list feeds the prompt, mount and allowed-tools. A text-only tool
+  // must not inflate the voice schema budget or remain callable but unlisted.
+  const voice = selected.filter((name) => input.supportsVoice?.(name.replace(AGENT_MCP_TOOL_PREFIX, '')) ?? true);
+  if (input.voiceProfile === 'standard') return voice;
+  // These are scanner/governance analysis tools, not conversational actions.
+  // Keep the existing task, plan, memory, docs and action seams, and deep
+  // delegation for questions requiring the broader analytical surface.
+  return voice.filter((name) => !/^(rubrics|scorecards|calibration|autonomy|decision_ledger|improvements):/.test(name.replace(AGENT_MCP_TOOL_PREFIX, '')));
 }
 
 export interface ConverseMcpMountInput {
@@ -82,7 +101,7 @@ export interface ConverseMcpMountInput {
   /**
    * D-421 (WI-10003195): the brain's agent CLI runs as the hosted customer workspace
    * account (the spawn transform is installed). That account must never hold the
-   * operator superuser token, so the owner mount is withheld and the brain runs tool-less.
+   * operator superuser token; a separate PI bearer is required for a customer-safe mount.
    */
   agentRunsAsCustomer?: boolean;
 }
@@ -106,7 +125,12 @@ export function buildConverseMcpMount(input: ConverseMcpMountInput): ConverseMcp
     `&tools=${encodeURIComponent(toolsParam)}` +
     (input.uiClientId ? `&client=${encodeURIComponent(input.uiClientId)}` : '');
   if (input.hostTrust === 'owner') {
-    if (!input.superuserToken || input.agentRunsAsCustomer) return null;
+    if (input.agentRunsAsCustomer) {
+      const principalBearer = input.principalToken?.trim() ?? '';
+      if (!principalBearer) return null;
+      return { url: `${input.baseUrl}/api/mcp?principal=pi&${common}`, bearer: principalBearer };
+    }
+    if (!input.superuserToken) return null;
     return { url: `${input.baseUrl}/api/mcp?superuser=1&${common}`, bearer: input.superuserToken };
   }
   // Public trust: no superuser param, no disk token — ever. The per-user

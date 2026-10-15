@@ -54,7 +54,7 @@
 #
 # Usage: papercup-backup-health-check.sh
 # Env:
-#   BACKUP_DUMP_DIR      (default /mnt/backup/db-dumps) — where the dumps land
+#   BACKUP_DUMP_DIR      (default /mnt/cold-a/Backup/db-dumps) — where the dumps land
 #   BACKUP_ARTIFACTS     (default "pg/papercusp-state pg/papercusp-transcript pg/restart") — space-separated dump artifacts
 #                                                              (relative to BACKUP_DUMP_DIR) that
 #                                                              MUST stay fresh. These are the
@@ -145,11 +145,10 @@ fi
 #
 # An explicitly-set BACKUP_DUMP_DIR still wins, which the self-test cases below rely on
 # (they pass BACKUP_DUMP_DIR="$t/dump" to judge a temp tree instead of live state).
-# Fallback moved to the live dump volume 2026-09-05 (WI-2146225) — see the long
-# note in papercusp-db-backup.sh. This script's own header (line ~139) already
-# records what the stale fallback did here: it tailed a db-backup.log frozen on
-# "backup FAILED", so the alarm could never clear and was blind to real failures.
-BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}}"
+# Current fallback moved to the cold-a dump volume under WI-6554700010014799;
+# see the producer's path-contract note. This probe follows the same override
+# and default so it cannot silently inspect the retained legacy tree.
+BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}}"
 # WI-2146225 cutover 2026-09-05: papercusp is dumped as a TIER PAIR, and the
 # undifferentiated pg/papercusp dump it used to name here is RETIRED — nothing
 # writes that path any more. Leaving the old default would have produced BOTH
@@ -183,6 +182,9 @@ BACKUP_DISK_WARN_PCT="${BACKUP_DISK_WARN_PCT:-90}"
 BACKUP_DB_NAME="${BACKUP_DB_NAME:-papercusp}"
 BACKUP_DB_PORT="${BACKUP_DB_PORT:-5432}"
 BACKUP_CONSUMERS_TIMEOUT_S="${BACKUP_CONSUMERS_TIMEOUT_S:-10}"
+# Budget for listing what occupies the backup volume, spent only while its alarm is
+# firing (backup_volume_consumers). The per-entry du runs niced and idle-class.
+BACKUP_VOLUME_CONSUMERS_TIMEOUT_S="${BACKUP_VOLUME_CONSUMERS_TIMEOUT_S:-120}"
 # TOAST-bloat signature. A high-churn large-bytea table ratchets its TOAST relation
 # upward forever because plain VACUUM marks TOAST pages reusable but never returns
 # them to the OS. The discriminator is TOAST BYTES PER CATALOG-ESTIMATED ROW, which
@@ -428,7 +430,7 @@ top_db_consumers() {
   # safe. A query that cannot run must be LOUD.
   out="$(timeout "${BACKUP_CONSUMERS_TIMEOUT_S}s" sudo -n -u postgres psql \
            -p "$BACKUP_DB_PORT" -d "$BACKUP_DB_NAME" -tA -c "$sql" 2>&1)" || true
-  if printf '%s' "$out" | grep -qE '^(ERROR|FATAL|psql):'; then
+  if grep -qE '^(ERROR|FATAL|psql):' <<<"$out"; then
     log "WARN top-consumers query FAILED (the alert will not name a consumer): $(printf '%s' "$out" | head -1)"
     out=""
   fi
@@ -565,7 +567,7 @@ check_db_relation_bloat() {
   # so, not fall silent. A silent detector is indistinguishable from a healthy database.
   bloated="$(timeout "${BACKUP_CONSUMERS_TIMEOUT_S}s" sudo -n -u postgres psql \
                -p "$BACKUP_DB_PORT" -d "$BACKUP_DB_NAME" -tA -c "$sql" 2>&1)" || true
-  if printf '%s' "$bloated" | grep -qE '^(ERROR|FATAL|psql):'; then
+  if grep -qE '^(ERROR|FATAL|psql):' <<<"$bloated"; then
     log "WARN TOAST-bloat query FAILED (this detector is BLIND until fixed): $(printf '%s' "$bloated" | head -1)"
     bloated=""
   fi
@@ -638,6 +640,52 @@ backup_required_free_gb() {
   printf '%s\n' "$(( PC_BACKUP_MIN_FREE_GB + required_dump_gb ))"
 }
 
+# Name what occupies the backup volume, so a capacity alarm says WHAT to reclaim.
+# EI-25211496463956189: on 2026-10-06 the volume carried large non-backup test
+# artifacts beside the dumps, and only a manual du found them. Lists the largest
+# entries directly under the volume's mount point (<mount>), each tagged as a backup
+# output (it is or holds <dump-dir>) or NOT a backup output. One du per entry under a
+# shared deadline, so a slow tree truncates the list instead of the probe; never fails.
+backup_volume_consumers() ( # <mount> <dump-dir>
+  mount="${1%/}" dump_dir="${2%/}"
+  [ -d "$mount" ] || { echo "  (mount point '$mount' is not a readable directory)"; exit 0; }
+  shopt -s nullglob dotglob
+  # The deadline must bound the scan's OWN cost, not only du's. Measured 2026-10-06
+  # (EI-25211496463956189): /tmp held 12,667 entries, and the old loop forked
+  # `date +%s` for every entry even after the deadline, so a 0s budget still cost
+  # ~12.6k forks and over a minute per call under load. Now the clock is read with
+  # the printf builtin (no fork), and the loop stops at the deadline, counting the
+  # rest as skipped arithmetically.
+  entries=()
+  for entry in "$mount"/*; do
+    [ "${entry##*/}" = lost+found ] || entries+=("$entry")
+  done
+  printf -v now '%(%s)T' -1
+  deadline=$(( now + BACKUP_VOLUME_CONSUMERS_TIMEOUT_S ))
+  rows="" skipped=0
+  for i in "${!entries[@]}"; do
+    printf -v now '%(%s)T' -1
+    left=$(( deadline - now ))
+    if [ "$left" -le 0 ]; then skipped=$(( skipped + ${#entries[@]} - i )); break; fi
+    entry="${entries[$i]}"
+    size_kb="$(timeout "$left" nice -n 19 ionice -c3 du -x -s -k -- "$entry" 2>/dev/null | awk 'NR == 1 { print $1; exit }')"
+    if ! [[ "$size_kb" =~ ^[0-9]+$ ]]; then skipped=$((skipped + 1)); continue; fi
+    if [ "$entry" = "$dump_dir" ] || [ "${dump_dir#"$entry"/}" != "$dump_dir" ]; then
+      tag="backup output"
+    else
+      tag="NOT a backup output"
+    fi
+    rows+="${size_kb}"$'\t'"${entry}"$'\t'"${tag}"$'\n'
+  done
+  if [ -z "$rows" ]; then
+    echo "  (no entry sized within ${BACKUP_VOLUME_CONSUMERS_TIMEOUT_S}s)"
+  else
+    printf '%s' "$rows" | sort -t$'\t' -k1,1nr | head -n 8 |
+      awk -F'\t' '{ printf "  %8.1f GiB  %s  [%s]\n", $1 / 1048576, $2, $3 }'
+  fi
+  [ "$skipped" -eq 0 ] || echo "  (${skipped} entr$([ "$skipped" -eq 1 ] && echo y || echo ies) not sized: unreadable or past the ${BACKUP_VOLUME_CONSUMERS_TIMEOUT_S}s budget)"
+)
+
 check_backup_volume_headroom() {
   local df_line="" disk_pct="" total_kb="" avail_kb="" floor_kb="" trend="" red_marker=""
   local largest_dump_gb="" required_free_gb="" required_free_kb=""
@@ -677,8 +725,13 @@ check_backup_volume_headroom() {
 
   red_marker="$STATE_DIR/backup-volume-red-ei-filed"
   if [ "$disk_pct" -ge "$BACKUP_VOLUME_WARN_PCT" ] || [ "$avail_kb" -lt "$required_free_kb" ]; then
-    local host title body
+    local host title body mount consumers
     host="$(hostname 2>/dev/null || echo unknown-host)"
+    mount="$(printf '%s' "$df_line" | awk '{ print $NF }')"
+    # The consumer scan is a du over the whole volume, so it runs only past red_gate
+    # below: a dedup-suppressed RED tick (the same alarm, already filed) does not
+    # re-scan (EI-25211496463956189). The body is spliced there.
+    consumers="@@BACKUP_VOLUME_CONSUMERS@@"
     # Keep changing measurements out of the title so repeated samples dedupe.
     title="Backup repository volume above capacity warning threshold on ${host}"
     body="WI-39596 durable backup-volume detector: the filesystem containing '$BACKUP_VOLUME_PATH' is ${disk_pct}% used with ${avail_kb} KiB free. The producer-fit threshold is ${required_free_gb} GiB (${largest_dump_gb} GiB largest recent dump x ${PC_BACKUP_SPACE_SAFETY}% + ${PC_BACKUP_MIN_FREE_GB} GiB floor); the coarse percentage backstop is ${BACKUP_VOLUME_WARN_PCT}% used and the admission floor is ${BACKUP_VOLUME_FLOOR_PCT}% free.
@@ -687,11 +740,18 @@ ${trend}
 
 This volume holds the database dump artifacts under '$BACKUP_DUMP_DIR'. The Kopia repository may be on a separate volume and is a separate capacity domain; this alarm follows the volume the producer actually writes.
 
+Largest entries on ${mount} (an entry marked NOT a backup output is a reclaim candidate; confirm what it is before deleting):
+${consumers}
+
 ACTION: read the measured trend first. If it is still shrinking, compare consecutive Kopia upload bytes and full-maintenance receipts; do not attribute growth from mtime or a single du snapshot. A mitigation/reclamation does not close WI-39596 until consecutive post-change dump/snapshot cycles show bounded growth.
 
 df output:
 ${df_line}"
     if red_gate "$red_marker" "backup volume"; then
+      consumers="$(backup_volume_consumers "$mount" "$BACKUP_DUMP_DIR")"
+      log "Backup-volume consumers on ${mount} (largest first):"$'\n'"${consumers}"
+      # Quoted replacement: bash 5.2's patsub_replacement would expand a '&' in a path.
+      body="${body/"@@BACKUP_VOLUME_CONSUMERS@@"/"$consumers"}"
       file_ei "$title" "$body"
       mark_red "$red_marker"
     fi
@@ -914,6 +974,14 @@ optional_artifact_latest_hook_degraded() { # <artifact>
 # Run:  apps/operator/scripts/papercup-backup-health-check.sh --self-test
 if [ "${1:-}" = "--self-test" ]; then
   t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
+  # Probes below run against /tmp fixtures with the REAL df, and that host volume can
+  # read RED. A zero budget keeps backup_volume_consumers from du-ing real host entries:
+  # measured 2026-10-06, without it each such probe spent the full 120s default and the
+  # suite timed out at load ~150. A zero budget alone was NOT enough: the scan still
+  # forked `date` once per /tmp entry (12,667 of them), ~150s per check, until the loop
+  # learned to stop at its deadline (pinned by the "consumer scan stops at its
+  # deadline" case below). The consumer cases (stub df/du) set their own budget.
+  export BACKUP_VOLUME_CONSUMERS_TIMEOUT_S=0
   mkdir -p "$t/dump" "$t/state"
   self="${BASH_SOURCE[0]}"
   p=0; f=0
@@ -1185,7 +1253,7 @@ if [ "${1:-}" = "--self-test" ]; then
         PATH="$selftest_df_bin:$PATH" \
         bash "$self" 2>&1 >/dev/null)"
     note_shell_errors "$out"
-    if printf '%s' "$out" | grep -qE "$want_re"; then
+    if grep -qE "$want_re" <<<"$out"; then
       printf '  ok    %s\n' "$name"; p=$((p+1))
     else
       printf '  FAIL  %s — wanted /%s/ in probe output, got: %s\n' \
@@ -1261,9 +1329,14 @@ $(trend_seed 7200 10485760)" \
   # sentence inside generated output is invisible to every other check in this repo —
   # no typecheck or unit test can see prose drift — so it needs its own guard.
   guard_body() { awk '/^check_db_disk_headroom\(\)/,/^}/' "$self"; }
+  # WI-10005986: read the body ONCE into a variable and grep a here-string. Under
+  # `set -o pipefail`, `guard_body | grep -q` is a load-dependent false FAIL: the
+  # range is >4 KiB, mawk writes it in two chunks, grep -q exits on a match in the
+  # first, and the second write SIGPIPEs awk, so the pipeline fails WITH a match.
+  guard_text="$(guard_body)"
 
   # 19. The filed body must SPLICE THE DERIVED READING rather than a written-down list.
-  if guard_body | grep -q '\${consumers}'; then
+  if grep -q '\${consumers}' <<<"$guard_text"; then
     printf '  ok    alert body splices the derived top-consumers reading\n'; p=$((p+1))
   else
     printf '  FAIL  alert body no longer references ${consumers} — the consumer list is not being derived at alert time\n'; f=$((f+1))
@@ -1273,9 +1346,9 @@ $(trend_seed 7200 10485760)" \
   #     "was/were N GiB" is the shape of a remembered measurement, and a remembered
   #     measurement is exactly what went stale. Derived values interpolate at runtime
   #     and never match this, so a correct implementation cannot trip it.
-  if guard_body | grep -qE '(was|were) [0-9]+(\.[0-9]+)? ?(GiB|TiB|GB|TB)\b'; then
+  if grep -qE '(was|were) [0-9]+(\.[0-9]+)? ?(GiB|TiB|GB|TB)\b' <<<"$guard_text"; then
     printf '  FAIL  a remembered measurement is back in the alert body: ...%s...\n' \
-      "$(guard_body | grep -oE '.{0,45}(was|were) [0-9]+(\.[0-9]+)? ?(GiB|TiB|GB|TB)\b.{0,25}' | head -1)"; f=$((f+1))
+      "$(grep -oE '.{0,45}(was|were) [0-9]+(\.[0-9]+)? ?(GiB|TiB|GB|TB)\b.{0,25}' <<<"$guard_text" | head -1)"; f=$((f+1))
   else
     printf '  ok    alert body asserts no remembered measurement\n'; p=$((p+1))
   fi
@@ -1391,6 +1464,7 @@ EOF
     out="$(env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
         BACKUP_DB_DATA_DIR="$t/no-db-data" BACKUP_VOLUME_PATH="$t/dump" \
         BACKUP_VOLUME_WARN_PCT="$threshold" BACKUP_VOLUME_FLOOR_PCT=2 \
+        BACKUP_VOLUME_CONSUMERS_TIMEOUT_S=30 \
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
@@ -1398,7 +1472,7 @@ EOF
         "$@" bash "$self" 2>&1 >/dev/null)"
     note_shell_errors "$out"
     [ -f "$t/state/backup-volume-red-ei-filed" ] && got_marker=yes
-    if [ "$got_marker" = "$want_marker" ] && printf '%s' "$out" | grep -qE "$want_re"; then
+    if [ "$got_marker" = "$want_marker" ] && grep -qE "$want_re" <<<"$out"; then
       printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
     else
       printf '  FAIL  %s — wanted marker=%s and /%s/; got marker=%s, output: %s\n' \
@@ -1434,6 +1508,39 @@ EOF
   check_backup_volume "backup trend recovering: no countdown" \
         100 no "$(backup_seed 7200 -10485760)" \
         "NOT shrinking" BACKUP_NO_FILE=1
+  # EI-25211496463956189: a firing alarm names what occupies the volume, and tells a
+  # backup output from everything else. A volume of its own keeps the list to two
+  # entries (the du stub sizes every path alike).
+  rm -rf "${t:?}/vol"; mkdir -p "$t/vol/dump/pg/papercusp" "$t/vol/offload"
+  : > "$t/vol/dump/pg/papercusp/toc.dat"
+  check_backup_volume "backup volume red: names a non-backup consumer" \
+        0 yes "" "/vol/offload  \\[NOT a backup output\\]" \
+        BACKUP_ALERT_FORCE=1 BACKUP_VOLUME_PATH="$t/vol" BACKUP_DUMP_DIR="$t/vol/dump"
+  check_backup_volume "backup volume red: tags the dump directory as a backup output" \
+        0 yes "" "/vol/dump  \\[backup output\\]" \
+        BACKUP_ALERT_FORCE=1 BACKUP_VOLUME_PATH="$t/vol" BACKUP_DUMP_DIR="$t/vol/dump"
+
+  # EI-25211496463956189: a past-deadline consumer scan must cost O(1) processes, not
+  # one fork per entry. A `date`/`du` shim logs each spawn; the old loop spawned `date`
+  # once per entry (301 here) even with a 0s budget, which is what made every probe
+  # against the real /tmp (12,667 entries) take minutes.
+  rm -rf "${t:?}/many" "$t/spawnbin"; mkdir -p "$t/many" "$t/spawnbin"
+  for i in $(seq 1 300); do : > "$t/many/e$i"; done
+  for cmd in date du; do
+    printf '#!/usr/bin/env bash\necho %s >> "%s/spawns.log"\nexec %s "$@"\n' \
+      "$cmd" "$t" "$(command -v "$cmd")" > "$t/spawnbin/$cmd"
+    chmod +x "$t/spawnbin/$cmd"
+  done
+  : > "$t/spawns.log"
+  consumers_out="$(PATH="$t/spawnbin:$PATH" BACKUP_VOLUME_CONSUMERS_TIMEOUT_S=0 \
+    backup_volume_consumers "$t/many" "$t/dump")"
+  spawns="$(wc -l < "$t/spawns.log")"
+  if [ "$spawns" -le 2 ] && grep -q '(300 entries not sized' <<<"$consumers_out"; then
+    printf '  ok    consumer scan stops at its deadline (spawns=%s, 300 entries skipped)\n' "$spawns"; p=$((p+1))
+  else
+    printf '  FAIL  consumer scan stops at its deadline — wanted <=2 spawns and 300 skipped; got spawns=%s, output: %s\n' \
+      "$spawns" "$(tr '\n' ' ' <<<"$consumers_out")"; f=$((f+1))
+  fi
   printf '  ---- %d passed, %d failed (post backup-volume block)\n' "$p" "$f"
 
   # ── WI-38830 recurrence guard: signal (f), TMPDIR entry count ─────────────
@@ -1494,7 +1601,7 @@ EOF
     local f_name got
     for f_name in "$@"; do : > "$dir/$f_name"; done
     got="$(tmpdir_top_shapes "$dir")"
-    if printf '%s\n' "$got" | grep -qE "$want_re"; then
+    if grep -qE "$want_re" <<<"$got"; then
       printf '  ok    %s\n' "$name"; p=$((p+1))
     else
       printf '  FAIL  %s — wanted /%s/, got: %s\n' "$name" "$want_re" "$got"; f=$((f+1))

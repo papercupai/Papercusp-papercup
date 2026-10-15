@@ -151,6 +151,7 @@ function bootcBakeManifest(version = '2026.8.22-1'): WorkspaceHostBootcBakeManif
     digest: `sha256:${BOOTC_DIGEST}`,
     pinnedRef: `${image}@sha256:${BOOTC_DIGEST}`,
     registryNamespace: 'registry.example.com/papercusp',
+    release: { version },
     clouds: [
       { cloud: 'gcp', type: 'gce', artifact: '/release/gcp/disk.raw', sha256: '1'.repeat(64), sizeBytes: 101 },
       { cloud: 'aws', type: 'ami', artifact: '/release/aws/disk.raw', sha256: '2'.repeat(64), sizeBytes: 102 },
@@ -360,6 +361,27 @@ describe('evaluateWorkspaceHostReleaseGate', () => {
 
       expect(verdict.failures.filter((entry) => entry.code === 'unsupported-builder')).toEqual([]);
       expect(verdict.accepted).toBe(true);
+    });
+
+    // WI-10005761: a bootc release is image CONTENT; the bootstrap dies at install-runtime when
+    // the named release is not baked in. Calibration is the accepting case directly above.
+    it.each([
+      ['an OS-only bake', null],
+      ['a bake recorded before releases were recorded', undefined],
+      ['a bake carrying a different release', { version: '2026.8.21-1' }],
+    ] as const)('rejects %s paired with a release', (_name, release) => {
+      const candidate = bootcArtifact();
+      const { release: _drop, ...rest } = bootcBakeManifest();
+      const verdict = evaluateWorkspaceHostReleaseGate({
+        artifact: candidate,
+        bootcBakeManifest: release === undefined ? rest : { ...rest, release },
+        trustReport: trustReport(BOOTC_DIGEST),
+        compatibilityRequest: bootcCompatibilityRequest(),
+        cleanRoomReport: cleanRoomReport(candidate),
+      });
+      expect(verdict.accepted).toBe(false);
+      const bake = verdict.failures.find((failure) => failure.code === 'invalid-bootc-bake-manifest');
+      expect(bake?.message).toContain(`but the release names ${candidate.release.version}`);
     });
 
     it('rejects bootc when its bake matrix is missing or trust still names the tarball', () => {

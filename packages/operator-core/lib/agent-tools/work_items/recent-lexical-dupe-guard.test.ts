@@ -14,15 +14,16 @@ import {
   type RecentDupeCandidateRow,
 } from './recent-lexical-dupe-guard';
 
-const row = (id: string, title: string, harness = 'papercusp'): RecentDupeCandidateRow => ({
+const row = (id: string, title: string, harness = 'papercusp', hasEmbedding = true): RecentDupeCandidateRow => ({
   id,
   title,
   state: 'open',
   harness,
+  hasEmbedding,
 });
 
-const depsWith = (rows: RecentDupeCandidateRow[]): RecentLexicalDupeDeps => ({
-  queryRecentOpenItems: async () => rows,
+const depsWith = (rows: RecentDupeCandidateRow[], truncated = false): RecentLexicalDupeDeps => ({
+  queryRecentOpenItems: async () => ({ rows, truncated }),
 });
 
 afterEach(() => {
@@ -54,14 +55,33 @@ describe('classification (advisory-only)', () => {
       depsWith([row('WI-4241', 'fix: boot repair handler fallback for WI-4070 unblock')]),
     );
     expect(r).not.toBeNull();
-    expect(r!.map((c) => c.id)).toEqual(['WI-4241']);
-    expect(r![0].source).toBe('lexical-recent');
-    expect(r![0].similarity).toBeGreaterThan(0.5);
+    expect(r!.candidates.map((c) => c.id)).toEqual(['WI-4241']);
+    expect(r!.candidates[0].source).toBe('lexical-recent');
+    expect(r!.candidates[0].similarity).toBeGreaterThan(0.5);
+    expect(r!.coverage).toEqual({ scanned: 1, unembedded: 0, truncated: false, complete: true });
   });
 
   it('returns [] (not null) when nothing recent is close — "screened, no dupes"', async () => {
     const r = await findRecentLexicalDupes({ title: 'totally unrelated title' }, depsWith([row('WI-1', 'a completely different concern')]));
-    expect(r).toEqual([]);
+    expect(r?.candidates).toEqual([]);
+    expect(r?.coverage.complete).toBe(true);
+  });
+
+  it('reports a fresh unembedded row even when it is not a lexical candidate', async () => {
+    const r = await findRecentLexicalDupes(
+      { title: 'unrelated new work' },
+      depsWith([row('WI-FRESH', 'separate active concern', 'papercusp', false)]),
+    );
+    expect(r?.candidates).toEqual([]);
+    expect(r?.coverage).toEqual({ scanned: 1, unembedded: 1, truncated: false, complete: false });
+  });
+
+  it('reports an incomplete census when the bounded query found a sentinel row', async () => {
+    const r = await findRecentLexicalDupes(
+      { title: 'unrelated new work' },
+      depsWith([row('WI-1', 'separate active concern')], true),
+    );
+    expect(r?.coverage).toEqual({ scanned: 1, unembedded: 0, truncated: true, complete: false });
   });
 
   it('excludes the item itself (excludeId) even if it would otherwise self-match', async () => {
@@ -69,7 +89,7 @@ describe('classification (advisory-only)', () => {
       { title: 'same exact title here', excludeId: 'WI-9' },
       depsWith([row('WI-9', 'same exact title here')]),
     );
-    expect(r).toEqual([]);
+    expect(r?.candidates).toEqual([]);
   });
 
   it('sorts by similarity desc and caps at top-3', async () => {
@@ -82,8 +102,10 @@ describe('classification (advisory-only)', () => {
     ];
     const r = await findRecentLexicalDupes({ title: 'alpha bravo charlie delta echo' }, depsWith(rows));
     expect(r).not.toBeNull();
-    expect(r!.length).toBeLessThanOrEqual(3);
-    for (let i = 1; i < r!.length; i++) expect(r![i - 1].similarity).toBeGreaterThanOrEqual(r![i].similarity);
+    expect(r!.candidates.length).toBeLessThanOrEqual(3);
+    for (let i = 1; i < r!.candidates.length; i++) {
+      expect(r!.candidates[i - 1].similarity).toBeGreaterThanOrEqual(r!.candidates[i].similarity);
+    }
   });
 
   it('passes the resolved window through to the query', async () => {
@@ -92,7 +114,7 @@ describe('classification (advisory-only)', () => {
     const deps: RecentLexicalDupeDeps = {
       queryRecentOpenItems: async (windowMin, harness) => {
         calls.push({ windowMin, harness });
-        return [];
+        return { rows: [], truncated: false };
       },
     };
     await findRecentLexicalDupes({ title: 't', harness: 'papercusp' }, deps);
@@ -119,7 +141,7 @@ describe('threshold + window env overrides', () => {
       { title: 'alpha bravo charlie delta' },
       depsWith([row('WI-1', 'alpha bravo charlie echo')]),
     );
-    expect(r).toEqual([]);
+    expect(r?.candidates).toEqual([]);
   });
 });
 
@@ -137,7 +159,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
     vi.useFakeTimers();
     try {
       const deps: RecentLexicalDupeDeps = {
-        queryRecentOpenItems: () => new Promise<RecentDupeCandidateRow[]>(() => {}), // never settles
+        queryRecentOpenItems: () => new Promise(() => {}), // never settles
       };
       const p = findRecentLexicalDupes({ title: 't' }, deps);
       await vi.advanceTimersByTimeAsync(1600);
@@ -153,7 +175,7 @@ describe('fail-open — every failure mode returns null (create proceeds)', () =
     const deps: RecentLexicalDupeDeps = {
       queryRecentOpenItems: async () => {
         touched = true;
-        return [];
+        return { rows: [], truncated: false };
       },
     };
     expect(await findRecentLexicalDupes({ title: 't' }, deps)).toBeNull();

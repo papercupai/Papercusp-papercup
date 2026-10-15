@@ -225,8 +225,10 @@ describe('R-13 — a service key needs a spending cap', () => {
   it('a capped service key is created with its cap, and a plain app key still needs none', async () => {
     const created = await createServiceKey({ workspaceId: WS, userEmail: CREATOR, label: 'capped', spendCapCents: 2500 });
     expect(created.app).toMatchObject({ kind: 'service', spend_cap_cents: 2500, spend_cap_window_sec: DEFAULT_SPEND_CAP_WINDOW_SEC, expires_at: null });
+    const zeroCapped = await createServiceKey({ workspaceId: WS, userEmail: CREATOR, label: 'read-only', spendCapCents: 0 });
+    expect(zeroCapped.app).toMatchObject({ kind: 'service', spend_cap_cents: 0, spend_cap_window_sec: DEFAULT_SPEND_CAP_WINDOW_SEC });
     expect(resolveSpendCap('app', {})).toEqual({ spendCapCents: null, spendCapWindowSec: null });
-    expect(() => resolveSpendCap('service', { spendCapCents: 0 })).toThrow(SpendCapError);
+    expect(resolveSpendCap('service', { spendCapCents: 0 })).toEqual({ spendCapCents: 0, spendCapWindowSec: DEFAULT_SPEND_CAP_WINDOW_SEC });
   });
 
   it('the Connect-an-app route refuses a service key without a cap', async () => {

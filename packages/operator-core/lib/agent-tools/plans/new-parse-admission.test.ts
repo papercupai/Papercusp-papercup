@@ -47,13 +47,14 @@ const withPlanLockM = vi.mocked(withPlanLock);
 const tool = (await import('./new')).default;
 
 type Out = { content: { text: string }[]; isError?: boolean };
-const call = (content: string) =>
+const call = (content: string, status?: string) =>
   tool.handler(
     {
       harness: 'papercusp',
       slug: 'parse-admission',
       title: 'Parse admission',
       force: true,
+      ...(status ? { status } : {}),
       content,
     } as never,
     { metadata: vi.fn() } as never,
@@ -97,6 +98,47 @@ describe('plans:new parse admission (EI-22005620513894909)', () => {
       items: [{ id: 'P-001', status: 'todo', text: 'this parses' }],
     });
     expect(payload.unparsedItemLines).toBeUndefined();
+  });
+
+  it('accepts a ready plan with an already-terminal item graph for post-create reconciliation', async () => {
+    const out = await call('## Phase 1\n\n- **P-001** `done` already complete\n', 'ready');
+
+    expect(out.isError).toBeUndefined();
+    expect(withPlanLockM).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(out.content[0]!.text) as Record<string, any>;
+    expect(payload).toMatchObject({
+      ok: true,
+      itemsParsed: 1,
+      items: [{ id: 'P-001', status: 'done', text: 'already complete' }],
+    });
+  });
+
+  it('refuses ordinary Requirements prose without an R-N BAR before persistence', async () => {
+    const out = await call([
+      '## Requirements',
+      '',
+      '- Every matching customer is exported exactly once.',
+      '',
+      '## Design',
+      '',
+      'The exporter reads the customer table.',
+      '',
+      '## Phase 1',
+      '',
+      '- **P-001** `todo` implement the exporter',
+      '',
+    ].join('\n'));
+
+    expect(out.isError).toBe(true);
+    expect(withPlanLockM).not.toHaveBeenCalled();
+    const payload = JSON.parse(out.content[0]!.text) as Record<string, any>;
+    expect(payload).toMatchObject({
+      error: 'invalid_plan_content',
+      reason: 'acceptance_bar_authoring',
+    });
+    expect(payload.acceptanceBar.problems).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'bar_requirement_parse_failed' })]),
+    );
   });
 
   it('refuses Requirements without the activation BAR map before persistence', async () => {

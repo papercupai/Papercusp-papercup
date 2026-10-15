@@ -1,4 +1,25 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest';
+import { projectAdvRoster, type RosterSnapshot } from './adv-roster-read';
+
+describe('header roster projection', () => {
+  it('preserves between-turn lifecycle facts while dropping large details', () => {
+    const live = { ownerId: 'live', sessionState: 'live', transcriptFresh: true,
+      machineLabel: 'desktop', isLocal: true, fleetSlug: 'repair', fleetColor: '#123456',
+      checkpoint: 'large checkpoint'.repeat(1000), intent: 'large intent'.repeat(1000) };
+    const snapshot = { active: [live, { ...live, ownerId: 'parked', sessionState: 'parked' }],
+      ended: [live], pending: [live], starting: [], orphanedClaims: [],
+      degradedFields: [{ field: 'ended', kind: 'read-failed', reason: 'unavailable' }] } as unknown as RosterSnapshot;
+    const header = projectAdvRoster(snapshot, 'header');
+    expect(header.active).toEqual(['live', 'parked'].map((sessionState) => ({
+      ownerId: sessionState, sessionState, liveness: undefined, loopArmed: undefined, transcriptFresh: true,
+      thinking: undefined, machineLabel: 'desktop', isLocal: true, fleetSlug: 'repair', fleetColor: '#123456',
+    })));
+    expect(header).toHaveProperty('degradedFields', snapshot.degradedFields);
+    expect(header).not.toHaveProperty('ended');
+    expect(JSON.stringify(header)).not.toContain('large');
+    expect(projectAdvRoster(snapshot)).toBe(snapshot);
+  });
+});
 
 /**
  * adv-roster-read — the read deadline on the Sessions roster fan-out (WI-39825).
@@ -38,6 +59,7 @@ vi.mock('../adv-roster', () => ({
   dedupeEndedAgainstActive: (ended: unknown) => ended,
   pendingLaunchesToRosterEntries: (rows: unknown) => rows,
   startingLaunchesToRosterEntries: (rows: unknown) => rows,
+  readStartingLaunchLogHints: async () => new Map(),
   dedupeStartingAgainstActive: (starting: unknown) => starting,
 }));
 

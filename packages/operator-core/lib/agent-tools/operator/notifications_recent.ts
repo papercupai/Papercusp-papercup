@@ -32,12 +32,14 @@ export default defineTool({
     limit: z.number().int().positive().max(500).optional(),
   }),
   async handler(args) {
-    const { toasts } = await listToasts({ limit: args.limit });
-    const filtered =
-      args.level && args.level !== 'all' ? toasts.filter((t) => t.level === args.level) : toasts;
+    const level = args.level && args.level !== 'all' ? args.level : undefined;
+    const { toasts } = await listToasts({
+      limit: args.limit,
+      ...(level ? { level } : {}),
+    });
     return {
       content: [
-        { type: 'text', text: JSON.stringify({ count: filtered.length, notifications: filtered }) },
+        { type: 'text', text: JSON.stringify({ count: toasts.length, notifications: toasts }) },
       ],
     };
   },

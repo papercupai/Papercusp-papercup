@@ -168,6 +168,87 @@ describe('planPortfolioFrontierStep', () => {
   });
 });
 
+// WI-10005247: a never-verified route (and rows the cursor lap has not revisited
+// for a day) must not wait out the whole round-robin lap behind rows another
+// writer just stamped.
+describe('planPortfolioFrontierStep staleness tier', () => {
+  const DAY = 86_400_000;
+  const STALE_BEFORE = NOW - DAY;
+  const fresh = (ideaId: string, over: Partial<PortfolioOutcomeCandidate> = {}) =>
+    candidate(ideaId, { outcomeCheckedAtMs: NOW - 60_000, ...over });
+
+  it('verifies a never-checked route and day-stale rows before a cursor that sits elsewhere', () => {
+    const result = planPortfolioFrontierStep({
+      gradingBacklog: 5,
+      pending: [
+        // graded su-ideate rows sort first but were last checked 2 days ago
+        candidate('ideate-old', { humanGrade: 4, outcomeCheckedAtMs: NOW - 2 * DAY }),
+        // brand-new route: never verified, graded late so it ranks behind the cursor
+        candidate('brand-new', { humanGrade: 4, routedAtMs: NOW + 1, outcomeCheckedAtMs: null }),
+        fresh('scout-1'),
+        fresh('scout-2'),
+        fresh('scout-3'),
+      ],
+      previous: checkpoint({ cursorIdeaId: 'scout-1' }),
+      itemBudget: 25,
+      timeBudgetMs: 5_000,
+      nowMs: NOW,
+      staleBeforeMs: STALE_BEFORE,
+    });
+    // never-checked first, then oldest check, then the reserved cursor slot
+    expect(result.selected.map((row) => row.ideaId)).toEqual(['brand-new', 'ideate-old', 'scout-2']);
+    expect(result.priorityCount).toBe(2);
+  });
+
+  it('keeps a reserved slot for the cursor so unstampable stale rows cannot freeze the lap', () => {
+    const stale = ['s1', 's2', 's3', 's4'].map((id) => candidate(id, { outcomeCheckedAtMs: null }));
+    const result = planPortfolioFrontierStep({
+      gradingBacklog: 1,
+      pending: [...stale, fresh('r1'), fresh('r2')],
+      previous: checkpoint({ cursorIdeaId: 'r1' }),
+      itemBudget: 25,
+      timeBudgetMs: 5_000,
+      nowMs: NOW,
+      staleBeforeMs: STALE_BEFORE,
+    });
+    expect(result.selected).toHaveLength(PORTFOLIO_FRONTIER_VERIFICATION_FLOOR);
+    expect(result.priorityCount).toBe(PORTFOLIO_FRONTIER_VERIFICATION_FLOOR - 1);
+    expect(result.selected.at(-1)?.ideaId).toBe('r2');
+  });
+
+  it('does not drag the round-robin cursor to a priority pick', () => {
+    const result = planPortfolioFrontierStep({
+      gradingBacklog: 1,
+      pending: [candidate('stale', { outcomeCheckedAtMs: null, humanGrade: 3 }), fresh('a'), fresh('b'), fresh('c')],
+      previous: checkpoint({ cursorIdeaId: 'a', cursorGrade: null, cursorRoutedAtMs: NOW }),
+      itemBudget: 25,
+      timeBudgetMs: 5_000,
+      nowMs: NOW,
+      staleBeforeMs: STALE_BEFORE,
+    });
+    expect(result.selected.map((row) => row.ideaId)).toEqual(['stale', 'b', 'c']);
+    expect(result.checkpoint.cursorIdeaId).toBe('c');
+    expect(result.checkpoint.currentIdeaId).toBe('stale');
+  });
+
+  it('is inert when the caller omits staleBeforeMs or the staleness reading', () => {
+    const pending = [candidate('x', { outcomeCheckedAtMs: null }), candidate('y'), candidate('z')];
+    const base = { gradingBacklog: 0, pending, itemBudget: 2, timeBudgetMs: 5_000, nowMs: NOW };
+    const disabled = planPortfolioFrontierStep({ ...base, previous: checkpoint({ cursorIdeaId: 'x' }) });
+    expect(disabled.selected.map((row) => row.ideaId)).toEqual(['y', 'z']);
+    expect(disabled.priorityCount).toBe(0);
+    // `undefined` (not read) never counts as stale even with the tier enabled
+    const unread = planPortfolioFrontierStep({
+      ...base,
+      pending: [candidate('y'), candidate('z')],
+      previous: checkpoint({ cursorIdeaId: 'y' }),
+      staleBeforeMs: STALE_BEFORE,
+    });
+    expect(unread.priorityCount).toBe(0);
+    expect(unread.selected.map((row) => row.ideaId)).toEqual(['z', 'y']);
+  });
+});
+
 describe('checkpoint durability', () => {
   it('rejects old/malformed persisted state instead of inventing a cursor', () => {
     expect(decodePortfolioFrontierCheckpoint(null)).toBeNull();

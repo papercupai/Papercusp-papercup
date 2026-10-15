@@ -1,0 +1,323 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005442",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "item": "P-011",
+  "scope": "Fresh exact selected-root observations on the actual staging main PID; diagnostic coverage only, no physical savings or full P011 acceptance.",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-pinned-owners-r2-2026-10-02.json",
+    "sha256": "bf5838c8703b1efa1f68a4e7c73bbb845d5e20a9696eb5008e7e59ec2126516c",
+    "bytes": 150743
+  },
+  "runtime": {
+    "plane": "live-current-build-operator-api",
+    "mainPid": 463014,
+    "healthBuildSha": "d849cabb62",
+    "healthBefore": {
+      "sha": "d849cabb62",
+      "version": "0.0.0",
+      "at": "2026-10-02T11:18:40.949Z"
+    },
+    "healthAfter": {
+      "sha": "d849cabb62",
+      "version": "0.0.0",
+      "at": "2026-10-02T11:19:02.885Z"
+    },
+    "startedAt": "2026-10-02T11:18:40.656Z",
+    "endedAt": "2026-10-02T11:19:03.139Z",
+    "processIdentityPreserved": true,
+    "probeOpenedInspectorClosed": true,
+    "samples": 9,
+    "requests": 24,
+    "requestConcurrency": 2,
+    "ambientWorkloadControlled": false,
+    "httpWorkerAttribution": "unknown; requests may reach sibling workers",
+    "sourceIdentity": "Health-reported loaded application build and disk bundle hash are separate observations. The updated local CDP reader injects the measurement expression; it is not claimed to be loaded application code."
+  },
+  "verification": {
+    "guard": {
+      "testRunId": 20517975,
+      "layer": "unit",
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0,
+      "log": "/tmp/su-7db4f-p011-selected-owner-guard-r2.log"
+    },
+    "live": {
+      "testRunId": 20517992,
+      "layer": "integration",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "log": "/tmp/su-7db4f-p011-selected-owner-live-r2.log"
+    },
+    "ledgerScope": {
+      "workspace": "papercusp-workspace",
+      "harness": "papercusp",
+      "source": "local",
+      "worktreeDirty": true
+    },
+    "focusedTypes": {
+      "namedFiles": 2,
+      "errors": 0,
+      "exit": 0,
+      "log": "/tmp/su-7db4f-p011-selected-owner-types-r2.log"
+    },
+    "testOracle": "Real Node inspector: a 100-entry first map is limited under maxEntries=4, while a later root still yields its six code units. Exact selection with maxSlots=1 reads that later root alone; a missing owner is explicit."
+  },
+  "namedSourceIdentity": {
+    "beforeAt": "2026-10-02T11:18:28.603Z",
+    "before": {
+      "scripts/cdp-inspector.mjs": "9a832b65de352ca5a5ea2fe241f1e1195f418dc5fc1cfd4bf910c55cbe6f1970",
+      "scripts/cdp-inspector.d.mts": "dc3b0e6e89907e18b7be9518e88c66923fa8ac46e1290fbf1abf15f8a795397e",
+      "packages/operator-core/lib/cdp-inspector.test.ts": "aa1b35830c6651ebcc9a170ab4ac0186fa8cfc242166cbbc514ca704069a2a60",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "d8a50ac87ab898b6df26c2a60358aba09ce5ec0a3ca2cc0d90dfd63b9da1da7a"
+    },
+    "after": {
+      "scripts/cdp-inspector.mjs": "9a832b65de352ca5a5ea2fe241f1e1195f418dc5fc1cfd4bf910c55cbe6f1970",
+      "scripts/cdp-inspector.d.mts": "dc3b0e6e89907e18b7be9518e88c66923fa8ac46e1290fbf1abf15f8a795397e",
+      "packages/operator-core/lib/cdp-inspector.test.ts": "aa1b35830c6651ebcc9a170ab4ac0186fa8cfc242166cbbc514ca704069a2a60",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "d8a50ac87ab898b6df26c2a60358aba09ce5ec0a3ca2cc0d90dfd63b9da1da7a"
+    },
+    "stable": true,
+    "qualification": "Four named source files only; full executed transitive graph and current serving source graph remain unknown."
+  },
+  "metricDefinitions": {
+    "stringCodeUnits": "Lengths summed over observed string references, including keys; repeated values can share physical storage.",
+    "byteViewExtents": "Observed view lengths can overlap backing stores.",
+    "mapEntries": "Sum of builtin Map sizes for observed map objects; not the number traversed.",
+    "selection": "Exact requested names; absent names listed separately. Registry population includes the 130 excluded roots.",
+    "budgets": "Global objects/entries/time are shared fairly among remaining selected roots. V8 enumeration can overrun the time budget.",
+    "zero": "An observed zero in this bounded enumerable-data-property walk does not prove an empty cache or absence of retained/native memory."
+  },
+  "observations": {
+    "selectedOwners": [
+      "@papercusp/memory:host",
+      "@papercusp/memory.local-embedder-worker",
+      "@papercusp/operator-core.harnessCoreCaches",
+      "@papercusp/operator-core.operatorCache",
+      "@papercusp/operator-core.snapshot-fold-slots",
+      "@papercusp/lexicon:host",
+      "@papercusp/operator-core.repoCitationTrackingCache",
+      "@papercusp/operator-core.agentsAcrossWorkspaceCache",
+      "@papercusp/operator-core.midTurnMemoryAdmission"
+    ],
+    "registryPopulation": 139,
+    "checkedPerSample": [
+      9,
+      9,
+      9,
+      9,
+      9,
+      9,
+      9,
+      9,
+      9
+    ],
+    "selectedNotCheckedPerSample": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "missingOwnersPerSample": [
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      [],
+      []
+    ],
+    "excludedBySelectionPerSample": [
+      130,
+      130,
+      130,
+      130,
+      130,
+      130,
+      130,
+      130,
+      130
+    ],
+    "observerMs": [
+      4.946415000129491,
+      3.339574000099674,
+      1.717204000102356,
+      2.7815479999408126,
+      2.163514999905601,
+      1.7598560000769794,
+      2.2926839999854565,
+      3.405001000035554,
+      2.281783999875188
+    ],
+    "perRoot": [
+      {
+        "owner": "@papercusp/memory:host",
+        "observations": 9,
+        "stringCodeUnitsRange": [
+          23,
+          23
+        ],
+        "mapEntryRange": [
+          0,
+          0
+        ],
+        "traversalLimitedSamples": 0,
+        "depthLimitedSamples": 0,
+        "fieldsLimitedSamples": 0,
+        "accessorsSkipped": 0,
+        "proxiesSkipped": 0
+      },
+      {
+        "owner": "@papercusp/memory.local-embedder-worker",
+        "observations": 9,
+        "stringCodeUnitsRange": [
+          0,
+          0
+        ],
+        "mapEntryRange": [
+          0,
+          0
+        ],
+        "traversalLimitedSamples": 0,
+        "depthLimitedSamples": 0,
+        "fieldsLimitedSamples": 0,
+        "accessorsSkipped": 0,
+        "proxiesSkipped": 0
+      },
+      {
+        "owner": "@papercusp/operator-core.harnessCoreCaches",
+        "observations": 9,
+        "stringCodeUnitsRange": [
+          0,
+          0
+        ],
+        "mapEntryRange": [
+          0,
+          0
+        ],
+        "traversalLimitedSamples": 0,
+        "depthLimitedSamples": 0,
+        "fieldsLimitedSamples": 0,
+        "accessorsSkipped": 0,
+        "proxiesSkipped": 0
+      },
+      {
+        "owner": "@papercusp/operator-core.operatorCache",
+        "observations": 9,
+        "stringCodeUnitsRange": [
+          18764,
+          18764
+        ],
+        "mapEntryRange": [
+          273,
+          279
+        ],
+        "traversalLimitedSamples": 9,
+        "depthLimitedSamples": 9,
+        "fieldsLimitedSamples": 0,
+        "accessorsSkipped": 0,
+        "proxiesSkipped": 0
+      },
+      {
+        "owner": "@papercusp/operator-core.snapshot-fold-slots",
+        "observations": 9,
+        "stringCodeUnitsRange": [
+          0,
+          0
+        ],
+        "mapEntryRange": [
+          0,
+          0
+        ],
+        "traversalLimitedSamples": 0,
+        "depthLimitedSamples": 0,
+        "fieldsLimitedSamples": 0,
+        "accessorsSkipped": 0,
+        "proxiesSkipped": 0
+      },
+      {
+        "owner": "@papercusp/lexicon:host",
+        "observations": 9,
+        "stringCodeUnitsRange": [
+          0,
+          0
+        ],
+        "mapEntryRange": [
+          0,
+          0
+        ],
+        "traversalLimitedSamples": 0,
+        "depthLimitedSamples": 0,
+        "fieldsLimitedSamples": 0,
+        "accessorsSkipped": 0,
+        "proxiesSkipped": 0
+      },
+      {
+        "owner": "@papercusp/operator-core.repoCitationTrackingCache",
+        "observations": 9,
+        "stringCodeUnitsRange": [
+          0,
+          0
+        ],
+        "mapEntryRange": [
+          0,
+          0
+        ],
+        "traversalLimitedSamples": 0,
+        "depthLimitedSamples": 0,
+        "fieldsLimitedSamples": 0,
+        "accessorsSkipped": 0,
+        "proxiesSkipped": 0
+      },
+      {
+        "owner": "@papercusp/operator-core.agentsAcrossWorkspaceCache",
+        "observations": 9,
+        "stringCodeUnitsRange": [
+          0,
+          0
+        ],
+        "mapEntryRange": [
+          0,
+          0
+        ],
+        "traversalLimitedSamples": 0,
+        "depthLimitedSamples": 0,
+        "fieldsLimitedSamples": 0,
+        "accessorsSkipped": 0,
+        "proxiesSkipped": 0
+      },
+      {
+        "owner": "@papercusp/operator-core.midTurnMemoryAdmission",
+        "observations": 9,
+        "stringCodeUnitsRange": [
+          0,
+          0
+        ],
+        "mapEntryRange": [
+          0,
+          0
+        ],
+        "traversalLimitedSamples": 0,
+        "depthLimitedSamples": 0,
+        "fieldsLimitedSamples": 0,
+        "accessorsSkipped": 0,
+        "proxiesSkipped": 0
+      }
+    ]
+  },
+  "remaining": [
+    "operatorCache is object/depth limited in all nine samples; further selected-root measurements are needed for its payload distribution.",
+    "130 registry roots excluded by selection; unpinned objects, function closures, symbols and non-enumerable fields also excluded.",
+    "Main PID only; no native retainer attribution, historical compiler recovery, paired useful-context/concurrency intervention, physical savings, R8/R9 independent acceptance or final shipment."
+  ]
+}

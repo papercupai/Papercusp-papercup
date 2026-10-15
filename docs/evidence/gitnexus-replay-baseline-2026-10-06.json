@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10006283",
+  "plan": "gitnexus-deterministic-integration-2026-10-05",
+  "planItem": "P-003",
+  "status": "complete-threshold-not-demonstrated",
+  "completedBy": "su-72f78fbb-7e47-41ae-a842-35c83b8fcdd2",
+  "completedAt": "2026-10-06T09:45:00Z",
+  "conclusion": "The D-006 go threshold (>=3 graph-only incidents or >=20% of sampled cross-workspace reds) is NOT DEMONSTRATED. The qualified population holds one verified cross-workspace red (WI-10001699) and the pre-change static index already caught it. No historical graph observation exists for any incident, so every graph signal is unknown and evaluateReplayThreshold returns 'unresolved', not 'scale-back'. Read this as 'no demonstrated graph-only value in this window', never as 'proven no value'.",
+  "window": { "fromInclusive": "2026-09-06T05:25:00Z", "toExclusive": "2026-10-06T05:25:00Z" },
+  "selector": {
+    "table": "harness_shared.engineer_issues",
+    "workspace_id": "papercusp-workspace",
+    "scope": "harness:papercusp",
+    "timestamp": "created_at",
+    "fields": ["title", "body"],
+    "postgresCaseInsensitiveRegex": "cross[- ]workspace|call[- ]count strand|required[- ]field strand|deleted export|renamed export|stale caller|no callers|unused.{0,50}retract|absence.{0,50}retract",
+    "positiveControl": "EI-24894428994273643",
+    "rowCount": 59,
+    "truncated": false,
+    "limitation": "Lexical discovery population, not the complete true-incident population. Older issues active in repair ledgers require separate inclusion. These rows include tool friction, reflections and unrelated scope issues; root causes remain unqualified."
+  },
+  "candidateIds": [
+    "EI-22639911757208669", "EI-22653911146271003", "EI-22706392084617013", "EI-22725694172066439", "EI-22790978723753074", "EI-23069811098276929", "EI-23069997326945207", "EI-23070035255433395", "EI-23072226699837052", "EI-23076097546337999", "EI-23109264318568216", "EI-23126318669665278", "EI-23218806884964837", "EI-23338867003673247", "EI-23381419295240279", "EI-23394274829357160", "EI-23395323683186007", "WI-10001699", "EI-23477903875117956", "EI-23523710826479782", "EI-23691486198883217", "EI-23783384703250272", "EI-23819741796239623", "EI-23939864291863237", "EI-23972791150314713", "EI-23979325050159306", "WI-10002500", "EI-24031964787187800", "EI-24034681812762704", "EI-24068140368320790", "EI-24128396373986817", "EI-24168958629400000", "EI-24350728085360442", "EI-24442819396601796", "EI-24639344765147379", "WI-10004191", "WI-10004467", "EI-24751753794438295", "EI-24754909050549317", "EI-24773341134273656", "WI-10004889", "EI-24795223291595712", "EI-24795389763283769", "EI-24805293543141850", "EI-24810486297867031", "EI-24811065681849994", "EI-24811624184931883", "EI-24811670394908585", "WI-10005226", "EI-24838237743424639", "EI-24839274085262433", "EI-24863339355681603", "EI-24864582017949411", "EI-24882837760982417", "EI-24944759908070540", "EI-25170086482040034", "EI-25195842698428342", "EI-25202266840842142", "EI-25203445803722183"
+  ],
+  "historicalRepairAttributedIds": ["WI-10000288", "EI-22773592411536980", "WI-10002602", "WI-10003582", "WI-10005450"],
+  "selectedEvidenceLeads": [
+    {
+      "id": "WI-10001699",
+      "status": "source-described-cross-workspace-strand; static-selector-replayed; graph-replay-pending",
+      "changeSha": "13da57561911c325992e69990c092bcf30119126",
+      "sourcePath": "libs/generic/deployment-driver/src/workspace-host-agent-home.ts",
+      "reportedFailingTests": ["packages/operator-core/lib/workspace-host/agent-credential-admission.test.ts", "libs/generic/deployment-driver/src/workspace-host-remote-initializer-host.test.ts"],
+      "testRunRefs": ["test-run:18204458"],
+      "reportedCause": "Fail-closed credential projection required a claudeAiOauth object; older test fixtures used a loose shape. Original body reports 19 failures across two workspaces.",
+      "archivedCompletionEvidence": {
+        "ref": "work-item:WI-10001699:terminalCompletionEvidence",
+        "repairHeadSha": "8c89726a71a4974be1b2c7862c0c28d1d8109d6b",
+        "reportedFailureRun": 18204458,
+        "reportedRepairRuns": [18204459, 18204460],
+        "reportedAfter": "48 passed, 0 failed across both repaired suites",
+        "limitation": "Current testing:runs did not retrieve legacy failure row18204458; before/after observations are retained in the authoritative original completion, not asserted as freshly rerun here."
+      },
+      "staticReplay": {
+        "prechangeSha": "a2e62e26f89394f3182f4d4746c632fc8c2ec03c",
+        "selector": "prechange scripts/lib/related-tests.mjs",
+        "snapshotSource": "git archive read into Python stdlib tarfile in memory; no checkout or files written",
+        "parserVersion": "6.0.2",
+        "archivedFiles": 14052,
+        "workspaceDependencyOnDeploymentDriver": "*",
+        "results": [
+          { "workspace": "packages/operator-core", "expectedTest": "lib/workspace-host/agent-credential-admission.test.ts", "expectedExists": true, "mode": "full", "reason": "no-changed-paths-in-scope", "totalTests": 6788, "selectedTests": 0, "expectedCovered": true },
+          { "workspace": "libs/generic/deployment-driver", "expectedTest": "src/workspace-host-remote-initializer-host.test.ts", "expectedExists": true, "mode": "related", "reason": "ok", "totalTests": 24, "selectedTests": 6, "expectedCovered": true }
+        ],
+        "meaning": "The historical file selector covers both reported failing files once their workspaces are dispatched. mode=full/selectedTests=0 means the whole suite, never zero executed tests. The core dependency on deployment-driver exists at the same parent commit.",
+        "limitation": "Historical source and selector with installed TypeScript parser, not reconstructed historical node_modules. Workspace-dispatch execution and the old failure itself were not rerun; this is a selector-arm observation, not a complete gate replay or a measured graph speedup."
+      },
+      "graphOnlyVerdict": "unknown"
+    },
+    { "id": "EI-24811624184931883", "status": "required-field lead; cross-workspace qualification-pending", "observedShaPrefix": "ad184e821e", "reportedTest": "packages/operator-core/lib/external-triggers/binding-engine.integration.test.ts", "reportedCause": "Missing required nature property in UpsertDatatypeInput fixture.", "graphOnlyVerdict": "unknown" },
+    { "id": "EI-25195842698428342", "status": "retracted-absence lead; symbol and historical source-pending", "reportedCause": "An inner function had no callers but its exported wrapper ran on boot.", "graphOnlyVerdict": "unknown" }
+  ],
+  "qualification": {
+    "method": "Each lexical candidate and repair-attributed id was read (title + summary + body). An incident enters the population only when its own record names a breaking change and a failing test in a DIFFERENT workspace (cross-workspace-red), or a code-caller absence claim that was later retracted (retracted-absence). The rest are tool friction, reflections, scope/identity issues or detector false positives, not breakage incidents.",
+    "crossWorkspaceReds": ["WI-10001699"],
+    "retractedAbsence": ["EI-25195842698428342"],
+    "excludedWithReason": [
+      { "id": "EI-24811624184931883", "reason": "same-workspace typecheck strand: UpsertDatatypeInput is defined in packages/operator-core (lib/datatype-registry-store.ts, lib/cupboard/install-datatype-io.ts) and the stranded fixture is packages/operator-core/lib/external-triggers/binding-engine.integration.test.ts; lint:tsc (a static instrument) caught it" },
+      { "id": "WI-10003582", "reason": "same-workspace typecheck strand: OrientationState.heldReadFailed was added in operator-core (f8d5dbddbf) and all 3 failing files are operator-core tests; the gate's early typecheck leg caught it" },
+      { "id": "EI-23338867003673247", "reason": "required-field strand caught pre-commit by lint:tsc; it never reached the gate" },
+      { "id": "EI-24839274085262433", "reason": "fixture-population contamination in one integration test, not a cross-workspace strand" },
+      { "id": "EI-24442819396601796", "reason": "false positive in check-behavioural-strands, not a breakage incident" },
+      { "id": "EI-22790978723753074", "reason": "false absence came from scorecards:get truncation, not a code-caller claim" }
+    ],
+    "allOtherCandidates": "not breakage incidents (tool friction, scope/identity, reflections)"
+  },
+  "replayIncidents": [
+    {
+      "id": "WI-10001699",
+      "kind": "cross-workspace-red",
+      "rootCauseVerified": true,
+      "staticIndex": { "verdict": "caught", "sourceSha": "a2e62e26f89394f3182f4d4746c632fc8c2ec03c", "positiveControl": true, "evidenceRefs": ["docs/evidence/gitnexus-replay-baseline-2026-10-06.json#selectedEvidenceLeads[0].staticReplay"] },
+      "signals": {
+        "graph-added-workspaces": { "verdict": "unknown", "comparison": "unavailable", "graphHealth": "empty-unproven", "sourceSha": null, "evidenceRefs": [], "note": "No GitNexus snapshot exists at a2e62e26. The static index already selected both failing workspaces, and D-002 makes the graph add-only, so even an observed graph could not have added a new catch." },
+        "edit-time-impact": { "verdict": "unknown", "comparison": "unavailable", "graphHealth": "empty-unproven", "sourceSha": null, "evidenceRefs": [], "note": "Credit requires a measured savedMs because static caught it. No historical record carries one." },
+        "graph-ordering": { "verdict": "unknown", "comparison": "unavailable", "graphHealth": "empty-unproven", "sourceSha": null, "evidenceRefs": [], "note": "Ordering credit requires a measured savedMs. None exists." }
+      }
+    },
+    {
+      "id": "EI-25195842698428342",
+      "kind": "retracted-absence",
+      "rootCauseVerified": false,
+      "staticIndex": { "verdict": "unknown", "sourceSha": null, "positiveControl": false, "evidenceRefs": [] },
+      "signals": {
+        "graph-added-workspaces": { "verdict": "unknown", "comparison": "unavailable", "graphHealth": "empty-unproven", "sourceSha": null, "evidenceRefs": [] },
+        "edit-time-impact": { "verdict": "unknown", "comparison": "unavailable", "graphHealth": "empty-unproven", "sourceSha": null, "evidenceRefs": [], "note": "The record names neither the symbol nor the commit. D-017 also measured graph:query callers as needs-widening against grep, so today's graph cannot answer an absence question better than grep." },
+        "graph-ordering": { "verdict": "unknown", "comparison": "unavailable", "graphHealth": "empty-unproven", "sourceSha": null, "evidenceRefs": [] }
+      }
+    }
+  ],
+  "thresholdEvaluation": {
+    "computedBy": "evaluateReplayThreshold(replayIncidents) in packages/operator-core/lib/code-intelligence/graph-replay.ts; pinned by graph-replay.test.ts",
+    "decision": "unresolved",
+    "graphOnlyIncidents": 0,
+    "sampledReds": 1,
+    "graphOnlyReds": 0,
+    "unknownIds": ["WI-10001699", "EI-25195842698428342"],
+    "unqualifiedIds": ["EI-25195842698428342"],
+    "d006Reading": "D-006 proceeds with Phases 2-4 only when the replay SHOWS the threshold. 'unresolved' does not show it, so D-006's default applies: Phase 1 + P-015 + P-017 + P-012."
+  },
+  "graphArmAvailability": "No GitNexus snapshot exists at any incident's pre-change commit; the index is rebuilt in place at HEAD. A fresh analyze measured >20 min CPU-bound at ~5 GB RSS (P-017 run, 2026-10-06 09:07Z onward). For the only qualified red it would not change the result anyway: static already caught it, and the ordering and edit-time signals need a measured savedMs that no historical record carries.",
+  "metrics": {
+    "notGreenPipelineEventRows": 76,
+    "notGreenPopulation": "kind=green_checkpoint,status=not-green in the fixed window and workspace/install papercusp; events are not unique incidents",
+    "notGreenDistinctCandidates": 44,
+    "strandCausedRedsPerWeek": {
+      "kind": "lower-bound from the qualified sample, not a census",
+      "weeks": 4.286,
+      "verifiedStrandIncidents": ["WI-10001699", "WI-10003582", "EI-24811624184931883"],
+      "crossWorkspace": 1,
+      "sameWorkspaceTypecheck": 2,
+      "perWeekAll": 0.7,
+      "perWeekCrossWorkspace": 0.23,
+      "limitation": "Most of the 44 red candidates have no root-cause record, so this is a floor."
+    },
+    "gateTimeToFirstRedMs": {
+      "definition": "detail.roundPhases.totalMs on green_checkpoint not-green events: gate run start to the red verdict",
+      "runsInWindow": 76,
+      "runsMeasured": 10,
+      "p50": 1659102,
+      "p90": 6160352,
+      "min": 154144,
+      "max": 6785328,
+      "byLeg": {
+        "earlyTypecheck": { "runs": 29, "candidates": 20, "measured": 4, "p50": 518300, "p90": 1205801 },
+        "testOrOtherLeg": { "runs": 47, "candidates": 27, "measured": 6, "p50": 2471763, "p90": 6785328 }
+      },
+      "limitation": "roundPhases is a recent writer; only 10 of 76 not-green runs carry it. 29 of 76 reds (20 of 44 candidates) were early-typecheck reds, which test selection or graph ordering cannot reach."
+    },
+    "graphAddedWorkspacesPerRun": {
+      "value": 0,
+      "runsMeasured": 37,
+      "gateAffectedLogsInWindow": 49,
+      "source": "~/.papercusp/checkpoint-logs/*-base-*-cand-*.log",
+      "positiveControl": "AFFECTED_DERIVATION is present in 37 of the 49 logs, so the selector's errSync output is captured (errSync writes to stderr and to the log)",
+      "rule": "Before 39ce2b4152 (2026-10-06T03:02:50Z, P-001) the selector printed GRAPH_SUGGESTIONS whenever status != 'unavailable'. Zero GRAPH_SUGGESTIONS lines across the 37 measured runs means the graph was unavailable, and so added 0 workspaces, on every one of them.",
+      "postP001": "P-012 re-measures this from the same logs now that the line prints on every run."
+    },
+    "retractedAbsenceClaimIncidents": { "codeCallerAbsence": 1, "ids": ["EI-25195842698428342"], "excluded": ["EI-22790978723753074"] }
+  },
+  "unknowns": [
+    "No historical graph snapshot exists, so every graph signal for every incident is unknown, never measured.",
+    "Root causes of most not-green candidates are unrecorded, so the strand rate is a floor.",
+    "pipeline_events failingTests is capped at 20 and candidate is truncated to 12 characters by its writer.",
+    "Most historical frozen-repair edits lack a work-item attribution; edit counts must not be called incident counts.",
+    "EI-25195842698428342 names neither the symbol nor the commit, so it cannot be replayed."
+  ],
+  "correction": "Initial candidate query used scope=papercusp and returned zero; positive controls corrected it to scope=harness:papercusp. No absence conclusion was drawn from that wrong-scope result."
+}

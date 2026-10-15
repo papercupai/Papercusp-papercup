@@ -25,6 +25,7 @@ import {
   evaluateCriterionCoverageChecks,
   subjectPlanAllowsPlannedPaths,
   type CriterionCheckRunner,
+  type CriterionCaseLoader,
   type CriterionCargoCheckRunner,
   type CoverageMeasurement,
   type CoverageReader,
@@ -1515,5 +1516,131 @@ describe('evaluateCriterionCoverageChecks (grading time)', () => {
     if (!res.ok) return;
     expect(Object.keys(res.checkRuns)).toEqual([]);
     expect(called).toBe(false);
+  });
+});
+
+// ── test-case filter on a tests check (test-rubric-unification P-002 / R-2) ──────────
+describe('tests check with a testName filter', () => {
+  const FILE = 'packages/x/real.test.ts';
+  const named = (testName: string) => [{ key: 'det', check: { ...testsCheck([FILE]), testName } }];
+  // The file's whole-file counts are GREEN while one unrelated case is red, so a verdict
+  // that ignored the filter would be distinguishable from one that honours it.
+  const CASES = [
+    { caseKey: 'probe sql > refuses a write', occurrence: 1, status: 'pass' as const, durationMs: 4 },
+    { caseKey: 'probe sql > reads a row', occurrence: 1, status: 'fail' as const, durationMs: 5 },
+    { caseKey: 'probe sql > skips on no db', occurrence: 1, status: 'skip' as const, durationMs: null },
+  ];
+  const runner: CriterionCheckRunner = async ({ files }) => ({ ...passRun(files), testRunIds: [77] }) as never;
+  const loaderOf = (cases: typeof CASES | null, seen?: Array<{ testRunIds: readonly number[]; file: string }>): CriterionCaseLoader =>
+    async (args) => {
+      seen?.push(args);
+      return cases;
+    };
+
+  it('schema: accepts testName with exactly one file and refuses it with two', () => {
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'tests', files: ['a.test.ts'], testName: 'x > y' }).success).toBe(true);
+    const two = rubricCriterionCheckSchema.safeParse({ kind: 'tests', files: ['a.test.ts', 'b.test.ts'], testName: 'x' });
+    expect(two.success).toBe(false);
+    expect(JSON.stringify(two.success ? '' : two.error.issues)).toContain('exactly one file');
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'tests', files: ['a.test.ts'], testName: '   ' }).success).toBe(false);
+  });
+
+  it('refuses a filter that matches zero recorded cases instead of counting it as a pass', async () => {
+    const res = await evaluateCriterionTestChecks({
+      criteria: named('probe sql > renamed away'),
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+      caseLoader: loaderOf(CASES),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res).toMatchObject({
+      error: 'check_test_case_unresolved',
+      criterionKey: 'det',
+      code: 'test_case_filter_zero_match',
+      testName: 'probe sql > renamed away',
+    });
+    if (res.error === 'check_test_case_unresolved') expect(res.recordedSample).toContain('probe sql > refuses a write');
+  });
+
+  it('judges only the matched cases: a passing case passes even when a sibling case in the file failed', async () => {
+    const seen: Array<{ testRunIds: readonly number[]; file: string }> = [];
+    const res = await evaluateCriterionTestChecks({
+      criteria: named('refuses a write'),
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+      caseLoader: loaderOf(CASES, seen),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.checkRuns.det).toMatchObject({
+      kind: 'tests',
+      verdict: 'pass',
+      passed: 1,
+      failed: 0,
+      testName: 'refuses a write',
+      matchedCases: 1,
+    });
+    // The loader is asked for exactly this run's ledger rows and the cited file.
+    expect(seen).toEqual([{ testRunIds: [77], file: FILE }]);
+  });
+
+  it('a matched failing case contradicts a pass rating', async () => {
+    const res = await evaluateCriterionTestChecks({
+      criteria: named('reads a row'),
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+      caseLoader: loaderOf(CASES),
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe('check_contradicted');
+    if (res.error === 'check_contradicted') {
+      expect(res.run).toMatchObject({ verdict: 'fail', passed: 0, failed: 1, testName: 'reads a row' });
+      expect(JSON.stringify(res.run)).toContain('probe sql > reads a row');
+    }
+  });
+
+  it('refuses when the run recorded no cases for the file (unknown is not a pass)', async () => {
+    const res = await evaluateCriterionTestChecks({
+      criteria: named('refuses a write'),
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+      caseLoader: loaderOf(null),
+    });
+    expect(res).toMatchObject({ ok: false, error: 'check_test_case_unresolved', code: 'test_case_filter_no_cases_recorded' });
+  });
+
+  it('refuses a filter whose only matches were skipped', async () => {
+    const res = await evaluateCriterionTestChecks({
+      criteria: named('skips on no db'),
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+      caseLoader: loaderOf(CASES),
+    });
+    expect(res).toMatchObject({ ok: false, error: 'check_test_case_unresolved', code: 'test_case_filter_unexecuted' });
+  });
+
+  it('leaves a check without testName on whole-file counts and never reads cases', async () => {
+    let read = false;
+    const res = await evaluateCriterionTestChecks({
+      criteria: [{ key: 'det', check: testsCheck([FILE]) }],
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+      caseLoader: async () => {
+        read = true;
+        return CASES;
+      },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.checkRuns.det).toMatchObject({ verdict: 'pass', passed: 3, failed: 0 });
+    if (res.ok) expect(res.checkRuns.det).not.toHaveProperty('testName');
+    expect(read).toBe(false);
   });
 });

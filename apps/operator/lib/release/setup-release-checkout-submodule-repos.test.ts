@@ -93,6 +93,93 @@ function cloneSubmoduleRepo(
   return r.status ?? -1;
 }
 
+describe('setup-release-checkout.sh committed gitlink population', () => {
+  let scratch: string;
+  let repo: string;
+  beforeEach(() => {
+    scratch = mkdtempSync(join(tmpdir(), 'setup-release-mappings-'));
+    repo = join(scratch, 'repo');
+    mkdirSync(repo);
+    git(repo, 'init', '-q');
+    writeFileSync(join(repo, 'tracked.txt'), 'source');
+    git(repo, 'add', 'tracked.txt');
+    git(repo, 'commit', '-qm', 'source');
+  });
+  afterEach(() => rmSync(scratch, { recursive: true, force: true }));
+
+  function check(sha = 'HEAD') {
+    return spawnSync('bash', ['-c',
+      'set -euo pipefail\nsource <(sed -n "/^assert_target_gitlink_mappings()/,/^}/p" "$1")\nassert_target_gitlink_mappings "$2" "$3"',
+      'mapping-guard', SCRIPT_PATH, repo, sha],
+    { encoding: 'utf8', env: { ...process.env, ...GIT_ENV }, timeout: 10_000 });
+  }
+
+  function addGitlink(path = 'apps/unmapped app') {
+    mkdirSync(join(repo, path), { recursive: true });
+    git(repo, 'update-index', '--add', '--cacheinfo', `160000,${git(repo, 'rev-parse', 'HEAD')},${path}`);
+    git(repo, 'commit', '-qm', 'nested repository');
+  }
+
+  it('accepts a source with no gitlinks or .gitmodules', () => {
+    expect(check().status).toBe(0);
+  });
+
+  it('refuses an unmapped committed gitlink even when ordinary status is empty', () => {
+    addGitlink();
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+    const result = check();
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('contains gitlinks without .gitmodules');
+  });
+
+  it('uses the selected commit mapping, preserving paths with spaces', () => {
+    addGitlink();
+    const incompleteSha = git(repo, 'rev-parse', 'HEAD');
+    writeFileSync(join(repo, '.gitmodules'), '[submodule "app"]\npath = apps/unmapped app\nurl = https://example.invalid/app.git\n');
+    git(repo, 'add', '.gitmodules');
+    git(repo, 'commit', '-qm', 'register app');
+    expect(check().status).toBe(0);
+    expect(check(incompleteSha).status).toBe(3);
+  });
+
+  it('identifies the omitted path when other mapped gitlinks are present', () => {
+    writeFileSync(join(repo, '.gitmodules'), '[submodule "other"]\npath = libs/other\nurl = https://example.invalid/other.git\n');
+    git(repo, 'add', '.gitmodules');
+    git(repo, 'commit', '-qm', 'other mapping');
+    addGitlink();
+    const result = check();
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('pinned gitlink apps/unmapped app has no .gitmodules mapping');
+  });
+
+  it('refuses source-only materialization before creating the release checkout', () => {
+    addGitlink();
+    const release = join(scratch, 'release');
+    const result = spawnSync('bash', [SCRIPT_PATH, '--ref', 'HEAD', '--integration', repo,
+      '--release', release, '--source-only', '--source-integrity', 'object-sourced'],
+    { encoding: 'utf8', env: { ...process.env, ...GIT_ENV }, timeout: 10_000 });
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('contains gitlinks without .gitmodules');
+    expect(existsSync(release)).toBe(false);
+  });
+
+  it('does not mistake SIGPIPE from an early match for a source without gitlinks', () => {
+    addGitlink();
+    writeFileSync(join(repo, '.gitmodules'), '[submodule "other"]\npath = libs/other\nurl = https://example.invalid/other.git\n');
+    git(repo, 'add', '.gitmodules');
+    const blob = git(repo, 'rev-parse', 'HEAD:tracked.txt');
+    const records = Array.from({ length: 3000 }, (_, i) => `100644 ${blob}\tz-${i}-${'x'.repeat(150)}\n`).join('');
+    const staged = spawnSync('git', ['update-index', '--index-info'], {
+      cwd: repo, input: records, encoding: 'utf8', env: { ...process.env, ...GIT_ENV }, timeout: 10_000,
+    });
+    expect(staged.status).toBe(0);
+    git(repo, 'commit', '-qm', 'large snapshot');
+    const result = check();
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('pinned gitlink apps/unmapped app has no .gitmodules mapping');
+  });
+});
+
 describe('setup-release-checkout.sh clone_submodule_repo (EI-19299565558496583)', () => {
   let tmp: string;
   let integrationRoot: string;

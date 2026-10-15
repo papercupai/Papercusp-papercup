@@ -5,9 +5,13 @@ import { describe, expect, it } from 'vitest';
 import type { PlanItem } from '@/app/admin/plans/plans-api';
 import {
   collapsePlanActivity,
+  derivedStatusViewOf,
   groupPlanItems,
   newestDecisions,
+  noteAgeOf,
   statusCountsOf,
+  type DashboardDerivedStatus,
+  type DashboardNoteStaleness,
   type PlanActivityFeedRow,
 } from './plan-dashboard-derive';
 
@@ -135,5 +139,132 @@ describe('collapsePlanActivity', () => {
   it('handles empty input', () => {
     expect(collapsePlanActivity(undefined)).toEqual([]);
     expect(collapsePlanActivity([])).toEqual([]);
+  });
+});
+
+// derived-status-not-hand-written-2026-10-12 P-005: the status card and the
+// note's age, derived from plans:get `derivedStatus` and `now.staleness`.
+function staleness(over: Partial<DashboardNoteStaleness> = {}): DashboardNoteStaleness {
+  return {
+    transitionsSinceNote: 0,
+    noteWrittenAt: '2026-10-12T20:00:00.000Z',
+    basis: 'events-after-note',
+    itemStatusChanges: 0,
+    planStatusChanges: 0,
+    truncatedByLimit: false,
+    text: '0 status changes since this note was written',
+    ...over,
+  };
+}
+
+function summaryItem(id: string, effectiveStatus: 'todo' | 'wip' | 'blocked' | 'needs-human', heldBy: string[] = []) {
+  return { id, effectiveStatus, importance: 'normal' as const, phase: null, heldBy };
+}
+
+function derivedStatus(over: Partial<DashboardDerivedStatus> = {}): DashboardDerivedStatus {
+  return {
+    counts: { todo: 1, wip: 1, blocked: 1, 'needs-human': 1, done: 2, dropped: 0, total: 6, terminal: 2, nonTerminal: 4 } as DashboardDerivedStatus['counts'],
+    actionable: [summaryItem('P-004', 'todo', ['su-aaaaaaaa-0000'])],
+    inFlight: [summaryItem('P-003', 'wip', ['su-bbbbbbbb-0000'])],
+    blocked: [{ ...summaryItem('P-005', 'blocked'), blockedOn: ['P-003'], external: false }],
+    awaitingHuman: [summaryItem('P-006', 'needs-human')],
+    truncated: { actionable: false, inFlight: false, blocked: false, awaitingHuman: false },
+    next: { itemId: 'P-004', reason: 'actionable', text: 'next: P-004' } as DashboardDerivedStatus['next'],
+    latestDecision: null,
+    lifecycle: null,
+    holdersMeasured: true,
+    text: '2 of 6 done; 1 in flight, 1 actionable, 1 blocked, 1 awaiting a human',
+    ...over,
+  };
+}
+
+describe('noteAgeOf (P-005)', () => {
+  it('is null when the read carried no staleness', () => {
+    expect(noteAgeOf(undefined)).toBeNull();
+    expect(noteAgeOf(null)).toBeNull();
+  });
+
+  it('marks the note moved past when transitionsSinceNote is above zero', () => {
+    const age = noteAgeOf(staleness({ transitionsSinceNote: 2, itemStatusChanges: 2, text: '2 status changes since this note was written' }));
+    expect(age).toEqual({
+      state: 'moved-past',
+      text: '2 status changes since this note was written',
+      writtenAt: '2026-10-12T20:00:00.000Z',
+      transitionsSinceNote: 2,
+    });
+  });
+
+  it('keeps a note current when no status changed after it', () => {
+    expect(noteAgeOf(staleness())?.state).toBe('current');
+  });
+
+  it('reports an unknown count as unknown, never as current', () => {
+    const age = noteAgeOf(
+      staleness({ transitionsSinceNote: null, noteWrittenAt: null, basis: 'note-not-in-event-log', text: 'note age unknown: the note was not written through plans:set-now' }),
+    );
+    expect(age?.state).toBe('unknown');
+    expect(age?.writtenAt).toBeNull();
+  });
+
+  it('treats a floor count (read window full) above zero as moved past', () => {
+    expect(noteAgeOf(staleness({ transitionsSinceNote: 200, truncatedByLimit: true }))?.state).toBe('moved-past');
+  });
+});
+
+describe('derivedStatusViewOf (P-005)', () => {
+  it('is null when the read carried no derivedStatus', () => {
+    expect(derivedStatusViewOf(undefined)).toBeNull();
+    expect(derivedStatusViewOf(null)).toBeNull();
+  });
+
+  it('orders rows in-flight, actionable, blocked, awaiting-human and carries holders and blockers', () => {
+    const view = derivedStatusViewOf(derivedStatus());
+    expect(view?.text).toBe('2 of 6 done; 1 in flight, 1 actionable, 1 blocked, 1 awaiting a human');
+    expect(view?.rows.map((r) => [r.kind, r.id])).toEqual([
+      ['in-flight', 'P-003'],
+      ['actionable', 'P-004'],
+      ['blocked', 'P-005'],
+      ['awaiting-human', 'P-006'],
+    ]);
+    expect(view?.rows[1]?.holders).toEqual(['su-aaaaaaaa-0000']);
+    expect(view?.rows[2]).toMatchObject({ blockedOn: ['P-003'], external: false });
+    expect(view?.hiddenRows).toBe(0);
+    expect(view?.shipGate).toBeNull();
+  });
+
+  it('collapses rows past the cap and flags a server-truncated list', () => {
+    const many = Array.from({ length: 5 }, (_, i) => summaryItem(`P-1${i}`, 'todo'));
+    const view = derivedStatusViewOf(
+      derivedStatus({ actionable: many, truncated: { actionable: true, inFlight: false, blocked: false, awaitingHuman: false } }),
+      3,
+    );
+    expect(view?.rows).toHaveLength(3);
+    expect(view?.hiddenRows).toBe(5);
+    expect(view?.listTruncated).toBe(true);
+  });
+
+  it('projects the ship-gate step with its repair verb, and a skipped gate as skipped', () => {
+    const gate = {
+      source: 'plan-acceptance-gate' as const,
+      satisfied: false,
+      code: 'acceptance_ungraded',
+      skipped: null,
+      message: 'no independent grade',
+      nextRepair: { kind: 'grade', verb: 'scorecards:emit', nextVerb: null, instruction: 'grade it' },
+      guardsNotChecked: [],
+      confirmWith: { name: 'plans:set-plan-status' as const, args: {} },
+      reusedShipReadiness: false,
+      unavailableReason: null,
+      text: 'ship refused: acceptance_ungraded',
+    };
+    const refused = derivedStatusViewOf(derivedStatus({ shipGate: gate }));
+    expect(refused?.shipGate).toEqual({
+      satisfied: false,
+      skipped: false,
+      text: 'ship refused: acceptance_ungraded',
+      repairVerb: 'scorecards:emit',
+    });
+    const skipped = derivedStatusViewOf(derivedStatus({ shipGate: { ...gate, skipped: 'plan-shipped', nextRepair: null } }));
+    expect(skipped?.shipGate).toMatchObject({ skipped: true, repairVerb: null });
   });
 });

@@ -39,6 +39,11 @@ import {
   runGitViaSpawnerSidecar,
   runGitStdinViaSpawnerSidecar,
 } from '../../fleet/git-via-sidecar';
+import {
+  gitReplayIsSafe,
+  isSidecarPostDispatchFault,
+  sidecarPostDispatchUnknownResult,
+} from '../../fleet/sidecar-dispatch-fault';
 
 /** Per-call override for {@link defaultRunGit}'s kill-timeout. */
 export interface RunGitOptions {
@@ -61,8 +66,13 @@ export interface RunGitOptions {
    * process is still caught quickly.
    */
   timeoutMs?: number;
+  /** Called whenever the Git process produces stdout/stderr activity. */
+  onProgress?: () => void;
   /** Retain the process lifetime until cancellation has actually drained Git and its helpers. */
   signal?: AbortSignal;
+  /** Extra environment for the git child. Shared with run-git-sync's RunGit (WI-10006705:
+   *  its attributed commits pass a private GIT_INDEX_FILE and probe that it is honoured). */
+  env?: Readonly<Record<string, string>>;
 }
 
 /** The run-git seam (matches harness/git-sync/run-git-sync.ts): spawn `git
@@ -167,9 +177,18 @@ export const runGitLocal: RunGit = (args, cwd, opts) =>
     }
     const child = spawn('git', args, {
       cwd, detached: process.platform !== 'win32',
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C', GIT_TERMINAL_PROMPT: '0' },
+      env: { ...process.env, ...opts?.env, LC_ALL: 'C', LANG: 'C', GIT_TERMINAL_PROMPT: '0' },
     });
     const out = collectChildOutput(child);
+    const reportOutputActivity = (): void => {
+      try {
+        opts?.onProgress?.();
+      } catch {
+        // Progress accounting is diagnostic-only and must never break Git.
+      }
+    };
+    child.stdout?.on('data', reportOutputActivity);
+    child.stderr?.on('data', reportOutputActivity);
     const lifetime = processGroupLifetime(child, (message) => out.stderr.append(`\n${message}`));
     let settled = false;
     let terminating = false;
@@ -247,9 +266,10 @@ const runGitUnchecked: RunGit = async (args, cwd, opts) => {
     try {
       return await runGitViaSpawnerSidecar(args, cwd, timeoutMs, {
         ...process.env,
+        ...opts?.env,
         LC_ALL: 'C',
         LANG: 'C',
-      }, { signal: opts?.signal });
+      }, { signal: opts?.signal, onProgress: opts?.onProgress });
     } catch (e) {
       // Fall through to the local spawn, but COUNT it: falling back means every
       // git call here is paying the full ~165 ms fork stall again, which is the
@@ -258,6 +278,13 @@ const runGitUnchecked: RunGit = async (args, cwd, opts) => {
       // and then looking identical to a healthy process — see
       // {@link noteSidecarFallback}.
       noteSidecarFallback('pot-git', e);
+      // WI-10006716: a transport loss AFTER dispatch leaves the outcome unknown
+      // (the sidecar child may have written the ref). Replaying a write could
+      // apply it twice, so only reads replay; a write reports failure and the
+      // caller re-reads state. A pre-dispatch fault still falls back as before.
+      if (isSidecarPostDispatchFault(e) && !gitReplayIsSafe(args)) {
+        return sidecarPostDispatchUnknownResult(args, e);
+      }
     }
   }
   return runGitLocal(args, cwd, opts);

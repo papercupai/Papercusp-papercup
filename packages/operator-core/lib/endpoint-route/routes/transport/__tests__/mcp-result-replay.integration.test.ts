@@ -7,19 +7,29 @@
  * first response died on a dropped connection) replays the stored
  * outcome, tagged `_meta.replayed: true`, instead of re-executing.
  *
- * Live-PG test against harness_shared.mcp_tool_results.
+ * Isolated-Postgres test against harness_shared.mcp_tool_results.
  */
 
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll, vi } from 'vitest';
 import { getOrgPg } from '@papercusp/db-org';
+import type { OrgTestDb } from '../../../../../test/_org-test-db';
 import {
   validIdempotencyKey,
   lookupStoredMcpResult,
   serializeStoredMcpResult,
   storeMcpResult,
+  claimPendingMcpResult,
   sweepExpiredMcpResults,
   type StoredMcpResult,
 } from '../_mcp-result-replay';
+
+const h = vi.hoisted(() => ({ sql: null as unknown }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
+
+const { createOrgTestDb } = await import('../../../../../test/_org-test-db');
 
 const RUN = Date.now();
 const OWNER_A = `replay-test-owner-a-${RUN}`;
@@ -30,23 +40,16 @@ const RESULT: StoredMcpResult = {
   _meta: { format: 'json' },
 };
 
-async function dbLive(): Promise<boolean> {
-  try {
-    const { sql } = getOrgPg();
-    await sql`SELECT 1`;
-    return true;
-  } catch {
-    return false;
-  }
-}
+describe('MCP result replay (audit P-046 / EI-68)', () => {
+  let db: OrgTestDb;
 
-describe('MCP result replay (audit P-046 / EI-68)', async () => {
-  const live = await dbLive();
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  }, 120_000);
 
   afterAll(async () => {
-    if (!live) return;
-    const { sql } = getOrgPg();
-    await sql`DELETE FROM harness_shared.mcp_tool_results WHERE owner_key LIKE 'replay-test-owner-%'`;
+    await db?.cleanup();
   });
 
   it('validates caller-supplied keys (non-empty bounded strings only)', () => {
@@ -79,7 +82,7 @@ describe('MCP result replay (audit P-046 / EI-68)', async () => {
     expect(JSON.parse(json)).not.toHaveProperty('structuredContent');
   });
 
-  it.skipIf(!live)('stores a result and replays it tagged _meta.replayed', async () => {
+  it('stores a result and replays it tagged _meta.replayed', async () => {
     expect(await lookupStoredMcpResult(OWNER_A, 'k1')).toBeNull();
 
     await storeMcpResult({
@@ -97,11 +100,11 @@ describe('MCP result replay (audit P-046 / EI-68)', async () => {
     expect(replayed!.isError).toBeUndefined();
   });
 
-  it.skipIf(!live)('keys are scoped per owner — another caller with the same key sees nothing', async () => {
+  it('keys are scoped per owner — another caller with the same key sees nothing', async () => {
     expect(await lookupStoredMcpResult(OWNER_B, 'k1')).toBeNull();
   });
 
-  it.skipIf(!live)('first write wins — a concurrent same-key store never clobbers the original', async () => {
+  it('first write wins — a concurrent same-key store never clobbers the original', async () => {
     await storeMcpResult({
       ownerKey: OWNER_A,
       idempotencyKey: 'k1',
@@ -113,7 +116,7 @@ describe('MCP result replay (audit P-046 / EI-68)', async () => {
     expect(replayed!.content).toEqual(RESULT.content);
   });
 
-  it.skipIf(!live)('error results replay with isError preserved', async () => {
+  it('error results replay with isError preserved', async () => {
     await storeMcpResult({
       ownerKey: OWNER_A,
       idempotencyKey: 'k-err',
@@ -126,7 +129,7 @@ describe('MCP result replay (audit P-046 / EI-68)', async () => {
     expect(replayed!._meta).toMatchObject({ replayed: true });
   });
 
-  it.skipIf(!live)(
+  it(
     'replays an output-schema tool result with its structuredContent intact (scheduler:get_next recovery shape)',
     async () => {
       const structured = {
@@ -151,7 +154,27 @@ describe('MCP result replay (audit P-046 / EI-68)', async () => {
     },
   );
 
-  it.skipIf(!live)('the sweep removes only rows past the 1h TTL; lookup ignores them either way', async () => {
+  it('retains a non-idempotent pot creation receipt across the generic expiry and sweep', async () => {
+    const { sql } = getOrgPg();
+    await storeMcpResult({ ownerKey: OWNER_A, idempotencyKey: 'old-pot-create',
+      toolName: 'pot:create_from_repo', workspaceId: 'default', result: RESULT });
+    await sql`UPDATE harness_shared.mcp_tool_results SET created_at = now() - interval '2 hours'
+      WHERE owner_key = ${OWNER_A} AND idempotency_key = 'old-pot-create'`;
+    await sweepExpiredMcpResults();
+    expect((await lookupStoredMcpResult(OWNER_A, 'old-pot-create'))?.content).toEqual(RESULT.content);
+  });
+  it('retains an unfinished pot operation so another process cannot claim it after expiry', async () => {
+    const { sql } = getOrgPg();
+    const input = { ownerKey: OWNER_A, idempotencyKey: 'old-pending-pot', toolName: 'pot:create_from_repo',
+      workspaceId: 'default', result: { ...RESULT, _meta: { state: 'pending', progressId: 'original' } } };
+    expect((await claimPendingMcpResult(input)).claimed).toBe(true);
+    await sql`UPDATE harness_shared.mcp_tool_results SET created_at = now() - interval '2 hours'
+      WHERE owner_key = ${OWNER_A} AND idempotency_key = 'old-pending-pot'`;
+    await sweepExpiredMcpResults();
+    expect(await claimPendingMcpResult(input)).toMatchObject({ claimed: false, pending: true });
+    expect(await lookupStoredMcpResult(OWNER_A, 'old-pending-pot')).toBeNull();
+  });
+  it('the sweep removes ordinary rows past the 1h TTL; lookup ignores them either way', async () => {
     const { sql } = getOrgPg();
     await storeMcpResult({
       ownerKey: OWNER_A,
@@ -178,4 +201,5 @@ describe('MCP result replay (audit P-046 / EI-68)', async () => {
     // Fresh rows survive.
     expect(await lookupStoredMcpResult(OWNER_A, 'k1')).not.toBeNull();
   });
+
 });

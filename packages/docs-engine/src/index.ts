@@ -79,7 +79,7 @@ export {
   type NearestOpts,
 } from './shared.js';
 
-export { renderMdxToMarkdown, withPreamble } from './render-mdx.js';
+export { raceWithAbort, renderMdxToMarkdown, setMdxRenderObserver, throwIfAborted, withPreamble, type MdxRenderObserver } from './render-mdx.js';
 
 export { harnessFsAdapter, type HarnessFsAdapterOptions } from './adapters/harness-fs.js';
 export { genericFsAdapter, type GenericFsAdapterOptions } from './adapters/generic-fs.js';

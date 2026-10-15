@@ -244,6 +244,8 @@ export type WatchdogSource =
   // sat deployable-but-not-live longer than the threshold (a genuinely wedged
   // pipeline OR a lying deployedAt field; either way, worth an alert).
   | 'release-deploy-staleness'
+  // WI-10005065: goal spend's interactive transcript ingestion freshness alarm.
+  | 'interactive-usage-freshness'
   // pot-seed-bundle P-008 (D-007): the cold-join canary's per-interval fire —
   // a scheduled FULL cold join (seed disabled) keeps the whole-history join path
   // exercised now that seeded installs only carry the delta. A fire records each
@@ -275,6 +277,10 @@ export type WatchdogSource =
   // error-streak pager — N consecutive ERROR ticks fire one debounced @role:mug
   // escalation (the circuit gate backs off but pages nobody).
   | 'scout-error-streak'
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-17: the weekly owner grading
+  // sample — one message per ~7d window to the human inbox with a stratified sample
+  // of routed ideation ideas to grade (scout/weekly-grading-sample.ts).
+  | 'scout-weekly-grading-sample'
   // rubric-system-hardening-2026-07-14 P-004 (EI-12149): the rubric-staleness
   // watchdog — an ACTIVE releaseGating rubric with no COMPLETE scorecard within
   // its threshold window (default 6h) fires one debounced alert + escalation

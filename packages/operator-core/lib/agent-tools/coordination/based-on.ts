@@ -168,11 +168,13 @@ export const READ_TOOL_NAMES: readonly string[] = Object.freeze(Object.keys(READ
 export function refsFromInvocations(
   rows: readonly ReadInvocation[],
   limit: number = BASED_ON_MAX_ENTRIES,
+  includeRefs: readonly string[] = [],
 ): ReadRef[] {
   const seen = new Set<string>();
+  const required = new Set(includeRefs);
   const out: ReadRef[] = [];
   for (const row of rows) {
-    if (out.length >= limit) break;
+    if (out.length >= limit && !required.size) break;
     const map = READ_REF_MAPPERS[row.tool];
     if (!map) continue;
     const args = row.args && typeof row.args === 'object' ? (row.args as Record<string, unknown>) : {};
@@ -183,9 +185,10 @@ export function refsFromInvocations(
       continue; // a malformed args bag is not worth failing a send over
     }
     for (const ref of refs) {
-      if (out.length >= limit) break;
+      if (out.length >= limit && !required.has(ref)) continue;
       if (seen.has(ref)) continue;
       seen.add(ref);
+      required.delete(ref);
       out.push({ ref, via: row.tool, readAt: row.readAt });
     }
   }
@@ -246,6 +249,8 @@ export async function deriveBasedOn(opts: {
   harness: string | null;
   windowMs?: number;
   limit?: number;
+  /** Also retain successfully read named subjects beyond the display cap. */
+  includeRefs?: readonly string[];
 }): Promise<BasedOnEntry[]> {
   if (!opts.ownerId || !opts.workspaceId) return [];
   const windowMs = opts.windowMs ?? BASED_ON_WINDOW_MS;
@@ -270,6 +275,7 @@ export async function deriveBasedOn(opts: {
         readAt: (r.invoked_at instanceof Date ? r.invoked_at : new Date(r.invoked_at)).toISOString(),
       })),
       limit,
+      opts.includeRefs,
     );
     if (!refs.length) return [];
     return await versionRefs(refs, { workspaceId: opts.workspaceId, harness: opts.harness });

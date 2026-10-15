@@ -16,8 +16,11 @@
  */
 
 import { registerOverride, clearOverride } from '@papercusp/testing-shell/llm';
+import { TOOL_RESULT_EVIDENCE_MAX_EVENTS } from '@papercusp/testing-shell/llm';
+import { captureToolResultEvidence } from '../tool-result-evidence';
 
 import { llmTestBaseUrl } from './base-url';
+import type { ConverseHostTrust } from '../../agent-tools/operator/converse-toolset';
 import type {
   ChatSession,
   ChatTarget,
@@ -51,6 +54,14 @@ export interface OperatorTargetOpts {
    * (converse.ts ~L512), so the operator target can never trigger it.
    */
   role?: 'operator' | 'papercup';
+  /** Production host boundary; omitted preserves the desktop owner transport. */
+  hostTrust?: ConverseHostTrust;
+  /** Public boundary bearer, forwarded only on a public turn. */
+  principalToken?: string;
+  /** Isolated scenario workspace, ahead of the shared environment default. */
+  workspaceId?: string;
+  /** An existing conversation in that workspace, validated by the live route. */
+  conversationId?: string;
 }
 
 export class OperatorTarget implements ChatTarget {
@@ -82,12 +93,19 @@ export class OperatorTarget implements ChatTarget {
       baseUrl,
       harnessSlug: this.opts.harnessSlug,
       role: this.opts.role,
+      hostTrust: this.opts.hostTrust,
+      principalToken: this.opts.principalToken,
+      workspaceId: this.opts.workspaceId,
       transport: opts.transport,
       hasOverride: !!opts.dispatchOverride,
       // The runId IS a UUID; reuse it as conversationId so chain rows
       // for this scenario are queryable by `ui_client_id` + the same
       // value as conversation_id.
-      conversationId: opts.runId,
+      // Public callers must not present a synthetic id as an existing
+      // conversation. The production route validates explicit ids and carries
+      // public cards on this turn's SSE stream without an owner state watcher.
+      conversationId: this.opts.conversationId
+        ?? (this.opts.hostTrust === 'public' ? undefined : opts.runId),
     });
   }
 }
@@ -98,6 +116,9 @@ interface SessionState {
   harnessSlug?: string;
   /** Persona role to stamp in the converse body (default operator). */
   role?: 'operator' | 'papercup';
+  hostTrust?: ConverseHostTrust;
+  principalToken?: string;
+  workspaceId?: string;
   transport: 'in-process' | 'http-sse';
   hasOverride: boolean;
   /**
@@ -107,7 +128,7 @@ interface SessionState {
    * doesn't match an operator-side conversations.id, only that it's
    * stable across the chain turns of one scenario run.
    */
-  conversationId: string;
+  conversationId?: string;
 }
 
 class OperatorSession implements ChatSession {
@@ -141,7 +162,7 @@ class OperatorSession implements ChatSession {
       mayAskActive: true,
       modality: (input.meta?.modality as 'text' | 'voice' | undefined) ?? 'text',
       uiClientId: this.sessionId,
-      conversationId: this.state.conversationId,
+      ...(this.state.conversationId ? { conversationId: this.state.conversationId } : {}),
       // The runner sets pendingTrigger='continue' when it observes a
       // <continue/> tag in the last turn — that's an auto-fire by
       // definition. Same shape as the production provider.
@@ -151,6 +172,9 @@ class OperatorSession implements ChatSession {
       // Only stamp it when non-default so the operator target's wire body is
       // byte-identical to before (keeps existing operator scenarios stable).
       ...(this.state.role && this.state.role !== 'operator' ? { role: this.state.role } : {}),
+      ...(this.state.hostTrust ? { hostTrust: this.state.hostTrust } : {}),
+      ...(this.state.hostTrust === 'public' && this.state.principalToken
+        ? { principalToken: this.state.principalToken } : {}),
     };
 
     // Stamp the workspace the brain should run in. WITHOUT this, the
@@ -161,7 +185,7 @@ class OperatorSession implements ChatSession {
     // operator/oracle principals + the scenario harnesses (sheets, …) live
     // in `default`, so target that. Overridable via PAPERCUSP_LLM_TEST_WORKSPACE.
     // Shared with the WI-5023 state-snapshot watcher below — same workspace.
-    const workspaceHeader = process.env.PAPERCUSP_LLM_TEST_WORKSPACE ?? 'default';
+    const workspaceHeader = this.state.workspaceId ?? process.env.PAPERCUSP_LLM_TEST_WORKSPACE ?? 'default';
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       accept: 'text/event-stream',
@@ -250,7 +274,7 @@ class OperatorSession implements ChatSession {
         killer = setTimeout(() => ctrl.abort(), IDLE_TIMEOUT_MS);
 
         if (ev.name === 'run-meta') {
-          if (modality !== 'voice' && !cardWatcher) {
+          if (modality !== 'voice' && this.state.hostTrust !== 'public' && !cardWatcher) {
             const runId = (ev.data as { runId?: string } | undefined)?.runId;
             if (runId) {
               cardWatcher = startCardWatcher({ baseUrl: this.state.baseUrl, workspaceHeader, runId });
@@ -477,6 +501,14 @@ function applyEvent(ev: SseEvent, result: TurnResult): void {
       if (tc?.name) {
         const event: ToolCallEvent = { name: tc.name, input: tc.input };
         result.toolCalls.push(event);
+      }
+      break;
+    }
+    case 'tool_result': {
+      const returned = ev.data as { name?: unknown; summary?: unknown; ok?: unknown };
+      if (typeof returned?.name === 'string' && typeof returned.summary === 'string'
+        && result.toolResults.length < TOOL_RESULT_EVIDENCE_MAX_EVENTS) {
+        result.toolResults.push(captureToolResultEvidence(returned.name, returned.summary, returned.ok === false));
       }
       break;
     }

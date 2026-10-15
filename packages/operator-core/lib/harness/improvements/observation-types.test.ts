@@ -20,6 +20,18 @@ import {
 } from './observation-types';
 
 describe('OBSERVATION_KINDS', () => {
+  it('round-trips complete ALL probe records and refuses empty, nested or contradictory aggregates', () => {
+    const probe = { kind: 'tool', tool: 'status:read', args: {}, schemaRevision: 'historical-revision', expect: { path: '$.state', op: 'eq', value: 'green' } };
+    const child = { kind: 'probe', probe, verdict: 'pass', status: 'fresh', executed: true, observed: 'green', measuredAt: '2026-10-03T07:00:00Z' };
+    const group = { kind: 'probe', all: [child, { ...child, verdict: 'fail', status: 'stale', observed: 'red' }], verdict: 'fail', status: 'stale', executed: true, measuredAt: child.measuredAt };
+    expect(asStructuredObservation({ checkRuns: { proof: group } })?.checkRuns?.proof).toEqual(group);
+    for (const bad of [
+      { ...group, all: [] }, { ...group, all: [group] }, { ...group, verdict: 'pass', status: 'fresh' },
+      { ...group, all: [child, { ...child, executed: false }] }, { ...group, probe },
+    ]) expect(asStructuredObservation({ checkRuns: { proof: bad } })?.checkRuns).toBeUndefined();
+    expect(asStructuredObservation({ checkRuns: { proof: { ...group, all: [{ ...child, observed: { private: 'payload' } }], verdict: 'pass', status: 'fresh' } } })?.checkRuns?.proof)
+      .toMatchObject({ all: [expect.not.objectContaining({ observed: expect.anything() })] });
+  });
   it('includes test-failure as a supported machine-readable observation kind', () => {
     expect(OBSERVATION_KINDS).toContain('test-failure');
   });
@@ -65,6 +77,22 @@ describe('validateObservationRatings — the D-002 mandatory-evidence gate', () 
         ratings: { 'placement-health': { rating: 'broken', evidence: '   ' } },
       }),
     ).toThrow(ObservationEvidenceError);
+  });
+
+  it('rejects projection-truncation and recovery markers copied into rating evidence', () => {
+    for (const evidence of [
+      '…[TRUNCATED +290 chars — pass payloadTier:"full" for complete output]',
+      'Recover the full tool result with _projection.cursor.args',
+    ]) {
+      expect(() =>
+        validateObservationRatings({
+          rubricRef: 'spec-quality',
+          ratings: {
+            'stable-revision-identity': { rating: 'pass', evidence },
+          },
+        }),
+      ).toThrow(/projection.*marker|marker.*projection/i);
+    }
   });
 
   it('rejects a blank rating value', () => {
@@ -188,6 +216,33 @@ describe('validateScorecardCompleteness — the P-014a completeness gate', () =>
 });
 
 describe('asStructuredObservation — read-side payload surfacing', () => {
+  it('preserves an awaiting-reemit grading audit and its source-card re-emit requirement', () => {
+    const gradingAudit = {
+      state: 'awaiting-reemit',
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-10-02T02:30:01.384Z',
+      rubricRevision: 7,
+      criteriaHash: 'criteria-hash-v7',
+      lastDispatchReservation: {
+        key: 'grading-audit:EI-lapsed',
+        reservedAt: '2026-10-02T02:30:00.000Z',
+      },
+      reemitRequired: {
+        code: 'grading_audit_evaluator_changed',
+        at: '2026-10-02T02:31:00.000Z',
+        reason: 'evaluator revision changed the replayed rating',
+      },
+    } as const;
+
+    const out = asStructuredObservation({
+      rubricRef: 'spec-test-adequacy',
+      ratings: { traceability: { rating: 'pass', evidence: 'exact replay passed' } },
+      gradingAudit,
+    });
+
+    expect(out?.gradingAudit).toEqual(gradingAudit);
+  });
+
   it('preserves a server-stamped vetting seat through the structured observation parser', () => {
     const seat = {
       succeededFrom: 'su-ended-author',

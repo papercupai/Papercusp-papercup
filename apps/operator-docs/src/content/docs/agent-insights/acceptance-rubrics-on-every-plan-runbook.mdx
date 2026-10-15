@@ -22,12 +22,15 @@ documents:
   - "packages/operator-core/lib/acceptance-seat-succession.ts"
   - "packages/operator-core/lib/acceptance-bar-contract-snapshot.ts"
   - "packages/operator-core/lib/agent-tools/plans/bind-vetting-advisory.ts"
+  - "packages/operator-core/lib/acceptance-bar-seed.ts"
+  - "packages/operator-core/lib/agent-tools/rubrics/amend.ts"
 plans:
   - "acceptance-rubrics-on-every-plan-2026-08-11"
   - "consult-min-max-and-rubric-vetting-2026-08-17"
   - "plan-completion-audit-and-acceptance-verdict-2026-08-13"
   - "ship-main-greening-program-2026-09-15"
   - "review-system-rework-reduction-2026-09-23"
+  - "verification-system-improvements-2026-10-10"
 ---
 
 ## The completion contract
@@ -35,7 +38,7 @@ plans:
 A plan is not ready to ship merely because its implementation tasks are terminal. The completion path has two independent evidence families, in this order:
 
 1. the implementer audits every plan item against the actual source tree;
-2. the implementer authors and vets a post-implementation acceptance rubric;
+2. the implementer amends the activation-seeded acceptance bars to as-built reality and vets them;
 3. a non-implementer grades the finished work;
 4. the rubric author reads that grading and records an explicit `accept` or `reject` verdict;
 5. `plans:set-plan-status { status:'shipped' }` re-verifies the evidence and closes the plan.
@@ -103,9 +106,11 @@ plans:audit {
 
 Only resolving `code` and `test` citations verify implementation. Their repo-relative paths must resolve; optional line and symbol anchors must be valid. A PG-canonical doc citation needs `ref` and `reason`; `none` needs `reason`. An `implemented` verdict requires a resolving code or test citation. Each item stores its audited SHA, timestamp, and text hash. At ship time the gate rechecks only status, text, citation resolution, and cited bytes. If it reports `audit_coverage_stale`, re-audit only the named items.
 
-## 3. Author and vet the acceptance rubric
+## 3. Amend and vet the acceptance rubric
 
-After the audit is clean, author the as-built definition of done:
+Acceptance bars are seeded at plan activation: `plans:audit { phase:'activation' }` projects each `requirement` block in the plan into the `acceptance-<plan-slug>` rubric and its `AUTO-BAR-R-<n>-P-<NNN>` clauses, before `plans:start`. Those bars state what the plan promised. After the audit is clean, amend them to as-built reality with `rubrics:amend` (below): tighten a METHOD, add a falsifier, or record a deliberate departure, so the bar graded at completion describes the code that shipped. Amend the seeded rubric; do not propose a second one beside it.
+
+A plan with no seeded bar (it has no `requirement` blocks, for example a pure investigation) authors its rubric with `rubrics:propose`:
 
 ```text
 rubrics:propose {
@@ -137,6 +142,8 @@ Do these steps in exactly this order. A vetting critique should cost a text edit
 Why this order: an amendment re-revisions the clauses it touches. Proof, adequacy cards and grading bound to the old revision then no longer cover those clauses, and must be redone. Vetting is where amendments come from. So vetting after proof reliably pays for proof twice. The audit behind `review-system-rework-reduction-2026-09-23` measured a whole "vetting after proof" re-proof cycle on one plan.
 
 The gate follows this order. The acceptance gate's `NEXT REPAIR` line ranks contract-text codes first, then `bar_snapshot_vetting_missing` / `bar_snapshot_vetting_stale`, then proof, adequacy and grading codes (`ACCEPTANCE_BAR_REPAIR_ORDER`). `plans:bind-spec-evidence` still writes BAR proof bound to an unvetted revision, but its result carries an `acceptance_rubric_unvetted_before_proof` advisory. Treat that advisory as the cue to stop binding and vet first. Binding early stays legal; it is just the expensive order.
+
+**Re-binding proof after a clause or source change.** For test or mutation proof, bind the clean ledger row with `items:[{ fromTestRun, canonicalTestPath, sourcePaths }]`. Use a probe row with `worktree_dirty=false`, ideally run in an as-committed clone. Then retract the stale row with `retract:[{ bindingId, reason }]`. Operational proof cannot use `fromTestRun`, which derives only test, mutation and counterexample rows. Record the run with `testing:record-run` from a committed `docs/evidence/…json` (`schemaVersion:1`, kind `operational-test-evidence`). Then bind it with the single `binding` form: `testRunId`, `evidenceRef`, a top-level `measurement:{ schemaVersion:1, kind:'repo-files', sourcePaths }`, and `details.adequacy` with `collected`, `executed`, `skipped` and `outcome`. Pass `supersedeAtRevision:true` too. An operational binding without `testRunId` or those adequacy fields is still bound, but it does not supersede the old row.
 
 ## 4. Independent grading, then the implementer's verdict
 

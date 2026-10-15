@@ -69,7 +69,9 @@ const RULES: Rule[] = [
     // We allow native <details> when wrapping nothing heavy. The heuristic:
     // a <details> element with a child component reference (PascalCase JSX
     // tag inside it). LazyDetails itself is the canonical replacement.
-    pattern: /<details\b[^>]*>\s*[\s\S]{0,200}<summary[^>]*>[\s\S]{0,200}<\/summary>\s*[\s\S]{0,500}<[A-Z][A-Za-z]/,
+    // The body window stops at `</details>`: a PascalCase SIBLING after a
+    // cheap disclosure is not a child of it (WI-6554700010009816).
+    pattern: /<details\b[^>]*>\s*[\s\S]{0,200}<summary[^>]*>[\s\S]{0,200}<\/summary>\s*(?:(?!<\/details>)[\s\S]){0,500}<[A-Z][A-Za-z]/,
     excludePathContains: ['/_components/LazyDetails.tsx', '/test/', '.test.ts', '/perf-anti-patterns.test.ts', '/content/'],
   },
   {
@@ -240,4 +242,12 @@ describe('perf anti-pattern guard (A1–A14)', () => {
       expect.fail(lines.join('\n'));
     }
   }, 30000);
+
+  it('A6 flags a component INSIDE <details>, never a sibling after </details>', () => {
+    const a6 = RULES.find((r) => r.id === 'A6')!.pattern;
+    const child = '<details><summary>More</summary>\n  <HeavyPanel />\n</details>';
+    const sibling = '<details><summary>Model</summary>\n  <label>Model<input /></label>\n</details>\n<Button>Go</Button>';
+    expect(a6.test(child)).toBe(true);
+    expect(a6.test(sibling)).toBe(false);
+  });
 });

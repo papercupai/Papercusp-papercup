@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-1 deployed plane: gitnexus-reindex regenerates the graph dependency snapshot and reports it in gitnexus health",
+  "framework": "operational",
+  "command": [
+    "routines:list { name: 'gitnexus-reindex', installSlug: 'papercusp', limit: 1 }",
+    "dev:pipeline_position { path: 'packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts', testClass: 'background-federation' }"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T09:15:40.904Z",
+  "finishedAt": "2026-10-06T09:15:46.904Z",
+  "summary": "Read on the deployed background plane. The gitnexus-reindex routine (cron 0 35 * * * *) runs on bg-host, which serves build 6b949fee10; dev:pipeline_position reports containsChange=true for gitnexus-reindex-action.ts on that runtime (method blob). The routine fired at 08:35:02Z and its reindex succeeded at lastSuccessAt 1791277354386 (09:02:34Z). The dependency snapshot producer ran 0.4 s later (lastProducerAt 1791277354804, lastProducerExit 0) and wrote dependency-snapshot.json at 09:02:35Z (52108 edges, index commit 47a899a680). gitnexus health carries the snapshot's status (fresh), age, producer result line, and alert flag, with consecutiveFailures 0. The selection-time graph status line is covered by the unit layer (affected-tests-graph-suggestions.test.ts); this file covers only the deployed routine and health surface.",
+  "observed": {
+    "routine": {
+      "name": "gitnexus-reindex",
+      "installSlug": "papercusp",
+      "cron": "0 35 * * * *",
+      "lastFiredAt": "2026-10-06T08:35:02.413Z",
+      "nextFireAt": "2026-10-06T09:35:00.000Z"
+    },
+    "gitnexusHealth": {
+      "lastSuccessAt": 1791277354386,
+      "lastFailureAt": 1791258731005,
+      "consecutiveFailures": 0,
+      "dependencySnapshot": {
+        "path": "$HOME/.papercusp/graph-snapshot/papercusp/dependency-snapshot.json",
+        "status": "fresh",
+        "ageMs": 116302,
+        "edges": 52108,
+        "reason": null,
+        "alerted": false,
+        "checkedAt": 1791277471366,
+        "generatedAt": "2026-10-06T09:02:35.042Z",
+        "indexCommit": "47a899a680fee3cce3b1a023ff52db9b43a24edb",
+        "lastProducerAt": 1791277354804,
+        "lastProducerExit": 0,
+        "lastProducerLine": "GRAPH_SNAPSHOT status=written edges=52108 input=59577 uncorroborated=7469 missing=0 duplicates=0 rows=59577 pages=12 bytes=11939202 index=47a899a680 out=$HOME/.papercusp/graph-snapshot/papercusp/dependency-snapshot.json"
+      }
+    },
+    "servingRuntime": {
+      "runtime": "bg-host",
+      "role": "owner",
+      "buildSha": "6b949fee10",
+      "buildShaSource": "runtime-vintage",
+      "containsChange": true,
+      "method": "blob"
+    }
+  },
+  "redactions": "Home-directory prefixes in path and lastProducerLine are written as $HOME (identity-lint); the values are otherwise verbatim.",
+  "assertions": [
+    {
+      "id": "change-live-on-owner-runtime",
+      "passed": true,
+      "evidence": "dev:pipeline_position servingRuntimes: bg-host (role owner) build 6b949fee10 containsChange=true by blob comparison for gitnexus-reindex-action.ts."
+    },
+    {
+      "id": "snapshot-regenerated-after-successful-reindex",
+      "passed": true,
+      "evidence": "lastProducerAt (1791277354804) follows lastSuccessAt (1791277354386) by 418 ms; lastProducerExit 0; generatedAt 09:02:35.042Z; producer line reports status=written edges=52108 missing=0 duplicates=0."
+    },
+    {
+      "id": "age-and-producer-result-in-health",
+      "passed": true,
+      "evidence": "routines:list health.gitnexus_health.dependencySnapshot carries status, ageMs, generatedAt, lastProducerExit, lastProducerLine and alerted."
+    },
+    {
+      "id": "routine-healthy",
+      "passed": true,
+      "evidence": "consecutiveFailures 0; the last recorded failure (1791258731005, about 03:52Z) predates the current success."
+    }
+  ],
+  "workItemId": "WI-10006281",
+  "specId": "AUTO-BAR-R-1-P-001",
+  "sourceFile": "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts"
+}

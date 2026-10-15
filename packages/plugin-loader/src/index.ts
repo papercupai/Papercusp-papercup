@@ -153,6 +153,12 @@ export interface LoadedPlugin {
   manifestReactions?: import('@papercusp/plugin-sdk').PluginReactionRule[];
   /** Pure-data external source → plan-template declaration (never armed by discovery). */
   triggerPack?: import('@papercusp/plugin-sdk').PluginTriggerPack;
+  /**
+   * Integration provider descriptor from the manifest, validated by
+   * `readManifest` (generalized-integrations D-006 / P-001). The host
+   * registers it with the entry's `providerAdapter` on load.
+   */
+  provider?: import('@papercusp/plugin-sdk').ProviderDescriptor;
 }
 
 export interface LoaderOptions {
@@ -211,6 +217,26 @@ interface ManifestShape {
   dependencies?: import('@papercusp/plugin-sdk').ManifestDependencies;
   /** Pure-data trigger-pack declaration (external-triggers P-012). */
   triggerPack?: import('@papercusp/plugin-sdk').PluginTriggerPack;
+  /** Integration provider descriptor (generalized-integrations D-006 / P-001). */
+  provider?: import('@papercusp/plugin-sdk').ProviderDescriptor;
+  /** How a running app obtains the package; see `PluginManifest.distribution`. */
+  distribution?: import('@papercusp/plugin-sdk').PluginDistribution;
+}
+
+/**
+ * cupboard-distributable-integrations-2026-10-10 D-015: a `distribution: "cupboard"` package
+ * keeps its source in a bundled plugin dir (tests, mirror export) but reaches a running app
+ * ONLY through a Cupboard install. The `project` root is the bundled set (and ships in the
+ * desktop source tree), so it never loads one; the kernel checks this before its first-seen
+ * dedupe, so the bundled copy can't shadow the installed one either.
+ */
+export function cupboardDistributionExclusion(
+  manifest: Pick<ManifestShape, 'distribution'>,
+  source: string,
+): string | null {
+  return manifest.distribution === 'cupboard' && source === 'project'
+    ? 'distribution "cupboard": loads only from a Cupboard install, never from the bundled plugin root'
+    : null;
 }
 
 async function readManifest(dir: string): Promise<ManifestShape | { __error: string } | null> {
@@ -240,6 +266,11 @@ async function readManifest(dir: string): Promise<ManifestShape | { __error: str
     const triggerPackIssues = validateTriggerPackDeclaration(parsed);
     if (triggerPackIssues.length > 0) {
       return { __error: `manifest invalid: ${triggerPackIssues.join('; ')}` };
+    }
+    const { validateProviderDeclaration } = await import('@papercusp/plugin-sdk');
+    const providerIssues = validateProviderDeclaration(parsed);
+    if (providerIssues.length > 0) {
+      return { __error: `manifest invalid: ${providerIssues.join('; ')}` };
     }
     if (parsed.triggerPack) {
       for (const target of parsed.triggerPack.targets) {
@@ -660,6 +691,7 @@ function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugi
     runtime,
     manifestReactions: manifest.reactions ?? [],
     triggerPack: manifest.triggerPack,
+    provider: manifest.provider,
   };
 }
 
@@ -672,6 +704,7 @@ function toLoadedPlugin(r: CoreLoadedPlugin<Plugin, ManifestShape>): LoadedPlugi
  */
 const corePluginLoader = createPluginLoader<Plugin, ManifestShape>({
   readManifest,
+  admitManifest: cupboardDistributionExclusion,
   locateEntry,
   importEntry: importPluginEntry,
   runtimeDispatch,
@@ -683,7 +716,12 @@ const corePluginLoader = createPluginLoader<Plugin, ManifestShape>({
 });
 
 /** Load a single plugin from a known directory. */
-export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source']): Promise<LoadedPlugin | { error: string; path: string } | { skipped: 'not-a-plugin'; path: string }> {
+export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source']): Promise<
+  | LoadedPlugin
+  | { error: string; path: string }
+  | { skipped: 'not-a-plugin'; path: string }
+  | { skipped: 'excluded'; path: string; reason: string }
+> {
   const r = await corePluginLoader.loadFromDir(dir, source);
   if ('skipped' in r) return r;
   if ('error' in r) return r;
@@ -741,6 +779,7 @@ function makeManifestOnlyPluginShim(manifest: ManifestShape): import('@papercusp
     provides: manifest.provides,
     dependencies: manifest.dependencies,
     triggerPack: manifest.triggerPack,
+    provider: manifest.provider,
     __runtime: 'manifest-only',
   } as unknown as import('@papercusp/plugin-sdk').Plugin;
 }
@@ -892,6 +931,7 @@ export async function registerPluginTools(
         }
         registerProjectedTool({
           pluginName: lp.plugin.name,
+          pluginInstallation: Object.freeze({ version: lp.plugin.version, path: lp.path, source: lp.source }),
           description: def.description,
           inputSchema: def.inputSchema,
           capabilities: def.capabilities,

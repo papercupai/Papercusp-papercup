@@ -25,10 +25,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { clusterPairs, type OverlapPair } from '@papercusp/overlap-clusters';
 import { getOrgPg } from '@papercusp/db-org';
+import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import { admissionIdentity } from './harness/improvements/digest';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import type { AdmissionRunOutcome } from './work-items-admission-promoter';
-import type { OrgSql } from './work-items';
+import { natureWhereSql, type OrgSql } from './work-items';
 import {
   proseProfilePredicateSql,
   resolveAcceptedProseProfileSelection,
@@ -516,6 +517,16 @@ export interface AdmissionCensusRunOptions extends AdmissionShardConfig {
   now?: () => number;
   /** Caller already owns a transaction (bulk-stage ratchet); avoid opening a nested one. */
   withinTransaction?: boolean;
+  /**
+   * WI-10004951: waits (ms) before retrying a census statement that PG refused with
+   * 55P03 lock_not_available. Default ADMISSION_CENSUS_LOCK_RETRY_BACKOFFS_MS; `[]`
+   * restores the old fail-on-first-refusal behaviour. Ignored when `withinTransaction`:
+   * a refused statement has already aborted the caller's transaction, so only the
+   * caller can retry.
+   */
+  lockRetryBackoffsMs?: readonly number[];
+  /** Injectable sleep for the lock-retry ladder (tests). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface AdmissionCensusRunResult extends AdmissionShardPlan {
@@ -547,13 +558,14 @@ function corpusWhere(sql: OrgSql, opts: Pick<AdmissionCensusRunOptions, 'workspa
   const a = sql.unsafe(alias);
   return sql`${a}.workspace_id = ${opts.workspaceId}
     AND ${a}.harness_slug = ${opts.harnessSlug}
+    AND ${natureWhereSql(sql, undefined, undefined)}
     AND ${a}.lane IS DISTINCT FROM 'observation'
     AND (${a}.status IS NULL OR NOT (${a}.status = ANY(${terminal}::text[])))`;
 }
 
 /**
  * The corpus definition ("every open lane bug") — every non-terminal,
- * non-observation work item in one workspace/harness. Exported for the P-007
+ * non-observation row with nature 'work' in one workspace/harness. Exported for the P-007
  * whole-corpus resolver pass, which reuses this exact definition rather than
  * re-deriving its own `corpusWhere` (reuse-first mandate).
  */
@@ -622,6 +634,99 @@ async function readUnadjudicatedCensus(
   return Number(rows[0]?.n ?? 0);
 }
 
+/** What a later bulk stage reads from a finished census: its id (the shard-map key), size and count. */
+export type AdmissionCensusRef = Pick<AdmissionCensusRunResult, 'runId' | 'censusAfter' | 'corpusSize'>;
+
+/**
+ * WI-10006553: rehydrate a COMPLETE census row instead of re-running it.
+ * `runWorkItemAdmissionCensus` never resumes a complete row (see
+ * `parseAdmissionCensusResume`); it upserts the row back to 'running' and
+ * recomputes the whole census. A recovered bulk pass used to do exactly that
+ * for every completed stage's result census: ~16 minutes per bg-host restart,
+ * and meanwhile the daily digest, which accepts only a complete source census,
+ * could not read it. Returns null for anything not provably complete, so the
+ * caller falls back to running the census (an unfinished row still resumes, D-008).
+ */
+export async function readCompletedAdmissionCensus(
+  sql: OrgSql,
+  scope: { workspaceId: string; harnessSlug: string },
+  runId: string,
+): Promise<AdmissionCensusRef | null> {
+  const rows = await sql<{ census_after: number | string | null; corpus_size: string | null }[]>`
+    SELECT census_after, detail->'snapshot'->>'corpusSize' AS corpus_size
+      FROM harness_shared.admission_runs
+     WHERE id = ${runId}
+       AND workspace_id = ${scope.workspaceId}
+       AND harness_slug = ${scope.harnessSlug}
+       AND run_kind = 'census'
+       AND detail->>'status' = 'complete'
+       AND finished_at IS NOT NULL
+     LIMIT 1`;
+  const row = rows[0];
+  if (!row || row.census_after == null || row.corpus_size == null) return null;
+  const censusAfter = Number(row.census_after);
+  const corpusSize = Number(row.corpus_size);
+  if (!Number.isInteger(censusAfter) || censusAfter < 0) return null;
+  if (!Number.isInteger(corpusSize) || corpusSize < 0) return null;
+  return { runId, censusAfter, corpusSize };
+}
+
+/**
+ * WI-10006336: the unadjudicated census over ONE population — the members
+ * pinned by `pinnedRunId` that are still members of `currentRunId` — so a
+ * bulk stage's post-stage ratchet compares the same population it started
+ * from. The corpus is "every open item" and is re-read live, so a census taken
+ * after a ~50-minute stage also counts items FILED during that stage; one
+ * machine emitter adding 39 near-duplicates to a dense cluster added ~9.5K
+ * unadjudicated edges and failed a stage that had created none (10-05 stage,
+ * 56,606 -> 65,264). A pinned member that leaves the corpus (merged away,
+ * closed) only removes edges, which is the decrease the ratchet expects; an
+ * edge that genuinely appears between two pinned members still counts, so
+ * the guard stays strict for everything the stage could have caused.
+ */
+export async function readPinnedUnadjudicatedCensus(
+  sql: OrgSql,
+  opts: Pick<AdmissionCensusRunOptions, 'workspaceId' | 'harnessSlug'>,
+  runs: { pinnedRunId: string; currentRunId: string },
+): Promise<number> {
+  // A just-written run is absent from the last statistics sample. PostgreSQL
+  // can estimate one pinned member, then probe the edge PK for the Cartesian
+  // product of both member sets (thousands squared in a real run). Keep this
+  // census read bounded and prefer hash/merge membership joins independently
+  // of that estimate. Both settings belong only to this read transaction.
+  return withCensusStatementTimeout(sql, opts, async (tx) => {
+    await tx.unsafe('SET LOCAL enable_nestloop = off');
+    const rows = await tx<Array<{ n: number }>>`
+    WITH pinned AS MATERIALIZED (
+      SELECT p.item_id
+        FROM harness_shared.dedup_shard_map p
+        JOIN harness_shared.dedup_shard_map c
+          ON c.workspace_id = p.workspace_id
+         AND c.harness_slug = p.harness_slug
+         AND c.run_id = ${runs.currentRunId}
+         AND c.role = 'member'
+         AND c.item_id = p.item_id
+       WHERE p.workspace_id = ${opts.workspaceId}
+         AND p.harness_slug = ${opts.harnessSlug}
+         AND p.run_id = ${runs.pinnedRunId}
+         AND p.role = 'member'
+    )
+    SELECT count(*)::int AS n
+      FROM harness_shared.dedup_edges e
+      LEFT JOIN harness_shared.dedup_adjudications d
+        ON d.workspace_id = e.workspace_id
+       AND d.harness_slug = e.harness_slug
+       AND d.a = e.a AND d.b = e.b
+     WHERE e.workspace_id = ${opts.workspaceId}
+       AND e.harness_slug = ${opts.harnessSlug}
+       AND e.cos >= ${ADMISSION_COMPONENT_FLOOR}
+       AND d.a IS NULL
+       AND e.a IN (SELECT item_id FROM pinned)
+       AND e.b IN (SELECT item_id FROM pinned)`;
+    return Number(rows[0]?.n ?? 0);
+  });
+}
+
 /**
  * Canonical `a\0b` keys of every adjudicated pair inside the corpus, so
  * in-memory lexical edges honour the same "no adjudication" census rule the
@@ -679,6 +784,27 @@ export async function readAdjudicatedPairKeys(
 export const ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS = 900_000;
 
 /**
+ * WI-10004951: waits (ms) before retrying a census statement refused with PG 55P03
+ * lock_not_available. About 110s in total.
+ *
+ * Measured 2026-10-01: migration 1308 took ACCESS EXCLUSIVE on work_items and
+ * rewrote it. The role's lock_timeout is 15s, so census-0 of a bulk-dedup fire was
+ * cancelled at 16:59:40Z, and one ~30s window ended a pass meant to run 24h. A
+ * lock refusal is transient by construction: the holder commits and the statement
+ * can run. Only 55P03 is retried. 57014 (statement_timeout) is NOT retried,
+ * because the census sets a deliberately long statement_timeout above and
+ * retrying it would multiply an already-slow statement.
+ */
+export const ADMISSION_CENSUS_LOCK_RETRY_BACKOFFS_MS = [5_000, 15_000, 30_000, 60_000] as const;
+
+/** True only for PG 55P03 lock_not_available, raw (`code`) or wrapped (`pgCode`). */
+export function isLockNotAvailable(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const o = e as { code?: unknown; pgCode?: unknown };
+  return o.code === '55P03' || o.pgCode === '55P03';
+}
+
+/**
  * Run one census scan under {@link ADMISSION_CENSUS_STATEMENT_TIMEOUT_MS}.
  *
  * WI-1194246 declared that bound by wrapping each scan in `sql.begin` purely to
@@ -716,6 +842,176 @@ export async function withCensusStatementTimeout<T>(
   })) as T;
 }
 
+/**
+ * WI-10004965: a census interrupted part-way (a bg-host restart kills the routine
+ * fire; DBOS recovery re-runs the census with the SAME runId) resumes from the
+ * edge-scan chunks it already finished instead of starting over.
+ *
+ * Measured 2026-10-01: a full census took 17m03s, while bg-host restarted every
+ * ~10-13 min (agents loading fixes plus su-loopback auto-activate). census-0 of one
+ * bulk-dedup fire restarted from chunk 0 at 17:14, 17:26, 17:37 and 17:47, so the
+ * pass never left census.
+ *
+ * What is pinned, and why: the edge scan partitions anchors by POSITION in the
+ * embedded-id list. If that list were re-read live on resume, one newly filed item
+ * would shift every later position and the finished chunks would no longer cover the
+ * anchors they claim to. So the first attempt pins the list on its run row, and
+ * every resume scans the remaining chunks over the same list. Items filed after
+ * the pin are covered by one delta scan (new ids x the live corpus). Everything
+ * after the edge scan (plan, counts, shard map) uses the live corpus, as before.
+ *
+ * The working pin lives in `detail.resume`. Original pin identities and bounded
+ * edge-write witnesses remain in `detail.edgeEvidence` after completion.
+ */
+// Older pins used the broader corpus, which included DATA rows. Rebuild their
+// chunks against the work-only corpus rather than reusing those anchors.
+export const ADMISSION_CENSUS_RESUME_SCHEMA = 'work-item-admission-census-resume-v2';
+/** A pin older than this is discarded; a routine fire's own timeout is 24h. */
+export const ADMISSION_CENSUS_RESUME_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Per committed scan/removal statement, not a claim of exhaustive history. */
+export const ADMISSION_CENSUS_EDGE_EVIDENCE_LIMIT = 200;
+const CENSUS_EDGE_EVIDENCE_SCHEMA = 'work-item-admission-census-edge-evidence-v1';
+
+export interface AdmissionCensusChunkCheckpoint {
+  /** Pinned positions assigned to this chunk. */
+  positions: number;
+  /** Of those, rows that still had an embedding at scan time. */
+  present: number;
+  /** Of those, rows the scan actually anchored (embedding AND profile match). */
+  anchors: number;
+  edges: number;
+  hard: number;
+}
+
+export interface AdmissionCensusResumePin {
+  schemaVersion: typeof ADMISSION_CENSUS_RESUME_SCHEMA;
+  chunkCount: number;
+  edgeFloor: number;
+  componentFloor: number;
+  profileId: string | null;
+  pinnedEmbeddedIds: string[];
+  pinnedFingerprint: string;
+  censusBefore: number;
+  attempts: number;
+  chunks: Record<string, AdmissionCensusChunkCheckpoint>;
+}
+
+function pinFingerprint(ids: readonly string[]): string {
+  return createHash('sha256').update(ids.join('\u0001')).digest('hex');
+}
+
+function isChunkCheckpoint(value: unknown): value is AdmissionCensusChunkCheckpoint {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return ['positions', 'present', 'anchors', 'edges', 'hard'].every(
+    (key) => Number.isInteger(v[key]) && (v[key] as number) >= 0,
+  );
+}
+
+/**
+ * Decide whether an existing run row can be resumed. Pure: every refusal returns
+ * null, which means "start fresh", never an error. Only an UNFINISHED ('running')
+ * or 'failed' attempt with an intact pin for the same chunking and floors resumes;
+ * a 'complete' row (e.g. a stage's result census being re-read) never does.
+ */
+export function parseAdmissionCensusResume(
+  row: { started_at: string | Date; detail: unknown } | undefined,
+  expected: { chunkCount: number; nowMs: number },
+): { startedAt: string; pin: AdmissionCensusResumePin; edgeEvidence?: unknown } | null {
+  if (!row || !row.detail || typeof row.detail !== 'object') return null;
+  const detail = row.detail as { status?: unknown; resume?: unknown; edgeEvidence?: unknown };
+  if (detail.status !== 'running' && detail.status !== 'failed') return null;
+  const pin = detail.resume as Partial<AdmissionCensusResumePin> | undefined;
+  if (!pin || pin.schemaVersion !== ADMISSION_CENSUS_RESUME_SCHEMA) return null;
+  if (pin.chunkCount !== expected.chunkCount) return null;
+  if (pin.edgeFloor !== ADMISSION_EDGE_FLOOR || pin.componentFloor !== ADMISSION_COMPONENT_FLOOR) return null;
+  if (!Array.isArray(pin.pinnedEmbeddedIds) || !pin.pinnedEmbeddedIds.every((id) => typeof id === 'string')) return null;
+  if (pin.pinnedFingerprint !== pinFingerprint(pin.pinnedEmbeddedIds)) return null;
+  if (!Number.isInteger(pin.censusBefore) || !Number.isInteger(pin.attempts)) return null;
+  if (!pin.chunks || typeof pin.chunks !== 'object') return null;
+  const startedMs = new Date(row.started_at).getTime();
+  if (!Number.isFinite(startedMs) || expected.nowMs - startedMs > ADMISSION_CENSUS_RESUME_MAX_AGE_MS) return null;
+  const chunks: Record<string, AdmissionCensusChunkCheckpoint> = {};
+  for (const [key, value] of Object.entries(pin.chunks)) {
+    const index = Number(key);
+    if (Number.isInteger(index) && index >= 0 && index < expected.chunkCount && isChunkCheckpoint(value)) {
+      chunks[String(index)] = value;
+    }
+  }
+  return {
+    startedAt: new Date(startedMs).toISOString(),
+    pin: { ...(pin as AdmissionCensusResumePin), profileId: pin.profileId ?? null, chunks },
+    edgeEvidence: detail.edgeEvidence,
+  };
+}
+
+/** Append the FIRST witness for a statement slot in the SAME edge transaction.
+ * A crash after edges commit but before the chunk checkpoint must not replace it
+ * with the re-scan's preimage. Before values are statement-snapshot observations;
+ * concurrent non-census writers are explicitly outside this recorder's coverage.
+ * The caller supplies a `changes` CTE with a,b,before_value,after_value.
+ */
+function retainCensusEdgeChangesSql(sql: OrgSql, opts: AdmissionCensusRunOptions, runId: string, slot: string) {
+  return sql`
+    evidence_samples AS MATERIALIZED (
+      SELECT * FROM changes ORDER BY a, b LIMIT ${ADMISSION_CENSUS_EDGE_EVIDENCE_LIMIT}
+    ), evidence_recorded AS (
+      UPDATE harness_shared.admission_runs
+         SET detail = jsonb_set(detail, ${['edgeEvidence', 'writes', slot]}::text[],
+           jsonb_build_object(
+             'capturedAt', statement_timestamp(),
+             'changed', (SELECT count(*) FROM changes),
+             'omitted', (SELECT count(*) FROM changes) - (SELECT count(*) FROM evidence_samples),
+             'samples', COALESCE((
+               SELECT jsonb_agg(jsonb_build_object(
+                 'a', s.a, 'b', s.b, 'before', s.before_value, 'after', s.after_value,
+                 'embeddingSha256', jsonb_build_object(
+                   'a', CASE WHEN wa.embedding IS NOT NULL THEN encode(sha256(convert_to(wa.embedding::text, 'UTF8')), 'hex') END,
+                   'b', CASE WHEN wb.embedding IS NOT NULL THEN encode(sha256(convert_to(wb.embedding::text, 'UTF8')), 'hex') END
+                 )) ORDER BY s.a, s.b)
+                 FROM evidence_samples s
+                 LEFT JOIN harness_shared.work_items wa ON wa.workspace_id = ${opts.workspaceId}
+                   AND wa.harness_slug = ${opts.harnessSlug} AND wa.feature_id = s.a
+                 LEFT JOIN harness_shared.work_items wb ON wb.workspace_id = ${opts.workspaceId}
+                   AND wb.harness_slug = ${opts.harnessSlug} AND wb.feature_id = s.b
+             ), '[]'::jsonb)
+           ), true)
+       WHERE id = ${runId} AND workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug}
+         AND NOT (COALESCE(detail #> '{edgeEvidence,writes}', '{}'::jsonb) ? ${slot})
+      RETURNING id
+    )`;
+}
+
+/** Shared by pinned chunks and new-member delta scans. `pairs` is a materialized
+ * CTE on the same statement snapshot. Keep only changed scores/membership: a
+ * timestamp-only refresh is not evidence of a vector or candidate-set change.
+ */
+function writeCensusEdgesSql(sql: OrgSql, opts: AdmissionCensusRunOptions, runId: string, slot: string) {
+  return sql`
+    preimages AS MATERIALIZED (
+      SELECT e.a, e.b, jsonb_build_object('cos', e.cos, 'trgm', e.trgm,
+               'runId', e.run_id, 'computedAt', e.computed_at) AS value,
+             e.cos, e.trgm
+        FROM harness_shared.dedup_edges e JOIN pairs p ON p.a = e.a AND p.b = e.b
+       WHERE e.workspace_id = ${opts.workspaceId} AND e.harness_slug = ${opts.harnessSlug}
+    ), written AS (
+      INSERT INTO harness_shared.dedup_edges
+        (workspace_id, harness_slug, a, b, cos, trgm, run_id, computed_at)
+      SELECT ${opts.workspaceId}, ${opts.harnessSlug}, a, b, cos, trgm, ${runId}, clock_timestamp()
+        FROM pairs WHERE cos >= ${ADMISSION_EDGE_FLOOR}
+      ON CONFLICT (workspace_id, harness_slug, a, b) DO UPDATE SET
+        cos = EXCLUDED.cos, trgm = EXCLUDED.trgm,
+        run_id = EXCLUDED.run_id, computed_at = EXCLUDED.computed_at
+      RETURNING a, b, cos, trgm, run_id, computed_at
+    ), changes AS MATERIALIZED (
+      SELECT w.a, w.b, p.value AS before_value,
+             jsonb_build_object('cos', w.cos, 'trgm', w.trgm,
+               'runId', w.run_id, 'computedAt', w.computed_at) AS after_value
+        FROM written w LEFT JOIN preimages p ON p.a = w.a AND p.b = w.b
+       WHERE p.a IS NULL OR p.cos IS DISTINCT FROM w.cos OR p.trgm IS DISTINCT FROM w.trgm
+    ), ${retainCensusEdgeChangesSql(sql, opts, runId, slot)}`;
+}
+
 async function scanEdgeChunk(
   sql: OrgSql,
   opts: AdmissionCensusRunOptions,
@@ -725,25 +1021,39 @@ async function scanEdgeChunk(
   embeddedIds: readonly string[],
   chunkIndex: number,
   chunkCount: number,
-): Promise<{ anchors: number; edges: number; hard: number }> {
+  evidenceSlot: string,
+): Promise<AdmissionCensusChunkCheckpoint> {
   // WI-1194246: runs under the census's declared statement_timeout. It MUST be
   // SET LOCAL, never a session-level `SET`: this can run on a SHARED pool
   // checkout, so a session-level set would leak the bound onto whatever ran
   // next on the same connection — silently un-capping an unrelated caller.
   // SET LOCAL reverts at COMMIT. The body is a single statement, so the
   // wrapper does not change atomicity.
+  //
+  // WI-10004965: an anchor's chunk is its POSITION in `embeddedIds` (the pinned
+  // list), not a row_number over whichever rows currently qualify. A pinned item
+  // that lost its embedding between attempts would otherwise shift every later
+  // row into a different chunk, and a resumed census would skip anchors that no
+  // finished chunk ever scanned.
   const rows = await withCensusStatementTimeout(sql, opts, (tx) =>
-    tx<Array<{ anchors: number; edges: number; hard: number }>>`
-    WITH corpus AS MATERIALIZED (
+    tx<Array<{ positions: number; present: number; anchors: number; edges: number; hard: number }>>`
+    WITH pinned AS MATERIALIZED (
+      SELECT p.id, p.rn
+        FROM unnest(${embeddedIds}::text[]) WITH ORDINALITY AS p(id, rn)
+    ), slot AS MATERIALIZED (
+      SELECT id FROM pinned
+       WHERE mod((rn - 1)::int, ${chunkCount}) = ${chunkIndex}
+    ), corpus AS MATERIALIZED (
       SELECT wi.feature_id AS id,
              COALESCE(wi.title, '') AS title,
              wi.embedding,
-             row_number() OVER (ORDER BY wi.feature_id) AS rn
-        FROM harness_shared.work_items wi
-       WHERE wi.workspace_id = ${opts.workspaceId}
+             p.rn
+        FROM pinned p
+        JOIN harness_shared.work_items wi
+          ON wi.workspace_id = ${opts.workspaceId}
          AND wi.harness_slug = ${opts.harnessSlug}
-         AND wi.feature_id = ANY(${embeddedIds}::text[])
-         AND wi.embedding IS NOT NULL
+         AND wi.feature_id = p.id
+       WHERE wi.embedding IS NOT NULL
          AND ${proseProfilePredicateSql(tx, selection, 'wi.embedding_profile', 'wi.embedding_mode')}
     ), anchors AS MATERIALIZED (
       SELECT * FROM corpus
@@ -755,19 +1065,66 @@ async function scanEdgeChunk(
              similarity(a.title, b.title)::real AS trgm
         FROM anchors a
         JOIN corpus b ON a.id < b.id
-    ), written AS (
-      INSERT INTO harness_shared.dedup_edges
-        (workspace_id, harness_slug, a, b, cos, trgm, run_id, computed_at)
-      SELECT ${opts.workspaceId}, ${opts.harnessSlug}, a, b, cos, trgm, ${runId}, clock_timestamp()
-        FROM pairs
-       WHERE cos >= ${ADMISSION_EDGE_FLOOR}
-      ON CONFLICT (workspace_id, harness_slug, a, b) DO UPDATE SET
-        cos = EXCLUDED.cos,
-        trgm = EXCLUDED.trgm,
-        run_id = EXCLUDED.run_id,
-        computed_at = EXCLUDED.computed_at
-      RETURNING cos
-    )
+    ), ${writeCensusEdgesSql(tx, opts, runId, evidenceSlot)}
+    SELECT (SELECT count(*)::int FROM slot) AS positions,
+           (SELECT count(*)::int
+              FROM slot s
+              JOIN harness_shared.work_items wi
+                ON wi.workspace_id = ${opts.workspaceId}
+               AND wi.harness_slug = ${opts.harnessSlug}
+               AND wi.feature_id = s.id
+             WHERE wi.embedding IS NOT NULL) AS present,
+           (SELECT count(*)::int FROM anchors) AS anchors,
+           count(*)::int AS edges,
+           count(*) FILTER (WHERE cos >= ${ADMISSION_COMPONENT_FLOOR})::int AS hard
+      FROM written`);
+  return {
+    positions: Number(rows[0]?.positions ?? 0),
+    present: Number(rows[0]?.present ?? 0),
+    anchors: Number(rows[0]?.anchors ?? 0),
+    edges: Number(rows[0]?.edges ?? 0),
+    hard: Number(rows[0]?.hard ?? 0),
+  };
+}
+
+/**
+ * WI-10004965: on a resumed census, scan the embedded items filed AFTER the pin
+ * against the whole live embedded corpus, so the resumed census covers every pair
+ * a fresh one would. Pairs between two new items are written once (a < b); every
+ * edge is stored canonically (a < b), matching scanEdgeChunk.
+ */
+async function scanDeltaEdges(
+  sql: OrgSql,
+  opts: AdmissionCensusRunOptions,
+  runId: string,
+  selection: ProseProfileSelection,
+  deltaIds: readonly string[],
+  liveEmbeddedIds: readonly string[],
+  attempt: number,
+): Promise<{ anchors: number; edges: number; hard: number }> {
+  const rows = await withCensusStatementTimeout(sql, opts, (tx) =>
+    tx<Array<{ anchors: number; edges: number; hard: number }>>`
+    WITH corpus AS MATERIALIZED (
+      SELECT wi.feature_id AS id,
+             COALESCE(wi.title, '') AS title,
+             wi.embedding,
+             (wi.feature_id = ANY(${deltaIds}::text[])) AS is_delta
+        FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${opts.workspaceId}
+         AND wi.harness_slug = ${opts.harnessSlug}
+         AND wi.feature_id = ANY(${liveEmbeddedIds}::text[])
+         AND wi.embedding IS NOT NULL
+         AND ${proseProfilePredicateSql(tx, selection, 'wi.embedding_profile', 'wi.embedding_mode')}
+    ), anchors AS MATERIALIZED (
+      SELECT * FROM corpus WHERE is_delta
+    ), pairs AS MATERIALIZED (
+      SELECT LEAST(a.id, b.id) AS a,
+             GREATEST(a.id, b.id) AS b,
+             (1 - (a.embedding <=> b.embedding))::real AS cos,
+             similarity(a.title, b.title)::real AS trgm
+        FROM anchors a
+        JOIN corpus b ON a.id <> b.id AND (NOT b.is_delta OR a.id < b.id)
+    ), ${writeCensusEdgesSql(tx, opts, runId, `delta:${attempt}`)}
     SELECT (SELECT count(*)::int FROM anchors) AS anchors,
            count(*)::int AS edges,
            count(*) FILTER (WHERE cos >= ${ADMISSION_COMPONENT_FLOOR})::int AS hard
@@ -785,15 +1142,24 @@ async function removeStaleEdges(
   runId: string,
   startedAt: string,
   embeddedIds: readonly string[],
+  attempt: number,
 ): Promise<void> {
   await sql`
+    WITH removed AS (
     DELETE FROM harness_shared.dedup_edges e
      WHERE e.workspace_id = ${opts.workspaceId}
        AND e.harness_slug = ${opts.harnessSlug}
        AND e.run_id <> ${runId}
        AND e.computed_at < ${startedAt}::timestamptz
        AND e.a = ANY(${embeddedIds}::text[])
-       AND e.b = ANY(${embeddedIds}::text[])`;
+       AND e.b = ANY(${embeddedIds}::text[])
+    RETURNING e.a, e.b, e.cos, e.trgm, e.run_id, e.computed_at
+    ), changes AS MATERIALIZED (
+      SELECT a, b, jsonb_build_object('cos', cos, 'trgm', trgm,
+               'runId', run_id, 'computedAt', computed_at) AS before_value,
+             NULL::jsonb AS after_value FROM removed
+    ), ${retainCensusEdgeChangesSql(sql, opts, runId, `stale-removal:${attempt}`)}
+    SELECT count(*) FROM removed`;
 }
 
 async function readCosineEdges(
@@ -997,7 +1363,6 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
   const startedMs = now();
-  const startedAt = new Date(startedMs).toISOString();
   const runId = opts.runId ?? `admission-census-${startedMs}-${randomUUID().slice(0, 8)}`;
   const chunkCount = Math.max(1, Math.floor(opts.chunkCount ?? DEFAULT_EDGE_SCAN_CHUNKS));
   const config = {
@@ -1008,8 +1373,58 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
     ghostFraction: opts.ghostFraction ?? DEFAULT_GHOST_FRACTION,
     chunkCount,
   };
+  // WI-10004951: every statement below is retried on its own when PG refuses it with
+  // 55P03. That is safe because each one is an autocommit statement or its own
+  // `sql.begin`, so a refused attempt has committed nothing. The retry wraps each
+  // unit, not the whole census: one late lock refusal must not throw away the
+  // completed edge-scan chunks. Inside a caller's transaction a refusal has already
+  // aborted that transaction, so it is surfaced unchanged for the caller to retry.
+  const lockRetry = <T>(run: () => Promise<T>): Promise<T> =>
+    opts.withinTransaction
+      ? run()
+      : acquireWithContentionRetry(run, {
+          backoffsMs: opts.lockRetryBackoffsMs ?? ADMISSION_CENSUS_LOCK_RETRY_BACKOFFS_MS,
+          isRetryable: isLockNotAvailable,
+          ...(opts.sleep ? { sleep: opts.sleep } : {}),
+        });
 
-  await sql`
+  // WI-10004965: an interrupted earlier attempt of this runId leaves its pin and
+  // finished chunks on the run row. Inside a caller's transaction an interruption
+  // rolls the row back too, so only an autocommit census can be resumed.
+  const resumable = !opts.withinTransaction;
+  const prior =
+    resumable && opts.runId
+      ? parseAdmissionCensusResume(
+          (
+            await lockRetry(() => sql<Array<{ started_at: Date; detail: unknown }>>`
+              SELECT started_at, detail
+                FROM harness_shared.admission_runs
+               WHERE id = ${runId}
+                 AND workspace_id = ${opts.workspaceId}
+                 AND harness_slug = ${opts.harnessSlug}`)
+          )[0],
+          { chunkCount, nowMs: startedMs },
+        )
+      : null;
+  // A resumed attempt keeps the FIRST attempt's start: removeStaleEdges must not
+  // treat edges written by other runs during the earlier attempts as stale, and
+  // the bulk-dedup in-flight window is measured from it.
+  let startedAt = prior?.startedAt ?? new Date(startedMs).toISOString();
+  const oldEvidence = prior?.edgeEvidence as Record<string, unknown> | undefined;
+  const oldScope = oldEvidence?.scope as Record<string, unknown> | undefined;
+  const evidenceMatches = oldEvidence?.schemaVersion === CENSUS_EDGE_EVIDENCE_SCHEMA
+    && oldScope?.runId === runId && oldScope?.workspaceId === opts.workspaceId
+    && oldScope?.harnessSlug === opts.harnessSlug;
+  const edgeEvidence = evidenceMatches ? oldEvidence : {
+    schemaVersion: CENSUS_EDGE_EVIDENCE_SCHEMA,
+    scope: { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, runId },
+    coverage: 'census-write-transitions-only; before=statement-snapshot; concurrent-writers-not-covered',
+    sampleLimitPerStatement: ADMISSION_CENSUS_EDGE_EVIDENCE_LIMIT,
+    missingPriorChunks: Object.keys(prior?.pin.chunks ?? {}),
+    writes: {},
+  };
+
+  await lockRetry(() => sql`
     INSERT INTO harness_shared.admission_runs
       (id, workspace_id, harness_slug, run_kind, started_at, detail)
     VALUES (${runId}, ${opts.workspaceId}, ${opts.harnessSlug}, 'census', ${startedAt}::timestamptz,
@@ -1017,6 +1432,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
               schemaVersion: 'work-item-admission-census-v1',
               status: 'running',
               config,
+              edgeEvidence,
               outcome: {
                 unit: 'snapshots',
                 attempted: 1,
@@ -1027,6 +1443,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
                 failureReason: null,
                 blockedReason: null,
               } satisfies AdmissionRunOutcome,
+              ...(prior ? { resume: prior.pin } : {}),
             })}::text::jsonb)
     ON CONFLICT (id) DO UPDATE SET
       workspace_id = EXCLUDED.workspace_id,
@@ -1034,10 +1451,10 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       run_kind = EXCLUDED.run_kind,
       started_at = EXCLUDED.started_at,
       finished_at = NULL,
-      detail = EXCLUDED.detail`;
+      detail = EXCLUDED.detail`);
 
   try {
-    const corpus = await readCorpus(sql, opts);
+    const corpus = await lockRetry(() => readCorpus(sql, opts));
     const embedded = corpus.filter((item) => item.hasEmbedding);
     const corpusIds = corpus.map((item) => item.id);
     const embeddedIds = embedded.map((item) => item.id);
@@ -1062,42 +1479,121 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         corpus.map((item) => `${item.id}\u0000${item.hasEmbedding ? item.embeddingProfile : 'text-only'}`).join('\u0001'),
       )
       .digest('hex');
-    await sql`
+
+    // WI-10004965: reuse the earlier attempt's pin only for the same embedding
+    // profile; a profile change invalidates every finished chunk, so start over.
+    let resumeDiscarded: string | null = null;
+    let pin: AdmissionCensusResumePin | null = null;
+    if (prior && prior.pin.profileId === profileId) {
+      pin = { ...prior.pin, attempts: prior.pin.attempts + 1 };
+    } else if (prior) {
+      resumeDiscarded = `embedding profile changed: ${prior.pin.profileId ?? 'none'} -> ${profileId ?? 'none'}`;
+      startedAt = new Date(startedMs).toISOString();
+    }
+    // censusBefore is the count BEFORE this census refreshed any edge, so a resumed
+    // attempt reports the first attempt's reading, not one taken mid-refresh.
+    const censusBefore = pin ? pin.censusBefore : await lockRetry(() => readUnadjudicatedCensus(sql, opts, corpusIds));
+    if (!pin) {
+      pin = {
+        schemaVersion: ADMISSION_CENSUS_RESUME_SCHEMA,
+        chunkCount,
+        edgeFloor: ADMISSION_EDGE_FLOOR,
+        componentFloor: ADMISSION_COMPONENT_FLOOR,
+        profileId,
+        pinnedEmbeddedIds: embeddedIds,
+        pinnedFingerprint: pinFingerprint(embeddedIds),
+        censusBefore,
+        attempts: 1,
+        chunks: {},
+      };
+    }
+    const activePin = pin;
+    const pinnedIds = activePin.pinnedEmbeddedIds;
+    await lockRetry(() => sql`
       UPDATE harness_shared.admission_runs
          SET batch_size = ${corpus.length},
-             detail = detail || ${JSON.stringify({
+             started_at = ${startedAt}::timestamptz,
+             detail = jsonb_set(detail || ${JSON.stringify({
                snapshot: {
                  fingerprint: snapshotFingerprint,
                  corpusSize: corpus.length,
                  embeddedItems: embeddedIds.length,
                  missingEmbeddingItems: missingEmbeddingIds.length,
                },
-             })}::text::jsonb
-       WHERE id = ${runId}`;
-    const censusBefore = await readUnadjudicatedCensus(sql, opts, corpusIds);
+               ...(resumable ? { resume: activePin } : {}),
+             })}::text::jsonb, '{edgeEvidence,pin}',
+               COALESCE(detail #> '{edgeEvidence,pin}', jsonb_build_object(
+                 'embeddedIds', ${pinnedIds}::text[], 'fingerprint', ${activePin.pinnedFingerprint}::text,
+                 'profileId', ${profileId}::text, 'capturedAt', statement_timestamp(),
+                 'embeddings', COALESCE((SELECT jsonb_object_agg(wi.feature_id,
+                   CASE WHEN wi.embedding IS NOT NULL THEN encode(sha256(convert_to(wi.embedding::text, 'UTF8')), 'hex') END)
+                   FROM harness_shared.work_items wi
+                   WHERE wi.workspace_id = ${opts.workspaceId} AND wi.harness_slug = ${opts.harnessSlug}
+                     AND wi.feature_id = ANY(${pinnedIds}::text[])), '{}'::jsonb)
+               )), true)
+       WHERE id = ${runId}`);
 
-    const chunkCoverage: number[] = [];
+    const chunkResults: AdmissionCensusChunkCheckpoint[] = [];
+    let resumedChunks = 0;
+    let deltaAnchors = 0;
+    let anchorsMissingEmbedding = 0;
     let scannedEdgeWrites = 0;
     let scannedHardEdges = 0;
     if (mode && selection) {
       for (let i = 0; i < chunkCount; i += 1) {
-        const result = await scanEdgeChunk(sql, opts, runId, mode, selection, embeddedIds, i, chunkCount);
-        chunkCoverage.push(result.anchors);
-        scannedEdgeWrites += result.edges;
-        scannedHardEdges += result.hard;
+        const saved = activePin.chunks[String(i)];
+        if (saved) {
+          chunkResults.push(saved);
+          resumedChunks += 1;
+          continue;
+        }
+        const result = await lockRetry(() =>
+          scanEdgeChunk(sql, opts, runId, mode, selection, pinnedIds, i, chunkCount,
+            `chunk:${profileId}:${activePin.pinnedFingerprint}:${i}`),
+        );
+        chunkResults.push(result);
+        if (resumable) {
+          // Checkpoint AFTER the chunk's edges committed. A kill between the two
+          // statements re-scans this one chunk; its upserts are idempotent.
+          await lockRetry(() => sql`
+            UPDATE harness_shared.admission_runs
+               SET detail = jsonb_set(detail, ${['resume', 'chunks', String(i)]}::text[],
+                                      ${JSON.stringify(result)}::text::jsonb, true)
+             WHERE id = ${runId}`);
+        }
       }
-      const covered = chunkCoverage.reduce((sum, n) => sum + n, 0);
-      if (covered !== embedded.length) {
-        throw new Error(`edge-scan coverage mismatch: chunks=${covered}, embedded=${embedded.length}`);
+      const total = (key: keyof AdmissionCensusChunkCheckpoint) => chunkResults.reduce((sum, r) => sum + r[key], 0);
+      scannedEdgeWrites = total('edges');
+      scannedHardEdges = total('hard');
+      if (total('positions') !== pinnedIds.length) {
+        throw new Error(`edge-scan coverage mismatch: positions=${total('positions')}, pinned=${pinnedIds.length}`);
       }
-      await removeStaleEdges(sql, opts, runId, startedAt, embeddedIds);
+      // Every pinned row that still carries an embedding must have been anchored.
+      // A gap here means the profile predicate silently excluded embedded rows.
+      if (total('anchors') !== total('present')) {
+        throw new Error(`edge-scan coverage mismatch: chunks=${total('anchors')}, embedded=${total('present')}`);
+      }
+      // A pinned item that lost its embedding after the pin is not an error.
+      anchorsMissingEmbedding = total('positions') - total('present');
+      const pinnedSet = new Set(pinnedIds);
+      const deltaIds = embeddedIds.filter((id) => !pinnedSet.has(id));
+      if (deltaIds.length > 0) {
+        const delta = await lockRetry(() => scanDeltaEdges(sql, opts, runId, selection, deltaIds, embeddedIds, activePin.attempts));
+        deltaAnchors = delta.anchors;
+        scannedEdgeWrites += delta.edges;
+        scannedHardEdges += delta.hard;
+      }
+      await lockRetry(() => removeStaleEdges(sql, opts, runId, startedAt, embeddedIds, activePin.attempts));
     }
+    const chunkCoverage = chunkResults.map((r) => r.anchors);
 
     const lexical = lexicalHardEdges(corpus);
     const [cosine, textContext, adjudicatedPairs] = await Promise.all([
-      readCosineEdges(sql, opts, embeddedIds),
-      readTextContextEdges(sql, opts, corpusIds, missingEmbeddingIds),
-      lexical.length > 0 ? readAdjudicatedPairKeys(sql, opts, corpusIds) : Promise.resolve(new Set<string>()),
+      lockRetry(() => readCosineEdges(sql, opts, embeddedIds)),
+      lockRetry(() => readTextContextEdges(sql, opts, corpusIds, missingEmbeddingIds)),
+      lexical.length > 0
+        ? lockRetry(() => readAdjudicatedPairKeys(sql, opts, corpusIds))
+        : Promise.resolve(new Set<string>()),
     ]);
     // stableEdges canonicalizes a < b, so the pair key matches the adjudication keys.
     const lexicalUnadjudicated = lexical.filter((edge) => !adjudicatedPairs.has(`${edge.a}\0${edge.b}`));
@@ -1107,8 +1603,8 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
       [...cosine.unadjudicated, ...lexicalUnadjudicated],
       opts,
     );
-    await persistShardMap(sql, opts, runId, plan);
-    const censusAfter = await readUnadjudicatedCensus(sql, opts, corpusIds);
+    await lockRetry(() => persistShardMap(sql, opts, runId, plan));
+    const censusAfter = await lockRetry(() => readUnadjudicatedCensus(sql, opts, corpusIds));
     const latencyMs = Math.max(0, now() - startedMs);
     const detail = {
       schemaVersion: 'work-item-admission-census-v1',
@@ -1153,6 +1649,16 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         maxGhostTokens: Math.max(0, ...plan.shards.map((shard) => shard.ghostTokens)),
       },
       projection: plan.projection,
+      // Working checkpoints are compacted; original IDs/digests and atomic edge
+      // witnesses remain under edgeEvidence and are never rebuilt from live rows.
+      resume: {
+        attempts: activePin.attempts,
+        resumedChunks,
+        pinnedEmbeddedItems: pinnedIds.length,
+        deltaAnchors,
+        anchorsMissingEmbedding,
+        discarded: resumeDiscarded,
+      },
       coverageAssertion: {
         expected: corpus.length,
         memberRows: plan.memberRows,
@@ -1170,7 +1676,7 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
         blockedReason: null,
       } satisfies AdmissionRunOutcome,
     };
-    await sql`
+    await lockRetry(() => sql`
       UPDATE harness_shared.admission_runs
          SET finished_at = clock_timestamp(),
              batch_size = ${corpus.length},
@@ -1184,8 +1690,8 @@ export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions
              tokens_in = 0,
              tokens_out = 0,
              latency_ms = ${latencyMs},
-             detail = ${JSON.stringify(detail)}::text::jsonb
-       WHERE id = ${runId}`;
+             detail = jsonb_build_object('edgeEvidence', detail->'edgeEvidence') || ${JSON.stringify(detail)}::text::jsonb
+       WHERE id = ${runId}`);
 
     return {
       ...plan,

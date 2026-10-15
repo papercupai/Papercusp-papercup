@@ -29,6 +29,7 @@
  */
 
 import postgres from 'postgres';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { createHash } from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -78,6 +79,13 @@ import type { LearningSloOptions } from './learning-slo';
 import type { EngagementCollectorOptions } from '../../endpoint-ipc/engagement';
 import { isLoopArmOwnerRole } from '../routines/autoloop-chronic-failure';
 import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
+import {
+  toolLatencyBudgetSignalsFromRows,
+  toolLatencyBudgetsFromProjected,
+  writeToolNames,
+  type ToolLatencyBudget,
+  type ToolLatencyRow,
+} from './tool-latency-budget';
 
 export type WatchdogSource =
   | 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down'
@@ -143,6 +151,11 @@ export type WatchdogSource =
   // learning-slo.ts; flag-gated dark per D-001 until the P-001 arming gate):
   | 'triage-entropy' | 'capture-consume-imbalance' | 'mttsh-regression'
   | 'governor-starvation' | 'memory-zero-hit'
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-009 (producer-silence.ts): an ACTIVE
+  // learning producer (loop enabled, pot on, routine not stopped) with no output past
+  // its threshold — the six-week silent Gym class (WI-10007379) — plus the unexplained
+  // pot learning switch that silences every producer for a pot.
+  | 'producer-silence'
   // context-injection-audit-2026-07-28 P-013 (D-024): the PER-POOL slice of recall
   // health, which the blended 'memory-zero-hit' aggregate above cannot express. The
   // push path fuses three independently-budgeted pools into ONE recorded row, so a
@@ -330,9 +343,11 @@ export interface WatchdogSignal {
      * (WI-10929) Did ONE sha both pass and fail in the window? If so the commit
      * does not determine this test's verdict, so the redness is not attributable
      * to code and bisecting it is wasted work. Computed by
-     * `hasSameShaVerdictFlip` — see it for why this is kept rather than dropped.
+     * `findSameShaVerdictFlipSha` — see it for why this is kept rather than dropped.
      */
     sameShaFlip?: boolean;
+    /** A SHA present in both the pass and fail sets, when `sameShaFlip` is true. */
+    sameShaFlipSha?: string;
   };
   /**
    * Resolution cooldown (ms). When set, a signal whose key matches only RESOLVED
@@ -840,6 +855,20 @@ export interface CollectOptions extends LearningSloOptions, EngagementCollectorO
   sharedStallDurationMs?: number;
   /** Bound the raw candidate read used by shared-stall correlation. Default 2000. */
   sharedStallMaxRows?: number;
+  /**
+   * tool-latency-budget (WI-10005730): a MUTATING tool whose p95 STRICTLY exceeds this fraction
+   * of its dispatch timeout budget is flagged (late-return / commit-unknown risk). Default 0.8.
+   */
+  toolLatencyRatio?: number;
+  /** Minimum calls in the window before a tool's p95 counts. Default 20. */
+  toolLatencyMinSamples?: number;
+  /** Window for the per-tool p95 aggregate, in hours. Default 24. */
+  toolLatencyWindowHours?: number;
+  /**
+   * Test seam: tool-name → budget map. Production leaves this unset and the collector reads
+   * the live projected-tool registry (the dispatcher's own `timeoutSec ?? 60` source).
+   */
+  toolLatencyBudgets?: ReadonlyMap<string, ToolLatencyBudget>;
   /** Caller/DX tool-error (invalid_args / role-denied) sustained-pattern bar. Default 10. */
   callerMinCount?: number;
   /** Soft-failure outcome current consecutive-run bar. Default 10. */
@@ -1021,7 +1050,8 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
     const passShas = countFailShas([...(r.pass_shas ?? []), r.last_pass_sha ?? null]).map(
       ([sha]) => sha,
     );
-    const sameShaFlip = hasSameShaVerdictFlip(failShas, passShas);
+    const sameShaFlipSha = findSameShaVerdictFlipSha(failShas, passShas);
+    const sameShaFlip = sameShaFlipSha !== undefined;
     const latestFailAt = toIsoOrUndefined(r.latest_fail_at);
     return {
       source: 'red-test' as const,
@@ -1030,7 +1060,7 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       body:
         `Watchdog signal (red-test): ${r.file_path} (${r.framework}) failed ${r.fails}× in the last ` +
         `${windowHours}h and its latest run is still red.\n` +
-        renderRedTestCommitContext(failShaCounts, lastPassSha, lastPassAt, sameShaFlip) +
+        renderRedTestCommitContext(failShaCounts, lastPassSha, lastPassAt, sameShaFlipSha) +
         `\nFailure tail AS OF ${latestFailAt ?? 'the latest recorded failing run'} — the specific failing assertion may have changed; re-run this file before acting on the assertion below.\n` +
         `${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
       severity: 'major' as const,
@@ -1043,6 +1073,7 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
         ...(lastPassSha ? { lastPassSha } : {}),
         ...(lastPassAt ? { lastPassAt } : {}),
         ...(sameShaFlip ? { sameShaFlip } : {}),
+        ...(sameShaFlipSha ? { sameShaFlipSha } : {}),
       },
     };
   });
@@ -1092,9 +1123,18 @@ export function hasSameShaVerdictFlip(
   failShas: readonly string[],
   passShas: readonly string[] | string | undefined,
 ): boolean {
-  if (!passShas) return false;
+  return findSameShaVerdictFlipSha(failShas, passShas) !== undefined;
+}
+
+/** Return the first failing SHA also present in the pass set, if any. */
+export function findSameShaVerdictFlipSha(
+  failShas: readonly string[],
+  passShas: readonly string[] | string | undefined,
+): string | undefined {
+  if (!passShas) return undefined;
   const passes = typeof passShas === 'string' ? [passShas] : passShas;
-  return failShas.some((sha) => passes.includes(sha));
+  const passSet = new Set(passes);
+  return failShas.find((sha) => passSet.has(sha));
 }
 
 /**
@@ -1117,7 +1157,7 @@ function renderRedTestCommitContext(
   failShaCounts: Array<[string, number]>,
   lastPassSha: string | undefined,
   lastPassAt: string | undefined,
-  sameShaFlip: boolean,
+  sameShaFlipSha: string | undefined,
 ): string {
   const lines: string[] = [];
   if (failShaCounts.length > 0) {
@@ -1129,11 +1169,16 @@ function renderRedTestCommitContext(
           ` — these may be DIFFERENT causes, or runs against an already-superseded tree.`,
     );
   }
-  if (sameShaFlip && lastPassSha) {
+  if (sameShaFlipSha) {
+    if (lastPassSha || lastPassAt) {
+      lines.push(
+        `Last PASS in window: ${lastPassAt ?? 'unknown time'}` +
+          `${lastPassSha ? ` (${lastPassSha.slice(0, 10)})` : ''}` +
+          `${lastPassSha === sameShaFlipSha ? ' — SAME SHA as a failing run.' : ''}`,
+      );
+    }
     lines.push(
-      `Last PASS in window: ${lastPassAt ?? 'unknown time'} (${lastPassSha.slice(0, 10)})` +
-        ` — SAME SHA as a failing run.`,
-      `⚠ SAME-SHA VERDICT FLIP: ${lastPassSha.slice(0, 10)} both PASSED and FAILED here, so this commit` +
+      `⚠ SAME-SHA VERDICT FLIP: ${sameShaFlipSha.slice(0, 10)} both PASSED and FAILED here, so this commit` +
         ` does NOT determine the verdict and the redness is not attributable to code at that sha.` +
         ` DO NOT BISECT. Triage the two causes that survive: (1) the test reads state outside the` +
         ` commit — most often the WORKING TREE (a readdir/glob/file-scan census), which flips on a` +
@@ -1522,6 +1567,11 @@ export async function fetchRedTestRows(
          -- synthetic fixture rows ('b', 'fail', 'no-such-bin') into test_runs;
          -- a real run always carries a repo-relative path with a separator.
          AND file_path LIKE '%/%'
+         -- The assertion-detail integration test deliberately runs the failure
+         -- fixture as a nested red test. That row is expected input to a passing
+         -- outer test, not a repository regression. Exclude it from both the fail
+         -- count and rn=1 freshness.
+         AND file_path !~ '(^|/)packages/operator-core/lib/agent-tools/testing/__tests__/run-failure-fixture[.]test[.]ts$'
          AND ${pathFilter}
          -- EI-18767688096795873: a run whose vitest config resolved OUTSIDE the repo
          -- tree (a throwaway/mutation-testing config synthesized under /tmp, aliasing
@@ -1707,11 +1757,9 @@ interface ClassifiedToolErrorRow {
   /** SQL alias `class`; one of ToolErrorClass. */
   class: ToolErrorClass;
   /**
-   * Normalized error-shape fingerprint (P-003): SQL-computed for the `structural`
-   * class only (first 6 alpha tokens of the digit/punct-stripped message), null
-   * otherwise. Appended to the structural dedup key so two genuinely DIFFERENT
-   * deterministic failure modes under the same tool don't collapse onto one key
-   * (the 2026-06-17 embed-429-masked-by-EI-630 class of bug).
+   * Full normalized-message digest (P-003/P-012): SQL-computed for fingerprinted
+   * classes, null otherwise. Appended to the dedup key so distinct failure modes
+   * under the same tool do not collapse onto one key.
    */
   fingerprint?: string | null;
   /** Failures of this class for this tool in the window. */
@@ -1779,7 +1827,8 @@ export function analyzeSharedToolStallsFromRows(
   rows: SharedToolStallTelemetryRow[],
   opts: CollectOptions = {},
 ): SharedToolStallAnalysis {
-  const windowMs = Math.max(1, opts.sharedStallWindowMinutes ?? 5) * 60_000;
+  const windowMinutes = Math.max(1, opts.sharedStallWindowMinutes ?? 5);
+  const windowMs = windowMinutes * 60_000;
   const minTools = Math.max(2, opts.sharedStallMinTools ?? 3);
   const minSessions = Math.max(2, opts.sharedStallMinSessions ?? 2);
   const minFailures = Math.max(minTools, opts.sharedStallMinFailures ?? 3);
@@ -1854,8 +1903,8 @@ export function analyzeSharedToolStallsFromRows(
       body:
         `Watchdog signal (shared-resource stall): ${correlatedRows.length} transient timeout-class ` +
         `failures from ${tools.length} distinct tools and ${sessions.length} distinct sessions ` +
-        `within a ${Math.max(1, opts.sharedStallWindowMinutes ?? 5)}-minute window ` +
-        `(observed span ${spanSeconds}s). This shape points to a shared dependency/resource ` +
+        `across qualifying ${windowMinutes}-minute sliding windows ` +
+        `(aggregated observed span ${spanSeconds}s). This shape points to a shared dependency/resource ` +
         `rather than ${tools.length} independent tool defects; per-tool transient captures ` +
         `for these tools were suppressed.\n\nTools: ${tools.join(', ') || '(unknown)'}` +
         `\nSamples: ${samples.join(', ') || '(none)'}`,
@@ -2134,9 +2183,26 @@ export function toolErrorSignalsFromRows(
  * tick scoped to workspace W no longer counts another workspace's errors, without
  * going dark on the unscoped traffic where most signal lives.
  */
+/**
+ * Live projected-tool registry → `{tool name → timeoutSec, effect}` for the tool-latency-budget
+ * check. Read from the registry the dispatcher itself resolves budgets from (never a hand-kept
+ * copy that could drift). Imported lazily so merely loading the watchdog does not pull the
+ * whole tool catalog into every consumer.
+ */
+async function loadProjectedToolLatencyBudgets(): Promise<Map<string, ToolLatencyBudget>> {
+  const { listAllProjectedTools } = await import('@papercusp/agent-mcp');
+  return toolLatencyBudgetsFromProjected(listAllProjectedTools());
+}
+
 export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {}, workspaceId?: string): Promise<WatchdogSignal[]> {
   const windowHours = opts.toolErrorWindowHours ?? 24;
   const scopes = workspaceId ? [...new Set([workspaceId, '*', DEFAULT_COORD_WORKSPACE])] : null;
+  const structuralMinCount = opts.structuralMinCount ?? 2;
+  const structuralMinCallsForRate = opts.structuralMinCallsForRate ?? 3;
+  const structuralMinRate = opts.structuralMinRate ?? 0.5;
+  const transientMinCount = opts.transientMinCount ?? 15;
+  const callerMinCount = opts.callerMinCount ?? 10;
+  const rateLimitMinCount = opts.rateLimitMinCount ?? 8;
   const rows = await sql<ClassifiedToolErrorRow[]>`
     WITH fail AS (
       SELECT tool_name,
@@ -2165,12 +2231,12 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
          AND ${dispatchWrapperExclusionPredicate(sql)}
        GROUP BY tool_name
     ),
-    -- P-003 + P-012 fingerprint: the normalized error-shape skeleton (first 6 alpha
-    -- tokens of the digit/punct-stripped message), computed by the GENERATED CASE from
+    -- P-003 + P-012 fingerprint: an MD5 digest of the full digit/punct-stripped
+    -- normalized message, computed by the GENERATED CASE from
     -- FINGERPRINTED_TOOL_ERROR_CLASSES (tool-error-classifier.ts). structural + caller +
     -- transient are fingerprinted, so distinct same-class modes under one tool split into
     -- separate keys instead of masking each other; rate-limit stays coarse (one capacity
-    -- concern). toolErrorFingerprint() mirrors this exact arithmetic in TS for the
+    -- concern). toolErrorFingerprint() mirrors this exact digest in TS for the
     -- key-migration backfill — parity proven by the integration test.
     tagged AS (
       SELECT tool_name, class, error_message, invoked_at,
@@ -2183,8 +2249,19 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
            max(tagged.invoked_at) AS latest_at
       FROM tagged LEFT JOIN tot ON tot.tool_name = tagged.tool_name
      GROUP BY tagged.tool_name, tagged.class, tagged.fingerprint, tot.total
+    HAVING
+       (tagged.class = 'structural' AND (
+         count(*) >= ${structuralMinCount}
+         OR (
+           COALESCE(tot.total, count(*)) >= ${structuralMinCallsForRate}
+           AND count(*)::float8 / NULLIF(COALESCE(tot.total, count(*)), 0) >= ${structuralMinRate}
+         )
+       ))
+       OR (tagged.class = 'transient' AND count(*) >= ${transientMinCount})
+       OR (tagged.class = 'caller' AND count(*) >= ${callerMinCount})
+       OR (tagged.class = 'rate-limit' AND count(*) >= ${rateLimitMinCount})
      ORDER BY count(*) DESC
-      LIMIT 30`;
+  `;
   let sharedStall: SharedToolStallAnalysis = { signals: [], correlatedToolNames: new Set() };
   try {
     const sharedStallRows = await sql<SharedToolStallTelemetryRow[]>`
@@ -2261,10 +2338,51 @@ export async function collectToolErrorSignals(sql: Sql, opts: CollectOptions = {
     HAVING count(*) >= ${softMinRun}
      ORDER BY count(*) DESC
      LIMIT 100`;
+  // tool-latency-budget (WI-10005730): write tools whose p95 runs near their dispatch timeout.
+  // Fail-soft like the shared-stall correlation above — a registry that cannot load (a tool file
+  // mid-edit) or a partial telemetry schema must not blind the rest of the tool-error sweep.
+  let toolLatencySignals: WatchdogSignal[] = [];
+  try {
+    const budgets = opts.toolLatencyBudgets ?? await loadProjectedToolLatencyBudgets();
+    const writeTools = writeToolNames(budgets);
+    if (writeTools.length === 0) {
+      // An EMPTY registry is indistinguishable from "no slow tools" in the output — say so,
+      // so a blind detector is a logged fact rather than a silent clean bill.
+      console.warn('[improvement-watchdog] tool-latency-budget skipped: no write tools in the projected registry');
+    } else {
+      const latencyWindowHours = opts.toolLatencyWindowHours ?? 24;
+      const latencyRows = await sql<ToolLatencyRow[]>`
+        SELECT tool_name,
+               count(*)::int AS n,
+               (percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms))::float8 AS p95_ms,
+               max(invoked_at) AS latest_at,
+               min(invoked_at) AS earliest_at
+          FROM harness_shared.tool_invocations
+         WHERE invoked_at > now() - make_interval(hours => ${latencyWindowHours})
+           AND tool_name = ANY(${writeTools}::text[])
+           AND status IN ('ok', 'error', 'timeout')
+           AND duration_ms > 0
+           AND ${scopes ? sql`workspace_id = ANY(${scopes}::text[])` : sql`TRUE`}
+           AND ${dispatchWrapperExclusionPredicate(sql)}
+         GROUP BY tool_name
+        HAVING count(*) >= ${opts.toolLatencyMinSamples ?? 20}
+         LIMIT 500`;
+      toolLatencySignals = toolLatencyBudgetSignalsFromRows(latencyRows, budgets, {
+        toolLatencyRatio: opts.toolLatencyRatio,
+        toolLatencyMinSamples: opts.toolLatencyMinSamples,
+        toolLatencyWindowHours: latencyWindowHours,
+      });
+    }
+  } catch (error) {
+    console.warn(
+      `[improvement-watchdog] tool-latency-budget unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   return [
     ...toolErrorSignalsFromRows(rows, opts, sharedStall.correlatedToolNames),
     ...sharedStall.signals,
     ...softFailureSignalsFromRunRows(softRows, opts),
+    ...toolLatencySignals,
   ];
 }
 
@@ -3806,23 +3924,12 @@ interface StalledClaimRow {
   detail: string | null;
   stalled_minutes: number | string | null;
   /**
-   * EI-14763: the holder emitted native tool / lifecycle (agent_activity) or
-   * coord/MCP (tool_invocations) activity within the stall window. A claim with
-   * no item-scoped STATE transition in 30 min is NOT a stall when its holder is
-   * demonstrably working (long-horizon su lanes hold a claim for hours while
-   * running bash / sending coord). Such rows are dropped from the signal — a
-   * heartbeat alone (holder_alive) is too weak; genuine abandonment is the
-   * separate orphaned-claim case (dead/absent holder). Absent ⇒ not-active
-   * (older callers behave exactly as before).
-   */
-  holder_active?: boolean | null;
-  /**
    * EI-18633753937712900 (WI-3669 recurrence): the item is deliberately PARKED —
    * a `blocked` status, or payload._claimHold=true (WI-2797) — a considered
    * "nothing to do right now" disposition, NOT an abandoned/stuck claim, so
    * re-picking it is futile (a blocked item stays blocked). Such rows are dropped
    * from the signal. The SQL fetch also excludes these (one rule, two enforcement
-   * points — mirrors holder_active). Absent ⇒ not-parked (older callers behave
+   * points). Absent ⇒ not-parked (older callers behave
    * exactly as before).
    */
   parked?: boolean | null;
@@ -3838,12 +3945,6 @@ export function stalledClaimSignalsFromRows(
   rows: StalledClaimRow[],
   opts: { minMinutes?: number } = {},
 ): WatchdogSignal[] {
-  // EI-14763: a holder that is alive AND actively emitting tool/coord activity in
-  // the window is not stalled (a claim is not progress, but neither is "no state
-  // event in 30 min" a stall when the holder is demonstrably working). Genuine
-  // abandonment (dead/absent holder) is the orphaned-claim case, covered
-  // elsewhere. Drop active holders before the signal is built.
-  rows = rows.filter((r) => r.holder_active !== true);
   // EI-18633753937712900 (WI-3669 recurrence): a deliberately PARKED claim — a
   // `blocked` status, or payload._claimHold=true (WI-2797) — is a considered
   // "nothing to do right now" disposition, not a stall to re-pick (re-picking a
@@ -3916,20 +4017,6 @@ export async function collectStalledClaimSignals(
   const rows = await sql<StalledClaimRow[]>`
     SELECT fa.work_item_id, fa.agent_id, fa.harness_slug, fa.detail,
            EXTRACT(epoch FROM (now() - COALESCE(fa.last_progress_at, fa.claim_acquired_ts))) / 60 AS stalled_minutes,
-           -- EI-14763: the holder is demonstrably WORKING within the window — a
-           -- native tool call / lifecycle turn (agent_activity) or a coord/MCP
-           -- dispatch (tool_invocations). A live, active holder is not stalled
-           -- even with no item-scoped STATE transition; only a heartbeating-but-
-           -- idle holder (or the dead-holder orphaned case) should raise this.
-           (EXISTS (
-              SELECT 1 FROM harness_shared.agent_activity aa
-               WHERE aa.owner_id = fa.agent_id
-                 AND aa.created_at > now() - make_interval(mins => ${minMinutes})
-            ) OR EXISTS (
-              SELECT 1 FROM harness_shared.tool_invocations ti
-               WHERE ti.coord_owner_id = fa.agent_id
-                 AND ti.invoked_at > now() - make_interval(mins => ${minMinutes})
-            ))                                              AS holder_active,
            -- EI-18633753937712900 (WI-3669 recurrence): the item is deliberately
            -- PARKED — a blocked status, or payload._claimHold=true (WI-2797) —
            -- a considered disposition, not a stuck claim. Exposed for the pure
@@ -3953,19 +4040,6 @@ export async function collectStalledClaimSignals(
                   'workitem:*:' || fa.work_item_id)
             AND cn.note IS NOT NULL
             AND cn.updated_ts > (extract(epoch from now()) * 1000)::bigint - (${minMinutes}::int * 60000)
-       )
-       -- Suppress live, actively-working holders directly in the fetch so genuine
-       -- stalls are never crowded out of the LIMIT (the pure signal also drops
-       -- holder_active rows defensively — one rule, two enforcement points).
-       AND NOT EXISTS (
-         SELECT 1 FROM harness_shared.agent_activity aa
-          WHERE aa.owner_id = fa.agent_id
-            AND aa.created_at > now() - make_interval(mins => ${minMinutes})
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM harness_shared.tool_invocations ti
-          WHERE ti.coord_owner_id = fa.agent_id
-            AND ti.invoked_at > now() - make_interval(mins => ${minMinutes})
        )
        -- (bug-drain-200k / EI-18633753937712900, WI-3669 recurrence) a
        -- deliberately PARKED item is a considered "nothing more to do right now"
@@ -4287,8 +4361,29 @@ export async function defaultPapercuspCollectors(
         // WI-10004648: the promoted pass folds never-worked promoted legacy rows
         // (bulk_dedup's reviewed gate refuses them by design). Same 200/tick bound.
         const foldNote = `${await foldPass('probation')}; ${await foldPass('promoted')}`;
+        // unified-bug-pipeline P-003 / D-022: promoted tool-failure rows stamped
+        // awaiting-review or freshness-unknown with no reviewer get verified, retired
+        // with evidence, or enrolled in agent review. Bounded by rows and wall time.
+        const { sweepStrandedToolFailures, renderStrandedSweepNote, sweepExpiredCandidates, renderCandidateExpiryNote } =
+          await import('./stranded-tool-failure-sweep');
+        const asError = (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) });
+        const sweepNote = renderStrandedSweepNote(await sweepStrandedToolFailures(workspaceId).catch(asError));
+        // P-011 / D-046 pt 6: automatic reports still at candidate admission expire on
+        // the same D-012 evidence when a newer build changed the tool and nobody reproduced it.
+        const expiryNote = renderCandidateExpiryNote(await sweepExpiredCandidates(workspaceId).catch(asError));
+        // P-014 / D-013 / D-048 pt 4: consented report attachments are deleted 90 days
+        // after their item closes; the report text stays on the item.
+        const { sweepExpiredReportAttachments, renderReportAttachmentSweepNote } = await import('./report-attachments');
+        const attachmentNote = renderReportAttachmentSweepNote(await sweepExpiredReportAttachments(workspaceId).catch(asError));
+        const { retryReportAttachmentDelivery } = await import('./report-attachment-rpc');
+        const delivery = await retryReportAttachmentDelivery(workspaceId).catch(asError);
+        const deliveryNote = 'error' in delivery ? `attachments delivery error=${delivery.error}`
+          : `attachments delivery attempted=${delivery.attempted} delivered=${delivery.delivered}`;
         const result = await recoverInvocationFriction(workspaceId);
-        return { signals: [], note: `friction delivered=${result.delivered}, locked-pending=${result.pending}; ${foldNote}` };
+        return {
+          signals: [],
+          note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}; ${sweepNote}; ${expiryNote}; ${attachmentNote}; ${deliveryNote}`,
+        };
       },
     },
     {
@@ -4401,6 +4496,13 @@ export async function defaultPapercuspCollectors(
       name: 'papercusp-governor-starvation',
       collect: () => import('./learning-slo').then((m) => m.governorStarvationCollector(workspaceId, opts)),
     },
+    // P-009 (scout-su-ideate-pipeline-gaps-2026-10-08): the zero-output sibling of the
+    // collector above — starvation asks "can this loop still afford to run?", this asks
+    // "is an active producer actually producing?". Same flag, SQL-only.
+    {
+      name: 'papercusp-producer-silence',
+      collect: () => import('./learning-slo').then((m) => m.producerSilenceCollector(workspaceId)),
+    },
     {
       name: 'papercusp-memory-recall-zero-hit',
       collect: () => import('./learning-slo').then((m) => m.memoryZeroHitCollector(opts)),
@@ -4456,15 +4558,9 @@ export async function defaultPapercuspCollectors(
       name: 'papercusp-zero-promotion',
       collect: () => import('./zero-promotion-detect').then((m) => m.collectZeroPromotionSignals(workspaceId)),
     },
-    // enforce-system-on-generic-work P-009: the "done without test" recurrence guard —
-    // a feature work-item marked done (terminal/passed) that still carries requires_test
-    // VAL(s) with no passing covering test. SQL-only (three workspace-scoped reads), no
-    // flag gate (naturally inert where the inline-VAL flow is dark). One finding per
-    // harness, count = number of flagged items.
-    {
-      name: 'papercusp-done-without-test',
-      collect: () => import('./done-without-test-detect').then((m) => m.collectDoneWithoutTestSignals(workspaceId)),
-    },
+    // (enforce-system-on-generic-work P-009's 'papercusp-done-without-test' collector is
+    // RETIRED with inline VAL-* assertions — verification-system-improvements-2026-10-10
+    // P-003; its successor signal is the P-002 verification.health cell.)
     // enforce-system-on-generic-work P-013: the dark-flag-age guard — surfaces the
     // DARK_FLAGS allowlist for owner review BEFORE its review-by lands / its size
     // watermark is hit (the same two invariants production-defaults.test.ts enforces at
@@ -4547,6 +4643,9 @@ const HARNESS_SCOPED_WATCHDOG_SOURCES: ReadonlySet<WatchdogSource> = new Set([
   'stalled-feature', 'unresolved-escalation', 'escalation-spike', 'orphaned-spawn',
   'failed-spawn', 'stuck-plan', 'smoke-fail', 'fire-circuit-open', 'ship-link-stuck',
   'governor-starvation',
+  // producer-silence is per-pot (scope harness:<slug>): a torn-down benchmark pot's
+  // silent producer or switched-off learning is test debris, not an improvement.
+  'producer-silence',
   // bridge-needs-owner-unalerted is per-harness (scope harness:<slug>): a torn-down
   // benchmark instance's un-paged bridge block is test debris, not an improvement.
   'bridge-needs-owner-unalerted',
@@ -4999,6 +5098,7 @@ export async function withWatchdogTickLock<T>(workspaceId: string, fn: () => Pro
   try {
     reserved = await tickLockSql().reserve();
   } catch (e) {
+    observeFallback('improvement-watchdog-read', { eligible: 1, applied: 0, reason: 'lock-reserve-failed', scope: 'tick-lock' }, { workspaceId });
     console.warn(`[improvement-watchdog] could not reserve a connection for the tick lock, running unlocked (fail-open): ${e instanceof Error ? e.message : e}`);
     return { ran: true, value: await fn() };
   }
@@ -5010,8 +5110,10 @@ export async function withWatchdogTickLock<T>(workspaceId: string, fn: () => Pro
       const rows = await reserved<{ ok: boolean }[]>`
         SELECT pg_try_advisory_lock(hashtext('improvement-watchdog'), hashtext(${workspaceId})) AS ok`;
       if (rows[0]?.ok) acquired = true;
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'tick-lock' }, { workspaceId });
     } catch (e) {
       lockErrored = true;
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 0, reason: 'lock-query-failed', scope: 'tick-lock' }, { workspaceId });
       console.warn(`[improvement-watchdog] advisory-lock query failed, running unlocked (fail-open): ${e instanceof Error ? e.message : e}`);
     }
     if (lockErrored) return { ran: true, value: await fn() };
@@ -5143,7 +5245,9 @@ async function runWatchdogTickBody(
   if (signals.length > 0) {
     try {
       recentTicks = await readRecentTicks(workspaceId, WATCHDOG_REFILE_HISTORY_LIMIT, { status: 'ran' });
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'tick-history' }, { workspaceId });
     } catch {
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 0, reason: 'history-read-failed', scope: 'tick-history' }, { workspaceId });
       /* no prior-tick history this tick: delta gate off (fails open), deferred boost empty,
          re-file rate limit off (fails CLOSED — an empty set suppresses nothing extra) */
     }
@@ -5157,7 +5261,9 @@ async function runWatchdogTickBody(
     try {
       const dups = await readKeyDups([...new Set(signals.map(watchdogKeyOf))]);
       partition = partitionSignalsByKnownKeys(signals, dups, priorSeenKeys, refileEligible);
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'key-dedup' }, { workspaceId });
     } catch (e) {
+      observeFallback('improvement-watchdog-read', { eligible: 1, applied: 0, reason: 'key-dedup-read-failed', scope: 'key-dedup' }, { workspaceId });
       console.warn(`[improvement-watchdog] key-dup pre-filter failed (degrading to title dedup): ${e instanceof Error ? e.message : e}`);
       // The dup pre-filter is gone, but the delta gate is independent of it and is the
       // load-bearing anti-churn guard — apply it alone rather than re-filing everything.
@@ -5214,8 +5320,12 @@ async function runWatchdogTickBody(
   // fixes. Those signals stay fully collected and are still written to watchdog_ticks, so
   // they continue to reach ideation via scout/watchdog-health-lane.ts (the Blender corpus
   // digest); they simply never mint a work item. Defect-lane signals are unaffected.
-  const fileable = partition.fresh.filter((s) => sourceFilesWorkItem(s.source));
-  const metricSuppressed = partition.fresh.filter((s) => !sourceFilesWorkItem(s.source));
+  // Synthetic Red-Queen drills are explicitly exercising the detector and
+  // capture path, even when their source is normally a metric. Keep the shared
+  // source classification unchanged; organic metric signals remain suppressed.
+  const isFileable = (s: WatchdogSignal) => s.origin === 'drill' || sourceFilesWorkItem(s.source);
+  const fileable = partition.fresh.filter(isFileable);
+  const metricSuppressed = partition.fresh.filter((s) => !isFileable(s));
 
   const planCap = Math.max(0, opts.maxPerTick ?? 3);
   // Reuses the single prior-tick read above (P-011: `ran` only, so a skipped tick can't wipe

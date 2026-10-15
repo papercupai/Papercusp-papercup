@@ -12,6 +12,7 @@
  * manifest — base D-006 item 3), so one installer covers both.
  */
 import { spawn } from 'node:child_process';
+import type { Sql } from 'postgres';
 import { tmpdir } from 'node:os';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
@@ -21,6 +22,8 @@ import { grantCapabilities } from '../plugin-grants';
 import { resolveCupboardBaseUrl } from './base-url';
 import {
   installPluginFromCupboardCore,
+  readInstalledPluginProvenance,
+  verifyInstalledPluginCommerceProvenance,
   InstallPluginError,
   type InstallPluginCoreDeps,
   type InstallPluginCoreInput,
@@ -30,6 +33,8 @@ import {
 import type { InstallableUnitRef } from './resolve-and-install';
 import type { TreeDigestEntry } from '@papercusp/artifact-registry';
 import type { InstallSelfDescribingDeps } from './install-self-describing-core';
+import { fetchSelfDescribingArtifact } from './self-describing-release';
+import { coordsFromRow, type ResolvedListingCoords } from './resolve-listing-by-kind';
 
 /** Shallow `git clone --depth 1 url dest`. Rejects on non-zero exit. */
 export function gitCloneShallow(url: string, dest: string): Promise<void> {
@@ -102,7 +107,15 @@ export async function gitListTreeBlobs(cloneDir: string, sha: string, ref: strin
 
 /** The real git-backed deps every self-describing Cupboard installer shares. */
 export function cupboardGitDeps(): InstallSelfDescribingDeps {
-  return { cloneRepo: gitCloneShallow, fetchAtSha: gitFetchAtSha, listTreeBlobs: gitListTreeBlobs, tmpDir: tmpdir };
+  return {
+    cloneRepo: gitCloneShallow,
+    fetchAtSha: gitFetchAtSha,
+    listTreeBlobs: gitListTreeBlobs,
+    tmpDir: tmpdir,
+    // P-011: prefer the R2 origin's release bytes; the installer verifies their Merkle root.
+    fetchArtifact: (contentHash) =>
+      fetchSelfDescribingArtifact({ baseUrl: resolveCupboardBaseUrl(), contentHash }),
+  };
 }
 
 /** Drop the in-memory plugin-host + api-route caches so a new unit goes live. */
@@ -119,12 +132,21 @@ export async function invalidatePluginHost(): Promise<void> {
   } catch {
     /* mount cache not initialized */
   }
+  // Settings → Integrations lists installed providers and packs not set up yet, so an open page
+  // re-reads after every install or uninstall (cupboard-distributable-integrations-2026-10-10 D-017).
+  // 'integrations.tickets' is that page's sync query (sync-resolver/index.ts).
+  try {
+    const { notifySyncInvalidate } = await import('../sync-sse');
+    void notifySyncInvalidate('integrations.tickets').catch(() => {});
+  } catch {
+    /* sync bus not initialized */
+  }
 }
 
 /** Resolve a Cupboard listing id → { githubUrl, listingRef } via the worker. */
 export async function resolveListingCoords(
   id: string,
-): Promise<{ githubUrl: string; listingRef?: string } | null> {
+): Promise<{ githubUrl: string; listingRef?: string; listing?: ResolvedListingCoords; listingKind?: string } | null> {
   const base = resolveCupboardBaseUrl();
   try {
     const res = await fetch(`${base}/listings/${encodeURIComponent(id)}`, {
@@ -139,11 +161,33 @@ export async function resolveListingCoords(
       (data as Record<string, unknown>);
     const githubUrl = typeof row?.github_url === 'string' ? row.github_url : '';
     if (!githubUrl) return null;
-    const listingRef = typeof row?.listing_ref === 'string' ? row.listing_ref : undefined;
-    return { githubUrl, listingRef };
+    const listing = coordsFromRow(row);
+    return { githubUrl, ...(typeof row.listing_ref === 'string' ? { listingRef: row.listing_ref } : {}),
+      ...(typeof row.listing_kind === 'string' ? { listingKind: row.listing_kind } : {}),
+      ...(listing ? { listing } : {}) };
   } catch {
     return null;
   }
+}
+
+/** P-007: resolve the actual loaded installation to hosted commerce authority, never a tool alias. */
+export async function readInstalledPluginCommerceProvenance(
+  installation: { name: string; version: string; path: string },
+  deps: {
+    resolveListing?: typeof resolveListingCoords;
+    content?: Pick<InstallPluginCoreDeps, 'fetchArtifact' | 'fetchAtSha' | 'listTreeBlobs' | 'tmpDir'>;
+  } = {},
+) {
+  const retained = await readInstalledPluginProvenance(installation);
+  if (!retained) return null;
+  if (!retained.listing.listingId) {
+    throw new InstallPluginError('installation has no exact storefront listing id', 409, 'installation_commerce_binding_invalid');
+  }
+  const resolved = await (deps.resolveListing ?? resolveListingCoords)(retained.listing.listingId);
+  if (!resolved?.listing || !['plugin', 'pack'].includes(resolved.listingKind ?? '')) {
+    throw new InstallPluginError('loaded installation has no hosted plugin/pack listing', 409, 'installation_commerce_binding_invalid');
+  }
+  return verifyInstalledPluginCommerceProvenance(installation, resolved.listing, deps.content ?? buildInstallPluginDeps());
 }
 
 /**
@@ -156,10 +200,26 @@ export async function resolveListingCoords(
 export function buildInstallPluginDeps(): InstallPluginCoreDeps {
   return {
     cloneRepo: gitCloneShallow,
+    fetchAtSha: gitFetchAtSha,
+    listTreeBlobs: gitListTreeBlobs,
+    fetchArtifact: (hash) => fetchSelfDescribingArtifact({ baseUrl: resolveCupboardBaseUrl(), contentHash: hash }),
     globalPluginsDir: GLOBAL_PLUGINS_DIR,
     tmpDir: tmpdir,
     grant: (args) => grantCapabilities({ ...args, grantedBy: 'user', reason: 'cupboard install-consent' }),
     invalidateHost: invalidatePluginHost,
+    // P-012 (D-013): a trigger pack installed into a harness materializes as its
+    // plans and DISARMED bindings in the active workspace.
+    materializeTriggerPack: async (args) => {
+      const [{ getOrgPg }, { activeWorkspaceId }, { materializeTriggerPack }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('./trigger-pack-materialize'),
+      ]);
+      return materializeTriggerPack(getOrgPg().sql as unknown as Sql, activeWorkspaceId(), {
+        ...args,
+        createdBy: 'cupboard-install',
+      });
+    },
     validateDependencies: async (deps) => {
       const { validateBlueprintDependencies, resolveEventProvider } = await import('@papercusp/blueprint-distribution');
       const { derivePackCatalog, depHostSetsFromCatalog } = await import('./pack-catalog');
@@ -212,7 +272,16 @@ export function buildInstallPluginDeps(): InstallPluginCoreDeps {
 
 export type InstallPluginFromCupboardResult =
   | { ok: true; result: InstallPluginCoreResult }
-  | { ok: false; status: number; error: string; detail?: string };
+  | {
+      ok: false;
+      status: number;
+      error: string;
+      detail?: string;
+      /** Stable refusal code (e.g. `provider_install_consent_required`). */
+      code?: string;
+      /** Structured refusal payload — for a provider consent refusal, `{ review }`. */
+      data?: Record<string, unknown>;
+    };
 
 /**
  * The ONE orchestrated path that installs a plugin/pack from the Cupboard by
@@ -229,23 +298,42 @@ export async function installPluginFromCupboard(input: {
   listingRef?: string;
   harness?: string;
   acceptCapabilities?: boolean;
+  /**
+   * The provider review the caller consented to — echo back the `data.review`
+   * from a `provider_install_consent_required` refusal. The core refuses with
+   * `plugin_review_changed` if the cloned manifest no longer matches it.
+   */
+  expectedReview?: InstallPluginManifestReview;
+  /** Installer-local trigger-pack source mappings + inputs (P-012). */
+  triggerPackConfig?: InstallPluginCoreInput['triggerPackConfig'];
 }): Promise<InstallPluginFromCupboardResult> {
   let githubUrl = typeof input.githubUrl === 'string' ? input.githubUrl.trim() : '';
   let listingRef = typeof input.listingRef === 'string' ? input.listingRef.trim() : undefined;
+  let listing: ResolvedListingCoords | undefined;
 
-  if (!githubUrl && input.listingId) {
+  if (input.listingId) {
     const resolved = await resolveListingCoords(String(input.listingId));
     if (!resolved) return { ok: false, status: 404, error: 'listing_not_found_or_unreachable' };
+    if (!['plugin', 'pack'].includes(resolved.listingKind ?? '') || !resolved.listing) {
+      return { ok: false, status: 422, error: 'plugin_listing_required' };
+    }
+    if ((githubUrl && githubUrl !== resolved.githubUrl) || (listingRef && listingRef !== resolved.listingRef)) {
+      return { ok: false, status: 422, error: 'listing_binding_mismatch' };
+    }
     githubUrl = resolved.githubUrl;
-    listingRef = listingRef ?? resolved.listingRef;
+    listingRef = resolved.listingRef;
+    listing = resolved.listing;
   }
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
 
   const coreInput: InstallPluginCoreInput = {
     githubUrl,
     listingRef,
+    ...(listing ? { listing } : {}),
     harness: typeof input.harness === 'string' ? input.harness.trim() : undefined,
     acceptCapabilities: input.acceptCapabilities === true,
+    ...(input.expectedReview ? { expectedReview: input.expectedReview } : {}),
+    ...(input.triggerPackConfig ? { triggerPackConfig: input.triggerPackConfig } : {}),
   };
 
   try {
@@ -277,7 +365,13 @@ export async function installPluginFromCupboard(input: {
     return { ok: true, result };
   } catch (e) {
     if (e instanceof InstallPluginError) {
-      return { ok: false, status: e.status, error: e.message };
+      return {
+        ok: false,
+        status: e.status,
+        error: e.message,
+        ...(e.code ? { code: e.code } : {}),
+        ...(e.data ? { data: e.data } : {}),
+      };
     }
     return {
       ok: false,
@@ -324,11 +418,15 @@ export async function installCupboardUnitFromListing(
   if (!coords) {
     return { ok: false, error: `listing ${unit.listingId} not found or Cupboard unreachable` };
   }
+  if (coords.listingKind !== unit.kind || !coords.listing) {
+    return { ok: false, error: `listing ${unit.listingId} is not a complete ${unit.kind} listing` };
+  }
   try {
     const result = await installPluginFromCupboardCore(
       {
         githubUrl: coords.githubUrl,
         listingRef: coords.listingRef,
+        listing: coords.listing,
         harness: opts.harness,
         acceptCapabilities: opts.acceptCapabilities === true,
         ...(opts.expectedReview ? { expectedReview: opts.expectedReview } : {}),
@@ -361,11 +459,14 @@ export async function reviewCupboardUnitFromListing(
   if (!coords) {
     return { ok: false, error: `listing ${unit.listingId} not found or Cupboard unreachable` };
   }
+  if (coords.listingKind !== unit.kind || !coords.listing) {
+    return { ok: false, error: `listing ${unit.listingId} is not a complete ${unit.kind} listing` };
+  }
   const reviewDir = await fs.mkdtemp(join(tmpdir(), 'cupboard-provider-review-'));
   try {
     const real = buildInstallPluginDeps();
     const result = await installPluginFromCupboardCore(
-      { githubUrl: coords.githubUrl, listingRef: coords.listingRef },
+      { githubUrl: coords.githubUrl, listingRef: coords.listingRef, listing: coords.listing },
       {
         ...real,
         globalPluginsDir: () => reviewDir,

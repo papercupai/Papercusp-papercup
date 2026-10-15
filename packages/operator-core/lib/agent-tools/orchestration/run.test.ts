@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { z } from 'zod';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { ToolResult } from '@papercusp/tooldef';
 import { DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS } from '../../output-envelope';
@@ -81,6 +82,10 @@ describe('orchestrate:run server-script adapter', () => {
       timeoutSec: 120,
     }).success).toBe(false);
     expect(serverScriptRunArgsSchema.safeParse({
+      script: { source: 'return "foreground";' },
+      timeoutSec: 60,
+    }).success).toBe(false);
+    expect(serverScriptRunArgsSchema.safeParse({
       durableControl: { workflowId: 'orchestrate-durable:ws:run', action: 'cancel' },
     }).success).toBe(true);
 
@@ -96,6 +101,30 @@ describe('orchestrate:run server-script adapter', () => {
       error: { code: 'execution_mode_unavailable' },
       metrics: { phase: 'preflight', executed: false },
     });
+  });
+
+  it('publishes the foreground timeout ceiling while preserving the durable timeout range', () => {
+    type JsonSchema = {
+      anyOf?: Array<{
+        properties?: {
+          execution?: { properties?: { durability?: { const?: unknown } } };
+          timeoutSec?: { maximum?: number };
+        };
+        required?: string[];
+      }>;
+    };
+    const schema = z.toJSONSchema(serverScriptRunArgsSchema, { io: 'input' }) as JsonSchema;
+    const foreground = schema.anyOf?.find((branch) =>
+      branch.properties?.timeoutSec?.maximum === FOREGROUND_TIMEOUT_CEILING_MS / 1000,
+    );
+    const durable = schema.anyOf?.find((branch) =>
+      branch.properties?.timeoutSec?.maximum === 3_600,
+    );
+
+    expect(foreground).toBeDefined();
+    expect(durable).toBeDefined();
+    expect(durable?.required).toContain('execution');
+    expect(durable?.properties?.execution?.properties?.durability).toMatchObject({ const: 'durable' });
   });
 
   it('delegates to code:run and emits the P-006 envelope without copying its payload', async () => {

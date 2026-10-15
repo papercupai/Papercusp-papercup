@@ -71,18 +71,34 @@ describe('resolveTtsEngine', () => {
   const healthy = () => Promise.resolve(true);
   const unhealthy = () => Promise.resolve(false);
 
-  it('honors an explicit, supported request over the prefs default', async () => {
-    const r = await resolveTtsEngine('elevenlabs', { ttsEngine: 'kokoro' }, healthy);
-    expect(r).toEqual({ ok: true, engine: 'elevenlabs' });
+  it('honors an explicit, available request over the prefs default', async () => {
+    const r = await resolveTtsEngine('kokoro', { ttsEngine: 'browser' }, healthy);
+    expect(r).toEqual({ ok: true, engine: 'kokoro' });
   });
 
   it('falls back to the prefs default when no engine is requested', async () => {
-    const r = await resolveTtsEngine(undefined, { ttsEngine: 'openai' }, healthy);
-    expect(r).toEqual({ ok: true, engine: 'openai' });
+    const r = await resolveTtsEngine(undefined, { ttsEngine: 'kokoro' }, healthy);
+    expect(r).toEqual({ ok: true, engine: 'kokoro' });
     // empty string is treated as "not requested" too
-    const r2 = await resolveTtsEngine('', { ttsEngine: 'cartesia' }, healthy);
-    expect(r2).toEqual({ ok: true, engine: 'cartesia' });
+    const r2 = await resolveTtsEngine('', { ttsEngine: 'kokoro' }, healthy);
+    expect(r2).toEqual({ ok: true, engine: 'kokoro' });
   });
+
+  // voice-final-public-release-2026-10-01#D-005: cloud TTS engines without a
+  // working key are refused — explicitly requested OR saved as the default —
+  // and never silently substituted with another engine.
+  it.each(['elevenlabs', 'openai', 'cartesia'] as const)(
+    "refuses release-unavailable '%s' whether requested or saved, without substituting",
+    async (engine) => {
+      const probe = vi.fn(healthy);
+      const requested = await resolveTtsEngine(engine, { ttsEngine: 'kokoro' }, probe);
+      expect(requested).toMatchObject({ ok: false, status: 400 });
+      expect((requested as { error: string }).error).toMatch(/not available in this release/);
+      const saved = await resolveTtsEngine(undefined, { ttsEngine: engine }, probe);
+      expect(saved).toMatchObject({ ok: false, status: 400 });
+      expect(probe).not.toHaveBeenCalled();
+    },
+  );
 
   it("maps 'browser' to kokoro only when kokoro is healthy", async () => {
     const probe = vi.fn(healthy);

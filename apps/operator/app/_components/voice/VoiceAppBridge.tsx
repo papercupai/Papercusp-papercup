@@ -33,15 +33,17 @@ import { useEffect, useRef } from 'react';
 import {
   onFinalUtterance,
   subscribeVoiceState,
-  cancelAllSpeech,
   getVoiceState,
   speak,
+  startReading,
+  controlReading,
   type VoiceState,
 } from './voice-mode';
 import { routeVoiceToSentinelPane, drainSentinelOutput, drainHindsightForSpeech } from './voice-sentinel-bridge';
 import { submitVoiceTurn } from './voice-converse-handler';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
+import { useUiIntent } from '@/lib/ui/use-ui-intent';
 
 /**
  * Voice consumer priority registry (v4 §2b).
@@ -113,6 +115,20 @@ function hasHigherPriorityConsumer(): boolean {
 }
 
 export function VoiceAppBridge(): null {
+  useUiIntent('voice_read', args => {
+    if (typeof args.text !== 'string') throw new Error('Readable text required.');
+    if (args.format !== undefined && args.format !== 'text' && args.format !== 'markdown') throw new Error('Unsupported reading format.');
+    if (args.allowCloud !== undefined && typeof args.allowCloud !== 'boolean') throw new Error('Cloud disclosure permission must be explicit.');
+    return startReading(args.text, {
+      allowCloud: args.allowCloud === true,
+      format: args.format as 'text' | 'markdown' | undefined,
+      coverage: args.coverage as { complete: boolean; warnings: string[] } | undefined,
+    });
+  });
+  useUiIntent('voice_read_control', args => {
+    if (typeof args.readingId !== 'string' || !['pause', 'resume', 'stop', 'status'].includes(String(args.action))) throw new Error('Reading id and control action required.');
+    return controlReading(args.readingId, args.action as 'pause' | 'resume' | 'stop' | 'status');
+  });
   // Seed from the live module state instead of a hand-enumerated literal —
   // the old partial literal silently went stale every time VoiceState grew
   // a field (and eventually stopped typechecking). subscribeVoiceState
@@ -313,7 +329,10 @@ export function VoiceAppBridge(): null {
     return () => {
       unsubState();
       unsubUtterance();
-      cancelAllSpeech();
+      // This bridge owns subscriptions, not the shared reply player. React
+      // disconnects effects when Suspense hides the shell; cancelling here
+      // aborts an in-flight TTS reply even though the user never stopped it.
+      // Explicit mode-off and user interruption own playback cancellation.
     };
   }, []);
 

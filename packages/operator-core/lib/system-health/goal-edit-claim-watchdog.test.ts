@@ -41,11 +41,21 @@ function makeDeps(over: Partial<GoalEditClaimSweepDeps> = {}): GoalEditClaimSwee
     notify: vi.fn(async () => {}),
     emitEditClaim: vi.fn(async () => {}),
     flagEnabled: vi.fn(async () => true),
+    rail: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) },
+    readOpenConditionKeys: vi.fn(async () => []),
+    readGoalState: vi.fn(async () => null),
     ...over,
   };
 }
 
 describe('groupEditClaims (pure)', () => {
+  it('keeps delimiter-containing workspace and goal identities independent', () => {
+    expect(groupEditClaims([
+      makeRow({ workspaceId: 'ws:other', goalId: 'g-1' }),
+      makeRow({ workspaceId: 'ws', goalId: 'other:g-1' }),
+    ])).toHaveLength(2);
+  });
+
   it('groups rows into one alert per (workspace, goal, owner)', () => {
     const alerts = groupEditClaims([
       makeRow({ ledgerId: 1, agentId: 'su-a' }),
@@ -105,6 +115,86 @@ describe('advanceHighWaterMark (pure)', () => {
 });
 
 describe('runGoalEditClaimSweepOnce', () => {
+  const key = (workspace = 'ws', goal = 'g-1', owner = 'su-goal-owner') =>
+    'alarm:goal-edit-claim:' + encodeURIComponent(JSON.stringify([workspace, goal, owner]));
+
+  it('opens independent oneShot conditions before legacy escalation, even when legacy fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const order: string[] = [];
+    const broadcast = vi.fn(async (_event: { conditionKey?: string; oneShot?: boolean }) => { order.push('condition'); return true; });
+    const deps = makeDeps({
+      readNewEditClaims: async () => ({ rows: [makeRow(), makeRow({ agentId: 'su-other' }),
+        makeRow({ workspaceId: 'other' }), makeRow({ goalId: 'g-2' })], ledgerMaxId: 100 }),
+      rail: { broadcast, resolve: vi.fn(async () => true) },
+      escalate: async () => { order.push('legacy'); throw new Error('legacy down'); },
+    });
+    try {
+      await runGoalEditClaimSweepOnce(sqlNever, null, deps);
+      expect(order).toEqual(['condition', 'legacy', 'condition', 'legacy', 'condition', 'legacy', 'condition', 'legacy']);
+      expect(broadcast.mock.calls.map(([event]) => event)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ conditionKey: key(), oneShot: true }),
+        expect.objectContaining({ conditionKey: key('ws', 'g-1', 'su-other'), oneShot: true }),
+        expect.objectContaining({ conditionKey: key('other'), oneShot: true }),
+        expect.objectContaining({ conditionKey: key('ws', 'g-2'), oneShot: true }),
+      ]));
+      expect(deps.notify).toHaveBeenCalledTimes(4);
+      expect(deps.emitEditClaim).toHaveBeenCalledTimes(4);
+    } finally { warn.mockRestore(); }
+  });
+
+  it.each(['active', 'paused', 'draft', 'unknown'])('preserves a durable violation through an empty scan with goal status %s', async status => {
+    const deps = makeDeps({ readOpenConditionKeys: async () => [key()],
+      readGoalState: async () => ({ workspaceId: 'ws', goalId: 'g-1', status }) });
+    await runGoalEditClaimSweepOnce(sqlNever, 100, deps);
+    expect(deps.rail!.resolve).not.toHaveBeenCalled();
+  });
+
+  it.each(['achieved', 'killed'])('recovers a persisted episode after restart only from measured matching %s goal closure', async status => {
+    const deps = makeDeps({ readOpenConditionKeys: async () => [key(), 'alarm:sibling', CONDITION_BAD],
+      readGoalState: vi.fn(async () => ({ workspaceId: 'ws', goalId: 'g-1', status })) });
+    await runGoalEditClaimSweepOnce(sqlNever, null, deps);
+    expect(deps.readGoalState).toHaveBeenCalledExactlyOnceWith('ws', 'g-1');
+    expect(deps.rail!.resolve).toHaveBeenCalledExactlyOnceWith({ conditionKey: key(), summary: 'goal-edit-claim-watchdog recovered' });
+  });
+
+  it('preserves missing, unreadable and sibling terminal goal readings', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const readGoalState of [async () => null, async () => { throw new Error('store down'); },
+        async () => ({ workspaceId: 'other', goalId: 'g-1', status: 'achieved' }),
+        async () => ({ workspaceId: 'ws', goalId: 'other', status: 'achieved' })]) {
+        const deps = makeDeps({ readOpenConditionKeys: async () => [key()], readGoalState });
+        await runGoalEditClaimSweepOnce(sqlNever, 100, deps);
+        expect(deps.rail!.resolve).not.toHaveBeenCalled();
+      }
+    } finally { warn.mockRestore(); }
+  });
+
+  it('uses the goal store exact workspace and goal status for durable recovery without needing a goal-mode row', async () => {
+    const queries: unknown[][] = [];
+    const sql = (async (_parts: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push(values);
+      return [{ workspace_id: 'ws', id: 'g-1', status: 'killed' }];
+    }) as unknown as Sql;
+    const deps = makeDeps({ readOpenConditionKeys: async () => [key()], readGoalState: undefined });
+    delete (deps as Partial<GoalEditClaimSweepDeps>).readGoalState;
+    await runGoalEditClaimSweepOnce(sql, 100, deps);
+    expect(queries).toEqual([['ws', 'g-1']]);
+    expect(deps.rail!.resolve).toHaveBeenCalledExactlyOnceWith({ conditionKey: key(), summary: 'goal-edit-claim-watchdog recovered' });
+  });
+
+  it('contains rail failures without suppressing the subject, graders or legacy alert', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps = makeDeps({ readNewEditClaims: async () => ({ rows: [makeRow()], ledgerMaxId: 100 }),
+      rail: { broadcast: async () => { throw new Error('rail down'); } },
+      readOpenConditionKeys: async () => { throw new Error('condition read down'); } });
+    try {
+      expect((await runGoalEditClaimSweepOnce(sqlNever, null, deps)).alerted).toBe(1);
+      expect(deps.notify).toHaveBeenCalledTimes(1);
+      expect(deps.emitEditClaim).toHaveBeenCalledTimes(1);
+    } finally { warn.mockRestore(); }
+  });
+
   it('escalates, notifies subject+graders, and emits the event for a goal-owner edit claim', async () => {
     const deps = makeDeps({
       readNewEditClaims: vi.fn(async () => ({
@@ -128,6 +218,8 @@ describe('runGoalEditClaimSweepOnce', () => {
     const res = await runGoalEditClaimSweepOnce(sqlNever, 55, deps);
     expect(res).toEqual({ scanned: 0, alerted: 0, skipped: true, nextSinceLedgerId: 55 });
     expect(deps.readNewEditClaims).not.toHaveBeenCalled();
+    expect(deps.readOpenConditionKeys).not.toHaveBeenCalled();
+    expect(deps.readGoalState).not.toHaveBeenCalled();
   });
 
   it('a claim-free tick alerts nothing but still advances the mark to the ledger max', async () => {
@@ -183,3 +275,5 @@ describe('runGoalEditClaimSweepOnce', () => {
     }
   });
 });
+
+const CONDITION_BAD = 'alarm:goal-edit-claim:%broken';

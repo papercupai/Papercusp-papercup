@@ -33,6 +33,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 
 /** Overridable so a mutation probe can aim this at a copy OUTSIDE the shared tree. */
 const HOST_SOURCE = process.env.PSU_PTY_HOST_SOURCE
@@ -135,31 +136,66 @@ describe('psu-pty busy-gate defer leaves durable evidence for EVERY mode (WI-214
 });
 
 describe('pending carry-respawn wake deferral is durable-only (WI-10001960)', () => {
-  function pendingRespawnDeferralBlock(): string {
-    const src = readFileSync(HOST_SOURCE, 'utf-8');
-    const openIdx = src.indexOf('if (shouldDeferWakeForPendingRespawn(');
-    if (openIdx === -1) {
+  function pendingRespawnDeferralBlocks(src: string): string[] {
+    const parsed = ts.createSourceFile('psu-pty-host.mjs', src, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const blocks: string[] = [];
+    const visit = (node: ts.Node) => {
+      if (ts.isIfStatement(node) && ts.isCallExpression(node.expression) &&
+          ts.isIdentifier(node.expression.expression) &&
+          node.expression.expression.text === 'shouldDeferWakeForPendingRespawn') {
+        blocks.push(node.thenStatement.getText(parsed));
+      }
+      ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(parsed, visit);
+    if (blocks.length === 0) {
       throw new Error(
         'psu-pty-host.mjs no longer contains the pending carry-respawn wake guard; ' +
           'this regression guard cannot pass vacuously.',
       );
     }
-    const returnText = "return { ok: false, reason: 'deferred-carry-respawn-pending' };";
-    const endIdx = src.indexOf(returnText, openIdx);
-    if (endIdx === -1) {
-      throw new Error(
-        `psu-pty-host.mjs no longer contains ${returnText}; re-anchor this guard.`,
-      );
-    }
-    return src.slice(openIdx, endIdx + returnText.length);
+    return blocks;
+  }
+
+  function assertDurableOnly(block: string): void {
+    expect(block).toContain("appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn',");
+    expect(block).toMatch(/return\s*\{\s*ok:\s*false,\s*reason:\s*'(?:deferred-)?carry-respawn-pending'/);
+    expect(block).not.toContain('process.stderr.write');
+    expect(block).not.toContain('successor');
   }
 
   it('records the deferral durably without writing an internal warning into the owner TUI', () => {
-    const block = pendingRespawnDeferralBlock();
-    expect(block).toContain(
-      "appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', dropExtra)",
-    );
-    expect(block).not.toContain('process.stderr.write');
-    expect(block).not.toContain('successor');
+    const blocks = pendingRespawnDeferralBlocks(readFileSync(HOST_SOURCE, 'utf-8'));
+    expect(blocks).toHaveLength(3); // admission, rearmed pre-write, and final pre-write boundaries
+    for (const block of blocks) assertDurableOnly(block);
+  });
+
+  const fixture = [
+    "if (shouldDeferWakeForPendingRespawn(mode, pending)) {",
+    "  appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', { phase: 'pre-write' });",
+    "  return { ok: false, reason: 'carry-respawn-pending' };",
+    "}",
+    "process.stderr.write('unrelated delivery diagnostic');",
+    "if (shouldDeferWakeForPendingRespawn(msg.mode, pending)) {",
+    "  appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', dropExtra);",
+    "  return { ok: false, reason: 'deferred-carry-respawn-pending' };",
+    "}",
+  ].join('\n');
+
+  it('isolates both return variants without including the diagnostic between branches', () => {
+    const blocks = pendingRespawnDeferralBlocks(fixture);
+    expect(blocks).toHaveLength(2);
+    for (const block of blocks) assertDurableOnly(block);
+  });
+
+  it.each([0, 1])('detects a TUI write or missing durable event in branch %s', (index) => {
+    const block = pendingRespawnDeferralBlocks(fixture)[index]!;
+    expect(() => assertDurableOnly(block.replace('return {', "process.stderr.write('warning'); return {")))
+      .toThrow();
+    expect(() => assertDurableOnly(block.replace('appendHostEvent', 'discardHostEvent'))).toThrow();
+  });
+
+  it('refuses to pass when the pending-respawn guards disappear', () => {
+    expect(() => pendingRespawnDeferralBlocks('return { ok: true };')).toThrow('cannot pass vacuously');
   });
 });

@@ -26,7 +26,13 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { EmbedderProfileSpec } from '@papercusp/memory';
 import { withIterativeScan } from '@papercusp/search';
 
-import { corpusNovelty, type CorpusEntry, type CorpusNovelty, type CorpusNoveltyOptions } from './critique-core';
+import {
+  corpusNovelty,
+  type CorpusEntry,
+  type CorpusNovelty,
+  type CorpusNoveltyOptions,
+  type SemanticLegStatus,
+} from './critique-core';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import {
@@ -140,6 +146,10 @@ export interface SemanticNoveltyDeps {
   /** Query-time semantic neighbours from the full settled implementation corpus.
    * Optional so isolated callers/tests retain the pre-WI-6773 behavior. */
   queryImplementationCorpus?: (vec: number[], mode: string, selection: ProseProfileSelection) => Promise<ImplementationCorpusCandidate[]>;
+  /** feature_id → a bounded summary excerpt, for shortlisted 'wi:<id>' priors the
+   * Scout critic adjudicates as possible duplicates (D-002). Plain SQL — no embedder —
+   * so it works when the semantic leg is unavailable. Optional: absent ⇒ no excerpts. */
+  queryPriorExcerpts?: (ids: string[]) => Promise<Map<string, string>>;
 }
 
 function clamp01(n: number): number {
@@ -242,6 +252,25 @@ export async function queryImplementationCorpusReal(
     .filter((candidate): candidate is ImplementationCorpusCandidate => candidate !== null);
 }
 
+/** Bounded summary excerpt per shortlisted prior. The corpus carries only routed-idea
+ * TITLES, which name the problem but not the mechanism; the duplicate adjudication
+ * (same problem + same mechanism) needs the mechanism text. */
+export const PRIOR_EXCERPT_MAX_CHARS = 600;
+
+async function queryPriorExcerptsReal(ids: string[]): Promise<Map<string, string>> {
+  if (ids.length === 0) return new Map();
+  const { sql } = getOrgPg();
+  // Workspace-global, like the vector joins above: corpus refs are workspace-global.
+  const rows = await sql<Array<{ id: string; excerpt: string | null }>>`
+    SELECT feature_id AS id, left(summary, ${PRIOR_EXCERPT_MAX_CHARS}) AS excerpt
+      FROM harness_shared.work_items
+     WHERE feature_id = ANY(${ids})
+       AND summary IS NOT NULL`;
+  return new Map(
+    rows.filter((r) => typeof r.excerpt === 'string' && r.excerpt.trim()).map((r) => [r.id, r.excerpt!.trim()]),
+  );
+}
+
 const realDeps: SemanticNoveltyDeps = {
   // The DOCUMENT-side resolver the backfill sweep stores with — the one seam that
   // guarantees the query text and the stored ledger share space AND prompt.
@@ -249,7 +278,34 @@ const realDeps: SemanticNoveltyDeps = {
   queryPlanSims: queryPlanSimsReal,
   queryWorkItemSims: queryWorkItemSimsReal,
   queryImplementationCorpus: queryImplementationCorpusReal,
+  queryPriorExcerpts: queryPriorExcerptsReal,
 };
+
+/**
+ * Bounded summary excerpts for shortlisted 'wi:<id>' priors (D-002 stage 2 input).
+ * FAIL-OPEN like the semantic leg — any error or the budget expiring yields an empty
+ * map and the critic sees the corpus title only — and Vitest-inert unless deps are
+ * injected. Independent of the embedder: it must work when the semantic leg is down.
+ */
+export async function resolvePriorExcerpts(
+  refs: readonly string[],
+  deps?: SemanticNoveltyDeps,
+): Promise<Map<string, string>> {
+  const ids = [...new Set(refs.filter((r) => r.startsWith('wi:')).map((r) => r.slice('wi:'.length)))];
+  if (ids.length === 0) return new Map();
+  if (process.env.VITEST && !deps) return new Map();
+  const query = (deps ?? realDeps).queryPriorExcerpts;
+  if (!query) return new Map();
+  const byId = await withBudget(BUDGET_MS, query(ids));
+  const out = new Map<string, string>();
+  if (!byId) return out;
+  for (const ref of refs) {
+    if (!ref.startsWith('wi:')) continue;
+    const excerpt = byId.get(ref.slice('wi:'.length));
+    if (excerpt) out.set(ref, excerpt.slice(0, PRIOR_EXCERPT_MAX_CHARS));
+  }
+  return out;
+}
 
 /**
  * Split corpus refs by their stored-vector source (readNoveltyCorpus ref conventions):
@@ -281,22 +337,33 @@ interface SemanticNoveltyContext {
   implementationCandidates: ImplementationCorpusCandidate[];
 }
 
+/** Either a resolved context, or WHY there is none — the reason becomes the
+ * `SemanticLegStatus.reason` a reviewer reads when the leg silently failed open. */
+type ContextOutcome = { context: SemanticNoveltyContext } | { unavailable: string };
+
 async function resolveContext(
   text: string,
   corpus: readonly CorpusEntry[],
   deps: SemanticNoveltyDeps,
-): Promise<SemanticNoveltyContext | null> {
+): Promise<ContextOutcome> {
   const { planSlugToRefs, wiIdToRefs } = partitionRefs(corpus);
-  if (planSlugToRefs.size === 0 && wiIdToRefs.size === 0 && !deps.queryImplementationCorpus) return null;
+  if (planSlugToRefs.size === 0 && wiIdToRefs.size === 0 && !deps.queryImplementationCorpus) {
+    return { unavailable: 'no-vector-bearing-refs' };
+  }
   const resolved = await deps.resolveEmbedder();
-  if (!resolved || resolved.mode === 'disabled' || !('embed' in resolved)) return null;
-  if (!fitsProseColumns(resolved.dims)) return null; // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
+  if (!resolved) return { unavailable: 'embedder-unresolved' };
+  if (resolved.mode === 'disabled' || !('embed' in resolved)) {
+    const reason = 'reason' in resolved && resolved.reason ? resolved.reason : 'no-reason';
+    return { unavailable: `embedder-disabled:${reason}` };
+  }
+  // dims-ineligible for the prose columns (harrier@1024, local@384) — no verdict possible
+  if (!fitsProseColumns(resolved.dims)) return { unavailable: `dims-ineligible:${resolved.mode}@${resolved.dims}` };
   const selection = resolved.profile
     ? resolveProseProfileSelection(resolved.mode, resolved.profile)
     : null;
-  if (!selection) return null;
+  if (!selection) return { unavailable: `no-profile-selection:${resolved.mode}` };
   const vec = await resolved.embed(text.slice(0, 2000));
-  if (!fitsProseColumns(vec.length)) return null;
+  if (!fitsProseColumns(vec.length)) return { unavailable: `query-dims-ineligible:${vec.length}` };
   const [planSims, wiSims, implementationCandidates] = await Promise.all([
     deps.queryPlanSims(vec, resolved.mode, [...planSlugToRefs.keys()], selection),
     deps.queryWorkItemSims(vec, resolved.mode, [...wiIdToRefs.keys()], selection),
@@ -315,26 +382,36 @@ async function resolveContext(
     out.set(candidate.entry.ref, candidate.similarity);
   }
   const evaluatedCorpus = mergeImplementationCorpus(corpus, implementationCandidates);
-  return out.size > 0 ? { corpus: evaluatedCorpus, sims: out, implementationCandidates } : null;
+  return out.size > 0
+    ? { context: { corpus: evaluatedCorpus, sims: out, implementationCandidates } }
+    : { unavailable: 'nothing-resolved' };
 }
 
 /** One guarded entry to the impure leg. Both public callers must pass through
  * this seam so the kill switch, Vitest isolation, budget, and fail-open behavior
- * cannot drift when the resolved context grows new corpus sources. */
+ * cannot drift when the resolved context grows new corpus sources. Always returns
+ * the leg's status, so "no context" is never silent (D-002 point 4). */
 async function resolveContextFailOpen(
   text: string,
   corpus: readonly CorpusEntry[],
   deps?: SemanticNoveltyDeps,
-): Promise<SemanticNoveltyContext | null> {
-  if (process.env.PAPERCUSP_SU_SEMANTIC_NOVELTY === 'off') return null;
+): Promise<{ context: SemanticNoveltyContext | null; leg: SemanticLegStatus }> {
+  if (process.env.PAPERCUSP_SU_SEMANTIC_NOVELTY === 'off') {
+    return { context: null, leg: { status: 'disabled', reason: 'kill-switch' } };
+  }
   // Inert under vitest unless a test injects deps: the real resolver lazy-loads an
   // ONNX model, which unrelated tool tests must never pay.
-  if (process.env.VITEST && !deps) return null;
-  try {
-    return await withBudget(BUDGET_MS, resolveContext(text, corpus, deps ?? realDeps));
-  } catch {
-    return null;
-  }
+  if (process.env.VITEST && !deps) return { context: null, leg: { status: 'disabled', reason: 'vitest-inert' } };
+  const outcome = await withBudget(
+    BUDGET_MS,
+    resolveContext(text, corpus, deps ?? realDeps).catch(
+      (err): ContextOutcome => ({ unavailable: `error:${err instanceof Error ? err.message : String(err)}`.slice(0, 200) }),
+    ),
+  );
+  // withBudget resolves null only on expiry (rejections are mapped above).
+  if (!outcome) return { context: null, leg: { status: 'unavailable', reason: `timeout:${BUDGET_MS}ms` } };
+  if ('unavailable' in outcome) return { context: null, leg: { status: 'unavailable', reason: outcome.unavailable } };
+  return { context: outcome.context, leg: { status: 'resolved' } };
 }
 
 /**
@@ -348,7 +425,7 @@ export async function resolveSemanticNoveltySims(
   corpus: readonly CorpusEntry[],
   deps?: SemanticNoveltyDeps,
 ): Promise<SemanticSimByRef | null> {
-  const context = await resolveContextFailOpen(text, corpus, deps);
+  const { context } = await resolveContextFailOpen(text, corpus, deps);
   if (!context) return null;
   // Preserve this function's original contract: it resolves similarities only
   // for refs the caller supplied. Query-time implementation rows are exposed by
@@ -364,6 +441,8 @@ export interface CorpusNoveltyHybridResult extends CorpusNovelty {
   /** Nearest realized-work rows for the LLM skeptic to inspect. These are
    * retrieval candidates, not deterministic duplicate verdicts. */
   implementationCandidates: readonly ImplementationCorpusCandidate[];
+  /** What the semantic leg did on this pass — a fail-open is recorded, not silent. */
+  semanticLeg: SemanticLegStatus;
 }
 
 /**
@@ -381,12 +460,16 @@ export async function corpusNoveltyHybrid(
   opts: CorpusNoveltyOptions = {},
   deps?: SemanticNoveltyDeps,
 ): Promise<CorpusNoveltyHybridResult> {
-  const context = opts.semanticSimByRef ? null : await resolveContextFailOpen(text, corpus, deps);
+  const resolved = opts.semanticSimByRef
+    ? { context: null, leg: { status: 'provided' } as SemanticLegStatus }
+    : await resolveContextFailOpen(text, corpus, deps);
+  const context = resolved.context;
   const evaluatedCorpus = context?.corpus ?? corpus;
   const semanticSimByRef = opts.semanticSimByRef ?? context?.sims ?? undefined;
   return {
     ...corpusNovelty(text, evaluatedCorpus, { ...opts, semanticSimByRef }),
     evaluatedCorpus,
     implementationCandidates: context?.implementationCandidates ?? [],
+    semanticLeg: resolved.leg,
   };
 }

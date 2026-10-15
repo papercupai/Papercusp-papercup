@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "R-23: the published public cut's export integrity follows the pinned objects and dependency graph",
+  "specId": "AUTO-BAR-R-23-P-014",
+  "plan": "open-source-release-2026-09-29",
+  "workItemId": "WI-10003960",
+  "evidencePlane": "tree",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "sourceCommit": "d20b360237373f31326a9ba287086b625dd8624d",
+  "command": [
+    "git init --bare <scratch>/pub.git && git --git-dir <scratch>/pub.git fetch --depth 1 https://github.com/Papercusp/papercusp-app refs/heads/main",
+    "git --git-dir <scratch>/pub.git rev-parse FETCH_HEAD^{commit} FETCH_HEAD^{tree} ; git ls-tree -r FETCH_HEAD (mode 160000 count, node_modules path-segment count, lockfile list)",
+    "for each public lockfile (package-lock.json|npm-shrinkwrap.json|Cargo.lock|yarn.lock|pnpm-lock.yaml): resolve the same path at Papercusp/papercup@d20b360237373f31326a9ba287086b625dd8624d through every gitlink on the path (git rev-parse <commit>:<gitlink>, recurse into the submodule repo), compare blob ids",
+    "negative control: the same comparator against the canonical staging HEAD 0a8f4f5ebe3fcbb80714129850bc08e482dbb98e",
+    "git show FETCH_HEAD:MANIFEST.json | jq .source,.submodules,.notShipped ; compare to git ls-tree -r d20b3602 gitlinks",
+    "isolated re-export: node scripts/source-preview.mjs export --target public --ref d20b360237373f31326a9ba287086b625dd8624d --out /tmp/osr-r23-export.FqKLXr/out (release-identity.env + release-host.env loaded); tree via a bare repo, add -A -f, core.autocrlf=false, core.fileMode=true (the push path's own recipe)",
+    "shared-tree invariance: canonical tree git rev-parse HEAD, git branch --show-current, git status --porcelain=v1 -uall, git submodule status --recursive captured immediately before and after the re-export",
+    "node scripts/source-preview.mjs gate /tmp/osr-r23-export.FqKLXr/out --target public"
+  ],
+  "startedAt": "2026-10-06T07:00:35Z",
+  "finishedAt": "2026-10-06T07:07:10Z",
+  "exitCode": 0,
+  "summary": "The published public head Papercusp/papercusp-app@3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c (tree d44db83c0b291570ac67c70f9ed927be3b78166a) carries MANIFEST.source = Papercusp/papercup@d20b360237373f31326a9ba287086b625dd8624d, the same source the export-gate receipt pushed. Its dependency graph follows the pinned objects: all 12 shipped lockfiles are byte-identical (blob ids) to the pinned source resolved through gitlinks; the 37 MANIFEST submodule pins equal the 37 shipped gitlinks of d20b3602 (the 38th, libs/generic/prospect-contract, is declared notShipped and has 0 files in the cut); 0 gitlink entries and 0 node_modules paths are shipped across 16275 entries. A fresh isolated re-export of d20b3602 into /tmp produced the identical 16275-path set with no dependency-file differences, and left the shared tree's HEAD, branch, submodule pins and export-related status untouched. It did not reproduce the tree byte-for-byte: 86 non-dependency files differ in identity-scrub output, a regression in today's exporter filed as WI-10006500 (it does not affect the published cut).",
+  "assertions": [
+    {
+      "id": "public-head-pinned",
+      "passed": true,
+      "evidence": "fetch of refs/heads/main at 2026-10-06T07:01Z: head 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c, tree d44db83c0b291570ac67c70f9ed927be3b78166a — equal to the export-gate receipt docs/evidence/osr-r22-head-2026-09-30/push-real2.out ('pushed 3c1ed9a1… (tree d44db83c…) = Papercusp/papercup@d20b3602…')"
+    },
+    {
+      "id": "manifest-source-pinned",
+      "passed": true,
+      "evidence": "MANIFEST.json at the public head: source = {repo: Papercusp/papercup, ref: d20b360237373f31326a9ba287086b625dd8624d, commit: d20b360237373f31326a9ba287086b625dd8624d}"
+    },
+    {
+      "id": "submodule-pins-follow-gitlinks",
+      "passed": true,
+      "evidence": "d20b3602 has 38 gitlinks; MANIFEST.submodules lists 37 (path, commit) pairs and comm -3 against the source gitlinks leaves exactly one line: libs/generic/prospect-contract 7efe3314…, which MANIFEST.notShipped lists and which has 0 files under it in the public tree"
+    },
+    {
+      "id": "no-gitlinks-or-node-modules-shipped",
+      "passed": true,
+      "evidence": "git ls-tree -r of the public head: 16275 entries, 0 with mode 160000, 0 paths with a node_modules segment"
+    },
+    {
+      "id": "lockfiles-byte-exact",
+      "passed": true,
+      "evidence": "12 lockfiles in the public tree; 12/12 blob ids equal the pinned source blob at d20b3602 resolved through gitlinks (LOCK_MATCH=12 LOCK_MISMATCH=0)"
+    },
+    {
+      "id": "lockfile-comparator-negative-control",
+      "passed": true,
+      "evidence": "the same comparator against canonical staging HEAD 0a8f4f5e reports 9 of 12 lockfiles differ, so the instrument distinguishes a non-pinned source"
+    },
+    {
+      "id": "isolated-reexport-dependency-graph",
+      "passed": true,
+      "evidence": "re-export of d20b3602 into /tmp/osr-r23-export.FqKLXr/out (outside the repository) exited 0: 16264 files + 37 submodules, 16275 tree entries, path set identical to the public tree; 0 of the 86 content-differing files is a lockfile, package.json, Cargo manifest or .gitmodules"
+    },
+    {
+      "id": "shared-tree-invariance",
+      "passed": true,
+      "evidence": "canonical tree before/after the re-export: HEAD 0a8f4f5ebe3fcbb80714129850bc08e482dbb98e and branch staging both unchanged; git submodule status --recursive byte-identical; porcelain status gained 6 and lost 1 line, all concurrent peer edits (e.g. packages/operator-core/lib/work-admission/admit.ts), 0 export-named paths"
+    }
+  ],
+  "limitations": [
+    "NOT REPRODUCED byte-for-byte: the re-export tree is 4a9aaf55b13430eb8c1f5746e457bb59f723a379, not d44db83c. 86 identity-scrub files differ (71 equal the unscrubbed source, 15 differ from both). The owner's release identity name appears in 5 re-exported files and in 0 public files, and the public gate reports clean on that re-export. CORRECTED 2026-10-06T09:45Z: this is not a regression. The owner authorized name/email in public release material (p2p-public-release-endgame-2026-09-01#D-112, owner #1113), and papercusp-desktop 736e9482 removed those literals from the scrub on purpose after this cut was pushed. Re-applying the pre-D-112 scrub makes 85 of the 86 files byte-identical to the published blobs, and the remaining README.md differs only in wording (WI-10006500, dropped; comment 1159521). It does not change the published cut measured above.",
+    "The pinned exporter at d20b3602 was not re-run; the re-export used today's exporter (scripts at 0a8f4f5e, papercusp-desktop/bin d7cd75ee), so byte-for-byte reproduction of the scrub step is not established. The dependency graph and pinned objects are measured directly on the published tree and do not depend on the re-export.",
+    "Measures the public source cut only. Installer and finished-build dependency provenance is graded under the release BARs, not here.",
+    "Shared-tree invariance is observed as HEAD, branch, submodule pins and export-named status paths before and after one run on a tree with concurrent peer edits; it is not a syscall-level write trace."
+  ]
+}

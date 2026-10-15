@@ -188,7 +188,12 @@ export function iterationMetric(
 }
 
 export interface ReadIterationDeps {
-  listLinked?: (input: { workspaceId: string; planSlug: string; itemIds: readonly string[] }) => Promise<LinkedWorkItem[]>;
+  /** Replaces listPlanLinkedWorkItems; receives the same handle the default reads with, so an
+   *  injected reader can assert which one it was given (WI-6554700010009519). */
+  listLinked?: (
+    input: { workspaceId: string; planSlug: string; itemIds: readonly string[] },
+    sql: Sql,
+  ) => Promise<LinkedWorkItem[]>;
   listAttempts?: typeof listWorkItemAttempts;
   readNotes?: (workItemId: string) => Promise<AttemptAuditNote[] | null>;
   sql?: Sql;
@@ -218,7 +223,7 @@ export async function readIterationMetrics(
   try {
     const sql = deps.sql ?? (getOrgPg().sql as unknown as Sql);
     const linked = deps.listLinked
-      ? await deps.listLinked(input)
+      ? await deps.listLinked(input, sql)
       : await listPlanLinkedWorkItems(input, sql, { includeTerminal: true });
     type Slot = { workItemIds: string[]; attempts: WorkItemAttempt[]; classes: Map<string, FailureClass> };
     const emptySlot = (): Slot => ({ workItemIds: [], attempts: [], classes: new Map() });

@@ -7,8 +7,10 @@
  * them (same contract as the carry-surface provenance stamp).
  */
 import { withBoundedTimeout } from './bounded-timeout';
+import { createHash } from 'node:crypto';
 import { modeImpliesAutonomy } from './modes/registry';
 import {
+  isUnpublishedReportTurn,
   awaitGuaranteesRewake,
   composeMechanicalCheckpoint,
   decideOpenTaskReminder,
@@ -25,6 +27,42 @@ import {
 
 /** Total budget for each sweep — advisory work riding a fire-and-forget hook. */
 export const TURN_END_SWEEP_BUDGET_MS = 4_000;
+
+export async function observeUnpublishedReportTurn(input: {
+  workspaceId: string; ownerId: string; sessionId: string; sinceIso: string;
+  assistantText: string; turnRef: string; harnessSlug?: string;
+}): Promise<boolean> {
+  if (!isUnpublishedReportTurn(input.assistantText, false)) return false;
+  try {
+    const [{ getOrgPg }, { reportsLibraryDisabled }, { captureImprovement }] = await Promise.all([
+      import('@papercusp/db-org'), import('./agent-tools/reports/_shared'),
+      import('./harness/improvements/capture-core'),
+    ]);
+    if (await reportsLibraryDisabled()) return false;
+    const published = await getOrgPg().sql`SELECT report_id FROM harness_shared.report_library
+      WHERE workspace_id = ${input.workspaceId} AND author_owner_id = ${input.ownerId}
+        AND published_at >= ${input.sinceIso}::timestamptz LIMIT 1`;
+    if (!isUnpublishedReportTurn(input.assistantText, published.length > 0)) return false;
+    await captureImprovement({
+      title: 'Owner-facing report ended without library publication', kind: 'change',
+      lane: 'observation', initialState: 'done', createdBy: input.ownerId, filedByRole: 'su',
+      scope: input.harnessSlug ? `harness:${input.harnessSlug}` : 'workspace',
+      watchdogKey: `unpublished-report:${createHash('sha256').update(input.turnRef).digest('hex')}`,
+      body: `A report-shaped assistant turn ended without a Reports row in the author's turn window. Source: ${input.turnRef}; session ${input.sessionId}. Publish the complete original verdict with reports:publish. This observation never blocks the turn.`,
+    });
+    return true;
+  } catch (error) {
+    console.warn(`[reports] unpublished-turn observation unavailable: ${String(error)}`);
+    return false;
+  }
+}
+
+export async function boundedUnpublishedReportTurn(input: Parameters<typeof observeUnpublishedReportTurn>[0]): Promise<boolean> {
+  const { value } = await withBoundedTimeout(observeUnpublishedReportTurn(input), {
+    fallback: false, timeoutMs: TURN_END_SWEEP_BUDGET_MS, label: 'turn-end-unpublished-report',
+  });
+  return value;
+}
 
 /** Held items auto-checkpointed per turn end (readHeldWorkItems' own cap is 6). */
 const MAX_AUTO_CHECKPOINTS = 4;
@@ -54,7 +92,7 @@ export async function autoCheckpointStaleHeldItems(input: {
   nowMs?: number;
 }): Promise<AutoCheckpointResult[]> {
   try {
-    const [{ readHeldWorkItems }, { setWorkItemCheckpoint }, { toolCallRowsFor }, { renderToolCallLog }] =
+    const [{ readHeldWorkItems }, { setWorkItemCheckpointWithPrior }, { toolCallRowsFor }, { renderToolCallLog }] =
       await Promise.all([
         import('./carry-brief'),
         import('./work-item-checkpoint'),
@@ -90,11 +128,18 @@ export async function autoCheckpointStaleHeldItems(input: {
     const written: AutoCheckpointResult[] = [];
     for (const item of stale) {
       try {
-        await setWorkItemCheckpoint(
+        const result = await setWorkItemCheckpointWithPrior(
           { harness: item.harness, workItemId: item.id, workspaceId: input.workspaceId },
-          mergeMechanicalCheckpoint(item.checkpoint, block),
+          undefined,
+          {
+            // The held-item read precedes tool-log IO. A newer authored update
+            // must win; test this against the locked row, not another pre-read.
+            guard: (prior) => (prior ?? '').trim() === (item.checkpoint ?? '').trim()
+              ? null : 'checkpoint-changed-before-auto-snapshot',
+            transform: (prior) => mergeMechanicalCheckpoint(prior, block),
+          },
         );
-        written.push({ id: item.id, mechanical: true });
+        if (!result.blockedReason) written.push({ id: item.id, mechanical: true });
       } catch {
         /* per-item fail-soft */
       }
@@ -196,7 +241,7 @@ async function checkpointOnReleaseImpl(input: {
   workItemId: string;
 }): Promise<{ written: boolean }> {
   try {
-    const [{ getWorkItemCheckpointWithMeta, setWorkItemCheckpoint }, { toolCallRowsFor }, { renderToolCallLog }] =
+    const [{ getWorkItemCheckpointWithMeta, setWorkItemCheckpointWithPrior }, { toolCallRowsFor }, { renderToolCallLog }] =
       await Promise.all([import('./work-item-checkpoint'), import('./tool-call-log-store'), import('./tool-call-log')]);
     const ref = { harness: input.harness, workItemId: input.workItemId, workspaceId: input.workspaceId };
     const existing = await getWorkItemCheckpointWithMeta(ref);
@@ -222,8 +267,11 @@ async function checkpointOnReleaseImpl(input: {
         `— look for already-completed work before rebuilding (EI-18734870651452334).`,
       toolLog,
     });
-    await setWorkItemCheckpoint(ref, block);
-    return { written: true };
+    const result = await setWorkItemCheckpointWithPrior(ref, block, {
+      // A holder may checkpoint while the release snapshot's log is fetched.
+      guard: (prior) => prior?.trim() ? 'checkpoint-written-before-release-snapshot' : null,
+    });
+    return { written: !result.blockedReason };
   } catch {
     return { written: false };
   }

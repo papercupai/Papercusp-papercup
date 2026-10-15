@@ -29,6 +29,7 @@ import type { Anchor } from './anchors';
 
 export interface MemoryWithAnchors {
   memoryId: string;
+  workspaceId?: string;
   anchors: Anchor[];
 }
 
@@ -36,7 +37,7 @@ export type AnchorCheckResult =
   | { ok: true }
   | { ok: false; reason: string };
 
-export type AnchorChecker = (anchor: Anchor) => Promise<AnchorCheckResult>;
+export type AnchorChecker = (anchor: Anchor, memory?: MemoryWithAnchors) => Promise<AnchorCheckResult>;
 
 /**
  * The four checkers a real CLI wrapper plugs in.
@@ -48,6 +49,11 @@ export interface AuditCheckers {
   feature: AnchorChecker;
   /** Optional; default skips symbols (returns ok). */
   symbol?: AnchorChecker;
+  'work-item'?: AnchorChecker;
+  decision?: AnchorChecker;
+  fact?: AnchorChecker;
+  'session-turn'?: AnchorChecker;
+  report?: AnchorChecker;
 }
 
 export interface AuditedAnchor {
@@ -102,7 +108,7 @@ export async function runAnchorAudit(opts: {
       const checker = pickChecker(anchor.kind, opts.checkers);
       let result: AnchorCheckResult;
       try {
-        result = await checker(anchor);
+        result = await checker(anchor, m);
       } catch (err) {
         result = { ok: false, reason: `checker_threw:${(err as Error).message}` };
       }
@@ -154,12 +160,62 @@ function pickChecker(
     case 'symbol':
       // Default: skip symbols at Layer 1 (would need project-wide grep).
       return checkers.symbol ?? (async () => ({ ok: true }));
+    case 'work-item':
+    case 'decision':
+    case 'fact':
+    case 'session-turn':
+    case 'report':
+      return checkers[kind] ?? (async () => ({ ok: false, reason: `checker_missing:${kind}` }));
     default: {
       // Exhaustive guard — TS will warn if we add a kind without a case
       const _exhaustive: never = kind;
       return async () => ({ ok: false, reason: `unknown_kind:${_exhaustive}` });
     }
   }
+}
+
+/** Reuse the source objects' canonical stores; never infer existence from prose.
+ * Every lookup is scoped to the memory's workspace. Read failures reach the audit
+ * as checker_threw, so an unavailable source never silently validates an anchor. */
+export function nonFileAnchorChecker(client: {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+}): AnchorChecker {
+  return async (anchor, memory) => {
+    if (!memory?.workspaceId) return { ok: false, reason: 'workspace_unknown' };
+    const params: unknown[] = [memory.workspaceId, anchor.value];
+    let query: string;
+    switch (anchor.kind) {
+      case 'work-item':
+        query = 'SELECT 1 FROM harness_shared.work_items WHERE workspace_id = $1 AND feature_id = $2';
+        break;
+      case 'decision': {
+        const match = /^([a-z0-9][a-z0-9-]*)#(D-\d{3,})$/.exec(anchor.value);
+        if (!match) return { ok: false, reason: 'invalid_decision_ref' };
+        params[1] = match[1]; params.push(JSON.stringify([{ id: match[2] }]));
+        query = 'SELECT 1 FROM harness_shared.harness_plans WHERE workspace_id = $1 AND plan_slug = $2 AND decisions @> $3::jsonb';
+        break;
+      }
+      case 'fact':
+        query = `SELECT 1 FROM harness_shared.agent_facts WHERE workspace_id = $1 AND key = $2
+          AND retracted_at IS NULL AND superseded_at IS NULL AND evicted_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())`;
+        break;
+      case 'session-turn': {
+        const match = /^(claude|codex|omp):(.+):(\d+)$/.exec(anchor.value);
+        if (!match) return { ok: false, reason: 'invalid_session_turn_ref' };
+        params[1] = match[1]; params.push(match[2], Number(match[3]));
+        query = 'SELECT 1 FROM harness_shared.session_turns WHERE workspace_id = $1 AND source_kind = $2 AND session_id = $3 AND turn_idx = $4';
+        break;
+      }
+      case 'report':
+        query = 'SELECT 1 FROM harness_shared.report_library WHERE workspace_id = $1 AND report_id = $2';
+        break;
+      default: return { ok: false, reason: `unsupported_source:${anchor.kind}` };
+    }
+    const { rows } = await client.query(query, params);
+    return rows.length === 1 ? { ok: true } : { ok: false,
+      reason: rows.length === 0 ? `${anchor.kind}_not_found_or_retracted` : `${anchor.kind}_ambiguous` };
+  };
 }
 
 /* ─── Standard checker factories ─────────────────────────────────────── */

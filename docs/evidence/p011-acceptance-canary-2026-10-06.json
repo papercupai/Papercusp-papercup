@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-011 legacy acceptance adoption: current-build canary, report-first cohort and cutover-check on :3170 (P-012 re-measure)",
+  "framework": "operational",
+  "command": [
+    "curl -s 127.0.0.1:3170/api/health",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-canary-args.json --port 3170 --client su-4a152da3-3ef7-420f-a82b-bfab10cf563a  # {op:canary,harness:papercusp,confirm:true}",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-report-args.json --port 3170 --client su-4a152da3-3ef7-420f-a82b-bfab10cf563a  # {op:report,harness:papercusp,kind:bug,limit:25}",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p011-cutover-args.json --port 3170 ...  # {op:cutover-check,proposedCutover:2026-10-02T00:00:00.000Z} -> refused cutover-precedes-canary (expected)",
+    "node scripts/mcp-call.mjs work_items:acceptance_adoption --json-file .papercusp/scratch/p012-rebind/live/cutover-args.json --port 3170 ...  # {op:cutover-check,proposedCutover:2026-10-07T00:00:00.000Z}"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T00:39:23Z",
+  "finishedAt": "2026-10-06T00:40:05Z",
+  "summary": "On staging build 2ce9df58a8 (:3170) the P-011 canary passed (lac-canary-b087ef21-7fb7-4fe7-b9ca-53f49bb35cb2). Containment: legacy-acceptance-adoption.ts (ba26b4e80b), issues-engineer.ts (133bfc87ef) and agent-review-policy.ts (9926615249) have the same blob at 2ce9df58a8 as the working tree. The report-first bug cohort examined 25 rows with 0 eligible (791 legacy rows remain outside the bounded cohort, unchanged by this dry run). Cutover-check: a proposed cutover before the canary is refused (cutover-precedes-canary); a proposed cutover after it is authorized by the new receipt. enforcing:false is expected: D-018/D-022 keep the sentinel cutover until WI-10005016.",
+  "assertions": [
+    "canary.status == passed on buildSha 2ce9df58a8",
+    "report.dryRun == true; report.examined == 25; report.eligible == []",
+    "cutover-check(2026-10-02) refused with cutover-precedes-canary",
+    "cutover-check(2026-10-07) authorization.ok == true with receiptRunId lac-canary-b087ef21",
+    "attested.enforcing == false (sentinel cutover kept)"
+  ],
+  "subject": [
+    "packages/operator-core/lib/harness/improvements/legacy-acceptance-adoption.ts",
+    "packages/operator-core/lib/issues-engineer.ts",
+    "packages/operator-core/lib/harness/improvements/agent-review-policy.ts"
+  ],
+  "workItem": "WI-10004574",
+  "recordedBy": "su-4a152da3-3ef7-420f-a82b-bfab10cf563a (P-012, WI-10004575)",
+  "evidencePlane": "live",
+  "runtime": {
+    "port": 3170,
+    "service": "papercusp-operator",
+    "buildSha": "2ce9df58a8",
+    "healthTs": "2026-10-06T00:39:23.813Z"
+  },
+  "canary": {
+    "runId": "lac-canary-b087ef21-7fb7-4fe7-b9ca-53f49bb35cb2",
+    "runtime": "operator-api",
+    "buildSha": "2ce9df58a8",
+    "status": "passed",
+    "recordedAt": "2026-10-06T00:39:26.486Z"
+  },
+  "reportFirstCohort": {
+    "runId": "lac-report-34d44783-8a59-4825-9e2b-93956ab069c1",
+    "dryRun": true,
+    "cohortKey": "bug:0..4102444800000",
+    "examined": 25,
+    "eligible": 0,
+    "remainingLegacyOutsideCohort": 791,
+    "fingerprint": "lac-v1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "cutoverCheck": [
+    {
+      "proposedCutover": "2026-10-02T00:00:00.000Z",
+      "ok": false,
+      "attested": { "ok": true, "enforcing": false },
+      "authorization": { "ok": false, "refusal": "cutover-precedes-canary" }
+    },
+    {
+      "proposedCutover": "2026-10-07T00:00:00.000Z",
+      "ok": true,
+      "attested": { "ok": true, "enforcing": false },
+      "authorization": { "ok": true, "receiptRunId": "lac-canary-b087ef21-7fb7-4fe7-b9ca-53f49bb35cb2", "buildSha": "2ce9df58a8" }
+    }
+  ],
+  "rawOutputs": ".papercusp/scratch/p012-rebind/live/{health-3170,canary,report,cutover,cutover2}.json"
+}

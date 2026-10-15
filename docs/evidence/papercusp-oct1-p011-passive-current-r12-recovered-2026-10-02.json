@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10004890",
+  "planItem": "P-011",
+  "evidencePlane": "passive-live-process-observation",
+  "recovery": {
+    "originalToolInvocationId": 31408670,
+    "originalTaskId": "0muri59h45nd2s2bq1c",
+    "originalLog": ".papercusp/scratch/bash-081b5f23-fbd.log",
+    "originalLogBytes": 3843,
+    "originalLogSha256": "4671561fcfb380a4436e7f034be1fb0376eae77cbe97444f64b76c974d3665f8",
+    "originalJsonPrefixBytes": 3193,
+    "originalJsonPrefixSha256": "b55f1a2b61bf11baee7933a9387fdb651ea6590afe29356de4f0c79f06a869e6",
+    "method": "Decode the first complete JSON value from the original durable bash log; keep the 650-byte task-lifecycle trailer outside the census. Preserve parsed values in this normalized derivative. No census replay.",
+    "originalStatus": "completed",
+    "originalExitCode": 0,
+    "transportEnvelope": "docs/evidence/papercusp-oct1-p011-passive-current-r12-envelope-2026-10-02.json",
+    "truncationCause": "code:run summaryNotice explicitly truncated summary.output inside JSON; partial:false did not establish string completeness."
+  },
+  "census": {
+    "schemaVersion": 1,
+    "workItem": "WI-10004890",
+    "at": "2026-10-02T21:55:47.889131+00:00",
+    "observerMs": 2149.3733250026708,
+    "services": [
+      {
+        "requestedUnit": "papercup-dev-api.service",
+        "resolvedUnit": "papercusp-dev-api.service",
+        "mainPid": 178515,
+        "finalMainPid": 178515,
+        "stableMain": true,
+        "population": 22,
+        "checked": 22,
+        "notChecked": 0,
+        "missed": [],
+        "serialPssBytes": 11048488960,
+        "top": [
+          {
+            "pid": 402584,
+            "startTicks": "2101194",
+            "parentPid": 178515,
+            "executable": "node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "entryBasename": "hono-host.mjs",
+            "role": "named-node-entry",
+            "RssBytes": 2643529728,
+            "PssBytes": 2573074432,
+            "AnonymousBytes": 2571919360
+          },
+          {
+            "pid": 593663,
+            "startTicks": "2120220",
+            "parentPid": 178515,
+            "executable": "node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "entryBasename": "hono-host.mjs",
+            "role": "named-node-entry",
+            "RssBytes": 2389737472,
+            "PssBytes": 2316944384,
+            "AnonymousBytes": 2315694080
+          },
+          {
+            "pid": 3040571,
+            "startTicks": "2441757",
+            "parentPid": 178515,
+            "executable": "node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "entryBasename": "hono-host.mjs",
+            "role": "named-node-entry",
+            "RssBytes": 1819594752,
+            "PssBytes": 1731527680,
+            "AnonymousBytes": 1728307200
+          },
+          {
+            "pid": 3647585,
+            "startTicks": "2514080",
+            "parentPid": 178515,
+            "executable": "node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "entryBasename": "hono-host.mjs",
+            "role": "named-node-entry",
+            "RssBytes": 1482002432,
+            "PssBytes": 1393866752,
+            "AnonymousBytes": 1390604288
+          },
+          {
+            "pid": 3625458,
+            "startTicks": "2511594",
+            "parentPid": 178515,
+            "executable": "node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "entryBasename": "hono-host.mjs",
+            "role": "named-node-entry",
+            "RssBytes": 1357021184,
+            "PssBytes": 1270977536,
+            "AnonymousBytes": 1267798016
+          }
+        ],
+        "nativeEsbuild": []
+      },
+      {
+        "requestedUnit": "papercusp-staging-api.service",
+        "resolvedUnit": "papercusp-staging-api.service",
+        "mainPid": 3918364,
+        "finalMainPid": 3918364,
+        "stableMain": true,
+        "population": 1,
+        "checked": 1,
+        "notChecked": 0,
+        "missed": [],
+        "serialPssBytes": 715548672,
+        "top": [
+          {
+            "pid": 3918364,
+            "startTicks": "2540939",
+            "parentPid": 4229,
+            "executable": "node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "entryBasename": "hono-host.mjs",
+            "role": "named-node-entry",
+            "RssBytes": 794419200,
+            "PssBytes": 715548672,
+            "AnonymousBytes": 712966144
+          }
+        ],
+        "nativeEsbuild": []
+      }
+    ],
+    "limits": {
+      "processesPerUnit": 128,
+      "top": 5,
+      "ancestryDepth": 12
+    },
+    "definitions": {
+      "serialPssBytes": "Sum of non-atomic serial smaps_rollup observations; kernel kB multiplied by1024. Not cgroup memory, retained ownership or matched reduction.",
+      "role": "Exact executable basename plus service argument; named entry basename is classification, not initiating caller."
+    },
+    "limitations": [
+      "Single passive observation; ambient workload uncontrolled.",
+      "No GC, inspector, snapshot, signal, restart, trim or cache mutation.",
+      "Later low PSS/absence cannot establish recovery of historical 4.2GiB compiler services."
+    ]
+  },
+  "qualification": {
+    "writer": "Original command preserved in harness_shared.tool_invocations id31408670 args_json.command; smaps_rollup Pss/Rss/Anonymous kernel kB multiplied by1024, serial reads over cgroup.procs membership captured at command start.",
+    "coverage": "22/22 captured release-service members and 1/1 staging-service member were sampled, with no missed reads and unchanged systemd MainPID. Only five largest rows per service and esbuild rows were persisted; complete per-process rows were not persisted.",
+    "classification": "The original parser selects a JavaScript-looking argv argument and its basename. It does not use the maintained exact Node-entry parser. named-node-entry identifies a candidate, not a verified HTTP worker, cluster role, useful-context owner or initiating query. Native esbuild uses basename plus a --service= prefix; no native row was observed.",
+    "ancestry": "The five recorded release top rows each report parentPid178515. This is a same-sample parent relationship, not a complete process-lifetime record. No native ancestry was exercised because nativeEsbuild is empty.",
+    "currentness": "This is the original 21:55Z snapshot, not current runtime or source-suite acceptance. No loaded build or bundle fingerprint was captured.",
+    "result": "High-PSS candidate Node host processes are the next measured attribution targets. No compiler service was observed in the captured membership. Absence cannot establish historical instance recovery or a non-defect disposition.",
+    "acceptance": "Passive inventory only; no matched ordinary-workload PSS/allocation comparison, retained-owner/native disposition, R8/R9 acceptance, independent verification or shipment."
+  }
+}

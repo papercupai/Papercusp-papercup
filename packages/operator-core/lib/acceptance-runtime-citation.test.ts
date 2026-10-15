@@ -26,6 +26,15 @@ describe('which ratings need a runtime citation', () => {
 });
 
 describe('validateRuntimeCitation', () => {
+  it('recognizes exact registry citations without aliasing embedded built-in labels', () => {
+    const runtime = 'runtime-vintage:papercusp-workspace/bg-host@builder';
+    expect(validateRuntimeCitation({ rating: 'unknown', evidence: runtime, evidencePlane: 'live' }))
+      .toEqual({ missing: ['sha'], runtimesCited: [runtime] });
+    expect(validateRuntimeCitation({ rating: 'unknown', evidence: `${runtime} build 9536482f31.`, evidencePlane: 'live' }))
+      .toBeNull();
+    expect(validateRuntimeCitation({ rating: 'unknown', evidence: 'runtime-vintage:workspace/bg-host@ build 9536482f31', evidencePlane: 'live' }))
+      .toEqual({ missing: ['runtime'], runtimesCited: [] });
+  });
   it('the 2026-09-23 rating — mismatch, "wait for deployed:true", no runtime, no sha — is refused on both counts', () => {
     expect(
       validateRuntimeCitation({

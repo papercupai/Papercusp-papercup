@@ -134,6 +134,16 @@ describe('sliceByHeading', () => {
     expect(sliceByHeading(md, '  sEcTiOn A  ', toc)).toBe('## Section A\n\ncontent A');
   });
 
+  it('matches rendered headings when the Markdown serializer escapes punctuation', () => {
+    const title = 'Live verification ~13:30 — deployed';
+    const rendered = '## Live verification \\~13:30 — deployed\n\nbody';
+    const renderedToc: TocEntry[] = [
+      { url: '#live-verification-13-30-deployed', title, depth: 2 },
+    ];
+
+    expect(sliceByHeading(rendered, 'live-verification-13-30-deployed', renderedToc)).toBe(rendered);
+  });
+
   it('accepts a normalized anchor when an older TOC preserves case and punctuation runs', () => {
     const title = 'What NOT to do — server-side / data layer';
     const legacyToc: TocEntry[] = [

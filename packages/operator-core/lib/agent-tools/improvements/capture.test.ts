@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
+import { applyPayloadTier } from '@papercusp/tooldef';
 import captureTool, { defaultScorecardConditionKey, deriveToolFailureCaptureText } from './capture';
 import { coerceCaptureArgs, coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
 import {
   captureImprovement,
+  captureToolInvocationFriction,
   recordCaptureReviewFailure,
   setCaptureReviewState,
 } from '../../harness/improvements/capture-core';
@@ -40,6 +42,7 @@ const trustedRuntime = vi.hoisted(() => ({
     filePaths: string[];
   } | null),
 }));
+const dedupAlarm = vi.hoisted(() => ({ report: vi.fn(async (_detail: unknown) => undefined) }));
 
 // PG-free unit: capture-core has its own 31-test suite; this pins the tool
 // wrapper's two jobs — (1) deriving the `source` label from the caller's
@@ -66,7 +69,22 @@ vi.mock('../../harness/improvements/agent-review', () => ({
 }));
 vi.mock('../coordination/identity');
 vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => []) }));
+// P-013 (D-024): the filing door resolves a receipt's ledger ref through this seam.
+const reproLedger = vi.hoisted(() => ({
+  invocations: new Map<number, { status: string | null; servingBuildSha: string | null }>(),
+}));
+vi.mock('../../attention/intake-promotion', async (original) => ({
+  ...(await original<typeof import('../../attention/intake-promotion')>()),
+  defaultReproductionLedgerDeps: () => ({
+    readTestRun: async () => null,
+    readToolInvocation: async (id: number) => reproLedger.invocations.get(id) ?? null,
+    now: () => new Date('2026-10-05T22:00:00Z'),
+  }),
+}));
 vi.mock('../work_items/drain-flow', () => ({ withDrainBugAdmission: drainAdmission.gate }));
+vi.mock('../work_items/semantic-dedup-probe-alarm', () => ({
+  reportDedupCoverageDegraded: dedupAlarm.report,
+}));
 // P-008: the novelty pre-check is PG-backed (readNoveltyCorpus) — mock it so this
 // suite stays PG-free. Default = resolved undefined ("check unavailable"), which the
 // handler renders as an ABSENT priorArt field, leaving every pre-P-008 assertion
@@ -83,6 +101,7 @@ vi.mock('../../scout/generation-watermark', () => ({
 }));
 
 const mockCapture = vi.mocked(captureImprovement);
+const mockCaptureToolInvocationFriction = vi.mocked(captureToolInvocationFriction);
 const mockRecordCaptureReviewFailure = vi.mocked(recordCaptureReviewFailure);
 const mockSetCaptureReviewState = vi.mocked(setCaptureReviewState);
 const mockEnterAgentReview = vi.mocked(enterAgentReview);
@@ -128,13 +147,16 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
     mockCapture.mockResolvedValue({
       ok: true,
       created: true,
-      issue: { id: 'EI-42', title: 'Replace human review' },
+      issue: {
+        id: 'EI-42', title: 'Replace human review', state: 'blocked',
+        assignee: 'su-filer', assignedBy: 'su-filer',
+      },
       reviewRequired: true,
       reviewState: 'blocked',
     } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
 
     const result = await callTool(
-      { title: 'Replace human review', kind: 'change', harness: 'papercusp' },
+      { title: 'Replace human review', kind: 'change', harness: 'papercusp', assign_to: 'self' },
       {
         harnessSlug: 'papercusp',
         workspaceId: 'ws-1',
@@ -156,6 +178,10 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
     expect(body.agentReview).toEqual({
       entered: true,
       state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'EI-42', round: 1 },
+    });
+    expect(body).toMatchObject({
+      reviewState: 'open',
+      issue: { state: 'open', assignee: null, assignedBy: 'su-filer' },
     });
   });
 
@@ -306,7 +332,58 @@ describe('improvements:capture — duplicate verdicts are annotations, not inacc
     const returns = captureTool.guidance?.returns ?? '';
     expect(returns).toContain('created row carries `payload.dedupVerdict');
     expect(returns).not.toContain('May DECLINE your capture');
-    expect(captureTool.guidance?.seeAlso?.[0]).toContain('checkDuplicatesOnly:true');
+    expect(returns).toContain('semantic:"partial"');
+    expect(returns).toContain('index coverage is unknown/unmeasured');
+    const seeAlso = captureTool.guidance?.seeAlso;
+    expect(Array.isArray(seeAlso)).toBe(true);
+    if (!Array.isArray(seeAlso)) throw new Error('capture guidance must provide static see-also entries');
+    expect(seeAlso.some((entry) => entry.includes('checkDuplicatesOnly:true'))).toBe(true);
+  });
+});
+
+describe('improvements:capture payload-tier write echo', () => {
+  it('keeps the default issue receipt compact while preserving the explicit full-detail path', () => {
+    const payload = { report: { message: 'x'.repeat(4_000) } };
+    const original = {
+      ok: true,
+      created: true,
+      kind: 'bug',
+      issue: {
+        id: 'EI-42',
+        kind: 'bug',
+        harness: 'papercusp',
+        state: 'open',
+        title: 'T'.repeat(200),
+        assignee: 'su-test',
+        summary: 'S'.repeat(4_000),
+        payload,
+      },
+      possibleDuplicates: [],
+      dedupCoverage: { lexical: 'complete', semantic: 'complete', degraded: false },
+    };
+    const applyTier = (tier: 'trimmed' | 'standard' | 'full') =>
+      applyPayloadTier({
+        toolName: 'improvements:capture',
+        shape: captureTool.shape,
+        response: { data: original } as never,
+        tier,
+        args: {},
+      }).data as Record<string, any>;
+
+    const trimmed = applyTier('trimmed');
+    const standard = applyTier('standard');
+    const full = applyTier('full');
+
+    expect(trimmed).toMatchObject({ ok: true, created: true, kind: 'bug', issue: {
+      id: 'EI-42', kind: 'bug', harness: 'papercusp', state: 'open', assignee: 'su-test',
+    } });
+    expect(trimmed.issue.title).toHaveLength(90);
+    expect(trimmed.issue).not.toHaveProperty('summary');
+    expect(trimmed.issue).not.toHaveProperty('payload');
+    expect(JSON.stringify(trimmed).length).toBeLessThan(1_000);
+    expect(standard.issue.title).toHaveLength(140);
+    expect(full.issue.payload).toEqual(payload);
+    expect(full.issue.summary).toHaveLength(4_000);
   });
 });
 
@@ -328,6 +405,156 @@ function callTool(args: Record<string, unknown>, ctx: unknown = {}) {
   ).handler(args, ctx);
 }
 
+describe('improvements:capture degraded dedup alert', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    drainAdmission.blocked = false;
+    drainAdmission.unavailable = false;
+    mockReadTrustedHarnessTestRunProvenance.mockResolvedValue(null);
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-filer'));
+  });
+
+  it('publishes one advisory signal when a real capture proceeds with incomplete dedup coverage', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-42', title: 'dedup coverage test' },
+      possibleDuplicates: [],
+      dedupCoverage: { lexical: 'unavailable', semantic: 'unavailable', degraded: true },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    await callTool(
+      { title: 'dedup coverage test', kind: 'bug' },
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
+    );
+
+    expect(dedupAlarm.report).toHaveBeenCalledWith({
+      source: 'improvements:capture',
+      harnessSlug: 'papercusp',
+      coverage: { lexical: 'unavailable', semantic: 'unavailable', degraded: true },
+    });
+  });
+
+  it('preserves check-only exclusion and forwards complete coverage for measured recovery', async () => {
+    mockCapture
+      .mockResolvedValueOnce({
+        ok: true,
+        created: false,
+        reason: 'check-only',
+        possibleDuplicates: [],
+        dedupCoverage: { lexical: 'unavailable', semantic: 'unavailable', degraded: true },
+      } as unknown as Awaited<ReturnType<typeof captureImprovement>>)
+      .mockResolvedValueOnce({
+        ok: true,
+        created: true,
+        issue: { id: 'EI-43', title: 'complete dedup coverage test' },
+        possibleDuplicates: [],
+        dedupCoverage: { lexical: 'ok', semantic: 'ok', degraded: false },
+      } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    await callTool(
+      { title: 'dedup coverage check', kind: 'bug', checkDuplicatesOnly: true },
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
+    );
+    expect(dedupAlarm.report).not.toHaveBeenCalled();
+    await callTool(
+      { title: 'complete dedup coverage test', kind: 'bug' },
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
+    );
+
+    expect(dedupAlarm.report).toHaveBeenCalledOnce();
+    expect(dedupAlarm.report).toHaveBeenCalledWith({
+      source: 'improvements:capture', harnessSlug: 'papercusp',
+      coverage: { lexical: 'ok', semantic: 'ok', degraded: false },
+    });
+  });
+});
+
+describe('improvements:capture timing diagnostics', () => {
+  it('logs request-correlated stage timings, including late search completion, without capture text', async () => {
+    vi.clearAllMocks();
+    drainAdmission.blocked = false;
+    drainAdmission.unavailable = false;
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-filer'));
+    mockResolveSelfLiteral.mockImplementation((value, callerOwnerId) => (value === 'self' ? callerOwnerId : value));
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-42', title: 'private timing title' },
+      reviewRequired: true,
+      reviewState: 'blocked',
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+    mockCaptureToolInvocationFriction.mockResolvedValue(null);
+    mockEnterAgentReview.mockResolvedValue({
+      entered: true,
+      state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'EI-42', round: 1 },
+    });
+    mockSetCaptureReviewState.mockImplementation(async (_id, state) => ({
+      workItem: { id: 'EI-42', state },
+      requestedState: state,
+      appliedState: state,
+    }));
+    mockPriorArt.mockResolvedValue(undefined);
+    mockRecordRoutedIdea.mockResolvedValue(undefined);
+
+    const log = vi.fn();
+    const privateText = 'private timing body sentinel';
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => {
+      now += 1_000;
+      return now;
+    });
+    try {
+      await callTool(
+        { title: 'private timing title', body: privateText, kind: 'feature' },
+        {
+          harnessSlug: 'papercusp',
+          workspaceId: 'ws-1',
+          requestOrigin: { mcpRequestTraceId: 'mcp-trace-for-capture-test' },
+          log,
+        },
+      );
+    } finally {
+      clock.mockRestore();
+    }
+
+    const captureInput = mockCapture.mock.calls[mockCapture.mock.calls.length - 1]?.[0] as
+      | { onDependencyTiming?: (sample: { dependency: string; elapsedMs: number; outcome: 'fulfilled' | 'rejected' }) => void }
+      | undefined;
+    captureInput?.onDependencyTiming?.({
+      dependency: 'searchIssuesForDedup.pg-transaction',
+      elapsedMs: 1_600,
+      outcome: 'fulfilled',
+    });
+
+    const prefix = '[improvements:capture] timing ';
+    const timingLines = log.mock.calls.map(([message]) => String(message)).filter((message) => message.startsWith(prefix));
+    const line = timingLines[0];
+    expect(line).toBeDefined();
+    const timing = JSON.parse(line!.slice(prefix.length)) as {
+      traceId: string;
+      stages: Array<{ name: string; count: number; totalMs: number; maxMs: number; failures: number }>;
+    };
+    expect(timing.traceId).toBe('mcp-trace-for-capture-test');
+    expect(timing.stages.map((stage) => stage.name)).toEqual(
+      expect.arrayContaining([
+        'wrapper.persist',
+        'wrapper.routedIdeaProvenance',
+        'wrapper.agentReview.enroll',
+        'wrapper.agentReview.reopen',
+        'wrapper.noveltyPriorArt',
+        'wrapper.unresolvedRefs',
+      ]),
+    );
+    const lateTiming = timingLines
+      .map((entry) => JSON.parse(entry.slice(prefix.length)) as typeof timing)
+      .find((entry) => entry.stages.some((stage) => stage.name === 'core.searchIssuesForDedup.pg-transaction'));
+    expect(lateTiming?.traceId).toBe('mcp-trace-for-capture-test');
+    expect(timingLines.join('\n')).not.toContain(privateText);
+    expect(timingLines.join('\n')).not.toContain('private timing title');
+  });
+});
+
 describe('improvements:capture tool envelope', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -338,6 +565,7 @@ describe('improvements:capture tool envelope', () => {
     mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
+    mockCaptureToolInvocationFriction.mockResolvedValue(null);
   });
 
   it('opts out of the ambient workspace transaction while awaiting capture work (EI-20223628286146305)', () => {
@@ -372,6 +600,30 @@ describe('improvements:capture tool envelope', () => {
         kind: 'bug',
       }),
     );
+  });
+
+  it('forwards a bug reporter context to the core so its error can fold (unified-bug-pipeline P-011 / D-046)', async () => {
+    const reportContext = {
+      appVersion: '0.9.3',
+      recentErrors: [{ message: 'TypeError: cannot read properties of undefined (reading "id")', source: 'renderer' }],
+    };
+    const parsed = (captureTool.args as { parse: (value: unknown) => Record<string, unknown> }).parse({
+      kind: 'bug',
+      title: 'board crashes on open',
+      reportContext,
+    });
+
+    await callTool(parsed);
+
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ kind: 'bug', reportContext }));
+  });
+
+  it('omits reportContext when the caller sent none, and refuses an unknown context field', async () => {
+    await callTool({ title: 'no context', kind: 'bug' });
+    expect(mockCapture.mock.calls[0]?.[0]).not.toHaveProperty('reportContext');
+
+    const schema = captureTool.args as { safeParse: (value: unknown) => { success: boolean } };
+    expect(schema.safeParse({ kind: 'bug', title: 't', reportContext: { screenshotBytes: 'data:image/png;base64,AAAA' } }).success).toBe(false);
   });
 
   it('maps a static-client caller to source="su"', async () => {
@@ -573,7 +825,7 @@ describe('improvements:capture tool envelope', () => {
     ).toBe(false);
   });
 
-  it('publishes the conditional title/body/toolFailure prerequisite (EI-22685673523193526)', () => {
+  it('publishes conditional capture prerequisites for title/body/toolFailure and notExercised', () => {
     const json = z.toJSONSchema(captureTool.args as never) as {
       'x-papercusp-call-constraint'?: string;
     };
@@ -581,6 +833,9 @@ describe('improvements:capture tool envelope', () => {
     expect(json['x-papercusp-call-constraint']).toContain('at least one of title, body, or toolFailure');
     expect(json['x-papercusp-call-constraint']).toContain(
       'title is required when both body and toolFailure are omitted',
+    );
+    expect(json['x-papercusp-call-constraint']).toContain(
+      'a non-empty observation.notExercised requires observation.rubricRef or the top-level rubricRef compatibility alias',
     );
 
     const argsSchema = captureTool.args as {
@@ -626,6 +881,135 @@ describe('improvements:capture tool envelope', () => {
         },
       }),
     );
+  });
+
+  it('separates incomplete ptool bootstrap causes using the reported field path', async () => {
+    const prefix = 'SDK bootstrap failed before operator connection: ';
+    await callTool({
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'ptool',
+        errorCode: 'sdk_bootstrap_failed',
+        message: `${prefix}repoLockName is not a function`,
+      },
+    });
+    await callTool({
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'ptool',
+        status: 'ENOSPC',
+        fieldPath: '/tmp/pcv/fs-mutex-locks',
+        message: `${prefix}ENOSPC while mkdir of a lock in /tmp/pcv/fs-mutex-locks.`,
+      },
+    });
+    await callTool({
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'ptool',
+        status: 'ENOSPC',
+        fieldPath: '/tmp/pcv/fs-mutex-locks',
+        message: `${prefix}ENOSPC while mkdir of a lock in /tmp/pcv/fs-mutex-locks.`,
+      },
+    });
+
+    const rowKeys = mockCapture.mock.calls.map(([input]) => input.watchdogKey);
+    expect(rowKeys[0]).toBe('repeated-tool-error:ptool:structural:md5-8627c9c6c1206235c21992a6dee757ef');
+    expect(rowKeys[1]).toBe('tool-failure-signature:ptool:structural:enospc:tmp-pcv-fs-mutex-locks');
+    expect(rowKeys[1]).not.toBe(rowKeys[0]);
+    expect(rowKeys[2]).toBe(rowKeys[1]);
+    const firstProbation = (mockCapture.mock.calls[0]?.[0].payloadExtra as Record<string, unknown>)
+      ?.toolFailureProbation as Record<string, unknown>;
+    const enospcProbation = (mockCapture.mock.calls[1]?.[0].payloadExtra as Record<string, unknown>)
+      ?.toolFailureProbation as Record<string, unknown>;
+    expect(firstProbation.watchdogKey).toBe(rowKeys[0]);
+    expect(enospcProbation.watchdogKey).toBe(
+      'repeated-tool-error:ptool:structural:md5-7a7a4b4cbc261d5b0c59a376c9fb3f1a',
+    );
+    expect(enospcProbation.watchdogKey).not.toBe(firstProbation.watchdogKey);
+  });
+
+  it('keeps distinct status-502 lock failures separate through the regular capture route', async () => {
+    mockIdentity.mockReturnValue(identity('static-client', 'su-lock-filer'));
+    const prefix = 'locks:acquire failed (502): read ECONNRESET while acquiring the file lock for ';
+    const messages = [
+      `${prefix}packages/operator-core/lib/agent-tools/locks/alpha.ts`,
+      `${prefix}packages/operator-core/lib/agent-tools/locks/beta.ts`,
+    ];
+    const ctx = { workspaceId: 'ws-1', harnessSlug: 'papercusp' };
+
+    for (const message of messages) {
+      await callTool({
+        kind: 'bug',
+        toolFailure: {
+          toolName: 'locks:acquire',
+          errorCode: 'ECONNRESET',
+          status: '502',
+          message,
+        },
+      }, ctx);
+    }
+
+    // 502 is not accepted by the narrower invocation-friction helper, so both
+    // reports must fall through to captureImprovement with their own full-message key.
+    expect(mockCaptureToolInvocationFriction).not.toHaveBeenCalled();
+    expect(mockCapture).toHaveBeenCalledTimes(2);
+    const inputs = mockCapture.mock.calls.map(([input]) => input as {
+      watchdogKey?: string;
+      payloadExtra?: { toolFailureProbation?: { watchdogKey?: string; messageFingerprint?: string | null } };
+    });
+    const rowKeys = inputs.map((input) => input.watchdogKey);
+    expect(rowKeys[0]).toMatch(/^repeated-tool-error:locks:acquire:transient:md5-[a-f0-9]{32}$/);
+    expect(rowKeys[1]).toMatch(/^repeated-tool-error:locks:acquire:transient:md5-[a-f0-9]{32}$/);
+    expect(rowKeys[1]).not.toBe(rowKeys[0]);
+    const probation = inputs.map((input) => input.payloadExtra?.toolFailureProbation);
+    expect(probation[0]?.watchdogKey).toBe(rowKeys[0]);
+    expect(probation[1]?.watchdogKey).toBe(rowKeys[1]);
+    expect(probation[1]?.messageFingerprint).not.toBe(probation[0]?.messageFingerprint);
+  });
+
+  it('routes output-spill failures through the signature-aware subsystem writer (EI-25309649835141283)', async () => {
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-spill-filer'));
+    mockCaptureToolInvocationFriction
+      .mockResolvedValueOnce({
+        ok: true,
+        created: true,
+        issue: { id: 'EI-result-door', title: 'result-door failure' },
+      } as unknown as Awaited<ReturnType<typeof captureToolInvocationFriction>>)
+      .mockResolvedValueOnce({
+        ok: true,
+        created: false,
+        reason: 'coalesced',
+        issue: { id: 'EI-result-door', title: 'result-door failure' },
+      } as unknown as Awaited<ReturnType<typeof captureToolInvocationFriction>>);
+
+    const ctx = { workspaceId: 'ws-1', harnessSlug: 'papercusp' };
+    await callTool({
+      toolFailure: {
+        toolName: 'facts:list',
+        errorCode: 'output_spill_failed',
+        message: 'the result-door could not persist its spill',
+      },
+    }, ctx);
+    await callTool({
+      toolFailure: {
+        toolName: 'work_items:get',
+        errorCode: 'output_spill_failed',
+        message: 'the result-door could not persist its spill',
+      },
+    }, ctx);
+
+    expect(mockCaptureToolInvocationFriction).toHaveBeenCalledTimes(2);
+    expect(mockCaptureToolInvocationFriction.mock.calls.map(([input]) => input.failure.toolName)).toEqual([
+      'facts:list',
+      'work_items:get',
+    ]);
+    expect(mockCaptureToolInvocationFriction.mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      ownerId: 'su-spill-filer',
+      failure: { errorCode: 'output_spill_failed' },
+    });
+    expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it('preserves an explicit conditionKey when toolFailure wording changes (EI-22722288208033107)', async () => {
@@ -736,6 +1120,25 @@ describe('improvements:capture tool envelope', () => {
         payloadExtra: {
           toolFailureProbation: expect.objectContaining({ state: 'promoted', directEvidence: true }),
         },
+      }),
+    );
+  });
+
+  it('keeps a reproduced miss on an unseeded direct wrapper as caller-side observation', async () => {
+    await callTool({
+      toolFailure: {
+        toolName: 'locks:list',
+        message: 'The normalized direct wrapper tools.mcp__papercusp_su__locks_list was undefined, so attempting it raised a local TypeError before MCP dispatch. tools:find activated locks:list; no server-side locks:list call was made.',
+        reproduced: true,
+      },
+    });
+    expect(mockCapture).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'change',
+        lane: 'observation',
+        payloadExtra: expect.objectContaining({
+          toolFailureProbation: expect.objectContaining({ state: 'probation', class: 'caller' }),
+        }),
       }),
     );
   });
@@ -910,6 +1313,35 @@ describe('improvements:capture tool envelope', () => {
     const res = await callTool({ title: 'x', kind: 'bug' });
     const body = JSON.parse(res.content[0].text);
     expect(body).toEqual({ ok: true, id: 'EI-42', created: true, duplicateOf: null });
+  });
+
+  it('maps an unmatched watchdog identity conflict to a structured refusal', async () => {
+    const conflict = Object.assign(new Error('A watchdog identity conflict could not be safely coalesced.'), {
+      name: 'CaptureWatchdogIdentityConflictError',
+      code: 'watchdog_identity_conflict',
+      reason: 'no_compatible_winner',
+      retryable: false,
+      watchdogKey: 'tool-failure:work_items:get:23505',
+      relatedIds: ['EI-41', 'EI-42'],
+    });
+    mockCapture.mockRejectedValueOnce(conflict);
+
+    const res = await callTool({
+      title: 'capture conflict',
+      kind: 'bug',
+      watchdogKey: 'tool-failure:work_items:get:23505',
+    });
+    const body = JSON.parse(res.content[0].text) as Record<string, unknown>;
+
+    expect(body).toEqual({
+      ok: false,
+      error: 'watchdog_identity_conflict',
+      retryable: false,
+      reason: 'no_compatible_winner',
+      watchdogKey: 'tool-failure:work_items:get:23505',
+      relatedIds: ['EI-41', 'EI-42'],
+      message: 'A watchdog identity conflict could not be safely coalesced.',
+    });
   });
 
   it('maps bounded database contention to a retryable timeout envelope', async () => {
@@ -1407,6 +1839,25 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(r.success).toBe(true);
   });
 
+  it('documents observation confidence separately from fact-registry confidence', () => {
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: {
+        observation?: { properties?: { confidence?: { description?: string; enum?: string[] } } };
+      };
+    };
+    const confidence = json.properties?.observation?.properties?.confidence;
+    expect(confidence?.enum).toEqual(['low', 'med', 'high']);
+    expect(confidence?.description).toContain('Evidence strength for this observation');
+    expect(confidence?.description).toContain('verified/provisional/suspected');
+    expect(confidence?.description).toContain('facts:assert');
+
+    expect(argsSchema.safeParse({
+      title: 'fact confidence is not observation confidence',
+      lane: 'observation',
+      observation: { confidence: 'verified' },
+    }).success).toBe(false);
+  });
+
   it('accepts a test-failure observation kind (EI-21565027021959535)', () => {
     const r = argsSchema.safeParse({
       title: 'test failure note',
@@ -1507,6 +1958,8 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(guidance.notWhen).toMatch(/sourceRole/);
     const seeAlso = (guidance.seeAlso ?? []).join('\n');
     expect(seeAlso).toMatch(/assign_to:"self"/);
+    expect(seeAlso).toMatch(/claims non-observation filings/);
+    expect(seeAlso).toMatch(/lane:"observation" records are non-claimable sensor readings and ignore assign_to/);
     expect(seeAlso).toMatch(/observation\.refs/);
 
     const r = argsSchema.safeParse({
@@ -1531,13 +1984,22 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(JSON.stringify(r.success ? [] : r.error!.issues)).toContain('bogusNewField');
   });
 
-  it('routes free-text evidence to body and rejects observation.evidence (EI-21310187819463956)', () => {
+  it('routes free-text observations to top-level body and rejects nested prose fields (EI-21310187819463956)', () => {
     const json = z.toJSONSchema(captureTool.args as never) as {
       properties?: { observation?: { description?: string } };
     };
     expect(json.properties?.observation?.description).toMatch(/top-level body/i);
+    expect(json.properties?.observation?.description).toMatch(/observation\.body is not a valid field/i);
     expect(json.properties?.observation?.description).toMatch(/observation\.evidence is not a valid field/i);
     expect(json.properties?.observation?.description).toMatch(/observation\.ratings\[criterion\]\.evidence/i);
+
+    const misplacedBody = argsSchema.safeParse({
+      title: 'free-text observation body routing',
+      lane: 'observation',
+      observation: { kind: 'friction', body: 'narrative evidence' },
+    });
+    expect(misplacedBody.success).toBe(false);
+    expect(JSON.stringify(misplacedBody.success ? [] : misplacedBody.error!.issues)).toContain('body');
 
     const misplaced = argsSchema.safeParse({
       title: 'free-text observation evidence routing',
@@ -2638,5 +3100,78 @@ describe('improvements:capture — foundDuring is soft-capped (EI-10943)', () =>
     expect(fd?.type).toBe('string');
     // advertised as a plain string: no maxLength to bounce a caller on
     expect(fd?.maxLength).toBeUndefined();
+  });
+});
+
+// observation-candidate-acceptance-promotion-2026-09-30 P-013 (D-024): an encountered
+// bug files its encounter as the reproduction receipt; the verdict is the server's.
+describe('improvements:capture reproduction receipt (D-024)', () => {
+  const BUILD = 'abcdef1234567';
+  const passedPayload = () =>
+    (mockCapture.mock.calls[0]![0] as { payloadExtra?: Record<string, unknown> }).payloadExtra ?? {};
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    reproLedger.invocations.clear();
+    mockReadTrustedHarnessTestRunProvenance.mockResolvedValue(null);
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-filer'));
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-77', title: 'writer rejects a valid state' },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+  });
+
+  it('stamps a ledger-verified encounter on the filing and reports its status', async () => {
+    reproLedger.invocations.set(7, { status: 'error', servingBuildSha: BUILD });
+    const result = await callTool({
+      title: 'writer rejects a valid state',
+      kind: 'bug',
+      reproduction: { ref: 'tool_invocations:7', buildSha: BUILD },
+    });
+    expect(passedPayload().reproduction).toMatchObject({
+      schemaVersion: 'bug-reproduction-v1',
+      filedBy: 'su-filer',
+      receipt: { kind: 'encounter', ref: 'tool_invocations:7', buildSha: BUILD },
+      verification: { status: 'verified' },
+    });
+    expect(JSON.parse(result.content[0].text).reproduction).toMatchObject({ status: 'verified' });
+  });
+
+  it('records what the ledger says, not what the filer claims: a succeeded invocation is refuted', async () => {
+    reproLedger.invocations.set(8, { status: 'ok', servingBuildSha: BUILD });
+    const result = await callTool({
+      title: 'writer rejects a valid state',
+      kind: 'bug',
+      reproduction: { ref: 'tool_invocations:8', buildSha: BUILD },
+    });
+    expect(passedPayload().reproduction).toMatchObject({ verification: { status: 'refuted' } });
+    expect(JSON.parse(result.content[0].text).reproduction).toMatchObject({ status: 'refuted' });
+  });
+
+  it('a caller-classified tool failure keeps its probation path: the receipt is stored as not-eligible', async () => {
+    reproLedger.invocations.set(7, { status: 'error', servingBuildSha: BUILD });
+    await callTool(
+      captureTool.args.parse({
+        toolFailure: { ...metadataToolFailure },
+        reproduction: { ref: 'tool_invocations:7', buildSha: BUILD },
+      }),
+    );
+    expect(passedPayload()).toMatchObject({
+      toolFailureProbation: { state: 'probation', class: 'caller' },
+      reproduction: { verification: { status: 'not-eligible' } },
+    });
+  });
+
+  it('refuses a receipt whose build sha is not a git sha, before filing anything', async () => {
+    await expect(
+      callTool({ title: 'x', kind: 'bug', reproduction: { ref: 'stack trace line', buildSha: 'staging' } }),
+    ).rejects.toThrow(/buildSha/);
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+
+  it('files without a reproduction key when none is supplied', async () => {
+    await callTool({ title: 'writer rejects a valid state', kind: 'bug' });
+    expect(passedPayload()).not.toHaveProperty('reproduction');
   });
 });

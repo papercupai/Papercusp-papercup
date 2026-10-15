@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R2 fresh current-build acceptance at 18:24 UTC",
+  "framework": "node",
+  "command": ["node", "--input-type=module", "-e", "const originalFetch=globalThis.fetch;globalThis.fetch=async(...a)=>{const start=performance.now();const r=await originalFetch(...a);await r.clone().text();console.error('R2_HTTP_TIMING '+JSON.stringify({ms:Math.round(performance.now()-start),status:r.status}));return r;};process.argv=['node','scripts/mcp-call.mjs','search:fulltext','--json','-','--client',process.env.PAPERCUSP_SID,'--workspace','papercusp-workspace','--harness','papercusp','--port','3170'];await import('./scripts/mcp-call.mjs');"],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T18:24:30.088420+00:00",
+  "finishedAt": "2026-10-01T18:24:45.606626+00:00",
+  "summary": "Fresh live HTTP latency fails R2: nearest-rank p95 1808ms exceeds 1000ms. All20 requests returned HTTP200 and CLI exit0. Separately, the unchanged original25turn fixture matches all four saved hit sets and rank tiers, and an actual installed hook glance_stale payload was accepted on3170. This red receipt must not supersede earlier proof as a green result.",
+  "assertions": [
+    {"id": "twenty-successful-attributed-requests", "passed": true, "evidence": "20 sequential official mcp-call requests using exact PAPERCUSP_SID, workspace papercusp-workspace, harness papercusp, and port3170 each returned one HTTP200 and CLI exit0."},
+    {"id": "representative-http-p95-at-most-one-second", "passed": false, "evidence": "Sorted nearest-rank index19 of20=1808ms; maximum2405ms. Initial slow requests are retained. Timing spans fetch start through consumption of the complete cloned HTTP response and excludes CLI startup."}
+  ],
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10004474",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 5,
+  "evidencePlane": "live",
+  "commandRepeated": 20,
+  "stdinTemplate": {"query": "rotated representativeQueries[i%4]", "scope": ["session_turn"], "limit": 5},
+  "representativeQueries": ["corpus recall", "furnishedfinder", "memory admission", "WI-10004474"],
+  "measurement": {
+    "servingBuild": "7b51e44017",
+    "httpMilliseconds": [2405,1808,789,381,334,169,190,381,108,242,231,95,91,162,138,89,87,86,198,199],
+    "httpP95NearestRankMs": 1808,
+    "httpMaxMs": 2405,
+    "slowInvocationIds": [30810489,30810512],
+    "slowInvokeStageMilliseconds": [2198.8625379999867,1704.6772219999984],
+    "slowLedgerDurationMilliseconds": [2292,1745]
+  },
+  "supportingObservations": {
+    "frozenFixture": {"sessionId": "01a0f68e-3037-7dc3-b898-a1cc12441884", "sourceKind": "codex", "workspaceId": "default", "owner": "su-0da9d55e-30de-4a57-9380-8c81a7e3c99d", "exclusiveUntil": "2026-10-01T09:14:42Z", "rows": 25, "turnRange": [0,24], "hash": "0303e7a27eb9d4d8122224393fec8d0f", "hashWriterInvocationId": 30721282, "hashExpression": "md5(string_agg(turn_idx::text || ':' || md5(text), '|' ORDER BY turn_idx))"},
+    "frozenQueries": [
+      {"query": "memory admission", "turns": [6,8,22], "ranks": [0.2,0.2,0.1]},
+      {"query": "04474", "turns": [1,23,3], "ranks": [0,0,0]},
+      {"query": "WI-10004474", "turns": [1,23], "ranks": [0.2,0.1]},
+      {"query": "zz-r2-absent-20261001", "turns": [], "ranks": []}
+    ],
+    "parityBaselineRef": "thread-post:1153616",
+    "installedHook": {"invocationId": 30809861, "invokedAt": "2026-10-01T18:22:07.590Z", "servingHost": "port-3170", "servingBuild": "7b51e44017", "status": "ok", "hookBundle": {"generation": "us4e-mupv0jvq:22722353", "glance_stale": true}}
+  },
+  "residualUnknowns": ["The measured delay lies inside invoke; retrieval-versus-rerank attribution was unavailable in this build.", "Frozen parity establishes hit sets and rank tiers; historical zero-rank ties have no total-order oracle.", "This receipt is a failed operational check, not a conventional unit or integration test."]
+}

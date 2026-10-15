@@ -17,6 +17,15 @@ const processor = remark()
   .use(remarkGfm)
   .use(remarkMdxToMarkdown);
 
+/** The host owns durable storage; this source-agnostic renderer only reports outcomes. */
+export type MdxRenderObserver = (mechanism: 'mdx-render', decision: {
+  eligible: 1; applied: 0 | 1; reason: 'parse-failed' | 'applied';
+}) => void;
+let observeFallback: MdxRenderObserver | undefined;
+export function setMdxRenderObserver(observer: MdxRenderObserver | undefined): void {
+  observeFallback = observer;
+}
+
 /**
  * Fallback body for a doc whose MDX fails to parse (EI-5860). A single malformed
  * doc — a raw `<owner>` placeholder parsed as an unclosed JSX tag, or a `{expr}`
@@ -31,11 +40,97 @@ function fallbackStripMdx(rawMdx: string): string {
     .trim();
 }
 
-export async function renderMdxToMarkdown(rawMdx: string, absolutePath: string): Promise<string> {
+/**
+ * WI-10004766 — every render goes through ONE FIFO queue, with a macrotask hop
+ * before each page.
+ *
+ * A unified parse+stringify runs entirely inside microtasks. Corpus-wide callers
+ * (docs:search, the docs/section resource, docs-qa, doc-embed-sync) fan out over
+ * ~1,000 pages with Promise.all, so on a cold cache every render resolved in one
+ * uninterrupted microtask chain: the event loop got no turn until the whole corpus
+ * was done. Measured on :3170 (2026-10-02 00:07Z): one docs:search ran 16.2s and its
+ * stall profile was 95.8% getContent → renderMdxToMarkdown; 22 of 40 R-state
+ * sentinel stalls that day overlapped a slow docs call, against 1.2% base-rate
+ * coverage. WI-2146645 had already fixed this for doc-embed-sync's own loop, but the
+ * defect lived here, in the renderer every caller shares.
+ *
+ * A per-call yield is NOT enough under Promise.all: N setImmediate callbacks queued
+ * together all drain in one check phase, with no I/O poll between them. Serializing
+ * the queue means each hop is scheduled only after the previous page finished, so it
+ * lands in the NEXT loop iteration. The loop then blocks for at most one page's render,
+ * and timers, I/O and pool releases run between pages. Throughput is unchanged
+ * because renders are CPU-bound on one thread anyway.
+ */
+let renderQueueTail: Promise<unknown> = Promise.resolve();
+
+function macrotaskHop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('cancelled');
+}
+
+/** Race a caller's wait against cancellation without cancelling shared work. */
+export function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new Error('cancelled'));
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('cancelled'));
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * Queued renders honor abort before parsing starts. A render already in progress
+ * is allowed to finish; callers can stop waiting via `raceWithAbort`.
+ */
+export function renderMdxToMarkdown(rawMdx: string, absolutePath: string, signal?: AbortSignal): Promise<string> {
+  const run = renderQueueTail.then(macrotaskHop).then(() => {
+    throwIfAborted(signal);
+    return renderMdxToMarkdownUnqueued(rawMdx, absolutePath);
+  });
+  renderQueueTail = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * The render itself, with no queue and no yield. Exported ONLY so the test suite can
+ * keep it as the deliberately-starving control that proves the measurement detects
+ * starvation. Production callers must use {@link renderMdxToMarkdown}.
+ * @internal
+ */
+export async function renderMdxToMarkdownUnqueued(rawMdx: string, absolutePath: string): Promise<string> {
   try {
     const processed = await processor.process({ path: absolutePath, value: rawMdx });
-    return String(processed);
+    const rendered = String(processed);
+    try { observeFallback?.('mdx-render', { eligible: 1, applied: 1, reason: 'applied' }); } catch { /* observer cannot change rendering */ }
+    return rendered;
   } catch (err) {
+    try { observeFallback?.('mdx-render', { eligible: 1, applied: 0, reason: 'parse-failed' }); } catch { /* preserve searchable fallback */ }
     // EI-5860: remark-mdx throws on a single malformed doc (unclosed `<tag>`,
     // unparseable `{expr}`). Because adapters render every page (Promise.all),
     // one throw unwinds the entire search/outline for the corpus. Degrade

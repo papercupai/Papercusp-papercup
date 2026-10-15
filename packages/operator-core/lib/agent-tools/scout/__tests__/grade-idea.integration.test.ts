@@ -20,9 +20,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: h.sql }),
 }));
+vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
 const { runGradeIdea } = await import('../grade-idea');
 const { recordRoutedIdea } = await import('../../../scout/routed-ledger');
+const { claimAgentReview } = await import('../../../harness/improvements/agent-review');
+const { getWorkItem } = await import('../../../work-items');
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 
 const WS = 'ws-grade-idea-ei15389';
@@ -248,5 +251,114 @@ describe('blender:grade-idea keyed by routedRef (EI-21864158051054483, real PG)'
     expect(out.applied).toBe(false);
     expect(out.reason).toBe('not-found');
     expect(out.ideaId).toBeNull();
+  });
+});
+
+describe('prefixed agent-review grading (EI-24742538368325488, real PG)', () => {
+  const workspace = 'ws-grade-idea-prefixed-review';
+  const harness = 'papercusp';
+  const reviewer = 'su-prefixed-grade-reviewer';
+  const submitter = 'su-prefixed-grade-author';
+  let db: OrgTestDb;
+  let priorWorkspace: string | undefined;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+    priorWorkspace = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = workspace;
+  }, 120_000);
+
+  afterAll(async () => {
+    if (priorWorkspace === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+    else process.env.PAPERCUSP_WORKSPACE_ID = priorWorkspace;
+    await db?.cleanup();
+  });
+
+  async function pendingReview(id: string, ledgerIdeaId: string): Promise<void> {
+    const now = new Date('2026-10-06T00:00:00.000Z');
+    // Use the same migrated issue view as the plan-route integration fixture.
+    // All writes stay in this throwaway DB; the production review lifecycle and
+    // resolver use their default dependencies rather than mocked SQL results.
+    await db.adminSql`
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, kind, scope, title, body, severity, source, state,
+         payload, created_by, signal_origin, created_at, updated_at, admission)
+      VALUES
+        (${workspace}, ${id}, 'change', ${`harness:${harness}`},
+         'Prefixed lookup must grade the pending review', 'Private integration fixture',
+         'minor', 'engineer', 'open',
+         ${JSON.stringify({
+           agentReview: { status: 'pending', submittedBy: submitter, ledgerIdeaId, round: 1 },
+         })}::text::jsonb,
+         ${submitter}, 'organic', ${now}, ${now}, 'pending')`;
+    await recordRoutedIdea({
+      ideaId: ledgerIdeaId,
+      lens: 'agent-review',
+      rail: 'improvement',
+      routedRef: `wi:${id}`,
+      harnessSlug: harness,
+      workspaceId: workspace,
+      origin: 'agent-review',
+      createdBy: submitter,
+      title: 'Prefixed lookup must grade the pending review',
+    });
+    const claim = await claimAgentReview({ id, reviewer, harnessSlug: harness });
+    expect(claim.claimed).toBe(true);
+  }
+
+  async function assertApproved(id: string, ledgerIdeaId: string): Promise<void> {
+    const [ledger] = await db.adminSql<{ human_grade: number; graded_by: string }[]>`
+      SELECT human_grade, graded_by FROM harness_shared.scout_routed_ideas
+       WHERE idea_id = ${ledgerIdeaId}`;
+    expect(Number(ledger.human_grade)).toBe(5);
+    expect(ledger.graded_by).toBe(reviewer);
+    const item = await getWorkItem(id, harness);
+    expect((item!.payload as { agentReview: { status: string; ledgerIdeaId: string } }).agentReview)
+      .toMatchObject({ status: 'approved', ledgerIdeaId });
+    expect(item!.assignee).toBeNull();
+  }
+
+  it('falls back from a missing prefixed key, persists the grade, and approves the bare-keyed review', async () => {
+    const id = 'EI-PREFIXED-GRADE-BARE';
+    await pendingReview(id, id);
+    const out = await runGradeIdea(
+      { ideaId: `agent-review:${id}`, grade: 5, feedback: 'Ready for implementation.' },
+      { ownerId: reviewer, role: 'operator' },
+    );
+    expect(out).toMatchObject({
+      applied: true,
+      ideaId: id,
+      agentReview: { workItemId: id, status: 'approved', changed: true },
+    });
+    await assertApproved(id, id);
+  });
+
+  it('keeps exact prefixed authority and leaves the colliding historical bare row ungraded', async () => {
+    const id = 'EI-PREFIXED-GRADE-COLLISION';
+    const ledgerIdeaId = `agent-review:${id}`;
+    await recordRoutedIdea({
+      ideaId: id,
+      lens: 'su-ideate',
+      rail: 'plan',
+      routedRef: 'plan:historical-prefixed-grade-fixture',
+      harnessSlug: harness,
+      workspaceId: workspace,
+      title: 'Historical plan authority',
+    });
+    await pendingReview(id, ledgerIdeaId);
+    const out = await runGradeIdea(
+      { ideaId: ledgerIdeaId, grade: 5, feedback: 'Ready for implementation.' },
+      { ownerId: reviewer, role: 'operator' },
+    );
+    expect(out).toMatchObject({
+      applied: true,
+      ideaId: ledgerIdeaId,
+      agentReview: { workItemId: id, status: 'approved', changed: true },
+    });
+    await assertApproved(id, ledgerIdeaId);
+    const [historical] = await db.adminSql<{ human_grade: number | null; graded_by: string | null }[]>`
+      SELECT human_grade, graded_by FROM harness_shared.scout_routed_ideas WHERE idea_id = ${id}`;
+    expect(historical).toEqual({ human_grade: null, graded_by: null });
   });
 });

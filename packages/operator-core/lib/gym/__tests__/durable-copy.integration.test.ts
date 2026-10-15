@@ -10,16 +10,18 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, teardownTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { applyGymSchema } from '../schema';
 import {
   insertVariant,
   insertTask,
   insertRun,
+  insertRunParams,
   finishRun,
   insertScore,
   insertCycle,
@@ -28,10 +30,18 @@ import {
 } from '../store';
 import { readDurableCycleHistory, readDurableVariants, durableFrontierView } from '../read-api';
 import type { GymScore } from '../judge';
+import { buildAbDeps, createGymStore, type RealAbDepsConfig } from '../ab-runner-real';
+import { readTraceBundle } from '../collector';
+import { buildLoopDeps } from '../loop-deps';
+import type { AbDeps } from '../ab-runner';
+import { GYM_JUDGE_RUBRIC_V1, rubricHash } from '../judge-scoring';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATION_650 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/650-harness-gym-durable-run-analytics.sql');
 const MIGRATION_1012 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/1012-gym-durable-active-task-generation.sql');
+const RUN_EVIDENCE_MIGRATION = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/1358-gym-durable-run-evidence.sql');
+
+const decode = (value: unknown) => typeof value === 'string' ? JSON.parse(value) : value;
 
 let src: postgres.Sql;
 let dst: postgres.Sql;
@@ -65,7 +75,9 @@ beforeAll(async () => {
   const maint = postgres(containerUri, { max: 1, onnotice: () => {} });
   try {
     await maint.unsafe(`CREATE DATABASE "${srcDb}"`);
+    await markManagedTestDatabase(maint, srcDb);
     await maint.unsafe(`CREATE DATABASE "${dstDb}"`);
+    await markManagedTestDatabase(maint, dstDb);
   } finally { await maint.end({ timeout: 5 }); }
 
   const srcUrl = new URL(containerUri); srcUrl.pathname = `/${srcDb}`;
@@ -111,6 +123,11 @@ beforeAll(async () => {
       END $$;
     `);
     await mig.unsafe(readFileSync(MIGRATION_1012, 'utf8')).simple();
+    const evidenceMigration = readFileSync(existsSync(RUN_EVIDENCE_MIGRATION)
+      ? RUN_EVIDENCE_MIGRATION : `${RUN_EVIDENCE_MIGRATION}.DRAFT`, 'utf8');
+    await mig.unsafe(evidenceMigration).simple();
+    // The additive migration must also be safe on an already-upgraded schema.
+    await mig.unsafe(evidenceMigration).simple();
   } finally { await mig.end({ timeout: 5 }); }
 });
 
@@ -197,5 +214,154 @@ describe('durable run-analytics copy (migration 650)', () => {
       { task_id: 'gym-train', corpus: 'synthetic', active: true },
       { task_id: 'legacy-synthetic', corpus: 'synthetic', active: false },
     ]);
+  });
+
+  it('retains actual oracle signals and recorded parameters after source rows are removed', async () => {
+    const runId = 'baseline::gym-train::c0::r0';
+    // Controlled source rows exercise retention; these are not a native acceptance verdict.
+    const signals = { regressions: false, planted_bug_caught: true,
+      oracle: { sourceRef: 'controlled-oracle', status: 'not-measured',
+        pre: { results: [{ name: 'assertion', passed: false }], sourceHashes: { pinned: 'pre-pin' } },
+        post: { results: [{ name: 'assertion', passed: true }], sourceHashes: { pinned: 'post-pin' } },
+        unresolved: ['complete-runtime-identity'] } };
+    await finishRun(src, runId, { terminalState: 'passed', deterministicSignals: signals,
+      traceRef: '/removed-scratch/trace.json', distilledRef: '/removed-scratch/distilled.txt' });
+    await insertRunParams(src, runId, { harnessCommit: 'declared-harness', substrateCommit: 'declared-substrate',
+      mutableRoles: ['worker'], judgeModel: 'recorded-model', judgeTemp: 0,
+      weights: { d1: 0.5, d2: 0.25, d3: 0.25 }, rubricHash: RH });
+    const [originalRun] = await src`SELECT row_to_json(r) AS evidence FROM harness_gym.gym_runs r WHERE run_id = ${runId}`;
+    const [originalParams] = await src`SELECT row_to_json(p) AS params FROM harness_gym.gym_runs_params p WHERE run_id = ${runId}`;
+    expect(decode(originalRun.evidence).deterministic_signals).toEqual(signals);
+    const readEvidence = () => dst`
+      SELECT run_evidence,
+             run_evidence->'deterministic_signals' AS deterministic_signals,
+             run_evidence->>'trace_ref' AS trace_ref, run_evidence->>'distilled_ref' AS distilled_ref, run_params
+        FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = 'evidence-ws' AND harness_slug = 'evidence-harness' AND run_id = ${runId}`;
+    await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'evidence-ws', harnessSlug: 'evidence-harness' });
+    const [retained] = await readEvidence();
+    // Preserve the entire source row, including workflow/harness identity and future fields.
+    expect(decode(retained.run_evidence)).toEqual(decode(originalRun.evidence));
+    expect(decode(retained.deterministic_signals)).toEqual(signals);
+    expect(retained.trace_ref).toBe('/removed-scratch/trace.json');
+    expect(retained.distilled_ref).toBe('/removed-scratch/distilled.txt');
+    expect(decode(retained.run_params)).toEqual(decode(originalParams.params));
+    expect(decode(retained.run_params)).toMatchObject({ run_id: runId, harness_commit: 'declared-harness',
+      substrate_commit: 'declared-substrate', mutable_roles: ['worker'], judge_model: 'recorded-model',
+      judge_temp: 0, rubric_hash: RH });
+    // Re-copy retains the same bytes, and missing params stay unknown on the sibling run.
+    await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'evidence-ws', harnessSlug: 'evidence-harness' });
+    expect((await readEvidence())[0]).toEqual(retained);
+    const [unmeasured] = await dst`
+      SELECT run_params FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = 'evidence-ws' AND harness_slug = 'evidence-harness' AND run_id = 'cand-c0::gym-train::c0::r0'`;
+    expect(unmeasured.run_params).toBeNull();
+    const [foreign] = await dst`
+      SELECT run_evidence->'deterministic_signals' AS deterministic_signals, run_params FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = 'ws1' AND harness_slug = 'h1' AND run_id = ${runId}`;
+    expect(decode(foreign.deterministic_signals)).toEqual({ regressions: false });
+    expect(foreign.run_params).toBeNull();
+    await src`DELETE FROM harness_gym.gym_runs WHERE run_id = ${runId}`;
+    expect((await readEvidence())[0]).toEqual(retained);
+  });
+
+  it('resolves the real retained trace through its durable row after scratch and source cleanup', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'gym-durable-trace-'));
+    const scratchRoot = join(root, 'scratch');
+    try {
+      // This private-PG fixture exercises the real collector + store + copy.
+      // No operator, agent, judge or external model is invoked.
+      await src`CREATE SCHEMA IF NOT EXISTS harness_shared`;
+      await src`CREATE TABLE IF NOT EXISTS harness_shared.harness_run_output
+        (run_id TEXT, role TEXT, out_body TEXT, harness_slug TEXT, started_at TIMESTAMPTZ)`;
+      await src`INSERT INTO harness_shared.harness_run_output
+        VALUES ('retained-worker', 'worker', 'retained submission', 'trace-copy', now())`;
+      const deps = buildAbDeps({ gymSql: src, ports: {} as RealAbDepsConfig['ports'],
+        llmCall: async () => { throw new Error('judge must not run'); },
+        timeoutMs: 1, pollIntervalMs: 1, scratchRoot, traceRoot: join(root, 'retained'),
+        collectStrategy: 'work-item-output' });
+      const collected = await deps.collectAndDistill({
+        handle: { harnessSlug: 'trace-copy', clonePath: scratchRoot, workflowID: 'trace-copy',
+          outcome: 'passed', pipelineUsd: 0, deterministicSignals: { regressions: false } },
+        task: { taskId: 'trace-copy-task', pool: 'train', repoUrl: '', repoCommit: '',
+          spec: 's', intent: 'i', projectContext: 'c' }, maxChars: 60000 });
+      await deps.store.upsertVariant({ variantId: 'trace-copy', label: 'trace-copy', overlay: { promptOverrides: {} } });
+      await deps.store.upsertTask({ taskId: 'trace-copy-task', pool: 'train', repoUrl: '', repoCommit: '', spec: 's', intent: 'i', projectContext: 'c' });
+      await deps.store.startRun({ runId: 'retained-trace-run', variantId: 'trace-copy', taskId: 'trace-copy-task',
+        cycle: 35, repeat: 0, harnessSlug: 'trace-copy', workflowId: 'trace-copy' });
+      await deps.store.finishRun('retained-trace-run', { terminalState: 'passed',
+        deterministicSignals: collected.rawSignals, traceRef: collected.traceRef });
+      await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'trace-copy-ws', harnessSlug: 'trace-copy' });
+      await src`DELETE FROM harness_gym.gym_runs WHERE run_id = 'retained-trace-run'`;
+      rmSync(scratchRoot, { recursive: true, force: true });
+      const [row] = await dst<{ trace_ref: string }[]>`
+        SELECT run_evidence->>'trace_ref' AS trace_ref FROM harness_gym_durable.gym_runs
+         WHERE workspace_id = 'trace-copy-ws' AND harness_slug = 'trace-copy' AND run_id = 'retained-trace-run'`;
+      expect(row.trace_ref).toBe(collected.traceRef);
+      expect(JSON.parse(await readTraceBundle(row.trace_ref))).toMatchObject({
+        diff: 'retained submission', signals: { regressions: false },
+        roleTranscripts: [{ runId: 'retained-worker', role: 'worker', text: 'retained submission' }] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves SQL NULL for a run that never recorded measurements', async () => {
+    const runId = 'unmeasured-run';
+    await insertRun(src, { runId, variantId: 'baseline', taskId: 'gym-train', cycle: 9 });
+    await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'unknown-ws', harnessSlug: 'unknown-harness' });
+    const [row] = await dst`
+      SELECT run_evidence->'deterministic_signals' AS deterministic_signals,
+             run_evidence->>'trace_ref' AS trace_ref, run_evidence->>'distilled_ref' AS distilled_ref, run_params
+        FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = 'unknown-ws' AND harness_slug = 'unknown-harness' AND run_id = ${runId}`;
+    expect(row).toEqual({ deterministic_signals: null, trace_ref: null, distilled_ref: null, run_params: null });
+  });
+
+  it('retains both independent baseline evaluations through the real store and durable copy', async () => {
+    const scope = { workspaceId: 'identity-ws', harnessSlug: 'identity-harness' };
+    const evaluate = async (token: string) => {
+      const judge: AbDeps['llmCall'] = async () => ({
+        text: JSON.stringify({ d1: 5, d2: 5, d3: 5, rationale: 'controlled identity fixture' }),
+        costUsd: 0, inputTokens: 0, outputTokens: 0,
+      });
+      const ab: AbDeps = {
+        store: createGymStore(src), llmCall: judge, now: () => 0,
+        newRunId: () => { throw new Error('the loop owns its evaluation identity'); },
+        runPipeline: async () => ({ harnessSlug: `identity-${token}`, clonePath: '/controlled-clone',
+          workflowID: `identity-${token}`, outcome: 'passed', pipelineUsd: 0 }),
+        collectAndDistill: async () => ({ distilledTrace: 'controlled trace',
+          traceRef: `controlled:${token}`, rawSignals: { regressions: false, fixtureLoop: token } }),
+      };
+      const deps = buildLoopDeps({ gymSql: src, ports: {} as never, abDeps: ab,
+        judgeCall: judge, proposerCall: judge, proposerModel: 'controlled-unused',
+        tasks: [{ taskId: 'identity-task', pool: 'train', repoUrl: '/controlled',
+          repoCommit: 'declared-source', spec: 'controlled', intent: 'controlled', projectContext: 'controlled' }],
+        baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
+        harnessCommit: 'declared-harness', workspaceId: 'controlled-workspace', scratchRoot: '/controlled-scratch',
+        timeoutMs: 1000, pollIntervalMs: 10, maxDistillChars: 100, runId: token,
+      });
+      await deps.evaluate('baseline', { promptOverrides: {} });
+      await copyRunAnalyticsToDurable(src, dst, scope);
+      // The next independent loop has a new temporary DB. Clear its source run
+      // here while keeping the real destination, reproducing that lifecycle.
+      await src`DELETE FROM harness_gym.gym_runs WHERE task_id = 'identity-task'`;
+    };
+    await evaluate('first');
+    await evaluate('second');
+    const rows = await dst`
+      SELECT run_id, run_evidence->'deterministic_signals'->>'fixtureLoop' AS fixture_loop, run_params
+        FROM harness_gym_durable.gym_runs
+       WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+         AND task_id = 'identity-task' ORDER BY fixture_loop`;
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.run_id)).size).toBe(2);
+    expect(rows.map((row) => row.fixture_loop)).toEqual(['first', 'second']);
+    for (const row of rows) {
+      expect(decode(row.run_params)).toMatchObject({ run_id: row.run_id,
+        harness_commit: 'declared-harness', substrate_commit: 'declared-source',
+        judge_model: GYM_JUDGE_RUBRIC_V1.model, judge_temp: GYM_JUDGE_RUBRIC_V1.temperature,
+        weights: GYM_JUDGE_RUBRIC_V1.weights, rubric_hash: rubricHash(GYM_JUDGE_RUBRIC_V1), mutable_roles: null });
+    }
   });
 });

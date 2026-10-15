@@ -95,6 +95,7 @@ export const BROWSER_CLIENT_ALLOWLIST = new Set([
   'packages/operator-core/lib/voice-engines/deepgram.ts', // browser STT adapter — window.setInterval + MediaRecorder, runs in the webview not the host
   'apps/operator/app/_components/useWslGateBlocking.ts', // browser hook -- window.setInterval polling wsl_status in the webview, not the host
   'packages/operator-core/lib/operator-window-sync.ts', // browser cross-window localStorage sync (lease heartbeat) -- window/StorageEvent, only imported by OperatorConversationProvider.tsx; not a host timer
+  'apps/operator/e2e/_keyboard-input.ts', // in-page diagnostics heartbeat -- installWorkspaceKeyboardDiagnostics runs via page.addInitScript inside the Playwright page (window/document/PerformanceObserver); not a host timer
 ]);
 
 /**
@@ -121,6 +122,35 @@ export const SEPARATE_PROCESS_ALLOWLIST = new Set([
   // in-host twin (createTestProcessDemandSampler in agent-tools/testing/run.ts)
   // IS registered via managedSetInterval. [P-018]
   'scripts/lib/governed-test-process.mjs',
+  // WI-10004963: the RSS sampler inside collectSidecarPerformance. It runs only in the
+  // embedder-eval bench CLI (`npx tsx .../bench/embedder-eval-cli.ts`), which no host
+  // module imports, and it samples THAT process's own memory, so a registry entry would
+  // sit in a per-process inventory schedule:inventory never serves.
+  'packages/operator-core/lib/memory/bench/sidecar-performance.ts',
+  // WI-10004963: the stats logger of the standalone relay daemon. build-relay-daemon.mjs
+  // bundles it for a relay VM with only hyperdht + blind-relay as runtime deps and no
+  // operator, so @papercusp/scheduled-registry is neither available nor meaningful there.
+  'scripts/relay/blind-relay-daemon.ts',
+  // The owned producer-container supervisor's lease heartbeat. papercusp-desktop is a
+  // standalone package (not an npm workspace), and this file is loaded only by its
+  // build-time CLIs (bin/build-server-container.mjs, bin/lib/sidecar-stage-state.js,
+  // bin/build-desktop-sidecar.sh); in the operator host only tests read it, as text.
+  // The timer lives and dies with that CLI process, so a registry entry would land in
+  // an inventory schedule:inventory never serves, and the package cannot import
+  // @papercusp/scheduled-registry. Measured red on gate repair head 382606c4 (WI-10006055).
+  'papercusp-desktop/bin/lib/server-container.mjs',
+  // The throwaway-Postgres wrapper CLI (`node scripts/with-test-pg.mjs -- <cmd>`). Its two
+  // timers sample its OWN private postmaster while cleanup stops it, and live and die with
+  // that wrapper process. Like governed-test-process.mjs it must run under bare `node` for
+  // packaged installs, so it cannot import @papercusp/scheduled-registry (a .ts main), and a
+  // registry entry would sit in an inventory schedule:inventory never serves (WI-6554700010008641).
+  'scripts/with-test-pg.mjs',
+  // The cleanup half of that same wrapper, extracted into a helper module: its
+  // pg-stop-waiting stage timer is armed only inside the with-test-pg.mjs process (its
+  // sole importer), under the same bare-`node` constraint. Measured red on frozen gate
+  // candidate 0a16d4a6 (WI-10006055) after the extraction moved the timer out of the
+  // allowlisted wrapper.
+  'scripts/lib/with-test-pg-cleanup.mjs',
 ]);
 
 /** Permanently-allowed individual files (rare; prefer ALLOWLIST_DIRS). */
@@ -136,6 +166,12 @@ export const ALLOWLIST = new Set([
   // file; the pair of guards must allowlist each other or each reds on the other's
   // detector. Added when the client scan landed (2026-08-09) left this lint red.
   'scripts/check-timer-classification.mjs',
+  // Standalone CLI process: the npm install mutex / exec-under-lock wrapper that
+  // `npm run install:safe` and `test:file` launch as their own node process. Its
+  // child-progress heartbeat timer lives and dies with that short-lived process; the
+  // operator host's registry is not in that process, so managedSetInterval would
+  // register into a registry schedule:inventory never reads (WI-10007008).
+  'scripts/npm-install-safe.mjs',
   // worker_threads BODY — runs on the worker's own event loop, so registering there
   // buys nothing this guard is asking for. MEASURED 2026-08-04: the registry's state
   // is pinned per-isolate, so a managedSetInterval call inside a Worker succeeds but
@@ -197,6 +233,11 @@ export const isExcluded = (f) =>
   // moment it landed and stayed red, unnoticed, because this lint runs only in CI on
   // `main` and green-checkpoint does not carry it as a leg.
   f.includes('/dist-sidecar/') ||
+  // WI-6554700010008641: the esbuild host bundles (apps/operator/dist-host/, dist-host-*/) are
+  // gitignored build output, but a 2026-10-10 sweep committed dist-host-customer-terminal/
+  // before its ignore rule landed, so its compiled event-loop-sentinel worker is TRACKED.
+  // Same class as `/dist-sidecar/`: the source is already allowlisted; the artifact is not code.
+  /\/dist-host(-[^/]+)?\//.test(f) ||
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||

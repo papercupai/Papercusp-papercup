@@ -24,6 +24,8 @@ vi.mock('./rubrics', async (importOriginal) => {
   return {
     ...actual,
     proposeRubric: mocks.proposeRubric,
+    // P-005: rubrics:propose/amend read the stored revision for instrument grandfathering.
+    getRubric: async () => null,
     amendRubric: mocks.amendRubric,
     previewAcceptanceBarAmendment: mocks.previewAcceptanceBarAmendment,
     rubricCompleteness: mocks.rubricCompleteness,
@@ -48,7 +50,12 @@ import amendTool from './agent-tools/rubrics/amend';
 const BG_PATH = 'packages/operator-core/lib/harness/routines/psu-pty-host-events-ingest.ts';
 
 type ToolOutput = { content: Array<{ text: string }> };
-const parse = (result: unknown) => JSON.parse((result as ToolOutput).content[0]!.text);
+// rubrics:amend answers with a structured `{ data }` root (receipt-bearing, since a5462cbbf9);
+// rubrics:propose still answers with the MCP `content[]` envelope. Read either, as amend.test.ts does.
+const parse = (result: unknown) => {
+  if (result && typeof result === 'object' && 'data' in result) return (result as { data: Record<string, any> }).data;
+  return JSON.parse((result as ToolOutput).content[0]!.text);
+};
 
 /** A complete acceptance BAR on the live plane, optionally carrying a declared runtime. */
 const liveCriterion = (evidenceRuntime?: 'staging-operator') => ({

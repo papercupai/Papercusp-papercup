@@ -42,6 +42,9 @@ describe('hive.beaconConsent named query (WI-4137)', () => {
       'hive.steering',
       'learning.dream',
       { name: 'hive.beaconConsent', args: { potId: 'acme-hive' } },
+      // pot-review-integration-mode P-017 (EI-25188362216785598): the integration-mode settings
+      // section reads pot_settings too; it full-busts because its args are the harness slug.
+      'potIntegration.settings',
     ]);
   });
 });

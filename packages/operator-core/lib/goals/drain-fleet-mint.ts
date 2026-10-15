@@ -33,8 +33,10 @@
 
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 
-import { createFleetIfAbsent, deleteFleet, setFleetLeader } from '../agent-fleets-store';
+import { createFleetIfAbsent, deleteFleet, getFleet, setFleetLeader } from '../agent-fleets-store';
 import { setPresenceFleet } from '../agent-tools/coordination/presence';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { takeFleetLeadership } from '../agent-tools/fleet_registry/take-leadership-core';
 import { declareCoupling } from '../coord/couplings';
 import { potHomeSlugForHarness } from '../hive-federation';
 import { DEFAULT_CLAIM_SPEC } from '../scheduler/claim-spec';
@@ -168,10 +170,13 @@ export async function mintDrainFleetForGoal(args: DrainFleetMintArgs): Promise<D
 }
 
 /**
- * Install an OPENED delegated leader with a compare-and-set. A concurrent
- * takeover wins over this recovery; the goal holder is never impersonated as
- * the caller. A missing coupling is returned as a partial result so the next
- * watchdog sweep can repair it without relaunching either agent.
+ * Install an OPENED delegated leader with a compare-and-set. When an actor
+ * identity is available, use the shared leadership-transfer effect so prior
+ * leader presence and leadership-bound watches are reconciled with the
+ * registry. An identity-less caller may install only into a truly leaderless
+ * fleet; replacing a recorded leader without the transfer effect is refused.
+ * A missing coupling is returned as a partial result so the next watchdog
+ * sweep can repair it without relaunching either agent.
  */
 export async function registerGoalDrainFleetLeader(args: {
   workspaceId: string;
@@ -181,16 +186,56 @@ export async function registerGoalDrainFleetLeader(args: {
   leaderOwnerId: string;
   declaredBy: string;
   expectedLeaderOwnerId: string | null;
+  identity?: AgentIdentity;
+  harnessSlug?: string | null;
 }): Promise<{ registered: boolean; coupled: boolean; warning: string | null }> {
-  const record = await setFleetLeader(
-    args.workspaceId, args.fleetSlug, args.leaderOwnerId, undefined, args.expectedLeaderOwnerId,
-  );
-  if (!record) return { registered: false, coupled: false, warning: 'fleet leadership changed during launch' };
   let warning: string | null = null;
-  try {
-    await setPresenceFleet(args.workspaceId, args.leaderOwnerId, args.fleetSlug, 'leader');
-  } catch (error) {
-    warning = `leader presence could not be labelled: ${String(error)}`;
+  const fleet = await getFleet(args.workspaceId, args.fleetSlug);
+  if (!fleet || fleet.leaderOwnerId !== args.expectedLeaderOwnerId) {
+    return { registered: false, coupled: false, warning: 'fleet leadership changed during launch' };
+  }
+
+  if (args.identity) {
+    try {
+      const transfer = await takeFleetLeadership(
+        args.workspaceId,
+        fleet,
+        args.identity,
+        args.leaderOwnerId,
+        { harnessSlug: args.harnessSlug },
+      );
+      if (
+        transfer.leader !== args.leaderOwnerId ||
+        transfer.previousLeader !== args.expectedLeaderOwnerId
+      ) {
+        return { registered: false, coupled: false, warning: 'fleet leadership changed during launch' };
+      }
+      if (transfer.control.errors.length > 0) {
+        warning = 'leader control reconciliation was partial: ' + transfer.control.errors.join('; ');
+      }
+    } catch (error) {
+      if (String(error).includes('fleet_leadership_superseded:')) {
+        return { registered: false, coupled: false, warning: 'fleet leadership changed during launch' };
+      }
+      throw error;
+    }
+  } else {
+    if (args.expectedLeaderOwnerId !== null) {
+      return {
+        registered: false,
+        coupled: false,
+        warning: 'leader replacement requires an actor identity for lifecycle reconciliation',
+      };
+    }
+    const record = await setFleetLeader(
+      args.workspaceId, args.fleetSlug, args.leaderOwnerId, undefined, null,
+    );
+    if (!record) return { registered: false, coupled: false, warning: 'fleet leadership changed during launch' };
+    try {
+      await setPresenceFleet(args.workspaceId, args.leaderOwnerId, args.fleetSlug, 'leader');
+    } catch (error) {
+      warning = 'leader presence could not be labelled: ' + String(error);
+    }
   }
   try {
     const edge = await ensureGoalDrainLeaderCoupling(args);

@@ -220,19 +220,29 @@ describe('a failed count is an explicit unknown, never a zero', () => {
 
     // The degradation warning is EXPECTED here, so it is asserted rather than
     // silenced — a timeout that degraded quietly would be its own defect.
+    // The gate's pure lane can share a fork across files, so a co-resident
+    // source may emit an unrelated warning while this process-global spy is active.
+    const expectedWarningLabel = 'delegation-counts:plans-awaiting-delegation';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const counts = await readDelegationCounts({
-      workspaceId: 'ws-1',
-      sourceTimeoutMs: 20,
-      deps,
-    });
+    const { counts, sourceWarningMessages } = await (async () => {
+      try {
+        const counts = await readDelegationCounts({
+          workspaceId: 'ws-1',
+          sourceTimeoutMs: 20,
+          deps,
+        });
+        const sourceWarningMessages = warn.mock.calls
+          .map(([message]) => String(message))
+          .filter((message) => message.includes(expectedWarningLabel));
+        return { counts, sourceWarningMessages };
+      } finally {
+        warn.mockRestore();
+      }
+    })();
 
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(String(warn.mock.calls[0]?.[0])).toContain(
-      'delegation-counts:plans-awaiting-delegation',
-    );
-    warn.mockRestore();
+    expect(sourceWarningMessages).toHaveLength(1);
+    expect(sourceWarningMessages[0]).toContain(expectedWarningLabel);
 
     expect(counts.plansAwaitingDelegation.status).toBe('unknown');
     expect(renderDelegationCount(counts.plansAwaitingDelegation)).toBe('unknown (not measured)');

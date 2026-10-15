@@ -46,6 +46,8 @@ export interface BootMigrationGateAlarm {
 }
 
 export interface BootMigrationGateDeps {
+  /** Request-only hosts keep HTTP closed until the same gate recovers. */
+  plane?: 'background' | 'request';
   /** The first, boot-time apply (the once-per-process `applyPendingMigrationsAtBoot`). */
   applyAtBoot: () => Promise<BootMigrateResult | null>;
   /**
@@ -109,6 +111,7 @@ export async function awaitBootMigrationGate(deps: BootMigrationGateDeps): Promi
   const error = deps.error ?? ((line: string) => console.error(line));
   const retryIntervalMs = deps.retryIntervalMs ?? BOOT_MIGRATION_RETRY_INTERVAL_MS;
   const alarmAfterMs = deps.alarmAfterMs ?? BOOT_MIGRATION_ALARM_AFTER_MS;
+  const plane = deps.plane ?? 'background';
 
   const first = await deps.applyAtBoot();
   if (bootMigrationGatePassed(first)) {
@@ -118,10 +121,14 @@ export async function awaitBootMigrationGate(deps: BootMigrationGateDeps): Promi
   const withheldSince = now();
   let failureSummary = bootMigrationFailureSummary(first);
   error(
-    `[boot-migrate] 🚨 BACKGROUND STARTUP WITHHELD: ${failureSummary}. ` +
-      'The request plane may still start after its bounded gate timeout, but schema-dependent background machinery ' +
-      `(routines, the P2P substrate) stays off. This host re-checks every ${Math.round(retryIntervalMs / 1000)}s and ` +
-      'starts the background plane IN PLACE once the migrations are applied — no restart needed.',
+    plane === 'request'
+      ? `[boot-migrate] 🚨 REQUEST STARTUP WITHHELD: ${failureSummary}. HTTP stays closed. ` +
+        `This host re-checks every ${Math.round(retryIntervalMs / 1000)}s and opens the request plane ` +
+        'IN PLACE once the migrations are applied — no restart needed.'
+      : `[boot-migrate] 🚨 BACKGROUND STARTUP WITHHELD: ${failureSummary}. ` +
+        'The request plane may still start after its bounded gate timeout, but schema-dependent background machinery ' +
+        `(routines, the P2P substrate) stays off. This host re-checks every ${Math.round(retryIntervalMs / 1000)}s and ` +
+        'starts the background plane IN PLACE once the migrations are applied — no restart needed.',
   );
   await deps.onWithheld(failureSummary);
 
@@ -142,7 +149,7 @@ export async function awaitBootMigrationGate(deps: BootMigrationGateDeps): Promi
       const recovered = snapshot();
       log(
         `[boot-migrate] ✅ migration gate RECOVERED after ${Math.round(recovered.withheldMs / 1000)}s withheld ` +
-          `(${retries} retr${retries === 1 ? 'y' : 'ies'}); starting the background plane in place.`,
+          `(${retries} retr${retries === 1 ? 'y' : 'ies'}); starting the ${plane} plane in place.`,
       );
       if (alarmed) await deps.clearAlarm(recovered);
       return { result, recoveredInPlace: true, retries, withheldMs: recovered.withheldMs, alarmed };
@@ -150,7 +157,7 @@ export async function awaitBootMigrationGate(deps: BootMigrationGateDeps): Promi
     const nextSummary = bootMigrationFailureSummary(result);
     if (nextSummary !== failureSummary) {
       failureSummary = nextSummary;
-      error(`[boot-migrate] background plane still withheld: ${failureSummary}`);
+      error(`[boot-migrate] ${plane} plane still withheld: ${failureSummary}`);
     }
     if (!alarmed && now() - withheldSince >= alarmAfterMs) {
       alarmed = true;
@@ -169,21 +176,28 @@ export function bootMigrationGateConditionKey(host: string): string {
  * broadcast carrying a condition key that the recovery leg resolves. Best-effort by
  * contract — a paging failure is logged, never allowed to wedge the retry loop.
  */
-export async function raiseBootMigrationGateAlarm(alarm: BootMigrationGateAlarm, host: string): Promise<void> {
+export async function raiseBootMigrationGateAlarm(
+  alarm: BootMigrationGateAlarm,
+  host: string,
+  plane: 'background' | 'request' = 'background',
+): Promise<void> {
   const minutes = Math.round(alarm.withheldMs / 60_000);
   const summary =
-    `🚨 ${host}: background plane (routines + P2P substrate) WITHHELD for ${minutes}m — ${alarm.failureSummary}. ` +
-    'Every pot replicating through this host is dark until the migrations apply.';
+    `🚨 ${host}: ${plane === 'request' ? 'request plane (HTTP)' : 'background plane (routines + P2P substrate)'} ` +
+    `WITHHELD for ${minutes}m — ${alarm.failureSummary}. ` +
+    (plane === 'request'
+      ? 'The desktop cannot connect until the migration check succeeds.'
+      : 'Every pot replicating through this host is dark until the migrations apply.');
   const body =
     `The boot migration gate failed at ${new Date(alarm.withheldSince).toISOString()} and has not passed in ` +
     `${alarm.retries} retries. Repair/apply the pending migration (db:migrate, or fix the cause the boot log names); ` +
-    'the host re-checks every minute and boots the background plane in place, so a restart is NOT required. ' +
+    `the host re-checks every minute and boots the ${plane} plane in place, so a restart is NOT required. ` +
     'Do not force-restart just to clear this page: a restart cannot apply a migration that is still failing.';
   try {
     const { notifyAttention } = await import('./attention-notify');
     await notifyAttention({
       kind: 'intervention',
-      title: `Background plane withheld on ${host}: boot migrations pending`,
+      title: `${plane === 'request' ? 'Request' : 'Background'} plane withheld on ${host}: boot migrations pending`,
       body: `${summary}\n\n${body}`,
       importance: 'urgent',
       data: { host, withheldSince: alarm.withheldSince, retries: alarm.retries, failure: alarm.failureSummary },
@@ -205,14 +219,18 @@ export async function raiseBootMigrationGateAlarm(alarm: BootMigrationGateAlarm,
   }
 }
 
-export async function clearBootMigrationGateAlarm(alarm: BootMigrationGateAlarm, host: string): Promise<void> {
+export async function clearBootMigrationGateAlarm(
+  alarm: BootMigrationGateAlarm,
+  host: string,
+  plane: 'background' | 'request' = 'background',
+): Promise<void> {
   try {
     const { broadcastSevereEventResolved } = await import('./severe-event-broadcast');
     await broadcastSevereEventResolved({
       conditionKey: bootMigrationGateConditionKey(host),
       summary:
         `${host}: boot migration gate RECOVERED after ${Math.round(alarm.withheldMs / 60_000)}m — ` +
-        'the background plane (routines + P2P substrate) is starting in place.',
+        `the ${plane === 'request' ? 'request plane (HTTP)' : 'background plane (routines + P2P substrate)'} is starting in place.`,
     });
   } catch (e) {
     console.warn(`[boot-migrate] gate alarm resolve failed (non-fatal): ${e instanceof Error ? e.message : e}`);

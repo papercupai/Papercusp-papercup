@@ -1,27 +1,38 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Script } from 'node:vm';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import * as terminalCounters from '../../../../scripts/lib/terminal-counter-fields.mjs';
 
 import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.mjs';
 import {
   admissionMutexName,
   classifyAffectedBlastRadius,
+  createCgroupMemoryObserver,
   durationEstimate,
   emptyDurationHistory,
   estimateBudgetedTaskWallMs,
   formatAdmissionHolder,
   formatAdmissionProspect,
   formatAffectedTaskShardMarker,
+  formatCgroupMemoryObservedMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
   isSharedAdmissionTimeout,
   mergeDurationHistory,
   pidsEventRefusalDelta,
   planAffectedTaskShards,
+  prepareBudgetedTaskComparison,
+  evaluateBudgetedTaskComparison,
+  readBudgetedTaskComparisonArtifacts,
   readDurationHistory,
   readTaskCgroupMemoryMaxMb,
+  readTaskCgroupMemoryUsage,
   readTaskCgroupPidsEventMax,
   readTaskCgroupPidsMax,
   resolveGlobalWorkerBudget,
@@ -32,6 +43,7 @@ import {
   runBudgetedTasks,
   timeoutDurationEstimate,
   writeDurationHistoryAtomic,
+  writeBudgetedTaskNativeExecutionReceipt,
 } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS policy module, no declaration file.
@@ -46,6 +58,883 @@ const SCHEDULER_SRC = readFileSync(
   resolve(REPO_ROOT, 'scripts/lib/budgeted-task-scheduler.mjs'),
   'utf8',
 );
+
+describe('native affected-task parent receipt transport', () => {
+  it('binds real process-step artifacts to the native root while preserving chain/runtime refusal', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-process-parent-'));
+    try {
+      const out = join(root, 'source-map.json');
+      const command = [process.execPath, '-e', "require('node:child_process').spawn(process.execPath, ['-e', 'process.stdout.write(Buffer.from([0,255,10])); process.stderr.write(Buffer.from([254,13,10])); process.exitCode = 3'], {stdio:'inherit'});"];
+      const startedAtMs = Date.now();
+      const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT,
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 15_000 });
+      if (child.error) throw child.error;
+      const unrelated = spawnSync(process.execPath, ['-e', 'process.exitCode = 0'], {
+        env: nativeProcessTraceEnv({ ...process.env, PC_EXECUTED_SOURCE_MAP_OUT: out,
+          PAPERCUSP_TEST_STARTUP_TRACE: '0' }), timeout: 15_000 });
+      if (unrelated.error) throw unrelated.error;
+      const input = { task: 'native-fixture :: test', attempt: 'initial', cwd: REPO_ROOT, command,
+        startedAtMs, finishedAtMs: Date.now(), exitCode: child.status, signal: child.signal,
+        error: null, captureComplete: true, stdout: child.stdout, stderr: child.stderr,
+        processTrace: { out, rootPid: child.pid } };
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), input);
+      const trace = result.observation.processTrace;
+      expect(trace.events.map(row => row.event)).toEqual(expect.arrayContaining([
+        'node-entry', 'node-exit', 'child-spawn', 'child-close',
+      ]));
+      expect(trace.events.filter(row => row.event === 'node-entry')).toHaveLength(2);
+      expect(trace.events.some(row => row.pid === unrelated.pid)).toBe(false);
+      expect(trace.events.find(row => row.event === 'child-close')).toMatchObject({ code: 3 });
+      expect(trace.streams).toHaveLength(4);
+      const leaf = trace.events.find(row => row.event === 'node-entry' && row.pid !== child.pid)!;
+      const leafStreams = trace.streams.filter(row => row.processIdentity === leaf.processIdentity);
+      for (const row of leafStreams) {
+        expect(row.captureComplete).toBe(true);
+        expect(readFileSync(join(result.root, row.artifact.ref))).toEqual(
+          Buffer.from(row.role === 'stdout' ? [0,255,10] : [254,13,10]));
+      }
+      expect(trace.gaps).toContain('direct-fd-native-and-inherited-stream-writes-unobserved');
+      for (const row of trace.events) {
+        const bytes = readFileSync(join(result.root, row.artifact.ref));
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(row.artifact.sha256);
+      }
+      expect(result.observation.steps).toEqual([]);
+      expect(result.observation.orderedChainQualified).toBe(false);
+      expect(result.observation.runtimeClosure).toBe('unmeasured');
+      // Tampered or redirected process evidence is retained as a gap, never a
+      // fabricated step or a successful qualification.
+      const stream = leafStreams[0]!;
+      writeFileSync(join(`${out}.native-processes`, `${stream.artifact.sha256}.stream`), Buffer.from([1,2,3]));
+      const badStream = writeBudgetedTaskNativeExecutionReceipt(join(root, 'bad-stream'), input).observation;
+      expect(badStream.processTrace.streams).toEqual([]);
+      expect(badStream.processTrace.gaps.join(' ')).toContain('stream artifact hash mismatch');
+      const names = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json'));
+      writeFileSync(join(`${out}.native-processes`, names[0]!), '{}');
+      const bad = writeBudgetedTaskNativeExecutionReceipt(join(root, 'bad'), input).observation;
+      expect(bad.processTrace.events).toEqual([]);
+      expect(bad.processTrace.gaps.join(' ')).toContain('hash mismatch');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  function nativeObservation() {
+    const command = [process.execPath, '-e',
+      'process.stdout.write(Buffer.from([0,255,10])); process.stderr.write(Buffer.from([254,13,10]));'];
+    const startedAtMs = Date.now();
+    const child = spawnSync(command[0]!, command.slice(1), { cwd: REPO_ROOT, timeout: 10_000 });
+    if (child.error) throw child.error;
+    const inputs = [{ path: 'package.json', sha256: createHash('sha256')
+      .update(readFileSync(join(REPO_ROOT, 'package.json'))).digest('hex') }];
+    return { task: 'native-fixture :: test', attempt: 'initial', cwd: REPO_ROOT, command,
+      originalCommand: 'native fixture', startedAtMs, finishedAtMs: Date.now(),
+      exitCode: child.status, signal: child.signal, error: null, captureComplete: true,
+      stdout: child.stdout, stderr: child.stderr, before: inputs, after: structuredClone(inputs) };
+  }
+  it('retains the actual command and binary streams in immutable independently hashed artifacts', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-task-receipt-'));
+    try {
+      const input = nativeObservation(), result = writeBudgetedTaskNativeExecutionReceipt(root, input);
+      expect(input.exitCode).toBe(0);
+      const original = JSON.parse(readFileSync(join(result.root, result.receipt.ref), 'utf8'));
+      expect(original.execution).toMatchObject({ command: input.command, cwd: REPO_ROOT, exitCode: 0,
+        captureComplete: true, startedAtMs: input.startedAtMs, finishedAtMs: input.finishedAtMs });
+      for (const role of ['stdout', 'stderr'] as const) {
+        const bytes = readFileSync(join(result.root, result.logs[role].ref));
+        expect(bytes).toEqual(input[role]);
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(result.logs[role].sha256);
+        expect(bytes.length).toBe(result.logs[role].byteLength);
+      }
+      expect(original.sourceInputsUnchanged).toBe(true);
+      expect(original.orderedChainQualified).toBe(false);
+      expect(original.steps).toEqual([]);
+      expect(original.gaps).toContain('original-step-boundaries-unobserved');
+      expect(original.runtimeClosure).toBe('unmeasured');
+      expect(original.operationalAcceptance).toBe(false);
+      // Rewriting the exact observation is idempotent; input mutation cannot alter its stored proof.
+      expect(writeBudgetedTaskNativeExecutionReceipt(root, input).receipt).toEqual(result.receipt);
+      input.command[0] = 'substituted';
+      expect(original.execution.command[0]).toBe(process.execPath);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('preserves partial capture, native errors and unknown or drifted wrapper inputs as gaps', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-task-gaps-'));
+    try {
+      const input = nativeObservation();
+      input.after[0]!.sha256 = '0'.repeat(64);
+      const changed = writeBudgetedTaskNativeExecutionReceipt(root, input).observation;
+      expect(changed.sourceInputsUnchanged).toBe(false);
+      expect(changed.gaps).toContain('wrapper-inputs-unknown-or-changed');
+      const partial = writeBudgetedTaskNativeExecutionReceipt(root, { ...input, before: null,
+        captureComplete: false, exitCode: null, signal: 'SIGTERM', error: 'capture interrupted' }).observation;
+      expect(partial.execution).toMatchObject({ exitCode: null, signal: 'SIGTERM', error: 'capture interrupted' });
+      expect(partial.gaps).toContain('raw-stream-capture-incomplete');
+      expect(partial.sourceInputsUnchanged).toBe(false);
+      expect(partial.operationalAcceptance).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('refuses overwritten and symlinked sidecars without replacing their bytes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-task-refusal-'));
+    try {
+      const input = nativeObservation(), first = writeBudgetedTaskNativeExecutionReceipt(root, input);
+      const path = join(root, first.logs.stdout.ref);
+      writeFileSync(path, 'overwritten');
+      expect(() => writeBudgetedTaskNativeExecutionReceipt(root, input)).toThrow('artifact bytes differ');
+      expect(readFileSync(path, 'utf8')).toBe('overwritten');
+      rmSync(path); symlinkSync(join(root, first.logs.stderr.ref), path);
+      expect(() => writeBudgetedTaskNativeExecutionReceipt(root, input)).toThrow('redirected');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('executes the production OUT observation and settled journal with native binary output', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-production-journal-'));
+    try {
+      const input = nativeObservation();
+      const task = { ws: { name: 'native-fixture', dir: 'packages/operator-core', scripts: { test: 'native fixture' } }, script: 'test' };
+      const observationStart = AFFECTED_TESTS_SRC.indexOf('const nativeReceiptArmed =');
+      const observationEnd = AFFECTED_TESTS_SRC.indexOf('const stdout = [];', observationStart);
+      expect(observationStart).toBeGreaterThan(0); expect(observationEnd).toBeGreaterThan(observationStart);
+      const observe = (out: string | null) => new Script(
+        `${AFFECTED_TESTS_SRC.slice(observationStart, observationEnd)}\nnativeObservation;`,
+      ).runInNewContext({ inheritedExecutedMapOut: out, integrationSourceMapOut: null,
+        ROOT: REPO_ROOT, spawnTask: task, spawnTaskKey: input.task, journalLabel: input.attempt,
+        startedAt: input.startedAtMs, cwd: input.cwd, cmd: input.command[0], argv: input.command.slice(1),
+        relative: (a: string, b: string) => resolve(b).slice(resolve(a).length + 1),
+        join, readFileSync, createHash, Date, Set });
+      expect(observe(null)(0, null, null, input.stdout, input.stderr)).toBeNull();
+      const observation = observe('requested.json')(0, null, null, input.stdout, input.stderr);
+      expect(observation.command).toEqual(input.command);
+      expect(observation.before).toHaveLength(2);
+      expect(observation.before).toEqual(observation.after);
+      const journalStart = AFFECTED_TESTS_SRC.indexOf('function journalCapturedTaskOutput(');
+      const journalEnd = AFFECTED_TESTS_SRC.indexOf('\n}\n\nfunction emitCapturedTaskOutput(', journalStart) + 2;
+      const log = join(root, 'run.log'), errors: string[] = [];
+      const journal = new Script(`(${AFFECTED_TESTS_SRC.slice(journalStart, journalEnd)})`).runInNewContext({
+        taskKey: () => input.task, RUN_LOG_PATH: log, writeBudgetedTaskNativeExecutionReceipt,
+        appendAllSync: (path: string, chunks: string[]) => appendFileSync(path, chunks.join('')),
+        rawErrSync: (text: string) => errors.push(text),
+        formatTaskOutcomeFields: () => ({ exitStatus: 0, signal: 'none' }),
+      });
+      const result = { status: 0, signal: null, error: null, stdout: input.stdout.toString(),
+        stderr: input.stderr.toString(), __nativeExecution: observation };
+      expect(journal(task, result, { lane: 'primary', workers: 1, memoryMb: 1 }, 'initial')).toBe(true);
+      const output = readFileSync(log, 'utf8');
+      const marker = JSON.parse(output.split('\n').find(line => line.startsWith('AFFECTED_TASK_NATIVE_RECEIPT='))!
+        .slice('AFFECTED_TASK_NATIVE_RECEIPT='.length));
+      const receipt = JSON.parse(readFileSync(join(marker.root, marker.receipt.ref), 'utf8'));
+      expect(receipt.execution.command).toEqual(input.command);
+      expect(readFileSync(join(marker.root, receipt.execution.logs.stdout.ref))).toEqual(input.stdout);
+      expect(marker.orderedChainQualified).toBe(false);
+      expect(errors).toEqual([]);
+      // Artifact failure is a diagnostic miss; the ordinary settled journal must still survive.
+      writeFileSync(join(marker.root, receipt.execution.logs.stdout.ref), 'tampered');
+      expect(journal(task, result, { lane: 'primary', workers: 1, memoryMb: 1 }, 'initial')).toBe(true);
+      expect(errors[0]).toContain('AFFECTED_TASK_NATIVE_RECEIPT_FAILED');
+      expect(readFileSync(log, 'utf8').match(/AFFECTED_TASK_OUTPUT_END/g)).toHaveLength(2);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 immutable full-gate comparison preparation', () => {
+  const hash = 'a'.repeat(64);
+  function input() {
+    const policy = { workerBudget: 8, memoryBudgetMb: 32768, workerMemoryMb: 4096,
+      maxConcurrentTasks: 2, reserveWorkers: 1, taskCgroupPidsMax: 32768 };
+    return { selection: { kind: 'full-gate' as const, coverage: 'complete' as const,
+      unenumerated: [] as string[], originalRef: 'fixture:full-selection', originalSha256: hash,
+      files: ['long.test.ts', 'short.test.ts'] },
+    source: { commit: 'b'.repeat(40), receiptSha256: hash, dependencySha256: hash,
+      runtimeClosureSha256: hash, files: ['long.test.ts', 'short.test.ts'].map(path => ({ path, sha256: hash })) },
+    tasks: [{ id: 'long', files: ['long.test.ts'] }, { id: 'short', files: ['short.test.ts'] }],
+    baseline: policy, candidate: { ...policy, maxConcurrentTasks: 4 },
+    envelope: { hardMemoryMb: 45056, pidsMax: 32768, heapMb: 4096 },
+    estimates: [{ task: 'long', ms: 100, originalRef: 'fixture:long-wall', originalSha256: hash },
+      { task: 'short', ms: 20, originalRef: 'fixture:short-wall', originalSha256: hash }] };
+  }
+  function pair() {
+    const manifest = prepareBudgetedTaskComparison(input());
+    const cohorts = manifest.order.map((key, index) => {
+      const [side, repeat] = key.split(':');
+      const executionWallMs = side === 'baseline' ? 100 : 50;
+      return { side: side as 'baseline' | 'candidate', repeat: Number(repeat), runId: `fixture:run-${index}`,
+        originalRef: `fixture:cohort-${index}`, originalSha256: hash, manifestSha256: manifest.manifestSha256,
+        sourceUnchanged: true, sourceReceiptSha256: hash, dependencySha256: hash, runtimeClosureSha256: hash,
+        policy: side === 'baseline' ? manifest.baseline : manifest.candidate, envelope: manifest.envelope,
+        wallMs: executionWallMs + 30, acquiredWaitsMs: [10, 20], executionWallMs,
+        memory: { pairedSamples: 3, maxAnonPerAllocatedWorkerMb: 300, oomKills: 0 },
+        stats: { memoryReadings: 2, lastMemAvailableMb: 40000, observedMaxWorkers: 8,
+          observedMaxTasks: 2, observedMaxMemoryMb: 32768 },
+        children: manifest.tasks.map(task => ({ task: task.id, lane: 'primary' as const, files: [...task.files],
+          code: 0, signal: null, childWallMs: 20,
+          resultLine: 'TEST_FILE_RESULT status=passed requested=1 executed=1 matched=1 skippedTests=0 childSubstituted=0',
+          originalRef: `fixture:child-${index}-${task.id}`, originalSha256: hash, expectedCgroup: '/fixture',
+          runGroup: `fixture:group-${index}-${task.id}`, deadlineEpochMs: 1000,
+          cgroupObservations: [{ pid: 123, cgroupPath: '/fixture', runGroup: `fixture:group-${index}-${task.id}`,
+            deadlineEpochMs: 1000, vitestFork: true, phase: 'preload' }] })) };
+    });
+    return { manifest, cohorts };
+  }
+  it('detaches and deeply freezes the full selection, source, partition and ABBA order', () => {
+    const original = input(); const manifest = prepareBudgetedTaskComparison(original);
+    original.selection.files.pop(); original.source.files[0]!.sha256 = 'c'.repeat(64);
+    expect(manifest.selection.files).toHaveLength(2);
+    expect(manifest.source.files[0]!.sha256).toBe(hash);
+    expect(Object.isFrozen(manifest.tasks[0]!.files)).toBe(true);
+    expect(manifest.order).toEqual(['baseline:1', 'candidate:1', 'candidate:2', 'baseline:2']);
+  });
+  it.each(['partial', 'unknown-runtime', 'missing-file', 'duplicate-task', 'heap-change', 'unknown-estimate'])
+  ('refuses %s inputs before any cohort is admitted', defect => {
+    const data = input();
+    if (defect === 'partial') data.selection.unenumerated.push('wide workspace');
+    if (defect === 'unknown-runtime') data.source.runtimeClosureSha256 = 'unknown';
+    if (defect === 'missing-file') data.tasks.pop();
+    if (defect === 'duplicate-task') data.tasks[1]!.files = [...data.tasks[0]!.files];
+    if (defect === 'heap-change') data.candidate.workerMemoryMb = 2048;
+    if (defect === 'unknown-estimate') data.estimates[0]!.ms = NaN;
+    expect(() => prepareBudgetedTaskComparison(data)).toThrow('COMPARISON_INPUT_REFUSAL');
+  });
+  it('qualifies exactly half the execution wall and excludes every acquired queue wait', () => {
+    const { manifest, cohorts } = pair(); const result = evaluateBudgetedTaskComparison(manifest, cohorts);
+    expect(result.assertions.every(row => row.passed)).toBe(true);
+    expect(result).toMatchObject({ ratio: 0.5, baselineWallMs: 200, candidateWallMs: 100, operationalAcceptance: false });
+  });
+  it('refuses original command obligations even when a caller claims a complete test-file partition', () => {
+    for (const placement of ['selection', 'original-task', 'task', 'original-lifecycle', 'lifecycle']) {
+      const data = input();
+      const commandObligations = [{ command: 'node guard.mjs', executed: false }];
+      if (placement === 'selection') Object.assign(data.selection, { commandObligations });
+      if (placement === 'original-task') Object.assign(data.selection, { tasks: [{ commandObligations }] });
+      if (placement === 'task') Object.assign(data.tasks[0]!, { commandObligations });
+      if (placement === 'original-lifecycle') Object.assign(data.selection, { tasks: [{ lifecycleCommands: commandObligations }] });
+      if (placement === 'lifecycle') Object.assign(data.tasks[0]!, { lifecycleCommands: commandObligations });
+      expect(() => prepareBudgetedTaskComparison(data)).toThrow('native original command-obligation receipts required');
+    }
+  });
+  it('pins the original one-to-one occurrence population and refuses check inputs or collapsed repeats', () => {
+    const data = input();
+    const fileOccurrences = data.tasks.flatMap(task => task.files.map(file => ({ task: task.id,
+      step: null, command: 'vitest run', file, kind: 'test-file' as const })));
+    const manifest = prepareBudgetedTaskComparison({ ...data, selection: { ...data.selection, fileOccurrences } });
+    expect(manifest.selection.fileOccurrences).toEqual(fileOccurrences);
+    expect(Object.isFrozen(manifest.selection.fileOccurrences)).toBe(true);
+    for (const bad of [[...fileOccurrences, fileOccurrences[0]!],
+      [{ ...fileOccurrences[0]!, kind: 'check-input' as const }, fileOccurrences[1]!],
+      [{ ...fileOccurrences[0]!, task: 'not-original' }, fileOccurrences[1]!],
+      [fileOccurrences[0]!]]) {
+      expect(() => prepareBudgetedTaskComparison({ ...data, selection: { ...data.selection, fileOccurrences: bad } }))
+        .toThrow('native original command-step occurrence receipts required');
+    }
+  });
+  it.each(['missing-repeat', 'duplicate-run', 'drift', 'skip', 'substitution', 'escape', 'oom',
+    'unpaired', 'headroom', 'order', 'queue', 'slow', 'tampered-manifest'])
+  ('fails closed on %s, with no operational acceptance from fixtures', defect => {
+    const { manifest, cohorts } = pair(); const row = cohorts[1]!;
+    if (defect === 'missing-repeat') cohorts.pop();
+    if (defect === 'duplicate-run') row.runId = cohorts[0]!.runId;
+    if (defect === 'drift') row.sourceUnchanged = false;
+    if (defect === 'skip') row.children[0]!.resultLine = row.children[0]!.resultLine.replace('skippedTests=0', 'skippedTests=1');
+    if (defect === 'substitution') row.children[0]!.resultLine = row.children[0]!.resultLine.replace('childSubstituted=0', 'childSubstituted=1');
+    if (defect === 'escape') row.children[0]!.cgroupObservations[0]!.cgroupPath = '/elsewhere';
+    if (defect === 'oom') row.memory.oomKills = 1;
+    if (defect === 'unpaired') row.memory.pairedSamples = 0;
+    if (defect === 'headroom') row.stats.memoryReadings = 0;
+    if (defect === 'order') row.children.reverse();
+    if (defect === 'queue') row.acquiredWaitsMs = [row.wallMs];
+    if (defect === 'slow') { row.wallMs++; row.executionWallMs++; }
+    const subject = defect === 'tampered-manifest' ? { ...manifest, manifestSha256: 'c'.repeat(64) } : manifest;
+    expect(evaluateBudgetedTaskComparison(subject, cohorts).assertions.some(assertion => !assertion.passed)).toBe(true);
+    expect(evaluateBudgetedTaskComparison(subject, cohorts).operationalAcceptance).toBe(false);
+  });
+  it('rejects malformed external rows rather than throwing or accepting missing data', () => {
+    const { manifest } = pair();
+    expect(evaluateBudgetedTaskComparison(manifest, [null] as never).assertions.every(a => !a.passed)).toBe(true);
+  });
+  it('retains each repeat so an aggregate half-time cannot hide a slow candidate', () => {
+    const { manifest, cohorts } = pair();
+    cohorts[1]!.wallMs += 10; cohorts[1]!.executionWallMs += 10;
+    cohorts[2]!.wallMs -= 10; cohorts[2]!.executionWallMs -= 10;
+    const result = evaluateBudgetedTaskComparison(manifest, cohorts);
+    expect(result.ratio).toBe(0.5);
+    expect(result.assertions.at(-1)!.passed).toBe(false);
+  });
+  it('resolves complete original artifact chains and rejects later byte drift', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'r12-original-artifacts-'));
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: createHash('sha256').update(bytes).digest('hex') };
+    };
+    try {
+      const data = input();
+      const selection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [], files: data.selection.files });
+      data.selection.originalRef = selection.ref; data.selection.originalSha256 = selection.sha256;
+      const source = pin('source.json', { schemaVersion: 'verifier-source-v1', sourceCommit: data.source.commit, files: data.source.files });
+      const dependencies = pin('dependencies.txt', 'fixture independent dependency bytes', true);
+      const runtimeClosure = pin('closure.json', { status: 'complete', sourceCommit: data.source.commit, files: data.selection.files });
+      data.source.receiptSha256 = source.sha256; data.source.dependencySha256 = dependencies.sha256;
+      data.source.runtimeClosureSha256 = runtimeClosure.sha256;
+      data.estimates = data.estimates.map(estimate => {
+        const original = pin(`${estimate.task}-wall.json`, { task: estimate.task, childWallMs: estimate.ms });
+        return { ...estimate, originalRef: original.ref, originalSha256: original.sha256 };
+      });
+      const manifest = prepareBudgetedTaskComparison(data);
+      const rows = pair().cohorts.map((row, index) => ({ ...row, manifestSha256: manifest.manifestSha256,
+        sourceReceiptSha256: source.sha256, dependencySha256: dependencies.sha256, runtimeClosureSha256: runtimeClosure.sha256,
+        children: row.children.map(child => {
+          const { originalRef, originalSha256, ...fields } = child;
+          void originalRef; void originalSha256;
+          const original = pin(`child-${index}-${child.task}.json`, fields);
+          return { ...fields, originalRef: original.ref, originalSha256: original.sha256 };
+        }) }));
+      const pins = { manifest: pin('manifest.json', manifest), source, dependencies, runtimeClosure,
+        cohorts: rows.map((row, index) => pin(`cohort-${index}.json`, row)) };
+      const original = await readBudgetedTaskComparisonArtifacts(root, pins);
+      expect(original.originalArtifactsResolved).toBe(true);
+      expect(evaluateBudgetedTaskComparison(original.manifest, original.cohorts).ratio).toBe(0.5);
+      const occurrences = data.tasks.flatMap(task => task.files.map(file => ({ task: task.id,
+        step: null, command: 'vitest run', file, kind: 'test-file' })));
+      const occurrenceSelection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [],
+        files: data.selection.files, fileOccurrences: occurrences });
+      data.selection.originalSha256 = occurrenceSelection.sha256;
+      await expect(readBudgetedTaskComparisonArtifacts(root, { ...pins,
+        manifest: pin('occurrence-omission-manifest.json', prepareBudgetedTaskComparison(data)) }))
+        .rejects.toThrow('Original command-step file occurrences were omitted or changed');
+      for (const secondFile of ['long.test.ts', 'short.test.ts']) {
+        const legacySelection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [],
+          files: data.selection.files, tasks: [{ steps: [{ files: ['long.test.ts'] }, { files: [secondFile] }] }] });
+        data.selection.originalSha256 = legacySelection.sha256;
+        await expect(readBudgetedTaskComparisonArtifacts(root, { ...pins,
+          manifest: pin('legacy-step-manifest.json', prepareBudgetedTaskComparison(data)) }))
+          .rejects.toThrow('Original ordered command-step population requires native step receipts');
+      }
+      const obligationSelection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [],
+        files: data.selection.files, commandObligations: [{ command: 'node guard.mjs', executed: false }] });
+      data.selection.originalSha256 = obligationSelection.sha256;
+      const omissionManifest = prepareBudgetedTaskComparison(data);
+      await expect(readBudgetedTaskComparisonArtifacts(root, { ...pins,
+        manifest: pin('omission-manifest.json', omissionManifest) }))
+        .rejects.toThrow('Original command obligations were omitted');
+      const lifecycleSelection = pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [],
+        files: data.selection.files, tasks: [{ lifecycleCommands: [{ script: 'pretest', command: 'node build.mjs' }] }] });
+      data.selection.originalSha256 = lifecycleSelection.sha256;
+      await expect(readBudgetedTaskComparisonArtifacts(root, { ...pins,
+        manifest: pin('lifecycle-manifest.json', prepareBudgetedTaskComparison(data)) }))
+        .rejects.toThrow('Original command obligations were omitted');
+      pin('selection.json', { kind: 'full-gate', coverage: 'complete', unenumerated: [], files: data.selection.files });
+      writeFileSync(join(root, 'child-1-long.json'), '{}');
+      await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow('hash mismatch');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 native command-local artifact preparation', () => {
+  function fixture() {
+    const root = mkdtempSync(join(tmpdir(), 'r12-native-command-'));
+    const repositoryRoot = join(root, 'repo');
+    mkdirSync(join(repositoryRoot, 'desktop/bin/lib'), { recursive: true });
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: digest(bytes) };
+    };
+    const listed = ['b.selftest.sh', 'a.selftest.sh'];
+    const files = listed.map(script => `desktop/bin/lib/${script}`);
+    const inputs = [...files, 'desktop/bin/lib/run-selftests.sh', 'desktop/bin/lib/baseline.txt']
+      .sort().map(path => {
+        writeFileSync(join(repositoryRoot, path), path);
+        return { path, sha256: digest(path) };
+      });
+    const command = 'bash bin/lib/run-selftests.sh';
+    const obligation = { task: 'desktop :: test', step: 7, kind: 'command-check',
+      check: 'desktop-selftest-aggregate', command, inputs, executed: false };
+    const fileOccurrences = files.slice().sort().map(file => ({ task: obligation.task,
+      step: 7, command, file, kind: 'test-file' }));
+    const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+      unenumerated: ['remaining native chain'], fileOccurrences,
+      commandObligations: [obligation], tasks: [{ id: obligation.task, dir: 'desktop',
+        steps: [...Array.from({ length: 7 }, () => ({ command: 'other native command' })), { command }] }] };
+    const before = { schemaVersion: 1, kind: 'command-check-inputs',
+      check: obligation.check, files, inputs, listed, executed: false };
+    const stdout = listed.map(script => `--- ${script}: PASS`).join('\n') +
+      '\n  ✓ assertion about SKIP handling\nPASS — all 2 papercusp-desktop selftests green\n';
+    const logs = { stdout: pin('command.out', stdout, true), stderr: pin('command.err', '', true),
+      beforeStdout: pin('before.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(before)}\n`, true),
+      beforeStderr: pin('before.err', '', true),
+      afterStdout: pin('after.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(before)}\n`, true),
+      afterStderr: pin('after.err', '', true) };
+    const receipt = { schemaVersion: 1, kind: 'original-command-execution', cwd: 'desktop',
+      command: ['bash', 'bin/lib/run-selftests.sh'], exitCode: 0, childWallMs: 1000,
+      startedAt: '2026-10-14T00:00:00Z', finishedAt: '2026-10-14T00:00:01Z', before, after: before,
+      logs: Object.values(logs).map(log => ({ path: log.ref, sha256: log.sha256 })) };
+    const pins = { mode: 'command-preparation' as const, repositoryRoot,
+      selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true),
+      commands: [{ task: obligation.task, step: 7, receipt: pin('receipt.json', receipt), logs }] };
+    const saveSelection = () => { pins.selection = pin('selection.log',
+      `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true); };
+    const saveReceipt = () => { pins.commands[0]!.receipt = pin('receipt.json', receipt); };
+    const saveStdout = (text: string) => {
+      logs.stdout = pin('command.out', text, true);
+      receipt.logs = Object.values(logs).map(log => ({ path: log.ref, sha256: log.sha256 }));
+      saveReceipt();
+    };
+    return { root, pins, selection, receipt, stdout, files, pin, saveSelection, saveReceipt, saveStdout };
+  }
+  it('resolves raw receipts and logs, preserving script order, guard inputs and partial selection', async () => {
+    const f = fixture();
+    try {
+      const result = await readBudgetedTaskComparisonArtifacts(f.root, f.pins);
+      expect(result).toMatchObject({ mode: 'command-preparation', originalArtifactsResolved: true,
+        currentDeclaredInputsMatched: true, operationalAcceptance: false,
+        orderedChainQualified: false, runtimeClosure: 'unmeasured' });
+      expect(result.commands[0]!.inputs).toHaveLength(4);
+      expect(result.commands[0]!.fileOccurrences).toHaveLength(2);
+      expect(result.commands[0]!.scriptOrder).toEqual(['b.selftest.sh', 'a.selftest.sh']);
+      expect(result.selection).toMatchObject({ coverage: 'partial', unenumerated: ['remaining native chain'] });
+      expect(Object.isFrozen(result.commands[0]!.inputs)).toBe(true);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['step', 'task', 'command', 'format', 'exit', 'census', 'occurrence-kind',
+    'occurrence-missing', 'occurrence-duplicate', 'script-order', 'skip', 'missing-verdict',
+    'duplicate-marker', 'duplicate-command', 'role-alias', 'source-drift', 'source-escape', 'log-drift'])
+  ('refuses %s without admitting any comparison cohort', async defect => {
+    const f = fixture();
+    try {
+      if (defect === 'step') f.pins.commands[0]!.step = 6;
+      if (defect === 'task') f.pins.commands[0]!.task = 'another task';
+      if (defect === 'command') { f.receipt.command = ['bash', 'different.sh']; f.saveReceipt(); }
+      if (defect === 'format') { f.selection.commandObligations[0]!.check = 'unknown-format'; f.saveSelection(); }
+      if (defect === 'exit') { f.receipt.exitCode = 1; f.saveReceipt(); }
+      if (defect === 'census') { f.selection.commandObligations[0]!.inputs.pop(); f.saveSelection(); }
+      if (defect === 'occurrence-kind') { f.selection.fileOccurrences[0]!.kind = 'check-input'; f.saveSelection(); }
+      if (defect === 'occurrence-missing') { f.selection.fileOccurrences.pop(); f.saveSelection(); }
+      if (defect === 'occurrence-duplicate') { f.selection.fileOccurrences.push(f.selection.fileOccurrences[0]!); f.saveSelection(); }
+      if (defect === 'script-order') f.saveStdout(f.stdout.replace('b.selftest.sh: PASS', 'a.selftest.sh: PASS')
+        .replace('--- a.selftest.sh: PASS\n  ✓', '--- b.selftest.sh: PASS\n  ✓'));
+      if (defect === 'skip') f.saveStdout(f.stdout.replace('b.selftest.sh: PASS', 'b.selftest.sh: SKIP'));
+      if (defect === 'missing-verdict') f.saveStdout(f.stdout.replace('--- a.selftest.sh: PASS\n', ''));
+      if (defect === 'duplicate-marker') { f.pins.selection = { ...f.pins.selection,
+        sha256: createHash('sha256').update(readFileSync(join(f.root, 'selection.log'))).digest('hex') };
+        const bytes = readFileSync(join(f.root, 'selection.log'), 'utf8');
+        writeFileSync(join(f.root, 'selection.log'), bytes + bytes);
+        f.pins.selection.sha256 = createHash('sha256').update(bytes + bytes).digest('hex'); }
+      if (defect === 'duplicate-command') f.pins.commands.push(f.pins.commands[0]!);
+      if (defect === 'role-alias') f.pins.commands[0]!.logs.afterStderr = f.pins.commands[0]!.logs.beforeStderr;
+      if (defect === 'source-drift') writeFileSync(join(f.pins.repositoryRoot, f.files[0]!), 'changed');
+      if (defect === 'source-escape') { const path = join(f.pins.repositoryRoot, f.files[0]!);
+        rmSync(path); symlinkSync(join(f.root, 'receipt.json'), path); }
+      if (defect === 'log-drift') writeFileSync(join(f.root, 'command.out'), 'changed');
+      await expect(readBudgetedTaskComparisonArtifacts(f.root, f.pins)).rejects.toThrow();
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 original Astro command receipt', () => {
+  it.each(['valid-standalone', 'valid-ordered', 'wrapper-command', 'wrapper-script', 'original-command',
+    'failed-execution', 'signal', 'failed-discovery', 'discovery-command', 'discovery-order',
+    'sync-incomplete', 'discovery-executed', 'duplicate-discovery', 'multiple-results',
+    'changed-inputs', 'changed-population', 'wrong-occurrence-kind', 'missing-occurrence',
+    'missing-summary', 'duplicate-summary', 'wrong-file-count', 'errors', 'missing-counter',
+    'duplicate-counter', 'missing-wrapper-output', 'log-path', 'stderr-drift', 'source-drift'])
+  ('qualifies Astro only with %s evidence', async defect => {
+    const root = mkdtempSync(join(tmpdir(), 'r12-astro-command-'));
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: digest(bytes) };
+    };
+    try {
+      const repositoryRoot = join(root, 'repo'); mkdirSync(join(repositoryRoot, 'docs'), { recursive: true });
+      const packageText = JSON.stringify({ scripts: { check: defect === 'wrapper-script' ? 'astro check && true' : 'astro check' } });
+      const files = ['docs/page.astro', 'docs/types.d.ts'];
+      const inputs = [...files, 'docs/package.json'].sort().map(path => {
+        const bytes = path.endsWith('package.json') ? packageText : path;
+        writeFileSync(join(repositoryRoot, path), bytes);
+        return { path, sha256: digest(bytes) };
+      });
+      const command = 'astro check', task = 'docs :: test';
+      const step = defect === 'valid-standalone' ? null : 0;
+      const census = { ok: true, enumerated: true, repositoryFiles: files, inputs,
+        config: { runner: 'astro-check', tsconfig: null }, sync: { status: 'completed', beforePopulation: true },
+        executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+        unenumerated: ['remaining original chain'],
+        fileOccurrences: files.map(file => ({ task, step, command, file, kind: 'check-input' })),
+        tasks: [{ id: task, dir: 'docs', command: step === null ? command : 'astro check && vitest run',
+          ...(step === null ? {} : { steps: [{ command }, { command: 'vitest run' }] }) }],
+        commandObligations: [{ task, step, kind: 'command-check', check: 'astro-check', command, inputs, discovery: census }] };
+      const before = structuredClone(census), after = structuredClone(census);
+      if (defect === 'failed-discovery') before.ok = false;
+      if (defect === 'sync-incomplete') before.sync.status = 'pending';
+      if (defect === 'discovery-executed') before.executed = true;
+      if (defect === 'changed-inputs') after.inputs[0]!.sha256 = 'f'.repeat(64);
+      if (defect === 'changed-population') after.repositoryFiles.pop();
+      if (defect === 'wrong-occurrence-kind') selection.fileOccurrences[0]!.kind = 'test-file';
+      if (defect === 'missing-occurrence') selection.fileOccurrences.pop();
+      const discovery = (value: typeof census, elapsedMs: number) => 'PC_VITEST_CONFIG_CONTRACTS=' +
+        JSON.stringify({ results: [ { ...value, diagnostics: { elapsedMs } },
+          ...(defect === 'multiple-results' ? [value] : []) ] }) + '\n';
+      let stdout = '\n> docs@0.1.0 check\n> astro check\n\nResult (2 files): \n- 0 errors\n- 1 warnings\n- 23 hints\n';
+      if (defect === 'missing-summary') stdout = stdout.replace('Result (2 files): \n', '');
+      if (defect === 'duplicate-summary') stdout += 'Result (2 files): \n';
+      if (defect === 'wrong-file-count') stdout = stdout.replace('(2 files)', '(1 files)');
+      if (defect === 'errors') stdout = stdout.replace('- 0 errors', '- 1 errors');
+      if (defect === 'missing-counter') stdout = stdout.replace('- 1 warnings\n', '');
+      if (defect === 'duplicate-counter') stdout += '- 0 errors\n';
+      if (defect === 'missing-wrapper-output') stdout = stdout.replace('> astro check\n', '');
+      const beforeLog = discovery(before, 10);
+      const logs = { stdout: pin('command.out', stdout, true), stderr: pin('command.err', 'deprecation\n', true),
+        beforeStdout: pin('before.out', beforeLog + (defect === 'duplicate-discovery' ? beforeLog : ''), true),
+        beforeStderr: pin('before.err', 'deprecation\n', true),
+        afterStdout: pin('after.out', discovery(after, 20), true),
+        afterStderr: pin('after.err', defect === 'stderr-drift' ? 'different\n' : 'deprecation\n', true) };
+      const discoveryCommand = ['/installed/bin/node', 'scripts/resolve-vitest-config-contracts.mjs', '--astro-selection-child'];
+      const receipt = { kind: 'original-native-command-execution', cwd: 'docs',
+        originalCommand: defect === 'original-command' ? ['astro', 'sync'] : ['astro', 'check'],
+        wrapperCommand: ['npm', 'run', 'check'],
+        before: { command: defect === 'discovery-command' ? ['/installed/bin/node', 'other.mjs'] : discoveryCommand,
+          startedAt: '2026-10-14T00:00:00Z', completedAt: '2026-10-14T00:00:01Z',
+          exitCode: 0, signal: null, error: null, stdout: join(root, 'before.out'), stderr: join(root, 'before.err') },
+        execution: { command: defect === 'wrapper-command' ? ['npm', 'run', 'other'] : ['npm', 'run', 'check'],
+          startedAt: '2026-10-14T00:00:01Z', completedAt: '2026-10-14T00:00:02Z',
+          exitCode: defect === 'failed-execution' ? 1 : 0, signal: defect === 'signal' ? 'SIGTERM' : null,
+          error: null, stdout: defect === 'log-path' ? '/elsewhere/command.out' : join(root, 'command.out'),
+          stderr: join(root, 'command.err') },
+        after: { command: discoveryCommand,
+          startedAt: defect === 'discovery-order' ? '2026-10-14T00:00:01Z' : '2026-10-14T00:00:02Z',
+          completedAt: '2026-10-14T00:00:03Z', exitCode: 0, signal: null, error: null,
+          stdout: join(root, 'after.out'), stderr: join(root, 'after.err') } };
+      const pins = { mode: 'command-preparation' as const, repositoryRoot,
+        selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true),
+        commands: [{ task, step, receipt: pin('receipt.json', receipt), logs }] };
+      if (defect === 'source-drift') writeFileSync(join(repositoryRoot, files[0]!), 'changed');
+      if (defect.startsWith('valid-')) {
+        const result = await readBudgetedTaskComparisonArtifacts(root, pins);
+        expect(result.commands[0]).toMatchObject({ task, step, command, scriptsExecuted: 0,
+          diagnostics: { filesChecked: 2, errors: 0, warnings: 1, hints: 23 } });
+        expect(result.selection).toMatchObject({ coverage: 'partial', unenumerated: ['remaining original chain'] });
+        expect(result.orderedChainQualified).toBe(false);
+        expect(result.runtimeClosure).toBe('unmeasured');
+        expect(result.operationalAcceptance).toBe(false);
+        expect(Object.isFrozen(result.commands[0]!.diagnostics)).toBe(true);
+      } else await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 original native voice transcript receipt', () => {
+  it.each(['valid', 'projection-only', 'missing-event-pin', 'duplicate-event', 'wrong-event', 'wrong-session',
+    'wrong-cwd', 'wrong-shell', 'extra-shell-command', 'failed-execution', 'failed-selection',
+    'unfinished-event', 'source-mismatch', 'wrong-clock', 'changed-census', 'executed-discovery',
+    'fabricated-occurrence', 'missing-result', 'duplicate-result', 'warnings', 'log-drift', 'source-drift'])
+  ('qualifies original voice only with %s evidence', async defect => {
+    const root = mkdtempSync(join(tmpdir(), 'r12-voice-command-'));
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const pin = (ref: string, value: string) => {
+      writeFileSync(join(root, ref), value);
+      return { ref, sha256: digest(value) };
+    };
+    try {
+      const repositoryRoot = join(root, 'repo'); mkdirSync(join(repositoryRoot, 'operator/scripts'), { recursive: true });
+      const source = 'operator/scripts/el-tools-check.mjs';
+      writeFileSync(join(repositoryRoot, source), 'source');
+      const inputs = [{ path: source, sha256: digest('source') }];
+      const task = 'operator :: lint:el-tools', command = 'node scripts/el-tools-check.mjs';
+      const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+        unenumerated: ['remaining original chain'],
+        fileOccurrences: defect === 'fabricated-occurrence' ? [{ task, step: null, command, file: source, kind: 'test-file' }] : [],
+        tasks: [{ id: task, dir: 'operator', command }],
+        commandObligations: [{ task, kind: 'command-check', check: 'el-tools-drift', command, inputs }] };
+      const before = { schemaVersion: 1, kind: 'command-check-inputs', check: 'el-tools-drift', files: [], inputs,
+        executed: defect === 'executed-discovery', runtimeClosure: 'unmeasured', operationalAcceptance: false };
+      const after = structuredClone(before);
+      if (defect === 'changed-census') after.inputs[0]!.sha256 = 'f'.repeat(64);
+      const result = '[el-tools-check] ✓ aligned — 25 client tools, all backed by registry defs.\n';
+      const logs = { stdout: pin('command.out', defect === 'missing-result' ? '' : result + (defect === 'duplicate-result' ? result : '')),
+        stderr: pin('command.err', defect === 'warnings' ? '[el-tools-check] 1 warning:\n' : ''),
+        beforeStdout: pin('before.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(before)}\n`),
+        afterStdout: pin('after.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(after)}\n`) };
+      const shell = [
+        `${command} --print-selection > ${join(root, 'before.out')}`,
+        `${command} > ${join(root, 'command.out')} 2> ${join(root, 'command.err')}`,
+        'voice_status=$?',
+        `${command} --print-selection > ${join(root, 'after.out')}`,
+        'selection_status=$?',
+        "printf 'voice_exit=%s selection_exit=%s\\n' \"$voice_status\" \"$selection_status\"",
+        'exit "$voice_status"',
+      ].join('\n');
+      const event = { type: 'event_msg', payload: { type: 'item_completed', thread_id: 'original-session',
+        started_at_ms: 1000, completed_at_ms: defect === 'wrong-clock' ? 999 : 2000,
+        item: { type: 'CommandExecution', id: 'original-event', cwd: `file://${join(repositoryRoot, 'operator')}`,
+          command: ['/bin/bash', '-lc', defect === 'wrong-shell' ? shell.replace(command, 'node scripts/other.mjs') :
+            shell + (defect === 'extra-shell-command' ? '\ntrue' : '')],
+          source: defect === 'source-mismatch' ? 'agent-authored' : 'unified_exec_startup',
+          status: defect === 'unfinished-event' ? 'running' : 'completed',
+          exit_code: defect === 'failed-execution' ? 1 : 0,
+          aggregated_output: defect === 'failed-selection' ? 'voice_exit=0 selection_exit=1\n' : 'voice_exit=0 selection_exit=0\n' } } };
+      if (defect === 'wrong-cwd') event.payload.item.cwd = `file://${repositoryRoot}`;
+      // A copied native event in tool-output text does not qualify as the native event.
+      const projection = { type: 'response_item', payload: { type: 'custom_tool_call_output', output: JSON.stringify(event) } };
+      const transcript = [projection, ...(defect === 'projection-only' ? [] : [event]),
+        ...(defect === 'duplicate-event' ? [event] : [])].map(row => JSON.stringify(row)).join('\n') + '\n';
+      const pins = { mode: 'command-preparation' as const, repositoryRoot,
+        selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`),
+        commands: [{ task, step: null, receipt: pin('native.jsonl', transcript), logs,
+          ...(defect === 'missing-event-pin' ? {} : { nativeEvent: {
+            sessionId: defect === 'wrong-session' ? 'another-session' : 'original-session',
+            eventId: defect === 'wrong-event' ? 'another-event' : 'original-event' } }) }] };
+      if (defect === 'log-drift') writeFileSync(join(root, 'command.out'), 'changed');
+      if (defect === 'source-drift') writeFileSync(join(repositoryRoot, source), 'changed');
+      if (defect === 'valid') {
+        const receipt = await readBudgetedTaskComparisonArtifacts(root, pins);
+        expect(receipt.commands[0]).toMatchObject({ task, step: null, command, fileOccurrences: [],
+          childWallMs: null, nativeExecutionWallMs: 1000, durationScope: 'discovery-and-command',
+          scriptsExecuted: 0, scriptOrder: [], voiceResult: { clientTools: 25 } });
+        expect(receipt.selection).toMatchObject({ coverage: 'partial' });
+        expect(receipt.runtimeClosure).toBe('unmeasured');
+        expect(receipt.orderedChainQualified).toBe(false);
+        expect(receipt.operationalAcceptance).toBe(false);
+      } else await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 original fixture lifecycle receipt', () => {
+  it.each(['valid', 'valid-ordered-lifecycle', 'missing-lifecycle', 'wrong-script', 'wrong-discovery', 'after-before-exit',
+    'discovery-failure', 'missing-build-result'])('qualifies lifecycle only with %s evidence', async defect => {
+    const root = mkdtempSync(join(tmpdir(), 'r12-fixture-lifecycle-'));
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: createHash('sha256').update(bytes).digest('hex') };
+    };
+    try {
+      const repositoryRoot = join(root, 'repo'); mkdirSync(repositoryRoot);
+      writeFileSync(join(repositoryRoot, 'source.ts'), 'source');
+      const inputs = [{ path: 'source.ts', sha256: createHash('sha256').update('source').digest('hex') }];
+      const command = 'node scripts/build.mjs';
+      const lifecycleCommands = defect === 'missing-lifecycle' ? [] :
+        [{ script: defect === 'wrong-script' ? 'other' : 'pretest', command }];
+      const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+        fileOccurrences: [] as Array<{ task: string; step: null; command: string; file: string; kind: string }>,
+        tasks: [{ id: 'fixture :: test', dir: 'fixture', script: 'test', command: 'vitest run', lifecycleCommands,
+          files: [] as string[] }],
+        commandObligations: [{ task: 'fixture :: test', kind: 'npm-lifecycle', script: 'pretest', command, inputs }] };
+      const census = { schemaVersion: 1, kind: 'command-check-inputs', check: 'fixture-build', files: [], inputs };
+      const logs = { stdout: pin('command.out', defect === 'missing-build-result' ? 'partial build\n' :
+        `Fixture built: ${'a'.repeat(64)}\n`, true), stderr: pin('command.err', '', true),
+        beforeStdout: pin('before.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(census)}\n`, true),
+        beforeStderr: pin('before.err', '', true),
+        afterStdout: pin('after.out', `COMMAND_CHECK_SELECTION=${JSON.stringify(census)}\n`, true),
+        afterStderr: pin('after.err', '', true) };
+      const discoveryCommand = ['node', 'scripts/build.mjs', '--print-selection', '--repository-root', repositoryRoot];
+      const receipt = { kind: 'original-native-command-execution', cwd: 'fixture',
+        before: { command: defect === 'wrong-discovery' ? ['node', 'unrelated.mjs'] : discoveryCommand,
+          startedAt: '2026-10-14T00:00:00Z', completedAt: '2026-10-14T00:00:01Z',
+          exitCode: defect === 'discovery-failure' ? 1 : 0, stdout: 'before.out', stderr: 'before.err' },
+        execution: { command: ['node', 'scripts/build.mjs'], startedAt: '2026-10-14T00:00:01Z',
+          completedAt: '2026-10-14T00:00:02Z', exitCode: 0, stdout: 'command.out', stderr: 'command.err' },
+        after: { command: discoveryCommand,
+          startedAt: defect === 'after-before-exit' ? '2026-10-14T00:00:01Z' : '2026-10-14T00:00:02Z',
+          completedAt: '2026-10-14T00:00:03Z', exitCode: 0, stdout: 'after.out', stderr: 'after.err' } };
+      const pins = { mode: 'command-preparation' as const, repositoryRoot,
+        selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true),
+        commands: [{ task: 'fixture :: test', step: null, receipt: pin('receipt.json', receipt), logs }] };
+      if (defect === 'valid-ordered-lifecycle') {
+        mkdirSync(join(repositoryRoot, 'fixture'));
+        const testFile = 'fixture/check.test.ts', testBody = 'original test source';
+        writeFileSync(join(repositoryRoot, testFile), testBody);
+        const packageBody = JSON.stringify({ scripts: { pretest: command, test: 'vitest run' } });
+        writeFileSync(join(repositoryRoot, 'fixture/package.json'), packageBody);
+        const packageInput = { path: 'fixture/package.json', sha256: createHash('sha256').update(packageBody).digest('hex') };
+        const testInputs = [packageInput, { path: testFile, sha256: createHash('sha256').update(testBody).digest('hex') }];
+        selection.tasks[0]!.files = [testFile];
+        selection.fileOccurrences.push({ task: 'fixture :: test', step: null, command: 'vitest run', file: testFile, kind: 'test-file' });
+        pins.selection = pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true);
+        const report = { success: true, numPassedTests: 1, numTotalTests: 1, numFailedTests: 0,
+          numPendingTests: 0, numTodoTests: 0, numFailedTestSuites: 0,
+          testResults: [{ name: join(repositoryRoot, testFile), status: 'passed',
+            assertionResults: [{ status: 'passed', failureMessages: [] }] }] };
+        const testReceipt = { kind: 'original-native-command-execution', cwd: 'fixture', originalCommand: 'vitest run',
+          before: { inputs: testInputs }, after: { inputs: testInputs }, execution: {
+            command: ['bash', '-lc', 'vitest run'], exitCode: 0, signal: null, error: null,
+            startedAt: '2026-10-14T00:00:03Z', completedAt: '2026-10-14T00:00:04Z',
+            stdout: 'test.out', stderr: 'test.err', report: 'test.report.json' } };
+        const chainSteps = [{ phase: 'pre', step: null, format: 'command-preparation', receipt: pins.commands[0]!.receipt },
+          { phase: 'test', step: null, format: 'vitest-json', receipt: pin('test.json', testReceipt), logs: {
+            stdout: pin('test.out', '', true), stderr: pin('test.err', '', true), report: pin('test.report.json', report) } }];
+        const parent = { kind: 'original-native-command-execution', cwd: 'fixture', originalCommand: 'vitest run',
+          inputs: [packageInput], execution: { command: ['npm', 'run', 'test'], exitCode: 0, signal: null, error: null,
+            startedAt: '2026-10-14T00:00:00Z', completedAt: '2026-10-14T00:00:05Z', stdout: 'parent.out', stderr: 'parent.err' },
+          steps: chainSteps.map(({ phase, step, receipt }) => ({ phase, step, receipt })) };
+        Object.assign(pins, { chains: [{ task: 'fixture :: test', receipt: pin('parent.json', parent), steps: chainSteps,
+          logs: { stdout: pin('parent.out', '', true), stderr: pin('parent.err', '', true) } }] });
+        const result = await readBudgetedTaskComparisonArtifacts(root, pins);
+        expect(result.orderedChainQualified).toBe(true);
+        expect(result.chains[0]!.steps).toMatchObject([{ phase: 'pre', kind: 'npm-lifecycle' }, { phase: 'test', testsPassed: 1 }]);
+        return;
+      }
+      if (defect === 'valid') {
+        const result = await readBudgetedTaskComparisonArtifacts(root, pins);
+        expect(result.commands[0]).toMatchObject({ kind: 'npm-lifecycle', script: 'pretest',
+          command, fileOccurrences: [], scriptsExecuted: 0 });
+        expect(result.orderedChainQualified).toBe(false);
+      } else await expect(readBudgetedTaskComparisonArtifacts(root, pins)).rejects.toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('R12 original ordered native occurrence qualification', () => {
+  function fixture(format: 'node-test' | 'vitest-json' = 'node-test') {
+    const root = mkdtempSync(join(tmpdir(), 'r12-ordered-native-'));
+    const repositoryRoot = join(root, 'repo');
+    mkdirSync(join(repositoryRoot, 'app'), { recursive: true });
+    const digest = (bytes: string) => createHash('sha256').update(bytes).digest('hex');
+    const pin = (ref: string, value: unknown, raw = false) => {
+      const bytes = raw ? String(value) : JSON.stringify(value);
+      writeFileSync(join(root, ref), bytes);
+      return { ref, sha256: digest(bytes) };
+    };
+    const taskId = 'app :: test';
+    const file = 'app/repeated.test.mjs';
+    const body = "import { test } from 'node:test'; import assert from 'node:assert/strict';\ntest('original assertion', () => assert.equal(2 + 2, 4));\n";
+    writeFileSync(join(repositoryRoot, file), body);
+    const collector = join(REPO_ROOT, 'libs/test-config/src/node-test-ledger-collector.ts');
+    const native = spawnSync(process.execPath, ['--test', `--test-reporter=${collector}`, 'repeated.test.mjs'],
+      { cwd: join(repositoryRoot, 'app'), encoding: 'utf8', timeout: 10_000 });
+    if (native.status !== 0) throw new Error(`native collector fixture failed: ${native.stderr}`);
+    const nodeReport = JSON.parse(native.stdout);
+    if (nodeReport.files?.length !== 1 || nodeReport.files[0]?.file !== join(repositoryRoot, file)) {
+      throw new Error(`native collector fixture population differs: ${JSON.stringify(nodeReport.files?.map(
+        (row: { file: string; passed: number; failed: number }) => ({ file: row.file, passed: row.passed, failed: row.failed }),
+      ))}; stderr=${native.stderr}`);
+    }
+    const command = format === 'node-test' ? 'node --test repeated.test.mjs' : 'vitest run';
+    const packageBody = JSON.stringify({ scripts: { test: `${command} && ${command}` } });
+    writeFileSync(join(repositoryRoot, 'app/package.json'), packageBody);
+    const inputs = [{ path: file, sha256: digest(body) }, { path: 'app/package.json', sha256: digest(packageBody) }];
+    const fileOccurrences = [0, 1].map(step => ({ task: taskId, step, command, file, kind: 'test-file' }));
+    const task = { id: taskId, dir: 'app', script: 'test', command: `${command} && ${command}`,
+      lifecycleCommands: [] as Array<{ script: string; command: string }>,
+      steps: [0, 1].map(() => ({ command, script: 'test', files: [file] })) };
+    const selection = { schemaVersion: 1, kind: 'full-gate', coverage: 'partial',
+      unenumerated: ['runtime closure'], tasks: [task], commandObligations: [], fileOccurrences };
+    const report = format === 'node-test' ? nodeReport : { success: true, numPassedTests: 1,
+      numTotalTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, numFailedTestSuites: 0,
+      testResults: [{ name: join(repositoryRoot, file), status: 'passed',
+        assertionResults: [{ status: 'passed', failureMessages: [] }] }] };
+    const receipts = [0, 1].map(step => ({ kind: 'original-native-command-execution', cwd: 'app',
+      originalCommand: command, before: { inputs }, after: { inputs: structuredClone(inputs) },
+      execution: { command: ['bash', '-lc', command], exitCode: 0, signal: null, error: null,
+        startedAt: `2026-10-14T00:00:0${step * 2 + 1}Z`, completedAt: `2026-10-14T00:00:0${step * 2 + 2}Z`,
+        stdout: `step${step}.out`, stderr: `step${step}.err`, report: `step${step}.report.json` } }));
+    const steps = receipts.map((receipt, step) => ({ phase: 'test' as const, step, format,
+      receipt: pin(`step${step}.json`, receipt), logs: {
+        stdout: pin(receipt.execution.stdout, native.stdout, true),
+        stderr: pin(receipt.execution.stderr, '', true), report: pin(receipt.execution.report, report) } }));
+    const parent = { kind: 'original-native-command-execution', cwd: 'app', originalCommand: task.command,
+      inputs: [inputs[1]], execution: { command: ['npm', 'run', 'test'], exitCode: 0, signal: null, error: null,
+        startedAt: '2026-10-14T00:00:00Z', completedAt: '2026-10-14T00:00:05Z', stdout: 'parent.out', stderr: 'parent.err' },
+      steps: steps.map(({ phase, step, receipt }) => ({ phase, step, receipt })) };
+    const pins = { mode: 'command-preparation' as const, repositoryRoot, commands: [],
+      selection: pin('selection.log', `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true),
+      chains: [{ task: taskId, receipt: pin('parent.json', parent), steps,
+        logs: { stdout: pin('parent.out', native.stdout, true), stderr: pin('parent.err', '', true) } }] };
+    const saveSelection = () => { pins.selection = pin('selection.log',
+      `AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}\n`, true); };
+    const saveParent = () => { pins.chains[0]!.receipt = pin('parent.json', parent); };
+    const saveSteps = () => {
+      receipts.forEach((receipt, i) => { steps[i]!.receipt = pin(`step${i}.json`, receipt); });
+      parent.steps = steps.map(({ phase, step, receipt }) => ({ phase, step, receipt }));
+      saveParent();
+    };
+    const saveReport = () => { steps[0]!.logs.report = pin('step0.report.json', report); };
+    return { root, pins, selection, task, parent, receipts, steps, report, inputs, file, pin,
+      saveSelection, saveParent, saveSteps, saveReport };
+  }
+  it.each(['node-test', 'vitest-json'] as const)
+  ('retains repeated file occurrences in their original %s steps', async format => {
+    const f = fixture(format);
+    try {
+      const result = await readBudgetedTaskComparisonArtifacts(f.root, f.pins);
+      expect(result).toMatchObject({ orderedChainQualified: true, operationalAcceptance: false,
+        runtimeClosure: 'unmeasured', orderedChainCoverage: { population: [f.task.id], qualified: [f.task.id], missing: [] } });
+      expect(result.chains[0]!.steps).toHaveLength(2);
+      expect(result.chains[0]!.steps).toMatchObject([
+        { step: 0, fileOccurrences: [{ file: f.file }], testsPassed: 1 },
+        { step: 1, fileOccurrences: [{ file: f.file }], testsPassed: 1 },
+      ]);
+      expect(Object.isFrozen(result.chains[0]!.steps)).toBe(true);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('leaves unsupplied original chains explicitly missing', async () => {
+    const f = fixture();
+    try {
+      f.selection.tasks.push({ ...f.task, id: 'another :: test' }); f.saveSelection();
+      const result = await readBudgetedTaskComparisonArtifacts(f.root, f.pins);
+      expect(result.orderedChainQualified).toBe(false);
+      expect(result.orderedChainCoverage.missing).toEqual(['another :: test']);
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it.each(['missing-step', 'reversed-step', 'duplicate-chain', 'parent-binding', 'parent-exit', 'parent-command',
+    'parent-signal', 'parent-wrapper', 'parent-source-drift', 'step-command', 'step-exit', 'step-signal',
+    'interval-overlap', 'interval-outside-parent', 'input-drift', 'input-missing', 'source-drift',
+    'occurrence-missing', 'occurrence-duplicate', 'occurrence-command', 'occurrence-kind', 'extra-occurrence',
+    'report-missing-file', 'report-duplicate-file', 'report-skip', 'report-zero-tests', 'report-failed',
+    'report-source-escape', 'receipt-reuse', 'log-role-alias', 'log-symlink-alias', 'log-drift',
+    'wrong-runner-report', 'unsupported-lifecycle', 'parent-log-drift', 'parent-log-alias', 'undeclared-lifecycle'])
+  ('refuses %s in original ordered evidence', async defect => {
+    const f = fixture();
+    try {
+      if (defect === 'missing-step') f.steps.pop();
+      if (defect === 'reversed-step') f.steps.reverse();
+      if (defect === 'duplicate-chain') f.pins.chains.push(f.pins.chains[0]!);
+      if (defect === 'parent-binding') { f.parent.steps[0]!.receipt.sha256 = 'a'.repeat(64); f.saveParent(); }
+      if (defect === 'parent-exit') { f.parent.execution.exitCode = 1; f.saveParent(); }
+      if (defect === 'parent-command') { f.parent.execution.command = ['npm', 'run', 'other']; f.saveParent(); }
+      if (defect === 'parent-signal') { Object.assign(f.parent.execution, { signal: 'SIGTERM' }); f.saveParent(); }
+      if (defect === 'parent-wrapper') { f.parent.originalCommand = 'other'; f.saveParent(); }
+      if (defect === 'parent-source-drift') writeFileSync(join(f.pins.repositoryRoot, 'app/package.json'), '{}');
+      if (defect === 'step-command') { f.receipts[0]!.execution.command = ['bash', '-lc', 'other']; f.saveSteps(); }
+      if (defect === 'step-exit') { f.receipts[0]!.execution.exitCode = 1; f.saveSteps(); }
+      if (defect === 'step-signal') { Object.assign(f.receipts[0]!.execution, { signal: 'SIGTERM' }); f.saveSteps(); }
+      if (defect === 'interval-overlap') { f.receipts[1]!.execution.startedAt = f.receipts[0]!.execution.startedAt; f.saveSteps(); }
+      if (defect === 'interval-outside-parent') { f.parent.execution.completedAt = '2026-10-14T00:00:03Z'; f.saveParent(); }
+      if (defect === 'input-drift') { f.receipts[0]!.after.inputs[0]!.sha256 = 'a'.repeat(64); f.saveSteps(); }
+      if (defect === 'input-missing') { f.receipts[0]!.before.inputs = [f.inputs[1]!];
+        f.receipts[0]!.after.inputs = [f.inputs[1]!]; f.saveSteps(); }
+      if (defect === 'source-drift') writeFileSync(join(f.pins.repositoryRoot, f.file), 'changed');
+      if (defect === 'occurrence-missing') { f.selection.fileOccurrences.pop(); f.saveSelection(); }
+      if (defect === 'occurrence-duplicate') { f.selection.fileOccurrences.push(f.selection.fileOccurrences[0]!); f.saveSelection(); }
+      if (defect === 'occurrence-command') { f.selection.fileOccurrences[0]!.command = 'other'; f.saveSelection(); }
+      if (defect === 'occurrence-kind') { f.selection.fileOccurrences[0]!.kind = 'check-input'; f.saveSelection(); }
+      if (defect === 'extra-occurrence') { f.selection.fileOccurrences.push({ ...f.selection.fileOccurrences[0]!, step: 99 }); f.saveSelection(); }
+      if (defect === 'report-missing-file') { f.report.files = []; f.saveReport(); }
+      if (defect === 'report-duplicate-file') { f.report.files.push(f.report.files[0]); f.saveReport(); }
+      if (defect === 'report-skip') { f.report.files[0].skipped = 1; f.saveReport(); }
+      if (defect === 'report-zero-tests') { f.report.files[0].passed = 0; f.saveReport(); }
+      if (defect === 'report-failed') { f.report.files[0].failed = 1; f.saveReport(); }
+      if (defect === 'report-source-escape') { f.report.files[0].file = join(f.root, 'parent.json'); f.saveReport(); }
+      if (defect === 'receipt-reuse') { f.steps[1]!.receipt = f.steps[0]!.receipt;
+        f.parent.steps = f.steps.map(({ phase, step, receipt }) => ({ phase, step, receipt })); f.saveParent(); }
+      if (defect === 'log-role-alias') f.steps[0]!.logs.stderr = f.steps[0]!.logs.stdout;
+      if (defect === 'log-symlink-alias') {
+        symlinkSync(join(f.root, 'step0.out'), join(f.root, 'alias.out'));
+        f.steps[1]!.logs.stdout = { ...f.steps[0]!.logs.stdout, ref: 'alias.out' };
+        f.receipts[1]!.execution.stdout = 'alias.out'; f.saveSteps();
+      }
+      if (defect === 'log-drift') writeFileSync(join(f.root, 'step0.out'), 'changed');
+      if (defect === 'wrong-runner-report') Object.assign(f.steps[0]!, { format: 'vitest-json' });
+      if (defect === 'parent-log-drift') writeFileSync(join(f.root, 'parent.out'), 'changed');
+      if (defect === 'parent-log-alias') f.pins.chains[0]!.logs.stderr = f.pins.chains[0]!.logs.stdout;
+      if (defect === 'undeclared-lifecycle') {
+        const body = JSON.stringify({ scripts: { test: f.task.command, pretest: 'other' } });
+        writeFileSync(join(f.pins.repositoryRoot, 'app/package.json'), body);
+        f.inputs[1]!.sha256 = createHash('sha256').update(body).digest('hex'); f.saveParent();
+      }
+      if (defect === 'unsupported-lifecycle') { f.task.lifecycleCommands.push({ script: 'before', command: 'other' }); f.saveSelection(); }
+      await expect(readBudgetedTaskComparisonArtifacts(f.root, f.pins)).rejects.toThrow();
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  });
+});
 
 // HYGIENE, NOT A FIX — do not read this as the reason the timeouts went away.
 //
@@ -156,7 +1045,7 @@ describe('runBudgetedTasks', () => {
       { id: 'short', lane: 'reserved', workers: 1 },
     ]);
     gates.get('short')!.resolve('short-result');
-    await new Promise<void>((done) => setImmediate(done));
+    await until(() => starts.length >= 3, 'the uncontended reserved lane refill');
     expect(starts[2]).toEqual({ id: 'medium', lane: 'reserved', workers: 1 });
     gates.get('medium')!.resolve('medium-result');
     gates.get('long')!.resolve('long-result');
@@ -171,6 +1060,82 @@ describe('runBudgetedTasks', () => {
     expect(result.stats.observedMaxWorkers).toBe(4);
     expect(result.stats.observedMaxMemoryMb).toBe(4096);
     expect(result.stats.observedMaxTasks).toBe(2);
+  });
+
+  it('funds two longest-first primary tasks and a shortest-first reserved task under a raised ceiling', async () => {
+    const tasks = ['long', 'middle', 'pending', 'short'].map((id, index) => ({ id, estimateMs: 100 - index * 25 }));
+    const gates = new Map(tasks.map((task) => [task.id, deferred<string>()]));
+    const starts: Array<{ id: string; lane: string; workers: number }> = [];
+    const running = runBudgetedTasks(tasks, {
+      ...config, workerBudget: 13, memoryBudgetMb: 13 * 1024, maxConcurrentTasks: 3,
+      estimateMs: (task) => task.estimateMs,
+      runTask: (task, allocation) => {
+        starts.push({ id: task.id, lane: allocation.lane, workers: allocation.workers });
+        return gates.get(task.id)!.promise;
+      },
+    });
+    try {
+      await until(() => starts.length === 3, 'three independently funded lanes');
+      expect(starts).toEqual([
+        { id: 'long', lane: 'primary', workers: 6 },
+        { id: 'middle', lane: 'primary', workers: 6 },
+        { id: 'short', lane: 'reserved', workers: 1 },
+      ]);
+      gates.get('middle')!.resolve('middle');
+      await until(() => starts.length === 4, 'primary lane refill');
+      expect(starts[3]).toEqual({ id: 'pending', lane: 'primary', workers: 6 });
+    } finally {
+      for (const [id, gate] of gates) gate.resolve(id);
+      await running;
+    }
+    const result = await running;
+    expect(result.results.map((entry) => entry.value)).toEqual(tasks.map((task) => task.id));
+    expect(result.stats.observedMaxWorkers).toBe(13);
+    expect(result.stats.observedMaxMemoryMb).toBe(13 * 1024);
+    expect(result.stats.observedMaxTasks).toBe(3);
+  });
+
+  it('limits raised task concurrency to payable worker tokens and the pids envelope', async () => {
+    for (const options of [
+      { workerBudget: 3, memoryBudgetMb: 3072, maxConcurrentTasks: 10 },
+      { workerBudget: 13, memoryBudgetMb: 13 * 1024, maxConcurrentTasks: 10, taskCgroupPidsMax: 9216 },
+    ]) {
+      const result = await runBudgetedTasks(['a', 'b', 'c', 'd'], {
+        ...config, ...options,
+        runTask: async () => { await new Promise<void>((done) => setImmediate(done)); },
+      });
+      expect(result.stats.observedMaxWorkers).toBeLessThanOrEqual(options.workerBudget);
+      expect(result.stats.observedMaxMemoryMb).toBeLessThanOrEqual(options.memoryBudgetMb);
+      expect(result.stats.observedMaxTasks).toBe(options.taskCgroupPidsMax ? 2 : 3);
+      expect(result.results).toHaveLength(4);
+    }
+  });
+
+  it('drains every raised lane after rejection without refilling a surviving lane', async () => {
+    const tasks = ['long', 'middle', 'pending', 'short'].map((id, index) => ({ id, estimateMs: 100 - index * 25 }));
+    const gates = new Map(tasks.map((task) => [task.id, deferred<string>()]));
+    const starts: string[] = [];
+    const running = runBudgetedTasks(tasks, {
+      ...config, workerBudget: 13, memoryBudgetMb: 13 * 1024, maxConcurrentTasks: 3,
+      estimateMs: (task) => task.estimateMs,
+      runTask: (task) => { starts.push(task.id); return gates.get(task.id)!.promise; },
+    });
+    let settled = false;
+    const outcome = running.then(() => null, (error: Error) => error).finally(() => { settled = true; });
+    try {
+      await until(() => starts.length === 3, 'three lanes before rejection');
+      gates.get('long')!.reject(new Error('primary failed'));
+      await new Promise<void>((done) => setImmediate(done));
+      gates.get('middle')!.resolve('middle');
+      await new Promise<void>((done) => setImmediate(done));
+      expect(starts).toEqual(['long', 'middle', 'short']);
+      expect(settled).toBe(false);
+      gates.get('short')!.resolve('short');
+      expect((await outcome)?.message).toBe('primary failed');
+    } finally {
+      for (const [id, gate] of gates) gate.resolve(id);
+      await outcome;
+    }
   });
 
   it('publishes a settled task before an in-flight sibling lets the pool return', async () => {
@@ -350,6 +1315,209 @@ describe('runBudgetedTasks', () => {
   });
 });
 
+describe('cooperative shared admission (WI-10006150)', () => {
+  it('rejects inputs changed while queued before starting a shard and releases admission', async () => {
+    const release = deferred<void>();
+    const acquired = deferred<void>();
+    const holder = withFsMutex(admissionMutexName(), async () => {
+      acquired.resolve();
+      await release.promise;
+    });
+    await acquired.promise;
+    let fingerprint = 'baseline';
+    let queued = false;
+    const runTask = vi.fn(async (task: string) => task);
+    const plan = planAffectedTaskShards(['first', 'second'], {
+      blastRadius: { kind: 'scoped', reason: 'path-closure', triggerPaths: [] },
+      taskKey: (task: string) => task,
+      maxTasksPerShard: 2,
+    });
+    const running = runBudgetedTaskShards(plan, {
+      ...config,
+      admissionRunBudgetMs: 8_000,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') queued = true; },
+      onAdmissionAcquired: () => {
+        if (fingerprint !== 'baseline') throw new Error('calibration input drift');
+      },
+      runTask,
+    });
+    // Observe the rejection before releasing the holder to avoid an unhandled
+    // rejection racing the assertion. The failure occurs after FIFO admission.
+    const rejected = expect(running).rejects.toThrow('calibration input drift');
+    try {
+      await until(() => queued, 'the calibration to queue');
+      fingerprint = 'changed';
+    } finally {
+      release.resolve();
+      await holder;
+    }
+    await rejected;
+    expect(runTask).not.toHaveBeenCalled();
+    await expect(runBudgetedTaskShards(plan, {
+      ...config,
+      admissionRunBudgetMs: 1_000,
+      runTask,
+    })).resolves.toMatchObject({ results: [{ value: 'first' }, { value: 'second' }] });
+    expect(runTask).toHaveBeenCalledTimes(2);
+  }, 20_000);
+
+  it('drains the active wave and lets a queued peer run before refilling the shard', async () => {
+    const tasks = [
+      { id: 'long', estimateMs: 100 },
+      { id: 'medium', estimateMs: 50 },
+      { id: 'short', estimateMs: 5 },
+    ];
+    const gates = new Map(tasks.map((task) => [task.id, deferred<string>()]));
+    const events: string[] = [];
+    const notices: string[] = [];
+    const admissions: Array<{ waitedMs: number; budgetMs: number }> = [];
+    const leaseIntents: Array<Record<string, unknown>> = [];
+    let activeWorkers = 0;
+    let observedWorkers = 0;
+    let peerQueued = false;
+    const running = runBudgetedTasks(tasks, {
+      ...config,
+      admissionTimeoutMs: 8_000,
+      // Index-based history also proves a resumed task retains its original index.
+      estimateMs: (_, index) => [100_000, 50_000, 5_000][index],
+      admissionIntent: { purpose: 'yield-eta', tasks: 3, etaProjectedSec: 999 },
+      readMemAvailableMb: () => 8192,
+      onAdmissionNotice: (line) => notices.push(line),
+      onAdmissionAcquired: (info) => {
+        admissions.push(info);
+        leaseIntents.push(JSON.parse(readFileSync(
+          join(mutexLockRoot, `${admissionMutexName()}.lock`, 'owner.json'), 'utf8',
+        )).intent);
+      },
+      runTask: async (task, allocation) => {
+        events.push(task.id);
+        activeWorkers += allocation.workers;
+        observedWorkers = Math.max(observedWorkers, activeWorkers);
+        try { return await gates.get(task.id)!.promise; }
+        finally { activeWorkers -= allocation.workers; }
+      },
+    });
+    await until(() => events.length === 2, 'the initial concurrent wave');
+    const peer = runBudgetedTasks(['peer'], {
+      ...config,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') peerQueued = true; },
+      runTask: async (_, allocation) => {
+        events.push('peer');
+        activeWorkers += allocation.workers;
+        observedWorkers = Math.max(observedWorkers, activeWorkers);
+        activeWorkers -= allocation.workers;
+        return 'peer-result';
+      },
+    });
+    await until(() => peerQueued, 'the peer FIFO ticket');
+    gates.get('short')!.resolve('short-result');
+    // Wait for the contention check, using its queue directory observation rather
+    // than a guessed timer. The long child still owns the slot at this point.
+    await until(() => readdirSync(join(mutexLockRoot, `${admissionMutexName()}.queue`)).length === 1,
+      'the peer remains queued while the long child drains');
+    gates.get('long')!.resolve('long-result');
+    await peer;
+    await until(() => events.length === 4, 'the remaining task to resume');
+    gates.get('medium')!.resolve('medium-result');
+    const result = await running;
+    expect(events).toEqual(['long', 'short', 'peer', 'medium']);
+    expect(result.results.map((entry) => [entry.index, entry.task.id, entry.value])).toEqual([
+      [0, 'long', 'long-result'], [1, 'medium', 'medium-result'], [2, 'short', 'short-result'],
+    ]);
+    expect(observedWorkers).toBe(4);
+    expect(result.stats.observedMaxWorkers).toBe(4);
+    expect(result.stats.memoryReadings).toBe(2);
+    expect(notices.some((line) => line.startsWith('AFFECTED_TESTS_ADMISSION_YIELD '))).toBe(true);
+    expect(admissions).toHaveLength(2);
+    expect(admissions[1].budgetMs).toBe(admissions[0].budgetMs - admissions[0].waitedMs);
+    expect(leaseIntents).toEqual([
+      { purpose: 'yield-eta', tasks: 3, etaProjectedSec: 100, etaWorkSec: 155,
+        etaFromTasks: '3/3', etaUnknownTasks: 0, etaMode: 'parallel', etaConcurrency: 2 },
+      { purpose: 'yield-eta', tasks: 1, etaProjectedSec: 50, etaWorkSec: 50,
+        etaFromTasks: '1/1', etaUnknownTasks: 0, etaMode: 'parallel', etaConcurrency: 2 },
+    ]);
+  }, 20_000);
+
+  it('retains one queue budget across a yield after an initial admission wait', async () => {
+    const releaseInitial = deferred<void>();
+    const initialAcquired = deferred<void>();
+    const initial = withFsMutex(admissionMutexName(), async () => {
+      initialAcquired.resolve();
+      await releaseInitial.promise;
+    });
+    await initialAcquired.promise;
+    const releaseFirst = deferred<void>();
+    let firstStarted = false;
+    let firstQueued = false;
+    let peerQueued = false;
+    const admissions: Array<{ waitedMs: number; budgetMs: number }> = [];
+    const running = runBudgetedTasks(['first', 'remaining'], {
+      ...config,
+      maxConcurrentTasks: 1,
+      admissionTimeoutMs: 8_000,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') firstQueued = true; },
+      onAdmissionAcquired: (info) => admissions.push(info),
+      runTask: async (task) => {
+        if (task === 'first') { firstStarted = true; await releaseFirst.promise; }
+        return task;
+      },
+    });
+    await until(() => firstQueued, 'the initial queue wait');
+    await new Promise<void>((done) => setTimeout(done, 300));
+    releaseInitial.resolve();
+    await initial;
+    await until(() => firstStarted, 'the first task to start');
+    const peer = runBudgetedTasks(['peer'], {
+      ...config,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') peerQueued = true; },
+      runTask: async () => 'peer',
+    });
+    await until(() => peerQueued, 'the peer to queue');
+    releaseFirst.resolve();
+    await Promise.all([running, peer]);
+    expect(admissions).toHaveLength(2);
+    expect(admissions[0].waitedMs).toBeGreaterThanOrEqual(250);
+    expect(admissions[1].budgetMs).toBe(8_000 - admissions[0].waitedMs);
+  }, 20_000);
+
+  it('drains a failed wave and its persistence before releasing to a queued peer', async () => {
+    const failLong = deferred<string>();
+    const finishShort = deferred<string>();
+    const finishPersistence = deferred<void>();
+    let persistenceStarted = false;
+    let queued = false;
+    const starts: string[] = [];
+    const running = runBudgetedTasks([
+      { id: 'long', estimateMs: 100 }, { id: 'remaining', estimateMs: 50 }, { id: 'short', estimateMs: 5 },
+    ], {
+      ...config,
+      estimateMs: (task) => task.estimateMs,
+      onAdmissionNotice: () => undefined,
+      runTask: async (task) => {
+        starts.push(task.id);
+        return task.id === 'long' ? failLong.promise : finishShort.promise;
+      },
+      onTaskSettled: async () => { persistenceStarted = true; await finishPersistence.promise; },
+    });
+    const failure = running.catch((error: Error) => error.message);
+    await until(() => starts.length === 2, 'the failed wave to start');
+    const peer = runBudgetedTasks(['peer'], {
+      ...config,
+      onAdmissionNotice: (_, info) => { if (info.kind === 'queued') queued = true; },
+      runTask: async () => { starts.push('peer'); return 'peer'; },
+    });
+    await until(() => queued, 'the peer to wait on the failed wave');
+    failLong.reject(new Error('failed child'));
+    finishShort.resolve('short');
+    await until(() => persistenceStarted, 'the surviving child persistence');
+    expect(starts).toEqual(['long', 'short']);
+    finishPersistence.resolve();
+    expect(await failure).toBe('failed child');
+    await peer;
+    expect(starts).toEqual(['long', 'short', 'peer']);
+  }, 20_000);
+});
+
 describe('near-tree-wide deterministic sharding (P-011)', () => {
   const broad = classifyAffectedBlastRadius({ changedPaths: ['package-lock.json'] });
 
@@ -430,6 +1598,65 @@ describe('near-tree-wide deterministic sharding (P-011)', () => {
       mode: 'parallel',
       maxConcurrentTasks: 2,
     });
+  });
+
+  it.each([
+    { name: 'mixed known and unknown history', durations: [90_000, 30_000, null, 12_000],
+      estimates: [
+        { etaProjectedSec: 90, etaWorkSec: 120, etaFromTasks: '2/2', etaUnknownTasks: 0 },
+        { etaProjectedSec: 12, etaWorkSec: 12, etaFromTasks: '1/2', etaUnknownTasks: 1 },
+      ] },
+    { name: 'no duration history', durations: [null, null, null, null],
+      estimates: [
+        { etaProjectedSec: 0, etaWorkSec: 0, etaFromTasks: '0/2', etaUnknownTasks: 2 },
+        { etaProjectedSec: 0, etaWorkSec: 0, etaFromTasks: '0/2', etaUnknownTasks: 2 },
+      ] },
+  ])('publishes current-shard lease ETA with $name', async ({ durations, estimates }) => {
+    const tasks = Array.from({ length: 4 }, (_, id) => ({ id }));
+    const plan = planAffectedTaskShards(tasks, {
+      blastRadius: broad, maxTasksPerShard: 2, taskKey: (task) => task.id,
+    });
+    const unrelated = { scope: 'git-status', paths: 11, workspaces: 4,
+      workItem: 'EI-25482105942475587', discardable: true };
+    const original = Object.freeze({ ...unrelated, tasks: 4, etaProjectedSec: 999,
+      etaWorkSec: 999, etaFromTasks: '4/4', etaUnknownTasks: 0,
+      etaMode: 'serial', etaConcurrency: 1 });
+    // The real fs-mutex contract caps declarations at twelve scalar fields.
+    expect(Object.keys(original)).toHaveLength(12);
+    const leases: Array<Record<string, unknown>> = [];
+    const run = await runBudgetedTaskShards(plan, {
+      ...config, admissionIntent: original,
+      estimateMs: (task) => durations[task.id],
+      onAdmissionAcquired: () => leases.push(JSON.parse(readFileSync(
+        join(mutexLockRoot, `${admissionMutexName()}.lock`, 'owner.json'), 'utf8',
+      )).intent),
+      runTask: async (task) => task.id,
+    });
+    expect(run.results.map((entry) => entry.value)).toEqual([0, 1, 2, 3]);
+    expect(leases).toEqual(estimates.map((estimate) => ({ ...unrelated, tasks: 2,
+      ...estimate, etaMode: 'parallel', etaConcurrency: 2 })));
+    for (const lease of leases) {
+      if (lease.etaFromTasks === '0/2') {
+        expect(formatAdmissionProspect(JSON.stringify({ intent: lease }),
+          { elapsedMs: 0, budgetMs: 60_000 })).toContain('PROSPECT UNKNOWN');
+      }
+    }
+    expect(original).toEqual({ ...unrelated, tasks: 4, etaProjectedSec: 999,
+      etaWorkSec: 999, etaFromTasks: '4/4', etaUnknownTasks: 0,
+      etaMode: 'serial', etaConcurrency: 1 });
+  });
+
+  it('projects raised primary lanes with the same launch order as execution', () => {
+    const tasks = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }];
+    const plan = planAffectedTaskShards(tasks, {
+      blastRadius: { kind: 'scoped', reason: 'path-closure', triggerPaths: [] },
+      taskKey: (task) => task.id,
+    });
+    const projection = estimateBudgetedTaskWallMs(plan, {
+      ...config, workerBudget: 13, memoryBudgetMb: 13 * 1024, maxConcurrentTasks: 3,
+      estimateMs: () => 10_000,
+    });
+    expect(projection).toMatchObject({ projectedWallMs: 20_000, knownWorkMs: 50_000, maxConcurrentTasks: 3 });
   });
 
   it('falls back to serial-equivalent wall time when concurrency is disabled', () => {
@@ -822,6 +2049,24 @@ describe('resolveMemoryBudgetMb', () => {
     ).toThrow(/refusing before launch/);
   });
 
+  // P-006: a requested budget must be resolved before declaring experiment workers.
+  it.each([
+    { hardGiB: 40, budgetMiB: 30 * 1024, workers: 7 },
+    { hardGiB: 44, budgetMiB: 32 * 1024, workers: 8 },
+  ])('resolves eight 4 GiB tokens under a $hardGiB GiB hard envelope to $workers workers', ({ hardGiB, budgetMiB, workers }) => {
+    const workerPolicy = { workerBudget: 8, workerMemoryMb: 4096 };
+    const memoryBudgetMb = resolveMemoryBudgetMb({
+      ...workerPolicy,
+      affectedGlobalMemoryMb: 32 * 1024,
+      taskCgroupMemoryMaxMb: hardGiB * 1024,
+    });
+    expect(memoryBudgetMb).toBe(budgetMiB);
+    expect(resolveTaskBudget({
+      ...workerPolicy, memoryBudgetMb, maxConcurrentTasks: 4,
+      reserveWorkers: 1, taskCgroupPidsMax: 32768,
+    })).toMatchObject({ memoryBudgetMb: budgetMiB, effectiveWorkerBudget: workers, maxConcurrentTasks: 4 });
+  });
+
   it('reads memory.max from the current unified cgroup and treats max/unreadable as unbounded', () => {
     const files = new Map([
       ['/proc/self/cgroup', '0::/user.slice/test.scope\n'],
@@ -862,6 +2107,139 @@ describe('resolveMemoryBudgetMb', () => {
     expect(readTaskCgroupPidsEventMax({ readFile })).toBe(121);
     files.set('/sys/fs/cgroup/user.slice/test.scope/pids.events', 'max not-a-number');
     expect(readTaskCgroupPidsEventMax({ readFile })).toBeNull();
+  });
+
+  describe('cgroup memory usage evidence (WI-10007629, P-006)', () => {
+    const MB = 1024 * 1024;
+    const scope = '/sys/fs/cgroup/user.slice/test.scope';
+    const cgroupFiles = (entries: Record<string, string>) => {
+      const files = new Map<string, string>([['/proc/self/cgroup', '0::/user.slice/test.scope\n']]);
+      for (const [name, body] of Object.entries(entries)) files.set(`${scope}/${name}`, body);
+      const readFile = (path: string) => {
+        if (!files.has(path)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+        return files.get(path)!;
+      };
+      return { files, readFile };
+    };
+
+    it('reads anon (not file cache), the cumulative peak and the oom_kill counter', () => {
+      const { readFile } = cgroupFiles({
+        // `file` is page cache and must NOT be counted as worker demand.
+        'memory.stat': `anon ${9000 * MB}\nfile ${20000 * MB}\nanon_thp 0\n`,
+        'memory.peak': `${31000 * MB}\n`,
+        'memory.events': 'low 0\nhigh 0\nmax 4\noom 1\noom_kill 1\n',
+      });
+      expect(readTaskCgroupMemoryUsage({ readFile })).toEqual({
+        anonMb: 9000,
+        peakMb: 31000,
+        oomKills: 1,
+      });
+    });
+
+    it('keeps each field independent and returns null only when nothing is readable', () => {
+      // memory.peak needs a recent kernel; its absence must not hide the anon reading.
+      const partial = cgroupFiles({ 'memory.stat': `anon ${512 * MB}\n` });
+      expect(readTaskCgroupMemoryUsage({ readFile: partial.readFile })).toEqual({
+        anonMb: 512,
+        peakMb: null,
+        oomKills: null,
+      });
+      // `anon_thp` must not be mistaken for `anon`, and a malformed counter is unreadable.
+      const malformed = cgroupFiles({ 'memory.stat': 'anon_thp 77\nanon nope\n' });
+      expect(readTaskCgroupMemoryUsage({ readFile: malformed.readFile })).toBeNull();
+      expect(readTaskCgroupMemoryUsage({ readFile: cgroupFiles({}).readFile })).toBeNull();
+    });
+
+    it('tracks the sampled anon maximum and reports oom kills as a delta over the run', () => {
+      const readings = [
+        { anonMb: 4000, peakMb: 20000, oomKills: 3 },
+        null,
+        { anonMb: 11000, peakMb: 26000, oomKills: 3 },
+        { anonMb: 6000, peakMb: 26000, oomKills: 5 },
+      ];
+      const observer = createCgroupMemoryObserver({ read: () => readings.shift() ?? null });
+      for (let i = 0; i < 4; i++) observer.sample();
+      // The cgroup carried 3 kills from before the run; only the 2 during it count.
+      expect(observer.summary()).toEqual({ samples: 3, maxAnonMb: 11000, peakMb: 26000, oomKills: 2,
+        pairedSamples: 0, maxAnonPerAllocatedWorkerMb: null });
+    });
+
+    it('reports every field as unknown, never zero, when nothing was measured', () => {
+      const observer = createCgroupMemoryObserver({ read: () => null });
+      observer.sample();
+      const line = formatCgroupMemoryObservedMarker(observer.summary(), { observedMaxWorkers: 7 });
+      expect(line).toBe(
+        'AFFECTED_TESTS_CGROUP_MEMORY_OBSERVED samples=0 anonMaxMb=unknown peakMb=unknown ' +
+          'oomKills=unknown maxWorkers=7 anonPerWorkerMb=unknown workerBasis=paired-allocation pairedSamples=0',
+      );
+    });
+
+    it('does not derive worker demand from unrelated memory and worker peaks', () => {
+      const line = formatCgroupMemoryObservedMarker(
+        { samples: 12, maxAnonMb: 10001, peakMb: 29000, oomKills: 0 },
+        { observedMaxWorkers: 7 },
+      );
+      expect(line).toContain('anonMaxMb=10001 peakMb=29000 oomKills=0 maxWorkers=7 anonPerWorkerMb=unknown');
+      expect(
+        formatCgroupMemoryObservedMarker(
+          { samples: 1, maxAnonMb: 100, peakMb: null, oomKills: 0 },
+          { observedMaxWorkers: 0 },
+        ),
+      ).toContain('anonPerWorkerMb=unknown');
+    });
+
+    it('keeps the one-worker memory peak paired when the worker-count peak happened earlier', async () => {
+      let anonMb = 200;
+      const observer = createCgroupMemoryObserver({ read: () => ({ anonMb, peakMb: 500, oomKills: 0 }) });
+      await observer.withWorkers(1, async () => {
+        await observer.withWorkers(1, async () => observer.sample()); // 200 / 2 = 100
+        anonMb = 400;
+        observer.sample(); // 400 / 1 = 400, not maxAnon(400) / maxWorkers(2) = 200
+      });
+      expect(observer.summary()).toMatchObject({ maxAnonMb: 400, maxAnonPerAllocatedWorkerMb: 400 });
+      expect(formatCgroupMemoryObservedMarker(observer.summary(), { observedMaxWorkers: 2 })).toContain('anonPerWorkerMb=400');
+    });
+
+    it('releases worker grants on rejection and excludes idle samples from the paired ratio', async () => {
+      let anonMb = 100;
+      const observer = createCgroupMemoryObserver({ read: () => ({ anonMb, peakMb: 5000, oomKills: 0 }) });
+      await expect(observer.withWorkers(2, async () => { observer.sample(); throw new Error('task failed'); })).rejects.toThrow('task failed');
+      anonMb = 5000; observer.sample();
+      expect(observer.summary()).toMatchObject({ maxAnonMb: 5000, maxAnonPerAllocatedWorkerMb: 50 });
+      await observer.withWorkers(1, async () => { anonMb = 101; observer.sample(); });
+      expect(observer.summary().maxAnonPerAllocatedWorkerMb).toBe(101);
+    });
+
+    it('rounds a paired ratio up and never admits an invalid worker count', async () => {
+      const read = vi.fn(() => ({ anonMb: 101, peakMb: 200, oomKills: 0 }));
+      const observer = createCgroupMemoryObserver({ read });
+      await observer.withWorkers(2, async () => observer.sample());
+      expect(observer.summary().maxAnonPerAllocatedWorkerMb).toBe(51);
+      await expect(observer.withWorkers(0, async () => {})).rejects.toThrow('positive integer');
+      await expect(observer.withWorkers(1.5, async () => {})).rejects.toThrow('positive integer');
+    });
+
+    it('keeps an unreadable diagnostic from changing the task result or masking its failure', async () => {
+      const observer = createCgroupMemoryObserver({ read: () => { throw new Error('measurement unavailable'); } });
+      await expect(observer.withWorkers(1, async () => 42)).resolves.toBe(42);
+      await expect(observer.withWorkers(1, async () => { throw new Error('actual task failure'); })).rejects.toThrow('actual task failure');
+      expect(observer.summary()).toMatchObject({ samples: 0, pairedSamples: 0, maxAnonPerAllocatedWorkerMb: null });
+    });
+
+    it('is wired into affected-tests: sampled on every progress beat and printed once beside OBSERVED', () => {
+      expect(AFFECTED_TESTS_SRC).toContain('const cgroupMemoryObserver = createCgroupMemoryObserver();');
+      const emitProgress = AFFECTED_TESTS_SRC.slice(AFFECTED_TESTS_SRC.indexOf('const emitProgress = ('));
+      expect(emitProgress.slice(0, emitProgress.indexOf('AFFECTED_TASK_PROGRESS state=${state}'))).toContain(
+        'cgroupMemoryObserver.sample();',
+      );
+      expect(AFFECTED_TESTS_SRC.indexOf('const cgroupMemoryObserver')).toBeLessThan(
+        AFFECTED_TESTS_SRC.indexOf('const emitProgress = ('),
+      );
+      const observed = AFFECTED_TESTS_SRC.indexOf('outSync(formatTaskBudgetObservedMarker(initialPool.stats));');
+      expect(observed).toBeGreaterThan(-1);
+      expect(AFFECTED_TESTS_SRC.slice(observed, observed + 400)).toContain('formatCgroupMemoryObservedMarker(');
+      expect(AFFECTED_TESTS_SRC).toContain('cgroupMemoryObserver.withWorkers(allocation.workers,');
+    });
   });
 
   it('invalidates only red runs when the cgroup refused forks during the run', () => {
@@ -1599,6 +2977,100 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     expect(AFFECTED_TESTS_SRC).toMatch(/onAdmissionNotice:\s*\(line\)\s*=>\s*errSync\(line\)/);
   });
 
+  it.each([
+    { reason: 'admission-starved', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
+    { reason: 'admission-starved', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
+    { reason: 'deadline-insufficient', completedTasks: 0, observedNonzeroExits: 0, remaining: 5 },
+    { reason: 'deadline-insufficient', completedTasks: 2, observedNonzeroExits: 1, remaining: 3 },
+  ])('retains settled shard evidence on $reason: $completedTasks completed', (sample) => {
+    // Execute the production refusal boundary, including its actual result marker.
+    // The second case reproduces a failed pure shard followed by a queued shard;
+    // a wholly unstarted run is the contrasting control.
+    const runAt = AFFECTED_TESTS_SRC.indexOf('initialPool = await runBudgetedTaskShards');
+    const catchAt = AFFECTED_TESTS_SRC.indexOf('} catch (error) {', runAt);
+    const bodyAt = catchAt + '} catch (error) {'.length;
+    const endAt = AFFECTED_TESTS_SRC.indexOf('\n}\n', bodyAt);
+    expect(runAt).toBeGreaterThan(-1);
+    expect(catchAt).toBeGreaterThan(runAt);
+    expect(endAt).toBeGreaterThan(bodyAt);
+    const output: string[] = [];
+    const exit = new Error('captured process exit');
+    const context = {
+      ...terminalCounters,
+      error: new Error(`Timed out after 60ms waiting for fs-mutex "${admissionMutexName()}" (/tmp/private-test-lock)`),
+      isTaskDeadlineRefusal: () => sample.reason === 'deadline-insufficient',
+      isSharedAdmissionTimeout,
+      tasks: Array.from({ length: 5 }),
+      readTerminalCounters: () => ({
+        tasks: 5, failed: 0, quarantinedFailed: 0, timedOutTasks: 0,
+        undeterminedTasks: 0, observedAdmissionErrors: 0, ...sample,
+      }),
+      coverage: {},
+      formatCoverageFields: () => `testsExecuted=${sample.completedTasks * 3} testsSkipped=0`,
+      errSync: (line: string) => output.push(line),
+      RUN_LOG_PATH: '/tmp/private-test-log',
+      terminalEmitted: false,
+      process: { exit: (_code: number) => { throw exit; } },
+    };
+    expect(() => new Script(AFFECTED_TESTS_SRC.slice(bodyAt, endAt)).runInNewContext(context)).toThrow(exit);
+    const marker = output.find((line) => line.startsWith('AFFECTED_TESTS_RESULT '));
+    expect(marker).toContain(`status=refused reason=${sample.reason}`);
+    expect(marker).toContain(`completedTasks=${sample.completedTasks}`);
+    expect(marker).toContain(`undeterminedTasks=${sample.remaining}`);
+    expect(marker).toContain(`observedNonzeroExits=${sample.observedNonzeroExits}`);
+    expect(marker).toContain(`testsExecuted=${sample.completedTasks * 3}`);
+    expect(output.join('\n')).not.toContain('never got to run its tasks');
+    expect(output.join('\n')).not.toContain('refused before running anything');
+    if (sample.observedNonzeroExits) expect(marker).toContain('TALLY-UNDERCOUNT');
+    else expect(marker).not.toContain('TALLY-UNDERCOUNT');
+  });
+
+  it('counts known initial settlements before persistence while leaving unreadable outcomes undetermined', () => {
+    const runAt = AFFECTED_TESTS_SRC.indexOf('initialPool = await runBudgetedTaskShards');
+    const callbackAt = AFFECTED_TESTS_SRC.indexOf('onTaskSettled: (scheduled) => {', runAt);
+    const bodyAt = callbackAt + 'onTaskSettled: (scheduled) => {'.length;
+    const endAt = AFFECTED_TESTS_SRC.indexOf('\n  },', bodyAt);
+    expect(callbackAt).toBeGreaterThan(runAt);
+    expect(endAt).toBeGreaterThan(bodyAt);
+    const countsSeenByCoverage: number[] = [];
+    const initialExecutedMapReads = new Map<string, unknown>();
+    const executedMapSnapshot = { status: 'unknown', reason: 'report-not-written' };
+    const context = {
+      observedCompletedTasks: 0,
+      foldSettledTaskCoverage: () => countsSeenByCoverage.push(context.observedCompletedTasks),
+      persistCleanFirstPassTaskVerdict: () => {},
+      taskKey: (task: { key: string }) => task.key,
+      executedMapResultFiles: new Map([['settled-task', '/results/settled-task.json']]),
+      initialExecutedMapReads,
+      executedMapReportExpectations: new Map([['settled-task', { expectsReport: true }]]),
+      readExecutedMapResults: (path: string) => {
+        expect(path).toBe('/results/settled-task.json');
+        return executedMapSnapshot;
+      },
+    };
+    const settle = new Script(`(scheduled) => {${AFFECTED_TESTS_SRC.slice(bodyAt, endAt)}}`).runInNewContext(context);
+    for (const value of [
+      { status: 0 }, { status: 1 }, { status: null, signal: 'SIGTERM' },
+      { status: null }, { status: Number.NaN },
+    ]) settle({ task: { t: { key: 'settled-task' } }, value });
+    expect(context.observedCompletedTasks).toBe(3);
+    expect(countsSeenByCoverage).toEqual([1, 2, 3, 3, 3]);
+    expect(initialExecutedMapReads.get('settled-task')).toEqual({
+      ...executedMapSnapshot, expectsReport: true,
+    });
+    // The refusal boundary reads the observation, not the later aggregate tally.
+    const counterAt = AFFECTED_TESTS_SRC.lastIndexOf('readTerminalCounters = () => ({', runAt);
+    const counterEnd = AFFECTED_TESTS_SRC.indexOf('\n});', counterAt) + '\n});'.length;
+    expect(counterAt).toBeGreaterThan(-1);
+    expect(counterEnd).toBeGreaterThan(counterAt);
+    const readCounters = new Script(AFFECTED_TESTS_SRC.slice(counterAt, counterEnd)).runInNewContext({
+      ...context, tasks: Array.from({ length: 5 }), failed: 0,
+      quarantinedFailed: 0, timedOutTasks: 0, undeterminedTasks: 0,
+      observedNonzeroExits: 1, observedAdmissionErrors: 0,
+    });
+    expect(readCounters()).toMatchObject({ tasks: 5, completedTasks: 3, observedNonzeroExits: 1 });
+  });
+
   describe('WI-1746759: the release gate rides its own admission lane', () => {
     // Why a separate lane at all: `runBudgetedTasks` takes the mutex ONCE PER SHARD, so on the
     // shared lane the gate re-queues per shard and each re-entry lands behind whoever arrived
@@ -1730,7 +3202,6 @@ describe('formatAdmissionHolder', () => {
 
   it('is what the queued notice actually calls, not a helper nothing reaches', () => {
     expect(SCHEDULER_SRC).toMatch(/holder: \$\{formatAdmissionHolder\(owner\)\}/);
-    expect(SCHEDULER_SRC).toMatch(/intent:\s*options\?\.admissionIntent/);
   });
 
   it('is fed by affected-tests, which derives its declaration instead of hand-maintaining it', () => {
@@ -1812,12 +3283,12 @@ describe('formatAdmissionProspect', () => {
     expect(nearlyDone).toBe('');
   });
 
-  it('reports an unusable ETA as an explicit unknown instead of silently skipping it', () => {
+  it.each([0, 5000])('reports an unusable ETA of %s as an explicit unknown', (etaProjectedSec) => {
     // Same reason `intent=undeclared` is emitted rather than omitted: "could not estimate"
     // and "nearly done" must never read alike. A 0-numerator ratio means the projection saw
     // no duration history at all, so the number carries no information.
     const line = formatAdmissionProspect(
-      owner({ tasks: 9, etaProjectedSec: 5000, etaFromTasks: '0/9' }),
+      owner({ tasks: 9, etaProjectedSec, etaFromTasks: '0/9' }),
       { elapsedMs: 60_000, budgetMs: 2_700_000 },
       NOW,
     );
@@ -1852,7 +3323,7 @@ describe('formatAdmissionProspect', () => {
     // The sibling of formatAdmissionHolder's wiring test. Without this the projection could
     // be silently dropped from the notice and every unit test above would still pass.
     expect(SCHEDULER_SRC).toMatch(
-      /formatAdmissionProspect\(owner,\s*\{\s*elapsedMs,\s*budgetMs:\s*timeoutMs\s*\}\)/,
+      /formatAdmissionProspect\(owner,\s*\{\s*elapsedMs,\s*budgetMs:\s*remainingQueueMs\s*\}\)/,
     );
   });
 });

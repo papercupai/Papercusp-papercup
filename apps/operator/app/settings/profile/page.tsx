@@ -1,10 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 import { useLexicon } from '@/lib/useLexicon';
+import { OperatorSettingsSlot } from '@papercusp/operator-ui/settings-slots';
+import { CloudMonitoringPreferences } from '@papercusp/operator-ui/browser-telemetry';
+import { CustomerDataControls } from './CustomerDataControls';
 
 /**
  * The `preferred_models` block (scoper/worker/validator/reviewer/orchestrator)
@@ -29,6 +32,11 @@ const ProfileSchema = z.object({
 type ProfileFormData = z.infer<typeof ProfileSchema>;
 
 export default function ProfilePage() {
+  return <><OperatorSettingsSlot name="profile" fallback={<DesktopProfilePage />} /><CustomerDataControls /><CloudMonitoringPreferences /></>;
+}
+
+function DesktopProfilePage() {
+  const fieldId = useId();
   const t = useLexicon();
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -42,7 +50,10 @@ export default function ProfilePage() {
   useEffect(() => {
     let cancelled = false;
     fetch('/api/profile')
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then((d: Profile) => {
         if (cancelled) return;
         reset({
@@ -96,18 +107,18 @@ export default function ProfilePage() {
       </p>
 
       <form onSubmit={submit(onSubmit)} className="pc-card">
-        <FormField label="Email (optional)" error={errors.email?.message} description="Used to identify you in commit messages and agent attribution.">
-          <input type="email" className="pc-input" placeholder="you@example.com" {...register('email')} />
+        <FormField label="Email (optional)" htmlFor={`${fieldId}-email`} error={errors.email?.message} description="Used to identify you in commit messages and agent attribution.">
+          <input id={`${fieldId}-email`} type="email" className="pc-input" placeholder="you@example.com" {...register('email')} />
         </FormField>
 
-        <FormField label="Display name" error={errors.display_name?.message} description={`Shown next to your ${t('pot', { lower: true })} runs and proposals.`}>
-          <input type="text" className="pc-input" placeholder="Your name" {...register('display_name')} />
+        <FormField label="Display name" htmlFor={`${fieldId}-name`} error={errors.display_name?.message} description={`Shown next to your ${t('pot', { lower: true })} runs and proposals.`}>
+          <input id={`${fieldId}-name`} type="text" className="pc-input" placeholder="Your name" {...register('display_name')} />
         </FormField>
 
-        <FormField label="Default project directory" error={errors.default_project_dir?.message} description={
+        <FormField label="Default project directory" htmlFor={`${fieldId}-directory`} error={errors.default_project_dir?.message} description={
           <>Where <code>papercusp init &lt;slug&gt;</code> creates new project directories.</>
         }>
-          <input type="text" className="pc-input" placeholder="~/papercusp-projects" {...register('default_project_dir')} />
+          <input id={`${fieldId}-directory`} type="text" className="pc-input" placeholder="~/papercusp-projects" {...register('default_project_dir')} />
         </FormField>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>

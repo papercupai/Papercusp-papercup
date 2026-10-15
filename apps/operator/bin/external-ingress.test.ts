@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { externalIngressHandler, handler } from './host-handler';
-import { EXTERNAL_INGRESS_SERVED_PATHS, isServedOnExternalIngress } from './external-ingress-paths';
+import { EXTERNAL_INGRESS_SERVED_PATHS, PHONE_DEVICE_PATHS, isServedOnExternalIngress } from './external-ingress-paths';
 
 const PUBLIC_HOST = 'ws.example.org';
 const WEBHOOK_ID = '0b9f3c2e-4d51-4a7e-9c0f-2f8d6a1b3e57';
@@ -88,6 +88,41 @@ describe('external-ingress listener (WI-10004174)', () => {
       expect(res.status, `${method} ${path}`).toBe(404);
       const body = (await res.json()) as { error?: { code?: string } };
       expect(body.error?.code, `${method} ${path}`).toBe('not_served_on_external_ingress');
+    }
+  });
+
+  it('admits one-use phone pairing input validation and requires device authentication for reads', async () => {
+    const pair = await externalIngressHandler(new Request(`http://${PUBLIC_HOST}/api/device/pair`, {
+      method: 'POST', headers: { host: PUBLIC_HOST, 'content-type': 'application/json' }, body: '{}',
+    }));
+    expect(pair.status).toBe(400);
+    for (const path of ['/api/device/attention', '/api/device/plans', '/api/device/monitoring',
+      '/api/device/runtime-config', '/api/device/operator/conversation/turns']) {
+      const response = await externalIngressHandler(get(path, PUBLIC_HOST));
+      expect(response.status, path).toBe(401);
+    }
+  });
+
+  it('never exposes desktop pairing controls or the public QR renderer even with a localhost Host', async () => {
+    for (const path of ['/api/device/desktop/mint-pair-token', '/api/device/desktop/devices',
+      '/api/device/desktop/devices/phone-id', '/api/device/qr.svg']) {
+      const response = await externalIngressHandler(get(path, 'localhost'));
+      expect(response.status, path).toBe(404);
+      expect((await response.json()).error.code).toBe('not_served_on_external_ingress');
+    }
+  });
+
+  it('allows only enumerated phone paths and bounded authenticated parameter shapes', () => {
+    for (const path of PHONE_DEVICE_PATHS) expect(isServedOnExternalIngress(path), path).toBe(true);
+    for (const path of ['/api/device/devices/mobile-123', '/api/device/plans/release-plan',
+      '/api/device/plans/release-plan/items/P-001/status', '/api/device/harnesses/fixture/log/stream']) {
+      expect(isServedOnExternalIngress(path), path).toBe(true);
+    }
+    for (const path of ['/api/device', '/api/device/new-public-route', '/api/device/pair/extra',
+      '/api/device/desktop/mint-pair-token', '/api/device/plans/fixture/extra',
+      '/api/device/plans/fixture/items/arbitrary/status', '/api/device/plans/%2fadmin',
+      '/api/device/devices/phone/extra', '/api/device/harnesses/fixture/admin']) {
+      expect(isServedOnExternalIngress(path), path).toBe(false);
     }
   });
 

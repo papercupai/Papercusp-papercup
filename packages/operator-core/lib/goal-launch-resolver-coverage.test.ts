@@ -80,6 +80,19 @@ const ALLOWLIST: Record<string, string> = {
     'goal context exists, and the resolver performs administrative inbox triage rather than goal work. ' +
     'resolveGoalLaunch would therefore derive null and enforce no goal ceiling; wiring it here would add ' +
     'ceremonial coupling to an unrelated goal instead of governing a goal launch.',
+  'blueprint/operation-agent-placement.ts':
+    'The applied-worker placement for ACCEPTED blueprint operations (WI-10006859, D-017). Its launcher is the ' +
+    'routines tick, and the worker is launched with --launched-by system:blueprint-agent-operation-placement, so ' +
+    'bootstrap-su inherits no goal context onto it (D-008): the worker joins no goal, no goal headcount ever ' +
+    'counts it, and resolveGoalLaunch over that launcher resolves null on every call. A refusal here could not ' +
+    'defer the work either, only destroy it: the claim consumes one of the receipt\'s maxAttempts BEFORE the ' +
+    'launch (so a crash costs a retry window, never a duplicate worker), and a goal held at its ceiling would ' +
+    'retire an accepted operation after maxAttempts refused passes. Its bound is enforced in that same claiming ' +
+    'UPDATE under a transaction advisory lock: at most perWorkspaceLive (default 4) live placed workers per ' +
+    'workspace, counting ones still booting. The receipt\'s caller_id (operationCallerId: <principal slug>/' +
+    '<client id>) can name the session that invoked the operation; attributing placed workers to THAT ' +
+    'session\'s goal is a design change to the placement itself (WI-6554700010009834), not a check this door ' +
+    'can add.',
 };
 
 const COMPOSERS = /\b(buildAgentLaunchCommand|memberLaunchCommand)\s*\(/;

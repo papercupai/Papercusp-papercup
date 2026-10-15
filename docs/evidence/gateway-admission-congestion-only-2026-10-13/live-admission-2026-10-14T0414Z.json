@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "plan": "gateway-admission-congestion-only-2026-10-13",
+  "clauses": ["GW-LIVE-QUEUEWAIT@2", "AUTO-BAR-R-3-P-003@3", "GW-R-3-ATOMIC@1"],
+  "measuredAt": "2026-10-14T04:14:00Z",
+  "source": "GET http://127.0.0.1:8788/admin/stats (papercup-inference-gateway.service), distilled; account identities removed",
+  "gateway": {
+    "processStartedAtMs": 1791943509999,
+    "processUptimeMin": 125.5,
+    "queueDepth": 0,
+    "inFlight": 27
+  },
+  "codex": {
+    "admissionWindow": { "effective": 629, "floor": 4, "cap": 1389, "pressure": 0, "decreases": 11, "increases": 1958, "countersSinceMs": 1791943510001 },
+    "admission": { "running": 15, "queued": 0, "maxConcurrent": 629 },
+    "queueWaitMsRecent": { "n": 198, "p50": 414, "p95": 1044, "max": 1721 }
+  },
+  "claude": {
+    "admissionWindow": { "effective": 452, "floor": 4, "cap": 452, "pressure": 0, "decreases": 0, "increases": 412, "countersSinceMs": 1791943510001 },
+    "admission": { "running": 12, "queued": 0, "maxConcurrent": 452 },
+    "queueWaitMsRecent": { "n": 58, "p50": 778, "p95": 3752, "max": 8717 }
+  },
+  "allLanesQueueWaitMs": { "count": 19432, "retained": 4096, "p50": 759, "p95": 4829, "p99": 16899 },
+  "readings": {
+    "GW-LIVE-QUEUEWAIT": "Codex queueWait p50 414 ms (< 2 s) with queueDepth 0 (no herd queued); Codex window 629, far above its floor of 4; Claude window at its cap 452 with zero decreases since restart (unchanged).",
+    "R-3": "15 Codex requests running against a 629 window with 0 queued: in-flight streams do not exhaust admission slots or force queueing."
+  }
+}

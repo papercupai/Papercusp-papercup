@@ -27,6 +27,7 @@
  * so a demotion takes effect immediately whether or not the version moved.
  */
 import { getOrgPg } from '@papercusp/db-org/connection';
+import type { TransactionSql } from 'postgres';
 import {
   hostedPermissionsForMembership,
   isHostedMembershipStatus,
@@ -36,7 +37,7 @@ import {
 } from './hosted-role-permissions';
 import type { HostedPermission } from './hosted-principal';
 
-type SqlClient = ReturnType<typeof getOrgPg>['sql'];
+type SqlClient = ReturnType<typeof getOrgPg>['sql'] | TransactionSql;
 
 interface MembershipRow {
   organization_id: string;
@@ -108,6 +109,18 @@ export class PostgresHostedMembershipAuthority implements HostedMembershipAuthor
   constructor(private readonly sql: SqlClient = getOrgPg().sql) {}
 
   async resolveActive(input: { userId: string; organizationId: string }): Promise<HostedMembershipAuthority | null> {
+    return this.resolveActiveRow(input, false);
+  }
+
+  /** Keep membership revocation and demotion behind the admission transaction. */
+  async resolveActiveForUpdate(input: { userId: string; organizationId: string }): Promise<HostedMembershipAuthority | null> {
+    if (typeof (this.sql as { begin?: unknown }).begin === 'function') {
+      throw new Error('hosted_membership_lock_requires_transaction');
+    }
+    return this.resolveActiveRow(input, true);
+  }
+
+  private async resolveActiveRow(input: { userId: string; organizationId: string }, lock: boolean): Promise<HostedMembershipAuthority | null> {
     const userId = identifier(input.userId);
     const organizationId = identifier(input.organizationId);
     if (userId === null || organizationId === null) return null;
@@ -127,6 +140,7 @@ export class PostgresHostedMembershipAuthority implements HostedMembershipAuthor
          AND status = 'active'
          AND revoked_at IS NULL
        LIMIT 1
+       ${this.sql.unsafe(lock ? 'FOR UPDATE' : '')}
     `;
     if (rows.length === 0) return null;
     return toAuthority(rows[0]);
@@ -140,6 +154,22 @@ export class PostgresHostedMembershipAuthority implements HostedMembershipAuthor
     customerWorkspaceId: string;
     controlPlaneWorkspaceId: string;
   }): Promise<boolean> {
+    return this.workspaceBelongsToOrganizationRow(input, false);
+  }
+
+  /** Keep deletion and tenant reassignment behind the admission transaction. */
+  async workspaceBelongsToOrganizationForUpdate(
+    input: Parameters<HostedMembershipAuthorityReader['workspaceBelongsToOrganization']>[0],
+  ): Promise<boolean> {
+    if (typeof (this.sql as { begin?: unknown }).begin === 'function') {
+      throw new Error('hosted_workspace_lock_requires_transaction');
+    }
+    return this.workspaceBelongsToOrganizationRow(input, true);
+  }
+
+  private async workspaceBelongsToOrganizationRow(
+    input: Parameters<HostedMembershipAuthorityReader['workspaceBelongsToOrganization']>[0], lock: boolean,
+  ): Promise<boolean> {
     const userId = identifier(input.userId);
     const sessionId = identifier(input.sessionId);
     const organizationId = identifier(input.organizationId);
@@ -165,6 +195,7 @@ export class PostgresHostedMembershipAuthority implements HostedMembershipAuthor
          AND organization_id = ${organizationId}
          AND deleted_at IS NULL
        LIMIT 1
+       ${this.sql.unsafe(lock ? 'FOR UPDATE' : '')}
     `;
     return rows.length === 1;
   }

@@ -28,6 +28,14 @@ import {
   PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS,
   PG_READ_TXN_DEFAULT_TIMEOUT_MS,
 } from './pg-read-query';
+import {
+  BM25_LATENCY_CANARY_QUERIES,
+  bm25Health,
+  measureBm25Latency,
+  percentileMs,
+  type Bm25Health,
+  type Bm25Latency,
+} from './search/lexical/rank';
 
 export interface EndpointSpec {
   name: string;
@@ -758,10 +766,13 @@ export const PORTLESS_PROBE_NAMES = {
   bgHostTicker: 'bg-host-ticker',
   bgHostCode: 'bg-host-code',
   mcpProxyCode: 'mcp-proxy-code',
+  mcpProxyBgHostCode: 'mcp-proxy-bg-host-code',
   substrateSidecar: 'substrate-sidecar',
   embedSidecar: 'embed-sidecar',
   /** See {@link probeJournalCanary} (EI-15810, EI-2434 follow-up). */
   journalCanary: 'journal-canary',
+  /** See {@link probeBm25Lexical} (plan bm25-lexical-search-evoke-adoption-2026-10-10 P-004). */
+  bm25Lexical: 'bm25-lexical',
 } as const;
 
 /** Flat lookup for "is this name a portless probe target?" */
@@ -931,6 +942,12 @@ export const MCP_PROXY_HOT_PATHS = [
   'apps/operator/bin/mcp-proxy.ts',
 ] as const;
 
+/** The BG-host proxy also consumes its own systemd launch options. */
+export const MCP_PROXY_BG_HOST_HOT_PATHS = [
+  ...MCP_PROXY_HOT_PATHS,
+  'apps/operator/scripts/systemd/papercup-mcp-proxy-bg-host.service',
+] as const;
+
 /**
  * Pure verdict for bg-host CODE DRIFT (WI-1867), from the bg-host process start (ms)
  * + the newest hot-path ON-DISK CHANGE (ms; the bg-host tsx-loads the WORKING TREE at
@@ -1000,6 +1017,38 @@ export function evaluateMcpProxyCodeDrift(
       `the :9071 proxy is running STALE code until ` +
       `\`systemctl --user restart papercup-mcp-proxy.service\`.`,
   }, loadedIdentity, currentSourceSha, sourceChangedSinceLoaded);
+}
+
+/** Pure code-drift verdict for the separate BG-host MCP proxy on :9271. */
+export function evaluateMcpProxyBgHostCodeDrift(
+  bootMs: number | null,
+  hotChangeMs: number | null,
+  newestFile?: string | null,
+  loadedIdentity?: LoadedCodeIdentity | null,
+  currentSourceSha?: string | null,
+  sourceChangedSinceLoaded?: boolean | null,
+): ProbeResult {
+  return evaluateCodeDrift(
+    PORTLESS_PROBE_NAMES.mcpProxyBgHostCode,
+    bootMs,
+    hotChangeMs,
+    newestFile,
+    {
+      unknown: 'BG-host mcp-proxy code-drift unknown (boot time or hot-path change time unreadable)',
+      current: 'BG-host mcp-proxy code current (no proxy hot-path change on disk since its boot)',
+      drift: (behindMin, which) =>
+        `⚠ BG-host mcp-proxy CODE DRIFT: :9271 proxy code changed on disk${which} ~${behindMin}m AFTER papercup-mcp-proxy-bg-host booted — ` +
+        `the proxy tsx-loads the working tree with NO file-watch, so capture admission and retry behavior are running STALE code until dev:restart target mcp-proxy-bg-host is run.`,
+      identityCurrent: (loadedSha, expectedSha) =>
+        `BG-host mcp-proxy code current (loaded build ${loadedSha} matches current hot-path source at ${expectedSha}; mtime is only a fallback signal)`,
+      identityDrift: (loadedSha, expectedSha, identity) =>
+        `⚠ BG-host mcp-proxy CODE DRIFT: loaded build ${loadedSha} from ${identityLabel(identity)} differs from current source ${expectedSha} — ` +
+        `the :9271 proxy is running STALE code until dev:restart target mcp-proxy-bg-host is run.`,
+    },
+    loadedIdentity,
+    currentSourceSha,
+    sourceChangedSinceLoaded,
+  );
 }
 
 /** Shared pure verdict for a "tsx-loads the working tree, no file-watch" unit: process
@@ -1202,6 +1251,21 @@ export async function probeMcpProxyCodeDrift(now: number = Date.now()): Promise<
   );
 }
 
+/** Probe the separate :9271 BG-host MCP proxy against the same source tree. */
+export async function probeMcpProxyBgHostCodeDrift(now: number = Date.now()): Promise<ProbeResult> {
+  return probeCodeDrift(
+    {
+      name: PORTLESS_PROBE_NAMES.mcpProxyBgHostCode,
+      unit: 'papercup-mcp-proxy-bg-host',
+      hotPaths: MCP_PROXY_BG_HOST_HOT_PATHS,
+      evaluate: evaluateMcpProxyBgHostCodeDrift,
+      platformNote: 'BG-host mcp-proxy code-drift probe is Linux/systemd-only — not applicable on this platform',
+      failedNote: 'BG-host mcp-proxy code-drift unknown (probe failed)',
+    },
+    now,
+  );
+}
+
 /**
  * Keep the runtime-vintage lookup inside the same bounded read-only transaction
  * used by the other operator diagnostics. The explicit acquisition deadline
@@ -1259,9 +1323,8 @@ async function probeCodeDrift(
     };
   }
   try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    const run = promisify(execFile);
+    // Every git/find below goes through the spawner sidecar (WI-10005118), never a local fork.
+    const run = defaultCodeDriftExec;
     // Boot time via the SHARED systemd probe (agent-tools/dev/systemd-service-probe)
     // rather than a second inline systemctl+ps: it already handles the unit-type
     // suffix correctly (EI-18700974567040702) and distinguishes "MainPID 0 = not
@@ -1550,7 +1613,30 @@ export async function probeEmbedSidecar(
         note: 'embed sidecar not enabled on this host (PAPERCUSP_EMBED_SIDECAR/…_URL unset) — nothing to probe',
       };
     }
-    url = (explicitUrl ?? spawnMod.embedSidecarLocalUrl()).replace(/\/$/, '');
+    const resolved = explicitUrl ?? spawnMod.embedSidecarLocalUrl();
+    if (!explicitUrl && spawnMod.embedSidecarIdleByDesign()) {
+      return {
+        name,
+        up: true,
+        status: null,
+        latencyMs: Date.now() - start,
+        present: false,
+        note: 'embed sidecar is exiting idle (announced) — the next embed re-launches it; nothing to probe',
+      };
+    }
+    if (!resolved) {
+      // P-530: this Server spawns its sidecar on demand and none is running
+      // now (not started yet, or it exited idle). Not an outage.
+      return {
+        name,
+        up: true,
+        status: null,
+        latencyMs: Date.now() - start,
+        present: false,
+        note: 'embed sidecar is spawned on demand by this Server and is not running now — nothing to probe',
+      };
+    }
+    url = resolved.replace(/\/$/, '');
   } catch {
     return { name, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'embed-sidecar liveness unknown (spawn-module read failed)' };
   }
@@ -1560,12 +1646,32 @@ export async function probeEmbedSidecar(
     : exercise
       ? EMBED_SIDECAR_EXERCISE_PROBE_TIMEOUT_MS
       : EMBED_SIDECAR_FUNCTIONAL_PROBE_TIMEOUT_MS;
+  // P-532b: a per-tenant sidecar exits after 5 idle minutes. Its idle clock must not count
+  // this probe, and a sidecar that exits idle WHILE this probe runs is "not running", not DOWN.
+  const { EMBED_SIDECAR_PROBE_HEADER } = await import('./memory/embed-sidecar-server');
+  const exitedIdleMeanwhile = async (): Promise<ProbeResult | null> => {
+    if (process.env.PAPERCUSP_EMBED_SIDECAR_URL) return null;
+    try {
+      const spawnMod = await import('./memory/embed-sidecar-spawn');
+      if (!spawnMod.embedSidecarIdleByDesign()) return null;
+    } catch {
+      return null;
+    }
+    return {
+      name,
+      up: true,
+      status: null,
+      latencyMs: Date.now() - start,
+      present: false,
+      note: 'embed sidecar exited idle while this probe ran — the next embed re-launches it; not an outage',
+    };
+  };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), budgetMs);
   try {
     const response = await fetch(embedUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', [EMBED_SIDECAR_PROBE_HEADER]: '1' },
       body: JSON.stringify({
         model: 'gemma',
         kind: 'query',
@@ -1580,6 +1686,8 @@ export async function probeEmbedSidecar(
       signal: ctl.signal,
     });
     if (!response.ok) {
+      const idle = await exitedIdleMeanwhile();
+      if (idle) return idle;
       return {
         name,
         up: false,
@@ -1685,6 +1793,8 @@ export async function probeEmbedSidecar(
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    const idle = await exitedIdleMeanwhile();
+    if (idle) return idle;
     return {
       name,
       up: false,
@@ -1804,11 +1914,49 @@ export async function resolveOwnServiceUnit(): Promise<string | null> {
   }
 }
 
-async function defaultJournalCanaryExec(args: string[], timeoutMs: number): Promise<{ stdout: string }> {
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  const run = promisify(execFile);
-  return run('journalctl', args, { timeout: timeoutMs, maxBuffer: 64 * 1024 });
+/** Per-site kill-switch for the code-drift probes' sidecar route (`0` = force a local spawn). */
+export const CODE_DRIFT_SIDECAR_VAR = 'PAPERCUSP_CODE_DRIFT_SPAWN_SIDECAR';
+
+/**
+ * The production exec for the code-drift probes (`git rev-parse`, `git diff --name-only`,
+ * `find -printf`): forked by the spawner sidecar where this host has one. WI-10005118: a 30 s
+ * main-thread CPU profile of a 3.5 GB bg-host put probeCodeDrift at 47% of the main thread's
+ * spawn self time, because a local fork copies the parent's page tables (cost grows with RSS).
+ * Same contract as promisify(execFile): resolves on exit 0, rejects with `.code`/`.stdout` otherwise.
+ */
+export async function defaultCodeDriftExec(
+  file: string,
+  args: string[],
+  options: { cwd?: string; timeout: number; maxBuffer?: number },
+): Promise<{ stdout: string }> {
+  const { execFileViaSidecar } = await import('./fleet/git-via-sidecar');
+  const { stdout } = await execFileViaSidecar(file, args, {
+    timeoutMs: options.timeout,
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.maxBuffer !== undefined ? { maxBuffer: options.maxBuffer } : {}),
+    subsystem: 'code-drift-probe',
+    sidecarVar: CODE_DRIFT_SIDECAR_VAR,
+  });
+  return { stdout };
+}
+
+/** Per-site kill-switch for the journal canary's sidecar route (`0` = force a local spawn). */
+export const JOURNAL_CANARY_SIDECAR_VAR = 'PAPERCUSP_JOURNAL_CANARY_SPAWN_SIDECAR';
+
+/**
+ * The production canary read: `journalctl` forked by the spawner sidecar where this host
+ * has one (WI-10004975 — this per-tick read was ~10% of a 13 GB bg-host's spawn samples;
+ * a local fork costs time proportional to the parent's RSS). Exported for its routing test.
+ */
+export async function defaultJournalCanaryExec(args: string[], timeoutMs: number): Promise<{ stdout: string }> {
+  const { execFileViaSidecar } = await import('./fleet/git-via-sidecar');
+  const { stdout } = await execFileViaSidecar('journalctl', args, {
+    timeoutMs,
+    maxBuffer: 64 * 1024,
+    subsystem: 'journal-canary',
+    sidecarVar: JOURNAL_CANARY_SIDECAR_VAR,
+  });
+  return { stdout };
 }
 
 /** Render epoch milliseconds in journalctl's unambiguous `@epoch` grammar — never a
@@ -2023,6 +2171,26 @@ export interface SupervisionEntry {
    * `service-health-unit-coverage.test.ts` asserts this.
    */
   exitEncodesRunOnly?: boolean;
+  /**
+   * EI-24811958626062774: hold this report-only entry's DOWN broadcast until the unit has been
+   * continuously down for this many ms, and stay silent about a recovery that lands first.
+   *
+   * Report-only entries otherwise announce the first failed tick. That is right for a unit
+   * that fails rarely and wrong for one that fails in short self-clearing streaks. Measured on
+   * `papercup-staging-sync` over 3 days: 30 failure streaks, 14 of them a single failed run. A
+   * first-tick alarm there emits about 20 down/recovered broadcasts a day, almost all noise,
+   * and a channel that cries wolf is the one nobody reads when the 5-hour streak arrives.
+   *
+   * The clock counts the WHOLE episode, including runs in flight that did not recover it
+   * (`decideReconcile` holds state across them), so it measures how long the subject has
+   * actually been stuck. It is in-memory like the rest of the flap state: a bg-host restart
+   * restarts the clock, which delays one alarm and never invents one.
+   *
+   * INVARIANT: `notifyAfterDownMs ⇒ !autoRestart`. A restart-capable entry already pages on
+   * its own ladder (failed restart, give-up), and delaying that would hide a dead service.
+   * `service-health-unit-coverage.test.ts` asserts this.
+   */
+  notifyAfterDownMs?: number;
 }
 
 /**
@@ -2114,6 +2282,21 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // which is `static` and has no `[Install]` section — does NOT persist and WILL be undone).
   // `enable --now` to resume.
   { name: 'live-federation-gate-timer', layer: 'systemd-user', unit: 'papercup-live-federation-gate.timer', criticality: 'important', autoRestart: true },
+  // EI-24811958626062774: the job that moves :3170 forward. `Type=oneshot`, `RemainAfterExit=no`,
+  // fired ~every 5min by papercup-staging-sync.timer, so it is EPISODIC: idle `inactive` is
+  // healthy and only `failed` is down. When it fails, :3170 keeps serving its last build while
+  // staging moves on, and every agent verifying "current staging" there is reading stale code.
+  // Nothing watched it: on 2026-10-01 it exited FATAL on every tick from 20:16Z for 5+ hours
+  // (WorkingDirectory vs the `.current` alias) and was found only because one live verification
+  // needed :3170.
+  //
+  // `autoRestart: false`: re-running a failed sync just repeats the same FATAL; the failure is in
+  // the tree or the layout, which a restart cannot fix. `notifyAfterDownMs: 30min`: measured
+  // over 3 days, 30 failure streaks; at 30 min the alarm fires on the 31-69 min streaks and the
+  // 5-hour one, and stays quiet on the 14 single-run blips. The timer itself is not a separate
+  // entry: a stopped timer is a different failure (it stops running at all) and has not been
+  // observed here.
+  { name: 'staging-sync', layer: 'systemd-user', unit: 'papercup-staging-sync', criticality: 'important', autoRestart: false, episodic: true, notifyAfterDownMs: 30 * 60_000 },
   // WI-6149 (D-010 item 4): the oddsmith sidecar — persistent, probed on :46229
   // (see HEALTH_ENDPOINTS). `autoRestart: false` follows the `bg-host` precedent
   // directly above: the unit is already `Restart=always` at the systemd level, so
@@ -2179,6 +2362,69 @@ export function supervisedProcesses(filter?: { layer?: SupervisionLayer; autoRes
   );
 }
 
+/**
+ * How long one BM25 latency measurement stands. The canary set is eight top-10 queries;
+ * re-running it every service-health tick would add that load to the shared database for
+ * no new information, so the probe re-measures at most this often.
+ */
+export const BM25_LATENCY_REMEASURE_MS = 5 * 60_000;
+
+let lastBm25Latency: Bm25Latency | null = null;
+
+/** Test seam: forget the remembered latency measurement. */
+export function __resetBm25LatencyForTests(): void {
+  lastBm25Latency = null;
+}
+
+/** Map a BM25 health verdict onto a probe result (pure, so the mapping is unit-tested). */
+export function evaluateBm25Health(health: Bm25Health, latencyMs: number): ProbeResult {
+  const name = PORTLESS_PROBE_NAMES.bm25Lexical;
+  const latency = health.latency;
+  const p95CanaryIndex = latency && latency.samplesMs.length === BM25_LATENCY_CANARY_QUERIES.length
+    ? latency.samplesMs.indexOf(percentileMs(latency.samplesMs, 95))
+    : -1;
+  const p95Canary = p95CanaryIndex >= 0 ? BM25_LATENCY_CANARY_QUERIES[p95CanaryIndex] : undefined;
+  const p95Attribution = p95Canary && latency
+    ? ` (p95 canary ${JSON.stringify(p95Canary)}: ${latency.samplesMs[p95CanaryIndex]!.toFixed(1)}ms at ${new Date(latency.measuredAt).toISOString()})`
+    : '';
+  if (health.status === 'off') {
+    return { name, up: true, status: null, latencyMs, present: false, note: 'BM25_LEXICAL_RANKING is off: lexical search uses ts_rank by configuration' };
+  }
+  if (health.status === 'degraded') {
+    return { name, up: false, status: null, latencyMs, note: `BM25 degraded, lexical search is falling back to ts_rank: ${health.reason ?? 'unknown reason'}${p95Attribution}` };
+  }
+  const p95 = latency ? `, work-item p95 ${latency.p95Ms.toFixed(1)}ms of ${latency.budgetMs}ms` : '';
+  return { name, up: true, status: null, latencyMs, note: `BM25 ok: ${health.presentIndexes.length} index(es) present${p95}${p95Attribution}` };
+}
+
+/**
+ * The BM25 lexical-search health check (plan bm25-lexical-search-evoke-adoption-2026-10-10,
+ * P-004 / R-4): DOWN when the flag is on and pg_textsearch is not preloaded, the extension
+ * is not installed, a registered corpus has no valid BM25 index, or the work-item p95
+ * exceeds its budget. Fail-soft: a failed read is `present:false`, never a fabricated DOWN.
+ */
+export async function probeBm25Lexical(
+  deps: { read?: (latency: Bm25Latency | null) => Promise<{ health: Bm25Health; latency: Bm25Latency | null }>; now?: () => number } = {},
+): Promise<ProbeResult> {
+  const start = Date.now();
+  const now = deps.now ?? Date.now;
+  const remembered = lastBm25Latency && now() - lastBm25Latency.measuredAt < BM25_LATENCY_REMEASURE_MS ? lastBm25Latency : null;
+  const read = deps.read ?? ((cached: Bm25Latency | null) => boundedPgReadTxn(
+    async (tx) => {
+      const latency = cached ?? (await measureBm25Latency(tx));
+      return { health: await bm25Health(tx, { latency }), latency };
+    },
+    { timeoutMs: PG_READ_TXN_DEFAULT_TIMEOUT_MS, acquireTimeoutMs: PG_READ_TXN_DEFAULT_ACQUIRE_TIMEOUT_MS },
+  ));
+  try {
+    const { health, latency } = await read(remembered);
+    lastBm25Latency = latency;
+    return evaluateBm25Health(health, Date.now() - start);
+  } catch {
+    return { name: PORTLESS_PROBE_NAMES.bm25Lexical, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'BM25 health unknown (database read failed)' };
+  }
+}
+
 export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
   // The Tauri desktop has no HTTP endpoint — probe it from its local signals
   // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones; the
@@ -2187,17 +2433,19 @@ export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
   // the embed sidecar HAS a port but is opt-in, so its probe is present:false-aware
   // rather than a raw HEALTH_ENDPOINTS entry (phantom-DOWN guard).
   const probeSpecs = specs ?? resolveHealthEndpoints();
-  const [http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar, journalCanary] = await Promise.all([
+  const [http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, mcpProxyBgHostCode, substrateSidecar, embedSidecar, journalCanary, bm25Lexical] = await Promise.all([
     Promise.all(probeSpecs.map((s) => probeEndpoint(s))),
     probeDesktop(),
     probeBgHostTicker(),
     probeBgHostCodeDrift(),
     probeMcpProxyCodeDrift(),
+    probeMcpProxyBgHostCodeDrift(),
     probeSubstrateSidecar(),
     probeEmbedSidecar(),
     probeJournalCanary(),
+    probeBm25Lexical(),
   ]);
-  return [...http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, substrateSidecar, embedSidecar, journalCanary];
+  return [...http, desktop, bgHostTicker, bgHostCode, mcpProxyCode, mcpProxyBgHostCode, substrateSidecar, embedSidecar, journalCanary, bm25Lexical];
 }
 
 /**
@@ -2222,12 +2470,16 @@ export async function probeNamedService(name: string): Promise<ProbeResult | nul
       return probeBgHostCodeDrift();
     case PORTLESS_PROBE_NAMES.mcpProxyCode:
       return probeMcpProxyCodeDrift();
+    case PORTLESS_PROBE_NAMES.mcpProxyBgHostCode:
+      return probeMcpProxyBgHostCodeDrift();
     case PORTLESS_PROBE_NAMES.substrateSidecar:
       return probeSubstrateSidecar();
     case PORTLESS_PROBE_NAMES.embedSidecar:
       return probeEmbedSidecar();
     case PORTLESS_PROBE_NAMES.journalCanary:
       return probeJournalCanary();
+    case PORTLESS_PROBE_NAMES.bm25Lexical:
+      return probeBm25Lexical();
     default:
       return null;
   }
@@ -2310,6 +2562,15 @@ export function diffHealth(
  * HEALTH_ENDPOINTS for the measured restart rate behind that call.
  */
 export const DESKTOP_DOWN_CONFIRM_TICKS = 2;
+
+/**
+ * The operator probe resolves through `operatorApiBase()` to the current
+ * packaged listener. A single refused preflight can coincide with its brief
+ * restart/startup window, so use the same two-tick confirmation as the
+ * explicitly probed staging listener. A sustained outage still confirms on
+ * the next 60s health tick.
+ */
+export const OPERATOR_DOWN_CONFIRM_TICKS = 2;
 
 /**
  * WI-6146: damping is LOAD-BEARING for `staging-api`, not a nicety — without
@@ -2423,6 +2684,7 @@ export const JOURNAL_CANARY_DOWN_CONFIRM_TICKS = 2;
 
 export const DOWN_CONFIRM_TICKS: Readonly<Record<string, number>> = {
   [PORTLESS_PROBE_NAMES.desktop]: DESKTOP_DOWN_CONFIRM_TICKS,
+  operator: OPERATOR_DOWN_CONFIRM_TICKS,
   'staging-api': STAGING_API_DOWN_CONFIRM_TICKS,
   [PORTLESS_PROBE_NAMES.bgHostTicker]: BG_HOST_TICKER_DOWN_CONFIRM_TICKS,
   'oddsmith-sidecar': ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS,

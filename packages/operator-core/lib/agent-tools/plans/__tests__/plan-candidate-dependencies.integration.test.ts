@@ -5,10 +5,13 @@
  * rewrites one item line, making it the regression shape for the central seam.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { parsePlan } from '@papercusp/plan-parser';
 import setItemBlockedByTool from '../set-item-blocked-by';
+import { withPlanLock } from '../with-plan-lock';
+import { mutateWorkItemDependencies, mutateWorkItemDependenciesInTransaction } from '../../../dbos/work-item-deps-store';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './_pg-tool-fixture';
 
 const HARNESS = `zzz-candidate-deps-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -17,6 +20,48 @@ const SLUG = 'candidate-dependency-structured-writer';
 let fx: PlanPgFixture;
 let admin: postgres.Sql;
 let wsId: string;
+
+const workId = (item: string) => `WI-${HARNESS}-${item}`;
+const endpoint = (item: string) => ({ kind: 'feature', ref: `${HARNESS}#${workId(item)}` });
+
+async function seedPromotedItems() {
+  for (const item of ['P-001', 'P-002', 'external']) {
+    const payload = item === 'external' ? {} : {
+      plan_item: { plan_slug: SLUG, item_id: item, harness_slug: HARNESS },
+    };
+    await admin`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts, payload)
+      VALUES (${wsId}, ${HARNESS}, ${workId(item)}, 'feature', ${item}, 'open', 0, 0,
+        ${JSON.stringify(payload)}::text::jsonb)`;
+  }
+}
+
+async function seedEdge(blocked: string, blocker: string, independent = false) {
+  await mutateWorkItemDependencies({
+    workspaceId: DEFAULT_COORD_WORKSPACE, itemWorkspaceId: wsId,
+    mutations: [{ op: 'add', blocked: endpoint(blocked), blocker: endpoint(blocker),
+      ...(independent ? { createdBy: 'independent-author', satisfaction: 'success' as const } : {}) }],
+  }, { sql: admin });
+}
+
+async function liveEdges() {
+  return admin`
+    SELECT blocked_ref, blocker_ref, created_by, satisfaction FROM harness_shared.work_item_deps
+     WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+       AND blocked_ref LIKE ${`${HARNESS}#%`}
+     ORDER BY blocked_ref, blocker_ref`;
+}
+
+async function cleanupPromotedItems() {
+  await mutateWorkItemDependencies({ workspaceId: DEFAULT_COORD_WORKSPACE, itemWorkspaceId: wsId,
+    mutations: ['P-001', 'P-002', 'external'].flatMap((item) => [
+      { op: 'replace' as const, blocked: endpoint(item), blockers: [] },
+      { op: 'replace' as const, blocked: { kind: 'issue', ref: workId(item) }, blockers: [] },
+    ]),
+  }, { sql: admin });
+  await admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS}`;
+}
 
 function planBody(
   status: 'draft' | 'ready' | 'active',
@@ -88,15 +133,164 @@ beforeAll(async () => {
 }, 90_000);
 
 beforeEach(async () => {
+  await cleanupPromotedItems();
   await cleanupPlans(admin, wsId, HARNESS);
 });
 
 afterAll(async () => {
+  await cleanupPromotedItems().catch(() => {});
   await cleanupPlans(admin, wsId, HARNESS).catch(() => {});
   await fx?.dispose();
 });
 
 describe('withPlanLock candidate dependency admission — structured writer', () => {
+  it('preserves an independently authored blocker even when it overlaps a removed plan dependency', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready', { p2BlockedBy: ['P-001'] }));
+    await seedPromotedItems();
+    await seedEdge('P-002', 'P-001', true);
+    const before = await liveEdges();
+    await runSetBlockedBy('P-002', []);
+    expect(await liveEdges()).toEqual(before);
+  }, 60_000);
+
+  it('refuses an unresolved promoted blocker and preserves the prior plan', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready'));
+    await seedPromotedItems();
+    await admin`DELETE FROM harness_shared.work_items
+      WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND feature_id = ${workId('P-001')}`;
+    const before = await livePlan();
+    const result = await runSetBlockedBy('P-002', ['P-001']);
+    expect(result.counts).toEqual({ ok: 0, failed: 1 });
+    expect(await livePlan()).toEqual(before);
+    expect(await liveEdges()).toHaveLength(0);
+  }, 60_000);
+
+  it('rejects use of the coupled dependency writer inside a READ COMMITTED transaction', async () => {
+    await expect(admin.begin((tx) => mutateWorkItemDependenciesInTransaction(tx as unknown as postgres.Sql, {
+      workspaceId: DEFAULT_COORD_WORKSPACE, mutations: [],
+    }))).rejects.toThrow('requires a SERIALIZABLE admission transaction');
+  }, 60_000);
+
+  it('resolves promoted task endpoints to the canonical issue family', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready'));
+    await seedPromotedItems();
+    await admin`UPDATE harness_shared.work_items SET item_kind = 'task'
+      WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND feature_id = ${workId('P-002')}`;
+    expect((await runSetBlockedBy('P-002', ['P-001'])).counts).toEqual({ ok: 1, failed: 0 });
+    const edges = await admin`SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref
+      FROM harness_shared.work_item_deps WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
+        AND blocked_ref = ${workId('P-002')}`;
+    expect(edges).toMatchObject([{
+      blocked_kind: 'issue', blocked_ref: workId('P-002'),
+      blocker_kind: 'feature', blocker_ref: endpoint('P-001').ref,
+    }]);
+    await runSetBlockedBy('P-002', []);
+    expect(await admin`SELECT id FROM harness_shared.work_item_deps
+      WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE} AND blocked_ref = ${workId('P-002')}`).toHaveLength(0);
+  }, 60_000);
+
+  it('serializes concurrent promoted removals and additions without a stale reconciliation', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready', { p2BlockedBy: ['P-001'] }));
+    await seedPromotedItems();
+    await seedEdge('P-002', 'P-001');
+    const outcomes = await Promise.all([runSetBlockedBy('P-002', []), runSetBlockedBy('P-002', ['P-001'])]);
+    expect(outcomes.map((outcome) => outcome.counts)).toEqual([{ ok: 1, failed: 0 }, { ok: 1, failed: 0 }]);
+    const blockers = parsePlan((await livePlan()).content).items[1]!.blockedBy;
+    expect(await liveEdges()).toHaveLength(blockers.length);
+    if (blockers.length) expect(await liveEdges()).toMatchObject([{
+      blocked_ref: endpoint('P-002').ref, blocker_ref: endpoint('P-001').ref,
+    }]);
+  }, 60_000);
+
+  it('removes the last promoted blocker while preserving an independently authored success edge', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready', { p2BlockedBy: ['P-001'] }));
+    await seedPromotedItems();
+    await seedEdge('P-002', 'P-001');
+    await seedEdge('P-002', 'external', true);
+    const independent = (await liveEdges()).find((edge) => edge.blocker_ref === endpoint('external').ref);
+
+    expect((await runSetBlockedBy('P-002', [])).counts).toEqual({ ok: 1, failed: 0 });
+
+    expect(await liveEdges()).toEqual([independent]);
+    expect(parsePlan((await livePlan()).content).items[1]?.blockedBy).toEqual([]);
+  }, 60_000);
+
+  it('reconciles promoted blockers for a generic body write, including a removed plan item', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready', { p2BlockedBy: ['P-001'] }));
+    await seedPromotedItems();
+    await seedEdge('P-002', 'P-001');
+    const result = await withPlanLock(makeCtx(), {
+      harnessSlug: HARNESS, workspaceId: wsId, slug: SLUG, intent: 'remove promoted dependent',
+    }, async (body) => ({ newBody: body!.replace(/^- \*\*P-002\*\*.*\n/m, ''), value: true }));
+    expect(result.kind).toBe('applied');
+    expect(await liveEdges()).toHaveLength(0);
+  }, 60_000);
+
+  it('reorients promoted dependencies using one admitted batch rather than an intermediate cycle', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready', { p2BlockedBy: ['P-001'] }));
+    await seedPromotedItems();
+    await seedEdge('P-002', 'P-001');
+    const data = await runSetBlockedByArgs({ harness: HARNESS, items: [
+      { slug: SLUG, item: 'P-001', blockedBy: ['P-002'] },
+      { slug: SLUG, item: 'P-002', blockedBy: [] },
+    ] });
+    expect(data.counts).toEqual({ ok: 2, failed: 0 });
+    expect(await liveEdges()).toMatchObject([{
+      blocked_ref: endpoint('P-001').ref, blocker_ref: endpoint('P-002').ref,
+    }]);
+  }, 60_000);
+
+  it('rolls back the plan when canonical dependency admission refuses a new blocker behind active work', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready'));
+    await seedPromotedItems();
+    await admin`UPDATE harness_shared.work_items SET status = 'wip', taken_by = 'active-agent'
+      WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND feature_id = ${workId('P-002')}`;
+    const before = await livePlan();
+    const data = await runSetBlockedBy('P-002', ['P-001']);
+    expect(data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(await livePlan()).toEqual(before);
+    expect(await liveEdges()).toHaveLength(0);
+  }, 60_000);
+
+  it('rolls back both records on a coupled hook failure and keeps a later writer current', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready', { p2BlockedBy: ['P-001'] }));
+    await seedPromotedItems();
+    await seedEdge('P-002', 'P-001');
+    const before = await livePlan();
+    await expect(withPlanLock(makeCtx(), {
+      harnessSlug: HARNESS, workspaceId: wsId, slug: SLUG, intent: 'failed coupled write',
+      inTransaction: async () => { throw new Error('coupled-write-failure'); },
+    }, async (body) => ({ newBody: body!.replace(' blocked-by: P-001', ''), value: true })))
+      .rejects.toThrow('coupled-write-failure');
+    expect(await livePlan()).toEqual(before);
+    expect(await liveEdges()).toHaveLength(1);
+    await runSetBlockedBy('P-002', []);
+    await runSetBlockedBy('P-002', ['P-001']);
+    expect(await liveEdges()).toMatchObject([{
+      blocked_ref: endpoint('P-002').ref, blocker_ref: endpoint('P-001').ref,
+    }]);
+  }, 60_000);
+
+  it.each([
+    ['invalid_plan_dependencies', (body: string) => body.replace('status: draft', 'status: ready').replace('first', 'first blocked-by: P-001')],
+    ['child_seed_template_reserved', (body: string) => body.replace('status: draft', 'status: draft\ntemplate: child-seed')],
+    ['conversation_audit_required', (body: string) => body.replace('status: draft', 'status: ready')],
+  ] as const)('returns a distinct refused result for %s without writing or running hooks', async (code, candidate) => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('draft'));
+    const before = await livePlan();
+    const afterWrite = vi.fn();
+    const result = await withPlanLock(
+      makeCtx(), { harnessSlug: HARNESS, workspaceId: wsId, slug: SLUG, intent: 'typed refusal regression', afterWrite },
+      async (body) => ({ newBody: candidate(body!), value: { created: true } }),
+    );
+    expect(result.kind).toBe('refused');
+    if (result.kind !== 'refused') throw new Error('Expected central domain refusal');
+    expect(result.value).toMatchObject({ ok: false, code });
+    expect(result.value).not.toHaveProperty('created');
+    expect(await livePlan()).toEqual(before);
+    expect(afterWrite).not.toHaveBeenCalled();
+  });
+
   it('allows a draft forward ref, writes it, and surfaces invalid-draft evidence on the tool value', async () => {
     await seedPlan(admin, wsId, HARNESS, SLUG, planBody('draft'));
 

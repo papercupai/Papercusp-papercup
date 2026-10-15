@@ -731,3 +731,118 @@ describe('evaluateCloseTerminalCriteria (P-007)', () => {
     expect(outcome.result.claimsRemediation).toBe(false);
   });
 });
+
+/**
+ * Plan `bug-queue-legitimacy-and-actionable-validation-2026-10-10`, D-011 ruling A
+ * (SPEC-BQL-P-009-RECEIPT). The replayed close is EI-25318915268790777 as measured
+ * 2026-10-11: a reproduction-validation bug closed `done` with authority `committed` by
+ * shipping a fix, while its agent review still read revision-requested/reproduction. Every
+ * OTHER criterion passes on that close — it declared real files and a real verification — so
+ * only this criterion can tell it apart from an honest close.
+ */
+describe('reproduction-receipt criterion (D-011 A)', () => {
+  const pendingReproduction = {
+    agentReview: {
+      status: 'revision-requested',
+      revisionKind: 'reproduction',
+      submittedBy: 'su-submitter',
+      ledgerIdeaId: 'idea-1',
+      round: 2,
+    },
+  };
+  const honestFixClose = {
+    ...closeThatSurvived,
+    verifiedHow: 'unit+integration; added a regression test that fails without the change',
+    itemRef: 'EI-25318915268790777',
+  };
+
+  it('DOWNGRADES a successful bug close that skipped the reproduction it was returned for', () => {
+    const outcome = evaluateCloseTerminalCriteria({ ...honestFixClose, payload: pendingReproduction });
+    expect(outcome.result.ratings['durable-change'].rating).toBe('pass');
+    expect(outcome.result.ratings['forbidden-evidence-mode'].rating).toBe('pass');
+    expect(outcome.result.ratings['reproduction-receipt'].rating).toBe('fail');
+    expect(outcome.unmet).toEqual(['reproduction-receipt']);
+    // Downgrading BY DEFAULT, unlike durable-change: no declaration is needed to enforce it.
+    expect(outcome.downgrading).toEqual(['reproduction-receipt']);
+    expect(outcome.downgrade).toBe(true);
+  });
+
+  it('the warning names BOTH legitimate exits and says the close is still recorded', () => {
+    const outcome = evaluateCloseTerminalCriteria({ ...honestFixClose, payload: pendingReproduction });
+    expect(outcome.warning).toContain('reproduction-receipt');
+    expect(outcome.warning).toContain("improvements:agent-review { mode:'resubmit'");
+    expect(outcome.warning).toContain("state:'dropped'");
+    // D-003: downgrade, never refusal — a caller who reads "unmet" as "rejected" re-sends.
+    expect(outcome.warning).toContain('RECORDED');
+  });
+
+  it('FALSIFIABILITY CONTROL: the same close with no pending reproduction is not downgraded', () => {
+    for (const payload of [
+      undefined,
+      {},
+      { agentReview: { ...pendingReproduction.agentReview, revisionKind: 'content' } },
+      { agentReview: { ...pendingReproduction.agentReview, status: 'approved' } },
+      { agentReview: { ...pendingReproduction.agentReview, status: 'pending' } },
+    ]) {
+      const outcome = evaluateCloseTerminalCriteria({ ...honestFixClose, payload });
+      expect(outcome.result.ratings['reproduction-receipt'].rating).toBe('not-applicable');
+      expect(outcome.downgrade).toBe(false);
+      expect(outcome.warning).toBeUndefined();
+    }
+  });
+
+  it("the 'not reproducible' exit is open: a dropped close of a pending bug is not-applicable", () => {
+    const outcome = evaluateCloseTerminalCriteria({
+      itemKind: 'bug',
+      status: 'dropped',
+      filesChanged: [],
+      treeStamp: null,
+      verifiedHow: 'ran the scripted repro on the current build; it does not reproduce',
+      payload: pendingReproduction,
+      itemRef: 'EI-1',
+    });
+    expect(outcome.result.ratings['reproduction-receipt'].rating).toBe('not-applicable');
+    expect(outcome.downgrade).toBe(false);
+  });
+
+  it.each([
+    ['a duplicate close (superseded by its survivor)', { terminalReason: 'duplicate' }],
+    ['a not-reproducible disposition', { terminalReason: 'not-reproducible' }],
+    ['a non-bug kind', { itemKind: 'change' }],
+  ])('rates %s not-applicable', (_label, override) => {
+    const outcome = evaluateCloseTerminalCriteria({ ...honestFixClose, ...override, payload: pendingReproduction });
+    expect(outcome.result.ratings['reproduction-receipt'].rating).toBe('not-applicable');
+    expect(outcome.downgrading).not.toContain('reproduction-receipt');
+  });
+
+  it('a requireDurableChange declaration widening the remediating kinds does NOT widen this criterion', () => {
+    // Only `bug` rows carry the reproduction gate; widening durable-change onto `task` must
+    // not drag a task with a stray review block into a reproduction requirement.
+    const outcome = evaluateCloseTerminalCriteria({
+      ...honestFixClose,
+      itemKind: 'task',
+      payload: { ...pendingReproduction, terminalCriteria: { requireDurableChange: true } },
+    });
+    expect(outcome.resolved.requireDurableChange).toBe(true);
+    expect(outcome.result.ratings['reproduction-receipt'].rating).toBe('not-applicable');
+  });
+
+  it('may only TIGHTEN: an explicit false cannot wave a payload-pending row through', () => {
+    const outcome = evaluateCloseTerminalCriteria({
+      ...honestFixClose,
+      reproductionValidationPending: false,
+      payload: pendingReproduction,
+    });
+    expect(outcome.result.ratings['reproduction-receipt'].rating).toBe('fail');
+    expect(outcome.downgrade).toBe(true);
+  });
+
+  it('the pure evaluator stands down when pending was not observed, and fails when it was', () => {
+    const base: TerminalCriteriaInput = { ...closeThatSurvived, verifiedHow: 'unit' };
+    expect(evaluateTerminalCriteria(base).ratings['reproduction-receipt'].rating).toBe('not-applicable');
+    const pending = evaluateTerminalCriteria({ ...base, reproductionValidationPending: true });
+    expect(pending.ratings['reproduction-receipt'].rating).toBe('fail');
+    expect(pending.wouldBlock).toEqual(['reproduction-receipt']);
+    expect(pending.verdict).toBe('fail');
+  });
+});

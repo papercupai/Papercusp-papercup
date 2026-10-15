@@ -117,6 +117,18 @@ describe('refsFromInvocations — the trace is a pointer set, not a transcript',
     expect(refsFromInvocations(rows, 3)).toHaveLength(3);
   });
 
+  it('checks named subjects from a 23-item batch beyond eight later unrelated reads without fabricating missing reads', () => {
+    const recent = Array.from({ length: 8 }, (_, i) => inv('work_items:get', { id: 'WI-' + (9000 + i) }, 1));
+    const ids = Array.from({ length: 23 }, (_, i) => 'WI-' + (1000 + i));
+    const rows = [...recent, inv('work_items:get', { ids }, 10)];
+    const required = ['work-item:WI-1020', 'work-item:WI-1021', 'work-item:WI-1022', 'work-item:WI-99999'];
+    const basis = refsFromInvocations(rows, BASED_ON_MAX_ENTRIES, required);
+    expect(basis.slice(0, BASED_ON_MAX_ENTRIES)).toEqual(refsFromInvocations(rows));
+    expect(basis.slice(BASED_ON_MAX_ENTRIES).map((entry) => entry.ref)).toEqual(required.slice(0, 3));
+    expect(basis.map((entry) => entry.ref)).not.toContain('work-item:WI-99999');
+    expect(basis.find((entry) => entry.ref === 'work-item:WI-1022')?.readAt).toBe(at(10));
+  });
+
   it('skips unmapped tools and survives a malformed args bag', () => {
     const out = refsFromInvocations([
       inv('coord:send', { to: ['x'] }),

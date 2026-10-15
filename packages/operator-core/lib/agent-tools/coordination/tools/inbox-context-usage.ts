@@ -19,6 +19,16 @@ export interface ObservedPromptFloor {
   observations: number;
 }
 
+/** Provenance for the numerator used by the live inbox gauge. */
+export type ContextGaugeReadingSource = 'live-transcript-bytes/4' | 'watchdog-cache';
+
+/** The live transcript estimate wins; the watchdog value is used only when it cannot be read. */
+export function contextGaugeReadingSource(
+  liveContextTokens: number | null | undefined,
+): ContextGaugeReadingSource {
+  return liveContextTokens == null ? 'watchdog-cache' : 'live-transcript-bytes/4';
+}
+
 /**
  * A conservative lower bound on conversation room. The observed floor can
  * include first-turn conversation content, so it may overstate the fixed prefix;
@@ -44,12 +54,18 @@ function renderContextFact(
   compactionLimit: number,
   pct: number,
   observedPromptFloor?: ObservedPromptFloor | null,
+  readingSource?: ContextGaugeReadingSource,
 ): string {
   const runway = usableRunwayFromObservedPromptFloor(compactionLimit, observedPromptFloor);
   const measured = runway == null || !observedPromptFloor
     ? ''
     : `; observed-input floor ${Math.floor(observedPromptFloor.tokens)} (${observedPromptFloor.observations} sample${observedPromptFloor.observations === 1 ? '' : 's'}), conservative usable runway ${runway}`;
-  return `context: ${contextTokens}/${compactionLimit} (${pct}%)${measured}`;
+  const source = readingSource === 'live-transcript-bytes/4'
+    ? '; count source: live transcript-size estimate (bytes/4)'
+    : readingSource === 'watchdog-cache'
+      ? '; count source: watchdog-cached estimate'
+      : '';
+  return `context: ${contextTokens}/${compactionLimit} (${pct}%)${measured}${source}`;
 }
 
 /**
@@ -82,10 +98,11 @@ export function renderContextUsageLine(
   selfCompactionAvailable: boolean | null = null,
   fleetWindDownLoopEndAuthorized: boolean | null = null,
   observedPromptFloor: ObservedPromptFloor | null = null,
+  readingSource?: ContextGaugeReadingSource,
 ): string | null {
   const pct = contextUsagePct(contextTokens, compactionLimit);
   if (pct == null || contextTokens == null || !compactionLimit) return null;
-  let line = renderContextFact(contextTokens, compactionLimit, pct, observedPromptFloor);
+  let line = renderContextFact(contextTokens, compactionLimit, pct, observedPromptFloor, readingSource);
   if (pct >= COMPACTION_HINT_PCT) {
     const windDownLoopEnd =
       pct >= CONTEXT_GAUGE_CRITICAL_PCT &&
@@ -137,11 +154,12 @@ export function renderBandedContextGauge(
   selfCompactionAvailable: boolean | null = null,
   fleetWindDownLoopEndAuthorized: boolean | null = null,
   observedPromptFloor: ObservedPromptFloor | null = null,
+  readingSource?: ContextGaugeReadingSource,
 ): string | null {
   const pct = contextUsagePct(contextTokens, compactionLimit);
   const band = contextGaugeBand(pct);
   if (band == null || pct == null || contextTokens == null || !compactionLimit) return null;
-  const fact = renderContextFact(contextTokens, compactionLimit, pct, observedPromptFloor);
+  const fact = renderContextFact(contextTokens, compactionLimit, pct, observedPromptFloor, readingSource);
   switch (band) {
     case 'quiet':
       return fact;
@@ -156,7 +174,9 @@ export function renderBandedContextGauge(
           ? `point and call loop:end under the typed fleet wind-down authorization; preserve the session and do not call session:end or respawn.`
           : selfCompactionAvailable === false
           ? `point soon; self-compaction is unavailable to this session (no supported live psu-pty host), so keep the loop armed and end for the next wake.`
-          : `point soon and call session:request-compaction with a focus.`)
+          : selfCompactionAvailable === true
+          ? `point soon and call session:request-compaction with a focus.`
+          : `point soon; use this session's supported continuation path and keep any required loop armed.`)
       );
     case 'critical':
       return (
@@ -165,7 +185,10 @@ export function renderBandedContextGauge(
           ? `then call loop:end under the typed fleet wind-down authorization; preserve the session and do not call session:end or respawn.`
           : selfCompactionAvailable === false
           ? `then keep the loop armed and end at the nearest stopping point for the next wake; self-compaction is unavailable to this session (no supported live psu-pty host).`
-          : `then call session:request-compaction with a focus NOW, at the nearest stopping ` +
+          : selfCompactionAvailable === true
+          ? `then call session:request-compaction with a focus NOW, at the nearest stopping ` +
+            `point — do not merely narrate ending the turn.`
+          : `then use this session's supported continuation path NOW, at the nearest stopping ` +
             `point — do not merely narrate ending the turn.`)
       );
   }

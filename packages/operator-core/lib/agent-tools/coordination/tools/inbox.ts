@@ -13,10 +13,12 @@ import {
   COORD_EXECUTABLE_KINDS,
   type CoordKind,
 } from "@papercusp/coordination/core";
-import { resolveAgentIdentity } from "../identity";
+import { resolveAgentIdentity, senderMatchesFilter, verifiedSpawnSessionAlias } from "../identity";
 import { resolveActorIdentity, actorMailboxKeys } from "../actor-identity";
 import {
   readInbox,
+  readDirectedInbox,
+  mergeInboxEntries,
   drainAndDeliverUserMailbox,
   getSupersededMap,
   getRemoteOriginMsgIds,
@@ -39,8 +41,11 @@ import {
   isDirectedDelivery,
   excludeIntentDeclares,
   coalesceRepeatedBroadcasts,
+  changedSystemNoticeDelivery,
+  relevantSystemNoticeDelivery,
   inboxPriorityBucket,
   prioritizedInboxWindow,
+  expandInboxChunkGroupsForMessageIds,
 } from "../inbox-visibility";
 import { COORD_READ_ROLES } from "../roles";
 import { renderInjection, type CoordLineSource } from "../../../coord-schema";
@@ -51,9 +56,11 @@ import { annotateBlockedOnStatus } from "../blocked-on-status";
 import { resolveBestEffort, knownOwnerIdSet } from "../recipient-resolve";
 import {
   BODY_REF_SNIPPET_CHARS,
+  canonicalRefKey,
   detectEntryBodyRefs,
   isBodyRefEligible,
   readBodyRefsOptOut,
+  type HydratableRef,
   type HydratedRef,
 } from "../ref-hydrate";
 import {
@@ -63,18 +70,32 @@ import {
   CONTEXT_GAUGE_CRITICAL_PCT,
   CONTEXT_GAUGE_LOUD_PCT,
   CONTEXT_GAUGE_QUIET_PCT,
+  contextGaugeReadingSource,
+  type ContextGaugeReadingSource,
 } from "./inbox-context-usage";
 import { readFleetWindDownLoopEndAuthorization } from "./continuation-gate";
 import { readPriorRespawnOutcome, lostRespawnAmbientLine } from "../../../carry-respawn-outcome";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
 import { currentContextTokensForOwner } from "../../../compaction-usage";
 import { getContextUsage } from "../../../system-health/context-usage-cache";
-import { selfCompactionAvailability } from "../../../events/await/psu-pty-discovery";
+import { selfCompactionAvailabilityAsync } from "../../../events/await/psu-pty-discovery";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
-import { fetchUnansweredDirected } from "../unanswered-directed";
+import { fetchUnansweredDirected, type UnansweredDirectedEntry } from "../unanswered-directed";
 import { authoredFieldsMarker } from "../message-fields";
+import {
+  asSevereEventEmitter,
+  renderSevereEventEmitter,
+  SEVERE_EVENT_EMITTER_RULE,
+} from "../../../severe-event-emitter";
+import {
+  BAKED_DOOR_CONSTANTS,
+  CHARS_PER_TOKEN_ESTIMATE,
+  computeTurnDoors,
+  type DoorConstants,
+} from "../../../context-doors";
+import { getDoorConstantsSync } from "../../../context-doors-config";
 import { annotateMessageAge } from "../message-age";
 import {
   DEFAULT_INBOX_LIMIT,
@@ -479,6 +500,136 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
   });
 }
 
+/** P-006 (oversized-tool-results-reduction-2026-10-12): `body` is the flattened
+ *  projection of `sections[].text` (message-fields.ts joins the texts with a
+ *  blank line), and `boundInboxEntries` caps each copy separately. So a bounded
+ *  read of a sectioned message paid for the same prose twice. Measured on 67 real
+ *  coord:inbox spills: 46 of the 63 entries carrying both had duplicated text.
+ *
+ *  When `body` is exactly that join, keep `body` as the single text copy and
+ *  strip `text` from each section, preserving every structural key
+ *  (`authoredFieldsMarker` reads only those). A kept array stays index-aligned
+ *  with the body's blank-line-separated paragraphs and carries
+ *  `sections_text_in_body: true`. If no section keeps a key, the array is dropped.
+ *  An entry whose body is not exactly the join (legacy, malformed) is returned
+ *  untouched. coord:read and coord:thread still return the full sections.
+ *  Pure. */
+export function dropSectionTextDuplicatedInBody<T extends Record<string, unknown>>(
+  entries: readonly T[],
+): Array<Record<string, unknown>> {
+  return entries.map((e) => {
+    const body = e["body"];
+    const raw = e["sections"];
+    if (typeof body !== "string" || !Array.isArray(raw) || raw.length === 0) return e;
+    const texts: string[] = [];
+    for (const s of raw) {
+      if (!s || typeof s !== "object") return e;
+      const text = (s as Record<string, unknown>)["text"];
+      if (typeof text !== "string") return e;
+      texts.push(text);
+    }
+    if (texts.join("\n\n") !== body) return e;
+    const stripped = raw.map((s) => {
+      const { text: _text, ...rest } = s as Record<string, unknown>;
+      return rest;
+    });
+    const out: Record<string, unknown> = { ...e };
+    if (stripped.some((s) => Object.keys(s).length > 0)) {
+      out["sections"] = stripped;
+      out["sections_text_in_body"] = true;
+    } else {
+      delete out["sections"];
+    }
+    return out;
+  });
+}
+
+/** P-006 (oversized-tool-results-reduction-2026-10-12): a severe-event alarm's body
+ *  ends with the emitter trailer (renderSevereEventEmitter): about 260 chars that
+ *  restate the entry's structured `emitter` field plus one fixed interpretation
+ *  rule. Bounded reads clip a body from the HEAD (tail-biased, because an agent
+ *  message puts its ask last), so a default read kept the identical trailer on
+ *  every clipped alarm and dropped the alarm's own text. Measured 2026-10-13 on a
+ *  no-args read: 42 of 50 entries were clipped, and every clipped body kept only
+ *  the trailer.
+ *
+ *  Strip the trailer only when it is exactly what the renderer produces for the
+ *  entry's own `emitter`, so that field still carries pid / startedAt / uptimeSec
+ *  / cwd. `body_full_chars` then measures the body without its trailer, and
+ *  coord:read still returns the stored body. Returns how many were stripped so the
+ *  caller states the rule once per result. Pure. */
+export function stripSevereEventEmitterTrailer<T extends Record<string, unknown>>(
+  entries: readonly T[],
+): { entries: Array<Record<string, unknown>>; stripped: number } {
+  let stripped = 0;
+  const out = entries.map((e): Record<string, unknown> => {
+    const body = e["body"];
+    const emitter = asSevereEventEmitter(e["emitter"]);
+    if (typeof body !== "string" || !emitter) return e;
+    const trailer = renderSevereEventEmitter(emitter);
+    if (!body.endsWith(trailer)) return e;
+    stripped++;
+    return { ...e, body: body.slice(0, body.length - trailer.length) };
+  });
+  return { entries: out, stripped };
+}
+
+/** The once-per-result note that replaces N stripped emitter trailers. */
+export function severeEventEmitterNote(stripped: number): string {
+  return (
+    `${stripped} alarm bod${stripped === 1 ? "y omits its" : "ies omit their"} emitter trailer; ` +
+    "each entry's emitter.startedAt is when its emitting process started. " +
+    SEVERE_EVENT_EMITTER_RULE
+  );
+}
+
+/** P-006 D-002 (oversized-tool-results-reduction-2026-10-12): share of the caller's
+ *  result door a DEFAULT read may spend on entries. The rest covers summary,
+ *  injection and recent, plus annotations added after the fit (authored,
+ *  superseded, age, blocked-on). */
+export const INBOX_DEFAULT_WINDOW_DOOR_SHARE = 0.6;
+
+/** Chars a default read's entries may fill: a share of the caller's own result door,
+ *  from the same constants the result-door enforcer uses (result-door.ts). */
+export function inboxDefaultWindowChars(ownerId?: string | null): number {
+  let constants: DoorConstants = BAKED_DOOR_CONSTANTS;
+  try {
+    constants = getDoorConstantsSync(ownerId);
+  } catch {
+    // The baked floor is the enforcer's own fallback.
+  }
+  return Math.floor(
+    computeTurnDoors(0, constants).resultEach * CHARS_PER_TOKEN_ESTIMATE * INBOX_DEFAULT_WINDOW_DOOR_SHARE,
+  );
+}
+
+/** P-006 D-002: a no-args read returned 50 entries at p50 61KB against a ~6KB door, so
+ *  every default read spilled and the agent saw a mid-JSON prefix. Trim the default
+ *  window, in priority order, to what fits `budgetChars` once shaped at `cap`. Each
+ *  entry is measured after the same single-copy and bounding steps the read applies.
+ *  Keeps at least one entry, and stops at the first that does not fit so the kept set
+ *  stays a priority prefix. The caller runs this BEFORE read receipts and the shown
+ *  watermark, so a trimmed entry is never reported to its sender as seen. Pure. */
+export function fitInboxWindowToChars<T extends Record<string, unknown>>(
+  window: readonly T[],
+  cap: number,
+  budgetChars: number,
+): { kept: T[]; omitted: number } {
+  const kept: T[] = [];
+  let used = 0;
+  for (const e of window) {
+    const shaped = boundInboxEntries(
+      stripSevereEventEmitterTrailer(dropSectionTextDuplicatedInBody([e])).entries,
+      cap,
+    )[0];
+    const n = JSON.stringify(shaped).length + 1;
+    if (kept.length > 0 && used + n > budgetChars) break;
+    kept.push(e);
+    used += n;
+  }
+  return { kept, omitted: window.length - kept.length };
+}
+
 /** The warning attached to a REMOTE-ORIGIN entry that asserts infrastructure
  *  state. Deliberately names the misreading it prevents AND the destructive act
  *  such alarms prescribe, because both were observed (EI-19493603840800478). */
@@ -614,26 +765,38 @@ export function filterInboxBySender<T extends { from?: unknown }>(
   from: string | undefined | null,
 ): readonly T[] {
   if (!from) return entries;
-  return entries.filter((e) => e.from === from);
+  // WI-10005678: a verified spawn session (an acceptance judge) sends as
+  // `system:<role>/<id>`, so a filter naming its bare `<id>` must still match.
+  return entries.filter((e) => senderMatchesFilter(e.from, from));
 }
 
 /**
- * EI-13159: keep only entries whose `msg_id` is in the caller's unanswered-
- * directed set — the exact set `fleet:assignments`' `unanswered_directed`
- * counter and `fleet:leader-brief` are built from (unanswered-directed.ts),
- * so a `coord:inbox { unanswered_only: true }` read can never disagree with
- * what those surfaces flagged. `undefined`/`null` unansweredMsgIds (the
- * filter wasn't requested) is a no-op passthrough. Pure — unit-tested without
- * PG or a live handler.
+ * EI-13159: keep entries in the caller's unanswered-directed set — the exact
+ * msg_ids `fleet:assignments` and `fleet:leader-brief` flag — while preserving
+ * every available part of a matching chunked message. Only a chunk's final
+ * part can carry the reply expectation, so an exact-row filter would otherwise
+ * discard the context parts and make the inbox's complete-group window hide the
+ * outstanding ask. `undefined`/`null` (filter not requested) is a no-op.
+ * Pure — unit-tested without PG or a live handler.
  */
 export function filterInboxByUnanswered<T extends { msg_id?: unknown }>(
   entries: readonly T[],
   unansweredMsgIds: ReadonlySet<string> | undefined | null,
 ): readonly T[] {
   if (!unansweredMsgIds) return entries;
-  return entries.filter(
-    (e) => typeof e.msg_id === "string" && unansweredMsgIds.has(e.msg_id),
-  );
+  return expandInboxChunkGroupsForMessageIds(
+    entries as unknown as readonly Record<string, unknown>[],
+    unansweredMsgIds,
+  ) as unknown as readonly T[];
+}
+
+/** Only messages whose sender is not positively ended still need a reply. */
+export function replyOwedMessageIds(
+  entries: readonly Pick<UnansweredDirectedEntry, "msgId" | "senderState">[],
+): ReadonlySet<string> {
+  // newest spans both liveness populations for display. Unknown or unmeasured
+  // liveness stays actionable; only positive ended evidence demotes a message.
+  return new Set(entries.filter((entry) => entry.senderState !== "ended").map((entry) => entry.msgId));
 }
 
 /**
@@ -688,6 +851,8 @@ export interface InboxDeliveryFloor {
   /** Committed floor from the caller's OWN server-side read cursor. Never a
    *  client-reported wall-clock timestamp. */
   __deliveryFloorTs?: string | null;
+  /** Internal committed notice fingerprints; absence preserves public VIEW reads. */
+  __systemNoticeState?: unknown;
 }
 
 function internalDeliveryFloor(args: unknown): string | undefined {
@@ -698,7 +863,7 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default 50). Ambient system broadcasts are excluded by default; include_ambient shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
+    "Read messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus a priority-ranked (not newest-first) window (default: what fits one result). Ambient system broadcasts are excluded unless include_ambient. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — ignore it. An entry with `superseded_by` was corrected — follow that msg_id. " +
       COORD_KIND_FILTER_DESCRIPTION +
       " `recent` mirrors `entries` as bare `msg_id`s (cross-surface alias; look up the row in `entries`)." +
       " This is a VIEW, not a delta: re-reading the same window does not empty it.",
@@ -897,7 +1062,7 @@ export default defineTool({
       .max(500)
       .optional()
       .describe(
-        `Max entries returned (most-recent kept). Default ${DEFAULT_INBOX_LIMIT}.`,
+        `Max entries in the priority-ranked window; newest-first overall is not guaranteed. Default: what fits one result, max ${DEFAULT_INBOX_LIMIT}.`,
       ),
     include_ambient: z
       .boolean()
@@ -958,6 +1123,7 @@ export default defineTool({
     const inboxContext = ctx as {
       contextTier?: keyof typeof INBOX_TIER_DEFAULTS;
       payloadTierOverride?: keyof typeof INBOX_TIER_DEFAULTS;
+      indirectDispatch?: boolean;
     };
     const sessionTier = inboxContext.contextTier;
     const explicitFullRequest = inboxContext.payloadTierOverride === "full";
@@ -980,6 +1146,94 @@ export default defineTool({
     // P-001: hoisted above the derive because it participates in the windowing
     // decision below, not just the post-read filtering.
     const directedOnly = args.directed === true;
+    // Opt-in full tracing lets the isolated background-runtime probe inspect a
+    // natural default read without adding metadata work to ordinary inbox calls.
+    const traceAllInboxPhases = process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES === "1";
+    // EI-25299318738413287: a nested coord:inbox can outlive the tools:invoke
+    // transport deadline. Keep phase evidence on delegated reads even when they
+    // use the default arguments, so a repeated slow call identifies its await.
+    const traceIndirectDispatch = inboxContext.indirectDispatch === true;
+    // Selective inbox reads have produced request_timeout failures, but the
+    // existing cache telemetry measures only the readInbox factory. Preserve a
+    // cumulative phase trace in invocation metadata for these less-common paths.
+    // ctx.metadata is overwrite-not-merge, so every update includes the complete
+    // finished-phase list plus any currently awaited helper; a timeout therefore
+    // still identifies the phase that was in flight.
+    const phaseMetadata = (ctx as {
+      metadata?: (value: Record<string, unknown>) => void;
+    } | undefined)?.metadata;
+    const traceSelectivePhases = Boolean(args.from || directedOnly || unansweredOnly);
+    let tracePresenceRebootstrap = false;
+    const shouldTraceInboxPhase = (name?: string): boolean =>
+      traceAllInboxPhases || traceSelectivePhases || traceIndirectDispatch || (
+        tracePresenceRebootstrap && (
+          name === undefined ||
+          name === "consume-presence-rebootstrap" ||
+          name.startsWith("rebootstrap-")
+        )
+      );
+    const phaseTraceStartedAt = performance.now();
+    type InboxPhaseStatus = "running" | "fulfilled" | "rejected";
+    type InboxPhase = {
+      name: string;
+      status: InboxPhaseStatus;
+      startedAt: string;
+      elapsedMs: number | null;
+    };
+    const inboxPhases: InboxPhase[] = [];
+    const activeInboxPhases = new Map<number, string>();
+    let nextInboxPhaseId = 0;
+    const publishInboxPhases = (): void => {
+      if (!shouldTraceInboxPhase() || !phaseMetadata) return;
+      try {
+        phaseMetadata({
+          coordInboxRead: {
+            schemaVersion: "coord-inbox-read-phases-v1",
+            unit: "ms",
+            timing: "awaited-helper-wall-time",
+            request: {
+              hasFrom: Boolean(args.from),
+              directed: directedOnly,
+              unansweredOnly,
+            },
+            elapsedMs: Math.max(0, Math.round(performance.now() - phaseTraceStartedAt)),
+            activePhases: [...activeInboxPhases.values()],
+            phases: inboxPhases.map((phase) => ({ ...phase })),
+          },
+        });
+      } catch {
+        // Diagnostic delivery must never replace the inbox result or error.
+      }
+    };
+    const measureInboxPhase = async <T>(
+      name: string,
+      action: () => Promise<T>,
+    ): Promise<T> => {
+      if (!shouldTraceInboxPhase(name) || !phaseMetadata) return action();
+      const phaseId = ++nextInboxPhaseId;
+      const phase: InboxPhase = {
+        name,
+        status: "running",
+        startedAt: new Date().toISOString(),
+        elapsedMs: null,
+      };
+      inboxPhases.push(phase);
+      activeInboxPhases.set(phaseId, name);
+      publishInboxPhases();
+      const startedAt = performance.now();
+      try {
+        const value = await action();
+        phase.status = "fulfilled";
+        return value;
+      } catch (error) {
+        phase.status = "rejected";
+        throw error;
+      } finally {
+        phase.elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+        activeInboxPhases.delete(phaseId);
+        publishInboxPhases();
+      }
+    };
     // EI-12930: resolve a SHORT ownerId/label `from` (`su-b0fbf`) to the FULL ownerId via
     // the SAME roster resolver coord:send uses — so a filter that SUCCESSFULLY sent can't
     // then silently FAIL to find the reply — and flag `from_unmatched` when it matches NO
@@ -988,23 +1242,41 @@ export default defineTool({
     let resolvedFrom = args.from ?? undefined;
     let fromUnmatched = false;
     if (args.from) {
-      const known = await knownOwnerIdSet(identity.workspaceId).catch(() => null);
+      const known = await measureInboxPhase(
+        "resolve-from-owner-roster",
+        () => knownOwnerIdSet(identity.workspaceId),
+      ).catch(() => null);
       ({ resolvedFrom, unmatched: fromUnmatched } = classifyInboxFromFilter(
         args.from,
         known ? [...known] : [],
       ));
     }
+    const boundedInbox = !resolvedFrom && !unansweredOnly && !directedOnly;
     // Offline-member mailbox (shared-hive-collaboration P-016): before the read,
     // deliver any `@user:`-parked assignment waiting for THIS member into their
     // live inbox, so a returning member sees it in this very response. The drain
     // matches the member's full actorUserKey ladder (resolveActorIdentity adds the
     // async gh id; cached). Best-effort — a drain hiccup must never break the read;
     // a fully-online member with no parked mail is a single cheap no-op UPDATE.
-    await resolveActorIdentity(ctx)
-      .then((actor) =>
-        drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId),
-      )
-      .catch(() => {});
+    await measureInboxPhase("resolve-actor-and-drain-mailbox", () => {
+      // Keep the ordinary path identical; the opt-in/selective trace additionally
+      // separates identity resolution from the mailbox write/read work.
+      if (!shouldTraceInboxPhase("resolve-actor-identity")) {
+        return resolveActorIdentity(ctx)
+          .then((actor) =>
+            drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId),
+          )
+          .catch(() => {});
+      }
+      return (async () => {
+        const actor = await measureInboxPhase("resolve-actor-identity", () =>
+          resolveActorIdentity(ctx),
+        );
+        await measureInboxPhase("drain-user-mailbox", () =>
+          drainAndDeliverUserMailbox(actorMailboxKeys(actor), actor.ownerId),
+        );
+      })().catch(() => {});
+    });
     // Piggyback liveness: reading your inbox IS a heartbeat. Keeps a fresh
     // coord:presence row for every active agent (the read hook runs every
     // tool call) without clobbering a declared intent. Best-effort, and run
@@ -1016,14 +1288,37 @@ export default defineTool({
     // The watermark is read concurrently too — the P-010 re-bootstrap flag rides
     // it (snapshot_rebootstrap_pending), so the common no-flag path adds only one
     // cheap PK read and no extra latency.
-    const [, all, wm] = await Promise.all([
-      inboxHeartbeatThrottle.shouldBeat(identity.ownerId)
-        ? heartbeatPresence(identity).catch(() => {})
-        : Promise.resolve(),
+    const nativeNoticeDelivery = Object.prototype.hasOwnProperty.call(args, '__systemNoticeState');
+    // Reuse these existing readers for the context/claim gauges below. Resolve
+    // native scope before paging so unrelated broadcasts cannot stop a scan
+    // before an older relevant notice. Failed reads preserve delivery.
+    const readerPresence = measureInboxPhase('reader-presence-read', () => getPresence(identity.ownerId))
+      .catch(() => null);
+    const readerFleet = measureInboxPhase('reader-presence-fleet-read', () => fetchPresenceFleet([identity.ownerId]))
+      .catch(() => null);
+    const activeClaims = nativeNoticeDelivery
+      ? measureInboxPhase('active-claim-freshness-read', () => listActiveClaimFreshnessForOwner(
+          (ctx as { workspaceId?: string | null } | undefined)?.workspaceId ?? activeWorkspaceId(),
+          identity.ownerId,
+        )).catch(() => null)
+      : null;
+    let noticeScope: Parameters<typeof relevantSystemNoticeDelivery>[1] = null;
+    if (nativeNoticeDelivery) {
+      const [presence, claims, fleets] = await Promise.all([readerPresence, activeClaims, readerFleet]);
+      if (presence && claims && fleets) noticeScope = { ownerId: identity.ownerId,
+        workItemIds: claims.map(claim => claim.workItemId), planSlug: presence.currentPlanSlug,
+        files: presence.currentFiles, fleetSlug: fleets.get(identity.ownerId)?.fleetSlug };
+    }
+    const [, ownInbox, wm] = await Promise.all([
+      measureInboxPhase("presence-heartbeat", () =>
+        inboxHeartbeatThrottle.shouldBeat(identity.ownerId)
+          ? heartbeatPresence(identity).catch(() => {})
+          : Promise.resolve(),
+      ),
       // Cache ONLY the pure derive (P-008). Keyed on the OWNER (principal-scoped — never
       // leak one agent's inbox to another), since_ts + kinds. The side effects above/below
       // run unconditionally. The VITEST bypass keeps existing coord:inbox tests unchanged.
-      cachedRead(
+      measureInboxPhase("readInbox-derive", () => cachedRead(
         ctx as CachedReadCtx,
         {
           tool: "coord:inbox",
@@ -1031,14 +1326,16 @@ export default defineTool({
             owner: identity.ownerId,
             since_ts: deliveryFloorTs ?? null,
             kinds: args.kinds ?? null,
-            // WI-6939: the derive is now WINDOWED, so how much it reads depends on
-            // `limit` and on whether the narrowing filters force the full read.
-            // These MUST be in the key — without them a cached 15-entry window
-            // would be served to a caller asking for 500.
-            limit,
-            bounded: !resolvedFrom && !unansweredOnly && !directedOnly,
-            ambient: includeAmbient,
-            intents: !!args.include_intents,
+            bounded: boundedInbox,
+            // Windowed reads depend on the stopping rule. Full reads depend only
+            // on owner/floor/kinds: display limits and visibility filters run below.
+            // Share that raw graph across selective callers rather than retaining
+            // another decoded full inbox for each post-read option combination.
+            ...(boundedInbox ? {
+              limit,
+              ambient: includeAmbient,
+              intents: !!args.include_intents,
+            } : {}),
           },
           tags: ["coord_event_log"],
           softTtlMs: COORD_INBOX_SOFT_TTL_MS,
@@ -1086,7 +1383,7 @@ export default defineTool({
           readInbox(
             identity.ownerId,
             { since_ts: deliveryFloorTs, kinds: args.kinds },
-            !resolvedFrom && !unansweredOnly && !directedOnly
+            boundedInbox
               ? {
                   enough: (entries) => {
                     const afterAmbient = includeAmbient
@@ -1099,16 +1396,52 @@ export default defineTool({
                       { includeIntents: args.include_intents, from: resolvedFrom },
                     ) as unknown as { kept: Array<Record<string, unknown>> };
                     return prioritizedInboxWindow(
-                      coalesceRepeatedBroadcasts(kept),
+                      coalesceRepeatedBroadcasts(nativeNoticeDelivery
+                        ? relevantSystemNoticeDelivery(kept, noticeScope).entries : kept),
                       limit,
                     ).length >= limit;
                   },
                 }
               : undefined,
           ),
+      )),
+      measureInboxPhase("read-watermark", () =>
+        readWatermark(identity.ownerId).catch(() => emptyWatermark()),
       ),
-      readWatermark(identity.ownerId).catch(() => emptyWatermark()),
     ]);
+    tracePresenceRebootstrap = wm.snapshot_rebootstrap_pending === true;
+    // WI-10005678: a verified spawn session (an acceptance judge) reads as
+    // `system:<role>/<id>`, but peers, its inbox-wake and the ship recruiter all
+    // address the bare `<id>`. Fold in what was sent to that bare id. Directed rows
+    // only: the broadcasts already arrived through the caller's own read.
+    const sessionAlias = verifiedSpawnSessionAlias(
+      ctx as Parameters<typeof verifiedSpawnSessionAlias>[0],
+      identity.ownerId,
+    );
+    // WI-10005678: a verified role-scoped spawn may be addressed by either its
+    // namespaced principal id or its signed bare session id. The display read
+    // already unions the alias; keep the directed and unanswered views on that
+    // same recipient set so the inbox agrees with turn-start's bare-id owner.
+    const readerOwnerIds = [
+      identity.ownerId,
+      ...(sessionAlias && sessionAlias !== identity.ownerId ? [sessionAlias] : []),
+    ];
+    const all = sessionAlias
+      ? mergeInboxEntries(
+          ownInbox,
+          await measureInboxPhase(
+            "verified-session-alias-read",
+            () => readDirectedInbox(sessionAlias, { since_ts: deliveryFloorTs, kinds: args.kinds }),
+          ).catch((e: unknown) => {
+              console.warn(
+                `[coord:inbox] session-alias read for ${sessionAlias} failed (own inbox still served): ${
+                  e instanceof Error ? e.message : String(e)
+                }`,
+              );
+              return [];
+            }),
+        )
+      : ownInbox;
 
     const ambientExcluded = includeAmbient
       ? 0
@@ -1139,10 +1472,10 @@ export default defineTool({
     // arg descriptions promise and the summary counts below see the final set.
     const directedInput = bySender as unknown as Array<Record<string, unknown>>;
     const broadcastExcluded = directedOnly
-      ? directedInput.filter((e) => !isDirectedDelivery(e)).length
+      ? directedInput.filter((e) => !readerOwnerIds.some((readerId) => isDirectedDelivery(e, readerId))).length
       : 0;
     const byDelivery = directedOnly
-      ? (directedInput.filter((e) => isDirectedDelivery(e)) as unknown as typeof bySender)
+      ? (directedInput.filter((e) => readerOwnerIds.some((readerId) => isDirectedDelivery(e, readerId))) as unknown as typeof bySender)
       : bySender;
 
     // EI-13159: unanswered_only — narrow to exactly the msg_ids fleet:assignments'
@@ -1151,15 +1484,18 @@ export default defineTool({
     // those surfaces already told the caller was outstanding. Fail-SAFE, not fail-open:
     // a lookup failure filters to NOTHING (never silently falls back to the unfiltered
     // inbox, which would look like "unanswered_only had no effect" and hide the failure).
-    let unansweredMsgIds: Set<string> | undefined;
+    let unansweredMsgIds: ReadonlySet<string> | undefined;
     let unansweredLookupFailed = false;
     if (unansweredOnly) {
       try {
-        const unansweredMap = await fetchUnansweredDirected([identity.ownerId], {
-          perRecipientCap: UNANSWERED_FILTER_CAP,
-        });
-        unansweredMsgIds = new Set(
-          (unansweredMap.get(identity.ownerId)?.newest ?? []).map((e) => e.msgId),
+        const unansweredMap = await measureInboxPhase(
+          "unanswered-directed-lookup",
+          () => fetchUnansweredDirected(readerOwnerIds, {
+            perRecipientCap: UNANSWERED_FILTER_CAP,
+          }),
+        );
+        unansweredMsgIds = replyOwedMessageIds(
+          readerOwnerIds.flatMap((readerId) => unansweredMap.get(readerId)?.newest ?? []),
         );
       } catch {
         unansweredMsgIds = new Set();
@@ -1178,10 +1514,25 @@ export default defineTool({
 
     // P-009: order by priority BEFORE slicing, so actionable asks survive a
     // low-priority flood even when they are older than the newest status rows.
-    const entries = prioritizedInboxWindow(
+    const priorityWindow = prioritizedInboxWindow(
       coalesced as unknown as Array<Record<string, unknown>>,
       limit,
-    ) as unknown as typeof filtered;
+    );
+    // P-006 D-002: a DEFAULT read (no limit, no max_body_chars, no explicit full
+    // tier) is fitted to the caller's result door at the cap it will be bounded at.
+    // Done here, before receipts and the shown watermark, so `returned`/`truncated`
+    // and every read receipt describe what the agent actually receives.
+    const doorFitCap =
+      args.limit === undefined && args.max_body_chars === undefined && !explicitFullRequest
+        ? priorityWindow.length > 0
+          ? Math.min(tierDefaults.bodyChars, Math.floor(INBOX_ENTRY_BUDGET / priorityWindow.length))
+          : tierDefaults.bodyChars
+        : undefined;
+    const doorFit =
+      doorFitCap === undefined
+        ? undefined
+        : fitInboxWindowToChars(priorityWindow, doorFitCap, inboxDefaultWindowChars(identity.ownerId));
+    const entries = (doorFit ? doorFit.kept : priorityWindow) as unknown as typeof filtered;
     const truncated = Math.max(0, coalesced.length - entries.length);
 
     const byKind: Record<string, number> = {};
@@ -1191,6 +1542,10 @@ export default defineTool({
       total: filtered.length,
       returned: entries.length,
       truncated,
+      // P-006 D-002: say when the default window was fitted to one result.
+      ...(doorFit && doorFit.omitted > 0
+        ? { fitted_to_result: { omitted: doorFit.omitted, more: "pass limit for more, or coord:read { msg_id }" } }
+        : {}),
       // P-012: mark a tier-tightened read so the cap is never silent (D-004) —
       // pass an explicit `limit`/`max_body_chars` (or payloadTier:"full") for more.
       ...(sessionTier && sessionTier !== "full"
@@ -1282,6 +1637,26 @@ export default defineTool({
       }
     }
 
+    // WI-10479: coalescing within a read does not stop a watchdog re-emission on
+    // the next tool call. Only the native delivery path passes committed state;
+    // stage its replacement with the inbox cursor after the complete fold.
+    const maxInjectionLines = 8;
+    let noticeRelevance: ReturnType<typeof relevantSystemNoticeDelivery> | null = null;
+    if (nativeNoticeDelivery) {
+      noticeRelevance = relevantSystemNoticeDelivery(injectionPopulation, noticeScope);
+      injectionEntries = prioritizedInboxWindow(noticeRelevance.entries, limit) as unknown as typeof injectionEntries;
+    }
+    const noticeDelivery = nativeNoticeDelivery
+      ? changedSystemNoticeDelivery(
+          injectionEntries as unknown as Array<Record<string, unknown>>,
+          (args as InboxDeliveryFloor).__systemNoticeState,
+          maxInjectionLines,
+        )
+      : null;
+    if (noticeDelivery) {
+      injectionEntries = noticeDelivery.entries as unknown as typeof injectionEntries;
+    }
+
     // EI-213057 READ-RECEIPT: emit receipts for newly SHOWN directed messages before
     // advancing this agent's `messages_shown_ts` cursor. The watermark is the sender's
     // read proof, so a failed receipt must leave it untouched; the next VIEW read then
@@ -1292,8 +1667,11 @@ export default defineTool({
       identity.ownerId,
       wm.messages_shown_ts,
     );
-    const receiptResults = await Promise.allSettled(
-      newlyShownReceipts.map((entry) => emitReadReceipt(entry, identity)),
+    const receiptResults = await measureInboxPhase(
+      "read-receipt-emission",
+      () => Promise.allSettled(
+        newlyShownReceipts.map((entry) => emitReadReceipt(entry, identity)),
+      ),
     );
     const receiptsEmitted = receiptResults.every((result) => result.status === "fulfilled");
 
@@ -1317,9 +1695,11 @@ export default defineTool({
       injectionPopulation,
     );
     if (receiptsEmitted && safeShownTs && safeShownTs > wm.messages_shown_ts) {
-      await writeWatermark(identity.ownerId, {
-        messages_shown_ts: safeShownTs,
-      }).catch(() => {});
+      await measureInboxPhase("shown-watermark-write", () =>
+        writeWatermark(identity.ownerId, {
+          messages_shown_ts: safeShownTs,
+        }).catch(() => {}),
+      );
     }
 
     // Server-side injection render (token-efficient-coord-injection P-005): the
@@ -1338,7 +1718,9 @@ export default defineTool({
     // (TOCTOU) resolves to current truth.
     let cueScope: RecipientCueScope | undefined;
     try {
-      const fleet = (await fetchPresenceFleet([identity.ownerId])).get(identity.ownerId);
+      const fleets = await readerFleet;
+      if (!fleets) throw new Error('fleet membership unavailable');
+      const fleet = fleets.get(identity.ownerId);
       cueScope = {
         recipientId: identity.ownerId,
         fleetSlugs: fleet?.fleetSlug ? [fleet.fleetSlug] : [],
@@ -1372,9 +1754,11 @@ export default defineTool({
         ),
       ].slice(-RELATED_QUOTE_MAX_REFS);
       if (relatedIds.length) {
-        const hydrated = await hydrateRefs(
-          relatedIds.map((id) => ({ kind: "msg" as const, id })),
-          { budget: { snippetChars: RELATED_QUOTE_SNIPPET_CHARS, maxRefs: relatedIds.length } },
+        const hydrated = await measureInboxPhase("related-message-hydration", () =>
+          hydrateRefs(
+            relatedIds.map((id) => ({ kind: "msg" as const, id })),
+            { budget: { snippetChars: RELATED_QUOTE_SNIPPET_CHARS, maxRefs: relatedIds.length } },
+          ),
         );
         relatedQuotes = new Map(
           hydrated.flatMap((h) => (h.ref.kind === "msg" ? [[h.ref.id, h] as const] : [])),
@@ -1397,25 +1781,28 @@ export default defineTool({
     // travels verbatim in the prose. Newest-biased global cap, like P-005.
     let bodyRefs: Map<string, HydratedRef> | undefined;
     try {
-      const ids = [
-        ...new Set(
-          (injectionEntries as unknown as Array<Record<string, unknown>>)
-            .filter((en) => isBodyRefEligible(en) && !readBodyRefsOptOut(en))
-            .flatMap((en) =>
-              detectEntryBodyRefs(en).flatMap((r) => (r.kind === "work-item" ? [r.id] : [])),
-            ),
-        ),
-      ].slice(-BODY_REF_MAX_TOTAL);
-      if (ids.length) {
-        const hydrated = await hydrateRefs(
-          ids.map((id) => ({ kind: "work-item" as const, id })),
-          {
-            budget: { snippetChars: BODY_REF_SNIPPET_CHARS, maxRefs: ids.length },
-            resolvers: { "work-item": bodyRefWorkItemResolver },
-          },
+      const refByKey = new Map<string, HydratableRef>();
+      for (const en of injectionEntries as unknown as Array<Record<string, unknown>>) {
+        if (!isBodyRefEligible(en) || readBodyRefsOptOut(en)) continue;
+        for (const ref of detectEntryBodyRefs(en)) {
+          if (ref.kind === "work-item") refByKey.set(canonicalRefKey(ref), ref);
+        }
+      }
+      const refs = [...refByKey.values()].slice(-BODY_REF_MAX_TOTAL);
+      if (refs.length) {
+        const hydrated = await measureInboxPhase("work-item-body-reference-hydration", () =>
+          hydrateRefs(
+            refs,
+            {
+              budget: { snippetChars: BODY_REF_SNIPPET_CHARS, maxRefs: refs.length },
+              resolvers: { "work-item": bodyRefWorkItemResolver },
+            },
+          ),
         );
         bodyRefs = new Map(
-          hydrated.flatMap((h) => (h.ref.kind === "work-item" ? [[h.ref.id, h] as const] : [])),
+          hydrated.flatMap((h) =>
+            h.ref.kind === "work-item" ? [[canonicalRefKey(h.ref), h] as const] : [],
+          ),
         );
       }
     } catch {
@@ -1423,7 +1810,7 @@ export default defineTool({
     }
     const coordInjection = renderInjection(
       injectionEntries as unknown as CoordLineSource[],
-      { cueScope, relatedQuotes, bodyRefs },
+      { cueScope, relatedQuotes, bodyRefs, maxLines: maxInjectionLines },
     );
 
     // P-010 re-bootstrap-on-compaction (D-007): on the first read after a fresh
@@ -1439,14 +1826,33 @@ export default defineTool({
         workspaceId?: string | null;
         harnessSlug?: string | null;
       };
-      rebootstrap = await consumePresenceRebootstrap(
-        identity.ownerId,
-        wm,
-        async () => {
-          const resolved = await resolvePresenceScope(c);
-          const snap = await assemblePresenceSnapshot(resolved);
-          return renderPresenceRebootstrapBlock(snap);
-        },
+      rebootstrap = await measureInboxPhase("consume-presence-rebootstrap", () =>
+        consumePresenceRebootstrap(
+          identity.ownerId,
+          wm,
+          async () => {
+            const resolved = await measureInboxPhase(
+              "rebootstrap-presence-scope",
+              () => resolvePresenceScope(c),
+            );
+            const snap = await measureInboxPhase(
+              "rebootstrap-presence-snapshot",
+              () => assemblePresenceSnapshot(resolved, {
+                includeDesktopEnrichment: false,
+                onDiagnostic: (diagnostic) => {
+                  inboxPhases.push({
+                    name: `rebootstrap-presence-snapshot:${diagnostic.phase}:${diagnostic.name}`,
+                    status: diagnostic.status === "ok" ? "fulfilled" : "rejected",
+                    startedAt: new Date(Date.now() - diagnostic.elapsedMs).toISOString(),
+                    elapsedMs: Math.max(0, Math.round(diagnostic.elapsedMs)),
+                  });
+                  publishInboxPhases();
+                },
+              }),
+            );
+            return renderPresenceRebootstrapBlock(snap);
+          },
+        ),
       );
     } catch {
       rebootstrap = null;
@@ -1465,15 +1871,19 @@ export default defineTool({
     let contextGauge: string | null = null;
     let respawnLine: string | null = null;
     try {
-      const pres = await getPresence(identity.ownerId);
+      const pres = await readerPresence;
       // WI-4154: derive the usage from the transcript's CURRENT state (anchored
       // incremental read — cost is the append delta), never from the watchdog's
       // point-in-time cache, which went stale across every compaction boundary and
       // served false 126%/87% post-compaction alarms. The presence value remains
       // only as the fallback for owners whose transcript can't be read here (the
       // same sessions it was the only source for before).
-      const live = await currentContextTokensForOwner(identity.ownerId);
+      const live = await measureInboxPhase(
+        "current-context-transcript-read",
+        () => currentContextTokensForOwner(identity.ownerId),
+      );
       const tokens = live ?? pres?.contextTokens;
+      const readingSource: ContextGaugeReadingSource = contextGaugeReadingSource(live);
       // WI-2143463: the watchdog mirrors the gateway's route-bound lowest
       // observed prompt into the existing hot cache. It is evidence about the
       // fixed-prefix ceiling / conservative usable runway, never a replacement
@@ -1486,7 +1896,7 @@ export default defineTool({
       // guaranteed `no_live_pty_host` refusal.
       const selfCompactionAvailable =
         pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT
-          ? selfCompactionAvailability(identity.ownerId).available
+          ? (await selfCompactionAvailabilityAsync(identity.ownerId)).available
           : null;
       let fleetWindDownLoopEndAuthorized: boolean | null = null;
       const authorizationWorkspaceId =
@@ -1497,10 +1907,13 @@ export default defineTool({
         selfCompactionAvailable === false &&
         authorizationWorkspaceId
       ) {
-        fleetWindDownLoopEndAuthorized = await readFleetWindDownLoopEndAuthorization({
-          ownerId: identity.ownerId,
-          workspaceId: authorizationWorkspaceId,
-        });
+        fleetWindDownLoopEndAuthorized = await measureInboxPhase(
+          "fleet-wind-down-authorization-read",
+          () => readFleetWindDownLoopEndAuthorization({
+            ownerId: identity.ownerId,
+            workspaceId: authorizationWorkspaceId,
+          }),
+        );
       }
       usageLine = renderContextUsageLine(
         tokens,
@@ -1508,6 +1921,7 @@ export default defineTool({
         selfCompactionAvailable,
         fleetWindDownLoopEndAuthorized,
         cachedUsage?.observedPromptFloor ?? null,
+        readingSource,
       );
       // flush-to-proceed-stretch-discipline-2026-07-04 P-002: near a compaction boundary,
       // surface any work-item claim whose checkpoint is stale (unflushed state) and NAME the
@@ -1522,6 +1936,7 @@ export default defineTool({
           selfCompactionAvailable,
           fleetWindDownLoopEndAuthorized,
           cachedUsage?.observedPromptFloor ?? null,
+          readingSource,
         );
       }
       if (pct != null && pct >= FLUSH_GATE_PCT) {
@@ -1537,17 +1952,23 @@ export default defineTool({
         let loopNeedingCarryNote: string | null = null;
         try {
           const [{ getLoopStatus }, { getLoopCarryNoteWithMeta }, { armedLoopNeedsCarryNote }] =
-            await Promise.all([
+            await measureInboxPhase("flush-gate-module-load", () => Promise.all([
               import("../../../harness/routines/loop"),
               import("../../../carry-note"),
               import("../../../enforcement-gate"),
-            ]);
-          const loop = await getLoopStatus(identity.ownerId);
+            ]));
+          const loop = await measureInboxPhase(
+            "flush-gate-loop-status-read",
+            () => getLoopStatus(identity.ownerId),
+          );
           if (loop?.active) {
-            const meta = await getLoopCarryNoteWithMeta({
-              harness: loop.harnessSlug,
-              ownerId: identity.ownerId,
-            });
+            const meta = await measureInboxPhase(
+              "flush-gate-carry-note-read",
+              () => getLoopCarryNoteWithMeta({
+                harness: loop.harnessSlug,
+                ownerId: identity.ownerId,
+              }),
+            );
             if (
               !meta.readFailed &&
               armedLoopNeedsCarryNote({
@@ -1566,7 +1987,11 @@ export default defineTool({
           const ws =
             (ctx as { workspaceId?: string | null } | undefined)?.workspaceId ??
             activeWorkspaceId();
-          const fresh = await listActiveClaimFreshnessForOwner(ws, identity.ownerId);
+          const fresh = await (activeClaims ?? measureInboxPhase(
+            "active-claim-freshness-read",
+            () => listActiveClaimFreshnessForOwner(ws, identity.ownerId),
+          ));
+          if (!fresh) throw new Error('active claim scope unavailable');
           flushLine = renderFlushGateLine(pct, classifyStaleClaims(fresh, Date.now()), {
             loopNeedingCarryNote,
           });
@@ -1593,7 +2018,10 @@ export default defineTool({
       // extra, the discipline the flush-gate read above already follows.
       if (pct != null && pct >= CONTEXT_GAUGE_QUIET_PCT) {
         try {
-          respawnLine = lostRespawnAmbientLine(await readPriorRespawnOutcome(identity.ownerId));
+          respawnLine = lostRespawnAmbientLine(await measureInboxPhase(
+            "prior-respawn-outcome-read",
+            () => readPriorRespawnOutcome(identity.ownerId),
+          ));
         } catch {
           respawnLine = null;
         }
@@ -1626,6 +2054,8 @@ export default defineTool({
         ? args.max_body_chars
         : explicitFullRequest
           ? 0
+        : doorFitCap !== undefined
+          ? doorFitCap
         : entries.length > 0
           ? Math.min(
               tierDefaults.bodyChars,
@@ -1639,7 +2069,15 @@ export default defineTool({
       entries as unknown as Array<Record<string, unknown>>,
       all as unknown as Array<Record<string, unknown>>,
     );
-    const boundEntries = boundInboxEntries(annotatedEntries, effectiveCap).map((entry) => {
+    // P-006: a bounded read keeps ONE copy of a sectioned message's prose (see
+    // dropSectionTextDuplicatedInBody). An unbounded read (cap 0) is left whole.
+    // P-006: and drops the per-alarm emitter trailer (see stripSevereEventEmitterTrailer);
+    // the rule it carried is stated once, as `emitter_note`.
+    const singleCopy =
+      effectiveCap > 0
+        ? stripSevereEventEmitterTrailer(dropSectionTextDuplicatedInBody(annotatedEntries))
+        : { entries: annotatedEntries, stripped: 0 };
+    const boundEntries = boundInboxEntries(singleCopy.entries, effectiveCap).map((entry) => {
       // P-033 (e): mark which entries carry AUTHORED structure (premises /
       // forYouBecause / youMayNotKnow / couldNotDetermine / clarify). Derived AFTER
       // bounding on purpose: bounding truncates the TEXT of `summary`/`body`/
@@ -1667,7 +2105,12 @@ export default defineTool({
       const ids = entriesOut
         .map((e) => e["msg_id"])
         .filter((id): id is string => typeof id === "string");
-      if (ids.length > 0) entriesOut = annotateSuperseded(entriesOut, await getSupersededMap(ids));
+      if (ids.length > 0) {
+        entriesOut = annotateSuperseded(
+          entriesOut,
+          await measureInboxPhase("supersession-marker-read", () => getSupersededMap(ids)),
+        );
+      }
     } catch {
       // Unmarked, but complete.
     }
@@ -1680,9 +2123,11 @@ export default defineTool({
     // verdict is exactly the news a waiting reader needs; an undeterminable
     // ref gets NO verdict, never a guess.
     try {
-      entriesOut = await annotateBlockedOnStatus(entriesOut, {
-        workspaceId: identity.workspaceId ?? '',
-      });
+      entriesOut = await measureInboxPhase("blocked-on-status-annotation", () =>
+        annotateBlockedOnStatus(entriesOut, {
+          workspaceId: identity.workspaceId ?? '',
+        }),
+      );
     } catch {
       // Unmarked, but complete.
     }
@@ -1697,8 +2142,12 @@ export default defineTool({
       const ids = entriesOut
         .map((e) => e["msg_id"])
         .filter((id): id is string => typeof id === "string");
-      if (ids.length > 0)
-        entriesOut = annotateRemoteOrigin(entriesOut, await getRemoteOriginMsgIds(ids));
+      if (ids.length > 0) {
+        entriesOut = annotateRemoteOrigin(
+          entriesOut,
+          await measureInboxPhase("remote-origin-marker-read", () => getRemoteOriginMsgIds(ids)),
+        );
+      }
     } catch {
       // Unmarked, but complete.
     }
@@ -1733,9 +2182,18 @@ export default defineTool({
             // looks it up by `msg_id` in `entries`, same as it always could.
             recent: entriesOut.map((e) => e["msg_id"]),
             injection,
+            ...(noticeDelivery ? {
+              __systemNoticeState: noticeDelivery.state,
+              system_notices_suppressed: noticeDelivery.suppressed,
+              system_notices_irrelevant: noticeRelevance?.excluded ?? 0,
+              system_notice_history: { tool: 'coord:feed' },
+            } : {}),
             // P-015: the ≥80% loud gauge, exposed OUT of `injection` so the PostToolUse
             // hook can inject it even when there are no new entries (empty-inbox turns).
             context_gauge: contextGauge,
+            ...(singleCopy.stripped > 0
+              ? { emitter_note: severeEventEmitterNote(singleCopy.stripped) }
+              : {}),
           }),
         },
       ],

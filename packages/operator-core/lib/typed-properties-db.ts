@@ -22,9 +22,13 @@
  * writers on the same row.
  */
 import type postgres from 'postgres';
+import { isDeepStrictEqual } from 'node:util';
 import {
   prepareTypedPropertyMutation,
   TypedPropertySchemaDocumentSchema,
+  ORDERED_SELECTION_POLICY_DATATYPE,
+  OrderedSelectionPolicySchema,
+  readTypedPropertyCollection,
   type PropertyEditProvenance,
   type TypedPropertyMutationResult,
 } from './typed-properties';
@@ -34,11 +38,111 @@ import {
   CANONICAL_WORKLIST_PROPERTY,
   PLAN_REF_LIST_DATATYPE,
   ensurePlanRefListDatatype,
+  ensureOrderedSelectionPolicyDatatype,
   withCanonicalWorklistDeclaration,
 } from './goals/package-property-datatypes';
 
 /** The narrowest handle both callers' SQL tags satisfy (pool sql or tx). */
 type SqlLike = postgres.Sql;
+
+export interface GoalPlanClaimSelection {
+  goalId: string;
+  selected: string[];
+  ordered: string[];
+  attributed: string[];
+  appliesToActor: boolean;
+  policyVersion: number | null;
+}
+
+export function assertGoalPlanClaimSelection(
+  selections: readonly GoalPlanClaimSelection[],
+  args: { harness: string; planSlug: string; goalId?: string | null },
+): void {
+  const ref = `plan:${args.harness}/${args.planSlug}`;
+  for (const selection of selections) {
+    if ((selection.appliesToActor || selection.goalId === args.goalId || selection.attributed.includes(ref))
+        && !selection.selected.includes(ref)) {
+      throw new Error(`goal_plan_excluded: ${ref} is not selected by ${selection.goalId} at policy version ${selection.policyVersion ?? 'unavailable'}`);
+    }
+  }
+}
+
+/**
+ * Call INSIDE the claim transaction. Owner property writes lock this same goal
+ * row FOR UPDATE; FOR SHARE orders a new claim before or after that write.
+ * No policy snapshot survives the transaction, and finishing an existing claim
+ * does not enter this admission boundary.
+ */
+export async function lockGoalPlanClaimSelections(
+  sql: SqlLike,
+  workspaceId: string,
+  assignee?: string,
+): Promise<GoalPlanClaimSelection[]> {
+  const goals = await sql<Array<{ id: string; property_schema: unknown; properties: unknown }>>`
+    SELECT id, property_schema, properties FROM harness_shared.goals
+     WHERE workspace_id = ${workspaceId}
+       AND property_schema->'worklist'->'collection' IS NOT NULL
+     ORDER BY id FOR SHARE`;
+  if (goals.length === 0) return [];
+  const plans = await sql<Array<{ harness_slug: string; plan_slug: string; goal_id: string | null;
+    status: string; op_status: string | null; archived: boolean }>>`
+    SELECT harness_slug, plan_slug, goal_id, status, op_status, archived
+      FROM harness_shared.harness_plans WHERE workspace_id = ${workspaceId}
+     ORDER BY created_at, harness_slug, plan_slug`;
+  const actorGoal = assignee
+    ? await (await import('./modes/goal-context')).resolveGoalContext(workspaceId, assignee, sql, { requireRead: true }) : null;
+  const refOf = (plan: typeof plans[number]) => `plan:${plan.harness_slug}/${plan.plan_slug}`;
+  const canonical = (ref: string) => {
+    if (!ref.startsWith('plan:') || ref.includes('/')) return ref;
+    const matches = plans.filter((plan) => plan.plan_slug === ref.slice(5));
+    return matches.length === 1 ? refOf(matches[0]) : ref;
+  };
+  return goals.map((goal) => {
+    const schema = asDoc(goal.property_schema);
+    const properties = asDoc(goal.properties);
+    const definition = asDoc(schema.worklist);
+    const collection = asDoc(definition.collection);
+    const stored = asDoc(properties.worklist);
+    const explicit = stored.value ?? definition.default ?? [];
+    const refs = Array.isArray(explicit) && explicit.every((ref) => typeof ref === 'string')
+      ? explicit.map(canonical) : null;
+    const discovered = collection.source === 'active-workspace-plans'
+      ? plans.filter((plan) => !plan.archived && (plan.op_status ?? plan.status) === 'active').map(refOf) : [];
+    const selection = readTypedPropertyCollection({ propertySchema: schema, properties, property: 'worklist',
+      source: refs ? { ok: true, items: [...new Set([...refs, ...discovered])] }
+        : { ok: false, reason: 'invalid stored worklist' } });
+    return { goalId: goal.id, selected: selection.ok && selection.configured ? selection.selected : [],
+      ordered: selection.ok && selection.configured ? selection.items.map((item) => item.id) : [],
+      attributed: plans.filter((plan) => plan.goal_id === goal.id).map(refOf),
+      appliesToActor: actorGoal === goal.id,
+      policyVersion: selection.ok && selection.configured ? selection.policyVersion : null };
+  });
+}
+
+/** SQL composition over the shared reader's result; domain floors stay with the caller. */
+export function goalPlanClaimFragments(
+  sql: SqlLike,
+  selections: readonly GoalPlanClaimSelection[],
+  columns: { harness: string; goal: string; payload: string; sourcePlan: string; holder?: string },
+  assignee?: string,
+) {
+  const plan = sql`COALESCE(${sql.unsafe(columns.sourcePlan)}, ${sql.unsafe(columns.payload)}->'plan_item'->>'plan_slug')`;
+  const ref = sql`('plan:' || COALESCE(${sql.unsafe(columns.payload)}->'plan_item'->>'harness_slug',
+    ${sql.unsafe(columns.harness)}) || '/' || ${plan})`;
+  const applies = (selection: GoalPlanClaimSelection) => selection.appliesToActor ? sql`TRUE`
+    : sql`(${sql.unsafe(columns.goal)} = ${selection.goalId} OR ${ref} = ANY(${selection.attributed}::text[]))`;
+  const predicates = selections.map((selection) => sql`(NOT COALESCE(${applies(selection)}, false)
+    OR ${plan} IS NULL OR ${ref} = ANY(${selection.selected}::text[]))`);
+  const admission = predicates.reduce((result, predicate) => sql`(${result} AND ${predicate})`, sql`TRUE`);
+  // A self-reclaim refreshes the current atomic unit; a transfer is NEW work.
+  const where = columns.holder && assignee
+    ? sql`(${sql.unsafe(columns.holder)} = ${assignee} OR ${admission})` : admission;
+  const ranks = selections.map((selection) => sql`CASE WHEN ${applies(selection)}
+    THEN array_position(${selection.ordered}::text[], ${ref}) ELSE NULL END`);
+  const joinedRanks = ranks.slice(1).reduce((result, rank) => sql`${result}, ${rank}`, ranks[0] ?? sql`NULL`);
+  const order = ranks.length ? sql`LEAST(${joinedRanks}) ASC NULLS LAST,` : sql``;
+  return { where, order };
+}
 
 /** JSONB columns come back parsed on some driver configs and as raw text on
  *  others — normalize to an object (the columns are NOT NULL DEFAULT '{}'). */
@@ -83,6 +187,13 @@ export async function validatePropertySchemaDeclaration(
   }
   const issues: string[] = [];
   for (const [name, def] of Object.entries(parsed.data)) {
+    if (def.datatype === ORDERED_SELECTION_POLICY_DATATYPE) {
+      await ensureOrderedSelectionPolicyDatatype(sql, workspaceId);
+      if (def.default !== undefined) {
+        const policy = OrderedSelectionPolicySchema.safeParse(def.default);
+        if (!policy.success) issues.push(`${name}: invalid ordered-selection-policy default`);
+      }
+    }
     const dt = await getDatatype(sql, workspaceId, def.datatype);
     if (!dt) {
       issues.push(
@@ -98,6 +209,48 @@ export async function validatePropertySchemaDeclaration(
     }
   }
   return issues.length > 0 ? { ok: false, issues } : { ok: true, declared: Object.keys(parsed.data) };
+}
+
+/** Add declarations on an existing goal without replacing its property values. */
+export async function extendGoalPropertySchema(
+  sql: SqlLike,
+  args: { workspaceId: string; goalId: string; patch: unknown; expected: unknown },
+): Promise<{ ok: true; propertySchema: Record<string, unknown> } |
+  { ok: false; code: 'not_found' | 'stale_schema' | 'invalid_schema' | 'owner_policy_declaration'; issues?: string[] }> {
+  const [row] = await sql<Array<{ property_schema: unknown }>>`
+    SELECT property_schema FROM harness_shared.goals
+     WHERE workspace_id = ${args.workspaceId} AND id = ${args.goalId} FOR UPDATE`;
+  if (!row) return { ok: false, code: 'not_found' };
+  const current = asDoc(row.property_schema);
+  if (!isDeepStrictEqual(current, args.expected)) return { ok: false, code: 'stale_schema' };
+  if (args.patch === null || typeof args.patch !== 'object' || Array.isArray(args.patch)) {
+    return { ok: false, code: 'invalid_schema', issues: ['schema patch must be an object'] };
+  }
+  const patch = asDoc(args.patch);
+  for (const [key, raw] of Object.entries(patch)) {
+    const definition = asDoc(raw);
+    const prior = asDoc(current[key]);
+    // Declarations cannot be used as a second owner-policy writer. Existing
+    // owner contracts and collection metadata are immutable on this extension
+    // door; actual owner choices use the canonical value/CAS/provenance writer.
+    if ((prior.editable_by === 'owner' || prior.collection) && !isDeepStrictEqual(prior, definition)) {
+      return { ok: false, code: 'owner_policy_declaration' };
+    }
+    if (definition.datatype === ORDERED_SELECTION_POLICY_DATATYPE && current[key] === undefined &&
+        !isDeepStrictEqual(definition.default ?? { order: [], excluded: [] }, { order: [], excluded: [] })) {
+      return { ok: false, code: 'owner_policy_declaration' };
+    }
+    if (definition.collection && current[key] !== undefined) {
+      const { collection: _collection, ...base } = definition;
+      if (!isDeepStrictEqual(base, prior)) return { ok: false, code: 'owner_policy_declaration' };
+    }
+  }
+  const propertySchema = { ...current, ...patch };
+  const checked = await validatePropertySchemaDeclaration(sql, args.workspaceId, propertySchema);
+  if (!checked.ok) return { ok: false, code: 'invalid_schema', issues: checked.issues };
+  await sql`UPDATE harness_shared.goals SET property_schema = ${JSON.stringify(propertySchema)}::jsonb,
+    updated_at = now() WHERE workspace_id = ${args.workspaceId} AND id = ${args.goalId}`;
+  return { ok: true, propertySchema };
 }
 
 /** Validate one VALUE against a datatype's registered payload_schema. */
@@ -124,6 +277,7 @@ async function validateValueForDatatype(
 export type TypedPropertyWriteResult = { ok: false; code: 'not_found' } | TypedPropertyMutationResult;
 
 export interface TypedPropertyWriteArgs {
+  reason?: string;
   workspaceId: string;
   property: string;
   value: unknown;
@@ -149,6 +303,9 @@ async function runPreparedMutation(
   const propsDoc = asDoc(row.properties);
   const parsed = TypedPropertySchemaDocumentSchema.safeParse(schemaDoc);
   const datatypeRef = parsed.success ? parsed.data[args.property]?.datatype : undefined;
+  if (datatypeRef === ORDERED_SELECTION_POLICY_DATATYPE) {
+    await ensureOrderedSelectionPolicyDatatype(sql, args.workspaceId);
+  }
   const resolved = datatypeRef
     ? await validateValueForDatatype(sql, args.workspaceId, datatypeRef, args.value)
     : null; // unknown property / bad schema — prepare refuses before validate runs
@@ -161,6 +318,7 @@ async function runPreparedMutation(
     confirmShrink: args.confirmShrink,
     provenance: args.provenance,
     actorId: args.actorId,
+    reason: args.reason,
     validate: () => (resolved === null || resolved.ok ? { ok: true } : { ok: false, issues: resolved.issues }),
   });
 }

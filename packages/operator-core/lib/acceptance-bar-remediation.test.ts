@@ -12,11 +12,9 @@ import { nextRepair } from './acceptance-bar-contract-snapshot.js';
  * requiredTestLayers bumps the rubric revision, which invalidates the plan's vetting attestation
  * and independent grading card — so the agent follows the instruction and lands strictly behind.
  *
- * `bar_snapshot_proof_inadequate` then said "fix every fail/unknown proof obligation", which reads
- * as "your evidence is bad". But freshness is one of those obligations and CANNOT be satisfied by a
- * read-only probe at all: it compares each binding against a caller-supplied `current` fingerprint
- * array that a read-only shipReadiness call never supplies. An agent re-probing read-only sees the
- * code persist no matter what evidence they produce, and concludes the evidence is at fault.
+ * Freshness now comes from server measurement recipes, including read-only evidence reads.
+ * The repair must explain recipe renewal and measurement failures, rather than requiring the
+ * retired caller-supplied fingerprint array or implying every unknown is inadequate evidence.
  *
  * These assertions pin the CONTENT the strings must carry, not their wording, so they survive
  * rephrasing but fail if either half is dropped again.
@@ -41,9 +39,13 @@ function warnsHeldVerificationMayBeInvalidated(action: string): boolean {
     && /re-grade and re-vet/i.test(action);
 }
 
-/** The remediation must warn that a read-only probe cannot establish freshness. */
-function warnsReadOnlyProbeCannotClear(action: string): boolean {
-  return /read-only/i.test(action) && /current fingerprints/i.test(action);
+/** The remediation must use server measurement and explain unresolved recipe failures. */
+function explainsServerMeasuredFreshness(action: string): boolean {
+  return /do not need to supply current fingerprints/i.test(action)
+    && /server re-measures.*recorded measurement recipe/i.test(action)
+    && /unknownReasons/.test(action)
+    && /server-measurement-unavailable/.test(action)
+    && /re-bind it with fromTestRun or a measurement/i.test(action);
 }
 
 /** The BAR revision mismatch must first distinguish stale serving code from a live guard. */
@@ -71,7 +73,7 @@ describe('acceptance-bar ship-gate proof remediations (EI-22495407709800667)', (
     expect(namesEvidenceHalf(PRE_FIX_DEPTH_MISSING)).toBe(false);
     expect(warnsDeclarationAloneIsNotEnough(PRE_FIX_DEPTH_MISSING)).toBe(false);
     expect(warnsHeldVerificationMayBeInvalidated(PRE_FIX_DEPTH_MISSING)).toBe(false);
-    expect(warnsReadOnlyProbeCannotClear(PRE_FIX_INADEQUATE)).toBe(false);
+    expect(explainsServerMeasuredFreshness(PRE_FIX_INADEQUATE)).toBe(false);
     expect(namesServingBuildCheck(PRE_FIX_REVISION_MISMATCH)).toBe(false);
   });
 
@@ -87,12 +89,14 @@ describe('acceptance-bar ship-gate proof remediations (EI-22495407709800667)', (
     expect(action).toMatch(/requiredTestLayers/);
   });
 
-  it('proof_inadequate warns that a read-only probe cannot clear freshness', () => {
+  it('proof_inadequate explains server-measured freshness and recipe renewal', () => {
     const repair = nextRepair(['bar_snapshot_proof_inadequate'], []);
     expect(repair?.code).toBe('bar_snapshot_proof_inadequate');
     const action = repair?.action ?? '';
 
-    expect(warnsReadOnlyProbeCannotClear(action)).toBe(true);
+    expect(explainsServerMeasuredFreshness(action)).toBe(true);
+    expect(explainsServerMeasuredFreshness('A read-only probe needs current fingerprints.')).toBe(false);
+    expect(explainsServerMeasuredFreshness('You do not need to supply current fingerprints.')).toBe(false);
     // Still tells the agent what to actually run.
     expect(action).toMatch(/plans:evaluate-spec-test-adequacy/);
   });

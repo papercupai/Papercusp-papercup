@@ -32,7 +32,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
@@ -91,7 +91,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('wi-issue-release-cooldown');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   // releaseWorkItem retires lifecycle-bound awaits and emits a claim-released
   // event. The shared, audited event-substrate list keeps those tables complete,
@@ -203,6 +203,91 @@ describe('claimNextWorkItem SKIPS an issue-family item within ITS OWN release co
 
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-1' });
     expect(got?.id).toBe('WI-cool-e');
+  });
+});
+
+/** One sidecar release per agent, `secondsAgo` in the past (the PK is one row per agent). */
+async function seedReleases(id: string, agents: readonly string[], secondsAgo = 60) {
+  for (const agent of agents) {
+    await db.sql`
+      INSERT INTO harness_shared.work_item_release_cooldowns
+        (workspace_id, harness_slug, feature_id, agent_id, released_at)
+      VALUES (${WS}, ${H}, ${id}, ${agent}, now() - make_interval(secs => ${secondsAgo}))`;
+  }
+}
+
+async function setEvidenceAdvancedAt(id: string, value: string) {
+  await db.sql`
+    UPDATE harness_shared.work_items
+       SET payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object('evidenceAdvancedAt', ${value}::text)
+     WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+}
+
+describe('WI-6554700010008444: release damping stops cross-member reselect churn (BQL#D-020)', () => {
+  afterEach(() => {
+    delete process.env.PAPERCUSP_RELEASE_DAMPING_RELEASERS;
+    delete process.env.PAPERCUSP_RELEASE_DAMPING_WINDOW_SEC;
+  });
+
+  it('three distinct releasers with no new evidence: a fourth member is served a sibling instead', async () => {
+    await seedIssue('WI-damp-a', { createdTs: 100 });
+    await seedIssue('WI-damp-b', { createdTs: 200 });
+    await seedReleases('WI-damp-a', ['bee-1', 'bee-2', 'bee-3']);
+    const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-4' });
+    expect(got?.id).toBe('WI-damp-b');
+    expect((await readCooldownCols('WI-damp-a')).takenBy).toBeNull();
+  });
+
+  it('two releasers stay under the threshold, so the oldest row is still served', async () => {
+    await seedIssue('WI-damp-c', { createdTs: 100 });
+    await seedReleases('WI-damp-c', ['bee-1', 'bee-2']);
+    const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-4' });
+    expect(got?.id).toBe('WI-damp-c');
+  });
+
+  it('new evidence after the releases re-admits the row at once', async () => {
+    await seedIssue('WI-damp-d', { createdTs: 100 });
+    await seedReleases('WI-damp-d', ['bee-1', 'bee-2', 'bee-3'], 120);
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'bee-4' })).toBeNull();
+    await setEvidenceAdvancedAt('WI-damp-d', new Date().toISOString());
+    const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-4' });
+    expect(got?.id).toBe('WI-damp-d');
+  });
+
+  it('evidence OLDER than the releases does not re-admit it', async () => {
+    await seedIssue('WI-damp-e', { createdTs: 100 });
+    await setEvidenceAdvancedAt('WI-damp-e', new Date(Date.now() - 3_600_000).toISOString());
+    await seedReleases('WI-damp-e', ['bee-1', 'bee-2', 'bee-3'], 60);
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'bee-4' })).toBeNull();
+  });
+
+  it('releases older than the damping window age out and the row is re-offered', async () => {
+    await seedIssue('WI-damp-f', { createdTs: 100 });
+    await seedReleases('WI-damp-f', ['bee-1', 'bee-2', 'bee-3'], 14_400 + 60);
+    const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-4' });
+    expect(got?.id).toBe('WI-damp-f');
+  });
+
+  it('an unparsable evidenceAdvancedAt fails open to counting releases and never throws', async () => {
+    await seedIssue('WI-damp-g', { createdTs: 100 });
+    await setEvidenceAdvancedAt('WI-damp-g', '2026-13-45T99:00:00Z');
+    await seedReleases('WI-damp-g', ['bee-1', 'bee-2', 'bee-3']);
+    await expect(wi.claimNextWorkItem({ harness: H, assignee: 'bee-4' })).resolves.toBeNull();
+  });
+
+  it('PAPERCUSP_RELEASE_DAMPING_RELEASERS=0 disables the leg', async () => {
+    process.env.PAPERCUSP_RELEASE_DAMPING_RELEASERS = '0';
+    await seedIssue('WI-damp-h', { createdTs: 100 });
+    await seedReleases('WI-damp-h', ['bee-1', 'bee-2', 'bee-3']);
+    const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-4' });
+    expect(got?.id).toBe('WI-damp-h');
+  });
+
+  it('a by-id claim of a damped row still succeeds (damping gates self-select only)', async () => {
+    await seedIssue('WI-damp-i', { createdTs: 100 });
+    await seedReleases('WI-damp-i', ['bee-1', 'bee-2', 'bee-3']);
+    await wi.claimWorkItem('WI-damp-i', 'bee-4', { harness: H });
+    expect((await readCooldownCols('WI-damp-i')).takenBy).toBe('bee-4');
   });
 });
 

@@ -333,6 +333,59 @@ function compactFleetMetrics(value: unknown): unknown {
   return parsed.success ? parsed.data : undefined;
 }
 
+/**
+ * A large fleet's complete indexes cannot fit the monitor budget. Use this
+ * preview ONLY after the result door saved the emitted body: the queue numbers
+ * retain their full comparison contract, and omitted identities, actions and
+ * secondary metrics are recovered from the SAME snapshot's cursor.
+ */
+export function compactLeaderBriefForResultDoor(data: unknown): Dict | null {
+  const source = asDict(data);
+  if (!source) return null;
+  const metrics = fleetMetricsResultSchema.safeParse(source.fleetMetrics);
+  if (!metrics.success) return null;
+
+  const summarySource = asDict(source.summary);
+  const summary = pick(summarySource, ['fleet', 'members'], 120) ?? {};
+  const headcount = pick(summarySource?.headcount,
+    ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict'], 120);
+  if (headcount) {
+    const basis = asDict(summarySource?.headcount)?.basis;
+    if (basis) headcount.basis = compactHeadcountBasis(basis);
+    summary.headcount = headcount;
+  }
+  const claimable = asDict(summarySource?.claimable_now);
+  if (claimable) {
+    // The canonical snapshot carries the stock spec and scheduler-floor
+    // contract. Keep null and its reason; never turn an unread oracle into 0.
+    summary.claimable_now = {
+      value: claimable.value,
+      population: { recovery: '_projection.cursor', source: 'summary.claimable_now.population' },
+      ...(claimable.unknown ? { unknown: pick(claimable.unknown, ['code', 'detail'], 120) } : {}),
+    };
+  }
+  const fleetMetrics = metrics.data.ok
+    ? { ok: true, snapshot: pick(metrics.data.snapshot, [
+        'schemaVersion', 'generatedAt', 'scope', 'quality', 'flow', 'remaining',
+        'authority', 'issueUnits', 'intakeStages', 'admissionParity',
+      ]) }
+    : metrics.data;
+  return {
+    ok: source.ok === true,
+    ...(source.degraded === true ? { degraded: true } : {}),
+    ...(source.notLeader ? { notLeader: pick(source.notLeader, ['registeredLeader', 'leaderState'], 120) } : {}),
+    summary,
+    fleetMetrics,
+    ...(source.blockedAt ? { blockedAt: compactBlockedAt(source.blockedAt, 80, false) } : {}),
+    leaderBriefProjection: {
+      tier: 'trimmed', emergency: true, detailOmitted: true,
+      recovery: '_projection.cursor',
+      // No claim that complete exceptional-action indexes fit inline.
+      completeIndexesInCursor: true,
+    },
+  };
+}
+
 /** P-006: keep the ranked dependency answer as one measured|unknown unit. The
  * graph reader already bounds rows, but each row can still carry long titles,
  * many coverage-twin work items, and several holder identities. */
@@ -494,11 +547,13 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'laneless_idle',
     'dormant',
     'spinning',
+    'stalled_item',
     'throttled',
     'repeated_recovery',
     'darkFleetAlert',
     'fleetExecutionCollapseAlert',
     'fleetHeadcountVsExecutableFrontierAlert',
+    'fleetUnderStaffedAlert',
     'leaderBlockerStallAlert',
     'customInvariantAlert',
     'unowned_criticals',
@@ -607,6 +662,25 @@ function compactSummary(value: unknown, ultra = false): unknown {
   if (headcount && 'basis' in headcount) headcount.basis = compactHeadcountBasis(headcount.basis);
   if (headcount) out.headcount = headcount;
 
+  // P-007 / R-17: the silent members `headcount.current` left out must survive
+  // shaping, or a leader reads an under-strength fleet with no names to act on.
+  const silentMembers = source.silentMembers;
+  if (silentMembers && typeof silentMembers === 'object' && !Array.isArray(silentMembers)) {
+    const sm = silentMembers as Record<string, unknown>;
+    if (sm.status === 'measured' && Array.isArray(sm.ownerIds)) {
+      const ids = sm.ownerIds.filter((id): id is string => typeof id === 'string');
+      out.silentMembers = {
+        status: 'measured',
+        ownerIds: ids.slice(0, 8),
+        ...(ids.length > 8 ? { ownerIdsTruncated: ids.length } : {}),
+        thresholdMs: sm.thresholdMs,
+        paused: sm.paused,
+      };
+    } else if (sm.status === 'unknown') {
+      out.silentMembers = { status: 'unknown', reason: sm.reason };
+    }
+  }
+
   // WI-2034563: policy-parked capacity must survive shaping and sit BESIDE headcount.
   // Shaped away, a leader reads `underStrength` with nothing saying the missing seats
   // are alive and parked by their own directive — which is exactly the reading that
@@ -684,6 +758,13 @@ function compactMember(value: unknown): unknown {
     ) ?? {};
   if (source.idleVerdict && typeof source.idleVerdict === 'object') {
     out.idleVerdict = pick(source.idleVerdict, ['cause', 'reason'], 160) ?? source.idleVerdict;
+  }
+  // P-004/R-4: the stalled-item rotation verdict is the actionable fact on this row —
+  // keep its identity, age, ready count and required action under shaping.
+  if (source.stalledItem && typeof source.stalledItem === 'object') {
+    out.stalledItem =
+      pick(source.stalledItem, ['item', 'noAdvanceMin', 'advancedAt', 'readyWaiting', 'requiredAction'], 400) ??
+      source.stalledItem;
   }
   if (source.doing && typeof source.doing === 'object') {
     out.doing = pick(source.doing, ['id', 'title', 'status', 'activity'], 140) ?? source.doing;
@@ -1198,7 +1279,12 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     },
   };
   // P-010/P-011: keep fleet-level detector evidence at the emergency tier too.
-  for (const alert of ['darkFleetAlert', 'fleetExecutionCollapseAlert', 'fleetHeadcountVsExecutableFrontierAlert']) {
+  for (const alert of [
+    'darkFleetAlert',
+    'fleetExecutionCollapseAlert',
+    'fleetHeadcountVsExecutableFrontierAlert',
+    'fleetUnderStaffedAlert',
+  ]) {
     const reasonKey = `${alert}Reason`;
     const falsifierKey = `${alert}Falsifier`;
     if (source[reasonKey] !== undefined) {

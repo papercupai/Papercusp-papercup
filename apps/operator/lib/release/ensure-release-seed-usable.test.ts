@@ -66,6 +66,9 @@ async function makeTree(
   await mkdir(fakebin, { recursive: true });
 
   await cp(REAL_SCRIPT, join(bin, 'ensure-release-seed.sh'));
+  // The predicate sources shared guards before checking the payload. Carry its
+  // real helper tree so the fixture exercises that startup path as well.
+  await cp(join(HERE, '../../../../papercusp-desktop/bin/lib'), join(bin, 'lib'), { recursive: true });
   await chmod(join(bin, 'ensure-release-seed.sh'), 0o755);
 
   if (seedFiles.manifest) await writeFile(join(seed, 'manifest.json'), '{"stores":[]}', 'utf8');
@@ -96,6 +99,10 @@ async function runScript(
         ...process.env,
         PATH: `${fakebin}:${process.env.PATH ?? ''}`,
         PAPERCUSP_SEED_REQUIRED: '0',
+        PAPERCUSP_SEED_UUID_PLAN_PATH: '',
+        PAPERCUSP_SEED_UUID_PLAN_SHA256: '',
+        PAPERCUSP_SEED_UUID_CENSUS_PATH: '',
+        PAPERCUSP_SEED_UUID_CENSUS_SHA256: '',
         ...extraEnv,
       },
       timeout: 60_000,

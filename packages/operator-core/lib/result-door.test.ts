@@ -6,6 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
+import { applyPayloadTier } from '@papercusp/tooldef';
+import { encode } from '@papercusp/result-encoding';
+import { shapeCodeRunSummary } from './agent-tools/code/run';
 
 // P-023: the door resolves its constants through the config surface per call — stub it
 // (the config module has its own suite) so these tests run PG-free and one case can
@@ -16,6 +19,7 @@ vi.mock('./context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMo
 import type { DoorableResult } from './result-door';
 import {
   applyResultDoor,
+  applyResultDoorAsync,
   beginResultDoorAggregate,
   buildProjectionHint,
   measureResultContextBytes,
@@ -24,7 +28,8 @@ import {
 } from './result-door';
 import { applyResultProjection } from './result-projection/apply';
 import { parseProjection } from './result-projection/parse';
-import { parseScratchReference } from './scratch-reference';
+import { parseScratchReference, readVolatileScratchReference } from './scratch-reference';
+import { senderBodyDeliveryDiagnostics } from './agent-tools/coordination/tools/inbox-content-bounds';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '11111111-2222-4333-8444-555555555555';
@@ -60,6 +65,142 @@ function longText(chars: number): string {
     .slice(0, chars);
 }
 
+describe('discovery schema integrity', () => {
+  it.each([
+    { toolName: 'tools:find' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'tools:find' },
+  ])('keeps schemas atomic through $toolName spill failure', (route) => {
+    writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+    const small = JSON.stringify({ type: 'object', properties: {
+      body: { type: 'string', description: 'é'.repeat(1_000) },
+    }, required: ['body'], additionalProperties: false });
+    const oversized = JSON.stringify({ type: 'object', properties: {
+      body: { type: 'string', description: 'large schema '.repeat(2_000) },
+    } });
+    const source = { hits: [
+      { tool: 'work_items:comment', argSchema: small },
+      { tool: 'coord:send', argSchema: oversized },
+    ] };
+    const text = JSON.stringify(source);
+    const result = { content: [{ type: 'text' as const, text }],
+      structuredContent: source, _meta: { explicitFullRequest: true } };
+    const out = applyResultDoor(result, { ...route, workspaceId: 'ws-1', runId: RUN_ID });
+    const body = boundedBody(out) as any;
+    expect(body.hits[0].argSchema).toBe(small);
+    expect(JSON.parse(body.hits[0].argSchema)).toEqual(JSON.parse(small));
+    expect(body.hits[1]).toMatchObject({ tool: 'coord:send', argSchemaUnavailable: true });
+    expect(body.hits[1]).not.toHaveProperty('argSchema');
+    expect(body._projection.cursor).toMatchObject({
+      kind: 'volatile-scratch-page', reason: 'spill-write-failed', tool: 'capability:read',
+    });
+    const recovered = readVolatileScratchReference(body._projection.cursor.uri,
+      { workspaceId: 'ws-1' });
+    expect(recovered.payload.subarray(body._projection.cursor.bodyOffsetInPayload)
+      .toString('utf8')).toBe(text);
+    expect(() => readVolatileScratchReference(body._projection.cursor.uri,
+      { workspaceId: 'another-workspace' })).toThrow();
+    expect(out.structuredContent).toBe(source);
+    expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
+  });
+
+  it('preserves compact signatures atomically on ordinary projection without changing other tools', () => {
+    const signature = 'body:string ' + 'field guidance '.repeat(90);
+    const source = { hits: [{ tool: 'work_items:comment', argSchema: signature }],
+      padding: 'P'.repeat(BUDGET_CHARS * 3) };
+    const content = [{ type: 'text' as const, text: JSON.stringify(source) }];
+    const out = applyResultDoor({ content },
+      { toolName: 'tools:find', workspaceId: 'ws-1', runId: RUN_ID });
+    const body = boundedBody(out) as any;
+    expect(body.hits[0].argSchema).toBe(signature);
+    expect(readSpill('ws-1', 'tools:find', RUN_ID)).toContain(signature);
+    expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
+    const unrelated = applyResultDoor({ content },
+      { toolName: 'other:read', workspaceId: 'ws-1', runId: RUN_ID });
+    expect((boundedBody(unrelated) as any).hits[0].argSchema).not.toBe(signature);
+  });
+});
+
+describe('fleet admission receipt recovery', () => {
+  it('keeps the repair header and original full-details cursor through a nested partial-result door', () => {
+    const source = { ok: false, error: 'admission_refused', reason: 'floor-gated',
+      message: 'P-001 / WI-17 is excluded by stopTheLine.', blockingPlanItemIds: ['P-001'],
+      blockingWorkItemIds: ['WI-17'], namedFloors: { stopTheLine: 1 },
+      repairCall: { tool: 'work_items:claim', args: { id: 'WI-17', assignee: 'self', harness: 'papercusp' },
+        effect: 'claim' }, promotionFailsafe: { diagnostic: longText(20_000) } };
+    const first = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(source) }], isError: true },
+      { toolName: 'fleet:launch-on-plan', workspaceId: 'ws-1', runId: RUN_ID });
+    const firstBody = boundedBody(first) as any;
+    const nested = applyResultDoor(first, { toolName: 'tools:invoke', nestedTargetToolName: 'fleet:launch-on-plan',
+      workspaceId: 'ws-1', runId: RUN_ID });
+    const body = boundedBody(nested) as any;
+    expect(JSON.stringify(body).length).toBeLessThanOrEqual(6000);
+    expect(nested.isError).toBe(true);
+    expect(body).toMatchObject({ reason: 'floor-gated', message: source.message,
+      blockingPlanItemIds: ['P-001'], blockingWorkItemIds: ['WI-17'], namedFloors: { stopTheLine: 1 },
+      repairCall: source.repairCall });
+    expect(body._projection.cursor).toEqual(firstBody._projection.cursor);
+    const cursor = body._projection.cursor;
+    const reference = parseScratchReference(readFileSync(cursor.args.file_path))!;
+    expect(JSON.parse(reference.payload.subarray(cursor.bodyOffsetInPayload).toString())).toEqual(source);
+  });
+});
+
+describe('plans:start write receipt recovery', () => {
+  const receipt = () => ({
+    ok: false, counts: { ok: 0, failed: 1 }, results: [{
+      ok: false, slug: 'receipt-plan', harnessSlug: 'papercusp', error: 'admission_refused',
+      autoApproved: true, transitioned: false,
+      promotion: { promoted: 3, skipped: 2, flagOff: false },
+      promotedBlock: { changed: true, rows: 5 },
+      admission: { ready: false, reason: 'floor-gated', message: 'P-001 is excluded by claim floors.', diagnostics: longText(20_000) },
+    }],
+  });
+
+  it.each(['plans:start', 'tools:invoke'])('retains the refusal and committed legs through %s and pages the original bytes', (toolName) => {
+    const source = receipt();
+    const out = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(source) }] }, {
+      toolName, nestedTargetToolName: toolName === 'tools:invoke' ? 'plans:start' : undefined,
+      workspaceId: 'ws-1', runId: RUN_ID,
+    });
+    const body = boundedBody(out) as any;
+    expect(body.results[0]).toMatchObject({
+      error: 'admission_refused', autoApproved: true,
+      promotion: { promoted: 3, skipped: 2 }, promotedBlock: { changed: true, rows: 5 },
+      admission: { ready: false, reason: 'floor-gated' },
+    });
+    expect(body._projection.cursor.tool).toBe('capability:read');
+    expect(body._projection.next).not.toMatch(/Re-call plans:start|Call plans:start again/);
+    const payload = parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!.payload;
+    expect(JSON.parse(payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString())).toEqual(source);
+  });
+
+  it('does not recommend replay when an upstream projection already lost the receipt', () => {
+    const tiered = applyPayloadTier({ toolName: 'plans:start', shape: undefined,
+      response: { data: receipt() }, tier: 'trimmed', args: { slug: 'receipt-plan' }, log: vi.fn() });
+    const out = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(tiered.data) }],
+      _meta: { payloadProjection: tiered.payloadProjection } }, {
+      toolName: 'plans:start', workspaceId: 'ws-1', runId: RUN_ID,
+    });
+    const body = boundedBody(out) as any;
+    expect(body._projection.next).toContain('Do NOT repeat plans:start');
+    expect(body._projection.next).not.toMatch(/Re-call plans:start|Call plans:start again/);
+  });
+
+  it('retains the committed receipt and a read-only recovery after a scratch failure', () => {
+    const blockedRoot = join(sandbox, 'not-a-directory');
+    writeFileSync(blockedRoot, 'blocked');
+    process.env.PAPERCUSP_SCRATCH_ROOT = blockedRoot;
+    const out = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(receipt()) }] }, {
+      toolName: 'plans:start', workspaceId: 'ws-1', runId: RUN_ID,
+    });
+    const body = boundedBody(out) as any;
+    expect(body.results[0]).toMatchObject({ autoApproved: true,
+      promotion: { promoted: 3 }, admission: { reason: 'floor-gated' } });
+    expect(body._projection.cursor.tool).toBe('capability:read');
+    expect(body._projection.next).toContain('Do NOT repeat plans:start');
+  });
+});
+
 /** The single spill file written under <scratchRoot>/<ws>/<tool>/<runId>/. */
 function readSpill(ws: string, tool: string, runId: string): string {
   const dir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, ws, tool, runId);
@@ -71,8 +212,16 @@ function readSpill(ws: string, tool: string, runId: string): string {
   return reference!.payload.toString('utf8');
 }
 
+function readVolatilePayloadText(uri: string): string {
+  const payload = readVolatileScratchReference(uri, { workspaceId: 'ws-1' }).payload.toString('utf8');
+  const parsed = JSON.parse(payload) as { content?: Array<{ text?: string }> };
+  return parsed.content?.[0]?.text ?? '';
+}
+
 function boundedBody(result: DoorableResult): {
   text?: string;
+  review?: unknown;
+  summaryNotice?: Record<string, unknown>;
   _projection: {
     cursor: Record<string, unknown>;
     next: string;
@@ -86,6 +235,8 @@ function boundedBody(result: DoorableResult): {
   expect(textItems).toHaveLength(1);
   return JSON.parse(textItems[0].text) as {
     text?: string;
+    review?: unknown;
+    summaryNotice?: Record<string, unknown>;
     _projection: {
       cursor: Record<string, unknown>;
       next: string;
@@ -96,6 +247,73 @@ function boundedBody(result: DoorableResult): {
 }
 
 describe('applyResultDoor', () => {
+  describe('EI-25185987580518406 coordination send receipts', () => {
+    it.each([421, 700])('keeps a complete %i-character delivery receipt inline', (chars) => {
+      const diagnostics = senderBodyDeliveryDiagnostics('x'.repeat(chars))!;
+      const receipt = {
+        ok: !diagnostics.bodyTruncated,
+        results: [{ ok: true, msg_id: 'already-persisted', ...diagnostics,
+          bodyReadRef: { tool: 'coord:read', msg_id: 'already-persisted' } }],
+        counts: { ok: 1, failed: 0 },
+      };
+      const result = { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
+      expect(applyResultDoor(result, { toolName: 'coord:send', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+    });
+
+    it('keeps nested coord:send inbox-page diagnostics from marking a complete receipt partial', () => {
+      const diagnostics = senderBodyDeliveryDiagnostics('x'.repeat(570))!;
+      expect(diagnostics).toMatchObject({ bodyTruncated: false, bodyMayBeTruncated: true });
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: true,
+          results: [{ ok: true, msg_id: 'already-persisted', ...diagnostics }],
+          counts: { ok: 1, failed: 0 },
+        }) }],
+      };
+
+      expect(applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'coord:send',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      })).toBe(result);
+
+      const unrelated = applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'plans:list',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const envelope = JSON.parse((unrelated.content[0] as { text: string }).text);
+      expect(envelope.incomplete.reason).toBe('under-budget-partial-result');
+    });
+
+    it.each(['field', 'upstream'] as const)('recovers genuinely %s-partial receipts by reading without repeating the send', (kind) => {
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: true, results: [{ msg_id: 'already-persisted', _partial: true }],
+        }) }],
+        ...(kind === 'upstream' ? { _meta: { payloadProjection: {
+          truncated: true, tier: 'trimmed', originalChars: 9_000, returnedChars: 500, omittedCount: 1,
+        } } } : {}),
+      };
+      const out = applyResultDoor(result, { toolName: 'coord:send', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((out.content[0] as { text: string }).text);
+      expect(envelope.incomplete).toMatchObject({ reason: 'under-budget-partial-result', recoverable: false });
+      expect(envelope.incomplete.note).toContain('coord:read');
+      expect(envelope.incomplete.note).toContain('Do not repeat coord:send');
+      expect(envelope.incomplete.note).not.toMatch(/re-call|re-send/i);
+    });
+
+    it('does not treat inbox output clipping as a complete send receipt', () => {
+      const result = { content: [{ type: 'text' as const, text: JSON.stringify({
+        entries: [{ msg_id: 'already-persisted', body_truncated: true }],
+      }) }] };
+      const out = applyResultDoor(result, { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID });
+      expect(JSON.parse((out.content[0] as { text: string }).text).incomplete.recoverable).toBe(false);
+    });
+  });
+
   it('a result within the budget passes through as the SAME object (no copy, no spill)', () => {
     const result = { content: [{ type: 'text' as const, text: 'small result' }] };
     expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
@@ -174,8 +392,9 @@ describe('applyResultDoor', () => {
       }
       if (workItemLostField) {
         sawPartial = true;
-        expect(workItem?._partial).toBe(true);
+        expect(row._partial).toBe(true);
       }
+      if (workItem) expect(workItem).not.toHaveProperty('_partial');
     }
     // Calibration: if this turns false, the fixture no longer exercises the
     // dangerous field-loss direction and the assertions above are vacuous.
@@ -226,6 +445,546 @@ describe('applyResultDoor', () => {
       key: 'WI-tail-failure',
     });
     expect(projected.tally).toEqual({ ok: 16, failed: 1 });
+  });
+
+  it('EI-22468133965181704: work_items:links keeps the full selected-set receipt when result rows are bounded', () => {
+    const ids = Array.from({ length: 100 }, (_, i) => `EI-${String(i + 1).padStart(18, '0')}`);
+    const results = ids.map((id) => ({
+      ok: true,
+      id,
+      direction: 'out',
+      links: [{ rel: 'relates', dst: { kind: 'issue', ref: `${id}-linked-target` } }],
+    }));
+    const source = {
+      ok: true,
+      results,
+      counts: { ok: 100, failed: 0 },
+      coverage: {
+        selectedCount: 100,
+        checkedCount: 100,
+        complete: true,
+        linkedCount: 100,
+      },
+    };
+    expect(JSON.stringify(source).length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: JSON.stringify(source) }] },
+      { toolName: 'work_items:links', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(doored) as unknown as {
+      results: Array<Record<string, unknown>>;
+      _partial?: boolean;
+      coverage: {
+        selectedCount: number;
+        checkedCount: number;
+        complete: boolean;
+        linkedCount: number;
+      };
+    };
+    const visibleRows = body.results.filter((row) => row._truncated !== true);
+
+    expect(body.coverage).toEqual({
+      selectedCount: 100,
+      checkedCount: 100,
+      complete: true,
+      linkedCount: 100,
+    });
+    expect(visibleRows.length).toBeLessThan(body.coverage.linkedCount);
+    expect(body._partial).toBe(true);
+    expect(body.results.every((row) =>
+      typeof row.id === 'string' && row.kind !== 'projection-truncation',
+    )).toBe(true);
+  });
+
+  it('work_items:get preserves row reread handles ahead of get-shape counts through the result door', () => {
+    const ids = Array.from({ length: 100 }, (_, i) => `WI-${String(i + 1).padStart(5, '0')}`);
+    const source = {
+      ok: true,
+      results: ids.map((id) => ({
+        ok: true,
+        id,
+        availability: 'available',
+        workItem: { id, summary: 'detail '.repeat(300) },
+      })),
+      counts: { ok: 100, failed: 0 },
+      read: {
+        schemaVersion: 'work-items-get-read-v1',
+        mode: 'complete',
+        requested: 100,
+        available: 100,
+        absent: 0,
+        unavailable: 0,
+        detailRows: 100,
+        stubbedRows: 0,
+      },
+      _shapeNote: {
+        tier: 'trimmed',
+        dropped: ['workItem.summary'],
+        stubbed: { count: 0, note: 're-read an id alone for detail' },
+      },
+    };
+    expect(JSON.stringify(source).length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: JSON.stringify(source) }] },
+      { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(doored) as unknown as {
+      results: Array<Record<string, unknown>>;
+      read: Record<string, unknown>;
+      _shapeNote: { dropped: string[]; stubbed: { count: number } };
+    };
+
+    expect(body.read).toMatchObject({
+      requested: 100,
+      available: 100,
+      absent: 0,
+      unavailable: 0,
+      detailRows: 100,
+      stubbedRows: 0,
+    });
+    expect(body._shapeNote).toMatchObject({
+      dropped: ['workItem.summary'],
+      stubbed: { count: 0 },
+    });
+    expect(body.results.some((row) => typeof row.id === 'string')).toBe(true);
+    expect((doored as any)._meta?.resultDoor).toMatchObject({ truncated: true, spillUri: expect.any(String) });
+  });
+
+  it('work_items:get preserves explicitly selected bounded thread bodies ahead of checkpoint detail', () => {
+    const selectedBody = 'The reviewer objected that the acceptance evidence is incomplete.';
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'WI-thread-body',
+        availability: 'available',
+        checkpoint: 'C'.repeat(10_000),
+        checkpointContentHash: 'checkpoint-sha',
+        checkpointUpdatedAtMs: 123,
+        checkpointBody: {
+          notes: Array.from({ length: 20 }, (_, i) => `checkpoint note ${i}: ${'N'.repeat(1_200)}`),
+        },
+        threadWindow: {
+          posts: [{
+            id: 37,
+            thread_id: 'thread-37',
+            author_id: 'su-reviewer',
+            body: selectedBody,
+            created_ts: '2026-10-08T05:00:00.000Z',
+          }],
+          shown: 1,
+          total: 5,
+          topics: [],
+          createdAt: '2026-10-08T04:00:00.000Z',
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+      read: {
+        schemaVersion: 'work-items-get-read-v1',
+        mode: 'complete',
+        requested: 1,
+        available: 1,
+        absent: 0,
+        unavailable: 0,
+        detailRows: 1,
+        stubbedRows: 0,
+      },
+      _shapeNote: { tier: 'standard', dropped: [] },
+    };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666667',
+        preservePaths: ['results[].threadWindow.total', 'results[].threadWindow.posts[].body'],
+      },
+    );
+    const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
+      results: Array<{ threadWindow?: { total?: number; posts?: Array<{ body?: string }> } }>;
+    };
+
+    expect(projected.results[0]?.threadWindow?.total).toBe(5);
+    expect(projected.results[0]?.threadWindow?.posts?.[0]?.body).toBe(selectedBody);
+  });
+
+  it('tools:invoke work_items:get preserves bounded thread bodies through its outer depth-limited door', () => {
+    const selectedBody = 'The latest approval objection remains unresolved.';
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'WI-nested-thread-body',
+        checkpoint: 'C'.repeat(10_000),
+        checkpointBody: { notes: Array.from({ length: 20 }, () => 'N'.repeat(350)) },
+        threadWindow: {
+          posts: [{
+            id: 41,
+            thread_id: 'thread-41',
+            author_id: 'su-reviewer',
+            body: selectedBody,
+            created_ts: '2026-10-08T05:00:00.000Z',
+          }],
+          shown: 1,
+          total: 3,
+          topics: [],
+          createdAt: null,
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666668',
+      },
+    );
+    const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
+      results: Array<{ threadWindow?: { total?: number; posts?: Array<{ id?: number; body?: string }> } }>;
+    };
+
+    expect(projected.results[0]?.threadWindow?.total).toBe(3);
+    expect(projected.results[0]?.threadWindow?.posts?.[0]).toMatchObject({ id: 41, body: selectedBody });
+  });
+
+  it('tools:invoke work_items:get preserves explicitly picked thread post leaves through the outer door', () => {
+    const selectedPost = {
+      id: 43,
+      author_id: 'su-reviewer',
+      created_ts: '2026-10-08T05:00:00.000Z',
+      body: 'The reviewer needs the original objection before approving this change.',
+    };
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'WI-explicit-thread-leaf-pick',
+        checkpoint: 'C'.repeat(10_000),
+        checkpointBody: { notes: Array.from({ length: 20 }, () => 'N'.repeat(350)) },
+        threadWindow: {
+          posts: [selectedPost],
+          shown: 1,
+          total: 3,
+          topics: [],
+          createdAt: null,
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666670',
+        preservePaths: [
+          'results[].threadWindow.posts[].id',
+          'results[].threadWindow.posts[].author_id',
+          'results[].threadWindow.posts[].created_ts',
+          'results[].threadWindow.posts[].body',
+        ],
+      },
+    );
+    const projected = JSON.parse((doored.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{ threadWindow?: { posts?: Array<typeof selectedPost> } }>;
+    };
+
+    expect(projected.results[0]?.threadWindow?.posts?.[0]).toMatchObject(selectedPost);
+  });
+
+  it('tools:invoke work_items:get keeps post bodies when projection selects the enclosing threadWindow', () => {
+    const selectedBody = 'The reviewer requested the full comment text.';
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'WI-nested-parent-pick',
+        checkpoint: 'C'.repeat(10_000),
+        checkpointBody: { notes: Array.from({ length: 20 }, () => 'N'.repeat(350)) },
+        threadWindow: {
+          posts: [{
+            id: 42,
+            thread_id: 'thread-42',
+            author_id: 'su-reviewer',
+            body: selectedBody,
+            created_ts: '2026-10-08T05:00:00.000Z',
+          }],
+          shown: 1,
+          total: 4,
+          topics: [],
+          createdAt: null,
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: '22222222-3333-4444-8555-666666666669',
+        preservePaths: ['results[].checkpoint', 'results[].threadWindow'],
+      },
+    );
+    const projected = JSON.parse((doored.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{ threadWindow?: { total?: number; posts?: Array<{
+        id?: number;
+        thread_id?: string;
+        author_id?: string;
+        body?: string;
+        created_ts?: string;
+      }> } }>;
+    };
+
+    expect(projected.results[0]?.threadWindow?.total).toBe(4);
+    expect(projected.results[0]?.threadWindow?.posts?.[0]).toMatchObject({
+      id: 42,
+      thread_id: 'thread-42',
+      author_id: 'su-reviewer',
+      body: selectedBody,
+      created_ts: '2026-10-08T05:00:00.000Z',
+    });
+  });
+
+  it('recipes:run nested work-item rows retain identity, state, and full-detail recovery through both shapers', () => {
+    const recipeId = 'read-existing-agent-operability-work-items';
+    const expectedIds = Array.from({ length: 10 }, (_, i) => 'WI-' + (4600 + i));
+    const source = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: recipeId,
+        result: {
+          ok: true,
+          summary: expectedIds.map((id, i) => ({
+            ok: true,
+            results: [{
+              ok: true,
+              id,
+              workItem: {
+                id,
+                title: 'Operability item ' + i,
+                state: i % 2 === 0 ? 'todo' : 'passed',
+                summary: 'detail '.repeat(1_000),
+              },
+            }],
+            counts: { ok: 1, failed: 0 },
+          })),
+          logs: [],
+          dryRun: false,
+          plannedMutations: [],
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    expect(JSON.stringify(source).length).toBeGreaterThan(BUDGET_CHARS);
+
+    // This is the framework's generic recipes:run payload-tier path followed by
+    // the model-facing result door. It is a producer-shape fixture, not a replay
+    // of the saved recipe: recipes:get currently reports that recipe unrunnable.
+    const tiered = applyPayloadTier({
+      toolName: 'recipes:run',
+      shape: undefined,
+      response: { data: source },
+      tier: 'trimmed',
+      args: { id: recipeId },
+      rawDispatchTemplate: "tools:invoke { name:'{tool}', args:{ …original args, payloadTier:'full' } }",
+      log: vi.fn(),
+    });
+    expect(tiered.payloadProjection).toMatchObject({ truncated: true, tier: 'trimmed' });
+
+    const tieredBody = tiered.data as any;
+    const tieredRows = tieredBody.results[0].result.summary as any[];
+    expect(tieredRows).toHaveLength(expectedIds.length);
+    expect(tieredRows.map((row) => row.results[0].id)).toEqual(expectedIds);
+    expect(tieredRows.map((row) => row.results[0].workItem.state)).toEqual(
+      expectedIds.map((_, i) => (i % 2 === 0 ? 'todo' : 'passed')),
+    );
+    for (const row of tieredRows) {
+      expect(row.results[0]).toMatchObject({ _partial: true });
+      expect(row.results[0].workItem).not.toHaveProperty('_partial');
+      expect(row.results[0].workItem).not.toHaveProperty('_omitted');
+    }
+    expect(tieredBody._projection.cursor).toEqual({
+      kind: 'full-detail',
+      tool: 'recipes:run',
+      args: { id: recipeId, payloadTier: 'full' },
+    });
+    expect(tieredBody._projection.next).toContain("tools:invoke { name:'recipes:run'");
+
+    const doored = applyResultDoor(
+      {
+        content: [{ type: 'text' as const, text: JSON.stringify(tieredBody) }],
+        _meta: { payloadProjection: tiered.payloadProjection },
+      },
+      { toolName: 'recipes:run', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const envelope = boundedBody(doored) as any;
+    expect((doored as any)._meta?.resultDoor).toMatchObject({
+      truncated: true,
+      spillUri: expect.any(String),
+      upstreamProjected: true,
+    });
+    expect(envelope).toMatchObject({
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'incomplete',
+      incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      content: [expect.objectContaining({ kind: expect.stringMatching(/reference/), uri: expect.any(String) })],
+    });
+    expect(envelope.incomplete.note).toContain('capability:read');
+    expect(envelope.incomplete.note).toContain("payloadTier:'full'");
+    expect((doored as any)._meta.resultDoor.outputEnvelope).toEqual(envelope);
+    expect((doored as any)._meta.resultDoor.spillUri).toBe(envelope.content[0].uri);
+
+    const spill = JSON.parse(readSpill('ws-1', 'recipes:run', RUN_ID)) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    expect(spill.content).toHaveLength(1);
+    const emitted = JSON.parse(spill.content[0].text) as any;
+    const emittedRows = emitted.results[0].result.summary as any[];
+    expect(emittedRows).toHaveLength(expectedIds.length);
+    expect(emittedRows.map((row) => row.results[0].id)).toEqual(expectedIds);
+    expect(emittedRows.map((row) => row.results[0].workItem.state)).toEqual(
+      expectedIds.map((_, i) => (i % 2 === 0 ? 'todo' : 'passed')),
+    );
+    expect(emitted._projection.cursor).toEqual(tieredBody._projection.cursor);
+  });
+
+  it('EI-251528: code:run reduction stays visibly partial through a later result-door projection', () => {
+    const produced = shapeCodeRunSummary({
+      ok: true,
+      summary: {
+        markerCount: 9,
+        rows: Array.from({ length: 18 }, (_, index) => ({
+          id: `row-${index}`,
+          status: index % 2 === 0 ? 'pass' : 'fail',
+          evidence: `evidence-${index} `.repeat(90),
+        })),
+      },
+    }) as any;
+    expect(produced.summaryNotice).toMatchObject({ truncated: true });
+
+    const sourceText = JSON.stringify({ ...produced, padding: 'p'.repeat(BUDGET_CHARS * 2) });
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: sourceText }] },
+      { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const inline = boundedBody(doored);
+
+    expect(inline._projection.truncated).toBe(true);
+    expect(inline._projection.next).toContain('source is already partial');
+    expect((doored as any)._meta.resultDoor.innerTruncationMarkers).toContain('summaryNotice.truncated');
+    expect(readSpill('ws-1', 'code:run', RUN_ID)).toContain(sourceText);
+  });
+
+  it('EI-251528: evaluator rating-map payload-tier omissions remain explicitly incomplete at the result door', () => {
+    const criteria = Array.from({ length: 9 }, (_, index) => `criterion-${index + 1}`);
+    const ratings = Object.fromEntries(criteria.map((criterion, index) => [criterion, {
+      rating: index % 2 === 0 ? 'fail' : 'unknown',
+      evidence: `${criterion} evidence `.repeat(35),
+      suggestion: `${criterion} suggestion `.repeat(30),
+    }]));
+    const source = {
+      ok: true,
+      slug: 'adequacy-plan',
+      count: 1,
+      rows: [{ specId: 'SPEC-1', planItemId: 'P-001', verdict: 'fail', ratings }],
+      padding: 'p'.repeat(20_000),
+    };
+    const tiered = applyPayloadTier({
+      toolName: 'plans:evaluate-spec-test-adequacy',
+      shape: undefined,
+      response: { data: source },
+      tier: 'trimmed',
+      args: { slug: 'adequacy-plan' },
+      rawDispatchTemplate: "tools:invoke { name:'{tool}', args:{ …original args, payloadTier:'full' } }",
+      log: vi.fn(),
+    });
+    expect(tiered.payloadProjection).toMatchObject({ truncated: true, tier: 'trimmed' });
+
+    const tieredBody = tiered.data as any;
+    expect(tieredBody._projection).toMatchObject({ truncated: true });
+    expect(tieredBody._projection.omittedCount).toBeGreaterThan(0);
+    const row = tieredBody.rows?.[0] ?? {};
+    const visibleRatings = row.ratings ?? {};
+    const missingRatings = criteria.filter((criterion) => !Object.prototype.hasOwnProperty.call(visibleRatings, criterion));
+    expect(missingRatings.length).toBeGreaterThan(0);
+    expect(row._partial).toBe(true);
+    expect(visibleRatings).not.toHaveProperty('_partial');
+    expect(tieredBody._projection.omitted).toContainEqual(expect.objectContaining({
+      path: `$.rows[0].ratings.${missingRatings[0]}`,
+      reason: 'remaining fields omitted to fit projection budget',
+    }));
+    expect(tieredBody._projection.omittedCount).toBeGreaterThanOrEqual(missingRatings.length);
+
+    const doored = applyResultDoor(
+      {
+        content: [{ type: 'text' as const, text: JSON.stringify(tieredBody) }],
+        _meta: { payloadProjection: tiered.payloadProjection },
+      },
+      { toolName: 'plans:evaluate-spec-test-adequacy', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const inline = JSON.parse((doored.content[0] as { text: string }).text) as any;
+    expect((doored as any)._meta.resultDoor).toMatchObject({ truncated: true, upstreamProjected: true });
+    if (inline.schemaVersion === 'papercusp.output-envelope/v1') {
+      expect(inline).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+    } else {
+      expect(inline._projection).toMatchObject({ truncated: true });
+    }
+    expect(readSpill('ws-1', 'plans:evaluate-spec-test-adequacy', RUN_ID)).toContain('full-detail');
+  });
+
+  it('EI-251528: oversized rubrics:amend output signals projection and keeps the routed review actionable inline and in spill', () => {
+    const output = {
+      ok: true,
+      dryRun: true,
+      preview: { changes: Array.from({ length: 180 }, (_, index) => ({
+        barKey: `R-${index}`,
+        detail: `preview-${index} `.repeat(50),
+      })) },
+      review: {
+        state: 'routed',
+        conversationId: 'conv-review-1',
+        previewPostRef: 'thread-post:42',
+        next: "events:await { event:'consult:reply:conv-review-1' }",
+      },
+    };
+    const sourceText = JSON.stringify(output);
+    expect(sourceText.length).toBeGreaterThan(BUDGET_CHARS);
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: sourceText }] },
+      { toolName: 'rubrics:amend', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const inline = boundedBody(doored);
+    const spill = readSpill('ws-1', 'rubrics:amend', RUN_ID);
+
+    expect(inline._projection.truncated).toBe(true);
+    expect(inline.review).toMatchObject(output.review);
+    expect((doored as any)._meta.resultDoor.spillUri).toContain('papercusp://scratch/ws-1/rubrics:amend/');
+    expect(spill).toContain('thread-post:42');
+    expect(spill).toContain('consult:reply:conv-review-1');
   });
 
   it('EI-21986877021459153: plans:get keeps nested item text through the generic result-door fallback', () => {
@@ -389,7 +1148,7 @@ describe('applyResultDoor', () => {
     expect(doored.structuredContent).toBe(rows);
   });
 
-  it('REGRESSION (EI-23481355842555588): coord:thread array truncation is explicitly typed as a marker, not an empty message row', () => {
+  it('REGRESSION (EI-23481355842555588): coord:thread keeps message arrays domain-only and marks the containing envelope partial', () => {
     const entries = Array.from({ length: 300 }, (_, index) => ({
       msg_id: `coord-${index}`,
       kind: 'message',
@@ -410,18 +1169,52 @@ describe('applyResultDoor', () => {
     ) as DoorableResult;
     const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
       entries: Array<Record<string, unknown>>;
-      _projection: { truncated: boolean };
+      _partial?: boolean;
+      _projection: { truncated: boolean; omitted?: Array<{ path: string; reason: string }> };
     };
-    const marker = projected.entries.at(-1);
 
     expect(projected._projection.truncated).toBe(true);
-    expect(marker).toMatchObject({
-      kind: 'projection-truncation',
-      type: 'projection-truncation',
-      _truncated: true,
-    });
-    expect(marker).not.toHaveProperty('msg_id');
-    expect(marker).not.toHaveProperty('summary');
+    expect(projected._partial).toBe(true);
+    expect(projected.entries.length).toBeLessThan(entries.length);
+    expect(projected.entries.every((entry) =>
+      entry.kind === 'message' && typeof entry.msg_id === 'string',
+    )).toBe(true);
+    expect(projected._projection.omitted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: `$.entries[${projected.entries.length}]`,
+        reason: expect.stringContaining('array item(s) omitted'),
+      }),
+    ]));
+  });
+
+  it.each([
+    { toolName: 'coord:thread' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'coord:thread' },
+  ])('EI-25974584172289918: $toolName keeps projected nested arrays domain-only with recovery', (route) => {
+    const source = {
+      entries: Array.from({ length: 200 }, (_, index) => ({
+        msg_id: `message-${index}`, kind: 'message', summary: 'reply '.repeat(100),
+      })),
+      values: Array.from({ length: 100 }, (_, index) => index),
+    };
+    const original = JSON.stringify(source);
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      { ...route, workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
+      entries: Array<Record<string, unknown>>;
+      _partial?: boolean;
+    };
+    const entries = body.entries;
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.length).toBeLessThan(source.entries.length);
+    expect(entries.every((row) => row.kind === 'message' && typeof row.msg_id === 'string')).toBe(true);
+    expect(body._partial).toBe(true);
+    expect(body._projection.truncated).toBe(true);
+    expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
+    expect(readSpill('ws-1', route.toolName, RUN_ID).endsWith(original)).toBe(true);
+    expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
   });
 
   it('REGRESSION (EI-23481355842555588): coord:send delivery verdicts survive generic result-door trimming', () => {
@@ -608,6 +1401,79 @@ describe('applyResultDoor', () => {
     expect(control.results.some((row) => row.completionAuthority === undefined)).toBe(true);
   });
 
+  it('REGRESSION (EI-25394627440656634): preserves committed blocker writes when the ordinary spill fails', () => {
+    const noise = Object.fromEntries(
+      Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)]),
+    );
+    const payload = {
+      ok: true,
+      results: [{
+        ok: true,
+        id: 'EI-blocker-write-1',
+        changed: true,
+        ...noise,
+        workItem: { id: 'EI-blocker-write-1', state: 'blocked', harness: 'papercup', payload: noise },
+        activeBlockers: [{
+          kind: 'runtime',
+          ref: 'runtime:worker',
+          capability: 'live-dependency',
+          summary: 'Worker runtime is not ready.',
+          nextVerb: 'events:await { event: "runtime:worker" }',
+          status: 'active',
+        }],
+        capabilityDispositions: [{ capability: 'live-dependency', disposition: 'await-event' }],
+        blockerHistory: noise,
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const original = `format: toon\n${encode(payload, 'toon')}`;
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+    // Make the normal spill fail deterministically after a committed mutation.
+    writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }], _meta: { format: 'toon' } },
+      {
+        toolName: 'work_items:set_blocker',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      },
+    ) as DoorableResult;
+    const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+      results: Array<Record<string, any>>;
+      _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
+    };
+
+    expect(output.results[0]).toMatchObject({
+      ok: true,
+      id: 'EI-blocker-write-1',
+      changed: true,
+      workItem: { id: 'EI-blocker-write-1', state: 'blocked', harness: 'papercup' },
+      activeBlockers: [{
+        kind: 'runtime',
+        ref: 'runtime:worker',
+        capability: 'live-dependency',
+        status: 'active',
+      }],
+      capabilityDispositions: [{ capability: 'live-dependency', disposition: 'await-event' }],
+    });
+    expect(output._projection).toMatchObject({
+      truncated: true,
+      cursor: {
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+      },
+    });
+    expect(output._projection.next).toContain('Do NOT repeat this mutation');
+    expect(output._projection.next).toContain('work_items:get');
+    expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+      spillFailed: true,
+      spillPath: null,
+      spillUri: null,
+    });
+    expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+  });
+
   it('REGRESSION (EI-22652581729405439): evaluator compact preview keeps all eight ratings and verdict metadata', () => {
     const criteria = [
       'traceability', 'fixture-calibration', 'falsifiability', 'correct-layer',
@@ -671,8 +1537,13 @@ describe('applyResultDoor', () => {
     expect(Object.keys(controlBody.rows[0].ratings ?? {})).not.toEqual(criteria);
   });
 
-  it('REGRESSION (EI-22663465512565342): marker pipeline verdicts survive a generic door re-projection', () => {
+  it('REGRESSION (EI-22663465512565342, EI-25574253034038454): pipeline verdicts and test route survive a generic door re-projection', () => {
     const marker = 'pipeline-marker-added-by-this-change';
+    const currentBuildTestRoute = {
+      testClass: 'operator-api',
+      readiness: 'ready',
+      route: 'staging',
+    };
     const admissions = Array.from({ length: 24 }, (_, index) => ({
       paths: [`packages/operator-core/lib/changed-${index}.ts`],
       unchanged: [`packages/operator-core/lib/unchanged-${index}.ts`],
@@ -701,6 +1572,9 @@ describe('applyResultDoor', () => {
         detail: 'marker settles the judged candidate and next candidate',
       },
       summary: 'pipeline summary',
+      // Handler extras are appended after the compact pipeline fields. Keep this
+      // late so the generic control reproduces the real omission under pressure.
+      currentBuildTestRoute,
     };
     const original = JSON.stringify(payload);
     expect(original.length).toBeGreaterThan(BUDGET_CHARS);
@@ -719,6 +1593,20 @@ describe('applyResultDoor', () => {
     });
     expect(kept.positions).toMatchObject({ inMain: false, deployed: false });
     expect(kept.positionsMarker).toMatchObject({ marker, inMain: true, deployed: true });
+    expect(kept.currentBuildTestRoute).toEqual(currentBuildTestRoute);
+
+    const nestedDoored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'dev:pipeline_position',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      },
+    );
+    const nestedKept = JSON.parse((nestedDoored.content[0] as { text: string }).text) as any;
+    expect(nestedKept._projection.truncated).toBe(true);
+    expect(nestedKept.currentBuildTestRoute).toEqual(currentBuildTestRoute);
 
     // FALSIFIABILITY CONTROL: the same oversized bytes through an ordinary tool
     // have no marker-verdict policy and should still demonstrate the old drop.
@@ -729,13 +1617,15 @@ describe('applyResultDoor', () => {
     const controlBody = JSON.parse((control.content[0] as { text: string }).text) as any;
     expect(controlBody._projection.truncated).toBe(true);
     expect(controlBody.changeInCandidate).toBeUndefined();
+    expect(controlBody.currentBuildTestRoute).toBeUndefined();
   });
 
-  it('preserves events:status exact-event generation state when waiter history overflows the door', () => {
+  it('preserves exact event identity and state while marking overflowed default history incomplete', () => {
+    const event = 'harness:papercusp:wi-40086-qualified-current-tip';
     const original = JSON.stringify({
       ok: true,
       event_inspection: {
-        event: 'harness:papercusp:wi-40086-qualified-current-tip',
+        event,
         current_generation: 17,
         current_state: 'declared',
         declarations: [{ generation: 17, state: 'declared', note: 'qualification gate' }],
@@ -763,11 +1653,158 @@ describe('applyResultDoor', () => {
       { toolName: 'events:status', workspaceId: 'ws-1', runId: RUN_ID },
     );
     const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
-      event_inspection?: { current_generation?: number; current_state?: string };
+      _partial?: boolean;
+      _projection: ReturnType<typeof boundedBody>['_projection'] & {
+        omittedCount: number;
+        omitted?: Array<{ path: string; reason: string }>;
+        omittedSamplesDropped?: true;
+      };
+      ok?: boolean;
+      event_inspection?: {
+        event?: string;
+        current_generation?: number;
+        current_state?: string;
+        waiters?: unknown[];
+      };
     };
 
     expect(body._projection.truncated).toBe(true);
-    expect(body.event_inspection).toMatchObject({ current_generation: 17, current_state: 'declared' });
+    expect(body.ok).toBe(true);
+    expect(body.event_inspection).toMatchObject({
+      event,
+      current_generation: 17,
+      current_state: 'declared',
+    });
+    expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
+    expect(body._projection.next).toContain('capability:read');
+    expect(body._partial).toBe(true);
+    const visibleWaiters = body.event_inspection?.waiters ?? [];
+    expect(visibleWaiters.length).toBeGreaterThan(0);
+    expect(visibleWaiters.length).toBeLessThan(200);
+    expect(visibleWaiters.every((row) =>
+      row !== null && typeof row === 'object' && (row as { kind?: string }).kind !== 'projection-truncation',
+    )).toBe(true);
+    const arrayOmission = body._projection.omitted?.find((row) =>
+      row.path === `$.event_inspection.waiters[${visibleWaiters.length}]`,
+    );
+    if (arrayOmission) {
+      expect(arrayOmission.reason).toMatch(/\d+ array item\(s\) omitted; showing \d+ of 200 rendered input entries/);
+    } else {
+      // The payload tier may shed omission samples to keep useful rows in the
+      // body. That fallback must disclose the sample loss and retain the exact
+      // omission count; the envelope's `_partial` remains the in-band warning.
+      expect(body._projection.omittedSamplesDropped).toBe(true);
+      expect(body._projection.omittedCount).toBeGreaterThanOrEqual(200 - visibleWaiters.length);
+    }
+
+    // The visible summary keeps the requested key/state so ok:true cannot read as
+    // absence; the named cursor still recovers every row that the bounded body cut.
+    const spillText = readSpill('ws-1', 'events:status', RUN_ID);
+    const bodyOffset = (body._projection.cursor as { bodyOffsetInPayload?: number }).bodyOffsetInPayload;
+    expect(bodyOffset).toEqual(expect.any(Number));
+    const spill = JSON.parse(Buffer.from(spillText, 'utf8').subarray(bodyOffset!).toString('utf8')) as {
+      event_inspection: { event: string; current_generation: number; current_state: string; waiters: unknown[] };
+    };
+    expect(spill.event_inspection).toMatchObject({
+      event,
+      current_generation: 17,
+      current_state: 'declared',
+    });
+    expect(spill.event_inspection.waiters).toHaveLength(200);
+  });
+
+  it('preserves exact event identity through an explicit projection before history overflow', () => {
+    // Exercise the tight-budget edge deterministically. The output hint shares
+    // this budget with the retained event identity and omission diagnostics.
+    doorConstantsMock.mockReturnValue({
+      ...BAKED_DOOR_CONSTANTS,
+      maxTurnFloorTokens: 7_000,
+      maxTurnCapTokens: 7_000,
+    });
+    const event = 'harness:papercusp:explicit-event-projection';
+    const original = JSON.stringify({
+      ok: true,
+      event_inspection: {
+        event,
+        current_generation: 23,
+        current_state: 'fired',
+        waiters: Array.from({ length: 200 }, (_, i) => ({
+          await_id: i + 1,
+          subscriber_id: `su-explicit-${i}`,
+          state: 'registered',
+          note: 'y'.repeat(320),
+        })),
+      },
+    });
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const parsed = parseProjection({ pick: [
+      'ok',
+      'event_inspection.event',
+      'event_inspection.current_generation',
+      'event_inspection.current_state',
+      'event_inspection.waiters',
+    ] });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const projected = applyResultProjection(
+      { content: [{ type: 'text' as const, text: original }] },
+      parsed.spec,
+      { toolName: 'events:status', effect: 'read' },
+    );
+    const doored = applyResultDoor(projected, {
+      toolName: 'events:status',
+      workspaceId: 'ws-2',
+      runId: RUN_ID,
+    });
+    const body = boundedBody(doored) as ReturnType<typeof boundedBody> & {
+      _partial?: boolean;
+      _projection: ReturnType<typeof boundedBody>['_projection'] & {
+        omitted?: Array<{ path: string; reason: string }>;
+      };
+      ok?: boolean;
+      event_inspection?: {
+        event?: string;
+        current_generation?: number;
+        current_state?: string;
+        waiters?: unknown[];
+      };
+    };
+
+    expect(body._projection.truncated).toBe(true);
+    expect(body.ok).toBe(true);
+    expect(body.event_inspection).toMatchObject({
+      event,
+      current_generation: 23,
+      current_state: 'fired',
+    });
+    expect(body._projection.cursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
+    expect(body._projection.next).toContain('capability:read');
+    expect(body._partial).toBe(true);
+    const visibleWaiters = body.event_inspection?.waiters ?? [];
+    expect(visibleWaiters.length).toBeGreaterThan(0);
+    expect(visibleWaiters.length).toBeLessThan(200);
+    expect(visibleWaiters.every((row) =>
+      row !== null && typeof row === 'object' && (row as { kind?: string }).kind !== 'projection-truncation',
+    )).toBe(true);
+    expect(body._projection.omitted).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: '$.event_inspection.waiters[' + visibleWaiters.length + ']',
+        reason: expect.stringMatching(/\d+ array item\(s\) omitted; showing \d+ of 200 rendered input entries/),
+      }),
+    ]));
+
+    const spillText = readSpill('ws-2', 'events:status', RUN_ID);
+    const bodyOffset = (body._projection.cursor as { bodyOffsetInPayload?: number }).bodyOffsetInPayload;
+    expect(bodyOffset).toEqual(expect.any(Number));
+    const spill = JSON.parse(Buffer.from(spillText, 'utf8').subarray(bodyOffset!).toString('utf8')) as {
+      event_inspection: { event: string; current_generation: number; current_state: string; waiters: unknown[] };
+    };
+    expect(spill.event_inspection).toMatchObject({
+      event,
+      current_generation: 23,
+      current_state: 'fired',
+    });
+    expect(spill.event_inspection.waiters).toHaveLength(200);
   });
 
   it('finds and structurally projects JSON accompanied by advisory prose', () => {
@@ -889,7 +1926,12 @@ describe('applyResultDoor', () => {
     });
     expect(original.length).toBeGreaterThan(BUDGET_CHARS);
 
-    const parsed = parseProjection({ pick: ['results[].missing'] });
+    // A PARTIAL miss keeps the oversized body (the matched path still returns every
+    // row) while carrying a degraded warning — the combination this test needs. An
+    // ALL-miss no longer qualifies: EI-23774219620725180 made that case REFUSE with
+    // a bounded key list instead of failing open into the full body, so it never
+    // reaches structural bounding at all (covered in result-projection/apply.test.ts).
+    const parsed = parseProjection({ pick: ['results[].id', 'results[].detail', 'results[].missing'] });
     if (!parsed.ok) throw new Error(parsed.error);
     const projected = applyResultProjection(
       { content: [{ type: 'text' as const, text: original }] },
@@ -898,7 +1940,7 @@ describe('applyResultDoor', () => {
     );
     const projectedWarning = (projected.content[0] as { text: string }).text;
     expect(projectedWarning).toMatch(/^⚠/);
-    expect(projectedWarning).toContain('matched NOTHING');
+    expect(projectedWarning).toContain('matched nothing');
 
     const doored = applyResultDoor(projected, {
       toolName: 'work_items:list',
@@ -920,7 +1962,7 @@ describe('applyResultDoor', () => {
     };
     expect(bounded._projection.truncated).toBe(true);
     expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
-    expect(readSpill('ws-1', 'work_items:list', RUN_ID)).toContain('matched NOTHING');
+    expect(readSpill('ws-1', 'work_items:list', RUN_ID)).toContain('matched nothing');
   });
 
   it('CONTROL: a clean projection footer remains spill-only during structural bounding', () => {
@@ -984,19 +2026,14 @@ describe('applyResultDoor', () => {
     expect(measureResultContextBytes(doored)).toBeLessThanOrEqual(BUDGET_CHARS);
   });
 
-  it('every truncation footer teaches `projection` — the knob that would have avoided the spill (P-020)', () => {
-    // The projection stage is a DISPATCH-level reserved arg, so it is in no
-    // tool's inputSchema and an agent can only learn it exists from a moment
-    // like this one. If this assertion is ever deleted, the feature silently
-    // becomes unreachable — which is the failure this test exists to prevent.
+  it('a multi-line text spill teaches the bounded saved-result query recovery path', () => {
     const doored = applyResultDoor(
       { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 3) }] },
       { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID },
     );
     const next = boundedBody(doored)._projection.next;
-    expect(next).toContain('projection:');
-    expect(next).toContain('pick');
-    expect(next).toContain('head');
+    expect(next).toContain('capability:read { file_path, query:"terms" }');
+    expect(next).toContain('all terms, context and coverage');
   });
 
   it('D-021: mixed over-budget text/non-text is stored once behind a typed reference', () => {
@@ -1032,6 +2069,8 @@ describe('applyResultDoor', () => {
         },
       ],
     });
+    expect(envelope.incomplete.note).toContain('framed scratch-reference container, not a raw JSON file');
+    expect(envelope.incomplete.note).toContain('`capability:read`');
     const spill = readSpill('ws-1', 'plans:get', RUN_ID);
     expect(spill).toContain('trailing text fully over budget');
     expect(spill).toContain('"type":"image"');
@@ -1139,13 +2178,17 @@ describe('applyResultDoor', () => {
   });
 
   it("an unscoped caller ('*' workspace) spills under 'unscoped'; a non-UUID runId gets a fresh UUID", () => {
+    const reportedRunId = 'bbc9c2b7-872b-496a-b3f4-4127e25c8e868d';
     const doored = applyResultDoor(
       { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
-      { toolName: 'plans:get', workspaceId: '*', runId: 'not-a-uuid' },
+      { toolName: 'plans:get', workspaceId: '*', runId: reportedRunId },
     );
     const pointer = (doored.content.at(-1) as { text: string }).text;
     expect(pointer).toContain('papercusp://scratch/unscoped/plans:get/');
-    expect(pointer).not.toContain('not-a-uuid');
+    expect(pointer).not.toContain(reportedRunId);
+    expect(pointer).toMatch(
+      /papercusp:\/\/scratch\/unscoped\/plans:get\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\//i,
+    );
   });
 
   it('P-023: a per-session override widens the door — the same over-baked result passes through', () => {
@@ -1224,9 +2267,10 @@ describe('applyResultDoor', () => {
       const doored = applyResultDoor(input, { toolName: 'computer:screenshot', workspaceId: 'ws-1', runId: RUN_ID });
       const envelope = JSON.parse((doored.content[0] as { text: string }).text);
       expect(envelope).toMatchObject({
-        state: 'error',
-        error: { code: 'output_spill_failed', retryable: true },
+        state: 'incomplete',
+        incomplete: { recoverable: true },
       });
+      expect(envelope.content[0]).toMatchObject({ kind: 'reference' });
       expect((doored.content[0] as { text: string }).text).not.toContain(original.data);
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
         spillFailed: true,
@@ -1239,6 +2283,455 @@ describe('applyResultDoor', () => {
   describe('P-006 aggregate budget spans one explicit or compatibility cohort', () => {
     const medium = (): DoorableResult => ({
       content: [{ type: 'text' as const, text: 'm'.repeat(5_000) }],
+    });
+    const expectVolatileEnvelope = (envelope: {
+      state?: string;
+      error?: unknown;
+      content?: Array<Record<string, unknown>>;
+      incomplete?: { recoverable?: boolean; note?: string };
+    }, expectedText: string) => {
+      expect(envelope.state).toBe('incomplete');
+      expect(envelope.error).toBeUndefined();
+      expect(envelope.incomplete?.recoverable).toBe(true);
+      const reference = envelope.content?.find((item) => item.kind === 'reference');
+      expect(reference?.uri).toEqual(expect.stringMatching(/^papercusp:\/\/scratch-memory\//));
+      expect(reference?.expiresAt).toEqual(expect.any(String));
+      if (typeof reference?.uri !== 'string') throw new Error('missing volatile reference URI');
+      expect(readVolatilePayloadText(reference.uri)).toBe(expectedText);
+      expect(JSON.stringify(envelope)).not.toContain(sandbox);
+      return envelope.incomplete?.note ?? '';
+    };
+
+    it.each([
+      { label: 'direct', toolName: 'scorecards:emit' },
+      { label: 'nested', toolName: 'tools:invoke', nestedTargetToolName: 'scorecards:emit' },
+    ])('preserves the scorecard write receipt after a $label spill failure', ({ toolName, nestedTargetToolName }) => {
+      const noise = Object.fromEntries(
+        Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)]),
+      );
+      const receipt = {
+        ok: true,
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-emit-1' },
+        canonicalRatings: { 'degenerate-distribution': { rating: 'preserved-rating' } },
+        created: true,
+        issueId: 'scorecard-emit-1',
+        ...noise,
+      };
+      const original = JSON.stringify(receipt);
+      expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName,
+          ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+        },
+      ) as DoorableResult;
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        completionReceipt: Record<string, unknown>;
+        canonicalRatings: Record<string, { rating: unknown }>;
+        created: boolean;
+        issueId: string;
+        _projection: { kind: string; truncated: boolean; cursor: Record<string, unknown>; next: string };
+      };
+
+      expect(output).toMatchObject({
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-emit-1' },
+        canonicalRatings: { 'degenerate-distribution': { rating: 'preserved-rating' } },
+        created: true,
+        issueId: 'scorecard-emit-1',
+      });
+      expect(output._projection).toMatchObject({
+        kind: 'bounded-payload',
+        truncated: true,
+        cursor: { kind: 'volatile-scratch-page', tool: 'capability:read', reason: 'spill-write-failed' },
+      });
+      expect(output._projection.next).toContain('Do NOT repeat this non-idempotent emit');
+      expect(output._projection.next).toContain('completionReceipt');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+    });
+
+    it.each([
+      { label: 'direct', toolName: 'scorecards:emit' },
+      { label: 'nested', toolName: 'tools:invoke', nestedTargetToolName: 'scorecards:emit' },
+    ])('preserves a committed scorecard receipt after $label aggregate spill failure', async ({ toolName, nestedTargetToolName }) => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'scorecard-emit-hard-failure', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+      const noise = Object.fromEntries(
+        Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)]),
+      );
+      const receipt = {
+        ok: true,
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-emit-hard-1' },
+        canonicalRatings: { 'degenerate-distribution': { rating: 'preserved-rating' } },
+        created: true,
+        issueId: 'scorecard-emit-hard-1',
+        ...noise,
+      };
+      const original = JSON.stringify(receipt);
+      const doored: DoorableResult = await applyResultDoorAsync(
+        { content: [{ type: 'text' as const, text: original }], structuredContent: receipt },
+        {
+          toolName,
+          ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+        },
+      );
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        committed?: boolean;
+        completionReceipt?: Record<string, unknown>;
+        canonicalRatings?: Record<string, { rating: unknown }>;
+        created?: boolean;
+        issueId?: string;
+        _projection?: { cursor?: Record<string, unknown>; next?: string };
+        error?: Record<string, unknown>;
+      };
+
+      expect(output).toMatchObject({
+        ok: true,
+        committed: true,
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-emit-hard-1' },
+        canonicalRatings: { 'degenerate-distribution': { rating: 'preserved-rating' } },
+        created: true,
+        issueId: 'scorecard-emit-hard-1',
+      });
+      expect(output.error).toBeUndefined();
+      expect(output._projection?.cursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+        reason: 'spill-write-failed',
+      });
+      expect(output._projection?.next).toContain('Do NOT repeat this non-idempotent emit');
+      expect(doored.structuredContent).toEqual(receipt);
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+        reason: 'aggregate-output-budget-exceeded',
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+    });
+
+    it.each([
+      { label: 'direct', toolName: 'scorecards:emit' },
+      { label: 'nested', toolName: 'tools:invoke', nestedTargetToolName: 'scorecards:emit' },
+    ])('marks a $label scorecard hard-spill failure non-retryable when no receipt is available', ({ toolName, nestedTargetToolName }) => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'scorecard-emit-no-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+      const receipt = {
+        ok: true,
+        ...Object.fromEntries(Array.from({ length: 18 }, (_, index) => [`detail${index}`, 'n'.repeat(900)])),
+      };
+      const original = JSON.stringify(receipt);
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName,
+          ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+        },
+      );
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        state?: string;
+        error?: { code?: string; message?: string; retryable?: boolean };
+        content?: Array<Record<string, unknown>>;
+        incomplete?: { note?: string };
+      };
+
+      const note = expectVolatileEnvelope(output, original);
+      expect(note).toContain('Do NOT repeat this non-idempotent emit');
+      expect(note).toContain('scorecard ledger');
+    });
+
+    it('retains a nested coord:send receipt when the aggregate hard-spill write fails', () => {
+      // Two ordinary results consume 10KB of the 12KB cohort. The third result
+      // must take the hard whole-result spill route; making scratch unavailable
+      // exercises the failure path without an environmental race.
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-receipt-fallback', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+      const receipt = {
+        ok: true,
+        results: [{
+          ok: true,
+          msg_id: 'persisted-message',
+          queued: true,
+          woken: 1,
+          wakeOutcome: 'queued',
+          body: 'x'.repeat(4_800),
+        }],
+        counts: { ok: 1, failed: 0 },
+      };
+      const input: DoorableResult = {
+        content: [{ type: 'text' as const, text: JSON.stringify(receipt) }],
+      };
+      const doored = applyResultDoor(input, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'coord:send',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope(),
+      });
+
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        results: Array<Record<string, unknown>>;
+        _projection: { kind: string; truncated: boolean; cursor: Record<string, unknown>; next: string };
+      };
+      expect(output.results).toMatchObject([{
+        msg_id: 'persisted-message',
+        queued: true,
+        woken: 1,
+        wakeOutcome: 'queued',
+      }]);
+      expect(output._projection).toMatchObject({
+        kind: 'bounded-payload',
+        truncated: true,
+        cursor: { kind: 'volatile-scratch-page', tool: 'capability:read', reason: 'spill-write-failed' },
+      });
+      expect(output._projection.next).toContain('Do not repeat coord:send');
+      expect(output._projection.next).toContain('coord:read');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(JSON.stringify(receipt).length);
+    });
+
+    it('retains a nested work_items:complete write receipt when the aggregate spill fails', () => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-completion-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+
+      const completion = {
+        ok: true,
+        results: [{
+          ok: true,
+          id: 'EI-completion-receipt-1',
+          completionAuthority: 'committed',
+          countsTowardBurnDown: true,
+          workItem: { id: 'EI-completion-receipt-1', state: 'resolved' },
+          completion: { summary: 'C'.repeat(4_500) },
+        }],
+        counts: { ok: 1, failed: 0 },
+      };
+      const original = JSON.stringify(completion);
+      expect(original.length).toBeGreaterThan(4_500);
+
+      const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:complete',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+          scratchWriteFailure: { error: failure },
+        },
+      ) as DoorableResult;
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        results: Array<Record<string, any>>;
+        _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
+      };
+
+      expect(output.results[0]).toMatchObject({
+        ok: true,
+        id: 'EI-completion-receipt-1',
+        completionAuthority: 'committed',
+        countsTowardBurnDown: true,
+        workItem: { id: 'EI-completion-receipt-1', state: 'resolved' },
+      });
+      expect(output._projection).toMatchObject({
+        truncated: true,
+        cursor: {
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
+          reason: 'spill-write-failed',
+          errorCode: 'SCRATCH_QUOTA_EXCEEDED',
+        },
+      });
+      expect(output._projection.next).toContain('Do NOT repeat work_items:complete');
+      expect(output._projection.next).toContain('work_items:get');
+      const cursorUri = output._projection.cursor.uri;
+      if (typeof cursorUri !== 'string') throw new Error('missing volatile completion cursor URI');
+      expect(readVolatilePayloadText(cursorUri)).toBe(original);
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+        spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+    });
+
+    it('retains committed work_items:set_blocker verdicts when the aggregate spill fails', () => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-blocker-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+
+      const receipt = {
+        ok: true,
+        results: [{
+          ok: true,
+          id: 'EI-blocker-write-2',
+          changed: true,
+          workItem: { id: 'EI-blocker-write-2', state: 'blocked', harness: 'papercup' },
+          activeBlockers: [{ kind: 'runtime', ref: 'runtime:worker', status: 'active' }],
+          blockerHistory: 'B'.repeat(4_800),
+        }],
+        counts: { ok: 1, failed: 0 },
+      };
+      const original = JSON.stringify(receipt);
+      const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:set_blocker',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+          scratchWriteFailure: { error: failure },
+        },
+      ) as DoorableResult;
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        results: Array<Record<string, any>>;
+        _projection: { truncated: boolean; cursor: Record<string, unknown>; next: string };
+      };
+
+      expect(output.results[0]).toMatchObject({
+        ok: true,
+        id: 'EI-blocker-write-2',
+        changed: true,
+        workItem: { id: 'EI-blocker-write-2', state: 'blocked', harness: 'papercup' },
+        activeBlockers: [{ kind: 'runtime', ref: 'runtime:worker', status: 'active' }],
+      });
+      expect(output._projection).toMatchObject({
+        truncated: true,
+        cursor: {
+          kind: 'volatile-scratch-page',
+          tool: 'capability:read',
+        },
+      });
+      expect(output._projection.next).toContain('Do NOT repeat this mutation');
+      expect(output._projection.next).toContain('work_items:get');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
+        spillPath: null,
+        spillUri: null,
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+    });
+
+    it('makes a nested work_items:set_blocker hard-spill failure non-retryable without a parseable receipt', () => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-blocker-no-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+
+      const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const original = 'x'.repeat(4_800);
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:set_blocker',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+          scratchWriteFailure: { error: failure },
+        },
+      ) as DoorableResult;
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
+        error?: { code?: string; message?: string; retryable?: boolean };
+        state?: string;
+        content?: Array<Record<string, unknown>>;
+        incomplete?: { note?: string };
+      };
+
+      const note = expectVolatileEnvelope(envelope, original);
+      expect(note).toContain('Do NOT repeat it');
+      expect(note).toContain('work_items:get');
+    });
+
+    it('makes a nested work_items:complete hard-spill failure non-retryable when no receipt parses', () => {
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-completion-no-receipt', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+
+      const failure = Object.assign(new Error('workspace quota exhausted'), { code: 'SCRATCH_QUOTA_EXCEEDED' });
+      const original = 'x'.repeat(4_800);
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:complete',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope(),
+          scratchWriteFailure: { error: failure },
+        },
+      ) as DoorableResult;
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
+        error?: { code?: string; message?: string; retryable?: boolean };
+        state?: string;
+        content?: Array<Record<string, unknown>>;
+        incomplete?: { note?: string };
+      };
+
+      const note = expectVolatileEnvelope(envelope, original);
+      expect(note).toContain('Do NOT repeat this call');
+      expect(note).toContain('work_items:get');
+    });
+
+    it('marks a nested coord:send hard-spill failure non-retryable when no receipt can be recovered', () => {
+      const failure = Object.assign(new Error('scratch filesystem full'), { code: 'ENOSPC' });
+      const original = 'x'.repeat(BUDGET_CHARS * 2);
+      const doored = applyResultDoor(
+        {
+          content: [{ type: 'text' as const, text: original }],
+          _meta: { explicitFullRequest: true },
+        },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'coord:send',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          scratchWriteFailure: { error: failure },
+        },
+      );
+      const envelope = JSON.parse((doored.content[0] as { type: 'text'; text: string }).text) as {
+        error?: { code?: string; message?: string; retryable?: boolean };
+        state?: string;
+        content?: Array<Record<string, unknown>>;
+        incomplete?: { note?: string };
+      };
+
+      const note = expectVolatileEnvelope(envelope, original);
+      expect(note).toContain('do NOT repeat the send');
+      expect(note).toContain('coord:feed');
+      expect(note).toContain('coord:inbox');
     });
 
     it('uses one budget across explicit fan-out and spills the result that crosses it', () => {
@@ -1255,6 +2748,12 @@ describe('applyResultDoor', () => {
       expect((second._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
       const envelope = JSON.parse((third.content[0] as { text: string }).text);
       expect(envelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
+      // EI-23761431768707969: code:run avoids the aggregate budget only when its bounded
+      // summary is enough. Complete long text must stay in the recoverable spill or use slices.
+      expect(envelope.incomplete.note).toMatch(/ONE code:run only for compact output/i);
+      expect(envelope.incomplete.note).toContain('summaryNotice.truncated');
+      expect(envelope.incomplete.note).toMatch(/complete long text, page this spill or fetch bounded slices/i);
+      expect(envelope.incomplete.note).not.toContain('fold the calls into ONE code:run');
       const aggregate = (third._meta as { resultDoor?: { aggregate?: Record<string, unknown> } }).resultDoor?.aggregate;
       expect(aggregate).toMatchObject({
         mode: 'explicit',
@@ -1268,6 +2767,78 @@ describe('applyResultDoor', () => {
       });
       expect(JSON.stringify(aggregate)).not.toContain('turn-7');
       expect(readSpill('ws-1', 'plans:get', RUN_ID)).toContain('m'.repeat(100));
+    });
+
+    it('keeps direct and nested scratch-reference byte pages readable after the aggregate cohort is exhausted', () => {
+      const scope = beginResultDoorAggregate({ sessionKey: 'owner-read-recovery', outputGroupId: 'turn-recovery' });
+      const normalOpts = { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope };
+      applyResultDoor(medium(), normalOpts);
+      applyResultDoor(medium(), normalOpts);
+      applyResultDoor(medium(), normalOpts);
+
+      const pageContent = (reference?: Record<string, unknown>): DoorableResult => ({
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            file_path: '/scratch/result-door.spill',
+            encoding: 'base64',
+            byte_offset: 0,
+            byte_length: 1_024,
+            total_bytes: 2_048,
+            ...(reference ? { reference } : {}),
+            eof: false,
+            data: Buffer.alloc(1_024).toString('base64'),
+            next_cursor: { tool: 'capability:read', args: { byte_offset: 1_024, byte_limit: 1_024 } },
+          }),
+        }],
+      });
+
+      const recoveryPage = applyResultDoor(pageContent({ uri: 'papercusp://scratch/ws-1/plans:get/page' }), {
+        toolName: 'capability:read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope,
+      });
+      expect(JSON.parse((recoveryPage.content[0] as { text: string }).text)).toMatchObject({
+        ok: true,
+        encoding: 'base64',
+        byte_length: 1_024,
+      });
+      expect((recoveryPage._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+
+      const nestedRecoveryPage = applyResultDoor(pageContent({ uri: 'papercusp://scratch/ws-1/plans:get/page' }), {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'capability:read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope,
+      });
+      expect(JSON.parse((nestedRecoveryPage.content[0] as { text: string }).text)).toMatchObject({
+        ok: true,
+        encoding: 'base64',
+        byte_length: 1_024,
+      });
+      expect((nestedRecoveryPage._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+
+      const ordinaryPage = applyResultDoor(pageContent(), {
+        toolName: 'capability:read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope,
+      });
+      const ordinaryEnvelope = JSON.parse((ordinaryPage.content[0] as { text: string }).text);
+      expect(ordinaryEnvelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
+
+      const nestedOrdinaryPage = applyResultDoor(pageContent(), {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'capability:read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope,
+      });
+      const nestedOrdinaryEnvelope = JSON.parse((nestedOrdinaryPage.content[0] as { text: string }).text);
+      expect(nestedOrdinaryEnvelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
     });
 
     // EI-21954450841272611, and independently EI-21733745031882912 /
@@ -1445,17 +3016,17 @@ describe('applyResultDoor', () => {
   // and a failed WRITE silently inherited the cap's correct answer.
   //
   // The two failures need opposite answers. A failed CAP returning the original is
-  // right. A failed SPILL returning the original re-exposes the entire payload the
-  // door exists to bound — at exactly the moment the box is unhealthy (disk full,
-  // unwritable scratch), and unbounded outright when the caller passed
-  // payloadTier:'full' (which bypasses payload-tier's 30k ceiling upstream).
+  // right. A failed SPILL must still stay bounded — returning the original re-exposes
+  // the entire payload the door exists to bound, especially for payloadTier:'full'
+  // (which bypasses payload-tier's 30k ceiling upstream). A bounded volatile page is
+  // allowed when the in-process cache can retain the spill bytes.
   //
   // OMP has the identical bug with the sign flipped: correct on save-FAILED
   // (output-meta.ts:684-692, truncates anyway, under a comment saying a save
   // failure must never re-expose the full output), wrong on store-ABSENT (:656,
   // returns uncapped). Same function, opposite answers — which is what makes this
   // shape worth a named guard rather than a one-line fix.
-  describe('spill write fails → truncate WITHOUT recovery, never no-cap (WI-36047)', () => {
+  describe('spill write fails → truncate and offer volatile recovery, never no-cap (WI-36047)', () => {
     /** A regular FILE where the scratch root dir should be → mkdirSync throws. */
     function breakScratchRoot(): void {
       writeFileSync(join(sandbox, 'scratch'), 'not a directory');
@@ -1479,20 +3050,151 @@ describe('applyResultDoor', () => {
       expect(text.length).toBeLessThan(original.length);
     });
 
-    it('names NO spill path in the footer — a pointer to a file that was never written is worse than none', () => {
+    it('offers a volatile page without advertising a missing filesystem path', () => {
       breakScratchRoot();
       const doored = applyResultDoor(
         { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
         { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
       );
-      const footer = boundedBody(doored)._projection.next;
+      const bounded = boundedBody(doored);
+      const footer = bounded._projection.next;
 
-      expect(footer).toContain('spill write failed');
-      expect(footer).toContain('NOT recoverable');
-      // No scratch URI, no filesystem path — the reader must not spend a call
-      // discovering the file is absent.
+      expect(footer).toContain('Primary scratch persistence failed');
+      expect(footer).toContain('in-process copy is available');
+      expect(bounded._projection.cursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+      });
+      // No scratch URI in prose and no filesystem path; the cursor carries only
+      // the short-lived, capability:read reference.
       expect(footer).not.toContain('papercusp://scratch');
       expect(footer).not.toContain(sandbox);
+    });
+
+    it('keeps useful checkpoint text and its stored identity when a work_items:get spill cannot be written', () => {
+      breakScratchRoot();
+      const checkpoint =
+        'RETAINED-CHECKPOINT-BEGIN\n' +
+        'Resume by checking the saved acceptance evidence and continue from the next action. '.repeat(180) +
+        '\nRETAINED-CHECKPOINT-END';
+      const original = JSON.stringify({
+        ok: true,
+        results: [{
+          ok: true,
+          id: 'WI-checkpoint-spill-failure',
+          availability: 'available',
+          workItem: {
+            id: 'WI-checkpoint-spill-failure',
+            kind: 'bug',
+            state: 'open',
+            title: 'continuation checkpoint',
+            summary: 'S'.repeat(1_200),
+            payload: { diagnostics: 'P'.repeat(2_000) },
+          },
+          checkpoint,
+          checkpointContentHash: 'checkpoint-hash-123456',
+          checkpointUpdatedAtMs: 123,
+          checkpointBody: { chars: checkpoint.length, cap: 32_000, remaining: 32_000 - checkpoint.length },
+        }],
+        counts: { ok: 1, failed: 0 },
+      });
+      expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const bounded = boundedBody(doored) as unknown as {
+        results: Array<{
+          checkpoint?: string;
+          checkpointContentHash?: string;
+          checkpointUpdatedAtMs?: number;
+          checkpointBody?: unknown;
+        }>;
+        _projection: { cursor: Record<string, unknown> };
+      };
+
+      expect(bounded._projection.cursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+        reason: 'spill-write-failed',
+      });
+      expect(bounded.results[0].checkpoint).toContain('RETAINED-CHECKPOINT-BEGIN');
+      expect(bounded.results[0].checkpoint!.length).toBeGreaterThan(800);
+      expect(bounded.results[0].checkpoint).toContain('TRUNCATED');
+      expect(bounded.results[0].checkpointContentHash).toBe('checkpoint-hash-123456');
+      expect(bounded.results[0].checkpointUpdatedAtMs).toBe(123);
+      expect(bounded.results[0].checkpointBody).toEqual({
+        chars: checkpoint.length,
+        cap: 32_000,
+        remaining: 32_000 - checkpoint.length,
+      });
+      expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(BUDGET_CHARS);
+    });
+
+    it('keeps selected comment bodies for nested work_items:get when spill persistence fails', () => {
+      breakScratchRoot();
+      const selectedBody = 'RETAINED-COMMENT: the reviewer requested the bounded continuation evidence.';
+      const original = JSON.stringify({
+        ok: true,
+        results: [{
+          ok: true,
+          id: 'WI-thread-spill-failure',
+          availability: 'available',
+          workItem: {
+            id: 'WI-thread-spill-failure',
+            kind: 'bug',
+            state: 'open',
+            title: 'bounded continuation comment',
+            summary: 'S'.repeat(1_200),
+          },
+          threadWindow: {
+            shown: 1,
+            total: 4,
+            posts: [{
+              id: 42,
+              thread_id: 'thread-42',
+              author_id: 'su-reviewer',
+              body: selectedBody,
+              created_ts: '2026-10-08T05:00:00.000Z',
+            }],
+          },
+          checkpoint: 'C'.repeat(40_000),
+          checkpointContentHash: 'checkpoint-hash-123456',
+        }],
+        counts: { ok: 1, failed: 0 },
+      });
+      expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:get',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+        },
+      );
+      const bounded = boundedBody(doored) as unknown as {
+        results: Array<{
+          threadWindow?: { total?: number; shown?: number; posts?: Array<{ body?: string }> };
+          checkpointContentHash?: string;
+        }>;
+        _projection: { cursor: Record<string, unknown> };
+      };
+
+      expect(bounded._projection.cursor).toMatchObject({
+        kind: 'volatile-scratch-page',
+        tool: 'capability:read',
+        reason: 'spill-write-failed',
+      });
+      expect(bounded.results[0].threadWindow).toMatchObject({
+        total: 4,
+        shown: 1,
+        posts: [{ body: selectedBody }],
+      });
+      expect(bounded.results[0].checkpointContentHash).toBe('checkpoint-hash-123456');
+      expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(BUDGET_CHARS);
     });
 
     it('stamps the failure structurally so a machine reader is not left parsing prose', () => {
@@ -1580,6 +3282,31 @@ describe('applyResultDoor', () => {
       expect(spill).toContain('NOT recoverable from this file');
     });
 
+    it('an upstream-projected JSON spill keeps its locator and marks the body incomplete', () => {
+      const text = JSON.stringify({
+        rows: Array.from({ length: 300 }, (_, index) => ({ id: `row-${index}`, evidence: 'e'.repeat(80) })),
+      });
+      expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }], _meta: { payloadProjection } },
+        { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const body = boundedBody(doored) as {
+        _projection: {
+          cursor: { bodyOffsetInPayload?: number; bodyComplete?: boolean };
+          next: string;
+        };
+      };
+
+      expect(body._projection.cursor.bodyOffsetInPayload).toEqual(expect.any(Number));
+      expect(body._projection.cursor.bodyComplete).toBe(false);
+      expect(body._projection.next).toContain('upstream payloadProjection');
+      expect(body._projection.next).toContain('this JSON is partial (bodyComplete:false)');
+      expect(body._projection.next).toContain('paging cannot recover omitted fields');
+      expect(body._projection.next).toContain("Re-call coord:orient with payloadTier:'full'");
+    });
+
     it(
       'a result WITHOUT any marker gets the HONEST default wording — never an unconditional ' +
         '"FULL result" claim (EI-18762253154342502: no marker firing proves nothing was cut ' +
@@ -1592,7 +3319,7 @@ describe('applyResultDoor', () => {
         );
         const pointer = boundedBody(doored)._projection.next;
         expect(pointer).not.toContain('The FULL result is at');
-        expect(pointer).toContain('recover spill;');
+        expect(pointer).toMatch(/JSON starts after cursor\.bodyOffsetInPayload|the spill opens with a text header/);
         expect(pointer).toContain('No upstream truncation marker was detected');
         const spill = readSpill('ws-1', 'plans:get', RUN_ID);
         expect(spill).not.toContain('# result-door spill — FULL tool result');
@@ -1600,34 +3327,128 @@ describe('applyResultDoor', () => {
       },
     );
 
-    // EI-19361771982678588 — this case USED to assert `toBe(result)` (byte
-    // identity). That was stronger than its own stated intent: what must not
-    // happen is a false-positive SPILL, and no spill is still written here.
-    // But returning the body untouched also meant a result that was
-    // tier-trimmed and THEN landed under the door said NOTHING about being
-    // partial — every truncation disclosure in this file is downstream of the
-    // fits-the-budget early return. So the harder a tool trimmed itself, the
-    // likelier it was to go silent: the warning fired only when the
-    // already-trimmed body still overflowed. Measured on the facts:list case
-    // that motivated this, the margin was 245 chars out of ~6,000.
-    it('a projected result that fits the door writes NO spill, but still DISCLOSES that it is partial', () => {
+    // EI-19361771982678588: a partial source now takes the typed incomplete
+    // route even when its emitted body fits the per-result byte budget.
+    it('an under-budget upstream projection returns an incomplete envelope and keeps the emitted body inspectable', () => {
       const result = {
         content: [{ type: 'text' as const, text: 'small already-projected result' }],
         _meta: { payloadProjection },
       };
       const doored = applyResultDoor(result, { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
 
-      // The original intent, unchanged: fitting the budget must never spill.
-      expect(() => readdirSync(join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'coord:orient', RUN_ID))).toThrow();
+      expect(doored.content).toHaveLength(1);
+      expect(envelope).toMatchObject({
+        schemaVersion: 'papercusp.output-envelope/v1',
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+        content: [{ kind: 'reference', uri: expect.stringContaining('papercusp://scratch/ws-1/coord:orient/') }],
+      });
+      expect(envelope.incomplete.note).toContain('lossy upstream projection');
+      expect(envelope.incomplete.note).toContain("payloadTier:'full'");
+      expect(readSpill('ws-1', 'coord:orient', RUN_ID)).toContain('small already-projected result');
+    });
 
-      // The body itself is preserved verbatim — only a disclosure is appended.
-      expect((doored.content[0] as { text: string }).text).toBe('small already-projected result');
-      const note = (doored.content.at(-1) as { text: string }).text;
-      expect(note).toContain('PARTIAL RESULT');
-      expect(note).toContain('omittedCount=39');
-      expect(note).toContain('ABSENCE HERE IS NOT EVIDENCE');
-      expect(note).toContain("payloadTier:'full'");
-      expect(note).toContain('coord:orient');
+    it('uses the nested target in recovery advice for an under-budget tools:invoke result', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: 'small nested partial result' }],
+        _meta: { payloadProjection },
+      };
+      const doored = applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        effect: 'read',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'under-budget-partial-result',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain("Re-call work_items:get with payloadTier:'full'");
+      expect(envelope.incomplete.note).toContain(
+        "tools:invoke { name:'work_items:get', args:{ …original args, payloadTier:'full' } }",
+      );
+      expect(envelope.incomplete.note).not.toContain("name:'tools:invoke'");
+    });
+
+    it.each([
+      ['scorecards:emit', 'Do NOT repeat this non-idempotent emit', 'scorecard ledger'],
+      ['mail:send', 'Do NOT repeat the write', 'authoritative state'],
+    ])('does not recommend replaying nested write %s to recover an upstream projection', (target, warning, recovery) => {
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, created: true, issueId: 'EI-emit-1' }) }],
+        _meta: { payloadProjection },
+      };
+      const doored = applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: target,
+        effect: 'write',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'under-budget-partial-result',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain(warning);
+      expect(envelope.incomplete.note).toContain(recovery);
+      expect(envelope.incomplete.note).not.toMatch(/Re-call (scorecards:emit|mail:send) with payloadTier:'full'/);
+    });
+
+    it('preserves work-item field recovery when upstream projection metadata is also present', () => {
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            results: [{
+              id: 'EI-1',
+              priorAttempts: {
+                attempts: [{ rawRef: 'EI-1#completion', textTruncated: true, text: 'prefix…' }],
+              },
+            }],
+          }),
+        }],
+        _meta: { payloadProjection },
+      };
+      const doored = applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'under-budget-partial-result',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).toContain('rawRef');
+      expect(envelope.incomplete.note).toContain('For other fields omitted by the upstream payload projection');
+      expect(envelope.incomplete.note).toContain("Re-call work_items:get with payloadTier:'full'");
+      const resultDoorMeta = (doored as unknown as {
+        _meta?: { resultDoor?: { innerTruncationMarkers?: string[] } };
+      })._meta?.resultDoor;
+      expect(resultDoorMeta?.innerTruncationMarkers).toContain('textTruncated');
+    });
+
+    it('shows a schema-compatible dispatch path for framework-reserved payloadTier', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: 'small partial list result' }],
+        _meta: { payloadProjection },
+      };
+      const doored = applyResultDoor(result, { toolName: 'work_items:list', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete.note).toContain("Re-call work_items:list with payloadTier:'full'");
+      expect(envelope.incomplete.note).toContain(
+        "tools:invoke { name:'work_items:list', args:{ …original args, payloadTier:'full' } }",
+      );
     });
 
     it('an UNtruncated small result keeps the identity fast-path (no note, no copy)', () => {
@@ -1641,6 +3462,144 @@ describe('applyResultDoor', () => {
         _meta: { payloadProjection: { ...payloadProjection, truncated: false as unknown as true } },
       };
       expect(applyResultDoor(result, { toolName: 'coord:orient', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+    });
+
+    it.each([
+      [
+        'array row',
+        JSON.stringify({ rows: [{ id: 'row-1', _partial: true, title: 'visible row' }] }),
+        '_partial',
+      ],
+      [
+        'keyed map',
+        JSON.stringify({ ratings: { criterionA: { rating: 'pass' }, _partial: true } }),
+        '_partial',
+      ],
+      [
+        'clipped string',
+        JSON.stringify({ evidence: 'evidence prefix…[TRUNCATED +17 chars — re-read with payloadTier:full]' }),
+        'textTruncated',
+      ],
+    ] as const)('returns an incomplete envelope for an under-budget %s marker', (_shape, text, marker) => {
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThan(BUDGET_CHARS);
+      const input: DoorableResult = { content: [{ type: 'text' as const, text }] };
+      const doored = applyResultDoor(
+        input,
+        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope).toMatchObject({
+        schemaVersion: 'papercusp.output-envelope/v1',
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+        content: [{ kind: 'reference', uri: expect.stringContaining('papercusp://scratch/ws-1/plans:get/') }],
+      });
+      expect(envelope.incomplete.note).toContain('paging this reference cannot recover');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor).toMatchObject({
+        innerTruncationMarkers: [marker],
+      });
+      const spill = JSON.parse(readSpill('ws-1', 'plans:get', RUN_ID)) as {
+        content: Array<{ type: string; text: string }>;
+      };
+      expect(spill.content[0].text).toBe(text);
+    });
+
+    it.each([
+      ['direct work_items:get', 'work_items:get', undefined],
+      ['nested work_items:get', 'tools:invoke', 'work_items:get'],
+    ] as const)(
+      'gives %s a field-specific recovery route for clipped comment bodies',
+      (_shape, toolName, nestedTargetToolName) => {
+        const text = JSON.stringify({
+          results: [{
+            id: 'WI-1',
+            threadWindow: { posts: [{ body: 'comment prefix…', bodyChars: 1_874, bodyTruncated: true }] },
+          }],
+        });
+        const doored = applyResultDoor(
+          { content: [{ type: 'text' as const, text }], _meta: {} },
+          {
+            toolName,
+            ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+            workspaceId: 'ws-1',
+            runId: RUN_ID,
+          },
+        );
+        const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+        expect(envelope.incomplete).toMatchObject({
+          reason: 'under-budget-partial-result',
+          recoverable: false,
+        });
+        expect(envelope.incomplete.note).toContain('bodyTruncated/bodyChars');
+        expect(envelope.incomplete.note).toContain("payloadTier:'full'");
+        expect(envelope.incomplete.note).toContain('results[].threadWindow.posts[].body');
+        expect(envelope.incomplete.note).toContain('a spill cannot restore body bytes omitted by the upstream shaper');
+        expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor).toMatchObject({
+          innerTruncationMarkers: ['bodyTruncated'],
+        });
+      },
+    );
+
+    it('gives capability:read a schema-compatible recovery path for truncated evidence', () => {
+      const text = JSON.stringify({
+        evidence: 'evidence prefix…[TRUNCATED +17 chars — re-read with payloadTier:full]',
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }] },
+        { toolName: 'capability:read', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete.note).toContain('`byte_offset` + `byte_limit`');
+      expect(envelope.incomplete.note).toContain('(without `evidence_class`)');
+      expect(envelope.incomplete.note).toContain('per-field limit');
+      expect(envelope.incomplete.note).not.toContain('wider per-field limit');
+    });
+
+    it.each([
+      ['direct capability:read', 'capability:read', undefined],
+      ['nested capability:read', 'tools:invoke', 'capability:read'],
+    ] as const)('%s does not recursively wrap markers stored in a scratch reference', (_shape, toolName, nestedTargetToolName) => {
+      const result: DoorableResult = {
+        content: [{
+          type: 'text',
+          text: '/tmp/result-door-1.md (1 lines)\n     1\t{"outputTailTruncated":true,"textTruncated":true}',
+        }],
+        _meta: { capabilityRead: { source: 'scratch-reference' } },
+      };
+
+      expect(applyResultDoor(result, {
+        toolName,
+        ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      })).toBe(result);
+    });
+
+    it('still reports a transport projection on a scratch-reference read', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: 'visible bytes from a scratch reference' }],
+        _meta: {
+          capabilityRead: { source: 'scratch-reference' },
+          payloadProjection,
+        },
+      };
+      const doored = applyResultDoor(result, { toolName: 'capability:read', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+    });
+
+    it('does not treat an escaped partial-marker example inside a JSON string as a real marker', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify({ note: 'Example syntax: "_partial": true' }) }],
+      };
+      expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
     });
   });
 
@@ -1675,7 +3634,16 @@ describe('applyResultDoor', () => {
         byteCount: expect.any(Number),
         sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
       });
-      expect(readSpill('ws-1', 'work_items:get', RUN_ID)).toContain(original);
+      const spillDir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'work_items:get', RUN_ID);
+      const spillFiles = readdirSync(spillDir);
+      expect(spillFiles).toHaveLength(1);
+      const reference = parseScratchReference(readFileSync(join(spillDir, spillFiles[0])));
+      expect(reference).not.toBeNull();
+      expect(reference!.manifest).toMatchObject({ mediaType: 'application/json', bodyOffsetInPayload: 0 });
+      const rawEnvelope = JSON.parse(
+        reference!.payload.subarray(reference!.manifest.bodyOffsetInPayload!).toString('utf8'),
+      ) as { content: Array<{ type: string; text?: string }> };
+      expect(rawEnvelope.content[0]?.text).toBe(original);
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
         truncated: true,
         structural: true,
@@ -1703,13 +3671,94 @@ describe('applyResultDoor', () => {
         spilledItems: 1,
         recoverable: false,
       });
-      expect(envelope.incomplete.note).toContain('TOOL ITSELF already truncated');
+      expect(envelope.incomplete.note).toContain('upstream partial marker(s)');
       expect(envelope.incomplete.note).toContain('textTruncated');
       expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
         upstreamProjected: false,
         innerTruncationMarkers: ['textTruncated'],
       });
       expect(readSpill('ws-1', 'work_items:get', RUN_ID)).toContain('checkpoint prefix');
+    });
+
+    it('routes work_items:get prior-attempt truncation to its rawRef argument', () => {
+      const text = JSON.stringify({
+        results: [{
+          id: 'WI-1',
+          priorAttempts: {
+            attempts: [{
+              rawRef: 'WI-1#completion',
+              textTruncated: true,
+              text: 'completion prefix…[TRUNCATED +1200 chars]',
+            }],
+          },
+          padding: 'P'.repeat(BUDGET_CHARS * 3),
+        }],
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }], _meta: { explicitFullRequest: true } },
+        { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'explicit-full-request-overflow',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).toContain('rawRef');
+      expect(envelope.incomplete.note).not.toContain('wider per-field limit');
+    });
+
+    it('routes clipped work-item checkpoints to checkpointOnly pages', () => {
+      const text = JSON.stringify({
+        results: [{
+          id: 'WI-checkpoint',
+          checkpoint: 'checkpoint prefix…[TRUNCATED +1200 chars — re-read with payloadTier:\'full\']',
+          checkpointTruncated: true,
+          padding: 'P'.repeat(BUDGET_CHARS * 3),
+        }],
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }], _meta: { explicitFullRequest: true } },
+        { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'explicit-full-request-overflow',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain('checkpointOnly:true');
+      expect(envelope.incomplete.note).toContain('checkpointPage.nextOffset');
+      expect(envelope.incomplete.note).not.toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).not.toContain('retry now with payloadTier');
+    });
+
+    it('routes a nested tools:invoke work_items:get textTruncated marker to priorAttemptRefs', () => {
+      const text = JSON.stringify({
+        results: [{
+          id: 'EI-1',
+          priorAttempts: {
+            attempts: [{ rawRef: 'EI-1#completion', textTruncated: true, text: 'prefix…' }],
+          },
+          padding: 'P'.repeat(BUDGET_CHARS * 3),
+        }],
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }], _meta: { explicitFullRequest: true } },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:get',
+          workspaceId: 'ws-1',
+          runId: '88888888-7777-4888-9999-bbbbbbbbbbbb',
+        },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'explicit-full-request-overflow',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).toContain('work_items:get has no wider per-field limit argument');
+      expect(envelope.incomplete.note).not.toContain('Re-call tools:invoke with a wider per-field limit');
     });
 
     it('a small explicit-full body that FITS the door passes through untouched (no spill, no note)', () => {
@@ -1772,7 +3821,7 @@ describe('applyResultDoor', () => {
       return markerJson + longText(Math.max(0, totalChars - markerJson.length));
     }
 
-    it('a body_truncated:true marker swaps the footer to "re-call the tool", not "page the spill"', () => {
+    it('a body_truncated:true marker gives recovery guidance instead of suggesting paging the spill', () => {
       const text = withMarker('{"entries":[{"id":"m1","body_truncated":true}]}\n', BUDGET_CHARS * 3);
       const doored = applyResultDoor(
         { content: [{ type: 'text' as const, text }] },
@@ -1782,7 +3831,8 @@ describe('applyResultDoor', () => {
       expect(pointer).not.toContain('page it with a bounded read');
       expect(pointer).toContain('TOOL ITSELF already truncated');
       expect(pointer).toContain('body_truncated');
-      expect(pointer).toContain('Re-call coord:inbox');
+      expect(pointer).toContain('coord:inbox result already marked a field as truncated');
+      expect(pointer).toContain("Re-read using that field's documented recovery handle or narrower arguments");
 
       const spill = readSpill('ws-1', 'coord:inbox', RUN_ID);
       expect(spill).toContain('TOOL ITSELF already truncated');
@@ -1806,7 +3856,7 @@ describe('applyResultDoor', () => {
       expect(pointer.match(/body_truncated/g)).toHaveLength(1);
     });
 
-    it('camelCase *Truncated markers from build:typecheck TOON output are detected', () => {
+    it('camelCase *Truncated markers from build:typecheck TOON output are detected with recovery guidance', () => {
       const text = withMarker(
         'errorsTruncated: true\nbyFileTruncated: true\n',
         BUDGET_CHARS * 3,
@@ -1819,7 +3869,67 @@ describe('applyResultDoor', () => {
       expect(pointer).toContain('TOOL ITSELF already truncated');
       expect(pointer).toContain('errorsTruncated');
       expect(pointer).toContain('byFileTruncated');
-      expect(pointer).toContain('Re-call build:typecheck');
+      expect(pointer).toContain('build:typecheck result already marked a field as truncated');
+      expect(pointer).toContain("Re-read using that field's documented recovery handle or narrower arguments");
+    });
+
+    it('code:run summaryNotice.truncated points to the raw summary spill and marks the outer spill partial', () => {
+      const text = JSON.stringify({
+        summary: 'S'.repeat(3_500),
+        summaryNotice: {
+          truncated: true,
+          originalChars: 9_296,
+          returnedChars: 3_500,
+          rawSummaryCursor: {
+            status: 'available',
+            tool: 'capability:read',
+            args: { uri: 'papercusp://scratch/ws-1/code:run/123e4567-e89b-42d3-a456-426614174000/raw-summary.json', byte_offset: 0, byte_limit: 3072 },
+            bodyOffsetInPayload: 0,
+          },
+        },
+        padding: 'P'.repeat(BUDGET_CHARS * 3),
+      });
+      const input: DoorableResult = { content: [{ type: 'text' as const, text }] };
+      const doored = applyResultDoor(
+        input,
+        { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const pointer = boundedBody(doored)._projection.next;
+      const spill = readSpill('ws-1', 'code:run', RUN_ID);
+
+      expect(pointer).toContain('source is already partial');
+      expect(pointer).toContain('summaryNotice.truncated');
+      expect(pointer).toContain('summaryNotice.rawSummaryCursor');
+      expect(pointer).toContain('capability:read');
+      expect(pointer).toContain('smaller return');
+      expect(pointer).toContain('bounded slices');
+      expect(boundedBody(doored).summaryNotice?.rawSummaryCursor).toMatchObject({
+        status: 'available',
+        args: { uri: 'papercusp://scratch/ws-1/code:run/123e4567-e89b-42d3-a456-426614174000/raw-summary.json' },
+      });
+      expect(spill).toContain('summaryNotice.truncated');
+      expect(spill).toContain('summaryNotice.rawSummaryCursor');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor).toMatchObject({
+        innerTruncationMarkers: ['summaryNotice.truncated'],
+      });
+    });
+
+    it('summaryNotice.truncated:false is not treated as a partial-result marker', () => {
+      const text = JSON.stringify({
+        summary: 'S'.repeat(3_500),
+        summaryNotice: { truncated: false, originalChars: 3_500, returnedChars: 3_500 },
+        padding: 'P'.repeat(BUDGET_CHARS * 3),
+      });
+      const input: DoorableResult = { content: [{ type: 'text' as const, text }] };
+      const doored = applyResultDoor(
+        input,
+        { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+
+      expect(boundedBody(doored)._projection.next).not.toContain('source is already partial');
+      expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor).toMatchObject({
+        innerTruncationMarkers: [],
+      });
     });
 
     it('a *_truncated:false field is NOT mistaken for a truncation marker', () => {
@@ -1829,7 +3939,10 @@ describe('applyResultDoor', () => {
         { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID },
       );
       const pointer = boundedBody(doored)._projection.next;
-      expect(pointer).toContain('recover spill;');
+      // The recovery footer is "JSON starts after cursor.bodyOffsetInPayload…" when the body parses
+      // as JSON, else "the spill opens with a text header." (the literal `recover spill;` lead-in was
+      // dropped by the Codex no-base64 pointer rewrite) — either way a recovery footer must be present.
+      expect(pointer).toMatch(/JSON starts after cursor\.bodyOffsetInPayload|the spill opens with a text header/);
       expect(pointer).not.toContain('TOOL ITSELF already truncated');
     });
 
@@ -1856,11 +3969,69 @@ describe('applyResultDoor', () => {
       expect(pointer).not.toContain('TOOL ITSELF already truncated');
     });
 
-    it('a marker present but under the door budget is untouched (no false-positive spill)', () => {
+    it.each([
+      'entries_truncated',
+      'thread_metadata_truncated',
+      'thread_entry_truncated',
+      'summary_truncated',
+      'body_truncated',
+      'sections_truncated',
+      'to_truncated',
+    ])('passes through documented coord:thread continuation marker %s', (marker) => {
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ entries: [{ msg_id: 'm1' }], [marker]: true }),
+        }],
+      };
+
+      expect(applyResultDoor(result, { toolName: 'coord:thread', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+    });
+
+    it('passes through documented coord:thread markers nested through tools:invoke', () => {
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ entries_truncated: true, thread_metadata_truncated: true }),
+        }],
+      };
+
+      expect(applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'coord:thread',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      })).toBe(result);
+    });
+
+    it('still marks an unknown coord:thread truncation marker incomplete', () => {
+      const result = {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ entries: [{ msg_id: 'm1' }], unknown_truncated: true }),
+        }],
+      };
+      const doored = applyResultDoor(result, { toolName: 'coord:thread', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+      expect(envelope.incomplete.note).toContain('unknown_truncated');
+    });
+
+    it('a true truncation marker under the door budget returns an incomplete envelope', () => {
       const result = {
         content: [{ type: 'text' as const, text: '{"entries":[{"id":"m1","body_truncated":true}]}' }],
       };
-      expect(applyResultDoor(result, { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+      const doored = applyResultDoor(result, { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+      expect(envelope.incomplete.note).toContain('body_truncated');
     });
   });
 });
@@ -1896,10 +4067,13 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     return boundedBody(doored)._projection.next;
   }
 
-  it('a JSON body leads with `pick` and states that `pipe` cannot reduce it', () => {
+  it('a JSON body leads with `pick` and says `pipe` filters the indented rendering (D-005)', () => {
     const footer = footerFor([{ type: 'text', text: longJson(BUDGET_CHARS * 2) }]);
     expect(footer).toContain('`pick` is what reduces it');
-    expect(footer).toContain('all-or-nothing');
+    // oversized-tool-results-reduction-2026-10-12#D-005: applyProjection renders a
+    // pipe-only JSON body indented, so `pipe` does cut it. The old claim is now false.
+    expect(footer).toContain('`pipe` filters the indented lines');
+    expect(footer).not.toContain('all-or-nothing');
     expect(footer).toContain('1 line(s)');
     // The actual defect was ORDER: the pipe form was advertised first.
     expect(footer.indexOf('pick')).toBeLessThan(footer.indexOf('pipe'));
@@ -1909,12 +4083,24 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     expect(footer).not.toContain('for text, or');
   });
 
-  it('a multi-line non-JSON body offers the `pipe` operators and says `pick` does not apply', () => {
+  it('a multi-line non-JSON spill recommends a bounded saved-result query', () => {
     const footer = footerFor([{ type: 'text', text: longText(BUDGET_CHARS * 2) }], 'capability:bash');
-    expect(footer).toContain('op:"grep"');
     expect(footer).toContain('lines of non-JSON text');
-    expect(footer).toContain('`pick` does not apply');
-    expect(footer).toContain('grep (fixed/ignoreCase');
+    expect(footer).toContain('capability:read { file_path, query:"terms" }');
+    expect(footer).toContain('all terms, context and coverage');
+    expect(footer).not.toContain('projection: { pipe:');
+  });
+
+  it('uses byte pages when multi-line non-JSON text contains a line too large for a line window', () => {
+    const oversizedLine = 'x'.repeat(BUDGET_CHARS * 2);
+    const footer = footerFor([
+      { type: 'text', text: `line before\n${oversizedLine}\nline after` },
+    ], 'capability:read');
+
+    expect(footer).toContain('include a line over');
+    expect(footer).toContain('byte_offset+byte_limit; no raw');
+    expect(footer).toContain('follow next_cursor');
+    expect(footer).not.toContain('op:"grep"');
   });
 
   it('finds the JSON payload even when it is neither the joined body nor the first item', () => {
@@ -1934,14 +4120,14 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     // in the SAME text item as the payload, so `classifyProjectionBody` misses
     // on both the join and the per-item pass. The spill writer still recovers
     // the payload via `findJsonPrefixSlice` — and the footer used to re-derive
-    // the shape with only the weaker half, so ONE string claimed both "JSON
-    // starts after cursor.bodyOffsetInPayload" and "`pick` does not apply here".
+    // the shape with only the weaker half, so ONE string claimed both "JSON at
+    // response.data[cursor.bodyOffsetInPayload]" and "`pick` does not apply here".
     // That sent the reader to `pipe`, which on a JSON body is the all-or-nothing
     // trap this very hint exists to warn about.
     const footer = footerFor([
       { type: 'text', text: `${longJson(BUDGET_CHARS * 2)}\n\nSee also: work_items:claimable (the claim floors as a tool)` },
     ]);
-    expect(footer).toContain('JSON starts after cursor.bodyOffsetInPayload');
+    expect(footer).toContain('JSON at response.data[cursor.bodyOffsetInPayload]');
     expect(footer).toContain('`pick` is what reduces it');
     expect(footer).not.toContain('lines of non-JSON text');
     expect(footer).not.toContain('`pick` does not apply');
@@ -1960,11 +4146,27 @@ describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
     ).toContain('`pick` is what reduces it');
   });
 
-  it('a single-line non-JSON body says projection cannot help, and names the tool to re-call', () => {
+  it('a single-line non-JSON body over byte-page size points to capability:read', () => {
     const footer = footerFor([{ type: 'text', text: 'x'.repeat(BUDGET_CHARS * 2) }], 'capability:read');
-    expect(footer).toContain('`projection` cannot help');
-    expect(footer).toContain('capability:read');
+    expect(footer).toContain('include a line over 4096 bytes; use capability:read cursor.args');
+    expect(footer).not.toContain('`projection` cannot help');
     expect(footer).not.toContain('op:"grep"');
+    // Byte paging is the recovery path; neither projection nor search is advertised.
+    expect(footer).not.toContain('query:"terms"');
+  });
+
+  it('advertises the one-call saved-result search on JSON and multi-line spills (token-efficiency P-005)', () => {
+    const jsonHint = buildProjectionHint([{ text: '{"a":1}' }], 'plans:get');
+    const textHint = buildProjectionHint([{ text: 'line one\nline two\nline three' }], 'plans:get');
+    for (const hint of [jsonHint, textHint]) {
+      expect(hint).toContain('capability:read { file_path, query:"terms" }');
+    }
+    // The JSON variant's `next` shares a budget with the retained preview (WI-5656): adding the search
+    // route was paid for by trimming, so it must not grow past its pre-P-005 length of 356 chars.
+    expect(jsonHint.length).toBeLessThanOrEqual(356);
+    // And it reaches the real spill footer, after the projection advice.
+    const footer = footerFor([{ type: 'text', text: longJson(BUDGET_CHARS * 2) }]);
+    expect(footer.indexOf('query:"terms"')).toBeGreaterThan(footer.indexOf('`pick` is what reduces it'));
   });
 
   it('the hint is derived from the body, not fixed: the same tool gets DIFFERENT advice for JSON vs text', () => {

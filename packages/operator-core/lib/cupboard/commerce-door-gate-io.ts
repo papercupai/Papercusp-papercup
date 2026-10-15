@@ -491,6 +491,7 @@ export interface CommerceOfferPublishRequest {
   readonly pricingModel: PricingModel;
   readonly price: Money;
   readonly perUse?: PerUseOfferTerms;
+  readonly receiptAuthority?: import('../p2p/metered-invocation').SellerReceiptAuthority;
   readonly active?: boolean;
 }
 
@@ -596,18 +597,19 @@ export async function postCommerceOffer(
 // ---------------------------------------------------------------------------
 
 /**
- * agent-economy-flywheel P-016 (D-011): a per-use preflight for an identity
- * release names the channel that will pay for that release in this workspace.
- * The pair is recorded locally so the activation gate knows which channel to
- * re-read. The hosted checkout already succeeded, so a failed local write is
- * reported, never turned into a checkout failure.
+ * agent-economy-flywheel P-016/P-007 (D-011/D-065): a per-use preflight names
+ * the channel selected for its exact identity or tool SKU in this workspace.
+ * Admission re-reads the hosted channel; this row is routing only. The hosted
+ * checkout already succeeded, so a failed local write is reported separately.
  */
-export type IdentityFundingBindingOutcome =
+export type ReleaseFundingBindingOutcome =
   | { readonly ok: true; readonly skuRef: string; readonly channelId: string }
   | { readonly ok: false; readonly skuRef: string; readonly channelId: string; readonly detail: string };
 
+export type IdentityFundingBindingOutcome = ReleaseFundingBindingOutcome;
+
 export interface CheckoutDoorContext {
-  /** The workspace whose identity activations the preflight channel funds. */
+  /** The workspace whose release uses the preflight channel. */
   readonly workspaceId?: string;
   /** Who started the checkout; stamped on the binding. */
   readonly actorId?: string;
@@ -624,23 +626,26 @@ export type CheckoutDoorOutcome =
   | {
       readonly ok: true;
       readonly session: CheckoutSessionSuccess;
-      readonly fundingBinding?: IdentityFundingBindingOutcome;
+      readonly fundingBinding?: ReleaseFundingBindingOutcome;
     }
   | { readonly ok: false; readonly code: string; readonly detail: string; readonly status?: number };
 
 export async function bindPreflightFunding(
   session: PerUseCheckoutPreflightOk,
   context: CheckoutDoorContext,
-): Promise<IdentityFundingBindingOutcome | undefined> {
-  const { isIdentityReleaseSkuRef } = await import('./identity-per-use-offer');
+): Promise<ReleaseFundingBindingOutcome | undefined> {
+  const { isReleaseFundingSkuRef } = await import('./identity-release-funding-store');
   const { releaseRef: skuRef, channelId } = session.channel;
-  if (!context.workspaceId || !isIdentityReleaseSkuRef(skuRef)) return undefined;
+  if (!context.workspaceId) return undefined;
+  if (!isReleaseFundingSkuRef(skuRef)) return {
+    ok: false, skuRef, channelId, detail: 'the hosted preflight must name an exact bounded skuRef',
+  };
   const bind = context.bindFunding ?? (async (input) => {
-    const [{ getOrgPg }, { bindIdentityReleaseFundingChannel }] = await Promise.all([
+    const [{ getOrgPg }, { bindReleaseFundingChannel }] = await Promise.all([
       import('@papercusp/db-org'),
       import('./identity-release-funding-store'),
     ]);
-    await bindIdentityReleaseFundingChannel(getOrgPg().sql as never, { ...input, source: 'per-use-checkout' });
+    await bindReleaseFundingChannel(getOrgPg().sql as never, { ...input, source: 'per-use-checkout' });
   });
   try {
     await bind({ workspaceId: context.workspaceId, skuRef, channelId, boundBy: context.actorId ?? 'cupboard:checkout' });

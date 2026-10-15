@@ -1,0 +1,213 @@
+{
+  "schemaVersion": "p011-request-retainer-r3-qualification-v1",
+  "measuredAt": "2026-10-05T15:39:46.494854+00:00",
+  "ownerId": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+  "nativeSession": "01a10c92-0eaa-7531-93db-3177d5767f75",
+  "workItem": "WI-10005966",
+  "responseLinkBug": "WI-10006007",
+  "oracleOutputBug": "EI-25154065724618437",
+  "plane": "isolated-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct5-p011-request-retainers-r3-2026-10-05.json",
+    "bytes": 1012267,
+    "sha256": "0b67e72bf878b0c6174192692c8cfbc036aeca76ff0a902342d0a243d1baeff7"
+  },
+  "oracle": {
+    "path": "docs/evidence/papercusp-oct5-p011-request-heap-oracle-r3-2026-10-05.json",
+    "bytes": 30885,
+    "sha256": "e60ad4a097b115a7aa2bf15c5a7bac270d15e9d2490bceaf9ed4f120127e8fdf"
+  },
+  "producer": {
+    "testRunId": 20703429,
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "result": "PASS",
+    "passed": 1,
+    "filteredSkipped": 138,
+    "exitCode": 0,
+    "log": {
+      "path": ".papercusp/logs/cohort-6ac9ab6612ca6c3f584b4b21240768aafafc75f756e515c0f7280d4ddf1c7a2f.log",
+      "bytes": 61331,
+      "sha256": "6ac9ab6612ca6c3f584b4b21240768aafafc75f756e515c0f7280d4ddf1c7a2f"
+    },
+    "buildSha": "ad82b273dc9c29151e363b11d8b524d993d1b72c",
+    "bundleHash": "168f86a165e48d40f5b476b267f4af8bd3de9d0a548bbaea2aedb44f972dd7db"
+  },
+  "independentOracle": {
+    "testRunId": 20703450,
+    "passed": 39,
+    "filteredSkipped": 89,
+    "exitCode": 0,
+    "log": {
+      "path": ".papercusp/logs/cohort-f77fa37004494b9370939318b91fca1ff96d1c29925ad88bf87fd24251901a88.log",
+      "bytes": 33800,
+      "sha256": "f77fa37004494b9370939318b91fca1ff96d1c29925ad88bf87fd24251901a88"
+    },
+    "source": {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 58005,
+      "sha256": "6fb7a2667984736759a9896fc339893957eb7b8ce8eed92e284f95c25d94b080"
+    },
+    "reportedInputReResolved": true,
+    "weakPhaseRegistration": "observed-complete"
+  },
+  "oracleOutputRegression": {
+    "beforeTestRunId": 20703447,
+    "beforeTestResult": "PASS; artifact end-state mismatch discovered by re-reading output",
+    "beforeObservation": {
+      "intendedInput": "docs/evidence/papercusp-oct5-p011-request-retainers-r3-2026-10-05.json",
+      "actualInput": "docs/evidence/papercusp-oct1-p011-request-retainers-r2-2026-10-03.json",
+      "actualInputSha256": "76c8e92b253001a1be3aef697e99d9c76a09c0a1c07e0a3719f97c5cb3666a0b",
+      "phaseRegistration": "unmeasured"
+    },
+    "beforeLog": {
+      "path": ".papercusp/logs/cohort-c861a35bca1bec344e0b621269bdea2878e72014c2a239c7860c61d2cb0af2c9.log",
+      "bytes": 34456,
+      "sha256": "c861a35bca1bec344e0b621269bdea2878e72014c2a239c7860c61d2cb0af2c9"
+    },
+    "rootCause": "Two suite tests wrote the same report path; the legacy writer ran after the explicit-input writer.",
+    "fix": "Select one output writer and assert the artifact input path and hash after every suite writer has run.",
+    "recurrenceGuard": "Canonical afterAll check reads final output path and validates selected input digest; all legacy tests remain in the same group."
+  },
+  "preflightQualification": {
+    "path": "docs/evidence/papercusp-oct5-p011-weak-phase-preflight-r1-2026-10-05.json",
+    "bytes": 6289,
+    "sha256": "2d47a67afab7af89d236e74c1187b5fc9984f262ae8306ffddc3708ff3b3e843"
+  },
+  "typesAfterOracleChange": {
+    "exitCode": 0,
+    "scope": "Only the changed independent oracle test file; no global clean claim",
+    "log": {
+      "path": ".papercusp/logs/cohort-8506495c8471be51b441c7a17e669a038855adcab9999749dbebcd6d1fe14c21.log",
+      "bytes": 4808,
+      "sha256": "8506495c8471be51b441c7a17e669a038855adcab9999749dbebcd6d1fe14c21"
+    }
+  },
+  "counts": {
+    "samples": 14,
+    "windows": 3,
+    "httpRequests": 24,
+    "queryTuples": 48,
+    "selectedQueryTuples": 16,
+    "registeredQueryPhases": 48,
+    "queryObjectStatuses": {
+      "decodedResult:collected": 16,
+      "resolvedRows:collected": 16,
+      "responseValue:collected": 16
+    },
+    "foundQueryObjectIds": [],
+    "nativeGraphRequestedNodes": 9
+  },
+  "snapshotTiming": {
+    "writeMs": 13118,
+    "summaryMs": 96381
+  },
+  "sourceFence": [
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "beforeSha256": "bba36ba90ea41a6a6edc813f00098e09aa55cbe5db8ee5e6107b371ebf65b186",
+      "afterSha256": "bba36ba90ea41a6a6edc813f00098e09aa55cbe5db8ee5e6107b371ebf65b186",
+      "unchanged": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query.ts",
+      "beforeSha256": "5f5bad1c9ad0904bd0a48b111533974dff2dafaf3b282ae7c3d3b315e6c99002",
+      "afterSha256": "5f5bad1c9ad0904bd0a48b111533974dff2dafaf3b282ae7c3d3b315e6c99002",
+      "unchanged": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+      "beforeSha256": "64da0b2e68cf63797127d31cc787fa14584a6603da496c21eb3cc8577ce9982d",
+      "afterSha256": "64da0b2e68cf63797127d31cc787fa14584a6603da496c21eb3cc8577ce9982d",
+      "unchanged": true
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "beforeSha256": "d72752978db0773b83d5347bcb39f5bbae33a997754ac8abf9354fe11222f6ea",
+      "afterSha256": "d72752978db0773b83d5347bcb39f5bbae33a997754ac8abf9354fe11222f6ea",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "beforeSha256": "3efdd779140982d3867cc55886b14168a43cb309166920a2951e68240c2736bf",
+      "afterSha256": "3efdd779140982d3867cc55886b14168a43cb309166920a2951e68240c2736bf",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/cdp-inspector.d.mts",
+      "beforeSha256": "d323300e713cc5bcf9960fc76107c5c688782aec4db854627adfc5e387021e4a",
+      "afterSha256": "d323300e713cc5bcf9960fc76107c5c688782aec4db854627adfc5e387021e4a",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/analyze-heap-snapshots.mjs",
+      "beforeSha256": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29",
+      "afterSha256": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/analyze-heap-snapshots.d.mts",
+      "beforeSha256": "6f71bdf2d28612fbb98f2c4e6e0153a75b6bbef49c9f44cbab5c2c869a67ad4d",
+      "afterSha256": "6f71bdf2d28612fbb98f2c4e6e0153a75b6bbef49c9f44cbab5c2c869a67ad4d",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/heap-retainers-native/Cargo.toml",
+      "beforeSha256": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb",
+      "afterSha256": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/heap-retainers-native/Cargo.lock",
+      "beforeSha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded",
+      "afterSha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded",
+      "unchanged": true
+    },
+    {
+      "path": "scripts/heap-retainers-native/src/main.rs",
+      "beforeSha256": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9",
+      "afterSha256": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9",
+      "unchanged": true
+    },
+    {
+      "path": ".heap-retainers-cargo-target/release/papercusp-heap-retainers",
+      "beforeSha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "afterSha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "unchanged": true
+    },
+    {
+      "path": ".heap-retainers-cargo-target/decoder-control/bin/v8-heap",
+      "beforeSha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24",
+      "afterSha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24",
+      "unchanged": true
+    }
+  ],
+  "sourceFenceCoverage": "Thirteen named producer/analyzer/native source or executable files unchanged; full executed dependency graph remains unknown. Oracle test source is separately measured after its extension.",
+  "cleanup": {
+    "hostPid": 1748660,
+    "hostReaped": true,
+    "hostProcessAbsent": true,
+    "privateHomeAbsent": true,
+    "snapshotRemoved": true
+  },
+  "historicalRawPreserved": [
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r1-2026-10-03.json",
+      "bytes": 761198,
+      "sha256": "dfdcfd16e7242cc1049c1dc2c0567bb8f040c4d2deb6580e0aa34dc662894a0d"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r2-2026-10-03.json",
+      "bytes": 997501,
+      "sha256": "76c8e92b253001a1be3aef697e99d9c76a09c0a1c07e0a3719f97c5cb3666a0b"
+    }
+  ],
+  "acceptanceLimits": [
+    "Registration was observed without dereference; post-snapshot all 48 query-phase objects were collected. This does not establish when they were collected or a retained-query owner.",
+    "Nine singleton graph nodes do not establish production worker clone or physical ownership.",
+    "One new isolated current-build fixture is not current shared/deployed runtime acceptance.",
+    "R1/R2 historical producer failures and their original scopes remain unchanged.",
+    "P011@2/D021 full clause, eight-source acceptance, P010/R8/R9, independent acceptance and shipment remain open.",
+    "No further resource cohort is justified merely to turn collected targets into retained ones."
+  ]
+}

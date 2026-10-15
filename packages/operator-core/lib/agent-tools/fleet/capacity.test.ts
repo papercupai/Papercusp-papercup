@@ -476,8 +476,9 @@ test('EI-20183190844096359: Codex capacity ignores stale Claude walls and report
   const body = JSON.parse(res.content[0]!.text);
 
   assert.equal(body.ok, true);
-  assert.equal(body.verdict, 'measured');
+  assert.equal(body.verdict, 'unknown');
   assert.deepEqual(body.scope, { provider: 'codex', model: 'gpt-5.6-luna', account: null });
+  assert.ok(body.capacityUnknown.some((note: string) => note.includes('gpt-5.6-luna')));
   assert.equal(body.usableAccounts, 1);
   assert.equal(body.poolExhausted, false);
   assert.equal(body.healthyAccounts, 1);
@@ -510,6 +511,149 @@ test('fleet:capacity account-only scope resolves a Codex account instead of defa
   assert.equal(body.usableAccounts, 1);
   assert.equal(headroomSpy.mock.calls[0]?.[0]?.provider, 'codex');
   headroomSpy.mockRestore();
+});
+
+test('WI-10006088: auto routing preserves the whole pool, blind readings, and account overrides', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValue(tieredHr());
+  const bodies: Record<string, any>[] = [];
+  try {
+    for (const account of [undefined, 'auto']) {
+      mockAccountStatus.mockResolvedValueOnce([
+        acctRow('healthy', { provider: 'codex' }),
+        acctRow('unmeasured', { provider: 'codex', available: false, readingStatus: 'stale' }),
+      ]);
+      mockGetAccountOverride.mockResolvedValueOnce({ forcedAccounts: [], excludeAccounts: ['healthy'] });
+      const res = await capacityMod.default.handler({ provider: 'codex', account, headroom: 3 } as never, {} as never);
+      const body = JSON.parse((res as { content: { text: string }[] }).content[0]!.text);
+      assert.equal(body.verdict, 'blind');
+      assert.equal(body.blind, true);
+      assert.equal(body.accountPool.total, 2);
+      assert.equal(body.usableAccounts, 0);
+      assert.equal(body.overrideExcludedAccounts, 1);
+      bodies.push(body);
+    }
+    assert.deepEqual(bodies[0]!.accountPool, bodies[1]!.accountPool);
+    assert.equal(bodies[0]!.recommendedHeadroom, bodies[1]!.recommendedHeadroom);
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
+test('WI-10006088: auto-only routing inherits the fleet worker backend', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  mockListFleetRosterDiagnosed.mockResolvedValueOnce({
+    entries: [{ agentId: 'worker', model: 'gpt-6-luna', alive: true, fleetRole: 'member', sessionState: 'live' }],
+    degradedLegs: [],
+  });
+  mockAdvSessionsByCoordOwner.mockResolvedValueOnce(new Map());
+  mockAccountStatus.mockResolvedValueOnce([acctRow('healthy', { provider: 'codex' })]);
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce(tieredHr());
+  try {
+    const res = await capacityMod.default.handler({ fleet: 'codex-fleet', account: 'auto', headroom: 3 } as never, {} as never);
+    const body = JSON.parse((res as { content: { text: string }[] }).content[0]!.text);
+    assert.equal(body.verdict, 'measured');
+    assert.equal(body.provider, 'codex');
+    assert.equal(body.providerSource, 'fleet');
+    assert.equal(body.scope.account, 'auto');
+    assert.equal(body.accountPool.total, 1);
+    assert.equal(headroomSpy.mock.calls[0]?.[0]?.provider, 'codex');
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
+test('WI-10006088: a real account pin still narrows capacity with an explicit model', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('selected', { provider: 'codex' }),
+    acctRow('other', { provider: 'codex', available: false, readingStatus: 'stale' }),
+  ]);
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce(tieredHr());
+  try {
+    const res = await capacityMod.default.handler({ model: 'gpt-6-luna', account: 'selected', headroom: 3 } as never, {} as never);
+    const body = JSON.parse((res as { content: { text: string }[] }).content[0]!.text);
+    assert.equal(body.verdict, 'unknown');
+    assert.equal(body.recommendedHeadroom, null);
+    assert.equal(body.accountPool.total, 1);
+    assert.equal(body.accountPool.usable, 1);
+    assert.equal(body.account, 'selected');
+    assert.equal(mockAccountStatus.mock.calls.length > 0, true);
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
+test('EI-25562829699329250: pinned canonical verdict excludes the other accounts in both directions', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValue(tieredHr());
+  try {
+    for (const pinnedWalled of [false, true]) {
+      mockAccountStatus.mockResolvedValueOnce([
+        acctRow('selected', { available: !pinnedWalled, usageWalled: pinnedWalled }),
+        acctRow('other', { available: pinnedWalled, usageWalled: !pinnedWalled }),
+      ]);
+      const res = await capacityMod.default.handler({ provider: 'claude', account: 'selected' } as never, {} as never);
+      const body = JSON.parse((res as { content: { text: string }[] }).content[0]!.text);
+      assert.equal(body.accountPool.total, 1);
+      assert.equal(body.capacityVerdict.atCapacity, pinnedWalled);
+      assert.equal(body.capacityVerdict.binding, pinnedWalled ? 'usage-wall' : 'none');
+      const signals = new Map(body.capacityVerdict.evidence.map((entry: { signal: string; value: number }) =>
+        [entry.signal, entry.value]));
+      assert.equal(signals.get('pool.serviceable'), pinnedWalled ? 0 : 1);
+      assert.equal(signals.get('pool.walledFresh'), pinnedWalled ? 1 : 0);
+      assert.deepEqual(body.capacityUnknown, []);
+    }
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
+test('EI-25562829699329250: representative-model health cannot establish requested Haiku readiness', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom');
+  try {
+    for (const representativeHealthyAccounts of [0, 8]) {
+      mockAccountStatus.mockResolvedValueOnce([acctRow('selected')]);
+      headroomSpy.mockResolvedValueOnce(tieredHr({
+        healthyAccounts: representativeHealthyAccounts,
+        priorityTiers: { ...tieredHr().priorityTiers!, healthyAccounts: representativeHealthyAccounts },
+      }));
+      const model = 'claude-haiku-4-5-20251001';
+      const res = await capacityMod.default.handler({ provider: 'claude', model, account: 'selected' } as never, {} as never);
+      const body = JSON.parse((res as { content: { text: string }[] }).content[0]!.text);
+      assert.equal(body.verdict, 'unknown');
+      assert.equal(body.scope.model, model);
+      assert.equal(body.recommendedHeadroom, null);
+      assert.ok(body.capacityVerdict.unknown.some((note: string) => note.includes(model) && /unmeasured/i.test(note)));
+      assert.deepEqual(body.capacityUnknown, body.capacityVerdict.unknown);
+    }
+  } finally {
+    headroomSpy.mockRestore();
+  }
+});
+
+test('WI-10006088: unknown and wrong-provider pins do not skip pool checks when a model is supplied', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom');
+  try {
+    for (const account of ['missing', 'claude-account']) {
+      mockAccountStatus.mockResolvedValueOnce([acctRow('claude-account')]);
+      const res = await capacityMod.default.handler({ model: 'gpt-6-luna', account, headroom: 3 } as never, {} as never);
+      const body = JSON.parse((res as { content: { text: string }[] }).content[0]!.text);
+      assert.equal(body.verdict, 'unknown');
+      assert.match(body.reason, /account/);
+    }
+    assert.equal(headroomSpy.mock.calls.length, 0);
+  } finally {
+    headroomSpy.mockRestore();
+  }
 });
 
 test('EI-21664939388634125: Codex tier oracle measures spare capacity when utilization and account rows are absent', async () => {

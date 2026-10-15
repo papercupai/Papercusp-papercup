@@ -17,9 +17,14 @@
  * instead of discovering staleness only after acting on it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { z } from 'zod';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 
 const getWorkItem = vi.fn();
+const readReportAttachmentEvidence = vi.fn();
+vi.mock('../../harness/improvements/report-attachments', () => ({
+  readReportAttachmentEvidence: (...args: unknown[]) => readReportAttachmentEvidence(...args),
+}));
 const getWorkItemDetail = vi.fn();
 const getWorkItemThreadWindow = vi.fn();
 vi.mock('../../work-items', () => ({
@@ -68,7 +73,13 @@ vi.mock('./deployment-position', () => ({
   deploymentPositionForEvidence: (...a: unknown[]) => deploymentPositionForEvidence(...a),
 }));
 
-import get from './get';
+// P-012 (D-049): the corroboration block's reader. Default: nothing corroborates the item.
+const readCorroborationSummary = vi.fn(async (..._a: unknown[]): Promise<unknown> => null);
+vi.mock('../../harness/improvements/corroboration', () => ({
+  readCorroborationSummary: (...a: unknown[]) => readCorroborationSummary(...a),
+}));
+
+import get, { workItemsGetSourceReadOptions } from './get';
 import { shapeWorkItemsGet } from './get-shape';
 import {
   CARRY_NOTE_MAX_CHECKS,
@@ -77,9 +88,23 @@ import {
   computeWorkItemSubjectFingerprint,
 } from '../../carry-note';
 
-const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
+const ctxFields = { uiClientId: 'su-tester', workspaceId: 'default' };
+const ctx = ctxFields as never;
 const parse = (x: unknown) => (get.args as { parse: (x: unknown) => unknown }).parse(x);
 type Out = { data: any };
+
+it('attachment read returns bounded evidence without checkpoint enrichment and refuses mixed/bulk modes', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-attachment', harness: 'papercusp' });
+  const evidence = { sourceWorkItemId: 'EI-source', attachments: [], page: null };
+  readReportAttachmentEvidence.mockResolvedValue(evidence);
+  const result = (await env({ id: 'WI-attachment', attachments: {} })).results[0];
+  expect(result).toMatchObject({ ok: true, id: 'WI-attachment', reportAttachments: evidence });
+  expect(readReportAttachmentEvidence).toHaveBeenCalledWith(expect.any(String), 'WI-attachment', {}, { harness: 'papercusp' });
+  expect(getWorkItemCheckpointWithMeta).not.toHaveBeenCalled();
+  expect(() => parse({ ids: ['WI-a', 'WI-b'], attachments: {} })).toThrow();
+  expect(() => parse({ id: 'WI-a', attachments: {}, resume: true })).toThrow();
+  expect(() => parse({ id: 'WI-a', attachments: { limit: 2049 } })).toThrow();
+});
 
 it('documents checkpointUpdatedAtMs as the checkpoint-change marker, not workItem.updatedAt', () => {
   const returns = (get as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
@@ -95,8 +120,9 @@ it('documents checkpointUpdatedAtMs as the checkpoint-change marker, not workIte
 // underlying reader is still never asked for more than the cap, and the clamp is
 // disclosed rather than silent.
 it('documents the threadLimit window and still accepts the in-range values', () => {
-  expect(get.description).toContain('`threadLimit`');
-  expect(get.description).toContain('(0–10)');
+  const when = String((get as unknown as { guidance?: { when?: string } }).guidance?.when ?? '');
+  expect(when).toContain('`threadLimit`');
+  expect(when).toContain('(0–10');
   expect(() => parse({ id: 'WI-thread-limit', threadLimit: 10 })).not.toThrow();
   expect(() => parse({ id: 'WI-thread-limit', threadLimit: 0 })).not.toThrow();
   expect(() => parse({ id: 'WI-thread-limit', threadLimit: -1 })).toThrow();
@@ -137,6 +163,66 @@ it('EI-21885040199084336: accepts detail as the boolean-or-string-enum conventio
 it('accepts checksOnly as the narrow checkpoint-ledger read switch', () => {
   expect((parse({ id: 'WI-checks-only-schema', checksOnly: true }) as { checksOnly?: boolean }).checksOnly).toBe(true);
   expect((parse({ id: 'WI-checks-only-schema', checksOnly: false }) as { checksOnly?: boolean }).checksOnly).toBe(false);
+});
+
+it('checkpointOnly pages exact stored checkpoint text by Unicode code point and clamps the page size', async () => {
+  const stored = 'A😀BCDEF';
+  getWorkItem.mockResolvedValue({ id: 'WI-checkpoint-page', harness: 'canonical' });
+  getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: stored, updatedAtMs: 123 });
+
+  expect(() => parse({ id: 'WI-checkpoint-page', offset: 1 })).toThrow(/only valid with checkpointOnly/);
+  expect(() => parse({ id: 'WI-checkpoint-page', checkpointOnly: true, limit: 0 })).toThrow();
+  expect(() => parse({ id: 'WI-checkpoint-page', checkpointOnly: true, detail: true })).toThrow(/standalone/);
+  const outputSchema = z.toJSONSchema(get.result as never) as any;
+  expect(outputSchema.properties.results.items.properties.checkpointPage.anyOf[0]).toMatchObject({
+    type: 'object',
+    properties: expect.objectContaining({
+      offset: expect.objectContaining({ type: 'integer' }),
+      totalChars: expect.objectContaining({ type: 'integer' }),
+      nextOffset: expect.objectContaining({ anyOf: expect.any(Array) }),
+      text: expect.objectContaining({ type: 'string' }),
+    }),
+  });
+
+  const first = await one({ id: 'WI-checkpoint-page', harness: 'requested', checkpointOnly: true, offset: 1, limit: 2 });
+  expect(first).toMatchObject({
+    id: 'WI-checkpoint-page',
+    __checkpointOnly: true,
+    checkpointPage: {
+      offset: 1,
+      limit: 2,
+      totalChars: 7,
+      returnedChars: 2,
+      nextOffset: 3,
+      text: '😀B',
+    },
+    checkpointUpdatedAtMs: 123,
+    checkpointContentHash: shortCarryHash(stored),
+  });
+  expect(getWorkItemCheckpointWithMeta).toHaveBeenCalledWith({ harness: 'canonical', workItemId: 'WI-checkpoint-page' });
+  expect(getWorkItemDetail).not.toHaveBeenCalled();
+  expect(getWorkItemThreadWindow).not.toHaveBeenCalled();
+
+  const clamped = await one({ id: 'WI-checkpoint-page', checkpointOnly: true, offset: 99, limit: 900 });
+  expect(clamped.checkpointPage).toMatchObject({
+    offset: Array.from(stored).length,
+    limit: 768,
+    returnedChars: 0,
+    nextOffset: null,
+    text: '',
+    limitClamped: { requested: 900, applied: 768 },
+  });
+});
+
+it('checkpointOnly keeps a failed checkpoint read distinct from no stored checkpoint', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-checkpoint-page-failed', harness: 'canonical' });
+  getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null, readFailed: true });
+  const result = await one({ id: 'WI-checkpoint-page-failed', checkpointOnly: true });
+  expect(result).toMatchObject({
+    checkpointPage: null,
+    checkpointReadFailed: true,
+    checkpointContentHash: null,
+  });
 });
 
 const env = async (x: unknown) => {
@@ -182,18 +268,65 @@ it('resume reaches the saved checkpoint and evidence without loading history or 
 
 it('resume documents and enforces its standalone contract', () => {
   expect(get.args.description ?? '').toBeDefined();
-  const resumeDescription = String(
-    ((get.args as { shape?: Record<string, { description?: string }> }).shape?.resume?.description ?? ''),
-  );
+  const argsShape = (get.args as { shape?: Record<string, { description?: string }> }).shape;
+  const resumeDescription = String(argsShape?.resume?.description ?? '');
+  const idsDescription = String(argsShape?.ids?.description ?? '');
+  const callConstraint = (z.toJSONSchema(get.args as never) as { 'x-papercusp-call-constraint'?: string })['x-papercusp-call-constraint'] ?? '';
+  expect(callConstraint).toContain('resume requires one item');
+  expect(callConstraint).toContain('multi-id batches are not supported');
+  expect(idsDescription).toContain('With resume:true, provide one ID only');
   expect(resumeDescription).toContain('Standalone one-item continuation view');
-  for (const excluded of ['detail', 'checksOnly', 'threadLimit', 'priorAttemptRefs']) {
+  expect(resumeDescription).toContain('a one-element ids array is accepted');
+  expect(resumeDescription).toContain('multi-id batches are rejected');
+  for (const excluded of ['detail', 'checksOnly', 'checkpointOnly', 'threadLimit', 'priorAttemptRefs', 'operationalBrief']) {
     expect(resumeDescription).toContain(excluded);
   }
+  const json = z.toJSONSchema(get.args as never) as { 'x-papercusp-call-constraint'?: string };
+  expect(json['x-papercusp-call-constraint']).toContain('operationalBrief');
+  expect(() => parse({ id: 'WI-a', resume: true })).not.toThrow();
+  expect(() => parse({ ids: ['WI-a'], resume: true })).not.toThrow();
   expect(() => parse({ ids: ['WI-a', 'WI-b'], resume: true })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, detail: true })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, checksOnly: true })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, threadLimit: 0 })).toThrow(/resume requires one item/);
   expect(() => parse({ id: 'WI-a', resume: true, priorAttemptRefs: ['WI-b#checkpoint'] })).toThrow(/resume requires one item/);
+  expect(() => parse({ id: 'WI-a', resume: true, operationalBrief: true })).toThrow(/operationalBrief/);
+});
+
+it('declares resume checks as a rows ledger in the published output contract', () => {
+  const schema = z.toJSONSchema(get.result as never) as any;
+  const resume = schema.properties.results.items.properties.resume;
+  expect(resume).toBeDefined();
+  expect(resume.properties.schemaVersion.const).toBe('work-item-resume-v1');
+  expect(resume.properties.checks.type).toBe('object');
+  expect(resume.properties.checks.properties.rows.type).toBe('array');
+  expect(resume.properties.checks.properties.rows.items.properties.claim.type).toBe('string');
+  expect(resume.properties.checks.properties.omitted.type).toBe('integer');
+  expect(resume.properties.checks.required).toEqual(expect.arrayContaining(['rows', 'omitted']));
+});
+
+it('validates the real resume check ledger and rejects the caller array assumption', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-resume-check-contract', harness: 'canonical' });
+  getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: withCarryNoteChecks('Saved progress', [
+    { id: 'saved-proof', claim: 'Saved proof is current', recheck: 'Read its source receipt' },
+  ]), updatedAtMs: 123 });
+  resumeEvidence.mockResolvedValue([]);
+  const output = await env({ id: 'WI-resume-check-contract', resume: true });
+  const schema = (get as unknown as {
+    result: { safeParse: (value: unknown) => { success: boolean } };
+  }).result;
+  const packet = output.results[0].resume;
+  expect(packet.checks).toMatchObject({ rows: [{ id: 'saved-proof' }], omitted: 0 });
+  for (const tier of ['standard', 'trimmed'] as const) {
+    expect(schema.safeParse(shapeWorkItemsGet(output, tier)).success).toBe(true);
+  }
+  for (const checks of [[], { rows: {}, omitted: 0 }, { rows: [], omitted: -1 }, { rows: [] }]) {
+    const invalid = { ...output, results: [{ ...output.results[0], resume: { ...packet, checks } }] };
+    expect(schema.safeParse(invalid).success, JSON.stringify(checks)).toBe(false);
+  }
+  const resumeDescription = String((get.args as any).shape.resume.description);
+  expect(resumeDescription).toContain('resume.checks.rows');
+  expect(resumeDescription).toContain('resume.checks.omitted');
 });
 
 it('declares the actual checkpoint/comment window output with writer-owned numeric post identity', async () => {
@@ -283,8 +416,88 @@ describe('work_items:get — checkpoint field', () => {
 
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'legacy checkpoint', updatedAtMs: 123 });
     const unknownRead = await one({ id: item.id, checksOnly: true });
-    expect(unknownRead.checkpointSubjectFingerprint).toEqual({ status: 'unknown', current });
+    expect(unknownRead.checkpointSubjectFingerprint).toEqual({ status: 'unknown' });
     expect(unknownRead).not.toHaveProperty('checkpoint');
+  });
+
+  it('does not compare a bodyless issue subject against the stored full-subject fingerprint', async () => {
+    const item = {
+      id: 'WI-checks-only-subject',
+      harness: 'papercusp',
+      family: 'issue',
+      kind: 'bug',
+      title: 'bodyless issue subject',
+      summary: 'The authoritative issue body.',
+      state: 'open',
+    };
+    const current = computeWorkItemSubjectFingerprint(item);
+    const checkpoint = 'checkpoint body';
+    getWorkItem.mockImplementation(async (_id, _harness, options) =>
+      options?.includeBody === false ? { ...item, summary: '' } : item,
+    );
+    getWorkItemCheckpointWithMeta.mockResolvedValue({
+      checkpoint,
+      updatedAtMs: 123,
+      subjectFingerprint: current,
+    });
+
+    const fullRead = await one({ id: item.id });
+    const checksOnlyRead = await one({ id: item.id, checksOnly: true });
+
+    expect(fullRead.checkpointSubjectFingerprint).toEqual({ status: 'current', current, stored: current });
+    expect(checksOnlyRead.checkpointSubjectFingerprint).toEqual({ status: 'unknown', stored: current });
+    expect(checksOnlyRead.checkpointContentHash).toBe(fullRead.checkpointContentHash);
+    expect(checksOnlyRead.checkpointUpdatedAtMs).toBe(fullRead.checkpointUpdatedAtMs);
+    expect(getWorkItem).toHaveBeenNthCalledWith(1, item.id, undefined);
+    expect(getWorkItem).toHaveBeenNthCalledWith(2, item.id, undefined, {
+      includeBody: false,
+      payloadProjection: 'none',
+    });
+  });
+
+  it('includes the issue body when a result projection requests the subject fingerprint', () => {
+    expect(workItemsGetSourceReadOptions({ pick: ['results[].checkpointSubjectFingerprint'] }, false)).toEqual({
+      includeBody: true,
+      payloadProjection: 'none',
+    });
+    expect(workItemsGetSourceReadOptions({ pick: ['results[0].checkpointSubjectFingerprint.current.sha256'] }, false)).toEqual({
+      includeBody: true,
+      payloadProjection: 'none',
+    });
+    expect(workItemsGetSourceReadOptions({ pick: ['results[].checkpointContentHash'] }, false)).toEqual({
+      includeBody: false,
+      payloadProjection: 'none',
+    });
+  });
+
+  it('includes the issue body before the result-door expands the summary shorthand', async () => {
+    const item = {
+      id: 'WI-summary-shorthand',
+      harness: 'papercusp',
+      family: 'issue',
+      kind: 'bug',
+      title: 'summary projection',
+      summary: 'The authoritative issue body.',
+      state: 'open',
+    };
+    getWorkItem.mockImplementation(async (_id, _harness, options) =>
+      options?.includeBody === false ? { ...item, summary: '' } : item,
+    );
+
+    const result = await get.handler(
+      { id: item.id } as never,
+      { ...ctxFields, sourceProjection: { pick: ['summary'] } } as never,
+    ) as Out;
+
+    expect(workItemsGetSourceReadOptions({ pick: ['summary'] }, false)).toEqual({
+      includeBody: true,
+      payloadProjection: 'none',
+    });
+    expect(getWorkItem).toHaveBeenCalledWith(item.id, undefined, {
+      includeBody: true,
+      payloadProjection: 'none',
+    });
+    expect(result.data.results[0].workItem.summary).toBe(item.summary);
   });
 
   it('checksOnly reads only the stored row identities and skips the full enrichment ladder', async () => {
@@ -977,5 +1190,41 @@ describe('work_items:get — checkpointContentHash (EI-21379898054596220)', () =
     // hash, and its null must stay distinguishable from "never checkpointed" above.
     expect(r.checkpointContentHash).toBeNull();
     expect(r.checkpointReadFailed).toBe(true);
+  });
+});
+
+describe('P-012 the corroboration count is shown on the item (D-049)', () => {
+  const NOTE = 'Orders verification work only. It is never a verification receipt: a bug still needs a recorded reproduction receipt before it is claimable.';
+
+  it('shows distinct reporters, filings and the not-a-receipt note, read for this item in its harness', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-corr', harness: 'papercusp', title: 't', payload: { reporterKinds: ['agent'] } });
+    getWorkItemThreadWindow.mockResolvedValue({ total: 0, posts: [], topics: [] });
+    readCorroborationSummary.mockResolvedValueOnce({
+      reporters: 3, filings: 7, firstFiledAt: '2026-10-01T00:00:00.000Z', lastFiledAt: '2026-10-02T00:00:00.000Z',
+      reporterKinds: ['agent'], note: NOTE,
+    });
+    const r = (await one({ id: 'WI-corr' })) as Record<string, unknown>;
+    expect(r.corroboration).toEqual({
+      reporters: 3, filings: 7, firstFiledAt: '2026-10-01T00:00:00.000Z', lastFiledAt: '2026-10-02T00:00:00.000Z',
+      reporterKinds: ['agent'], note: NOTE,
+    });
+    expect(readCorroborationSummary).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'WI-corr', harness: 'papercusp', payload: { reporterKinds: ['agent'] } }),
+    );
+  });
+
+  it('omits the block when nothing corroborates the item, and keeps the item when the ledger read fails', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-corr-none', harness: 'papercusp', title: 't' });
+    getWorkItemThreadWindow.mockResolvedValue({ total: 0, posts: [], topics: [] });
+    readCorroborationSummary.mockResolvedValueOnce(null);
+    const quiet = (await one({ id: 'WI-corr-none' })) as Record<string, unknown>;
+    expect(quiet.ok).toBe(true);
+    expect(quiet).not.toHaveProperty('corroboration');
+
+    readCorroborationSummary.mockRejectedValueOnce(new Error('ledger read failed'));
+    const failed = (await one({ id: 'WI-corr-none' })) as Record<string, unknown>;
+    expect(failed.ok).toBe(true);
+    expect((failed.workItem as { id?: string }).id).toBe('WI-corr-none');
+    expect(failed).not.toHaveProperty('corroboration');
   });
 });

@@ -17,7 +17,12 @@
  * hashes, option order, probabilities, subject ids — never the judged text.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { toDecisionLedgerEntry, type DecisionCallRecord, type DecisionPricing } from '@papercusp/decision-model';
+import {
+  toDecisionLedgerEntry,
+  type DecisionCallRecord,
+  type DecisionLedgerEntry,
+  type DecisionPricing,
+} from '@papercusp/decision-model';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -68,8 +73,15 @@ export async function recordDecisionModelCall(
   record: DecisionCallRecord,
   options: RecordDecisionModelCallOptions = {},
 ): Promise<boolean> {
+  return recordDecisionModelLedgerEntry(toDecisionLedgerEntry(record, { pricing: options.pricing }), options);
+}
+
+/** Persist an already sanitized ledger entry received across a worker boundary. */
+export async function recordDecisionModelLedgerEntry(
+  e: DecisionLedgerEntry,
+  options: Pick<RecordDecisionModelCallOptions, 'workspaceId'> = {},
+): Promise<boolean> {
   try {
-    const e = toDecisionLedgerEntry(record, { pricing: options.pricing });
     const workspaceId = options.workspaceId ?? activeWorkspaceId();
     const { sql } = getOrgPg();
     await sql`
@@ -78,7 +90,8 @@ export async function recordDecisionModelCall(
         question_ids, questions_schema_sha256, option_order, answers,
         outcome, inconclusive_reason, inconclusive_detail, http_status,
         attempts, latency_ms, input_tokens, output_tokens, cost_usd,
-        subject_ids, state_sha256, started_at, surface
+        subject_ids, state_sha256, started_at, surface,
+        loop_busy_ms, loop_utilization, transport_latency_ms
       ) VALUES (
         ${workspaceId}, ${e.consumer}, ${e.provider}, ${e.requestedModel}, ${e.returnedModel},
         ${sql.array([...e.questionIds])}, ${e.questionsSchemaSha256},
@@ -86,7 +99,8 @@ export async function recordDecisionModelCall(
         ${e.answers === null ? null : sql.json(e.answers as unknown as Record<string, never>)},
         ${e.outcome}, ${e.inconclusiveReason}, ${e.inconclusiveDetail}, ${e.httpStatus},
         ${e.attempts}, ${e.latencyMs}, ${e.inputTokens}, ${e.outputTokens}, ${e.costUsd},
-        ${sql.array([...e.subjectIds])}, ${e.stateSha256}, ${e.startedAt}, ${e.surface}
+        ${sql.array([...e.subjectIds])}, ${e.stateSha256}, ${e.startedAt}, ${e.surface},
+        ${e.loopBusyMs}, ${e.loopUtilization}, ${e.transportLatencyMs}
       )
     `;
     state.written += 1;

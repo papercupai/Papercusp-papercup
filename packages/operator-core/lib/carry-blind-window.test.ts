@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import type { Sql } from 'postgres';
 import {
   CARRY_BLIND_WINDOW_MAX_CUT_AGE_MS,
   CARRY_BLIND_WINDOW_MIN_MS,
   buildCarryBlindWindow,
   cutAtFromRespawn,
+  readCarryBlindWindow,
   renderCarryBlindWindowLine,
 } from './carry-blind-window';
+import type { PriorRespawn } from './carry-respawn-outcome';
 
 /**
  * EI-21442716425230784 — the arithmetic behind the successor's blind-window line.
@@ -113,5 +116,53 @@ describe('carry blind window', () => {
     const later = buildCarryBlindWindow({ ...ok, nowMs: CUT + 10 * 60_000 })!;
     expect(`${later.cutAtMs}:${later.callsAfter}`).toBe(`${first.cutAtMs}:${first.callsAfter}`);
     expect(renderCarryBlindWindowLine(later)).toBe(renderCarryBlindWindowLine(first));
+  });
+
+  it('excludes automatic hook telemetry from the database-counted predecessor window', async () => {
+    const cutAtMs = Date.parse('2026-10-03T04:53:51.000Z');
+    let capturedQuery = '';
+    const render = (value: unknown): string => {
+      if (value && typeof value === 'object' && 'sqlText' in value) {
+        return String((value as { sqlText: string }).sqlText);
+      }
+      return '$value';
+    };
+    const fakeSql = Object.assign(
+      (parts: TemplateStringsArray, ...values: unknown[]) => {
+        const query = parts.reduce(
+          (text, part, index) => `${text}${part}${index < values.length ? render(values[index]) : ''}`,
+          '',
+        );
+        if (query.includes('WITH snapshot AS')) {
+          capturedQuery = query;
+          return Promise.resolve([{
+            snapshot_at: new Date(cutAtMs - 60_000),
+            calls_after: 0,
+            last_call_at: null,
+            last_tool: null,
+          }]);
+        }
+        return { sqlText: query };
+      },
+      {
+        unsafe: (sqlText: string) => ({ sqlText }),
+        array: (values: unknown[]) => ({ sqlText: `ARRAY[${values.map(value => JSON.stringify(value)).join(',')}]` }),
+      },
+    ) as unknown as Sql;
+
+    const prior: PriorRespawn = {
+      outcome: 'delivered',
+      ts: new Date(cutAtMs).toISOString(),
+    } as PriorRespawn;
+    const result = await readCarryBlindWindow('owner-1', {
+      workspaceId: 'papercusp-workspace',
+      now: cutAtMs + 10_000,
+      sql: fakeSql,
+      prior,
+    });
+
+    expect(result).toBeNull();
+    expect(capturedQuery).toContain('t.call_origin');
+    expect(capturedQuery).toContain('activity:report');
   });
 });

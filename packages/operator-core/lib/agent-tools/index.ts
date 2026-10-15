@@ -118,6 +118,9 @@ import './recipes/sweep';
 import './datatypes/declare';
 import './datatypes/list';
 import './datatypes/get';
+import './people/search';
+import './people/get';
+import './people/merge';
 // identities-v1 P-027 / D-010 — the shared leg and the global BROWSE were retired here:
 // `datatypes:publish` → cupboard:publish-datatype, `datatypes:catalog` →
 // cupboard:search { kind:'datatype' }. They were a second Cupboard, and a broken one:
@@ -183,6 +186,7 @@ import './consult/get-feedback';
 import './consult/reply';
 import './consult/decline';
 import './consult/close';
+// EI-23764501791910357 slice 3: the requester's terminal disposition of a proceed consult.
 // review-routing-through-relevance-router-2026-09-26 P-004: per-policy routing health.
 import './consult/routing-health';
 import './roles/list';
@@ -300,9 +304,15 @@ import './search/fulltext';
 import './search/semantic';
 // personal-vault-2026-08-22: default-deny owner-local recall + owner-only purge.
 import './personal/search';
+// P-007 / R-12: hidden-delegate read — an answer without restricted content leaves the caller unlabelled.
+import './personal/ask';
 import './personal/purge';
-// external-triggers P-008: reply only to the Slack thread anchored by a durable plan run.
-import './slack/respond-in-thread';
+import './personal/privacy-rules';
+import './personal/declassify';
+import './personal/open-sealed';
+import './documents/search';
+import './documents/read';
+import './documents/subscriptions';
 // external-triggers D-019 Tier 1 (P-029/P-030/P-031): provider-neutral capability
 // verbs keyed to the canonical datatypes. Reply-shaped verbs resolve the
 // destination server-side (D-020 rail 1); create-shaped verbs check the
@@ -315,7 +325,9 @@ import './mail/send';
 import './mail/send-draft';
 import './calendar/propose';
 import './calendar/update';
+import './calendar/delete';
 import './chat/reply';
+import './ticket/file';
 import './social/delete';
 import './social/post';
 import './social/read';
@@ -330,6 +342,7 @@ import './memory/get';
 // (deterministic scoped conclusions folded verbatim into briefs/dossiers/orients)
 import './facts/assert';
 import './facts/retract';
+import './claims/retract';
 import './facts/list';
 // unified-agent-state-plane-2026-07-27 P-011 — assumptions in tension over the
 // same typed referent. A read, never a push: see the file header for why.
@@ -680,6 +693,7 @@ import './capability/edit';
 import './capability/patch';
 import './capability/notebook';
 import './capability/git';
+import './capability/git-evidence';
 import './capability/fetch';
 // Read-only verification exec (EI-524 / P-035): typecheck/test via fixed commands,
 // the sanctioned inspect path for confined bees (capability:bash is envelope-gated).
@@ -720,6 +734,7 @@ import './issues/list';
 import './db/next_migration';
 import './testing/prune_orphan_runs';
 import './testing/flakiness';
+import './testing/case-categories';
 import './testing/run';
 import './testing/record-run';
 import './testing/run-status';
@@ -882,8 +897,9 @@ import './coordination/tools/topics-merge';
 import './coordination/tools/topics-tag';
 import './coordination/tools/topics-feed';
 
-// Conversations — questions + discussions on the substrate (the first consumer:
-// coordination-conversations-2026-06-03). coord:ask is knowledge-first.
+// Conversations — questions + discussions on the substrate
+// (coordination-conversations-2026-06-03). coord:ask is owner-UI-only; agents
+// contact peers with coord:send or coord:message-agent.
 import './coordination/tools/ask';
 import './coordination/tools/conversations-post';
 import './coordination/tools/conversations-answer';
@@ -893,6 +909,7 @@ import './coordination/tools/conversations-list';
 import './coordination/tools/conversations-get';
 import './coordination/tools/conversations-promote';
 import './coordination/tools/conversations-supersede';
+import './coordination/tools/conversations-withdraw';
 
 // Self-improvement loop — capture + triage + the resolve back-edge
 // (papercusp-self-improvement-loop-2026-06-04 Phase 1 + 2;
@@ -973,6 +990,7 @@ import './routines/revert';
 // git-sync:run — fire git-sync once on demand (WI-1320; the manual lever git-sync lacked,
 // so a force-deploy ships CURRENT staging not stale).
 import './git_sync/run';
+import './git_sync/send_green';
 // WI-1555 — the owner ratify surface for the multi-owner integration-requests queue
 // (lib/sync/pot-git/integration-requests.ts had no exposed verb until this tool).
 import './pot_git/integration_requests';
@@ -1013,6 +1031,8 @@ import './coordination/session-reaper-config';
 import './pot/control-policy';
 import './pot/work-scope';
 import './pot/work-scope-status';
+// papercusp-enterprise-readiness-roadmap-2026-10-09 P-005 — inherited org/department/workspace policy:
+import './governance/policy';
 // live-configurability-audit-2026-06-20 P-016 — green-checkpoint / release thresholds:
 import './release/checkpoint-config';
 // EI-21433366079878122 — guarded inspection/exact-CAS retirement of the persisted repair queue:
@@ -1179,6 +1199,7 @@ import './work_items/checkpoint';
 import './work_items/amend';
 import './work_items/expand';
 import './work_items/promote';
+import './work_items/admit'; // enterprise-data-sources P-020: data -> work admission
 // work-queue-admission-and-bulk-dedup P-006 — model-backed staged corpus pass,
 // reusing the admission census + promoter charter under a transactional ratchet.
 import './work_items/bulk_dedup';
@@ -1245,6 +1266,9 @@ import './work_items/redundancy_status';
 // work_items:completion_stats — the genuine-completions-vs-dedup metric
 // (work-item-completion-integrity-2026-07-01 WI-1405, contract C-1 consumer).
 import './work_items/completion_stats';
+// work_items:acceptance_adoption — legacy acceptance cohorts + current-build canary
+// (observation-candidate-acceptance-promotion-2026-09-30 P-011, WI-10004574).
+import './work_items/acceptance_adoption';
 
 // Fleet — structured concurrency / supervision over the spawn tree
 // (fleet-as-supervised-blackboard-2026-06-04). fleet:cancel is the transitive
@@ -1334,6 +1358,8 @@ import './plans/list';
 import './plans/get';
 import './plans/get-properties';
 import './plans/set-property';
+import './plans/acceptance-disposition';
+import './plans/blind-review';
 // first-class-spec-clauses-and-prior-attempt-briefs P-002 — stable clause
 // identities + immutable revisions, with exact/current/history reads.
 import './plans/get-specs';
@@ -1342,6 +1368,8 @@ import './plans/set-specs';
 // P-005 — exact many-to-many work-item/spec-revision coverage plus immutable
 // proof fingerprints and computed (never stored) currentness.
 import './plans/bind-spec-evidence';
+// EI-25692833751908142 — the judge's narrow door for independent-verification bindings only.
+import './plans/bind-independent-verification';
 import './plans/get-spec-evidence';
 // review-system-rework-reduction-2026-09-23 P-040 — which live repo-files proof measures a
 // path; the PostToolUse proof-stale nudge calls it after every edit.
@@ -1369,6 +1397,7 @@ import './plans/rubric-template';
 // schema SOURCE (JSON Schema, runtime-declared) beside the code registry above. Its
 // `required` array is what the start gate (P-005/P-006) enforces before a plan runs.
 import './plans/get-input-schema';
+import './plans/governance-event';
 import './plans/set-input-schema';
 import './plans/get-output-schema';
 import './plans/set-output-schema';
@@ -1414,6 +1443,7 @@ import './plans/set-title';
 import './plans/set-item-blocked-by';
 import './plans/set-item-phase';
 import './plans/set-decision-body';
+import './plans/conformance';
 // plan-level lifecycle flip (draft→ready approve / demote / ship / reject).
 import './plans/set-plan-status';
 // scheduled-recurring-plans-2026-06-16 P-014 — author/clear a plan's schedule + manual run-now.
@@ -1429,6 +1459,7 @@ import './plans/revisions-list';
 import './plans/revisions-backfill';
 import './plans/acceptance-bar-migration';
 import './plans/acceptance-bar-census';
+import './plans/verification-health';
 import './plans/backfill-dependency-edges';
 import './plans/revision-transcript';
 import './plans/revision-summary';
@@ -1476,6 +1507,9 @@ import './blueprint/publish';
 // Public blueprint operation lifecycle (blueprint-backed-work-item-execution P-017, D-009):
 // one typed defineTool per verb over the shared operation service.
 import './blueprint/submit-operation';
+// D-014 (app-agent-tasks-durable-execution-2026-10-06): the worker read of an
+// operation's private input, holder-only and refused once the item is terminal.
+import './blueprint/read-private-input';
 import './blueprint/status-operation';
 import './blueprint/result-operation';
 import './blueprint/events-operation';
@@ -1575,8 +1609,12 @@ import './cupboard/ledger-chain-witness';
 // (read) and run-now (write).
 import './cupboard/ledger-anchor';
 import './cupboard/ledger-anchor-run';
+// agent-economy-flywheel-2026-08-30 P-046 (D-029) — per-payment receipts.
+import './cupboard/payment-receipt';
+import './cupboard/statement-attestation';
 import './cupboard/reconciliation';
 import './cupboard/bind-wallet';
+import './pot/equity';
 import './cupboard/bind-identity-funding';
 // P-031 — the per-unit half of the same commerce surface. A per-use offer has no
 // single purchase to authorize, so checkout only opens the channel and EVERY
@@ -1690,16 +1728,16 @@ import './triggers/rotate-webhook-secret';
 import './triggers/bind';
 import './triggers/arm';
 import './triggers/disarm';
+import './trigger-packs/review';
+import './trigger-packs/arm';
+import './trigger-packs/uninstall';
+import './trigger-packs/export';
 import './triggers/run-with-last-event';
 import './triggers/status';
 // WI-2143575 — the READ half of the trigger pair. The private ingest is no
 // longer embedded in federated plan-run inputs, so the agent pulls it
 // server-side by planRunId, exactly as the write tools already resolve theirs.
 import './triggers/read-payload';
-// external-triggers-gmail-slack-2026-08-22 P-011 — anchored, draft-only
-// Gmail response seam. Recipient/thread/token come from the trigger run; there
-// is deliberately no send branch on this tool.
-import './gmail/create-draft';
 // WI-4014 Part 2 (linking-system follow-up to WI-3956): the lifecycle verb for a
 // standing event-key INJECT subscription (watch:create wake:false targetKind:'event')
 // — the wake:false sibling of events:cancel, mirroring topics:unsubscribe's shape.
@@ -1714,6 +1752,7 @@ import './state/subscribe';
 // EI-20449419111876508: read-only resolver lens for the host.memoryPressure cell.
 import './state/host-memory';
 import './state/governor-state';
+import './state/lsp-admission';
 // event-await-discoverability-and-coverage-2026-07-03 P-002 — the awaitable-key
 // catalog ("what can I wait on instead of polling?"), rendered from the SSOT
 // registry events/await/catalog.ts.
@@ -1742,6 +1781,12 @@ import '../events';
 import '../coord-lifecycle/lifecycle-rules';
 import '../coord-lifecycle/register-emit-rules';
 
+// derived-status-not-hand-written-2026-10-12#P-011 — blocker auto-clear: a terminal
+// work_items:complete / set_state clears every live-dependency blocker that named
+// the finished item (history kept) and wakes the blocked item's holder. Importing
+// registers the rules; loaded after '../events' so the registry exists.
+import '../work-item-ref-blocker-auto-clear-rule';
+
 // docs-and-memory-as-projections-2026-06-05 P0 — the topic-keyed RATIONALE
 // projection (@papercusp/projection-index): plan decisions + work-items + insights,
 // indexed by topic and kept fresh by the event engine. `rationale:feed` is the
@@ -1761,7 +1806,9 @@ import './lexicon/active_pack';
 // category + the safe prune-by-category-and-age executor behind the Settings →
 // Storage page (federated categories refused; default keep-all).
 import './storage/usage';
+import './storage/census';
 import './storage/prune';
+import './storage/pin';
 
 // access:* (external-app-access-to-workspaces-2026-09-29 P-012) — local-only list /
 // create / pause / revoke of the keys outside apps use. Hard-denied to every app key.
@@ -1801,7 +1848,7 @@ import { backgroundWorkspaceIds } from '../workspace-registry';
 // (EI-312 leg 1: a test worker must not poke the live wake system). The
 // PAPERCUSP_BACKGROUND_WORKERS flag only controls background loops and is `0`
 // in the request workers whose process-local matcher must remain armed.
-import { isHostSingleton, reactionMatcherShouldArm } from '../background-workers';
+import { isHostSingleton, reactionMatcherShouldArm, whenOperatorHostProcess } from '../background-workers';
 try {
   if (reactionMatcherShouldArm()) {
     // WI-4890: :3070 is a reuse-port cluster, but event-reaction rules are
@@ -1895,22 +1942,19 @@ import '../harness/routines/loop-turn-outcome';
 // P-020: terminal work-item rows carry a durable done-event intent. Register
 // its source reconciler on this existing await sweep before the first tick.
 import '../work-item-completion-event-reconciler';
-try {
-  startAwaitSweeper();
-} catch {
-  /* never block boot */
-}
+// WI-10006280: these three loops claim and EXECUTE other agents' wake deliveries,
+// so they start only in an operator HOST — `whenOperatorHostProcess` runs them once
+// `runBootstrap()` declares the process a host (immediately if it already has).
+// Importing this registry from a script, a build generator or a vitest worker no
+// longer starts them. The wrapper keeps the never-block-boot contract.
+whenOperatorHostProcess('await-event-sweeper', startAwaitSweeper);
 
 // fleet-deltas-leader-primitives-2026-07-10 P-008 — the predicate-watch poller
 // (engine-side "wake me when a tool result crosses a threshold"). Boot-started so
 // rows registered before a host restart keep polling; same fail-soft contract as
 // the sweeper above (missing table pre-migration-541 must never block boot).
 import { startPredicateWatchPoller } from '../events/await/predicate-watch';
-try {
-  startPredicateWatchPoller();
-} catch {
-  /* never block boot */
-}
+whenOperatorHostProcess('predicate-watch-poller', startPredicateWatchPoller);
 
 // get-feedback-relevance-consults-2026-08-16 P-008 — the interest-watch sweeper
 // (push-interjection: peer in-flight work matched against standing embedded
@@ -1918,14 +1962,16 @@ try {
 // sweeping; same fail-soft contract (missing table pre-migration-839 must
 // never block boot — the tick catches its own errors).
 import { startInterestWatchSweeper } from '../events/await/interest-watch';
-try {
-  startInterestWatchSweeper();
-} catch {
-  /* never block boot */
-}
+whenOperatorHostProcess('interest-watch-sweeper', startInterestWatchSweeper);
 
 // EI-10966 — prompt-weight budget self-check. LAST import: every tool above has
 // registered, so this sees the full projected catalog. Warns (operator logs only,
 // never under vitest) when a tool is over budget, so an over-budget guidance EDIT
 // surfaces at hot-reload time instead of hours later at the fleet-blocking gate.
 import './tool-weight-selfcheck';
+
+// EI-25644552827273063: static HTTP registration has already completed when
+// desktop MCP starts. Avoid re-loading that graph through tsx's ESM loader.
+// Keep this call last: partial/failed registration must never count as ready.
+import { markOperatorToolCatalogueLoaded } from './operator-tool-catalogue';
+markOperatorToolCatalogueLoaded();

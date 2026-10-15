@@ -11,17 +11,18 @@
  *     file-lock acquire → contend-busy → release → contender wins — through the
  *     REAL host adapters (sendMessage/readInbox/appendAck, tryAcquire/tryRelease
  *     over the live su-lock store). The leading `baseline` step is a control
- *     DB round-trip (SELECT 1) that touches neither the coord write path nor its
- *     NOTIFY triggers, so a breach is self-attributing: baseline slow ⇒ DB-wide
- *     / pool contention; baseline fast but ping/ack slow ⇒ the coord
- *     INSERT+commit+NOTIFY path (EI-401 — the first real breach was mis-read as
- *     a slow read path; see agent-insight coord-canary-breach-attribute-per-step).
+ *     DB round-trip (SELECT 1) that touches neither the coord writer nor its
+ *     notification triggers. This is a reference measurement, not a cause
+ *     isolator: the ping timer covers sendMessage, and the ack timer covers
+ *     appendAck plus readback. Reports preserve these measured boundaries without
+ *     attributing their latency to a specific database or notification layer.
  *     Per-step latency + a 30s total-cycle SLO (EI-401 owner ruling: a 10s SLO
  *     false-alarmed on transient shared-box peak-load write spikes). A failed
  *     step or a coord-attributed SLO breach files a forensics-laden improvement
  *     (coord-log + lock-table rows) through the watchdog capture core (deduped,
- *     dedupScope 'open'); a breach the baseline pins on DB-wide / pool contention
- *     is DOWNGRADED to a logged note, not an EI (breachDisposition). Probe
+ *     dedupScope 'open'); a pure breach with a slow baseline control follows the
+ *     owner-ratified note policy (breachDisposition), without asserting a root
+ *     cause. Probe
  *     hygiene: rows older than 24h are swept each fire, so the canary never
  *     becomes its own bloat incident.
  *
@@ -158,7 +159,10 @@ import {
   tryAcquire,
   tryRelease,
 } from '../../agent-tools/locks/su-lock-store';
-import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
+import {
+  inWorkspaceTxn,
+  type WorkspaceTxnPhaseTiming,
+} from '../../agent-tools/locks/in-workspace-txn';
 import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
 import { fetchPresenceFleet } from '../../agent-tools/coordination/presence-fleet';
 import { getFleet } from '../../agent-fleets-store';
@@ -243,31 +247,29 @@ export function evaluateProbe(steps: ProbeStep[], totalSloMs: number): ProbeVerd
   };
 }
 
-/** How a breach attributes against the control `baseline`: 'db-wide' = the whole
- *  DB/pool was contended (baseline itself slow) — NOT a coord regression;
- *  'coord' = baseline fast but ping/ack slow ⇒ the coord INSERT+commit+NOTIFY
- *  path; 'cumulative' = no single step dominates; 'none' = no baseline sampled. */
-export type BreachClass = 'db-wide' | 'coord' | 'cumulative' | 'none';
+/** Triage labels for measured round-trip boundaries, not root-cause claims.
+ *  'baseline-slow' means the SELECT 1 control exceeded its threshold;
+ *  'coord-operations-slow' means the end-to-end ping or ack operation did;
+ *  'unattributed' means neither comparison identifies a component; 'none'
+ *  means no baseline was sampled. */
+export type BreachClass = 'baseline-slow' | 'coord-operations-slow' | 'unattributed' | 'none';
 
-/** Pure: classify an SLO breach by comparing the control `baseline` round-trip
- *  against the coord write steps (the EI-401 self-attribution model — see
- *  agent-insight coord-canary-breach-attribute-per-step). Drives both the
- *  human-readable attribution line AND the file-vs-note disposition below. */
+/** Pure: compare the control `baseline` round-trip with end-to-end ping/ack
+ *  durations. These comparisons classify measurements but do not isolate a
+ *  lower-level cause. The result drives the report wording and note policy. */
 export function classifyBreach(steps: ProbeStep[], slowMs = 2_000): BreachClass {
   const ms = (step: string) => steps.find((s) => s.step === step)?.ms;
   const baseline = ms('baseline');
   if (baseline == null) return 'none';
   const ping = ms('ping') ?? 0;
   const ack = ms('ack') ?? 0;
-  if (baseline > slowMs) return 'db-wide';
-  if (Math.max(ping, ack) > slowMs) return 'coord';
-  return 'cumulative';
+  if (baseline > slowMs) return 'baseline-slow';
+  if (Math.max(ping, ack) > slowMs) return 'coord-operations-slow';
+  return 'unattributed';
 }
 
-/** Pure: a one-line attribution hint for an SLO breach. Compares the control
- *  `baseline` round-trip against the coord write steps so a breach is not
- *  mis-read as a read-path cost — the EI-401 failure mode (see agent-insight
- *  coord-canary-breach-attribute-per-step). */
+/** Pure: a one-line summary of measured control and operation timings. It does
+ *  not assign those timings to a lower-level source. */
 export function attributeBreach(steps: ProbeStep[], slowMs = 2_000): string {
   const ms = (step: string) => steps.find((s) => s.step === step)?.ms;
   const baseline = ms('baseline');
@@ -276,26 +278,24 @@ export function attributeBreach(steps: ProbeStep[], slowMs = 2_000): string {
   switch (classifyBreach(steps, slowMs)) {
     case 'none':
       return 'Attribution: no baseline control sampled.';
-    case 'db-wide':
-      return `Attribution: baseline control (SELECT 1) took ${baseline}ms — DB-wide / connection-pool contention, NOT coord-specific.`;
-    case 'coord':
-      return `Attribution: baseline control fast (${baseline}ms) but coord write slow (ping ${ping}ms / ack ${ack}ms) — the cost is the coord INSERT+commit+NOTIFY path (NOTIFY-queue serialization / substrate_outbox capture), not the read path or the DB at large.`;
-    case 'cumulative':
-      return `Attribution: baseline ${baseline}ms, ping ${ping}ms, ack ${ack}ms — no single step dominates; likely cumulative load.`;
+    case 'baseline-slow':
+      return `Attribution: SELECT 1 baseline control took ${baseline}ms; this single round-trip does not distinguish connection-pool wait, query execution, or a broader database issue.`;
+    case 'coord-operations-slow':
+      return `Attribution: SELECT 1 baseline control took ${baseline}ms; end-to-end coord ping took ${ping}ms and ack-plus-readback took ${ack}ms. These measurements do not isolate coord_event_log INSERT/commit/NOTIFY or show that these steps dominate the full cycle.`;
+    case 'unattributed':
+      return `Attribution: baseline ${baseline}ms, ping ${ping}ms, ack-plus-readback ${ack}ms; these measurements do not isolate the cause of the full-cycle delay.`;
   }
 }
 
 /** Pure: should a non-clean cycle FILE an EI, or downgrade to a logged NOTE?
  *  EI-401 owner ruling ("accept + tune", 2026-06-13): a *pure* SLO breach (no
- *  step failed) that the baseline control attributes to DB-wide / pool
- *  contention is a transient shared-box peak-load spike, not an actionable coord
- *  regression — log a forensic note instead of minting an EI. Everything else
- *  still files: a failed step (correctness), a coord-attributed breach (the real
- *  coord INSERT+NOTIFY cost), and cumulative/unattributable breaches (fail
- *  open — never silently swallow a breach we cannot pin on the DB at large). */
+ *  step failed) with a slow baseline control follows the owner-ratified note
+ *  policy. The control is not sufficient to establish why it was slow. Everything
+ *  else still files: failed steps and total-cycle breaches that the measurements
+ *  do not explain remain visible for investigation (fail open). */
 export function breachDisposition(verdict: ProbeVerdict, steps: ProbeStep[]): 'ok' | 'note' | 'file' {
   if (verdict.ok) return 'ok';
-  if (verdict.sloBreached && classifyBreach(steps) === 'db-wide') return 'note';
+  if (verdict.sloBreached && classifyBreach(steps) === 'baseline-slow') return 'note';
   // EI-3019: a step that failed SOLELY because its per-workspace txn could not
   // serialize in time (WorkspaceContendedError — pg 55P03/57014) is the same
   // transient shared-box contention as the db-wide SLO breach above, just
@@ -312,16 +312,39 @@ export function breachDisposition(verdict: ProbeVerdict, steps: ProbeStep[]): 'o
 
 /** The verb cycle, over an injectable deps bag (unit tests run on fakes). */
 export interface ProbeDeps {
-  /** Control round-trip (SELECT 1) — no coord write path, no NOTIFY. Isolates
-   *  DB-wide / pool latency from coord-substrate latency in a breach report. */
+  /** Reference round-trip (SELECT 1); it does not isolate all database/pool
+   *  costs from the multi-query coordination operations. */
   baseline: () => Promise<{ ok: boolean; detail?: string }>;
   send: (from: AgentIdentity, to: string, summary: string) => Promise<{ msg_id: string; ts: string }>;
   inboxHas: (owner: string, msgId: string, sinceTs: string) => Promise<boolean>;
   ack: (acker: AgentIdentity, msgId: string, from: string) => Promise<void>;
   ackedHas: (acker: string, msgId: string) => Promise<boolean>;
-  acquire: (owner: string) => Promise<{ ok: boolean; busyOwner?: string }>;
-  release: (owner: string) => Promise<void>;
+  acquire: (owner: string) => Promise<{ ok: boolean; busyOwner?: string; detail?: string }>;
+  release: (owner: string) => Promise<void | { detail?: string }>;
   now?: () => number;
+}
+
+function formatWorkspaceTxnPhaseTimings(
+  timings: readonly WorkspaceTxnPhaseTiming[],
+): string | undefined {
+  if (timings.length === 0) return undefined;
+  const phases = timings
+    .map((timing) => timing.phase + '=' + timing.durationMs.toFixed(1) + 'ms')
+    .join(', ');
+  return 'txnPhases=' + phases;
+}
+
+function attachWorkspaceTxnPhaseTimings(
+  error: unknown,
+  timings: readonly WorkspaceTxnPhaseTiming[],
+): void {
+  const detail = formatWorkspaceTxnPhaseTimings(timings);
+  if (!detail || error === null || typeof error !== 'object') return;
+  try {
+    Object.defineProperty(error, 'probeTimingDetail', { value: detail, configurable: true });
+  } catch {
+    // Preserve the original failure even when its error object cannot be extended.
+  }
 }
 
 export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: AgentIdentity): Promise<ProbeStep[]> {
@@ -334,22 +357,29 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
       steps.push({ step, ok: r.ok, ms: now() - t0, detail: r.detail });
       return r.ok;
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const phaseDetail =
+        err !== null && typeof err === 'object' &&
+        typeof (err as { probeTimingDetail?: unknown }).probeTimingDetail === 'string'
+          ? (err as { probeTimingDetail: string }).probeTimingDetail
+          : undefined;
       steps.push({
         step,
         ok: false,
         ms: now() - t0,
-        detail: err instanceof Error ? err.message : String(err),
+        detail: phaseDetail ? message + '; ' + phaseDetail : message,
         contended: isContentionTimeout(err),
       });
       return false;
     }
   };
 
-  // 0. Baseline control: a trivial DB round-trip that does NOT touch the coord
-  //    write path or its NOTIFY triggers. If `baseline` is slow too, the whole
-  //    DB is contended (pool/IO); if it is fast but ping/ack are slow, the cost
-  //    is in the coord INSERT+commit+NOTIFY path. A hard failure means the DB is
-  //    unreachable, so the rest of the cycle would fail anyway — abort.
+  // 0. Baseline control: a trivial DB round-trip that does NOT touch coordination
+  //    writes or their notification triggers. It is a reference measurement only:
+  //    a slow result does not localize pool wait vs query execution, and a fast
+  //    result does not localize costs within the multi-query ping/ack operations.
+  //    A hard failure means the DB is unreachable, so the rest of the cycle would
+  //    fail anyway — abort.
   if (!(await timed('baseline', () => deps.baseline()))) return steps;
   // 1. ping A→B …
   let msgId = '';
@@ -369,8 +399,16 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
   // 3. … B acks, and the ack is readable.
   if (
     !(await timed('ack', async () => {
+      const appendStartedAt = now();
       await deps.ack(idB, msgId, idA.ownerId);
-      return { ok: await deps.ackedHas(idB.ownerId, msgId) };
+      const appendMs = now() - appendStartedAt;
+      const readbackStartedAt = now();
+      const acked = await deps.ackedHas(idB.ownerId, msgId);
+      const readbackMs = now() - readbackStartedAt;
+      return {
+        ok: acked,
+        detail: `appendAck/sendMessage=${appendMs}ms; readAckedMsgIds=${readbackMs}ms`,
+      };
     }))
   ) {
     return steps;
@@ -383,7 +421,7 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
       const r = await deps.acquire(idB.ownerId);
       return {
         ok: !r.ok && r.busyOwner === idA.ownerId,
-        detail: r.ok ? 'contender was GRANTED a held lock' : undefined,
+        detail: r.ok ? 'contender was GRANTED a held lock' : r.detail,
       };
     }))
   ) {
@@ -394,8 +432,11 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
   // 6. A releases…
   if (
     !(await timed('lock-release', async () => {
-      await deps.release(idA.ownerId);
-      return { ok: true };
+      const released = await deps.release(idA.ownerId);
+      return {
+        ok: true,
+        detail: released && typeof released === 'object' ? released.detail : undefined,
+      };
     }))
   ) {
     return steps;
@@ -403,8 +444,17 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
   // 7. …and the former contender now wins.
   await timed('lock-regrant', async () => {
     const r = await deps.acquire(idB.ownerId);
-    if (r.ok) await deps.release(idB.ownerId);
-    return { ok: r.ok };
+    let releaseDetail: string | undefined;
+    if (r.ok) {
+      const released = await deps.release(idB.ownerId);
+      if (released && typeof released === 'object') releaseDetail = released.detail;
+    }
+    return {
+      ok: r.ok,
+      detail: [r.detail, releaseDetail ? `regrant release: ${releaseDetail}` : undefined]
+        .filter((part): part is string => typeof part === 'string' && part.length > 0)
+        .join('; ') || undefined,
+    };
   });
   return steps;
 }
@@ -437,23 +487,52 @@ function liveProbeDeps(): ProbeDeps {
     },
     ackedHas: async (acker, msgId) => (await readAckedMsgIds(acker)).has(msgId),
     acquire: async (owner) => {
-      const r = await inWorkspaceTxn(PROBE_DOMAIN, owner, (tx) =>
-        tryAcquire(tx, {
-          coordinationDomain: PROBE_DOMAIN,
-          owner,
-          ownerLabel: `probe:${owner}`,
-          paths: normalizePaths([PROBE_PATH]),
-          intent: 'coord probe-pair canary',
-          ttlSec: 120,
-        }),
-      );
-      if (r.ok) return { ok: true };
-      return { ok: false, busyOwner: r.busy[0]?.owner };
+      const transactionStartedAt = Date.now();
+      let tryAcquireMs = 0;
+      const phaseTimings: WorkspaceTxnPhaseTiming[] = [];
+      const r = await inWorkspaceTxn(PROBE_DOMAIN, owner, async (tx) => {
+        const operationStartedAt = Date.now();
+        try {
+          return await tryAcquire(tx, {
+            coordinationDomain: PROBE_DOMAIN,
+            owner,
+            ownerLabel: `probe:${owner}`,
+            paths: normalizePaths([PROBE_PATH]),
+            intent: 'coord probe-pair canary',
+            ttlSec: 120,
+          });
+        } finally {
+          tryAcquireMs = Date.now() - operationStartedAt;
+        }
+      }, { onPhase: (timing) => phaseTimings.push(timing) }).catch((err: unknown) => {
+        attachWorkspaceTxnPhaseTimings(err, phaseTimings);
+        throw err;
+      });
+      const detail = `inWorkspaceTxn=${Date.now() - transactionStartedAt}ms; tryAcquire=${tryAcquireMs}ms`;
+      const phaseDetail = formatWorkspaceTxnPhaseTimings(phaseTimings);
+      const combinedDetail = phaseDetail ? detail + '; ' + phaseDetail : detail;
+      if (r.ok) return { ok: true, detail: combinedDetail };
+      return { ok: false, busyOwner: r.busy[0]?.owner, detail: combinedDetail };
     },
     release: async (owner) => {
-      await inWorkspaceTxn(PROBE_DOMAIN, owner, (tx) =>
-        tryRelease(tx, { coordinationDomain: PROBE_DOMAIN, owner, allMine: true }),
-      );
+      const transactionStartedAt = Date.now();
+      let tryReleaseMs = 0;
+      const phaseTimings: WorkspaceTxnPhaseTiming[] = [];
+      await inWorkspaceTxn(PROBE_DOMAIN, owner, async (tx) => {
+        const operationStartedAt = Date.now();
+        try {
+          return await tryRelease(tx, { coordinationDomain: PROBE_DOMAIN, owner, allMine: true });
+        } finally {
+          tryReleaseMs = Date.now() - operationStartedAt;
+        }
+      }, { onPhase: (timing) => phaseTimings.push(timing) }).catch((err: unknown) => {
+        attachWorkspaceTxnPhaseTimings(err, phaseTimings);
+        throw err;
+      });
+      const detail =
+        'inWorkspaceTxn=' + (Date.now() - transactionStartedAt) + 'ms; tryRelease=' + tryReleaseMs + 'ms';
+      const phaseDetail = formatWorkspaceTxnPhaseTimings(phaseTimings);
+      return { detail: phaseDetail ? detail + '; ' + phaseDetail : detail };
     },
   };
 }
@@ -517,10 +596,10 @@ registerSystemAction('coord-probe-canary', async (ctx: SystemActionCtx) => {
       .join('\n');
 
     // EI-401 (owner-ratified "accept + tune", 2026-06-13): a pure SLO breach the
-    // baseline control pins on DB-wide / pool contention is a transient shared-box
-    // peak-load spike, not a coord regression — log a forensic note instead of
-    // minting a non-actionable EI. The probe-row sweep above already ran, so this
-    // path leaves no debris. A failed step or a coord-attributed breach still files.
+    // baseline control is slow follows the owner-ratified note policy. That policy
+    // is a disposition rule, not proof that a shared-box condition caused the
+    // breach. The probe-row sweep above already ran, so this path leaves no debris.
+    // A failed step or any other total-cycle breach still files for investigation.
     if (disposition === 'note') {
       console.warn(
         `[coord-probe-canary] SLO breach DOWNGRADED to note (not filed) — completed in ${verdict.totalMs}ms (SLO ${sloMs}ms).\n` +

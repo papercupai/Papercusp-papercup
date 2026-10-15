@@ -24,6 +24,9 @@ import { describe, expect, it } from 'vitest';
  *  - It does not re-census the live population. That population drifts by design (5,803 rows
  *    on 2026-09-21 vs 5,765 on 2026-09-22 — drift, not a method change), so asserting a live
  *    count here would encode a number guaranteed to rot.
+ *  - It does not establish ordinary CODE-review coverage. The historical residual bucket
+ *    contains other rubric assessments, including coordination and spec-quality cards.
+ *    Ordinary code reviews require their own source census; missing coverage stays explicit.
  *
  * What it DOES prove: the recorded analysis is internally sound (exhaustive, mutually
  * exclusive, reconciling), and its 80-row sample is reproducible from the stated rule.
@@ -41,10 +44,11 @@ const CENSUS_DISTINCT_RUBRICS = 388;
  * Derivation: rubricRef='meta-acceptance-rubric' => rubric-vetting; rubricRef LIKE
  * 'acceptance-%' split by presence of payload->observation->acceptance into
  * author-acceptance (present) vs independent-acceptance (absent); grading-integrity by
- * its own rubric family; everything else ordinary-review.
+ * its own rubric family; everything else other-rubric-assessments. This residual
+ * category makes no claim about code-review provenance (WI-10007705).
  */
 const STRATUM_POPULATION = {
-  'ordinary-review': 3004,
+  'other-rubric-assessments': 3004,
   'grading-integrity': 1707,
   'rubric-vetting': 444,
   'independent-acceptance': 402,
@@ -53,7 +57,7 @@ const STRATUM_POPULATION = {
 
 /** Proportional allocation, rounded to sum to exactly 80. */
 const STRATUM_QUOTA = {
-  'ordinary-review': 41,
+  'other-rubric-assessments': 41,
   'grading-integrity': 24,
   'rubric-vetting': 6,
   'independent-acceptance': 6,
@@ -72,7 +76,7 @@ type Stratum = keyof typeof STRATUM_POPULATION;
  * substituted without the rule failing to reproduce it.
  */
 const SAMPLE: Record<Stratum, readonly string[]> = {
-  'ordinary-review': [
+  'other-rubric-assessments': [
     'EI-22609569466831718', 'EI-18109350392768994', 'EI-18167697280038298', 'EI-22682613978025609',
     'EI-18631127624713235', 'EI-12210', 'EI-23070152880124222', 'EI-22669907578006627',
     'EI-22086066196416632', 'EI-22777200856475614', 'EI-23932713662666825', 'EI-22770305319565150',
@@ -139,6 +143,21 @@ const STRATA = Object.keys(STRATUM_POPULATION) as Stratum[];
 const allSampledIds = STRATA.flatMap((s) => SAMPLE[s]);
 
 describe('R-001 — bounded stratified population is exhaustive and reconciles', () => {
+  it('does not claim ordinary code review coverage from measured non-review scorecards', () => {
+    // WI-10007705: a scoped live read on 2026-10-09 established these five
+    // preserved rows as coordination-health, acceptance, or spec-quality
+    // assessments. The residual branch does not establish code-review provenance.
+    const nonReviewRows = [
+      'EI-22609569466831718', 'EI-18109350392768994', 'EI-18167697280038298',
+      'EI-22682613978025609', 'EI-18631127624713235',
+    ];
+    for (const id of nonReviewRows) {
+      const memberships = Object.entries(SAMPLE)
+        .filter(([, ids]) => ids.includes(id)).map(([stratum]) => stratum);
+      expect(memberships, id).toEqual(['other-rubric-assessments']);
+    }
+  });
+
   it('strata partition the census with zero residue', () => {
     const summed = STRATA.reduce((total, s) => total + STRATUM_POPULATION[s], 0);
     expect(summed).toBe(CENSUS_TOTAL);
@@ -204,7 +223,7 @@ describe('R-001/R-003 — the sample is REPRODUCIBLE from the recorded rule', ()
   it('pins the lowest-ranked drawn row per stratum', () => {
     // Frozen from the recorded draw. These are the rows the rule selects first, so they
     // are the cheapest falsifier of a changed seed or a substituted sample.
-    expect(SAMPLE['ordinary-review'][0]).toBe('EI-22609569466831718');
+    expect(SAMPLE['other-rubric-assessments'][0]).toBe('EI-22609569466831718');
     expect(SAMPLE['grading-integrity'][0]).toBe('EI-22622199465093983');
     expect(SAMPLE['rubric-vetting'][0]).toBe('EI-21072066586463828');
     expect(SAMPLE['independent-acceptance'][0]).toBe('EI-21407165086822010');

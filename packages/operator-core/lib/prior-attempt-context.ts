@@ -11,6 +11,7 @@
  */
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { PgThreadStore, type ThreadPostRow } from '@papercusp/coordination/capabilities';
 import { lookup as lookupToolDefinition } from '@papercusp/tooldef';
 import {
   readGoalHistory,
@@ -770,6 +771,8 @@ export interface CollectPriorAttemptsOptions {
   specIds?: string[];
   maxPlanWorkItems?: number;
   maxThreadPosts?: number;
+  /** Exact drill-down refs supplement the bounded page only for admitted threads. */
+  exactCommentRefs?: readonly string[];
   /**
    * Containment direction (D-007). `up` (DEFAULT) is the member-safe read: the ref's
    * own history plus its ancestors' rulings. `down`/`both` add the descendant rollup,
@@ -810,6 +813,8 @@ interface CollectorDeps {
   item: typeof getWorkItem;
   items: typeof listWorkItems;
   thread: typeof getWorkItemThreadWindow;
+  /** Workspace-scoped existing post reader; optional for older injected collectors. */
+  threadPost?: (input: { workspaceId: string; postId: number }) => Promise<ThreadPostRow | null>;
   checkpoint: typeof getWorkItemCheckpointWithMeta;
   /**
    * P-003's trajectory ring — the superseded checkpoints a replace-on-write slot used
@@ -988,6 +993,11 @@ const DEFAULT_DEPS: CollectorDeps = {
   item: getWorkItem,
   items: listWorkItems,
   thread: getWorkItemThreadWindow,
+  threadPost: ({ workspaceId, postId }) => new PgThreadStore({
+    getSql: () => getOrgPg().sql,
+    ensureSchema: async () => {},
+    workspaceId,
+  }).getPostById(postId),
   checkpoint: getWorkItemCheckpointWithMeta,
   journal: getWorkItemCheckpointJournal,
   lifecycle: getWorkItemLifecycleHistory,
@@ -1071,6 +1081,34 @@ function scopeFor(
   // (a plan's item) sits on the plan rung, which is also where a plan sibling lands.
   if ((descendantDepth ?? 0) >= 2) return 'goal-wide';
   return 'plan-wide';
+}
+
+/** Recover requested older posts without widening the subject or its workspace. */
+async function expandExactComments(
+  prefix: string,
+  posts: ThreadPostRow[],
+  rawRefs: readonly string[] | undefined,
+  workspaceId: string,
+  read: CollectorDeps['threadPost'],
+): Promise<ThreadPostRow[]> {
+  if (!rawRefs?.length || !read || !workspaceId || !posts.length) return posts;
+  // Membership comes from the canonical admitted thread read, never the caller's
+  // guessed rawRef. getPostById enforces workspace; this check enforces subject.
+  const threadIds = new Set(posts.map((post) => post.thread_id));
+  const present = new Set(posts.map((post) => post.id));
+  const ids = [...new Set(rawRefs.flatMap((ref) => {
+    if (!ref.startsWith(prefix)) return [];
+    const suffix = ref.slice(prefix.length);
+    if (!/^[1-9]\d*$/.test(suffix)) return [];
+    const id = Number(suffix);
+    return Number.isSafeInteger(id) && !present.has(id) ? [id] : [];
+  }))];
+  // A failed exact read is unknown, not evidence of a vanished source. Let the
+  // resolver's bounded fail-soft boundary report null rather than unresolved.
+  const exact = await Promise.all(ids.map((postId) => read({ workspaceId, postId })));
+  return [...posts, ...exact.filter((post): post is ThreadPostRow =>
+    post !== null && threadIds.has(post.thread_id) && ids.includes(post.id),
+  )];
 }
 
 /**
@@ -1276,7 +1314,9 @@ export async function collectPriorAttempts(
             depth: node.depth,
           });
         }
-        for (const post of posts) {
+        for (const post of await expandExactComments(
+          `plan:${node.ref}#comment:`, posts, options.exactCommentRefs, workspaceId, deps.threadPost,
+        )) {
           sources.push({
             scope: 'goal-wide',
             authority: retractionText(post.body) ? 'retraction' : 'comment',
@@ -1312,10 +1352,13 @@ export async function collectPriorAttempts(
   ]);
   const levelScopes: PriorAttemptScope[] = ['plan-wide', 'goal-wide'];
   const levelRefs = [planSlug, target.kind === 'goal' ? target.ref : (ancestorGoal?.ref ?? null)];
-  levelThreads.forEach((posts, index) => {
+  await Promise.all(levelThreads.map(async (posts, index) => {
     const ref = levelRefs[index];
     if (!ref) return;
-    for (const post of posts) {
+    for (const post of await expandExactComments(
+      `${index === 0 ? 'plan' : 'goal'}:${ref}#comment:`, posts,
+      options.exactCommentRefs, workspaceId, deps.threadPost,
+    )) {
       sources.push({
         scope: levelScopes[index]!,
         authority: retractionText(post.body) ? 'retraction' : 'comment',
@@ -1326,7 +1369,7 @@ export async function collectPriorAttempts(
         text: post.body,
       });
     }
-  });
+  }));
 
   await Promise.all(
     [...candidates.values()].map(async (item) => {
@@ -1411,7 +1454,9 @@ export async function collectPriorAttempts(
           detail: { supersededCheckpoint: true, ringIndex: index },
         });
       }
-      for (const post of thread?.posts ?? []) {
+      for (const post of await expandExactComments(
+        `${item.id}#comment:`, thread?.posts ?? [], options.exactCommentRefs, workspaceId, deps.threadPost,
+      )) {
         sources.push({
           scope,
           authority: retractionText(post.body) ? 'retraction' : 'comment',
@@ -1755,7 +1800,8 @@ export interface PriorAttemptRefResolution {
  * back to their full source records.
  *
  * This is a re-projection of the same authority the brief was cut from, not a
- * second store: it re-runs the canonical collector and selects by `rawRef`.  So
+ * second store: it re-runs the canonical collector with exact post recovery in
+ * its admitted threads, then selects by `rawRef`. So
  * a ref that a bounded brief could only afford to COUNT still leads back to the
  * text, which is the property the module docstring promises and the budget loop
  * would otherwise quietly break.
@@ -1811,6 +1857,7 @@ export async function resolvePriorAttemptRefs(
             // A goal brief is minted from a 25-row page. Recompile the same page so
             // unchanged refs ranked 13–25 never become false `unresolved` results.
             maxThreadPosts: opts.target?.kind === 'goal' ? 25 : 12,
+            exactCommentRefs: wanted,
           },
           deps,
         );

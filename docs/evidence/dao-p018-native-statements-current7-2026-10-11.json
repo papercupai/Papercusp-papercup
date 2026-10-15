@@ -1,0 +1,261 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "DAO P018 native Statements unavailable-state refresh, current7",
+  "framework": "playwright",
+  "command": [
+    "bash",
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    "-c",
+    "cd \"$OPERATOR_SOURCE_ROOT/apps/operator\" && OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_SKIP_WARMUP=1 OPERATOR_E2E_BASE_URL=\"$VERIFY_TAURI_DEV_URL\" npx playwright test e2e/cupboard-identity-statements-native.spec.mts --config=playwright.config.ts --workers=1 --retries=0"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-11T14:38:27.216Z",
+  "finishedAt": "2026-10-11T14:46:18.225Z",
+  "summary": "One native Playwright test passed in the locally compiled Linux desktop. The unavailable statement, unavailable accepted-outcome cost, quote disclosure, paging and refresh checks passed. prepare/boot/assert passed. This covers isolated unauthenticated behavior; paid-serving, measured provider spend, full R4 and final shipment are separate open acceptance work.",
+  "assertions": [
+    {
+      "id": "native-statements-preserve-unavailable-amounts-across-refresh",
+      "passed": true,
+      "evidence": "Actual Playwright output: 1 passed (9.7s); native Statements preserve unavailable amounts across refresh (3.5s). Run20261011T143825Z-2866360; exact test e2e/cupboard-identity-statements-native.spec.mts:12; bridge PID3270619. No retries or skipped tests."
+    }
+  ],
+  "environment": {
+    "VERIFY_TAURI_SOURCE_REF": "cafc0329a9cfe3a7a64131c884f2548337520da0",
+    "VERIFY_TAURI_SOURCE_INPUTS": "apps/operator/e2e/cupboard-identity-statements-native.spec.mts,apps/operator/e2e/_native-bridge-json.ts,apps/operator/playwright.config.ts,packages/operator-core/lib/sync-resolver/index.ts,packages/operator-core/lib/sync-resolver/cupboard-usage-v2.test.ts,apps/operator/app/cupboard/CupboardClient.tsx,packages/operator-core/lib/cupboard/metered-invocation-door-io.ts,apps/operator/app/cupboard/IdentityStatements.tsx,apps/operator/app/cupboard/[id]/IdentitySurface.tsx",
+    "VERIFY_TAURI_ISOLATED_DB": "1",
+    "VERIFY_TAURI_ISOLATED_SEED": "ready",
+    "VERIFY_TAURI_REQUIRE_BUILT": "apps/operator/app/cupboard/CupboardClient.tsx,apps/operator/app/cupboard/IdentityStatements.tsx,apps/operator/app/cupboard/[id]/IdentitySurface.tsx",
+    "VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS": "Identity usage statement"
+  },
+  "source": {
+    "commit": "cafc0329a9cfe3a7a64131c884f2548337520da0",
+    "desktopGitlink": "d2e95d38027d6ce41c521593beb90af87ff8bd20",
+    "testedInputs": [
+      {
+        "path": "apps/operator/app/cupboard/CupboardClient.tsx",
+        "sha256": "e184c75eccb3e4ada70c2c85bbcefdfc9d1189e452e4da918fa1cd94f4b8e4bd"
+      },
+      {
+        "path": "apps/operator/app/cupboard/IdentityStatements.tsx",
+        "sha256": "21098011b0ebed3908d83372ebca072795c99cb553c7b61a92c3065eddcde501"
+      },
+      {
+        "path": "apps/operator/app/cupboard/[id]/IdentitySurface.tsx",
+        "sha256": "f75b9d558c67a22e4cf479e5ab6d70ee6945729a2c7da91ead33abf87e45a2bc"
+      },
+      {
+        "path": "apps/operator/bin/release/dependency-generation.sh",
+        "sha256": "fa1623f685f4c97547598a1bf661dc5461d74d5c1c1f5e4341b3dfae341564f3"
+      },
+      {
+        "path": "apps/operator/e2e/_native-bridge-json.ts",
+        "sha256": "360138c795953ba39e6f50842a3a1c2df0356ebe52bda260a31b417970a25222"
+      },
+      {
+        "path": "apps/operator/e2e/cupboard-identity-statements-native.spec.mts",
+        "sha256": "eac47d903aad27a284758aaa96cc6782ba2c50c1a2939f78efdcca4af153159c"
+      },
+      {
+        "path": "apps/operator/playwright.config.ts",
+        "sha256": "39f48cf4f278922eef3dd8ce563ad6a78d61c4c176e2be4e3575d5e438e934ee"
+      },
+      {
+        "path": "package-lock.json",
+        "sha256": "1d50a2b6955595c8d449d3d8ec617f8fd8a212861b5953841dc2a20f45031406"
+      },
+      {
+        "path": "package.json",
+        "sha256": "00d5371c3013a789a95a595cfb77526780245333da1ffc8324fabcb0fb4dcc9c"
+      },
+      {
+        "path": "packages/operator-core/lib/cupboard/metered-invocation-door-io.ts",
+        "sha256": "8f336147a1b7dbf41d1786788fc4aee965b6d647a518bb9a86ea24cefc1605bf"
+      },
+      {
+        "path": "packages/operator-core/lib/gnome-terminal-policy.json",
+        "sha256": "0dbaa9d2be3c77f201ad1a08a5bf7ed0ff41ada304e5f04f44dfaf8de8aad4a3"
+      },
+      {
+        "path": "packages/operator-core/lib/sync-resolver/cupboard-usage-v2.test.ts",
+        "sha256": "9f5264d2b7b5c7390b5d6b97f74ab693c935a115fb0f2c626dc32f69b5d5b653"
+      },
+      {
+        "path": "packages/operator-core/lib/sync-resolver/index.ts",
+        "sha256": "0bff9c67a90a7421adf09666f52b0ea2cc248f07c3669a1748ce175a3e92dc1e"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/cargo-target-root.sh",
+        "sha256": "e7298435cd9dfc1938872e428af7cfd2971e0bc73428aa3d89ff9e15313a800a"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/claim-target-dir.sh",
+        "sha256": "fb83411ed7568dc1d8e78d15f86eb5491756241e4701864efee2d56da836b411"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/disk-preflight.sh",
+        "sha256": "bb9f85437012871dd293bd39f6be6608ef3c49dba0575b27007bbdf7eabef7d6"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/federation-asserts.sh",
+        "sha256": "a45d8f36ef4ded807a5200da767fc5afb308d4a2094bcd83826e0acf8739780d"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/pinned-deps.sh",
+        "sha256": "bff66ec1b40f522c17eba79361a9a44a9c974720bf9f636e01bfe82bb21c8d32"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-artifacts.sh",
+        "sha256": "21f61d842fe20a3824e070588b29b55070ca10e41cbd74e603b07c0af83ae72d"
+      },
+      {
+        "path": "papercusp-desktop/bin/tauri-guarded",
+        "sha256": "3e9e66ca194ab185eb3cbd30f1df2cb250778133ddf3fc602b69c50276b646b0"
+      },
+      {
+        "path": "papercusp-desktop/package-lock.json",
+        "sha256": "1234d89f2767f7c4d2b16e9d51532f5f0614dc52df349e861b8589648d4a2c8d"
+      },
+      {
+        "path": "papercusp-desktop/package.json",
+        "sha256": "e4b118ed54b815ff3745b33802aada99f5f723cd990bbb8e0b59e42865ede47e"
+      },
+      {
+        "path": "papercusp-desktop/src-tauri/src/main.rs",
+        "sha256": "f9befd1c42017782d2f8e6a8da4f3675b63f5293e57ad5863bd949d9bf84187b"
+      },
+      {
+        "path": "papercusp-desktop/src-tauri/src/native_console.rs",
+        "sha256": "d24d96582506575bafb0d25e96004581d56559e26e5e19c326c0b24b1b9739d5"
+      },
+      {
+        "path": "papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs",
+        "sha256": "70a2d5207490b03a23114ebbb02790ceb69f40596ee7340bb3b81589c94e3769"
+      },
+      {
+        "path": "papercusp-desktop/test/monorepo-host-preflight.mjs",
+        "sha256": "fbc35e5679ed948f9844780498405b52772d848931620e3f7a59b7d703e40f0f"
+      },
+      {
+        "path": "papercusp-desktop/test/native-console-gnome.test.js",
+        "sha256": "5aa2f7498f3d4bf1760a1c40b3c2f1d6c8538508524539d1e610d541c0971b2a"
+      },
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "sha256": "a0459b73241f77549dcab346a695b91a2fab391fca613ac856dc1b587f1392f8"
+      },
+      {
+        "path": "scripts/lib/committed-source-loader.mjs",
+        "sha256": "2ff3c7ca99694df74069d133cdead95b18e4bb62c74b055bc5ea772d7a20f691"
+      },
+      {
+        "path": "scripts/lib/node-test-host-preflight.mjs",
+        "sha256": "8f04a13c47f68170c95a5cf00d2b99634d6d39aabb53eb662f5767d2825d4a58"
+      },
+      {
+        "path": "scripts/lib/spa-require-built.sh",
+        "sha256": "b3b10e8e677dc9b8b05471922095594d6a288b24d8cfff03163e361eceaafaf7"
+      },
+      {
+        "path": "scripts/npm-install-safe.mjs",
+        "sha256": "701ceac9afb7fe0636e6b7643640a2663d42744e8b6bf1ec1898add8de49ef5b"
+      },
+      {
+        "path": "scripts/pc-heavy.sh",
+        "sha256": "78c76f24ac80d7f8e32a0bfe49a3970e0a224c2506521c068035b635093c7904"
+      },
+      {
+        "path": "scripts/restricted-hold-tree-gate.mjs",
+        "sha256": "9d0c8cfa4d9ea10f00c77ef36f74c5002dca6d0ab7542e46980f424f8870ba10"
+      },
+      {
+        "path": "scripts/source-preview.mjs",
+        "sha256": "229c503ab09c7531725ae62855d987a6fb547ece31667704a70218f54bc90d06"
+      },
+      {
+        "path": "scripts/verify-tauri-headless.sh",
+        "sha256": "32fd87d4961c774038e35628c1defece88de6789658ab3e55adfe58120787a1f"
+      }
+    ],
+    "verifierSourceReceiptSha256": "25cc8b399330795cbf66bea4d3139ab0968ab4f3edbc02d186e2610240c9e9de"
+  },
+  "runtime": {
+    "bridge": {
+      "pid": 3270619,
+      "port": 37555,
+      "window": "main",
+      "version": "0.8.1"
+    },
+    "binary": {
+      "path": "/mnt/data/cargo-target/.papercusp-target-slots/dev2/debug/papercusp-desktop",
+      "sha256": "df8800a56a08420e975706e091135c8c5b133f0ccd543e2377a5871f1828c3e6",
+      "mtime": "2026-10-11T14:45:21.758Z",
+      "hashObservation": "Measured after the completed run from the exact Cargo Running path; mtime precedes the run end."
+    }
+  },
+  "verificationHarness": {
+    "schemaVersion": 1,
+    "harness": "verify-tauri-headless",
+    "runId": "20261011T143825Z-2866360",
+    "evidenceDir": "$XDG_STATE_HOME/verification-harness/verify-tauri-headless/20261011T143825Z-2866360",
+    "selection": {
+      "only": null,
+      "from": null
+    },
+    "reuseFromRunId": null,
+    "preflight": null,
+    "phases": [
+      {
+        "phase": "prepare",
+        "status": "passed",
+        "step": "isolated-database-prepare",
+        "reasonCode": null,
+        "evidenceDir": "$XDG_STATE_HOME/verification-harness/verify-tauri-headless/20261011T143825Z-2866360/phases/prepare",
+        "startedAt": "2026-10-11T14:38:27.285Z",
+        "endedAt": "2026-10-11T14:43:52.758Z",
+        "elapsedMs": 325480
+      },
+      {
+        "phase": "boot",
+        "status": "passed",
+        "step": "launch-attempt-1",
+        "reasonCode": null,
+        "evidenceDir": "$XDG_STATE_HOME/verification-harness/verify-tauri-headless/20261011T143825Z-2866360/phases/boot",
+        "startedAt": "2026-10-11T14:43:54.031Z",
+        "endedAt": "2026-10-11T14:45:45.894Z",
+        "elapsedMs": 111871
+      },
+      {
+        "phase": "assert",
+        "status": "passed",
+        "step": null,
+        "reasonCode": null,
+        "evidenceDir": "$XDG_STATE_HOME/verification-harness/verify-tauri-headless/20261011T143825Z-2866360/phases/assert",
+        "startedAt": "2026-10-11T14:45:45.923Z",
+        "endedAt": "2026-10-11T14:46:16.742Z",
+        "elapsedMs": 30828
+      }
+    ],
+    "verdict": "pass",
+    "firstFailure": null,
+    "guardRails": null,
+    "startedAt": "2026-10-11T14:38:27.216Z",
+    "endedAt": "2026-10-11T14:46:18.225Z",
+    "resultSha256": "7cd41c8b5a5dcc761e4aafa72b8385fdb5940f055348656a7d03190b5262bf6c"
+  },
+  "retainedEvidence": {
+    "stateHome": "$XDG_STATE_HOME, defaulting to $HOME/.local/state",
+    "runDir": "$XDG_STATE_HOME/verification-harness/verify-tauri-headless/20261011T143825Z-2866360",
+    "log": "/tmp/su-38c4b-p018-native-20261011-current7.log",
+    "logSha256": "fcaf9472aeaec17bade7210171e56654053fe9f8e772ed79b82ae42c9e51233d",
+    "tauriLog": "/tmp/verify-tauri-headless.OGM8UU/tauri.log",
+    "tauriLogSha256": "5cb22d85855a0d5f29eaf2a24e6efdd7a5a9f39c76f0c2d798315066b2e3aed3"
+  },
+  "disclosures": [
+    "No paid-serving or actual provider-billed outcome sample was executed.",
+    "The original ETXTBSY descriptor holder was not measured; the fixture publication defect class has a deterministic maintained guard.",
+    "The Playwright attachment was stored in the disposable source snapshot; its raw before/after JSON was not separately retained. The passing assertions and complete command log are retained."
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-23128731257365930:72a89d5e6404808e1136d84d2a53eef0",
+  "inputSha256": "72a89d5e6404808e1136d84d2a53eef0b79a762fe01c1914763207ce816e740f",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:17:25.708Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-23128731257365930",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "d8145faa3e129ca0ce93b4786dc08dc96df647373c1d49aef9d7b639fc77405a",
+      "observedParkFingerprint": "d8145faa3e129ca0ce93b4786dc08dc96df647373c1d49aef9d7b639fc77405a",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:WI-10000288 (condition: 'WI-10000288 reaches a terminal state and a fresh default-endpoint replay probe can determine whether the live evaluator accepts specRevision/specFingerprint/replaySnapshot.'). Re-read 2026-10-10T22:15Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): WI-10000288 status=done, taken_by none; EI-23128731257365930 status=blocked, taken_by null. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-23128731257365930-72a89d5e6404808e1136d84d2a53eef0-reconcile.json"
+}

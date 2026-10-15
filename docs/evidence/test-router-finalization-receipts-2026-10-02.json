@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "test-router-finalization-receipts-v1",
+  "workItem": "WI-10004947",
+  "parentWorkItem": "WI-10004893",
+  "sourceRootRef": "harness:papercusp",
+  "rootCause": "The router treated rejection of the entire governed process promise as admission failure, discarding a child outcome already captured before governor receipt finalization.",
+  "repair": "Share completed-outcome retention between async Vitest and synchronous Node:test; retain the originating finalization exception separately, emit its diagnostic, preserve measured verdict/counts, and return unsuccessful exit 3 without rerunning the child.",
+  "reused": [
+    "runGovernedTestProcess callback boundary",
+    "existing router group aggregation",
+    "test-file-exit-codes contract",
+    "existing bounded router diagnostic reservoir",
+    "existing testing:run JSON and Node-summary readers"
+  ],
+  "sourceHashes": {
+    "scripts/test-files.mjs": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d",
+    "scripts/lib/test-file-exit-codes.mjs": "0c27fb02d77eb0110a3ee459353ca5cd55089fdeef21ceff35e43fa200ee6daf",
+    "packages/operator-core/lib/__tests__/test-file-router.test.ts": "4ba92bba4f902d17d47946a73a42f04f6c9de8206a520851eb0a8c19bdf44160",
+    "packages/operator-core/lib/__tests__/test-file-exit-codes.test.ts": "60ebea1d0fe08331a9ad38d3fc5681ac9a20b17dca780bc58fccfac9acba1c3a",
+    "packages/operator-core/lib/agent-tools/testing/run.ts": "0617abb97e3929f4b59e09b56a8c9bb77472a3e3c2c0c3a68f77982d16e2d480",
+    "packages/operator-core/lib/agent-tools/testing/__tests__/run.integration.test.ts": "5d252a296bfcdc7e679d332856b33c94e1c829d2d982a239a5323087f7e7e3fe"
+  },
+  "runs": [
+    {
+      "runId": "c970cdb6-cdc3-4593-b998-fd8999a7217e",
+      "testRunId": 20499861,
+      "phase": "pre-fix discriminating guards",
+      "passed": 0,
+      "failed": 4,
+      "filtered": 116
+    },
+    {
+      "runId": "f308f345-03ad-412a-b3da-d508564f4c38",
+      "testRunId": 20500801,
+      "file": "packages/operator-core/lib/__tests__/test-file-router.test.ts",
+      "passed": 122,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "runId": "51578148-476c-4d3c-a713-5aa0f2ab1aae",
+      "testRunId": 20500813,
+      "file": "packages/operator-core/lib/__tests__/test-file-exit-codes.test.ts",
+      "passed": 11,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "runId": "f6c3eac5-eb22-41b7-8b56-c42b575b1a4e",
+      "testRunId": 20500846,
+      "file": "packages/operator-core/lib/agent-tools/testing/__tests__/run.integration.test.ts",
+      "passed": 7,
+      "failed": 0,
+      "filtered": 60
+    }
+  ],
+  "finalTypecheck": {
+    "tool": "build:typecheck",
+    "project": "packages/operator-core",
+    "scopeToFiles": true,
+    "namedFiles": 4,
+    "checkedFiles": 23,
+    "errorsInRequestedFiles": 0,
+    "otherErrorCount": 0,
+    "exitCode": 0,
+    "limit": "Scoped full-program check; transitive importers and project-global diagnostics are outside this verdict."
+  },
+  "otherChecks": [
+    "node --check scripts/test-files.mjs: exit 0",
+    "node --check scripts/lib/test-file-exit-codes.mjs: exit 0",
+    "git diff --check: exit 0"
+  ],
+  "limitations": [
+    "The original production database lock-contention cause is not established by injected finalization guards.",
+    "Historical Phone restart incident EI-24845567110086010 remains open and is not attributed to this repair.",
+    "Phone P009 and public PSTN shipment remain incomplete; this closes only the router misclassification."
+  ]
+}

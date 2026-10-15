@@ -1,0 +1,7 @@
+---
+rel_path: "verification/WI-10006312/fire144-successor-types.json"
+updated_at: 1791256650078
+_body: "content"
+---
+
+{"ok":true,"project":"packages/operator-core/tsconfig.json","engine":"tsc-service","errorCount":0,"scopedToFiles":["packages/operator-core/lib/gym/__tests__/loop.test.ts","packages/operator-core/lib/learning-governor/store.integration.test.ts","libs/generic/eval-battery/src/rate-pause.ts"],"scopedVerdict":"requested-files-clean","scopedVerdictIncomplete":false,"errorsInRequestedFiles":0,"totalErrorCount":0,"otherErrorCount":0,"otherErrors":[],"otherErrorsTruncated":false,"otherByFile":[],"otherByFileTruncated":false,"otherFilesWithErrors":0,"unattributedErrorCount":0,"compilerExitCode":0,"serviceScope":{"checkedFiles":10,"named":3,"typeReferencing":6,"importers":1,"snapshotAgeMs":907,"queuedMs":1341,"checkMs":907},"scopeCaveat":"SCOPED RUN (shared typecheck service) — ok/errorCount/errors/exitCode describe the requested files, checked inside the FULL project program. otherErrorCount/otherErrors cover files that reference their exported types or import them directly, and do not fail that requested-file verdict; missing requested paths make scopedVerdict incomplete instead. A TRANSITIVE importer whose error names none of those types is NOT covered, nor are project-global diagnostics. This is not the gate verdict.","errors":[],"errorsTruncated":false,"byFile":[],"byFileTruncated":false,"filesWithErrors":0,"syntaxBroken":[],"semanticCheckIncomplete":false,"durationMs":2468,"exitCode":0,"_meta":{"explicitFullRequest":true,"format":"json"}}

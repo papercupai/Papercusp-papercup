@@ -11,10 +11,14 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/dev/restart.test.ts
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { BundleStaleness } from '../../bundle-staleness';
 import { EventEmitter } from 'node:events';
 import { readFileSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+
+const foreignCoordinationDomain = join(tmpdir(), 'papercusp-release');
 
 vi.mock('../locks/identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })),
@@ -39,16 +43,25 @@ vi.mock('node:child_process', async (importOriginal) => {
   const { PassThrough } = await import('node:stream');
   return {
     ...actual,
-    spawn: vi.fn(() => {
+    spawn: vi.fn((...spawnArgs: unknown[]) => {
+      const commandArgs = Array.isArray(spawnArgs[1]) ? spawnArgs[1].map(String) : [];
       const acquired = new PassThrough();
       const release = new PassThrough();
       const child = Object.assign(new EventEmitter(), {
         unref: vi.fn(),
         kill: vi.fn(),
         pid: undefined,
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
         stdio: [null, null, null, acquired, release],
       });
-      queueMicrotask(() => acquired.write('papercup-staging-sync-lock-acquired\n'));
+      queueMicrotask(() => {
+        acquired.write('papercup-staging-sync-lock-acquired\n');
+        if (commandArgs.join(' ').includes('papercusp-bg-host.service')) {
+          child.exitCode = 0;
+          child.emit('close', 0, null);
+        }
+      });
       return child as unknown as ReturnType<typeof actual.spawn>;
     }),
   };
@@ -79,7 +92,18 @@ vi.mock('../../task-manager/cgroup-read', async (importOriginal) => {
 // EI-18661647550414959: the pre-kill "can this tree actually boot?" check. Mocked so
 // the suite never shells out to systemctl; its own logic is covered in
 // restart-preflight.test.ts. The default (set in beforeEach) is a clean tree.
-vi.mock('./restart-preflight', () => ({ preflightRestartTarget: vi.fn() }));
+vi.mock('./restart-preflight', () => ({
+  preflightRestartTarget: vi.fn(),
+  prepareStagingSchemaForRestart: vi.fn(),
+}));
+vi.mock('../../harness/routines/restricted-tree-skip', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness/routines/restricted-tree-skip')>();
+  return { ...actual, integrationTreeRoots: vi.fn() };
+});
+vi.mock('../testing/restricted-hold-fence', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../testing/restricted-hold-fence')>();
+  return { ...actual, restrictedTreeHoldRefusal: vi.fn() };
+});
 vi.mock('./desktop-dev-restart', () => ({
   DESKTOP_DEV_RESOURCE: 'desktop-dev-server',
   resolveDesktopDevListener: vi.fn(),
@@ -93,6 +117,7 @@ vi.mock('../../release/gate-collision-guard', async (importOriginal) => {
     checkGitSyncCollision: vi.fn(),
     checkStagingSyncCollision: vi.fn(),
     acquireGitSyncRestartBarrier: vi.fn(),
+    waitForInFlightLocalSync: vi.fn(),
   };
 });
 // WI-2140796: the bg-host quiesce preflight. isQuiesceSensitiveTarget stays real
@@ -120,20 +145,27 @@ import { spawn } from 'node:child_process';
 import { probeServiceStart, probeSystemdDaemonReloadNeed } from './systemd-service-probe';
 import { probeHttpReachable } from '../../escalating-http-probe';
 import { listListeningSockets } from '../../listening-sockets';
+import { integrationTreeRoots } from '../../harness/routines/restricted-tree-skip';
+import { restrictedTreeHoldRefusal } from '../testing/restricted-hold-fence';
 import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
-import { preflightRestartTarget } from './restart-preflight';
+import {
+  preflightRestartTarget,
+  prepareStagingSchemaForRestart,
+  type StagingSchemaPreparationResult,
+} from './restart-preflight';
 import { resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { getOrgPg } from '@papercusp/db-org';
 import { BUDGET, HARD_CAP, promptWeight } from '../tool-guidance-budget';
 import {
   acquireGitSyncRestartBarrier,
+  waitForInFlightLocalSync,
   checkGateCollision,
   checkGitSyncCollision,
   checkStagingSyncCollision,
 } from '../../release/gate-collision-guard';
 import { checkBgHostQuiesce } from './bg-host-quiesce-guard';
 import { mockImplementationTyped, mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
-import type { StagingRestartReadiness } from './restart';
+import type { BgHostRestartReadiness, StagingRestartReadiness } from './restart';
 
 const acquireM = vi.mocked(tryAcquireResource);
 const releaseM = vi.mocked(tryReleaseResource);
@@ -144,7 +176,10 @@ const probeM = vi.mocked(probeServiceStart);
 const daemonReloadNeedM = vi.mocked(probeSystemdDaemonReloadNeed);
 const gatewayHealthM = vi.mocked(probeHttpReachable);
 const listeningSocketsM = vi.mocked(listListeningSockets);
+const integrationTreeRootsM = vi.mocked(integrationTreeRoots);
+const restrictedTreeHoldRefusalM = vi.mocked(restrictedTreeHoldRefusal);
 const preflightM = vi.mocked(preflightRestartTarget);
+const stagingSchemaPreparationM = vi.mocked(prepareStagingSchemaForRestart);
 const desktopResolveM = vi.mocked(resolveDesktopDevListener);
 const desktopRestartM = vi.mocked(restartDesktopDev);
 /** A boot-integrity verdict. Defaults to an inspected, clean tree. */
@@ -161,6 +196,17 @@ const bootVerdict = (over: Record<string, unknown> = {}) =>
     note: 'clean',
     ...over,
   }) as never;
+const preparedStagingSchema = (
+  over: Partial<StagingSchemaPreparationResult> = {},
+): StagingSchemaPreparationResult => ({
+  ok: true,
+  integrationRoot: '/staging-tree',
+  sqlDir: '/staging-tree/libs/papercusp/libs/db/sql',
+  applied: 0,
+  failed: [],
+  note: 'The staging target schema is prepared while the current API remains serving.',
+  ...over,
+});
 const orgPgM = vi.mocked(getOrgPg);
 const auditUnsafeM = vi.fn(async (_query: string, _params: unknown[]) => undefined);
 const gateCollisionM = vi.mocked(checkGateCollision);
@@ -168,6 +214,7 @@ const gitSyncCollisionM = vi.mocked(checkGitSyncCollision);
 const stagingSyncCollisionM = vi.mocked(checkStagingSyncCollision);
 const gitSyncBarrierM = vi.mocked(acquireGitSyncRestartBarrier);
 const gitSyncBarrierReleaseM = vi.fn(async () => undefined);
+const localSyncWaitM = vi.mocked(waitForInFlightLocalSync);
 const quiesceM = vi.mocked(checkBgHostQuiesce);
 /** A quiesce verdict. Defaults to "not quiesced" (see beforeEach). */
 const quiesceVerdict = (over: Record<string, unknown> = {}) =>
@@ -251,10 +298,15 @@ const tool = restartModule.default;
 const { RESTART_TARGETS } = restartModule;
 const {
   bgHostIntegrationRootFromUnitProperties,
+  configureBgHostEnvironmentDropInFreshnessReaderForTests,
   configureBgHostIntegrationRootResolverForTests,
+  configureBgHostRestartReadinessReaderForTests,
   configureBgHostRestartFreshnessReaderForTests,
+  configureBgHostBundleStaleReaderForTests,
+  configurePeerInFlightEditsReaderForTests,
   configureStagingRestartReadinessReaderForTests,
   configureSystemdDaemonReloaderForTests,
+  evaluateBgHostEnvironmentDropInFreshness,
   evaluateBgHostRestartFreshness,
   restartVerificationHint,
   SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS,
@@ -263,7 +315,7 @@ const {
   gatewayListenerBelongsToService,
 } = restartModule;
 
-type Out = { content: { text: string }[] };
+type Out = { content: { text: string }[]; isError?: boolean };
 type Fence = Pick<FenceToken, 'assertCurrent' | 'seq'>;
 type FreshnessSnapshot = {
   bundleMtimeMs: number | null;
@@ -279,9 +331,25 @@ const freshnessM = vi.fn(
     newestSourcePath: null,
   }),
 );
+type EnvironmentDropInFreshness = { checked: boolean; changedPaths: string[] };
+const environmentDropInFreshnessM = vi.fn(
+  async (_unit: string, _startedAtMs: number): Promise<EnvironmentDropInFreshness> => ({
+    checked: true,
+    changedPaths: [],
+  }),
+);
 /** WI-10003606: the root bg-host's own unit names — deliberately NOT the serving operator's. */
 const BG_HOST_UNIT_ROOT = '/fixture/canonical-tree';
 const bgHostRootM = vi.fn(async (): Promise<string | null> => BG_HOST_UNIT_ROOT);
+/** EI-25257294558913225: the unit tree's dist-host/.bundle-stale.json. Default absent (fresh build). */
+const bgHostBundleStaleM = vi.fn((_root: string): BundleStaleness | null => null);
+// EI-24790218658923698: the peer in-flight-edit advisory. Default: checked, nothing held.
+const peerEditsM = vi.fn(async (_workingDirectory: string | null, _selfOwner: string | null) => ({
+  checked: true,
+  tree: BG_HOST_UNIT_ROOT as string | null,
+  total: 0,
+  files: [] as { path: string; owner: string; intent: string }[],
+}));
 const systemdDaemonReloadM = vi.fn(async (): Promise<void> => undefined);
 const stagingReadinessM = vi.fn(
   async (before: { mainPid?: number }): Promise<StagingRestartReadiness> => ({
@@ -300,6 +368,18 @@ const stagingReadinessM = vi.fn(
       observedPids: [(before.mainPid ?? 0) + 1],
       detail: 'listener belongs to replacement',
     },
+    waitedMs: 5,
+  }),
+);
+const bgHostRestartReadinessM = vi.fn(
+  async (before: { mainPid?: number }): Promise<BgHostRestartReadiness> => ({
+    ready: true,
+    observed: true,
+    outcome: 'ready',
+    pidChanged: true,
+    observedPid: (before.mainPid ?? 0) + 1,
+    activeState: 'active',
+    result: 'success',
     waitedMs: 5,
   }),
 );
@@ -341,9 +421,16 @@ beforeEach(() => {
     newestSourcePath: null,
   });
   configureBgHostRestartFreshnessReaderForTests(freshnessM);
+  environmentDropInFreshnessM.mockResolvedValue({ checked: true, changedPaths: [] });
+  configureBgHostEnvironmentDropInFreshnessReaderForTests(environmentDropInFreshnessM);
   bgHostRootM.mockResolvedValue(BG_HOST_UNIT_ROOT);
   configureBgHostIntegrationRootResolverForTests(bgHostRootM);
+  peerEditsM.mockResolvedValue({ checked: true, tree: BG_HOST_UNIT_ROOT, total: 0, files: [] });
+  configurePeerInFlightEditsReaderForTests(peerEditsM);
   configureStagingRestartReadinessReaderForTests(stagingReadinessM);
+  configureBgHostRestartReadinessReaderForTests(bgHostRestartReadinessM);
+  bgHostBundleStaleM.mockReturnValue(null);
+  configureBgHostBundleStaleReaderForTests(bgHostBundleStaleM);
   configureSystemdDaemonReloaderForTests(systemdDaemonReloadM);
   releaseM.mockResolvedValue({
     released: 1,
@@ -362,9 +449,12 @@ beforeEach(() => {
     totalListening: 0,
     truncated: false,
     ownerHidden: 0,
-  } as never);
+  });
   gatewayHealthM.mockResolvedValue({ reachable: true, detail: 'HTTP 200' });
+  integrationTreeRootsM.mockReturnValue(['/tree']);
+  restrictedTreeHoldRefusalM.mockResolvedValue(null);
   preflightM.mockResolvedValue(bootVerdict());
+  stagingSchemaPreparationM.mockResolvedValue(preparedStagingSchema());
   desktopResolveM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   desktopRestartM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   auditUnsafeM.mockClear();
@@ -383,15 +473,51 @@ beforeEach(() => {
     expiresAt: '2026-08-27T19:00:00.000Z',
     release: gitSyncBarrierReleaseM,
   });
+  localSyncWaitM.mockReset();
+  localSyncWaitM.mockResolvedValue({ probeFailed: false, targetCgroupPath: null, inFlight: [] });
 });
 
 afterAll(() => {
   configureBgHostRestartFreshnessReaderForTests();
   configureBgHostIntegrationRootResolverForTests();
+  configurePeerInFlightEditsReaderForTests();
   configureStagingRestartReadinessReaderForTests();
+  configureBgHostRestartReadinessReaderForTests();
+  configureBgHostBundleStaleReaderForTests();
   configureSystemdDaemonReloaderForTests();
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
   else process.env.PAPERCUSP_ALLOW_DEV_RESTART = ORIGINAL_ENV;
+});
+
+describe('evaluateBgHostEnvironmentDropInFreshness (EI-24391112212280372)', () => {
+  it('flags only active Environment= drop-ins newer than the exact MainPID start time', () => {
+    expect(
+      evaluateBgHostEnvironmentDropInFreshness(
+        [
+          {
+            path: '/fixture/53-workspace-host-identity.conf',
+            mtimeMs: 101,
+            contents: '[Service]\nEnvironment=PAPERCUSP_WORKSPACE_HOST_RELEASE_MANIFEST=/new/manifest.json\n',
+          },
+          { path: '/fixture/50-memory.conf', mtimeMs: 102, contents: '[Service]\nMemoryMax=2G\n' },
+          { path: '/fixture/40-old-env.conf', mtimeMs: 99, contents: '[Service]\nEnvironment=FOO=old\n' },
+          { path: '/fixture/40-comment.conf', mtimeMs: 103, contents: '# Environment=IGNORED=1\n' },
+        ],
+        100,
+      ),
+    ).toEqual({ checked: true, changedPaths: ['/fixture/53-workspace-host-identity.conf'] });
+  });
+
+  it('reports unknown when the MainPID start time or a drop-in timestamp is not measurable', () => {
+    const dropIns = [{ path: '/fixture/env.conf', mtimeMs: 101, contents: 'Environment=FOO=1\n' }];
+    expect(evaluateBgHostEnvironmentDropInFreshness(dropIns, Number.NaN)).toEqual({
+      checked: false,
+      changedPaths: [],
+    });
+    expect(
+      evaluateBgHostEnvironmentDropInFreshness([{ ...dropIns[0]!, mtimeMs: Number.NaN }], 100),
+    ).toEqual({ checked: false, changedPaths: [] });
+  });
 });
 
 describe('evaluateBgHostRestartFreshness (WI-207443)', () => {
@@ -482,13 +608,15 @@ describe('dev:restart dry run', () => {
   });
 
   it('defaults target to dev and reports the dev unit', async () => {
-    const b = body(await call({}));
+    const result = await call({});
+    const b = body(result);
     expect(b).toMatchObject({
       ok: true,
       dry_run: true,
       target: 'dev',
       would_run: 'systemctl --user daemon-reload && systemctl --user restart papercusp-dev-api.service',
     });
+    expect(result.isError).toBeUndefined();
     expect(b.note).not.toMatch(/coalesced/);
     expect(acquireM).not.toHaveBeenCalled();
   });
@@ -529,6 +657,7 @@ describe('dev:restart dry run', () => {
     });
     expect(b.note).toMatch(/coalesced/);
     expect(b.note).toMatch(/~2min/);
+    expect(stagingSchemaPreparationM).not.toHaveBeenCalled();
   });
 
   // EI-13307: bg-host's coalesce window is tuned to its REAL cost (the ~13min
@@ -540,7 +669,7 @@ describe('dev:restart dry run', () => {
       ok: true,
       dry_run: true,
       target: 'bg-host',
-      would_run: 'systemctl --user daemon-reload && systemctl --user restart papercusp-bg-host.service',
+      would_run: 'systemctl --user daemon-reload && systemctl --user --no-block restart papercusp-bg-host.service',
     });
     expect(b.note).toMatch(/coalesced/);
     expect(b.note).toMatch(/~13min/);
@@ -620,6 +749,7 @@ describe('dev:restart dry run', () => {
     ['embed-sidecar', 'papercup-embed-sidecar.service', true],
     ['mcp-proxy', 'papercup-mcp-proxy.service', true],
     ['mcp-proxy-staging', 'papercup-mcp-proxy-staging.service', false],
+    ['mcp-proxy-bg-host', 'papercup-mcp-proxy-bg-host.service', false],
     // WI-10001633: app sidecars run tsx from the tree with no restart-on-change —
     // without a sanctioned target the only way to load an edit was raw systemctl.
     ['email-sidecar', 'papercusp-email-sidecar.service', true],
@@ -630,7 +760,10 @@ describe('dev:restart dry run', () => {
       ok: true,
       dry_run: true,
       target,
-      would_run: `systemctl --user daemon-reload && systemctl --user restart ${unit}`,
+      would_run:
+        target === 'bg-host'
+          ? `systemctl --user daemon-reload && systemctl --user --no-block restart ${unit}`
+          : `systemctl --user daemon-reload && systemctl --user restart ${unit}`,
     });
     if (coalesces) expect(b.note).toMatch(/coalesced/);
     else expect(b.note).not.toMatch(/coalesced/);
@@ -644,7 +777,7 @@ describe('dev:restart dry run', () => {
 // which reads as "the restart happened" to any caller that checks `ok`.
 describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
   it('target:dev REFUSES with ok:false and does NOT drain — no guard, no lock, no audit — and the note points at authorize:true', async () => {
-    guardM.mockImplementation(runGuard(fenceOk()) as never);
+    guardM.mockImplementation(runGuard(fenceOk()));
     const b = body(await call({ confirm: true }));
     expect(b).toMatchObject({
       ok: false,
@@ -759,6 +892,122 @@ describe('dev:restart boot-integrity preflight', () => {
       dry_run: true,
       boot_integrity: { checked: true, would_block: true, tree: '/tree', missing: ['hono', 'postgres'] },
     });
+  });
+});
+
+describe('dev:restart D-012 restricted-hold preflight', () => {
+  const held = {
+    error: 'restricted_write_held',
+    hint: '1 held restricted write in /tree (packages/operator-core/lib/agent-tools/dev/restart.ts).',
+  } as const;
+
+  it('refuses a held staging tree before schema preparation, lock, drain, audit, or restart', async () => {
+    integrationTreeRootsM.mockReturnValue(['/tree']);
+    restrictedTreeHoldRefusalM.mockResolvedValue(held);
+
+    const b = body(
+      await call({
+        confirm: true,
+        authorize: true,
+        target: 'staging',
+        reason: 'x',
+        // D-012 is unconditional; a boot-integrity override cannot bypass it.
+        override_boot_integrity: true,
+      }),
+    );
+
+    expect(integrationTreeRootsM).toHaveBeenCalledWith({}, '/tree/apps/operator');
+    expect(restrictedTreeHoldRefusalM).toHaveBeenCalledWith(['/tree']);
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'staging',
+      reason: 'restricted_write_held',
+      restarted: false,
+      drained: false,
+      restricted_hold: { checked: true, roots: ['/tree'], ...held },
+    });
+    expect(stagingSchemaPreparationM).not.toHaveBeenCalled();
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(acquireM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it.each(['staging', 'gateway', 'bg-host', 'embed-sidecar', 'mcp-proxy', 'mcp-proxy-staging'] as const)(
+    'checks the WorkingDirectory-derived tree for %s',
+    async (target) => {
+      const workingDirectory = target === 'gateway' ? '/tree' : '/tree/apps/operator';
+      preflightM.mockResolvedValue(bootVerdict({ target, requestedRoot: workingDirectory, lockRoot: '/tree' }));
+      integrationTreeRootsM.mockReturnValue(['/tree']);
+      restrictedTreeHoldRefusalM.mockResolvedValue(held);
+
+      const b = body(await call({ confirm: true, authorize: true, target, reason: 'x' }));
+
+      expect(b.reason).toBe('restricted_write_held');
+      expect(integrationTreeRootsM).toHaveBeenCalledWith({}, '/tree/apps/operator');
+      expect(restrictedTreeHoldRefusalM).toHaveBeenCalledWith(['/tree']);
+      expect(guardM).not.toHaveBeenCalled();
+      expect(spawnM).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fails closed when a networked target has no measurable WorkingDirectory', async () => {
+    preflightM.mockResolvedValue(
+      bootVerdict({ checked: false, requestedRoot: '', lockRoot: null, reason: 'WorkingDirectory unavailable' }),
+    );
+
+    const b = body(
+      await call({
+        confirm: true,
+        authorize: true,
+        target: 'gateway',
+        reason: 'x',
+        override_boot_integrity: true,
+      }),
+    );
+
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'restricted_hold_state_unknown',
+      restarted: false,
+      drained: false,
+      restricted_hold: { checked: false, roots: [] },
+    });
+    expect(integrationTreeRootsM).not.toHaveBeenCalled();
+    expect(restrictedTreeHoldRefusalM).not.toHaveBeenCalled();
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(acquireM).not.toHaveBeenCalled();
+  });
+
+  it('shows a held integration tree in the dry-run preview', async () => {
+    integrationTreeRootsM.mockReturnValue(['/tree']);
+    restrictedTreeHoldRefusalM.mockResolvedValue(held);
+
+    const b = body(await call({ target: 'staging' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      restricted_hold: { checked: true, roots: ['/tree'], would_block: true, ...held },
+    });
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it.each(['dev', 'email-sidecar', 'calendar-sidecar'] as const)(
+    'does not apply the Papercusp integration-tree fence to %s',
+    async (target) => {
+      await call({ confirm: true, authorize: true, target, reason: 'x' }).catch(() => undefined);
+      expect(integrationTreeRootsM).not.toHaveBeenCalled();
+      expect(restrictedTreeHoldRefusalM).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps the wrapper-owned desktop development runtime outside the tree fence', async () => {
+    await call({ target: 'desktop-dev' });
+    expect(integrationTreeRootsM).not.toHaveBeenCalled();
+    expect(restrictedTreeHoldRefusalM).not.toHaveBeenCalled();
   });
 });
 
@@ -881,10 +1130,16 @@ describe('dev:restart bg-host quiesce preflight (WI-2140796)', () => {
       }),
     );
     expect(b).toMatchObject({ ok: true, restarted: true, quiesceOverridden: { marker: { pid: 4242 } } });
-    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
-    const [, params] = auditUnsafeM.mock.calls[0]!;
-    const details = JSON.parse(params[5] as string);
-    expect(details.quiesceOverridden).toMatchObject({ marker: { pid: 4242 } });
+    expect(auditUnsafeM).toHaveBeenCalledTimes(2);
+    const request = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    const outcome = JSON.parse(auditUnsafeM.mock.calls[1]![1][5] as string);
+    expect(request.quiesceOverridden).toMatchObject({ marker: { pid: 4242 } });
+    expect(outcome).toMatchObject({
+      requestId: request.requestId,
+      phase: 'outcome',
+      restarted: true,
+      quiesceOverridden: { marker: { pid: 4242 } },
+    });
   });
 
   it('previews the quiesce block in the DRY RUN, where the decision is actually made', async () => {
@@ -1198,6 +1453,9 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
 
     // It got PAST the preflight — the refusal now comes from the barrier, not the proxy.
     expect(b.reason).not.toBe('git_sync_collision_operation_in_flight');
+    expect(b).toMatchObject({ ok: false, restarted: false, drained: false });
+    expect(b.note).toContain('git-sync barrier did not clear within the requested 45s wait');
+    expect(b.note).not.toContain('saturated');
     expect(gitSyncBarrierM).toHaveBeenCalled();
     expect(gitSyncBarrierM).toHaveBeenCalledWith(
       expect.anything(),
@@ -1291,6 +1549,72 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
     expect(b.note).toMatch(/before draining/i);
     expect(spawnM).not.toHaveBeenCalled();
     expect(auditUnsafeM).not.toHaveBeenCalled();
+    expect(localSyncWaitM).not.toHaveBeenCalled();
+  });
+
+  // WI-6554700010010484 (P-031): a local-sync pass whose leases lapsed reads clear to
+  // the cgroup preflight AND lets the barrier acquire; only its activity marker shows it.
+  it('refuses under a HELD barrier while a lapsed-lease local-sync pass is still committing', async () => {
+    gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+    localSyncWaitM.mockResolvedValue({
+      probeFailed: false,
+      targetCgroupPath: '/user.slice/papercusp-dev-api.service',
+      inFlight: [
+        {
+          installSlug: 'papercusp',
+          owner: 'system:git-sync:4242:fire',
+          ownerPid: 4242,
+          startedAtMs: Date.parse('2026-10-14T08:00:00.000Z'),
+          updatedAtMs: Date.parse('2026-10-14T08:01:00.000Z'),
+          cgroupRelation: 'same',
+        },
+      ],
+    });
+    const b = body(
+      await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'reload code', git_sync_drain_sec: 120 }),
+    );
+
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'git_sync_local_sync_in_flight',
+      restarted: false,
+      drained: false,
+      waited_sec: 30,
+      in_flight: [{ install_slug: 'papercusp', owner_pid: 4242, updated_at: '2026-10-14T08:01:00.000Z' }],
+    });
+    expect(localSyncWaitM).toHaveBeenCalledWith('bg-host', { waitSec: 30 });
+    expect(gitSyncBarrierM).toHaveBeenCalledWith(
+      expect.anything(),
+      undefined,
+      expect.objectContaining({ maxDrainSec: 120, holdExtraSec: 30 }),
+    );
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('refuses fail-closed when the activity markers cannot be read', async () => {
+    gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+    localSyncWaitM.mockResolvedValue({ probeFailed: true, targetCgroupPath: null, inFlight: [] });
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
+
+    expect(b).toMatchObject({ ok: false, reason: 'git_sync_local_sync_probe_failed', drained: false });
+    expect(localSyncWaitM).toHaveBeenCalledWith('dev', { waitSec: 10 });
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+    expect(guardM).not.toHaveBeenCalled();
+  });
+
+  it('does not consult local-sync markers under the wedged-host override (no barrier is taken)', async () => {
+    gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+    await call({
+      confirm: true,
+      authorize: true,
+      target: 'dev',
+      reason: 'wedged host',
+      override_git_sync_collision: true,
+    });
+    expect(gitSyncBarrierM).not.toHaveBeenCalled();
+    expect(localSyncWaitM).not.toHaveBeenCalled();
   });
 
   it('retries transient workspace contention while acquiring the barrier', async () => {
@@ -1319,16 +1643,23 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
 
   it('releases an acquired barrier when the target drain never grants', async () => {
     guardM.mockResolvedValue({ acquired: false, reason: 'drain_timeout', holders: [] } as never);
+    const contention = Object.assign(new Error('workspace lock timed out'), {
+      name: 'WorkspaceContendedError',
+      pgCode: '57014',
+    });
+    gitSyncBarrierReleaseM.mockRejectedValueOnce(contention);
 
-    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
+    const result = await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' });
+    const b = body(result);
 
     expect(b).toMatchObject({
       ok: false,
       target: 'dev',
       reason: 'resource_drain_timeout',
     });
+    expect(result.isError).toBe(true);
     expect(gitSyncBarrierM).toHaveBeenCalledTimes(1);
-    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(2);
     expect(spawnM).not.toHaveBeenCalled();
   });
 
@@ -1378,6 +1709,38 @@ describe('dev:restart staging-sync collision guard', () => {
       restarted: false,
       drained: false,
       staging_sync_collision: { lockHeld: true },
+    });
+    expect(acquireM).not.toHaveBeenCalled();
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it('prepares the target schema before cooldown or drain and refuses a failed preparation', async () => {
+    stagingSchemaPreparationM.mockResolvedValue(
+      preparedStagingSchema({
+        ok: false,
+        reason: 'staging_migration_failed',
+        applied: 1,
+        failed: [{ file: '299-test.sql', error: 'constraint violation' }],
+        note: 'The target schema has a failed migration; the service was left running.',
+      }),
+    );
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'staging', reason: 'reload staging' }));
+
+    expect(stagingSchemaPreparationM).toHaveBeenCalledWith('/tmp/papercup-staging-sync.lock');
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'staging',
+      reason: 'staging_migration_failed',
+      restarted: false,
+      drained: false,
+      staging_schema_preparation: {
+        ok: false,
+        applied: 1,
+        failed: [{ file: '299-test.sql', error: 'constraint violation' }],
+      },
     });
     expect(acquireM).not.toHaveBeenCalled();
     expect(guardM).not.toHaveBeenCalled();
@@ -1880,6 +2243,117 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(spawnM).not.toHaveBeenCalled();
   });
 
+  it('restarts under the exclusive guard when an Environment= drop-in is newer than the MainPID', async () => {
+    const changedDropIn = '/fixture/53-workspace-host-identity.conf';
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [{ owner: 'peer-bg', owner_label: 'peer-bg-host', mode: 'exclusive', status: 'held' }],
+    } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 6064, secondsSinceStart: 12, startedAtMs: 10_000 });
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 6064, secondsSinceStart: 12, startedAtMs: 10_000 });
+    freshnessM.mockResolvedValue({
+      bundleMtimeMs: 10_001,
+      newestSourceMtimeMs: 10_000,
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+    });
+    let underGuard = false;
+    let environmentReads = 0;
+    environmentDropInFreshnessM.mockImplementation(async (_unit, startedAtMs) => {
+      environmentReads++;
+      expect(startedAtMs).toBe(10_000);
+      if (environmentReads === 2) expect(underGuard).toBe(true);
+      return { checked: true, changedPaths: [changedDropIn] };
+    });
+    const guardBehavior = runGuard(fenceOk(14));
+    guardM.mockImplementation((async (spec: GuardSpec, run: (fence: FenceToken) => Promise<unknown>) => {
+      underGuard = true;
+      try {
+        return await guardBehavior(spec, run);
+      } finally {
+        underGuard = false;
+      }
+    }) as never);
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'bg-host',
+      restarted: true,
+      unitEnvFreshnessVerified: true,
+      unitEnvChangedSinceRestart: true,
+      unitEnvChangedDropIns: [changedDropIn],
+    });
+    expect(b.coalesced).toBeUndefined();
+    expect(b.note).toMatch(/restarted to load the newer Environment= drop-in/i);
+    expect(environmentReads).toBe(2);
+    expect(guardM).toHaveBeenCalledTimes(1);
+    expect(spawnM).toHaveBeenCalled();
+  });
+
+  it('skips the bypass restart when a peer loads the drop-in before the exclusive recheck', async () => {
+    const changedDropIn = '/fixture/53-workspace-host-identity.conf';
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [{ owner: 'peer-bg', owner_label: 'peer-bg-host', mode: 'exclusive', status: 'held' }],
+    } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 6065, secondsSinceStart: 12, startedAtMs: 10_000 });
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 6066, secondsSinceStart: 2, startedAtMs: 11_000 });
+    environmentDropInFreshnessM.mockResolvedValueOnce({ checked: true, changedPaths: [changedDropIn] });
+    environmentDropInFreshnessM.mockResolvedValueOnce({ checked: true, changedPaths: [] });
+    freshnessM.mockResolvedValue({
+      bundleMtimeMs: 10_001,
+      newestSourceMtimeMs: 10_000,
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+    });
+    guardM.mockImplementation(runGuard(fenceOk(15)) as never);
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'bg-host',
+      restarted: false,
+      coalesced: true,
+      unitEnvFreshnessVerified: true,
+      unitEnvChangedSinceRestart: false,
+      treeChangedSinceRestart: false,
+    });
+    expect(b.note).toMatch(/rechecked under the exclusive/i);
+    expect(environmentDropInFreshnessM).toHaveBeenCalledTimes(2);
+    expect(freshnessM).toHaveBeenCalledTimes(2);
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('keeps unit environment freshness explicitly unknown when the drop-in probe fails', async () => {
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [{ owner: 'peer-bg', owner_label: 'peer-bg-host', mode: 'exclusive', status: 'held' }],
+    } as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 6067, secondsSinceStart: 12, startedAtMs: 10_000 });
+    environmentDropInFreshnessM.mockResolvedValue({ checked: false, changedPaths: [] });
+    freshnessM.mockResolvedValue({
+      bundleMtimeMs: 10_001,
+      newestSourceMtimeMs: 10_000,
+      newestSourcePath: 'packages/operator-core/lib/learning/model-policy.ts',
+    });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      coalesced: true,
+      unitEnvFreshnessVerified: false,
+      unitEnvChangedSinceRestart: null,
+    });
+    expect(b.note).toMatch(/Environment= drop-in freshness could NOT be verified/i);
+    expect(b.note).not.toMatch(/no active Environment= drop-in is newer/i);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
   it("WI-10003606: scans bg-host's own tree, never the serving operator's PAPERCUSP_INTEGRATION_ROOT", async () => {
     const originalRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
     process.env.PAPERCUSP_INTEGRATION_ROOT = '/fixture/serving-staging-checkout';
@@ -2137,7 +2611,7 @@ describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, secondsSinceStart: 1 } as never);
     listeningSocketsM.mockResolvedValue(gatewayListenerResult(5252));
     mockResolvedTyped(gatewayHealthM, { reachable: true, detail: 'HTTP 200' });
-    guardM.mockImplementation(runGuard(fenceOk(31)) as never);
+    mockImplementationTyped(guardM, runGuard(fenceOk(31)));
 
     const b = body(
       await call({
@@ -2183,16 +2657,26 @@ describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
     mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, secondsSinceStart: 1 } as never);
     listeningSocketsM.mockResolvedValue(gatewayListenerResult(5252));
     mockResolvedTyped(gatewayHealthM, { reachable: false, detail: 'ConnectionRefused' });
-    guardM.mockImplementation(runGuard(fenceOk(32)) as never);
+    mockImplementationTyped(guardM, runGuard(fenceOk(32)));
 
-    const b = body(
-      await call({
+    // WI-10005747: `ready:false` now means the whole 20s readiness budget was SPENT polling the
+    // listener + /healthz (it used to mean "the first single-shot look missed"), so drive the
+    // budget with fake timers instead of waiting it out in real time.
+    vi.useFakeTimers();
+    let b: ReturnType<typeof body>;
+    try {
+      const pending = call({
         confirm: true,
         authorize: true,
         target: 'gateway',
         reason: 'exercise the not-ready response',
-      }),
-    );
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      b = body(await pending);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(gatewayHealthM.mock.calls.length).toBeGreaterThan(1);
 
     expect(b).toMatchObject({
       ok: false,
@@ -2217,6 +2701,175 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
     process.env.PAPERCUSP_ALLOW_DEV_RESTART = '1';
   });
 
+  it('correlates the request and outcome audit rows and reports restarted only after the active PID changes', async () => {
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(21)));
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'bg-host',
+      restartScheduled: true,
+      systemdJobAccepted: true,
+      restartObserved: true,
+      restarted: true,
+      restartedFromPid: 4321,
+      restartReadiness: { ready: true, observedPid: 4322, activeState: 'active' },
+    });
+    expect(typeof b.restartRequestId).toBe('string');
+    expect(auditUnsafeM).toHaveBeenCalledTimes(2);
+    const request = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    const outcome = JSON.parse(auditUnsafeM.mock.calls[1]![1][5] as string);
+    expect(request).toMatchObject({
+      requestId: b.restartRequestId,
+      phase: 'request',
+      beforeMainPid: 4321,
+      restartCommand: 'systemctl --user --no-block restart papercusp-bg-host.service',
+    });
+    expect(outcome).toMatchObject({
+      requestId: request.requestId,
+      phase: 'outcome',
+      restartCommandExitCode: 0,
+      systemdJobAccepted: true,
+      restartObserved: true,
+      restarted: true,
+      observedMainPid: 4322,
+      observedActiveState: 'active',
+    });
+  });
+
+  it('refuses to schedule a bg-host restart when the request audit cannot be persisted', async () => {
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(25)));
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG-AUDIT-FAILURE',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
+    auditUnsafeM.mockRejectedValueOnce(new Error('audit database unavailable'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    let b: ReturnType<typeof body>;
+    try {
+      b = body(await call({ confirm: true, target: 'bg-host' }));
+      expect(warn).toHaveBeenCalledWith('[dev:restart] audit write failed:', 'audit database unavailable');
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'bg-host',
+      drained: true,
+      restarted: false,
+      restartScheduled: false,
+      audited: false,
+      requestAuditPersisted: false,
+      reason: 'bg_host_restart_request_audit_failed',
+    });
+    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
+    expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it('reports loadedNewCode:true when the restart built a fresh bundle (no stale marker in the unit tree)', async () => {
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(23)));
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({ ok: true, restarted: true, loadedNewCode: true });
+    expect(b.bundleStale).toBeUndefined();
+    expect(bgHostBundleStaleM).toHaveBeenCalledWith(BG_HOST_UNIT_ROOT);
+  });
+
+  it('EI-25257294558913225: a restart whose rebuild was refused is restarted but NOT ok — it loaded no new code', async () => {
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG-STALE-BUNDLE',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    } as never);
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(24)));
+    bgHostBundleStaleM.mockReturnValueOnce({
+      schema: 'bundle-stale-v1',
+      failedAt: '2026-10-06T19:02:19.596Z',
+      entry: 'bin/hono-host.ts',
+      outfile: 'dist-host/hono-host.mjs',
+      servingBundleMtime: '2026-10-06T18:47:10.795Z',
+      servingBundleAgeSecAtFailure: 909,
+      failingFiles: [],
+      error: '🚨 free reference `structuredRootShape` at libs/generic/tooldef/src/serialize-result.ts:364:18',
+    });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      restarted: true,
+      loadedNewCode: false,
+      reason: 'bg_host_restarted_on_stale_bundle',
+      bundleStale: { servingBundleMtime: '2026-10-06T18:47:10.795Z' },
+    });
+    expect(String(b.bundleStale.error)).toMatch(/structuredRootShape/);
+    expect(b.note).toMatch(/STALE bundle built 2026-10-06T18:47:10\.795Z/);
+  });
+
+  it('releases the git-sync barrier after an accepted restart job returns active without a PID transition', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG-NO-PID',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 22,
+    });
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(22)));
+    bgHostRestartReadinessM.mockResolvedValueOnce({
+      ready: false,
+      observed: false,
+      outcome: 'not-observed',
+      pidChanged: false,
+      observedPid: null,
+      activeState: 'active',
+      result: 'success',
+      waitedMs: 30_000,
+    });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'bg-host',
+      restartScheduled: true,
+      systemdJobAccepted: true,
+      restartObserved: false,
+      restarted: false,
+      reason: 'bg_host_restart_not_observed',
+    });
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+    const request = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    const outcome = JSON.parse(auditUnsafeM.mock.calls[1]![1][5] as string);
+    expect(outcome).toMatchObject({
+      requestId: request.requestId,
+      phase: 'outcome',
+      restartObserved: false,
+      restarted: false,
+      observedMainPid: null,
+      systemdJobAccepted: true,
+    });
+  });
+
   it('uses bounded startup polling for the portless bg-host and labels MainPID=0/activating as transient', () => {
     const hint = restartVerificationHint('bg-host', 'papercusp-bg-host.service', 7777);
     expect(hint).toContain('Bounded poll (up to ~30s)');
@@ -2227,8 +2880,26 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
     expect(hint).not.toContain('dev:listening_ports');
   });
 
-  it('claims the bg-host cooldown marker with the WIDENED ~13min TTL (780s), not the generic 120s one', async () => {
-    acquireM.mockResolvedValue({
+  it('verifies the BG-host MCP proxy through its listener on port 9271', () => {
+    const hint = restartVerificationHint('mcp-proxy-bg-host', 'papercup-mcp-proxy-bg-host.service', 8908);
+    expect(hint).toContain('dev:listening_ports { port: 9271 }');
+    expect(hint).toContain('different from 8908');
+  });
+
+  // EI-24790218658923698: a crash at module import yields a fresh nonzero MainPID that dies
+  // seconds later, so "MainPID nonzero and different" alone passes on a crash-loop.
+  it('tells the caller to confirm bg-host STAYS up, naming the pre-restart NRestarts', () => {
+    const hint = restartVerificationHint('bg-host', 'papercusp-bg-host.service', 7777, 4);
+    expect(hint).toContain('STAYS up');
+    expect(hint).toContain('NRestarts still 4');
+    expect(hint).toContain("logs:read { unit: 'papercusp-bg-host.service'");
+    expect(restartVerificationHint('bg-host', 'papercusp-bg-host.service', 7777)).toContain(
+      'NRestarts still at its pre-restart value',
+    );
+  });
+
+  it("names peers' in-flight edits in the tree it boots, so a host that does not stay up has its suspects", async () => {
+    mockResolvedTyped(acquireM, {
       ok: true,
       mode: 'exclusive',
       status: 'held',
@@ -2236,8 +2907,57 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
       expires_ts: new Date(),
       shared_holders: [],
       fence_seq: 1,
-    } as never);
-    guardM.mockImplementation(runGuard(fenceOk(11)) as never);
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(11)));
+    mockResolvedTyped(probeM, { ok: true, mainPid: 7777, secondsSinceStart: 99999, nRestarts: 2 });
+    preflightM.mockResolvedValue(bootVerdict({ target: 'bg-host', requestedRoot: `${BG_HOST_UNIT_ROOT}/apps/operator` }));
+    const edit = {
+      path: 'packages/operator-core/lib/agent-tools/plans/rubric-template.ts',
+      owner: 'su-peer',
+      intent: 'rubric evidence runtime id',
+    };
+    peerEditsM.mockResolvedValue({ checked: true, tree: BG_HOST_UNIT_ROOT, total: 1, files: [edit] });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(peerEditsM).toHaveBeenCalledWith(`${BG_HOST_UNIT_ROOT}/apps/operator`, 'me');
+    expect(b).toMatchObject({ ok: true, restarted: true, peerInFlightEdits: { checked: true, total: 1, files: [edit] } });
+    expect(b.note).toContain('rubric-template.ts (su-peer)');
+    expect(b.note).toContain('mid-edit by other agents');
+    expect(b.verifyWith).toContain('NRestarts still 2');
+  });
+
+  it('omits the advisory when no peer holds a source file in the booted tree', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(11)));
+    mockResolvedTyped(probeM, { ok: true, mainPid: 7777, secondsSinceStart: 99999 });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({ ok: true, restarted: true });
+    expect(b).not.toHaveProperty('peerInFlightEdits');
+    expect(b.note).not.toContain('mid-edit by other agents');
+  });
+
+  it('claims the bg-host cooldown marker with the WIDENED ~13min TTL (780s), not the generic 120s one', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
+    mockImplementationTyped(guardM, runGuard(fenceOk(11)));
     mockResolvedTyped(probeM, { ok: true, mainPid: 7777, secondsSinceStart: 99999 });
 
     const b = body(await call({ confirm: true, target: 'bg-host' }));
@@ -2253,20 +2973,24 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
   });
 
   it("a restart request ~10min (600s) after a peer's real bg-host restart COALESCES under the widened window — the exact storm from EI-13307 (old 120s window would have fired a fresh restart here)", async () => {
-    acquireM.mockResolvedValue({
+    mockResolvedTyped(acquireM, {
       ok: false,
       reason: 'held_exclusive',
       holders: [
         {
           owner: 'peer-2',
           owner_label: 'peer-two',
+          resource: 'bg-host-cooldown',
+          lock_id: 'COOL-PEER',
+          acquired_ts: new Date(),
+          fence_seq: 1,
           mode: 'exclusive',
           status: 'held',
           reason: '',
           expires_ts: new Date(),
         },
       ],
-    } as never);
+    });
     // 600s ago: outside the OLD 120s window (would have been a phantom / real
     // restart under the pre-fix code) but well inside the NEW 780s window.
     mockResolvedTyped(probeM, { ok: true, mainPid: 8888, secondsSinceStart: 600 });
@@ -2337,6 +3061,40 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (un
     expect(b.verifyWith).toMatch(/ownerVisible:true/);
     expect(b.verifyWith).toMatch(/different from 4242/);
     expect(b.verifyWith).not.toMatch(/systemctl --user show/);
+  });
+
+  it('returns a host-global cross-domain lease as a structured refusal with the holder domain', async () => {
+    guardM.mockResolvedValue({
+      acquired: false,
+      reason: 'held_in_other_domain',
+      holders: [
+        {
+          owner: 'legacy-holder',
+          owner_label: null,
+          mode: 'exclusive',
+          status: 'held',
+          coordination_domain: foreignCoordinationDomain,
+        },
+      ],
+    } as never);
+
+    const b = body(await call({ target: 'dev', confirm: true, authorize: true, reason: 'reload operator' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'dev',
+      reason: 'resource_held_in_other_domain',
+      resource: 'dev-server',
+      holders: [
+        {
+          owner: 'legacy-holder',
+          mode: 'exclusive',
+          status: 'held',
+          coordination_domain: foreignCoordinationDomain,
+        },
+      ],
+    });
+    expect(spawnM).not.toHaveBeenCalled();
   });
 
   it('never touches the cooldown machinery for dev', async () => {

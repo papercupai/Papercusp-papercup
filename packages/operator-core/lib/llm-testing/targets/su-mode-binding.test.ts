@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { loadPlaybookBody, parseSuTargetConfig, SuTarget } from './su';
+import { SU_CATALOG } from './su-catalog';
+import { REPORT_KINDS, REPORT_VISIBILITIES } from '../../report-library';
 
 // A phrase only the IDEATE definition layer carries: the closed-loop ritual's
 // closing call. The positive case proves the phrase is detector-shaped, so the
@@ -14,6 +16,25 @@ import { loadPlaybookBody, parseSuTargetConfig, SuTarget } from './su';
 const IDEATE_RITUAL = 'blender:ideate-pass-record';
 
 describe('su target mode binding', () => {
+  it('advertises production Reports vocabularies and required title constraints', () => {
+    const publish = SU_CATALOG.find(tool => tool.name === 'reports:publish')!;
+    expect(publish.input).toMatchObject({ required: ['title'], properties: {
+      title: { minLength: 1, maxLength: 500 },
+      kind: { enum: [...REPORT_KINDS] }, visibility: { enum: [...REPORT_VISIBILITIES] },
+    } });
+    expect(REPORT_KINDS).not.toContain('architecture-review');
+  });
+
+  it('renders the Reports delivery sequence in the actual AUTO prompt and tool catalog', async () => {
+    const prompt = await loadPlaybookBody(['auto']);
+    expect(prompt).toContain('(1) `reports:publish`; (2) `reports:get { id: report_id }`');
+    expect(prompt).toContain('verify that readback contains the complete Markdown and intended');
+    expect(prompt).toContain('saved or delivered only after the readback succeeds');
+    const publish = SU_CATALOG.find(tool => tool.name === 'reports:publish');
+    expect(publish?.description).toContain('reports:get { id: report_id }');
+    expect(publish?.description).toContain('verify the complete body and visibility before citing the path or claiming delivery');
+  }, 60_000);
+
   it('renders a bound mode definition layer and omits it when no mode is bound', async () => {
     const [unbound, ideate] = await Promise.all([loadPlaybookBody(), loadPlaybookBody(['ideate'])]);
     expect(ideate).toContain(IDEATE_RITUAL);

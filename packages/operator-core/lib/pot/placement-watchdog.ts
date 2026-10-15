@@ -50,10 +50,98 @@ import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from '../work-items-stale-cl
 import { listStartedPots, mugKettleSystemEnabled } from './started';
 import { workItemCheckpointScope } from '../work-item-checkpoint';
 import { checkpointDeclaresTerminal } from '../checkpoint-terminal-claim';
-import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { ANY_FAMILY_TERMINAL_STATES, FEATURE_FAMILY_STATES } from '../work-item-dispatch-states';
 import { isClaimHoldParked } from '../work-items';
 import { reconcileLinkedWorkItemsForPlanItem } from '../plan-items/reconcile-linked-work-items';
 import { getPlanRow } from '../agent-tools/plans/source';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+type PlacementConditionKind = 'cursed' | 'infra-cursed' | 'stale-recovery' | 'stranded';
+export interface PlacementConditionDeps {
+  rail?: AlarmAttentionDeps;
+  readOpenConditions?: () => Promise<Array<{ conditionKey: string; openedAtMs: number }>>;
+}
+export function placementConditionKey(workspaceId: string, installSlug: string,
+  harness: string | null, unitId: string, kind: PlacementConditionKind): string {
+  return 'alarm:pot-placement:' + encodeURIComponent(JSON.stringify([workspaceId, installSlug, harness, unitId, kind]));
+}
+
+async function raisePlacementCondition(workspaceId: string, installSlug: string, harness: string | null,
+  unitId: string, kind: PlacementConditionKind, detail: string, deps: PlacementConditionDeps): Promise<void> {
+  if (!workspaceId?.trim() || !installSlug?.trim() || !unitId?.trim()) return;
+  const event = { conditionKey: placementConditionKey(workspaceId, installSlug, harness, unitId, kind),
+    oneShot: true, summary: `Placement ${kind}: ${unitId}`,
+    body: `Workspace ${workspaceId}; pot ${installSlug}; harness ${harness ?? 'unknown'}; ${detail}` };
+  try {
+    if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+    else await broadcastSevereEvent(event);
+  } catch (error) {
+    console.warn(`[pot-placement-watchdog] condition delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function readOpenPlacementConditions(): Promise<Array<{ conditionKey: string; openedAtMs: number }>> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith('alarm:pot-placement:'))
+    .map(condition => ({ conditionKey: condition.condition_key,
+      openedAtMs: condition.open_since ? Date.parse(condition.open_since) : Number.NaN }));
+}
+
+/** Recover from the durable episode's exact subject even after restart or loss
+ * of the old cup. Missing subjects, omitted pots and failed reads are unknown.
+ * A parked row or a checkpoint declaration alone is not measured recovery. */
+async function recoverPlacementConditions(sql: Sql, workspaceId: string, installSlug: string,
+  now: number, deps: PlacementConditionDeps): Promise<void> {
+  if (!Number.isFinite(now) || now <= 0) return;
+  let episodes: Array<{ conditionKey: string; openedAtMs: number }>;
+  try { episodes = await (deps.readOpenConditions ?? readOpenPlacementConditions)(); }
+  catch { return; }
+  if (!Array.isArray(episodes)) return;
+  for (const episode of episodes) {
+    try {
+      if (!episode?.conditionKey?.startsWith('alarm:pot-placement:') ||
+          !Number.isFinite(episode.openedAtMs) || episode.openedAtMs <= 0 || episode.openedAtMs > now) continue;
+      const scope: unknown = JSON.parse(decodeURIComponent(episode.conditionKey.slice('alarm:pot-placement:'.length)));
+      if (!Array.isArray(scope) || scope.length !== 5 || scope[0] !== workspaceId || scope[1] !== installSlug ||
+          typeof scope[2] !== 'string' || !scope[2].trim() || typeof scope[3] !== 'string' || !scope[3].trim() ||
+          !['cursed', 'infra-cursed', 'stale-recovery', 'stranded'].includes(scope[4])) continue;
+      const [, , harness, unitId, kind] = scope as [string, string, string, string, PlacementConditionKind];
+      const rows = await sql<{ status: string; payload: unknown; holder_live: boolean; downstream: number }[]>`
+        SELECT f.status, f.payload,
+          (EXISTS (SELECT 1 FROM harness_shared.coord_presence p
+            WHERE p.workspace_id = ${workspaceId} AND p.owner_id = f.taken_by
+              AND p.heartbeat_at > now() - interval '10 minutes' AND p.heartbeat_at <= now())
+           OR EXISTS (SELECT 1 FROM harness_shared.spawned_agents s
+            WHERE s.workspace_id = ${workspaceId} AND f.taken_by IN (s.spawn_id, s.session_owner, s.run_id)
+              AND s.status IN ('running', 'restarting')
+              AND s.heartbeat_at > now() - interval '10 minutes' AND s.heartbeat_at <= now())) AS holder_live,
+          (SELECT count(*)::int FROM harness_shared.work_item_deps l
+            JOIN harness_shared.harness_features_consolidated d
+              ON d.workspace_id = ${workspaceId}
+             AND d.harness_slug = split_part(l.blocked_ref, '#', 1)
+             AND d.feature_id = split_part(l.blocked_ref, '#', 2)
+            WHERE l.workspace_id = ${DEFAULT_COORD_WORKSPACE} AND l.dep_type = 'blocks'
+              AND l.blocker_kind = 'feature' AND l.blocked_kind = 'feature'
+              AND l.blocker_ref = ${harness + '#' + unitId}
+              AND d.status <> ALL(${[...TERMINAL_UNIT_STATES]})) AS downstream
+        FROM harness_shared.harness_features_consolidated f
+        WHERE f.workspace_id = ${workspaceId} AND f.harness_slug = ${harness} AND f.feature_id = ${unitId}`;
+      if (rows.length !== 1) continue;
+      const row = rows[0];
+      const knownActive = FEATURE_FAMILY_STATES.includes(row.status) &&
+        !isUnitParkedForReconcile(row.status, row.payload);
+      const recovered = isUnitTerminal(row.status) || (kind === 'stranded'
+        ? (knownActive && !isStuckBlockerState(row.status)) ||
+          (Number.isSafeInteger(row.downstream) && row.downstream === 0)
+        : row.holder_live === true && knownActive);
+      if (recovered) await resolveAlarm(episode.conditionKey, 'pot-placement-watchdog', deps.rail);
+    } catch (error) {
+      console.warn(`[pot-placement-watchdog] condition recovery failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
 
 // ── vocabulary (the canonical work-item terminal + stuck states) ──────────────
 
@@ -920,6 +1008,7 @@ interface PlacementRow {
    *  sweeps). */
   last_loss_spawn_id: string | null;
   escalation_msg_id: string | null;
+  disposition?: string | null;
   /** F-FIX-041 — last sweep time for this row (ms). max() over the pot ≈ the pot's
    *  previous sweep; a large gap to `now` means the operator was dormant in between. */
   last_seen_ms: number | null;
@@ -1190,8 +1279,10 @@ export async function reconcileOnePot(
   // last-positioned so every existing positional call site (reconcileOnePot(sql, ws,
   // slug, cfg, now)) stays byte-identical; defaults to the real check.
   isAlive: (pid: number, kind?: 'spawn' | 'launch') => boolean = isSpawnProcessAlive,
+  conditions: PlacementConditionDeps = {},
 ): Promise<PlacementSweepResult[]> {
   const out: PlacementSweepResult[] = [];
+  await recoverPlacementConditions(sql, workspaceId, installSlug, now, conditions);
   // ALL Mug-owners that served this pot (a fresh-per-wake / re-woken Mug accrues
   // several); cups are discovered across the whole set, but the NEWEST is the live
   // Mug we attribute to + wake. Without any resolvable owner we can neither attribute
@@ -1354,7 +1445,7 @@ export async function reconcileOnePot(
            extract(epoch from last_recovery_at) * 1000 AS last_recovery_ms,
            extract(epoch from recovery_started_at) * 1000 AS recovery_started_ms,
            last_loss_spawn_id,
-           escalation_msg_id,
+           escalation_msg_id, last_disposition AS disposition,
            extract(epoch from last_seen_at) * 1000 AS last_seen_ms
       FROM harness_shared.pot_placements
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug}`;
@@ -1557,6 +1648,7 @@ export async function reconcileOnePot(
           break;
         case 'stale-recovery': {
           const ageHours = Math.max(0, Math.floor((now - (obs.recoveryStartedAtMs ?? now)) / 3_600_000));
+          await raisePlacementCondition(workspaceId, installSlug, base.harnessSlug, unitId, 'stale-recovery', decision.reason, conditions);
           const msgId = await escalateStaleRecovery(unitId, base.harnessSlug, ageHours);
           await upsertPlacement(sql, {
             ...base,
@@ -1763,6 +1855,8 @@ export async function reconcileOnePot(
           });
           break;
         case 'breaker': {
+          await raisePlacementCondition(workspaceId, installSlug, base.harnessSlug, unitId,
+            decision.infraAttributed ? 'infra-cursed' : 'cursed', decision.reason, conditions);
           // EI-3216 — only a genuine item-PATHOLOGY curse (a cup that RAN and failed
           // `breakerThreshold` times) opens a per-item owner escalation. An infra-attributed
           // curse (the bounded no-fair-attempt zombie breaker, fail_count=0) records `cursed`
@@ -1791,6 +1885,11 @@ export async function reconcileOnePot(
           break;
         }
         case 'latched':
+          if (obs.placementStatus === 'cursed' || existing?.disposition === 'recovery-timeout') {
+            await raisePlacementCondition(workspaceId, installSlug, base.harnessSlug, unitId,
+              obs.placementStatus === 'stranded' ? 'stale-recovery' : obs.failCount > 0 ? 'cursed' : 'infra-cursed',
+              'placement remains latched without a live holder or terminal work', conditions);
+          }
           // EI-865 — the breaker has tripped and the unit is still cursed: HALT.
           // Refresh last_seen_at (the row stays observable in pot:status) but do
           // NOT re-fire, NOT re-escalate (escalation_msg_id is preserved), and do
@@ -1801,7 +1900,7 @@ export async function reconcileOnePot(
             failCount: obs.failCount,
             lastLossSpawnId: existing?.last_loss_spawn_id ?? null,
             infraLossCount: obs.infraLossCount,
-            disposition: obs.placementStatus === 'stranded' ? 'recovery-timeout' : 'breaker',
+            disposition: obs.placementStatus === 'stranded' ? existing?.disposition ?? 'recovery-timeout' : 'breaker',
           });
           out.push({
             workspaceId,
@@ -1846,7 +1945,7 @@ export async function reconcileOnePot(
   }
 
   // 3. P-022 — stranded-work resolution: stuck blockers gating downstream work.
-  out.push(...(await reconcileStrandedWork(sql, workspaceId, installSlug, mugOwner, placeById, now)));
+  out.push(...(await reconcileStrandedWork(sql, workspaceId, installSlug, mugOwner, placeById, now, conditions)));
 
   // 4. EI-6109/1524/1518 — completion-reconcile GC: converge EVERY open placement
   //    (working/recovering/cursed/stranded) whose subject item went terminal/gone with
@@ -2160,6 +2259,7 @@ async function reconcileStrandedWork(
   mugOwner: string,
   placeById: Map<string, PlacementRow>,
   now: number,
+  conditions: PlacementConditionDeps,
 ): Promise<PlacementSweepResult[]> {
   const out: PlacementSweepResult[] = [];
   const blockers = await sql<
@@ -2185,6 +2285,8 @@ async function reconcileStrandedWork(
      GROUP BY b.feature_id, b.harness_slug, b.status`;
 
   for (const blk of blockers) {
+    await raisePlacementCondition(workspaceId, installSlug, blk.blocker_harness, blk.blocker_id, 'stranded',
+      `${blk.blocker_status}; ${blk.downstream} non-terminal downstream units`, conditions);
     const existing = placeById.get(blk.blocker_id);
     // Already escalated (stranded earlier, or cursed by the breaker) → skip.
     if (existing && existing.escalation_msg_id && (existing.status === 'stranded' || existing.status === 'cursed')) {

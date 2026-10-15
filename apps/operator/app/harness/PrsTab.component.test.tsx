@@ -17,7 +17,7 @@
  * refetch.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { cleanup, render, waitFor, fireEvent } from '@testing-library/react';
 
 beforeAll(() => {
   if (typeof (globalThis as { ResizeObserver?: unknown }).ResizeObserver === 'undefined') {
@@ -50,6 +50,42 @@ vi.mock('nuqs', async () => {
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
 
+// Exercise the tab's named-query contract while preserving the existing HTTP
+// fixture responses. The production sync transport's cache/SSE has its own suite.
+vi.mock('@papercusp/sync', async () => {
+  const React = await import('react');
+  return {
+    onSyncBusEvent: () => () => {},
+    useSyncQuery: ({ queryName, args, enabled = true }: { queryName: string; args?: { harnessSlug?: string; scope?: string }; enabled?: boolean }) => {
+      const [data, setData] = React.useState<unknown[]>([]);
+      const [loading, setLoading] = React.useState(true);
+      const [error, setError] = React.useState<Error | null>(null);
+      const [revision, setRevision] = React.useState(0);
+      const key = JSON.stringify(args);
+      React.useEffect(() => {
+        let cancelled = false;
+        if (!enabled || !['harnessPrs.byHarness', 'prReviewerSettings.byHarness'].includes(queryName)) {
+          setData([]); setLoading(false); return;
+        }
+        setLoading(true);
+        const url = `/api/harness/${args?.harnessSlug}/${queryName === 'harnessPrs.byHarness' ? `prs${args?.scope === 'hive' ? '?scope=hive' : ''}` : 'pr-reviewer-settings'}`;
+        void fetch(url).then(async response => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const row: unknown = await response.json();
+          if (!cancelled) { setData([row]); setError(null); }
+        }).catch((e: Error) => { if (!cancelled) setError(e); })
+          .finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
+      }, [queryName, key, revision, enabled]);
+      const invalidate = React.useCallback(() => setRevision(n => n + 1), []);
+      return { data, loading, error, invalidate };
+    },
+    useSyncMutate: () => ({ mutate: vi.fn(), pending: false }),
+  };
+});
+vi.mock('./PrDetails', () => ({ PrDetails: ({ harnessSlug, number }: { harnessSlug: string; number: number }) =>
+  <div data-testid="pr-details">{harnessSlug}:{number}</div> }));
+
 import { PrsTab, rowBelongsToViewedHarness, shouldShowAutoStatus } from './PrsTab';
 
 describe('rowBelongsToViewedHarness — hive-scope auto-status honesty (PR-3 §4)', () => {
@@ -62,6 +98,46 @@ describe('rowBelongsToViewedHarness — hive-scope auto-status honesty (PR-3 §4
   });
   it("a hive-scope row from a DIFFERENT member does NOT belong (suppress its auto-status)", () => {
     expect(rowBelongsToViewedHarness({ member_slug: 'other-member' }, 'acme')).toBe(false);
+  });
+});
+
+describe('PrsTab — history and member-aware detail selection', () => {
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
+  function mount() {
+    const rows = ['open', 'merged', 'closed'].map((state, i) => ({
+      remote: 'github.com/acme/repo', number: 7 + i, title: `${state} combined work`,
+      author_login: 'avi', author_github_id: 1, html_url: `https://github.com/acme/repo/pull/${7 + i}`,
+      state, review_decision: 'none', check_conclusion: null, trusted: false, reviewerRoleEnabled: false,
+    }));
+    rows.push({ ...rows[0], title: 'foreign combined work', member_slug: 'other' } as typeof rows[number]);
+    const fallback = routedFetch({ autoModeEditable: false });
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => String(url).endsWith('/prs')
+      ? { ok: true, status: 200, json: async () => ({ prs: rows }) } as Response
+      : fallback(url)));
+    return render(<PrsTab harnessSlug="acme" />);
+  }
+  it('shows open, merged and closed history and filters each actual state', async () => {
+    const view = mount();
+    await view.findByText('closed combined work');
+    expect(view.getByText('open combined work')).toBeTruthy();
+    expect(view.getByText('merged combined work')).toBeTruthy();
+    fireEvent.click(view.getByRole('tab', { name: 'closed' }));
+    expect(view.getByText('closed combined work')).toBeTruthy();
+    expect(view.queryByText('open combined work')).toBeNull();
+    fireEvent.click(view.getByRole('tab', { name: 'open' }));
+    expect(view.queryByText('closed combined work')).toBeNull();
+    expect(view.getByText('open combined work')).toBeTruthy();
+  });
+  it('opens details without a report and selects only the matching member for identical PR numbers', async () => {
+    const view = mount();
+    await view.findByText('foreign combined work');
+    const buttons = view.getAllByRole('button', { name: 'Expand details for PR #7' });
+    fireEvent.click(buttons[1]);
+    expect(view.getAllByTestId('pr-details')).toHaveLength(1);
+    expect(view.getByTestId('pr-details').textContent).toBe('other:7');
+    fireEvent.click(view.getByRole('button', { name: 'Expand details for PR #7' }));
+    expect(view.getAllByTestId('pr-details')).toHaveLength(1);
+    expect(view.getByTestId('pr-details').textContent).toBe('acme:7');
   });
 });
 

@@ -6,13 +6,15 @@
  * full card-correlator + workspace-lifecycle behavior is unit-tested.
  */
 import { test, expect } from './_egress';
+import { onAppOrigin } from './_app-origin';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
-  `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
+  `http://localhost:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
 test.describe('state-snapshot SSE', () => {
   test('GET /api/operator/state-snapshot is SSE-shaped or auth-gated', async ({ page }) => {
+    await onAppOrigin(page, baseURL);
     const result = await page.evaluate(async (url) => {
       const controller = new AbortController();
       setTimeout(() => controller.abort(), 600);
@@ -39,6 +41,7 @@ test.describe('state-snapshot SSE', () => {
 
   test('GET /api/operator/state-snapshot includes Last-Event-ID handling', async ({ page }) => {
     // Probe with Last-Event-ID header — the route should accept it for resumption.
+    await onAppOrigin(page, baseURL);
     const result = await page.evaluate(async (url) => {
       const controller = new AbortController();
       setTimeout(() => controller.abort(), 400);

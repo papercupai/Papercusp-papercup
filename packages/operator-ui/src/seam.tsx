@@ -41,6 +41,9 @@ export interface OperatorUiToast {
 export interface OperatorUiSeam {
   Link: ComponentType<OperatorUiLinkProps>;
   toast: OperatorUiToast;
+  /** The host's surface selector and the existing ADV-to-surface mapping.
+   * Desktop hosts omit this and keep the native `tab` vocabulary. */
+  advNavigation?: { param: string; targets: Readonly<Record<string, string>> };
   /**
    * Fetch an OPERATOR API path (always written operator-relative, e.g.
    * `/api/admin/deploy-accounts/session-override`). A host that is not the

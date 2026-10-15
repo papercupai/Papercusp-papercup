@@ -62,11 +62,12 @@ export function walkLockfiles(root: any, { pruned, names }?: {
  * whose presence is structurally guaranteed.
  *
  * @param {string} root
- * @param {{ pruned?: Set<string>, names?: Map<string,string> }} [options] forwarded to walkLockfiles
+ * @param {{ pruned?: Set<string>, names?: Map<string,string>, standaloneDirs?: string[] }} [options]
  */
-export function censusOrThrow(root: string, options?: {
+export function censusOrThrow(root: string, { standaloneDirs, ...options }?: {
     pruned?: Set<string>;
     names?: Map<string, string>;
+    standaloneDirs?: string[];
 }): string[];
 /**
  * Directories whose npm dependencies are hoisted into the root lockfile.

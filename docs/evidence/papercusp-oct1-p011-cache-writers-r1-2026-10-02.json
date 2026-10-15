@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "plane": "live-current-build-operator-api",
+  "incomplete": true,
+  "pid": 1957654,
+  "buildSha": "c11fb0c0b0",
+  "startedAt": "2026-10-02T12:54:41.070Z",
+  "samples": [],
+  "windows": [],
+  "requests": [],
+  "operations": [],
+  "cleanup": {
+    "inspector": {
+      "closed": true
+    },
+    "processIdentityPreserved": true
+  },
+  "metricDefinitions": {
+    "pssBytes": "smaps_rollup Pss kernel kB times 1024",
+    "heapAndNative": "V8/Node counters, overlapping with PSS; no additive native-residual estimate",
+    "pinnedState": "Reachable logical payloads under named roots; not total retained heap/native bytes",
+    "observerMs": "wall time for inspector counter read and proc descendant census"
+  },
+  "limits": {
+    "windows": 3,
+    "idleMs": 2000,
+    "requestsPerWindow": 8,
+    "concurrency": 2,
+    "descendantsPerSample": 64
+  },
+  "pinnedOwners": [
+    "@papercusp/operator-core.operatorCache"
+  ],
+  "pinnedLimits": {
+    "maxObjects": 16384,
+    "maxEntries": 32768,
+    "maxFields": 256,
+    "maxDepth": 8,
+    "budgetMs": 200,
+    "maxCacheEntries": 256,
+    "maxEntryEntries": 2048,
+    "maxEntryObjects": 1024
+  },
+  "operatorCacheEntries": true,
+  "limitations": [
+    "Main service PID only; HTTP requests may be served by sibling workers.",
+    "Ambient workload is uncontrolled; idle means no probe HTTP requests.",
+    "No paired intervention, allocation profiler, retainer graph or physical-savings claim.",
+    "Current disk bundle hash is recorded separately from the health-reported loaded build."
+  ],
+  "healthBefore": {
+    "sha": "c11fb0c0b0",
+    "version": "0.0.0",
+    "at": "2026-10-02T12:54:41.232Z"
+  },
+  "bundle": {
+    "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-c11fb0c0b0b5.k2b4ya/checkout/apps/operator/dist-host/hono-host.mjs",
+    "argvEntry": "dist-host/hono-host.mjs",
+    "diskSha256": "dd1c3eeba77b48299c4922961842900fab24a21a461b37b4a2e37db14bc7f032"
+  },
+  "inspectorWasOpen": false,
+  "inspector": {
+    "pid": 1957654,
+    "port": 9229,
+    "openedByProbe": true
+  },
+  "error": "invalid pinned-state limits/PID/owners",
+  "endedAt": "2026-10-02T12:54:41.874Z"
+}

@@ -329,6 +329,67 @@ describe('reportIdleRecipients — EI-19937974676482462 aliveNotWakeable reclass
   });
 });
 
+describe('reportIdleRecipients — roster-absent confirmed-dead evidence', () => {
+  afterEach(() => vi.clearAllMocks());
+
+  const verdict = (sessionState: LivenessVerdict['sessionState']): LivenessVerdict => ({
+    ownerId: 'su-roster-missing',
+    sessionState,
+    wakeable: false,
+    liveTurn: false,
+    confirmLiveness: sessionState === null ? null : sessionState === 'draining' || sessionState === 'suspect',
+    heartbeatFresh: false,
+  });
+
+  it('keeps the roster classification unknown but exposes a measured ended session with no self-wake', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence());
+    vi.mocked(resolveSessionStates).mockResolvedValue(
+      new Map([['su-roster-missing', { ...verdict('ended'), selfWake: 'none' }]]),
+    );
+
+    const r = await reportIdleRecipients(['su-roster-missing'], {});
+
+    expect(r.unknown).toEqual(['su-roster-missing']);
+    expect(r.idle).toEqual([]);
+    expect(r.confirmedDead).toEqual(['su-roster-missing']);
+    expect(resolveSessionStates).toHaveBeenCalledWith(
+      [{ ownerId: 'su-roster-missing' }],
+      { hydrateBatch: true, psuHostPositiveAuthority: true, selfWake: true },
+    );
+  });
+
+  it.each([
+    ['active loop', 'loop'],
+    ['standing event', 'event'],
+    ['missing self-wake measurement', undefined],
+  ] as const)('does not confirm an unrostered ended session with %s', async (_label, selfWake) => {
+    vi.mocked(listPresence).mockResolvedValue(presence());
+    vi.mocked(resolveSessionStates).mockResolvedValue(
+      new Map([['su-roster-missing', { ...verdict('ended'), ...(selfWake ? { selfWake } : {}) }]]),
+    );
+
+    const r = await reportIdleRecipients(['su-roster-missing'], {});
+
+    expect(r.unknown).toEqual(['su-roster-missing']);
+    expect(r.confirmedDead).toEqual([]);
+  });
+
+  it('does not confirm a roster-absent id when the ended verdict lacks positive liveness evidence', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence());
+    vi.mocked(resolveSessionStates).mockResolvedValue(
+      new Map([[
+        'su-roster-missing',
+        { ...verdict('ended'), selfWake: 'none', confirmLiveness: true, signalMissing: true },
+      ]]),
+    );
+
+    const r = await reportIdleRecipients(['su-roster-missing'], {});
+
+    expect(r.unknown).toEqual(['su-roster-missing']);
+    expect(r.confirmedDead).toEqual([]);
+  });
+});
+
 describe('classifyDormantSchedule (pure core — WI-5994)', () => {
   it('is null (plain idle) when there is no loop at all', () => {
     expect(classifyDormantSchedule(null)).toBeNull();

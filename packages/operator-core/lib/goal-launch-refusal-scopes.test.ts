@@ -51,9 +51,10 @@ describe('launch-refusal population labels stay pinned to their sources', () => 
     expect(budgetSpendScope('hand-entered-by-someone')).toBe(REFUSAL_SCOPES.BUDGET_UNVERIFIED);
   });
 
-  it('only an unpriced window is unmeasurable spend; an empty window is not', () => {
-    // D-011 clause 3: no attributed samples is "nothing spent" (admit, degraded),
-    // an unpriced attributed sample is a hole (refuse). A live number always wins.
+  it('this helper detects unpriced samples; the admission gate handles empty windows', () => {
+    // D-017: both unpriced samples and an empty authoritative window refuse
+    // admission. This helper identifies the unpriced branch only; a measured
+    // figure prevents that branch from claiming an unmeasured amount.
     expect(hasUnmeasuredPricedSpend('unpriced-lineage-samples', null)).toBe(true);
     expect(hasUnmeasuredPricedSpend('no-lineage-samples', null)).toBe(false);
     expect(hasUnmeasuredPricedSpend(null, null)).toBe(false);
@@ -93,6 +94,7 @@ describe('launch-refusal population labels stay pinned to their sources', () => 
       REFUSAL_SCOPES.BUDGET_UNVERIFIED,
       REFUSAL_SCOPES.BUDGET_UNMEASURABLE,
       REFUSAL_SCOPES.BUDGET_UNATTRIBUTED,
+      REFUSAL_SCOPES.BUDGET_NO_SAMPLES,
       REFUSAL_SCOPES.BUDGET_MEASUREMENT_FAILED,
       REFUSAL_SCOPES.LIVE_AGENTS_IN_GOAL,
       REFUSAL_SCOPES.LIVE_AGENTS_IN_FLEET,

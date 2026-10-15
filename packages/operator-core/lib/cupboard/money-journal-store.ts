@@ -24,6 +24,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   MICROS_PER_CENT,
   daoShareCents,
+  splitMicrosDecimal,
   journalEntryForMovement,
   validateJournalEntry,
   type ExternalRef,
@@ -220,12 +221,16 @@ interface RollupRow {
 }
 
 function rollupFromRow(row: RollupRow, accrualIds: readonly string[]): MicrosRollup {
+  const total = splitMicrosDecimal(String(row.total_micros));
+  const rounding = splitMicrosDecimal(String(row.rounding_micros));
   return {
     rollupId: row.rollup_id,
     currency: row.currency,
-    totalMicros: toSafeInt(row.total_micros, 'total_micros'),
+    totalMicros: total.micros,
     settledCents: toSafeInt(row.settled_cents, 'settled_cents'),
-    roundingMicros: toSafeInt(row.rounding_micros, 'rounding_micros'),
+    roundingMicros: rounding.micros,
+    ...(total.exact.includes('.') ? { totalMicrosExact: total.exact } : {}),
+    ...(rounding.exact.includes('.') ? { roundingMicrosExact: rounding.exact } : {}),
     accrualIds: new Set(accrualIds),
   };
 }
@@ -247,8 +252,77 @@ export async function readMicrosRollup(
   return rollupFromRow(rows[0]!, accruals.map((a) => a.accrual_id));
 }
 
+export interface MoneyJournalPopulation {
+  readonly entries: readonly { readonly workspaceId: string; readonly entry: JournalEntry }[];
+  readonly rollups: readonly { readonly workspaceId: string;
+    readonly rollup: Omit<MicrosRollup, 'accrualIds'>; readonly accrualIds: readonly string[] }[];
+  readonly accruals: readonly { readonly workspaceId: string; readonly rollupId: string;
+    readonly accrualId: string; readonly microsExact: string; readonly recordedAtMs: number }[];
+}
+
+/** Full LOCAL journal/rollup/accrual population in the caller's read-only
+ * transaction, including legacy workspaces and all currencies/times. Reuses
+ * the existing hosted funding lock bridge; no separate runner or transaction.
+ * A hosted funding composition must acquire its global account lock first.
+ * Retain these locks through reconciliation and commit/rollback; never invoke
+ * a journal/accrual/settlement writer under this SHARE population phase.
+ * Local identities do not authenticate provider account/invoice/generation
+ * joins, paid settlement, cash backing, or completeness outside this database.
+ */
+export async function readLockedMoneyJournalPopulation(sql: Sql): Promise<MoneyJournalPopulation> {
+  const [isolation] = await sql<{ transaction_isolation: string }[]>`SHOW transaction_isolation`;
+  if (isolation?.transaction_isolation !== 'read committed') throw new Error('journal population requires read committed');
+  const [started] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+  await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population()`;
+  const rollupRows = await sql<(RollupRow & { workspace_id: string })[]>`
+    SELECT workspace_id, rollup_id, currency, total_micros, settled_cents, rounding_micros
+      FROM harness_shared.money_journal_rollups
+     ORDER BY workspace_id COLLATE "C", rollup_id COLLATE "C"`;
+  const accrualRows = await sql<{ workspace_id: string; rollup_id: string; accrual_id: string;
+    micros: string | number; recorded_at: Date }[]>`
+    SELECT workspace_id, rollup_id, accrual_id, micros, recorded_at
+      FROM harness_shared.money_journal_micro_accruals
+     ORDER BY workspace_id COLLATE "C", rollup_id COLLATE "C", accrual_id COLLATE "C"`;
+  const entryRows = await sql<(EntryRow & { workspace_id: string })[]>`
+    SELECT workspace_id, entry_id, occurred_at, currency, movement, external_ref_kind, external_ref, rollup_id, memo
+      FROM harness_shared.money_journal_entries ORDER BY posting_seq`;
+  const lineRows = await sql<(LineRow & { workspace_id: string })[]>`
+    SELECT workspace_id, entry_id, line_no, account, side, cents FROM harness_shared.money_journal_lines`;
+  // Entry/rollup ids are workspace-local. Never merge identical ids from two
+  // workspaces or manufacture an account mapping from their names/amounts.
+  const linesByEntry = new Map<string, LineRow[]>();
+  for (const row of lineRows) {
+    const key = JSON.stringify([row.workspace_id, row.entry_id]);
+    const group = linesByEntry.get(key) ?? [];
+    group.push(row); linesByEntry.set(key, group);
+  }
+  const entries = entryRows.map(row => {
+    const entry = assemble([row], linesByEntry.get(JSON.stringify([row.workspace_id, row.entry_id])) ?? [])[0]!;
+    return Object.freeze({ workspaceId: row.workspace_id, entry: Object.freeze({ ...entry,
+      externalRef: Object.freeze(entry.externalRef), lines: Object.freeze(entry.lines.map(line => Object.freeze(line))) }) });
+  });
+  const accruals = accrualRows.map(row => Object.freeze({ workspaceId: row.workspace_id,
+    rollupId: row.rollup_id, accrualId: row.accrual_id, microsExact: splitMicrosDecimal(String(row.micros)).exact,
+    recordedAtMs: row.recorded_at.getTime() }));
+  const accrualsByRollup = new Map<string, string[]>();
+  for (const row of accruals) {
+    const key = JSON.stringify([row.workspaceId, row.rollupId]);
+    const ids = accrualsByRollup.get(key) ?? []; ids.push(row.accrualId); accrualsByRollup.set(key, ids);
+  }
+  const rollups = rollupRows.map(row => {
+    const { accrualIds: _ids, ...rollup } = rollupFromRow(row, []);
+    return Object.freeze({ workspaceId: row.workspace_id, rollup: Object.freeze(rollup),
+      accrualIds: Object.freeze(accrualsByRollup.get(JSON.stringify([row.workspace_id, row.rollup_id])) ?? []) });
+  });
+  const [finished] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+  if (!started?.transaction_id || finished?.transaction_id !== started.transaction_id) {
+    throw new Error('journal population requires one transaction');
+  }
+  return Object.freeze({ entries: Object.freeze(entries), rollups: Object.freeze(rollups), accruals: Object.freeze(accruals) });
+}
+
 export type AccrueStoreResult =
-  | { ok: true; duplicate: boolean; totalMicros: number; roundingMicros: number }
+  | { ok: true; duplicate: boolean; totalMicros: number; roundingMicros: number; totalMicrosExact?: string; roundingMicrosExact?: string }
   | { ok: false; code: 'invalid-micros' | 'invalid-rollup' | 'currency-mismatch'; detail: string };
 
 /** Accrue one per-use charge (micros) into its roll-up. Idempotent on accrualId. */
@@ -258,12 +332,17 @@ export async function accrueUsageMicros(
     readonly rollupId: string;
     readonly accrualId: string;
     readonly micros: number;
+    readonly microsExact?: string;
     readonly currency?: string;
   },
   deps: MoneyJournalStoreDeps = {},
 ): Promise<AccrueStoreResult> {
   const currency = input.currency ?? 'USD';
-  if (!Number.isSafeInteger(input.micros) || input.micros <= 0) {
+  let amount: ReturnType<typeof splitMicrosDecimal>;
+  try { amount = splitMicrosDecimal(input.microsExact ?? String(input.micros)); }
+  catch { return { ok: false, code: 'invalid-micros', detail: 'invalid exact micro amount' }; }
+  if (!Number.isSafeInteger(input.micros) || amount.micros !== input.micros || amount.exact === '0'
+      || (input.microsExact !== undefined && amount.exact !== input.microsExact)) {
     return { ok: false, code: 'invalid-micros', detail: `micros must be a positive whole number, got ${String(input.micros)}` };
   }
   if (input.rollupId.length === 0 || input.rollupId.length > 256 || input.accrualId.length === 0 || input.accrualId.length > 256) {
@@ -285,35 +364,43 @@ export async function accrueUsageMicros(
     }
     const inserted = await tx`
       INSERT INTO harness_shared.money_journal_micro_accruals (workspace_id, rollup_id, accrual_id, micros)
-      VALUES (${input.workspaceId}, ${input.rollupId}, ${input.accrualId}, ${input.micros})
+      VALUES (${input.workspaceId}, ${input.rollupId}, ${input.accrualId}, ${amount.exact})
       ON CONFLICT (workspace_id, rollup_id, accrual_id) DO NOTHING
       RETURNING accrual_id`;
     if (inserted.length === 0) {
+      const [prior] = await tx<{ micros: string }[]>`
+        SELECT micros FROM harness_shared.money_journal_micro_accruals
+         WHERE workspace_id = ${input.workspaceId} AND rollup_id = ${input.rollupId} AND accrual_id = ${input.accrualId}`;
+      if (!prior || splitMicrosDecimal(String(prior.micros)).exact !== amount.exact) {
+        return { ok: false, code: 'invalid-micros', detail: 'accrual replay mismatch' } as const;
+      }
+      const saved = rollupFromRow(rollup, []);
       return {
         ok: true,
         duplicate: true,
-        totalMicros: toSafeInt(rollup.total_micros, 'total_micros'),
-        roundingMicros: toSafeInt(rollup.rounding_micros, 'rounding_micros'),
+        totalMicros: saved.totalMicros, roundingMicros: saved.roundingMicros,
+        totalMicrosExact: saved.totalMicrosExact, roundingMicrosExact: saved.roundingMicrosExact,
       } as const;
     }
     const [updated] = await tx<RollupRow[]>`
       UPDATE harness_shared.money_journal_rollups
-         SET total_micros = total_micros + ${input.micros},
-             rounding_micros = rounding_micros + ${input.micros},
+         SET total_micros = total_micros + ${amount.exact}::numeric,
+             rounding_micros = rounding_micros + ${amount.exact}::numeric,
              updated_at = now()
        WHERE workspace_id = ${input.workspaceId} AND rollup_id = ${input.rollupId}
        RETURNING rollup_id, currency, total_micros, settled_cents, rounding_micros`;
+    const saved = rollupFromRow(updated!, []);
     return {
       ok: true,
       duplicate: false,
-      totalMicros: toSafeInt(updated!.total_micros, 'total_micros'),
-      roundingMicros: toSafeInt(updated!.rounding_micros, 'rounding_micros'),
+      totalMicros: saved.totalMicros, roundingMicros: saved.roundingMicros,
+      totalMicrosExact: saved.totalMicrosExact, roundingMicrosExact: saved.roundingMicrosExact,
     } as const;
   });
 }
 
 export type SettleStoreResult =
-  | { ok: true; settledCents: number; roundingMicros: number; entry: JournalEntry | null; duplicate: boolean }
+  | { ok: true; settledCents: number; roundingMicros: number; roundingMicrosExact?: string; entry: JournalEntry | null; duplicate: boolean }
   | JournalRejection
   | { ok: false; code: 'unknown-rollup' | 'entry-id-conflict'; detail: string };
 
@@ -335,6 +422,12 @@ export async function settleUsageRollup(
 ): Promise<SettleStoreResult> {
   const result = await db(deps).begin(async (rawTx) => {
     const tx = rawTx as unknown as Tx;
+    // Take the rollup WRITE table lock before inserting a journal entry.
+    // FOR UPDATE alone takes only ROW SHARE: a population reader could then
+    // hold SHARE on rollups while waiting for our entry write, and our later
+    // rollup UPDATE would wait for that reader. Accrual already takes this
+    // mode with its first rollup INSERT; settlement must use the same order.
+    await tx`LOCK TABLE harness_shared.money_journal_rollups IN ROW EXCLUSIVE MODE`;
     const [rollup] = await tx<RollupRow[]>`
       SELECT rollup_id, currency, total_micros, settled_cents, rounding_micros
         FROM harness_shared.money_journal_rollups
@@ -342,15 +435,17 @@ export async function settleUsageRollup(
        FOR UPDATE`;
     if (!rollup) return { ok: false, code: 'unknown-rollup', detail: `no roll-up ${input.rollupId}` } as const;
     const prior = await existingEntry(tx, input.workspaceId, input.entryId);
-    const roundingMicros = toSafeInt(rollup.rounding_micros, 'rounding_micros');
+    const rounding = splitMicrosDecimal(String(rollup.rounding_micros));
+    const roundingMicros = rounding.micros;
+    const roundingMicrosExact = rounding.exact.includes('.') ? rounding.exact : undefined;
     if (prior) {
       if (prior.rollupId !== input.rollupId) {
         return { ok: false, code: 'entry-id-conflict', detail: `entry ${input.entryId} settles a different roll-up` } as const;
       }
-      return { ok: true, settledCents: 0, roundingMicros, entry: prior, duplicate: true } as const;
+      return { ok: true, settledCents: 0, roundingMicros, roundingMicrosExact, entry: prior, duplicate: true } as const;
     }
     const cents = Math.floor(roundingMicros / MICROS_PER_CENT);
-    if (cents === 0) return { ok: true, settledCents: 0, roundingMicros, entry: null, duplicate: false } as const;
+    if (cents === 0) return { ok: true, settledCents: 0, roundingMicros, roundingMicrosExact, entry: null, duplicate: false } as const;
     const built = journalEntryForMovement({
       entryId: input.entryId,
       occurredAtMs: input.occurredAtMs,
@@ -369,10 +464,12 @@ export async function settleUsageRollup(
              updated_at = now()
        WHERE workspace_id = ${input.workspaceId} AND rollup_id = ${input.rollupId}
        RETURNING rollup_id, currency, total_micros, settled_cents, rounding_micros`;
+    const remainder = splitMicrosDecimal(String(updated!.rounding_micros));
     return {
       ok: true,
       settledCents: cents,
-      roundingMicros: toSafeInt(updated!.rounding_micros, 'rounding_micros'),
+      roundingMicros: remainder.micros,
+      ...(remainder.exact.includes('.') ? { roundingMicrosExact: remainder.exact } : {}),
       entry: built.entry,
       duplicate: false,
     } as const;

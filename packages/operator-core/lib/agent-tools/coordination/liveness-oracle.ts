@@ -41,6 +41,14 @@
  *      (`psuHostAuthority: true`) because findLiveHost cannot distinguish "never
  *      pty-hosted here" from "host dead" — enable it only for cohorts known to be
  *      psu-pty-hosted (leader-brief's desktop fleet members).
+ *   7. host condition (parked-agent-census P-011(a), D-011) — a live psu host
+ *      whose child CANNOT take a turn (dead provider auth, quota/403, an unbound
+ *      respawn successor, deliveries stuck pending) is `suspect` with a `wedged`
+ *      reason, never `parked`/`recorded`. The live process is not evidence the
+ *      session can think. Same judge as the pickup sweep and the stalled-loops
+ *      guard (turn-proof.ts judgeHostTail, D-007). On by default wherever
+ *      `psuHostPositiveAuthority` trusts the host; opt in elsewhere with
+ *      `hostCondition: true`.
  *
  * Callers with only ownerIds (the send/handoff MISS path) can set
  * `hydratePerId: true` to fill heartbeat/stale/host/pid/source from each
@@ -52,6 +60,7 @@
  * liveness-parity.test.ts (P-001).
  */
 
+import { hostname } from 'node:os';
 import { probeProcessLiveness, getPresence, listPresence } from './presence';
 import {
   fetchWakeability,
@@ -74,9 +83,27 @@ import {
   type SelfWakeSignals,
   type SelfWakeSource,
 } from './presence-selfwake';
-import { RECORDED_SESSION_SOURCE } from './recorded-sessions';
-import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
-import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { RECORDED_ENDED_SESSION_SOURCE, RECORDED_SESSION_SOURCE } from './recorded-sessions';
+import {
+  advSessionsByCoordOwner,
+  DISPLAY_TERMINAL_LAUNCH,
+  endedRecordedOwnerIds,
+  recordedLiveOwnerIds,
+  type AdvSessionRow,
+} from '../../adv-sessions';
+import { findLiveHost, findLiveHostAsync, readHostEventTailAsync } from '../../events/await/psu-pty-discovery';
+import {
+  corroborateHostAuth,
+  type AuthCorroborationHost,
+  type ReadProviderErrorAfter,
+} from '../../events/await/host-auth-corroboration';
+import {
+  hostRecoverableCondition,
+  pickupHostView,
+  type HostTailEvent,
+  type PickupHostRecord,
+  type PickupRecoverable,
+} from '../../events/await/turn-proof';
 
 /** The per-owner inputs a caller supplies. Everything beyond `ownerId` is
  *  optional — a missing leg degrades exactly like the legacy call sites did
@@ -148,6 +175,13 @@ export interface LivenessVerdict {
    * declare one dead — the ceiling that does declare is ACTIVITY_DEAD_MS.
    */
   warmIdle?: boolean;
+  /**
+   * P-011(a): the host condition that stops this session taking a turn, when the
+   * host-condition leg ran and found one. Present only with `sessionState:
+   * 'suspect'`. Absent means "not wedged OR not checked", never "checked healthy";
+   * a supervisor that needs the distinction must have enabled the leg.
+   */
+  wedged?: PickupRecoverable;
   /** WI-4400: draining/suspect verdicts need a fresh required wake before a
    *  coordinator assumes the owner is dead or alive. */
   confirmLiveness: boolean | null;
@@ -212,6 +246,24 @@ export interface ResolveSessionStatesOpts {
    * noticing a stranded member is precisely their job.
    */
   selfWake?: boolean;
+  /**
+   * P-011(a) / D-011: judge each live psu host's condition and report a session
+   * that cannot take a turn as `suspect` + `wedged`. Defaults to
+   * `psuHostPositiveAuthority`: a caller that trusts a live host as proof of life
+   * must also hear when that host's child cannot think, or the positive rescue
+   * hands a dead-auth codex the same `parked` as a healthy one. Costs one 64 KB
+   * async tail read per candidate (a non-cup subject with a live host whose
+   * verdict is parked / draining / recorded), 16 at a time.
+   */
+  hostCondition?: boolean;
+  /** DI seam for the host-condition leg's lifecycle-tail read. */
+  readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>;
+  /**
+   * DI seam for the host-condition leg's codex rollout read. Used only for a host whose record
+   * omits `authBlocked` (pre-P-004 host code): the missing field is unknown, not `false`
+   * (WI-6554700010008461, host-auth-corroboration.ts).
+   */
+  readProviderErrorFn?: ReadProviderErrorAfter;
   // ── DI seams (unit tests / bounded callers) ──
   fetchWakeabilityFn?: (ids: string[]) => Promise<Map<string, WakeabilitySignals>>;
   fetchSelfWakeFn?: (ids: string[]) => Promise<Map<string, SelfWakeSignals>>;
@@ -220,6 +272,8 @@ export interface ResolveSessionStatesOpts {
   fetchRecordedEndedFn?: (ids: string[]) => Promise<Set<string>>;
   probePidFn?: (r: { host?: string | null; pid?: number | null }) => boolean | null;
   findHostFn?: (ownerId: string) => unknown | null;
+  /** Async production lookup so psu-pty filesystem waits stay off request event loops. */
+  findHostAsyncFn?: (ownerId: string) => Promise<unknown | null>;
   getPresenceFn?: (
     ownerId: string,
   ) => Promise<{
@@ -242,6 +296,35 @@ export interface ResolveSessionStatesOpts {
   } | null>;
   /** Batched counterpart to `getPresenceFn`, injectable for PG-free tests. */
   listPresenceFn?: typeof listPresence;
+  /** Latest exact incarnation per owner, only after a successful presence miss.
+   * Reuses the recorded-session reader; no presence mutation or lifecycle write. */
+  fetchRecordedSessionsFn?: (ids: string[]) => Promise<Map<string, AdvSessionRow>>;
+}
+
+/** WI-10005725: true only when `host` (a `findLiveHost` result) names a live psu
+ *  host under a CONCRETE pid that differs from the recorded one, i.e. positive
+ *  evidence that the dead recorded pid belongs to a predecessor incarnation. */
+function liveHostSupersedesRecordedPid(
+  host: unknown,
+  recordedPid: number | null | undefined,
+): boolean {
+  if (host == null || typeof host !== 'object') return false;
+  const hostPid = (host as { pid?: unknown }).pid;
+  return (
+    typeof hostPid === 'number' && Number.isInteger(hostPid) && hostPid > 0 && hostPid !== recordedPid
+  );
+}
+
+/** A PID without a non-empty host is not bound to a machine and cannot support
+ *  an OS liveness probe. Keep unknown-host evidence fail-closed even when a
+ *  recorded session row happens to carry a PID. */
+function hasProbeablePidBinding(
+  subject: Pick<LivenessSubject, 'host' | 'pid'>,
+): subject is Pick<LivenessSubject, 'host' | 'pid'> & { host: string; pid: number } {
+  return (
+    typeof subject.host === 'string' && subject.host.trim().length > 0 &&
+    typeof subject.pid === 'number' && Number.isInteger(subject.pid) && subject.pid > 0
+  );
 }
 
 /** PURE: one subject's verdict from already-fetched signals — the single place
@@ -306,7 +389,28 @@ export function deriveVerdict(
   // EPERM — returns `null`, which leaves `recorded` untouched. The generosity
   // the goal-holder predicate depends on is preserved for genuine ambiguity;
   // only a KNOWN-dead process loses it.
-  const pidConfirmedDead = probePidFn({ host: subject.host, pid: subject.pid }) === false;
+  //
+  // WI-10005725: `subject.pid` is the RECORDED liveness pid (the supervisor
+  // beat's launcher pid, carried on the presence row), not necessarily the
+  // CURRENT incarnation's. A session relaunched under a REUSED ownerId
+  // (fleet:respawn-member, a goal-holder respawn, a successor launch) keeps the
+  // predecessor's pid until its own beat lands, and a beat that never lands
+  // leaves it there. That ESRCH describes the predecessor, yet it outranks
+  // `liveTurn` in deriveSessionState, so a working successor read `ended`
+  // (measured: a respawned fleet leader at lastActiveSecAgo 6). A dead recorded
+  // pid therefore ends the session only when no identity-verified psu host for
+  // this owner is alive under a DIFFERENT concrete pid. `findLiveHost` already
+  // checks owner identity, socket, pid-alive and the psu-host cmdline, so such
+  // a host is positive evidence of a current incarnation. A witness with no
+  // concrete pid, or the same pid, is not: the probe stays authoritative and
+  // EI-21572355077403526's killed-holder trap stays closed. The host lookup
+  // runs only on this rare dead-pid path.
+  const recordedPidDead =
+    hasProbeablePidBinding(subject) &&
+    probePidFn({ host: subject.host, pid: subject.pid }) === false;
+  const pidConfirmedDead =
+    recordedPidDead &&
+    !liveHostSupersedesRecordedPid(psuHost?.findHostFn(subject.ownerId), subject.pid);
   const recordedLiveOnly =
     !w.wakeable &&
     !w.liveTurn &&
@@ -315,13 +419,16 @@ export function deriveVerdict(
       recordedLive.has(subject.ownerId) ||
       (psuHostLive && psuHost?.positive === true));
   let sessionState: SessionState;
-  if (recordedLiveOnly) {
-    sessionState = 'recorded';
-  } else if (recordedEnded.has(subject.ownerId)) {
+  if (
+    recordedEnded.has(subject.ownerId) ||
+    subject.source === RECORDED_ENDED_SESSION_SOURCE
+  ) {
     // A warm heartbeat and a lingering wake-await can outlive the process.
     // Positive session-log death evidence settles that ambiguity immediately;
     // claims still held remain suspect until their cleanup is reconciled.
     sessionState = subject.claimsHeld ? 'suspect' : 'ended';
+  } else if (recordedLiveOnly) {
+    sessionState = 'recorded';
   } else {
     sessionState = deriveSessionState({
       stale: !!stale,
@@ -431,6 +538,34 @@ export function unknownVerdict(subject: LivenessSubject, nowMs: number): Livenes
   };
 }
 
+/**
+ * States the host-condition leg may move to `suspect`. `live` is excluded: a
+ * live turn is direct proof the session is taking turns, and a host flag that
+ * contradicts it is stale. `suspect`/`ended` are already non-actionable, and
+ * `null` is the in-band unknown, which a host reading must not invent.
+ */
+const WEDGE_ELIGIBLE: ReadonlySet<SessionState> = new Set<SessionState>(['parked', 'draining', 'recorded']);
+
+/**
+ * PURE (P-011(a), D-011): apply a host condition to an already-derived verdict.
+ * A session whose host reports it cannot take a turn is `suspect` and names the
+ * condition in `wedged`; every other verdict is returned unchanged.
+ */
+export function applyHostCondition(
+  verdict: LivenessVerdict,
+  condition: PickupRecoverable | null,
+): LivenessVerdict {
+  if (condition == null || verdict.sessionState == null || !WEDGE_ELIGIBLE.has(verdict.sessionState)) {
+    return verdict;
+  }
+  return {
+    ...verdict,
+    sessionState: 'suspect',
+    wedged: condition,
+    confirmLiveness: needsLivenessConfirmation('suspect'),
+  };
+}
+
 /** A bare owner id has no presence-derived liveness evidence to feed the
  *  state machine. In particular, `fetchWakeability` deliberately emits a
  *  `wakeable:false/liveTurn:false` row for every requested id, so that
@@ -439,9 +574,8 @@ function hasPresenceSignal(subject: LivenessSubject): boolean {
   return (
     subject.heartbeatAt != null ||
     subject.stale != null ||
-    subject.host != null ||
-    subject.pid != null ||
-    subject.source != null
+    !!subject.host?.trim() ||
+    !!subject.source?.trim()
   );
 }
 
@@ -479,9 +613,11 @@ export async function resolveSessionStates(
   const fetchRecorded = opts.fetchRecordedLiveFn ?? recordedLiveOwnerIds;
   const fetchEnded = opts.fetchRecordedEndedFn ?? endedRecordedOwnerIds;
   const probePidFn = opts.probePidFn ?? probeProcessLiveness;
-  const findHostFn = opts.findHostFn ?? findLiveHost;
+  const explicitFindHostFn = opts.findHostFn;
+  const findHostAsyncFn = opts.findHostAsyncFn ?? findLiveHostAsync;
 
   let hydrated: readonly LivenessSubject[] = subjects;
+  const absentPresence = new Set<string>();
   if (opts.hydrateBatch) {
     const needsHydration = subjects.filter((s) => s.heartbeatAt == null && s.stale == null);
     if (needsHydration.length > 0) {
@@ -493,7 +629,10 @@ export async function resolveSessionStates(
         hydrated = subjects.map((s) => {
           if (s.heartbeatAt != null || s.stale != null) return s;
           const p = byOwner.get(s.ownerId);
-          if (!p) return s;
+          if (!p) {
+            absentPresence.add(s.ownerId);
+            return s;
+          }
           return {
             ...s,
             heartbeatAt: p.heartbeatAt,
@@ -516,7 +655,10 @@ export async function resolveSessionStates(
         if (s.heartbeatAt != null || s.stale != null) return s;
         try {
           const p = await getPresenceFn(s.ownerId);
-          if (!p) return s;
+          if (!p) {
+            absentPresence.add(s.ownerId);
+            return s;
+          }
           return {
             ...s,
             heartbeatAt: p.heartbeatAt,
@@ -539,6 +681,41 @@ export async function resolveSessionStates(
     );
   }
 
+  if (absentPresence.size > 0) {
+    try {
+      const missingIds = [...absentPresence];
+      const recorded = await (opts.fetchRecordedSessionsFn ??
+        ((ids: string[]) => advSessionsByCoordOwner(ids.length, ids)))(missingIds);
+      hydrated = hydrated.map((s) => {
+        if (!absentPresence.has(s.ownerId)) return s;
+        const r = recorded.get(s.ownerId);
+        if (!r || r.coordOwnerId !== s.ownerId) return s;
+        // adv_sessions has NO host column. Only a terminal-spawned row is
+        // local by construction (the existing isDeadTerminalLaunch contract).
+        // A caller-known host is retained, including remote hosts. Never turn
+        // an arbitrary recorded PID into local ESRCH evidence.
+        const host = s.host || (r.display === DISPLAY_TERMINAL_LAUNCH ? hostname() : null);
+        const localPid = host === hostname() && r.pid != null && r.pid > 0;
+        return {
+          ...s,
+          host,
+          pid: s.pid ?? r.pid,
+          agentRole: s.agentRole ?? r.role,
+          // started_at is an incarnation binding, NOT a heartbeat. Copying
+          // it here would manufacture hard-stale death for an unknown host.
+          // A locally-bound PID can use the existing recorded rescue; the
+          // oracle's affirmative ESRCH still outranks it, and a newer verified
+          // live host still supersedes a predecessor PID.
+          ...(localPid && r.endedAt == null && s.source == null
+            ? { source: RECORDED_SESSION_SOURCE }
+            : {}),
+        };
+      });
+    } catch {
+      // An unavailable recorded leg is unknown, not terminal evidence.
+    }
+  }
+
   const ids = hydrated.map((s) => s.ownerId);
   const fetchSelf = opts.fetchSelfWakeFn ?? fetchSelfWake;
   const [wakeability, recordedLive, recordedEnded, selfWake] = await Promise.all([
@@ -557,6 +734,29 @@ export async function resolveSessionStates(
       ? fetchSelf(ids).catch(() => new Map<string, SelfWakeSignals>())
       : Promise.resolve(new Map<string, SelfWakeSignals>()),
   ]);
+  const pidProbeByOwner = new Map<string, boolean | null>();
+  const hostLookupOwnerIds = new Set<string>();
+  for (const subject of hydrated) {
+    const pidResult = hasProbeablePidBinding(subject)
+      ? probePidFn({ host: subject.host, pid: subject.pid })
+      : null;
+    pidProbeByOwner.set(subject.ownerId, pidResult);
+    if (pidResult === false || (
+      opts.psuHostPositiveAuthority === true &&
+      subject.agentRole != null &&
+      subject.agentRole !== 'cup'
+    )) hostLookupOwnerIds.add(subject.ownerId);
+  }
+  const liveHostsByOwner = new Map<string, unknown | null>();
+  if (!explicitFindHostFn) {
+    const idsToLookup = [...hostLookupOwnerIds];
+    for (let i = 0; i < idsToLookup.length; i += 16) {
+      await Promise.all(idsToLookup.slice(i, i + 16).map(async (ownerId) => {
+        liveHostsByOwner.set(ownerId, await findHostAsyncFn(ownerId).catch(() => null));
+      }));
+    }
+  }
+  const findHostFn = explicitFindHostFn ?? ((ownerId: string) => liveHostsByOwner.get(ownerId) ?? null);
   const psuHost = {
     enabled: opts.psuHostAuthority === true || opts.psuHostPositiveAuthority === true,
     negative: opts.psuHostAuthority === true,
@@ -596,14 +796,110 @@ export async function resolveSessionStates(
         w,
         recordedLive,
         nowMs,
-        probePidFn,
+        (r) => pidProbeByOwner.has(s.ownerId) ? pidProbeByOwner.get(s.ownerId)! : probePidFn(r),
         psuHost,
         selfWake.get(s.ownerId),
         recordedEnded,
       ),
     );
   }
+
+  // P-011(a) / D-011: a live host is not proof the session can think. Judge the
+  // host's condition for every candidate the positive rescue (or the plain
+  // derivation) left looking actionable, with the SAME judge the pickup sweep and
+  // the stalled-loops guard use, and report a wedged one as `suspect`.
+  if (opts.hostCondition ?? opts.psuHostPositiveAuthority === true) {
+    await applyHostConditionLeg(out, hydrated, {
+      nowMs,
+      findHostFn,
+      findHostAsyncFn: explicitFindHostFn ? null : findHostAsyncFn,
+      readHostTailFn: opts.readHostTailFn,
+      readProviderErrorFn: opts.readProviderErrorFn,
+    });
+  }
   return out;
+}
+
+/** Dependencies of {@link applyHostConditionLeg}. */
+export interface HostConditionLegDeps {
+  nowMs: number;
+  /** Host lookup the verdicts were derived with (a pre-fetched map, or a DI fake). */
+  findHostFn: (ownerId: string) => unknown | null;
+  /** Fallback lookup for a subject `findHostFn` has no entry for. `null` = no
+   *  fallback (the caller already looked up every subject, or injected a fake). */
+  findHostAsyncFn?: ((ownerId: string) => Promise<unknown | null>) | null;
+  readHostTailFn?: (ownerId: string) => Promise<readonly HostTailEvent[]>;
+  readProviderErrorFn?: ReadProviderErrorAfter;
+}
+
+/**
+ * P-011(a) / D-011: THE host-condition leg, shared by every surface that trusts a
+ * live psu host as proof of life — `resolveSessionStates` (fleet:status,
+ * fleet:assignments, the send-miss report) AND the coord:presence snapshot, which
+ * derives its verdicts row by row with `deriveVerdict` and so never passed through
+ * `resolveSessionStates` (EI-25695434826164414: coord:presence kept reporting a
+ * dead-auth live-host session as `parked`).
+ *
+ * A live host is not proof the session can think. For every non-cup subject whose
+ * verdict is still actionable (WEDGE_ELIGIBLE) and that HAS a live host, judge the
+ * host's condition with the SAME judge the pickup sweep and the stalled-loops guard
+ * use, and replace the verdict with `applyHostCondition`'s. Mutates `verdicts` in
+ * place. Cost is bounded to that candidate set, 16 at a time.
+ */
+export async function applyHostConditionLeg(
+  verdicts: Map<string, LivenessVerdict>,
+  subjects: readonly { ownerId: string; agentRole?: string | null }[],
+  deps: HostConditionLegDeps,
+): Promise<void> {
+  const candidates = subjects.filter((s) => {
+    const v = verdicts.get(s.ownerId);
+    return (
+      s.agentRole != null &&
+      s.agentRole !== 'cup' &&
+      v?.sessionState != null &&
+      WEDGE_ELIGIBLE.has(v.sessionState)
+    );
+  });
+  for (let i = 0; i < candidates.length; i += 16) {
+    await Promise.all(
+      candidates.slice(i, i + 16).map(async (s) => {
+        let host = deps.findHostFn(s.ownerId);
+        if (host == null && deps.findHostAsyncFn) {
+          host = await deps.findHostAsyncFn(s.ownerId).catch(() => null);
+        }
+        if (host == null || typeof host !== 'object') return;
+        const condition = await judgeHostCondition(s.ownerId, host, deps);
+        const v = verdicts.get(s.ownerId);
+        if (v) verdicts.set(s.ownerId, applyHostCondition(v, condition));
+      }),
+    );
+  }
+}
+
+/**
+ * P-011(a) / D-011: judge ONE live host's turn-taking condition — the per-subject
+ * step of {@link applyHostConditionLeg}, exported so a PURE fold (fleet-roster's
+ * `foldFleetRoster`) can have its async caller precompute the condition and then
+ * apply it with {@link applyHostCondition}. One judge, so every surface that
+ * trusts a live host agrees on what "cannot take a turn" means.
+ *
+ * Returns `null` for a host that can take a turn (or a non-object host record).
+ */
+export async function judgeHostCondition(
+  ownerId: string,
+  host: unknown,
+  deps: Pick<HostConditionLegDeps, 'nowMs' | 'readHostTailFn' | 'readProviderErrorFn'>,
+): Promise<PickupRecoverable | null> {
+  if (host == null || typeof host !== 'object') return null;
+  const readTail = deps.readHostTailFn ?? ((id: string) => readHostEventTailAsync(id));
+  // Best-effort like the pickup sweep: an unreadable tail is "no tail
+  // reading", which can still surface the record's own auth/quota flags
+  // but never invents an unbound or stuck verdict.
+  const tail = await readTail(ownerId).catch(() => [] as HostTailEvent[]);
+  // A host record without `authBlocked` predates P-004: corroborate from the codex
+  // rollout rather than read the missing field as healthy (WI-6554700010008461).
+  const judged = await corroborateHostAuth(host as AuthCorroborationHost, deps.readProviderErrorFn);
+  return hostRecoverableCondition(pickupHostView(judged as PickupHostRecord, tail, deps.nowMs));
 }
 
 /**

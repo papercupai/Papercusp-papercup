@@ -2,6 +2,41 @@ import { describe, expect, it, vi, beforeEach, beforeAll, afterAll } from 'vites
 import { knownQueryNamesV2, isRegisteredV2, resolveNamedQueryV2, NAME_NOT_FOUND, jsonSafeRows } from './index';
 import { readWorkItemAdmissionSnapshot } from '../work-items-admission-promoter';
 
+describe('Learning canonical detail provider-free prerequisite', () => {
+  it.each(['mem0', 'hybrid-pg', 'custom'])('reads %s through its own corpus and preserves owner unsealing', async choice => {
+    const entry = { id: 'selected-memory', text: 'sealed-source', scope: 'hive:selected' };
+    const canonicalRead = vi.fn(async () => [entry]);
+    const available = vi.fn(async () => ({ ok: choice === 'custom', reason: 'provider-unavailable' }));
+    const get = vi.fn(async () => entry);
+    const unseal = vi.fn(async (rows: Array<typeof entry>) => rows.map(row => ({ ...row, text: 'owner-readable' })));
+    const sql = {};
+    vi.doMock('../memory/backend-selection', () => ({ currentMemoryBackendChoice: () => choice }));
+    vi.doMock('../memory/backend', () => ({ getMemoryBackend: () => ({ available, get }) }));
+    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'private-workspace' }));
+    vi.doMock('../personal-vault/shared-store-seal', () => ({ unsealRowsForOwner: unseal }));
+    vi.doMock('./learning-retain-read', async importOriginal => ({
+      ...await importOriginal<typeof import('./learning-retain-read')>(),
+      listCanonicalRetainMemoriesPage: canonicalRead,
+    }));
+    try {
+      const rows = await resolveNamedQueryV2('learning.retainDetail', { kind: 'memory', id: entry.id, hive: 'selected' });
+      expect(rows).toEqual([expect.objectContaining({ id: entry.id, body: 'owner-readable' })]);
+      expect(unseal).toHaveBeenCalledWith([entry], expect.objectContaining({ workspaceId: 'private-workspace' }));
+      if (choice === 'custom') {
+        expect(canonicalRead).not.toHaveBeenCalled();
+        expect(available).toHaveBeenCalledOnce(); expect(get).toHaveBeenCalledWith(entry.id);
+      } else {
+        expect(canonicalRead).toHaveBeenCalledWith(sql, ['hive:selected'], { window: null, limit: 1, id: entry.id });
+        expect(available).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled();
+      }
+    } finally {
+      for (const module of ['../memory/backend-selection', '../memory/backend', '@papercusp/db-org',
+        '../workspace-registry', '../personal-vault/shared-store-seal', './learning-retain-read']) vi.doUnmock(module);
+    }
+  });
+});
+
 describe('jsonSafeRows (BigInt → Number for the JSON.stringify rest-query serializer)', () => {
   it('coerces a BigInt id so the row is JSON-serializable (the user_actions 500 class)', () => {
     const out = jsonSafeRows([{ id: 42n, kind: 'tool', startedAt: 1700000000000 }]);
@@ -103,14 +138,20 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
     const executedSql: unknown[][] = [];
     const fakeSql = Object.assign(
       vi.fn((...args: unknown[]) => {
-        const strings = args[0] as TemplateStringsArray;
-        const statement = Array.isArray(strings) ? strings.join(' ') : '';
-        // postgres.js invokes the same callable for composable SQL fragments and
-        // executed statements. Only top-level statements consume a fixture row.
-        if (/^\s*SELECT d\.blocked_ref\b/.test(statement)) return {};
-        if (!/\b(?:SELECT|WITH|INSERT|UPDATE|DELETE)\b/i.test(statement)) return {};
-        executedSql.push(args);
-        return Promise.resolve(responses.shift() ?? []);
+        // postgres.js executes on await, not template construction. Nested
+        // fragments can contain SELECT too; they must not consume result rows.
+        return {
+          then(resolve: (rows: unknown[]) => void) {
+            executedSql.push(args);
+            const statement = (args[0] as TemplateStringsArray).join(' ');
+            const responseIndex = statement.includes('ar.tokens_in') ? 0
+              : statement.includes('AS latency_sample_size') ? 1
+                : statement.includes('AS population') ? 2
+                  : statement.includes('ar.census_before') ? 3 : -1;
+            if (responseIndex < 0) throw new Error(`Unexpected executed admission query: ${statement}`);
+            resolve(responses[responseIndex]!);
+          },
+        };
       }),
       {
         unsafe: vi.fn((value: string) => value),
@@ -128,7 +169,10 @@ describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', (
     // Recurrence is now part of the readiness projection's one CTE-backed row,
     // so this snapshot performs four top-level reads rather than a fifth query.
     expect(executedSql).toHaveLength(4);
-    expect(executedSql[0]?.slice(1)).toEqual(
+    const runsRead = executedSql.find(([strings]) =>
+      (strings as TemplateStringsArray).join(' ').includes('ar.tokens_in'),
+    );
+    expect(runsRead?.slice(1)).toEqual(
       expect.arrayContaining(['ws-active', 'papercusp', 'promoter-tick', 'complete', 200]),
     );
     expect(snapshot.runs[0]).toMatchObject({
@@ -674,8 +718,10 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doMock('@papercusp/db-org', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/db-org')>()),
       getOrgPg: () => ({
-        sql: async () => {
-          throw Object.assign(new Error('relation "hive_members" does not exist'), { code: '42P01' });
+        sql: (strings: TemplateStringsArray | string) => {
+          // Identifiers are composed synchronously; only a statement read fails.
+          if (typeof strings === 'string') return strings;
+          return Promise.reject(Object.assign(new Error('relation "hive_members" does not exist'), { code: '42P01' }));
         },
       }),
     }));
@@ -811,8 +857,9 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doMock('@papercusp/db-org', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/db-org')>()),
       getOrgPg: () => ({
-        sql: async () => {
-          throw new Error('audit_log unavailable');
+        sql: (strings: TemplateStringsArray | string) => {
+          if (typeof strings === 'string') return strings;
+          return Promise.reject(new Error('audit_log unavailable'));
         },
       }),
     }));

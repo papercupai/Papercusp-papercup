@@ -59,6 +59,8 @@ export type RecipeUnresolvedCause =
   | { kind: 'fixed-claim-assignee'; tool: string }
   /** A recipe embeds one generated task-manager handle from a past/current run. */
   | { kind: 'volatile-task-id'; taskId: string }
+  /** A recipe pins a native session UUID in a session id slot rather than resolving it per run. */
+  | { kind: 'volatile-session-id-literal'; sessionId: string }
   /** Tools were referenced but NO call could be statically resolved (dynamic/unsupported access form). */
   | { kind: 'unparsable-call-form'; tool: null };
 
@@ -149,7 +151,19 @@ const VOLATILE_COORDINATION_OWNER_ID =
   /\bsu-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{4,64})\b/i;
 
 export function findVolatileCoordinationOwnerId(script: string): string | null {
-  return script.match(VOLATILE_COORDINATION_OWNER_ID)?.[0] ?? null;
+  const direct = script.match(VOLATILE_COORDINATION_OWNER_ID)?.[0];
+  if (direct) return direct;
+
+  // Condition keys commonly carry JSON values in URI-encoded form. In that
+  // representation the owner id is preceded/followed by an encoded quote
+  // (`%22`), so the raw text's neighbouring `2` characters suppress the
+  // word-boundary checks above even though the decoded value is a literal
+  // coordination owner id. Treat a complete percent escape as a separator
+  // while preserving the existing guard against ids embedded in words.
+  const encoded = script.match(
+    /(?:^|[^a-z0-9]|%[0-9a-f]{2})(su-(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{4,64}))(?![a-z0-9_])/i,
+  );
+  return encoded?.[1] ?? null;
 }
 
 /**
@@ -198,6 +212,29 @@ const PERSISTED_CHECKPOINT_LOG_PATH = /(?:^|\/)\.papercusp\/checkpoint-logs\/[^/
 /** Quoted literals, skipping any template that interpolates (`$` excluded): a
  *  path BUILT at runtime is derived-from-live-state and therefore fine. */
 const SCRIPT_STRING_LITERAL = /'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`\\$]*)`/g;
+
+/**
+ * Native agent sessions use UUID-shaped ids, optionally prefixed by their
+ * source (`claude:<uuid>`). A fixed value in a sessionId/session_id slot names
+ * one past or current reporter, so reusing the recipe can quietly inspect the
+ * wrong person's activity. Keep this slot-scoped: unrelated stable UUIDs in a
+ * recipe are not session authority. Runtime values and validated `inputs`
+ * bindings do not match the static-literal prefix.
+ */
+const VOLATILE_SESSION_ID_LITERAL =
+  /^(?:[a-z][a-z0-9_-]*:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SESSION_ID_LITERAL_PREFIX =
+  /(?:\b(?:const|let|var)\s+[\w$]*session_?ids?\s*=\s*(?:\[\s*)?|\bsession_?ids?\s*:\s*(?:\[\s*)?)$/i;
+
+export function findVolatileSessionIdLiteral(script: string): string | null {
+  for (const match of script.matchAll(SCRIPT_STRING_LITERAL)) {
+    const value = match[1] ?? match[2] ?? match[3];
+    if (!value || !VOLATILE_SESSION_ID_LITERAL.test(value)) continue;
+    const prefix = script.slice(0, match.index);
+    if (SESSION_ID_LITERAL_PREFIX.test(prefix)) return value;
+  }
+  return null;
+}
 
 /**
  * The run-scoped ephemeral artifact path a script PINS, or null.
@@ -397,6 +434,14 @@ export async function deriveRecipeAuthority(script: string): Promise<RecipeAutho
   if (!unresolvedCause) {
     const taskId = findVolatileTaskIdLiteral(script);
     if (taskId) unresolvedCause = { kind: 'volatile-task-id', taskId };
+  }
+
+  // Native session IDs are invocation-specific even though they are UUIDs
+  // rather than task-manager handles. A literal in a session-id slot remains
+  // stale across reporters and must not be recommended as a generic recipe.
+  if (!unresolvedCause) {
+    const sessionId = findVolatileSessionIdLiteral(script);
+    if (sessionId) unresolvedCause = { kind: 'volatile-session-id-literal', sessionId };
   }
 
   // A coordination recipe must resolve its target owner from the current

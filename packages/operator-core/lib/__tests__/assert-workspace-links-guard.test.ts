@@ -20,7 +20,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { buildSync } from 'esbuild';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
 import { findMissingWorkspaceLinks } from '../../../../scripts/assert-workspace-links.mjs';
@@ -67,6 +69,32 @@ const ALL = {
 };
 
 describe('assert-workspace-links guard detector (EI-12894)', () => {
+  it('does not run its CLI or exit an importing host bundle', () => {
+    root = scaffold({ ...ALL, linked: ['@x/a', '@x/b', 'solo'] });
+    const repo = resolve(import.meta.dirname, '../../../..');
+    const script = join(repo, 'scripts/assert-workspace-links.mjs');
+    const bundle = buildSync({ stdin: { contents: `import { findMissingWorkspaceLinks } from ${JSON.stringify(script)};
+      console.log(JSON.stringify({ imported: true, missing: findMissingWorkspaceLinks(process.argv[3]) }));`,
+      resolveDir: repo }, bundle: true, platform: 'node', format: 'esm', write: false,
+      define: { __PAPERCUSP_BUNDLED_SIDECAR__: 'true' } });
+    const path = join(root, 'host.mjs');
+    writeFileSync(path, bundle.outputFiles[0].text);
+    const child = spawnSync(process.execPath, [path, '--root', root], { encoding: 'utf8', timeout: 15_000 });
+    expect(child.error).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout.trim()).toBe(JSON.stringify({ imported: true, missing: [] }));
+  });
+
+  it('still executes directly and reports missing workspace links', () => {
+    root = scaffold({ ...ALL, linked: ['@x/a', 'solo'] });
+    const script = resolve(import.meta.dirname, '../../../../scripts/assert-workspace-links.mjs');
+    const child = spawnSync(process.execPath, [script, '--root', root], { encoding: 'utf8', timeout: 15_000 });
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(1);
+    expect(child.stderr).toContain('@x/b');
+    expect(child.stderr).not.toContain('@x/a  (');
+  });
+
   it('is GREEN when every root workspace has its node_modules link', () => {
     root = scaffold({ ...ALL, linked: ['@x/a', '@x/b', 'solo'] });
     expect(findMissingWorkspaceLinks(root)).toEqual([]);

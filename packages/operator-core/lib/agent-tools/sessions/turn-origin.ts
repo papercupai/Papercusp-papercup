@@ -228,6 +228,9 @@ function classifyFromText(
     case 'owner-turn':
     case 'owner-dialog':
       return { verdict, origin };
+    case 'unknown':
+      // The classifier itself could not establish authorship: never the owner.
+      return unknownTurnOrigin('the turn text did not establish its authorship');
   }
 }
 

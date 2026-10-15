@@ -10,6 +10,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 
 const EXECUTION_MODULE_URL = new URL(
   '../../packages/operator-core/lib/resource-governor/execution.ts',
@@ -153,8 +154,52 @@ function procCpuMicros(pid) {
   }
 }
 
-function processTreePids(rootPid) {
-  if (process.platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) return [rootPid];
+/**
+ * Above this many pids the per-pid children walk stops paying for itself (measured 2026-10-01:
+ * 390-620 ms on 1,600-3,850-pid churning trees, more than the host-wide scan), so the walk
+ * hands over to the scan.  Test trees are a handful of pids.
+ */
+export const GOVERNED_PROCESS_TREE_WALK_PID_CAP = 512;
+
+/**
+ * Children of one pid from its threads' `/proc/<pid>/task/<tid>/children` files.  Returns
+ * null when the kernel lacks CONFIG_PROC_CHILDREN, so the caller falls back to the scan;
+ * an exited pid reads as childless, exactly as the scan would see it.
+ */
+function procChildPids(pid) {
+  let tids;
+  try {
+    tids = readdirSync(`/proc/${pid}/task`);
+  } catch {
+    return [];
+  }
+  const children = [];
+  for (const tid of tids) {
+    let text;
+    try {
+      text = readFileSync(`/proc/${pid}/task/${tid}/children`, 'utf8');
+    } catch (error) {
+      if (error?.code === 'ENOENT' && tid === String(pid)) {
+        // The leader's task dir exists for as long as the pid does, so ENOENT on its children
+        // file means the file is unsupported, unless the pid exited in between.
+        try {
+          readdirSync(`/proc/${pid}/task`);
+        } catch {
+          return children;
+        }
+        return null;
+      }
+      continue; // A thread exited between readdir and read.
+    }
+    for (const token of text.split(/\s+/)) {
+      if (/^\d+$/.test(token)) children.push(Number(token));
+    }
+  }
+  return children;
+}
+
+/** The host-wide scan: one /proc/<pid>/status read per pid on the box, then a PPid join. */
+function scanProcessTreePids(rootPid) {
   const children = new Map();
   let entries;
   try {
@@ -181,6 +226,48 @@ function processTreePids(rootPid) {
     }
   }
   return result;
+}
+
+/** Breadth-first walk of ONE tree through its children files; null hands over to the scan. */
+function walkProcessTreePids(rootPid, pidCap, readChildren) {
+  const result = [rootPid];
+  const seen = new Set(result);
+  for (let index = 0; index < result.length; index += 1) {
+    const children = readChildren(result[index]);
+    if (children == null) return null;
+    for (const pid of children) {
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      result.push(pid);
+    }
+    if (result.length > pidCap) return null;
+  }
+  return result;
+}
+
+/**
+ * The pids of one process tree, root first, and how they were found.  WI-10004924: the scan reads
+ * /proc/<pid>/status for every pid on the host (~9.5k here, ~310 ms CPU per call) to find a few
+ * descendants, and the 250 ms sampler re-ran it back to back, burning ~0.5 core per test run.  The
+ * walk reads only the tree (0.3 ms on a 6-pid tree).  The scan stays as the fallback when the
+ * kernel lacks per-task children files or the tree outgrows the walk.  `method: 'scan'` forces it.
+ */
+export function resolveGovernedProcessTree(
+  rootPid,
+  { method = 'auto', pidCap = GOVERNED_PROCESS_TREE_WALK_PID_CAP, readChildren = procChildPids } = {},
+) {
+  if (process.platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) {
+    return { pids: [rootPid], method: 'none' };
+  }
+  if (method !== 'scan') {
+    const walked = walkProcessTreePids(rootPid, pidCap, readChildren);
+    if (walked != null) return { pids: walked, method: 'walk' };
+  }
+  return { pids: scanProcessTreePids(rootPid), method: 'scan' };
+}
+
+function processTreePids(rootPid) {
+  return resolveGovernedProcessTree(rootPid).pids;
 }
 
 /** Fail-soft aggregate resource snapshot for one child process tree. */
@@ -315,6 +402,9 @@ export function classifyGovernedTestProcessOutcome(outcome = {}) {
   }
   const code = outcome.code ?? outcome.status ?? null;
   const signal = outcome.signal ?? null;
+  if (outcome.error?.code === 'TEST_SCOPE_LAUNCH_FAILED') {
+    return { kind: 'cancel', reason: 'test scope admission failed before a trustworthy verdict was produced' };
+  }
   if (outcome.error && (code == null || code < 0 || output.trim() === '')) {
     return { kind: 'cancel', reason: `test process failed to start: ${outcome.error.message ?? outcome.error}` };
   }
@@ -405,7 +495,7 @@ export async function runGovernedTestProcess(options, run) {
   const workspaceId = await resolveGovernedWorkspaceId(options.workspaceId, env);
   const timeoutMs = options.timeoutMs;
   const leaseTtlMs = options.leaseTtlMs ?? api.governedExecutionLeaseTtlForTimeout?.(timeoutMs);
-  const operation = {
+  let operation = {
     workspaceId,
     namespace: options.namespace ?? 'test-process',
     owner: options.owner,
@@ -446,17 +536,80 @@ export async function runGovernedTestProcess(options, run) {
       // `started` first: a post-launch failure is never retried, however retryable the
       // error looks. Re-running tests is a worse outcome than surfacing the error.
       if (started || attempt >= maxAttempts || !isRetryableAdmissionFailure(error)) throw error;
+      const startFailure = error?.governedAdmissionStartFailure;
+      if (startFailure) {
+        // A failed lease/start can leave an active or cancelled durable receipt.
+        // Only the canonical cleanup's confirmed cancellation of THIS key lets
+        // us renew it. A lost cleanup reply or mismatched evidence fails closed.
+        if (
+          startFailure.contractVersion !== 1 ||
+          startFailure.idempotencyKey !== operation.idempotencyKey ||
+          typeof startFailure.receiptId !== 'string' || !startFailure.receiptId ||
+          startFailure.state !== 'cancelled' ||
+          startFailure.cancellationVerified !== true
+        ) throw error;
+        operation = { ...operation, idempotencyKey: governedProcessIdempotencyKey(options.owner) };
+      }
       const delayMs = backoffBaseMs * 2 ** (attempt - 1);
       // A silent retry would hide fleet-wide DB contention — real signal about the box,
       // and an invisible mitigation is how a degradation becomes permanent.
       log(
         `${GOVERNED_ADMISSION_RETRY_MARKER} attempt=${attempt + 1}/${maxAttempts} ` +
           `pgCode=${admissionFailureCode(error) ?? 'unknown'} delayMs=${delayMs} ` +
-          `owner=${options.owner ?? 'unknown'}`,
+          `owner=${options.owner ?? 'unknown'}` +
+          (startFailure ? ` cancelledReceipt=${startFailure.receiptId} receiptRenewed=true` : ''),
       );
       await sleep(delayMs);
     }
   }
+}
+
+/** Execute a finite byte-input diagnostic under the existing process lifecycle.
+ * The child starts only after admission, receives its typed context, and keeps
+ * the receipt until execFile has observed exit and pipe EOF. Output and input
+ * stay in memory; callers persist only their own redacted diagnostics.
+ * @param {string} executable
+ * @param {string[]} args
+ * @param {Uint8Array} input
+ * @param {{ timeoutMs: number, maxBuffer: number, namespace: string, workspaceId?: string, owner?: string, env?: NodeJS.ProcessEnv, executionApi?: any }} options
+ * @returns {Promise<{status: number|null, signal: NodeJS.Signals|null, stdout: string, stderr: string, error?: {code: string}, actualDemand: any}>}
+ */
+export function selectGovernedByteProcessFailure(execError, inputError, inputByteLength, exitCode) {
+  if (execError) return execError;
+  // A command that consumes no input may close stdin before the empty write
+  // finishes. Its EPIPE says nothing about a successful child result.
+  if (inputByteLength === 0 && exitCode === 0 && inputError?.code === 'EPIPE') return undefined;
+  return inputError;
+}
+
+export async function executeGovernedByteProcess(executable, args, input, options) {
+  if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 ||
+      !Number.isSafeInteger(options.maxBuffer) || options.maxBuffer < 1)
+    throw new TypeError('Native diagnostic requires finite timeout and output bounds');
+  const demand = { cpuWeight: 1,
+    memoryBytes: Math.max(GOVERNED_TEST_PROCESS_DEFAULT_MEMORY_BYTES, input.byteLength + options.maxBuffer),
+    fileDescriptors: 3 };
+  return runGovernedTestProcess({
+    ...options, demand,
+    owner: options.owner ?? process.env.PAPERCUSP_SID ?? `native-diagnostic:${process.pid}`,
+    settle: result => result.error || result.status !== 0
+      ? { kind: 'cancel', reason: 'native diagnostic did not complete successfully' }
+      : { kind: 'release', actualDemand: result.actualDemand },
+  }, async (_context, childEnv) => await new Promise(resolveResult => {
+    const sampler = createGovernedProcessDemandSampler(demand);
+    let inputError;
+    const child = execFile(executable, args, {
+      env: childEnv, encoding: 'utf8', timeout: options.timeoutMs, maxBuffer: options.maxBuffer,
+    }, (error, stdout, stderr) => {
+      const failure = selectGovernedByteProcessFailure(error, inputError, input.byteLength, child.exitCode);
+      resolveResult({ status: child.exitCode, signal: child.signalCode, stdout, stderr,
+        error: failure && typeof failure.code === 'string' ? { code: failure.code } : undefined,
+        actualDemand: sampler.stop() });
+    });
+    sampler.attach(child.pid);
+    child.stdin?.on('error', error => { inputError = error; });
+    child.stdin?.end(input);
+  }));
 }
 
 /** The contention code that made a rejection retryable, for the retry marker. */

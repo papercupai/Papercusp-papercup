@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../../context-doors';
 import { RESULT_DOOR_TOKENS } from '../../../result-door';
+import { assemblePresenceSnapshot, type PresenceSnapshot } from '../presence-snapshot';
 import rosterTool, { EXPLICIT_LIVENESS_ROW_CAP } from './roster';
 
 // Mock dependencies
@@ -26,7 +27,7 @@ vi.mock('../presence-snapshot', async (importOriginal) => ({
   // pure row transforms, better exercised than stubbed.
   ...(await importOriginal<typeof import('../presence-snapshot')>()),
   resolvePresenceScope: vi.fn(async (ctx, args) => ({
-    scope: args.scope ?? 'hive',
+    scope: args.hive ? 'hive' : (args.scope ?? (args.targetedOwner ? 'workspace' : 'hive')),
     wsId: 'test-ws',
     potId: args.hive ?? 'test-hive',
   })),
@@ -219,6 +220,52 @@ describe('coord:roster', () => {
       });
     });
 
+    it('streams completed snapshot diagnostics before a later phase settles', async () => {
+      const metadata = vi.fn();
+      let finishSnapshot!: (snapshot: PresenceSnapshot) => void;
+      const pendingSnapshot = new Promise<PresenceSnapshot>((resolve) => {
+        finishSnapshot = resolve;
+      });
+      const diagnostic = {
+        phase: 'source' as const,
+        name: 'listPresence',
+        elapsedMs: 7,
+        status: 'ok' as const,
+      };
+      vi.mocked(assemblePresenceSnapshot).mockImplementationOnce(async (_resolved, opts) => {
+        opts?.onDiagnostic?.(diagnostic);
+        return pendingSnapshot;
+      });
+
+      const pendingCall = call(
+        { view: 'live', scope: 'hive' },
+        { workspaceId: 'test-ws', harnessSlug: 'test-harness', metadata },
+      );
+      await vi.waitFor(() => {
+        expect(metadata).toHaveBeenLastCalledWith(expect.objectContaining({
+          snapshotDiagnostics: expect.objectContaining({ stages: [diagnostic] }),
+        }));
+      });
+
+      finishSnapshot({
+        as_of: '2026-07-01T10:40:00.000Z',
+        scope: 'hive',
+        summary: {
+          active: 0,
+          stale: 0,
+          federated: 0,
+          wakeable: 0,
+          onDesktop: 0,
+          viewerAttached: 0,
+          byState: { live: 0, parked: 0, ended: 0, recorded: 0 },
+          byContextPressure: { high: 0, critical: 0 },
+        },
+        active: [],
+        etag: 'test-etag',
+      });
+      await pendingCall;
+    });
+
     it('should support scope=workspace', async () => {
       const { output } = await call(
         { view: 'live', scope: 'workspace' },
@@ -246,6 +293,13 @@ describe('coord:roster', () => {
       const active = output.active as Array<{ ownerId: string }>;
       expect(active).toHaveLength(1);
       expect(active[0]!.ownerId).toBe('agent-1');
+      expect(output.scope).toBe('workspace');
+
+      const narrowed = await call(
+        { view: 'live', owner: 'agent-1', scope: 'hive' },
+        { workspaceId: 'test-ws' },
+      );
+      expect(narrowed.output.scope).toBe('hive');
     });
 
     it('should report plan as unsupported instead of silently returning an unfiltered roster', async () => {

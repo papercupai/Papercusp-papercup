@@ -136,3 +136,81 @@ export function redactEvidenceUrl(raw: string): string {
 export function isForcedHttp1(protocol: string): boolean {
   return protocol.toLowerCase() === 'http/1.1';
 }
+
+export interface HostedWorkspaceAcceptanceTarget {
+  organizationId: string;
+  workspaceId: string;
+  hostId: string;
+}
+
+export interface HostedWorkspaceAcceptanceIdentity {
+  sessionId: string;
+  userId: string;
+  organizationId: string;
+  workspaceId: string;
+  permissionVersion: number;
+}
+
+function acceptanceRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('hosted acceptance identity record is missing');
+  return value as Record<string, unknown>;
+}
+
+function acceptanceIdentifier(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value !== value.trim())
+    throw new Error('hosted acceptance identity identifier is missing');
+  return value;
+}
+
+/** Retain only identity fields, never the cookie, email or upstream credentials. */
+export function readHostedWorkspaceAcceptanceIdentity(
+  response: unknown,
+  target: HostedWorkspaceAcceptanceTarget,
+): HostedWorkspaceAcceptanceIdentity {
+  const body = acceptanceRecord(response);
+  const session = acceptanceRecord(body.session);
+  const identity = {
+    sessionId: acceptanceIdentifier(session.sessionId),
+    userId: acceptanceIdentifier(session.userId),
+    organizationId: acceptanceIdentifier(session.organizationId),
+    workspaceId: acceptanceIdentifier(session.workspaceId),
+    permissionVersion: session.permissionVersion,
+  };
+  if (body.ok !== true || identity.organizationId !== target.organizationId ||
+    identity.workspaceId !== target.workspaceId ||
+    !Number.isSafeInteger(identity.permissionVersion) || Number(identity.permissionVersion) < 0)
+    throw new Error('hosted acceptance browser identity does not match the target');
+  return { ...identity, permissionVersion: Number(identity.permissionVersion) };
+}
+
+/** Join the server's actual channel binding before any guest command or file write. */
+export function readHostedWorkspaceAcceptanceBinding(
+  frame: unknown,
+  identity: HostedWorkspaceAcceptanceIdentity,
+  target: HostedWorkspaceAcceptanceTarget,
+  expected: { kind: 'pty' | 'desktop'; role: 'controller' | 'observer'; generation?: number },
+) {
+  const message = acceptanceRecord(frame);
+  const binding = acceptanceRecord(message.binding);
+  if (message.type !== 'session.bound' || message.protocol !== 'papercusp-hosted-workspace.v1' ||
+    message.kind !== expected.kind || message.role !== expected.role ||
+    binding.organizationId !== identity.organizationId ||
+    binding.organizationId !== target.organizationId ||
+    binding.customerWorkspaceId !== identity.workspaceId ||
+    binding.customerWorkspaceId !== target.workspaceId ||
+    binding.hostId !== target.hostId || binding.hostedSessionId !== identity.sessionId ||
+    !Number.isSafeInteger(binding.generation) || Number(binding.generation) < 1 ||
+    (expected.generation !== undefined && binding.generation !== expected.generation))
+    throw new Error('hosted acceptance connector binding does not match the browser and target');
+  return {
+    channelId: acceptanceIdentifier(message.channelId),
+    kind: expected.kind,
+    role: expected.role,
+    organizationId: identity.organizationId,
+    customerWorkspaceId: identity.workspaceId,
+    hostId: target.hostId,
+    hostedSessionId: identity.sessionId,
+    generation: Number(binding.generation),
+  };
+}

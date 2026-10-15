@@ -43,6 +43,9 @@ vi.mock('../../work-items', async (importOriginal) => ({
   resolveWorkItemRef: (...a: unknown[]) => resolveWorkItemRef(...a),
   linkWorkItem: (...a: unknown[]) => linkWorkItem(...a),
   subscribeWorkItem: (...a: unknown[]) => subscribeWorkItem(...a),
+  // D-035 agent-work door gate: the real lookup opens PG, which a unit test may not. null =
+  // the row IS agent work, so every case reaches the design-evidence gate it is testing.
+  readNonAgentWorkCategory: async () => null,
   SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
 }));
 
@@ -61,10 +64,6 @@ const getFlag = vi.fn();
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: (...a: unknown[]) => getFlag(...a),
   onFlagChange: () => {},
-}));
-const itemTestGate = vi.fn();
-vi.mock('../../harness-test-gate', () => ({
-  itemTestGate: (...a: unknown[]) => itemTestGate(...a),
 }));
 const specTestAdequacyCompletionGate = vi.fn();
 vi.mock('./spec-test-adequacy-gate', () => ({
@@ -680,8 +679,6 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     fireReactionInProcess.mockResolvedValue({ ok: true });
     attachCompletionEvidenceToSettledItem.mockReset();
     attachCompletionEvidenceToSettledItem.mockResolvedValue({ outcome: 'recorded', workItem: null });
-    itemTestGate.mockReset();
-    itemTestGate.mockResolvedValue({ ok: true });
     specTestAdequacyCompletionGate.mockReset();
     specTestAdequacyCompletionGate.mockResolvedValue({ ok: true, applicable: false, checked: [] });
 

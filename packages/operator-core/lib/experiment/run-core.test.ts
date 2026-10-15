@@ -8,6 +8,7 @@ import type { ExperimentLedger, ExperimentLedgerRow } from './ledger';
 function canned(): ReplayBatteryResult {
   return {
     batteryId: 'b1',
+    costMeasured: true,
     outcomes: [
       {
         runId: 'b1:baseline:c1:r0',
@@ -261,6 +262,28 @@ describe('runExperiment tier default + escalation discipline (P-040/P-041)', () 
 });
 
 describe('runExperiment ledger write (P-050)', () => {
+  it.each([false, true])('records unknown-cost arms but emits no scorecard (unknown=%s)', async (unknown) => {
+    resetTestRegistry();
+    _resetExperimentRegistration();
+    registerExperimentDescriptors();
+    registerTest({
+      id: 'chargefixture', summary: 'fake governed cost boundary', kind: 'component', fidelityTier: 'live', costClass: 'high', knobSlice: ['overlay'],
+      metrics: { signals: [], rubricDimensions: ['d1'], rubricRef: 'cost-fixture-quality' },
+      async run() { return {
+        testId: 'chargefixture', tier: 'live', baselineId: BASELINE_ID,
+        arms: [{ id: BASELINE_ID, label: 'baseline', meanScore: 8, cells: 1, scored: 1, costUsd: 0.04, costMeasured: !unknown }],
+        comparison: null, winner: null, totalCostUsd: 0.04, costMeasured: !unknown, budgetExhausted: false, scorecardScores: { d1: 8 },
+      }; },
+    });
+    const rows: ExperimentLedgerRow[] = [];
+    const captureScorecard = vi.fn(async () => undefined);
+    const out = await runExperiment(input({ testId: 'chargefixture', tier: 'live', escalation: { offlineSignalRunId: 'fixture-offline' }, arms: [{ id: 'cand', knobs: { 'overlay.role': 'x' } }] }), { workspaceId: 'ws' }, deps({ governorPreflight: async () => ({ allow: true, remainingUsd: 1 }), ledger: { record: async (row) => { rows.push(row); } }, captureScorecard }));
+    expect(out.ok).toBe(true);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].arms[0].costMeasured).toBe(!unknown);
+    expect(captureScorecard).toHaveBeenCalledTimes(unknown ? 0 : 1);
+  });
+
   beforeEach(() => {
     resetTestRegistry();
     _resetExperimentRegistration();

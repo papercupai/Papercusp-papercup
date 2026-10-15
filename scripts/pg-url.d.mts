@@ -8,11 +8,13 @@
  * the caller believed was redacted.
  *
  * @param {string[]} argv
- * @returns {{ mode: 'url' | 'export' | 'describe' | 'help', verify: boolean } | { error: string }}
+ * @returns {{ mode: 'url' | 'export' | 'describe' | 'help' | 'exec', verify: boolean, root?: string, command?: string[] } | { error: string }}
  */
 export function parseArgs(argv: string[]): {
-    mode: "url" | "export" | "describe" | "help";
+    mode: "url" | "export" | "describe" | "help" | "exec";
     verify: boolean;
+    root?: string;
+    command?: string[];
 } | {
     error: string;
 };
@@ -36,6 +38,6 @@ export function shellSingleQuote(v: string): string;
 export function formatExportLines(url: string): string;
 /**
  * @param {string[]} argv
- * @returns {Promise<0 | 1 | 2>} the process exit code
+ * @returns {Promise<number>} the process exit code
  */
-export function main(argv: string[]): Promise<0 | 1 | 2>;
+export function main(argv: string[]): Promise<number>;

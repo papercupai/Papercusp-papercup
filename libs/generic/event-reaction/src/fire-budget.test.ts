@@ -36,7 +36,9 @@ function harness(rule: Partial<ReactionRule<TestEvent>> = {}) {
 
   const schedule = (budget?: FireBudget<TestEvent>, durable?: DurableSeam<TestEvent>) =>
     scheduleReaction<TestEvent>({
-      rule: { id: 'r1', on: 'demo:tool', fire: 'sink:tool', source: 'plugin:acme', ...rule },
+      // A CONTRIBUTED rule by default: capability-scoped, as every plugin/standalone
+      // install path registers one. First-party cases override `capability` away.
+      rule: { id: 'r1', on: 'demo:tool', fire: 'sink:tool', source: 'plugin:acme', capability: 'plugin:acme', ...rule },
       fire: 'sink:tool',
       args: { echoed: 'WI-1' },
       event: { kind: 'demo:tool', item: 'WI-1' },
@@ -60,15 +62,40 @@ describe('scheduleReaction — per-contributor fire budget (P-030 c)', () => {
     await flush();
 
     expect(budget).toHaveBeenCalledOnce();
-    // `rule.source` IS the budget key — a host that keys on anything else budgets
-    // the wrong thing entirely.
+    // A contributed rule's `source` IS the budget key — a host that keys on
+    // anything else budgets the wrong thing entirely.
     expect(budget).toHaveBeenCalledWith(expect.objectContaining({ contributor: 'plugin:acme' }));
     expect(h.fireInProcess).toHaveBeenCalledOnce();
     expect(h.onFailure).not.toHaveBeenCalled();
   });
 
-  it('passes contributor:null for a first-party rule that declares no source', async () => {
+  // REGRESSION GUARD (WI-10005204): first-party rules carry a provenance `source`
+  // too. Keying on it put every same-label built-in into one shared 500/60m bucket
+  // and made the host count its ledger on every built-in fire (~157/s live from the
+  // cache-tag ECA rule, source 'events-file').
+  it('passes contributor:null for a first-party rule even when it carries a provenance source', async () => {
+    const h = harness({ source: 'events-file', capability: undefined });
+    const budget = vi.fn<FireBudget<TestEvent>>(async () => ({ allow: true }));
+
+    await h.schedule(budget);
+    await flush();
+
+    expect(budget).toHaveBeenCalledWith(expect.objectContaining({ contributor: null }));
+    expect(h.fireInProcess).toHaveBeenCalledOnce();
+  });
+
+  it('never leaves a contributed rule unbudgeted: no source falls back to its rule id', async () => {
     const h = harness({ source: undefined });
+    const budget = vi.fn<FireBudget<TestEvent>>(async () => ({ allow: true }));
+
+    await h.schedule(budget);
+    await flush();
+
+    expect(budget).toHaveBeenCalledWith(expect.objectContaining({ contributor: 'rule:r1' }));
+  });
+
+  it('passes contributor:null for a first-party rule that declares no source', async () => {
+    const h = harness({ source: undefined, capability: undefined });
     const budget = vi.fn<FireBudget<TestEvent>>(async () => ({ allow: true }));
 
     await h.schedule(budget);

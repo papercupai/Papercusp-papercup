@@ -6,6 +6,7 @@ import type {
   ExternalTriggerAdminSnapshot,
   ExternalTriggerBindingAdminRow,
 } from '@papercusp/operator-core/lib/external-triggers/admin';
+import type { BlueprintOperationHandle } from '@papercusp/pot-app-seam';
 
 export type AutomationKind =
   | "triggered-plan"
@@ -85,6 +86,9 @@ export interface AutomationOperation {
   operationId: string;
   specificationRevision: string | null;
   target: AutomationOperationTarget | null;
+  /** Full receipt identity for the existing result/review/cancel lifecycle.
+   * Strip display-only target status fields before sending the strict handle. */
+  handle: BlueprintOperationHandle | null;
 }
 
 export interface AutomationItem {
@@ -433,6 +437,16 @@ function operationItem(
       operationId: target.operationId,
       specificationRevision: operation?.specificationRevision ?? null,
       target: operation?.target ?? null,
+      handle: operation ? {
+        workspaceId: operation.workspaceId,
+        harnessSlug: operation.harnessSlug,
+        receiptId: operation.receiptId,
+        operationId: operation.operationId,
+        specificationRevision: operation.specificationRevision,
+        target: operation.target.kind === 'work-item'
+          ? { kind: 'work-item', id: operation.target.id }
+          : { kind: 'plan', runId: operation.target.runId, instanceSlug: operation.target.instanceSlug },
+      } : null,
     },
     routine: null,
     triggers,

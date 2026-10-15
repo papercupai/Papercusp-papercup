@@ -5,13 +5,20 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   AUTHORED_UNCHECKED,
+  archiveTreeDiffs,
+  contiguousChunks,
   executeCutReclaim,
+  helperResult,
+  nextForkSlot,
+  parseHelperFrames,
   gatherCutReclaimPlan,
+  inspectAuthoredWork,
   isLeaseLive,
   lastReflogEntryMs,
   machineWrittenRule,
@@ -21,9 +28,12 @@ import {
   parseWorktreePorcelain,
   planCutReclaim,
   probeTree,
+  reclaimPathRefusal,
   renderReclaimPlan,
   resolveReclaimTargets,
+  scanProcHolders,
   type HolderScan,
+  type ReclaimPhaseTiming,
   type ReclaimPlanInput,
   type ReclaimWorktree,
   type RetentionLease,
@@ -115,6 +125,21 @@ describe('lastReflogEntryMs', () => {
     expect(lastReflogEntryMs(path.join(dir, 'empty'))).toBeNull();
     fs.writeFileSync(path.join(dir, 'junk'), 'not a reflog line\n');
     expect(lastReflogEntryMs(path.join(dir, 'junk'))).toBeNull();
+  });
+});
+
+describe('reclaimPathRefusal — the executor rail independent of the plan (WI-10006139)', () => {
+  const canonical = '/w/papercusp';
+  const home = '/home/u';
+  it('refuses the canonical tree, any ancestor of it, home, any ancestor of home, and /', () => {
+    for (const p of [canonical, '/w', '/', home, '/home']) expect(reclaimPathRefusal(p, canonical, home)).not.toBeNull();
+  });
+  it('allows a sibling tree and a linked worktree NESTED inside the canonical tree', () => {
+    expect(reclaimPathRefusal('/w/papercusp-relcut-0023-win', canonical, home)).toBeNull();
+    expect(reclaimPathRefusal('/w/papercusp/.papercusp/worktrees/desktop-release-0.0.19', canonical, home)).toBeNull();
+    // a shared name prefix is not containment
+    expect(reclaimPathRefusal('/w/papercusp2', canonical, home)).toBeNull();
+    expect(reclaimPathRefusal('/home/u/.papercusp/relcut', canonical, home)).toBeNull();
   });
 });
 
@@ -377,6 +402,30 @@ describe('gather + execute against a real temporary repo', () => {
       ...extra,
     });
 
+  it('emits phase timings for a read-only plan when diagnostics are requested', async () => {
+    const phases: ReclaimPhaseTiming[] = [];
+    await gather({
+      listWorktrees: () => [wt(repo, { detached: false })],
+      onPhase: (event) => phases.push(event),
+    });
+
+    const expected = [
+      'worktree-enumeration',
+      'tree-probes',
+      'retention-leases',
+      'release-records',
+      'holder-scan',
+      'cheap-plan',
+      'authored-work',
+      'final-plan',
+      'interrupted-receipt-scan',
+    ];
+    expect(phases.filter((phase) => phase.stage === 'start').map((phase) => phase.phase)).toEqual(expected);
+    const finished = phases.filter((phase) => phase.stage === 'finish');
+    expect(finished.map((phase) => phase.phase)).toEqual(expected);
+    expect(finished.every((phase) => Number.isFinite(phase.elapsedMs) && phase.outcome === 'fulfilled')).toBe(true);
+  });
+
   it('only runs the git-heavy authored read for trees that survive the cheap checks', async () => {
     g(repo, 'worktree', 'add', '-q', '--detach', path.join(tmp, 'relcut-a'));
     g(repo, 'worktree', 'add', '-q', '--detach', path.join(tmp, 'relcut-held'));
@@ -388,6 +437,64 @@ describe('gather + execute against a real temporary repo', () => {
     expect(authoredWork).toHaveBeenCalledTimes(1);
     expect(authoredWork).toHaveBeenCalledWith(path.join(tmp, 'relcut-a'), repo);
     expect(plan.verdicts.find((v) => v.path.endsWith('relcut-a'))?.disposition).toBe('named-only');
+  });
+
+  it('inspects a named target without probing unrelated trees', async () => {
+    const selected = path.join(tmp, 'selected');
+    const other = path.join(tmp, 'unrelated');
+    g(repo, 'worktree', 'add', '-q', '--detach', selected);
+    g(repo, 'worktree', 'add', '-q', '--detach', other);
+    const inspect = vi.fn(() => ({ ok: true as const, authored: [], machineWritten: 0 }));
+    const probeTarget = vi.fn((p: string) => {
+      if (p === other) throw new Error('unrelated tree must not be visited');
+      return probeTree(p, null);
+    });
+    const plan = await gather({ targets: [selected], probe: probeTarget, authoredWork: inspect });
+    expect(probeTarget).toHaveBeenCalledTimes(1);
+    expect(inspect).toHaveBeenCalledExactlyOnceWith(selected, repo);
+    expect(plan.verdicts.map((v) => v.path)).toEqual([selected]);
+    expect(plan.failClosed).toEqual([]);
+    const absent = await gather({ targets: [path.join(tmp, 'not-registered')] });
+    expect(absent.verdicts).toEqual([]);
+    expect(absent.failClosed).toEqual([`target-not-inspectable:${path.join(tmp, 'not-registered')}`]);
+  });
+
+  it('preserves containment protection when a nested worktree is outside the target selection', async () => {
+    const parent = path.join(tmp, 'parent');
+    const nested = path.join(parent, 'nested');
+    g(repo, 'worktree', 'add', '-q', '--detach', parent);
+    g(repo, 'worktree', 'add', '-q', '--detach', nested);
+    const inspect = vi.fn(() => ({ ok: true as const, authored: [], machineWritten: 0 }));
+    const plan = await gather({ targets: [parent], authoredWork: inspect });
+    expect(plan.verdicts).toHaveLength(1);
+    expect(plan.verdicts[0]?.reasons).toContain(`contains-worktree:${nested}`);
+    expect(plan.verdicts[0]?.disposition).toBe('protected');
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it('runs the authored-work reads width-bounded and keeps each result with its own tree', async () => {
+    const trees = [1, 2, 3, 4, 5].map((i) => path.join(tmp, `relcut-${i}`));
+    for (const t of trees) g(repo, 'worktree', 'add', '-q', '--detach', t);
+    let inFlight = 0;
+    let peak = 0;
+    const authoredWork = vi.fn(async (tree: string) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 30));
+      inFlight--;
+      return { ok: true as const, authored: tree.endsWith('relcut-3') ? ['x.ts'] : [], machineWritten: 0 };
+    });
+    // calibration: width 1 is the old serial loop, and the instrument must read exactly 1
+    await gather({ authoredWork, authoredConcurrency: 1 });
+    expect(peak).toBe(1);
+    authoredWork.mockClear();
+    const plan = await gather({ authoredWork, authoredConcurrency: 2 });
+    expect(authoredWork).toHaveBeenCalledTimes(5);
+    // serial (the 54s dry-run, EI-24849983022443070) would peak at 1; unbounded at 5
+    expect(peak).toBe(2);
+    const byTree = new Map(plan.verdicts.map((v) => [path.basename(v.path), v]));
+    expect(byTree.get('relcut-3')?.reasons).toEqual(['authored:x.ts']);
+    for (const n of [1, 2, 4, 5]) expect(byTree.get(`relcut-${n}`)?.disposition).toBe('named-only');
   });
 
   it('dates a checkout by the newest reflog ENTRY, not the reflog file mtime a gc rewrites', () => {
@@ -455,6 +562,153 @@ describe('gather + execute against a real temporary repo', () => {
     expect(() => fs.lstatSync(tree)).toThrow();
   });
 
+  it('rediscovers failed physical deletion from the retained archive after the original path becomes prunable', async () => {
+    const parent = path.join(tmp, 'producer');
+    const tree = path.join(parent, 'source');
+    const offload = path.join(tmp, 'offload');
+    fs.mkdirSync(parent);
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.renameSync(parent, offload);
+    fs.symlinkSync(offload, parent);
+    const admin = g(tree, 'rev-parse', '--absolute-git-dir');
+    const rmrf = vi.fn(async () => { throw new Error('injected deletion failure'); });
+    const result = await executeCutReclaim(await gather(), [tree], {
+      scanHolders: () => verified,
+      archiveDir: path.join(ret, 'reclaim-archive'),
+      rmrf,
+    });
+    expect(result).toMatchObject({ ok: true, results: [{ removed: false, reason: expect.stringContaining('partial removal') }] });
+    expect(rmrf).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(admin)).toBe(true);
+    expect(fs.existsSync(tree)).toBe(false);
+    const next = await gather();
+    expect(next.skipped.prunable).toBe(1);
+    expect(next.interrupted).toHaveLength(1);
+    const residue = next.interrupted![0]!;
+    expect(residue).toMatchObject({ path: tree, realPath: path.join(offload, 'source'), adminDir: admin, state: 'trash-present' });
+    expect(fs.readFileSync(path.join(residue.trash, '.git'), 'utf8')).toContain(admin);
+    expect(fs.readFileSync(residue.archive, 'utf8')).toContain('## HEAD ');
+    expect(renderReclaimPlan(next)).toMatchObject({ interrupted: [residue] });
+    // A recovery receipt reports evidence; it does not confer deletion authority.
+    expect(await executeCutReclaim(next, [residue.trash])).toMatchObject({ ok: false, refused: true });
+    expect(fs.existsSync(residue.trash)).toBe(true);
+  });
+
+  it('keeps unfinished Git bookkeeping discoverable after physical deletion succeeds', async () => {
+    const tree = path.join(tmp, 'relcut-bookkeeping');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const admin = g(tree, 'rev-parse', '--absolute-git-dir');
+    const calls: string[] = [];
+    await executeCutReclaim(await gather(), [tree], {
+      scanHolders: () => verified,
+      archiveDir: path.join(ret, 'reclaim-archive'),
+      rmrf: async (p) => {
+        calls.push(p);
+        if (p === admin) throw new Error('injected bookkeeping failure');
+        await fs.promises.rm(p, { recursive: true, force: true });
+      },
+    });
+    expect(calls[0]).toContain('.reclaim-trash-');
+    expect(calls[1]).toBe(admin);
+    expect((await gather()).interrupted).toEqual([expect.objectContaining({ path: tree, state: 'bookkeeping-pending' })]);
+  });
+
+  it('refuses to rename when the retained removal receipt cannot be made durable', async () => {
+    const tree = path.join(tmp, 'relcut-receipt');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const rename = vi.fn(fs.renameSync);
+    const result = await executeCutReclaim(await gather(), [tree], {
+      scanHolders: () => verified,
+      archiveDir: path.join(ret, 'reclaim-archive'),
+      recordRemoval: () => { throw new Error('injected fsync failure'); },
+      rename,
+    });
+    expect(result).toMatchObject({ ok: true, results: [{ removed: false, reason: expect.stringContaining('removal receipt failed') }] });
+    expect(rename).not.toHaveBeenCalled();
+    expect(g(tree, 'rev-parse', 'HEAD')).toBe(g(repo, 'rev-parse', 'HEAD'));
+    expect((await gather()).interrupted).toEqual([]);
+  });
+
+  it('removes an offloaded tree beneath a symlinked parent without unlinking the missing leaf', async () => {
+    const parent = path.join(tmp, 'producer');
+    const tree = path.join(parent, 'source');
+    const offload = path.join(tmp, 'offloaded-producer');
+    fs.mkdirSync(parent);
+    fs.writeFileSync(path.join(parent, 'evidence.txt'), 'retained producer evidence');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.renameSync(parent, offload);
+    fs.symlinkSync(offload, parent);
+    const plan = await gather();
+    const adminDir = plan.verdicts.find((v) => v.path === tree)?.realPath;
+    expect(adminDir).toBe(path.join(offload, 'source'));
+    const unlink = vi.fn(fs.unlinkSync);
+    const res = await executeCutReclaim(plan, [tree], {
+      scanHolders: () => ({ verified: true, holders: new Map() }),
+      archiveDir: path.join(ret, 'archive'),
+      appendAudit: () => {},
+      unlink,
+    });
+    expect(res).toMatchObject({ ok: true, results: [{ path: tree, removed: true }] });
+    expect(unlink).not.toHaveBeenCalled();
+    expect(fs.lstatSync(parent).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(path.join(parent, 'evidence.txt'), 'utf8')).toBe('retained producer evidence');
+    expect(fs.existsSync(path.join(offload, 'source'))).toBe(false);
+    expect(fs.readdirSync(offload).filter((n) => n.startsWith('.reclaim-trash-'))).toEqual([]);
+    expect(g(repo, 'worktree', 'list', '--porcelain')).not.toContain(tree);
+    expect(fs.readdirSync(path.join(repo, '.git', 'worktrees'))).toEqual([]);
+  });
+
+  // WI-10006139: the planner offered `.papercusp/worktrees/desktop-release-0.0.19` (a linked
+  // worktree NESTED in the canonical tree) as named-only, and the executor then refused it as
+  // "overlaps the canonical tree" — a descendant is not the canonical tree or an ancestor.
+  it('removes a linked worktree nested INSIDE the canonical tree and leaves the canonical repo intact', async () => {
+    const tree = path.join(repo, '.papercusp', 'worktrees', 'desktop-release-0.0.19');
+    fs.mkdirSync(path.dirname(tree), { recursive: true });
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    expect(plan.verdicts.find((v) => v.path === tree)?.disposition).toBe('named-only');
+    const res = await executeCutReclaim(plan, [tree], {
+      scanHolders: () => ({ verified: true, holders: new Map() }),
+      archiveDir: path.join(ret, 'archive'),
+      appendAudit: () => {},
+    });
+    expect(res).toMatchObject({ ok: true, results: [{ path: tree, removed: true }] });
+    expect(fs.existsSync(tree)).toBe(false);
+    expect(fs.readdirSync(path.dirname(tree)).filter((n) => n.startsWith('.reclaim-trash-'))).toEqual([]);
+    expect(g(repo, 'worktree', 'list', '--porcelain')).not.toContain('desktop-release-0.0.19');
+    expect(fs.statSync(path.join(repo, '.git')).isDirectory()).toBe(true);
+    expect(g(repo, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('staging');
+  });
+
+  // WI-10006139: archiveTreeDiffs collected `git diff --binary HEAD` through the buffered git()
+  // helper (64 MB maxBuffer), so a cut tree whose staged sidecar diff was 158 MB could never be
+  // archived — and therefore never removed. The archive must stream, with no size ceiling.
+  it('archives a tracked diff larger than 64 MB (streamed, not buffered) and then removes the tree', async () => {
+    const tree = path.join(tmp, 'relcut-big-diff');
+    const blob = path.join(repo, 'sidecar.bin');
+    // --binary emits a forward AND a reverse literal; 32 MB of incompressible bytes each way
+    // base85-encodes to well over 64 MB (asserted below, so the test cannot pass vacuously).
+    fs.writeFileSync(blob, crypto.randomBytes(32 * 1024 * 1024));
+    g(repo, 'add', 'sidecar.bin');
+    g(repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'sidecar');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.writeFileSync(path.join(tree, 'sidecar.bin'), crypto.randomBytes(32 * 1024 * 1024));
+    const plan = await gather({ authoredWork: () => ({ ok: true as const, authored: [], machineWritten: 1 }) });
+    const res = await executeCutReclaim(plan, [tree], {
+      scanHolders: () => ({ verified: true, holders: new Map() }),
+      archiveDir: path.join(ret, 'archive'),
+      appendAudit: () => {},
+    });
+    expect(res).toMatchObject({ ok: true, results: [{ path: tree, removed: true }] });
+    const [archive] = fs.readdirSync(path.join(ret, 'archive'));
+    const archivePath = path.join(ret, 'archive', archive as string);
+    expect(fs.statSync(archivePath).size).toBeGreaterThan(64 * 1024 * 1024);
+    const head = fs.readFileSync(archivePath, 'utf8').slice(0, 4096);
+    expect(head).toContain('## HEAD ');
+    expect(head).toContain('GIT binary patch');
+    expect(fs.existsSync(tree)).toBe(false);
+  }, 120_000);
+
   it('refuses a protected target and removes nothing; a fresh holder hit aborts that tree', async () => {
     const tree = path.join(tmp, 'relcut-live');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
@@ -471,5 +725,304 @@ describe('gather + execute against a real temporary repo', () => {
     });
     expect(held).toMatchObject({ ok: true, results: [{ removed: false, reason: 'in use: pid 9 cwd' }] });
     expect(fs.existsSync(tree)).toBe(true);
+  });
+});
+
+// WI-10005315 (owner directive #1155): this module runs inside the operator host via
+// release:cut. On 2026-10-02 05:30Z its synchronous git (execFileSync per tree and per
+// submodule) held :3170's event loop for 24s and the sentinel SIGKILLed the host.
+describe('host event loop stays live during reclaim git + /proc work', () => {
+  let binDir: string;
+  let savedPath: string | undefined;
+  beforeEach(() => {
+    binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-slow-git-'));
+    // A `git` that takes 300ms and fails: one call is enough to observe whether the
+    // caller blocks the event loop while the child runs.
+    fs.writeFileSync(path.join(binDir, 'git'), '#!/bin/sh\nsleep 0.3\nexit 1\n', { mode: 0o755 });
+    savedPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ''}`;
+  });
+  afterEach(() => {
+    process.env.PATH = savedPath;
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  it('inspectAuthoredWork never blocks the event loop while git runs (a 20ms timer fires first)', async () => {
+    const order: string[] = [];
+    const timer = new Promise<void>((resolve) =>
+      setTimeout(() => {
+        order.push('timer');
+        resolve();
+      }, 20),
+    );
+    // A synchronous spawn finishes the whole 300ms git call before the timer can run,
+    // so 'inspect' would come first; an async spawn lets the loop service the timer.
+    const result = await inspectAuthoredWork(binDir, binDir, VERSION_PATHS).then((r) => {
+      order.push('inspect');
+      return r;
+    });
+    await timer;
+    expect(order).toEqual(['timer', 'inspect']);
+    expect(result.ok).toBe(false); // the fake git exits 1 → fails CLOSED, as before
+  });
+
+  it('archiveTreeDiffs is async and rejects (not throws synchronously) on a git failure', async () => {
+    const pending = archiveTreeDiffs(binDir, path.join(binDir, 'out', 'a.patch'));
+    expect(pending).toBeInstanceOf(Promise);
+    await expect(pending).rejects.toThrow();
+  });
+});
+
+describe('inspectAuthoredWork reads submodules width-bounded (EI-24849983022443070)', () => {
+  const SHA = 'a'.repeat(40);
+  let binDir: string;
+  let log: string;
+  let savedPath: string | undefined;
+  beforeEach(() => {
+    binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-subs-git-'));
+    log = path.join(binDir, 'calls.log');
+    fs.writeFileSync(
+      path.join(binDir, 'subs.txt'),
+      [1, 2, 3, 4, 5, 6].map((i) => ` ${SHA} sub/s${i} (heads/main)`).join('\n') + '\n',
+    );
+    // Each submodule status logs its start and end and holds 300ms, so the log ORDER
+    // shows how many ran at once without a wall-clock assertion. s6's commit is absent
+    // from the canonical checkout; RECLAIM_FAIL_SUB makes one submodule status fail.
+    fs.writeFileSync(
+      path.join(binDir, 'git'),
+      [
+        '#!/bin/sh',
+        'case "$*" in',
+        `  *"submodule status"*) cat '${path.join(binDir, 'subs.txt')}' ;;`,
+        `  *"rev-parse HEAD"*) echo ${SHA} ;;`,
+        '  *"for-each-ref"*) echo refs/heads/staging ;;',
+        '  *"--ignore-submodules=all"*)',
+        `    echo s >> '${log}'; sleep 0.3; echo e >> '${log}'`,
+        '    case "$*" in *"/$RECLAIM_FAIL_SUB "*) exit 1 ;; esac ;;',
+        '  *"cat-file"*) case "$*" in *sub/s6*) exit 1 ;; esac ;;',
+        'esac',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    savedPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ''}`;
+  });
+  afterEach(() => {
+    process.env.PATH = savedPath;
+    delete process.env.RECLAIM_FAIL_SUB;
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  const peakOverlap = () => {
+    let cur = 0;
+    let peak = 0;
+    for (const ev of fs.readFileSync(log, 'utf8').split('\n')) {
+      if (ev === 's') peak = Math.max(peak, ++cur);
+      else if (ev === 'e') cur--;
+    }
+    return peak;
+  };
+
+  it('overlaps submodule reads up to the width, never past it, and reports in submodule order', async () => {
+    const tree = path.join(binDir, 'tree');
+    // calibration: width 1 is the old serial loop, and the log instrument must read exactly 1
+    await inspectAuthoredWork(tree, path.join(binDir, 'canon'), VERSION_PATHS, { submoduleConcurrency: 1 });
+    expect(peakOverlap()).toBe(1);
+    fs.rmSync(log);
+    const result = await inspectAuthoredWork(tree, path.join(binDir, 'canon'), VERSION_PATHS, { submoduleConcurrency: 3 });
+    expect(result).toEqual({
+      ok: true,
+      authored: [`sub/s6@${SHA.slice(0, 10)} (commit absent from canonical checkout)`],
+      machineWritten: 0,
+    });
+    expect(fs.readFileSync(log, 'utf8').split('\n').filter((l) => l === 's')).toHaveLength(6);
+    const peak = peakOverlap();
+    expect(peak).toBeGreaterThanOrEqual(2); // a serial loop peaks at exactly 1
+    expect(peak).toBeLessThanOrEqual(3);
+  });
+
+  it('still fails CLOSED when one submodule read fails', async () => {
+    process.env.RECLAIM_FAIL_SUB = 's2';
+    const result = await inspectAuthoredWork(path.join(binDir, 'tree'), path.join(binDir, 'canon'), VERSION_PATHS);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('scanProcHolders (async /proc walk) against a fabricated proc root', () => {
+  let proc: string;
+  let held: string;
+  beforeEach(() => {
+    proc = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-proc-'));
+    held = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-held-'));
+    const self = path.join(proc, String(process.pid));
+    fs.mkdirSync(path.join(self, 'fd'), { recursive: true });
+    fs.symlinkSync(fs.realpathSync(process.cwd()), path.join(self, 'cwd'));
+    fs.symlinkSync(path.join(held, 'data.bin'), path.join(self, 'fd', '7'));
+    fs.mkdirSync(path.join(proc, 'self'));
+    fs.writeFileSync(path.join(proc, 'self', 'status'), `Name:\tnode\nNSpid:\t${process.pid}\n`);
+    fs.mkdirSync(path.join(proc, '999999')); // an unreadable/exited process: no links at all
+  });
+  afterEach(() => {
+    fs.rmSync(proc, { recursive: true, force: true });
+    fs.rmSync(held, { recursive: true, force: true });
+  });
+
+  it('finds an fd holder, sees its own cwd as the positive control, and returns a Promise', async () => {
+    const pending = scanProcHolders([{ key: held, prefixes: [held] }], proc);
+    expect(pending).toBeInstanceOf(Promise);
+    const scan = await pending;
+    expect(scan.verified).toBe(true);
+    expect(scan.holders.get(held)).toEqual([`pid ${process.pid} fd`]);
+  });
+
+  it('refuses verification in a nested PID namespace (a confident false idle otherwise)', async () => {
+    fs.writeFileSync(path.join(proc, 'self', 'status'), `Name:\tnode\nNSpid:\t${process.pid}\t12\n`);
+    const scan = await scanProcHolders([{ key: held, prefixes: [held] }], proc);
+    expect(scan.verified).toBe(false);
+    expect(scan.verified === false && scan.reason).toMatch(/nested-pid-namespace/);
+  });
+});
+
+describe('batched git helpers (EI-24849983022443070)', () => {
+  const N = '0123456789abcdef0123456789abcdef';
+  const frame = (tag: string, exit: number) => `\0${N} ${tag} ${exit}\0`;
+
+  it('splits framed output in order, keeps NUL-delimited bodies intact, drops unframed tail bytes', () => {
+    const body = '1 .M N... 100644 100644 100644 a b x.ts\0? we ird\nname\0';
+    const out = body + frame('status', 0) + 'abc' + frame('head', 0) + frame('contains', 1) + 'partial';
+    expect(parseHelperFrames(out, N)).toEqual([
+      { tag: 'status', exit: 0, out: body },
+      { tag: 'head', exit: 0, out: 'abc' },
+      { tag: 'contains', exit: 1, out: '' },
+    ]);
+  });
+
+  it('a frame forged with a different nonce stays inside the body', () => {
+    const forged = `? \0${'f'.repeat(32)} head 0\0\0`;
+    expect(parseHelperFrames(forged + frame('status', 0), N)).toEqual([{ tag: 'status', exit: 0, out: forged }]);
+    expect(() => parseHelperFrames('', 'not-hex(.*)')).toThrow(/hex/);
+  });
+
+  it('take() fails on a failed or missing section; exitOf() reports a failure without throwing', () => {
+    const r = helperResult(
+      [
+        { tag: 'a', exit: 0, out: 'ok' },
+        { tag: 'b', exit: 128, out: '' },
+      ],
+      '\nfatal: not a git repository\n',
+    );
+    expect(r.take('a')).toBe('ok');
+    expect(() => r.take('b')).toThrow('git b failed (exit 128): fatal: not a git repository');
+    expect(r.exitOf('b')).toBe(128);
+    expect(() => r.exitOf('c')).toThrow(/no 'c' section/);
+  });
+
+  it('nextForkSlot gives each fork its own event-loop turn: work queued after slot A runs before slot B', async () => {
+    const order: string[] = [];
+    const a = nextForkSlot().then(() => {
+      order.push('a');
+      setImmediate(() => order.push('turn-after-a'));
+    });
+    const b = nextForkSlot().then(() => order.push('b'));
+    await Promise.all([a, b]);
+    // independent setImmediate slots would run a and b in the same check phase: [a, b, turn-after-a]
+    expect(order).toEqual(['a', 'turn-after-a', 'b']);
+  });
+
+  it('contiguousChunks keeps order, never exceeds the part count, and handles empty input', () => {
+    expect(contiguousChunks([1, 2, 3, 4, 5, 6], 3)).toEqual([[1, 2], [3, 4], [5, 6]]);
+    expect(contiguousChunks([1, 2, 3, 4, 5], 2)).toEqual([[1, 2, 3], [4, 5]]);
+    expect(contiguousChunks([1, 2], 4)).toEqual([[1], [2]]);
+    expect(contiguousChunks([], 4)).toEqual([]);
+    expect(contiguousChunks([1, 2], 0)).toEqual([[1, 2]]);
+  });
+
+  describe('host spawn count', () => {
+    const SHA = 'b'.repeat(40);
+    let binDir: string;
+    let savedPath: string | undefined;
+    beforeEach(() => {
+      binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-spawns-'));
+      const subs = Array.from({ length: 30 }, (_, i) => ` ${SHA} sub/s${i} (heads/main)`).join('\n');
+      fs.writeFileSync(path.join(binDir, 'subs.txt'), subs + '\n');
+      // `sh` on PATH logs every HOST spawn of a helper, then hands over to the real shell.
+      fs.writeFileSync(
+        path.join(binDir, 'sh'),
+        `#!/bin/sh\necho sh >> '${path.join(binDir, 'host.log')}'\nexec /bin/sh "$@"\n`,
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(
+        path.join(binDir, 'git'),
+        [
+          '#!/bin/sh',
+          `echo git >> '${path.join(binDir, 'git.log')}'`,
+          'case "$*" in',
+          `  *"submodule status"*) cat '${path.join(binDir, 'subs.txt')}' ;;`,
+          `  *"rev-parse HEAD"*) echo ${SHA} ;;`,
+          '  *"for-each-ref"*) echo refs/heads/staging ;;',
+          '  *"--ignore-submodules=all"*) case "$*" in *"/s7 "*) printf "? new.ts\\000" ;; esac ;;',
+          'esac',
+          'exit 0',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      savedPath = process.env.PATH;
+      process.env.PATH = `${binDir}${path.delimiter}${savedPath ?? ''}`;
+    });
+    afterEach(() => {
+      process.env.PATH = savedPath;
+      fs.rmSync(binDir, { recursive: true, force: true });
+    });
+    const lines = (f: string) => fs.readFileSync(path.join(binDir, f), 'utf8').split('\n').filter(Boolean).length;
+
+    it('forks the host once per helper, not once per git call: 30 submodules cost 2 host spawns', async () => {
+      const result = await inspectAuthoredWork(path.join(binDir, 'tree'), path.join(binDir, 'canon'), VERSION_PATHS);
+      expect(result).toEqual({ ok: true, authored: ['sub/s7/new.ts'], machineWritten: 0 });
+      // positive control: the git work itself still happened, 4 top-level + 2 per submodule
+      expect(lines('git.log')).toBe(4 + 2 * 30);
+      expect(lines('host.log')).toBe(2);
+    });
+
+    it('a width of 3 costs exactly 3 submodule helpers', async () => {
+      await inspectAuthoredWork(path.join(binDir, 'tree'), path.join(binDir, 'canon'), VERSION_PATHS, {
+        submoduleConcurrency: 3,
+      });
+      expect(lines('host.log')).toBe(1 + 3);
+    });
+  });
+
+  it('reads a REAL submodule through the helper, including a path with a newline in it', async () => {
+    const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reclaim-realsub-')));
+    try {
+      const lib = path.join(tmp, 'lib');
+      const canon = path.join(tmp, 'canon');
+      const commit = (cwd: string, m: string) =>
+        g(cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', m);
+      for (const r of [lib, canon]) {
+        fs.mkdirSync(r);
+        g(r, 'init', '-q', '-b', 'staging');
+      }
+      commit(lib, 'lib root');
+      g(canon, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'libs/x');
+      commit(canon, 'add sub');
+      const tree = path.join(tmp, 'tree');
+      g(canon, 'worktree', 'add', '-q', '--detach', tree);
+      g(tree, '-c', 'protocol.file.allow=always', 'submodule', 'update', '-q', '--init');
+      fs.writeFileSync(path.join(tree, 'libs/x', 'we ird\nname.ts'), 'x');
+      const clean = await inspectAuthoredWork(canon, canon, VERSION_PATHS);
+      expect(clean).toEqual({ ok: true, authored: [], machineWritten: 0 });
+      const dirty = await inspectAuthoredWork(tree, canon, VERSION_PATHS);
+      expect(dirty).toEqual({ ok: true, authored: ['libs/x/we ird\nname.ts'], machineWritten: 0 });
+      // a submodule commit the canonical checkout lacks is authored work
+      commit(path.join(tree, 'libs/x'), 'local only');
+      const local = g(path.join(tree, 'libs/x'), 'rev-parse', 'HEAD');
+      const ahead = await inspectAuthoredWork(tree, canon, VERSION_PATHS);
+      expect(ahead.ok && ahead.authored).toContain(`libs/x@${local.slice(0, 10)} (commit absent from canonical checkout)`);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

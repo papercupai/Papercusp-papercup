@@ -18,22 +18,38 @@ import { currentContextTokensForOwner } from '../compaction-usage';
 
 export interface ContextRefreshDeps {
   estimate?: (ownerId: string) => Promise<number | null>;
-  writePgEstimate?: (ownerId: string, tokens: number) => Promise<void>;
+  writePgEstimate?: (
+    ownerId: string,
+    tokens: number,
+    expectedSession: { nativeSessionId: string | null; advSessionId?: number | null },
+  ) => Promise<boolean | void>;
   /** Native session id the host just spawned. When supplied, the refresh must
    *  prove the owner resolver has reached this successor before estimating. */
   expectedSessionId?: string | null;
   resolveSessionId?: (ownerId: string) => Promise<string | null>;
+  resolveSession?: (ownerId: string) => Promise<{
+    nativeSessionId: string | null;
+    advSessionId?: number | null;
+  } | null>;
 }
 
 /** Dynamic import keeps this off the presence/db-org graph until a write happens. */
-async function defaultWritePgEstimate(ownerId: string, tokens: number): Promise<void> {
+async function defaultWritePgEstimate(
+  ownerId: string,
+  tokens: number,
+  expectedSession: { nativeSessionId: string | null; advSessionId?: number | null },
+): Promise<boolean> {
   const { setContextEstimate } = await import('../agent-tools/coordination/presence');
-  await setContextEstimate(ownerId, tokens);
+  return setContextEstimate(ownerId, tokens, expectedSession);
 }
 
-async function defaultResolveSessionId(ownerId: string): Promise<string | null> {
-  const { resolveSelfSession } = await import('../search/self-session');
-  return (await resolveSelfSession(ownerId))?.sessionId ?? null;
+async function defaultResolveSession(ownerId: string): Promise<{
+  nativeSessionId: string | null;
+  advSessionId?: number | null;
+} | null> {
+  const { resolveSessionRefReconciled } = await import('../compaction-usage');
+  const ref = await resolveSessionRefReconciled(ownerId);
+  return ref ? { nativeSessionId: ref.sessionId, advSessionId: ref.sessionKey ?? null } : null;
 }
 
 /**
@@ -54,15 +70,22 @@ export async function refreshContextEstimateAtBoundary(
     // the same stale critical value. Prove the mapping names the exact native
     // successor the host spawned before deriving anything. On a race, leave the
     // PG estimate unknown; the watchdog fills it from the successor later.
-    if (deps.expectedSessionId) {
-      const resolved = await (deps.resolveSessionId ?? defaultResolveSessionId)(ownerId);
-      if (resolved !== deps.expectedSessionId) return null;
-    }
+    const identity = deps.resolveSession
+      ? await deps.resolveSession(ownerId)
+      : deps.resolveSessionId
+        ? { nativeSessionId: await deps.resolveSessionId(ownerId) }
+        : await defaultResolveSession(ownerId);
+    const expectedSessionId = deps.expectedSessionId?.trim() || identity?.nativeSessionId;
+    if (!identity || !expectedSessionId || identity.nativeSessionId !== expectedSessionId) return null;
     const fresh = await (deps.estimate ??
       ((o: string) => currentContextTokensForOwner(o, { reseed: true })))(ownerId);
     if (fresh == null) return null;
     try {
-      await (deps.writePgEstimate ?? defaultWritePgEstimate)(ownerId, fresh);
+      const written = await (deps.writePgEstimate ?? defaultWritePgEstimate)(ownerId, fresh, {
+        nativeSessionId: expectedSessionId,
+        advSessionId: identity.advSessionId ?? null,
+      });
+      if (written === false) return null;
     } catch {
       /* best-effort */
     }

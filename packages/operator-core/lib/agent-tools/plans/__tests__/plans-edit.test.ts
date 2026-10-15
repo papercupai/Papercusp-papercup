@@ -144,6 +144,38 @@ describe('evaluatePlanEdit — CAS + lint inherited from evaluateSetContent', ()
     }
   });
 
+  it('rejects reopening a finished child under a terminal parent through the shared evaluator', async () => {
+    const tick = String.fromCharCode(96);
+    const terminal = VALID
+      .replace('status: active', 'status: shipped')
+      .replace(
+        '## Decisions',
+        [
+          '## Phase 1 — Work',
+          '',
+          '- **P-001** ' + tick + 'done' + tick + ' Historical item',
+          '',
+          '## Decisions',
+        ].join(String.fromCharCode(10)),
+      );
+    const result = await evaluatePlanEdit(
+      terminal,
+      tick + 'done' + tick + ' Historical item',
+      tick + 'todo' + tick + ' Historical item',
+      false,
+      SLUG,
+      hashPlanContent(terminal),
+    );
+
+    expect(result.newBody).toBeNull();
+    expect(result.value).toMatchObject({
+      ok: false,
+      code: 'terminal_parent_child_mutation',
+      parentStatus: 'shipped',
+      changes: [{ itemId: 'P-001', kind: 'reopened', from: 'done', to: 'todo' }],
+    });
+  });
+
   it('lint_failed when the edit removes the required ## Now section', async () => {
     const r = await evaluatePlanEdit(VALID, '## Now', '## Nowww', false, SLUG, undefined);
     expect(r.value.ok === false && r.value.code).toBe('lint_failed');

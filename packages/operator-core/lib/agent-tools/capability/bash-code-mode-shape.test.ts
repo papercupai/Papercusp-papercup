@@ -31,6 +31,7 @@ import bashTool from './bash';
 import { __resetBashJobs, getJob, waitForJobResponse } from './bash-jobs';
 import { generateToolFacadeTypes, lookupByMcpName } from '@papercusp/agent-mcp';
 import { unwrapToolResult } from '@papercusp/tooldef';
+import * as enrollSync from '../../task-manager/enroll-sync';
 
 type ToolResultish = {
   content: Array<{ text: string }>;
@@ -64,6 +65,27 @@ afterEach(() => {
 });
 
 describe('capability:bash — result shape for a code:run script (EI-20066912585022608)', () => {
+  it.each([false, true])('required task confinement returns a no-fork refusal (background=%s)', async (background) => {
+    const wrap = vi.fn((binary: string, argv: string[]) => ({ binary, argv }));
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'required-public-confinement-refused', enrolled: true, confined: false,
+      unconfinedReason: 'probe-pending', unitKind: 'service', scopeUnit: null,
+      registrationReady: null, wrap, releaseEnvironmentTransport: () => {},
+    });
+    try {
+      const args = (bashTool as unknown as { args: BashArgsSchema }).args;
+      expect(args.safeParse({ command: 'echo should-not-run', require_task_confinement: true }).success).toBe(true);
+      const result = await bash.handler({
+        command: 'echo should-not-run', require_task_confinement: true, run_in_background: background,
+      }, makeCtx({ codeMode: true }));
+      expect(result.isError).toBe(true);
+      expect(unwrapToolResult(result as never)).toMatchObject({
+        ok: false, reason: 'task_confinement_unavailable', unconfined_reason: 'probe-pending', command_started: false,
+      });
+      expect(wrap).not.toHaveBeenCalled();
+    } finally { begin.mockRestore(); }
+  });
+
   it('advertises the code-mode result fields in the generated tools facade', () => {
     const registered = lookupByMcpName('capability:bash');
     expect(registered).toBeDefined();
@@ -109,15 +131,28 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(guidance?.notWhen).toContain('dev:pg_query');
     // The claim that earns the redirect: the shell cannot see DB credentials.
     expect(guidance?.notWhen).toMatch(/strips (?:database|DB) credential env(?:ironment)? var(?:iable)?s/);
-    expect(guidance?.when).toContain('fixed-string searches');
+    expect(guidance?.when).toContain('Fixed strings');
     expect(guidance?.when).toContain('`rg -F`');
     expect(guidance?.when).toContain('`grep -F`');
-    // Quote the argument, because an unmatched backtick fails before the search runs.
-    expect(guidance?.when).toMatch(/single-quot(?:e|ed)/);
-    expect(guidance?.when).toContain('unmatched backtick');
-    expect(guidance?.when).toMatch(/fails before either (?:search )?tool runs/);
+    expect(guidance?.when).toContain('quote backticks before shell use');
+    expect(guidance?.when).toContain('Apostrophes break single-quoted regexes');
+    expect(guidance?.when).toContain('`-e`');
+    expect(guidance?.when).toContain('quoted input');
     expect(guidance?.when).toContain('do not shell-background child');
     expect(guidance?.when).toContain('without `wait`');
+    expect(guidance?.when).toContain('For `systemd-run`');
+    expect(guidance?.when).toContain('`-- executable argv` after options');
+    expect(guidance?.when).toContain('`&&` starts another command');
+  });
+
+  it('documents that truncated shell output is a preview and points to the full log', () => {
+    const fields = (bashTool as unknown as {
+      result?: { shape?: Record<string, { description?: string }> };
+    }).result?.shape;
+    expect(fields?.truncated?.description).toContain('bounded head/tail preview');
+    expect(fields?.truncated?.description).toContain('do not parse it');
+    expect(fields?.truncated?.description).toContain('read log_path');
+    expect(fields?.log_path?.description).toContain('complete command output');
   });
 
   it('gives a code-mode caller an OBJECT whose output field carries the real output', async () => {

@@ -111,7 +111,8 @@ describe('PostgresHostedMembershipAuthority.resolveActive', () => {
     expect(authority?.userId).toBe(USER);
     expect(authority?.role).toBe('admin');
     expect(sql.calls).toHaveLength(1);
-    expect(sql.calls[0].params).toEqual([USER, ORG]);
+    // This fake exposes unsafe SQL fragments as a recorded value.
+    expect(sql.calls[0].params).toEqual([USER, ORG, '']);
   });
 
   it('filters to active, non-revoked rows in SQL, not only in code', async () => {
@@ -173,12 +174,22 @@ describe('PostgresHostedMembershipAuthority.workspaceBelongsToOrganization', () 
     expect(owned).toBe(true);
     expect(sql.calls[0].sql).toContain('harness_shared.customer_workspaces');
     expect(sql.calls[0].sql).toContain('deleted_at IS NULL');
-    expect(sql.calls[0].params).toEqual(['papercusp-control-plane', 'cw-1', ORG]);
+    expect(sql.calls[0].params).toEqual(['papercusp-control-plane', 'cw-1', ORG, '']);
   });
 
   it('is false when no row matches', async () => {
     const sql = fakeSql([[]]);
     expect(await new PostgresHostedMembershipAuthority(sql as never).workspaceBelongsToOrganization(input)).toBe(false);
+  });
+
+  it('locks the exact workspace row and refuses a pool whose lock would end early', async () => {
+    const sql = fakeSql([[{ organization_id: ORG }]]);
+    expect(await new PostgresHostedMembershipAuthority(sql as never).workspaceBelongsToOrganizationForUpdate(input)).toBe(true);
+    expect(sql.calls[0].params).toEqual(['papercusp-control-plane', 'cw-1', ORG, 'FOR UPDATE']);
+    const pool = Object.assign(fakeSql([]), { begin: () => {} });
+    await expect(new PostgresHostedMembershipAuthority(pool as never).workspaceBelongsToOrganizationForUpdate(input))
+      .rejects.toThrow('hosted_workspace_lock_requires_transaction');
+    expect(pool.calls).toHaveLength(0);
   });
 
   it('refuses blank identifiers without touching the database', async () => {

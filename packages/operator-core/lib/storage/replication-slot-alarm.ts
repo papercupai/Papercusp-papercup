@@ -28,7 +28,9 @@
  */
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
-import { escalateAlarm } from '../alarm-attention';
+import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+export const REPLICATION_SLOT_ALARM_CONDITION_KEY = 'alarm:replication-slot';
 import { notifySyncInvalidate } from '../sync-sse';
 
 const GIB = 1024 ** 3;
@@ -146,7 +148,7 @@ export function formatSlotEscalation(critical: SlotBreach[]): { title: string; b
   };
 }
 
-export interface SlotAlarmDeps {
+export interface SlotAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'resolve'> {
   /** Injectable for tests — defaults to a read-only pg_replication_slots scan. */
   fetchSlots?: () => Promise<SlotRow[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
@@ -257,9 +259,12 @@ export async function runReplicationSlotAlarmOnce(
         ...formatSlotEscalation(critical),
         cooldownMs: REPLSLOT_ESCALATE_COOLDOWN_MS,
         source: 'replication-slot-alarm',
+        conditionKey: REPLICATION_SLOT_ALARM_CONDITION_KEY,
       },
-      { notify: escalate, recentlyEscalated },
+      { notify: escalate, recentlyEscalated, broadcast: deps.broadcast },
     );
+  } else {
+    await resolveAlarm(REPLICATION_SLOT_ALARM_CONDITION_KEY, 'replication-slot-alarm', deps);
   }
   return { checked: slots.length, breaches };
 }

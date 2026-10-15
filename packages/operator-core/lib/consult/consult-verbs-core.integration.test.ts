@@ -19,10 +19,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 import {
   consultCloseCore,
@@ -30,12 +29,224 @@ import {
   consultReplyCore,
   type ConsultVerbDeps,
 } from './consult-verbs-core';
-import { advanceCascade, makeDigestEntry } from './cascade-core';
+import { advanceCascade, continueCascadeDispatchCore, makeDigestEntry } from './cascade-core';
+import { makeDeferredConsultReachDispatcher } from './consult-dispatch';
 
 const WS = 'ws-consult-verbs';
 const NOW = new Date('2026-08-16T00:00:00Z');
 const REQUESTER = 'req-1';
 const RESPONDER = 'resp-1';
+
+// Durable acknowledgement/recovery uses the real production adapter and real
+// consult rows; only the launch seam is controlled, so a blocked launch cannot
+// accidentally pass because the test bypassed the interactive binding.
+describe('durable cascade acknowledgement and restart recovery', () => {
+  async function queuedRow(id: string) {
+    return await stateRow(id) as Record<string, unknown> & { expires_at: string; routing: {
+      cascadeDispatch?: { attempts?: number; lastError?: string; leaseToken?: string | null; leaseUntil?: string | null };
+      selection: { selected: Array<{ answeringOwnerId?: string }> };
+    } };
+  }
+  async function queue(kind: 'decline' | 'reply' = 'decline', refill = false) {
+    const snap = menuSnapshot([RESPONDER, 'resp-next']);
+    const routing = refill ? { ...snap, selection: { min: 1, selected: snap.selection.selected.slice(0, 1) } } : snap;
+    const id = await seedConsult({ routing });
+    const { deps, posts } = makeDeps();
+    let acknowledged = false;
+    let acknowledgedBeforeLaunch = false;
+    let launchFinished!: Promise<boolean>;
+    let starts = 0;
+    deps.dispatch = makeDeferredConsultReachDispatcher({ workspaceId: WS, harnessSlug: 'papercusp', launchedBy: RESPONDER }, {
+      getSql: () => rootSql,
+      continueDispatch: async () => {
+        starts += 1;
+        launchFinished = new Promise<boolean>((resolve) => setImmediate(() => {
+          acknowledgedBeforeLaunch = acknowledged;
+          resolve(true);
+        }));
+        return launchFinished;
+      },
+    });
+    const result = kind === 'decline'
+      ? await consultDeclineCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'wrong subsystem' }, deps)
+      : await consultReplyCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'new_fact', body: 'known fact' }, deps);
+    if ('error' in result) throw new Error(result.error);
+    acknowledged = true;
+    await launchFinished;
+    expect(acknowledgedBeforeLaunch).toBe(true);
+    expect(result.cascade).toMatchObject({ advanced_to: 'resp-next', exhausted: false, woke: 0, pending: true });
+    expect(result.hint).toContain('durably queued');
+    expect(posts).toHaveLength(1);
+    expect(starts).toBe(1);
+    return id;
+  }
+
+  it.each(['decline', 'reply'] as const)('%s returns its post identity while the subsequent launch is blocked', async (kind) => {
+    const id = await queue(kind);
+    const row = await queuedRow(id);
+    expect(row.cascade_cursor).toBe(1);
+    expect(row.routing.cascadeDispatch).toMatchObject({ version: 1, cursor: 1, responder: 'resp-next', leaseToken: null });
+    expect(row.routing.selection.selected[1].answeringOwnerId).toBeUndefined();
+    const posts = await rootSql`SELECT post_id FROM harness_shared.consult_post_meta WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    expect(posts).toHaveLength(1);
+  });
+
+  it('queues the refill without mistaking an accepted launch for a failed dispatch', async () => {
+    const id = await queue('decline', true);
+    expect((await queuedRow(id)).cascade_digest).toMatchObject([{ kind: 'decline' }]);
+  });
+
+  it.each(['decline', 'reply'] as const)('%s acknowledges while its continuation owns the lease and is still launching', async (kind) => {
+    const id = await seedConsult({ routing: menuSnapshot([RESPONDER, 'resp-next']) });
+    const { deps, posts } = makeDeps();
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let continuation: Promise<boolean> | undefined;
+    let launches = 0;
+    let currentAtCompletion = false;
+    deps.dispatch = makeDeferredConsultReachDispatcher({ workspaceId: WS, harnessSlug: 'papercusp', launchedBy: RESPONDER }, {
+      getSql: () => rootSql,
+      continueDispatch: (workspaceId, conversationId) => {
+        continuation = continueCascadeDispatchCore(workspaceId, conversationId, {
+          getSql: () => rootSql,
+          now: () => NOW,
+          dispatch: (isCurrent) => async (opts) => {
+            launches += 1;
+            entered();
+            await held;
+            currentAtCompletion = await isCurrent();
+            await opts.onAnsweringOwner?.('resp-next-fork');
+            return { woke: 1, answeringOwnerId: 'resp-next-fork' };
+          },
+        });
+        return continuation;
+      },
+    });
+    let acknowledged = false;
+    const response = (kind === 'decline'
+      ? consultDeclineCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'wrong subsystem' }, deps)
+      : consultReplyCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, kind: 'new_fact', body: 'known fact' }, deps)
+    ).then((result) => { acknowledged = true; return result; });
+    try {
+      await started;
+      // Observe after the acknowledgement microtasks, while the real lease-owning
+      // continuation remains blocked. Always release it, including on regression.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(acknowledged).toBe(true);
+      const result = await response;
+      if ('error' in result) throw new Error(result.error);
+      expect(result.post_id).toBeTruthy();
+      expect(result.cascade).toMatchObject({ advanced_to: 'resp-next', woke: 0, pending: true });
+      const pending = (await queuedRow(id)).routing.cascadeDispatch;
+      expect(pending?.leaseToken).toEqual(expect.any(String));
+      expect(new Date(pending!.leaseUntil!).getTime()).toBeGreaterThan(NOW.getTime());
+      expect(posts).toHaveLength(1);
+      const persisted = await rootSql`SELECT post_id FROM harness_shared.consult_post_meta
+        WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+      expect(persisted).toHaveLength(1);
+      expect(String(persisted[0].post_id)).toBe(String(result.post_id));
+      expect(launches).toBe(1);
+    } finally {
+      release();
+      await response;
+      await continuation;
+    }
+    expect(currentAtCompletion).toBe(true);
+    expect((await queuedRow(id)).routing.cascadeDispatch).toBeUndefined();
+    expect((await queuedRow(id)).routing.selection.selected[1].answeringOwnerId).toBe('resp-next-fork');
+    expect(launches).toBe(1);
+  });
+
+  it('restarts from the saved copy, authorizes the answerer before launch, and does not launch twice', async () => {
+    const id = await queue();
+    let launches = 0;
+    const deps = { getSql: () => rootSql, now: () => NOW, dispatch: (isCurrent: () => Promise<boolean>) => async (opts: Parameters<NonNullable<ConsultVerbDeps['dispatch']>>[0]) => {
+      expect(await isCurrent()).toBe(true);
+      expect(opts.body).toContain('wrong subsystem');
+      await opts.onAnsweringOwner?.('resp-next-fork');
+      expect((await queuedRow(id)).routing.selection.selected[1].answeringOwnerId).toBe('resp-next-fork');
+      launches += 1;
+      return { woke: 1, answeringOwnerId: 'resp-next-fork' };
+    } };
+    expect(await continueCascadeDispatchCore(WS, id, deps)).toBe(true);
+    expect(await continueCascadeDispatchCore(WS, id, deps)).toBe(false);
+    expect(launches).toBe(1);
+    expect((await queuedRow(id)).routing.cascadeDispatch).toBeUndefined();
+  });
+
+  it('only one continuation acquires a live lease; the sweep cannot expire its launch', async () => {
+    const id = await queue();
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const deps = { getSql: () => rootSql, now: () => NOW, dispatch: () => async () => {
+      entered(); await held; return { woke: 0, answeringOwnerId: null };
+    } };
+    const first = continueCascadeDispatchCore(WS, id, deps);
+    await started;
+    expect(await continueCascadeDispatchCore(WS, id, deps)).toBe(false);
+    release();
+    expect(await first).toBe(true);
+    expect(new Date((await queuedRow(id)).expires_at).getTime()).toBeLessThan(NOW.getTime());
+  });
+
+  it('recovers an expired pre-launch lease and fences the older continuation', async () => {
+    const id = await queue();
+    let time = NOW;
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let staleCurrent = true;
+    const first = continueCascadeDispatchCore(WS, id, { getSql: () => rootSql, now: () => time, dispatch: (isCurrent) => async () => {
+      entered(); await held; staleCurrent = await isCurrent(); return { woke: 0, answeringOwnerId: null };
+    } });
+    await started;
+    time = new Date(NOW.getTime() + 120_001);
+    expect(await continueCascadeDispatchCore(WS, id, { getSql: () => rootSql, now: () => time, dispatch: () => async (opts) => {
+      await opts.onAnsweringOwner?.('restart-fork'); return { woke: 1, answeringOwnerId: 'restart-fork' };
+    } })).toBe(true);
+    release(); await first;
+    expect(staleCurrent).toBe(false);
+    expect((await queuedRow(id)).routing.selection.selected[1].answeringOwnerId).toBe('restart-fork');
+    expect(new Date((await queuedRow(id)).expires_at).getTime()).toBeGreaterThan(time.getTime());
+  });
+
+  it('does not replay a reserved answering identity after process death', async () => {
+    const id = await queue();
+    await rootSql`UPDATE harness_shared.consult_state SET routing = jsonb_set(routing, '{selection,selected,1,answeringOwnerId}', '"reserved-fork"'::jsonb) WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    let called = false;
+    expect(await continueCascadeDispatchCore(WS, id, { getSql: () => rootSql, now: () => NOW, dispatch: () => async () => {
+      called = true; return { woke: 1 };
+    } })).toBe(false);
+    expect(called).toBe(false);
+  });
+
+  it('persists thrown pre-launch recovery and retries only after its backoff', async () => {
+    const id = await queue();
+    const fail = { getSql: () => rootSql, now: () => NOW, dispatch: () => async () => { throw new Error('pre-launch fault'); } };
+    await expect(continueCascadeDispatchCore(WS, id, fail)).rejects.toThrow('pre-launch fault');
+    expect((await queuedRow(id)).routing.cascadeDispatch).toMatchObject({ attempts: 1, lastError: 'Error: pre-launch fault', leaseToken: null });
+    expect(await continueCascadeDispatchCore(WS, id, fail)).toBe(false);
+    expect(await continueCascadeDispatchCore(WS, id, { ...fail, now: () => new Date(NOW.getTime() + 30_001), dispatch: () => async () => ({ woke: 0 }) })).toBe(true);
+  });
+
+  it('bounds thrown recovery attempts and makes exhaustion due for requester-visible expiry', async () => {
+    const id = await queue();
+    let time = NOW;
+    const deps = { getSql: () => rootSql, now: () => time, dispatch: () => async () => { throw new Error('persistent launch fault'); } };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expect(continueCascadeDispatchCore(WS, id, deps)).rejects.toThrow('persistent launch fault');
+      time = new Date(time.getTime() + 30_001);
+    }
+    expect((await queuedRow(id)).routing.cascadeDispatch).toMatchObject({ attempts: 3, leaseToken: null });
+    expect(new Date((await queuedRow(id)).expires_at).getTime()).toBeLessThan(time.getTime());
+    expect(await continueCascadeDispatchCore(WS, id, deps)).toBe(false);
+  });
+});
 const MIGRATION_834 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url),
 );
@@ -47,19 +258,11 @@ const MIGRATION_844_ARMED = fileURLToPath(
 const MIGRATION_844 = existsSync(MIGRATION_844_ARMED) ? MIGRATION_844_ARMED : `${MIGRATION_844_ARMED}.DRAFT`;
 
 let rootSql: Sql;
+let fixtureDb: MigratedTestDb;
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `consultv_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  fixtureDb = await createFreshTestDb({ prefix: 'consultv' });
+  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
   // Minimal landing pad for the migration's coord_conversations kind-CHECK
   // widening (the real table is migration-132-owned; only `kind` matters here).
@@ -78,10 +281,14 @@ beforeAll(async () => {
   // The REAL migration — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_844, 'utf8'));
+  await rootSql.unsafe(readFileSync(fileURLToPath(
+    new URL('../../../../libs/papercusp/libs/db/sql/1484-consult-state-no-launchable-responder.sql', import.meta.url),
+  ), 'utf8'));
 }, 120_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  try { await rootSql?.end({ timeout: 5 }); }
+  finally { await fixtureDb?.drop(); }
 });
 
 // ── Fixture builders ─────────────────────────────────────────────────────
@@ -282,6 +489,74 @@ async function evidenceJsonbType(conversationId: string) {
 
 const EVIDENCE = [{ session_id: 'sess-r', turn_idx: 7, note: 'the debug session' }];
 
+describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)(
+  'retired requester reporting — historical outcome preservation: %s',
+  (disposition) => {
+    const historical = {
+      disposition,
+      note: 'Previously recorded project decision; no new reporting call is required.',
+      by: REQUESTER,
+      at: '2026-08-15T12:00:00Z',
+      consult_state: 'active',
+      decision_ref: 'historical-project#D-001',
+    };
+
+    async function seedHistory() {
+      const id = await seedConsult({ state: 'active' });
+      await rootSql`
+        UPDATE harness_shared.consult_state
+           SET outcome = ${rootSql.json({ reconciliation: historical } as never)}
+         WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+      expect((await stateRow(id)).outcome).toEqual({ reconciliation: historical });
+      return id;
+    }
+
+    it('preserves the exact historical record when the responder replies', async () => {
+      const id = await seedHistory();
+      const { deps } = makeDeps();
+      const result = await consultReplyCore({
+        workspaceId: WS, authorId: RESPONDER, conversationId: id,
+        kind: 'answer', body: 'Source-grounded advice.', evidence: EVIDENCE,
+      }, deps);
+      expect(result).not.toHaveProperty('error');
+      expect((await stateRow(id)).outcome).toEqual({ reconciliation: historical });
+    });
+
+    it.each(['answered', 'cant_help', 'graduate'] as const)(
+      'preserves the exact historical record through an %s close',
+      async (outcome) => {
+        const id = await seedHistory();
+        const { deps } = makeDeps({ withMint: true });
+        const result = await consultCloseCore({
+          workspaceId: WS, authorId: REQUESTER, conversationId: id, outcome,
+          ...(outcome === 'answered'
+            ? { answer: 'Advice reviewed in the project.', evidence: EVIDENCE }
+            : { reason: 'Continue the project through the ordinary workflow.' }),
+        }, deps);
+        expect(result).not.toHaveProperty('error');
+        const row = await stateRow(id);
+        expect(row.state).toBe(outcome === 'answered'
+          ? 'closed_answered' : outcome === 'graduate' ? 'graduated' : 'closed_cant_help');
+        expect(row.outcome).toMatchObject({ reconciliation: historical });
+        expect((row.outcome as Record<string, unknown>).reconciliation).toEqual(historical);
+      },
+    );
+
+    it('preserves the exact historical record through terminal decline', async () => {
+      const id = await seedHistory();
+      const { deps } = makeDeps();
+      const result = await consultDeclineCore({
+        workspaceId: WS, authorId: RESPONDER, conversationId: id,
+        reason: 'The transcript does not cover this question.',
+      }, deps);
+      expect(result).not.toHaveProperty('error');
+      const row = await stateRow(id);
+      expect(row.state).toBe('declined');
+      expect((row.outcome as Record<string, unknown>).reconciliation).toEqual(historical);
+    });
+  },
+);
+
 // ── consult:reply ────────────────────────────────────────────────────────
 describe('consultReplyCore — kind rules + transitions', () => {
   it('responder answer: meta row with evidence, awaiting_responder→active, park-key emit to the requester', async () => {
@@ -411,6 +686,66 @@ describe('consultReplyCore — kind rules + transitions', () => {
     ).toMatchObject({ error: 'consult_not_open', state: 'no_qualified_responder' });
   });
 
+  it.each(['no_qualified_responder', 'no_launchable_responder'])('continues an undelivered consult (%s) from requester new facts without replaying tried reviewers', async (state) => {
+    const snapshot = menuSnapshot([RESPONDER, 'resp-next']);
+    const routing = { ...snapshot, selection: { min: 1, selected: snapshot.selection.selected.slice(0, 1) } };
+    const id = await seedConsult({ state, responderId: null, routing });
+    await rootSql`UPDATE harness_shared.consult_state SET cascade_digest = ${rootSql.json([
+      makeDigestEntry(RESPONDER, 'dispatch_failed', NOW.toISOString(), 'source port unavailable'),
+    ] as never)} WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    const { deps, reached, dispatchCalls } = makeDeps();
+    const reply = await consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'new_fact', body: 'The containing runtime now supports exact source acquisition.' },
+      deps,
+    );
+    if ('error' in reply) throw new Error(reply.error);
+    expect(reply.cascade).toMatchObject({ advanced_to: 'resp-next', exhausted: false, woke: 1 });
+    expect(reply.wake).toMatchObject({ attempted: false, reroute: { status: 'advanced', to: 'resp-next' } });
+    expect(reply.state).toBe('active');
+    expect(dispatchCalls.map((call) => call.responder)).toEqual(['resp-next']);
+    expect(reached).toEqual([]);
+    expect(await stateRow(id)).toMatchObject({ state: 'active', responder_id: 'resp-next', cascade_cursor: 1, exchanges_used: 1 });
+  });
+
+  it.each(['no_qualified_responder', 'no_launchable_responder'])('does not restart undelivered consults (%s) for questions, missing selections, foreign authors or a spent exchange cap', async (state) => {
+    const routing = menuSnapshot([RESPONDER, 'resp-next']);
+    const id = await seedConsult({ state, responderId: null, routing });
+    const { deps, posts, dispatchCalls } = makeDeps();
+    for (const [authorId, kind] of [[REQUESTER, 'question'], ['unassigned', 'new_fact']] as const) {
+      expect(await consultReplyCore({ workspaceId: WS, authorId, conversationId: id, kind, body: 'b' }, deps))
+        .toMatchObject({ error: 'consult_not_open' });
+    }
+    const empty = await seedConsult({ state, responderId: null });
+    expect(await consultReplyCore({ workspaceId: WS, authorId: REQUESTER, conversationId: empty, kind: 'new_fact', body: 'b' }, deps))
+      .toMatchObject({ error: 'consult_not_open' });
+    const capped = await seedConsult({ state, responderId: null, routing, exchangesUsed: 4 });
+    expect(await consultReplyCore({ workspaceId: WS, authorId: REQUESTER, conversationId: capped, kind: 'new_fact', body: 'b' }, deps))
+      .toMatchObject({ error: 'exchange_cap' });
+    expect(posts).toEqual([]);
+    expect(dispatchCalls).toEqual([]);
+  });
+
+  it('concurrent changed facts launch the next saved reviewer once and preserve its active state', async () => {
+    const id = await seedConsult({ state: 'no_qualified_responder', responderId: null, routing: menuSnapshot([RESPONDER, 'resp-next']) });
+    const { deps, dispatchCalls } = makeDeps();
+    let posted = 0;
+    let release!: () => void;
+    const bothPosted = new Promise<void>((resolve) => { release = resolve; });
+    const originalPost = deps.post;
+    deps.post = async (input) => {
+      const result = await originalPost(input);
+      if (++posted === 2) release();
+      await bothPosted;
+      return result;
+    };
+    const replies = await Promise.all(['runtime fixed', 'source now retained'].map((body) => consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'new_fact', body }, deps,
+    )));
+    expect(replies.every((reply) => !('error' in reply))).toBe(true);
+    expect(dispatchCalls.map((call) => call.responder)).toEqual(['resp-next']);
+    expect(await stateRow(id)).toMatchObject({ state: 'active', responder_id: 'resp-next', cascade_cursor: 1, exchanges_used: 2 });
+  });
+
   it('the exchange cap refuses a reply with the close-instead nudge; close still works AT the cap', async () => {
     const id = await seedConsult({ state: 'active', exchangesUsed: 4, maxExchanges: 4 });
     const { deps, posts } = makeDeps();
@@ -445,6 +780,25 @@ describe('consultReplyCore — kind rules + transitions', () => {
 });
 
 describe('consultReplyCore — requester follow-up wake (budget REMOVED, consult-min-max-and-rubric-vetting D-005)', () => {
+  it('wakes the answering fork rather than the transcript expert when their identities differ', async () => {
+    const routing = menuSnapshot([RESPONDER, 'resp-2']);
+    routing.selection.selected[0] = {
+      ...routing.selection.selected[0],
+      answeringOwnerId: 'resp-1-answering-fork',
+    };
+    const id = await seedConsult({ state: 'active', routing });
+    const { deps, reached } = makeDeps();
+
+    const r = await consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'question', body: 'follow-up for the fork' },
+      deps,
+    );
+
+    if ('error' in r) throw new Error(r.error);
+    expect(r.wake).toMatchObject({ attempted: true, woke: 1 });
+    expect(reached).toEqual([{ responder: 'resp-1-answering-fork', conversationId: id }]);
+  });
+
   it('wakes the responder and debits the wakes_used stat', async () => {
     const ref = 'WI-V-BUDGET-1';
     const id = await seedConsult({ state: 'active', originTaskRef: ref, wakesUsed: 1 });
@@ -456,11 +810,48 @@ describe('consultReplyCore — requester follow-up wake (budget REMOVED, consult
     if ('error' in r) throw new Error(r.error);
     expect(r.role).toBe('requester');
     expect(r.wake).toEqual({ attempted: true, woke: 1 }); // no budget surfaces at all
+    expect(r.hint).toContain('responder wake queued; turn pickup not confirmed');
     expect(reached).toEqual([{ responder: RESPONDER, conversationId: id }]);
     expect(emits).toHaveLength(0); // requester posts never fire the park key
     expect((await stateRow(id)).wakes_used).toBe(2);
     const meta = await metaRows(id);
     expect(meta[0].kind).toBe('question');
+  });
+
+  it('reroutes a requester follow-up only when the answering session is confirmed ended', async () => {
+    const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.reach = async () => ({ woke: 0, confirmedDead: true });
+    const r = await consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'question', body: 'additional evidence' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.wake).toMatchObject({ attempted: true, woke: 0, reroute: { status: 'advanced', to: 'resp-2' } });
+    expect(r.cascade).toMatchObject({ advanced_to: 'resp-2', exhausted: false, woke: 1 });
+    expect(r.hint).toContain('advanced to reviewer resp-2');
+    expect(dispatchCalls.map((call) => call.responder)).toEqual(['resp-2']);
+    expect(dispatchCalls[0].body).toContain('resp-1 (wake_failed)');
+    const row = await stateRow(id);
+    expect(row).toMatchObject({ state: 'active', responder_id: 'resp-2', cascade_cursor: 1, closed_at: null });
+    expect(row.cascade_digest).toMatchObject([
+      { ownerId: RESPONDER, kind: 'wake_failed' },
+    ]);
+  });
+
+  it('leaves the cascade untouched when the wake count is zero but liveness is ambiguous', async () => {
+    const id = await seedConsult({ state: 'active', routing: menuSnapshot([RESPONDER, 'resp-2']) });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.reach = async () => ({ woke: 0 });
+    const r = await consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'question', body: 'additional evidence' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(r.wake).toMatchObject({ attempted: true, woke: 0, reroute: { status: 'not_confirmed_dead', to: null } });
+    expect(r.cascade).toBeUndefined();
+    expect(dispatchCalls).toEqual([]);
+    expect(await stateRow(id)).toMatchObject({ state: 'active', responder_id: RESPONDER, cascade_cursor: 0, closed_at: null });
   });
 
   it('wakes even when sibling consults on the same origin ref spent what was once the budget', async () => {
@@ -1051,30 +1442,35 @@ describe.each(['selected', 'refill'] as const)('failed cascade dispatch — %s m
       { ownerId: 'also-unlaunchable', kind: 'dispatch_failed' },
     ]);
     if (menu === 'refill') {
-      expect(row.routing).toMatchObject({ selection: { underFilled: { answers: 0, min: 2, reason: 'refill-spent' } } });
+      // WI-10005360: every refill pick was refused BEFORE launch, so the round is
+      // not spent — the cascade ran out because the POOL did. That is the honest label.
+      expect(row.routing).toMatchObject({ selection: { underFilled: { answers: 0, min: 2, reason: 'no-untried-candidate' } } });
     }
     expect(emits).toHaveLength(1);
   });
 
-  it.each(['return', 'early stamp'] as const)('retains a booting answering session identified by %s', async (identity) => {
-    const id = await seedConsult({ routing: routingFor(['booting', 'unused']) });
-    const { deps, dispatchCalls } = makeDeps();
-    deps.dispatch = async (o) => {
-      dispatchCalls.push(o);
-      if (identity === 'early stamp') await o.onAnsweringOwner?.('booting-fork');
-      return { woke: 0, ...(identity === 'return' ? { answeringOwnerId: 'booting-fork' } : {}) };
-    };
-    const r = await consultDeclineCore(
-      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict' }, deps,
-    );
-    expect(r).toMatchObject({ cascade: { advanced_to: 'booting', exhausted: false, woke: 0 } });
-    expect(dispatchCalls).toHaveLength(1);
-    const row = await stateRow(id);
-    expect(row).toMatchObject({ responder_id: 'booting', cascade_cursor: 1, closed_at: null });
-    expect((row.routing as { selection: { selected: Array<{ answeringOwnerId?: string }> } }).selection.selected[1])
-      .toMatchObject({ answeringOwnerId: 'booting-fork' });
-    expect(row.cascade_digest).toHaveLength(1);
-  });
+  it.each(['return', 'early stamp'] as const)(
+    'retains a booting answering session when the dispatcher returns its identity (%s path)',
+    async (identity) => {
+      const id = await seedConsult({ routing: routingFor(['booting', 'unused']) });
+      const { deps, dispatchCalls } = makeDeps();
+      deps.dispatch = async (o) => {
+        dispatchCalls.push(o);
+        if (identity === 'early stamp') await o.onAnsweringOwner?.('booting-fork');
+        return { woke: 0, answeringOwnerId: 'booting-fork' };
+      };
+      const r = await consultDeclineCore(
+        { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict' }, deps,
+      );
+      expect(r).toMatchObject({ cascade: { advanced_to: 'booting', exhausted: false, woke: 0 } });
+      expect(dispatchCalls).toHaveLength(1);
+      const row = await stateRow(id);
+      expect(row).toMatchObject({ responder_id: 'booting', cascade_cursor: 1, closed_at: null });
+      expect((row.routing as { selection: { selected: Array<{ answeringOwnerId?: string }> } }).selection.selected[1])
+        .toMatchObject({ answeringOwnerId: 'booting-fork' });
+      expect(row.cascade_digest).toHaveLength(1);
+    },
+  );
 
   it.each(['cursor', 'expiry'] as const)('preserves concurrent %s progress instead of dispatching or terminal-closing over it', async (race) => {
     const id = await seedConsult({ routing: routingFor(['unlaunchable', 'concurrent-winner']) });
@@ -1399,6 +1795,83 @@ describe('advanceCascade — liveness-blind refill + honest under-filled (D-002/
     expect(r.cascade.exhausted).toBe(true);
     const routingRow = parseRouting((await stateRow(id)).routing);
     expect(routingRow.selection?.underFilled).toMatchObject({ answers: 0, min: 1, reason: 'refill-spent' });
+  });
+
+  // WI-10005360 (conv-muqlw2ay): min 1, the menu AND the one refill pick were all
+  // refused BEFORE launch, and the consult closed `refill-spent` while launchable
+  // experts sat untried. The bound is on LAUNCHES — a pre-launch refusal costs no
+  // answering session, so it must not spend the round.
+  function refusalPoolRouting(extra: string[]) {
+    const cand = (ownerId: string, score: number) => ({
+      ownerId, score, relevance: score, signals: { similarity: score - 0.1 }, liveness: 'ended',
+    });
+    return {
+      relevanceFloor: 0.5,
+      simFloor: 0.4,
+      candidates: [cand(RESPONDER, 0.9), ...extra.map((o, i) => cand(o, 0.8 - i * 0.05))],
+      selection: {
+        min: 1,
+        max: 1,
+        selected: [{ ownerId: RESPONDER, via: 'floor', score: 0.9, similarity: 0.8, liveness: 'live' }],
+      },
+    };
+  }
+
+  it('WI-10005360: a refill round refused entirely before launch is NOT spent — it extends until an expert launches', async () => {
+    const id = await seedConsult({
+      state: 'active',
+      routing: refusalPoolRouting(['refused-1', 'refused-2', 'launchable', 'never-needed']),
+    });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.dispatch = async (o) => {
+      dispatchCalls.push(o);
+      return o.responder === 'launchable' ? { woke: 1, answeringOwnerId: 'launchable-fork' } : { woke: 0 };
+    };
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
+      deps,
+    );
+    if ('error' in r) throw new Error(r.error);
+    expect(dispatchCalls.map((o) => o.responder)).toEqual(['refused-1', 'refused-2', 'launchable']);
+    expect(r.cascade).toMatchObject({ advanced_to: 'launchable', exhausted: false });
+    const row = await stateRow(id);
+    expect(row).toMatchObject({ responder_id: 'launchable', closed_at: null });
+    const routingRow = parseRouting(row.routing);
+    // The continuation APPENDS to the original stamp, so `added` stays the full record.
+    expect(routingRow.selection?.refill?.added).toEqual(['refused-1', 'refused-2', 'launchable']);
+    expect(routingRow.selection?.refill).toHaveProperty('continued');
+    expect(routingRow.selection?.underFilled).toBeUndefined();
+    // Still bounded: once one pick launched, nobody further is pulled in.
+    expect(routingRow.selection?.selected?.map((s) => s.ownerId)).not.toContain('never-needed');
+  });
+
+  it('WI-10005360 bound: once a refill pick LAUNCHED, the round is spent — its fork declining ends refill-spent with pool left', async () => {
+    const id = await seedConsult({ state: 'active', routing: refusalPoolRouting(['launch-a', 'spare-b']) });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.dispatch = async (o) => {
+      dispatchCalls.push(o);
+      await o.onAnsweringOwner?.(`${o.responder}-fork`);
+      return { woke: 1, answeringOwnerId: `${o.responder}-fork` };
+    };
+    const first = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'not my area' },
+      deps,
+    );
+    if ('error' in first) throw new Error(first.error);
+    expect(first.cascade).toMatchObject({ advanced_to: 'launch-a', exhausted: false });
+    // The launched fork posts under its OWN identity, so the digest has no entry
+    // under 'launch-a' — that absence must read as "launched" (spent), never as
+    // "refused before launch".
+    const second = await consultDeclineCore(
+      { workspaceId: WS, authorId: 'launch-a-fork', conversationId: id, reason: 'transcript does not cover this' },
+      deps,
+    );
+    if ('error' in second) throw new Error(second.error);
+    expect(second.cascade.exhausted).toBe(true);
+    expect(dispatchCalls.map((o) => o.responder)).toEqual(['launch-a']);
+    const routingRow = parseRouting((await stateRow(id)).routing);
+    expect(routingRow.selection?.underFilled).toMatchObject({ answers: 0, min: 1, reason: 'refill-spent' });
+    expect(routingRow.selection?.selected?.map((s) => s.ownerId)).not.toContain('spare-b');
   });
 
   it('nobody untried left at all — honest terminal: no-untried-candidate, never a silent exhaustion', async () => {

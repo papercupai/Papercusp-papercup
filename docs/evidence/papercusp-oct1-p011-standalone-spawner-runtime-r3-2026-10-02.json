@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "p011-standalone-spawner-runtime-v1",
+  "workItem": "WI-10005714",
+  "parent": "WI-10004890",
+  "priorGuards": {"path": "docs/evidence/papercusp-oct1-p011-standalone-spawner-adoption-guards-r1-2026-10-02.json", "sha256": "099c1b43269ef100f041403f504bcf3cb0a0069934c85fbbd579533ddc53a45a"},
+  "originalComparisonReplayed": false,
+  "verification": {
+    "fallback": {"ledgerId": 20584015, "passed": 15, "skipped": 0, "provenance": "local dirty; router HEAD moved; transitive provenance unknown"},
+    "hostBoundaryRuntime": {"ledgerId": 20584020, "passed": 2, "skipped": 0, "provenance": "local dirty; router HEAD moved; transitive provenance unknown"},
+    "desktopBoundaryRuntime": {"ledgerId": 20584027, "passed": 2, "skipped": 0, "provenance": "local dirty; stable router HEAD 80fbc954da; full graph not pinned"},
+    "focusedTypeErrors": 0,
+    "runtime": {
+      "route": "scripts/with-test-pg.mjs --isolated-runtime",
+      "maintainedBuilder": "desktop builder actual spawner command, externals, minification, version and dogfood defines",
+      "entry": "spawner-sidecar.mjs selected by resolveSidecarSpawnPlan",
+      "privateWorkspace": "test-runtime-9987b932-188",
+      "processRpcPassed": true,
+      "invokeOnceRpcPassed": true,
+      "invokeOnceScope": "Real server, buildInvokeOnce and runChild; harmless packaged invoke-once fixture at documented harness path; no native LLM agent",
+      "privateDatabaseAndHomeVerified": true,
+      "childPids": [327031, 327130],
+      "hostPid": 324315,
+      "childrenExited": true,
+      "hostGracefulExit": true,
+      "socketRemoved": true,
+      "forcedCleanup": false
+    },
+    "diagnosticFix": {
+      "rootCause": "Standalone build failure used the successful main-entry BUILD_LOG for its stale marker, losing the compiler diagnostic after the terminal exited.",
+      "fix": "Capture spawner-sidecar.mjs.build-error.log and pass that exact log to the stale marker.",
+      "guard": "Three real wrapper compiler-refusal cases assert persisted failure, unchanged prior sibling or absence fallback, release failure and supervisor availability."
+    },
+    "frozenTargetCompatibility": {
+      "passed": 7,
+      "skipped": 0,
+      "guard": "Desktop builder calls standalone composer only if the target helper defines it; older exact-source targets retain their full-host divert.",
+      "suite": "papercusp-desktop/test/build-desktop-sidecar-host-worker-bundler.test.js",
+      "log": "/tmp/su-7db4f-p011-spawner-desktop-compat-r1.log"
+    }
+  },
+  "sources": [
+    {"path": "apps/operator/bin/bundle-host.sh", "sha256": "95ba04ac32571d63feffe4090ffef2abc35bb88b9a45cdf1b120d1a482abb226"},
+    {"path": "packages/operator-core/lib/bundle-host-fallback.test.ts", "sha256": "230ffb5fd8a3e9c6e8691368dbdd8176dc71b9bd069418b9a60018a48652065e"},
+    {"path": "packages/operator-core/lib/spawner-sidecar-bundle.integration.test.ts", "sha256": "b276b06ec8250a59f856a9cb94b94aef0e208ffaca3491374beddcff7c2de4a1"},
+    {"path": "papercusp-desktop/bin/build-desktop-sidecar.sh", "sha256": "ce1ba92070e81796fb5b641cb85a24a175143967cc9631f304bf8fc524e2ad3a"},
+    {"path": "papercusp-desktop/test/build-desktop-sidecar-host-worker-bundler.test.js", "sha256": "ae9396bb187079425098bdc413701533db8eb64f0b5124be94442963e1854a36"}
+  ],
+  "logs": [
+    {"path": "/tmp/su-7db4f-p011-spawner-fallback-r2.log", "sha256": "6522dfe10fc51bd43b40984f91dd9d032725acb572a839ea4f13cf7cffd37043"},
+    {"path": "/tmp/su-7db4f-p011-spawner-runtime-r2.log", "sha256": "e92b5d37612fe7c48797e011c8f1a68dc79bbb954ea57bf323945f00066ccd41"},
+    {"path": "/tmp/su-7db4f-p011-spawner-desktop-runtime-r3.log", "sha256": "ba395b28dadb0f7c2fe16de5b2b59632be1948382d037d986813b46551747abe"},
+    {"path": "/tmp/su-7db4f-p011-spawner-types-r3.log", "sha256": "3a32c3e966c4d786311fdf940f9242e72c30e1b51cd551f28034ea5109edf3e8"}
+  ],
+  "limitations": [
+    "Local current-build acceptance only; no production memory savings or shipment claim.",
+    "Full desktop distribution was not assembled; the maintained standalone boundary and frozen-target call contracts were exercised.",
+    "Native agents, live gate actions and service restarts were not used.",
+    "Original R2 and older memory matrices were not replayed."
+  ]
+}

@@ -9,18 +9,23 @@
  * a safe install in any checkout on this host.
  */
 import { spawn } from 'node:child_process';
+import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { dirSizeBytesAsync, type DiskWalkBudget } from './disk';
+import { criticalWriteHeadroomBytes, diskPolicyFromEnv, sampleDiskSnapshots } from './disk-space-alarm';
+import { withRetentionPinProtection } from './retention-pins';
 
-// @ts-expect-error -- buildless plain-JS mutex module intentionally has no declaration file.
 import { PACKAGE_CACHE_MUTEX_NAME, withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
 export { PACKAGE_CACHE_MUTEX_NAME };
 
 export const DEFAULT_PACKAGE_CACHE_MAX_BYTES = 8 * 1024 ** 3;
+/** Keep small working caches; pressure recovery is not a purge on every fetch. */
+export const PRESSURE_PACKAGE_CACHE_MAX_BYTES = 1024 ** 3;
 const DEFAULT_MEASURE_BUDGET_MS = 30_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+const DEFAULT_MUTEX_TIMEOUT_MS = 300_000;
 const MAX_MEASURED_FILES = 2_000_000;
 const COMMAND_OUTPUT_CHARS = 4_000;
 
@@ -52,6 +57,8 @@ export type PackageCacheOutcomeStatus =
   | 'would-prune'
   | 'pruned'
   | 'prune-failed'
+  | 'pressure-ineligible'
+  | 'pinned'
   | 'mutex-unavailable';
 
 export interface PackageCacheOutcome {
@@ -78,9 +85,20 @@ interface PackageCacheRetentionOptions {
   maxBytes?: number;
   targets?: readonly PackageCacheTarget[];
   repoRoot?: string;
+  /** Restrict pressure recovery to this filesystem. Omit to probe each cache's own filesystem. */
+  pressurePath?: string;
+  /** Bound the shared cache-writer lease wait; defaults to the maintenance budget. */
+  mutexTimeoutMs?: number;
+  sampleDisk?: typeof sampleDiskSnapshots;
+  sameFilesystem?: (a: string, b: string) => Promise<boolean>;
   measure?: (path: string) => Promise<PackageCacheMeasurement>;
   runCommand?: (target: PackageCacheTarget, cwd: string) => Promise<PackageCacheCommandResult>;
   withMutex?: <T>(name: string, run: () => Promise<T>, options?: Record<string, unknown>) => Promise<T>;
+}
+
+async function sameFilesystem(a: string, b: string): Promise<boolean> {
+  const [first, second] = await Promise.all([stat(a), stat(b)]);
+  return first.dev === second.dev;
 }
 
 function configuredPath(raw: string | undefined, fallback: string, homeDir: string, cwd: string): string {
@@ -222,9 +240,10 @@ function belowOutcome(
 }
 
 /**
- * Measure every known cache and prune only those above the configured high-water
- * mark. Re-measures after acquiring the writer lease so an install/peer cleanup
- * that finished while we waited cannot trigger a stale destructive command.
+ * Measure every known cache and prune above its high-water mark. Critical
+ * pressure lowers the floor only for caches on the affected filesystem.
+ * Re-checks pressure and cache size under the writer lease so peer recovery
+ * while we waited cannot trigger a stale destructive command.
  */
 export async function runPackageCacheRetention(
   options: PackageCacheRetentionOptions = {},
@@ -239,17 +258,55 @@ export async function runPackageCacheRetention(
   const measure = options.measure ?? measurePackageCache;
   const runCommand = options.runCommand ?? runPackageCacheCommand;
   const withMutex = options.withMutex ?? withFsMutex;
+  const sampleDisk = options.sampleDisk ?? sampleDiskSnapshots;
+  const sharesFilesystem = options.sameFilesystem ?? sameFilesystem;
+  async function threshold(target: PackageCacheTarget): Promise<number | null> {
+    // The ordinary telemetry janitor has no pressurePath. It must still notice
+    // a critically full cache filesystem, rather than wait for an 8 GiB cache
+    // on a disk that has already exhausted its write reserve.
+    const pressurePath = options.pressurePath ?? target.path;
+    try {
+      if (options.pressurePath && !(await sharesFilesystem(pressurePath, target.path))) return null;
+      const snapshot = (await sampleDisk([pressurePath]))[0];
+      if (snapshot && Number.isFinite(snapshot.totalBytes) && snapshot.totalBytes > 0 &&
+          Number.isFinite(snapshot.freeBytes) && snapshot.freeBytes >= 0 &&
+          snapshot.freeBytes <= criticalWriteHeadroomBytes(snapshot.totalBytes, diskPolicyFromEnv())) {
+        return Math.min(maxBytes, PRESSURE_PACKAGE_CACHE_MAX_BYTES);
+      }
+    } catch (error) {
+      console.warn(`[package-cache-retention] pressure eligibility unmeasured: ${String(error)}`);
+      // A targeted recovery cannot prove eligibility. An ordinary janitor
+      // keeps its existing high-water policy, never an unmeasured lower floor.
+      return options.pressurePath ? null : maxBytes;
+    }
+    // Unknown pressure never authorizes a more aggressive cleanup.
+    return maxBytes;
+  }
+  function unchanged(target: PackageCacheTarget, measurement: PackageCacheMeasurement, limit: number | null): PackageCacheOutcome {
+    return limit === null
+      ? { ...belowOutcome(target, measurement, maxBytes), status: 'pressure-ineligible',
+        note: 'cache filesystem differs from the pressure path or its identity is unmeasured' }
+      : belowOutcome(target, measurement, limit);
+  }
 
   const initial = new Map<PackageCacheManager, PackageCacheMeasurement>();
-  for (const target of targets) initial.set(target.manager, await measure(target.path));
+  const thresholds = new Map<PackageCacheManager, number | null>();
+  for (const target of targets) {
+    initial.set(target.manager, await measure(target.path));
+    thresholds.set(target.manager, await threshold(target));
+  }
 
-  const eligible = targets.filter((target) => overHighWater(initial.get(target.manager)!, maxBytes));
+  const eligible = targets.filter((target) => {
+    const limit = thresholds.get(target.manager)!;
+    return limit !== null && overHighWater(initial.get(target.manager)!, limit);
+  });
   if (dryRun) {
     return targets.map((target) => {
       const measurement = initial.get(target.manager)!;
-      if (!overHighWater(measurement, maxBytes)) return belowOutcome(target, measurement, maxBytes);
+      const limit = thresholds.get(target.manager)!;
+      if (limit === null || !overHighWater(measurement, limit)) return unchanged(target, measurement, limit);
       return {
-        ...belowOutcome(target, measurement, maxBytes),
+        ...belowOutcome(target, measurement, limit),
         status: 'would-prune',
         note: measurement.truncated
           ? 'size scan truncated; actual bytes are at least the measured lower bound'
@@ -258,7 +315,7 @@ export async function runPackageCacheRetention(
     });
   }
   if (eligible.length === 0) {
-    return targets.map((target) => belowOutcome(target, initial.get(target.manager)!, maxBytes));
+    return targets.map((target) => unchanged(target, initial.get(target.manager)!, thresholds.get(target.manager)!));
   }
 
   try {
@@ -267,19 +324,31 @@ export async function runPackageCacheRetention(
       async () => {
         const outcomes = new Map<PackageCacheManager, PackageCacheOutcome>();
         for (const target of eligible) {
+          const limit = await threshold(target);
           const before = await measure(target.path);
-          if (!overHighWater(before, maxBytes)) {
+          if (limit === null || !overHighWater(before, limit)) {
             outcomes.set(target.manager, {
-              ...belowOutcome(target, before, maxBytes),
-              note: 'fell below the high-water mark while waiting for the cache mutex',
+              ...unchanged(target, before, limit),
+              note: limit === null ? 'cache filesystem eligibility changed while waiting for the cache mutex'
+                : 'fell below the high-water mark while waiting for the cache mutex',
             });
             continue;
           }
 
-          const command = await runCommand(target, repoRoot);
+          // Native managers can remove arbitrary descendants. Hold the common
+          // pin mutex through the command and retain the whole cache on overlap.
+          const command = await withRetentionPinProtection((isPinned) =>
+            isPinned(target.path) ? null : runCommand(target, repoRoot));
+          if (command === null) {
+            outcomes.set(target.manager, {
+              ...belowOutcome(target, before, limit), status: 'pinned',
+              note: 'live retention pin protects this cache or one of its descendants',
+            });
+            continue;
+          }
           if (!command.ok) {
             outcomes.set(target.manager, {
-              ...belowOutcome(target, before, maxBytes),
+              ...belowOutcome(target, before, limit),
               status: 'prune-failed',
               note: command.timedOut
                 ? `native cleanup timed out: ${command.output}`
@@ -292,13 +361,13 @@ export async function runPackageCacheRetention(
           outcomes.set(target.manager, {
             manager: target.manager,
             path: target.path,
-            maxBytes,
+            maxBytes: limit,
             beforeBytes: before.bytes,
             afterBytes: after.bytes,
             reclaimedBytes: Math.max(0, before.bytes - after.bytes),
             measurementTruncated: before.truncated || after.truncated,
             status: 'pruned',
-            note: overHighWater(after, maxBytes)
+            note: overHighWater(after, limit)
               ? 'native cleanup completed, but the cache still measures above the high-water mark'
               : undefined,
           });
@@ -306,7 +375,7 @@ export async function runPackageCacheRetention(
         return outcomes;
       },
       {
-        timeoutMs: 300_000,
+        timeoutMs: options.mutexTimeoutMs ?? DEFAULT_MUTEX_TIMEOUT_MS,
         staleMs: 10 * 60_000,
         retryMs: 250,
         waitingNoticeIntervalMs: 60_000,
@@ -315,16 +384,17 @@ export async function runPackageCacheRetention(
     );
 
     return targets.map(
-      (target) => changed.get(target.manager) ?? belowOutcome(target, initial.get(target.manager)!, maxBytes),
+      (target) => changed.get(target.manager) ?? unchanged(target, initial.get(target.manager)!, thresholds.get(target.manager)!),
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const eligibleManagers = new Set(eligible.map((target) => target.manager));
     return targets.map((target) => {
       const measurement = initial.get(target.manager)!;
-      if (!eligibleManagers.has(target.manager)) return belowOutcome(target, measurement, maxBytes);
+      const limit = thresholds.get(target.manager)!;
+      if (!eligibleManagers.has(target.manager)) return unchanged(target, measurement, limit);
       return {
-        ...belowOutcome(target, measurement, maxBytes),
+        ...unchanged(target, measurement, limit),
         status: 'mutex-unavailable',
         note: message,
       };

@@ -8,7 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 
 const spawnMock = vi.fn();
-vi.mock('node:child_process', () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
+vi.mock('node:child_process', () => ({
+  spawn: (...args: unknown[]) => spawnMock(...args),
+  execFile: (_file: unknown, _args: unknown, _options: unknown, callback: (...args: unknown[]) => void) => {
+    queueMicrotask(() => callback(null, '', ''));
+    return undefined;
+  },
+}));
 
 // ── EI-19479764372783341 fallout: this file's subject now sits behind an ASYNC
 // chokepoint ──────────────────────────────────────────────────────────────────
@@ -50,6 +56,12 @@ import {
   MAX_RESPAWN_ATTEMPTS,
 } from './spawner-sidecar-spawn';
 import { _resetSidecarShutdownHookRegistryForTests, respawnBackoffMs } from '../process-supervision/sidecar-spawn-shared';
+import {
+  __resetShutdownStateForTest,
+  markGracefulDrainInstalled,
+  markShuttingDown,
+  runBeforeHostExitHooks,
+} from '../shutdown-state';
 import { probeScopeSupport, resetScopeProbe } from '../task-manager/managed-spawn';
 
 type FakeChild = EventEmitter & {
@@ -200,6 +212,93 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
 
   it('a no-op stop when nothing is running never throws', async () => {
     await expect(stopSpawnerSidecar()).resolves.toBeUndefined();
+  });
+
+  it('coalesces a caller that joins after child creation and rejects both on startup error', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValueOnce(child);
+    const first = spawnSpawnerSidecar('/tmp/spawner-sidecar-startup-error.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const second = spawnSpawnerSidecar('/tmp/spawner-sidecar-startup-error.sock');
+    let secondSettled = false;
+    void second.then(
+      () => {
+        secondSettled = true;
+      },
+      () => {
+        secondSettled = true;
+      },
+    );
+
+    const error = new Error('sidecar failed before ready');
+    const matchingRejection = expect(first).rejects.toBe(error);
+    child.emit('error', error);
+
+    await matchingRejection;
+    await Promise.resolve();
+    expect(secondSettled).toBe(true);
+  });
+
+  it.each([
+    { code: 17, signal: null, reason: 'exit code 17' },
+    { code: null, signal: 'SIGTERM', reason: 'signal SIGTERM' },
+  ])('rejects all startup callers with the actual pre-ready exit: $reason', async ({ code, signal, reason }) => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const child = makeChild();
+    spawnMock.mockReturnValueOnce(child);
+    const first = spawnSpawnerSidecar('/tmp/spawner-sidecar-early-exit.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const second = spawnSpawnerSidecar('/tmp/spawner-sidecar-early-exit.sock');
+    let firstError: unknown;
+    let secondError: unknown;
+    void first.catch((error) => { firstError = error; });
+    void second.catch((error) => { secondError = error; });
+    child.emit('exit', code, signal);
+    await vi.waitFor(() => {
+      expect(firstError).toMatchObject({ message: `Spawner sidecar exited before ready (${reason})`,
+        code: 'SIDECAR_STARTUP_EXIT', exitCode: code, signal });
+      expect(secondError).toBe(firstError);
+    }, { timeout: 500 });
+    expect(warning).toHaveBeenCalledWith(`[spawner-sidecar] died (${reason})`);
+  });
+
+  it('rejects every coalesced startup caller when the ready handshake times out', async () => {
+    const child = makeChild();
+    child.kill.mockImplementation(() => {
+      child.killed = true;
+      return true;
+    });
+    spawnMock.mockReturnValueOnce(child);
+    const first = spawnSpawnerSidecar('/tmp/spawner-sidecar-startup-timeout.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const second = spawnSpawnerSidecar('/tmp/spawner-sidecar-startup-timeout.sock');
+    const firstRejection = expect(first).rejects.toThrow('Spawner sidecar startup timeout');
+    let secondSettled = false;
+    void second.then(
+      () => {
+        secondSettled = true;
+      },
+      () => {
+        secondSettled = true;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await firstRejection;
+    await Promise.resolve();
+    expect(secondSettled).toBe(true);
+  });
+
+  it('retains the startup timeout cause when its kill emits exit synchronously', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValueOnce(child);
+    const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar-kill-exit.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const rejection = expect(ready).rejects.toThrow('Spawner sidecar startup timeout');
+    await vi.advanceTimersByTimeAsync(10_000);
+    await rejection;
+    expect(child.kill).toHaveBeenCalled();
   });
 
   // EI-19479764372783341. Landing unconfined is a legitimate degrade (a box with
@@ -355,6 +454,72 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
       await newestUncaughtExceptionListener()(new TypeError('a real bug, not EPIPE'));
 
       expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      warn.mockRestore();
+    });
+  });
+
+  // EI-24863236643374267: measured 2026-10-02 11:49:26-33Z on bg-host — the sidecar
+  // was stopped by its own SIGTERM listener BEFORE the host drain began, so every git
+  // call of the ~10 s drain forked on the host's main thread (256-512 ms each).
+  describe('host drain keeps the sidecar up until exit (EI-24863236643374267)', () => {
+    beforeEach(() => {
+      _resetSidecarShutdownHookRegistryForTests();
+      __resetShutdownStateForTest();
+    });
+    afterEach(() => {
+      process.removeAllListeners('SIGTERM');
+      process.removeAllListeners('SIGINT');
+      process.removeAllListeners('uncaughtException');
+      __resetShutdownStateForTest();
+    });
+
+    const newestSigtermListener = (): (() => unknown) => {
+      const listeners = process.listeners('SIGTERM');
+      return listeners[listeners.length - 1] as () => unknown;
+    };
+
+    async function readySidecar(): Promise<FakeChild> {
+      const child = makeChild();
+      spawnMock.mockReturnValueOnce(child);
+      const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar.sock');
+      child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+      await ready;
+      return child;
+    }
+
+    it('with a drain armed, SIGTERM leaves the sidecar running; the before-exit hook stops it', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const child = await readySidecar();
+      registerSpawnerSidecarShutdownHooks();
+      markGracefulDrainInstalled();
+
+      await newestSigtermListener()();
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(isSpawnerSidecarRunning()).toBe(true);
+
+      runBeforeHostExitHooks();
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      log.mockRestore();
+    });
+
+    it('with NO drain armed (cluster primary, short-lived CLI), SIGTERM still stops it at once', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const child = await readySidecar();
+      registerSpawnerSidecarShutdownHooks();
+
+      await newestSigtermListener()();
+      expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+      log.mockRestore();
+    });
+
+    it('a sidecar crash DURING the drain is not respawned', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const child = await readySidecar();
+      markShuttingDown();
+
+      child.emit('exit', 1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(spawnMock).toHaveBeenCalledTimes(1); // the original spawn only
       warn.mockRestore();
     });
   });

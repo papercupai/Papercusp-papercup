@@ -87,6 +87,11 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
         // Idempotent (ADD COLUMN IF NOT EXISTS), so it is safe to apply on top of
         // the canonical fixture whether or not that fixture already models it.
         '777-work-items-embedding-recipe-discriminator.sql',
+        '1110-work-items-admission-flags-generated-columns.sql',
+        '1135-work-items-epoch-ms-timestamp-guard.sql',
+        '1194-work-items-directive-ref.sql',
+        '1294-work-item-readiness-payload-projections.sql',
+        '1308-work-items-severity-projection.sql',
       ],
       {
         label: 'work-items-terminal-attribution',

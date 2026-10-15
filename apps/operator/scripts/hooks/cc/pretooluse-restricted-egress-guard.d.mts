@@ -1,0 +1,51 @@
+export declare const PROVIDER_PREFILTER: RegExp[];
+
+export declare const RESTRICTED_EGRESS_MATCHER: string;
+
+export declare function egressTexts(toolName: string, toolInput: Record<string, unknown> | undefined): string[];
+
+export declare function prefilterHits(texts: readonly string[]): boolean;
+
+export declare function restrictedRuntimePaths(env?: NodeJS.ProcessEnv, cwd?: string): string[];
+
+export declare function isRestrictedRuntimePath(target: string, roots: readonly string[]): boolean;
+
+export declare function sandboxedBashCommand(
+  command: string,
+  opts?: {
+    env?: NodeJS.ProcessEnv;
+    cwd?: string;
+    uid?: number;
+    exists?: (p: string) => boolean;
+    bwrap?: string;
+    unshare?: string;
+  },
+): string | null;
+
+export declare const RTK_BIN_ENV: string;
+
+export declare const RTK_REWRITE_TIMEOUT_MS: number;
+
+export declare const RTK_EARLY_EXIT_PIPE: RegExp;
+export declare const RTK_GREP_NO_FILENAME: RegExp;
+
+export declare function resolveRtkBin(env?: NodeJS.ProcessEnv): string | null;
+
+export declare function rtkRewriteSync(
+  command: string,
+  opts?: { env?: NodeJS.ProcessEnv; cwd?: string; timeoutMs?: number },
+): string | null;
+
+export declare function decideEgress(params: {
+  toolName: string;
+  toolInput?: Record<string, unknown>;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  fetchImpl?: typeof fetch;
+  sandbox?: (command: string) => string | null;
+  rtk?: (command: string) => string | null;
+}): Promise<
+  | { decision: 'allow' }
+  | { decision: 'deny'; reason: string }
+  | { decision: 'rewrite'; updatedInput: Record<string, unknown> }
+>;

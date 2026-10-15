@@ -9,15 +9,16 @@
  * work + deploys frozen for 7h (and the bghost-watchdog mistook the starved queue for a frozen ticker and
  * restart-looped bg-host, killing green-checkpoint mid-run). The fix is two-pronged: the watchdog now
  * corroborates with the routinesTick SCHEDULER (so a busy queue is no longer read as a freeze), and — here —
- * git-sync gets a DEDICATED `routines-critical` lane so the shared queue's saturation can NEVER starve it.
+ * git-sync and the bounded deterministic admission fail-open action use the protected `routines-critical`
+ * lane so shared-queue saturation cannot starve commit persistence or the admission floor.
  *
  * EI-21386288922867645 proves queueing a loop behind that shared backlog is NOT benign: a due loop fire sat
  * FIFO behind 29 earlier jobs for ~11 minutes, so the owner received no turn by its five-minute deadline.
  * Loop fires are quick but latency-sensitive, so they get their own bounded `routines-loop` lane. WI-41662
  * found the SAME shape a third time — the external-source polls (gmail/calendar/pr/vault) starved 4–18min
- * every hour behind green-checkpoint — so they get `routines-triggers` on the same principle. Git-sync
- * remains the ONLY action on `routines-critical`; long/unknown system actions and agent roles still default
- * to `routines`, except for explicitly-known heavy/background work such as gitnexus reindexing, which gets
+ * every hour behind green-checkpoint — so they get `routines-triggers` on the same principle. The critical
+ * lane contains only git-sync and the bounded fail-open action; long/unknown system actions and agent roles
+ * still default to `routines`, except for explicitly-known heavy/background work such as gitnexus reindexing, which gets
  * a bounded serial lane of its own. This extends the existing queue mechanism without weakening its
  * persistence invariant.
  */
@@ -39,22 +40,28 @@ export const LOOP_WAKE_TARGET_ROLE = `${SYSTEM_TARGET_PREFIX}loop-wake`;
 /**
  * System actions whose STARVATION freezes fleet-wide persistence/coordination → the protected lane.
  * `git-sync` is the proven case (its starvation behind 4 long routines froze every commit + deploys for 7h).
+ * `work-item-admission-fail-open` also belongs here: its capped deterministic update is the only non-model
+ * path that clears over-age pending work and now has a per-tick cap plus database-side timeouts.
  * Add to this set ONLY a genuinely must-never-starve, QUICK action — never a long-running one (that would
  * re-create the starvation this lane exists to prevent).
  */
-export const CRITICAL_ROUTINE_ACTIONS = new Set<string>(['git-sync']);
+export const CRITICAL_ROUTINE_ACTIONS = new Set<string>(['git-sync', 'work-item-admission-fail-open']);
 
 /**
- * Fleet membership restoration is control-plane work whose latency determines
- * whether a leader can recover dead/stale lanes. It cannot share the ordinary
- * queue: a pool-pressure episode can leave dozens of older routine rows ahead
- * of a one-second headcount tick, delaying recovery for tens of minutes even
- * after the scheduler itself is healthy. It also cannot use the critical,
- * loop, trigger, or release lanes: a headcount action can open and attest agent
- * processes, so it is neither quick nor safe to put ahead of those consumers.
- * Keep this exact allow-list on its own serial queue.
+ * Fleet control-plane actions whose latency determines whether leaders can
+ * recover dead/stale lanes or learn about fleet state transitions. They share
+ * a separate admission class so ordinary routine backlog cannot starve them.
+ *
+ * The headcount governor can open and attest agent processes, so it must stay
+ * off the responsive loop/trigger lanes. The two transition sweeps are bounded
+ * observers with one-minute detection latency; keeping them on the fleet lane
+ * separates them from both the general queue and unrelated external traffic.
  */
-export const FLEET_CONTROL_ACTIONS = new Set<string>(['fleet-headcount-governor']);
+export const FLEET_CONTROL_ACTIONS = new Set<string>([
+  'fleet-headcount-governor',
+  'fleet-transition-sweep',
+  'presence-transition-sweep',
+]);
 
 /**
  * External-SOURCE poll actions → their own bounded lane. These are QUICK, run on a
@@ -76,10 +83,19 @@ export const FLEET_CONTROL_ACTIONS = new Set<string>(['fleet-headcount-governor'
  * the lane exists to prevent.
  */
 export const TRIGGER_POLL_ACTIONS = new Set<string>([
-  'google-gmail-poll',
-  'google-calendar-poll',
   'pr-poll',
-  'facebook-personal-vault-poll',
+  'connector-sync',
+]);
+
+/**
+ * Other bounded trigger/import handlers use the same latency-isolated lane as
+ * source polls: trigger dispatch processes a bounded outbox batch, and personal
+ * vault import advances one bounded, checkpointed batch per fire.
+ */
+export const TRIGGERS_QUEUE_ACTIONS = new Set<string>([
+  ...TRIGGER_POLL_ACTIONS,
+  'external-trigger-dispatch',
+  'personal-vault-import',
 ]);
 
 /**
@@ -90,8 +106,19 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
  * admission window as short housekeeping routines, which is the starvation shape
  * this classification layer exists to prevent. Keep this exact allow-list narrow:
  * a new action belongs here only after its runtime and resource profile are known.
+ *
+ * `work-item-admission-bulk-dedup` is LLM-bound rather than CPU-bound, but its wall
+ * clock is the same shape: a census fire measured 17m and a bulk stage over a
+ * 65,091-member corpus ran 2h+ (2026-10-01). On the shared queue one stage held a
+ * slot for 1h53m while pool pressure shrank the window to 3, and 117 cron routines
+ * went overdue (plan work-queue-bulk-cleanup-remediation-2026-10-01 D-005). The
+ * lane is serial, so a stage and a reindex can delay each other; both are
+ * background work, which is the accepted trade-off.
  */
-export const HEAVY_ROUTINE_ACTIONS = new Set<string>(['gitnexus-reindex']);
+export const HEAVY_ROUTINE_ACTIONS = new Set<string>([
+  'gitnexus-reindex',
+  'work-item-admission-bulk-dedup',
+]);
 
 /**
  * The DEPLOY LAUNCHER → its own bounded serial lane.
@@ -112,9 +139,9 @@ export const HEAVY_ROUTINE_ACTIONS = new Set<string>(['gitnexus-reindex']);
  * overdue, release-trigger had not fired for ~50 minutes, and 426 green commits sat
  * undeployed behind a live certification that nothing was left to launch.
  *
- * It does NOT belong on the existing lanes: `routines-critical` is deliberately git-sync-only
- * (a guard test pins that set, and widening it re-creates the very contention that lane
- * exists to prevent), and `routines-release` is the SERIAL lane for the operator-home
+ * It does NOT belong on the existing lanes: `routines-critical` contains only git-sync and
+ * the bounded admission fail-open, both must-never-starve quick actions; the deploy launcher is
+ * not one, and `routines-release` is the SERIAL lane for the operator-home
  * green-checkpoint, whose ~25-minute fire would starve a 15-minute trigger outright.
  * Serial, because two concurrent deploy evaluations have nothing to gain: the units they
  * launch are themselves singletons, deduped by fixed unit name.
@@ -129,9 +156,9 @@ export const DEPLOY_TRIGGER_ACTIONS = new Set<string>(['release-trigger']);
  * that one home-hive action its own serial lane; subject-hive checkpoints stay on
  * the bounded shared lane so their aggregate concurrency remains unchanged.
  *
- * A loop wake → the latency-isolated `routines-loop` lane; fleet restoration →
- * the serial `routines-fleet-control` lane; a critical quick SYSTEM action →
- * `routines-critical`; a quick external-source poll → `routines-triggers`; the
+ * A loop wake → the latency-isolated `routines-loop` lane; fleet control-plane
+ * actions → the dedicated `routines-fleet-control` lane; a critical quick SYSTEM action →
+ * `routines-critical`; a source poll or bounded trigger/import drain → `routines-triggers`; the
  * operator-home green-checkpoint → `routines-release`; the deploy launcher →
  * `routines-deploy`; a known heavy/background action → `routines-heavy`;
  * everything else → `routines`.
@@ -147,7 +174,7 @@ export function queueForRoutine(targetRole: string, installSlug?: string | null)
     if (FLEET_CONTROL_ACTIONS.has(action)) return ROUTINES_FLEET_CONTROL_QUEUE;
     if (CRITICAL_ROUTINE_ACTIONS.has(action)) return ROUTINES_CRITICAL_QUEUE;
     if (DEPLOY_TRIGGER_ACTIONS.has(action)) return ROUTINES_DEPLOY_QUEUE;
-    if (TRIGGER_POLL_ACTIONS.has(action)) return ROUTINES_TRIGGERS_QUEUE;
+    if (TRIGGERS_QUEUE_ACTIONS.has(action)) return ROUTINES_TRIGGERS_QUEUE;
   }
   return ROUTINES_QUEUE;
 }
@@ -156,10 +183,10 @@ export function queueForRoutine(targetRole: string, installSlug?: string | null)
  * The CRITICAL-ROUTINE FLOOR for the routinesTick PG-pool-starvation shed (EI-11171).
  *
  * When routinesTickImpl sheds on critical pool pressure (pool-pressure.ts), it must NOT go
- * fully dark: the ONE thing that can never be allowed to stall is the protected critical-queue
- * routine (git-sync) — the whole reason the dedicated `routines-critical` lane exists is that
- * its starvation froze every commit + deploy for 7h (2026-06-23). The original shed did a bare
- * `return` BEFORE the fire loop, silently skipping git-sync's enqueue too — defeating that lane.
+ * fully dark: the protected critical-queue actions (git-sync and the deterministic admission
+ * fail-open) cannot be allowed to stall. Git-sync starvation froze every commit + deploy for 7h
+ * (2026-06-23); fail-open starvation breaks the pending-admission floor. The original shed did
+ * a bare `return` BEFORE the fire loop, silently skipping their enqueue too — defeating that lane.
  * This predicate is the floor: under a shed, a routine fires ONLY if it belongs to the protected
  * lane; everything else sheds with the heavy sweeps, exactly as before. Pure ⇒ unit-testable.
  */

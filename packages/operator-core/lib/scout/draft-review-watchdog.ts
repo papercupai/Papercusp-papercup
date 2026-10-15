@@ -62,6 +62,9 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { PLAN_STATUSES } from '@papercusp/plan-parser';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 import {
   listBlenderMaintenanceScopes,
   listBlenderMaintenanceWorkspaceIds,
@@ -76,6 +79,30 @@ import {
   getWorkItemRefStates,
   type CitedWorkItemRefState,
 } from '../agent-tools/plans/cited-work-item-refs';
+
+const CONDITION_PREFIX = 'alarm:scout-draft-review:';
+export function scoutDraftReviewConditionKey(workspaceId: string, planStorageSlug: string, planSlug: string): string {
+  return CONDITION_PREFIX + 'stale:' + encodeURIComponent(JSON.stringify([workspaceId, planStorageSlug, planSlug]));
+}
+export function scoutDraftReviewCoverageKey(workspaceId: string): string {
+  return CONDITION_PREFIX + 'coverage:' + encodeURIComponent(JSON.stringify([workspaceId]));
+}
+async function readOpenScoutDraftReviewKeys(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(condition => condition.open && condition.condition_key.startsWith(CONDITION_PREFIX))
+    .map(condition => condition.condition_key);
+}
+function conditionIdentity(key: string, kind: 'stale' | 'coverage', size: number): string[] | null {
+  const prefix = CONDITION_PREFIX + kind + ':';
+  if (!key.startsWith(prefix)) return null;
+  try {
+    const value: unknown = JSON.parse(decodeURIComponent(key.slice(prefix.length)));
+    return Array.isArray(value) && value.length === size &&
+      value.every(part => typeof part === 'string' && part.trim().length > 0) &&
+      prefix + encodeURIComponent(JSON.stringify(value)) === key ? value : null;
+  } catch { return null; }
+}
 
 // ── tunable (env-overridable, like the liveness-watchdog floor) ───────────────
 
@@ -315,6 +342,10 @@ export async function readScoutDraftCandidates(
      ORDER BY updated_at ASC
      LIMIT ${limit}`;
 
+  return scoutDraftCandidatesFromRows(sql, planWorkspaceId, rows);
+}
+
+async function scoutDraftCandidatesFromRows(sql: Sql, planWorkspaceId: string, rows: DraftRow[]): Promise<ScoutDraftCandidate[]> {
   // WI-2142684: only a decision that READS as a deferred/conditional hold (and
   // cites a WI-/EI- ref) is even eligible for re-evaluation — batch-resolve
   // every such ref ONCE across the whole page, so the common case (no
@@ -339,7 +370,7 @@ export async function readScoutDraftCandidates(
   return rows.map((r) => ({
     planSlug: r.plan_slug,
     title: r.title,
-    updatedAtMs: Number(r.updated_at_ms ?? 0),
+    updatedAtMs: r.updated_at_ms == null || r.updated_at_ms === '' ? Number.NaN : Number(r.updated_at_ms),
     reviewEvidence: {
       hasDecision:
         jsonArray(r.decisions).some((d) => decisionStillSuppresses(d, refStates)) ||
@@ -349,6 +380,47 @@ export async function readScoutDraftCandidates(
       hasRevisionHold: /\brev(?:ision)?\s+hold\b/i.test(r.content ?? ''),
     },
   }));
+}
+
+/** Exact scoped recovery. A missing row or a bounded page's absence is unknown. */
+export async function readScoutDraftReviewRecovery(
+  sql: Sql,
+  identity: { workspaceId: string; planStorageSlug: string; planSlug: string },
+  now: number,
+  thresholdMs: number,
+): Promise<boolean | null> {
+  if (!Number.isFinite(now) || !Number.isFinite(thresholdMs) || thresholdMs <= 0) return null;
+  const rows = await sql<(DraftRow & { workspace_id: string; harness_slug: string; status: string; archived: boolean })[]>`
+    SELECT workspace_id, harness_slug, plan_slug, title, status, archived,
+           (extract(epoch FROM updated_at) * 1000)::bigint AS updated_at_ms,
+           items, decisions, content
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${identity.workspaceId}
+       AND harness_slug = ${identity.planStorageSlug}
+       AND plan_slug = ${identity.planSlug}`;
+  if (rows.length !== 1) return null;
+  const row = rows[0];
+  if (row.workspace_id !== identity.workspaceId || row.harness_slug !== identity.planStorageSlug ||
+      row.plan_slug !== identity.planSlug || typeof row.archived !== 'boolean' ||
+      !(PLAN_STATUSES as readonly string[]).includes(row.status)) return null;
+  if (row.archived || row.status !== 'draft') return true;
+  if ((typeof row.updated_at_ms !== 'number' && typeof row.updated_at_ms !== 'string') ||
+      (typeof row.updated_at_ms === 'string' && row.updated_at_ms.trim() === '') ||
+      !Number.isFinite(Number(row.updated_at_ms)) || Number(row.updated_at_ms) > now ||
+      typeof row.content !== 'string') return null;
+  // The ordinary candidate reader tolerates legacy fields. Recovery needs known
+  // arrays: dropping malformed index evidence would manufacture a healthy scan.
+  for (const value of [row.items, row.decisions]) {
+    let parsed: unknown = value;
+    if (typeof value === 'string') {
+      try { parsed = JSON.parse(value); } catch { return null; }
+    }
+    if (!Array.isArray(parsed) || parsed.some(item => !item || typeof item !== 'object' || Array.isArray(item))) return null;
+    if (parsed.some(item => ['status', 'title', 'body'].some(field =>
+      item[field] !== undefined && typeof item[field] !== 'string'))) return null;
+  }
+  const [candidate] = await scoutDraftCandidatesFromRows(sql, identity.workspaceId, [row]);
+  return selectStaleDrafts([candidate], { now, thresholdMs }).length === 0;
 }
 
 /**
@@ -392,7 +464,13 @@ async function countStaleScoutDraftBacklog(sql: Sql, workspaceId: string, staleB
        AND archived = false
        AND updated_at <= to_timestamp(${staleBeforeMs} / 1000.0)
        AND content LIKE ${BLENDER_PLAN_SQL_PATTERN}`;
-  return Math.max(0, Number(rows[0]?.c ?? 0));
+  const value = rows.length === 1 ? rows[0].c : null;
+  if ((typeof value !== 'number' && typeof value !== 'string') ||
+      (typeof value === 'string' && value.trim() === '') ||
+      !Number.isSafeInteger(Number(value)) || Number(value) < 0) {
+    throw new Error('unmeasured Scout draft backlog count');
+  }
+  return Number(value);
 }
 
 export interface ScoutDraftReviewResult {
@@ -505,13 +583,33 @@ export async function fireReviewWake(
  * them. Never throws — a watchdog that crashes its host guards nothing. DEFAULT-SAFE: no
  * stale draft ⇒ no wake. Kill switch: PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC <= 0.
  */
-export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promise<ScoutDraftReviewResult[]> {
+export async function scoutDraftReviewSweep(opts: {
+  now?: number;
+  rail?: AlarmAttentionDeps;
+  readOpenConditionKeys?: () => Promise<string[]>;
+} = {}): Promise<ScoutDraftReviewResult[]> {
   const results: ScoutDraftReviewResult[] = [];
   const staleSec = scoutDraftReviewStaleSec();
   if (staleSec <= 0) return results; // kill switch
+  const now = opts.now ?? Date.now();
+  const thresholdMs = staleSec * 1_000;
+  if (!Number.isFinite(now) || !Number.isFinite(thresholdMs)) return results;
   try {
     const registeredScopes = await listBlenderMaintenanceScopes();
     const { sql } = getOrgPg();
+    let openKeys: string[] = [];
+    try { openKeys = await (opts.readOpenConditionKeys ?? readOpenScoutDraftReviewKeys)(); }
+    catch (e) { console.warn(`[scout-draft-review] condition read failed (non-fatal): ${String(e)}`); }
+    for (const key of openKeys) {
+      const parts = conditionIdentity(key, 'stale', 3);
+      if (!parts) continue;
+      const [workspaceId, planStorageSlug, planSlug] = parts;
+      try {
+        if (await readScoutDraftReviewRecovery(sql, { workspaceId, planStorageSlug, planSlug }, now, thresholdMs) === true) {
+          await resolveAlarm(key, 'scout-draft-review', opts.rail);
+        }
+      } catch (e) { console.warn(`[scout-draft-review] exact recovery read failed (non-fatal): ${String(e)}`); }
+    }
 
     // The registry is the normal source for live maintenance scopes, but it is
     // not the complete population of retained Scout plans. Legacy/default
@@ -521,8 +619,10 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
     // identity available for an unregistered scope and keeps the durable nudge
     // routed to the correct workspace.
     let discoveredScopes: Array<{ workspaceId: string; planStorageSlug: string }> = [];
+    let discoveryComplete = false;
     try {
       discoveredScopes = await readScoutDraftScopes(sql);
+      discoveryComplete = true;
     } catch (e) {
       // Discovery is an additive coverage leg. A transient failure must not
       // suppress the registry-backed sweep that can still make progress.
@@ -569,11 +669,21 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
           ? listBlenderMaintenanceWorkspaceIds()
           : [];
       if (workspaceIds.length === 0) return results;
-      const now = opts.now ?? Date.now();
       const staleBeforeMs = now - staleSec * 1_000;
       let eligibleBacklogCount = 0;
       for (const workspaceId of workspaceIds) {
-        eligibleBacklogCount += await countStaleScoutDraftBacklog(sql, workspaceId, staleBeforeMs);
+        const count = await countStaleScoutDraftBacklog(sql, workspaceId, staleBeforeMs);
+        eligibleBacklogCount += count;
+        const conditionKey = scoutDraftReviewCoverageKey(workspaceId);
+        if (count === 0) await resolveAlarm(conditionKey, 'scout-draft-review', opts.rail);
+        else {
+          try {
+            const event = { conditionKey, oneShot: true,
+              summary: `${count} stale Scout draft(s) have no evaluated scope in ${workspaceId}` };
+            if (opts.rail?.broadcast) await opts.rail.broadcast(event);
+            else await broadcastSevereEvent(event);
+          } catch (e) { console.warn(`[scout-draft-review] condition broadcast failed (non-fatal): ${String(e)}`); }
+        }
       }
       if (eligibleBacklogCount > 0) {
         const reason =
@@ -601,9 +711,8 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
       ...resolutionFailures.map(({ workspaceId }) => workspaceId),
     ]).size;
     const evaluatedScopeCount = resolvedScopes.length + resolutionFailures.length;
-    const now = opts.now ?? Date.now();
-    const thresholdMs = staleSec * 1_000;
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
+    const evaluatedScopes = new Set<string>();
 
     for (const { workspaceId, installSlug, error } of resolutionFailures) {
       results.push({
@@ -625,6 +734,18 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
         // already carry the storage slug from harness_plans.
         const candidates = await readScoutDraftCandidates(sql, workspaceId, planStorageSlug);
         const stale = selectStaleDrafts(candidates, { now, thresholdMs });
+        evaluatedScopes.add(`${workspaceId}\u0000${planStorageSlug}`);
+        // A durable episode precedes nudge cooldown/claim and recipient effects.
+        for (const candidate of stale) {
+          if (!candidate.planSlug.trim() || candidate.updatedAtMs > now) continue;
+          try {
+            const event = { conditionKey: scoutDraftReviewConditionKey(workspaceId, planStorageSlug, candidate.planSlug),
+              oneShot: true, summary: `Scout draft '${candidate.planSlug}' is overdue for review`,
+              body: `Workspace ${workspaceId}, scope ${planStorageSlug}; unreviewed for ${formatStaleDuration(now - candidate.updatedAtMs)}.` };
+            if (opts.rail?.broadcast) await opts.rail.broadcast(event);
+            else await broadcastSevereEvent(event);
+          } catch (e) { console.warn(`[scout-draft-review] condition broadcast failed (non-fatal): ${String(e)}`); }
+        }
         if (stale.length === 0) continue;
         
         // EI-XXXX: use atomic claimWatchdogFire (with advisory lock) instead of non-atomic
@@ -685,6 +806,16 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
           staleCount: 0,
           reason: e instanceof Error ? e.message : String(e),
         });
+      }
+    }
+    for (const key of openKeys) {
+      const parts = conditionIdentity(key, 'coverage', 1);
+      if (!parts) continue;
+      const [workspaceId] = parts;
+      const scopes = resolvedScopes.filter(scope => scope.workspaceId === workspaceId);
+      if (discoveryComplete && scopes.length > 0 && !resolutionFailures.some(scope => scope.workspaceId === workspaceId) &&
+          scopes.every(scope => evaluatedScopes.has(`${workspaceId}\u0000${scope.planStorageSlug}`))) {
+        await resolveAlarm(key, 'scout-draft-review', opts.rail);
       }
     }
   } catch (e) {

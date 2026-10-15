@@ -30,6 +30,16 @@ import { createHash } from 'node:crypto';
 /** A held checkpoint older than this (or absent) is STALE at turn end. */
 export const STALE_CHECKPOINT_MS = 45 * 60 * 1000;
 
+/** Conservative advisory signal; quoted/code examples and progress notes do not qualify. */
+export function isUnpublishedReportTurn(assistantText: string, publicationSeen: boolean): boolean {
+  if (publicationSeen) return false;
+  const text = assistantText.slice(0, 128_000).replace(/```[\s\S]*?```/g, '')
+    .split('\n').filter(line => !/^\s*>/.test(line)).join('\n');
+  if (text.trim().length < 500) return false;
+  const headings = Array.from(text.matchAll(/^#{1,3}\s+([^\n]+)$/gm), match => match[1]);
+  return headings.filter(heading => /\b(findings|verdict|recommendations|assessment|conclusions|postmortem|analysis)\b/i.test(heading)).length >= 2;
+}
+
 /** Marker opening a mechanical (system-written) checkpoint block. The ⟦…⟧
  *  bracket family is already the machine-text convention (⟦journal⟧,
  *  ⟦turn-origin⟧) — unmistakable, never typed by hand. */
@@ -96,15 +106,32 @@ export function composeMechanicalCheckpoint(input: MechanicalCheckpointInput): s
 
 /**
  * Merge the mechanical block into an existing checkpoint: agent-authored prose
- * is PRESERVED verbatim; a previous mechanical block (always the tail — this
- * function only ever appends one at the end) is replaced, so repeated sweeps
- * never stack blocks.
+ * is preserved; a previous mechanical block is replaced, so repeated sweeps
+ * never stack blocks. Structured Checks/Walls following that block belong to
+ * the agent, and must survive replacement just like a legacy block's prefix.
  */
 export function mergeMechanicalCheckpoint(existing: string | null | undefined, block: string): string {
   const prior = (existing ?? '').trimEnd();
   if (!prior) return block;
   const markerAt = prior.indexOf(MECHANICAL_CHECKPOINT_MARKER);
-  const agentPart = (markerAt >= 0 ? prior.slice(0, markerAt) : prior).replace(/(\n\s*---\s*)+$/, '').trimEnd();
+  let agentPart = prior;
+  if (markerAt >= 0) {
+    const tail = prior.slice(markerAt);
+    const mechanicalEnd = tail.indexOf(MECHANICAL_SEP);
+    const suffixAt = STRUCTURED_CARRY_SECTION_RE.exec(tail)?.index;
+    const prefix = prior.slice(0, markerAt).replace(/(\n\s*---\s*)+$/, '').trimEnd();
+    // A work-item checkpoint may have been appended after an older mechanical
+    // snapshot. The separator closes that system block and starts a newer
+    // agent-authored update; preserve the whole update so its journal
+    // latestUpdate span still points into the stored note. Legacy snapshots
+    // without that separator can still carry Checks/Walls directly after the
+    // block, so retain that structured suffix as the fallback.
+    const suffix = mechanicalEnd >= 0
+      ? tail.slice(mechanicalEnd + MECHANICAL_SEP.length)
+      : suffixAt === undefined ? '' : tail.slice(suffixAt);
+    agentPart = [prefix, suffix].filter(Boolean).join('\n\n');
+  }
+  agentPart = agentPart.replace(/(\n\s*---\s*)+$/, '').trimEnd();
   if (!agentPart) return block;
 
   // Mechanical tool-log lines are ordinary prose, but carry-note parsing treats

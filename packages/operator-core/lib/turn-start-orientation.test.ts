@@ -434,6 +434,25 @@ describe('turn-start-orientation — when it speaks', () => {
     expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
   });
 
+  it('an obligations-only re-emit never asserts "holding: nothing" over a held item (EI-24811284380539882)', () => {
+    // The unchanged-fingerprint path narrows the block to the undischarged
+    // obligation row. That projection did not re-read held work, so it must stay
+    // SILENT about it — rendering the measured-empty "holding: nothing — claim
+    // before your first edit" told an agent holding four items its lane was empty.
+    const undischarged = {
+      ...obligationBrief(),
+      primary: [{ kind: 'duty' }] as unknown as NonNullable<OrientationState['obligations']>['primary'],
+    };
+    const state: OrientationState = { ...withWork, unansweredDirected: 0, inboxRecent: [], obligations: undischarged };
+    const committed = fingerprintOrientation(state, EPOCH);
+    const out = composeOrientationBlock({ state, committed, epoch: EPOCH });
+    expect(out).toContain('[DUE] Send the owner report'); // the obligation row is still re-injected
+    expect(out).not.toContain('holding: nothing');
+    expect(out).not.toContain('claim before your first edit');
+    // Same quiet-value rule for the loop: this projection did not look at it either.
+    expect(out).not.toContain('engine loop');
+  });
+
   it('preserves an obligation cursor on read failure but re-emits a measured clear', () => {
     const active: OrientationState = { ...base, obligations: obligationBrief() };
     const committed = fingerprintOrientation(active, EPOCH);
@@ -678,6 +697,31 @@ describe('turn-start-orientation — what it says', () => {
       lastWithheldAt: '2026-08-24T04:00:01.000Z',
     });
     expect(await defaultOrientationDeps().loopFireWithheld('su-1')).toBe(false);
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-1');
+  });
+
+  it('derives armed and withheld loop fields from one owner-status snapshot', async () => {
+    getLoopStatusMock.mockClear();
+    getLoopStatusMock.mockResolvedValue({
+      active: true,
+      lastFiredAt: '2026-08-24T04:00:00.000Z',
+      lastWithheldAt: '2026-08-24T04:00:01.000Z',
+    });
+    const deps = defaultOrientationDeps();
+    const [armed, withheld] = await Promise.all([
+      deps.loopArmed('su-1'),
+      deps.loopFireWithheld('su-1'),
+    ]);
+
+    expect(armed).toBe(true);
+    expect(withheld).toBe(true);
+    expect(getLoopStatusMock).toHaveBeenCalledTimes(1);
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-1');
+
+    getLoopStatusMock.mockClear();
+    getLoopStatusMock.mockResolvedValue({ active: false });
+    expect(await defaultOrientationDeps().loopArmed('su-1')).toBe(false);
+    expect(getLoopStatusMock).toHaveBeenCalledTimes(1);
     expect(getLoopStatusMock).toHaveBeenCalledWith('su-1');
   });
 

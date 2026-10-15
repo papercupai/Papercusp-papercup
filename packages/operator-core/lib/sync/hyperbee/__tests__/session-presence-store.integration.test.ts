@@ -16,6 +16,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import {
   applySessionPresenceSet,
   listLiveSessionPresence,
@@ -60,8 +61,12 @@ const entry = (ownerId: string, over?: Partial<SessionPresenceEntry>): SessionPr
 
 describe('shared_session_presence (real PG, mig 434)', () => {
   let db: FreshPgDb;
+  let dedicatedPg: DedicatedNativePg | undefined;
+  const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
 
   beforeAll(async () => {
+    dedicatedPg = await startDedicatedNativePg({ baseDir: '/dev/shm/pcv' });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
     db = await createFreshPgDb('session_presence');
     await db.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS harness_shared`);
     await db.sql.unsafe(stripMeta(readFileSync(MIG_434, 'utf8')));
@@ -72,7 +77,16 @@ describe('shared_session_presence (real PG, mig 434)', () => {
   }, 60_000);
 
   afterAll(async () => {
-    await db?.cleanup();
+    try {
+      await db?.cleanup();
+    } finally {
+      try {
+        await dedicatedPg?.stop();
+      } finally {
+        if (priorAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+        else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = priorAdminUrl;
+      }
+    }
   });
 
   async function rowsFor(devicePubkey: string) {
@@ -170,6 +184,42 @@ describe('shared_session_presence (real PG, mig 434)', () => {
       db.sql,
     );
     expect(await rowsFor('dev-B')).toEqual([]);
+  });
+
+  it('full-set deletes stay within the frame pot when a device announces multiple pots', async () => {
+    const devicePubkey = 'dev-multi-pot';
+    const apply = (potSlug: string | null, sessions: SessionPresenceEntry[], frameTs: number) =>
+      applySessionPresenceSet(
+        {
+          workspaceId: WS,
+          devicePubkey,
+          githubUserId: 77,
+          machineLabel: 'multi-pot',
+          potSlug,
+          sessions,
+          frameTs,
+        },
+        db.sql,
+      );
+
+    await apply('pot-a', [entry('su-pot-a1'), entry('su-pot-a2')], T0 + 40_000);
+    await apply('pot-b', [entry('su-pot-b1')], T0 + 50_000);
+    await apply(null, [entry('su-pot-null')], T0 + 55_000);
+    // The non-empty replace deletes only pot-a's absent row; pot-b remains.
+    await apply('pot-a', [entry('su-pot-a2')], T0 + 60_000);
+    expect((await rowsFor(devicePubkey)).map(({ owner_id, pot_slug }) => [owner_id, pot_slug])).toEqual([
+      ['su-pot-a2', 'pot-a'],
+      ['su-pot-b1', 'pot-b'],
+      ['su-pot-null', null],
+    ]);
+
+    // An empty pot-a frame clears that pot's final row without evicting pot-b
+    // or the NULL-scoped row.
+    await apply('pot-a', [], T0 + 70_000);
+    expect((await rowsFor(devicePubkey)).map(({ owner_id, pot_slug }) => [owner_id, pot_slug])).toEqual([
+      ['su-pot-b1', 'pot-b'],
+      ['su-pot-null', null],
+    ]);
   });
 
   it('listLiveSessionPresence TTL-filters and hive-scopes', async () => {

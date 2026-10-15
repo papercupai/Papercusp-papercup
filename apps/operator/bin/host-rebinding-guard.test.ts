@@ -44,6 +44,15 @@ describe('isHostHeaderAllowed', () => {
     expect(isHostHeaderAllowed('mainserver:3070', { PAPERCUSP_ALLOW_REMOTE_ADMIN: '1' })).toBe(true);
     expect(isHostHeaderAllowed('mainserver:3070', { PAPERCUSP_ALLOW_REMOTE_ADMIN: '0' })).toBe(false);
   });
+
+  it('preserves the exact hosted and VM distribution exemptions', () => {
+    for (const profile of ['hosted-control-plane', 'vm-release']) {
+      expect(isHostHeaderAllowed('public.example', { PAPERCUSP_DISTRIBUTION_PROFILE: profile })).toBe(true);
+    }
+    for (const profile of ['', 'hosted-control-plane-other', 'VM-RELEASE', 'desktop']) {
+      expect(isHostHeaderAllowed('public.example', { PAPERCUSP_DISTRIBUTION_PROFILE: profile })).toBe(false);
+    }
+  });
 });
 
 describe('hostRebindingGuard middleware', () => {

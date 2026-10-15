@@ -40,6 +40,7 @@
 
 import { createHash } from 'node:crypto';
 import { clearStaleHolderlessEmptyGitLock } from '../../harness/git-sync/run-git-sync';
+import { classifyGitError } from '../../harness/clone-github';
 import {
   type RunGit,
   NETWORK_RUN_GIT_TIMEOUT_MS,
@@ -269,12 +270,14 @@ export async function ingressOriginBranches(input: IngressInput): Promise<Ingres
       } else {
         res.ok = false;
         // code === -1 is defaultRunGit's own sentinel for a process-level
-        // fault (spawn error or timeout-kill) — never a real git exit code —
-        // so tag it transient rather than let it read as a transport error.
+        // fault (spawn error or timeout-kill). Git's real nonzero exits can
+        // also be transient network failures, such as DNS lookup failures;
+        // share clone-github's network classification so these do not read as
+        // permanent remote URL or credential faults.
         res.errors.push({
           branch,
           message: fetch.stderr.trim() || `fetch exited ${fetch.code}`,
-          transient: fetch.code === -1,
+          transient: fetch.code === -1 || classifyGitError(fetch.stderr) === 'network_timeout',
         });
       }
       continue;

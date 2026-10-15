@@ -1,8 +1,11 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
-import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
+import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
+import { join } from 'node:path';
+import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
 import type { AdvSessionRow } from '../adv-sessions';
 import { pgSessionArchiveStore } from '../session-archive';
-import { adaptClaudeJsonl, CLAUDE_SESSION_PORT_ADAPTER_VERSION } from './claude-adapter';
+import { CLAUDE_SESSION_PORT_ADAPTER_VERSION } from './claude-adapter';
+import { adaptNativeSessionJsonl, NATIVE_SESSION_PORT_ADAPTER_VERSION } from './native-adapter';
 import {
   deleteSessionPortArtifact,
   writeSessionPortArtifact,
@@ -22,7 +25,9 @@ import {
 import { sanitizePortableText } from './security';
 import {
   findCanonicalClaudeLiveJsonl,
+  findCanonicalNativeLiveJsonl,
   readCanonicalClaudeArchive,
+  readCanonicalNativeArchive,
   readStableLiveJsonl,
   type StableSource,
 } from './source';
@@ -46,7 +51,7 @@ import {
 export { SESSION_PORT_TRANSFORM_VERSION } from './types';
 
 export interface SessionPortTarget {
-  backend: Exclude<SessionBackend, 'claude'>;
+  backend: SessionBackend;
   provider: string;
   model: string | null;
   account: string;
@@ -54,6 +59,20 @@ export interface SessionPortTarget {
   availableInputTokens: number;
   contextSize: 'full' | 'trimmed' | 'steward' | null;
   launchContextHash: string;
+  /** Bind an isolated answering owner; omission preserves source continuation. */
+  ownerId?: string;
+}
+
+/** The preparation owns this choice, never the later launcher request. */
+export function resolveSessionPortTargetOwner(sourceOwnerId: string, targetOwnerId?: unknown): string {
+  if (!sourceOwnerId) throw new Error('prepared session port is missing its source coordination identity');
+  if (targetOwnerId === undefined) return sourceOwnerId;
+  if (typeof targetOwnerId !== 'string' ||
+      !/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(targetOwnerId) ||
+      targetOwnerId === sourceOwnerId) {
+    throw new Error('isolated target owner must be a valid distinct su coordination identity');
+  }
+  return targetOwnerId;
 }
 
 export interface SessionPortInspection {
@@ -61,7 +80,7 @@ export interface SessionPortInspection {
   source: {
     advSessionId: number;
     nativeSessionId: string;
-    backend: 'claude';
+    backend: SessionBackend;
     workspaceId: string;
     cwd: string;
     planSlug: string | null;
@@ -80,7 +99,7 @@ export interface SessionPortInspection {
   disclosure: {
     newTargetSession: true;
     sourceUntouched: true;
-    authorityCarried: true;
+    authorityCarried: boolean;
     targetEgress: string;
     summarizerEgress: string | null;
   };
@@ -272,25 +291,82 @@ function isMissingClaudeLiveSource(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
 
+export interface TrackedNativeSourceDeps {
+  rootForSource?: (source: AdvSessionRow) => string;
+  findLive?: typeof findCanonicalNativeLiveJsonl;
+  readLive?: typeof readStableLiveJsonl;
+  readArchive?: typeof readCanonicalNativeArchive;
+  archiveStore?: typeof pgSessionArchiveStore;
+}
+
+export async function acquireTrackedSessionSource(source: AdvSessionRow, deps: TrackedNativeSourceDeps = {}): Promise<StableSource> {
+  if (source.agent === 'claude') return acquireTrackedClaudeSource(source);
+  if (!['codex', 'omp'].includes(source.agent ?? '') || source.role != null || !source.coordOwnerId || !source.cwd) {
+    throw new Error('session ports require a tracked plain SU source');
+  }
+  const backend = source.agent as 'codex' | 'omp';
+  const sessionId = backend === 'omp' ? source.ompThreadId ?? source.sessionId : source.sessionId;
+  if (!sessionId) throw new Error('source is missing exact native session identity');
+  const readArchive = () => (deps.readArchive ?? readCanonicalNativeArchive)({ backend, sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)());
+  const readLive = async () => {
+    const root = deps.rootForSource?.(source) ?? join(backend === 'codex'
+      ? codexHomeForSessionKey(source.id) : ompAgentHomeForSessionKey(source.id), 'sessions');
+    const path = await (deps.findLive ?? findCanonicalNativeLiveJsonl)(root, backend, sessionId);
+    return await (deps.readLive ?? readStableLiveJsonl)(path);
+  };
+  if (source.endedAt) {
+    try { return await readArchive(); }
+    catch (archiveError) {
+      // A row's death does not prove that every older carry incarnation was
+      // archived. Retained bytes still go through the exact tracked-home reader.
+      if (!(archiveError instanceof Error) || archiveError.message !== `canonical ${backend} archive not found`) throw archiveError;
+      try { return await readLive(); }
+      catch (liveError) { throw new AggregateError([archiveError, liveError], 'canonical native archive is missing and retained exact source is unavailable'); }
+    }
+  }
+  try {
+    return await readLive();
+  } catch (error) {
+    const missing = error instanceof Error && error.message === `canonical live ${backend} JSONL is missing`;
+    const disappeared = typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+    if (!missing && !disappeared) throw error;
+    try { return await readArchive(); }
+    catch (archiveError) { throw new AggregateError([error, archiveError], 'canonical native source unavailable: live JSONL is missing and archive fallback failed'); }
+  }
+}
+
+function sourceAdapterVersion(backend: SessionBackend): number {
+  return backend === 'claude' ? CLAUDE_SESSION_PORT_ADAPTER_VERSION : NATIVE_SESSION_PORT_ADAPTER_VERSION;
+}
+
 export async function acquireTrackedClaudeSource(
   source: AdvSessionRow,
   deps: TrackedClaudeSourceDeps = {},
 ): Promise<StableSource> {
   if (source.agent !== 'claude' || source.role != null) throw new Error('V1 ports require a tracked plain Claude SU source');
   if (!source.sessionId || !source.coordOwnerId || !source.cwd) throw new Error('source is missing tracked Claude identity/cwd');
+  const { sessionId, coordOwnerId } = source;
   const readArchive = () => (deps.readArchive ?? readCanonicalClaudeArchive)(
-    { sessionId: source.sessionId! },
+    { sessionId },
     (deps.archiveStore ?? pgSessionArchiveStore)(),
   );
-  if (source.endedAt) {
-    return readArchive();
-  }
-  try {
+  const readLive = async () => {
     const path = await (deps.findLive ?? findCanonicalClaudeLiveJsonl)(
-      (deps.configDirForOwner ?? sessionClaudeConfigDir)(source.coordOwnerId),
-      source.sessionId,
+      (deps.configDirForOwner ?? sessionClaudeConfigDir)(coordOwnerId),
+      sessionId,
     );
     return await (deps.readLive ?? readStableLiveJsonl)(path);
+  };
+  if (source.endedAt) {
+    try { return await readArchive(); }
+    catch (archiveError) {
+      if (!(archiveError instanceof Error) || archiveError.message !== 'canonical Claude archive not found') throw archiveError;
+      try { return await readLive(); }
+      catch (liveError) { throw new AggregateError([archiveError, liveError], 'canonical Claude archive is missing and retained exact source is unavailable'); }
+    }
+  }
+  try {
+    return await readLive();
   } catch (liveError) {
     // Inspect and prepare deliberately reacquire the source around a
     // human-paced confirmation. Archive-at-death can remove the inspected
@@ -317,17 +393,22 @@ export function inspectAcquiredSessionPort(input: {
   currentInstruction?: string | null;
   evidenceSpan?: SessionPortEvidenceSpan;
 }): SessionPortInspection {
-  const { sourceRow, stableSource, target } = input;
-  if (sourceRow.agent !== 'claude' || sourceRow.role != null || !sourceRow.sessionId || !sourceRow.cwd) {
-    throw new Error('V1 ports require a tracked plain Claude SU source');
+  const { stableSource, target } = input;
+  const nativeSessionId = input.sourceRow.agent === 'omp'
+    ? input.sourceRow.ompThreadId ?? input.sourceRow.sessionId : input.sourceRow.sessionId;
+  const sourceRow = { ...input.sourceRow, sessionId: nativeSessionId };
+  if (!['claude', 'codex', 'omp'].includes(sourceRow.agent ?? '') || sourceRow.role != null || !sourceRow.sessionId || !sourceRow.cwd || !sourceRow.coordOwnerId) {
+    throw new Error('session ports require a tracked plain SU source');
   }
+  const targetOwnerId = resolveSessionPortTargetOwner(sourceRow.coordOwnerId, target.ownerId);
   if (!Number.isFinite(target.availableInputTokens) || target.availableInputTokens <= 0) {
     throw new Error('target launch has no available input budget');
   }
   if (input.evidenceSpan && input.evidenceSpan.sessionId !== sourceRow.sessionId) {
     throw new Error('consult evidence span must name the exact tracked source session');
   }
-  const adapted = adaptClaudeJsonl(stableSource.bytes.toString('utf8'));
+  const sourceBackend = sourceRow.agent as SessionBackend;
+  const adapted = adaptNativeSessionJsonl(sourceBackend, stableSource.bytes.toString('utf8'), sourceRow.sessionId);
   const selectedTurns = input.evidenceSpan
     ? selectSessionPortEvidenceSpan(adapted.turns, input.evidenceSpan)
     : null;
@@ -337,10 +418,11 @@ export function inspectAcquiredSessionPort(input: {
   const fullHistoryEstimatedTokens = estimatePortableTokens(rendered.text);
   const fullPayloadEstimatedTokens = estimatePortableTokens(renderSessionPortSeed({
     portId: BUDGET_PORT_ID,
-    sourceBackend: 'claude',
+    sourceBackend,
     targetBackend: target.backend,
     fidelity: 'full',
     transcript: rendered.text,
+    authorityCarried: targetOwnerId === sourceRow.coordOwnerId,
     currentInstruction: currentInstruction.present ? currentInstruction.text : null,
   }).seed);
   const stats: PortableSessionPort['stats'] = {
@@ -354,7 +436,7 @@ export function inspectAcquiredSessionPort(input: {
     source: {
       advSessionId: sourceRow.id,
       nativeSessionId: sourceRow.sessionId,
-      backend: 'claude',
+      backend: sourceBackend,
       workspaceId: sourceRow.workspaceId,
       cwd: sourceRow.cwd,
       planSlug: sourceRow.planSlug,
@@ -378,7 +460,7 @@ export function inspectAcquiredSessionPort(input: {
     disclosure: {
       newTargetSession: true,
       sourceUntouched: true,
-      authorityCarried: true,
+      authorityCarried: targetOwnerId === sourceRow.coordOwnerId,
       targetEgress: `${target.provider}/${target.account}`,
       summarizerEgress: fullPayloadEstimatedTokens > target.availableInputTokens
         ? (input.summarizerProvider ?? 'papercusp inference gateway')
@@ -411,7 +493,8 @@ export function deriveSessionPortIdempotencyKey(inspection: SessionPortInspectio
     sourceAdvSessionId: inspection.source.advSessionId,
     target: inspection.target,
     protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
-    adapterVersion: CLAUDE_SESSION_PORT_ADAPTER_VERSION,
+    sourceBackend: inspection.source.backend,
+    adapterVersion: sourceAdapterVersion(inspection.source.backend),
     transformVersion: SESSION_PORT_TRANSFORM_VERSION,
     rendererVersion: SESSION_PORT_RENDERER_VERSION,
   }));
@@ -508,20 +591,22 @@ export async function prepareInspectedSessionPort(input: {
     summarizer: input.summarizer,
     renderPayload: (transcript, fidelity) => renderSessionPortSeed({
       portId: BUDGET_PORT_ID,
-      sourceBackend: 'claude',
+      sourceBackend: inspection.source.backend,
       targetBackend: inspection.target.backend,
       fidelity,
       transcript,
+      authorityCarried: inspection.disclosure.authorityCarried,
       currentInstruction: inspection.internal.currentInstruction,
     }).seed,
   });
   const portId = randomUUID();
   const rendered = renderSessionPortSeed({
     portId,
-    sourceBackend: 'claude',
+    sourceBackend: inspection.source.backend,
     targetBackend: inspection.target.backend,
     fidelity: fitted.fidelity,
     transcript: fitted.transcript,
+    authorityCarried: inspection.disclosure.authorityCarried,
     currentInstruction: inspection.internal.currentInstruction,
   });
   const finalPayloadEstimatedTokens = estimatePortableTokens(rendered.seed);
@@ -533,7 +618,7 @@ export async function prepareInspectedSessionPort(input: {
     schema: SESSION_PORT_SCHEMA,
     protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
     source: {
-      backend: 'claude',
+      backend: inspection.source.backend,
       workspaceId: sourceRow.workspaceId,
       advSessionId: sourceRow.id,
       nativeSessionId: sourceRow.sessionId!,
@@ -554,7 +639,7 @@ export async function prepareInspectedSessionPort(input: {
     target: inspection.target,
     fidelity: fitted.fidelity,
     versions: {
-      adapter: CLAUDE_SESSION_PORT_ADAPTER_VERSION,
+      adapter: sourceAdapterVersion(inspection.source.backend),
       transform: SESSION_PORT_TRANSFORM_VERSION,
       renderer: SESSION_PORT_RENDERER_VERSION,
       summaryPrompt: fitted.summary?.promptVersion ?? null,
@@ -571,7 +656,7 @@ export async function prepareInspectedSessionPort(input: {
       summarizerOutputBudgetTokens: fitted.summary?.outputBudgetTokens ?? null,
     },
     portedFrom: {
-      backend: 'claude',
+      backend: inspection.source.backend,
       advSessionId: sourceRow.id,
       nativeSessionId: sourceRow.sessionId!,
     },
@@ -600,7 +685,7 @@ export async function prepareInspectedSessionPort(input: {
       retryOfPortId: existing?.id ?? null,
       protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
       sourceAdvSessionId: sourceRow.id,
-      sourceBackend: 'claude',
+      sourceBackend: inspection.source.backend,
       targetBackend: inspection.target.backend,
       targetModel: inspection.target.model,
       sourceHash: inspection.source.sha256,

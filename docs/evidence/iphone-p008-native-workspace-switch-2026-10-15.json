@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native workspace switching isolates data and survives Keychain relaunch",
+  "command": ["tools/ios-ci.py", "--mode", "simulator", "--force", "--paired-ui", "--workspace-switch-ui", "--pair-payload-file", "<owner-only fresh pairing input>"],
+  "startedAt": "2026-10-15T01:54:34.600878+00:00",
+  "finishedAt": "2026-10-15T02:02:13.939359+00:00",
+  "exitCode": 0,
+  "summary": "The maintained Mac VM runner passed 60 native unit tests, five UI smoke tests and one selected workspace-switch test with zero failures or skips. The actual iOS Settings journey paired with workspace A, authenticated switching to B, displayed only the selected workspace's device marker, retained B after ordinary Keychain relaunch, then authenticated returning to A. All 283 declared artifacts matched their hashes and sizes. Four actual screenshots were visually reviewed. The disposable fixture, private inputs and Mac lease were cleaned up. This verifies the selected simulator journey; broader P-008 remains open.",
+  "assertions": [
+    {
+      "id": "PapercupUITests/PairFlowUITests/testOwnedWorkspaceSwitchAndKeychainRelaunch",
+      "passed": true,
+      "evidence": "paired-ui-summary.json records one passed, zero failed and zero skipped. The test uses the actual Settings switch flow, asserts that the target workspace is absent before authentication approves, checks the selected workspace marker and rejects the other marker, performs ordinary relaunch without credential seeding, and returns to A."
+    },
+    {
+      "id": "native unit and smoke phases",
+      "passed": true,
+      "evidence": "unit-1-summary.json records 60 passed, zero failed and zero skipped; ui-smoke-summary.json records five passed, zero failed and zero skipped."
+    },
+    {
+      "id": "artifact integrity and visual review",
+      "passed": true,
+      "evidence": "local-artifact-verification.json rehashed all 283 result.json artifacts directly from native-artifacts.tar.gz with zero mismatches. The four retained PNGs show A data, isolated B data, B after ordinary relaunch and restored A data."
+    },
+    {
+      "id": "owned fixture and resource cleanup",
+      "passed": true,
+      "evidence": "Native and fixture durable tasks completed with exit zero. runtime.json records processCleanupVerified, cloudCleanupVerified and cleanupVerified true. local-cleanup-verification.json confirms the three owned processes absent, ports 33859, 33527 and 42671 closed, fixture HOME/runtime/Postgres directories absent, spent Linux inputs absent and inspected guest input directory removed. The authoritative CLI lease release returned released:1 and expired:false."
+    }
+  ],
+  "workItemId": "WI-10004735",
+  "fixtureWorkItemId": "EI-26001723102859424",
+  "regressionWorkItemId": "EI-26005260366938397",
+  "sourceWorkItemId": "WI-10007213",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "spec": "AUTO-BAR-R-2-P-008@3",
+  "repository": "papercup-rust-mobile (canonical independent mobile repository)",
+  "sourceCommitAtExecution": "56bb1b34e5143763d79b0112f71f704b5d3f03d3",
+  "sourceDirtyAtExecution": true,
+  "sourceFingerprint": "cea0450cfe48f1f6a99c8ad7914b929f254391713ebea1d567355db1a25fe365",
+  "canonicalSourceAtVerification": {
+    "commit": "0f1983d361393855db832d788e1e135a3aa0d5d6",
+    "dirty": false,
+    "fingerprint": "cea0450cfe48f1f6a99c8ad7914b929f254391713ebea1d567355db1a25fe365"
+  },
+  "sourceAdmission": "Executed guest bytes matched the clean canonical mobile fingerprint. Guest Git metadata remained dirty at an older commit. This is development simulator evidence and does not admit a signed release candidate.",
+  "toolchain": {
+    "xcode": "Xcode 16.4 Build 16F6",
+    "simulatorSDK": "18.5",
+    "simulatorRuntime": "iOS 18.6",
+    "device": "iPhone 16 Pro x86_64",
+    "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"
+  },
+  "rootCause": "The new UI test selected a workspace without completing LocalAuthentication. The first retained failure recording showed an iPhone passcode challenge. After simulated biometric enrollment, the next recording showed the first-use Face ID privacy permission still awaiting Allow. The test now enrolls the simulator sensor, handles SpringBoard consent, asserts no premature scope change and posts a simulated match. Simulator builds select biometric authentication; physical-device builds retain deviceOwnerAuthentication. The failures did not establish a backend workspace-switch defect.",
+  "detectorRepair": "The maintained native runner now exports XCTest summaries and attachments even when the UI test fails, records diagnostic-export errors and preserves the original failed verdict. Previously the failed run required manual attachment export to identify the system dialog.",
+  "recurrenceGuards": [
+    "ios/PapercupUITests/PairFlowUITests.swift:testOwnedWorkspaceSwitchAndKeychainRelaunch exercises actual Settings authentication, A/B data isolation and ordinary Keychain relaunch, restoring the simulator enrollment state afterward.",
+    "tools/tests/ios-ci-runner-test.py:test_failed_ui_retains_native_summary_and_attachments_without_admitting_success verifies failed native summary/attachment retention and refusal of a success cache entry.",
+    "tools/tests/ios-ci-runner-test.py:test_failed_summary_export_still_retains_attachments_and_original_ui_failure verifies that summary export failure preserves attachment export and the original verdict. The saved issue checkpoint records all 55 registered Python tests passing before this native run; completed checks were not rerun for recovery."
+  ],
+  "retainedEvidence": {
+    "root": ".papercusp/evidence/EI-260052-switch-consent-native-20261015T0155Z",
+    "pathBase": "Operating account home directory; retained evidence is outside the staging checkout.",
+    "attempt": "20261015T015434Z-55fdea6c",
+    "archive": "native-artifacts.tar.gz",
+    "archiveSha256": "41db522316d1eb4464eff4e8db02a939abc036fae4d51aeadd1488a776d1a729",
+    "archiveBytes": 9840640,
+    "resultPath": "result.json",
+    "resultSha256": "ac7e0dfd9eed520dc179533d14db281ce731f2de18809a6fb35a3af31cc9cf8b",
+    "verificationFile": "local-artifact-verification.json",
+    "cleanupFile": "local-cleanup-verification.json",
+    "verifiedArtifactCount": 283,
+    "mismatches": [],
+    "nativeJobId": "0mv8vylawwlua76cywh",
+    "fixtureJobId": "0mv8vvdyhpqd1zn1lf6",
+    "jobDisposition": "Both completed/exit0; do not rerun these completed jobs."
+  },
+  "screenshots": [
+    {"file": "E3AD00C0-8996-44FE-90DD-A6C381DF4D56.png", "review": "The header names workspace A and the paired-device list visibly contains the A marker."},
+    {"file": "B7AA35FE-99FD-49FC-9055-6C443D4B3AFF.png", "review": "The header names workspace B and the paired-device list visibly contains its B marker and other-workspace identifier."},
+    {"file": "8157B4EE-E20F-42FF-80A4-1FCA7EA53D61.png", "review": "After ordinary relaunch, the header and visible device marker still identify B."},
+    {"file": "7D822954-3FF2-490B-B44B-A3518A4D5C43.png", "review": "After authenticated return, the header and visible device marker identify A again."}
+  ],
+  "fixture": {
+    "runtimeRoot": ".papercusp/evidence/EI-260052-switch-consent-20261015T0152Z",
+    "pathBase": "Operating account home directory.",
+    "readyAt": "2026-10-15T01:53:41.013Z",
+    "finishedAt": "2026-10-15T02:03:30.292Z",
+    "cleanupVerified": true,
+    "macLeaseId": "14c985e0-3c0f-49c1-b4ba-efd266fd0a0e",
+    "macLeaseReleased": true
+  },
+  "priorFailureEvidence": [
+    ".papercusp/evidence/WI-10004735-switch-20261015T0050Z retains the original passcode-dialog failure; its 1388 declared artifacts were verified in the saved issue checkpoint.",
+    ".papercusp/evidence/EI-260052-switch-auth-20261015T0129Z retains the first-use Face ID permission failure; its 1374 declared artifacts were verified in the saved issue checkpoint."
+  ],
+  "disclosedGaps": [
+    "Broader P-008 and accepted hosted/BYOC cloud target acceptance remain open.",
+    "This selected simulator result does not measure physical biometric hardware, cellular radio, production APNs, Bluetooth hardware or battery endurance.",
+    "No acceptance grade, Xcode 26, clean signed candidate, manual IPA, App Store, TestFlight or final shipment claim."
+  ]
+}

@@ -36,6 +36,7 @@ import {
   isEnforcedMigrationFile,
   isMigrationArtifactFile,
   readScannedFiles,
+  selectDdlEnforcedArtifacts,
   SOURCE_ROOTS,
   violationsFor,
 } from '../../../scripts/check-migration-forward-compat.mjs';
@@ -157,6 +158,42 @@ describe('the nudge covers the DRAFT window, which IS the authoring window', () 
   });
 });
 
+describe('the BLOCKING destructive-DDL scan stops at armed SQL (WI-6554700010008502)', () => {
+  // A committed 1451-*.sql.DRAFT with a narrowing unique index failed
+  // papercup-staging-sync and pinned :3170 on a stale build. The draft is never
+  // applied; the nudge above covers it, and arming makes it an armed .sql that
+  // this scan then enforces.
+  const n = (k: number) => ENFORCE_FROM + k;
+
+  it('excludes a .sql.DRAFT, keeps armed and .PENDING-CODE-DEPLOY artifacts, in number order', () => {
+    const selected = selectDdlEnforcedArtifacts([
+      `${n(30)}-later-armed.sql`,
+      `${n(10)}-draft.sql.DRAFT`,
+      `${n(20)}-parked.sql.PENDING-CODE-DEPLOY`,
+      `${n(5)}-armed.sql`,
+    ]);
+    expect(selected).toEqual([
+      { file: `${n(5)}-armed.sql`, num: n(5) },
+      { file: `${n(20)}-parked.sql.PENDING-CODE-DEPLOY`, num: n(20) },
+      { file: `${n(30)}-later-armed.sql`, num: n(30) },
+    ]);
+  });
+
+  it('still enforces the same migration once it is armed', () => {
+    const draft = `${n(10)}-x.sql.DRAFT`;
+    expect(selectDdlEnforcedArtifacts([draft])).toEqual([]);
+    expect(selectDdlEnforcedArtifacts([draft.replace('.DRAFT', '')])).toEqual([{ file: `${n(10)}-x.sql`, num: n(10) }]);
+    // The draft stays visible to the dependency check, which reads parked artifacts.
+    expect(isDraftMigrationFile(draft)).toBe(true);
+  });
+
+  it('keeps the historical cutoff for every artifact kind', () => {
+    expect(
+      selectDdlEnforcedArtifacts([`${ENFORCE_FROM - 1}-old.sql`, `${ENFORCE_FROM - 1}-old.sql.PENDING-CODE-DEPLOY`]),
+    ).toEqual([]);
+  });
+});
+
 describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
   const DRAFT = `${ENFORCE_FROM + 107}-adv-sessions-ended-by-signal.sql.DRAFT`;
 
@@ -229,6 +266,40 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
     ]);
   });
 
+  it('ignores SQL projection aliases and their result fields without requiring the projected column', () => {
+    const sql = 'ALTER TABLE harness_shared.fc_alias_sessions ADD COLUMN fc_alias_probe text;';
+    const result = findDraftColumnReferences(sql, [
+      {
+        file: 'packages/operator-core/lib/operation-binding.ts',
+        text: [
+          'type Row = { fc_alias_probe: string | null };',
+          "const query = sql`SELECT s.launch_spec->>'harnessSlug' AS fc_alias_probe FROM harness_shared.fc_alias_sessions s`;",
+          'const harness = row.fc_alias_probe;',
+        ].join('\n'),
+      },
+      {
+        file: 'packages/operator-core/lib/operation-binding.test.ts',
+        text: "const table = 'harness_shared.fc_alias_sessions'; const row = { fc_alias_probe: 'harness-a' };",
+      },
+    ]);
+    expect(result.references).toEqual([]);
+  });
+
+  it('still detects a real column read when the same file also projects an alias with that name', () => {
+    const sql = 'ALTER TABLE harness_shared.fc_alias_sessions ADD COLUMN fc_alias_probe text;';
+    const result = findDraftColumnReferences(sql, [{
+      file: 'packages/operator-core/lib/operation-binding.ts',
+      text: [
+        'type Row = { fc_alias_probe: string | null };',
+        "const alias = sql`SELECT s.launch_spec->>'harnessSlug' AS fc_alias_probe FROM fc_alias_sessions s`;",
+        'const real = sql`SELECT s.fc_alias_probe FROM fc_alias_sessions s`;',
+      ].join('\n'),
+    }]);
+    expect(result.references).toEqual([{
+      column: 'fc_alias_probe', file: 'packages/operator-core/lib/operation-binding.ts', line: 3,
+    }]);
+  });
+
   it('extracts the altered table without its schema qualifier', () => {
     expect(
       alteredTablesFor('ALTER TABLE harness_shared.fc_probe_backends ADD COLUMN IF NOT EXISTS fc_probe_mode text;'),
@@ -236,6 +307,81 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
     expect(alteredTablesFor('ALTER TABLE IF EXISTS ONLY "fc_probe_sessions" ADD COLUMN x text;')).toEqual([
       'fc_probe_sessions',
     ]);
+  });
+
+  it('qualifies a draft column against its own ALTER target, not another altered table', () => {
+    const sql = [
+      'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;',
+      'ALTER TABLE fc_probe_memory ADD COLUMN fc_probe_count integer;',
+    ].join('\n');
+    expect(findDraftColumnReferences(sql, [{
+      file: 'store.ts',
+      text: 'const query = sql`SELECT fc_probe_outcome FROM fc_probe_memory`;',
+    }]).references).toEqual([]);
+    expect(findDraftColumnReferences(sql, [{
+      file: 'store.ts',
+      text: 'const query = sql`SELECT fc_probe_outcome FROM fc_probe_sessions`;',
+    }]).references).toEqual([{ column: 'fc_probe_outcome', file: 'store.ts', line: 1 }]);
+  });
+
+  it('does not combine unrelated queries, prose, or TypeScript fields with a table elsewhere in a file', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    const text = [
+      'const query = sql`SELECT id FROM fc_probe_sessions`;',
+      'const other = sql`SELECT fc_probe_outcome FROM fc_other_sessions`;',
+      'const description = "The fc_probe_outcome is recorded separately.";',
+      'interface Row { readonly fc_probe_outcome?: string }',
+      'const fc_probe_outcome = measure();',
+      'const value = row.fc_probe_outcome;',
+    ].join('\n');
+    expect(findDraftColumnReferences(sql, [{ file: 'store.ts', text }]).references).toEqual([]);
+  });
+
+  it('excludes generated bundles while retaining a new production source consumer', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    const text = 'const query = sql`SELECT fc_probe_outcome FROM fc_probe_sessions`;';
+    expect(findDraftColumnReferences(sql, [
+      { file: 'apps/operator/dist-sidecar/worker.mjs', text },
+      { file: 'apps/operator/dist-hosted-control-plane/serve.mjs', text },
+      { file: 'apps/operator/storybook-static/worker.js', text },
+      { file: 'apps/operator/lib/new-store.ts', text },
+    ]).references).toEqual([{ column: 'fc_probe_outcome', file: 'apps/operator/lib/new-store.ts', line: 1 }]);
+  });
+
+  it('retains genuine reads in ordinary SQL strings and concatenated query arguments', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    for (const text of [
+      "const query = 'SELECT fc_probe_outcome FROM fc_probe_sessions';",
+      "await db.query('SELECT fc_probe_outcome ' + 'FROM fc_probe_sessions');",
+      "const query = sql`SELECT ${sql`fc_probe_outcome`} FROM fc_probe_sessions`;",
+    ]) {
+      expect(findDraftColumnReferences(sql, [{ file: 'store.ts', text }]).references)
+        .toEqual([{ column: 'fc_probe_outcome', file: 'store.ts', line: 1 }]);
+    }
+  });
+
+  it('does not join independent SQL statements or unrelated schema objects', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    const sources = [
+      { file: 'store.sql', text: 'SELECT id FROM fc_probe_sessions; SELECT fc_probe_outcome FROM fc_other_sessions;' },
+      { file: 'schema.ts', text: [
+        "const sessions = pgTable('fc_probe_sessions', { id: text() });",
+        "const other = pgTable('fc_other_sessions', { fc_probe_outcome: text() }, () => [check('valid', sql`fc_probe_outcome IS NOT NULL`)]);",
+      ].join('\n') },
+      { file: 'manifest.ts', text: "const tables = [{table:'fc_probe_sessions', definition:'SELECT id FROM fc_probe_sessions'}, {table:'fc_other_sessions', definition:'SELECT fc_probe_outcome FROM fc_other_sessions'}];" },
+    ];
+    expect(findDraftColumnReferences(sql, sources).references).toEqual([]);
+  });
+
+  it('preserves a true schema definition and an unresolved interpolated SQL target', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    for (const text of [
+      "const table = pgTable('fc_probe_sessions', { fc_probe_outcome: text() });",
+      "const table = 'fc_probe_sessions'; const query = sql`SELECT fc_probe_outcome FROM ${sql(table)}`;",
+    ]) {
+      expect(findDraftColumnReferences(sql, [{ file: 'store.ts', text }]).references)
+        .toEqual([{ column: 'fc_probe_outcome', file: 'store.ts', line: 1 }]);
+    }
   });
 
   // ⚠ The two fixtures below deliberately use FICTIONAL identifiers (`fc_probe_backends`,

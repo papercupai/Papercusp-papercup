@@ -152,6 +152,36 @@ describe('cloud resource obligation VM incarnation lifecycle (real Postgres)', (
     expect(open[0]).toMatchObject({ incarnationId: 'gce-instance-2002', teardownOwed: true, closedAtMs: null });
   });
 
+  it('keeps a newer unincarnated disk obligation open when a stale absence read misses', async () => {
+    const diskWorkspace = 'cloud-resource-obligation-unincarnated-disk-ws';
+    const disk = {
+      ...base,
+      workspaceId: diskWorkspace,
+      resourceKind: 'disk',
+      resourceId: 'vol-unincarnated-disk-regression',
+    };
+    const staleRead = new Date(Date.now() - 60_000).toISOString();
+
+    expect(await recordCloudResourceObligation(db.adminSql, { ...disk, purpose: 'new disk after read' }))
+      .toMatchObject({ created: true });
+    expect(
+      await closeCloudResourceObligation(db.adminSql, {
+        ...disk,
+        confirmedAbsentAt: staleRead,
+        reason: 'stale provider not-found read',
+      }),
+    ).toEqual({ closed: false });
+
+    const open = await listOpenCloudResourceObligations(db.adminSql, { workspaceId: diskWorkspace });
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({
+      resourceId: disk.resourceId,
+      incarnationId: '',
+      teardownOwed: true,
+      closedAtMs: null,
+    });
+  });
+
   // WI-10003512: the discharged-escalation read decides which "Undischarged …" work-items the
   // sweep retires. Its HAVING/EXISTS predicate is exactly what a fake SQL cannot check.
   it('lists an escalation only when every referencing obligation is closed and the work-item is still open', async () => {

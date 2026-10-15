@@ -17,21 +17,15 @@
  * precisely the mechanism behind "the knowledge existed and it did not reach
  * me". Nothing alarmed, because nothing was counting.
  *
- * SCOPE HONESTY — read this before trusting a quiet watchdog. `readLegHealth()`
- * is an IN-PROCESS ring buffer, so this sweep measures the searches THIS process
- * ran. It is armed in the operator host, which is where the agent-facing search
- * paths execute, so that is the population that matters — but a quiet result
- * means "this process saw no sustained degradation", never "retrieval is healthy
- * everywhere". A cross-process aggregate would need a durable sink and is
- * deliberately not built here: it would be a second definition of the same
- * verdict, and the first thing to establish is whether the rate is even
- * non-trivial.
+ * P-005 now extends that SAME per-search recorder with an optional host sink.
+ * Startup wires each authoritative healthy/degraded sample into observeFallback;
+ * the generic degradation watchdog reads its durable cross-process window and
+ * owns alarm and recovery on the existing condition bridge. The local ring stays
+ * available for diagnostics. A quiet durable window still means no measured
+ * collapse among instrumented searches, never universal retrieval health.
  */
-import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
-import { readLegHealth, type LegHealthWindow } from '@papercusp/search';
-
-import { openEscalation } from '../agent-tools/coordination/escalations';
-import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { readLegHealth, setLegHealthObserver, type LegHealthWindow, type LegSample } from '@papercusp/search';
+import { observeFallback, type FallbackDecision } from '../degradation/fallback-observations';
 
 export const RETRIEVAL_DEGRADATION_SWEEP_INTERVAL_MS = 15 * 60_000;
 export const RETRIEVAL_DEGRADATION_WINDOW_MS = 60 * 60_000;
@@ -58,13 +52,16 @@ export const RETRIEVAL_DEGRADATION_MIN_SAMPLES = 20;
  */
 export const RETRIEVAL_DEGRADATION_FLOOR = 0.5;
 
-const WATCHDOG_IDENTITY: AgentIdentity = {
-  ownerId: 'retrieval-degradation-watchdog',
-  ownerLabel: 'system · retrieval degradation',
-  source: 'principal',
-  workspaceId: null,
-  userId: null,
-};
+export const RETRIEVAL_DEGRADATION_MECHANISM = 'retrieval';
+
+export function retrievalSampleDecision(sample: LegSample): FallbackDecision {
+  const reasons = [
+    sample.semanticBlocked && 'semantic-blocked', sample.lexicalBlocked && 'lexical-blocked',
+    sample.semanticEmpty && 'semantic-empty', sample.lexicalEmpty && 'lexical-empty',
+  ].filter((reason): reason is string => typeof reason === 'string');
+  return { eligible: 1, applied: sample.degraded ? 0 : 1,
+    reason: !sample.degraded ? 'applied' : reasons.length === 1 ? reasons[0] : 'mixed' };
+}
 
 export type RetrievalVerdict =
   | { kind: 'insufficient-samples'; health: LegHealthWindow }
@@ -106,6 +103,7 @@ export interface RetrievalDegradationSweepDeps {
   flagEnabled: () => Promise<boolean>;
   minSamples: number;
   floor: number;
+  observe: typeof observeFallback;
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -122,43 +120,16 @@ async function defaultFlagEnabled(): Promise<boolean> {
 
 async function defaultEscalate(
   v: Extract<RetrievalVerdict, { kind: 'degraded' }>,
+  observer: typeof observeFallback = observeFallback,
 ): Promise<void> {
-  const pct = (v.rate * 100).toFixed(0);
   const h = v.health;
-  await openEscalation(WATCHDOG_IDENTITY, {
-    severity: 'advisory',
-    summary: `Retrieval degraded: ${pct}% of ${h.searches} searches in the last hour did not run at full strength (${v.dominant})`,
-    body:
-      `${h.degraded} of ${h.searches} searches in the trailing ` +
-      `${Math.round(h.windowMs / 60_000)}min ran DEGRADED — the ranking returned was not the ` +
-      `ranking the configuration promises. Dominant cause: ${v.dominant}.\n\n` +
-      `Breakdown: semantic blocked ${h.semanticBlocked} · lexical blocked ${h.lexicalBlocked} · ` +
-      `semantic returned nothing ${h.semanticEmpty} · lexical returned nothing ${h.lexicalEmpty}` +
-      (h.truncatedByCapacity
-        ? `\n\n⚠ The retained sample was capacity-bound, so these counts are FLOORS, not totals.`
-        : '') +
-      `\n\nWhy this matters more than it looks: retrieval is how stored knowledge reaches an ` +
-      `agent at the moment it is needed. A half-strength retrieval layer does not fail loudly — ` +
-      `it silently returns a worse ranking, and the caller reads it as the answer. The observed ` +
-      `signature is a per-call prose warning ("semantic leg blocked: query embed exceeded 1200ms ` +
-      `budget") that readers skim past.\n\n` +
-      `Triage: if 'semantic leg blocked' dominates, the query embedder is timing out — check the ` +
-      `embedding provider's latency against the query-embed budget. If a leg 'returned nothing', ` +
-      `check the score floors before suspecting the sources.\n\n` +
-      `SCOPE: this measures searches run in THIS operator process. Quiet means "this process saw ` +
-      `no sustained degradation", never "retrieval is healthy everywhere".`,
-    meta: {
-      dedupKind: 'retrieval-degradation',
-      // Bucketed so a persistent condition dedups instead of re-alarming every
-      // sweep, while a materially worse rate still opens a fresh escalation.
-      subjectSignature: `${v.dominant}:${Math.floor(v.rate * 10)}`,
-      degradedRate: v.rate,
-      searches: h.searches,
-      degraded: h.degraded,
-      dominant: v.dominant,
-      truncatedByCapacity: h.truncatedByCapacity,
-    },
-  });
+  const counts = { searches: h.searches, degraded: h.degraded };
+  const decision = { eligible: counts.searches, applied: counts.searches - counts.degraded,
+    reason: v.dominant.replace(/\s+/g, '-') };
+  // Kept for explicit one-shot callers; runtime startup now observes each search,
+  // and the generic durable watchdog is the only scheduled rate detector.
+  if (observer === observeFallback) observeFallback(RETRIEVAL_DEGRADATION_MECHANISM, decision);
+  else observer(RETRIEVAL_DEGRADATION_MECHANISM, decision);
 }
 
 function sweepDeps(
@@ -166,10 +137,11 @@ function sweepDeps(
 ): RetrievalDegradationSweepDeps {
   return {
     readHealth: () => readLegHealth({ windowMs: RETRIEVAL_DEGRADATION_WINDOW_MS }),
-    escalate: defaultEscalate,
+    escalate: (v) => defaultEscalate(v, overrides.observe ?? observeFallback),
     flagEnabled: defaultFlagEnabled,
     minSamples: RETRIEVAL_DEGRADATION_MIN_SAMPLES,
     floor: RETRIEVAL_DEGRADATION_FLOOR,
+    observe: observeFallback,
     ...overrides,
   };
 }
@@ -189,35 +161,16 @@ export async function runRetrievalDegradationSweepOnce(
   return { verdict: 'degraded', escalated: 1 };
 }
 
-let watchdogTimer: ManagedHandle | null = null;
-
 /**
- * Start the retrieval-degradation watchdog. Idempotent.
- * Runtime gate: FLAGS.RETRIEVAL_DEGRADATION_WATCHDOG (checked per tick).
+ * Install a sink on the existing authoritative search measurement. Idempotent:
+ * replacing the observer cannot multiply records. The generic degradation watchdog
+ * owns the schedule and condition lifecycle; no private ring-poll/escalation timer.
  */
-export function startRetrievalDegradationWatchdog(opts: { intervalMs?: number } = {}): void {
-  const intervalMs = opts.intervalMs ?? RETRIEVAL_DEGRADATION_SWEEP_INTERVAL_MS;
-  if (watchdogTimer) watchdogTimer.stop();
-  let sweeping = false;
-  watchdogTimer = managedSetInterval(
-    'retrieval-degradation-watchdog',
-    intervalMs,
-    () => {
-      if (sweeping) return;
-      sweeping = true;
-      void runRetrievalDegradationSweepOnce()
-        .catch((e) => {
-          console.warn(
-            `[retrieval-degradation-watchdog] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-          );
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    },
-    // D-004: 'must-sample'. The leg-health ring buffer is plain in-process state written
-    // by the search path and emits no change events, so there is nothing to subscribe to
-    // for "the degradation rate crossed" — it has to be read.
-    { category: 'watchdog', classification: 'must-sample' },
-  );
+export function startRetrievalDegradationWatchdog(opts: { observe?: typeof observeFallback } = {}): void {
+  setLegHealthObserver((sample) => (opts.observe ?? observeFallback)(RETRIEVAL_DEGRADATION_MECHANISM,
+    retrievalSampleDecision(sample), {
+      observedAt: new Date(sample.atMs),
+      processTag: 'search',
+      correlationId: sample.correlationId,
+    }));
 }

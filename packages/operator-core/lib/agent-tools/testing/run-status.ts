@@ -9,6 +9,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { clipWithMarker, payloadTierRecoveryHint } from '../plans/shape-clip';
 import {
   getRunAsync,
   getTestRunLedgerRecoveryAsync,
@@ -50,7 +51,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: argsSchema,
-  async handler(args): Promise<{ data: TestingRunStatusResult }> {
+  async handler(args, ctx): Promise<{ data: TestingRunStatusResult }> {
     let snapshot: RunSnapshot | null;
     let snapshotUnavailable = false;
     try {
@@ -60,7 +61,14 @@ export default defineTool({
       snapshot = null;
       snapshotUnavailable = true;
     }
-    if (snapshot) return { data: { ok: true, snapshot } };
+    if (snapshot) {
+      const fullOutputRequested =
+        ctx.payloadTierOverride === 'full' && ctx.sourceMaterialization?.promotedToFull !== true;
+      return { data: { ok: true, snapshot: fullOutputRequested ? snapshot : {
+        ...snapshot,
+        output: clipWithMarker(snapshot.output, 2048, payloadTierRecoveryHint('testing:run-status')),
+      } } };
+    }
 
     const ledgerRecovery = await getTestRunLedgerRecoveryAsync(args.runId);
     if (ledgerRecovery) return { data: { ok: true, ledgerRecovery } };

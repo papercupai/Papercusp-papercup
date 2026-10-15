@@ -15,23 +15,38 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../messages', () => ({ getMessageById: vi.fn(), resolveMessageRef: vi.fn() }));
+// WI-10005375: coord:read folds an escalation's sibling resolve/reopen events through this seam.
+vi.mock('../escalations', () => ({
+  foldEscalationResolution: vi.fn(async (record: unknown) => record),
+}));
 
 import { resolveMessageRef } from '../messages';
+import { foldEscalationResolution } from '../escalations';
+import { mockResolvedOnceTyped } from '../../../testing/typed-mock';
 const resolveRef = vi.mocked(resolveMessageRef);
+const foldEscalation = vi.mocked(foldEscalationResolution);
+type EscalationFixture = Parameters<typeof foldEscalationResolution>[0];
 const tool = (await import('./read')).default;
 
-const envelope = (msgId: string, body = 'x'.repeat(2615)) => ({
-  msg_id: msgId,
-  from: 'su-l1',
-  to: ['su-leader'],
-  kind: 'note',
-  ts: '2026-07-12T00:00:00Z',
-  summary: 'root-cause report',
-  body,
-});
+/** The envelope a `found` resolution carries — derived from the resolver's own result type. */
+type FoundMessage = Extract<Awaited<ReturnType<typeof resolveMessageRef>>, { status: 'found' }>['message'];
 
-async function run(args: unknown) {
-  const res = (await tool.handler(args as never, {} as never)) as { data?: unknown; content?: { text: string }[] };
+// `kind` must be a real CoordKind: the former `'note'` is not one, which is why every
+// `found` fixture below needed an `as never` escape. `satisfies` keeps the literal
+// (non-escalation, so the handler's only kind branch is not taken) and schema-checks it.
+const envelope = (msgId: string, body = 'x'.repeat(2615)) =>
+  ({
+    msg_id: msgId,
+    from: 'su-l1',
+    to: ['su-leader'],
+    kind: 'message',
+    ts: '2026-07-12T00:00:00Z',
+    summary: 'root-cause report',
+    body,
+  }) satisfies FoundMessage;
+
+async function run(args: unknown, ctx: unknown = {}) {
+  const res = (await tool.handler(args as never, ctx as never)) as { data?: unknown; content?: { text: string }[] };
   return res.data ?? JSON.parse(res.content![0].text);
 }
 
@@ -47,7 +62,7 @@ describe('coord:read', () => {
       msgId: 'mrh4rf15',
       message: full,
       resolvedFrom: 'exact',
-    } as never);
+    });
 
     const out = await run({ msg_id: 'mrh4rf15' });
 
@@ -64,9 +79,111 @@ describe('coord:read', () => {
       status: 'not-found',
       msgId: 'nope',
       looksTruncated: false,
-    } as never);
+    });
     const out = await run({ msg_id: 'nope' });
     expect(out).toMatchObject({ ok: true, found: false, msg_id: 'nope', message: null });
+  });
+
+  it('judge: an exact msg_id is not authority to read a message addressed elsewhere', async () => {
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'known-private-message',
+      message: envelope('known-private-message', 'private body'),
+      resolvedFrom: 'exact',
+    });
+
+    const out = await run(
+      { msg_id: 'known-private-message' },
+      {
+        role: 'judge',
+        principal: { kind: 'harness', slug: 'system:judge', workspaceId: 'ws' },
+        uiClientId: 'judge-session',
+      },
+    );
+
+    expect(out).toEqual({ ok: true, found: false, msg_id: 'known-private-message', message: null });
+  });
+
+  it('judge: accepts the bare recipient id only for a verified signed spawn session', async () => {
+    const full = { ...envelope('judge-evidence', 'evidence body'), to: ['judge-session'] };
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'judge-evidence',
+      message: full,
+      resolvedFrom: 'exact',
+    });
+
+    const out = await run(
+      { msg_id: 'judge-evidence' },
+      {
+        role: 'judge',
+        principal: {
+          kind: 'harness',
+          slug: 'system:judge',
+          workspaceId: 'ws',
+          authMethod: 'spawn-url',
+          trust: 'trusted',
+        },
+        uiClientId: 'judge-session',
+      },
+    );
+
+    expect(out).toMatchObject({ ok: true, found: true, msg_id: 'judge-evidence' });
+    expect(out.message.body).toBe('evidence body');
+  });
+
+  it('judge: a wildcard or unverified bare client id does not grant message access', async () => {
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'broadcast',
+      message: { ...envelope('broadcast', 'broadcast body'), to: ['*'] },
+      resolvedFrom: 'exact',
+    });
+    const broadcast = await run(
+      { msg_id: 'broadcast' },
+      {
+        role: 'judge',
+        principal: { kind: 'harness', slug: 'system:judge', workspaceId: 'ws' },
+        uiClientId: 'judge-session',
+      },
+    );
+    expect(broadcast).toMatchObject({ found: false, message: null });
+
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'unverified-alias',
+      message: { ...envelope('unverified-alias', 'private body'), to: ['judge-session'] },
+      resolvedFrom: 'exact',
+    });
+    const unverifiedAlias = await run(
+      { msg_id: 'unverified-alias' },
+      {
+        role: 'judge',
+        principal: {
+          kind: 'harness',
+          slug: 'system:judge',
+          workspaceId: 'ws',
+          authMethod: 'bearer',
+          trust: 'untrusted',
+        },
+        uiClientId: 'judge-session',
+      },
+    );
+    expect(unverifiedAlias).toMatchObject({ found: false, message: null });
+  });
+
+  it('non-judge coordination readers retain exact-id read behavior', async () => {
+    const full = { ...envelope('reader-message', 'reader body'), to: ['somebody-else'] };
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'reader-message',
+      message: full,
+      resolvedFrom: 'exact',
+    });
+
+    const out = await run({ msg_id: 'reader-message' }, { role: 'operator' });
+
+    expect(out).toMatchObject({ ok: true, found: true, message: { body: 'reader body' } });
   });
 
   it('a unique PREFIX resolves, and says so — the WI-6725 false negative', async () => {
@@ -79,7 +196,7 @@ describe('coord:read', () => {
       msgId: 'mrh4rf15-0000-abc',
       message: envelope('mrh4rf15-0000-abc', 'resolved'),
       resolvedFrom: 'prefix',
-    } as never);
+    });
 
     const out = await run({ msg_id: 'mrh4rf15' });
 
@@ -98,7 +215,7 @@ describe('coord:read', () => {
       status: 'ambiguous',
       msgId: 'mrh4',
       candidates: ['mrh4rf15-0000-a', 'mrh4rf15-0000-b'],
-    } as never);
+    });
 
     const out = await run({ msg_id: 'mrh4' });
 
@@ -116,12 +233,49 @@ describe('coord:read', () => {
       status: 'not-found',
       msgId: 'mrh4',
       looksTruncated: true,
-    } as never);
+    });
 
     const out = await run({ msg_id: 'mrh4' });
 
     expect(out).toMatchObject({ ok: true, found: false, message: null });
-    expect(out.detail).toContain('NOT a full msg_id');
+    expect(out.detail).toContain('NOT a recognized full msg_id');
+  });
+
+  it('WI-10005375: an escalation is returned with its sibling resolution FOLDED in', async () => {
+    // The stored escalation record says resolved:null forever (resolution is a sibling
+    // event). Returning it raw made a withdrawn ask read as still open.
+    const raw: EscalationFixture = {
+      ...envelope('muqn4z3z'),
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'question',
+      resolved: null,
+    };
+    mockResolvedOnceTyped(resolveRef, { status: 'found', msgId: 'muqn4z3z', message: raw, resolvedFrom: 'exact' });
+    const resolved: NonNullable<EscalationFixture['resolved']> = {
+      by: 'su-4d390264',
+      choice: 'superseded',
+      ts: '2026-10-02T07:54:42Z',
+    };
+    mockResolvedOnceTyped(foldEscalation, { ...raw, resolved });
+
+    const out = await run({ msg_id: 'muqn4z3z' });
+
+    expect(foldEscalation).toHaveBeenCalledTimes(1);
+    expect(foldEscalation).toHaveBeenCalledWith(raw);
+    expect(out).toMatchObject({ ok: true, found: true });
+    expect(out.message.resolved).toEqual(resolved);
+  });
+
+  it('WI-10005375: a non-escalation message is never routed through the escalation fold', async () => {
+    mockResolvedOnceTyped(resolveRef, {
+      status: 'found',
+      msgId: 'mrh4rf15',
+      message: { ...envelope('mrh4rf15'), kind: 'message' },
+      resolvedFrom: 'exact',
+    });
+    await run({ msg_id: 'mrh4rf15' });
+    expect(foldEscalation).not.toHaveBeenCalled();
   });
 });
 
@@ -132,7 +286,7 @@ describe('coord:read structured response', () => {
       msgId: 'mrh4rf15',
       message: envelope('mrh4rf15'),
       resolvedFrom: 'exact',
-    } as never);
+    });
 
     const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
     const projected = lookupByMcpName('coord:read')!;

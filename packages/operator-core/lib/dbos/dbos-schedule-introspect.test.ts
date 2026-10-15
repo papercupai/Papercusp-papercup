@@ -69,6 +69,24 @@ describe('listDbosScheduledWorkflows', () => {
     });
     expect(seen).toEqual(['a.x', 'b.y']);
   });
+
+  it('applies a name filter before reading fire-state for unrelated schedules', async () => {
+    let seen: string[] | null = null;
+    const out = await listDbosScheduledWorkflows({
+      nameFilter: 'sessionSearchIndexBuild',
+      getRegisteredSchedules: () => [
+        reg('.sessionSearchIndexBuild', '0 7,22,37,52 * * * *'),
+        reg('routinesTick', '0 */2 * * * *'),
+      ],
+      getFireState: async (names) => {
+        seen = names;
+        return new Map();
+      },
+    });
+
+    expect(seen).toEqual(['.sessionSearchIndexBuild']);
+    expect(out.map((entry) => entry.name)).toEqual(['.sessionSearchIndexBuild']);
+  });
 });
 
 describe('defaultGetRegisteredSchedules', () => {

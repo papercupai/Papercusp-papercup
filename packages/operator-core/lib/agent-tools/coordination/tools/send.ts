@@ -19,9 +19,11 @@
  */
 
 import { createHash } from 'node:crypto';
+import { trackDetached } from '../../../detached-imports';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
+import type { CoordEnvelope } from '@papercusp/coordination';
 import {
   resolveAgentIdentity,
   deriveFleetMembership,
@@ -54,6 +56,7 @@ import {
   BODY_REFS_OPT_OUT_FIELD,
   detectEntryBodyRefs,
   GATE_REFS_FIELD,
+  parseRefToken,
 } from '../ref-hydrate';
 import { resolveGateRefStamps } from '../ref-hydrate-resolve';
 import {
@@ -95,6 +98,7 @@ import {
   reportIdleRecipients,
   buildStagedWakeNote,
   type DormantScheduledInfo,
+  type WakePickupHandle,
 } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
@@ -102,7 +106,8 @@ import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../f
 import { COORD_REPLY_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
 import { runBulk, bulkContent, type BulkEnvelope, type BulkItemResult } from '../../_bulk';
-import { cellTranscriptionHint } from '../../../cell-transcription-detector';
+import { coordSendAbortCompletionReceipt, coordSendPhaseTimingDiagnostics } from './send-abort-completion';
+import { cellTranscriptionHintResolvingCommits } from '../../../git-commit-resolver';
 import {
   messageBodyArg,
   PREMISES_REF_OBJECT_REENCODING,
@@ -114,15 +119,17 @@ import {
   toSections,
   sectionsToText,
   SECTION_ONLY_FIELDS,
+  type ForYouBecauseRelation,
   type MessageSection,
   type MessageWhy,
 } from '../message-fields';
-import { deriveBasedOn } from '../based-on';
+import { BASED_ON_MAX_ENTRIES, deriveBasedOn } from '../based-on';
 import { deriveAwaiting, AWAITING_DERIVED_PROVENANCE } from '../derive-awaiting';
 import { deriveDraftSuspension } from '../derive-draft-suspension';
 import { DRAFT_SUSPENSION_FIELD, DRAFT_SUSPENSION_DERIVED_PROVENANCE } from '../draft-suspension';
 import {
   completionClaimMismatch,
+  completionClaimRefs,
   COMPLETION_CLAIM_MISMATCH_FIELD,
 } from '../completion-claim-mismatch';
 import { getFlag } from '@papercusp/flags/server';
@@ -137,10 +144,17 @@ import { chunkOverCapMessage, type ChunkPartMeta } from './send-chunking';
 import { withDbCallDeadline, DEFAULT_DB_CALL_DEADLINE_MS } from '@papercusp/db-org';
 import {
   GOAL_OWNER_REPORT_FIELD,
+  GOAL_OWNER_REPORT_FIELDS,
+  GOAL_OWNER_REPORT_HEADING_LIST,
+  GOAL_OWNER_REPORT_HEADINGS,
+  describeGoalOwnerReportTruthViolations,
   parseGoalOwnerReport,
   stampGoalOwnerReport,
+  type GoalOwnerReportField,
+  type GoalOwnerReportParseResult,
   type GoalOwnerReportStamp,
 } from '../../../goal-owner-report';
+import type { GoalOwnerReportTruthVerdict } from '../../../goal-owner-report-truth';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
@@ -173,6 +187,50 @@ export const COORD_SEND_IDLE_REPORT_TIMEOUT_MS = 1_500;
 /** Keep the post-send work-item routing advisory from coupling send latency to
  * a slow work-item store. The message is already durable when this runs. */
 export const COORD_SEND_DISPATCH_ADVISORY_TIMEOUT_MS = 1_500;
+
+export const COORD_SEND_PREPERSIST_ENRICHMENT_TIMEOUT_MS = 1_500;
+
+interface CoordSendPhaseTimer {
+  startedAt: number;
+  persistStartedAt?: number;
+  persistFinishedAt?: number;
+}
+
+function coordSendPhaseTimingsMs(timer: CoordSendPhaseTimer, finishedAt = performance.now()) {
+  const persistStartedAt = timer.persistStartedAt;
+  const persistFinishedAt = timer.persistFinishedAt;
+  return {
+    prePersistMs: Math.max(0, Math.round((persistStartedAt ?? finishedAt) - timer.startedAt)),
+    persistMs:
+      persistStartedAt === undefined || persistFinishedAt === undefined
+        ? null
+        : Math.max(0, Math.round(persistFinishedAt - persistStartedAt)),
+    postPersistMs:
+      persistFinishedAt === undefined ? null : Math.max(0, Math.round(finishedAt - persistFinishedAt)),
+  };
+}
+
+async function withOptionalSendEnrichment<T>(
+  stage: string,
+  read: () => Promise<T>,
+  fallback: T,
+  requestSignal?: AbortSignal,
+): Promise<T> {
+  const { value } = await withBoundedTimeout(read, {
+    fallback,
+    timeoutMs: COORD_SEND_PREPERSIST_ENRICHMENT_TIMEOUT_MS,
+    label: 'coord:send:' + stage,
+    signal: requestSignal,
+  });
+  return value;
+}
+
+/** Normalize an explicitly cited work-item ref to the dependency-tag form. */
+function workItemBasisRef(ref: unknown): string | undefined {
+  if (typeof ref !== 'string') return undefined;
+  const match = /^(?:work-item:|wi:)?((?:WI|EI)-\d+)(?:#.*)?$/i.exec(ref.trim());
+  return match ? `work-item:${match[1]!.toUpperCase()}` : undefined;
+}
 
 /**
  * EI-21860312102671987: `sendMessage()` (the actual coord_event_log persist)
@@ -241,6 +299,9 @@ interface SendMsg {
    *  Flattened to text for `env.body` (every existing reader keeps working) with
    *  the STRUCTURE stamped alongside it. */
   body?: string | MessageSection[];
+  /** coord:conditions lifecycle keys are scoped to the authenticated sender. */
+  conditionKey?: string;
+  resolvesCondition?: string;
   /** ENVELOPE (D-064). Is the SENDER blocked until this is dealt with? */
   blocking?: boolean;
   /** ENVELOPE (D-011). A goal REF, never prose — the receiver queries its LIVE state. */
@@ -251,6 +312,9 @@ interface SendMsg {
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
+  /** Internal only: chunk continuations use this to validate a departed reply
+   *  recipient without persisting a reply edge or firing reply-wake per part. */
+  recipientAuthRelatedMsgId?: string;
   /** D-048: REQUIRED reply-expectation. `expectsReply` is derived from it, never passed. */
   expects: ExpectsKind;
   /** H2 (coord-authority-hardening P-004): relay provenance — the coord msg_id
@@ -349,9 +413,9 @@ function readClaimKind(value: unknown): string | null {
 /**
  * Whether `address` is the same owner-id alias that the live recipient
  * resolver accepts for `ownerId`. This matters when a reply closes a thread
- * after the original sender's session has ended: the dead owner is no longer
- * in the roster, so the normal resolver cannot expand a copied short handle
- * or prefix. The related message is the proof of which owner the alias names;
+ * after the original sender has ended, or when the sender's short handle is
+ * ambiguous among live owners. The related message proves which owner the alias
+ * names;
  * keep this matcher exactly aligned with resolveRecipientsAgainst's
  * exact/prefix/substring rules.
  */
@@ -410,6 +474,12 @@ interface DispatchAdvisory {
 // item. Keep it aligned with actionable-work-item-dispatch's unassigned
 // frontier; terminal/blocked items must not produce a dispatch suggestion.
 const DISPATCH_ADVISORY_CLAIMABLE_STATES = new Set(['open', 'failing', 'todo']);
+const DISPATCH_ADVISORY_ATTACHED_RELATIONS: ReadonlySet<ForYouBecauseRelation> = new Set([
+  'owns',
+  'holds-a-lock-on',
+  'is-blocked-on',
+  'awaits',
+]);
 
 /**
  * Detect the "cheerful acceptance, zero claim" route at the send seam.
@@ -427,15 +497,37 @@ const DISPATCH_ADVISORY_CLAIMABLE_STATES = new Set(['open', 'failing', 'todo']);
  */
 async function deriveDispatchAdvisory(
   msg: SendMsg,
-  bodyText: string | undefined,
   recipients: readonly string[],
   harnessSlug: string | null,
+  senderOwnerId: string,
 ): Promise<DispatchAdvisory | undefined> {
   if (msg.expects !== 'action' || msg.noBodyRefs || !isDirected(msg.to)) return undefined;
 
-  const refs = detectEntryBodyRefs({ summary: msg.summary, body: bodyText }).filter(
+  const workItemRefs = (text: string) => detectEntryBodyRefs({ summary: text }).filter(
     (ref): ref is { kind: 'work-item'; id: string } => ref.kind === 'work-item',
   );
+  // `forYouBecause` is the structured reason this recipient is being asked. If
+  // present, its ref is the action target when it names a work-item; an event,
+  // message, file, or other ref must not fall back to an incidental WI id in
+  // the summary. Relations that already attach the recipient to that target
+  // also cannot describe a phantom assignment handoff.
+  const structuredSections = Array.isArray(msg.body)
+    ? msg.body.filter((section) => section.forYouBecause !== undefined)
+    : [];
+  const structuredRefs = structuredSections.flatMap((section) => {
+    const rationale = section.forYouBecause;
+    if (!rationale || typeof rationale.ref !== 'string') return [];
+    const target = parseRefToken(rationale.ref);
+    if (
+      target?.kind !== 'work-item' ||
+      DISPATCH_ADVISORY_ATTACHED_RELATIONS.has(rationale.relation)
+    ) {
+      return [];
+    }
+    return [{ kind: 'work-item' as const, id: target.id }];
+  });
+  const candidateRefs = structuredSections.length > 0 ? structuredRefs : workItemRefs(msg.summary);
+  const refs = [...new Map(candidateRefs.map((ref) => [ref.id, ref])).values()];
   if (refs.length === 0) return undefined;
 
   try {
@@ -478,17 +570,27 @@ async function deriveDispatchAdvisory(
       //
       // The advisory's subject (EI-21824246903447871) is PHANTOM ROUTING: a recipient who
       // replies "yes" cannot become the worker, so the request dies un-actioned. That
-      // failure requires NOBODY addressed to be able to act. If even one addressee holds
-      // the item, the work has a real owner in the audience and the suggested remedy
-      // (coord:dispatch, to "assign the execution lane") is already satisfied — an
+      // failure requires neither the sender nor anyone addressed to hold the item. If the
+      // sender or even one addressee holds it, the work has a real owner and the suggested
+      // remedy (coord:dispatch, to "assign the execution lane") is already satisfied — an
       // advisory whose fix is a no-op is noise, and noise trains readers to ignore the
       // alarm that does matter.
       //
       // `recipients.length > 0` is load-bearing: a bare `0 === 0` match would fire a
       // vacuous advisory naming an empty recipient set.
       .filter(
-        (assignment) =>
-          recipients.length > 0 && assignment.recipientsNotHolding.length === recipients.length,
+        (assignment) => {
+          const senderHoldsItem =
+            assignment.assignee !== null &&
+            (senderOwnerId === assignment.assignee ||
+              isOwnerIdAlias(senderOwnerId, assignment.assignee) ||
+              isOwnerIdAlias(assignment.assignee, senderOwnerId));
+          return (
+            !senderHoldsItem &&
+            recipients.length > 0 &&
+            assignment.recipientsNotHolding.length === recipients.length
+          );
+        },
       );
     if (mismatches.length === 0) return undefined;
 
@@ -689,6 +791,31 @@ const noBodyRefsArg = z
     "P-008 body auto-refs OPT-OUT: by default, WI-/EI- ids mentioned in your summary/body auto-hydrate at delivery into a one-line live status+title+checkpoint suffix on the receiver's [coord+N] line (first 3 ids, ~150 chars each — receivers stop re-fetching cited items). Set true when that live status would MISLEAD: the ids are historical/illustrative examples, or you are deliberately quoting stale state.",
   );
 
+const conditionKeyArg = z
+  .string()
+  .min(1)
+  .max(512)
+  .optional()
+  .describe(
+    'Raise a coord:conditions alarm for this key. The persisted key is scoped to your authenticated sender, so a different producer cannot resolve it.',
+  );
+
+const resolvesConditionArg = z
+  .string()
+  .min(1)
+  .max(512)
+  .optional()
+  .describe(
+    'Resolve a coord:conditions alarm previously raised by this authenticated sender with conditionKey. Pass the same raw key.',
+  );
+
+/** The condition fold is workspace-wide, so make a coord:send key unique to
+ *  its authenticated producer. Length-prefixing the sender keeps the tuple
+ *  unambiguous even when either component contains colons. */
+function senderScopedConditionKey(senderId: string, key: string): string {
+  return `coord:send:${senderId.length}:${senderId}:${key}`;
+}
+
 /** P-013 (fleet-leadership-continuity): the SIDE EFFECT this directive requires.
  *  `queued:1` proves a durable wake delivery was queued; it does not prove a session
  *  started a turn. `expects`/`expectsReply` proves they answered.
@@ -714,31 +841,37 @@ const expectEffectArg = z
  *  `parseReportBlock` (@papercusp/chat-protocol) is the single canonical
  *  validator (loud `report_invalid` refusal in sendOne), so this zod shape is
  *  introspection/documentation only and cannot drift from it. */
-const reportArg = z
-  .object({
-    title: z.string().optional(),
-    plans: z.array(
-      z.object({
-        slug: z.string().optional(),
-        title: z.string().optional(),
-        status: z.string().optional(),
-        summary: z.string().optional(),
-        items: z
-          .array(
-            z.object({
-              id: z.string().optional(),
-              text: z.string().optional(),
-              status: z.string().optional(),
-            }),
-          )
-          .optional(),
-      }),
-    ),
-  })
-  .optional()
-  .describe(
-    'Structured status card (ReportBlock): { title?, plans:[{ title, status?, summary?, items?:[{ id?, text, status? }] }] }. Sent to ["human"] it renders as a 📋 card in the owner\'s Inbox (fleet updates, status digests) instead of plain text. Statuses like blocked/failing surface it as an Alert; a genuine decision still goes through coord:escalate. Invalid shape → loud report_invalid refusal (nothing sent).',
-  );
+// Keep each input axis' ReportBlock schema inline. The shared named schema was
+// emitted as a local $ref, which the Codex nested tool wrapper rendered as
+// unknown and hid the accepted payload shape from callers.
+const reportArg = () =>
+  z
+    .object({
+      title: z.string().optional(),
+      goalReport: z.object({ schemaVersion: z.literal(1), goalId: z.string(), reportId: z.string(), bodySha256: z.string() }).optional(),
+      plans: z.array(
+        z.object({
+          slug: z.string().optional(),
+          title: z.string().optional(),
+          status: z.string().optional(),
+          summary: z.string().optional(),
+          items: z
+            .array(
+              z.object({
+                id: z.string().optional(),
+                text: z.string().optional(),
+                status: z.string().optional(),
+                ref: z.string().optional(),
+              }),
+            )
+            .optional(),
+        }),
+      ),
+    })
+    .optional()
+    .describe(
+      'Structured status card (ReportBlock): { title?, plans:[{ title, status?, summary?, items?:[{ id?, text, status? }] }] }. Sent to ["human"] it renders as a 📋 card in the owner\'s Inbox (fleet updates, status digests) instead of plain text. Statuses like blocked/failing surface it as an Alert; a genuine decision still goes through coord:escalate. Invalid shape → loud report_invalid refusal (nothing sent).',
+    );
 
 /** P-033. Which fields a NON-AGENT sender (the operator GUI) derived rather than
  *  authored — so the D-070 measurement can exclude them instead of counting a
@@ -785,6 +918,8 @@ export const itemSpec = z.object({
   summary: summaryArg,
   harness: messageHarnessArg,
   body: messageBodyArg,
+  conditionKey: conditionKeyArg,
+  resolvesCondition: resolvesConditionArg,
   // P-032 / D-064, reopened by D-070: the ENVELOPE half of the split. These
   // cannot vary per section — `blocking` because a scheduler acts on a message
   // as a UNIT, `why` because one message serves one goal (D-011). The SECTION
@@ -828,7 +963,7 @@ export const itemSpec = z.object({
   hive: hiveArg,
   allHive: allHiveArg,
   asAuthority: asAuthorityArg,
-  report: reportArg,
+  report: reportArg(),
   expectEffect: expectEffectArg,
   fieldProvenance: fieldProvenanceArg,
 });
@@ -850,8 +985,30 @@ export type GoalOwnerReportVerdict =
   | { kind: 'none' }
   | { kind: 'skip' }
   | { kind: 'warning'; warning: string }
+  | {
+      kind: 'not-stamped';
+      diagnostic: {
+        status: 'not-stamped';
+        goalId: string;
+        reason: 'not-attempted';
+        missing: GoalOwnerReportField[];
+        bodyAuthoredChars?: number;
+        bodyDeliveryCap: number;
+        message: string;
+      };
+    }
   | { kind: 'stamped'; stamp: GoalOwnerReportStamp }
+  | { kind: 'reference'; stamp: GoalOwnerReportStamp; body: string; summary: string;
+      persistEnvelope: (envelope: CoordEnvelope) => Promise<CoordEnvelope> }
   | { kind: 'refused'; result: BulkItemResult };
+
+function hasAllGoalOwnerReportLabels(body: SendMsg['body']): boolean {
+  const text = sectionsToText(toSections(body));
+  return GOAL_OWNER_REPORT_FIELDS.every((field) => {
+    const label = GOAL_OWNER_REPORT_HEADINGS[field].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${label}\\b`, 'i').test(text);
+  });
+}
 
 /**
  * Judge a message against the GOAL owner-report contract.
@@ -866,12 +1023,39 @@ export type GoalOwnerReportVerdict =
  * threads the verdict to every part, so a report is delivered whole or not at all.
  */
 export async function evaluateGoalOwnerReport(
-  msg: Pick<SendMsg, 'to' | 'body'>,
+  msg: Pick<SendMsg, 'to' | 'body' | 'report'>,
   identity: Pick<AgentIdentity, 'workspaceId' | 'ownerId'>,
 ): Promise<GoalOwnerReportVerdict> {
+  if (msg.report && typeof msg.report === 'object' && 'goalReport' in msg.report) {
+    const block = parseReportBlock(msg.report);
+    if (!block?.goalReport) return { kind: 'refused', result: { ok: false, to: msg.to, error: 'report_invalid', oracle: 'goal-reference-shape' } };
+    if (msg.to.length !== 1 || msg.to[0] !== 'human') return { kind: 'refused', result: { ok: false, to: msg.to, error: 'report_reference_unavailable', oracle: 'owner-recipient' } };
+    try {
+      const { getModeSubject } = await import('../../../modes/store');
+      const goalId = await getModeSubject(identity.workspaceId!, identity.ownerId, 'goal');
+      if (!goalId || !identity.workspaceId || identity.workspaceId === '*') return { kind: 'refused', result: { ok: false, to: msg.to, error: 'goal-owner-report-untruthful', oracle: 'current-goal-subject' } };
+      const { coordSql } = await import('../log');
+      const bridge = await import('../../../goal-owner-report-reference');
+      const sql = coordSql();
+      const context = { workspaceId: identity.workspaceId, goalId, ref: block.goalReport, viewer: { ownerId: identity.ownerId } };
+      const report = await bridge.resolveGoalReportReference(sql, context.workspaceId, goalId, context.ref, context.viewer);
+      await bridge.validateGoalReportReferenceSnapshot(report.goalOwnerReport!, bridge.makeGoalReportReferenceReads(sql, context.workspaceId, goalId), Date.now());
+      const body = bridge.deriveGoalReportNotification(report.goalOwnerReport!);
+      return { kind: 'reference', body, summary: report.title, stamp: bridge.stampGoalReportReference(goalId, report.goalOwnerReport!, body),
+        persistEnvelope: (envelope) => bridge.persistGoalReportReference(sql, envelope, context) };
+    } catch (error) {
+      const failure = error as { code?: string; oracle?: string; message?: string };
+      return { kind: 'refused', result: { ok: false, to: msg.to, error: failure.code ?? 'goal-owner-report-untruthful', oracle: failure.oracle ?? 'current-source-read', message: failure.message } };
+    }
+  }
   if (!msg.to.includes('human')) return { kind: 'none' };
   const parsed = parseGoalOwnerReport(msg.body);
-  if (!parsed.attempted) return { kind: 'none' };
+  // A complete set of labels in the body that is not parseable as headings is
+  // still report-like. Resolve the active goal for this narrow case so the
+  // sender gets an explicit not-stamped result instead of a silent kind:none.
+  // Ordinary owner-facing prose stays on the cheap path without a mode-store read.
+  const unrecognizedReportShape = !parsed.attempted && hasAllGoalOwnerReportLabels(msg.body);
+  if (!parsed.attempted && !unrecognizedReportShape) return { kind: 'none' };
   let goalId: string | null = null;
   if (!identity.workspaceId || identity.workspaceId === '*') {
     return {
@@ -894,6 +1078,31 @@ export async function evaluateGoalOwnerReport(
   // No active GOAL row means this is ordinary owner-facing prose, even if
   // its headings resemble the GOAL contract. Do not manufacture authority.
   if (!goalId) return { kind: 'none' };
+  const authoredBodyChars = bodyTextLength(msg.body);
+  const overCap = authoredBodyChars !== null && authoredBodyChars > DEFAULT_INBOX_BODY_CAP;
+  if (unrecognizedReportShape) {
+    const multipartNote = overCap && authoredBodyChars !== null
+      ? ` The ${authoredBodyChars}-character body exceeded the ${DEFAULT_INBOX_BODY_CAP}-character cap and was delivered in parts; multipart sends cannot reset the report cadence.`
+      : '';
+    return {
+      kind: 'not-stamped',
+      diagnostic: {
+        status: 'not-stamped',
+        goalId,
+        reason: 'not-attempted',
+        missing: [...GOAL_OWNER_REPORT_FIELDS],
+        ...(authoredBodyChars !== null ? { bodyAuthoredChars: authoredBodyChars } : {}),
+        bodyDeliveryCap: DEFAULT_INBOX_BODY_CAP,
+        message:
+          `GOAL owner report for ${goalId} was delivered but not stamped: no report headings were recognized at the start of a body line or section. Use exactly one non-empty section headed ${GOAL_OWNER_REPORT_FIELDS.map((field) => GOAL_OWNER_REPORT_HEADINGS[field]).join(', ')}; this send will not reset the report cadence.` +
+          multipartNote,
+      },
+    };
+  }
+  const overCapNote = overCap
+    ? ` The body has ${authoredBodyChars} characters, above the ${DEFAULT_INBOX_BODY_CAP}-character inbox cap. ` +
+      'A GOAL owner report must fit in one message so the whole report is delivered as a unit. Nothing was sent; shorten it and retry.'
+    : '';
   if (!parsed.complete) {
     return {
       kind: 'refused',
@@ -905,16 +1114,72 @@ export async function evaluateGoalOwnerReport(
         missing: parsed.missing,
         empty: parsed.empty,
         duplicate: parsed.duplicate,
+        ...(overCap && authoredBodyChars !== null
+          ? { bodyAuthoredChars: authoredBodyChars, bodyDeliveryCap: DEFAULT_INBOX_BODY_CAP }
+          : {}),
         message:
           `GOAL owner report for ${goalId} is incomplete; nothing was sent. ` +
-          'Provide exactly one non-empty body section headed MOVED, COST, OWNER-WALLED, and KILLED. ' +
+          `Provide exactly one non-empty body section headed each of ${GOAL_OWNER_REPORT_HEADING_LIST}. ` +
           'Use explicit `none` or `unknown (<source/provenance>)` when that is the factual value. ' +
+          'NEXT WAKE names what will wake you next and roughly when (loop interval, awaited event, or owner reply). ' +
           `Missing: ${parsed.missing.join(', ') || 'none'}; empty: ${parsed.empty.join(', ') || 'none'}; ` +
-          `duplicate: ${parsed.duplicate.join(', ') || 'none'}.`,
+          `duplicate: ${parsed.duplicate.join(', ') || 'none'}.` +
+          overCapNote,
       },
     };
   }
-  return { kind: 'stamped', stamp: stampGoalOwnerReport(goalId, parsed) };
+  if (overCap && authoredBodyChars !== null) {
+    return {
+      kind: 'refused',
+      result: {
+        ok: false,
+        to: msg.to,
+        error: 'goal-owner-report-over-cap',
+        goalId,
+        bodyAuthoredChars: authoredBodyChars,
+        bodyDeliveryCap: DEFAULT_INBOX_BODY_CAP,
+        message:
+          `GOAL owner report for ${goalId} is ${authoredBodyChars} characters; its sections must fit ` +
+          `one ${DEFAULT_INBOX_BODY_CAP}-character inbox message to update the reporting rail as a unit. ` +
+          'Nothing was sent. Shorten the report and retry; put long supporting detail on its work-item.',
+      },
+    };
+  }
+  // P-005 (goal-holder-plans-ideation-truthful-reports-2026-10-03): a complete
+  // report is judged against MEASURED goal state before it reaches the owner.
+  // An unreadable measurement skips its check; only a readable contradiction refuses.
+  const truth = await readGoalOwnerReportTruth(identity.workspaceId, goalId, parsed.fields);
+  if (truth && truth.violations.length) {
+    return {
+      kind: 'refused',
+      result: {
+        ok: false,
+        to: msg.to,
+        error: 'goal-owner-report-untruthful',
+        goalId,
+        violations: truth.violations,
+        message: describeGoalOwnerReportTruthViolations(goalId, truth.violations),
+      },
+    };
+  }
+  return {
+    kind: 'stamped',
+    stamp: stampGoalOwnerReport(goalId, parsed, truth ? { citedRefStates: truth.citedRefStates, summary: truth.summary } : undefined),
+  };
+}
+
+/** Lazy so the truth module's DB reads stay off the cheap path of ordinary sends. */
+async function readGoalOwnerReportTruth(
+  workspaceId: string,
+  goalId: string,
+  fields: GoalOwnerReportParseResult['fields'],
+): Promise<GoalOwnerReportTruthVerdict | null> {
+  try {
+    const { readGoalOwnerReportTruth: read } = await import('../../../goal-owner-report-truth');
+    return await read(workspaceId, goalId, fields);
+  } catch {
+    return null;
+  }
 }
 
 async function sendOne(
@@ -951,7 +1216,19 @@ async function sendOne(
    * unchunked message, which is judged here as before.
    */
   goalReportPreVerdict?: GoalOwnerReportVerdict,
+  phaseTimer: CoordSendPhaseTimer = { startedAt: performance.now() },
+  /** The dispatcher aborts this signal when the caller stops waiting. */
+  requestSignal?: AbortSignal,
 ): Promise<BulkItemResult> {
+  // Reference prose is server-derived before cap/chunk/inline truth checks.
+  // A caller's short body cannot substitute for the pinned snapshot.
+  if (msg.report && typeof msg.report === 'object' && 'goalReport' in msg.report) {
+    goalReportPreVerdict = await evaluateGoalOwnerReport(msg, identity);
+    if (goalReportPreVerdict.kind === 'refused') return goalReportPreVerdict.result;
+    if (goalReportPreVerdict.kind === 'reference') {
+      msg = { ...msg, summary: goalReportPreVerdict.summary, body: [{ text: goalReportPreVerdict.body }] };
+    }
+  }
   // EI-21826596284846555: a normal inbox read exposes at most the first
   // 600 characters of one message body (and less on a crowded page). For a
   // load-bearing message, persisting a longer body and warning only after the
@@ -1007,9 +1284,11 @@ async function sendOne(
   const goalReportVerdict = goalReportPreVerdict ?? (await evaluateGoalOwnerReport(msg, identity));
   if (goalReportVerdict.kind === 'refused') return goalReportVerdict.result;
   const goalOwnerReport: GoalOwnerReportStamp | null =
-    goalReportVerdict.kind === 'stamped' ? goalReportVerdict.stamp : null;
+    goalReportVerdict.kind === 'stamped' || goalReportVerdict.kind === 'reference' ? goalReportVerdict.stamp : null;
   const goalOwnerReportWarning: string | null =
     goalReportVerdict.kind === 'warning' ? goalReportVerdict.warning : null;
+  const goalOwnerReportDiagnostic =
+    goalReportVerdict.kind === 'not-stamped' ? goalReportVerdict.diagnostic : null;
 
   // Wake INTENT (directed-wake-honesty D-002): 'required' = the wake must land
   // (a clean miss → recipient_absent); 'optimistic' = best-effort over a durable
@@ -1046,27 +1325,30 @@ async function sendOne(
   // stays fail-soft (never refuse a genuine reply on a transient read hiccup).
   // The fetched original is reused by the reply-wake block below (one lookup),
   // AND by the recipient-resolution block right after (EI-18145: see
-  // `goneRepliedTo` — resolved BEFORE recipient resolution so that block can
-  // tell "closing a loop with a since-ended sender" apart from a bad address).
+  // recipient block can use the authenticated sender for only that alias).
   let relatedOriginal: Awaited<ReturnType<typeof getMessageById>> = null;
   // Keep the caller's ref for diagnostics, but persist and reuse the canonical
   // full id when resolveMessageRef accepted a unique leading prefix.
   let relatedMsgIdForSend = msg.related_msg_id;
-  if (msg.related_msg_id) {
+  // A chunk continuation carries this internal auth-only reference so the
+  // departed-sender exception is checked consistently for every part. It is
+  // deliberately not persisted as related_msg_id and cannot cause a reply wake.
+  const recipientAuthRelatedMsgId = msg.related_msg_id ?? msg.recipientAuthRelatedMsgId;
+  if (recipientAuthRelatedMsgId) {
     let lookupErrored = false;
     let relatedLookup: Awaited<ReturnType<typeof resolveMessageRef>> | null = null;
     try {
-      relatedLookup = await resolveMessageRef(msg.related_msg_id);
+      relatedLookup = await resolveMessageRef(recipientAuthRelatedMsgId);
       if (relatedLookup.status === 'found') {
         relatedOriginal = relatedLookup.message;
-        relatedMsgIdForSend = relatedLookup.msgId;
+        if (msg.related_msg_id) relatedMsgIdForSend = relatedLookup.msgId;
       } else if (relatedLookup.status === 'ambiguous') {
         return {
           ok: false,
           to: msg.to,
           error: 'related_msg_ambiguous',
           message:
-            `related_msg_id '${msg.related_msg_id}' matches multiple coord messages ` +
+            `related_msg_id '${recipientAuthRelatedMsgId}' matches multiple coord messages ` +
             `(${relatedLookup.candidates.join(', ')}) — nothing was sent. ` +
             'Use the full msg_id or a longer unique leading prefix.',
         };
@@ -1083,13 +1365,13 @@ async function sendOne(
       // of leaving the caller to guess.
       let conversationHint = '';
       try {
-        const maybeConversation = await getConversation(msg.related_msg_id);
+        const maybeConversation = await getConversation(recipientAuthRelatedMsgId);
         if (maybeConversation) {
           conversationHint =
-            ` '${msg.related_msg_id}' IS a valid conversation id (kind:${maybeConversation.conversation.kind}, ` +
+            ` '${recipientAuthRelatedMsgId}' IS a valid conversation id (kind:${maybeConversation.conversation.kind}, ` +
             `state:${maybeConversation.conversation.state}) — but related_msg_id threads coord MESSAGES, a ` +
             'separate id space conversations do not share. Reply IN the conversation with ' +
-            `conversations:answer / conversations:post { conversation_id: '${msg.related_msg_id}' } instead; ` +
+            `conversations:answer / conversations:post { conversation_id: '${recipientAuthRelatedMsgId}' } instead; ` +
             'if you meant to thread a coord message, find its msg_id in coord:inbox.';
         }
       } catch {
@@ -1100,7 +1382,7 @@ async function sendOne(
         to: msg.to,
         error: 'related_msg_not_found',
         message:
-          `related_msg_id '${msg.related_msg_id}' matches no coord message — nothing was sent.` +
+          `related_msg_id '${recipientAuthRelatedMsgId}' matches no coord message — nothing was sent.` +
           conversationHint +
           ` A dangling threading id silently voids the asker's wake-on-reply (they sleep while ` +
           `you believe you replied). Copy the full msg_id from coord:inbox / the message you ` +
@@ -1120,9 +1402,12 @@ async function sendOne(
   // happen — instead of the old silent ok:true. Fail-soft: a roster-read hiccup
   // degrades to the raw ids (never blocks coord). Local-roster scoped.
   //
-  // EI-18145: a reply CLOSING A LOOP with the original sender of `related_msg_id`
-  // is exempt from the unknown-recipient refusal for THAT one id. A directed
-  // obligation (unanswered-directed / the delivery-ladder alarm) is satisfied by
+  // EI-18145 / EI-24838286424095637: the related message authenticates its
+  // original sender for that exact alias. This permits an unknown alias when
+  // that sender has left the roster, or an ambiguous alias when that sender is
+  // one of the live candidates. Any OTHER unknown or ambiguous recipient still
+  // hard-refuses. A directed obligation (unanswered-directed / the delivery-ladder
+  // alarm) is satisfied by
   // recording a reply authored by the recipient with `related_msg_id` set — it
   // does NOT require the original sender to still exist. Before this fix, once
   // a correspondent's session ended (reaped from the roster), NOTHING could ever
@@ -1131,31 +1416,54 @@ async function sendOne(
   // named the now-gone sender — a structurally unresolvable dead end (observed
   // live: EI-18145123522199011, a directed ping from a since-ended sender kept
   // re-surfacing as "unanswered" with no way to ever clear it). Scoped tight:
-  // only the specific unknown id that IS `relatedOriginal.from` is exempted —
-  // any OTHER unknown/ambiguous recipient on the same send still hard-refuses.
+  // only an unknown or ambiguous alias matching `relatedOriginal.from` is
+  // canonicalized; unrelated recipients still go through normal validation.
   let toSend = msg.to;
   let goneRepliedTo: string[] = [];
   if (msg.to.some((id) => !isSelectorOrWildcard(id))) {
     try {
       const r = await resolveRecipients(msg.to, identity.workspaceId);
-      const closingGoneSender = relatedOriginal?.from ?? null;
-      const goneReplyAliases = closingGoneSender ? r.unknown.filter((id) => isOwnerIdAlias(id, closingGoneSender)) : [];
-      // Canonicalize a resolver-supported short handle/prefix to the full
-      // ownerId in the durable reply. Once the session is gone there is no
-      // roster left to perform that expansion, but the related message gives
-      // us the authenticated canonical sender id.
-      if (goneReplyAliases.length && closingGoneSender !== null) {
-        goneRepliedTo = [closingGoneSender];
+      const closingReplySender = relatedOriginal?.from ?? null;
+      const goneReplyAliases = closingReplySender
+        ? r.unknown.filter((id) => isOwnerIdAlias(id, closingReplySender))
+        : [];
+      const ambiguousReplyAliases = closingReplySender
+        ? r.ambiguous.filter(
+            ({ id, matches }) => matches.includes(closingReplySender) && isOwnerIdAlias(id, closingReplySender),
+          )
+        : [];
+      // Canonicalize an unknown alias to the full ownerId in the durable reply
+      // when the original sender has left the roster. For a live sender, the
+      // matching entry in `r.ambiguous` proves the alias was shared by multiple
+      // owners and lets this related message disambiguate only that sender.
+      if (goneReplyAliases.length && closingReplySender !== null && !r.resolved.includes(closingReplySender)) {
+        goneRepliedTo = [closingReplySender];
       }
+      // A related message authenticates its exact sender, so it can disambiguate
+      // that sender's own short handle even when other live respawn IDs share it.
+      // The candidate check above keeps unrelated ambiguous addresses refused.
+      const resolvedAmbiguousReplySender =
+        ambiguousReplyAliases.length &&
+        closingReplySender !== null &&
+        !r.resolved.includes(closingReplySender)
+          ? [closingReplySender]
+          : [];
       const trulyUnknown = r.unknown.filter((id) => !goneReplyAliases.includes(id));
-      if (trulyUnknown.length || r.ambiguous.length) {
+      const trulyAmbiguous = r.ambiguous.filter(
+        ({ id }) => !ambiguousReplyAliases.some((alias) => alias.id === id),
+      );
+      if (trulyUnknown.length || trulyAmbiguous.length) {
         // EI-19343900550313022: this is ALL-OR-NOTHING BY DESIGN (see toArg's
         // own description), but that is easy to miss in the moment — a sender
         // with 2 valid + 1 fabricated/typo'd recipient reads "nothing was sent"
         // and can reasonably assume the valid two are unaffected. They are not:
         // say so explicitly whenever the list carried >1 addressee, so the
         // sender knows to re-notify the valid ones (or re-split via items[]).
-        const otherValidCount = r.resolved.length + goneRepliedTo.length;
+        const otherValidCount = new Set([
+          ...r.resolved,
+          ...resolvedAmbiguousReplySender,
+          ...goneRepliedTo,
+        ]).size;
         // knowledge-at-symptom-time-2026-08-09 P-005: when the bad address is
         // session-SHAPED, the existing advice ("use the handle / look it up in
         // coord:presence") answers the wrong question — no live session will
@@ -1180,7 +1488,7 @@ async function sendOne(
             'coord:send addressed agent(s) not in the roster — nothing was sent. ' +
             'Use the short handle from [coord+N]/inbox, the su- prefix, or the full ownerId ' +
             '(coord:presence lists them); a substring of a live ownerId also resolves.' +
-            (msg.related_msg_id
+            (recipientAuthRelatedMsgId
               ? ' Just closing the loop on a message from someone whose session has ended? ' +
                 'coord:ack { msg_id } never requires the original sender to still be in the ' +
                 'roster — use it instead of a manual related_msg_id reply.'
@@ -1194,10 +1502,10 @@ async function sendOne(
               : '') +
             roleHint,
           ...(trulyUnknown.length ? { unknown_recipients: trulyUnknown } : {}),
-          ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),
+          ...(trulyAmbiguous.length ? { ambiguous_recipients: trulyAmbiguous } : {}),
         };
       }
-      toSend = [...r.resolved, ...goneRepliedTo];
+      toSend = [...r.resolved, ...resolvedAmbiguousReplySender, ...goneRepliedTo];
     } catch (e) {
       console.warn(`[coord:send] recipient resolve failed, sending unresolved: ${e instanceof Error ? e.message : e}`);
     }
@@ -1235,17 +1543,24 @@ async function sendOne(
   // send opted in, so a FUTURE reply (which looks the original up by msg_id) can see
   // the opt-in and wake us back. Both keys merge onto the persisted envelope.
   const extra: Record<string, unknown> = {};
+  if (msg.conditionKey !== undefined) {
+    extra.condition_key = senderScopedConditionKey(identity.ownerId, msg.conditionKey);
+  }
+  if (msg.resolvesCondition !== undefined) {
+    extra.resolves_condition = senderScopedConditionKey(identity.ownerId, msg.resolvesCondition);
+  }
   if (relayStamp) extra[RELAY_PROVENANCE_FIELD] = relayStamp;
   // P-006: verify + stamp announced-gate refs at send (fail-soft — a store
   // hiccup stamps 'unknown', never blocks; the EXACT key always travels).
-  if (msg.gateRefs?.length) {
-    try {
-      const gateStamps = await resolveGateRefStamps(msg.gateRefs);
-      if (gateStamps.length) extra[GATE_REFS_FIELD] = gateStamps;
-    } catch {
-      /* fail-soft: gate stamping never blocks a send */
-    }
-  }
+  const gateRefs = msg.gateRefs;
+  const gateRefStampsPromise = gateRefs?.length
+    ? withOptionalSendEnrichment(
+        'gate-ref-stamps',
+        () => resolveGateRefStamps(gateRefs),
+        [],
+        requestSignal,
+      )
+    : Promise.resolve([]);
   // P-008: the sender's body-auto-ref opt-out rides the envelope so DELIVERY
   // (the receiver's inbox seam + renderer) honors it — no receiver-side config.
   if (msg.noBodyRefs) extra[BODY_REFS_OPT_OUT_FIELD] = true;
@@ -1259,7 +1574,9 @@ async function sendOne(
   // trust this stamp (or their explicitly bounded legacy compatibility arm),
   // never the mere fact that a message reached the human.
   if (goalOwnerReport) extra[GOAL_OWNER_REPORT_FIELD] = goalOwnerReport;
-  if (goalOwnerReportWarning) {
+  if (goalOwnerReportDiagnostic) {
+    extra.goalOwnerReportValidation = goalOwnerReportDiagnostic;
+  } else if (goalOwnerReportWarning) {
     extra.goalOwnerReportValidation = { status: 'unknown', reason: goalOwnerReportWarning };
   }
   // P-013: the declared side effect rides the envelope so the ACTUATION probe
@@ -1312,11 +1629,26 @@ async function sendOne(
   // to prevent on the completion gate. A send with no provenance is fine; a
   // provenance failure that eats a message is not. (Caught live by the wiring
   // test below, which the first cut of this failed.)
-  const basedOn = await deriveBasedOn({
-    ownerId: identity.ownerId,
-    workspaceId: identity.workspaceId ?? '',
-    harness: harnessSlug,
-  }).catch(() => []);
+  const completionRefs = completionClaimRefs({ summary: msg.summary, body: msg.body, planSlug: msg.plan_slug });
+  const [readTrace, gateRefStamps] = await Promise.all([
+    withOptionalSendEnrichment(
+      'based-on',
+      () =>
+        deriveBasedOn({
+          ownerId: identity.ownerId,
+          workspaceId: identity.workspaceId ?? '',
+          harness: harnessSlug,
+          // Rubric reads are persisted under their plan identity. Reuse the
+          // same bounded read scan; do not infer unread from its display cap.
+          includeRefs: completionRefs.map((ref) => ref.replace(/^rubric:/, 'plan:')),
+        }).catch(() => []),
+      [],
+      requestSignal,
+    ),
+    gateRefStampsPromise,
+  ]);
+  const basedOn = readTrace.slice(0, BASED_ON_MAX_ENTRIES);
+  if (gateRefStamps.length) extra[GATE_REFS_FIELD] = gateRefStamps;
   const fieldStamp = stampMessageFields({
     body: msg.body,
     why: msg.why,
@@ -1345,59 +1677,65 @@ async function sendOne(
   // before any IO. NO extra cost gate: measured 30h load is ~13 probes total
   // (WI-6731), so a second gate would guard a load that does not exist.
   const classifiedPremises = fieldStamp.premisesClassified;
-  if (classifiedPremises?.some((s) => s.length > 0)) {
-    try {
-      const stamps = await resolvePremiseStamps(
-        classifiedPremises.flat().map((c) => c.ref),
-        premiseProbes({ harnessSlug, workspaceId: identity.workspaceId }),
-      );
-      // ALL stamps ride, not just the failures. `failingPremises()` is the
-      // READER's filter and stays exported for that; baking it in here would
-      // discard the denominator, and "2 broken" cannot be read without "out of
-      // how many" — the aggregate read D-090 R3 mandates needs both.
-      if (stamps.length) extra[PREMISE_STAMPS_FIELD] = stamps;
-    } catch {
-      /* fail-soft: premise stamping never blocks a send */
-    }
-  }
+  const premiseStampsPromise = classifiedPremises?.some((s) => s.length > 0)
+    ? withOptionalSendEnrichment(
+        'premise-stamps',
+        () =>
+          resolvePremiseStamps(
+            classifiedPremises.flat().map((c) => c.ref),
+            premiseProbes({ harnessSlug, workspaceId: identity.workspaceId }),
+          ),
+        [],
+        requestSignal,
+      )
+    : Promise.resolve([]);
   // D-089 / WI-6685: score each `forYouBecause` against the coupling graph AS IT
   // STANDS NOW. This is the only moment the comparison is meaningful — the graph
   // is live state (locks release, awaits fire), so a later pass over the message
   // log could only ever answer 'not-comparable'. Gated on the divergence rule
   // table before any IO, so a message whose relations are all `owns`/`other`
   // (the majority) costs nothing; fail-soft, like every other stamp here.
-  if (fieldStamp.sections) {
-    const divergence = await resolveCouplingDivergenceStamps({
-      selfOwnerId: identity.ownerId,
-      to: toSend,
-      sections: fieldStamp.sections,
-      workspaceId: identity.workspaceId,
-      harnessSlug,
-      // P-009: the census rides the derivation that ALREADY happens here — no
-      // extra IO, no second coupling path.
-      //
-      // ⚠ THIS SAMPLES ~1.5% OF SENDS — it is NOT a census OF sends, and the
-      // earlier claim here that it is "the only coupling read that runs at
-      // volume" was wrong in the way that matters. `observe` is reached only
-      // PAST resolveCouplingDivergenceStamps' cost gate, which returns before
-      // any IO unless the message carries a COMPARABLE `forYouBecause` (never
-      // `owns`/`other`) addressed to a NON-SELF peer. Measured 2026-08-10 over
-      // 7d of coord_event_log (13,633 messages): 628 carry forYouBecause at all
-      // (4.6%), and of 737 asserted relations 525 (71%) are owns/other —
-      // leaving ~212, i.e. ~1.5% of sends, that can ever reach this sink.
-      //
-      // That is still ~30 FULL censuses/day (each observation covers all four
-      // legs, whichever relation opened the gate), which is enough to answer
-      // "has this leg EVER fired in production". But the sample is deliberately
-      // biased toward senders who assert checkable relations, so: never read a
-      // census count as a send count, and never read leg silence HERE as proof
-      // that leg is dead fleet-wide — absence in a 1.5% biased sample is not
-      // absence. Verified the hard way: a probe send with no forYouBecause,
-      // addressed to self, produced a tool_invocations row with no census and
-      // looked exactly like a broken sink.
-      ...(observeCensus ? { observe: observeCensus } : {}),
-    });
-    if (divergence.length) extra[COUPLING_DIVERGENCE_FIELD] = divergence;
+  let couplingDivergencePromise = Promise.resolve(
+    [] as Awaited<ReturnType<typeof resolveCouplingDivergenceStamps>>,
+  );
+  const senderSections = fieldStamp.sections;
+  if (senderSections) {
+    couplingDivergencePromise = withOptionalSendEnrichment(
+      'coupling-divergence',
+      () =>
+        resolveCouplingDivergenceStamps({
+          selfOwnerId: identity.ownerId,
+          to: toSend,
+          sections: senderSections,
+          workspaceId: identity.workspaceId,
+          harnessSlug,
+          // P-009: the census rides the derivation that ALREADY happens here — no
+          // extra IO, no second coupling path.
+          //
+          // ⚠ THIS SAMPLES ~1.5% OF SENDS — it is NOT a census OF sends, and the
+          // earlier claim here that it is "the only coupling read that runs at
+          // volume" was wrong in the way that matters. `observe` is reached only
+          // PAST resolveCouplingDivergenceStamps' cost gate, which returns before
+          // any IO unless the message carries a COMPARABLE `forYouBecause` (never
+          // `owns`/`other`) addressed to a NON-SELF peer. Measured 2026-08-10 over
+          // 7d of coord_event_log (13,633 messages): 628 carry forYouBecause at all
+          // (4.6%), and of 737 asserted relations 525 (71%) are owns/other —
+          // leaving ~212, i.e. ~1.5% of sends, that can ever reach this sink.
+          //
+          // That is still ~30 FULL censuses/day (each observation covers all four
+          // legs, whichever relation opened the gate), which is enough to answer
+          // "has this leg EVER fired in production". But the sample is deliberately
+          // biased toward senders who assert checkable relations, so: never read a
+          // census count as a send count, and never read leg silence HERE as proof
+          // that leg is dead fleet-wide — absence in a 1.5% biased sample is not
+          // absence. Verified the hard way: a probe send with no forYouBecause,
+          // addressed to self, produced a tool_invocations row with no census and
+          // looked exactly like a broken sink.
+          ...(observeCensus ? { observe: observeCensus } : {}),
+        }),
+      [],
+      requestSignal,
+    );
   }
   // P-011 (state-plane-adoption-2026-08-02): stamp stale-value QUOTING — a
   // section that cites a registered cell's identity while the sender's
@@ -1412,22 +1750,45 @@ async function sendOne(
   // gating the scan on fieldStamp.sections silently exempted it (caught by
   // the send.test.ts wiring pin, state-plane-adoption-2026-08-02 C5).
   const staleQuoteSections = fieldStamp.sections ?? (Array.isArray(msg.body) ? msg.body : undefined);
-  if (staleQuoteSections) {
-    try {
-      const staleQuoteStamps = await resolveStaleQuoteStamps({
-        selfOwnerId: identity.ownerId,
-        sections: staleQuoteSections,
-        workspaceId: identity.workspaceId,
-      });
-      if (staleQuoteStamps.length) extra[STALE_QUOTE_FIELD] = staleQuoteStamps;
-    } catch {
-      /* fail-soft: stale-quote stamping never blocks a send */
-    }
-  }
+  const staleQuoteStampsPromise = staleQuoteSections
+    ? withOptionalSendEnrichment(
+        'stale-quote-stamps',
+        () =>
+          resolveStaleQuoteStamps({
+            selfOwnerId: identity.ownerId,
+            sections: staleQuoteSections,
+            workspaceId: identity.workspaceId,
+          }),
+        [],
+        requestSignal,
+      )
+    : Promise.resolve([]);
+  const [premiseStamps, divergence, staleQuoteStamps] = await Promise.all([
+    premiseStampsPromise,
+    couplingDivergencePromise,
+    staleQuoteStampsPromise,
+  ]);
+  if (premiseStamps.length) extra[PREMISE_STAMPS_FIELD] = premiseStamps;
+  if (divergence.length) extra[COUPLING_DIVERGENCE_FIELD] = divergence;
+  if (staleQuoteStamps.length) extra[STALE_QUOTE_FIELD] = staleQuoteStamps;
   if (fieldStamp.why) extra.why = fieldStamp.why;
   if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
   if (fieldStamp.basedOn) extra.basedOn = fieldStamp.basedOn;
-  const staleBasisStamps = staleBasis(basedOn);
+  // `basedOn` is the sender's bounded recent-read trace, so it can include an
+  // item from a prior unit of work in the same session. Only label a changed
+  // work-item as stale basis when this message cites it as a premise, goal, or
+  // completion claim; otherwise the stamp misattributes ambient session state
+  // to the current message.
+  const messageWorkItemRefs = new Set<string>(completionRefs);
+  for (const section of sections) {
+    for (const premise of section.premises ?? []) {
+      const ref = workItemBasisRef(premise);
+      if (ref) messageWorkItemRefs.add(ref);
+    }
+  }
+  const whyWorkItemRef = workItemBasisRef(msg.why?.goalRef);
+  if (whyWorkItemRef) messageWorkItemRefs.add(whyWorkItemRef);
+  const staleBasisStamps = staleBasis(basedOn).filter((stamp) => messageWorkItemRefs.has(stamp.ref));
   if (staleBasisStamps.length) extra[STALE_BASIS_FIELD] = staleBasisStamps;
   // coord-derived-fields-2026-08-31 P-004 (D-003's derived half): the sender's
   // REGISTERED waits — active events:await registrations + set_blocker records
@@ -1436,10 +1797,28 @@ async function sendOne(
   // is: a decorative stamp must never fail the delivery it decorates). Named
   // `awaiting`, NOT blockedOn: the authored per-section field is the sender's
   // claim about a statement; this is a machine observation about the session.
-  const awaiting = await deriveAwaiting({
-    ownerId: identity.ownerId,
-    workspaceId: identity.workspaceId ?? '',
-  }).catch(() => []);
+  const [awaiting, draftSuspension] = await Promise.all([
+    withOptionalSendEnrichment(
+      'awaiting',
+      () =>
+        deriveAwaiting({
+          ownerId: identity.ownerId,
+          workspaceId: identity.workspaceId ?? '',
+        }).catch(() => []),
+      [],
+      requestSignal,
+    ),
+    withOptionalSendEnrichment(
+      'draft-suspension',
+      () =>
+        deriveDraftSuspension({
+          ownerId: identity.ownerId,
+          workspaceId: identity.workspaceId ?? '',
+        }).catch(() => null),
+      null,
+      requestSignal,
+    ),
+  ]);
   if (awaiting.length) extra.awaiting = awaiting;
   // EI-19395608899173941: a wake-pump can interleave a turn between the moment a claim
   // was measured and the moment it is sent — the filed case measured `git status`
@@ -1449,10 +1828,6 @@ async function sendOne(
   // old). Stamped like `awaiting`: a machine OBSERVATION about the session, envelope
   // level, fail-soft. It reports a measured gap and never guesses which sentence is
   // stale — an inference about the prose is the EI-10949 hazard `cellHint` avoids.
-  const draftSuspension = await deriveDraftSuspension({
-    ownerId: identity.ownerId,
-    workspaceId: identity.workspaceId ?? '',
-  }).catch(() => null);
   if (draftSuspension) extra[DRAFT_SUSPENSION_FIELD] = draftSuspension;
   // Completion claims are additive evidence, never a refusal. If the message
   // names a plan/work-item/rubric as completed but the sender's recent read
@@ -1463,7 +1838,7 @@ async function sendOne(
     summary: msg.summary,
     body: msg.body,
     planSlug: msg.plan_slug,
-    basedOn,
+    basedOn: readTrace,
   });
   if (completionMismatch) extra[COMPLETION_CLAIM_MISMATCH_FIELD] = completionMismatch;
   // P-033: ride the envelope so a reader (and the D-070 adoption measurement)
@@ -1519,9 +1894,24 @@ async function sendOne(
   // on the envelope. Deliberately NOT re-caught/reshaped here: that would
   // diverge from the one established, tested shape every other sendMessage
   // failure (e.g. a PG lock-timeout) already reports through.
-  const env = await withDbCallDeadline(
+  // A client disconnect or request deadline can fire while the per-message
+  // enrichment above is still running. Check at the durable-write boundary so
+  // that work cannot append a message after its caller has stopped waiting.
+  if (requestSignal?.aborted) {
+    return {
+      ok: false,
+      to: msg.to,
+      error: 'request_aborted',
+      message: 'coord:send was aborted before persistence; the message was not appended.',
+    };
+  }
+  let env: Awaited<ReturnType<typeof sendMessage>>;
+  phaseTimer.persistStartedAt = performance.now();
+  try {
+    env = await withDbCallDeadline(
     sendMessage(identity, {
       to: toSend,
+      ...(goalReportVerdict.kind === 'reference' ? { persistEnvelope: goalReportVerdict.persistEnvelope } : {}),
       ...(idempotencyKey !== undefined && itemIndex !== undefined
         ? { msgId: idempotentCoordMsgId(identity, harnessSlug, idempotencyKey, itemIndex) }
         : {}),
@@ -1545,7 +1935,26 @@ async function sendOne(
       ...(Object.keys(extra).length ? { extra } : {}),
     }),
     { ms: COORD_SEND_DB_DEADLINE_MS, label: 'coord:send.sendMessage' },
-  );
+    );
+  } catch (error) {
+    // The transaction can invalidate a successful preflight. Keep the failed
+    // oracle visible on reference refusals, just as on preflight refusals.
+    if (goalReportVerdict.kind === 'reference') {
+      const failure = error as { code?: string; oracle?: string; message?: string };
+      return { ok: false, to: msg.to, error: failure.code ?? 'goal-owner-report-untruthful',
+        oracle: failure.oracle ?? 'delivery-transaction', message: failure.message };
+    }
+    throw error;
+  } finally {
+    phaseTimer.persistFinishedAt = performance.now();
+  }
+
+  if (reportBlock && identity.workspaceId && env.to.includes('human')) {
+    void trackDetached(import('../../../report-capture').then(({ captureCoordReport }) => captureCoordReport({
+      workspaceId: identity.workspaceId!, ownerId: identity.ownerId, harnessSlug,
+      sessionRef: identity.ownerId, msgId: env.msg_id, summary: msg.summary, report: reportBlock!,
+    })).catch(error => console.warn(`Reports card capture failed for ${env.msg_id}: ${String(error)}`)));
+  }
 
   // EI-6874 (zero-recipient audience send is a refusal-class event, not a silent
   // ok): a LIVE-audience selector (@fleet:/@fleet-leader:/@topic:/@plan:/@object:/
@@ -1890,6 +2299,8 @@ async function sendOne(
         woken: number;
         /** False until a later checkpoint/activity observation proves pickup. */
         pickupConfirmed: boolean;
+        deferred?: number;
+        deferredTargets?: string[];
         staged?: number;
         /** EI-19965318428068990: an explicit, non-numeric discriminant so a caller reading
          *  ONLY `queued` (the durable delivery count) cannot conflate a STAGED
@@ -1906,13 +2317,16 @@ async function sendOne(
          *  delivery was queued but turn pickup is not confirmed; 'unknown' means the local wake
          *  deadline elapsed before the fire result arrived, so the underlying wake may still
          *  complete and the sender MUST verify pickup rather than treating it as absent. */
-        wakeOutcome?: 'queued' | 'partial-staged' | 'staged-manual-mode' | 'missed' | 'unknown';
+        wakeOutcome?: 'queued' | 'partial-staged' | 'staged-manual-mode' | 'missed' | 'unknown' | 'deferred' | 'partial-deferred';
         /** EI-5957: the ownerIds whose wake STAGED (manual wake-mode) — named so a
          *  leader-steering send surfaces WHO didn't get the directive, alongside `note`. */
         stagedTargets?: string[];
         /** EI-202273: targets whose wake completion exceeded the local deadline. The durable
          *  inbox row exists, but the wake result is unknown because the emit may finish late. */
         timedOutTargets?: string[];
+        /** P-006 / D-005: per queued target, the key the pump fires if the wake was NOT picked up
+         *  (and the window it waits). The later seam `pickupConfirmed:false` points at. */
+        pickup?: WakePickupHandle[];
         recipient_absent?: boolean;
         /** WI-574: the subset of missed targets with NO live session watching their inbox-wake key —
          *  genuinely dead (not merely paused), so the inject has no "next turn" to be seen on and the
@@ -1978,8 +2392,14 @@ async function sendOne(
     });
     const queued = fan.queued ?? fan.woken;
     wake = { mode: wakeMode, targets: fan.targets, queued, woken: queued, pickupConfirmed: false };
+    if (fan.deferred) {
+      wake.deferred = fan.deferred;
+      wake.deferredTargets = fan.deferredTargets;
+      wake.note = `${fan.deferred} bulk wake(s) durably DEFERRED for pacing; they will be delivered by the event pump. Deferred recipients are not dead or absent; do not relaunch them. Pickup windows start on actual delivery.`;
+    }
     if (fan.staged > 0) wake.staged = fan.staged;
     if (fan.timedOutTargets?.length) wake.timedOutTargets = fan.timedOutTargets;
+    if (fan.pickup?.length) wake.pickup = fan.pickup;
     // EI-19965318428068990: compute the explicit discriminant BEFORE the staged-note /
     // missed-classification branches below — it depends only on the queued/staged/targets
     // counts already known here, and every branch after this point only adds detail, never
@@ -1989,6 +2409,8 @@ async function sendOne(
     if (fan.targets.length > 0) {
       wake.wakeOutcome = fan.timedOutTargets?.length
         ? 'unknown'
+        : (fan.deferred ?? 0) > 0
+          ? queued > 0 ? 'partial-deferred' : 'deferred'
         : queued > 0 && fan.staged === 0
           ? 'queued'
           : queued > 0 && fan.staged > 0
@@ -2005,7 +2427,7 @@ async function sendOne(
     // notes never collide.
     if (fan.stagedTargets.length > 0) {
       wake.stagedTargets = fan.stagedTargets;
-      wake.note = buildStagedWakeNote(fan.stagedTargets);
+      wake.note = [wake.note, buildStagedWakeNote(fan.stagedTargets)].filter(Boolean).join(' ');
     }
     if (fan.timedOutTargets?.length) {
       const targets = fan.timedOutTargets.join(', ');
@@ -2016,7 +2438,7 @@ async function sendOne(
         '({ agent, sent_ts }) for messages_shown_ts/read_through_ts before claiming the holder was nudged.';
       wake.note = wake.note ? `${wake.note} ${timeoutNote}` : timeoutNote;
     }
-    const missed = fan.targets.length > 0 && queued === 0 && fan.staged === 0 && !fan.timedOutTargets?.length;
+    const missed = fan.targets.length > 0 && queued === 0 && !fan.deferred && fan.staged === 0 && !fan.timedOutTargets?.length;
     if (missed) {
       // FF#1 — the forcing function: a 'required' miss is ALWAYS loud; an 'optimistic'
       // miss is loud UNLESS the caller consciously declared a durable backstop
@@ -2217,7 +2639,10 @@ async function sendOne(
   // claim bug below — a detector reading the wrong text reports a confident
   // clean.
   const sentText = [msg.summary, bodyText].filter(Boolean).join('\n');
-  const cellHint = cellTranscriptionHint(sentText);
+  // EI-24684014950807803: resolve each sha-shaped token against the integration tree
+  // before flagging it — an agent short id like `c0b38c83` is hex-shaped but names no
+  // commit. Async + parallel (never a sync spawn on the send hot path), never throws.
+  const cellHint = await cellTranscriptionHintResolvingCommits(sentText);
 
   // WI-41323 — the SENDER-side half of EI-21333824056510800. That item fixed what
   // the RECEIVER sees: an unbacked "OWNER-VERIFIED DIRECTIVE" now renders prefixed
@@ -2236,7 +2661,7 @@ async function sendOne(
   const claimText = msg.summary || bodyText || '';
   const authorityClaim = claimText ? unverifiedAuthorityClaim(claimText, relayStamp, cueAuthority) : null;
   const { value: dispatchAdvisory } = await withBoundedTimeout(
-    () => deriveDispatchAdvisory(msg, bodyText, env.to, harnessSlug),
+    () => deriveDispatchAdvisory(msg, env.to, harnessSlug, identity.ownerId),
     {
       fallback: undefined,
       timeoutMs: COORD_SEND_DISPATCH_ADVISORY_TIMEOUT_MS,
@@ -2369,7 +2794,17 @@ async function sendOne(
       : {}),
     ...(dispatchAdvisory ? { dispatchAdvisory } : {}),
     ...(staleBasisStamps.length ? { staleBasis: staleBasisStamps } : {}),
-    ...(goalOwnerReport ? { goalOwnerReport: { status: 'stamped' as const, goalId: goalOwnerReport.goalId } } : {}),
+    ...(goalOwnerReport
+      ? {
+          goalOwnerReport: {
+            status: 'stamped' as const,
+            goalId: goalOwnerReport.goalId,
+            // The watchdog reads this persisted message row's ts as lastReportAt.
+            lastReportAt: env.ts,
+          },
+        }
+      : {}),
+    ...(goalOwnerReportDiagnostic ? { goalOwnerReport: goalOwnerReportDiagnostic } : {}),
     ...(goalOwnerReportWarning ? { goalOwnerReportWarning } : {}),
   };
 }
@@ -2462,12 +2897,19 @@ export default defineTool({
   // Budget is recovered by tightening prose instead; response/refusal detail lives in the
   // free `returns` below (EI-22083648545226771 / EI-18742337097445085).
   description:
-    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is the required one-line inbox headline, `body` optional detail. Distinct messages: items:[…]. `to` takes ownerIds, ["*"], or ["human"]. `expects` required: ack|answer|action|none. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it; authored refs go in `body[].premises`. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).',
+    'coord:send. Directed action/answer requires `body[].forYouBecause: { relation, ref?, note? }`. `summary` is the required inbox headline. `items:[…]` sends distinct messages. `why`={goalRef,note?}, not prose. `basedOn` is OUTPUT-ONLY, auto-derived; omit it. `body[].premises` are ref strings; `body[].youMayNotKnow` uses {ref, provenance} objects. `wake` re-invokes recipients; `optimistic` needs `backstop`.',
   guidance: {
-    when: 'Share context or ask. `summary` is the required inbox headline; `body` is detail. Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on that section gets readers a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. Transferring a named WI-/EI- item? coord:dispatch.',
+    when:
+      'Share context or ask. `summary` is the required inbox headline; `body` is detail. For the dispatch advisory, put the work-item action target in `body[].forYouBecause.ref`; summary ids can be contextual. A complete active-GOAL owner report (MOVED/COST/OWNER-WALLED/KILLED) must fit in one body of at most ' +
+      DEFAULT_INBOX_BODY_CAP +
+      ' characters; longer ones are refused unsent (see returns). Directed action/answer needs `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. `why` is { goalRef, note? } — a goal REF, never prose. `basedOn` is OUTPUT-ONLY, auto-derived — omit it. Waiting? `blockedOn: { kind, ref }` on a section gives a live cleared/pending verdict. SHAPES: `premises` is an array of ref STRINGS; `youMayNotKnow` is [{ ref, provenance }]; `couldNotDetermine` is [{ what, note? }] — objects, never bare strings. ',
     argRedirects: sectionOnlyArgRedirects,
     returns:
-      'Per-message {ok, to, msg_id|error} counts. Envelope `ok` is DERIVED from results[].ok, so ANY failed delivery makes it false; `partial:true` and `deliveryFailureWarning` then name which messages failed and why. A body above the ' + DEFAULT_INBOX_BODY_CAP + '-character inbox cap is delivered in full as ordered parts (`chunked[]`; only the final part, `askMsgId`, carries expects/wake/reply-threading); one needing more than ' + COORD_SEND_MAX_CHUNK_PARTS + ' parts is refused. A directed action that mentions an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
+      'Per-message {ok, to, msg_id|error} counts. Envelope `ok` is DERIVED from results[].ok, so ANY failed delivery makes it false; `partial:true` and `deliveryFailureWarning` then name which messages failed and why. A complete active-GOAL owner report above ' +
+      DEFAULT_INBOX_BODY_CAP +
+      ' characters is refused before persistence (`goal-owner-report-over-cap`); generic over-cap bodies are delivered in full as ordered parts (`chunked[]`; only the final part, `askMsgId`, carries expects/wake/reply-threading). A generic body needing more than ' +
+      COORD_SEND_MAX_CHUNK_PARTS +
+      ' parts is refused. A directed action whose `body[].forYouBecause.ref` names an existing WI-/EI- item but does not assign it may include `dispatchAdvisory` naming the live assignment and `coord:dispatch` remedy; summary ids are not used as a fallback when structured rationale is present. `draftSuspension` appears when the sender\'s own tool activity shows a gap (default >10m) before the send — a wake-pump can interleave a turn between measuring a claim and sending it, so any measurement taken before `gapStartedAt` may have aged; it reports the measured gap only and never guesses which claim is stale.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Named work-item transfer: coord:dispatch with workItemIds:[…]; plan-lane transfer: coord:handoff.',
     seeAlso: [
       'EI-21927749510698309: relaying an owner or fleet-leader directive? Pass relayOf/relayQuote on THIS send, not after — a text claim ("owner said/directive/approved") with neither ships anyway but renders [UNVERIFIED authority claim] to every recipient; re-sending backed does not un-flag the first copy, so a fleet-wide broadcast lands twice.',
@@ -2486,12 +2928,15 @@ export default defineTool({
   argReencodings: [PREMISES_REF_OBJECT_REENCODING],
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_REPLY_ROLES],
+  // A researcher may deliver its result on the existing reply channel;
+  // broader coordination writers and placement keep their current role sets.
+  agentRoles: [...COORD_REPLY_ROLES, 'researcher'],
   // EI-20186059075216845: coord:send persists through the coordination/admin
   // seams and never reads ctx.tx. Do not hold an org-app transaction open while
   // roster, federation, and wake delivery work runs; under fleet concurrency
   // that pins every app-pool slot until the 45s acquisition deadline expires.
   skipWorkspaceTx: true,
+  abortCompletionReceipt: coordSendAbortCompletionReceipt,
   // EI-7838: this cross-field "need {to,summary} (or items)" check used to live in
   // a trailing `.refine()` on the object below. Zod only RUNS a `.refine()` /
   // `.superRefine()` after the base object schema parses EVERY field successfully —
@@ -2539,10 +2984,28 @@ export default defineTool({
       if ('harness_slug' in m) delete m.harness_slug;
     };
     applyHarnessSlugAlias(a);
+    // WI-10005668 (measured 2026-10-02, 24h of tool_invocations): a caller who passes
+    // `to` as a BARE recipient string — `to: "su-…"` — was refused 13x/6 owners and
+    // re-failed 11 of those 13 times. The cause was this file, not the caller:
+    // `toPresent` below is `Array.isArray(a.to) && …`, so a scalar string read as
+    // MISSING and the refusal said "needs `to`: at least one recipient id" to a
+    // caller who HAD supplied one — no retry could get closer to the contract from
+    // that message. A single recipient string is unambiguous (ids, `*`, `human` and
+    // @selectors are all strings), so normalize it to the one-element array the
+    // schema declares, here — before the strict object schema sees it — exactly as
+    // `harness_slug` is. The published JSON Schema is unchanged (preprocess is
+    // transparent to it): `to` still advertises an array. An EMPTY string is left
+    // alone so it keeps falling through to the specific refusal below.
+    const applyScalarToNormalization = (m: { to?: unknown } | null | undefined) => {
+      if (!m || typeof m !== 'object') return;
+      if (typeof m.to === 'string' && m.to.length > 0) m.to = [m.to];
+    };
+    applyScalarToNormalization(a);
     if (Array.isArray(a?.items)) {
       for (const it of a.items) {
         if (it && typeof it === 'object') {
           applyHarnessSlugAlias(it as { harness?: unknown; harness_slug?: unknown });
+          applyScalarToNormalization(it as { to?: unknown });
         }
       }
     }
@@ -2731,7 +3194,17 @@ export default defineTool({
     // shape as D-016's "a default is how a field dies" — a rule that can be satisfied by
     // not participating is not a gate. So a message that ASKS SOMETHING of its recipient
     // must carry a body; a genuine FYI (`expects: 'none'`) still may not.
-    const checkStructured = (m: { to?: unknown; expects?: unknown; body?: unknown }, path: (string | number)[]) => {
+    const checkStructured = (
+      m: { to?: unknown; expects?: unknown; body?: unknown; conditionKey?: unknown; resolvesCondition?: unknown },
+      path: (string | number)[],
+    ) => {
+      if (m.conditionKey !== undefined && m.resolvesCondition !== undefined) {
+        pctx.addIssue({
+          code: 'custom',
+          path: [...path, 'resolvesCondition'],
+          message: 'Set only one condition lifecycle field per message: `conditionKey` or `resolvesCondition`.',
+        });
+      }
       const expects = typeof m.expects === 'string' ? m.expects : undefined;
       // Scoped to the two expectations that ask the recipient to DO something with content.
       // 'none' is an FYI and 'ack' asks only for a receipt — for both, `summary` genuinely can
@@ -2813,6 +3286,8 @@ export default defineTool({
     summary: summaryArg.optional(),
     harness: messageHarnessArg,
     body: messageBodyArg,
+    conditionKey: conditionKeyArg,
+    resolvesCondition: resolvesConditionArg,
     // P-032 / D-064 envelope half — see itemSpec for why these two cannot be
     // per-section.
     blocking: blockingArg,
@@ -2844,7 +3319,7 @@ export default defineTool({
     hive: hiveArg,
     allHive: allHiveArg,
     asAuthority: asAuthorityArg,
-    report: reportArg,
+    report: reportArg(),
     expectEffect: expectEffectArg,
     items: z
       .array(itemSpec)
@@ -2852,8 +3327,11 @@ export default defineTool({
       .max(100)
       .optional()
       .describe(
-        'send many DISTINCT messages at once — each { to, summary, expects, harness?, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? }; a top-level `harness` is the default for items that omit it — `expects` is required on EVERY item',
+        'send many DISTINCT messages at once — each { to, summary, expects, harness?, body?, files?, plan_slug?, conditionKey?, resolvesCondition?, related_msg_id?, wake?, wakeOnReply?, endTurn? }; a top-level `harness` is the default for items that omit it — `expects` is required on EVERY item',
       ),
+  }).meta({
+    'x-papercusp-call-constraint':
+      'When `items` is omitted, top-level `to`, `summary`, and `expects` are required; when `items` is used, each item must include its own `to`, `summary`, and `expects`.',
   })),
   result: z
     .object({
@@ -2974,6 +3452,10 @@ export default defineTool({
       goalReportPreVerdict?: GoalOwnerReportVerdict;
     }> = [];
     for (const original of list) {
+      if (original.report && typeof original.report === 'object' && 'goalReport' in original.report) {
+        expanded.push({ msg: original });
+        continue;
+      }
       const plan = chunkOverCapMessage(original);
       if (plan.kind === 'single') expanded.push({ msg: original });
       else if (plan.kind === 'refused') {
@@ -3000,10 +3482,31 @@ export default defineTool({
       }
     }
 
+    const phaseTimers = new Map<number, CoordSendPhaseTimer>();
+    // Once one chunk of a logical message is durably appended, finish the
+    // remaining chunks even if the caller disconnects. Otherwise the shared
+    // request signal aborts every later sendOne at its pre-persist boundary and
+    // leaves a permanent prefix in the inbox. If the first part is explicitly
+    // aborted before persistence, suppress the rest too, so no tail can land by
+    // itself. A returned msg_id is the append receipt (even if a later wake step
+    // makes the per-part result unsuccessful).
+    const chunkCompletion = new Map<string, 'persisted' | 'aborted-before-persist'>();
     const env = await runBulk(
       expanded,
-      async ({ msg, refusal, goalReportPreVerdict }, itemIndex) => {
+      async ({ msg, refusal, goalReportPreVerdict, chunk }, itemIndex): Promise<BulkItemResult> => {
         if (refusal) return { ok: false, to: msg.to, ...refusal };
+        const phaseTimer: CoordSendPhaseTimer = { startedAt: performance.now() };
+        phaseTimers.set(itemIndex, phaseTimer);
+        const priorChunkState = chunk ? chunkCompletion.get(chunk.group) : undefined;
+        if (chunk && priorChunkState === 'aborted-before-persist') {
+          return {
+            ok: false,
+            to: msg.to,
+            error: 'request_aborted',
+            message: 'coord:send was aborted before its first chunk was persisted; no parts were appended.',
+            phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer),
+          };
+        }
         // Capture the ORIGINAL broadcast intent BEFORE scopeBroadcastAudience
         // rewrites `*` → @fleet:<slug>: only a broadcast is stamped (P-003).
         const wasBroadcast = msg.to.includes('*');
@@ -3063,8 +3566,10 @@ export default defineTool({
           msg.to,
           msg.hive,
         );
-        if ('error' in scoped) return scoped.error;
-        return sendOne(
+        if ('error' in scoped) {
+          return { ...scoped.error, phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer) };
+        }
+        const result = await sendOne(
           msg,
           identity,
           scoped.harnessSlug,
@@ -3074,12 +3579,41 @@ export default defineTool({
           idempotencyKey,
           itemIndex,
           goalReportPreVerdict,
+          phaseTimer,
+          chunk && priorChunkState === 'persisted' ? undefined : ctx.signal,
         );
+        if (chunk && priorChunkState !== 'persisted') {
+          if (typeof result.msg_id === 'string' && result.msg_id.length > 0) {
+            chunkCompletion.set(chunk.group, 'persisted');
+          } else if (result.error === 'request_aborted') {
+            chunkCompletion.set(chunk.group, 'aborted-before-persist');
+          }
+        }
+        return { ...result, phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer) };
       },
       {
-        keyOf: ({ msg }) => ({ to: msg.to }),
+        // runBulk owns the established thrown-error shape. Enrich its failure
+        // key at the catch boundary so a thrown send keeps phase diagnostics,
+        // including when persistence throws after an ambiguous durable effect.
+        keyOf: ({ msg }, itemIndex) => {
+          const phaseTimer = phaseTimers.get(itemIndex);
+          return {
+            to: msg.to,
+            ...(phaseTimer ? { phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer) } : {}),
+          };
+        },
       },
     );
+    // EI-25380637492003672: result replay expires and a caller can lose the
+    // response. Retain the same sanitized timings on the invocation ledger,
+    // including runBulk's ambiguous thrown-write rows. These are measurements,
+    // never evidence that a write landed; a broken observer must not fail a send.
+    try {
+      const diagnostics = coordSendPhaseTimingDiagnostics(env.results);
+      if (diagnostics) ctx.metadata?.(diagnostics);
+    } catch {
+      /* telemetry is independent of delivery */
+    }
     // RSR-P-008-B: stamp each delivered part with its place in the chunked message,
     // and summarise every chunked message on the envelope, so the sender can see
     // that one logical message became N rows (and which msg_id carries the ask).
@@ -3089,7 +3623,7 @@ export default defineTool({
       if (!chunk) return;
       (result as Record<string, unknown>).chunk = chunk;
       const entry = chunkedMessages.get(chunk.group) ?? { group: chunk.group, of: chunk.of, msgIds: [] };
-      entry.msgIds[chunk.part - 1] = typeof result.msg_id === 'string' ? result.msg_id : null;
+      entry.msgIds[chunk.part - 1] = 'msg_id' in result && typeof result.msg_id === 'string' ? result.msg_id : null;
       chunkedMessages.set(chunk.group, entry);
     });
     const chunked = chunkedMessages.size

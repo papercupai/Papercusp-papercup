@@ -11,12 +11,14 @@
  * loopback peer-uid gate now refuses such callers too; this is the second layer.
  */
 import { randomBytes } from 'node:crypto';
-import { startPiSession } from '@papercusp/agent-mcp/provisioning';
+import { getCatalog } from '@papercusp/agent-mcp';
+import { DEFAULT_PI_CAPABILITIES, startPiSession } from '@papercusp/agent-mcp/provisioning';
 import { papercuspRoot } from '../../../papercusp-root';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { operatorApiBase } from '../../../operator-api-base';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
+import '../../../agent-tools/index';
 
 export default defineTool({
   method: 'POST',
@@ -29,10 +31,19 @@ export default defineTool({
     };
     const sessionId = body.sessionId ?? randomBytes(8).toString('hex');
     const workspaceId = activeWorkspaceId();
+    // Preserve the existing default grant, then bind the bearer to the exact
+    // canonical names visible under those capabilities. The URL/client surface
+    // is not an authorization boundary by itself.
+    const capabilities = body.capabilities?.length ? body.capabilities : DEFAULT_PI_CAPABILITIES;
+    const granted = new Set(capabilities);
+    const allowedTools = getCatalog()
+      .filter((tool) => granted.has('*') || granted.has(tool.capability))
+      .map((tool) => tool.name);
     const result = await startPiSession({
       workspaceId,
       sessionId,
-      capabilities: body.capabilities ?? [],
+      capabilities,
+      allowedTools,
     });
 
     const mcpServer = {

@@ -38,6 +38,55 @@ describe('canonicalJson', () => {
   });
 });
 
+describe('verifyChain startAfter (segment verification)', () => {
+  // A batch appended after an already-delivered head verifies on its own, and still catches
+  // every break the full-chain verifier does at the segment boundary.
+  const full = build();
+  const head = full[1]!.link;
+  const segment = full.slice(2);
+
+  it('accepts a segment continuing after the given head', () => {
+    const verdict = verifyChain(STREAM, segment, { requireEntries: true, startAfter: head });
+    expect(verdict).toMatchObject({ ok: true, length: 2, head: full[3]!.link });
+  });
+
+  it('matches appendLinks continued from the same head', () => {
+    const continued = appendLinks(STREAM, head, ENTRIES.slice(2).map((e) => entryDigest(e)));
+    expect(continued).toEqual(segment.map((r) => r.link));
+  });
+
+  it('refuses the segment without startAfter (it is not rooted at genesis)', () => {
+    const verdict = verifyChain(STREAM, segment);
+    expect(verdict.ok === false && verdict.firstBreak.reason).toBe('seq-gap');
+  });
+
+  it('refuses a segment whose first link does not chain from the head', () => {
+    const forkHead = { seq: head.seq, entryHash: 'f'.repeat(64) };
+    const verdict = verifyChain(STREAM, segment, { startAfter: forkHead });
+    expect(verdict.ok === false && verdict.firstBreak.reason).toBe('prev-mismatch');
+  });
+
+  it('refuses a segment with a dropped first record (seq gap after the head)', () => {
+    const verdict = verifyChain(STREAM, segment.slice(1), { startAfter: head });
+    expect(verdict.ok === false && verdict.firstBreak.reason).toBe('seq-gap');
+  });
+
+  it('refuses a malformed startAfter instead of verifying against it', () => {
+    const verdict = verifyChain(STREAM, segment, { startAfter: { seq: -1, entryHash: 'x' } });
+    expect(verdict.ok === false && verdict.firstBreak.reason).toBe('malformed');
+  });
+
+  it('accepts an EMPTY segment whose expected head is the start head (nothing new to deliver)', () => {
+    const verdict = verifyChain(STREAM, [], { startAfter: head, expectedHead: head });
+    expect(verdict).toMatchObject({ ok: true, length: 0 });
+  });
+
+  it('refuses an empty segment claiming a head beyond its start (a dropped batch)', () => {
+    const verdict = verifyChain(STREAM, [], { startAfter: head, expectedHead: full[3]!.link });
+    expect(verdict.ok === false && verdict.firstBreak.reason).toBe('head-mismatch');
+  });
+});
+
 describe('verifyChain', () => {
   it('accepts an intact chain and reports its head', () => {
     const records = build();

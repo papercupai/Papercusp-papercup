@@ -41,7 +41,20 @@ export type AgentObligationFamily =
    * — so it is exactly the one a compaction drops without trace, leaving a
    * session parked on a key nobody will ever fire.
    */
-  | 'waiting-on';
+  | 'waiting-on'
+  /**
+   * P-005 / D-030 step 6: a fleet this session leads is under-staffed and nothing
+   * will restore it (the headcount governor does not hold it). Rendered on every
+   * wake so a leader loop cannot keep recording quiet wakes over an empty fleet;
+   * clears when the governor holds the fleet, it reaches target, or it winds down.
+   */
+  | 'fleet-staffing'
+  /**
+   * Goal-created work items left open and unassigned: past the stranded threshold,
+   * or stamped by a refused goal launch (goal-stranded-work.ts). Clears when every
+   * such item is claimed, dropped or finished.
+   */
+  | 'stranded-goal-work';
 export type AgentObligationStatus = 'due' | 'in-progress' | 'blocked' | 'satisfied' | 'not-applicable' | 'unknown';
 export type AgentObligationPriority = 'critical' | 'high' | 'normal' | 'low';
 export type AgentObligationFreshness = 'current' | 'stale' | 'unknown';

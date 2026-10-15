@@ -14,9 +14,9 @@
  *     (a) a real p2p/federation/rig item stays fenced, (b) an unrelated item whose
  *     title/path merely mentions the word does NOT get excluded.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { WorkItem } from '../work-items';
-import type { ClaimSpec, FilterNode } from './claim-spec';
+import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';
 import { positiveIdCohortIds, validateClaimSpec } from './claim-spec';
 import { claimSpecSubjectFromWorkItem, matchesClaimSpecFilter, matchesWorkItemClaimSpec, planSlugOfWorkItem } from './claim-spec-match';
 
@@ -49,6 +49,122 @@ function issueItem(overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'title'>
     ...overrides,
   } as WorkItem;
 }
+
+// EI-25503081061868211: compilation cost must depend on filter predicates,
+// rather than the size of the complete fleet-metric population.
+describe('text predicates over complete census cohorts', () => {
+  it('preserves whole-word and path admission beyond 2000 rows without recompiling per row', () => {
+    const filter: FilterNode = { all: [
+      { not: { field: 'title', op: 'word', value: 'p2p' } },
+      { field: 'paths', op: 'glob', value: 'packages/operator-core/**' },
+    ] };
+    const rows = Array.from({ length: 2101 }, (_, index) => issueItem({
+      id: `EI-census-${index}`,
+      title: ['ordinary queue repair', 'nonp2p-bug-drain repair', 'P2P_transport repair'][index % 3],
+      payload: { paths: ['unrelated/file.ts', 'packages/operator-core/lib/queue.ts'] },
+    }));
+    const NativeRegExp = globalThis.RegExp;
+    const constructors = vi.spyOn(globalThis, 'RegExp').mockImplementation(function (pattern, flags) {
+      return new NativeRegExp(pattern, flags);
+    });
+    try {
+      const admitted = rows.filter(row => matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(row), filter));
+      expect(admitted).toHaveLength(1401);
+      expect(admitted.some(row => row.id === 'EI-census-2100')).toBe(true);
+      expect(admitted.every(row => !row.title.startsWith('P2P_'))).toBe(true);
+      expect(constructors).toHaveBeenCalledTimes(2);
+    } finally {
+      constructors.mockRestore();
+    }
+  });
+
+  it('recompiles edited literals and operators, preserving scalar and array word boundaries', () => {
+    const leaf: FilterLeaf = { field: 'title', op: 'word', value: 'p2p' };
+    const subject = claimSpecSubjectFromWorkItem(issueItem({ id: 'EI-edit', title: 'nonp2p federation_soak' }));
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(false);
+    leaf.value = 'federation';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(true);
+    leaf.op = 'glob';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(false);
+    leaf.value = '*federation*';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(true);
+    leaf.op = 'word';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(false);
+    leaf.field = 'paths';
+    leaf.value = 'x+y';
+    subject.paths = ['notx+y', 'x+y_file'];
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(true);
+    subject.paths = ['notx+y', 'xxy_file'];
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(false);
+    leaf.value = 'xxy';
+    expect(matchesClaimSpecFilter(subject, leaf)).toBe(true);
+  });
+
+  it('scans a complete census once per field for a broad word fence', () => {
+    const filter: FilterNode = { not: { any: ['p2p', 'replication', 'federation', 'relay', 'x+y']
+      .map(value => ({ field: 'summary', op: 'word', value })) } };
+    const rows = Array.from({ length: 2101 }, (_, index) => issueItem({
+      id: `EI-word-group-${index}`, title: 'ordinary queue repair',
+      summary: index === 2100 ? 'replication_soak fails' : 'nonp2p repair with unrelated text',
+    }));
+    const scans = vi.spyOn(RegExp.prototype, 'test');
+    let admitted: WorkItem[];
+    let scanCount: number;
+    try {
+      admitted = rows.filter(row => matchesClaimSpecFilter(claimSpecSubjectFromWorkItem(row), filter));
+      scanCount = scans.mock.calls.length;
+    } finally {
+      scans.mockRestore();
+    }
+    expect(admitted!).toHaveLength(2100);
+    expect(admitted!.some(row => row.id === 'EI-word-group-2099')).toBe(true);
+    expect(scanCount!).toBe(2101);
+  });
+
+  it('preserves independent-leaf verdicts for grouped words, nulls, arrays and nested booleans', () => {
+    const words: FilterLeaf[] = ['p2p', 'federation', 'x+y', 'a', 'ab', '']
+      .map(value => ({ field: 'summary', op: 'word', value }));
+    const paths: FilterLeaf[] = ['replication', 'relay']
+      .map(value => ({ field: 'paths', op: 'word', value }));
+    const other: FilterNode = { all: [
+      { field: 'title', op: 'contains', value: 'queue' },
+      { not: { field: 'id', op: '=', value: 'EI-refused' } },
+    ] };
+    const children: FilterNode[] = [...words, other, ...paths];
+    const corpus = [null, '', 'NONP2P repair', 'P2P_transport', 'federation/repair',
+      'x+y_file', 'xxy_file', 'ab', 'a', 'no match', 'federationé'];
+    for (const summary of corpus) for (const array of [[], ['relay_file'], ['nonrelay'], ['replication/queue']]) {
+      const subject = claimSpecSubjectFromWorkItem(issueItem({ id: 'EI-refused', title: 'queue repair', summary: summary ?? undefined }));
+      subject.paths = array;
+      const independent = children.some(child => matchesClaimSpecFilter(subject, child));
+      expect(matchesClaimSpecFilter(subject, { any: children }), JSON.stringify({ summary, array })).toBe(independent);
+      expect(matchesClaimSpecFilter(subject, { not: { any: children } })).toBe(!independent);
+    }
+  });
+
+  it('invalidates word groups when literals, fields, operators or the alternatives change', () => {
+    const first: FilterLeaf = { field: 'summary', op: 'word', value: 'p2p' };
+    const second: FilterLeaf = { field: 'summary', op: 'word', value: 'relay' };
+    const filter: FilterNode = { any: [first, second] };
+    const subject = claimSpecSubjectFromWorkItem(issueItem({ id: 'EI-group-edit', title: 'federation', summary: 'nonp2p' }));
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(false);
+    first.value = 'nonp2p';
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(true);
+    first.value = 'federation';
+    first.field = 'title';
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(true);
+    first.op = 'glob';
+    first.value = '*p2p*';
+    first.field = 'summary';
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(true);
+    filter.any.splice(0, 1);
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(false);
+    filter.any.push({ field: 'summary', op: 'word', value: 'nonp2p' });
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(true);
+    filter.any[1] = { field: 'summary', op: 'word', value: 'replication' };
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(false);
+  });
+});
 
 /** The live backlog-drain-clean title-glob terms (rev11), verbatim. */
 const P2P_TITLE_GLOBS = ['*p2p*', '*P2P*', '*teering lease*', '*hared-hive*', '*federation*', '*Federation*', '*holepunch*'];
@@ -177,6 +293,7 @@ describe('WI-5272 hardened p2p/federation/rig fence — false-positive vs real-l
       planItem: [],
       fleet: null,
       triageGate: null,
+      itemClass: 'work' as const,
       age: 0,
       riskTier: null,
       redundancy: null,

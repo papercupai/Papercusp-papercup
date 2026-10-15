@@ -252,4 +252,77 @@ describe('TOOL_REJECTION_RATE_DAILY_SQL', () => {
     expect(TOOL_REJECTION_RATE_DAILY_SQL).toContain('workspace_id = $1');
     expect(TOOL_REJECTION_RATE_DAILY_SQL).toContain('GROUP BY tool_name');
   });
+
+  it('EI-24917731383616292: never drops dispatch-wrapper rows in WHERE — it counts them as wrapper_calls', () => {
+    // The wrapper mark is stamped inside the handler, so only calls that PASSED the
+    // schema boundary carry it. A row-level exclusion therefore removes successes from
+    // the denominator while every rejection stays in the numerator.
+    const where = TOOL_REJECTION_RATE_DAILY_SQL.slice(
+      TOOL_REJECTION_RATE_DAILY_SQL.indexOf('WHERE workspace_id'),
+      TOOL_REJECTION_RATE_DAILY_SQL.indexOf('GROUP BY'),
+    );
+    expect(where).toContain('workspace_id = $1');
+    expect(where).not.toContain('dispatchWrapper');
+    expect(TOOL_REJECTION_RATE_DAILY_SQL).toContain('AS wrapper_calls');
+    expect(TOOL_REJECTION_RATE_DAILY_SQL).toContain('dispatchWrapper');
+  });
+});
+
+/**
+ * EI-24917731383616292 — the measured shape that produced a false 78.8% filing: on
+ * 2026-09-26..10-03 the ledger held 203,163 marked `ok` tools:invoke rows and 335
+ * unmarked `invalid-input` rows. Daily figures below are that population scaled to days.
+ */
+describe('dispatch-wrapper rows (EI-24917731383616292)', () => {
+  const days = ['2026-09-30', '2026-10-01', '2026-10-02'];
+  const wrapperDays: ToolRejectionDayRow[] = days.map((d) => ({
+    ...day('tools:invoke', d, 30_100, 100),
+    wrapperCalls: 30_000,
+  }));
+
+  /**
+   * CONTROL — the pre-fix semantics: marked rows filtered out of the population before
+   * counting, so only the unmarked (failed) rows remain as `calls`.
+   */
+  function rollupWithWrapperRowsDropped(rows: readonly ToolRejectionDayRow[]) {
+    return rollupToolRejections(
+      rows.map((r) => ({ ...r, calls: r.calls - (r.wrapperCalls ?? 0), wrapperCalls: 0 })),
+    );
+  }
+
+  it('CONTROL: dropping marked rows reproduces the false breach', () => {
+    const roll = rollupWithWrapperRowsDropped(wrapperDays);
+    expect(roll.breaching.map((b) => b.toolName)).toEqual(['tools:invoke']);
+    expect(roll.breaching[0]!.schemaRejectPct).toBe(100);
+  });
+
+  it('rates a wrapper over its whole population, so a ~0.3% verb is not filed', () => {
+    const roll = rollupToolRejections(wrapperDays);
+    expect(roll.breaching).toEqual([]);
+  });
+
+  it('CALIBRATION: a wrapper that really rejects most calls still breaches', () => {
+    const bad = days.map((d) => ({ ...day('tools:invoke', d, 1_000, 800), wrapperCalls: 200 }));
+    const roll = rollupToolRejections(bad);
+    expect(roll.breaching.map((b) => b.toolName)).toEqual(['tools:invoke']);
+    expect(roll.breaching[0]!.schemaRejectPct).toBe(80);
+  });
+
+  it('keeps the fleet aggregate a de-duplicated census: marked rows leave totalCalls only', () => {
+    const roll = rollupToolRejections([
+      ...wrapperDays,
+      ...days.map((d) => day('coord:send', d, 30_000, 30)),
+    ]);
+    expect(roll.totalCalls).toBe(3 * 100 + 3 * 30_000);
+    expect(roll.totalRejects).toBe(3 * 100 + 3 * 30);
+  });
+
+  it('reads wrapper_calls from the daily SQL row', async () => {
+    const runQuery = (async () =>
+      days.map((d) => ({ tool_name: 'tools:invoke', day: d, calls: '30100', rejects: '100', wrapper_calls: '30000' }))
+    ) as Parameters<typeof readToolRejectionRate>[0];
+    const roll = await readToolRejectionRate(runQuery, { workspaceId: 'w' });
+    expect(roll.breaching).toEqual([]);
+    expect(roll.totalCalls).toBe(300);
+  });
 });

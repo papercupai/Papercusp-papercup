@@ -14,15 +14,18 @@
  *   - Uint8Array data is base64-enveloped, not numeric-keyed.
  *   - progressToken passes through.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   __buildMcpToolContext_forTests,
+  __withMcpSessionSurfaceRecheckForTests,
   type BuiltSpawnContext,
 } from '../routes/transport/_mcp-host';
 import { MCP_SERVER_CAPABILITIES } from '../routes/transport/mcp-contract';
+import { buildMcpSessionSurfaceTraceEvent } from '../../mcp-request-trace';
 import {
   getSessionSurface,
+  rememberSessionToolRegistryRevision,
   __resetSessionSurfaces,
 } from '../routes/transport/tool-allowlist';
 
@@ -221,6 +224,197 @@ describe('MCP emit → notifications', () => {
       progressToken: 'tok-progress-alias',
       event: 'progress',
       data: { progress: 75, total: 100, message: 'three-quarters' },
+    });
+  });
+});
+
+describe('MCP session tool-contract revision notifications', () => {
+  const knownGeneration = (revision: string) => ({
+    state: 'known' as const,
+    revision,
+    buildSha: 'build-sha',
+    appliedMigrationDigest: 'migration-sha',
+    toolRegistryRevision: 'tool-sha',
+  });
+
+  it('blocks missing and stale baselines before dispatch and waits for tools/list to advance them', async () => {
+    __resetSessionSurfaces();
+    const sessionId = 'mcp-contract-revision-session';
+    const { sent, sendNotification } = recordingSendNotification();
+    let generation = knownGeneration('generation-1');
+    let dispatchCount = 0;
+    const call = __withMcpSessionSurfaceRecheckForTests(
+      async () => { dispatchCount += 1; return { isError: false }; },
+      async () => generation,
+    );
+    const extra = { sessionId, sendNotification };
+
+    await expect(call({}, extra)).rejects.toThrow(/stale_tool_contract.*tools\/list/);
+    expect(dispatchCount).toBe(0);
+    expect(sent).toEqual([{ method: 'notifications/tools/list_changed', params: {} }]);
+
+    // This is the action the notified client performs: a real tools/list handler
+    // records the revision only after producing its response.
+    rememberSessionToolRegistryRevision(sessionId, 'generation-1');
+    expect(await call({}, extra)).toEqual({ isError: false });
+    expect(dispatchCount).toBe(1);
+    expect(sent).toHaveLength(1);
+
+    generation = knownGeneration('generation-2');
+    await expect(call({}, extra)).rejects.toThrow(/stale_tool_contract.*tools\/list/);
+    expect(dispatchCount).toBe(1);
+    expect(sent).toHaveLength(2);
+
+    // list_changed is not a baseline update. Only the subsequent real list can
+    // unblock calls for generation 2.
+    await expect(call({}, extra)).rejects.toThrow(/stale_tool_contract.*tools\/list/);
+    expect(dispatchCount).toBe(1);
+    expect(sent).toHaveLength(3);
+    rememberSessionToolRegistryRevision(sessionId, 'generation-2');
+    expect(await call({}, extra)).toEqual({ isError: false });
+    expect(dispatchCount).toBe(2);
+  });
+
+  it('traces the transport/native session split when a reconnect has no tools/list baseline', async () => {
+    __resetSessionSurfaces();
+    const nativeSessionId = 'native-codex-session-123';
+    const headers = (sessionId: string) => ({
+      'mcp-session-id': sessionId,
+      'x-papercusp-native-session': nativeSessionId,
+    });
+    const listedExtra = {
+      sessionId: 'mcp-transport-a',
+      requestInfo: { headers: headers('mcp-transport-a') },
+    };
+    rememberSessionToolRegistryRevision('mcp-transport-a', 'generation-1');
+    const listedEvent = buildMcpSessionSurfaceTraceEvent({
+      traceId: '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4',
+      toolName: 'tools/list',
+      stage: 'tools_list_completed',
+      elapsedMs: 1,
+      extra: listedExtra,
+      sessionKey: 'mcp-transport-a',
+      sessionBaseline: 'recorded',
+      servingGeneration: 'generation-1',
+      outcome: 'success',
+    });
+    const { sendNotification } = recordingSendNotification();
+    const rejectedExtra = {
+      sessionId: 'mcp-transport-b',
+      requestInfo: { headers: headers('mcp-transport-b') },
+      sendNotification,
+    };
+    let dispatchCount = 0;
+    const call = __withMcpSessionSurfaceRecheckForTests(
+      async () => { dispatchCount += 1; return { isError: false }; },
+      async () => knownGeneration('generation-1'),
+    );
+    const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    try {
+      await expect(call({ params: { name: 'coord:orient' } }, rejectedExtra))
+        .rejects.toThrow(/stale_tool_contract.*tools\/list/);
+      expect(dispatchCount).toBe(0);
+
+      const line = trace.mock.calls
+        .map(([value]) => String(value))
+        .find((value) => value.startsWith('[mcp-request-trace] ') && value.includes('stale_contract_rejected'));
+      expect(line).toBeDefined();
+      const event = JSON.parse(line!.slice('[mcp-request-trace] '.length));
+      expect(event).toMatchObject({
+        toolName: 'coord:orient',
+        stage: 'stale_contract_rejected',
+        phase: 'pre_dispatch',
+        outcome: 'rejected',
+        sessionBaseline: 'missing',
+        servingGeneration: 'generation-1',
+        nativeSessionCarrier: 'header',
+      });
+      expect(event.mcpSessionKeyFingerprint).not.toBe(listedEvent.mcpSessionKeyFingerprint);
+      expect(event.wireMcpSessionIdFingerprint).not.toBe(listedEvent.wireMcpSessionIdFingerprint);
+      expect(event.nativeSessionClaimFingerprint).toBe(listedEvent.nativeSessionClaimFingerprint);
+      expect(line).not.toContain(nativeSessionId);
+    } finally {
+      trace.mockRestore();
+    }
+  });
+
+  it('blocks unknown generations before dispatch', async () => {
+    __resetSessionSurfaces();
+    const { sent, sendNotification } = recordingSendNotification();
+    const sessionId = 'mcp-unknown-generation-session';
+    rememberSessionToolRegistryRevision(sessionId, 'generation-1');
+    let dispatchCount = 0;
+    const call = __withMcpSessionSurfaceRecheckForTests(
+      async () => { dispatchCount += 1; return { isError: false }; },
+      async () => ({ state: 'unknown', reason: 'applied-migrations-unknown' }),
+    );
+
+    await expect(call({}, { sessionId, sendNotification })).rejects.toThrow(/serving_generation_unknown/);
+    expect(dispatchCount).toBe(0);
+    expect(sent).toEqual([]);
+  });
+
+  // WI-10006051: the production HTTP transport (mcp-handler) is STATELESS — a
+  // fresh server per POST with no sessionIdGenerator — so `extra.sessionId` is
+  // always absent there. Refusing a keyless call took down every HTTP tools/call
+  // on :3170 and :3271, even straight after a successful tools/list.
+  describe('stateless transport (no session key)', () => {
+    it('dispatches an undeclared call without reading the generation or notifying', async () => {
+      __resetSessionSurfaces();
+      const { sent, sendNotification } = recordingSendNotification();
+      let dispatchCount = 0;
+      let generationReads = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => { generationReads += 1; return knownGeneration('generation-1'); },
+      );
+
+      // Exactly what mcp-handler hands the handler: no sessionId at all.
+      expect(await call({ params: { name: 'coord:whoami' } }, { sendNotification })).toEqual({ isError: false });
+      expect(await call({ params: { name: 'coord:whoami' } }, undefined)).toEqual({ isError: false });
+      expect(dispatchCount).toBe(2);
+      expect(generationReads).toBe(0);
+      expect(sent).toEqual([]);
+    });
+
+    it('admits a call whose declared generation matches the live one', async () => {
+      __resetSessionSurfaces();
+      let dispatchCount = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => knownGeneration('generation-1'),
+      );
+
+      const req = { params: { name: 'coord:whoami', _meta: { 'papercusp/servingGeneration': 'generation-1' } } };
+      expect(await call(req, {})).toEqual({ isError: false });
+      expect(dispatchCount).toBe(1);
+    });
+
+    it('refuses a call whose declared generation is stale, before dispatch', async () => {
+      __resetSessionSurfaces();
+      let dispatchCount = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => knownGeneration('generation-2'),
+      );
+
+      const req = { params: { name: 'coord:whoami', _meta: { 'papercusp/servingGeneration': 'generation-1' } } };
+      await expect(call(req, {})).rejects.toThrow(/stale_tool_contract.*declares serving generation generation-1.*generation-2/);
+      expect(dispatchCount).toBe(0);
+    });
+
+    it('refuses a declared call when the generation is unknown', async () => {
+      __resetSessionSurfaces();
+      let dispatchCount = 0;
+      const call = __withMcpSessionSurfaceRecheckForTests(
+        async () => { dispatchCount += 1; return { isError: false }; },
+        async () => ({ state: 'unknown', reason: 'applied-migrations-unknown' }),
+      );
+
+      const req = { params: { name: 'coord:whoami', _meta: { 'papercusp/servingGeneration': 'generation-1' } } };
+      await expect(call(req, {})).rejects.toThrow(/serving_generation_unknown/);
+      expect(dispatchCount).toBe(0);
     });
   });
 });

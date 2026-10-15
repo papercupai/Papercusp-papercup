@@ -96,17 +96,19 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
     const b = await body({ id: 'WI-1', body: 'hello' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', post: { id: 'post-1' } });
-    expect(cmtM).toHaveBeenCalledWith('WI-1', 'hello', 'me', { harness: undefined });
+    // P-012 / D-006: the commenter's identity rides as writerOwnerId so a restricted
+    // writer's comment is sealed.
+    expect(cmtM).toHaveBeenCalledWith('WI-1', 'hello', 'me', { harness: undefined, writerOwnerId: 'me' });
   });
 
   it('forwards a concrete request workspace while rejecting the unscoped wildcard', async () => {
     cmtM.mockResolvedValue({ id: 'post-1' } as never);
     await tool.handler({ id: 'WI-1', body: 'hello' } as never, { workspaceId: 'ws-scoped' } as never);
-    expect(cmtM).toHaveBeenCalledWith('WI-1', 'hello', 'me', { harness: undefined, workspaceId: 'ws-scoped' });
+    expect(cmtM).toHaveBeenCalledWith('WI-1', 'hello', 'me', { harness: undefined, workspaceId: 'ws-scoped', writerOwnerId: 'me' });
 
     cmtM.mockClear();
     await tool.handler({ id: 'WI-2', body: 'hello' } as never, { workspaceId: '*' } as never);
-    expect(cmtM).toHaveBeenCalledWith('WI-2', 'hello', 'me', { harness: undefined });
+    expect(cmtM).toHaveBeenCalledWith('WI-2', 'hello', 'me', { harness: undefined, writerOwnerId: 'me' });
   });
 
   it('items:[…] comments on many; a not-found item fails only itself', async () => {
@@ -135,8 +137,8 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
   it('per-item harness overrides the batch default', async () => {
     cmtM.mockResolvedValue({ id: 'p' } as never);
     await body({ harness: 'def', items: [{ id: 'WI-1', body: 'a' }, { id: 'WI-2', body: 'b', harness: 'web' }] });
-    expect(cmtM).toHaveBeenNthCalledWith(1, 'WI-1', 'a', 'me', { harness: 'def' });
-    expect(cmtM).toHaveBeenNthCalledWith(2, 'WI-2', 'b', 'me', { harness: 'web' });
+    expect(cmtM).toHaveBeenNthCalledWith(1, 'WI-1', 'a', 'me', { harness: 'def', writerOwnerId: 'me' });
+    expect(cmtM).toHaveBeenNthCalledWith(2, 'WI-2', 'b', 'me', { harness: 'web', writerOwnerId: 'me' });
   });
 
   describe('EI-8837: completion-shaped post on a still-open item gets a nudge hint', () => {

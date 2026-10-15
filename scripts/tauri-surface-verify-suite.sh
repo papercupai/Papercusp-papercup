@@ -56,6 +56,9 @@ LEGS=(
   "login:0:scripts/tauri-surface-verify-p007-login.sh"
   "settings:0:scripts/tauri-surface-verify-p007-settings.sh"
   "embed-device:1:scripts/tauri-surface-verify-embed-device.sh"
+  "goal-report:1:scripts/tauri-surface-verify-goal-report.mts"
+  "reports-library:1:scripts/tauri-surface-verify-reports.mts"
+  "reporter-status:1:scripts/tauri-surface-verify-reporter-status.mts"
   "signup:0:scripts/tauri-surface-verify-p007-signup.sh"
   # Added post-P-007-expansion (gui-e2e-tauri-surface-verification-2026-08-27
   # D-012): the P-007 spec-upgrade item grew to cover 14 surfaces total, but
@@ -75,7 +78,26 @@ LEGS=(
   "setup:0:scripts/tauri-surface-verify-p007-setup.sh"
   "support:0:scripts/tauri-surface-verify-p007-support.sh"
   "users:0:scripts/tauri-surface-verify-p007-users.sh"
+  # linear-asana-task-sync-2026-10-05 P-007: Settings → Integrations + /admin/admission
+  # Ticket sources. Isolated: it inserts a data source and writes its config.
+  "ticket-integrations:1:scripts/tauri-surface-verify-ticket-integrations.sh"
+  "dao-launch:1:scripts/tauri-surface-verify-dao-launch.sh"
+  "dao-workbench:1:scripts/tauri-surface-verify-dao-workbench.sh"
 )
+
+# Test seams (packages/operator-core/lib/system-health/gui-e2e-surface-scheduled-run.test.ts runs
+# this real script): a whitespace-separated leg list, and the verifier each leg boots through.
+if [ -n "${TAURI_SURFACE_VERIFY_SUITE_LEGS:-}" ]; then
+  read -r -a LEGS <<<"$TAURI_SURFACE_VERIFY_SUITE_LEGS"
+fi
+VERIFIER="${TAURI_SURFACE_VERIFY_SUITE_VERIFIER:-scripts/verify-tauri-headless.sh}"
+
+# Every leg ends with exactly one line the scheduled producer can parse
+# (/^P0\d\d_TAURI_SURFACE_VERIFY_(OK|FAIL)\s+leg=/). A leg prints its own; when the verifier dies
+# before the leg runs (e.g. refused for a missing PAPERCUSP_SID, WI-10006730), or the script is
+# missing, the runner prints P000 on its behalf. Before this, those failures printed nothing
+# parseable and the alarm could only say "unparsed output".
+VERDICT_RE='^P0[0-9][0-9]_TAURI_SURFACE_VERIFY_(OK|FAIL)[[:space:]]+leg='
 
 OK_LEGS=()
 FAILED_LEGS=()
@@ -84,26 +106,66 @@ for entry in "${LEGS[@]}"; do
   IFS=: read -r leg needs_isolated script <<<"$entry"
   echo "=== leg: $leg ($script) ==="
   if [ ! -f "$script" ]; then
-    echo "P0XX_TAURI_SURFACE_VERIFY_FAIL leg=$leg (script not found: $script)"
+    echo "P000_TAURI_SURFACE_VERIFY_FAIL leg=$leg reason=script-not-found script=$script"
     FAILED_LEGS+=("$leg")
     continue
   fi
   log_file="$OUT_DIR/$leg.log"
-  if [ "$leg" = "embed-device" ]; then
+  if [ "$leg" = "dao-workbench" ]; then
+    # The wrapper installs synthetic GitHub/keychain transports before the
+    # isolated sidecar starts, then invokes the same maintained verifier.
+    bash "$script" >"$log_file" 2>&1
+  elif [ "$leg" = "dao-launch" ]; then
+    bash "$script" --check-syntax >"$log_file" 2>&1 && \
+    npm run test:file -- packages/operator-core/lib/__tests__/tauri-dao-surface-syntax.test.ts >>"$log_file" 2>&1 && \
+    VERIFY_TAURI_ISOLATED_DB=1 \
+      VERIFY_TAURI_ISOLATED_SEED=ready \
+      VERIFY_TAURI_REQUIRE_BUILT='apps/operator/app/dao/DaoLaunchWorkspace.tsx apps/operator/app/dao/dao-launch.css' \
+      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='dao-workspace-container' \
+      "$VERIFIER" -- bash "$script" >>"$log_file" 2>&1
+  elif [ "$leg" = "reporter-status" ]; then
+    node --import tsx "$script" --check-imports >"$log_file" 2>&1 && \
+      VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready \
+      VERIFY_TAURI_REQUIRE_BUILT='apps/operator/app/_components/ReportProblemDialog.tsx apps/operator/app/adv/harnesses/DetailPanel.tsx' \
+      "$VERIFIER" -- node --import tsx "$script" >>"$log_file" 2>&1
+  elif [ "$leg" = "reports-library" ]; then
+    VERIFY_TAURI_ISOLATED_DB=1 \
+      VERIFY_TAURI_ISOLATED_SEED=ready \
+      VERIFY_TAURI_REQUIRE_BUILT='apps/operator-vite/src/components/reports/ReportsRoute.tsx apps/operator-vite/src/routes/reports.tsx' \
+      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='Reports native verification' \
+      "$VERIFIER" -- node --import tsx "$script" >"$log_file" 2>&1
+  elif [ "$leg" = "goal-report" ]; then
+    VERIFY_TAURI_ISOLATED_DB=1 \
+      VERIFY_TAURI_ISOLATED_SEED=ready \
+      VERIFY_TAURI_REQUIRE_BUILT='apps/operator/app/_components/chat/ReportBlockCard.tsx libs/generic/chat-cards/src/index.tsx apps/operator/app/globals.css' \
+      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='Historical snapshot' \
+      "$VERIFIER" -- node --import tsx "$script" >"$log_file" 2>&1
+  elif [ "$leg" = "embed-device" ]; then
     VERIFY_TAURI_ISOLATED_DB=1 \
       VERIFY_TAURI_ISOLATED_SEED=ready \
       VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='Embedding device' \
-      scripts/verify-tauri-headless.sh -- bash "$script" >"$log_file" 2>&1
+      "$VERIFIER" -- bash "$script" >"$log_file" 2>&1
   elif [ "$needs_isolated" = "1" ]; then
-    VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- bash "$script" >"$log_file" 2>&1
+    VERIFY_TAURI_ISOLATED_DB=1 "$VERIFIER" -- bash "$script" >"$log_file" 2>&1
   else
-    scripts/verify-tauri-headless.sh -- bash "$script" >"$log_file" 2>&1
+    "$VERIFIER" -- bash "$script" >"$log_file" 2>&1
   fi
   rc=$?
   tail -n 8 "$log_file"
-  if [ "$rc" -eq 0 ]; then
+  # The verifier prints teardown lines after the leg finishes, so the leg's own verdict can sit
+  # above the tail: re-emit it when the tail cut it off.
+  verdict_line="$(grep -E "$VERDICT_RE" "$log_file" | tail -n 1)"
+  if [ -n "$verdict_line" ] && ! tail -n 8 "$log_file" | grep -qxF -- "$verdict_line"; then
+    echo "$verdict_line"
+  fi
+  if [ "$rc" -eq 0 ] && [ -n "$verdict_line" ] && ! grep -q '_TAURI_SURFACE_VERIFY_FAIL' <<<"$verdict_line"; then
     OK_LEGS+=("$leg")
   else
+    if ! grep -q '_TAURI_SURFACE_VERIFY_FAIL' <<<"$verdict_line"; then
+      reason=no-leg-verdict
+      [ "$rc" -ne 0 ] && reason=verifier-exit
+      echo "P000_TAURI_SURFACE_VERIFY_FAIL leg=$leg reason=$reason rc=$rc log=$log_file"
+    fi
     FAILED_LEGS+=("$leg")
   fi
 done

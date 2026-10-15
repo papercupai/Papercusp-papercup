@@ -6,7 +6,7 @@
  *   - dataset     → ./dataset.ts        (gated HF load, row schema, stratified subset, BenchTask mapping)
  *   - agent       → ./agent.ts          (pure ReAct loop; FINAL-ANSWER discipline; turn/budget guards)
  *   - tools-live  → ./tools-live.ts     (Brave web_search / fetch_url / run_python / read_file)
- *   - agent-live  → ./agent-live.ts     (Anthropic SDK → inference gateway; opus-4.8 @ xhigh)
+ *   - agent-live  → ./agent-live.ts     (Anthropic SDK → inference gateway; registry-resolved model @ xhigh)
  *   - run         → ./run.ts            (orchestrate → self-grade → predictions JSONL + report)
  *
  * Operate it via ./cli.ts (provision / selfcheck / pilot / run).

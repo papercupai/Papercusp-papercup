@@ -4,7 +4,7 @@
  *   capture trigger → git_export_outbox → drainer → .papercusp/state/<…> file,
  * the echo-loop guard (remote-origin writes skipped), and DELETE → file removal.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -46,6 +46,13 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
         PRIMARY KEY (workspace_id, harness_slug, feature_id, chunk_id)
       )`);
     await attachGitCaptureTrigger(db.sql, 'harness_chunk_plans', ['feature_id', 'chunk_id']);
+    await db.sql.unsafe(`
+      CREATE TABLE harness_shared.harness_text_artifacts (
+        harness_slug TEXT, rel_path TEXT, workspace_id TEXT,
+        content TEXT, updated_at BIGINT,
+        PRIMARY KEY (harness_slug, rel_path)
+      )`);
+    await attachGitCaptureTrigger(db.sql, 'harness_text_artifacts', ['rel_path']);
   }, 90_000);
 
   afterAll(async () => {
@@ -132,6 +139,126 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
       id: 'D-rt', title: 'RT', content: 'body text\n\nx',
       workspace_id: WS, harness_slug: SLUG, origin: 'remote',
     });
+  });
+
+  it('EI-25858658863255291: stale artifact hydration preserves newer PG evidence and its pending export', async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), 'git-artifact-revision-'));
+    const key = 'audits/recovery.json';
+    await db.sql`
+      INSERT INTO harness_shared.harness_text_artifacts
+        (workspace_id, harness_slug, rel_path, content, updated_at)
+      VALUES (${WS}, ${SLUG}, ${key}, 'old evidence', 100)`;
+    await drainGitExportOnce({ sql: db.sql, workspaceId: WS, harnessSlug: SLUG, harnessRoot: artifactRoot });
+    const abs = join(artifactRoot, gitFilePath('harness_text_artifacts', key));
+    expect(parseFile('harness_text_artifacts', await readFile(abs, 'utf8'))).toMatchObject({
+      content: 'old evidence', updated_at: 100,
+    });
+
+    await db.sql`
+      UPDATE harness_shared.harness_text_artifacts
+         SET content = 'verified reply union', updated_at = 200
+       WHERE harness_slug = ${SLUG} AND rel_path = ${key}`;
+    const pending = await db.sql<{ content: string }[]>`
+      SELECT row->>'content' AS content FROM harness_shared.git_export_outbox
+       WHERE workspace_id = ${WS} AND harness_slug = ${SLUG}
+         AND table_name = 'harness_text_artifacts' AND key = ${key} AND exported_at IS NULL`;
+    expect(pending).toEqual([{ content: 'verified reply union' }]);
+
+    const hydrated = await hydrateGitTable({
+      sql: db.sql, harnessRoot: artifactRoot, table: 'harness_text_artifacts',
+      conflictCols: ['harness_slug', 'rel_path'], workspaceId: WS, harnessSlug: SLUG,
+    });
+    expect(hydrated).toBe(0);
+    const stored = await db.sql<{ content: string; updated_at: number }[]>`
+      SELECT content, updated_at FROM harness_shared.harness_text_artifacts
+       WHERE harness_slug = ${SLUG} AND rel_path = ${key}`;
+    expect(stored).toEqual([{ content: 'verified reply union', updated_at: 200 }]);
+
+    await drainGitExportOnce({ sql: db.sql, workspaceId: WS, harnessSlug: SLUG, harnessRoot: artifactRoot });
+    expect(parseFile('harness_text_artifacts', await readFile(abs, 'utf8'))).toMatchObject({
+      content: 'verified reply union', updated_at: 200,
+    });
+    expect(await db.sql`
+      SELECT 1 FROM harness_shared.git_export_outbox
+       WHERE workspace_id = ${WS} AND harness_slug = ${SLUG}
+         AND table_name = 'harness_text_artifacts' AND key = ${key} AND exported_at IS NULL`).toHaveLength(0);
+
+    // A later checkout of the old file remains stale even after export settles.
+    await writeFile(abs, serializeRow('harness_text_artifacts', {
+      rel_path: key, content: 'old evidence', updated_at: 100,
+    }), 'utf8');
+    expect(await hydrateGitTable({
+      sql: db.sql, harnessRoot: artifactRoot, table: 'harness_text_artifacts',
+      conflictCols: ['harness_slug', 'rel_path'], workspaceId: WS, harnessSlug: SLUG,
+    })).toBe(0);
+    expect(await db.sql`
+      SELECT content, updated_at FROM harness_shared.harness_text_artifacts
+       WHERE harness_slug = ${SLUG} AND rel_path = ${key}`).toEqual(stored);
+  });
+
+  it('artifact hydration still creates missing rows and applies newer or equal revisions', async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), 'git-artifact-import-'));
+    const key = 'audits/import.json';
+    const abs = join(artifactRoot, gitFilePath('harness_text_artifacts', key));
+    await mkdir(dirname(abs), { recursive: true });
+    for (const [content, updated_at] of [['first clone', 100], ['new revision', 200], ['same revision edit', 200]] as const) {
+      await writeFile(abs, serializeRow('harness_text_artifacts', { rel_path: key, content, updated_at }), 'utf8');
+      expect(await hydrateGitTable({
+        sql: db.sql, harnessRoot: artifactRoot, table: 'harness_text_artifacts',
+        conflictCols: ['harness_slug', 'rel_path'], workspaceId: WS, harnessSlug: SLUG,
+      })).toBe(1);
+      expect(await db.sql`
+        SELECT content, updated_at FROM harness_shared.harness_text_artifacts
+         WHERE harness_slug = ${SLUG} AND rel_path = ${key}`).toEqual([{ content, updated_at }]);
+    }
+  });
+
+  it('a skipped stale artifact remains a valid file when another hydrate file is malformed', async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), 'git-artifact-partial-'));
+    const partialSlug = 'partial-artifacts';
+    const key = 'audits/partial.json';
+    try {
+    await db.sql`
+      INSERT INTO harness_shared.harness_text_artifacts
+        (workspace_id, harness_slug, rel_path, content, updated_at)
+      VALUES (${WS}, ${partialSlug}, ${key}, 'new evidence', 200)`;
+    const good = join(artifactRoot, gitFilePath('harness_text_artifacts', key));
+    await mkdir(dirname(good), { recursive: true });
+    await writeFile(good, serializeRow('harness_text_artifacts', {
+      rel_path: key, content: 'old evidence', updated_at: 100,
+    }), 'utf8');
+    const malformed = serializeRow('harness_text_artifacts', {
+      rel_path: 'audits/bad.json', content: 'bad file', unexpected_column: true,
+    });
+    await writeFile(join(artifactRoot, gitFilePath('harness_text_artifacts', 'audits/bad.json')), malformed, 'utf8');
+    const opts = {
+      sql: db.sql, harnessRoot: artifactRoot, table: 'harness_text_artifacts',
+      conflictCols: ['harness_slug', 'rel_path'], workspaceId: WS, harnessSlug: partialSlug,
+    };
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(hydrateGitTable(opts)).resolves.toBe(0);
+      expect(warning).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('skipped 1 of 2 file(s), loaded 0'));
+    } finally {
+      warning.mockRestore();
+    }
+    expect(await db.sql`
+      SELECT content, updated_at FROM harness_shared.harness_text_artifacts
+       WHERE harness_slug = ${partialSlug} AND rel_path = ${key}`).toEqual([{ content: 'new evidence', updated_at: 200 }]);
+
+    const badRoot = await mkdtemp(join(tmpdir(), 'git-artifact-invalid-'));
+    const bad = join(badRoot, gitFilePath('harness_text_artifacts', 'audits/bad.json'));
+    await mkdir(dirname(bad), { recursive: true });
+    await writeFile(bad, malformed, 'utf8');
+    await expect(hydrateGitTable({ ...opts, harnessRoot: badRoot })).rejects.toThrow(/unknown column/);
+    } finally {
+      // This test intentionally leaves an export pending. Keep that fixture
+      // out of both subsequent export counts and the orphan-GC population.
+      await db.sql`
+        DELETE FROM harness_shared.git_export_outbox
+         WHERE workspace_id = ${WS} AND harness_slug = ${partialSlug}`;
+    }
   });
 
   // EI-19900345996596896: 17/17 hives failed `[git-export]` boot with

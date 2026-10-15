@@ -42,6 +42,7 @@ import {
   type SourceCoverageAssessment,
 } from '@papercusp/search';
 import { withChunkSearchColumns } from './chunks/registry';
+import { observeFallback as recordFallback } from '../degradation/fallback-observations';
 
 /** Shared query/alarm floors. Keep them on the read side so a cold query
  * does not initialize the background monitor and its backfill dependencies.
@@ -111,6 +112,8 @@ export const SEARCH_SOURCE_SURFACES: Readonly<Record<string, readonly string[]>>
   // (generic-rag-chunking P-005): a dedicated store names its source
   // (session_turn_chunks -> session_turn), a shared-store entry names its own.
   session_turn: ['harness_shared.session_turns.text_embedding'],
+  plan: ['harness_shared.harness_plans.embedding'],
+  doc: ['harness_shared.doc_sections.embedding'],
 });
 
 /**
@@ -195,7 +198,7 @@ export async function loadCoverageSnapshot(
   return gate().snapshot(samples, now);
 }
 
-let memo: { at: number; workspaceId: string; snapshot: CoverageSnapshot } | null = null;
+let memo: { at: number; workspaceId: string; snapshot: CoverageSnapshot; applied: boolean } | null = null;
 let lastWarnAt = 0;
 
 /** A persistent read failure must not spam a hot search path — one line per
@@ -242,20 +245,28 @@ export async function loadCoverageSnapshotCached(
   sql: CoverageSqlHandle,
   workspaceId: string,
   now: Date = new Date(),
+  observeFallback: typeof recordFallback = recordFallback,
 ): Promise<CoverageSnapshot> {
   if (memo && memo.workspaceId === workspaceId && now.getTime() - memo.at < COVERAGE_SNAPSHOT_TTL_MS) {
+    observeFallback('coverage-snapshot-read', { eligible: 1, applied: memo.applied ? 1 : 0,
+      reason: memo.applied ? 'applied' : 'snapshot-read-failed', scope: workspaceId });
     return memo.snapshot;
   }
-  if (!isQueryable(sql)) return new Map();
+  if (!isQueryable(sql)) {
+    observeFallback('coverage-snapshot-read', { eligible: 1, applied: 0, reason: 'sql-unavailable', scope: workspaceId });
+    return new Map();
+  }
   try {
     const snapshot = await loadCoverageSnapshot(sql, workspaceId, now);
-    memo = { at: now.getTime(), workspaceId, snapshot };
+    memo = { at: now.getTime(), workspaceId, snapshot, applied: true };
+    observeFallback('coverage-snapshot-read', { eligible: 1, applied: 1, reason: 'applied', scope: workspaceId });
     return snapshot;
   } catch (err) {
     // Memoise the EMPTY result too. Without this a persistent failure retries
     // (and logs) on EVERY query, turning a degraded signal into a log flood on
     // the hottest path in the tool.
-    memo = { at: now.getTime(), workspaceId, snapshot: new Map() };
+    memo = { at: now.getTime(), workspaceId, snapshot: new Map(), applied: false };
+    observeFallback('coverage-snapshot-read', { eligible: 1, applied: 0, reason: 'snapshot-read-failed', scope: workspaceId });
     if (!isExpectedReadFailure(err) && now.getTime() - lastWarnAt >= COVERAGE_WARN_THROTTLE_MS) {
       lastWarnAt = now.getTime();
       console.warn(

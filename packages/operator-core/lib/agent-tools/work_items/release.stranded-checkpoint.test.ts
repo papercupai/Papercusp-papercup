@@ -138,6 +138,14 @@ const wi = (over: Partial<WorkItem> & Pick<WorkItem, 'id'>): WorkItem => ({
 const BG_CHECKPOINT =
   'Fix implemented + committed. test:affected running in background (bash id bx76day3h) to confirm ' +
   'no other suite depended on the old behavior — will report+complete once it finishes.';
+/** An isolated session-local handle: this must trigger without relying on other keywords. */
+const SESSION_LOCAL_TASK_HANDLE_CHECKPOINT = 'read task id bf5ryqqze output when it lands. If green -> complete.';
+/** A server-side deferred writer is not a session-local process/job. */
+const SERVER_SIDE_DEFERRED_WRITER_CHECKPOINT =
+  'The applyResultDoorAsync deferred writer may continue in the background after the request times out.';
+/** A SQL column mention without a native task handle is ordinary source evidence. */
+const SQL_TASK_ID_COLUMN_CHECKPOINT =
+  'gcTerminalTasks deleted expired non-release ledger rows with RETURNING task_id only';
 /** The CONTROL: a real, substantial checkpoint that cites NO background job. */
 const PLAIN_CHECKPOINT =
   'Fix implemented + committed at 7a8371a1caf9. Ran npm run test:file -- swarm.test.ts: 61/61 green. ' +
@@ -173,6 +181,27 @@ describe('work_items:release — stranding warning (WI-38297)', () => {
     // It must tell the releaser what to actually DO, not merely that something is wrong.
     expect(w).toMatch(/work_items:complete/);
     expect(w).toMatch(/blocked/);
+  });
+
+  it('warns for an isolated session-local task handle', async () => {
+    getWorkItemCheckpoint.mockResolvedValue(SESSION_LOCAL_TASK_HANDLE_CHECKPOINT);
+    const b = await body({ id: 'WI-TASK-HANDLE' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-TASK-HANDLE', released: true });
+    expect(b.results[0].strandedCheckpointWarning).toMatch(/BACKGROUND JOB/);
+  });
+
+  it('stays silent for a server-side deferred writer that may continue in the background', async () => {
+    getWorkItemCheckpoint.mockResolvedValue(SERVER_SIDE_DEFERRED_WRITER_CHECKPOINT);
+    const b = await body({ id: 'WI-SERVER-WRITER' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-SERVER-WRITER', released: true });
+    expect(b.results[0].strandedCheckpointWarning).toBeUndefined();
+  });
+
+  it('stays silent when a checkpoint names an SQL task_id column without a handle', async () => {
+    getWorkItemCheckpoint.mockResolvedValue(SQL_TASK_ID_COLUMN_CHECKPOINT);
+    const b = await body({ id: 'WI-SQL-TASK-ID' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-SQL-TASK-ID', released: true });
+    expect(b.results[0].strandedCheckpointWarning).toBeUndefined();
   });
 
   it('reads the checkpoint under the item\'s own harness + the caller workspace', async () => {
@@ -272,6 +301,43 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
     expect(b.results[0].completionAssertionWarning).toMatch(/work_items:complete/);
   });
 
+  it('does not treat a completed bounded observation as completion of the referenced item', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'coord-send-63ac7f89f2c165b527963983fccddd74257a663d1f0627cc3bf10b3cbec7c657',
+        ts: '2026-10-03T13:31:00.549Z',
+        from: 'me',
+        summary:
+          'WI-10005168 observation is complete; please route the remaining root-cause work through an admitted lane.',
+        body:
+          'The missing-run blocker cleared; the delay and failure causes remain unknown. Please route any root-cause follow-up through an admitted lane.',
+        sections: [
+          {
+            text:
+              'The missing-run blocker cleared; the delay and failure causes remain unknown. Please route any root-cause follow-up through an admitted lane.',
+          },
+        ],
+      } as never,
+    ]);
+
+    const b = await body({ id: 'WI-10005168' });
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
+  it('still recognizes explicit item completion after a bounded activity in the same clause', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-item-complete-after-observation',
+        ts: '2026-10-03T13:32:00.000Z',
+        from: 'me',
+        summary: `${ITEM} observation is complete, and ${ITEM} is complete.`,
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toMatch(/msg-item-complete-after-observation/);
+  });
+
   it('recognizes an explicit structured completion premise for the item', async () => {
     outboxM.mockResolvedValue([
       {
@@ -301,6 +367,36 @@ describe('work_items:release — prior completion assertion warning (EI-20744001
 
     const b = await body({ id: canonical });
     expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
+  it('stays silent when a neighboring item completion shares the same clause', async () => {
+    const sibling = 'EI-24732811620490811';
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-neighboring-completion',
+        ts: '2026-08-23T00:30:10.000Z',
+        from: 'me',
+        summary: `${ITEM} remains unresolved and should stay open while the sibling item ${sibling} is done`,
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
+  it('still warns when this item is complete beside an unresolved sibling', async () => {
+    const sibling = 'EI-24732811620490811';
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-target-completion-neighbor',
+        ts: '2026-08-23T00:31:10.000Z',
+        from: 'me',
+        summary: `${ITEM} is done while the sibling item ${sibling} remains unresolved and should stay open`,
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toMatch(/msg-target-completion-neighbor/);
   });
 
   it('stays silent for negated or still-in-progress completion language', async () => {

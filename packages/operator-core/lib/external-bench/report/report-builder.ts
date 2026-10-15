@@ -15,12 +15,15 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { costAccuracyFrontier, summarizeAssignedOutcomes } from '@papercusp/bench-metrics';
+import { armContamination } from '../contamination';
 import {
   BENCH_REPORT_SCHEMA_VERSION,
   type BenchReportArmSummary,
   type BenchReportBundle,
   type BenchReportCall,
   type BenchReportCoordEvent,
+  type BenchReportCostComparison,
   type BenchReportRollout,
   type BenchReportSpawnNode,
 } from './report-schema';
@@ -56,6 +59,7 @@ interface RunResultLike {
   generationError?: string | null;
   stopReason?: string;
   costUsd: number;
+  armMeta?: Record<string, unknown> | null;
   tokensIn: number;
   tokensOut: number;
   tokensTotal: number;
@@ -69,12 +73,18 @@ function key(taskId: string, arm: string, seed: number): string {
   return `${arm}::${taskId}::${seed}`;
 }
 
-/** Is this a SCORED row (counted in resolved%/meanScore) vs an infra/transient exclusion? */
-function isScored(rr: RunResultLike): boolean {
-  const g = rr.generationStatus;
-  if (g === 'error' || g === 'timeout') return false;
-  if (rr.graderStatus === 'error' || rr.graderStatus === 'timeout') return false;
-  return rr.resolved !== null;
+/** Unknown telemetry retains its known subtotal, never a measured zero.
+ * Preserve the same explicit missing-measurement convention as bench-metrics. */
+function recordedCosts(rows: readonly RunResultLike[]) {
+  const subtotal = rows.reduce((sum, r) => sum + (Number.isFinite(r.costUsd) && r.costUsd >= 0 ? r.costUsd : 0), 0);
+  const costUsdMeasurementMissing = !rows.length || !Number.isFinite(subtotal) || rows.some(r =>
+    !Number.isFinite(r.costUsd) || r.costUsd < 0 ||
+    r.armMeta?.costUsdMeasurementMissing !== undefined && r.armMeta.costUsdMeasurementMissing !== false);
+  const bases = new Set(rows.map(r => (r.armMeta?.nativeCostAccounting as { basis?: unknown } | undefined)?.basis ===
+    'frozen-normalized-native-source' ? 'frozen-normalized-native-source' : 'recorded'));
+  return { costUsd: costUsdMeasurementMissing ? null : subtotal,
+    costKnownSubtotalUsd: Number.isFinite(subtotal) ? subtotal : null, costUsdMeasurementMissing,
+    costBasis: bases.size === 1 ? [...bases][0] : 'mixed' };
 }
 
 /**
@@ -93,13 +103,23 @@ export function bundleFromRollouts(input: {
   harnessGitSha?: string | null;
   envFingerprint?: Record<string, unknown> | null;
   runResults: RunResultLike[];
+  assignedTaskIds?: readonly string[];
+  assignedSeeds?: readonly number[];
   rollouts?: RolloutLike[];
   coordTrace?: BenchReportCoordEvent[];
   spawnTree?: BenchReportSpawnNode[];
   callLog?: BenchReportCall[];
   concurrencyTimeline?: Record<string, Array<{ tMs: number; live: number }>>;
   suiteData?: Record<string, unknown>;
+  /** taskId → task creation date (ISO). A task absent here is undated, so its arm cannot be labelled clean. */
+  taskCreatedAt?: Readonly<Record<string, string | null | undefined>>;
+  /** modelId → pinned training-data cutoff (`null` = explicitly unknown). Absent ids use MODEL_TRAINING_CUTOFFS. */
+  trainingCutoffs?: Readonly<Record<string, string | null>>;
 }): BenchReportBundle {
+  if (input.runResults.some(row => !input.arms.includes(row.arm))) {
+    throw new Error('benchmark report: result outside frozen arm assignment');
+  }
+  const assignedTaskIds = input.assignedTaskIds ?? [...new Set(input.runResults.map(row => row.taskId))];
   const rolloutByKey = new Map<string, RolloutLike>();
   for (const r of input.rollouts ?? []) rolloutByKey.set(key(r.taskId, r.arm, r.seed), r);
 
@@ -115,7 +135,8 @@ export function bundleFromRollouts(input: {
       graderStatus: rr.graderStatus,
       stopReason: rr.stopReason ?? rr.generationStatus ?? 'unknown',
       generationError: rr.generationError ?? null,
-      costUsd: rr.costUsd,
+      ...recordedCosts([rr]),
+      armMeta: rr.armMeta ?? null,
       tokensIn: rr.tokensIn,
       tokensOut: rr.tokensOut,
       tokensTotal: rr.tokensTotal,
@@ -139,27 +160,45 @@ export function bundleFromRollouts(input: {
   // per-arm rollups
   const arms: BenchReportArmSummary[] = input.arms.map((arm) => {
     const rows = input.runResults.filter((r) => r.arm === arm);
-    const scoredRows = rows.filter(isScored);
-    const resolved = scoredRows.filter((r) => r.resolved === true).length;
-    const scoresPresent = scoredRows.filter((r) => typeof r.score === 'number');
-    const meanScore = scoresPresent.length
-      ? scoresPresent.reduce((s, r) => s + (r.score as number), 0) / scoresPresent.length
-      : null;
+    const outcome = summarizeAssignedOutcomes(rows, { assignedTaskIds, assignedSeeds: input.assignedSeeds });
+    const costs = recordedCosts(rows);
     return {
       arm,
-      resolved,
-      scored: scoredRows.length,
-      meanScore,
-      infraExcluded: rows.length - scoredRows.length,
-      costUsd: rows.reduce((s, r) => s + (r.costUsd || 0), 0),
+      resolved: outcome.resolved,
+      scored: outcome.gradedAttempts,
+      meanScore: rows.some(row => row.score != null) ? outcome.conditionalMeanScore : null,
+      assignedTasks: outcome.assignedTasks,
+      assignedAttempts: outcome.assignedAttempts,
+      attempts: outcome.attempts,
+      absentAttempts: outcome.absentAttempts,
+      missingMeasurements: outcome.missingMeasurements,
+      outcomes: outcome.outcomes,
+      measurementComplete: outcome.measurementComplete,
+      primaryResolvedPct: outcome.primaryResolvedPct,
+      primaryMeanScore: outcome.primaryMeanScore,
+      conditionalResolvedPct: outcome.conditionalResolvedPct,
+      assignmentSource: input.assignedTaskIds && input.assignedSeeds ? 'frozen' : 'observed',
+      infraExcluded: rows.length - outcome.gradedAttempts,
+      ...costs,
+      costPerAssignedTaskUsd: input.assignedTaskIds && input.assignedSeeds &&
+        outcome.assignedTasks > 0 && outcome.absentAttempts === 0 && costs.costUsd !== null
+        ? costs.costUsd / outcome.assignedTasks : null,
       tokensTotal: rows.reduce((s, r) => s + (r.tokensTotal || 0), 0),
       concurrency: summarizeConcurrency(input.concurrencyTimeline?.[arm]),
+      contamination: armContamination({
+        modelId: input.models[arm] ?? 'unknown',
+        assignedTaskIds,
+        assignedSeeds: input.assignedSeeds,
+        rows,
+        taskCreatedAt: input.taskCreatedAt,
+        trainingCutoffOverride: pinnedCutoff(input.trainingCutoffs, input.models[arm]),
+      }),
     };
   });
 
   const totals = {
-    tasks: new Set(input.runResults.map((r) => r.taskId)).size,
-    costUsd: input.runResults.reduce((s, r) => s + (r.costUsd || 0), 0),
+    tasks: assignedTaskIds.length,
+    ...recordedCosts(input.runResults),
     tokensIn: input.runResults.reduce((s, r) => s + (r.tokensIn || 0), 0),
     tokensOut: input.runResults.reduce((s, r) => s + (r.tokensOut || 0), 0),
     wallMs: input.runResults.reduce((m, r) => Math.max(m, r.wallClockMs || 0), 0),
@@ -182,6 +221,7 @@ export function bundleFromRollouts(input: {
     },
     arms,
     rollouts,
+    costComparison: costComparison(input, arms, assignedTaskIds),
     coordTrace: input.coordTrace,
     spawnTree: input.spawnTree,
     callLog: input.callLog,
@@ -189,6 +229,61 @@ export function bundleFromRollouts(input: {
     suite: input.suite,
     suiteData: input.suiteData,
   };
+}
+
+/** Reuse the common Pareto core, with eligibility from the frozen assigned denominator.
+ * Never place a partial-cost subtotal or conditional graded quality on the efficiency frontier. */
+function costComparison(input: {
+  runResults: RunResultLike[]; assignedTaskIds?: readonly string[]; assignedSeeds?: readonly number[];
+}, arms: readonly BenchReportArmSummary[], assignedTaskIds: readonly string[]): BenchReportCostComparison {
+  const partialCredit = input.runResults.some(row => typeof row.score === 'number' && Number.isFinite(row.score));
+  const metric = partialCredit ? 'assigned-mean-score' : 'assigned-resolved-rate';
+  const bases = new Set(arms.filter(arm => arm.costPerAssignedTaskUsd != null).map(arm => arm.costBasis));
+  const points: BenchReportCostComparison['points'] = arms.map(arm => {
+    const value = (partialCredit ? arm.primaryMeanScore : arm.primaryResolvedPct) ?? null;
+    const excludedReasons: string[] = [];
+    if (arm.assignmentSource !== 'frozen') excludedReasons.push('unfrozen-assignment');
+    if (value === null || !arm.measurementComplete) excludedReasons.push('missing-grade');
+    if (arm.absentAttempts) excludedReasons.push('absent-attempts');
+    if (arm.costUsd === null) excludedReasons.push('incomplete-cost');
+    if (arm.costPerAssignedTaskUsd === null) excludedReasons.push('cost-per-task-unavailable');
+    if (arm.costBasis === 'mixed' || bases.size > 1) excludedReasons.push('incompatible-cost-bases');
+    return { arm: arm.arm, value, costPerTaskUsd: arm.costPerAssignedTaskUsd ?? null,
+      onFrontier: null, excludedReasons };
+  });
+  const eligible = points.filter(point => !point.excludedReasons.length)
+    .map(point => ({ arm: point.arm, accuracy: point.value!, cost: point.costPerTaskUsd! }));
+  const frontier = new Set(costAccuracyFrontier(eligible).map(point => point.arm));
+  for (const point of points) if (!point.excludedReasons.length) point.onFrontier = frontier.has(point.arm);
+
+  const taskWinners: BenchReportCostComparison['taskWinners'] = assignedTaskIds.map(taskId => {
+    const candidates = arms.map(arm => {
+      const rows = input.runResults.filter(row => row.arm === arm.arm && row.taskId === taskId);
+      const outcome = summarizeAssignedOutcomes(rows, { assignedTaskIds: [taskId], assignedSeeds: input.assignedSeeds });
+      const costs = recordedCosts(rows);
+      return { arm: arm.arm, value: (partialCredit ? outcome.primaryMeanScore : outcome.primaryResolvedPct),
+        complete: outcome.measurementComplete && arm.assignmentSource === 'frozen',
+        costUsd: outcome.absentAttempts ? null : costs.costUsd, costBasis: costs.costBasis,
+        tokensTotal: rows.reduce((sum, row) => sum + (row.tokensTotal || 0), 0) };
+    });
+    const incompleteArms = candidates.filter(candidate => !candidate.complete || candidate.value === null)
+      .map(candidate => candidate.arm);
+    const value = !incompleteArms.length && candidates.length ? Math.max(...candidates.map(candidate => candidate.value!)) : null;
+    // A zero-outcome tie has no successful winner. Retain all ties at a positive outcome, with their full task cost.
+    const winners = value !== null && value > 0 ? candidates.filter(candidate => candidate.value === value)
+      .map(({ arm, costUsd, costBasis, tokensTotal }) => ({ arm, costUsd, costBasis, tokensTotal })) : [];
+    return { taskId, value, incompleteArms, winners };
+  });
+  return { metric, points, taskWinners };
+}
+
+/** A caller-pinned cutoff for `modelId`: `undefined` when none was pinned (use the curated table). */
+function pinnedCutoff(
+  pins: Readonly<Record<string, string | null>> | undefined,
+  modelId: string | undefined,
+): string | null | undefined {
+  if (!pins || !modelId || !Object.prototype.hasOwnProperty.call(pins, modelId)) return undefined;
+  return pins[modelId];
 }
 
 function summarizeConcurrency(

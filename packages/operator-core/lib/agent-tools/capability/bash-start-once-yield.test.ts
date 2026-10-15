@@ -3,11 +3,17 @@
  * durable job, wait for fast completion, and yield that same job at the bounded
  * response window without killing or relaunching it.
  */
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unwrapToolResult } from '@papercusp/tooldef';
+import type { Sql } from 'postgres';
+import * as bashJobs from './bash-jobs';
+import * as enrollSync from '../../task-manager/enroll-sync';
+import * as taskStore from '../../task-manager/store';
+import * as taskProvenance from './bash-task-provenance';
+import { listTasks } from '../../task-manager/store';
 
 vi.mock('./exec-sandbox', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./exec-sandbox')>()),
@@ -35,7 +41,7 @@ const bash = bashTool as unknown as Tool;
 const bashOutput = bashOutputTool as unknown as Tool;
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-start-once-'));
 
-function makeCtx(options: { signal?: AbortSignal; codeMode?: boolean; emitted?: string[] } = {}) {
+function makeCtx(options: { signal?: AbortSignal; codeMode?: boolean; emitted?: string[]; dispatchCallId?: string } = {}) {
   return {
     projectDir: STATE,
     stateDir: STATE,
@@ -46,6 +52,7 @@ function makeCtx(options: { signal?: AbortSignal; codeMode?: boolean; emitted?: 
       if (event === 'output') options.emitted?.push(chunk);
     },
     role: 'operator',
+    ...(options.dispatchCallId ? { dispatchCallId: options.dispatchCallId } : {}),
     ...(options.codeMode ? { codeMode: true } : {}),
   } as never;
 }
@@ -71,6 +78,76 @@ afterEach(() => {
 });
 
 describe('capability:bash — start once and yield the same durable job (P-002)', () => {
+  it('carries the API parent through validated provenance into the real child enrollment', async () => {
+    const provenance = vi.spyOn(taskProvenance, 'resolveCapabilityBashTaskProvenance').mockResolvedValue({
+      launchedBy: 'owner', sessionId: 'owner', harnessSlug: 'papercusp', workItemId: 'WI-current',
+      planSlug: null, goalRef: 'WI-current', parentTaskId: 'parent123',
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    const live = vi.spyOn(taskStore, 'listLiveTasks').mockResolvedValue([]);
+    try {
+      const raw = await bash.handler({ command: 'printf CHILD-LINEAGE', timeout: 5_000,
+        parent_task_id: 'parent123', work_item_id: 'WI-current' }, makeCtx({ codeMode: true }));
+      const result = unwrapToolResult(raw as never);
+      expect(provenance.mock.calls[0]?.[3]).toMatchObject({ explicitParentTaskId: 'parent123' });
+      expect(complete.mock.calls[0]?.[1]).toMatchObject({ parentTaskId: 'parent123', workItemId: 'WI-current' });
+      expect(result).toMatchObject({ status: 'completed', output: 'CHILD-LINEAGE' });
+    } finally { provenance.mockRestore(); complete.mockRestore(); finish.mockRestore(); live.mockRestore(); }
+  });
+
+  it('dispatch correlation recovers a lost launch response without a second launch or enrollment', async () => {
+    const dispatchCallId = 'server-owned-dispatch';
+    const marker = join(STATE, `dispatch-correlation-${crypto.randomUUID()}.txt`);
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'correlated-shell-task', enrolled: true, confined: false,
+      unconfinedReason: 'no-scope-support', unitKind: 'scope', scopeUnit: null,
+      registrationReady: null, wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    const launch = vi.spyOn(bashJobs, 'startBackground');
+    const liveTasks = vi.spyOn(taskStore, 'listLiveTasks').mockResolvedValue([]);
+    try {
+      // Deliberately discard the entire launch response, including bash_id/task_id.
+      await bash.handler({
+        command: `printf 'once\\n' >> '${marker}'`, timeout: 5_000,
+        run_in_background: true, dispatchCallId: 'client-forged-dispatch',
+      }, makeCtx({ dispatchCallId, codeMode: true }));
+      const enrolled = complete.mock.calls[0]![1];
+      expect(enrolled.detail).toMatchObject({ dispatchCallId });
+      expect(enrolled.detail?.dispatchCallId).not.toBe('client-forged-dispatch');
+      const bashId = String(enrolled.detail?.bashJobId);
+      const original = getJob(bashId)!;
+      await readUntilTerminal(bashId);
+      const queries: string[] = [];
+      const params: unknown[] = [];
+      const sql = ((strings: TemplateStringsArray, ...args: unknown[]) => {
+        const text = Array.from(strings).join('?');
+        queries.push(text); params.push(...args);
+        return Promise.resolve(text.includes('SELECT') ? [{
+          task_id: 'correlated-shell-task', workspace_id: 'papercusp-workspace',
+          root_task_id: 'correlated-shell-task', class: enrolled.class, title: enrolled.title,
+          argv: enrolled.argv, launched_by: enrolled.launchedBy, state: 'exited',
+          detail: enrolled.detail,
+        }] : []);
+      }) as unknown as Sql;
+      const recovered = await listTasks({
+        workspaceId: 'papercusp-workspace', dispatchCallId, includeEnded: true, limit: 1,
+      }, sql);
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]).toMatchObject({ taskId: original.taskId, detail: { dispatchCallId, bashJobId: bashId } });
+      expect(params).toContain(dispatchCallId);
+      expect(queries.join('\n')).not.toMatch(/INSERT|UPDATE|DELETE/);
+      expect(launch).toHaveBeenCalledOnce();
+      expect(begin).toHaveBeenCalledOnce();
+      expect(complete).toHaveBeenCalledOnce();
+      expect(getJob(bashId)).toBe(original);
+      expect(readFileSync(marker, 'utf8')).toBe('once\n');
+    } finally { liveTasks.mockRestore(); launch.mockRestore(); begin.mockRestore(); complete.mockRestore(); finish.mockRestore(); }
+  });
+
   it('warns that an empty process table cannot prove a host process is gone', async () => {
     const result = await bash.handler(
       { command: 'ps -eo pid --no-headers', timeout: 5_000 },
@@ -206,16 +283,21 @@ describe('capability:bash — start once and yield the same durable job (P-002)'
 
   it('treats caller abort as cancellation of that same whole process tree', async () => {
     const orphanMarker = join(STATE, `abort-orphan-${crypto.randomUUID()}.txt`);
+    const releaseMarker = join(STATE, `abort-release-${crypto.randomUUID()}.txt`);
+    const emitted: string[] = [];
     const controller = new AbortController();
     const resultPromise = bash.handler(
       {
-        command: `(sleep 0.8; printf orphan > ${JSON.stringify(orphanMarker)}) & wait`,
+        command: `(printf 'CHILD-READY\\n'; while test ! -e ${JSON.stringify(releaseMarker)}; do sleep 0.02; done; printf orphan > ${JSON.stringify(orphanMarker)}) & wait`,
         timeout: 5_000,
-        yield_after_ms: 2_000,
+        yield_after_ms: 10_000,
       },
-      makeCtx({ signal: controller.signal, codeMode: true }),
+      makeCtx({ signal: controller.signal, codeMode: true, emitted }),
     );
-    setTimeout(() => controller.abort(), 100);
+    // Abort only after observing the child. A fixed 100ms timer can fire after
+    // its old 800ms payload already finished during synchronous job setup.
+    await vi.waitFor(() => expect(emitted.join('')).toContain('CHILD-READY'), { timeout: 5_000 });
+    controller.abort();
 
     const result = await resultPromise;
     const seen = unwrapToolResult(result as never) as Record<string, unknown>;
@@ -224,7 +306,9 @@ describe('capability:bash — start once and yield the same durable job (P-002)'
     expect(typeof seen.bash_id).toBe('string');
     expect(getJob(String(seen.bash_id))?.status).toBe('killed');
 
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // Release any survivor: a detached child would now write the orphan marker.
+    writeFileSync(releaseMarker, 'release');
+    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(existsSync(orphanMarker)).toBe(false);
   });
 });

@@ -32,6 +32,8 @@ import {
 import { createInMemoryReferenceStore } from './design-compare/reference-store';
 import type { ComparisonProvider } from './design-compare/provider';
 import { createDesignCompareVerbs } from './design-compare/verbs';
+import { lintIr } from './design-ir/lint';
+import type { UiIr } from './design-ir/schema';
 
 const require_ = createRequire(import.meta.url);
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -80,6 +82,44 @@ const POLICY: ThresholdPolicy = {
 };
 
 const ctx = { harnessSlug: HARNESS, workspaceId: 'ws', spawnId: 'spawn-bridge', role: 'reviewer' };
+
+describe('design-phase plugin state component references (EI-25261432783270107)', () => {
+  it('keeps the real tutorial state controls in the plugin lint coverage', async () => {
+    const ir = JSON.parse(readFileSync(resolve(REPO_ROOT,
+      'apps/operator/lib/onboarding/cloud-tutorial.ui.json'), 'utf8')) as UiIr;
+    const result = JSON.parse((await plugin.tools.lint_spec({ ir }, ctx)).content[0].text);
+    expect(result.issues.filter((issue: { ruleId: string }) => issue.ruleId === 'orphan-component-binding'))
+      .toEqual([]);
+    expect(result.errorCount).toBe(0);
+    expect(result.issues.map((issue: { ruleId: string }) => issue.ruleId)).toEqual([
+      'raw-escape-hatch', 'raw-escape-hatch',
+    ]);
+    expect(lintIr(ir).filter(issue => issue.ruleId === 'orphan-component-binding')).toEqual([]);
+  });
+
+  it('checks bindings under state children, slots, item and emptyState', async () => {
+    const ir = {
+      layout: { kind: 'stack' },
+      components: ['resume', 'replay', 'restart', 'locate'].map(id => ({ id, registry: 'action.secondary' })),
+      states: {
+        paused: { kind: 'stack', children: [{ kind: 'component', ref: 'resume' }] },
+        complete: { kind: 'stack', slots: { action: { kind: 'component', ref: 'replay' } } },
+        skipped: { kind: 'stack', item: { kind: 'component', ref: 'restart' } },
+        missing: { kind: 'stack', emptyState: { kind: 'component', ref: 'locate' } },
+      },
+    };
+    const lint = async (value: unknown) => {
+      const result = JSON.parse((await plugin.tools.lint_spec({ ir: value }, ctx)).content[0].text);
+      return result.issues.filter((issue: { ruleId: string }) => issue.ruleId === 'orphan-component-binding');
+    };
+    expect(await lint(ir)).toEqual([]);
+    expect(await lint({ ...ir, states: { ...ir.states,
+      unknown: { kind: 'stack', slots: { action: { kind: 'component', ref: 'missing-binding' } } },
+    } })).toEqual([expect.objectContaining({ severity: 'error',
+      message: expect.stringContaining('missing-binding') })]);
+    expect(await lint({ ...ir, states: {} })).toHaveLength(4);
+  });
+});
 
 function fakeProvider(pixelDifference: number): ComparisonProvider {
   return {

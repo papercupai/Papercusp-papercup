@@ -1223,9 +1223,13 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     const { createInferenceGateway } = await import('./inference-gateway/gateway');
     const { createFailoverPool } = await import('./inference-gateway/account-failover');
     const { resetGovernorRegistry } = await import('@papercusp/papercusp-shared/agent');
-    const { mintCarryRespawnArgs, codexThreadWriterLockPath, codexThreadWriterHolder } = await vi.importActual<{
+    const { mintCarryRespawnArgs, codexThreadWriterLockPath, codexThreadWriterHolder,
+      codexThreadWriterStatErrorCode } = await vi.importActual<{
       codexThreadWriterLockPath: (home: string, threadId: string) => string;
-      codexThreadWriterHolder: (home: string, threadId: string) => { held: boolean; pid: number | null; reason: string };
+      codexThreadWriterHolder: (home: string, threadId: string) => {
+        held: boolean; pid: number | null; reason: string; statErrorCodes?: string[];
+      };
+      codexThreadWriterStatErrorCode: (error: unknown) => string;
       mintCarryRespawnArgs: (args: string[], options: Record<string, unknown>) => {
       args: string[]; carryText: string; launchContextPath: string; codexAgentsPath: string; predecessorSessionId: string;
     } }>('../../../apps/operator/scripts/psu-launcher.mjs');
@@ -1308,20 +1312,41 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     const runtimeBoundaries: Array<{ threadId: string; turnId?: string; phase: string;
       runtime: Awaited<ReturnType<typeof captureCarryRuntimeSnapshot>> }> = [];
     const sourceGuards: Array<{ peer: SuStdioPeer; threadId: string; path: string; device: bigint; inode: bigint }> = [];
+    const sourceGuardObservations: Array<Record<string, unknown>> = [];
     let source: CarrySourceSnapshot | undefined;
     try {
       const assertSourceGuards = () => {
         for (const guard of sourceGuards) {
-          const file = (() => { try { return lstatSync(guard.path, { bigint: true }); } catch { return null; } })();
+          let fileStatErrorCode: string | null = null;
+          const file = (() => {
+            try { return lstatSync(guard.path, { bigint: true }); }
+            catch (error) {
+              fileStatErrorCode = codexThreadWriterStatErrorCode(error);
+              return null;
+            }
+          })();
           const holder = codexThreadWriterHolder(nativeHome, guard.threadId);
+          const peerState = guard.peer.receiptState?.();
+          const peerPid = guard.peer.pid();
           const missing = [
-            !file?.isFile() && 'lock-file-missing',
+            !file?.isFile() && (fileStatErrorCode && fileStatErrorCode !== 'ENOENT'
+              ? 'lock-file-stat-error-' + fileStatErrorCode : 'lock-file-missing'),
             file && (file.dev !== guard.device || file.ino !== guard.inode) && 'lock-inode-changed',
-            guard.peer.receiptState?.().exited !== false && 'guard-peer-exited',
+            peerState?.exited !== false && 'guard-peer-exited',
             !holder.held && `flock-${holder.reason}`,
-            holder.held && holder.pid !== guard.peer.pid() && 'flock-holder-mismatch',
+            holder.held && holder.pid !== peerPid && 'flock-holder-mismatch',
           ].filter(Boolean);
-          if (missing.length) throw new Error(`frozen source native writer guard lost (${missing.join(',')})`);
+          const observation = {
+            at: new Date().toISOString(), phase, threadId: guard.threadId, path: guard.path,
+            expectedDevice: guard.device.toString(), expectedInode: guard.inode.toString(),
+            fileIsFile: file?.isFile() ?? false, actualDevice: file?.dev.toString() ?? null,
+            actualInode: file?.ino.toString() ?? null, fileStatErrorCode,
+            peerPid, peerExited: peerState?.exited ?? null,
+            holderHeld: holder.held, holderPid: holder.pid, holderReason: holder.reason,
+            holderStatErrorCodes: holder.statErrorCodes ?? [],
+          };
+          sourceGuardObservations.push(observation);
+          if (missing.length) throw new Error(`frozen source native writer guard lost (${missing.join(',')}; probe=${JSON.stringify(observation)})`);
         }
       };
       const port = await gateway.listen(0);
@@ -1970,7 +1995,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           expect(incomplete.status).not.toBe('observations-linked');
           expect(incomplete.population!.unmatchedGatewayRequestIds.length).toBeGreaterThan(0);
         }
-        console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, taskId: task.id, sourceSha256: source.snapshot.sha256,
+      console.log('CARRY_UNPAID_PAIR_RECEIPT', JSON.stringify({ providerInference: false, taskId: task.id, sourceSha256: source.snapshot.sha256,
           armTimings, timingScope: 'local HTTP headers write to scripted task response; not remote receipt or natural-first-two acceptance',
           sourceReadCount: observedReads.length, sourceWindow, responseQuality: 'not-established',
           modelWitnesses, modelWitnessScope: 'native-client-request-and-persisted-context; no authenticated serving account',
@@ -1992,6 +2017,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             .map(path => path.slice(path.lastIndexOf('/') + 1))))].sort(),
           captureSha256: evidence.captureSha256, nativePeers: captures.length, nativeTurns: evidence.native.turns.length,
           canonicalRows: evidence.canonical!.rows.length, admission: evidence.admission, accountingComplete: false }));
+      if (resetHome && switchModel) console.info('SOURCE_GUARD_HOLDER_PROBE', JSON.stringify({ mode, armOrder, observations: sourceGuardObservations }));
       } finally { dbSpy.mockRestore(); workspaceSpy.mockRestore(); await org?.cleanup(); }
     } finally {
       for (const guard of sourceGuards) { await guard.peer.close(); await guard.peer.done; }
@@ -2432,12 +2458,62 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     expect(Array.isArray(servers.data)).toBe(true);
   }, 90_000);
 
-  it('OMP exposes its assigned session and tool catalog through RPC', async () => {
-    const p = await peer('omp', ['--mode', 'rpc', '--no-title', '--no-extensions', '--no-skills', '--no-lsp', '--no-session']);
-    let state: RpcFrame;
-    try { state = await p.request({ type: 'get_state' }); }
-    catch (error) { throw new Error(`${String(error)}; native startup diagnostic: ${processState.stderr}`); }
-    expect(state).toMatchObject({ sessionId: expect.any(String), model: { id: expect.any(String) }, dumpTools: expect.any(Array) });
-    await expect(p.request({ type: 'abort' })).resolves.toEqual({});
+});
+
+describe('OMP native protocol startup', () => {
+  it('exposes its assigned session and tool catalog through RPC without provider credentials', async () => {
+    // The peer helper sets PI_CODING_AGENT_DIR to the supplied home. Seed a
+    // loopback-only model there so the handshake never depends on ambient user
+    // configuration or credentials and cannot issue provider inference.
+    const home = mkdtempSync(join(tmpdir(), 'pui-omp-protocol-'));
+    homes.push(home);
+    const providerRequests: string[] = [];
+    const server = createServer((req, res) => {
+      providerRequests.push(`${req.method} ${req.url}`);
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end('Offline protocol fixture: provider requests are not allowed.');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing OMP fixture loopback listener');
+    writeFileSync(join(home, 'config.yml'), [
+      'modelRoles:',
+      '  default: pui-protocol-fixture/fixture-model',
+      '',
+    ].join('\n'));
+    writeFileSync(join(home, 'models.yml'), [
+      'providers:',
+      '  pui-protocol-fixture:',
+      `    baseUrl: "http://127.0.0.1:${address.port}"`,
+      '    apiKey: "offline-fixture"',
+      '    api: openai-responses',
+      '    auth: apiKey',
+      '    models:',
+      '      - id: fixture-model',
+      '        name: Offline protocol fixture',
+      '        api: openai-responses',
+      '        input: [text]',
+      '        contextWindow: 64000',
+      '        maxTokens: 1024',
+      '',
+    ].join('\n'));
+    let p: SuStdioPeer | undefined;
+    try {
+      p = await peer('omp', ['--mode', 'rpc', '--no-title', '--no-extensions', '--no-skills', '--no-lsp', '--no-session'],
+        { HOME: home, USERPROFILE: home }, undefined, undefined, undefined, home);
+      let state: RpcFrame;
+      try { state = await p.request({ type: 'get_state' }); }
+      catch (error) { throw new Error(`${String(error)}; native startup diagnostic: ${processState.stderr}`); }
+      expect(state).toMatchObject({ sessionId: expect.any(String), model: { id: expect.stringContaining('fixture-model') }, dumpTools: expect.any(Array) });
+      await expect(p.request({ type: 'abort' })).resolves.toEqual({});
+      expect(providerRequests).toEqual([]);
+    } finally {
+      try {
+        if (p) { await p.close(); peers.splice(peers.indexOf(p), 1); }
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      }
+    }
   }, 90_000);
 });

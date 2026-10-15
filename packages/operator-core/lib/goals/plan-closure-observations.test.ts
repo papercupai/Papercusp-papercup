@@ -52,6 +52,34 @@ describe('judgePlanClosureObservation', () => {
     expect(read.status === 'fresh' && read.gate).toEqual({ satisfied: true, code: null, skipped: 'already-shipped' });
   });
 
+  it('carries the rubric and grader the independent-verification obligation names (D-039)', () => {
+    const read = judgePlanClosureObservation('p', [row({
+      satisfied: true, code: null, message: null, rubric_id: 'acceptance-p', graded_by: 'su-grader',
+    })], NOW);
+    expect(read.status === 'fresh' && read.gate).toEqual({
+      satisfied: true, code: null, rubricId: 'acceptance-p', gradedBy: 'su-grader',
+    });
+  });
+
+  it.each(['fresh', 'stale', 'absent'] as const)(
+    'retains current lifecycle independently of a %s historical gate', (status) => {
+      const read = judgePlanClosureObservation('p', [row({
+        plan_status: 'superseded',
+        ...(status === 'stale' ? { fingerprint_matches: false } : {}),
+        ...(status === 'absent' ? { observed_at: null, satisfied: null } : {}),
+      })], NOW);
+      expect(read).toMatchObject({ status, planStatus: 'superseded' });
+    },
+  );
+
+  it('does not assign a lifecycle to an ambiguous cross-harness slug', () => {
+    const read = judgePlanClosureObservation('p', [
+      row({ matches: 2, plan_status: 'superseded' }), row({ matches: 2, plan_status: 'active' }),
+    ], NOW);
+    expect(read.status).toBe('ambiguous');
+    expect(read.planStatus).toBeUndefined();
+  });
+
   it('reads stale on a fingerprint change and names what changed', () => {
     const current = { ...FP, planVersion: '37', scorecardWatermark: '1790830000000000' };
     const read = judgePlanClosureObservation('p', [row({ fingerprint: current, fingerprint_matches: false })], NOW);
@@ -111,6 +139,22 @@ describe('isCanonicalClosureGateCall', () => {
 });
 
 describe('refreshPlanClosureObservations', () => {
+  it('refreshes equal slugs independently with their exact harness while de-duplicating each qualified ref', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls: Array<[string, string | undefined]> = [];
+    const evaluate = async (slug: string, harness?: string) => { calls.push([slug, harness]); await gate; };
+    const a = { planSlug: 'qualified-flight', harnessSlug: 'harness-a' };
+    const b = { planSlug: 'qualified-flight', harnessSlug: 'harness-b' };
+    expect(refreshPlanClosureObservations([a, b, a], evaluate))
+      .toEqual(['plan:harness-a/qualified-flight', 'plan:harness-b/qualified-flight']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([['qualified-flight', 'harness-a'], ['qualified-flight', 'harness-b']]);
+    expect(refreshPlanClosureObservations([a, b], evaluate)).toEqual([]);
+    release();
+    await gate;
+  });
+
   it('runs at most one evaluation per plan at a time', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

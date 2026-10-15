@@ -122,12 +122,47 @@ export const firstAssignmentLine = (lines: string[], name: string): number => {
   return Number.POSITIVE_INFINITY;
 };
 
+/**
+ * Names expanded before a simple, unconditional assignment in the trap body.
+ * Only a leading sequence of assignment commands is treated as definite; the
+ * scanner deliberately does not infer initialization from conditional branches.
+ */
+const unassignedTrapNames = (body: string): string[] => {
+  const assigned = new Set<string>();
+  const unassigned = new Set<string>();
+  let assignmentPrefix = true;
+
+  for (const command of body.split(/[;\n]/)) {
+    if (command.trim() === '') continue;
+    const assignment = assignmentPrefix
+      ? command.match(
+          /^\s*(?:(?:export\s+|local\s+|declare\s+(?:-[a-zA-Z]+\s+)?|readonly\s+))?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/,
+        )
+      : null;
+
+    if (assignment) {
+      for (const name of unguardedNames(assignment[2])) {
+        if (!assigned.has(name)) unassigned.add(name);
+      }
+      assigned.add(assignment[1]);
+      continue;
+    }
+
+    assignmentPrefix = false;
+    for (const name of unguardedNames(command)) {
+      if (!assigned.has(name)) unassigned.add(name);
+    }
+  }
+
+  return [...unassigned];
+};
+
 export const hazardsIn = (src: string, file = '<memory>'): string[] => {
   if (!ENABLES_NOUNSET.test(src)) return [];
   const lines = src.split('\n');
   const found: string[] = [];
   for (const site of trapSites(src)) {
-    for (const name of unguardedNames(site.body)) {
+    for (const name of unassignedTrapNames(site.body)) {
       const assigned = firstAssignmentLine(lines, name);
       if (assigned <= site.line) continue;
       if (`${file}:${site.line}:${name}` in ALLOW) continue;
@@ -192,6 +227,22 @@ describe('trap bodies cannot abort on an unbound variable', () => {
     // blunt "always guard" rule reports all three; each is correct code.
     expect(hazardsIn(REAL_BUG).join('\n')).not.toContain('_c_lockdir');
     expect(hazardsIn(['set -eu', 'PROBE_PID=$!', `trap 'kill "$PROBE_PID"' EXIT`].join('\n'))).toEqual([]);
+  });
+
+  it('recognizes an unconditional assignment before use in the trap body', () => {
+    const src = [
+      'set -u',
+      "trap 'status=$?; if [ \"$status\" -ne 0 ]; then :; fi' EXIT",
+    ].join('\n');
+    expect(hazardsIn(src)).toEqual([]);
+  });
+
+  it('still flags a trap-body variable used before a later assignment', () => {
+    const src = [
+      'set -u',
+      "trap 'if [ \"$status\" -ne 0 ]; then :; fi; status=$?' EXIT",
+    ].join('\n');
+    expect(hazardsIn(src)).toHaveLength(1);
   });
 
   it('ignores a script that does not enable nounset', () => {

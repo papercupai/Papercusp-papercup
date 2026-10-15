@@ -38,6 +38,7 @@ import { SnapshotFoldWorker } from './snapshot-fold-offload';
 import { encodeStoredBlock } from './snapshot-fold-protocol';
 import { openOwnLog, type OwnLog, type PeerLogOp } from './peer-log';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
+import { shouldDropGovernorReceiptSnapshotRow, type GovernorReceiptSnapshotFilter } from './governor-receipt-snapshot-filter';
 
 const NOW = 50_000_000_000;
 const SV = CURRENT_SCHEMA_VERSION;
@@ -154,6 +155,66 @@ function rowFoldBlocks(
     excludeTables: opts.excludeTables ?? [],
   }).map((op) => new TextDecoder().decode(encodeStoredBlock(op)));
 }
+
+describe('legacy engineer-issue receipt filtering across both folds', () => {
+  it('filters raw and prior-snapshot aliases identically and retains authenticated headers', () => {
+    const filter: GovernorReceiptSnapshotFilter = {
+      maxSourceIndexExclusive: 2,
+      liveQualifiedKeys: ['papercusp/WI-COLLISION', 'papercusp/WI-LIVE'],
+    };
+    const transformValue: SnapshotValueTransform = (value, context) =>
+      shouldDropGovernorReceiptSnapshotRow(value, context, filter) ? DROP_SNAPSHOT_ROW : value;
+    const receipt = (issueId: string, scope: string, storageHarnessSlug?: string) => ({
+      issue_id: issueId,
+      scope,
+      ...(storageHarnessSlug ? { storage_harness_slug: storageHarnessSlug } : {}),
+      payload: { resource_governor: { schemaVersion: 1, state: 'completed' } },
+    });
+    const priorRows = [
+      {
+        table: 'engineer-issues', hbKey: 'WI-COLLISION',
+        value: receipt('WI-COLLISION', 'harness:papercup'),
+        ts: NOW - 3, schema_version: SV, epoch: 21, author_pubkey: 'retired-author',
+      },
+      {
+        table: 'engineer-issues', hbKey: 'papercusp/WI-COLLISION',
+        value: receipt('WI-COLLISION', 'harness:papercusp', 'papercusp'),
+        ts: NOW - 2, schema_version: SV, epoch: 22, author_pubkey: 'qualified-author',
+      },
+      {
+        table: 'engineer-issues', hbKey: 'WI-LIVE',
+        value: receipt('WI-LIVE', 'harness:papercusp', 'papercusp'),
+        ts: NOW - 1, schema_version: SV, epoch: 23, author_pubkey: 'bare-author',
+      },
+    ];
+    const ops: PeerLogOp[] = [
+      {
+        type: 'put', table: 'engineer-issues', hbKey: 'WI-RAW',
+        value: receipt('WI-RAW', 'harness:papercup'),
+        ts: NOW - 4, schema_version: SV, epoch: 20, author_pubkey: 'raw-author',
+      },
+      {
+        type: 'put', table: '__snapshot__', hbKey: 'snapshot/0',
+        value: { coversUpTo: 1, chunkIndex: 0, chunkCount: 1, rows: priorRows },
+        ts: NOW, schema_version: SV, author_pubkey: 'snapshot-author',
+      },
+    ];
+    const opts = { transformValue };
+    const rowFold = rowFoldBlocks(ops, opts);
+    expect(indexFoldBlocks(ops, opts)).toEqual(rowFold);
+    const rows = rowFold.flatMap((block) => {
+      const op = JSON.parse(block) as PeerLogOp;
+      return (op.value as { rows: Array<{ hbKey: string; value: unknown; epoch?: number; author_pubkey?: string }> }).rows;
+    });
+    expect(rows.map((row) => row.hbKey).sort()).toEqual(['WI-LIVE', 'papercusp/WI-COLLISION'].sort());
+    expect(rows.find((row) => row.hbKey === 'WI-LIVE')).toMatchObject({
+      epoch: 23, author_pubkey: 'bare-author', value: receipt('WI-LIVE', 'harness:papercusp', 'papercusp'),
+    });
+    expect(rows.find((row) => row.hbKey === 'papercusp/WI-COLLISION')).toMatchObject({
+      epoch: 22, author_pubkey: 'qualified-author',
+    });
+  });
+});
 
 describe('R-1 bounded: the scan retains winning positions only', () => {
   it('scan state is identical whether values are 1 byte or 64 KiB (retention independent of value size)', () => {

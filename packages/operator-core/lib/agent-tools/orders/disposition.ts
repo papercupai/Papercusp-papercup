@@ -11,6 +11,7 @@ import { COORD_REPLY_ROLES } from '../coordination/roles';
 import { dispositionOwnerDirective, type OwnerDirectiveDisposition } from '../../owner-directives';
 import { directiveActionVerdict } from '../../owner-directive-agenda';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { URL_ONLY_DISPOSITION_ERROR, URL_ONLY_DISPOSITION_HINT } from '../../spec-conformance/disposition-evidence';
 
 const entry = z.object({
   id: z.number().int().positive().describe('The directive id (from orders:record / orders:list).'),
@@ -109,7 +110,10 @@ export default defineTool({
       results.push(
         r.ok
           ? { ok: true, id: e.id, status: e.status }
-          : { ok: false, id: e.id, error: 'error' in r ? r.error : 'write_failed' },
+          : {
+              ok: false, id: e.id, error: 'error' in r ? r.error : 'write_failed',
+              ...('error' in r && r.error === URL_ONLY_DISPOSITION_ERROR ? { hint: URL_ONLY_DISPOSITION_HINT } : {}),
+            },
       );
     }
     const failed = results.filter((r) => !r.ok).length;

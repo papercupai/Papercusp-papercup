@@ -23,6 +23,8 @@ surface that matches the thing being protected:
 | `locks:release_resource` | Release a named-resource lock by `lock_id`, resource name, or a selected batch. |
 | `locks:heartbeat_resource` | Extend a long-held named-resource lease before its TTL expires. |
 
+Path-only release accepts repo-relative paths, canonical external lock keys, or absolute ordinary files below HOME/XDG_RUNTIME_DIR (normalized to the canonical key). Use lock_id for an absolute file inside a managed repository.
+
 ### Lease and wait bounds
 
 - All lock leases default to `ttl_sec=1200` (20 minutes) and cap at

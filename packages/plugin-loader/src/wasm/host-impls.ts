@@ -165,7 +165,8 @@ export function makeHttpHost(ctx: WasmHostCtx) {
         const resp = await globalThis.fetch(req.url, {
           method: req.method.toUpperCase(),
           headers: Object.fromEntries(req.headers),
-          body: req.body && req.body.length > 0 ? req.body : undefined,
+          // A copy is a Uint8Array<ArrayBuffer>, which BodyInit accepts; the WIT view may be shared-backed.
+          body: req.body && req.body.length > 0 ? new Uint8Array(req.body) : undefined,
         });
         const respBody = new Uint8Array(await resp.arrayBuffer());
         const respHeaders: [string, string][] = [];

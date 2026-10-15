@@ -62,6 +62,17 @@ describe('decideWorkItemAdmissionProducerPressure', () => {
       maxIdeators: 1,
     });
   });
+
+  it('uses current capacity instead of terminal backlog and old claim history, while retaining current slow-claim pressure', () => {
+    const historical = queueHealth(467, 7500, 10 * 24 * 60 * 60_000);
+    const current = { pending: 0, latencyWindowMs: 90 * 60_000, promotedToFirstClaim: queueHealth(0).promotedToFirstClaim };
+    expect(decideWorkItemAdmissionProducerPressure({ ...historical, producerPressure: current })).toMatchObject({
+      level: 'normal', pending: 0, latencySampleSize: 0, p95Ms: null, maxIdeators: null,
+    });
+    expect(decideWorkItemAdmissionProducerPressure({
+      ...historical, producerPressure: { ...current, promotedToFirstClaim: queueHealth(0, 1, 180 * 60_000 + 1).promotedToFirstClaim },
+    })).toMatchObject({ level: 'deep', maxIdeators: 1 });
+  });
 });
 
 describe('admission review metadata', () => {

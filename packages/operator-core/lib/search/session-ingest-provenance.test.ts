@@ -17,7 +17,14 @@ import {
   correlatePromptOriginStamps,
   promptOriginHash,
   PROMPT_ORIGIN_MATCH_WINDOW_MS,
+  parseClaudeLine,
+  parseCodexLine,
+  parseOmpLine,
+  cleanTurnText,
+  SESSION_TURN_TEXT_CAP,
+  PROVENANCE_PASTE_TAIL_CHARS,
 } from './session-ingest';
+import { closeTruncatedWholePaste } from '../turn-provenance/envelope-grammar';
 import { MACHINE_SURFACE_CATALOGUE_VERSION } from '../turn-provenance/machine-surface-catalogue';
 import { classifyRecordedTurn, OWNER_CANDIDATE_TURN_VERDICTS } from '../turn-provenance/turn-ref';
 
@@ -250,6 +257,55 @@ describe('stampTurnProvenance', () => {
 });
 
 describe('hook-authenticated prompt-origin correlation', () => {
+  it('EI-25237423028877031: an exact hook receipt cannot promote a damaged event wake', () => {
+    const text = '0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue the work';
+    const candidate = row({ source_kind: 'codex', text, ts: '2026-10-06T04:29:27.803Z', prompt_hash: promptOriginHash(text) });
+    stampTurnProvenance(candidate);
+    expect(candidate.turn_origin_verdict).toBe('machine-surface');
+    expect(correlatePromptOriginStamps([candidate], [{ source_kind: 'codex', session_id: candidate.session_id,
+      prompt_hash: candidate.prompt_hash!, submitted_at: candidate.ts!, expires_at: '2026-10-06T04:39:27.803Z' }])).toBe(0);
+    expect(candidate.turn_origin_verdict).toBe('machine-surface');
+  });
+
+  it.each(['claude', 'codex', 'codex-history', 'omp'])(
+    'carries the original %s user prompt hash through parser truncation into correlation', (kind) => {
+      const submittedAt = '2026-09-01T10:00:00.000Z';
+      const text = '  approve this exact bounded repair\r\n' + 'original prompt bytes '.repeat(500);
+      const parse = kind === 'claude' ? parseClaudeLine : kind === 'omp' ? parseOmpLine : parseCodexLine;
+      const line = kind === 'codex-history'
+        ? { session_id: 's-1', ts: Date.parse(submittedAt) / 1000, text }
+        : kind === 'codex'
+          ? { timestamp: submittedAt, type: 'response_item', payload: {
+              type: 'message', role: 'user', content: [{ type: 'input_text', text }],
+            } }
+          : { timestamp: submittedAt, type: kind === 'omp' ? 'message' : 'user',
+              message: { role: 'user', content: [{ type: 'text', text }] } };
+      const parsed = parse(JSON.stringify(line))!;
+      expect(parsed.text.length).toBeLessThan(text.trim().length);
+      expect(parsed.promptHash).toBe(promptOriginHash(text));
+      expect(parsed.promptHash).not.toBe(promptOriginHash(parsed.text));
+      const source_kind = kind === 'codex-history' ? 'codex' : kind;
+      const candidate = row({ source_kind, ts: parsed.ts!.toISOString(),
+        text: parsed.text, prompt_hash: parsed.promptHash });
+      stampTurnProvenance(candidate);
+      expect(candidate.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+      expect(correlatePromptOriginStamps([candidate], [{ source_kind, session_id: 's-1',
+        prompt_hash: promptOriginHash(text), submitted_at: submittedAt }])).toBe(1);
+      expect(candidate.turn_origin_verdict).toBe('owner-typed');
+    },
+  );
+
+  it.each(['claude', 'codex', 'omp'])('does not give an assistant %s response a prompt hash', (kind) => {
+    const text = 'The measured result is ready.';
+    const line = kind === 'codex'
+      ? { type: 'response_item', payload: { type: 'message', role: 'assistant',
+          content: [{ type: 'output_text', text }] } }
+      : { type: kind === 'omp' ? 'message' : 'assistant',
+          message: { role: 'assistant', content: [{ type: 'text', text }] } };
+    const parse = kind === 'claude' ? parseClaudeLine : kind === 'omp' ? parseOmpLine : parseCodexLine;
+    expect(parse(JSON.stringify(line))?.promptHash ?? null).toBeNull();
+  });
+
   it('keeps the hook and ingest hash normalization in lockstep', () => {
     expect(promptOriginHash('  line one\r\nline two\r\n ')).toBe(
       promptOriginHash('line one\nline two'),
@@ -286,6 +342,87 @@ describe('hook-authenticated prompt-origin correlation', () => {
     expect(correlatePromptOriginStamps([candidate], [stamp])).toBe(0);
   });
 
+  // WI-10008184: identical prompts typed twice in one session share a hash, so
+  // the stamp a turn receives must be decided by time, not by row order.
+  function unenrolledAt(turnIdx: number, ts: string, text = 'continue'): Row {
+    return row({
+      turn_idx: turnIdx,
+      ts,
+      text,
+      prompt_hash: promptOriginHash(text),
+      turn_origin_verdict: UNENROLLED_ORIGIN_VERDICT,
+      turn_origin_classifier_version: MACHINE_SURFACE_CATALOGUE_VERSION,
+    });
+  }
+  function stampAt(submittedAt: string, text = 'continue') {
+    return { source_kind: 'claude', session_id: 's-1', prompt_hash: promptOriginHash(text), submitted_at: submittedAt };
+  }
+  const at = (offsetSec: number) => new Date(Date.parse('2026-10-10T19:00:00.000Z') + offsetSec * 1000).toISOString();
+
+  it('gives a single stamp to the identical turn nearest it, not to the earlier row (WI-10008184)', () => {
+    const earlier = unenrolledAt(10, at(0));
+    const later = unenrolledAt(12, at(100));
+    expect(correlatePromptOriginStamps([earlier, later], [stampAt(at(95))])).toBe(1);
+    expect(later.turn_origin_verdict).toBe('owner-typed');
+    expect(earlier.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('does not depend on the order rows are supplied in', () => {
+    const earlier = unenrolledAt(10, at(0));
+    const later = unenrolledAt(12, at(100));
+    expect(correlatePromptOriginStamps([later, earlier], [stampAt(at(95))])).toBe(1);
+    expect(later.turn_origin_verdict).toBe('owner-typed');
+    expect(earlier.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('never trades a matched turn for a nearer pairing: every stamp that can vouch for a turn does', () => {
+    // A nearest-pair-first greedy gives B the 60s stamp (40s away) and leaves
+    // A with nothing, because the 150s stamp is outside A's window. Both turns
+    // were typed and both were stamped, so both must be promoted.
+    const a = unenrolledAt(10, at(0));
+    const b = unenrolledAt(12, at(100));
+    expect(correlatePromptOriginStamps([a, b], [stampAt(at(60)), stampAt(at(150))])).toBe(2);
+    expect(a.turn_origin_verdict).toBe('owner-typed');
+    expect(b.turn_origin_verdict).toBe('owner-typed');
+  });
+
+  it('pairs repeated prompts in time order when there are as many stamps as turns', () => {
+    const rows = [0, 30, 60, 90].map((sec, i) => unenrolledAt(i, at(sec)));
+    const stamps = [88, 58, 28, -2].map((sec) => stampAt(at(sec)));
+    expect(correlatePromptOriginStamps(rows, stamps)).toBe(4);
+    expect(rows.every((r) => r.turn_origin_verdict === 'owner-typed')).toBe(true);
+  });
+
+  it('matches a prompt repeated across a long session, segment by segment', () => {
+    // Turns 10 minutes apart: each window gap starts a new segment, and a
+    // stamp with no turn in its own segment vouches for nothing.
+    const rows = [0, 600, 1200].map((sec, i) => unenrolledAt(i, at(sec)));
+    const stamps = [1199, 2, 900, 601].map((sec) => stampAt(at(sec)));
+    expect(correlatePromptOriginStamps(rows, stamps)).toBe(3);
+    expect(rows.every((r) => r.turn_origin_verdict === 'owner-typed')).toBe(true);
+    const lone = unenrolledAt(9, at(3000));
+    expect(correlatePromptOriginStamps([lone], [stampAt(at(3000 - 121))])).toBe(0);
+  });
+
+  it('lets priority rows keep their stamps before any other row is considered', () => {
+    // Replay (WI-10008183): an already-promoted row consumed a stamp when it
+    // was promoted; a candidate nearer that stamp must not take it from it.
+    const promoted = unenrolledAt(10, at(0));
+    const candidate = unenrolledAt(12, at(100));
+    const stamp = stampAt(at(95));
+    expect(correlatePromptOriginStamps([promoted, candidate], [stamp], { priority: new Set([promoted]) })).toBe(1);
+    expect(promoted.turn_origin_verdict).toBe('owner-typed');
+    expect(candidate.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('matches clusters independently when several prompts are mixed together', () => {
+    const go = unenrolledAt(1, at(0), 'go');
+    const stop = unenrolledAt(2, at(10), 'stop');
+    expect(correlatePromptOriginStamps([go, stop], [stampAt(at(9), 'stop'), stampAt(at(1), 'go')])).toBe(2);
+    expect(go.turn_origin_verdict).toBe('owner-typed');
+    expect(stop.turn_origin_verdict).toBe('owner-typed');
+  });
+
   it.each([
     ['wrong source', { source_kind: 'omp' }],
     ['wrong session', { session_id: 'other-session' }],
@@ -309,5 +446,59 @@ describe('hook-authenticated prompt-origin correlation', () => {
     };
     expect(correlatePromptOriginStamps([candidate], [stamp])).toBe(0);
     expect(candidate.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+});
+
+/**
+ * WI-6554700010009878. The ingest cap (SESSION_TURN_TEXT_CAP) cut a long
+ * whole-prompt paste's closing tag before stamping, so every PTY-typed machine
+ * kickoff over the cap (scorecard judge fleet-kickoffs) stored unenrolled-origin
+ * and competed with real owner turns in consult routing.
+ */
+describe('cleanTurnText keeps an over-cap whole-prompt paste classifiable', () => {
+  const envelope = '⟦turn-origin:fleet-kickoff nonce:013ec62794d30cef⟧';
+  const body = 'Currentness check. '.repeat(Math.ceil((SESSION_TURN_TEXT_CAP * 2) / 19));
+  const paste = `<pasted_content id="f715">\n${envelope}\n${body}\n</pasted_content id="f715">\n`;
+
+  function stamped(text: string | null): Row {
+    expect(text).not.toBeNull();
+    const r = row({ source_kind: 'claude', text: text! });
+    stampTurnProvenance(r);
+    return r;
+  }
+
+  it('stamps an over-cap machine kickoff agent-injected, as the full text would', () => {
+    expect(paste.length).toBeGreaterThan(SESSION_TURN_TEXT_CAP);
+    const text = cleanTurnText(paste);
+    expect(stamped(text).turn_origin_verdict).toBe('agent-injected');
+    expect(stamped(text).turn_origin).toBe('fleet-kickoff');
+    expect(classifyRecordedTurn(paste.trim()).verdict).toBe('agent-injected');
+  });
+
+  it('keeps the evidence in the STORED text, so a head+tail re-derivation agrees', () => {
+    const text = cleanTurnText(paste)!;
+    expect(text.endsWith('</pasted_content id="f715">')).toBe(true);
+    expect(text.length).toBeLessThanOrEqual(SESSION_TURN_TEXT_CAP + 32);
+    const rederived = closeTruncatedWholePaste(text.slice(0, 4000), text.slice(-PROVENANCE_PASTE_TAIL_CHARS));
+    expect(stamped(rederived).turn_origin_verdict).toBe('agent-injected');
+  });
+
+  it('does not re-close a paste the owner typed words AFTER', () => {
+    const text = cleanTurnText(`${paste}\nplease look at this one carefully`)!;
+    expect(text.length).toBe(SESSION_TURN_TEXT_CAP);
+    expect(text.includes('</pasted_content')).toBe(false);
+    expect(stamped(text).turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('does not re-close a paste the owner typed words BEFORE', () => {
+    const text = cleanTurnText(`here is the kickoff I got:\n${paste}`)!;
+    expect(text.length).toBe(SESSION_TURN_TEXT_CAP);
+    expect(stamped(text).turn_origin_verdict).not.toBe('agent-injected');
+  });
+
+  it('leaves under-cap text and fullSource reads untouched', () => {
+    const short = `<pasted_content id="a1">\n${envelope}\nshort\n</pasted_content id="a1">`;
+    expect(cleanTurnText(short)).toBe(short);
+    expect(cleanTurnText(paste, { fullSource: true })).toBe(paste.trim());
   });
 });

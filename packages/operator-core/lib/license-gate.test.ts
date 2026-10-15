@@ -11,12 +11,12 @@
  * LICENSE file, so the exception path matters as much as the evaluator: an exception must
  * stop applying the moment the package's declared license changes.
  *
- * Every function under test is pure, so each case runs on inline fixtures: no lockfile
- * read, no cargo invocation, no shared-tree mutation. The one real-file case checks the
- * committed exceptions file against the same validator the gate runs first.
+ * Classifiers use inline fixtures; main() controls read temporary lockfile trees and
+ * assert the gate's status and return code. No case mutates the shared checkout or
+ * resolves Cargo dependencies. The committed exceptions file is validated as well.
  */
-import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, vi } from 'vitest';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statfsSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // Enrolled in tsconfig.declarations.json, so this import is typed by the generated
@@ -27,10 +27,12 @@ import {
   cargoPackagesOf,
   classify,
   collectThirdPartyNotices,
+  collectInstallerTree,
   renderThirdPartyNotices,
   declaredNpmLicense,
   evaluateExpression,
   globToRegExp,
+  main,
   npmPackageRootOf,
   npmPackagesOf,
   payloadKindOf,
@@ -45,6 +47,124 @@ const COMPONENTS_PATH =
   process.env.LICENSE_COMPONENTS_PATH ?? join(REPO_ROOT, 'scripts', 'installer-components.json');
 
 const tier = (expr: unknown) => evaluateExpression(expr).tier;
+
+describe('collectInstallerTree — Syft directory mount exclusions', () => {
+  const canUseTmpfs = process.platform === 'linux' && existsSync('/dev/shm')
+    && Number(statfsSync('/dev/shm').type) === 0x01021994;
+
+  it.runIf(canUseTmpfs)('stages exact npm bytes outside excluded tmpfs and removes scan scratch', () => {
+    const root = mkdtempSync('/dev/shm/license-mount-control-');
+    const bin = join(root, 'bin');
+    const input = join(root, 'input');
+    const logPath = join(root, 'scan-input');
+    const manifest = JSON.stringify({ name: 'mount-control', version: '1.0.0', license: 'MIT' });
+    mkdirSync(bin);
+    mkdirSync(join(input, 'node_modules/mount-control'), { recursive: true });
+    writeFileSync(join(input, 'node_modules/mount-control/package.json'), manifest);
+    symlinkSync('package.json', join(input, 'node_modules/mount-control/manifest-link'));
+    // A subprocess fixture models the measured Syft rule, not an empty SBOM
+    // canned as success. It reads the exact bytes the checker supplied.
+    const syft = join(bin, 'syft');
+    writeFileSync(syft, `#!${process.execPath}\n` + [
+      "const fs=require('node:fs'),path=require('node:path');",
+      "const input=process.argv[2].slice(4);",
+      `fs.writeFileSync(${JSON.stringify(logPath)},input);`,
+      "const skipped=Number(fs.statfsSync(input).type)===0x01021994 && /^(?:\\/dev|\\/run)(?:\\/|$)/.test(input);",
+      "const file=path.join(input,'node_modules/mount-control/package.json');",
+      `if(fs.readFileSync(file,'utf8')!==${JSON.stringify(manifest)})process.exit(9);`,
+      "if(fs.readlinkSync(path.join(input,'node_modules/mount-control/manifest-link'))!=='package.json')process.exit(10);",
+      "const out=process.argv.find(a=>a.startsWith('syft-json=')).slice(10);",
+      "fs.writeFileSync(out,JSON.stringify({artifacts:skipped||process.env.LICENSE_FIXTURE_EMPTY==='1'?[]:[{type:'npm',name:'mount-control',version:'1.0.0',licenses:[{spdxExpression:'MIT'}],locations:[{path:'/node_modules/mount-control/package.json'}]}]}));",
+    ].join('\n'));
+    chmodSync(syft, 0o700);
+    const oldPath = process.env.PATH;
+    const oldEmpty = process.env.LICENSE_FIXTURE_EMPTY;
+    try {
+      process.env.PATH = `${bin}:${oldPath}`;
+      const result = collectInstallerTree(input, []);
+      expect(result.syftArtifacts).toEqual([{
+        type: 'npm', name: 'mount-control', version: '1.0.0', licenses: ['MIT'],
+        path: 'node_modules/mount-control/package.json',
+      }]);
+      expect(result.undetermined).toEqual([]);
+      expect(readFileSync(join(input, 'node_modules/mount-control/package.json'), 'utf8')).toBe(manifest);
+      const scanned = readFileSync(logPath, 'utf8');
+      expect(scanned).not.toBe(input);
+      expect(existsSync(scanned)).toBe(false);
+      process.env.LICENSE_FIXTURE_EMPTY = '1';
+      const empty = collectInstallerTree(input, []);
+      expect(empty.syftArtifacts).toEqual([]);
+      expect(empty.undetermined).toHaveLength(1);
+      expect(empty.undetermined[0]).toContain('Syft catalogued 0 npm packages');
+      expect(existsSync(readFileSync(logPath, 'utf8'))).toBe(false);
+    } finally {
+      process.env.PATH = oldPath;
+      if (oldEmpty === undefined) delete process.env.LICENSE_FIXTURE_EMPTY;
+      else process.env.LICENSE_FIXTURE_EMPTY = oldEmpty;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('main — strict gate results over measured lockfile fixtures', () => {
+  function runGate(license: string | null, argv = ['--strict', '--ecosystem=npm'], missingCargoManifest = false) {
+    const root = mkdtempSync(join(tmpdir(), 'license-gate-main-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
+        lockfileVersion: 3,
+        packages: license === null ? {} : {
+          '': { name: 'fixture' },
+          'node_modules/gate-control': { version: '1.0.0', license },
+        },
+      }));
+      if (missingCargoManifest) writeFileSync(join(root, 'Cargo.lock'), 'version = 3\n');
+      const exitCode = main(argv, root);
+      return { exitCode, output: log.mock.calls.map((args) => args.join(' ')).join('\n') };
+    } finally {
+      log.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('returns 1 and status=fail for a disallowed dependency in strict mode', () => {
+    const result = runGate('GPL-3.0-only');
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain('DENIED gate-control@1.0.0');
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=fail');
+  });
+
+  it('returns 0 and status=pass for a measured permissive dependency', () => {
+    const result = runGate('MIT');
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain('ecosystem=npm lockfiles=1 packages=1 permissive=1');
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=pass');
+  });
+
+  it('returns 2 and remains undetermined when the root npm graph measures nothing', () => {
+    const result = runGate(null);
+    expect(result.exitCode).toBe(2);
+    expect(result.output).toContain('UNDETERMINED package-lock.json: parsed 0 packages');
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=undetermined');
+    expect(result.output).not.toContain('LICENSE_GATE_RESULT status=pass');
+  });
+
+  it('does not accept a permissive npm result when the Cargo graph is unmeasured', () => {
+    const result = runGate('MIT', ['--strict'], true);
+    expect(result.exitCode).toBe(2);
+    expect(result.output).toContain('ecosystem=npm lockfiles=1 packages=1 permissive=1');
+    expect(result.output).toContain('UNDETERMINED Cargo.lock: no Cargo.toml beside it');
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=undetermined');
+    expect(result.output).not.toContain('LICENSE_GATE_RESULT status=pass');
+  });
+
+  it('preserves a failed verdict even when report-only mode returns 0', () => {
+    const result = runGate('GPL-3.0-only', ['--ecosystem=npm']);
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain('LICENSE_GATE_RESULT status=fail');
+    expect(result.output).not.toContain('LICENSE_GATE_RESULT status=pass');
+  });
+});
 
 describe('evaluateExpression — SPDX semantics', () => {
   it('classifies single ids into the three tiers', () => {
@@ -358,6 +478,21 @@ describe('installer leg — validateComponents', () => {
     expect(validateComponents(file)).toEqual([]);
     const kinds = new Set(file.components.map((c: { kind: string }) => c.kind));
     for (const k of ['first-party', 'program', 'model', 'os-image']) expect(kinds.has(k), k).toBe(true);
+  });
+
+  it('covers the lowercase Windows desktop binary while keeping unknown executables unreviewed', () => {
+    const file = JSON.parse(readFileSync(COMPONENTS_PATH, 'utf8'));
+    const r = attributeInstaller({
+      components: file.components,
+      payloads: [
+        { path: 'app/papercusp-desktop.exe', kind: 'native' },
+        { path: 'wrapped/app/papercusp-desktop.exe', kind: 'native' },
+        { path: 'app/unreviewed.exe', kind: 'native' },
+      ],
+    });
+    expect(r.components.find((c: { kind: string }) => c.kind === 'first-party')?.hits).toBe(2);
+    expect(r.unreviewed.map((u: { path: string }) => u.path)).toEqual(['app/unreviewed.exe']);
+    expect(r.denied).toEqual([]);
   });
 
   // Defect #10 (open-source-release R-15 build8): the GTK/gdk-pixbuf plugin modules were

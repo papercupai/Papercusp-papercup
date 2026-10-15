@@ -13,15 +13,18 @@
  * needs a REAL Postgres round-trip to reproduce, hence this integration test.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type postgres from 'postgres';
-import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { TaskReleaseReceiptInput, TaskReleaseReceiptState } from './store';
+import {
+  createFreshPgDb,
+  applyEventSubstrateMigrationsForTest,
+  type FreshPgDb,
+  COORD_SUBSCRIPTION_SUBSTRATE,
+} from '../../test/_pg-helpers';
+import type { CloseTaskEffects, TaskReleaseReceiptInput, TaskReleaseReceiptState } from './store';
 import type { TaskTerminalProvenance } from './types';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -74,9 +77,16 @@ async function insertAgentSessionTask(input: {
 beforeAll(async () => {
   db = await createFreshPgDb('task-ledger-store');
   h.sql = db.sql;
-  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '632-event-key-fire-latch.sql'));
-  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '696-task-ledger.sql'));
-  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '700-task-ledger-bash-job-id-idx.sql'));
+  await applyEventSubstrateMigrationsForTest(db.sql, {
+    label: 'task-manager/store.integration.test.ts',
+    ...COORD_SUBSCRIPTION_SUBSTRATE,
+    extra: [
+      ...COORD_SUBSCRIPTION_SUBSTRATE.extra,
+      '696-task-ledger.sql',
+      '700-task-ledger-bash-job-id-idx.sql',
+      '774-task-ledger-ended-unobserved-state.sql',
+    ],
+  });
   await db.sql`
     CREATE TABLE harness_shared.adv_sessions (
       id bigserial PRIMARY KEY,
@@ -98,7 +108,94 @@ beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.adv_sessions`;
 });
 
+describe('dispatch correlation real SQL recovery', () => {
+  async function insertDispatchTask(taskId: string, workspaceId: string, dispatchCallId: string | null, ageMinutes: number) {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, confined, state, started_at, ended_at, detail
+      ) VALUES (
+        ${taskId}, ${workspaceId}, ${taskId}, 'bash-job', 'same shell command',
+        '[]'::jsonb, 'test', true, 'exited',
+        now() - ${ageMinutes} * interval '1 minute', now(),
+        jsonb_build_object('dispatchCallId', ${dispatchCallId}::text)
+      )
+    `;
+  }
+
+  it('dispatch correlation recovers an older exact task before a small LIMIT without another enrollment', async () => {
+    const dispatchCallId = "dispatch_%' OR true --";
+    await insertDispatchTask('original-dispatch', WS, dispatchCallId, 10);
+    await insertDispatchTask('foreign-same-dispatch', 'foreign-workspace', dispatchCallId, 0);
+    await insertDispatchTask('same-command-other-dispatch', WS, 'other-dispatch', 1);
+    await insertDispatchTask('literal-near-match', WS, "dispatch_X' OR true --", 2);
+    await insertDispatchTask('legacy-no-dispatch', WS, null, 3);
+
+    const countBefore = await db.sql`SELECT count(*)::int AS count FROM harness_shared.task_ledger`;
+    const filter = { workspaceId: WS, dispatchCallId, includeEnded: true, limit: 1 };
+    expect((await store.listTasks(filter)).map((task) => task.taskId)).toEqual(['original-dispatch']);
+    expect((await store.listTasks(filter)).map((task) => task.taskId)).toEqual(['original-dispatch']);
+    expect(await db.sql`SELECT count(*)::int AS count FROM harness_shared.task_ledger`).toEqual(countBefore);
+
+    // The legacy top row is a decoy: filtering an already-limited result cannot recover the original.
+    expect((await store.listTasks({ workspaceId: WS, includeEnded: true, limit: 1 })).map((task) => task.taskId))
+      .toEqual(['same-command-other-dispatch']);
+  });
+
+  it('dispatch correlation never returns a foreign-workspace match and retains missing-identity rows in legacy reads', async () => {
+    await insertDispatchTask('foreign-only-match', 'foreign-workspace', 'foreign-only-dispatch', 0);
+    await insertDispatchTask('legacy-own-task', WS, null, 1);
+
+    expect(await store.listTasks({ workspaceId: WS, dispatchCallId: 'foreign-only-dispatch', includeEnded: true, limit: 1 }))
+      .toEqual([]);
+    expect((await store.listTasks({ workspaceId: 'foreign-workspace', dispatchCallId: 'foreign-only-dispatch', includeEnded: true, limit: 1 }))
+      .map((task) => task.taskId)).toEqual(['foreign-only-match']);
+    expect((await store.listTasks({ workspaceId: WS, includeEnded: true, limit: 1 })).map((task) => task.taskId))
+      .toEqual(['legacy-own-task']);
+  });
+});
+
 describe('agent-session native-id binding (EI-21268871278252116)', () => {
+  it('links the exact initial native session after a real short child has exited (EI-25609725859690051)', async () => {
+    const { managedSpawn } = await import('./managed-spawn');
+    const spawned = await managedSpawn(process.execPath, ['-e', 'process.exit(0)'], {
+      class: 'agent-session', title: 'short stock child', argv: [], launchedBy: 'test',
+      detail: { coordOwnerId: 'stock-fast-owner' },
+    }, { workspaceId: WS, confine: false, requireRegistration: true });
+    if (spawned.child.exitCode === null) await new Promise<void>((resolve, reject) => {
+      spawned.child.once('exit', () => resolve()); spawned.child.once('error', reject);
+    });
+    await expect.poll(async () => (await store.getTask(spawned.taskId))?.state).toBe('exited');
+    const binding = { workspaceId: WS, coordOwnerId: 'stock-fast-owner', sessionId: 'native-fast-child',
+      initialTaskId: spawned.taskId };
+
+    // The old live-only path cannot account for this already-terminal child.
+    expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, initialTaskId: undefined })).toEqual([]);
+    await insertAgentSessionTask({ taskId: 'same-owner-sibling', coordOwnerId: 'stock-fast-owner' });
+    expect(await store.bindLiveAgentSessionTasksToNativeSession(binding)).toEqual([spawned.taskId]);
+    // A retried observation returns the same receipt, without reopening the task.
+    expect(await store.bindLiveAgentSessionTasksToNativeSession(binding)).toEqual([spawned.taskId]);
+    expect(await store.getTask(spawned.taskId)).toMatchObject({ state: 'exited', sessionId: 'native-fast-child', exitCode: 0 });
+    expect((await store.getTask('same-owner-sibling'))?.sessionId).toBeNull();
+  });
+
+  it('initial binding never retargets a conflicting session or crosses task, owner, workspace or class', async () => {
+    await insertAgentSessionTask({ taskId: 'conflict', coordOwnerId: 'stock-owner', state: 'exited', sessionId: 'other-native' });
+    await insertAgentSessionTask({ taskId: 'wrong-owner', coordOwnerId: 'other-owner', state: 'exited' });
+    await insertAgentSessionTask({ taskId: 'wrong-class', coordOwnerId: 'stock-owner', taskClass: 'bash-job' });
+    await insertAgentSessionTask({ taskId: 'exact', coordOwnerId: 'stock-owner', state: 'exited' });
+    await insertAgentSessionTask({ taskId: 'sibling', coordOwnerId: 'stock-owner' });
+    const binding = { workspaceId: WS, coordOwnerId: 'stock-owner', sessionId: 'new-native' };
+    for (const initialTaskId of ['conflict', 'wrong-owner', 'wrong-class', 'missing']) {
+      expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, initialTaskId })).toEqual([]);
+    }
+    expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, workspaceId: 'other-workspace', initialTaskId: 'exact' })).toEqual([]);
+    expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, initialTaskId: '' })).toEqual([]);
+    expect(await store.bindLiveAgentSessionTasksToNativeSession({ ...binding, initialTaskId: 'exact' })).toEqual(['exact']);
+    expect((await store.getTask('conflict'))?.sessionId).toBe('other-native');
+    for (const id of ['wrong-owner', 'wrong-class', 'sibling']) expect((await store.getTask(id))?.sessionId).toBeNull();
+  });
+
   it('binds every matching live task when enrolment lands before bootstrap, without crossing owner/class/state', async () => {
     await insertAgentSessionTask({ taskId: 'match-pending', coordOwnerId: 'su-owner', state: 'pending' });
     await insertAgentSessionTask({ taskId: 'match-running', coordOwnerId: 'su-owner' });
@@ -506,14 +603,44 @@ describe('P-012 terminal provenance writer', () => {
   it("records a cgroup-cap OOM as killed/137/exit_reason='oom-kill' with its exact unit identity", async () => {
     const max = 32 * 1024 * 1024;
     const row = await liveTask('oomtask', { memoryMaxBytes: max });
+    // Classification and persistence use the awaited effect seam; the real
+    // terminal-event bridge is exercised by its own integration suite.
+    let emittedAfterClose = false;
+    const emitTerminal = vi.fn<NonNullable<CloseTaskEffects['emitTerminal']>>(async (event) => {
+      await Promise.resolve();
+      const [closed] = await db.sql`
+        SELECT state, exit_code, exit_reason, ended_at
+          FROM harness_shared.task_ledger WHERE task_id = ${event.taskId}
+      `;
+      expect(closed).toMatchObject({
+        state: 'killed',
+        exit_code: 137,
+        exit_reason: 'oom-kill',
+      });
+      expect(closed!.ended_at).not.toBeNull();
+      emittedAfterClose = true;
+    });
+    const effects: CloseTaskEffects = { emitTerminal };
 
     await expect(
       store.closeTask('oomtask', {
         state: 'exited',
         exitCode: 1,
         terminalProvenance: terminal(row.scopeUnit!),
-      }),
+      }, undefined, effects),
     ).resolves.toBe(true);
+    expect(emittedAfterClose).toBe(true);
+    expect(emitTerminal).toHaveBeenCalledTimes(1);
+    expect(emitTerminal).toHaveBeenCalledWith({
+      taskId: 'oomtask',
+      workspaceId: WS,
+      harnessSlug: null,
+      taskClass: 'bash-job',
+      launchedBy: 'test',
+      state: 'killed',
+      exitCode: 137,
+      exitReason: 'oom-kill',
+    });
 
     const [stored] = await db.sql`
       SELECT state, exit_code, exit_reason, memory_max_bytes::text,
@@ -542,7 +669,11 @@ describe('P-012 terminal provenance writer', () => {
     // bridge would import an unrelated module graph after this test has settled.
     // WI-10002569: inject the documented effect seam so late import warnings
     // cannot turn a truthful ledger assertion into a console-warn flake.
-    const emitTerminal = vi.fn();
+    const emittedEvents: string[] = [];
+    const emitTerminal = vi.fn(async (event: { taskId: string }) => {
+      await Promise.resolve();
+      emittedEvents.push(event.taskId);
+    });
     const effects = { emitTerminal };
     const timeout = await liveTask('timeouttask', { memoryMaxBytes: 64 * 1024 * 1024 });
     await store.closeTask('timeouttask', {
@@ -582,6 +713,7 @@ describe('P-012 terminal provenance writer', () => {
       hostoomtask: { state: 'killed', exit_code: 137, exit_reason: 'host-oom' },
     });
     expect(emitTerminal).toHaveBeenCalledTimes(4);
+    expect(emittedEvents).toEqual(['timeouttask', 'exit1task', 'manualtask', 'hostoomtask']);
   });
 
   it('refuses to attach terminal evidence from a different scope identity', async () => {
@@ -615,7 +747,11 @@ describe('persistFailedTaskUnitTerminal fallback collector', () => {
   }
 
   it('reconstructs a missing ledger row, closes it with terminal evidence, then authorizes reset', async () => {
-    const emitTerminal = vi.fn();
+    const emittedEvents: string[] = [];
+    const emitTerminal = vi.fn(async (event: { taskId: string }) => {
+      await Promise.resolve();
+      emittedEvents.push(event.taskId);
+    });
     const result = await store.persistFailedTaskUnitTerminal(
       failedTerminal('pc-recovered1.service'),
       { workspaceId: WS, harnessSlug: 'papercusp' },
@@ -643,6 +779,7 @@ describe('persistFailedTaskUnitTerminal fallback collector', () => {
     });
     expect(row?.detail.recoveredFailedUnit).toMatchObject({ source: 'task-reconcile-fallback' });
     expect(emitTerminal).toHaveBeenCalledOnce();
+    expect(emittedEvents).toEqual(['recovered1']);
   });
 
   it('augments an already-terminal row without rewriting its observed terminal verdict', async () => {
@@ -693,12 +830,26 @@ describe('persistFailedTaskUnitTerminal fallback collector', () => {
 
   it('is idempotent after terminal evidence is already durable', async () => {
     const terminal = failedTerminal('pc-idempotent1.service');
-    await store.persistFailedTaskUnitTerminal(terminal, { workspaceId: WS });
-    await expect(store.persistFailedTaskUnitTerminal(terminal, { workspaceId: WS })).resolves.toEqual({
+    const emitTerminal = vi.fn();
+    await store.persistFailedTaskUnitTerminal(
+      terminal,
+      { workspaceId: WS },
+      undefined,
+      { emitTerminal },
+    );
+    await expect(
+      store.persistFailedTaskUnitTerminal(
+        terminal,
+        { workspaceId: WS },
+        undefined,
+        { emitTerminal },
+      ),
+    ).resolves.toEqual({
       durable: true,
       outcome: 'already-recorded',
       taskId: 'idempotent1',
     });
+    expect(emitTerminal).toHaveBeenCalledOnce();
   });
 
   it('refuses to reset a reused unit name when its invocation differs from durable evidence', async () => {
@@ -759,14 +910,20 @@ describe('clearVanishedUnaccounted (EI-18824358724907941)', () => {
 });
 
 describe('gcTerminalTasks retention', () => {
-  async function insertTerminal(taskId: string, endedHoursAgo: number, detail: Record<string, unknown>) {
+  async function insertTerminal(
+    taskId: string,
+    endedHoursAgo: number,
+    detail: Record<string, unknown>,
+    options: { taskClass?: string; logPath?: string | null } = {},
+  ) {
     await db.sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,
-        launched_by, confined, state, ended_at, detail
+        launched_by, confined, state, ended_at, log_path, detail
       ) VALUES (
-        ${taskId}, ${WS}, ${taskId}, 'deploy', ${taskId}, '[]'::jsonb, 'test', false, 'exited',
-        now() - make_interval(hours => ${endedHoursAgo}::int), ${db.sql.json(detail as postgres.JSONValue)}
+        ${taskId}, ${WS}, ${taskId}, ${options.taskClass ?? 'deploy'}, ${taskId}, '[]'::jsonb, 'test', false, 'exited',
+        now() - make_interval(hours => ${endedHoursAgo}::int), ${options.logPath ?? null},
+        ${db.sql.json(detail as postgres.JSONValue)}
       )
     `;
   }
@@ -781,13 +938,84 @@ describe('gcTerminalTasks retention', () => {
     const rows = await db.sql`SELECT task_id FROM harness_shared.task_ledger ORDER BY task_id`;
     expect(rows.map((row) => row.task_id)).toEqual(['old-release', 'young-plain']);
   });
+
+  it('keeps terminal logs reattachable until expiry, then retires only deleted-row logs', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'task-ledger-retention-'));
+    const scratchDir = join(stateDir, 'scratch');
+    mkdirSync(scratchDir, { recursive: true });
+    const expiredLog = join(scratchDir, 'bash-expired.log');
+    const recentLog = join(scratchDir, 'bash-recent.log');
+    const releaseLog = join(scratchDir, 'bash-release.log');
+    const activeLog = join(scratchDir, 'bash-active.log');
+    for (const [path, content] of [
+      [expiredLog, 'expired output\n'],
+      [recentLog, 'late reattachment output\n'],
+      [releaseLog, 'release receipt output\n'],
+      [activeLog, 'active output\n'],
+    ]) {
+      writeFileSync(path, content, 'utf8');
+    }
+
+    try {
+      await insertTerminal(
+        'expired-bash-task',
+        200,
+        { bashJobId: 'bash-expired' },
+        { taskClass: 'bash-job', logPath: expiredLog },
+      );
+      await insertTerminal(
+        'recent-bash-task',
+        1,
+        { bashJobId: 'bash-recent' },
+        { taskClass: 'bash-job', logPath: recentLog },
+      );
+      await insertTerminal(
+        'release-bash-task',
+        200,
+        { bashJobId: 'bash-release', release: { operationId: 'release-1', receipts: [] } },
+        { taskClass: 'bash-job', logPath: releaseLog },
+      );
+      await db.sql`
+        INSERT INTO harness_shared.task_ledger (
+          task_id, workspace_id, root_task_id, class, title, argv,
+          launched_by, confined, state, log_path, detail
+        ) VALUES (
+          'active-bash-task', ${WS}, 'active-bash-task', 'bash-job', 'active-bash-task',
+          '[]'::jsonb, 'test', false, 'running', ${activeLog},
+          ${db.sql.json({ bashJobId: 'bash-active' } as postgres.JSONValue)}
+        )
+      `;
+
+      // bash_output's worker-loss recovery resolves this durable task identity
+      // and reads its ledger-owned path while the row is within retention.
+      const attachable = await store.getTaskByBashJobId('bash-recent', { workspaceId: WS });
+      expect(attachable).toMatchObject({ taskId: 'recent-bash-task', logPath: recentLog, state: 'exited' });
+      expect(readFileSync(attachable!.logPath!, 'utf8')).toBe('late reattachment output\n');
+
+      await expect(store.gcTerminalTasks(168, { workspaceId: WS })).resolves.toBe(1);
+
+      expect(await store.getTask('expired-bash-task')).toBeNull();
+      expect(existsSync(expiredLog)).toBe(false);
+      expect(await store.getTaskByBashJobId('bash-recent', { workspaceId: WS })).toMatchObject({
+        taskId: 'recent-bash-task',
+        logPath: recentLog,
+      });
+      expect(existsSync(recentLog)).toBe(true);
+      expect(await store.getTask('release-bash-task')).toMatchObject({ logPath: releaseLog });
+      expect(existsSync(releaseLog)).toBe(true);
+      expect(await store.getTask('active-bash-task')).toMatchObject({ logPath: activeLog, state: 'running' });
+      expect(existsSync(activeLog)).toBe(true);
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('upsertUnaccounted scope identity', () => {
   it('persists managed scope_unit canonically and backfills it on conflict without erasing it', async () => {
     const group = {
-      taskId: 't-scope-unit',
-      cgroupPath: '/sys/fs/cgroup/papercusp.slice/pc-t-scope-unit.scope',
+      taskId: 'tscopeunit',
+      cgroupPath: '/sys/fs/cgroup/papercusp.slice/pc-tscopeunit.scope',
       scopeUnit: null as string | null,
       pids: [11],
       sampleCmdline: 'managed residue',
@@ -795,21 +1023,24 @@ describe('upsertUnaccounted scope identity', () => {
 
     await store.upsertUnaccounted([group], { workspaceId: WS });
     let [row] = await db.sql`
-      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
+      SELECT scope_unit, confined FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
     `;
     expect(row!.scope_unit).toBeNull();
+    expect(row!.confined).toBe(false);
 
-    await store.upsertUnaccounted([{ ...group, scopeUnit: 'pc-t-scope-unit.scope', pids: [12] }], { workspaceId: WS });
+    await store.upsertUnaccounted([{ ...group, scopeUnit: 'pc-tscopeunit.scope', pids: [12] }], { workspaceId: WS });
     [row] = await db.sql`
-      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
+      SELECT scope_unit, confined FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
     `;
-    expect(row!.scope_unit).toBe('pc-t-scope-unit.scope');
+    expect(row!.scope_unit).toBe('pc-tscopeunit.scope');
+    expect(row!.confined).toBe(true);
 
     await store.upsertUnaccounted([{ ...group, pids: [13] }], { workspaceId: WS });
     [row] = await db.sql`
-      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
+      SELECT scope_unit, confined FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
     `;
-    expect(row!.scope_unit).toBe('pc-t-scope-unit.scope');
+    expect(row!.scope_unit).toBe('pc-tscopeunit.scope');
+    expect(row!.confined).toBe(true);
   });
 
   it('persists unaccounted cgroup metrics and preserves lifecycle probes on refresh', async () => {
@@ -1212,9 +1443,10 @@ describe('process-lifecycle judgement ledger seam (P-009)', () => {
     expect(rows.map((task) => task.taskId).sort()).toEqual(['live-row', 'terminal-residue', 'unaccounted-row']);
   });
 
-  it('persists probe clocks additively and never mutates an ended row', async () => {
+  it('persists probes for live rows and explicitly confirmed terminal residue only', async () => {
     await insertAgentSessionTask({ taskId: 'live-probe', coordOwnerId: 'su-live' });
     await insertAgentSessionTask({ taskId: 'ended-probe', coordOwnerId: 'su-ended', state: 'exited' });
+    await insertAgentSessionTask({ taskId: 'ended-residue-probe', coordOwnerId: 'su-ended-residue', state: 'exited' });
     const probe = {
       version: 1,
       launcherEndedSinceMs: 123,
@@ -1228,18 +1460,23 @@ describe('process-lifecycle judgement ledger seam (P-009)', () => {
       store.mergeTaskLifecycleProbes([
         { taskId: 'live-probe', probe },
         { taskId: 'ended-probe', probe },
+        { taskId: 'ended-residue-probe', probe, terminalResidue: true },
       ]),
-    ).resolves.toBe(1);
+    ).resolves.toBe(2);
 
     const rows = await db.sql`
       SELECT task_id, detail FROM harness_shared.task_ledger
-       WHERE task_id IN ('live-probe', 'ended-probe') ORDER BY task_id
+       WHERE task_id IN ('live-probe', 'ended-probe', 'ended-residue-probe') ORDER BY task_id
     `;
     expect(rows[0]).toEqual({
       task_id: 'ended-probe',
       detail: { coordOwnerId: 'su-ended' },
     });
     expect(rows[1]).toEqual({
+      task_id: 'ended-residue-probe',
+      detail: { coordOwnerId: 'su-ended-residue', processLifecycleProbe: probe },
+    });
+    expect(rows[2]).toEqual({
       task_id: 'live-probe',
       detail: { coordOwnerId: 'su-live', processLifecycleProbe: probe },
     });

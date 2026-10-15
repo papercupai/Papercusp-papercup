@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import {
   buildFcmMessage,
   resolveFcmCreds,
@@ -72,6 +73,60 @@ afterEach(() => {
 });
 
 describe('device-push-dispatcher', () => {
+  it.each([1, 2])('composes a session message into exactly one provider request per %i capable device (R-10)', async (count) => {
+    const capable = [
+      { deviceId: 'android-a', platform: 'fcm' as const, token: 'android-token-a' },
+      { deviceId: 'iphone-b', platform: 'apns' as const, token: 'iphone-token-b' },
+    ].slice(0, count);
+    const delivered: Array<{ deviceId: string; payload: unknown }> = [];
+    const record = (token: string, payload: unknown) => {
+      const device = capable.find(row => row.token === token);
+      expect(device, 'provider received an unexpected recipient token').toBeDefined();
+      delivered.push({ deviceId: device!.deviceId, payload });
+    };
+    const targets = vi.fn(async () => capable.map(({ platform, token }) => ({ platform, token })));
+    vi.doMock('./device-store', () => ({ pushTargetsForWorkspace: targets, deletePushToken: vi.fn() }));
+    vi.doMock('./owner-sessions/roster', () => ({ readSessionRosterSnapshot: async () => ({
+      active: [{ ownerId: 'su-target', workspaceId: 'ws-a', role: 'su' }], starting: [], pending: [],
+    }) }));
+    vi.doMock('node:http2', () => ({ connect: () => Object.assign(new EventEmitter(), {
+      close: vi.fn(),
+      request: (headers: Record<string, string>) => Object.assign(new EventEmitter(), {
+        setEncoding: vi.fn(),
+        write: (body: string) => record(headers[':path']!.slice('/3/device/'.length), JSON.parse(body)),
+        end(this: EventEmitter) { queueMicrotask(() => { this.emit('response', { ':status': 200 }); this.emit('end'); }); },
+      }),
+    }) }));
+    vi.stubGlobal('fetch', vi.fn(async (url: string, request: RequestInit) => {
+      expect(url).toBe('https://fcm.googleapis.com/v1/projects/phone-cardinality/messages:send');
+      const payload = JSON.parse(String(request.body));
+      record(payload.message.token, payload);
+      return new Response('{}', { status: 200 });
+    }));
+    vi.resetModules();
+    try {
+      const serviceAccount = join(dir, 'cardinality-sa.json');
+      writeFakeServiceAccount(serviceAccount, 'phone-cardinality');
+      process.env.FCM_SERVICE_ACCOUNT_PATH = serviceAccount;
+      process.env.APNS_AUTH_TOKEN = 'fixture-apns-auth';
+      const dispatcher = await import('./device-push-dispatcher');
+      vi.spyOn(dispatcher.resolveFcmCreds()!, 'getAccessToken').mockResolvedValue('fixture-fcm-auth');
+      const { notifySessionOwnerMessage } = await import('./session-push');
+      await notifySessionOwnerMessage({ msg_id: 'message-cardinality', from: 'su-target', to: ['human'],
+        kind: 'message', ts: new Date().toISOString(), summary: 'Please review' }, 'ws-a');
+      expect(targets).toHaveBeenCalledExactlyOnceWith('ws-a', 'agent-sessions');
+      expect(delivered.map(row => row.deviceId).sort()).toEqual(capable.map(row => row.deviceId).sort());
+      for (const device of capable) expect(delivered.filter(row => row.deviceId === device.deviceId)).toHaveLength(1);
+      for (const row of delivered) expect(JSON.stringify(row.payload)).toContain('agent-session');
+    } finally {
+      vi.unstubAllGlobals();
+      vi.doUnmock('./device-store');
+      vi.doUnmock('./owner-sessions/roster');
+      vi.doUnmock('node:http2');
+      vi.resetModules();
+    }
+  });
+
   it('buildFcmMessage produces the FCM v1 shape with HIGH android priority', () => {
     const msg = buildFcmMessage('device-token-123', {
       title: 'Needs you',
@@ -257,6 +312,19 @@ describe('stale FCM token reaping (WI-37477)', () => {
       { platform: 'fcm' as const, token: 'b' },
     ];
     expect(tokensToReap(targets, [{ platform: 'fcm', ok: false, status: 404, unregistered: true }])).toEqual([]);
+  });
+
+  it('notifyWorkspace forwards the required session capability to the workspace target query', async () => {
+    const targets = vi.fn().mockResolvedValue([]);
+    vi.doMock('./device-store', () => ({ pushTargetsForWorkspace: targets, deletePushToken: vi.fn() }));
+    vi.resetModules();
+    const { notifyWorkspace } = await import('./device-push-dispatcher');
+    expect(await notifyWorkspace('ws-a', { title: 'Agent message', body: 'Review requested', data: { kind: 'agent-session' } },
+      { requiredCapability: 'agent-sessions' })).toEqual([]);
+    expect(targets).toHaveBeenCalledOnce();
+    expect(targets).toHaveBeenCalledWith('ws-a', 'agent-sessions');
+    vi.doUnmock('./device-store');
+    vi.resetModules();
   });
 
   it('notifyWorkspace DELETES an unregistered token and leaves the healthy ones alone', async () => {

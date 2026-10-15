@@ -1,0 +1,867 @@
+---
+rel_path: "evidence/originals/0edfffc806e7b9c098fd32d93e97a628472c12bcac6f921daf720a4bdaf0175f.json"
+updated_at: 1790936181224
+_body: "content"
+---
+
+{
+  "schemaVersion": 1,
+  "incomplete": false,
+  "plane": "serving-operator-http-preflight-private-cohorts",
+  "bundleSha256": "ba55a2d10b6fe513503f76f27f3fb3e041bfbcfd1795f25e49fa0962763e95c3",
+  "workerSha256": "fc4febf9df144a3a704fb29d5dd3dc6a7e4350bda29d17511bfcc0819187fb00",
+  "sourceDirectory": "/home/marsh-office/papercupai-workspace/papercusp-staging.generations/.candidate-3e4e69880f2d.0m9uj7/checkout/apps/operator/dist-host",
+  "cohorts": [
+    {
+      "mode": "control",
+      "samples": [
+        {
+          "phase": "preflight",
+          "pid": 2619714,
+          "at": 1790925377047,
+          "uptime": 10.19781095,
+          "memory": {
+            "rss": 957833216,
+            "heapTotal": 680304640,
+            "heapUsed": 559883768,
+            "external": 146699572,
+            "arrayBuffers": 70411914
+          },
+          "heap": {
+            "total_heap_size": 680304640,
+            "total_heap_size_executable": 5931008,
+            "total_physical_size": 680304640,
+            "total_available_size": 137079454776,
+            "used_heap_size": 559888656,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 127048,
+            "used_global_handles_size": 112768,
+            "external_memory": 146699612,
+            "total_allocated_bytes": 1731055048
+          },
+          "os": {
+            "pid": 2619714,
+            "parent": 2619590,
+            "startTicks": "21504598",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 920582,
+            "anonymousKiB": 917384,
+            "privateDirtyKiB": 917428
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-0",
+          "pid": 2619714,
+          "at": 1790925379465,
+          "uptime": 12.61560213,
+          "memory": {
+            "rss": 960970752,
+            "heapTotal": 686272512,
+            "heapUsed": 570173848,
+            "external": 146878967,
+            "arrayBuffers": 70591269
+          },
+          "heap": {
+            "total_heap_size": 686272512,
+            "total_heap_size_executable": 6193152,
+            "total_physical_size": 686272512,
+            "total_available_size": 137069159600,
+            "used_heap_size": 570174072,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262496,
+            "external_memory": 146878967,
+            "total_allocated_bytes": 1749779208
+          },
+          "os": {
+            "pid": 2619714,
+            "parent": 2619590,
+            "startTicks": "21504598",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 926239,
+            "anonymousKiB": 923044,
+            "privateDirtyKiB": 923100
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-1",
+          "pid": 2619714,
+          "at": 1790925379613,
+          "uptime": 12.763129163,
+          "memory": {
+            "rss": 960970752,
+            "heapTotal": 686272512,
+            "heapUsed": 573210248,
+            "external": 146983325,
+            "arrayBuffers": 70695627
+          },
+          "heap": {
+            "total_heap_size": 686272512,
+            "total_heap_size_executable": 6193152,
+            "total_physical_size": 686272512,
+            "total_available_size": 137066122808,
+            "used_heap_size": 573210472,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262624,
+            "external_memory": 146983325,
+            "total_allocated_bytes": 1757781048
+          },
+          "os": {
+            "pid": 2619714,
+            "parent": 2619590,
+            "startTicks": "21504598",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 926370,
+            "anonymousKiB": 923176,
+            "privateDirtyKiB": 923232
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-2",
+          "pid": 2619714,
+          "at": 1790925379789,
+          "uptime": 12.939827243,
+          "memory": {
+            "rss": 962019328,
+            "heapTotal": 686534656,
+            "heapUsed": 576267808,
+            "external": 147079310,
+            "arrayBuffers": 70791612
+          },
+          "heap": {
+            "total_heap_size": 686534656,
+            "total_heap_size_executable": 6193152,
+            "total_physical_size": 686534656,
+            "total_available_size": 137063064752,
+            "used_heap_size": 576268032,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262752,
+            "external_memory": 147079310,
+            "total_allocated_bytes": 1764334048
+          },
+          "os": {
+            "pid": 2619714,
+            "parent": 2619590,
+            "startTicks": "21504598",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 926499,
+            "anonymousKiB": 923304,
+            "privateDirtyKiB": 923360
+          },
+          "descendants": []
+        },
+        {
+          "phase": "bounded-idle",
+          "pid": 2619714,
+          "at": 1790925380917,
+          "uptime": 14.067621365,
+          "memory": {
+            "rss": 962019328,
+            "heapTotal": 686534656,
+            "heapUsed": 576471624,
+            "external": 147113751,
+            "arrayBuffers": 70826053
+          },
+          "heap": {
+            "total_heap_size": 686534656,
+            "total_heap_size_executable": 6193152,
+            "total_physical_size": 686534656,
+            "total_available_size": 137062860912,
+            "used_heap_size": 576471848,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262944,
+            "external_memory": 147113751,
+            "total_allocated_bytes": 1765182216
+          },
+          "os": {
+            "pid": 2619714,
+            "parent": 2619590,
+            "startTicks": "21504598",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 926516,
+            "anonymousKiB": 923320,
+            "privateDirtyKiB": 923376
+          },
+          "descendants": []
+        }
+      ],
+      "requests": [
+        {
+          "window": 0,
+          "value": {
+            "ok": false,
+            "runId": "b0dd6820-bba4-4bd9-92db-c4dc1f0d2273",
+            "root": "/tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.txt and subject.txt is not a code module, so only a filesystem read can reach it; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 11.04,
+              "provenanceMs": 14.97,
+              "preparationMs": 0.12,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 4,
+              "finalizationMs": 0.15,
+              "totalHandlerMs": 528.82
+            }
+          },
+          "requestSha256": "a7e95ce7345ff4fcba64feefe528f404b743255ff468ff40197433a4f885698d",
+          "requestBytes": 130
+        },
+        {
+          "window": 1,
+          "value": {
+            "ok": false,
+            "runId": "c1f29a7f-cb54-4af5-b178-d5b87da4ab21",
+            "root": "/tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.txt and subject.txt is not a code module, so only a filesystem read can reach it; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 9.9,
+              "provenanceMs": 18.86,
+              "preparationMs": 0.02,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 2.71,
+              "finalizationMs": 0.02,
+              "totalHandlerMs": 72.65
+            }
+          },
+          "requestSha256": "a7e95ce7345ff4fcba64feefe528f404b743255ff468ff40197433a4f885698d",
+          "requestBytes": 130
+        },
+        {
+          "window": 2,
+          "value": {
+            "ok": false,
+            "runId": "78769bd4-a983-4368-995e-e85d7aca2948",
+            "root": "/tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.txt and subject.txt is not a code module, so only a filesystem read can reach it; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 7.12,
+              "provenanceMs": 11.63,
+              "preparationMs": 0.01,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 2.84,
+              "finalizationMs": 0.03,
+              "totalHandlerMs": 116.13
+            }
+          },
+          "requestSha256": "a7e95ce7345ff4fcba64feefe528f404b743255ff468ff40197433a4f885698d",
+          "requestBytes": 130
+        }
+      ],
+      "descendants": [
+        {
+          "pid": 2636553,
+          "parent": 2619714,
+          "startTicks": "21505884",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 120,
+          "anonymousKiB": 48,
+          "privateDirtyKiB": 48,
+          "samples": 1,
+          "peakPssKiB": 120
+        }
+      ],
+      "pauses": 0,
+      "reaped": true,
+      "identity": {
+        "pid": 2619714,
+        "entry": "/tmp/pcv/papercusp-serving-compiler-4X1yRv/host/hono-host.mjs",
+        "startTicks": "21504598",
+        "bundleSha256": "ba55a2d10b6fe513503f76f27f3fb3e041bfbcfd1795f25e49fa0962763e95c3"
+      },
+      "leaseReceipt": {
+        "ok": true,
+        "lock_id": "d9d679eb-66d2-46f5-86d2-f3ce9bc97f9e",
+        "owner": "loopback",
+        "owner_label": "system · loopback",
+        "expires_ts": "2026-10-02T07:18:17.023Z",
+        "held": [
+          "subject.txt"
+        ],
+        "newly_held": [
+          "subject.txt"
+        ],
+        "sha_token": {
+          "required_sha": null,
+          "unsynced_risk": false
+        }
+      },
+      "poll": {
+        "intervalMs": 20,
+        "ticks": 109,
+        "totalMs": 40.3604309999846,
+        "maxMs": 16.222395000000688
+      },
+      "trace": {
+        "pid": 2619714,
+        "startedAt": 1790925378868,
+        "until": 1790925408869,
+        "total": 0,
+        "observerMs": 0,
+        "calls": {
+          "fork": {
+            "calls": 0,
+            "stacks": []
+          }
+        },
+        "endedAt": 1790925379828,
+        "limited": false
+      },
+      "unreaped": [],
+      "leaseRelease": {
+        "ok": true,
+        "results": [
+          {
+            "ok": true,
+            "lock_id": "d9d679eb-66d2-46f5-86d2-f3ce9bc97f9e",
+            "released": [
+              "subject.txt"
+            ],
+            "held_before": 1
+          }
+        ],
+        "counts": {
+          "ok": 1,
+          "failed": 0
+        }
+      }
+    },
+    {
+      "mode": "compiler",
+      "samples": [
+        {
+          "phase": "preflight",
+          "pid": 2638734,
+          "at": 1790925388923,
+          "uptime": 7.718839251,
+          "memory": {
+            "rss": 965713920,
+            "heapTotal": 679256064,
+            "heapUsed": 551505704,
+            "external": 146291238,
+            "arrayBuffers": 70003580
+          },
+          "heap": {
+            "total_heap_size": 679256064,
+            "total_heap_size_executable": 5931008,
+            "total_physical_size": 679256064,
+            "total_available_size": 137087832112,
+            "used_heap_size": 551510592,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112832,
+            "external_memory": 146291278,
+            "total_allocated_bytes": 1813588552
+          },
+          "os": {
+            "pid": 2638734,
+            "parent": 2619590,
+            "startTicks": "21506033",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 920095,
+            "anonymousKiB": 916844,
+            "privateDirtyKiB": 916888
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-0",
+          "pid": 2638734,
+          "at": 1790925390890,
+          "uptime": 9.686004099,
+          "memory": {
+            "rss": 968458240,
+            "heapTotal": 684961792,
+            "heapUsed": 562648744,
+            "external": 146710633,
+            "arrayBuffers": 70417079
+          },
+          "heap": {
+            "total_heap_size": 684961792,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 684961792,
+            "total_available_size": 137076682768,
+            "used_heap_size": 562648968,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4227152,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 262784,
+            "external_memory": 146710633,
+            "total_allocated_bytes": 1835207584
+          },
+          "os": {
+            "pid": 2638734,
+            "parent": 2619590,
+            "startTicks": "21506033",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 926019,
+            "anonymousKiB": 922768,
+            "privateDirtyKiB": 922824
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-1",
+          "pid": 2638734,
+          "at": 1790925391511,
+          "uptime": 10.307215631,
+          "memory": {
+            "rss": 968458240,
+            "heapTotal": 685223936,
+            "heapUsed": 567240272,
+            "external": 147037557,
+            "arrayBuffers": 70743779
+          },
+          "heap": {
+            "total_heap_size": 685223936,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 685223936,
+            "total_available_size": 137072090776,
+            "used_heap_size": 567240496,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4235352,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 263040,
+            "external_memory": 147037557,
+            "total_allocated_bytes": 1846526632
+          },
+          "os": {
+            "pid": 2638734,
+            "parent": 2619590,
+            "startTicks": "21506033",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 926202,
+            "anonymousKiB": 922952,
+            "privateDirtyKiB": 923008
+          },
+          "descendants": []
+        },
+        {
+          "phase": "window-2",
+          "pid": 2638734,
+          "at": 1790925392140,
+          "uptime": 10.936136481,
+          "memory": {
+            "rss": 968458240,
+            "heapTotal": 685223936,
+            "heapUsed": 571934032,
+            "external": 147460648,
+            "arrayBuffers": 71166646
+          },
+          "heap": {
+            "total_heap_size": 685223936,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 685223936,
+            "total_available_size": 137067396464,
+            "used_heap_size": 571934256,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4243552,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 263360,
+            "external_memory": 147460648,
+            "total_allocated_bytes": 1856231256
+          },
+          "os": {
+            "pid": 2638734,
+            "parent": 2619590,
+            "startTicks": "21506033",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 926383,
+            "anonymousKiB": 923132,
+            "privateDirtyKiB": 923188
+          },
+          "descendants": []
+        },
+        {
+          "phase": "bounded-idle",
+          "pid": 2638734,
+          "at": 1790925393263,
+          "uptime": 12.059109759,
+          "memory": {
+            "rss": 968458240,
+            "heapTotal": 685223936,
+            "heapUsed": 573553200,
+            "external": 148007706,
+            "arrayBuffers": 71713704
+          },
+          "heap": {
+            "total_heap_size": 685223936,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 685223936,
+            "total_available_size": 137065777240,
+            "used_heap_size": 573553424,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4243552,
+            "peak_malloced_memory": 118598848,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 348232,
+            "used_global_handles_size": 263520,
+            "external_memory": 148007706,
+            "total_allocated_bytes": 1860096776
+          },
+          "os": {
+            "pid": 2638734,
+            "parent": 2619590,
+            "startTicks": "21506033",
+            "executable": "/home/marsh-office/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssKiB": 926439,
+            "anonymousKiB": 923188,
+            "privateDirtyKiB": 923244
+          },
+          "descendants": []
+        }
+      ],
+      "requests": [
+        {
+          "window": 0,
+          "value": {
+            "ok": false,
+            "runId": "93fc8738-922d-4c4f-a30c-3e609f48db78",
+            "root": "/tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.ts and caller.test.ts may observe it: imports /tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home/subject.ts; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 12.35,
+              "provenanceMs": 13.17,
+              "preparationMs": 0.09,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 4.2,
+              "finalizationMs": 0.14,
+              "totalHandlerMs": 616.79
+            }
+          },
+          "requestSha256": "a7e95ce7345ff4fcba64feefe528f404b743255ff468ff40197433a4f885698d",
+          "requestBytes": 130
+        },
+        {
+          "window": 1,
+          "value": {
+            "ok": false,
+            "runId": "6cc7e411-deda-4945-a37a-360e930a5a65",
+            "root": "/tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.ts and caller.test.ts may observe it: imports /tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home/subject.ts; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 7.56,
+              "provenanceMs": 14.27,
+              "preparationMs": 0.02,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 2.62,
+              "finalizationMs": 0.01,
+              "totalHandlerMs": 570.25
+            }
+          },
+          "requestSha256": "a7e95ce7345ff4fcba64feefe528f404b743255ff468ff40197433a4f885698d",
+          "requestBytes": 130
+        },
+        {
+          "window": 2,
+          "value": {
+            "ok": false,
+            "runId": "dc449095-d88c-4b49-98b4-26a869f06cf5",
+            "root": "/tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home",
+            "error": "mutation_probe_active",
+            "hint": "no test process was started because this checkout has an active mutation probe on subject.ts and caller.test.ts may observe it: imports /tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home/subject.ts; retry after the probe restores its source",
+            "testRunIds": [],
+            "rootSource": "requested",
+            "phaseTimingsMs": {
+              "preflightMs": 7.77,
+              "provenanceMs": 15.03,
+              "preparationMs": 0.02,
+              "admissionWaitMs": null,
+              "routerExecutionMs": null,
+              "ledgerIdReadbackMs": 2.55,
+              "finalizationMs": 0.01,
+              "totalHandlerMs": 577.16
+            }
+          },
+          "requestSha256": "a7e95ce7345ff4fcba64feefe528f404b743255ff468ff40197433a4f885698d",
+          "requestBytes": 130
+        }
+      ],
+      "descendants": [
+        {
+          "pid": 2649008,
+          "parent": 2638734,
+          "startTicks": "21506945",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 113,
+          "anonymousKiB": 44,
+          "privateDirtyKiB": 44,
+          "samples": 1,
+          "peakPssKiB": 113
+        },
+        {
+          "pid": 2649042,
+          "parent": 2638734,
+          "startTicks": "21506949",
+          "executable": "/home/marsh-office/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssKiB": 71854,
+          "anonymousKiB": 71644,
+          "privateDirtyKiB": 71660,
+          "samples": 24,
+          "peakPssKiB": 71854
+        },
+        {
+          "pid": 2649458,
+          "parent": 2649042,
+          "startTicks": "21506992",
+          "executable": "/home/marsh-office/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild",
+          "executableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+          "pssKiB": 22888,
+          "anonymousKiB": 22176,
+          "privateDirtyKiB": 22176,
+          "samples": 3,
+          "peakPssKiB": 22888
+        },
+        {
+          "pid": 2649591,
+          "parent": 2638734,
+          "startTicks": "21507011",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 28,
+          "anonymousKiB": 28,
+          "privateDirtyKiB": 28,
+          "samples": 1,
+          "peakPssKiB": 28
+        },
+        {
+          "pid": 2649608,
+          "parent": 2638734,
+          "startTicks": "21507015",
+          "executable": "/home/marsh-office/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssKiB": 71721,
+          "anonymousKiB": 71512,
+          "privateDirtyKiB": 71528,
+          "samples": 23,
+          "peakPssKiB": 71721
+        },
+        {
+          "pid": 2650172,
+          "parent": 2649608,
+          "startTicks": "21507055",
+          "executable": "/home/marsh-office/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild",
+          "executableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+          "pssKiB": 22052,
+          "anonymousKiB": 21340,
+          "privateDirtyKiB": 21340,
+          "samples": 4,
+          "peakPssKiB": 22052
+        },
+        {
+          "pid": 2650373,
+          "parent": 2638734,
+          "startTicks": "21507074",
+          "executable": "/usr/bin/git",
+          "executableSha256": "2a8c18fbf43da9f692d75474c72bea9dfd796c260b0f3dfe456376abc3bbd668",
+          "pssKiB": 118,
+          "anonymousKiB": 48,
+          "privateDirtyKiB": 48,
+          "samples": 1,
+          "peakPssKiB": 118
+        },
+        {
+          "pid": 2650398,
+          "parent": 2638734,
+          "startTicks": "21507077",
+          "executable": "/home/marsh-office/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssKiB": 61954,
+          "anonymousKiB": 61744,
+          "privateDirtyKiB": 61760,
+          "samples": 24,
+          "peakPssKiB": 71722
+        },
+        {
+          "pid": 2650916,
+          "parent": 2650398,
+          "startTicks": "21507117",
+          "executable": "/home/marsh-office/papercupai-workspace/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild",
+          "executableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+          "pssKiB": 17916,
+          "anonymousKiB": 17204,
+          "privateDirtyKiB": 17204,
+          "samples": 4,
+          "peakPssKiB": 17916
+        }
+      ],
+      "pauses": 0,
+      "reaped": true,
+      "identity": {
+        "pid": 2638734,
+        "entry": "/tmp/pcv/papercusp-serving-compiler-4X1yRv/host/hono-host.mjs",
+        "startTicks": "21506033",
+        "bundleSha256": "ba55a2d10b6fe513503f76f27f3fb3e041bfbcfd1795f25e49fa0962763e95c3"
+      },
+      "leaseReceipt": {
+        "ok": true,
+        "lock_id": "7e1e1315-5fb6-4565-ac0e-a3d370466a30",
+        "owner": "loopback",
+        "owner_label": "system · loopback",
+        "expires_ts": "2026-10-02T07:18:28.884Z",
+        "held": [
+          "subject.ts"
+        ],
+        "newly_held": [
+          "subject.ts"
+        ],
+        "sha_token": {
+          "required_sha": null,
+          "unsynced_risk": false
+        }
+      },
+      "poll": {
+        "intervalMs": 20,
+        "ticks": 158,
+        "totalMs": 482.81366699998034,
+        "maxMs": 48.193459999998595
+      },
+      "trace": {
+        "pid": 2638734,
+        "startedAt": 1790925390206,
+        "until": 1790925420206,
+        "total": 3,
+        "observerMs": 0.32582800000091083,
+        "calls": {
+          "fork": {
+            "calls": 3,
+            "stacks": [
+              "Error\n    at eval (eval at fork (node:child_process:126:3), <anonymous>:6:32)\n    at eval (eval at fork (node:child_process:126:3), <anonymous>:9:70)\n    at fork (node:child_process:126:3)\n    at testImportClosures (file:///tmp/pcv/papercusp-serving-compiler-4X1yRv/host/hono-host.mjs:310251:14)\n    at mutationProbeRefusal (file:///tmp/pcv/papercusp-serving-compiler-4X1yRv/host/hono-host.mjs:310446:25)\n    at async runTestFilesCore (file:///tmp/pcv/papercusp-serving-compiler-4X1yRv/host/hono-host.mjs:314178:25)\n    at async Object.handler (file:///tmp/pcv/papercusp-serving-compiler-4X1yRv/host/hono-host.mjs:314739:26)\n    at async Object.projectedFn [as fn] (file:///tmp/pcv/papercusp-serving-compiler-4X1yRv/host/hono-host.mjs:84864:18)\n    at async Object.run (file:///tmp/pcv/papercusp-serving-compiler-4X1yRv/host/hono-host.mjs:79374:26)\n    at async runDispatchStack (file:///tmp/pcv/papercusp-serving-compiler-4X1yRv/host/hono-host.mjs:78942:20)"
+            ]
+          }
+        },
+        "endedAt": 1790925392176,
+        "limited": false
+      },
+      "unreaped": [],
+      "leaseRelease": {
+        "ok": true,
+        "results": [
+          {
+            "ok": true,
+            "lock_id": "7e1e1315-5fb6-4565-ac0e-a3d370466a30",
+            "released": [
+              "subject.ts"
+            ],
+            "held_before": 1
+          }
+        ],
+        "counts": {
+          "ok": 1,
+          "failed": 0
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "Actual maintained HTTP testing:run preflight; private request-only processes and data, not ambient production load.",
+    "Control uses an unsupported-extension mutation lease; compiler uses a code-module lease. HTTP request and source bytes match.",
+    "Compiler workload is a refused mutation preflight, not a completed test run or normal idle baseline.",
+    "No historical gigabyte caller attribution or production memory reduction is claimed.",
+    "Executable PSS and V8 native counters are separate measurements, not a total native allocation estimate."
+  ],
+  "repositoryPreflight": {
+    "root": "/tmp/pcv/papercusp-test-runtime-kmDuTq/workspaces/test-runtime-555e9fe4-133/operator-home",
+    "initialized": true,
+    "noCommit": true
+  },
+  "inputs": {
+    "sourceBytes": 768915,
+    "sourceSha256": "a0fba187b939a0fbaf9be5b48368a6d1a04a5e1ce1c69c261d958b7fb7f8d860",
+    "testSha256": "e3d86a64cc2ea3839ac8327ea81fb2fc7ee746959465c022365db280b8386a89"
+  },
+  "runner": {
+    "status": 0,
+    "signal": null,
+    "stdoutBytes": 0,
+    "stderrBytes": 4000,
+    "log": {
+      "path": "/tmp/su-7db4f-p011-serving-r24-child.log",
+      "bytes": 622612,
+      "sha256": "55f1164dcf8803a3f30cde19b6a9cfcc39f7df92f26381f467a66464ac0bb017"
+    }
+  }
+}
+

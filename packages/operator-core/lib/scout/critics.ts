@@ -25,7 +25,7 @@ import {
   type CorpusNoveltyOptions,
   type BucketOptions,
 } from './critique-core';
-import { corpusNoveltyHybrid, type SemanticNoveltyDeps } from './semantic-novelty-leg';
+import { corpusNoveltyHybrid, resolvePriorExcerpts, type SemanticNoveltyDeps } from './semantic-novelty-leg';
 import { parseLlmJson } from './llm-json';
 import { DEFAULT_SCOUT_CRITIC_MODEL } from './models';
 import { callScoutPhaseLlm, DEFAULT_SCOUT_CRITIC_TIMEOUT_MS } from './llm-deadline';
@@ -76,8 +76,15 @@ export interface CriticRawScores {
   conceptualNovelty: number;
   /** The LLM feasibility critic's score (0..1). */
   feasibility: number;
+  /** D-002 stage 2: the prior ref the critic judged this idea a restatement of, or
+   *  null. A CLAIM only — `applyDuplicateVerdict` merges it solely when the ref was
+   *  actually shortlisted. Null on every failure path. */
+  duplicateOf: string | null;
   rationale: string;
   costUsd: number;
+  /** WI-10007486: true when the call failed or returned no parseable JSON — the scores
+   *  above are fail-safe placeholders, not a judgment, so the idea must not be bucketed. */
+  failed?: boolean;
 }
 
 export interface CritiqueOptions {
@@ -108,10 +115,17 @@ export interface CriticPrior {
   evidence?: string;
   /** True means nearest-neighbour candidate only, not an above-floor match. */
   implementationCandidate?: boolean;
+  /** D-002 stage 1: in the recall shortlist — the critic adjudicates whether the
+   *  idea restates it (same problem + same mechanism). */
+  duplicateCandidate?: boolean;
+  /** The prior's own text (summary excerpt, else its corpus title) so the critic
+   *  can compare MECHANISMS, not just similarity scores. */
+  excerpt?: string;
 }
 
 const MAX_IMPLEMENTATION_CANDIDATES_FOR_CRITIC = 3;
 const CRITIC_EVIDENCE_EXCERPT_CHARS = 500;
+const CRITIC_PRIOR_TEXT_EXCERPT_CHARS = 300;
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -134,9 +148,10 @@ export function buildCriticPrompt(
     '',
     '• NOVELTY critic (skeptic): is this genuinely NEW, or the obvious move dressed up / something already tried? Be harsh — penalise ideas close to what already exists. This is a mature, actively-developed platform: a well-known operational category (rate-limit ladders, per-account throttling, egress rotation, circuit breakers, retries, caching, scheduling) is MORE LIKELY to already exist than not, so an idea that confidently asserts such a gap without hedging or evidence should be scored LOW, not taken at face value. Retrieved implementation candidates are evidence to inspect, not automatic duplicate verdicts: an irrelevant candidate or no candidate at all is NEVER proof of novelty. Score conceptualNovelty 0 (obvious / already done) … 1 (a real leap).',
     "• FEASIBILITY critic: could this actually work in THIS architecture, and is the cost worth the upside? Also check the idea's OWN cited evidence (specific incidents/logs/tickets) actually supports the mechanism it claims — e.g. a citation describing a local rate-governor pause is NOT evidence of an upstream HTTP 429, and citing the wrong event class undermines the whole premise. If the citations contradict or fail to support the claim, score feasibility LOW and say so explicitly in the rationale. Score feasibility 0 (impractical / no clear payoff, or premise contradicted by its own evidence) … 1 (clearly buildable, high payoff).",
+    '• DUPLICATE check: compare the idea with each prior marked "possible duplicate candidate". It is a DUPLICATE only when it targets the SAME problem with the SAME mechanism — a restatement, however re-worded or re-measured. The same problem attacked with a DIFFERENT mechanism is NOT a duplicate, and topical closeness alone is not one. Set duplicateOf to that prior\'s ref exactly as listed, otherwise null.',
     '',
     'A great idea is novel AND feasible; a leap may be novel but not-yet-feasible (that is fine — it is preserved separately). Reason briefly, then output ONLY this JSON (no prose, no fences):',
-    '{"conceptualNovelty": <0-1 number>, "feasibility": <0-1 number>, "rationale": "<one or two sentences>"}',
+    '{"conceptualNovelty": <0-1 number>, "feasibility": <0-1 number>, "duplicateOf": "<a duplicate-candidate ref>" or null, "rationale": "<one or two sentences>"}',
   ].join('\n');
 
   const priorLines = nearestPriors.length
@@ -145,10 +160,15 @@ export function buildCriticPrompt(
           const score = p.implementationCandidate
             ? `semantic implementation candidate; retrieval score ${p.similarity}; NOT a duplicate verdict`
             : `similarity ${p.similarity}`;
+          const candidate = p.duplicateCandidate ? '; possible duplicate candidate' : '';
           const evidence = p.evidence
             ? `\n    Completion evidence: ${p.evidence.replace(/\s+/g, ' ').slice(0, CRITIC_EVIDENCE_EXCERPT_CHARS)}`
             : '';
-          return `  - ${p.ref}${p.state ? ` [${p.state}]` : ''} (${score})${evidence}`;
+          const text =
+            !p.evidence && p.excerpt
+              ? `\n    Text: ${p.excerpt.replace(/\s+/g, ' ').slice(0, CRITIC_PRIOR_TEXT_EXCERPT_CHARS)}`
+              : '';
+          return `  - ${p.ref}${p.state ? ` [${p.state}]` : ''} (${score}${candidate})${evidence}${text}`;
         })
         .join('\n')
     : '  (none — the bounded evidence-backed corpus found no positive match; coverage is incomplete, so absence is not evidence that the mechanism is new)';
@@ -217,8 +237,10 @@ export async function runCritic(
     return {
       conceptualNovelty: 1,
       feasibility: 0,
+      duplicateOf: null,
       rationale: `critic call failed: ${err instanceof Error ? err.message : String(err)}`,
       costUsd: 0,
+      failed: true,
     };
   }
   const parsed = parseLlmJson(res) as Record<string, unknown> | null;
@@ -228,15 +250,42 @@ export async function runCritic(
     return {
       conceptualNovelty: 1,
       feasibility: 0,
+      duplicateOf: null,
       rationale: 'critic produced no parseable JSON',
       costUsd: res.costUsd,
+      failed: true,
     };
   }
   return {
     conceptualNovelty: clamp01(parsed.conceptualNovelty, 1),
     feasibility: clamp01(parsed.feasibility, 0),
+    duplicateOf: typeof parsed.duplicateOf === 'string' && parsed.duplicateOf.trim() ? parsed.duplicateOf.trim() : null,
     rationale: typeof parsed.rationale === 'string' ? parsed.rationale : '',
     costUsd: res.costUsd,
+  };
+}
+
+/**
+ * D-002 point 3 — the deterministic merge rule for the critic's duplicate claim. A
+ * `duplicateOf` naming a ref that was in THIS idea's stage-1 shortlist merges the idea
+ * (verdict 'reject', `duplicateOf` recorded, notes lead with "duplicate of <ref>"). A
+ * ref that was NOT shortlisted — hallucinated, or a prior the critic was never shown —
+ * is ignored: the LLM may only adjudicate among candidates retrieval surfaced, never
+ * invent one. Pure; returns a new object.
+ */
+export function applyDuplicateVerdict(
+  scored: ScoredIdea,
+  shortlistRefs: readonly string[],
+  duplicateOf: string | null,
+): ScoredIdea {
+  const ref = duplicateOf?.trim();
+  if (!ref || !shortlistRefs.includes(ref)) return scored;
+  return {
+    ...scored,
+    verdict: 'reject',
+    rejectCause: 'duplicate',
+    duplicateOf: ref,
+    notes: scored.notes ? `duplicate of ${ref} — ${scored.notes}` : `duplicate of ${ref}`,
   };
 }
 
@@ -251,19 +300,46 @@ export async function critiqueIdea(
   deps: { llmCall: ScoutLlmCall },
   opts: CritiqueOptions = {},
 ): Promise<ScoredIdea> {
-  // P-017: the deterministic search-first novelty, now blended with the hybrid
-  // embedding leg (fail-open to pure lexical). Still a CEILING the LLM may only lower.
-  const cn = await corpusNoveltyHybrid(`${idea.title} ${idea.body}`, corpus, opts.novelty, opts.semanticDeps);
+  // P-017: the deterministic search-first novelty, blended with the hybrid embedding
+  // leg (fail-open to pure lexical). Still a CEILING the LLM may only lower — but per
+  // D-003 the ceiling is LEXICAL here: semantic similarity feeds the stage-1 shortlist
+  // the critic adjudicates below, because it errs both ways as a hard verdict.
+  const cn = await corpusNoveltyHybrid(
+    `${idea.title} ${idea.body}`,
+    corpus,
+    { ...opts.novelty, semanticLowersNovelty: false },
+    opts.semanticDeps,
+  );
   const corpusByRef = new Map(cn.evaluatedCorpus.map((entry) => [entry.ref, entry]));
-  const matchedRefs = new Set(cn.matches.map((match) => match.ref));
-  const criticPriors: CriticPrior[] = cn.matches.map((match) => ({
-    ref: match.ref,
-    similarity: match.similarity,
-    ...(match.state ? { state: match.state } : {}),
-    ...(corpusByRef.get(match.ref)?.kind === 'implementation' ? { evidence: corpusByRef.get(match.ref)?.text } : {}),
-  }));
+  const shortlistRefs = cn.shortlist.map((m) => m.ref);
+  const excerpts = await resolvePriorExcerpts(shortlistRefs, opts.semanticDeps);
+  const matchedRefs = new Set(cn.matches.map((m) => m.ref));
+  const implementationRefs = new Set(cn.implementationCandidates.map((c) => c.entry.ref));
+  const priorFor = (match: (typeof cn.matches)[number], duplicateCandidate: boolean): CriticPrior => {
+    const entry = corpusByRef.get(match.ref);
+    return {
+      ref: match.ref,
+      similarity: match.similarity,
+      ...(match.state ? { state: match.state } : {}),
+      ...(entry?.kind === 'implementation' ? { evidence: entry.text } : {}),
+      // WI-6773 framing survives the shortlist: a below-floor realized-work row is a
+      // retrieval candidate to inspect, never a verdict — even while it is ALSO a
+      // duplicate candidate the critic may adjudicate.
+      ...(implementationRefs.has(match.ref) && !matchedRefs.has(match.ref) ? { implementationCandidate: true } : {}),
+      ...(duplicateCandidate ? { duplicateCandidate: true, excerpt: excerpts.get(match.ref) ?? entry?.text } : {}),
+    };
+  };
+  // Stage-1 shortlist first (strongest first, each a duplicate candidate WITH text),
+  // then any above-floor match the shortlist did not already carry.
+  const criticPriors: CriticPrior[] = cn.shortlist.map((m) => priorFor(m, true));
+  const listedRefs = new Set(shortlistRefs);
+  for (const match of cn.matches) {
+    if (listedRefs.has(match.ref)) continue;
+    listedRefs.add(match.ref);
+    criticPriors.push(priorFor(match, false));
+  }
   for (const candidate of cn.implementationCandidates.slice(0, MAX_IMPLEMENTATION_CANDIDATES_FOR_CRITIC)) {
-    if (matchedRefs.has(candidate.entry.ref)) continue;
+    if (listedRefs.has(candidate.entry.ref)) continue;
     criticPriors.push({
       ref: candidate.entry.ref,
       similarity: candidate.similarity,
@@ -276,15 +352,37 @@ export async function critiqueIdea(
   // Search-first novelty is the CEILING: the LLM may only LOWER it.
   const novelty = round2(Math.min(cn.novelty, raw.conceptualNovelty));
   const feasibility = round2(raw.feasibility);
-  const { verdict } = verdictFor({ id: idea.id, novelty, feasibility }, opts.bucket);
-  return {
-    idea,
-    novelty,
-    feasibility,
-    noveltyMatches: cn.matches,
-    verdict,
-    notes: raw.rationale,
-  };
+  if (raw.failed) {
+    // WI-10007486: a failed critic judged nothing — its placeholder scores (novelty 1,
+    // feasibility 0) left the search-first ceiling in place, so verdictFor promoted
+    // un-critiqued ideas to MOONSHOT whenever lexical novelty was high (2 of the 3
+    // moonshots in the 2026-10-07/08 artifact window). Reject with the cause instead.
+    return {
+      idea,
+      novelty,
+      feasibility,
+      noveltyMatches: cn.matches,
+      verdict: 'reject',
+      rejectCause: 'critic-failure',
+      notes: raw.rationale,
+      semanticLeg: cn.semanticLeg,
+    };
+  }
+  const { verdict, rejectCause } = verdictFor({ id: idea.id, novelty, feasibility }, opts.bucket);
+  return applyDuplicateVerdict(
+    {
+      idea,
+      novelty,
+      feasibility,
+      noveltyMatches: cn.matches,
+      verdict,
+      ...(rejectCause ? { rejectCause } : {}),
+      notes: raw.rationale,
+      semanticLeg: cn.semanticLeg,
+    },
+    shortlistRefs,
+    raw.duplicateOf,
+  );
 }
 
 /**
@@ -309,24 +407,36 @@ export async function critiqueIdeas(
   // bounded by the SLOWEST single critique, not their sum. runCritic's catch
   // above keeps one failed call from crashing the batch.
   const critiques: ScoredIdea[] = await Promise.all(ideas.map((idea) => critiqueIdea(idea, corpus, deps, opts)));
+  // D-002: an adjudicated duplicate is MERGED, not bucketed — it must neither be
+  // re-stamped keep/moonshot by the bucket pass nor shift the batch-relative moonshot
+  // floor (WI-39492) with a novelty that no longer describes a candidate.
+  // WI-10007486: a critic-failure reject is excluded the same way — its placeholder
+  // scores are not a judgment and must neither be bucketed nor move the floor.
+  const isPreRejected = (c: ScoredIdea): boolean => !!c.duplicateOf || c.rejectCause === 'critic-failure';
+  const preRejected = critiques.filter(isPreRejected);
+  const candidates = critiques.filter((c) => !isPreRejected(c));
   const buckets = bucketByCritique(
-    critiques.map((c) => ({ id: c.idea.id, novelty: c.novelty, feasibility: c.feasibility })),
+    candidates.map((c) => ({ id: c.idea.id, novelty: c.novelty, feasibility: c.feasibility })),
     opts.bucket,
   );
-  for (const c of critiques) {
+  for (const c of candidates) {
     const v = buckets.verdicts[c.idea.id];
     if (v) {
       c.verdict = v.verdict;
       c.notes = c.notes ? `${v.reason} — ${c.notes}` : v.reason;
+      // The FINAL (post-cap, batch-relative) cause replaces the pre-cap one; a pre-cap
+      // reject can become a moonshot under the batch-relative floor, and vice versa.
+      if (v.rejectCause) c.rejectCause = v.rejectCause;
+      else delete c.rejectCause;
     }
   }
-  const byId = new Map(critiques.map((c) => [c.idea.id, c]));
+  const byId = new Map(candidates.map((c) => [c.idea.id, c]));
   const pick = (rows: ReadonlyArray<{ id: string }>): ScoredIdea[] =>
     rows.map((r) => byId.get(r.id)).filter((c): c is ScoredIdea => c != null);
   return {
     critiques,
     kept: pick(buckets.kept),
     moonshot: pick(buckets.moonshot),
-    rejected: pick(buckets.rejected),
+    rejected: [...pick(buckets.rejected), ...preRejected],
   };
 }

@@ -50,6 +50,14 @@ interface OutboxRow {
 
 describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-2026-07-10 P-007)', () => {
   let db: FreshPgDb;
+  // Exercise the projection's privacy/LWW path independently of the live dark
+  // gate. The explicit OFF control below guards the production gate itself.
+  const projection = (enabled = true) => buildMemoriesProjection({
+    workspaceId: WS,
+    harnessSlug: SLUG,
+    sql: db.sql,
+    isFlagOn: async () => enabled,
+  });
 
   beforeAll(async () => {
     db = await createFreshPgDb('mem-fed-privacy');
@@ -152,6 +160,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
         // whole point is that a write path attempting to INSERT an explicit value into
         // a generated column fails here exactly as it would in production.
         '757-memory-canonical-row-kind-discriminator.sql',
+        '1312-memory-canonical-hot-surfaced-bump.sql',
       ],
       { label: 'memory-federation-privacy.integration.test.ts' },
     );
@@ -245,8 +254,30 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
 
   // ── (4): projection-layer private-pot leak guard, against the REAL table ──
   describe('projection demux: a foreign/non-admitted pot memory never lands (no leak)', () => {
+    it('keeps remote puts, retractions and deletes inert while the gate is OFF', async () => {
+      const id = '22222222-2222-2222-2222-222222222222';
+      const otherId = '33333333-3333-3333-3333-333333333333';
+      const row = {
+        harness_slug: SLUG,
+        id,
+        payload: { shareable: true, workspace_id: WS, text: 'existing shared memory' },
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      const provenance = { authorPubkey: 'admitted-peer', origin: 'remote', ts: 100 } as never;
+      await projection().writeToPg(row, provenance);
+      expect(await db.sql`SELECT id FROM harness_shared.memory_canonical WHERE id = ${id}::uuid`).toHaveLength(1);
+
+      const disabled = projection(false);
+      await disabled.writeToPg({ ...row, id: otherId }, provenance);
+      await disabled.writeToPg({ ...row, payload: { ...row.payload, shareable: false } }, provenance);
+      await disabled.deleteFromPg(id, 200);
+      const rows = await db.sql`SELECT id FROM harness_shared.memory_canonical`;
+      expect(rows).toEqual([{ id }]);
+    });
+
     it('a wire row scoped to a DIFFERENT (non-admitted) pot never inserts', async () => {
-      const proj = buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
+      const proj = projection();
       const id = '77777777-7777-7777-7777-777777777777';
       await proj.writeToPg(
         {
@@ -263,7 +294,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
     });
 
     it('a wire row scoped to THIS pot from an admitted peer lands under its receiver-stamped source partition', async () => {
-      const proj = buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
+      const proj = projection();
       const id = '88888888-8888-8888-8888-888888888888';
       await proj.writeToPg(
         {
@@ -287,7 +318,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
   // ("peers apply the retraction of sharing") — the projection must DELETE that
   // source's partition on such an op, never store the now-private content.
   describe('retraction-of-sharing: a remote non-shareable put deletes that source partition', () => {
-    const mkProj = () => buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
+    const mkProj = () => projection();
     const wire = (id: string, payload: Record<string, unknown>) => ({
       harness_slug: SLUG,
       id,
@@ -353,7 +384,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
   // ── (5): fed_order_key LWW guard resolves conflicting writes last-writer-wins ──
   describe('fed_order_key LWW guard resolves last-writer-wins', () => {
     it('a newer fed_ts write wins; a STALE out-of-order write arriving after is refused', async () => {
-      const proj = buildMemoriesProjection({ workspaceId: WS, harnessSlug: SLUG, sql: db.sql });
+      const proj = projection();
       const id = '99999999-9999-9999-9999-999999999999';
       const wire = (text: string) => ({
         harness_slug: SLUG,

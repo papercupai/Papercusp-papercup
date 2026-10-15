@@ -1805,6 +1805,6 @@
       "connectivity": "not-exercised"
     }
   ],
-  "referencePath": "scratchpad/visual-desktop-mockups-2026-09-07/b-workspace.png",
+  "referencePath": "docs/evidence/visual-desktop-mockups-2026-09-07/b-workspace.png",
   "disclosure": "Controlled component states and viewer fixture. No shell entry, real video, remote input, cloud provisioning or connectivity proof. Visual reviews are absent until an actual reviewer inspects the captures."
 }

@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Full locked Rust source notice production",
+  "framework": "operational",
+  "command": [
+    "tools/build-scripts/android-release-provenance.sh source-archive",
+    "tools/build-scripts/android-release-provenance.sh source-notices"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T05:50:49.143757+00:00",
+  "finishedAt": "2026-10-03T05:51:12.687388+00:00",
+  "exitCode": 0,
+  "summary": "Actual current exported source verified 249 locked registry packages and 12321 vendor files; emitted 162 distinct exact offline texts through 463 package/text references. Prior compilation receipt unchanged; no compilation or app rebuild.",
+  "scope": "Selected filename/declared-file notices and pinned supplements for every locked registry package. Not Android linkage, complete source-header attribution, app delivery, rights clearance or recipient access.",
+  "sourceCommit": "8d3e99c8333293ac83387a2b82c1b5a53c139604",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "7ff3fe6dc18fea82c336795b3b556303680d1b099335c00bc3bcefda96a5c768"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "a4be0bc8009b181fc374f3e285528f05ce9fccac5e39014c095875c23fa4d99d"
+    },
+    {
+      "path": "papercup-rust-mobile/Cargo.lock",
+      "sha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "448cd9b2c526663423aa99f47968cf2a74c1f32ee829bb924582d8fa92779355"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "a4be0bc8009b181fc374f3e285528f05ce9fccac5e39014c095875c23fa4d99d"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "operational-delivered-source-verification",
+      "passed": true,
+      "evidence": "Existing source-notices action independently verified complete locked package/checksum/file population before notice emission; 249 packages and 12321 files."
+    },
+    {
+      "id": "exact-text-round-trip",
+      "passed": true,
+      "evidence": "All 463 package/text references resolve to matching SHA-256 of decoded UTF-8 JSON content; library/package populations and reference sets match."
+    },
+    {
+      "id": "prior-compilation-receipt-preserved",
+      "passed": true,
+      "evidence": "Prior c0adc01280f54ac134518efd6a2fe27a6a4bafa847feee59fea08c052624bb52 unchanged before/after. Existing code returns before Cargo in notices mode."
+    }
+  ],
+  "retainedInputs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-mobile-source.tar.gz",
+      "sha256": "b3dd66fcd5e9640928dd6732b251df798a1e7f4e3f763d44501e65c039e0897a"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-rust-dependencies.tar.gz",
+      "sha256": "c3e3ef5c280b270deb739ba1341443d47cbd3fe3afb7693b14c74df0ee570f8d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-mobile-source-retained-f2d39bcf8a582003dd03c8cffa83c48918b988d870ad78d09fcb58b5a62d638d.tar.gz",
+      "sha256": "f2d39bcf8a582003dd03c8cffa83c48918b988d870ad78d09fcb58b5a62d638d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-result.json",
+      "sha256": "c0adc01280f54ac134518efd6a2fe27a6a4bafa847feee59fea08c052624bb52"
+    }
+  ],
+  "retainedOutputs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-rust-notices.json",
+      "sha256": "fd917d1d3955a5e4a9c319e582894f601994181f9235f10bf0e0e765c99e68b5"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-rust-notices-result.json",
+      "sha256": "328fd87258f995066f32bc4409e1cb5ac53fe945fd1712270751229aaa110a52"
+    }
+  ],
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-rust-source-notices-20261003.log",
+      "sha256": "882fcf04a5443ac703720ed8f249bf4fdae2333165cdac5bc2864441f1ea4aef"
+    }
+  ],
+  "registryPackages": 249,
+  "vendorFiles": 12321,
+  "uniqueTexts": 162,
+  "packageTextReferences": 463,
+  "limitations": [
+    "Lockfile includes host/development/platform crates; no Android-linked crate census.",
+    "Selected filenames, declared license files and pinned supplements; not complete source-header attribution or license clearance.",
+    "App collector integration, native viewer execution, final signed candidate and recipient access remain separate."
+  ]
+}

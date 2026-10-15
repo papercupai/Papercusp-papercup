@@ -81,6 +81,18 @@ describe('requireLoopbackOr403', () => {
     expect(await res!.json()).toMatchObject({ error: 'loopback_only' });
   });
 
+  it('guards native roster GETs by loopback origin, independently of workspace cookies', async () => {
+    const path = '/api/zero-harness/rest-query?name=advRoster.list&args=' +
+      encodeURIComponent(JSON.stringify({ workspaceId: 'selected-workspace' }));
+    for (const token of ['selected-workspace-cookie', 'foreign-workspace-cookie']) {
+      const headers = { cookie: `session=${token}`, 'x-papercusp-workspace': 'selected-workspace' };
+      expect(requireLoopbackOr403(new Request('http://127.0.0.1:3070' + path, { headers }))).toBeNull();
+      const denied = requireLoopbackOr403(new Request('http://foreign-roster.invalid' + path, { headers }));
+      expect(denied?.status).toBe(403);
+      expect(await denied!.json()).toMatchObject({ error: 'loopback_only' });
+    }
+  });
+
   it('PAPERCUSP_ALLOW_REMOTE_ADMIN=1 opts a non-loopback request through', () => {
     process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = '1';
     expect(requireLoopbackOr403(req('http://evil.example.com/flags/set'))).toBeNull();

@@ -38,8 +38,16 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { describeSpecTriadGap } from '@papercusp/plan-parser';
-import { specTriadGate, specTriadEpoch, planInSpecTriadScope } from './spec-triad-policy';
-import { ensureSpecTriadFiling, SPEC_TRIAD_NON_TERMINAL_STATUSES } from './spec-triad-filing';
+import {
+  specTriadGate,
+  specTriadEpoch,
+  planInSpecTriadScope,
+  isSpecTriadExcludedTemplate,
+  SPEC_TRIAD_EXCLUDED_TEMPLATES,
+  isSpecTriadCompanion,
+  readSpecTriadDeclaration,
+} from './spec-triad-policy';
+import { ensureSpecTriadFiling, listSpecTriadFilingSuppressions, SPEC_TRIAD_NON_TERMINAL_STATUSES } from './spec-triad-filing';
 import { setWorkItemState } from '../../work-items';
 
 /** Upper bound on work items filed in a single run. See the rails note above. */
@@ -153,7 +161,7 @@ export interface SpecTriadSelection {
  */
 export function selectSpecTriadFilings(input: {
   rows: PlanContentRow[];
-  /** Plan refs with a non-terminal filing already open. */
+  /** Plan refs with an open filing or a reasoned drop (a sticky disposition). */
   alreadyOpen: ReadonlySet<string>;
   /** Refs that passed the metadata-only candidate filter, when phase 1 ran. */
   candidateKeys?: ReadonlySet<string>;
@@ -207,17 +215,11 @@ export interface SpecTriadOpenFiling {
 }
 
 /**
- * `harness_plans.template` values the sweep never files against (WI-10004229).
- *
- * An acceptance rubric (`template: rubric`) is stored in the plan store, but it
- * is a grading BAR, not a plan with work to promote: it carries no P-NNN items
- * and no `## Requirements` / `## Design` by design. A "write the spec triad"
- * filing against one has no correct resolution. An agent that followed it
- * would rewrite the rubric's content under an in-flight vetting attestation or
- * independent grade. Measured 2026-09-30: 335 rubric rows in
- * papercusp-workspace, and at least 8 open filings against them.
+ * `harness_plans.template` values the sweep never files against (WI-10004229). The
+ * list is owned by the shared scope verdict (spec-triad-policy.ts) since WI-10005441,
+ * so the promotion runner applies the same exclusion; re-exported for existing importers.
  */
-export const SPEC_TRIAD_EXCLUDED_TEMPLATES: readonly string[] = ['rubric'];
+export { SPEC_TRIAD_EXCLUDED_TEMPLATES };
 
 /** Where a plan row actually lives, plus the fields the liveness predicate reads. */
 export interface SpecTriadPlanLocator {
@@ -229,6 +231,8 @@ export interface SpecTriadPlanLocator {
   is_legacy: boolean;
   /** `harness_plans.template` — a rubric row is never sweep-live. */
   template: string | null;
+  /** Only plans with existing reminders need this read for exemption reconciliation. */
+  content?: string;
 }
 
 /**
@@ -239,17 +243,18 @@ export interface SpecTriadPlanLocator {
  * with the sweep's own test, or the two legs fight each other.
  */
 export function planRowIsSweepLive(
-  p: Pick<SpecTriadPlanLocator, 'status' | 'archived' | 'is_legacy' | 'template'>,
+  p: Pick<SpecTriadPlanLocator, 'status' | 'archived' | 'is_legacy' | 'template'> & { plan_slug?: string },
 ): boolean {
   return (
     !p.archived &&
     !p.is_legacy &&
-    !(p.template !== null && SPEC_TRIAD_EXCLUDED_TEMPLATES.includes(p.template)) &&
+    !isSpecTriadExcludedTemplate(p.template) &&
+    !isSpecTriadCompanion(p.plan_slug) &&
     (p.status === null || LIVE_PLAN_STATUSES.includes(p.status))
   );
 }
 
-export type SpecTriadReconcileReason = 'plan-missing' | 'plan-not-live';
+export type SpecTriadReconcileReason = 'plan-missing' | 'plan-not-live' | 'plan-exempt';
 
 export interface SpecTriadReconciliation {
   filing: SpecTriadOpenFiling;
@@ -283,13 +288,11 @@ export interface SpecTriadReconcileSelection {
  * covers a plan deleted, archived, or moved to a terminal/unapproved status
  * (shipped / superseded / demoted to draft) while its filing was open: in every
  * case the sweep would not file for that row today, so the standing filing is
- * moot and closing it is safe — if the plan comes back live and still owes the
- * triad, the next run files afresh (dedupe checks only non-terminal filings).
+ * moot and closing it is safe. The reason-bearing disposition remains sticky
+ * if the plan returns; reopening the reminder explicitly makes it actionable.
  *
- * Deliberately NOT handled here: a LIVE plan that no longer owes the triad
- * (triad written / `exempt` declared while the filing was open). That close
- * belongs to whoever did the writing, with their evidence — auto-closing it
- * would erase the paper trail the filing body explicitly asks for.
+ * Structural and declared exemptions settle reminders with that exemption as
+ * evidence. Merely writing the triad still requires the author's close.
  */
 export function selectSpecTriadReconciliations(input: {
   openFilings: SpecTriadOpenFiling[];
@@ -330,6 +333,20 @@ export function selectSpecTriadReconciliations(input: {
       });
       continue;
     }
+    const exemption = isSpecTriadCompanion(row.plan_slug)
+      ? 'acceptance-* companion plan (structurally exempt)'
+      : readSpecTriadDeclaration(row.content ?? '') === 'exempt'
+        ? 'specTriad: exempt in plan frontmatter'
+        : null;
+    // Preserve the existing rubric-template evidence when both exclusions apply.
+    if (exemption && !isSpecTriadExcludedTemplate(row.template)) {
+      candidates.push({
+        filing: f,
+        reason: 'plan-exempt',
+        detail: `spec-triad reconciliation: plan '${slug}' at '${f.ref}' is exempt: ${exemption}. This reminder is settled by that exemption.`,
+      });
+      continue;
+    }
     if (!planRowIsSweepLive(row)) {
       const why = row.archived
         ? 'archived'
@@ -344,8 +361,8 @@ export function selectSpecTriadReconciliations(input: {
         detail:
           `spec-triad reconciliation: plan '${slug}' at '${f.ref}' is ${why} — the sweep ` +
           `only gates ready/active plans, so this filing's lane is settled or unapproved and ` +
-          `the filing is moot. A plan re-approved while still owing the triad gets a fresh ` +
-          `filing (exact-ref dedupe checks only non-terminal filings).`,
+          `the filing is moot. This reasoned disposition remains sticky; explicitly reopen ` +
+          `the reminder if the triad needs to be pursued again.`,
       });
       continue;
     }
@@ -406,7 +423,7 @@ async function reconcileDanglingSpecTriadFilings(
       slugs.length === 0
         ? []
         : ((await sql`
-            SELECT workspace_id, harness_slug, plan_slug, status, archived, is_legacy, template
+            SELECT workspace_id, harness_slug, plan_slug, status, archived, is_legacy, template, content
               FROM harness_shared.harness_plans
              WHERE plan_slug = ANY(${slugs})
           `) as unknown as SpecTriadPlanLocator[]);
@@ -518,6 +535,7 @@ export async function runSpecTriadSweepOnce(
          AND is_legacy = false
          AND (status IS NULL OR status = ANY(${LIVE_PLAN_STATUSES}))
          AND (template IS NULL OR NOT (template = ANY(${SPEC_TRIAD_EXCLUDED_TEMPLATES as string[]})))
+         AND plan_slug NOT LIKE 'acceptance-%'
     `) as unknown as PlanMetaRow[];
   } catch (err) {
     return empty(`plan scan failed: ${(err as Error).message}`);
@@ -528,7 +546,7 @@ export async function runSpecTriadSweepOnce(
   // directions, and phase 1 cannot tell `required` from `exempt`).
   const candidates = metas.filter((m) => {
     if (m.has_declaration) return true;
-    return planInSpecTriadScope({ content: '', created: m.created }, { flagEnabled: true, epoch })
+    return planInSpecTriadScope({ planSlug: m.plan_slug, content: '', created: m.created }, { flagEnabled: true, epoch })
       .inScope;
   });
 
@@ -569,12 +587,7 @@ export async function runSpecTriadSweepOnce(
   // Which plans already have an outstanding filing?
   let alreadyOpen = new Set<string>();
   try {
-    const existing = (await sql`
-      SELECT DISTINCT payload->>'specTriadPlan' AS ref
-        FROM harness_shared.work_items
-       WHERE payload->>'specTriadPlan' IS NOT NULL
-         AND status = ANY(${SPEC_TRIAD_NON_TERMINAL_STATUSES})
-    `) as unknown as Array<{ ref: string | null }>;
+    const existing = await listSpecTriadFilingSuppressions();
     alreadyOpen = new Set(existing.map((e) => e.ref).filter((r): r is string => !!r));
   } catch (err) {
     // Cannot prove absence ⇒ do not file. Filing duplicates every day is worse

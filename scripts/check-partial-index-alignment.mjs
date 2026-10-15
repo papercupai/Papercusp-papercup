@@ -103,6 +103,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 import { isLiveCodeAt, stripCommentsAndStrings, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
 
@@ -501,4 +502,4 @@ function main() {
   process.exit(1);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (isCliEntry(import.meta.url)) main();

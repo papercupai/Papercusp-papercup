@@ -248,6 +248,51 @@ describe('accounts:status', () => {
     expect(b.accounts[1].egress).toBeUndefined();
   });
 
+  describe('oversized-tool-results-reduction P-005: summary by default, full on request', () => {
+    const history7d = [{ at: 1, u: 0.5 }, { at: 2, u: 0.6 }];
+    const rows = () =>
+      [
+        { id: 'A1', provider: 'claude', credentialRef: 'token:/p', available: true, rate: { history7d, utilization7d: 0.6, pausedUntil: 0 }, burn: { action: 'shed' } },
+        { id: 'A2', provider: 'claude', credentialRef: 'token:/q', available: false, rate: { history7d, utilization7d: 1 }, burn: { action: 'hold' } },
+      ] as never;
+
+    it('default (no account) omits rate.history7d and credentialRef but keeps every other field', async () => {
+      statusM.mockResolvedValue(rows());
+      const b = body(await statusTool.handler({} as never, {} as never) as Out);
+      expect(b.detail).toBe('summary');
+      expect(b.omitted.fields).toEqual(['rate.history7d', 'credentialRef']);
+      expect(b.accounts).toHaveLength(2);
+      for (const row of b.accounts) {
+        expect(row.rate.history7d).toBeUndefined();
+        expect(row.credentialRef).toBeUndefined();
+      }
+      expect(b.accounts[0]).toMatchObject({ id: 'A1', available: true, rate: { utilization7d: 0.6, pausedUntil: 0 }, burn: { action: 'shed' } });
+    });
+
+    it('account:<id> returns ONLY that row at full detail, while poolVerdict still covers the whole pool', async () => {
+      const all = rows();
+      statusM.mockResolvedValue(all);
+      const b = body(await statusTool.handler({ account: 'A2' } as never, {} as never) as Out);
+      expect(b.detail).toBeUndefined();
+      expect(b.accounts).toHaveLength(1);
+      expect(b.accounts[0]).toMatchObject({ id: 'A2', credentialRef: 'token:/q', rate: { history7d } });
+      // The rollup is computed from EVERY row, not the one the caller narrowed to.
+      expect(verdictM).toHaveBeenCalledWith(all, expect.any(Number));
+    });
+
+    it("detail:'full' keeps history7d and credentialRef on every row", async () => {
+      statusM.mockResolvedValue(rows());
+      const b = body(await statusTool.handler({ detail: 'full' } as never, {} as never) as Out);
+      expect(b.accounts.map((r: { credentialRef: string }) => r.credentialRef)).toEqual(['token:/p', 'token:/q']);
+      expect(b.accounts[0].rate.history7d).toEqual(history7d);
+    });
+
+    it('toAccountStatusSummaryRow leaves a row without rate history untouched apart from credentialRef', () => {
+      expect(mod.toAccountStatusSummaryRow({ id: 'X', credentialRef: 'c', rate: { utilization7d: 0 } })).toEqual({ id: 'X', rate: { utilization7d: 0 } });
+      expect(mod.toAccountStatusSummaryRow({ id: 'Y' })).toEqual({ id: 'Y' });
+    });
+  });
+
   it('passes the workspace arg through to the status read-model', async () => {
     statusM.mockResolvedValue([] as never);
     await statusTool.handler({ workspace: 'ws-7' } as never, {} as never);
@@ -342,10 +387,13 @@ describe('accounts:status', () => {
       };
       mockResolvedOnceTyped(statsM, stats);
       const b = body((await statusTool.handler({} as never, {} as never)) as Out);
-      expect(b.accounts[0]).toEqual({ ...rows[0], billing: overageBilling });
-      expect(b.accounts[1]).toEqual({ ...rows[1], billing: 'not-observed' });
+      // The default view is the summary row (P-005: no credentialRef / rate.history7d), with
+      // the billing join applied on top of it.
+      const summary = mod.toAccountStatusSummaryRow;
+      expect(b.accounts[0]).toEqual({ ...summary(rows[0]), billing: overageBilling });
+      expect(b.accounts[1]).toEqual({ ...summary(rows[1]), billing: 'not-observed' });
       // The Anthropic billing model does not apply to codex: no key, not a fabricated value.
-      expect(b.accounts[2]).toEqual(rows[2]);
+      expect(b.accounts[2]).toEqual(summary(rows[2]));
       expect(b.accounts[2]).not.toHaveProperty('billing');
       expect(b.billing).toEqual({ source: 'gateway:/stats', reachable: true, supported: true, metered: tally });
       // ONE /stats read, shared with accountStatus so edge-throttle and billing describe one instant.

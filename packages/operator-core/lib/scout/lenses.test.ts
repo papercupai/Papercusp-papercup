@@ -20,6 +20,14 @@ import {
 } from './lenses';
 import { CREATIVE_LENSES } from './types';
 import type { CorpusDigest, MetaPattern } from './types';
+import {
+  classifyIdeaOutcome,
+  computeLensOutcomes,
+  computeLensOutcomesFromCached,
+  type RoutedIdeaProvenance,
+} from './outcome-feedback';
+import type { ChangeFeedEntry } from '../curation/change-feed';
+import { pickNewestLensWeightScope } from './routed-ledger';
 
 const pat = (ref: string, summary = `pattern ${ref}`): MetaPattern => ({ ref, summary }) as MetaPattern;
 const digest = (over: Partial<CorpusDigest> = {}): CorpusDigest =>
@@ -260,5 +268,91 @@ describe('deterministic rubric seeding (blender-self-learning-2026-07-12 P-004)'
     expect(seeded.system).toContain('rubric:r1#a@h');
     const unseeded = buildIdeatorPrompt({ lens: 'reframing', digest: withRubrics });
     expect(unseeded.system).not.toContain('## Rubric focus');
+  });
+});
+
+/**
+ * scout-su-ideate-pipeline-gaps-2026-10-08 P-008 / R-19: the lens weights the scout cycle
+ * samples from are computed from the CORRECTED routed-idea outcomes, and the reader serves
+ * the scope those outcomes last produced — never a retired scope's stale weights.
+ */
+describe('lens weights use corrected outcomes (P-008 / R-19)', () => {
+  const at = '2026-10-01T00:00:00.000Z';
+  const feedEntry = (ref: string, detail: string): ChangeFeedEntry =>
+    ({ id: ref, kind: 'completion', title: `Closed: ${ref}`, detail, ref, ts: at }) as ChangeFeedEntry;
+  const row = (p: Partial<RoutedIdeaProvenance> & Pick<RoutedIdeaProvenance, 'ideaId' | 'lens' | 'routedRef'>): RoutedIdeaProvenance =>
+    ({ rail: 'improvement', ...p }) as RoutedIdeaProvenance;
+
+  const provenance: RoutedIdeaProvenance[] = [
+    row({ ideaId: 'a-won', lens: 'analogical', routedRef: 'wi:EI-1' }),
+    row({ ideaId: 'a-lost', lens: 'analogical', routedRef: 'wi:EI-2' }),
+    row({ ideaId: 'r-won', lens: 'reframing', routedRef: 'wi:EI-3' }),
+    row({ ideaId: 'r-open', lens: 'reframing', routedRef: 'wi:EI-4' }),
+    row({ ideaId: 'f-graded', lens: 'first-principles', routedRef: 'wi:EI-5', humanGrade: 5 }),
+    row({ ideaId: 'c-gym', lens: 'constraint-removal', routedRef: 'gym:SP-77-001', rail: 'gym' }),
+    row({ ideaId: 'c-legacy', lens: 'constraint-removal', routedRef: 'gym:SP-012', rail: 'gym' }),
+  ];
+  const completions = [
+    feedEntry('wi:EI-1', 'Status: done'),
+    feedEntry('wi:EI-2', 'Status: dropped'),
+    feedEntry('wi:EI-3', 'Status: resolved'),
+  ];
+  const pausedRails = new Set(['gym'] as const);
+  /** What refreshScoutOutcomes persists: one classification per row, written to `outcome`. */
+  const cached = (): RoutedIdeaProvenance[] => {
+    const byRef = new Map(completions.map((e) => [e.ref, e]));
+    return provenance.map((p) => ({ ...p, outcome: classifyIdeaOutcome(p, byRef, { pausedRails }) }));
+  };
+
+  it('a recompute from the cached corrected outcomes reproduces the refresh-time lens weights exactly', () => {
+    const live = computeLensOutcomes(provenance, completions, { pausedRails });
+    const recomputed = computeLensOutcomesFromCached(cached(), { pausedRails });
+    for (const lens of CREATIVE_LENSES) {
+      expect(recomputed.byLens[lens]).toEqual(live.byLens[lens]);
+    }
+    // Paused-rail and legacy-gym rows stay out of every denominator in both.
+    expect(recomputed.byLens['constraint-removal']).toMatchObject({ routed: 0, unresolvable: 2 });
+    // A grade still dominates (C-5 / D-002).
+    expect(recomputed.byLens['first-principles']).toMatchObject({ won: 1, lost: 0 });
+  });
+
+  it('FALSIFIER: a weight derived from an outcome the corrected resolver reads differently is visible', () => {
+    const live = computeLensOutcomes(provenance, completions, { pausedRails });
+    // The corrected resolver read a-lost as 'lost'; a weight built from a stale 'won' differs.
+    const drifted = cached().map((p) => (p.ideaId === 'a-lost' ? { ...p, outcome: 'won' as const } : p));
+    const recomputed = computeLensOutcomesFromCached(drifted, { pausedRails });
+    expect(recomputed.byLens.analogical.weight).not.toBe(live.byLens.analogical.weight);
+  });
+
+  it('the weight reader serves the newest scope, never a retired scope listed after it (live 2026-10-08 shape)', () => {
+    const fresh = '2026-10-08T15:36:29.848Z';
+    const stale = '2026-08-02T02:05:36.501Z';
+    const picked = pickNewestLensWeightScope([
+      { lens: 'analogical', weight: '0.1926', potSlug: 'papercusp-workspace', updatedAt: fresh },
+      { lens: 'reframing', weight: '0.2737', potSlug: 'papercusp-workspace', updatedAt: fresh },
+      // Retired scopes, last in heap order: an old last-row-wins fold returned these.
+      { lens: 'analogical', weight: '0.2592', potSlug: 'papercusp', updatedAt: stale },
+      { lens: 'reframing', weight: '0.2669', potSlug: '@singleton', updatedAt: stale },
+    ]);
+    expect(picked.potSlug).toBe('papercusp-workspace');
+    expect(picked.weights).toEqual({ analogical: 0.1926, reframing: 0.2737 });
+    expect(picked.updatedAtMs).toBe(Date.parse(fresh));
+  });
+
+  it('ties pick deterministically; legacy rows without scope metadata keep every valid weight', () => {
+    const t = '2026-09-01T00:00:00.000Z';
+    const tie = pickNewestLensWeightScope([
+      { lens: 'analogical', weight: 0.4, potSlug: 'b', updatedAt: t },
+      { lens: 'analogical', weight: 0.6, potSlug: 'a', updatedAt: t },
+    ]);
+    expect(tie.potSlug).toBe('a');
+    expect(tie.weights).toEqual({ analogical: 0.6 });
+    const legacy = pickNewestLensWeightScope([
+      { lens: 'analogical', weight: 0.3, potSlug: null, updatedAt: null },
+      { lens: 'reframing', weight: '0.7', potSlug: null, updatedAt: null },
+      { lens: 'not-a-lens', weight: 0.9, potSlug: null, updatedAt: null },
+    ]);
+    expect(legacy.weights).toEqual({ analogical: 0.3, reframing: 0.7 });
+    expect(pickNewestLensWeightScope([]).weights).toEqual({});
   });
 });

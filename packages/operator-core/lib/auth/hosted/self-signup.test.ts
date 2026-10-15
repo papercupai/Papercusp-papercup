@@ -58,7 +58,8 @@ function harness(options: { failAt?: string; recentAttempts?: number } = {}) {
     // match, which silently kept every unit test off the linked-identity path.)
     if (query.includes('SELECT hosted_user_id')) return [...identities]
       .filter((key) => key.startsWith(`${values[0]}|${values[1]}|`))
-      .map((key) => ({ hosted_user_id: key.split('|')[2] }));
+      .map((key) => ({ hosted_user_id: key.split('|')[2], identity_status: 'active', user_status: 'active', primary_email: 'member@example.com' }));
+    if (query.includes('FROM papercusp_auth.organization_memberships')) return [{ id: 'membership-1' }];
     if (query.includes('SELECT id::text AS id') && query.includes('hosted_users')) return [];
     if (query.includes('INSERT INTO papercusp_auth.hosted_users')) {
       const id = `00000000-0000-4000-8000-${String(++userSequence).padStart(12, '0')}`;

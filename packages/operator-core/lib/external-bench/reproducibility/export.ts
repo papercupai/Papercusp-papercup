@@ -10,9 +10,30 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
-import { getRollout, getPrereg, listRunResults } from './store';
+import { buildRunReports, getRollout, getPrereg, listRunResults } from './store';
 import { listFleetRunsFull, getCoordTrace } from './fleet';
 import type { DbScope } from './db';
+import { buildCampaignBundle, campaignEntryFromRollout, writeCampaignBundle, type LabelCorrectionInput } from './campaign-bundle';
+import { classifyPreregisteredFreshness } from './freshness';
+
+/**
+ * P-022 / D-009: write a run as a DATED campaign bundle (every task's trace pointer + scorer output, with a
+ * completeness verdict and raw/corrected label-error aggregates). Reuses exportRunBundle's PG reads; the
+ * P-016 reproducer layout written by exportRunBundle is unchanged. Local/repo only — nothing is published.
+ */
+export async function exportCampaignBundle(
+  runId: string,
+  opts: { repoRoot?: string; completedAt?: string | Date; labelCorrections?: LabelCorrectionInput[] } & DbScope = {},
+): Promise<{ root: string; files: string[]; complete: boolean; missing: number }> {
+  const scope: DbScope = { sql: opts.sql, workspaceId: opts.workspaceId };
+  const results = await listRunResults({ runId, ...scope });
+  const entries = [];
+  for (const r of results) entries.push(campaignEntryFromRollout(r, await getRollout(r.rolloutId, scope)));
+  const bundle = buildCampaignBundle({ campaignId: runId, completedAt: opts.completedAt ?? new Date(), entries,
+    labelCorrections: opts.labelCorrections, meta: { source: 'pg', runId } });
+  const files = writeCampaignBundle(bundle, opts.repoRoot ?? REPO_ROOT);
+  return { root: bundle.root, files, complete: bundle.manifest.complete, missing: bundle.manifest.missing.length };
+}
 
 /** Path-safe slug for a benchmark task id (instance ids carry slashes/colons). */
 function slug(taskId: string): string {
@@ -34,7 +55,9 @@ export interface ExportResult {
  */
 export async function exportRunBundle(
   runId: string,
-  opts: { repoRoot?: string } & DbScope = {},
+  // compareTo: the study this run's evidence would be pooled with. The manifest then records whether the
+  // run's frozen protocol still matches it (P-006 evidence freshness); drift makes it stale, not current.
+  opts: { repoRoot?: string; compareTo?: { runId: string } } & DbScope = {},
 ): Promise<ExportResult> {
   const repoRoot = opts.repoRoot ?? REPO_ROOT;
   const scope: DbScope = { sql: opts.sql, workspaceId: opts.workspaceId };
@@ -80,12 +103,20 @@ export async function exportRunBundle(
   }
 
   const prereg = await getPrereg({ runId }, scope);
+  const comparison = opts.compareTo ? await getPrereg({ runId: opts.compareTo.runId }, scope) : null;
+  const freshness = opts.compareTo
+    ? { comparedToRunId: opts.compareTo.runId, comparedToPreregHash: comparison?.preregHash ?? null,
+        ...classifyPreregisteredFreshness(prereg?.config, comparison?.config) }
+    : null;
   const manifestRel = path.join('benchmarks', 'runs', runId, 'manifest.json');
   const manifestAbs = path.join(repoRoot, manifestRel);
   const manifest = {
     runId,
     preregHash: prereg?.preregHash ?? null,
     preregFile: prereg?.filePath ?? null,
+    preregistration: prereg,
+    freshness,
+    reports: buildRunReports(results, prereg),
     suites: [...suites].sort(),
     arms: [...arms].sort(),
     seeds: [...seeds].sort((a, b) => a - b),

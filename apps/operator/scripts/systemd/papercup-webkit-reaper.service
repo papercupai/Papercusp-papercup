@@ -14,4 +14,6 @@ IOSchedulingPriority=7
 # Reaper should finish in seconds; 30s timeout prevents a stuck ps/proc read
 # from blocking the next timer tick.
 TimeoutStartSec=30
-ExecStart=%h/papercupai-workspace/papercusp/bin/reap-leaked-webviews.sh
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/bin/reap-leaked-webviews.sh

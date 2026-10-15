@@ -4,21 +4,25 @@
  * The properties under test are ORDERING properties, which is what makes them
  * worth a suite of their own: every gate here can be individually present and
  * the verb still be unsafe if they run in the wrong order. In particular the
- * registry write gate must fire BEFORE the adapter lookup, because "an adapter
- * exists" is not evidence that we know how to call the API correctly — and once
- * a Bluesky adapter lands in P-011, a reversed order would let an unverified
- * lexicon reach the owner's real public identity.
+ * registry write gate must fire BEFORE the provider lookup, because "a package
+ * is installed" is not evidence that we know how to call the API correctly —
+ * a reversed order would let an unverified write path reach the owner's real
+ * public identity as soon as someone installed a package for it.
+ *
+ * Since provider-adapters-to-packages-2026-10-11 P-002 the write goes through
+ * the installed provider package for the post's platform (`./social-provider.fixture`
+ * installs fakes), so "reached the adapter" is now measured as "the package was
+ * invoked".
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  registerSocialWriteAdapter,
   replyToCanonicalSocialPost,
   socialReplyIdempotencyKey,
-  unregisterSocialWriteAdapter,
   type SocialReplyRequest,
-  type SocialWriteAdapter,
 } from './social';
 import { SocialVisibilityWidened } from './social';
+import { installSocialPackages, invokedArgs } from './social-provider.fixture';
+import { PROVIDER_SOCIAL_POST_CAPABILITY } from '@papercusp/plugin-sdk';
 import { anUnverifiedPlatformId } from '../external-triggers/social/platform-exemplars.fixture';
 
 /**
@@ -65,93 +69,86 @@ const OWNED_SOURCE = {
   cursor: {},
 };
 
-function recordingAdapter(platform: 'mastodon' | 'bluesky' | 'linkedin' = 'mastodon') {
-  const seen: SocialReplyRequest[] = [];
-  const adapter: SocialWriteAdapter = {
-    platform,
-    async reply(request) {
-      seen.push(request);
-      return { externalId: '110000', ref: `${platform}:110000`, url: 'https://example.test/110000' };
-    },
-  };
-  return { adapter, seen };
+/** A mastodon package, installed; `seen()` is every reply request it received. */
+async function mastodonInstalled() {
+  const installed = await installSocialPackages([{ platform: 'mastodon' }]);
+  return { installed, seen: () => invokedArgs<SocialReplyRequest>(installed) };
 }
 
 afterEach(() => {
-  unregisterSocialWriteAdapter('mastodon');
-  unregisterSocialWriteAdapter('bluesky');
-  unregisterSocialWriteAdapter('linkedin');
   vi.restoreAllMocks();
 });
 
-const BASE = { workspaceId: 'ws', userId: 'user-1' };
+const BASE = { workspaceId: 'ws', userId: 'user-1', agentOwnerId: null };
 
 describe('social:reply — rail 1', () => {
   it('sends text to the server-resolved destination and echoes where it went', async () => {
-    const { adapter, seen } = recordingAdapter();
-    registerSocialWriteAdapter(adapter);
+    const { installed, seen } = await mastodonInstalled();
     const sql = fakeSql([[MASTODON_DOC], [OWNED_SOURCE]]);
 
-    const result = await replyToCanonicalSocialPost(sql, {
-      ...BASE,
-      ref: 'mastodon:109999',
-      text: '  thanks!  ',
-    });
+    const result = await replyToCanonicalSocialPost(
+      sql,
+      { ...BASE, ref: 'mastodon:109999', text: '  thanks!  ' },
+      installed.deps,
+    );
 
-    expect(seen).toHaveLength(1);
-    expect(seen[0].target).toEqual({
+    expect(seen()).toHaveLength(1);
+    expect(installed.invokes[0]!.request.capability).toBe('social.reply');
+    expect(installed.invokes[0]!.request.source).toBe('src-1');
+    expect(seen()[0]!.target).toEqual({
       platform: 'mastodon',
       inReplyToId: '109999',
       instanceHost: 'mastodon.social',
     });
-    expect(seen[0].text).toBe('thanks!');
+    expect(seen()[0]!.text).toBe('thanks!');
+    expect((seen()[0] as SocialReplyRequest & { payload: unknown }).payload).toMatchObject(MASTODON_DOC.metadata);
     expect(result.inReplyTo).toBe('mastodon:109999');
     expect(result.ref).toBe('mastodon:110000');
     expect(result.label).toContain('mastodon.social');
   });
 
   it('INHERITS the parent audience when none is requested', async () => {
-    const { adapter, seen } = recordingAdapter();
-    registerSocialWriteAdapter(adapter);
+    const { installed, seen } = await mastodonInstalled();
     const sql = fakeSql([[MASTODON_DOC], [OWNED_SOURCE]]);
 
-    const result = await replyToCanonicalSocialPost(sql, { ...BASE, ref: 'mastodon:109999', text: 'ok' });
+    const result = await replyToCanonicalSocialPost(
+      sql,
+      { ...BASE, ref: 'mastodon:109999', text: 'ok' },
+      installed.deps,
+    );
 
     // The parent is Mastodon `private`, which is followers-only on the ladder.
-    expect(seen[0].visibility).toBe('followers');
+    expect(seen()[0]!.visibility).toBe('followers');
     expect(result.visibility).toBe('followers');
   });
 
   it('REFUSES a reply that would widen the parent audience — and writes nothing', async () => {
-    const { adapter, seen } = recordingAdapter();
-    registerSocialWriteAdapter(adapter);
+    const { installed } = await mastodonInstalled();
     const sql = fakeSql([[MASTODON_DOC], [OWNED_SOURCE]]);
 
     await expect(
-      replyToCanonicalSocialPost(sql, {
-        ...BASE,
-        ref: 'mastodon:109999',
-        text: 'ok',
-        visibility: 'public',
-      }),
+      replyToCanonicalSocialPost(
+        sql,
+        { ...BASE, ref: 'mastodon:109999', text: 'ok', visibility: 'public' },
+        installed.deps,
+      ),
     ).rejects.toBeInstanceOf(SocialVisibilityWidened);
 
     // The refusal must happen BEFORE the write, not be reported after it.
-    expect(seen).toHaveLength(0);
+    expect(installed.invokes).toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
   });
 
   it('permits narrowing', async () => {
-    const { adapter, seen } = recordingAdapter();
-    registerSocialWriteAdapter(adapter);
+    const { installed, seen } = await mastodonInstalled();
     const sql = fakeSql([[MASTODON_DOC], [OWNED_SOURCE]]);
 
-    await replyToCanonicalSocialPost(sql, {
-      ...BASE,
-      ref: 'mastodon:109999',
-      text: 'ok',
-      visibility: 'direct',
-    });
-    expect(seen[0].visibility).toBe('direct');
+    await replyToCanonicalSocialPost(
+      sql,
+      { ...BASE, ref: 'mastodon:109999', text: 'ok', visibility: 'direct' },
+      installed.deps,
+    );
+    expect(seen()[0]!.visibility).toBe('direct');
   });
 
   it('rejects empty or oversized text before touching the database', async () => {
@@ -164,11 +161,22 @@ describe('social:reply — rail 1', () => {
     ).rejects.toThrow(/too_long/);
     expect(sql.calls()).toBe(0);
   });
+
+  it('rejects a package answer that is not a social write result', async () => {
+    // The package is code we did not write; its result is validated against the
+    // SDK contract rather than trusted into a canonical ref.
+    const installed = await installSocialPackages([{ platform: 'mastodon', respond: () => ({ id: 42 }) }]);
+    const sql = fakeSql([[MASTODON_DOC], [OWNED_SOURCE]]);
+
+    await expect(
+      replyToCanonicalSocialPost(sql, { ...BASE, ref: 'mastodon:109999', text: 'ok' }, installed.deps),
+    ).rejects.toThrow(/^provider_result_invalid:mastodon:social\.reply:externalId must be a non-empty string$/);
+  });
 });
 
 describe('social:reply — gate ORDER', () => {
-  it('refuses a registry-refused platform even when an adapter is registered', async () => {
-    // The ordering property: registering an adapter is never evidence that the
+  it('refuses a registry-refused platform even when a package is installed', async () => {
+    // The ordering property: installing a package is never evidence that the
     // platform may be written to, so a refused platform must not reach it.
     //
     // This was asserted against Bluesky while its write path was unread. P-011
@@ -178,8 +186,7 @@ describe('social:reply — gate ORDER', () => {
     // rather than the write-verified gate — earlier, not later, so the property
     // this test protects is strictly stronger, not weaker. If it ever fails, an
     // unusable platform can reach a real public identity.
-    const { adapter, seen } = recordingAdapter('linkedin');
-    registerSocialWriteAdapter(adapter);
+    const installed = await installSocialPackages([{ platform: 'linkedin' }]);
     const sql = fakeSql([
       [
         {
@@ -193,26 +200,26 @@ describe('social:reply — gate ORDER', () => {
     ]);
 
     await expect(
-      replyToCanonicalSocialPost(sql, {
-        ...BASE,
-        ref: 'linkedin:urn:li:share:123',
-        text: 'hello',
-      }),
-    // LinkedIn is VERIFIED as of P-021, so it no longer demonstrates
-    // "unverified" — it now demonstrates something sharper: a usable platform
-    // whose grant covers posting but not commenting. The gate still refuses
-    // before the registered adapter is consulted, which is what this asserts.
+      replyToCanonicalSocialPost(
+        sql,
+        { ...BASE, ref: 'linkedin:urn:li:share:123', text: 'hello' },
+        installed.deps,
+      ),
+      // LinkedIn is VERIFIED as of P-021, so it no longer demonstrates
+      // "unverified" — it now demonstrates something sharper: a usable platform
+      // whose grant covers posting but not commenting. The gate still refuses
+      // before the installed package is consulted, which is what this asserts.
     ).rejects.toThrow(/social_platform_unusable:linkedin:write-verb-unsupported/);
 
-    expect(seen, 'a refused platform must not reach its adapter').toHaveLength(0);
+    expect(installed.invokes, 'a refused platform must not reach its package').toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
   });
 
-  it('now lets a Bluesky reply REACH the adapter — write path verified 2026-08-23 (P-011)', async () => {
+  it('now lets a Bluesky reply REACH the package — write path verified 2026-08-23 (P-011)', async () => {
     // The state change, asserted so it cannot silently regress. The strong ref
     // (uri AND cid) is what atproto requires for both parent and root, and is
     // exactly what the verified lexicon pinned.
-    const { adapter, seen } = recordingAdapter('bluesky');
-    registerSocialWriteAdapter(adapter);
+    const installed = await installSocialPackages([{ platform: 'bluesky' }]);
     const sql = fakeSql([
       [
         {
@@ -225,23 +232,58 @@ describe('social:reply — gate ORDER', () => {
       [{ ...OWNED_SOURCE, kind: 'bluesky' }],
     ]);
 
-    await replyToCanonicalSocialPost(sql, {
-      ...BASE,
-      ref: 'bluesky:at://did:plc:abc/app.bsky.feed.post/3k',
-      text: 'hello',
-    });
+    await replyToCanonicalSocialPost(
+      sql,
+      { ...BASE, ref: 'bluesky:at://did:plc:abc/app.bsky.feed.post/3k', text: 'hello' },
+      installed.deps,
+    );
 
-    expect(seen, 'a verified platform must now reach its adapter').toHaveLength(1);
+    expect(installed.invokes, 'a verified platform must now reach its package').toHaveLength(1);
+    expect(installed.invokes[0]!.provider).toBe('bluesky');
   });
 
-  it('reports a missing adapter distinctly from an unverified write path', async () => {
-    // Two different failures that must not be conflated: "we do not know how to
-    // call this API" vs "we know, but nobody wrote the code yet". Mastodon is
-    // write-verified, so with no adapter registered it must report the latter.
+  it('refuses a platform with NO installed package by name, before the source lookup', async () => {
+    // Mastodon is write-verified, so the only thing missing is the package.
+    // That must read as "nothing installed serves mastodon", not as an
+    // unverified write path or a disconnected account — those send the owner
+    // to fix the wrong thing.
+    const installed = await installSocialPackages([]);
     const sql = fakeSql([[MASTODON_DOC], [OWNED_SOURCE]]);
+
     await expect(
-      replyToCanonicalSocialPost(sql, { ...BASE, ref: 'mastodon:109999', text: 'ok' }),
-    ).rejects.toThrow(/adapter_missing/);
+      replyToCanonicalSocialPost(sql, { ...BASE, ref: 'mastodon:109999', text: 'ok' }, installed.deps),
+    ).rejects.toThrow(
+      /^outbound_source_not_connected:social-post:mastodon — no installed provider package serves mastodon$/,
+    );
+    // Only the post was read: the owner's sources were never listed.
+    expect(sql.calls()).toBe(1);
+    expect(installed.hostFetchesBuilt).toBe(0);
+  });
+
+  it('refuses a package that does not declare social.reply, distinctly', async () => {
+    const installed = await installSocialPackages([
+      { platform: 'mastodon', capabilities: [PROVIDER_SOCIAL_POST_CAPABILITY] },
+    ]);
+    const sql = fakeSql([[MASTODON_DOC], [OWNED_SOURCE]]);
+
+    await expect(
+      replyToCanonicalSocialPost(sql, { ...BASE, ref: 'mastodon:109999', text: 'ok' }, installed.deps),
+    ).rejects.toThrow(/^provider_capability_unsupported:mastodon:social\.reply$/);
+    expect(installed.invokes).toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
+  });
+
+  it('never lets ANOTHER platform\'s package answer for this one', async () => {
+    // The platform IS the provider id. Without that narrowing, an owner whose
+    // only connected source is Reddit would have a Mastodon reply handed to the
+    // Reddit package — one ambiguous-free candidate, so nothing would refuse it.
+    const installed = await installSocialPackages([{ platform: 'mastodon' }, { platform: 'reddit' }]);
+    const sql = fakeSql([[MASTODON_DOC], [{ ...OWNED_SOURCE, id: 'src-reddit', kind: 'reddit' }]]);
+
+    await expect(
+      replyToCanonicalSocialPost(sql, { ...BASE, ref: 'mastodon:109999', text: 'ok' }, installed.deps),
+    ).rejects.toThrow(/^outbound_source_not_connected:social-post:mastodon$/);
+    expect(installed.invokes).toHaveLength(0);
   });
 
   it('refuses an unverified platform before any credential lookup', async () => {
@@ -275,7 +317,7 @@ describe('idempotency key', () => {
   });
 
   it('CONTROL: a time-seeded key would defeat its own purpose', () => {
-    // Reddit documents no idempotency mechanism, so its adapter has nothing but
+    // Reddit documents no idempotency mechanism, so its package has nothing but
     // this key to dedupe on. Mixing in a clock makes every retry unique, which
     // IS the double-post the key exists to prevent.
     const broken = (text: string) => `${text}-${Date.now()}-${Math.random()}`;

@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "EAA P-014 leg (b1): an app on another network (a GCP VM) runs a blueprint operation on a local install through the install's own tunnel, with the install listening only on loopback (live re-proof, 2026-10-02)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "external-app-access-to-workspaces-2026-09-29",
+  "workItem": "WI-10004611",
+  "supersedes": "docs/evidence/p014-own-tunnel-blueprint-live-2026-09-30.json (same leg, run against the code as of 2026-09-30; re-run because the bound source files changed since)",
+  "specs": ["AUTO-BAR-R-32-P-014"],
+  "observer": "su-e445ff19-9904-4cb9-9694-88cb40f1ec82",
+  "outcome": "passed",
+  "command": [
+    "PAPERCUSP_DEV_BACKGROUND_WORKERS=1 VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready scripts/verify-tauri-headless.sh -- bash .papercusp/scratch/eaa/p014/b1p6-assert.sh"
+  ],
+  "assertions": [
+    { "id": "owner-setup", "passed": true, "evidence": "P014_OK owner loopback MCP reachable; P014_OK harness created with operations; P014_OK blueprint.yaml written by harness:create" },
+    { "id": "own-tunnel-only", "passed": true, "evidence": "P014 tunnel_url=https://bosnia-tracy-colleges-assessment.trycloudflare.com ingress_port=39047: the own-tunnel (manual mode) ingress listener is bound to 127.0.0.1 (apps/operator/bin/hono-host.ts, 'own-tunnel external-ingress listener on 127.0.0.1:<port>'), and the only public path was an outbound cloudflared quick tunnel to it; no inbound port was opened on the install." },
+    { "id": "blueprint-operation-from-another-network", "passed": true, "evidence": "P014 vm_from=34.70.0.169; P014_OK VM submit on a fresh harness accepted, pinned to b70258051de17925b8d78cdde71f281e67ec81078c0e12cc16ac9ec0793756ad; P014_OK replayed submit returns the same handle; P014_OK VM reads the operation status" },
+    { "id": "signed-webhook-over-tunnel", "passed": true, "evidence": "P014_OK webhook created through the owner's agent door; P014_OK binding ca7aadb0-2945-4030-a5f2-49f3a5d48c08 armed; P014_OK signed webhook accepted over the tunnel (202, deliveries 2); P014_OK bad signature refused (401 signature_invalid); P014_OK unsigned delivery refused (401 signature_missing); P014_OK stale timestamp refused (401 signature_stale); P014_OK the webhook started the bound operation (2 work items: VM submit + webhook)" }
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T09:19:34Z",
+  "finishedAt": "2026-10-02T09:26:27Z",
+  "rig": {
+    "run": "verify-tauri-headless 20261002T091934Z-2965341 (HARNESS_RESULT verdict=pass passed=3 failed=0)",
+    "log": ".papercusp/scratch/eaa/p014/b1p6-r3.log (13 P014_OK, 0 P014_FAIL, 'P014 done ... fails=0'); per-step bodies in .papercusp/scratch/eaa/p014/b1p6-run3/",
+    "install": "headless Tauri desktop, isolated throwaway Postgres + WebView profile, workspace verify-tauri-isolated-90, background workers on (WI-10004404)",
+    "appClient": "GCP VM pc-host-560adc2a196edd88206fb582-190a4acd-vm (public address 34.70.0.169): a different network from the install",
+    "tunnel": "own tunnel in manual mode (D-001) fronted by a Cloudflare quick tunnel (outbound connection from the install)",
+    "deviationFromPriorRun": "Since about 08:42Z on 2026-10-02 this LAN drops TCP to api.trycloudflare.com, the endpoint cloudflared calls once to obtain quick-tunnel credentials. That one request was relayed through the same GCP VM (cloudflared --quick-service pointed at .papercusp/scratch/eaa/p014/quick-relay.py, which repeats the POST with curl on the VM and returns Cloudflare's reply; log: b1p6-run3/quick-relay.log, '09:24:42Z quick-relay POST /tunnel via pc-host-560adc2a196edd88206fb582-190a4acd-vm: ssh rc=0 status=200 bytes=297', status and byte count only because the reply carries the tunnel secret). The tunnel connection itself ran from the install's box, outbound to the Cloudflare edge, exactly as before. All app traffic (submit, replay, status, webhooks) went VM -> Cloudflare edge -> cloudflared on the install's box -> 127.0.0.1:39047. The relay carries no app traffic and does not change what R-32 measures."
+  },
+  "results": {
+    "R-32": {
+      "verdict": "pass",
+      "observed": "From a GCP VM on another network, the app called blueprint:submit on a freshly created harness of a local install through https://bosnia-tracy-colleges-assessment.trycloudflare.com, which forwards to the install's own-tunnel ingress on 127.0.0.1:39047. The submit was accepted and pinned to a projected specification; a replay returned the same handle and blueprint:status read it back. A signed webhook bound to the same operation was accepted over the tunnel and started the operation; bad, missing and stale signatures were refused.",
+      "artifacts": ["own-tunnel.json", "cloudflared.log", "quick-relay.log", "vm-submit1.txt", "vm-submit2.txt", "vm-status1.txt", "vm-hook-good.txt", "vm-hook-badsig.txt", "vm-hook-nosig.txt", "vm-hook-stale.txt"]
+    }
+  },
+  "summary": "Live P-014 leg (b1) re-proof through the install's own tunnel; 13 assertions passed, 0 failed. The quick-tunnel credential request was relayed through the VM because this LAN drops api.trycloudflare.com (disclosed in rig.deviationFromPriorRun)."
+}

@@ -25,17 +25,32 @@
  * Never throws — losing a dump is better than losing the snapshot.
  */
 
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess, type ChildProcessByStdio } from 'node:child_process';
 import { mkdir, readdir, stat, statfs, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { createWriteStream, type Dirent } from 'node:fs';
+import type { Readable } from 'node:stream';
 import { appendFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 interface HookContext {
   workspaceId: string;
   workspaceRoot: string;
+  /**
+   * Why the snapshot is being taken (workspace-backup's SnapshotTriggerReason).
+   * Only a ROUTINE `interval` dump defers to an overdue Kopia sweep that is still
+   * making progress (the guard's --deadline-at-arrival). Every other reason, and an
+   * absent one, is treated as a safety dump and keeps the guard's due-now priority
+   * (WI-10004871): `pre_destructive` fails CLOSED without a verified dump, so a
+   * deferred dump would time out at its 900s lock wait and block the migration it
+   * guards; `pre-deploy` is the deploy's DB rollback point.
+   */
+  triggerReason?: string;
 }
+
+/** The one trigger reason whose dump yields to a progressing overdue sweep. */
+const ROUTINE_SNAPSHOT_TRIGGER = 'interval';
 
 // Embedded PG port is no longer fixed — desktop picks at boot and writes
 // it to ~/.papercusp/embedded-pg.json (or honors PAPERCUSP_PG_PORT env).
@@ -44,6 +59,7 @@ import { backupHost } from './config';
 import { WORKSPACE_BACKUP_APPLICATION_NAME } from './application-names';
 import {
   evaluateHostDumpCoverage,
+  readHostDumpInProgress,
   hostDumpStatusPath,
   probeSystemIdentifier,
   readHostDumpStatus,
@@ -111,6 +127,9 @@ export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
   // the schema but omitting its bytea data prevents a transient request-body
   // backlog from making the per-workspace restore dump exceed its watchdog.
   'harness_shared.gateway_payload_blobs',
+  // The same spool's body chunks (D-017, migration 1314): content-defined pieces of
+  // those request bodies, kept only while a manifest row above references them.
+  'harness_shared.gateway_payload_chunks',
   // Session-transcript archive blobs (~3 GB TOAST) + their parent metadata rows
   // (excluded together so a restore sees a clean absence, not dangling refs).
   // This pair dominated the dump — one 279s-mean COPY per snapshot, ~65% of the
@@ -119,15 +138,83 @@ export const HOT_SNAPSHOT_EXCLUDED_TABLE_DATA: readonly string[] = [
   // /mnt/data/Backup/db-dumps/pg/papercusp/), which includes all table data.
   'harness_shared.session_archives',
   'harness_shared.session_archive_files',
+  // EI-25164396022471391: measured on snapshot 78722 (2026-10-14), the included
+  // COPY volume had grown to ~50 GB, so a safety dump without host coverage
+  // could not finish. These three were ~14 GB of it and none is restore-critical:
+  // - session_turn_windows (~6.3 GB) is a trigger-maintained substring index
+  //   over session_turns, whose data is already excluded above. Its comment
+  //   says it is rebuildable (truncate it, reset session_turn_windows_state,
+  //   and the deferred job refills it).
+  // - fallback_observations (~4.6 GB, 19M rows) is best-effort degradation
+  //   telemetry read by the watchdog.
+  // - psu_pty_host_events (~2.9 GB) is psu-pty delivery telemetry ingested from
+  //   per-owner JSONL logs.
+  // The hourly host-level dump still carries their rows.
+  'harness_shared.session_turn_windows',
+  'harness_shared.fallback_observations',
+  'harness_shared.psu_pty_host_events',
 ] as const;
 
 const MIN_RESTORABLE_DUMP_BYTES = 10_000;
 const PG_DUMP_TIMEOUT_MS = 15 * 60_000;
+const GUARD_LOCK_WAIT_TIMEOUT_SEC = PG_DUMP_TIMEOUT_MS / 1000;
+// Let the guard's own flock timeout report and exit before this backstop fires.
+const GUARD_READINESS_TIMEOUT_MS = PG_DUMP_TIMEOUT_MS + 5_000;
+const GUARD_READY_SIGNAL = 'KOPIA_BACKUP_GUARD_READY\n';
 // Keep the database-side cancellation ahead of the Node watchdog. Killing the
 // client alone can leave pg_dump's backend holding its transaction lock until
 // PostgreSQL notices the broken connection (EI-21363741549000811).
 const PG_DUMP_STATEMENT_TIMEOUT_MS = 10 * 60_000;
 const PG_DUMP_LOCK_WAIT_TIMEOUT_MS = 30_000;
+/**
+ * Safety dumps (pre_destructive, pre-deploy, manual, no reason) gate a
+ * migration or a deploy. A fixed 900s budget cannot work for them:
+ * measured 2026-10-14 (EI-25164396022471391, snapshot 78722), the dump was
+ * still streaming at 10-20 MB/s when it was killed, and the included volume
+ * needed 42-83 minutes. A safety dump without host-dump coverage is the only
+ * restore point the migration has. It is therefore killed when it STOPS
+ * making progress (no pg_dump output for the stall window), and the absolute
+ * ceiling is only a backstop. The routine interval dump keeps its 900s budget,
+ * because it yields to the hourly sweep and is retried next interval.
+ *
+ * The 60-minute orphan sweep does not fail a dump that runs past an hour:
+ * the snapshot emits a progress heartbeat every 30s for its whole run, and
+ * a recent event counts as liveness (orphan-cleanup.ts).
+ */
+export const SAFETY_DUMP_STALL_TIMEOUT_MS = 5 * 60_000;
+export const SAFETY_DUMP_CEILING_MS = 3 * 60 * 60_000;
+// pg_dump issues one COPY per table, and the largest included table
+// (coord_thread_posts, ~11 GB) needs over 10 minutes at the measured rate. A
+// safety dump's per-statement bound therefore tracks its ceiling, still
+// ahead of the Node backstop. A stalled statement is caught by the stall
+// watchdog plus client_connection_check_interval below, not by this bound.
+const SAFETY_DUMP_STATEMENT_TIMEOUT_MS = SAFETY_DUMP_CEILING_MS - 5 * 60_000;
+// When the watchdog kills the client, the backend notices the closed socket
+// on its next poll even while it is blocked and writing nothing. This is the
+// PG14+ client-liveness check, a user-settable GUC. Without it, a killed
+// dump's backend can keep its AccessShareLocks until its statement ends
+// (EI-21363741549000811).
+const PG_DUMP_CLIENT_CHECK_INTERVAL_MS = 10_000;
+
+/** Watchdog budget for one dump, chosen by its trigger. */
+export interface DumpWatchdogPolicy {
+  /** Kill when pg_dump writes no output for this long (null = no stall check). */
+  stallTimeoutMs: number | null;
+  /** Kill unconditionally after this long once the guard lock is held. */
+  ceilingMs: number;
+  /** Server-side per-statement bound, kept ahead of the ceiling. */
+  statementTimeoutMs: number;
+}
+
+export function dumpWatchdogPolicy(deferToProgressingSweep: boolean): DumpWatchdogPolicy {
+  return deferToProgressingSweep
+    ? { stallTimeoutMs: null, ceilingMs: PG_DUMP_TIMEOUT_MS, statementTimeoutMs: PG_DUMP_STATEMENT_TIMEOUT_MS }
+    : {
+        stallTimeoutMs: SAFETY_DUMP_STALL_TIMEOUT_MS,
+        ceilingMs: SAFETY_DUMP_CEILING_MS,
+        statementTimeoutMs: SAFETY_DUMP_STATEMENT_TIMEOUT_MS,
+      };
+}
 const GIB = 1024n * 1024n * 1024n;
 
 /**
@@ -155,6 +242,59 @@ export function resolveKopiaBackupGuard(): string | null {
   if (process.env.KOPIA_BACKUP_GUARD_ACTIVE === '1') return null;
   return process.env.KOPIA_BACKUP_GUARD_BIN?.trim()
     || (process.platform === 'linux' ? DEFAULT_BACKUP_GUARD_PATH : null);
+}
+
+const GUARD_LOG_LINE_PREFIX = 'KOPIA_BACKUP_GUARD ';
+const MAX_PENDING_GUARD_LOG_CHARS = 8_192;
+const MAX_DUMP_FAILURE_CHARS = 200;
+
+/**
+ * The failure text recorded for a failed dump pipeline: its stderr without the
+ * guard's own decision lines (already forwarded to the journal, see
+ * createGuardLogForwarder), keeping the END, where pg_dump's error and the
+ * watchdog's timeout line land. Quoting the first 200 chars instead recorded
+ * every timed-out dump on 2026-10-06 as "result=waiting reason=lock", hiding the
+ * timeout (EI-25211496463956189).
+ */
+export function summarizeDumpFailure(stderr: string): string {
+  const text = stderr
+    .split('\n')
+    .filter((line) => !line.startsWith(GUARD_LOG_LINE_PREFIX))
+    .join('\n')
+    .trim();
+  if (!text) return 'dump pipeline failed';
+  return text.length > MAX_DUMP_FAILURE_CHARS ? text.slice(-MAX_DUMP_FAILURE_CHARS) : text;
+}
+
+/**
+ * Re-emit the guard's own decision lines from the captured stderr stream.
+ *
+ * The wait-mode guard writes its `KOPIA_BACKUP_GUARD ... label=workspace-db-dump`
+ * lines to stderr so they cannot corrupt the SQL dump on stdout, and this hook
+ * captures that stderr only to quote it on failure. That left every waiting /
+ * started / finished line for this producer out of the journal, so a hot sweep
+ * preempted by a deploy- or migration-triggered dump could not be attributed
+ * to its caller (WI-10004871: two of fourteen preemptions on 2026-10-01 had no
+ * identifiable waiter). Forwarding to the host process's stderr lands them in
+ * the journal of whichever unit ran the hook. pg_dump's own stderr is not
+ * forwarded: it is already quoted in the failure result.
+ */
+export function createGuardLogForwarder(
+  write: (line: string) => void = (line) => { process.stderr.write(`${line}\n`); },
+): (chunk: Buffer | string) => void {
+  let pending = '';
+  return (chunk) => {
+    pending += chunk.toString();
+    let newline = pending.indexOf('\n');
+    while (newline !== -1) {
+      const line = pending.slice(0, newline);
+      pending = pending.slice(newline + 1);
+      if (line.startsWith(GUARD_LOG_LINE_PREFIX)) write(line);
+      newline = pending.indexOf('\n');
+    }
+    // A producer that never ends its line must not grow this buffer unbounded.
+    if (pending.length > MAX_PENDING_GUARD_LOG_CHARS) pending = '';
+  };
 }
 
 /**
@@ -420,16 +560,27 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
   // a deployment with no host job (the desktop ship target) never pays for a
   // psql spawn it can never act on.
   const hostStatus = await readHostDumpStatus(hostDumpStatusPath());
+  const targetSystemIdentifier = hostStatus ? await probeSystemIdentifier(target) : null;
+  // Read progress after the completion receipt and cluster probe. A host run
+  // can begin while those reads are in flight; the fresh marker must win over a
+  // stale STATUS.json and keep this hook from launching a duplicate dump.
+  const hostInProgress = await readHostDumpInProgress();
   const coverage = evaluateHostDumpCoverage({
     database: target.database,
-    targetSystemIdentifier: hostStatus ? await probeSystemIdentifier(target) : null,
+    targetSystemIdentifier,
     status: hostStatus,
+    inProgress: hostInProgress,
     nowEpoch: Math.floor(Date.now() / 1000),
   });
   if (coverage.covered) {
     await log(`pg SKIP: ${coverage.reason}`);
     await log('hook done (skipped: host-covered)');
     return { ok: true, skipped: coverage.reason };
+  }
+  if (coverage.inProgress) {
+    await log(`pg SKIP: ${coverage.reason}`);
+    await log('hook done (degraded: host-backup-in-progress)');
+    return { ok: false, error: coverage.reason };
   }
   if (hostStatus) await log(`host-dump coverage not established: ${coverage.reason}`);
 
@@ -465,6 +616,7 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
     ...target,
     outPath,
     log,
+    deferToProgressingSweep: ctx.triggerReason === ROUTINE_SNAPSHOT_TRIGGER,
   });
 
   await log(`hook done (${result.ok ? 'ok' : 'degraded'})`);
@@ -479,8 +631,11 @@ async function dumpPg(opts: {
   database: string;
   outPath: string;
   log: (msg: string) => Promise<void>;
+  /** See HookContext.triggerReason: true only for a routine interval dump. */
+  deferToProgressingSweep: boolean;
 }): Promise<PreSnapshotHookResult> {
   const tmp = allocateDumpTempPath(opts.outPath);
+  const policy = dumpWatchdogPolicy(opts.deferToProgressingSweep);
   // A crash/timeout from an earlier attempt must not become the next
   // snapshot's input. This is paired with the `*.tmp` Kopia policy rule.
   await unlink(tmp).catch(() => {});
@@ -496,8 +651,9 @@ async function dumpPg(opts: {
     // options, then append bounds that apply to this dump only.
     PGOPTIONS: [
       process.env.PGOPTIONS,
-      `-c statement_timeout=${PG_DUMP_STATEMENT_TIMEOUT_MS}`,
+      `-c statement_timeout=${policy.statementTimeoutMs}`,
       `-c lock_timeout=${PG_DUMP_LOCK_WAIT_TIMEOUT_MS}`,
+      `-c client_connection_check_interval=${PG_DUMP_CLIENT_CHECK_INTERVAL_MS}`,
     ].filter(Boolean).join(' '),
   };
   const pgDumpArgs = [
@@ -532,18 +688,36 @@ async function dumpPg(opts: {
   ];
   const guard = resolveKopiaBackupGuard();
   const dumpCommand = guard ?? 'pg_dump';
+  // --deadline-at-arrival, for a routine interval dump only: measured 2026-10-06, an
+  // interval dump (snapshot 78261, 09:57 EDT) stopped the overdue Kopia sweep 3s after
+  // it began waiting and then failed its own 900s budget anyway, so it must not stop a
+  // sweep that is still making progress (EI-25211496463956189). A safety dump
+  // (pre_destructive, pre-deploy, or no stated reason) keeps due-now priority.
+  const deadlineAtArrival = opts.deferToProgressingSweep ? ['--deadline-at-arrival'] : [];
   const dumpArgs = guard
-    ? ['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL, '--', 'pg_dump', ...pgDumpArgs]
+    ? ['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL, ...deadlineAtArrival, '--', 'pg_dump', ...pgDumpArgs]
     : pgDumpArgs;
+  if (guard) {
+    // Guard logs must not contaminate the SQL dump on stdout. FD 3 reports when
+    // the shared lock is acquired so the 900s dump watchdog starts at that point.
+    env.KOPIA_BACKUP_GUARD_LOG_STDERR = '1';
+    env.KOPIA_BACKUP_GUARD_READY_FD = '3';
+    env.KOPIA_BACKUP_GUARD_LOCK_WAIT_TIMEOUT_SEC = String(GUARD_LOCK_WAIT_TIMEOUT_SEC);
+  }
   return new Promise<PreSnapshotHookResult>((resolve) => {
     const dumpDetached = process.platform !== 'win32';
+    // Node only specializes child-process stream types for fds 0–2; fd 3 is
+    // the optional guard channel. Both branches guarantee stdin=ignore and
+    // stdout/stderr=pipe, so preserve those known stream types explicitly.
     const dump = spawn(dumpCommand, dumpArgs, {
       env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: guard
+        ? ['ignore', 'pipe', 'pipe', 'pipe']
+        : ['ignore', 'pipe', 'pipe'],
       // The watchdog owns this entire guard -> pg_dump tree. Without an
       // isolated group, ChildProcess.kill() reaches only the guard shell.
       detached: dumpDetached,
-    });
+    }) as ChildProcessByStdio<null, Readable, Readable>;
     const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = createWriteStream(tmp);
 
@@ -551,20 +725,64 @@ async function dumpPg(opts: {
     gz.stdout.pipe(out);
     let stderr = '';
     dump.stderr.on('data', (d) => { stderr += d.toString(); });
+    if (guard) dump.stderr.on('data', createGuardLogForwarder());
     gz.stderr.on('data', (d) => { stderr += d.toString(); });
 
     const killDumpTree = () => terminateSpawnTree(dump, dumpDetached);
 
-    const t = setTimeout(() => {
-      stderr += `pg dump timed out after ${PG_DUMP_TIMEOUT_MS}ms\n`;
+    let settled = false;
+    let dumpWatchdog: NodeJS.Timeout | undefined;
+    let stallWatchdog: NodeJS.Timeout | undefined;
+    let guardReadinessWatchdog: NodeJS.Timeout | undefined;
+    // Progress = bytes pg_dump has written. Measured before gzip, whose
+    // buffering would hide steady progress behind long silent stretches.
+    let dumpedBytes = 0;
+    let lastProgressAt = Date.now();
+    dump.stdout.on('data', (d: Buffer | string) => {
+      dumpedBytes += typeof d === 'string' ? Buffer.byteLength(d) : d.length;
+      lastProgressAt = Date.now();
+    });
+    const abortDump = (reason: string) => {
+      if (settled) return;
+      stderr += `${reason}\n`;
       killDumpTree();
       gz.kill('SIGKILL');
-    }, PG_DUMP_TIMEOUT_MS);
-    let settled = false;
+    };
+    // Re-armed one-shot timer rather than an interval. Each check either fires
+    // the kill or sleeps exactly until the current stall window would end.
+    const armStallWatchdog = (stallMs: number) => {
+      const check = () => {
+        stallWatchdog = undefined;
+        if (settled) return;
+        const idleMs = Date.now() - lastProgressAt;
+        if (idleMs >= stallMs) {
+          abortDump(`pg dump stalled: no output for ${stallMs}ms (${dumpedBytes} bytes dumped)`);
+          return;
+        }
+        stallWatchdog = setTimeout(check, stallMs - idleMs);
+      };
+      stallWatchdog = setTimeout(check, stallMs);
+    };
+    const armDumpWatchdog = () => {
+      if (settled || dumpWatchdog) return;
+      if (guardReadinessWatchdog) {
+        clearTimeout(guardReadinessWatchdog);
+        guardReadinessWatchdog = undefined;
+      }
+      // The stall window starts when the lock is held, not at spawn, so
+      // queueing behind the guard is not counted as a stall.
+      lastProgressAt = Date.now();
+      if (policy.stallTimeoutMs !== null) armStallWatchdog(policy.stallTimeoutMs);
+      dumpWatchdog = setTimeout(() => {
+        abortDump(`pg dump timed out after ${policy.ceilingMs}ms (${dumpedBytes} bytes dumped)`);
+      }, policy.ceilingMs);
+    };
     const finalize = async (ok: boolean) => {
       if (settled) return;
       settled = true;
-      clearTimeout(t);
+      if (dumpWatchdog) clearTimeout(dumpWatchdog);
+      if (stallWatchdog) clearTimeout(stallWatchdog);
+      if (guardReadinessWatchdog) clearTimeout(guardReadinessWatchdog);
       if (!out.destroyed) out.end();
       let result: PreSnapshotHookResult;
       if (ok) {
@@ -588,7 +806,7 @@ async function dumpPg(opts: {
           result = { ok: false, error };
         }
       } else {
-        const error = stderr.trim().slice(0, 200) || 'dump pipeline failed';
+        const error = summarizeDumpFailure(stderr);
         await unlink(tmp).catch(() => {});
         await opts.log(`pg ${opts.host}:${opts.port} FAIL: ${error}`);
         result = { ok: false, error };
@@ -646,6 +864,35 @@ async function dumpPg(opts: {
       void finalize(false);
     });
 
+    if (!guard) {
+      armDumpWatchdog();
+    } else {
+      const readiness = dump.stdio[3] as NodeJS.ReadableStream | null;
+      if (!readiness) {
+        stderr += 'backup guard readiness channel unavailable\n';
+        killDumpTree();
+        try { gz.kill('SIGKILL'); } catch { /* already gone */ }
+        void finalize(false);
+      } else {
+        guardReadinessWatchdog = setTimeout(() => {
+          stderr += `backup guard lock readiness timed out after ${GUARD_READINESS_TIMEOUT_MS}ms\n`;
+          killDumpTree();
+          gz.kill('SIGKILL');
+        }, GUARD_READINESS_TIMEOUT_MS);
+        let readinessBuffer = '';
+        readiness.on('data', (d) => {
+          readinessBuffer = `${readinessBuffer}${d.toString()}`.slice(-GUARD_READY_SIGNAL.length);
+          if (readinessBuffer.includes(GUARD_READY_SIGNAL)) armDumpWatchdog();
+        });
+        readiness.on('error', (e) => {
+          stderr += `backup guard readiness pipe failed: ${e.message}\n`;
+          killDumpTree();
+          try { gz.kill('SIGKILL'); } catch { /* already gone */ }
+          void finalize(false);
+        });
+      }
+    }
+
     let dumpClosed = false;
     let gzipClosed = false;
     let dumpCode: number | null = null;
@@ -670,10 +917,30 @@ async function dumpPg(opts: {
   });
 }
 
-async function renameAtomic(from: string, to: string): Promise<void> {
+export async function renameAtomic(from: string, to: string): Promise<void> {
   const { rename } = await import('node:fs/promises');
   // POSIX rename replaces an existing regular file atomically. Unlinking the
   // destination first created a real missing-file window in which a concurrent
   // Kopia scan could omit the DB dump altogether.
-  await rename(from, to);
+  const install = async (holdIds: readonly string[]) => {
+    const { link, rm } = await import('node:fs/promises');
+    if (!Array.isArray(holdIds) || holdIds.some((id) => typeof id !== 'string' || !id)) {
+      throw new Error('backup dump retention: unreadable legal holds; replacement refused');
+    }
+    const archive = `${to}.legal-hold`;
+    if (holdIds.length) {
+      await mkdir(archive, { recursive: true, mode: 0o700 });
+      // Hardlink keeps the previous bytes without opening a missing-target
+      // window or doubling their disk use. The archive is in the snapshot tree.
+      await link(to, join(archive, `${randomUUID()}.gz`)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    } else {
+      await rm(archive, { recursive: true, force: true });
+    }
+    await rename(from, to);
+  };
+  const lease = backupHost().withRetentionLease;
+  if (lease) await lease(install);
+  else await rename(from, to);
 }

@@ -346,3 +346,127 @@ describe('getAcceptanceRubricVettingStatus names a stand-down that strands a pen
     expect(result.gradingAuditDispatchSuppressed).toBeUndefined();
   });
 });
+
+describe('getAcceptanceRubricVettingStatus names the repair call for a pending audit (WI-10005150)', () => {
+  // The defect: a pending-audit rejection said only "audit is 'pending'". Automatic
+  // re-dispatch sweeps just the newest scorecards, so an aged-out pending card never
+  // moves on its own, and the lever (scorecards:repair with an explicit target) was
+  // discoverable only by reading grading-integrity.ts. The rejection must carry it.
+  const pendingAudit = {
+    gradingAudit: {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-09-08T00:01:00.000Z',
+    },
+  } as Partial<ScorecardRow>;
+  const repairCall = (ids: string[]) => ({ tool: 'scorecards:repair', args: { targetIds: ids } });
+
+  it('names the exact call on the card and machine-readably when no suppression reader is wired', async () => {
+    const result = await getAcceptanceRubricVettingStatus(rubric, deps([card(pendingAudit)]));
+
+    expect(result.satisfied).toBe(false);
+    expect(result.candidates[0]).toMatchObject({ rejectedBy: 'grading-audit-unsettled' });
+    // The original observation survives; the lever is ADDED, not substituted.
+    expect(result.candidates[0]!.detail).toContain("audit is 'pending'");
+    expect(result.candidates[0]!.detail).toContain("scorecards:repair { targetIds: ['EI-vetting'] }");
+    expect(result.diagnosis).toContain("scorecards:repair { targetIds: ['EI-vetting'] }");
+    expect(result.pendingGradingAuditRepair).toEqual(repairCall(['EI-vetting']));
+  });
+
+  it('names the call when the suppression reader reports nothing suppressed', async () => {
+    const result = await getAcceptanceRubricVettingStatus(rubric, {
+      ...deps([card(pendingAudit)]),
+      readGradingAuditDispatchSuppression: async () => null,
+    });
+
+    expect(result.gradingAuditDispatchSuppressed).toBeUndefined();
+    expect(result.pendingGradingAuditRepair).toEqual(repairCall(['EI-vetting']));
+  });
+
+  it('does not offer repair for a suppressed card, whose repair would only return skipped', async () => {
+    const result = await getAcceptanceRubricVettingStatus(rubric, {
+      ...deps([card(pendingAudit)]),
+      readGradingAuditDispatchSuppression: async () => ({
+        reason: 'workspace-wide-loop-standdown',
+        pausedOwnerCount: 2,
+      }),
+    });
+
+    expect(result.gradingAuditDispatchSuppressed).toBeDefined();
+    expect(result.pendingGradingAuditRepair).toBeUndefined();
+    expect(result.candidates[0]!.detail).not.toContain('targetIds');
+  });
+
+  it('lists only the unsuppressed cards when suppression is per owner', async () => {
+    const result = await getAcceptanceRubricVettingStatus(rubric, {
+      ...deps([
+        card({ issueId: 'EI-free', createdAt: '2026-09-09T00:00:00.000Z', createdBy: 'su-free', ...pendingAudit }),
+        card({ issueId: 'EI-held', createdAt: '2026-09-08T00:00:00.000Z', createdBy: 'su-paused', ...pendingAudit }),
+      ]),
+      readGradingAuditDispatchSuppression: async (owner) =>
+        owner === 'su-paused'
+          ? { reason: 'workspace-wide-loop-standdown', pausedOwnerCount: 1, targetOwnerId: owner }
+          : null,
+    });
+
+    expect(result.pendingGradingAuditRepair).toEqual(repairCall(['EI-free']));
+    const byId = new Map(result.candidates.map((c) => [c.issueId, c.detail]));
+    expect(byId.get('EI-free')).toContain("targetIds: ['EI-free']");
+    expect(byId.get('EI-held')).not.toContain('targetIds');
+    expect(byId.get('EI-held')).toContain('stand-down');
+  });
+
+  it('does not offer repair for a pending audit whose rubric subject is stale', async () => {
+    const result = await getAcceptanceRubricVettingStatus(
+      rubric,
+      deps([
+        card({
+          ...pendingAudit,
+          subject: { kind: 'rubric', ref: 'acceptance-plan' },
+          subjectRubricCurrentness: {
+            state: 'stale',
+            reason: 'meaning-revision-mismatch',
+            recordedRevision: 3,
+            currentRevision: 4,
+            recordedCriteriaHash: 'hash-old',
+            currentCriteriaHash: 'hash-current',
+          },
+        }),
+      ]),
+    );
+
+    expect(result).toMatchObject({ satisfied: false, state: 'unvetted', reason: 'rejected-attestation' });
+    expect(result.candidates[0]).toMatchObject({ rejectedBy: 'grading-audit-unsettled' });
+    expect(result.candidates[0]!.detail).toContain('subject rubric is stale (meaning-revision-mismatch)');
+    expect(result.candidates[0]!.detail).toContain('scorecards:repair skips non-current rubric subjects');
+    expect(result.pendingGradingAuditRepair).toBeUndefined();
+    expect(result.diagnosis).not.toContain("scorecards:repair { targetIds: ['EI-vetting'] }");
+  });
+
+  it('does not offer repair for a FAILED audit, which a new auditor would not settle', async () => {
+    const result = await getAcceptanceRubricVettingStatus(
+      rubric,
+      deps([
+        card({ gradingAudit: { state: 'failed', metaRubricRef: 'grading-integrity', stampedAt: '2026-09-08T00:01:00.000Z' } } as Partial<ScorecardRow>),
+      ]),
+    );
+
+    expect(result.candidates[0]).toMatchObject({ rejectedBy: 'grading-audit-unsettled' });
+    expect(result.pendingGradingAuditRepair).toBeUndefined();
+    expect(result.candidates[0]!.detail).not.toContain('scorecards:repair');
+  });
+
+  it('does not offer repair once a settled attestation carries, so no auditor is spent for nothing', async () => {
+    const result = await getAcceptanceRubricVettingStatus(
+      rubric,
+      deps([
+        card({ issueId: 'EI-good', createdAt: '2026-09-09T00:00:00.000Z' }),
+        card({ issueId: 'EI-pending', ...pendingAudit }),
+      ]),
+    );
+
+    expect(result.satisfied).toBe(true);
+    expect(result.pendingGradingAuditRepair).toBeUndefined();
+    expect(result.diagnosis).not.toContain('scorecards:repair');
+  });
+});

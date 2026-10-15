@@ -61,12 +61,39 @@ function egressFetch(deadIds: Set<string>, onCall?: (id: string) => void): typeo
 
 const MSG = { model: 'claude-opus-4', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] };
 
+/**
+ * The absorb tests' slot-hold deadline: short enough that the scripted 429/529s exhaust it and hand the
+ * caller to the absorb rung, long enough that attempt 1 is dispatched at all. It must be positive: since
+ * WI-6554700010011504 a deadline already spent before an attempt is a SHED with no upstream call, so a
+ * 0 here would test "no attempt can start" instead of the absorb (WI-6554700010012381).
+ */
+const SHORT_RETRY_DEADLINE_MS = 50;
+
 const post = (extraHeaders: Record<string, string> = {}) =>
   fetch(`http://127.0.0.1:${port}/v1/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...extraHeaders },
     body: JSON.stringify(MSG),
   });
+
+test('a zero retry budget sheds without dispatching or re-acquiring even when absorb is enabled', async () => {
+  let calls = 0;
+  const { governorFor, counts } = perAccountGovernors();
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('A')]),
+    fetchImpl: (async () => { calls++; return new Response('{}'); }) as typeof fetch,
+    governorFor,
+    selfHeal: { enabled: false },
+    internalRetryDeadlineMs: 0,
+    requestAbsorbMs: 8000,
+  });
+  port = await gw.listen(0);
+  const res = await post();
+  assert.equal(res.status, 429);
+  assert.equal(res.headers.get('x-should-retry'), 'false');
+  assert.equal(calls, 0, 'no attempt can start with a zero budget');
+  assert.equal(counts.acquires, 1, 'refreshing a zero budget cannot make progress and must not loop');
+});
 
 test('a dead/hanging egress proxy on one account FAILS OVER to a healthy account → 200, never a 502 wedge', async () => {
   const calls: string[] = [];
@@ -218,7 +245,10 @@ test('EXTENDED ABSORB (requestAbsorbMs) — RELEASES the slot, WAITS OUT a still
     governorFor,
     selfHeal: { enabled: false },
     maxQueueWaitMs: 50,
-    internalRetryDeadlineMs: 0, // hit the slot-hold deadline IMMEDIATELY so each 429 triggers the absorb path
+    // A SHORT slot-hold deadline, so the 429s exhaust it and reach the absorb path. Not 0: since
+    // WI-6554700010011504 a spent budget sheds BEFORE attempt 1 (no upstream call at all), so 0 now
+    // means "no attempt can ever start" rather than "absorb on the first 429" (WI-6554700010012381).
+    internalRetryDeadlineMs: SHORT_RETRY_DEADLINE_MS,
     requestAbsorbMs: ABSORB_MS, // ENABLE extended absorption (off by default)
   });
   port = await gw.listen(0);
@@ -226,7 +256,8 @@ test('EXTENDED ABSORB (requestAbsorbMs) — RELEASES the slot, WAITS OUT a still
   const res = await post();
   const elapsedMs = Date.now() - startedMs;
 
-  assert.equal(res.status, 200, 'absorb-retry held the caller through the transient 429s + returned the eventual 200 — never a shed 429');
+  assert.equal(res.status, 200,
+    `absorb-retry held the caller through the transient 429s (calls=${calls}, elapsed=${elapsedMs}, acquires=${counts.acquires}, releases=${counts.releases}, response=${res.status === 200 ? 'ok' : await res.text()})`);
   assert.ok(calls >= 3, `it kept re-acquiring + retrying through the 429s until the 200 (calls=${calls})`);
 
   // THE ASSERTIONS THE OLD FRESH-GOVERNOR VERSION COULD NOT MAKE:
@@ -275,7 +306,7 @@ test('EXTENDED ABSORB — a FRESH-per-call governor factory cannot hold a penalt
     },
     selfHeal: { enabled: false },
     maxQueueWaitMs: 50,
-    internalRetryDeadlineMs: 0,
+    internalRetryDeadlineMs: SHORT_RETRY_DEADLINE_MS,
     requestAbsorbMs: 8000,
   });
   port = await gw.listen(0);
@@ -323,7 +354,7 @@ test('EXTENDED ABSORB — also holds the caller through a 529 SERVER-OVERLOAD (n
     governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
     selfHeal: { enabled: false },
     maxQueueWaitMs: 50,
-    internalRetryDeadlineMs: 0, // hit the deadline immediately → each 529 reaches the forward-absorb
+    internalRetryDeadlineMs: SHORT_RETRY_DEADLINE_MS, // exhausted by the 529s → each reaches the forward-absorb
     requestAbsorbMs: 8000, // > 2 × OVERLOAD_529_BACKOFF (1s) so the absorb out-waits the overload
   });
   port = await gw.listen(0);
@@ -400,7 +431,7 @@ test('INTERACTIVE fail-fast — a human-labeled caller caps its absorb + sheds f
       governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
       selfHeal: { enabled: false },
       maxQueueWaitMs: 50,
-      internalRetryDeadlineMs: 0, // hit the slot-hold deadline immediately → each 529 reaches the absorb
+      internalRetryDeadlineMs: SHORT_RETRY_DEADLINE_MS, // exhausted by the 529s → each reaches the absorb
       requestAbsorbMs: 3500, // autonomous hold budget (> several OVERLOAD_529_BACKOFF of 1s)
       interactiveAbsorbMs: 20, // human cap: shed almost immediately
     });
@@ -491,4 +522,93 @@ test('a successful response RESETS the streak — a flapping proxy that recovers
     0,
     'the successful response RESET the transport-failure streak — a single post-recovery failure does not re-open the circuit',
   );
+});
+
+// WI-6554700010009426 (2026-10-12 mass-resume collapse): an ADMITTED attempt that dies on the wire spent
+// its slot and produced nothing. Before the fix only a mid-relay death contracted the claude lane, so a
+// herd of TTFB/transport failures left the window wide open and every abort re-uploaded its whole body
+// onto a saturated uplink. The window must contract on the transport failure itself — and must NOT
+// contract when the same traffic is clean (the control, so this cannot pass vacuously).
+// WI-6554700010011426 (plan gateway-admission-congestion-only-2026-10-13 P-002) replaced
+// WI-6554700010009426's "an admitted transport failure CONTRACTS the window" contract:
+// one request's transport failure is one unit of pressure, and the window contracts
+// only when that pressure is sustained across distinct requests.
+test('a lone admitted transport failure does NOT contract the claude admission window', async () => {
+  const dead = new Set<string>(['DEAD']);
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('DEAD'), acct('OK')]),
+    fetchImpl: egressFetch(dead),
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 2000,
+  });
+  port = await gw.listen(0);
+  const initial = gw.stats().admission.maxConcurrent;
+  const clean = await post({ 'x-papercusp-account': 'OK' });
+  assert.equal(clean.status, 200);
+  assert.equal(gw.stats().admission.maxConcurrent, initial, 'a clean success does not contract the window');
+  const res = await post({ 'x-papercusp-account': 'DEAD' });
+  assert.equal(res.status, 200, 'the request still fails over and is served');
+  assert.ok(Object.keys(gw.stats().egressFailsByAccount ?? {}).length > 0, 'CALIBRATION: the transport failure happened');
+  assert.equal(gw.stats().admission.maxConcurrent, initial, 'one slow request cannot shrink the lane');
+});
+
+test('admitted transport failures still reach the claude window once pressure is sustained (herd guard wiring)', async () => {
+  const dead = new Set<string>(['DEAD']);
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('DEAD'), acct('OK')]),
+    fetchImpl: egressFetch(dead),
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 2000,
+    // A threshold of one distinct request makes the herd guard observable with one request.
+    aimd: { decreaseThreshold: 1 },
+  });
+  port = await gw.listen(0);
+  const initial = gw.stats().admission.maxConcurrent;
+  const res = await post({ 'x-papercusp-account': 'DEAD' });
+  assert.equal(res.status, 200, 'the request still fails over and is served');
+  assert.ok(
+    gw.stats().admission.maxConcurrent < initial,
+    `the transport failure reached the claude window (${initial} → ${gw.stats().admission.maxConcurrent})`,
+  );
+});
+
+// gateway-admission-congestion-only-2026-10-13 R-5 / P-004: one request cannot burn every account.
+// A very large uncached prompt that is slow to start times out on first byte on EVERY account. Before
+// P-004 each timeout failed over to the next account (up to the six-attempt budget) and the stall
+// absorb then re-entered the whole ladder, re-uploading the same prompt each time. The request must
+// now stop after the TTFB bound (two attempts) and return an error, even with more healthy-looking
+// accounts left and the absorb budget still open.
+test('a request that times out on first byte on every account is attempted on at most two accounts (R-5)', async () => {
+  const calls: string[] = [];
+  const stallingFetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const auth = (init?.headers as Record<string, string> | undefined)?.authorization ?? '';
+    calls.push(auth.replace(/^Bearer\s+/i, ''));
+    // Headers never arrive; only the gateway's TTFB deadline (an abort) ends the wait.
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener('abort', () => reject(signal.reason ?? new Error('aborted')), { once: true });
+    });
+  }) as typeof fetch;
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('A1'), acct('A2'), acct('A3'), acct('A4')]),
+    fetchImpl: stallingFetch,
+    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 2000,
+    upstreamHeadersTimeoutMs: 40,
+    // An open absorb budget: without the bound, the stall absorb would re-enter the ladder.
+    requestAbsorbMs: 3000,
+  });
+  port = await gw.listen(0);
+
+  const res = await post();
+  await res.arrayBuffer();
+
+  assert.ok(res.status >= 500, `the request fails rather than hanging (status ${res.status})`);
+  assert.equal(calls.length, 2, `attempted on ${calls.length} account(s): ${calls.join(', ')}`);
+  assert.equal(new Set(calls).size, 2, 'the two attempts went to two different accounts');
 });

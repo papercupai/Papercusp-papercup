@@ -11,12 +11,14 @@ import {
   pickWhisperPrebuiltAsset,
   whisperBuildCommands,
   renderWhisperServerArgs,
+  whisperInferenceThreadsForCpuCount,
   whisperModelUrl,
   whisperModelCacheDir,
   resolveWhisperModel,
   downloadWhisperModel,
   resolveWhisperBinary,
   WHISPER_SERVER_DEFAULT_PORT,
+  WHISPER_MAX_SERVER_TASKS,
   DEFAULT_WHISPER_MODEL,
   type WhisperModelManifest,
 } from './whisper-binary';
@@ -124,14 +126,14 @@ describe('whisperBuildCommands', () => {
 });
 
 describe('renderWhisperServerArgs', () => {
-  it("mirrors this box's live, working voicemode-whisper invocation shape", () => {
-    const args = renderWhisperServerArgs({ modelPath: '/m/ggml-base.bin', host: '0.0.0.0', port: 2022, threads: 16, noGpu: true });
+  it('preserves explicit serve options on a small host', () => {
+    const args = renderWhisperServerArgs({ modelPath: '/m/ggml-base.bin', host: '0.0.0.0', port: 2022, threads: 4, noGpu: true }, 8);
     expect(args).toEqual([
       '--host', '0.0.0.0',
       '--port', '2022',
       '--model', '/m/ggml-base.bin',
       '--inference-path', '/v1/audio/transcriptions',
-      '--threads', '16',
+      '--threads', '4',
       '--convert',
       '--no-gpu',
     ]);
@@ -145,11 +147,22 @@ describe('renderWhisperServerArgs', () => {
     expect(args[args.indexOf('--port') + 1]).toBe(String(WHISPER_SERVER_DEFAULT_PORT));
   });
 
-  it('default threads are CLAMPED to 16 (WI-4501) — a big box must not claim cpus()-1 per server', () => {
-    const args = renderWhisperServerArgs({ modelPath: '/m/ggml-base.bin' });
+  it('bounds HTTP-worker × inference-thread fan-out on high-core hosts', () => {
+    const args = renderWhisperServerArgs({ modelPath: '/m/ggml-base.bin', threads: 16 }, 128);
     const threads = Number(args[args.indexOf('--threads') + 1]);
-    expect(threads).toBeGreaterThanOrEqual(1);
-    expect(threads).toBeLessThanOrEqual(16); // 127-thread servers × a 17-server pile = the incident
+    expect(threads).toBe(2);
+    expect(127 * threads + 2).toBeLessThanOrEqual(WHISPER_MAX_SERVER_TASKS);
+  });
+
+  it('keeps projected server tasks within budget across representative CPU counts', () => {
+    for (const cpuCount of [1, 8, 16, 32, 128, 255]) {
+      const httpWorkers = Math.max(8, cpuCount - 1);
+      const threads = whisperInferenceThreadsForCpuCount(cpuCount, 16);
+      expect(threads).toBeGreaterThanOrEqual(1);
+      expect(httpWorkers * threads + 2).toBeLessThanOrEqual(WHISPER_MAX_SERVER_TASKS);
+    }
+    expect(whisperInferenceThreadsForCpuCount(16, 16)).toBe(15);
+    expect(whisperInferenceThreadsForCpuCount(32, 16)).toBe(8);
   });
 });
 

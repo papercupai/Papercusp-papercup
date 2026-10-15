@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Archived completed R1 unrelated-task-result shell mutation control",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "apps/operator/lib/onboarding/cloud-tutorial-session.tsx",
+    "--mutate",
+    "s|\\Qcandidate.prompt?.text?.includes(request.prompt)\\E|true|",
+    "--test",
+    "test -f {} && PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx",
+    "--relocation",
+    "overlay"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T16:31:03.056Z",
+  "finishedAt": "2026-10-06T16:35:33.831Z",
+  "summary": "Archive of an already-completed shell mutation-probe control, not a new test execution. Both baseline guards passed six tests; the private-overlay mutant failed three exact assertions and passed three, with zero skips. The wrapper reported MUTANT CAUGHT and byte-identical source restoration. This operational artifact does not repair or replace original Vitest ledger row20845162, whose truncated DOM tail lost case identities. R1 acceptance remains UNKNOWN pending supported historical identity recovery and regrade.",
+  "assertions": [
+    {
+      "id": "in-tree-baseline",
+      "passed": true,
+      "evidence": "Original mutation-probe row20845130: clean immutable c46da34062628f3346833a5db281896d94561337, six passed and zero skips; baseline guard exited0."
+    },
+    {
+      "id": "private-copy-baseline",
+      "passed": true,
+      "evidence": "Original mutation-probe row20845138: clean immutable same source, six passed and zero skips; unmutated-copy baseline guard exited0."
+    },
+    {
+      "id": "unrelated-task-result-mutant-caught",
+      "passed": true,
+      "evidence": "Original mutation-probe row20845162: three failed, three passed, zero skips. Retained stdout has three TEST_FILE_ASSERTION_FAILURE records and MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 assertion_evidence=test-file-assertion-failure relocation=overlay."
+    },
+    {
+      "id": "source-restored",
+      "passed": true,
+      "evidence": "Retained stdout: tree integrity VERIFIED; the original cloud-tutorial-session.tsx is byte-identical to its pre-probe state. Mutation was mounted privately; the shared canonical source was not edited by the control."
+    }
+  ],
+  "mutationProbes": [
+    {
+      "runnerPath": "scripts/mutation-probe.sh",
+      "runnerCommit": "c46da34062628f3346833a5db281896d94561337",
+      "cwd": ".",
+      "schemaVersion": 1,
+      "runnerSha256": "9609e573dfe3a7154b9ffb41d10b2f4f8b9635bd68885dc37b4901b4ac72d23b",
+      "result": {
+        "target": "copy-out",
+        "mutantParse": "unchecked",
+        "assertionEvidence": "test-file-assertion-failure",
+        "verdict": "caught",
+        "relocation": "overlay",
+        "baselineExit": 0,
+        "guardExit": 1,
+        "expected": "caught"
+      },
+      "argv": [
+        "--file",
+        "apps/operator/lib/onboarding/cloud-tutorial-session.tsx",
+        "--mutate",
+        "s|\\Qcandidate.prompt?.text?.includes(request.prompt)\\E|true|",
+        "--test",
+        "test -f {} && PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx",
+        "--relocation",
+        "overlay"
+      ]
+    }
+  ],
+  "archivedMutation": {
+    "originalTestRunId": 20845162,
+    "rawLogFile": "docs/evidence/cloud-tutorial-r1-saved-control-c46da340-2026-10-06.log",
+    "rawLogCommit": "5abf62bf3c4f4a82132dde189795e7877f7600cb",
+    "rawLogSha256": "85f0cea4001bdcc163a3d67d399af9250098f2f351703f4186e40be32e1fe988"
+  },
+  "archiveProvenance": {
+    "producer": "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f",
+    "workItem": "EI-25248905256718690",
+    "parentWorkItem": "WI-10004837",
+    "plan": "cloud-app-live-tutorial-2026-10-01",
+    "specId": "AUTO-BAR-R-1-P-007",
+    "specRevision": 5,
+    "specContentHash": "9fdb2a11662d5cd8aab6b0bfdf59202c21cefc1bca6b26d93c490b76c49881c1",
+    "originalBindings": [26874, 26875],
+    "sourceCommit": "c46da34062628f3346833a5db281896d94561337",
+    "sourceRoot": "/dev/shm/pcv/papercusp-lint-as-committed-c46da34062-oZEHS0",
+    "testFile": "apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx",
+    "rawLog": {
+      "filePath": "docs/evidence/cloud-tutorial-r1-saved-control-c46da340-2026-10-06.log",
+      "commit": "5abf62bf3c4f4a82132dde189795e7877f7600cb",
+      "publication": "The working log is a portable view produced by scripts/lib/identity-leak-patterns.mjs:redactIdentityLeaks. Recover the exact original bytes with git show <commit>:<filePath>; the raw digest below belongs to that historical blob, not the public view. Original receipt20845162 and recovered receipt20847791 remain unchanged.",
+      "originalPath": "/tmp/cloud-tutorial-r1-correlation-c46da340-20261006T1630.log",
+      "sha256": "85f0cea4001bdcc163a3d67d399af9250098f2f351703f4186e40be32e1fe988",
+      "bytes": 43311
+    },
+    "nativeExecution": {
+      "terminalHandle": 86334,
+      "exitCode": 0,
+      "note": "Previously completed and drained; archival preparation did not rerun this process."
+    },
+    "timeScope": "First reported baseline pre-run through final mutant post-run; these timestamps are copied from retained TEST_FILE_PROVENANCE records, not a new execution clock.",
+    "ledgerReceipts": [
+      {
+        "id": 20845130,
+        "source": "mutation-probe",
+        "status": "pass",
+        "startedAt": "2026-10-06T16:31:38.561Z",
+        "finishedAt": "2026-10-06T16:31:44.743Z",
+        "worktreeDirty": false,
+        "runGroupId": null
+      },
+      {
+        "id": 20845138,
+        "source": "mutation-probe",
+        "status": "pass",
+        "startedAt": "2026-10-06T16:34:05.016Z",
+        "finishedAt": "2026-10-06T16:34:10.665Z",
+        "worktreeDirty": false,
+        "runGroupId": null
+      },
+      {
+        "id": 20845162,
+        "source": "mutation-probe",
+        "status": "fail",
+        "startedAt": "2026-10-06T16:35:23.330Z",
+        "finishedAt": "2026-10-06T16:35:28.082Z",
+        "worktreeDirty": false,
+        "runGroupId": null
+      }
+    ],
+    "failedCaseTitles": [
+      "beginner meaningful work and self-written practice requires correlated reviewed first, revision and different self-written answers through the actual owner chat",
+      "authenticated first-agent product journey new-user reaches an inspected successful correlated result using explicit real controls",
+      "authenticated first-agent product journey existing-workspace reaches an inspected successful correlated result using explicit real controls"
+    ],
+    "failureTitleSource": "Exact JSON name fields of the three TEST_FILE_ASSERTION_FAILURE records in the hash-pinned original raw log, not DOM text or an author-edited ledger tail.",
+    "limits": [
+      "This archive is not a new Vitest execution.",
+      "No original test_runs row or spec binding was overwritten.",
+      "archivedMutation requests additive identity recovery only after the recorder validates the committed raw log against original receipt20845162; it does not execute a new test or overwrite that receipt.",
+      "The archive alone does not satisfy the evaluator's exact measured mutation-case requirement.",
+      "No acceptance, clean repair matrix, final hosted verification, independent grade, or shipment is claimed."
+    ]
+  }
+}

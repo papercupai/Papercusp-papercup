@@ -34,18 +34,29 @@
  * Dedup is openEscalation's (dedupKind, subjectSignature), signed per boot and
  * per signal, so a sustained leak holds ONE open escalation per signal.
  */
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 
 const GIB = 1024 ** 3;
 const HOUR_MS = 3600_000;
 const DAY_MS = 24 * HOUR_MS;
 
-/** Sampling cadence, and the width of one series bucket. */
-export const KERNEL_LEAK_SAMPLE_INTERVAL_MS = 10 * 60_000;
+/**
+ * Sampling cadence, and the width of one series bucket. 60 s since migration 1485
+ * (papercusp-performance-audit-2026-10-12 P-002, D-005): the host-contention-sampler
+ * check stores a row every minute so PSI and per-cgroup CPU deltas resolve to the
+ * minute. Leak EVALUATION is unaffected — it stays on the 10-minute check below and
+ * fits over sample time, so more points only tighten the fit.
+ */
+export const KERNEL_LEAK_SAMPLE_INTERVAL_MS = 60_000;
+
+/** Cadence of the kernel-leak evaluation (store + prune + evaluate + alarm). */
+export const KERNEL_LEAK_EVALUATE_INTERVAL_MS = 10 * 60_000;
 
 /** Samples younger than this after boot are warm-up, never evidence of a leak. */
 export const KERNEL_LEAK_WARMUP_MS = 6 * HOUR_MS;
@@ -105,6 +116,96 @@ export interface KernelLeakAlert {
 function meminfoKb(text: string, key: string): number | null {
   const m = new RegExp(`^${key}:\\s+(\\d+)\\s+kB`, 'm').exec(text);
   return m ? Number(m[1]) : null;
+}
+
+/**
+ * Cumulative PSI stall totals in microseconds — the `total=` field of
+ * /proc/pressure/{cpu,io,memory}. Totals rather than avg10/avg60 so a two-sample
+ * delta gives the exact stalled fraction of any interval (migration 1485, D-005).
+ */
+export interface HostPressureTotals {
+  cpuSomeUs: number | null;
+  ioSomeUs: number | null;
+  ioFullUs: number | null;
+  memorySomeUs: number | null;
+  memoryFullUs: number | null;
+}
+
+/** Contention readings stored beside a kernel-memory sample (P-002, D-005). */
+export interface HostContentionReading {
+  /** Null when no /proc/pressure file is readable (CONFIG_PSI=n). */
+  pressure: HostPressureTotals | null;
+  /** Cumulative cpu.stat usage_usec by cgroup leaf name ('/' = root = whole host); null when none readable. */
+  cgroupCpuUsageUs: Record<string, number> | null;
+}
+
+/** PURE — the cumulative `total=` (µs) of one PSI line kind, or null when absent. */
+export function parsePressureTotal(text: string | null, kind: 'some' | 'full'): number | null {
+  if (!text) return null;
+  const m = new RegExp(`^${kind}\\s[^\\n]*\\btotal=(\\d+)`, 'm').exec(text);
+  return m ? Number(m[1]) : null;
+}
+
+/** PURE — all five stall totals, or null when no pressure file was readable at all. */
+export function buildHostPressureTotals(input: {
+  cpu: string | null;
+  io: string | null;
+  memory: string | null;
+}): HostPressureTotals | null {
+  const totals: HostPressureTotals = {
+    cpuSomeUs: parsePressureTotal(input.cpu, 'some'),
+    ioSomeUs: parsePressureTotal(input.io, 'some'),
+    ioFullUs: parsePressureTotal(input.io, 'full'),
+    memorySomeUs: parsePressureTotal(input.memory, 'some'),
+    memoryFullUs: parsePressureTotal(input.memory, 'full'),
+  };
+  return Object.values(totals).every((v) => v === null) ? null : totals;
+}
+
+/** PURE — usage_usec from a cgroup v2 cpu.stat body, or null when absent. */
+export function parseCpuUsageUsec(cpuStat: string | null): number | null {
+  if (!cpuStat) return null;
+  const m = /^usage_usec\s+(\d+)/m.exec(cpuStat);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * PURE — this process's app.slice (relative to /sys/fs/cgroup) from /proc/self/cgroup,
+ * e.g. `user.slice/user-1000.slice/user@1000.service/app.slice`; null when the process
+ * is not under one (system service, container, cgroup v1).
+ */
+export function appSliceOf(selfCgroup: string | null): string | null {
+  const m = selfCgroup ? /^0::\/(.*)$/m.exec(selfCgroup) : null;
+  if (!m) return null;
+  const parts = m[1].split('/');
+  const i = parts.lastIndexOf('app.slice');
+  return i < 0 ? null : parts.slice(0, i + 1).join('/');
+}
+
+/** Units of the app.slice worth a series: the papercusp services (operator, bg-host, sidecars). */
+const CONTENTION_APP_UNIT = /^papercu[a-z0-9-]*\.service$/;
+
+/**
+ * PURE — the cgroups to sample, as { key, path } with `path` relative to /sys/fs/cgroup
+ * ('' = the root, i.e. the whole host). Keys are leaf names, which is what the
+ * host_contention_hourly view reports. A path whose cpu.stat is unreadable is simply
+ * dropped by the reader, so naming system-postgresql.slice on a host without it is safe.
+ */
+export function contentionCgroups(input: {
+  appSlice: string | null;
+  rootEntries: readonly string[];
+  appSliceEntries: readonly string[];
+}): Array<{ key: string; path: string }> {
+  const out = new Map<string, string>([['/', '']]);
+  for (const e of [...input.rootEntries].sort()) if (e.endsWith('.slice')) out.set(e, e);
+  out.set('system-postgresql.slice', 'system.slice/system-postgresql.slice');
+  if (input.appSlice) {
+    out.set('app.slice', input.appSlice);
+    for (const e of [...input.appSliceEntries].sort()) {
+      if (CONTENTION_APP_UNIT.test(e)) out.set(e, `${input.appSlice}/${e}`);
+    }
+  }
+  return [...out].map(([key, path]) => ({ key, path }));
 }
 
 /** PURE — nr_dying_descendants from a cgroup.stat body, or null when absent. */
@@ -250,10 +351,13 @@ export function formatKernelLeakEscalation(alert: KernelLeakAlert): { summary: s
 
 export interface KernelLeakDeps {
   readSample: () => Promise<KernelMemorySample | null>;
-  store: (sample: KernelMemorySample) => Promise<void>;
+  /** PSI stall totals + per-cgroup CPU; a failure stores the sample without them. */
+  readContention: () => Promise<HostContentionReading | null>;
+  store: (sample: KernelMemorySample, contention: HostContentionReading | null) => Promise<void>;
   loadSeries: (bootId: string, sinceMs: number) => Promise<KernelMemorySample[]>;
   prune: () => Promise<void>;
   escalate: (alert: KernelLeakAlert) => Promise<void>;
+  rail?: AlarmAttentionDeps;
 }
 
 async function readOptional(path: string): Promise<string | null> {
@@ -276,17 +380,60 @@ async function defaultReadSample(): Promise<KernelMemorySample | null> {
   return buildKernelMemorySample({ meminfo, cgroupStat, bootId, uptime, host: hostname(), nowMs: Date.now() });
 }
 
+const CGROUP_ROOT = '/sys/fs/cgroup';
+
+async function readDirNames(path: string): Promise<string[]> {
+  try {
+    return await readdir(path);
+  } catch {
+    return [];
+  }
+}
+
+async function defaultReadContention(): Promise<HostContentionReading | null> {
+  if (process.platform !== 'linux') return null;
+  const [cpu, io, memory, selfCgroup, rootEntries] = await Promise.all([
+    readOptional('/proc/pressure/cpu'),
+    readOptional('/proc/pressure/io'),
+    readOptional('/proc/pressure/memory'),
+    readOptional('/proc/self/cgroup'),
+    readDirNames(CGROUP_ROOT),
+  ]);
+  const appSlice = appSliceOf(selfCgroup);
+  const appSliceEntries = appSlice ? await readDirNames(`${CGROUP_ROOT}/${appSlice}`) : [];
+  const groups = contentionCgroups({ appSlice, rootEntries, appSliceEntries });
+  const usage = await Promise.all(
+    groups.map(async (g) => {
+      const stat = await readOptional(g.path ? `${CGROUP_ROOT}/${g.path}/cpu.stat` : `${CGROUP_ROOT}/cpu.stat`);
+      return [g.key, parseCpuUsageUsec(stat)] as const;
+    }),
+  );
+  const cgroupCpuUsageUs: Record<string, number> = {};
+  for (const [key, usec] of usage) if (usec !== null) cgroupCpuUsageUs[key] = usec;
+  return {
+    pressure: buildHostPressureTotals({ cpu, io, memory }),
+    cgroupCpuUsageUs: Object.keys(cgroupCpuUsageUs).length ? cgroupCpuUsageUs : null,
+  };
+}
+
 // NB: the org pool rejects Date params — timestamps go in as ISO strings (see
 // system-health/history.ts), and bigint columns come back as strings.
-async function defaultStore(sample: KernelMemorySample): Promise<void> {
+async function defaultStore(sample: KernelMemorySample, contention: HostContentionReading | null): Promise<void> {
   const { sql } = getOrgPg();
   const bucketMs = Math.floor(sample.sampledAtMs / KERNEL_LEAK_SAMPLE_INTERVAL_MS) * KERNEL_LEAK_SAMPLE_INTERVAL_MS;
+  const p = contention?.pressure ?? null;
+  const usage = contention?.cgroupCpuUsageUs ?? null;
   await sql`
     INSERT INTO harness_shared.host_kernel_memory_samples
-      (boot_id, bucket_at, sampled_at, host, booted_at, mem_total_bytes, sunreclaim_bytes, slab_bytes, dying_descendants)
+      (boot_id, bucket_at, sampled_at, host, booted_at, mem_total_bytes, sunreclaim_bytes, slab_bytes, dying_descendants,
+       cpu_some_stall_us, io_some_stall_us, io_full_stall_us, memory_some_stall_us, memory_full_stall_us,
+       cgroup_cpu_usage_us)
     VALUES (${sample.bootId}, ${new Date(bucketMs).toISOString()}, ${new Date(sample.sampledAtMs).toISOString()},
             ${sample.host}, ${new Date(sample.bootedAtMs).toISOString()}, ${sample.memTotalBytes},
-            ${sample.sUnreclaimBytes}, ${sample.slabBytes}, ${sample.dyingDescendants})
+            ${sample.sUnreclaimBytes}, ${sample.slabBytes}, ${sample.dyingDescendants},
+            ${p?.cpuSomeUs ?? null}, ${p?.ioSomeUs ?? null}, ${p?.ioFullUs ?? null},
+            ${p?.memorySomeUs ?? null}, ${p?.memoryFullUs ?? null},
+            ${usage === null ? null : JSON.stringify(usage)}::jsonb)
     ON CONFLICT (boot_id, bucket_at) DO NOTHING`;
 }
 
@@ -333,6 +480,55 @@ async function defaultEscalate(alert: KernelLeakAlert): Promise<void> {
   });
 }
 
+/** A contention read never costs the kernel-memory sample: on failure, store without it. */
+async function readContentionSafely(
+  read: () => Promise<HostContentionReading | null>,
+  warn: (what: string, err: unknown) => void,
+): Promise<HostContentionReading | null> {
+  try {
+    return await read();
+  } catch (err) {
+    warn('contention read', err);
+    return null;
+  }
+}
+
+export interface HostSampleResult {
+  stored: boolean;
+  sample: KernelMemorySample | null;
+  contention: HostContentionReading | null;
+}
+
+/**
+ * One host-contention-sampler tick (every 60 s, papercusp-performance-audit-2026-10-12
+ * P-002, D-005): read and store one sample — meminfo plus PSI stall totals and
+ * per-cgroup CPU — and nothing else. Evaluation, alarms and pruning stay on the
+ * 10-minute kernel-leak check, so this adds rows, not alarm traffic. Never throws.
+ */
+export async function runHostSampleOnce(
+  overrides: Partial<Pick<KernelLeakDeps, 'readSample' | 'readContention' | 'store'>> = {},
+): Promise<HostSampleResult> {
+  const deps = { readSample: defaultReadSample, readContention: defaultReadContention, store: defaultStore, ...overrides };
+  const warn = (what: string, err: unknown): void =>
+    console.warn(`[host-contention-sampler] ${what} failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  let sample: KernelMemorySample | null;
+  try {
+    sample = await deps.readSample();
+  } catch (err) {
+    warn('read', err);
+    return { stored: false, sample: null, contention: null };
+  }
+  if (!sample) return { stored: false, sample: null, contention: null };
+  const contention = await readContentionSafely(deps.readContention, warn);
+  try {
+    await deps.store(sample, contention);
+  } catch (err) {
+    warn('store', err);
+    return { stored: false, sample, contention };
+  }
+  return { stored: true, sample, contention };
+}
+
 export interface KernelLeakCheckResult {
   skipped: boolean;
   sample: KernelMemorySample | null;
@@ -346,6 +542,7 @@ export interface KernelLeakCheckResult {
 export async function runKernelLeakCheckOnce(overrides: Partial<KernelLeakDeps> = {}): Promise<KernelLeakCheckResult> {
   const deps: KernelLeakDeps = {
     readSample: defaultReadSample,
+    readContention: defaultReadContention,
     store: defaultStore,
     loadSeries: defaultLoadSeries,
     prune: defaultPrune,
@@ -364,8 +561,9 @@ export async function runKernelLeakCheckOnce(overrides: Partial<KernelLeakDeps> 
   }
   if (!sample) return { skipped: true, sample: null, alerts: [] };
 
+  const contention = await readContentionSafely(deps.readContention, warn);
   try {
-    await deps.store(sample);
+    await deps.store(sample, contention);
     await deps.prune();
   } catch (err) {
     warn('store', err);
@@ -379,8 +577,38 @@ export async function runKernelLeakCheckOnce(overrides: Partial<KernelLeakDeps> 
     warn('load', err);
   }
 
-  const alerts = evaluateKernelLeak([...series, sample], sample);
+  const observations = [...series, sample];
+  const alerts = evaluateKernelLeak(observations, sample);
+  const key = (signal: KernelLeakSignal) => `alarm:kernel-leak:${encodeURIComponent(sample.host)}:${signal}`;
+  const window = slopeWindow(observations, sample);
+  const span = window.length ? window[window.length - 1].sampledAtMs - window[0].sampledAtMs : 0;
+  const trendReady = window.length >= KERNEL_LEAK_MIN_SAMPLES && span >= KERNEL_LEAK_MIN_SPAN_MS;
+  const dying = window.filter((row) => row.dyingDescendants !== null);
+  const dyingReady = trendReady && dying.length >= KERNEL_LEAK_MIN_SAMPLES
+    && dying[dying.length - 1].sampledAtMs - dying[0].sampledAtMs >= KERNEL_LEAK_MIN_SPAN_MS
+    && Number.isFinite(slopePerDay(dying.map((row) => ({ tMs: row.sampledAtMs, v: row.dyingDescendants! }))));
+  const measured: KernelLeakSignal[] = [];
+  if (Number.isFinite(sample.memTotalBytes) && sample.memTotalBytes > 0
+    && Number.isFinite(sample.sUnreclaimBytes) && sample.sUnreclaimBytes >= 0) measured.push('sunreclaim-absolute');
+  if (trendReady && Number.isFinite(slopePerDay(window.map((row) => ({ tMs: row.sampledAtMs, v: row.sUnreclaimBytes }))))) {
+    measured.push('sunreclaim-growth');
+  }
+  if (sample.dyingDescendants !== null && (sample.dyingDescendants < DYING_DESCENDANTS_FLOOR || dyingReady)) {
+    measured.push('dying-growth');
+  }
+  for (const signal of measured) {
+    if (!alerts.some((alert) => alert.signal === signal)) {
+      await resolveAlarm(key(signal), 'kernel-leak-watchdog', deps.rail);
+    }
+  }
   for (const alert of alerts) {
+    const { summary, body } = formatKernelLeakEscalation(alert);
+    try {
+      if (deps.rail?.broadcast) await deps.rail.broadcast({ conditionKey: key(alert.signal), summary, body });
+      else await broadcastSevereEvent({ conditionKey: key(alert.signal), summary, body });
+    } catch (err) {
+      warn(`condition ${alert.signal}`, err);
+    }
     try {
       await deps.escalate(alert);
     } catch (err) {

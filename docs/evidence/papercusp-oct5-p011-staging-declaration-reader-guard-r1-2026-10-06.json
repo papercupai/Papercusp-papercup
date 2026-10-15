@@ -1,0 +1,109 @@
+{
+  "schemaVersion": "p011-staging-declaration-reader-guard-evidence-v1",
+  "workItem": "EI-25181611831349662",
+  "status": "isolated-refreshed-declaration-reader-distinct-owner-guard-verified",
+  "reuse": "Extended existing register-resource-domain.integration.test.ts using the maintained publisher, declaration loader, PG lock store and guardResource. No new tool, service, config or schema.",
+  "test": {
+    "command": "node scripts/with-test-pg.mjs --isolated-runtime -- npm run test:file -- packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts -t 'a refreshed legacy declaration reader'",
+    "exitCode": 0,
+    "passed": 4,
+    "filteredSkips": 2,
+    "preRunHead": "d152edfe03",
+    "postRunHead": "d152edfe03",
+    "result": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=d152edfe03 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-06T00:28:53.469Z skippedTests=2",
+    "cases": [
+      {
+        "resource": "staging-server",
+        "maxDrainSec": 0
+      },
+      {
+        "resource": "staging-server-cooldown",
+        "maxDrainSec": 0
+      },
+      {
+        "resource": "staging-server",
+        "maxDrainSec": 0.02
+      },
+      {
+        "resource": "staging-server-cooldown",
+        "maxDrainSec": 0.02
+      }
+    ],
+    "observedAssertions": [
+      "Private PG actual data_directory and port match isolated fixture.",
+      "Tree declaration yields legacy caller-tree fallback before publication.",
+      "Existing registration publishes host-global and retains existing row identity.",
+      "Explicit real registry refresh makes declaration-only reader return host-global.",
+      "Distinct restart caller is refused while probe caller holds shared lease.",
+      "Guarded body runs zero times.",
+      "Declined restart reservation is absent; probe shared lease remains held.",
+      "Finally releases both test callers and final queue contains neither."
+    ],
+    "canonicalPrivateLedgerId": null
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+    "exitCode": 0,
+    "namedFiles": 1,
+    "errors": 0
+  },
+  "isolation": {
+    "dataDirectory": "/tmp/papercusp-test-pg-FsBC2d",
+    "port": 37421,
+    "privateDataDirectoryAbsentAfterExit": true,
+    "sharedRuntimeRestarted": false
+  },
+  "runtimeRead": {
+    "source": "dev:pipeline_position writer; testClass background-federation",
+    "stagingBuild": "cf272b6803",
+    "stagingContainsDomainChange": true,
+    "backgroundBuild": "e4478d8f5c",
+    "backgroundContainsDomainChange": false,
+    "route": "node scripts/with-test-pg.mjs --isolated-runtime -- <current-build background assertion>"
+  },
+  "receipts": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+      "bytes": 7523,
+      "sha256": "57c5f1d800c6a110a4bbcd4dc1dbe11bc62ef8ac5be1983224b2ae85ea47ff93"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/register_resource.ts",
+      "bytes": 4030,
+      "sha256": "63d8005018c2e5e2525f3ab04dadaebcd4ba5cace12ff071e54ccfe4b275ff4d"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/coordination-domain.ts",
+      "bytes": 18909,
+      "sha256": "f75762f4045cf2d699361ae2cc1b8350569c1c2fca849acfced89c893880e732"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/resource-domain-kinds.ts",
+      "bytes": 7792,
+      "sha256": "9dea128f3476f9ee8c7006ec01358c3b12a41f4ae25e3278897d2443bdfbb3b5"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/resource-lock-guard.ts",
+      "bytes": 10278,
+      "sha256": "127eb9debbc0598ce08887ccc6228065679b565ac2e72b155db15be366324e6e"
+    },
+    {
+      "path": "/tmp/su-7db4f-declaration-reader-guard-r1.log",
+      "bytes": 629611,
+      "sha256": "428920154eb2bd9b525eb91d107799a092e715bf9d12a8faff09cc98a46f2405"
+    },
+    {
+      "path": "/tmp/su-7db4f-declaration-reader-guard-types-r1.log",
+      "bytes": 1114,
+      "sha256": "b47e9bc4769dcff88dd204d576fea3a0358b0a8988780e6241943ce56607e7dd"
+    }
+  ],
+  "limitations": [
+    "Declaration-only branch is exercised in the current isolated process; the live older background-host process is not executed or attested.",
+    "Refresh is explicit; cold or stale synchronous live restart cache remains unverified.",
+    "Publisher preflight is not an atomic legacy acquisition migration fence.",
+    "Distinct-owner live restart-body refusal, exact native process attribution and fleet-wide exclusion remain open.",
+    "Original R3 unknown joins, R4 failure, pending-review unused alias cleanup, full P011/D021/native physical acceptance and final shipment remain open.",
+    "Prior publication/R5 producers were not replayed. LIVE_GATE_OPS stays peer-owned and stopped."
+  ]
+}

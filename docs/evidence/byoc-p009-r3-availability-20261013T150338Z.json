@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "BYOC P009 R003 live mixed available/absent disclosure",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "-c",
+    "import os,json,subprocess,datetime\nnow=lambda:datetime.datetime.now(datetime.timezone.utc).isoformat()\ns=now(); a={'ids':['WI-10000407','WI-0'],'harness':'papercusp','detail':False,'threadLimit':0,'projection':{'pick':['ok','results[].id','results[].availability','results[].ok','results[].error','results[].workItem.id','results[].workItem.state','counts','read']}}\nr=subprocess.run(['node','scripts/mcp-call.mjs','work_items:get',json.dumps(a),'--client',os.environ['PAPERCUSP_SID'],'--workspace',os.environ['PAPERCUSP_WORKSPACE'],'--harness','papercusp','--port','3170'],capture_output=True,text=True)\nd=json.loads(r.stdout); p,n=d['results']\nassert r.returncode==5 and d['ok']==False and p['availability']=='available' and p['workItem']['id']==p['id'] and p['workItem']['state'] and n['availability']=='absent' and 'workItem' not in n and d['counts']=={'ok':1,'failed':1}\nprint(json.dumps({'startedAt':s,'finishedAt':now(),'response':d,'clientExitCode':r.returncode}))"
+  ],
+  "exitCode": 0,
+  "clientExitCode": 5,
+  "startedAt": "2026-10-13T15:03:38.622572+00:00",
+  "finishedAt": "2026-10-13T15:03:38.872824+00:00",
+  "summary": "Expected-negative live staging availability read. The replayable guard exits0 only after asserting the maintained client's exit5 and explicit mixed identity/state/availability/count result. Native orchestration also checks disclosure, source stability and containing runtime; partial two-row read only.",
+  "assertions": [
+    {
+      "id": "requested-identity-census",
+      "passed": true,
+      "evidence": "Actual result contains exactly WI-10000407 and WI-0."
+    },
+    {
+      "id": "available-state-retained",
+      "passed": true,
+      "evidence": "Actual available row retains requested identity/state."
+    },
+    {
+      "id": "absent-is-explicit",
+      "passed": true,
+      "evidence": "Actual absent row is keyed, explicitly absent, and contains no invented workItem."
+    },
+    {
+      "id": "partial-result-not-healthy",
+      "passed": true,
+      "evidence": "Maintained mcp-call exit5 is expected here: overall ok:false and successful1/failed1; never healthy."
+    },
+    {
+      "id": "availability-disclosure",
+      "passed": true,
+      "evidence": "Actual read disclosure distinguishes available1, absent1, unavailable0 and retains server timing attribution."
+    },
+    {
+      "id": "source-stable",
+      "passed": true,
+      "evidence": "The three source fingerprints are unchanged across the measured read."
+    }
+  ],
+  "sourceHashes": {
+    "packages/operator-core/lib/agent-tools/work_items/get.ts": "a88cbbab2c7da2c605772de9e8bb7bedfc30ac33e5a969936fb12dc27ffb157f",
+    "packages/operator-core/lib/agent-tools/work_items/get-shape.ts": "7f5c9d79b5865147cb93e175113f15a0e28fcd7c17cccdc951f764348e2cacd3",
+    "scripts/mcp-call.mjs": "114930a4bea5aa27c9d124559748ded59d2826d4830992cc157b92e96e4ab6cf"
+  },
+  "response": {
+    "ok": false,
+    "results": [
+      {
+        "id": "WI-10000407",
+        "availability": "available",
+        "ok": true,
+        "workItem": {
+          "id": "WI-10000407",
+          "state": "open"
+        }
+      },
+      {
+        "id": "WI-0",
+        "availability": "absent",
+        "ok": false,
+        "error": "work_item 'WI-0' not found"
+      }
+    ],
+    "counts": {
+      "ok": 1,
+      "failed": 1
+    },
+    "read": {
+      "schemaVersion": "work-items-get-read-v1",
+      "mode": "projected",
+      "requested": 2,
+      "available": 1,
+      "absent": 1,
+      "unavailable": 0,
+      "budgetMs": 30000,
+      "elapsedMs": 5,
+      "baseReadMaxMs": 5,
+      "enrichmentMaxMs": 0,
+      "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+    }
+  },
+  "notExercised": [
+    "Unavailable due to timeout/cancellation/PG failure",
+    "All read paths",
+    "Shared deployed proxy stall/claim mutations",
+    "R006 deployed producer/soak/customer/shipment"
+  ],
+  "preflightRef": "docs/evidence/byoc-p009-r3-availability-20261013T145744Z.json",
+  "oracleScope": "Guard directly enforces identity/state/availability/count and expected negative client outcome. Runtime/source/disclosure are separately observed by the native orchestration; this is not an independently adjudicated or complete live census."
+}

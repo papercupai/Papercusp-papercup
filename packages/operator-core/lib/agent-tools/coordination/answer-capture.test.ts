@@ -133,6 +133,41 @@ describe('captureResolvedAnswer', () => {
     expect(res.detail).toBe('store add failed');
   });
 
+  it('remember errors preserve only allowlisted diagnostics found in a nested cause', async () => {
+    const rawDiagnostics = {
+      status: 404,
+      requestId: 'req.123',
+      type: 'anthropic',
+      classification: 'permanent',
+      transport: 'anthropic-direct',
+      transportFailureCode: 'UND_ERR_HEADERS_TIMEOUT',
+      url: 'https://provider.invalid/private-path',
+      headers: { authorization: 'Bearer secret-token' },
+      body: 'private provider response',
+      account: 'private-account',
+    };
+    const cause = Object.assign(new Error('provider failure'), { diagnostics: rawDiagnostics });
+    const wrapped = Object.assign(new Error('mem0 wrapper'), { cause });
+    const outer = Object.assign(new Error('LLM extraction failed'), { cause: wrapped });
+    const b = fakeBackend();
+    b.remember.mockRejectedValue(outer);
+    getMemoryBackend.mockReturnValue(b);
+
+    await expect(captureResolvedAnswer(baseInput())).resolves.toEqual({
+      target: 'mem0_error',
+      ok: false,
+      detail: 'LLM extraction failed',
+      diagnostics: {
+        status: 404,
+        requestId: 'req.123',
+        type: 'anthropic',
+        classification: 'permanent',
+        transport: 'anthropic-direct',
+        transportFailureCode: 'UND_ERR_HEADERS_TIMEOUT',
+      },
+    });
+  });
+
   it('remember resolving with ZERO stored events → mem0_no_store (ok:false) — the EI-25 false-success fix', async () => {
     const b = fakeBackend();
     b.remember.mockResolvedValue({ ids: [], storedEvents: 0 });

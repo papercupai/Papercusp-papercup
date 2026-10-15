@@ -13,7 +13,13 @@
  * integration tests.
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/set-status.bulk.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 
 // Keep the real `harnessArg` zod schema; only stub `harnessScopedCtx` so the test
 // ctx (which carries no harnessSlug) does not trip the harness-required gate.
@@ -26,6 +32,8 @@ vi.mock('../_harness-scope', async (orig) => {
   };
 });
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: (ctx: { harnessSlug?: string }) => ctx.harnessSlug ?? null }));
+// WI-10008137: the draft-plan item-start gate has its own suite (draft-item-start-gate.test.ts).
+vi.mock('./draft-item-start-gate', () => ({ checkDraftItemStartGateLive: vi.fn(async () => null) }));
 const slugScopeM = vi.hoisted(() => ({ recover: vi.fn() }));
 vi.mock('./slug-scope', async (orig) => ({
   ...(await orig<typeof import('./slug-scope')>()),
@@ -35,11 +43,46 @@ vi.mock('./revisions', () => ({
   planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
 }));
 vi.mock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
-// No attributable agent identity → the claim/terminal discipline is skipped.
-vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => {
+vi.mock('./plan-item-events', () => ({ emitPlanItemDoneEvent: vi.fn(async () => {}) }));
+vi.mock('../../plan-items/assignments', () => ({ unassignItem: vi.fn(async () => null) }));
+// Control IO outcomes per case without re-importing the whole server graph.
+const callerMocks = vi.hoisted(() => ({
+  identity: vi.fn<() => { ownerId: string; ownerLabel: string; source: string }>(() => {
     throw new Error('no identity in this test');
-  },
+  }),
+  claimForWork: vi.fn<(...args: unknown[]) => Promise<unknown>>(),
+  releaseOwnClaim: vi.fn(async () => true),
+  convertPlanItem: vi.fn(),
+  getFlag: vi.fn(async () => true),
+}));
+vi.mock('../../plan-items/convert', () => ({
+  convertPlanItem: callerMocks.convertPlanItem,
+  findConvertedWorkItemByStamp: vi.fn(async () => null),
+  findCoverageWorkItems: vi.fn(async () => []),
+  looksLikeResidualClosure: vi.fn(() => false),
+  TERMINAL_WORK_ITEM_STATES: new Set(['passed', 'resolved', 'closed', 'done', 'deprecated', 'dropped']),
+}));
+// Ordinary envelope cases have no identity; the discipline cases opt in below.
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: callerMocks.identity,
+  isEphemeralMcpCallIdentity: (id: string) => id.startsWith('mcp-call-'),
+}));
+vi.mock('../../plan-items/claim-discipline', () => ({
+  claimForWork: callerMocks.claimForWork,
+  releaseOwnClaim: callerMocks.releaseOwnClaim,
+}));
+vi.mock('./source', () => ({
+  resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercup' })),
+}));
+vi.mock('../../plan-items/agent-names', () => ({
+  bestEffortOwnerUser: () => 'reader@example.com',
+  resolveAdoptedName: vi.fn(async () => null),
+  listSessionsForAgentName: vi.fn(async () => []),
+}));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: callerMocks.getFlag }));
+vi.mock('../coordination/holder-advisory', () => ({
+  holderContextReader: () => null,
+  resolveHolderAdvisory: vi.fn(async () => null),
 }));
 // The lock helper is the single seam: it invokes the mutator and we shape its result.
 vi.mock('./with-plan-lock', () => ({
@@ -75,7 +118,12 @@ type Out = { data: any };
 const body = async (args: Record<string, unknown>, ctx: Record<string, unknown> = {}) =>
   (((await tool.handler(args as never, ctx as never)) as Out).data);
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  callerMocks.identity.mockImplementation(() => {
+    throw new Error('no identity in this test');
+  });
+});
 
 /** Drive the lock: run the mutator against a fake body, then return its ok-value as a
  *  successful lock outcome (or a not_found mutator-value for an unknown item). */
@@ -104,7 +152,6 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
       status: 'resolved',
       harnessSlug: 'papercusp',
       bySlug: { 'plan-a': 'papercusp' },
-      ambiguous: {},
     });
     const metadata = vi.fn();
     const result = await body(
@@ -119,10 +166,9 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
 
   it('refuses an ambiguous exact slug before any status write', async () => {
     slugScopeM.recover.mockResolvedValue({
-      status: 'resolved',
-      harnessSlug: 'papercusp',
-      bySlug: { 'plan-a': 'papercusp' },
-      ambiguous: { 'plan-a': ['papercusp', 'other-harness'] },
+      status: 'ambiguous',
+      candidates: { 'plan-a': ['papercusp', 'other-harness'] },
+      workspaceId: 'papercusp-workspace',
     });
     const result = await body(
       { slug: 'plan-a', item: 'P-001', status: 'todo' },
@@ -266,7 +312,7 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
   });
 
   it('a busy lock maps to that item\'s { ok:false, error:"busy" } without throwing', async () => {
-    lockM.mockResolvedValue({ kind: 'busy', busy: [{ path: 'p', owner_label: 'o', intent: 'i', expires_ts: 1 }] } as never);
+    lockM.mockResolvedValue({ kind: 'busy', busy: [{ path: 'p', owner: 'o', owner_label: 'o', intent: 'i', expires_ts: new Date(1), holder_snapshot: null }] });
     const b = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });
     expect(b.ok).toBe(false); // DERIVED from counts.failed — the sole item failed
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
@@ -317,45 +363,13 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
   });
 });
 
-// EI-8509: a →wip flip auto-claims the item under the CALLER's identity. When the
-// caller is scripts/mcp-call.mjs's auto-generated fallback (`mcp-call-<pid>` — a
-// one-shot process with no liveness/heartbeat and no fleet cup behind it), that
-// auto-claim must be refused, the same "placed but nothing executes it" failure
-// EI-8509 found. This suite re-mocks resolveAgentIdentity to return that shape
-// (the sibling suite above mocks it to throw, which already skips this leg).
+// EI-8509: refuse ephemeral identities before writing or claiming. All cases
+// reuse the real handler and controllable IO seams; resetting the module graph
+// repeats unrelated server startup and breaks the fixture's zero-PG contract.
 describe('plans:set-status →wip auto-claim refuses the mcp-call.mjs fallback identity (EI-8509)', () => {
   it('refuses the wip flip and never reaches the lock/claim path', async () => {
-    vi.resetModules();
-    vi.doMock('../_harness-scope', async (orig) => ({
-      ...(await orig<typeof import('../_harness-scope')>()),
-      harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
-    }));
-    vi.doMock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
-    vi.doMock('./revisions', () => ({
-      planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
-    }));
-    vi.doMock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
-    vi.doMock('../coordination/identity', () => ({
-      resolveAgentIdentity: () => ({ ownerId: 'mcp-call-42', ownerLabel: 'su · mcp-call-42', source: 'omp-hook-session' }),
-      isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
-    }));
-    const lock = vi.fn();
-    vi.doMock('./with-plan-lock', () => ({ withPlanLock: lock, bumpUpdatedDate: (s: string) => s }));
-    vi.doMock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
-    vi.doMock('../plan-items/claim-discipline', () => ({
-      claimForWork: vi.fn(async () => ({ ok: true, claimId: 'c1', alreadyHeld: false })),
-      releaseOwnClaim: vi.fn(async () => true),
-    }));
-    vi.doMock('./source', () => ({
-      resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercup' })),
-    }));
-
-    const freshTool = (await import('./set-status')).default;
-    const out = (await freshTool.handler(
-      { slug: 'plan-a', item: 'P-001', status: 'wip' } as never,
-      {} as never,
-    )) as { data: any };
-    const b = out.data;
+    callerMocks.identity.mockReturnValue({ ownerId: 'mcp-call-42', ownerLabel: 'su · mcp-call-42', source: 'omp-hook-session' });
+    const b = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });
 
     expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({
@@ -365,144 +379,38 @@ describe('plans:set-status →wip auto-claim refuses the mcp-call.mjs fallback i
       error: 'ephemeral_mcp_call_identity',
     });
     expect(b.results[0].hint).toMatch(/mcp-call\.mjs/);
-    expect(lock).not.toHaveBeenCalled();
-
-    vi.doUnmock('../_harness-scope');
-    vi.doUnmock('./_ctx-opts');
-    vi.doUnmock('./revisions');
-    vi.doUnmock('../coordination/plan-events');
-    vi.doUnmock('../coordination/identity');
-    vi.doUnmock('./with-plan-lock');
-    vi.doUnmock('../../sync-sse');
-    vi.doUnmock('../plan-items/claim-discipline');
-    vi.doUnmock('./source');
-    vi.resetModules();
+    expect(lockM).not.toHaveBeenCalled();
+    expect(callerMocks.claimForWork).not.toHaveBeenCalled();
   });
 });
 
 describe('plans:set-status failed wip flips release new claims (WI-10002606)', () => {
   it('releases a new claim and skips auto-conversion when the plan is missing', async () => {
-    vi.resetModules();
-    vi.doMock('../_harness-scope', async (orig) => ({
-      ...(await orig<typeof import('../_harness-scope')>()),
-      harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
-    }));
-    vi.doMock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
-    vi.doMock('./revisions', () => ({
-      planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
-    }));
-    vi.doMock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
-    vi.doMock('../coordination/identity', () => ({
-      resolveAgentIdentity: () => ({ ownerId: 'su-test-owner', ownerLabel: 'su · test', source: 'omp-hook-session' }),
-      isEphemeralMcpCallIdentity: () => false,
-    }));
-    const lock = vi.fn(async () => ({ kind: 'ok', value: { ok: false, code: 'not_found' } }));
-    vi.doMock('./with-plan-lock', () => ({ withPlanLock: lock, bumpUpdatedDate: (s: string) => s }));
-    vi.doMock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
-    const claimForWork = vi.fn(async () => ({ ok: true, claimId: 'claim-1', alreadyHeld: false }));
-    const releaseOwnClaim = vi.fn(async () => true);
-    vi.doMock('../../plan-items/claim-discipline', () => ({ claimForWork, releaseOwnClaim }));
-    const convertPlanItem = vi.fn(async () => ({ status: 'converted' }));
-    vi.doMock('../../plan-items/convert', async (orig) => ({
-      ...(await orig<typeof import('../../plan-items/convert')>()),
-      convertPlanItem,
-    }));
-    vi.doMock('../../plan-items/agent-names', () => ({
-      bestEffortOwnerUser: () => null,
-      resolveAdoptedName: vi.fn(async () => null),
-    }));
-    vi.doMock('./source', () => ({
-      resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercup' })),
-    }));
-    const getFlag = vi.fn(async () => true);
-    vi.doMock('@papercusp/flags/server', () => ({ getFlag }));
+    callerMocks.identity.mockReturnValue({ ownerId: 'su-test-owner', ownerLabel: 'su · test', source: 'omp-hook-session' });
+    lockM.mockResolvedValue({ kind: 'ok', value: { ok: false, code: 'not_found' } } as never);
+    callerMocks.claimForWork.mockResolvedValue({ ok: true, claimId: 'claim-1', alreadyHeld: false });
+    const b = await body({ slug: 'missing-plan', item: 'P-999', status: 'wip' });
 
-    const freshTool = (await import('./set-status')).default;
-    const out = (await freshTool.handler(
-      { slug: 'missing-plan', item: 'P-999', status: 'wip' } as never,
-      {} as never,
-    )) as { data: any };
-
-    expect(out.data).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
-    expect(out.data.results[0]).toMatchObject({
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({
       ok: false,
       slug: 'missing-plan',
       itemId: 'P-999',
       error: 'not_found',
       claimReleased: true,
     });
-    expect(claimForWork).toHaveBeenCalledTimes(1);
-    expect(releaseOwnClaim).toHaveBeenCalledWith('default', 'papercup', 'missing-plan', 'P-999', 'su-test-owner');
-    expect(getFlag).not.toHaveBeenCalled();
-    expect(convertPlanItem).not.toHaveBeenCalled();
-
-    vi.doUnmock('../_harness-scope');
-    vi.doUnmock('./_ctx-opts');
-    vi.doUnmock('./revisions');
-    vi.doUnmock('../coordination/plan-events');
-    vi.doUnmock('../coordination/identity');
-    vi.doUnmock('./with-plan-lock');
-    vi.doUnmock('../../sync-sse');
-    vi.doUnmock('../../plan-items/claim-discipline');
-    vi.doUnmock('../../plan-items/convert');
-    vi.doUnmock('../../plan-items/agent-names');
-    vi.doUnmock('./source');
-    vi.doUnmock('@papercusp/flags/server');
-    vi.resetModules();
+    expect(callerMocks.claimForWork).toHaveBeenCalledTimes(1);
+    expect(callerMocks.releaseOwnClaim).toHaveBeenCalledWith('default', 'papercup', 'missing-plan', 'P-999', 'su-test-owner');
+    expect(callerMocks.getFlag).not.toHaveBeenCalled();
+    expect(callerMocks.convertPlanItem).not.toHaveBeenCalled();
   });
 });
 
 describe('plans:set-status claim-conflict guidance for linked claim holds', () => {
   async function invokeWipRefusal(claimOutcome: unknown) {
-    vi.resetModules();
-    vi.doMock('../_harness-scope', async (orig) => ({
-      ...(await orig<typeof import('../_harness-scope')>()),
-      harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
-    }));
-    vi.doMock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
-    vi.doMock('./revisions', () => ({
-      planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
-    }));
-    vi.doMock('../coordination/plan-events', () => ({ emitPlanEventForCaller: vi.fn(async () => {}) }));
-    vi.doMock('../coordination/identity', () => ({
-      resolveAgentIdentity: () => ({ ownerId: 'su-reader', ownerLabel: 'su · reader', source: 'omp-hook-session' }),
-      isEphemeralMcpCallIdentity: () => false,
-    }));
-    vi.doMock('./source', () => ({
-      resolvePlanScope: vi.fn(async () => ({ workspaceId: 'default', harnessSlug: 'papercup' })),
-    }));
-    vi.doMock('../../plan-items/agent-names', () => ({
-      bestEffortOwnerUser: () => 'reader@example.com',
-      resolveAdoptedName: vi.fn(async () => null),
-    }));
-    vi.doMock('../../plan-items/claim-discipline', () => ({
-      claimForWork: vi.fn(async () => claimOutcome),
-      releaseOwnClaim: vi.fn(async () => false),
-    }));
-    vi.doMock('../coordination/holder-advisory', () => ({
-      holderContextReader: () => null,
-      resolveHolderAdvisory: vi.fn(async () => null),
-    }));
-
-    try {
-      const freshTool = (await import('./set-status')).default;
-      const response = (await freshTool.handler(
-        { slug: 'plan-a', item: 'P-001', status: 'wip' } as never,
-        {} as never,
-      )) as { data: any };
-      return response.data.results[0];
-    } finally {
-      vi.doUnmock('../_harness-scope');
-      vi.doUnmock('./_ctx-opts');
-      vi.doUnmock('./revisions');
-      vi.doUnmock('../coordination/plan-events');
-      vi.doUnmock('../coordination/identity');
-      vi.doUnmock('./source');
-      vi.doUnmock('../../plan-items/agent-names');
-      vi.doUnmock('../../plan-items/claim-discipline');
-      vi.doUnmock('../coordination/holder-advisory');
-      vi.resetModules();
-    }
+    callerMocks.identity.mockReturnValue({ ownerId: 'su-reader', ownerLabel: 'su · reader', source: 'omp-hook-session' });
+    callerMocks.claimForWork.mockResolvedValue(claimOutcome);
+    return (await body({ slug: 'plan-a', item: 'P-001', status: 'wip' })).results[0];
   }
 
   it('names the hold_open repair instead of inventing a live peer for a holderless park', async () => {

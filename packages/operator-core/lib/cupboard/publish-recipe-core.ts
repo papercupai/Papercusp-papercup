@@ -31,6 +31,7 @@
  * executable orchestration, so it lands PENDING until an operator approves it.
  */
 import { publishListingToCupboard } from './publish-listing';
+import { buildSelfDescribingPublishExtras } from './self-describing-release';
 import { parseGithubRemote, fetchGithubRepoMeta } from './resolve-repo-coords';
 import { sanitizeRecipeForExport, type RecipeExport } from './recipe-export';
 import { writeRecipeDir, type WrittenRecipe } from './recipe-store';
@@ -191,7 +192,20 @@ export async function publishRecipeToCupboard(
     return { ok: false, status: 422, error: `could not resolve GitHub repo ${parsed.owner}/${parsed.repo}` };
   }
 
+  // Route the recipe through the release gate: pin its content hash and ship the package bytes
+  // to the R2 origin (GitHub stays the mirror). A build failure is a publisher-visible refusal.
+  const releaseBuild = await buildSelfDescribingPublishExtras({
+    listingKind: 'recipe',
+    listingRef: ref,
+    dir: written.dir,
+    ...(input.version ? { version: input.version } : {}),
+  });
+  if (!releaseBuild.ok) {
+    return { ok: false, status: releaseBuild.status, error: releaseBuild.error, detail: releaseBuild.detail };
+  }
+
   const result = await publishListingToCupboard({
+    ...releaseBuild.extras,
     listing_kind: 'recipe',
     listing_ref: ref,
     ...(typeof input.project_ref === 'string' ? { project_ref: input.project_ref } : {}),

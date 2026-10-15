@@ -465,8 +465,8 @@ describe('SIDECAR restart-durability federation (D-053/D-054) — member sidecar
           announceIdentityOverride: idOwner.override,
           verifyBindingOverride: async (_pk, _login, userId) =>
             userId === idMember.userId ? 'verified' : 'fail',
-          applyOverride: (op) => {
-            ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, owner.handle.ownLog.keyHex);
+          applyOverride: (op, ctx) => {
+            ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, ctx.ownLogKeyHex);
             return ownerApply(op);
           },
         },
@@ -839,8 +839,8 @@ describe('OWNER+MEMBER ALTERNATING restart SOAK (WI-5481 rig-independent repro) 
             announceIdentityOverride: idOwner.override,
             verifyBindingOverride: async (_pk, _login, userId) =>
               userId === idMember.userId ? 'verified' : 'fail',
-            applyOverride: (op) => {
-              ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, owner.handle.ownLog.keyHex);
+            applyOverride: (op, ctx) => {
+              ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, ctx.ownLogKeyHex);
               return ownerApply(op);
             },
             mergePollMs: MERGE_POLL_MS,
@@ -1387,8 +1387,8 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
           announceIdentityOverride: idOwner.override,
           verifyBindingOverride: async (_pk, _login, userId) =>
             userId === idMember.userId ? 'verified' : 'fail',
-          applyOverride: (op) => {
-            ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, owner.handle.ownLog.keyHex);
+          applyOverride: (op, ctx) => {
+            ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, ctx.ownLogKeyHex);
             return ownerApply(op);
           },
           mergePollMs: MERGE_POLL_MS,

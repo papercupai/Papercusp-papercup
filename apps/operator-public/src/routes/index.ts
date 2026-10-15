@@ -6,6 +6,7 @@ import { bindingRoute } from './binding.ts';
 import { adminRoute } from './admin.ts';
 import { workspaceHostArtifactsRoute } from './workspace-host-artifacts.ts';
 import { creatorDraftsRoute } from './creator-drafts.ts';
+import { selfDescribingArtifactsRoute } from './self-describing-artifacts.ts';
 import { releaseMirrorRoute } from './release-mirror.ts';
 import { githubWebhookRoute } from './github-webhook.ts';
 import { commerceRoute } from './commerce.ts';
@@ -53,6 +54,9 @@ export function buildApi(
   api.route('/', adminRoute());
   api.route('/', workspaceHostArtifactsRoute());
   api.route('/', creatorDraftsRoute());
+  // R2 ORIGIN for self-describing release bytes (cupboard-release-pipeline-content-trust
+  // P-011): content-addressed PUT (Merkle-root verified) + tokenless GET.
+  api.route('/', selfDescribingArtifactsRoute());
   // Public mirror publication (P-045). Shares `fetchImpl` with the commerce
   // route for the same reason: its only outbound call is to a third party, and
   // an unexercised credential path is the one that rots.

@@ -46,7 +46,7 @@ function makeFakeOctokit(opts: FakeOctokitOpts) {
             getCalls++;
             if (entry === 'ok') {
               return {
-                data: { full_name: opts.forkFullName, fork: true },
+                data: { full_name: opts.forkFullName, fork: true, parent: { full_name: 'papercupai/papercup' } },
               };
             }
             const err = Object.assign(new Error(`HTTP ${entry}`), { status: entry });
@@ -129,5 +129,50 @@ describe('ensureFork — authed user is the upstream owner', () => {
     expect(result.forkFullName).toBe('papercupai/papercup');
     expect(fake.spy.createFork).not.toHaveBeenCalled();
     expect(fake.spy.getReposGetCalls()).toBe(0); // short-circuit before any repos.get
+  });
+});
+
+describe('ensureFork — canonical fork identity', () => {
+  const upstream = 'Papercusp/agent-chat';
+  const alternate = 'papercupai/Papercusp-agent-chat';
+  function redirectedFork(existing: Record<string, unknown>, alternateExisting?: Record<string, unknown>) {
+    let created = false;
+    const createFork = vi.fn(async () => { created = true; return { data: {} }; });
+    const get = vi.fn(async ({ repo }: { repo: string }) => {
+      if (repo === 'agent-chat') return { data: existing };
+      if (alternateExisting) return { data: alternateExisting };
+      if (created) return { data: { full_name: alternate, fork: true, parent: { full_name: upstream } } };
+      throw Object.assign(new Error('HTTP 404'), { status: 404 });
+    });
+    const oc = { rest: { users: { getAuthenticated: async () => ({ data: { login: 'papercupai' } }) },
+      repos: { get, createFork } } };
+    return { oc, get, createFork };
+  }
+  it('creates a distinctly named fork when the old user name redirects to the upstream', async () => {
+    const fake = redirectedFork({ full_name: upstream, fork: false });
+    expect(await ensureFork(baseOpts(fake.oc, { upstreamOwner: 'Papercusp', upstreamRepo: 'agent-chat' })))
+      .toEqual({ forkOwner: 'papercupai', forkFullName: alternate, created: true });
+    expect(fake.createFork).toHaveBeenCalledWith({ owner: 'Papercusp', repo: 'agent-chat', name: 'Papercusp-agent-chat' });
+  });
+  it.each([
+    { full_name: 'papercupai/agent-chat', fork: false },
+    { full_name: 'papercupai/agent-chat', fork: true, parent: { full_name: 'other/agent-chat' } },
+  ])('does not reuse an unrelated repository: %j', async (existing) => {
+    const fake = redirectedFork(existing);
+    expect(await ensureFork(baseOpts(fake.oc, { upstreamOwner: 'Papercusp', upstreamRepo: 'agent-chat' })))
+      .toMatchObject({ forkFullName: alternate, created: true });
+  });
+  it('reuses a verified alternate fork on a subsequent call', async () => {
+    const fake = redirectedFork({ full_name: upstream, fork: false },
+      { full_name: alternate, fork: true, parent: { full_name: upstream } });
+    expect(await ensureFork(baseOpts(fake.oc, { upstreamOwner: 'Papercusp', upstreamRepo: 'agent-chat' })))
+      .toMatchObject({ forkFullName: alternate, created: false });
+    expect(fake.createFork).not.toHaveBeenCalled();
+  });
+  it('refuses an occupied incompatible alternate without creating or replacing a repository', async () => {
+    const fake = redirectedFork({ full_name: upstream, fork: false }, { full_name: alternate, fork: false });
+    await expect(ensureFork(baseOpts(fake.oc, { upstreamOwner: 'Papercusp', upstreamRepo: 'agent-chat' })))
+      .rejects.toThrow('already resolves to an incompatible repository');
+    expect(fake.createFork).not.toHaveBeenCalled();
   });
 });

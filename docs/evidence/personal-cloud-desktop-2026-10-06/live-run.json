@@ -1,0 +1,259 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "personal-cloud-desktop P-006 live run p006-pcd006b-1: personal desktop on a real KasmVNC host (GCP host-560adc2a196edd88206fb582, workspace-host runtime 0.0.21-pcd006b)",
+  "command": [
+    "env",
+    "ORG=d405-e2e-probe-org-20260923154559",
+    "CWS=ws-560adc2a196edd88206fb582",
+    "HOST=host-560adc2a196edd88206fb582",
+    "INST=pc-host-560adc2a196edd88206fb582-190a4acd-vm",
+    "PROJECT=papercusp-hosted-workspaces",
+    "ZONE=us-central1-c",
+    "RUN_ID=p006-pcd006b-1",
+    "RUNTIME=0.0.21-pcd006b",
+    "OUT=docs/evidence/personal-cloud-desktop-2026-10-06/live-run.json",
+    "npx",
+    "tsx",
+    ".papercusp/scratch/pcd/p006-live.mts"
+  ],
+  "exitCode": 0,
+  "summary": "All five live assertions passed on the historical run timestamped below against a real GCP KasmVNC workspace host with the desktop pack installed. Tickets were minted by the production HostedWorkspaceConnectorGateway and sockets went through the real broker relay to hosted-session-host on the VM; VM-side readings were taken over the controller IAP SSH as the customer account. R-6 personal-desktop-uid, R-17 personal-desktop-home, R-18 personal-desktop-takeover-input, R-19 personal-desktop-reconnect, R-20 personal-desktop-non-owner-refused. The driver and its SSH helper are local scratch files pinned below by SHA-256; every VM command and relay message they issued is in transcript[]. Provenance correction: desktopSessionIdAfter was assigned the starting id, not independently re-read. R-19 identity continuity is supported by rosterStillLists and successful reopen-by-id desktop.ready; Xvnc pid continuity was independently re-read. Recording this corrected committed artifact does not constitute a new live run.",
+  "driver": {
+    "script": ".papercusp/scratch/pcd/p006-live.mts",
+    "scriptSha256": "5d6bf2ffba31cdf2e6e3b77b02378abbcf0d67058837f59acb26a5e2bc076ade",
+    "sshHelper": ".papercusp/scratch/pcd/vmssh.sh",
+    "sshHelperSha256": "567a0a521bb0a45dbdc93556e0d90807a7e93a6f36c18060752a8547306139bf",
+    "stdoutLog": ".papercusp/scratch/pcd/p006-live-pcd006b-1.log",
+    "stdoutLogSha256": "7a7c32b626dc47ea46c33566e3fa48c7a2c452d13a1c019d8b982a7c80d272ab"
+  },
+  "plan": "personal-cloud-desktop-2026-10-06",
+  "item": "P-006",
+  "workItem": "WI-10006781",
+  "evidencePlane": "live",
+  "framework": "shell",
+  "layer": "operational",
+  "run": "p006-pcd006b-1",
+  "startedAt": "2026-10-06T21:09:15.953Z",
+  "finishedAt": "2026-10-06T21:09:44.983Z",
+  "host": {
+    "hostId": "host-560adc2a196edd88206fb582",
+    "instance": "pc-host-560adc2a196edd88206fb582-190a4acd-vm",
+    "project": "papercusp-hosted-workspaces",
+    "zone": "us-central1-c",
+    "organizationId": "d405-e2e-probe-org-20260923154559",
+    "customerWorkspaceId": "ws-560adc2a196edd88206fb582",
+    "runtime": "0.0.21-pcd006b"
+  },
+  "relay": {
+    "broker": "ws://127.0.0.1:3880/api/hosted/connectors/socket",
+    "publicHost": "app.papercusp.com",
+    "identities": {
+      "owner": "pcd-owner-p006-pcd006b-1",
+      "secondMember": "pcd-member-p006-pcd006b-1"
+    },
+    "ticketIssuer": "HostedWorkspaceConnectorGateway.issueSessionTicket (production control-plane gateway; synthetic probe-org identities, no browser sign-in)"
+  },
+  "desktop": {
+    "desktopSessionId": "0eae995a-5ddb-4b08-a3a0-4742bd9da756",
+    "state": "ready",
+    "displayNumber": 210,
+    "geometry": "1024x768",
+    "lastActiveAt": "2026-10-06T21:09:19.418Z",
+    "scope": "user",
+    "owner": "pcd-owner-p006-pcd006b-1"
+  },
+  "passed": true,
+  "assertions": [
+    {
+      "id": "personal-desktop-uid",
+      "passed": true,
+      "evidence": "R-6: the personal desktop's Xvnc process (pid 9880, display :210) runs as uid 1001, and id -u papercusp-workspace = 1001 (ps uid of the pgrep-matched Xvnc vs id -u, over the controller IAP SSH). Full readings: observations.personal-desktop-uid."
+    },
+    {
+      "id": "personal-desktop-home",
+      "passed": true,
+      "evidence": "R-17: HOME read from /proc/9946/environ (the desktop's xfce4-session) = /home/papercusp-workspace; the workspace checkout listed under it (ls /home/papercusp-workspace/workspaces) is papercusp-workspace. Full readings: observations.personal-desktop-home."
+    },
+    {
+      "id": "personal-desktop-takeover-input",
+      "passed": true,
+      "evidence": "R-18: the owner dialed the desktop in takeover mode through the relay and hosted-session-host (ready action=takeover, inputAllowed=true; RFB 003.008, 1024x768), sent Ctrl+Alt+T over RFB, and the visible X window list went from 7 windows to 8, adding 'Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~'. Full readings: observations.personal-desktop-takeover-input."
+    },
+    {
+      "id": "personal-desktop-reconnect",
+      "passed": true,
+      "evidence": "R-19: after closing the viewer, the roster still listed desktop 0eae995a-5ddb-4b08-a3a0-4742bd9da756 and reopening that id returned desktop.ready in takeover with inputAllowed=true and RFB 003.008. The independently re-read Xvnc pid stayed 9880. Limitation: desktopSessionIdAfter was assigned the starting id, not independently re-read; it is not an additional identity measurement. Full readings: observations.personal-desktop-reconnect."
+    },
+    {
+      "id": "personal-desktop-non-owner-refused",
+      "passed": true,
+      "evidence": "R-20: a second member identity (pcd-member-p006-pcd006b-1) dialed the owner's desktop over the relay in takeover mode and in watch mode; both sockets closed with code 4000 reason desktop_not_owner after 0 RFB bytes, and that member's desktop roster came back empty. Full readings: observations.personal-desktop-non-owner-refused."
+    }
+  ],
+  "observations": {
+    "personal-desktop-uid": {
+      "passed": true,
+      "bar": "R-6",
+      "xvncPid": "9880",
+      "xvncUid": "1001",
+      "customerAccountUid": "1001"
+    },
+    "personal-desktop-home": {
+      "passed": true,
+      "bar": "R-17",
+      "home": "/home/papercusp-workspace",
+      "workspaceCheckouts": [
+        "papercusp-workspace"
+      ]
+    },
+    "personal-desktop-takeover-input": {
+      "passed": true,
+      "bar": "R-18",
+      "ready": {
+        "action": "takeover",
+        "inputAllowed": true
+      },
+      "rfb": {
+        "greeting": "RFB 003.008",
+        "securityTypes": [
+          1
+        ],
+        "width": 1024,
+        "height": 768,
+        "name": "x11"
+      },
+      "keys": "Ctrl+Alt+T",
+      "windowsBefore": [
+        "10485800 Desktop",
+        "12582915 xfce4-panel",
+        "12582926 xfce4-panel",
+        "12582930 xfce4-panel",
+        "14680067 wrapper-2.0",
+        "20971523 wrapper-2.0",
+        "2097202 Xfwm4"
+      ],
+      "windowsAfter": [
+        "10485800 Desktop",
+        "12582915 xfce4-panel",
+        "12582926 xfce4-panel",
+        "12582930 xfce4-panel",
+        "14680067 wrapper-2.0",
+        "20971523 wrapper-2.0",
+        "2097202 Xfwm4",
+        "25165827 Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~"
+      ],
+      "opened": [
+        "25165827 Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~"
+      ]
+    },
+    "personal-desktop-reconnect": {
+      "passed": true,
+      "bar": "R-19",
+      "desktopSessionIdBefore": "0eae995a-5ddb-4b08-a3a0-4742bd9da756",
+      "desktopSessionIdAfter": "0eae995a-5ddb-4b08-a3a0-4742bd9da756",
+      "desktopSessionIdAfterProvenance": {
+        "source": "starting-id-variable",
+        "independentlyMeasured": false,
+        "note": "desktopSessionIdAfter:id reused the initial id; the post-reconnect roster and reopen-by-id ready response are the independent continuity observations."
+      },
+      "desktopSessionIdAfterObserved": "0eae995a-5ddb-4b08-a3a0-4742bd9da756",
+      "desktopSessionIdAfterObservedProvenance": {
+        "source": "owner-session desktop.roster.result",
+        "requestId": "pcd-roster-owner",
+        "observedAt": "2026-10-06T21:09:41.338Z",
+        "independentlyMeasured": true
+      },
+      "rosterStillLists": true,
+      "xvncPidBefore": "9880",
+      "xvncPidAfter": "9880",
+      "reopenedReady": {
+        "action": "takeover",
+        "inputAllowed": true
+      },
+      "rfbAfter": "RFB 003.008"
+    },
+    "personal-desktop-non-owner-refused": {
+      "passed": true,
+      "bar": "R-20",
+      "refusals": [
+        {
+          "mode": "takeover",
+          "messages": [
+            {
+              "type": "session.bound",
+              "protocol": "papercusp-hosted-workspace.v1",
+              "channelId": "a3eafebd-32bd-43a2-971f-65d00664af3f",
+              "role": "controller",
+              "kind": "desktop",
+              "binding": {
+                "organizationId": "d405-e2e-probe-org-20260923154559",
+                "customerWorkspaceId": "ws-560adc2a196edd88206fb582",
+                "hostId": "host-560adc2a196edd88206fb582",
+                "generation": 4,
+                "hostedSessionId": "p006-pcd006b-1-other-takeover"
+              }
+            }
+          ],
+          "close": {
+            "code": 4000,
+            "reason": "desktop_not_owner"
+          },
+          "rfbBytes": 0
+        },
+        {
+          "mode": "watch",
+          "messages": [
+            {
+              "type": "session.bound",
+              "protocol": "papercusp-hosted-workspace.v1",
+              "channelId": "ffa2e2ba-fa39-4022-809f-93cfcbcebbcf",
+              "role": "observer",
+              "kind": "desktop",
+              "binding": {
+                "organizationId": "d405-e2e-probe-org-20260923154559",
+                "customerWorkspaceId": "ws-560adc2a196edd88206fb582",
+                "hostId": "host-560adc2a196edd88206fb582",
+                "generation": 4,
+                "hostedSessionId": "p006-pcd006b-1-other-watch"
+              }
+            }
+          ],
+          "close": {
+            "code": 4000,
+            "reason": "desktop_not_owner"
+          },
+          "rfbBytes": 0
+        }
+      ],
+      "hiddenFromOtherRoster": true
+    }
+  },
+  "transcript": [
+    "2026-10-06T21:09:15.954Z RUN p006-pcd006b-1 host host-560adc2a196edd88206fb582 owner pcd-owner-p006-pcd006b-1 other pcd-member-p006-pcd006b-1",
+    "2026-10-06T21:09:16.154Z RECV owner-session {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"2c2e9ae9-c095-484f-a384-bde961d8e750\",\"role\":\"controller\",\"kind\":\"pty\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-pcd006b-1-owner-session\"}}",
+    "2026-10-06T21:09:16.288Z RECV owner-session {\"type\":\"pty.ready\",\"resumed\":false,\"role\":\"controller\",\"program\":\"shell\",\"limits\":{\"maxFileBytes\":8388608,\"maxUploadChunkBytes\":524288}}",
+    "2026-10-06T21:09:19.510Z RECV owner-session {\"type\":\"desktop.start.result\",\"requestId\":\"pcd-start\",\"desktop\":{\"desktopSessionId\":\"0eae995a-5ddb-4b08-a3a0-4742bd9da756\",\"state\":\"ready\",\"displayNumber\":210,\"geometry\":\"1024x768\",\"lastActiveAt\":\"2026-10-06T21:09:19.418Z\",\"scope\":\"user\",\"owner\":\"pcd-owner-p006-pcd006b-1\"}}",
+    "2026-10-06T21:09:19.510Z PERSONAL_DESKTOP {\"desktopSessionId\":\"0eae995a-5ddb-4b08-a3a0-4742bd9da756\",\"state\":\"ready\",\"displayNumber\":210,\"geometry\":\"1024x768\",\"lastActiveAt\":\"2026-10-06T21:09:19.418Z\",\"scope\":\"user\",\"owner\":\"pcd-owner-p006-pcd006b-1\"}",
+    "2026-10-06T21:09:21.450Z VM$ set -e; acct=$(id -u papercusp-workspace); x=$(pgrep -u papercusp-workspace -n -f '[X]vnc|[X]kasmvnc' || true); s=$(pgrep -u papercusp-workspace -n -x xfce4-ses => P1 acct_uid=1001 xvnc_pid=9880 xvnc_uid=1001 session_pid=9946\nP1 env_HOME=/home/papercusp-workspace\nP1 env_USER=papercusp-workspace\nP1 env_DISPLAY=:210",
+    "2026-10-06T21:09:23.063Z VM$ ls -1 /home/papercusp-workspace/workspaces | head -20 => papercusp-workspace",
+    "2026-10-06T21:09:23.090Z RECV owner-takeover-1 {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"dab832c2-a9e4-42b9-8cbb-e3807b52a76b\",\"role\":\"controller\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-pcd006b-1-owner-takeover-1\"}}",
+    "2026-10-06T21:09:23.167Z RECV owner-takeover-1 {\"type\":\"desktop.ready\",\"action\":\"takeover\",\"inputAllowed\":true}",
+    "2026-10-06T21:09:23.490Z RFB {\"greeting\":\"RFB 003.008\",\"securityTypes\":[1],\"width\":1024,\"height\":768,\"name\":\"x11\"}",
+    "2026-10-06T21:09:25.326Z VM$ DISPLAY=:210  xdotool search --onlyvisible --name '.' 2>/dev/null | while read w; do echo \"$w $(DISPLAY=:210  xdotool getwindowname $w 2>/dev/null)\"; done | sor => 10485800 Desktop\n12582915 xfce4-panel\n12582926 xfce4-panel\n12582930 xfce4-panel\n14680067 wrapper-2.0\n20971523 wrapper-2.0\n2097202 Xfwm4",
+    "2026-10-06T21:09:32.825Z VM$ DISPLAY=:210  xdotool search --onlyvisible --name '.' 2>/dev/null | while read w; do echo \"$w $(DISPLAY=:210  xdotool getwindowname $w 2>/dev/null)\"; done | sor => 10485800 Desktop\n12582915 xfce4-panel\n12582926 xfce4-panel\n12582930 xfce4-panel\n14680067 wrapper-2.0\n20971523 wrapper-2.0\n2097202 Xfwm4\n25165827 Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~",
+    "2026-10-06T21:09:32.830Z CLOSE owner-takeover-1 1000 p006 done",
+    "2026-10-06T21:09:38.857Z RECV owner-takeover-2 {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"59abb406-5787-4805-a5a5-a34e742f2413\",\"role\":\"controller\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-pcd006b-1-owner-takeover-2\"}}",
+    "2026-10-06T21:09:38.944Z RECV owner-takeover-2 {\"type\":\"desktop.ready\",\"action\":\"takeover\",\"inputAllowed\":true}",
+    "2026-10-06T21:09:41.264Z VM$ set -e; acct=$(id -u papercusp-workspace); x=$(pgrep -u papercusp-workspace -n -f '[X]vnc|[X]kasmvnc' || true); s=$(pgrep -u papercusp-workspace -n -x xfce4-ses => P2 acct_uid=1001 xvnc_pid=9880 xvnc_uid=1001 session_pid=9946\nP2 env_HOME=/home/papercusp-workspace\nP2 env_USER=papercusp-workspace\nP2 env_DISPLAY=:210",
+    "2026-10-06T21:09:41.338Z RECV owner-session {\"type\":\"desktop.roster.result\",\"requestId\":\"pcd-roster-owner\",\"desktops\":[{\"desktopSessionId\":\"0eae995a-5ddb-4b08-a3a0-4742bd9da756\",\"state\":\"ready\",\"displayNumber\":210,\"geometry\":\"1024x768\",\"lastActiveAt\":\"2026-10-06T21:09:19.418Z\",\"scope\":\"user\",\"owner\":\"pcd-owner-p006-pcd006b-1\"}]}",
+    "2026-10-06T21:09:41.340Z CLOSE owner-takeover-2 1000 p006 done",
+    "2026-10-06T21:09:41.354Z RECV other-takeover {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"a3eafebd-32bd-43a2-971f-65d00664af3f\",\"role\":\"controller\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-pcd006b-1-other-takeover\"}}",
+    "2026-10-06T21:09:41.418Z CLOSE other-takeover 4000 desktop_not_owner",
+    "2026-10-06T21:09:43.186Z RECV other-watch {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"ffa2e2ba-fa39-4022-809f-93cfcbcebbcf\",\"role\":\"observer\",\"kind\":\"desktop\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-pcd006b-1-other-watch\"}}",
+    "2026-10-06T21:09:43.252Z CLOSE other-watch 4000 desktop_not_owner",
+    "2026-10-06T21:09:44.772Z RECV other-session {\"type\":\"session.bound\",\"protocol\":\"papercusp-hosted-workspace.v1\",\"channelId\":\"0c1aed9c-755a-438e-b244-c6ffbc129352\",\"role\":\"controller\",\"kind\":\"pty\",\"binding\":{\"organizationId\":\"d405-e2e-probe-org-20260923154559\",\"customerWorkspaceId\":\"ws-560adc2a196edd88206fb582\",\"hostId\":\"host-560adc2a196edd88206fb582\",\"generation\":4,\"hostedSessionId\":\"p006-pcd006b-1-other-session\"}}",
+    "2026-10-06T21:09:44.846Z RECV other-session {\"type\":\"pty.ready\",\"resumed\":false,\"role\":\"controller\",\"program\":\"shell\",\"limits\":{\"maxFileBytes\":8388608,\"maxUploadChunkBytes\":524288}}",
+    "2026-10-06T21:09:44.982Z RECV other-session {\"type\":\"desktop.roster.result\",\"requestId\":\"pcd-roster-other\",\"desktops\":[]}"
+  ]
+}

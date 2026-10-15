@@ -13,7 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
 // NOTE (WI-10004585): do NOT statically import './convert' (or anything else that
@@ -158,6 +158,7 @@ const {
   reconcileOrphanedPlanItemWorkItems,
   reconcilePlanAuthoredDependenciesNow,
   resyncPlanItemLaneNow,
+  syncLinkedWorkItemsToPlanLane,
   planLaneBlockerRef,
   PLAN_AUTHORED_BLOCKERS_KEY,
 } = await import('./reconcile-linked-work-items');
@@ -172,6 +173,7 @@ const {
 // (2026-09-04 → 2026-10-01). The 'mock wiring' test below pins the order.
 const { IMPLEMENTS_REL } = await import('./convert');
 const { getFeatureBlockers, syncFeatureBlockEdges } = await import('../dbos/feature-blockers-edges');
+const { mirrorWorkItemBlockingEdge } = await import('../dbos/work-item-deps-store');
 const { fireBuiltinReactionAction, PLAN_ITEM_LANE_RESYNC_ACTION } = await import('../events/builtin-actions');
 const { updateExternalBlockerHistory } = await import('../external-blockers');
 const { isClaimHoldParked } = await import('../work-items');
@@ -185,6 +187,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -1216,6 +1219,31 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
   });
 });
 
+describe('syncLinkedWorkItemsToPlanLane failure reporting (WI-10003685)', () => {
+  it('returns a structured read failure when linked-item lookup throws', async () => {
+    const originalSql = h.sql;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.sql = (() => {
+      throw new Error('injected: linked-item lookup unavailable');
+    }) as unknown as postgres.Sql;
+
+    try {
+      const result = await syncLinkedWorkItemsToPlanLane(
+        { planSlug: 'p-read-failure', itemId: 'P-FAIL', harnessSlug: 'sheets' },
+        'blocked',
+      );
+
+      expect(result.failures).toEqual([
+        { stage: 'linked-work-item-read', message: 'injected: linked-item lookup unavailable' },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"event":"plan_lane_sync_failure"'));
+    } finally {
+      h.sql = originalSql;
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocked-by (EI-18732669095544832)', () => {
   beforeEach(() => {
     h4.mergeWorkItemPayload.mockClear();
@@ -1503,6 +1531,22 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     expect(h4.setWorkItemClaimHold).not.toHaveBeenCalledWith('WI-still-blocked', false, expect.anything());
   });
 
+  it('blocker history CAS rejects a lane gate conflict before lifecycle mutation', async () => {
+    await edge({ plan: 'pcas', item: 'P-011', srcRef: 'WI-cas' });
+    const row = stub({ id: 'WI-cas', harness: 'sheets', state: 'open', family: 'issue', lastProgressAt: null, payload: {} });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-011', status: 'blocked', blockedBy: [] }] });
+    h4.mergeWorkItemPayload.mockResolvedValueOnce(null);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await resyncPlanItemLaneNow('pcas', 'P-011', null);
+      expect(result?.gated).toEqual([]);
+      expect(result?.failures).toEqual([{ stage: 'apply-gate', workItemId: 'WI-cas', message: 'blocker history changed before lane gate write' }]);
+      expect(row.state).toBe('open');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(h4.mergeWorkItemPayload).toHaveBeenCalledWith('WI-cas', expect.any(Object), expect.objectContaining({ expectedExternalBlockers: undefined, requireNonTerminal: true }));
+    } finally { warn.mockRestore(); }
+  });
+
   it('keeps the lane blocker active when lifecycle restore fails, so the next sweep can retry', async () => {
     // EI-20268159828040355: clearing blocker history before the state write made a
     // concurrent lifecycle rejection permanent — the row stayed `blocked`, but the
@@ -1532,10 +1576,19 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     });
     setWorkItemStateWithAliasInfo.mockRejectedValueOnce(new Error('concurrent lifecycle guard'));
 
-    const failed = await resyncPlanItemLaneNow('pretry', 'P-011', null);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const failed = await resyncPlanItemLaneNow('pretry', 'P-011', null);
 
-    expect(failed).not.toBeNull();
-    expect(failed!.ungated).toEqual([]);
+      expect(failed).not.toBeNull();
+      expect(failed!.ungated).toEqual([]);
+      expect(failed!.failures).toEqual([
+        { stage: 'apply-gate', workItemId: 'WI-retry', message: 'concurrent lifecycle guard' },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"stage":"apply-gate"'));
+    } finally {
+      warn.mockRestore();
+    }
     expect((row.payload?.externalBlockers as Array<{ status: string }>).some((b) => b.status === 'active')).toBe(true);
     expect(h4.mergeWorkItemPayload).not.toHaveBeenCalled();
 
@@ -1656,6 +1709,84 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       planSlug: plan,
       itemId: 'P-003',
       blockerWorkItemIds: ['F-new'],
+    });
+  });
+
+  it.each([
+    { label: 'empty provenance', prior: [] as string[] | null },
+    { label: 'replaced provenance', prior: ['F-old'] },
+    // WI-10006540: no marker at all (first reconcile) owns NO edges, so it must remove none.
+    // Passing undefined instead of [] would select the full-replace contract and drop WI-source.
+    { label: 'no provenance marker', prior: null },
+  ])('EI-252075: preserves mixed-family SUCCESS blockers with $label', async ({ prior }) => {
+    const plan = 'p-mixed-success';
+    const target = stub({
+      id: 'F-target', harness: 'sheets', state: 'todo', family: 'feature',
+      payload: prior === null ? {} : {
+        [PLAN_AUTHORED_BLOCKERS_KEY]: { planSlug: plan, itemId: 'P-003', blockerWorkItemIds: prior },
+      },
+    });
+    stub({ id: 'F-new', harness: 'sheets', state: 'todo', family: 'feature' });
+    await insertDependencyRows(['F-target', 'F-old', 'F-new', 'F-manual']);
+    await rootSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, payload, created_ts, updated_ts)
+      VALUES (${WS}, 'sheets', 'WI-source', 'bug', 'open', '{}'::jsonb, 0, 0)`;
+    await edge({ plan, item: 'P-002', srcKind: 'feature', srcRef: 'sheets#F-new' });
+    await edge({ plan, item: 'P-003', srcKind: 'feature', srcRef: 'sheets#F-target' });
+    await syncFeatureBlockEdges('sheets', 'F-target', prior ?? []);
+    for (const blocker of [
+      { kind: 'issue', ref: 'WI-source' },
+      { kind: 'feature', ref: 'sheets#F-manual' },
+    ]) {
+      await mirrorWorkItemBlockingEdge(blocker, { kind: 'feature', ref: 'sheets#F-target' }, {
+        satisfaction: 'success', createdBy: 'manual-source',
+      });
+    }
+    const manualEdges = () => rootSql`
+      SELECT id, blocker_kind, blocker_ref, satisfaction, created_by, created_at
+        FROM harness_shared.work_item_deps
+       WHERE blocked_ref = 'sheets#F-target'
+         AND blocker_ref IN ('WI-source', 'sheets#F-manual')
+       ORDER BY blocker_ref`;
+    const before = await manualEdges();
+    expect(before).toHaveLength(2);
+    expect(before.every((row) => row.satisfaction === 'success')).toBe(true);
+    h3.getPlanRow.mockResolvedValue({ items: [
+      { id: 'P-002', status: 'todo', blockedBy: [] },
+      { id: 'P-003', status: 'todo', blockedBy: ['P-002'] },
+    ] });
+
+    const result = await reconcilePlanAuthoredDependenciesNow(plan, 'P-003', null);
+
+    expect(result).toEqual({ canonicalId: 'F-target', desired: ['F-manual', 'F-new'], resolved: ['F-new'] });
+    expect(await manualEdges()).toEqual(before);
+    expect((await getFeatureBlockers('sheets')).get('F-target')?.sort()).toEqual(['F-manual', 'F-new']);
+    expect(target.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toEqual({
+      planSlug: plan, itemId: 'P-003', blockerWorkItemIds: ['F-new'],
+    });
+
+    // Strengthening a retained plan edge must also survive an idempotent reconciliation.
+    await mirrorWorkItemBlockingEdge(
+      { kind: 'feature', ref: 'sheets#F-new' }, { kind: 'feature', ref: 'sheets#F-target' },
+      { satisfaction: 'success' },
+    );
+    // A repeat and then removal of the plan's last blocker must not touch either manual edge.
+    await reconcilePlanAuthoredDependenciesNow(plan, 'P-003', null);
+    expect(await manualEdges()).toEqual(before);
+    expect(await rootSql`
+      SELECT satisfaction FROM harness_shared.work_item_deps
+       WHERE blocked_ref = 'sheets#F-target' AND blocker_ref = 'sheets#F-new'`
+    ).toEqual([{ satisfaction: 'success' }]);
+    h3.getPlanRow.mockResolvedValue({ items: [
+      { id: 'P-002', status: 'todo', blockedBy: [] },
+      { id: 'P-003', status: 'todo', blockedBy: [] },
+    ] });
+    await reconcilePlanAuthoredDependenciesNow(plan, 'P-003', null);
+    expect(await manualEdges()).toEqual(before);
+    expect((await getFeatureBlockers('sheets')).get('F-target')).toEqual(['F-manual']);
+    expect(target.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toEqual({
+      planSlug: plan, itemId: 'P-003', blockerWorkItemIds: [],
     });
   });
 

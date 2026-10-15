@@ -1,7 +1,8 @@
 /**
- * backup:restore — restore-to-clone only. Never overwrites live files.
- * Restores into <workspace>/.restored/<snapshotId>/. Agent (or user)
- * diffs the clone against live and promotes manually.
+ * backup:restore — restore-to-clone by default, or explicitly in place.
+ * Clone mode writes into <workspace>/.restored/<snapshotId>/ without
+ * overwriting live files. In-place mode replaces the target after taking
+ * a safety snapshot; an optional source path narrows clone mode only.
  */
 
 import { z } from 'zod';
@@ -23,6 +24,7 @@ export default defineTool({
     'omitting it restores the full snapshot. mode="in_place" overwrites the target ' +
     'after taking a safety snapshot first; source does not narrow in_place.',
   capability: 'backup:write',
+  irreversible: (args) => args.mode === 'in_place',
   guidance: {
     when: `Restore a backup snapshot — replay PG dump + filesystem into the workspace. Destructive: replaces current state.`,
     notWhen: `For ROLLING BACK without changing the snapshot list, use \`backup:rollback\`. restore is the full apply.`,

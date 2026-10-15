@@ -220,10 +220,44 @@ describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by de
     expect(d.rec.comments[0].body).toMatch(/LEADER TRIAGE/);
   });
 
-  it('a genuine OWNER-gated blockerCapability (credential) → the OWNER ACTION path (payload.needsOwnerAction) AND state moves to needs-human (EI-18210987268765837)', async () => {
+  it('D-029: an OWNER-gated needs-human without defaultIfUnanswered is refused before ANY write', async () => {
     const d = deps(issue({ id: 'EI-3' }));
     const r = await resolveImprovement(
       { id: 'EI-3', outcome: 'needs-human', summary: 'needs a prod DB credential only the owner holds', blockerCapability: 'credential' },
+      d,
+    );
+    expect(r).toMatchObject({ ok: false, id: 'EI-3' });
+    expect(r.error).toMatch(/requires defaultIfUnanswered/);
+    expect(d.rec.payloads).toEqual([]);
+    expect(d.rec.comments).toEqual([]);
+  });
+
+  it('blocker history CAS retains the claim and dispatch when the owner-ask history conflicts', async () => {
+    const d = deps(issue({ id: 'EI-3' }));
+    const merge = vi.fn(async () => null);
+    d.mergeIssuePayload = merge;
+    const r = await resolveImprovement({
+      id: 'EI-3', outcome: 'needs-human', summary: 'Provide the credential', blockerCapability: 'credential',
+      defaultIfUnanswered: 'stays parked; recheck later',
+    }, d);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('Blocker history changed');
+    expect(d.rec.states).toEqual([]);
+    expect(d.rec.released).toEqual([]);
+    expect(d.rec.closes).toEqual([]);
+    expect(merge).toHaveBeenCalledWith('EI-3', expect.any(Object), expect.objectContaining({ requireNonTerminal: true, expectedExternalBlockers: undefined }));
+  });
+
+  it('a genuine OWNER-gated blockerCapability (credential) → the OWNER ACTION path (payload.needsOwnerAction) AND state moves to needs-human (EI-18210987268765837)', async () => {
+    const d = deps(issue({ id: 'EI-3' }));
+    const r = await resolveImprovement(
+      {
+        id: 'EI-3',
+        outcome: 'needs-human',
+        summary: 'needs a prod DB credential only the owner holds',
+        blockerCapability: 'credential',
+        defaultIfUnanswered: 'stays parked; the weekly owner digest re-surfaces it',
+      },
       d,
     );
     expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'needs-human', routedToOwnerAction: true });
@@ -405,5 +439,122 @@ describe('resolveImprovement — dispatch-ledger close (consume-edges P-010 / B-
     expect(r).toMatchObject({ ok: true, outcome: 'fixed', state: 'resolved' });
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/dispatch-ledger close failed/), 'PG hiccup');
     warn.mockRestore();
+  });
+});
+
+describe('own-node rows stranded at origin=remote (WI-10006515)', () => {
+  // origin records how a row ARRIVED, not who wrote it (WI-10003565). The heal dep owns the
+  // identity check; these cases pin that every route consults it before choosing peer
+  // reconciliation, and that a true peer row (heal answers false) keeps the peer route.
+  function stranded(id: string, ownNode: boolean) {
+    let row = issue({ id, origin: 'remote' });
+    const d = deps(row);
+    const healed: string[] = [];
+    d.getIssue = async () => row;
+    d.setIssueState = async (sid, state) => {
+      d.rec.states.push({ id: sid, state });
+      return row.origin === 'remote' ? null : { ...row, state };
+    };
+    d.healOwnNodeOrigin = async (hid) => {
+      healed.push(hid);
+      if (ownNode) row = { ...row, origin: 'local' };
+      return ownNode;
+    };
+    return { d, healed };
+  }
+
+  it('needs-human on an own-node row heals and takes the normal leader-triage route', async () => {
+    const { d, healed } = stranded('EI-own', true);
+    const r = await resolveImprovement({ id: 'EI-own', outcome: 'needs-human', summary: 'needs a schema migration' }, d);
+    expect(healed).toEqual(['EI-own']);
+    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'blocked', routedToLeaderTriage: true });
+    expect(r.routedToPeerReconciliation).toBeUndefined();
+  });
+
+  it('needs-human on a true peer row keeps the peer-reconciliation route', async () => {
+    const { d, healed } = stranded('EI-peer', false);
+    const r = await resolveImprovement({ id: 'EI-peer', outcome: 'needs-human', summary: 'needs a schema migration' }, d);
+    expect(healed).toEqual(['EI-peer']);
+    expect(r).toMatchObject({ ok: true, outcome: 'could-not-fix', routedToPeerReconciliation: true });
+    expect(d.rec.states).toEqual([]);
+  });
+
+  it('fixed on an own-node row heals first, so the resolve write lands instead of a false peer route', async () => {
+    const { d } = stranded('EI-own', true);
+    const r = await resolveImprovement({ id: 'EI-own', outcome: 'fixed', summary: 'fixed it', testsRun: 'vitest green' }, d);
+    expect(r).toMatchObject({ ok: true, outcome: 'fixed', state: 'resolved' });
+  });
+
+  it('the exhausted-attempts flip heals an own-node row so the leader-triage block sticks', async () => {
+    const { d } = stranded('EI-own', true);
+    const r = await routeExhaustedImprovementToLeaderTriage({ id: 'EI-own', attempts: 3 }, d);
+    expect(r).toMatchObject({ ok: true, flipped: true });
+  });
+
+  it('a local row never consults the heal', async () => {
+    const d = deps(issue({ id: 'EI-local' }));
+    const heal = vi.fn(async () => true);
+    d.healOwnNodeOrigin = heal;
+    await resolveImprovement({ id: 'EI-local', outcome: 'could-not-fix', summary: 'retry later' }, d);
+    expect(heal).not.toHaveBeenCalled();
+  });
+});
+
+// WI-6554700010009273: migrations 1474/1477 refuse a row ENTERING `blocked` unless it already
+// names its blocker, and the leader-triage park names it with a fresh payload.blockedReason. So the
+// reason must be written BEFORE the status flip (status-first was refused outright), and it must be
+// withdrawn when the flip does not stick so it cannot vouch for a later, unrelated `blocked` write.
+describe('resolveImprovement — leader-triage park writes its reason before the status flip', () => {
+  function orderedDeps(current: EngineerIssue | null) {
+    const d = deps(current);
+    const log: string[] = [];
+    const merge = d.mergeIssuePayload;
+    const flip = d.setIssueState;
+    d.mergeIssuePayload = async (id, patch, opts) => {
+      log.push(opts?.unset ? `unset:${opts.unset.join(',')}` : `merge:${Object.keys(patch).join(',')}`);
+      return merge(id, patch, opts);
+    };
+    d.setIssueState = async (...args) => {
+      log.push(`state:${args[1]}`);
+      return flip(...args);
+    };
+    return { d, log };
+  }
+
+  it('stamps blockedReason + a current blockedAt, then flips to blocked', async () => {
+    const { d, log } = orderedDeps(issue({ id: 'EI-5' }));
+    const before = Date.now();
+    const r = await resolveImprovement({ id: 'EI-5', outcome: 'needs-human', summary: 'needs a schema migration' }, d);
+    expect(r).toMatchObject({ ok: true, state: 'blocked', routedToLeaderTriage: true });
+    expect(log.indexOf('merge:blockedReason,blockedAt')).toBeGreaterThanOrEqual(0);
+    expect(log.indexOf('merge:blockedReason,blockedAt')).toBeLessThan(log.indexOf('state:blocked'));
+    const stamp = d.rec.payloads.find((p) => 'blockedReason' in p.patch)!.patch;
+    expect(Date.parse(String(stamp.blockedAt))).toBeGreaterThanOrEqual(before - 1000);
+    expect(log).not.toContain('unset:blockedReason,blockedAt');
+    expect(d.rec.released).toEqual(['EI-5']);
+  });
+
+  it('withdraws the reason when the flip no-ops (remote-owned / missing row) and still releases the claim', async () => {
+    const { d, log } = orderedDeps(issue({ id: 'EI-6' }));
+    d.setIssueState = async () => {
+      log.push('state:blocked');
+      return null;
+    };
+    await resolveImprovement({ id: 'EI-6', outcome: 'needs-human', summary: 'needs a schema migration' }, d);
+    expect(log.indexOf('unset:blockedReason,blockedAt')).toBeGreaterThan(log.indexOf('state:blocked'));
+    expect(d.rec.released).toEqual(['EI-6']);
+  });
+
+  it('withdraws the reason and releases the claim when the database refuses the flip', async () => {
+    const { d, log } = orderedDeps(issue({ id: 'EI-7' }));
+    d.setIssueState = async () => {
+      log.push('state:blocked');
+      throw Object.assign(new Error('work-item EI-7 cannot enter status blocked without naming its blocker'), { code: '23514' });
+    };
+    await expect(
+      resolveImprovement({ id: 'EI-7', outcome: 'needs-human', summary: 'needs a schema migration' }, d),
+    ).rejects.toThrow(/cannot enter status blocked/);
+    expect(log.indexOf('unset:blockedReason,blockedAt')).toBeGreaterThan(log.indexOf('state:blocked'));
+    expect(d.rec.released).toEqual(['EI-7']);
   });
 });

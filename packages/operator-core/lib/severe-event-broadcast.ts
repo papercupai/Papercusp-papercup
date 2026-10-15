@@ -18,6 +18,7 @@
 import { sendMessage } from './agent-tools/coordination/messages';
 import { wakeRecipients } from './agent-tools/coordination/inbox-wake';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { renderSevereEventEmitter, severeEventEmitter } from './severe-event-emitter';
 
 /** The system identity severe-event broadcasts are attributed to (mirrors the
  *  hive-owner-key-health escalation identity — a workspace-level system sender). */
@@ -85,73 +86,21 @@ export interface SevereEventBroadcast {
   oneShot?: boolean;
   /** EI-10060: the resolved responsible party, if any. See {@link SevereEventRoute}. */
   route?: SevereEventRoute;
-}
-
-/**
- * WI-7309: identity of the PROCESS that emitted an alarm.
- *
- * Stamped on every severe-event broadcast because on this box the emitter's AGE is the
- * decisive forensic fact and nothing else in the envelope carries it. Long-lived
- * `tsx bin/hono-host.ts` hosts run from the STAGING tree with no hot-reload, so each
- * executes a frozen snapshot of the code from whenever it started (measured 2026-08-03:
- * one at 8.4h, one at 7.8 DAYS). A fix can therefore be committed, green-gated, deployed
- * and verified live by every available check — `--is-ancestor`, blob identity, served sha
- * — while one of those hosts keeps paging the PRE-FIX text forever. No deploy reaches it.
- *
- * Without these fields attribution has to be reconstructed indirectly, from in-memory
- * streak arithmetic cross-referenced against `ps` by hand. That cost two agents ~1h on
- * 2026-08-03 and still ended UNDETERMINED. With them it is a field read.
- */
-export interface SevereEventEmitter {
-  pid: number;
   /**
-   * ISO time this PROCESS started — THE discriminator. A process that started before
-   * your fix landed has not loaded it, whatever the deployed sha reports.
+   * Further responsible parties paged the same way as `route`, each with its own directed
+   * message + wake (e.g. a gate holder AND its fleet leader). Delivered after `route`.
    */
-  startedAt: string;
-  uptimeSec: number;
-  /** cwd of the emitting process: WHICH CHECKOUT it executes from (staging vs release). */
-  cwd: string;
+  extraRoutes?: readonly SevereEventRoute[];
 }
 
-/** Snapshot the current process's identity. Never throws — an alarm must still fire. */
-export function severeEventEmitter(): SevereEventEmitter {
-  let uptimeSec = 0;
-  let cwd = '(unknown)';
-  let pid = -1;
-  try {
-    uptimeSec = Math.max(0, Math.round(process.uptime()));
-  } catch {
-    /* best-effort: an unusable clock must never suppress the alarm */
-  }
-  try {
-    cwd = process.cwd();
-  } catch {
-    /* best-effort */
-  }
-  try {
-    if (typeof process.pid === 'number') pid = process.pid;
-  } catch {
-    /* best-effort */
-  }
-  return { pid, startedAt: new Date(Date.now() - uptimeSec * 1000).toISOString(), uptimeSec, cwd };
-}
-
-/**
- * One-line trailer appended to the alarm BODY. The structured `extra.emitter` is what SQL
- * queries; this is what an agent reading coord:inbox actually sees, so it carries the
- * INTERPRETATION RULE and not only the raw numbers — the rule is the part that was missing.
- */
-export function renderSevereEventEmitter(e: SevereEventEmitter): string {
-  const h = Math.floor(e.uptimeSec / 3600);
-  const m = Math.floor((e.uptimeSec % 3600) / 60);
-  const age = h > 0 ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`;
-  return (
-    `\n\n— emitted by pid ${e.pid}, process started ${e.startedAt} (up ${age}), cwd ${e.cwd}. ` +
-    `If that start time PREDATES the fix you are checking, this process never loaded it ` +
-    `(no hot-reload) and no deploy will reach it — restart that host instead of re-investigating the alarm.`
-  );
-}
+// WI-7309: the emitter stamp (type, snapshot, trailer renderer) lives in the leaf module
+// ./severe-event-emitter so coord:inbox can recognise the trailer without importing this
+// broadcast path. Re-exported here so existing importers are unchanged.
+export {
+  renderSevereEventEmitter,
+  severeEventEmitter,
+  type SevereEventEmitter,
+} from './severe-event-emitter';
 
 /**
  * The Mug role slot, INLINED rather than imported from placement-watchdog's
@@ -234,11 +183,56 @@ async function deliverRoute(route: SevereEventRoute, summary: string, body: stri
 }
 
 /**
+ * WI-6554700010011878: ONE-SHOT is a contract, and this chokepoint enforces it.
+ *
+ * `oneShot` (WI-6228) means the emitter "alarms once per episode and stays silent until
+ * recovery". Nothing held emitters to that. Measured 2026-10-14: 42,378 of the 56,193
+ * condition-keyed rows in the 30-day coord log (75%, 747 keys) were one-shot alarms that
+ * repeated the previous summary of a still-open key. ungraded-filings and rubric-staleness
+ * re-sent theirs about every 2 minutes. That volume overflowed `readConditionEnvelopes`'
+ * 25k-row fold window (the condition-reconciler flap on the ascending build; 90 long-open
+ * one-shot conditions dropped from coord:conditions on the descending one). It also re-sent
+ * every routed directed message and wake on each tick.
+ *
+ * A repeat is a oneShot alarm whose key's NEWEST envelope is an alarm (not a resolution)
+ * with the SAME summary. Everything else passes through: the first alarm, an alarm after any
+ * resolution (a new episode), a changed summary (new information), and every alarm that did
+ * not declare oneShot. Pure, so the decision is pinned without a database.
+ */
+export function isRepeatOfOpenOneShotAlarm(
+  latest: Record<string, unknown> | null,
+  conditionKey: string,
+  summary: string,
+): boolean {
+  if (!latest) return false;
+  // Any resolution naming the key (singular or batched) closed the episode.
+  if (typeof latest['resolves_condition'] === 'string' || Array.isArray(latest['resolves_conditions'])) {
+    return false;
+  }
+  return latest['condition_key'] === conditionKey && latest['summary'] === summary;
+}
+
+/** Fail-OPEN: a read failure broadcasts, because a lost alarm costs more than a duplicate. */
+async function suppressOneShotRepeat(ev: SevereEventBroadcast): Promise<boolean> {
+  if (!ev.oneShot || !ev.conditionKey) return false;
+  try {
+    const { readLatestConditionEnvelope } = await import('./agent-tools/coordination/tools/conditions');
+    return isRepeatOfOpenOneShotAlarm(await readLatestConditionEnvelope(ev.conditionKey), ev.conditionKey, ev.summary);
+  } catch (e) {
+    console.warn(`[severe-event-broadcast] one-shot repeat check failed, broadcasting (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+}
+
+/**
  * Broadcast a SEVERE pipeline event to every running agent, inject-only (no wake). Seen on the
- * recipient's next turn so someone claims it. Never throws.
+ * recipient's next turn so someone claims it. Never throws. A oneShot alarm that repeats its
+ * still-open key's summary is not re-sent (WI-6554700010011878); it returns true because the
+ * alarm is still in effect.
  */
 export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<boolean> {
   try {
+    if (await suppressOneShotRepeat(ev)) return true;
     // No `wake` option ⇒ plain inject (the owner-requested wake=false): lands in every agent's
     // inbox for their next turn, no forced re-invoke storm.
     // WI-7309: emitter identity is stamped UNCONDITIONALLY — an alarm whose emitter is
@@ -263,6 +257,7 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
       },
     });
     if (ev.route) await deliverRoute(ev.route, ev.summary, body);
+    for (const extra of ev.extraRoutes ?? []) await deliverRoute(extra, ev.summary, body);
     return true;
   } catch (e) {
 

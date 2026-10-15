@@ -17,14 +17,19 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-# The tier-2 content sweep is the expensive half and this box routinely sits at
-# load average 60+. A security probe that degrades its host is a security probe
-# somebody disables, so it runs at the bottom of both the CPU and I/O queues.
-Nice=19
-IOSchedulingClass=idle
-# Must exceed KEYPERM_DEEP_TIMEOUT_S (default 900s) plus the tier-1 sweep, or
-# systemd kills the probe before its OWN timeout can fire — and the probe's
-# timeout is what converts a truncated sweep into an INDETERMINATE verdict
-# instead of a silent clean one.
-TimeoutStartSec=2400
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-fedplane-key-permission-check.sh
+# The tier-2 content sweep is the expensive half. Keep its CPU share modest and
+# its I/O at the lowest best-effort priority: idle I/O can be starved completely
+# while the device has active work, leaving the security probe without progress.
+Nice=10
+CPUWeight=50
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# Tier 2 applies KEYPERM_DEEP_TIMEOUT_S independently to each of its three
+# default roots: 3 × 2700s = 8100s. Keep a further 1500s for tier 1 and final EI
+# reporting so systemd cannot kill the probe before its per-root timeout is
+# handled and the INDETERMINATE result is filed. The 160-minute cap remains
+# inside this unit's daily timer cadence.
+TimeoutStartSec=9600
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-fedplane-key-permission-check.sh

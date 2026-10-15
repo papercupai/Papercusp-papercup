@@ -75,6 +75,12 @@ describe('detectFabrication', () => {
 });
 
 describe('computeOutcomeMetrics', () => {
+  it('refuses a score with incomplete regression coverage', async () => {
+    await expect(computeOutcomeMetrics(record, scenario, { ...truthAllGood,
+      preTests: [{ name: 'kept', passed: true }, { name: 'missing', passed: true }],
+      postTests: [{ name: 'kept', passed: true }],
+    }, { acceptance: passAcceptance })).rejects.toThrow('regression evidence not measured');
+  });
   it('passes the outcome gate when acceptance + planted-bug + no-fabrication all hold (D-002)', async () => {
     const m = await computeOutcomeMetrics(record, scenario, truthAllGood, { acceptance: passAcceptance });
     expect(m.acceptancePass).toBe(true);

@@ -16,8 +16,9 @@
  *   - The ONLY fail-closed serve primitive on public APIs: an EXPLICIT
  *     per-core×connection attach — `session.replicate(muxer)` (a Protomux
  *     instance routes to `_attachToMuxer` → `core.replicator.attachTo(mux)` and
- *     registers NO ondiscoverykey) — and `session.replicator.detachFrom(mux)`
- *     to stop serving NOW. With no lazy path registered for the scoped store,
+ *     registers NO ondiscoverykey). Revocation unpairs the replicator AND closes
+ *     its live per-core channels: detachFrom alone leaves open peers serving.
+ *     With no lazy path registered for the scoped store,
  *     an unattached (or detached) scoped core is structurally UNSERVABLE on
  *     that connection, no matter who knows its key. That IS the §5.3 gate.
  *
@@ -48,8 +49,8 @@ export function ownScopeLogName(scope: ScopeId): string {
 /**
  * Minimal structural view of a corestore SESSION (hypercore) — the bits the
  * registry touches. `replicate(mux)` with a Protomux instance attaches the core
- * to that muxer (hypercore index.js `_attachToMuxer`); `replicator.detachFrom`
- * stops serving it there. Narrowed at the boundary (peer-log.ts convention) so
+ * to that muxer (hypercore index.js `_attachToMuxer`); revocation also closes
+ * matching live peers. Narrowed at the boundary (peer-log.ts convention) so
  * unit tests run on fakes.
  */
 export interface ScopedSessionLike {
@@ -58,6 +59,8 @@ export interface ScopedSessionLike {
   replicate(mux: object): unknown;
   readonly key: Buffer;
   readonly writable: boolean;
+  /** Hypercore's live peers. Unpairing alone does not close their channels. */
+  readonly peers?: ReadonlyArray<{ protomux: object; channel: { close(): void } }>;
   /** hypercore session replicator accessor — used for detach + attached(). */
   readonly replicator?: {
     attached(mux: object): boolean;
@@ -106,6 +109,18 @@ export class ScopeCoreRegistry {
   private readonly remotes = new Map<string, Map<string, RemoteEntry>>();
   /** live muxer → the scopes served on it (Map so revocation can iterate). */
   private readonly served = new Map<object, ServedConn>();
+  /** Cuts invalidate authorization reads that were started before them. */
+  private readonly serveGenerations = new WeakMap<object, Map<string, number>>();
+  private readonly pendingServes = new Set<{ mux: object; scopeId: string; peerGithubUserId: number }>();
+
+  private generationsFor(mux: object): Map<string, number> {
+    let generations = this.serveGenerations.get(mux);
+    if (!generations) {
+      generations = new Map();
+      this.serveGenerations.set(mux, generations);
+    }
+    return generations;
+  }
 
   constructor(store: ScopedStoreLike) {
     this.store = store;
@@ -194,7 +209,24 @@ export class ScopeCoreRegistry {
     isScopeMember: IsScopeMember,
   ): Promise<ServeScopeResult> {
     const id = formatScopeId(scope);
-    if (!(await isScopeMember(scope, peerGithubUserId))) {
+    const generations = this.generationsFor(mux);
+    const generation = generations.get(id) ?? 0;
+    const pending = { mux, scopeId: id, peerGithubUserId };
+    this.pendingServes.add(pending);
+    let member: boolean;
+    try {
+      member = await isScopeMember(scope, peerGithubUserId);
+    } catch (error) {
+      this.stopServingScope(mux, id);
+      throw error;
+    } finally {
+      this.pendingServes.delete(pending);
+    }
+    if (this.serveGenerations.get(mux) !== generations || (generations.get(id) ?? 0) !== generation) {
+      // A newer cut wins over this stale success; a new serve call may grant again.
+      return { ok: false, attached: 0, refusal: { reason: 'not-a-member', scopeId: id, peerGithubUserId } };
+    }
+    if (!member) {
       // Belt: if we were serving this scope here (roster changed under us),
       // stop NOW — a serve check is also a revocation edge (§5.3).
       this.stopServingScope(mux, id);
@@ -221,6 +253,8 @@ export class ScopeCoreRegistry {
 
   /** Stop serving ONE scope on ONE connection (detach every core of it). */
   stopServingScope(mux: object, scopeId: string): void {
+    const generations = this.generationsFor(mux);
+    generations.set(scopeId, (generations.get(scopeId) ?? 0) + 1);
     const conn = this.served.get(mux);
     if (conn) conn.scopes.delete(scopeId);
     const ownEntry = this.own.get(scopeId);
@@ -236,18 +270,20 @@ export class ScopeCoreRegistry {
    * (never wait for reconnect). Returns how many connections were cut.
    */
   revokePeerFromScope(scopeId: string, peerGithubUserId: number): number {
-    let cut = 0;
+    const cut = new Set<object>();
     for (const [mux, conn] of this.served) {
-      if (conn.scopes.get(scopeId) === peerGithubUserId) {
-        this.stopServingScope(mux, scopeId);
-        cut++;
-      }
+      if (conn.scopes.get(scopeId) === peerGithubUserId) cut.add(mux);
     }
-    return cut;
+    for (const pending of this.pendingServes) {
+      if (pending.scopeId === scopeId && pending.peerGithubUserId === peerGithubUserId) cut.add(pending.mux);
+    }
+    for (const mux of cut) this.stopServingScope(mux, scopeId);
+    return cut.size;
   }
 
   /** Transport died — forget its tracking (detach is moot on a dead stream). */
   dropConnection(mux: object): void {
+    this.serveGenerations.delete(mux);
     this.served.delete(mux);
   }
 
@@ -270,11 +306,16 @@ export class ScopeCoreRegistry {
 
   private detachSafely(session: ScopedSessionLike, mux: object): void {
     try {
-      if (session.replicator && session.replicator.attached(mux)) {
-        session.replicator.detachFrom(mux);
+      // detachFrom removes future pairing; it does not close an existing
+      // hypercore/alpha channel. Close only this core's peers on this mux,
+      // preserving every unrelated public/scope channel on the connection.
+      session.replicator?.detachFrom(mux);
+      for (const peer of [...(session.peers ?? [])]) {
+        if (peer.protomux === mux) peer.channel.close();
       }
     } catch {
-      // best-effort — a dead muxer/core can't block the revocation sweep
+      // A failed channel cut must not leave private serving alive.
+      (mux as { stream?: { destroy(): void } }).stream?.destroy();
     }
   }
 }

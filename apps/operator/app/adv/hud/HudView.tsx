@@ -47,6 +47,7 @@ import GoalComposer from './GoalComposer';
 import GoalDetailPanel from './GoalDetailPanel';
 import GoalStatusControl from './GoalStatusControl';
 import GoalPackagesRail, { type GoalPackageRailEntry } from './GoalPackagesRail';
+import { representedOngoingGoalIds } from './ongoing-work-model';
 import {
   goalsTruncationNotice,
   hudHarnessScopeArgs,
@@ -763,11 +764,12 @@ export default function HudView({
   }>({
     queryName: 'goals.list',
     args: { workspaceId: goalWorkspaceId, ...hudHarnessScopeArgs(scopedHarnessSlugs) },
-    enabled: tab === 'goals' && scopeReady,
+    enabled: scopeReady,
   });
   const goalBoard = useMemo(
     () =>
-      buildGoalBoard(goalsQuery.data?.[0]?.goals ?? [], {
+      buildGoalBoard((goalsQuery.data?.[0]?.goals ?? []).filter((goal) =>
+        !representedOngoingGoalIds(goalsQuery.data?.[0]?.goalPackages ?? []).has(goal.id)), {
         nowMs,
         query: entityQuery,
       }),
@@ -1107,6 +1109,8 @@ export default function HudView({
           entries={goalsQuery.data?.[0]?.goalPackages ?? []}
           goals={goalsQuery.data?.[0]?.goals ?? []}
           onOpenGoal={onOpenPackageGoal}
+          workspaceId={goalWorkspaceId}
+          nowMs={nowMs}
         />
         <HudEntityColumns
           board={goalBoard}
@@ -1185,6 +1189,9 @@ export default function HudView({
 
   return (
     <>
+      {tab !== 'goals' ? <GoalPackagesRail entries={goalsQuery.data?.[0]?.goalPackages ?? []}
+        goals={goalsQuery.data?.[0]?.goals ?? []} onOpenGoal={onOpenPackageGoal}
+        workspaceId={goalWorkspaceId} variant="compact" nowMs={nowMs} /> : null}
       <HudBoard
         board={board}
         selectedFleets={selectedFleets}
@@ -1326,6 +1333,10 @@ export default function HudView({
         nowMs={nowMs}
         onClose={() => void setGoalFilter(null)}
         onOpenWorkItem={(id) => void setOpenItemId(id)}
+        onOpenPlan={(harness, slug) => {
+          void setGoalFilter(null);
+          void setDashPlan(encodeScopedRef(harness, slug));
+        }}
         /* P-018/D-011: the goal popup's ONE conversation affordance. It routes
            into the SAME `hudsession` popup the sessions pane opens rather than
            growing a chat surface of its own — D-005, never fork a second chat

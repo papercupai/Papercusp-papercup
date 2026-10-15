@@ -234,17 +234,17 @@ export function activeInteractiveExchangeForWake(
 export async function carryProvenClassForOwner(
   ownerId: string,
   deps: ColdByDefaultDeps & {
-    findHostFn?: (ownerId: string) => ColdByDefaultHostView | null;
+    findHostFn?: (ownerId: string) => Promise<ColdByDefaultHostView | null>;
   } = {},
 ): Promise<string | null> {
   try {
     if (!ownerId) return null;
     const findHost =
       deps.findHostFn ??
-      ((await import('./events/await/psu-pty-discovery')).findLiveHost as (
+      ((await import('./events/await/psu-pty-discovery')).findLiveHostAsync as (
         ownerId: string,
-      ) => ColdByDefaultHostView | null);
-    const host = findHost(ownerId);
+      ) => Promise<ColdByDefaultHostView | null>);
+    const host = await findHost(ownerId);
     if (!host) return null; // no live host ⇒ cannot classify ⇒ keep the enrichment
     const sessionClass = sessionClassForHost(host);
     const sufficientClasses = await sufficientClassesCached(deps);

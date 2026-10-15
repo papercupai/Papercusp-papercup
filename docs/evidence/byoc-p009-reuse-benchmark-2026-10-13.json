@@ -1,0 +1,181 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "BYOC P-006 controlled trusted artifact reuse benchmark",
+  "framework": "operational",
+  "command": [
+    "npx tsx scripts/bench-release-task-reuse.ts >/tmp/p006-reuse-benchmark-current.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-13T05:58:19.778Z",
+  "finishedAt": "2026-10-13T05:58:27.350Z",
+  "summary": "Five same-host paired release-preparation runs reduced median preparation from 282.227 ms to 49.83 ms (82.344%), above the 30% bar. Every hit re-verified artifact bytes, Ed25519 signature, manifest, offline payload and tenant identity; all eight identity mutations and the exact audit-expiry boundary invalidated reuse.",
+  "assertions": [
+    {
+      "id": "preparation-reduction",
+      "passed": true,
+      "evidence": "cold median 282.227 ms; verified-hit median 49.83 ms; reduction 82.344% >= 30% across 5 paired runs"
+    },
+    {
+      "id": "receipt-transition",
+      "passed": true,
+      "evidence": "Every cold arm ran; every prior-receipt hit seeded only a reconcile intent; every verified hit committed a new receipt."
+    },
+    {
+      "id": "artifact-trust",
+      "passed": true,
+      "evidence": "All hit arms reproduced artifact 5c336f3595c2f7db9657de55f85a75801b92dc2ee6919e35b1b3216f43639e61 and manifest 97134e90bd84a5fc29463db203da0867a190ac913b6584117063c6c32382779b, verified Ed25519 signatures, and gunzipped to source eb5d7cf536feaa2d89011e47d8c767381adb01f7eb13e62d9b05f1b516405bce."
+    },
+    {
+      "id": "identity-invalidation",
+      "passed": true,
+      "evidence": "One-at-a-time mutations all changed the input hash: source, gitlink, dependency, toolchain, profile, policy, signing, audit."
+    },
+    {
+      "id": "freshness-boundary",
+      "passed": true,
+      "evidence": "A committed receipt inspected exactly at 2026-09-10T12:40:00.000Z returned action=refused and freshness=expired."
+    },
+    {
+      "id": "isolation-offline-queue",
+      "passed": true,
+      "evidence": "Tenant stayed papercusp-workspace/papercusp, offline payload verification required no network, and queueWaitMs=0 remained separate from preparationElapsedMs."
+    }
+  ],
+  "benchmark": "BYOC-ACCEL-P006-CACHE@2 controlled release preparation",
+  "observedAtUtc": "2026-10-13T05:58:27.350Z",
+  "host": "buildhost",
+  "runtime": {
+    "node": "v25.9.0",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "pinnedSource": {
+    "sourceSha": "b01fcd34c9d3bb56ae0bcfeac8ce049857209d7e",
+    "gitlinks": {
+      "papercusp-desktop": "9416c74a3f0f1cf1a83ba618812df76edeeeb7c0"
+    },
+    "sourceFingerprints": {
+      "packages/operator-core/lib/task-manager/store.ts": "4055892c24831b1f573a783cfc52395be21bb52f29556b586049eccebd29b42b",
+      "scripts/lib/release-task-journal.mts": "62a8573ab9d324d4744121b3a34bc94eb625e09b23a7ca6d3881aa099216285f",
+      "packages/operator-core/lib/harness/routines/nightly-release-cut-action.ts": "d5d0992bc4238b82182b8b95ec6582fdce4328b3f93ba1227b534b581726ae0c",
+      "papercusp-desktop/bin/release-local.sh": "9c11340d5b0daea18b1a5bc998c711f267deeb61b765677839d7f40d19d26172",
+      "scripts/bench-release-task-reuse.ts": "633c2cb12a1676fcf220ccdf4efcddcdba67cbefd0fc24fe40554692df4ec31f"
+    }
+  },
+  "fixture": {
+    "bytes": 8388608,
+    "sourceSha256": "eb5d7cf536feaa2d89011e47d8c767381adb01f7eb13e62d9b05f1b516405bce",
+    "artifactSha256": "5c336f3595c2f7db9657de55f85a75801b92dc2ee6919e35b1b3216f43639e61",
+    "manifestSha256": "97134e90bd84a5fc29463db203da0867a190ac913b6584117063c6c32382779b",
+    "signingIdentitySha256": "fa109b19997e15ec9b6e4a30188486b042d33bb0e43c5f76f963a7923dd4335b",
+    "tenant": {
+      "workspaceId": "papercusp-workspace",
+      "harness": "papercusp"
+    },
+    "offlineAssets": {
+      "embedded": true,
+      "networkRequired": false,
+      "sourceDigest": "eb5d7cf536feaa2d89011e47d8c767381adb01f7eb13e62d9b05f1b516405bce"
+    }
+  },
+  "method": {
+    "pairs": 5,
+    "cold": "gzip level 9 + SHA-256 + Ed25519 sign + manifest digest, then committed receipt",
+    "hit": "prior committed receipt -> reconcile hint; SHA-256 + Ed25519 verify + offline gunzip/source digest + manifest digest, then new committed receipt",
+    "queueTreatment": "queueWaitMs fixed at 0 and recorded separately from preparation",
+    "statistic": "median of five paired runs on the same host and deterministic bytes"
+  },
+  "samples": [
+    {
+      "run": 0,
+      "coldPreparationMs": 270.344,
+      "hitPreparationMs": 49.83,
+      "lookupMs": 0.016,
+      "queueWaitMs": 0,
+      "coldAction": "run",
+      "hitAction": "reconcile",
+      "committedAction": "reuse"
+    },
+    {
+      "run": 1,
+      "coldPreparationMs": 247.285,
+      "hitPreparationMs": 57.328,
+      "lookupMs": 0.01,
+      "queueWaitMs": 0,
+      "coldAction": "run",
+      "hitAction": "reconcile",
+      "committedAction": "reuse"
+    },
+    {
+      "run": 2,
+      "coldPreparationMs": 312.592,
+      "hitPreparationMs": 50.385,
+      "lookupMs": 0.016,
+      "queueWaitMs": 0,
+      "coldAction": "run",
+      "hitAction": "reconcile",
+      "committedAction": "reuse"
+    },
+    {
+      "run": 3,
+      "coldPreparationMs": 364.291,
+      "hitPreparationMs": 46.098,
+      "lookupMs": 0.017,
+      "queueWaitMs": 0,
+      "coldAction": "run",
+      "hitAction": "reconcile",
+      "committedAction": "reuse"
+    },
+    {
+      "run": 4,
+      "coldPreparationMs": 282.227,
+      "hitPreparationMs": 31.136,
+      "lookupMs": 0.031,
+      "queueWaitMs": 0,
+      "coldAction": "run",
+      "hitAction": "reconcile",
+      "committedAction": "reuse"
+    }
+  ],
+  "result": {
+    "coldMedianMs": 282.227,
+    "hitMedianMs": 49.83,
+    "reductionPct": 82.344,
+    "requiredReductionPct": 30,
+    "passed": true,
+    "artifactBytesIdentical": true,
+    "manifestDigestIdentical": true,
+    "signatureVerifiedEveryHit": true,
+    "offlineReadinessVerifiedEveryHit": true,
+    "tenantIdentityPreserved": true,
+    "exactExpiryBoundaryRefused": true,
+    "invalidationMatrix": {
+      "source": true,
+      "gitlink": true,
+      "dependency": true,
+      "toolchain": true,
+      "profile": true,
+      "policy": true,
+      "signing": true,
+      "audit": true
+    }
+  },
+  "receiptEvidence": {
+    "queueWaitMs": 0,
+    "preparationElapsedMs": 31.13611200000014,
+    "reuseExpiresAt": "2026-09-10T12:40:00.000Z",
+    "reuseSource": {
+      "taskId": "p006-cold-task-4",
+      "operationId": "p006-cold-4",
+      "sequence": 1
+    },
+    "evidenceRefs": [
+      "artifact-set:hash-signature-verified",
+      "artifact:sha256:5c336f3595c2f7db9657de55f85a75801b92dc2ee6919e35b1b3216f43639e61",
+      "manifest:sha256:97134e90bd84a5fc29463db203da0867a190ac913b6584117063c6c32382779b",
+      "offline-assets:verified",
+      "tenant:papercusp-workspace/papercusp"
+    ]
+  }
+}

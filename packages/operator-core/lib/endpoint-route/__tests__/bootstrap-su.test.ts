@@ -110,6 +110,11 @@ const buildLaunchSpecMock = vi.fn(async (_input: any) => ({
   mcpJsonContents: '{}',
   stack: _input.stack ?? [],
 }));
+const sessionAllowsAmbientContextMock = vi.fn(async (_input: unknown) => true);
+vi.mock('../../capability-envelope/session-confinement-port', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../capability-envelope/session-confinement-port')>()),
+  sessionAllowsAmbientContext: (input: unknown) => sessionAllowsAmbientContextMock(input),
+}));
 const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
   promptText: input.promptText,
   stack: input.stack ?? [],
@@ -119,13 +124,16 @@ const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
   compositionSource: 'compatibility' as const,
   resourceArtifacts: [],
 }));
-const provisionLaunchIdentityResourcesMock = vi.fn(async () => {});
+const provisionLaunchIdentityResourcesMock = vi.fn(async (_input: unknown) => {});
 const resolveLaunchIdentityModelDefaultMock = vi.fn(async (_input: unknown): Promise<string | null> => null);
 const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   codexHome: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}`,
   agentsPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/AGENTS.md`,
   configPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/config.toml`,
 }));
+const assertSuCodexHomeNotOwnedByLiveSessionMock = vi.fn(
+  async (_sessionKey: string | number, _sid: string, _isOwnerLive: (sid: string) => Promise<boolean>) => {},
+);
 const rekeyCodexHomeMock = vi.fn((_source: string | number, target: string | number) =>
   `/fake/.papercusp/su-codex-homes/session-${target}`,
 );
@@ -301,8 +309,12 @@ vi.mock('../../agent-launch-core', async (importOriginal) => ({
   releaseAgentLaunchClaim: (...args: unknown[]) =>
     releaseAgentLaunchClaimMock(...(args as [any])),
 }));
-vi.mock('../../role-codex-home', () => ({
+vi.mock('../../role-codex-home', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../role-codex-home')>()),
+  assertSuCodexHomeNotOwnedByLiveSession: (...args: unknown[]) =>
+    assertSuCodexHomeNotOwnedByLiveSessionMock(...(args as Parameters<typeof assertSuCodexHomeNotOwnedByLiveSessionMock>)),
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
+  writeSuCodexHomeAsync: async (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
   rekeyCodexHome: (...args: unknown[]) => rekeyCodexHomeMock(...(args as [any, any])),
 }));
 vi.mock('../../interactive-claude-config', () => ({
@@ -316,6 +328,9 @@ vi.mock('../../saved-prompts-materialize', () => ({
   materializeWorkspacePrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
   materializeHarnessPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
   materializeCodexPrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
+}));
+vi.mock('../../slash-tool-prompts-codex', () => ({
+  emitCodexSlashToolPrompts: vi.fn(async () => ({ written: 0, skipped: 0, pruned: 0, ms: 0 })),
 }));
 vi.mock('../../desktop-install/papercusp-files', () => ({
   resolveInstallPaths: () => ({ extensionPath: COORD_EXT }),
@@ -379,6 +394,7 @@ vi.mock('../../agent-tools/plans/source', () => ({
 // DB-free + deterministic (the gateway-OFF + no-account branches return before them).
 type MockPoolAccount = {
   id: string;
+  credentialFailure?: { observedAt: number; ownerId: string };
   provider?: 'claude' | 'codex';
   rate?: {
     utilization?: number;
@@ -450,8 +466,13 @@ const getFleetMock = vi.fn(async (_ws: string, slug: string): Promise<AgentFleet
   description: null,
   owner: 'su-1',
   leaderOwnerId: 'su-1',
+  leaderMissingSinceMs: null,
+  fleetType: 'single',
   colorScheme: null,
   controlState: 'active',
+  controlResumeGate: null,
+  controlExpiresAt: null,
+  controlNoResumePath: false,
   controlReason: null,
   controlBy: null,
   controlAt: null,
@@ -490,10 +511,41 @@ vi.mock('../../fleet-membership-store', async (orig) => ({
 const writePresenceMock = vi.fn(
   async (_identity: unknown, _input: unknown, _harness: unknown) => {},
 );
+// WI-10006674: a harness-less boot stamp reads the row first (create-if-absent).
+// Default null = no row yet, i.e. a fresh launch.
+const getPresenceMock = vi.fn(async (_ownerId: string): Promise<unknown> => null);
 vi.mock('../../agent-tools/coordination/presence', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
   writePresence: (...args: unknown[]) =>
     writePresenceMock(...(args as [unknown, unknown, unknown])),
+  getPresence: (...args: unknown[]) => getPresenceMock(...(args as [string])),
+}));
+type PendingCarryRespawnTestSlot = {
+  nonce: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  firstPrompt: string;
+  systemPromptAddendum: string;
+};
+const consumePendingCarryRespawnMock = vi.fn(
+  async (_ownerId: string): Promise<PendingCarryRespawnTestSlot | null> => null,
+);
+const restorePendingCarryRespawnMock = vi.fn(
+  async (_ownerId: string, _workspaceId: string, _slot: PendingCarryRespawnTestSlot) => true,
+);
+vi.mock('../../session-brief', async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  consumePendingCarryRespawn: (...args: unknown[]) =>
+    consumePendingCarryRespawnMock(...(args as [string])),
+  restorePendingCarryRespawn: (...args: unknown[]) =>
+    restorePendingCarryRespawnMock(...(args as [string, string, PendingCarryRespawnTestSlot])),
+}));
+const resolveWakeModeMock = vi.hoisted(() => vi.fn(async (_ownerId: string): Promise<'auto' | 'manual'> => 'auto'));
+const ensureLaunchedWakeAutoMock = vi.hoisted(() => vi.fn(async (_ownerId: string, _options: unknown) => null));
+vi.mock('../../agent-tools/coordination/wake-mode', async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  resolveWakeMode: (...args: unknown[]) => resolveWakeModeMock(...(args as [string])),
+  ensureLaunchedWakeAuto: (...args: unknown[]) => ensureLaunchedWakeAutoMock(...(args as [string, unknown])),
 }));
 // EI-21442511412659661: bootstrap must consult the shared liveness oracle and
 // treat an absent/rejected read as unknown (therefore blocking). Keep the route
@@ -510,6 +562,7 @@ type FakeOrgSql = (strings: TemplateStringsArray, ...values: unknown[]) => Promi
 vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
   findLiveHost: () => null,
+  findLiveHostAsync: async () => null,
 }));
 // EI-21365235532676472: hermetic PG for the pre-pinned guard's two reads. Only
 // queries the guard itself issues are answered; everything else stays empty.
@@ -582,6 +635,11 @@ async function callBrainGet(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sessionAllowsAmbientContextMock.mockReset().mockResolvedValue(true);
+  consumePendingCarryRespawnMock.mockReset().mockResolvedValue(null);
+  restorePendingCarryRespawnMock.mockReset().mockResolvedValue(true);
+  resolveWakeModeMock.mockReset().mockResolvedValue('auto');
+  ensureLaunchedWakeAutoMock.mockReset().mockResolvedValue(null);
   resolveLaunchIdentityModelDefaultMock.mockReset().mockResolvedValue(null);
   resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
   claimAgentLaunchMock.mockReset().mockResolvedValue({
@@ -602,6 +660,36 @@ beforeEach(() => {
   // P-002 brain-brief defaults: one started hive + a brief string. Tests that
   // exercise the no-brief / no-hive branches override per-call.
   listStartedHivesMock.mockResolvedValue([{ workspaceId: 'default', installSlug: 'papercup' }]);
+});
+
+describe('bootstrap frozen native prompt binding', () => {
+  it.each([false, true])('saved prompt isolation follows host ambient policy: allowed=%s', async (allowed) => {
+    sessionAllowsAmbientContextMock.mockResolvedValue(allowed);
+    const saved = await import('../../saved-prompts-materialize');
+    const slash = await import('../../slash-tool-prompts-codex');
+    const response = await callPost({ agent: 'codex', harness_slug: 'papercup',
+      owner_id: 'su-frozen-prompts-123', model: 'gpt-6-sol', account: 'default' });
+    expect(response.status).toBe(200);
+    // These writes expose workspace content and the full operator catalog in
+    // the readable native home, after the persona builder has already run.
+    const homeInput = writeSuCodexHomeMock.mock.calls.at(-1)![0];
+    expect(homeInput.denyAmbientContext).toBe(allowed ? undefined : true);
+    expect(saved.materializeCodexPrompts).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    expect(slash.emitCodexSlashToolPrompts).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    expect(saved.materializeWorkspacePrompts).not.toHaveBeenCalled();
+    expect(saved.materializeHarnessPrompts).not.toHaveBeenCalled();
+  });
+
+  it('threads the pre-pinned host identity into the renderer and suppresses live plan context', async () => {
+    sessionAllowsAmbientContextMock.mockResolvedValue(false);
+    const response = await callPost({ agent: 'codex', harness_slug: 'papercup', plan_slug: 'private-plan',
+      owner_id: 'su-frozen-native-123', model: 'gpt-6-sol', account: 'default' });
+    expect(response.status).toBe(200);
+    expect(sessionAllowsAmbientContextMock).toHaveBeenCalledWith({ ownerId: 'su-frozen-native-123', workspaceId: 'default' });
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({
+      ownerId: 'su-frozen-native-123', planTitle: null, planNow: null,
+    }));
+  });
 });
 
 describe('bootstrap-su', () => {
@@ -726,7 +814,13 @@ describe('bootstrap-su', () => {
       expect.objectContaining({
         promptText: expect.stringContaining('⟦INSTRUCTION-PRECEDENCE⟧'),
         role: 'su',
+        // WI-10004747: the persona composes the su static layers, so the artifact (and the
+        // model preflight that must agree with it) records them as slotted inputs.
+        impliedStack: 'su-static',
       }),
+    );
+    expect(resolveLaunchIdentityModelDefaultMock).toHaveBeenCalledWith(
+      expect.objectContaining({ impliedStack: 'su-static' }),
     );
     expect(json.envelopeEnv.CODEX_HOME).toBeUndefined();
     // coord extension resolved for omp's -e (present in this test env).
@@ -900,6 +994,85 @@ describe('bootstrap-su', () => {
     expect(noPlan.kickoffPrompt).toBeNull();
   });
 
+  it('consumes a validated owner carry slot into the next launch prompt and system prompt', async () => {
+    const now = Date.now();
+    const slot: PendingCarryRespawnTestSlot = {
+      nonce: 'carry-bootstrap-nonce',
+      createdAtMs: now,
+      expiresAtMs: now + 60_000,
+      firstPrompt: 'Test-only saved first turn prompt.',
+      systemPromptAddendum: 'Test-only persisted system carry addendum.',
+    };
+    consumePendingCarryRespawnMock.mockResolvedValueOnce(slot);
+
+    const response = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      owner_id: 'su-carry-bootstrap',
+    });
+
+    expect(response.status).toBe(200);
+    expect(consumePendingCarryRespawnMock).toHaveBeenCalledWith('su-carry-bootstrap');
+    const body = await response.json();
+    expect(body.kickoffPrompt).toBe(slot.firstPrompt);
+    const compiledPrompt = (compileLaunchSpecificationArtifactMock.mock.calls[0]?.[0] as { promptText: string })
+      .promptText;
+    expect(compiledPrompt).toContain(slot.systemPromptAddendum);
+    expect(compiledPrompt.indexOf('PLAYBOOK + CTX BODY')).toBeLessThan(
+      compiledPrompt.indexOf(slot.systemPromptAddendum),
+    );
+    expect(restorePendingCarryRespawnMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves a pending carry when the effective wake mode is manual', async () => {
+    resolveWakeModeMock.mockResolvedValue('manual');
+
+    const response = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      owner_id: 'su-carry-paused',
+    });
+
+    expect(response.status).toBe(200);
+    expect(resolveWakeModeMock).toHaveBeenCalledWith('su-carry-paused');
+    expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
+    expect(restorePendingCarryRespawnMock).not.toHaveBeenCalled();
+  });
+
+  it('restores a consumed carry slot when fresh bootstrap fails before completion', async () => {
+    const now = Date.now();
+    const slot: PendingCarryRespawnTestSlot = {
+      nonce: 'carry-restore-nonce',
+      createdAtMs: now,
+      expiresAtMs: now + 60_000,
+      firstPrompt: 'Test-only saved first turn prompt.',
+      systemPromptAddendum: 'Test-only persisted system carry addendum.',
+    };
+    consumePendingCarryRespawnMock.mockResolvedValueOnce(slot);
+    compileLaunchSpecificationArtifactMock.mockRejectedValueOnce(new Error('artifact compile failed'));
+
+    const response = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      owner_id: 'su-carry-restore',
+    });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('artifact compile failed') });
+
+    expect(restorePendingCarryRespawnMock).toHaveBeenCalledWith('su-carry-restore', 'default', slot);
+    expect(restorePendingCarryRespawnMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      consumePendingCarryRespawnMock.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('leaves an unconsumed carry pending when session creation fails first', async () => {
+    recordAdvSessionMock.mockRejectedValueOnce(new Error('session write failed'));
+    await expect(callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-carry-early-fail' }))
+      .rejects.toThrow('session write failed');
+    expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
+    expect(restorePendingCarryRespawnMock).not.toHaveBeenCalled();
+  });
+
   it('EI-155: claude gets a per-session CLAUDE_CONFIG_DIR keyed by the minted sid', async () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     const sid = json.envelopeEnv.PAPERCUSP_SID;
@@ -954,6 +1127,7 @@ describe('bootstrap-su', () => {
       }),
     );
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
     expect(recordSessionPortBootstrapReceiptMock).toHaveBeenCalledWith(
       expect.objectContaining({
         portId: SESSION_PORT_ID,
@@ -965,6 +1139,63 @@ describe('bootstrap-su', () => {
       portId: '22222222-2222-4222-8222-222222222222',
       targetAdvSessionId: 42,
     }));
+  });
+
+  // consult-backed-parking-2026-10-12#P-010 (R-10): 16 measured cross-backend port
+  // failures (~2026-10-05) ended with "prepared target account auto did not resolve
+  // exactly at bootstrap (got default)". The launcher sent the prepared 'auto', but the
+  // codex auto route resolved without the gatewayAuto marker, so bootstrap read it as
+  // 'default'. The first case is the regression guard for that class: an auto-routed
+  // codex target must resolve to exactly 'auto' and be accepted. The second pins the
+  // earlier contract guard: a launch whose account drifted from the prepared request is
+  // refused before any target is reserved, so no route ever changes silently.
+  const sessionPortRowForAccount = (account: string) => {
+    const row = sessionPortRow();
+    const summary = (row.metadata as { summary: { target: Record<string, unknown> } }).summary;
+    return {
+      ...row,
+      metadata: { ...row.metadata, summary: { ...summary, target: { ...summary.target, account } } },
+    };
+  };
+  const sessionPortLaunch = (account: string) => ({
+    agent: 'codex',
+    model: 'gpt-5.5',
+    account,
+    owner_id: 'su-source-owner',
+    bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+    session_port_protocol: 2,
+    session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+    session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+  });
+
+  it('accepts a prepared auto account when the codex target resolves to unpinned gateway routing', async () => {
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRowForAccount('auto'));
+    getFlagMock.mockImplementation(async (key: string) => key === 'papercusp-inference-gateway');
+    loadAccountPoolMock.mockResolvedValueOnce({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
+    try {
+      const res = await callPost(sessionPortLaunch('auto'));
+      expect(res.status).toBe(200);
+      expect(reserveSessionPortTargetMock).toHaveBeenCalledWith(
+        expect.objectContaining({ portId: SESSION_PORT_ID }),
+      );
+      expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+        expect.objectContaining({ codexGatewayAuto: true, codexGatewayAccountId: null }),
+      );
+    } finally {
+      getFlagMock.mockImplementation(async () => false);
+    }
+  });
+
+  it('refuses a launch whose account drifted from the prepared auto request, before reserving a target', async () => {
+    getSessionPortMock.mockResolvedValueOnce(sessionPortRowForAccount('auto'));
+    const res = await callPost(sessionPortLaunch('default'));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe(
+      'session-port bootstrap inputs differ from the immutable prepared request; inspect and prepare again',
+    );
+    expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
   it('replays the committed bootstrap receipt before rejecting an already-pending attempt', async () => {
@@ -1035,6 +1266,187 @@ describe('bootstrap-su', () => {
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
+  it.each((['codex', 'omp'] as const).flatMap((sourceBackend) =>
+    [true, false].map((continueSourceOwner) => ({ sourceBackend, continueSourceOwner }))))(
+    'continues $sourceBackend source identity without a prepared target owner: matching owner $continueSourceOwner',
+    async ({ sourceBackend, continueSourceOwner }) => {
+      const seed = renderSessionPortSeed({
+        portId: SESSION_PORT_ID, sourceBackend, targetBackend: 'claude',
+        fidelity: 'full', transcript: 'exact native source history',
+      });
+      const port = sessionPortRow({ sourceBackend, targetBackend: 'claude', targetModel: 'sonnet', renderedHash: seed.hash });
+      port.metadata.summary.source = {
+        ...port.metadata.summary.source, backend: sourceBackend, nativeSessionId: `${sourceBackend}-native-source`,
+      };
+      port.metadata.summary.target = {
+        ...port.metadata.summary.target, backend: 'claude', provider: 'anthropic', model: 'sonnet',
+      };
+      expect(port.metadata.summary.target).not.toHaveProperty('ownerId');
+      const sourceIdentity = { ...port.metadata.summary.source };
+      getSessionPortMock.mockResolvedValueOnce(port);
+      readSessionPortArtifactMock.mockResolvedValueOnce(seed.seed);
+      try {
+        const response = await callPost({
+          agent: 'claude', model: 'sonnet', account: 'default',
+          owner_id: continueSourceOwner ? 'su-source-owner' : 'su-unprepared-answer',
+          bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+          session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+          session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+          session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+        });
+        const body = await response.json();
+        expect(response.status, JSON.stringify(body)).toBe(continueSourceOwner ? 200 : 409);
+        if (continueSourceOwner) {
+          expect(body.envelopeEnv.PAPERCUSP_SID).toBe('su-source-owner');
+          expect(body.sessionPortKickoffFile).toBe('/managed/222.seed.md');
+          expect(reserveSessionPortTargetMock).toHaveBeenCalledWith(expect.objectContaining({
+            portId: SESSION_PORT_ID,
+            target: expect.objectContaining({ agent: 'claude', coordOwnerId: 'su-source-owner' }),
+          }));
+          expect(recordSessionPortBootstrapReceiptMock).toHaveBeenCalledWith(expect.objectContaining({
+            portId: SESSION_PORT_ID, targetAdvSessionId: 42,
+          }));
+        } else {
+          expect(body.error).toMatch(/must continue source coordination identity/);
+          expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+          expect(recordSessionPortBootstrapReceiptMock).not.toHaveBeenCalled();
+        }
+        expect(port.metadata.summary.source).toEqual(sourceIdentity);
+        expect(port.metadata.sourceCoordOwnerId).toBe('su-source-owner');
+        expect(recordAdvSessionMock).not.toHaveBeenCalled();
+        expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+        expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
+      } finally {
+        readSessionPortArtifactMock.mockReset().mockResolvedValue(SESSION_PORT_ARTIFACT.seed);
+      }
+    },
+  );
+
+  it('bootstraps a prepared isolated answer under its bound owner without touching source identity or authority', async () => {
+    const port = sessionPortRow();
+    port.metadata.summary.target = { ...port.metadata.summary.target, ownerId: 'su-answer-owner' } as typeof port.metadata.summary.target;
+    getSessionPortMock.mockResolvedValueOnce(port);
+    const res = await callPost({
+      agent: 'codex', model: 'gpt-5.5', owner_id: 'su-answer-owner',
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+      session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+      session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).envelopeEnv.PAPERCUSP_SID).toBe('su-answer-owner');
+    expect(reserveSessionPortTargetMock).toHaveBeenCalledWith(expect.objectContaining({
+      target: expect.objectContaining({ coordOwnerId: 'su-answer-owner' }),
+    }));
+    expect(resolveSessionStatesMock).toHaveBeenCalledWith([{ ownerId: 'su-answer-owner' }], { hydratePerId: true });
+    expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+    expect(consumePendingCarryRespawnMock).not.toHaveBeenCalled();
+    expect(setModeMock).not.toHaveBeenCalled();
+    expect(port.metadata.sourceCoordOwnerId).toBe('su-source-owner');
+  });
+
+  it.each([
+    { preparedAccount: 'auto', requestedAccount: 'auto', gatewayOn: true, status: 200 },
+    { preparedAccount: 'default', requestedAccount: 'default', gatewayOn: true, status: 200 },
+    { preparedAccount: 'aviynw6', requestedAccount: 'aviynw6', gatewayOn: true, status: 200 },
+    { preparedAccount: 'auto', requestedAccount: 'default', gatewayOn: true, status: 409 },
+    { preparedAccount: 'auto', requestedAccount: 'auto', gatewayOn: false, status: 409 },
+    { preparedAccount: 'aviynw6', requestedAccount: 'auto', gatewayOn: true, status: 409 },
+  ])('honors prepared Claude account $preparedAccount with requested $requestedAccount and gateway $gatewayOn', async ({
+    preparedAccount, requestedAccount, gatewayOn, status,
+  }) => {
+    getFlagMock.mockResolvedValue(gatewayOn);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }] });
+    const seed = renderSessionPortSeed({
+      portId: SESSION_PORT_ID, sourceBackend: 'claude', targetBackend: 'claude',
+      fidelity: 'full', transcript: 'ported history',
+    });
+    const port = sessionPortRow({ targetBackend: 'claude', targetModel: 'sonnet', renderedHash: seed.hash });
+    port.metadata.summary.target = {
+      ...port.metadata.summary.target, backend: 'claude', provider: 'anthropic', model: 'sonnet',
+      account: preparedAccount, ownerId: 'su-answer-owner',
+    } as typeof port.metadata.summary.target;
+    getSessionPortMock.mockResolvedValueOnce(port);
+    readSessionPortArtifactMock.mockResolvedValueOnce(seed.seed);
+    try {
+      const response = await callPost({
+        agent: 'claude', model: 'sonnet', account: requestedAccount, owner_id: 'su-answer-owner',
+        bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+        session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+        session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+        session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+      });
+      const body = await response.json();
+      expect(response.status, JSON.stringify(body)).toBe(status);
+      expect(recordAdvSessionMock).not.toHaveBeenCalled();
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(setModeMock).not.toHaveBeenCalled();
+      if (status === 200) {
+        expect(body.envelopeEnv.PAPERCUSP_SID).toBe('su-answer-owner');
+        expect(body.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe(
+          preparedAccount === 'aviynw6' ? 'pin' : preparedAccount,
+        );
+        if (preparedAccount === 'auto') {
+          expect(body.envelopeEnv.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
+          expect(body.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+          expect(body.envelopeEnv.ANTHROPIC_CUSTOM_HEADERS ?? '').not.toContain('account');
+        } else if (preparedAccount === 'aviynw6') {
+          expect(body.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('aviynw6');
+        }
+        expect(reserveSessionPortTargetMock).toHaveBeenCalledWith(expect.objectContaining({
+          target: expect.objectContaining({ agent: 'claude', coordOwnerId: 'su-answer-owner' }),
+        }));
+        expect(recordSessionPortBootstrapReceiptMock).toHaveBeenCalled();
+      } else {
+        expect(body.error).toMatch(gatewayOn ? /immutable prepared request/ : /gateway is off.*refusing to fall back/i);
+        expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+        expect(recordSessionPortBootstrapReceiptMock).not.toHaveBeenCalled();
+      }
+    } finally {
+      readSessionPortArtifactMock.mockReset().mockResolvedValue(SESSION_PORT_ARTIFACT.seed);
+      getFlagMock.mockResolvedValue(false);
+    }
+  });
+
+  it.each(['su-source-owner', 'su-unprepared-answer'])('refuses isolated bootstrap owner substitution %s before reservation', async (ownerId) => {
+    const port = sessionPortRow();
+    port.metadata.summary.target = { ...port.metadata.summary.target, ownerId: 'su-answer-owner' } as typeof port.metadata.summary.target;
+    getSessionPortMock.mockResolvedValueOnce(port);
+    const res = await callPost({
+      agent: 'codex', model: 'gpt-5.5', owner_id: ownerId,
+      bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+      session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+      session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+      session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+    });
+    expect(res.status).toBe(409);
+    expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps an already-live isolated answer owner blocking without reclaiming it', async () => {
+    const port = sessionPortRow();
+    port.metadata.summary.target = { ...port.metadata.summary.target, ownerId: 'su-answer-owner' } as typeof port.metadata.summary.target;
+    getSessionPortMock.mockResolvedValueOnce(port);
+    dbState.advRows = [{ id: '777', display: 'terminal', has_session: true }];
+    resolveSessionStatesMock.mockResolvedValueOnce(new Map([['su-answer-owner', { sessionState: 'live' }]]));
+    try {
+      const res = await callPost({
+        agent: 'codex', model: 'gpt-5.5', owner_id: 'su-answer-owner',
+        bootstrap_idempotency_key: `session-port:${SESSION_PORT_ID}`,
+        session_port_protocol: SESSION_PORT_PROTOCOL_VERSION,
+        session_port_transform_version: SESSION_PORT_TRANSFORM_VERSION,
+        session_port_token: `${SESSION_PORT_ID}.${'a'.repeat(64)}`,
+      });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: expect.stringContaining('already bound to live adv session 777') });
+      expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+    } finally {
+      dbState.advRows = [];
+    }
+  });
+
   it('refuses an old launcher missing the transform handshake before creating a target row', async () => {
     const res = await callPost({
       agent: 'codex',
@@ -1089,6 +1501,62 @@ describe('bootstrap-su', () => {
     // The session still has its identity + native id — only transcript isolation degraded.
     expect(json.envelopeEnv.PAPERCUSP_SID).toMatch(/^su-/);
     expect(json.nativeSessionId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  // WI-10006674: the supervisor beat never mints a presence row (D-003), so a harness-less
+  // session (a workspace-level su; every consult/headless --fork) that never completes a
+  // first turn used to park with a live host and NO row — coord:presence reported it
+  // absent. Bootstrap now mints the row for it too, before turn 1.
+  it('WI-10006674: a harness-less launch still gets a presence row before turn 1', async () => {
+    getPresenceMock.mockResolvedValueOnce(null);
+    const json = await (
+      await callPost({ agent: 'claude', harness_slug: null, plan_slug: null, label: 'consult fork' })
+    ).json();
+    const sid = json.envelopeEnv.PAPERCUSP_SID;
+    expect(writePresenceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: sid, ownerLabel: 'consult fork', source: 'omp-hook-session' }),
+      { agentRole: 'su' },
+      null,
+    );
+    expect(recordAdvSessionMock.mock.invocationCallOrder[0]).toBeLessThan(
+      writePresenceMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('WI-10006674: a harness-less stamp never overwrites an existing row (create-if-absent)', async () => {
+    const { stampPresenceAtBoot } = await import('../routes/agent-mcp/bootstrap-su');
+    // A carry-respawn re-POSTs bootstrap with the same ownerId: the live row holds the
+    // session's declared intent/plan, which store.write() would overwrite.
+    getPresenceMock.mockResolvedValueOnce({ ownerId: 'su-respawned', intent: 'WI-1: live lane' });
+    await expect(stampPresenceAtBoot({ workspaceId: 'default', ownerId: 'su-respawned', harnessSlug: null }))
+      .resolves.toBeNull();
+    expect(getPresenceMock).toHaveBeenCalledWith('su-respawned');
+    expect(writePresenceMock).not.toHaveBeenCalled();
+
+    // No row yet → the stamp mints it, with a null harness.
+    getPresenceMock.mockResolvedValueOnce(null);
+    await expect(stampPresenceAtBoot({ workspaceId: 'default', ownerId: 'su-fresh', harnessSlug: null }))
+      .resolves.toBeNull();
+    expect(writePresenceMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-fresh' }),
+      { agentRole: 'su' },
+      null,
+    );
+  });
+
+  it('WI-10006674: a harnessed stamp still writes unconditionally (pot_slug refresh)', async () => {
+    const { stampPresenceAtBoot } = await import('../routes/agent-mcp/bootstrap-su');
+    getPresenceMock.mockResolvedValue({ ownerId: 'su-harnessed' });
+    try {
+      await stampPresenceAtBoot({ workspaceId: 'default', ownerId: 'su-harnessed', harnessSlug: 'papercup' });
+      expect(writePresenceMock).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'su-harnessed' }),
+        { agentRole: 'su' },
+        'papercup',
+      );
+    } finally {
+      getPresenceMock.mockReset().mockResolvedValue(null);
+    }
   });
 
   it('no harness + no plan → playbook prompt still written; spec gets nulls', async () => {
@@ -1160,10 +1628,14 @@ describe('bootstrap-su', () => {
     expect(json.codexHome).toMatch(/su-codex-homes\/session-42$/);
     expect(json.envelopeEnv.CODEX_HOME).toBe(json.codexHome);
     expect(json.promptFile).toMatch(/AGENTS\.md$/);
+    // The async writer now owns the guard and receives the live-host probe.
+    // Its real guard behavior is verified in role-codex-home's own suite.
     // writeSuCodexHome gets the spec's prompt + url + the minted sid.
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         promptText: expect.stringContaining('⟦INSTRUCTION-PRECEDENCE⟧'),
+        sessionKey: 42,
+        isOwnerLive: expect.any(Function),
         mcpUrl: 'http://localhost:3070/api/mcp?superuser=1&workspace=default',
         sid: expect.stringMatching(/^su-/),
         model: 'gpt-5.6-terra:xhigh',
@@ -1263,6 +1735,28 @@ describe('bootstrap-su', () => {
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
+  it('carries a RefusalContract on identity_model_default_denied naming the harness, role and stack', async () => {
+    resolveLaunchIdentityModelDefaultMock.mockRejectedValueOnce(new Error('unknown stack ref domain:nope'));
+    const res = await callPost({ agent: 'codex', harness_slug: 'papercup', su_role: 'planner',
+      stack: ['domain:nope', 'client:x'] });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toMatchObject({ code: 'identity_model_default_denied', error: 'unknown stack ref domain:nope' });
+    expect(body.refusal.observed).toEqual({ harness: 'papercup', role: 'planner', stack: 'domain:nope,client:x' });
+    expect(body.refusal.liftsWhen).toMatch(/stack ref/);
+    expect(body.refusal.whoCanMakeItTrue).toEqual(['self', 'owner']);
+    expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('names a null harness, the default su role and a null stack when the launch supplied none', async () => {
+    resolveLaunchIdentityModelDefaultMock.mockRejectedValueOnce(new Error('selected source unavailable'));
+    const res = await callPost({ agent: 'codex' });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.refusal.observed).toEqual({ harness: null, role: 'su', stack: null });
+  });
+
   it('fails closed before session/home creation when an unattended Codex bootstrap has no model authority', async () => {
     for (const body of [
       { agent: 'codex', headless: true },
@@ -1303,10 +1797,12 @@ describe('bootstrap-su', () => {
       launch_context: kickoff,
     });
     expect(res.status).toBe(200);
+    // The composer may place the cache-split boundary (PSU_CACHE_BOUNDARY, role-launch-spec)
+    // between the stable playbook and the per-launch context; the folded order is the contract.
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        promptText: expect.stringContaining(
-          'PLAYBOOK + CTX BODY\n\n---\n## Launch Context\n\nKICKOFF CONTEXT\n- continue the rollout',
+        promptText: expect.stringMatching(
+          /PLAYBOOK \+ CTX BODY\n\n(?:<!--PSU_CACHE_BOUNDARY-->\n\n)?---\n## Launch Context\n\nKICKOFF CONTEXT\n- continue the rollout/,
         ),
       }),
     );
@@ -1517,6 +2013,60 @@ describe('bootstrap-su', () => {
     });
   });
 
+  it('options sections keep harness menus independent of stalled account/model reads', async () => {
+    const originalFlag = getFlagMock.getMockImplementation()!;
+    const originalCatalog = readOmpModelCatalogMock.getMockImplementation()!;
+    const originalPool = loadAccountPoolMock.getMockImplementation()!;
+    getFlagMock.mockResolvedValueOnce(true);
+    readOmpModelCatalogMock.mockImplementationOnce(() => new Promise(() => {}));
+    loadAccountPoolMock.mockImplementationOnce(() => new Promise(() => {}));
+    try {
+      const res = await callGet('?include=workspaces,harnesses,fleets');
+      expect(res.status).toBe(200);
+      const page = await res.json();
+      expect(page.harnesses).toEqual([{ slug: 'papercup', path: '/repo', status: 'active' }]);
+      expect(page.workspaces).toHaveLength(2);
+      expect(page.fleets).toEqual([]);
+      expect(page).not.toHaveProperty('accounts');
+      expect(page).not.toHaveProperty('ompCatalog');
+      expect(page).not.toHaveProperty('roles');
+      expect(readOmpModelCatalogMock).not.toHaveBeenCalled();
+      expect(loadAccountPoolMock).not.toHaveBeenCalled();
+      expect(getFlagMock).not.toHaveBeenCalled();
+      expect(listFleetsMock).toHaveBeenCalledTimes(1);
+    } finally {
+      // These deliberately stalled mocks must not leak to another test.
+      getFlagMock.mockReset().mockImplementation(originalFlag);
+      readOmpModelCatalogMock.mockReset().mockImplementation(originalCatalog);
+      loadAccountPoolMock.mockReset().mockImplementation(originalPool);
+    }
+  });
+
+  it('options account reads retain provider filtering and skip unrelated menu stores', async () => {
+    getFlagMock.mockResolvedValueOnce(true);
+    loadAccountPoolMock.mockResolvedValueOnce({ accounts: [
+      { id: 'claude-account', provider: 'claude' }, { id: 'codex-account', provider: 'codex' },
+    ] });
+    const res = await callGet('?include=accounts&workspace=ws2&agent=codex');
+    expect(res.status).toBe(200);
+    const page = await res.json();
+    expect(page.accounts).toMatchObject({ provider: 'codex', pool: ['codex-account'] });
+    expect(loadAccountPoolMock).toHaveBeenCalledWith('ws2');
+    expect(page).not.toHaveProperty('harnesses');
+    expect(page).not.toHaveProperty('fleets');
+    expect(readOmpModelCatalogMock).not.toHaveBeenCalled();
+    expect(listFleetsMock).not.toHaveBeenCalled();
+  });
+
+  it('options rejects unknown sections before loading picker data', async () => {
+    const res = await callGet('?include=unknown');
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('unknown launch-options section');
+    expect(readOmpModelCatalogMock).not.toHaveBeenCalled();
+    expect(loadAccountPoolMock).not.toHaveBeenCalled();
+    expect(listFleetsMock).not.toHaveBeenCalled();
+  });
+
   it('options?harness lists non-archived plan slugs', async () => {
     const res = await callGet('?harness=papercup');
     const json = await res.json();
@@ -1603,6 +2153,16 @@ describe('bootstrap-su', () => {
 });
 
 describe('resolveAccountPin (psu-account-chooser P-002)', () => {
+  it('refuses a credential with a confirmed native auth failure for both pin and auto routing', async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'bad', credentialFailure: { observedAt: 1, ownerId: 'su-failed' } }] });
+    const requested = await pin('bad');
+    expect(requested.error).toContain('confirmed provider authentication failure');
+    expect(requested.env).toEqual({});
+    const automatic = await pin('auto');
+    expect(automatic.error).toContain('no allowed claude account');
+  });
+
   beforeEach(() => {
     getFlagMock.mockResolvedValue(false);
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }] });
@@ -1702,6 +2262,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.env.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
     expect(r.accountId).toBeNull();
     expect(r.provider).toBe('claude');
+    expect(r.gatewayAuto).toBe(true);
     expect(r.notice).toMatch(/auto.*selects an available pool account and fails over/i);
     // Auto remains unpinned, but the pool is validated so a missing provider
     // cannot silently degrade to the default system login.
@@ -1712,6 +2273,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     getFlagMock.mockResolvedValue(true);
     const r = await pin('gateway');
     expect(r.accountId).toBeNull();
+    expect(r.gatewayAuto).toBe(true);
     expect(r.env.ANTHROPIC_BASE_URL).toMatch(/127\.0\.0\.1/);
     expect(r.notice).toMatch(/auto/i);
   });
@@ -1795,7 +2357,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     it('a CODEX agent never consults the default (it stands in for the CLAUDE login)', async () => {
       loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
       const r = await pin(null, 'codex');
-      expect(r.env).toEqual({});
+      expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' });
       expect(readDefaultAccountIdMock).not.toHaveBeenCalled();
     });
 
@@ -1856,16 +2418,23 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     // gateway: the session egressed direct-to-ChatGPT on the local credential, unmetered. Now
     // auto returns provider:'codex' + gatewayAuto:true — the CODEX_HOME writers translate that
     // into the UNPINNED gateway provider block (x-papercusp-account header omitted; the gateway
-    // auto-selects via its bearer-pool → codex-CLI fallback). env stays {} deliberately: codex
-    // routing rides in config.toml, never ANTHROPIC_* env.
+    // auto-selects via its bearer-pool → codex-CLI fallback). The env carries only the route
+    // marker needed by PTY carry/recycle repair; transport routing still rides in config.toml.
     getFlagMock.mockResolvedValue(true);
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
     const r = await pin('auto', 'codex');
-    expect(r.env).toEqual({});
+    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' });
     expect(r.provider).toBe('codex');
     expect(r.accountId).toBeNull();
     expect(r.gatewayAuto).toBe(true);
     expect(r.notice).toMatch(/routing through the inference gateway \(auto/i);
+  });
+
+  it("'default' + codex stamps the system route for carry restoration", async () => {
+    const r = await pin(null, 'codex');
+    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' });
+    expect(r.accountId).toBeNull();
+    expect(r.provider).toBeNull();
   });
 
   it("'auto' + omp emits an unpinned gateway models.yml", async () => {
@@ -1919,7 +2488,10 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     const r = await pin('codex-main', 'codex');
     expect(r.provider).toBe('codex');
     expect(r.accountId).toBe('codex-main');
-    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    expect(r.env).toEqual({
+      PAPERCUSP_ACCOUNT_ID: 'codex-main',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin',
+    });
     expect(r.notice).toMatch(/pinned to Codex account codex-main/i);
   });
 
@@ -1970,7 +2542,10 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     getFlagMock.mockResolvedValue(true);
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
     const response = await callPost({ agent: 'codex', harness_slug: 'papercup', account: 'codex-main' });
-    expect(response.status).toBe(200);
+    expect(response.status, await response.clone().text()).toBe(200);
+    const json = await response.json();
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('pin');
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('codex-main');
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         codexGatewayAccountId: 'codex-main',
@@ -1980,11 +2555,25 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     );
   });
 
+  it('POST Codex auto carries its route mode into the fresh envelope', async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
+    const json = await (await callPost({ agent: 'codex', harness_slug: 'papercup', account: 'auto' })).json();
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ codexGatewayAuto: true }),
+    );
+  });
+
   it('POST without account → no accountNotice, explicit default marker, no gateway env', async () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     expect(json.accountNotice).toBeNull();
     expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
+    const codex = await (await callPost({ agent: 'codex', harness_slug: 'papercup' })).json();
+    expect(codex.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
+    expect(codex.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
   });
 
   it('POST with explicit account=default stays on the system route when a default account is configured', async () => {

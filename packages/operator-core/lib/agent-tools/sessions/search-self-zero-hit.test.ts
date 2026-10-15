@@ -11,6 +11,7 @@
  *   lib/agent-tools/sessions/search-self-zero-hit.test.ts
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { deferredSqlAnswer } from '../../../test/_fake-sql';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -49,11 +50,14 @@ function makeTx(results: unknown[][]) {
   // types as unknown[][] instead of the empty tuple []. Without them `c[0]` in
   // sqlTexts below is TS2493 ("tuple of length 0 has no element at index 0") —
   // invisible to vitest, which does not typecheck, and caught only by lint:tsc.
-  const tx = vi.fn(async (..._args: unknown[]) => {
+  // deferredSqlAnswer: a canned result is handed out only when a query is
+  // AWAITED (an interpolated fragment never is), and the D-006 ledger reads
+  // answer "no disclosures" without taking a slot.
+  const tx = vi.fn((..._args: unknown[]) => deferredSqlAnswer(_args, () => {
     const r = results[i] ?? [];
     i += 1;
     return r;
-  });
+  }));
   return {
     tx,
     calledTimes: () => tx.mock.calls.length,
@@ -113,7 +117,7 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
     expect(parsed.zeroHitCaveat).toMatch(/QUERY-MATCH MISS/);
   });
 
-  it('omits the caveat when this IS the owner\'s only indexed session (a genuine 0)', async () => {
+  it('omits the query-miss caveat when this IS the owner\'s only indexed session', async () => {
     resolveSelfSession.mockResolvedValue({
       sourceKind: 'claude',
       sessionId: 'sess-current',
@@ -129,7 +133,8 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
 
     expect(aggregateProbes(sqls)).toBe(1);
     expect(parsed.total_hits).toBe(0);
-    expect(parsed.zeroHitCaveat).toBeUndefined();
+    expect(parsed.zeroHitCaveat).toMatch(/TOOL-CONTENT NOT CHECKED/);
+    expect(parsed.zeroHitCaveat).not.toMatch(/QUERY-MATCH MISS/);
   });
 
   it('never runs the extra aggregate query when there ARE hits', async () => {
@@ -171,6 +176,6 @@ describe('sessions:search — session:self zero-hit caveat (EI-18862790811651475
     // for a non-self session.
     expect(aggregateProbes(sqls)).toBe(0);
     expect(parsed.total_hits).toBe(0);
-    expect(parsed.zeroHitCaveat).toBeUndefined();
+    expect(parsed.zeroHitCaveat).toMatch(/TOOL-CONTENT NOT CHECKED: this search has no owner filter/);
   });
 });

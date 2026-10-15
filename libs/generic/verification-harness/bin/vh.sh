@@ -50,7 +50,17 @@
 # when stdout carries the harness's own payload). VH_DISABLE=1 turns every vh_* call into a no-op
 # that lets the phase run. VH_FAIL_OPEN=1 does the same, loudly (a VH_DISABLED line), when the
 # contract itself cannot start (no tsx, unwritable evidence root), so instrumentation can never
-# block the harness it instruments. VH_KEEP_RUNS bounds the retained run dirs (default 30).
+# block the harness it instruments. It does not override a measured release-local disk-reserve
+# refusal. VH_KEEP_RUNS bounds the run count (default 30); low disk
+# pressure can remove older valid terminal runs below that count to restore the disk alarm's
+# critical reserve. latest, incomplete evidence, and .vh-keep runs are protected; emergency
+# cleanup requires a valid terminal result. A
+# release-local shell run stops with ENOSPC when safe retention cannot restore the measured
+# reserve, instead of starting another expensive write-heavy cut.
+# Anything else in the evidence root (a hand-named scratch or investigation dir, a stray file) is
+# removed at finalize once nothing under it changed for VH_FOREIGN_MAX_AGE_HOURS (default 72; 0
+# disables), with a VH_PRUNED_FOREIGN line on stderr. `latest`, `retained/`, dot-entries and
+# symlinks are never touched; put a `.vh-keep` file in a dir to keep it indefinitely.
 
 VH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # vh_converge: wait for a cross-host observation to converge instead of reading it once.
@@ -83,14 +93,30 @@ _vh_disable() { # <reason>
     "${VH_NAME:-?}" "$1" >&2
 }
 
-_vh_tsx() {
-  if [ -n "${VH_TSX:-}" ]; then echo "$VH_TSX"; return; fi
-  local d="$VH_LIB_DIR"
+_vh_cli() {
+  if [ -n "${VH_TSX:-}" ]; then
+    "$VH_TSX" "$VH_LIB_DIR/src/cli.ts" "$@"
+    return $?
+  fi
+  local d="$VH_LIB_DIR" tsx_bin="" loader
   while [ "$d" != "/" ]; do
-    [ -x "$d/node_modules/.bin/tsx" ] && { echo "$d/node_modules/.bin/tsx"; return; }
+    if [ -x "$d/node_modules/.bin/tsx" ]; then
+      tsx_bin="$d/node_modules/.bin/tsx"
+      break
+    fi
     d="$(dirname "$d")"
   done
-  echo tsx
+  [ -n "$tsx_bin" ] || tsx_bin="$(command -v tsx)" || return $?
+  # Load the maintained module directly: the tsx CLI opens an IPC socket below
+  # TMPDIR before main(), which can exceed the Unix socket path limit.
+  # Resolve from the real executable so local, global and symlinked installs work.
+  loader="$(node -e '
+    const { realpathSync } = require("node:fs");
+    const { createRequire } = require("node:module");
+    const { pathToFileURL } = require("node:url");
+    console.log(pathToFileURL(createRequire(realpathSync(process.argv[1])).resolve("tsx")).href);
+  ' "$tsx_bin")" || return $?
+  node --import "$loader" "$VH_LIB_DIR/src/cli.ts" "$@"
 }
 
 _vh_json_str() {
@@ -102,6 +128,107 @@ _vh_json_str() {
 
 _vh_now() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 _vh_ms() { date -u +%s%3N; }
+
+# Run a shared-checkout reader under mutation-probe admission. The shared lock
+# prevents a probe from publishing/removing its manifest during the read; when
+# a live probe is already active, bwrap overlays the validated original bytes
+# so the reader sees the source tree as it was before the temporary mutant.
+# Usage: vh_probe_admitted_exec <repo-root> -- <command...>
+vh_probe_admitted_exec() {
+  local root="${1:-}"
+  [ "$#" -ge 3 ] || { echo "vh_probe_admitted_exec: expected <repo-root> -- <command...>" >&2; return 2; }
+  shift
+  [ "$1" = "--" ] || { echo "vh_probe_admitted_exec: missing --" >&2; return 2; }
+  shift
+  root="$(realpath -e -- "$root")" || { echo "vh_probe_admitted_exec: missing checkout" >&2; return 2; }
+
+  local key directory lock manifest admission_fd status helper
+  key="$(printf '%s' "$root" | sha256sum | cut -d' ' -f1)" || return 2
+  directory="/tmp/papercusp-mutation-probe-$(id -u)-$key"
+  mkdir -p -m 700 -- "$directory" || { echo "vh_probe_admitted_exec: cannot create admission directory" >&2; return 2; }
+  lock="$directory/admission.lock"
+  manifest="$directory/original.manifest"
+  exec {admission_fd}>"$lock" || { echo "vh_probe_admitted_exec: cannot open admission lock" >&2; return 2; }
+  flock -s "$admission_fd" || {
+    exec {admission_fd}>&-
+    echo "vh_probe_admitted_exec: cannot acquire admission lock" >&2
+    return 2
+  }
+
+  if [ ! -e "$manifest" ]; then
+    if "$@"; then status=0; else status=$?; fi
+    flock -u "$admission_fd" || true
+    exec {admission_fd}>&-
+    return "$status"
+  fi
+
+  helper="$(cd "$VH_LIB_DIR/../../../" 2>/dev/null && pwd -P)/scripts/mutation-probe-admission.sh"
+  [ -f "$helper" ] || {
+    flock -u "$admission_fd" || true
+    exec {admission_fd}>&-
+    echo "mutation-probe admission: shared manifest validator is missing" >&2
+    return 2
+  }
+  # shellcheck source=/dev/null
+  . "$helper" || {
+    flock -u "$admission_fd" || true
+    exec {admission_fd}>&-
+    echo "mutation-probe admission: could not load shared manifest validator" >&2
+    return 2
+  }
+  if ! probe_admission_read_manifest "$root" "$manifest"; then
+    flock -u "$admission_fd" || true
+    exec {admission_fd}>&-
+    echo "mutation-probe admission: invalid original snapshot; refusing source read" >&2
+    return 2
+  fi
+  if probe_admission_owner_alive; then
+    local snapshot_fd
+    if ! exec {snapshot_fd}<"${PROBE_ADMISSION_FIELDS[2]}"; then
+      flock -u "$admission_fd" || true
+      exec {admission_fd}>&-
+      echo "mutation-probe admission: original snapshot unavailable; refusing source read" >&2
+      return 2
+    fi
+    if bwrap --bind / / --proc /proc --dev /dev --bind-try /dev/shm /dev/shm \
+      --ro-bind-data "$snapshot_fd" "${PROBE_ADMISSION_FIELDS[1]}" -- "$@"; then
+      status=0
+    else
+      status=$?
+    fi
+    exec {snapshot_fd}<&-
+    flock -u "$admission_fd" || true
+    exec {admission_fd}>&-
+    return "$status"
+  fi
+
+  # The probe owner died while the manifest remained. Recover only under the
+  # exclusive counterpart of this lock, then re-enter admission in case a new
+  # probe started immediately after recovery.
+  flock -u "$admission_fd" || true
+  if ! flock -x "$admission_fd"; then
+    exec {admission_fd}>&-
+    echo "mutation-probe admission: cannot acquire recovery lock" >&2
+    return 2
+  fi
+  if [ -e "$manifest" ]; then
+    if ! probe_admission_read_manifest "$root" "$manifest"; then
+      flock -u "$admission_fd" || true
+      exec {admission_fd}>&-
+      echo "mutation-probe admission: invalid original snapshot; refusing recovery" >&2
+      return 2
+    fi
+    if ! probe_admission_owner_alive && ! probe_admission_recover_orphan "$root" "$manifest"; then
+      flock -u "$admission_fd" || true
+      exec {admission_fd}>&-
+      echo "mutation-probe admission: orphan recovery failed; refusing source read" >&2
+      return 2
+    fi
+  fi
+  flock -u "$admission_fd" || true
+  exec {admission_fd}>&-
+  vh_probe_admitted_exec "$root" -- "$@"
+}
 
 # _vh_record <phase> <status> <step> <reasonCode> <detail> <startedAt> <endedAt> <elapsedMs> [reusedFromRunId]
 _vh_record() {
@@ -159,6 +286,25 @@ vh_init() {
   VH_ARGS=(${VH_ARGS_TMP[@]+"${VH_ARGS_TMP[@]}"})
   [ "$VH_DISABLED" = 1 ] && return 0
   mkdir -p "$root" 2>/dev/null || { _vh_init_failed "evidence-root-unwritable:$root"; return $?; }
+  # Reclaim completed old runs before creating this run and entering the expensive
+  # release/build phases. Disk-pressure pruning is independent of VH_KEEP_RUNS and
+  # refuses to remove latest, live, unfinished, or .vh-keep-protected evidence.
+  local retention_line=""
+  if retention_line="$(_vh_cli retain --evidence-root "$root")"; then
+    [ -z "$retention_line" ] || _vh_say "$retention_line"
+  else
+    local retention_rc=$?
+    if [ "$retention_rc" -eq 28 ]; then
+      if [ "$name" = "release-local" ]; then
+        echo "VH_RETENTION_BLOCKED reason=disk-headroom-unresolved evidence=$root" >&2
+        return 28
+      fi
+      echo "VH_RETENTION_UNRESOLVED harness=$name evidence=$root" >&2
+    else
+      _vh_init_failed "retention-command-failed"
+      return $?
+    fi
+  fi
   # Claim the run dir EXCLUSIVELY (R-5): a plain mkdir fails when the dir exists, so a second
   # run from the same process in the same second takes a .N suffix instead of writing into
   # another run's evidence (runner.ts claimRunDir is the TS twin).
@@ -190,7 +336,7 @@ vh_init() {
     printf '],"scopeTags":[%s]}\n' "$tags"
   } > "$VH_RUN_DIR/contract.json"
   local plan
-  plan="$("$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" plan --run-dir "$VH_RUN_DIR" ${sel[@]+"${sel[@]}"})" \
+  plan="$(_vh_cli plan --run-dir "$VH_RUN_DIR" ${sel[@]+"${sel[@]}"})" \
     || { _vh_init_failed "plan-command-failed"; return $?; }
   local p a r
   while IFS=$'\t' read -r p a r; do
@@ -211,6 +357,114 @@ vh_init() {
 vh_step() {
   VH_CUR_STEP="$1"
   [ "$VH_DISABLED" = 1 ] || _vh_say "VH_STEP phase=${VH_CUR_PHASE:-?} step=$1"
+}
+
+# vh_run_step <label> <command...> — mark and run one shell command while keeping
+# its output and exit status under this phase's evidence directory. Logging is
+# best-effort: if the evidence directory cannot be written, run the command
+# directly so diagnostics never become a new verifier precondition.
+vh_run_step() {
+  local step="${1:-}"
+  [ -n "$step" ] || { echo 'vh_run_step: missing step label' >&2; return 2; }
+  shift
+  [ "$#" -gt 0 ] || { echo "vh_run_step: missing command for $step" >&2; return 2; }
+  vh_step "$step"
+  if [ "${VH_DISABLED:-1}" = 1 ] || [ -z "${VH_PHASE_DIR:-}" ]; then
+    "$@"
+    return $?
+  fi
+
+  local safe="${step//[^a-zA-Z0-9_.-]/_}"
+  local command_dir="$VH_PHASE_DIR/commands"
+  local stdout_file="$command_dir/$safe.stdout.log"
+  local stderr_file="$command_dir/$safe.stderr.log"
+  local result_file="$command_dir/$safe.result.json"
+  if ! mkdir -p "$command_dir" 2>/dev/null ||
+     ! : > "$stdout_file" 2>/dev/null ||
+     ! : > "$stderr_file" 2>/dev/null; then
+    _vh_say "VH_CAPTURE_DISABLED phase=${VH_CUR_PHASE:-?} step=$safe reason=command-evidence-unwritable"
+    "$@"
+    return $?
+  fi
+
+  local rc=0
+  "$@" >"$stdout_file" 2>"$stderr_file" || rc=$?
+  cat "$stdout_file" 2>/dev/null || true
+  cat "$stderr_file" >&2 2>/dev/null || true
+  printf '{"step":%s,"exitCode":%s}\n' "$(_vh_json_str "$step")" "$rc" >"$result_file" 2>/dev/null || true
+  _vh_say "VH_COMMAND_RESULT phase=${VH_CUR_PHASE:-?} step=$safe exit=$rc evidence=$command_dir/$safe"
+  return "$rc"
+}
+
+# Capture the bracketed phase's combined stdout/stderr while preserving the
+# caller's streams. The explicit wait in the matching stop closes the tee before
+# finalization, so a failed long-running prepare still leaves complete bytes.
+vh_capture_phase_start() {
+  [ "${VH_DISABLED:-1}" = 1 ] && return 0
+  [ -n "${VH_PHASE_DIR:-}" ] || return 0
+  [ "${VH_PHASE_CAPTURE_ACTIVE:-0}" = 1 ] && return 0
+  local output_file="$VH_PHASE_DIR/command-output.log"
+  if ! : >> "$output_file" 2>/dev/null; then
+    _vh_say "VH_CAPTURE_DISABLED phase=${VH_CUR_PHASE:-?} reason=phase-output-unwritable"
+    return 0
+  fi
+  exec {VH_PHASE_CAPTURE_OUT_FD}>&1
+  exec {VH_PHASE_CAPTURE_ERR_FD}>&2
+  exec > >(tee -a "$output_file") 2>&1
+  VH_PHASE_CAPTURE_TEE_PID=$!
+  VH_PHASE_CAPTURE_ACTIVE=1
+}
+
+# True while <pid> exists and is not a zombie. `kill -0` alone is not enough:
+# an exited-but-unreaped tee still answers it until the shell waits on it.
+_vh_pid_running() {
+  local pid="$1" line state
+  [ -n "$pid" ] || return 1
+  if [ -r "/proc/$pid/stat" ]; then
+    { read -r line < "/proc/$pid/stat"; } 2>/dev/null || return 1
+    line="${line##*) }"
+    state="${line%% *}"
+  else
+    state="$(ps -o stat= -p "$pid" 2>/dev/null)" || return 1
+    state="${state#"${state%%[![:space:]]*}"}"
+  fi
+  [ -n "$state" ] && [ "${state#Z}" = "$state" ]
+}
+
+# Wait for the capture tee, but only for VH_CAPTURE_TEE_GRACE_SEC (default 10).
+# tee exits on EOF, and EOF needs EVERY holder of its input pipe to close it. A
+# detached descendant (a daemon left behind by a killed prepare step) inherits
+# that pipe, so an unbounded wait pinned the verifier, and the Cargo slot lock it
+# held, for 15h after result.json was written (WI-6554700010011505). After the
+# grace the tee is stopped: only output written after this point by that
+# lingering descendant is lost. The descendant itself is never killed here.
+_vh_wait_capture_tee() {
+  local tee_pid="$1" grace="${VH_CAPTURE_TEE_GRACE_SEC:-10}" ticks=0
+  case "$grace" in ''|*[!0-9]*) grace=10 ;; esac
+  while _vh_pid_running "$tee_pid"; do
+    if [ "$ticks" -ge $(( grace * 10 )) ]; then
+      _vh_say "VH_CAPTURE_TEE_FORCED phase=${VH_CUR_PHASE:-?} grace_sec=$grace reason=capture-pipe-held-open"
+      kill "$tee_pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.1
+    ticks=$(( ticks + 1 ))
+  done
+  wait "$tee_pid" 2>/dev/null || true
+}
+
+vh_capture_phase_stop() {
+  [ "${VH_PHASE_CAPTURE_ACTIVE:-0}" = 1 ] || return 0
+  local out_fd="${VH_PHASE_CAPTURE_OUT_FD:-}" err_fd="${VH_PHASE_CAPTURE_ERR_FD:-}"
+  local tee_pid="${VH_PHASE_CAPTURE_TEE_PID:-}"
+  if [ -n "$out_fd" ] && [ -n "$err_fd" ]; then
+    exec 1>&"$out_fd" 2>&"$err_fd"
+  fi
+  [ -z "$tee_pid" ] || _vh_wait_capture_tee "$tee_pid"
+  exec {VH_PHASE_CAPTURE_OUT_FD}>&-
+  exec {VH_PHASE_CAPTURE_ERR_FD}>&-
+  VH_PHASE_CAPTURE_TEE_PID=""
+  VH_PHASE_CAPTURE_ACTIVE=0
 }
 
 vh_fail() { VH_CUR_FAIL="$1"; VH_CUR_DETAIL="${2:-}"; }
@@ -241,7 +495,7 @@ _vh_preflight_body() {
   local out="" line grc=0 greason="" gdetail=""
   if [ "${#VH_SCOPE_TAGS[@]}" -gt 0 ]; then
     vh_step guard-rails
-    out="$("$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" guard-rails --run-dir "$VH_RUN_DIR")" || grc=$?
+    out="$(_vh_cli guard-rails --run-dir "$VH_RUN_DIR")" || grc=$?
     while IFS= read -r line; do
       case "$line" in
         "VH_GUARD_RAILS_FAILED "*)
@@ -314,9 +568,9 @@ vh_finish() {
   VH_FINALIZED=1
   local rc=0
   if [ "${VH_LOG_FD:-1}" = 2 ]; then
-    "$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" >&2 || rc=$?
+    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" >&2 || rc=$?
   else
-    "$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" || rc=$?
+    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" || rc=$?
   fi
   VH_FINISH_RC="$rc"
   return "$rc"

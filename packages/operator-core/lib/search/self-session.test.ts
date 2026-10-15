@@ -11,6 +11,49 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+describe('resolveSelfSession — launcher executable paths', () => {
+  it.each(['codex', '/home/testuser/.local/node25/bin/codex'])(
+    'finds the managed Codex transcript when discovery names %s',
+    async (command) => {
+      const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+      roots.push(home);
+      const ptyDir = join(home, '.papercusp', 'psu-pty');
+      const rolloutDir = join(home, '.papercusp', 'su-codex-homes', 'session-11801', 'sessions');
+      await mkdir(ptyDir, { recursive: true });
+      await mkdir(rolloutDir, { recursive: true });
+      await writeFile(join(ptyDir, 'su-current.json'), JSON.stringify({ command, args: [] }));
+      const filePath = join(rolloutDir, `rollout-2026-10-07T21-05-19-${SID}.jsonl`);
+      await writeFile(filePath, '{}\n');
+
+      const resolved = await resolveSelfSession('su-current', {
+        home,
+        loadActiveSessions: async () => [{ id: 11801, agent: 'codex', session_id: SID, omp_thread_id: null }],
+      });
+
+      expect(resolved).toEqual({ sourceKind: 'codex', sessionId: SID, filePath });
+    },
+  );
+
+  it.each(['omp', '/home/testuser/.local/bin/omp'])(
+    'finds the pinned OMP transcript when discovery names %s',
+    async (command) => {
+      const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+      roots.push(home);
+      const ptyDir = join(home, '.papercusp', 'psu-pty');
+      const sessionDir = join(home, '.omp', 'agent', 'sessions', 'workspace');
+      await mkdir(ptyDir, { recursive: true });
+      await mkdir(sessionDir, { recursive: true });
+      await writeFile(join(ptyDir, 'su-current.json'), JSON.stringify({ command, args: ['--resume', SID] }));
+      const filePath = join(sessionDir, `2026-10-07_${SID}.jsonl`);
+      await writeFile(filePath, '{}\n');
+
+      const resolved = await resolveSelfSession('su-current', { home, loadActiveSessions: async () => [] });
+
+      expect(resolved).toEqual({ sourceKind: 'omp', sessionId: SID, filePath });
+    },
+  );
+});
+
 describe('resolveSelfSession — fresh Codex without a rollout', () => {
   it('uses the active adv-session to find the isolated history fallback', async () => {
     const home = await mkdtemp(join(tmpdir(), 'self-session-'));

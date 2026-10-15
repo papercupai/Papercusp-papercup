@@ -91,6 +91,54 @@ describe('P-012 / D-040(b): a governed wearer sees what the kernel admits', () =
     }
   });
 
+  it('expands an accepted operation receipt before the same identity-kernel listing gate', async () => {
+    const state = stateFor({ requires: [] });
+    const record = state.identityLaunchRecord as Record<string, unknown>;
+    const revision = record.specificationRevision as string;
+    record.acceptedOperation = {
+      kind: 'blueprint-operation-worker',
+      workItemId: 'WI-1',
+      operationId: 'prep',
+      specificationRevision: revision,
+      requiredTools: ['work_items:claim', 'work_items:checkpoint', 'plans:set-status'],
+      pin: {
+        kind: 'blueprint-operation',
+        harnessSlug: 'sales',
+        operationId: 'prep',
+        specificationRevision: revision,
+        operationVersion: '1.0.0',
+        input: {},
+      },
+    };
+    const operationCandidates = [
+      { name: 'work_items:claim', capabilities: ['work_items:write'] },
+      { name: 'work_items:checkpoint', capabilities: ['work_items:write'] },
+      { name: 'plans:set-status', capabilities: ['plans:write'] },
+      { name: 'coord:send', capabilities: ['coord:write'] },
+    ];
+    const operationPolicy: IdentityGrantPolicy = {
+      ...policy,
+      ceilings: [{}, { allowCapabilities: ['work_items:read', 'work_items:write'] }],
+      tools: new Map(operationCandidates.map((candidate) => [candidate.name, candidate.capabilities])),
+    };
+    const expand = vi.fn((identityLaunchRecord: unknown) => {
+      const accepted = (identityLaunchRecord as { acceptedOperation?: { requiredTools?: unknown } })
+        .acceptedOperation;
+      const requiredTools = accepted?.requiredTools;
+      if (!Array.isArray(requiredTools)) return [];
+      return operationCandidates.filter((candidate) => requiredTools.includes(candidate.name));
+    });
+
+    const surface = await resolveIdentityToolSurface(ctx, [], deps(state, vi.fn(async () => operationPolicy)), expand);
+
+    expect(surface.kind).toBe('governed');
+    expect(expand).toHaveBeenCalledWith(record);
+    expect(surface.kind === 'governed' && [...surface.admitted])
+      .toEqual(['work_items:claim', 'work_items:checkpoint']);
+    expect(surface.kind === 'governed' && surface.admitted.has('coord:send')).toBe(false);
+    expect(surface.kind === 'governed' && surface.admitted.has('plans:set-status')).toBe(false);
+  });
+
   it('leaves an ungoverned session unnarrowed', async () => {
     expect(await resolveIdentityToolSurface(ctx, candidates, deps(stateFor(undefined))))
       .toMatchObject({ kind: 'ungoverned' });

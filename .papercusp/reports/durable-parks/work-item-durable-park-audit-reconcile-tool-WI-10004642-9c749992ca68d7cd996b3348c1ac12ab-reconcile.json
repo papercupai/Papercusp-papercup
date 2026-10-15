@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:WI-10004642:9c749992ca68d7cd996b3348c1ac12ab",
+  "inputSha256": "9c749992ca68d7cd996b3348c1ac12ab69b3db851aa138af9fdf8da04b3c64b5",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:22:37.999Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "WI-10004642",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "3a692bf6fa18bd247c552c5701199385a0e0a2f6712039b16d27ff7e3d0e6965",
+      "observedParkFingerprint": "3a692bf6fa18bd247c552c5701199385a0e0a2f6712039b16d27ff7e3d0e6965",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:WI-10001655 (condition: 'cupboard-release-pipeline-content-trust-2026-09-16 P-010/P-011/P-012 finished so listings.ts is final; then adopt pinRefusalToHttp once and re-bind the 4 stale clauses'). Re-read 2026-10-10T22:22Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): WI-10001655 status=done, taken_by none; WI-10004642 status=open, taken_by null. Condition clause beyond the trigger, verified: plans:items for cupboard-release-pipeline-content-trust-2026-09-16 at ~22:19Z: P-010=done, P-011=done, P-012=done, so listings.ts is final per the condition. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-WI-10004642-9c749992ca68d7cd996b3348c1ac12ab-reconcile.json"
+}

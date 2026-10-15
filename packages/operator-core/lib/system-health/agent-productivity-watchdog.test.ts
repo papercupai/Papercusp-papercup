@@ -103,6 +103,8 @@ function harness(over: Partial<AgentProductivitySweepDeps> = {}) {
   const ideateNotified: Array<{ wave: AgentIdeateSilenceWave; graders: string[] }> = [];
   const degenerateEscalated: DegenerateWakeWave[] = [];
   const deps: Partial<AgentProductivitySweepDeps> = {
+    rail: { broadcast: async () => true, resolve: async () => true },
+    readOpenConditions: async () => [],
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: AGENT_PRODUCTIVITY_GRACE_MS,
@@ -297,6 +299,8 @@ describe('runAgentProductivitySweepOnce', () => {
     ];
     const escalated: AgentWedgeWave[] = [];
     const deps: Partial<AgentProductivitySweepDeps> = {
+      rail: { broadcast: async () => true, resolve: async () => true },
+      readOpenConditions: async () => [],
       flagEnabled: async () => true,
       now: () => NOW,
       graceMs: AGENT_PRODUCTIVITY_GRACE_MS,

@@ -249,9 +249,24 @@ export async function resolveWorkItemBehaviorContract(
         ...new Map([...itemClauses, ...edgeClauses].map((clause) => [clause.specId, clause])).values(),
       ];
       const currentBySpec = new Map(clauses.map((clause) => [clause.specId, clause]));
-      const staleEdges = planEdges.flatMap((edge) => {
+      // ONE verdict per spec, never one per edge. Edges are append-only (an immutability
+      // trigger rejects DELETE/UPDATE), so a work item re-bound to a clause's current
+      // revision still carries every superseded edge as a row. Judging each row reported
+      // those superseded rows as "pinned to a superseded revision" even though the item
+      // IS bound to the current one (measured 2026-10-06: 2,494 of 5,438 item/spec pairs,
+      // vs 255 genuinely stale — EI-25255610125482108). A spec is stale only when NO edge
+      // reaches the current revision, and then it is reported once, at its newest edge.
+      const newestEdgeBySpec = new Map<string, WorkItemSpecRevisionEdge>();
+      const boundAtCurrent = new Set<string>();
+      for (const edge of planEdges) {
         const clause = currentBySpec.get(edge.specId);
-        if (!clause || clause.revision === edge.specRevision) return [];
+        if (clause && clause.revision === edge.specRevision) boundAtCurrent.add(edge.specId);
+        const prior = newestEdgeBySpec.get(edge.specId);
+        if (!prior || edge.specRevision > prior.specRevision) newestEdgeBySpec.set(edge.specId, edge);
+      }
+      const staleEdges = [...newestEdgeBySpec.values()].flatMap((edge) => {
+        const clause = currentBySpec.get(edge.specId);
+        if (!clause || boundAtCurrent.has(edge.specId)) return [];
         return [{ specId: edge.specId, edgeRevision: edge.specRevision, currentRevision: clause.revision }];
       });
 
@@ -314,7 +329,19 @@ export async function resolveWorkItemBehaviorContract(
     ? `link one with plans:bind-spec-evidence, or promote a new clause with plans:set-specs.`
     : `This item has no source plan. Use the harness ad-hoc scope \`${ADHOC_WORK_ITEM_SPEC_SCOPE}\`: ` +
       `author an item-local clause with plans:set-specs while omitting \`slug\` and ${adhocPlanItemArg}, ` +
-      `then bind this work item and its proof with plans:bind-spec-evidence while also omitting \`slug\`.`;
+      `then bind this work item and its proof with plans:bind-spec-evidence while also omitting \`slug\`. ` +
+      // EI-23820598120293502: naming the two verbs and the one arg to OMIT still cost a closer
+      // five corrective round-trips, because neither verb's WRAPPER key nor required keys were
+      // named. State only the structural facts that were each measured to be guessed wrong
+      // (an OBJECT not an array under `spec`; `binding`, not loose top-level args) and point at
+      // the schema for the closed enums, which are the part that drifts if copied here.
+      `Shapes: plans:set-specs takes ONE object under \`spec\` (not an array) with at least specId, ` +
+      `expectedRevision (0 to create), planItemId, behavior, behaviorClass and lifecycleStatus; ` +
+      `plans:bind-spec-evidence takes ONE object under \`binding\` with at least workItemId, specId, ` +
+      `specRevision, evidenceKind and evidenceRef, plus exactly one of \`measurement\` ` +
+      `({ schemaVersion: 1, kind, sourcePaths, ... }) or \`sourceFingerprint\` (or the ledger form ` +
+      `{ workItemId, specId, fromTestRun } that derives the rest from a test_runs row). Read the exact ` +
+      `enum values with tools:find before the first call.`;
   return {
     workItemId: workItem.id,
     groups,

@@ -127,7 +127,7 @@ export default function PromptStudioPanel() {
   const sourceOptions = useMemo(() => sources.map((s) => ({ value: s.id, label: s.label })), [sources]);
 
   return (
-    <div style={{ padding: 16, height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    <div style={{ padding: 16, height: '100%', width: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <header style={{ marginBottom: 12 }}>
         <h1 style={{ margin: 0, fontSize: 18 }}>Prompt Studio</h1>
         <p style={{ margin: '6px 0 0', color: 'var(--fg-mute)', fontSize: 12.5 }}>
@@ -137,10 +137,10 @@ export default function PromptStudioPanel() {
         </p>
       </header>
 
-      <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
+      <div className="pc-prompt-studio-workspace" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gridAutoRows: 'minmax(300px, 1fr)', gap: 16, flex: 1, minHeight: 0, overflow: 'auto' }}>
         {/* ── Editor ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <span style={{ fontSize: 11.5, color: 'var(--fg-mute)' }}>Source</span>
             <Select value={selectedId} onChange={(v) => setSelectedId(v)} options={sourceOptions} />
             <button
@@ -177,7 +177,7 @@ export default function PromptStudioPanel() {
 
         {/* ── Live preview ── */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <span style={{ fontSize: 11.5, color: 'var(--fg-mute)' }}>Preview</span>
             <Select
               value={previewAgent}

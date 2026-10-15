@@ -34,6 +34,11 @@ beforeAll(async () => {
   mkdirSync(join(distDir, 'assets'));
   writeFileSync(join(distDir, 'assets', 'entry-AbCd1234.js'), 'export const entry = 1;');
   writeFileSync(join(distDir, 'assets', 'runtime.js'), 'export const runtime = 1;');
+  writeFileSync(join(distDir, 'assets', 'SessionChatModal-fixture.css'), '.modal{}');
+  mkdirSync(join(distDir, 'elevenlabs-runtime'));
+  for (const name of ['rawAudioProcessor.js', 'audioConcatProcessor.js', 'libsamplerate.worklet.js']) {
+    writeFileSync(join(distDir, 'elevenlabs-runtime', name), `// ${name}\nregisterProcessor("fixture", class {});`);
+  }
   process.env.PAPERCUSP_SPA_DIST = distDir;
   ({ spaRoutes, createSpaRoutes, IMMUTABLE_CACHE_CONTROL: immutableCacheControl } = await import('./host-spa'));
 });
@@ -48,6 +53,20 @@ afterAll(() => {
 });
 
 describe('SPA shell pre-hydration globals', () => {
+  it.each(['rawAudioProcessor.js', 'audioConcatProcessor.js', 'libsamplerate.worklet.js'])('serves tutorial audio asset %s from the packaged SPA', async name => {
+    const res = await spaRoutes.request(`/elevenlabs-runtime/${name}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/javascript/);
+    expect(await res.text()).toBe(`// ${name}\nregisterProcessor("fixture", class {});`);
+    expect(res.headers.get('cache-control')).toBeNull();
+  });
+
+  it('returns a real 404 for missing tutorial audio assets', async () => {
+    const res = await spaRoutes.request('/elevenlabs-runtime/missing.js');
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe('Not found');
+  });
+
   it('injects the active workspace id global before the module bundle', async () => {
     const res = await spaRoutes.request('/');
     expect(res.status).toBe(200);
@@ -68,6 +87,20 @@ describe('SPA shell pre-hydration globals', () => {
       expect(body.indexOf('window.__PAPERCUSP_TAURI_ISOLATED__=')).toBeLessThan(body.indexOf('</head>'));
     } finally {
       delete process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
+    }
+  });
+
+  it('reloads a bare Inbox URL in the process-pinned workspace and honors an explicit window workspace', async () => {
+    const previous = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = 'verify-tauri-isolated-fixture';
+    try {
+      const bare = await spaRoutes.request('/inbox?opci=all&opcis=coord-message%3Afixture');
+      expect(await bare.text()).toContain('window.__PAPERCUSP_WS__="verify-tauri-isolated-fixture";');
+      const scoped = await spaRoutes.request('/inbox?ws=another-window&opci=all');
+      expect(await scoped.text()).toContain('window.__PAPERCUSP_WS__="another-window";');
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = previous;
     }
   });
 
@@ -182,5 +215,99 @@ describe('SPA shell pre-hydration globals', () => {
     expect(mutable.status).toBe(200);
     expect(mutable.headers.get('cache-control')).toBeNull();
     expect(await mutable.text()).toBe('export const runtime = 1;');
+  });
+
+  it('traces the first SessionChatModal CSS response once per Host when explicitly enabled', async () => {
+    const previous = process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS;
+    process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS = '1';
+    const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const routes = createSpaRoutes();
+      const first = await routes.request(
+        'http://localhost:33701/assets/SessionChatModal-fixture.css',
+        { headers: { host: 'localhost:33701' } },
+      );
+      expect(first.status).toBe(200);
+      expect(first.headers.get('content-length')).toBe(String('.modal{}'.length));
+      expect(await first.text()).toBe('.modal{}');
+      expect(trace).toHaveBeenCalledTimes(1);
+
+      const logLine = String(trace.mock.calls[0]?.[0]);
+      const record = JSON.parse(logLine.replace(/^\[spa-css-response\] /, ''));
+      expect(record).toMatchObject({
+        event: 'spa_css_response',
+        host: 'localhost:33701',
+        path: '/assets/SessionChatModal-fixture.css',
+        status: 200,
+        contentLength: String('.modal{}'.length),
+        completion: 'complete',
+      });
+      expect(record.durationMs).toEqual(expect.any(Number));
+
+      const second = await routes.request(
+        'http://localhost:33701/assets/SessionChatModal-fixture.css',
+        { headers: { host: 'localhost:33701' } },
+      );
+      await second.text();
+      expect(trace).toHaveBeenCalledTimes(1);
+
+      const loopbackAlias = await routes.request(
+        'http://127.0.0.1:33701/assets/SessionChatModal-fixture.css',
+        { headers: { host: '127.0.0.1:33701' } },
+      );
+      await loopbackAlias.text();
+      expect(trace).toHaveBeenCalledTimes(2);
+
+      const repeatedHost = await routes.request(
+        'http://localhost:33701/assets/SessionChatModal-fixture.css',
+        { headers: { host: 'localhost:33701' } },
+      );
+      await repeatedHost.text();
+      expect(trace).toHaveBeenCalledTimes(2);
+
+      const secondLogLine = String(trace.mock.calls[1]?.[0]);
+      const secondRecord = JSON.parse(secondLogLine.replace(/^\[spa-css-response\] /, ''));
+      expect(secondRecord).toMatchObject({
+        event: 'spa_css_response',
+        host: '127.0.0.1:33701',
+        path: '/assets/SessionChatModal-fixture.css',
+        status: 200,
+        completion: 'complete',
+      });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS;
+      else process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS = previous;
+      trace.mockRestore();
+    }
+  });
+
+  it('traces the first matching missing CSS asset as a completed 404 response', async () => {
+    const previous = process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS;
+    process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS = '1';
+    const trace = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const routes = createSpaRoutes();
+      const response = await routes.request(
+        'http://127.0.0.1:33701/assets/SessionChatModal-missing.css',
+        { headers: { host: '127.0.0.1:33701' } },
+      );
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe('Not found');
+      expect(trace).toHaveBeenCalledTimes(1);
+      const record = JSON.parse(
+        String(trace.mock.calls[0]?.[0]).replace(/^\[spa-css-response\] /, ''),
+      );
+      expect(record).toMatchObject({
+        host: '127.0.0.1:33701',
+        path: '/assets/SessionChatModal-missing.css',
+        status: 404,
+        contentLength: null,
+        completion: 'complete',
+      });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS;
+      else process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS = previous;
+      trace.mockRestore();
+    }
   });
 });

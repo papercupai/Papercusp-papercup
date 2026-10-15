@@ -1,0 +1,73 @@
+{
+  "name": "R-22: the public repository's default branch head is the commit that passed the export gate",
+  "specId": "AUTO-BAR-R-22-P-014",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "command": [
+    "gh api repos/Papercusp/papercusp-app --jq .default_branch",
+    "gh api repos/Papercusp/papercusp-app/commits/<default_branch> --jq .sha",
+    "git ls-remote https://github.com/Papercusp/papercusp-app refs/heads/<default_branch>",
+    "export gate receipt docs/evidence/osr-r22-head-2026-09-30/push-real2.out (sha256 03426eb61f222d479cc5d40e35310aa62985d516cec877c0296616201ea5d0eb)",
+    "git -C <clone> rev-parse <head>^{tree} / <head>^ ; git show <head>:README.md|package.json|MANIFEST.json|LICENSE|CONTRIBUTING.md|NOTICE",
+    "gh api repos/Papercusp/papercusp-app/releases ; gh api repos/Papercusp/papercusp-app/tags"
+  ],
+  "startedAt": "2026-10-06T03:44:52Z",
+  "finishedAt": "2026-10-06T03:44:54Z",
+  "summary": "default_branch=main (read, not assumed); head=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c by API and ls-remote. The export gate receipt pushed exactly 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c (tree d44db83c0b291570ac67c70f9ed927be3b78166a, parent b98518640b8d026adfc59b7149ed6334dcdd0c2f) from Papercusp/papercup@d20b360237373f31326a9ba287086b625dd8624d after 4 gate checks all clean (audit-release-bundle, audit-release-bundle --scan-dir, gitleaks, trufflehog). The live head's tree and parent match the receipt. README/NOTICE/package.json/repo description state source-available Elastic License 2.0 with no OSI open-source product claim; the repo has 0 GitHub releases and 0 tags, so there is no published release text to contradict it.",
+  "assertions": [
+    {
+      "id": "default-branch-read",
+      "passed": true,
+      "evidence": "repos/Papercusp/papercusp-app.default_branch='main' at 2026-10-06T03:44:52Z"
+    },
+    {
+      "id": "head-identity-agrees",
+      "passed": true,
+      "evidence": "api=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c ls-remote=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c"
+    },
+    {
+      "id": "head-equals-gated-push",
+      "passed": true,
+      "evidence": "receipt 'pushed 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c' vs live head 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c"
+    },
+    {
+      "id": "tree-and-parent-match-receipt",
+      "passed": true,
+      "evidence": "live tree=d44db83c0b291570ac67c70f9ed927be3b78166a receipt tree=d44db83c0b291570ac67c70f9ed927be3b78166a; live parent=b98518640b8d026adfc59b7149ed6334dcdd0c2f receipt parent=b98518640b8d026adfc59b7149ed6334dcdd0c2f"
+    },
+    {
+      "id": "gate-population-complete-clean",
+      "passed": true,
+      "evidence": "gate checks clean=['audit-release-bundle', 'audit-release-bundle --scan-dir', 'gitleaks', 'trufflehog']; failures=[]; receipt ends EXIT=0=True"
+    },
+    {
+      "id": "manifest-source-matches-receipt",
+      "passed": true,
+      "evidence": "MANIFEST.json at head names source commit d20b3602...: True"
+    },
+    {
+      "id": "elv2-source-available-wording",
+      "passed": true,
+      "evidence": "README contains 'Elastic License 2.0'; LICENSE line1='Elastic License 2.0'; description='Papercusp \u2014 desktop app for coordinating AI agent pots (source-available, Elastic License 2.0)'; package.json license field=None"
+    },
+    {
+      "id": "no-osi-open-source-claim",
+      "passed": true,
+      "evidence": "lines matching /open[- ]source/ at head: {'README.md': [], 'CONTRIBUTING.md': [], 'NOTICE': [], 'package.json': []}"
+    },
+    {
+      "id": "published-release-text",
+      "passed": true,
+      "evidence": "releases=0 tags=0: no published release text exists on the public repo (measured empty, not unavailable)"
+    }
+  ],
+  "limitations": [
+    "Measures the public repository and its committed export-gate receipt; installer/finished-build release text is graded under R-15/R-2, not here."
+  ],
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "workItemId": "WI-10003960",
+  "exitCode": 0
+}

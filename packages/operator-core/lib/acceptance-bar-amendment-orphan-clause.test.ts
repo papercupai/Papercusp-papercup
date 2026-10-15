@@ -7,7 +7,10 @@ vi.mock('./agent-tools/plans/spec-clauses-store', async (importOriginal) => ({
   setSpecClause: h.setSpecClause,
 }));
 
-import { synchronizeAcceptanceBarRevision } from './acceptance-bar-amendment';
+import {
+  synchronizeAcceptanceBarRevision,
+  validateAcceptanceBarRevisionProjectionPreview,
+} from './acceptance-bar-amendment';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
 
 // Mirrors the fixture in acceptance-bar-amendment.test.ts. R-1 mapped to P-001 is what
@@ -133,6 +136,39 @@ function runAmendment(
     actorId: 'amender',
   });
 }
+
+describe('plan-only BAR mapping (EI-25651776897214505)', () => {
+  const extendedPlan = subjectPlan('| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |')
+    .replace('## Design', '**R-2 — Second outcome.** The reader consumes the canonical BAR.\n\n## Design');
+
+  beforeEach(() => h.setSpecClause.mockReset());
+
+  function preview(templateData = seedTemplateData()) {
+    return validateAcceptanceBarRevisionProjectionPreview(
+      sqlStub([clauseRow()], undefined, extendedPlan) as never,
+      {
+        workspaceId: 'workspace', harnessSlug: 'papercusp',
+        rubricSlug: 'acceptance-subject-plan', rubricRevision: 4, templateData,
+      },
+    );
+  }
+
+  it('refuses a preview when a mapped plan BAR is absent from the candidate rubric', async () => {
+    await expect(preview()).rejects.toThrow('acceptance_bar_revision_mapping_missing:R-2');
+    expect(h.setSpecClause).not.toHaveBeenCalled();
+  });
+
+  it('refuses the same missing BAR on apply before any projection write', async () => {
+    await expect(runAmendment(sqlStub([clauseRow()], undefined, extendedPlan)))
+      .rejects.toThrow('acceptance_bar_revision_mapping_missing:R-2');
+    expect(h.setSpecClause).not.toHaveBeenCalled();
+  });
+
+  it('allows a preview that adds the mapped BAR even before its clause exists', async () => {
+    await expect(preview(seedTemplateData(extendedPlan))).resolves.toBeUndefined();
+    expect(h.setSpecClause).not.toHaveBeenCalled();
+  });
+});
 
 function writeFor(specId: string) {
   return h.setSpecClause.mock.calls
@@ -343,14 +379,18 @@ describe('generated projection retired by an EARLIER amendment (WI-10004061)', (
       .rejects.toThrow('acceptance_bar_revision_projection_unmapped:AUTO-BAR-R-9-P-001');
   });
 
-  it('still re-projects a terminal clause whose (BAR, item) pair is back in the current map', async () => {
-    // A re-added BAR must not be skipped merely because its old projection was retired.
-    const sql = sqlStub([orphaned({ lifecycle_status: 'superseded', current_revision: 3 })]);
+  it.each(['superseded', 'retired'] as const)(
+    're-enters the draft activation pipeline when a %s clause pair returns to the current map',
+    async (lifecycleStatus) => {
+      // A re-added BAR must not be skipped merely because its old projection was retired.
+      const sql = sqlStub([orphaned({ lifecycle_status: lifecycleStatus, current_revision: 3 })]);
 
-    await runAmendment(sql, { previousTemplateData: seedTemplateData() });
+      await runAmendment(sql, { previousTemplateData: seedTemplateData() });
 
-    const write = writeFor('AUTO-BAR-R-1-P-001');
-    expect(write).toBeDefined();
-    expect(write!.expectedRevision).toBe(3);
-  });
+      const write = writeFor('AUTO-BAR-R-1-P-001');
+      expect(write).toBeDefined();
+      expect(write!.expectedRevision).toBe(3);
+      expect(write!.lifecycleStatus).toBe('draft');
+    },
+  );
 });

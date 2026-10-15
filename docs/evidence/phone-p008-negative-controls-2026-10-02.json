@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Phone P-008 isolated worker negative controls",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace $PAPERCUSP_REPO_ROOT/scripts/mutation-probe.sh --file worker/src/call-recovery.ts --mutate 's/count\\.fallback >= 1/count.fallback >= 99/' --test 'PROBE_SUBJECT={} npm --prefix worker test -- src/call-recovery.test.ts' --expect caught",
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace $PAPERCUSP_REPO_ROOT/scripts/mutation-probe.sh --file worker/src/call-recovery.ts --mutate 's/bargeIn\\(\\) \\{ this\\.speaking\\(\\); \\}/bargeIn() { }/' --test 'PROBE_SUBJECT={} npm --prefix worker test -- src/call-recovery.test.ts' --expect caught",
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace $PAPERCUSP_REPO_ROOT/scripts/mutation-probe.sh --file worker/src/call-recovery.ts --mutate 's/this\\.limits\\.inputMs\\);/this.limits.inputMs * 100);/' --test 'PROBE_SUBJECT={} npm --prefix worker test -- src/call-recovery.test.ts' --expect caught",
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace $PAPERCUSP_REPO_ROOT/scripts/mutation-probe.sh --file worker/src/call-recovery.ts --mutate 's/Math\\.abs\\(s\\) > 100/Math.abs(s) > 32767/' --test 'PROBE_SUBJECT={} npm --prefix worker test -- src/call-recovery.test.ts' --expect caught",
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace $PAPERCUSP_REPO_ROOT/scripts/mutation-probe.sh --file worker/src/call-recovery.ts --mutate 's/this\\.limits\\.responseMs\\);/this.limits.responseMs * 100);/' --test 'PROBE_SUBJECT={} npm --prefix worker test -- src/call-recovery.test.ts' --expect caught",
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace $PAPERCUSP_REPO_ROOT/scripts/mutation-probe.sh --file worker/src/agent.ts --mutate 's/if \\(matchesAuthority\\(current\\) && !authorityRevoked/if (true && !authorityRevoked/' --test 'PROBE_SUBJECT={} npm --prefix worker test -- src/call-recovery.integration.test.ts' --expect caught"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T16:56:37Z",
+  "finishedAt": "2026-10-02T16:58:46Z",
+  "summary": "Six copy-out overlay mutation probes in the registered phone-app staging repo each passed the baseline, changed one worker behavior, triggered a specific Vitest assertion failure, returned verdict=caught, and verified source byte integrity. These establish software guard falsifiability only; no carrier or public PSTN was exercised.",
+  "assertions": [
+    { "id": "capacity", "passed": true, "evidence": "Allowing 99 fallback reservations instead of one failed call-recovery.test.ts:28: denied.reject was not called; baseline 7/7 passed, mutant 1 failed/6 passed, verdict=caught, tree integrity verified." },
+    { "id": "interruption", "passed": true, "evidence": "Removing bargeIn cancellation failed call-recovery.test.ts:86: no_response_audio fired after interruption; baseline 7/7 passed, mutant 1 failed/6 passed, verdict=caught, tree integrity verified." },
+    { "id": "no-inbound", "passed": true, "evidence": "Multiplying input deadline by 100 failed call-recovery.test.ts:100: no_input_audio was not emitted by the expected deadline; baseline 7/7 passed, mutant 1 failed/6 passed, verdict=caught, tree integrity verified." },
+    { "id": "provider-free-recovery", "passed": true, "evidence": "Raising the non-silent PCM threshold above Int16 range failed call-recovery.test.ts:104: real recovery WAV was rejected as silent; baseline 7/7 passed, mutant 1 failed/6 passed, verdict=caught, tree integrity verified." },
+    { "id": "response-deadline", "passed": true, "evidence": "Multiplying response deadline by 100 failed call-recovery.test.ts:89: stalled response did not trigger no_response_audio by the bound; baseline 7/7 passed, mutant 1 failed/6 passed, verdict=caught, tree integrity verified." },
+    { "id": "recovery-authority", "passed": true, "evidence": "Bypassing sidecar authority match failed call-recovery.integration.test.ts:61: provider-free fallback was called after revocation; baseline 7/7 passed, mutant 1 failed/6 passed, verdict=caught, tree integrity verified." }
+  ],
+  "executionNote": "Run these commands from the registered phone-app root after setting PAPERCUSP_REPO_ROOT to the canonical Papercusp checkout. The original invocations used that checkout's absolute script path; the variable removes a machine-specific path from the recorded commands.",
+  "sourceRepo": "phone-app",
+  "sourceRootRef": "app:phone-app",
+  "mutationMode": "copy-out overlay"
+}

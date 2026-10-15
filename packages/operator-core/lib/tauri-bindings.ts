@@ -347,6 +347,10 @@ export type ExternalConsoleSpec = {
  *  liveness by hand.
  */
 export type IpcStatus = {
+	// Unix milliseconds when Rust began this snapshot, excluding command dispatch.
+	snapshotStartedAtUnixMs: number,
+	// Monotonic milliseconds spent resolving and assembling this snapshot.
+	snapshotDurationMs: number,
 	// Live re-resolution performed at status time (a pure filesystem read).
 	resolvedPath: string | null,
 	resolutionDetail: string,

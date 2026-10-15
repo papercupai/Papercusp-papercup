@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -103,7 +103,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('wi-claim-readiness');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql)
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // claim path LEFT-JOINs the trust list (autoPickableWhereSql)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the dep table the P-005 readiness clause reads
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
@@ -164,8 +164,23 @@ describe('claimNextWorkItem readiness — issue blocker (P-005, F2 cross-family 
     await blockByIssue('F-blocked', 'EI-1');
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
 
-    await wi.setWorkItemState('EI-1', 'resolved', { by: 'integration-test', completionRef: 'readiness' });
+    // Migration 996: only a SETTLED completion (authority committed/validated) satisfies a
+    // blocker. A bare completionRef is judged 'proposed' and keeps blocking (next test).
+    await wi.setWorkItemState('EI-1', 'resolved', {
+      by: 'integration-test', completionRef: 'readiness', completionAuthority: 'committed',
+    });
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-blocked');
+  });
+
+  it('a RESOLVED issue blocker with only PROPOSED authority still blocks (migration 996)', async () => {
+    await seedFeature('F-blocked', { status: 'open', createdTs: 100 });
+    await seedIssue('EI-3', 'open');
+    await blockByIssue('F-blocked', 'EI-3');
+    const closed = await wi.setWorkItemState('EI-3', 'resolved', { by: 'integration-test', completionRef: 'readiness' });
+    // Precondition: the close really landed terminal and was judged under-evidenced; without
+    // it a "still blocked" read could just mean the write never happened.
+    expect(closed?.completionAuthority).toBe('proposed');
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
   });
 
   it('a CLOSED issue blocker (the other issue-terminal) does not block', async () => {

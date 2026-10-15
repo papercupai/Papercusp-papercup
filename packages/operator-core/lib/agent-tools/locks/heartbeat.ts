@@ -18,18 +18,18 @@ import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SE
 export default defineTool({
   name: 'locks:heartbeat',
   description:
-    'Extend a held lock\'s TTL. Returns extended=true on success; extended=false means the lock had already expired or been stolen.',
+    'Extend a held file lock\'s TTL. Named-resource leases use locks:heartbeat_resource. Returns extended=true on success; extended=false means the lock had already expired or been stolen.',
   guidance: {
-    when: 'For edits expected to take >15 min, call once at the halfway mark.',
-    notWhen: 'For short edits — the default 20-min TTL covers it. Heartbeating every minute is wasteful.',
+    when: 'For file edits expected to take >15 min, call once at the halfway mark.',
+    notWhen: 'For named-resource leases, use locks:heartbeat_resource. For short file edits, the default 20-min TTL covers it; heartbeating every minute is wasteful.',
   },
   capability: 'locks:write',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z
     .object({
-      lock_id: z.string().uuid().optional().describe('single lock id to heartbeat'),
-      lock_ids: z.array(z.string().uuid()).min(1).max(200).optional().describe('lock ids to heartbeat in one call'),
+      lock_id: z.string().uuid().optional().describe('single file-lock id to heartbeat'),
+      lock_ids: z.array(z.string().uuid()).min(1).max(200).optional().describe('file-lock ids to heartbeat in one call'),
       ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
       coordination_domain: z
         .string()

@@ -27,8 +27,10 @@ function fakeCluster() {
     },
   };
   const workerById = (id: number): WatchdogWorkerRef => ({ id, kill: (signal) => kills.push({ id, signal }) });
+  const rail = { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => false) };
   return {
     cluster,
+    rail,
     kills,
     beat: (id: number) => handlers.message?.({ id }, { type: CLUSTER_HEARTBEAT_TYPE }),
     otherMessage: (id: number) => handlers.message?.({ id }, { type: 'something-else' }),
@@ -45,6 +47,7 @@ describe('startClusterLagWatchdog (EI-1598/1608) — deterministic scan via fake
       const wd = startClusterLagWatchdog({
         cluster: f.cluster,
         workerById: f.workerById,
+        rail: f.rail,
         scanMs: 5_000,
         silenceMs: 30_000,
         now: () => Date.now(),
@@ -69,7 +72,7 @@ describe('startClusterLagWatchdog (EI-1598/1608) — deterministic scan via fake
     vi.useFakeTimers();
     try {
       const f = fakeCluster();
-      const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: f.workerById, scanMs: 5_000, silenceMs: 30_000, now: () => Date.now(), log: () => {} });
+      const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: f.workerById, rail: f.rail, scanMs: 5_000, silenceMs: 30_000, now: () => Date.now(), log: () => {} });
       f.beat(1);
       f.exit(1); // worker 1 exits (e.g. its own crash) before going silent
       vi.advanceTimersByTime(60_000);
@@ -84,7 +87,7 @@ describe('startClusterLagWatchdog (EI-1598/1608) — deterministic scan via fake
     vi.useFakeTimers();
     try {
       const f = fakeCluster();
-      const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: f.workerById, scanMs: 5_000, silenceMs: 30_000, now: () => Date.now(), log: () => {} });
+      const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: f.workerById, rail: f.rail, scanMs: 5_000, silenceMs: 30_000, now: () => Date.now(), log: () => {} });
       f.otherMessage(1); // not a heartbeat → not registered → not watched
       vi.advanceTimersByTime(60_000);
       expect(f.kills).toEqual([]);
@@ -99,7 +102,7 @@ describe('startClusterLagWatchdog (EI-1598/1608) — deterministic scan via fake
     vi.useFakeTimers();
     try {
       const f = fakeCluster();
-      const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: f.workerById, scanMs: 5_000, silenceMs: 30_000, now: () => Date.now(), log: () => {} });
+      const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: f.workerById, rail: f.rail, scanMs: 5_000, silenceMs: 30_000, now: () => Date.now(), log: () => {} });
       f.beat(1);
       wd.stop();
       vi.advanceTimersByTime(60_000);
@@ -107,6 +110,94 @@ describe('startClusterLagWatchdog (EI-1598/1608) — deterministic scan via fake
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('cluster lag condition measured recovery', () => {
+  const scan = async (wd: ReturnType<typeof startClusterLagWatchdog>) => {
+    await vi.advanceTimersByTimeAsync(1_000);
+    await wd.settled();
+  };
+  it('keeps a killed worker open through sibling heartbeats and exit until a replacement beats', async () => {
+    vi.useFakeTimers();
+    const f = fakeCluster();
+    const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: f.workerById,
+      rail: f.rail, host: 'fixture-host', scanMs: 1_000, silenceMs: 2_000, log: () => {} });
+    try {
+      f.beat(1);
+      vi.setSystemTime(Date.now() + 3_000);
+      await scan(wd);
+      expect(f.kills).toEqual([{ id: 1, signal: 'SIGKILL' }]);
+      expect(f.rail.broadcast).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: 'alarm:cluster-lag:fixture-host' }));
+      f.beat(2); // a new worker cannot replace a worker whose exit is unknown
+      await scan(wd);
+      expect(f.rail.resolve).not.toHaveBeenCalled();
+      f.exit(1);
+      f.beat(2); // existing healthy sibling still cannot clear it
+      await scan(wd);
+      expect(f.rail.resolve).not.toHaveBeenCalled();
+      f.beat(3);
+      f.beat(2);
+      await scan(wd);
+      expect(f.rail.resolve).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: 'alarm:cluster-lag:fixture-host' }));
+    } finally { wd.stop(); vi.useRealTimers(); }
+  });
+
+  it('resolves a failed kill only after that worker resumes; diagnostic errors cannot suppress the alarm', async () => {
+    vi.useFakeTimers();
+    const f = fakeCluster();
+    const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: () => ({ id: 1,
+      kill: () => { throw new Error('kill failed'); } }), rail: f.rail,
+      host: 'fixture-host', scanMs: 1_000, silenceMs: 2_000,
+      log: () => { throw new Error('log failed'); } });
+    try {
+      f.beat(1);
+      vi.setSystemTime(Date.now() + 3_000);
+      await scan(wd);
+      expect(f.rail.broadcast).toHaveBeenCalledTimes(1);
+      expect(f.rail.resolve).not.toHaveBeenCalled();
+      f.beat(1);
+      await scan(wd);
+      expect(f.rail.resolve).toHaveBeenCalledTimes(1);
+    } finally { wd.stop(); vi.useRealTimers(); }
+  });
+
+  it('does not resolve unseen, stopped, or missing-reference readings', async () => {
+    vi.useFakeTimers();
+    const f = fakeCluster();
+    const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: () => undefined,
+      rail: f.rail, scanMs: 1_000, silenceMs: 2_000, log: () => {} });
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(f.rail.resolve).not.toHaveBeenCalled();
+      f.beat(1);
+      // Jump the injected clock without taking an intermediate healthy scan.
+      vi.setSystemTime(Date.now() + 3_000);
+      await scan(wd);
+      expect(f.rail.broadcast).toHaveBeenCalled();
+      expect(f.rail.resolve).not.toHaveBeenCalled();
+      wd.stop(); f.beat(1);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(f.rail.resolve).not.toHaveBeenCalled();
+    } finally { wd.stop(); vi.useRealTimers(); }
+  });
+
+  it('retries failed condition delivery without delaying or repeating the kill', async () => {
+    vi.useFakeTimers();
+    const f = fakeCluster();
+    f.rail.broadcast.mockRejectedValueOnce(new Error('rail failed'));
+    const diagnostics: string[] = [];
+    const wd = startClusterLagWatchdog({ cluster: f.cluster, workerById: f.workerById,
+      rail: f.rail, scanMs: 1_000, silenceMs: 2_000, log: (line) => diagnostics.push(line) });
+    try {
+      f.beat(1); vi.setSystemTime(Date.now() + 3_000);
+      await scan(wd);
+      expect(f.kills).toHaveLength(1);
+      expect(diagnostics.some((line) => line.includes('condition delivery failed'))).toBe(true);
+      await scan(wd);
+      expect(f.rail.broadcast).toHaveBeenCalledTimes(2);
+      expect(f.kills).toHaveLength(1);
+    } finally { wd.stop(); vi.useRealTimers(); }
   });
 });
 

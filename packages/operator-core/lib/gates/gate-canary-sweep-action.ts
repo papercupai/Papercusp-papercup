@@ -71,6 +71,8 @@ import { isRegisteredHive } from '../harness-registry';
 import { insertProbe } from '../sync/pot-git/federation-probe-store';
 import { buildFederationProbeCanary } from './federation-probe-canary';
 import { runGateCanary, classifyGateCanary, type GateCanaryReport } from './canary';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import type { Sql } from 'postgres';
 
 export const GATE_CANARY_SWEEP_FACT_KEY = 'gate-canary-sweep-verdict';
 export const GREEN_CHECKPOINT_PARSER_CANARY_FACT_KEY = 'gate-canary-sweep-verdict:green-checkpoint-parser';
@@ -89,13 +91,17 @@ const GREEN_CHECKPOINT_PARSER_ESCALATION_PHASE = 'gate-canary-sweep:green-checkp
  * anywhere in here must not break the sweep tick or the OTHER canary's own
  * handling.
  */
-async function recordCanaryVerdict(opts: {
+export async function recordCanaryVerdict(opts: {
   ctx: SystemActionCtx;
   report: GateCanaryReport;
   factKey: string;
   escalationPhase: string;
   title: string;
-}): Promise<void> {
+}, deps: {
+  attention?: AlarmAttentionDeps;
+  assertFact?: typeof assertFact;
+  sql?: Pick<Sql, 'unsafe'>;
+} = {}): Promise<void> {
   const { ctx, report, factKey, escalationPhase, title } = opts;
   const line = `[gate-canary-sweep] ${ctx.installSlug} ${report.id}: verdict=${report.classification.verdict} alarm=${report.classification.alarm} — ${report.classification.detail}`;
   if (report.classification.alarm === 'none') {
@@ -107,7 +113,7 @@ async function recordCanaryVerdict(opts: {
     console.warn(line);
   }
 
-  await assertFact({
+  await (deps.assertFact ?? assertFact)({
     scope: 'harness',
     scopeRef: ctx.installSlug,
     key: factKey,
@@ -119,12 +125,27 @@ async function recordCanaryVerdict(opts: {
     console.warn(`[gate-canary-sweep] fact assert failed for ${report.id} (non-fatal):`, e instanceof Error ? e.message : e);
   });
 
+  // The condition cannot depend on the legacy escalation row or its one-shot
+  // notification cooldown. An unreadable/unknown sample never proves recovery.
+  const conditionKey = `alarm:gate-canary:${ctx.installSlug}:${report.id}`;
+  if (report.classification.alarm !== 'none') {
+    try {
+      const broadcastSevereEvent = deps.attention?.broadcast
+        ?? (await import('../severe-event-broadcast')).broadcastSevereEvent;
+      await broadcastSevereEvent({ conditionKey, summary: title,
+        body: `${report.classification.detail} (canary: ${report.canaryDetail})` });
+    } catch (e) {
+      console.warn(`[gate-canary-sweep] condition broadcast failed for ${report.id}: ${String(e)}`);
+    }
+  } else if (report.canaryOk === true) {
+    await resolveAlarm(conditionKey, 'gate-canary-sweep', deps.attention);
+  }
+
   // WI-6005: real escalation on a gate alarm — the same notifyAttention +
   // durable harness_escalations one-shot/recovery-clear pair every other
   // "real gate-broken signal" in this codebase uses.
   try {
-    const { getOrgPg } = await import('@papercusp/db-org');
-    const { sql } = getOrgPg();
+    const sql = deps.sql ?? (await import('@papercusp/db-org')).getOrgPg().sql;
     const existing = (await sql.unsafe(
       `SELECT escalation FROM harness_shared.harness_escalations WHERE harness_slug = $1 AND phase = $2`,
       [ctx.installSlug, escalationPhase],
@@ -135,17 +156,19 @@ async function recordCanaryVerdict(opts: {
       if (alreadyAlarmed) return; // one-shot until recovery, like every sibling watchdog
       try {
         const { notifyAttention } = await import('../attention-notify');
-        await notifyAttention({
-          kind: 'intervention',
+        const notification = {
+          kind: 'intervention' as const,
           title,
           body:
             `${report.classification.detail} (canary: ${report.canaryDetail}). A KNOWN-GOOD sample failed to pass ` +
             `through the gate's own apparatus — green may be unreachable by construction. This is NOT by itself ` +
             'evidence of a real system failure, but the apparatus needs a look.',
-          importance: 'urgent',
+          importance: 'urgent' as const,
           workspaceId: ctx.workspaceId,
           data: { canaryId: report.id, verdict: report.classification.verdict, alarm: report.classification.alarm },
-        });
+        };
+        if (deps.attention?.notify) await deps.attention.notify(notification);
+        else await notifyAttention(notification);
       } catch (e) {
         console.warn(`[gate-canary-sweep] notify failed for ${report.id}: ${e instanceof Error ? e.message : e}`);
       }
@@ -176,7 +199,7 @@ async function recordCanaryVerdict(opts: {
         console.warn(`[gate-canary-sweep] escalation write failed for ${report.id}: ${e instanceof Error ? e.message : e}`);
       }
       console.warn(`[gate-canary-sweep] ESCALATED ${report.id} on ${ctx.installSlug}: ${report.classification.detail}`);
-    } else if (alreadyAlarmed) {
+    } else if (alreadyAlarmed && report.canaryOk === true) {
       await sql.unsafe(
         `UPDATE harness_shared.harness_escalations SET escalation = NULL, mtime_ms = $3
           WHERE harness_slug = $1 AND phase = $2 AND escalation IS NOT NULL`,
@@ -351,4 +374,5 @@ registerSystemAction(GATE_CANARY_SWEEP_ACTION_NAME, async (ctx: SystemActionCtx)
   await sweepGreenCheckpointParserCanary(ctx).catch((e) => {
     console.warn(`[gate-canary-sweep] green-checkpoint-parser sweep failed (non-fatal): ${e instanceof Error ? e.message : e}`);
   });
-});
+  // WI-10005745: runs tsx <root>/apps/operator/lib/release/run-green-checkpoint-canary.ts.
+}, { executesIntegrationTreeCode: true });

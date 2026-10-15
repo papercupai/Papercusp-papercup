@@ -1,0 +1,37 @@
+{
+  "arms": [
+    {
+      "arm": "none",
+      "device": null,
+      "storm": {
+        "agents": 1,
+        "failed": 0,
+        "totalSec": {
+          "p50": 4.402,
+          "p90": 4.402,
+          "max": 4.402
+        },
+        "echoSec": {
+          "p50": 0.025,
+          "max": 0.025
+        },
+        "submitToReplySec": {
+          "p50": 4.375,
+          "max": 4.375
+        },
+        "regainedMiBPerAgent": 1.4,
+        "majfltPerAgent": 0,
+        "allDoneSec": 4.402,
+        "probeExecMs": {
+          "p50": 0.44,
+          "p99": 0.6,
+          "max": 0.6,
+          "samples": 44
+        }
+      },
+      "swapAfterStormMiB": 0.0,
+      "residentAfterStormMiB": 93.0
+    }
+  ],
+  "fio": []
+}

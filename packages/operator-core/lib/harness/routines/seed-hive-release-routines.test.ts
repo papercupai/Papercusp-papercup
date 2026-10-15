@@ -12,7 +12,8 @@ let envResult: {
   hasDeploy: boolean;
   isOperatorHome: boolean;
 };
-let sqlCalls: Array<{ kind: 'insert' | 'delete' | 'other'; values: unknown[] }>;
+let sqlCalls: Array<{ kind: 'insert' | 'delete' | 'other'; values: unknown[]; query: string }>;
+let sqlResultRows: Array<{ name: string }>;
 
 function classify(text: string): 'insert' | 'delete' | 'other' {
   if (/INSERT INTO/i.test(text)) return 'insert';
@@ -23,8 +24,9 @@ function classify(text: string): 'insert' | 'delete' | 'other' {
 // A fake tagged-template sql that records each call.
 function fakeSql(): import('postgres').Sql {
   const fn = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-    sqlCalls.push({ kind: classify(strings.join(' ? ')), values });
-    return Promise.resolve([]);
+    const query = strings.join(' ? ');
+    sqlCalls.push({ kind: classify(query), values, query });
+    return Promise.resolve(sqlResultRows);
   }) as unknown as import('postgres').Sql;
   return fn;
 }
@@ -34,6 +36,7 @@ beforeEach(() => {
   flagOn = true;
   envResult = { enabled: true, env: {}, hasDeploy: false, isOperatorHome: false };
   sqlCalls = [];
+  sqlResultRows = [];
   vi.doMock('@papercusp/flags/server', () => ({ getFlag: async () => flagOn }));
   vi.doMock('@papercusp/flags', () => ({ FLAGS: { PER_POT_RELEASE_GATE: 'papercusp-per-hive-release-gate' } }));
   vi.doMock('./hive-release-env', () => ({ resolveHiveReleaseEnv: async () => envResult }));
@@ -108,5 +111,24 @@ describe('seedHiveReleaseRoutines', () => {
     const deletes = sqlCalls.filter((c) => c.kind === 'delete');
     expect(deletes).toHaveLength(1);
     expect(deletes[0].values).toContain('oddsmith-hive');
+  });
+
+  it('teardown deletes only this workspace and pot release routines', async () => {
+    sqlResultRows = [{ name: 'green-checkpoint' }, { name: 'release-trigger' }];
+    const { teardownHiveReleaseRoutines } = await import('./seed-hive-release-routines');
+
+    const result = await teardownHiveReleaseRoutines({
+      sql: fakeSql(),
+      workspaceId: 'workspace-a',
+      potSlug: 'oddsmith-hive',
+    });
+
+    expect(result.deleted).toEqual(['green-checkpoint', 'release-trigger']);
+    expect(sqlCalls).toHaveLength(1);
+    expect(sqlCalls[0].kind).toBe('delete');
+    expect(sqlCalls[0].values).toEqual(['workspace-a', 'oddsmith-hive']);
+    expect(sqlCalls[0].query).toMatch(
+      /WHERE workspace_id =\s*\?\s+AND install_slug =\s*\?\s+AND name IN \('green-checkpoint', 'release-trigger'\)/i,
+    );
   });
 });

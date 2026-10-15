@@ -1,0 +1,19 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=mail-round-4",
+  "value": [
+    {
+      "id": "AAMkAGI2-msg-4",
+      "conversationId": "AAQkAGI2-conv-quarterly",
+      "subject": "RE: Quarterly numbers",
+      "bodyPreview": "Could you send the revised forecast before Friday?",
+      "body": { "contentType": "text", "content": "Could you send the revised forecast before Friday?" },
+      "from": { "emailAddress": { "name": "Grace Hopper", "address": "grace@fabrikam.example" } },
+      "toRecipients": [{ "emailAddress": { "name": "Owner", "address": "owner@contoso.example" } }],
+      "receivedDateTime": "2026-10-05T14:05:00Z",
+      "internetMessageId": "<msg-4@fabrikam.example>",
+      "categories": ["Finance"],
+      "isRead": false
+    }
+  ]
+}

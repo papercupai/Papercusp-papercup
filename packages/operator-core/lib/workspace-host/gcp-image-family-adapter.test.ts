@@ -54,6 +54,7 @@ import {
 } from './gcp-image-family';
 import {
   GoogleComputeGcpImageFamilyReleaseAdapter,
+  NodeGcpImageFamilyCommandRunner,
   parseGcpImageFamilyPackerOutput,
   parseGcpImageFamilyProvenance,
   type GcpImageFamilyCleanRoomRunInput,
@@ -68,12 +69,23 @@ import {
   CredentialScopedGcpImageFamilyCommandRunner,
   safeGcpImageFamilyCommandEnvironment,
 } from './gcp-image-family-production';
+import { gcpBaseImageIdentity, gcpBaseImageIdentityDigest } from './gcp-base-image-identity';
+import { workspaceHostReleaseSubjectSha256 } from './bootc-bake-manifest';
 
 const PROJECT = 'papercusp-images-123';
 const FAMILY = 'papercusp-workspace-host';
 const VERSION = '2026.8.28-1';
 const RELEASE_SHA = 'a'.repeat(64);
-const BASE_SHA = 'b'.repeat(64);
+const BASE_REFERENCE = `projects/${PROJECT}/global/images/ubuntu-base`;
+/** What the Compute API returns for BASE_REFERENCE; ComputeFake is seeded with it. */
+const BASE_IMAGE_RESOURCE: GcpImageFamilyComputeImage = {
+  name: 'ubuntu-base',
+  id: '7000000000000000001',
+  creationTimestamp: '2026-08-01T00:00:00.000-07:00',
+  state: 'ACTIVE',
+};
+/** Derived through the real measurement, so the manifest attests the image the adapter re-measures. */
+const BASE_SHA = gcpBaseImageIdentityDigest(gcpBaseImageIdentity(BASE_REFERENCE, BASE_IMAGE_RESOURCE));
 const SIGNING_PUBLIC_KEY = 'untrusted comment: Papercusp test key\nRWQtestkey';
 const SIGNING_KEY_SHA = createHash('sha256').update(SIGNING_PUBLIC_KEY).digest('hex');
 const PUBLISHED_AT = '2026-08-28T00:00:00.000Z';
@@ -120,7 +132,7 @@ function artifact(templateSha256: string): WorkspaceHostImageArtifact {
       sha256: RELEASE_SHA,
       sizeBytes: 42_000,
     },
-    baseImage: { reference: `projects/${PROJECT}/global/images/ubuntu-base`, architecture: 'x86_64', sha256: BASE_SHA },
+    baseImage: { reference: BASE_REFERENCE, architecture: 'x86_64', sha256: BASE_SHA },
     builder: {
       strategy: 'shared',
       kind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
@@ -274,7 +286,7 @@ const CONTEXT: GcpImageFamilyReleaseContext = {
 };
 
 class ComputeFake implements GcpImageFamilyComputeApi {
-  readonly images = new Map<string, GcpImageFamilyComputeImage>();
+  readonly images = new Map<string, GcpImageFamilyComputeImage>([[BASE_IMAGE_RESOURCE.name, BASE_IMAGE_RESOURCE]]);
   readonly inserts: Array<{
     projectId: string;
     input: Parameters<NonNullable<GcpImageFamilyComputeApi['insertImage']>>[1];
@@ -604,6 +616,72 @@ describe('GCP image-family production adapter', () => {
       }),
     ).rejects.toThrow(/GCP IAP firewall preflight found no INGRESS tcp:22 rule/);
     expect(calls.map((call) => `${call.command}:${call.args[0]}`)).toEqual(['gcloud:compute', 'gcloud:compute']);
+  });
+
+  /**
+   * WI-10005746: `base_image_sha256` is recorded in the image provenance as fact, so the adapter
+   * re-measures the image Packer will actually boot and refuses a mismatch before ANY command
+   * (no IAP probe, no ADC mint, no packer init). Two ways the attested digest stops describing the
+   * build: the named image was deleted and recreated (same name, new id), or the `sourceImage`
+   * override points at a different image than the manifest measured.
+   */
+  it.each([
+    {
+      name: 'the named base image was recreated under the same name',
+      compute: () => {
+        const compute = new ComputeFake();
+        compute.images.set('ubuntu-base', { ...BASE_IMAGE_RESOURCE, id: '7000000000000000002' });
+        return compute;
+      },
+      sourceImage: undefined,
+    },
+    {
+      name: 'the sourceImage override points at a different image',
+      compute: () => {
+        const compute = new ComputeFake();
+        compute.images.set('other-base', { ...BASE_IMAGE_RESOURCE, name: 'other-base', id: '7000000000000000003' });
+        return compute;
+      },
+      sourceImage: `projects/${PROJECT}/global/images/other-base`,
+    },
+  ])('refuses before any command when $name', async ({ compute, sourceImage }) => {
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL));
+    const candidateArtifact = artifact(createHash('sha256').update(template).digest('hex'));
+    const context = {
+      ...CONTEXT,
+      artifact: candidateArtifact,
+      request: { ...CONTEXT.request, releaseGate: { ...CONTEXT.request.releaseGate, artifact: candidateArtifact } },
+    };
+    const calls: string[] = [];
+    const commandRunner: GcpImageFamilyCommandRunner = {
+      run: async (command, args = []) => {
+        calls.push(`${typeof command === 'string' ? command : command.command}:${args.join(' ')}`);
+        return { exitCode: 1, stdout: '', stderr: 'unexpected command' };
+      },
+    };
+    const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(compute(), {
+        repositoryRoot: REPO_ROOT,
+        commandRunner,
+        ...(sourceImage ? { sourceImage } : {}),
+      }),
+    );
+    await adapter.bindReleaseContext(context);
+
+    await expect(
+      adapter.buildCandidate({
+        projectId: PROJECT,
+        candidateImageName: CANDIDATE_NAME,
+        builderKind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
+        templatePath: 'infra/images/workspace-host.pkr.hcl',
+        buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
+        releaseVersion: VERSION,
+        releaseSha256: RELEASE_SHA,
+        architecture: 'x86_64',
+        requiredGuestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+      }),
+    ).rejects.toThrow(/refusing to build from an image the release did not measure/);
+    expect(calls).toEqual([]);
   });
 
   /**
@@ -1136,6 +1214,52 @@ describe('GCP image-family production adapter', () => {
     ).rejects.toThrow('not bound');
   });
 
+  it('accepts a bootc clean-room attestation against the bootc fixture it rendered (WI-10006586)', async () => {
+    // The adapter used to re-build the expected bootstrap input field by field and drop
+    // hostModel/bootc, so a healthy bootc boot was judged against the ubuntu default and refused.
+    const bootc = bootcArtifact(TEMPLATE_SHA);
+    const bootcContext: GcpImageFamilyReleaseContext = { ...CONTEXT, artifact: bootc };
+    let seenFixture: GcpImageFamilyCleanRoomRunInput['fixture'] | undefined;
+    const runner = {
+      run: async (input: GcpImageFamilyCleanRoomRunInput) => {
+        seenFixture = input.fixture;
+        return {
+          evidenceRef: 'gcp://clean-room/evidence-bootc',
+          projectId: input.projectId,
+          zone: input.zone,
+          imageId: input.imageId,
+          buildManifestIdentity: input.buildManifestIdentity,
+          computeRunning: true,
+          osLoginReady: true,
+          publicIpv4Assigned: false,
+          attestation: workspaceHostCleanRoomFixtureAttestation(input.fixture, CLEAN_ROOM_OBSERVED_AT),
+          terminated: true,
+          residualResourceIds: [],
+          observedAt: CLEAN_ROOM_OBSERVED_AT,
+          fixtureId: input.fixture.fixtureId,
+          bootstrapScriptSha256: input.fixture.bootstrapScriptSha256,
+        };
+      },
+    };
+    const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(new ComputeFake(), { cleanRoomRunner: runner }),
+    );
+    await adapter.bindReleaseContext(bootcContext);
+    const proof = await adapter.launchCleanRoomCanary({
+      projectId: PROJECT,
+      zone: 'us-central1-a',
+      serviceAccountEmail: CONTEXT.request.cleanRoom.serviceAccountEmail,
+      subnetwork: CONTEXT.request.cleanRoom.subnetwork,
+      imageId: CANDIDATE_ID,
+      buildManifestIdentity: bootc.buildManifest.manifestIdentity,
+      releaseVersion: VERSION,
+      releaseSha256: workspaceHostReleaseSubjectSha256(bootc),
+    });
+    expect(seenFixture?.bootstrapInput.hostModel).toBe('bootc-image');
+    expect(proof.attestation.hostModel).toBe('bootc-image');
+    expect(proof.terminated).toBe(true);
+  });
+
   it('publishes an exact family member, resolves it, and deprecates by immutable replacement', async () => {
     const compute = new ComputeFake();
     const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(baseOptions(compute));
@@ -1165,5 +1289,56 @@ describe('GCP image-family production adapter', () => {
     });
     expect(compute.deprecations).toHaveLength(1);
     expect(compute.inserts[0]?.input.sourceImage).toBe(CANDIDATE_ID);
+  });
+});
+
+describe('NodeGcpImageFamilyCommandRunner abortOnStderr (WI-10006192)', () => {
+  const runner = new NodeGcpImageFamilyCommandRunner();
+  // coldsnap's line for a block that has used its last retry.
+  const LOST = /\battempt (\d+)\/\1 failed\b/;
+
+  it('stops the process at the first matching stderr line and keeps the output it captured', async () => {
+    const started = Date.now();
+    const result = await runner.run({
+      command: '/bin/sh',
+      args: ['-c', "echo 'attempt 2/5 failed' >&2; echo 'attempt 5/5 failed snap-0dead' >&2; exec sleep 30"],
+      abortOnStderr: LOST,
+      timeoutMs: 60_000,
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain('attempt 5/5 failed snap-0dead');
+    expect(result.stderr).toMatch(/stopped early: stderr matched/);
+  });
+
+  it('sees a match split across two stderr writes', async () => {
+    const started = Date.now();
+    const result = await runner.run({
+      command: '/bin/sh',
+      args: ['-c', "printf 'attempt 5/' >&2; sleep 0.3; printf '5 failed\\n' >&2; exec sleep 30"],
+      abortOnStderr: LOST,
+      timeoutMs: 60_000,
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  it('lets a run whose stderr never matches finish with its own exit code and output', async () => {
+    const result = await runner.run({
+      command: '/bin/sh',
+      args: ['-c', "echo 'attempt 2/5 failed' >&2; echo done"],
+      abortOnStderr: LOST,
+    });
+    expect(result).toEqual({ exitCode: 0, stdout: 'done\n', stderr: 'attempt 2/5 failed\n' });
+  });
+
+  it('accepts a global pattern without skipping a later match', async () => {
+    const result = await runner.run({
+      command: '/bin/sh',
+      args: ['-c', "echo 'attempt 1/5 failed' >&2; sleep 0.2; echo 'attempt 5/5 failed' >&2; exec sleep 30"],
+      abortOnStderr: /\battempt (\d+)\/\1 failed\b/g,
+      timeoutMs: 60_000,
+    });
+    expect(result.stderr).toMatch(/stopped early/);
   });
 });

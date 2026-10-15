@@ -9,6 +9,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   compareLegs,
+  compareSourceGroupedLegs,
+  planSourcePower,
   classesDisagree,
   ALL_ANSWERABLE,
   DECISION_RELEVANT_DELTA_MRR,
@@ -25,6 +27,70 @@ function rows(cls: string, rr: number[], prefix = 'q'): PerQueryRow[] {
     top1Score: 0.5,
   }));
 }
+
+describe('independent source-target comparisons', () => {
+  const entries = ['a', 'b', 'c'].map((key) => ({ key, metadata: { cluster: key } }));
+  const queries = ['lexical-gap', 'exact-identifier', 'session-start-intent'].flatMap((cls) =>
+    ['a', 'b', 'c'].map((group) => ({ id: `${cls}-${group}`, class: cls, group, expected: [group] })));
+  const outcomes = queries.map((q) => ({ ...q, firstRelevantRank: 1, reciprocalRank: 1, top1Score: 0.5 }));
+  it('resamples sources rather than repeated questions, and keeps positive classes separate', () => {
+    const repeated = [...queries, { ...queries[0], id: 'repeat-a' }];
+    const a = [...outcomes, { ...outcomes[0], id: 'repeat-a' }];
+    const b = a.map((r) => ({ ...r, reciprocalRank: r.group === 'a' ? 0 : 1 }));
+    const cmp = compareSourceGroupedLegs('a', a, 'b', b, entries, repeated);
+    expect(cmp.byClass['lexical-gap'].sourceTargets).toBe(3);
+    expect(cmp.byClass['lexical-gap'].queryCount).toBe(4);
+    expect(cmp.byClass['lexical-gap'].comparison.delta.point).toBeCloseTo(-1 / 3);
+    expect(cmp.byClass['exact-identifier'].sourceTargets).toBe(3);
+    expect(cmp.decisionMargin).toBe(0.03);
+  });
+  it('unions co-relevant sources and refuses to resolve power from one source', () => {
+    const joined = queries.map((q) => ({ ...q, expected: ['a', 'b', 'c'] }));
+    const cmp = compareSourceGroupedLegs('a', outcomes, 'b', outcomes, entries, joined);
+    expect(cmp.byClass.ALL_ANSWERABLE.sourceTargets).toBe(1);
+    expect(cmp.byClass.ALL_ANSWERABLE.marginResolved).toBe(false);
+  });
+  it('rejects omitted, duplicate and misclassified outcomes before bootstrapping', () => {
+    expect(() => compareSourceGroupedLegs('a', outcomes, 'b', outcomes.slice(1), entries, queries)).toThrow('incomplete');
+    expect(() => compareSourceGroupedLegs('a', outcomes, 'b', [outcomes[0], ...outcomes.slice(0, -1)], entries, queries)).toThrow('duplicate');
+    expect(() => compareSourceGroupedLegs('a', outcomes, 'b', outcomes.map((r) => ({ ...r, class: 'hard-negative' })), entries, queries)).toThrow('identity');
+  });
+  it('resolves the frozen margin only with an interval on one side or entirely within it', () => {
+    const better = outcomes.map((r) => ({ ...r, reciprocalRank: 0.5 }));
+    expect(compareSourceGroupedLegs('a', better, 'b', outcomes, entries, queries).byClass.ALL_ANSWERABLE.marginDecision).toBe('improvement-above-margin');
+    expect(compareSourceGroupedLegs('a', outcomes, 'b', better, entries, queries).byClass.ALL_ANSWERABLE.marginDecision).toBe('loss-above-margin');
+    expect(compareSourceGroupedLegs('a', outcomes, 'b', outcomes, entries, queries).byClass.ALL_ANSWERABLE.marginDecision).toBe('inside-margin');
+  });
+  it('keeps conditional source-power projections separate from observed acceptance', () => {
+    const b = outcomes.map((r) => ({ ...r, reciprocalRank: r.group === 'a' ? 0.5 : 1 }));
+    const cmp = compareSourceGroupedLegs('a', outcomes, 'b', b, entries, queries);
+    const before = structuredClone(cmp), plan = planSourcePower(cmp, 30).ALL_ANSWERABLE;
+    expect(cmp).toEqual(before);
+    expect(plan.sourceComponents).toBe(3); expect(plan.status).toBe('conditional-variance-projection');
+    expect(plan.observedMarginDecision).toBe(cmp.byClass.ALL_ANSWERABLE.marginDecision);
+    expect(plan.projectedComponentsForEffect03VsZero).toBeGreaterThan(30);
+    expect(plan.projectedMde80AtSourceUpperBound).toBeCloseTo(plan.observedMde80 * Math.sqrt(3 / 30));
+    expect(plan.acceptanceEstablishedByProjection).toBe(false);
+    const doubled = planSourcePower(cmp, 60).ALL_ANSWERABLE;
+    expect(doubled.projectedComponentsForEffect03VsZero).toBe(plan.projectedComponentsForEffect03VsZero);
+    expect(doubled.projectedMde80AtSourceUpperBound).toBeLessThan(plan.projectedMde80AtSourceUpperBound!);
+  });
+  it('does not turn two identical observations or one connected source into extrapolated power', () => {
+    const equal = planSourcePower(compareSourceGroupedLegs('a', outcomes, 'b', outcomes, entries, queries), 30).ALL_ANSWERABLE;
+    expect(equal.status).toBe('zero-observed-variance-no-extrapolation');
+    expect(equal.projectedComponentsForEffect03VsZero).toBeNull();
+    expect(equal.projectedComponentsForObservedMarginDistance).toBeNull();
+    const joined = queries.map((q) => ({ ...q, expected: ['a', 'b', 'c'] }));
+    expect(planSourcePower(compareSourceGroupedLegs('a', outcomes, 'b', outcomes, entries, joined), 30).ALL_ANSWERABLE.status).toBe('insufficient-components');
+  });
+  it('refuses query-count populations, altered margins and invalid MDEs', () => {
+    const cmp = compareSourceGroupedLegs('a', outcomes, 'b', outcomes, entries, queries);
+    for (const n of [0, -1, 1.5, NaN, Infinity, 2]) expect(() => planSourcePower(cmp, n)).toThrow('source power');
+    expect(() => planSourcePower({ ...cmp, decisionMargin: 0.04 }, 30)).toThrow('contract');
+    cmp.byClass.ALL_ANSWERABLE.comparison.mde80 = NaN;
+    expect(() => planSourcePower(cmp, 30)).toThrow('comparison');
+  });
+});
 
 describe('compareLegs', () => {
   it('reports a real degradation as candidate-worse with a CI excluding zero', () => {

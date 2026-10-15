@@ -1,0 +1,178 @@
+{
+  "schemaVersion": 1,
+  "kind": "acceptance-coverage-census",
+  "workItemId": "WI-10004735",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "spec": "AUTO-BAR-R-2-P-008@3",
+  "reviewedAt": "2026-10-15T02:23:29Z",
+  "scope": "Current source and retained simulator subsets; this census does not close the whole R-2 live acceptance bar.",
+  "source": {
+    "repository": "papercup-rust-mobile",
+    "commit": "b264f57cbdaaafa0f7e2c7ca7f7e547b4a2275a8",
+    "dirty": false,
+    "fingerprint": "1038f28b436acd0361508fcfefa1fe8067c2bfac0faa728b5f317e5bed8bdacf",
+    "scope": "Historical source census snapshot. Later native receipts below retain their own exact source identities; this is not a current whole-candidate admission."
+  },
+  "supportedModes": [
+    {
+      "mode": "Desktop operator on LAN or protected public HTTPS",
+      "advertised": true,
+      "evidence": "Current PairView.swift and store/LISTING.md; native visible LAN pairing/reply/relaunch and public HTTPS authorized Inbox receipts retained separately.",
+      "limit": "The later native-public-chat receipt exercises actual assistant reply and ordinary Keychain relaunch through protected public HTTPS. Production hostname configuration remains separately tracked by EI-25946131547854574."
+    },
+    {
+      "mode": "BYOC or hosted cloud workspace through advertised relay",
+      "advertisedInAppGuidance": true,
+      "advertisedInReleaseListing": false,
+      "evidence": "PairView names cloud workspace; Credentials parses baseUrls kind relay. LISTING and APP-STORE-REVIEW retain explicit pending cloud sections. Native controlled relay UI is verified.",
+      "limit": "A controlled NWListener relay is not an accepted live hosted/BYOC target. P-016 remains blocked on WI-10006956 and target/custody admission."
+    },
+    {
+      "mode": "In-app account signup or paid subscription",
+      "advertised": false,
+      "evidence": "ios/README.md says the app does not create a hosted account or sell a subscription; APP-STORE-REVIEW says no public sign-up or paid features.",
+      "limit": "This copy census does not certify platform-side cloud billing/entitlements."
+    },
+    {
+      "mode": "Optional ElevenLabs cloud voice",
+      "advertised": true,
+      "evidence": "LISTING and APP-STORE-REVIEW require explicit consent; retained unit tests cover default denied, grant persistence and revoke.",
+      "limit": "Consent unit tests do not prove a live cloud voice journey."
+    }
+  ],
+  "copyGuard": {
+    "command": "make test-store-cloud-pending",
+    "exitCode": 0,
+    "result": "PASS with 7 rejecting controls",
+    "framework": "Maintained Makefile check target tools/tests/store-cloud-pending-test.sh",
+    "runOnCommit": "b264f57cbdaaafa0f7e2c7ca7f7e547b4a2275a8"
+  },
+  "retainedNativeCloudProof": {
+    "receipt": "docs/evidence/iphone-p008-native-cloud-ui-2026-10-14.json",
+    "nativeJobId": "0mv81k6r19sd6h51u4z",
+    "unitPassed": 60,
+    "uiPassed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "artifactHashSizeMatches": 230,
+    "proofScope": "Native app with controlled loopback relay, not a live cloud deployment",
+    "executedSourceFingerprint": "a1461312f610358aaca978e0e23ab684d9e49c859ec5b01481aa69afeff064a2",
+    "unchangedNamedFiles": "Current PairView, Credentials, SettingsView, DesktopRouteTests and CloudWorkspaceOfflineUITests bytes equal verified committed mobile 0d96db6cd7c1d671dddbf39904b778c1235f9848; complete current mobile fingerprint differs."
+  },
+  "acceptanceRows": [
+    {
+      "row": 1,
+      "journey": "Clean installation and current pairing instructions",
+      "status": "retained-passed-subset",
+      "evidence": "docs/evidence/iphone-p008-native-reinstall-2026-10-14.json",
+      "observed": "Actual OS uninstall/reinstall created a different app data container. Two unseeded launches showed current pairing instructions, Scan QR and Paste manually; no Operator UI.",
+      "remaining": "This is exact historical simulator-source evidence; supported live cloud acceptance remains in row 10."
+    },
+    {
+      "row": 2,
+      "journey": "Visible LAN pairing and real operator reply",
+      "status": "retained-passed-subset",
+      "evidence": "WI-10007213-native-paired-20261014T064302Z-89effcd2",
+      "remaining": "Preserve exact historical source identity; do not rerun merely to reconstruct the receipt."
+    },
+    {
+      "row": 3,
+      "journey": "Supported public HTTPS pairing, workspace and chat",
+      "status": "partial",
+      "evidence": "docs/evidence/iphone-p008-native-public-https-2026-10-14.json; docs/evidence/iphone-p008-native-public-chat-2026-10-14.json; testRunIds 21244733 and 21245578; carried-forward bindings 45314 and 45317",
+      "observed": "Actual iOS protected 404/401 boundaries, visible pairing, authorized Inbox, actual assistant reply and ordinary Keychain relaunch passed in retained selected runs.",
+      "remaining": "Production hostname configuration EI-25946131547854574; physical cellular radio remains a known simulator limit under D-026."
+    },
+    {
+      "row": 4,
+      "journey": "Ordinary relaunch retains authorized Keychain pairing",
+      "status": "retained-passed-subset",
+      "evidence": "WI-10007213-native-paired-20261014T064302Z-89effcd2",
+      "remaining": "No additional relaunch rerun is required to preserve this executed subset."
+    },
+    {
+      "row": 5,
+      "journey": "Disconnect owned operator and automatic recovery",
+      "status": "retained-passed-subset",
+      "evidence": "docs/evidence/iphone-p008-native-offline-recovery-regression-2026-10-14.json; testRunId 21247556; carried-forward binding 45322",
+      "observed": "The actual owned operator stopped and a replacement became ready with the same private database and signing identity. Native Inbox data recovered before relaunch; the HTTP 502 error cleared. Ordinary Keychain relaunch retained pairing and data. The strengthened native test passed and all 283 declared artifact hashes/sizes matched.",
+      "remaining": "Preserve exact historical source and dirty guest metadata limits. The earlier offline-recovery receipt remains a recorded false-positive detector result, not the passing regression proof."
+    },
+    {
+      "row": 6,
+      "journey": "Real backend revocation, negative reads and fresh pairing",
+      "status": "retained-passed-subset",
+      "evidence": "docs/evidence/iphone-p008-native-revocation-2026-10-14.json; testRunId 21244211; binding 44412",
+      "observed": "Native real revocation, Pair again, Keychain clearing through ordinary relaunch and fresh device identity passed; current source-bound backend proof 21243583/binding 44242 separately establishes runtime-config/read/heartbeat/switch refusal for revoked credentials with positive controls.",
+      "remaining": "Preserve the two exact source-bound subsets; do not rerun completed native revocation merely to reconstruct proof."
+    },
+    {
+      "row": 7,
+      "journey": "Expired pair and device credentials",
+      "status": "partial",
+      "evidence": "docs/evidence/iphone-p008-native-expiry-2026-10-14.json; docs/evidence/iphone-p008-native-pair-guidance-2026-10-14.json; docs/evidence/iphone-p008-native-workspace-isolation-2026-10-14.json",
+      "observed": "Retained native expired-pair guidance and fresh pairing passed against the actual disposable operator. The later guidance regression proves complete rendered text. Current integration run 21246468 expires pair/device credentials, checks read/heartbeat/switch refusal and retains positive controls.",
+      "remaining": "Actual native expired-device-token guidance is not separately established by the expired-pair case. Preserve that scope distinction; do not rerun completed expired-pair jobs to reconstruct evidence."
+    },
+    {
+      "row": 8,
+      "journey": "Unauthorized workspace isolation and supported UI switching",
+      "status": "retained-passed-subset",
+      "evidence": "docs/evidence/iphone-p008-native-workspace-isolation-2026-10-14.json; testRunId 21246468; carried-forward binding 45320; docs/evidence/iphone-p008-native-workspace-switch-2026-10-15.json; operational binding 45905",
+      "observed": "The retained integration run recorded 20 lifecycle/isolation checks through real HTTP and disposable PostgreSQL. The later actual native Settings A-to-B-to-A journey completed system authentication, displayed only each selected workspace's device marker, retained B through ordinary Keychain relaunch and restored A. Its maintained run passed 60 unit, 5 smoke and 1 selected paired case with zero failures/skips; all 283 retained artifact hashes/sizes matched and four actual screenshots were reviewed.",
+      "executedNativeSourceFingerprint": "cea0450cfe48f1f6a99c8ad7914b929f254391713ebea1d567355db1a25fe365",
+      "remaining": "No outstanding native-switch journey in this selected subset. Preserve the receipt's exact execution identity and dirty guest Git metadata; this is development simulator evidence, not current whole-candidate or signed-release admission."
+    },
+    {
+      "row": 9,
+      "journey": "Delete and reinstall clears old Keychain pairing",
+      "status": "retained-passed-subset",
+      "evidence": "docs/evidence/iphone-p008-native-reinstall-2026-10-14.json",
+      "executedSourceFingerprint": "a27b8bc9cec096016510895cfd53dde164f9d55d0171ebc12712e1303b0acb85",
+      "observed": "Maintained native pair, ordinary authorized relaunch and post-uninstall onboarding phases each passed with zero failures/skips. OS receipt proves removal of the original container and a different installed container; both post-reinstall launches used no credential wipe or seed. All 356 retained artifact hashes/sizes match.",
+      "remaining": "Preserve the exact dirty execution fingerprint and source limits; no native rerun is required to retain this subset."
+    },
+    {
+      "row": 10,
+      "journey": "Advertised hosted/account/paid modes match copy",
+      "status": "partial",
+      "observed": "No in-app account or paid feature is promised; pending cloud copy guard passed; native controlled relay label/recovery is verified.",
+      "remaining": "Accepted live hosted/BYOC target and relevant platform entitlement evidence. P-016 typed dependency is preserved."
+    }
+  ],
+  "existingBackendProof": {
+    "testRunId": 21246468,
+    "bindingId": 45320,
+    "testPath": "packages/operator-core/lib/device-operator-api-profile.integration.test.ts",
+    "status": "pass",
+    "currentness": "Exact retained source-bound result; no new source-currentness comparison was supplied in this census review.",
+    "verifiedHow": "Read the retained conventional integration receipt and plans:get-spec-evidence carry-forward result; no test was rerun."
+  },
+  "acceptanceGovernance": {
+    "rubric": "acceptance-iphone-public-release-2026-08-11",
+    "revision": 4,
+    "criteriaHash": "c042c98a714c1fc895dc43cd018182d4595fc345b62ce877b847cc3eeb98164d",
+    "vetting": "unvetted",
+    "reason": "rejected-attestation: grading-audit-unsettled",
+    "candidate": "EI-24782775335411324",
+    "note": "The only recorded candidate attests meaning revision 3; its grade-the-grader audit is pending and stale. It cannot vet current revision 4. A current independent-review consult returned no available responder and launched nobody; a bounded review was requested from an existing iphone-release fleet member. No acceptance grade was asserted.",
+    "reviewConsult": "conv-mv8rquhz-0000-006ea3c7f1094ca8bbb524e5504be25a",
+    "clausePromotion": {
+      "fromRevision": 2,
+      "toRevision": 3,
+      "lifecycleStatus": "active",
+      "contentHash": "66c2ed74fcfb585cd35733f4b2414da43fb61a09c0e3b1208126fc5d9edd383a",
+      "evidenceCarriedForward": 9,
+      "scope": "Provenance-only activation; behavior, falsifier, required evidence/layers, sourceBar and acceptanceRef stayed unchanged. This does not assert an acceptance pass."
+    }
+  },
+  "disclosedGaps": [
+    "Real cellular radio, production APNs delivery, Bluetooth hardware and battery endurance are known simulator limits under D-026",
+    "No signed IPA, store submission or shipment claim",
+    "No rerun of completed native jobs",
+    "Native expired-device-token guidance, production hostname configuration and accepted live hosted/BYOC target/entitlement evidence remain open",
+    "Carried-forward native bindings retain exact historical source fingerprints; this review does not assert whole-candidate currentness",
+    "Owner-directive disposition is outside this evidence census; read the authoritative directive ledger"
+  ]
+}

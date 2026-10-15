@@ -58,6 +58,18 @@ afterEach(() => {
 });
 
 describe('accounts:probe-capacity — failure persistence', () => {
+  it('reports HTTP refusal metadata read-only without claiming capacity or changing the pool', async () => {
+    const httpRefusal = { status: 400, bodyState: 'parsed', errorType: 'invalid_request_error', message: 'model is unavailable', requestId: 'req_test' };
+    probeM.mockResolvedValue([{ accountId: 'a', ok: false, status: 400, windows: {}, before: {}, unwalls: false, error: 'no capacity headers', httpRefusal }]);
+    const before = JSON.stringify(pool);
+    const out = body((await tool.handler({ id: 'a', provider: 'claude', apply: false } as never, {} as never)) as Out);
+    expect(out.rows[0]).toMatchObject({ status: 400, verdict: 'no-reading', httpRefusal });
+    expect(out.serving).toEqual([]);
+    expect(out.applied).toEqual([]);
+    expect(JSON.stringify(pool)).toBe(before);
+    expect(gatewayFetchM).not.toHaveBeenCalled();
+  });
+
   it('advertises provider in the MCP schema and accepts Codex probes', () => {
     expect(tool.args.safeParse({ provider: 'codex' }).success).toBe(true);
   });

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 packaged boot import namespace regression suite",
+  "command": ["node", "--test", "--test-global-setup=test/monorepo-host-preflight.mjs", "test/verify-sidecar-bundle-spa-layout.test.js"],
+  "cwd": "papercusp-desktop",
+  "startedAt": "2026-10-11T00:20:09.335Z",
+  "finishedAt": "2026-10-11T00:27:39.222Z",
+  "timestampProvenance": "Conservative bounds from the preceding file-lock receipt and later evidence-file lock receipt; exact test elapsed is the Node runner duration below.",
+  "exitCode": 0,
+  "summary": "The registered Node test suite passed39, failed0, skipped0. The real boot-import function refuses native ancestor resolution before launch and rejects CommonJS, ESM and escaping package symlinks during graph loading.",
+  "workItemId": "EI-25639520292031822",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "host-conventional-regression-suite",
+  "candidateAccepted": false,
+  "nativeExecReceipt": "ca7605",
+  "durationMs": 18810.80418,
+  "counts": { "passed": 39, "failed": 0, "skipped": 0 },
+  "sourceHashes": {
+    "papercusp-desktop/bin/verify-sidecar-bundle.sh": "8acb89ad5c88469a944472b909ffad8d2c5e4506212a0ce02a7943e1eab8cfd0",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js": "54017ddd9f05e9eca956cc3f503ac35a41c51e9e7cd86cddfbb118b62e57aaa9"
+  },
+  "assertions": [
+    { "id": "native-preflight", "passed": true, "evidence": "Missing target node-pty and native wrappers supplied by ancestors are refused before GRAPH_MUST_NOT_RUN executes." },
+    { "id": "commonjs-esm-link-guard", "passed": true, "evidence": "Three full graph cases reject CommonJS, ESM and symlink ancestor-only packages with ESCAPED_BUNDLE and no success receipt." },
+    { "id": "positive-control", "passed": true, "evidence": "In-bundle CommonJS, ESM and builtin imports return the required boot receipt." },
+    { "id": "existing-deadline-and-output-contract", "passed": true, "evidence": "Existing tests retain the60000ms child timeout, allocator cap, bounded stderr, partial failure diagnostics and exact marker requirement." },
+    { "id": "registered-conventional-suite", "passed": true, "evidence": "The changed test path is already present in papercusp-desktop package test scripts and ran with the maintained monorepo global setup." }
+  ],
+  "rootCause": "The direct diagnostic constructor replaced the entire native package tree with a JS-only overlay; missing native packages then resolved through the surrounding checkout. The full boot child lacked the physical namespace guard used by the separate native probes.",
+  "reuse": "Extended the existing check_boot_import_closure and reused REQUIRED_NATIVE_MODULES; Node's built-in synchronous loader hook covers both module systems.",
+  "limitations": ["Host regression fixtures only; actual restored ARM24 runtime execution is still pending.", "No original ARM60s startup cause or final native/container acceptance is established.", "No installed-native, signing/publication, transfer or shipment acceptance."]
+}

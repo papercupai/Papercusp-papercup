@@ -30,6 +30,7 @@
 // re-export them from the server module for existing callers, and point the
 // client import at the shared file. See knowledge-packs/candidates-shared.ts.
 import { describe, expect, it } from "vitest";
+import * as ts from "typescript";
 import {
   existsSync,
   readdirSync,
@@ -196,40 +197,77 @@ function resolveSpec(spec: string, fromFile: string): string | null {
   return resolveWorkspacePkg(s); // our own packages; third-party deps still return null
 }
 
-// The clause between `import`/`export` and `from` may contain identifiers, braces,
-// commas, `*`, `as` and `type` — but NEVER a `;` or a quote. Bounding the capture to
-// `[^;'"]` is what keeps it from running past the end of its own statement.
+// Historical regex-parser failures explain why the scanner now uses the TypeScript AST.
+// The former regex parser also mishandled side-effect imports and TypeScript type queries.
 //
 // ⚠ It was `[\s\S]*?` until 2026-08-02, which made a SIDE-EFFECT import (`import
 // './x.css';` — no `from` clause) swallow every line after it until the next `from`,
 // then report THAT statement's specifier. Two ways it lied, both silent:
-//   - the `^\s*type\b` guard below tested the runaway's text (which starts at the CSS
+//   - the former `^\s*type\b` guard tested the runaway's text (which starts at the CSS
 //     specifier), never the real statement, so a type-only `export type {…} from
 //     '<server module>'` — fully erased by the bundler — was recorded as a RUNTIME edge
 //     and reported as a leak. That false positive red-pinned the fleet gate.
 //   - every statement the runaway jumped OVER lost its edge entirely, so the graph was
 //     also under-walked — real leaks could hide behind a side-effect import.
-const STMT = /(?:^|\n)\s*(?:import|export)\b([^;'"]*?)from\s*['"]([^'"]+)['"]/g;
-const SIDE = /(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
-const DYN = /import\(\s*['"]([^'"]+)['"]\s*\)/g;
-
 /**
- * Runtime edges declared in ONE module's source (type-only erased). Pure, so the
- * scanner itself is unit-testable — see the 'import-graph scanner' suite below.
+ * Runtime edges declared in ONE module's source (type-only erased). The TypeScript
+ * AST keeps typeof import('x').Member and import('x').Type queries out of the
+ * runtime graph. Pure, so the scanner itself is unit-testable.
  */
 function specsIn(src: string, allowDynamic: boolean): string[] {
+  const source = ts.createSourceFile(
+    "client-source.tsx",
+    src,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
   const out: string[] = [];
-  let m: RegExpExecArray | null;
-  // Module-level /g regexes: reset so a call can never inherit a previous one's lastIndex.
-  STMT.lastIndex = 0;
-  SIDE.lastIndex = 0;
-  DYN.lastIndex = 0;
-  while ((m = STMT.exec(src))) {
-    if (/^\s*type\b/.test(m[1])) continue;
-    out.push(m[2]);
-  }
-  while ((m = SIDE.exec(src))) out.push(m[1]);
-  if (allowDynamic) while ((m = DYN.exec(src))) out.push(m[1]);
+  const add = (specifier: ts.StringLiteralLike | undefined) => {
+    if (specifier) out.push(specifier.text);
+  };
+  const importHasRuntimeBindings = (clause: ts.ImportClause | undefined) => {
+    if (!clause) return true; // side-effect import
+    if (clause.isTypeOnly) return false;
+    if (clause.name) return true;
+    const bindings = clause.namedBindings;
+    if (!bindings) return false;
+    if (ts.isNamespaceImport(bindings)) return true;
+    return (
+      bindings.elements.length === 0 ||
+      bindings.elements.some((el) => !el.isTypeOnly)
+    );
+  };
+  const exportHasRuntimeBindings = (clause: ts.NamedExportBindings | undefined) => {
+    if (!clause) return true; // export * from
+    if (ts.isNamespaceExport(clause)) return true;
+    return (
+      clause.elements.length === 0 ||
+      clause.elements.some((el) => !el.isTypeOnly)
+    );
+  };
+  const visit = (node: ts.Node) => {
+    if (ts.isImportDeclaration(node) && importHasRuntimeBindings(node.importClause)) {
+      if (ts.isStringLiteral(node.moduleSpecifier)) add(node.moduleSpecifier);
+    } else if (
+      ts.isExportDeclaration(node) &&
+      !node.isTypeOnly &&
+      exportHasRuntimeBindings(node.exportClause)
+    ) {
+      if (node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+        add(node.moduleSpecifier);
+      }
+    } else if (
+      allowDynamic &&
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword
+    ) {
+      const argument = node.arguments[0];
+      if (argument && ts.isStringLiteralLike(argument)) add(argument);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
   return [...new Set(out)];
 }
 
@@ -475,5 +513,13 @@ describe("import-graph scanner", () => {
     expect(specs("export type {\n  A,\n  B,\n} from '@srv/mod';\n")).toEqual(
       [],
     );
+  });
+
+  it("does not treat TypeScript import type queries as runtime dynamic imports", () => {
+    expect(
+      specs(
+        "interface PanelRow { reporterStatus?: Awaited<ReturnType<typeof import('@srv/reporter-status').readReporterStatus>>; }\n",
+      ),
+    ).toEqual([]);
   });
 });

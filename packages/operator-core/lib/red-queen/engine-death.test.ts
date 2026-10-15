@@ -16,7 +16,6 @@ import {
   type EngineDeathSentinelDeps,
   type RoutineLivenessRow,
 } from './engine-death';
-import { SANDBOX_SCOPE } from './types';
 import type { CaptureImprovementResult } from '../harness/improvements/capture-core';
 
 const NOW = Date.parse('2026-06-12T12:00:00.000Z');
@@ -175,9 +174,9 @@ describe('engineDeathSignal', () => {
   });
 
   it('stamps drill origin + sandbox scope when asked (the drill leg)', () => {
-    const s = engineDeathSignal(verdict, { key: 'engine:sb', origin: 'drill', captureScope: SANDBOX_SCOPE });
+    const s = engineDeathSignal(verdict, { key: 'engine:sb', origin: 'drill', captureScope: 'operator' });
     expect(s.origin).toBe('drill');
-    expect(s.scope).toBe(SANDBOX_SCOPE);
+    expect(s.scope).toBe('operator');
   });
 });
 
@@ -188,7 +187,7 @@ describe('engineDeathDrillCollector (the sandbox drill leg)', () => {
     const signals = Array.isArray(res) ? res : res.signals;
     expect(signals).toHaveLength(1);
     expect(signals[0].origin).toBe('drill');
-    expect(signals[0].scope).toBe(SANDBOX_SCOPE);
+    expect(signals[0].scope).toBe('operator');
   });
 
   it('a healed snapshot yields nothing, with the verdict as the note', async () => {

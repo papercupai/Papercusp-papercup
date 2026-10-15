@@ -44,7 +44,14 @@ import { computeCombinedSourceHash } from './src-hash';
  *  cycle-error-rate bar is judging. Order is part of the hash's identity; only
  *  ever APPEND, never reorder existing entries (reordering would change every
  *  future hash for byte-identical code, spuriously breaking the soak union). */
-export const SCOUT_CODE_IDENTITY_FILES = ['./capacity-errors.ts', './scheduler.ts', './quality-metrics.ts'] as const;
+// P-006 (WI-10007504): inference-transport-retry.ts decides whether a transport death becomes
+// an error tick at all, so it governs the cycle-error-rate classification too.
+export const SCOUT_CODE_IDENTITY_FILES = [
+  './capacity-errors.ts',
+  './scheduler.ts',
+  './quality-metrics.ts',
+  './inference-transport-retry.ts',
+] as const;
 
 function resolvePaths(): string[] {
   const dir = fileURLToPath(new URL('.', import.meta.url));

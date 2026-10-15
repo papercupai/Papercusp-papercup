@@ -3,11 +3,14 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { PgL2Store } from '../cache/pg-l2-store';
 import { lspFacade } from '../code-intelligence/lsp-facade';
+import { LSP_VENDOR_DIR } from '../code-intelligence/lsp-adapter';
 import { gitnexusFacade } from '../code-intelligence/gitnexus-facade';
+import { firstPartyCallersOffthread } from '../code-intelligence/first-party-callers-offthread';
 import { packerFacade, type PackerResult } from '../code-intelligence/packer-facade';
 import type { CodeIntelAnswer } from '../code-intelligence/contracts';
 import {
   CapabilityPacketSchema,
+  CapabilityPacketGraphSchema,
   CapabilityPathSchema,
   CapabilityUnitSchema,
   capabilityHash,
@@ -15,9 +18,10 @@ import {
   type CapabilityPacket,
   type CapabilitySource,
   type CapabilityUnit,
+  type CapabilityPacketGraph,
 } from './capability-contracts';
 
-export const CAPABILITY_EXTRACTION_RECIPE = 'scanned-anchors-and-radius-v2';
+export const CAPABILITY_EXTRACTION_RECIPE = 'scanned-anchors-and-cited-context-v4';
 export const CAPABILITY_SUMMARY_PROMPT = 'manifest-facets-v1';
 const MAX_SOURCE_BYTES = 512 * 1024;
 const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
@@ -37,6 +41,7 @@ export interface CapabilityPacketDeps {
   lookup: (root: string, file: string, line1: number, character: number) => Promise<CodeIntelAnswer>;
   resolveSymbol: (root: string, file: string, line1: number, character: number) => Promise<CodeIntelAnswer>;
   neighbors: (direction: 'callers' | 'callees', repositoryId: string, name: string) => Promise<CodeIntelAnswer>;
+  graph?: (root: string, repositoryId: string, name: string, file: string, paths: string[]) => Promise<CodeIntelAnswer>;
   readArtifact: (path: string) => Promise<string>;
   now: () => number;
 }
@@ -69,6 +74,17 @@ async function withinRoot(root: string, path: string): Promise<string> {
   return file;
 }
 
+/** Same canonical scope and source byte budget for independently retrieved code priors. */
+export async function readCapabilitySource(rootPath: string, path: string): Promise<string> {
+  const root = await realpath(rootPath);
+  return readBounded(await withinRoot(root, path), MAX_SOURCE_BYTES);
+}
+
+/** Compiler context over the exact cited files, under the packet's fixed deadline. */
+export const queryCapabilityGraph: NonNullable<CapabilityPacketDeps['graph']> =
+  (root, repositoryId, name, filePath, paths) => firstPartyCallersOffthread({ root, repositoryId,
+    vendorDir: LSP_VENDOR_DIR, name, filePath, paths, op: 'context', contextScope: 'cited-files', limit: 12 }, { budgetMs: 6_000 });
+
 const defaultDeps: CapabilityPacketDeps = {
   cache: new PgL2Store(),
   pack: (rootPath, include) => packerFacade('pack', { rootPath, include, format: 'xml', compress: false }),
@@ -77,6 +93,7 @@ const defaultDeps: CapabilityPacketDeps = {
   resolveSymbol: (rootPath, file, line1, character) =>
     lspFacade('symbol', { rootPath, file, line1, character, limit: 4 }),
   neighbors: (direction, repositoryId, name) => gitnexusFacade(direction, { repo: repositoryId, name, limit: 12 }),
+  graph: queryCapabilityGraph,
   readArtifact: async (path) => {
     const root = await realpath(join(homedir(), '.papercusp', 'scratch', 'packs'));
     const artifact = await withinRoot(root, path);
@@ -98,7 +115,18 @@ export interface BuildCapabilityPacketInput {
 
 export type CapabilityPacketBuild =
   | { status: 'ready'; packet: CapabilityPacket; cacheHit: boolean; costUsd: number; durationMs: number }
-  | { status: 'unavailable'; reason: string; costUsd: number; durationMs: number };
+  | { status: 'unavailable'; reason: string; costUsd: number; durationMs: number; graphMismatch?: CapabilityGraphMismatch };
+
+/** Bounded graph projections, not compiler bodies or a replay of the failed query. */
+export interface CapabilityGraphMismatch {
+  unitId: string;
+  sourceFingerprint: string;
+  expectedHash: string;
+  actualHash: string;
+  differingFields: Array<keyof CapabilityPacketGraph>;
+  expected: CapabilityPacketGraph;
+  actual: CapabilityPacketGraph;
+}
 
 async function readUnitFiles(root: string, unit: CapabilityUnit): Promise<Map<string, string>> {
   const paths = [...new Set(unit.evidence.map((ref) => ref.path))];
@@ -134,8 +162,8 @@ function extract(unit: CapabilityUnit, files: Map<string, string>, excerptLines:
 export async function verifyCapabilityPacket(
   value: unknown,
   input: BuildCapabilityPacketInput,
-  deps: Pick<CapabilityPacketDeps, 'readArtifact'> = defaultDeps,
-): Promise<{ fresh: true } | { fresh: false; reason: string }> {
+  deps: Pick<CapabilityPacketDeps, 'readArtifact' | 'graph'> = defaultDeps,
+): Promise<{ fresh: true } | { fresh: false; reason: string; graphMismatch?: CapabilityGraphMismatch }> {
   const parsed = CapabilityPacketSchema.safeParse(value);
   if (!parsed.success) return { fresh: false, reason: 'Invalid packet evidence contract' };
   const expectedUnit = CapabilityUnitSchema.safeParse(input.unit);
@@ -171,6 +199,24 @@ export async function verifyCapabilityPacket(
   try {
     const root = await realpath(input.rootPath);
     const files = await readUnitFiles(root, input.unit);
+    if (packet.graph) {
+      const fingerprint = capabilityHash(JSON.stringify(packet.sources.map(source => [source.id, source.path, source.sourceHash])));
+      if (packet.graph.sourceFingerprint !== fingerprint) return { fresh: false, reason: 'Graph source fingerprint differs' };
+      const sites = [...packet.graph.candidates, ...packet.graph.relationships.flatMap(edge => [edge.source, edge.target])];
+      for (const site of sites) {
+        if (site.line1 > (files.get(site.path)?.split('\n').length ?? 0))
+          return { fresh: false, reason: 'Graph location differs from cited source' };
+      }
+      for (const candidate of packet.graph.candidates) {
+        const source = packet.sources.find(source => source.id === candidate.evidenceId)!;
+        const declaration = /\b(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][\w$]*)/.exec(source.anchor);
+        const contents = files.get(source.path)!;
+        const anchorLine = contents.slice(0, contents.indexOf(source.anchor)).split('\n').length;
+        const declarationLine = anchorLine + source.anchor.slice(0, declaration?.index ?? 0).split('\n').length - 1;
+        if (declaration?.[1] !== candidate.symbol || declarationLine !== candidate.line1)
+          return { fresh: false, reason: 'Graph boundary differs from cited declaration' };
+      }
+    }
     for (const source of packet.sources) {
       const current = files.get(source.path);
       if (current === undefined || capabilityHash(current) !== source.sourceHash)
@@ -188,6 +234,20 @@ export async function verifyCapabilityPacket(
     const artifact = await deps.readArtifact(packet.extraction.artifactRef);
     if (capabilityHash(artifact) !== packet.extraction.artifactHash)
       return { fresh: false, reason: 'Packed artifact changed' };
+    if (packet.graph?.status === 'measured') {
+      if (!deps.graph) return { fresh: false, reason: 'Compiler graph verification unavailable' };
+      const currentGraph = await inspectCapabilityGraph(root, packet.scope.repositoryId, packet.sources, deps.graph);
+      const actual = CapabilityPacketGraphSchema.parse(currentGraph);
+      const expectedText = JSON.stringify(packet.graph), actualText = JSON.stringify(actual);
+      if (actualText !== expectedText)
+        return { fresh: false, reason: 'Compiler graph differs from current cited source', graphMismatch: {
+          unitId: packet.unit.id, sourceFingerprint: packet.graph.sourceFingerprint,
+          expectedHash: capabilityHash(expectedText), actualHash: capabilityHash(actualText),
+          differingFields: (Object.keys(actual) as Array<keyof CapabilityPacketGraph>)
+            .filter(key => JSON.stringify(actual[key]) !== JSON.stringify(packet.graph![key])),
+          expected: packet.graph, actual,
+        } };
+    }
     return { fresh: true };
   } catch (error) {
     return {
@@ -195,6 +255,79 @@ export async function verifyCapabilityPacket(
       reason: 'Source verification unavailable: ' + (error instanceof Error ? error.message : String(error)),
     };
   }
+}
+
+/** Extend the existing source packet, without promoting function boundaries into capabilities. */
+async function inspectCapabilityGraph(root: string, repositoryId: string, sources: CapabilitySource[],
+  graph: CapabilityPacketDeps['graph']): Promise<CapabilityPacketGraph> {
+  const result: CapabilityPacketGraph = { status: 'unknown', repositoryId,
+    sourceFingerprint: capabilityHash(JSON.stringify(sources.map(source => [source.id, source.path, source.sourceHash]))),
+    candidates: [], relationships: [], unmapped: [], claimValidation: 'manifest-evidence-only' };
+  const implementations = sources.filter(source => source.kind === 'implementation');
+  if (implementations.length > 4) result.unmapped.push('Additional implementation boundaries omitted by the four-symbol budget.');
+  if (!graph) { result.unmapped.push('Compiler graph discovery is unavailable; only manifest source evidence was inspected.'); return result; }
+  const paths = [...new Set(sources.map(source => source.path))];
+  for (const source of implementations.slice(0, 4)) {
+    const declaration = /\b(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][\w$]*)/.exec(source.anchor);
+    if (!declaration) { result.unmapped.push('No declared symbol at implementation anchor ' + source.id); continue; }
+    let answer: CodeIntelAnswer;
+    try { answer = await graph(root, repositoryId, declaration[1]!, source.path, paths); }
+    catch (error) {
+      result.unmapped.push('Compiler discovery unavailable for ' + source.id + ': '
+        + (error instanceof Error ? error.message.slice(0, 400) : 'unknown failure'));
+      continue;
+    }
+    const evidence = answer.evidence;
+    if (answer.error || evidence?.graphScope.basis !== 'compiler-project'
+      || evidence.sourceScope.repositoryId !== repositoryId || !evidence.sourceScope.sourceFingerprint) {
+      result.unmapped.push('Current scoped compiler evidence unavailable for ' + source.id
+        + (answer.error ? ': ' + answer.error.slice(0, 400) : ': source scope or compiler evidence did not match'));
+      continue;
+    }
+    for (const limitation of evidence.graphScope.limitations)
+      if (!result.unmapped.includes(limitation)) result.unmapped.push(limitation);
+    const supported = (site: { site: { path: string; line1: number | null }; contentHash: string }) =>
+      site.site.line1 !== null && sources.some(cited => cited.path === site.site.path && cited.sourceHash === site.contentHash)
+      && evidence.sourceScope.supportingFiles.some(file => file.path === site.site.path
+        && file.contentHash === site.contentHash && file.representation === 'full-source');
+    // The compiler's declaration site may omit its display name. Bind its
+    // definition relationship, measured location and identity hash instead.
+    const anchorOffset = source.excerpt.indexOf(source.anchor) + declaration.index;
+    const declarationLine = source.startLine + source.excerpt.slice(0, anchorOffset).split('\n').length - 1;
+    const capturedSite = (index: number) => {
+      const site = answer.sites[index];
+      const identity = evidence.siteIdentities.find(row => row.siteIndex === index && row.sourcePath === site?.path);
+      return site && identity?.contentHash ? { site, contentHash: identity.contentHash } : null;
+    };
+    const boundary = evidence.relationships.filter(edge => edge.kind === 'definition'
+      && edge.origin === 'compiler' && edge.knowledge === 'observed').map(edge => capturedSite(edge.siteIndex))
+      .find(site => site?.site.path === source.path && site.site.line1 === declarationLine
+        && site.contentHash === source.sourceHash && supported(site));
+    if (!boundary) { result.unmapped.push('Compiler did not resolve the cited boundary for ' + source.id); continue; }
+    result.candidates.push({ evidenceId: source.id, symbol: declaration[1]!, path: source.path,
+      line1: boundary.site.line1!, sourceHash: source.sourceHash, capabilityStatus: 'candidate-only' });
+    for (const edge of evidence.relationships) {
+      if (edge.kind === 'definition') continue;
+      const from = edge.source ?? capturedSite(edge.siteIndex);
+      if (edge.origin !== 'compiler' || edge.knowledge !== 'observed' || !from || !edge.target
+        || !['callers', 'callees', 'imports', 'impact'].includes(edge.kind) || !supported(from) || !supported(edge.target)) {
+        if (!result.unmapped.includes('Relationships outside current cited source remain unverified.'))
+          result.unmapped.push('Relationships outside current cited source remain unverified.');
+        continue;
+      }
+      const site = (value: NonNullable<typeof from>) => ({ path: value.site.path, line1: value.site.line1!, sourceHash: value.contentHash });
+      const candidate = { kind: edge.kind as CapabilityPacketGraph['relationships'][number]['kind'],
+        source: site(from), target: site(edge.target), origin: 'compiler' as const, runtimeExecution: 'unknown' as const };
+      if (!result.relationships.some(existing => JSON.stringify(existing) === JSON.stringify(candidate))) {
+        if (result.relationships.length < 12) result.relationships.push(candidate);
+        else if (!result.unmapped.includes('Additional relationships omitted by the twelve-edge budget.'))
+          result.unmapped.push('Additional relationships omitted by the twelve-edge budget.');
+      }
+    }
+    if (answer.truncation.truncated) result.unmapped.push('Compiler discovery was bounded for ' + source.id + '; no absence claim is valid.');
+  }
+  if (result.candidates.length) result.status = 'measured';
+  return result;
 }
 
 async function inspectCodeContext(
@@ -363,6 +496,7 @@ export async function buildCapabilityPacket(
         throw new Error('Packed source differs or is excluded: ' + path);
     }
     const context = await inspectCodeContext(root, input.scope.repositoryId, sources, deps);
+    const graph = await inspectCapabilityGraph(root, input.scope.repositoryId, sources, deps.graph);
     const indexCurrent = context.indexCurrent;
     const packet = CapabilityPacketSchema.parse({
       schemaVersion: 'dream-capability-packet-v1',
@@ -371,6 +505,7 @@ export async function buildCapabilityPacket(
       unitHash,
       manifestRevision: input.manifestRevision,
       sources,
+      graph,
       extraction: {
         recipeVersion,
         promptVersion,
@@ -399,7 +534,8 @@ export async function buildCapabilityPacket(
     if (JSON.stringify(packet).length > maxPacketChars)
       throw new Error('Packet exceeds budget; required contracts were retained, so it is not admitted');
     const verified = await verifyCapabilityPacket(packet, { ...input, unit }, deps);
-    if (!verified.fresh) throw new Error(verified.reason);
+    if (!verified.fresh) return { status: 'unavailable', reason: verified.reason, costUsd: 0,
+      durationMs: durationMs(), ...(verified.graphMismatch ? { graphMismatch: verified.graphMismatch } : {}) };
     await deps.cache.set(input.scope.workspaceId, key, packet, {
       hardTtlMs: CACHE_TTL_MS,
       tags: ['dream:capability:' + input.scope.potSlug],

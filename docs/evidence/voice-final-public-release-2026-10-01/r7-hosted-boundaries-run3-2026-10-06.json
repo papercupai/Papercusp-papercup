@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Voice R-7 hosted credential, spend, tenant and engine boundaries incl. hosted LiveKit (Phone) on app.papercusp.com (portal e2e, 2026-10-06 run 3)",
+  "framework": "playwright",
+  "command": [
+    "bash",
+    "-c",
+    "P=~/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal; S=./.papercusp/scratch; LOG=$S/r7-boundaries-run3.log; cd \"$P\" || exit 1; date -u +STARTED=%Y-%m-%dT%H:%M:%SZ > \"$LOG\"; git rev-parse HEAD | sed 's/^/PORTAL_HEAD=/' >> \"$LOG\"; git status --porcelain -- e2e/portal-voice-hosted-boundaries.spec.ts playwright.config.ts apps/host/src/api.ts | sed 's/^/PORTAL_DIRTY=/' >> \"$LOG\"; PORTAL_VOICE_BOUNDARIES_E2E=1 PORTAL_VOICE_BOUNDARIES_EVIDENCE_OUT=$S/r7-boundaries-run3-receipt.json npx playwright test e2e/portal-voice-hosted-boundaries.spec.ts --reporter=list >> \"$LOG\" 2>&1; echo \"RUN_EXIT=$?\" >> \"$LOG\"; date -u +FINISHED=%Y-%m-%dT%H:%M:%SZ >> \"$LOG\"; tail -14 \"$LOG\""
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T22:48:55.000Z",
+  "finishedAt": "2026-10-06T22:49:42.000Z",
+  "summary": "portal/e2e/portal-voice-hosted-boundaries.spec.ts ran against the live hosted portal (https://app.papercusp.com) through the canonical portal playwright.config.ts with three freshly admitted TEST tenants: 4 passed, 0 failed, exit 0. Unauthenticated: /api/voice/elevenlabs/token 401; /api/voice/engines 401; /api/papercup-chat/conversations/boundary-probe/voice-session 401, no token minted. Engines advertised exactly {\"elevenlabs\":false,\"livekit\":true}. Retired /api/device/voice/turn GET+POST 404. Browser-delivered bodies scanned for secret patterns (46 responses, 2268621 bytes, twice): 0 findings. Tenant A start burst: 6 x 404 no-agent-id (hosted ElevenLabs fails closed, unconfigured per D-007), then 429 portal_voice_start_rate_limited Retry-After 60. Tenant B after A's burst: 404 no-agent-id (not throttled). Hosted LiveKit (Phone, /api/phone): unauthenticated call 401 with no grant; tenant A's spent budget refuses a LiveKit start too (429 portal_voice_start_rate_limited); a chat id tenant B does not own 404 portal_chat_not_found; tenants B and C each got a grant (200/200) with distinct room, token and LiveKit identity, each JWT room claim matching its grant; tenant C could not list (absent), export (404) or end (404 phone_call_not_found) B's room; both rooms ended (200/200). Exact-value secret compare: not run (pattern-only). 3 TEST users cleaned up.",
+  "repository": "portal",
+  "sourceCommit": "4754eba2a343b1616506c3ca4d813d4180aa9bef",
+  "sourceDirty": true,
+  "sourceDirtyAtRun": [
+    " M e2e/portal-voice-hosted-boundaries.spec.ts"
+  ],
+  "sourceFiles": [
+    {
+      "path": "e2e/portal-voice-hosted-boundaries.spec.ts",
+      "sha256": "b85957f23156e466cdcf259d060ce8b7953304f1d5e3475b278b1c4eff217327"
+    },
+    {
+      "path": "playwright.config.ts",
+      "sha256": "31f254145670906ea6d0eb2b0af0b2e24df0cbd786321dfe02f74fa32711f676"
+    },
+    {
+      "path": "apps/host/src/api.ts",
+      "sha256": "c4d69032cbf7c901c5482615de1286941254db05db6e8d04a8f8d22c2ae64851"
+    }
+  ],
+  "logs": [
+    {
+      "path": ".papercusp/scratch/r7-boundaries-run3.log",
+      "sha256": "c7191bfc597fcd89d477ee6befca4f69a44c7f107205df07a2e489398c7b34e3"
+    },
+    {
+      "path": ".papercusp/scratch/r7-boundaries-run3-receipt.json",
+      "sha256": "a8c2777a457d020fcb15ca5a847c18bd599e00909206dda996df2853fd8a22cf"
+    }
+  ],
+  "testCounts": {
+    "playwright": {
+      "tests": 4,
+      "passed": 4,
+      "failed": 0
+    }
+  },
+  "plan": "voice-final-public-release-2026-10-01",
+  "specId": "AUTO-BAR-R-7-P-004",
+  "workItemId": "WI-10004760",
+  "evidencePlane": "live",
+  "testLayer": "integration",
+  "assertions": [
+    {
+      "id": "spec-L151-credential-an-unauthenticated-caller-reaches-no-voice-surfac",
+      "passed": true,
+      "evidence": "PASSED in 625ms: [hosted voice boundaries (R-7)] credential: an unauthenticated caller reaches no voice surface"
+    },
+    {
+      "id": "spec-L177-engines-only-hosted-engines-are-advertised-the-retired-deskt",
+      "passed": true,
+      "evidence": "PASSED in 11.1s: [hosted voice boundaries (R-7)] engines: only hosted engines are advertised; the retired desktop-local route stays dead; no secret reaches the browser"
+    },
+    {
+      "id": "spec-L198-spend-tenant-the-mint-never-returns-a-key-one-tenant-s-burst",
+      "passed": true,
+      "evidence": "PASSED in 7.1s: [hosted voice boundaries (R-7)] spend + tenant: the mint never returns a key, one tenant's burst is refused, and a second tenant is untouched"
+    },
+    {
+      "id": "spec-L244-livekit-phone-starts-share-the-spend-budget-each-tenant-gets",
+      "passed": true,
+      "evidence": "PASSED in 15.1s: [hosted voice boundaries (R-7)] livekit (Phone): starts share the spend budget; each tenant gets its own room; another tenant cannot list, export or end it"
+    },
+    {
+      "id": "unauthenticated-refused-no-token",
+      "passed": true,
+      "evidence": "/api/voice/elevenlabs/token=401 minted=false; /api/voice/engines=401 minted=false; /api/papercup-chat/conversations/boundary-probe/voice-session=401 minted=false"
+    },
+    {
+      "id": "engines-hosted-only",
+      "passed": true,
+      "evidence": "GET /api/voice/engines 200 {\"ok\":true,\"engines\":{\"elevenlabs\":false,\"livekit\":true}}"
+    },
+    {
+      "id": "retired-device-turn-dead",
+      "passed": true,
+      "evidence": "GET 404 {\"ok\":false,\"error\":\"not_found\"}; POST 404 {\"ok\":false,\"error\":\"not_found\"}"
+    },
+    {
+      "id": "browser-bodies-carry-no-secret-pattern",
+      "passed": true,
+      "evidence": "tenant A 46 responses/2268621 bytes, tenant B 46/2268621; patterns elevenlabs-sk_, openai-or-anthropic-sk-; findings 0"
+    },
+    {
+      "id": "start-budget-refuses-burst",
+      "passed": true,
+      "evidence": "404:no-agent-id 404:no-agent-id 404:no-agent-id 404:no-agent-id 404:no-agent-id 404:no-agent-id 429:portal_voice_start_rate_limited Retry-After=60"
+    },
+    {
+      "id": "mint-responses-carry-no-credential-field",
+      "passed": true,
+      "evidence": "response field sets: error|hint|status / error|ok|retryAfterMs; tenant B error|hint|status"
+    },
+    {
+      "id": "second-tenant-not-throttled",
+      "passed": true,
+      "evidence": "tenant B after tenant A's 429: 404 no-agent-id"
+    },
+    {
+      "id": "livekit-unauthenticated-no-grant",
+      "passed": true,
+      "evidence": "POST /api/phone/call with no session: 401, grant minted=false"
+    },
+    {
+      "id": "livekit-shares-start-budget",
+      "passed": true,
+      "evidence": "tenant A after its ElevenLabs burst, POST /api/phone/call: 429 portal_voice_start_rate_limited"
+    },
+    {
+      "id": "livekit-foreign-chat-refused",
+      "passed": true,
+      "evidence": "tenant B binding a chat id it does not own: 404 portal_chat_not_found, fields error|ok"
+    },
+    {
+      "id": "livekit-grant-per-tenant",
+      "passed": true,
+      "evidence": "b: 200 fields identity|ok|roomName|token|url roomClaimMatches=true; c: 200 fields identity|ok|roomName|token|url roomClaimMatches=true; rooms/tokens/identities distinct=true"
+    },
+    {
+      "id": "livekit-cross-tenant-room-refused",
+      "passed": true,
+      "evidence": "tenant C on B's room: list 200 mentionsRoomB=false; export 404; end 404 phone_call_not_found"
+    },
+    {
+      "id": "livekit-rooms-ended",
+      "passed": true,
+      "evidence": "own-room end: 200, 200"
+    }
+  ],
+  "disclosures": [
+    "Secret scan is pattern-only (elevenlabs-sk_, openai-or-anthropic-sk-): no hosted secret value was supplied to the run (secretEnvChecked=[]), so no exact-value comparison ran.",
+    "Hosted ElevenLabs has no agent id configured (hosted EL is out of release scope per D-007), so every ElevenLabs start fails closed with 404 no-agent-id before any token exists; there is no live ElevenLabs token to compare across tenants. Cross-tenant grant distinctness is measured live on the advertised hosted engine (LiveKit), and for ElevenLabs at the unit layer (portal/tests/a-shared-mint-is-not-a-shared-token.test.ts).",
+    "Scope note, not an R-7 gap: the hosted spoken round trip and browser microphone denial belong to R-2/R-3/R-4 and run in the guided real-microphone session (D-005, D-009).",
+    "The run used the portal working tree at 4754eba2a343b1616506c3ca4d813d4180aa9bef with uncommitted changes (sourceDirtyAtRun); sourceFiles records the exact bytes that ran."
+  ]
+}

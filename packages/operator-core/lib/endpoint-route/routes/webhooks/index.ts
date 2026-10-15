@@ -21,6 +21,8 @@ import {
   type WebhookDeliveryRequest,
   type WebhookDeliveryResponse,
 } from '../../../external-triggers/webhook';
+import { readyProviderRegistry } from '../../../integrations/provider-registry';
+import { handleConnectorPushDelivery, handleConnectorPushVerification } from '../../../providers/connector-push';
 
 type AnyRoute = RouteDefinition<any>;
 
@@ -28,6 +30,7 @@ const noStore = { 'cache-control': 'no-store' };
 
 export interface WebhookRouteDependencies {
   readonly deliver: (request: WebhookDeliveryRequest) => Promise<WebhookDeliveryResponse>;
+  readonly verify?: (sourceId: string, params: URLSearchParams) => Promise<{ status: number; text: string }>;
 }
 
 function respond(result: WebhookDeliveryResponse): Response {
@@ -62,10 +65,24 @@ export function createWebhookRoutes(deps: WebhookRouteDependencies): ReadonlyArr
       }
     },
   });
-  return [receive];
+  const verify = defineTool({ method: 'GET', path: '/hooks/:sourceId', auth: 'public',
+    async handler(req, ctx) {
+      const sourceId = String((ctx.params as Record<string, string> | undefined)?.sourceId ?? '');
+      try {
+        const result = await deps.verify?.(sourceId, new URL(req.url).searchParams) ?? { status: 404, text: 'not_found' };
+        return new Response(result.text, { status: result.status, headers: { ...noStore, 'content-type': 'text/plain; charset=utf-8' } });
+      } catch { return new Response('verification_unavailable', { status: 503, headers: noStore }); }
+    },
+  });
+  return [receive, verify];
 }
 
 const routes: ReadonlyArray<AnyRoute> = createWebhookRoutes({
+  verify: (sourceId, params) => handleConnectorPushVerification(sourceId, params, {
+    get sql() { return getOrgPg().sql; },
+    remoteAccessEnabled: async (workspaceId) => (await getRemoteAccess(workspaceId)).enabled,
+    registry: () => readyProviderRegistry(),
+  }),
   deliver: (request) =>
     handleWebhookDelivery(request, {
       // Lazy: a request refused on its body alone (size, not a JSON object, not a source id)
@@ -74,6 +91,11 @@ const routes: ReadonlyArray<AnyRoute> = createWebhookRoutes({
         return getOrgPg().sql;
       },
       remoteAccessEnabled: async (workspaceId) => (await getRemoteAccess(workspaceId)).enabled,
+      // A provider's own webhook for a connector source (linear-asana-task-sync D-016): it only
+      // wakes that source's next sync. The registry is read once plugin discovery has registered
+      // the providers, so a request-only host never mistakes "not loaded yet" for "no scheme".
+      connectorPush: (pushRequest, base) =>
+        handleConnectorPushDelivery(pushRequest, { ...base, registry: () => readyProviderRegistry() }),
     }),
 });
 

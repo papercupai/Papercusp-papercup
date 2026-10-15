@@ -1,7 +1,11 @@
 /**
  * GET  /api/plugins/config?harness=<h>&plugin=<slug> — read per-harness config.
  * PUT  /api/plugins/config — write per-harness config (prunes schema defaults, bumps configHash).
- * Ported from app/api/plugins/config/route.ts. `auth: 'public'`.
+ * Ported from app/api/plugins/config/route.ts. GET is `auth: 'public'`, PUT `auth: 'loopback'`.
+ *
+ * The config file also holds OAuth and Slack tokens, so GET masks every secret
+ * value and PUT swaps a returned mask back to the stored value
+ * (plugin-config-secrets.ts, WI-6554700010008325).
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -10,6 +14,10 @@ import { mirrorHarness } from '../../../plugin-enables-pg';
 import { mirrorPluginConfig } from '../../../plugin-configs-pg';
 import { listPluginsIn } from '../../../plugin-catalog';
 import { papercuspRoot } from '../../../papercusp-root';
+import {
+  redactPluginConfigSecrets,
+  restoreMaskedPluginConfigSecrets,
+} from '../../../plugin-config-secrets';
 import { defineTool } from '@papercusp/agent-mcp';
 
 function HARNESSES_DIR() { return join(papercuspRoot(), 'harnesses'); }
@@ -79,7 +87,9 @@ async function readJson<T>(path: string): Promise<T | null> {
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await fs.mkdir(dirname(path), { recursive: true });
-  await fs.writeFile(path, JSON.stringify(value, null, 2), 'utf8');
+  // 0600 like fsTokenStorage: a plugin config can hold a typed or OAuth secret.
+  // The mode applies when the file is created; an existing file keeps its own.
+  await fs.writeFile(path, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
 const get = defineTool({
@@ -100,7 +110,7 @@ const get = defineTool({
       (await readJson<Record<string, unknown>>(canonicalPath))
       ?? (await readJson<Record<string, unknown>>(fallbackPath))
       ?? {};
-    return Response.json({ config });
+    return Response.json({ config: redactPluginConfigSecrets(config, m?.schema ?? null) });
   },
 });
 
@@ -123,9 +133,16 @@ const put = defineTool({
 
     const m = await findPluginManifest(harness, plugin);
     const canonicalSlug = m?.canonicalName ?? plugin;
-    const pruned = pruneSchemaDefaults(cfg as Record<string, unknown>, m?.schema ?? null);
-
     const configPath = join(HARNESSES_DIR(), harness, 'plugin-configs', `${canonicalSlug}.json`);
+    // GET masked every stored secret, so a form save sends the mask back:
+    // restore the stored value at each masked path before persisting.
+    const stored =
+      (await readJson<Record<string, unknown>>(configPath))
+      ?? (await readJson<Record<string, unknown>>(join(HARNESSES_DIR(), harness, 'plugin-configs', `${plugin}.json`)))
+      ?? {};
+    const restored = restoreMaskedPluginConfigSecrets(cfg as Record<string, unknown>, stored);
+    const pruned = pruneSchemaDefaults(restored, m?.schema ?? null);
+
     await writeJson(configPath, pruned);
     if (canonicalSlug !== plugin) {
       const legacyPath = join(HARNESSES_DIR(), harness, 'plugin-configs', `${plugin}.json`);

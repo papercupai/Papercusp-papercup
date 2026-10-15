@@ -502,6 +502,7 @@ describe('applyDeclaredGateRecovery — idempotent actions (R-004) with durable 
       expect(filed.summary).toContain(label);
     }
     expect(filed.summary).toMatch(/never marks the gate fired/);
+    expect(filed.summary).toContain(`evidence checked at (UTC): ${new Date(r.evidence.checkedAtMs).toISOString()}`);
     expect(filed.payload.declaredGateRecovery).toMatchObject({
       classification: 'stalled-producer',
       escalationTarget: { kind: 'live-declarer', ref: 'su-declarer' },

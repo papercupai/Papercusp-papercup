@@ -7,6 +7,7 @@
  * to P-007; this strip carries the run into that surface through `?opcln=`.
  */
 import { useCallback, useState } from "react";
+import { Select } from "@/app/harness/Select";
 import { BrushCleaning, ChevronRight, Loader2, RotateCw } from "lucide-react";
 import { formatRunElapsed } from "../review-report/bulk-run-time";
 import BulkResolverSettingsControl from "../bulk-resolver/BulkResolverSettingsControl";
@@ -17,10 +18,38 @@ import { useBulkResolverSettings } from "../bulk-resolver/bulk-resolver-settings
 import {
   canonicalPlanCleanupDisposition,
   derivePlanCleanupCounts,
+  planCleanupCoverageNotice,
   usePlanCleanupOps,
   type PlanCleanupFinding,
   type PlanCleanupRun,
+  type PlanCleanupReviewInventory,
 } from "./use-plan-cleanup-run";
+
+/** Uses the registered control.select and existing opcln report navigation. */
+export function PlanCleanupReviewSelector({ inventory, selectedRunId, onReview }: {
+  inventory: PlanCleanupReviewInventory;
+  selectedRunId: string | null;
+  onReview: (runId: string) => void;
+}) {
+  if (inventory.error) return <p role="status">{inventory.error}</p>;
+  if (inventory.total === 0) return null;
+  return (
+    <div className="plan-cleanup-review-inventory">
+      <Select
+        ariaLabel="Unresolved cleanup reviews"
+        value={inventory.runs.some((run) => run.runId === selectedRunId) ? selectedRunId ?? "" : ""}
+        placeholder={`${inventory.total} unresolved cleanup reviews`}
+        options={inventory.runs.map((run) => ({ value: run.runId,
+          label: `${run.createdAt ? new Date(run.createdAt).toLocaleDateString() : "Earlier run"} · ${run.unresolved} need review`,
+        }))}
+        onChange={onReview}
+      />
+      {inventory.total > inventory.runs.length ? (
+        <span>Showing the latest {inventory.runs.length} of {inventory.total} unresolved reviews.</span>
+      ) : null}
+    </div>
+  );
+}
 
 export interface PlansCleanupStripProps {
   /** Exact click-time set currently rendered by PlansPane. */
@@ -83,16 +112,29 @@ export default function PlansCleanupStrip({
         return;
       }
       if (result.runId) onRunStarted(result.runId);
+      // P-005 (WI-10004732): a capped run says so — "first N of M" — instead
+      // of silently scanning only part of what the pane shows.
+      const coverageNote = planCleanupCoverageNotice(result.coverage);
       // No LLM is a SUCCESS when the fixed-point deterministic pass cleared
       // every provable finding and no recommendation work remained.
-      if (result.resolverNeeded === false && !result.launchError) return;
+      if (result.resolverNeeded === false && !result.launchError) {
+        if (coverageNote) setNotice(coverageNote);
+        return;
+      }
       // The request succeeds once the run is durable even when its supervised
       // resolver did not boot. Surface that persisted failure instead of
       // leaving a run that can never move looking live.
       if (!result.launched) {
         setNotice(
-          `resolver could not start${result.launchError ? `: ${result.launchError}` : ""}`,
+          [
+            `resolver could not start${result.launchError ? `: ${result.launchError}` : ""}`,
+            coverageNote,
+          ]
+            .filter(Boolean)
+            .join(" "),
         );
+      } else if (coverageNote) {
+        setNotice(coverageNote);
       }
     } finally {
       setStarting(false);

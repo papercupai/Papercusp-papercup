@@ -1,3 +1,5 @@
+import { fromHtml } from 'hast-util-from-html';
+
 /**
  * HTML → readable text (pure, dependency-free).
  *
@@ -88,4 +90,33 @@ export function htmlToText(html: string): string {
   s = s.replace(/ *\n */g, '\n');
   s = s.replace(/\n{3,}/g, '\n\n');
   return s.trim();
+}
+
+/** Parse document/selection HTML without executing scripts or loading resources. */
+export function readableHtmlText(html: string): { text: string; title?: string } {
+  const tree = fromHtml(html);
+  type Node = { type: string; value?: string; tagName?: string; properties?: Record<string, unknown>; children?: Node[] };
+  const skipped = new Set(['head', 'script', 'style', 'noscript', 'svg', 'iframe', 'template']);
+  const blocks = new Set(['p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article', 'header', 'footer', 'table', 'ul', 'ol', 'blockquote', 'pre']);
+  const pieces: string[] = [];
+  let title: string | undefined;
+  const collectTitle = (node: Node): string => node.type === 'text' ? node.value ?? '' : (node.children ?? []).map(collectTitle).join('');
+  const walk = (node: Node): void => {
+    if (node.tagName === 'title') title = collectTitle(node).trim() || undefined;
+    if (node.type === 'text') { pieces.push(node.value ?? ''); return; }
+    if (node.type === 'comment') return;
+    const tag = node.tagName ?? '';
+    if (skipped.has(tag)) {
+      if (tag === 'head') for (const child of node.children ?? []) if (child.tagName === 'title') title = collectTitle(child).trim() || undefined;
+      return;
+    }
+    if (node.properties?.hidden === true || node.properties?.ariaHidden === 'true') return;
+    if (tag === 'br' || blocks.has(tag)) pieces.push('\n');
+    if (tag === 'li') pieces.push('- ');
+    for (const child of node.children ?? []) walk(child);
+    if (blocks.has(tag)) pieces.push('\n');
+    else if (tag === 'td' || tag === 'th') pieces.push('\t');
+  };
+  walk(tree);
+  return { text: pieces.join('').replace(/[ \t\f\v]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim(), ...(title ? { title } : {}) };
 }

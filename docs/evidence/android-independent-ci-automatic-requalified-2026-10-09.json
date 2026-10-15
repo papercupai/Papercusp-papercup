@@ -1,0 +1,1383 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Automatic Android CI fresh qualification after owned-filesystem, boot-diagnostics and host-temp repairs",
+  "command": [
+    "existing enabled papercusp-android-ci.timer scheduled invocation"
+  ],
+  "startedAt": "2026-10-09T18:57:53.499212+00:00",
+  "finishedAt": "2026-10-09T19:27:55.476774+00:00",
+  "exitCode": 0,
+  "summary": "The existing timer completed all eleven maintained phases at clean bacc1c14/0d564cdd and prepared operator42ead. Host checks, 31 connected cases and the selected paired six-feature JNI journey passed. Exact source, counterpart, retained artifacts, failure-closed admission, owned cleanup and free shared executor were independently verified; prior passes and rejections are preserved.",
+  "migrationRefs": [
+    "WI-10007209",
+    "WI-10007816",
+    "WI-10007839",
+    "WI-10007859",
+    "WI-10007931",
+    "android-public-release-2026-10-01#P-016"
+  ],
+  "sourceCommit": "bacc1c143d3347bf571adb66291a11c69b2b1bd6",
+  "sourceDirty": false,
+  "sourceFingerprint": "0d564cdd382f55557bd8f749d7890b63ce046b54e02373aacb543d08dc417446",
+  "operatorCommit": "42ead3e6b01cc770446f00d07623954f3b1b8e72",
+  "execution": {
+    "attemptId": "20261009T185753Z-4deab18f",
+    "status": "passed",
+    "executor": "local-systemd",
+    "trigger": "automatic-systemd-timer",
+    "triggeredAt": "2026-10-09T18:57:53Z",
+    "servicePid": 2899527,
+    "manualServiceStart": false,
+    "receipts": [
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/result.json",
+        "sha256": "7f1d72c747cf8059a05b388d2c505237fe1033e66227aceda50a7ac83efb8d61"
+      },
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/paired/result.json",
+        "sha256": "e0e6c33a0d5c3062e2cc05dd1845b210d283859bcde6a9880fae6b81216f9f89"
+      },
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/paired-runtime/result.json",
+        "sha256": "76464929a05e7404834db2cdd02e21087e8bf020d2da4c94da61c9ffb8cdeb5c"
+      }
+    ]
+  },
+  "phases": [
+    {
+      "name": "operator-freshness",
+      "exitCode": 0,
+      "sha256": "81b28566b1c10750867a5d8550e6dff270f8864d00e2e1a0b878e6e864f1333d"
+    },
+    {
+      "name": "rust-preflight",
+      "exitCode": 0,
+      "sha256": "71898dff3c6432efdb734448f5be423843b12dd8075283501aad41600c41899c"
+    },
+    {
+      "name": "emulator-preflight",
+      "exitCode": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "avd-space-preflight",
+      "exitCode": 0,
+      "sha256": "ed9edd1306446aa37eb3f504b2c70ec40cd40a9af05e2b36a6c9c192450aa984"
+    },
+    {
+      "name": "host",
+      "exitCode": 0,
+      "sha256": "cd8cc392bcd9d1f2b71790cf41c357c58896189e0c6957bfd1cc31b37e9abc2d"
+    },
+    {
+      "name": "boot",
+      "exitCode": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "connected",
+      "exitCode": 0,
+      "sha256": "6ecfe857d34154dcc649fb8ea683cd3cbf7d1349b1a47fd4dee699ce99916121"
+    },
+    {
+      "name": "paired",
+      "exitCode": 0,
+      "sha256": "5d8e9b02c7f6a21c15a09bf9afbd9ca0ec8dc002cbb1c9a9289076dcb0527baf"
+    },
+    {
+      "name": "verify-paired",
+      "exitCode": 0,
+      "sha256": "1af66d046fbc0def56a8e30437bf8571c1a1a372d3cdc62cc09a8eeea63e26c1"
+    },
+    {
+      "name": "operator-freshness-end",
+      "exitCode": 0,
+      "sha256": "81b28566b1c10750867a5d8550e6dff270f8864d00e2e1a0b878e6e864f1333d"
+    },
+    {
+      "name": "ci-admission",
+      "exitCode": 0,
+      "sha256": "7b3ff82d5136ec2e2eba5fc910573eae78bc16a6cb0636ce282401b983fc531c"
+    }
+  ],
+  "host": {
+    "debugJUnit": {
+      "testCount": 43,
+      "failuresErrorsSkips": 0,
+      "reports": [
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+          "sha256": "52dc55a584bd5b600397ff4766cd9986cc910f5e089d11ea76a1bc202d0ec1b6"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+          "sha256": "599625f575d486990f21d10750b2b6f50aeb8651774086e84d56bc3abb03c383"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+          "sha256": "8c3f3c05d3399c5ef2ff3a6cbb9e327fbe8f1c0027680f28e4380f1ad4f392a8"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml",
+          "sha256": "292c12ebaa59fa98261b018240d42c888b8c3ed3e99ebcc27bb5f8e67c4dca0b"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml",
+          "sha256": "831518259cfa038bd64ea19096f12a7f498d5a975777246d520978bf1b43d723"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+          "sha256": "bbac1957103f2e9d40db936827521726eb9e6596f70735e1d8c1e09986a78b23"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+          "sha256": "4694c997aa916d35786c9cf80249e30d04fc691687e224e28eeec7c9d21fdabc"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+          "sha256": "6f46d83d292e8fbf8436550addb104007aaa91553f608e75255d02483c328600"
+        }
+      ],
+      "testNames": [
+        "unavailableMonitoringIsDistinctFromZeroPresence",
+        "systemAlertOnlyFeedIsVisibleAndCounted",
+        "missingGroupContentCannotClaimInboxZero",
+        "badgeCountsItemsRatherThanGroupsAndSupportsTheEnvelope",
+        "presenceDoesNotClaimExecutingWork",
+        "genuinelyEmptyFeedCanShowInboxZero",
+        "aMalformedRowCannotBeHiddenByOtherVisibleRows",
+        "malformedAndMissingGroupPayloadsAreUnavailableRatherThanEmpty",
+        "missingRowsOrMismatchedCountsDoNotClaimZero",
+        "badgeCountsSystemAlertsWithoutNotificationHistory",
+        "releaseRejectsCleartextAndMalformedEndpoints",
+        "debugAllowsOnlyExplicitLoopbackCleartext",
+        "releaseAcceptsHttps",
+        "unknownThrowableNeverLeaksItsInternals",
+        "serverErrorsMapByStatus",
+        "timeoutBecomesRetryGuidance",
+        "everyShapeStartsWithTheAttemptedAction",
+        "decodeFailurePointsAtVersionSkew",
+        "rawReqwestNetworkErrorBecomesReachabilityGuidance",
+        "unauthorizedPointsAtRePairing",
+        "emptyBundledMetadataCannotBecomeASuccessfulBlankScreen",
+        "damagedBundledMetadataIsRejected",
+        "collectorSchemaPreservesEveryLicenseAndLinkedReference",
+        "legacyStatusKeyAndNullsStillParse",
+        "readsStoredStatusFromCurrentServerShape",
+        "malformedRowsCannotDisappearFromAnOtherwiseValidArray",
+        "effectiveStatusWinsOverStoredStatusWhenServerSendsIt",
+        "malformedPayloadRemainsAnErrorInsteadOfHealthyEmptyItems",
+        "ownerAuthorityMarksItemOwnerGated",
+        "permanentDenialPointsAtSettings",
+        "denialCopyNeverLeaksInternals",
+        "firstDenialProducesActionableMicPermissionFailure",
+        "disclosureNamesCloudProcessorsAndDataUse",
+        "cloudVoiceIsBlockedUntilConsent",
+        "inAppPolicyDisclosesEveryShippedProcessor",
+        "desktopLocalVoiceDoesNotRequireCloudConsent",
+        "successfulSwitchPersistsTokenAndWorkspaceBeforeReturning",
+        "mismatchedWorkspaceOrEmptyTokenCannotReplaceCredentials",
+        "revokedOrExpiredSessionPreservesExistingCredentials",
+        "storageFailureIsNotReportedAsSuccessfulSwitch",
+        "identitySurvivesTokenRotationWithoutAppearingInDiagnostics",
+        "cancelledBiometricOrRequestDoesNotPersist",
+        "subsequentSwitchUsesTheReplacementCredentials"
+      ]
+    },
+    "releaseJUnit": {
+      "testCount": 43,
+      "failuresErrorsSkips": 0,
+      "reports": [
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+          "sha256": "74d6c368a5630fe6c2f2a5d38305424b771ac8603dbaad41448b340eadeeadfc"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+          "sha256": "0b111bd975d67f2cd8e5c2e4c6b1a2dd73036864b88fb59fbc6286c1eec97c55"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+          "sha256": "74786d7eb5fb3b4d79196298c4f8871079e7842adc4154dfb036a316aecc2742"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml",
+          "sha256": "0b1e5a144ef71f0b63e2584e0072aaee6b03b0367ccd08be8354da38c1423c23"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml",
+          "sha256": "de62bbf40c465b55ada549d90603bb1e4e9f67199d7f29b517c4c5ce1e17ac47"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+          "sha256": "c94c7aca337ad19ab1b4e27ec5b2b35e39245d9caa2f8ae4734a4775f8af6e27"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+          "sha256": "dc9cb4b648577270f63ed8199ce45ce4a4dde9326031fbb5454476fdeb76e75f"
+        },
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+          "sha256": "a742e055ac280888492e2fb3654f52d343c1defb109452f65991ef9b223d0633"
+        }
+      ],
+      "testNames": [
+        "unavailableMonitoringIsDistinctFromZeroPresence",
+        "systemAlertOnlyFeedIsVisibleAndCounted",
+        "missingGroupContentCannotClaimInboxZero",
+        "badgeCountsItemsRatherThanGroupsAndSupportsTheEnvelope",
+        "presenceDoesNotClaimExecutingWork",
+        "genuinelyEmptyFeedCanShowInboxZero",
+        "aMalformedRowCannotBeHiddenByOtherVisibleRows",
+        "malformedAndMissingGroupPayloadsAreUnavailableRatherThanEmpty",
+        "missingRowsOrMismatchedCountsDoNotClaimZero",
+        "badgeCountsSystemAlertsWithoutNotificationHistory",
+        "releaseRejectsCleartextAndMalformedEndpoints",
+        "debugAllowsOnlyExplicitLoopbackCleartext",
+        "releaseAcceptsHttps",
+        "unknownThrowableNeverLeaksItsInternals",
+        "serverErrorsMapByStatus",
+        "timeoutBecomesRetryGuidance",
+        "everyShapeStartsWithTheAttemptedAction",
+        "decodeFailurePointsAtVersionSkew",
+        "rawReqwestNetworkErrorBecomesReachabilityGuidance",
+        "unauthorizedPointsAtRePairing",
+        "emptyBundledMetadataCannotBecomeASuccessfulBlankScreen",
+        "damagedBundledMetadataIsRejected",
+        "collectorSchemaPreservesEveryLicenseAndLinkedReference",
+        "legacyStatusKeyAndNullsStillParse",
+        "readsStoredStatusFromCurrentServerShape",
+        "malformedRowsCannotDisappearFromAnOtherwiseValidArray",
+        "effectiveStatusWinsOverStoredStatusWhenServerSendsIt",
+        "malformedPayloadRemainsAnErrorInsteadOfHealthyEmptyItems",
+        "ownerAuthorityMarksItemOwnerGated",
+        "permanentDenialPointsAtSettings",
+        "denialCopyNeverLeaksInternals",
+        "firstDenialProducesActionableMicPermissionFailure",
+        "disclosureNamesCloudProcessorsAndDataUse",
+        "cloudVoiceIsBlockedUntilConsent",
+        "inAppPolicyDisclosesEveryShippedProcessor",
+        "desktopLocalVoiceDoesNotRequireCloudConsent",
+        "successfulSwitchPersistsTokenAndWorkspaceBeforeReturning",
+        "mismatchedWorkspaceOrEmptyTokenCannotReplaceCredentials",
+        "revokedOrExpiredSessionPreservesExistingCredentials",
+        "storageFailureIsNotReportedAsSuccessfulSwitch",
+        "identitySurvivesTokenRotationWithoutAppearingInDiagnostics",
+        "cancelledBiometricOrRequestDoesNotPersist",
+        "subsequentSwitchUsesTheReplacementCredentials"
+      ]
+    },
+    "androidAbiGuard": {
+      "testCount": 7,
+      "failures": 0,
+      "temporaryRoute": "per-attempt owned TMPDIR",
+      "hostLogSha256": "cd8cc392bcd9d1f2b71790cf41c357c58896189e0c6957bfd1cc31b37e9abc2d"
+    }
+  },
+  "native": {
+    "runId": "d161b5e8e3ed49d1879ae0edf321f33a",
+    "selection": "features",
+    "fixtureReadback": {
+      "workspaceId": "android-live-scope-d161b5e8e3ed49d1879ae0edf321f33a",
+      "deviceReadbackPassed": true,
+      "turnCount": 2
+    },
+    "journey": {
+      "runId": "d161b5e8e3ed49d1879ae0edf321f33a",
+      "journeyCompleted": true,
+      "enrollmentBrowserStubbed": true,
+      "currentStage": "completed",
+      "deviceId": "99b42c08-a089-435d-81ea-168a9787828b",
+      "workspaceId": "android-live-scope-d161b5e8e3ed49d1879ae0edf321f33a",
+      "enrollmentIntentObserved": true,
+      "authenticatedRequestPassed": true,
+      "returnedToPairedShell": true,
+      "activityRecreated": true,
+      "chatStatePassed": true,
+      "plansStatePassed": true,
+      "fleetStatePassed": true,
+      "workspacePotStatePassed": true,
+      "diagnosticsStatePassed": true,
+      "inboxScopeWitness": {
+        "groupCount": 1,
+        "workItemCount": 0,
+        "groups": [
+          {
+            "key": "alerts:workspace",
+            "harnessSlug": null,
+            "planSlug": null,
+            "items": [
+              {
+                "id": "dark-flag-ratification:papercusp-accept-delegated-seats",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-auth-config-overrides",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-authority-eviction-probe",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-authority-rpc-protomux",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-capability-envelope-overrides",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-doc-steward",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-fleet-headcount-governor",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-gmail-auto-send",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-goal-holder-respawn",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-graduation-tracker",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-hosted-billing-live-mode",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-improvement-auto-implement",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-lazy-substrate-boot",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-mem0-federation-egress",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-open-signup",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-own-log-fork-auto-recovery",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-psu-end-user",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-queen-full-autonomy",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-reclaim-stalled",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-replication-liveness-staleness-auto-close",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-social-auto-publish",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-standing-goal-boot-arm",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              },
+              {
+                "id": "dark-flag-ratification:papercusp-watchdog-auto-close",
+                "kind": "dark-flag-ratification",
+                "harnessSlug": null,
+                "planSlug": null
+              }
+            ]
+          }
+        ]
+      },
+      "inboxScopedReadPassed": true,
+      "inboxSystemAlertCount": 1,
+      "attentionApprovalsStatePassed": true,
+      "featureExpectedState": {
+        "chatTurns": 2,
+        "plans": 0,
+        "fleetAvailability": "0 available · 0 agents",
+        "pots": 0,
+        "workspaceId": "android-live-scope-d161b5e8e3ed49d1879ae0edf321f33a",
+        "workspaceName": "android-live-scope-d161b5e8e3ed49d1879ae0edf321f33a",
+        "standingCandidates": 0
+      },
+      "credentialsCleared": true
+    },
+    "unpairedJUnit": {
+      "testCount": 31,
+      "failuresErrorsSkips": 0,
+      "reports": [
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/unpaired-native-results/debug/TEST-papercusp-ci-d1488fb50858(AVD) - 16-_app-.xml",
+          "sha256": "e651e971fcaf340a87e60c1524079f6a3cc394b6f0966643b79b05b4ff8ec2ec"
+        }
+      ],
+      "testNames": [
+        "debugDiagnosticsRetainWorkingPushTestControl",
+        "publicDiagnosticsKeepConnectionStatusWithoutDeveloperPushControls",
+        "bundledSupplementalNoticesMatchSourceAndOpenWithoutPairing",
+        "failedResourceDisplaysAnErrorInsteadOfACompletedEmptyList",
+        "dialogPreservesMultipleLicenseTextsAndLinkedOnlyTerms",
+        "bundledRustSourceNoticeOpensWithoutPairing",
+        "unpairedRecipientCanOpenBundledLicenseTextAndReturn",
+        "repairToAnotherServerDoesNotExposePreviousDraft",
+        "rejectedDraftSurvivesSameScopeRepairAndActivityRecreation",
+        "rejectedDraftSurvivesSettingsRoundTrip",
+        "forbiddenSendKeepsDraftWithoutInventingAPersistedTurn",
+        "unauthorizedSendKeepsDraftWithoutInventingAPersistedTurn",
+        "repairToAnotherWorkspaceDoesNotExposePreviousDraft",
+        "invalidPastedPayloadStaysUnpairedAndReturnsToChoice",
+        "sixFeatureJourneysMatchOwnedOperatorState",
+        "launcherActivityStarts",
+        "insecureNonLoopbackPayloadIsRejectedWithoutPersistingCredentials",
+        "privateInboxScopeAcceptsOnlyDocumentedGlobalControls",
+        "effectiveStatusAndUnknownStatusRenderWithoutInventingTodo",
+        "validEmptyItemsRenderEmptyState",
+        "invalidItemsRenderAnErrorInsteadOfEmptyState",
+        "malformedItemRowRendersAnErrorInsteadOfPartialState",
+        "failedLoadRetriesAndSelectsPotWithoutReportingHealthyEmpty",
+        "successfulEmptyLoadIsExplicitAfterRetry",
+        "restoredSealedClientNeverFallsBackToPlaintextWhenSocketCloses",
+        "encryptedStoreRestoresIdentityAndRejectsPartialIdentity",
+        "nativeKeyHelpersValidateQrAndPin",
+        "restoredNativeClientStreamsUtf8AndChunksLargeSealedUpload",
+        "qrPairEncryptedRestoreAndReconnectKeepIdentityAndBearerSealed",
+        "failedLoadStopsLoadingAndRetryShowsMeasuredEmptyState",
+        "inlineNativeContinuationsCanReenterJna"
+      ]
+    },
+    "pairedJUnit": {
+      "testCount": 1,
+      "failuresErrorsSkips": 0,
+      "reports": [
+        {
+          "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/paired/native-results/TEST-papercusp-ci-d1488fb50858(AVD) - 16-_app-.xml",
+          "sha256": "760477d0ca79820354fe629ad6f29493ca37b6c923ff2d3eb63e9657850a6247"
+        }
+      ],
+      "testNames": [
+        "sixFeatureJourneysMatchOwnedOperatorState"
+      ]
+    },
+    "selectedTest": "sixFeatureJourneysMatchOwnedOperatorState",
+    "artifacts": [
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/paired/app-debug.apk",
+        "sha256": "894e5fd35ad7bbaa5c8c0d90c2d5fcde0b56aa07c7d4b8bb253fd9684578038d"
+      },
+      {
+        "path": "$HOME/.local/state/papercusp/android-ci/attempts/20261009T185753Z-4deab18f/paired/app-debug-androidTest.apk",
+        "sha256": "d275227b97e18180a97f4b63dbf0297e0345d6b3825cb6430d36acb5a4748d1c"
+      }
+    ]
+  },
+  "provenance": {
+    "runtimeHealth": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "42ead3e6b0",
+      "version": "0.0.0",
+      "ts": "2026-10-09T19:25:31.976Z"
+    },
+    "operatorSourceCommit": "42ead3e6b01cc770446f00d07623954f3b1b8e72",
+    "operatorRoot": "$HOME/papercupai-workspace/papercusp-staging.generations/.candidate-42ead3e6b01c.6iMnCz/checkout",
+    "bundleSha256": "70000531b2f8183cf17dfb2b90aa22905af411694c27855131f7d8fc2c398f23",
+    "retainedArtifactCount": 162,
+    "retainedArtifactHashMismatches": [],
+    "finalSourceIdentityMatched": true,
+    "cachedProofExactMatch": true
+  },
+  "avdSpace": {
+    "avdRoot": "$HOME/.local/state/papercusp/android-ci",
+    "configuredPartitionBytes": 6442450944,
+    "partitionBytes": 6442450944,
+    "availableBytes": 19217362944,
+    "requiredBytes": 8804682957,
+    "sufficient": true
+  },
+  "boot": {
+    "serial": "emulator-5660",
+    "bootCompleted": true,
+    "checks": 109,
+    "property": "1",
+    "adbError": "",
+    "transportEvidence": "boot-transports.txt",
+    "frameworkReady": true,
+    "frameworkSamples": [
+      {
+        "surfaceflinger": "707",
+        "system_server": "854",
+        "settings": "0"
+      },
+      {
+        "surfaceflinger": "707",
+        "system_server": "854",
+        "settings": "0"
+      },
+      {
+        "surfaceflinger": "707",
+        "system_server": "854",
+        "settings": "0"
+      }
+    ],
+    "frameworkErrors": [],
+    "guestMemory": {
+      "totalKiB": 4013808,
+      "availableKiB": 2901192,
+      "requiredTotalKiB": 3670016,
+      "requiredAvailableKiB": 1572864,
+      "sufficient": true
+    },
+    "graphics": {
+      "sdkVersion": "36.0",
+      "dmaReadbackRequired": false
+    },
+    "guestStorage": {
+      "availableBytes": 5232369664,
+      "requiredBytes": 536870912,
+      "sufficient": true
+    }
+  },
+  "retainedArtifacts": [
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/TEST-papercusp-ci-d1488fb50858(AVD) - 16-_app-.xml",
+      "sha256": "760477d0ca79820354fe629ad6f29493ca37b6c923ff2d3eb63e9657850a6247"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/cpuinfo",
+      "sha256": "10585b7f03807fbc1ebbdb3a37986dab7a8957117b94e08680f497751f2da774"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/device-info.pb",
+      "sha256": "a4516824c7b1a565075cf91d18788846d25b1e89fec3401d8cd7ae9e751d0d51"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PapercupAppSmokeTest-sixFeatureJourneysMatchOwnedOperatorState.txt",
+      "sha256": "e7605002cbfddabfef120017af578cc92e17ff97dc4d28b704d3fa2675c63845"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/meminfo",
+      "sha256": "386162237627be6b9c71abb21cc1169eb2810ea7f0723a50456cbebdc6505eb4"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/profiling/emulator-5660_profile.pb",
+      "sha256": "4303037d0354052b2749c58a74cf226eefef8b179906aa47e4bd906352f74657"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/test-result.pb",
+      "sha256": "5f2f14554fa0c817d671cf3a66d75437f9153aa9588eb22fb3591412d8ab2044"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/test-result.textproto",
+      "sha256": "51953e916f5f3548af27812e4c552f2f11fe3ffd03f41cd2dc947fd88cc854dc"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/testlog/test-results.log",
+      "sha256": "da785d687625fafd17b9c9a9f28ad4e1f69ce195437d90590a46a74efc28b572"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/utp.0.log",
+      "sha256": "683b999731be8d26b9543d6279e8130a27e04aa706be8493e92fb46e76e12804"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/papercusp-ci-d1488fb50858(AVD) - 16/utp.0.log.lck",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/outputs/androidTest-results/connected/debug/test-result.pb",
+      "sha256": "06dfc82c166760f0a2e1ff2d83ccd24d0868404dd166435f1b0fc60d43b78f48"
+    },
+    {
+      "path": "artifacts/outputs/apk/androidTest/debug/app-debug-androidTest.apk",
+      "sha256": "d275227b97e18180a97f4b63dbf0297e0345d6b3825cb6430d36acb5a4748d1c"
+    },
+    {
+      "path": "artifacts/outputs/apk/debug/app-debug.apk",
+      "sha256": "894e5fd35ad7bbaa5c8c0d90c2d5fcde0b56aa07c7d4b8bb253fd9684578038d"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/com.papercuspai.operator.mobile.PapercupAppSmokeTest.html",
+      "sha256": "31d234c836a95e4368506351fe242d314fc3b8fe71c751b965da4e502674e649"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/com.papercuspai.operator.mobile.html",
+      "sha256": "26fe11767172594c0cfdb3c36f9a8d29b1f336680dba7c61715c206dad409a6c"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/css/base-style.css",
+      "sha256": "2851d0b2f14f4ff1b75f0d01438887911eb474e235be93e561709227cefb18db"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/css/style.css",
+      "sha256": "f1b366319836f8726d0939654d0eeddfc5b20f67d9e5954b9a1632c60f2f31bf"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/index.html",
+      "sha256": "ebb82e5fa2e663c804e26e883cf7d32ae1ed970d56a9d4d39606f4fc216bcaee"
+    },
+    {
+      "path": "artifacts/reports/androidTests/connected/debug/js/report.js",
+      "sha256": "0aa306f94805890682c639b2d5c06108801d64b859a171a3c6eea66c8bab4c6a"
+    },
+    {
+      "path": "artifacts/reports/lint-results-release.html",
+      "sha256": "81e8800f4acc17984896713e6082c483dcc28d4f49ed0560252309dd64678f58"
+    },
+    {
+      "path": "artifacts/reports/lint-results-release.txt",
+      "sha256": "5009cb50629b3a34d2d040228cfdbd6e18643e64fcabb825810cffa4baad3981"
+    },
+    {
+      "path": "artifacts/reports/lint-results-release.xml",
+      "sha256": "1882a10fbff99155272adbb31faf9bf4611ea0ce38cd35e415e02c631e38c72e"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.CompanionFeedTest.html",
+      "sha256": "a945e90ea7f940c5d7386b1f18ed67d57b27c01dba838628e5305b46f79d78e1"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.EndpointSecurityTest.html",
+      "sha256": "63af1b988e510da620848e65c07fb79e9e69c69ac145b11926f18790a74b1e87"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.HumanErrorTest.html",
+      "sha256": "86da5180bd188f817e014685baea64c26cf20d9688133a65f65551f4f122a07d"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.LibraryNoticesTest.html",
+      "sha256": "cdb48ce61af6c9cd150e7664ede6f49712e17e2483e74dfacdd5f42afc9aa8d4"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.PlanItemsContractTest.html",
+      "sha256": "820afb54293c21afa73e862e982a18f94b175248dd7bfbc17e6f6e5054d164d3"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.VoiceMicDenialTest.html",
+      "sha256": "51d62e776bf288145babe9c044fbbd6944418df3fced377fac186cece6e63fb3"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.VoicePrivacyConsentTest.html",
+      "sha256": "eb5e5d4819652efc2a092fbd17005484ce73a7eac266c62cecfc0ac11a8710af"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/classes/com.papercuspai.operator.mobile.WorkspaceSwitchTest.html",
+      "sha256": "5ee6989e8938c7e9c4ea93e6af3e484a154c0a721f904f8ebc965e771cbfc64d"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/css/base-style.css",
+      "sha256": "e80e92985c9e56c3b3ecb437faf360042a7ff45fde849bf4e9f80fd4e0878743"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/css/style.css",
+      "sha256": "61866908fd7eb09c79e96239f69db2e8cc5c6526cdb308eba0535ed2a0f6a263"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/index.html",
+      "sha256": "f076db033c92539d3232bb91518a9515c24dbe069b7698e5dd9afeacab2fa3bf"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/js/report.js",
+      "sha256": "3365e26776dbfa97b975163b467cc913ca5790b58027473758c8f8dad02e3a31"
+    },
+    {
+      "path": "artifacts/reports/tests/testDebugUnitTest/packages/com.papercuspai.operator.mobile.html",
+      "sha256": "ffd02628744566a92d358d82b25792e9730b9609e6750631667806f84550c835"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.CompanionFeedTest.html",
+      "sha256": "c1586d4cc727ea6400c2663ddede12f9e0ae5bae6a8fc225a681396668104170"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.EndpointSecurityTest.html",
+      "sha256": "d9f15998eaffa9fa0c7190291e914fcb4cdc3c5159db93471e4010939afd054c"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.HumanErrorTest.html",
+      "sha256": "ead19535adb61c9d7218aec75f993ad0240da2a5550b7169839271617276d751"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.LibraryNoticesTest.html",
+      "sha256": "20b7e6bba0ed940be4787a7cd0860b0ac861bde0266817b72bd343028e8d2e35"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.PlanItemsContractTest.html",
+      "sha256": "afcc65c3ef66b7e15c4ee6667f82cef29d1de391ae5a3c4b6efedb19ca12abaf"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.VoiceMicDenialTest.html",
+      "sha256": "6efa754c3a451c53a765a4f8e038004624d330c5751d1ea5c0a9f87ca029f8e4"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.VoicePrivacyConsentTest.html",
+      "sha256": "f58ae7ae618b8c7e02796df5268e1a0883209ebe5cb36e6cc9a59d6ebeba05c7"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/classes/com.papercuspai.operator.mobile.WorkspaceSwitchTest.html",
+      "sha256": "7a51b2dc2ac764f16f315bb77d69fca0700bee95610fe8ac923da007ca56a44f"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/css/base-style.css",
+      "sha256": "e80e92985c9e56c3b3ecb437faf360042a7ff45fde849bf4e9f80fd4e0878743"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/css/style.css",
+      "sha256": "61866908fd7eb09c79e96239f69db2e8cc5c6526cdb308eba0535ed2a0f6a263"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/index.html",
+      "sha256": "879c3633b5d9ce5ac1dc4283942655838bce5f0c2414294b280cebad9ce901cd"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/js/report.js",
+      "sha256": "3365e26776dbfa97b975163b467cc913ca5790b58027473758c8f8dad02e3a31"
+    },
+    {
+      "path": "artifacts/reports/tests/testReleaseUnitTest/packages/com.papercuspai.operator.mobile.html",
+      "sha256": "fec174a77157054e2f884782bb768cafbe0c0edb15f1b86a0748349a3121e34e"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "52dc55a584bd5b600397ff4766cd9986cc910f5e089d11ea76a1bc202d0ec1b6"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "599625f575d486990f21d10750b2b6f50aeb8651774086e84d56bc3abb03c383"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "8c3f3c05d3399c5ef2ff3a6cbb9e327fbe8f1c0027680f28e4380f1ad4f392a8"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml",
+      "sha256": "292c12ebaa59fa98261b018240d42c888b8c3ed3e99ebcc27bb5f8e67c4dca0b"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml",
+      "sha256": "831518259cfa038bd64ea19096f12a7f498d5a975777246d520978bf1b43d723"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "bbac1957103f2e9d40db936827521726eb9e6596f70735e1d8c1e09986a78b23"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "4694c997aa916d35786c9cf80249e30d04fc691687e224e28eeec7c9d21fdabc"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "6f46d83d292e8fbf8436550addb104007aaa91553f608e75255d02483c328600"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/binary/output.bin",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/binary/output.bin.idx",
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+    },
+    {
+      "path": "artifacts/test-results/testDebugUnitTest/binary/results.bin",
+      "sha256": "b38d19afb74432909e0baf35ed60f4a0a20bea596d217ea72c418b759d4f8436"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "74d6c368a5630fe6c2f2a5d38305424b771ac8603dbaad41448b340eadeeadfc"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "0b111bd975d67f2cd8e5c2e4c6b1a2dd73036864b88fb59fbc6286c1eec97c55"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "74786d7eb5fb3b4d79196298c4f8871079e7842adc4154dfb036a316aecc2742"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml",
+      "sha256": "0b1e5a144ef71f0b63e2584e0072aaee6b03b0367ccd08be8354da38c1423c23"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml",
+      "sha256": "de62bbf40c465b55ada549d90603bb1e4e9f67199d7f29b517c4c5ce1e17ac47"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "c94c7aca337ad19ab1b4e27ec5b2b35e39245d9caa2f8ae4734a4775f8af6e27"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "dc9cb4b648577270f63ed8199ce45ce4a4dde9326031fbb5454476fdeb76e75f"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "a742e055ac280888492e2fb3654f52d343c1defb109452f65991ef9b223d0633"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/binary/output.bin",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/binary/output.bin.idx",
+      "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+    },
+    {
+      "path": "artifacts/test-results/testReleaseUnitTest/binary/results.bin",
+      "sha256": "fb70822d2a859f16383a6c969d0202ad03a6c2a8826bc2797dc8c42f5b440184"
+    },
+    {
+      "path": "avd-create.log",
+      "sha256": "452123b796ad584b00b4bd98ffbb34ed14c391d8171c6140e8089e5078d58dc5"
+    },
+    {
+      "path": "avd-space-preflight.log",
+      "sha256": "ed9edd1306446aa37eb3f504b2c70ec40cd40a9af05e2b36a6c9c192450aa984"
+    },
+    {
+      "path": "avd-space.txt",
+      "sha256": "ed9edd1306446aa37eb3f504b2c70ec40cd40a9af05e2b36a6c9c192450aa984"
+    },
+    {
+      "path": "boot/boot-adb-error.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "boot/boot-property.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "boot/boot-transports.txt",
+      "sha256": "850c0f1414754ec066948e1c896e5a2bc5678a0aa5df65cc6b9bd0770f359892"
+    },
+    {
+      "path": "boot/emulator-boot.json",
+      "sha256": "b2d22a8ef8dfc7efb800a8d34bc56ef3126461e3bf8127eec77170140accc19b"
+    },
+    {
+      "path": "boot/framework-crash.log",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "boot/guest-data-space.txt",
+      "sha256": "6e1821ab056c7983814aab93e787fb82060c23e1cf6c89ac501d66fb680e8d8b"
+    },
+    {
+      "path": "boot/guest-memory.txt",
+      "sha256": "dae30e33910a4d86f7e17b72347da8624310dee37b9ce1f7cc183645cd6430e8"
+    },
+    {
+      "path": "boot.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "ci-admission.log",
+      "sha256": "7b3ff82d5136ec2e2eba5fc910573eae78bc16a6cb0636ce282401b983fc531c"
+    },
+    {
+      "path": "connected.log",
+      "sha256": "6ecfe857d34154dcc649fb8ea683cd3cbf7d1349b1a47fd4dee699ce99916121"
+    },
+    {
+      "path": "emulator-libraries.txt",
+      "sha256": "d52be0cdd5d4b75fbf5a891c488b0ff3aa11c310c66bfa2a8d0be71ab6df643e"
+    },
+    {
+      "path": "emulator-preflight.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "emulator-version.txt",
+      "sha256": "5ede8f2a4c3d8000197bd40dd27bba42f1210c915ec1884c90dc27b674ff8454"
+    },
+    {
+      "path": "emulator.log",
+      "sha256": "19237965e7d163b20e0f4918bd8868db20371d31ce1cee3625dd74ef9649c763"
+    },
+    {
+      "path": "host.log",
+      "sha256": "cd8cc392bcd9d1f2b71790cf41c357c58896189e0c6957bfd1cc31b37e9abc2d"
+    },
+    {
+      "path": "operator-freshness-end.log",
+      "sha256": "81b28566b1c10750867a5d8550e6dff270f8864d00e2e1a0b878e6e864f1333d"
+    },
+    {
+      "path": "operator-freshness.log",
+      "sha256": "81b28566b1c10750867a5d8550e6dff270f8864d00e2e1a0b878e6e864f1333d"
+    },
+    {
+      "path": "paired/app-debug-androidTest.apk",
+      "sha256": "d275227b97e18180a97f4b63dbf0297e0345d6b3825cb6430d36acb5a4748d1c"
+    },
+    {
+      "path": "paired/app-debug.apk",
+      "sha256": "894e5fd35ad7bbaa5c8c0d90c2d5fcde0b56aa07c7d4b8bb253fd9684578038d"
+    },
+    {
+      "path": "paired/emulator-preflight/boot-adb-error.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "paired/emulator-preflight/boot-property.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "paired/emulator-preflight/boot-transports.txt",
+      "sha256": "850c0f1414754ec066948e1c896e5a2bc5678a0aa5df65cc6b9bd0770f359892"
+    },
+    {
+      "path": "paired/emulator-preflight/emulator-boot.json",
+      "sha256": "d73ab266fbdfd29c41131af2667ce6c34118859790b96a8a66115d083c447ce1"
+    },
+    {
+      "path": "paired/emulator-preflight/framework-crash.log",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "paired/emulator-preflight/guest-data-space.txt",
+      "sha256": "eaff17050709c42b48337358b9ce15eae7179fba3b92ca7df78ae298c5267763"
+    },
+    {
+      "path": "paired/emulator-preflight/guest-memory.txt",
+      "sha256": "7c8337a98bf8a0df7d9b3364231ad869990f79255a3716a5c043c72d948257ec"
+    },
+    {
+      "path": "paired/native-results/TEST-papercusp-ci-d1488fb50858(AVD) - 16-_app-.xml",
+      "sha256": "760477d0ca79820354fe629ad6f29493ca37b6c923ff2d3eb63e9657850a6247"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/cpuinfo",
+      "sha256": "10585b7f03807fbc1ebbdb3a37986dab7a8957117b94e08680f497751f2da774"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/device-info.pb",
+      "sha256": "a4516824c7b1a565075cf91d18788846d25b1e89fec3401d8cd7ae9e751d0d51"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PapercupAppSmokeTest-sixFeatureJourneysMatchOwnedOperatorState.txt",
+      "sha256": "e7605002cbfddabfef120017af578cc92e17ff97dc4d28b704d3fa2675c63845"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/meminfo",
+      "sha256": "386162237627be6b9c71abb21cc1169eb2810ea7f0723a50456cbebdc6505eb4"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/profiling/emulator-5660_profile.pb",
+      "sha256": "4303037d0354052b2749c58a74cf226eefef8b179906aa47e4bd906352f74657"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/test-result.pb",
+      "sha256": "5f2f14554fa0c817d671cf3a66d75437f9153aa9588eb22fb3591412d8ab2044"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/test-result.textproto",
+      "sha256": "51953e916f5f3548af27812e4c552f2f11fe3ffd03f41cd2dc947fd88cc854dc"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/testlog/test-results.log",
+      "sha256": "da785d687625fafd17b9c9a9f28ad4e1f69ce195437d90590a46a74efc28b572"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/utp.0.log",
+      "sha256": "683b999731be8d26b9543d6279e8130a27e04aa706be8493e92fb46e76e12804"
+    },
+    {
+      "path": "paired/native-results/papercusp-ci-d1488fb50858(AVD) - 16/utp.0.log.lck",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "paired/native-results/test-result.pb",
+      "sha256": "06dfc82c166760f0a2e1ff2d83ccd24d0868404dd166435f1b0fc60d43b78f48"
+    },
+    {
+      "path": "paired/native-test.log",
+      "sha256": "600ba33d5f341cb4993f5c438a948714cca5ff8646537fd9b9c9fc9f1cdec1c6"
+    },
+    {
+      "path": "paired/pairing-stages.log",
+      "sha256": "0eb9bcc9c8cbc511a06f4a1b1e38820529164ec3085a36cf0b161f62d1685109"
+    },
+    {
+      "path": "paired-runtime/host.log",
+      "sha256": "d7b6b81643c153efdb041fc236bcf32ea5255215181b8ec0e9ded8cde5964ce5"
+    },
+    {
+      "path": "paired.log",
+      "sha256": "5d8e9b02c7f6a21c15a09bf9afbd9ca0ec8dc002cbb1c9a9289076dcb0527baf"
+    },
+    {
+      "path": "rust-preflight.log",
+      "sha256": "71898dff3c6432efdb734448f5be423843b12dd8075283501aad41600c41899c"
+    },
+    {
+      "path": "unpaired-native-results/debug/TEST-papercusp-ci-d1488fb50858(AVD) - 16-_app-.xml",
+      "sha256": "e651e971fcaf340a87e60c1524079f6a3cc394b6f0966643b79b05b4ff8ec2ec"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/aapt.1.ok.txt",
+      "sha256": "514dbf67356a58a45e2911c461758db842dce1a5d82dc230fa8159a6711e0876"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/aapt.2.ok.txt",
+      "sha256": "1e73ba02ecfcdfe1b3e8188efab1de737224b06a6ca19afd52030c6c54a011e6"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/cpuinfo",
+      "sha256": "10585b7f03807fbc1ebbdb3a37986dab7a8957117b94e08680f497751f2da774"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/device-info.pb",
+      "sha256": "a4516824c7b1a565075cf91d18788846d25b1e89fec3401d8cd7ae9e751d0d51"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.DiagnosticsScreenTest-debugDiagnosticsRetainWorkingPushTestControl.txt",
+      "sha256": "c091b229be0f7cc6352aa0599f0c4d4c9e42a4a01c55325e85e6535f3550b826"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.DiagnosticsScreenTest-publicDiagnosticsKeepConnectionStatusWithoutDeveloperPushControls.txt",
+      "sha256": "04779e6366ae3b396103d57948893d7d18b194d4dc0fafc7b8396fd0248bbcd7"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.LibraryNoticesScreenTest-bundledRustSourceNoticeOpensWithoutPairing.txt",
+      "sha256": "fd39bd4459eeec4dc53d94ecc1bf64360e0394db12892b6e807e619db9fe5a80"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.LibraryNoticesScreenTest-bundledSupplementalNoticesMatchSourceAndOpenWithoutPairing.txt",
+      "sha256": "a2ee81304993a6ff61674d2753c1f3642de9be9cea69301bf67f7e691e5dd57e"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.LibraryNoticesScreenTest-dialogPreservesMultipleLicenseTextsAndLinkedOnlyTerms.txt",
+      "sha256": "994c367ab41950830371d1be119fee7a664791009678d4c944da7c53bd3d36f5"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.LibraryNoticesScreenTest-failedResourceDisplaysAnErrorInsteadOfACompletedEmptyList.txt",
+      "sha256": "16ff66aa6cee92af639c0286f88dcac46eb760546275fea82e838ab0474a7e37"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.LibraryNoticesScreenTest-unpairedRecipientCanOpenBundledLicenseTextAndReturn.txt",
+      "sha256": "2b78c377e05165bb6becbd96ed5cdfbcedd8642fbd1f32225f7a391c7f72d9d0"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.OperatorChatScreenTest-forbiddenSendKeepsDraftWithoutInventingAPersistedTurn.txt",
+      "sha256": "d4c9c13f3cd2fc584f75daac8dc94aea5d1e847fbd4947c34719e0381c490b56"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.OperatorChatScreenTest-rejectedDraftSurvivesSameScopeRepairAndActivityRecreation.txt",
+      "sha256": "7a1e3bef26c201d6f5df33b84ebeb81fec1629b4ea17b1dd81637fa629db1116"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.OperatorChatScreenTest-rejectedDraftSurvivesSettingsRoundTrip.txt",
+      "sha256": "5f7c6a2fb1c39c9e64bb0acffb067a8e120bf572f7aa6a5082754acb1971e19c"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.OperatorChatScreenTest-repairToAnotherServerDoesNotExposePreviousDraft.txt",
+      "sha256": "da78425749d3ef5e00742eb1e74343370de2de5e653b8322a432b482446fccdd"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.OperatorChatScreenTest-repairToAnotherWorkspaceDoesNotExposePreviousDraft.txt",
+      "sha256": "f77fdef45ccedf9c09b61d2cd56c3114d1bbe1eddbe22cd47bb6bb18eed613b9"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.OperatorChatScreenTest-unauthorizedSendKeepsDraftWithoutInventingAPersistedTurn.txt",
+      "sha256": "539a8faef4c637807b0a798994aedc867a48265c409ea3660fa6c169bb63a12e"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PapercupAppSmokeTest-insecureNonLoopbackPayloadIsRejectedWithoutPersistingCredentials.txt",
+      "sha256": "e8c164e9d15982e81b4db39483e8115d174b208c2e5bcf1c5109d306efeeca65"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PapercupAppSmokeTest-invalidPastedPayloadStaysUnpairedAndReturnsToChoice.txt",
+      "sha256": "d8191389b55260d6eab8d774501207412e7e72fc5a3f4e8545bb042304d2860e"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PapercupAppSmokeTest-launcherActivityStarts.txt",
+      "sha256": "1565b96580a6a9153795d8c5920a7c07f701d2bc0aa4631eec8130b352d0fb4b"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PapercupAppSmokeTest-privateInboxScopeAcceptsOnlyDocumentedGlobalControls.txt",
+      "sha256": "2730010c2afab4d94d925e1192cd33c6b21381aa8156ef9ca3a6cce68ee71131"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PapercupAppSmokeTest-sixFeatureJourneysMatchOwnedOperatorState.txt",
+      "sha256": "c1ab402cf8b1e0c27d26bf0d24d6fd251f3a86ff255d534e17db537ecba8179c"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PlansScreenTest-effectiveStatusAndUnknownStatusRenderWithoutInventingTodo.txt",
+      "sha256": "6e5f963d8dec090a7506bf4c73ae6e9a198fc410f7f6c0f1245ef703d072fac5"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PlansScreenTest-invalidItemsRenderAnErrorInsteadOfEmptyState.txt",
+      "sha256": "0ac500727d6b29bc6efdb052f64741367576a5e4b26d72cc86c4fb308e6b4724"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PlansScreenTest-malformedItemRowRendersAnErrorInsteadOfPartialState.txt",
+      "sha256": "df57a4d0b3af558157a20cd86508e0e50f4506f2b5bbee664ac75641833161aa"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PlansScreenTest-validEmptyItemsRenderEmptyState.txt",
+      "sha256": "1faca0b73e298e9d6b4757f738c773e64b6ce30b5f35552a42eec48debb8998c"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PotSwitcherTest-failedLoadRetriesAndSelectsPotWithoutReportingHealthyEmpty.txt",
+      "sha256": "3dc544d5d8a2d66d536a67efcb7555ab504d1fe776720800daf926d98fa76708"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.PotSwitcherTest-successfulEmptyLoadIsExplicitAfterRetry.txt",
+      "sha256": "8734e33d63ae50d8fd31c5ecbf7862f57d1c8126e27585166a13e3999892b3df"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.SealedCredentialsTest-encryptedStoreRestoresIdentityAndRejectsPartialIdentity.txt",
+      "sha256": "b79ed516c7eb98ef283139aface6a6c58a7a705f8172327aecc491c588da5005"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.SealedCredentialsTest-nativeKeyHelpersValidateQrAndPin.txt",
+      "sha256": "3585a0d13acaf6e3bf9f7cea6b1e06e1f849eaa6515f5c828b4e3ce1cc6b1d24"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.SealedCredentialsTest-restoredSealedClientNeverFallsBackToPlaintextWhenSocketCloses.txt",
+      "sha256": "84a3cc3e633c3ea0984524f6e58306569d1a69a84349fcbb47eff44eea422a64"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.SealedTransportInteropTest-qrPairEncryptedRestoreAndReconnectKeepIdentityAndBearerSealed.txt",
+      "sha256": "d449505506352c54c19e433e0723adce0076e65339d5eebe590cbbb240b2c8c5"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.SealedTransportInteropTest-restoredNativeClientStreamsUtf8AndChunksLargeSealedUpload.txt",
+      "sha256": "38a1c892c006cb96f7cf6b9c7c7255d9a82dc0cfc81ed6c47048a015ef2712ec"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.StandingApprovalsScreenTest-failedLoadStopsLoadingAndRetryShowsMeasuredEmptyState.txt",
+      "sha256": "b99e75cf92e3647652a877f8cfe20f44b22eaf77a4001d90240c4750dae505a4"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/logcat-com.papercuspai.operator.mobile.UniffiCallbackTest-inlineNativeContinuationsCanReenterJna.txt",
+      "sha256": "9f70c14aa3019cb4aa7684fb30b58014274e29faee68119cb2fc0d5ec365a5a3"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/meminfo",
+      "sha256": "cf134845eb60fe20f7eeb6ad30183a1854fcf6c6e58166a43f1be99f94ec1e39"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/profiling/emulator-5660_profile.pb",
+      "sha256": "8b29176657724c1403e728012a9a43d3a5642bcd60b09d3d3c4b7959d5f48fc5"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/test-result.pb",
+      "sha256": "552dc309acc3836f966953e9164330886f7566d82abf0e0a71e7b73d700db287"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/test-result.textproto",
+      "sha256": "ffc9bdbf7331f1ba1c81a7fe4ab8173e41f0ec1f0fe2d94f86f2c317e4bfe505"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/testlog/test-results.log",
+      "sha256": "88e752772c54ae5b0e9a8c138d47720cb112f9ebbcc29d8891f9c445743233cd"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/utp.0.log",
+      "sha256": "c8287b91e22b2bbc782670b674a4c0aa4d20c4f0a0ed04e96518230ccd587fc2"
+    },
+    {
+      "path": "unpaired-native-results/debug/papercusp-ci-d1488fb50858(AVD) - 16/utp.0.log.lck",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "unpaired-native-results/debug/test-result.pb",
+      "sha256": "3b34e699049e5544078cf04eee96927423dbbf2ee97b2be3b780ea616b55efaf"
+    },
+    {
+      "path": "verify-paired.log",
+      "sha256": "1af66d046fbc0def56a8e30437bf8571c1a1a372d3cdc62cc09a8eeea63e26c1"
+    }
+  ],
+  "cleanup": {
+    "emulatorCleanupVerified": true,
+    "temporaryCleanupVerified": true,
+    "ownedFixtureCleanupVerified": true,
+    "credentialsCleared": true,
+    "hostCleanupVerified": true,
+    "nativeProcessCleanupVerified": true,
+    "privatePortClosed": true,
+    "ownedAvdDirectoriesRemaining": []
+  },
+  "ciAdmission": {
+    "schemaVersion": 1,
+    "phase": "ci",
+    "result": "pass",
+    "sourceCommit": "bacc1c143d3347bf571adb66291a11c69b2b1bd6",
+    "sourceDirty": false,
+    "passedAt": "2026-10-09T19:27:45Z",
+    "runner": "tools/android-ci.py"
+  },
+  "timer": {
+    "unit": "papercusp-android-ci.timer",
+    "observedAt": "2026-10-09T19:28:55.005810+00:00",
+    "LastTriggerUSec": "Fri 2026-10-09 14:57:53 EDT",
+    "Result": "success",
+    "ActiveState": "active",
+    "SubState": "waiting",
+    "UnitFileState": "enabled",
+    "service": {
+      "MainPID": "0",
+      "Result": "success",
+      "ExecMainStartTimestamp": "Fri 2026-10-09 14:57:53 EDT",
+      "ExecMainExitTimestamp": "Fri 2026-10-09 15:27:56 EDT",
+      "ExecMainStatus": "0",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "UnitFileState": "linked"
+    }
+  },
+  "sharedExecutor": {
+    "path": "$HOME/.local/state/papercusp/android-ci/executor.lock",
+    "verifiedFreeAfterCleanup": true,
+    "producerEntrypoint": "python3 tools/android-ci.py --exclusive-command",
+    "guardedWriters": [
+      "build-android.sh debug/release",
+      "run-android-checks.sh native/check",
+      "tools/cloud-native-check.py"
+    ]
+  },
+  "acceptanceBoundary": {
+    "independentCIExecutionPassed": true,
+    "automaticMeaningfulSourceChangePassed": true,
+    "fullSelectedNativePass": true,
+    "signedCandidate": false,
+    "hostedCloudJourneys": false,
+    "physicalPhone": false,
+    "googlePlay": false,
+    "featurePopulations": {
+      "chatTurns": 2,
+      "plans": 0,
+      "fleetAvailability": "0 available · 0 agents",
+      "pots": 0,
+      "workspaceId": "android-live-scope-d161b5e8e3ed49d1879ae0edf321f33a",
+      "workspaceName": "android-live-scope-d161b5e8e3ed49d1879ae0edf321f33a",
+      "standingCandidates": 0
+    }
+  },
+  "historicalEvidence": {
+    "automaticPass": {
+      "path": "docs/evidence/android-independent-ci-automatic-full-2026-10-09.json",
+      "testRunId": 20960550,
+      "sha256": "a751a1b563e0e376872099f96fe54d8bff14438825aae0a58cb4ce7678938494"
+    },
+    "bootRejection": {
+      "path": "docs/evidence/android-independent-ci-automatic-boot-rejection-2026-10-09.json",
+      "testRunId": 20961915
+    },
+    "hostRejection": {
+      "path": "docs/evidence/android-independent-ci-automatic-host-rejection-2026-10-09.json",
+      "testRunId": 20961916
+    }
+  },
+  "verificationObservedAt": "2026-10-09T19:28:55.005810+00:00",
+  "handoffContract": {
+    "producerOwner": "su-c9cbdca9-7cd0-4b58-a69c-7645de562968",
+    "maximumSeconds": 3600,
+    "starts": "explicit direct admission after this exact committed proof",
+    "wholeProducerMutexRequired": true,
+    "timerRemainsEnabled": true,
+    "candidateVersion": "0.1.1",
+    "candidateVersionCode": 101,
+    "agreementReceipt": "coord-send-9554e596238766463a6f6d172b5d4ff21d86850ca047fbf8baa676e393fd5a65",
+    "candidateProduced": false
+  },
+  "assertions": [
+    {
+      "id": "automatic-current-clean-source",
+      "passed": true,
+      "evidence": "Same scheduled185753Z/PID2899527; exact clean bacc1c14/0d564cdd and prepared operator42ead, with final source identity and bundle checks. No manual native/service invocation."
+    },
+    {
+      "id": "host-connected-paired",
+      "passed": true,
+      "evidence": "All eleven maintained phases exit0. Host debug/release XML, all31 connected cases and selected paired1case independently parsed with zero failures/errors/skips; all report digests retained."
+    },
+    {
+      "id": "owned-filesystem-and-temp-fixture-guards",
+      "passed": true,
+      "evidence": "Real scheduled owned-state capacity preflight sufficient; seven Android ABI guard fixtures passed under owned per-attempt TMPDIR. TMP directory was removed in finally. Maintained realchild/temp/AVD regression tests ran within host phase."
+    },
+    {
+      "id": "authenticated-two-turn-six-feature-JNI",
+      "passed": true,
+      "evidence": "Exact matching run/workspace, native journey completed, authenticated request passed, private device readback turnCount2, six selected feature witnesses true; actual feature populations retained."
+    },
+    {
+      "id": "exact-retained-artifacts-and-admission",
+      "passed": true,
+      "evidence": "Every retained artifact SHA256 recomputed without mismatch; APKs, receipts, JUnit and bundle individually pinned. success.json equals exact result; maintained cached_proof resolves it for exact source/counterpart, and current CI admission binds clean bacc1c14."
+    },
+    {
+      "id": "owned-cleanup-and-free-executor",
+      "passed": true,
+      "evidence": "Emulator/temp/fixture/credential/private host/native-process cleanup witnesses true; private port closed, runtime host PID gone, owned AVD directories absent; executor.lock reacquired nonblocking and explicitly released."
+    },
+    {
+      "id": "enabled-timer-and-historical-rejections-preserved",
+      "passed": true,
+      "evidence": "Existing timer remains enabled and active; completed service MainPID0/Resultsuccess/ExecMainStatus0. Original20960550/a751 and rejection20961915/20961916 remain historical; this qualification is a separate record."
+    }
+  ]
+}

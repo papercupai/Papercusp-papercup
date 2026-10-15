@@ -55,6 +55,7 @@
  * · 2 bad usage.
  */
 import { describePgUrlResolution, resolveScriptPgUrl } from './lib/pg-url.mjs';
+import { spawn } from 'node:child_process';
 
 /** libpq env var per URL part. PGPASSWORD is what keeps the secret out of argv. */
 const LIBPQ = [
@@ -71,17 +72,30 @@ const LIBPQ = [
  * the caller believed was redacted.
  *
  * @param {string[]} argv
- * @returns {{ mode: 'url' | 'export' | 'describe' | 'help', verify: boolean } | { error: string }}
+ * @returns {{ mode: 'url' | 'export' | 'describe' | 'help' | 'exec', verify: boolean, root?: string, command?: string[] } | { error: string }}
  */
 export function parseArgs(argv) {
-  let mode = /** @type {'url' | 'export' | 'describe' | 'help'} */ ('url');
+  let mode = /** @type {'url' | 'export' | 'describe' | 'help' | 'exec'} */ ('url');
   let verify = true;
   let modeSetBy = null;
-  for (const a of argv) {
-    const asMode = { '--export': 'export', '--describe': 'describe', '--help': 'help', '-h': 'help' }[a];
+  let root;
+  let command;
+  for (let index = 0; index < argv.length; index++) {
+    const a = argv[index];
+    if (a === '--') {
+      if (mode !== 'exec') return { error: '-- is only accepted with --exec' };
+      command = argv.slice(index + 1);
+      break;
+    }
+    if (a.startsWith('--root=')) {
+      root = a.slice('--root='.length);
+      if (!root) return { error: '--root requires a directory' };
+      continue;
+    }
+    const asMode = { '--export': 'export', '--describe': 'describe', '--help': 'help', '-h': 'help', '--exec': 'exec' }[a];
     if (asMode) {
       if (modeSetBy && modeSetBy !== a) return { error: `conflicting modes: ${modeSetBy} and ${a}` };
-      mode = /** @type {'url' | 'export' | 'describe' | 'help'} */ (asMode);
+      mode = /** @type {'url' | 'export' | 'describe' | 'help' | 'exec'} */ (asMode);
       modeSetBy = a;
       continue;
     }
@@ -91,7 +105,8 @@ export function parseArgs(argv) {
     }
     return { error: `unknown argument: ${a}` };
   }
-  return { mode, verify };
+  if (mode === 'exec' && !command?.length) return { error: '--exec requires -- followed by a command' };
+  return { mode, verify, ...(root ? { root } : {}), ...(command ? { command } : {}) };
 }
 
 /**
@@ -139,6 +154,10 @@ const USAGE = `pg-url — the gated Postgres DSN for a shell caller.
   node scripts/pg-url.mjs --export      \`export PG…=…\` lines for eval (keeps the
                                         password out of argv — prefer this)
   node scripts/pg-url.mjs --describe    provenance only, never credentials
+  node scripts/pg-url.mjs --root=DIR    resolve the selected operator environment
+  node scripts/pg-url.mjs --exec -- COMMAND [ARG…]
+                                      bind that database to one source child;
+                                      no shell expansion or global env injection
   node scripts/pg-url.mjs --no-verify   skip the connect check
 
   eval "$(node scripts/pg-url.mjs --export)" && psql -c 'SELECT 1'
@@ -147,7 +166,7 @@ Exit: 0 ok · 1 resolved but unreachable · 2 bad usage.`;
 
 /**
  * @param {string[]} argv
- * @returns {Promise<0 | 1 | 2>} the process exit code
+ * @returns {Promise<number>} the process exit code
  */
 export async function main(argv) {
   const args = parseArgs(argv);
@@ -160,8 +179,17 @@ export async function main(argv) {
     return 0;
   }
 
-  const resolution = resolveScriptPgUrl();
+  const resolution = resolveScriptPgUrl(args.root ? { root: args.root } : {});
   const provenance = describePgUrlResolution(resolution);
+
+  // Executing source against an administrative store needs an explicit target.
+  // A healthy desktop discovery/fallback is not proof it is the selected
+  // operator's database. Never start the child when no env/root/isolated pin
+  // selected the target, even if the ordinary DSN-printing CLI can resolve it.
+  if (args.mode === 'exec' && !['env', 'isolated-pg-port'].includes(resolution.source)) {
+    process.stderr.write(`pg-url: --exec requires an explicit database pin (environment, operator .env.local, or isolated PG port)\n  ${provenance}\n`);
+    return 1;
+  }
 
   const failure = args.verify ? await verifyReachable(resolution.url) : null;
   if (failure) {
@@ -177,6 +205,26 @@ export async function main(argv) {
   }
   // Provenance goes to stderr so `$(…)`/`eval` capture only the payload.
   process.stderr.write(`${provenance}\n`);
+  if (args.mode === 'exec') {
+    // Explicit opt-in for administrative source children. Reuse the exact CLI
+    // resolution, including isolated-PG precedence, rather than allowing db-org
+    // in a fresh child to discover a different healthy desktop database. Only
+    // the DB names were read from the selected .env.local; capability:bash's
+    // existing secret scrubbing remains untouched for every other command.
+    const [executable, ...commandArgs] = args.command;
+    return await new Promise((resolve) => {
+      const child = spawn(executable, commandArgs, {
+        env: { ...process.env, HARNESS_ADMIN_DATABASE_URL: resolution.url },
+        stdio: 'inherit',
+        shell: false,
+      });
+      child.once('error', (error) => {
+        process.stderr.write(`pg-url: child launch failed — ${error.message}\n`);
+        resolve(1);
+      });
+      child.once('exit', (code) => resolve(code ?? 1));
+    });
+  }
   process.stdout.write(`${args.mode === 'export' ? formatExportLines(resolution.url) : resolution.url}\n`);
   return 0;
 }

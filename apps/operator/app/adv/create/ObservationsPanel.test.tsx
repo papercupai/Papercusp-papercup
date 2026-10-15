@@ -213,6 +213,25 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("<ObservationsPanel />", () => {
+  it('labels observation stock as retained evidence rather than pending triage or delivery', () => {
+    renderPanel();
+    expect(screen.getByText(/Retained evidence · intake handling is separate from delivered work/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'bulk report' }).getAttribute('href')).toBe('/inbox');
+  });
+  it('R-10/R-32/R-33 reports exact observation triage partitions with their writer and scope', () => {
+    setSummary(10);
+    (summary.data[0] as { facets: unknown[] }).facets.push({
+      key: 'triageState', label: 'Intake triage',
+      values: [{ value: 'awaiting', count: 7 }, { value: 'handled', count: 3 }],
+    });
+    renderPanel();
+    const counts = screen.getByTestId('observations-triage-counts');
+    expect(counts.textContent).toContain('7 awaiting triage');
+    expect(counts.textContent).toContain('3 handled intake');
+    expect(counts.title).toContain('current observation filters excluding Intake triage');
+    expect(counts.title).toContain('units: rows');
+    expect(counts.title).toContain('readLearningObservationsSummaryFromStore');
+  });
   it("shows the loading copy while loading with no rows yet", () => {
     sync.loading = true;
     sync.data = [];

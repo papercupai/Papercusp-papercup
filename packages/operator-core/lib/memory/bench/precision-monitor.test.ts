@@ -6,14 +6,24 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { QueryOutcome } from '@papercusp/memory/bench';
+import { toDecisionLedgerEntry, type DecisionCallRecord } from '@papercusp/decision-model';
 import { JEV_MEMORY_ADMIT_THRESHOLD, type JevMemoryGateInput } from '../jev-memory-gate';
+import { createPrecisionBenchJevGate } from './precision-bench-core';
 import {
   gateReplayWithJev,
   jevGatedShape,
   parsePrecisionBenchWorkerOutput,
+  parsePrecisionBenchWorkerLedgerEntries,
+  persistPrecisionBenchWorkerLedgerEntries,
+  PRECISION_BENCH_JEV_API_KEY_ENV,
   PRECISION_BENCH_JEV_CONSUMER,
   PRECISION_BENCH_JEV_GATE_ENV,
+  PRECISION_BENCH_JEV_LEDGER_MARKER,
+  PRECISION_BENCH_EMBEDDER_MODE_ENV,
   PRECISION_BENCH_RESULT_MARKER,
+  PRECISION_BENCH_WORKSPACE_ID_ENV,
+  precisionBenchWorkerInvocation,
+  resolvePrecisionBenchWorkerTarget,
   runBenchInWorker,
   runMemoryPrecisionMonitor,
   type MemoryPrecisionBenchDeps,
@@ -304,6 +314,43 @@ describe('runMemoryPrecisionMonitor', () => {
 });
 
 describe('precision bench worker protocol', () => {
+  const ledgerRecord = {
+    provider: 'typesafe',
+    requestedModel: 'jev-1.13.0',
+    request: {
+      state: 'private memory text that must stay in the worker',
+      questions: { m1: { type: 'yesNo', instructions: 'Is this relevant?' } },
+    },
+    outcome: { kind: 'inconclusive', reason: 'unauthorized', status: 401, latencyMs: 12, attempts: 1 },
+    startedAt: new Date('2026-10-06T10:00:00Z'),
+    consumer: 'memory-bench',
+    surface: null,
+    subjectIds: ['memory-1'],
+    hostLoad: null,
+    transportLatencyMs: null,
+  } as unknown as DecisionCallRecord;
+  const ledgerEntry = toDecisionLedgerEntry(ledgerRecord);
+
+  it('resolves the bundled sibling from the relocated host entry and runs it with plain Node', () => {
+    const moduleUrl = new URL('../../../../../apps/operator/dist-host/hono-host.mjs', import.meta.url).href;
+    const target = resolvePrecisionBenchWorkerTarget(moduleUrl, (path) => path.endsWith('precision-bench-worker.mjs'));
+
+    expect(target).toMatchObject({ path: expect.stringContaining('precision-bench-worker.mjs'), runtime: 'node' });
+    expect(
+      precisionBenchWorkerInvocation(target, '/runtime/node', '/runtime/tsx'),
+    ).toEqual({ command: '/runtime/node', args: [target.path] });
+  });
+
+  it('keeps source-mode development on the TypeScript worker through tsx', () => {
+    const moduleUrl = new URL('./precision-monitor.ts', import.meta.url).href;
+    const target = resolvePrecisionBenchWorkerTarget(moduleUrl, () => false);
+
+    expect(target).toMatchObject({ path: expect.stringContaining('precision-bench-worker.ts'), runtime: 'tsx' });
+    expect(
+      precisionBenchWorkerInvocation(target, '/runtime/node', '/runtime/tsx'),
+    ).toEqual({ command: '/runtime/node', args: ['/runtime/tsx', target.path] });
+  });
+
   it('parses the marked result while ignoring unrelated child logs', () => {
     const parsed = parsePrecisionBenchWorkerOutput(
       `startup log\n${PRECISION_BENCH_RESULT_MARKER}${JSON.stringify(METRICS)}\n`,
@@ -315,22 +362,79 @@ describe('precision bench worker protocol', () => {
     expect(() => parsePrecisionBenchWorkerOutput('seed failed\n')).toThrow(/no result marker/);
   });
 
+  it('parses only sanitized ledger entries from the child marker protocol', () => {
+    const parsed = parsePrecisionBenchWorkerLedgerEntries(
+      `startup log\n${PRECISION_BENCH_JEV_LEDGER_MARKER}${JSON.stringify(ledgerEntry)}\n`,
+    );
+    expect(parsed).toEqual([ledgerEntry]);
+    expect(JSON.stringify(parsed)).not.toContain('private memory text');
+    expect(parsed[0]).not.toHaveProperty('request');
+  });
+
+  it('writes parsed worker ledger entries and evaluates refusal alerts on the host', async () => {
+    const recorded: unknown[] = [];
+    const alerted: unknown[] = [];
+    await persistPrecisionBenchWorkerLedgerEntries([ledgerEntry], 'ws-worker', {
+      record: async (entry, options) => { recorded.push({ entry, options }); return true; },
+      alert: async (entry, deps) => { alerted.push({ entry, workspaceId: deps?.workspaceId?.() }); return true; },
+      log: () => {},
+    });
+    expect(recorded).toEqual([{ entry: ledgerEntry, options: { workspaceId: 'ws-worker' } }]);
+    expect(alerted).toEqual([{ entry: ledgerEntry, workspaceId: 'ws-worker' }]);
+  });
+
   it('tells the worker explicitly whether to gate, so an inherited value can never gate a floor-only run', async () => {
-    const seen: Array<string | undefined> = [];
+    const seen: Array<Record<string, string | undefined>> = [];
+    let keyReads = 0;
     const spawnProcess = ((_cmd: string, _args: string[], o: { env: NodeJS.ProcessEnv }) => {
-      seen.push(o.env[PRECISION_BENCH_JEV_GATE_ENV]);
+      seen.push({
+        jevGate: o.env[PRECISION_BENCH_JEV_GATE_ENV],
+        mode: o.env[PRECISION_BENCH_EMBEDDER_MODE_ENV],
+        openai: o.env.OPENAI_API_KEY,
+        anthropic: o.env.ANTHROPIC_API_KEY,
+        jevApiKey: o.env[PRECISION_BENCH_JEV_API_KEY_ENV],
+        workspaceId: o.env[PRECISION_BENCH_WORKSPACE_ID_ENV],
+        rawJevApiKey: o.env.TYPESAFE_API_KEY,
+      });
       throw new Error('stop before spawning');
     }) as unknown as typeof import('node:child_process').spawn;
     const prior = process.env[PRECISION_BENCH_JEV_GATE_ENV];
+    const priorApiKey = process.env[PRECISION_BENCH_JEV_API_KEY_ENV];
+    const priorWorkspaceId = process.env[PRECISION_BENCH_WORKSPACE_ID_ENV];
+    const priorTypesafeKey = process.env.TYPESAFE_API_KEY;
     process.env[PRECISION_BENCH_JEV_GATE_ENV] = '1';
+    process.env[PRECISION_BENCH_JEV_API_KEY_ENV] = 'inherited-worker-key';
+    process.env[PRECISION_BENCH_WORKSPACE_ID_ENV] = 'inherited-workspace';
+    process.env.TYPESAFE_API_KEY = 'raw-host-key';
     try {
-      await expect(runBenchInWorker({ spawnProcess })).rejects.toThrow(/stop before spawning/);
-      await expect(runBenchInWorker({ spawnProcess, jevGate: true })).rejects.toThrow(/stop before spawning/);
+      const run = (jevGate = false) => runBenchInWorker({
+        spawnProcess,
+        jevGate,
+        workspaceId: 'ws-worker',
+        embedderMode: 'local',
+        resolveWorkerCredentials: async () => ({
+          openai_api_key: 'stored-openai-key',
+          anthropic_api_key: 'stored-anthropic-key',
+        }),
+        resolveWorkerJevApiKey: async () => { keyReads += 1; return 'stored-typesafe-key'; },
+      });
+      await expect(run()).rejects.toThrow(/stop before spawning/);
+      await expect(run(true)).rejects.toThrow(/stop before spawning/);
     } finally {
       if (prior === undefined) delete process.env[PRECISION_BENCH_JEV_GATE_ENV];
       else process.env[PRECISION_BENCH_JEV_GATE_ENV] = prior;
+      if (priorApiKey === undefined) delete process.env[PRECISION_BENCH_JEV_API_KEY_ENV];
+      else process.env[PRECISION_BENCH_JEV_API_KEY_ENV] = priorApiKey;
+      if (priorWorkspaceId === undefined) delete process.env[PRECISION_BENCH_WORKSPACE_ID_ENV];
+      else process.env[PRECISION_BENCH_WORKSPACE_ID_ENV] = priorWorkspaceId;
+      if (priorTypesafeKey === undefined) delete process.env.TYPESAFE_API_KEY;
+      else process.env.TYPESAFE_API_KEY = priorTypesafeKey;
     }
-    expect(seen).toEqual(['0', '1']);
+    expect(seen).toEqual([
+      { jevGate: '0', mode: 'local', openai: 'stored-openai-key', anthropic: 'stored-anthropic-key', jevApiKey: undefined, workspaceId: undefined, rawJevApiKey: undefined },
+      { jevGate: '1', mode: 'local', openai: 'stored-openai-key', anthropic: 'stored-anthropic-key', jevApiKey: 'stored-typesafe-key', workspaceId: 'ws-worker', rawJevApiKey: undefined },
+    ]);
+    expect(keyReads).toBe(1);
   });
 });
 
@@ -444,6 +548,39 @@ describe('gateReplayWithJev (P-008)', () => {
     };
     const r = await gateReplayWithJev([outcome('q1', ['a'], ['k-a']), outcome('q2', ['b'])], texts, gate, 1);
     expect(r.stats.model).toBe('jev-1.13.0+jev-1.14.0');
+  });
+});
+
+describe('precision worker Jev gate', () => {
+  it('uses the injected key and emits only the sanitized decision ledger projection', async () => {
+    const emitted: unknown[] = [];
+    const gate = createPrecisionBenchJevGate({
+      workspaceId: 'ws-worker',
+      apiKey: 'worker-typesafe-key',
+      fetch: async (_url, init) => {
+        const request = JSON.parse(init.body) as { questions: Record<string, unknown> };
+        const answers = Object.fromEntries(Object.keys(request.questions).map((id) => [id, { type: 'noul', noul: 0.9 }]));
+        return {
+          status: 200,
+          headers: { get: () => null },
+          text: async () => JSON.stringify({ model: 'jev-1.13.0', answers }),
+        };
+      },
+      onLedgerEntry: (entry) => { emitted.push(entry); },
+    });
+
+    const result = await gate({
+      message: 'private user prompt',
+      candidates: [{ id: 'memory-a', text: 'private candidate memory text' }],
+      consumer: PRECISION_BENCH_JEV_CONSUMER,
+    });
+
+    expect(result).toMatchObject({ effective: 'on', outcome: 'answered', keep: [true], model: 'jev-1.13.0' });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toMatchObject({ consumer: 'memory-bench', subjectIds: ['memory-a'], outcome: 'answered' });
+    expect(emitted[0]).not.toHaveProperty('request');
+    expect(JSON.stringify(emitted)).not.toContain('private user prompt');
+    expect(JSON.stringify(emitted)).not.toContain('private candidate memory text');
   });
 });
 

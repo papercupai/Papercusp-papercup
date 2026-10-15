@@ -1,0 +1,117 @@
+{
+  "schemaVersion": "p011-expiry-resources-independent-v1",
+  "proof": {
+    "path": "docs/evidence/papercusp-oct5-p011-expiry-resources-r1-2026-10-05.json",
+    "bytes": 26200,
+    "sha256": "1235f94168d6c5815d9c8cc50eda4d66ba96c25050339d5c752cf7b7385403fb",
+    "result": {
+      "arms": [
+        {
+          "mode": "baseline",
+          "identity": "2297151:1767786:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "idleBefore": {
+            "pssDeltaBytes": 319488,
+            "allocatedBytes": 1755984
+          },
+          "ordinary": {
+            "pssDeltaBytes": 16384,
+            "allocatedBytes": 1520256
+          },
+          "idleAfter": {
+            "pssDeltaBytes": 1024,
+            "allocatedBytes": 766640
+          },
+          "diagnosticHeapUsedBytes": 168962584,
+          "diagnosticPssBytes": 277155840,
+          "expiredReachable": 438
+        },
+        {
+          "mode": "pruned",
+          "identity": "2297482:1767914:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "idleBefore": {
+            "pssDeltaBytes": 28672,
+            "allocatedBytes": 1717312
+          },
+          "ordinary": {
+            "pssDeltaBytes": 20480,
+            "allocatedBytes": 2185864
+          },
+          "idleAfter": {
+            "pssDeltaBytes": 0,
+            "allocatedBytes": 461216
+          },
+          "diagnosticHeapUsedBytes": 5259440,
+          "diagnosticPssBytes": 295280640,
+          "expiredReachable": 0
+        },
+        {
+          "mode": "pruned",
+          "identity": "2297938:1768022:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "idleBefore": {
+            "pssDeltaBytes": 16384,
+            "allocatedBytes": 835304
+          },
+          "ordinary": {
+            "pssDeltaBytes": 16384,
+            "allocatedBytes": 2868504
+          },
+          "idleAfter": {
+            "pssDeltaBytes": 3072,
+            "allocatedBytes": 737920
+          },
+          "diagnosticHeapUsedBytes": 5291520,
+          "diagnosticPssBytes": 295586816,
+          "expiredReachable": 0
+        },
+        {
+          "mode": "baseline",
+          "identity": "2298411:1768131:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "idleBefore": {
+            "pssDeltaBytes": 11264,
+            "allocatedBytes": 467192
+          },
+          "ordinary": {
+            "pssDeltaBytes": 12288,
+            "allocatedBytes": 912784
+          },
+          "idleAfter": {
+            "pssDeltaBytes": -1024,
+            "allocatedBytes": 192400
+          },
+          "diagnosticHeapUsedBytes": 168962728,
+          "diagnosticPssBytes": 286617600,
+          "expiredReachable": 438
+        }
+      ],
+      "pairs": [
+        {
+          "baselineArm": 0,
+          "candidateArm": 1,
+          "ordinaryPssGrowthDifferenceBytes": -4096,
+          "ordinaryAllocatedDifferenceBytes": -665608,
+          "diagnosticHeapDifferenceBytes": 163703144,
+          "diagnosticPssDifferenceBytes": -18124800
+        },
+        {
+          "baselineArm": 3,
+          "candidateArm": 2,
+          "ordinaryPssGrowthDifferenceBytes": -4096,
+          "ordinaryAllocatedDifferenceBytes": -1955720,
+          "diagnosticHeapDifferenceBytes": 163671208,
+          "diagnosticPssDifferenceBytes": -8969216
+        }
+      ],
+      "usefulEntries": 604,
+      "usefulSha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028",
+      "disposition": "Expired roots reclaimed with complete useful content; unforced resource costs observed independently.",
+      "nativePhysicalOwnership": "unknown",
+      "productionSavings": "unmeasured",
+      "fullExecutedOperatorGraph": "unknown"
+    }
+  },
+  "independentOf": "No sampler import or headline; raw PID/source/workload/counter phases and independently regenerated useful contents.",
+  "limitations": [
+    "Private cache evidence only; full P011, live operator, native physical ownership and shipment remain open.",
+    "Diagnostic GC and root observations occur after unforced resource phases; unfavorable PSS deltas are retained."
+  ]
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reconcileNowNext, DERIVED_NEXT_MARK } from './now-next-derivation';
+import { reconcileNowNext, reconcileNowState, DERIVED_NEXT_MARK } from './now-next-derivation';
 import type { ItemStatus, PlanItem } from '@papercusp/plan-parser';
 
 /**
@@ -27,6 +27,49 @@ const item = (id: string, storedStatus: ItemStatus, extra: Partial<PlanItem> = {
   lineNumber: 1,
   rawLine: `- **${id}** \`${storedStatus}\` ${id} body`,
   ...extra,
+});
+
+describe('reconcileNowState — EI-25279424848174951 lifecycle narration', () => {
+  const stored = 'P-001 done; P-002 remains open; P-003/full eleven-consumer reconciliation remains open.';
+
+  it('rechecks the same authored State after an item becomes terminal', () => {
+    const open = [item('P-001', 'done'), item('P-002', 'todo'), item('P-003', 'todo')];
+    expect(reconcileNowState(stored, open).state).toBe(stored);
+    const completed = [item('P-001', 'done'), item('P-002', 'done'), item('P-003', 'todo')];
+    const result = reconcileNowState(stored, completed);
+    expect(result.contradictions).toEqual([expect.objectContaining({ id: 'P-002', status: 'done' })]);
+    expect(result.state.startsWith('⟳ current item status — P-002 [done].')).toBe(true);
+    expect(result.state.endsWith(stored)).toBe(true);
+    expect(result.storedState).toBe(stored);
+    expect(completed[2].storedStatus).toBe('todo');
+  });
+
+  it('leaves the corrected scoped adoption and outstanding consumer work unchanged', () => {
+    const corrected = 'P-002 scoped adoption is DONE/COMMITTED (WI-10006495); P-003/full eleven-consumer reconciliation remains open.';
+    const result = reconcileNowState(corrected, [item('P-002', 'done'), item('P-003', 'todo')]);
+    expect(result.state).toBe(corrected);
+    expect(result.warning).toBeNull();
+    expect(result.contradictions).toEqual([]);
+  });
+
+  it('discloses a dropped item without turning it into completion proof', () => {
+    const result = reconcileNowState('P-002 remains open.', [item('P-002', 'dropped')]);
+    expect(result.warning).toContain('P-002 [dropped]');
+    expect(result.warning).not.toContain('[done]');
+  });
+
+  it('does not infer terminal status from an effective block or unmeasured item', () => {
+    expect(reconcileNowState('P-002 remains open.', [item('P-002', 'blocked')]).warning).toBeNull();
+    expect(reconcileNowState('P-002 remains open.', []).warning).toBeNull();
+    expect(reconcileNowState('Source admission is uncertified.', [item('P-002', 'done')]).warning).toBeNull();
+  });
+
+  it('preserves a foreign plan citation, historical quote and surrounding whitespace', () => {
+    const citation = '  other-plan-2026-01-01 P-002 remains open.  ';
+    expect(reconcileNowState(citation, [item('P-002', 'done')], 'this-plan-2026-01-01').state).toBe(citation);
+    const historical = 'The old State said "P-002 remains open"; P-002 is done.';
+    expect(reconcileNowState(historical, [item('P-002', 'done')]).state).toBe(historical);
+  });
 });
 
 describe('reconcileNowNext — supersede exactly the measured failure class', () => {
@@ -79,7 +122,7 @@ describe('reconcileNowNext — supersede exactly the measured failure class', ()
   });
 
   it('preserves the author’s words verbatim when it supersedes', () => {
-    // Prepend-only, like terminal-now-stamp: the derived verdict leads, the
+    // Prepend-only: the derived verdict leads, the
     // typed line survives beneath it. Nothing is destroyed on a read.
     const prose = 'P-001 — smallest change, highest value (45 items advertise pickable work).';
     const r = reconcileNowNext(prose, [item('P-001', 'done'), item('P-002', 'todo')]);

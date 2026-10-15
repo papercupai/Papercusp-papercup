@@ -20,8 +20,12 @@ Environment=CLOUDSDK_CORE_ACCOUNT=omp-vertex@active-alcove-504205-q3.iam.gservic
 # Re-read every stored byte against its capture-time manifest BEFORE spending a
 # restore on it. Bit rot is the failure a copy job can never see, because a copy
 # job only ever looks at data it just wrote.
-ExecStartPre=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh verify
-ExecStart=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-mirror-restore-drill.sh
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+# pc-estate-mirror.sh reads RESTORE-RUNBOOK.md beside itself (not a snapshotted sidecar).
+Environment=PC_ESTATE_MIRROR_TOOLS_SRC=%h/papercupai-workspace/papercusp/infra/estate-backup
+ExecStartPre=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh verify
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/infra/estate-backup/pc-mirror-restore-drill.sh
 TimeoutStartSec=90min
 
 [Install]

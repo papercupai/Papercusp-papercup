@@ -14,6 +14,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { controlPlaneTempRoot } from '../../../control-plane-temp.mjs';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../../papercusp-root';
 import { buildConsoleEnvelope } from '../../../console-launcher';
@@ -46,7 +47,7 @@ function attachExitWatcher(child: ChildProcess, sessionPromise: Promise<number |
   });
 }
 
-const DEBUG_LOG = '/tmp/console-launch.log';
+const DEBUG_LOG = join(controlPlaneTempRoot('log'), 'console-launch.log');
 function dlog(line: string): void {
   try {
     appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${line}\n`);

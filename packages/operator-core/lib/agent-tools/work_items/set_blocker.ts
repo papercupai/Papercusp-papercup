@@ -13,6 +13,8 @@ import { COORD_ROLES } from '../coordination/roles';
 import { runBulk, bulkContent } from '../_bulk';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
+import { askOp } from '../../coord-ops/ops/compose';
+import { buildCoordOpCtx } from '../../coord-ops/prod-caps';
 import {
   getWorkItem,
   mergeWorkItemPayload,
@@ -24,14 +26,23 @@ import {
   applyExternalBlockerUpdate,
   externalBlockerCapabilityPolicy,
   EXTERNAL_BLOCKER_CAPABILITIES,
+  OWNER_ASK_DEFAULT_ACTIONS,
   readExternalBlockers,
+  isDirectHumanCapability,
+  isHumanBlockerCapability,
+  type DirectHumanCapability,
   type ExternalBlockerCapability,
   type ExternalBlockerKind,
+  type OwnerAskDefaultAction,
 } from '../../external-blockers';
 import { lookupWorkItem } from './_lookup';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
+import { hasActiveStrictHumanAsk } from '../../hold-registry';
 import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
-import { workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
+import { pureWorkItemDependencyReferents, workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
+import { linkWorkItemRefDependencies } from './work-item-ref-blocker-edges';
+import { workItemRefDependencyRefusal } from './work-item-ref-dependency-refusal';
+import { OWNER_AUTHORITY_TOPICS, type OwnerAuthorityTopic } from '../../consult/decision-review';
 
 // Older callers used the missing capability as `kind` (for example,
 // `kind:'credential'`). Keep accepting those inputs at the tool boundary, but
@@ -50,6 +61,9 @@ const BLOCKER_KIND = z.enum([
 const BLOCKER_CAPABILITY = z.enum(EXTERNAL_BLOCKER_CAPABILITIES);
 type BlockerKindInput = z.infer<typeof BLOCKER_KIND>;
 type BlockerCapabilityInput = z.infer<typeof BLOCKER_CAPABILITY>;
+const SET_BLOCKER_CALL_CONSTRAINT =
+  "For a single-item call that sets a blocker, pass id, kind, and ref; ref is required even though it is optional in the structural schema. For items:[...], each entry that sets a blocker also requires kind and ref. A clear-only call may omit ref when one active blocker can be resolved; migrateWorkItemRefs:true takes only id. When setting a strict human owner-capability blocker (capability: credential, physical-device, external-service-action, or product-decision), provide a nonblank defaultIfUnanswered. For items:[...], this applies to each entry. A reassertion may omit it only when that work-item already has an active human blocker with the same ref and a nonblank defaultIfUnanswered. Clear-only calls and non-human blockers do not require it. The legacy kind shorthands credential, physical-device, external-service-action, and product-decision are treated as human capabilities." +
+  " For a non-final item blocked on main/:3070/green-checkpoint, put in summary or evidence the literal phrase 'deployed-only', what staging/current-build cannot exercise, and a concrete reason introduced with because/due to/since; otherwise the guard refuses the blocker and source work continues on staging/current-build.";
 type BlockerInput = {
   id: string;
   kind?: BlockerKindInput;
@@ -58,8 +72,15 @@ type BlockerInput = {
   summary?: string;
   evidence?: string;
   nextVerb?: string;
+  recheckAt?: string;
+  defaultIfUnanswered?: string;
+  decideBy?: string;
+  defaultAction?: OwnerAskDefaultAction;
+  /** consult-backed-parking R-14: a product-decision park on an owner-authority topic. */
+  ownerAuthorityTopic?: OwnerAuthorityTopic;
   clear?: boolean;
   harness?: string;
+  migrateWorkItemRefs?: boolean;
 };
 type NormalizedBlockerInput = Omit<BlockerInput, 'kind'> & { kind?: ExternalBlockerKind };
 const CAPABILITY_KIND_ALIASES = {
@@ -94,16 +115,130 @@ function normalizeBlockerInput(input: BlockerInput): NormalizedBlockerInput {
   };
 }
 
+function directHumanCapabilityChoices(capability: DirectHumanCapability): string[] {
+  switch (capability) {
+    case 'credential':
+      return [
+        'I will provide it through the approved secret/configuration surface (do not paste a credential in chat).',
+        'Route this to the credential holder; I will identify the right person.',
+        'Keep this work-item parked until a credential holder is available.',
+      ];
+    case 'physical-device':
+      return [
+        'I will perform or attest the required physical-device interaction.',
+        'Route this to the person who has the device; I will identify them.',
+        'Keep this work-item parked until the device is available.',
+      ];
+    case 'external-service-action':
+      return [
+        'I will perform the action through the approved external-service integration.',
+        'Route this to the service operator; I will identify the right person.',
+        'Keep this work-item parked until the service action is available.',
+      ];
+    default:
+      return [];
+  }
+}
+
+function directHumanCapabilityQuestion(input: NormalizedBlockerInput, defaultIfUnanswered: string) {
+  const capability = input.capability as DirectHumanCapability;
+  const options = directHumanCapabilityChoices(capability);
+  return {
+    options,
+    question: `How should we resolve the ${capability} blocker for work-item ${input.id}?`,
+    body: [
+      `Blocker: ${input.summary?.trim() ?? input.ref ?? input.id}`,
+      `Reference: ${input.ref}`,
+      `Action that unblocks it: ${input.nextVerb?.trim()}`,
+      '',
+      'Choose one option by number or reply with the corresponding action:',
+      ...options.map((option, index) => `${index + 1}. ${option}`),
+      '',
+      `If you do not answer: ${defaultIfUnanswered}`,
+    ].join('\n'),
+  };
+}
+
+async function openDirectHumanCapabilityQuestion(
+  input: NormalizedBlockerInput,
+  identity: ReturnType<typeof resolveAgentIdentity>,
+  rawCtx: unknown,
+  defaultIfUnanswered: string,
+  supersedesConversationId?: string,
+) {
+  const { question, body, options } = directHumanCapabilityQuestion(input, defaultIfUnanswered);
+  const ctxHarness = (rawCtx as { harnessSlug?: unknown } | null)?.harnessSlug;
+  const coordContext = buildCoordOpCtx({
+    identity: { ownerId: identity.ownerId, ownerLabel: identity.ownerLabel },
+    workspaceId: identity.workspaceId ?? undefined,
+    harnessSlug:
+      input.harness ?? (typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined),
+    callerId: identity.ownerId,
+  });
+  const ask = await askOp.run(
+    {
+      question,
+      body,
+      timeout_s: 0,
+      poll_ms: 2000,
+      ...(supersedesConversationId ? { supersedes_conversation_id: supersedesConversationId } : {}),
+    },
+    coordContext,
+  );
+  return { conversationId: ask.conversation_id, options };
+}
+
 const fields = {
   kind: BLOCKER_KIND.optional(),
   capability: BLOCKER_CAPABILITY.optional(),
   ref: z.string().min(1).max(300).optional(),
-  summary: z.string().max(1000).optional(),
-  evidence: z.string().max(4000).optional(),
+  summary: z.string().max(1000).optional().describe(
+    "Blocker rationale. For a non-final deployed-only exception, include here or in evidence the literal phrase 'deployed-only', what staging/current-build cannot exercise, and a concrete reason (because/due to/since).",
+  ),
+  evidence: z.string().max(4000).optional().describe(
+    "Supporting evidence. The non-final deployed-only exception checks summary and evidence for the literal phrase 'deployed-only', the staging/current-build limitation, and a concrete reason (because/due to/since).",
+  ),
   nextVerb: z.string().max(300).optional(),
+  recheckAt: z.string().datetime({ offset: true }).optional()
+    .describe('Next condition re-check. Omit to use the existing hold registry cadence; this does not authorize clearing on expiry.'),
+  defaultIfUnanswered: z.string().max(500).optional(),
+  decideBy: z.string().max(40).optional(),
+  defaultAction: z
+    .enum(OWNER_ASK_DEFAULT_ACTIONS)
+    .optional()
+    .describe(
+      "Typed, machine-executable form of defaultIfUnanswered, applied ONCE by the reaper after decideBy passes with no owner answer. stay_parked: ask stays active, item stays parked. release_to_agents: ask cleared, item returns to the claimable pool. Needs decideBy; the free-text default is never parsed.",
+    ),
+  ownerAuthorityTopic: z
+    .enum(OWNER_AUTHORITY_TOPICS)
+    .optional()
+    .describe('product-decision parks only: the owner-authority topic. Such a park never resolves to proceed without the owner.'),
   clear: z.boolean().optional(),
   harness: z.string().max(80).optional(),
+  migrateWorkItemRefs: z
+    .boolean()
+    .optional()
+    .describe('Migrate this item\'s legacy rows that name only work-items to blocks edges; pass id (+harness) only.'),
 };
+
+/** A migration request names only the item: it rewrites existing rows, so a set/clear field is contradictory. */
+function validateMigrateOnly(
+  value: { migrateWorkItemRefs?: boolean; kind?: unknown; capability?: unknown; ref?: unknown; clear?: unknown },
+  ctx: z.RefinementCtx,
+  path: (string | number)[] = [],
+) {
+  if (value.migrateWorkItemRefs !== true) return;
+  for (const key of ['kind', 'capability', 'ref', 'clear'] as const) {
+    if (value[key] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, key],
+        message: `migrateWorkItemRefs rewrites the item's existing rows and cannot be combined with '${key}'`,
+      });
+    }
+  }
+}
+
 const itemSpec = z
   .object({ id: z.string().min(1), ...fields })
   .strict()
@@ -111,22 +246,193 @@ const itemSpec = z
 
 const TERMINAL = new Set(['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']);
 
+type WorkItemRow = NonNullable<Awaited<ReturnType<typeof getWorkItem>>>;
+const MIGRATION_EVIDENCE = 'WI-10005020 R-15: migrated to the work_item_deps blocks edge (canonical dependency form)';
+
+const OWNER_ACTION_FLAGS = ['needsOwnerAction', 'needsHuman'] as const;
+
+/**
+ * WI-10008173 — the owner-action payload flags a CLEAR must release with its blocker.
+ *
+ * `payload.needsOwnerAction` (and legacy `needsHuman`) are written ALONGSIDE a human
+ * blocker (resolve-core's park write, mergeIssuePayload in work-items.ts) and gate every
+ * claim door on their own (`needsOwnerActionExclusionSql`, the `needsOwnerAction` claimable
+ * exclusion leg). Clearing the last active human blocker removes the flag's only backing
+ * evidence, so the flag must go in the SAME CAS write; leaving it reopened the row while
+ * keeping it excluded from every claim door (measured 2026-10-10: 7 open rows, 0 active
+ * blockers, flag still set).
+ *
+ * Releases nothing unless this request CLEARS a human-kind blocker and no active human-kind
+ * blocker remains, so a surviving owner ask, a non-human clear, or a set call never drops
+ * an owner flag.
+ */
+export function ownerActionFlagsReleasedByClear(
+  payload: unknown,
+  remainingActive: ReadonlyArray<{ kind: string }>,
+  change: { kind: string; cleared: boolean },
+): Array<(typeof OWNER_ACTION_FLAGS)[number]> {
+  if (!change.cleared || change.kind !== 'human') return [];
+  if (remainingActive.some((blocker) => blocker.kind === 'human')) return [];
+  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : {};
+  return OWNER_ACTION_FLAGS.filter((key) => record[key] === true);
+}
+
+/**
+ * WI-10005020 (P-002 / R-15) — migrate an item's legacy `externalBlockers` rows whose ref
+ * names ONLY work-items to the canonical `blocks` edge, then clear the row (history kept).
+ *
+ * - A referent equal to the item's own id is not a dependency: rows naming only the item
+ *   itself are owner-action records and stay untouched; a self id inside a multi-ref row
+ *   is dropped from the referents.
+ * - A terminal dependent gets its rows cleared without new edges — nothing can wait on it.
+ * - A refused edge (missing referent, cycle, an active dependant's guard) leaves that row
+ *   active and is reported, so no dependency is ever lost.
+ * - When no active row remains, the lifecycle mirrors clearing the last blocker: `blocked`
+ *   returns to `open` (the edge alone now gates claiming) and an issue's claim hold drops.
+ */
+async function migrateWorkItemRefRows(input: NormalizedBlockerInput, workItem: WorkItemRow, by: string) {
+  const ownId = input.id.toUpperCase();
+  const dependentTerminal = TERMINAL.has(workItem.state.toLowerCase());
+  const converted: Array<{ kind: string; ref: string; blockers: string[] }> = [];
+  const refused: Array<{ kind: string; ref: string; error: string }> = [];
+  const untouchedSelfOnly: Array<{ kind: string; ref: string }> = [];
+  let payload: Record<string, unknown> =
+    workItem.payload && typeof workItem.payload === 'object' && !Array.isArray(workItem.payload)
+      ? (workItem.payload as Record<string, unknown>)
+      : {};
+  let blockers = readExternalBlockers(payload);
+
+  for (const row of activeExternalBlockers(workItem.payload)) {
+    const referents = pureWorkItemDependencyReferents(row.ref);
+    if (!referents) continue;
+    const dependencies = referents.filter((referent) => referent !== ownId);
+    if (!dependencies.length) {
+      untouchedSelfOnly.push({ kind: row.kind, ref: row.ref });
+      continue;
+    }
+    if (!dependentTerminal) {
+      const linked = await linkWorkItemRefDependencies({
+        dependentId: input.id,
+        harness: input.harness,
+        referents: dependencies,
+        by,
+      });
+      if (!linked.ok) {
+        refused.push({ kind: row.kind, ref: row.ref, error: linked.error });
+        continue;
+      }
+    }
+    const history = applyExternalBlockerUpdate(
+      payload,
+      { kind: row.kind, ref: row.ref, clear: true, evidence: MIGRATION_EVIDENCE },
+      by,
+      { autoAuthority: false },
+    );
+    blockers = history.blockers;
+    payload = { ...payload, externalBlockers: blockers };
+    converted.push({ kind: row.kind, ref: row.ref, blockers: dependentTerminal ? [] : dependencies });
+  }
+
+  const migration = { dependentTerminal, converted, refused, untouchedSelfOnly };
+  if (!converted.length) {
+    return {
+      ok: refused.length === 0,
+      id: input.id,
+      changed: false,
+      workItem,
+      migration,
+      activeBlockers: activeExternalBlockers(workItem.payload),
+      ...(refused.length
+        ? {
+            code: 'work_item_ref_dependency_refused',
+            error: refused.map((r) => r.error).join(' | '),
+            refusal: workItemRefDependencyRefusal(input.id, refused.map((r) => r.ref).join(',')),
+          }
+        : {}),
+    };
+  }
+
+  const ownerFlagUnset = ownerActionFlagsReleasedByClear(
+    workItem.payload,
+    blockers.filter((blocker) => blocker.status === 'active'),
+    { kind: converted.some((row) => row.kind === 'human') ? 'human' : 'non-human', cleared: true },
+  );
+  const updated = await mergeWorkItemPayload(input.id, { externalBlockers: blockers }, {
+    harness: input.harness,
+    expectedExternalBlockers: (workItem.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+    ...(ownerFlagUnset.length > 0 ? { unset: ownerFlagUnset } : {}),
+  });
+  if (!updated) return {
+    ok: false as const, id: input.id, code: 'blocker_history_conflict',
+    error: 'Blocker history changed or the row became unwritable; the typed hold was not cleared. Dependency edges may already exist. Read work_items:get before retrying.',
+    migration,
+    partialOutcome: { blockerHistoryPersisted: false, dependencyEdgesMayBePersisted: !dependentTerminal },
+  };
+  const active = activeExternalBlockers(updated.payload);
+  let finalWorkItem = updated;
+  let lifecycle: unknown = null;
+  if (active.length === 0 && !dependentTerminal) {
+    if (updated.state === 'blocked') {
+      // The payload write and the edges above are already committed, so a refused
+      // restore (e.g. the plan gate while the linked plan item is still blocked)
+      // must not report the whole migration as failed. The item stays blocked,
+      // which is correct while that gate holds; report the refusal as lifecycle.
+      try {
+        const restored = await setWorkItemStateWithAliasInfo(input.id, 'open', { harness: input.harness, by });
+        if (restored.workItem) finalWorkItem = restored.workItem;
+        lifecycle = restored;
+      } catch (err) {
+        lifecycle = {
+          restored: false,
+          state: updated.state,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    } else if (updated.family === 'issue') {
+      lifecycle = await setWorkItemClaimHold(input.id, false, {
+        harness: input.harness,
+        by,
+        reason: 'external work-item-ref blockers migrated to blocks edges',
+      });
+    }
+  }
+  return {
+    ok: refused.length === 0,
+    id: input.id,
+    changed: true,
+    workItem: finalWorkItem,
+    migration,
+    activeBlockers: active,
+    blockerHistory: blockers,
+    lifecycle,
+    ...(refused.length
+      ? {
+          code: 'work_item_ref_dependency_refused',
+          error: refused.map((r) => r.error).join(' | '),
+          refusal: workItemRefDependencyRefusal(input.id, refused.map((r) => r.ref).join(',')),
+        }
+      : {}),
+  };
+}
+
 export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
   description:
-    "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Capability shorthands (kind:'credential') normalize to kind:'human', capability:'credential'. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history.",
+    "Set/clear typed external blockers (event, gate, runtime, human capability); internal work-item dependencies use work_items:link {rel:'blocks'}. `kind` names the trigger, `capability` what is missing. Shorthands such as `kind:'credential'` normalize to human/credential. Clear preserves history. Non-final work proceeds on staging/current-build; main/:3070 waits require final shipment or a named deployed-only property staging cannot exercise. Include literal 'deployed-only', the staging limitation, and a concrete reason in summary/evidence.",
   guidance: {
     // P-011: response documentation lives here, not in `description` — `returns` is not
     // counted against the 1500-char prompt-weight budget and is demand-loaded via
     // tools:find instead of baked into every system prompt (the WI-9334 pattern).
     returns:
-      'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by.',
-    when: 'Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.',
+      'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), ownerAsk (the real coord:ask-owner conversation and choice list opened for a credential/device/service action), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by. Omitted legacy rows infer live-dependency; new human rows require a closed-list capability.',
+    when: "Use only when a named external condition or human capability actually stops work. Credential/device/service blockers open coord:ask-owner. kind:'product-decision' may park with defaultIfUnanswered + decideBy; owner-authority topics still need the owner. Use a stable ref and name nextVerb when known.",
     notWhen:
-      "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source). A vague concern with no actual stop condition is a comment, not a blocker. Do not block ordinary implementation on main/:3070/green-checkpoint — staging/current-build is the acceptance plane; only final shipment or a named deployed-only property waits on the release plane.",
+      "Use work_items:link {rel:'blocks'} when another work-item must finish first. A vague concern is not a blocker. Do not pause ordinary non-final work for main/:3070/green-checkpoint; staging/current-build is the acceptance plane.",
     chaining:
-      'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call may omit ref when the item has one matching active blocker; pass ref (and kind when reused) if the request is ambiguous.',
+      'set_blocker {id,kind,ref,…} → follow the returned disposition → set_blocker {id,ref,clear:true,evidence} when resolved. Omit ref on clear-only only when one active blocker matches.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -142,28 +448,36 @@ export default defineTool({
       kind: BLOCKER_KIND.optional(),
       capability: BLOCKER_CAPABILITY.optional(),
       ref: z.string().min(1).max(300).optional(),
-      summary: z.string().max(1000).optional(),
-      evidence: z.string().max(4000).optional(),
+      summary: fields.summary,
+      evidence: fields.evidence,
       nextVerb: z.string().max(300).optional(),
+      recheckAt: fields.recheckAt,
+      defaultIfUnanswered: z.string().max(500).optional(),
+      decideBy: z.string().max(40).optional(),
+      defaultAction: fields.defaultAction,
+      ownerAuthorityTopic: fields.ownerAuthorityTopic,
       clear: z.boolean().optional(),
       harness: z.string().max(80).optional(),
+      migrateWorkItemRefs: fields.migrateWorkItemRefs,
       items: z.array(itemSpec).min(1).max(100).optional(),
     })
     .strict()
     .refine(
       (args) =>
         (args.items?.length ?? 0) > 0 ||
-        (Boolean(args.id) && (Boolean(args.ref) || args.clear === true)),
+        (Boolean(args.id) && (Boolean(args.ref) || args.clear === true || args.migrateWorkItemRefs === true)),
       {
         message:
-          'pass { id, ref, kind?, summary? } for one, or items:[{ id, ref, kind?, … }]; clear:true may omit ref when one active blocker matches',
+          'pass { id, ref, kind?, summary? } for one, or items:[{ id, ref, kind?, … }]; clear:true may omit ref when one active blocker matches; migrateWorkItemRefs:true takes only id',
       },
     )
     .superRefine((args, ctx) => {
       validateCapabilityKindAlias(args, ctx);
+      validateMigrateOnly(args, ctx);
       if (!args.items?.length) return;
       for (const [index, item] of args.items.entries()) {
-        if (!item.clear && !item.ref) {
+        validateMigrateOnly(item, ctx, ['items', index]);
+        if (!item.clear && !item.ref && item.migrateWorkItemRefs !== true) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['items', index, 'ref'],
@@ -172,13 +486,20 @@ export default defineTool({
         }
       }
     })
-    .refine((args) => (args.items?.length ?? 0) > 0 || Boolean(args.kind) || args.clear === true, {
-      message: 'kind is required when setting a blocker; clear:true may infer kind from ref',
-    })
+    .refine(
+      (args) =>
+        (args.items?.length ?? 0) > 0 ||
+        Boolean(args.kind) ||
+        args.clear === true ||
+        args.migrateWorkItemRefs === true,
+      {
+        message: 'kind is required when setting a blocker; clear:true may infer kind from ref',
+      },
+    )
     .superRefine((args, ctx) => {
       if (!args.items?.length) return;
       for (const [index, item] of args.items.entries()) {
-        if (!item.kind && item.clear !== true) {
+        if (!item.kind && item.clear !== true && item.migrateWorkItemRefs !== true) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['items', index, 'kind'],
@@ -186,7 +507,8 @@ export default defineTool({
           });
         }
       }
-    }),
+    })
+    .meta({ 'x-papercusp-call-constraint': SET_BLOCKER_CALL_CONSTRAINT }),
   result: z
     .object({
       rel: z.string().optional(),
@@ -195,6 +517,8 @@ export default defineTool({
       activeBlockers: z.array(z.unknown()).optional(),
       capabilityDispositions: z.unknown().optional(),
       lifecycle: z.unknown().optional(),
+      park: z.unknown().optional(),
+      ownerAsk: z.object({ conversationId: z.string(), options: z.array(z.string()) }).optional(),
       error: z.string().optional(),
     })
     .passthrough(),
@@ -211,8 +535,14 @@ export default defineTool({
             summary: args.summary,
             evidence: args.evidence,
             nextVerb: args.nextVerb,
+            recheckAt: args.recheckAt,
+            defaultIfUnanswered: args.defaultIfUnanswered,
+            decideBy: args.decideBy,
+            defaultAction: args.defaultAction,
+            ownerAuthorityTopic: args.ownerAuthorityTopic,
             clear: args.clear,
             harness: args.harness,
+            migrateWorkItemRefs: args.migrateWorkItemRefs,
           },
         ];
     const items: NormalizedBlockerInput[] = rawItems.map(normalizeBlockerInput);
@@ -231,6 +561,9 @@ export default defineTool({
       async (input) => {
         const workItem = await getWorkItem(input.id, input.harness);
         if (!workItem) return { ok: false as const, id: input.id, error: `work_item '${input.id}' not found` };
+        if (input.migrateWorkItemRefs) {
+          return migrateWorkItemRefRows(input, workItem, identity.ownerId);
+        }
         if (!input.clear && TERMINAL.has(workItem.state.toLowerCase())) {
           return {
             ok: false as const,
@@ -246,11 +579,66 @@ export default defineTool({
               error: `work_item '${input.id}' blocker ref is required when setting a blocker. Blocker was not written.`,
             };
           }
-          // WI-2141488: a bare work-item id here is inert — no event key, nothing
-          // to await, nothing to clear — so the row would wait forever. Refuse at
-          // the write; `clear` is deliberately exempt so rows already carrying a
-          // bad ref stay clearable.
-          const workItemRef = workItemRefBlockerProblem({ itemId: input.id, ref: input.ref });
+          // WI-10005020 (P-002 / R-14): a ref naming ONLY work-items (bare ids or
+          // `work-item:done:<id>` keys) is a dependency, and its one canonical form is
+          // the `blocks` edge the claim floors, plans:items blockedBy and the
+          // dependency traversal read. Record that edge instead of an external row;
+          // the lifecycle is left alone because the edge itself gates claiming.
+          // Legacy owner asks can use their own item id as the ask identity.
+          // Preserve that existing condition on reassertion; it is not a
+          // dependency on the item itself. New bare refs still use the edge
+          // writer, and the structured-owner-ask checks below still apply.
+          const existingSelfOwnerAsk =
+            input.kind === 'human' &&
+            isStrictOwnerActionCapability(input.capability) &&
+            input.ref.toUpperCase() === input.id.toUpperCase() &&
+            activeExternalBlockers(workItem.payload).some((blocker) =>
+              blocker.kind === 'human' &&
+              blocker.ref === input.ref &&
+              blocker.capability === input.capability,
+            );
+          const referents = existingSelfOwnerAsk ? null : pureWorkItemDependencyReferents(input.ref);
+          if (referents) {
+            const linked = await linkWorkItemRefDependencies({
+              dependentId: input.id,
+              harness: input.harness,
+              referents,
+              by: identity.ownerId,
+            });
+            if (!linked.ok) {
+              return { ok: false as const, id: input.id, error: linked.error, code: linked.code, refusal: linked.refusal };
+            }
+            return {
+              ok: true as const,
+              id: input.id,
+              changed: true,
+              workItem,
+              convertedToEdge: { rel: 'blocks' as const, blockers: linked.edges.map((edge) => edge.blocker) },
+              note:
+                `Recorded as work_item_deps blocks edge(s) ${referents.join(', ')} → ${input.id}; no external ` +
+                'blocker row was written. The edge resolves itself when the blocker is terminal (dropped counts); ' +
+                'remove it with work_items:link { rel:"blocks", remove:true }.',
+              activeBlockers: activeExternalBlockers(workItem.payload),
+              blockerHistory: readExternalBlockers(workItem.payload),
+              capabilityDisposition: externalBlockerCapabilityPolicy(input.capability ?? 'live-dependency'),
+              autoCleared: false,
+            };
+          }
+          if (input.kind === 'human' && !isHumanBlockerCapability(input.capability)) {
+            return {
+              ok: false as const,
+              id: input.id,
+              code: 'human_blocker_capability_required',
+              error:
+                `work_item '${input.id}' human blocker rejected — choose an explicit closed-list capability ` +
+                `(${EXTERNAL_BLOCKER_CAPABILITIES.filter((capability) => capability !== 'live-dependency').join(', ')}). ` +
+                'An engineering defect or internal implementation failure remains agent work; do not park it as an untyped human blocker.',
+            };
+          }
+          // WI-2141488: a bare work-item id MIXED with other conditions is still
+          // inert as external text — refuse at the write; `clear` is deliberately
+          // exempt so rows already carrying a bad ref stay clearable.
+          const workItemRef = existingSelfOwnerAsk ? null : workItemRefBlockerProblem({ itemId: input.id, ref: input.ref });
           if (workItemRef) {
             return {
               ok: false as const,
@@ -294,6 +682,32 @@ export default defineTool({
               '`summary` (the concrete question) and `nextVerb` (what action unblocks it).',
           };
         }
+        // Owner-attention ledger (EI-23783029010995961): an ask the owner may never
+        // answer must say what the system WILL do in that case, so silence is a
+        // stated outcome instead of an invisible chronic deferral. A plain
+        // re-assertion of an existing ask may omit it when the record already has one.
+        if (strictHumanAsk) {
+          const existingDefault = activeExternalBlockers(workItem.payload).find(
+            (blocker) => blocker.kind === 'human' && blocker.ref === input.ref,
+          )?.defaultIfUnanswered;
+          if (!input.defaultIfUnanswered?.trim() && !existingDefault?.trim()) {
+            return {
+              ok: false as const,
+              id: input.id,
+              error:
+                `work_item '${input.id}' owner-capability blocker rejected — state \`defaultIfUnanswered\`: what the ` +
+                'system will do if the owner never answers (e.g. "stays parked; weekly digest re-surfaces it" or ' +
+                '"proceeds with option A"). Add `decideBy` (ISO timestamp) when that default has a date. Blocker was not written.',
+            };
+          }
+        }
+        if (!input.clear && input.decideBy !== undefined && !Number.isFinite(Date.parse(input.decideBy))) {
+          return {
+            ok: false as const,
+            id: input.id,
+            error: `work_item '${input.id}' decideBy '${input.decideBy}' is not a parseable ISO timestamp. Blocker was not written.`,
+          };
+        }
         if (strictHumanAsk) {
           // EI-13766 requirement 2: preflight plan truth BEFORE persisting the
           // blocker payload. The canonical lifecycle writer repeats this guard,
@@ -312,13 +726,98 @@ export default defineTool({
           }
         }
 
+        // consult-backed-parking-2026-10-12 P-005 (R-3, R-13, R-14): a NEW product-decision
+        // blocker is a park. It opens a decision-review consult, and the stored blocker ref
+        // becomes consult:<id>. Re-asserting an active park (ref already consult:<id>) skips this.
+        let parkOpened: import('../../consult/park-door').ParkOpened | null = null;
+        if (!input.clear && input.kind === 'human' && input.capability === 'product-decision') {
+          const parkDoor = await import('../../consult/park-door');
+          const activeRefs = activeExternalBlockers(workItem.payload)
+            .filter((blocker) => blocker.kind === 'human' && blocker.capability === 'product-decision')
+            .map((blocker) => blocker.ref);
+          if (!parkDoor.isParkReassertion(input.ref, activeRefs)) {
+            if (input.defaultAction !== undefined) {
+              return {
+                ok: false as const,
+                id: input.id,
+                code: 'park_default_action_unsupported',
+                error:
+                  `work_item '${input.id}' product-decision park rejected — \`defaultAction\` belongs to owner asks; ` +
+                  'a park resolves through its decision-review consult. Omit defaultAction. Blocker was not written.',
+              };
+            }
+            const park = await parkDoor.openDecisionReviewPark(
+              {
+                workItemId: input.id,
+                setterId: identity.ownerId,
+                question: input.summary?.trim() || input.ref || input.id,
+                defaultIfUnanswered: input.defaultIfUnanswered,
+                decideBy: input.decideBy,
+                ownerAuthorityTopic: input.ownerAuthorityTopic ?? null,
+                callerRef: input.ref,
+              },
+              parkDoor.makeProdParkDoorDeps(identity),
+            );
+            if (!park.ok) {
+              return { ok: false as const, id: input.id, code: park.code, error: `work_item '${input.id}' ${park.error}` };
+            }
+            parkOpened = park.park;
+          }
+        }
+
+        let ownerAsk: { conversationId: string; options: string[] } | null = null;
+        let ownerAskConversationId: string | undefined;
+        if (!input.clear && input.kind === 'human' && isDirectHumanCapability(input.capability)) {
+          const currentAsk = activeExternalBlockers(workItem.payload).find(
+            (blocker) =>
+              blocker.kind === 'human' &&
+              blocker.capability === input.capability &&
+              blocker.ref === input.ref,
+          );
+          const effectiveDefault =
+            input.defaultIfUnanswered?.trim() || currentAsk?.defaultIfUnanswered?.trim() || '';
+          const unchangedAsk = Boolean(
+            currentAsk?.ownerAskConversationId &&
+            currentAsk.summary === input.summary?.trim() &&
+            currentAsk.nextVerb === input.nextVerb?.trim() &&
+            currentAsk.defaultIfUnanswered?.trim() === effectiveDefault,
+          );
+          if (unchangedAsk) {
+            ownerAskConversationId = currentAsk!.ownerAskConversationId;
+            ownerAsk = {
+              conversationId: ownerAskConversationId!,
+              options: directHumanCapabilityChoices(input.capability),
+            };
+          } else {
+            try {
+              ownerAsk = await openDirectHumanCapabilityQuestion(
+                input,
+                identity,
+                ctx,
+                effectiveDefault,
+                currentAsk?.ownerAskConversationId,
+              );
+              ownerAskConversationId = ownerAsk.conversationId;
+            } catch (error) {
+              return {
+                ok: false as const,
+                id: input.id,
+                code: 'owner_ask_failed',
+                error:
+                  `work_item '${input.id}' owner-capability blocker rejected — coord:ask-owner could not be opened: ` +
+                  `${error instanceof Error ? error.message : String(error)}. Blocker was not written.`,
+              };
+            }
+          }
+        }
+
         // A clear-only request may omit kind when the ref points to exactly one
         // active blocker. Keep the (kind, ref) identity strict when a ref is
         // reused across different blocker kinds, rather than clearing the wrong
         // dependency. The schema already rejects kind-less set requests; this
         // guard is defensive for callers that bypass parsing.
         let resolvedKind = input.kind;
-        let resolvedRef = input.ref;
+        let resolvedRef = parkOpened ? parkOpened.blockerRef : input.ref;
         if (input.clear && !resolvedRef) {
           const active = activeExternalBlockers(workItem.payload);
           const candidates = resolvedKind ? active.filter((blocker) => blocker.kind === resolvedKind) : active;
@@ -398,8 +897,13 @@ export default defineTool({
             capability: input.capability,
             ref: resolvedRef,
             summary: input.summary,
-            evidence: input.evidence,
+            evidence: parkOpened ? [input.evidence, parkOpened.evidence].filter(Boolean).join('\n') : input.evidence,
             nextVerb: input.nextVerb,
+            recheckAt: input.recheckAt,
+            defaultIfUnanswered: input.defaultIfUnanswered,
+            decideBy: parkOpened ? parkOpened.deadlineAt : input.decideBy,
+            defaultAction: input.defaultAction,
+            ownerAskConversationId,
             clear: input.clear,
           },
           identity.ownerId,
@@ -419,6 +923,7 @@ export default defineTool({
                 (resolvedKind === 'human' ? 'product-decision' : 'live-dependency'),
             ),
             autoCleared: history.autoCleared,
+            ...(ownerAsk ? { ownerAsk } : {}),
           };
         }
 
@@ -430,16 +935,39 @@ export default defineTool({
         // still active. Parking that row as generic `blocked` removes it from
         // the owner-action queue despite the surviving blocker still requiring
         // owner capability.
-        const remainingStrictHumanAsk = active.some(
-          (blocker) => blocker.kind === 'human' && isStrictOwnerActionCapability(blocker.capability),
-        );
+        //
+        // D-029: "strict" is the hold registry's answerable ask (structured AND carrying
+        // defaultIfUnanswered), the same predicate the canonical needs-human writer refuses
+        // on. A surviving LEGACY ask with no default parks as `blocked` (an owner-clearer
+        // blocker hold) instead of a needs-human write the writer would refuse.
+        const remainingStrictHumanAsk = hasActiveStrictHumanAsk({ externalBlockers: active });
+        const ownerFlagUnset = ownerActionFlagsReleasedByClear(workItem.payload, active, {
+          kind: resolvedKind,
+          cleared: input.clear === true,
+        });
         const updated = await mergeWorkItemPayload(
           input.id,
           { externalBlockers: history.blockers },
-          { harness: input.harness },
+          {
+            harness: input.harness,
+            expectedExternalBlockers: (workItem.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+            requireNonTerminal: !input.clear && !history.autoCleared,
+            ...(ownerFlagUnset.length > 0 ? { unset: ownerFlagUnset } : {}),
+          },
         );
         if (!updated) {
-          return { ok: false as const, id: input.id, error: 'blocker payload write did not return the work-item' };
+          return {
+            ok: false as const, id: input.id, code: 'blocker_history_conflict',
+            error: 'Blocker history or lifecycle changed, or the row became unwritable. This attempt wrote no blocker history or lifecycle. Read work_items:get before retrying.',
+            ...(ownerAsk ? {
+              ownerAsk,
+              partialOutcome: {
+                blockerHistoryPersisted: false,
+                ownerAskOpened: true,
+                ownerAskConversationId: ownerAsk.conversationId,
+              },
+            } : {}),
+          };
         }
 
         // EI-13301 fix: `finalWorkItem` tracks the POST-transition snapshot so the
@@ -483,7 +1011,13 @@ export default defineTool({
           // find). If the branches above didn't clear it for any reason (a race with a
           // concurrent write, an unhandled family/state combination, …), force the
           // restore now rather than leaving the item silently orphaned.
-          if (active.length === 0 && finalWorkItem.state === 'blocked') {
+          // WI-10005104: the same stranding exists for an ISSUE-family item parked as
+          // `needs-human` on a strict human ask — setWorkItemClaimHold above only strips
+          // payload hold keys and never touches `status`, so clearing the last ask left
+          // `needs-human` with zero blockers (unclaimable AND unexplained). Feature-family
+          // `needs-human` is deliberately excluded: it can be the plan lane's own state.
+          const strandedIssueNeedsHuman = updated.family === 'issue' && finalWorkItem.state === 'needs-human';
+          if (active.length === 0 && (finalWorkItem.state === 'blocked' || strandedIssueNeedsHuman)) {
             const restored = await setWorkItemStateWithAliasInfo(
               input.id,
               // work-item-status-full-unify P-007: both families restore to the unified
@@ -542,6 +1076,8 @@ export default defineTool({
           ),
           autoCleared: history.autoCleared,
           lifecycle,
+          ...(parkOpened ? { park: parkOpened } : {}),
+          ...(ownerAsk ? { ownerAsk } : {}),
           ...(resolvedKind === 'event' && !input.clear && !history.autoCleared ? { await: { event: resolvedRef } } : {}),
         };
       },

@@ -6,15 +6,71 @@
  * values must NOT accrete JSON quotes) and the watched-key merge that preserves
  * TanStack's native typed params + applies nuqs deletions.
  *
- * Pure functions only — no router/provider wiring — so this is deterministic
- * and DOM-free apart from the global URLSearchParams.
+ * Pure round-trip helpers plus a controlled adapter-lifecycle probe for nuqs's
+ * module-global throttle queue across router mounts.
  */
-import { describe, expect, it } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
+import { useQueryState } from 'nuqs';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+import { describe, expect, it, vi } from 'vitest';
 import {
   decodeQueryValue,
   searchObjectToParams,
   composedSearchToObject,
+  NuqsAdapter,
 } from './nuqs-tanstack-router-adapter';
+
+function QueueWriteButton({ name, value }: { name: string; value: string }) {
+  const [, setValue] = useQueryState(name);
+  return <button onClick={() => { void setValue(value); }}>Write {name}</button>;
+}
+
+function resetNuqsUpdateQueue() {
+  render(<NuqsTestingAdapter />).unmount();
+}
+
+async function mountQueueWriter(name: string, value: string) {
+  resetNuqsUpdateQueue();
+  const root = createRootRoute({
+    component: () => <NuqsAdapter><Outlet /><QueueWriteButton name={name} value={value} /></NuqsAdapter>,
+  });
+  const probe = createRoute({ getParentRoute: () => root, path: '/probe', component: () => null });
+  const router = createRouter({
+    routeTree: root.addChildren([probe]),
+    history: createMemoryHistory({ initialEntries: ['/probe'] }),
+  });
+  const view = render(<RouterProvider router={router} />);
+  await act(async () => { await router.load(); });
+  return { ...view, router };
+}
+
+describe('adapter lifecycle — nuqs global queue across router mounts', () => {
+  it('clears a pending update before an independent router mount', async () => {
+    let useFakeTimers = false;
+    try {
+      const first = await mountQueueWriter('stale', 'from-old-mount');
+      vi.useFakeTimers();
+      useFakeTimers = true;
+      fireEvent.click(screen.getByRole('button', { name: 'Write stale' }));
+      first.unmount();
+
+      // mountQueueWriter clears nuqs's module-global queue; the new router
+      // must receive its own write instead of sharing the prior flush.
+      const second = await mountQueueWriter('fresh', 'from-new-mount');
+      fireEvent.click(screen.getByRole('button', { name: 'Write fresh' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+
+      expect(first.router.state.location.search).not.toHaveProperty('stale');
+      expect(first.router.state.location.search).not.toHaveProperty('fresh');
+      expect(second.router.state.location.search).not.toHaveProperty('stale');
+      expect(second.router.state.location.search).toMatchObject({ fresh: 'from-new-mount' });
+    } finally {
+      cleanup();
+      if (useFakeTimers) vi.useRealTimers();
+    }
+  });
+});
 
 describe('decodeQueryValue — type-faithful nuqs→TanStack decode', () => {
   it('decodes canonical booleans to real booleans (not the quoted strings)', () => {

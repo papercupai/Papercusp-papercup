@@ -100,9 +100,11 @@ describe('sweepOrphanedGymPgContainers', () => {
     const result = await sweepOrphanedGymPgContainers({ image: IMAGE, maxAgeMs: 2 * 60 * 60 * 1000 });
     expect(result.swept).toEqual(['orphan123']);
     expect(result.errors).toEqual([]);
-    // docker rm -f was actually invoked with the container id.
+    // docker rm -f -v was actually invoked with the container id. `-v` is load-bearing:
+    // without it the container's anonymous PG data volume is left dangling on the root
+    // disk (WI-6554700010008551 — ~41 GB of leaked volumes starved the release gate).
     const rmCall = execFileMock.mock.calls.find((c) => c[1]?.[0] === 'rm');
-    expect(rmCall?.[1]).toEqual(['rm', '-f', 'orphan123']);
+    expect(rmCall?.[1]).toEqual(['rm', '-f', '-v', 'orphan123']);
   });
 
   it('mixed set: sweeps only the old un-hashed one, skips the young one and the reused one', async () => {

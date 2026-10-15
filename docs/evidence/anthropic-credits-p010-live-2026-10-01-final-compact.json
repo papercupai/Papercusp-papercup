@@ -1,0 +1,1229 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "P-010 live re-verification on final P-008/P-009 code: subscription HTTP 200 + billing state from a real response",
+ "framework": "operational",
+ "command": [
+  "node",
+  ".papercusp/scratch/acg-live-r32-r33.mjs"
+ ],
+ "startedAt": "2026-10-01T14:29:56.026Z",
+ "finishedAt": "2026-10-01T14:29:56.649Z",
+ "exitCode": 0,
+ "summary": "R-32 PASS (HTTP 200, request req_011CfbgDji9fPY5Ap6hVR5aJ, routed aviynw4); R-33 PASS (stats billing state included for aviynw4).",
+ "assertions": [
+  {
+   "id": "r32-subscription-http200-after-restart",
+   "passed": true,
+   "evidence": "Gateway restart issued 2026-10-01T14:29:17.388Z; processStartedAt=1790864960064 (2026-10-01T14:29:20.064Z); serving build a6ab88c04e. POST /v1/messages 2026-10-01T14:29:56.097Z returned 200; message_start=true message_stop=true; request req_011CfbgDji9fPY5Ap6hVR5aJ; routed aviynw4."
+  },
+  {
+   "id": "r33-billing-from-real-response",
+   "passed": true,
+   "evidence": "Unified headers {\"anthropic-ratelimit-unified-5h-reset\":\"1790875800\",\"anthropic-ratelimit-unified-5h-status\":\"allowed\",\"anthropic-ratelimit-unified-5h-utilization\":\"0.42\",\"anthropic-ratelimit-unified-7d-reset\":\"1791295200\",\"anthropic-ratelimit-unified-7d-status\":\"allowed\",\"anthropic-ratelimit-unified-7d-utilization\":\"0.64\",\"anthropic-ratelimit-unified-fallback-percentage\":\"0.5\",\"anthropic-ratelimit-unified-overage-disabled-reason\":\"org_level_disabled\",\"anthropic-ratelimit-unified-overage-status\":\"rejected\",\"anthropic-ratelimit-unified-representative-claim\":\"five_hour\",\"anthropic-ratelimit-unified-reset\":\"1790875800\",\"anthropic-ratelimit-unified-status\":\"allowed\"}. /stats read from the same process (processStartedAt unchanged=true) has billing.byAccount.aviynw4 = {\"state\":\"included\",\"stateUntil\":1790875800000,\"meteredNow\":false,\"authMode\":\"oauth\",\"meteredPolicy\":\"overflow\",\"classes\":{\"included\":{\"requests\":12,\"inputTokens\":33,\"cacheReadTokens\":2068646,\"cacheCreationTokens\":200572,\"outputTokens\":4537,\"usageKnown\":12,\"outputKnown\":11}},\"metered\":{\"requests\":0,\"inputTokens\":0,\"cacheReadTokens\":0,\"cacheCreationTokens\":0,\"outputTokens\":0,\"usageKnown\":0,\"outputKnown\":0}}."
+  }
+ ],
+ "execution": {
+  "restart": {
+   "target": "gateway",
+   "issuedAt": "2026-10-01T14:29:17.388Z",
+   "buildSha": "a6ab88c04e",
+   "processStartedAt": 1790864960064
+  },
+  "subscription": {
+   "method": "POST",
+   "url": "http://127.0.0.1:8788/v1/messages",
+   "headers": {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "authorization": "Bearer papercusp-gateway",
+    "x-papercusp-owner": "su-839dcda5-7ca5-47d2-b65c-659f18cd82f8"
+   },
+   "body": {
+    "model": "claude-haiku-4-5",
+    "max_tokens": 8,
+    "messages": [
+     {
+      "role": "user",
+      "content": "Reply with OK."
+     }
+    ],
+    "stream": true
+   },
+   "startedAt": "2026-10-01T14:29:56.097Z",
+   "finishedAt": "2026-10-01T14:29:56.643Z",
+   "status": 200,
+   "messageStart": true,
+   "messageStop": true,
+   "requestId": "req_011CfbgDji9fPY5Ap6hVR5aJ",
+   "routedAccount": "aviynw4",
+   "billingHeaders": {
+    "anthropic-ratelimit-unified-5h-reset": "1790875800",
+    "anthropic-ratelimit-unified-5h-status": "allowed",
+    "anthropic-ratelimit-unified-5h-utilization": "0.42",
+    "anthropic-ratelimit-unified-7d-reset": "1791295200",
+    "anthropic-ratelimit-unified-7d-status": "allowed",
+    "anthropic-ratelimit-unified-7d-utilization": "0.64",
+    "anthropic-ratelimit-unified-fallback-percentage": "0.5",
+    "anthropic-ratelimit-unified-overage-disabled-reason": "org_level_disabled",
+    "anthropic-ratelimit-unified-overage-status": "rejected",
+    "anthropic-ratelimit-unified-representative-claim": "five_hour",
+    "anthropic-ratelimit-unified-reset": "1790875800",
+    "anthropic-ratelimit-unified-status": "allowed"
+   }
+  },
+  "statsSnapshot": {
+   "accountId": "aviynw8",
+   "upstreamBase": "https://api.anthropic.com",
+   "processStartedAt": 1790864960064,
+   "processUptimeMs": 36581,
+   "scheduledTimers": [
+    {
+     "name": "config-refresh:capability-envelope",
+     "category": "cache",
+     "intervalMs": 60000,
+     "armedAt": 1790864964428,
+     "lastFireAt": null,
+     "lastError": null,
+     "running": false,
+     "fires": 0,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": null
+    },
+    {
+     "name": "config-refresh:quota",
+     "category": "cache",
+     "intervalMs": 60000,
+     "armedAt": 1790864964426,
+     "lastFireAt": null,
+     "lastError": null,
+     "running": false,
+     "fires": 0,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": null
+    },
+    {
+     "name": "config-refresh:telemetry-buffer",
+     "category": "cache",
+     "intervalMs": 60000,
+     "armedAt": 1790864964428,
+     "lastFireAt": null,
+     "lastError": null,
+     "running": false,
+     "fires": 0,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": null
+    },
+    {
+     "name": "gateway-local-backend-refresh-health",
+     "category": "health-probe",
+     "intervalMs": 30000,
+     "armedAt": 1790864960083,
+     "lastFireAt": 1790864990085,
+     "lastError": null,
+     "running": false,
+     "fires": 1,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": "must-sample"
+    },
+    {
+     "name": "gateway-payload-spool-sweep",
+     "category": "global-sweep",
+     "intervalMs": 60000,
+     "armedAt": 1790864960083,
+     "lastFireAt": null,
+     "lastError": null,
+     "running": false,
+     "fires": 0,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": "timeout-reaper"
+    },
+    {
+     "name": "gateway-pool-reload",
+     "category": "cache",
+     "intervalMs": 60000,
+     "armedAt": 1790864960069,
+     "lastFireAt": null,
+     "lastError": null,
+     "running": false,
+     "fires": 0,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": "violation"
+    },
+    {
+     "name": "gateway-ratehint-pin-resync",
+     "category": "cache",
+     "intervalMs": 60000,
+     "armedAt": 1790864960076,
+     "lastFireAt": null,
+     "lastError": null,
+     "running": false,
+     "fires": 0,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": "violation"
+    },
+    {
+     "name": "gateway-self-heal",
+     "category": "watchdog",
+     "intervalMs": 10000,
+     "armedAt": 1790864960067,
+     "lastFireAt": 1790864990067,
+     "lastError": null,
+     "running": false,
+     "fires": 3,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": "timeout-reaper"
+    },
+    {
+     "name": "gateway-token-refresh",
+     "category": "cache",
+     "intervalMs": 2700000,
+     "armedAt": 1790864960069,
+     "lastFireAt": null,
+     "lastError": null,
+     "running": false,
+     "fires": 0,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": "timeout-reaper"
+    },
+    {
+     "name": "inference-gateway:proactive-egress-probe",
+     "category": "health-probe",
+     "intervalMs": 45000,
+     "armedAt": 1790864960066,
+     "lastFireAt": null,
+     "lastError": null,
+     "running": false,
+     "fires": 0,
+     "shed": false,
+     "instanced": false,
+     "instances": 1,
+     "classification": "must-sample"
+    }
+   ],
+   "totalRequests": 56,
+   "requestStages": {
+    "schemaVersion": 1,
+    "requests": {
+     "started": 55,
+     "finalized": 38,
+     "active": 17,
+     "sampled": 38,
+     "coverage": 1,
+     "reconciled": true,
+     "outcomeReconciled": true,
+     "missingStageTimelines": 0,
+     "cacheUsageObserved": 29,
+     "cacheUsageCoverage": 0.7631578947368421,
+     "cacheWriteObserved": 29
+    },
+    "outcomes": {
+     "ok": 29,
+     "client-error": 9,
+     "upstream-429": 0,
+     "upstream-error": 0,
+     "shed": 0,
+     "cancelled": 0,
+     "gateway-error": 0,
+     "unclassified": 0
+    },
+    "stages": {
+     "routeSelection": {
+      "count": 38,
+      "retained": 38,
+      "p50": 0,
+      "p95": 0,
+      "p99": 1
+     },
+     "queueWait": {
+      "count": 38,
+      "retained": 38,
+      "p50": 219,
+      "p95": 11370,
+      "p99": 12715
+     },
+     "bodyRead": {
+      "count": 38,
+      "retained": 38,
+      "p50": 0,
+      "p95": 1,
+      "p99": 1
+     },
+     "auth": {
+      "count": 38,
+      "retained": 38,
+      "p50": 0,
+      "p95": 113,
+      "p99": 126
+     },
+     "upstreamTtfb": {
+      "count": 38,
+      "retained": 38,
+      "p50": 940,
+      "p95": 8702,
+      "p99": 9718
+     },
+     "stream": {
+      "count": 29,
+      "retained": 29,
+      "p50": 3087,
+      "p95": 10714,
+      "p99": 12148
+     },
+     "gatewayOverhead": {
+      "count": 38,
+      "retained": 38,
+      "p50": 0,
+      "p95": 113,
+      "p99": 127
+     },
+     "total": {
+      "count": 38,
+      "retained": 38,
+      "p50": 5551,
+      "p95": 20613,
+      "p99": 29149
+     }
+    },
+    "missingStageByName": {
+     "routeSelection": 0,
+     "queueWait": 0,
+     "bodyRead": 0,
+     "auth": 0,
+     "upstreamTtfb": 0,
+     "stream": 0,
+     "gatewayOverhead": 0,
+     "total": 0
+    },
+    "sampleCapacity": 4096,
+    "recentCapacity": 256,
+    "recent": {
+     "externalized": true,
+     "rawArtifact": "docs/evidence/anthropic-credits-p010-live-2026-10-01-final.json",
+     "rawArtifactSha256": "ae255d83861295fef3cbd7095b02c16125434142e90a54da3b0e9ac45767b585",
+     "rawArtifactCommit": "8f007ed8bf",
+     "jsonPath": "$.execution.statsSnapshot.requestStages.recent",
+     "entries": 38,
+     "reason": "bulky fleet-wide gateway telemetry, not R-32/R-33 proof; kept verbatim in the SHA-256-pinned raw artifact (testing:record-run 256 KiB cap)"
+    }
+   },
+   "routingQuality": {
+    "countersSinceMs": 1790864960064,
+    "recentLimit": 128,
+    "scoreSemantics": "accountLoadKey; lower-is-better; null=unserviceable",
+    "picks": 52,
+    "upstream429s": 0,
+    "upstream429PerPick": 0,
+    "automatic": {
+     "picks": 22,
+     "comparablePicks": 22,
+     "divergences": 12,
+     "divergenceRate": 0.545455
+    },
+    "pins": {
+     "picks": 30,
+     "explicitPicks": 0,
+     "affinityPicks": 30,
+     "yields": 1,
+     "yieldRate": 0.033333
+    },
+    "byProvider": {
+     "claude": {
+      "picks": 37,
+      "upstream429s": 0,
+      "upstream429PerPick": 0,
+      "automatic": {
+       "picks": 15,
+       "comparablePicks": 15,
+       "divergences": 6,
+       "divergenceRate": 0.4
+      },
+      "pins": {
+       "picks": 22,
+       "explicitPicks": 0,
+       "affinityPicks": 22,
+       "yields": 0,
+       "yieldRate": 0
+      },
+      "byAccount": {
+       "aviynw6": {
+        "picks": 23,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       },
+       "aviynw4": {
+        "picks": 12,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       },
+       "aviynw8": {
+        "picks": 2,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       }
+      }
+     },
+     "codex": {
+      "picks": 15,
+      "upstream429s": 0,
+      "upstream429PerPick": 0,
+      "automatic": {
+       "picks": 7,
+       "comparablePicks": 7,
+       "divergences": 6,
+       "divergenceRate": 0.857143
+      },
+      "pins": {
+       "picks": 8,
+       "explicitPicks": 0,
+       "affinityPicks": 8,
+       "yields": 1,
+       "yieldRate": 0.125
+      },
+      "byAccount": {
+       "chatgpt-sub-cli": {
+        "picks": 1,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       },
+       "aviynw2_codex": {
+        "picks": 2,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       },
+       "aviynw_3": {
+        "picks": 1,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       },
+       "aviynw4_codex": {
+        "picks": 8,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       },
+       "aviynw5_codex": {
+        "picks": 1,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       },
+       "aviynw3_codex": {
+        "picks": 1,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       },
+       "aviynw6_codex": {
+        "picks": 1,
+        "upstream429s": 0,
+        "upstream429PerPick": 0
+       }
+      }
+     }
+    },
+    "recentScope": null,
+    "recent": {
+     "externalized": true,
+     "rawArtifact": "docs/evidence/anthropic-credits-p010-live-2026-10-01-final.json",
+     "rawArtifactSha256": "ae255d83861295fef3cbd7095b02c16125434142e90a54da3b0e9ac45767b585",
+     "rawArtifactCommit": "8f007ed8bf",
+     "jsonPath": "$.execution.statsSnapshot.routingQuality.recent",
+     "entries": 52,
+     "reason": "bulky fleet-wide gateway telemetry, not R-32/R-33 proof; kept verbatim in the SHA-256-pinned raw artifact (testing:record-run 256 KiB cap)"
+    }
+   },
+   "cachePolicy": {
+    "policyVersion": "2026-09-24-ttl-order-budget-v2",
+    "enabled": true,
+    "toolsBreakpoint": false,
+    "splitBoundary": true,
+    "deferLargeTools": true,
+    "anthropicRequests": 39,
+    "ttlUpgraded": 146,
+    "toolsBreakpointInjected": 0,
+    "toolsBreakpointSkippedNoBudget": 0,
+    "toolsBreakpointSkippedAllDeferred": 0,
+    "boundarySplit": 11,
+    "toolsDeferred": 1265,
+    "toolsDeferredBytes": 4753958,
+    "searchToolInjected": 37,
+    "breakpointHistogram": [
+     2,
+     0,
+     0,
+     2,
+     35
+    ],
+    "codexRequests": 15,
+    "codexLegacyRetention": 0,
+    "codexModernTtl": 0,
+    "codexCacheKeySet": 13
+   },
+   "inFlight": 16,
+   "queueDepth": 0,
+   "healthyAccounts": 8,
+   "db": {
+    "ok": true,
+    "observed": true,
+    "connectionLevel": false,
+    "consecutiveFailures": 0,
+    "failingOps": [],
+    "unhealthyForMs": null,
+    "lastOkAt": 1790864996632,
+    "lastFailureAt": null,
+    "lastError": null,
+    "ops": [
+     {
+      "op": "rate-hints",
+      "consecutiveFailures": 0,
+      "failingSince": null,
+      "lastOkAt": 1790864960072,
+      "lastFailureAt": null,
+      "lastError": null,
+      "connectionLevel": false
+     },
+     {
+      "op": "window-projection",
+      "consecutiveFailures": 0,
+      "failingSince": null,
+      "lastOkAt": 1790864996632,
+      "lastFailureAt": null,
+      "lastError": null,
+      "connectionLevel": false
+     }
+    ]
+   },
+   "admission": {
+    "running": 10,
+    "queued": 0,
+    "maxConcurrent": 36,
+    "byPriority": [],
+    "byTier": [
+     {
+      "tier": 1,
+      "minShare": 32,
+      "inFlight": 0,
+      "queued": 0
+     },
+     {
+      "tier": 2,
+      "minShare": 27,
+      "inFlight": 10,
+      "queued": 0
+     },
+     {
+      "tier": 3,
+      "minShare": 27,
+      "inFlight": 0,
+      "queued": 0
+     },
+     {
+      "tier": 4,
+      "minShare": 14,
+      "inFlight": 0,
+      "queued": 0
+     },
+     {
+      "tier": 5,
+      "minShare": 9,
+      "inFlight": 0,
+      "queued": 0
+     }
+    ],
+    "tier1Reserve": 5
+   },
+   "codexAdmission": {
+    "running": 6,
+    "queued": 0,
+    "maxConcurrent": 32,
+    "byPriority": [],
+    "byTier": [
+     {
+      "tier": 1,
+      "minShare": 32,
+      "inFlight": 4,
+      "queued": 0
+     },
+     {
+      "tier": 2,
+      "minShare": 27,
+      "inFlight": 2,
+      "queued": 0
+     },
+     {
+      "tier": 3,
+      "minShare": 27,
+      "inFlight": 0,
+      "queued": 0
+     },
+     {
+      "tier": 4,
+      "minShare": 14,
+      "inFlight": 0,
+      "queued": 0
+     },
+     {
+      "tier": 5,
+      "minShare": 9,
+      "inFlight": 0,
+      "queued": 0
+     }
+    ],
+    "tier1Reserve": 5
+   },
+   "priorityTiers": {
+    "healthyAccounts": 8,
+    "tier1Reserve": 5,
+    "tiers": [
+     {
+      "tier": 1,
+      "minShare": 32,
+      "inFlight": 0,
+      "queued": 0
+     },
+     {
+      "tier": 2,
+      "minShare": 27,
+      "inFlight": 10,
+      "queued": 0
+     },
+     {
+      "tier": 3,
+      "minShare": 27,
+      "inFlight": 0,
+      "queued": 0
+     },
+     {
+      "tier": 4,
+      "minShare": 14,
+      "inFlight": 0,
+      "queued": 0
+     },
+     {
+      "tier": 5,
+      "minShare": 9,
+      "inFlight": 0,
+      "queued": 0
+     }
+    ]
+   },
+   "upstream429": 0,
+   "queued429": 0,
+   "shed429": 0,
+   "edgeThrottleByAccount": {
+    "aviynw10": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw2": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw9": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw3_claude": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw4": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw6": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw8": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "chatgpt-sub-cli": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw2_codex": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw_3": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw4_codex": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw5_codex": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw3_codex": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    },
+    "aviynw6_codex": {
+     "edgeThrottled": false,
+     "cooldownUntil": 0,
+     "cooledIpCount": 0,
+     "bare429Streak": 0
+    }
+   },
+   "egressProxyHealth": {
+    "totalProxyEntries": 0,
+    "reachableProxyEntries": 0,
+    "allDown": false,
+    "configured": false
+   },
+   "shedAllThrottled": 0,
+   "bareBurstRotateSuppressed": 0,
+   "opusToSonnetDowngrades": 0,
+   "clamp": {
+    "mode": "off",
+    "recommendation": 32,
+    "applied": 36,
+    "overridden": true,
+    "legacyConfigured": true,
+    "legacyTickMs": 2000,
+    "serviceableAccounts": 8
+   },
+   "maxQueued": 0,
+   "concurrencyCap": 36,
+   "aimd": {
+    "effective": 36,
+    "cap": 36,
+    "floor": 4,
+    "pressure": 0,
+    "cleanStreak": 3,
+    "decreases": 0,
+    "increases": 4,
+    "hardFailures": 0,
+    "countersSinceMs": 1790864960065
+   },
+   "codexAimd": {
+    "effective": 32,
+    "cap": 32,
+    "floor": 4,
+    "pressure": 0,
+    "cleanStreak": 6,
+    "decreases": 0,
+    "increases": 0,
+    "hardFailures": 0,
+    "countersSinceMs": 1790864960065
+   },
+   "failovers": 0,
+   "upstreamErrors": 0,
+   "egressCircuitOpens": 0,
+   "egressFailsByAccount": {},
+   "egressAttemptsByAccount": {
+    "aviynw6": 23,
+    "chatgpt-sub-cli": 1,
+    "aviynw4": 12,
+    "aviynw8": 2,
+    "aviynw_3": 1,
+    "aviynw2_codex": 2,
+    "aviynw4_codex": 8,
+    "aviynw3_codex": 1,
+    "aviynw5_codex": 2,
+    "aviynw6_codex": 4
+   },
+   "egressFailRateByAccount": {
+    "aviynw6": 0,
+    "chatgpt-sub-cli": 0,
+    "aviynw4": 0,
+    "aviynw8": 0,
+    "aviynw_3": 0,
+    "aviynw2_codex": 0,
+    "aviynw4_codex": 0,
+    "aviynw3_codex": 0,
+    "aviynw5_codex": 0,
+    "aviynw6_codex": 0
+   },
+   "maintenance": {
+    "requests": 0,
+    "errors": 0,
+    "carried": 0
+   },
+   "selfHealReclaims": 0,
+   "slotReconcileMismatch": 0,
+   "inFlightTracked": 14,
+   "oldestHeldSlotAgeMs": 28625,
+   "stallsRecorded": 0,
+   "proactiveEgressProbe": {
+    "enabled": true,
+    "intervalMs": 45000,
+    "lastTickAt": 0,
+    "circuitOpens": 0,
+    "failStreakByAccount": {}
+   },
+   "codex": {
+    "requests": 17,
+    "upstream429": 0,
+    "failovers": 4,
+    "errors": 0
+   },
+   "codexHealthyAccounts": 3,
+   "codexTotalAccounts": 7,
+   "codexModelRefusals": [
+    {
+     "accountId": "aviynw3_codex",
+     "model": "gpt-6.1-sol",
+     "since": 1790864968906,
+     "lastAt": 1790864968906,
+     "until": 1790866768906,
+     "hits": 1,
+     "detail": "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+    },
+    {
+     "accountId": "aviynw5_codex",
+     "model": "gpt-6.1-sol",
+     "since": 1790864969181,
+     "lastAt": 1790864969261,
+     "until": 1790866769261,
+     "hits": 2,
+     "detail": "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+    },
+    {
+     "accountId": "aviynw4_codex",
+     "model": "gpt-6.1-sol",
+     "since": 1790864969366,
+     "lastAt": 1790864969366,
+     "until": 1790866769366,
+     "hits": 1,
+     "detail": "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+    }
+   ],
+   "codexEarliestRecoveryAt": 0,
+   "beeFacing503": {
+    "egressExhausted": 0,
+    "tokenStall": 0
+   },
+   "unified": {
+    "window": "7d",
+    "utilization": 0.79,
+    "resetAt": 1791234000000,
+    "rejected": false,
+    "observedAt": 1790864971780,
+    "staleAsOfMs": 24865,
+    "rejectedActuallyEnforced": false
+   },
+   "smoothing": {
+    "engaged": true,
+    "byAccount": {
+     "aviynw8": {
+      "smoothRpm": true,
+      "rpm": 45,
+      "rpmFactor": 1,
+      "effRpm": 45,
+      "paceDelayMs": 0,
+      "effectivePaceMs": 1334
+     },
+     "aviynw10": {
+      "smoothRpm": true,
+      "rpm": 45,
+      "rpmFactor": 1,
+      "effRpm": 45,
+      "paceDelayMs": 0,
+      "effectivePaceMs": 1334
+     },
+     "aviynw2": {
+      "smoothRpm": true,
+      "rpm": 45,
+      "rpmFactor": 1,
+      "effRpm": 45,
+      "paceDelayMs": 0,
+      "effectivePaceMs": 1334
+     },
+     "aviynw9": {
+      "smoothRpm": true,
+      "rpm": 45,
+      "rpmFactor": 1,
+      "effRpm": 45,
+      "paceDelayMs": 0,
+      "effectivePaceMs": 1334
+     },
+     "aviynw3_claude": {
+      "smoothRpm": true,
+      "rpm": 45,
+      "rpmFactor": 1,
+      "effRpm": 45,
+      "paceDelayMs": 0,
+      "effectivePaceMs": 1334
+     },
+     "aviynw": {
+      "smoothRpm": true,
+      "rpm": 45,
+      "rpmFactor": 1,
+      "effRpm": 45,
+      "paceDelayMs": 0,
+      "effectivePaceMs": 1334
+     },
+     "aviynw4": {
+      "smoothRpm": true,
+      "rpm": 45,
+      "rpmFactor": 1,
+      "effRpm": 45,
+      "paceDelayMs": 0,
+      "effectivePaceMs": 1334
+     },
+     "aviynw6": {
+      "smoothRpm": true,
+      "rpm": 45,
+      "rpmFactor": 1,
+      "effRpm": 45,
+      "paceDelayMs": 0,
+      "effectivePaceMs": 1334
+     }
+    }
+   },
+   "pausedUntil": 0,
+   "pausedActuallyEnforced": false,
+   "cache": {
+    "read": 5503232,
+    "create": 1983218,
+    "input": 1585,
+    "knownTokenTotals": {
+     "read": 5503232,
+     "create": 1983218,
+     "input": 1585
+    },
+    "hits": 29,
+    "misses": 5,
+    "failoverMisses": 0,
+    "hitRate": 0.735,
+    "tokenRateBasis": {
+     "read": 5503232,
+     "inputTotal": 7488035
+    },
+    "coverage": {
+     "requests": 35,
+     "readKnown": 35,
+     "writeKnown": 35,
+     "uncachedInputKnown": 35,
+     "inputTotalKnown": 35,
+     "tokenRateRequests": 35
+    },
+    "byAccount": {
+     "aviynw4": {
+      "read": 2068646,
+      "create": 200572,
+      "input": 33,
+      "knownTokenTotals": {
+       "read": 2068646,
+       "create": 200572,
+       "input": 33
+      },
+      "hits": 10,
+      "misses": 1,
+      "failoverMisses": 0,
+      "hitRate": 0.912,
+      "tokenRateBasis": {
+       "read": 2068646,
+       "inputTotal": 2269251
+      },
+      "coverage": {
+       "requests": 12,
+       "readKnown": 12,
+       "writeKnown": 12,
+       "uncachedInputKnown": 12,
+       "inputTotalKnown": 12,
+       "tokenRateRequests": 12
+      }
+     },
+     "aviynw6": {
+      "read": 3416800,
+      "create": 1600032,
+      "input": 1550,
+      "knownTokenTotals": {
+       "read": 3416800,
+       "create": 1600032,
+       "input": 1550
+      },
+      "hits": 18,
+      "misses": 4,
+      "failoverMisses": 0,
+      "hitRate": 0.681,
+      "tokenRateBasis": {
+       "read": 3416800,
+       "inputTotal": 5018382
+      },
+      "coverage": {
+       "requests": 22,
+       "readKnown": 22,
+       "writeKnown": 22,
+       "uncachedInputKnown": 22,
+       "inputTotalKnown": 22,
+       "tokenRateRequests": 22
+      }
+     },
+     "aviynw8": {
+      "read": 17786,
+      "create": 182614,
+      "input": 2,
+      "knownTokenTotals": {
+       "read": 17786,
+       "create": 182614,
+       "input": 2
+      },
+      "hits": 1,
+      "misses": 0,
+      "failoverMisses": 0,
+      "hitRate": 0.089,
+      "tokenRateBasis": {
+       "read": 17786,
+       "inputTotal": 200402
+      },
+      "coverage": {
+       "requests": 1,
+       "readKnown": 1,
+       "writeKnown": 1,
+       "uncachedInputKnown": 1,
+       "inputTotalKnown": 1,
+       "tokenRateRequests": 1
+      }
+     }
+    },
+    "affinity": {
+     "hits": 24,
+     "cold": 32,
+     "nokey": 0,
+     "yields": 1,
+     "enabled": true,
+     "ttlMs": 3600000
+    }
+   },
+   "billing": {
+    "byAccount": {
+     "aviynw10": {
+      "state": "unknown",
+      "meteredNow": false,
+      "authMode": "oauth",
+      "meteredPolicy": "overflow",
+      "classes": {},
+      "metered": {
+       "requests": 0,
+       "inputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "outputTokens": 0,
+       "usageKnown": 0,
+       "outputKnown": 0
+      }
+     },
+     "aviynw2": {
+      "state": "unknown",
+      "meteredNow": false,
+      "authMode": "oauth",
+      "meteredPolicy": "overflow",
+      "classes": {},
+      "metered": {
+       "requests": 0,
+       "inputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "outputTokens": 0,
+       "usageKnown": 0,
+       "outputKnown": 0
+      }
+     },
+     "aviynw9": {
+      "state": "unknown",
+      "meteredNow": false,
+      "authMode": "oauth",
+      "meteredPolicy": "overflow",
+      "classes": {},
+      "metered": {
+       "requests": 0,
+       "inputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "outputTokens": 0,
+       "usageKnown": 0,
+       "outputKnown": 0
+      }
+     },
+     "aviynw3_claude": {
+      "state": "unknown",
+      "meteredNow": false,
+      "authMode": "oauth",
+      "meteredPolicy": "overflow",
+      "classes": {},
+      "metered": {
+       "requests": 0,
+       "inputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "outputTokens": 0,
+       "usageKnown": 0,
+       "outputKnown": 0
+      }
+     },
+     "aviynw": {
+      "state": "unknown",
+      "meteredNow": false,
+      "authMode": "oauth",
+      "meteredPolicy": "overflow",
+      "classes": {},
+      "metered": {
+       "requests": 0,
+       "inputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "outputTokens": 0,
+       "usageKnown": 0,
+       "outputKnown": 0
+      }
+     },
+     "aviynw4": {
+      "state": "included",
+      "stateUntil": 1790875800000,
+      "meteredNow": false,
+      "authMode": "oauth",
+      "meteredPolicy": "overflow",
+      "classes": {
+       "included": {
+        "requests": 12,
+        "inputTokens": 33,
+        "cacheReadTokens": 2068646,
+        "cacheCreationTokens": 200572,
+        "outputTokens": 4537,
+        "usageKnown": 12,
+        "outputKnown": 11
+       }
+      },
+      "metered": {
+       "requests": 0,
+       "inputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "outputTokens": 0,
+       "usageKnown": 0,
+       "outputKnown": 0
+      }
+     },
+     "aviynw6": {
+      "state": "included",
+      "stateUntil": 1790880600000,
+      "meteredNow": false,
+      "authMode": "oauth",
+      "meteredPolicy": "overflow",
+      "classes": {
+       "included": {
+        "requests": 22,
+        "inputTokens": 1550,
+        "cacheReadTokens": 3416800,
+        "cacheCreationTokens": 1600032,
+        "outputTokens": 10498,
+        "usageKnown": 22,
+        "outputKnown": 18
+       }
+      },
+      "metered": {
+       "requests": 0,
+       "inputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "outputTokens": 0,
+       "usageKnown": 0,
+       "outputKnown": 0
+      }
+     },
+     "aviynw8": {
+      "state": "included",
+      "stateUntil": 1791234000000,
+      "meteredNow": false,
+      "authMode": "oauth",
+      "meteredPolicy": "overflow",
+      "classes": {
+       "included": {
+        "requests": 1,
+        "inputTokens": 2,
+        "cacheReadTokens": 17786,
+        "cacheCreationTokens": 182614,
+        "outputTokens": 0,
+        "usageKnown": 1,
+        "outputKnown": 0
+       }
+      },
+      "metered": {
+       "requests": 0,
+       "inputTokens": 0,
+       "cacheReadTokens": 0,
+       "cacheCreationTokens": 0,
+       "outputTokens": 0,
+       "usageKnown": 0,
+       "outputKnown": 0
+      }
+     }
+    },
+    "metered": {
+     "requests": 0,
+     "inputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheCreationTokens": 0,
+     "outputTokens": 0,
+     "usageKnown": 0,
+     "outputKnown": 0
+    }
+   }
+  }
+ },
+ "replication": [
+  "dev:pipeline_position { path: packages/operator-core/lib/inference-gateway/gateway.ts } — confirm the gateway runtime would load the current code; dev:restart { target: gateway }.",
+  "Run node .papercusp/scratch/acg-live-r32-r33.mjs with RESTART_AT and BUILD_SHA from those two results.",
+  "Require HTTP 200 with message_start/message_stop and a request id, and /stats billing.byAccount[routed account] with a non-unknown state from the same processStartedAt."
+ ],
+ "limitations": [
+  "Console API-credit spend is not exercised here (WI-10004490: the stored key returned 401).",
+  "Compact copy of docs/evidence/anthropic-credits-p010-live-2026-10-01-final.json (sha256 ae255d83861295fef3cbd7095b02c16125434142e90a54da3b0e9ac45767b585): statsSnapshot.requestStages.recent and statsSnapshot.routingQuality.recent are replaced by pointers into that raw artifact; every other field, including all assertions and statsSnapshot.billing, is byte-for-byte the same values."
+ ]
+}

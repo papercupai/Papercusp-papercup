@@ -1,0 +1,204 @@
+{
+  "schemaVersion": 1,
+  "kind": "trial-comparison-report",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "planItem": "P-028",
+  "workItem": "WI-10003890",
+  "acceptanceClause": "AUTO-BAR-R-4-P-004@11",
+  "acceptanceRubric": "acceptance-goal-agent-behavior-feedback-2026-09-06@9",
+  "author": "su-1c97c55a-dafc-4d85-a013-26f71bcec5a5",
+  "assembledOn": "2026-10-07",
+  "verdict": "inconclusive",
+  "causalEffectsClaimed": [],
+  "summary": "The configured full arms had placements after 10, 3 and 1 valid due rows; brief-only placed after 7; baseline was censored after 4. These are recorded placement associations. They do not establish an instruction effect: workloads and holders changed, instruction exposure is not verified, and most configured full-arm reminders did not fire. This report does not establish the required matched, exposed-arm comparison or clear R-4 acceptance.",
+  "sources": [
+    {
+      "path": "docs/evidence/goal-holder-arm-windows-rev-2026-10-03.json",
+      "sha256": "343ad151793d8295fc8ceb5675f7b0935c5750bead24fb99df87d5d741a8a8ff",
+      "role": "Corrected historical per-holder metrics; supersedes the initial metrics export."
+    },
+    {
+      "path": "docs/evidence/goal-holder-arm-windows-probe-2026-10-03.md",
+      "role": "Read-only collector procedure and exact arm boundaries; collector build ac5e5daf51."
+    },
+    {
+      "path": "docs/evidence/goal-behavior-r4-full-arm-p4-2026-10-02.json",
+      "sha256": "fc011a092d946a47c364e6ba57dc1612aa64e24ee192742d28137380b9ce6eec",
+      "role": "Full-w4 placement receipt and census, including explicit unverified brief delivery."
+    },
+    {
+      "ref": "goal-agent-behavior-feedback-2026-09-06#D-044..D-064",
+      "role": "Trial custody, configured arms, opportunity rules, exclusions, censoring and ratified outcomes."
+    },
+    {
+      "ref": "goal-holder-plans-ideation-truthful-reports-2026-10-03#D-008",
+      "role": "Independent historical metric measurement and disclosed confounds. Its blanket ideation-failure wording must not override the corrected export: the short su-e1774015 brief-only span is rated pass there."
+    }
+  ],
+  "metricSemantics": {
+    "plansWritten": "Successful holder plans:new or plan-producing route-idea calls settled within the holder window, per readHolderPlanToolCounts. This is not a count of completed work cycles.",
+    "reports": "Goal-stamped owner report rows in the historical collector. Counts alone establish neither complete report content nor reporting timeliness.",
+    "reminders": "Agent-obligation awaits created within the holder window with expires_ts set. fired counts non-null fired_at; cancelled counts non-null cancelled_at. These lifetime settlement fields are not proof that the model read a reminder within the trial window.",
+    "placementGeneration": "goalPlacementTurnEnd.rows[].sourceGeneration is the placement obligation generation. It must not be relabelled as a rendered instruction generation.",
+    "cost": "The historical reports.costNotMeasured field is a report-quality classification, not inference spend. It cannot establish a per-arm dollar cost.",
+    "loop": "Historical deliveredFires counts rearmed routine transitions. It must not be described as transcript-verified instruction delivery."
+  },
+  "arms": [
+    {
+      "name": "full-p1",
+      "configuredArm": "full",
+      "start": "2026-09-30T17:59:33Z",
+      "end": "2026-09-30T20:54:34Z",
+      "authority": "D-047",
+      "holders": ["su-af7cfbba", "su-2e6fb313"],
+      "validDueRowsBeforePlacement": 10,
+      "placementOutcome": "placed",
+      "plansWritten": 0,
+      "historicalReportRows": 3,
+      "timedRemindersCreated": 9,
+      "timedRemindersFired": 1,
+      "timedRemindersCancelled": 8,
+      "instructionGeneration": null,
+      "instructionExposure": "unverified"
+    },
+    {
+      "name": "brief-only",
+      "configuredArm": "brief-only",
+      "start": "2026-09-30T23:59:54.717Z",
+      "end": "2026-10-01T03:13:18Z",
+      "authority": "D-046/D-047",
+      "holders": ["su-2e6fb313", "su-e1774015"],
+      "validDueRowsBeforePlacement": 7,
+      "placementOutcome": "placed",
+      "plansWritten": 0,
+      "historicalReportRows": 4,
+      "timedRemindersCreated": 0,
+      "timedRemindersFired": 0,
+      "timedRemindersCancelled": 0,
+      "instructionGeneration": null,
+      "instructionExposure": "unverified"
+    },
+    {
+      "name": "full-p2",
+      "configuredArm": "full",
+      "start": "2026-10-01T04:01:10.607Z",
+      "end": "2026-10-01T11:01:44.771Z",
+      "authority": "D-048/D-053",
+      "holders": ["su-e1774015"],
+      "validDueRowsAtCensor": 0,
+      "placementOutcome": "censored-no-valid-opportunity",
+      "plansWritten": 0,
+      "historicalReportRows": 7,
+      "timedRemindersCreated": 4,
+      "timedRemindersFired": 0,
+      "timedRemindersCancelled": 4,
+      "instructionGeneration": null,
+      "instructionExposure": "unverified"
+    },
+    {
+      "name": "full-p3",
+      "configuredArm": "full",
+      "start": "2026-10-01T12:09:51.307Z",
+      "end": "2026-10-01T15:14:29.298Z",
+      "authority": "D-054/D-056",
+      "holders": ["su-ce50c06d"],
+      "validDueRowsBeforePlacement": 3,
+      "placementOutcome": "placed",
+      "plansWritten": 0,
+      "historicalReportRows": 5,
+      "timedRemindersCreated": 27,
+      "timedRemindersFired": 1,
+      "timedRemindersCancelled": 26,
+      "instructionGeneration": null,
+      "instructionExposure": "unverified"
+    },
+    {
+      "name": "baseline",
+      "configuredArm": "baseline",
+      "start": "2026-10-02T02:28:59.745Z",
+      "end": "2026-10-02T12:10:00Z",
+      "authority": "D-060/D-061",
+      "holders": ["su-9ec5d030"],
+      "validDueRowsAtCensor": 4,
+      "placementOutcome": "censored",
+      "plansWritten": 0,
+      "historicalReportRows": 15,
+      "timedRemindersCreated": 0,
+      "timedRemindersFired": 0,
+      "timedRemindersCancelled": 0,
+      "instructionGeneration": null,
+      "instructionExposure": "unverified"
+    },
+    {
+      "name": "full-w4",
+      "configuredArm": "full",
+      "start": "2026-10-02T12:31:30.496Z",
+      "end": "2026-10-02T14:11:54.426Z",
+      "authority": "D-063",
+      "holders": ["su-9ec5d030"],
+      "validDueRowsBeforePlacement": 1,
+      "placementOutcome": "placed",
+      "plansWritten": 0,
+      "historicalReportRows": 2,
+      "timedRemindersCreated": 3,
+      "timedRemindersFired": 0,
+      "timedRemindersCancelled": 3,
+      "instructionGeneration": null,
+      "instructionExposure": "unverified"
+    }
+  ],
+  "requiredComparisons": {
+    "missedDuties": {"status": "partial", "observation": "Valid due rows and historical overdue-cluster metrics are available. Due-at-turn-end rows alone are not independently adjudicated missed obligations."},
+    "verifiedCompletedCycles": {"status": "unmeasured", "observation": "Placement events and plansWritten do not establish complete verified work cycles."},
+    "reportContentAndTimeliness": {"status": "partial", "observation": "Historical report counts and quality classifications are preserved; complete report content, scheduled deadlines and receipt-based timeliness are not adjudicated here."},
+    "launchChoices": {"status": "partial", "observation": "Ratified target-plan placement events are preserved. Equivalent offered alternatives and refusal opportunities across arms are not established."},
+    "effectBackedBoundaries": {"status": "partial", "observation": "Closed/censored arm boundaries follow their governing decisions; comparable resource, model and workload exposure is not established."},
+    "falseInterventions": {"status": "unmeasured", "observation": "Await cancellation counts are not a false-intervention oracle."},
+    "latency": {"status": "partial", "observation": "Opportunity counts before placement are available. Baseline and full-p2 are censored; their observed counts must not be treated as completed-placement latency."},
+    "inferenceCost": {"status": "unmeasured", "observation": "No arm-attributed inference ledger with consult/orphan-session inclusion was verified. Neither holderCalls nor report-quality cost fields substitute for spend."}
+  },
+  "verification": {
+    "date": "2026-10-07",
+    "procedure": "Read the current R-4 clause/rubric and metric writers; hash the source artifacts; independently rerun the closed baseline/full-w4 census over created_at > start AND created_at <= end, separating window-orphans; read exact fleet-launch invocation 31298800.",
+    "closedCensus": {
+      "baseline": {"blocked": 16, "due": 4, "inProgress": 18, "unknown": 16, "validDue": 4, "orphanDue": 0},
+      "full-w4": {"blocked": 2, "due": 2, "inProgress": 0, "unknown": 4, "validDue": 1, "orphanDue": 1},
+      "result": "Reproduces the ratified opportunity counts in D-061/D-063."
+    },
+    "endpointReceipt": {
+      "toolInvocationId": 31298800,
+      "tool": "fleet:launch-on-plan",
+      "status": "ok",
+      "canonicalPlacementAt": "2026-10-02T14:11:54.426Z",
+      "toolReceiptSettledAt": "2026-10-02T14:12:03.555Z",
+      "explanation": "projected-tool-deps stamps invoked_at at dispatch settlement. The receipt falls after the effect-bounded arm end, explaining why the historical full-w4 tool-count metric is zero despite the canonical placement event."
+    },
+    "correctedExport": "Use the revision export, not the first export, for ideation verdicts. Do not repeat the blanket claim that every holder span failed ideation."
+  },
+  "confounds": [
+    "Sequential windows on one live goal, five holders, and a changing backlog do not establish equivalent isolated workloads.",
+    "Full-p1 and brief-only each changed holder; the metric collector splits them into holder spans.",
+    "Ideation metrics cover the goal-day ending at each holder-window end, so adjacent windows overlap and must not be summed.",
+    "Configured arms and obligation source generations do not prove the rendered instruction generation or model exposure.",
+    "The full-arm reminder lifetime totals are 43 created, 2 fired and 41 cancelled; these do not establish delivery of the reminder treatment within each window.",
+    "Historical report classifications predate the current spend-aware metric implementation; they are not fresh ratings under that implementation.",
+    "The baseline census records missed opportunities without a target placement, not a zero-duration completed placement."
+  ],
+  "acceptance": {
+    "status": "not-established",
+    "primaryLiveBindingCreated": false,
+    "independentReportReview": "approved-as-descriptive-inconclusive",
+    "review": {
+      "reviewer": "su-32d1b8df-01dd-442a-8711-7ff4e8d9cc92",
+      "ref": "thread-post:1162729",
+      "workItem": "WI-10004612",
+      "reviewedReportSha256": "1aaf72f2055c1824b2d0d20332eef4334756e4ee6f7f272ee1e9fe28bc414b4e",
+      "scope": "Read report, D-065, metric writers and source hashes. Did not independently recensus the database or reread the original launch invocation.",
+      "verdict": "Approved as an inconclusive descriptive record; P-028/P-004 and primary live binding remain uncleared."
+    },
+    "remaining": [
+      "Verified instruction-generation/exposure receipts and matched model/resource/workload opportunities before any claimed causal effect.",
+      "The missing required comparison dimensions, or an owner-approved acceptance rescope through the existing amendment mechanism."
+    ]
+  }
+}

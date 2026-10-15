@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exported Rust notice metadata provenance regression",
+  "framework": "operational",
+  "command": [
+    "make test-android-release-provenance"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T05:38:00.589Z",
+  "finishedAt": "2026-10-03T05:38:30.642Z",
+  "timestampSource": "Retained final command log birth and final modification time; actual shell envelope exited 0.",
+  "exitCode": 0,
+  "summary": "Maintained provenance suite passed. Real miniature delivered-source fixture emits byte-preserved LICENSE, AUTHORS, plural NOTICES and revision-pinned supplement in the existing viewer metadata format. Nine damaged notice controls rejected. Notice-only mode executes no Cargo and preserves compilation receipt. Existing real tiny Rust and controlled Android orchestration regressions also pass.",
+  "scope": "Maintained controlled-fixture notice/source validation only. No operational full-registry notice generation, Android-linked crate census, app packaging, native execution, exact candidate, complete rights/source-header coverage or recipient access.",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "7ff3fe6dc18fea82c336795b3b556303680d1b099335c00bc3bcefda96a5c768"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "a4be0bc8009b181fc374f3e285528f05ce9fccac5e39014c095875c23fa4d99d"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "448cd9b2c526663423aa99f47968cf2a74c1f32ee829bb924582d8fa92779355"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "a4be0bc8009b181fc374f3e285528f05ce9fccac5e39014c095875c23fa4d99d"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "fixture-positive-byte-preservation",
+      "passed": true,
+      "evidence": "Exact CRLF LICENSE text, AUTHORS text, plural NOTICES attribution and full pinned supplement survive JSON round-trip; four notice references."
+    },
+    {
+      "id": "notice-source-controls",
+      "passed": true,
+      "evidence": "Omitted AUTHORS, omitted plural NOTICES, wrong notice digest, manifest declaration mismatch, empty notice, escaping declared license path, escaping supplement path, wrong VCS revision and changed supplement are rejected."
+    },
+    {
+      "id": "notice-runtime-isolation",
+      "passed": true,
+      "evidence": "A deliberate Cargo executor that exits 93 was not called in source-notices. The existing compilation receipt stayed byte-identical; each rejected notice attempt removed stale output/receipt."
+    },
+    {
+      "id": "existing-provenance-regressions",
+      "passed": true,
+      "evidence": "Real tiny vendored Rust compilation/eight rejecting controls and controlled APK orchestration/ten rejecting controls plus original init-path mutant passed in the maintained suite; this is fixture verification."
+    }
+  ],
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-rust-notice-provenance-final-20261003.log",
+      "sha256": "772e1367bb69ee9e21f5171b219bd398a6f14858ee0619d3f0b482038859e0be"
+    }
+  ],
+  "limitations": [
+    "Final helper/test source commit pending at capture; exact source fingerprints recorded.",
+    "Full locked operational notice production and integration into the app remain pending.",
+    "No replay of settled native/build/Graphics evidence and no current candidate release acceptance."
+  ]
+}

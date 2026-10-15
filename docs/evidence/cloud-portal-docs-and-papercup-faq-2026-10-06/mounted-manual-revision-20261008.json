@@ -1,0 +1,164 @@
+{
+  "id": "mounted-manual-revision",
+  "stage": "passed",
+  "runtimeBuild": {
+    "sha": "7bf0e2fa65",
+    "measuredAt": "2026-10-08T13:34:06.690Z"
+  },
+  "workspaceId": "public-chat-manual-9d18c86f-3111-4507-b989-dcb8093b57af",
+  "observedAt": "2026-10-08T13:34:12.584Z",
+  "modelSendCount": 0,
+  "observations": {
+    "before": {
+      "get": {
+        "results": [
+          {
+            "slug": "faq",
+            "found": true,
+            "content": "## How do I check the orchard workspace?\n\nAlso asked as: How do I inspect the orchard workspace? What is the orchard recovery marker?\n\nThe orchard recovery marker is ORCHARD-RED-5831. View the workspace status before attempting recovery.",
+            "bytes": 237,
+            "sliced": true
+          }
+        ],
+        "surface": "public",
+        "revision": "e9a4b1ec713cc1c62dae7d74ec08d9e06b64d31d63ed8481e41f08caae0960e8"
+      },
+      "search": {
+        "query": "orchard recovery marker",
+        "tokenCount": 3,
+        "hitCount": 1,
+        "hits": [
+          {
+            "slug": "faq",
+            "url": "/docs/faq#how-do-i-check-the-orchard-workspace",
+            "title": "How do I check the orchard workspace?",
+            "description": "How do I inspect the orchard workspace? What is the orchard recovery marker?",
+            "score": 4.81022322411166,
+            "excerpt": "## How do I check the orchard workspace? Also asked as: How do I inspect the orchard workspace? What is the orchard recovery marker? The orchard recovery marker is ORCHARD-RED-5831. View the workspace status before attempting recovery.",
+            "heading": "how-do-i-check-the-orchard-workspace"
+          }
+        ],
+        "surface": "public",
+        "revision": "e9a4b1ec713cc1c62dae7d74ec08d9e06b64d31d63ed8481e41f08caae0960e8",
+        "legs": {
+          "lexical": {
+            "status": "ran"
+          },
+          "semantic": {
+            "status": "not-run",
+            "reason": "public-manual lexical fallback"
+          }
+        }
+      }
+    },
+    "unchanged": {
+      "get": {
+        "results": [
+          {
+            "slug": "faq",
+            "found": true,
+            "content": "## How do I check the orchard workspace?\n\nAlso asked as: How do I inspect the orchard workspace? What is the orchard recovery marker?\n\nThe orchard recovery marker is ORCHARD-RED-5831. View the workspace status before attempting recovery.",
+            "bytes": 237,
+            "sliced": true
+          }
+        ],
+        "surface": "public",
+        "revision": "e9a4b1ec713cc1c62dae7d74ec08d9e06b64d31d63ed8481e41f08caae0960e8"
+      },
+      "search": {
+        "query": "orchard recovery marker",
+        "tokenCount": 3,
+        "hitCount": 1,
+        "hits": [
+          {
+            "slug": "faq",
+            "url": "/docs/faq#how-do-i-check-the-orchard-workspace",
+            "title": "How do I check the orchard workspace?",
+            "description": "How do I inspect the orchard workspace? What is the orchard recovery marker?",
+            "score": 4.81022322411166,
+            "excerpt": "## How do I check the orchard workspace? Also asked as: How do I inspect the orchard workspace? What is the orchard recovery marker? The orchard recovery marker is ORCHARD-RED-5831. View the workspace status before attempting recovery.",
+            "heading": "how-do-i-check-the-orchard-workspace"
+          }
+        ],
+        "surface": "public",
+        "revision": "e9a4b1ec713cc1c62dae7d74ec08d9e06b64d31d63ed8481e41f08caae0960e8",
+        "legs": {
+          "lexical": {
+            "status": "ran"
+          },
+          "semantic": {
+            "status": "not-run",
+            "reason": "public-manual lexical fallback"
+          }
+        }
+      }
+    },
+    "after": {
+      "get": {
+        "results": [
+          {
+            "slug": "faq",
+            "found": true,
+            "content": "## How do I check the orchard workspace?\n\nAlso asked as: How do I inspect the orchard workspace? What is the orchard recovery marker?\n\nThe orchard recovery marker is ORCHARD-BLUE-9274. View the workspace status before attempting recovery.",
+            "bytes": 238,
+            "sliced": true
+          }
+        ],
+        "surface": "public",
+        "revision": "4e5d69fd03a5eda567c8261f7bc1a813f3208c0fa05bdc2acb9810a293164f39"
+      },
+      "search": {
+        "query": "orchard recovery marker",
+        "tokenCount": 3,
+        "hitCount": 1,
+        "hits": [
+          {
+            "slug": "faq",
+            "url": "/docs/faq#how-do-i-check-the-orchard-workspace",
+            "title": "How do I check the orchard workspace?",
+            "description": "How do I inspect the orchard workspace? What is the orchard recovery marker?",
+            "score": 4.81022322411166,
+            "excerpt": "## How do I check the orchard workspace? Also asked as: How do I inspect the orchard workspace? What is the orchard recovery marker? The orchard recovery marker is ORCHARD-BLUE-9274. View the workspace status before attempting recovery.",
+            "heading": "how-do-i-check-the-orchard-workspace"
+          }
+        ],
+        "surface": "public",
+        "revision": "4e5d69fd03a5eda567c8261f7bc1a813f3208c0fa05bdc2acb9810a293164f39",
+        "legs": {
+          "lexical": {
+            "status": "ran"
+          },
+          "semantic": {
+            "status": "not-run",
+            "reason": "public-manual lexical fallback"
+          }
+        }
+      }
+    }
+  },
+  "scope": "Disposable FAQ through the docs-only public MCP mount; canonical FAQ, model answer cache, novice acceptance and shipment remain unverified.",
+  "testFile": "packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts",
+  "testFilter": "invalidates mounted docs retrieval after a fixture revision without model calls",
+  "testCommand": "npm run test:file -- packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts -t 'invalidates mounted docs retrieval after a fixture revision without model calls'",
+  "testLog": "/tmp/su73-mounted-manual-revision-1336.log",
+  "testResult": {
+    "passed": 1,
+    "filteredOut": 40,
+    "exitCode": 0,
+    "sourceProvenance": "unknown: HEAD moved bbc69d37a9 to e447980feb; imported source radius was not captured"
+  },
+  "testFileSha256AtEvidenceSave": "604195d43a29d7a038ed4a5d611408d5bcb5fa31e4c887b84a3cd2ce7e668bea",
+  "requestHost": {
+    "bundleSha256": "b62673e0c3fa8854f7bd0456ea418edeed9f958b7a52b731433a5b2525e7398c",
+    "exit": {
+      "code": null,
+      "signal": "SIGKILL",
+      "pid": 2224340,
+      "root": "/dev/shm/pcv/public-manual-owned-host-0Lprrt",
+      "stoppedBySuite": true,
+      "measuredAt": "2026-10-08T13:34:15.070Z"
+    },
+    "ownedRootRemoved": true
+  },
+  "rawCasePath": "/dev/shm/pcv/su73-mounted-manual-revision-evidence-n7E6kA/mounted-manual-revision-45a15fe6-9465-44a0-a306-0cf827dad5b5/case.json"
+}

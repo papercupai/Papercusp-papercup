@@ -97,4 +97,24 @@ describe('substrate:revoke_contributor tool', () => {
     expect(harnessRevoke).not.toHaveBeenCalled();
     expect(JSON.parse(res.content[0].text)).toEqual(hiveResult);
   });
+
+  // WI-10006415: a single-device revoke is Hive-scoped and forwarded verbatim.
+  it('accepts devicePubkey with potSlug and refuses it with harnessSlug', async () => {
+    const tool = await loadTool();
+    expect(tool.args.safeParse({ ...VALID_HIVE, devicePubkey: 'vm-pk' }).success).toBe(true);
+    expect(tool.args.safeParse({ ...VALID, devicePubkey: 'vm-pk' }).success).toBe(false);
+    expect(tool.args.safeParse({ ...VALID_HIVE, devicePubkey: '' }).success).toBe(false);
+  });
+
+  it('Hive scope forwards devicePubkey to revokeHiveContributor', async () => {
+    const hiveRevoke = vi.fn(async () => ({ ok: true, revokedPubkeys: ['vm-pk'], live: false }));
+    const tool = await loadTool(vi.fn(), hiveRevoke);
+    await tool.handler({ ...VALID_HIVE, devicePubkey: 'vm-pk' }, {} as never);
+    expect(hiveRevoke).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      potHomeSlug: 'acme-hive',
+      githubUserId: 12345,
+      devicePubkey: 'vm-pk',
+    });
+  });
 });

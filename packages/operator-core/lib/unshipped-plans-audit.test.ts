@@ -1,5 +1,4 @@
 import { readFileSync } from 'node:fs';
-import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import type { PlanIndexRow } from './agent-tools/plans/source';
 import {
@@ -9,6 +8,7 @@ import {
   classifyUnshippedPlan,
   hasExplicitPlanLevelSupersession,
   renderUnshippedPlansAuditHtml,
+  selectAuditPlans,
   type AuditOwnerEvidence,
   type ClassifierInput,
 } from './unshipped-plans-audit';
@@ -269,7 +269,7 @@ describe('manifest and evidence rendering', () => {
 
   it('neutralizes closing-script input while preserving the embedded manifest round trip', () => {
     const html = renderUnshippedPlansAuditHtml(manifest());
-    const embedded = html.match(/<script type="application\/json" id="manifest">([^<]*)<\/script>/)?.[1];
+    const embedded = html.match(/<script type="application\/json" id="audit">([^<]*)<\/script>/)?.[1];
 
     expect(html).not.toContain('<script>alert("x")</script>');
     expect(embedded).toContain('\\u003cscript>alert(\\"x\\")\\u003c/script>');
@@ -281,116 +281,40 @@ describe('manifest and evidence rendering', () => {
     expect(html).toContain('Outside Blender');
   });
 
-  it('preserves the plan identity set and composes provenance, search, and harness filters', () => {
+
+  it('validates explicit audit population instead of silently dropping unavailable selections', () => {
+    const plans = [plan({ planSlug: 'a' }), plan({ planSlug: 'b', status: 'shipped', archived: true })];
+    expect(selectAuditPlans(plans, ['b', 'b']).map(p => p.planSlug)).toEqual(['b']);
+    expect(() => selectAuditPlans(plans, [])).toThrow('selection');
+    expect(() => selectAuditPlans(plans, ['missing'])).toThrow('unavailable');
+    expect(selectAuditPlans(plans)).toEqual(plans);
+  });
+
+  it('retains the entire historical census with per-class disclosure and an unknown row for unavailable harness evidence', () => {
     const allPlans = [
-      plan({ planSlug: 'blender-alpha', title: 'Alpha Blender', isBlenderOrigin: true }),
-      plan({ planSlug: 'outside-alpha', title: 'Alpha Outside', isBlenderOrigin: false }),
-      plan({
-        harnessSlug: 'other',
-        planSlug: 'blender-beta',
-        title: 'Beta Blender',
-        isBlenderOrigin: true,
-      }),
-      plan({
-        harnessSlug: 'other',
-        planSlug: 'outside-beta',
-        title: 'Beta Outside',
-        isBlenderOrigin: false,
-      }),
+      plan(), plan({ planSlug: 'archived', archived: true }),
+      plan({ planSlug: 'superseded', status: 'superseded' }),
+      plan({ planSlug: 'rubric', template: 'rubric' }),
+      plan({ planSlug: 'instance', templateSlug: 'scheduled-parent' }),
+      plan({ planSlug: 'unavailable', harnessSlug: 'missing-harness' }),
     ];
-    const result = buildUnshippedPlansAuditManifest({
-      workspaceId: 'ws-test',
-      snapshotStartedAt: '2026-08-20T12:00:00.000Z',
-      snapshotFinishedAt: '2026-08-20T12:00:01.000Z',
-      liveOwnershipMeasuredAt: '2026-08-20T12:00:00.500Z',
-      allPlans,
-      registeredHarnesses: new Set(['papercusp', 'other']),
-      ownersByPlan: new Map(),
-      workItemsByPlan: new Map(),
-      blockedItems: new Map(),
-      auditsByPlan: new Map(),
-      rubricsByPlan: new Map(),
-      gateVerdictsByPlan: new Map(),
-    });
-    const identity = (row: { harness: string; slug: string }) => `${row.harness}::${row.slug}`;
-    const baseline = allPlans.map((candidate) => `${candidate.harnessSlug}::${candidate.planSlug}`).sort();
-    const rendered = result.rows.map(identity).sort();
-    const blender = new Set(result.rows.filter((row) => row.provenance === 'blender').map(identity));
-    const outside = new Set(result.rows.filter((row) => row.provenance === 'outside-blender').map(identity));
-
-    expect(rendered).toEqual(baseline);
-    expect([...blender].filter((id) => outside.has(id))).toEqual([]);
-    expect(new Set([...blender, ...outside])).toEqual(new Set(baseline));
-
-    type FakeNode = {
-      value: string;
-      textContent: string;
-      innerHTML: string;
-      insertAdjacentHTML: (_position: string, html: string) => void;
-      addEventListener: (event: string, listener: () => void) => void;
-      dispatch: (event: string) => void;
+    const base = {
+      workspaceId: 'ws-test', snapshotStartedAt: 'start', snapshotFinishedAt: 'finish', liveOwnershipMeasuredAt: 'measured', allPlans,
+      registeredHarnesses: new Set(['papercusp']), ownersByPlan: new Map(), workItemsByPlan: new Map(), blockedItems: new Map(), auditsByPlan: new Map(), rubricsByPlan: new Map(), gateVerdictsByPlan: new Map(),
     };
-    const fakeNode = (value = ''): FakeNode => {
-      const listeners = new Map<string, Array<() => void>>();
-      return {
-        value,
-        textContent: '',
-        innerHTML: '',
-        insertAdjacentHTML(_position, html) {
-          this.innerHTML += html;
-        },
-        addEventListener(event, listener) {
-          const current = listeners.get(event) ?? [];
-          current.push(listener);
-          listeners.set(event, current);
-        },
-        dispatch(event) {
-          for (const listener of listeners.get(event) ?? []) listener();
-        },
-      };
-    };
-    const html = renderUnshippedPlansAuditHtml(result);
-    const scripts = [...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
-    expect(scripts).toHaveLength(2);
-    const nodes = {
-      manifest: fakeNode(),
-      q: fakeNode(),
-      provenance: fakeNode(),
-      cat: fakeNode(),
-      status: fakeNode(),
-      harness: fakeNode(),
-      shown: fakeNode(),
-      rows: fakeNode(),
-    };
-    nodes.manifest.textContent = scripts[0];
-    const controls = [nodes.q, nodes.provenance, nodes.cat, nodes.status, nodes.harness];
-    const document = {
-      querySelector(selector: string) {
-        return nodes[selector.slice(1) as keyof typeof nodes];
-      },
-      querySelectorAll(selector: string) {
-        return selector === '#q,#provenance,#cat,#status,#harness' ? controls : [];
-      },
-    };
-
-    runInNewContext(scripts[1], { document });
-    expect(nodes.shown.textContent).toBe('4 of 4 rows');
-
-    nodes.provenance.value = 'outside-blender';
-    nodes.provenance.dispatch('change');
-    expect(nodes.shown.textContent).toBe('2 of 4 rows');
-
-    nodes.q.value = 'alpha';
-    nodes.q.dispatch('input');
-    expect(nodes.shown.textContent).toBe('1 of 4 rows');
-
-    nodes.harness.value = 'other';
-    nodes.harness.dispatch('change');
-    expect(nodes.shown.textContent).toBe('0 of 4 rows');
-
-    nodes.q.value = '';
-    nodes.q.dispatch('input');
-    expect(nodes.shown.textContent).toBe('1 of 4 rows');
+    const full = buildUnshippedPlansAuditManifest({ ...base, includeHistorical: true });
+    expect(full.rows.map(row => row.slug).sort()).toEqual(allPlans.map(row => row.planSlug).sort());
+    expect(full.scope.listedAtSnapshot).toBe(6);
+    expect(full.scope.classifiedRows).toBe(6);
+    for (const key of ['archived', 'superseded', 'rubricTemplate', 'scheduledInstance'] as const) {
+      expect(full.scope.census[key]).toEqual({ listed: 1, included: 1, excluded: 0, exclusionReason: null });
+    }
+    expect(full.rows.find(row => row.slug === 'unavailable')).toMatchObject({ status: 'unknown', category: 'catalog-residue' });
+    expect(full.rows.find(row => row.slug === 'archived')).toMatchObject({ archived: true });
+    const legacy = buildUnshippedPlansAuditManifest(base);
+    for (const key of ['archived', 'superseded', 'scheduledInstance'] as const) {
+      expect(legacy.scope.census[key]).toMatchObject({ listed: 1, included: 0, excluded: 1, exclusionReason: expect.stringContaining('Legacy nonterminal') });
+    }
   });
 
   it('keeps the implementation manual-only and free of direct lifecycle SQL/writer seams', () => {

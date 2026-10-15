@@ -39,6 +39,7 @@ function session(over: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord
     kind: 'xvfb-local',
     scope: 'pot',
     scopeRef: 'pot-a',
+    name: null,
     hostRef: null,
     ownerPid: 4242,
     ownerBootId: 'boot-1',
@@ -62,10 +63,41 @@ function session(over: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord
 }
 
 /** A deps double that RECORDS the call order — the property under test. */
+describe('P-004: agent desktops die with their owning session (D-007)', () => {
+  it("reaps an active agent desktop whose owner session has ended, keeps a live owner's, never asks about pot rows", async () => {
+    const dead = session({ id: 'agent-dead', scope: 'agent', scopeRef: 'owner-ended', taskId: 'task-dead' });
+    const alive = session({ id: 'agent-live', scope: 'agent', scopeRef: 'owner-live', taskId: 'task-live' });
+    const pot = session({ id: 'pot-row', taskId: 'task-pot' });
+    const ownerSessionStates = vi.fn(async () => new Map<string, string | null>([['owner-ended', 'ended'], ['owner-live', 'live']]));
+    const { d } = deps([dead, alive, pot], { ownerSessionStates });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+    expect(ownerSessionStates).toHaveBeenCalledWith(['owner-ended', 'owner-live']);
+    expect(res.reaped).toBe(1);
+    expect(d.kill).toHaveBeenCalledWith('task-dead');
+    expect(d.kill).not.toHaveBeenCalledWith('task-live');
+    expect(res.sessions.find((s) => s.id === 'agent-dead')?.reason).toContain('has ended');
+  });
+
+  it('an unreadable oracle leaves agent desktops to the ordinary ladder', async () => {
+    const row = session({ id: 'agent-x', scope: 'agent', scopeRef: 'owner-x', taskId: 'task-x' });
+    const { d } = deps([row], { ownerSessionStates: vi.fn(async () => { throw new Error('pg down'); }) });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+    expect(res.reaped).toBe(0);
+    expect(d.kill).not.toHaveBeenCalled();
+  });
+
+  it('does not consult the oracle when there are no agent desktops', async () => {
+    const { d } = deps([session()]);
+    await gcDesktopSessions({ now: NOW, deps: d });
+    expect(d.ownerSessionStates).not.toHaveBeenCalled();
+  });
+});
+
 function deps(sessions: DesktopSessionRecord[], over: Partial<GcDesktopSessionsDeps> = {}) {
   const calls: string[] = [];
   const d: GcDesktopSessionsDeps = {
     list: vi.fn(async () => sessions) as unknown as GcDesktopSessionsDeps['list'],
+    ownerSessionStates: vi.fn(async () => new Map<string, string | null>()),
     freeze: vi.fn(async (t: string) => {
       calls.push(`freeze:${t}`);
       return ok(t, 'freeze');
@@ -90,6 +122,8 @@ function deps(sessions: DesktopSessionRecord[], over: Partial<GcDesktopSessionsD
       calls.push(`close:${id}`);
       return true;
     }),
+    // Default: the live row is exactly the snapshot (nobody touched it mid-sweep).
+    reread: vi.fn(async (s: DesktopSessionRecord) => sessions.find((x) => x.id === s.id)),
     ...over,
   };
   return { d, calls };
@@ -146,6 +180,168 @@ describe('gcDesktopSessions — actuation ordering', () => {
     expect(res.failed).toBe(1);
     expect(d.close).toHaveBeenCalledWith('ds-1');
     expect(res.sessions[0]?.failed).toMatch(/kill failed/);
+  });
+});
+
+/**
+ * WI-10006636 — the sweep classifies from ONE snapshot and acts on each row later.
+ * A computer verb that drives a desktop in between must not have it frozen or
+ * killed out from under it. `reread` is the live row at actuation time; a row
+ * whose clock moved past the snapshot is a desktop someone is using.
+ */
+describe('gcDesktopSessions — a desktop driven mid-sweep is not frozen or reaped off the stale snapshot', () => {
+  const touchedNow = (s: DesktopSessionRecord): DesktopSessionRecord => ({
+    ...s,
+    state: s.state === 'idle' ? 'ready' : s.state,
+    lastActiveAt: new Date(NOW),
+  });
+
+  it('does not reap a lease-expired desktop that a computer verb touched after the scan', async () => {
+    const snap = session({ ttlSec: 60, lastActiveAt: ago(2 * HOUR) });
+    const { d, calls } = deps([snap], { reread: vi.fn(async () => touchedNow(snap)) });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+
+    expect(calls).toEqual([]);
+    expect(res.reaped).toBe(0);
+    expect(res.stoodDown).toBe(1);
+    expect(res.sessions[0]?.stoodDown).toMatch(/driven since the scan/);
+  });
+
+  it('does not reap a long-frozen desktop that its owner thawed and drove after the scan', async () => {
+    // prepareDesktopForDrive thaws + markThawed (state → ready, frozen_at NULL,
+    // clock bumped) before the verb's input lands — the live row says so.
+    const snap = session({ state: 'frozen', frozenAt: ago(30 * HOUR), lastActiveAt: ago(40 * HOUR) });
+    const thawedAndDriven = { ...snap, state: 'ready' as const, frozenAt: null, lastActiveAt: new Date(NOW) };
+    const { d, calls } = deps([snap], { reread: vi.fn(async () => thawedAndDriven) });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+
+    expect(calls).toEqual([]);
+    expect(res.reaped).toBe(0);
+  });
+
+  it("does not reap an ended owner's agent desktop while a verb is still driving it — it waits a sweep", async () => {
+    const snap = session({ scope: 'agent', scopeRef: 'su-gone', lastActiveAt: ago(5) });
+    const { d, calls } = deps([snap], {
+      ownerSessionStates: vi.fn(async () => new Map([['su-gone', 'ended']])),
+      reread: vi.fn(async () => touchedNow(snap)),
+    });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+
+    expect(calls).toEqual([]);
+    expect(res.stoodDown).toBe(1);
+  });
+
+  it('does not freeze an idle desktop that was driven after the scan', async () => {
+    const snap = session({ state: 'idle', lastActiveAt: ago(4 * HOUR) });
+    const { d, calls } = deps([snap], { reread: vi.fn(async () => touchedNow(snap)) });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+
+    expect(calls).toEqual([]);
+    expect(res.frozen).toBe(0);
+  });
+
+  it('passes the snapshot clock to the row write, so the database refuses a freeze over a later touch', async () => {
+    const snap = session({ state: 'idle', lastActiveAt: ago(4 * HOUR) });
+    const { d } = deps([snap]);
+    await gcDesktopSessions({ now: NOW, deps: d });
+    expect(d.markFrozen).toHaveBeenCalledWith('ds-1', snap.lastActiveAt);
+  });
+
+  it('THAWS IT BACK when a verb touches it while the freezer runs (the guarded row write refused)', async () => {
+    const snap = session({ state: 'idle', lastActiveAt: ago(4 * HOUR) });
+    // First read (the pre-actuation re-check) still matches the snapshot; the
+    // touch lands inside the freeze window, so the read after the refusal sees it.
+    const reread = vi
+      .fn<(s: DesktopSessionRecord) => Promise<DesktopSessionRecord | undefined>>()
+      .mockResolvedValueOnce(snap)
+      .mockResolvedValueOnce(touchedNow(snap));
+    const { d, calls } = deps([snap], {
+      reread,
+      markFrozen: vi.fn(async (id: string) => {
+        calls.push(`markFrozen:${id}`);
+        return false;
+      }),
+    });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+
+    expect(calls).toEqual(['freeze:task-1', 'markFrozen:ds-1', 'thaw:task-1']);
+    expect(res.frozen).toBe(0);
+    expect(res.stoodDown).toBe(1);
+    expect(res.sessions[0]?.stoodDown).toMatch(/thawed back/);
+  });
+
+  it('does NOT thaw back when a concurrent sweep already recorded the freeze (the row would become a lie)', async () => {
+    const snap = session({ state: 'idle', lastActiveAt: ago(4 * HOUR) });
+    const reread = vi
+      .fn<(s: DesktopSessionRecord) => Promise<DesktopSessionRecord | undefined>>()
+      .mockResolvedValueOnce(snap)
+      .mockResolvedValueOnce({ ...snap, state: 'frozen', frozenAt: new Date(NOW) });
+    const { d, calls } = deps([snap], {
+      reread,
+      markFrozen: vi.fn(async (id: string) => {
+        calls.push(`markFrozen:${id}`);
+        return false;
+      }),
+    });
+    await gcDesktopSessions({ now: NOW, deps: d });
+
+    expect(calls).toEqual(['freeze:task-1', 'markFrozen:ds-1']);
+  });
+
+  it('reports a failed thaw-back loudly — suspended processes under a live row are the hang this prevents', async () => {
+    const snap = session({ state: 'idle', lastActiveAt: ago(4 * HOUR) });
+    const reread = vi
+      .fn<(s: DesktopSessionRecord) => Promise<DesktopSessionRecord | undefined>>()
+      .mockResolvedValueOnce(snap)
+      .mockResolvedValueOnce(touchedNow(snap));
+    const { d } = deps([snap], {
+      reread,
+      markFrozen: vi.fn(async () => false),
+      thaw: vi.fn(async (t: string) => fail(t, 'thaw')),
+    });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+
+    expect(res.failed).toBe(1);
+    expect(res.sessions[0]?.failed).toMatch(/thaw-back failed/);
+  });
+
+  it('stands down when the row cannot be re-read — acting blind could kill a desktop mid-verb', async () => {
+    const { d, calls } = deps([session({ ttlSec: 60, lastActiveAt: ago(2 * HOUR) })], {
+      reread: vi.fn(async () => {
+        throw new Error('pg down');
+      }),
+    });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+
+    expect(calls).toEqual([]);
+    expect(res.sessions[0]?.stoodDown).toMatch(/could not re-read/);
+  });
+
+  it('stands down when the row was closed since the scan (someone else released it)', async () => {
+    const snap = session({ ttlSec: 60, lastActiveAt: ago(2 * HOUR) });
+    const { d, calls } = deps([snap], {
+      reread: vi.fn(async () => ({ ...snap, state: 'released' as const, releasedAt: new Date(NOW) })),
+    });
+    await gcDesktopSessions({ now: NOW, deps: d });
+    expect(calls).toEqual([]);
+  });
+
+  it('stands down when the live row re-judges differently, clock unchanged (a concurrent sweep froze it first)', async () => {
+    const snap = session({ state: 'idle', lastActiveAt: ago(4 * HOUR) });
+    const { d, calls } = deps([snap], {
+      reread: vi.fn(async () => ({ ...snap, state: 'frozen' as const, frozenAt: new Date(NOW) })),
+    });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+
+    expect(calls).toEqual([]);
+    expect(res.sessions[0]?.stoodDown).toMatch(/re-judged as keep/);
+  });
+
+  it('acts normally when the live row matches the snapshot', async () => {
+    const { d, calls } = deps([session({ ttlSec: 60, lastActiveAt: ago(2 * HOUR) })]);
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+    expect(calls).toEqual(['kill:task-1', 'close:ds-1']);
+    expect(res.stoodDown).toBe(0);
   });
 });
 

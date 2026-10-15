@@ -718,6 +718,24 @@ export const SHAPER_CONTRACT_EXEMPT: Readonly<Record<string, ShaperExemption>> =
       'one level below the row where a `fields` pin cannot reach. Covered by the same ' +
       'calibrated probe.',
   },
+  // AUDITED 2026-10-13 (oversized-tool-results-reduction-2026-10-12 P-002, WI-6554700010009725):
+  // both shapers were added as write receipts on 2026-10-12 and were never classified here.
+  'improvements:capture': {
+    case: 'reasoned',
+    reason:
+      'Same family as `work_items:complete`: `shapeCaptureWriteEcho` (improvements/capture.ts) ' +
+      'SPREADS the envelope and only replaces `issue` with `compactWorkItemRef` from ' +
+      'write-echo-shape.ts — the 6-key literal rebuild one level below the row, where a ' +
+      '`fields` pin cannot reach. The full row stays behind payloadTier:"full" / work_items:get.',
+  },
+  'scheduler:get_next': {
+    case: 'reasoned',
+    reason:
+      '`shapeGetNextResult` (scheduler/get-next-shape.ts) SPREADS the envelope. It drops only ' +
+      'payload bookkeeping keys inside `workItem.payload` (named in-band), zero counters, and ' +
+      'repeated `excluded` maps (replaced by an in-band SAME_AS_POPULATION marker). Every ' +
+      'reduction is nested below the envelope and marked, so a row `fields` pin would be vacuous.',
+  },
   'work_items:list': {
     case: 'reasoned',
     reason:
@@ -757,6 +775,18 @@ export const SHAPER_CONTRACT_EXEMPT: Readonly<Record<string, ShaperExemption>> =
       'survived the spread), an invented key and an arbitrary extra field both survive at BOTH ' +
       'tiers, its negative control (rows past the cap absent) confirms the shaper really ran, and ' +
       'its calibration arm confirms an equivalent literal-rebuild envelope shaper passes clean.',
+  },
+  'rubrics:amend': {
+    case: 'reasoned',
+    reason:
+      'Audited by reading (WI-10006943), not probed: there is no hand-written key list to pin. ' +
+      'shapeAmendReviewPayload (rubrics/amend.ts) returns the payload UNCHANGED below its tier ' +
+      'target (12k chars trimmed, 24k standard) and above it delegates to the generic ' +
+      'projectBoundedPayload (@papercusp/tooldef), which records every drop IN-BAND ' +
+      '(`_projection.omitted*` plus a recovery cursor) and pins AMEND_REVIEW_PRESERVE_PATHS ' +
+      '(review.state/conversationId/previewPostRef/next, ok, dryRun, preview.approval). The ' +
+      'silent-drop hazard this gate exists for cannot arise, and the payload is a review ' +
+      'envelope with no `rows` array for `contract: { rows }` to bind to.',
   },
 };
 

@@ -47,6 +47,52 @@ export function inheritedContextDecision(forkedFromId: string): {
     systemMessage: string;
 };
 /**
+ * WI-10004953: a codex NESTED inside another agent (run from an su's Bash tool, or under a
+ * capability:bash job) inherits that su's CODEX_HOME, PAPERCUSP_SID and PAPERCUSP_MCP_URL.
+ * Bridging its auto-compaction would ask session:request-compaction on the SU's route and
+ * queue a carry-respawn of the live su. A nested CLI has no managed carry of its own, so
+ * it compacts natively.
+ */
+export function nestedCliDecision(): {
+    continue: boolean;
+    systemMessage: string;
+};
+/**
+ * WI-6554700010008779: is this codex a ONE-TURN WAKE RESUME? The wake executor's
+ * channel 2 (`codex exec resume <id> <wake>`) sets PAPERCUSP_WAKE_DELIVERY_ID on
+ * exactly that child, and the child exits when its single turn settles
+ * (session-reset-continuation.ts WAKE_RESUME_TURN_CHANNELS). Codex hooks inherit it;
+ * the activity hook already forwards it as wake_delivery_id (WI-10005679). A
+ * malformed value is not a wake marker.
+ * @param {Record<string, string | undefined>} env
+ */
+export function isWakeResumeChild(env: Record<string, string | undefined>): boolean;
+/**
+ * WI-6554700010008779: the structural no-host refusal reaching a one-turn wake
+ * resume. That child has no psu-pty host once the member's own host is gone, so
+ * session:request-compaction can only answer `no_live_pty_host`: no managed
+ * boundary can ever be queued for it. Refusing native compaction there does NOT
+ * leave the process intact. The turn fails, the delivery re-arms, and the next
+ * wake resumes the same thread into the same refusal. The thread need not be
+ * over its limit: Codex can fire PreCompact(auto) on a resume's first turn below
+ * it (WI-10002531, WI-10005673). Measured 2026-10-12: six headless members of one
+ * fleet looped like this, about 45 refused wakes an hour. For one of them the
+ * last sampled turn was 2026-10-03 (input 567,648 of a 784,800 limit), followed by
+ * 1,531 turn starts that never sampled. A hosted session, and
+ * every other refusal reason, keep the fail-closed refusal.
+ * @param {{ ok?: boolean, inner?: Record<string, unknown> | null }} parsed
+ * @param {Record<string, string | undefined>} env
+ */
+export function isHostlessWakeResumeRefusal(parsed: {
+    ok?: boolean;
+    inner?: Record<string, unknown> | null;
+}, env: Record<string, string | undefined>): boolean;
+/** @param {string | undefined} deliveryId */
+export function hostlessWakeResumeDecision(deliveryId: string | undefined): {
+    continue: boolean;
+    systemMessage: string;
+};
+/**
  * Run the bridge with injectable transport/token readers for hermetic tests.
  * @param {Record<string, unknown>} payload
  * @param {{
@@ -54,6 +100,7 @@ export function inheritedContextDecision(forkedFromId: string): {
  *   fetchImpl?: typeof globalThis.fetch,
  *   readToken?: (env: Record<string, string | undefined>) => string,
  *   inspectTranscript?: (transcriptPath: unknown) => { readable: boolean, forkedFromId: string | null, sampled: boolean | null },
+ *   isNested?: () => boolean,
  * }} [options]
  */
 export function runManagedPreCompact(payload: Record<string, unknown>, options?: {
@@ -65,6 +112,7 @@ export function runManagedPreCompact(payload: Record<string, unknown>, options?:
         forkedFromId: string | null;
         sampled: boolean | null;
     };
+    isNested?: () => boolean;
 }): Promise<{
     continue: boolean;
     systemMessage: string;

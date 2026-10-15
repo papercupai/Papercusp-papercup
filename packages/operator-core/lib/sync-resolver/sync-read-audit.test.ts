@@ -70,6 +70,25 @@ describe('sync-read audit — registry coverage guard (P-008)', () => {
     const map = buildLiveFixtureMap(['plans.lint'], (name) => getRegistryEntryV2(name) as never);
     expect(map).toEqual({ 'plans.lint': null });
   });
+
+  it('skips identity-specific reads instead of measuring fabricated empty fixtures', async () => {
+    const queries = ['cupboard.identityOutcomeCosts', 'integrations.tickets', 'reports.lineage'];
+    const fixtures = buildLiveFixtureMap(queries, (name) => getRegistryEntryV2(name) as never);
+    expect(fixtures).toEqual(Object.fromEntries(queries.map((name) => [name, null])));
+    let fetches = 0;
+    const result = await measureSyncReadPayloadsViaRest({
+      baseUrl: 'http://unused.invalid',
+      token: 'fixture-only',
+      fixtures,
+      fetchImpl: async () => {
+        fetches++;
+        throw new Error('identity-specific reads must not be probed');
+      },
+    });
+    expect(fetches).toBe(0);
+    expect(result.skipped).toEqual(queries);
+    expect(result.measured).toEqual([]);
+  });
 });
 
 describe('sync-read audit — allowlist hygiene (P-008)', () => {

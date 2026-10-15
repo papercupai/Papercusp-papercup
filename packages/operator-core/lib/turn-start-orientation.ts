@@ -893,75 +893,6 @@ export function hasUndischargedObligations(state: OrientationState): boolean {
 }
 
 /**
- * The reduced state used when every class is unchanged but an obligation is
- * still undischarged: obligations ONLY.
- *
- * Re-emitting the WHOLE block each turn for one standing row would repeat held
- * items, gates and facts that genuinely have not changed — manufacturing the
- * exact signal decay D-003 withdrew the improvement-triage line for. The item
- * says an obligation ROW renders every turn, not the block, so this keeps the
- * re-injection as narrow as the contract requires.
- *
- * `loopArmed: true` is the QUIET value, not an assertion about the loop: the
- * renderer warns on a loop that is NOT armed, so `false` here would fabricate a
- * "not armed" line on a healthy session every time a directive went unsettled.
- */
-function undischargedObligationsOnly(state: OrientationState): OrientationState {
-  return {
-    held: [],
-    unansweredDirected: 0,
-    unansweredStale: 0,
-    inboxRecent: [],
-    openAsks: null,
-    announcedGates: [],
-    // `[]`, not null: the QUIET value. Empty renders no transition line, which
-    // is right for an obligations-only re-emit — the modes have not changed, so
-    // repeating their attribution would be the signal decay this projection
-    // exists to avoid. null would mean "unreadable", which is a different and
-    // untrue claim on a turn where we simply did not look.
-    modes: [],
-    // `null` is the QUIET value HERE, and — unlike `modes` above — it carries no
-    // "unreadable" claim, because this projection is RENDER-ONLY: composeOrientationBlock
-    // fingerprints the FULL state before building it, so nothing in here reaches a cursor.
-    // There is no empty AuthorityVerdict to use instead (the type is three required
-    // strings, and a blank-valued one would render `- authority: exec  …` on a first
-    // turn), so null — which renders unconditionally nothing — is the honest choice.
-    authorityVerdict: null,
-    // `undefined` is the QUIET value for this class (renders nothing), and is
-    // the honest one here for the same reason as `authorityVerdict: null`
-    // above: this projection did not look, so it must not claim a measured
-    // empty. `{ decisions: [] }` would be the "no new decisions" assertion
-    // D-081 ruling 3 forbids building on anything but a real read.
-    planDecisions: undefined,
-    // `undefined` for the same reason as `planDecisions` directly above: this
-    // projection did not read the lock queue, so it must not claim the
-    // measured-empty `{ held: [], blocked: [], observed: [] }`. That value would
-    // assert "nothing about your locks changed" from a read that never
-    // happened — and, worse than for decisions, it would WRITE an empty
-    // observed-set token, so the next real read would see every standing hold
-    // as new.
-    lockTransitions: undefined,
-    // `[]` — the MEASURED-empty value — is right here, and the asymmetry with
-    // `lockTransitions: undefined` directly above is deliberate, not an
-    // oversight. That field must be `undefined` because it WRITES a watermark
-    // token (`observed`), so a projection claiming measured-empty would erase
-    // the cursor. `coupledPeers` in THIS projection reaches no cursor at all —
-    // it is a render-only view — so the preserve-on-unreadable argument does
-    // not apply, and `[]` both renders nothing and asserts nothing. Same
-    // convention as `modes: []`.
-    coupledPeers: [],
-    loopArmed: true,
-    loopFireWithheld: false,
-    improvementTriage: null,
-    executableFrontier: null,
-    neverDropFacts: [],
-    toolSurface: null,
-    carryBlindWindow: null,
-    obligations: state.obligations,
-  };
-}
-
-/**
  * P-006 of owner-directive-delivery-redesign-2026-09-22 (D-005): the addressed
  * agent's reminder cadence for its own open owner directives.
  *
@@ -3249,21 +3180,31 @@ export function composeOrientationBlockWithRows(input: ComposeOrientationBlockIn
   const shown = withoutWithheldDirectiveRows(state, directives.withheld);
   const undischarged = hasUndischargedObligations(shown);
   if (unchanged && !undischarged && !directives.reminder) return { block: '', rows: [] };
-  const renderState = unchanged ? undischargedObligationsOnly(shown) : shown;
 
   const header = `## ${HEADING}`;
   // Rows, not bare lines: identical text, but each carries the class that
   // emitted it, which is what lets the budget loop below report WHICH classes
   // survived. `renderOrientationLines` is this same call with `.map(r => r.text)`.
   // The reminder leads: an owner directive outranks everything else here.
+  //
+  // When every other class is UNCHANGED, the re-emit is narrowed to the
+  // obligations class BY ROW, from the real state. It used to be narrowed by
+  // rendering a hand-built state of "quiet" values (`held: []`, `loopArmed:
+  // true`, …), but a value is only quiet if its class renders nothing for it,
+  // and two did not: `held: []` rendered "holding: nothing — claim before your
+  // first edit" over a session holding four items, and `loopArmed: true`
+  // rendered "engine loop: ARMED" without reading the loop (EI-24811284380539882).
+  // Filtering rows makes every other class silent by construction, including
+  // classes added later.
+  const allRows = projectOrientationRows(shown, 'turn-start', committed);
   const projected: OrientationRow[] = [
     ...(directives.reminder ? [{ classId: 'obligations' as const, order: 0, text: directives.reminder }] : []),
-    ...projectOrientationRows(renderState, 'turn-start', committed),
+    ...(unchanged ? allRows.filter((row) => row.classId === 'obligations') : allRows),
   ];
   // Rows whose DELIVERY a receipt measures are paid for before anything else is
   // packed. Every other row keeps the break-on-first-miss rule below; a reserved
   // row still lands in its own emission slot, it just cannot be the one that misses.
-  const reserved = reservedOrientationRows(projected, renderState, budget - header.length);
+  const reserved = reservedOrientationRows(projected, shown, budget - header.length);
   let reservedCost = [...reserved].reduce((sum, row) => sum + row.text.length + 1, 0);
   const kept: OrientationRow[] = [];
   const omitted: OrientationRow[] = [];
@@ -3676,6 +3617,18 @@ export async function resolveOrientationState(
 /** Default readers — each one is an EXISTING shared primitive, never a new query.
  *  Dynamic imports keep them off the module graph until a turn actually needs them. */
 export function defaultOrientationDeps(): OrientationDeps {
+  // Both orientation loop facts describe one owner's current loop. Share one
+  // owner-scoped status read per resolution so the ARMED line and withheld-fire
+  // variant cannot be derived from separate readers or different snapshots.
+  const loopStatusReads = new Map<string, Promise<import('./harness/routines/loop').LoopStatus | null>>();
+  const loopStatusFor = (ownerId: string) => {
+    let pending = loopStatusReads.get(ownerId);
+    if (!pending) {
+      pending = import('./harness/routines/loop').then(({ getLoopStatus }) => getLoopStatus(ownerId));
+      loopStatusReads.set(ownerId, pending);
+    }
+    return pending;
+  };
   return {
     /**
      * P-014. Reuse-first: the decisions themselves come from
@@ -4464,12 +4417,10 @@ export function defaultOrientationDeps(): OrientationDeps {
       };
     },
     loopArmed: async (ownerId) => {
-      const { activeLoopOwners } = await import('./adv-roster');
-      return (await activeLoopOwners()).has(ownerId);
+      return Boolean((await loopStatusFor(ownerId))?.active);
     },
     loopFireWithheld: async (ownerId) => {
-      const { getLoopStatus } = await import('./harness/routines/loop');
-      return isLoopFireWithheld(await getLoopStatus(ownerId));
+      return isLoopFireWithheld(await loopStatusFor(ownerId));
     },
     // P-013: filing already works; consumption did not. Reuse the exact bounded
     // triage window, policy split, and ONE human-queue ranker rather than adding
@@ -4745,6 +4696,8 @@ export async function buildTurnStartOrientationBlock(input: {
   deps?: Partial<OrientationDeps>;
   /** Test seam only; production always uses the receipt module's real writers. */
   progressReceiptDeps?: GoalPlacementTurnReceiptDeps;
+  /** Test seam only; production always stages the real cursor. */
+  cursorStage?: typeof import('./agent-tools/coordination/read-cursors').stage;
   /** Test seam only; production uses the selected identity compiler. */
   identityBinder?: typeof import('./agent-identities/source').bindSelectedIdentityOutputs;
   /** Test seam only; production reads the caller's authoritative presence row. */
@@ -4763,7 +4716,7 @@ export async function buildTurnStartOrientationBlock(input: {
     // source is: a broken generation read must degrade the dedup to its old
     // behaviour, never fail the block or the turn.
     const { contextEpoch: epochDep, contextTokens: tokensDep } = { ...defaultOrientationDeps(), ...(input.deps ?? {}) };
-    const [{ ackAndRead, stage }, state, epoch, contextTokens, progressReceipts] = await Promise.all([
+    const [{ ackAndRead, stage: defaultStage }, state, epoch, contextTokens, progressReceipts] = await Promise.all([
       import('./agent-tools/coordination/read-cursors'),
       resolveOrientationState(ownerId, workspaceId, input.deps ?? {}),
       epochDep(ownerId).catch(() => 0),
@@ -4778,14 +4731,35 @@ export async function buildTurnStartOrientationBlock(input: {
       ORIENTATION_CURSOR_SURFACE,
       proof ? { confirmedToken: input.confirmedDeliveryToken ?? null } : undefined,
     ).catch(() => null);
+    const unconfirmedPlacement = progressReceipts && ack?.unconfirmedPending
+      ? ack.unconfirmedPending[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY]
+      : undefined;
+    if (progressReceipts && unconfirmedPlacement !== undefined) {
+      const reason = input.confirmedDeliveryToken === null
+        ? 'confirmation-token-missing'
+        : 'confirmation-token-mismatch';
+      void trackDetached(progressReceipts.recordGoalPlacementDeliveryOutcome({
+        ownerId, workspaceId, stage: 'confirm', reason, candidate: unconfirmedPlacement,
+      }, input.progressReceiptDeps)).catch(() => {});
+    }
     // A completed plan can leave no new orientation rows. Still settle its
     // previously emitted receipt; an empty next block must not erase evidence.
     if (progressReceipts && ack?.committed?.[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY]) {
-      void trackDetached(progressReceipts.confirmGoalPlacementDelivery({
-        ownerId, workspaceId, confirmedToken: input.confirmedDeliveryToken,
-        candidate: ack.committed[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY],
-        brief: state.obligations,
-      }, input.progressReceiptDeps)).catch(() => {});
+      const candidate = ack.committed[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY];
+      // A confirm that records nothing must say why (WI-10005636): a discarded
+      // reason made a dropped receipt indistinguishable from no opportunity.
+      void trackDetached((async () => {
+        const outcome = await progressReceipts.confirmGoalPlacementDelivery({
+          ownerId, workspaceId, confirmedToken: input.confirmedDeliveryToken,
+          candidate, brief: state.obligations,
+        }, input.progressReceiptDeps).catch((error: unknown) => ({
+          recorded: 0, reason: `confirm-threw:${error instanceof Error ? error.message : String(error)}`,
+        }));
+        if (outcome.recorded > 0) return;
+        await progressReceipts.recordGoalPlacementDeliveryOutcome({
+          ownerId, workspaceId, stage: 'confirm', reason: outcome.reason, candidate,
+        }, input.progressReceiptDeps);
+      })()).catch(() => {});
     }
     if (isEmptyOrientation(state)) return NO_ORIENTATION;
     const composed = composeOrientationBlockWithRows({
@@ -4857,15 +4831,29 @@ export async function buildTurnStartOrientationBlock(input: {
         if (measured.degraded && measured.reason === 'timeout') latePlacement = preparing;
       }
     }
-    const staged = await stage(
+    const stageResult = await (input.cursorStage ?? defaultStage)(
       ownerId,
       ORIENTATION_CURSOR_SURFACE,
       deliveredFingerprint,
       deliveryToken ? { deliveryToken } : {},
     ).then(
-      () => true,
-      () => false,
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ ok: false as const, error }),
     );
+    if (!stageResult.ok && progressReceipts && deliveryToken) {
+      const placementKey = progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY;
+      const candidate = deliveredFingerprint[placementKey];
+      if (candidate !== undefined) {
+        const errorReason = stageResult.error instanceof Error
+          ? stageResult.error.message
+          : String(stageResult.error);
+        void trackDetached(progressReceipts.recordGoalPlacementDeliveryOutcome({
+          ownerId, workspaceId, stage: 'stage',
+          reason: `cursor-stage-rejected:${errorReason}`, candidate,
+        }, input.progressReceiptDeps)).catch(() => {});
+      }
+    }
+    const staged = stageResult.ok;
     if (staged) {
       // Optional provenance must never consume the hook's 2.5s response wall.
       // The token-guarded update works whether native proof has already moved
@@ -4904,9 +4892,26 @@ export async function buildTurnStartOrientationBlock(input: {
           fallback: null, timeoutMs: input.placementBackgroundTimeoutMs ?? 8_000,
           label: 'goal-placement-delivery-background',
         });
-        if (!late.value) return;
+        if (!late.value) {
+          const reason = late.degraded
+            ? `late-prepare-${late.reason ?? 'degraded'}${late.errorMessage ? `:${late.errorMessage}` : ''}`
+            : 'late-prepare-null';
+          await progressReceipts.recordGoalPlacementDeliveryOutcome({
+            ownerId, workspaceId, stage: 'late-upgrade', reason,
+            candidate: deliveredFingerprint[placementKey],
+          }, input.progressReceiptDeps);
+          return;
+        }
         const { annotateReadCursorByToken } = await import('./agent-tools/coordination/read-cursors');
-        await annotateReadCursorByToken(ownerId, ORIENTATION_CURSOR_SURFACE, placementKey, deliveryToken, late.value);
+        const annotated = await annotateReadCursorByToken(
+          ownerId, ORIENTATION_CURSOR_SURFACE, placementKey, deliveryToken, late.value,
+        );
+        if (annotated === false) {
+          await progressReceipts.recordGoalPlacementDeliveryOutcome({
+            ownerId, workspaceId, stage: 'late-upgrade', reason: 'late-annotate-not-applied',
+            candidate: late.value,
+          }, input.progressReceiptDeps);
+        }
       })()).catch(() => {});
     }
     // A token whose stage failed names no pending, so confirming it could never

@@ -35,6 +35,9 @@ function bootHarnessSubstrate(opts: BootHarnessOpts) {
   return bootHarnessSubstrateImpl({
     rekeyDepsOverride: null,
     loadOwnCompactionGovernorReceiptKeys: async () => [],
+    // Snapshot flushing does not exercise mem0 federation. Bind the existing
+    // flag reader so an unavailable production override store cannot affect it.
+    memoryFederationFlagOn: async () => false,
     ...opts,
   });
 }

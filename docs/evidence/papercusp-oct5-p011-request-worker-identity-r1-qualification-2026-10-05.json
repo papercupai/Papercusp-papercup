@@ -1,0 +1,117 @@
+{
+  "schemaVersion": "p011-request-worker-assignment-qualification-v1",
+  "workItem": "WI-10006124",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "status": "supporting-integration-guards-only",
+  "recordedAt": "2026-10-05T20:11:00Z",
+  "implementation": {
+    "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+    "sha256": "4d69b43ef01b86935dcae2e8bc3999cc4147aef4213bcb057e43094321db3ee5",
+    "bytes": 66151,
+    "behavior": "Read only selected terminal diagnostic metadata in the target inspector; join server HTTP UUIDs through query/pool/process/build tuples to PID/startTicks/executable fences. Conserve one-to-many queries and reject contradictory assignments. Unobserved request identities or ring rows remain unknown/partial.",
+    "reused": [
+      "Pinned db-org diagnostic identity and bounded acquire-registry",
+      "Host-registered build-stamp resolver",
+      "Existing live OS/counter/role sampler and CDP client",
+      "Existing canonical integration test runner"
+    ]
+  },
+  "verification": {
+    "command": "npm run test:file -- packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+    "testRunId": 20739956,
+    "ledgerStatus": "pass",
+    "harness": "papercusp",
+    "workspace": "papercusp-workspace",
+    "commitSha": "7e34150de0b44b11c93ae909ad6b9ff2a1b34e00",
+    "worktreeDirty": true,
+    "passed": 32,
+    "failed": 0,
+    "skipped": 1,
+    "skippedTest": "measures unforced live idle and ordinary HTTP windows on the named staging process",
+    "actualBoundary": "Two independent disposable request-only Node HTTP targets generated response UUIDs and recorded two query tuples each through the actual PG diagnostic writer. Serialized inspector readers recovered their distinct process UUIDs and actual PID/OS fences; reversed observation order preserved the exact joins. These are isolated fixture processes, not production cluster workers.",
+    "counterexamples": [
+      "PID reuse",
+      "changed executable",
+      "inspector PID mismatch",
+      "changed loaded build",
+      "query source build mismatch",
+      "operation build mismatch",
+      "query source process mismatch",
+      "operation process mismatch",
+      "pool identity missing",
+      "duplicate query tuple",
+      "unrequested HTTP UUID",
+      "wrong registered operation",
+      "invalid query ID",
+      "sidecar role",
+      "failed query",
+      "same request assigned to two processes"
+    ],
+    "privacy": "Actual writer and independent inspector fixture exclude result bodies, SQL and WeakRef dereferences from the emitted metadata.",
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "namedFiles": 1,
+      "actualErrors": 0
+    },
+    "bindingIds": {
+      "child": 23914,
+      "parent": 23915
+    },
+    "logs": [
+      {
+        "path": "/tmp/su-7db4f-p011-worker-assignment-r4.log",
+        "bytes": 5683,
+        "sha256": "ede4a1f884e7e004d3fc77956e6ae0418cf440d759daf673f6e2654a5032422d"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-worker-assignment-types-r3.log",
+        "bytes": 1066,
+        "sha256": "75e17e8669b9df6227e082f08a4f97b89f2151fe9b3462f4f6b60b73e8f81df7"
+      }
+    ]
+  },
+  "sourceFingerprints": {
+    "scope": "Bounded post-run file fingerprints, not a complete executed-source graph",
+    "files": [
+      {
+        "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+        "bytes": 29262,
+        "sha256": "d72752978db0773b83d5347bcb39f5bbae33a997754ac8abf9354fe11222f6ea"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/build-stamp.ts",
+        "bytes": 5163,
+        "sha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e"
+      },
+      {
+        "path": "packages/operator-core/lib/background-workers.ts",
+        "bytes": 10151,
+        "sha256": "2c4c31597075252183391b9a4b68ffb7bb2bde033448bc337c5ee5d59d2e1008"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "bytes": 66663,
+        "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+      }
+    ]
+  },
+  "preservedFailures": [
+    "R1 guard fixture supplied unwrapped diagnostic context; corrected to the writer's state/correlation envelope.",
+    "R3 independent target inherited the resource-governor sidecar mode; all five sidecar flags are now explicitly cleared in the isolated fixture. The serving-role check stayed strict."
+  ],
+  "limits": [
+    "No new shared staging or deployed request-worker measurement",
+    "No production worker clone or native physical allocation ownership",
+    "No complete executed-source graph or all-eight-source acceptance",
+    "No PSS/allocation saving or historical service recovery claim",
+    "Full P011@2/D-021, R8/R9, independent acceptance and shipment remain open",
+    "Existing expiry/cache/query receipts were not replayed",
+    "Original native owner-origin affirmation remains pending; no duplicate approval ask"
+  ]
+}

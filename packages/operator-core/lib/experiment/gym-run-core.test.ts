@@ -35,6 +35,18 @@ describe('armToAbVariant', () => {
 });
 
 describe('abResultToExperimentResult', () => {
+  it('withholds winner and scorecard for an unmeasured charge even when scores favor the candidate', () => {
+    const result = fakeAbResult();
+    result.cost.costMeasured = false;
+    result.outcomes[1].judgeCostMeasured = false;
+    const out = abResultToExperimentResult(result, [{ variantId: BASELINE_ID, label: 'baseline', overlay: { promptOverrides: {} } }, { variantId: 'cand', label: 'cand', overlay: { promptOverrides: {} } }]);
+    expect(out.costMeasured).toBe(false);
+    expect(out.arms[1].costMeasured).toBe(false);
+    expect(out.winner).toBeNull();
+    expect(out.comparison).toBeNull();
+    expect(Object.values(out.scorecardScores!)).toEqual([null, null, null]);
+  });
+
   it('computes per-variant means + the compareArms winner', () => {
     const out = abResultToExperimentResult(fakeAbResult(), [
       { variantId: BASELINE_ID, label: 'baseline', overlay: { promptOverrides: {} } },

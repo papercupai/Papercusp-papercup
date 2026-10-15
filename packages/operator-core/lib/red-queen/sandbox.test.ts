@@ -155,6 +155,50 @@ describe('runDrillCycle', () => {
     expect(cls.cleaned.v).toBe(true);
   });
 
+  it('preserves the owner-escalation target for an operator-scoped infrastructure drill', async () => {
+    const watchdogKey = 'fire-circuit-open:red-queen-sandbox';
+    const cls = fakeClass({
+      plant: async () => ({
+        expectedWatchdogKey: watchdogKey,
+        expectedKind: 'bug',
+        expectedSeverity: 'major',
+        expectedDecision: 'gate',
+        artifacts: { table: 'autoloop_state' },
+      }),
+    });
+    const candidate = {
+      id: 'iss-1',
+      kind: 'bug' as const,
+      scope: 'operator',
+      title: 'Red Queen drill fire circuit is open',
+      severity: 'major' as const,
+      state: 'open' as const,
+      createdAt: '2026-06-12T10:00:00.000Z',
+      updatedAt: '2026-06-12T10:00:00.000Z',
+      watchdogKey,
+      origin: 'drill' as const,
+    };
+    const { deps, stamps } = fakeDeps({
+      getIssue: vi.fn(async (id: string) =>
+        issue(id, { scope: 'operator', payload: { watchdogKey } }),
+      ),
+      readItems: vi.fn(async (opts) => (opts.origins?.includes('drill') ? [candidate] : [])),
+    });
+
+    const r = await runDrillCycle(cls, deps);
+
+    expect(r.status).toBe('resolved');
+    expect(deps.applyTriage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'iss-1',
+        decision: 'gate',
+        target: 'owner-escalation',
+        by: 'red-queen-sandbox',
+      }),
+    );
+    expect(stamps.triaged[0]).toMatchObject({ triagedDecision: 'gate', triagedIdeaType: 'infra-environment' });
+  });
+
   it('EI-6933: the detect-stage tick no-ops processAging/processAutoClose (both are NOT scoped to SANDBOX_WORKSPACE_ID upstream — they resolve issues via a process-global "active workspace", so left live they run against the REAL production issue backlog on every drill)', async () => {
     const cls = fakeClass();
     const { deps } = fakeDeps();

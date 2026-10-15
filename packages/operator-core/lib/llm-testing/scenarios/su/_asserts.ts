@@ -353,8 +353,8 @@ export function assertTextForbids(pattern: RegExp, meta: Meta): CustomAssert {
 }
 
 /** A negation cue immediately governing a nearby banned term — "there is NO
- *  `features:update`", "I won't use raw SQL", "doesn't have a psql path". */
-const NEGATION_CUE = /\b(no|not|n['’]t|never|isn['’]t|doesn['’]t|won['’]t|cannot|can['’]t|nor|without)\b/i;
+ *  `features:update`", "I won't use raw SQL", "doesn't have a psql path", "neither is a license". */
+const NEGATION_CUE = /\b(no|not|n['’]t|never|isn['’]t|doesn['’]t|won['’]t|cannot|can['’]t|nor|neither|without)\b/i;
 
 /** ERROR if ANY turn's assistant text matches `pattern` in an AFFIRMATIVE
  *  context — i.e. the match is NOT immediately preceded (within

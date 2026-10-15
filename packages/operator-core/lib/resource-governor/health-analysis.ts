@@ -18,10 +18,23 @@ import {
   type LiveHealthSnapshot,
   type LiveHealthWriterKind,
 } from './live-health';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+export interface HealthConditionContext {
+  readonly workspaceId: string;
+  readonly rail?: AlarmAttentionDeps;
+  readonly readOpenConditions?: () => Promise<Array<{ conditionKey: string; openedAtMs: number }>>;
+}
+
+export function healthObjectiveConditionKey(workspaceId: string, scopeId: string, objectiveId: string,
+  signal: LiveHealthSignalKey, writerId: string): string {
+  return `alarm:resource-health:${encodeURIComponent(JSON.stringify([workspaceId, scopeId, objectiveId, signal, writerId]))}`;
+}
 
 export const HEALTH_ANALYSIS_SCHEMA_VERSION = 'resource-governor-health-analysis-v1' as const;
 
-export type HealthResource = 'cpu' | 'memory' | 'database' | 'service' | 'provider' | 'queue' | 'governor';
+export type HealthResource = 'cpu' | 'io' | 'memory' | 'database' | 'service' | 'provider' | 'queue' | 'governor';
 export type HealthVerdictState = 'warming' | 'healthy' | 'degraded' | 'unknown';
 export type HealthSeverity = 'none' | 'warning' | 'critical';
 export type EvidenceQuality = 'actionable' | 'low-confidence' | 'warming' | 'stale' | 'unknown';
@@ -40,6 +53,8 @@ export const NON_CAUSAL_CAPACITY_SIGNALS = Object.freeze([
   'disk.freeBytes',
   'disk.readBytesPerSec',
   'disk.writeBytesPerSec',
+  'io.processReadBytesPerSec',
+  'io.processWriteBytesPerSec',
   'network.rxBytesPerSec',
   'network.txBytesPerSec',
   'queue.oldestAgeMs',
@@ -412,6 +427,20 @@ const CAUSAL_RULES: readonly CausalRule[] = Object.freeze([
     minimumAbsoluteIncrease: 1,
   },
   {
+    resource: 'io',
+    causeSignal: 'io.psiSomePct',
+    outcomes: PROGRESS_OUTCOMES,
+    warningRatio: 3,
+    minimumAbsoluteIncrease: 1,
+  },
+  {
+    resource: 'io',
+    causeSignal: 'io.psiFullPct',
+    outcomes: PROGRESS_OUTCOMES,
+    warningRatio: 3,
+    minimumAbsoluteIncrease: 0.5,
+  },
+  {
     resource: 'memory',
     causeSignal: 'memory.psiSomePct',
     outcomes: PROGRESS_OUTCOMES,
@@ -492,6 +521,8 @@ const CAUSAL_RULES: readonly CausalRule[] = Object.freeze([
 /** Corroborators keep their own units; a swap byte-rate delta cannot be reused for PSI. */
 const PRESSURE_THRESHOLDS = Object.freeze({
   'cpu.psiSomePct': { warningRatio: 3, minimumAbsoluteIncrease: 1 },
+  'io.psiSomePct': { warningRatio: 3, minimumAbsoluteIncrease: 1 },
+  'io.psiFullPct': { warningRatio: 3, minimumAbsoluteIncrease: 0.5 },
   'memory.psiSomePct': { warningRatio: 3, minimumAbsoluteIncrease: 1 },
   'memory.psiFullPct': { warningRatio: 3, minimumAbsoluteIncrease: 0.5 },
   'memory.workingSetGrowthBytesPerSec': { warningRatio: 3, minimumAbsoluteIncrease: 1024 * 1024 },
@@ -574,11 +605,52 @@ export class RollingHealthAnalyzer {
     this.#history.set(frame.scopeId, history);
   }
 
-  #assessObjective(frame: HealthAnalysisFrame, objective: ServiceObjective): ObjectiveEvidence {
+  #assessObjective(frame: HealthAnalysisFrame, objective: ServiceObjective,
+    context?: HealthConditionContext, deliveries: Promise<void>[] = [],
+    readEpisodes?: () => Promise<Array<{ conditionKey: string; openedAtMs: number }>>): ObjectiveEvidence {
     const reading = frame.signals[objective.signal];
     const baseline = this.baseline.get(frame.scopeId, objective.signal, frame.atMs);
+    const delivered = (evidence: ObjectiveEvidence): ObjectiveEvidence => {
+      if (!context || !reading || evidence.quality !== 'actionable') return evidence;
+      const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+      const spec = LIVE_HEALTH_SIGNAL_SPECS[objective.signal];
+      // Unknown, stale, malformed, foreign-clock and baseline-warming readings
+      // preserve the durable episode, even when the aggregate verdict looks healthy.
+      if (!context.workspaceId?.trim() || !frame.scopeId?.trim() || !objective.id?.trim() ||
+          !reading.writerId?.trim() || reading.state !== 'measured' || reading.unit !== spec.unit ||
+          !finite(frame.atMs) || frame.atMs === 0 || !finite(reading.observedAtMs) || reading.observedAtMs === 0 ||
+          !finite(reading.collectedAtMs) || !finite(reading.lastMeasuredAtMs) ||
+          reading.observedAtMs > frame.atMs || reading.collectedAtMs > frame.atMs ||
+          reading.lastMeasuredAtMs !== reading.observedAtMs || reading.reason !== null ||
+          frame.atMs - reading.observedAtMs > spec.freshForMs ||
+          !finite(reading.confidence) || reading.confidence > 1 ||
+          !reading.window || !finite(reading.window.startedAtMs) || !finite(reading.window.endedAtMs) ||
+          !finite(reading.window.durationMs) || reading.window.startedAtMs > reading.window.endedAtMs ||
+          reading.window.endedAtMs > frame.atMs ||
+          (spec.unit === 'boolean' ? typeof reading.value !== 'boolean' : !finite(reading.value))) return evidence;
+      const conditionKey = healthObjectiveConditionKey(context.workspaceId, frame.scopeId, objective.id,
+        objective.signal, reading.writerId);
+      deliveries.push((async () => {
+        try {
+          if (evidence.breached) {
+            const event = { conditionKey, oneShot: true,
+              summary: `Resource health objective breached: ${objective.id} (${frame.scopeId})`,
+              body: `${objective.description}\n${evidence.reason}; value=${String(evidence.value)}; severity=${evidence.severity}` };
+            if (context.rail?.broadcast) await context.rail.broadcast(event);
+            else await broadcastSevereEvent(event);
+          } else if (readEpisodes) {
+            const episodes = await readEpisodes();
+            if (Array.isArray(episodes) && episodes.some(episode => episode?.conditionKey === conditionKey &&
+                finite(episode.openedAtMs) && episode.openedAtMs > 0 && episode.openedAtMs <= reading.observedAtMs)) {
+              await resolveAlarm(conditionKey, 'resource-health', context.rail);
+            }
+          }
+        } catch { /* rail failure cannot suppress the verdict or another objective */ }
+      })());
+      return evidence;
+    };
     if (!reading) {
-      return Object.freeze({
+      return delivered(Object.freeze({
         objectiveId: objective.id,
         signal: objective.signal,
         resource: objective.resource,
@@ -593,10 +665,10 @@ export class RollingHealthAnalyzer {
         severity: 'none',
         quality: 'unknown',
         reason: 'signal-absent',
-      });
+      }));
     }
     if (reading.state !== 'measured' || reading.value === null) {
-      return Object.freeze({
+      return delivered(Object.freeze({
         objectiveId: objective.id,
         signal: objective.signal,
         resource: objective.resource,
@@ -611,11 +683,11 @@ export class RollingHealthAnalyzer {
         severity: 'none',
         quality: reading.state === 'stale' ? 'stale' : 'unknown',
         reason: reading.reason ?? `signal-${reading.state}`,
-      });
+      }));
     }
     if (typeof reading.value === 'boolean') {
       const breached = objective.failureWhenTrue === true && reading.value;
-      return Object.freeze({
+      return delivered(Object.freeze({
         objectiveId: objective.id,
         signal: objective.signal,
         resource: objective.resource,
@@ -630,10 +702,10 @@ export class RollingHealthAnalyzer {
         severity: breached ? 'critical' : 'none',
         quality: reading.confidence >= this.minimumEvidenceConfidence ? 'actionable' : 'low-confidence',
         reason: breached ? 'explicit-failure-signal' : 'objective-satisfied',
-      });
+      }));
     }
     if (!baseline?.ready) {
-      return Object.freeze({
+      return delivered(Object.freeze({
         objectiveId: objective.id,
         signal: objective.signal,
         resource: objective.resource,
@@ -648,13 +720,13 @@ export class RollingHealthAnalyzer {
         severity: 'none',
         quality: 'warming',
         reason: `healthy-baseline-warming:${baseline?.sampleCount ?? 0}/${this.baseline.minimumSamples}`,
-      });
+      }));
     }
     const warningBoundary = boundary(baseline.median, objective.warningRatio, objective.minimumAbsoluteIncrease);
     const criticalBoundary = boundary(baseline.median, objective.criticalRatio, objective.minimumAbsoluteIncrease * 2);
     const severity: HealthSeverity =
       reading.value >= criticalBoundary ? 'critical' : reading.value >= warningBoundary ? 'warning' : 'none';
-    return Object.freeze({
+    return delivered(Object.freeze({
       objectiveId: objective.id,
       signal: objective.signal,
       resource: objective.resource,
@@ -669,7 +741,7 @@ export class RollingHealthAnalyzer {
       severity,
       quality: reading.confidence >= this.minimumEvidenceConfidence ? 'actionable' : 'low-confidence',
       reason: severity === 'none' ? 'objective-satisfied' : 'rolling-objective-breached',
-    });
+    }));
   }
 
   #signalUnderPressure(frame: HealthAnalysisFrame, rule: CausalRule, signal = rule.causeSignal): boolean {
@@ -757,8 +829,19 @@ export class RollingHealthAnalyzer {
     return out;
   }
 
-  evaluate(frame: HealthAnalysisFrame): HealthVerdict {
-    const evidence = this.objectives.map((objective) => this.#assessObjective(frame, objective));
+  evaluate(frame: HealthAnalysisFrame): HealthVerdict;
+  evaluate(frame: HealthAnalysisFrame, context: HealthConditionContext): Promise<HealthVerdict>;
+  evaluate(frame: HealthAnalysisFrame, context?: HealthConditionContext): HealthVerdict | Promise<HealthVerdict> {
+    const deliveries: Promise<void>[] = [];
+    let episodes: Promise<Array<{ conditionKey: string; openedAtMs: number }>> | undefined;
+    const readEpisodes = () => episodes ??= (async () => {
+      if (context?.readOpenConditions) return context.readOpenConditions();
+      const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+      return computeConditionStates(await readConditionEnvelopes()).filter(condition => condition.open)
+        .map(condition => ({ conditionKey: condition.condition_key,
+          openedAtMs: condition.open_since ? Date.parse(condition.open_since) : Number.NaN }));
+    })();
+    const evidence = this.objectives.map((objective) => this.#assessObjective(frame, objective, context, deliveries, readEpisodes));
     const breached = evidence.filter((item) => item.breached);
     const frames = [...(this.#history.get(frame.scopeId) ?? []), frame].slice(-this.historySamples);
     const attributions = breached
@@ -785,7 +868,7 @@ export class RollingHealthAnalyzer {
     if (this.commitHealthyFrames && breached.length === 0) this.baseline.recordHealthy(frame);
     this.#appendHistory(frame);
 
-    return Object.freeze({
+    const verdict: HealthVerdict = Object.freeze({
       schemaVersion: HEALTH_ANALYSIS_SCHEMA_VERSION,
       scopeId: frame.scopeId,
       evaluatedAtMs: frame.atMs,
@@ -798,5 +881,6 @@ export class RollingHealthAnalyzer {
       ignoredCapacitySignals: Object.freeze(ignoredCapacitySignals),
       reasons: Object.freeze(reasons),
     });
+    return context ? Promise.all(deliveries).then(() => verdict) : verdict;
   }
 }

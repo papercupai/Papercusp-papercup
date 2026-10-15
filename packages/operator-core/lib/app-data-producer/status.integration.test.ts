@@ -14,13 +14,16 @@ import { countPendingRows, readPushRollup } from './status';
  * found during independent acceptance grading). This is that check.
  *
  * The workspace is the shared fixture workspace, because trigger_deliveries has
- * FKs onto trigger_sources and datatype_registry. Isolation comes from a fresh
+ * FKs onto data_sources and datatype_registry. Isolation comes from a fresh
  * user uuid per run: both queries are scoped by user, which is exactly the
  * scoping property worth testing.
  */
 
 const WS = 'papercusp-workspace';
+/** Vault category label. Display-only after D-010; it no longer routes. */
 const SOURCE = 'google-calendar';
+/** The canonical datatype countPendingRows selects on (D-010). */
+const DATATYPE = 'calendar-event';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -55,9 +58,9 @@ async function delivery(
 
 async function document(occurredAt: string | null): Promise<string> {
   const [row] = await sql<{ id: string }[]>`
-    INSERT INTO harness_shared.personal_documents
-      (workspace_id, user_id, source, kind, dedupe_key, occurred_at)
-    VALUES (${WS}, ${userId}, ${SOURCE}, 'calendar-event',
+    INSERT INTO harness_shared.documents
+      (workspace_id, user_id, source, datatype_id, kind, dedupe_key, occurred_at)
+    VALUES (${WS}, ${userId}, ${SOURCE}, ${DATATYPE}, 'event',
             ${`doc-${Math.random().toString(36).slice(2)}`}, ${occurredAt})
     RETURNING id`;
   return row.id;
@@ -67,7 +70,7 @@ beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
   const [source] = await sql<{ id: string }[]>`
-    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+    INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES (${WS}, 'google-calendar', 'connected') RETURNING id`;
   sourceId = source.id;
   userId = await makeUser('subject');
@@ -77,10 +80,10 @@ beforeAll(async () => {
 afterAll(async () => {
   if (sql) {
     await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ${sourceId}`.catch(() => {});
-    await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS} AND id = ${sourceId}`.catch(() => {});
+    await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND id = ${sourceId}`.catch(() => {});
     for (const id of [userId, neighbourId]) {
       if (id) {
-        await sql`DELETE FROM harness_shared.personal_documents WHERE workspace_id = ${WS} AND user_id = ${id}`.catch(() => {});
+        await sql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND user_id = ${id}`.catch(() => {});
         await sql`DELETE FROM harness_shared.users WHERE id = ${id}`.catch(() => {});
       }
     }
@@ -90,7 +93,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ${sourceId}`;
-  await sql`DELETE FROM harness_shared.personal_documents WHERE workspace_id = ${WS} AND user_id IN (${userId}, ${neighbourId})`;
+  await sql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND user_id IN (${userId}, ${neighbourId})`;
 });
 
 describe('readPushRollup (real SQL)', () => {
@@ -149,7 +152,7 @@ describe('countPendingRows (real SQL)', () => {
   it('counts every row for the user when the cursor is null', async () => {
     await document('2026-03-01T00:00:00Z');
     await document('2026-03-02T00:00:00Z');
-    expect(await countPendingRows(sql, WS, userId, SOURCE, null)).toBe(2);
+    expect(await countPendingRows(sql, WS, userId, DATATYPE,null)).toBe(2);
   });
 
   it('counts only rows ordered AFTER the cursor', async () => {
@@ -159,35 +162,48 @@ describe('countPendingRows (real SQL)', () => {
 
     const cursor = `2026-03-02T00:00:00.000Z|${mid}`;
     // Strictly greater than (occurred_at, id): the cursor row itself is excluded.
-    expect(await countPendingRows(sql, WS, userId, SOURCE, cursor)).toBe(1);
+    expect(await countPendingRows(sql, WS, userId, DATATYPE,cursor)).toBe(1);
   });
 
   it('falls back to imported_at when occurred_at is null', async () => {
     await document(null);
     // A null occurred_at must still be counted via COALESCE, not silently dropped.
-    expect(await countPendingRows(sql, WS, userId, SOURCE, null)).toBe(1);
+    expect(await countPendingRows(sql, WS, userId, DATATYPE,null)).toBe(1);
   });
 
-  it('does not count another user, or another source', async () => {
+  it('does not count another user, or another datatype', async () => {
     await document('2026-03-01T00:00:00Z');
     await sql`
-      INSERT INTO harness_shared.personal_documents
-        (workspace_id, user_id, source, kind, dedupe_key, occurred_at)
-      VALUES (${WS}, ${neighbourId}, ${SOURCE}, 'calendar-event',
+      INSERT INTO harness_shared.documents
+        (workspace_id, user_id, source, datatype_id, kind, dedupe_key, occurred_at)
+      VALUES (${WS}, ${neighbourId}, ${SOURCE}, ${DATATYPE}, 'event',
               ${`doc-${Math.random().toString(36).slice(2)}`}, '2026-03-01T00:00:00Z')`;
+    // Same SOURCE label, different datatype: D-010 routes by datatype, so a
+    // shared provider-named label must not leak rows into this app's count.
     await sql`
-      INSERT INTO harness_shared.personal_documents
-        (workspace_id, user_id, source, kind, dedupe_key, occurred_at)
-      VALUES (${WS}, ${userId}, 'gmail', 'email-message',
+      INSERT INTO harness_shared.documents
+        (workspace_id, user_id, source, datatype_id, kind, dedupe_key, occurred_at)
+      VALUES (${WS}, ${userId}, ${SOURCE}, 'email-message', 'message',
               ${`doc-${Math.random().toString(36).slice(2)}`}, '2026-03-01T00:00:00Z')`;
 
-    expect(await countPendingRows(sql, WS, userId, SOURCE, null)).toBe(1);
+    expect(await countPendingRows(sql, WS, userId, DATATYPE, null)).toBe(1);
+  });
+
+  it('counts a non-Google provider row of the same datatype (routing is provider-neutral)', async () => {
+    await document('2026-03-01T00:00:00Z');
+    await sql`
+      INSERT INTO harness_shared.documents
+        (workspace_id, user_id, source, datatype_id, kind, dedupe_key, occurred_at)
+      VALUES (${WS}, ${userId}, 'outlook-fixture', ${DATATYPE}, 'event',
+              ${`doc-${Math.random().toString(36).slice(2)}`}, '2026-03-01T00:00:00Z')`;
+
+    expect(await countPendingRows(sql, WS, userId, DATATYPE, null)).toBe(2);
   });
 
   it('treats a malformed cursor as no cursor rather than counting zero', async () => {
     await document('2026-03-01T00:00:00Z');
     // parseReconcileCursor returns null for these, so the unbounded branch runs.
-    expect(await countPendingRows(sql, WS, userId, SOURCE, 'not-a-cursor')).toBe(1);
-    expect(await countPendingRows(sql, WS, userId, SOURCE, '')).toBe(1);
+    expect(await countPendingRows(sql, WS, userId, DATATYPE,'not-a-cursor')).toBe(1);
+    expect(await countPendingRows(sql, WS, userId, DATATYPE,'')).toBe(1);
   });
 });

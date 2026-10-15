@@ -18,7 +18,7 @@
  * variable, which would let an ambient `=/dev/null` blind a release gate — and the producer is
  * guard-tested below to pass exactly two arguments.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import {
   readFileSync,
@@ -29,6 +29,9 @@ import {
   rmSync,
   symlinkSync,
   statSync,
+  chmodSync,
+  linkSync,
+  utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -75,9 +78,11 @@ function codeOnly(src: string): string {
  * the pure lane shares one fork across thousands of files — an unbounded hang here wedges
  * all of them until the batch watchdog fires.
  */
-function runLib(args: string[]): { code: number; out: string; err: string } {
+function runLib(args: string[], env?: NodeJS.ProcessEnv, cwd?: string): { code: number; out: string; err: string } {
   const r = spawnSync('bash', [HELPER_PATH, ...args], {
     encoding: 'utf8',
+    cwd,
+    env: env ? { ...process.env, ...env } : process.env,
     timeout: 60_000,
     killSignal: 'SIGKILL',
   });
@@ -85,6 +90,9 @@ function runLib(args: string[]): { code: number; out: string; err: string } {
 }
 
 const scratch: string[] = [];
+afterEach(() => {
+  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 function fixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'pinned-deps-'));
   scratch.push(dir);
@@ -154,9 +162,251 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
       expect(r.code).toBe(0);
       expect(r.out.trim()).toBe('');
     });
+
+    it('WI-41095 shares the full-depth tracked-repository boundary', () => {
+      const t = fixture();
+      const git = (args: string[]) => {
+        const r = spawnSync('git', ['-C', t, ...args], { encoding: 'utf8', timeout: 10_000 });
+        expect(r.status, r.stderr).toBe(0);
+      };
+      git(['init', '-q']);
+      for (const path of ['apps/foreign', 'libs/tracked']) {
+        mkdirSync(join(t, path), { recursive: true });
+        git(['init', '-q', path]);
+        write(join(t, path, 'node_modules/p/index.js'), 'package');
+      }
+      git(['update-index', '--add', '--cacheinfo', '160000', '1'.repeat(40), 'libs/tracked']);
+      write(join(t, 'packages/deep/one/two/three/node_modules/p/index.js'), 'deep');
+      const r = runLib(['trees', t]);
+      expect(r.code, r.err).toBe(0);
+      expect(r.out.trim().split('\n').sort()).toEqual([
+        'libs/tracked/node_modules', 'packages/deep/one/two/three/node_modules',
+      ]);
+    });
+  });
+
+  describe('WI-41095 donor and planned source closure preflight', () => {
+    it('refuses dangling .bin links before allocating a snapshot', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      mkdirSync(join(donor, 'node_modules/.bin'), { recursive: true });
+      symlinkSync('../vitest/vitest.mjs', join(donor, 'node_modules/.bin/vitest'));
+      const r = runLib(['snapshot', donor, out]);
+      expect(r.code).toBe(1); expect(r.err).toContain('dangling-pinned-dependency-link:node_modules/.bin/vitest');
+      expect(existsSync(out)).toBe(false);
+    });
+    it.each(['absolute', 'escape'])('refuses %s dependency links before allocation', kind => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      write(join(donor, 'node_modules/p/index.js'), 'valid'); write(join(t, 'external'), 'outside');
+      symlinkSync(kind === 'absolute' ? join(donor, 'node_modules/p/index.js') : '../../external',
+        join(donor, 'node_modules/link'));
+      const r = runLib(['snapshot', donor, out]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain(kind === 'absolute' ? 'absolute-pinned-dependency-link' : 'escaping-pinned-dependency-link');
+      expect(existsSync(out)).toBe(false);
+    });
+    it('refuses the donor self-link created by relinking a prepared host output', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      const modules = join(donor, 'node_modules');
+      const hostModules = join(t, 'host', 'node_modules');
+      write(join(modules, 'p/index.js'), 'preserved package');
+      mkdirSync(dirname(hostModules), { recursive: true });
+      symlinkSync(modules, hostModules);
+      // Legacy caller sequence: bundle-host has prepared host/node_modules;
+      // an unconditional ln follows that directory symlink into the donor.
+      const relink = spawnSync('ln', ['-s', modules, hostModules], { encoding: 'utf8', timeout: 5_000 });
+      expect(relink.status, relink.stderr).toBe(0);
+      expect(readFileSync(join(modules, 'p/index.js'), 'utf8')).toBe('preserved package');
+      const r = runLib(['snapshot', donor, out]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('absolute-pinned-dependency-link:node_modules/node_modules');
+      expect(existsSync(out)).toBe(false);
+    });
+    it('requires workspace link targets in the declared source population', () => {
+      const t = fixture(); const donor = join(t, 'donor');
+      write(join(donor, 'libs/workspace/index.js'), 'workspace'); mkdirSync(join(donor, 'node_modules'));
+      symlinkSync('../libs/workspace', join(donor, 'node_modules/workspace'));
+      const population = join(t, 'population.json'); write(population, JSON.stringify([]));
+      expect(runLib(['preflight', donor, population]).err).toContain('unplanned-pinned-dependency-target');
+      write(population, JSON.stringify(['libs/workspace/index.js']));
+      const r = runLib(['preflight', donor, population]);
+      expect(r.code, r.err).toBe(0);
+    });
+    it('rechecks the donor after entering its install mutex', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      write(join(donor, 'node_modules/vitest/vitest.mjs'), 'healthy');
+      mkdirSync(join(donor, 'node_modules/.bin')); symlinkSync('../vitest/vitest.mjs', join(donor, 'node_modules/.bin/vitest'));
+      write(join(donor, 'scripts/npm-install-safe.mjs'), `import { unlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+unlinkSync(${JSON.stringify(join(donor, 'node_modules/vitest/vitest.mjs'))});
+const args = process.argv.slice(process.argv.indexOf('--') + 1);
+const result = spawnSync(args[0], args.slice(1), { stdio: 'inherit' });
+process.exit(result.status ?? 1);`);
+      const r = runLib(['snapshot-locked', donor, out]);
+      expect(r.code).toBe(1); expect(r.err).toContain('dangling-pinned-dependency-link');
+      expect(existsSync(out)).toBe(false);
+    });
   });
 
   describe('papercusp_pinned_deps_snapshot — the floor the overlay stands on', () => {
+    it.each(['hardlink', 'copy'])('preserves workspace executable closure in a complete %s verifier and a nested snapshot', mode => {
+      const t = fixture(); const donor = join(t, 'donor');
+      const manifest = JSON.stringify({ name: '@fixture/cli', bin: { cli: './dist/cli.js' } });
+      write(join(donor, 'packages/cli/package.json'), manifest);
+      write(join(donor, 'packages/cli/dist/cli.js'), 'import "./support.js";');
+      write(join(donor, 'packages/cli/dist/support.js'), 'export const frozen = true;');
+      mkdirSync(join(donor, 'node_modules/@fixture'), { recursive: true });
+      mkdirSync(join(donor, 'node_modules/.bin'));
+      symlinkSync('../../packages/cli', join(donor, 'node_modules/@fixture/cli'));
+      symlinkSync('../@fixture/cli/dist/cli.js', join(donor, 'node_modules/.bin/cli'));
+      const prepare = (root: string) => {
+        write(join(root, 'packages/cli/package.json'), manifest);
+        write(join(root, '.verifier-source.json'), JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
+      };
+      const snapshot = join(t, 'snapshot'); prepare(snapshot);
+      const first = runLib(['snapshot', donor, snapshot, mode]);
+      expect(first.code, first.err).toBe(0);
+      expect(readFileSync(join(snapshot, 'node_modules/.bin/cli'), 'utf8')).toContain('./support.js');
+      expect(readFileSync(join(snapshot, 'packages/cli/dist/support.js'), 'utf8')).toContain('frozen');
+      const nested = join(t, 'nested'); prepare(nested);
+      const second = runLib(['snapshot', snapshot, nested, mode]);
+      expect(second.code, second.err).toBe(0);
+      rmSync(join(donor, 'packages/cli/dist'), { recursive: true });
+      expect(readFileSync(join(nested, 'node_modules/.bin/cli'), 'utf8')).toContain('./support.js');
+      expect(statSync(join(nested, 'packages/cli/dist/cli.js')).ino === statSync(join(snapshot, 'packages/cli/dist/cli.js')).ino)
+        .toBe(mode === 'hardlink');
+      expect(runLib(['preflight', nested]).code).toBe(0);
+    });
+
+    it('refuses an incomplete copied workspace closure instead of stamping donor validity', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snapshot');
+      write(join(donor, 'packages/cli/package.json'), JSON.stringify({ name: 'cli' }));
+      write(join(donor, 'packages/cli/source.js'), 'source');
+      mkdirSync(join(donor, 'node_modules/.bin'), { recursive: true });
+      symlinkSync('../../packages/cli/source.js', join(donor, 'node_modules/.bin/cli'));
+      write(join(snapshot, '.verifier-source.json'), JSON.stringify({ files: [] }));
+      const r = runLib(['snapshot', donor, snapshot]);
+      expect(r.code).toBe(1);
+      expect(r.err).toContain('dangling-pinned-dependency-link:node_modules/.bin/cli');
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
+    });
+
+    it('refuses workspace output when the frozen manifest differs from its donor', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snapshot');
+      write(join(donor, 'packages/cli/package.json'), JSON.stringify({ name: 'cli', version: '2', bin: './dist/cli.js' }));
+      write(join(donor, 'packages/cli/dist/cli.js'), 'donor');
+      write(join(donor, 'node_modules/dep/index.js'), 'dep');
+      write(join(snapshot, 'packages/cli/package.json'), JSON.stringify({ name: 'cli', version: '1', bin: './dist/cli.js' }));
+      write(join(snapshot, '.verifier-source.json'), JSON.stringify({ files: [{ path: 'packages/cli/package.json' }] }));
+      const r = runLib(['snapshot', donor, snapshot]);
+      expect(r.code).toBe(1); expect(r.err).toContain('workspace-bin-manifest-mismatch');
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
+      expect(existsSync(join(snapshot, 'packages/cli/dist'))).toBe(false);
+    });
+
+    it('preserves hardlink identity when the donor is given as a relative path', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      const source = join(donor, 'node_modules/dep/index.js');
+      write(source, 'package');
+      const r = runLib(['snapshot', 'donor', snapshot], undefined, t);
+      expect(r.code, r.err).toBe(0);
+      expect(statSync(join(snapshot, 'node_modules/dep/index.js')).ino).toBe(statSync(source).ino);
+    });
+
+    it.each(['completed', 'staging'])('removes disposable caches from a retained %s copy', retained => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      expect(runLib(['snapshot', donor, snapshot, 'copy']).code).toBe(0);
+      const retainedTree = join(snapshot, retained === 'completed' ? 'node_modules' : 'node_modules.pinned-deps-tmp');
+      if (retained === 'staging') {
+        write(join(retainedTree, 'dep/index.js'), 'package');
+        write(join(donor, 'node_modules/dep/index.js'), 'updated package');
+      }
+      const directories = [retainedTree, join(retainedTree, 'dep')];
+      const originalTimes = directories.map(path => statSync(path));
+      for (const cache of ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data']) {
+        write(join(retainedTree, cache, 'stale.js'), 'stale cache');
+        write(join(retainedTree, 'dep', cache, 'stale.js'), 'stale cache');
+      }
+      // A completed copy must reject cache-only residue even when ordinary
+      // package metadata matches; directory timestamp drift must not mask it.
+      directories.forEach((path, index) => utimesSync(path, originalTimes[index].atime, originalTimes[index].mtime));
+      const r = runLib(['snapshot', donor, snapshot, 'copy']);
+      expect(r.code, r.err).toBe(0);
+      for (const cache of ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data']) {
+        expect(existsSync(join(snapshot, 'node_modules', cache))).toBe(false);
+        expect(existsSync(join(snapshot, 'node_modules/dep', cache))).toBe(false);
+      }
+      expect(readFileSync(join(snapshot, 'node_modules/dep/index.js'), 'utf8')).toBe(
+        retained === 'staging' ? 'updated package' : 'package',
+      );
+    });
+
+    it.each(['hardlink', 'copy'])('excludes mutable tool caches from %s snapshots', mode => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      write(join(donor, 'node_modules/vite/index.js'), 'real package');
+      const caches = ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data'];
+      for (const cache of caches) {
+        write(join(donor, 'node_modules', cache, 'changing.js'), 'temporary');
+        write(join(donor, 'node_modules/dep', cache, 'changing.js'), 'temporary');
+      }
+      const r = runLib(['snapshot', donor, snapshot, mode]);
+      expect(r.code, r.err).toBe(0);
+      expect(readFileSync(join(snapshot, 'node_modules/dep/index.js'), 'utf8')).toBe('package');
+      expect(readFileSync(join(snapshot, 'node_modules/vite/index.js'), 'utf8')).toBe('real package');
+      for (const cache of caches) {
+        expect(existsSync(join(snapshot, 'node_modules', cache))).toBe(false);
+        expect(existsSync(join(snapshot, 'node_modules/dep', cache))).toBe(false);
+      }
+    });
+
+    it.each(['hardlink', 'copy'])('excludes absolute cache entry symlinks from %s snapshots', mode => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      const external = join(t, 'external-cache');
+      write(join(external, 'changing.js'), 'external cache');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      const caches = ['.cache', '.astro', '.vite', '.vite-temp', '.verdict-data'];
+      for (const cache of caches) {
+        symlinkSync(external, join(donor, 'node_modules', cache));
+        symlinkSync(join(t, 'absent-cache'), join(donor, 'node_modules/dep', cache));
+      }
+      const r = runLib(['snapshot', donor, snapshot, mode]);
+      expect(r.code, r.err).toBe(0);
+      expect(readFileSync(join(snapshot, 'node_modules/dep/index.js'), 'utf8')).toBe('package');
+      for (const cache of caches) {
+        expect(existsSync(join(snapshot, 'node_modules', cache))).toBe(false);
+        expect(existsSync(join(snapshot, 'node_modules/dep', cache))).toBe(false);
+      }
+      expect(readFileSync(join(external, 'changing.js'), 'utf8')).toBe('external cache');
+    });
+
+    it('does not validate disposable cache links as package dependencies', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      write(join(donor, 'node_modules/dep/index.js'), 'package');
+      mkdirSync(join(donor, 'node_modules/.vite-temp'));
+      symlinkSync('already-removed.mjs', join(donor, 'node_modules/.vite-temp/module.mjs'));
+      const r = runLib(['snapshot', donor, snapshot]);
+      expect(r.code, r.err).toBe(0);
+      expect(existsSync(join(snapshot, 'node_modules/.vite-temp'))).toBe(false);
+    });
+
+    it('preserves the failed copy diagnostic and refuses both fresh and stale success receipts', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snapshot = join(t, 'snapshot');
+      write(join(donor, 'node_modules', 'dep', 'index.js'), 'donor');
+      write(join(snapshot, '.papercusp-pinned-deps'), 'stale success');
+      const shim = join(t, 'bin', 'rsync');
+      write(shim, '#!/usr/bin/env bash\necho "rsync: fixture hardlink path: Permission denied" >&2\nexit 17\n');
+      chmodSync(shim, 0o755);
+      const result = runLib(['snapshot', donor, snapshot], { PATH: `${dirname(shim)}:${process.env.PATH}` });
+      expect(result.code).toBe(1);
+      expect(result.err).toContain('rsync: fixture hardlink path: Permission denied');
+      expect(result.err).toContain('FAILED to snapshot node_modules (exit=17)');
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
+      expect(existsSync(join(snapshot, 'node_modules'))).toBe(false);
+    });
+
     it('survives an npm-style REPLACE of a donor package (the r14 killer)', () => {
       const t = fixture();
       write(join(t, 'donor', 'node_modules', 'left', 'index.js'), 'v1');
@@ -195,6 +445,7 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
     it('preserves relative symlink TEXT, so workspace packages resolve at the MOUNTPOINT', () => {
       const t = fixture();
       mkdirSync(join(t, 'donor', 'node_modules', '@papercusp'), { recursive: true });
+      write(join(t, 'donor', 'libs/generic/x/index.js'), 'workspace');
       symlinkSync('../../libs/generic/x', join(t, 'donor', 'node_modules', '@papercusp', 'x'));
       expect(runLib(['snapshot', join(t, 'donor'), join(t, 'snap')]).code).toBe(0);
       const r = spawnSync('readlink', [join(t, 'snap', 'node_modules', '@papercusp', 'x')], {
@@ -205,6 +456,198 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
         killSignal: 'SIGKILL',
       });
       expect(String(r.stdout).trim()).toBe('../../libs/generic/x');
+    });
+
+    it('copy mode survives in-place writes on both sides with independent inodes', () => {
+      const t = fixture();
+      const donor = join(t, 'donor', 'node_modules', 'p', 'i.js');
+      const copied = join(t, 'snap', 'node_modules', 'p', 'i.js');
+      write(donor, 'original');
+      expect(runLib(['snapshot', join(t, 'donor'), join(t, 'snap'), 'copy']).code).toBe(0);
+      expect(statSync(copied).ino).not.toBe(statSync(donor).ino);
+      writeFileSync(donor, 'donor changed in place');
+      expect(readFileSync(copied, 'utf8')).toBe('original');
+      writeFileSync(copied, 'snapshot changed in place');
+      expect(readFileSync(donor, 'utf8')).toBe('donor changed in place');
+      expect(readFileSync(join(t, 'snap', '.papercusp-pinned-deps'), 'utf8')).toContain('mode=copy');
+    });
+
+    it('refuses an unaffordable independent copy before touching retained progress, then releases its lease', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const retained = join(snap, 'node_modules.pinned-deps-tmp/p/kept.js');
+      const lock = join(t, 'copy.lock');
+      write(join(donor, 'node_modules/p/index.js'), 'new source bytes');
+      write(retained, 'forensic progress');
+      write(join(snap, '.papercusp-pinned-deps'), 'stale receipt');
+      const env = { DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '0', DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '0',
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0', DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '1048576', DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '1' };
+      const refused = runLib(['snapshot', donor, snap, 'copy'], env);
+      expect(refused.code).toBe(77);
+      expect(refused.err).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+      expect(refused.err).toContain('size=measured');
+      expect(readFileSync(retained, 'utf8')).toBe('forensic progress');
+      expect(existsSync(join(snap, 'node_modules'))).toBe(false);
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+      const admitted = runLib(['snapshot', donor, snap, 'copy'], {
+        ...env, DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '1048576',
+      });
+      expect(admitted.code, admitted.err).toBe(0);
+      expect(readFileSync(join(snap, 'node_modules/p/index.js'), 'utf8')).toBe('new source bytes');
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(true);
+    });
+
+    it.runIf(process.platform === 'linux')('independent snapshots honor the shared physical-copy lease', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const lock = join(t, 'copy.lock');
+      write(join(donor, 'node_modules/p/index.js'), 'source');
+      const r = spawnSync('flock', [lock, 'bash', HELPER_PATH, 'snapshot', donor, snap, 'copy'], {
+        encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+          DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '0', DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '0' },
+      });
+      expect(r.status, r.stderr).toBe(76);
+      expect(r.stderr).toContain('DEPENDENCY_GENERATION_LOCK_TIMEOUT');
+      expect(existsSync(snap)).toBe(false);
+      expect(runLib(['snapshot', donor, snap, 'copy'], {
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '0', DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '0',
+      }).code).toBe(0);
+    });
+
+    it('refuses unmeasured destination capacity while preserving forensic staging', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const retained = join(snap, 'node_modules.pinned-deps-tmp/p/kept.js');
+      write(join(donor, 'node_modules/p/index.js'), 'source');
+      write(retained, 'forensic progress');
+      const shim = join(t, 'bin/stat');
+      write(shim, '#!/usr/bin/env bash\nexit 1\n');
+      chmodSync(shim, 0o755);
+      const refused = runLib(['snapshot', donor, snap, 'copy'], {
+        PATH: `${dirname(shim)}:${process.env.PATH}`,
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '', DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '',
+      });
+      expect(refused.code).toBe(77);
+      expect(refused.err).toContain('DEPENDENCY_GENERATION_HEADROOM_UNMEASURED');
+      expect(readFileSync(retained, 'utf8')).toBe('forensic progress');
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+    });
+
+    it('retains an interrupted copy, invalidates the old stamp and reuses verified completed files', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      write(join(donor, 'node_modules/p/kept.js'), 'completed file');
+      write(join(donor, 'node_modules/p/large.js'), 'complete new file');
+      expect(runLib(['snapshot', donor, snap, 'copy']).code).toBe(0);
+      writeFileSync(join(donor, 'node_modules/p/large.js'), 'changed new file');
+      const shim = join(t, 'shim');
+      // Fault injection at the storage boundary: one completed independent file
+      // and one incomplete file, followed by rsync's partial-transfer failure.
+      write(join(shim, 'rsync'), [
+        '#!/usr/bin/env bash',
+        'case " $* " in *" --dry-run "*) printf changed; exit 0 ;; esac',
+        'mkdir -p "$SNAP/node_modules.pinned-deps-tmp/p"',
+        'cp -a "$DONOR/node_modules/p/kept.js" "$SNAP/node_modules.pinned-deps-tmp/p/kept.js"',
+        'printf partial > "$SNAP/node_modules.pinned-deps-tmp/p/large.js"',
+        'exit 23',
+      ].join('\n'));
+      chmodSync(join(shim, 'rsync'), 0o755);
+      const failed = runLib(['snapshot', donor, snap, 'copy'], {
+        PATH: `${shim}:${process.env.PATH}`, DONOR: donor, SNAP: snap,
+      });
+      expect(failed.code).not.toBe(0);
+      expect(failed.err).toContain('retained resumable staging tree');
+      expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+      expect(readFileSync(join(snap, 'node_modules/p/large.js'), 'utf8')).toBe('complete new file');
+      const completedInode = statSync(join(snap, 'node_modules.pinned-deps-tmp/p/kept.js')).ino;
+      expect(runLib(['snapshot', donor, snap, 'copy']).code).toBe(0);
+      expect(statSync(join(snap, 'node_modules/p/kept.js')).ino).toBe(completedInode);
+      expect(readFileSync(join(snap, 'node_modules/p/large.js'), 'utf8')).toBe('changed new file');
+      expect(existsSync(join(snap, 'node_modules.pinned-deps-tmp'))).toBe(false);
+      expect(readFileSync(join(snap, '.papercusp-pinned-deps'), 'utf8')).toContain('trees=1');
+      const completedSnapshotInode = statSync(join(snap, 'node_modules/p/kept.js')).ino;
+      const repeated = runLib(['snapshot', donor, snap, 'copy']);
+      expect(repeated.code).toBe(0);
+      expect(repeated.out).toContain('reused verified completed snapshot node_modules');
+      expect(statSync(join(snap, 'node_modules/p/kept.js')).ino).toBe(completedSnapshotInode);
+    });
+
+    it('checksum-verifies legacy partials despite equal size/mtime and removes stale paths and links', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const sourceFile = join(donor, 'node_modules/p/index.js');
+      const legacy = join(snap, 'node_modules.pinned-deps-tmp.12345');
+      write(sourceFile, 'NEW BYTES');
+      write(join(legacy, 'p/index.js'), 'OLD BYTES');
+      const sourceStat = statSync(sourceFile);
+      utimesSync(join(legacy, 'p/index.js'), sourceStat.atime, sourceStat.mtime);
+      write(join(legacy, 'p/removed.js'), 'stale');
+      symlinkSync('wrong.js', join(legacy, 'p/link.js'));
+      symlinkSync('index.js', join(donor, 'node_modules/p/link.js'));
+      expect(runLib(['snapshot', donor, snap, 'copy']).code).toBe(0);
+      expect(readFileSync(join(snap, 'node_modules/p/index.js'), 'utf8')).toBe('NEW BYTES');
+      expect(readFileSync(join(snap, 'node_modules/p/link.js'), 'utf8')).toBe('NEW BYTES');
+      expect(existsSync(join(snap, 'node_modules/p/removed.js'))).toBe(false);
+      expect(existsSync(legacy)).toBe(false);
+    });
+
+    it('breaks retained donor hardlinks before applying metadata and preserves independent hardlink groups', () => {
+      const t = fixture();
+      const donor = join(t, 'donor');
+      const snap = join(t, 'snap');
+      const sourceFile = join(donor, 'node_modules/p/index.js');
+      write(sourceFile, 'independent');
+      linkSync(sourceFile, join(donor, 'node_modules/p/twin.js'));
+      const retained = join(snap, 'node_modules.pinned-deps-tmp/p/index.js');
+      mkdirSync(dirname(retained), { recursive: true });
+      linkSync(sourceFile, retained);
+      expect(runLib(['snapshot', donor, snap, 'copy']).code).toBe(0);
+      const copied = join(snap, 'node_modules/p/index.js');
+      expect(statSync(copied).ino).not.toBe(statSync(sourceFile).ino);
+      expect(statSync(copied).ino).toBe(statSync(join(snap, 'node_modules/p/twin.js')).ino);
+      writeFileSync(copied, 'changed');
+      expect(readFileSync(sourceFile, 'utf8')).toBe('independent');
+    });
+
+    it('refuses ambiguous or symlinked staging without deleting retained progress or stamping success', () => {
+      for (const unsafe of ['ambiguous', 'symlink']) {
+        const t = fixture();
+        write(join(t, 'donor/node_modules/p/index.js'), 'source');
+        const snap = join(t, 'snap');
+        mkdirSync(snap);
+        if (unsafe === 'ambiguous') {
+          write(join(snap, 'node_modules.pinned-deps-tmp.1/p/index.js'), 'first');
+          write(join(snap, 'node_modules.pinned-deps-tmp.2/p/index.js'), 'second');
+        } else {
+          symlinkSync(join(t, 'donor/node_modules'), join(snap, 'node_modules.pinned-deps-tmp'));
+        }
+        const result = runLib(['snapshot', join(t, 'donor'), snap, 'copy']);
+        expect(result.code).not.toBe(0);
+        expect(result.err).toMatch(/REFUSING (ambiguous|unsafe)/);
+        expect(existsSync(join(snap, '.papercusp-pinned-deps'))).toBe(false);
+        if (unsafe === 'ambiguous') {
+          expect(readFileSync(join(snap, 'node_modules.pinned-deps-tmp.1/p/index.js'), 'utf8')).toBe('first');
+          expect(readFileSync(join(snap, 'node_modules.pinned-deps-tmp.2/p/index.js'), 'utf8')).toBe('second');
+        }
+      }
+    });
+
+    it('refuses an unknown snapshot mode before producing a dependency stamp', () => {
+      const t = fixture();
+      write(join(t, 'donor', 'node_modules', 'p', 'i.js'), 'original');
+      const r = runLib(['snapshot', join(t, 'donor'), join(t, 'snap'), 'unknown']);
+      expect(r.code).toBe(2);
+      expect(r.err).toContain('snapshot mode must be hardlink or copy');
+      expect(existsSync(join(t, 'snap', '.papercusp-pinned-deps'))).toBe(false);
     });
 
     it('mirrors the donor layout rather than flattening it, so a lowerdir is prefix-checkable', () => {
@@ -224,6 +667,33 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
       expect(stamp).toContain(`donor=${join(t, 'donor')}`);
       expect(stamp).toMatch(/^trees=1$/m);
       expect(stamp).toMatch(/^takenAtUtc=\d{4}-\d{2}-\d{2}T/m);
+    });
+
+    it('keeps snapshot metadata clean without hiding untracked source from the real provenance producer', () => {
+      const t = fixture();
+      const snapshot = join(t, 'snap');
+      write(join(t, 'donor', 'node_modules', 'p', 'i.js'), 'dependency');
+      expect(runLib(['snapshot', join(t, 'donor'), snapshot, 'copy']).code).toBe(0);
+      const initialized = spawnSync('git', ['init', '-q', snapshot], {
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(initialized.status).toBe(0);
+      // Use the product's actual ignore policy without committing fixture source.
+      write(join(snapshot, '.git', 'info', 'exclude'), readFileSync(join(ROOT, '.gitignore'), 'utf8'));
+      const capture = () => {
+        const result = spawnSync('bash', [
+          join(ROOT, 'papercusp-desktop', 'bin', 'emit-build-provenance.sh'),
+          '--capture-source', snapshot,
+        ], { encoding: 'utf8', timeout: 10_000 });
+        expect(result.status, String(result.stderr)).toBe(0);
+        return String(result.stdout).trim().split('\n').at(-1);
+      };
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(true);
+      expect(capture()).toBe('false');
+      write(join(snapshot, 'node_modules.pinned-deps-tmp.123/p/partial.js'), 'partial output');
+      expect(capture()).toBe('false');
+      write(join(snapshot, 'untracked-source.ts'), 'export const pending = true;');
+      expect(capture()).toBe('true');
     });
 
     it('REFUSES to snapshot THROUGH a symlinked tree — cp -al would reproduce the link', () => {

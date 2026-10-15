@@ -82,6 +82,8 @@ export interface StripeBalanceSource {
   readonly metadata?: Readonly<Record<string, string>> | null;
   /** On a charge: the invoice it paid, expanded or as an id. */
   readonly invoice?: string | StripeInvoiceTaxView | null;
+  /** On a charge or refund: the Stripe customer, which is who a payment receipt belongs to (P-046). */
+  readonly customer?: string | { readonly id: string } | null;
 }
 
 export interface StripeInvoiceTaxView {
@@ -250,6 +252,43 @@ export function journalVerdictForTreasuryTransfer(transfer: TreasuryTransfer): P
   });
   if (built.ok) return { disposition: 'entry', entry: built.entry };
   return { disposition: 'unmapped', sourceId: String(transfer.txHash), reason: `${built.code}: ${built.detail}` };
+}
+
+// ---------------------------------------------------------------------------
+// Chain: FINAL settlement claims on the EVM rail (D-032).
+// ---------------------------------------------------------------------------
+
+export interface SettlementClaim {
+  /** EIP-155 chain id the claim settled on. */
+  readonly chainId: number;
+  /** The claim transaction's hash. */
+  readonly txHash: string;
+  /** What the claim moved, in whole cents. */
+  readonly grossCents: number;
+  /** The DAO's allocation of the batch, in whole cents. */
+  readonly daoCents: number;
+  /** When the claim became FINAL: a claim that can still be reorged is not money received. */
+  readonly occurredAtMs: number;
+  readonly memo?: string;
+}
+
+/**
+ * A final settlement claim is a customer payment over the chain: the gross
+ * lands in operating, the DAO's allocation is owed to the DAO, the rest is
+ * revenue. The split was fixed when the batch settled, so no policy applies here.
+ */
+export function journalVerdictForSettlementClaim(claim: SettlementClaim): ProducerVerdict {
+  const txHash = String(claim.txHash).toLowerCase();
+  const built = journalEntryForMovement({
+    entryId: `chain-tx:${claim.chainId}:${txHash}`,
+    occurredAtMs: claim.occurredAtMs,
+    currency: 'USD',
+    externalRef: { kind: 'chain-tx', chainId: claim.chainId, txHash },
+    memo: claim.memo ?? `settlement claim ${txHash}`,
+    movement: { kind: 'customer-payment', grossCents: claim.grossCents, feeCents: 0, taxCents: 0, daoCents: claim.daoCents, refundReserveCents: 0 },
+  });
+  if (built.ok) return { disposition: 'entry', entry: built.entry };
+  return { disposition: 'unmapped', sourceId: String(claim.txHash), reason: `${built.code}: ${built.detail}` };
 }
 
 // ---------------------------------------------------------------------------

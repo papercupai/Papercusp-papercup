@@ -5,6 +5,7 @@
  *
  *   npm run gen:declarations                         # emit every enrolled output
  *   npm run gen:declarations -- --files=a.mjs,b.mjs # emit selected enrolled outputs
+ *   npm run gen:declarations -- --files a.mjs,b.mjs # the same selection, spaced form
  *   npm run gen:declarations:check                   # verify every committed output
  *
  * Both modes compile into an isolated temp directory. `--check` compares that
@@ -29,6 +30,12 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { exportParityProblems, formatProblems } from './lib/declaration-export-parity.js';
 import { orphanedJsdocProblems, formatOrphanedJsdoc } from './lib/orphaned-jsdoc.ts';
+import {
+  formatStaleSuppressions,
+  importerSources,
+  staleDeclarationSuppressions,
+  type StaleSuppression,
+} from './lib/stale-declaration-suppressions.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CONFIG = 'tsconfig.declarations.json';
@@ -221,9 +228,26 @@ export function generate(
     console.log(
       `✓ gen:declarations: emitted ${selectedInputs.length} of ${declaredInputs.length} declaration file(s) — compiler: ${COMPILER_LABEL}`,
     );
+    // Publishing a declaration is exactly the moment an importer's `@ts-expect-error` goes stale
+    // (WI-10005290). Report it HERE, naming each line, rather than leaving it to surface as TS2578
+    // whenever someone next typechecks that importer. Reported, not auto-removed: this runs from
+    // an edit hook, and rewriting arbitrary importers from a script would bypass the file locks.
+    const stale = staleSuppressionsIn(repoRoot, declaredInputs);
+    if (stale?.length) {
+      console.error(
+        `✗ gen:declarations: ${stale.length} @ts-expect-error suppression(s) are now unused (TS2578) because ` +
+          `the module they guarded has a declaration. Delete each line:\n   ${formatStaleSuppressions(stale).join('\n   ')}`,
+      );
+    }
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
+}
+
+/** `null` = importers could not be listed (not a git checkout): NOT measured, never "none". */
+export function staleSuppressionsIn(repoRoot: string, modules: readonly string[]): StaleSuppression[] | null {
+  const sources = importerSources(repoRoot, modules);
+  return sources === null ? null : staleDeclarationSuppressions(modules, sources);
 }
 
 export function check(repoRoot = REPO_ROOT, config = CONFIG): void {
@@ -291,25 +315,63 @@ export function check(repoRoot = REPO_ROOT, config = CONFIG): void {
       process.exit(1);
     }
 
+    const unusedSuppressions = staleSuppressionsIn(repoRoot, declaredInputs);
+    if (unusedSuppressions === null) {
+      console.error(`✗ could not list importers (git grep failed in ${repoRoot}); stale suppressions NOT checked`);
+      process.exit(1);
+    }
+    if (unusedSuppressions.length) {
+      console.error(
+        `✗ @ts-expect-error suppression(s) guarding a module that now has a declaration — each is\n` +
+          `  TS2578 "Unused '@ts-expect-error' directive":\n   ${formatStaleSuppressions(unusedSuppressions).join('\n   ')}`,
+      );
+      console.error(`\nDelete each listed line (WI-10005290).`);
+      process.exit(1);
+    }
+
     console.log(
       `✓ gen:declarations:check: ${declaredInputs.length} declaration file(s) up to date; ` +
-        `hand-written declarations match their sources`,
+        `hand-written declarations match their sources; no importer suppresses a declared module`,
     );
   } finally {
     rmSync(out, { recursive: true, force: true });
   }
 }
 
-const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
-  const filesArgs = process.argv.slice(2).filter((arg) => arg.startsWith('--files='));
-  const requestedInputs = filesArgs.flatMap((arg) =>
-    arg.slice('--files='.length).split(',').filter((input) => input.length > 0),
-  );
-  if (process.argv.includes('--check')) {
-    if (filesArgs.length > 0) throw new Error('`--files` is only valid for generation, not `--check`');
-    check();
+/** Validate the complete CLI before invoking either compiler-backed operation. */
+export function runDeclarationCli(
+  args: readonly string[],
+  {
+    generateImpl = (selected?: readonly string[]) => generate(REPO_ROOT, CONFIG, runTsc, selected),
+    checkImpl = check,
+  } = {},
+): void {
+  const requestedInputs: string[] = [];
+  let hasSelection = false;
+  let checkOnly = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === '--check') {
+      checkOnly = true;
+      continue;
+    }
+    let value: string | undefined;
+    if (arg === '--files') value = args[++index];
+    else if (arg.startsWith('--files=')) value = arg.slice('--files='.length);
+    else throw new Error(`unknown declaration-generator argument: ${arg}`);
+    if (!value || value.startsWith('--') || value.split(',').some((input) => !input.trim())) {
+      throw new Error('`--files` requires a non-empty comma-separated list of enrolled .mjs inputs');
+    }
+    hasSelection = true;
+    requestedInputs.push(...value.split(','));
+  }
+  if (checkOnly) {
+    if (hasSelection) throw new Error('`--files` is only valid for generation, not `--check`');
+    checkImpl();
   } else {
-    generate(REPO_ROOT, CONFIG, runTsc, filesArgs.length > 0 ? requestedInputs : undefined);
+    generateImpl(hasSelection ? requestedInputs : undefined);
   }
 }
+
+const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) runDeclarationCli(process.argv.slice(2));

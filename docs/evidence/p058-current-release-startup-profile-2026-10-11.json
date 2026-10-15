@@ -1,0 +1,319 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 current release ARM startup diagnostic capture",
+  "cwd": ".",
+  "command": [
+    "node",
+    ".papercusp/scratch/p058-current-release-profile-20261011/run.mjs"
+  ],
+  "startedAt": "2026-10-11T16:55:54.451Z",
+  "finishedAt": "2026-10-11T16:57:28.836Z",
+  "exitCode": 0,
+  "summary": "Diagnostic capture and cleanup passed on exact current serve1333 bytes. Original canonical60000ms qualification remains FAILED. Instrumented child also timed out with no boot marker; this PASS concerns saved profile, stable inputs and cleanup only.",
+  "workItemId": "EI-25500068013952985",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "producerTaskId": "0mv42dplrw90qi61ptm",
+  "sourceCommit": "4f991247708f12d9edc56af763f1f8fd94219773",
+  "sourceServeSha256": "1333a5d98d754731b9cd6eef319b2668a089fbb025c354769c5fe00adb117d88",
+  "evidencePlane": "instrumented-current-source-private-podman-arm64-uid1001",
+  "candidateAccepted": false,
+  "originalCanonicalQualification": {
+    "evidenceFile": "docs/evidence/p058-changed-release-arm-qualification-2026-10-11.json",
+    "sha256": "bfc1ee6f47fa06c7fbc7b51e7b0e7ee76267d9e24d410d048c6863dfa5bc0ea5",
+    "outcome": "fail",
+    "deadlineMs": 60000,
+    "rawEvidence": {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/qualification-evidence-original-fb12.json",
+      "sha256": "fb12d4304cb4892c10d3212609d26a9ba9043f4e9a20822a848941ffa6b05e87"
+    }
+  },
+  "observation": {
+    "capture": {
+      "passed": true,
+      "error": null,
+      "profile": {
+        "sha256": "ba55f1d91c8ed7da54f8fdb8139d721e31851e4142aad2295924ffe47ef9b937",
+        "bytes": 1958623,
+        "samples": 29304,
+        "nodes": 8421
+      }
+    },
+    "boot": {
+      "status": null,
+      "signal": "SIGKILL",
+      "timedOut": true,
+      "markerObserved": false
+    },
+    "aggregate": {
+      "totalUs": 34592555,
+      "realUs": 34456529,
+      "excludedUs": 136026,
+      "leadInUs": 149675,
+      "unsampledGapUs": 2134800,
+      "frames": [
+        [
+          "compileSourceTextModule @ node:internal/modules/esm/utils:315",
+          15138310
+        ],
+        [
+          "wrapSafe @ node:internal/modules/cjs/loader:1761",
+          2479375
+        ],
+        [
+          "parse @ (native):-1",
+          1515559
+        ],
+        [
+          "detectModuleFormat @ node:internal/modules/esm/get_format:86",
+          1288473
+        ],
+        [
+          "(garbage collector) @ (native):-1",
+          646703
+        ],
+        [
+          "getPackageScopeConfig @ (native):-1",
+          438232
+        ],
+        [
+          "defaultLoadSync @ node:internal/modules/esm/load:135",
+          433398
+        ],
+        [
+          "decodeUTF8 @ (native):-1",
+          422860
+        ]
+      ]
+    },
+    "moduleLoads": 2252,
+    "groupsByLoadCount": [
+      [
+        "viem",
+        1122
+      ],
+      [
+        "mingo",
+        297
+      ],
+      [
+        "undici",
+        110
+      ],
+      [
+        "ox",
+        99
+      ],
+      [
+        "yaml",
+        72
+      ],
+      [
+        "node:assert",
+        38
+      ],
+      [
+        "@dbos-inc/dbos-sdk",
+        37
+      ],
+      [
+        "node:stream",
+        32
+      ]
+    ],
+    "largestIntervalsBetweenLoads": [
+      {
+        "precedingUrl": "file:///opt/papercusp/sidecar/serve.mjs",
+        "precedingBytes": 56496623,
+        "afterMs": 226.01672099999996,
+        "nextMs": 13377.796414000002,
+        "gapMs": 13151.779693000002
+      },
+      {
+        "precedingUrl": "file:///opt/papercusp/sidecar/node_modules/undici/lib/web/eventsource/util.js",
+        "precedingBytes": 629,
+        "afterMs": 41043.832173999996,
+        "nextMs": 46581.623928,
+        "gapMs": 5537.791754000005
+      },
+      {
+        "precedingUrl": "file:///opt/papercusp/sidecar/node_modules/mingo/cjs/core/index.js",
+        "precedingBytes": 1318,
+        "afterMs": 32599.831101999996,
+        "nextMs": 36253.671053,
+        "gapMs": 3653.8399510000017
+      },
+      {
+        "precedingUrl": "node:os",
+        "precedingBytes": null,
+        "afterMs": 52198.998631999995,
+        "nextMs": 54031.64657,
+        "gapMs": 1832.647938000002
+      },
+      {
+        "precedingUrl": "node:process",
+        "precedingBytes": null,
+        "afterMs": 47401.41885,
+        "nextMs": 49119.017817,
+        "gapMs": 1717.598966999998
+      }
+    ]
+  },
+  "inputBindings": {
+    "/mnt/backup/portable-server-p058/changed-input-release-20261011/qualification-precheck.json": "0935bd469e5675ced84dc3d988e7ae7aae64aee2425d21421e3624df385a30eb",
+    "/mnt/backup/portable-server-p058/changed-input-release-20261011/overlay-full-inventory.json": "a72784932299bfe42b79a1718f0bc9e610063b46ed43970e7deb41ab3e7f2136",
+    "/mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline.podman-config.json": "a9cedf9bb1e430bca5f374f77361a760b6f3aaa79cc908d1685a9b2cba86677e",
+    "/mnt/backup/portable-server-p058/changed-input-release-20261011/post-arm-input-binding.json": "b6f3f83e2d46da34cda42791ceb55655560b75c49a7b93cb1a8dc8ade93df0b3",
+    "/mnt/backup/portable-server-p058/changed-input-release-20261011/release-output/serve.mjs": "1333a5d98d754731b9cd6eef319b2668a089fbb025c354769c5fe00adb117d88",
+    ".papercusp/scratch/p058-arm-release-source-4f991247-20261011/papercusp-desktop/bin/lib/server-container.mjs": "478ec0548be8792d553d3f722cc904b230bcbc8fcd2cc39c7b611fe89d2e9137",
+    ".papercusp/scratch/p058-current-release-profile-20261011/run.mjs": "0b870c5ec157c463c45cd99b607302edfe7e969931cb4870e19e493ad830b5b6",
+    ".papercusp/scratch/p058-current-release-profile-20261011/guest.mjs": "f3069d77f4c83fbdbed8006ed2b2b25a3a9a9c82bb92d2f5069946aa6411c9f2",
+    ".papercusp/scratch/p058-current-release-profile-20261011/loader.mjs": "61bb9e6c6d3ad73e8607a57368f8be42be88f81e1b99ca045fbd2f86961142f2",
+    "scripts/cpu-sample.mjs": "c75cb780006a80b85a760550c6cd10539c90fe035d00190e0aef415da32c3df3",
+    "scripts/cdp-inspector.mjs": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112",
+    "scripts/lib/cpu-profile.mjs": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3",
+    "scripts/proc-guard.mjs": "5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda"
+  },
+  "overlayBefore": {
+    "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+    "bytes": 136031718,
+    "entries": 27985,
+    "elfFiles": []
+  },
+  "overlayAfter": {
+    "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+    "bytes": 136031718,
+    "entries": 27985,
+    "elfFiles": []
+  },
+  "ownership": {
+    "schemaVersion": 1,
+    "engine": "podman",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "leaseTimeoutMs": 15000,
+    "leaseRoot": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-current-release-profile-20261011/output/.native-producer-owner-HhoW3k",
+    "clockRoot": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-current-release-profile-20261011/output/.native-producer-owner-HhoW3k/clock",
+    "status": "completed",
+    "containerName": "papercusp-native-8090bf1c-c90c-4d80-bc7a-fab06e6eec5a",
+    "ownerToken": "86873d02-8ce7-4ae5-b67c-31ce223dfedb",
+    "cleanupPending": false,
+    "containerId": "130f3906e5bb7ff221f42e2c18ef220df15d67bf7acc5b0bce85d2161cd6d985",
+    "exitCode": 0,
+    "removed": true
+  },
+  "cleanup": {
+    "childAbsent": true,
+    "homeAbsent": true
+  },
+  "harnessAudit": [
+    {
+      "class": "Docker CREATE and cleanup timeout",
+      "guard": "Use existing private Podman store; maintained ownership receipt persists before CREATE; exact cleanup readback required. Docker incident remains unresolved."
+    },
+    {
+      "class": "Guest0600 capture unreadable by host",
+      "guard": "Maintained persistCpuProfile explicit0644 only on new file; host verifies same saved bytes."
+    },
+    {
+      "class": "Capture success coupled to boot deadline or empty streamed return",
+      "guard": "Guest writes capture.json before child deadline; host reads saved files independent of returned output."
+    },
+    {
+      "class": "Initial sampling misses later startup and loader intervals misattributed",
+      "guard": "35s window on current1333 plus complete loader chronology; do not sum gaps with profile durations or infer later cause."
+    },
+    {
+      "class": "Wrong-source or replayed output",
+      "guard": "Known artifact hashes checked before/after; unique output must be absent; original source build and canonicalFAIL left unchanged."
+    }
+  ],
+  "artifactRefs": [
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/run.mjs",
+      "sha256": "0b870c5ec157c463c45cd99b607302edfe7e969931cb4870e19e493ad830b5b6"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/guest.mjs",
+      "sha256": "f3069d77f4c83fbdbed8006ed2b2b25a3a9a9c82bb92d2f5069946aa6411c9f2"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/loader.mjs",
+      "sha256": "61bb9e6c6d3ad73e8607a57368f8be42be88f81e1b99ca045fbd2f86961142f2"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/harness-audit.json",
+      "sha256": "1642bafde3e6c6eba660aa03f29a1d7b5fed600f0ef223d40a1d5cec49875315"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/result.json",
+      "sha256": "6f786b6243c281dbd675e6d27b58dc472ec029c3d4e9c9a697fe9b92efd11b2f"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/output/guest-result.json",
+      "sha256": "8cbb34c8e27da3b8cdc7180321871e9ff3f4b9fa48ccc36562b6f7b2fe7db9a9"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/output/capture.json",
+      "sha256": "95e1ecd4176a738349bd42386b81df864f3c82cdb838dbbeac6824fa3fe20a32"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/output/profile.cpuprofile",
+      "sha256": "ba55f1d91c8ed7da54f8fdb8139d721e31851e4142aad2295924ffe47ef9b937"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/output/loads.jsonl",
+      "sha256": "e764f5a47ca2b9daac8adaecdb30c196b67ce4260b78cbaa60876fd22943841a"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/output/guest-phases.jsonl",
+      "sha256": "9f62de380353f6f2211c9f77570c91054944054f4bb5a2a3d7c1917903347825"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/output/stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-profile-20261011/output/stderr.log",
+      "sha256": "1b90ce96a4892034c1e83fd7c0fd99dff4ce6f774e6ef73540391981626b6297"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "exact-current-source-profile-saved",
+      "passed": true,
+      "evidence": "35s/29304samples/8421nodes/ba55f1d9 saved while exact kernel-bound target alive, host byte hash matches."
+    },
+    {
+      "id": "source-and-full-overlay-stable",
+      "passed": true,
+      "evidence": "Recorded input hashes and full27985entry/136031718byte/0ELF overlay cedde981 unchanged before/after."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Exact130f3906 container removedtrue/cleanupPendingfalse; child and private home absent."
+    }
+  ],
+  "counts": {
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "limitations": [
+    "Inspector and synchronous loader hooks add observer overhead.",
+    "This is separate from the failed original uninstrumented qualification.",
+    "XDG_STATE_HOME isolated additionally; no full-release or physical ARM acceptance.",
+    "Sampled durations are not OS CPU time; lead-in and unsampled gaps are excluded.",
+    "Inter-load intervals are not exclusive preceding-module times and are not additive with sampled frame weights.",
+    "The initial35s window leaves later startup unprofiled; complete original timeout cause remains unproven.",
+    "Historical serve2cbb profiles are not causal controls for current1333.",
+    "No canonical boot, installed-native, trusted publication or final shipment acceptance."
+  ],
+  "evidenceSerialization": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs::serializeIdentitySafeJson"
+  }
+}

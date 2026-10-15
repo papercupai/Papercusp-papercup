@@ -26,10 +26,12 @@
  *                               the real login — copying would risk a
  *                               single-use refresh-token logout).
  *
- * KNOWN GAP (D-002, owner-inbox-single-pane-2026-07-17): codex's hook
- * surface is PreToolUse/PostToolUse ONLY — there is no turn_end/Stop
- * equivalent event today (an upstream `notify` turn-complete channel is
- * reportedly available but UNVERIFIED against our pin). That means the
+ * HISTORICAL GAP (D-002, owner-inbox-single-pane-2026-07-17), now partly
+ * superseded: when this was written codex's hook surface was
+ * PreToolUse/PostToolUse only. Current codex (0.159+) ships a `Stop` event,
+ * which `writeCodexLockHooks` now uses for the identity stop port and the
+ * turn-end journal (WI-10006795). The text below records the original
+ * decision about owner-directed questions; it has not been re-evaluated. That meant the
  * su convention "an owner-directed question must ride a durable channel"
  * (coord:escalate w/ options, or an `<ask>` block at minimum) cannot be
  * enforced or even soft-nudged for a Codex role session the way Claude's
@@ -56,8 +58,10 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { homedir as osHomedir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
+import { parse as parseToml } from '@iarna/toml';
 import {
   codexHomeForSessionKey,
   codexSqliteHomeForSessionKey,
@@ -74,6 +78,22 @@ import {
   codexModelConfigToml,
   resolveCodexModel,
 } from './model-context-budget.mjs';
+import { runCodexHomeMaterializerJob, type CodexHomeMaterializerJob } from './role-codex-home-offload';
+
+/**
+ * WI-6554700010009552: the async APIs run the synchronous materializers in a
+ * worker thread (role-codex-home-offload.ts). A worker resolves `os.homedir()`
+ * on its own, so it could judge or write a home against a different user home
+ * than the caller resolved: module mocks do not cross the worker boundary, and
+ * a test then read the REAL ~/.papercusp/hooks/cc and ~/.codex. Every
+ * enqueue passes the caller's home as `job.homeDir`, and
+ * executeCodexHomeMaterializerJob scopes it here for that one job. Outside a
+ * job this is plain `os.homedir()`.
+ */
+let materializerHomeOverride: string | undefined;
+function homedir(): string {
+  return materializerHomeOverride ?? osHomedir();
+}
 
 import { dirname as __esmDirname } from 'node:path';
 import { fileURLToPath as __esmFileURLToPath } from 'node:url';
@@ -114,6 +134,13 @@ const CODEX_CONTROL_BYTES_PRE_MATCHER =
 /** Full Write/capability:write inputs carry the complete requested content, so
  * the shared PostToolUse guard can compare exact UTF-8 bytes on disk. */
 const CODEX_WRITE_BYTE_INTEGRITY_MATCHER = '^(?:Write|mcp__.*__capability_write)$';
+/** The shared cc/ turn-end journal hook (WI-10006795). One name, read by both the
+ * writer and the identity repair, so a home missing it is repaired on resume. */
+const CODEX_TURN_JOURNAL_HOOK = 'stop-turn-journal.sh';
+/** WI-6554700010009447: the Codex RTK rewrite hook. Every codex shell handler
+ *  reports tool_name "Bash" to hooks (codex-rs core/src/tools/hook_names.rs). */
+export const CODEX_RTK_REWRITE_HOOK = 'pretooluse-codex-rtk-rewrite.mjs';
+const CODEX_RTK_REWRITE_MATCHER = '^Bash$';
 
 /**
  * TOML preamble baked into EVERY per-session codex home (psu-isolation P-004 /
@@ -128,8 +155,8 @@ const CODEX_WRITE_BYTE_INTEGRITY_MATCHER = '^(?:Write|mcp__.*__capability_write)
  *    consistent with the claude/omp isolation.
  *  - `[features] memories = false` — disable codex's native memory tool so the
  *    agent doesn't read/write the native `memories_*.sqlite` store and instead uses
- *    `memory:*`. (Cross-session that store is ALSO neutralized by `freshCodexHome`
- *    wiping the home each launch; this stops within-session use.) The flag was
+ *    `memory:*`. (A fresh launch also resets generated home state and its
+ *    SQLite companion, retaining native transcripts; this stops within-session use.) The flag was
  *    `memory_tool` through codex 0.137; codex 0.142 renamed it to `memories` and
  *    `memory_tool` is now a deprecated legacy alias that prints a boot warning
  *    (`codex doctor`: "legacy alias memory_tool -> memories"). We write the modern
@@ -182,21 +209,41 @@ function shellSingleQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Workspace root the lock hooks scope to — the parent of the harness
- *  worktrees. Honors PAPERCUSP_WORKSPACE_ROOT (matches the installer's
- *  explicit set); else 4 dirs up from this module (apps/operator/lib →
- *  …/papercupai-workspace), which is also the hook script's own default. */
+/** Workspace root the lock hooks scope to — the parent of the declared
+ * canonical edit tree. The serving module can live in a release/candidate
+ * checkout, so its location cannot define an agent's edit scope. */
 function resolveWorkspaceRoot(): string {
-  return process.env.PAPERCUSP_WORKSPACE_ROOT || resolve(__dirname, '..', '..', '..', '..');
+  const canonical = process.env.PAPERCUSP_CANONICAL_TREE?.trim();
+  if (canonical && isAbsolute(canonical)) return __esmDirname(canonical);
+  return process.env.PAPERCUSP_WORKSPACE_ROOT?.trim() || join(homedir(), 'papercupai-workspace');
 }
 
-/** Rebuild a per-session codex home dir fresh + share the ChatGPT OAuth
- *  login via a SYMLINK (never a copy — a copied single-use refresh token
- *  can log the user out). Returns the home path. */
-function freshCodexHome(codexHome: string): string {
-  rmSync(codexHome, { recursive: true, force: true });
+/** Rebuild generated launch state, retaining native transcript custody.
+ *  Only the archive/retention path may retire transcripts. A retry of a fresh
+ *  launch can reuse an ADV home containing earlier native sessions.
+ *  Share ChatGPT OAuth via a SYMLINK (never copy a single-use refresh token). */
+function freshCodexHome(codexHome: string, inheritAmbientContext = true): string {
+  if (existsSync(codexHome)) {
+    if (!lstatSync(codexHome).isDirectory()) {
+      throw new Error('Cannot rebuild Codex home: expected a real directory');
+    }
+    const entries = readdirSync(codexHome, { withFileTypes: true });
+    const transcriptRoots = new Set(['sessions', 'archived_sessions']);
+    // Validate every retained root before removing ANY generated file. Never
+    // follow a symlink into another home or silently discard native history.
+    for (const entry of entries) {
+      if (transcriptRoots.has(entry.name) && !entry.isDirectory()) {
+        throw new Error(`Cannot rebuild Codex home: transcript root ${entry.name} must be a real directory`);
+      }
+    }
+    for (const entry of entries) {
+      if (!transcriptRoots.has(entry.name)) {
+        rmSync(join(codexHome, entry.name), { recursive: true, force: true });
+      }
+    }
+  }
   mkdirSync(codexHome, { recursive: true });
-  inheritUserCodexHome(codexHome);
+  if (inheritAmbientContext) inheritUserCodexHome(codexHome);
   ensureCodexSkillWatchRoots({ codexHome });
   return codexHome;
 }
@@ -206,6 +253,26 @@ function freshCodexSqliteHome(sessionKey: string | number): string {
   const sqliteHome = codexSqliteHomeForSessionKey(sessionKey);
   rmSync(sqliteHome, { recursive: true, force: true });
   mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
+  return sqliteHome;
+}
+
+/** A resume must retain its recorded state location even when the serving
+ * operator has a different TMPDIR or SQLite-root override from the launch. */
+function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null): string {
+  if (recordedHome && (!isAbsolute(recordedHome) || recordedHome.includes('\0'))) {
+    throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
+  }
+  const configPath = join(codexHome, 'config.toml');
+  if (!existsSync(configPath)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  const text = readFileSync(configPath, 'utf8');
+  if (!/^sqlite_home\s*=/m.test(text)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  const sqliteHome = parseToml(text).sqlite_home;
+  if (typeof sqliteHome !== 'string' || !isAbsolute(sqliteHome) || sqliteHome.includes('\0')) {
+    throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
+  }
+  if (recordedHome && recordedHome !== sqliteHome) {
+    throw new Error('Cannot repair Codex home: launch receipt and configured sqlite_home disagree');
+  }
   return sqliteHome;
 }
 
@@ -280,6 +347,64 @@ function existingCodexHomeOwnerSid(codexHome: string): string | null {
     return v.length > 0 ? v : null;
   } catch {
     return null;
+  }
+}
+
+async function existingCodexHomeOwnerSidAsync(codexHome: string): Promise<string | null> {
+  try {
+    const value = (await readFile(join(codexHome, '.owner-sid'), 'utf8')).trim();
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+const codexHomeAsyncWriteTails = new Map<string, Promise<void>>();
+
+/** Serialize async home mutations across their sentinel read/write boundary. */
+async function withCodexHomeAsyncWriteLock<T>(codexHome: string, action: () => Promise<T>): Promise<T> {
+  const previous = codexHomeAsyncWriteTails.get(codexHome) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => current);
+  codexHomeAsyncWriteTails.set(codexHome, tail);
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+    if (codexHomeAsyncWriteTails.get(codexHome) === tail) codexHomeAsyncWriteTails.delete(codexHome);
+  }
+}
+
+async function stampCodexHomeOwnerSidAsync(codexHome: string, sid: string): Promise<void> {
+  try {
+    await (await import('node:fs/promises')).writeFile(join(codexHome, '.owner-sid'), sid, { mode: 0o600 });
+  } catch {
+    /* non-fatal: the collision guard simply skips on the next write */
+  }
+}
+
+/** Async preflight for bootstrap callers: keep the psu-host liveness probe off
+ *  the operator event loop before the synchronous home materialization begins. */
+export async function assertSuCodexHomeNotOwnedByLiveSession(
+  sessionKey: string | number,
+  sid: string,
+  isOwnerLive: (ownerSid: string) => Promise<boolean>,
+): Promise<void> {
+  let priorSid: string | null = null;
+  try {
+    priorSid = (await readFile(join(codexHomeForSessionKey(sessionKey), '.owner-sid'), 'utf8')).trim() || null;
+  } catch {
+    return;
+  }
+  if (priorSid && priorSid !== sid && (await isOwnerLive(priorSid))) {
+    throw new Error(
+      `writeSuCodexHome: refusing to rebuild a live Codex home owned by a different session ` +
+        `(owner ${priorSid}); overwriting it would silently split that session's identity ` +
+        `(EI-11366). Pass the same sid to re-prepare that session, or use a sessionKey that ` +
+        `does not collide with a live session's home.`,
+    );
   }
 }
 
@@ -447,10 +572,10 @@ const CODEX_DANGER_TOML = [
  *     CODEX_HOME never carries an answer forward — without the seed, every
  *     scripted codex launch hangs at the trust prompt.
  */
-function inheritedCodexTrustToml(trustDir?: string | null): string[] {
+function inheritedCodexTrustToml(trustDir?: string | null, inheritAmbientContext = true): string[] {
   const source = join(homedir(), '.codex', 'config.toml');
   const out: string[] = [];
-  if (existsSync(source)) {
+  if (inheritAmbientContext && existsSync(source)) {
     let keep = false;
     for (const line of readFileSync(source, 'utf8').split(/\r?\n/)) {
       const table = line.match(/^\s*\[([^\]]+)\]\s*$/);
@@ -537,13 +662,12 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * hook's stdin carries { prompt, cwd, session_id, turn_id, model, ... }.
  * The turn-start port is therefore REACHABLE on codex via THIS file.
  *
- * TURN PROVENANCE (turn-provenance-owner-vs-agent-2026-07-11 P-004): that plan
- * concluded codex sessions must run LAYER-1 ONLY (envelope tagged
- * operator-side, never ledger-VERIFIED) because the classification hook had
- * nowhere to attach. The premise above is refuted, so codex layer-2 provenance
- * is now UNBLOCKED — but it is NOT implemented here (out of scope for this
- * plan; the classification hook is a separate script). Do not read the
- * injection registration below as provenance parity.
+ * TURN PROVENANCE + OWNER-DIRECTIVE CAPTURE: Codex's UserPromptSubmit hook
+ * carries the same prompt/session/turn identity the shared provenance script
+ * needs. Register that script beside the context-injection dispatcher below;
+ * it verifies Papercusp's nonce ledger, stamps the turn, and captures only an
+ * interactive owner prompt. Keep both entries behind the session identity and
+ * the provenance script's installed-file check.
  *
  * ⚠ TRUST IS SILENT (D-004, measured): an UNTRUSTED codex hook does not fire
  * and does not warn — no error, no log line, exit 0, session otherwise normal.
@@ -597,8 +721,9 @@ function copyInheritedCodexPrompts(codexHome: string): boolean {
  * "end session" invisible to Papercusp: no lifecycle row, no lease cleanup, and
  * — most importantly — no handoff to the managed-host teardown path, so `psu
  * --resume` correctly found the old host still alive and refused a double host.
- * Register the SAME lifecycle-report.sh used by Claude. SessionEnd runs
- * synchronously because the script first asks activity:report whether this is a
+ * Register the SAME lifecycle-report.sh used by Claude. Stop also replays
+ * uncaught per-edit lock releases before a carry/turn boundary can strand them.
+ * SessionEnd runs synchronously because the script first asks activity:report whether this is a
  * genuine terminal end or a carry/reset continuation, then reuses the audited
  * admin fleet:kill route only for the terminal verdict (WI-41305).
  */
@@ -659,6 +784,14 @@ export function writeCodexLockHooks(
     });
   }
 
+  const launchProseNudge = join(dir, 'posttooluse-launch-prose-budget-nudge.mjs');
+  if (existsSync(launchProseNudge)) {
+    postToolUse.push({
+      matcher: '^(?:Edit|Write|MultiEdit|apply_patch|write_file|edit_file|Bash|exec_command|shell_command|(?:mcp__.*__)?capability[:_-](?:edit|write|multi_?edit|patch|bash)|(?:mcp__.*__)?tools[:_]invoke)$',
+      hooks: [{ type: 'command', command: launchProseNudge, timeout: 60 }],
+    });
+  }
+
   // Activity-bridge hook (matcher `.*`), coord-folding when `coordSid` is ALSO
   // given (SU sessions only — see the header doc for the EI-11405 merge).
   // Baked PAPERCUSP_SID = the session's identity (the activity owner/pane key
@@ -696,6 +829,7 @@ export function writeCodexLockHooks(
   const lifecycle = join(dir, 'lifecycle-report.sh');
   const sessionStart: CodexHook[] = [];
   const sessionEnd: CodexHook[] = [];
+  const lifecycleStop: CodexHook[] = [];
   if (opts.activitySid && existsSync(lifecycle)) {
     const lifecycleIdentity =
       `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex ` +
@@ -708,6 +842,15 @@ export function writeCodexLockHooks(
       hooks: [{ type: 'command', command: `${lifecycleIdentity} ${lifecycle}` }],
     });
     sessionEnd.push({
+      matcher: '.*',
+      hooks: [
+        {
+          type: 'command',
+          command: `${lifecycleIdentity} PAPERCUSP_ACTIVITY_SYNC=1 ${lifecycle}`,
+        },
+      ],
+    });
+    lifecycleStop.push({
       matcher: '.*',
       hooks: [
         {
@@ -737,6 +880,18 @@ export function writeCodexLockHooks(
   // §5 explains why the frozen array interface absorbs that).
   const injectDispatcher = join(homedir(), '.papercusp', 'hooks', 'inject', 'index.mjs');
   const userPromptSubmit: CodexHook[] = [];
+  const provenance = join(dir, 'userpromptsubmit-provenance.sh');
+  if (opts.injectSid && existsSync(provenance)) {
+    userPromptSubmit.push({
+      matcher: '.*',
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex ${provenance}`,
+        },
+      ],
+    });
+  }
   if (opts.injectSid && existsSync(injectDispatcher)) {
     const injectIdentity = `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex`;
     userPromptSubmit.push({
@@ -826,6 +981,23 @@ export function writeCodexLockHooks(
     });
   }
 
+  // WI-10001350: use the same migration reservation policy for Codex's native
+  // apply_patch payloads as the Claude hooks. This shared path matcher accepts
+  // apply_patch plus Edit/Write/MCP writer inputs; baking the managed root lets
+  // the guard resolve Codex's repository-relative patch targets safely.
+  const migrationReservation = join(dir, 'pretooluse-unreserved-migration-guard.mjs');
+  if (existsSync(migrationReservation)) {
+    preToolUse.push({
+      matcher: CODEX_CONTROL_BYTES_PRE_MATCHER,
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_WORKSPACE_ROOT=${root} ${migrationReservation}`,
+        },
+      ],
+    });
+  }
+
   // P-010 (fleet-friction-remediation-2026-08-21): an apply_patch envelope may
   // carry at most ONE operation per target path, and violating that rejects the
   // WHOLE patch — deterministically, before anything is written. The class was
@@ -862,6 +1034,23 @@ export function writeCodexLockHooks(
     });
   }
 
+  // WI-6554700010009447 (owner #1759/#1764): RTK output compression for Codex's
+  // native shell, the Codex counterpart of the RTK rewrite inside Claude's
+  // egress guard. It must stay the ONLY Codex PreToolUse hook that returns
+  // updatedInput: codex resolves competing rewrites by completion order (last
+  // to finish wins), and every other hook in this file only denies. Codex
+  // applies a rewrite only with permissionDecision "allow", which this script
+  // emits; code-mode script calls (tool_use_id `exec-*`) stay verbatim. Su AND
+  // role homes, since both run native shells. The script fails open when rtk is
+  // missing. role-codex-home.test.ts fails if this registration is removed.
+  const rtkRewrite = join(dir, CODEX_RTK_REWRITE_HOOK);
+  if (existsSync(rtkRewrite)) {
+    preToolUse.push({
+      matcher: CODEX_RTK_REWRITE_MATCHER,
+      hooks: [{ type: 'command', command: rtkRewrite }],
+    });
+  }
+
   // IDENTITY HOOK ports (portable-identity-packages-2026-09-26 P-011, D-023 §2):
   // a worn identity's pre-tool guards, stop rules and compaction rules, through
   // the same dispatcher and the same baked sid as the two context ports above.
@@ -870,6 +1059,29 @@ export function writeCodexLockHooks(
   // (codex's schemas are read in adapters/codex.mjs). The guard renders only a
   // deny for the one pending call, so it can never auto-approve (D-027).
   const stop: CodexHook[] = [];
+
+  // WI-10006795: the per-turn JOURNAL hook. stop-turn-journal.sh was written to
+  // serve Claude AND Codex (it reads codex's Stop payload — `session_id` plus the
+  // nullable `transcript_path` — and keys source_kind off PAPERCUSP_AGENT=codex),
+  // but only Claude's settings.json ever enrolled it. Codex sessions therefore
+  // never reached journal:record-turn (1 call in 7 days against ~13k for Claude),
+  // and a codex GOAL holder emitted no goalPlacementTurnEnd evidence at all.
+  // PAPERCUSP_SID is baked for the same reason as every hook above: codex hands
+  // hook commands a minimal env, and the script exits 0 silently without it. Its
+  // stdout is always empty, so it can never be read as a Stop `decision`.
+  const turnJournal = join(dir, CODEX_TURN_JOURNAL_HOOK);
+  if (opts.activitySid && existsSync(turnJournal)) {
+    stop.push({
+      matcher: '.*',
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} PAPERCUSP_AGENT=codex ${turnJournal}`,
+        },
+      ],
+    });
+  }
+
   if (opts.injectSid && existsSync(injectDispatcher)) {
     const injectIdentity = `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex`;
     const identityHook = (event: string): CodexHook => ({
@@ -889,7 +1101,7 @@ export function writeCodexLockHooks(
       PreToolUse: preToolUse,
       PostToolUse: postToolUse,
       ...(userPromptSubmit.length > 0 ? { UserPromptSubmit: userPromptSubmit } : {}),
-      ...(stop.length > 0 ? { Stop: stop } : {}),
+      ...(stop.length > 0 || lifecycleStop.length > 0 ? { Stop: [...lifecycleStop, ...stop] } : {}),
       ...(sessionStart.length > 0 ? { SessionStart: sessionStart } : {}),
       ...(sessionEnd.length > 0 ? { SessionEnd: sessionEnd } : {}),
       ...(preCompact.length > 0 ? { PreCompact: preCompact } : {}),
@@ -904,6 +1116,7 @@ function writeCodexHomeDiagnostics(
   opts: {
     hooksInstalled: boolean;
     inheritedPromptsCopied: boolean;
+    denyAmbientContext?: boolean;
     lockOwnerSid?: string;
     lockRuntime: CodexLockRuntimeVerdict;
   },
@@ -920,6 +1133,7 @@ function writeCodexHomeDiagnostics(
     requiresExplicitPapercuspLocks: opts.lockRuntime.lockMode === 'manual',
     ...(opts.lockOwnerSid ? { lockOwnerSid: opts.lockOwnerSid } : {}),
     inheritedPromptsCopied: opts.inheritedPromptsCopied,
+    ...(opts.denyAmbientContext ? { denyAmbientContext: true } : {}),
     // EI-21417256075155406: systemSkillsReady=false means every Codex session on this host
     // watches /etc and wakes on every process start — provision /etc/codex/skills.
     codexSkillWatchRoots: ensureCodexSkillWatchRoots({ codexHome }),
@@ -944,11 +1158,14 @@ function writeCodexHomeDiagnostics(
  * the canonical hooks, merges the current owner into diagnostics, and advances
  * the collision sentinel.  A same-owner home remains byte-identical.
  */
-export function repairSuCodexHomeIdentity(
+type CodexHomeOwnerSidIo = { priorSid: string | null; skipStamp?: boolean };
+
+function repairSuCodexHomeIdentityImpl(
   codexHome: string,
   sid: string,
   advSessionId?: string | number,
   mcpUrl?: string,
+  ownerSidIo?: CodexHomeOwnerSidIo,
 ): { repaired: boolean; hooksInstalled: boolean; reason?: 'no-home' } {
   if (!existsSync(codexHome)) return { repaired: false, hooksInstalled: false, reason: 'no-home' };
 
@@ -976,15 +1193,33 @@ export function repairSuCodexHomeIdentity(
   const hooksMatch = hooksExpected
     ? hookOwners.length > 0 && hookOwners.every((owner) => owner === sid)
     : hookOwners.length === 0;
+  const hookWorkspaceMatches = (() => {
+    if (!hooksExpected) return true;
+    try {
+      const parsed = JSON.parse(hooksText) as {
+        hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+      };
+      const expected = `PAPERCUSP_WORKSPACE_ROOT=${shellSingleQuote(resolveWorkspaceRoot())}`;
+      return [
+        ['PreToolUse', 'pretooluse-locks-acquire.sh'],
+        ['PostToolUse', 'posttooluse-locks-release.sh'],
+      ].every(([event, script]) => parsed.hooks?.[event]?.some((group) =>
+        group.hooks?.some((hook) => hook.command?.includes(script) && hook.command.includes(expected)),
+      ) === true);
+    } catch {
+      return false;
+    }
+  })();
   const diagnosticsMatch = diagnostics.lockOwnerSid === sid;
-  const sentinelMatches = existingCodexHomeOwnerSid(codexHome) === sid;
+  const priorSid = ownerSidIo ? ownerSidIo.priorSid : existingCodexHomeOwnerSid(codexHome);
+  const sentinelMatches = priorSid === sid;
   const lifecycleHooksMatch = (() => {
     if (!hooksExpected) return true;
     try {
       const parsed = JSON.parse(hooksText) as {
         hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
       };
-      return ['SessionStart', 'SessionEnd'].every((event) =>
+      return ['SessionStart', 'SessionEnd', 'Stop'].every((event) =>
         parsed.hooks?.[event]?.some((group) =>
           group.hooks?.some(
             (hook) =>
@@ -1026,12 +1261,69 @@ export function repairSuCodexHomeIdentity(
       return false;
     }
   })();
+  // WI-10006795: a home written before the turn-journal enrollment carries a Stop
+  // entry with only the identity dispatcher. Without this check the owner-only
+  // comparison above calls it current, so a resumed codex session would keep
+  // emitting no journal:record-turn rows forever. Gated on the script being
+  // installed, exactly like the writer, so a host without it never repair-loops.
+  // EI-25438656045891094: old same-owner homes also lack prompt provenance.
+  // Without checking enrollment, their genuine owner turns stay unenrolled
+  // forever even after the canonical writer gains the hook.
+  const managedTurnHooksMatch = (() => {
+    if (!hooksExpected) return true;
+    try {
+      const parsed = JSON.parse(hooksText) as {
+        hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+      };
+      return [
+        ['Stop', CODEX_TURN_JOURNAL_HOOK],
+        ['UserPromptSubmit', 'userpromptsubmit-provenance.sh'],
+      ].every(([event, script]) =>
+        !existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', script)) ||
+        parsed.hooks?.[event]?.some((group) =>
+          group.hooks?.some(
+            (hook) =>
+              hook.command?.includes(script) &&
+              hook.command.includes(`PAPERCUSP_SID='${sid}'`) &&
+              hook.command.includes('PAPERCUSP_AGENT=codex'),
+          ),
+        ) === true,
+      );
+    } catch {
+      return false;
+    }
+  })();
+  // WI-6554700010009447: a home written before the Codex RTK hook existed would
+  // otherwise read as current, so a RESUMED su codex session would keep running
+  // its shell without RTK. Gated on the script being installed, like the writer.
+  const rtkRewriteHookMatches = (() => {
+    if (!hooksExpected || !existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', CODEX_RTK_REWRITE_HOOK))) {
+      return true;
+    }
+    try {
+      const parsed = JSON.parse(hooksText) as {
+        hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>;
+      };
+      return (
+        parsed.hooks?.PreToolUse?.some(
+          (group) =>
+            group.matcher === CODEX_RTK_REWRITE_MATCHER &&
+            group.hooks?.some((hook) => hook.command?.includes(CODEX_RTK_REWRITE_HOOK)),
+        ) === true
+      );
+    } catch {
+      return false;
+    }
+  })();
   if (
     hooksMatch &&
+    hookWorkspaceMatches &&
     diagnosticsMatch &&
     sentinelMatches &&
     lifecycleHooksMatch &&
-    preCompactHookMatches
+    preCompactHookMatches &&
+    managedTurnHooksMatch &&
+    rtkRewriteHookMatches
   ) {
     return { repaired: false, hooksInstalled: hooksExpected };
   }
@@ -1060,8 +1352,17 @@ export function repairSuCodexHomeIdentity(
     lockOwnerSid: sid,
   };
   writeFileSync(diagnosticsPath, `${JSON.stringify(nextDiagnostics, null, 2)}\n`, { mode: 0o600 });
-  writeFileSync(join(codexHome, '.owner-sid'), sid, { mode: 0o600 });
+  if (!ownerSidIo?.skipStamp) writeFileSync(join(codexHome, '.owner-sid'), sid, { mode: 0o600 });
   return { repaired: true, hooksInstalled };
+}
+
+export function repairSuCodexHomeIdentity(
+  codexHome: string,
+  sid: string,
+  advSessionId?: string | number,
+  mcpUrl?: string,
+): { repaired: boolean; hooksInstalled: boolean; reason?: 'no-home' } {
+  return repairSuCodexHomeIdentityImpl(codexHome, sid, advSessionId, mcpUrl);
 }
 
 function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerdict): string {
@@ -1075,8 +1376,12 @@ function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerd
  * recreated fresh each launch so a re-launch can't inherit a stale prompt
  * or url.
  */
-export function writeRoleCodexHome(opts: {
+export type WriteRoleCodexHomeOptions = {
   sessionKey: string | number;
+  /** Repair managed files in place without removing the native resume history. */
+  preserveExisting?: boolean;
+  /** Persisted native-state binding, used when archive/GC removed config.toml. */
+  recordedSqliteHome?: string | null;
   /** Already-signed, role-scoped MCP url (from buildRoleLaunchSpec). */
   mcpUrl: string;
   /** The role prompt — becomes AGENTS.md. */
@@ -1102,14 +1407,25 @@ export function writeRoleCodexHome(opts: {
    *  as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME does
    *  not block at codex's "Do you trust this directory?" boot prompt. */
   trustDir?: string | null;
-}): RoleCodexHome {
+};
+
+export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHome {
   // ONE shared codex-home key (unify-launch-mechanics P-004): both role and su
   // codex sessions live under the SAME root the wake-executor resume leg reads
   // (`codexHomeForAdvSession` → `codexHomeForSessionKey`). Previously the role
   // path wrote to a separate `role-codex-homes/` root the resume leg never
   // looked in, so a woken codex role session resumed from nothing.
-  const codexHome = freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
-  const sqliteHome = freshCodexSqliteHome(opts.sessionKey);
+  const codexHome = opts.preserveExisting
+    ? codexHomeForSessionKey(opts.sessionKey)
+    : freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
+  const sqliteHome = opts.preserveExisting
+    ? preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome)
+    : freshCodexSqliteHome(opts.sessionKey);
+  if (opts.preserveExisting) {
+    mkdirSync(codexHome, { recursive: true, mode: 0o700 });
+    mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
+    inheritUserCodexHome(codexHome);
+  }
   const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
 
   // AGENTS.md = the role prompt. codex has no per-launch system-prompt
@@ -1149,6 +1465,9 @@ export function writeRoleCodexHome(opts: {
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
     '[mcp_servers.papercusp]',
     `url = "${tomlEscape(opts.mcpUrl)}"`,
+    // tools:invoke allows 1080s and the MCP host adds a 5s buffer; keep
+    // Codex's per-server timeout 5s above that 1085s wrapper deadline.
+    'tool_timeout_sec = 1090',
     '',
   ].join('\n');
   writeFileSync(configPath, toml, { mode: 0o600 });
@@ -1183,6 +1502,18 @@ export function writeRoleCodexHome(opts: {
   });
 
   return { codexHome, sqliteHome, agentsPath, configPath, instructionLint };
+}
+
+/** The production request paths use the bounded worker queue so Codex-home
+ *  materialization never performs synchronous filesystem writes on the host
+ *  event loop. The synchronous form remains for isolated scripts and tests. */
+export async function writeRoleCodexHomeAsync(
+  opts: WriteRoleCodexHomeOptions,
+): Promise<RoleCodexHome> {
+  const codexHome = codexHomeForSessionKey(opts.sessionKey);
+  return withCodexHomeAsyncWriteLock(codexHome, () =>
+    runCodexHomeMaterializerJob<RoleCodexHome>({ operation: 'role-write', options: opts, homeDir: homedir() }),
+  );
 }
 
 export interface SuCodexHome {
@@ -1229,6 +1560,9 @@ export type { CodexHomeDiagnostics, CodexPapercuspDiagnostics } from './codex-ho
 /** Inputs the su `config.toml` is rendered from — the subset of
  *  `writeSuCodexHome`'s options that end up IN the file. */
 export interface SuCodexConfigInput {
+  /** Host confinement policy: only the declared native role and assignment
+   * may populate this home's readable context and connectors. */
+  denyAmbientContext?: true;
   mcpUrl: string;
   sid: string;
   /** Absolute per-session directory Codex uses for its plaintext TUI log. */
@@ -1236,6 +1570,8 @@ export interface SuCodexConfigInput {
   /** Launch model. Omit/null resolves the managed Sol xhigh default, which keeps
    *  repair and model-less resume paths aligned with a fresh launch. */
   model?: string | null;
+  /** Per-session soft compaction ceiling recovered from the recorded psu argv. */
+  compactionLimit?: number | null;
   /** Direct per-session CODEX_HOME whose model registry should seed context roots. */
   codexHome?: string | null;
   /** Fast session companion for Codex's high-write SQLite state. */
@@ -1300,8 +1636,10 @@ function mcpUrlWithClient(mcpUrl: string, sid: string): string {
  * The per-session client identity is baked into the url because codex cannot
  * env-expand config.toml, and the superuser bearer rides as an http_headers
  * Authorization (D-006 — the env-var form doesn't deliver on codex 0.135).
- * `env_http_headers` resolves CODEX_SESSION_ID at request time, independently
- * proving which native Codex incarnation is using the inherited coord owner.
+ * `env_http_headers` supplies a legacy process-environment native-session claim.
+ * The MCP host prefers Codex's per-call _meta.threadId, since the process can
+ * inherit a parent's CODEX_SESSION_ID while shell tools receive the current id.
+ * Both carriers are checked against the owner's registered native incarnation.
  */
 export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const url = mcpUrlWithClient(opts.mcpUrl, opts.sid);
@@ -1316,6 +1654,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const modelConfig = codexModelConfigToml(resolvedModel);
   const contextConfig = codexContextConfigToml(resolvedModel, {
     codexHome: opts.codexHome ?? undefined,
+    compactionLimit: opts.compactionLimit,
   }).trimEnd();
   return [
     ...(contextConfig ? contextConfig.split('\n') : []),
@@ -1325,15 +1664,18 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
     codexIsolationPreamble(opts.headless),
-    ...inheritedCodexTrustToml(opts.trustDir),
+    ...inheritedCodexTrustToml(opts.trustDir, opts.denyAmbientContext !== true),
     ...gatewayConfig.tables,
     ...CODEX_TUI_TOML,
     '# Per-session codex SU home config (managed by bootstrap-su / writeSuCodexHome).',
     '[mcp_servers.papercusp-su]',
     `url = "${tomlEscape(url)}"`,
+    // Papercusp tools can declare a 600s deadline plus a 5s MCP buffer.
+    // Keep Codex's per-server client timeout just above that contract.
+    'tool_timeout_sec = 610',
     ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
     'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
-    ...projectHttpMcpToml(opts.projectDir ?? opts.trustDir),
+    ...projectHttpMcpToml(opts.denyAmbientContext ? null : opts.projectDir ?? opts.trustDir),
     '',
   ].join('\n');
 }
@@ -1342,10 +1684,9 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  * REPAIR an existing CODEX_HOME's `config.toml` in place — the resume-leg
  * counterpart to `writeSuCodexHome`, and deliberately NOT that function.
  *
- * `writeSuCodexHome` starts with `freshCodexHome`, which rm -rf's the directory.
- * That is right for preparing a session, and catastrophic for repairing one: the
- * home holds every `sessions/**​/rollout-*.jsonl` the resume is about to read, so
- * rebuilding it would destroy the very transcripts being resumed. This repairs
+ * `writeSuCodexHome` rebuilds generated launch files while retaining native
+ * transcripts. A resume must also retain its prompt, auth and SQLite state;
+ * it must not run the fresh-launch reset. This repairs
  * only managed launch files in place: config.toml plus identity-bearing hooks /
  * diagnostics when their owner has drifted. Rollouts, prompts and auth survive.
  *
@@ -1362,13 +1703,13 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  * (or carry superseded values) are rewritten from this canonical renderer so a
  * model-less resume cannot silently fall back to Codex's smaller native window.
  */
-export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
+function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   sessionKey: string | number;
   /** Canonical, current SU render; supplied by the operator repair route. */
   promptText?: string;
   /** A carry starts a fresh thread, so a GC-removed home can be recreated safely. */
   recoverMissingHome?: boolean;
-}): {
+}, ownerSidIo?: CodexHomeOwnerSidIo): {
   codexHome: string;
   sqliteHome: string;
   configPath: string;
@@ -1378,22 +1719,40 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   reason?: 'no-home';
 } {
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
-  const sqliteHome = codexSqliteHomeForSessionKey(opts.sessionKey);
+  const sqliteHome = preservedCodexSqliteHome(codexHome, opts.sessionKey);
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(codexHome)) {
     if (!opts.recoverMissingHome || !opts.promptText?.trim()) {
       return { codexHome, sqliteHome, configPath, repaired: false, identityRepaired: false, promptRepaired: false, reason: 'no-home' };
     }
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-    inheritUserCodexHome(codexHome);
+    if (!opts.denyAmbientContext) inheritUserCodexHome(codexHome);
     ensureCodexSkillWatchRoots({ codexHome });
+  }
+  // The recorded home can be repaired without the original launch options.
+  // Reuse its existing diagnostics rather than granting ambient inheritance.
+  const diagnosticsPath = join(codexHome, 'papercusp-diagnostics.json');
+  let diagnostics: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(readFileSync(diagnosticsPath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) diagnostics = parsed;
+    if (diagnostics.denyAmbientContext === true) {
+      opts = { ...opts, denyAmbientContext: true };
+    }
+  } catch { /* Legacy/unconfined homes have no saved context policy. */ }
+  const contextPolicyRepaired = opts.denyAmbientContext === true && diagnostics.denyAmbientContext !== true;
+  if (contextPolicyRepaired) {
+    writeFileSync(diagnosticsPath, `${JSON.stringify({ ...diagnostics, denyAmbientContext: true }, null, 2)}\n`, { mode: 0o600 });
   }
   mkdirSync(sqliteHome, { recursive: true, mode: 0o700 });
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
   const resolvedModel = resolveCodexModel(opts.model);
   const expectedModelConfig = codexModelConfigToml(resolvedModel).join('\n');
-  const expectedContextConfig = codexContextConfigToml(resolvedModel, { codexHome });
+  const expectedContextConfig = codexContextConfigToml(resolvedModel, {
+    codexHome,
+    compactionLimit: opts.compactionLimit,
+  });
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
   const expectedSqliteHome = `sqlite_home = "${tomlEscape(sqliteHome)}"`;
   const expectedClient = `client=${encodeURIComponent(opts.sid)}`;
@@ -1401,13 +1760,13 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
   const expectedSuMcpRoute =
     '[mcp_servers.papercusp-su]\nurl = "' +
     tomlEscape(mcpUrlWithClient(opts.mcpUrl, opts.sid)) +
-    '"';
+    '"\ntool_timeout_sec = 610';
   const expectedGateway = codexGatewayConfigToml(opts.codexGatewayAccountId, {
     gatewayOn: opts.codexGatewayAuto,
     ownerId: opts.sid,
     priority: opts.codexGatewayPriority,
   });
-  const expectedProjectMcp = projectHttpMcpToml(opts.projectDir ?? opts.trustDir).join('\n');
+  const expectedProjectMcp = projectHttpMcpToml(opts.denyAmbientContext ? null : opts.projectDir ?? opts.trustDir).join('\n');
   let configReady = false;
   try {
     const current = readFileSync(configPath, 'utf8');
@@ -1428,23 +1787,26 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       current.includes(expectedProjectMcp) &&
       current.includes(expectedClient) &&
       current.includes(expectedNativeSessionHeader) &&
+      parseToml(current).check_for_update_on_startup === false &&
       contextMatches &&
       current.includes(expectedSqliteHome) &&
       current.includes(expectedLogDir) &&
       current.includes('[tui]\nterminal_title = []\nalternate_screen = "never"\n') &&
       gatewayReady &&
-      headlessPolicyReady;
+      headlessPolicyReady &&
+      (!opts.denyAmbientContext || current === suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }));
   } catch {
     /* absent or unreadable — that is precisely the repair case */
   }
   if (!configReady) {
     writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir, codexHome, sqliteHome }), { mode: 0o600 });
   }
-  const identity = repairSuCodexHomeIdentity(
+  const identity = repairSuCodexHomeIdentityImpl(
     codexHome,
     opts.sid,
     opts.sessionKey,
     mcpUrlWithClient(opts.mcpUrl, opts.sid),
+    ownerSidIo,
   );
   const agentsPath = join(codexHome, 'AGENTS.md');
   const carryBasePath = join(codexHome, '.papercusp-carry-base-AGENTS.md');
@@ -1474,13 +1836,41 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
     codexHome,
     sqliteHome,
     configPath,
-    repaired: !configReady || identity.repaired || promptRepaired,
+    repaired: !configReady || identity.repaired || promptRepaired || contextPolicyRepaired,
     identityRepaired: identity.repaired,
     promptRepaired,
   };
 }
 
-export function writeSuCodexHome(opts: {
+type EnsureSuCodexHomeConfigOptions = SuCodexConfigInput & {
+  sessionKey: string | number;
+  /** Canonical, current SU render; supplied by the operator repair route. */
+  promptText?: string;
+  /** A carry starts a fresh thread, so a GC-removed home can be recreated safely. */
+  recoverMissingHome?: boolean;
+};
+
+export function ensureSuCodexHomeConfig(opts: EnsureSuCodexHomeConfigOptions) {
+  return ensureSuCodexHomeConfigImpl(opts);
+}
+
+export async function ensureSuCodexHomeConfigAsync(
+  opts: EnsureSuCodexHomeConfigOptions,
+): Promise<ReturnType<typeof ensureSuCodexHomeConfigImpl>> {
+  const codexHome = codexHomeForSessionKey(opts.sessionKey);
+  return withCodexHomeAsyncWriteLock(codexHome, async () => {
+    const priorSid = await existingCodexHomeOwnerSidAsync(codexHome);
+    const result = await runCodexHomeMaterializerJob<ReturnType<typeof ensureSuCodexHomeConfigImpl>>({
+      operation: 'su-ensure-config', options: opts, priorSid, homeDir: homedir(),
+    });
+    if (result.identityRepaired) await stampCodexHomeOwnerSidAsync(codexHome, opts.sid);
+    return result;
+  });
+}
+
+type WriteSuCodexHomeOptions = {
+  /** Same host-owned context ceiling consulted by bootstrap and MCP. */
+  denyAmbientContext?: true;
   sessionKey: string | number;
   /** Superuser MCP url (?superuser=1&workspace=…) from buildLaunchSpec(su). */
   mcpUrl: string;
@@ -1491,6 +1881,8 @@ export function writeSuCodexHome(opts: {
   /** Launch model. Extended-window models bake their canonical root keys into
    *  config.toml so model-less resumes retain the launch window. */
   model?: string | null;
+  /** Per-session soft compaction ceiling recovered from the recorded psu argv. */
+  compactionLimit?: number | null;
   /** Superuser bearer token, baked as an http_headers Authorization (D-006).
    *  Omit only when no token is installed → a degraded non-superuser home. */
   token?: string | null;
@@ -1518,15 +1910,16 @@ export function writeSuCodexHome(opts: {
    *  Omitted ⇒ the collision check is skipped entirely (byte-identical to the
    *  pre-guard behavior — safe default for every existing caller/test). */
   isOwnerLive?: (sid: string) => boolean;
-}): SuCodexHome {
+};
+
+function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexHomeOwnerSidIo): SuCodexHome {
   const targetHome = codexHomeForSessionKey(opts.sessionKey);
   // EI-11366: a live Codex psu host was once found split across two identities
   // — the physical host process/PAPERCUSP_SID/socket stayed with its ORIGINAL
   // sid while CODEX_HOME/hooks.json on disk had been silently regenerated for a
-  // DIFFERENT sid. `freshCodexHome` below unconditionally rm -rf's + rebuilds
-  // whatever is at `targetHome` (intentional — see the "rebuilds fresh" test —
-  // for the ordinary case of re-preparing the SAME logical session). The gap is
-  // that nothing ever checked whether the directory it is about to destroy is
+  // DIFFERENT sid. `freshCodexHome` below rebuilds generated launch files but
+  // retains native transcripts, including on re-preparing the SAME logical
+  // session. The identity guard still checks whether the home being rebuilt is
   // still the ACTIVE home of a DIFFERENT, currently-live session. If a future
   // caller (a retry path, a sessionKey computed by different code, an operator
   // debug script) ever passes a sessionKey that collides with a still-live
@@ -1534,7 +1927,7 @@ export function writeSuCodexHome(opts: {
   // diagnosable refusal instead. Fails OPEN (proceeds, current behavior) unless
   // BOTH a differing prior owner AND a caller-supplied liveness check confirm
   // it is still live — never blocks a normal fresh/re-prepare launch.
-  const priorSid = existingCodexHomeOwnerSid(targetHome);
+  const priorSid = ownerSidIo ? ownerSidIo.priorSid : existingCodexHomeOwnerSid(targetHome);
   if (priorSid && priorSid !== opts.sid && opts.isOwnerLive?.(priorSid)) {
     throw new Error(
       `writeSuCodexHome: refusing to rebuild ${targetHome} — it is the LIVE Codex home of a ` +
@@ -1544,9 +1937,9 @@ export function writeSuCodexHome(opts: {
         `not collide with a live session's home.`,
     );
   }
-  const codexHome = freshCodexHome(targetHome);
+  const codexHome = freshCodexHome(targetHome, opts.denyAmbientContext !== true);
   const sqliteHome = freshCodexSqliteHome(opts.sessionKey);
-  const inheritedPromptsCopied = copyInheritedCodexPrompts(codexHome);
+  const inheritedPromptsCopied = !opts.denyAmbientContext && copyInheritedCodexPrompts(codexHome);
 
   const agentsPath = join(codexHome, 'AGENTS.md');
 
@@ -1580,19 +1973,77 @@ export function writeSuCodexHome(opts: {
   writeCodexHomeDiagnostics(codexHome, {
     hooksInstalled,
     inheritedPromptsCopied,
+    denyAmbientContext: opts.denyAmbientContext === true,
     lockOwnerSid: opts.sid,
     lockRuntime,
   });
   // EI-11366: stamp the sentinel the collision guard above reads on the NEXT
   // write to this sessionKey's home. Best-effort — a write failure here must
   // never fail the launch (mirrors every other diagnostics write in this fn).
-  try {
-    writeFileSync(join(codexHome, '.owner-sid'), opts.sid, { mode: 0o600 });
-  } catch {
-    /* non-fatal: the collision guard simply skips on the next write */
+  if (!ownerSidIo?.skipStamp) {
+    try {
+      writeFileSync(join(codexHome, '.owner-sid'), opts.sid, { mode: 0o600 });
+    } catch {
+      /* non-fatal: the collision guard simply skips on the next write */
+    }
   }
 
   return { codexHome, sqliteHome, agentsPath, configPath, instructionLint };
+}
+
+export function writeSuCodexHome(opts: WriteSuCodexHomeOptions): SuCodexHome {
+  return writeSuCodexHomeImpl(opts);
+}
+
+export async function writeSuCodexHomeAsync(
+  opts: Omit<WriteSuCodexHomeOptions, 'isOwnerLive'> & {
+    isOwnerLive?: (sid: string) => boolean | Promise<boolean>;
+  },
+): Promise<SuCodexHome> {
+  const targetHome = codexHomeForSessionKey(opts.sessionKey);
+  return withCodexHomeAsyncWriteLock(targetHome, async () => {
+    const priorSid = await existingCodexHomeOwnerSidAsync(targetHome);
+    if (priorSid && priorSid !== opts.sid && opts.isOwnerLive && await opts.isOwnerLive(priorSid)) {
+      throw new Error(
+        `writeSuCodexHome: refusing to rebuild ${targetHome} — it is the LIVE Codex home of a ` +
+          `different session (owner ${priorSid}); overwriting it would silently split that ` +
+          `session's identity between its still-running process and a rewritten CODEX_HOME ` +
+          `(EI-11366). Pass the SAME sid to re-prepare that session, or a sessionKey that does ` +
+          `not collide with a live session's home.`,
+      );
+    }
+    const { isOwnerLive: _isOwnerLive, ...writeOpts } = opts;
+    const result = await runCodexHomeMaterializerJob<SuCodexHome>({
+      operation: 'su-write', options: writeOpts, priorSid, homeDir: homedir(),
+    });
+    await stampCodexHomeOwnerSidAsync(result.codexHome, opts.sid);
+    return result;
+  });
+}
+
+/** Worker entry dispatch. Keep the synchronous implementations here so their
+ *  existing filesystem and identity semantics remain the single source of truth. */
+export function executeCodexHomeMaterializerJob(job: CodexHomeMaterializerJob): unknown {
+  const previousHome = materializerHomeOverride;
+  materializerHomeOverride = job.homeDir ?? previousHome;
+  try {
+    switch (job.operation) {
+      case 'role-write':
+        return writeRoleCodexHome(job.options as WriteRoleCodexHomeOptions);
+      case 'su-write':
+        return writeSuCodexHomeImpl(job.options as WriteSuCodexHomeOptions, {
+          priorSid: job.priorSid ?? null,
+          skipStamp: true,
+        });
+      case 'su-ensure-config':
+        return ensureSuCodexHomeConfigImpl(job.options as EnsureSuCodexHomeConfigOptions, {
+          priorSid: job.priorSid ?? null,
+          skipStamp: true,
+        });
+    }
+  } finally {
+    materializerHomeOverride = previousHome;
+  }
 }
 
 const PAPERCUSP_SU_TABLE_RE = /^mcp_servers\.(?:papercusp-su|"papercusp-su")(?:\.|$)/;
@@ -1637,6 +2088,16 @@ export function makeCodingAssistantCodexHome(codexHome: string, home: string = h
   const agentsPath = join(codexHome, 'AGENTS.md');
   rmSync(agentsPath, { force: true });
   const userAgents = join(home, '.codex', 'AGENTS.md');
-  if (existsSync(userAgents)) writeFileSync(agentsPath, readFileSync(userAgents), { mode: 0o600 });
+  if (existsSync(userAgents)) {
+    // Older standalone installers put the SU playbook in the user's global
+    // instructions. It is generated SU context, not a personal instruction:
+    // copying it back would undo the identity isolation above (EI-25332697642301259).
+    // Use the installer's exact paired markers; leave unmarked user rules alone.
+    const personal = readFileSync(userAgents, 'utf8').replace(
+      /<!-- BEGIN papercusp-su playbook \(managed by install-standalone-mcp\.sh\) -->[\s\S]*?<!-- END papercusp-su playbook -->\r?\n?/g,
+      '',
+    );
+    if (personal.trim()) writeFileSync(agentsPath, personal, { mode: 0o600 });
+  }
   rmSync(join(codexHome, 'hooks.json'), { force: true });
 }

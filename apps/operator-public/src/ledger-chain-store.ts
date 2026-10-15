@@ -81,7 +81,9 @@ const STREAMS: Readonly<Record<LedgerStreamId, StreamSpec>> = {
     orderSql: 'src.occurred_at_ms ASC, src.credit_event_id ASC',
   },
   'treasury.transfers': {
-    table: 'treasury_transfers',
+    // Pending reservations are mutable control state, never payment evidence.
+    // Keep the committed column set frozen for pre-migration chain history.
+    table: "(SELECT * FROM treasury_transfers WHERE submission_state = 'submitted')",
     sourceIdSql: 'src.transfer_id',
     columns: [
       'transfer_id',

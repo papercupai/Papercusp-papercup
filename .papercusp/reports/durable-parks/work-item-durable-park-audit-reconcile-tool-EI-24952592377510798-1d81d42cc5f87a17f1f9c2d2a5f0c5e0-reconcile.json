@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-24952592377510798:1d81d42cc5f87a17f1f9c2d2a5f0c5e0",
+  "inputSha256": "1d81d42cc5f87a17f1f9c2d2a5f0c5e003aa64ef9bd9e7cb60eaa1d512bc7568",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:15:54.606Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-24952592377510798",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "c0b4037a7ee1e8d8a7d633f8efe694f49eefb72a49a001d1461c8fb259da90ea",
+      "observedParkFingerprint": "c0b4037a7ee1e8d8a7d633f8efe694f49eefb72a49a001d1461c8fb259da90ea",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:EI-24932442270076519 (condition: 'Re-evaluate EI-24952592377510798 after umbrella EI-24932442270076519 reaches terminal state; close as duplicate if its serving-generation fix covers the acceptance cases, otherwise re-queue only a specific uncovered consumer seam.'). Re-read 2026-10-10T22:15Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): EI-24932442270076519 status=done, taken_by none; EI-24952592377510798 status=open, taken_by null. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-24952592377510798-1d81d42cc5f87a17f1f9c2d2a5f0c5e0-reconcile.json"
+}

@@ -3,3 +3,6 @@ results/
 
 # Local wdio install (this runner is kept out of the npm workspace on purpose).
 node_modules/
+
+# This standalone package's resolved graph is not covered by the root lock.
+!package-lock.json

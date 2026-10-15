@@ -119,6 +119,12 @@ describe('pickEligibleHost', () => {
   it('excludes a host without the carry-respawn capability', () => {
     expect(pickEligibleHost([host({ caps: [] })], HEADLESS)).toBeNull();
   });
+  it('never picks a protected (goal-holder) owner, even when it is the most idle — WI-10005559', () => {
+    const holder = host({ ownerId: 'su-goal-holder', lastActivityAt: 1 });
+    const other = host({ ownerId: 'su-plain', lastActivityAt: 500 });
+    expect(pickEligibleHost([holder, other], HEADLESS, new Set(['su-goal-holder']))?.ownerId).toBe('su-plain');
+    expect(pickEligibleHost([holder], HEADLESS, new Set(['su-goal-holder']))).toBeNull();
+  });
   it('null when no host matches the class', () => {
     // a headless host classifies as claude-headless, never claude-interactive
     expect(pickEligibleHost([host({ bridgeTty: false })], INTERACTIVE)).toBeNull();
@@ -132,6 +138,7 @@ function deps(over: Partial<ColdBootDrillAutorunDeps>): Partial<ColdBootDrillAut
     listHosts: () => [],
     startDrill: async () => ({ ok: true, drillId: 'new-drill', sessionClass: HEADLESS, queued: true, nextAllowedAt: '' }),
     gradeDrill: async () => ({ ok: true, drillId: 'g', sample: { sessionClass: HEADLESS, lookups: [] }, report: { perClass: [], params: {} as never, sufficientClasses: [], terminalOutcomes: [] }, transcriptPath: '', alreadyGraded: false }),
+    listProtectedOwners: async () => new Set<string>(),
     flagEnabled: async () => true,
     now: () => 0,
     ...over,
@@ -214,5 +221,46 @@ describe('runColdBootDrillAutorunOnce', () => {
     );
     expect(startDrill).not.toHaveBeenCalled();
     expect(r.skippedClasses).toContainEqual({ sessionClass: HEADLESS, reason: 'no-eligible-headless-host' });
+  });
+
+  it('does not drill a goal holder: the only headless host is protected ⇒ no start (WI-10005559)', async () => {
+    const startDrill = vi.fn();
+    const r = await runColdBootDrillAutorunOnce(
+      deps({
+        listHosts: () => [host({ ownerId: 'su-goal-holder' })],
+        listProtectedOwners: async () => new Set(['su-goal-holder']),
+        startDrill,
+      }),
+    );
+    expect(startDrill).not.toHaveBeenCalled();
+    expect(r.skippedClasses).toContainEqual({ sessionClass: HEADLESS, reason: 'no-eligible-headless-host' });
+  });
+
+  it('drills an unprotected host when a goal holder is also eligible', async () => {
+    const startDrill = vi.fn(async () => ({ ok: true as const, drillId: 'nd', sessionClass: HEADLESS, queued: true as const, nextAllowedAt: '' }));
+    await runColdBootDrillAutorunOnce(
+      deps({
+        listHosts: () => [host({ ownerId: 'su-goal-holder', lastActivityAt: 1 }), host({ ownerId: 'su-plain', lastActivityAt: 9 })],
+        listProtectedOwners: async () => new Set(['su-goal-holder']),
+        startDrill,
+      }),
+    );
+    expect(startDrill).toHaveBeenCalledTimes(1);
+    expect(startDrill).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-plain' }));
+  });
+
+  it('fails CLOSED when the protected-owner read throws: no drill this pass', async () => {
+    const startDrill = vi.fn();
+    const r = await runColdBootDrillAutorunOnce(
+      deps({
+        listHosts: () => [host({ ownerId: 'su-plain' })],
+        listProtectedOwners: async () => {
+          throw new Error('pg down');
+        },
+        startDrill,
+      }),
+    );
+    expect(startDrill).not.toHaveBeenCalled();
+    expect(r.skippedClasses).toContainEqual({ sessionClass: HEADLESS, reason: 'protected-owner-read-failed:pg down' });
   });
 });

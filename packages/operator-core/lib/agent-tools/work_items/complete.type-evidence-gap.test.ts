@@ -19,7 +19,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { typeEvidenceGapInCompletion } from './complete';
+import { typeEvidenceGapInCompletion } from '../type-evidence-gap';
 import type { CompletionVerificationEvidence } from '../../coord-lifecycle/records';
 
 const ev = (e: Partial<CompletionVerificationEvidence>): CompletionVerificationEvidence =>
@@ -71,6 +71,8 @@ describe('typeEvidenceGapInCompletion — STAYS SILENT when there is nothing to 
     ['tsc named in testResult', { testResult: 'tsc clean, 42 passed' }],
     ['the word typecheck', { testsRun: 'typecheck + suite' }],
     ['build:typecheck', { testsRun: 'build:typecheck project=operator-core' }],
+    ['canonical tool followed by scope count', { testsRun: 'Scoped build:typecheck10 requested/44file graph and final4 requested/11file graph' }],
+    ['compact compiler result', { testResult: 'tsc0 errors, 42 passed' }],
     ['case-insensitively', { testResult: 'TSC: 0 errors' }],
   ])('the caller already looked — %s', (_label, prose) => {
     // Their own words settle it: they checked, so a nudge would be pure noise.
@@ -110,5 +112,13 @@ describe('typeEvidenceGapInCompletion — STAYS SILENT when there is nothing to 
 
   it('evidence with no verifiedHow at all cannot be judged, so it says nothing', () => {
     expect(typeEvidenceGapInCompletion(ev({ filesChanged: ['lib/a.ts'] }))).toBeUndefined();
+  });
+});
+
+describe('typeEvidenceGapInCompletion — does not mistake other words for a typecheck', () => {
+  it.each(['typechecker helper tested', 'tsconfig updated', 'notypecheck was run', 'types0'])('%s still needs type evidence', (testsRun) => {
+    expect(typeEvidenceGapInCompletion(ev({
+      verifiedHow: 'unit', filesChanged: ['lib/a.ts'], testsRun,
+    }))).toEqual({ tsFiles: ['lib/a.ts'] });
   });
 });

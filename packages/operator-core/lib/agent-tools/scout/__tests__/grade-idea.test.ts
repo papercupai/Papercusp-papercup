@@ -1,13 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 
 import gradeIdeaTool, {
+  bareIdBehindAgentReviewKey,
+  candidateWorkItemId,
   deriveGradedBy,
   gradeIdeaArgs,
   runGradeIdea,
   toToolResult,
   revisionNoticeMode,
   REVISION_WAKE_MAX_GRADE,
+  GRADE_IDEA_FEEDBACK_MAX_CHARS,
   type GradeIdeaDeps,
+  type GradeIdeaDiagnostics,
   type GradedIdeaSummary,
   type WorkItemExistenceProbeResult,
 } from '../grade-idea';
@@ -50,6 +54,7 @@ function fakeDeps(over: Partial<GradeIdeaDeps> = {}): GradeIdeaDeps {
     // real ledger idea_id. Per-test overrides model the bare-work-item-id
     // resolution (a bare `EI-…` → the cycle-prefixed idea_id, or null on a miss).
     resolveIdeaIdFromKey: vi.fn(async (id: string) => id),
+    findAgentReviewLedgerCollision: vi.fn(async () => null),
     getWorkItem: vi.fn(async () => null),
     readIdeaSummary: vi.fn(async () => summary()),
     // D-012: default row is UNattributed (created_by null) — no self-grade path.
@@ -97,17 +102,40 @@ describe('gradeIdeaArgs validation', () => {
     }
   });
 
-  it('rejects empty ideaId; accepts any-length feedback (softText — clamped in the handler, EI-3693)', () => {
+  it('rejects empty ideaId and feedback above its hard cap while accepting the cap boundary', () => {
     expect(gradeIdeaArgs.safeParse({ ideaId: '', grade: 3 }).success).toBe(false);
-    // feedback is now softText(LIMITS.ANNOTATION): the SCHEMA never bounces on length —
-    // an over-long value parses fine and runGradeIdea truncates it to 2000 (clampText),
-    // rather than rejecting the whole tool call at arg-parse.
-    expect(gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(2001) }).success).toBe(true);
-    expect(gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(2000) }).success).toBe(true);
+    expect(
+      gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(GRADE_IDEA_FEEDBACK_MAX_CHARS) }).success,
+    ).toBe(true);
+    expect(
+      gradeIdeaArgs.safeParse({ ideaId: 'i1', grade: 3, feedback: 'x'.repeat(GRADE_IDEA_FEEDBACK_MAX_CHARS + 1) }).success,
+    ).toBe(false);
   });
 });
 
 describe('runGradeIdea', () => {
+  it('refuses a bare work-item key that collides with a historical row and returns the canonical review key', async () => {
+    const deps = fakeDeps({
+      findAgentReviewLedgerCollision: vi.fn(async (workItemId: string) => ({
+        workItemId,
+        ledgerIdeaId: `agent-review:${workItemId}`,
+      })),
+    });
+
+    const out = await runGradeIdea({ ideaId: 'EI-42', grade: 4 }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(out).toMatchObject({
+      applied: false,
+      reason: 'agent-review-ledger-id-required',
+      ledgerIdeaId: 'agent-review:EI-42',
+      gradeWith: { ideaId: 'agent-review:EI-42' },
+    });
+    expect(deps.findAgentReviewLedgerCollision).toHaveBeenCalledWith('EI-42');
+    expect(deps.resolveIdeaIdFromKey).not.toHaveBeenCalled();
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+    expect(deps.preflightAgentReviewGrade).not.toHaveBeenCalled();
+  });
+
   it("writes through C-2 with gradedBy 'auto-grader' for a mug ctx and returns the read-back summary", async () => {
     const deps = fakeDeps({
       readIdeaSummary: vi.fn(async () => summary({ humanGrade: 5, gradedBy: 'auto-grader', humanFeedback: 'love it' })),
@@ -133,6 +161,29 @@ describe('runGradeIdea', () => {
     const out = await runGradeIdea({ ideaId: 'idea-1', grade: 2 }, undefined, deps);
     expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({ ideaId: 'idea-1', grade: 2, gradedBy: 'owner' });
     expect(out.gradedBy).toBe('owner');
+  });
+
+  it('emits phase entry and settle diagnostics for the grade path without changing its result', async () => {
+    const deps = fakeDeps();
+    const snapshots: Array<{ phases: GradeIdeaDiagnostics['phases'] }> = [];
+
+    const out = await runGradeIdea(
+      { ideaId: 'idea-1', grade: 4 },
+      { role: 'operator', ownerId: 'su-reviewer' },
+      deps,
+      { onDiagnostics: (diagnostics) => snapshots.push({ phases: { ...diagnostics.phases } }) },
+    );
+
+    expect(out).toMatchObject({ applied: true, ideaId: 'idea-1', gradedBy: 'su-reviewer' });
+    const gradeStart = snapshots.find((snapshot) => snapshot.phases.gradeRoutedIdea?.status === 'in-progress');
+    expect(gradeStart?.phases.gradeRoutedIdea?.startedAt).toEqual(expect.any(String));
+    expect(snapshots.at(-1)?.phases).toMatchObject({
+      readCreatedBy: { status: 'ok' },
+      preflightAgentReviewGrade: { status: 'ok' },
+      gradeRoutedIdea: { status: 'ok' },
+      readIdeaSummary: { status: 'ok' },
+    });
+    expect(snapshots.at(-1)?.phases.gradeRoutedIdea?.elapsedMs).toEqual(expect.any(Number));
   });
 
   it('writes the resolved su caller ownerId for an identified agent grade', async () => {
@@ -162,11 +213,25 @@ describe('runGradeIdea', () => {
     expect('feedback' in input).toBe(false);
   });
 
-  it('clamps over-long feedback to 2000 chars before the C-2 write (softText handler clamp, EI-3693)', async () => {
-    const deps = fakeDeps();
-    await runGradeIdea({ ideaId: 'idea-1', grade: 3, feedback: 'x'.repeat(2500) }, undefined, deps);
+  it('preserves 2,185-character feedback in both the ledger write and revision notice', async () => {
+    const feedback = 'x'.repeat(2185);
+    const deps = fakeDeps({
+      readIdeaSummary: vi.fn(async () => summary({ origin: 'su-ideate', createdBy: 'su-originator-1' })),
+    });
+    const args = gradeIdeaArgs.parse({ ideaId: 'idea-1', grade: 2, feedback });
+    await runGradeIdea(args, undefined, deps);
     const input = vi.mocked(deps.gradeRoutedIdea).mock.calls[0][0] as { feedback?: string };
-    expect(input.feedback).toHaveLength(2000);
+    expect(input.feedback).toBe(feedback);
+    const notice = vi.mocked(deps.sendRevisionNotice).mock.calls[0][0];
+    expect(notice.body).toContain('Critique: ' + feedback);
+  });
+
+  it('rejects over-cap feedback before the ledger write or revision notice', async () => {
+    const deps = fakeDeps();
+    const feedback = 'x'.repeat(GRADE_IDEA_FEEDBACK_MAX_CHARS + 1);
+    await expect(runGradeIdea({ ideaId: 'idea-1', grade: 3, feedback }, undefined, deps)).rejects.toThrow();
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+    expect(deps.sendRevisionNotice).not.toHaveBeenCalled();
   });
 
   it('resolves routedRef → ideaId before the write (D-007)', async () => {
@@ -366,6 +431,104 @@ describe('EI-15389: bare work-item id keyed as ideaId resolves to the ledger PK'
       });
     }
     expect(getWorkItem).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-24742538368325488: an `agent-review:<id>` ideaId falls back to the bare work-item id', () => {
+  const WI = 'EI-22451127204495357';
+  const PREFIXED = `agent-review:${WI}`;
+  /** A ledger that only knows the BARE id — the common case: enrollment prefixes the PK only on a collision. */
+  const bareOnlyLedger = () => vi.fn(async (key: string) => (key === WI ? WI : null));
+
+  it('grades the bare-keyed ledger row after the exact prefixed lookup misses (the reported repro)', async () => {
+    const deps = fakeDeps({ resolveIdeaIdFromKey: bareOnlyLedger() });
+
+    const out = await runGradeIdea({ ideaId: PREFIXED, grade: 3, feedback: 'needs work' }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(out).toMatchObject({ applied: true, ideaId: WI });
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenNthCalledWith(1, PREFIXED); // exact form first
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenNthCalledWith(2, WI);
+    expect(deps.findAgentReviewLedgerCollision).toHaveBeenCalledWith(WI); // same guard a bare id gets
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({ ideaId: WI, grade: 3 }));
+  });
+
+  it('an exact prefixed ledger row WINS — no fallback, no collision probe, the prefixed row is the one graded', async () => {
+    const deps = fakeDeps(); // default resolver is identity: the prefixed key IS a ledger PK
+
+    const out = await runGradeIdea({ ideaId: PREFIXED, grade: 4 }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(out).toMatchObject({ applied: true, ideaId: PREFIXED });
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenCalledTimes(1);
+    expect(deps.findAgentReviewLedgerCollision).not.toHaveBeenCalled();
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({ ideaId: PREFIXED }));
+  });
+
+  it('refuses with the canonical ledger id when the bare id collides with a historical row, never grading it by accident', async () => {
+    const deps = fakeDeps({
+      resolveIdeaIdFromKey: vi.fn(async () => null),
+      findAgentReviewLedgerCollision: vi.fn(async (workItemId: string) => ({
+        workItemId,
+        ledgerIdeaId: 'scout-1:scout-idea-x',
+      })),
+    });
+
+    const out = await runGradeIdea({ ideaId: PREFIXED, grade: 4 }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(out).toMatchObject({
+      applied: false,
+      reason: 'agent-review-ledger-id-required',
+      gradeWith: { ideaId: 'scout-1:scout-idea-x' },
+    });
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenCalledTimes(1); // the bare lookup is never reached
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+  });
+
+  it('a total miss reports BOTH key forms and probes the work item behind the prefix (was status:not-attempted)', async () => {
+    const candidate: WorkItemExistenceProbeResult = { id: WI, family: 'issue', kind: 'bug' };
+    const getWorkItem = vi.fn(async () => candidate);
+    const deps = fakeDeps({ resolveIdeaIdFromKey: vi.fn(async () => null), getWorkItem });
+
+    const out = await runGradeIdea({ ideaId: PREFIXED, grade: 3 }, undefined, deps);
+
+    expect(getWorkItem).toHaveBeenCalledWith(WI);
+    expect(out).toMatchObject({
+      applied: false,
+      reason: 'not-routed',
+      ideaId: null,
+      diagnostic: {
+        code: 'ledger-resolution-miss',
+        attempted: { ideaId: [PREFIXED, WI] },
+        workItem: { candidateId: WI, status: 'found', family: 'issue' },
+        remedy: 'blender:route-idea',
+      },
+    });
+    expect(out.diagnostic?.attempted.routedRef).toEqual(
+      expect.arrayContaining([PREFIXED, `wi:${PREFIXED}`, `gym:${PREFIXED}`, WI, `wi:${WI}`, `gym:${WI}`]),
+    );
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+  });
+
+  it('a prefix whose remainder is not work-item-shaped gets no fallback (single lookup, single attempted form)', async () => {
+    const deps = fakeDeps({ resolveIdeaIdFromKey: vi.fn(async () => null) });
+
+    const out = await runGradeIdea({ ideaId: 'agent-review:not-a-work-item', grade: 2 }, undefined, deps);
+
+    expect(out).toMatchObject({
+      reason: 'not-found',
+      diagnostic: { attempted: { ideaId: ['agent-review:not-a-work-item'] }, workItem: { status: 'not-attempted' } },
+    });
+    expect(deps.resolveIdeaIdFromKey).toHaveBeenCalledTimes(1);
+    expect(deps.findAgentReviewLedgerCollision).not.toHaveBeenCalled();
+  });
+
+  it('bareIdBehindAgentReviewKey / candidateWorkItemId strip only a work-item-shaped agent-review: prefix', () => {
+    expect(bareIdBehindAgentReviewKey(PREFIXED)).toBe(WI);
+    expect(bareIdBehindAgentReviewKey('AGENT-REVIEW:WI-7')).toBe('WI-7');
+    expect(bareIdBehindAgentReviewKey(WI)).toBeNull(); // a bare id has nothing to strip
+    expect(bareIdBehindAgentReviewKey('agent-review:')).toBeNull();
+    expect(bareIdBehindAgentReviewKey('agent-review:plan-x')).toBeNull();
+    expect(candidateWorkItemId({ ideaId: PREFIXED, grade: 3 } as never)).toBe(WI);
+    expect(candidateWorkItemId({ ideaId: 'agent-review:plan-x', grade: 3 } as never)).toBeNull();
   });
 });
 
@@ -684,10 +847,15 @@ describe('tool registration (C-3 surface)', () => {
   it('registers as blender:grade-idea with the SU+Mug allowlist and derived-attribution args', () => {
     const tool = gradeIdeaTool as unknown as {
       name: string;
+      timeoutSec?: number;
       agentRoles?: string[];
       guidance?: { when?: string };
     };
     expect(tool.name).toBe('blender:grade-idea');
+    // tools:invoke applies a 55s fallback when a target omits its declared budget.
+    // Keep this write-capable grade tool at 60s so its nested transport deadline
+    // includes the shared 5s buffer and does not time out before a slow grade settles.
+    expect(tool.timeoutSec).toBe(60);
     expect(tool.agentRoles).toContain('mug');
     expect(tool.agentRoles).toContain('operator');
     // gradedBy is derived, never an arg (C-3)

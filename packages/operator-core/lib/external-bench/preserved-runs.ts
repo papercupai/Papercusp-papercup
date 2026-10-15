@@ -37,6 +37,7 @@ export function defaultBenchResultsDir(): string {
 /** One per-task row as persisted by the arm runner (lenient — additive fields ignored). */
 export interface PreservedPerTask {
   instanceId: string;
+  taskStatus?: string;
   cupId?: string;
   disposition?: string;
   stopReason?: string;
@@ -53,9 +54,15 @@ export interface PreservedPerTask {
 /** The arm-run snapshot on disk (`<arm>.json`). */
 export interface PreservedArmRun {
   arm: string;
+  /** Execution identity belongs to the archive; missing legacy fields stay unknown. */
+  model?: string;
+  suite?: string;
+  taskSetId?: string;
+  config?: Record<string, unknown>;
   runId?: string;
   runError?: string | null;
   startedAt?: string;
+  finishedAt?: string;
   wallMs?: number;
   peakConcurrentBees?: number;
   taskCount?: number;
@@ -79,15 +86,21 @@ export interface PreservedRunSummary {
   gradedCount: number;
   /** Tasks marked resolved (true) by the grader (among the SCORED tasks). */
   resolvedCount: number;
-  /** perTask length (the run's task set). */
+  /** Assigned task population, including tasks that produced no row. */
   taskCount: number;
+  attemptedCount?: number;
+  absentCount?: number;
+  missingGradeCount?: number;
+  measurementComplete?: boolean;
+  /** Secondary quality among completed, officially graded submissions. */
+  conditionalResolvedPct?: number | null;
   /**
    * Tasks EXCLUDED from the resolved% denominator because generation was an external/transient/infra
    * failure (stopReason ∈ {error, timeout, infra-failed} or a generationError) — never a capability fail.
    * The fairness count (mirrors bench-metrics' `infraErrors`).
    */
   infraExcluded: number;
-  /** resolvedCount / gradedCount (0–1) where gradedCount = SCORED tasks (infra excluded); null when none scored. */
+  /** Primary resolved / assigned; null while a submission lacks a grader measurement. */
   resolvedPct: number | null;
   /** Summed cost across the run (prefer the snapshot `totals`, else sum perTask). */
   costUsd: number;
@@ -178,11 +191,38 @@ export function readGradeMap(dir: string, arm: string): Record<string, boolean> 
   if (!existsSync(gradePath)) return null;
   try {
     const parsed = JSON.parse(readFileSync(gradePath, 'utf8')) as unknown;
-    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    if (Object.values(parsed).some((value) => typeof value !== 'boolean')) return null;
     return parsed as Record<string, boolean>;
   } catch {
     return null;
   }
+}
+
+/** Import time is not execution time. Derive an end only from measured, unrecovered timing. */
+export function preservedExecutionTimes(run: PreservedArmRun): {
+  startedAt: string | null;
+  finishedAt: string | null;
+} {
+  const timestamp = (value: unknown): string | null => {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  };
+  const startedAt = timestamp(run.startedAt);
+  const explicitEnd = timestamp(run.finishedAt);
+  let measuredEnd: string | null = null;
+  if (startedAt && !run.recovered && typeof run.wallMs === 'number' &&
+      Number.isFinite(run.wallMs) && run.wallMs > 0) {
+    const end = new Date(Date.parse(startedAt) + run.wallMs);
+    if (Number.isFinite(end.getTime())) measuredEnd = end.toISOString();
+  }
+  const finishedAt = explicitEnd ?? measuredEnd;
+  return {
+    startedAt,
+    finishedAt: finishedAt && (!startedAt || Date.parse(finishedAt) >= Date.parse(startedAt))
+      ? finishedAt : null,
+  };
 }
 
 /**
@@ -204,12 +244,9 @@ export function mergeResolved(
 /**
  * Compute the headline summary from the merged rows + the run snapshot.
  *
- * FAIRNESS (benchmark-fairness-fix): a row whose generation was an EXTERNAL/transient/infra failure
- * (stopReason ∈ {error, timeout, infra-failed} per {@link isScoredStopReason}, or a non-null
- * generationError) is EXCLUDED from the resolved% denominator — never counted as a capability fail —
- * and tallied in `infraExcluded` instead. So `gradedCount` = SCORED tasks the grader verdicted, and
- * resolvedPct = resolved / SCORED-tasks, NOT resolved / all-graded (the audit's core correction). This
- * is the file-dir mirror of `@papercusp/bench-metrics` `isScored`.
+ * Assignment is the primary denominator. Generation failures and non-attempts
+ * remain outcomes; quality conditional on a measured submission is secondary.
+ * A missing official grader measurement makes the primary score inconclusive.
  */
 export function summarizePreservedRun(
   run: PreservedArmRun,
@@ -218,7 +255,11 @@ export function summarizePreservedRun(
   let gradedCount = 0;
   let resolvedCount = 0;
   let infraExcluded = 0;
+  let attemptedCount = 0;
+  let missingGradeCount = 0;
   for (const t of merged) {
+    if (t.taskStatus === 'todo' || t.taskStatus === 'in_progress') continue;
+    attemptedCount += 1;
     // NON-SCORED: an external/transient/infra failure (by stopReason or a generationError) is excluded
     // from the denominator even if the grade map carries a verdict for it (it never produced a real,
     // fairly-given submission). Count it separately.
@@ -227,7 +268,10 @@ export function summarizePreservedRun(
       infraExcluded += 1;
       continue;
     }
-    if (t.resolved == null) continue;
+    if (t.resolved == null) {
+      missingGradeCount += 1;
+      continue;
+    }
     gradedCount += 1;
     if (t.resolved) resolvedCount += 1;
   }
@@ -235,13 +279,22 @@ export function summarizePreservedRun(
   const summedCost = merged.reduce((a, t) => a + (t.costUsd ?? 0), 0);
   const summedIn = merged.reduce((a, t) => a + (t.tokensIn ?? 0), 0);
   const summedOut = merged.reduce((a, t) => a + (t.tokensOut ?? 0), 0);
+  const assignedIds = Array.isArray(run.config?.taskIds)
+    ? new Set(run.config.taskIds.filter((id): id is string => typeof id === 'string')).size : 0;
+  const declaredCount = Number.isSafeInteger(run.taskCount) && run.taskCount! >= 0 ? run.taskCount! : 0;
+  const taskCount = Math.max(declaredCount, assignedIds, merged.length);
   return {
     arm: run.arm,
     gradedCount,
     resolvedCount,
     infraExcluded,
-    taskCount: merged.length,
-    resolvedPct: gradedCount > 0 ? resolvedCount / gradedCount : null,
+    taskCount,
+    attemptedCount,
+    absentCount: taskCount - attemptedCount,
+    missingGradeCount,
+    measurementComplete: missingGradeCount === 0,
+    resolvedPct: taskCount > 0 && missingGradeCount === 0 ? resolvedCount / taskCount : null,
+    conditionalResolvedPct: gradedCount > 0 ? resolvedCount / gradedCount : null,
     costUsd: run.totals?.costUsd ?? summedCost,
     tokensIn: run.totals?.tokensIn ?? summedIn,
     tokensOut: run.totals?.tokensOut ?? summedOut,
@@ -259,25 +312,57 @@ export function summarizePreservedRun(
  * missing or unreadable (the route maps that to a 404). `baseDir` is injectable
  * for tests; production resolves it server-side (NEVER from a request param).
  */
-export function readPreservedRun(
+export type PreservedRunInspection =
+  | { kind: 'valid'; detail: PreservedRunDetail }
+  | { kind: 'unavailable'; reason: string }
+  | { kind: 'invalid'; reason: string };
+
+/** Distinguish invalid archive content from unavailable evidence before repairing stored history. */
+export function inspectPreservedRun(
   id: string,
   baseDir = defaultBenchResultsDir(),
-): PreservedRunDetail | null {
-  if (!isSafeRunId(id)) return null;
+): PreservedRunInspection {
+  if (!isSafeRunId(id)) return { kind: 'unavailable', reason: 'unsafe_run_id' };
   const dir = join(baseDir, id);
   const arm = resolveArmFile(dir);
-  if (!arm) return null;
+  if (!arm) return { kind: 'unavailable', reason: 'missing_or_ambiguous_arm_file' };
   const armPath = join(dir, `${arm}.json`);
-  if (!existsSync(armPath)) return null;
+  if (!existsSync(armPath)) return { kind: 'unavailable', reason: 'missing_arm_file' };
+  let raw: string;
+  try {
+    raw = readFileSync(armPath, 'utf8');
+  } catch {
+    return { kind: 'unavailable', reason: 'unreadable_arm_file' };
+  }
   let run: PreservedArmRun;
   try {
-    run = JSON.parse(readFileSync(armPath, 'utf8')) as PreservedArmRun;
+    run = JSON.parse(raw) as PreservedArmRun;
   } catch {
-    return null;
+    return { kind: 'invalid', reason: 'invalid_arm_json' };
+  }
+  // A dataset, summary or settings JSON is not an executed arm. Validate before
+  // metrics are computed or a directory can become a completed database run.
+  if (!run || typeof run !== 'object' || Array.isArray(run) ||
+      !Array.isArray(run.perTask) || run.perTask.length === 0) {
+    return { kind: 'invalid', reason: 'no_task_submission_records' };
+  }
+  const taskIds = new Set<string>();
+  for (const task of run.perTask) {
+    if (!task || typeof task !== 'object' || Array.isArray(task) ||
+        typeof task.instanceId !== 'string' || !task.instanceId.trim() ||
+        taskIds.has(task.instanceId)) {
+      return { kind: 'invalid', reason: 'invalid_or_duplicate_task_identity' };
+    }
+    taskIds.add(task.instanceId);
   }
   const grade = readGradeMap(dir, arm);
   const perTask = mergeResolved(run.perTask ?? [], grade);
   const summary = summarizePreservedRun(run, perTask);
   const coordRates = substrateSignalRates(run.coordEvents ?? [], perTask.length);
-  return { id, run, perTask, summary, coordRates };
+  return { kind: 'valid', detail: { id, run, perTask, summary, coordRates } };
+}
+
+export function readPreservedRun(id: string, baseDir = defaultBenchResultsDir()): PreservedRunDetail | null {
+  const inspection = inspectPreservedRun(id, baseDir);
+  return inspection.kind === 'valid' ? inspection.detail : null;
 }

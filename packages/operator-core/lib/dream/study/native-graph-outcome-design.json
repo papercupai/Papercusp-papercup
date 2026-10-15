@@ -1,0 +1,17 @@
+{
+  "version": "native-graph-outcome-v1",
+  "utility": {
+    "version": "dream-utility-v1",
+    "qualified": "Unique behavioral family, source-verified contributions, concrete beneficiary, feasible independently reviewed falsifier; scoped novelty only.",
+    "outcome": "Verified beneficial executed experiment; an unexecuted hypothesis is not a successful change.",
+    "leadingMetric": "unique-qualified-families / fully-attributed-discovery-usd",
+    "outcomeMetric": "verified-beneficial-experiments / (discovery-usd + experiment-usd)",
+    "time": "Report engineer/reviewer minutes separately; do not invent a dollar conversion.",
+    "decision": "inconclusive until replicated benefit; exploratory evidence never selects an automatic winner"
+  },
+  "blinding": "Remove treatment, model, run identifiers and original reviewer verdict before independent assessment; retain source citations and the executable falsifier.",
+  "execution": "Execute the accepted falsifier in the project test framework. Count benefit only with observed baseline/control and intervention outcomes plus independent assessment.",
+  "duplicates": "Group behavioral families before counting. An existing integration or refinement is not a novel family.",
+  "accounting": "Attribute indexing, retrieval, generation, review, verification and experiment costs, failed attempts and reservations to both treatments; record engineer and reviewer minutes separately.",
+  "decision": "Report paired exploratory observations. Missing, unequal or unexecuted outcomes remain inconclusive; proposal volume and reviewer acceptance cannot establish benefit."
+}

@@ -42,6 +42,7 @@ import {
   unresolvedPathsInCompletion,
   workspaceQualifiedCompletionPathHint,
 } from './complete';
+import { coerceCompletionShape } from './completion-coerce';
 import {
   CompletionVerificationEvidenceSchema,
   type CompletionVerificationEvidence,
@@ -49,6 +50,7 @@ import {
 
 const ROOT = '/repo';
 const SIDESTAGE_ROOT = '/hives/sidestage';
+const PORTAL_ROOT = '/hives/portal';
 
 /** The pretend tree — absolute paths, mirroring the real ones from the measured incident. */
 const TREE = new Set<string>([
@@ -58,10 +60,12 @@ const TREE = new Set<string>([
   '/repo/packages/operator-core/lib/scheduler/claim-spec.ts',
   '/repo/packages/operator-core/lib/agent-tools/work_items',
   '/repo/packages/operator-core/lib/agent-tools/work_items/create.test.ts',
+  '/repo/packages/operator-core/lib/voice-engines/elevenlabs-conv.ts',
   '/repo/libs/papercusp/libs/db/sql',
   '/repo/libs/papercusp/libs/db/sql/790-expose-goal-id-on-engineer-issues-view.sql',
   `${SIDESTAGE_ROOT}/apps/api/src/auction/auction.service.ts`,
   `${SIDESTAGE_ROOT}/apps/api/src/app.module.ts`,
+  `${PORTAL_ROOT}/apps/host/src/papercup-chat.ts`,
   '/another-repo/only-there.ts',
 ]);
 
@@ -137,6 +141,29 @@ describe('unresolvedPathsInCompletion — FIRES on a fabricated path', () => {
     // The ORIGINAL declared path is reported, not the stripped candidate — a successor
     // re-reading the completion must see exactly what the closer wrote.
     expect(got?.missing[0]?.path).toBe('repo/totally/made/up/nowhere.ts');
+  });
+});
+
+// WI-10005684 (EI-23774140426573307) recurrence guard: a truthful "no files changed" SENTENCE used to be
+// comma-split into fabricated "paths", so this very check accused an honest close of fabricating evidence.
+// Run the REAL coercion, then the REAL path check, so neither half can regress alone.
+describe('unresolvedPathsInCompletion — a path-free negation sentence is the empty set, not fabricated paths (WI-10005684)', () => {
+  const NEGATION = 'None. This is a not-a-defect close, no source, test, or config file was modified.';
+  const filesChangedOf = (raw: string): string[] => {
+    const coerced = coerceCompletionShape({ summary: 's', filesChanged: raw }) as { filesChanged: string[] };
+    return coerced.filesChanged;
+  };
+
+  it('the negation sentence coerces to [] and the unresolved-path check stays silent', () => {
+    const filesChanged = filesChangedOf(NEGATION);
+    expect(filesChanged).toEqual([]);
+    expect(unresolvedPathsInCompletion(ev(filesChanged), probe)).toBeUndefined();
+  });
+
+  it('CONTROL: the same lead naming a missing path still coerces to that path and the check still fires', () => {
+    const filesChanged = filesChangedOf('None, but I did edit packages/operator-core/lib/agent-tools/issues-engineer.ts');
+    expect(filesChanged).toContain('but I did edit packages/operator-core/lib/agent-tools/issues-engineer.ts');
+    expect(unresolvedPathsInCompletion(ev(filesChanged), probe)?.missing.length).toBeGreaterThan(0);
   });
 });
 
@@ -254,6 +281,17 @@ describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)'
 });
 
 describe('unresolvedPathsInCompletion — multiple checkout integrity', () => {
+  it('resolves bare primary paths alongside explicitly sibling-qualified paths', () => {
+    const got = unresolvedPathsInCompletion(
+      ev([
+        'packages/operator-core/lib/voice-engines/elevenlabs-conv.ts',
+        'portal/apps/host/src/papercup-chat.ts',
+      ]),
+      { ...probe, repoRoots: [ROOT, PORTAL_ROOT] },
+    );
+    expect(got).toBeUndefined();
+  });
+
   it('does not combine partial matches from different repositories into one false green', () => {
     const got = unresolvedPathsInCompletion(ev(['packages/operator-core/lib/issues-engineer.ts', 'only-there.ts']), {
       ...probe,

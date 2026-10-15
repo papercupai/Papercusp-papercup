@@ -1,0 +1,174 @@
+{
+  "schemaVersion": "p011-query-checkpoints-source-qualification-v1",
+  "workItem": "WI-10006124",
+  "parent": "WI-10004890",
+  "blockingIncident": "EI-25181611831349662",
+  "status": "source-verified-current-build-acceptance-open",
+  "reuse": "Extended existing maintained collector, independent raw reader and host-global resource routing. No new tool, service, configuration or telemetry table.",
+  "verification": {
+    "collector": {
+      "testRunId": 20772280,
+      "passed": 61,
+      "optInSkipped": 1,
+      "log": "/tmp/su-7db4f-p011-query-checkpoints-guards-r3.log"
+    },
+    "independentReader": {
+      "testRunId": 20771172,
+      "passed": 283,
+      "optInSkipped": 4,
+      "log": "/tmp/su-7db4f-p011-query-checkpoints-guards-r2.log"
+    },
+    "preservedIntermediateFailure": {
+      "testRunId": 20771159,
+      "status": "fail",
+      "reason": "New terminal validation was placed before resource publication; existing recurrence guard rejected missing failed brackets."
+    },
+    "typecheck": {
+      "samplerAndReaderFiles": 2,
+      "lockFiles": 3,
+      "errorCount": 0,
+      "engine": "tsc-service",
+      "semanticCheckIncomplete": false
+    },
+    "lockDomainUnit": {
+      "testRunId": 20775551,
+      "passed": 36,
+      "skipped": 0
+    },
+    "realPgExclusion": {
+      "testRunId": 20775556,
+      "passed": 4,
+      "skipped": 0,
+      "procedure": "A shared staging-server or cooldown lease in one supplied caller tree blocks guardResource's exclusive body from a second caller tree. Private PG coordination domain isolates the production service."
+    },
+    "executedSourceGraph": "unknown; named-source fences only"
+  },
+  "samplerChange": {
+    "observation": "Metadata-only sample after each pair of completed responses; persist raw during checkpoints before validation.",
+    "conservation": "Join exact request/query/process/build tuples from independently fenced raw checkpoints and the final ring; deduplicate exact repeats and reject changed tuples.",
+    "accounting": "Per-pool totalRecorded, retained, dropped and capacity; all-query counters do not identify an unseen request.",
+    "measuredWriterGuard": "Real FIFO writer: two selected query records then thirty-two unrelated results yields totalRecorded34/retained32/dropped2 and no selected terminal rows.",
+    "resourceDefinition": "Serial PSS and cumulative V8 deltas include observer work. They are not paired physical or native allocation savings."
+  },
+  "failedCurrentBuildRun": {
+    "testRunId": 20772927,
+    "status": "fail",
+    "requests": 0,
+    "windowCount": 0,
+    "raw": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r4-2026-10-05.json",
+    "reason": "ECONNREFUSED :3170 during deliberate staging-sync restart; no post-change workload acceptance was measured.",
+    "cleanup": "No target inspectors opened; old failure retained byte-for-byte."
+  },
+  "stagingLeaseIncident": {
+    "auditRef": "restart-muvucmco-gdnh7s",
+    "actor": "28dbf719-6c0e-4f42-a0d2-56d6be156634",
+    "reason": "staging-sync advanced d2a53e11 to 49b3ce42",
+    "sharedLease": {
+      "lockId": "f0d1140c-2d28-40e7-ac2b-0e69730611ea",
+      "grantedAt": "2026-10-05T22:47:33.945Z",
+      "expiresAt": "2026-10-05T22:52:33.945Z",
+      "releasedAfterFailure": true
+    },
+    "lifecycle": {
+      "requestAt": "2026-10-05T22:47:52Z",
+      "stopAt": "2026-10-05T22:48:30Z",
+      "oldPid": 1731718,
+      "oldStartTicks": "2678176",
+      "exitAt": "2026-10-05T22:48:38Z",
+      "newPid": 3908976,
+      "readyAt": "2026-10-05T22:50:03Z"
+    },
+    "registryRead": {
+      "stagingServer": "tree-default",
+      "stagingCooldown": "tree-default"
+    },
+    "rootCause": "resourceLockDomain selected the executing repository tree for one physical staging server. The shared caller and immutable staging generation used different trees. Existing tests explicitly asserted that exclusion, so they missed the mutual-exclusion defect.",
+    "durableFix": "Add staging-server and staging-server-cooldown to existing HOST_GLOBAL_RESOURCES. Add real-PG shared-probe versus exclusive-restart guard across caller trees.",
+    "runtimeAcceptance": "Containing staging runtime now verified; effective lease exclusion and corrected serving cohort remain open. Earlier absent-source read preceded the owned refresh."
+  },
+  "limitations": [
+    "Original R3 fourteen missing HTTP/query relations remain unknown; the new FIFO guard does not retroactively identify their cause.",
+    "No new completed corrected serving cohort or independent frozen R4 acceptance exists.",
+    "Real worker clones, physical/native ownership and savings, all eight sources, full executed graph, full P011/D021 and shipment remain open.",
+    "Pending native-origin owner question and historical owner-source audit are unchanged.",
+    "LIVE_GATE_OPS remains peer-held; no gate action was taken."
+  ],
+  "currentBuild": {
+    "builderExitCode": 0,
+    "buildSha": "4a36c9692a",
+    "pid": 613219,
+    "startTicks": "3059513",
+    "healthOk": true,
+    "containsChange": true,
+    "containmentMethod": "blob",
+    "candidateSourceEqualsCurrent": true,
+    "otherToolRuntime": {
+      "runtime": "bg-host",
+      "buildSha": "e4478d8f5c",
+      "containsChange": false
+    },
+    "next": "Use containing staging MCP for a shared lease, then one fresh R5 and independent raw reader; preserve failed R4."
+  },
+  "receiptLinks": [
+    {
+      "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "bytes": 111988,
+      "sha256": "d877581f779734ca802319304e8e2c4124dd086793af3b9b522ae2dfce333fdb"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 137465,
+      "sha256": "4935bd6c3d39802f91e8d548a6aac6cfe1633d8a646e894bc7e15e35d0b7bc9e"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/coordination-domain.ts",
+      "bytes": 18909,
+      "sha256": "f75762f4045cf2d699361ae2cc1b8350569c1c2fca849acfced89c893880e732"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/coordination-domain.test.ts",
+      "bytes": 18541,
+      "sha256": "8b5ebd1418a82bab91e2369dddb19d77d3c3f1838bcf99c34566c52a9c753c3c"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/__tests__/resource-lock-guard.integration.test.ts",
+      "bytes": 5636,
+      "sha256": "7a327be38db6424396ffd081f6321e5609d818e4843625d148d0f0f375a97d3d"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r4-2026-10-05.json",
+      "bytes": 1847,
+      "sha256": "b44c6149f762d81de4fb76bbc6a7c02d89d7764eaca4a85c7937671c7eecb3d5"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-query-checkpoints-guards-r1.log",
+      "bytes": 15903,
+      "sha256": "232054f26448e2a2fb65837abc7902e86d4e1a5470a32d72833424f9325bfec6"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-query-checkpoints-guards-r2.log",
+      "bytes": 9373,
+      "sha256": "24d76d3b34b6bb143aa154e6f1e9223d8dd7c609d5da218017d9166d667a8c9e"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-query-checkpoints-guards-r3.log",
+      "bytes": 5254,
+      "sha256": "f1ab7cf573ed3d4ed4aa12c73a1ed953d0fb12a1a04e308c9dfd1b3eb7a2bb4a"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-shared-worker-window-r4.log",
+      "bytes": 33694,
+      "sha256": "2adf82116090118b89f3cae394633cc6374d014f70fe8bffd08b43923ab499d9"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-lease-domain-r2.log",
+      "bytes": 8474,
+      "sha256": "af9bb0772945c5c6af311432aea5c98c8bd1e6ce3a9d8ca8c612320642eeb0e4"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-lease-domain-refresh-r1.log",
+      "bytes": 14496,
+      "sha256": "5117341307eaf91f11e13a137942c4252642fa307048094141e41132ce444b43"
+    }
+  ]
+}

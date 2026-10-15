@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-4 live drill with no hand classification and no wake intervention: the BD015 Slack bug report travelled the installed Cupboard slack + bug-triage packages to one Asana task, classified and filed by the named executor bug-triage on bg-host pid 4113181 (started 2026-10-13T12:16:58Z, tree c4f47f8534)",
+  "framework": "operational",
+  "command": [
+    "Real Slack post into channel C0C8836LU5C at 2026-10-13T12:30:21.298Z (ts 1791894621.145369, client_msg_id 7c1d2e3f-4a5b-4c6d-bd15-202610131232) through the drill reporter account (auth.test team T0C4WJSCV9V, user U0C8BMMPPBQ), not the system bot; script .papercusp/scratch/su-0dd6b-bd015-post.sh.",
+    "Classification: NOT by the implementer. Trigger run 7a3cf424-0eba-4ea6-9441-f16736fa9fce (binding 209f8c45, action.execution agentName bug-triage) created plan run 1349 and assigned WI-6554700010009998 to the named executor; its dispatch wake (delivery 742756) opened the executor's turn with no manual wake. The executor (su-76e39e39) called triggers:read-payload { planRunId: 1349 } at 12:31:10.266Z and ticket:file at 12:31:28.457Z, both served by port-3170 build c4f47f8534 (harness_shared.tool_invocations).",
+    "Measurement: readTriggerPackDrillRows + assessTriggerPackDrill from packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts (tested by trigger-pack-drill-evidence.test.ts), run as .papercusp/scratch/p008-bd015-drill-measure.mts against the operator database (DATABASE_URL of the bg-host process), output .papercusp/scratch/p008-bd015-drill-measure-out.json."
+  ],
+  "startedAt": "2026-10-13T12:32:45.799Z",
+  "finishedAt": "2026-10-13T12:32:45.868Z",
+  "exitCode": 0,
+  "summary": "Instrument verdict pass on 5 of 5 checks. Slack message ts 1791894621.145369 in C0C8836LU5C arrived on source f0566e25 (kind slack) through the installed slack package's provider setup, fired exactly one run (7a3cf424-0eba-4ea6-9441-f16736fa9fce, succeeded, plan run 1349) from installed binding 209f8c45, produced exactly one Asana task 1219450249156150 in project 1219381686283984, and the in-app binding 7c3c95c0 stayed silent.",
+  "assertions": [
+    {
+      "id": "package-socket-path",
+      "passed": true,
+      "evidence": "source f0566e25-ec24-4c51-8388-74ebf49fb6fc: kind slack (expected slack), credential_ref provider-setup:slack, status connected, last_error null"
+    },
+    {
+      "id": "chat-message-recorded",
+      "passed": true,
+      "evidence": "1 run(s) on the installed binding carry dedupe prefix connector:f0566e25-ec24-4c51-8388-74ebf49fb6fc:chat-message:C0C8836LU5C:1791894621.145369:"
+    },
+    {
+      "id": "one-run-from-installed-binding",
+      "passed": true,
+      "evidence": "binding 209f8c45-2d5a-48ed-8b82-78ec6f0148a0 (plan bug-triage, installation 2e0593bb-17cc-4f27-bb68-5ef62cc9ea3c, armed true, channels [C0C8836LU5C]): 1 run(s) in window; 7a3cf424-0eba-4ea6-9441-f16736fa9fce succeeded, minted 1, replayed false, planRunId 1349"
+    },
+    {
+      "id": "one-ticket-in-chosen-project",
+      "passed": true,
+      "evidence": "ticket created 1219450249156150 in container 1219381686283984; installation destination 1219381686283984"
+    },
+    {
+      "id": "in-app-path-silent",
+      "passed": true,
+      "evidence": "in-app binding 7c3c95c0-fc75-4832-b66c-c493fefea789 (plan slack-classify-bug-2026-10-08) armed false; 0 run(s) in window"
+    }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": [
+    "P-007"
+  ],
+  "specs": [
+    "SPEC-R-4-P-007"
+  ],
+  "evidencePlane": "live",
+  "instrument": {
+    "path": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts",
+    "testPath": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.test.ts"
+  },
+  "drill": {
+    "workspaceId": "papercusp-workspace",
+    "sourceKind": "slack",
+    "channelId": "C0C8836LU5C",
+    "messageId": "1791894621.145369",
+    "sourceId": "f0566e25-ec24-4c51-8388-74ebf49fb6fc",
+    "installedBindingId": "209f8c45-2d5a-48ed-8b82-78ec6f0148a0",
+    "inAppBindingId": "7c3c95c0-fc75-4832-b66c-c493fefea789",
+    "windowStart": "2026-10-13T12:29:21.298Z",
+    "windowEnd": "2026-10-13T13:05:21.298Z"
+  },
+  "ticket": {
+    "containerId": "1219381686283984",
+    "externalRef": "1219450249156150",
+    "url": "https://app.asana.com/1/1219197493738449/project/1219381686283984/task/1219450249156150"
+  },
+  "executor": {
+    "agentName": "bug-triage",
+    "session": "su-76e39e39-7078-4dc8-b9b5-19336aa5fac7",
+    "workItem": "WI-6554700010009998",
+    "readPayloadAt": "2026-10-13T12:31:10.266Z",
+    "ticketFileAt": "2026-10-13T12:31:28.457Z",
+    "servingHost": "port-3170",
+    "servingBuild": "c4f47f8534"
+  },
+  "supersedes": "docs/evidence/cupboard-distributable-integrations-2026-10-10/p008-bd012-drill-assessment.json for AUTO-BAR-R-4-P-007 currency only: BD012 stays the record of the 08:16Z run, but its bg-host process (pid 179292) ended at the 10:07Z stale-executor watchdog restart, so its live proof is environment-stale.",
+  "limitations": [
+    "The Slack message was posted by an inline one-shot script, not a committed sender; the instrument measures what the platform recorded after delivery, not the posting.",
+    "The executor session su-76e39e39 was launched by the implementer at 12:22Z through capability:launch-agent (claude, account auto) with a brief to adopt the agent name bug-triage and work its assigned items. Earlier executors had ended: su-5c17f739 (reaped 09:07Z) and su-608d73b4 (a codex launch that exited after its first turn, WI-6554700010009992).",
+    "Two earlier posts in this bg-host lifetime are not this evidence: BD013 (ts 1791893912.738819) failed dispatch with target_absent because the named executor was the exited codex session, and BD014 (ts 1791894338.747939) did file a ticket (plan run 1348) but its 35-minute window also contains this run, so the instrument cannot attribute one run to it.",
+    "Correction: the BD015 message text overstated its defect. It said the dispatch wake for plan run 1348 was settled without opening a turn; in fact the executor did run a turn for it (ticket filed 12:29:52Z). What is real is the ledger row (delivery 742499: last_error caught up at turn-end cursor settle, no turn_started_at). The retraction is recorded on WI-6554700010009881 and WI-6554700010009998. This does not change what the instrument measured: the routing, classification and filing path.",
+    "The executor must be connected to a build that serves ticket:file (here :3170, c4f47f8534). An executor connected to :3070 (green main d740fc3802) gets unknown_tool; tracked as EI-25837118762007088.",
+    "The window end was later than the measurement time; the in-app-path-silent check covers only rows present when the instrument ran.",
+    "The Asana task identity comes from the trigger run's recorded ticket filing; the instrument does not query Asana's API.",
+    "This drill posted in the chosen channel, so it does not exercise the non-chosen-channel case; that case is guarded by the ticket.ts channel check and its integration test."
+  ]
+}

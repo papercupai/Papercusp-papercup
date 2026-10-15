@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { BWRAP_USERNS_GRANT_FUNCTION } from './bwrap-userns-grant';
+import { ZRAM_GENERATOR_APT_PACKAGE, ZRAM_SWAP_FUNCTION } from './zram-swap';
 import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
@@ -18,8 +19,11 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_SHARED_CHECKS,
   WORKSPACE_HOST_MODELS,
   WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_BOOTC_RUNTIME_READ_GROUP,
   WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   WORKSPACE_HOST_BOOTC_RELEASE_REGISTRY_SCOPE_PATH,
+  WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET,
+  WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL,
   WORKSPACE_HOST_BOOTSTRAP_STAGED_PREFIX,
   WORKSPACE_HOST_UPDATE_MODE_BY_MODEL,
   workspaceHostBootstrapChecks,
@@ -28,6 +32,7 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
   WORKSPACE_HOST_AGENT_NODE_SHA256,
   WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
+  customerTscServiceInstallLines,
   WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT,
   WORKSPACE_HOST_AGENT_NODE_VERSION,
   WORKSPACE_HOST_OLLAMA_SHA256,
@@ -51,6 +56,7 @@ import {
   parseWorkspaceHostReadelfNeeded,
   parseWorkspaceHostBootstrapAttestation,
   validateWorkspaceHostBootstrapAttestation,
+  workspaceHostBootcPinnedImageRef,
   type WorkspaceHostBootstrapAttestation,
   type WorkspaceHostBootstrapInput,
 } from "./workspace-host-bootstrap";
@@ -285,7 +291,14 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
     expect(script).toContain('install -m 0755 -o root -g root -- "$CLAUDE_REAL" "$TOOLCHAIN_NEXT/bin/claude"');
     expect(script).toContain('ln -s /usr/local/bin/omp "$TOOLCHAIN_NEXT/bin/omp"');
     const section = script.slice(toolchainAt, script.indexOf('customer agent toolchain path exposes the platform agent home'));
-    expect(section).not.toContain('RELEASE_DIR/');
+    // The ONLY release-tree reads are D-031's two heavy-admission scripts, COPIED root-owned
+    // by `install` (never linked, so the customer never needs to read the release tree).
+    const releaseLines = section.split('\n').filter((line) => line.includes('RELEASE_DIR/'));
+    expect(releaseLines.length).toBeGreaterThan(0);
+    for (const line of releaseLines) {
+      expect(line).toMatch(/^\s*(if \[\[ -f "\$RELEASE_DIR\/scripts\/heavy-admission\.cjs" && -f "\$RELEASE_DIR\/scripts\/pc-heavy\.sh" \]\]; then|install -m 0\d{3} -o root -g root -- "\$RELEASE_DIR\/scripts\/(heavy-admission\.cjs|pc-heavy\.sh)" "\$TOOLCHAIN_NEXT\/lib\/heavy-admission\/[a-z.-]+")$/);
+    }
+    expect(section).not.toMatch(/ln -s[^\n]*RELEASE_DIR/);
     expect(section).toContain('chown -R -h root:root -- "$TOOLCHAIN_NEXT"');
     expect(section).toContain('die "customer agent toolchain would publish an agent credential file"');
     // Swapped in whole, never edited in place.
@@ -301,6 +314,91 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
 
     const syntax = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
     expect(syntax.status, syntax.stderr).toBe(0);
+  });
+
+  // WI-10005296 (D-031 ruling 2): the toolchain carries the heavy-job admission pair when the
+  // release has both files, inside the staged toolchain (so the credential scan and the root
+  // chown/chmod cover it), and the log says which way it went.
+  it('publishes the heavy-job admission pair into the staged toolchain only when the release carries both', () => {
+    const script = buildWorkspaceHostBootstrap(input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }));
+    const guard = script.indexOf('if [[ -f "$RELEASE_DIR/scripts/heavy-admission.cjs" && -f "$RELEASE_DIR/scripts/pc-heavy.sh" ]]; then');
+    expect(guard).toBeGreaterThan(script.indexOf('TOOLCHAIN_NEXT="$TOOLCHAIN_ROOT.next"'));
+    expect(guard).toBeLessThan(script.indexOf('chown -R -h root:root -- "$TOOLCHAIN_NEXT"'));
+    expect(script).toContain('"$TOOLCHAIN_NEXT/lib/heavy-admission/heavy-admission.cjs"');
+    expect(script).toContain('install -m 0755 -o root -g root -- "$RELEASE_DIR/scripts/pc-heavy.sh" "$TOOLCHAIN_NEXT/lib/heavy-admission/pc-heavy.sh"');
+    expect(script).toContain('PAPERCUSP_HEAVY_ADMISSION status=installed');
+    expect(script).toContain('PAPERCUSP_HEAVY_ADMISSION status=absent');
+  });
+
+  // WI-10005362: the shared typecheck service's user template units, written by the real lines
+  // into a temp unit dir against a fake /proc/meminfo (root-only install/chown shimmed).
+  describe('shared typecheck service template units', () => {
+    function runLines(memTotalKiB: number, preexisting = false) {
+      const dir = mkdtempSync(join(tmpdir(), 'tsc-units-'));
+      const unitDir = join(dir, 'user');
+      const meminfo = join(dir, 'meminfo');
+      writeFileSync(meminfo, `MemTotal:       ${memTotalKiB} kB\nMemFree:        1 kB\n`);
+      if (preexisting) {
+        mkdirSync(unitDir);
+        writeFileSync(join(unitDir, 'papercusp-tsc-service@.socket'), 'old');
+        writeFileSync(join(unitDir, 'papercusp-tsc-service@.service'), 'old');
+      }
+      const script = [
+        'set -euo pipefail',
+        'install() { mkdir -p -- "${@: -1}"; }',
+        'chown() { :; }',
+        'TOOLCHAIN_ROOT=/usr/local/lib/papercusp-agent-toolchain',
+        ...customerTscServiceInstallLines({ unitDir, meminfo }),
+      ].join('\n');
+      const run = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+      const read = (name: string) => {
+        try {
+          return readFileSync(join(unitDir, name), 'utf8');
+        } catch {
+          return null;
+        }
+      };
+      const out = { run, socket: read('papercusp-tsc-service@.socket'), service: read('papercusp-tsc-service@.service') };
+      rmSync(dir, { recursive: true, force: true });
+      return out;
+    }
+
+    it('installs a per-checkout socket + service sized from host RAM on a 64 GB host', () => {
+      const { run, socket, service } = runLines(65_843_000);
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain('PAPERCUSP_TSC_SERVICE status=installed memoryMaxGiB=15 maxProjects=2');
+      expect(socket).toContain('ListenStream=%t/papercusp-tsc-service-%i.sock');
+      expect(socket).toContain('SocketMode=0600');
+      expect(service).toContain('ExecStart=/usr/local/lib/papercusp-agent-toolchain/bin/node %f/scripts/tsc-service/server.mjs');
+      expect(service).toContain('Environment=PAPERCUSP_TSC_SERVICE_ROOT=%f');
+      expect(service).toContain('ConditionPathExists=%f/scripts/tsc-service/server.mjs');
+      expect(service).toContain('Requires=papercusp-tsc-service@%i.socket');
+      expect(service).toMatch(/^MemoryHigh=13G$/m);
+      expect(service).toMatch(/^MemoryMax=15G$/m);
+      expect(service).toMatch(/^Environment=PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB=11$/m);
+      expect(service).not.toContain('$');
+    });
+
+    it('caps the service at 16 GiB and one project below 56 GiB', () => {
+      expect(runLines(268_435_456).service).toMatch(/^MemoryMax=16G$/m);
+      const small = runLines(33_554_432);
+      expect(small.service).toMatch(/^MemoryMax=10G$/m);
+      expect(small.service).toMatch(/^Environment=PAPERCUSP_TSC_SERVICE_MAX_PROJECTS=1$/m);
+    });
+
+    it('removes previously installed units on a host under 24 GiB, so the operator stops advertising them', () => {
+      const { run, socket, service } = runLines(16_384_000, true);
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain('PAPERCUSP_TSC_SERVICE status=absent reason=host-memory-below-24GiB memTotalGiB=15');
+      expect(socket).toBeNull();
+      expect(service).toBeNull();
+    });
+
+    it('runs after the toolchain is in place, inside the customer toolchain block', () => {
+      const script = buildWorkspaceHostBootstrap(input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }));
+      expect(script.indexOf('PAPERCUSP_TSC_SERVICE status=installed')).toBeGreaterThan(script.indexOf('mv -T -- "$TOOLCHAIN_NEXT" "$TOOLCHAIN_ROOT"'));
+      expect(buildWorkspaceHostBootstrap(input())).not.toContain('PAPERCUSP_TSC_SERVICE status=');
+    });
   });
 
   it('publishes no customer agent toolchain on a host that installs no vendor runtime', () => {
@@ -1327,6 +1425,8 @@ describe('buildWorkspaceHostBootstrap', () => {
     for (const [envVar, dir] of [
       ['PAPERCUSP_SPA_DIST', 'spa'],
       ['PAPERCUSP_DOCS_ROOT', 'internal-docs'],
+      // WI-10004899: the cut packs the doc-vector seed beside the docs it covers.
+      ['PAPERCUSP_DOC_VECTOR_SEED_DIR', 'doc-vector-seed'],
     ] as const) {
       expect(unit).toContain(`Environment=${envVar}=$RUNTIME_ROOT/current/${dir}`);
     }
@@ -1364,15 +1464,414 @@ describe('buildWorkspaceHostBootstrap', () => {
     const switchAt = lines.indexOf('mv -Tf "$RUNTIME_ROOT/current.next" "$RUNTIME_ROOT/current"');
     const reloadAt = lines.indexOf('systemctl daemon-reload');
     const enableAt = lines.indexOf('systemctl enable "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to enable"; }');
-    const restartAt = lines.indexOf('  systemctl restart "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }');
+    const restartAt = lines.indexOf('  if systemctl restart "$SERVICE_NAME.service"; then');
 
     // Calibration: no missing command may pass the ordering assertions through a -1 index.
     expect(switchAt).toBeGreaterThanOrEqual(0);
     expect(reloadAt).toBeGreaterThan(switchAt);
     expect(enableAt).toBeGreaterThan(reloadAt);
     expect(restartAt).toBeGreaterThan(enableAt);
-    expect(lines[restartAt - 1]).toBe('if service_restart_needed; then');
+    // WI-10006110: the restart runs under the in-flight start sampler, and a failed start
+    // carries both the post-mortem and the in-flight diagnostics before dying.
+    expect(lines.slice(restartAt - 3, restartAt)).toEqual([
+      'if service_restart_needed; then',
+      '  start_sampler',
+      '  SERVICE_START_T0=$SECONDS',
+    ]);
+    const elseAt = lines.indexOf('  else', restartAt);
+    expect(lines.slice(elseAt + 1, elseAt + 5)).toEqual([
+      '    stop_sampler',
+      '    service_diagnostics',
+      '    start_diagnostics',
+      '    die "workspace service failed to start"',
+    ]);
     expect(repair).not.toContain('systemctl enable --now "$SERVICE_NAME.service"');
+  });
+
+  /**
+   * WI-10006110 / chain10: once the bootc service started, attest-health died on 'runtime release
+   * tree must not be world-readable'. The bootc image keeps executables a+rx on purpose
+   * (embedded-postgres checks all 0555 bits) and carries confidentiality on its 0750 parents, so
+   * the ubuntu predicate can never pass there. The bootc render must assert that contract
+   * instead, and still refuse every other world-readable shape.
+   */
+  it('keeps the bootc agent identity in exactly the runtime-read group the image declares (WI-10006173)', () => {
+    // The image is the source of truth: sysusers.conf makes the agent a member of the group that
+    // owns the 0750 /opt/papercusp parents, and host-prepare re-verifies it every boot. Clearing
+    // the agent's supplementary groups (the ubuntu shape) left bin/claude unexecutable on bootc.
+    const sysusers = readFileSync(
+      new URL('../../../../infra/images/bootc/papercusp-sysusers.conf', import.meta.url),
+      'utf8',
+    );
+    const declared = sysusers
+      .split('\n')
+      .map((l) => l.trim().split(/\s+/))
+      .filter((f) => f[0] === 'm' && f[1] === DEFAULT_WORKSPACE_HOST_AGENT_USER)
+      .map((f) => f[2]);
+    expect(declared).toEqual([WORKSPACE_HOST_BOOTC_RUNTIME_READ_GROUP]);
+
+    const agentUsermod = (script: string) =>
+      script.split('\n').filter((l) => /^usermod\b/.test(l) && l.endsWith('"$AGENT_USER"'));
+    const bootc = agentUsermod(buildWorkspaceHostBootstrap(bootcInput()));
+    const ubuntu = agentUsermod(buildWorkspaceHostBootstrap(input()));
+    expect(bootc).toHaveLength(1);
+    expect(ubuntu).toHaveLength(1);
+    expect(ubuntu[0]).toContain('--groups ""');
+    expect(bootc[0]).not.toContain('--groups ""');
+
+    // Run the rendered line against a recording usermod: the argv must carry the declared group
+    // as the value of --groups, so the shell quoting cannot silently drop it.
+    const dir = mkdtempSync(join(tmpdir(), 'wh-agent-groups-'));
+    try {
+      const log = join(dir, 'argv');
+      writeFileSync(join(dir, 'usermod'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(log)}\n`);
+      chmodSync(join(dir, 'usermod'), 0o755);
+      const script = [
+        `PATH=${JSON.stringify(dir)}:$PATH`,
+        'AGENT_GROUP=papercusp-agent AGENT_HOME=/home/papercusp-agent AGENT_USER=papercusp-agent',
+        bootc[0],
+      ].join('\n');
+      const run = spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 10_000 });
+      expect(run.status).toBe(0);
+      const argv = readFileSync(log, 'utf8').trim().split('\n');
+      expect(argv[argv.indexOf('--groups') + 1]).toBe(declared.join(','));
+      expect(argv.at(-1)).toBe('papercusp-agent');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // WI-10006258: the first bootc host to reach the hosted-PTY loopback was refused
+  // `Permission denied (publickey)` and the die path carried no evidence of why.
+  const shellFunction = (script: string, name: string): string => {
+    const lines = script.split('\n');
+    const start = lines.findIndex((l) => l === `${name}() {`);
+    expect(start, `${name}() is rendered`).toBeGreaterThanOrEqual(0);
+    const end = lines.findIndex((l, i) => i > start && l === '}');
+    return lines.slice(start, end + 1).join('\n');
+  };
+  const withStubs = (stubs: Record<string, string>, body: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'wh-stubs-'));
+    try {
+      for (const [name, sh] of Object.entries(stubs)) {
+        writeFileSync(join(dir, name), `#!/bin/sh\n${sh}\n`);
+        chmodSync(join(dir, name), 0o755);
+      }
+      return spawnSync('bash', ['-c', `set -euo pipefail\nPATH=${JSON.stringify(dir)}:$PATH\n${body}`], {
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('dumps the boot AVC denials on every die on an SELinux host, and stays silent without SELinux (WI-10006258)', () => {
+    const script = buildWorkspaceHostBootstrap(bootcInput());
+    const die = script.split('\n').find((l) => l.startsWith('die() {'));
+    expect(die).toContain('selinux_denials >&2');
+    const prelude = [
+      'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }',
+      shellFunction(script, 'selinux_denials'),
+      die,
+      'die "hosted customer PTY loopback authentication or isolation failed"',
+    ].join('\n');
+    const avc = 'type=AVC msg=audit(1): avc:  denied  { read } for comm="sshd-session" name="authorized_keys" tcontext=system_u:object_r:user_home_dir_t:s0';
+    const enforcing = withStubs(
+      { selinuxenabled: 'exit 0', journalctl: `printf '%s\\n' 'noise' '${avc}'` },
+      prelude,
+    );
+    expect(enforcing.status).toBe(1);
+    expect(enforcing.stderr).toContain('ERROR: hosted customer PTY loopback authentication or isolation failed');
+    expect(enforcing.stderr).toContain('--- SELinux denials this boot ---');
+    expect(enforcing.stderr).toContain('name="authorized_keys"');
+    expect(enforcing.stderr).not.toContain('noise');
+
+    const ubuntu = withStubs({ selinuxenabled: 'exit 1', journalctl: `printf '%s\\n' '${avc}'` }, prelude);
+    expect(ubuntu.status).toBe(1);
+    expect(ubuntu.stderr).not.toContain('SELinux denials');
+  });
+
+  it('relabels the workspace .ssh to the policy default on SELinux hosts, logging both labels (WI-10006258)', () => {
+    const lines = buildWorkspaceHostBootstrap(bootcInput()).split('\n');
+    const write = lines.findIndex((l) => l.includes('base64 -d > "/home/$WORKSPACE_USER/.ssh/authorized_keys"'));
+    const ptyKey = lines.findIndex((l) => l.includes('>> "/home/$WORKSPACE_USER/.ssh/authorized_keys"'));
+    // The hosted PTY key directory has its own SELinux block earlier in harden-os (WI-10006903),
+    // so find the guard that follows the ~/.ssh writes rather than the first one in the script.
+    const guard = lines.findIndex(
+      (l, i) => i > ptyKey && l === 'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then',
+    );
+    const restore = lines.findIndex((l) => l.includes('restorecon -RF "/home/$WORKSPACE_USER/.ssh"'));
+    const dropIn = lines.findIndex((l) => l.startsWith('cat > /etc/ssh/sshd_config.d/'));
+    // After every write into ~/.ssh, before sshd is reconfigured.
+    expect(write).toBeGreaterThan(0);
+    expect(ptyKey).toBeGreaterThan(write);
+    expect(guard).toBeGreaterThan(ptyKey);
+    expect(restore).toBe(guard + 2);
+    expect(dropIn).toBeGreaterThan(restore);
+
+    const block = lines.slice(guard, guard + 5).join('\n');
+    expect(block.split('\n')[4]).toBe('fi');
+    const log = 'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }\ndie() { echo "DIE $1" >&2; exit 1; }';
+    const recorded = withStubs(
+      {
+        selinuxenabled: 'exit 0',
+        restorecon: 'echo "restorecon $*"',
+        stat: 'for p in "$@"; do case "$p" in -*|%*) ;; *) echo "$p=ctx" ;; esac; done',
+      },
+      `WORKSPACE_USER=papercusp-workspace\n${log}\n${block}`,
+    );
+    expect(recorded.status).toBe(0);
+    expect(recorded.stdout).toContain('selinux labels before restorecon: /home/papercusp-workspace=ctx');
+    expect(recorded.stdout).toContain('restorecon -RF /home/papercusp-workspace/.ssh');
+    expect(recorded.stdout).toContain('selinux labels after restorecon:');
+
+    const skipped = withStubs(
+      { selinuxenabled: 'exit 1', restorecon: 'echo "restorecon $*"' },
+      `WORKSPACE_USER=papercusp-workspace\n${log}\n${block}`,
+    );
+    expect(skipped.status).toBe(0);
+    expect(skipped.stdout).not.toContain('restorecon');
+  });
+
+  // WI-10006903: on a bootc host ssh-keygen, started from the bootstrap's initrc_t domain, enters
+  // the confined ssh_keygen_t. Measured on a P-012 AWS host in that exact domain: it was refused
+  // writing the key into a var_lib_t directory (the policy default for this path) and accepted an
+  // ssh_home_t one, so the directory must be registered as an SSH identity directory.
+  it('labels the hosted PTY key directory ssh_home_t before ssh-keygen on SELinux hosts (WI-10006903)', () => {
+    const lines = buildWorkspaceHostBootstrap(bootcInput()).split('\n');
+    const dir = lines.findIndex((l) => l.includes('-m 0700 "$(dirname "$HOSTED_PTY_SSH_KEY")"'));
+    const guard = lines.findIndex(
+      (l, i) => i > dir && l === 'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then',
+    );
+    const end = lines.findIndex((l, i) => i > guard && l === 'fi');
+    const keygen = lines.findIndex((l) => l.includes('ssh-keygen -q -t ed25519') && l.includes('"$HOSTED_PTY_SSH_KEY"'));
+    // Directly after the directory exists, directly before the key is generated into it.
+    expect(dir).toBeGreaterThan(0);
+    expect(guard).toBe(dir + 1);
+    expect(keygen).toBe(end + 1);
+
+    const block = lines.slice(guard, end + 1).join('\n');
+    const prelude = [
+      `STATE_ROOT='${WORKSPACE_HOST_STATE_ROOT}'`,
+      `HOSTED_PTY_SSH_KEY='${WORKSPACE_HOST_HOSTED_PTY_SSH_KEY}'`,
+      'die() { echo "DIE $1" >&2; exit 1; }',
+    ].join('\n');
+    const keyDir = WORKSPACE_HOST_HOSTED_PTY_SSH_KEY.replace(/\/[^/]+$/, '');
+    const run = (stubs: Record<string, string>) =>
+      withStubs({ selinuxenabled: 'exit 0', restorecon: 'echo "restorecon $*"', semanage: 'echo "semanage $*"', ...stubs }, `${prelude}\n${block}`);
+
+    // A fresh host: the policy still maps the directory to var_lib_t, so the rule is registered.
+    const fresh = run({
+      matchpathcon: 'echo "system_u:object_r:var_lib_t:s0"',
+      stat: 'echo "system_u:object_r:ssh_home_t:s0"',
+    });
+    expect(fresh.status, fresh.stderr).toBe(0);
+    const calls = fresh.stdout.trim().split('\n');
+    expect(calls).toEqual([
+      `restorecon -F ${WORKSPACE_HOST_STATE_ROOT}`,
+      `semanage fcontext -a -t ssh_home_t ${keyDir}(/.*)?`,
+      `restorecon -RF ${keyDir}`,
+    ]);
+
+    // A re-run: the rule already exists, so it is not re-added (semanage -a would refuse it).
+    const rerun = run({
+      matchpathcon: 'echo "system_u:object_r:ssh_home_t:s0"',
+      stat: 'echo "system_u:object_r:ssh_home_t:s0"',
+    });
+    expect(rerun.status, rerun.stderr).toBe(0);
+    expect(rerun.stdout).not.toContain('semanage');
+    expect(rerun.stdout).toContain(`restorecon -RF ${keyDir}`);
+
+    // The relabel did not take: fail here, naming the label, not later at ssh-keygen's bare EACCES.
+    const stuck = run({
+      matchpathcon: 'echo "system_u:object_r:var_lib_t:s0"',
+      stat: 'echo "system_u:object_r:var_lib_t:s0"',
+    });
+    expect(stuck.status).not.toBe(0);
+    expect(stuck.stderr).toContain('DIE hosted PTY key directory is not labeled ssh_home_t: system_u:object_r:var_lib_t:s0');
+
+    // No SELinux (Ubuntu): nothing is relabeled.
+    const ubuntu = run({ selinuxenabled: 'exit 1' });
+    expect(ubuntu.status, ubuntu.stderr).toBe(0);
+    expect(ubuntu.stdout).toBe('');
+  });
+
+  it('a refused hosted-PTY loopback prints its sshd evidence before dying (WI-10006258)', () => {
+    const script = buildWorkspaceHostBootstrap(bootcInput());
+    const loopback = script.split('\n').find((l) => l.includes('-l "$WORKSPACE_USER" 127.0.0.1'));
+    expect(loopback).toMatch(
+      /\|\| \{ pty_loopback_evidence >&2; die "hosted customer PTY loopback authentication or isolation failed"; \}$/,
+    );
+    const run = withStubs(
+      {
+        sshd: `printf '%s\\n' 'usepam yes' 'strictmodes yes' 'authorizedkeysfile .ssh/authorized_keys' 'port 22'`,
+        journalctl: `echo 'Authentication refused: bad ownership or modes for directory /var/home/papercusp-workspace'`,
+        getent: 'echo "papercusp-workspace:x:1001:1001::/home/papercusp-workspace:/bin/bash"',
+        passwd: 'echo "papercusp-workspace LK"',
+        stat: 'echo "stat $*"',
+      },
+      `WORKSPACE_USER=papercusp-workspace\n${shellFunction(script, 'pty_loopback_evidence')}\npty_loopback_evidence`,
+    );
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('--- hosted PTY loopback evidence ---');
+    expect(run.stdout).toContain('strictmodes yes');
+    expect(run.stdout).not.toContain('port 22');
+    expect(run.stdout).toContain('Authentication refused: bad ownership');
+    expect(run.stdout).toContain('%C');
+  });
+
+  it('writes the sshd drop-in as 05- so vendor 50- drop-ins cannot override it, and attests X11 off (WI-10006176)', () => {
+    for (const script of [buildWorkspaceHostBootstrap(bootcInput()), buildWorkspaceHostBootstrap(input())]) {
+      const lines = script.split('\n');
+      // sshd keeps the FIRST value per keyword; CentOS 50-redhat.conf sets X11Forwarding yes.
+      const legacy = lines.indexOf('rm -f /etc/ssh/sshd_config.d/60-papercusp-workspace.conf');
+      const dropIn = lines.indexOf('cat > /etc/ssh/sshd_config.d/05-papercusp-workspace.conf <<PAPERCUSP_SSH');
+      expect(legacy).toBeGreaterThan(0);
+      expect(dropIn).toBe(legacy + 1);
+      expect(lines.slice(dropIn, lines.indexOf('PAPERCUSP_SSH', dropIn))).toContain('X11Forwarding no');
+      expect(script).not.toMatch(/cat > \/etc\/ssh\/sshd_config\.d\/60-/);
+      expect(lines).toContain(
+        'grep -Fx "x11forwarding no" <<<"$SSHD_POLICY" >/dev/null || die "SSH X11 forwarding must be off; a vendor sshd drop-in is overriding the workspace policy"',
+      );
+    }
+  });
+
+  it('writes the completion marker to a root-only /var/lib dir, never the read-only bootc runtime root (WI-10006299)', () => {
+    for (const script of [buildWorkspaceHostBootstrap(bootcInput()), buildWorkspaceHostBootstrap(input())]) {
+      const lines = script.split('\n');
+      const dirAssignment = lines.find((l) => l.startsWith('BOOTSTRAP_STATE_DIR='));
+      expect(dirAssignment).toContain('/var/lib/papercusp-bootstrap');
+      // Not $STATE_ROOT (/var/lib/papercusp): the service user owns it and could forge the marker.
+      expect(dirAssignment).not.toMatch(/\/var\/lib\/papercusp\//);
+      expect(lines).toContain('BOOTSTRAP_COMPLETE_MARKER="$BOOTSTRAP_STATE_DIR/complete"');
+      const mkdir = lines.indexOf('install -d -o root -g root -m 0700 "$BOOTSTRAP_STATE_DIR"');
+      const write = lines.indexOf('printf "%s %s\\n" "$BOOTSTRAP_FINGERPRINT" "$BOOT_ID" > "$BOOTSTRAP_COMPLETE_MARKER.next"');
+      expect(mkdir).toBeGreaterThan(0);
+      expect(write).toBe(mkdir + 1);
+      expect(script).not.toContain('$RUNTIME_ROOT/.bootstrap-complete');
+    }
+    // bootc: /opt is part of the immutable image, so nothing may redirect output into $RUNTIME_ROOT.
+    expect(buildWorkspaceHostBootstrap(bootcInput())).not.toMatch(/>\s*"?\$RUNTIME_ROOT/);
+  });
+
+  it('attests bootc runtime confidentiality without refusing the image a+rx executables', () => {
+    const oldShape = '-type f -o -type d \\) -perm -0004';
+    const ubuntuLines = buildWorkspaceHostBootstrap(input()).split('\n');
+    const bootcLines = buildWorkspaceHostBootstrap(bootcInput()).split('\n');
+    const oldGuard = ubuntuLines.find((l) => l.includes(oldShape));
+    const parents = bootcLines.find((l) => l.startsWith('[[ "$(stat -c %a "$RUNTIME_ROOT"'));
+    const tree = bootcLines.find((l) => l.includes('-type f ! -perm /111 \\) \\) -perm -0004'));
+    expect(oldGuard).toBeDefined();
+    expect(bootcLines.some((l) => l.includes(oldShape))).toBe(false);
+    expect(parents).toBeDefined();
+    expect(tree).toBeDefined();
+    expect(parents).toContain('die "runtime release tree must not be world-readable"');
+    expect(tree).toContain('die "runtime release tree must not be world-readable"');
+
+    // A tree shaped like the image (measured on image A r62b): parents 0750, inner dirs 0750,
+    // executables 0755, data 0640, current -> releases/<version>.
+    const runGuards = (guards: string[], mutate: (root: string) => void = () => {}) => {
+      const root = mkdtempSync(join(tmpdir(), 'wh-runtime-perms-'));
+      try {
+        const release = join(root, 'releases', '0.0.21-test');
+        mkdirSync(join(release, 'bin'), { recursive: true });
+        writeFileSync(join(release, 'bin', 'node'), '#!/bin/sh\n');
+        writeFileSync(join(release, 'serve.mjs'), 'export {};\n');
+        symlinkSync('releases/0.0.21-test', join(root, 'current'));
+        for (const d of [root, join(root, 'releases'), release, join(release, 'bin')]) chmodSync(d, 0o750);
+        chmodSync(join(release, 'bin', 'node'), 0o755);
+        chmodSync(join(release, 'serve.mjs'), 0o640);
+        mutate(root);
+        const script = [`RUNTIME_ROOT=${JSON.stringify(root)}`, 'die() { echo "$1" >&2; exit 1; }', ...guards].join('\n');
+        return spawnSync('bash', ['-c', script], { encoding: 'utf8', timeout: 10_000 });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+    const bootcGuards = [parents as string, tree as string];
+    const release = (root: string) => join(root, 'releases', '0.0.21-test');
+
+    // Positive control: the ubuntu predicate rejects the image shape, which is the chain10 failure.
+    expect(runGuards([oldGuard as string]).status).not.toBe(0);
+    expect(runGuards(bootcGuards).status).toBe(0);
+    // Every other world-readable shape is still refused.
+    expect(runGuards(bootcGuards, (r) => chmodSync(join(release(r), 'serve.mjs'), 0o644)).status).not.toBe(0);
+    expect(runGuards(bootcGuards, (r) => chmodSync(join(release(r), 'bin'), 0o755)).status).not.toBe(0);
+    expect(runGuards(bootcGuards, (r) => chmodSync(join(r, 'releases'), 0o755)).status).not.toBe(0);
+    expect(runGuards(bootcGuards, (r) => chmodSync(release(r), 0o751)).status).not.toBe(0);
+    const refused = runGuards(bootcGuards, (r) => chmodSync(r, 0o755));
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain('runtime release tree must not be world-readable');
+  });
+
+  /**
+   * WI-10006110: every AWS bootc clean room died at systemd's DEFAULT 90s start timeout
+   * ("start-post operation timed out") with nothing to say what the server was waiting on,
+   * because service_diagnostics only runs after systemd has killed it. The unit must
+   * declare its own start budget, and the start must be sampled while it is in flight.
+   */
+  it('declares a start budget and samples the service start in flight (WI-10006110)', () => {
+    const script = buildWorkspaceHostBootstrap(input({ action: 'upgrade' }));
+    const lines = script.split('\n');
+    const unitAt = lines.indexOf('cat > "/etc/systemd/system/$SERVICE_NAME.service" <<PAPERCUSP_SERVICE');
+    const unitEnd = lines.indexOf('PAPERCUSP_SERVICE', unitAt + 1);
+    const budgetAt = lines.indexOf('SERVICE_START_TIMEOUT_SEC=600');
+    expect(unitAt).toBeGreaterThanOrEqual(0);
+    expect(budgetAt).toBeGreaterThanOrEqual(0);
+    expect(budgetAt).toBeLessThan(unitAt);
+    expect(lines.slice(unitAt, unitEnd)).toContain('TimeoutStartSec=$SERVICE_START_TIMEOUT_SEC');
+    // chain8: papercusp-health's own 120s default gave up long before the 600s start budget.
+    // Its budget must come from the start budget and stay below it, inside the probe's 1..600.
+    const healthAt = lines.indexOf('SERVICE_HEALTH_TIMEOUT_SEC=$((SERVICE_START_TIMEOUT_SEC - 30))');
+    expect(healthAt).toBeGreaterThan(budgetAt);
+    expect(healthAt).toBeLessThan(unitAt);
+    expect(lines.slice(unitAt, unitEnd)).toContain(
+      'Environment=PAPERCUSP_HEALTH_TIMEOUT_SEC=$SERVICE_HEALTH_TIMEOUT_SEC',
+    );
+    const rendered = spawnSync(
+      'bash',
+      ['-c', [...lines.slice(budgetAt, healthAt + 1), 'echo "$SERVICE_START_TIMEOUT_SEC $SERVICE_HEALTH_TIMEOUT_SEC"'].join('\n')],
+      { encoding: 'utf8', timeout: 5_000 },
+    );
+    const [startBudget, healthBudget] = rendered.stdout.trim().split(' ').map(Number);
+    expect(healthBudget).toBeGreaterThanOrEqual(1);
+    expect(healthBudget).toBeLessThanOrEqual(600);
+    expect(healthBudget).toBeLessThan(startBudget);
+
+    const from = lines.indexOf('START_SAMPLE_LOG=""');
+    const to = lines.indexOf('if service_restart_needed; then');
+    expect(from).toBeGreaterThanOrEqual(0);
+    expect(to).toBeGreaterThan(from);
+    const stateRoot = mkdtempSync(join(tmpdir(), 'wh-start-diag-'));
+    try {
+      writeFileSync(join(stateRoot, 'server.log'), 'embedded-pg: waiting for postmaster\n');
+      const harness = [
+        'set -euo pipefail',
+        `STATE_ROOT=${JSON.stringify(stateRoot)}`,
+        // The AVC dump is shared with die() (WI-10006258) and only speaks on an SELinux host.
+        'selinuxenabled() { return 0; }',
+        shellFunction(lines.join('\n'), 'selinux_denials'),
+        ...lines.slice(from, to),
+        'start_sampler',
+        'sleep 1',
+        'stop_sampler',
+        'start_diagnostics',
+      ].join('\n');
+      const started = Date.now();
+      const run = spawnSync('bash', ['-c', harness], { encoding: 'utf8', timeout: 20_000 });
+      expect(run.status).toBe(0);
+      // The stopped sampler must not hold the caller's output pipe open (its sleep is 10s).
+      expect(Date.now() - started).toBeLessThan(8_000);
+      expect(run.stderr).toContain('--- start samples: first, then last');
+      expect(run.stderr).toMatch(/=== start sample t\+\d+s/);
+      expect(run.stderr).toContain('cpustat cpu');
+      expect(run.stderr).toContain(`## ${join(stateRoot, 'server.log')}`);
+      expect(run.stderr).toContain('embedded-pg: waiting for postmaster');
+      expect(run.stderr).toContain('--- SELinux denials this boot ---');
+    } finally {
+      rmSync(stateRoot, { recursive: true, force: true });
+    }
   });
 
   /**
@@ -2129,7 +2628,7 @@ describe('workspace-host bootstrap attestation', () => {
         bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
         release: {
           version: base.release.version,
-          source: bootcInput().bootc!.image,
+          source: workspaceHostBootcPinnedImageRef(bootcInput().bootc!),
           imageDigest: bootcInput().bootc!.imageDigest,
           signaturePolicyPath: bootcInput().bootc!.signaturePolicyPath,
           signatureVerified: true,
@@ -2184,6 +2683,123 @@ describe('workspace-host bootstrap attestation', () => {
       expect(script).toContain(`@${bootcInput().bootc!.imageDigest}`);
       // …and the symlink swap is gone with it.
       expect(script).not.toContain('$RUNTIME_ROOT/current.next');
+    });
+
+    // WI-10005754: /opt is immutable image content on this model, and D-314 bakes the runtime
+    // root's access as group ownership that papercusp-host-prepare.service only VERIFIES. Any
+    // write under it dies with EROFS on a booted host (the first AWS bootc clean room died here,
+    // in harden-os), and a named-user ACL would also trip host-prepare's refusal.
+    const runtimeRootWrites = (script: string): string[] => {
+      const writer =
+        /(?:^|[;&|(]\s*|\bthen\s+|\bdo\s+|\belse\s+)'?(?:install|setfacl|chown|chmod|chgrp|mkdir|ln|rm|mv|cp|tar|touch|tee)\s/;
+      return script
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('#'))
+        .filter((line) => writer.test(line))
+        .filter(
+          (line) =>
+            line.includes('$RUNTIME_ROOT') ||
+            line.includes('${RUNTIME_ROOT') ||
+            line.includes('/opt/papercusp'),
+        )
+        .map((line) => line.trim());
+    };
+
+    it('never writes the image-provided runtime root (WI-10005754)', () => {
+      const script = buildWorkspaceHostBootstrap(bootcInput());
+      expect(runtimeRootWrites(script)).toEqual([]);
+      expect(script).toContain(
+        'install -d -o root -g "$SERVICE_GROUP" -m 0750 /etc/papercusp',
+      );
+      expect(script).toContain('[[ -d "$RUNTIME_ROOT/releases" ]] || die');
+    });
+
+    // Calibration for the guard above: the bundle model still owns a writable runtime root, so
+    // the SAME detector must flag exactly the two lines the bootc render used to carry. If this
+    // ever comes back empty the detector is blind, and the bootc assertion passes vacuously.
+    it('keeps the runtime-root creation and agent ACL on the bundle model, and the detector sees them (WI-10005754)', () => {
+      const writes = runtimeRootWrites(buildWorkspaceHostBootstrap(input()));
+      expect(writes).toContain(
+        'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
+      );
+      expect(writes).toContain(
+        'setfacl -m "u:$AGENT_USER:r-x" "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases"',
+      );
+    });
+
+    // WI-10005830: on the bootc base `/usr/local` is a real directory inside the read-only `/usr`,
+    // so the first AWS bootc clean room past install-runtime died in configure-service:
+    //   install: cannot create regular file '/usr/local/bin/papercusp-workspace-host-initialize': Read-only file system
+    // The image now links `/usr/local` to machine-local storage. Every OTHER `/usr` path is still
+    // read-only, so the render may write under `/usr/local` (directly or through a conduit
+    // variable) only after asserting that link, and may write nothing else under `/usr`.
+    // `--shell /usr/sbin/nologin` names an existing program; it writes nothing.
+    const usrWrites = (script: string): string[] => {
+      const writer =
+        /(?:^|[;&|(]\s*|\bthen\s+|\bdo\s+|\belse\s+|\|\|\s*)'?(?:install|setfacl|chown|chmod|chgrp|mkdir|ln|rm|mv|cp|tar|touch|tee|useradd)\s/;
+      return script
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('#'))
+        .filter((line) => writer.test(line))
+        .filter((line) => line.replaceAll('--shell /usr/sbin/nologin', '').includes('/usr/'))
+        .map((line) => line.trim());
+    };
+    const outsideUsrLocal = (lines: string[]): string[] =>
+      lines.filter((line) =>
+        (line.replaceAll('--shell /usr/sbin/nologin', '').match(/\/usr\/[^\s"';)]*/g) ?? []).some(
+          (path) => path !== '/usr/local' && !path.startsWith('/usr/local/'),
+        ),
+      );
+    // Everything a bootc host can be asked to install: all three agent runtimes (OMP brings the
+    // ollama runtime, its service account and the customer OMP copy) plus the hosted connector.
+    const fullBootcRender = () =>
+      buildWorkspaceHostBootstrap(
+        bootcInput({
+          agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS],
+          hostedConnector: { controlPlaneOrigin: 'https://app.papercusp.com' },
+        }),
+      );
+    const USR_LOCAL_ASSERTION = `[[ -L /usr/local && "$(readlink -f /usr/local)" == '${WORKSPACE_HOST_BOOTC_USR_LOCAL_TARGET}' ]]`;
+
+    it('writes nothing under read-only /usr except through the machine-local /usr/local link (WI-10005830)', () => {
+      const script = fullBootcRender();
+      expect(outsideUsrLocal(usrWrites(script))).toEqual([]);
+      // The ollama account's home is machine-local on this model: `--create-home` under
+      // /usr/share would die on EROFS exactly like the conduit did.
+      expect(script).toContain(`--home-dir ${WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL['bootc-image']} --create-home`);
+      expect(script).not.toContain(WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL['ubuntu-release-bundle']);
+    });
+
+    it('asserts the /usr/local link in validate-host, before its first write through /usr/local (WI-10005830)', () => {
+      const script = fullBootcRender();
+      const assertion = script.indexOf(USR_LOCAL_ASSERTION);
+      expect(assertion).toBeGreaterThan(script.indexOf(`phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[0]}'`));
+      expect(assertion).toBeLessThan(script.indexOf(`phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[1]}'`));
+      // The conduits are written through shell variables, so find the first write either way.
+      const firstWrite = Math.min(
+        ...[
+          'install -o root -g root -m 0755 /dev/null "$REMOTE_INITIALIZER_CONDUIT"',
+          'install -m 0755 -o root -g root -- "$AGENT_RUNTIME_OMP" /usr/local/bin/omp',
+          '-C /usr/local --exclude=',
+        ].map((needle) => {
+          const at = script.indexOf(needle);
+          expect(at, `render no longer contains: ${needle}`).toBeGreaterThan(-1);
+          return at;
+        }),
+      );
+      expect(assertion).toBeLessThan(firstWrite);
+      expect(script).toContain('install -d -o root -g root -m 0755 /usr/local/bin /usr/local/sbin /usr/local/lib /usr/local/libexec');
+    });
+
+    // Calibration: the bundle model has a writable /usr, so it keeps the upstream ollama home and
+    // never asserts the bootc link, and the SAME detector must see that write. If this ever comes
+    // back empty the detector is blind, and the bootc assertion above passes vacuously.
+    it('keeps /usr/share/ollama on the bundle model, and the detector sees it (WI-10005830)', () => {
+      const script = buildWorkspaceHostBootstrap(input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }));
+      const flagged = outsideUsrLocal(usrWrites(script));
+      expect(flagged).toHaveLength(1);
+      expect(flagged[0]).toContain(`--home-dir ${WORKSPACE_HOST_OLLAMA_HOME_BY_MODEL['ubuntu-release-bundle']} --create-home`);
+      expect(script).not.toContain(USR_LOCAL_ASSERTION);
     });
 
     it('preserves an explicit registry port and checks the baked namespace policy pin', () => {
@@ -2302,6 +2918,38 @@ describe('workspace-host bootstrap attestation', () => {
       expect(verdict.errors).toContain(
         'attested image digest does not match the pinned release image',
       );
+    });
+
+    // WI-10006339: a correct host boots `repo@digest` (the bake and the bootstrap both pin the
+    // digest), so the attested ref is checked against that, never against the tag ref.
+    it('accepts the digest-pinned booted ref on a registry with a port, refuses the tag ref and another repository', () => {
+      const input = bootcInput({
+        bootc: {
+          ...bootcInput().bootc!,
+          image: '127.0.0.1:5096/papercusp/workspace-host:papercusp-workspace-host-aws-a-r62b',
+        },
+      });
+      const digest = input.bootc!.imageDigest;
+      const withSource = (source: string) =>
+        validateWorkspaceHostBootstrapAttestation(
+          bootcAttestation({ release: { ...bootcAttestation().release, source } }),
+          input,
+        );
+      expect(workspaceHostBootcPinnedImageRef(input.bootc!)).toBe(
+        `127.0.0.1:5096/papercusp/workspace-host@${digest}`,
+      );
+      expect(withSource(`127.0.0.1:5096/papercusp/workspace-host@${digest}`).ok).toBe(true);
+      for (const source of [
+        input.bootc!.image,
+        `127.0.0.1:5096/papercusp/other-host@${digest}`,
+        `127.0.0.1@${digest}`,
+      ]) {
+        const verdict = withSource(source);
+        expect(verdict.ok, source).toBe(false);
+        expect(verdict.errors).toContain(
+          'attested booted image ref does not match the pinned release image',
+        );
+      }
     });
 
     // Both directions. The second is the quiet one: a caller who passes a bootc block on an
@@ -2551,6 +3199,59 @@ describe('hosted connector enrollment conduit (D-403)', () => {
   });
 });
 
+// WI-6554700010012418 (owner directive #1879): compressed-RAM swap on the Ubuntu cloud desktops.
+// The function's behaviour is tested in zram-swap.test.ts; these pin where, for which model, and
+// how failure-tolerant it renders.
+describe('zram swap (WI-6554700010012418)', () => {
+  const render = (hostModel: (typeof WORKSPACE_HOST_MODELS)[number]) =>
+    buildWorkspaceHostBootstrap(hostModel === 'bootc-image' ? bootcInput() : input());
+  const zramCall = `  ${ZRAM_SWAP_FUNCTION} /etc/systemd/zram-generator.conf /etc/sysctl.d/90-papercusp-zram.conf /usr/lib/systemd/system-generators/zram-generator /proc/swaps`;
+  const zramInstall = `if retry 3 apt_install -y --no-install-recommends ${ZRAM_GENERATOR_APT_PACKAGE} >/dev/null; then`;
+
+  it('installs the generator and configures zram on Ubuntu, after the runtime packages', () => {
+    const ubuntu = render('ubuntu-release-bundle');
+    const runtime = ubuntu.indexOf('retry 5 apt_install -y --no-install-recommends ');
+    const install = ubuntu.indexOf(zramInstall);
+    const call = ubuntu.indexOf(`\n${zramCall}\n`);
+    expect(runtime).toBeGreaterThan(-1);
+    expect(install).toBeGreaterThan(runtime);
+    expect(call).toBeGreaterThan(install);
+    // The function is defined before the call that uses it.
+    expect(ubuntu.indexOf(`\n${ZRAM_SWAP_FUNCTION}() {\n`)).toBeGreaterThan(-1);
+    expect(ubuntu.indexOf(`\n${ZRAM_SWAP_FUNCTION}() {\n`)).toBeLessThan(call);
+  });
+
+  it('never dies on zram: a failed package fetch reports and the bootstrap continues', () => {
+    const ubuntu = render('ubuntu-release-bundle');
+    const block = ubuntu.slice(ubuntu.indexOf(zramInstall), ubuntu.indexOf('\nfi\n', ubuntu.indexOf(zramInstall)) + 4);
+    expect(block).toContain('PAPERCUSP_ZRAM_SWAP status=absent reason=package-install-failed');
+    expect(block).not.toContain('die ');
+  });
+
+  it('stays out of the required apt contract, which dies on a failed fetch', () => {
+    expect(WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES).not.toContain(ZRAM_GENERATOR_APT_PACKAGE);
+  });
+
+  it('does not render on the bootc image (no apt there)', () => {
+    const bootc = render('bootc-image');
+    expect(bootc).not.toContain(ZRAM_SWAP_FUNCTION);
+    expect(bootc).not.toContain(ZRAM_GENERATOR_APT_PACKAGE);
+  });
+
+  it('renders a script bash can parse', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zram-bootstrap-'));
+    try {
+      const file = join(dir, 'bootstrap.sh');
+      writeFileSync(file, render('ubuntu-release-bundle'));
+      const parsed = spawnSync('bash', ['-n', file], { encoding: 'utf8' });
+      expect(parsed.stderr).toBe('');
+      expect(parsed.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // WI-10004636: Codex's workspace-write sandbox runs every tool command through bwrap. On stock
 // Ubuntu 24.04 an unprivileged bwrap cannot get a usable user namespace without an AppArmor grant,
 // and the failure is SILENT (every command fails, the run reports success). The grant behaviour
@@ -2630,5 +3331,140 @@ describe('agent sandbox user namespaces (WI-10004636)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * WI-10006965: the bootstrap runs under `set -u`, so a variable it EXPANDS but never ASSIGNS
+ * aborts it at that line. A bootc host died in install-runtime on `$WORK_DIR` (and would have
+ * died on `$PREVIOUS_TARGET` after its first reboot) because only the bundle arm assigned them,
+ * while code after the model branch read them on both models. Every host model x action is
+ * rendered with every agent, and each bare UPPERCASE expansion must have an assignment in the
+ * script. Defaulted expansions (`${X:-}`, `${X-}`, `${X:+}`, `${X:=}`) are `set -u` safe.
+ */
+describe('rendered bootstrap assigns every variable it expands (WI-10006965)', () => {
+  // Assigned outside the script text: by bash itself, or by `. /etc/os-release`.
+  const ASSIGNED_OUTSIDE_SCRIPT = new Set(['BASH_COMMAND', 'EUID', 'SECONDS', 'VERSION_ID']);
+
+  function unassignedExpansions(script: string): { unassigned: string[]; expansions: number } {
+    const assigned = new Set<string>(ASSIGNED_OUTSIDE_SCRIPT);
+    for (const m of script.matchAll(/\b([A-Z_][A-Z0-9_]*)(?:\[[^\]]*\])?\+?=/g)) assigned.add(m[1]);
+    for (const m of script.matchAll(
+      /\b(?:for|local|export|declare|readonly|read(?:\s+-\w+)*)\s+((?:[A-Z_][A-Z0-9_]*\s*)+)/g,
+    )) {
+      for (const name of m[1].trim().split(/\s+/)) assigned.add(name);
+    }
+    const unassigned = new Set<string>();
+    let expansions = 0;
+    for (const m of script.matchAll(/\$\{?([A-Z_][A-Z0-9_]*)(:?[-=+?])?/g)) {
+      if (m[2] && m[2] !== ':?' && m[2] !== '?') continue;
+      expansions += 1;
+      if (!assigned.has(m[1])) unassigned.add(m[1]);
+    }
+    return { unassigned: [...unassigned].sort(), expansions };
+  }
+
+  it('flags an expansion nothing assigns, and accepts assigned and defaulted ones (control)', () => {
+    expect(unassignedExpansions('set -u\nA=1\necho "$A ${B} ${C:-x} $EUID"').unassigned).toEqual(['B']);
+  });
+
+  for (const [model, render] of [
+    ['ubuntu-release-bundle', input],
+    ['bootc-image', bootcInput],
+  ] as const) {
+    for (const action of ['install', 'upgrade', 'rollback'] as const) {
+      it(`${model} ${action} with every agent`, () => {
+        const script = buildWorkspaceHostBootstrap(
+          render({ action, agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+        );
+        const { unassigned, expansions } = unassignedExpansions(script);
+        // The scan must actually have walked the script, or an empty list proves nothing.
+        expect(expansions).toBeGreaterThan(200);
+        expect(unassigned).toEqual([]);
+      });
+    }
+  }
+
+  it('the bootc local-inference install reads a WORK_DIR assigned before it', () => {
+    const script = buildWorkspaceHostBootstrap(
+      bootcInput({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    const assignedAt = script.indexOf('WORK_DIR="$(mktemp -d');
+    const usedAt = script.indexOf('OLLAMA_TMP="$WORK_DIR/');
+    expect(usedAt).toBeGreaterThan(-1);
+    expect(assignedAt).toBeGreaterThan(-1);
+    expect(assignedAt).toBeLessThan(usedAt);
+  });
+});
+
+/**
+ * WI-10006974: on a bootc image /home is a symlink to var/home, so `readlink -f` of the
+ * installer's ~/.local/bin/claude symlink yields /var/home/<agent>/... A prefix test of that
+ * CANONICAL path against the raw $AGENT_HOME (/home/<agent>) refused a correctly installed CLI
+ * and killed install-runtime. The rendered check is executed against three fixture layouts: a
+ * symlinked home (bootc), a plain home (Ubuntu), and a CLI that resolves outside the home, which
+ * must still be refused.
+ */
+describe('vendor claude resolve check survives a symlinked /home (WI-10006974)', () => {
+  function renderedClaudeCheck(): string {
+    const script = buildWorkspaceHostBootstrap(
+      bootcInput({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    const start = script.indexOf('CLAUDE_REAL="$(readlink -f');
+    const dieAt = script.indexOf('die "vendor claude did not resolve to a file inside the agent home"', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(dieAt).toBeGreaterThan(start);
+    return script.slice(start, script.indexOf('\n', dieAt));
+  }
+
+  function runCheck(layout: 'symlinked-home' | 'plain-home' | 'outside-home') {
+    const root = mkdtempSync(join(tmpdir(), 'wi10006974-'));
+    try {
+      const realHomes = layout === 'plain-home' ? join(root, 'home') : join(root, 'var', 'home');
+      mkdirSync(realHomes, { recursive: true });
+      if (layout !== 'plain-home') symlinkSync(join('var', 'home'), join(root, 'home'));
+      const agentHome = join(root, 'home', 'agent');
+      const versions = join(realHomes, 'agent', '.local', 'share', 'claude', 'versions');
+      mkdirSync(versions, { recursive: true });
+      mkdirSync(join(realHomes, 'agent', '.local', 'bin'), { recursive: true });
+      writeFileSync(join(versions, '9.9.9'), '#!/bin/sh\n');
+      const outside = join(root, 'opt-claude');
+      writeFileSync(outside, '#!/bin/sh\n');
+      const target = layout === 'outside-home' ? outside : join('..', 'share', 'claude', 'versions', '9.9.9');
+      symlinkSync(target, join(realHomes, 'agent', '.local', 'bin', 'claude'));
+      return spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'die() { echo "DIE: $*" >&2; exit 3; }',
+        renderedClaudeCheck(),
+        'echo "OK $CLAUDE_REAL"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        timeout: 5000,
+        env: {
+          ...process.env,
+          AGENT_HOME: agentHome,
+          AGENT_RUNTIME_CLAUDE: join(agentHome, '.local', 'bin', 'claude'),
+        },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('accepts a CLI installed under a symlinked home (bootc /home -> var/home)', () => {
+    const run = runCheck('symlinked-home');
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout).toMatch(/OK .*\/var\/home\/agent\/\.local\/share\/claude\/versions\/9\.9\.9/);
+  });
+
+  it('accepts a CLI installed under a plain home (Ubuntu)', () => {
+    const run = runCheck('plain-home');
+    expect(run.status, run.stderr).toBe(0);
+  });
+
+  it('still refuses a CLI that resolves outside the agent home (control)', () => {
+    const run = runCheck('outside-home');
+    expect(run.status).toBe(3);
+    expect(run.stderr).toContain('vendor claude did not resolve to a file inside the agent home');
   });
 });

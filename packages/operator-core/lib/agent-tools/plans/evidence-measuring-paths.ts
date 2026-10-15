@@ -221,9 +221,18 @@ export function packMeasuringClauses(
       remeasure: {
         bindingId,
         rerunFirst,
+        // Select the ONE binding whose measurement the reader needs. A specIds-only read
+        // returns every binding of the clause at detail:'full' (measured 2026-10-13: 1,071
+        // replays/day by judges, p50 22KB, p90 89KB); bindingIds narrows it to the row.
         measurementFrom: {
           tool: 'plans:get-spec-evidence',
-          args: { harness: opts.harnessSlug, slug: row.plan_slug, specIds: [row.spec_id], detail: 'full' },
+          args: {
+            harness: opts.harnessSlug,
+            slug: row.plan_slug,
+            specIds: [row.spec_id],
+            bindingIds: [bindingId],
+            detail: 'full',
+          },
         },
       },
     };

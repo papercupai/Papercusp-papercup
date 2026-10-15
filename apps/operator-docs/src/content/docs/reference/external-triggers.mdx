@@ -6,19 +6,20 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "External triggers — setup, arming, and acceptance"
 description: "Connect replay-safe Slack and Google Workspace sources, review disarmed bindings, drive the Triggers UI, and collect falsifiable live acceptance evidence without exposing credentials."
-type: runbook
+type: Insight
 discovered: 2026-08-23
 tags: ["external-triggers", "slack", "gmail", "calendar", "workflows", "setup", "acceptance"]
 status: active
 documents:
-  - "packages/operator-core/lib/external-triggers/slack.ts"
+  - "libs/papercusp/plugins/slack/papercusp.json"
+  - "packages/operator-core/lib/providers/provider-socket-ingress.ts"
   - "packages/operator-core/lib/external-triggers/google-workspace.ts"
-  - "packages/operator-core/lib/external-triggers/google-gmail.ts"
+  - "libs/papercusp/plugins/gmail/index.cjs"
   - "packages/operator-core/lib/external-triggers/admin.ts"
   - "packages/operator-core/lib/endpoint-route/routes/admin/external-triggers.ts"
   - "apps/operator/app/admin/triggers/TriggersClient.tsx"
 plans:
-  - "external-triggers-gmail-slack-2026-08-22"
+  - "cupboard-distributable-integrations-2026-10-10"
 ---
 
 ## Contract
@@ -29,7 +30,7 @@ Slack, Gmail, and Google Calendar use outbound-only transports suitable for a de
 
 ## Connect Slack
 
-Follow [Slack external triggers — Socket Mode setup](/internal/docs/reference/slack-external-trigger-setup). The maintained app manifest, token-storage rules, required scopes, channel configuration, delayed-event option, and cold-gap behavior live there. After connecting, `triggers:list { sourceKind: "slack" }` must show one source and no credential values. Review the generated `slack-respond-in-thread-2026-08-22` binding before arming it.
+Install the **Slack** package from the Cupboard and connect it on **Settings → Integrations**; the steps, the app definition and the token rules are in [Slack setup](/internal/docs/reference/slack-external-trigger-setup). To file bug reports from Slack, install the **Bug triage** trigger pack from the Cupboard and set it up on the same page. Tool output never includes Slack credential values. The same package handles the **Report a bug** shortcut, the :bug: reaction and bug mentions; Bug triage files each one (see [Slack setup](/internal/docs/reference/slack-external-trigger-setup#report-a-bug-from-slack)).
 
 ## Connect Google Workspace
 
@@ -39,7 +40,7 @@ Successful provisioning creates `gmail`, `gcal`, and `contacts` source rows that
 
 ## Review and arm
 
-Open **Admin → Triggers** (`/admin/triggers`). Confirm source status, binding event/filter, destination plan, storm policy, and the fact that the binding is disarmed. Attach or edit through this page or the `triggers:*` tools. Arming is the only step that authorizes autonomous launches and requires `triggers:arm { bindingId, confirm: true }`; installation alone never arms.
+Open **Admin → Triggers** (`/admin/triggers`). Confirm source status, binding event/filter, destination plan, storm policy, and the fact that the binding is disarmed. Attach or edit through this page or the `triggers:*` tools. A trigger pack installed from the Cupboard, such as Bug triage, is set up, reviewed and armed in its own section on **Settings → Integrations**. Arming is the only step that authorizes autonomous launches and requires `triggers:arm { bindingId, confirm: true }`; installation alone never arms.
 
 Use `triggers:list` to discover source and binding ids without secrets. `triggers:status` reports health and recent failures. A source-level `degraded`/`error` state must be resolved before live acceptance; do not treat a rendered page or a bridge probe as provider evidence.
 
@@ -54,11 +55,11 @@ Drive an isolated debug Tauri instance with an explicit `tauri-agent-tools --pid
 
 ## Live Slack acceptance
 
-With the Slack source connected and the flagship binding armed, mention `@papercusp` in an allowed channel. Verify all of the following from canonical state: one `ext:slack:app_mention` delivery, one succeeded trigger run, one linked plan run/work item, and one reply in the originating channel/thread. Replay the same Slack `event_id` and verify it does not launch or post twice.
+With Slack connected through the package and the Bug triage binding armed, post a bug report in a watched channel. Verify from canonical state: one `ext:slack:message` delivery, one succeeded trigger run on the Bug triage binding, and one ticket at the installation's destination. Post an ordinary message and verify it files nothing. Replay the same Slack `event_id` and verify it neither launches again nor files a second ticket.
 
 ## Live Gmail acceptance
 
-With the Gmail source connected and the draft-response binding armed, send an inbound message to the connected account. Verify one `ext:gmail:message.received` delivery, one succeeded trigger/plan run, and one Gmail draft anchored to the originating thread with resolved recipient and reply headers. The workflow creates a draft only; it never sends. Reprocessing the same message/dedupe key must return the existing draft rather than create a second one.
+With the Gmail source connected and a draft-response binding armed (for example from the `email-draft-responder` trigger pack — nothing is armed by default, and connecting Google no longer creates a binding), send an inbound message to the connected account. Verify one `ext:gmail:message.received` delivery, one succeeded trigger/plan run, and one Gmail draft, created by `mail:reply { planRunId }`, anchored to the originating thread with resolved recipient and reply headers. The workflow creates a draft only; it never sends. Reprocessing the same message/dedupe key must return the existing draft rather than create a second one.
 
 ## Provider-independent regression layer
 
@@ -67,9 +68,14 @@ When live provider credentials are unavailable, run the real-Postgres flagship i
 ```bash
 cd packages/operator-core
 npx vitest run --config vitest.integration.config.ts \
-  lib/external-triggers/slack-flagship.integration.test.ts \
-  lib/external-triggers/gmail-flagship.integration.test.ts \
-  lib/external-triggers/google-gmail.integration.test.ts
+  lib/providers/slack/slack-package.integration.test.ts \
+  lib/providers/connector-runtime.integration.test.ts
+```
+
+Gmail's sync, cursor adoption and wake are covered by the provider-contract tests under `lib/providers/gmail/` (run with the default `vitest.config.ts`), since Gmail now runs as the bundled `gmail` provider plugin rather than a host-side adapter.
+
+```bash
+npx vitest run lib/providers/gmail
 ```
 
 This layer is necessary but does not substitute for a live Slack workspace or Gmail account. Record missing Slack tokens, Google OAuth client material, or Pub/Sub IAM as explicit acceptance residue rather than silently relabeling simulated evidence as live.

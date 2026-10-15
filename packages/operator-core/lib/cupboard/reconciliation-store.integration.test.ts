@@ -39,7 +39,7 @@ const MICROS_PER_CENT = 10_000;
 function sources(opts: { outstandingCreditCents: number }): ReconciliationSources {
   return {
     credits: { status: 'ok', value: { outstandingMicros: opts.outstandingCreditCents * MICROS_PER_CENT } },
-    dao: { status: 'ok', value: { transferredCents: 0 } },
+    dao: { status: 'ok', value: { transferredCents: 0, chainAccruedCents: 0 } },
     safe: { status: 'ok', value: { balanceMicros: 0, receiptsMicros: 0, approvedSpendsMicros: 0 } },
     stripe: { status: 'not-configured' },
     bank: { status: 'not-configured' },

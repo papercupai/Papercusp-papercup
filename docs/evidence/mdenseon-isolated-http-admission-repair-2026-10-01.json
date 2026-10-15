@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "verification-evidence-v1",
+  "kind": "integration",
+  "name": "isolated-three-model-http-admission-repair",
+  "framework": "Vitest + actual native HTTP/client/worker admission",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItem": "EI-24782479168658026",
+  "parent": "WI-10004539",
+  "ownerId": "su-5dfd8e29-6241-44cf-8982-2cc0fa4ddb50",
+  "measuredAt": "2026-10-01T13:19:27.883Z",
+  "sourceCommit": "0fa8a6e36d91c34285a5aead947e8031ed7510e3",
+  "rootCause": "The isolated CLI supplied only the mdenseon builder, replacing the complete sidecar defaults. The model allowlist derives from supplied builder keys, so Harrier returned400 before model construction.",
+  "alternativeHypothesis": "Harrier weights or worker runtime failed after the route accepted the request.",
+  "distinguishingObservation": {
+    "before": "Actual HTTP400 unknown model harrier expected only mdenseon; no first inferred response. A load/runtime failure would pass model admission and return an inference error.",
+    "after": "Shared isolatedEvaluationBuilders includes both maintained incumbent builders and candidate; driver checks scheduled model support. Same collector/request contract now receives actual native Harrier1024 response with one inferred text."
+  },
+  "recurrenceGuard": {
+    "test": "admits all three model arms through the exact isolated CLI builder-map assembler",
+    "file": "packages/operator-core/lib/memory/bench/sidecar-performance.integration.test.ts",
+    "runGroupId": "6774c14d-153c-4318-8461-26a3181037d9",
+    "testRunIds": [
+      20385109,
+      20385110,
+      20385112
+    ],
+    "passed": 10,
+    "failed": 0,
+    "syntheticScope": "Unit and real HTTP tests inject vectors; they qualify route and collection guards, not real-model quality/performance."
+  },
+  "typecheck": {
+    "engine": "tsc-service",
+    "named": 3,
+    "typeReferencing": 1,
+    "requestedErrors": 0,
+    "otherErrors": 0,
+    "scope": "Changed CLI, collector and integration test"
+  },
+  "failedAttempt": {
+    "manifest": {
+      "locator": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v1.json",
+      "sha256": "f2ec1298395dba28200f5a19add728c18b95e8cfb5f34ce2272683130947e55d",
+      "bytes": 111179
+    },
+    "driver": {
+      "locator": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v1/driver.json",
+      "sha256": "18bc662699ccc86dd268053d2d86ada6acb5176ecffdc3a33c8365cd01460e7c",
+      "bytes": 330
+    },
+    "childLog": {
+      "locator": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v1/performance-b0-harrier.json.log",
+      "sha256": "7cb6225626762a58f54fab47373a2ccf2d9b53b1a5f48ac7c7db0f8b30d39e91",
+      "bytes": 149
+    },
+    "status": "failed-before-model-inference"
+  },
+  "repairedAttempt": {
+    "manifest": {
+      "locator": "cache:validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v2.json",
+      "sha256": "324335c349a5f7507c7750591c42a9e253606dde5418206e9c211fcde0920708",
+      "bytes": 111179
+    },
+    "sameRequestsSha256": "c8b94379d002efce7ceaf5fa145af41994cc03023434b7562c7088c7d17234e1",
+    "firstNativeResponse": {
+      "phase": "cold",
+      "kind": "query",
+      "sequence": 0,
+      "requestIds": [
+        "memory:memory-a4f0c9fdee053da26961-exact-identifier"
+      ],
+      "batchSize": 1,
+      "concurrency": 1,
+      "startedAt": "2026-10-01T13:14:50.351Z",
+      "latencyMs": 6137.065535000002,
+      "cache": {
+        "hits": 0,
+        "coalesced": 0,
+        "inferred": 1
+      },
+      "runtime": "node-onnx-worker",
+      "modelRev": "onnx-community/harrier-oss-v1-0.6b-ONNX",
+      "dims": 1024,
+      "vectorsSha256": "23d74dbca5db4937b80f5e46184d2a1635ced44183cb9a3eb43d58fd13d36f9c"
+    },
+    "rawFirstLine": {
+      "locator": "cache:validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v2/performance-b0-harrier.json.samples.jsonl",
+      "line": 1,
+      "sha256": "cd97103380bb84a4d6762260c77d1ef798bb3c4f1f016eee32987530da8c3866",
+      "bytes": 435,
+      "scope": "Hash binds the first immutable line of the still-growing raw sample log; not a whole-file fingerprint."
+    }
+  },
+  "sources": [
+    {
+      "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+      "sha256": "5eb3b512e098ca90f11184cbd84e4f14f7693c858315a6bbcd235fb8d6243b78",
+      "bytes": 48459
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/sidecar-performance.ts",
+      "sha256": "775dc97d6f084d10bf9d80f047cd7e3b07860aae1b2aa241f3e0bc595c558c0b",
+      "bytes": 21397
+    }
+  ],
+  "verificationLayers": ["unit", "integration", "actual-native-worker"],
+  "limitations": [
+    "Full15-cell performance population is running, not completed.",
+    "No relevance, GPU,8192-token, hybrid,reliability,answer-usefulness or adoption claim follows from this route repair.",
+    "No production embedding model or index change."
+  ]
+}

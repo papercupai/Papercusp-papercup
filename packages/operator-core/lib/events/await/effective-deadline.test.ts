@@ -29,10 +29,30 @@ describe('applyRootDeadlines', () => {
     expect(row?.expiresTs).toBe(iso(T0 + 30 * 60_000));
   });
 
+  it('inherits the composed root timeout policy instead of the delivery anchor expiry policy', () => {
+    const input = { expiresTs: null, rootId: 7, timeoutBehavior: 'expire' };
+    const [row] = applyRootDeadlines([input], roots);
+    expect(row).toMatchObject({ expiresTs: iso(T0 + 30 * 60_000), timeoutBehavior: 'wake' });
+    expect(input).toEqual({ expiresTs: null, rootId: 7, timeoutBehavior: 'expire' });
+  });
+
+  it('does not promote a composed root that expires silently to a wake guarantee', () => {
+    const expiringRoots = new Map([[7, { expiresTs: iso(T0 + 30 * 60_000), timeoutBehavior: 'expire' }]]);
+    const [row] = applyRootDeadlines([{ expiresTs: null, rootId: 7, timeoutBehavior: 'wake' }], expiringRoots);
+    expect(row).toMatchObject({ expiresTs: iso(T0 + 30 * 60_000), timeoutBehavior: 'expire' });
+  });
+
+  it('preserves the original policy when the composed root policy could not be read', () => {
+    const unknownPolicy = new Map([[7, { expiresTs: iso(T0 + 30 * 60_000), timeoutBehavior: null }]]);
+    const [row] = applyRootDeadlines([{ expiresTs: null, rootId: 7, timeoutBehavior: 'expire' }], unknownPolicy);
+    expect(row?.timeoutBehavior).toBe('expire');
+  });
+
   it("NEVER overrides a row's own deadline — the helper only fills a gap", () => {
     const own = iso(T0 + 60_000);
-    const [row] = applyRootDeadlines([{ expiresTs: own, rootId: 7 }], roots);
-    expect(row?.expiresTs).toBe(own);
+    const input = { expiresTs: own, rootId: 7, timeoutBehavior: 'expire' };
+    const [row] = applyRootDeadlines([input], roots);
+    expect(row).toBe(input);
   });
 
   it('leaves an ordinary (non-composed) await completely untouched', () => {

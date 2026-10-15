@@ -32,9 +32,12 @@
  * places can drift out of its own catalog entry, and the failure is silent — the alarm
  * broadcasts, mints nothing, and reads exactly like a gate that never held anything.
  */
-import { FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX } from '../coord/actionable-conditions';
+import {
+  FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX,
+  FROZEN_REPAIR_LEG_CONDITION_PREFIX,
+} from '../coord/actionable-conditions';
 
-export { FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX };
+export { FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX, FROZEN_REPAIR_LEG_CONDITION_PREFIX };
 
 /** The single condition key for one pipeline's held-repair routing. */
 export function frozenRepairConvergenceConditionKey(pipeline: string): string {
@@ -63,6 +66,162 @@ export interface FrozenRepairConvergenceRoutingInput {
 
 /** How many failing paths are named inline before the list is summarized. */
 const MAX_NAMED_FAILING = 12;
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// Per-leg items (green-main-cycle-time-2026-10-08 P-013, D-028 as amended by D-029)
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/** At most this many legs hold their own item at once; the next one is routed as one clears. */
+export const MAX_ROUTED_LEGS = MAX_NAMED_FAILING;
+
+/** How much of a leg's recorded failure output its item carries (the tail, not the head). */
+const MAX_FAILURE_TAIL_CHARS = 1500;
+
+/** The key prefix shared by every leg item of one pipeline. */
+export function frozenRepairLegKeyPrefix(pipeline: string): string {
+  return `${FROZEN_REPAIR_LEG_CONDITION_PREFIX}${pipeline}:`;
+}
+
+/** The condition key for one failing leg (`frozen-repair-leg:<pipeline>:<entry>`). */
+export function frozenRepairLegConditionKey(pipeline: string, entry: string): string {
+  return `${frozenRepairLegKeyPrefix(pipeline)}${entry}`;
+}
+
+export interface FrozenRepairLegRoutingInput {
+  /** `pipelineName(cfg.integrationRoot)`. */
+  pipeline: string;
+  /**
+   * The frozen queue this tick ended holding, or null when there is none (it went green,
+   * was retired, or never existed). Null resolves every open leg item of the pipeline.
+   * The CALLER decides null: an UNREADABLE queue must not be passed as null, because that
+   * would close every leg on a read fault — skip routing for that tick instead.
+   */
+  queue: { candidate: string; repairHead: string; failingTests: readonly string[] } | null;
+  /** Leg keys of this pipeline currently OPEN in the condition fold. */
+  openLegKeys: readonly string[];
+  /** Recorded failure output per failing entry, best-effort; absent entries say so. */
+  failureTails?: ReadonlyMap<string, string>;
+}
+
+export interface FrozenRepairLegOpen {
+  conditionKey: string;
+  entry: string;
+  summary: string;
+  body: string;
+}
+
+export interface FrozenRepairLegRoutingPlan {
+  /** Legs to OPEN this tick: failing, within the routed window, and not already open. */
+  open: FrozenRepairLegOpen[];
+  /** Open leg keys to RESOLVE: their entry left the failing set, or the queue is gone. */
+  resolve: string[];
+  /** The entries that should hold an item after this tick (the routed window). */
+  routed: string[];
+}
+
+/** A failing entry is admitted by path only when it IS a path; a leg name is not one. */
+function looksLikePath(entry: string): boolean {
+  return entry.includes('/') && !/\s/.test(entry);
+}
+
+/**
+ * PURE: which per-leg items to open and which to resolve on this tick.
+ *
+ * Change-only by design (D-029). Each leg is broadcast ONCE when it enters the routed
+ * window, as a one-shot condition, and resolved explicitly when it leaves — not re-fired
+ * every tick. Re-firing up to 12 legs per gate tick would push every one of them into every
+ * running agent's inbox on every tick, for the whole life of a red that has already lasted
+ * days. Because the plan is recomputed against the condition fold every tick, a lost open
+ * or resolve message is repaired on the next tick, which is the property the staleness
+ * sweep was otherwise providing.
+ *
+ * Entries are routed in the queue's own order, de-duplicated, up to MAX_ROUTED_LEGS. A leg
+ * beyond the window gets its item when one inside it clears.
+ */
+export function planFrozenRepairLegRouting(
+  input: FrozenRepairLegRoutingInput,
+): FrozenRepairLegRoutingPlan {
+  const prefix = frozenRepairLegKeyPrefix(input.pipeline);
+  const open = new Set(input.openLegKeys.filter((k) => k.startsWith(prefix)));
+  const routed: string[] = [];
+  if (input.queue) {
+    const seen = new Set<string>();
+    for (const raw of input.queue.failingTests) {
+      if (typeof raw !== 'string') continue;
+      const entry = raw.trim();
+      if (!entry || seen.has(entry)) continue;
+      seen.add(entry);
+      routed.push(entry);
+      if (routed.length >= MAX_ROUTED_LEGS) break;
+    }
+  }
+  const wanted = new Set(routed.map((e) => frozenRepairLegConditionKey(input.pipeline, e)));
+  const plan: FrozenRepairLegRoutingPlan = { open: [], resolve: [], routed };
+  for (const key of open) if (!wanted.has(key)) plan.resolve.push(key);
+  plan.resolve.sort();
+  if (!input.queue) return plan;
+  const total = new Set(
+    input.queue.failingTests.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim()),
+  ).size;
+  for (const entry of routed) {
+    const conditionKey = frozenRepairLegConditionKey(input.pipeline, entry);
+    if (open.has(conditionKey)) continue;
+    plan.open.push({
+      conditionKey,
+      entry,
+      ...buildFrozenRepairLegBroadcast({
+        pipeline: input.pipeline,
+        candidate: input.queue.candidate,
+        repairHead: input.queue.repairHead,
+        entry,
+        failingCount: total,
+        failureTail: input.failureTails?.get(entry) ?? null,
+      }),
+    });
+  }
+  return plan;
+}
+
+/** PURE: the summary and body of one leg's item. */
+export function buildFrozenRepairLegBroadcast(input: {
+  pipeline: string;
+  candidate: string;
+  repairHead: string;
+  entry: string;
+  failingCount: number;
+  failureTail?: string | null;
+}): { summary: string; body: string } {
+  const tailRaw = input.failureTail?.trim() ?? '';
+  const tail =
+    tailRaw.length > MAX_FAILURE_TAIL_CHARS
+      ? `…[earlier output truncated]\n${tailRaw.slice(-MAX_FAILURE_TAIL_CHARS)}`
+      : tailRaw;
+  const admit = looksLikePath(input.entry)
+    ? `release:repair-queue { op: 'admit', paths: ['${input.entry}'] }`
+    : `release:repair-queue { op: 'admit', paths: [ <the files you changed to fix ${input.entry}> ] }`;
+  const summary =
+    `[${input.pipeline}] failing on frozen candidate ${shortSha(input.candidate)}: ${input.entry} — ` +
+    `claimable: fix it and admit the fix (no gate ownership needed).`;
+  const body =
+    `One failing leg of the frozen repair queue (1 of ${input.failingCount}). Any agent may take ` +
+    `it: claim THIS item, fix the leg on the shared staging checkout, wait for git-sync to commit ` +
+    `the fix, then admit it onto the frozen lineage. Admission needs no gate ownership and no ` +
+    `checkpoint run; the queue re-tests repairHead itself.\n\n` +
+    `LEG: ${input.entry}\n` +
+    `FROZEN CANDIDATE: ${input.candidate}\n` +
+    `CONVERGE ONTO (repairHead): ${input.repairHead}\n\n` +
+    `ADMIT WITH (dry run first, then confirm:true):\n    ${admit}\n` +
+    `Admission is hunk-exact; a refusal 'admission-incomplete' names a sibling path to admit too.\n\n` +
+    `RECORDED FAILURE OUTPUT:\n` +
+    (tail
+      ? tail
+      : '  (none recorded for this leg on the candidate or repairHead; reproduce it with ' +
+        `testing:run { files: ['${input.entry}'] } when it is a test file)`) +
+    `\n\n⚠ A fix committed to staging tip is NOT in ${shortSha(input.candidate)}: until it is ` +
+    `admitted the gate keeps judging the old blob. This item resolves on its own when the leg ` +
+    `leaves the queue's failing set (it passed at repairHead) or the queue clears.`;
+  return { summary, body };
+}
 
 function shortSha(sha: string): string {
   return sha.slice(0, 12);

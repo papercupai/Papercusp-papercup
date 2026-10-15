@@ -103,7 +103,9 @@ describe('renderStackTransitionContext (P-012)', () => {
   it('delivers nothing when the stack did not move, or when a full-resync has nothing bound', async () => {
     expect(await renderStackTransitionContext({ state: state(), stackBefore: [] }, opts)).toBe('');
     expect(await renderStackTransitionContext({ state: state({ stack: [SU_POSTURE_REFS.member] }), stackBefore: [SU_POSTURE_REFS.member] }, opts)).toBe('');
-    expect(await renderStackTransitionContext({ state: state() }, opts)).toBe('');
+    const emptyResync = await renderStackTransitionContext({ state: state() }, opts);
+    expect(emptyResync).toContain('no runtime stack layers remain');
+    expect(emptyResync).toContain('treat it as VOID from this turn on');
   });
 
   it('a fleet join attaches the member posture: a ⟦stack⟧ payload carrying the real posture text, no seal', async () => {
@@ -134,6 +136,34 @@ describe('renderStackTransitionContext (P-012)', () => {
     );
     expect(broken).toBe('');
     expect(warnings[0]).toMatch(/stack transition not delivered/);
+  });
+
+  // WI-10004896: a vm-release host's content root holds unattested first-party copies of
+  // every blueprint. Attaching AUTO mid-session must deliver the catalog-selected built-in
+  // definition, not refuse the installed copy the id would re-resolve to.
+  it('attaches AUTO from the selected catalog source when the content root holds an unattested copy', async () => {
+    const { cpSync, mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const root = mkdtempSync(join(tmpdir(), 'stack-channel-vm-release-'));
+    const priorHome = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = root;
+      for (const id of ['base', 'su.mode-auto']) {
+        cpSync(dirname(blueprint.builtinBlueprintPath(id)), join(root, 'blueprints', id), { recursive: true });
+      }
+      const warnings: string[] = [];
+      const out = await renderStackTransitionContext(
+        { state: state({ stack: ['autonomy:su.mode-auto'] }), stackBefore: [] },
+        { ...opts, warn: (m) => warnings.push(m) },
+      );
+      expect(warnings).toEqual([]);
+      expect(out).toContain('"id":"su.mode-auto"');
+      expect(out).toContain("AUTO mode — the owner's switch");
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('marks domain/client mutations fresh-context so the old host cannot acknowledge them', async () => {
@@ -184,6 +214,25 @@ describe('renderStackTransitionContext (P-012)', () => {
     expect(failed.text).toContain('## Addressed guidance — could not be read');
     expect(failed.text).toContain('relation missing');
     expect(warnings.some((w) => w.includes('addressed guide not read'))).toBe(true);
+  });
+
+  it('P-003: an empty full-resync replaces previously addressed guide parts with the empty set', async () => {
+    const rows = [
+      { part_key: 'member', body: 'MEMBER RULE.', ordinal: 1, target_section: 'Fleet', stack_scope: ['blueprint:su.fleet-member'] },
+    ];
+    const sql = {
+      unsafe: async (q: string, params: unknown[]) => q.includes('SELECT 1 AS present')
+        ? [{ present: 1 }]
+        : rows.filter((r) => r.stack_scope.some((t) => (params[3] as string[]).includes(t))),
+    } as never;
+    const result = await renderStackTransitionContextResult({ state: state() }, {
+      ...opts,
+      guide: { workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql },
+    });
+    expect(result.rendered).toBe(true);
+    expect(result.text).toContain('Addressed guidance — none for this session’s stack');
+    expect(result.text).toContain('no longer applies');
+    expect(result.text).not.toContain('MEMBER RULE.');
   });
 
   // portable-identity P-009 / D-022: a wearer's pack-doc keys move on a pack upgrade even

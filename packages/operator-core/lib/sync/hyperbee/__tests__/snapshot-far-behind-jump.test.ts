@@ -285,7 +285,7 @@ describe('P-004 R-4 — a far-behind cursor jumps to a complete set ahead of it'
       [`${a.keyHex}:${setAt + 5}`, 1],
     ]);
     cursor.readThrows = new Map([[`${a.keyHex}:40`, 2]]);
-    cursor.lateReadResults = new Map([[`${a.keyHex}:40`, []]]);
+    cursor.lateReadResults = new Map([[`${a.keyHex}:40`, { kind: 'op', op: null }]]);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await seedCursorFromSnapshots([a, b], cursor, { getTimeoutMs: 0, jumpMinBacklogOps: 1 });
     expect(cursor.positions.get(a.keyHex)).toBe(setAt);

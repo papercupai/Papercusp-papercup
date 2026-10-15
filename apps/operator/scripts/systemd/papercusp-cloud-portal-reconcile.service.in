@@ -5,6 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# The unattended Portal compiler is background work; keep interactive builds and
+# the operator responsive when this linked-workspace reconciliation runs.
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=idle
 WorkingDirectory=@PORTAL_ROOT@
 Environment=PAPERCUSP_CLOUD_PORTAL_ROOT=@PORTAL_ROOT@
 Environment=PAPERCUSP_CLOUD_PORTAL_RUNTIME_ROOT=@RUNTIME_ROOT@

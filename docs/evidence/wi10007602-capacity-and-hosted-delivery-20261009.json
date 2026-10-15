@@ -1,0 +1,119 @@
+{
+  "workItems": ["WI-10007602", "EI-25533252356302006"],
+  "scope": "Root recovery and tested producer guards; data-disk recovery remains open",
+  "boundedPublishedCensusReview": {
+    "workItem": "WI-10007997",
+    "kind": "manual review of retained allocated-block receipts",
+    "sourceArtifact": "docs/evidence/wi10007602-retention-interval-20261010.json",
+    "sourceArtifactSha256": "38a956eb97d70ad07f77c5c5dc6d107ec592d71ac197b09c14d1cff206516a0e",
+    "sourceField": "currentCandidateDemandAndAllocation.allocationReceipts",
+    "newHostMeasurement": false,
+    "producer": "Maintained dependency-generation publisher",
+    "retentionOwner": "Existing sessionDirGc dependency-generation-retention step",
+    "retentionSource": "packages/operator-core/lib/release/dependency-generation-retention.ts",
+    "stores": [
+      {
+        "root": "/mnt/data/papercusp-dependency-generations",
+        "device": 66304,
+        "capturedAt": "2026-10-11T03:03:36.384238+00:00",
+        "allocatedPublishedBytes": 72653312000,
+        "capturedGenerationCount": 10,
+        "generationPopulationRef": "currentCandidateDemandAndAllocation.allocationReceipts[0].population",
+        "populationStable": true,
+        "capturedPublishedPopulationComplete": true
+      },
+      {
+        "root": "/mnt/data/dependency-generations/papercusp",
+        "device": 66304,
+        "capturedAt": "2026-10-11T03:04:02.446005+00:00",
+        "allocatedPublishedBytes": 33380065280,
+        "capturedGenerationCount": 2,
+        "generationPopulationRef": "currentCandidateDemandAndAllocation.allocationReceipts[1].population",
+        "populationStable": true,
+        "capturedPublishedPopulationComplete": true
+      }
+    ],
+    "deviceInterpretation": "Both stores are on recorded device 66304. The retained root filesystem is device 66307. These store rows do not attribute root-filesystem usage. The /mnt/data and /tmp/pcv aliases share device 66304 and one reservation budget.",
+    "sharingInterpretation": "These are directory allocated-block observations. Hardlinks and reflinks can share physical blocks. Do not sum the stores as exclusive physical consumption, demand, or reclaim; no removal causality or growth rate follows from these snapshots.",
+    "coverage": {
+      "population": [
+        "published generation payloads at /mnt/data/papercusp-dependency-generations",
+        "published generation payloads at /mnt/data/dependency-generations/papercusp",
+        "mutable pending/inflight/control metadata at /mnt/data/papercusp-dependency-generations",
+        "mutable pending/inflight/control metadata at /mnt/data/dependency-generations/papercusp",
+        "root-filesystem producers outside these captured stores",
+        "data-filesystem producers outside these captured stores"
+      ],
+      "checked": [
+        "published generation payloads at /mnt/data/papercusp-dependency-generations",
+        "published generation payloads at /mnt/data/dependency-generations/papercusp"
+      ],
+      "notChecked": [
+        "mutable pending/inflight/control metadata at /mnt/data/papercusp-dependency-generations",
+        "mutable pending/inflight/control metadata at /mnt/data/dependency-generations/papercusp",
+        "root-filesystem producers outside these captured stores",
+        "data-filesystem producers outside these captured stores"
+      ],
+      "notApplicable": [],
+      "residue": ["WI-10007602"]
+    },
+    "preservation": "This review performed no deletion, restart, prune or allocation scan. Personal, VM, session, backup, source and evidence data are not classified as disposable. Native pin and generation-custody receipts remain in the source artifact.",
+    "limits": [
+      "Complete means only the exact captured published populations in the two retained receipts; it does not mean a host-wide census.",
+      "Excluded regions have no allocated-byte estimate here. Earlier partial scans remain lower-bound historical evidence; they were not replayed or upgraded to complete.",
+      "This record supports scoped attribution review, not full R1/R5 acceptance, current capacity or shipment."
+    ]
+  },
+  "cleanup": {
+    "actor": "papercup-docker-reclaim.service",
+    "startedAt": "2026-10-09T23:09:12Z",
+    "policy": "Native unused image/build-cache retention defaults to 12h below the shared 2% reserve; explicit age overrides and active-reference protection retained",
+    "reportedFilesystemDeltaMiB": 34224,
+    "reportedFreeGiB": 35,
+    "measurementLimit": "Net df delta during the actor run, not logical image sizes or an attribution of every freed block to one manager",
+    "subsequentAvailableBytes": { "root": 34224721920, "dataTmp": 5517754368 },
+    "desktopRestarted": false,
+    "retainedVerificationRootsDeleted": false,
+    "generationPruneOnly": "Existing dependency-generation.sh --integration canonical-root --prune-only exited 0 with no output; no data-disk reclamation claim"
+  },
+  "sourceGuards": {
+    "sourceClone": "Reuses dependency generation reserve/margin check under the host-wide copy lock before destination creation; includes pinned gitlinks",
+    "imageReclaim": "Existing hourly actor switches default retention only under critical pressure; named volumes, native container/build references, explicit overrides and SKIP_IMAGES are preserved",
+    "sourceSha256": {
+      "bin/reclaim-docker-disk.sh": "3bc0781430c739d5c683b4e73058fbcf6ac01010a65e98282d4b95e3cac54afb",
+      "apps/operator/bin/release/setup-release-checkout.sh": "29e77f661fe36c33ce5d3a36a96999b7d6ad805038532da282ac28b9babc154b",
+      "apps/operator/lib/docker-reclaim-anonymous-volumes-only.test.ts": "e23d59d75e0d53027a0102d071c687831781f4edeb0a8fba0d916b906adbe980",
+      "apps/operator/lib/release/setup-release-checkout-deps.test.ts": "fdc95efcb2a88422c4a618cf472e2941b328a13e960828ef03a3d8ae58c21dde"
+    },
+    "tests": [
+      { "file": "apps/operator/lib/docker-reclaim-anonymous-volumes-only.test.ts", "passed": 35, "skipped": 0 },
+      { "file": "apps/operator/lib/release/setup-release-checkout-deps.test.ts", "passed": 111, "skipped": 0 },
+      { "file": "apps/operator/scripts/__tests__/reconcile-cloud-portal.test.ts", "passed": 18, "skipped": 0 }
+    ],
+    "testCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- <named files>",
+    "syntaxAndWhitespace": "bash -n and scoped git diff --check passed"
+  },
+  "hostedDelivery": {
+    "reconcileExitCode": 0,
+    "buildId": "5qsFpd7OTvvhGdWQl5oAN",
+    "release": "5qsFpd7OTvvhGdWQl5oAN-20261009231947332-4158376-8aea3878",
+    "sourceRootDigest": "f8da7239415444c3e568fa4f84d15cbe4e348cae8d3e71b29b1b83b10b295ecd",
+    "serviceHealthyAt": "2026-10-09T23:21:47Z",
+    "url": "https://app.papercusp.com/?firstRun=deferred&chat=fd0a128c-e8fb-43c3-a150-9cd62aede836&find=true&app=settings&settings=deploy-accounts",
+    "pageStatus": 200,
+    "servedBuildId": "5qsFpd7OTvvhGdWQl5oAN",
+    "cssAsset": "/_next/static/css/6660f7cd1f55ad67.css",
+    "cssStatus": 200,
+    "verifiedRules": [".pc-settings-frame", "grid-template-columns:220px minmax(0,1fr)", "width:100%", "min-width:0"],
+    "previousCssAsset": "/_next/static/css/108038487435c3e0.css",
+    "previousRules": "Old shell had 220px 1fr and no pc-settings-frame rule",
+    "automaticReconcileTimerRestored": true,
+    "limits": "Public served artifact verified. No owner authentication cookie was available for a full authenticated geometry journey. Source layout browser proof is stored on WI-10007827."
+  },
+  "remaining": [
+    "Data/tmp filesystem still has about 5 GiB available",
+    "Retained validation-intermediate lifecycle and wider producer coverage require further work",
+    "Old desktop WAL is preserved; restart approval has not been supplied",
+    "No universal claim that every disk writer is bounded"
+  ]
+}

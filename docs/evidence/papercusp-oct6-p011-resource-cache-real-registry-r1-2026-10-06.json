@@ -1,0 +1,171 @@
+{
+  "schemaVersion": "p011-resource-cache-real-registry-evidence-v1",
+  "workItem": "EI-25181611831349662",
+  "status": "isolated-real-registry-diagnostic-delivery-verified",
+  "change": "Added two real registry-to-passive diagnostic cases to the existing registered integration suite. Production diagnostic source is unchanged.",
+  "reuse": "Existing register_resource, resourceDomainKinds pinned loader and cache_stats handler, exercised through the maintained with-test-pg isolated-runtime route.",
+  "observedScope": [
+    "The actual disposable PostgreSQL registry contains host-global declarations for staging-server and staging-server-cooldown.",
+    "After resetting only the process cache, the actual diagnostic remains cold despite the database declaration.",
+    "Explicit production ensureResourceDomainKindsFresh loads the real registry, after which the same diagnostic reports the declaration and loaded timestamp.",
+    "Both diagnostic responses match process.pid by test assertion, and a subsequent passive read preserves the cache snapshot.",
+    "The full ten-case suite retains the prior publication, declaration-reader and distinct-owner restart-handler refusal guards."
+  ],
+  "verification": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/with-test-pg.mjs --isolated-runtime -- npm run test:file -- packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+    "exitCode": 0,
+    "passed": 10,
+    "skipped": 0,
+    "testFileResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=99e704f02c uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-06T01:28:03.158Z skippedTests=0",
+    "scope": "Named test source was dirty. Full imported-source graph was not frozen; the receipts below are post-run named-file hashes.",
+    "initialRun": {
+      "exitCode": 0,
+      "passed": 10,
+      "skipped": 0,
+      "head": "a1109d57cb",
+      "qualification": "Preceded the typed diagnostic reader correction; final-source run supersedes this run."
+    },
+    "ledger": {
+      "nativeReadCount": 0,
+      "query": {
+        "filePath": "register-resource-domain.integration.test.ts",
+        "since": "2026-10-06T01:25:00Z",
+        "limit": 3
+      },
+      "writer": "libs/test-config/src/admin-test-runs-reporter.ts prioritizes HARNESS_ADMIN_DATABASE_URL; scripts/with-test-pg.mjs supplies the disposable PG URL.",
+      "qualification": "No native ledger id is claimed. The configured writer targets the disposable store, whose teardown was verified."
+    }
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+    "exitCode": 0,
+    "namedFiles": 1,
+    "namedErrors": 0,
+    "initialResult": {
+      "exitCode": 1,
+      "namedErrors": 8,
+      "rootCause": "defineTool handler data is unknown; the new test reader initially returned it without the payload typing used by the existing cache_stats tests.",
+      "fix": "Type the checked data envelope as Record<string, unknown> and match loadedAtMs inside the runtime matcher."
+    }
+  },
+  "cleanup": {
+    "execSessionsTerminal": [
+      "90548:exit0",
+      "58170:exit1",
+      "16818:exit0",
+      "5178:exit0"
+    ],
+    "privatePgDirectories": [
+      {
+        "path": "/tmp/papercusp-test-pg-PDcINU",
+        "exists": false
+      },
+      {
+        "path": "/tmp/papercusp-test-pg-8yfU8s",
+        "exists": false
+      }
+    ],
+    "fileLocksReleased": true
+  },
+  "nativeCacheSample": {
+    "capturedAt": "2026-10-06T01:30:15.954Z",
+    "pid": 1518148,
+    "uptimeSec": 2982,
+    "telemetryVersion": 2,
+    "resourceDomainKindsPresent": false,
+    "qualification": "This sampled native cache handler still lacks the extension. Its PID is not an attribution of dev:restart or evidence of native cache state."
+  },
+  "reloadPreview": {
+    "target": "bg-host",
+    "dryRun": true,
+    "bootIntegrityWouldBlock": false,
+    "restrictedHoldWouldBlock": false,
+    "quiesced": false,
+    "gitSyncCollisionWouldBlock": true,
+    "gateCollisionWouldBlock": true,
+    "actionTaken": "No shared restart or override.",
+    "qualification": "Point-in-time supported tool preview; no repeated live-gate investigation or gate operation."
+  },
+  "historicalHandlerSource": {
+    "evidencePath": "docs/evidence/papercusp-oct6-p011-staging-restart-handler-r1-2026-10-06.json",
+    "testSourceRef": "02df57332978cdd2561fe5c4bb6ec6e91dc95c80:packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+    "bytes": 13163,
+    "sha256": "d562d8b6958bbe203ead6eaf2e279f0669c9ee41dc7ce7b588ab3d179024c5e1",
+    "verification": "git show resolves to the exact original test source bytes.",
+    "qualification": "Original eight-case evidence remains historical. Its test-source receipt no longer matches the extended current file. The prior diagnostic evidence link to that artifact remains unchanged."
+  },
+  "limitations": [
+    "Private PostgreSQL with mocked external restart preflights; no full live native background-host bootstrap or native MCP restart execution is asserted.",
+    "PID equality is established by assertions, not an exported numeric test-process identity receipt.",
+    "Native loaded restart-handler/cache attribution, live distinct-owner refusal, wholefleet exclusion and atomic old-call fencing remain open.",
+    "Pending-review alias cleanup is untouched. Original R3 unknown joins, R4 failure, full P011/D021/native physical acceptance, P010 R8/R9 and shipment remain open.",
+    "No historical producer, R5 cohort, profiler or GC replay; no native agent launch or shared service restart; LIVE_GATE_OPS remains stopped."
+  ],
+  "receipts": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+      "bytes": 15382,
+      "sha256": "3d47a981628ef962646be1e304ace9c13ad4259b48a58e7e1c71d7afccca8b0c"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/cache_stats.ts",
+      "bytes": 8849,
+      "sha256": "2c3939811168e8bdbb902f20dd316b6ec80244db25a587b5f6b98292c7426a35"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/resource-domain-kinds.ts",
+      "bytes": 7792,
+      "sha256": "9dea128f3476f9ee8c7006ec01358c3b12a41f4ae25e3278897d2443bdfbb3b5"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/register_resource.ts",
+      "bytes": 4030,
+      "sha256": "63d8005018c2e5e2525f3ab04dadaebcd4ba5cace12ff071e54ccfe4b275ff4d"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/restart.ts",
+      "bytes": 134234,
+      "sha256": "f64bd78976e4de7867f5f7536f3d82d1ccf7fbcdccfe336b0143fa98896a11c4"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "bytes": 15664,
+      "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+    },
+    {
+      "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+      "bytes": 67138,
+      "sha256": "840a6e02476d044d3d5de01c87f365c41e056bd8c8ab4373186a7529ed22dc25"
+    },
+    {
+      "path": "/tmp/su-7db4f-resource-cache-real-registry-r1.log",
+      "bytes": 630554,
+      "sha256": "bdd4c0c9345229d8b6b0d99ffc02c6562c21be3153a036e2862085a8384de1a3"
+    },
+    {
+      "path": "/tmp/su-7db4f-resource-cache-real-registry-r2.log",
+      "bytes": 630106,
+      "sha256": "c2198d6943258107ac8f8866002e72cce8ec0af2586ce055990df397e6152b9a"
+    },
+    {
+      "path": "/tmp/su-7db4f-resource-cache-real-registry-types-r1.log",
+      "bytes": 2574,
+      "sha256": "0de4200b9366256ff292cdbfd243c47da6ba944cd812a1abda61a6ce2fc00195"
+    },
+    {
+      "path": "/tmp/su-7db4f-resource-cache-real-registry-types-r2.log",
+      "bytes": 1114,
+      "sha256": "9766287f13638ae21366e6e7ac64dd3acb893b6f7b3fc06672215a3680a86ca8"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct6-p011-resource-cache-diagnostics-r1-2026-10-06.json",
+      "bytes": 6774,
+      "sha256": "0b9f75b6f6638c88007e10e4e793097dbf2362192da3e2c1b712b2bf286c60f3"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct6-p011-staging-restart-handler-r1-2026-10-06.json",
+      "bytes": 6652,
+      "sha256": "b947f90e7a6aa9ea2419801f46a0e1596158137473f255adbace96f043c4a4f4"
+    }
+  ]
+}

@@ -431,7 +431,23 @@ export function candidateSnapshotMatchesDispatch(
       return false;
     }
     const expected = candidateSnapshotFailureSignature(queue.failingTests, queue.candidate);
-    return expected != null && snapshot.failureSignature === expected;
+    if (expected == null) return false;
+    if (snapshot.failureSignature === expected) return true;
+    // WI-10007398: the snapshot WRITER prefers the hold tick's leg measurement
+    // (`repairTickLegs.failingSignatures`) and then the verdict's own list, while the queue's
+    // signature carries forward every entry whose KIND that round did not measure. So an
+    // identity-bound frozen snapshot routinely names a NARROWER still-failing set than the queue
+    // (measured 2026-10-07: snapshot `@papercusp/desktop :: test`, queue additionally
+    // `@papercusp/operator-core :: test:lane-stateful`). Requiring string equality made the two
+    // writers' disagreement a permanent `release-fixer-skipped-snapshot` (212 skips 09-08..10-01).
+    // The ownership fields above already bind this snapshot to this exact queue row, and the
+    // dispatched fixer is handed the queue's list, so the question this guard answers is whether
+    // that list COVERS what the snapshot observed. A snapshot naming any failure the queue lacks
+    // still refuses (the queue is stale the other way); an empty observed set never matches here.
+    const observed = boundedFailureList(snapshot.failingTests);
+    if (observed.length === 0) return false;
+    const covered = new Set(boundedFailureList(queue.failingTests));
+    return observed.every((failure) => covered.has(failure));
   }
 
   if (!isCandidateSnapshotFresh(snapshot, nowMs, input.maxAgeMs)) return false;

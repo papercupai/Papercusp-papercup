@@ -1,0 +1,8 @@
+{
+  "unit": "cap-titanium50-gateway.service",
+  "checkedAt": "2026-10-14T23:42:13.423755+00:00",
+  "before": "MainPID=0\nActiveState=inactive\n",
+  "stopExitCode": 5,
+  "after": "MainPID=0\nActiveState=inactive\n",
+  "verifiedInactive": true
+}

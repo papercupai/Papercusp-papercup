@@ -33,7 +33,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
@@ -78,6 +78,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -320,6 +321,17 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     const rows = await recorded();
     expect(rows.map((r) => r.filename)).toEqual(['001-good.sql', '002-bad.sql', '003-later.sql']);
     expect(rows.find((r) => r.filename === '002-bad.sql')?.sha256).toBe(sha256(fixed));
+  });
+
+  it('preserves PL/pgSQL failure context when PostgreSQL provides no outer query position', async () => {
+    const dir = await makeSqlDir({
+      '001-inner.sql': "DO $guard$ BEGIN RAISE EXCEPTION 'inner role guard'; END $guard$;",
+    });
+    await expect(applyPendingMigrations({ client: sql, sqlDir: dir })).rejects.toThrow(
+      /PostgreSQL context: PL\/pgSQL function inline_code_block line 1 at RAISE/,
+    );
+    expect(await recorded()).toEqual([]);
+    expect((await sql.unsafe('SELECT 1 AS ok'))[0].ok).toBe(1);
   });
 
   it('failure without a query position still names the file, fresh-data context, and remedy', async () => {

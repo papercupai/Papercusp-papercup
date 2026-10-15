@@ -48,7 +48,7 @@
  *
  * Run: npm run test:file -- packages/operator-core/lib/desktop/desktop-audit.integration.test.ts
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { createOrgTestDb } from '../../test/_org-test-db';
@@ -59,6 +59,7 @@ import {
   desktopAuditAction,
   desktopAuditSubject,
   DESKTOP_AUDIT_ACTION_PREFIX,
+  hostedDesktopAuditRow,
 } from './desktop-audit';
 
 let db: OrgTestDb;
@@ -139,6 +140,46 @@ afterAll(async () => {
 });
 
 describe('recordDesktopAudit — the default (uninjected) Postgres write path', () => {
+  it('censuses hosted adapter detail persistence and database failure warnings with distinct content markers', async () => {
+    const workspaceId = ws();
+    const marker = 'customer-content-' + randomBytes(8).toString('hex');
+    const ignored = 'customer-unmapped-' + randomBytes(8).toString('hex');
+    const event = hostedDesktopAuditRow({
+      action: 'desktop_watch_started', organizationId: 'org-a', customerWorkspaceId: 'customer-a',
+      hostId: 'host-a', generation: 3, userId: 'user-a', channelId: 'channel-a', detail: marker,
+      ...{ customerPayload: ignored },
+    });
+    const errors: unknown[] = [];
+    recordDesktopAudit(event, { workspaceId: () => workspaceId, onError: (error) => errors.push(error) });
+    const rows = await waitForRows(workspaceId, 1);
+    expect(errors).toEqual([]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details).toMatchObject({ target: 'hosted', detail: marker });
+    expect(JSON.stringify(rows)).not.toContain(ignored);
+
+    // Customer tenant B cannot see tenant A's real audit row.
+    const { withWorkspace } = await import('@papercusp/db-org');
+    const foreign = await withWorkspace(ws(), (tx) => tx<Array<{ id: string }>>`
+      SELECT id FROM harness_shared.audit_log WHERE id = ${String(rows[0]!.id)}`);
+    expect(foreign).toEqual([]);
+
+    // Exercise the default console sink after an actual database rejection.
+    // Drizzle's error object may hold binding values even when its message does not.
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      recordDesktopAudit({ ...event, actor: null as unknown as string }, { workspaceId: () => ws() });
+      await waitFor(() => warning.mock.calls.length > 0);
+      expect(warning).toHaveBeenCalledTimes(1);
+      const [prefix, code] = warning.mock.calls[0]!;
+      expect(prefix).toBe('[desktop-audit] write failed:');
+      expect(code).toBe('desktop_audit_write_failed');
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(marker);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain('insert into');
+    } finally {
+      warning.mockRestore();
+    }
+  }, 60_000);
+
   it('lands a real audit_log row for a LOCAL desktop takeover, with details as a jsonb OBJECT', async () => {
     const workspaceId = ws();
     const at = 1_788_000_000_000;

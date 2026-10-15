@@ -45,6 +45,8 @@ export interface ResolvedHivePolicy {
 
 /** The raw federated columns of a hive_policy row (the signed subset). */
 export interface HivePolicyRowInput {
+  /** Optional compare-and-swap for a reviewed editor document; zero means absent. */
+  expectedPolicyVersion?: number;
   workspaceId: string;
   potHomeSlug: string;
   /** The canonical policy JSON TEXT (from canonicalizeHivePolicy). */
@@ -52,6 +54,10 @@ export interface HivePolicyRowInput {
   ownerPubkey: string;
   signature: string;
   policyVersion: number;
+}
+
+export class HivePolicyVersionConflictError extends Error {
+  constructor() { super('Policy changed since review. Reload before saving.'); this.name = 'HivePolicyVersionConflictError'; }
 }
 
 function pg(sql?: Sql): Sql {
@@ -165,16 +171,21 @@ export async function upsertHivePolicyRow(
 ): Promise<ResolvedHivePolicy> {
   const s = pg(sql);
   const now = Date.now();
+  if (input.expectedPolicyVersion !== undefined && input.policyVersion !== input.expectedPolicyVersion + 1) throw new HivePolicyVersionConflictError();
   const rows = (await s.unsafe(
     `INSERT INTO harness_shared.pot_policy
        (workspace_id, harness_slug, policy_json, owner_pubkey, signature, policy_version, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+     SELECT $1, $2, $3, $4, $5, $6, $7, $7
+       WHERE $8::bigint IS NULL OR $8 = 0 OR EXISTS (
+         SELECT 1 FROM harness_shared.pot_policy WHERE workspace_id = $1 AND harness_slug = $2 AND policy_version = $8
+       )
      ON CONFLICT (workspace_id, harness_slug) DO UPDATE SET
        policy_json    = EXCLUDED.policy_json,
        owner_pubkey   = EXCLUDED.owner_pubkey,
        signature      = EXCLUDED.signature,
        policy_version = EXCLUDED.policy_version,
        updated_at     = $7
+     WHERE $8::bigint IS NULL OR pot_policy.policy_version = $8
      RETURNING ${READ_COLS}`,
     [
       input.workspaceId,
@@ -184,8 +195,11 @@ export async function upsertHivePolicyRow(
       input.signature,
       input.policyVersion,
       now,
+      input.expectedPolicyVersion ?? null,
     ],
   )) as unknown as HivePolicyDbRow[];
+  if (!rows[0]) throw new HivePolicyVersionConflictError();
+  hivePolicyCache.delete(`${input.workspaceId}::${input.potHomeSlug}`);
   return rowToResolved(rows[0]!);
 }
 

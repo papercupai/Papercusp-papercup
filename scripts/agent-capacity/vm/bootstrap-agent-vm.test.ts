@@ -51,6 +51,21 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
     ]);
   });
 
+  it('downloads the Node build for the machine arch (x64, arm64 for c4a/t2a) and refuses any other arch', () => {
+    const nodeUrl = (stdout: string) =>
+      stdout.split('\n').find((l) => l.startsWith('RUN ') && l.includes('nodejs.org')) ?? '';
+    const x64 = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', MACHINE_ARCH: 'x86_64' });
+    expect(x64.status).toBe(0);
+    expect(nodeUrl(x64.stdout)).toMatch(/node-v[\d.]+-linux-x64\.tar\.xz /);
+    const arm = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', MACHINE_ARCH: 'aarch64' });
+    expect(arm.status).toBe(0);
+    expect(nodeUrl(arm.stdout)).toMatch(/node-v[\d.]+-linux-arm64\.tar\.xz /);
+    const other = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2', MACHINE_ARCH: 's390x' });
+    expect(other.status).toBe(7);
+    expect(other.stderr).toContain('BOOTSTRAP_FAILED no Node build for machine arch s390x');
+    expect(nodeUrl(other.stdout)).toBe('');
+  });
+
   it('bounds every apt fetch with a timeout and retries, so one stalled mirror connection cannot hang the bring-up', () => {
     const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2' });
     expect(r.status).toBe(0);
@@ -66,7 +81,7 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
   it('without CACHE_XFS_GB, leaves the cache on the boot disk (no xfsprogs, no mount)', () => {
     const r = boot({ CLAUDE_VERSION: '2.1.284', CODEX_VERSION: '0.159.2' });
     expect(r.status).toBe(0);
-    expect(r.stdout).not.toMatch(/xfsprogs|mkfs\.xfs|mount -o loop|fallocate/);
+    expect(r.stdout).not.toMatch(/xfsprogs|mkfs\.xfs|mount -o loop|fallocate|\/etc\/fstab/);
   });
 
   it('with CACHE_XFS_GB, mounts a reflink XFS volume at the cache before anything is cloned into it', () => {
@@ -92,6 +107,12 @@ describe('bootstrap-agent-vm.sh (DRY_RUN)', () => {
     expect(owned).toBeGreaterThan(mounted);
     expect(owned).toBeLessThan(at(`mkdir -p ${cache}/prepared`));
     expect(owned).toBeLessThan(at('git clone'));
+    // P-007: the mount must survive a restart (a spot reclaim), so it is persisted in fstab with
+    // nofail, idempotently, after the mount it describes.
+    const fstab = at('/etc/fstab');
+    expect(runs[fstab]).toContain(`grep -qsF '${img} ${cache} ' /etc/fstab ||`);
+    expect(runs[fstab]).toContain(`echo '${img} ${cache} xfs loop,nofail 0 0' >> /etc/fstab`);
+    expect(fstab).toBeGreaterThan(mounted);
   });
 
   it.each(['abc', '0', '-5', '1.5'])('refuses CACHE_XFS_GB=%s before running anything', (gb) => {

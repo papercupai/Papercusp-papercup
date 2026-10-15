@@ -38,7 +38,7 @@ import {
 } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import type { ClaimSpec, FilterNode } from './claim-spec';
@@ -156,6 +156,7 @@ function nullPlanSubject(id: string): ClaimSpecSubject {
     planItem: [],
     fleet: null,
     triageGate: null,
+    itemClass: 'work',
     age: 0,
     riskTier: null,
     redundancy: null,
@@ -184,7 +185,7 @@ beforeAll(async () => {
     ...COORD_SUBSCRIPTION_SUBSTRATE,
   });
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql
     .unsafe(

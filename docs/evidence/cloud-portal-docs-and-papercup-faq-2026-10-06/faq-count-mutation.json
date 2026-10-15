@@ -1,0 +1,96 @@
+{
+  "plan": "cloud-portal-docs-and-papercup-faq-2026-10-06",
+  "workItem": "WI-10006918",
+  "faqSha256": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+  "sourceContractSha256": "0c34fba93956b0cfa1ce8ff4fe0d02a1a8f43ffc6351fb5e3039cee5f024904e",
+  "testSha256": "124f6e17fdefbb79b8cf818c4789c69e2823a360230c7b418aa7323654c57271",
+  "testPath": "packages/operator-core/lib/harness/docs/public-manual-faq.test.ts",
+  "failedCase": "canonical public FAQ publication contract rejects a removed question and broken existing bookmark",
+  "controls": { "currentPassed": 7, "unmutatedOverlayPassed": 7 },
+  "mutant": { "testRunId": 20865121, "passed": 6, "failed": 1 },
+  "sharedSourceIntegrity": "verified byte-identical by mutation runner",
+  "runnerCommit": "bb530e861377845d392d0aa10e87d37869dcba20",
+  "runnerPath": "scripts/mutation-probe.sh",
+  "runnerSha256": "408fd44771e580cc0a7d2124e4451a266f54a28b13fcd390b831d5b74cd7e12a",
+  "cwd": ".",
+  "argv": [
+    "--file", "apps/papercusp-docs/scripts/source-contract.mjs",
+    "--mutate", "s/if \\(entries\\.length < 20\\)/if (false)/",
+    "--test", "test -f {} && npm run test:file -- packages/operator-core/lib/harness/docs/public-manual-faq.test.ts",
+    "--relocation", "overlay"
+  ],
+  "result": {
+    "baselineExit": 0,
+    "relocation": "overlay",
+    "expected": "caught",
+    "mutantParse": "ok",
+    "guardExit": 1,
+    "target": "copy-out",
+    "assertionEvidence": "test-file-assertion-failure",
+    "verdict": "caught",
+    "mutantLedger": "test_runs:20865121"
+  },
+  "clauseBindings": [
+    { "specId": "AUTO-BAR-R-4-P-004", "revision": 3, "mutationBinding": 27525, "pairedTestBinding": 27494 },
+    { "specId": "DOCS-FAQ-COUNT", "revision": 1, "mutationBinding": 27526, "pairedTestBinding": 27496 }
+  ],
+  "certification": { "clauses": 2, "passing": 2, "filed": 2, "refused": 0, "notPassing": 0 },
+  "scope": "Automated FAQ structure only; revised sensitive review, novice validation, owner acceptance and shipment are unverified.",
+  "currentProof": {
+    "observedAt": "2026-10-09T06:31:17.923Z",
+    "reason": "Astro configuration differs from the historical proof pin. FAQ, parser and test bytes remain unchanged; historical executions were not restamped.",
+    "specs": ["AUTO-BAR-R-4-P-004@3", "DOCS-FAQ-COUNT@1"],
+    "sourceCommit": "265aa9261bd5df9b72326353b663cf2ce9eb5e14",
+    "sourceRoot": "/tmp/papercusp-lint-as-committed-265aa9261b-LxQufw",
+    "sourceHashes": {
+      "apps/papercusp-docs/astro.config.mjs": "b49c893ae431be4c762d5bff4811f39ed199a310ec60c8e9ace1eb621cc4018e",
+      "apps/papercusp-docs/scripts/source-contract.mjs": "0c34fba93956b0cfa1ce8ff4fe0d02a1a8f43ffc6351fb5e3039cee5f024904e",
+      "apps/papercusp-docs/src/content/docs/faq.mdx": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+      "packages/operator-core/lib/harness/docs/public-manual-faq.test.ts": "124f6e17fdefbb79b8cf818c4789c69e2823a360230c7b418aa7323654c57271"
+    },
+    "positive": { "testRunId": 20951875, "passed": 7, "failed": 0, "skipped": 0, "exitCode": 0 },
+    "controls": {
+      "baselineTestRunId": 20951881,
+      "copyBaselineTestRunId": 20951883,
+      "passedEach": 7,
+      "skippedEach": 0
+    },
+    "mutant": { "testRunId": 20951886, "passed": 6, "failed": 1, "skipped": 0 },
+    "failedCase": "canonical public FAQ publication contract rejects a removed question and broken existing bookmark",
+    "mutationArgv": "Reuse the historical argv array above; executed by the committed runner in sourceRoot.",
+    "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+    "result": {
+      "verdict": "caught", "expected": "caught", "target": "copy-out",
+      "baselineExit": 0, "guardExit": 1, "mutantParse": "ok",
+      "assertionEvidence": "test-file-assertion-failure", "relocation": "overlay", "runnerExit": 0
+    },
+    "ledger": { "harnessSlug": "papercusp", "worktreeDirty": false, "isScratchConfig": false, "verifiedRunIds": [20951875, 20951881, 20951883, 20951886] },
+    "authorProofAdoption": {
+      "testRunId": 20951881,
+      "testBindings": { "AUTO-BAR-R-4-P-004@3": 32516, "DOCS-FAQ-COUNT@1": 32517 },
+      "mutationBindings": { "AUTO-BAR-R-4-P-004@3": 32470, "DOCS-FAQ-COUNT@1": 32471 },
+      "canonicalTestPath": "packages/operator-core/lib/harness/docs/public-manual-faq.test.ts",
+      "method": "Adopted the retained unmutated mutation baseline as ordinary test evidence. No test was replayed; the server verified measured paths against the recorded clean commit.",
+      "pathReachability": "The executed unit tests import and call the production FAQ validator on canonical content and copied fixtures; the Astro build hook reaches that validator through assertPublicManualSource. This is unit reachability, not a new build or browser execution.",
+      "oracleIndependence": "Literal minimum count, named question removal, bookmark replacement, alternate wording and invalid-guide fixtures establish expected outcomes independently of validator output. The shared anchor-array assertion is only corroborative.",
+      "retractedHistoricalBindings": [27491, 27492, 27494, 27496],
+      "retractionReason": "Source-stale historical proof was superseded by the current clean baseline and guarded mutation. Original ledger executions and artifacts remain historical.",
+      "adequacy": {
+        "evaluatorBuild": { "sha": "d740fc3802", "version": "0.0.0" },
+        "governing": true,
+        "clauses": [
+          { "specId": "AUTO-BAR-R-4-P-004", "revision": 3, "specFingerprint": "06b0220c5f13104e4dc3aaaead91164106949027ccd5a4608cb9e132dcf38868", "verdict": "pass", "wouldBlock": [] },
+          { "specId": "DOCS-FAQ-COUNT", "revision": 1, "specFingerprint": "3fe81d1da3a72de860bd3e5aed03a66a69ab736c8dbf921f044aa9328db48c71", "verdict": "pass", "wouldBlock": [] }
+        ],
+        "currentness": "Server-measured current for the active bindings of these two selected clauses; no stale or unknown binding remains in that selection.",
+        "limit": "Author adequacy only; no independent clause certificate, final plan acceptance or shipment is claimed."
+      }
+    },
+    "integrity": "All four source/test hashes match the canonical tree; maintained mutation runner verified byte-identical subject after the probe.",
+    "logs": [
+      { "path": "/tmp/su73-r4-current-positive.log", "sha256": "3b7178b04d7d2cde3233fb13516bc6ea4b1cb508bc67b852815ed8f7b0dd7bb6" },
+      { "path": "/tmp/su73-r4-current-mutation.log", "sha256": "1243fdb9f1be5444469e4e4e3b4f9c01a75f51fe15f0fb0f4046609a67d15bb6" }
+    ],
+    "scope": "Current automated FAQ publication structure and guard falsifiability. Sensitive-answer approval remains the separate exact-hash source review. This is not browser, actual Papercup answer, novice, independent acceptance or final shipment evidence."
+  }
+}

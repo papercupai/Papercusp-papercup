@@ -477,6 +477,18 @@ describe('P-013 SHADOW MODE — an absent or explicit `enforce` mode still enfor
 });
 
 describe('P-013 SHADOW MODE — never refuses, and records what enforcement would have done', () => {
+  it('a read-only promotion preflight returns the same shadow verdict without emitting it', async () => {
+    const observations: PlanAdmissionShadowObservation[] = [];
+    configurePlanAdmissionShadowSink({ record: (o) => void observations.push(o) });
+    configurePlanAdmissionPolicySource(async () => SHADOW_POLICY);
+    configurePlanAdmissionCertificateSource(withGovernance(null));
+    const subject = { slug: 'pilot-pot-plan', door: 'promotion' as const, row: rowWith('rev-1'), nowMs: NOW };
+    const preflight = await checkPlanAdmission({ ...subject, readOnly: true });
+    expect(observations).toEqual([]);
+    const actual = await checkPlanAdmission(subject);
+    expect(preflight).toEqual(actual);
+    expect(observations).toHaveLength(1);
+  });
   for (const scenario of SHADOW_SCENARIOS) {
     it(`${scenario.name}: admits, and reports the enforcing verdict verbatim`, async () => {
       const enforced = await runScenario(scenario, POLICY);

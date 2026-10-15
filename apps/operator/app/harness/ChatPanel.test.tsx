@@ -479,7 +479,8 @@ describe('ChatPanel — failed turn (EI-577)', () => {
     ];
     render(<ChatPanel slug={SLUG} chatId={CHAT} />);
 
-    const failed = await screen.findByText(/rate-limited — paused until later/i);
+    const failed = await screen.findByText('That turn did not complete. Try asking again.');
+    expect(screen.queryByText(/anthropic-direct: rate-limited/i)).toBeNull();
     const turn = failed.closest('.chat-turn');
     expect(turn?.className).toContain('chat-turn--error');
   });

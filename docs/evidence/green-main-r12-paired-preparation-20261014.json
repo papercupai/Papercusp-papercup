@@ -1,0 +1,2920 @@
+{
+  "schemaVersion": 1,
+  "kind": "r12-paired-preparation",
+  "status": "local-preparation-unapproved-no-operational-acceptance",
+  "referencePathConvention": "Home-directory references use ~. Native receipt text below normalizes only its root path to <repository-root>; archived original receipts and their hashes remain unchanged.",
+  "report": {
+    "reportId": "rpt_cd32bfd0-49df-4d2b-b912-6db895d2e6ae",
+    "path": "/reports?sel=rpt_cd32bfd0-49df-4d2b-b912-6db895d2e6ae",
+    "sourcePath": "docs/evidence/green-main-r12-preparation-progress-20261014.md",
+    "bodySha256": "4349cdf9dee5e96d4304f22052013abe6ebe44f7094e3c18e30d613ee495d4c7",
+    "requestKey": "c0523-r12-preparation-20261014-edition1",
+    "readbackExact": true,
+    "visibility": "owner",
+    "frictionRef": "EI-25698211877223668"
+  },
+  "workItemId": "WI-6554700010010682",
+  "planSlug": "green-main-cycle-time-2026-10-08",
+  "subjectPlanRevision": 129,
+  "activationAuditSeq": 5,
+  "rubricRevision": 5,
+  "reused": [
+    "scripts/lib/budgeted-task-scheduler.mjs",
+    "VerifierSourceReceipt",
+    "executeOperationalRun",
+    "existing test_runs ledger",
+    "existing managed preload/cgroup observations"
+  ],
+  "source": {
+    "head": "253089b56e4ff64c3208c4ad9e25400719a8a4e7",
+    "files": [
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "sha256": "286b770e32c1403508717c8e62e7399a5d10ffc1a00dbe932c20207e8bb6e4e4",
+        "mtimeNs": 1791975813653527600,
+        "equalsCommitted": false
+      },
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.d.mts",
+        "sha256": "9eee5e9f6492901dc1ce5c7f31ebc64c68c6676ff954463a9cfedb129a8f289c",
+        "mtimeNs": 1791975606105532700,
+        "equalsCommitted": false
+      },
+      {
+        "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "sha256": "27ae95bfd2381432341422dc6de89da1bd86d3886adf4489e6aef5d27c4c778d",
+        "mtimeNs": 1791975813654527700,
+        "equalsCommitted": false
+      },
+      {
+        "path": "packages/operator-core/lib/release/green-main-slo.ts",
+        "sha256": "bba4710bc15c9d5a955eb1a67d7b64f885730dea5c961b3e039f7b623afaf8be",
+        "mtimeNs": 1791976105813051600,
+        "equalsCommitted": false
+      }
+    ]
+  },
+  "functions": [
+    "prepareBudgetedTaskComparison",
+    "evaluateBudgetedTaskComparison",
+    "readBudgetedTaskComparisonArtifacts",
+    "executeGreenMainThroughputComparison"
+  ],
+  "verification": {
+    "scheduler": {
+      "passed": 145,
+      "requested": 1,
+      "executed": 1,
+      "matched": 1,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "exitCode": 0,
+      "log": "~/.papercusp/scratch/c0523-r12-comparison-tests-v3.log",
+      "scope": "maintained local unit and real temporary artifact IO fixtures; no benchmark/cohort"
+    },
+    "slo": {
+      "passed": 70,
+      "requested": 1,
+      "executed": 1,
+      "matched": 1,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "exitCode": 0,
+      "log": "~/.papercusp/scratch/c0523-r12-slo-tests.log",
+      "scope": "existing local SLO unit suite; no native throughput execution"
+    },
+    "typecheck": {
+      "status": "passed",
+      "exitCode": 0,
+      "scope": "Named three paths plus routed/importing legs; no whole-suite claim. Native wrapper command serialization changed during the running check without changing its string[] type; wrapper remains unexecuted.",
+      "log": "~/.papercusp/scratch/c0523-r12-comparison-tsc-v3.log",
+      "previousFailure": "Native assertions initially omitted required evidence field; fixed before v3. v2 exit1 preserved.",
+      "previousLog": "~/.papercusp/scratch/c0523-r12-comparison-tsc-v2.log"
+    },
+    "nodeSyntax": "passed",
+    "diffCheck": "passed"
+  },
+  "constraints": {
+    "D020": "hold preserved; no cohort launched or prerequisite retry",
+    "P006": "blocked/unassigned; preparation stays on registered full-plan umbrella",
+    "LIVE_GATE_OPS": "none",
+    "planAndRubric": "129/audit5/rubric5 preserved; no review/amendment/BAR apply",
+    "operationalAcceptance": false
+  },
+  "remaining": [
+    "Verify actual D020 prerequisite receipt before any comparison",
+    "Freeze NEW actual complete gate selection and complete source/dependency/runtime closure",
+    "Produce full original four-cohort ABBA pair with exact no-skip/substitution/containment/headroom/start-order artifacts",
+    "Resolve original population refs/hashes through native current-build producer; require serializer/source runtime containment",
+    "Complete all forms before one outside-lineage amendment review; statistical semantics unapproved",
+    "P028 actual pickup/cadence; actual seven-day P018; strict idle60; genuine alarm onset/delivery; shipped D045 first requests/P031 historical cause; EI259325 original cause unknown"
+  ],
+  "nativeWrapperIntegration": {
+    "issueId": "EI-25953680209463431",
+    "issueState": "done",
+    "completionAuthority": "committed",
+    "rootCause": "The wrapper captured caller-owned args/pins across asynchronous native executor checks, so its artifact reader could observe a different original population than the recorded command.",
+    "fix": "Detach scope, runtime units and nested cohort pins synchronously before the first dynamic import.",
+    "guardPath": "packages/operator-core/lib/release/green-main-throughput.integration.test.ts",
+    "passed": 4,
+    "requested": 1,
+    "executed": 1,
+    "matched": 1,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "exitCode": 0,
+    "redLog": "~/.papercusp/scratch/c0523-r12-wrapper-red-v2.log",
+    "greenLog": "~/.papercusp/scratch/c0523-r12-wrapper-green.log",
+    "typecheckLog": "~/.papercusp/scratch/c0523-r12-wrapper-tsc.log",
+    "typecheck": "Scoped2file exit0; importing legs clean. No whole-tree claim.",
+    "committedAtRead": "18777cf5623f8783ee87d0316eb050ef98582c17",
+    "sourceSha256": "13c67c9af425582bf846510faeb88d84569bf5b14e14d1c3d864b8d628da4916",
+    "guardSha256": "e4a4a9f80e95e5821f51187bd22b9a8870df579734cdd931122065ac8d39309f",
+    "scope": "Real artifact IO, evaluator and native executor; snapshot/runtime/persist boundaries are fixtures. No real benchmark, serving-runtime observation or operational acceptance.",
+    "redQualification": "Mutation case failed against original wrapper; two rejection controls passed. A separate repository-root fixture assertion was corrected. First red log is a >=2-task fixture setup failure, not causal evidence.",
+    "sqlForm": {
+      "component": "throughput",
+      "status": "draft-unapproved-unbound",
+      "syntaxAndColumnReferences": "valid",
+      "method": "Read-only EXPLAIN against explicit env localhost5432 with non-evidence sentinels",
+      "taskId": "0mv81908bbkxe2o1l08",
+      "parametersBound": false,
+      "operationalAcceptance": false
+    },
+    "handlesDrained": [
+      16329,
+      4093,
+      50036,
+      71996,
+      56799
+    ],
+    "syncFire": "Background-worker attributed git-sync fire returned firedtrue/in_progress; not retried. Independent source reads prove both fix and guard committed."
+  },
+  "wrapperReport": {
+    "reportId": "rpt_be99026c-27a0-4178-b173-95f6d23e5163",
+    "path": "/reports?sel=rpt_be99026c-27a0-4178-b173-95f6d23e5163",
+    "sourcePath": "docs/evidence/green-main-r12-wrapper-progress-20261014.md",
+    "bodySha256": "27a8e6039e590617fd98335769df544f54518ded57be0295ee9d61b2203d672d",
+    "requestKey": "c0523-r12-wrapper-progress-20261014-edition1",
+    "readbackExact": true,
+    "visibility": "owner"
+  },
+  "evidencePathGuardRepair": {
+    "scope": "This session's six named evidence/report paths only",
+    "change": "Portable ~/.papercusp/scratch references preserve the original log targets; do not edit or restamp the logs.",
+    "rootCause": "Absolute machine-home diagnostic paths were copied into shipped evidence docs.",
+    "guardItems": [
+      "WI-6554700010012745",
+      "WI-6554700010012746",
+      "WI-6554700010012747",
+      "WI-6554700010012748",
+      "WI-6554700010012749",
+      "WI-6554700010012750",
+      "WI-6554700010012782",
+      "WI-6554700010012783"
+    ],
+    "verification": "All six named files have zero findings using the canonical box/literal detectors and the live resolved literal set; portable original log targets exist; JSON parses. Full-tree guard commands still exit1 on existing dream/study/cycle-events.jsonl findings, outside this owned evidence scope.",
+    "guardLogs": [
+      "~/.papercusp/scratch/c0523-evidence-box-guard.log",
+      "~/.papercusp/scratch/c0523-evidence-literal-guard.log"
+    ],
+    "publishedReportHistory": "The original published report bodies and hashes remain immutable. Source MD path corrections do not rewrite those historical bodies. The current wrapper report above was published after correction and read back exactly.",
+    "settlement": {
+      "status": "done-committed",
+      "verifiedAt": "2026-10-14T12:04:25.965Z",
+      "scope": "Six named evidence files; the following hashes describe the corrected committed bytes before this settlement record was appended.",
+      "committedAtRead": "af04f0fa03df7edcc3c9cd1d2193f0f29eedea88",
+      "canonicalGuardProof": [
+        {
+          "path": "docs/evidence/green-main-acceptance-recovery-20261014.json",
+          "sha256": "7c40556eca305bf63104e8cc8a64b331f8f47122a87d10ef1e698b8809765525",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 3,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 3,
+            "identityLiterals": 3
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-native-receipt-progress-20261014.md",
+          "sha256": "fd8f048fa2412e6aee68cc339e4e46466303cd855320a9fc1a742d0b9899b9a8",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 3,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 1,
+            "identityLiterals": 1
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-native-receipt-settlement-20261014.json",
+          "sha256": "c598ccd60d8d6403d01e936d722fe2b27806e24095d6f7efbc66add111295141",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 3,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 3,
+            "identityLiterals": 3
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-r12-paired-preparation-20261014.json",
+          "sha256": "1d9fb8d340b3a489b3e8528d45c4a7fbc89a8e21aca75c9a9f017eb0591c9296",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 9,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 9,
+            "identityLiterals": 8
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-r12-preparation-progress-20261014.md",
+          "sha256": "4349cdf9dee5e96d4304f22052013abe6ebe44f7094e3c18e30d613ee495d4c7",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 0,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 0,
+            "identityLiterals": 0
+          }
+        },
+        {
+          "path": "docs/evidence/green-main-r12-wrapper-progress-20261014.md",
+          "sha256": "27a8e6039e590617fd98335769df544f54518ded57be0295ee9d61b2203d672d",
+          "committedMatch": true,
+          "boxIdentity": 0,
+          "identityLiterals": 0,
+          "portableLogReferences": 3,
+          "logTargetsExist": true,
+          "prefixRestorationControl": {
+            "boxIdentity": 1,
+            "identityLiterals": 1
+          }
+        }
+      ],
+      "completionReceipts": [
+        {
+          "id": "WI-6554700010012745",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012746",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012747",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012748",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012749",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012750",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012782",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        },
+        {
+          "id": "WI-6554700010012783",
+          "ok": true,
+          "appliedState": "done",
+          "completionAuthority": "committed"
+        }
+      ],
+      "recurrenceGuard": "Existing maintained identity guard commands and their shared edit-time matcher; no new detector or exception.",
+      "limits": "No full-tree guard, current gate, operational R12 or shipment verdict. The prior full-tree guard logs remain historical evidence only."
+    }
+  },
+  "guardSettlementReport": {
+    "reportId": "rpt_9aff8ed9-9635-473c-bb94-9efde069ad08",
+    "path": "/reports?sel=rpt_9aff8ed9-9635-473c-bb94-9efde069ad08",
+    "requestKey": "c0523-evidence-guard-settlement-20261014-edition1",
+    "bodySha256": "e0ce979fe5dfbdcc3664c26c95a9186c2fd27d949c5b09c719242bc5919622ab",
+    "visibility": "owner",
+    "readbackExact": true,
+    "sourceEvidencePath": "docs/evidence/green-main-r12-paired-preparation-20261014.json"
+  },
+  "fullSelectionPreparation": {
+    "status": "native-maintained-selection-preview-partial-no-operational-acceptance",
+    "reuses": [
+      "scripts/affected-tests.mjs",
+      "scripts/lib/related-tests.mjs#staticImportClosure",
+      "libs/test-config/src/verifier-source.ts#VerifierSourceReceipt",
+      "scripts/lib/budgeted-task-scheduler.mjs#readBudgetedTaskComparisonArtifacts"
+    ],
+    "writerFindings": [
+      "The maintained --dry/--dry-run route stops before taskContexts, the original duration history read and the execution boundary. Its status=dry-run tasks field is a task count; it does not enumerate every actual test file or attest runtime transforms.",
+      "taskContexts selects relatedFiles only when a concrete list exists; unrestricted lanes use null. Treating that null as an empty file set would undercount the original gate population.",
+      "staticImportClosure records static source and unresolved edges. Bare imports are excluded by that static mechanism; it cannot replace a dependency receipt or final transformed runtime closure.",
+      "The native artifact reader independently pins selection, source census, dependency bytes, runtime closure, every original estimate and all four original cohort/child receipts. Preparation must produce those original artifacts before binding any throughput parameter."
+    ],
+    "nativePreview": {
+      "command": "node scripts/affected-tests.mjs --all --print-selection",
+      "log": "~/.papercusp/scratch/c0523-full-selection-preparation-v2.log",
+      "logSha256": "c60e178be448ce38c7876710e92c72ea18f2307fbe39d7af5eb10116d3d0ddad",
+      "nativeExitCode": 0,
+      "coverage": "partial",
+      "files": 9902,
+      "enumeratedTasks": 104,
+      "unenumeratedTasks": 8,
+      "overlappingFiles": 0,
+      "executed": false,
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false,
+      "scope": "Current local maintained --all selector preview, not a frozen comparison population, runtime receipt or full-gate verdict.",
+      "residue": [
+        "@papercusp/web :: lint:el-tools",
+        "@papercupai/operator-docs :: test",
+        "@papercupai/papercusp-docs :: test",
+        "@bug-drill/fixture :: test",
+        "@papercusp/cli :: test",
+        "@papercusp/desktop :: test",
+        "@papercusp/perf-test-wdio :: test",
+        "@papercusp/cupboard-worker :: test"
+      ]
+    },
+    "selectorExtension": {
+      "reuses": [
+        "scripts/affected-tests.mjs final maintained tasks",
+        "scripts/lib/related-tests.mjs",
+        "scripts/resolve-vitest-config-contracts.mjs native resolveConfig",
+        "Vitest tinyglobby engine/options",
+        "scripts/workspace-test.mjs#workspaceTestInvocation"
+      ],
+      "behavior": "Optional --print-selection resolves actual cwd, unit lanes, include/exclude and related-filter lists without collection or test execution. Unsupported commands and source/typecheck/project configs remain named residue. Config-owned template files outside a workspace are accepted only inside the repository; task overlaps prevent complete coverage.",
+      "sourceAtRead": {
+        "head": "d97dfa9d0fb11485b553db3840f44b68a558c170",
+        "files": [
+          {
+            "path": "scripts/affected-tests.mjs",
+            "sha256": "5ff78ad6a0fe5ac69d3aaece385425445c7fb21cef48b4d40a298cdfe81ed1c3",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/lib/related-tests.mjs",
+            "sha256": "c753b314fc32cc4973bad7dd2e67d2c69c9949db1ca40b320eee98732551453d",
+            "committedMatch": false
+          },
+          {
+            "path": "scripts/resolve-vitest-config-contracts.mjs",
+            "sha256": "9b3098ea621bfa29049cad65defa0d4a666201898d1ca046e94acbd60528239d",
+            "committedMatch": false
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+            "sha256": "0cdd998ea2933174e803aa89f14c204b29776b1644062eb73d687ce0de42a820",
+            "committedMatch": false
+          }
+        ],
+        "limits": "Named local bytes only. Complete import/dependency/final-transform/runtime closure is unproven; automatic settlement is separate."
+      },
+      "verification": {
+        "nativeTestRunId": "0f5c02fc-92ba-402b-bd7f-fdac8f81fd39",
+        "ledgerRunIds": [
+          21244615,
+          21244616,
+          21244617
+        ],
+        "passed": 88,
+        "failed": 0,
+        "skipped": 0,
+        "testFiles": 3,
+        "testPaths": [
+          "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+          "packages/operator-core/lib/test-executor-runnability.test.ts",
+          "packages/operator-core/lib/__tests__/affected-tests-selected-files-line.test.ts"
+        ],
+        "positiveNativeControl": "Actual lane cwd/filter/exclude resolution and config-owned outside-workspace files are asserted through the changed native bridge; this does not run the fixture test files.",
+        "typecheckLog": "~/.papercusp/scratch/c0523-selection-preparation-tsc-v3.log",
+        "typecheck": "Scoped one test file, 0 errors, exit0; no full-project claim.",
+        "syntaxAndDiffCheck": "Three changed .mjs syntax checks and named-path diff check pass.",
+        "retainedRedEvidence": "~/.papercusp/scratch/c0523-selection-preparation-tests.log preserves the initial fixture path failure and committed child substitution; tsc.log preserves the initial ES2022 findLast diagnostic. Both were corrected before final native verification."
+      }
+    },
+    "report": {
+      "reportId": "rpt_d56a8f2a-b527-4aa2-951d-77d4ef7ed375",
+      "path": "/reports?sel=rpt_d56a8f2a-b527-4aa2-951d-77d4ef7ed375",
+      "requestKey": "c0523-selection-preparation-20261014-edition1",
+      "sourcePath": "docs/evidence/green-main-selection-preparation-progress-20261014.md",
+      "bodySha256": "b7df05be1962bf250ca2a3c713e94a02f80f2b646752052bd7a4e09f2c365d86",
+      "visibility": "owner",
+      "readbackExact": true,
+      "authorOwnerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894"
+    },
+    "nativeRunnerExtension": {
+      "status": "native-maintained-selection-preview-partial-no-operational-acceptance",
+      "reuses": [
+        "scripts/lib/related-tests.mjs#enumerateAffectedTaskSelection",
+        "scripts/lib/executed-source-map.mjs#scriptCommandWords",
+        "Node native globSync after npm POSIX shell path expansion",
+        "Vitest createVitest/globTestSpecifications/close"
+      ],
+      "behavior": "Follows acyclic single local npm aliases while retaining original commands and named pre/post lifecycle commands; resolves explicit TEMPLATE_CHECKS_CONFIG; resolves Node test path populations without importing tests; resolves Vitest project inheritance, in-source tests and typecheck pools through native specification discovery without collection. Unsupported arguments/chains remain residue.",
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection",
+        "log": "~/.papercusp/scratch/c0523-full-selection-preparation-v3.log",
+        "logSha256": "cb6a9e1562f8f25d132d5695f24b731acc1b330d72bf898deebbb97409af8e8b",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "files": 9979,
+        "enumeratedTasks": 108,
+        "unenumeratedTasks": 4,
+        "overlappingFiles": 0,
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false,
+        "resolvedPriorResidue": [
+          "@bug-drill/fixture :: test",
+          "@papercusp/cli :: test",
+          "@papercusp/perf-test-wdio :: test",
+          "@papercusp/cupboard-worker :: test"
+        ],
+        "residue": [
+          "@papercusp/web :: lint:el-tools",
+          "@papercupai/operator-docs :: test",
+          "@papercupai/papercusp-docs :: test",
+          "@papercusp/desktop :: test"
+        ],
+        "scope": "Current-local maintained selection snapshot. Counts describe this original log, not the moving tree. v2 above is preserved as a historical preparation snapshot. No frozen comparison population or runtime receipt."
+      },
+      "verification": {
+        "nativeTestRunId": "96eb24c2-b4dc-484d-8290-daadb04bd63a",
+        "ledgerRunIds": [
+          21244661,
+          21244662,
+          21244663
+        ],
+        "testPaths": [
+          "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+          "packages/operator-core/lib/test-executor-runnability.test.ts",
+          "packages/operator-core/lib/__tests__/affected-tests-selected-files-line.test.ts"
+        ],
+        "passed": 92,
+        "failed": 0,
+        "skipped": 0,
+        "testFiles": 3,
+        "receipt": "~/.papercusp/scratch/c0523-selection-native-runners-tests-v2.json",
+        "receiptSha256": "f18a70f62b684e1ae82e53eddc097b2c69fe61f9f8fd19132dd8e56ca8aa2acc",
+        "positiveNativeControl": "Fixtures throw if imported or executed. Native project/in-source/typecheck discovery and Node shell-before-native glob expansion are asserted through actual producer paths. Alias-cycle, unknown env, unsupported Node flags and mixed-chain controls remain partial.",
+        "typecheck": "Scoped one test file, zero errors, exit0. Initial two union-property test diagnostics corrected with explicit metadata narrowing; initial red log retained.",
+        "typecheckLog": "~/.papercusp/scratch/c0523-selection-native-runners-tsc-v2.log",
+        "typecheckLogSha256": "2d12e2a92ed115a490fc7bfa011b96242fb2024bddeda27e9f2279ece048670b"
+      },
+      "sourceAtRead": {
+        "head": "44df8c581ee86a53dc2bf69e2b35b196bcce6159",
+        "files": [
+          {
+            "path": "scripts/lib/related-tests.mjs",
+            "sha256": "bf8d11933bc4b94f386b2156ef91c4e963ffbc58ec35b1f6cf4cdf3f14904fac",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/resolve-vitest-config-contracts.mjs",
+            "sha256": "573d0d0fc709e23ba5b2d36892a0937cdb120523ff07f17e88b68a40e364e8f5",
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+            "sha256": "fea8dc37772e5ab43cfcecbc2097ce0a318a0f41d91f71934f85a3bac03180b8",
+            "committedMatch": true
+          }
+        ],
+        "limits": "Named source/test bytes have automatically settled. Whole import/dependency/final-transform/runtime closure is unproven; document settlement and operational acceptance are separate."
+      },
+      "report": {
+        "reportId": "rpt_651a9cf7-3c51-4e3c-b634-08dda27df657",
+        "guiReaderPath": "/reports?sel=rpt_651a9cf7-3c51-4e3c-b634-08dda27df657",
+        "returnedLegacyPath": "/reports/rpt_651a9cf7-3c51-4e3c-b634-08dda27df657",
+        "readerRouteVerifiedIn": "apps/operator-vite/src/components/reports/ReportsRoute.tsx",
+        "sourcePath": "docs/evidence/green-main-native-runner-selection-progress-20261014.md",
+        "bodySha256": "047013e430a70fda52c64de7dfd73985cd99e311094ac69761b6d5b53cb80db5",
+        "visibility": "owner",
+        "readbackExact": true,
+        "authorOwnerId": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+        "transportIdempotencyKey": "6d466409-40d5-42a6-a600-819407c0f6a3",
+        "requestKey": null,
+        "routeLimitation": "Pinned staging MCP schema discovery timed out before any publication. Captured as EI-25959982511553855, root cause unknown. The available Reports service publishes and reads back the complete body but its schema lacks request_key and returns a legacy reader path. This edition was sent once with the stable transport idempotency key; a handler-level request_key is not claimed. Never republish blindly or change this payload on retry."
+      },
+      "remainingWriterFindings": [
+        "Astro's actual CLI calls astro sync before @astrojs/check unless noSync is specified. A direct AstroCheck.getRootFileNames probe is a pre-sync discovery only and cannot certify that actual command population.",
+        "The pre-sync probe is preserved at ~/.papercusp/scratch/c0523-astro-selection-probe.json, sha256 93f854e5fce29635723d79a2dd74925e3e25bf489cdc65e72f6bfc93b6c11a84. It ran no diagnostics, sync or tests and is not acceptance evidence.",
+        "The desktop test command includes multiple Node scripts plus the maintained selftest aggregate. The aggregate's completeness and pipefail source guards are real command obligations as well as its named shell test files; a Node-only population would omit them.",
+        "The voice-tool guard is a standalone static check over its maintained sync and registry inputs. It cannot be represented honestly by fabricating a test-file result.",
+        "The comparison preparer presently requires every task to own nonempty selected files. Remaining command checks need an explicit original obligation representation and native receipts; removing those checks to satisfy the file partition is forbidden."
+      ]
+    },
+    "next": "Reuse the later native Astro diagnostics, fixture pretest, post-fix voice and desktop aggregate command receipts at matching source/log hashes. Their earlier preparation snapshots below remain historical. Extend the existing comparison/native reader only with matching original command obligations and ordered-step receipts; standalone command exits do not prove the full chain. Full source/dependency/final-transform closure and four real ABBA runs remain unproduced; D020/P006 and all original plan residue stay held/unapproved/unshipped.",
+    "postSyncAstroPreparation": {
+      "status": "post-sync-population-preparation-partial-local-tests-pass",
+      "reuses": [
+        "scripts/resolve-vitest-config-contracts.mjs native config bridge",
+        "installed Astro sync and AstroCheck.linter.getRootFileNames",
+        "existing affected selection and command obligations"
+      ],
+      "behavior": "Explicit --sync-astro with --print-selection synchronizes each Astro workspace in a fresh process before using its native checker file population; excludes Vue/Svelte exactly as AstroCheck.lint does. Every original astro check stays an unexecuted command obligation. Default discovery records unsynchronized Astro tasks as residue.",
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection --sync-astro",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "files": 10150,
+        "representedTasks": 112,
+        "unenumerated": [
+          {
+            "task": "@papercusp/web :: lint:el-tools",
+            "reason": "unexecuted-command-obligations",
+            "command": "node scripts/el-tools-check.mjs"
+          },
+          {
+            "task": "@papercupai/papercusp-docs :: test",
+            "reason": "overlapping-chain-file-population",
+            "command": "astro check && vitest run"
+          },
+          {
+            "task": "@papercupai/papercusp-docs :: test",
+            "step": 0,
+            "command": "astro check",
+            "reason": "unexecuted-command-obligations"
+          },
+          {
+            "task": "@papercusp/desktop :: test",
+            "step": 7,
+            "command": "bash bin/lib/run-selftests.sh",
+            "reason": "unexecuted-command-obligations"
+          },
+          {
+            "task": "@papercupai/operator-docs :: test",
+            "reason": "unexecuted-command-obligations",
+            "command": "astro check"
+          },
+          {
+            "task": "@bug-drill/fixture :: test",
+            "reason": "unexecuted-lifecycle-command",
+            "command": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run"
+          }
+        ],
+        "overlaps": [],
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false
+      },
+      "astroPopulations": [
+        {
+          "task": "@papercupai/operator-docs :: test",
+          "files": [
+            "apps/operator-docs/.astro/types.d.ts",
+            "apps/operator-docs/astro.config.mjs",
+            "apps/operator-docs/preview-libs.mjs",
+            "apps/operator-docs/scripts/emit-md-twins.ts",
+            "apps/operator-docs/src/content.config.ts"
+          ],
+          "inputs": [
+            {
+              "path": "apps/operator-docs/.astro/types.d.ts",
+              "sha256": "38ea3df3779cce222cd51ba2c9dc9ac053a859208d3097aa3165f70c71517736"
+            },
+            {
+              "path": "apps/operator-docs/astro.config.mjs",
+              "sha256": "6993472fdbf21ab9bbcda9345a33613dc545263ac1a495a468dbd41fd3b33f61"
+            },
+            {
+              "path": "apps/operator-docs/package.json",
+              "sha256": "12b11ef288855eda499eb22d0ecbb173e9dd76a71bf4f757397887f6fdbb739a"
+            },
+            {
+              "path": "apps/operator-docs/preview-libs.mjs",
+              "sha256": "9d51db24d777db4f8e15511fde4986988587bdf2cdbe87c036a9d92e5766d792"
+            },
+            {
+              "path": "apps/operator-docs/scripts/emit-md-twins.ts",
+              "sha256": "bf6c2985def802869f4abccecc5135d6712997f611fa8d263f0e3cc5fec0830e"
+            },
+            {
+              "path": "apps/operator-docs/src/content.config.ts",
+              "sha256": "008b96738e944d342ff4509b61b2c642ba6e65856be5333f33c77b4cf4445e9a"
+            },
+            {
+              "path": "apps/operator-docs/tsconfig.json",
+              "sha256": "b5b0a5b04a14cddd7713c5e1c82e86c79c17c2f86b170e26e9b170b3d5e01cd9"
+            },
+            {
+              "path": "node_modules/@astrojs/check/dist/index.js",
+              "sha256": "b05f1c9b260328d1346e181692b129b6b0857242a280ed4c9adee91a9a86120a"
+            },
+            {
+              "path": "node_modules/@astrojs/language-server/dist/check.js",
+              "sha256": "976e0f5ec338819176946d70540b30e849c991f38628f8a2dc7f3ffeeedb5575"
+            },
+            {
+              "path": "node_modules/@astrojs/language-server/dist/index.js",
+              "sha256": "fcb349a2e8cfc8b1d41a069ab5aecd7d3f5cfcacfdec627b8a04c61c6043c5ab"
+            },
+            {
+              "path": "node_modules/astro/dist/cli/check/index.js",
+              "sha256": "b94135f773271f3c1b1d3a88b91bd99b106da53f896c18727c8275a7b8409671"
+            },
+            {
+              "path": "node_modules/astro/dist/core/sync/index.js",
+              "sha256": "cea429c3c942636b37eb206665883200289cd1f54df3129a987fae84519a86da"
+            },
+            {
+              "path": "node_modules/astro/package.json",
+              "sha256": "2103538a5b3908590beef260c7e7831eb635b05d0e7aa7dafac367982f7820a7"
+            },
+            {
+              "path": "node_modules/typescript/lib/typescript.js",
+              "sha256": "d3f3cd2b04b7f466f4484df921b744223f7bd1f3e353ec9110bdf52695b983d5"
+            }
+          ],
+          "sync": {
+            "status": "completed",
+            "beforePopulation": true
+          },
+          "diagnosticsExecuted": false
+        },
+        {
+          "task": "@papercupai/papercusp-docs :: test",
+          "files": [
+            "apps/papercusp-docs/.astro/types.d.ts",
+            "apps/papercusp-docs/astro.config.mjs",
+            "apps/papercusp-docs/lib/first-task.test.ts",
+            "apps/papercusp-docs/lib/pagefind-output.test.ts",
+            "apps/papercusp-docs/lib/public-build-parity.test.ts",
+            "apps/papercusp-docs/scripts/source-contract.d.mts",
+            "apps/papercusp-docs/src/components/Search.astro",
+            "apps/papercusp-docs/src/content.config.ts",
+            "apps/papercusp-docs/vitest.config.ts"
+          ],
+          "inputs": [
+            {
+              "path": "apps/papercusp-docs/.astro/types.d.ts",
+              "sha256": "38ea3df3779cce222cd51ba2c9dc9ac053a859208d3097aa3165f70c71517736"
+            },
+            {
+              "path": "apps/papercusp-docs/astro.config.mjs",
+              "sha256": "b49c893ae431be4c762d5bff4811f39ed199a310ec60c8e9ace1eb621cc4018e"
+            },
+            {
+              "path": "apps/papercusp-docs/lib/first-task.test.ts",
+              "sha256": "59af0c1a8b674e122780983e787b6a8f024863e69b6b697745f4d3a5ad7c1092"
+            },
+            {
+              "path": "apps/papercusp-docs/lib/pagefind-output.test.ts",
+              "sha256": "42fb06afa19b1591fc2009cbfa5db95b0b7216215237326457e658b79a25cb0b"
+            },
+            {
+              "path": "apps/papercusp-docs/lib/public-build-parity.test.ts",
+              "sha256": "d6ef273beb90ae21c1133221310783800847147265d92938d72c4bf5e7e3eb60"
+            },
+            {
+              "path": "apps/papercusp-docs/package.json",
+              "sha256": "c89117fe9e0380b1858e930d6e494c47019e6211a763f2eb60f81725271c0462"
+            },
+            {
+              "path": "apps/papercusp-docs/scripts/source-contract.d.mts",
+              "sha256": "505422ddfd98051a3605eef8d8b74d5a0cc119b18b2fb4a2e0407fe93f10627a"
+            },
+            {
+              "path": "apps/papercusp-docs/src/components/Search.astro",
+              "sha256": "03b3df097b9f30d82446fcf9a7ae0cd9d68bdba7dec5a29bcf915017a2f2af0d"
+            },
+            {
+              "path": "apps/papercusp-docs/src/content.config.ts",
+              "sha256": "ee756dfba4122d2acc94a39b2555d9f200fff56a87a8c0b10f9cd01df26a8b62"
+            },
+            {
+              "path": "apps/papercusp-docs/tsconfig.json",
+              "sha256": "b5b0a5b04a14cddd7713c5e1c82e86c79c17c2f86b170e26e9b170b3d5e01cd9"
+            },
+            {
+              "path": "apps/papercusp-docs/vitest.config.ts",
+              "sha256": "18ac79017161e9dd04f11a105e4ccd7af3748089c3672d08d916426ac0a57c0e"
+            },
+            {
+              "path": "node_modules/@astrojs/check/dist/index.js",
+              "sha256": "b05f1c9b260328d1346e181692b129b6b0857242a280ed4c9adee91a9a86120a"
+            },
+            {
+              "path": "node_modules/@astrojs/language-server/dist/check.js",
+              "sha256": "976e0f5ec338819176946d70540b30e849c991f38628f8a2dc7f3ffeeedb5575"
+            },
+            {
+              "path": "node_modules/@astrojs/language-server/dist/index.js",
+              "sha256": "fcb349a2e8cfc8b1d41a069ab5aecd7d3f5cfcacfdec627b8a04c61c6043c5ab"
+            },
+            {
+              "path": "node_modules/astro/dist/cli/check/index.js",
+              "sha256": "b94135f773271f3c1b1d3a88b91bd99b106da53f896c18727c8275a7b8409671"
+            },
+            {
+              "path": "node_modules/astro/dist/core/sync/index.js",
+              "sha256": "cea429c3c942636b37eb206665883200289cd1f54df3129a987fae84519a86da"
+            },
+            {
+              "path": "node_modules/astro/package.json",
+              "sha256": "2103538a5b3908590beef260c7e7831eb635b05d0e7aa7dafac367982f7820a7"
+            },
+            {
+              "path": "node_modules/typescript/lib/typescript.js",
+              "sha256": "d3f3cd2b04b7f466f4484df921b744223f7bd1f3e353ec9110bdf52695b983d5"
+            }
+          ],
+          "sync": {
+            "status": "completed",
+            "beforePopulation": true
+          },
+          "diagnosticsExecuted": false
+        }
+      ],
+      "chainOverlap": [
+        "apps/papercusp-docs/lib/first-task.test.ts",
+        "apps/papercusp-docs/lib/pagefind-output.test.ts",
+        "apps/papercusp-docs/lib/public-build-parity.test.ts"
+      ],
+      "verification": {
+        "status": "local-focused-tests-pass-no-operational-acceptance",
+        "lastFullSuite": "v7: 75 pass; requested1/executed1/matched1; skips0/childSubstituted0/nativeexit0. Current-local source at ab999ce99e with one dirty test path; native bridge source committed. Exact log saved.",
+        "typecheck": "v4 final named test file: zero errors, exit0/clean. Initial25errorred and out-of-scope broad scripts leg retained; no whole-project typecheck claim.",
+        "syntax": "Three changed .mjs pass node --check; named diff check passed.",
+        "originalReceipts": [
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-selection-tsc-v4.log",
+            "sha256": "cc62916294847b20bace2464df9652fd85648a3f318beb5c2557f61bdf6eeac8",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-full-selection-post-sync-v1.log",
+            "sha256": "5aa4c6cafc14eb7e1c91d501d8be1f9845c841f6c78c5e32129020a4874f2abb",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-full-selection-post-sync-v1.err",
+            "sha256": "8e06563e455ea8632c1b6589f908bb01d36116890ef7f016f25a95298288b6e7",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-native-selection-v1.log",
+            "sha256": "57a50b98efec753b28e344bb8e01ed47d680e819033480b4bb3c10ccd0325e27",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-native-selection-v1.err",
+            "sha256": "42b8f69f5a51d057cb8370769c70648829aa163d9612e2b71efd65231dcc91e9",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-selection-tests-v5.log",
+            "sha256": "701235c83b1d9d8ed4a1de7d55fc1ef03e779c9c745bac0e4084a4880b13100c",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-selection-tsc-v3.log",
+            "sha256": "e942eb8a5b717977453ef062510d7a51d844dd4a921338721c91d8cb8c4b8e0c",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-selection-tests-v7.log",
+            "sha256": "f5eee8ff6c597649cffd42e00e811bf81f31b49ea8da65c7804a9127cbf08a81",
+            "status": "saved"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-astro-native-single-v6.log",
+            "sha256": "81710ea3f688993779f06b731b538b527800ddebc483ced98ea88830b0d34310",
+            "status": "saved"
+          }
+        ],
+        "correctedFixture": "v5 native config:setup injectTypes failure corrected to installed config:done hook; v6 targeted1pass/74explicitunselected preceded final no-skip suite."
+      },
+      "sourceAtRead": {
+        "head": "ab999ce99e3239c28c73b6f74f5a9383c501cbaa",
+        "files": [
+          {
+            "path": "scripts/lib/related-tests.mjs",
+            "sha256": "06382ac860a57d3ae84c79e30c48f1c762c3105e48a4e45fd317afd2ba052ccd",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/lib/related-tests.d.mts",
+            "sha256": "784ecb1fb6b6fc486804128c4074b9f78e5bdf087f61dd70d2eee1f4cc803902",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/resolve-vitest-config-contracts.mjs",
+            "sha256": "3468d577937872e0c7f76961ebb9735d0572e62963229d8bdd1fc2177c87c3b1",
+            "committedMatch": true
+          },
+          {
+            "path": "scripts/affected-tests.mjs",
+            "sha256": "ae2d34e41d0256d4657cc96c2ba4ce0e4db38a4bfcd4af36898af81cd9cde62e",
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+            "sha256": "01548bdd487062ef898b3118ec1f2a61df73ec4502b149ffe9f5d9892c47c543",
+            "committedMatch": false
+          }
+        ],
+        "limits": "Named source and generated output bytes only; no full dependency or final transformed runtime closure."
+      },
+      "guardRepairs": {
+        "items": [
+          "WI-6554700010012907",
+          "WI-6554700010012908"
+        ],
+        "state": "done",
+        "completionAuthority": "committed",
+        "scope": "Evidence references normalized; archived original receipts unchanged. Global identity lints still report study-log records outside this scoped repair."
+      },
+      "constraints": "D020/P006 hold, original six forms and whole-plan residue preserved. No benchmark/cohort, BAR apply, new agent, manual git or LIVE_GATE_OPS. Original fixture build pretest/voice/desktop checks remain unexecuted."
+    },
+    "originalCommandOccurrencePreparation": {
+      "status": "native-occurrence-preparation-local-verification-pass-full-comparison-held",
+      "reuses": [
+        "scripts/lib/related-tests.mjs#enumerateAffectedTaskSelection",
+        "scripts/lib/budgeted-task-scheduler.mjs#prepareBudgetedTaskComparison/readBudgetedTaskComparisonArtifacts"
+      ],
+      "behavior": "The maintained selector retains each ordered task/command/step/file occurrence and distinguishes Astro check inputs from test executions. The comparison reader pins one-to-one file-only occurrences; omitted or changed original occurrence metadata, check inputs, repeated populations and legacy ordered chains remain refused until native command-step execution receipts qualify them. Command and lifecycle obligations remain independently retained and refused.",
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection --sync-astro",
+        "log": "~/.papercusp/scratch/c0523-full-selection-occurrences-v1.log",
+        "logSha256": "4f93a4d48f6d57ddd0610eeb09080ec483328e0e64ab43617c641696d3131c32",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "uniqueFiles": 10150,
+        "fileOccurrences": 10153,
+        "representedTasks": 112,
+        "unenumeratedRecords": 6,
+        "crossTaskOverlaps": [],
+        "repeatedPublicDocsFiles": [
+          "apps/papercusp-docs/lib/first-task.test.ts",
+          "apps/papercusp-docs/lib/pagefind-output.test.ts",
+          "apps/papercusp-docs/lib/public-build-parity.test.ts"
+        ],
+        "repeatedPublicDocsRoles": [
+          { "step": 0, "command": "astro check", "kind": "check-input" },
+          { "step": 1, "command": "vitest run", "kind": "test-file" }
+        ],
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false
+      },
+      "verification": {
+        "firstRun": { "passed": 225, "failed": 0, "skipped": 0, "requested": 2, "executed": 2, "matched": 2, "childSubstituted": 0, "nativeExitCode": 0 },
+        "finalScheduler": { "passed": 147, "failed": 0, "skipped": 0, "requested": 1, "executed": 1, "matched": 1, "childSubstituted": 0, "nativeExitCode": 0 },
+        "finalTypecheck": "Two named test files: zero errors, status clean, native exit0. No full-project claim.",
+        "controls": "Actual Astro-check/Vitest occurrence roles; same-file ordered repeats and cross-task occurrences; immutable valid one-to-one manifest population; omitted/changed original occurrence metadata and legacy repeated or distinct ordered steps fail the independent pinned-artifact reader.",
+        "receipts": [
+          { "path": "~/.papercusp/scratch/c0523-command-occurrences-tests-v1.log", "sha256": "ffb44076190499b1d0c8144ae5544f052aa667a99b60eb9b6ec96f4b1aa53ba0" },
+          { "path": "~/.papercusp/scratch/c0523-command-occurrences-scheduler-v2.log", "sha256": "067711f7d952cb12f16d073e61f2a6bb15933355017cb4300cfc616f5c568598" },
+          { "path": "~/.papercusp/scratch/c0523-command-occurrences-tsc-v2.log", "sha256": "572229f9e0e5de3159aedaa26032097adf9c783be579e8378f8cf1763e0989cb" },
+          { "path": "~/.papercusp/scratch/c0523-full-selection-occurrences-v1.err", "sha256": "36913e1e79af9b73bedd614ad323f281c8d796ca2d0c7a174c11662b67d8f13f" }
+        ],
+        "syntaxAndDiff": "Both changed .mjs syntax checks and named-path diff check pass."
+      },
+      "sourceAtRead": {
+        "head": "91819b308e4603cd1b547e0ceee89bede6539beb",
+        "files": [
+          { "path": "scripts/lib/related-tests.mjs", "sha256": "95ea62a9235804317f21c6adf2912468cb7fee16d5c721682a5e92c9506494f1", "committedMatch": false },
+          { "path": "scripts/lib/related-tests.d.mts", "sha256": "455219453d9cc756f71930ef1948830635ee886e377b31983a9498fc650a7b98", "committedMatch": false },
+          { "path": "scripts/lib/budgeted-task-scheduler.mjs", "sha256": "4ae94ca953ec13cefe70aef7334791a631e3b707af081759fa4891623d1c999b", "committedMatch": false },
+          { "path": "scripts/lib/budgeted-task-scheduler.d.mts", "sha256": "70b79eb3613c32ded8d2eb123173197af721c87fa44fdb8f104f59937502f529", "committedMatch": false },
+          { "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "sha256": "a806ea1fba629ed236855a88dbb13811cd489b25b342fe1b887245fd17d1a015", "committedMatch": false },
+          { "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts", "sha256": "f3c08939279367b8b6013f0cdc74b3dd4c5c7a529661550838d844d267cd3e47", "committedMatch": false }
+        ],
+        "limits": "Named local source/guard bytes only. Check current bytes and automatic settlement before reusing proof."
+      },
+      "automaticSettlement": {
+        "head": "9bb1577ec9b9c840e6b086229df08f79b4ad61bb",
+        "sourceHashesUnchanged": true,
+        "namedCommittedMatches": 6,
+        "originalReceiptHashesMatch": true,
+        "scope": "Direct byte/hash readback of the six sourceAtRead paths against this committed HEAD. Earlier sourceAtRead local snapshot is preserved; no test was repeated. Evidence-document settlement and runtime/shipment are separate."
+      },
+      "remaining": "Original command-step execution receipts remain unproduced. No complete source/dependency/final-runtime closure, original ABBA cohorts or operational acceptance. D020/P006 and six forms stay unbound/unapproved. Whole plan UNSHIPPED."
+    },
+    "fixturePretestPreparation": {
+      "status": "original-fixture-pretest-source-discovery-local-verification-pass",
+      "reuses": [
+        "apps/slack-asana-bug-drill/scripts/source-identity.mjs#sourceIdentity",
+        "apps/slack-asana-bug-drill/scripts/build.mjs#--print-selection",
+        "scripts/lib/related-tests.mjs command input qualification and lifecycle obligations"
+      ],
+      "behavior": "Read-only fixture build discovery includes maintained source identity plus public assets and next-env.d.ts before dependency preflight, Next compilation, native hydration and esbuild bundling. The selector independently hashes inputs and retains the pretest command as unexecuted; malformed, forged or drifted receipts keep explicit residue and never invent a test file.",
+      "fixture": {
+        "task": "@bug-drill/fixture :: test",
+        "originalCommand": "node scripts/build.mjs",
+        "script": "pretest",
+        "selectedTestFiles": 10,
+        "inputCount": 25,
+        "inputReceipt": "~/.papercusp/scratch/c0523-fixture-pretest-native-v1.log",
+        "inputReceiptSha256": "3bde26cea9020910eb1d13ef32608a508b43a08fac9174aab0ec151f9063a976",
+        "discovery": {
+          "schemaVersion": 1,
+          "kind": "command-check-inputs",
+          "check": "fixture-build",
+          "files": [],
+          "executed": false,
+          "dependencyClosure": "unmeasured",
+          "runtimeClosure": "unmeasured",
+          "operationalAcceptance": false
+        }
+      },
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection --sync-astro",
+        "log": "~/.papercusp/scratch/c0523-full-selection-fixture-pretest-v1.log",
+        "logSha256": "931845fa7ce1d5de6bbc28b217eaac6b96fd5af5081404452f35a361b14c6fbf",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "files": 10150,
+        "representedTasks": 112,
+        "unenumerated": [
+          "@papercusp/web :: lint:el-tools (unexecuted command obligation)",
+          "@papercupai/papercusp-docs :: test (overlapping astro/vitest chain)",
+          "@papercusp/desktop :: test step 7 (unexecuted aggregate)",
+          "@papercupai/operator-docs :: test (unexecuted astro check)",
+          "@bug-drill/fixture :: test (unexecuted lifecycle command)"
+        ],
+        "overlaps": [],
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false
+      },
+      "verification": {
+        "testCommand": "npm run test:file -- packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+        "passed": 77,
+        "failed": 0,
+        "skipped": 0,
+        "requested": 1,
+        "executed": 1,
+        "matched": 1,
+        "childSubstituted": 0,
+        "nativeExitCode": 0,
+        "typecheck": "Named test-file TypeScript check: zero errors, status clean, native exit0; no whole-project claim.",
+        "syntax": "Build, source identity and selector pass node --check.",
+        "controls": "A copied build runs with no node_modules, an app that throws if compiled and a prior-build sentinel; public asset drift changes the census. Forged execution/acceptance/hash, duplicate/empty input, dependency-closure and fabricated-file cases retain the original command as residue.",
+        "receipts": [
+          { "path": "~/.papercusp/scratch/c0523-fixture-pretest-tests-v1.log", "sha256": "0b10f111c8815110133feaa412498955fb73724740646867e3c004f40470c1d5" },
+          { "path": "~/.papercusp/scratch/c0523-fixture-pretest-tsc-v1.log", "sha256": "bb33800a5a885d8a9c11a537b3ce2541ab659525ac65afd1e563b722442f97ae" },
+          { "path": "~/.papercusp/scratch/c0523-fixture-pretest-native-v1.log", "sha256": "3bde26cea9020910eb1d13ef32608a508b43a08fac9174aab0ec151f9063a976" },
+          { "path": "~/.papercusp/scratch/c0523-full-selection-fixture-pretest-v1.log", "sha256": "931845fa7ce1d5de6bbc28b217eaac6b96fd5af5081404452f35a361b14c6fbf" }
+        ]
+      },
+      "sourceAtRead": {
+        "superprojectHead": "91819b308e4603cd1b547e0ceee89bede6539beb",
+        "fixtureSubmoduleHead": "4aa24b04d75f76e6ef73c3868c0938b14d4d5b05",
+        "files": [
+          { "path": "scripts/lib/related-tests.mjs", "sha256": "09a6e9a1c23bf62aab72daa2810b96bb4c8f9fded8f4aebe0e65aaab4ba266d7", "committedMatch": true },
+          { "path": "scripts/lib/related-tests.d.mts", "sha256": "784ecb1fb6b6fc486804128c4074b9f78e5bdf087f61dd70d2eee1f4cc803902", "committedMatch": true },
+          { "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts", "sha256": "a222ee5e09bfabf30e9792fa3ff919c61833c560a5edbf95ce6d849b0b865ffa", "committedMatch": true },
+          { "path": "apps/slack-asana-bug-drill/scripts/build.mjs", "sha256": "267c2fe56f9c007636e4917cbc99f4ccf7c05d730392e5c4200acb6bcdc308ad", "committedMatch": true },
+          { "path": "apps/slack-asana-bug-drill/scripts/source-identity.mjs", "sha256": "dead8c647eb79b8530005a268e189714d00482ff57af56403f54fa7b668eb720", "committedMatch": true }
+        ],
+        "limits": "Named source/guard bytes only. Full installed dependency and final transformed runtime closure remain unmeasured."
+      },
+      "limits": "The original fixture build has not executed. Installed dependency and final transformed runtime closures remain unmeasured; this is source-input preparation only."
+    },
+    "nativeCommandObligationPreparation": {
+      "status": "partial-original-population-preparation-no-operational-acceptance",
+      "reuses": [
+        "scripts/lib/related-tests.mjs#enumerateAffectedTaskSelection",
+        "scripts/lib/budgeted-task-scheduler.mjs#prepareBudgetedTaskComparison/readBudgetedTaskComparisonArtifacts",
+        "apps/operator/scripts/el-tools-check.mjs actual registry input discovery",
+        "papercusp-desktop/bin/lib/run-selftests.sh actual TESTS array and disk census"
+      ],
+      "behavior": "Native read-only --print-selection routes produce actual input hashes. Voice guard remains a command obligation with no fabricated test file; desktop retains its original ordered eight-step npm chain, 152 selected tests in this snapshot and unexecuted aggregate completeness/pipefail obligations. Lifecycle scripts and unknown Astro steps remain explicit residue. Duplicate chain populations and original command obligations omitted by file-only comparison manifests are refused.",
+      "sourceAtRead": {
+        "head": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+        "files": [
+          {
+            "path": "scripts/lib/related-tests.mjs",
+            "sha256": "9f466602136741b9c48354d7e6e2f1392abd7cc5fb707c00a08aa5a9d30820db",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": false
+          },
+          {
+            "path": "scripts/lib/budgeted-task-scheduler.mjs",
+            "sha256": "1e110e168c50b1ac9bc962c43727711337ebbe4d29f63b579433cc490446f231",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": false
+          },
+          {
+            "path": "apps/operator/scripts/el-tools-check.mjs",
+            "sha256": "1ed3c2f70d93d771a69a434f702789fb17169dbe1d49673282a3c79092ff5f41",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": true
+          },
+          {
+            "path": "papercusp-desktop/bin/lib/run-selftests.sh",
+            "sha256": "66cc2631486ed5d0e7fa368a54bb751f1a27b58bfeeb85e5870b337986b2e586",
+            "repositoryHead": "8c6a895254e84de4574292661ccc201cb280accf",
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+            "sha256": "6769a8662da8a7e15788ea8b802f6f2c8264423f1144597acea683c068d53cd0",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": false
+          },
+          {
+            "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+            "sha256": "ef7a8e6286b816a0c374059e6017e8f424fd6e1115434092a8870eef7c2cff25",
+            "repositoryHead": "08f293551f92a1c0f6f5d95f073957309bb4b697",
+            "committedMatch": false
+          }
+        ],
+        "limits": "Named bytes only; no complete import, dependency or runtime closure."
+      },
+      "nativePreview": {
+        "command": "node scripts/affected-tests.mjs --all --print-selection",
+        "log": "~/.papercusp/scratch/c0523-full-selection-command-obligations-v2.log",
+        "logSha256": "c9db38b78fc08eb934fd63c20fab959ff2feffc21153abb0189c6aebc56fe296",
+        "nativeExitCode": 0,
+        "coverage": "partial",
+        "files": 10136,
+        "representedTasks": 111,
+        "unenumerated": [
+          {
+            "task": "@papercusp/web :: lint:el-tools",
+            "reason": "unexecuted-command-obligations",
+            "command": "node scripts/el-tools-check.mjs"
+          },
+          {
+            "task": "@papercupai/operator-docs :: test",
+            "reason": "unsupported-task-command",
+            "command": "astro check"
+          },
+          {
+            "task": "@papercupai/papercusp-docs :: test",
+            "step": 0,
+            "command": "astro check",
+            "reason": "unsupported-task-command"
+          },
+          {
+            "task": "@papercusp/desktop :: test",
+            "step": 7,
+            "command": "bash bin/lib/run-selftests.sh",
+            "reason": "unexecuted-command-obligations"
+          },
+          {
+            "task": "@bug-drill/fixture :: test",
+            "reason": "unexecuted-lifecycle-command",
+            "command": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run"
+          }
+        ],
+        "overlaps": [],
+        "executed": false,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false,
+        "commandObligations": [
+          {
+            "task": "@papercusp/web :: lint:el-tools",
+            "step": null,
+            "kind": "command-check",
+            "check": "el-tools-drift",
+            "command": "node scripts/el-tools-check.mjs",
+            "executed": false,
+            "inputs": 13
+          },
+          {
+            "task": "@bug-drill/fixture :: test",
+            "step": null,
+            "kind": "npm-lifecycle",
+            "check": null,
+            "command": "node scripts/build.mjs",
+            "executed": false,
+            "inputs": 0
+          },
+          {
+            "task": "@papercusp/desktop :: test",
+            "step": 7,
+            "kind": "command-check",
+            "check": "desktop-selftest-aggregate",
+            "command": "bash bin/lib/run-selftests.sh",
+            "executed": false,
+            "inputs": 36
+          }
+        ],
+        "scope": "This original log snapshot only; unresolved command checks remain partial. Counts do not certify a frozen comparison population."
+      },
+      "verification": {
+        "receipts": [
+          "~/.papercusp/scratch/c0523-command-obligation-tests-v1.json",
+          "~/.papercusp/scratch/c0523-command-obligation-tests-v3.json",
+          "~/.papercusp/scratch/c0523-command-obligation-scheduler-v2.json"
+        ],
+        "initialNativeRun": "e6ac7273-bc15-4287-910f-3a8902eacfe2",
+        "initialByFile": {
+          "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts": {
+            "passed": 146,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false,
+            "runId": 21244762
+          },
+          "packages/operator-core/lib/__tests__/desktop-selftests-registry-complete.test.ts": {
+            "passed": 5,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false,
+            "runId": 21244760
+          },
+          "packages/operator-core/lib/__tests__/related-tests-selection.test.ts": {
+            "passed": 72,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false,
+            "runId": 21244761
+          }
+        },
+        "finalSelectionReceipt": {
+          "content": [
+            {
+              "type": "text",
+              "text": "format: toon\nok: true\nrunId: 9ea7171c-ff13-4e25-99f4-4719ee318976\nroot: <repository-root>\npassed: 73\nfailed: 0\nskipped: 0\nfiles: 1\nfailures: []\nfailuresTruncated: false\ndurationMs: 1737\nbyFile:\n  \"packages/operator-core/lib/__tests__/related-tests-selection.test.ts\":\n    passed: 73\n    failed: 0\n    skipped: 0\n    collectionFailed: false\n    runId: 21244788\ntestRunIds[1]: 21244788\nrootSource: requested"
+            },
+            {
+              "type": "text",
+              "text": "See also: tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)"
+            }
+          ]
+        },
+        "testPaths": [
+          "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+          "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+          "packages/operator-core/lib/__tests__/desktop-selftests-registry-complete.test.ts"
+        ],
+        "positiveNativeControls": "Actual voice registry census; copied native shell aggregate with an unlisted disk file and selftests that write a sentinel if executed; ordered lifecycle/Astro chain, alias-cycle and repeated-file controls. Native original artifact reader rejects omitted command obligations. Legacy lifecycle metadata in either manifest tasks or independently read original task metadata is also refused.",
+        "typecheckLog": "~/.papercusp/scratch/c0523-command-obligation-tsc-v4.log",
+        "typecheck": "Final scoped two-file TypeScript check: zero errors, status clean, native exit0. Source JS/Bash syntax and named-path diff checks passed. No full-project typecheck claim.",
+        "retainedRedEvidence": "tsc-v1 was inconclusive after concurrent own edits; tsc-v2 named four implicit-any callback diagnostics. Explicit metadata types fixed those; v3 is clean. No operational receipts were generated. v4 is the final clean two-file check after the additional legacy lifecycle omission guard.",
+        "finalSchedulerReceipt": {
+          "content": [
+            {
+              "type": "text",
+              "text": "format: toon\nok: true\nrunId: 8a8857c8-79c2-44af-bee9-7a3e3b0dbeae\nroot: <repository-root>\npassed: 146\nfailed: 0\nskipped: 0\nfiles: 1\nfailures: []\nfailuresTruncated: false\ndurationMs: 3943\nbyFile:\n  \"packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts\":\n    passed: 146\n    failed: 0\n    skipped: 0\n    collectionFailed: false\n    runId: 21244814\ntestRunIds[1]: 21244814\nrootSource: requested"
+            },
+            {
+              "type": "text",
+              "text": "See also: tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)"
+            }
+          ]
+        }
+      },
+      "remainingWriterFindings": [
+        "The original fixture test now has a native source-input receipt for node scripts/build.mjs; its build execution, installed dependency closure and final transformed runtime closure remain unmeasured.",
+        "Astro sync still precedes actual diagnostics. Both Astro populations remain unknown; prior pre-sync discovery cannot qualify them.",
+        "File-only comparison preparation and original-artifact readback refuse retained command obligations until a native command-receipt contract independently qualifies them. This refusal is intentional and cannot be removed to bind throughput."
+      ]
+    }
+  },
+  "originalCommandExecutionPreparation": {
+    "status": "partial-original-native-command-receipts-no-operational-acceptance",
+    "scope": "Original maintained commands, their own declared check-input censuses, and exact stdout/stderr; not a full transformed/runtime closure or a comparison cohort.",
+    "voice": {
+      "task": "@papercusp/web :: lint:el-tools",
+      "cwd": "apps/operator",
+      "command": "node scripts/el-tools-check.mjs",
+      "check": "el-tools-drift",
+      "nativeExecution": {
+        "sessionId": "01a13af3-244d-75b3-96a5-976ed9f2cb8a",
+        "eventOrdinal": 437,
+        "eventId": "exec-d2216dfb-d5c5-4c09-8dd9-f24278bbe43b",
+        "startedAt": "2026-10-14T15:33:10.529Z",
+        "completedAt": "2026-10-14T15:33:11.299Z",
+        "commandExitCode": 0,
+        "afterDiscoveryExitCode": 0,
+        "outerExitCode": 0,
+        "provenance": "Recovered original native CommandExecution event and paired output from the predecessor transcript; command was not repeated."
+      },
+      "qualification": {
+        "headAtRead": "510cd3a575d5cb8ac93570328eddb15f9b2f2a0e",
+        "beforeAfterInputsIdentical": true,
+        "inputHashesMatchCurrent": true,
+        "inputHashesMatchCommitted": true,
+        "inputs": [
+          {
+            "path": "apps/operator/scripts/el-agent-sync.mjs",
+            "sha256": "7223a1c8bb7b8dbd7e253648c54cf8d78cb49091e12d3e7ad658fa5d70ff2d56",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "apps/operator/scripts/el-tools-check.mjs",
+            "sha256": "1ed3c2f70d93d771a69a434f702789fb17169dbe1d49673282a3c79092ff5f41",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/agent-dispatch.ts",
+            "sha256": "752a16bde85869a1b793ee9f36473b6909395c49a04b166edbbbacb7bbf32849",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/agents.ts",
+            "sha256": "7c1686c0f85ed0a78bf49d285cfd97e3729367b39f8b29dc175eb35c1d4e0825",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/chat.ts",
+            "sha256": "6e125aaa7f5db7803564d04ad36f34a6bd16cace0f95c3d967f6481a8b66c107",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/delegation.ts",
+            "sha256": "5aed1a73a30abe909ee497c50d1253b7d009da67ad85db4f13b3bded19af8724",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/harness.ts",
+            "sha256": "ef27d4734d42296c502d44526169beac2fe1d20708220e9f289245c23697fd80",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/help.ts",
+            "sha256": "093ea447c31d618ca51ddd5cece65c61b1a33a20b3f5dc37950e5135a02e2755",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/nav.ts",
+            "sha256": "37d9d1d192f4a47a8606317775adc013520bb0ae3f716a8cc99a483123f8901c",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/operator.ts",
+            "sha256": "9186d53f3a310a5a14b483ec83beb6eca5c365031e5c703946a804a5ded7de1b",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/recent-activity.ts",
+            "sha256": "f002cb38717ee7a50bd00eaceac199e92b55753f75b6c64d80113a07943c0479",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/voice.ts",
+            "sha256": "04cb7d8ef5e171f3d0ea3f6754cb7a33fdfbc0e354c56cf0f0a0fd62ef19d1b5",
+            "currentMatch": true,
+            "committedMatch": true
+          },
+          {
+            "path": "packages/operator-core/lib/commands/defs/workspace.ts",
+            "sha256": "11b8deb0ceb0da3c8e0348197d1523fec82714c3f7945ee5bdd6e0f22560b87e",
+            "currentMatch": true,
+            "committedMatch": true
+          }
+        ],
+        "logs": [
+          {
+            "path": "~/.papercusp/scratch/c0523-voice-command-inputs-before-v1.log",
+            "sha256": "9f5909bc381f0f5da723aea87b6fe7390f37d4c078013d01bc2c16a89539948c"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-voice-command-inputs-after-v1.log",
+            "sha256": "9f5909bc381f0f5da723aea87b6fe7390f37d4c078013d01bc2c16a89539948c"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-voice-command-result-v1.log",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "path": "~/.papercusp/scratch/c0523-voice-command-result-v1.err",
+            "sha256": "6dad0d153551abc0bef8aa109e9ec0af79c9070887e78d04178aad303b7d87b9"
+          }
+        ],
+        "warning": "report_problem is operator-tagged but absent from TOOLS; original guard allows warnings. Intent is unconfirmed; filed and assigned EI-25970186699682942.",
+        "files": [],
+        "testFilesFabricated": false,
+        "executed": true,
+        "runtimeClosure": "unmeasured",
+        "operationalAcceptance": false,
+        "limits": "Declared check inputs do not enumerate the imported formatter or all installed/runtime dependencies. Successful command exit does not qualify that unmeasured closure."
+      }
+    },
+    "loopSettlement": {
+      "observedAt": "2026-10-14T15:40:10Z",
+      "lastLoopTurnAt": "2026-10-14T15:36:53.811Z",
+      "lastDeliveryOutcome": "loop-loop-turn",
+      "cycle": {
+        "phase": "settled",
+        "turnInFlightSec": null,
+        "lastTurn": {
+          "parkedAt": "2026-10-14T15:08:08.753Z",
+          "settledAt": "2026-10-14T15:38:13.471Z",
+          "turnSec": 1805,
+          "settledBy": "reconcile-loop-routines",
+          "settledVia": "loop-turn",
+          "scheduledDelaySec": 95,
+          "postSettleDelaySec": null
+        },
+        "basis": "turnSec = parked->rearmed: the member's own turn (next_fire_at is infinity while parked), NOT a re-arm delay. postSettleDelaySec = rearmed->next parked: what the re-arm actually cost (~intervalSec + <=30s reconcile tick). loop.cadenceRatio / effectiveIntervalSec include the turn by construction."
+      },
+      "rewake": {
+        "rewakeGuaranteed": true,
+        "reason": null
+      },
+      "limits": "The completed turn came from a delivery created before the 15:20 recovery rearm. Settlement proves that delivered turn completed; it does not establish a new post-rearm fire, stable cadence, or root-cause repair."
+    },
+    "remaining": [
+      "Independently qualify later saved native fixture, Astro, post-fix voice and desktop aggregate receipts against original command obligations",
+      "Public-docs Vitest step and all original ordered command-step execution receipts",
+      "Qualified ordered command/overlap comparison contract",
+      "Whole source, installed dependency and final transformed/runtime closure",
+      "Four actual ABBA cohorts after D020/P006 permission hold is satisfied",
+      "Original seven-day, strict-idle, alarm-delivery and shipped-artifact acceptance"
+    ],
+    "desktop": {
+      "nativeReceipt": {
+        "kind": "original-native-command-execution",
+        "workItemId": "WI-6554700010010682",
+        "cwd": "papercusp-desktop",
+        "before": {
+          "command": [
+            "bash",
+            "bin/lib/run-selftests.sh",
+            "--print-selection"
+          ],
+          "startedAt": "2026-10-14T15:45:33.412636+00:00",
+          "completedAt": "2026-10-14T15:45:33.572253+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-before-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-before-v1.err"
+        },
+        "execution": {
+          "command": [
+            "bash",
+            "bin/lib/run-selftests.sh"
+          ],
+          "startedAt": "2026-10-14T15:45:33.572697+00:00",
+          "completedAt": "2026-10-14T15:55:51.980419+00:00",
+          "exitCode": 1,
+          "stdout": "~/.papercusp/scratch/c0523-desktop-aggregate-result-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-desktop-aggregate-result-v1.err"
+        },
+        "after": {
+          "command": [
+            "bash",
+            "bin/lib/run-selftests.sh",
+            "--print-selection"
+          ],
+          "startedAt": "2026-10-14T15:55:51.982800+00:00",
+          "completedAt": "2026-10-14T15:55:52.083346+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-after-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-after-v1.err"
+        },
+        "operationalAcceptance": false,
+        "runtimeClosure": "unmeasured"
+      },
+      "beforeAfterInputsIdentical": true,
+      "inputCount": 36,
+      "inputHashesMatchCurrent": true,
+      "inputs": [
+        {
+          "path": "papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh",
+          "sha256": "d616b9bad545a18b28f91f0fb393ce3d0d1c516070a3cc0816ade8d02f1daabd"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/b5-restart.selftest.sh",
+          "sha256": "569edb7c51db5038c328e55cef36663f8ae27eabbcf0c519a1a2051bde989ef2"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/b6-concurrent.selftest.sh",
+          "sha256": "51f1c444b36e17ca3a50b9dc63aa687c4311ca422f316701253870552b82fb32"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh",
+          "sha256": "c5ae36f5771ce5d3077f05cb9eb20888cfe82e98d73020c7f1b890a1d2d19fdc"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh",
+          "sha256": "9d70f92b867af0f6f0db302613c0efce15625fff5743e0d768f8380581b597d8"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/disk-preflight.selftest.sh",
+          "sha256": "3c2a5cb2eff2f0fd9c5ea7672b013d45124930a1ea93dc5d8a91b49d6c0168c4"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/federation-asserts.selftest.sh",
+          "sha256": "e3a1bf018da88a59e90d14142bfda2bc457cdbeed96094cf27cb340e28b10264"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh",
+          "sha256": "2f85f6d342cd9448464a459edebab64b8ccc99671258726fa968e3c2d69e5993"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+          "sha256": "aef9158c726831d31511006589743da70105d5d12d16726367ea928f59efb5ec"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+          "sha256": "0a021b93fca5083f815faa4d811124203cf2925ce0d2d4f9a14f8ebd9253fb9e"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh",
+          "sha256": "97045237020bb10cd6d4961100688edd221d5e8918f0f833e893fac71000a6d7"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh",
+          "sha256": "b1fd0e9b4a34e5540ef3585703d71a2f4bc94861dce9d1243f2e070800ae09fc"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh",
+          "sha256": "df08d6e1d8eab890bcb4bb041ce9707cc3933d4c8094d91fce83aff6aa64b78e"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh",
+          "sha256": "38ee04130e3a201c2b2c89c8dcfaa1005e4d229afb1a9e6137b4e63a868139c7"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/matrix-pass-transcript.selftest.sh",
+          "sha256": "f2886eecedc97a5a9771e00fba7e9941c077bf95640b1fd1442c5dcb664022f9"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh",
+          "sha256": "164da3d16cbe9804b8d5aab9fbc8fe63746ab7bc3695c8ad453488bd27d84d1c"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/matrix-verdict-states.selftest.sh",
+          "sha256": "11ebcf61c18fdc2e088163c8230d0027fd5aecc0b116febc9ff051d2c2bf2053"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh",
+          "sha256": "701bff63b7ed758f291839cc85006ceb304ce1697922a4f436f83a9114ae70ee"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/pipefail-predicate.baseline.txt",
+          "sha256": "276f9a2329728c94e08f61c2f0a395ae1b891fd043dedc9cdf38a38eff4b4544"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+          "sha256": "8c5312411d0b30c06589dd5e981901a0100f4dd97e22b6b34a77f1bf7fd60503"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/release-content-identity.selftest.sh",
+          "sha256": "a26344f90bf45b1f3f53600ccacfbf38ec6182f81b13f2638bcab2e606e5ac7a"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh",
+          "sha256": "21377523a45ac7a4d6805c7afe965643186963f0b2d42361923f1ce6a2d35b78"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/release-tag-pin.selftest.sh",
+          "sha256": "e2222ec0f0d0738572245c0e22af6a552c43cb23bf388e69c477a2d505686865"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+          "sha256": "310ff84da85e429e531fccc8fe0048d5dfb2659a66dd6d9af7b938badefdf751"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+          "sha256": "a92a812a8e104a0a12e9887d093b2f44b73fa3c12faa762de39314ba3a8cf03c"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh",
+          "sha256": "f9a60653bef0a21430df4cc17fbd9cba2199c8568451583b110eb491160141e3"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh",
+          "sha256": "10d422894bb2f0eeb6d6f1ea7dce58406fa9e9a11eae5cd00e6b9605087d1cfc"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh",
+          "sha256": "a18dc019ddcb15b0a8ae07757cb2a90f1d1fcb99bc2ca74d61af5a33c37fc27c"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/roster-scope.selftest.sh",
+          "sha256": "ecf85b6e4d1257993b40f0c5db57f0f66ec0f1d35b18803c27df03fbadc6adfe"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/run-selftests.sh",
+          "sha256": "66cc2631486ed5d0e7fa368a54bb751f1a27b58bfeeb85e5870b337986b2e586"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh",
+          "sha256": "7775eb9b7fc33f6b57e1c3140f64257aa9cc52481a7c024682870ea36a13cab6"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh",
+          "sha256": "ec3277fd9ace47350564c62f1dc42ad707fd4aa0bdb408a3920d9c9203918bf4"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/streak-escalation.selftest.sh",
+          "sha256": "39e5d9cd48a5dc88ca624a692e25ea7d8cd287c2ec5def00ef28e5493044f44c"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh",
+          "sha256": "05cbd36df5f7b402c7b210cbaaff18f72fcebe946386bf591a7bf13230aed6e3"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh",
+          "sha256": "da754cc5cf24c42addb6e12e7107f13d726ef802289430661eea139b9adccfdf"
+        },
+        {
+          "path": "papercusp-desktop/bin/lib/vm-run-env.selftest.sh",
+          "sha256": "2feba0e1c0ca2200e9413180baf17e6e526afa31cfce99934a06aff1d45e4a41"
+        }
+      ],
+      "logs": [
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-command-v1.json",
+          "sha256": "4b9cffb8b28d0a0deeeb59f5bc9eb2ea9f9270825b28dae25107c9b389e6be4b"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-before-v1.log",
+          "sha256": "041aafffd1498030b87149fc6e8c1052059d9496dfa07ac9d8b6b2abb299f2a9"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-inputs-after-v1.log",
+          "sha256": "041aafffd1498030b87149fc6e8c1052059d9496dfa07ac9d8b6b2abb299f2a9"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-result-v1.log",
+          "sha256": "46876db2bf3b017ec2e1141973716259f1da32d87d8347febfb6b518ef71a48d"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-desktop-aggregate-result-v1.err",
+          "sha256": "7d88860bff885960adc00b7ea1f1647098d8b25eb6bdd78801bb22ed4a2ce3e1"
+        }
+      ],
+      "files": [
+        "papercusp-desktop/bin/lib/federation-asserts.selftest.sh",
+        "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+        "papercusp-desktop/bin/lib/release-content-identity.selftest.sh",
+        "papercusp-desktop/bin/lib/release-tag-pin.selftest.sh",
+        "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh",
+        "papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh",
+        "papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh",
+        "papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh",
+        "papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh",
+        "papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh",
+        "papercusp-desktop/bin/lib/vm-run-env.selftest.sh",
+        "papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh",
+        "papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh",
+        "papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh",
+        "papercusp-desktop/bin/lib/b5-restart.selftest.sh",
+        "papercusp-desktop/bin/lib/b6-concurrent.selftest.sh",
+        "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh",
+        "papercusp-desktop/bin/lib/matrix-verdict-states.selftest.sh",
+        "papercusp-desktop/bin/lib/matrix-pass-transcript.selftest.sh",
+        "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+        "papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh",
+        "papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh",
+        "papercusp-desktop/bin/lib/roster-scope.selftest.sh",
+        "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh",
+        "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+        "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+        "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh",
+        "papercusp-desktop/bin/lib/disk-preflight.selftest.sh",
+        "papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh",
+        "papercusp-desktop/bin/lib/streak-escalation.selftest.sh",
+        "papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+        "papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh",
+        "papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh",
+        "papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh"
+      ],
+      "scope": "Original native command and declared input census only. The exact unmodified argv is in the original native receipt; portable root notation is used here. Imported dependencies/final transforms remain unmeasured.",
+      "operationalAcceptance": false,
+      "runtimeClosure": "unmeasured",
+      "scripts": [
+        {
+          "file": "federation-asserts.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "release-artifacts.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "release-content-identity.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "release-tag-pin.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "gen-latest-manifest.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "live-federation-gate-reaper.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "release-local-leg-reaper.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "local-matrix-starvation.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "rig-bank-logs.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "local-matrix-bank.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "vm-run-env.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "seat-offer-diag.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "b9-attestation-precondition.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "b3-revocation-kcut.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "b5-restart.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "b6-concurrent.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "matrix-scenario-adapters.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "matrix-verdict-states.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "matrix-pass-transcript.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "replication-soak-diagnostics.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "restart-settle-barrier.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "rig-wait-converged.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "roster-scope.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "deployed-state-guards.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "inno-legacy-reaper.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "inno-uninstall-cleanup.selftest.sh",
+          "status": "failed",
+          "skipLines": []
+        },
+        {
+          "file": "rust-path-remap.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "disk-preflight.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "mac-vm-fresh-state.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "streak-escalation.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "remote-object-state.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "offline-installer-evidence-redaction.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "vm-port-alloc.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        },
+        {
+          "file": "vm-boot-extra-drives.selftest.sh",
+          "status": "passed",
+          "skipLines": []
+        }
+      ],
+      "guards": [
+        "array-disk-completeness",
+        "pipefail-predicate-baseline"
+      ],
+      "qualified": false,
+      "failureItem": "EI-25971079786392324",
+      "rootCause": "unknown",
+      "diagnostics": "~/.papercusp/scratch/c0523-inno-uninstall-cleanup-diagnostics-v1",
+      "diagnosticArchiveScope": "Unmodified original harness, compiled executable, Wine boot/compiler and installer logs copied from the failing run before temporary-directory cleanup; no rerun or correction of historical evidence.",
+      "observation": "Compilation passed; the installer phase failed to connect to the owned Wine server. Product cleanup acceptance was not measured."
+    },
+    "fixtureBuild": {
+      "nativeReceipt": {
+        "kind": "original-native-command-execution",
+        "workItemId": "WI-6554700010010682",
+        "cwd": "apps/slack-asana-bug-drill",
+        "before": {
+          "command": [
+            "node",
+            "scripts/build.mjs",
+            "--print-selection",
+            "--repository-root",
+            "<canonical-repository-root>"
+          ],
+          "startedAt": "2026-10-14T15:56:22.115604+00:00",
+          "completedAt": "2026-10-14T15:56:22.309975+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-fixture-build-inputs-before-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-fixture-build-inputs-before-v1.err"
+        },
+        "execution": {
+          "command": [
+            "node",
+            "scripts/build.mjs"
+          ],
+          "startedAt": "2026-10-14T15:56:22.310420+00:00",
+          "completedAt": "2026-10-14T15:58:05.019245+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-fixture-build-result-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-fixture-build-result-v1.err"
+        },
+        "after": {
+          "command": [
+            "node",
+            "scripts/build.mjs",
+            "--print-selection",
+            "--repository-root",
+            "<canonical-repository-root>"
+          ],
+          "startedAt": "2026-10-14T15:58:05.019342+00:00",
+          "completedAt": "2026-10-14T15:58:05.116398+00:00",
+          "exitCode": 0,
+          "stdout": "~/.papercusp/scratch/c0523-fixture-build-inputs-after-v1.log",
+          "stderr": "~/.papercusp/scratch/c0523-fixture-build-inputs-after-v1.err"
+        },
+        "operationalAcceptance": false,
+        "runtimeClosure": "unmeasured"
+      },
+      "beforeAfterInputsIdentical": true,
+      "inputCount": 26,
+      "inputHashesMatchCurrent": true,
+      "inputs": [
+        {
+          "path": "apps/slack-asana-bug-drill/app/api/health/route.ts",
+          "sha256": "26fda492c2047a2fa488d875180b5f4bd1ff0605004c17bd8515ec9d0f76957b"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/api/quote/route.ts",
+          "sha256": "f1ddfea0a7e1985ed17a1be8e62805ef9b3bac3e7c7d3049db22db3f2502f046"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/api/quotes/route.ts",
+          "sha256": "12c2b474b34990f0784e4a9b012027bc454f5072c692b07659f7e17d8e5dd19b"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/globals.css",
+          "sha256": "5e3e42a42b53d46bfff58defc20442bd4d2763bd1a7f660973b526b7189acab4"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/layout.tsx",
+          "sha256": "9db33e074f8b11d12007b1d72e31bd16d426461bf6cac74b4bff3bb8779a9b6e"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/page.tsx",
+          "sha256": "73186da4566abcbbc58c4c7204e55b651fd387ef9aeb7714c36ea6a1aebf6a37"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/app/tokens.css",
+          "sha256": "956a7e727acee15f2bfcff0d58eb3288bf5f4ee7da3ec2692a4499a7c421b9b6"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/next-env.d.ts",
+          "sha256": "1862ac4bbbc5192d4bf562161df66ea547ed3e67173100656ab606ae9797db2b"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/next.config.mjs",
+          "sha256": "065d48d2b855f52503b6a35f5bc0494fbfa61831a8eadf60aef8378c0a3bdea5"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/package-lock.json",
+          "sha256": "faa5633d6289b0ccede56be6207f1685e120f9162ad272471a48ae6fd9991740"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/package.json",
+          "sha256": "3a09b456f5e90e1dbb7bcaa91ea37bcf2c8c29186338f52710098be191e4061d"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/packages/contracts/package.json",
+          "sha256": "035f43f6855c9e527637bc3b3a1a76f1b5458b47e451d373fe583c1024235887"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/packages/contracts/src/index.ts",
+          "sha256": "e80602a22cd30987cb19e98b01d01e84f4625515b3bb08270456fbed446d5afb"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/packages/data/package.json",
+          "sha256": "43e3b21844aeda7bd1c087855058c1cca6441049895ba6f401b5411c4cfcbb92"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/packages/data/src/index.ts",
+          "sha256": "2aae4f1f555ea223e6cb7c0beeec25cecbd1465390681e0c1daf532d1f77f5f6"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/scripts/build.mjs",
+          "sha256": "267c2fe56f9c007636e4917cbc99f4ccf7c05d730392e5c4200acb6bcdc308ad"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/scripts/dependency-preflight.mjs",
+          "sha256": "616613ab35a78f288a6606f6c524545fb52767489a91dc8ddae8f19d4854544e"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/scripts/source-identity.mjs",
+          "sha256": "dead8c647eb79b8530005a268e189714d00482ff57af56403f54fa7b668eb720"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/scripts/start.mjs",
+          "sha256": "3a1df19cbdffff811f21646ea4baf58097fb975e4cc646278a46bdb4789e1718"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/src/composition.test.ts",
+          "sha256": "eab4d0adbb5df9cf1310fe819899f597e550ebafa964ec47ff0d2e77bd56c651"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/src/quote.test.ts",
+          "sha256": "24d157d2d725bb77c1536972c258d1f9094a5cb50c3c52a7f45fd6e40bdbf389"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/src/quote.ts",
+          "sha256": "daa9e76b81893adf2a36d70931e8709e9b8f0a5dc8a639117ae39428f76c9277"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/src/terms.ts",
+          "sha256": "687e44401e6ba2e8e207036db15cb2313c58d0876054d5aca9c1108ddbc20c4c"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/tsconfig.json",
+          "sha256": "53fbd51b71bc66ed9487fe093b556be15758dd57078a2b340d29f82e628b5cd8"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/vendor/papercusp-embedded-pg-discovery-0.1.0.tgz",
+          "sha256": "e28bcdae350b213635369ab0ec0e671dcfcc06e115e050ed082dfa65c11a7f19"
+        },
+        {
+          "path": "apps/slack-asana-bug-drill/vendor/papercusp-module-singleton-0.1.0.tgz",
+          "sha256": "566c52824dc1bbbbea9cfa58e8de48fe94c8fb9e2c1cfd97cf0bdab749efa88e"
+        }
+      ],
+      "logs": [
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-command-v1.json",
+          "sha256": "b81379793ff6039b319d4aea54aab68189cb351b8cb90137fed11f4c33a279d8"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-inputs-before-v1.log",
+          "sha256": "f2689ee93e9a2268a2ddc9c230d70a5a15316d2cfac629b03560a50dbd393d36"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-inputs-after-v1.log",
+          "sha256": "f2689ee93e9a2268a2ddc9c230d70a5a15316d2cfac629b03560a50dbd393d36"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-result-v1.log",
+          "sha256": "e9d5cfe9fee1d6dace33bc2a462c629155c40af7a5139d781dda6b36d62b0e99"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-fixture-build-result-v1.err",
+          "sha256": "c52f1afb1c49817c79191c7ba2b55d30aceae7f64c30b3c9aa6af8eb732204e6"
+        }
+      ],
+      "files": [],
+      "scope": "Original native command and declared input census only. The exact unmodified argv is in the original native receipt; portable root notation is used here. Imported dependencies/final transforms remain unmeasured.",
+      "operationalAcceptance": false,
+      "runtimeClosure": "unmeasured"
+    }
+  },
+  "originalAstroExecutionPreparation": {
+    "status": "astro-diagnostics-passed-source-census-matched-no-operational-acceptance",
+    "evidenceFile": "docs/evidence/green-main-astro-native-receipts-20261014.json",
+    "commands": [
+      {
+        "task": "@papercupai/operator-docs :: test",
+        "step": null,
+        "originalCommand": [
+          "astro",
+          "check"
+        ],
+        "diagnostics": {
+          "filesChecked": 5,
+          "errors": 0,
+          "warnings": 0,
+          "hints": 23,
+          "nativeCommandExitCode": 0
+        },
+        "inputCount": 14,
+        "beforeAfterInputsIdentical": true,
+        "inputHashesMatchCurrent": true
+      },
+      {
+        "task": "@papercupai/papercusp-docs :: test",
+        "step": 0,
+        "originalCommand": [
+          "astro",
+          "check"
+        ],
+        "diagnostics": {
+          "filesChecked": 9,
+          "errors": 0,
+          "warnings": 0,
+          "hints": 0,
+          "nativeCommandExitCode": 0
+        },
+        "inputCount": 18,
+        "beforeAfterInputsIdentical": true,
+        "inputHashesMatchCurrent": true
+      }
+    ],
+    "scope": "Original Astro diagnostic steps only; public-docs Vitest step, full ordered-chain qualification, installed dependency/import and final transformed runtime closure remain open.",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "postFixVoiceExecutionPreparation": {
+    "schemaVersion": 1,
+    "recordedAt": "2026-10-14T16:19:47.793Z",
+    "workItem": "EI-25970186699682942",
+    "supersedesForCurrentSource": "originalCommandExecutionPreparation.voice",
+    "task": "@papercusp/web :: lint:el-tools",
+    "cwd": "apps/operator",
+    "command": "node scripts/el-tools-check.mjs",
+    "check": "el-tools-drift",
+    "nativeExecution": {
+      "sessionId": "01a13b2e-b43f-7511-b168-5ed9a7616762",
+      "eventOrdinal": 201,
+      "eventId": "exec-aab592a4-8148-4fa7-98be-e53de8be1540",
+      "startedAt": "2026-10-14T16:18:30.433Z",
+      "completedAt": "2026-10-14T16:18:31.404Z",
+      "commandExitCode": 0,
+      "afterDiscoveryExitCode": 0,
+      "outerExitCode": 0,
+      "sourceTranscript": "~/.papercusp/su-codex-homes/session-42663/sessions/2026/10/14/rollout-2026-10-14T12-11-19-01a13b2e-b43f-7511-b168-5ed9a7616762.jsonl",
+      "provenance": "Native command executed between unchanged before/after input censuses in this continuation."
+    },
+    "qualification": {
+      "headAtRead": "07a9ea0bcc926874ec0a7907f2596b2052ac253d",
+      "beforeAfterInputsIdentical": true,
+      "inputHashesMatchCurrent": true,
+      "inputHashesMatchCommitted": true,
+      "inputs": [
+        {
+          "path": "apps/operator/scripts/el-agent-sync.mjs",
+          "sha256": "239a1ea99f20a8c7f20c69a73d6d1e4d82d5217caa48b523732af4a5d86ac31a",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "apps/operator/scripts/el-tools-check.mjs",
+          "sha256": "1ed3c2f70d93d771a69a434f702789fb17169dbe1d49673282a3c79092ff5f41",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/agent-dispatch.ts",
+          "sha256": "752a16bde85869a1b793ee9f36473b6909395c49a04b166edbbbacb7bbf32849",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/agents.ts",
+          "sha256": "7c1686c0f85ed0a78bf49d285cfd97e3729367b39f8b29dc175eb35c1d4e0825",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/chat.ts",
+          "sha256": "6e125aaa7f5db7803564d04ad36f34a6bd16cace0f95c3d967f6481a8b66c107",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/delegation.ts",
+          "sha256": "5aed1a73a30abe909ee497c50d1253b7d009da67ad85db4f13b3bded19af8724",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/harness.ts",
+          "sha256": "ef27d4734d42296c502d44526169beac2fe1d20708220e9f289245c23697fd80",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/help.ts",
+          "sha256": "093ea447c31d618ca51ddd5cece65c61b1a33a20b3f5dc37950e5135a02e2755",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/nav.ts",
+          "sha256": "37d9d1d192f4a47a8606317775adc013520bb0ae3f716a8cc99a483123f8901c",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/operator.ts",
+          "sha256": "9186d53f3a310a5a14b483ec83beb6eca5c365031e5c703946a804a5ded7de1b",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/recent-activity.ts",
+          "sha256": "f002cb38717ee7a50bd00eaceac199e92b55753f75b6c64d80113a07943c0479",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/voice.ts",
+          "sha256": "04cb7d8ef5e171f3d0ea3f6754cb7a33fdfbc0e354c56cf0f0a0fd62ef19d1b5",
+          "currentMatch": true,
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/commands/defs/workspace.ts",
+          "sha256": "11b8deb0ceb0da3c8e0348197d1523fec82714c3f7945ee5bdd6e0f22560b87e",
+          "currentMatch": true,
+          "committedMatch": true
+        }
+      ],
+      "logs": [
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-command-inputs-before-fix-receipt-v2.log",
+          "sha256": "36525d429420ea35ba9c37337607e2dcfd3a648b3f009bc106677103f7c3417b"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-command-inputs-after-fix-receipt-v2.log",
+          "sha256": "36525d429420ea35ba9c37337607e2dcfd3a648b3f009bc106677103f7c3417b"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-command-result-fix-receipt-v2.log",
+          "sha256": "5a92c6080ffce78f9449116aa5636b36e47ae56fe90c576f0e89c917220e9f8b"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-command-result-fix-receipt-v2.err",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "path": "~/.papercusp/scratch/c0523-voice-report-guard-v1.log",
+          "sha256": "abcbc8499cf5e57e45ad46795d3cd86a886359756500c805a641da285aefdb92"
+        }
+      ],
+      "stdout": "[el-tools-check] ✓ aligned — 25 client tools, all backed by registry defs.\n",
+      "stderr": "",
+      "files": [],
+      "testFilesFabricated": false,
+      "executed": true,
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false,
+      "limits": "Declared check inputs exclude the imported formatter and installed runtime dependencies. No external ElevenLabs sync was run."
+    },
+    "regressionGuard": {
+      "file": "packages/operator-core/lib/commands/defs/help.test.ts",
+      "sha256": "b713676e47a48c01f244947f8ff9f6994e97f57f7c13b02b67e953eb30116fa9",
+      "committedMatchAtRead": false,
+      "command": "npm run test:file -- packages/operator-core/lib/commands/defs/help.test.ts",
+      "nativeExecution": {
+        "sessionId": "01a13b0f-6940-7d23-ab81-f40580f5a3b3",
+        "eventOrdinal": 481,
+        "eventId": "exec-bb2241fd-246d-4d4b-a9ad-9ad38ab769f4",
+        "startedAt": "2026-10-14T16:08:09.900Z",
+        "completedAt": "2026-10-14T16:09:05.289Z",
+        "exitCode": 0
+      },
+      "result": {
+        "requested": 1,
+        "executed": 1,
+        "matched": 1,
+        "passedTests": 5,
+        "skippedTests": 0,
+        "childSubstituted": 0,
+        "testedHead": "494deaaa9c",
+        "uncommittedPaths": 1,
+        "scope": "Named maintained guard ran locally. Full import graph provenance was not measured."
+      },
+      "settlement": "Catalog source matches committed HEAD; regression guard awaits auto-commit settlement. Original warning receipt remains historical."
+    }
+  },
+  "postFixDesktopFocusedPreparation": {
+    "schemaVersion": 1,
+    "workItem": "EI-25971079786392324",
+    "recordedAt": "2026-10-14T16:39:28.585Z",
+    "source": {
+      "path": "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+      "repoHeadAtRead": "d646444ec2e3fd8f0906555cf6a606343497e4e7",
+      "sha256": "cb43b84004c5cdc1453d5f727a9de9de9ee7f2855331b6e685e2154bd6ff0bfe",
+      "committedMatch": true
+    },
+    "rootCauseEvidence": {
+      "observedAtUnixSeconds": 1791995246.9594395,
+      "ownedPrefix": "~/.cache/inno-uninst-prefix.rhBnel",
+      "serverDirectory": "/run/user/1000/wine/server-10303-780233",
+      "lockHolderPid": 4062305,
+      "socketConnectErrno": 111,
+      "socketConnectError": "ECONNREFUSED",
+      "holderState": "D (disk sleep)",
+      "holderWait": "do_get_write_access",
+      "writer": "Wine9 dlls/ntdll/unix/server.c1322-1340; server/request.c935-959 closes listener before flush_registry; original preserved installer compiled successfully.",
+      "finding": "Per-command display/server shutdown permits a still-held prefix lock with an unavailable listener while registry writes finish. Retaining one display and a persistent owned server removes shutdown between phases.",
+      "limits": "Historical server PID2329578 had exited before diagnosis. The new baseline directly measured the same failure state but ultimately passed; no claim that storage capacity, CPU load or memory utilization caused the historical event."
+    },
+    "baseline": {
+      "nativeExecution": {
+        "sessionId": "01a13b2e-b43f-7511-b168-5ed9a7616762",
+        "eventOrdinal": 404,
+        "eventId": "exec-c2a9c312-2647-4e17-9dea-726df6350704",
+        "startedAt": "2026-10-14T16:24:29.098Z",
+        "completedAt": "2026-10-14T16:28:24.000Z",
+        "exitCode": 0
+      },
+      "scope": "Original standalone selftest ultimately passed; intermediate connection-refused shutdown state was observed. Not a deterministic historical failure reproduction."
+    },
+    "fixedVerification": {
+      "command": "BASH_XTRACEFD=3 timeout 600 bash -x bin/lib/inno-uninstall-cleanup.selftest.sh",
+      "cwd": "papercusp-desktop",
+      "nativeExecution": {
+        "sessionId": "01a13b2e-b43f-7511-b168-5ed9a7616762",
+        "eventOrdinal": 494,
+        "eventId": "exec-a3f2be28-c5af-42c7-b80b-389885ce2747",
+        "startedAt": "2026-10-14T16:32:34.919Z",
+        "completedAt": "2026-10-14T16:34:33.608Z",
+        "exitCode": 0
+      },
+      "result": "PASS: lifecycle fault injection plus real compilation, installs, uninstall, sibling/shared-runtime controls, autostart cleanup and user-config preservation. No real toolchain skip.",
+      "recurrenceGuard": "Existing failure_reporting_contract_selftest now rejects the nonpersistent-server fixture, verifies one display across compiler/install/query, and requires scoped kill+wait before display teardown.",
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false,
+      "limits": "Focused standalone selftest only. Original aggregate failed receipt remains unchanged. Shipping/runtime closure and a new full aggregate verdict are not asserted."
+    },
+    "logs": [
+      {
+        "path": "~/.papercusp/scratch/c0523-inno-wine-baseline-v3.log",
+        "sha256": "9286018a989c4de8b250c93ed1c01c8d2d76f86eafe96595ff826fe6d38cf600"
+      },
+      {
+        "path": "~/.papercusp/scratch/c0523-inno-wine-baseline-v3.trace",
+        "sha256": "619e8fb94c41e730f1420776676442e40e1cd23428bd638768444e320ae91b03"
+      },
+      {
+        "path": "~/.papercusp/scratch/c0523-inno-wine-lifecycle-v1.log",
+        "sha256": "f2084f0e02d45d74c6a13110c85958ff2d5882d9240c64b0e275d19b5af93265"
+      },
+      {
+        "path": "~/.papercusp/scratch/c0523-inno-wine-lifecycle-v1.trace",
+        "sha256": "bb8b3112cca17b33fa49e6451f4d18b64a458edeb38d7a32cdbaade2d4b6f6bd"
+      }
+    ],
+    "residue": {
+      "id": "EI-25973450727337503",
+      "assignee": "su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+      "scope": "Legacy Inno test has the same lifecycle pattern. Original aggregate passed it; current failure is unconfirmed. Owned follow-up retains that limitation."
+    }
+  },
+  "postFixDesktopAggregatePreparation": {
+    "status": "original-desktop-aggregate-command-passed-declared-inputs-unchanged",
+    "evidenceFile": "docs/evidence/green-main-desktop-aggregate-native-receipt-20261014.json",
+    "evidenceSha256": "1c5af38bbf286553069838e50e73f7c30a715d049f5510a2cfc09c3af164d9f9",
+    "supersedesForCurrentCommand": "originalCommandExecutionPreparation.desktop",
+    "historicalFailurePreserved": true,
+    "exitCode": 0,
+    "scriptsExecuted": 34,
+    "scriptFailures": 0,
+    "scriptSkips": 0,
+    "beforeAfterInputsIdentical": true,
+    "inputCount": 36,
+    "inputHashesMatchCurrent": true,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "currentSelectorDiagnosticVerification": {
+    "status": "committed-source-local-guard-pass-original-timeout-cause-unknown",
+    "workItemId": "EI-25977769047232321",
+    "testCommand": "npm run test:file -- packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+    "receipt": {
+      "path": "~/.papercusp/scratch/c0523-selection-diagnostics-successor-v2.log",
+      "sha256": "04a4c2c1d3a43d4fb4a318eb83fc91244f3974344d80ff0e37bb6114f501f16f"
+    },
+    "result": {
+      "passed": 79,
+      "failed": 0,
+      "skipped": 0,
+      "requested": 1,
+      "executed": 1,
+      "matched": 1,
+      "childSubstituted": 0,
+      "nativeAstroElapsedMs": 14206,
+      "testedHead": "d36029ecb83b379b6f5ca9e002a0e064242464c7",
+      "provenance": "stamped-named-test-path"
+    },
+    "sourceAtRead": {
+      "head": "bbdad9d26b24363ca9bbe124a294bb1c26dddcf8",
+      "files": [
+        {
+          "path": "scripts/resolve-vitest-config-contracts.mjs",
+          "sha256": "190c5503df0d0c5de9b9e64268a979e97d5ee3a810342c06870739411324bf4f",
+          "committedMatch": true
+        },
+        {
+          "path": "scripts/lib/related-tests.mjs",
+          "sha256": "f25b1ccaa9788f3200a6abdb1bd4fdf34ebd143daf1d29c77a00dfb78e10c918",
+          "committedMatch": true
+        },
+        {
+          "path": "scripts/lib/related-tests.d.mts",
+          "sha256": "1ad96b5025e98d3a68c543ed7a22a711d29bfbbb7ab18d769162a241e9775576",
+          "committedMatch": true
+        },
+        {
+          "path": "packages/operator-core/lib/__tests__/related-tests-selection.test.ts",
+          "sha256": "135751bbe6dd7360bd281fd4e8915d7c6654b8b330cd5b3be90f90ad0902df9d",
+          "committedMatch": true
+        }
+      ]
+    },
+    "priorFailedVerification": {
+      "path": "~/.papercusp/scratch/c0523-selection-diagnostics-successor-v1.log",
+      "scope": "78pass/1 missing diagnostics field;4 committed resolver substitutions. Not a timeout recurrence."
+    },
+    "limits": "Diagnostic retention guards and local selector behavior only. Earlier41256ms timeout root cause remains unknown. No full runtime closure or operational acceptance."
+  },
+  "currentSelectionPreparation": {
+    "status": "partial-original-full-gate-population-preparation",
+    "command": "node scripts/affected-tests.mjs --all --print-selection --sync-astro",
+    "log": {
+      "path": "~/.papercusp/logs/papercusp-affected-tests/2252475-9b84330b.log",
+      "sha256": "2a317e46c3b01fdd96caaf77f086742c31836adc2d0edf19cd47bfeecc8622b5"
+    },
+    "nativeExitCode": "unknown-shell-session-envelope-not-preserved",
+    "population": {
+      "coverage": "partial",
+      "uniqueFiles": 10158,
+      "fileOccurrences": 10161,
+      "representedTasks": 112,
+      "unenumerated": [
+        {
+          "task": "@papercusp/web :: lint:el-tools",
+          "reason": "unexecuted-command-obligations",
+          "command": "node scripts/el-tools-check.mjs"
+        },
+        {
+          "task": "@papercupai/papercusp-docs :: test",
+          "reason": "overlapping-chain-file-population",
+          "command": "astro check && vitest run"
+        },
+        {
+          "task": "@papercupai/papercusp-docs :: test",
+          "step": 0,
+          "command": "astro check",
+          "reason": "unexecuted-command-obligations"
+        },
+        {
+          "task": "@papercusp/desktop :: test",
+          "step": 7,
+          "command": "bash bin/lib/run-selftests.sh",
+          "reason": "unexecuted-command-obligations"
+        },
+        {
+          "task": "@papercupai/operator-docs :: test",
+          "reason": "unexecuted-command-obligations",
+          "command": "astro check"
+        },
+        {
+          "task": "@bug-drill/fixture :: test",
+          "reason": "unexecuted-lifecycle-command",
+          "command": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run"
+        }
+      ],
+      "overlaps": []
+    },
+    "executed": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "limits": "Final native preparation marker read from completed process log. Outer exit envelope was lost by this successor; no exit0 assertion. Population includes check inputs and test occurrences, not a count of test executions. This is not a frozen ABBA population."
+  },
+  "currentOriginalCommandPreparation": {
+    "status": "saved-local-command-proof-reconciled-native-step-qualification-open",
+    "workItemId": "WI-6554700010010682",
+    "fixture": {
+      "receiptSection": "originalCommandExecutionPreparation.fixtureBuild",
+      "originalCommand": "node scripts/build.mjs",
+      "cwd": "apps/slack-asana-bug-drill",
+      "nativeExitCode": 0,
+      "inputHashesChecked": 26,
+      "logHashesChecked": 5,
+      "inputAndLogHashMismatches": [],
+      "executed": true,
+      "limits": "The carried unexecuted-fixture note was stale. This is the original saved command-local proof, not full installed-dependency or transformed-runtime closure."
+    },
+    "reusableGuardProof": {
+      "schedulerReceiptSection": "fullSelectionPreparation.originalCommandOccurrencePreparation.verification.finalScheduler",
+      "schedulerPassed": 147,
+      "schedulerSourceAndGuardPinsMatchCurrentAndCommitted": true,
+      "selectorReceiptSection": "currentSelectorDiagnosticVerification",
+      "selectorPassed": 79,
+      "selectorSourceAndGuardPinsMatchCurrentAndCommitted": true,
+      "limits": "The older nativeCommandObligationPreparation and occurrence selector pins are historical. The three scheduler pins match the saved occurrence proof; the four latest selector/diagnostics pins match its newer proof. No test was repeated."
+    },
+    "retainedOriginalObligations": [
+      { "task": "@papercusp/web :: lint:el-tools", "step": null, "kind": "command-check", "check": "el-tools-drift", "inputs": 13 },
+      { "task": "@papercupai/operator-docs :: test", "step": null, "kind": "command-check", "check": "astro-check", "inputs": 14 },
+      { "task": "@papercupai/papercusp-docs :: test", "step": 0, "kind": "command-check", "check": "astro-check", "inputs": 18 },
+      { "task": "@bug-drill/fixture :: test", "step": null, "kind": "npm-lifecycle", "script": "pretest", "inputs": 26 },
+      { "task": "@papercusp/desktop :: test", "step": 7, "kind": "command-check", "check": "desktop-selftest-aggregate", "inputs": 36 }
+    ],
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "nativeCommandPreparationQualification": {
+    "status": "saved-desktop-and-fixture-command-preparation-readback-passed",
+    "reader": "scripts/lib/budgeted-task-scheduler.mjs::readBudgetedTaskComparisonArtifacts",
+    "mode": "command-preparation",
+    "selection": {
+      "ref": ".papercusp/logs/papercusp-affected-tests/2252475-9b84330b.log",
+      "sha256": "2a317e46c3b01fdd96caaf77f086742c31836adc2d0edf19cd47bfeecc8622b5"
+    },
+    "command": {
+      "task": "@papercusp/desktop :: test",
+      "step": 7,
+      "command": "bash bin/lib/run-selftests.sh",
+      "receipt": {
+        "ref": ".papercusp/scratch/c0523-desktop-aggregate-postfix-v1.json",
+        "sha256": "38c4d983bc46285fb927a883886d500b0edc4f3ebab0ae5333a11ac1b35c1d82"
+      },
+      "inputCount": 36,
+      "testFileOccurrences": 34,
+      "scriptsExecuted": 34,
+      "scriptVerdict": "34 PASS / 0 FAIL / 0 SKIP",
+      "beforeAfterInputsIdentical": true,
+      "currentDeclaredInputsMatched": true
+    },
+    "fixtureLifecycle": {
+      "task": "@bug-drill/fixture :: test",
+      "step": null,
+      "kind": "npm-lifecycle",
+      "script": "pretest",
+      "command": "node scripts/build.mjs",
+      "receipt": {
+        "ref": ".papercusp/scratch/c0523-fixture-build-command-v1.json",
+        "sha256": "b81379793ff6039b319d4aea54aab68189cb351b8cb90137fed11f4c33a279d8"
+      },
+      "inputCount": 26,
+      "fileOccurrences": 0,
+      "currentDeclaredInputsMatched": true,
+      "originalDiscoveryExecutionOrderMatched": true,
+      "buildResultMarkerMatched": true,
+      "operationalAcceptance": false
+    },
+    "populationSha256": "8cf2ba86c8756317d5f15418f15bc8ce6917674be2f5cca6adf72827df2fd9c4",
+    "sourcePins": [
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.mjs",
+        "sha256": "e65a70ec70c30eaf7aa0319dd1bfa51ddecb5c8e7253c7aa0303ac63ab97936f"
+      },
+      {
+        "path": "scripts/lib/budgeted-task-scheduler.d.mts",
+        "sha256": "e65e111f4c2c3224dbb70d2130dabb4e268d9eb7fb51ac730158235c7052488d"
+      },
+      {
+        "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "sha256": "eb6fe222267792036de832a8726906f633150b735c2d2d9c46af6c354a53e504"
+      }
+    ],
+    "maintainedTest": {
+      "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+      "log": "~/.papercusp/scratch/c0523-command-preparation-scheduler-v2.log",
+      "logSha256": "37bea4ac9041980257a7fecaac8f98ce658951b9d982b648f93d023961df8697",
+      "testsPassed": 173,
+      "testsSkipped": 0,
+      "childSubstituted": 0,
+      "nativeExitCode": 0,
+      "testedHead": "3f81fdd049",
+      "scope": "current-local named suite; full import/runtime closure unmeasured"
+    },
+    "typecheck": {
+      "log": "~/.papercusp/scratch/c0523-command-preparation-tsc-v2.log",
+      "sha256": "6dadff0ad23f3b32dbad67191419d508e9532a03aab8dfc7563228745388070f",
+      "namedFiles": 1,
+      "nativeExitCode": 0,
+      "typeErrors": 0,
+      "scope": "maintained scheduler test file and its resolved types; full scripts JS graph unmeasured"
+    },
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "limits": "Read-only raw receipt/log qualification of saved desktop and fixture commands: exact task/step/command, six raw log hashes each, unchanged/current 36 and 26-input censuses, 34 ordered PASS desktop verdicts, fixture lifecycle and discovery/execution ordering plus build completion. Remaining native formats, full chain, installed dependencies, final transformed runtime, ABBA cohorts and shipment remain open."
+  },
+  "nativeCommandPreparationAstroVoiceQualification": {
+    "status": "five-saved-original-command-readback-passed",
+    "evidence": "docs/evidence/green-main-command-preparation-qualification-20261014.json",
+    "readback": "~/.papercusp/scratch/c0523-five-command-preparation-readback-v1.json",
+    "readbackSha256": "5d69109b3c8beef43350b275f0122135d20ffbf641abea0d60118b6bd60a85c0",
+    "populationSha256": "6240b4080a9fee16c4413d89446b825c7a1622b022853e6c94ff8c0e2ce21338",
+    "maintainedTestsPassed": 223,
+    "testsSkipped": 0,
+    "childSubstituted": 0,
+    "nativeTestExitCode": 0,
+    "scopedTypecheckExitCode": 0,
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false
+  },
+  "nativeOrderedChainPreparation": {
+    "evidence": "docs/evidence/green-main-ordered-chain-preparation-20261014.json",
+    "status": "maintained-reader-guards-pass-original-chains-missing",
+    "maintainedTestsPassed": 264,
+    "testsSkipped": 0,
+    "childSubstituted": 0,
+    "nativeTestExitCode": 0,
+    "typecheck": "terminal native exit0; both named files clean across scripts/operator-core legs",
+    "savedOriginalCommandsRequalified": 5,
+    "originalCommandsRerun": 0,
+    "originalOrderedChainsQualified": 0,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false
+  },
+  "nativeEvaluatorInputPreparation": {
+    "status": "prospective-maintained-guards-pass-source-pins-settled-test-provenance-partial",
+    "reused": ["executed-inputs-capture Recorder and per-file transport", "existing PC_EXECUTED_SOURCE_MAP_OUT diagnostics", "Vitest worker moduleRunner.evaluator.runInlinedModule", "maintained real armed-worker fixture"],
+    "behavior": "When the existing OUT channel is requested, capture the exact code argument before the worker evaluator call, correlate it through AsyncLocalStorage to the actual vm.runInThisContext/runInContext wrapper bytes, preserve every invocation/version, retain content-addressed code sidecars next to the OUT artifact, and record external evaluator IDs without claiming loader bytes. Repeated files are independently read and hashed; overwritten files or redirected artifacts remain explicit gaps. Delegate the original receiver, arguments, return object and thrown error unchanged. The ordinary persisted reuse-row contract excludes this diagnostic field.",
+    "scope": "Vitest inlined evaluator inputs only. This is prospective fixture proof, not reconstructed historical execution or complete runtime closure.",
+    "limits": ["pre-setup evaluations unobserved", "external loader bytes unobserved although evaluator call IDs are retained", "VM observations require the current Vitest wrapper shape and leave unmatched shapes explicit", "non-module runtime inputs outside evaluator", "other runners and original ordered-chain receipts remain unmeasured"],
+    "sourceAtRead": {
+      "parentHead": "41fd8078b20f5b571fd91d838c787a50fbe6802e",
+      "testConfigHead": "b1bf690e46dfc7b6fee72f8ab0dafbbee4daa0ea",
+      "committed": true,
+      "sourcePins": [
+        { "path": "libs/test-config/src/executed-inputs-capture.ts", "sha256": "5bbbc6d86e8df3c8dc7d53f4a3b8aa14bad21115a1b85208508bc38072649a90" },
+        { "path": "libs/test-config/src/executed-inputs-capture-setup.ts", "sha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233" },
+        { "path": "libs/test-config/src/executed-inputs-capture.test.ts", "sha256": "1c2d8507dbd3a1225244ce166d76973c83bc2345311bf7d64bd9bd7655d5a851" },
+        { "path": "libs/test-config/src/executed-inputs-capture-armed-run.test.ts", "sha256": "73eb10b258c595fe3312edcc1a490f04cb11cbabfb89ee3a721a0405a8a46512" },
+        { "path": "libs/test-config/src/__fixtures__/armed-capture/sample.armed-fixture.ts", "sha256": "dc54023fb933ff9404ed5b78dc709c397448c50c7dbf23d27ca3e047a824e1d1" },
+        { "path": "libs/test-config/src/executed-source-map-reporter.ts", "sha256": "b02afb8d0de245bf3eee26e7a5bcfb30820373b72c740cd2e68a073a87fbbd4a" }
+      ]
+    },
+    "maintainedTests": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- libs/test-config/src/executed-inputs-capture.test.ts libs/test-config/src/executed-inputs-capture-armed-run.test.ts libs/test-config/src/executed-source-map-reporter.test.ts",
+      "log": "~/.papercusp/scratch/c0523-vm-evaluator-inputs-tests-v2.log",
+      "logSha256": "b159cff26940df8cc20a3170f6e47c09fe8aafb6fdc8ebf2011186af6a63d2b2",
+      "nativeExitCode": 0,
+      "testsPassed": 66,
+      "requested": 3, "executed": 3, "matched": 3, "childSubstituted": 0,
+      "skippedTests": 1,
+      "skip": "Pre-existing conditional test: the installed capture never calls a replaced process.cwd. It did not run in this armed parent; no evidence is claimed for that assertion.",
+      "provenance": "unknown imported-source radius: parent HEAD moved cd7006bfe7 to 0e2f2291d5 during this native run; all three named test paths dirty. Current source pins later matched committed test-config b1bf690e46 and parent gitlink; that settlement does not retroactively stamp the test. This evaluator suite reported childSubstituted0. The separate parent-receipt suite reported 12 substitutions in three integration-only preview CLI children.",
+      "realWorkerControl": "Actual worker evaluator input for the body-imported route differs from current TS disk and resolves to retained bytes with the exact recorded SHA-256 and length. The deliberately broken setup control still fails. Unit controls retain two code versions and thrown/return identity, and refuse changed or symlinked artifacts without overwriting them.",
+      "previousLog": "~/.papercusp/scratch/c0523-evaluator-inputs-tests-v1.log"
+    },
+    "typecheck": { "command": "npm run typecheck --workspace libs/test-config", "nativeExitCode": 0, "scope": "owning test-config workspace", "log": "~/.papercusp/scratch/c0523-vm-evaluator-inputs-tsc-v2.log", "logSha256": "e9296e0b5f210d8ac8b12c783d300d2a7a746098c4a8bf7ddcf657b3fcb2fa94" },
+    "nativeProcessStepPreparation": {
+      "status": "historical-pre-writable-source-guard-pass-superseded-by-pending-stream-preparation",
+      "reused": ["vitest-startup-trace preload", "PC_EXECUTED_SOURCE_MAP_OUT diagnostics", "existing affected native receipt/journal"],
+      "behavior": "Capture actual Node entries/exits and exported child_process.spawn calls, preserving npm lifecycle metadata and compound-script Node invocations. Bind immutable process-event sidecars to the actual affected child PID and time interval, exclude unrelated roots, and leave inaccessible shell steps, streams and runtime inputs explicit. Original npm/shell commands, stdio and return/error behavior are delegated unchanged.",
+      "sourceAtRead": "497e7b9dede067f9c10b8bd9d87024cdd6244047",
+      "sourcePins": [
+        {"path":"scripts/lib/vitest-startup-trace.mjs","sha256":"6802ed2c105affa8ae2d2602618e956af6a8def16d64d34094d094940d0a4777","committedMatch":true},
+        {"path":"scripts/lib/budgeted-task-scheduler.mjs","sha256":"22743c032c1e5540666525b30d2f985af040720b7a2ffbf4de78ec290fd3292f","committedMatch":true},
+        {"path":"scripts/lib/budgeted-task-scheduler.d.mts","sha256":"b19f23bb3185a7ff1e0872d2cbecadab8d14795773d19ef17439a2e93c658d1b","committedMatch":true},
+        {"path":"scripts/affected-tests.mjs","sha256":"02033e887adec031c2fcee413c57fff042ac5518364b2fe836c04d323cb4b794","committedMatch":true},
+        {"path":"packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts","sha256":"78d635161f2670a9ef69166065790f28d559663d1374501327f56232826ddbaf","committedMatch":true},
+        {"path":"packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts","sha256":"df8c51115a1968bf3b0996bb2eb9917e19cb8330e80709ebbef69a8686d9fc29","committedMatch":true}
+      ],
+      "firstMaintainedRun": {
+        "command":"PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "log":"~/.papercusp/scratch/c0523-native-process-steps-tests-v1.log",
+        "logSha256":"3a952df87f70653777eb17af127a32bd96785ba17fbd243f20ecfb2b34d61520",
+        "nativeExitCode":1,"failedTests":7,"childSubstituted":70,"skippedTests":0,
+        "qualification":"Failed. Child preloads substituted old committed observer bytes. Two additional original collector-population assertions failed and were independently diagnosed; no current native process guard pass is claimed."
+      },
+      "typecheck": {"nativeExitCode":0,"scope":"three named scripts/operator-core files",
+        "log":"~/.papercusp/scratch/c0523-native-process-steps-tsc-v1.log",
+        "logSha256":"902516086bbb8f3643b253a5cb9ab115a88261235536ffee2f1fb0cddbff3e3d"},
+      "collectorBlocker": {
+        "workItem":"WI-6554700010013510","assignee":"su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+        "rootCause":"The existing collector keyed every file-bearing event before filtering event type; one native file appeared under absolute and relative paths. Its line1,column1 filename-shaped empty-file wrapper also falsely counted as a passed assertion when only a file-less global summary followed.",
+        "fix":"Canonicalize admitted event paths against one captured cwd and admit only ledger-bearing events. Keep ambiguous wrapper passes pending until file-scoped assertion evidence qualifies them. Preserve unrelated same-basename files, actual file-named assertions, failures and zero-case populations.",
+        "sourcePins":[
+          {"path":"libs/test-config/src/node-test-ledger-collector.ts","sha256":"509aa0983f7d07a68e15a217b8a70d1f5348e6a55bfc5136fecbbd97be7a6633","committedMatch":true},
+          {"path":"libs/test-config/src/node-test-ledger.test.ts","sha256":"fb493022a5d35129d00fd0f0d778b2ad01217f3d44bd4dac859d7fb6476678f0","committedMatch":true}
+        ],
+        "tests":{"command":"PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- libs/test-config/src/node-test-ledger.test.ts",
+          "log":"~/.papercusp/scratch/c0523-node-collector-alias-tests-v3.log",
+          "logSha256":"3b2ce2b4a7da925d90c309d0eb1d46bd50c9122bc2e9b62df3ea500fed2c70cc",
+          "nativeExitCode":0,"passedTests":33,"requested":1,"executed":1,"matched":1,"skippedTests":0,"childSubstituted":0,
+          "provenance":"Stamped LOCAL test-config test path at parent497e7b9ded; imported-source radius not measured. Native reporter fixtures reuse the existing isolated child helper; this does not qualify original operational chains."},
+        "typecheck":{"nativeExitCode":0,"scope":"owning test-config workspace",
+          "log":"~/.papercusp/scratch/c0523-node-collector-alias-tsc-v3.log",
+          "logSha256":"e9296e0b5f210d8ac8b12c783d300d2a7a746098c4a8bf7ddcf657b3fcb2fa94"},
+        "nativeEventDiagnosticLog":"~/.papercusp/scratch/c0523-node-collector-native-order-v2.log",
+        "nativeEventDiagnosticLogSha256":"e2a4cfd396898549c45c94c7415a7ac03daec43c3019af28a54287ebe922a34c"
+      },
+      "committedSettlement": {
+        "parentHead": "384986738a92369328064f5eb0dc9c4a3de08c40",
+        "testConfigHeadAndParentGitlink": "511827f48eb345f6dd0afdaf7d79e29539e23256",
+        "verification": "All six parent and both collector SHA256 pins match saved, local, current HEAD and parent-pinned submodule bytes after the native guard. No manual git operations."
+      },
+      "currentMaintainedRun": {
+        "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "log": "~/.papercusp/scratch/c0523-native-process-steps-tests-v2.log",
+        "logSha256": "9d86e89d975aa10b25dda46118cdc12b5e46aa6e3f7bcb3763196c9af2141687",
+        "nativeExitCode": 0,
+        "passedTests": 281,
+        "requested": 2,
+        "executed": 2,
+        "matched": 2,
+        "skippedTests": 0,
+        "childSubstituted": 0,
+        "routerProcessSubstitutions": ["packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts", "packages/operator-core/lib/recipe-authority-derive.ts"],
+        "startHead": "95271b92fbfdd1f310d91eb641c3b810b8ff82a4",
+        "postHead": "384986738a92369328064f5eb0dc9c4a3de08c40",
+        "provenance": "Router result remains unknown because HEAD moved. Both named test paths were clean before/after. The eight recorded producer/test pins matched committed source before and after; the imported-source radius was not measured. This is a maintained preparation guard pass, not full committed-runtime or operational acceptance."
+      },
+      "sourceReadyEvent":{"key":"harness:papercusp:native-process-step-preparation-20261014-ready","generation":1,"fired":true,"emitReceipt":{"ok":true,"woken":1,"waiters":1,"pickupConfirmed":false},
+        "peerRequest":"coord-send-7445ff44720f88e35a216813230cdfbb62bf72ed026f3f7caae345064b3cb669",
+        "reply":"coord-send-fdeb2ce758b24a7fe0b79bc7921cae2b65c85a7aa302f6c87ffdeabe23751487"},
+      "next":"Existing generation1 source-ready event fired with one waiter woken; pickup is not independently confirmed. Continue actual original per-step and runtime closure. Do not rerun unchanged original commands or infer original ordered chains from these fixture guards.",
+      "orderedChainQualified":false,"runtimeClosure":"unmeasured","operationalAcceptance":false,"fullPlan":"unshipped"
+    },
+    "nativeWritableStreamPreparation": {
+      "workItem": "WI-6554700010013569",
+      "status": "current-committed-five-pin-native-guard-passed",
+      "reused": ["existing OUT-gated vitest-startup-trace preload", "existing immutable native process events", "existing affected native execution receipt transport"],
+      "behavior": "Retain bounded binary inputs accepted by each observed process stdout/stderr Writable API, with immutable SHA256 sidecars and process identity. Delegate original write receiver, arguments, callbacks, return and thrown error unchanged; retain synchronous exit-listener writes after the original exit emission. Parent verifies stream pins, bounds and hashes and retains explicit unavailable, truncated or missing-terminal gaps.",
+      "sourcePinsAtPreparation": [
+        {"path":"scripts/lib/vitest-startup-trace.mjs","sha256":"80296366deb568397fb7c17880fcbecfd7f91c602941cb84710070f4e267878c","committedMatch":false},
+        {"path":"scripts/lib/budgeted-task-scheduler.mjs","sha256":"bc9fda2685fd00a02363145c1fbdbbc219ccf84bee8fd019d2f9c19ebe25e5c5","committedMatch":false},
+        {"path":"scripts/lib/budgeted-task-scheduler.d.mts","sha256":"bcc0df4dc6d0dd080b2be6971d6c1bfbb0b86b2aa71d8a4488b1b9b63e31ca8e","committedMatch":false},
+        {"path":"packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts","sha256":"d9d97d203dcd3ba2f5a1f81664f250e9d5e541534717ea573c30b3d2f5d44729","committedMatch":false},
+        {"path":"packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts","sha256":"1b248d15c82cd4a839332985e88c2832e399ba203bca0c5d01698435e371d3b2","committedMatch":false}
+      ],
+      "firstNativeRun": {"log":"~/.papercusp/scratch/c0523-native-streams-tests-v1.log","nativeExitCode":1,"failedTests":6,"childSubstituted":71,"skippedTests":0,"qualification":"Failed before source settlement: committed child preload bytes did not contain the local stream observer. No current stream guard pass is claimed."},
+      "nativeControlsPrepared": ["binary and hex-encoded strings", "late synchronous exit-listener writes", "original receiver/callback/return/throw delegation", "16 MiB stream bound and explicit truncation", "immutable parent stream retention and tamper refusal"],
+      "typecheck": {
+        "command":"node scripts/lint-tsc.mjs --files=packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts,packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts,scripts/lib/budgeted-task-scheduler.d.mts",
+        "log":"~/.papercusp/scratch/c0523-native-streams-tsc-v2.log",
+        "logFormat":"Recovered terminal output with original run stamp and terminal exit, not a rerun or reconstructed pass.",
+        "nativeExitCode":0,"scope":"two named operator-core test files and owning scripts declaration; imported source radius not measured",
+        "previousRun":"v1 ended exit1 with TS2339 in the test environment object. Explicit Record<string,string> typing fixed that named error before this successful recheck."
+      },
+      "settlement": "All five current source/test hashes matched committed code before and after the successful native v3 run. Corrected vitest-startup-trace.test.ts SHA256 ba526bee62b5e4373cd5595f1de2955b49339f066af9f3692980ca1d5195db45 supersedes its historical preparation pin. Post-run HEAD beb61f58d10ed537932597707a50b04d5b70fe9b. No manual git, loader bypass or restart was attempted.",
+      "previousFailedNativeGuard": {
+        "originRunId":"b3f738fa-24aa-4a3a-8b45-fe3711e9c373","detachedRunId":"3c327599-62ce-44a9-beef-8e46c9528d27",
+        "foreground":"Requested timeoutMs180000 was clamped to45000; the tool started its own durable detached recovery. No duplicate manual native run was started.",
+        "nativeExitCode":1,"headBeforeAndAfter":"2bc6dd0ef4f871182cf35bc35f8c0fc878089a59","requested":2,"executed":2,"matched":2,"childSubstituted":0,"skippedTests":"unknown",
+        "testRows":[{"id":21247571,"file":"affected-tests-budgeted-scheduler.test.ts","status":"pass"},{"id":21247573,"file":"vitest-startup-trace.test.ts","status":"fail","error":"marks the stream bound explicitly while leaving the full native write intact: Test timed out in 60000ms"}],
+        "retainedResult":"/tmp/c0523-native-streams-tests-v2-status-full.json","retainedLedger":"/tmp/c0523-stream-recovery-ledger.json",
+        "blocker":"EI-26000329655691502",
+        "rootCauseEvidence":"The exact execFile piped child completed1167ms, full stdout16777217/retained16777216; Buffer.equals returnedtrue in1ms. The installed Vitest equals(a,b,[iterableEquality]) comparator on equal16MiBBuffers did not finish within a bounded20s probe (killed23652ms). Its toEqual source delegates to that comparator. Generic Buffer deep equality made the guard's assertion consume its own deadline; no resource-contention cause is asserted.",
+        "correction":"Use Buffer.equals(...).toBe(true) for the full retained payload; preserve the 16MiB bound, full-output assertion, truncation assertion and existing child/test timeouts. Local correction is not yet a verified guard pass.",
+        "harnessAudit":"Initial pre-settlement failure required exact committed-pin preflight (now enforced). Foreground timeout required consuming automatic detached recovery, not retrying foreground. Before any next native attempt require the corrected test pin committed; use a retained native/detached route with useful failure output."
+      },
+      "sourceReadyEvent":{"key":"harness:papercusp:native-writable-stream-preparation-20261014-ready","generation":1,"fired":true,"emitReceipt":{"ok":true,"woken":1,"waiters":1,"pickupConfirmed":null},"peerRequest":"coord-send-9248ec3010c8388abe71e500c59c96314d8ae4464ac733ff5eb12c231ed5aadf","reply":"coord-send-65044c363bc16dbb2458f377dc4d107504779029a83249bec52426e6587e3c25"},
+      "currentNativeGuard": {
+        "command":"npm run test:file -- packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+      "log":"~/.papercusp/scratch/c0523-native-streams-tests-v3.log",
+        "logSha256":"ca6ede361a27444c16b6779469e318862a761dd78c4f9b3cff8c098dbfe59b02",
+        "nativeExitCode":0,"testsPassed":284,"requested":2,"executed":2,"matched":2,"skippedTests":0,"childSubstituted":0,
+        "startedAt":"2026-10-15T00:24:29.335Z","postRunHead":"beb61f58d10ed537932597707a50b04d5b70fe9b",
+        "sourceVerification":{"allFiveLocalMatchCommittedBeforeAndAfter":true,"correctedTestSha256":"ba526bee62b5e4373cd5595f1de2955b49339f066af9f3692980ca1d5195db45","otherFourHashes":"unchanged from sourcePinsAtPreparation"},
+        "ledgerRows":[21248296,21248297],
+        "ledgerScope":{"workspaceId":"papercusp-workspace","harnessSlug":null,"source":"local","worktreeDirty":true,"isScratchConfig":false},
+        "provenance":"Named five pins match committed source. Both test children report zero substitutions and skips. Router substituted two unrelated modules; imported-source radius is unmeasured. Ledger harness is null because PAPERCUSP_TEST_RUN_HARNESS was omitted; exact row IDs and file paths identify this local run. No full-runtime or operational acceptance is inferred.",
+        "rootCauseVerification":"The previous 60s guard timeout originated in generic Vitest deep equality over an equal 16MiB Buffer. The exact piped child completed1167ms and Buffer.equals1ms, while the installed generic comparator exceeded20s. Replacing only that assertion with full-byte Buffer.equals keeps all bounds/timeouts and now passes in the maintained two-suite native run."
+      },
+      "next":"Publish the verified current guard and five source pins through the existing Writable readiness generation, then continue original per-step receipt and runtime-closure preparation. Do not repeat unchanged original operational chains.",
+      "limits":["Writable call inputs only; direct fd/native and inherited child writes unobserved", "missing preloads or terminal observations remain gaps", "16 MiB per stream and 64 MiB retained parent population bound", "original test reports, installed dependencies, final transforms, pre-setup, external and nonmodule runtime closure unverified"],
+      "orderedChainQualified":false,"runtimeClosure":"unmeasured","operationalAcceptance":false,"fullPlan":"unshipped"
+    },
+    "nativeParentExecutionReceiptPreparation": {
+      "status": "historical-maintained-writer-pass-superseded-by-current-process-observation-preparation",
+      "behavior": "Existing affected-tests child settlement now writes a content-addressed parent receipt before its finished pulse when OUT diagnostics are armed. The receipt retains actual command/cwd/timing/status, binary stdout/stderr, before/after wrapper-input hashes, and explicit gaps for original per-step boundaries, executable resolution, installed dependency/runtime closure and operational acceptance.",
+      "sourcePins": [
+        { "path": "scripts/lib/budgeted-task-scheduler.mjs", "sha256": "d3162e282fb26c950cd898ae12ffa8470b028685f78e49c96086ea8be01d9ed5" },
+        { "path": "scripts/lib/budgeted-task-scheduler.d.mts", "sha256": "0b49bc9bc32ce8b5061ae4dd10e71abf06a94e31d7b446be024384a541f3276d" },
+        { "path": "scripts/affected-tests.mjs", "sha256": "6339081f0a6abde50f341154078e0ff5bfd26010261fb553b3f395f5a4d35343" },
+        { "path": "packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts", "sha256": "690edba0471e13cc0ea0cbb156ebc2037a55623505f075b7da538eaca6188e64" }
+      ],
+      "maintainedTests": { "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts packages/operator-core/lib/__tests__/affected-tests-integration-only.test.ts", "log": "~/.papercusp/scratch/c0523-native-parent-receipt-tests-v2.log", "logSha256": "d456c36697a605e30d0e87efb4944e9722af2882ef4e174942fe81e0a02fdd7b", "nativeExitCode": 0, "testsPassed": 280, "requested": 2, "executed": 2, "matched": 2, "childSubstituted": 12, "skippedTests": 0, "provenance": "stamped local with 12 committed child substitutions; not a committed-source runtime verdict" },
+      "typecheck": { "command": "npm run typecheck -- --files=packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts,scripts/lib/budgeted-task-scheduler.d.mts", "nativeExitCode": 0, "log": "~/.papercusp/scratch/c0523-native-parent-receipt-tsc-v1.log", "logSha256": "a5349e6d9e579d2da2e8b43e147bf0fc48eeb73ba11b7691de110f0d27757243" },
+      "orderedChainQualified": false,
+      "runtimeClosure": "unmeasured",
+      "operationalAcceptance": false
+    },
+    "diffWhitespaceCheck": "passed",
+    "originalCommandsRerun": 0,
+    "runtimeClosure": "partial-prospective-evaluator-observation",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "nativeVitestOutcomePreparation": {
+    "workItemId": "WI-6554700010013705",
+    "status": "committed-named-source-pins-local-maintained-guard-and-owning-workspace-typecheck-passed",
+    "report": {
+      "reportId": "rpt_318f0294-7440-446e-8c3b-155025ccb588",
+      "path": "/reports?sel=rpt_318f0294-7440-446e-8c3b-155025ccb588",
+      "requestKey": "c0523-r12-native-vitest-outcomes-20261015-edition1",
+      "bodySha256": "f561cf3e43831cc922ce56c86f287d65fab39ff1410e890853a0b524b63697c7",
+      "readbackExact": true,
+      "visibility": "owner",
+      "sourceEvidencePath": "docs/evidence/green-main-r12-paired-preparation-20261014.json#nativeVitestOutcomePreparation",
+      "publicationFriction": "EI-25698211877223668; published with unchanged key/body through staging after the older serving contract refused request_key. Complete report body and owner visibility were then read back through staging after a direct MCP read reset."
+    },
+    "reused": [
+      "existing ExecutedSourceMapReporter optional OUT diagnostics",
+      "existing collectModuleExecution, collectTestCases and firstAttemptModuleVerdict"
+    ],
+    "behavior": "OUT retains reporter callback process identity and clocks, observed module occurrences, native case outcomes/counts and first-attempt verdicts, terminal module multiset, run-end reason and unhandled-error count. Omitted errors/reason remain null with explicit gaps; exit-only and missing/unreadable module results remain incomplete. These diagnostics never enter reusable-pass rows.",
+    "sourceAtVerification": {
+      "parentHeadAtRun": "a235d68c01",
+      "testConfigHeadAtRun": "e1fb622210474813c22441107c85eefa40e7cfcb",
+      "parentGitlinkAtRun": "c72f546d0d7d347fa936c07121c96bbab0bc96ef",
+      "files": [
+        {
+          "path": "libs/test-config/src/executed-source-map-reporter.ts",
+          "sha256": "00fb4e872a3d3b707e70143986a34fdb900aa4a8ea9d1eb4c873dff898d6fd3b",
+          "committedAtRun": false
+        },
+        {
+          "path": "libs/test-config/src/executed-source-map-reporter.test.ts",
+          "sha256": "cbc650cca4ba450a2f5fa1f8470a8a476b11d32e45dcef80c1220de0f9522e76",
+          "committedAtRun": false
+        }
+      ],
+      "provenance": "Named source/test pins still match the saved v2 verification. Router stamped the named test as dirty; the imported-source radius was not measured. Later source settlement cannot upgrade this into a committed-runtime test."
+    },
+    "maintainedTests": {
+      "command": "npm run test:file -- libs/test-config/src/executed-source-map-reporter.test.ts",
+      "log": "~/.papercusp/scratch/c0523-native-run-outcomes-tests-v2.log",
+      "logSha256": "62197fdb6876b4976730a3284ab2711350d9666ea5ef5bd6b06bb094ba99047d",
+      "nativeExitCode": 0,
+      "passed": 66,
+      "failed": 0,
+      "requested": 1,
+      "executed": 1,
+      "matched": 1,
+      "skippedTests": 0,
+      "childSubstituted": 0,
+      "routerProcessSubstitution": "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+      "controls": [
+        "clean pass and first-attempt failure/retry",
+        "skipped and pending cases and collection failure",
+        "failed or interrupted run with passed file assertions",
+        "omitted error-array and run-end reason remain unknown",
+        "exit-only flush and repeated or unreadable terminal modules",
+        "dirty no-persist diagnostics excluded from reusable rows"
+      ]
+    },
+    "typecheck": {
+      "command": "node scripts/lint-tsc.mjs --files=libs/test-config/src/executed-source-map-reporter.ts,libs/test-config/src/executed-source-map-reporter.test.ts",
+      "routedTo": "npm run lint:tsc:workspaces -- --files=libs/test-config/src/executed-source-map-reporter.ts,libs/test-config/src/executed-source-map-reporter.test.ts",
+      "log": "~/.papercusp/scratch/c0523-native-run-outcomes-tsc-v2.log",
+      "logSha256": "7876937687686bae43f5759093aaeb4bcd777a0de83cbf5778710cc20eda2ab1",
+      "nativeExitCode": 0,
+      "scope": "owning libs/test-config workspace: one passed, zero failed"
+    },
+    "sourceSettlement": {
+      "status": "verified",
+      "parentHead": "3d2e1fd122eb4823c6b044472d5d898b012c14a8",
+      "testConfigHeadAndParentGitlink": "898022df51e5baa02acb7ba216f59a9826061256",
+      "verification": "Both named source/test SHA256 values match the saved v2 verification, current local bytes, submodule HEAD blobs and parent-pinned submodule blobs. Background git-sync performed settlement; no manual git operation or duplicate test was run. The saved test remains local dirty-at-run proof with an unmeasured imported-source radius.",
+      "settlementFriction": "Request-only git-sync host refused a mutating fire; sanctioned background-worker fire reported an existing system git-sync exclusive hold. That existing sync subsequently committed both pins and updated the parent gitlink."
+    },
+    "limits": [
+      "Reporter callbacks only; no unobserved process exit or full runtime closure inferred",
+      "Prospective receipt preparation only; historical original command chains remain missing",
+      "No original operational command or unchanged guard was rerun"
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "currentOriginalFixtureParent20261015": {
+    "workItemId": "WI-6554700010010682",
+    "status": "original-parent-exit0-conditional-skips-native-process-scope-partial",
+    "cwd": "apps/slack-asana-bug-drill",
+    "command": ["npm", "run", "test"],
+    "originalScript": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run",
+    "lifecycle": { "pretest": "node scripts/build.mjs" },
+    "startedAt": "2026-10-15T03:46:35.525993+00:00",
+    "completedAt": "2026-10-15T03:47:35.942770+00:00",
+    "nativeExitCode": 0,
+    "parentWallMs": 60411,
+    "testResult": { "filesPassed": 10, "testsPassed": 37, "testsSkipped": 12, "totalTests": 49 },
+    "skipScope": [
+      "Eleven composition-integrity cases are conditional on root, invariant, chassis and agent-plane manifests being present.",
+      "One boot-e2e attach case is disabled by the original spawn-mode configuration."
+    ],
+    "declaredInputs": {
+      "count": 76,
+      "beforeAfterIdentical": true,
+      "scope": "Recursively tracked fixture files plus named package/lock/collector guards; not a complete imported or runtime population.",
+      "parentHeadAtStart": "9bca4cd79f6fd2f560b7326ba8ff1220dad6cfc9",
+      "parentHeadAtEnd": "8e253b4ec447654cd3f4358714ca32d77495610e",
+      "fixtureHeadAtBothBoundaries": "576a852cc16afd8a5431f8892291e21f927ebefd",
+      "provenance": "Current local execution with unchanged named pins. Parent HEAD moved; no complete committed import/runtime identity is inferred."
+    },
+    "receipt": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1.json",
+      "sha256": "146eebf6181598d9990b22127dd97aa96f35384872c315af4e154c66bc0378a3"
+    },
+    "stdout": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1.log",
+      "sha256": "baf61cc2e5bfe17364370e99b4b35ed2f1d8fa15237ba49929387f8f42fad307"
+    },
+    "stderr": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1.err",
+      "sha256": "1c8e34a068d3960a797726814178116ecd3d2bc951de944cfe5741061e0e6557"
+    },
+    "nativeProcessArchive": {
+      "root": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1-artifacts",
+      "receipt": "d9ab38c82125f6276a20853f183a47ac2781b2db1e9e6355cc7d8605c574a0fa.receipt.json",
+      "sha256": "d9ab38c82125f6276a20853f183a47ac2781b2db1e9e6355cc7d8605c574a0fa",
+      "eventCount": 70,
+      "streamCount": 24,
+      "referencedArtifactPinsChecked": 96,
+      "originalNpmLifecycle": [
+        { "phase": "pretest", "shell": "sh", "argv": ["-c", "node scripts/build.mjs"], "startedAtMs": 1792035996219, "closedAtMs": 1792036042451, "exitCode": 0, "signal": null },
+        { "phase": "test", "shell": "sh", "argv": ["-c", "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run"], "startedAtMs": 1792036042457, "closedAtMs": 1792036055889, "exitCode": 0, "signal": null }
+      ],
+      "scope": "Observed exported Node spawn/close calls and Node Writable API inputs. Shell builtins, non-Node entries, private/synchronous spawns, direct-fd/native writes and missing terminal events remain gaps."
+    },
+    "sourceProcessPinManifest": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1-source-process-pins.json",
+      "sha256": "41ec5e2f11b57d5de0d73de64ef0ba08d4b5165ffea7585b09624c006871189d",
+      "observedReceipts": 27,
+      "sourceStatus": "unknown",
+      "enginePopulationStatus": "unknown"
+    },
+    "dependencyRestoration": {
+      "workItemId": "EI-26015282781821143",
+      "status": "temporary-mitigation-disappearance-cause-unknown",
+      "method": "Maintained npm-install-safe ci --workspaces=false against the exact fixture lock; native exit0 and dependency preflight passed. Manifest and lock unchanged.",
+      "recurrenceGuard": "Existing tests/dependency-preflight.test.ts ran in this original parent: six passed. It refuses missing, ancestor-only or outside-app dependencies."
+    },
+    "limits": [
+      "The original parent was executed once. Two caller capture-preparation failures happened before npm launch and are not test outcomes.",
+      "Twelve skipped cases prevent the maintained ordered test-step reader's zero-skip qualification; no applicability exception is inferred.",
+      "The native process archive records actual npm lifecycle ordering but does not establish every original step/report binding or a complete descendant census.",
+      "This app's original Vitest configuration does not include the executed-source-map reporter/setup, so no per-test evaluator/body source census is inferred from Node process receipts.",
+      "Bootstrap, engine URL association, installed/external/native dependencies, final transforms, loader chain and independent termination/containment agreement remain unmeasured.",
+      "Next emitted module.createRequire parsing warnings while completing the build; their effect is unconfirmed and tracked on owned EI-26015814184804894.",
+      "No same-input comparison, R12 operational acceptance, live gate verdict or shipment follows from this diagnostic run."
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "currentFixtureHostBoundary20261015": {
+    "workItemId": "EI-26015814184804894",
+    "status": "warning-root-cause-fixed-current-local-host-verified",
+    "rootCause": "Route imports of the data package also exposed host-only bootData to Webpack. Its dynamic createRequire(require.resolve('embedded-postgres')) argument cannot be statically evaluated by the CommonJsImportsParserPlugin, which emitted two warnings. Native host packaging also implicitly depended on Next tracing those unused route imports.",
+    "fix": "Keep route access in the existing data entry, move startup to a directly bundled host entry, and share the unchanged singleton key through a private state module. Reuse Next's nodeFileTrace for host externals before existing native hydration; retain artifact containment checks and tracer warnings.",
+    "sourcePins": [
+      { "path": "apps/slack-asana-bug-drill/packages/data/src/index.ts", "sha256": "883e2e44df600fc7a1450de271ee49bbbc1d10702357600c46bbc3b0c6ebc4f1" },
+      { "path": "apps/slack-asana-bug-drill/packages/data/src/host.ts", "sha256": "091ff601157fa34b6467d1490dbd95ded7ed3c9733f84af641c32525108a3d55" },
+      { "path": "apps/slack-asana-bug-drill/packages/data/src/state.ts", "sha256": "7edd8bd6243f7dbbc564b87b1490a795dff410eb9f969005839f2c57315f491b" },
+      { "path": "apps/slack-asana-bug-drill/scripts/build.mjs", "sha256": "9eeb8807bc2387b17d72da8871fb264a9390a065ab4f6aa7da629626ed4dd80d" },
+      { "path": "apps/slack-asana-bug-drill/tests/data-route-bundle.test.ts", "sha256": "9d8791ee52731b790785289ccc3a1adebc1b670227ee49488059d51d64cabaf3" },
+      { "path": "apps/slack-asana-bug-drill/tests/host-smoke.test.ts", "sha256": "2c16895371ec4d44e85a057e2eb19107a10b80b75e38f430354da35f8d599ad4" }
+    ],
+    "causalRegression": {
+      "command": "npm run test:file -- tests/data-route-bundle.test.ts",
+      "red": { "ref": "~/.papercusp/scratch/c0523-data-route-bundle-red-v3-20261015.log", "sha256": "08bc42617551fd2bd3f26d0ce11259a82a0101748a5611e1e7a187b1c34b3084", "exitCode": 1, "observedWarnings": 2 },
+      "green": { "ref": "~/.papercusp/scratch/c0523-data-route-bundle-green-20261015.log", "sha256": "784cea18a8ea76e03d0b395ddb995d00f26091a38ec40cf213e5660d9e7566ac", "exitCode": 0, "testsPassed": 1, "skipped": 0 },
+      "preparationLimits": "v1 failed on the test compiler's external type; v2 used the ESM parser and was a false-negative preparation. Only v3 used Next's automatic parser and reproduced the original warnings."
+    },
+    "build": {
+      "command": "node scripts/build.mjs",
+      "exitCode": 0,
+      "stdout": { "ref": "~/.papercusp/scratch/c0523-data-route-build-v2-20261015.log", "sha256": "ea56173cdbb3c6934de8dcdd4cf98253f517e132109fb997ae7b5bd978b6c4ad" },
+      "stderr": { "ref": "~/.papercusp/scratch/c0523-data-route-build-v2-20261015.err", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "bytes": 0 },
+      "buildId": "af6f42346aeb0a4028800a9b19c0f71c5bb2c1383c221ec8b84cde34508b2557",
+      "tracer": "Next's bundled @vercel/nft; 88 retained file references, 15 retained optional-platform/native-analysis warnings; not complete runtime closure",
+      "earlierFailure": "The first changed-source build compiled Next and TypeScript without warnings, then failed native hydration because the artifact lacked the formerly implicit host dependencies. v2 adds explicit host tracing before hydration."
+    },
+    "hostSmoke": {
+      "command": "npm run test:file -- tests/host-smoke.test.ts",
+      "exitCode": 0,
+      "testsPassed": 2,
+      "skipped": 0,
+      "childWallMs": 11254,
+      "namedInputPinsUnchanged": 9,
+      "receipt": { "ref": "~/.papercusp/scratch/c0523-data-route-host-smoke-20261015.json", "sha256": "0b6e9d6d38514c5dc3841789852b9f3faf09ba7605de77770f8532505f627a65" },
+      "nativeArchive": "~/.papercusp/scratch/c0523-data-route-host-smoke-20261015-artifacts",
+      "nativeReceiptSha256": "3f9213df1a8c663061d0e55135aedd80fa66046d47d52f81e2d823bd232a6838",
+      "stdout": { "ref": "~/.papercusp/scratch/c0523-data-route-host-smoke-20261015.log", "sha256": "5d6418381fe4f005ba8defbf5d3dc4560621c4e6a1430da52c64b09b0db0b13b" },
+      "stderr": { "ref": "~/.papercusp/scratch/c0523-data-route-host-smoke-20261015.err", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+      "coverage": "Artifact-contained embedded-postgres/postgres/async-exit-hook/pg/platform resolution; actual browser quote flow, API validation, persistence across restart and clean discovery shutdown. Private fixture runtime, not an operator serving build."
+    },
+    "limits": [
+      "The preceding original fixture parent remains a historical 37-pass/12-skip receipt on its recorded source. It was not rerun, restamped, or promoted to the changed host source.",
+      "Source was current-local at verification. Four of six changed paths matched app commit cc5e1cea at the subsequent read; build.mjs and host-smoke.test.ts were still pending automatic commit at that read.",
+      "This fixes the observed compiler warning and verifies the named standalone host behavior. Bootstrap, engine-byte retention, full dependency/final-transform/population/containment closure and original ordered-step bindings remain unmeasured.",
+      "Engine archive proposal EI-26014170316247986 remains mandatory-review-pending; no implementation bypass, comparison, live gate operation or shipment claim."
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "next": "Preserve original public-docs and fixture parent receipts as recorded, including the fixture's 12 conditional skips. The new host-boundary repair has focused parser/build/host proof but does not qualify either original chain or full runtime closure. Original desktop eight-step parent remains missing. Continue actual per-step/report bindings and pre-setup/external-loader/non-module/other-runner closure using existing collectors. Do not repeat unchanged commands or saved guards absent drift. Preserve mandatory engine-archive review, D020/P006 hold, all six forms, P018 genuine seven-day/idle/alarm/P028/P031 and complete outside-lineage/final shipment requirements. Full plan remains unshipped."
+}

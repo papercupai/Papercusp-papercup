@@ -32,6 +32,15 @@
 # NOTE ON COVERAGE — this fixes ripgrep/fd (and therefore agent Grep tooling),
 # which is the common path. A raw `grep -rn` does NOT read .ignore files and is
 # still exposed; prefer rg, or bound the damage with `-I` / --max-columns.
+#
+# NOTE ON ANCHORED PATTERNS (EI-25828526343827983, measured ripgrep 14.1.x):
+# a pattern containing a slash, read from an ignore file ABOVE the search root,
+# applies only to that root's immediate children. So a root entry `a/b/c/` is
+# honored from the repo root and from `a/b`, but NOT from `a`. Generated trees that
+# agents reach by searching an intermediate directory therefore get their own
+# .ignore beside them instead of an entry here: apps/operator/.ignore
+# (public/internal/docs) and apps/operator-docs/.ignore (dist, .astro).
+# Unanchored patterns (no slash, e.g. junit.xml) are unaffected.
 
 # Generated Tauri sidecar trees (esbuild bundles, vendored binaries, wasm blobs)
 papercusp-desktop/src-tauri/sidecar/

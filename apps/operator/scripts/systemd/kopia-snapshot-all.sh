@@ -10,6 +10,11 @@ PROC_ROOT="${KOPIA_SNAPSHOT_PROC_ROOT:-/proc}"
 SUDO_BIN="${KOPIA_SNAPSHOT_SUDO:-/usr/bin/sudo}"
 KILL_BIN="${KOPIA_SNAPSHOT_KILL:-/usr/bin/kill}"
 KOPIA_BIN="${KOPIA_SNAPSHOT_BIN:-/usr/bin/kopia}"
+# Seconds a stopped sweep gives Kopia to flush after SIGTERM (kopia_stop_flushing).
+FLUSH_GRACE_SEC="${KOPIA_SNAPSHOT_FLUSH_GRACE_SEC:-15}"
+# Path of the output file the running Kopia writes, so a cleanup in ANOTHER process
+# (ExecStopPost) can mark exactly that output when it had to SIGKILL.
+OUTPUT_POINTER="$PID_FILE.output"
 if ! ensure_kopia_cache_dir "$LOG_DIR"; then
   echo "FATAL: unable to bootstrap Kopia snapshot log directory: $LOG_DIR" >&2
   exit 1
@@ -19,38 +24,47 @@ fi
 # down the user unit. Validate the exact PID and command before cleanup; never
 # scan for or kill unrelated Kopia processes.
 kopia_pid_matches() {
-  local pid="$1" exe="" cmdline=""
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [ "$pid" -gt 1 ] 2>/dev/null || return 1
-  exe="$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
-  # The Kopia child runs as ROOT (sudo), and /proc/<pid>/exe of a root process is
-  # unreadable to this user unit, so the plain readlink above returns nothing for the
-  # exact process this cleanup exists to kill (WI-10002636: two orphaned snapshot
-  # creates ran 3.5h while every cleanup logged "refusing to kill"). Resolve the link
-  # with the same sudo the kill below already uses; cmdline stays world-readable.
-  if [ "$exe" != "$KOPIA_BIN" ]; then
-    exe="$("$SUDO_BIN" -n -- readlink -f -- "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
+  # Shared exe+argv validator (kopia-cache-bootstrap.sh). The Kopia child runs as
+  # ROOT, so its exe link is unreadable here and is resolved with a bounded sudo
+  # (WI-10002636: two orphaned snapshot creates ran 3.5h while every cleanup logged
+  # "refusing to kill"), but only after the world-readable cmdline already matched
+  # (WI-6554700010011924).
+  kopia_exact_snapshot_pid "$1"
+}
+
+# Kopia was SIGKILLed, so the snapshots this output reports as "Created" were
+# discarded with it (see kopia_stop_flushing). Say so IN the output, so the sweep
+# rotation does not credit those sources as swept. A run that had reached Kopia's
+# post-snapshot maintenance had already flushed, so it is left alone.
+mark_unflushed_output() {
+  local f="${1:-}"
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  if tr '\r' '\n' <"$f" | grep -qE '^Running (quick|full) maintenance'; then
+    return 0
   fi
-  [ "$exe" = "$KOPIA_BIN" ] || return 1
-  cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)"
-  [[ "$cmdline" == "$KOPIA_BIN snapshot create "* ]]
+  echo "KOPIA_UNFLUSHED: Kopia was killed before it flushed; snapshots reported as created above were discarded" >>"$f"
 }
 
 cleanup_kopia_pid() {
-  local pid=""
+  local pid="" rc=0
   [ -s "$PID_FILE" ] || return 0
   pid="$(tr -d '[:space:]' <"$PID_FILE" 2>/dev/null || true)"
 
   if kopia_pid_matches "$pid"; then
-    if "$SUDO_BIN" -n -- "$KILL_BIN" -KILL "$pid" >>"$LOG_DIR/snapshot-all.log" 2>&1; then
-      echo "CLEANUP: killed exact Kopia PID $pid" >>"$LOG_DIR/snapshot-all.log"
-    else
-      echo "WARN: failed to kill exact Kopia PID $pid" >>"$LOG_DIR/snapshot-all.log"
-    fi
+    kopia_stop_flushing "$pid" "$FLUSH_GRACE_SEC"
+    rc=$?
+    case "$rc" in
+      0) echo "CLEANUP: Kopia PID $pid exited after SIGTERM; its finished snapshots were flushed" >>"$LOG_DIR/snapshot-all.log" ;;
+      2)
+        echo "CLEANUP: killed exact Kopia PID $pid after ${FLUSH_GRACE_SEC}s SIGTERM grace" >>"$LOG_DIR/snapshot-all.log"
+        mark_unflushed_output "$(cat -- "$OUTPUT_POINTER" 2>/dev/null || true)"
+        ;;
+      *) echo "WARN: failed to kill exact Kopia PID $pid" >>"$LOG_DIR/snapshot-all.log" ;;
+    esac
   else
     echo "INFO: stale/non-Kopia PID file $PID_FILE; refusing to kill PID ${pid:-<empty>}" >>"$LOG_DIR/snapshot-all.log"
   fi
-  rm -f -- "$PID_FILE"
+  rm -f -- "$PID_FILE" "$OUTPUT_POINTER"
 }
 
 # ExecStopPost calls this after a kill. Keep it above the guard self-wrap so
@@ -74,20 +88,112 @@ ionice -c3 -p $$ >/dev/null 2>&1 || true
 
 run_kopia_snapshot() {
   local output_file="$LOG_DIR/snapshot-all-output.$$" sudo_pid="" rc=0
+  kopia_retention_pin_all "$SUDO_BIN" "$KOPIA_BIN" add || return
   rm -f -- "$PID_FILE" "$output_file"
+  printf '%s\n' "$output_file" >"$OUTPUT_POINTER"
 
-  "$SUDO_BIN" -n /usr/bin/bash -c '
+  kopia_as_root "$SUDO_BIN" /usr/bin/bash -c '
     pid_file="$1"
     shift
     printf "%s\n" "$$" >"$pid_file"
     exec "$@"
-  ' bash "$PID_FILE" "$KOPIA_BIN" snapshot create "--parallel=1" "$@" >"$output_file" 2>&1 &
+  ' bash "$PID_FILE" "$KOPIA_BIN" snapshot create "--pin=$KOPIA_RETENTION_PIN" "--parallel=1" "$@" >"$output_file" 2>&1 &
   sudo_pid=$!
   wait "$sudo_pid"
   rc=$?
+  # 137 = Kopia died of SIGKILL (the OOM killer, or a cleanup whose grace ran out).
+  [ "$rc" -ne 137 ] || mark_unflushed_output "$output_file"
+  record_sweep_progress "$output_file"
   cat "$output_file"
-  rm -f -- "$output_file" "$PID_FILE"
+  rm -f -- "$output_file" "$PID_FILE" "$OUTPUT_POINTER"
+  [ "$rc" -ne 0 ] || kopia_retention_finish "$SUDO_BIN" "$KOPIA_BIN" || rc=$?
   return "$rc"
+}
+
+# ── SWEEP ROTATION: resume a stopped sweep instead of restarting it ──────────
+# The DB-dump waiters (papercusp-db-backup, workspace dumps) may stop this sweep
+# mid-run by design (the guard's priority-waiter handoff). Kopia keeps every
+# source it finished AND flushed (cleanup_kopia_pid now lets it flush), but discovery order was fixed, so the next sweep re-walked
+# the same leading sources and the ones after the slowest never got a turn.
+# Measured 2026-10-06 (EI-25211496463956189): the sweep stopped at 16:52 EDT had
+# landed only /mnt/backup/db-dumps, and Restart, storewolf-*, .papercusp-workspaces
+# and .papercusp were 19-20h stale. The last snapshot TIME cannot rank staleness
+# here: the global policy sets "ignore identical snapshots", so an unchanged source
+# keeps an old timestamp. So record, per source, when a sweep last reached it, from
+# Kopia's own per-source output: "Snapshotting <user@host:/path> ..." starts a
+# source; "Created snapshot ..." or "Not saving snapshot because no files have been
+# changed ..." finishes it. A source that started but did not finish is stamped one
+# second before the finished ones, so it runs ahead of them but after the sources
+# the stopped sweep never reached. "Created snapshot" proves only that Kopia BUILT
+# the snapshot: it is committed at Kopia's next flush, and a SIGKILL before that
+# discards it. An output marked KOPIA_UNFLUSHED (mark_unflushed_output) therefore
+# credits its "Created" sources as unfinished; "Not saving ... no files have been
+# changed" stays finished, since nothing was lost.
+SWEEP_STATE="${KOPIA_SNAPSHOT_SWEEP_STATE:-$LOG_DIR/snapshot-all.sweep-state}"
+
+# Merge the per-source progress in Kopia output file $1 into $SWEEP_STATE, stamped
+# with the file's mtime (when Kopia last wrote to it). Keeps the newest stamp.
+record_sweep_progress() {
+  local output_file="$1" stamp tmp
+  [ -s "$output_file" ] || return 0
+  stamp=$(stat -c %Y -- "$output_file" 2>/dev/null) || return 0
+  tmp="$SWEEP_STATE.tmp.$$"
+  {
+    if [ -r "$SWEEP_STATE" ]; then cat -- "$SWEEP_STATE"; fi
+    tr '\r' '\n' <"$output_file" | awk -v done_at="$stamp" '
+      function flush(at, created) {
+        if (cur != "") { n++; src[n] = cur; when[n] = at; built[n] = created }
+        cur = ""
+      }
+      /^Snapshotting [^ ]*@[^ ]*:\// {
+        flush(done_at - 1, 0)
+        cur = $0
+        sub(/^Snapshotting [^@]*@[^:]*:/, "", cur)
+        sub(/ \.\.\.$/, "", cur)
+        next
+      }
+      /^Created snapshot with root / { flush(done_at, 1) }
+      /Not saving snapshot because no files have been changed/ { flush(done_at, 0) }
+      /^KOPIA_UNFLUSHED:/ { unflushed = 1 }
+      END {
+        flush(done_at - 1, 0)
+        for (i = 1; i <= n; i++) printf "%d\t%s\n", (unflushed && built[i] ? done_at - 1 : when[i]), src[i]
+      }
+    '
+  } | awk -F'\t' '
+    NF >= 2 && $1 ~ /^[0-9]+$/ {
+      src = substr($0, index($0, "\t") + 1)
+      if (!(src in at) || $1 + 0 > at[src] + 0) at[src] = $1
+    }
+    END { for (s in at) printf "%s\t%s\n", at[s], s }
+  ' >"$tmp" 2>/dev/null && mv -f -- "$tmp" "$SWEEP_STATE" || rm -f -- "$tmp"
+}
+
+# True while <pid> is still a sweep, i.e. its output may still be written. Pids
+# wrap about daily on this host, so a live pid alone proves nothing: on 2026-10-06
+# three stopped sweeps' outputs sat un-ingested because firefox, typesense-server
+# and codex held their pids. A live pid whose cmdline cannot be read is treated as
+# a sweep: deleting a live sweep's output is worse than keeping a dead one's.
+sweep_pid_alive() {
+  local cmdline
+  [ -d "$PROC_ROOT/$1" ] || return 1
+  cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$1/cmdline" 2>/dev/null || true)"
+  [ -z "$cmdline" ] || [[ "$cmdline" == *snapshot-all.sh* ]]
+}
+
+# A stopped sweep is killed before run_kopia_snapshot can record its output, which
+# is why ~/.cache/kopia held 105 leftover output files on 2026-10-06. Fold in every
+# leftover from a sweep that is gone, oldest first, then delete it.
+ingest_stopped_sweep_outputs() {
+  local f pid
+  while IFS= read -r f; do
+    pid=${f##*.}
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [ "$pid" != "$$" ] || continue
+    ! sweep_pid_alive "$pid" || continue
+    record_sweep_progress "$f"
+    rm -f -- "$f"
+  done < <(ls -1tr -- "$LOG_DIR"/snapshot-all-output.* 2>/dev/null)
 }
 
 trap cleanup_kopia_pid EXIT
@@ -148,10 +254,10 @@ trap cleanup_kopia_pid EXIT
   # latency instead of forever. Only paths that exist on disk are added, so a
   # box that does not have one is not spammed with errors for it.
   REQUIRED_SOURCES=(
-    "${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+    "${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"
   )
   COLD_FILTER="$(printf '%s\n' "${COLD_SOURCES[@]}")"
-  mapfile -t DISCOVERED < <("$SUDO_BIN" -n "$KOPIA_BIN" snapshot list --all 2>/dev/null \
+  mapfile -t DISCOVERED < <(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all 2>/dev/null \
       | awk -F'@' '/^[a-zA-Z]/' \
       | grep -oE ':/[^ ]+' \
       | sed 's/^://' \
@@ -209,6 +315,21 @@ trap cleanup_kopia_pid EXIT
     printf '%s\n' ${PRIORITY[@]+"${PRIORITY[@]}"} | grep -qxF "$d" && continue
     TAIL+=("$d")
   done
+  # Least-recently-swept first (SWEEP ROTATION above); ties keep discovery order.
+  ingest_stopped_sweep_outputs
+  if [ "${#TAIL[@]}" -gt 1 ] && [ -s "$SWEEP_STATE" ]; then
+    mapfile -t TAIL < <(
+      printf '%s\n' "${TAIL[@]}" | awk -v state="$SWEEP_STATE" '
+        BEGIN {
+          while ((getline line < state) > 0) {
+            tab = index(line, "\t")
+            if (tab > 1) at[substr(line, tab + 1)] = substr(line, 1, tab - 1) + 0
+          }
+        }
+        { printf "%d\t%d\t%s\n", ($0 in at ? at[$0] : 0), NR, $0 }
+      ' | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2n | cut -f3-)
+    echo "ROTATION: least-recently-swept first: ${TAIL[*]}"
+  fi
   if [ "${#PRIORITY[@]}" -gt 0 ]; then
     echo "PRIORITY: ${#PRIORITY[@]} required source(s) ordered first: ${PRIORITY[*]}"
   fi
@@ -220,8 +341,30 @@ trap cleanup_kopia_pid EXIT
   if [ "${#SRCS[@]}" -eq 0 ]; then
     echo "WARNING: source discovery returned NOTHING — no sources snapshotted this cycle"
   else
-    echo "snapshotting ${#SRCS[@]} sources in ONE kopia invocation"
-    run_kopia_snapshot "${SRCS[@]}" 2>&1 | tail -5
+    # ── REQUIRED SOURCES COMMIT IN THEIR OWN INVOCATION (EI-25211496463956189) ──
+    # Kopia commits a finished source only when the process flushes (exit, or a
+    # 45-minute checkpoint), so inside one invocation a required source stayed
+    # uncommitted for the WHOLE sweep. Measured 2026-10-06: /mnt/backup/db-dumps
+    # finished at 21:52Z and was still absent from `snapshot list` at 22:47Z, with
+    # the workspace walk (42 min) still ahead. Meanwhile the backup alarm fired,
+    # and any stop discarded it. A second invocation costs one more index load
+    # (~4 CPU-s, see BATCHED INVOCATION above) and commits the required sources
+    # the moment they finish. The tail stays batched.
+    if [ "${#PRIORITY[@]}" -gt 0 ]; then
+      echo "snapshotting ${#PRIORITY[@]} required source(s) in their own kopia invocation"
+      if [ "${#TAIL[@]}" -gt 0 ]; then
+        # Required-source coverage must commit promptly, but full auto-maintenance
+        # can hold the shared guard for tens of minutes before the remaining sweep.
+        # Defer it to the tail invocation so the same run can cover both tiers.
+        run_kopia_snapshot --no-auto-maintenance "${PRIORITY[@]}" 2>&1 | tail -5
+      else
+        run_kopia_snapshot "${PRIORITY[@]}" 2>&1 | tail -5
+      fi
+    fi
+    if [ "${#TAIL[@]}" -gt 0 ]; then
+      echo "snapshotting ${#TAIL[@]} sources in ONE kopia invocation"
+      run_kopia_snapshot "${TAIL[@]}" 2>&1 | tail -5
+    fi
   fi
   echo "=== $(date -Iseconds) run end ==="
 } >> "$LOG_DIR/snapshot-all.log" 2>&1

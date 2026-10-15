@@ -137,6 +137,20 @@ describe('POST /api/harness/pots/from-repo — error→status map (Gap 7)', () =
     expect(status).toBe(200);
     expect(body).toMatchObject({ ok: true });
   });
+
+  // P-017 (pot-review-integration-mode-2026-10-05, D-007): the creation-time
+  // "where should the agents' work go" answer reaches the composition.
+  it.each(['direct', 'review'] as const)('forwards integrationMode=%s to createPotFromRepo', async (mode) => {
+    createHiveFromRepo.mockResolvedValue({ ok: true, created: { potSlug: 'r', memberSlug: 'r', memberPath: '/p' } });
+    await post(fromRepoRoute, { githubUrl: 'https://github.com/o/r', integrationMode: mode });
+    expect(createHiveFromRepo.mock.calls[0][0]).toMatchObject({ integrationMode: mode });
+  });
+
+  it.each([undefined, 'bogus', '', 7])('omits integrationMode for an unanswered/unknown value (%s)', async (mode) => {
+    createHiveFromRepo.mockResolvedValue({ ok: true, created: { potSlug: 'r', memberSlug: 'r', memberPath: '/p' } });
+    await post(fromRepoRoute, { githubUrl: 'https://github.com/o/r', integrationMode: mode });
+    expect(createHiveFromRepo.mock.calls[0][0]).not.toHaveProperty('integrationMode');
+  });
 });
 
 // ── Gap 8: POST /harness/pots status map ────────────────────────────────────

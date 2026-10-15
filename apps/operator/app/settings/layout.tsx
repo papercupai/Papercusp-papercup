@@ -13,6 +13,7 @@ import { Select } from '../harness/Select';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
+import { useOperatorWorkspaceLocation } from '@papercusp/operator-ui';
 
 /**
  * Settings paths that exist only behind a flag. The nav below hides a gated
@@ -24,7 +25,6 @@ import { useLexicon } from '@/lib/useLexicon';
 export const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
   '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
   '/settings/prompt-studio': FLAGS.PROMPT_STUDIO,
-  '/settings/autonomy':   FLAGS.MUG_AUTONOMY_SETTINGS,
   '/settings/storage':    FLAGS.STORAGE_SETTINGS,
   '/settings/pot-customization': FLAGS.BLUEPRINT_AWARE_SETTINGS,
   '/settings/p2p':        FLAGS.P2P,
@@ -77,6 +77,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     label: 'Keys & OAuth',
     links: [
+      { href: '/settings/integrations', label: 'Integrations', keywords: ['integrations', 'linear', 'asana', 'tickets', 'tasks', 'issues', 'tracker', 'sync', 'connect', 'oauth', 'admission', 'rules'] },
       { href: '/settings/api-keys', label: 'API keys', keywords: ['credentials', 'keys', 'api key', 'anthropic', 'openai', 'github', 'google', 'zeroentropy', 'elevenlabs', 'cartesia', 'deepgram', 'picovoice'] },
       // 'login' / 'sign in' / 'chatgpt' / 'codex' live HERE, not on api-keys: the account
       // sign-in cards were removed from that page (default-deploy-account-2026-08-08 P-001),
@@ -117,6 +118,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 const SETTINGS_LINKS = SETTINGS_GROUPS.flatMap((group) => group.links);
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
+  const workspaceLocation = useOperatorWorkspaceLocation();
   const pathname = usePathname() ?? '';
   const router = useRouter();
   const t = useLexicon();
@@ -136,6 +138,10 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   } | null>(null);
 
   useEffect(() => {
+    if (workspaceLocation === 'cloud') {
+      setWizardProgress(null);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       try {
@@ -160,11 +166,10 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [workspaceLocation]);
 
   const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
   const promptStudioEnabled = useFlag(FLAGS.PROMPT_STUDIO);
-  const autonomySettingsEnabled = useFlag(FLAGS.MUG_AUTONOMY_SETTINGS);
   const storageSettingsEnabled = useFlag(FLAGS.STORAGE_SETTINGS);
   const blueprintAwareSettingsEnabled = useFlag(FLAGS.BLUEPRINT_AWARE_SETTINGS);
   const p2pEnabled = useFlag(FLAGS.P2P);
@@ -185,7 +190,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const flagEnabled: Record<string, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
-    [FLAGS.MUG_AUTONOMY_SETTINGS]: false,
+    [FLAGS.MUG_AUTONOMY_SETTINGS]: true,
     [FLAGS.STORAGE_SETTINGS]: storageSettingsEnabled,
     [FLAGS.BLUEPRINT_AWARE_SETTINGS]: blueprintAwareSettingsEnabled,
     [FLAGS.P2P]: p2pEnabled,
@@ -232,6 +237,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   }, [normalizedQuery]);
 
   return (
+    <div className="pc-settings-frame">
     <div className="pc-settings-shell">
       <aside className="pc-settings-nav" aria-label="Settings sections">
         <div className="pc-settings-nav-search">
@@ -299,6 +305,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
         </nav>
       </aside>
       <section className="pc-settings-content">{children}</section>
+    </div>
     </div>
   );
 }

@@ -72,7 +72,9 @@ describe('no release-time path writes or uploads instructions.html [owner #868]'
         path.join(site, 'index.html'),
         '<section class="rel" data-newest-release="1.2.3"><a href="work-items/WI-1.html">item</a></section>\n',
       );
-      fs.writeFileSync(path.join(site, 'history.json'), '{"releases":[{"version":"1.2.3"}]}\n');
+      // Real history.json releases carry an `artifacts` array; publish runs
+      // spa-freshness.js --site first, which holds (exit 4) on a release without one.
+      fs.writeFileSync(path.join(site, 'history.json'), '{"releases":[{"version":"1.2.3","artifacts":[]}]}\n');
       fs.writeFileSync(path.join(site, 'work-items', 'WI-1.html'), '<html>detail</html>\n');
       for (const rel of ['assets/project-history.js', 'assets/project-history.css', 'assets/vditor/dist/js/lute/lute.min.js']) {
         fs.mkdirSync(path.dirname(path.join(site, rel)), { recursive: true });

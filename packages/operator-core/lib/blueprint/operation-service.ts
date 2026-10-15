@@ -10,7 +10,11 @@ import {
   type CompiledAgentSpecification,
 } from '@papercusp/orchestrator/blueprint';
 import { normalizeModelId } from '@papercusp/model-pricing';
-import { readAcceptedBlueprintDirectWorkItem, type AcceptedOperationPin } from './operation-admission';
+import {
+  assertAdmissibleAgentOperation,
+  readAcceptedBlueprintDirectWorkItem,
+  type AcceptedOperationPin,
+} from './operation-admission';
 import { readActiveOperationModelPolicy, type ActiveOperationAttestationContext } from './operation-worker-binding';
 import { checkAgainstJsonSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
@@ -23,9 +27,38 @@ import {
   acceptBlueprintDirectWorkItem,
   acceptBlueprintPlanRun,
 } from './operation-admission';
-import { readOrProjectBlueprintHash, readBlueprintSpecificationSnapshot } from './project-to-pg';
+import {
+  readBlueprintReprojectionAttempt,
+  readOrProjectBlueprintHash,
+  readBlueprintSpecificationSnapshot,
+} from './project-to-pg';
+
+/**
+ * WI-10006722: an operation added by a blueprint edit that FAILED validation is absent
+ * from the still-current (last valid) specification. Say why instead of the bare
+ * composition `operation-not-found`, so the app author sees the loader's error.
+ */
+export function operationFromCurrentSpecification(
+  specification: Parameters<typeof operationFromSpecification>[0],
+  input: { workspaceId: string; harnessSlug: string; operationId: string },
+): ReturnType<typeof operationFromSpecification> {
+  try {
+    return operationFromSpecification(specification, input.operationId);
+  } catch (error) {
+    const attempt = readBlueprintReprojectionAttempt(input.workspaceId, input.harnessSlug);
+    if (!attempt || attempt.ok) throw error;
+    throw new BlueprintOperationRefusal('undeclared',
+      `operation "${input.operationId}" is not in the effective blueprint for ${input.harnessSlug}: ` +
+        `${attempt.path} changed but failed to load, so the last valid blueprint is still in effect. ` +
+        `Loader error: ${attempt.error}`);
+  }
+}
 import { seedContentHash, type RubricSeedSource } from '../cupboard/rubric-store';
 import { BlueprintOperationRefusal } from './operation-refusal';
+import { storeOperationPrivateInput } from './operation-private-input';
+import type { PersonalToolContext } from '../personal-vault/types';
+import { assertSupportCaseInput, type SupportCaseInput } from './support-workflow-contract';
+import { supportWorkflowFromOperation } from './support-workflow-operation';
 
 /** Exported for the shared public contract (operation-contract.ts). */
 export const OperationHandleSchema = z.object({
@@ -42,13 +75,33 @@ export const OperationHandleSchema = z.object({
 
 export type BlueprintOperationHandle = z.infer<typeof OperationHandleSchema>;
 
+/** Display the current declaration only. Submission still rechecks this revision,
+ * admission, funding and the employee's live source permissions. */
+export async function readCurrentSupportWorkflow(sql: Sql, input: {
+  workspaceId: string; harnessSlug: string; operationId: string;
+}) {
+  return runWithWorkspace(input.workspaceId, async () => {
+    const revision = await readOrProjectBlueprintHash(sql, input.workspaceId, input.harnessSlug);
+    if (!revision) return null;
+    const specification = await readBlueprintSpecificationSnapshot(sql, input.workspaceId, input.harnessSlug, revision);
+    if (!specification) return null;
+    const { operation } = operationFromCurrentSpecification(specification, input);
+    return supportWorkflowFromOperation(operation, input.harnessSlug, revision);
+  });
+}
+
 export interface SubmitBlueprintOperationInput {
   workspaceId: string;
   harnessSlug: string;
   callerId: string;
   operationId: string;
   requestKey: string;
+  /** Compare with the current revision; never permission to select an old one. */
+  expectedSpecificationRevision?: string;
   input: Record<string, unknown>;
+  /** D-014: content for the worker that must NOT enter the work-item payload.
+   * Accepted only by an operation declaring privateInputSchema. */
+  privateInput?: unknown;
   title?: string;
   summary?: string;
 }
@@ -56,7 +109,11 @@ export interface SubmitBlueprintOperationInput {
 /** Only the durable program executor supplies this option. It stays outside the
  * public operation input so a caller cannot select an older definition. */
 export interface InternalBlueprintOperationSubmission {
-  expectedSpecificationRevision: string;
+  expectedSpecificationRevision?: string;
+  /** Verified transport identity; never a field of SubmitArgsSchema. */
+  principal?: PersonalToolContext['principal'] & { trust?: string };
+  /** Trusted routine caller only; never exposed in the public submission schema. */
+  beforeNewAdmission?: (tx: TransactionSql) => Promise<void>;
 }
 
 type InvocationRow = {
@@ -93,7 +150,8 @@ export function submitBlueprintOperation(
     const callerId = input.callerId?.trim();
     const requestKey = input.requestKey?.trim();
     if (!input.workspaceId?.trim() || !input.harnessSlug?.trim() || !input.operationId?.trim() ||
-        !callerId || callerId.length > 200 || !requestKey || requestKey.length > 200) {
+        !callerId || callerId.length > 200 || !requestKey || requestKey.length > 200 ||
+        (input.expectedSpecificationRevision !== undefined && !/^[0-9a-f]{64}$/.test(input.expectedSpecificationRevision))) {
       throw new BlueprintOperationRefusal('invalid_request',
         'blueprint submission requires workspace, harness, operation, authenticated caller and request key');
     }
@@ -118,6 +176,30 @@ export function submitBlueprintOperation(
         internal.expectedSpecificationRevision !== previous[0].specification_revision) {
       throw new Error('blueprint operation receipt differs from the expected specification revision');
     }
+    if (input.expectedSpecificationRevision &&
+        input.expectedSpecificationRevision !== (previous[0]?.specification_revision ?? currentHash) &&
+        // A trusted program can pin an old revision; a public request cannot.
+        !(internal?.expectedSpecificationRevision === input.expectedSpecificationRevision)) {
+      throw new BlueprintOperationRefusal('input_conflict',
+        'blueprint operation revision changed; reload the approved workflow before starting a new run');
+    }
+    const expectedSpecificationRevision = internal?.expectedSpecificationRevision ?? input.expectedSpecificationRevision;
+    const beforeNewAdmission = async (tx: TransactionSql) => {
+      if (input.expectedSpecificationRevision) {
+        // Serialize with projection's UPDATE: promotion cannot race between the
+        // displayed-revision comparison and durable admission. Replays bypass
+        // this hook and retain the accepted receipt even after rollback.
+        const [current] = await tx<Array<{ content_hash: string }>>`
+          SELECT content_hash FROM harness_shared.blueprints
+           WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
+           FOR SHARE`;
+        if (current?.content_hash !== input.expectedSpecificationRevision) {
+          throw new BlueprintOperationRefusal('input_conflict',
+            'blueprint operation revision changed; reload the approved workflow before starting a new run');
+        }
+      }
+      await internal?.beforeNewAdmission?.(tx);
+    };
     const revision = previous[0]?.specification_revision ??
       internal?.expectedSpecificationRevision ??
       currentHash;
@@ -127,9 +209,58 @@ export function submitBlueprintOperation(
     }
     const specification = await readBlueprintSpecificationSnapshot(sql, input.workspaceId, input.harnessSlug, revision);
     if (!specification) throw new Error('blueprint operation specification snapshot is missing');
-    const { operation } = operationFromSpecification(specification, input.operationId);
+    const { operation } = operationFromCurrentSpecification(specification, input);
+    // Validate before storing private input or creating an item/receipt. The
+    // submit path reads compiled snapshots directly and cannot rely on the
+    // separate blueprint authoring validator having run for this revision.
+    assertAdmissibleAgentOperation(operation);
     const targetKind = previous[0]?.target_kind ?? operation.target.kind;
     if (targetKind !== operation.target.kind) throw new Error('blueprint operation receipt and pinned target disagree');
+
+    let privateInput = input.privateInput;
+    const supportWorkflow = supportWorkflowFromOperation(operation, input.harnessSlug, revision);
+    if (supportWorkflow) {
+      const support = operation.policy.supportCase!;
+      if (!support.funding || !support.native || support.funding.organization.controlWorkspaceId !== input.workspaceId ||
+          operation.policy.model?.mode !== 'exact' || operation.policy.model.models.length !== 1 ||
+          operation.policy.model.models[0] !== support.native.model || operation.policy.model.effort !== support.native.effort) {
+        throw new BlueprintOperationRefusal('invalid_payload', 'support workflow requires funded, revision-pinned native budget policy');
+      }
+      if (input.expectedSpecificationRevision !== revision || input.privateInput !== undefined) {
+        throw new BlueprintOperationRefusal('invalid_payload',
+          'support workflow requires the displayed approved revision and server-read case content');
+      }
+      const principal = internal?.principal;
+      if (!principal?.slug || (callerId !== principal.slug && !callerId.startsWith(`${principal.slug}/`)) ||
+          principal.workspaceId !== input.workspaceId) {
+        throw new BlueprintOperationRefusal('handle_mismatch', 'support workflow requires its authenticated submitting principal');
+      }
+      let selection: SupportCaseInput;
+      try { selection = assertSupportCaseInput(supportWorkflow, input.input as unknown as SupportCaseInput); }
+      catch { throw new BlueprintOperationRefusal('invalid_payload', 'support case selection is outside the approved workflow'); }
+      const { readSelectedSupportCase } = await import('./support-workflow-case');
+      const selected = await readSelectedSupportCase(sql, {
+        workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+        role: operation.execution?.kind === 'agent' ? operation.execution.role : undefined, principal,
+      }, supportWorkflow, selection);
+      if (!selected.allowed) {
+        throw new BlueprintOperationRefusal('invalid_payload', `support case access refused: ${selected.reason}`);
+      }
+      privateInput = { supportCaseId: selection.supportCaseId,
+        documents: selected.results.map(({ id, source, externalId, title, snippet }) => ({ id, source, externalId, title, snippet })) };
+    }
+
+    // D-014: private input is stored BEFORE acceptance, so the worker that claims
+    // the item can always read it. Only a work-item target has a holder to read it.
+    const privateInputSchema = (operation as { privateInputSchema?: Record<string, unknown> }).privateInputSchema;
+    if (targetKind !== 'work-item' && (privateInputSchema || input.privateInput !== undefined)) {
+      throw new BlueprintOperationRefusal('invalid_request',
+        `blueprint operation "${input.operationId}" targets a plan; privateInput is only supported for work-item operations`);
+    }
+    await storeOperationPrivateInput(sql, {
+      workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, callerId,
+      operationId: input.operationId, requestKey,
+    }, { schema: privateInputSchema, value: privateInput, alreadyAccepted: previous.length > 0 });
 
     let target: BlueprintOperationHandle['target'];
     if (targetKind === 'work-item') {
@@ -138,7 +269,8 @@ export function submitBlueprintOperation(
         callerId, requestKey, operationId: input.operationId, input: input.input,
         title: input.title?.trim() || operation.description?.trim() || operation.id,
         summary: input.summary,
-        expectedSpecificationRevision: internal?.expectedSpecificationRevision,
+        expectedSpecificationRevision,
+        beforeNewAdmission,
         createdBy: callerId,
       });
       target = { kind: 'work-item', id: item.id };
@@ -146,7 +278,8 @@ export function submitBlueprintOperation(
       const run = await acceptBlueprintPlanRun(sql, {
         workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
         callerId, requestKey, operationId: input.operationId, input: input.input,
-        expectedSpecificationRevision: internal?.expectedSpecificationRevision,
+        expectedSpecificationRevision,
+        beforeNewAdmission,
       });
       target = { kind: 'plan', runId: run.runId, instanceSlug: run.instanceSlug };
     }
@@ -173,6 +306,48 @@ export function submitBlueprintOperation(
 export type BlueprintOperationPhase = 'accepted' | 'dispatched' | 'waiting' | 'terminal';
 export type BlueprintOperationOutcome = 'succeeded' | 'unverified' | 'failed' | 'cancelled' | 'dropped';
 export const BLUEPRINT_PROGRAM_COMPLETION_OWNER = 'system:blueprint-program';
+
+export type BusinessReviewDecision = 'accept' | 'reject' | 'rework';
+export interface BlueprintOperationBusinessReview {
+  state: 'pending' | 'accepted' | 'rejected' | 'rework';
+  accountableOwner: string;
+  resultFingerprint: string;
+  decision?: { eventId: string; reviewerPrincipal: string; reason: string; at: string };
+}
+
+export const BusinessReviewInputSchema = z.object({
+  decision: z.enum(['accept', 'reject', 'rework']),
+  reason: z.string().trim().min(1).max(2000),
+  resultFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+
+export const BusinessReviewStateSchema = z.object({
+  state: z.enum(['pending', 'accepted', 'rejected', 'rework']),
+  accountableOwner: z.string(), resultFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+  decision: z.object({ eventId: z.string(), reviewerPrincipal: z.string(), reason: z.string(), at: z.string() }).optional(),
+});
+
+/** The reviewer is authenticated by the transport; this value is never read
+ * from operation input or from a UI supplied principal alias. */
+export interface BlueprintOperationReviewAccess { principalId: string }
+
+export function assertBusinessReviewer(principalId: string, submitterId: string,
+  policy: { readonly reviewerPrincipals: readonly string[] }, workerId?: string | null): void {
+  if (!principalId.trim() || !policy.reviewerPrincipals.includes(principalId) ||
+      submitterId === principalId || submitterId.startsWith(`${principalId}/`) ||
+      workerId === principalId || workerId?.startsWith(`${principalId}/`)) {
+    throw new BlueprintOperationRefusal('handle_mismatch',
+      'business review requires a distinct authenticated reviewer principal named by the operation');
+  }
+}
+
+function operationResultFingerprint(handle: BlueprintOperationHandle, output: unknown, evidenceRef: string,
+  completionRef?: string | null): string {
+  return createHash('sha256').update(canonicalJson({
+    receiptId: handle.receiptId, operationId: handle.operationId,
+    specificationRevision: handle.specificationRevision, output, evidenceRef, completionRef: completionRef ?? null,
+  })).digest('hex');
+}
 
 /** The canonical root's completion reference carries an executor disposition,
  * but the work item remains the only business-state authority. The receipt in
@@ -289,7 +464,8 @@ async function readOperationControls(sql: Sql | TransactionSql, handle: Blueprin
   };
 }
 
-async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle, callerId: string): Promise<{
+async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle, callerId: string,
+  reviewAccess?: BlueprintOperationReviewAccess): Promise<{
   status: BlueprintOperationStatus;
   items: WorkItem[];
   run: PlanRunRow | null;
@@ -303,11 +479,16 @@ async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle
        AND harness_slug = ${ref.harnessSlug}
   `;
   const receipt = receipts[0];
-  if (!receipt || receipt.caller_id !== callerId.trim() || receipt.operation_id !== ref.operationId ||
+  if (!receipt || (!reviewAccess && receipt.caller_id !== callerId.trim()) || receipt.operation_id !== ref.operationId ||
       receipt.specification_revision !== ref.specificationRevision ||
       receipt.target_kind !== ref.target.kind ||
       receipt.target_ref !== (ref.target.kind === 'plan' ? ref.target.instanceSlug : ref.target.id)) {
     throw new BlueprintOperationRefusal('handle_mismatch', 'blueprint operation handle does not match its durable receipt');
+  }
+  if (reviewAccess) {
+    const operation = await declaredOperation(sql, ref);
+    if (!operation.acceptance.businessReview) throw new BlueprintOperationRefusal('undeclared', 'operation declares no business review');
+    assertBusinessReviewer(reviewAccess.principalId, receipt.caller_id, operation.acceptance.businessReview);
   }
   const controls = await readOperationControls(sql, ref);
   if (ref.target.kind === 'work-item') {
@@ -324,7 +505,7 @@ async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle
     const pin = payload?.blueprintOperation && typeof payload.blueprintOperation === 'object' &&
       !Array.isArray(payload.blueprintOperation) ? payload.blueprintOperation as Record<string, unknown> : null;
     if (!pin || pin.kind !== 'blueprint-operation' || pin.operationId !== ref.operationId ||
-        pin.specificationRevision !== ref.specificationRevision || pin.callerId !== callerId.trim()) {
+        pin.specificationRevision !== ref.specificationRevision || pin.callerId !== receipt.caller_id) {
       throw new Error('blueprint operation receipt and canonical work item pin disagree');
     }
     return { status: projectBlueprintOperationStatus(ref, [item], null, controls), items: [item], run: null };
@@ -352,8 +533,33 @@ async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle
   return { status: projectBlueprintOperationStatus(ref, items, run, controls), items, run };
 }
 
-export function getBlueprintOperationStatus(sql: Sql, handle: BlueprintOperationHandle, callerId: string): Promise<BlueprintOperationStatus> {
-  return runWithWorkspace(handle.workspaceId, async () => (await readValidatedCanonicalOperation(sql, handle, callerId)).status);
+export function getBlueprintOperationStatus(sql: Sql, handle: BlueprintOperationHandle, callerId: string,
+  reviewAccess?: BlueprintOperationReviewAccess): Promise<BlueprintOperationStatus> {
+  return runWithWorkspace(handle.workspaceId, async () => (await readValidatedCanonicalOperation(sql, handle, callerId, reviewAccess)).status);
+}
+
+/** Receipt-bound worker attribution, distinct from the app that submitted it.
+ * Uses the same receipt/payload checks as the lifecycle readers. */
+export function getBlueprintOperationTerminalWorker(sql: Sql, handle: BlueprintOperationHandle, callerId: string) {
+  return runWithWorkspace(handle.workspaceId, async () => {
+    const { status, items, result } = await readValidatedCanonicalOperation(sql, handle, callerId);
+    const { operation } = await declaredOperationWithSpecification(sql, handle);
+    if (handle.target.kind !== 'work-item' || operation.execution?.kind !== 'agent' ||
+        status.phase !== 'terminal' || status.outcome !== 'succeeded' || !items?.[0] || !result) {
+      throw new Error('review operation must be a successful terminal agent work item');
+    }
+    return { ...terminalOperationWorkerProof(items[0]), output: result.output, evidenceRef: result.evidenceRef };
+  });
+}
+
+/** Pure projection after canonical receipt validation; never caller-supplied identity. */
+export function terminalOperationWorkerProof(item: WorkItem) {
+  const pin = (item.payload as { blueprintOperation?: AcceptedOperationPin } | null)?.blueprintOperation;
+  if (!item.terminalOwner || !item.terminalCompletionRef ||
+      !['committed', 'validated'].includes(item.completionAuthority ?? '') || !pin?.input) {
+    throw new Error('review operation has no accountable terminal worker evidence');
+  }
+  return { ownerId: item.terminalOwner, completionRef: item.terminalCompletionRef, input: pin.input };
 }
 
 /** Issue-family kinds, exactly the `engineer_issues` view predicate. */
@@ -445,6 +651,21 @@ export async function readAcceptedProgramRootGuard(
 /** Exported for the shared public contract (operation-contract.ts). */
 export const OperationEventBodySchema = z.discriminatedUnion('kind', [
   z.object({
+    kind: z.literal('native-budget-reservation'), receiptId: z.number().int().positive(),
+    attemptId: z.string().uuid(), maximumCostMicros: z.number().int().positive(),
+    bodySha256: z.string().regex(/^[0-9a-f]{64}$/), reservationId: z.string().regex(/^[0-9a-f]{64}$/),
+    specificationRevision: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
+  z.object({
+    kind: z.literal('business-review'), receiptId: z.number().int().positive(),
+    workItemId: z.string().nullable(), runId: z.string().nullable(),
+    specificationRevision: z.string().regex(/^[0-9a-f]{64}$/),
+    resultFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+    evidenceRef: z.string().min(1), accountableOwner: z.string().min(1),
+    reviewerPrincipal: z.string().min(1), decision: z.enum(['accept', 'reject', 'rework']),
+    reason: z.string().min(1),
+  }),
+  z.object({
     kind: z.literal('work-item'), workItemId: z.string().min(1),
     runId: z.string().nullable(), harnessSlug: z.string().min(1),
     state: z.string().min(1), prevState: z.string().nullable(),
@@ -507,7 +728,7 @@ export function getBlueprintOperationEvents(
   sql: Sql,
   handle: BlueprintOperationHandle,
   callerId: string,
-  options: { cursor?: string; limit?: number } = {},
+  options: { cursor?: string; limit?: number; reviewAccess?: BlueprintOperationReviewAccess } = {},
 ): Promise<{ status: BlueprintOperationStatus; events: BlueprintOperationEvent[]; cursor: string; hasMore: boolean }> {
   return runWithWorkspace(handle.workspaceId, async () => {
     const cursor = options.cursor ?? '0';
@@ -515,7 +736,7 @@ export function getBlueprintOperationEvents(
       throw new BlueprintOperationRefusal('invalid_request', 'blueprint operation cursor must be a decimal event id');
     }
     const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
-    const { status } = await readValidatedCanonicalOperation(sql, handle, callerId);
+    const { status } = await readValidatedCanonicalOperation(sql, handle, callerId, options.reviewAccess);
     const rows = handle.target.kind === 'work-item'
       ? await sql<Array<{ id: string | number; ts: Date | string; body: unknown }>>`
           SELECT id, ts, body FROM harness_shared.coord_event_log
@@ -680,6 +901,7 @@ export interface BlueprintOperationInputReceipt {
 export function cancelBlueprintOperation(
   sql: Sql, handle: BlueprintOperationHandle, callerId: string,
   input: { requestKey: string; reason: string },
+  internal?: { inTransaction: true; requestedBy: string },
 ): Promise<BlueprintOperationInputReceipt & { effected: boolean }> {
   return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationInputReceipt & { effected: boolean }> => {
     const { status, items } = await readCanonicalOperation(sql, handle, callerId);
@@ -690,10 +912,10 @@ export function cancelBlueprintOperation(
       throw new BlueprintOperationRefusal('terminal', 'cannot cancel a terminal blueprint operation');
     }
     const body = { kind: 'cancel', receiptId: handle.receiptId, ...targetEventFields(handle),
-      requestedBy: callerId, requestKey: input.requestKey, reason: input.reason.trim() };
-    const receipt = await sql.begin(async (tx) => {
+      requestedBy: internal?.requestedBy ?? callerId, requestKey: input.requestKey, reason: input.reason.trim() };
+    const save = async (tx: Sql | TransactionSql) => {
       const saved = await appendControlEvent(tx, handle, eventIdentity('cancel', handle, 'once'), body);
-      const marker = JSON.stringify({ eventId: saved.id, requestedBy: callerId, reason: input.reason.trim() });
+      const marker = JSON.stringify({ eventId: saved.id, requestedBy: internal?.requestedBy ?? callerId, reason: input.reason.trim() });
       for (const item of items) {
         if (isSettledWorkItem(item)) continue;
         await tx`
@@ -705,7 +927,8 @@ export function cancelBlueprintOperation(
         `;
       }
       return saved;
-    });
+    };
+    const receipt = internal?.inTransaction ? await save(sql) : await sql.begin(save);
     const current = await readCanonicalOperation(sql, handle, callerId);
     const effected = current.status.outcome === 'cancelled';
     const wakeQueued = current.status.phase === 'terminal' ? false : await notifyControl(
@@ -721,7 +944,9 @@ export function cancelBlueprintOperation(
 export function signalBlueprintOperation(
   sql: Sql, handle: BlueprintOperationHandle, callerId: string,
   input: { channel: string; payload: unknown; requestKey: string },
+  reviewAccess?: BlueprintOperationReviewAccess,
 ): Promise<BlueprintOperationInputReceipt> {
+  if (input.channel === 'business-review') return reviewBlueprintOperation(sql, handle, callerId, input, reviewAccess);
   return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationInputReceipt> => {
     const { status } = await readCanonicalOperation(sql, handle, callerId);
     if (!input.requestKey?.trim()) throw new BlueprintOperationRefusal('invalid_request', 'blueprint signal requires a request key');
@@ -830,7 +1055,7 @@ export type BlueprintOperationResult =
   | { state: 'pending'; status: BlueprintOperationStatus }
   | { state: 'failed' | 'cancelled' | 'dropped' | 'unavailable'; status: BlueprintOperationStatus; reason: string }
   | { state: 'ready'; status: BlueprintOperationStatus; output: unknown; evidenceRef: string;
-      acceptanceEvidenceRef?: string };
+      acceptanceEvidenceRef?: string; businessReview?: BlueprintOperationBusinessReview };
 
 /** A launch selector or a requested model cannot prove what served a turn.
  * Claude transcripts carry provider message ids. Codex turn_context carries
@@ -1114,6 +1339,10 @@ export async function prepareDirectOperationCompletion(
   const output = exactJsonValue(outputPayload, 'output');
   const valid = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
   if (!valid.ok) throw new Error(`blueprint operation output is invalid: ${valid.errors.join('; ')}`);
+  if (operation.policy.supportCase) {
+    const { validateSupportOperationResult } = await import('./support-workflow-case');
+    await validateSupportOperationResult(sql, workspaceId, operation, pin, output);
+  }
   if (operation.policy.model) {
     const modelFailure = await verifyDirectOperationModel(
       sql, workspaceId, item.id, pin as Record<string, unknown>, operation.policy.model,
@@ -1147,7 +1376,13 @@ export async function prepareDirectOperationCompletion(
 
 interface ValidatedCanonicalOperation {
   status: BlueprintOperationStatus;
-  result?: { output: unknown; evidenceRef: string; acceptanceEvidenceRef?: string };
+  /** Current authorized source links are for app display only. Canonical worker
+   * attribution, rubric subjects and business-review fingerprints keep raw output. */
+  displayOutput?: unknown;
+  /** Available only after the canonical result passes validation. */
+  items?: WorkItem[];
+  result?: { output: unknown; evidenceRef: string; acceptanceEvidenceRef?: string;
+    businessReview?: BlueprintOperationBusinessReview };
   invalidReason?: string;
 }
 
@@ -1155,8 +1390,9 @@ interface ValidatedCanonicalOperation {
  * readable and valid. Status and result use this same canonical read. */
 async function readValidatedCanonicalOperation(
   sql: Sql, handle: BlueprintOperationHandle, callerId: string,
+  reviewAccess?: BlueprintOperationReviewAccess,
 ): Promise<ValidatedCanonicalOperation> {
-  const { status, items, run } = await readCanonicalOperation(sql, handle, callerId);
+  const { status, items, run } = await readCanonicalOperation(sql, handle, callerId, reviewAccess);
   if (status.phase !== 'terminal' || status.outcome !== 'succeeded') {
     const failedProgram = status.outcome === 'failed' && handle.target.kind === 'work-item' &&
       items[0]?.terminalOwner === BLUEPRINT_PROGRAM_COMPLETION_OWNER;
@@ -1171,6 +1407,10 @@ async function readValidatedCanonicalOperation(
     return invalid('canonical completion has no validated authority for its operation output');
   }
   const { operation, specification } = await declaredOperationWithSpecification(sql, handle);
+  if (operation.acceptance.businessReview && (status.cancellationRequested ||
+      (handle.target.kind === 'work-item' && (!items[0]?.terminalOwner || !items[0]?.terminalCompletionRef)))) {
+    return invalid('business review requires an accountable completed attempt without cancellation');
+  }
   if (operation.policy.model) {
     const pin = handle.target.kind === 'work-item' && items[0]?.payload &&
       typeof items[0].payload === 'object' && !Array.isArray(items[0].payload)
@@ -1203,6 +1443,18 @@ async function readValidatedCanonicalOperation(
   }
   const validation = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
   if (!validation.ok) return invalid(`canonical target output is invalid: ${validation.errors.join('; ')}`);
+  let displayOutput = output;
+  if (operation.policy.supportCase) {
+    if (handle.target.kind !== 'work-item' || !items[0]) return invalid('support result has no accepted case');
+    const { pin } = await readAcceptedBlueprintDirectWorkItem(sql, handle.workspaceId, items[0]);
+    const { validateSupportOperationResult } = await import('./support-workflow-case');
+    try { displayOutput = await validateSupportOperationResult(sql, handle.workspaceId, operation, pin, output,
+      reviewAccess?.principalId ?? callerId.split('/')[0]) ?? output; }
+    catch (error) {
+      if (error instanceof BlueprintOperationRefusal) return invalid(error.message);
+      throw error;
+    }
+  }
   let acceptanceEvidenceRef: string | undefined;
   if (operation.acceptance.rubric) {
     let subjectRef: string;
@@ -1232,14 +1484,96 @@ async function readValidatedCanonicalOperation(
       acceptance.ok ? 'canonical result has no acceptance scorecard' : acceptance.reason);
     acceptanceEvidenceRef = acceptance.evidenceRef;
   }
-  return { status, result: { output, evidenceRef,
-    ...(acceptanceEvidenceRef ? { acceptanceEvidenceRef } : {}) } };
+  if (reviewAccess && operation.acceptance.businessReview) {
+    assertBusinessReviewer(reviewAccess.principalId, '', operation.acceptance.businessReview, items[0]?.terminalOwner);
+  }
+  const businessReview = operation.acceptance.businessReview ? await readBusinessReview(sql, handle,
+    output, evidenceRef, operation.acceptance.businessReview.accountableOwner,
+    handle.target.kind === 'work-item' ? items[0]?.terminalCompletionRef : `plan-run:${handle.target.runId}`) : undefined;
+  return { status, items, displayOutput, result: { output, evidenceRef,
+    ...(acceptanceEvidenceRef ? { acceptanceEvidenceRef } : {}),
+    ...(businessReview ? { businessReview } : {}) } };
+}
+
+async function readBusinessReview(sql: Sql, handle: BlueprintOperationHandle, output: unknown,
+  evidenceRef: string, accountableOwner: string, completionRef?: string | null): Promise<BlueprintOperationBusinessReview> {
+  const resultFingerprint = operationResultFingerprint(handle, output, evidenceRef, completionRef);
+  const rows = await sql<Array<{ id: string | number; ts: Date | string; body: unknown }>>`
+    SELECT id, ts, body FROM harness_shared.coord_event_log
+     WHERE workspace_id = ${handle.workspaceId} AND surface = 'blueprint-operation'
+       AND writer_key = ${`receipt:${handle.receiptId}`}
+       AND msg_id = ${eventIdentity('business-review', handle, resultFingerprint)}
+  `;
+  if (!rows[0]) return { state: 'pending', accountableOwner, resultFingerprint };
+  const body = OperationEventBodySchema.parse(rows[0].body);
+  if (body.kind !== 'business-review' || body.resultFingerprint !== resultFingerprint ||
+      body.specificationRevision !== handle.specificationRevision || body.evidenceRef !== evidenceRef ||
+      body.accountableOwner !== accountableOwner) throw new Error('business review disagrees with its canonical result');
+  return { state: body.decision === 'accept' ? 'accepted' : body.decision === 'reject' ? 'rejected' : 'rework',
+    accountableOwner, resultFingerprint,
+    decision: { eventId: String(rows[0].id), reviewerPrincipal: body.reviewerPrincipal,
+      reason: body.reason, at: new Date(rows[0].ts).toISOString() } };
+}
+
+function reviewBlueprintOperation(sql: Sql, handle: BlueprintOperationHandle, callerId: string,
+  input: { payload: unknown; requestKey: string }, access?: BlueprintOperationReviewAccess): Promise<BlueprintOperationInputReceipt> {
+  return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationInputReceipt> => {
+    if (!access || !input.requestKey?.trim()) throw new BlueprintOperationRefusal('invalid_request', 'business review requires an authenticated reviewer and request key');
+    const parsed = BusinessReviewInputSchema.safeParse(input.payload);
+    if (!parsed.success) throw new BlueprintOperationRefusal('invalid_payload', 'business review requires decision, reason and exact result fingerprint');
+    const receipt = await sql.begin(async (tx) => {
+      await tx`SELECT id FROM harness_shared.blueprint_operation_invocations
+        WHERE workspace_id = ${handle.workspaceId} AND id = ${handle.receiptId} FOR UPDATE`;
+      if (handle.target.kind === 'work-item') await tx`SELECT feature_id FROM harness_shared.work_items
+        WHERE workspace_id = ${handle.workspaceId} AND feature_id = ${handle.target.id}
+          AND harness_slug = COALESCE((SELECT target_harness_slug FROM harness_shared.blueprint_operation_invocations
+            WHERE workspace_id = ${handle.workspaceId} AND id = ${handle.receiptId}), ${handle.harnessSlug}) FOR UPDATE`;
+      else await tx`SELECT id FROM harness_shared.plan_runs WHERE workspace_id = ${handle.workspaceId}
+        AND id = ${handle.target.runId} FOR UPDATE`;
+      const current = await readValidatedCanonicalOperation(tx as unknown as Sql, handle, callerId, access);
+      if (!current.result?.businessReview || current.status.outcome !== 'succeeded') {
+        throw new BlueprintOperationRefusal('terminal', 'business review requires a validated successful result');
+      }
+      if (current.result.businessReview.resultFingerprint !== parsed.data.resultFingerprint) {
+        throw new BlueprintOperationRefusal('invalid_payload', 'business review result changed; reload the canonical output');
+      }
+      const priorKey = await tx<Array<{ body: { resultFingerprint?: string } }>>`
+        SELECT body FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${handle.workspaceId} AND surface = 'blueprint-operation'
+           AND writer_key = ${`receipt:${handle.receiptId}`} AND body->>'kind' = 'business-review'
+           AND body->>'requestKey' = ${input.requestKey}
+      `;
+      if (priorKey[0] && priorKey[0].body.resultFingerprint !== parsed.data.resultFingerprint) {
+        throw new BlueprintOperationRefusal('input_conflict', 'business review request key was reused for a different result');
+      }
+      const reviewed = await appendControlEvent(tx, handle, eventIdentity('business-review', handle, parsed.data.resultFingerprint), {
+        kind: 'business-review', receiptId: handle.receiptId, ...targetEventFields(handle),
+        specificationRevision: handle.specificationRevision, resultFingerprint: parsed.data.resultFingerprint,
+        evidenceRef: current.result.evidenceRef, accountableOwner: current.result.businessReview.accountableOwner,
+        reviewerPrincipal: access.principalId, decision: parsed.data.decision, reason: parsed.data.reason,
+        requestKey: input.requestKey,
+      });
+      if (!reviewed.replayed) {
+        const operation = await declaredOperation(sql, handle);
+        const funding = operation.policy.supportCase?.funding;
+        if (funding) {
+          const { recordSupportWorkflowOutcome } = await import('./support-workflow-budget');
+          await recordSupportWorkflowOutcome(tx as unknown as Sql, { handle, funding,
+            decision: parsed.data.decision, reviewerPrincipal: access.principalId,
+            evidenceRef: `blueprint-operation-review:${reviewed.id}` });
+        }
+      }
+      return reviewed;
+    });
+    return { eventId: receipt.id, replayed: receipt.replayed, accepted: true, wakeQueued: false, handled: false };
+  });
 }
 
 /** Read a typed output from the canonical target only. */
-export function getBlueprintOperationResult(sql: Sql, handle: BlueprintOperationHandle, callerId: string): Promise<BlueprintOperationResult> {
+export function getBlueprintOperationResult(sql: Sql, handle: BlueprintOperationHandle, callerId: string,
+  reviewAccess?: BlueprintOperationReviewAccess): Promise<BlueprintOperationResult> {
   return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationResult> => {
-    const { status, result, invalidReason } = await readValidatedCanonicalOperation(sql, handle, callerId);
+    const { status, result, displayOutput, invalidReason } = await readValidatedCanonicalOperation(sql, handle, callerId, reviewAccess);
     if (status.phase !== 'terminal') return { state: 'pending', status };
     if (status.outcome !== 'succeeded') {
       return { state: status.outcome === 'unverified' ? 'unavailable' : (status.outcome ?? 'failed'),
@@ -1247,6 +1581,6 @@ export function getBlueprintOperationResult(sql: Sql, handle: BlueprintOperation
     }
     if (!result) return { state: 'unavailable', status: { ...status, outcome: 'unverified' },
       reason: 'canonical target has no validated operation output' };
-    return { state: 'ready', status, ...result };
+    return { state: 'ready', status, ...result, output: displayOutput ?? result.output };
   });
 }

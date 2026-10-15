@@ -49,6 +49,7 @@ import { addGoalFieldChange, appendGoalHistory, type GoalFieldChange } from './h
 import { isGoalHolderAuthorityError } from '@papercusp/operator-core/lib/modes/goal-context';
 import { assertGoalWriteAuthorityForCaller } from '@papercusp/operator-core/lib/goals/write-authority';
 import { withGoalPackageInstanceOverride } from './_core';
+import { extendGoalPropertySchema } from '@papercusp/operator-core/lib/typed-properties-db';
 
 function jsonField(value: unknown): unknown {
   if (typeof value !== 'string') return value ?? null;
@@ -77,6 +78,10 @@ function sortedRefs(refs: readonly string[]): string[] {
 
 const goalUpdateArgs = z.object({
   id: z.string().min(1),
+  propertySchemaPatch: z.record(z.string(), z.unknown()).optional()
+    .describe('Add typed-property declarations or collection metadata to an existing goal. Preserves values and existing owner/collection contracts; new owner-policy defaults must be empty.'),
+  expectedPropertySchema: z.record(z.string(), z.unknown()).optional()
+    .describe('Exact complete property schema last read; required with propertySchemaPatch. A concurrent declaration edit refuses as stale_schema.'),
   status: z.enum(GOAL_STATUSES).optional(),
   outputs: z
     .record(z.string(), z.unknown())
@@ -192,6 +197,11 @@ const goalUpdateArgs = z.object({
         'MERGES into the existing launch settings — unlike launchSettings, which replaces the whole document — so declaring a policy cannot disturb a declared ceiling. ' +
         'This is the door that clears a "no declared holder policy" refusal from goals:create / goals:start / mode:set { mode:"goal" }.',
     ),
+}).superRefine((args, ctx) => {
+  if ((args.propertySchemaPatch !== undefined) !== (args.expectedPropertySchema !== undefined)) {
+    ctx.addIssue({ code: 'custom', path: ['expectedPropertySchema'],
+      message: 'propertySchemaPatch and expectedPropertySchema must be supplied together' });
+  }
 });
 
 const goalUpdateTool = defineTool({
@@ -317,11 +327,12 @@ const goalUpdateTool = defineTool({
         launch_settings: unknown;
         output_schema: Record<string, unknown> | null;
         outputs: Record<string, unknown> | null;
+        property_schema: unknown;
       }>
     >`
       SELECT workspace_id, install_slug, title, body, status, parent_id, budget_cents, budget_window_sec,
-             kill_criterion, tripwires, metadata, launch_settings, output_schema, outputs
-        FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
+             kill_criterion, tripwires, metadata, launch_settings, output_schema, outputs, property_schema
+        FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1 FOR UPDATE
     `;
     if (!existing.length) {
       return { data: null, degraded: true, degradedReasons: [`goal ${args.id} not found`] };
@@ -391,6 +402,16 @@ const goalUpdateTool = defineTool({
       throw error;
     }
     let previousBlockedBy: string[] | null = null;
+    let schemaChange: GoalFieldChange | null = null;
+    if (args.propertySchemaPatch !== undefined) {
+      const declaration = await extendGoalPropertySchema(tx as unknown as Sql, {
+        workspaceId: prev.workspace_id, goalId: args.id,
+        patch: args.propertySchemaPatch, expected: args.expectedPropertySchema,
+      });
+      if (!declaration.ok) return { data: null, degraded: true,
+        degradedReasons: [`property schema extension refused: ${declaration.code}`], propertySchemaResult: declaration };
+      schemaChange = { field: 'propertySchema', before: jsonField(prev.property_schema), after: declaration.propertySchema };
+    }
     if (args.blockedBy !== undefined) {
       const edges = await readGoalBlockedByEdges(tx, prev.workspace_id);
       previousBlockedBy = sortedRefs((edges.get(args.id) ?? []).map((edge) => edge.ref));
@@ -738,6 +759,7 @@ const goalUpdateTool = defineTool({
     // they landed, and no-op calls do not manufacture fake history.
     if (row) {
       const changes: GoalFieldChange[] = [];
+      if (schemaChange) addGoalFieldChange(changes, schemaChange.field, schemaChange.before, schemaChange.after);
       addGoalFieldChange(changes, 'title', prev.title, row.title);
       addGoalFieldChange(changes, 'body', prev.body, row.body);
       addGoalFieldChange(changes, 'status', prev.status, row.status);

@@ -64,6 +64,71 @@ export interface SessionTurnResult {
   costUsd: number;
 }
 
+export interface SessionExtractionFailureDiagnostics {
+  status: number | null;
+  requestId: string | null;
+  type: string | null;
+  classification: string | null;
+  transport: string | null;
+  transportFailureCode: string | null;
+}
+
+type SessionTransportDiagnostic = Parameters<
+  NonNullable<Parameters<typeof runAgentChat>[0]['onTransportDiagnostic']>
+>[0];
+
+const SAFE_PROVIDER_TYPES = new Set(['anthropic', 'openai', 'unknown']);
+const SAFE_TURN_CLASSIFICATIONS = new Set([
+  'rate_limited', 'usage_limit', 'overloaded', 'timeout', 'transient_io', 'auth',
+  'context_overflow', 'agent_crash', 'empty_output', 'malformed_output', 'permanent',
+]);
+const SAFE_TRANSPORT_LABELS = new Set(['anthropic-direct', 'gateway-pool']);
+const SAFE_TRANSPORT_FAILURE_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET', 'ABORT_ERR',
+]);
+
+function safeEnum(value: unknown, allowed: ReadonlySet<string>): string | null {
+  return typeof value === 'string' && allowed.has(value) ? value : null;
+}
+
+function safeStatus(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
+    ? value
+    : null;
+}
+
+function safeRequestId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(trimmed)
+    ? trimmed
+    : null;
+}
+
+function sessionFailureDiagnostics(
+  transport: SessionTransportDiagnostic | null,
+  providerType: unknown,
+  classification: unknown,
+): SessionExtractionFailureDiagnostics {
+  return {
+    status: safeStatus(transport?.status),
+    requestId: safeRequestId(transport?.providerRequestId),
+    type: safeEnum(providerType, SAFE_PROVIDER_TYPES),
+    classification: safeEnum(classification, SAFE_TURN_CLASSIFICATIONS),
+    transport: safeEnum(transport?.label, SAFE_TRANSPORT_LABELS),
+    transportFailureCode: safeEnum(transport?.transportFailureCode, SAFE_TRANSPORT_FAILURE_CODES),
+  };
+}
+
+class SessionExtractionDiagnosticError extends Error {
+  constructor(message: string, readonly diagnostics: SessionExtractionFailureDiagnostics) {
+    super(message);
+    this.name = 'SessionExtractionDiagnosticError';
+  }
+}
+
 export type SessionTurnRunner = (args: {
   systemPromptText?: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
@@ -206,6 +271,9 @@ const defaultRunTurn: SessionTurnRunner = async ({
   let tokensOut = 0;
   let costUsd = 0;
   let errorMessage: string | null = null;
+  let transportDiagnostic: SessionTransportDiagnostic | null = null;
+  let providerType: unknown = null;
+  let classification: unknown = null;
   try {
     for await (const ev of runAgentChat({
       backend: 'anthropic-direct',
@@ -217,6 +285,7 @@ const defaultRunTurn: SessionTurnRunner = async ({
       temperature: 0,
       signal: ac.signal,
       usageAttribution: { role: 'memory-extraction' },
+      onTransportDiagnostic: (diagnostic) => { transportDiagnostic = diagnostic; },
     })) {
       if (ev.type === 'delta') text = ev.text;
       else if (ev.type === 'result') {
@@ -226,12 +295,19 @@ const defaultRunTurn: SessionTurnRunner = async ({
         costUsd = ev.costUsd ?? 0;
       } else if (ev.type === 'error') {
         errorMessage = ev.message;
+        providerType = ev.turn?.provider ?? null;
+        classification = ev.turn?.class ?? null;
       }
     }
   } finally {
     clearTimeout(killer);
   }
-  if (errorMessage) throw new Error(errorMessage);
+  if (errorMessage) {
+    throw new SessionExtractionDiagnosticError(
+      errorMessage,
+      sessionFailureDiagnostics(transportDiagnostic, providerType, classification),
+    );
+  }
   return { text, tokensIn, tokensOut, costUsd };
 };
 

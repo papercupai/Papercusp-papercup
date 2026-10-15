@@ -100,7 +100,12 @@ export async function sweepOrphanedGymPgContainers(
     if (!Number.isFinite(createdMs)) continue;
     if (now - createdMs < maxAgeMs) continue; // too young — could be a live in-flight run
     try {
-      await execFileAsync('docker', ['rm', '-f', c.Id]);
+      // `-v` removes the container's ANONYMOUS volumes with it. The pgvector image
+      // declares VOLUME /var/lib/postgresql, so every dedicated cluster gets an
+      // anonymous data volume; `rm -f` alone leaves it dangling on the root disk
+      // (WI-6554700010008551: 20 such volumes, ~41 GB, starved the gate's
+      // dependency-generation headroom). Named volumes are never touched by `-v`.
+      await execFileAsync('docker', ['rm', '-f', '-v', c.Id]);
       result.swept.push(c.Id);
     } catch (err) {
       result.errors.push({ id: c.Id, error: String(err) });

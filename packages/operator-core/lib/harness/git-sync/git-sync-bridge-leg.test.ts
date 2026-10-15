@@ -21,6 +21,7 @@ const hiveGitRepoPathMock = vi.hoisted(() => vi.fn());
 const pathExistsMock = vi.hoisted(() => vi.fn());
 const defaultRunGitMock = vi.hoisted(() => vi.fn());
 const runGithubBridgeTickMock = vi.hoisted(() => vi.fn());
+const loadHiveEffectAuthorityMock = vi.hoisted(() => vi.fn());
 const emitGitSyncEgressedEventMock = vi.hoisted(() => vi.fn());
 /** The routines row the leg reads its watermarks from. A non-null `wb_sha` is what
  *  arms the catch-up pin at all — without it the pin is skipped for an unrelated
@@ -54,12 +55,33 @@ vi.mock('../../sync/pot-git/github-bridge-tick', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   runGithubBridgeTick: runGithubBridgeTickMock,
 }));
+// WI-10006624: the owning-hive key decides whether this member bridges GitHub at all.
+vi.mock('../../sync/pot-git/hive-effect-authority', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadHiveEffectAuthority: loadHiveEffectAuthorityMock,
+}));
+// An OWNER key makes the leg resolve its serving actor; keep that hermetic and fast
+// (the real path boots a harness and waits 30s before giving up).
+vi.mock('../../sync/hyperbee/boot-all', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getBootedHarness: () => undefined,
+  bootSingleHarness: async () => {
+    throw new Error('unit test: no harness boot');
+  },
+}));
+vi.mock('../../sync/hyperbee/substrate-booted-handles-pg', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getPgGitServingCapability: async () => {
+    throw new Error('unit test: no advertised serving');
+  },
+}));
 vi.mock('./git-sync-events', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   emitGitSyncEgressedEvent: emitGitSyncEgressedEventMock,
 }));
 
 import {
+  githubBridgeErrorTransitionLine,
   refreshRemoteTrackingRefFromProvenTip,
   resolveGithubCredentialHelper,
   runGithubBridgeLeg,
@@ -86,6 +108,8 @@ beforeEach(() => {
   sqlMock.unsafe.mockReset();
   emitGitSyncEgressedEventMock.mockReset();
   defaultRunGitMock.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+  // Default: this device does NOT hold the owning hive key (a p2p joiner).
+  loadHiveEffectAuthorityMock.mockResolvedValue(null);
 });
 
 describe('runGithubBridgeLeg — WI-6282 cold-store catch-up pin', () => {
@@ -232,7 +256,16 @@ describe('runGithubBridgeLeg — owner-actionable egress failures', () => {
       errors: ['egress: push refs/heads/staging: GitHub rejected the workflow file: workflow scope missing'],
     });
 
-    await runGithubBridgeLeg(SLUG, WS);
+    // WI-10006470: a streak's first error tick is journaled too (prev errors: none).
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runGithubBridgeLeg(SLUG, WS);
+      expect(warnSpy.mock.calls.map((c) => String(c[0]))).toContainEqual(
+        expect.stringContaining(`[github-bridge] ${SLUG}: tick errors (divergence=escalate): egress: push`),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
 
     const [, params] = sqlMock.unsafe.mock.calls.at(-1) as [string, unknown[]];
     const metadata = JSON.parse(params[2] as string) as Record<string, unknown>;
@@ -311,6 +344,80 @@ describe('GitHub credential-helper handoff', () => {
         repoKey: 'gh-aviynw--oddsmith',
       }),
     );
+  });
+});
+
+/**
+ * WI-10006624 / D-022 — only the OWNING hive bridges GitHub.
+ *
+ * LIVE-OBSERVED on c1006k (2026-10-06): a cold p2p joiner (no owning hive key) ran the
+ * bridge's GitHub ingress every tick. The service user had no git credential, so ingress
+ * failed for every branch, and three sweeps later git-sync-stall-watchdog raised a
+ * persistent FAULT ALARM on a joiner whose p2p sync was healthy. Its egress was already
+ * refused by the hive-effect authority, so ingress there fed nothing it may act on.
+ * The integrator leg already declines `not_hive_owner`; the bridge must match.
+ */
+describe('runGithubBridgeLeg — WI-10006624 non-owner members do not bridge GitHub', () => {
+  const bridgedRegistry = {
+    projects: [
+      {
+        slug: SLUG,
+        path: '/clones/hello',
+        hive_slug: SLUG,
+        self_repo: true,
+        github_remote: 'https://github.com/acme/hello.git',
+      },
+    ],
+  };
+  const clearOutcome = {
+    ran: false,
+    egressTarget: 'skipped',
+    ingressed: { updated: 0, upToDate: 0, nonFF: 0, absent: 0 },
+    admissions: [],
+    lastAdmitted: null,
+    egress: null,
+    egressHead: null,
+    verdict: { action: 'clear', needsOwner: false, signals: [], detail: '' },
+    errors: [],
+  };
+  const writerSeam = async (): Promise<boolean | undefined> => {
+    expect(runGithubBridgeTickMock).toHaveBeenCalledOnce();
+    const input = runGithubBridgeTickMock.mock.calls[0]![0] as {
+      deps?: { isBridgeWriter?: () => Promise<boolean> };
+    };
+    return input.deps?.isBridgeWriter?.();
+  };
+
+  it('a member WITHOUT the owning hive key answers the writer seam false (the tick then skips not_bridge_writer)', async () => {
+    loadHarnessRegistryMock.mockResolvedValue(bridgedRegistry);
+    pathExistsMock.mockResolvedValue(false);
+    loadHiveEffectAuthorityMock.mockResolvedValue(null);
+    runGithubBridgeTickMock.mockResolvedValue({ ...clearOutcome, skipped: 'not_bridge_writer' });
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    // A missing seam (undefined) would default to "writer" inside the tick — the bug.
+    expect(await writerSeam()).toBe(false);
+  });
+
+  it('the OWNING member answers the writer seam true — the guard narrows to non-owners, it does not disable the bridge', async () => {
+    loadHarnessRegistryMock.mockResolvedValue(bridgedRegistry);
+    pathExistsMock.mockResolvedValue(false);
+    loadHiveEffectAuthorityMock.mockResolvedValue({
+      hive_id: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      sign: async () => Buffer.alloc(64),
+    });
+    runGithubBridgeTickMock.mockResolvedValue(clearOutcome);
+    // No serving actor in a unit test: the leg says so and continues (effectAuthority null).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    // Keyed on the owning KEY, not on the serving actor: an owner whose actor is
+    // missing still bridges and REPORTS the refusal instead of silently skipping.
+    expect(await writerSeam()).toBe(true);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('serving unavailable'))).toBe(true);
+    warn.mockRestore();
   });
 });
 
@@ -467,5 +574,99 @@ describe('runGithubBridgeLeg — EI-20331175777179195 truthful egress event', ()
     await runGithubBridgeLeg(SLUG, WS);
 
     expect(emitGitSyncEgressedEventMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-10006470 — `github_bridge.errors` is replaced wholesale every tick, so once an
+ * error streak cleared its cause was gone (hello-world-3-pot 2026-10-06: a 3-sweep
+ * "remote could not be contacted" fault, undiagnosable after the next clean tick).
+ * The leg must journal a streak's START/CHANGE and its CLEARING, and stay quiet on
+ * an identical repeat and on clean-after-clean.
+ */
+describe('runGithubBridgeLeg — WI-10006470 bridge error transitions are journaled', () => {
+  const UNREACHABLE = 'ingress main: fatal: unable to access https://github.com/acme/shop.git/: Could not resolve host';
+  const outcome = (errors: string[]) => ({
+    ran: true,
+    egressTarget: 'fork' as const,
+    ingressed: { updated: 0, upToDate: errors.length ? 0 : 1, nonFF: 0, absent: 0 },
+    admissions: [],
+    lastAdmitted: null,
+    egress: { pushed: 0, upToDate: 0, rejectedNonFF: 0, blockedSecrets: 0 },
+    egressHead: null,
+    verdict: errors.length
+      ? { action: 'escalate' as const, needsOwner: false, signals: [], detail: '' }
+      : { action: 'clear' as const, needsOwner: false, signals: [], detail: '' },
+    errors,
+  });
+  const bridgeLines = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .filter((line: string) => line.startsWith(`[github-bridge] ${SLUG}:`));
+
+  const runWith = async (prevErrors: unknown, errors: string[]) => {
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [
+        {
+          slug: SLUG,
+          hive_slug: SLUG,
+          self_repo: true,
+          github_remote: 'https://github.com/acme/shop.git',
+          // A fork avoids the live upstream permission probe; the bridge tick is mocked.
+          fork_remote: 'https://github.com/me/shop.git',
+        },
+      ],
+    });
+    pathExistsMock.mockResolvedValue(false);
+    sqlMock.mockResolvedValue([{ la: null, wb_sha: null, prev_egress_head: null, prev_errors: prevErrors }]);
+    runGithubBridgeTickMock.mockResolvedValue(outcome(errors));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runGithubBridgeLeg(SLUG, WS);
+      return bridgeLines(warnSpy);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  };
+
+  it('journals the cause when a streak STARTS (clean → errors)', async () => {
+    const lines = await runWith([], [UNREACHABLE]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('tick errors (divergence=escalate)');
+    expect(lines[0]).toContain('Could not resolve host');
+  });
+
+  it('stays quiet on an identical repeat tick (already journaled)', async () => {
+    expect(await runWith([UNREACHABLE], [UNREACHABLE])).toEqual([]);
+  });
+
+  it('journals again when the errors CHANGE mid-streak', async () => {
+    const lines = await runWith([UNREACHABLE], ['ingress main: remote: Repository not found.']);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Repository not found');
+  });
+
+  it('journals the CLEARING with the previous cause, so a recovered streak stays diagnosable', async () => {
+    const lines = await runWith([UNREACHABLE], []);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('tick errors cleared');
+    expect(lines[0]).toContain('Could not resolve host');
+  });
+
+  it('stays quiet on a clean tick after a clean tick', async () => {
+    expect(await runWith([], [])).toEqual([]);
+    expect(await runWith(null, [])).toEqual([]);
+  });
+});
+
+describe('githubBridgeErrorTransitionLine (WI-10006470)', () => {
+  it('treats a non-array persisted value as "no previous errors"', () => {
+    expect(githubBridgeErrorTransitionLine('s', { not: 'an array' }, [], 'clear')).toBeNull();
+    expect(githubBridgeErrorTransitionLine('s', 'boom', ['e1'], 'escalate')).toContain('tick errors');
+  });
+
+  it('compares on the persisted cap (first 10), so an 11+-error streak does not re-journal every tick', () => {
+    const errors = Array.from({ length: 12 }, (_, i) => `e${i}`);
+    expect(githubBridgeErrorTransitionLine('s', errors.slice(0, 10), errors, 'escalate')).toBeNull();
   });
 });

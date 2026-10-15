@@ -32,7 +32,7 @@ import {
   scrubExecEnv,
   type BuildSandboxOpts,
 } from './exec-sandbox';
-import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
+import { resolveAgentMcpBaseUrl, resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import {
   composeStreamingRedactors,
   createStreamingPatternRedactor,
@@ -528,6 +528,14 @@ export interface BashJob {
   timeoutMs?: number;
   /** Epoch ms of that deadline (`startedAt + timeoutMs`). */
   deadlineAt?: number;
+  /** Observed operator-side phases. A pipe byte is not proof that the payload
+   *  started: confined jobs record their own unit/payload phases in logPath. */
+  phaseTiming?: {
+    spawnRequestedAt: number;
+    spawnReturnedAt: number;
+    clientSpawnedAt: number | null;
+    firstPipeByteAt: number | null;
+  };
 }
 
 const JOBS = new Map<string, BashJob>();
@@ -567,9 +575,19 @@ export function scratchDir(stateDir: string | undefined): string {
   return dir;
 }
 
-/** Spawn `bash -o pipefail -c <command>` with an augmented PATH (the operator
- *  sidecar's PATH often omits node/npx/git locations — same fix as
- *  pluginSpawnImpl). stdin is closed; combined stdout+stderr are piped.
+/** Fixed, bounded `bash -c` payload. The actual script is sent on stdin and
+ *  captured before eval so commands still see EOF on their own stdin, as they
+ *  did when the payload was an argv passed to `-c`.
+ *
+ *  The trailing sentinel keeps command substitution from stripping trailing
+ *  newlines; removing exactly one appended byte restores the original script.
+ */
+const BASH_STDIN_BOOTSTRAP = 'script=$(cat; printf x); script=${script%x}; eval "$script"';
+
+/** Spawn Bash with an augmented PATH (the operator sidecar's PATH often omits
+ *  node/npx/git locations — same fix as pluginSpawnImpl). The fixed bootstrap
+ *  stays small in argv while the caller's script is piped to stdin; combined
+ *  stdout+stderr are piped.
  *
  *  `-o pipefail` (EI-13414): without it, bash's reported exit code for a
  *  piped command (`cmd | tail -N`, `| head`, `| grep`, …) is the LAST
@@ -625,7 +643,7 @@ function spawnShell(
   // host-X isolation still holds.
   const inheritedEnv = normalizeInheritedOperatorUrl(scrubExecEnv(process.env));
   const decision = buildCapabilitySandboxCommand(
-    { cmd: [resolveBin('bash', spawnPath), '-o', 'pipefail', '-c', instrumentedCommand], cwd },
+    { cmd: [resolveBin('bash', spawnPath), '-o', 'pipefail', '-c', BASH_STDIN_BOOTSTRAP], cwd },
     // EI-16635: `background` (true for startBackground's run_in_background jobs)
     // tells the sandbox builder to omit bwrap's `--die-with-parent` — that flag
     // is incompatible with a job contractually meant to outlive this spawn call.
@@ -669,7 +687,7 @@ function spawnShell(
     // stripHostX (which keeps the inherited, possibly-ephemeral TMPDIR) but BEFORE
     // the caller's explicit `env`, so a deliberate caller override still wins.
     env: childEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['pipe', 'pipe', 'pipe'],
     // OWN PROCESS GROUP (capability-bash-orphan-kill-2026-06-21): `detached:true`
     // makes the child (bash, or the bwrap wrapper) a process-group leader
     // (pgid === child.pid on Linux). That is what lets a timeout/abort kill the
@@ -680,16 +698,26 @@ function spawnShell(
     // unref() the child, so the operator still tracks + reaps it normally.
     detached: true,
   });
+  // `systemd-run --pipe` carries this same stdin through the transient service
+  // and systemd-scope-env-runner.mjs inherits it into the payload. Handle a
+  // closed input pipe as a spawn failure; the close handler remains the source
+  // of the workload's actual exit status.
+  child.stdin?.on('error', (error) => child.emit('error', error));
+  child.stdin?.end(instrumentedCommand);
   return child;
 }
 
 function normalizeInheritedOperatorUrl(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const raw = env.PAPERCUSP_OPERATOR_URL?.trim();
-  if (!raw) return env;
-  const hadMcpSuffix = /\/api\/mcp\/?$/.test(raw);
-  const base = raw.replace(/\/api\/mcp\/?$/, '').replace(/\/$/, '');
+  const hadMcpSuffix = raw ? /\/api\/mcp\/?$/.test(raw) : false;
+  // capability:bash runs inside this operator, not the caller's CLI process.
+  // `.env.local` commonly leaves PAPERCUSP_OPERATOR_URL pinned to green :3070
+  // even when this handler is served by staging :3170. Resolve the host identity
+  // first so ptool and other child CLIs call the same runtime that dispatched
+  // their parent tool request; then apply only a same-runtime proxy.
+  const base = resolveSpawnHostOperatorBaseUrl(process.env);
   const routedBase = resolveAgentMcpBaseUrl(base);
-  if (routedBase === base) return env;
+  if (raw === routedBase || raw === `${routedBase}/api/mcp`) return env;
   return {
     ...env,
     PAPERCUSP_OPERATOR_URL: hadMcpSuffix ? `${routedBase}/api/mcp` : routedBase,
@@ -1570,6 +1598,10 @@ interface HeredocDeclaration {
  * output away from the capability log (EI-23104327379801926).
  */
 const COMMAND_LOCAL_REDIRECT_HELPERS = new Set(['cleanup', 'curl']);
+// These builtins can own a file redirect without writing any command output.
+// Treating their truncation as the background job's stdout target produces a
+// false empty-log advisory (for example `: > "$LOG"; command &`).
+const NO_OUTPUT_REDIRECT_COMMANDS = new Set([':', 'true', 'false']);
 const REDIRECT_COMMAND_KEYWORDS = new Set([
   'case',
   'coproc',
@@ -1679,8 +1711,9 @@ function skipHeredocBody(command: string, bodyStart: number, declaration: Heredo
  * command (not just the last stage — `for i in …; do echo … >> /tmp/x; done`
  * counts). Skips stderr-only redirects (`2>`), fd dups (`>&2`, `2>&1`), process
  * substitution (`>(…)`), anything inside quotes, and redirects owned by the
- * command-local curl/cleanup helpers. Returns the LAST owned redirect (the
- * conventional main one), or `null`. Deliberately pragmatic, like
+ * command-local curl/cleanup helpers, no-output builtins, and commandless shell
+ * redirects. Returns the LAST owned redirect (the conventional main one), or
+ * `null`. Deliberately pragmatic, like
  * `detectBufferingLastStage`: this feeds an advisory note, so a rare miss just
  * preserves today's behavior.
  */
@@ -1984,7 +2017,12 @@ export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | 
   for (let i = candidates.length - 1; i >= 0; i--) {
     const candidate = candidates[i]!;
     const owner = commandNames.get(candidate.commandId);
-    if (candidate.helperScope || isCommandLocalHelperRedirect(owner, candidate.redirect)) {
+    if (
+      candidate.helperScope ||
+      owner == null ||
+      NO_OUTPUT_REDIRECT_COMMANDS.has(commandBasename(owner)) ||
+      isCommandLocalHelperRedirect(owner, candidate.redirect)
+    ) {
       continue;
     }
     return candidate.redirect;
@@ -2024,6 +2062,8 @@ export interface RunOptions {
   command: string;
   cwd: string;
   stateDir: string | undefined;
+  /** Server-owned dispatch identity for recovery when the launch response is lost. */
+  dispatchCallId?: string;
   env?: Record<string, string>;
   /** Exact secret values that must never reach streamed output, retained output,
    *  or spill logs. Redaction happens before every one of those sinks and keeps
@@ -2035,7 +2075,11 @@ export interface RunOptions {
   sandboxEnabled?: boolean;
   /** Confined profile: wrapper unavailability refuses before the command starts. */
   sandboxRequired?: boolean;
-  /** Internal deterministic test seam; never exposed as a tool argument. */
+  /** Refuse before fork unless the bounded job has a managed task cgroup. */
+  requireTaskConfinement?: boolean;
+  /** Server-owned wrapper overrides — never exposed as a tool argument. Tests use it
+   *  as a deterministic seam; capability:bash sets `{ denyAllEgress: true, srtBin: null }`
+   *  for a caller holding a personal disclosure (WI-10005589, BAR R-11). */
   sandboxBuildOpts?: Omit<BuildSandboxOpts, 'enabled' | 'required' | 'background'>;
   /** task-manager P-008 provenance — the agent id this job is FOR, and the
    *  work-item it is attributable to. Optional because a caller that does not know
@@ -2046,6 +2090,7 @@ export interface RunOptions {
   planSlug?: string | null;
   harnessSlug?: string | null;
   sessionId?: string | null;
+  parentTaskId?: string;
   /** The live goal ref used to derive workItemId/planSlug. Diagnostic-only, so a
    *  future reader can distinguish "no goal" from a parser miss. */
   goalRef?: string | null;
@@ -2059,6 +2104,13 @@ export interface ForegroundResult {
   truncated: boolean;
   logPath: string;
   durationMs: number;
+}
+
+export class BashTaskConfinementRequiredError extends Error {
+  constructor(readonly reason: string) {
+    super(`Required task confinement unavailable (${reason}); no command started.`);
+    this.name = 'BashTaskConfinementRequiredError';
+  }
 }
 
 /**
@@ -2566,6 +2618,15 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   const isTestRun = isBackgroundTestCommand(opts.command);
   const testBudget = isTestRun ? { memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX } : {};
   const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec, ...testBudget });
+  if (opts.requireTaskConfinement && (!enrolment.enrolled || !enrolment.confined || !enrolment.scopeUnit)) {
+    enrolment.releaseEnvironmentTransport();
+    const reason = !enrolment.enrolled
+      ? 'flag-off'
+      : !enrolment.confined
+        ? enrolment.unconfinedReason ?? 'confinement-unavailable'
+        : 'scope-unit-missing';
+    throw new BashTaskConfinementRequiredError(reason);
+  }
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'bash-job');
   const runnerOwnsLog = enrolment.confined && enrolment.unitKind === 'service';
 
@@ -2608,6 +2669,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // EI-16635 / P-002: startBackground jobs are durable whether the caller asks
   // for immediate background return or waits through the bounded response
   // window, so the sandbox path (when enabled) must not die-with-parent.
+  const spawnRequestedAt = Date.now();
   const child = spawnShell(
     opts.command,
     opts.cwd,
@@ -2619,14 +2681,18 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     id,
     opts.sandboxBuildOpts,
   );
+  const spawnReturnedAt = Date.now();
   // A service can finish before the job object and redactor are fully assembled.
   // Keep stdout/stderr flowing from the instant spawn returns, then replay the
   // tiny early prefix through the normal redaction/output path below.
   const earlyOutput: Array<{ stream: 'stdout' | 'stderr'; chunk: Buffer }> = [];
+  let firstPipeByteAt: number | null = null;
   const captureEarlyStdout = (b: Buffer): void => {
+    if (b.length && firstPipeByteAt === null) firstPipeByteAt = Date.now();
     earlyOutput.push({ stream: 'stdout', chunk: Buffer.from(b) });
   };
   const captureEarlyStderr = (b: Buffer): void => {
+    if (b.length && firstPipeByteAt === null) firstPipeByteAt = Date.now();
     earlyOutput.push({ stream: 'stderr', chunk: Buffer.from(b) });
   };
   child.stdout?.on('data', captureEarlyStdout);
@@ -2655,8 +2721,31 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     scopeUnit: enrolment.scopeUnit,
     timeoutMs: effectiveTimeoutMs,
     deadlineAt: Date.now() + effectiveTimeoutMs,
+    phaseTiming: {
+      spawnRequestedAt,
+      spawnReturnedAt,
+      clientSpawnedAt: null,
+      firstPipeByteAt,
+    },
   };
   JOBS.set(id, job);
+  child.once('spawn', () => {
+    job.phaseTiming!.clientSpawnedAt = Date.now();
+  });
+  // Log metadata only: never insert lifecycle diagnostics into command output
+  // or count them as workload bytes. Null means the phase was not observed.
+  const appendPhaseTiming = (): void => {
+    const timing = job.phaseTiming!;
+    try {
+      job.logStream?.write(
+        `\n[capability:bash] JOB TIMING: spawn_requested_at=${timing.spawnRequestedAt}` +
+        ` spawn_returned_at=${timing.spawnReturnedAt} client_spawned_at=${timing.clientSpawnedAt}` +
+        ` first_pipe_byte_at=${timing.firstPipeByteAt} ended_at=${job.endedAt}\n`,
+      );
+    } catch {
+      /* diagnostics must not change the command result */
+    }
+  };
 
   // The confined runner owns command bytes, while this append-only stream owns
   // operator diagnostics and the FINAL normalized marker. A runner marker can
@@ -2737,8 +2826,17 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // Attach before recording/enrolling the job. A transient service can execute
   // an immediate command and close before the later setup work yields; listeners
   // attached after that close lose its stdout/stderr entirely.
-  const onStdoutData = (b: Buffer): void => appendRawOutput(stdoutDecoder.write(b));
-  const onStderrData = (b: Buffer): void => appendRawOutput(stderrDecoder.write(b));
+  const markPipeByte = (b: Buffer): void => {
+    if (b.length && job.phaseTiming!.firstPipeByteAt === null) job.phaseTiming!.firstPipeByteAt = Date.now();
+  };
+  const onStdoutData = (b: Buffer): void => {
+    markPipeByte(b);
+    appendRawOutput(stdoutDecoder.write(b));
+  };
+  const onStderrData = (b: Buffer): void => {
+    markPipeByte(b);
+    appendRawOutput(stderrDecoder.write(b));
+  };
   child.stdout?.removeListener('data', captureEarlyStdout);
   child.stderr?.removeListener('data', captureEarlyStderr);
   child.stdout?.on('data', onStdoutData);
@@ -2762,11 +2860,13 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       planSlug: opts.planSlug ?? null,
       harnessSlug: opts.harnessSlug ?? null,
       sessionId: opts.sessionId ?? null,
+      parentTaskId: opts.parentTaskId ?? null,
       runtimeMaxSec,
       ...testBudget,
       logPath,
       detail: {
         bashJobId: id,
+        ...(opts.dispatchCallId ? { dispatchCallId: opts.dispatchCallId } : {}),
         sandboxed: Boolean(opts.sandboxEnabled),
         goalRef: opts.goalRef ?? null,
         workloadClass: isTestRun ? 'test-run' : 'other',
@@ -2831,6 +2931,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     flushRedactor();
     flushStreamLineCap();
     job.responseStream = undefined;
+    appendPhaseTiming();
     appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc — this is what lets a
     // raw `cat`/Read of `logPath` (bypassing bash_output's own `status` field)
@@ -2894,6 +2995,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     flushRedactor();
     flushStreamLineCap();
     job.responseStream = undefined;
+    // The redactor may retain a payload suffix. Terminal metadata must follow
+    // that suffix or it splits otherwise contiguous command bytes in the log.
+    appendPhaseTiming();
     appendPreflightSnapshot();
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
     const terminalMarker = formatJobLogEndMarker(job.status, job.exitCode, job.endedAt);

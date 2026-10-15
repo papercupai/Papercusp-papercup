@@ -97,6 +97,14 @@ describe('declaresContract', () => {
       false,
     );
   });
+
+  it('accepts a dynamically loaded source runner while still requiring an executable runHarness call', () => {
+    const load = "const { runHarness } = await import('@papercusp/verification-harness');\n";
+    expect(declaresContract('scripts/new-e2e.mjs', load + 'await runHarness({});')).toBe(true);
+    expect(declaresContract('scripts/new-e2e.mjs', load)).toBe(false);
+    expect(declaresContract('scripts/new-e2e.mjs', '// ' + load + 'await runHarness({});')).toBe(false);
+    expect(declaresContract('scripts/new-e2e.mjs', "const x = import('@papercusp/other-runner');\nawait runHarness({});")).toBe(false);
+  });
 });
 
 describe('lintHarnessContracts (fixtures)', () => {

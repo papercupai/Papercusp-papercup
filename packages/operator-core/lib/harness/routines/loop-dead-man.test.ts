@@ -8,6 +8,10 @@ import {
 } from './loop-dead-man';
 import type { ModeRow } from '../../modes/store';
 
+// These IO-gate cases isolate the shared rail; its durable bridge has integration coverage.
+vi.mock('../../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../../alarm-attention', () => ({ resolveAlarm: vi.fn(async () => true) }));
+
 describe('evaluateDeadManGuard (P2a — pure dead-man decision)', () => {
   const base = { armedAtMs: 1_000_000, nowMs: 1_000_000, fireCount: 0 };
 

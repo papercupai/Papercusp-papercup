@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-022 completed overlay mutation probe: always-on",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "apps/operator/app/harness/PrDetails.tsx",
+    "--relocation",
+    "overlay",
+    "--mutate",
+    "s/if \\(result\\.action === 'merged' \\|\\| result\\.action === 'closed' \\|\\| result\\.action === 'sent'\\) toast\\.success\\(message\\);/if (true) toast.success(message);/",
+    "--test",
+    "npm run test:file -- \"$(dirname {})/PrDetails.component.test.tsx\""
+  ],
+  "startedAt": "2026-10-06T01:22:30.343Z",
+  "finishedAt": "2026-10-06T01:23:48.013Z",
+  "exitCode": 0,
+  "summary": "Actual maintained copy-out overlay probe caught always-on: healthy canonical and relocation controls, 3/15 mutant assertion failures, shared source preserved. This committed artifact records the completed operational probe; it does not relabel the original failing Vitest ledger row as clean or passing.",
+  "assertions": [
+    {
+      "id": "baseline-pass",
+      "passed": true,
+      "evidence": "Canonical baseline 15/15; baseline_exit=0 in the retained real probe log."
+    },
+    {
+      "id": "relocation-control-pass",
+      "passed": true,
+      "evidence": "Unmutated copy in the same private overlay namespace 15/15; relocation alone did not fail."
+    },
+    {
+      "id": "mutant-caught",
+      "passed": true,
+      "evidence": "3 assertion failures and 12 passing tests; guard_exit=1, MUTATION_PROBE_RESULT verdict=caught."
+    },
+    {
+      "id": "shared-source-preserved",
+      "passed": true,
+      "evidence": "Maintained probe reports production source byte-identical to its pre-probe state; neither shared tree nor peer imports saw the overlay mutant."
+    },
+    {
+      "id": "retained-source-lineage",
+      "passed": true,
+      "evidence": "Source and canonical guard bytes still equal the original probe commit a1109d57cbe1ec5b3c75685b4b4af2403aa5e945."
+    }
+  ],
+  "evidencePlane": "current-build",
+  "observations": {
+    "workItemId": "WI-10006102",
+    "planItemId": "P-022",
+    "ownerId": "su-f7a0fc2f-2dfd-4e6d-92e9-8803cb408362",
+    "probeCommit": "a1109d57cbe1ec5b3c75685b4b4af2403aa5e945",
+    "originalMutationRun": {
+      "id": 20802878,
+      "source": "mutation-probe",
+      "framework": "vitest",
+      "status": "fail",
+      "worktreeDirty": true,
+      "failed": 3,
+      "passed": 12,
+      "total": 15
+    },
+    "probeEnvironment": {
+      "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+      "PAPERCUSP_WORKSPACE_ID": "papercusp-workspace",
+      "relocation": "overlay",
+      "sharedTreeMutated": false
+    },
+    "log": {
+      "path": "/tmp/p022-mutation-always-on-retry.log",
+      "sha256": "fbebe35cd34d4dccc2146105a03cace150217a0a606a435d2e0080fb4fa2b211"
+    },
+    "result": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=test-file-assertion-failure relocation=overlay",
+    "source": [
+      {
+        "path": "apps/operator/app/harness/PrDetails.tsx",
+        "sha256": "5171e186eac9775be4a82bed49a1bc5a2e4830b4dfdbc307ae65aa4a08c0606d",
+        "matchesProbeCommit": true
+      },
+      {
+        "path": "apps/operator/app/harness/PrDetails.component.test.tsx",
+        "sha256": "3d561bf6290d4b3006dd5b0cdb963556c8136e15640e1e24c9a270e92ff78295",
+        "matchesProbeCommit": true
+      }
+    ],
+    "assertionFailures": [
+      {
+        "name": "\"PR details reports the actual 'testing' outcome without inventing a merge\"",
+        "message": "AssertionError: expected \"vi.fn()\" to be called +0 times, but got 1 times"
+      },
+      {
+        "name": "\"PR details reports the actual 'waiting' outcome without inventing a merge\"",
+        "message": "AssertionError: expected \"vi.fn()\" to be called +0 times, but got 1 times"
+      },
+      {
+        "name": "\"PR details reports the actual 'refused' outcome without inventing a merge\"",
+        "message": "AssertionError: expected \"vi.fn()\" to be called +0 times, but got 1 times"
+      }
+    ],
+    "scope": "Canonical component guards and private overlay mutations. Native fixture acceptance is recorded separately; no external GitHub write, native boot, test rerun or shipment is represented by this artifact."
+  }
+}

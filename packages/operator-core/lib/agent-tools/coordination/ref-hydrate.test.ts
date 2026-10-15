@@ -28,10 +28,18 @@ import {
   renderTerminalSubjectSuffix,
   type HydratableRef,
 } from './ref-hydrate';
-import { hydrateRefs, resolveGateRefStamps, type RefResolver } from './ref-hydrate-resolve';
+import { bodyRefWorkItemResolver, hydrateRefs, resolveGateRefStamps, type RefResolver } from './ref-hydrate-resolve';
 import { findAnnouncementsForKey } from '../../events/await/store';
+import { getWorkItem } from '../../work-items';
+import { workItemFixture } from '../../testing/work-item-fixture';
 
 vi.mock('../../events/await/store', () => ({ findAnnouncementsForKey: vi.fn() }));
+vi.mock('../../work-items', () => ({
+  getWorkItem: vi.fn(),
+  isSettledWorkItemState: vi.fn(() => false),
+}));
+vi.mock('../../work-item-checkpoint', () => ({ getWorkItemCheckpoint: vi.fn(async () => null) }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'papercusp-workspace') }));
 
 describe('parseRefToken', () => {
   it('parses each typed ref shape', () => {
@@ -118,6 +126,12 @@ describe('applyRefBudget', () => {
     ];
     const out = applyRefBudget(refs, { snippetChars: 200, maxRefs: 3 });
     expect(out.map(canonicalRefKey)).toEqual(['work-item:WI-1', 'msg:m1', 'gate:g1']);
+    expect(canonicalRefKey({ kind: 'work-item', id: 'WI-1', harness: 'email' })).toBe(
+      'work-item:WI-1@email',
+    );
+    expect(canonicalRefKey({ kind: 'work-item', id: 'WI-1', harness: 'papercusp' })).not.toBe(
+      canonicalRefKey({ kind: 'work-item', id: 'WI-1', harness: 'email' }),
+    );
     expect(canonicalRefKey({
       kind: 'session-turn',
       sourceKind: 'codex',
@@ -260,6 +274,12 @@ describe('body auto-refs (P-008) — eligibility, opt-out, entry detection, tail
     expect(detectEntryBodyRefs(null)).toEqual([]);
   });
 
+  it('carries the envelope harness into each detected body ref', () => {
+    expect(detectEntryBodyRefs({ summary: 'email item WI-10000680', harness_slug: 'email' })).toEqual([
+      { kind: 'work-item', id: 'WI-10000680', harness: 'email' },
+    ]);
+  });
+
   it('does not resolve a prose id that is a strict prefix of a structured citation', () => {
     const fullId = 'EI-22489500008234936';
     const entry = {
@@ -400,5 +420,62 @@ describe('hydrateRefs (injected resolvers — DB-free)', () => {
     );
     expect(out).toHaveLength(3);
     expect(calls).toBe(3);
+  });
+
+  it('body hydration resolves in the stamped harness and labels that scope', async () => {
+    vi.mocked(getWorkItem).mockResolvedValue(workItemFixture({
+      id: 'WI-10000680',
+      kind: 'task',
+      family: 'issue',
+      state: 'open',
+      harness: 'email',
+      assignee: null,
+      title: 'email draft',
+      summary: 'proposal',
+      payload: {},
+      closedAt: null,
+    }));
+
+    const [hydrated] = await hydrateRefs(
+      [{ kind: 'work-item', id: 'WI-10000680', harness: 'email' }],
+      { resolvers: { 'work-item': bodyRefWorkItemResolver } },
+    );
+
+    expect(getWorkItem).toHaveBeenCalledWith('WI-10000680', 'email');
+    expect(hydrated).toMatchObject({ ok: true, label: 'WI-10000680 [task/open in email]' });
+  });
+
+  it('fails closed when a harness-scoped lookup falls back to another harness', async () => {
+    vi.mocked(getWorkItem).mockResolvedValue(workItemFixture({
+      id: 'WI-10000680',
+      kind: 'task',
+      family: 'feature',
+      state: 'dropped',
+      harness: 'papercusp',
+      assignee: null,
+      title: 'old spec triad',
+      summary: 'dropped',
+      payload: {},
+      closedAt: null,
+    }));
+
+    const [hydrated] = await hydrateRefs(
+      [{ kind: 'work-item', id: 'WI-10000680', harness: 'email' }],
+      { resolvers: { 'work-item': bodyRefWorkItemResolver } },
+    );
+
+    expect(hydrated).toMatchObject({ ok: false, error: 'not_found' });
+  });
+
+  it('does not guess an unscoped WI id from another harness', async () => {
+    vi.mocked(getWorkItem).mockReset();
+
+    const [hydrated] = await hydrateRefs(
+      [{ kind: 'work-item', id: 'WI-10000680' }],
+      { resolvers: { 'work-item': bodyRefWorkItemResolver } },
+    );
+
+    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(hydrated).toMatchObject({ ok: false, error: 'not_found' });
   });
 });

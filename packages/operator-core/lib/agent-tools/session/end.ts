@@ -54,10 +54,11 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { findLiveHost, hostSupports, shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import { findLiveHostAsync, hostSupports, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { markAdvSessionShutdownAcceptedByOwner } from '../../adv-sessions';
+import { markSessionBriefShutdown } from '../../session-brief';
 import {
   GOAL_DISPOSITIONS,
   activeGoalForOwner,
@@ -152,7 +153,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const host = findLiveHost(identity.ownerId);
+    const host = await findLiveHostAsync(identity.ownerId);
     // An ARMED LOOP is a guaranteed future wake, which makes "nothing will wake me
     // again" false by construction — so this is a real precondition, not advice, and
     // it is enforced HERE because the psu host has no DB to read it from. Closing a
@@ -302,7 +303,19 @@ export default defineTool({
           reason: args.reason,
           force: args.force === true,
         });
+    let shutdownWakeGuardRecorded: boolean | null = null;
     if (result === 'sent') {
+      // The adv marker is cleared on reactivation and is only a force-release
+      // signal. Reuse the durable lifecycle envelope for the wake cutoff so
+      // host exit (or a managed successor) cannot revive already handled mail.
+      shutdownWakeGuardRecorded = await markSessionBriefShutdown(
+        identity.ownerId,
+        identity.workspaceId ?? ctx.workspaceId ?? activeWorkspaceId(),
+        { at: new Date().toISOString(), by: identity.ownerId },
+      );
+      if (!shutdownWakeGuardRecorded) {
+        console.warn(`[session:end] accepted shutdown for ${identity.ownerId}, but its durable wake cutoff was not recorded`);
+      }
       // The host has positively accepted shutdown, but the child-exit report may
       // arrive later. Persist the in-between signal so force-release can reclaim
       // a claim without trusting the lingering loop heartbeat.
@@ -317,6 +330,10 @@ export default defineTool({
             ok,
             result,
             note: shutdownNote(result),
+            shutdownWakeGuardRecorded,
+            ...(shutdownWakeGuardRecorded === false
+              ? { wakeSafetyWarning: 'Shutdown accepted, but the durable managed-shutdown wake cutoff was not recorded; queued replay safety is unverified.' }
+              : {}),
             ...(dispositionWarning ? { dispositionWarning } : {}),
             // Surfaced so a refusal is self-explaining without a second call: these
             // are the two inputs to the host's own agent-vs-human verdict.

@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005469",
+  "parent": "WI-10004890",
+  "plane": "live-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-cache-writers-r2-2026-10-02.json",
+    "bytes": 2606118,
+    "sha256": "a6dfb3ef434ec96304996a4d406bae06b1ea20f5a8418e134eb6b8995c0c67fb"
+  },
+  "runtime": {
+    "pid": 1957654,
+    "buildSha": "c11fb0c0b0",
+    "startedAt": "2026-10-02T13:00:37.465Z",
+    "endedAt": "2026-10-02T13:00:47.945Z",
+    "cleanup": {
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true
+    }
+  },
+  "test": {
+    "testRunId": 20529467,
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "nativeLog": "/tmp/su-7db4f-p011-cache-writers-r2.log",
+    "localDirty": true
+  },
+  "guards": {
+    "testRunIds": [
+      20528462,
+      20528464
+    ],
+    "passed": 14,
+    "failed": 0,
+    "skipped": 1,
+    "skippedMeaning": "The opt-in actual-live test was not run in the guard cohort; it ran in the separate R2 actual staging cohort.",
+    "nativeLog": "/tmp/su-7db4f-p011-reader-preflight-guard.log"
+  },
+  "limits": {
+    "maxObjects": 16384,
+    "maxEntries": 32768,
+    "maxFields": 64,
+    "maxDepth": 8,
+    "budgetMs": 200,
+    "maxCacheEntries": 256,
+    "maxEntryEntries": 2048,
+    "maxEntryObjects": 1024
+  },
+  "sampleCount": 9,
+  "ordinaryReads": 24,
+  "membership": {
+    "population": [
+      218,
+      218,
+      218,
+      218,
+      218,
+      218,
+      218,
+      218,
+      218
+    ],
+    "checked": [
+      218,
+      218,
+      218,
+      218,
+      218,
+      218,
+      218,
+      218,
+      218
+    ],
+    "notChecked": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "stableLogicalGroupsAcrossNineSamples": {
+    "jev-memory": {
+      "values": 178,
+      "stringCodeUnits": 57760,
+      "limitedValues": 0
+    },
+    "work_items:list": {
+      "values": 4,
+      "stringCodeUnits": 55332,
+      "limitedValues": 1
+    },
+    "coord:inbox": {
+      "values": 14,
+      "stringCodeUnits": 900326,
+      "limitedValues": 12
+    },
+    "work_items:get": {
+      "values": 19,
+      "stringCodeUnits": 75170,
+      "limitedValues": 0
+    },
+    "plans:get": {
+      "values": 2,
+      "stringCodeUnits": 64183,
+      "limitedValues": 2
+    },
+    "coord:plan-events": {
+      "values": 1,
+      "stringCodeUnits": 42365,
+      "limitedValues": 1
+    }
+  },
+  "namedSourcesAfter": {
+    "scripts/cdp-inspector.mjs": "d3114909e8418ebf5fb2a6c9d2b706e15325cc3dca92b7440b3c84df1e043075",
+    "scripts/cdp-inspector.d.mts": "64af8c4f15656eaf1b78575e7af8070cbe5d8c9640ec331d105da7e23cca6293",
+    "packages/operator-core/lib/cdp-inspector.test.ts": "ec4a95c238f636c39416e6cb48330f741e23d6b803de8baab498df2df4529a12",
+    "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "589dfbf15d03f035efb0898a432588e7d3b9435b11e3e0ab64580f38945e3dde",
+    "packages/operator-core/lib/memory/jev-memory-gate.ts": "dfc94c7756003290a18b0212777636f59cdf2490e512f4c272eb0fb0aeb6c729",
+    "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+    "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+    "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992"
+  },
+  "fullLoadedGraph": "UNKNOWN",
+  "failedPredecessor": {
+    "raw": "docs/evidence/papercusp-oct1-p011-cache-writers-r1-2026-10-02.json",
+    "reason": "Caller maxFields256 exceeded reader cap64; zero samples, own inspector closed and PID preserved.",
+    "ownedPreflightFix": "EI-24872385269082829"
+  },
+  "disposition": {
+    "jev-memory": "Observed key contract belongs to the direct judgment-score cache. No measured retention defect or reason to remove useful scores in this cohort; no physical-memory bound follows from logical payload counts.",
+    "coord:inbox": "Twelve of fourteen values remain payload-limited; use exact protected digest selection for a deeper next measurement before proposing a cache change."
+  },
+  "limitations": [
+    "All218 L1 map values checked in this single PID cohort; not a census of the fleet, other caches or native retained memory.",
+    "Key writer-contract attribution is not an allocation stack or exclusive retained ownership.",
+    "Reachable string code units are logical units, not measured allocated or retained bytes.",
+    "Named disk sources compared separately from actual loaded graph; full graph remains UNKNOWN.",
+    "Ambient workload and sibling HTTP worker routing are uncontrolled; no paired intervention, useful-context/concurrency acceptance, R8/R9 or shipment claim."
+  ],
+  "namedSourcesBefore": {
+    "scripts/cdp-inspector.mjs": "d3114909e8418ebf5fb2a6c9d2b706e15325cc3dca92b7440b3c84df1e043075",
+    "scripts/cdp-inspector.d.mts": "64af8c4f15656eaf1b78575e7af8070cbe5d8c9640ec331d105da7e23cca6293",
+    "packages/operator-core/lib/cdp-inspector.test.ts": "ec4a95c238f636c39416e6cb48330f741e23d6b803de8baab498df2df4529a12",
+    "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "589dfbf15d03f035efb0898a432588e7d3b9435b11e3e0ab64580f38945e3dde",
+    "packages/operator-core/lib/memory/jev-memory-gate.ts": "dfc94c7756003290a18b0212777636f59cdf2490e512f4c272eb0fb0aeb6c729",
+    "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+    "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+    "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992"
+  },
+  "namedSourceComparison": {
+    "checked": [
+      "scripts/cdp-inspector.mjs",
+      "scripts/cdp-inspector.d.mts",
+      "packages/operator-core/lib/cdp-inspector.test.ts",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "packages/operator-core/lib/memory/jev-memory-gate.ts",
+      "packages/operator-core/lib/cache/cached-read.ts",
+      "libs/generic/cache/src/cache.ts",
+      "packages/operator-core/lib/cache/instance.ts"
+    ],
+    "changed": [],
+    "fullGraph": "UNKNOWN"
+  }
+}

@@ -23,6 +23,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../events/await/psu-pty-discovery', () => ({
   findLiveHost: vi.fn(() => null),
+  findLiveHostAsync: vi.fn(async () => null),
   hostSupports: vi.fn(() => true),
   shutdownViaPty: vi.fn(async () => 'sent'),
 }));
@@ -33,6 +34,7 @@ vi.mock('../../adv-sessions', async (importOriginal) => ({
   markAdvSessionShutdownAcceptedByOwner: vi.fn(async () => true),
 }));
 vi.mock('../../carry-note', () => ({ getLoopCarryNote: vi.fn(async () => null) }));
+vi.mock('../../session-brief', () => ({ markSessionBriefShutdown: vi.fn(async () => true) }));
 // Keep the module graph light: transitive imports of the REAL
 // wind-down-disposition module loaded via importOriginal below.
 vi.mock('../../modes/store', () => ({ getModeSubject: vi.fn() }));
@@ -61,6 +63,7 @@ vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
 import { getLoopStatus } from '../../harness/routines/loop';
 import { shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { markAdvSessionShutdownAcceptedByOwner } from '../../adv-sessions';
+import { markSessionBriefShutdown } from '../../session-brief';
 import {
   GOAL_DISPOSITIONS,
   activeGoalForOwner,
@@ -172,6 +175,8 @@ describe('session:end — the P-002 disposition gate for loopless goal owners', 
     shutdownViaPtyMock.mockResolvedValue('sent');
     markShutdownAcceptedMock.mockClear();
     markShutdownAcceptedMock.mockResolvedValue(true);
+    vi.mocked(markSessionBriefShutdown).mockReset();
+    vi.mocked(markSessionBriefShutdown).mockResolvedValue(true);
     activeGoalForOwnerMock.mockReset();
     activeGoalForOwnerMock.mockResolvedValue(null);
     applyGoalDispositionMock.mockReset();
@@ -284,6 +289,35 @@ describe('session:end — the P-002 disposition gate for loopless goal owners', 
     const got = await run({ reason: 'transport miss' });
     expect(got.result).toBe('send-failed');
     expect(markShutdownAcceptedMock).not.toHaveBeenCalled();
+  });
+
+  it('records a consumer-attested durable wake cutoff after positive managed shutdown', async () => {
+    const got = await run({ reason: 'finished' });
+    expect(got.shutdownWakeGuardRecorded).toBe(true);
+    expect(markSessionBriefShutdown).toHaveBeenCalledWith('su-caller-own-id', 'ws-1', {
+      at: expect.any(String), by: 'su-caller-own-id',
+    });
+    expect(vi.mocked(shutdownViaPty).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(markSessionBriefShutdown).mock.invocationCallOrder[0]);
+  });
+
+  it.each(['no-host', 'no-cap', 'send-failed', 'refused-human-attended', 'refused-agent-busy'])
+    ('does not invent a shutdown cutoff for host verdict %s', async (verdict) => {
+      shutdownViaPtyMock.mockResolvedValue(verdict);
+      const got = await run({});
+      expect(got.shutdownWakeGuardRecorded).toBeNull();
+      expect(markSessionBriefShutdown).not.toHaveBeenCalled();
+    });
+
+  it('reports missing cutoff persistence without pretending physical shutdown failed or replay safety passed', async () => {
+    vi.mocked(markSessionBriefShutdown).mockResolvedValue(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const got = await run({});
+      expect(got).toMatchObject({ ok: true, result: 'sent', shutdownWakeGuardRecorded: false });
+      expect(got.wakeSafetyWarning).toContain('unverified');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('durable wake cutoff was not recorded'));
+    } finally { warn.mockRestore(); }
   });
 
   it('flag OFF disables the gate: the goal is never consulted', async () => {

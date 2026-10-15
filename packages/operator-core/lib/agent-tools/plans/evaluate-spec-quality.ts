@@ -5,21 +5,29 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { readPlanBySlug } from './source';
 import { listSpecClauses } from './spec-clauses-store';
-import { evaluatePlanSpecQuality } from './spec-quality';
+import { evaluatePlanSpecQuality, specQualityPlanItemIds } from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { evaluatePlanStartReadiness } from './plan-input-validation';
 import { resolvePersistedClassRef } from './plan-spec-quality-gate';
 import { getAcceptanceRubricsForPlan } from '../../rubrics';
+import { getPlanRevisionSnapshot } from './revisions';
+import { parsePlan } from './parser';
 
 const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1),
   expectedSpecSetHash: z.string().regex(/^[a-f0-9]{64}$/).optional().describe(
-    'Optional replay guard. When supplied, the current clauses must hash to this exact value or spec-set-freshness is unknown and blocks the verdict.',
+    'Optional fail-closed replay guard. When supplied, the current clauses must hash to this exact value; a mismatch returns ok:false with a blocker and no scorecard draft.',
   ),
   classRef: z.enum(PLAN_CLASS_RUBRIC_REFS).optional().describe(
     'Optional assertion against the authoritative persisted acceptance-rubric class. Omit to derive it; a mismatch is refused, never used as an override.',
   ),
+  replaySnapshot: z.object({
+    planContentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    clausesAsOf: z.string().datetime({ offset: true }),
+  }).strict().optional().describe('Historical audit only: replay the saved plan body and latest immutable clause revisions at this cutoff. Requires classRef and expectedSpecSetHash; never substitutes for the live activation gate.'),
+}).refine((args) => !args.replaySnapshot || Boolean(args.classRef && args.expectedSpecSetHash), {
+  message: 'replaySnapshot requires classRef and expectedSpecSetHash', path: ['replaySnapshot'],
 });
 
 export default defineTool({
@@ -63,6 +71,7 @@ export default defineTool({
       wouldBlock: z.array(z.string()).optional(),
       planSlug: z.string().optional(),
       classRef: z.string().optional(),
+      expectedSpecSetHash: z.string().optional(),
       specSetHash: z.string().optional(),
       clauseCount: z.number().optional(),
       planItemCount: z.number().optional(),
@@ -76,6 +85,44 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const opts = await ctxToPlanSourceOpts(sctx);
+    const cutoff = args.replaySnapshot?.clausesAsOf ?? new Date().toISOString();
+    const snapshotFailure = (code: string, message: string) => ({ data: {
+      ok: false, error: code, slug: args.slug, harnessSlug,
+      blockers: [{ check: 'clauses', state: 'unknown', code, message }], wouldBlock: [code],
+    } });
+    if (Date.parse(cutoff) > Date.now()) return snapshotFailure('spec_snapshot_future', 'A future cutoff cannot identify a completed snapshot.');
+    const finish = (clauses: Awaited<ReturnType<typeof listSpecClauses>>, planItems: ReturnType<typeof parsePlan>['items'],
+      classRef: typeof PLAN_CLASS_RUBRIC_REFS[number], replaySnapshot: NonNullable<typeof args.replaySnapshot>) => {
+      const evaluation = evaluatePlanSpecQuality({
+        planSlug: args.slug, harnessSlug, planItems, planItemIds: specQualityPlanItemIds(planItems),
+        clauses, classRef, expectedSpecSetHash: args.expectedSpecSetHash, replaySnapshot,
+      });
+      if (args.expectedSpecSetHash && args.expectedSpecSetHash !== evaluation.specSetHash) {
+        return { data: {
+          ok: false, error: 'spec_set_hash_mismatch', slug: args.slug, harnessSlug,
+          expectedSpecSetHash: args.expectedSpecSetHash, specSetHash: evaluation.specSetHash,
+          blockers: [{ check: 'clauses', state: 'blocked', code: 'spec_set_hash_mismatch',
+            message: `Expected specSetHash ${args.expectedSpecSetHash}, but the selected clauses hash to ${evaluation.specSetHash}; refusing a different clause set.` }],
+          wouldBlock: ['spec_set_hash_mismatch'],
+        } };
+      }
+      return { data: { ok: true, slug: args.slug, harnessSlug, replaySnapshot, ...evaluation } };
+    };
+    if (args.replaySnapshot) {
+      try {
+        const [snapshot, clauses] = await Promise.all([
+          getPlanRevisionSnapshot(args.slug, args.replaySnapshot.planContentHash, opts),
+          listSpecClauses({ harnessSlug, planSlug: args.slug, asOf: cutoff }),
+        ]);
+        if (!snapshot || snapshot.contentSnapshotHash !== args.replaySnapshot.planContentHash) {
+          return snapshotFailure('plan_snapshot_unavailable', 'The exact immutable plan body is missing or its bytes do not match the recorded hash. No live fallback.');
+        }
+        if (!clauses.length) return snapshotFailure('spec_snapshot_unavailable', 'No clause revisions exist at the recorded cutoff.');
+        return finish(clauses, parsePlan(snapshot.contentSnapshot).items, args.classRef!, args.replaySnapshot);
+      } catch (error) {
+        return snapshotFailure('spec_snapshot_read_unavailable', error instanceof Error ? error.message : String(error));
+      }
+    }
     // Discover independent failures together, before evaluation or producing a
     // draft. Promise callbacks also capture synchronous IO failures in adapters.
     const [planRead, clauseRead, rubricRead] = await Promise.allSettled([
@@ -130,22 +177,38 @@ export default defineTool({
         wouldBlock: blockers.map((b) => b.code),
       } };
     }
-    const planItemIds = (read.row.items.length ? read.row.items : read.parsed.items).map((item) => item.id);
-    const evaluation = evaluatePlanSpecQuality({
-      planSlug: args.slug,
-      harnessSlug,
-      planItemIds,
-      clauses: clauseRead.value,
-      classRef: classResolution.classRef,
-      expectedSpecSetHash: args.expectedSpecSetHash,
-    });
-    return {
-      data: {
-        ok: true,
-        slug: args.slug,
-        harnessSlug,
-        ...evaluation,
-      },
-    };
+    try {
+      const snapshot = await getPlanRevisionSnapshot(args.slug, read.row.contentHash, {
+        ...opts, workspaceId: read.row.workspaceId,
+      });
+      if (!snapshot || snapshot.contentSnapshotHash !== read.row.contentHash) {
+        return snapshotFailure('plan_snapshot_unavailable', 'The current plan body has no exact immutable revision snapshot; repair its revision spine before grading.');
+      }
+      // Deterministic cutoff preserves retry identity. Acceptance is separately
+      // timestamped from revision creation, so include both times in the snapshot.
+      // Timestamp normalization rounds to milliseconds; include the whole last
+      // millisecond, then verify reconstruction rather than assuming no concurrent write.
+      const latest = Math.max(...clauseRead.value.flatMap((clause) => [
+        Date.parse(clause.createdAt),
+        ...(clause.acceptedAt ? [Date.parse(clause.acceptedAt)] : []),
+      ]));
+      if (!Number.isFinite(latest) || latest + 1 > Date.now()) {
+        return snapshotFailure('spec_snapshot_cutoff_unavailable', 'Clause revision and acceptance times do not identify a completed snapshot.');
+      }
+      const clausesAsOf = new Date(latest + 1).toISOString();
+      const reconstructed = await listSpecClauses({ harnessSlug, planSlug: args.slug, asOf: clausesAsOf });
+      const historical = finish(reconstructed, parsePlan(snapshot.contentSnapshot).items, classResolution.classRef,
+        { planContentHash: snapshot.contentSnapshotHash, clausesAsOf });
+      const live = evaluatePlanSpecQuality({ planSlug: args.slug, harnessSlug,
+        planItemIds: specQualityPlanItemIds(parsePlan(snapshot.contentSnapshot).items),
+        planItems: parsePlan(snapshot.contentSnapshot).items, clauses: clauseRead.value, classRef: classResolution.classRef });
+      if (!('specSetHash' in historical.data) || historical.data.specSetHash !== live.specSetHash) {
+        if (args.expectedSpecSetHash && args.expectedSpecSetHash !== live.specSetHash) return historical;
+        return snapshotFailure('spec_snapshot_changed', 'Historical reconstruction differs from the observed clause set. Retry after concurrent writes settle.');
+      }
+      return historical;
+    } catch (error) {
+      return snapshotFailure('spec_snapshot_read_unavailable', error instanceof Error ? error.message : String(error));
+    }
   },
 });

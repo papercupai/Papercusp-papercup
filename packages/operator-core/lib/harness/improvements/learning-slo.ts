@@ -898,6 +898,31 @@ export async function governorStarvationCollector(
   return { signals: await collectGovernorStarvationSignals(deps.sql(), workspaceId, opts) };
 }
 
+/**
+ * producer-silence collector (flag-gated; plan scout-su-ideate-pipeline-gaps-2026-10-08
+ * P-009 — logic in ./producer-silence). THROWS when any producer's output read failed:
+ * an unmeasured producer emits nothing, and a quiet tick is what auto-close reads as
+ * "resolved", so a broken read must surface as a failed collector instead.
+ */
+export async function producerSilenceCollector(
+  workspaceId: string,
+  opts: import('./producer-silence').ProducerSilenceOptions = {},
+  deps: LearningSloDeps = defaultDeps,
+): Promise<CollectorResult> {
+  const dark = await darkOrNull(deps);
+  if (dark) return dark;
+  const ps = await import('./producer-silence');
+  const facts = await ps.readProducerSilenceFacts(deps.sql(), workspaceId);
+  if (facts.unmeasured && facts.unmeasured.size > 0) {
+    throw new Error(`producer-silence: output read failed for ${[...facts.unmeasured].join(', ')} — not judged this tick`);
+  }
+  if (facts.suIdeateCircuits === 'unmeasured') {
+    throw new Error('producer-silence: su-ideate circuit read failed — not judged this tick (plan D-010)');
+  }
+  const verdict = ps.producerSilenceVerdict(facts, opts);
+  return { signals: verdict.signals, note: ps.producerSilenceNote(verdict) };
+}
+
 /** memory zero-hit collector (flag-gated; box-global — see collectMemoryZeroHitSignals). */
 export async function memoryZeroHitCollector(
   opts: LearningSloOptions = {},
@@ -1103,12 +1128,14 @@ export function recallPoolSignalsFromHealth(
         (starved.length > RECALL_POOL_BODY_SAMPLES
           ? `\n  … and ${starved.length - RECALL_POOL_BODY_SAMPLES} more.`
           : '') +
-        `\n\nA pool at or near 1.0 is the unmigrated-scope signature: it is being queried under a ` +
-        `scope key nothing writes to, so it contributes nothing to the injected block while its ` +
-        `sibling pools fill the space. This is invisible to the blended memory-zero-hit SLO by ` +
-        `construction — that detector aggregates the whole table, and a surface whose other pools ` +
-        `answer normally reports a healthy zero-hit rate throughout. Check the scope keys above ` +
-        `against what the writers actually key on before assuming the pool is merely empty.`,
+        `\n\nA near-total zero-hit rate is a signal, not proof of a scope-key mismatch. A key with no ` +
+        `active corpus can cause it, but narrow queries against a small corpus can also return ` +
+        `nothing when the scope is valid. Use the listed scopes, empty-scope rate and active-corpus ` +
+        `count to establish what was queried; inspect per-pool retrieval evidence before choosing ` +
+        `a caller, scope-key, corpus or relevance fix. A pool-specific zero-hit rate can be ` +
+        `invisible to the blended memory-zero-hit SLO when sibling pools return hits: that detector ` +
+        `aggregates the whole table, and a surface whose other pools answer normally can look ` +
+        `healthy.`,
       severity: 'major',
       kind: 'bug',
       findingClass: 'learning-slo:recall-degradation',

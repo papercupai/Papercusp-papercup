@@ -123,10 +123,10 @@ describe('Personal Vault archive importers', () => {
       .rejects.toThrow('personal_vault_import_ciphertext_size_invalid');
   });
 
-  it('parses Gmail mbox messages with stable ids and participants', () => {
+  it('parses Gmail mbox messages into canonical mail records with stable ids and participants', () => {
     const docs = parseMbox('From sender@example.com Tue Jan 1 00:00:00 2026\nMessage-ID: <m1@example.com>\nDate: Tue, 01 Jan 2026 00:00:00 +0000\nFrom: Ada <ada@example.com>\nTo: Bob <bob@example.com>\nSubject: Planning\n\nBring the notes.');
     expect(docs).toHaveLength(1);
-    expect(docs[0]).toMatchObject({ source: 'gmail', externalId: 'm1@example.com', title: 'Planning', dedupeKey: 'gmail:m1@example.com' });
+    expect(docs[0]).toMatchObject({ source: 'mail', externalId: 'm1@example.com', title: 'Planning', dedupeKey: 'mail:m1@example.com' });
     expect(docs[0]!.participants).toEqual(['ada@example.com', 'bob@example.com']);
   });
 

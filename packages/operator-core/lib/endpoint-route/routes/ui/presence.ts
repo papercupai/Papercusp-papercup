@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { getOrgPg } from '@papercusp/db-org';
 import { isLoopbackRequest } from '../../../superuser-token';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
 
 const BodySchema = z.object({
   client_id: z.string().min(8).max(128),
@@ -32,6 +33,13 @@ export default defineTool({
       return Response.json({ error: 'invalid_body', issues: parsed.error.issues }, { status: 400 });
     }
     const { client_id, url, title, workspace_id, viewport } = parsed.data;
+    // The browser carries its workspace through the shared request middleware.
+    // Ordinary presence bodies omit workspace_id; storing null would make a
+    // correctly scoped agent reject its own requesting tab for narration.
+    const workspaceId = activeWorkspaceId();
+    if (workspace_id && workspace_id !== workspaceId) {
+      return Response.json({ error: 'workspace_mismatch' }, { status: 400 });
+    }
 
     const { sql } = getOrgPg();
     const viewportJson = viewport ? JSON.stringify(viewport) : null;
@@ -39,7 +47,7 @@ export default defineTool({
       INSERT INTO harness_shared.ui_clients (client_id, workspace_id, url, title, viewport, last_seen_at)
       VALUES (
         ${client_id},
-        ${workspace_id ?? null},
+        ${workspaceId},
         ${url},
         ${title ?? null},
         ${viewportJson}::text::jsonb,

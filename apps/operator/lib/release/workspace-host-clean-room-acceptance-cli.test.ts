@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { failureFingerprint } from "@papercusp/operator-core/lib/verification-attempts/failure-fingerprint";
+import type { WorkspaceHostCleanRoomAcceptanceReport } from "@papercusp/deployment-driver";
 
 import {
   parseCleanRoomAcceptanceCliArgs,
   parseCleanRoomAcceptanceCliInput,
   runCleanRoomAcceptanceCli,
+  writeCleanRoomAcceptanceCliReport,
 } from "./workspace-host-clean-room-acceptance-cli";
 
 /**
@@ -18,6 +21,47 @@ const placement = {
   subnetwork: "pc-p046-canary-02-a810e759-subnet",
   architecture: "x86_64",
 };
+
+describe('clean-room CLI measurement output', () => {
+  const report = (message: string): WorkspaceHostCleanRoomAcceptanceReport => ({
+    contractVersion: 'papercusp-workspace-host-image-acceptance-v1',
+    fixtureId: 'campaign-clean-room', image: { id: 'papercusp-workspace-host', version: 'test' },
+    passed: false, checks: [], issues: [{ code: 'invalid-artifact', message }],
+  });
+
+  it('preserves rejected report JSON and exit status while distinguishing the two real failure classes', () => {
+    const failures = [
+      report('[workspace-host-bootstrap] ERROR: insufficient release storage; extraction was not started'),
+      report('papercusp-content-bootstrap: content bundle incomplete: git clone failed (exit 128)'),
+    ];
+    const fingerprints = failures.map((measurement) => {
+      let stdout = ''; let stderr = '';
+      expect(writeCleanRoomAcceptanceCliReport(measurement, {
+        stdout: (text) => { stdout += text; return true; },
+        stderr: (text) => { stderr += text; return true; },
+      })).toBe(3);
+      expect(JSON.parse(stdout)).toEqual({ cleanRoomReport: measurement });
+      const fingerprint = failureFingerprint({ exitCode: 3, exitReason: 'exit-code', logTail: stderr });
+      expect(fingerprint.source).toBe('log');
+      return fingerprint;
+    });
+    expect(fingerprints[0].label).toContain('archive-storage');
+    expect(fingerprints[1].label).toContain('content-repository-clone-failed');
+    expect(fingerprints[0].fingerprint).not.toBe(fingerprints[1].fingerprint);
+  });
+
+  it('retains unknown rejection codes and emits no failure for a passing measured report', () => {
+    let stdout = ''; let stderr = '';
+    const output = { stdout: (text: string) => { stdout += text; return true; }, stderr: (text: string) => { stderr += text; return true; } };
+    expect(writeCleanRoomAcceptanceCliReport(report('unclassified refusal'), output)).toBe(3);
+    expect(stderr).toBe('phase clean-room (acceptance): invalid-artifact\n');
+    stdout = ''; stderr = '';
+    const passing = { ...report(''), passed: true, issues: [] };
+    expect(writeCleanRoomAcceptanceCliReport(passing, output)).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ cleanRoomReport: passing });
+    expect(stderr).toBe('');
+  });
+});
 
 describe("parseCleanRoomAcceptanceCliArgs", () => {
   it("requires an input file", () => {

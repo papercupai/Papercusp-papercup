@@ -18,16 +18,35 @@ import { getCellUnchecked } from './cell-registry';
 import { withBoundedTimeout } from './bounded-timeout';
 import { mapWithConcurrency } from './gym/concurrency';
 import type { CheckEntry } from './carry-note';
-import { LIMITS } from './agent-tools/limits';
+import { CONTINUITY_PROBE_MAX_PER_WAKE, LIMITS } from './agent-tools/limits';
+import { assertSingleReadStatement, PG_READ_QUERY_HARD_MAX_ROWS } from './pg-read-query';
+export { CONTINUITY_PROBE_MAX_PER_WAKE } from './agent-tools/limits';
 
 export const CONTINUITY_PROBE_MAX_BYTES = 12_000;
 export const CONTINUITY_PROBE_ARGS_MAX_BYTES = 8_000;
 export const CONTINUITY_PROBE_PROJECTION_MAX_BYTES = 2_000;
 export const CONTINUITY_PROBE_RESULT_MAX_BYTES = 16_000;
 export const CONTINUITY_PROBE_BATCH_MAX_BYTES = 24_000;
-export const CONTINUITY_PROBE_MAX_PER_WAKE = 8;
 export const CONTINUITY_PROBE_CONCURRENCY = 4;
 export const CONTINUITY_PROBE_TIMEOUT_MS = 2_500;
+
+/**
+ * SQL probes (test-rubric-unification-2026-10-12#P-004, bar R-4) dispatch through
+ * this ONE tool, so every SQL probe gets exactly dev:pg_query's guard: the
+ * single-read-statement check, a READ ONLY transaction, a row cap and a
+ * statement timeout. There is deliberately no second allowlist in this module —
+ * the writer-side check below calls the same `assertSingleReadStatement`
+ * pgReadQuery runs, and the READ ONLY transaction stays the real enforcement.
+ */
+export const SQL_PROBE_TOOL = 'dev:pg_query';
+export const SQL_PROBE_DEFAULT_MAX_ROWS = 50;
+/** dev:pg_query's own `timeoutMs` ceiling. */
+export const SQL_PROBE_MAX_TIMEOUT_MS = 30_000;
+
+/** The statement timeout an SQL probe passes to dev:pg_query for a given dispatch budget. */
+export function sqlProbeTimeoutMs(budgetMs: number): number {
+  return Math.max(100, Math.min(SQL_PROBE_MAX_TIMEOUT_MS, Math.trunc(budgetMs)));
+}
 
 const scalarSchema = z.union([z.string().max(1_000), z.number().finite(), z.boolean(), z.null()]);
 
@@ -109,7 +128,8 @@ export const continuityPredicateSchema = z
         message: 'invalid predicate path; use $, dotted object keys, and numeric [index] segments only',
       });
     }
-  });
+  })
+  .meta({ id: 'continuity-predicate-v1' });
 
 const toolProbeShape = z
   .object({
@@ -138,6 +158,32 @@ const stateCellProbeShape = z
   })
   .strict();
 
+const sqlProbeShape = z
+  .object({
+    kind: z.literal('sql'),
+    sql: z
+      .string()
+      .min(1)
+      .max(4_000)
+      .describe(
+        'One read-only SELECT or WITH…SELECT, run through dev:pg_query: READ ONLY transaction, row cap and statement timeout are always applied, and a write is refused without changing any row. `expect` reads the dev:pg_query result, e.g. { path: "$.rows[0].n", op: "gte", value: 1 }.',
+      ),
+    maxRows: z
+      .number()
+      .int()
+      .positive()
+      .max(PG_READ_QUERY_HARD_MAX_ROWS)
+      .default(SQL_PROBE_DEFAULT_MAX_ROWS)
+      .describe(`Row cap passed to dev:pg_query (default ${SQL_PROBE_DEFAULT_MAX_ROWS}).`),
+    allowUnscoped: z
+      .boolean()
+      .optional()
+      .describe("Forwarded to dev:pg_query: allow a deliberate cross-tenant read of a tenant-scoped table."),
+    schemaRevision: schemaRevisionSchema,
+    expect: continuityPredicateSchema,
+  })
+  .strict();
+
 /**
  * Shape-only schema used to decode durable rows before current-contract checks.
  *
@@ -150,7 +196,7 @@ const stateCellProbeShape = z
  * whenever exactly one is present), so the honest reading is not "you specified
  * the probe wrong" but "there is no probe here" — and that row wants `recheck`.
  */
-const PROBE_DISCRIMINATOR_PREFIX = "probe.kind is a required discriminator ('tool' or 'state-cell').";
+const PROBE_DISCRIMINATOR_PREFIX = "probe.kind is a required discriminator ('tool', 'state-cell' or 'sql').";
 
 /**
  * The three ways a row reaches this error are NOT the same mistake, and a single
@@ -182,7 +228,7 @@ export function probeDiscriminatorMessage(input: unknown): string {
   );
 }
 
-export const continuityProbeShapeSchema = z.discriminatedUnion('kind', [toolProbeShape, stateCellProbeShape], {
+export const continuityProbeShapeSchema = z.discriminatedUnion('kind', [toolProbeShape, stateCellProbeShape, sqlProbeShape], {
   error: (issue) => (issue.code === 'invalid_union' ? probeDiscriminatorMessage(issue.input) : undefined),
 });
 export type ContinuityProbe = z.infer<typeof continuityProbeShapeSchema>;
@@ -211,7 +257,35 @@ const INDIRECT_OR_META_TOOL =
   /^(?:tools:|agent_tools:list$|code:run$|recipes:run$|capability:|computer:|dev:pg_(?:query|mutate)$)/;
 
 function targetName(probe: ContinuityProbe): string {
-  return probe.kind === 'tool' ? probe.tool : 'state:read';
+  return probe.kind === 'tool' ? probe.tool : probe.kind === 'sql' ? SQL_PROBE_TOOL : 'state:read';
+}
+
+/** The probe field that names its executable target, for field-addressed issues. */
+function targetField(probe: ContinuityProbe): 'tool' | 'cell' | 'sql' {
+  return probe.kind === 'tool' ? 'tool' : probe.kind === 'sql' ? 'sql' : 'cell';
+}
+
+/**
+ * The exact arguments a probe dispatches with. An SQL probe always carries an
+ * explicit row cap and statement timeout, so no SQL probe can run unbounded.
+ */
+function probeDispatchArgs(probe: ContinuityProbe, budgetMs: number = CONTINUITY_PROBE_TIMEOUT_MS): Record<string, unknown> {
+  if (probe.kind === 'tool') {
+    return { ...probe.args, ...(probe.projection !== undefined ? { projection: probe.projection } : {}) };
+  }
+  if (probe.kind === 'sql') {
+    // dev:pg_query's published input schema REQUIRES its defaulted booleans, so
+    // both are always sent explicitly; a probe never opts into the unbounded
+    // JSON-text-search bypass.
+    return {
+      sql: probe.sql,
+      maxRows: probe.maxRows,
+      timeoutMs: sqlProbeTimeoutMs(budgetMs),
+      allowUnscoped: probe.allowUnscoped === true,
+      allowUnboundedJsonSearch: false,
+    };
+  }
+  return { cell: probe.cell, ...(probe.as ? { as: probe.as } : {}) };
 }
 
 function projectedTool(name: string): ProjectedTool | undefined {
@@ -239,7 +313,9 @@ function normalizeWriterProbeRevision(value: unknown): unknown {
       ? probe.tool
       : probe.kind === 'state-cell'
         ? 'state:read'
-        : null;
+        : probe.kind === 'sql'
+          ? SQL_PROBE_TOOL
+          : null;
   if (!toolName) return value;
   const revision = continuityProbeRevision(toolName);
   return revision ? { ...probe, schemaRevision: revision } : value;
@@ -296,7 +372,7 @@ export function validateContinuityProbe(probe: ContinuityProbe): ContinuityProbe
   const tool = projectedTool(name);
   if (!tool) {
     issues.push({
-      path: probe.kind === 'tool' ? ['tool'] : ['cell'],
+      path: [targetField(probe)],
       code: 'unknown_tool',
       message: `unknown projected tool: ${name}`,
     });
@@ -306,13 +382,29 @@ export function validateContinuityProbe(probe: ContinuityProbe): ContinuityProbe
     issues.push({
       path: ['tool'],
       code: 'indirect_tool',
-      message: `${name} is an indirect execution/meta surface and cannot be persisted as a continuity probe`,
+      message:
+        name === SQL_PROBE_TOOL
+          ? `${name} cannot be a tool probe; measure with SQL through a kind:'sql' probe instead (same read-only guard, explicit row cap and statement timeout)`
+          : `${name} is an indirect execution/meta surface and cannot be persisted as a continuity probe`,
     });
   }
-  const args = probe.kind === 'tool' ? probe.args : { cell: probe.cell, ...(probe.as ? { as: probe.as } : {}) };
+  if (probe.kind === 'sql') {
+    // The same statement check pgReadQuery runs before it opens its READ ONLY
+    // transaction: a write is refused here, at authoring, as well as by Postgres.
+    try {
+      assertSingleReadStatement(probe.sql);
+    } catch (err) {
+      issues.push({
+        path: ['sql'],
+        code: 'not_read_only',
+        message: `SQL probe refused: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+  const args = probe.kind === 'tool' ? probe.args : probeDispatchArgs(probe);
   if (effectOf(tool, args) !== 'read') {
     issues.push({
-      path: probe.kind === 'tool' ? ['tool'] : ['cell'],
+      path: [targetField(probe)],
       code: 'not_read_only',
       message: `${name} is not provably read-only for these arguments`,
     });
@@ -337,7 +429,7 @@ export function validateContinuityProbe(probe: ContinuityProbe): ContinuityProbe
   const argsBytes = jsonBytes(args);
   if (argsBytes === null || argsBytes > CONTINUITY_PROBE_ARGS_MAX_BYTES) {
     issues.push({
-      path: probe.kind === 'tool' ? ['args'] : [],
+      path: probe.kind === 'tool' ? ['args'] : probe.kind === 'sql' ? ['sql'] : [],
       code: 'oversized',
       message: `arguments must serialize to at most ${CONTINUITY_PROBE_ARGS_MAX_BYTES} bytes`,
     });
@@ -355,7 +447,7 @@ export function validateContinuityProbe(probe: ContinuityProbe): ContinuityProbe
   const checked = checkAgainstJsonSchema(tool.discoveryInputSchema ?? tool.inputSchema, args);
   if (!checked.ok) {
     for (const message of checked.errors.slice(0, 6)) {
-      issues.push({ path: probe.kind === 'tool' ? ['args'] : [], code: 'invalid_args', message });
+      issues.push({ path: probe.kind === 'tool' ? ['args'] : probe.kind === 'sql' ? ['sql'] : [], code: 'invalid_args', message });
     }
   }
   if (probe.kind === 'tool' && probe.projection !== undefined) {
@@ -533,6 +625,26 @@ function candidateFields(tool: ProjectedTool | undefined, probe: ContinuityProbe
   return known.sort((a, b) => score(a) - score(b) || a.localeCompare(b)).slice(0, 5);
 }
 
+/** Characters of an error result's text a failed probe's diagnostic carries. */
+const TOOL_ERROR_EXCERPT_CHARS = 300;
+
+/**
+ * A bounded excerpt of an error result's text, so an unjudgeable probe names what the tool said
+ * (a timeout, a scope refusal, a SQL error) instead of only that it failed. Empty when the result
+ * carries no text.
+ */
+function toolErrorExcerpt(result: Record<string, unknown>): string {
+  const content = Array.isArray(result.content) ? result.content : [];
+  const text = content
+    .map((entry) => (entry && typeof entry === 'object' ? (entry as { text?: unknown }).text : undefined))
+    .filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  return `: ${text.length > TOOL_ERROR_EXCERPT_CHARS ? `${text.slice(0, TOOL_ERROR_EXCERPT_CHARS)}…` : text}`;
+}
+
 function decodeToolResult(result: unknown): unknown {
   if (!result || typeof result !== 'object') return result;
   const row = result as Record<string, unknown>;
@@ -567,6 +679,14 @@ function observedScalar(value: unknown): unknown {
 
 export interface ContinuityProbeDispatchContext {
   dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * Per-probe dispatch budget. Defaults to CONTINUITY_PROBE_TIMEOUT_MS, which is
+   * sized for the wake/orient replay path where every probe sits on a turn's
+   * critical path. A deliberate fail-closed caller (scorecard criterion probes)
+   * must pass a budget sized to the dispatched tool's measured tail latency, or
+   * a slow-but-healthy read is refused as unjudgeable (EI-24809550207915153).
+   */
+  timeoutMs?: number;
 }
 
 async function runOne(
@@ -598,7 +718,7 @@ async function runOne(
       diagnostic: {
         code: 'schema_revision_mismatch',
         message: 'probe contract drifted; explicit checkpoint migration is required before replay',
-        fieldPath: probe.kind === 'tool' ? 'args' : 'cell',
+        fieldPath: probe.kind === 'tool' ? 'args' : targetField(probe),
         storedRevision: probe.schemaRevision,
         currentRevision,
         candidates: candidateFields(tool, probe),
@@ -630,13 +750,11 @@ async function runOne(
       diagnostic: { code: 'dispatcher_unavailable', message: 'internal read-only dispatcher is unavailable' },
     };
   }
-  const args =
-    probe.kind === 'tool'
-      ? { ...probe.args, ...(probe.projection !== undefined ? { projection: probe.projection } : {}) }
-      : { cell: probe.cell, ...(probe.as ? { as: probe.as } : {}) };
+  const timeoutMs = ctx.timeoutMs ?? CONTINUITY_PROBE_TIMEOUT_MS;
+  const args = probeDispatchArgs(probe, timeoutMs);
   const dispatched = await withBoundedTimeout(ctx.dispatchTool(name, args), {
     fallback: null,
-    timeoutMs: CONTINUITY_PROBE_TIMEOUT_MS,
+    timeoutMs,
     label: `continuity-probe:${name}`,
   });
   if (dispatched.degraded || dispatched.value === null) {
@@ -646,7 +764,7 @@ async function runOne(
       executed: true,
       diagnostic: {
         code: dispatched.reason ?? 'empty_result',
-        message: dispatched.errorMessage ?? `probe ${name} did not return within its budget`,
+        message: dispatched.errorMessage ?? `probe ${name} did not return within its ${timeoutMs}ms budget`,
       },
     };
   }
@@ -656,23 +774,30 @@ async function runOne(
       ...base,
       status: 'error',
       executed: true,
-      diagnostic: { code: 'tool_error', message: `read-only probe ${name} returned an error` },
+      diagnostic: { code: 'tool_error', message: `read-only probe ${name} returned an error${toolErrorExcerpt(result)}` },
     };
   }
   const decoded = decodeToolResult(dispatched.value);
-  const decodedBytes = jsonBytes(decoded);
-  if (decodedBytes === null || decodedBytes > CONTINUITY_PROBE_RESULT_MAX_BYTES) {
+  // WI-10005537: the budget bounds what the predicate JUDGES, not the whole tool
+  // body. The body is already materialized by the time we get here, so charging
+  // it bought no protection; it only refused a healthy probe whenever the read
+  // tool's full result was large (dev:pipeline_position runs ~20KB+ with no
+  // projection), and scorecard criterion probes fail closed on that refusal, so
+  // no independent acceptance card could be filed. A selected value that is
+  // itself over budget (e.g. `exists` on a huge subtree) is still refused.
+  const verdict = evaluateContinuityPredicate(probe.expect, decoded);
+  const judgedBytes = verdict.actual === undefined ? 0 : jsonBytes(verdict.actual);
+  if (judgedBytes === null || judgedBytes > CONTINUITY_PROBE_RESULT_MAX_BYTES) {
     return {
       ...base,
       status: 'error',
       executed: true,
       diagnostic: {
         code: 'result_too_large',
-        message: `decoded probe result exceeded the ${CONTINUITY_PROBE_RESULT_MAX_BYTES}-byte budget`,
+        message: `the value at ${probe.expect.path} exceeded the ${CONTINUITY_PROBE_RESULT_MAX_BYTES}-byte budget`,
       },
     };
   }
-  const verdict = evaluateContinuityPredicate(probe.expect, decoded);
   const observed = observedScalar(verdict.actual);
   return {
     ...base,
@@ -716,7 +841,7 @@ export async function runContinuityProbeBatch(
     limits: {
       maxProbes: CONTINUITY_PROBE_MAX_PER_WAKE,
       concurrency: CONTINUITY_PROBE_CONCURRENCY,
-      timeoutMs: CONTINUITY_PROBE_TIMEOUT_MS,
+      timeoutMs: ctx.timeoutMs ?? CONTINUITY_PROBE_TIMEOUT_MS,
       maxResultBytes: CONTINUITY_PROBE_RESULT_MAX_BYTES,
       maxBatchBytes: CONTINUITY_PROBE_BATCH_MAX_BYTES,
     },

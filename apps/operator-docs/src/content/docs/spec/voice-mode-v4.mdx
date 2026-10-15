@@ -4,27 +4,29 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Voice mode v4
+title: "Voice mode v4"
 description: "Current Papercusp voice architecture: local STT/TTS, hosted full-agent sessions, the operator voice host, Papercup pane routing, wake-word engines, and the shared one-brain voice pipeline."
+type: Insight
+discovered: 2026-10-13
+status: active
+documents:
+  - "packages/operator-core/lib/voice-prefs.ts"
+  - "apps/operator/app/_components/voice/voice-mode.ts"
+  - "apps/operator/app/_components/voice/stt-voicemode.ts"
+  - "apps/operator/app/_components/voice/voice-sentinel-bridge.ts"
+  - "packages/operator-core/lib/voice-node/operator-voice-session.ts"
+  - "packages/operator-core/lib/voice-node/operator-voice-session-deps.ts"
+  - "packages/operator-core/lib/voice-node/operator-voice-host.ts"
+  - "packages/operator-core/lib/voice-node/sentinel-says-pump.ts"
+  - "packages/operator-core/lib/endpoint-route/routes/desktop/voice-config.ts"
+  - "libs/generic/p2p-voice/src/voice-node.ts"
+plans:
+  - "voice-realtime-tui-2026-06-05"
+  - "universal-voice-interface-2026-06-05"
+  - "sentinel-as-claude-tui-2026-06-22"
+  - "voice-unified-papercup-pipeline-2026-07-01"
 sidebar:
   order: 35
-plans:
-  - voice-realtime-tui-2026-06-05
-  - universal-voice-interface-2026-06-05
-  - sentinel-as-claude-tui-2026-06-22
-  - voice-unified-papercup-pipeline-2026-07-01
-documents:
-  - packages/operator-core/lib/voice-prefs.ts
-  - apps/operator/app/_components/voice/voice-mode.ts
-  - apps/operator/app/_components/voice/stt-voicemode.ts
-  - apps/operator/app/_components/voice/voice-sentinel-bridge.ts
-  - packages/operator-core/lib/voice-node/operator-voice-session.ts
-  - packages/operator-core/lib/voice-node/operator-voice-session-deps.ts
-  - packages/operator-core/lib/voice-node/operator-voice-host.ts
-  - packages/operator-core/lib/voice-node/sentinel-says-pump.ts
-  - packages/operator-core/lib/endpoint-route/routes/operator/sentinel-input.ts
-  - packages/operator-core/lib/endpoint-route/routes/desktop/voice-config.ts
-  - libs/generic/p2p-voice/src/voice-node.ts
 ---
 
 Voice mode is the operator's audio surface. As of **July 1, 2026**, the live

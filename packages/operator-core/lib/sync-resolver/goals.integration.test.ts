@@ -32,11 +32,16 @@
  *   npm run test:file -- packages/operator-core/lib/sync-resolver/goals.integration.test.ts
  */
 import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
+import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
+import { readTypedPropertyCollection } from '../typed-properties';
+import { flushFallbackObservations, observeFallback } from '../degradation/fallback-observations';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = join(here, '..', '..', '..', '..');
@@ -56,6 +61,7 @@ const GOAL = 'goal-under-test';
 
 let db: MigratedTestDb;
 let sql: Sql;
+let nestedPg: BaselineCoordFixture;
 
 // The resolvers reach for their connection through `getOrgPg()` at call time
 // (a dynamic import inside each function), so pointing that at the test
@@ -107,11 +113,32 @@ async function provision(url: string): Promise<void> {
 beforeAll(async () => {
   db = await createFreshTestDb({ provision });
   sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
+  // The owner report also uses dedicated connections outside getOrgPg().
+  nestedPg = await setupBaselineCoordFixture({ dsn: db.url });
+  // A name-filtered run may start with the deadline regression. Keep Vitest's
+  // cold module transforms in suite setup, outside its per-case timer; a timed
+  // out async test keeps running and would otherwise race the next SQL fixture.
+  await Promise.all([import('./goals'), import('../goal-launch-settings'), import('../agent-obligation-reader'),
+    import('../goal-rubric-stewardship')]);
 }, 600_000);
 
+async function closeGoalSql(timeout: number): Promise<void> {
+  try {
+    // A bounded read can leave telemetry buffered beyond the test body. Drain
+    // its real writer before ending the handle it captured or replacing sql.
+    expect(await flushFallbackObservations({ sql })).toMatchObject({ failed: 0, dropped: 0 });
+  } finally {
+    await sql?.end({ timeout });
+  }
+}
+
 afterAll(async () => {
-  await sql?.end({ timeout: 5 });
-  await db?.drop();
+  try {
+    await closeGoalSql(5);
+  } finally {
+    await nestedPg?.dispose();
+    await db?.drop();
+  }
 });
 
 beforeEach(async () => {
@@ -126,6 +153,7 @@ beforeEach(async () => {
 
 async function goal(
   over: {
+    body?: string;
     killCriterion?: string | null;
     tripwires?: unknown;
     launchSettings?: unknown;
@@ -138,7 +166,7 @@ async function goal(
     INSERT INTO harness_shared.goals (id, workspace_id, install_slug, title, body, status,
                                       budget_cents, kill_criterion, tripwires, launch_settings,
                                       metadata, created_at, updated_at)
-    VALUES (${GOAL}, ${WS}, 'papercusp', 'Ship the thing', 'body', 'active', 50000,
+    VALUES (${GOAL}, ${WS}, 'papercusp', 'Ship the thing', ${over.body ?? 'body'}, 'active', 50000,
             ${over.killCriterion === undefined ? 'Stop at day 30' : over.killCriterion},
             ${sql.json((over.tripwires ?? []) as never)},
             ${over.launchSettings === undefined ? null : sql.json(over.launchSettings as never)},
@@ -146,6 +174,182 @@ async function goal(
             COALESCE(${over.createdAt ?? null}::timestamptz, now()), now())
   `;
 }
+
+describe('goal rubric stewardship SQL', () => {
+  it('reads a preserved goal-owned baseline, verified repair and audited regrade while rejecting foreign and unsettled controls', async () => {
+    const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
+    const { proposeRubric } = await import('../rubrics');
+    const packageBody = JSON.parse(readFileSync(join(REPO, 'goal-packages', 'work-on-everything', 'goal.json'), 'utf8')).body;
+    await goal({ body: packageBody });
+    const criterion = { key: 'quality', title: 'Quality', model: 'The target meets its quality contract.',
+      method: 'Compare the exact target before and after the verified repair.', driftMarkers: 'A confirmed defect remains.' };
+    const rubric = await proposeRubric({ rubricId: 'stewardship-fixture-quality', title: 'Fixture quality',
+      characteristic: 'quality', criteria: [criterion], status: 'active', gradingAuthority: 'independent', by: 'fixture-author' });
+    const meta = await proposeRubric({ rubricId: 'grading-integrity', title: 'Grading integrity fixture',
+      characteristic: 'grading-integrity', criteria: [criterion], status: 'active', by: 'fixture-auditor' });
+    const now = Date.now(), baselineAt = now - 7200_000, repairedAt = now - 3600_000, regradedAt = now - 1800_000;
+    const columns = await sql<{ column_name: string; is_generated: string }[]>`
+      SELECT column_name, is_generated FROM information_schema.columns
+       WHERE table_schema = 'harness_shared' AND table_name = 'work_items'`;
+    for (const name of ['feature_id', 'workspace_id', 'harness_slug', 'item_kind', 'title', 'status',
+      'created_ts', 'updated_ts', 'closed_ts', 'goal_id', 'terminal_owner', 'authority', 'payload']) {
+      expect(columns.find(c => c.column_name === name)?.is_generated, `writable positive fixture column ${name}`).toBe('NEVER');
+    }
+    const subject = { kind: 'pot', ref: 'fixture-target' };
+    const card = (rating: string, baselineRef?: string, auditState = 'passed') => ({
+      rubricRef: rubric.rubricId, rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash,
+      subject, ...(baselineRef ? { baselineRef } : {}),
+      ratings: { quality: { rating, evidence: 'Independent measurement of the same fixture target',
+        ...(rating === 'fail' ? { remediation: 'WI-12' } : {}) } },
+      gradingAudit: { state: auditState, metaRubricRef: meta.rubricId, rubricRevision: meta.revision,
+        criteriaHash: meta.criteriaHash, stampedAt: new Date(baselineAt).toISOString(),
+        auditIssueId: 'EI-fixture-audit', auditor: 'independent-auditor', auditedAt: new Date(regradedAt).toISOString() },
+    });
+    const insertCard = async (id: string, goalId: string | null, at: number, observation: unknown, grader = 'independent-grader') => {
+      await sql`INSERT INTO harness_shared.work_items
+        (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, goal_id, payload)
+        VALUES (${id}, ${WS}, 'papercusp', 'change', ${id}, 'open', ${at}, ${at}, ${goalId},
+          ${sql.json({ lane: 'observation', _ei: { created_by: grader }, observation } as never)})`;
+    };
+    await insertCard('EI-owned-baseline', GOAL, baselineAt, card('fail'));
+    const repairEvidence = { summary: 'Fixture repair verified', testsRun: 'Canonical fixture repair suite',
+      testResult: 'passed', verifiedHow: 'Recurrence guard failed before repair and passed after repair',
+      filesChanged: ['packages/operator-core/lib/goal-rubric-stewardship.test.ts'] };
+    // Honor migration 972's real content-identity floor. These synthetic matching
+    // blobs model a committed fixture repair; missing identity must stay proposed.
+    const committedEvidence = { ...repairEvidence, treeStamp: { contentIdentity: [{
+      path: repairEvidence.filesChanged[0], workingTreeBlobSha: 'a'.repeat(40), headBlobSha: 'a'.repeat(40),
+    }] } };
+    const insertRepair = async (id: string, evidence: unknown) => sql`INSERT INTO harness_shared.work_items
+      (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, closed_ts,
+       goal_id, terminal_owner, authority, payload)
+      VALUES (${id}, ${WS}, 'papercusp', 'change', 'Fixture repair', 'done', ${baselineAt + 1000},
+        ${repairedAt}, ${repairedAt}, ${GOAL}, 'fixture-builder', 'committed',
+        ${sql.json({ _completionEvidence: evidence } as never)})`;
+    await insertRepair('WI-12', committedEvidence);
+    await insertRepair('WI-13', repairEvidence);
+    const repairAuthority = await sql<{ feature_id: string; authority: string }[]>`
+      SELECT feature_id, authority FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ANY(${['WI-12', 'WI-13']}) ORDER BY feature_id`;
+    expect(repairAuthority, 'Migrated authority guard decides committed versus unproven repair').toEqual([
+      { feature_id: 'WI-12', authority: 'committed' }, { feature_id: 'WI-13', authority: 'proposed' },
+    ]);
+    await insertCard('EI-owned-regrade', GOAL, regradedAt, card('pass', 'EI-owned-baseline'));
+    await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, launch_spec)
+      VALUES (${WS}, 'console', 'fixture-builder-child', ${sql.json({ launchedBy: 'fixture-builder' })})`;
+    await insertCard('EI-inlineage-regrade', GOAL, regradedAt, card('pass', 'EI-owned-baseline'), 'fixture-builder-child');
+    const unprovenBaseline = card('fail');
+    unprovenBaseline.ratings.quality.remediation = 'WI-13';
+    await insertCard('EI-unproven-baseline', GOAL, baselineAt, unprovenBaseline);
+    await insertCard('EI-unproven-regrade', GOAL, regradedAt, card('pass', 'EI-unproven-baseline'));
+    await insertCard('EI-null-goal', null, regradedAt + 1, card('pass', 'EI-owned-baseline'));
+    await insertCard('EI-other-goal', 'distinct-other-goal', regradedAt + 2, card('pass', 'EI-owned-baseline'));
+    await insertCard('EI-owned-unsettled', GOAL, regradedAt + 3, card('pass', undefined, 'pending'));
+    // Actual GRADE lifecycle, tracked session, claim and progress are separate
+    // ledgers. A foreign-goal assignment/work item must never enter this read.
+    for (const [owner, goalId] of [['fixture-grader', GOAL], ['foreign-grader', 'distinct-other-goal']]) {
+      await sql`INSERT INTO harness_shared.session_briefs (workspace_id, owner_id, goal_id)
+        VALUES (${WS}, ${owner}, ${goalId})`;
+      await sql`INSERT INTO harness_shared.agent_mode_changes
+        (workspace_id, owner_id, axis_key, new_mode, subject, set_by, changed_at)
+        VALUES (${WS}, ${owner}, 'overlay:grade', 'grade', ${rubric.rubricId}, 'fixture-launcher',
+          ${new Date(baselineAt).toISOString()}::timestamptz)`;
+      await sql`INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id)
+        VALUES (${WS}, 'console', ${owner})`;
+    }
+    await sql`INSERT INTO harness_shared.work_items
+      (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts,
+       goal_id, taken_by, taken_at, last_progress_at, payload)
+      VALUES ('WI-14', ${WS}, 'papercusp', 'task', 'Claimed grading assignment', 'wip', ${baselineAt}, ${regradedAt},
+        ${GOAL}, 'fixture-grader', ${new Date(repairedAt).toISOString()}::timestamptz,
+        ${new Date(regradedAt).toISOString()}::timestamptz, '{}'::jsonb)`;
+    // Canonical scorecard capture writes kind=change and observation lane; the
+    // engineer_issues view intentionally excludes synthetic item_kind=observation.
+    const seeded = await sql<{ issue_id: string; created_by: string }[]>`
+      SELECT issue_id, created_by FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${WS} AND issue_id = ANY(${['EI-owned-baseline', 'EI-owned-regrade', 'EI-owned-unsettled']})`;
+    expect(seeded).toHaveLength(3);
+    expect(seeded.every(row => row.created_by === 'independent-grader')).toBe(true);
+    const { getWorkItemsByIds } = await import('../work-items');
+    const repaired = await getWorkItemsByIds(['WI-12']);
+    expect(repaired, 'The canonical repair read must preserve terminal proof before cycle classification').toEqual([
+      expect.objectContaining({ id: 'WI-12', state: 'done', completionAuthority: 'committed',
+        closedAt: new Date(repairedAt).toISOString(), terminalCompletionEvidence: expect.objectContaining({
+          testsRun: 'Canonical fixture repair suite', testResult: 'passed',
+        }) }),
+    ]);
+    const reading = await readGoalRubricStewardship({ workspaceId: WS, goalId: GOAL, nowMs: now }, { sql });
+    expect(reading.error).toBeNull();
+    expect(reading.complete).toBe(true);
+    expect(reading.assignmentsComplete).toBe(true);
+    expect(reading.gradingAssignments).toEqual([expect.objectContaining({ ownerId: 'fixture-grader',
+      subject: rubric.rubricId, launchRef: expect.stringMatching(/^adv-session:/),
+      work: [{ ref: 'WI-14', state: 'wip', claimedAt: new Date(repairedAt).toISOString(),
+        progressAt: new Date(regradedAt).toISOString(), authority: null }],
+    })]);
+    expect(reading.cycles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scorecardRef: 'EI-owned-regrade', baselineRef: 'EI-owned-baseline',
+        repairRefs: ['WI-12'], status: 'verified' }),
+      expect.objectContaining({ scorecardRef: 'EI-owned-unsettled', status: 'unverified' }),
+      expect.objectContaining({ scorecardRef: 'EI-unproven-regrade', repairRefs: ['WI-13'], status: 'unverified' }),
+      expect.objectContaining({ scorecardRef: 'EI-inlineage-regrade', status: 'unverified',
+        reason: 'This rubric requires acceptance by a grader independent of the implementers.' }),
+    ]));
+    expect(reading.cycles.map(c => c.scorecardRef)).not.toContain('EI-null-goal');
+    expect(reading.cycles.map(c => c.scorecardRef)).not.toContain('EI-other-goal');
+    const { readGoalPortfolioBrief, renderGoalPortfolioBrief } = await import('../goal-launch-settings');
+    const portfolio = await readGoalPortfolioBrief({ workspaceId: WS, goalId: GOAL, sql,
+      now: new Date(now), claimability: 'skip' });
+    expect(portfolio?.rubricStewardship?.cycles).toEqual(reading.cycles);
+    const rendered = renderGoalPortfolioBrief(portfolio!);
+    for (const phrase of ['Maintain rubric coverage', 'Improve rubric quality', 'Grade, improve and re-grade',
+      'baseline=EI-owned-baseline', 'regrade=EI-owned-regrade', 'repairs=WI-12']) expect(rendered).toContain(phrase);
+    const { renderGoalHolderWakeState } = await import('../goal-holder-wake-state');
+    const wake = renderGoalHolderWakeState({ read: { goalId: GOAL, portfolio, observedAt: new Date(now).toISOString(),
+      degradedSources: [], agenda: { schemaVersion: 'agent-obligations-v1', evaluatedAt: new Date(now).toISOString(),
+        sourceGeneration: 'fixture', evaluations: [], primary: [], conflicts: [] } },
+      loop: { fireNumber: 1, intervalSec: 300, firedAtMs: now } });
+    for (const phrase of ['Maintain rubric coverage', 'Improve rubric quality', 'Grade, improve and re-grade',
+      'baselineRef', 'supersedes corrects']) expect(wake).toContain(phrase);
+    // The preserved baseline remains readable after a re-grade; it is not superseded.
+    const { listScorecards } = await import('../scorecards');
+    expect((await listScorecards({ issueIds: ['EI-owned-baseline'], limit: 1 })).map(c => c.issueId))
+      .toEqual(['EI-owned-baseline']);
+  });
+  it('reads the migrated ledgers and distinguishes absent evidence from a foreign goal card', async () => {
+    const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
+    await goal();
+    // Preflight the actual migrated write contract: lane is generated from payload,
+    // and lifecycle status is the persisted column (state is a reader projection).
+    const columns = await sql<{ column_name: string; is_generated: string }[]>`
+      SELECT column_name, is_generated FROM information_schema.columns
+       WHERE table_schema = 'harness_shared' AND table_name = 'work_items'`;
+    for (const name of ['feature_id', 'workspace_id', 'harness_slug', 'item_kind', 'title', 'status',
+      'created_ts', 'updated_ts', 'goal_id', 'payload']) {
+      expect(columns.find(c => c.column_name === name)?.is_generated, `writable fixture column ${name}`).toBe('NEVER');
+    }
+    expect(columns.find(c => c.column_name === 'lane')?.is_generated).toBe('ALWAYS');
+    await sql`INSERT INTO harness_shared.work_items (feature_id, workspace_id, harness_slug, item_kind, title, status, created_ts, updated_ts, goal_id, payload)
+      VALUES ('EI-stewardship-foreign', ${WS}, 'papercusp', 'observation', 'Foreign card', 'open',
+        ${Date.now()}, ${Date.now()}, NULL,
+        ${sql.json({ lane: 'observation', observation: { rubricRef: 'work-on-everything-stewardship-health', ratings: {} } } as never)})`;
+    const reading = await readGoalRubricStewardship({ workspaceId: WS, goalId: GOAL }, { sql });
+    expect(reading.error).toBeNull();
+    expect(reading.complete).toBe(true);
+    expect(reading.cycles).toEqual([]);
+    expect(Object.values(reading.criteria)).toEqual([null, null, null]);
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json({ worklist: {
+      datatype: 'plan-ref-list', default: [], editable_by: 'both', collection: { source: 'active-workspace-plans',
+        policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: false },
+    }, worklist_policy: { datatype: 'ordered-selection-policy', default: { order: [], excluded: [] },
+      editable_by: 'owner' } } as never)} WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    const { resolveGoalDetail } = await import('./goals');
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      rubricStewardship: { error: string | null; cycles: unknown[] } | null;
+    };
+    expect(detail.rubricStewardship).toMatchObject({ error: null, cycles: [] });
+  });
+});
 
 async function pot(
   slug: string,
@@ -256,6 +460,361 @@ async function usage(slug: string, tsMs: number, costUsd: number, goalId: string
 }
 
 describe('goals.* resolvers against real SQL', () => {
+  it('bounds pending collection reads together while retaining a ready collection', async () => {
+    await goal();
+    await plan('ready-plan', { harness: 'alpha', title: 'Ready collection', status: 'active' });
+    const schema = Object.fromEntries(['ready', 'slow-a', 'slow-b'].flatMap(property => [
+      [property, { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+        collection: { source: 'active-workspace-plans', policy: `${property}_policy`, order: 'priority',
+          selectable: true, defaultSelected: true } }],
+      [`${property}_policy`, { datatype: 'ordered-selection-policy', editable_by: 'owner',
+        default: { order: [], excluded: [] } }],
+    ]));
+    await sql`UPDATE harness_shared.goals SET property_schema=${sql.json(schema)}
+      WHERE workspace_id=${WS} AND id=${GOAL}`;
+    const [{ resolveGoalDetail }, settings] = await Promise.all([
+      import('./goals'), import('../goal-launch-settings'),
+    ]);
+    const original = settings.readGoalPortfolioBrief;
+    let releasePending!: () => void;
+    const pending = new Promise<void>(resolve => { releasePending = resolve; });
+    const portfolio = vi.spyOn(settings, 'readGoalPortfolioBrief').mockImplementation(async args => {
+      if (args.collectionProperty !== 'ready') await pending;
+      return original(args);
+    });
+    try {
+      const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+        goalData: { collections: Record<string, { selection: { ok: boolean }; rows: Array<{ planSlug: string }> }> };
+      };
+      expect(portfolio.mock.calls.map(([args]) => args.collectionProperty).sort())
+        .toEqual(['ready', 'slow-a', 'slow-b']);
+      expect(detail.goalData.collections.ready.selection.ok).toBe(true);
+      expect(detail.goalData.collections.ready.rows).toContainEqual(expect.objectContaining({ planSlug: 'ready-plan' }));
+      for (const property of ['slow-a', 'slow-b']) {
+        expect(detail.goalData.collections[property].selection.ok).toBe(false);
+        expect(detail.goalData.collections[property].rows).toEqual([]);
+        expect(JSON.stringify(detail.goalData.collections[property]))
+          .toContain('Active workspace plans could not be read in time.');
+      }
+    } finally {
+      // Release and drain the losing IO before the next fixture truncates.
+      releasePending();
+      await Promise.allSettled(portfolio.mock.results.filter(result => result.type === 'return')
+        .map(result => Promise.resolve(result.value)));
+      portfolio.mockRestore();
+    }
+  }, 15_000);
+
+  it('reads the active-plan collection even when the goal has no attached holder', async () => {
+    await goal();
+    await plan('worklist-a', { harness: 'alpha', title: 'Readable without a holder', status: 'active' });
+    const schema = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+      collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: true } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } } };
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)} WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    const { resolveGoalDetail } = await import('./goals');
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      goalModeState: { ownerId: string | null }; goalData: { collections: Record<string, {
+        selection: { ok: boolean; configured: boolean }; rows: Array<{ label: string; planSlug: string }> }> } };
+    expect(detail.goalModeState.ownerId).toBeNull();
+    expect(detail.goalData.collections.worklist.selection).toMatchObject({ ok: true, configured: true });
+    expect(detail.goalData.collections.worklist.rows).toContainEqual(expect.objectContaining({
+      label: 'Readable without a holder', planSlug: 'worklist-a' }));
+  });
+  it('keeps discovered scheduled runs addressable and applies their saved exclusion in goal detail', async () => {
+    await goal();
+    await plan('ordinary', { harness: 'alpha', status: 'active' });
+    const runSlug = 'nightly@run-1786557604333';
+    const runRef = `plan:alpha/${runSlug}`;
+    await plan(runSlug, { harness: 'alpha', title: 'Scheduled run', status: 'active' });
+    const schema = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+      collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority', selectable: true, defaultSelected: true } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } } };
+    const policy = { value: { order: [runRef, 'plan:alpha/ordinary'], excluded: [runRef] }, version: 4,
+      provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z' };
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+      properties = ${sql.json({ worklist_policy: policy })} WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    const { resolveGoalDetail } = await import('./goals');
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      goalData: { collections: Record<string, { selection: { ok: boolean; selected: string[] }; rows: Array<{ id: string; selected: boolean }> }> } };
+    expect(detail.goalData.collections.worklist.selection).toMatchObject({ ok: true, selected: ['plan:alpha/ordinary'] });
+    expect(detail.goalData.collections.worklist.rows).toMatchObject([
+      { id: runRef, selected: false }, { id: 'plan:alpha/ordinary', selected: true },
+    ]);
+    const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    expect(stored.properties.worklist_policy).toEqual(policy);
+  });
+
+  it('starts stewardship while the shared portfolio read is pending', async () => {
+    await goal();
+    await plan('concurrent-plan', { harness: 'alpha', title: 'Concurrent evidence', status: 'active' });
+    const schema = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+      collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+        selectable: true, defaultSelected: false } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
+        default: { order: [], excluded: [] } } };
+    const properties = { worklist: { value: ['plan:alpha/concurrent-plan'], version: 1 },
+      worklist_policy: { value: { order: ['plan:alpha/concurrent-plan'],
+        included: ['plan:alpha/concurrent-plan'], excluded: [] }, version: 1,
+        provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z' } };
+    expect(readTypedPropertyCollection({ propertySchema: schema, properties, property: 'worklist',
+      source: { ok: true, items: ['plan:alpha/concurrent-plan'] } }))
+      .toMatchObject({ ok: true, selected: ['plan:alpha/concurrent-plan'] });
+    await sql`UPDATE harness_shared.goals SET property_schema=${sql.json(schema)}, properties=${sql.json(properties)}
+      WHERE workspace_id=${WS} AND id=${GOAL}`;
+    const [{ resolveGoalDetail }, portfolioReader, stewardshipReader] = await Promise.all([
+      import('./goals'), import('../goal-launch-settings'), import('../goal-rubric-stewardship'),
+    ]);
+    let markPortfolioStarted!: () => void, releasePortfolio!: () => void;
+    const portfolioStarted = new Promise<void>(resolve => { markPortfolioStarted = resolve; });
+    const portfolioPending = new Promise<void>(resolve => { releasePortfolio = resolve; });
+    const original = portfolioReader.readGoalPortfolioBrief;
+    const portfolio = vi.spyOn(portfolioReader, 'readGoalPortfolioBrief').mockImplementation(async args => {
+      markPortfolioStarted();
+      await portfolioPending;
+      return original(args);
+    });
+    const stewardship = vi.spyOn(stewardshipReader, 'readGoalRubricStewardship');
+    const read = resolveGoalDetail({ workspaceId: WS, goalId: GOAL });
+    try {
+      await portfolioStarted;
+      // A serial implementation cannot reach stewardship until this test
+      // releases the portfolio. No timing sum or widened resolver clock can
+      // make that ordering pass.
+      await expect.poll(() => stewardship.mock.calls.length, { timeout: 1000 }).toBe(1);
+    } finally {
+      releasePortfolio();
+      // Drain even on an assertion failure before the next TRUNCATE fixture.
+      try { await read; } finally {
+        portfolio.mockRestore();
+        stewardship.mockRestore();
+      }
+    }
+    const detail = await read as { rubricStewardship: unknown; goalData: { collections: { worklist: {
+      selection: { ok: boolean; selected: string[] };
+    } } } };
+    expect(detail.rubricStewardship).not.toBeNull();
+    expect(detail.goalData.collections.worklist.selection.ok).toBe(true);
+    expect(detail.goalData.collections.worklist.selection.selected).toEqual(['plan:alpha/concurrent-plan']);
+    const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${WS} AND id=${GOAL}`;
+    expect(saved.properties).toEqual(properties);
+  });
+
+  it.each(['late success', 'failure'] as const)(
+    'shares the holder portfolio with the collection after optional read %s', async (outcome) => {
+      await goal();
+      await agentOnGoal('su-slow-portfolio');
+      await plan('shared-plan', { harness: 'alpha', title: 'Shared portfolio', status: 'active' });
+      const schema = { worklist: { datatype: 'plan-ref-list', default: [], editable_by: 'both',
+        collection: { source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+          selectable: true, defaultSelected: false } },
+        worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
+          default: { order: [], excluded: [] } } };
+      const properties = { worklist: { value: ['plan:alpha/shared-plan'], version: 1 },
+        worklist_policy: { value: { order: ['plan:alpha/shared-plan'], included: ['plan:alpha/shared-plan'],
+          excluded: [] }, version: 1,
+          provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z' } };
+      expect(readTypedPropertyCollection({ propertySchema: schema, properties, property: 'worklist',
+        source: { ok: true, items: ['plan:alpha/shared-plan'] } }))
+        .toMatchObject({ ok: true, selected: ['plan:alpha/shared-plan'] });
+      await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+        properties = ${sql.json(properties)} WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+      const settings = await import('../goal-launch-settings');
+      const read = settings.readGoalPortfolioBrief;
+      const { AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS } = await import('../agent-obligation-reader');
+      const spy = vi.spyOn(settings, 'readGoalPortfolioBrief').mockImplementation(async (args) => {
+        // A real pending read outlives the agenda's optional bound. The table
+        // must consume its eventual result (or error), without starting again.
+        await new Promise((resolve) => setTimeout(resolve, AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS + 100));
+        if (outcome === 'failure') throw new Error('portfolio unavailable');
+        return read(args);
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const { resolveGoalDetail } = await import('./goals');
+        const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+          goalModeState: { status: string; portfolio: unknown };
+          goalData: { collections: Record<string, {
+            selection: { ok: boolean; selected?: string[] }; rows: Array<{ id: string; label: string }> }> };
+        };
+        expect(detail.goalModeState).toMatchObject({ status: 'degraded', portfolio: null });
+        expect(warn).toHaveBeenCalledWith(
+          `[bounded-timeout] agent-obligations:goal-portfolio exceeded ${AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS}ms — degrading to fallback`,
+        );
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: WS, goalId: GOAL,
+          collectionProperty: 'worklist', sql, claimability: 'skip', rubricStewardship: 'skip' }));
+        if (outcome === 'late success') {
+          expect(detail.goalData.collections.worklist.selection).toMatchObject({
+            ok: true, selected: ['plan:alpha/shared-plan'] });
+          expect(detail.goalData.collections.worklist.rows).toContainEqual(expect.objectContaining({
+            id: 'plan:alpha/shared-plan', label: 'Shared portfolio' }));
+        } else {
+          expect(detail.goalData.collections.worklist.selection.ok).toBe(false);
+          expect(detail.goalData.collections.worklist.rows).toEqual([]);
+        }
+        const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+        expect(stored.properties).toEqual(properties);
+      } finally {
+        spy.mockRestore();
+        warn.mockRestore();
+      }
+    }, 15_000,
+  );
+
+  it('reads a non-plan collection through the shared reader, retaining owner choices', async () => {
+    await goal();
+    const { resolveGoalDetail } = await import('./goals');
+    const schema = { tea_choices: { datatype: 'list', default: ['mint', 'rooibos'], editable_by: 'both',
+      collection: { source: 'manual', policy: 'tea_policy', order: 'priority', selectable: true, defaultSelected: true } },
+      tea_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } } };
+    const policy = { value: { order: ['rooibos', 'mint', 'dormant'], excluded: ['mint'] }, version: 4,
+      provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z' };
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+      properties = ${sql.json({ tea_policy: policy })} WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      goalData: { collections: Record<string, { selection: { selected: string[]; policyVersion: number }; rows: Array<{ id: string; selected: boolean }> }> } };
+    expect(detail.goalData.collections.tea_choices.selection).toMatchObject({ policyVersion: 4, selected: ['rooibos'] });
+    expect(detail.goalData.collections.tea_choices.rows).toMatchObject([{ id: 'rooibos', selected: true }, { id: 'mint', selected: false }]);
+    const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    expect(stored.properties.tea_policy).toEqual(policy);
+  });
+
+  it('reads manual display order after the canonical owner save and a fresh detail read', async () => {
+    const { nativeCollectionDeclaration, insertNativeCollectionGoal } =
+      await import('../../../../apps/operator/e2e/_ongoing-work-native-fixture');
+    const { ensureOrderedSelectionPolicyDatatype } = await import('../goals/package-property-datatypes');
+    const { applyGoalPropertyWrite } = await import('../typed-properties-db');
+    const { resolveGoalDetail } = await import('./goals');
+    const ids = ['mint', 'chamomile', 'rooibos'];
+    const { property, policyName, schema } = nativeCollectionDeclaration('tea', ids,
+      { order: ['mint', 'lavender'], excluded: ['lavender'] });
+    await ensureOrderedSelectionPolicyDatatype(sql, WS);
+    await insertNativeCollectionGoal(sql, { workspaceId: WS, goalId: GOAL, title: 'Manual display', schema });
+    const read = async () => {
+      const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+        goalData: { collections: Record<string, {
+          selection: { policyVersion: number }; rows: Array<{ id: string; selected: boolean }>;
+        }> };
+      };
+      return detail.goalData.collections[property];
+    };
+    expect((await read()).rows.map(row => row.id)).toEqual(ids);
+    const value = { order: ['chamomile', 'mint', 'rooibos', 'lavender'], excluded: ['lavender'] };
+    const saved = await sql.begin(tx => applyGoalPropertyWrite(tx as unknown as typeof sql, {
+      workspaceId: WS, goalId: GOAL, property: policyName, value, expectedVersion: 0,
+      provenance: 'owner-edit', actorId: 'human',
+    }));
+    expect(saved).toMatchObject({ ok: true });
+    const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${WS} AND id=${GOAL}`;
+    expect(stored.properties[policyName]).toMatchObject({ value, version: 1, provenance: 'owner-edit' });
+    // A new resolver call must observe the saved envelope, rather than a UI
+    // reorder or a directly seeded policy that bypassed the writer.
+    const reloaded = await read();
+    expect(reloaded.selection.policyVersion).toBe(1);
+    expect(reloaded.rows.map(row => row.id)).toEqual(['chamomile', 'mint', 'rooibos']);
+    expect(reloaded.rows.every(row => row.selected)).toBe(true);
+  });
+
+  it.each(['manual', 'active-workspace-plans'] as const)(
+    'returns multiple selected members in saved owner priority order for %s collections',
+    async (source) => {
+      await goal();
+      const ids = source === 'manual'
+        ? ['mint', 'rooibos', 'chamomile']
+        : ['plan:alpha/first', 'plan:alpha/second', 'plan:alpha/excluded'];
+      if (source === 'active-workspace-plans') {
+        for (const slug of ['first', 'second', 'excluded']) {
+          await plan(slug, { harness: 'alpha', status: 'active' });
+        }
+      }
+      const schema = {
+        choices: {
+          datatype: source === 'manual' ? 'list' : 'plan-ref-list',
+          default: ids, editable_by: 'both',
+          collection: { source, policy: 'choices_policy', order: 'priority', selectable: true, defaultSelected: true },
+        },
+        choices_policy: {
+          datatype: 'ordered-selection-policy', editable_by: 'owner',
+          default: { order: [], excluded: [] },
+        },
+      };
+      const policy = {
+        value: { order: [ids[1], ids[0], ids[2], source === 'manual' ? 'dormant' : 'plan:alpha/dormant'],
+          excluded: [ids[2], source === 'manual' ? 'dormant' : 'plan:alpha/dormant'] },
+        version: 4, provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z',
+      };
+      // Calibrate the fixture before writing it; policy-only dormant members
+      // must obey the source's reference grammar too.
+      expect(readTypedPropertyCollection({ propertySchema: schema,
+        properties: { choices_policy: policy }, property: 'choices', source: { ok: true, items: ids } }))
+        .toMatchObject({ ok: true, configured: true });
+      await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+        properties = ${sql.json({ choices_policy: policy })} WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+      const { resolveGoalDetail } = await import('./goals');
+      const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+        goalData: { collections: Record<string, {
+          selection: { selected: string[]; policyVersion: number };
+          rows: Array<{ id: string; selected: boolean }>;
+        }> };
+      };
+      const collection = detail.goalData.collections.choices;
+      expect(collection.selection).toMatchObject({ policyVersion: 4, selected: [ids[1], ids[0]] });
+      expect(collection.rows.map(row => ({ id: row.id, selected: row.selected }))).toEqual([
+        { id: ids[1], selected: true }, { id: ids[0], selected: true }, { id: ids[2], selected: false },
+      ]);
+      const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+      expect(stored.properties.choices_policy).toEqual(policy);
+      const [claims] = await sql`SELECT count(*)::int AS count FROM harness_shared.work_items WHERE workspace_id = ${WS}`;
+      expect(claims.count).toBe(0);
+    },
+  );
+
+  it('keeps independent owner policies for two declared active-plan collections', async () => {
+    await goal();
+    for (const slug of ['first', 'second', 'third']) await plan(slug, { status: 'active' });
+    const ids = ['first', 'second', 'third'].map(slug => `plan:alpha/${slug}`);
+    const collection = (policy: string) => ({
+      datatype: 'plan-ref-list', default: ids, editable_by: 'both',
+      collection: { source: 'active-workspace-plans', policy, order: 'priority', selectable: true, defaultSelected: true },
+    });
+    const policyDefinition = { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } };
+    const schema = { worklist: collection('worklist_policy'), choices: collection('choices_policy'),
+      worklist_policy: policyDefinition, choices_policy: policyDefinition };
+    const policy = (order: string[], excluded: string[]) => ({
+      value: { order, excluded }, version: 4, provenance: 'owner-edit', edited_by: 'human', edited_at: '2026-10-01T00:00:00Z',
+    });
+    const properties = { worklist_policy: policy(ids, [ids[2]]),
+      choices_policy: policy([ids[1], ids[2], ids[0]], [ids[0]]) };
+    for (const property of ['worklist', 'choices']) {
+      expect(readTypedPropertyCollection({ propertySchema: schema, properties, property,
+        source: { ok: true, items: ids } })).toMatchObject({ ok: true, configured: true });
+    }
+    await sql`UPDATE harness_shared.goals SET property_schema = ${sql.json(schema)},
+      properties = ${sql.json(properties)} WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    const { resolveGoalDetail } = await import('./goals');
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as {
+      goalData: { collections: Record<string, { selection: { selected: string[] }; rows: Array<{ id: string }> }> };
+    };
+    expect(detail.goalData.collections.worklist.selection.selected).toEqual([ids[0], ids[1]]);
+    expect(detail.goalData.collections.choices.selection.selected).toEqual([ids[1], ids[2]]);
+    expect(detail.goalData.collections.choices.rows.map(row => row.id)).toEqual([ids[1], ids[2], ids[0]]);
+    const [stored] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    expect(stored.properties).toEqual(properties);
+  });
+
+  it('exposes stored standing identity in list and detail even after a goal is renamed', async () => {
+    await goal();
+    await sql`UPDATE harness_shared.goals SET standing = true, title = 'Renamed steward' WHERE id = ${GOAL}`;
+    const { resolveGoalsList, resolveGoalDetail } = await import('./goals');
+    const list = await resolveGoalsList({ workspaceId: WS });
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as { goal: { standing: boolean } | null };
+    expect(list.goals.find((g) => g.id === GOAL)?.standing).toBe(true);
+    expect(detail.goal?.standing).toBe(true);
+    await sql`UPDATE harness_shared.goals SET standing = false WHERE id = ${GOAL}`;
+    const ordinary = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL }) as { goal: { standing: boolean } | null };
+    expect(ordinary.goal?.standing).toBe(false);
+  });
   it('resolveGoalsList RUNS — the assertion the whole file exists for', async () => {
     // Before the fix this threw `column wi.closed_at does not exist`. Every
     // mocked test on this path was green at the same moment.
@@ -367,6 +926,78 @@ describe('goals.* resolvers against real SQL', () => {
     });
   });
 
+  it.each(['available', 'pending'] as const)(
+    'releases the detail transaction before holder liveness acquires the same one-connection pool with %s optional portfolio', async (portfolioState) => {
+    const { resolveGoalDetail } = await import('./goals');
+    const settings = await import('../goal-launch-settings');
+    const { AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS } = await import('../agent-obligation-reader');
+    await goal();
+    await agentOnGoal('su-single-connection');
+    const telemetryRef = randomUUID();
+    expect(observeFallback('goal-fixture-pool-close', { eligible: 1, applied: 0,
+      reason: 'fixture pool replacement' }, { sql, workspaceId: WS, correlationId: telemetryRef })).toBe(true);
+    try {
+      await closeGoalSql(5);
+    } finally {
+      sql = postgres(db.url, { max: 1, onnotice: () => {}, prepare: false });
+    }
+    // The buffered observation survives the old pool's closure; resetting or
+    // discarding the queue would make this real migrated SQL assertion fail.
+    expect(await sql`SELECT mechanism, reason FROM harness_shared.fallback_observations
+      WHERE workspace_id=${WS} AND correlation_id=${telemetryRef}`)
+      .toEqual([{ mechanism: 'goal-fixture-pool-close', reason: 'fixture pool replacement' }]);
+    const originalPortfolio = settings.readGoalPortfolioBrief;
+    let releasePortfolio!: () => void;
+    const pendingPortfolio = new Promise<void>(resolve => { releasePortfolio = resolve; });
+    const portfolio = vi.spyOn(settings, 'readGoalPortfolioBrief').mockImplementation(async args => {
+      if (portfolioState === 'pending') await pendingPortfolio;
+      return originalPortfolio(args);
+    });
+    // Optional agenda reads can legitimately use their bounded fallback while
+    // the transaction/connection contract stays intact. Assert that disclosure
+    // explicitly; unrelated warnings and read errors must still fail this case.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const out = await Promise.race([
+        resolveGoalDetail({ workspaceId: WS, goalId: GOAL }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('goal detail held the only connection during holder liveness')), 5_000);
+        }),
+      ]) as { goal: { id: string }; agents: Array<{ ownerId: string }>; holderLiveness: string;
+        goalModeState: { status: string; portfolio: unknown; degradedReasons: string[] } };
+      expect(out.goal.id).toBe(GOAL);
+      expect(out.agents.map((agent) => agent.ownerId)).toEqual(['su-single-connection']);
+      expect(['held', 'lost', 'unknown']).toContain(out.holderLiveness);
+      expect(await sql`SELECT 1 AS n`).toEqual([{ n: 1 }]);
+      expect(['known', 'degraded']).toContain(out.goalModeState.status);
+      for (const [message] of warn.mock.calls) {
+        expect(message).toMatch(/^\[bounded-timeout\] agent-obligations:[\w:-]+ exceeded \d+ms — degrading to fallback$/);
+        expect(out.goalModeState.status).toBe('degraded');
+        expect(out.goalModeState.degradedReasons.length).toBeGreaterThan(0);
+      }
+      if (portfolioState === 'pending') {
+        expect(portfolio).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          `[bounded-timeout] agent-obligations:goal-portfolio exceeded ${AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS}ms — degrading to fallback`,
+        );
+        expect(out.goalModeState.portfolio).toBeNull();
+      }
+    } finally {
+      clearTimeout(timer);
+      releasePortfolio();
+      await Promise.allSettled(portfolio.mock.results.filter(result => result.type === 'return')
+        .map(result => Promise.resolve(result.value)));
+      portfolio.mockRestore();
+      warn.mockRestore();
+      try {
+        await closeGoalSql(1);
+      } finally {
+        sql = postgres(db.url, { max: 4, onnotice: () => {}, prepare: false });
+      }
+    }
+  }, 15_000);
+
   it('returns the goal holder’s exact turn-start obligation projection and canonical portfolio', async () => {
     const { resolveGoalDetail } = await import('./goals');
     await goal();
@@ -383,6 +1014,7 @@ describe('goals.* resolvers against real SQL', () => {
         goalModeState: {
           schemaVersion: string;
           status: string;
+          degradedReasons: string[];
           ownerId: string | null;
           portfolio: { goal: { id: string } } | null;
           obligations: {
@@ -405,6 +1037,11 @@ describe('goals.* resolvers against real SQL', () => {
       });
       expect(['known', 'degraded']).toContain(out.goalModeState.status);
       expect(out.goalModeState.obligations?.sourceGeneration).toMatch(/^[0-9a-f]{20}$/);
+      for (const [message] of warn.mock.calls) {
+        expect(message).toMatch(/^\[bounded-timeout\] agent-obligations:[\w:-]+ (?:exceeded \d+ms|failed: .+) — degrading to fallback$/);
+        expect(out.goalModeState.status).toBe('degraded');
+        expect(out.goalModeState.degradedReasons.length).toBeGreaterThan(0);
+      }
     } finally {
       warn.mockRestore();
     }
@@ -688,18 +1325,38 @@ describe('goals.* resolvers against real SQL', () => {
     expect(out.agents[0]?.setBy).toBe('operator-ui');
   });
 
-  it('surfaces BOTH stamps when two agents claim one goal rather than collapsing to one', async () => {
+  it.each(['known', 'degraded', 'unknown'] as const)(
+    'surfaces BOTH stamps when two agents claim one goal with %s optional agenda state', async (status) => {
     // D-006 makes one the normal case; two is a coordination fault, and a
     // resolver that returned a scalar would hide it.
     const { resolveGoalDetail } = await import('./goals');
     await goal();
     await agentOnGoal('su-one');
     await agentOnGoal('su-two');
-
-    const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
-      agents: Array<{ ownerId: string }>;
+    // This case measures the real agent_modes SQL predicate. Optional agenda
+    // providers have their own reader suite and explicit timeout cases above;
+    // their cold imports/reads must not decide whether two SQL stamps survive.
+    const reader = await import('../agent-obligation-reader');
+    const state: Awaited<ReturnType<typeof reader.readAgentGoalModeState>> = {
+      schemaVersion: 'agent-goal-mode-state-v1', status, ownerId: 'su-two',
+      observedAt: new Date().toISOString(), portfolio: null, obligations: null,
+      degradedReasons: status === 'degraded' ? ['fixture optional source unavailable'] : [],
+      ...(status === 'unknown' ? { unknown: { code: 'goal-mode-state-read-failed',
+        detail: 'fixture optional source unavailable', retry: 'refresh goals.detail' } } : {}),
     };
-    expect(out.agents.map((a) => a.ownerId).sort()).toEqual(['su-one', 'su-two']);
+    const optional = vi.spyOn(reader, 'readAgentGoalModeState').mockResolvedValue(state);
+    try {
+      const out = (await resolveGoalDetail({ workspaceId: WS, goalId: GOAL })) as {
+        agents: Array<{ ownerId: string }>; goalModeState: typeof state;
+      };
+      expect(out.agents.map((a) => a.ownerId).sort()).toEqual(['su-one', 'su-two']);
+      expect(optional).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        workspaceId: WS, goalId: GOAL, ownerId: out.agents[0]?.ownerId,
+      }));
+      expect(out.goalModeState).toEqual(state);
+    } finally {
+      optional.mockRestore();
+    }
   });
 
   it('the LIST carries the same agents as the detail, so the HUD Goals tab can filter by agent id', async () => {

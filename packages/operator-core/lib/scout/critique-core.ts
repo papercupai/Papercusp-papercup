@@ -59,6 +59,31 @@ export interface CorpusNovelty {
    *  (dropped/shipped/resolved/closed/done) — "already tried", the adversarial
    *  reject signal. */
   alreadyTried: boolean;
+  /**
+   * Stage-1 RECALL set (scout-su-ideate-pipeline-gaps-2026-10-08 D-002/D-003): the
+   * `shortlistSize` nearest priors by blended similarity at or above `recallFloor`,
+   * strongest first, REGARDLESS of `matchFloor`. These are duplicate CANDIDATES for an
+   * adjudicator (the Scout critic) to judge — never a verdict on their own. It exists
+   * because no similarity threshold separates a restatement from a same-problem /
+   * different-mechanism idea (measured on labeled pairs: calibrated cosine 0.46-0.75
+   * for true duplicates vs 0.43-0.76 for distinct ones), so recall is cheap and the
+   * judgment is left to something that can read both texts.
+   */
+  shortlist: CorpusMatch[];
+}
+
+/**
+ * What the P-017 semantic leg did for one novelty pass (D-002 point 4) — recorded so a
+ * silent fail-open is VISIBLE instead of reading as "nothing similar exists":
+ *   resolved    — cosines were resolved and blended;
+ *   unavailable — the leg ran and produced no verdict (`reason` names why: embedder
+ *                 disabled, dims-ineligible, timeout, error, nothing resolved, …);
+ *   disabled    — the leg was not attempted (kill switch, or Vitest without deps);
+ *   provided    — the caller supplied the cosine map, so the leg was skipped.
+ */
+export interface SemanticLegStatus {
+  status: 'resolved' | 'unavailable' | 'disabled' | 'provided';
+  reason?: string;
 }
 
 export interface CorpusNoveltyOptions {
@@ -111,6 +136,29 @@ export interface CorpusNoveltyOptions {
    * mechanism (full-body embedding, or a cross-encoder / LLM pairwise judge).
    */
   semanticBaselineQuantile?: number;
+  /**
+   * Stage-1 recall floor (D-002/D-003, default 0.05): the minimum blended similarity
+   * for a prior to enter the duplicate-candidate `shortlist`. Deliberately far below
+   * `matchFloor`: the lexical matcher compares a long query (title + body) against
+   * short corpus titles, so Jaccard for a TRUE restatement measured 0.05-0.15 on the
+   * live corpus — `matchFloor` 0.5 is unreachable lexically, and a 0.2 floor would
+   * shortlist nothing whenever the semantic leg is unavailable. `shortlistSize` is
+   * what bounds the set; this floor only drops priors with no overlap worth reading.
+   */
+  recallFloor?: number;
+  /** Max priors in the stage-1 `shortlist` (default 5). */
+  shortlistSize?: number;
+  /**
+   * Whether a SEMANTIC (cosine) similarity may lower the deterministic novelty ceiling
+   * and drive `alreadyTried` (default true — the P-017 behaviour the su pre-check and
+   * dream review rely on). The Scout critic passes `false` (D-003): with a stage-2
+   * adjudicator reading the shortlist, semantic evidence feeds RECALL only, because on
+   * labeled pairs the calibrated cosine erred in both directions — it would reject a
+   * distinct same-domain idea (novelty 0.24) while catching only 2 of 7 restatements.
+   * `matches` and `shortlist` still rank by the blended score either way. Per-call
+   * behaviour, not a tuning knob, so it is excluded from {@link CorpusNoveltyTuning}.
+   */
+  semanticLowersNovelty?: boolean;
 }
 
 const DEFAULT_DECIDED_STATES = ['dropped', 'shipped', 'resolved', 'closed', 'done'] as const;
@@ -126,10 +174,11 @@ const DEFAULT_DECIDED_STATES = ['dropped', 'shipped', 'resolved', 'closed', 'don
 /**
  * The CONFIGURABLE novelty knobs — every `CorpusNoveltyOptions` field except
  * `semanticSimByRef`, which is per-call runtime data (the resolved cosine map for one
- * idea), never a tuning value. Blueprint config carries this shape; a caller passes
- * the cosine map separately.
+ * idea), and `semanticLowersNovelty`, which is a property of the calling pipeline
+ * (does it have a stage-2 adjudicator?), never a tuning value. Blueprint config
+ * carries this shape; a caller passes the per-call fields separately.
  */
-export type CorpusNoveltyTuning = Omit<Required<CorpusNoveltyOptions>, 'semanticSimByRef'>;
+export type CorpusNoveltyTuning = Omit<Required<CorpusNoveltyOptions>, 'semanticSimByRef' | 'semanticLowersNovelty'>;
 
 export const DEFAULT_CORPUS_NOVELTY_OPTIONS: CorpusNoveltyTuning = {
   matchFloor: 0.5,
@@ -137,6 +186,8 @@ export const DEFAULT_CORPUS_NOVELTY_OPTIONS: CorpusNoveltyTuning = {
   decidedStates: DEFAULT_DECIDED_STATES,
   decidedPenalty: 0.15,
   semanticBaselineQuantile: 0.9,
+  recallFloor: 0.05,
+  shortlistSize: 5,
 };
 
 /**
@@ -177,11 +228,14 @@ export function corpusNovelty(
   const semanticSimByRef = opts.semanticSimByRef;
   const semanticBaselineQuantile =
     opts.semanticBaselineQuantile ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.semanticBaselineQuantile;
+  const recallFloor = opts.recallFloor ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.recallFloor;
+  const shortlistSize = opts.shortlistSize ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.shortlistSize;
+  const semanticLowersNovelty = opts.semanticLowersNovelty ?? true;
 
   // No comparable tokens (e.g. empty / punctuation-only) — maximally novel, but
   // we surface nothing (there is nothing to compare).
   if (!dedupSignature(text)) {
-    return { novelty: 1, matches: [], alreadyTried: false };
+    return { novelty: 1, matches: [], alreadyTried: false, shortlist: [] };
   }
 
   // P-017 hybrid leg, calibration pass (EI-19899846879024832). Cosine does not share
@@ -203,6 +257,9 @@ export function corpusNovelty(
   const semanticSpan = Math.max(1e-6, 1 - semanticBaseline);
 
   const scored: CorpusMatch[] = [];
+  // The strongest LEXICAL-only prior — the novelty ceiling's basis when the caller
+  // has a stage-2 adjudicator for semantic evidence (semanticLowersNovelty: false).
+  let lexicalTop: { similarity: number; state?: string } | undefined;
   for (const e of corpus) {
     const lexical = round2(titleSimilarity(text, e.text));
     // P-017 hybrid leg: blend the caller-resolved cosine as max(lexical, calibrated).
@@ -217,6 +274,9 @@ export function corpusNovelty(
         : undefined;
     const useSemantic = typeof calibrated === 'number' && calibrated > lexical;
     const similarity = useSemantic ? round2(calibrated) : lexical;
+    if (lexical > 0 && (!lexicalTop || lexical > lexicalTop.similarity)) {
+      lexicalTop = { similarity: lexical, ...(e.state ? { state: e.state } : {}) };
+    }
     if (similarity <= 0) continue;
     scored.push({
       ref: e.ref,
@@ -228,7 +288,9 @@ export function corpusNovelty(
   }
   scored.sort((a, b) => b.similarity - a.similarity);
 
-  const top = scored[0];
+  // The ceiling's basis: the blended top (P-017 default), or the lexical-only top when
+  // semantic evidence is routed to a stage-2 adjudicator instead (D-003).
+  const top: { similarity: number; state?: string } | undefined = semanticLowersNovelty ? scored[0] : lexicalTop;
   const maxSim = top ? top.similarity : 0;
   const alreadyTried = !!top && top.similarity >= matchFloor && !!top.state && decidedStates.includes(top.state);
 
@@ -237,10 +299,73 @@ export function corpusNovelty(
   novelty = round2(Math.max(0, Math.min(1, novelty)));
 
   const matches = scored.filter((m) => m.similarity >= matchFloor).slice(0, maxMatches);
-  return { novelty, matches, alreadyTried };
+  const shortlist = scored.filter((m) => m.similarity >= recallFloor).slice(0, Math.max(0, shortlistSize));
+  return { novelty, matches, alreadyTried, shortlist };
 }
 
 export type CritiqueVerdict = 'keep' | 'moonshot' | 'reject';
+
+/**
+ * WHY a scored idea was rejected (WI-10007486). Recorded where the verdict is decided
+ * so a consumer reacts to the cause it can actually move: only `novelty` and
+ * `duplicate` rejects are corpus saturation (dedup-burn-guard widens the novelty band
+ * for those); a `feasibility` reject is not helped by a wider novelty band at all.
+ *   - `duplicate`       — the critic adjudicated a restatement of a shortlisted prior
+ *   - `novelty`         — below the novelty floor
+ *   - `feasibility`     — novel enough, but neither feasible nor a strong enough leap
+ *   - `moonshot-cap`    — a leap demoted because the moonshot bucket was full
+ *   - `critic-failure`  — the critic call failed or returned no parseable JSON, so the
+ *                         idea was never actually judged
+ */
+export type RejectCause = 'duplicate' | 'novelty' | 'feasibility' | 'moonshot-cap' | 'critic-failure';
+
+/** Per-cause reject counts for one cycle. `unclassified` holds rejects with no recorded
+ *  cause (artifacts from before causes existed), so the counts always sum to the rejects. */
+export interface RejectCauseCounts {
+  duplicate: number;
+  novelty: number;
+  feasibility: number;
+  moonshotCap: number;
+  criticFailure: number;
+  unclassified: number;
+}
+
+const REJECT_CAUSE_KEY: Record<RejectCause, keyof RejectCauseCounts> = {
+  duplicate: 'duplicate',
+  novelty: 'novelty',
+  feasibility: 'feasibility',
+  'moonshot-cap': 'moonshotCap',
+  'critic-failure': 'criticFailure',
+};
+
+/**
+ * Partition a cycle's rejected scored ideas by {@link RejectCause}. Takes `unknown[]`
+ * because the scheduler sees `cycle.scored` untyped; non-object rows are skipped and
+ * non-reject rows are not counted. Pure.
+ */
+export function countRejectCauses(scored: readonly unknown[] | undefined): RejectCauseCounts {
+  const counts: RejectCauseCounts = {
+    duplicate: 0,
+    novelty: 0,
+    feasibility: 0,
+    moonshotCap: 0,
+    criticFailure: 0,
+    unclassified: 0,
+  };
+  for (const row of scored ?? []) {
+    if (!row || typeof row !== 'object') continue;
+    const s = row as { verdict?: unknown; rejectCause?: unknown; duplicateOf?: unknown };
+    if (s.verdict !== 'reject') continue;
+    const cause =
+      typeof s.rejectCause === 'string' && s.rejectCause in REJECT_CAUSE_KEY
+        ? (s.rejectCause as RejectCause)
+        : typeof s.duplicateOf === 'string'
+          ? 'duplicate'
+          : null;
+    counts[cause ? REJECT_CAUSE_KEY[cause] : 'unclassified'] += 1;
+  }
+  return counts;
+}
 
 /** The minimal per-idea scores the bucketing reasons over. */
 export interface CritiqueScores {
@@ -331,14 +456,21 @@ export interface CritiqueBuckets<T extends CritiqueScores> {
   /** The obvious / already-tried, and the not-novel-enough leaps. */
   rejected: T[];
   /** Per-id verdict + one-line reason, for the digest/audit. */
-  verdicts: Record<string, { verdict: CritiqueVerdict; reason: string }>;
+  verdicts: Record<string, CritiqueVerdictResult>;
+}
+
+/** One idea's verdict + reason; `rejectCause` is set exactly when `verdict` is 'reject'. */
+export interface CritiqueVerdictResult {
+  verdict: CritiqueVerdict;
+  reason: string;
+  rejectCause?: RejectCause;
 }
 
 /**
  * The two-critics-in-tension verdict for one idea (pre-cap). Novelty is the
  * gate; feasibility decides keep-vs-moonshot among the novel.
  */
-export function verdictFor(s: CritiqueScores, opts: BucketOptions = {}): { verdict: CritiqueVerdict; reason: string } {
+export function verdictFor(s: CritiqueScores, opts: BucketOptions = {}): CritiqueVerdictResult {
   const noveltyFloor = opts.noveltyFloor ?? DEFAULT_BUCKET_OPTIONS.noveltyFloor;
   const feasibilityFloor = opts.feasibilityFloor ?? DEFAULT_BUCKET_OPTIONS.feasibilityFloor;
   const moonshotNoveltyFloor = opts.moonshotNoveltyFloor ?? DEFAULT_BUCKET_OPTIONS.moonshotNoveltyFloor;
@@ -347,6 +479,7 @@ export function verdictFor(s: CritiqueScores, opts: BucketOptions = {}): { verdi
     return {
       verdict: 'reject',
       reason: `novelty ${s.novelty} < ${noveltyFloor} — too close to an existing/already-tried idea`,
+      rejectCause: 'novelty',
     };
   }
   if (s.feasibility >= feasibilityFloor) {
@@ -364,6 +497,7 @@ export function verdictFor(s: CritiqueScores, opts: BucketOptions = {}): { verdi
   return {
     verdict: 'reject',
     reason: `mid novelty (${s.novelty} < moonshot floor ${moonshotNoveltyFloor}) but low feasibility (${s.feasibility}) — not a strong enough leap`,
+    rejectCause: 'feasibility',
   };
 }
 
@@ -388,7 +522,7 @@ export function bucketByCritique<T extends CritiqueScores>(
   const kept: T[] = [];
   const moonshotCandidates: T[] = [];
   const rejected: T[] = [];
-  const verdicts: Record<string, { verdict: CritiqueVerdict; reason: string }> = {};
+  const verdicts: Record<string, CritiqueVerdictResult> = {};
 
   for (const it of items) {
     const v = verdictFor(it, verdictOpts);
@@ -405,6 +539,7 @@ export function bucketByCritique<T extends CritiqueScores>(
     verdicts[demoted.id] = {
       verdict: 'reject',
       reason: `moonshot bucket full (max ${maxMoonshots}) — demoted lowest-novelty leap`,
+      rejectCause: 'moonshot-cap',
     };
     rejected.push(demoted);
   }

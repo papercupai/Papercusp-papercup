@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005600",
+  "parent": "WI-10004890",
+  "outcome": "failed",
+  "plane": "serving-artifact-private-operator-api-retainer-attempt",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-heap-retainers-r2-2026-10-02.json",
+    "bytes": 635247,
+    "sha256": "d1c1d5049cfb501282e52cd267501d884e30c312715fab3734678a7985655fde"
+  },
+  "before": {
+    "pid": 3714133,
+    "startTicks": "1535541",
+    "cwd": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-2de667a848e7.oO6qs5/checkout/apps/operator",
+    "entry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-2de667a848e7.oO6qs5/checkout/apps/operator/dist-host/hono-host.mjs",
+    "hostDirectory": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-2de667a848e7.oO6qs5/checkout/apps/operator/dist-host",
+    "bundleSha256": "6101605bdb3ead4c57e7ebdf80c36a2fecf767fbe958a842be25b42d89abb178",
+    "buildSha": "2de667a848",
+    "observedAt": "2026-10-02T19:09:13.095Z",
+    "sources": [
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "sha256": "877c0a1e821efdeca55d54db7da48a9a0903e6fcf4ed69fc9c3fc143bec0032b"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.d.mts",
+        "sha256": "d5e1b5c857c7b5ca47fb90439283bab7d84b63490044b7a1a26a039f79128d6d"
+      },
+      {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "sha256": "65651cbaa459f521dc4cc632bdeb2e198248387680f69562688dd2ff734c3224"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "sha256": "73b7e8bb7a00abb912e3f23d969f706a9bc81fe871e7af7aeecc0ccba345b1bb"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      },
+      {
+        "path": "scripts/test-files.mjs",
+        "sha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d"
+      },
+      {
+        "path": "node_modules/@vscode/v8-heap-parser/pkg/nodejs/v8_heap_parser_bg.wasm",
+        "sha256": "20b097dba67b7b52c7c33e721059fb6c1118aebc942b682ad70432b7bf35262b"
+      }
+    ],
+    "sourceHead": "4e611d9c046b078dda7245a3ea966c3242fe6424"
+  },
+  "measuredBundleMatches": true,
+  "test": {
+    "testRunId": 20554434,
+    "passed": 0,
+    "failed": 1,
+    "filteredSkipped": 17,
+    "source": "local",
+    "layer": "integration",
+    "exitCode": 1,
+    "provenance": "unknown: moving shared HEAD; named source receipts captured, full transitive graph not recorded"
+  },
+  "measurement": {
+    "phase": "private-heap-retainer-analysis",
+    "error": "Error: Heap retainer analysis failed at decode-bytes (RuntimeError)",
+    "diagnostic": {
+      "phase": "decode-bytes",
+      "inputBytes": 577023509,
+      "wasmMemoryBytes": 3765305344,
+      "panic": {
+        "kind": "unclassified",
+        "source": "",
+        "allocationBytes": 0,
+        "length": 0,
+        "index": 0
+      }
+    },
+    "snapshotBytes": 577023509,
+    "nodes": 4902359,
+    "nodeSelfSizeBytes": 499225046,
+    "captureAndStreamCensusMs": 110125,
+    "samples": 13,
+    "windows": 3
+  },
+  "cleanup": {
+    "hostReaped": true,
+    "snapshotRemoved": true,
+    "temporarySnapshotPersisted": false
+  },
+  "limits": [
+    "Decoder WASM trap is measured; grown memory alone is not proof of allocation ceiling/root cause.",
+    "Panic kind unclassified; no stack in R2. Follow-up analyzer records only numeric WASM frames.",
+    "No successful retaining owners, post-snapshot rows acceptance, production savings or shipment.",
+    "Private capture forces GC/synchronous pause; original host automatic profiler evidence remains on raw report."
+  ]
+}

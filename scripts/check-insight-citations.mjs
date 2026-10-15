@@ -19,20 +19,43 @@
  * `symbol` refs are filesystem-checked; a `feature` ref (`F-NNN`/`WI-NNN`) and a
  * glob-bearing path entry are skipped (see insight-citations.ts doc comment).
  *
- * Scope: tracked or nonignored-untracked .mdx/.md under
- * apps/operator-docs/src/content/docs/agent-insights/ (the corpus this WI
- * scoped the sweep to).
+ * Scope: tracked or nonignored-untracked .mdx/.md under the WHOLE
+ * apps/operator-docs/src/content/docs/ corpus (`isOperatorDoc`). WI-1576 scoped
+ * the first sweep to agent-insights/; WI-6554700010008908 widened it after 11
+ * stale citations in 8 non-insight docs (reference/, agent-spawning/, privacy/ …)
+ * accumulated unflagged — `documents:` is a drift anchor in every section.
  */
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findStaleInsightCitations, formatStaleCitations } from '../packages/operator-core/lib/content-lint/insight-citations';
-import { isInsightDoc } from '../packages/operator-core/lib/content-lint/insight-corpus';
+import { isOperatorDoc } from '../packages/operator-core/lib/content-lint/insight-corpus';
 import { describeUnscanned, listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 
 export { findStaleInsightCitations, formatStaleCitations };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * The scan itself, separated from enumeration so a test can drive it against a
+ * fixture root: every operator-docs page in `files` (repo-relative to `root`) whose
+ * `documents:` citations do not resolve under `root`, as `<file>  <message>` lines.
+ */
+export function findCitationOffenders(root, files) {
+  const offenders = [];
+  for (const f of files) {
+    if (!isOperatorDoc(f)) continue; // shared corpus scope (insight-corpus.ts) — see that module
+    let text;
+    try {
+      text = readFileSync(new URL(f, `file://${root}/`), 'utf8');
+    } catch {
+      continue;
+    }
+    const msg = formatStaleCitations(findStaleInsightCitations(text, root));
+    if (msg) offenders.push(`${f}  ${msg}`);
+  }
+  return offenders;
+}
 
 function main() {
   // EI-19372547555251881: a new insight is most vulnerable before git-sync has
@@ -41,24 +64,11 @@ function main() {
   // are both checked, including checked-out submodules, with honest coverage for
   // any submodule Git cannot enumerate.
   const scan = listFilesIncludingUntracked(ROOT);
-
-  const offenders = [];
-  for (const f of scan.files) {
-    if (!isInsightDoc(f)) continue; // shared corpus scope (insight-corpus.ts) — see that module
-    let text;
-    try {
-      text = readFileSync(new URL(f, `file://${ROOT}/`), 'utf8');
-    } catch {
-      continue;
-    }
-    const stale = findStaleInsightCitations(text, ROOT);
-    const msg = formatStaleCitations(stale);
-    if (msg) offenders.push(`${f}  ${msg}`);
-  }
+  const offenders = findCitationOffenders(ROOT, scan.files);
 
   if (offenders.length === 0) {
     console.log(
-      '✓ every selected tracked/untracked-not-ignored agent-insights `documents:` citation resolves on disk.' +
+      '✓ every selected tracked/untracked-not-ignored operator-docs `documents:` citation resolves on disk.' +
         describeUnscanned(scan, ROOT),
     );
     process.exit(0);

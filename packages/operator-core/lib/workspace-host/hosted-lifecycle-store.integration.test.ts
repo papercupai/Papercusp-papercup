@@ -10,10 +10,13 @@ import { createWorkspaceHostSpendObservation, type WorkspaceHostSpendObservation
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ appSql: null as any }));
+const h = vi.hoisted(() => ({ appSql: null as any, adminSql: null as any }));
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
+  // Recovery updates also notify SSE consumers through the admin pool. Keep that
+  // real pg_notify in the same throwaway database as the RLS-scoped writes.
+  getOrgPg: () => ({ sql: h.adminSql }),
   withWorkspace: async <T>(workspaceId: string, run: (tx: unknown) => Promise<T>): Promise<T> =>
     h.appSql.begin(async (tx: any) => {
       await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
@@ -84,6 +87,7 @@ describe('hosted lifecycle deferred-spend reconciliation (real PG + real RLS)', 
   beforeAll(async () => {
     db = await createOrgTestDb();
     h.appSql = db.appSql;
+    h.adminSql = db.adminSql;
   }, 180_000);
 
   afterEach(() => setHostedLifecycleStoreHooks(null));

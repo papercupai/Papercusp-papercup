@@ -150,13 +150,9 @@ export interface CoordFoldCensus {
   /**
    * Did the GLANCE leg run on this fold?
    *
-   * Before the legs were split, this was redundant with `changed` — one gate
-   * opened both surfaces, so glance ran exactly when the fold was expensive.
-   * It is no longer derivable: a `glance-only` fold has `changed === false`
-   * (the INBOX gate stayed shut, correctly) while still paying a hydration.
-   * Without this field such a fold would read as `quiet` with a non-zero
-   * `hydrateMs`, i.e. the instrument would contradict itself on the very path
-   * the split introduces.
+   * This is the branch's actual decision, passed in by the fold. It is
+   * independent of `changed`: an inbox delta may skip a fresh glance cache,
+   * while a glance-only fold hydrates with `changed === false`.
    */
   glanceHydrated: boolean;
 }
@@ -177,11 +173,9 @@ export interface CoordFoldObservation {
   hydrateMs: number;
   inboxAdvanced: boolean;
   inboxTotal: number | null;
-  /**
-   * The GLANCE leg ran even though the INBOX gate stayed shut. Carried in from
-   * the fold for the same reason as `changed`: this labeller observes decisions,
-   * it never re-derives them.
-   */
+  /** The fold actually hydrated GLANCE, independent of the inbox gate. */
+  glanceHydrated: boolean;
+  /** The GLANCE leg ran while the INBOX gate stayed shut. */
   glanceOnly: boolean;
 }
 
@@ -247,9 +241,7 @@ export function censusCoordFold(observation: CoordFoldObservation): CoordFoldCen
       typeof observation.inboxTotal === 'number' && Number.isFinite(observation.inboxTotal)
         ? Math.max(0, Math.trunc(observation.inboxTotal))
         : null,
-    // The glance leg runs on BOTH expensive paths: whenever the inbox gate
-    // opened (the legs still hydrate together there) and on a glance-only fold.
-    glanceHydrated: observation.changed === true || observation.glanceOnly === true,
+    glanceHydrated: observation.glanceHydrated === true,
   };
 }
 

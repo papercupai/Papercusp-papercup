@@ -34,6 +34,7 @@ import { resolveLearningPotSlug } from '../../learning/pot-scope';
 import {
   deriveRecipeAuthority,
   recipeAuthorityContextFromDescriptor,
+  type RecipeAuthorityContext,
 } from '../../recipe-authority';
 import type { EmbedderMode } from '@papercusp/memory';
 import type { ProseProfileSelection } from '../../search/prose-vector-dims';
@@ -75,6 +76,17 @@ export function recipeId(
 const camelVerb = (verb: string): string =>
   verb.replace(/[-_]+([a-z0-9])/gi, (_m, c: string) => c.toUpperCase());
 
+/** `work-items` / `work_items` → `workItems` — mirrors parse-check/tool-facade. */
+const camelNamespace = (namespace: string): string =>
+  namespace.replace(/[-_]+([a-z0-9])/gi, (_m, c: string) => c.toUpperCase());
+
+/** Normalize a parser member ref just as checkScript does before resolving it. */
+const canonicalMember = (member: string): string => {
+  const dot = member.indexOf('.');
+  if (dot <= 0) return member;
+  return `${camelNamespace(member.slice(0, dot))}.${camelVerb(member.slice(dot + 1))}`;
+};
+
 /**
  * The canonical `ns:verb` tool names a script references, via the SAME static
  * resolver the parse-check uses (`checkScript` resolves dotted access, the
@@ -96,7 +108,7 @@ export function extractToolsUsed(
     if (!name || name.indexOf(':') <= 0) continue;
     if (allowed && !allowed.has(name)) continue;
     const ci = name.indexOf(':');
-    memberToName.set(`${name.slice(0, ci)}.${camelVerb(name.slice(ci + 1))}`, name);
+    memberToName.set(`${camelNamespace(name.slice(0, ci))}.${camelVerb(name.slice(ci + 1))}`, name);
     fullNames.add(name);
   }
   const out = new Set<string>();
@@ -104,7 +116,11 @@ export function extractToolsUsed(
     if (ref.includes(':')) {
       if (fullNames.has(ref)) out.add(ref); // call-hatch full name
     } else {
-      const full = memberToName.get(ref); // dotted member → canonical
+      // checkScript refs preserve the source spelling for bracket access, so
+      // tools.capability["git-evidence"] arrives as `capability.git-evidence`
+      // while the facade's canonical member key is `capability.gitEvidence`.
+      // Normalize both namespace and verb before mapping back to the MCP name.
+      const full = memberToName.get(canonicalMember(ref));
       if (full) out.add(full);
     }
   }
@@ -179,6 +195,14 @@ export interface CaptureRecipeInput {
   allowed?: ReadonlySet<string>;
   /** P-013 trace for the same execution; stored on the recipe-run row. */
   executionTrace?: NormalizedExecutionTrace | null;
+  /**
+   * Server-derived authority for the caller's current lane. Similar-recipe
+   * recommendations must be runnable by this caller, so this context takes
+   * precedence over the captured script's own entity refs. The latter can
+   * describe a target the script reads, but do not prove the caller still
+   * holds that plan/item/resource when code:run is invoked.
+   */
+  recommendationContext?: RecipeAuthorityContext;
 }
 
 export interface CaptureRecipeResult {
@@ -314,10 +338,12 @@ export async function captureRecipe(
           embeddingProfile: embedded?.profile ?? null,
           excludeId: exactRecipe?.id ?? id,
           limit: 5,
-          recommendationContext: recipeAuthorityContextFromDescriptor(sourceAuthority, {
-            workspace: input.workspaceId,
-            harness: input.harness,
-          }),
+          recommendationContext:
+            input.recommendationContext ??
+            recipeAuthorityContextFromDescriptor(sourceAuthority, {
+              workspace: input.workspaceId,
+              harness: input.harness,
+            }),
         },
         { log },
       );

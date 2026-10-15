@@ -48,7 +48,7 @@ export const CHRONIC_CUMULATIVE_REBROADCAST_TICKS = 18;
 
 /** Which LEG of a git-sync tick failed (EI-19275994927087666). `disk-headroom` (WI-10004397)
  *  is not a git leg at all: the local disk is full, so no leg can run. */
-export type GitSyncFailingLeg = 'commit' | 'push' | 'conflict' | 'config-lock' | 'disk-headroom' | 'unknown';
+export type GitSyncFailingLeg = 'commit' | 'push' | 'serving' | 'conflict' | 'config-lock' | 'disk-headroom' | 'unknown';
 
 /**
  * PURE: classify which leg actually failed, from the error text git-sync recorded.
@@ -74,6 +74,10 @@ export function classifyGitSyncFailingLeg(
   // would misname it: that form read as "push failing — commits NOT reaching origin".
   if (isLocalDiskFullError(lastError)) return 'disk-headroom';
   const e = (lastError ?? '').toLowerCase();
+  // P034: beforePush refuses publication when the authenticated serving owner
+  // has not booted. Its wrapper may say "push failed", but no push was attempted.
+  if (e.includes('git-sync publication refused: serving unavailable') ||
+      e.includes('git-sync publication refused: serving capability has no usable device actor')) return 'serving';
   if (e.includes('conflict')) return 'conflict';
   if (e.includes('could not lock config file') && e.includes('config')) return 'config-lock';
   if (e.includes('commit failed') || e.includes('commit error')) return 'commit';
@@ -89,6 +93,8 @@ export function gitSyncLegPhrase(leg: GitSyncFailingLeg | null): string {
   switch (leg) {
     case 'push':
       return 'push failing — commits NOT reaching origin';
+    case 'serving':
+      return 'serving owner unavailable — authenticated publication refused before push; repair substrate startup';
     case 'commit':
       return 'COMMIT failing — nothing has reached the push stage; origin is unaffected';
     case 'conflict':
@@ -97,8 +103,8 @@ export function gitSyncLegPhrase(leg: GitSyncFailingLeg | null): string {
       return 'submodule config-lock contention — canonical URL sync blocked locally; origin is unaffected';
     case 'disk-headroom':
       return (
-        "LOCAL DISK FULL — free space is at or under git-sync's fetch-headroom reserve, so every fetch " +
-        'is refused and nothing commits; free space on that filesystem (network, credentials and origin are unaffected)'
+        'DISK SPACE / HEADROOM — a Git operation was refused for insufficient space or fetch headroom; ' +
+        'this does not establish a local commit failure'
       );
     default:
       return "cause unclassified — read that routine's last_error";
@@ -173,6 +179,38 @@ const formatMegabytes = (bytes: number): string =>
   Number.isFinite(bytes) ? `${(bytes / 1048576).toFixed(1)}MB` : 'an unknown byte limit';
 
 export const oversizedKey = (f: ScopedOversized): string => `${f.scope}:${f.path}`;
+
+/**
+ * WI-6554700010010939: the own-head-publish refusal this tick escalates on, or null when a
+ * secrets path exemption was added AFTER that refusal was recorded.
+ *
+ * The refusal comes from the PREVIOUS tick's publish leg (see `publishRefusal`), and on
+ * papercusp a tick can take ~35 min. On 2026-10-13 the publish was refused at 19:42:25Z,
+ * the exemption that cleared it landed at 19:45Z, and the next tick still broadcast
+ * "egress is FROZEN" at 20:16:22Z, 50 s before that same tick's publish leg retried and
+ * published. An exemption newer than the refusal means the remedy has already been
+ * applied and the retry is pending, so this tick treats the publish as not refused.
+ *
+ * This also keeps `last_publish_blocked_at` at null (the caller records the effective
+ * value), so if the retry is refused again at the same commit, the next tick still
+ * broadcasts: its refusal record is then newer than the exemption.
+ *
+ * Only `secrets` refusals are affected (an exemption cannot clear any other code). A
+ * missing or non-numeric timestamp on either side keeps the refusal (fail loud).
+ */
+export function effectivePublishRefusal(
+  refusal: { refused: string; blockedAtCommit: string | null; atMs: number | null } | null | undefined,
+  latestExemptionAtMs: number | null | undefined,
+): { refused: string; blockedAtCommit: string | null } | null {
+  if (!refusal?.refused) return null;
+  const kept = { refused: refusal.refused, blockedAtCommit: refusal.blockedAtCommit };
+  if (refusal.refused !== 'secrets') return kept;
+  const at = refusal.atMs;
+  const ex = latestExemptionAtMs;
+  if (typeof at !== 'number' || !Number.isFinite(at)) return kept;
+  if (typeof ex !== 'number' || !Number.isFinite(ex)) return kept;
+  return ex > at ? null : kept;
+}
 
 export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision {
   const reasons: EscalationReason[] = [];

@@ -1,4 +1,4 @@
-import { createWriteStream, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, createWriteStream, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:os';
 import { join } from 'node:path';
@@ -262,7 +262,7 @@ function formatJobEnd(exitCode) {
   );
 }
 
-function runDurablePayload(command, args, environment, logPath, redactions) {
+function runDurablePayload(command, args, environment, logPath, redactions, runnerStartedAt) {
   // Truncate once, synchronously, then keep every writer on O_APPEND. The live
   // operator may append a bounded attribution snapshot while this service is
   // running; O_APPEND prevents the runner's next write from overwriting it.
@@ -272,6 +272,13 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
   log.on('error', () => {
     logHealthy = false;
   });
+  // This executes inside the transient unit, unlike the operator's
+  // systemd-run client spawn. Keep phase evidence in the existing durable log
+  // so delayed unit startup can be distinguished from slow payload execution.
+  const recordPhase = (phase, at = Date.now()) => {
+    if (logHealthy) log.write(`\n[capability:bash] JOB PHASE: phase=${phase} at=${at}\n`);
+  };
+  recordPhase('unit-runner-started', runnerStartedAt);
   const mirrorOut = bestEffortMirror(process.stdout);
   const mirrorErr = bestEffortMirror(process.stderr);
   const redactor = composeStreamingRedactors(
@@ -289,6 +296,7 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
   const stdoutDecoder = new StringDecoder('utf8');
   const stderrDecoder = new StringDecoder('utf8');
   let settled = false;
+  let firstOutputSeen = false;
 
   const emit = (raw, mirror) => {
     const safe = redactor?.push(raw) ?? raw;
@@ -296,7 +304,7 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
     if (logHealthy) log.write(safe);
     mirror(safe);
   };
-  const finish = (exitCode, diagnostic = '') => {
+  const finish = (exitCode, diagnostic = '', terminalPhase = 'payload-closed', terminalAt = Date.now()) => {
     if (settled) return;
     settled = true;
     // Flush each stream's decoder BEFORE the redactor's tail: a code point left
@@ -312,20 +320,37 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
       if (logHealthy) log.write(tail);
       mirrorOut(tail);
     }
+    // Capture the terminal observation at entry, but persist it only after the
+    // redactor's buffered suffix so phase metadata cannot split payload bytes.
+    recordPhase(terminalPhase, terminalAt);
     if (logHealthy) log.write(formatJobEnd(exitCode));
     log.end(() => {
       process.exitCode = logHealthy ? exitCode : 1;
     });
   };
 
+  recordPhase('payload-spawn-requested');
   const child = spawn(command, args, { env: environment, stdio: ['inherit', 'pipe', 'pipe'] });
+  child.once('spawn', () => recordPhase('payload-spawned'));
   // WI-1064487: this process owns the payload's stdout/stderr pipes, so it must outlive the
   // deadline signal — otherwise the payload's own TERM trap dies on a broken pipe.
   forwardTerminationSignalsTo(child);
-  child.stdout?.on('data', (chunk) => emit(stdoutDecoder.write(chunk), mirrorOut));
-  child.stderr?.on('data', (chunk) => emit(stderrDecoder.write(chunk), mirrorErr));
+  const markOutput = (chunk) => {
+    if (chunk.length && !firstOutputSeen) {
+      firstOutputSeen = true;
+      recordPhase('payload-first-byte');
+    }
+  };
+  child.stdout?.on('data', (chunk) => {
+    markOutput(chunk);
+    emit(stdoutDecoder.write(chunk), mirrorOut);
+  });
+  child.stderr?.on('data', (chunk) => {
+    markOutput(chunk);
+    emit(stderrDecoder.write(chunk), mirrorErr);
+  });
   child.once('error', (error) => {
-    finish(1, `[systemd-scope-env-runner] payload spawn failed: ${error.message}\n`);
+    finish(1, `[systemd-scope-env-runner] payload spawn failed: ${error.message}\n`, 'payload-spawn-failed');
   });
   // `close`, not `exit`: all stdout/stderr bytes have drained before the final
   // redactor suffix and JOB END marker are committed.
@@ -335,6 +360,7 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
 }
 
 export function main(argv = process.argv) {
+  const runnerStartedAt = Date.now();
   const mode = argv[2];
   const source = argv[3];
   const separator = argv.indexOf('--', 4);
@@ -349,6 +375,8 @@ export function main(argv = process.argv) {
       throw new Error('credential directory is unavailable');
     }
     const environment = readEnvironment(sourcePath);
+    const inheritedFd = /^\/proc\/self\/fd\/(\d+)$/.exec(sourcePath);
+    if (inheritedFd) closeSync(Number(inheritedFd[1]));
     const logPath = environment[SYSTEMD_RUNNER_OUTPUT_PATH_ENV] ?? '';
     const redactions = decodeRedactions(environment[SYSTEMD_RUNNER_REDACTIONS_ENV] ?? '');
     delete environment[SYSTEMD_RUNNER_OUTPUT_PATH_ENV];
@@ -358,7 +386,7 @@ export function main(argv = process.argv) {
     if (!command) {
       usage('payload command is missing');
     } else if (logPath) {
-      runDurablePayload(command, args, environment, logPath, redactions);
+      runDurablePayload(command, args, environment, logPath, redactions, runnerStartedAt);
     } else {
       const child = spawn(command, args, { env: environment, stdio: 'inherit' });
       // WI-1064487: same grace as the durable branch. stdio is inherited here so there are no

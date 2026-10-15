@@ -8,9 +8,10 @@
  * stream; tests assert against it.
  *
  * Filters are ANDed: `owner` (one worker's pane), `session_id` (one CLI session of
- * that worker), `harness`, `agent` (claude/codex/omp), `kind`. `since_id` returns only
- * rows newer than a cursor (the stream-catch-up shape); default returns the most-recent
- * `limit` rows newest-first.
+ * that worker), `harness`, `agent` (claude/codex/omp), `kind`. `since_id` takes an
+ * unsigned decimal activity-row ID cursor and returns only rows newer than it (the
+ * stream-catch-up shape); it is not a timestamp. Default returns the most-recent `limit`
+ * rows newest-first.
  *
  * EI-20309400427356782: `session_id` is the row's own column and always came back on
  * every row, but there was no way to filter BY it — so recovering one session's tool
@@ -56,10 +57,10 @@ const ACTIVITY_RECENT_RESULT_SCHEMA = z.object({
 export default defineTool({
   name: 'activity:recent',
   description:
-    "Read recent worker-activity rows (native tool calls / lifecycle / todos) from the cross-CLI activity bridge. Filter by owner (one worker's pane), session_id (one CLI run of it), harness, agent (claude/codex/omp), kind (tool/lifecycle/todos); since_id pages forward from a cursor. The curator + fleet view read this; the live push is /api/activity/stream.",
+    "Read recent worker-activity rows (native tool calls / lifecycle / todos) from the cross-CLI activity bridge. Filter by owner (one worker's pane), session_id (one CLI run of it), harness, agent (claude/codex/omp), kind (tool/lifecycle/todos); since_id pages forward from an unsigned decimal activity-row ID cursor, not a timestamp. Use activity:tool-log for absolute ISO 8601 wall-clock bounds. The curator + fleet view read this; the live push is /api/activity/stream.",
   capability: 'activity:read',
   guidance: {
-    when: 'You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner for one pane, session_id for one CLI run of it, harness for one project, since_id to page forward.',
+    when: 'You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner for one pane, session_id for one CLI run of it, harness for one project, or an unsigned decimal activity-row ID as since_id to page forward (not a timestamp; use activity:tool-log for wall-clock windows).',
     notWhen: 'For a LIVE feed subscribe to the /api/activity/stream SSE (the pui does this). To report activity (you almost never need to) use `activity:report`. For coord messages use `coord:inbox`.',
     // EI-22047814129755519. This tool and activity:tool-log read the SAME ledger but
     // window it with OPPOSITE vocabularies: here it is `since_id` + `limit`, there it is
@@ -111,7 +112,8 @@ export default defineTool({
         z.number().finite().int().nonnegative(),
         z.string().regex(/^\d+$/),
       ])
-      .optional(),
+      .optional()
+      .describe('Unsigned decimal activity-row ID cursor for forward paging; not a timestamp.'),
     /** Max rows (default 50, max 500). */
     limit: z.number().int().positive().max(MAX_LIMIT).optional(),
   }),

@@ -1,0 +1,15 @@
+{
+  "incomplete": true,
+  "phase": "runner-before-report",
+  "samples": [],
+  "windows": [],
+  "error": "Private report was not written",
+  "runner": {
+    "status": 1,
+    "signal": null,
+    "error": "spawnSync /home/builduser/.local/node25/bin/node ENOBUFS",
+    "errorCode": "ENOBUFS",
+    "stdoutBytes": 131134,
+    "stderrBytes": 0
+  }
+}

@@ -17,7 +17,8 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity, resolveSelfLiteral } from '../identity';
+import { resolveAgentIdentity } from '../identity';
+import { resolveCouplingIdentityPair } from '../coupling-identities';
 import { COORD_ROLES } from '../roles';
 import { suppressCoupling, listCouplingsFor, peerOf, COUPLING_REASON_MAX } from '../../../coord/couplings';
 
@@ -57,11 +58,9 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const me = resolveAgentIdentity(ctx);
-    const a = (resolveSelfLiteral(args.a, me.ownerId) ?? me.ownerId).trim();
-    const b = (resolveSelfLiteral(args.b, me.ownerId) ?? '').trim();
-    if (!b) {
-      return { data: { ok: false, error: 'missing_agent', detail: 'pass `b` (an ownerId or "self")' } };
-    }
+    const pair = await resolveCouplingIdentityPair(args.a, args.b, me.ownerId, me.workspaceId);
+    if (!pair.ok) return { data: pair };
+    const { a, b } = pair;
     if (a === b) {
       return {
         data: {

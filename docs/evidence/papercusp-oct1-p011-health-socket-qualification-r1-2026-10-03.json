@@ -1,0 +1,133 @@
+{
+  "schemaVersion": "p011-serving-health-transport-qualification-v1",
+  "workItem": "EI-24949783691926480",
+  "parentWork": "WI-10005921",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "scope": "Canonical local transport regression only; no resource cohort, actual staging process or live allocation measurement",
+  "rootCause": {
+    "confirmedClass": "A pooled HTTP connection can remain apparently reusable when synchronous work blocks the client's idle and close callbacks after an independent peer retires the socket.",
+    "historicalCause": "Unproven for saved cohort20667339; stable-process local reproduction does not establish the historical staging peer's state.",
+    "fix": "Each generation-health pin sends Connection:close with the unchanged 10-second timeout. No retry or timeout increase.",
+    "reused": "Existing readServingInboxPin, servingInboxHealth, canonical attribution integration suite, Node fetch and Node worker_threads; no new service or production surface."
+  },
+  "runs": {
+    "initialDiagnostic": {
+      "testRunId": 20671632,
+      "status": "fail",
+      "harness": null,
+      "nativeSession": 46755,
+      "nativeExitCode": 1,
+      "interpretation": "Expected pooled failure was absent before an event-loop turn released the consumed response. Unscoped diagnostic only."
+    },
+    "beforeFix": {
+      "testRunId": 20671652,
+      "status": "fail",
+      "harness": "papercusp",
+      "nativeSession": 59826,
+      "nativeExitCode": 1,
+      "pooled": {
+        "connections": 1,
+        "requests": 1,
+        "error": "UND_ERR_SOCKET"
+      },
+      "healthPin": "Original pooled helper also failed with UND_ERR_SOCKET"
+    },
+    "afterFix": {
+      "testRunId": 20671660,
+      "status": "pass",
+      "harness": "papercusp",
+      "nativeSession": 46706,
+      "nativeExitCode": 0,
+      "passed": 32,
+      "filtered": 99,
+      "pooled": {
+        "connections": 1,
+        "requests": 1,
+        "error": "UND_ERR_SOCKET"
+      },
+      "healthPin": {
+        "connections": 2,
+        "requests": 2,
+        "health": {
+          "sha": "aaaaaaaaaa",
+          "version": "0.0.0"
+        }
+      },
+      "scope": "Serving inbox copy guards; filtered tests provide no proof"
+    }
+  },
+  "recurrenceGuard": {
+    "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "name": "reads serving health on a fresh socket across synchronous runtime work",
+    "procedure": "Independent local HTTP worker retires its first response socket while the client blocks in Atomics.wait. A setImmediate response-release barrier precedes blocking. Shared counters distinguish one closed reused transport from two successful one-shot requests, and finally terminates each worker."
+  },
+  "verification": {
+    "scopedTypes": {
+      "errorCount": 0,
+      "checkedFiles": 1,
+      "scope": "Requested test file only; not the project or gate"
+    },
+    "sourceContent": {
+      "applicableDetectors": 9,
+      "flags": 0
+    },
+    "namedDiffCheck": "pass",
+    "executedSourceGraph": "Unmeasured outside the named test and its controlled local worker"
+  },
+  "receipts": [
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "bytes": 188073,
+      "sha256": "fdccb9e6df40568b44ec7b25174ce9d36ee486a756ddd923674c18c7180391e9"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-health-socket-before-r1.log",
+      "bytes": 64325,
+      "sha256": "1b4bab3cb52d6efd52d970dcd5a4b3009591b52f4c59ec301ad1e037ba945966"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-health-socket-before-r2.log",
+      "bytes": 63819,
+      "sha256": "af1b1ce44c624fff03016506e8a417f137865b58cde93db28e74c8776ace5c79"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-health-socket-fixed-r1.log",
+      "bytes": 43262,
+      "sha256": "32c11d67deb2ee7bde9777830587a5b0bca71a14f408249fdb4718a670499b37"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-health-socket-types-r1.json",
+      "bytes": 1680,
+      "sha256": "b8a5d225b1266d17c95b2d2585c413faf6dc76d2199e9754b33e78d1f68a62da"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-health-socket-content-r1.log",
+      "bytes": 1116,
+      "sha256": "e6ff14ec7ea9d9a38f29706915806495b9f5bdcd46f7451621e77d2d291a9f51"
+    }
+  ],
+  "preservedHistoricalEvidence": {
+    "raw": {
+      "path": "docs/evidence/papercusp-oct1-p011-serving-inbox-pair-r1-2026-10-03.json",
+      "sha256": "1c2ca8fd2d1d68b2701d8e8a35409eef0e72a8fbd3793d0b796660805b7439b8",
+      "testRunId": 20667339,
+      "status": "fail"
+    },
+    "qualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-serving-inbox-pair-r1-qualification-2026-10-03.json",
+      "sha256": "f142d081765fdf844d2bda8f0fee3cfed2441416410aa5988ac5d3c5322c16db"
+    },
+    "rawAudit": {
+      "testRunId": 20667361,
+      "status": "fail"
+    },
+    "metadataLossBug": "EI-24947550723835470 remains done/committed; separate from this transport class"
+  },
+  "limitations": [
+    "No retrospective runner success or final staging identity is inferred.",
+    "Old44-guard source59479f1e differs from currentfdccb9e6; old bindings must retain source drift.",
+    "P011 parent and child remain open under D021. Full selected-source causal/live/retained/native/graph evidence and seven other source dispositions remain open.",
+    "No P010/R8/R9/independent acceptance/shipment acceptance is established.",
+    "No production restart, GC, profiler, native agent or LIVE_GATE_OPS occurred."
+  ]
+}

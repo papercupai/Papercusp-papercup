@@ -14,7 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 const h = vi.hoisted(() => ({ db: undefined as unknown }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -32,6 +32,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -88,6 +89,13 @@ describe('listToasts (drizzle, PG)', () => {
     for (let i = 1; i <= 5; i++) await insertToast({ id: i, createdAt: i * 10 });
     const { toasts } = await listToasts({ limit: 2 });
     expect(toasts.map((t) => t.id)).toEqual([5, 4]); // newest 2
+  });
+
+  it('filters by level before applying the newest-row limit', async () => {
+    await insertToast({ id: 1, createdAt: 100, level: 'warning', message: 'older warning' });
+    await insertToast({ id: 2, createdAt: 200, level: 'info', message: 'newer info' });
+    const { toasts } = await listToasts({ level: 'warning', limit: 1 });
+    expect(toasts.map((t) => t.id)).toEqual([1]);
   });
 
   it('the `since` filter returns only created_at >= since (the delta read)', async () => {

@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-013 live resume matrix: all six claude/codex/omp cross-backend psu --resume pairs deliver a session port on staging, and PUI-shape resumes reopen the original backend",
+  "framework": "operational",
+  "command": [
+    "psu --resume <source adv id> --agent <target backend>  (canonical launcher apps/operator/scripts/psu-launcher.mjs via PAPERCUSP_PSU_LAUNCHER, PAPERCUSP_OPERATOR_URL=staging :3170, one ordered pair at a time)",
+    "psu --resume <adv id>  (PUI ended-session pane argv, no --agent, once per backend)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-13T02:57:35.319Z",
+  "finishedAt": "2026-10-13T03:12:00.000Z",
+  "summary": "On staging :3170 (build 3e8525d881), one tracked source session per backend (claude adv 42034, omp adv 42036, codex adv 42045) was resumed onto each other backend with psu --resume --agent. All six ordered pairs reached harness_shared.session_ports status=delivered, re-read live from the database at about 2026-10-13T03:22Z: claude->omp 71dc94c9 (02:58:17Z), claude->codex 28e089f7 (02:57:45Z), omp->codex 33b0b29b (03:01:23Z), omp->claude 4d15634c (03:03:24Z), codex->claude 0898982e (03:07:23Z), codex->omp 28d4b61f (03:10:21Z). Each launch printed 'session port delivered - verified the exact seed checksum in the target native transcript' from the production native-transcript reader, and the session-port seed ('port-id: <id>') is present in each target's indexed native transcript. The PUI ended-session argv psu --resume <adv id> (no --agent) reopened the ORIGINAL backend on the same native conversation for claude, omp and codex. Full per-pair detail: docs/evidence/cbp-p013-live-resume-matrix-2026-10-13.json (sha256 c5800856fc0f28b6abfe08e78767b57db834c6635302cd5c76ac40f9f8e3f0e0).",
+  "assertions": [
+    {
+      "id": "pair-claude-to-codex-delivered",
+      "passed": true,
+      "evidence": "session_ports 28e089f7-a4fa-4b14-b1c5-e7350027c149: source adv 42034 (claude) -> target adv 42042 (codex), status delivered, prepared 02:57:35.596Z, delivered 02:57:45.278Z, fidelity full. Seed found in target codex native transcript 01a13331-b82e-7e92-be31-3c3c3f42cc72 (session_turn_parts: 1 part containing 'port-id: 28e089f7-…')."
+    },
+    {
+      "id": "pair-claude-to-omp-delivered",
+      "passed": true,
+      "evidence": "session_ports 71dc94c9-f5e2-42f2-beef-d8b15fe7d7b0: source adv 42034 (claude) -> target adv 42041 (omp), status delivered, prepared 02:57:35.319Z, delivered 02:58:17.388Z, fidelity full. Seed found in target omp native transcript 01a13331-c0cd-7617-958d-37031188a431 (sessions:search verbatim 'port-id: 71dc94c9-…', source omp: 1 hit)."
+    },
+    {
+      "id": "pair-omp-to-codex-delivered",
+      "passed": true,
+      "evidence": "session_ports 33b0b29b-4320-405d-8ab4-129d0c99f96d: source adv 42036 (omp) -> target adv 42044 (codex), status delivered, prepared 03:01:09.486Z, delivered 03:01:23.900Z, fidelity full. Seed found in target codex native transcript 01a13335-03b6-7e91-b4b1-53420cca6b5b (session_turn_parts: 1 part)."
+    },
+    {
+      "id": "pair-omp-to-claude-delivered",
+      "passed": true,
+      "evidence": "session_ports 4d15634c-4095-4237-a07b-4b50c8b6c791: source adv 42036 (omp) -> target adv 42046 (claude), status delivered, prepared 03:03:16.409Z, delivered 03:03:24.413Z, fidelity full. Seed found in target claude native transcript 5f115d1a-fa37-44c6-9242-67eb73b5ba9c (session_turn_parts: 1 part)."
+    },
+    {
+      "id": "pair-codex-to-claude-delivered",
+      "passed": true,
+      "evidence": "session_ports 0898982e-3ed9-4b92-82d0-7df09fe8130d: source adv 42045 (codex) -> target adv 42050 (claude), status delivered, prepared 03:07:14.850Z, delivered 03:07:23.753Z, fidelity full. Seed found in target claude native transcript ba1c90e0-0627-464b-baeb-c3cb3f2e1694 (session_turn_parts: 1 part)."
+    },
+    {
+      "id": "pair-codex-to-omp-delivered",
+      "passed": true,
+      "evidence": "session_ports 28d4b61f-691f-44d4-a208-2c457bbacab6: source adv 42045 (codex) -> target adv 42051 (omp), status delivered, prepared 03:08:51.735Z, delivered 03:10:21.724Z, fidelity summary-tail (target budget 107386 tokens below the source size). Seed found in target omp native transcript 01a1333c-2508-765b-97b2-16c87348009d (sessions:search verbatim 'port-id: 28d4b61f-…', source omp: 1 hit)."
+    },
+    {
+      "id": "pui-claude-original-backend",
+      "passed": true,
+      "evidence": "psu --resume 42034 (no --agent) launched claude --resume 09881b50-6286-4916-a0fc-2f2affb7f01a, the source's own native conversation."
+    },
+    {
+      "id": "pui-omp-original-backend",
+      "passed": true,
+      "evidence": "psu --resume 42036 (no --agent) launched omp -r 01a13331-7bd3-74d1-aecb-6bb95cc45cd7, the source's own native conversation."
+    },
+    {
+      "id": "pui-codex-original-backend",
+      "passed": true,
+      "evidence": "psu --resume 42045 (no --agent) launched codex … resume 01a13335-6b1a-71a2-bfea-279da4044d57, the source's own native conversation."
+    }
+  ],
+  "provenance": {
+    "evidencePlane": "staging-operator",
+    "operator": "staging :3170 via staging proxy :9171, /api/health build 3e8525d881",
+    "launcher": "apps/operator/scripts/psu-launcher.mjs (blob 8c2805c87cd5f50386834c73c379987eaa80c2d1)",
+    "plan": "consult-backed-parking-2026-10-12",
+    "items": ["P-013", "P-010"],
+    "workItem": "WI-6554700010009500",
+    "specs": ["consult-backed-parking-2026-10-12#AUTO-BAR-R-10-P-013@4", "consult-backed-parking-2026-10-12#AUTO-BAR-R-10-P-010@4", "consult-backed-parking-2026-10-12#SPEC-P-013@1", "consult-backed-parking-2026-10-12#SPEC-P-010@1"],
+    "detail": "docs/evidence/cbp-p013-live-resume-matrix-2026-10-13.json",
+    "recordedBy": "su-a2d144e1-4576-4511-8c32-3bf4de08bd29"
+  },
+  "disclosures": [
+    "Staging only. Production :3070 serves main d740fc3802, which does not carry these launcher fixes, and the ~/.local/bin/psu shim resolves the release launcher unless PAPERCUSP_PSU_LAUNCHER is set. An owner's bare `psu --resume` gets this behaviour once green main carries it.",
+    "The source sessions were seeded before startedAt, which marks the first session-port preparation.",
+    "One attempt failed and is excluded: omp->claude port 1a0587f1-667f-4c31-a04e-3a8f3c1d0a57 ('managed pty unavailable before session-port seed delivery'). Two concurrent resumes of one source share its coord identity, so the pty-host single-continuation guard refused the second. Re-run sequentially, the pair delivered as 4d15634c. This is not one of the four measured causes in R-24. The identity-sharing behaviour is filed as EI-25832331831534474.",
+    "The first codex source attempt (adv 42037, gpt-6.1-sol:low) showed only spinner output for more than 300s and was stopped. The xhigh retry (adv 42045) was used. This was not diagnosed further.",
+    "codex->omp delivered at summary-tail fidelity, because the omp target's token budget was smaller than the codex source transcript."
+  ]
+}

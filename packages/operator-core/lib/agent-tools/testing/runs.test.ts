@@ -18,6 +18,7 @@ import { PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import {
   defaultRollupSource,
   isSaturationSuspect,
+  MUTANT_DIFF_INLINE_CHARS,
   normalizeRunGroupFilter,
   shapeTestingRuns,
   toPathPattern,
@@ -231,7 +232,59 @@ describe('testing:runs runGroupId compatibility alias', () => {
 });
 
 describe('testing:runs evidence identity', () => {
-  it('returns each durable receipt and its stored scope, including an unscoped receipt', async () => {
+  const cappedDetails = {
+    schemaVersion: 1, root: '/checkouts/papercusp', filePath: 'same.test.ts',
+    runGroupId: null, workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+    testNamePattern: null, testLayer: 'integration', passed: 80, failed: 0, skipped: 0,
+    collectionFailed: false, mutationPhase: null, commitSha: 'abc123', worktreeDirty: true,
+    passedCaseTitles: Array.from({ length: 64 }, (_, index) => `suite > case ${index}`),
+    passedCaseTitlesTruncated: true,
+  };
+
+  async function readDetails(executionDetails: unknown) {
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      if (!call.strings.some(part => part.includes('WITH filtered'))) return call;
+      return Promise.resolve([{
+        id: '17692433', workspace_id: 'workspace-a', harness_slug: 'harness-a',
+        execution_details: executionDetails, file_path: 'same.test.ts',
+        status: 'pass', framework: 'vitest', started_at: '2026-09-08T09:43:05Z',
+        finished_at: '2026-09-08T09:43:06Z', duration_ms: '1000', output_tail: null,
+        run_group_id: null, source: 'local', branch: 'staging', commit_sha: 'abc123',
+        loop_lag_p95_ms: null, rss_mb: null, worktree_dirty: true,
+        is_scratch_config: false, total: '1',
+      }]);
+    });
+    const result = await runsTool.handler({ testRunIds: [17692433], limit: 1 } as never, {} as never) as {
+      data?: { runs: Array<Record<string, unknown>> };
+      content?: Array<{ text: string }>;
+    };
+    return (result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}')).runs[0];
+  }
+
+  it.each([
+    { name: 'missing column', stored: undefined, reason: 'not-recorded' },
+    { name: 'SQL NULL', stored: null, reason: 'not-recorded' },
+    { name: 'malformed JSON', stored: '{', reason: 'invalid-or-unsupported' },
+    { name: 'incomplete object', stored: { root: '/untrusted' }, reason: 'invalid-or-unsupported' },
+    { name: 'unsupported extension', stored: { ...cappedDetails, futureField: true }, reason: 'invalid-or-unsupported' },
+    { name: 'different file', stored: { ...cappedDetails, filePath: 'other.test.ts' }, reason: 'row-mismatch' },
+    { name: 'different group', stored: { ...cappedDetails, runGroupId: 'other-run' }, reason: 'row-mismatch' },
+  ])('explains execution-details availability for $name without granting identity', async ({ stored, reason }) => {
+    const row = await readDetails(stored);
+    expect(row).toMatchObject({ root: null, executionDetails: null, executionDetailsUnavailableReason: reason });
+    expect(shapeTestingRuns({ runs: [row] }, 'trimmed')).toMatchObject({
+      runs: [{ executionDetailsUnavailableReason: reason }],
+    });
+  });
+
+  it.each([false, true])('retains capped integration counts and root with serialized=%s', async serialized => {
+    const row = await readDetails(serialized ? JSON.stringify(cappedDetails) : cappedDetails);
+    expect(row).toMatchObject({ root: cappedDetails.root, executionDetails: cappedDetails });
+    expect(row).not.toHaveProperty('executionDetailsUnavailableReason');
+  });
+
+  it('preserves receipt roots with measured passing cases, including an unscoped receipt', async () => {
     let selectedSql = '';
     const row = {
       execution_details: {
@@ -242,10 +295,12 @@ describe('testing:runs evidence identity', () => {
         workspaceId: 'workspace-a',
         harnessSlug: 'harness-a',
         testNamePattern: null,
-        passed: 1,
+        passed: 65,
         failed: 0,
         skipped: 0,
         collectionFailed: false,
+        passedCaseTitles: ['suite > passed case'],
+        passedCaseTitlesTruncated: true,
         mutationPhase: null,
         commitSha: null,
         worktreeDirty: false,
@@ -274,8 +329,9 @@ describe('testing:runs evidence identity', () => {
     expect(data).toMatchObject({
       count: 2,
       runs: [
-        { id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'harness-a', root: '/checkouts/papercusp' },
-        { id: 17692432, workspaceId: null, harnessSlug: null, root: null },
+        { id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'harness-a', root: '/checkouts/papercusp',
+          executionDetails: row.execution_details },
+        { id: 17692432, workspaceId: null, harnessSlug: null, root: null, executionDetails: null },
       ],
     });
     // Both rows have the same path/time/commit. Those labels cannot replace
@@ -305,11 +361,15 @@ describe('testing:runs evidence identity', () => {
       content?: Array<{ text: string }>;
     };
     const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
-    expect(data.runs).toEqual([expect.objectContaining({ root: null })]);
+    expect(data.runs).toEqual([expect.objectContaining({ root: null, executionDetails: null })]);
     expect(selectedSql).toContain('p.execution_details');
   });
 
-  it('normalizes a JSONB string before parsing and projects its validated root', async () => {
+  it.each([
+    { filePath: 'same.test.ts', runGroupId: null, matches: true },
+    { filePath: 'other.test.ts', runGroupId: null, matches: false },
+    { filePath: 'same.test.ts', runGroupId: 'other-run', matches: false },
+  ])('binds JSONB measured cases to their exact file and group: $filePath/$runGroupId', async (scenario) => {
     sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
       const call = { strings: Array.from(strings), values };
       if (!call.strings.some((part) => part.includes('WITH filtered'))) return call;
@@ -318,8 +378,8 @@ describe('testing:runs evidence identity', () => {
         execution_details: JSON.stringify({
           schemaVersion: 1,
           root: '/checkouts/papercusp',
-          filePath: 'same.test.ts',
-          runGroupId: null,
+          filePath: scenario.filePath,
+          runGroupId: scenario.runGroupId,
           workspaceId: 'workspace-a',
           harnessSlug: 'harness-a',
           testNamePattern: null,
@@ -327,6 +387,7 @@ describe('testing:runs evidence identity', () => {
           failed: 0,
           skipped: 0,
           collectionFailed: false,
+          passedCaseTitles: ['suite > passed case'],
           mutationPhase: null,
           commitSha: null,
           worktreeDirty: false,
@@ -344,7 +405,10 @@ describe('testing:runs evidence identity', () => {
       content?: Array<{ text: string }>;
     };
     const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
-    expect(data.runs).toEqual([expect.objectContaining({ root: '/checkouts/papercusp' })]);
+    expect(data.runs).toMatchObject([scenario.matches
+      ? { root: '/checkouts/papercusp', executionDetails: { passed: 1, failed: 0, skipped: 0,
+        collectionFailed: false, passedCaseTitles: ['suite > passed case'], testNamePattern: null } }
+      : { root: null, executionDetails: null }]);
   });
 });
 
@@ -570,6 +634,155 @@ describe('testing:runs payload-tier shape', () => {
     expect(payload?.runs.every((row) => Number.isInteger(row.id))).toBe(true);
     expect(payload?.runs.every((row) => 'workspaceId' in row && 'harnessSlug' in row)).toBe(true);
     expect(payload?.runs[0]).toMatchObject({ id: 17692431, workspaceId: 'workspace-a', harnessSlug: 'papercusp' });
+  });
+
+  it('preserves every exact receipt row when case details exceed the inline tier budget', async () => {
+    const exactIds = [21207957, 21208029];
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      const query = call.strings.join(' ');
+      if (query.includes('WITH filtered')) return Promise.resolve([
+        { ...dbRows[0], id: String(exactIds[0]), status: 'pass', output_tail: null, total: '2' },
+        { ...dbRows[1], id: String(exactIds[1]), status: 'pass', output_tail: null, total: '2' },
+      ]);
+      if (query.includes('FROM harness_shared.test_case_runs')) return Promise.resolve(exactIds.map((id, index) => ({
+        test_run_id: String(id),
+        case_key: `suite > case ${index + 1}`,
+        occurrence: 1,
+        status: 'pass',
+        duration_ms: 3,
+        error_tail: `${index}: ${'case detail '.repeat(180)}`,
+      })));
+      return Promise.resolve([]);
+    });
+
+    const raw = await runsTool.handler({ testRunIds: exactIds, cases: true } as never, {} as never) as { data: unknown };
+    expect(JSON.stringify(raw.data).length).toBeGreaterThan(4_800);
+
+    const projected = lookupByMcpName('testing:runs');
+    expect(projected).toBeDefined();
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'testing:runs',
+      { testRunIds: exactIds, cases: true },
+      dispatchContext('trimmed'),
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{
+      count: number;
+      total: number;
+      runs: Array<{ id: number; cases: Array<{ caseKey: string; errorTail: string | null }> }>;
+      payloadBounded?: { droppedRuns?: number };
+    }>(dispatched.result!);
+    expect(payload?.count).toBe(2);
+    expect(payload?.total).toBe(2);
+    expect(payload?.runs.map((row) => row.id)).toEqual(exactIds);
+    expect(payload?.runs.every((row) => row.cases.length === 1 && row.cases[0]?.errorTail?.length! > 1_000)).toBe(true);
+    expect(payload?.payloadBounded?.droppedRuns ?? 0).toBe(0);
+  });
+
+  it('bounds verbose saved case details without clipping identities or changing measured counts', () => {
+    const executionDetails = {
+      schemaVersion: 1, root: '/tmp', filePath: 'measured.test.ts', runGroupId: 'measured',
+      workspaceId: null, harnessSlug: null, passed: 7, failed: 0, skipped: 118,
+      collectionFailed: false, testNamePattern: 'selected assertion',
+      mutationPhase: null, commitSha: null, worktreeDirty: false,
+      passedCaseTitles: ['exact short case', 'x'.repeat(2_048)],
+      passedCaseTitlesTruncated: true,
+    };
+    const shaped = shapeTestingRuns({ runs: [{ id: 42, executionDetails }] }, 'trimmed') as {
+      runs: Array<{ executionDetails: Record<string, unknown>; executionDetailsBounded: unknown }>;
+    };
+    expect(shaped.runs[0]?.executionDetails).toMatchObject({ passed: 7, failed: 0, skipped: 118,
+      collectionFailed: false, testNamePattern: 'selected assertion', passedCaseTitles: ['exact short case'] });
+    expect(shaped.runs[0]?.executionDetails.passedCaseTitlesTruncated).toBe(true);
+    expect(shaped.runs[0]?.executionDetailsBounded).toMatchObject({ passedCaseTitlesOmitted: 1,
+      failedCaseTitlesOmitted: 0, fieldsOmitted: expect.arrayContaining(['root', 'filePath']) });
+    expect(JSON.stringify(shaped).length).toBeLessThan(1_400);
+    expect(executionDetails.passedCaseTitles).toHaveLength(2);
+  });
+
+  it('publishes testLayer for judges and preserves it when execution details are bounded', () => {
+    expect(runsTool.agentRoles).toContain('judge');
+    const runShape = (runsTool.result as any).shape.runs.unwrap().element.shape;
+    expect(Object.keys(runShape)).toEqual(expect.arrayContaining([
+      'executionDetails', 'executionDetailsUnavailableReason',
+    ]));
+    const detailsShape = runShape.executionDetails.unwrap().shape;
+    expect(Object.keys(detailsShape)).toContain('testLayer');
+
+    const executionDetails = {
+      schemaVersion: 1,
+      root: '/tmp',
+      filePath: 'measured.test.ts',
+      runGroupId: 'measured',
+      workspaceId: null,
+      harnessSlug: null,
+      testNamePattern: null,
+      testLayer: 'integration',
+      passed: 7,
+      failed: 0,
+      skipped: 2,
+      collectionFailed: false,
+      passedCaseTitles: ['x'.repeat(2_048)],
+    };
+    const shaped = shapeTestingRuns({ runs: [{ id: 45, executionDetails }] }, 'trimmed') as {
+      runs: Array<{ executionDetails: Record<string, unknown>; executionDetailsBounded: { fieldsOmitted: string[] } }>;
+    };
+    expect(shaped.runs[0]?.executionDetails).toMatchObject({
+      testLayer: 'integration', passed: 7, failed: 0, skipped: 2,
+    });
+    expect(shaped.runs[0]?.executionDetailsBounded.fieldsOmitted).not.toContain('testLayer');
+  });
+
+  // Plan mutation-probe-evidence-value-2026-10-11 R-1: the mutation descriptor is what
+  // makes a probe row auditable, so a bounded row keeps it inline instead of listing it
+  // in fieldsOmitted, and clips only the mutant diff body (flagged).
+  it.each([
+    ['baseline', 1, 0], ['mutant', 1, 0], ['mutant', 0, 1], ['consumption-control', 0, 1],
+  ])('keeps execution_details.mutation inline on a bounded %s row (%i passed/%i failed) and clips only the mutant diff', (leg, passed, failed) => {
+    const mutation = {
+      schemaVersion: 1,
+      probeInvocationId: 'probe-7f3c',
+      leg,
+      mode: 'copy-out',
+      subjectPath: 'scripts/example-guard.sh',
+      mutateExpression: 's/^guard_on=1$/guard_on=0/',
+      againstCommit: null,
+      subjectBeforeSha256: 'a'.repeat(64),
+      subjectAfterSha256: 'b'.repeat(64),
+      mutantDiff: `--- a\n+++ b\n${'-guard_on=1\n+guard_on=0\n'.repeat(100)}`,
+      mutantDiffTruncated: false,
+      testCommandSha256: 'd'.repeat(64),
+      testFileSha256: 'c'.repeat(64),
+    };
+    const executionDetails = {
+      schemaVersion: 1, root: '/tmp', filePath: 'measured.test.ts', runGroupId: 'measured',
+      workspaceId: null, harnessSlug: null, passed, failed, skipped: 0,
+      collectionFailed: false, testNamePattern: null, mutationPhase: leg, commitSha: null,
+      worktreeDirty: false, failedCaseTitles: failed ? ['guard refuses when disabled'] : [],
+      passedCaseTitles: passed ? ['guard accepts the surviving source'] : [], mutation,
+    };
+    expect(JSON.stringify(executionDetails).length).toBeGreaterThan(1_400);
+    const shaped = shapeTestingRuns({ runs: [{ id: 43, executionDetails }] }, 'trimmed') as {
+      runs: Array<{ executionDetails: Record<string, unknown>; executionDetailsBounded: { fieldsOmitted: string[] } }>;
+    };
+    const row = shaped.runs[0]!;
+    const inline = row.executionDetails.mutation as Record<string, unknown>;
+    const { mutantDiff } = mutation;
+    expect(inline).toMatchObject({ ...mutation, mutantDiff: mutantDiff.slice(0, MUTANT_DIFF_INLINE_CHARS),
+      mutantDiffTruncated: true });
+    expect(inline.mutantDiff).toBe(mutantDiff.slice(0, MUTANT_DIFF_INLINE_CHARS));
+    expect(inline.mutantDiffTruncated).toBe(true);
+    expect(row.executionDetailsBounded.fieldsOmitted).not.toContain('mutation');
+    // A diff within budget is carried verbatim with no truncation flag.
+    const small = shapeTestingRuns({ runs: [{ id: 44, executionDetails: { ...executionDetails,
+      passedCaseTitles: ['x'.repeat(2_048)], mutation: { ...mutation, mutantDiff: '-a\n+b\n' } } }] }, 'trimmed') as {
+      runs: Array<{ executionDetails: Record<string, unknown> }>;
+    };
+    expect(small.runs[0]!.executionDetails.mutation).toEqual({ ...mutation, mutantDiff: '-a\n+b\n' });
   });
 
   it('preserves the required fields and announces row/tail bounds in the shaper output', () => {

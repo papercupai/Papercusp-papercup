@@ -67,11 +67,41 @@ vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
 }));
 
-import GitClient from './GitClient';
+import GitClient, { kindLabel } from './GitClient';
 
 afterEach(() => cleanup());
 
 describe('GitClient', () => {
+  it('shows verdict starvation separately from a small historical red streak', () => {
+    mockResult = { data: [{ ...snapshot, gate: {
+      ...snapshot.gate, consecutiveNoVerdict: 7,
+      fireHistory: { windowHours: 24, fires: 74, verdictRecords: 0, noVerdictAborts: 7, skippedStarts: 46 },
+      inconclusive: { status: 'dependency-prewarm-missing', detail: 'Waiting for the candidate dependency generation' },
+    } }], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.getByText('2 checkpoint(s)')).toBeTruthy();
+    expect(screen.getByText('no verdict')).toBeTruthy();
+    expect(screen.getByTestId('gate-fire-history').textContent).toContain('74 activation requests · 0 verdict records');
+    expect(screen.getByTestId('gate-no-verdict-streak').textContent).toBe('7 consecutive abort(s)');
+    expect(screen.getByTestId('gate-hold-duration').textContent).toBe('2h');
+    expect(screen.getByTestId('gate-current-blocker').textContent).toBe('Waiting for the candidate dependency generation');
+  });
+
+  it('keeps missing measurements explicit for an older snapshot', () => {
+    mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.getByTestId('gate-fire-history').textContent).toBe('not measured');
+    expect(screen.getByTestId('gate-no-verdict-streak').textContent).toBe('not measured');
+  });
+
+  it('does not label a recorded red verdict green when its historical streak was reset', () => {
+    mockResult = { data: [{ ...snapshot, gate: {
+      ...snapshot.gate, consecutiveReds: 0, consecutiveNoVerdict: 0, recordedVerdict: 'not-green',
+    } }], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.getByText('held')).toBeTruthy();
+  });
+
   it('renders pipeline stats, routines, the conflict banner, and the timeline', () => {
     mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
     render(<GitClient />);
@@ -238,5 +268,136 @@ describe('bridge pill helpers (P-009)', () => {
     const errs = { ...base, errors: 3, egressTarget: 'skipped' };
     expect(bridgeTone({ hiveGitMode: 'bridged', bridge: errs })).toBe('warn');
     expect(bridgeLabel({ hiveGitMode: 'bridged', bridge: errs })).toBe('bridged · 3 err');
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-016: the green-main SLO card.
+describe('GreenMainSloCard', () => {
+  const HOUR = 3_600_000;
+  const thresholds = {
+    redPageMs: 12 * HOUR,
+    noVerdictPageMs: 6 * HOUR,
+    roundCycleAlertMs: 2 * HOUR,
+    queueIdleAlertMs: HOUR,
+    perSyncRedRateAlert: 0.2,
+  };
+  const healthy = {
+    metrics: {
+      timeSinceGreenMs: 2 * HOUR,
+      timeSinceVerdictMs: 30 * 60_000,
+      roundCycleTime: { lastMs: null, medianMs: null, intervals: 0 },
+      queueIdleMs: null,
+      roundsToConverge: null,
+      redAddingAdmissions: null,
+      perSyncRedRate: null,
+    },
+    breaches: [],
+    thresholds,
+    unreadable: [],
+  };
+
+  it('renders a healthy SLO as within-SLO with every metric labelled, and sync rate "not measured"', () => {
+    mockResult = { data: [{ ...snapshot, gate: { ...snapshot.gate, slo: healthy } }], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    const card = screen.getByTestId('gate-green-main-slo');
+    expect(card.textContent).toContain('within SLO');
+    expect(card.textContent).toContain('since green');
+    expect(card.textContent).toContain('2.0h');
+    expect(card.textContent).toContain('30m');
+    expect(card.textContent).toContain('no queue');
+    expect(card.textContent).toContain('not measured');
+    expect(screen.queryByTestId('gate-green-main-slo-breaches')).toBeNull();
+  });
+
+  it('renders page and alert breaches with their titles, and an unreadable verdict ledger as unknown (never healthy)', async () => {
+    const { GreenMainSloCard } = await import('./GitClient');
+    render(
+      <GreenMainSloCard
+        slo={{
+          ...healthy,
+          metrics: {
+            ...healthy.metrics,
+            timeSinceGreenMs: 245 * HOUR,
+            timeSinceVerdictMs: null,
+            roundCycleTime: { lastMs: 3 * HOUR, medianMs: 2.5 * HOUR, intervals: 4 },
+            queueIdleMs: 90 * 60_000,
+            roundsToConverge: { rounds: 7, converged: false },
+            redAddingAdmissions: { count: 2, judged: 9, heads: ['aaaa', 'bbbb'] },
+          },
+          breaches: [
+            { metric: 'time-since-green', severity: 'page', title: 'Main has been red 245.0h on papercusp', detail: 'No green verdict since …', episodeKey: 'k1' },
+            { metric: 'queue-idle', severity: 'alert', title: 'Frozen repair queue idle 1.5h on papercusp', detail: 'The newest red has waited 1.5h for a fixer.', episodeKey: 'k2' },
+          ],
+          unreadable: ['lastVerdictAt'],
+        }}
+      />,
+    );
+    const card = screen.getByTestId('gate-green-main-slo');
+    expect(card.textContent).toContain('page: time-since-green');
+    expect(card.textContent).toContain('alert: queue-idle');
+    expect(card.textContent).not.toContain('within SLO');
+    expect(card.textContent).toContain('10.2d');
+    expect(card.textContent).toContain('unknown');
+    expect(card.textContent).toContain('ledger unreadable');
+    expect(card.textContent).toContain('2 of 9');
+    expect(card.textContent).toContain('median 2.5h · 4 interval(s)');
+    expect(screen.getByTestId('gate-green-main-slo-breaches').textContent).toContain('Main has been red 245.0h on papercusp');
+  });
+
+  it('renders each non-verdict reason and its daily threshold', async () => {
+    const { GreenMainSloCard } = await import('./GitClient');
+    render(<GreenMainSloCard slo={{ ...healthy, thresholds: { ...thresholds, nonVerdictReasonMinCount: 6 },
+      metrics: { ...healthy.metrics, nonVerdictReasons: { windowHours: 24, measuredAtMs: Date.now(), reasons: [
+        { reason: 'skipped-joined-attempt', count: 7, latestAtMs: Date.now() },
+        { reason: 'skipped-memory-budget', count: 2, latestAtMs: Date.now() },
+      ] } } }} />);
+    const card = screen.getByTestId('gate-non-verdict-reasons');
+    expect(card.textContent).toContain('skipped-joined-attempt: 7');
+    expect(card.textContent).toContain('skipped-memory-budget: 2');
+    expect(card.textContent).toContain('Owned follow-up at 6');
+  });
+
+  it('shows an unreadable reason ledger as unknown and a complete empty read as zero', async () => {
+    const { GreenMainSloCard } = await import('./GitClient');
+    const rendered = render(<GreenMainSloCard slo={{ ...healthy, unreadable: ['nonVerdictReasons'] }} />);
+    expect(screen.getByTestId('gate-non-verdict-reasons').textContent).toContain('unknown · ledger unreadable');
+    expect(screen.getByTestId('gate-green-main-slo').textContent).not.toContain('within SLO');
+    rendered.rerender(<GreenMainSloCard slo={{ ...healthy, metrics: { ...healthy.metrics,
+      nonVerdictReasons: { windowHours: 24, measuredAtMs: Date.now(), reasons: [] } } }} />);
+    expect(screen.getByTestId('gate-non-verdict-reasons').textContent).toContain('0 terminal skips or aborts');
+  });
+
+  it('is absent for an older snapshot that carries no slo', () => {
+    mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.queryByTestId('gate-green-main-slo')).toBeNull();
+  });
+});
+
+// WI-6554700010010213: the server appends more pipeline-event kinds than this pane has bespoke
+// labels for, and `recentPipelineEvents` returns all of them. A post-verdict deadline overrun
+// used to render as an empty chip with no detail — the opposite of "loud".
+describe('timeline: every event kind is labelled (WI-6554700010010213)', () => {
+  it('kindLabel names a known kind by its label and an unknown kind by its own name', () => {
+    expect(kindLabel('green_checkpoint_post_verdict')).toBe('post-verdict');
+    expect(kindLabel('git_sync')).toBe('git-sync');
+    expect(kindLabel('gate_invariants')).toBe('gate-invariants');
+  });
+
+  it('renders a post-verdict deadline overrun with its step, deadline and wait, and labels an unmapped kind', () => {
+    const withOverrun = {
+      ...snapshot,
+      recent: [
+        { id: '9', kind: 'green_checkpoint_post_verdict', status: 'deadline-exceeded', detail: { label: 'frozen-repair leg routing', deadlineMs: 60000, elapsedMs: 60004 }, createdAtMs: Date.now() - 60000 },
+        { id: '8', kind: 'gate_invariants', status: 'ok', detail: {}, createdAtMs: Date.now() - 90000 },
+        ...snapshot.recent,
+      ],
+    };
+    mockResult = { data: [withOverrun], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    const chip = screen.getByText('post-verdict');
+    expect(chip.className).toContain('is-warn');
+    expect(screen.getByText('frozen-repair leg routing · deadline 60000ms · waited 60004ms')).toBeTruthy();
+    expect(screen.getByText('gate-invariants')).toBeTruthy();
   });
 });

@@ -29,14 +29,29 @@ import { goalPlanningPortfolioFingerprint, parseGoalPlanningReview, type GoalPla
 import type { GoalPotPlacementAuthority } from './goal-launch-settings';
 import { GOAL_OWNER_REPORT_MAX_SILENCE_MS, GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS } from './system-health/goal-owner-report-watchdog';
 import type { GoalLaunchResolution, GoalPortfolioBrief } from './goal-launch-settings';
-import type { PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
+import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { GoalPlacementProgressState } from './goal-placement-progress';
 import { fleetSlugFromName } from './agent-fleets-store';
+import type { FleetStaffingRow } from './fleet/fleet-staffing-read';
+import type { StrandedGoalWork } from './goal-stranded-work';
 import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
 
 export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
+
+/**
+ * The goal-portfolio sections the obligation reader does NOT read, and so must not
+ * pay for inside AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS. The reader reads only
+ * `portfolio.goal`, `portfolio.worklist` and `pending.blenderIdeas` (the planning
+ * review fingerprint). Without this projection the 60d3a8
+ * read measured 0.8-1.3s warm, and 111 of 149 goal turn-end rows (2026-10-06..10)
+ * recorded `unknown` (EI-25306440159635835).
+ */
+export const AGENT_OBLIGATION_PORTFOLIO_PROJECTION = {
+  claimability: 'skip',
+  rubricStewardship: 'skip',
+} as const;
 
 /**
  * The cost bound on how many plans one turn-start read raises an acceptance
@@ -45,6 +60,12 @@ export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
  * deliberately reused this bound rather than inventing a second one.
  */
 export const PLAN_CONTEXT_MAX = 8;
+
+/** A lifecycle disposition is not a synthetic acceptance verdict. */
+export type PlanAcceptanceObligationRead = PlanClosureGateFields | {
+  notApplicable: 'superseded';
+  reason: string;
+};
 
 export interface AgentObligationReaderDeps {
   goalSubject: (workspaceId: string, ownerId: string) => Promise<string | null>;
@@ -77,7 +98,14 @@ export interface AgentObligationReaderDeps {
     goalId: string,
     nowMs: number,
   ) => Promise<GoalOwnerReportObligation | null>;
-  planAcceptance: (planSlug: string) => Promise<PlanAcceptanceGateVerdict>;
+  /**
+   * The plan's PERSISTED canonical acceptance-gate verdict (D-039, WI-10004673). Never
+   * runs the gate: inline, it cost 1.0–1.8s of main-thread CPU per agenda read and
+   * lagged bg-host's event loop past every 900ms budget here. A stale or absent
+   * observation rejects — an `unknown` read — and starts the single-flight background
+   * re-evaluation that refreshes it.
+   */
+  planAcceptance: (workspaceId: string, planSlug: string) => Promise<PlanAcceptanceObligationRead>;
   /**
    * Undispositioned owner directives (`pending` + `open`) for this workspace.
    *
@@ -103,6 +131,19 @@ export interface AgentObligationReaderDeps {
    * one, and gating it would reproduce the same measured hole.
    */
   waitingOn: (workspaceId: string, ownerId: string) => Promise<WaitingOnObligationRow[]>;
+  /**
+   * P-005 / D-030 step 6: staffing of every active fleet this owner leads. REQUIRED
+   * for the same reason as `waitingOn`. Not gated on an active goal: any session can
+   * lead a fleet. An empty array means the owner leads no active fleet.
+   */
+  fleetStaffing: (workspaceId: string, ownerId: string) => Promise<FleetStaffingRow[]>;
+  /**
+   * P-005 / R-5: the goal's open, unassigned goal-created items past the stranded
+   * threshold or stamped by a refused launch (goal-stranded-work.ts). REQUIRED for
+   * the same reason as `waitingOn`. Gated on an active goal: only a goal has
+   * goal-created work.
+   */
+  strandedGoalWork: (workspaceId: string, goalId: string, nowMs: number) => Promise<StrandedGoalWork>;
 }
 
 interface ReadOutcome<T> {
@@ -299,8 +340,8 @@ export async function readAgentObligationAgenda(input: {
   const readAcceptance = (planSlug: string) =>
     boundedRead(
       'plan-acceptance:' + planSlug,
-      deps.planAcceptance(planSlug),
-      null as PlanAcceptanceGateVerdict | null,
+      deps.planAcceptance(input.workspaceId, planSlug),
+      null as PlanAcceptanceObligationRead | null,
       sourceTimeoutMs,
     );
   const ownAcceptancePromises = ownPlanSlugs.map(readAcceptance);
@@ -314,7 +355,7 @@ export async function readAgentObligationAgenda(input: {
   // this wave still starts immediately and runs concurrently, and the one new
   // dependency edge (portfolio -> its own plans' acceptance) is intrinsic.
   const worklistAcceptancePromise = portfolioPromise.then(async (portfolioOutcome) => {
-    const empty = { planSlugs: [] as string[], acceptances: [] as ReadOutcome<PlanAcceptanceGateVerdict | null>[] };
+    const empty = { planSlugs: [] as string[], acceptances: [] as ReadOutcome<PlanAcceptanceObligationRead | null>[] };
     const budget = PLAN_CONTEXT_MAX - ownPlanSlugs.length;
     if (budget <= 0) return empty;
     const seen = new Set(ownPlanSlugs);
@@ -322,6 +363,9 @@ export async function readAgentObligationAgenda(input: {
       const slug = entry.slug?.trim();
       if (!slug || seen.has(slug)) return false;
       seen.add(slug);
+      // Abandoned plans do not owe acceptance, even if an old gate is still red.
+      // Exclude them before spending the bounded acceptance-read budget.
+      if (entry.status?.trim().toLowerCase() === 'superseded') return false;
       // `closure: null` means the question does not arise yet (the plan is not
       // administratively complete). Per D-012 that is NEVER a reading of
       // "closed", so such a plan stays in scope.
@@ -356,7 +400,22 @@ export async function readAgentObligationAgenda(input: {
     [] as WaitingOnObligationRow[],
     sourceTimeoutMs,
   );
-  const [portfolio, admission, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning] =
+  // Not gated on goalId either: see AgentObligationReaderDeps.fleetStaffing.
+  const fleetStaffingPromise = boundedRead(
+    'fleet-staffing',
+    deps.fleetStaffing(input.workspaceId, input.ownerId),
+    [] as FleetStaffingRow[],
+    sourceTimeoutMs,
+  );
+  const strandedPromise = goalId
+    ? boundedRead(
+        'stranded-goal-work',
+        deps.strandedGoalWork(input.workspaceId, goalId, now.getTime()),
+        null as StrandedGoalWork | null,
+        sourceTimeoutMs,
+      )
+    : Promise.resolve<ReadOutcome<StrandedGoalWork | null>>({ value: null, degraded: false, elapsedMs: 0 });
+  const [portfolio, admission, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning, staffing, stranded] =
     await Promise.all([
       portfolioPromise,
       admissionPromise,
@@ -368,12 +427,16 @@ export async function readAgentObligationAgenda(input: {
       directivesPromise,
       waitingOnPromise,
       planningPromise,
+      fleetStaffingPromise,
+      strandedPromise,
     ]);
   const planSlugs = [...ownPlanSlugs, ...worklistAcceptance.planSlugs];
   const acceptances = [...ownAcceptances, ...worklistAcceptance.acceptances];
   degradedSources.push(...admission.failures);
   if (directives.degraded) degradedSources.push(readFailure('owner directives', directives));
   if (waits.degraded) degradedSources.push(readFailure('waiting-on', waits));
+  if (staffing.degraded) degradedSources.push(readFailure('fleet staffing', staffing));
+  if (stranded.degraded) degradedSources.push(readFailure('stranded goal work', stranded));
   const waitingOn: WaitingOnProviderInput = {
     workspaceId: input.workspaceId,
     ownerId: input.ownerId,
@@ -611,6 +674,17 @@ export async function readAgentObligationAgenda(input: {
     }
     const gate = outcome.value;
     const generation = agentObligationSourceGeneration({ planSlug, gate });
+    if ('notApplicable' in gate) {
+      return {
+        workspaceId: input.workspaceId,
+        ownerId: input.ownerId,
+        planSlug,
+        observedAt,
+        sourceGeneration: generation,
+        notApplicableReason: gate.reason,
+        read: { status: 'known', value: null },
+      };
+    }
     return {
       workspaceId: input.workspaceId,
       ownerId: input.ownerId,
@@ -628,9 +702,79 @@ export async function readAgentObligationAgenda(input: {
     };
   });
 
+  // P-005 / D-030 step 6. Row facts only, no clock, for the same dedup reason as
+  // waitingOn: an unchanged staffing picture keeps an unchanged generation.
+  const fleetStaffing: NonNullable<Parameters<typeof buildAgentObligationAgenda>[0]['fleetStaffing']> = {
+    workspaceId: input.workspaceId,
+    ownerId: input.ownerId,
+    observedAt,
+    sourceGeneration: agentObligationSourceGeneration({
+      fleetStaffing: staffing.degraded
+        ? 'unknown'
+        : staffing.value.map((row) => [
+            row.fleetSlug,
+            row.evaluation?.alert ?? null,
+            row.evaluation?.current ?? null,
+            row.evaluation?.target ?? null,
+            row.evaluation?.held ?? null,
+            row.evaluation?.notHeldBecause ?? null,
+            row.evaluation?.topUpRule?.status ?? null,
+            row.unknownReason ?? null,
+          ]),
+    }),
+    read: staffing.degraded
+      ? {
+          status: 'unknown',
+          failure: {
+            code: 'canonical-fleet-staffing-read-failed',
+            detail: readFailure('fleet-staffing', staffing),
+            retry: 'retry fleet:leader-brief for each fleet you lead',
+          },
+        }
+      : { status: 'known', value: staffing.value },
+  };
+
+  // P-005 / R-5. Row facts only (ids, refusal count), no clock: the same stranded
+  // set keeps the same generation across warm turns.
+  const strandedGoalWork: NonNullable<Parameters<typeof buildAgentObligationAgenda>[0]['strandedGoalWork']> | undefined =
+    goalId
+      ? {
+          workspaceId: input.workspaceId,
+          ownerId: input.ownerId,
+          goalId,
+          observedAt,
+          sourceGeneration: agentObligationSourceGeneration({
+            strandedGoalWork:
+              stranded.degraded || !stranded.value
+                ? 'unknown'
+                : [stranded.value.total, stranded.value.refusedCount, stranded.value.sample.map((row) => row.id)],
+          }),
+          read:
+            stranded.degraded || !stranded.value
+              ? {
+                  status: 'unknown',
+                  failure: {
+                    code: 'canonical-stranded-goal-work-read-failed',
+                    detail: readFailure('stranded goal work', stranded),
+                    retry: `retry work_items:list { goalId: '${goalId}', state: 'open' } and check which items are unassigned`,
+                  },
+                }
+              : { status: 'known', value: stranded.value },
+        }
+      : undefined;
+
   return {
     agenda: buildAgentObligationAgenda(
-      { planPlacement, goalPlanning, ownerReport, independentVerification, ownerDirectives, waitingOn },
+      {
+        planPlacement,
+        goalPlanning,
+        ownerReport,
+        independentVerification,
+        ownerDirectives,
+        waitingOn,
+        fleetStaffing,
+        ...(strandedGoalWork ? { strandedGoalWork } : {}),
+      },
       observedAt,
     ),
     goalId,
@@ -802,6 +946,11 @@ export async function readAgentGoalModeState(input: {
 
 export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
   return {
+    // P-005 / D-030 step 6: the brief's own headcount primitives, loaded lazily.
+    fleetStaffing: async (workspaceId, ownerId) =>
+      (await import('./fleet/fleet-staffing-read')).readLedFleetStaffing({ workspaceId, ownerId }),
+    strandedGoalWork: async (workspaceId, goalId, nowMs) =>
+      (await import('./goal-stranded-work')).readStrandedGoalWork({ workspaceId, goalId, nowMs }),
     goalSubject: async (workspaceId, ownerId) => {
       const [{ getModes }, { goalIdFromModes }] = await Promise.all([
         import('./modes/store'),
@@ -816,9 +965,11 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
     },
     goalPortfolio: async (workspaceId, goalId) => {
       const { readGoalPortfolioBrief } = await import('./goal-launch-settings');
-      // Placement and planning obligations never read queue.claimable; its
-      // per-id floor count alone exceeded AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS.
-      return readGoalPortfolioBrief({ workspaceId, goalId, claimability: 'skip' });
+      // Placement and planning read `goal`, `worklist` and `pending.blenderIdeas`. The
+      // claim-floor count (queue.claimable) and the rubric-stewardship identity
+      // graph each alone pushed this read past AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS
+      // (EI-25306440159635835), so neither is paid for here.
+      return readGoalPortfolioBrief({ workspaceId, goalId, ...AGENT_OBLIGATION_PORTFOLIO_PROJECTION });
     },
     goalPlacementProgress: async (workspaceId, ownerId, goalId, planRefs) =>
       (await import('./goal-placement-progress-store')).readGoalPlacementProgress({ workspaceId, ownerId, goalId, planRefs }),
@@ -872,9 +1023,23 @@ export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
       ]);
       return readGoalOwnerReportObligation(getOrgPg().sql, { workspaceId, ownerId, goalId }, nowMs);
     },
-    planAcceptance: async (planSlug) => {
-      const { evaluatePlanAcceptanceGate } = await import('./plan-acceptance-gate');
-      return evaluatePlanAcceptanceGate(planSlug);
+    planAcceptance: async (workspaceId, planSlug) => {
+      // D-039: the same persisted verdict the goal portfolio's closure read serves
+      // (resolveWorklistClosures). A non-fresh observation is not a verdict, so it
+      // rejects with the observation's own detail rather than falling back inline.
+      const { readPlanClosureObservations, refreshPlanClosureObservations } =
+        await import('./goals/plan-closure-observations');
+      const observation = (await readPlanClosureObservations({ workspaceId, planSlugs: [planSlug] })).get(planSlug);
+      // Lifecycle comes from the current canonical row in the SAME query. A
+      // superseded plan needs no gate refresh or acceptance repair, including
+      // when the historical verdict is absent or stale. Ambiguity remains unknown.
+      if (observation?.status !== 'ambiguous' && observation?.planStatus === 'superseded') {
+        return { notApplicable: 'superseded' as const,
+          reason: `plan '${planSlug}' is superseded; independent acceptance is not applicable` };
+      }
+      if (observation?.status === 'fresh') return observation.gate;
+      if (observation?.status !== 'ambiguous') refreshPlanClosureObservations([planSlug]);
+      throw new Error(observation?.detail ?? `no acceptance-gate observation was read for '${planSlug}'`);
     },
     ownerDirectives: async (workspaceId, ownerId) => {
       const [

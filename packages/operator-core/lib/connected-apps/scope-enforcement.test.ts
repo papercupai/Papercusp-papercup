@@ -10,13 +10,16 @@
  * `operatorKernelEnforcement` that calls `enforceAppKeyScope`.
  */
 import { createRequire } from 'node:module';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const db = vi.hoisted(() => ({
   row: null as Record<string, unknown> | null,
   /** When set, what the DISPATCH SEAT's read (`loadAppScopeRow`) sees instead of `row`. */
   seatRow: undefined as Record<string, unknown> | null | undefined,
   seatReads: 0,
+  confinementReads: 0,
+  confinementPayload: null as unknown,
+  confinementFailure: false,
   /** Every fixture tool that actually ran — the negative assertions read this, not response text. */
   runs: [] as string[],
 }));
@@ -25,8 +28,17 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const sql = Object.assign(
     // Other modules in the transports' graphs also reach this client, some via postgres.js
     // helper calls (`sql(value)`) rather than a tagged template — answer those with no rows.
-    async (strings: TemplateStringsArray | unknown) => {
+    async (strings: TemplateStringsArray | unknown, ...values: unknown[]) => {
+      // postgres.js identifiers are interpolated into the authoritative policy read.
+      if (strings === 'harness_shared.operator_session_confinements') return strings;
       const text = Array.isArray(strings) ? strings.join('?') : '';
+      // This async fixture's identifier helper resolves to a promise; unwrap it
+      // before matching the table, just as the SQL driver resolves its helper.
+      if (/SELECT payload FROM/.test(text) && (await Promise.all(values)).includes('harness_shared.operator_session_confinements')) {
+        db.confinementReads += 1;
+        if (db.confinementFailure) throw new Error('fixture policy read unavailable');
+        return db.confinementPayload === null ? [] : [{ payload: db.confinementPayload }];
+      }
       if (!/SELECT[\s\S]*FROM harness_shared\.connected_apps/.test(text)) return [];
       // loadAppScopeRow names its columns literally; verifyAppKey interpolates them.
       if (/SELECT id, workspace_id, scopes, revoked_at/.test(text)) {
@@ -66,7 +78,11 @@ process.env.AGENT_MCP_TOOL_MANIFEST = '/nonexistent/scope-enforcement-no-manifes
 const { registerProjectedTool, _resetProjectionRegistryForTests } = await import('@papercusp/agent-mcp');
 type ProjectedTool = import('@papercusp/agent-mcp').ProjectedTool;
 const { default: catchall } = await import('../endpoint-route/routes/agent-tools/catchall');
-const { registerMcpHost, mcpHostServerOptions } = await import('../endpoint-route/routes/transport/_mcp-host');
+const { registerMcpHost, mcpHostServerOptions, tryBuildSpawnContext } = await import('../endpoint-route/routes/transport/_mcp-host');
+const { resolveAgentIdentity } = await import('../agent-tools/coordination/identity');
+const { synthesizeTransportPrincipal } = await import('../endpoint-route/routes/transport/role-principal-caps');
+const { readSessionConfinement } = await import('../capability-envelope/session-confinement-store');
+const { getBuildInfo, _resetBuildInfoForTest } = await import('../build-info');
 const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
 const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
@@ -142,7 +158,12 @@ function appRow(tokenHash: string, id: string, over: Record<string, unknown> = {
 
 let minted: ReturnType<typeof mintAppKey>;
 
-beforeEach(() => {
+beforeEach(async () => {
+  // This in-memory host has a declared fixture build, independent of a live
+  // shared checkout's Git HEAD or the two-second build-info discovery budget.
+  vi.stubEnv('PAPERCUSP_BUILD_SHA', '1'.repeat(40));
+  _resetBuildInfoForTest();
+  expect(getBuildInfo().sha).toBe('1'.repeat(40));
   _resetProjectionRegistryForTests();
   registerProjectedTool(echoTool(IN_SCOPE));
   registerProjectedTool(echoTool(OUT_OF_SCOPE));
@@ -152,7 +173,20 @@ beforeEach(() => {
   db.row = appRow(minted.tokenHash, minted.id);
   db.seatRow = undefined;
   db.seatReads = 0;
+  db.confinementReads = 0;
+  db.confinementPayload = null;
+  db.confinementFailure = false;
   db.runs = [];
+  // Fail at the fixture precondition if an authoritative policy read silently
+  // misses this fake SQL client. Empty/missing policy must be a measured read.
+  expect(await readSessionConfinement(`app:${minted.id}`, 'ws-app')).toBeNull();
+  expect(db.confinementReads).toBe(1);
+  db.confinementReads = 0;
+});
+
+afterAll(() => {
+  vi.unstubAllEnvs();
+  _resetBuildInfoForTest();
 });
 
 // ── HTTP ────────────────────────────────────────────────────────────────────────
@@ -274,6 +308,46 @@ const mcpText = (r: unknown): string => {
 };
 
 describe('MCP /api/mcp — app key scope (R-5, R-6)', () => {
+  it('authenticated app identity needs the principal projection independently of policy composition', async () => {
+    const spawn = await tryBuildSpawnContext({ requestInfo: {
+      url: 'http://127.0.0.1:3070/api/mcp',
+      headers: { host: '127.0.0.1:3070', authorization: `Bearer ${minted.key}` },
+    } });
+    expect(spawn.kind).toBe('ok');
+    if (spawn.kind !== 'ok') throw new Error('fixture app did not authenticate');
+    expect(() => resolveAgentIdentity(spawn.ctx)).toThrow(/cannot.*attributed/);
+    expect(resolveAgentIdentity({ ...spawn.ctx, principal: synthesizeTransportPrincipal(spawn.ctx) }).ownerId)
+      .toBe(`app:${minted.id}`);
+  });
+
+  it('reads and enforces the authenticated app owner confinement on listing', async () => {
+    db.confinementPayload = { sessions: { [`app:${minted.id}`]: {
+      confinement: { denyTools: [IN_SCOPE], reason: 'fixture ceiling', imposedBy: 'fixture' },
+      declaredAt: '2026-01-01T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z',
+    } } };
+    const names = await withMcpClient(async (client) => (await client.listTools()).tools.map((t) => t.name));
+    expect(db.confinementReads).toBeGreaterThan(0);
+    expect(names).not.toContain(IN_SCOPE);
+  });
+
+  it('an unreadable confinement never exposes the app catalog', async () => {
+    db.confinementFailure = true;
+    await expect(withMcpClient((client) => client.listTools())).rejects.toThrow(/session_confinement_unavailable/);
+    expect(db.confinementReads).toBeGreaterThan(0);
+  });
+
+  it('the authenticated app frozen context refuses ambient resource reads', async () => {
+    db.confinementPayload = { sessions: { [`app:${minted.id}`]: {
+      confinement: { denyTools: [], denyAmbientContext: true, reason: 'fixture frozen context', imposedBy: 'fixture' },
+      declaredAt: '2026-01-01T00:00:00Z', expiresAt: '2099-01-01T00:00:00Z',
+    } } };
+    await withMcpClient(async (client) => {
+      expect(await client.listResources()).toEqual({ resources: [] });
+      expect(db.confinementReads).toBeGreaterThan(0);
+      await expect(client.readResource({ uri: 'papercusp://fixture/private' })).rejects.toThrow(/frozen assignment context/);
+    });
+  });
+
   it('R-5 + R-6: tools/list shows exactly the in-scope tool — no out-of-scope or hard-denied tool', async () => {
     const names = await withMcpClient(async (client) => (await client.listTools()).tools.map((t) => t.name));
     expect(names).toContain(IN_SCOPE);

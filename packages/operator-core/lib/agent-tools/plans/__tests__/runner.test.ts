@@ -4,17 +4,60 @@
  *
  * `buildPlanAgentMcpUrl`, `planAgentToolEventFilter`, and the derived
  * tool-surface constants are pure — testable without spawning an
- * agent. `runPlanAgent` / `buildPlanAgentMcpConfig` are IO (process
- * spawn, superuser-token read) and are exercised live by P-012 / P-027.
+ * agent. `runPlanAgent` is IO (process spawn) and is exercised live by
+ * P-012 / P-027; `buildPlanAgentMcpConfig`'s token read is covered below
+ * against a throwaway PAPERCUSP_HOME (WI-10004357).
  */
 
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { isValidSuperuserBearer } from '../../../superuser-token';
 import {
+  buildPlanAgentMcpConfig,
   buildPlanAgentMcpUrl,
   planAgentToolEventFilter,
   PLAN_AGENT_ALLOWED_TOOLS,
   PLAN_AGENT_NATIVE_TOOLS,
 } from '../runner';
+
+// The registry's fallback reads the user's live workspace file; the URL shape is
+// covered by buildPlanAgentMcpUrl above, so pin the id rather than read it.
+vi.mock('../../../workspace-registry', async (orig) => ({
+  ...(await orig<typeof import('../../../workspace-registry')>()),
+  activeWorkspaceId: () => 'ws-token-test',
+}));
+
+describe('buildPlanAgentMcpConfig token source (WI-10004357)', () => {
+  let home: string;
+  const savedHome = process.env.PAPERCUSP_HOME;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'plan-runner-token-'));
+    process.env.PAPERCUSP_HOME = home;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.PAPERCUSP_HOME;
+    else process.env.PAPERCUSP_HOME = savedHome;
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('presents the token from $PAPERCUSP_HOME, the same one the operator validates', () => {
+    const token = 'scoped-home-token-0123456789abcdef';
+    writeFileSync(join(home, 'superuser-token'), `${token}\n`, { mode: 0o600 });
+
+    const config = buildPlanAgentMcpConfig({ planRunSessionId: 'run-1' });
+
+    expect(config?.mcpServers.agentmcp.headers.Authorization).toBe(`Bearer ${token}`);
+    expect(isValidSuperuserBearer(token)).toBe(true);
+  });
+
+  it('is unprovisioned when the scoped home has no token, even if ~/.papercusp has one', () => {
+    expect(buildPlanAgentMcpConfig({ planRunSessionId: 'run-2' })).toBeNull();
+  });
+});
 
 describe('buildPlanAgentMcpUrl', () => {
   it('carries the plan-run session id as ?plan_run= (D-016 contract)', () => {

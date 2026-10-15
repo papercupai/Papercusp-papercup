@@ -17,6 +17,9 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/session/request-compaction.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// This suite stubs PG for the compaction boundaries. Keep background fallback
+// telemetry at its own seam so its batched writer cannot use that partial stub.
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import { z } from 'zod';
 import { addressContinuationToOwner, truncateHint } from './request-compaction';
 /**
@@ -100,15 +103,24 @@ vi.mock('../../events/await/psu-pty-discovery', () => {
   // Keep the REAL caps predicate so the gating logic is exercised honestly.
   const hostSupports = (host: { caps?: string[] } | null | undefined, cap: string) =>
     Array.isArray(host?.caps) && host!.caps!.includes(cap);
+  const liveHost = (...a: unknown[]) => findLiveHost(...a) as { caps?: string[] } | null | undefined;
   return {
     findLiveHost: (...a: unknown[]) => findLiveHost(...a),
+    findLiveHostAsync: async (...a: unknown[]) => liveHost(...a),
     injectIntoHost: (...a: unknown[]) => injectIntoHost(...a),
     hostSupports,
     // The handler now reads its host gate through this shared predicate
     // (EI-20209826138488049). Composed here from the SAME two primitives the real
     // one composes, so every per-test host fixture still drives the gate unchanged.
     selfCompactionAvailability: (ownerId: string) => {
-      const host = findLiveHost(ownerId) as { caps?: string[] } | null | undefined;
+      const host = liveHost(ownerId);
+      if (!host) return { available: false, reason: 'no_live_pty_host', host: null };
+      if (!hostSupports(host, 'carry-respawn'))
+        return { available: false, reason: 'host_predates_carry_respawn', host };
+      return { available: true, reason: null, host };
+    },
+    selfCompactionAvailabilityAsync: async (ownerId: string) => {
+      const host = liveHost(ownerId);
       if (!host) return { available: false, reason: 'no_live_pty_host', host: null };
       if (!hostSupports(host, 'carry-respawn'))
         return { available: false, reason: 'host_predates_carry_respawn', host };
@@ -118,6 +130,11 @@ vi.mock('../../events/await/psu-pty-discovery', () => {
 });
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller' })),
+}));
+const resolveWakeModeMock = vi.hoisted(() => vi.fn());
+vi.mock('../coordination/wake-mode', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/wake-mode')>()),
+  resolveWakeMode: (...args: unknown[]) => resolveWakeModeMock(...args),
 }));
 const getLoopStatus = vi.fn();
 const readActiveLoopFacts = vi.fn();
@@ -187,6 +204,17 @@ vi.mock('../../compaction-usage', async () => {
   };
 });
 
+const savePendingCarryRespawn = vi.hoisted(() => vi.fn());
+const clearPendingCarryRespawn = vi.hoisted(() => vi.fn());
+vi.mock('../../session-brief', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../session-brief')>();
+  return {
+    ...actual,
+    savePendingCarryRespawn: (...a: unknown[]) => savePendingCarryRespawn(...a),
+    clearPendingCarryRespawn: (...a: unknown[]) => clearPendingCarryRespawn(...a),
+  };
+});
+
 const tool = (await import('./request-compaction')).default;
 
 it('opts out of the ambient workspace transaction because the handler never reads ctx.tx', () => {
@@ -226,6 +254,21 @@ vi.mock('../../carry-respawn-storm', async () => {
   };
 });
 const NO_STORM = { storm: false, reason: null, cutsSinceRealTurn: 0, cutTimes: [], lastRealTurnAt: null };
+// WI-6554700010008342: the handler scans all of /proc under a 5s production
+// deadline (NATIVE_BG_SCAN_DEADLINE_MS). On the green-checkpoint, the gate load
+// pushed that walk past the deadline, so the report came back `degraded: true`
+// and the "omits the field" case failed although nothing was alive. These cases
+// test the handler's wiring, not the deadline (native-bg-task-ledger.test.ts
+// owns that), so give the scan a deadline that load cannot exhaust. A caller-
+// supplied scanDeadlineMs still wins.
+vi.mock('../../native-bg-task-ledger', async () => {
+  const actual = await vi.importActual<typeof import('../../native-bg-task-ledger')>('../../native-bg-task-ledger');
+  return {
+    ...actual,
+    readLiveNativeBgTasks: (input: Parameters<typeof actual.readLiveNativeBgTasks>[0]) =>
+      actual.readLiveNativeBgTasks({ scanDeadlineMs: 60_000, ...input }),
+  };
+});
 
 type Envelope = { mode: string; data: string; systemPromptAddendum?: string; sourceTranscriptPath?: string };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -257,10 +300,19 @@ const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  resolveWakeModeMock.mockReset().mockResolvedValue('auto');
   await __resetRefusalMarkers(); // P-016 durable marker — isolate each test
   void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
   delete process.env.PAPERCUSP_FLUSH_GATE;
   injectIntoHost.mockResolvedValue(true);
+  savePendingCarryRespawn.mockResolvedValue({
+    nonce: 'pending-carry-nonce',
+    createdAtMs: 1,
+    expiresAtMs: 900_001,
+    firstPrompt: 'saved successor prompt',
+    systemPromptAddendum: 'saved carry addendum',
+  });
+  clearPendingCarryRespawn.mockResolvedValue(true);
   resolveSelfSession.mockResolvedValue(null);
   readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
   detectRespawnStorm.mockResolvedValue(NO_STORM);
@@ -394,6 +446,28 @@ describe('session:request-compaction — reports what happened to the PREVIOUS r
 });
 
 describe('session:request-compaction — P-018/P-022 carry-respawn actuation', () => {
+  it('refuses before persistence or host injection when the effective mode is manual', async () => {
+    resolveWakeModeMock.mockResolvedValue('manual');
+
+    const out = await call({ focus: 'continue the preserved unit' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false, requested: false, error: 'wake_mode_manual' });
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the effective wake mode cannot be read', async () => {
+    resolveWakeModeMock.mockRejectedValueOnce(new Error('read unavailable'));
+
+    const out = await call({ focus: 'continue the preserved unit' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false, requested: false, error: 'wake_mode_unavailable' });
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
   it('keeps the transport budget beyond the legacy-host compatibility wait', () => {
     expect(tool.timeoutSec).toBe(600);
   });
@@ -426,6 +500,40 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     });
   });
 
+  it('persists the exact first prompt and addendum before asking the host to respawn', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    const order: string[] = [];
+    savePendingCarryRespawn.mockImplementation(async (_identity: unknown, payload: unknown) => {
+      order.push('persist');
+      return { nonce: 'pending-carry-nonce', ...(payload as Record<string, unknown>) };
+    });
+    injectIntoHost.mockImplementation(async () => {
+      order.push('inject');
+      return true;
+    });
+
+    const result = body(await call({ focus: 'continue the preserved unit' }));
+    const msg = injected();
+
+    expect(order).toEqual(['persist', 'inject']);
+    expect(savePendingCarryRespawn).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'su-caller' }),
+      { firstPrompt: msg.data, systemPromptAddendum: 'CARRY-DOC-ADDENDUM' },
+    );
+    expect(result).toMatchObject({ ok: true, requested: true, respawn: 'queued' });
+  });
+
+  it('does not send a carry-respawn when the durable save returns no slot', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    savePendingCarryRespawn.mockResolvedValue(null);
+
+    const out = await call({ focus: 'continue the preserved unit' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false, requested: false, error: 'carry_persist_failed' });
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
   it('refuses the historical staging-candidate focus before any host or fallback persistence', async () => {
     readFrozenRepairMarker.mockReturnValue({
       candidate: 'c'.repeat(40),
@@ -456,6 +564,28 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(buildOwnerRespawnLaunchSpec).not.toHaveBeenCalled();
     expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
     expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('allows a negative staging-route note in the focus to pass the live carry boundary', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+
+    const focus = 'The candidate fix is uncommitted and no approved staging route has been provided.';
+    const out = await call({ focus });
+
+    expect(out.isError).toBeUndefined();
+    expect(body(out)).toMatchObject({ ok: true, requested: true, respawn: 'queued' });
+    expect(buildOwnerRespawnLaunchSpec).toHaveBeenCalledTimes(1);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+    expect(injected().data).toContain(focus);
   });
 
   it('does not reinterpret stale candidate prose in the immutable host addendum as a live instruction', async () => {
@@ -693,108 +823,42 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(detectRespawnStorm).not.toHaveBeenCalled();
   });
 
-  it('an active warm loop without a host prepares carry but refuses to promise a respawn', async () => {
+  it.each([
+    ['empty compaction request', {}],
+    ['focused compaction request', { focus: 'continue the fleet lane' }],
+    ['automatic continuation request', { autoContinue: true }],
+    ['explicit respawn request', { respawn: true, continueNote: 'resume the held lane' }],
+  ])('%s without a host preserves the active warm route', async (_label, args) => {
     findLiveHost.mockReturnValue(null);
     getLoopStatus.mockResolvedValue({
       active: true,
       carry: 'warm',
       harnessSlug: 'papercusp',
+      goal: 'Preserve the original WARM route and qualified admission HOLD',
     });
-    readActiveLoopFacts.mockResolvedValue({
-      active: true,
-      intervalSec: 135,
-      harnessSlug: 'papercusp',
-      goal: 'drain the active lane',
-      kickoff: 'CUSTOM KICKOFF — preserve this exact text',
-      customWakePrompt: true,
-      fireCount: 7,
-      carry: 'warm',
-      continuation: 'gated',
-      mode: 'monitor',
-      monitor: { authority: { kind: 'owner-turn' } },
-      armedAt: '2026-08-27T05:00:00.000Z',
-    });
-    const seeded = '## Did\nPrepared this active warm loop for a no-PTY deterministic compaction boundary.';
-    setLoopCarryNoteWithPrior.mockResolvedValue({ stored: `${seeded}\n\n## Left\ncontinue the fleet lane`, priorLength: 0 });
-    getLoopCarryNoteWithMeta.mockImplementation(async () => ({
-      note: setLoopCarryNoteWithPrior.mock.results[0]?.value
-        ? (await setLoopCarryNoteWithPrior.mock.results[0].value).stored
-        : null,
+    getLoopCarryNoteWithMeta.mockResolvedValue({
+      note: 'Existing source-custody checkpoint',
       updatedAtMs: Date.now(),
-    }));
+    });
 
-    const out = await call({ focus: 'continue the fleet lane' });
-    const b = body(out);
+    const out = await call(args);
 
     expect(out.isError).toBe(true);
-    expect(b).toMatchObject({
+    expect(body(out)).toMatchObject({
       ok: false,
       requested: false,
       respawn: false,
       error: 'no_live_pty_host',
-      carry: 'cold',
-      retuned: true,
-      carryNote: { verified: true },
-      loop: {
-        harness: 'papercusp',
-        intervalSec: 135,
-        goal: 'drain the active lane',
-        mode: 'monitor',
-        customWakePrompt: true,
-      },
+      carry: 'warm',
+      retuned: false,
     });
-    expect(b.note).toContain('This is preparation only, not a respawn');
-    expect(b.note).not.toContain('End this turn');
-    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledWith(
-      { harness: 'papercusp', ownerId: 'su-caller', workspaceId: undefined },
-      expect.stringContaining('continue the fleet lane'),
-      expect.objectContaining({ transform: expect.any(Function) }),
-    );
-    expect(materializeLoop).toHaveBeenCalledWith(
-      expect.objectContaining({
-        harnessSlug: 'papercusp',
-        ownerId: 'su-caller',
-        intervalSec: 135,
-        kickoff: 'CUSTOM KICKOFF — preserve this exact text',
-        customWakePrompt: true,
-        goal: 'drain the active lane',
-        carry: 'cold',
-        continuation: 'gated',
-        mode: 'monitor',
-        monitor: { authority: { kind: 'owner-turn' } },
-      }),
-    );
+    expect(body(out).note).toContain('keeps its warm carry policy');
+    expect(body(out).note).not.toContain('End this turn');
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
+    expect(materializeLoop).not.toHaveBeenCalled();
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
     expect(injectIntoHost).not.toHaveBeenCalled();
     expect(detectRespawnStorm).not.toHaveBeenCalled();
-  });
-
-  it('does not retune when the seed cannot be verified through the cold-wake reader', async () => {
-    findLiveHost.mockReturnValue(null);
-    getLoopStatus.mockResolvedValue({ active: true, carry: 'warm', harnessSlug: 'papercusp' });
-    setLoopCarryNoteWithPrior.mockResolvedValue({ stored: 'seeded note', priorLength: 0 });
-    getLoopCarryNoteWithMeta.mockResolvedValue({ note: null, updatedAtMs: null });
-
-    const out = await call({ focus: 'continue the fleet lane' });
-
-    expect(out.isError).toBe(true);
-    expect(body(out)).toMatchObject({ ok: false, error: 'cold_loop_recovery_failed', phase: 'verify-carry' });
-    expect(materializeLoop).not.toHaveBeenCalled();
-    expect(injectIntoHost).not.toHaveBeenCalled();
-  });
-
-  it('leaves the loop warm when the verified seed is followed by a failed retune', async () => {
-    findLiveHost.mockReturnValue(null);
-    getLoopStatus.mockResolvedValue({ active: true, carry: 'warm', harnessSlug: 'papercusp' });
-    setLoopCarryNoteWithPrior.mockResolvedValue({ stored: 'verified seed', priorLength: 0 });
-    getLoopCarryNoteWithMeta.mockResolvedValue({ note: 'verified seed', updatedAtMs: Date.now() });
-    materializeLoop.mockRejectedValue(new Error('database unavailable'));
-
-    const out = await call({ focus: 'continue the fleet lane' });
-
-    expect(out.isError).toBe(true);
-    expect(body(out)).toMatchObject({ ok: false, error: 'cold_loop_recovery_failed', phase: 'retune-loop' });
-    expect(body(out).note).toContain('loop remains warm');
-    expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
   it('no focus → the carry-brief/default preserve-set focus still yields a non-empty first prompt', async () => {
@@ -811,6 +875,7 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     injectIntoHost.mockResolvedValue(false);
     const b = body(await call({ focus: 'x' }));
     expect(b).toMatchObject({ ok: false, requested: false, respawn: false });
+    expect(clearPendingCarryRespawn).toHaveBeenCalledWith('su-caller', 'pending-carry-nonce');
   });
 
   // EI-18686525818431054: the default injectIntoHost socket timeout (2000ms) is
@@ -858,6 +923,20 @@ describe('session:request-compaction — focus-integrity warning wired into the 
     awaits: [],
     fleet: null,
   };
+  const reviewTargetId = 'WI-6554700010010741';
+  const briefWithReviewTarget = {
+    ...briefWithHeld,
+    deferredItems: [
+      {
+        id: reviewTargetId,
+        title: 'Acceptance review-target reservation',
+        body: null,
+        harness: 'papercusp',
+        kind: 'task',
+        source: 'commented' as const,
+      },
+    ],
+  };
 
   it('prepends a ⚠ FOCUS INTEGRITY caution to the injected note when focus names a WI/carry-hash the owner does not hold', async () => {
     findLiveHost.mockReturnValue(carryHost);
@@ -869,6 +948,16 @@ describe('session:request-compaction — focus-integrity warning wired into the 
     expect(msg.data).toContain('⚠ FOCUS INTEGRITY');
     expect(msg.data).toContain('WI-2140920');
     expect(msg.data).toContain('carry-note e5729a1f033a');
+  });
+
+  it('preserves focus on a review target this session commented on', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    buildCarryBrief.mockResolvedValue(briefWithReviewTarget);
+    const focus = `Continue grading ${reviewTargetId}.`;
+    await call({ focus }, { role: 'judge' });
+    const msg = injected();
+    expect(msg.data).toContain(focus);
+    expect(msg.data).not.toContain('FOCUS INTEGRITY');
   });
 
   it('removes a foreign ref from the executable resume directive when the recipient has no lane', async () => {
@@ -1368,7 +1457,7 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
-  it('judge role receives a tool-neutral continuation and threads role into carry assembly', async () => {
+  it('judge role gets the permitted address check and threads role into carry assembly', async () => {
     findLiveHost.mockReturnValue(carryHost);
     const b = body(await call({ focus: 'evaluate the candidate evidence' }, { role: 'judge' }));
     const msg = injected();
@@ -1376,8 +1465,9 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(b.ok).toBe(true);
     expect(msg.data).toContain('assigned evaluation');
     expect(msg.data).toContain('evaluate the candidate evidence');
+    expect(msg.data).toContain('coord:orient {}');
+    expect(msg.data).toContain('self.ownerId');
     for (const forbidden of [
-      'coord:orient',
       'coord:declare-intent',
       'scheduler:get_next',
       'loop:status',

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { expandWorkspaces as expandRootWorkspaces } from './assert-workspace-links.mjs';
 // Find workspaces affected by a git diff and run their vitest suites.
 //
 // Usage:
@@ -10,8 +11,16 @@
 //
 // Flags:
 //   --integration   also run `npm run test:integration` where defined
+//   --integration-only
+//                   run ONLY `test:integration` tasks (implies --integration): no unit
+//                   lanes, no lint:el-tools. The bounded schema/migration verification
+//                   (`npm run test:integration-only` = `--all --integration-only`) —
+//                   EI-24955492938994792: `--all --integration` queued every unit suite too
+//                   and starved behind gate-sized admission.
 //   --all           ignore git diff; run every workspace's tests
 //   --dry           print what would run, don't run
+//   --print-selection  emit resolved file/config preparation plus unknown-task residue, then exit
+//   --sync-astro       with --print-selection, sync generated Astro inputs before discovery
 //
 // Diagnostics:
 //   --print-affected                  print `AFFECTED_WS\t<name>`, one runnable
@@ -61,18 +70,25 @@ import {
 } from "./lib/vitest-summary.mjs";
 import {
   RELATED_FILTER_LIST_ENV,
+  prepareRelatedTestSelection,
   selectRelatedTests,
   playwrightOwnedTest,
+  tsconfigPathEntriesFor,
   unitExcludedVitestTest,
   writeRelatedFilterList,
+  enumerateAffectedTaskSelection,
 } from "./lib/related-tests.mjs";
+import { fixtureSpecClosureUnion } from "./lib/e2e-fixture-specs.mjs";
 import {
   EXECUTED_MAP_RESULT_ENV,
   EXECUTED_MAP_WORKSPACE_ENV,
+  EXECUTED_MAP_OUT_ENV,
+  EXECUTED_MAP_NO_PERSIST_ENV,
   clearExecutedMapResult,
   executedMapResultPath,
   formatExecutedMapAlarmLines,
   formatExecutedMapResultLines,
+  formatTestReuseAuditResultLines,
   formatExecutedMapTotalLine,
   readExecutedMapResults,
   resolveTaskReportExpectation,
@@ -82,10 +98,13 @@ import {
   executedMapRecordingEnabled,
   formatExecutedMapLine,
   gitChangedBetween,
+  gitInertGlobalChange,
   loadExecutedSourceMap,
   loadPassDurations,
+  loadReuseProofFiles,
   loadReuseProofs,
 } from "./lib/executed-source-map.mjs";
+import { gitSchemaDriftJudge } from "./lib/schema-symbol-drift.mjs";
 import {
   TEST_REUSE_SKIP_LIST_ENV,
   estimateReuseSavings,
@@ -98,13 +117,19 @@ import {
   reuseCandidates,
   reuseSoundnessAlarms,
   reuseRunnerIdentity,
+  judgedTreeProofFormat,
+  recordGateReuseDecision,
   selectReusablePasses,
   testReuseAuditRate,
   testReuseEnabled,
   testReuseMaxAgeMs,
   writeReuseSkipList,
 } from "./lib/test-pass-reuse.mjs";
-import { LANE_SCRIPTS as SHARED_LANE_SCRIPTS } from "./lib/targeted-task-reuse.mjs";
+import {
+  LANE_SCRIPTS as SHARED_LANE_SCRIPTS,
+  restoreCandidateCheckpointForReuse,
+} from "./lib/targeted-task-reuse.mjs";
+import { exactRadiusAdmission } from "./lib/exact-radius-admission.mjs";
 import {
   decideRetry,
   deriveRetryBudget,
@@ -113,7 +138,16 @@ import {
   formatRetryPoolLine,
 } from "./lib/retry-failure-shape.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
-import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
+// P-008 (gitnexus-selective-hardening-and-comparison-2026-09-13): snapshot-bound,
+// source-corroborated graph dependency SUGGESTIONS. Superset-only and file-read-only — see
+// the module header. Nothing here may remove a workspace the baseline selected.
+import {
+  computeGraphSuggestions,
+  formatSuggestionLine,
+  resolveSnapshotPath,
+  unionSuperset,
+} from "./lib/graph-dependency-suggestions.mjs";
+import { emptySuiteGuardArgs, scriptSupportsPassReuse } from "./lib/empty-suite-guard.mjs";
 // EI-21082046676950143: the lint:declared-consumed guard entry below keys on the guard's OWN
 // declaring-path set rather than restating any of it — fields (`declaredIn`), columns (their
 // migration), and the registry module itself. Import-safe: check-declared-consumed.mjs runs
@@ -152,7 +186,8 @@ import {
   formatBatchProgress,
 } from "./lib/batch-watchdog.mjs";
 import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
-import { sweepStaleTestScratch } from "../libs/test-config/src/hermetic-tmpdir.ts";
+import { affectedTestRunLogPath, sweepStaleTestScratch } from "../libs/test-config/src/hermetic-tmpdir.ts";
+import { testConfigMainProcessFiles } from "../libs/test-config/src/main-process-closure.ts";
 
 // EI-20767792192323374 — MUST happen HERE, in the launcher, and not in vitest.config.ts.
 // Vitest fixes its module-cache root as a class field initializer (`_tmpDir = join(tmpdir(),
@@ -185,11 +220,14 @@ import {
 // "serial" names, but after budgeted scheduling the sum is serial-equivalent work rather than
 // elapsed wall time. See scripts/lib/serial-phase.mjs.
 import { formatSerialPhaseSummary } from "./lib/serial-phase.mjs";
+import { nativeProcessTraceEnv } from "./lib/vitest-startup-trace.mjs";
 import {
   classifyAffectedBlastRadius,
+  createCgroupMemoryObserver,
   durationEstimate,
   estimateBudgetedTaskWallMs,
   formatAffectedTaskShardMarker,
+  formatCgroupMemoryObservedMarker,
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
   mergeDurationHistory,
@@ -209,6 +247,7 @@ import {
   runBudgetedTasks,
   timeoutDurationEstimate,
   writeDurationHistoryAtomic,
+  writeBudgetedTaskNativeExecutionReceipt,
 } from "./lib/budgeted-task-scheduler.mjs";
 import {
   buildPassingTaskVerdictIdentity,
@@ -242,7 +281,7 @@ import {
 // hoisted and fully initialized before this module's body executes, so unlike a closure
 // over a `let` declared further down (the TDZ hazard the abort block below is built
 // around), this binding cannot be unresolved when emitAbortMarker fires.
-import { formatTerminalCounterFields } from "./lib/terminal-counter-fields.mjs";
+import { formatRefusalCounterFields, formatTerminalCounterFields } from "./lib/terminal-counter-fields.mjs";
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -262,6 +301,11 @@ import {
   governedProcessIdempotencyKey,
   runGovernedTestProcess,
 } from "./lib/governed-test-process.mjs";
+import { applyGitOptionalLocksDefault } from "./lib/git-optional-locks.mjs";
+
+// WI-10006785 — this runner SIGKILLs test trees too; a `git status` killed while holding its
+// optional `.git/index.lock` leaves it behind and freezes every commit in the shared tree.
+applyGitOptionalLocksDefault();
 
 // EI-15802: an agent running this as a BACKGROUND task only sees the harness's
 // own truncated tail (~150 lines) plus an exit-code notification — on a long
@@ -293,20 +337,23 @@ import {
 const RUN_TOKEN = `${process.pid}-${randomBytes(4).toString("hex")}`;
 /** WI-10003603: taskKey → the executed-source-map result file its initial invocation was given. */
 const executedMapResultFiles = new Map();
+// Snapshot at initial settlement: a fresh retry must never replace a first-attempt audit miss.
+const initialExecutedMapReads = new Map();
 /** WI-10003792: taskKey → whether that task's recorder is EXPECTED to report (resolved at arming). */
 const executedMapReportExpectations = new Map();
-// WI-41782: keep one attributable entry in the SHARED TMPDIR instead of one
-// top-level file per invocation. The log deliberately outlives this process so a
-// background-job notifier or later triager can read the complete verdict; deleting
-// it from an exit handler would remove the evidence it exists to preserve, and a
-// signal-killed process would not run that handler anyway. Reuse the existing
-// lifecycle-independent, rotating age sweep instead: recent diagnostics remain for
-// four hours, while every future invocation contributes cleanup without depending
-// on the dying process to cooperate.
+// Scratch response files/source maps remain bounded by the existing age sweep.
+// EI-25477633446665003: raw settled-task journals must survive that sweep: a
+// successor can need them after four hours, including when a killed run never
+// reaches its final summary. Reuse the existing persistent operator-log location
+// and synchronous journal writer; no exit-time archival is needed.
 const RUN_LOG_ROOT = join(tmpdir(), "papercusp-affected-tests");
 mkdirSync(RUN_LOG_ROOT, { recursive: true });
 sweepStaleTestScratch(RUN_LOG_ROOT);
-const RUN_LOG_PATH = join(RUN_LOG_ROOT, `${RUN_TOKEN}.log`);
+const RUN_LOG_PATH = affectedTestRunLogPath(RUN_TOKEN);
+// WI-10007629 (P-006): sampled on every task progress beat, reported once beside the scheduler
+// OBSERVED marker. Declared this early because emitProgress runs during the task pool, long
+// before the marker site, and a later `const` would be in its TDZ there.
+const cgroupMemoryObserver = createCgroupMemoryObserver();
 // EI-21921867787033533: `Full run log: ${RUN_LOG_PATH}` was previously emitted to
 // stdout/stderr ONLY on a clean terminal path (every `outSync`/`errSync` call further
 // down this file) — so a run that WEDGES (reaches the shared test-process admission
@@ -546,8 +593,10 @@ let plannedTaskCount = 0;
 // risk — which is what lets an abort BEFORE the run loop stay honest too.
 let observedNonzeroExits = 0;
 let observedAdmissionErrors = 0;
+let observedCompletedTasks = 0;
 let readTerminalCounters = () => ({
   tasks: plannedTaskCount,
+  completedTasks: observedCompletedTasks,
   failed: 0,
   quarantinedFailed: 0,
   timedOutTasks: 0,
@@ -943,7 +992,10 @@ if (resolvedBase.source === "watermark") {
   errSync(baseSourceLine(resolvedBase));
 }
 const base = resolvedBase.base;
-const runIntegration = has("--integration");
+// EI-24955492938994792: `--integration-only` narrows the task set to `test:integration`
+// tasks. It IMPLIES --integration so the integration task is never dropped by omission.
+const integrationOnly = has("--integration-only");
+const runIntegration = has("--integration") || integrationOnly;
 const runAll = has("--all");
 // EI-19463337855465369: `--dry-run` is the more common CLI convention (npm,
 // git, rsync, kubectl all use it) and this repo's own agent guidance points
@@ -1051,6 +1103,12 @@ const changedPathsOverride = (() => {
   return [...new Set(requested.flatMap(normalizeExplicitChangedPath))];
 })();
 const printAffected = has("--print-affected");
+const printSelection = has("--print-selection");
+const syncAstroSelection = has("--sync-astro");
+if (syncAstroSelection && !printSelection) {
+  errSync('--sync-astro requires --print-selection');
+  process.exit(2);
+}
 
 // ── P-009 part (a): the `--coverage` passthrough ───────────────────────────────
 //
@@ -1116,6 +1174,7 @@ const excludes = new Set(excludeArg.split(",").filter(Boolean));
 const KNOWN_FLAGS = [
   "--base",
   "--integration",
+  "--integration-only",
   "--all",
   "--dry",
   "--dry-run",
@@ -1123,6 +1182,8 @@ const KNOWN_FLAGS = [
   "--range-to",
   "--changed-paths",
   "--print-affected",
+  "--print-selection",
+  "--sync-astro",
   "--related",
   "--el-suite",
   "--exclude",
@@ -1746,6 +1807,18 @@ const NON_WORKSPACE_PATH_ROUTES = [
   // the same "unreachable from the change they guard" shape the WI-37840 row above fixes,
   // one workspace over.
   { prefix: "templates/", workspace: "@papercusp/template-kit" },
+  // WI-6554700010008507. `libs/papercusp/plugins/` holds the BUNDLED first-party plugins,
+  // most of them manifest + script directories with no package.json. Two suites load them
+  // as data: plugin-loader's manifest-validate.test.ts ("every bundled first-party plugin
+  // manifest validates", the WI-10006546 guard) and operator-core's provider-package tests
+  // (asana-provider, slack-package, github-issues, ticket-integrations), which read the real
+  // manifests. MEASURED before adding it (2026-10-11): testing:run { changedPaths:
+  // ['libs/papercusp/plugins/asana/papercusp.json'] } derived workspaces=0 (seven lint
+  // guards only), so a manifest edit declaring setup.credentials key "personalAccessToken" —
+  // refused by the schema pattern, which makes the loader drop the WHOLE Asana package —
+  // passed scoped verification while the guard written for exactly that defect never ran.
+  { prefix: "libs/papercusp/plugins/", workspace: "@papercusp/plugin-loader" },
+  { prefix: "libs/papercusp/plugins/", workspace: "@papercusp/operator-core" },
 ];
 
 // EI-19388389386110890 — REPO-WIDE INVARIANTS ENFORCED FROM ONE WORKSPACE.
@@ -2010,6 +2083,95 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    workspace: "@papercusp/operator-core",
+    script: "lint:condition-rail",
+    // Match the inventory's source domain and its audit/baseline inputs. This executes
+    // the tree scan even when the edited file belongs to a different workspace.
+    appliesTo: (f) => /^(packages|apps|orchestrator|bin|scripts|libs)\//.test(f) ||
+      f.startsWith("docs/evidence/condition-rail-") || f === "package.json",
+  },
+  {
+    // WI-10005302: workflow/config-only changes are outside npm workspaces.
+    // Catch misplaced label rules before GitHub rejects a push with zero jobs.
+    workspace: "@papercusp/operator-core",
+    script: "test:github-workflows",
+    appliesTo: (f) =>
+      f.startsWith(".github/workflows/") ||
+      f === ".github/labeler.yml" ||
+      f === "packages/operator-core/lib/github-workflows.test.ts" ||
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/affected-tests.mjs",
+  },
+  {
+    // WI-10005194. lib/scout/pty-host-health-lane.test.ts reads
+    // apps/operator/scripts/psu-pty-host.mjs BY PATH and fails when the host
+    // emits an event kind the classifier does not know. The host lives in
+    // @papercusp/web, so a host-only edit never selected operator-core and the
+    // red first surfaced at the fleet gate. That happened twice in about 3 hours
+    // (EI-24823553355491316, then WI-10004943's launch-kickoff-fresh-child-retry).
+    // The task runs that one file only (11 assertions, under 1s).
+    workspace: "@papercusp/operator-core",
+    script: "test:pty-host-event-classification",
+    appliesTo: (f) =>
+      f === "apps/operator/scripts/psu-pty-host.mjs" ||
+      f === "packages/operator-core/lib/scout/pty-host-health-lane.ts" ||
+      f === "packages/operator-core/lib/scout/pty-host-health-lane.test.ts",
+  },
+  {
+    // Phone media sources are outside npm workspaces. Include all three layers even
+    // when the web unit suite is selected; it excludes the integration suite.
+    workspace: "@papercusp/web",
+    script: "test:phone-media",
+    appliesTo: (f) =>
+      f.startsWith("infra/phone-app/") ||
+      f.startsWith("apps/operator/scripts/__tests__/phone-app-hosted-config.") ||
+      f === "apps/operator/e2e/phone-media-probe.spec.ts" ||
+      f === "apps/operator/package.json",
+  },
+  {
+    // WI-10006650 — fixture-driven Playwright specs (a spec that boots its own Vite server on
+    // an apps/operator/e2e/__fixtures__ entry) render real product components. Playwright owns
+    // them, so unit related-selection drops them (RELATED_SELECTION_FOREIGN_RUNNER) and nothing
+    // else ran them. kasmvnc-rfb.ts then broke desktop-render-matrix.spec.ts for 13 days
+    // unnoticed. This attaches exactly when a changed path sits in some fixture spec's static
+    // import closure (spec + fixture literals, `@/` aliases resolved). The runner re-selects
+    // per spec from the forwarded paths and executes only those. No operator server; measured
+    // ~6-35s per spec.
+    workspace: "@papercusp/web",
+    script: "test:e2e:fixture-affected",
+    forwardChangedPaths: true,
+    appliesTo: (f) =>
+      f === "scripts/e2e-fixture-affected.mjs" ||
+      f === "scripts/lib/e2e-fixture-specs.mjs" ||
+      fixtureSpecClosureUnion(ROOT).has(f),
+  },
+  {
+    // WI-10007411 — Vite's production-only CSS preload helper creates stylesheet links for
+    // lazy HUD imports. Keep the first-link failure guard on the real production preview path;
+    // fixture-driven E2E uses Vite dev mode and cannot exercise that helper. The package script
+    // builds operator-vite, owns a preview server, and runs only the focused Playwright case.
+    workspace: "@papercusp/web",
+    script: "test:e2e:css-preload",
+    appliesTo: (f) =>
+      f === "scripts/affected-tests.mjs" ||
+      f === "apps/operator/e2e/adv-shell-nav.spec.ts" ||
+      f === "apps/operator/playwright.production-preview.config.ts" ||
+      f === "apps/operator-vite/vite.config.production-preview.ts" ||
+      f === "apps/operator/package.json" ||
+      f === "apps/operator-vite/package.json" ||
+      f === "apps/operator-vite/vite.config.ts" ||
+      f === "package-lock.json" ||
+      f === "apps/operator-vite/src/routes/adv/index.tsx" ||
+      f === "apps/operator-vite/src/components/adv/AdvShell.tsx" ||
+      f === "apps/operator-vite/src/components/ChunkReloadPrompt.tsx" ||
+      f === "apps/operator-vite/src/lazy-reload-gate.ts" ||
+      f === "libs/generic/sync/src/lazy-with-retry.ts" ||
+      f.startsWith("apps/operator/app/adv/hud/") ||
+      f.startsWith("apps/operator/app/_components/chat/") ||
+      f === "apps/operator/app/adv/sessions/SessionsRosterView.css" ||
+      f === "apps/operator/app/admin/plans/plans.css",
+  },
+  {
     // EI-24368307678871025 — the host's real esbuild graph must resolve imports
     // against the committed operator-core tree before a restart uses that graph.
     // The existing check builds into a temporary directory, so it cannot replace
@@ -2031,6 +2193,38 @@ const REPO_WIDE_INVARIANT_GUARDS = [
           f.startsWith("packages/operator-core/lib/"))),
   },
   {
+    // WI-6554700010009310 (perf audit 2026-10-12 P-010) — the operator-vite CLIENT bundle
+    // budget (scripts/check-bundle-budget.mjs, EI-13213) ran only in .github/workflows, so the
+    // green-checkpoint gate never measured it. It runs the real `vite build` into a temp dir
+    // (~150 s measured on this host) and fails when the eager (pre-first-paint) set exceeds
+    // its budget, one eager chunk exceeds the per-chunk cap, a named heavy chunk (Porcupine,
+    // elk, UiwMdPane) turns eager, or a dynamic import's split is defeated. A leak can enter
+    // through any source the SPA reaches, including relative imports deep inside
+    // operator-core (how EI-13213 hid), so every non-test JS/TS source under the client's
+    // roots attaches it.
+    workspace: "@papercusp/operator-core",
+    script: "lint:bundle-budget",
+    appliesTo: (f) =>
+      f === "scripts/check-bundle-budget.mjs" ||
+      f === "scripts/lib/bundle-budget.mjs" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "apps/operator-vite/package.json" ||
+      f === "apps/operator-vite/vite.config.ts" ||
+      f === "apps/operator-vite/index.html" ||
+      f === "packages/operator-core/package.json" ||
+      f === "package.json" ||
+      f === "package-lock.json" ||
+      (/\.[cm]?[jt]sx?$/.test(f) &&
+        !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(f) &&
+        !f.endsWith(".d.ts") &&
+        (f.startsWith("apps/operator-vite/src/") ||
+          f.startsWith("apps/operator/app/") ||
+          f.startsWith("apps/operator/lib/") ||
+          f.startsWith("apps/operator/providers/") ||
+          f.startsWith("packages/") ||
+          f.startsWith("libs/"))),
+  },
+  {
     // WI-10002061 — this guard scans tracked TS/TSX source across the entire tree.
     // Predicate-only unit tests cannot catch a newly introduced detached spawn,
     // and the root npm script was previously absent from every blocking runner.
@@ -2044,6 +2238,58 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         !f.includes("node_modules/") &&
         !f.includes("_retired/")) ||
       f === "scripts/check-no-unenrolled-detached-spawn.mjs" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/package.json" ||
+      f === "package.json",
+  },
+  {
+    // EI-24958945974387688 — this guard scans canonical JS/TS injection sources
+    // across the tree. Keep its trigger population aligned with the scanner's
+    // generated, vendored, retired, dependency, and test exclusions.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-unenrolled-injector",
+    appliesTo: (f) =>
+      (/\.[cm]?[jt]sx?$/.test(f) &&
+        !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(f) &&
+        !f.startsWith("_retired/") &&
+        !f.includes("/_retired/") &&
+        !f.includes("/node_modules/") &&
+        !f.includes("/dist/") &&
+        !f.includes("/build/") &&
+        !f.includes("/coverage/") &&
+        !f.includes("/target/") &&
+        !f.includes("/env-sidecars/")) ||
+      f === "scripts/check-no-unenrolled-injector.mjs" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/package.json" ||
+      f === "package.json",
+  },
+  {
+    // WI-10005282 — `lint:no-eager-execfile-promisify` (EI-10161) scans the whole tracked
+    // tree, but its only blocking runner was a GitHub Actions job that runs on `main` pushes
+    // and has failed on every run for days, so nobody acted on it. 14 new offenders landed
+    // unseen; WI-10005282 lazy-wrapped them. Registering it here makes the gate's own
+    // affected suite enforce it.
+    //
+    // COST, measured before registering: ~5.7 s for a whole-tree scan, because the shared
+    // stripper parses every file. A sound raw-text pre-filter in the guard (skip files with
+    // no `promisify(`) brought it to ~1.1 s.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-eager-execfile-promisify",
+    // MIRRORS `isExcluded` in scripts/check-no-eager-execfile-promisify.mjs (.ts/.mjs/.cjs,
+    // tests excluded, vendored and build output excluded) so the trigger set matches the scan.
+    appliesTo: (f) =>
+      (/\.(?:ts|mjs|cjs)$/.test(f) &&
+        !/\.(?:test|spec)\.[cm]?[tj]sx?$/.test(f) &&
+        !f.startsWith("_retired/") &&
+        !f.includes("/_retired/") &&
+        !f.includes("/node_modules/") &&
+        !f.includes("/dist/") &&
+        !f.includes("/dist-sidecar/") &&
+        !f.includes("/.next/") &&
+        !f.includes("/build/") &&
+        !f.includes("/spa/assets/") &&
+        !f.includes("/env-sidecars/")) ||
       f === "scripts/affected-tests.mjs" ||
       f === "packages/operator-core/package.json" ||
       f === "package.json",
@@ -2284,8 +2530,14 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // COST measured 2026-09-05 via this exact script over the whole real tree: 0.64s,
     // exit 0 (floor 500ms, 8 files baselined, 0 offenders) — so registering it cannot
     // red-pin the fleet on debt that accrued while nothing ran it.
+    //
+    // green-main-cycle-time-2026-10-08 P-004: the FILE-DURATION class judges exactly the
+    // changed test files, so they are forwarded; it reads the CI duration ledger, and an
+    // unreachable ledger is NOT CHECKED (exit 2) — reported, never a fleet red.
     workspace: "@papercusp/operator-core",
     script: "lint:test-timing-budgets",
+    forwardChangedPaths: true,
+    notCheckedIsNonGating: true,
     appliesTo: (f) =>
       f === "scripts/check-test-timing-budgets.mjs" ||
       (!f.includes("node_modules/") &&
@@ -3614,6 +3866,26 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         f.endsWith(".sql.PENDING-CODE-DEPLOY")),
   },
   {
+    // WI-10003236 — applyMigrationsForTest detects a stale fixture list only when these
+    // real-Postgres tests run. Attach both fixtures to migration changes so that detector
+    // runs in the affected pass that introduces a new work-item migration.
+    workspace: "@papercusp/operator-core",
+    script: "test:integration:work-items-migration-fixtures",
+    appliesTo: (f) =>
+      f === "libs/papercusp" ||
+      (f.startsWith(`${MIGRATION_SQL_DIR}/`) &&
+        (f.endsWith(".sql") ||
+          f.endsWith(".sql.DRAFT") ||
+          f.endsWith(".sql.PENDING-CODE-DEPLOY"))) ||
+      f === "packages/operator-core/lib/work-items-closed-ts.integration.test.ts" ||
+      f === "packages/operator-core/lib/work-items-terminal-attribution-preserve.integration.test.ts" ||
+      f === "packages/operator-core/test/_pg-helpers.ts" ||
+      f === "packages/operator-core/test/_work-items-schema.ts" ||
+      f === "packages/operator-core/package.json" ||
+      f === "packages/operator-core/vitest.integration.config.ts" ||
+      f === "scripts/affected-tests.mjs",
+  },
+  {
     // WI-10004160 — the federated-column drift guard is the only check that a column added
     // to a federated CDC table is either carried by the federation mapper or declared
     // machine-local. It is an integration test, so the unit-layer operator-core task never
@@ -3665,6 +3937,31 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "packages/operator-core/test/_work-items-schema.ts" ||
       f === "libs/papercusp" ||
       f === `${MIGRATION_SQL_DIR}/986-resource-governor-work-item-queue-identity.sql`,
+  },
+  {
+    // EI-25380500579773160 — keep the large scorecards:list → tools:invoke →
+    // result-door spill path measurable in a disposable current-build background
+    // runtime. The test asserts scratch readback; the shared isolation helper
+    // records source/build identity, process ownership, and cleanup receipts.
+    workspace: "@papercusp/operator-core",
+    script: "test:integration:scorecards-result-door",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "packages/operator-core/package.json" ||
+      f === "packages/operator-core/vitest.integration.config.ts" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/lib/agent-tools/scorecards/list.ts" ||
+      f === "packages/operator-core/lib/agent-tools/scorecards/list-result-door-background.integration.test.ts" ||
+      f === "packages/operator-core/lib/scorecards.ts" ||
+      f === "packages/operator-core/lib/sync-resolver/scorecard-history-list-query.ts" ||
+      f === "packages/operator-core/lib/result-door.ts" ||
+      f === "packages/operator-core/lib/scratch-reference.ts" ||
+      f === "packages/operator-core/lib/scratch-gc.ts" ||
+      f === "packages/operator-core/lib/agent-tools/capability/read.ts" ||
+      f === "packages/operator-core/lib/agent-tools/tools/invoke.ts" ||
+      f === "packages/operator-core/test/_scorecards-list-result-door-child.ts" ||
+      f === "packages/operator-core/test/isolated-integration-proof.ts" ||
+      f === "scripts/with-test-pg.mjs",
   },
   {
     // EI-23210600888560844 — sessions:read's private-Postgres regression suite was
@@ -4377,8 +4674,13 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // whenever either projection, its source, a writer, or the guard's wiring changes.
     // No hostSuiteRatchet: the operator-core test only probes router selection and
     // falsifiability fixtures; it does not execute the real projection comparison.
+    // Named `gen:prompt-projections:check` (root pair `gen:prompt-projections` /
+    // `gen:prompt-projections:check`) so the green-checkpoint P-005 gen:*:check self-heal
+    // can regenerate a drifted projection on the frozen repair lineage. As `lint:*` the
+    // leg could not heal, and a desktop-submodule projection fix is not admissible by an
+    // agent at all (WI-10006055: it froze repairHead 382606c4 for a full round).
     workspace: "@papercusp/operator-core",
-    script: "lint:prompt-projections",
+    script: "gen:prompt-projections:check",
     appliesTo: (f) => PROMPT_PROJECTION_TRIGGER_PATHS.has(f),
   },
   {
@@ -4539,26 +4841,7 @@ const workspaces = [
 const standaloneDirs = new Set(STANDALONE_PACKAGE_DIRS);
 
 function expandWorkspaces(patterns) {
-  const out = [];
-  for (const p of patterns) {
-    if (p.includes("*")) {
-      const base = p.replace(/\/\*$/, "");
-      const baseDir = join(ROOT, base);
-      if (!existsSync(baseDir)) continue;
-      for (const entry of execSync(`ls -1 ${JSON.stringify(baseDir)}`, {
-        encoding: "utf8",
-      })
-        .trim()
-        .split("\n")
-        .filter(Boolean)) {
-        const dir = join(base, entry);
-        if (existsSync(join(ROOT, dir, "package.json"))) out.push(dir);
-      }
-    } else if (existsSync(join(ROOT, p, "package.json"))) {
-      out.push(p);
-    }
-  }
-  return out;
+  return expandRootWorkspaces(patterns, ROOT);
 }
 
 const wsByName = new Map();
@@ -4735,6 +5018,48 @@ function affectedWorkspaces() {
 // The path-set -> workspace-set rule, factored out so the --changed-paths probe
 // (and its guard test) exercise the SAME code the real git-diff path does. Two
 // copies of this that could drift would make the test prove nothing.
+/**
+ * P-008 graph suggestions for `changed`, read from a PRE-COMPUTED snapshot FILE — never a live
+ * graph. The default path is the SHARED file the hourly `system:gitnexus-reindex` routine writes
+ * (`~/.papercusp/graph-snapshot/papercusp/`, outside every checkout — so the gate's isolated tree
+ * reads it too), falling back to the legacy per-checkout `.papercusp/graph-snapshot/` file; see
+ * `resolveSnapshotPath`. Under Vitest with no explicit path the lookup is off (hermetic-test).
+ * Importer SOURCE is still read from THIS checkout, so an edge only applies where the judged
+ * tree's importer content matches the hash the snapshot pinned — the snapshot can add, never
+ * vouch for, a file that differs.
+ *   PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT     snapshot file (overrides the default chain)
+ *   PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS  `0` disables suggestions entirely
+ *   PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS   snapshot age ceiling (default 24h)
+ *   PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT  where importer SOURCE is read for corroboration (hermetic-test seam; default repo root)
+ */
+function graphSuggestionsFor(changed) {
+  if (process.env.PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS === "0") {
+    return { status: "unavailable", reason: "disabled", workspaces: [], accepted: 0, rejected: 0, index: null, ageMs: null, source: null };
+  }
+  const resolved = resolveSnapshotPath({ env: process.env, root: ROOT });
+  const sourceRoot = process.env.PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT || ROOT;
+  const maxAge = Number(process.env.PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS);
+  const report = computeGraphSuggestions({
+    changed,
+    snapshotPath: resolved.path,
+    readFile: (p) => readFileSync(p, "utf8"),
+    readSource: (rel) => {
+      try {
+        return readFileSync(join(sourceRoot, rel), "utf8");
+      } catch {
+        return null;
+      }
+    },
+    ownerOfPath: (file) =>
+      [...wsByDir.values()]
+        .filter((ws) => file === ws.dir || file.startsWith(`${ws.dir}/`))
+        .map((ws) => ws.name),
+    now: Date.now(),
+    maxAgeMs: Number.isFinite(maxAge) && maxAge > 0 ? maxAge : undefined,
+  });
+  return { ...report, source: resolved.source };
+}
+
 function resolveAffected(changed) {
   const directlyChanged = new Set();
   for (const file of changed) {
@@ -4761,6 +5086,23 @@ function resolveAffected(changed) {
       if (wsByName.has(route.workspace)) directlyChanged.add(route.workspace);
     }
   }
+
+  // Graph dependency suggestions (P-008): ADD workspaces owning verified importers of the
+  // changed files, as extra seeds for the closure below. Seeds only ever grow the closure
+  // (monotone), so the final set is a superset of the baseline by construction;
+  // `unionSuperset` additionally asserts it. Stale/invalid/absent snapshot => nothing added.
+  const baselineSeeds = new Set(directlyChanged);
+  const graphReport = graphSuggestionsFor(changed);
+  const merged = unionSuperset(baselineSeeds, graphReport.workspaces);
+  for (const name of merged.names) directlyChanged.add(name);
+  // EVERY run, including absent/stale/disabled (gitnexus-deterministic-integration P-001): the
+  // P-008 snapshot went dormant for days while this line stayed silent on `unavailable`.
+  errSync(formatSuggestionLine(graphReport, merged.added, graphReport.source ?? null));
+  // Reuse the validated offline walk for behavioral-strand diagnostics. A path
+  // explains an added dependency; it is neither executed coverage nor a verdict.
+  for (const path of graphReport.dependencyPaths ?? [])
+    errSync(`GRAPH_DEPENDENCY_PATH ${JSON.stringify(path)}`);
+  if (graphReport.pathsTruncated) errSync('GRAPH_DEPENDENCY_PATHS truncated=true selection=preserved');
 
   // Walk reverse-deps transitively
   const affected = new Set(directlyChanged);
@@ -4872,7 +5214,9 @@ for (const ws of affected) {
     outSync(`(excluded ${ws.name})`);
     continue;
   }
-  if (ws.scripts.test) {
+  // --integration-only (EI-24955492938994792) skips the unit lanes and lint:el-tools: the
+  // caller asked for integration fixtures alone, and unit coverage is test:affected's job.
+  if (ws.scripts.test && !integrationOnly) {
     if (hasLaneSplit(ws))
       for (const script of LANE_SCRIPTS) tasks.push({ ws, script });
     else tasks.push({ ws, script: "test" });
@@ -4880,8 +5224,9 @@ for (const ws of affected) {
   // Static drift check between el-agent-sync TOOLS list and the
   // commands registry. Cheap (no network), catches the runtime crash
   // class that hit us yesterday ("Client tool not defined on client").
-  // Always runs when present — no integration flag gate.
-  if (ws.scripts["lint:el-tools"]) tasks.push({ ws, script: "lint:el-tools" });
+  // Runs whenever present, except under --integration-only.
+  if (ws.scripts["lint:el-tools"] && !integrationOnly)
+    tasks.push({ ws, script: "lint:el-tools" });
   if (runIntegration && ws.scripts["test:integration"])
     tasks.push({ ws, script: "test:integration" });
   // EL Conv AI behavior suite. Hits the live agent; expensive (a few
@@ -4973,50 +5318,9 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   });
 }
 
-/**
- * Path aliases for a workspace, read from its tsconfig `compilerOptions.paths`.
- *
- * Only intra-package aliases matter here (`@/…`); a bare package specifier is out of
- * graph by design. Returning {} on any problem is SAFE, not lossy: an alias we cannot
- * resolve makes the importing file "unresolved", and related-tests.mjs treats an
- * unresolved file as reaching everything — so a missing mapping widens the run rather
- * than silently dropping edges from the graph.
- */
-function tsconfigAliasesFor(wsRoot) {
-  try {
-    const tsconfigPath = join(wsRoot, "tsconfig.json");
-    if (!existsSync(tsconfigPath)) return {};
-    // Tolerate comments/trailing commas — tsconfig is JSON5-ish in practice.
-    // Comments are masked by the SHARED stripper, never a local regex. A naive
-    // `//`-to-end-of-line rule is string-literal-blind, so a tsconfig value that
-    // merely CONTAINS " // " (measured: `"note": "ratio 1 // 2 is fine"`) is
-    // truncated mid-string and JSON.parse throws. The catch below would swallow
-    // that and return {}, silently dropping every alias — which makes each aliased
-    // import unresolvable and fail-safes the whole workspace to "reaches
-    // everything". Safe direction, but it disables narrowing INVISIBLY, which is
-    // the failure mode this file can least afford to hide. Trailing commas are
-    // stripped AFTER masking, so a comma inside a string is never touched either.
-    const raw = stripCommentsOnly(
-      readFileSync(tsconfigPath, "utf8"),
-      tsconfigPath,
-    ).replace(/,(\s*[}\]])/g, "$1");
-    const cfg = JSON.parse(raw);
-    const opts = cfg.compilerOptions ?? {};
-    const baseUrl = join(wsRoot, opts.baseUrl ?? ".");
-    const out = {};
-    for (const [pattern, targets] of Object.entries(opts.paths ?? {})) {
-      const target = Array.isArray(targets) ? targets[0] : null;
-      if (typeof target !== "string") continue;
-      // "@/*": ["./*"]  ->  prefix "@/" maps to <baseUrl>/
-      const prefix = pattern.replace(/\*$/, "");
-      const dir = join(baseUrl, target.replace(/\*$/, ""));
-      out[prefix] = dir.endsWith("/") ? dir : dir + "/";
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
+// tsconfigPathEntriesFor(wsRoot) lives in ./lib/related-tests.mjs (moved there by WI-10006650
+// so the e2e fixture-spec guard resolves `@/` with the same parser as related selection; the
+// flattened prefix map it replaced was removed by WI-10007002).
 
 // --related: narrow each workspace's `test` task to the test files the change can
 // actually reach. Everything else about the task list is untouched — in particular
@@ -5028,6 +5332,8 @@ function tsconfigAliasesFor(wsRoot) {
 // safe direction: over-running costs minutes, under-running certifies nothing.
 let checkpointMaterializationSelection = null;
 let checkpointTargetedReVerdictSelection = null;
+/** Why the exact radius was refused, when the admission rule (not a failed selection) refused it. */
+let checkpointTargetedReVerdictRefusal = null;
 
 // P-002 (gate-latency-selection-and-retry-policy-2026-09-06): the executed-source map. The
 // static closure the selector computes is a SUPERSET; a map of what each test file actually
@@ -5069,17 +5375,16 @@ async function resolveExecutedMapContext() {
     judgedSha,
     changedBetween: gitChangedBetween({ repoRoot: ROOT }),
     client,
-    maps: new Map(),
   };
 }
 
-async function executedMapFor(ctx, wsName) {
+async function executedMapFor(ctx, wsName, files) {
   if (!ctx.enabled) return { map: null, rows: 0, error: null };
-  if (ctx.maps.has(wsName)) return ctx.maps.get(wsName);
+  if (!files.length) return { map: new Map(), rows: 0, error: null };
   let out;
   try {
     out = await Promise.race([
-      loadExecutedSourceMap({ client: ctx.client, workspaceName: wsName, repoRoot: ROOT }),
+      loadExecutedSourceMap({ client: ctx.client, workspaceName: wsName, repoRoot: ROOT, files }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("executed-map read timed out")), 15_000).unref(),
       ),
@@ -5088,7 +5393,6 @@ async function executedMapFor(ctx, wsName) {
   } catch (err) {
     out = { map: null, rows: 0, error: String((err && err.message) || err).replace(/\s+/g, " ") };
   }
-  ctx.maps.set(wsName, out);
   return out;
 }
 
@@ -5118,13 +5422,28 @@ if (relatedOnly) {
 
     if (!byWorkspace.has(t.ws.name)) {
       const wsRoot = join(ROOT, t.ws.dir);
-      const executedMap = await executedMapFor(executedMapContext, t.ws.name);
       let result;
+      let executedMap = { map: null, rows: 0, error: null };
       try {
+        const aliases = tsconfigPathEntriesFor(wsRoot);
+        const prepared = prepareRelatedTestSelection({
+          rootDir: wsRoot,
+          changedPaths: changedAbs,
+          aliases,
+        });
+        const candidates = prepared.selection.mode === "related"
+          ? [...prepared.selection.selected].sort()
+          : [];
+        executedMap = await executedMapFor(
+          executedMapContext,
+          t.ws.name,
+          candidates.map((file) => relative(ROOT, file)),
+        );
         result = selectRelatedTests({
           rootDir: wsRoot,
           changedPaths: changedAbs,
-          aliases: tsconfigAliasesFor(wsRoot),
+          aliases,
+          prepared,
           executedMap: executedMap.map,
           judgedSha: executedMapContext.judgedSha,
           changedBetween: executedMapContext.changedBetween,
@@ -5249,14 +5568,16 @@ if (relatedOnly) {
         .sort((a, b) =>
           `${a.workspace}\0${a.file}`.localeCompare(`${b.workspace}\0${b.file}`),
         );
-      const everyTaskIsCoveredByTheExactFileRunner = tasks.every((task) =>
-        narrowable(task.script),
-      );
-      if (
-        everyTaskIsCoveredByTheExactFileRunner &&
-        selectedInvariantGuards.length === 0 &&
-        affectedFiles.length > 0
-      ) {
+      // D-129 (1): invariant guards no longer refuse the exact radius — each one is emitted as
+      // its own AFFECTED_GUARD leg, which the repair-head consumer runs beside the exact files.
+      // A changed global runner input still widens fully (see exact-radius-admission.mjs).
+      const admission = exactRadiusAdmission({
+        everyTaskNarrowable: tasks.every((task) => narrowable(task.script)),
+        affectedFileCount: affectedFiles.length,
+        changedPaths: invariantGuardChangedPaths(),
+      });
+      if (!admission.admitted) checkpointTargetedReVerdictRefusal = admission.reason;
+      if (admission.admitted) {
         checkpointTargetedReVerdictSelection = {
           affectedWorkspaces: [...new Set(affected.map((ws) => ws.name))].sort(),
           affectedFiles,
@@ -5352,6 +5673,16 @@ if (coverageRequested) {
   }
 }
 
+if (printSelection) {
+  // Reuse the final maintained selection and native config bridge. This never emits an
+  // executed-file line, loads duration history, acquires test admission, or runs a cohort.
+  const selection = enumerateAffectedTaskSelection(tasks, { root: ROOT, filterDir: RUN_LOG_ROOT,
+    syncAstro: syncAstroSelection });
+  outSync(`AFFECTED_TESTS_SELECTION=${JSON.stringify(selection)}`);
+  terminalSuppressed = true;
+  process.exit(0);
+}
+
 if (printAffected) {
   for (const ws of affected) outSync(`AFFECTED_WS\t${ws.name}`);
   // One line per SELECTED TASK, carrying the command that actually runs it. A bare
@@ -5397,7 +5728,9 @@ if (printAffected) {
       }
     } else {
       outSync(
-        "RELATED_AFFECTED_FILES status=full reason=no-complete-exact-file-radius",
+        `RELATED_AFFECTED_FILES status=full reason=${
+          checkpointTargetedReVerdictRefusal ?? "no-complete-exact-file-radius"
+        }`,
       );
     }
   }
@@ -5508,14 +5841,28 @@ if (dry) {
 // runner identity). Everything about reaching the proofs is fail-OPEN toward running MORE: kill
 // switch, dirty checkout, no HEAD, no database, a slow read — each yields no skip list.
 async function armTestPassReuse(taskList) {
+  const runContext = process.env.GREEN_CHECKPOINT === "1" && process.env.PAPERCUSP_TEST_RUN_SOURCE === "ci"
+    ? "green-checkpoint"
+    : "clean-local";
+  const recordReuse = (task, decision) => recordGateReuseDecision(task, decision, {
+    runContext,
+    runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP,
+  });
+  const allUnitTasks = taskList.filter((t) => t.script === 'test' || LANE_SCRIPTS.includes(t.script));
+  for (const t of allUnitTasks.filter((task) => !scriptSupportsPassReuse(task.ws.scripts?.[task.script] ?? ''))) {
+    await recordReuse(`${t.ws.name}::${t.script}`, { offReason: 'script-cannot-run-zero-files', eligible: t.relatedFiles?.length });
+  }
   const unitTasks = taskList.filter(
     (t) =>
       (t.script === "test" || LANE_SCRIPTS.includes(t.script)) &&
-      // An all-reused task runs zero files; only a script that treats that as a pass may skip.
-      /--passWithNoTests\b/.test(t.ws.scripts?.[t.script] ?? ""),
+      // The empty-suite guard supplies Vitest's zero-file flag only with full reuse coverage.
+      scriptSupportsPassReuse(t.ws.scripts?.[t.script] ?? ""),
   );
   if (unitTasks.length === 0) return;
-  const off = (reason) => outSync(`TEST_PASS_REUSE applied=false reason=${reason}`);
+  const off = async (reason) => {
+    outSync(`TEST_PASS_REUSE applied=false reason=${reason}`);
+    for (const t of unitTasks) await recordReuse(`${t.ws.name}::${t.script}`, { offReason: reason, eligible: t.relatedFiles?.length });
+  };
   if (!testReuseEnabled()) return off("disabled-by-env");
   let judgedSha = null;
   try {
@@ -5546,6 +5893,23 @@ async function armTestPassReuse(taskList) {
   }
   if (dirtyPaths === null) return off("checkout-status-unknown");
   if (dirtyPaths.length > 0) {
+    // setupTree uses --prepare-existing for the isolated checkpoint checkout, so previous
+    // verification tasks can leave tracked/untracked output behind. The parent runner supplies
+    // these roots only for the candidate suite; the shared helper verifies the actual Git roots
+    // and exact judged HEAD before running any destructive command.
+    const restored = restoreCandidateCheckpointForReuse({
+      root: ROOT,
+      judgedSha,
+      env: process.env,
+    });
+    if (restored.ok) {
+      dirtyPaths = [];
+      if (restored.restored) outSync(`PASS_REUSE_CHECKPOINT_RESTORED sha=${judgedSha.slice(0, 12)}`);
+    } else {
+      outSync(`PASS_REUSE_CHECKPOINT_RESTORE applied=false reason=${restored.reason}`);
+    }
+  }
+  if (dirtyPaths.length > 0) {
     return off(
       `dirty-checkout(${dirtyPaths.length}: ${dirtyPaths
         .slice(0, 3)
@@ -5569,7 +5933,6 @@ async function armTestPassReuse(taskList) {
     runnerIdentity = null;
   }
   if (!runnerIdentity) return off("no-runner-identity");
-  const runContext = process.env.GREEN_CHECKPOINT === "1" ? "green-checkpoint" : "clean-local";
   let client = null;
   try {
     client = await connectExecutedMapPg();
@@ -5577,10 +5940,52 @@ async function armTestPassReuse(taskList) {
     return off(`pg-unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`);
   }
   const changedBetween = gitChangedBetween({ repoRoot: ROOT, relative: true });
+  // gate-test-reuse-yield-2026-10-01 P-002: a scripts-only root package.json change is not global.
+  const inertGlobalChange = gitInertGlobalChange({ repoRoot: ROOT });
+  // P-007 (D-010): a regenerated DB schema reaches only the proofs that name a changed table.
+  // Reads the judged tree from the working tree: sound because a dirty checkout already
+  // returned off("dirty-checkout") above.
+  const schemaDriftJudge = gitSchemaDriftJudge({ repoRoot: ROOT, judgedSha });
+  // P-003: the test-config files the vitest main process can load, derived at the judged tree.
+  // Unavailable = null, which keeps every test-config source file global (the pre-P-003 rule).
+  let testConfigMainProcess = null;
+  try {
+    testConfigMainProcess = testConfigMainProcessFiles({
+      repoRoot: ROOT,
+      srcDir: join(ROOT, "libs/test-config/src"),
+    });
+  } catch (err) {
+    outSync(
+      `TEST_PASS_REUSE_TEST_CONFIG_CLOSURE state=unavailable reason=${String((err && err.message) || err).replace(/\s+/g, "_").slice(0, 120)}`,
+    );
+  }
+  // P-004 (D-007): the tsconfig/jsconfig files vite and vite-tsconfig-paths read, derived at the
+  // judged tree. Unavailable = null, which keeps every root tsconfig global (the pre-P-004 rule).
+  // Imported lazily: a missing tsconfck must degrade to "unavailable", never break this script.
+  let toolchainTsconfigs = null;
+  try {
+    const { toolchainTsconfigFiles } = await import("../libs/test-config/src/toolchain-tsconfigs.ts");
+    toolchainTsconfigs = await toolchainTsconfigFiles({
+      repoRoot: ROOT,
+      // WI-10004941: untracked configs tsconfck cannot parse are skipped (sound); say so.
+      onUntrackedParseFailures: (failures) =>
+        outSync(
+          `TEST_PASS_REUSE_TSCONFIG_CLOSURE skippedUntracked=${failures.length} first=${String(failures[0]).replace(/\s+/g, "_").slice(0, 160)}`,
+        ),
+    });
+  } catch (err) {
+    outSync(
+      `TEST_PASS_REUSE_TSCONFIG_CLOSURE state=unavailable reason=${String((err && err.message) || err).replace(/\s+/g, "_").slice(0, 120)}`,
+    );
+  }
   const maxAgeMs = testReuseMaxAgeMs();
   const auditRate = testReuseAuditRate();
   const nowMs = Date.now();
+  // WI-6554700010008741: proof identity must match the recorder in this judged checkout, which
+  // may be older than the selector carried by the gate runner.
+  const judgedProofFormat = judgedTreeProofFormat(ROOT);
   const loaded = new Map();
+  const proofFilesByWorkspace = new Map();
   /** @type {{ tasks: number, summaries: Record<string, number>[], savedMs: number | null, unmeasured: number }} */
   const reuseTotals = { tasks: 0, summaries: [], savedMs: 0, unmeasured: 0 };
   // WI-10004617: classify with the SAME function each lane's vitest config uses (lane-split.ts),
@@ -5593,45 +5998,97 @@ async function armTestPassReuse(taskList) {
   };
   try {
     for (const t of unitTasks) {
-      if (!loaded.has(t.ws.name)) {
+      const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
+      const prefix = wsRel === "" ? "" : `${wsRel}/`;
+      const lane = laneOfTaskScript(t.script);
+      const requestedFiles = Array.isArray(t.relatedFiles) && t.relatedFiles.length > 0
+        ? reuseCandidates({ wsRel, relatedFiles: t.relatedFiles, proofFiles: [] })
+        : null;
+      const cacheKey = JSON.stringify([
+        t.ws.name,
+        lane,
+        requestedFiles == null ? null : [...requestedFiles].sort(),
+      ]);
+      if (!loaded.has(cacheKey)) {
         let out;
         try {
-          out = await Promise.race([
-            loadReuseProofs({ client, workspaceName: t.ws.name, runContext }),
+          out = await Promise.race([(
+            async () => {
+              let files = requestedFiles;
+              let laneOf = null;
+              let laneNote = "";
+              if (lane !== null) {
+                let laneCandidates = files;
+                if (laneCandidates == null) {
+                  if (!proofFilesByWorkspace.has(t.ws.name)) {
+                    proofFilesByWorkspace.set(
+                      t.ws.name,
+                      loadReuseProofFiles({ client, workspaceName: t.ws.name, runContext })
+                        .then((listed) => listed.files),
+                    );
+                  }
+                  laneCandidates = await proofFilesByWorkspace.get(t.ws.name);
+                }
+                try {
+                  laneOf = await laneClassifier(
+                    join(ROOT, t.ws.dir),
+                    laneCandidates
+                      .filter((file) => prefix === "" || file.startsWith(prefix))
+                      .map((file) => file.slice(prefix.length)),
+                  );
+                  const scoped = laneScopedCandidates({ candidates: laneCandidates, wsRel, lane, laneOf });
+                  files = scoped.candidates;
+                  laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
+                } catch (err) {
+                  laneOf = null;
+                  laneNote = ` lane=${lane} laneFilter=unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`;
+                  // A targeted file list is already a safe reduction. A broad lane falls back
+                  // to the prior all-proof read if classification is unavailable.
+                  files = requestedFiles;
+                }
+              }
+              const loadedProofs = await loadReuseProofs({
+                client,
+                workspaceName: t.ws.name,
+                runContext,
+                ...(files == null ? {} : { files }),
+              });
+              return { ...loadedProofs, error: null, laneOf, laneNote };
+            }
+          )(),
             new Promise((_, reject) =>
               setTimeout(() => reject(new Error("reuse-proof read timed out")), 15_000).unref(),
             ),
           ]);
-          out = { ...out, error: null };
         } catch (err) {
           out = { proofs: new Map(), rows: 0, error: String((err && err.message) || err).replace(/\s+/g, "_") };
         }
-        loaded.set(t.ws.name, out);
+        loaded.set(cacheKey, out);
       }
-      const { proofs, rows, error } = loaded.get(t.ws.name);
+      const { proofs, rows, error, laneOf: preclassifiedLaneOf, laneNote: preclassifiedLaneNote } = loaded.get(cacheKey);
       const label = `${t.ws.name}::${t.script}`;
       if (error) {
         outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=proofs-unavailable(${error})`);
+        await recordReuse(label, { offReason: 'proofs-unavailable', eligible: t.relatedFiles?.length });
         continue;
       }
-      const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
-      const prefix = wsRel === "" ? "" : `${wsRel}/`;
       let candidates = reuseCandidates({ wsRel, relatedFiles: t.relatedFiles, proofFiles: proofs.keys() });
       // WI-10004617: a lane task's selection covers BOTH lanes; count only the files it can run.
-      const lane = laneOfTaskScript(t.script);
-      let laneNote = "";
+      let laneNote = preclassifiedLaneNote;
       if (lane !== null) {
         try {
-          const laneOf = await laneClassifier(
+          const laneOf = preclassifiedLaneOf ?? await laneClassifier(
             join(ROOT, t.ws.dir),
-            candidates.map((f) => f.slice(prefix.length)),
+            candidates
+              .filter((file) => prefix === "" || file.startsWith(prefix))
+              .map((file) => file.slice(prefix.length)),
           );
           const scoped = laneScopedCandidates({ candidates, wsRel, lane, laneOf });
           candidates = scoped.candidates;
-          laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
+          if (preclassifiedLaneOf == null) laneNote = ` lane=${lane} otherLane=${scoped.otherLane}`;
         } catch (err) {
           // Fail-open: the unfiltered list only over-counts noProof; it never skips a wrong file.
-          laneNote = ` lane=${lane} laneFilter=unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`;
+          laneNote ??= ` lane=${lane} laneFilter=unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`;
         }
       }
       const { skip, summary, watch } = selectReusablePasses({
@@ -5643,7 +6100,12 @@ async function armTestPassReuse(taskList) {
         runnerIdentity,
         nowMs,
         maxAgeMs,
+        ...(judgedProofFormat == null ? {} : { proofFormat: judgedProofFormat }),
         auditRate,
+        inertGlobalChange,
+        testConfigMainProcess,
+        toolchainTsconfigs,
+        schemaDriftJudge,
       });
       // P-012: the files reuse WOULD have skipped but that run this time; a red among them is a
       // TEST_PASS_REUSE_ALARM (phase C), judged on the first pass before any retry.
@@ -5652,13 +6114,21 @@ async function armTestPassReuse(taskList) {
         // Workspace-relative, for the EI-11132 guard: a run this list empties must keep its
         // script's --passWithNoTests (see reuseSkipCoversRun in scripts/lib/empty-suite-guard.mjs).
         t.reuseSkipped = skip.map((f) => f.slice(prefix.length));
-        t.reuseSkipList = writeReuseSkipList(RUN_LOG_ROOT, {
-          files: t.reuseSkipped,
-          runContext,
-          runnerIdentity,
-          judgedSha,
-        });
+        try {
+          t.reuseSkipList = writeReuseSkipList(RUN_LOG_ROOT, {
+            files: t.reuseSkipped,
+            runContext,
+            runnerIdentity,
+            judgedSha,
+          });
+        } catch (err) {
+          t.reuseSkipped = [];
+          outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=skip-list-unwritable`);
+          await recordReuse(label, { offReason: 'skip-list-unwritable', eligible: summary.candidates });
+          continue;
+        }
       }
+      await recordReuse(label, { summary });
       // P-013: what the skip saved, from the files' last CI pass durations (a lower bound). A
       // failed read leaves the reuse decision untouched and only makes the estimate "unknown".
       let savings = { savedMs: 0, measured: 0, unmeasured: 0 };
@@ -5687,7 +6157,9 @@ async function armTestPassReuse(taskList) {
           label,
           summary,
           ` rows=${rows} narrowed=${Array.isArray(t.relatedFiles)} ` +
-            `minSavedTestMs=${savings === null ? "unknown" : savings.savedMs}${laneNote}`,
+            `minSavedTestMs=${savings === null ? "unknown" : savings.savedMs} auditRate=${auditRate}${laneNote}`,
+          { version: 1, judgedSha, runnerIdentity, runContext,
+            runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null, dirty: false },
         ),
       );
     }
@@ -6166,6 +6638,7 @@ let coverage = emptyCoverage();
 // because a closure over these `let`s is a TDZ throw until this point.
 readTerminalCounters = () => ({
   tasks: tasks.length,
+  completedTasks: observedCompletedTasks,
   failed,
   quarantinedFailed,
   timedOutTasks,
@@ -6352,14 +6825,25 @@ function runCapturedTask(
   // phase-C report reads exactly one invocation per task. An inherited value is stripped.
   const recordsExecutedMap =
     executedMapRecordingEnabled() &&
-    (spawnTask.script === "test" || LANE_SCRIPTS.includes(spawnTask.script));
+    (spawnTask.script === "test" || LANE_SCRIPTS.includes(spawnTask.script) ||
+      spawnTask.script === "test:integration");
   const executedMapResultFile =
     recordsExecutedMap && extraArgs.length === 0 && scriptOverride == null
       ? executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, `${context.t.ws.name}::${context.t.script}`)
       : null;
+  // Integration runs need execution diagnostics, including failures and source gaps, rather
+  // than reusable unit-pass rows. Keep each workspace/attempt's OUT separate from its result
+  // channel; retries retain diagnostics without replacing the initial invocation's verdict.
+  const integrationSourceMapOut = recordsExecutedMap &&
+    (spawnTask.script === "test:integration" || context.t.script === "test:integration")
+    ? `${executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, taskKey(spawnTask))}.${createHash("sha256")
+      .update(JSON.stringify([taskKey(context.t), taskKey(spawnTask), journalLabel, extraArgs])).digest("hex").slice(0, 16)}.sources.json`
+    : null;
   const {
     [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList,
     [EXECUTED_MAP_RESULT_ENV]: _inheritedExecutedMapResult,
+    [EXECUTED_MAP_WORKSPACE_ENV]: _inheritedExecutedMapWorkspace,
+    [EXECUTED_MAP_OUT_ENV]: inheritedExecutedMapOut,
     ...parentEnv
   } = process.env;
   const childEnv = {
@@ -6368,13 +6852,16 @@ function runCapturedTask(
     ...(relatedFilterList ? { [RELATED_FILTER_LIST_ENV]: relatedFilterList.path } : {}),
     ...(reuseSkipList ? { [TEST_REUSE_SKIP_LIST_ENV]: reuseSkipList.path } : {}),
     // P-002 (gate-latency-selection-and-retry-policy-2026-09-06): arm the executed-source-map
-    // reporter on every unit vitest task (the `test` script and the lane split), naming the
-    // workspace whose map it records. The reporter itself rails the recording to a CLEAN,
-    // isolated, passing run — so on the shared dirty checkout this stamps and records nothing,
-    // and only the gate's checkpoint checkout actually writes rows. Integration/el-suite/guard
-    // tasks are not narrowable and get no stamp.
+    // reporter on unit tasks and integration tasks, naming the workspace it observes. Unit
+    // proof persistence keeps the reporter's clean/passing guards. Integration OUT is local
+    // diagnostic evidence only: it never enables selection narrowing or pass-proof persistence.
+    // El-suite/guard tasks remain unarmed, including when the caller was itself armed.
     ...(recordsExecutedMap ? { [EXECUTED_MAP_WORKSPACE_ENV]: spawnTask.ws.name } : {}),
     ...(executedMapResultFile ? { [EXECUTED_MAP_RESULT_ENV]: executedMapResultFile } : {}),
+    ...(recordsExecutedMap && inheritedExecutedMapOut
+      ? { [EXECUTED_MAP_OUT_ENV]: inheritedExecutedMapOut } : {}),
+    ...(integrationSourceMapOut
+      ? { [EXECUTED_MAP_OUT_ENV]: integrationSourceMapOut, [EXECUTED_MAP_NO_PERSIST_ENV]: "1" } : {}),
     // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution for every task
     // this runner spawns, so a `test:affected` run contributes surface→test evidence the way
     // `testing:run` and the admin-UI runner already do. Inert unless a seam is exercised — the
@@ -6444,6 +6931,9 @@ function runCapturedTask(
         // drift apart: a field added to one would otherwise silently weaken the other.
         const cacheIdentitySpec = {
           taskKey: taskKey(context.t),
+          // lint:as-committed isolates its cache by source repository. Only that
+          // explicit immutable launch may compare relocated checkout commands.
+          commandRoot: process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === "1" ? ROOT : null,
           command: {
             cmd,
             argv,
@@ -6611,6 +7101,10 @@ function runCapturedTask(
   // Retain the declared task key as the per-entry identity while also recording
   // the command shape that actually ran.
   const processIdentity = `${taskKey(context.t)}=>${taskKey(spawnTask)}:${journalLabel}`;
+  if (integrationSourceMapOut) {
+    outSync(`EXECUTED_SOURCE_MAP_OUT task=${JSON.stringify(taskKey(spawnTask))} ` +
+      `path=${JSON.stringify(integrationSourceMapOut)} noPersist=true`);
+  }
   // WI-10003603: registered only once the task really spawns (a cache hit returned above), so the
   // phase-C report never reads a result for a run that did not happen.
   if (executedMapResultFile) {
@@ -6647,6 +7141,27 @@ function runCapturedTask(
     governedOptions,
     (_admissionContext, governedEnv, { inherited }) => new Promise((resolveRun) => {
     const startedAt = Date.now();
+    // Extend existing OUT diagnostics without replacing npm or its shell. The
+    // selected script is metadata; command below is the actual spawn invocation.
+    const nativeReceiptArmed = Boolean(inheritedExecutedMapOut || integrationSourceMapOut);
+    const nativeWrapperInputs = () => {
+      try {
+        const paths = ["package.json", relative(ROOT, join(ROOT, spawnTask.ws.dir, "package.json"))];
+        return [...new Set(paths)].map(path => ({
+          path, sha256: createHash("sha256").update(readFileSync(join(ROOT, path))).digest("hex"),
+        }));
+      } catch { return null; }
+    };
+    const nativeBefore = nativeReceiptArmed ? nativeWrapperInputs() : null;
+    const nativeObservation = (status, signal, error, stdoutBytes, stderrBytes, childPid = null) => nativeReceiptArmed ? {
+      task: spawnTaskKey, attempt: journalLabel, cwd, command: [cmd, ...argv],
+      originalCommand: spawnTask.ws.scripts[spawnTask.script] ?? null,
+      startedAtMs: startedAt, finishedAtMs: Date.now(), exitCode: status, signal,
+      error: error ? String(error.message ?? error) : null,
+      captureComplete: !error, stdout: stdoutBytes, stderr: stderrBytes,
+      before: nativeBefore, after: nativeWrapperInputs(),
+      processTrace: { out: integrationSourceMapOut || inheritedExecutedMapOut, rootPid: childPid },
+    } : null;
     const stdout = [];
     const stderr = [];
     let capturedBytes = 0;
@@ -6660,7 +7175,7 @@ function runCapturedTask(
     try {
       child = spawn(cmd, argv, {
         cwd,
-        env: governedEnv,
+        env: nativeProcessTraceEnv(governedEnv),
         stdio: ["ignore", "pipe", "pipe"],
         // Own a process group so the watchdog can reap npm -> shell -> vitest ->
         // worker descendants together. A direct-child kill leaves descendants
@@ -6689,6 +7204,7 @@ function runCapturedTask(
         stdout: "",
         stderr: "",
         error: spawnError,
+        __nativeExecution: nativeObservation(1, null, spawnError, Buffer.alloc(0), Buffer.alloc(0)),
         __elapsedMs: Date.now() - startedAt,
         __timeoutMs: taskTimeoutMs,
         __timeoutSource: taskTimeoutSource,
@@ -6718,7 +7234,7 @@ function runCapturedTask(
         allocation,
         journalLabel,
       );
-      rawErrSync(
+      errSync(
         `AFFECTED_TASK_PROGRESS state=spawn-error task=${progressTask} ` +
           `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=0 ` +
           `stalledForSec=0 timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
@@ -6759,9 +7275,11 @@ function runCapturedTask(
       signal = null,
       settled = false,
     ) => {
-      // Deliberately bypass the ordered replay buffer: this tiny, self-identifying marker is
-      // the live pulse consumed by green-checkpoint while the child output remains captured.
-      // It contains no child bytes, so concurrent tasks cannot misattribute test output.
+      // Bypass ordered task-output replay, but retain the live pulse in the canonical
+      // run log as well as stderr. A resumed observer may only have RUN_LOG_PATH:
+      // rawErrSync alone made a progressing suite look silent until phase C replayed it.
+      // capturedBytes/stalledForSec, not the pulse's mtime alone, establish progress.
+      cgroupMemoryObserver.sample();
       const outcome = formatTaskOutcomeFields({ status, signal, settled });
       // Deliberately narrow: only an UNAMBIGUOUS non-clean settlement counts — a nonzero
       // numeric status, or death by signal. A settled beat carrying neither (status null,
@@ -6774,7 +7292,7 @@ function runCapturedTask(
         countedNonzeroExit = true;
         observedNonzeroExits++;
       }
-      rawErrSync(
+      errSync(
         `AFFECTED_TASK_PROGRESS state=${state} task=${progressTask} ` +
           `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes} ` +
           // WI-41180: `elapsedSec` rises identically whether the task is working or
@@ -6865,6 +7383,8 @@ function runCapturedTask(
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
         error: captureError ?? spawnError,
+        __nativeExecution: nativeObservation(status, signal, captureError ?? spawnError,
+          Buffer.concat(stdout), Buffer.concat(stderr), child.pid),
         __elapsedMs: Date.now() - startedAt,
         __timeoutMs: taskTimeoutMs,
         __timeoutSource: taskTimeoutSource,
@@ -6976,6 +7496,18 @@ function journalCapturedTaskOutput(t, r, allocation, label) {
   const lastOutput = stderr || stdout;
   const beforeFooter = lastOutput && !lastOutput.endsWith("\n") ? "\n" : "";
   const error = r.error ? JSON.stringify(r.error.message) : "none";
+  if (r.__nativeExecution) {
+    try {
+      const native = writeBudgetedTaskNativeExecutionReceipt(`${RUN_LOG_PATH}.native`, r.__nativeExecution);
+      appendAllSync(RUN_LOG_PATH, [`AFFECTED_TASK_NATIVE_RECEIPT=${JSON.stringify({
+        task: taskKey(t), attempt: label, root: native.root, receipt: native.receipt,
+        orderedChainQualified: false, runtimeClosure: "unmeasured", operationalAcceptance: false,
+      })}\n`]);
+    } catch (failure) {
+      rawErrSync(`AFFECTED_TASK_NATIVE_RECEIPT_FAILED task=${task} label=${label} ` +
+        `reason=${JSON.stringify(String(failure?.message ?? failure))}`);
+    }
+  }
   try {
     appendAllSync(RUN_LOG_PATH, [
       `\nAFFECTED_TASK_OUTPUT_BEGIN task=${task} label=${label} ` +
@@ -7242,12 +7774,23 @@ try {
   readMemAvailableMb,
   estimateMs: (context) =>
     durationEstimate(durationHistory, taskKey(context.t)),
-  runTask: (context, allocation) => runCapturedTask(context, allocation),
+  runTask: (context, allocation) => cgroupMemoryObserver.withWorkers(allocation.workers,
+    () => runCapturedTask(context, allocation)),
   onTaskSettled: (scheduled) => {
+    // Refusal can interrupt a later shard before the aggregate tally. Count
+    // only outcomes whose exit is known; an unreadable result remains unknown.
+    const value = scheduled?.value ?? {};
+    if ((typeof value.status === "number" && Number.isFinite(value.status)) || value.signal) observedCompletedTasks++;
     // Coverage first: it is pure bookkeeping over output already in hand, while the verdict
     // cache does filesystem work whose environmental failures are tolerated. Ordering them
     // this way keeps a slow or failing cache write from costing the tally.
     foldSettledTaskCoverage(scheduled);
+    const initialKey = taskKey(scheduled.task.t);
+    const initialResultFile = executedMapResultFiles.get(initialKey);
+    if (initialResultFile) initialExecutedMapReads.set(initialKey, {
+      ...readExecutedMapResults(initialResultFile),
+      expectsReport: executedMapReportExpectations.get(initialKey)?.expectsReport ?? null,
+    });
     persistCleanFirstPassTaskVerdict(scheduled);
   },
   // WI-1490656: send the shared-admission queue notices through `errSync`, so they land in
@@ -7270,15 +7813,15 @@ try {
       `AFFECTED_TESTS_REFUSAL kind=deadline-insufficient detail=${String(error?.message ?? error)}`,
     );
     errSync(
-      `AFFECTED_TESTS_RESULT status=refused reason=deadline-insufficient tasks=${tasks.length} ` +
-        `failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=${tasks.length}`,
+      `AFFECTED_TESTS_RESULT status=refused reason=deadline-insufficient ` +
+        formatRefusalCounterFields(readTerminalCounters()) + ` ${formatCoverageFields(coverage)}`,
     );
     errSync(
-      "NOT MEASURED — this run's launcher gave it a wall clock shorter than the work it was " +
-        "asked to do, so it refused before running anything rather than being killed mid-suite " +
-        "with no verdict. Nothing here is a test verdict. Re-fire with a longer timeout: the " +
-        "TASK_DEADLINE_REFUSAL line above names the remaining clock and the KNOWN work (a lower " +
-        "bound — unknown-duration tasks are counted as zero and reported separately).",
+      "NOT MEASURED — this run's launcher gave it a wall clock shorter than the projected " +
+        "task work. The full plan was refused; any existing task observations remain above. " +
+        "Nothing here is a full test verdict. Re-fire with a longer timeout: the " +
+      "TASK_DEADLINE_REFUSAL line above names the remaining clock and the lane-aware historical " +
+        "wall projection (unknown-duration tasks are counted as zero and reported separately).",
     );
     // EI-22431012667356741: the documented triage grep includes AFFECTED_EXIT, but this
     // deliberate refusal previously emitted only status=refused and NOT MEASURED. Publish the
@@ -7292,14 +7835,14 @@ try {
   if (!isSharedAdmissionTimeout(error)) throw error;
   errSync(`AFFECTED_TESTS_REFUSAL kind=admission-starved detail=${String(error?.message ?? error)}`);
   errSync(
-    `AFFECTED_TESTS_RESULT status=refused reason=admission-starved tasks=${tasks.length} ` +
-      `failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=${tasks.length}`,
+    `AFFECTED_TESTS_RESULT status=refused reason=admission-starved ` +
+      formatRefusalCounterFields(readTerminalCounters()) + ` ${formatCoverageFields(coverage)}`,
   );
   errSync(
-    "NOT MEASURED — this run spent its whole shared-admission budget queued behind another " +
-      "test process and never got to run its tasks. Nothing here is a test verdict. The " +
-      "holder is named in the AFFECTED_TESTS_ADMISSION_QUEUED lines above; re-fire once the " +
-      "queue drains.",
+    "NOT MEASURED — the full task plan could not finish within its shared-admission " +
+      "queue budget. Settled shards retain their coverage and observed exit counters " +
+      "above; this is not a full test verdict. The holder is named in the " +
+      "AFFECTED_TESTS_ADMISSION_QUEUED lines above.",
   );
   terminalEmitted = true;
   errSync(`Full run log: ${RUN_LOG_PATH}`);
@@ -7315,6 +7858,12 @@ for (const scheduled of initialPool.results) {
   }
 }
 outSync(formatTaskBudgetObservedMarker(initialPool.stats));
+cgroupMemoryObserver.sample();
+outSync(
+  formatCgroupMemoryObservedMarker(cgroupMemoryObserver.summary(), {
+    observedMaxWorkers: initialPool.stats.observedMaxWorkers,
+  }),
+);
 if (TASK_VERDICT_CACHE_ENABLED) {
   outSync(
     formatPassingTaskVerdictSummary(
@@ -7618,8 +8167,8 @@ for (const scheduled of initialPool.results) {
   // reporter's own line went to the task's stderr, which the gate discards.
   const executedMapResultFile = executedMapResultFiles.get(taskKey(t));
   if (executedMapResultFile) {
-    const read = {
-      ...readExecutedMapResults(executedMapResultFile),
+    const read = initialExecutedMapReads.get(taskKey(t)) ?? {
+      status: "no-report", results: [], malformed: 0,
       expectsReport: executedMapReportExpectations.get(taskKey(t))?.expectsReport ?? null,
     };
     executedMapReads.push(read);
@@ -7627,6 +8176,9 @@ for (const scheduled of initialPool.results) {
     for (const line of formatExecutedMapResultLines(label, read)) outSync(line);
     for (const line of formatExecutedMapAlarmLines(label, read)) errSync(line);
   }
+  for (const line of formatTestReuseAuditResultLines(
+    `${t.ws.name}::${t.script}`, initialExecutedMapReads.get(taskKey(t)), t.reuseWatch,
+  )) outSync(line);
   let r = scheduled.value;
   const prep = retryPrep.get(scheduled.index);
   const { watchdogTimedOut } = prep;

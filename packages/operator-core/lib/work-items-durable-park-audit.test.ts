@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildDurableParkReleaseContract,
+  firedTriggerCannotCertify,
+  parseEventInstantMs,
+} from './durable-park-release-contract';
+import {
   buildDurableParkEvidenceMatrix,
   buildDurableParkAuditReport,
   classifyAuditAge,
@@ -49,6 +54,7 @@ describe('durable park audit classification', () => {
             submittedBy: 'su-reviewer',
             ledgerIdeaId: 'WI-B',
             round: 2,
+            timing: { round: 2, enteredAt: new Date(NOW_MS - 25 * 60 * 60 * 1_000).toISOString() },
           },
         },
         {
@@ -147,6 +153,23 @@ describe('durable park audit classification', () => {
     expect(report.overdueReviews.rows).toEqual([expect.objectContaining({ id: 'WI-B', ageMs: 25 * 60 * 60 * 1_000 })]);
   });
 
+  it('uses only a matching current-round start for overdue review and leaves ambiguous legacy ages unknown', () => {
+    const review = { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'WI-X', round: 2 };
+    const rows = [
+      row('WI-reset', { agentReview: { ...review, timing: { round: 2, enteredAt: new Date(NOW_MS - 1_000).toISOString() } } },
+        { reviewRoutedAtMs: NOW_MS - 30 * 24 * 60 * 60 * 1_000 }),
+      row('WI-legacy', { agentReview: review }, { reviewRoutedAtMs: NOW_MS - 30 * 24 * 60 * 60 * 1_000 }),
+      row('WI-mismatch', { agentReview: { ...review, timing: { round: 1, enteredAt: '2026-07-01T00:00:00Z' } } }),
+      row('WI-invalid', { agentReview: { ...review, timing: { round: 2, enteredAt: 'invalid' } } }),
+      row('WI-overdue', { agentReview: { ...review, timing: { round: 2, enteredAt: '2026-08-25T00:00:00Z' } } }),
+    ];
+    const report = buildDurableParkAuditReport({ rows, runId: 'round-reset', workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', nowMs: NOW_MS });
+    expect(report.overdueReviews.timestampBasis).toBe('agentReview.timing.enteredAt (matching round)');
+    expect(report.overdueReviews.rows.map(x => x.id)).toEqual(['WI-overdue']);
+    expect(report.missingMetadata.pendingReviewTimestamp).toBe(3);
+    expect(report.population.axes.pendingAgentReview).toBe(5);
+  });
+
   it('classifies age and condition text without treating vague prose as a release condition', () => {
     expect(classifyAuditAge('2026-07-20T00:00:00.000Z', NOW_MS)).toEqual({
       status: 'known',
@@ -165,6 +188,31 @@ describe('durable park audit classification', () => {
     expect(classifyUnparkCondition('Release after WI-1 is done')).toEqual({
       status: 'stated',
       text: 'Release after WI-1 is done',
+    });
+  });
+
+  it('keeps an unmeasured or unregistered condition actionable even when metadata is complete', () => {
+    const liveness = classifyDurableParkReleaseLiveness({ claim_hold_release: {
+      condition: 'producer finishes', owner: 'park-owner', trigger: 'ubp:unregistered-condition',
+      reachability: 'blocked', evidence: 'no producer registration or catalogued resolver was found',
+    } }, 'resume when producer finishes');
+    expect(liveness.status).toBe('unverified');
+    expect(liveness.findings).toContain('reachability-unverified');
+  });
+
+  it('reports a completed pause task as unverified resume authority even with a fired latch', async () => {
+    const legacy = {
+      condition: 'WI-10003058 reaches terminal done, ending this system-wide pause.',
+      owner: 'pause-driver', trigger: 'work-item:done:WI-10003058',
+      reachability: 'satisfied', evidence: 'the pause task is DONE/committed',
+    };
+    expect(classifyDurableParkReleaseLiveness({ claim_hold_release: legacy }, 'owner pause')).toMatchObject({
+      status: 'unverified', reachability: 'blocked', findings: ['condition-ambiguous', 'reachability-unverified'],
+      evidence: expect.stringContaining('explicit owner resume'),
+    });
+    expect(await buildDurableParkReleaseContract(legacy, 'parker')).toMatchObject({
+      condition: legacy.condition, owner: 'pause-driver', trigger: legacy.trigger,
+      reachability: 'blocked', evidence: expect.stringContaining('explicit owner resume'),
     });
   });
 
@@ -228,6 +276,135 @@ describe('durable park audit classification', () => {
       status: 'satisfied-still-parked',
       findings: ['condition-satisfied-still-parked'],
     });
+  });
+
+  // SPEC-BQL-P-004-WAKE: a generic wake is never condition proof. Pre-guard parkers stamped
+  // 'satisfied' from any fired latch (measured 2026-10-10: 37 coord:inbox-wake parks), and the
+  // stamp is never refreshed, so the audit must not turn it into a "reconcile now" finding.
+  it.each([
+    'coord:inbox-wake:su-parker',
+    'work-item:claimable',
+    'release:deployed',
+    'release:green:papercusp',
+    'plan:acceptance:some-plan-2026-10-01',
+  ])('downgrades a stored satisfied stamp from broad trigger %s to unverified', (trigger) => {
+    const liveness = classifyDurableParkReleaseLiveness({ claim_hold_release: {
+      condition: 'the fleet leader routes this item back with new evidence',
+      owner: 'su-parker', trigger, reachability: 'satisfied',
+      evidence: 'event fired at 2026-10-08 17:32:01-04',
+    } }, 'parked pending leader route');
+    expect(liveness).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+    expect(liveness.findings).toContain('reachability-unverified');
+    expect(liveness.findings).not.toContain('condition-satisfied-still-parked');
+    expect(liveness.evidence).toContain('broad trigger');
+  });
+
+  it('keeps a stored satisfied stamp on a subject-bound trigger or a non-catalogue declared gate', () => {
+    for (const trigger of ['work-item:done:WI-1', 'my-declared-gate:abc']) {
+      expect(classifyDurableParkReleaseLiveness({ claim_hold_release: {
+        condition: 'dependency reaches a terminal state', owner: 'plan:queue-cleanup',
+        trigger, reachability: 'satisfied', evidence: 'fired',
+      } }, 'UNPARK when done')).toMatchObject({ status: 'satisfied-still-parked' });
+    }
+  });
+
+  // EI-25664119449929994: measured 2026-10-11 on :3170 — all 9 live satisfied-still-parked
+  // stamps cited a latch that fired BEFORE the park (e.g. EI-24937591709395249: fired
+  // 2026-10-10 13:12:21-04, parked 2026-10-11T06:18:49Z), and 5 were work-item:status:<own id>.
+  const storedFire = (trigger: string, firedAt: string, parkedAt: string) => ({
+    claim_hold_at: parkedAt,
+    claim_hold_release: {
+      condition: 'a new failure receipt is recorded and the item transitions to failing',
+      owner: 'su-parker', trigger, reachability: 'satisfied', evidence: `event fired at ${firedAt}`,
+    },
+  });
+
+  it('downgrades a stored satisfied stamp whose cited fire predates the park', () => {
+    const liveness = classifyDurableParkReleaseLiveness(
+      storedFire('work-item:done:EI-dep', '2026-10-10 13:12:21.494399-04', '2026-10-11T06:18:49.823Z'),
+      'parked until EI-dep is done', 'EI-parked',
+    );
+    expect(liveness).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+    expect(liveness.findings).toContain('reachability-unverified');
+    expect(liveness.findings).not.toContain('condition-satisfied-still-parked');
+    expect(liveness.evidence).toContain('before this park');
+  });
+
+  it('keeps a stored satisfied stamp whose cited fire postdates the park', () => {
+    expect(classifyDurableParkReleaseLiveness(
+      storedFire('work-item:done:EI-dep', '2026-10-11 07:00:00.5+00', '2026-10-11T06:18:49.823Z'),
+      'parked until EI-dep is done', 'EI-parked',
+    )).toMatchObject({ status: 'satisfied-still-parked', reachability: 'satisfied' });
+  });
+
+  it("downgrades the parked item's own generic status event even after the park, but not another item's", () => {
+    const own = classifyDurableParkReleaseLiveness(
+      storedFire('work-item:status:EI-parked', '2026-10-11 07:00:00+00', '2026-10-11T06:18:49.823Z'),
+      'parked pending a new failure', 'EI-parked',
+    );
+    expect(own).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+    expect(own.evidence).toContain("parked item's own status event");
+    expect(classifyDurableParkReleaseLiveness(
+      storedFire('work-item:status:EI-other', '2026-10-11 07:00:00+00', '2026-10-11T06:18:49.823Z'),
+      'parked pending EI-other', 'EI-parked',
+    )).toMatchObject({ status: 'satisfied-still-parked' });
+  });
+
+  it('orders ledger fire times by their explicit offset and never guesses a zone', () => {
+    expect(parseEventInstantMs('2026-10-10 13:12:21.494399-04')).toBe(Date.parse('2026-10-10T17:12:21.494Z'));
+    expect(parseEventInstantMs('2026-10-10 22:42:21+05:30')).toBe(Date.parse('2026-10-10T17:12:21Z'));
+    expect(parseEventInstantMs('2026-10-10T17:12:21.494Z')).toBe(Date.parse('2026-10-10T17:12:21.494Z'));
+    expect(parseEventInstantMs('2026-10-10 13:12:21')).toBeNull();
+    // Legacy evidence from a postgres.js Date rendered via Date.toString() (measured in the
+    // real-PG claim-hold suite, 2026-10-11).
+    expect(parseEventInstantMs('Sun Oct 11 2026 07:22:44 GMT-0400 (Eastern Daylight Time)'))
+      .toBe(Date.parse('2026-10-11T11:22:44Z'));
+    expect(firedTriggerCannotCertify({
+      trigger: 'work-item:done:EI-dep', firedAt: 'yesterday', parkedAtMs: Date.parse('2026-10-11T06:18:49Z'),
+    })).toContain('unreadable time');
+    expect(firedTriggerCannotCertify({
+      trigger: 'work-item:done:EI-dep', firedAt: '2026-10-10 13:12:21-04', parkedAtMs: null,
+    })).toBeNull();
+  });
+
+  // SPEC-BQL-P-004-CLEARER: a park released only by its OWN work-item:done can never release
+  // (measured 2026-10-10: four live parks, every one stamped 'reachable' by the catalogue).
+  const selfReleaseContract = (reachability: string) => ({ claim_hold_release: {
+    condition: 'the reserved owner completes this item', owner: 'su-owner',
+    trigger: 'work-item:done:EI-self', reachability, evidence: 'catalogue live resolver',
+  } });
+
+  it('flags a self-release trigger as unverified even when stamped reachable, only on the park that carries it', () => {
+    const self = classifyDurableParkReleaseLiveness(selfReleaseContract('reachable'), 'reserved for su-owner', 'EI-self');
+    expect(self).toMatchObject({ status: 'unverified', reachability: 'blocked' });
+    expect(self.findings).toContain('reachability-unverified');
+    expect(self.evidence).toContain("parked item's own terminal event");
+    // The same key on a DIFFERENT park is an ordinary dependency; the legacy two-argument call is unchanged.
+    expect(classifyDurableParkReleaseLiveness(selfReleaseContract('reachable'), 'waits on EI-self', 'EI-other'))
+      .toMatchObject({ status: 'tracked', reachability: 'reachable' });
+    expect(classifyDurableParkReleaseLiveness(selfReleaseContract('reachable'), 'waits on EI-self'))
+      .toMatchObject({ status: 'tracked' });
+  });
+
+  it('the audit report flags a self-release park through its row id', () => {
+    const report = buildDurableParkAuditReport({
+      rows: ['EI-self', 'EI-other'].map((id) => ({
+        id, title: id, state: 'open', takenBy: null, takenAt: null, updatedAtMs: null, reviewRoutedAtMs: null,
+        payload: { _claimHold: true, claim_hold_by: 'su-parker', claim_hold_reason: 'reserved for su-owner',
+          claim_hold_at: '2026-10-01T00:00:00.000Z', ...selfReleaseContract('reachable') },
+      })),
+      runId: 'self-release', workspaceId: 'ws', harnessSlug: 'h', nowMs: Date.parse('2026-10-10T00:00:00.000Z'),
+    });
+    const byId = new Map(report.durableParks.map((park) => [park.id, park.releaseLiveness.status]));
+    expect(byId.get('EI-self')).toBe('unverified');
+    expect(byId.get('EI-other')).toBe('tracked');
+  });
+
+  it('the shared contract writer stamps a self-release trigger blocked before any event read', async () => {
+    const input = { condition: 'the reserved owner completes this item', trigger: 'work-item:done:EI-self' };
+    const stamped = await buildDurableParkReleaseContract({ ...input, parkId: 'EI-self' }, 'parker');
+    expect(stamped).toMatchObject({ trigger: 'work-item:done:EI-self', owner: 'parker', reachability: 'blocked' });
+    expect(stamped.evidence).toContain("parked item's own terminal event");
   });
 });
 
@@ -336,6 +513,47 @@ describe('durable park evidence matrix and reconciliation CAS', () => {
       planDurableParkClear({ id: 'WI-park', state: 'open', takenBy: null, payload: { keepMe: true } }, decision)
         .outcome,
     ).toBe('already-cleared');
+  });
+
+  it('retains a pause on its task-completion evidence but permits an explicit audited owner disposition', () => {
+    const payload = { ...parkedPayload, claim_hold_release: {
+      condition: 'WI-10003058 reaches terminal done, ending this system-wide pause.',
+      owner: 'pause-driver', trigger: 'work-item:done:WI-10003058',
+      reachability: 'satisfied', evidence: 'the pause task completed',
+    } };
+    const current = { id: 'WI-pause', state: 'open', takenBy: null, payload };
+    const decision = { id: current.id, expectedParkFingerprint: durableParkFingerprint(current),
+      reasonCode: 'condition-satisfied' as const, evidence: 'the pause task completed' };
+    expect(planDurableParkClear(current, decision)).toMatchObject({ outcome: 'unverified-condition', nextPayload: null });
+    expect(current.payload).toEqual(payload);
+    expect(planDurableParkClear(current, { ...decision, reasonCode: 'operator-directed',
+      evidence: 'verified owner resume for this exact pause, recorded separately' })).toMatchObject({
+      outcome: 'cleared', nextPayload: { keepMe: { nested: true } },
+    });
+  });
+
+  it.each(['condition', 'owner', 'trigger'])('refuses stale clearing after the release contract %s changes', (field) => {
+    const release = { condition: 'WI-1 completes', owner: 'condition-owner',
+      trigger: 'work-item:done:WI-1', reachability: 'reachable', evidence: 'specific resolver' };
+    const payload = { ...parkedPayload, claim_hold_release: release };
+    const expectedParkFingerprint = durableParkFingerprint({ state: 'open', takenBy: null, payload });
+    const changed = { ...payload, claim_hold_release: { ...release, [field]: 'new unsatisfied condition' } };
+    const plan = planDurableParkClear({ id: 'WI-park', state: 'open', takenBy: null, payload: changed }, {
+      id: 'WI-park', expectedParkFingerprint, reasonCode: 'condition-satisfied', evidence: 'WI-1 completed',
+    });
+    expect(plan.outcome).toBe('stale-fingerprint');
+    expect(plan.nextPayload).toBeNull();
+  });
+
+  it('keeps live condition observations out of the semantic control fingerprint', () => {
+    const release = { condition: 'WI-1 completes', owner: 'condition-owner',
+      trigger: 'work-item:done:WI-1', reachability: 'reachable', evidence: 'specific resolver' };
+    const payload = { ...parkedPayload, claim_hold_release: release };
+    const refreshed = { ...payload, claim_hold_release: { ...release,
+      reachability: 'satisfied', evidence: 'specific event fired now' } };
+    expect(durableParkFingerprint({ state: 'open', takenBy: null, payload })).toBe(
+      durableParkFingerprint({ state: 'open', takenBy: null, payload: refreshed }),
+    );
   });
 
   it('does not invalidate a park fingerprint for unrelated payload churn', () => {

@@ -10,6 +10,7 @@ import {
   proseProfilePredicateSql,
   resolveCurrentProseProfileSelection,
 } from '../search/prose-vector-dims';
+import { lexicalLeg } from '../search/lexical/rank';
 
 const SOURCE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -138,7 +139,7 @@ async function mergePersonalIdentities(
      WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
        AND identity_id = ANY(${duplicateIds}::uuid[])`;
   await sql`
-    UPDATE harness_shared.personal_documents d
+    UPDATE harness_shared.documents d
        SET participant_ids = ARRAY(
          SELECT DISTINCT CASE
            WHEN participant_id = ANY(${duplicateIds}::uuid[]) THEN ${targetId}::uuid
@@ -266,37 +267,38 @@ export async function upsertPersonalDocuments(
     const occurredAt = doc.occurredAt instanceof Date ? doc.occurredAt.toISOString() : doc.occurredAt ?? null;
     const metadata = JSON.stringify(doc.metadata ?? {});
     const rows = await sql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.personal_documents
-        (workspace_id, user_id, source, source_id, provider_account_id, kind, external_id, occurred_at,
+      INSERT INTO harness_shared.documents
+        (workspace_id, user_id, source, source_id, provider_account_id, datatype_id, kind, external_id, occurred_at,
          participants, participant_ids, title, text, metadata, dedupe_key)
       VALUES
         (${workspaceId}, ${userId}, ${source}, ${sourceId}::uuid, ${providerAccountId},
-         ${doc.kind.trim()}, ${doc.externalId ?? null},
+         ${doc.datatypeId?.trim() || null}, ${doc.kind.trim()}, ${doc.externalId ?? null},
          ${occurredAt}, ${participants}, ${participantIds}, ${doc.title ?? ''}, ${doc.text ?? ''},
          ${metadata}::jsonb, ${dedupeKeyFor(doc)})
       ON CONFLICT (workspace_id, user_id, source, dedupe_key) DO UPDATE
         SET kind = EXCLUDED.kind,
-            source_id = COALESCE(EXCLUDED.source_id, personal_documents.source_id),
-            provider_account_id = COALESCE(EXCLUDED.provider_account_id, personal_documents.provider_account_id),
+            datatype_id = COALESCE(EXCLUDED.datatype_id, documents.datatype_id),
+            source_id = COALESCE(EXCLUDED.source_id, documents.source_id),
+            provider_account_id = COALESCE(EXCLUDED.provider_account_id, documents.provider_account_id),
             external_id = EXCLUDED.external_id,
-            occurred_at = COALESCE(EXCLUDED.occurred_at, personal_documents.occurred_at),
+            occurred_at = COALESCE(EXCLUDED.occurred_at, documents.occurred_at),
             participants = EXCLUDED.participants,
             participant_ids = EXCLUDED.participant_ids,
             title = EXCLUDED.title,
             text = EXCLUDED.text,
             metadata = EXCLUDED.metadata,
             embedding = CASE
-              WHEN personal_documents.title IS DISTINCT FROM EXCLUDED.title
-                OR personal_documents.text IS DISTINCT FROM EXCLUDED.text
-              THEN NULL ELSE personal_documents.embedding END,
+              WHEN documents.title IS DISTINCT FROM EXCLUDED.title
+                OR documents.text IS DISTINCT FROM EXCLUDED.text
+              THEN NULL ELSE documents.embedding END,
             embedding_mode = CASE
-              WHEN personal_documents.title IS DISTINCT FROM EXCLUDED.title
-                OR personal_documents.text IS DISTINCT FROM EXCLUDED.text
-              THEN NULL ELSE personal_documents.embedding_mode END,
+              WHEN documents.title IS DISTINCT FROM EXCLUDED.title
+                OR documents.text IS DISTINCT FROM EXCLUDED.text
+              THEN NULL ELSE documents.embedding_mode END,
             embedding_profile = CASE
-              WHEN personal_documents.title IS DISTINCT FROM EXCLUDED.title
-                OR personal_documents.text IS DISTINCT FROM EXCLUDED.text
-              THEN NULL ELSE personal_documents.embedding_profile END,
+              WHEN documents.title IS DISTINCT FROM EXCLUDED.title
+                OR documents.text IS DISTINCT FROM EXCLUDED.text
+              THEN NULL ELSE documents.embedding_profile END,
             updated_at = now()
       RETURNING id`;
     ids.push(rows[0]!.id);
@@ -435,13 +437,13 @@ export async function personalVaultStats(sql: Sql, workspaceId: string, userId: 
     }>>`
       SELECT source, source_id::text, provider_account_id,
              count(*)::int AS documents, max(occurred_at)::text AS newest_at
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
        GROUP BY source, source_id, provider_account_id
        ORDER BY source, provider_account_id NULLS FIRST, source_id NULLS FIRST`,
     sql<Array<{ count: number }>>`
       SELECT count(*)::int AS count
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
          AND embedding IS NULL`,
   ]);
@@ -454,18 +456,29 @@ export async function purgePersonalSource(
   userId: string,
   sourceInput?: string | null,
   provenance: { sourceId?: string | null; providerAccountId?: string | null } = {},
-): Promise<{ documents: number; cursors: number; aliases: number; identities: number }> {
+): Promise<{ documents: number; held: number; cursors: number; aliases: number; identities: number }> {
   const source = sourceInput ? normalizePersonalSource(sourceInput) : null;
   const sourceId = normalizePersonalSourceId(provenance.sourceId);
   const providerAccountId = normalizePersonalProviderAccountId(provenance.providerAccountId);
   const accountScoped = sourceId !== null || providerAccountId !== null;
   return sql.begin(async (tx) => {
-    const docs = await tx<Array<{ id: string }>>`
-      DELETE FROM harness_shared.personal_documents
+    // Documents under an active legal hold (migration 1502) are kept and counted, not deleted: the
+    // documents trigger would refuse them and abort the whole purge.
+    const heldRows = await tx<Array<{ n: number }>>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.documents
        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
          AND (${source}::text IS NULL OR source = ${source})
          AND (${sourceId}::uuid IS NULL OR source_id = ${sourceId}::uuid)
          AND (${providerAccountId}::text IS NULL OR provider_account_id = ${providerAccountId})
+         AND harness_shared.document_under_hold(workspace_id, source_id, kind, metadata, permission_list_id)`;
+    const docs = await tx<Array<{ id: string }>>`
+      DELETE FROM harness_shared.documents
+       WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
+         AND (${source}::text IS NULL OR source = ${source})
+         AND (${sourceId}::uuid IS NULL OR source_id = ${sourceId}::uuid)
+         AND (${providerAccountId}::text IS NULL OR provider_account_id = ${providerAccountId})
+         AND NOT harness_shared.document_under_hold(workspace_id, source_id, kind, metadata, permission_list_id)
       RETURNING id`;
     const cursors = await tx<Array<{ source: string }>>`
       DELETE FROM harness_shared.personal_sync_state
@@ -479,7 +492,7 @@ export async function purgePersonalSource(
          AND (
            (${!accountScoped} AND (${source}::text IS NULL OR source = ${source}))
            OR (${accountScoped} AND NOT EXISTS (
-             SELECT 1 FROM harness_shared.personal_documents document
+             SELECT 1 FROM harness_shared.documents document
               WHERE document.workspace_id = personal_identity_aliases.workspace_id
                 AND document.user_id = personal_identity_aliases.user_id
                 AND personal_identity_aliases.identity_id = ANY(document.participant_ids)
@@ -494,7 +507,13 @@ export async function purgePersonalSource(
             WHERE a.workspace_id = i.workspace_id AND a.user_id = i.user_id
               AND a.identity_id = i.id)
       RETURNING id`;
-    return { documents: docs.length, cursors: cursors.length, aliases: aliases.length, identities: identities.length };
+    return {
+      documents: docs.length,
+      held: heldRows[0]?.n ?? 0,
+      cursors: cursors.length,
+      aliases: aliases.length,
+      identities: identities.length,
+    };
   });
 }
 
@@ -542,6 +561,18 @@ export async function searchPersonalDocuments(
               AND ${proseProfilePredicateSql(sql, personalSelection, 'embedding_profile', 'embedding_mode')}
            ORDER BY embedding <=> ${vector}::vector LIMIT ${Math.max(limit * 4, 20)}`
     : sql`SELECT id, NULL::bigint AS vector_rank FROM filtered WHERE false`;
+  // Lexical leg through the shared seam: BM25 over harness_shared.documents when its index
+  // is live, else the legacy ts_rank_cd ranking. `filtered` is SELECT d.* from documents,
+  // so the unqualified columns resolve. Websearch syntax keeps filtering under BM25 (plan
+  // bm25-lexical-search-evoke-adoption-2026-10-10 P-005, D-007). Only the ORDER feeds
+  // fusion, by position, so the engines' different score scales never meet (D-004).
+  const tsq = sql`websearch_to_tsquery('english', ${input.query})`;
+  const leg = await lexicalLeg(sql, {
+    table: 'documents',
+    query: input.query,
+    querySyntax: 'websearch',
+    legacy: { score: sql`ts_rank_cd(text_tsv, ${tsq})`, match: sql`text_tsv @@ ${tsq}` },
+  });
 
   const rows = await sql<Array<{
     id: string; source: string; scope_key: string; source_id: string | null;
@@ -552,18 +583,16 @@ export async function searchPersonalDocuments(
   }>>`
     WITH filtered AS (
       SELECT d.*
-        FROM harness_shared.personal_documents d
+        FROM harness_shared.documents d
        WHERE d.workspace_id = ${workspaceId} AND d.user_id = ${userId}
          ${scopeFilter} ${sourceIdFilter} ${providerAccountFilter}
          ${participantFilter} ${fromFilter} ${toFilter}
     ), lexical AS (
       SELECT id,
-             row_number() OVER (
-               ORDER BY ts_rank_cd(text_tsv, websearch_to_tsquery('english', ${input.query})) DESC
-             ) AS lexical_rank
+             row_number() OVER (ORDER BY ${leg.order}) AS lexical_rank
         FROM filtered
-       WHERE text_tsv @@ websearch_to_tsquery('english', ${input.query})
-       ORDER BY ts_rank_cd(text_tsv, websearch_to_tsquery('english', ${input.query})) DESC
+       WHERE ${leg.match}
+       ORDER BY ${leg.order}
        LIMIT ${Math.max(limit * 4, 20)}
     ), vector AS (${vectorCte}), ranked AS (
       SELECT COALESCE(l.id, v.id) AS id,

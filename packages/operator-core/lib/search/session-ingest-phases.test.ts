@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,7 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const probe = vi.hoisted(() => ({
   clock: 0, unchangedPath: '', unchangedSize: 0, failInsert: false,
   failOwners: false,
+  ownerParams: [] as string[][],
   queries: [] as string[],
+  statePaths: [] as string[][],
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => {
@@ -21,6 +24,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       return Promise.resolve(Object.assign([], { count: 1 }));
     }
     if (query.includes('UPDATE harness_shared.session_turns AS turns')) {
+      probe.ownerParams = values.slice(0, 2) as string[][];
       if (probe.failOwners) return Promise.reject(new Error('injected owner backfill failure'));
       return Promise.resolve(Object.assign([], { count: 3 }));
     }
@@ -29,6 +33,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     }
     if (query.includes('FROM harness_shared.session_ingest_state') &&
         query.includes('last_inference_id') && !query.includes('LIMIT')) {
+      if (query.includes('file_path = ANY')) probe.statePaths.push(values[1] as string[]);
       return Promise.resolve([{
         file_path: probe.unchangedPath, byte_offset: probe.unchangedSize,
         turn_count: 1, part_count: 1, prompt_count: 1, response_count: 0,
@@ -90,8 +95,10 @@ beforeEach(async () => {
   FILE_ADAPTERS.splice(0, FILE_ADAPTERS.length, { ...codex, roots: () => [{ root: day, dirDepth: 0 }] });
   probe.clock = 0;
   probe.queries = [];
+  probe.statePaths = [];
   probe.failInsert = false;
   probe.failOwners = false;
+  probe.ownerParams = [];
   vi.spyOn(performance, 'now').mockImplementation(() => probe.clock);
 });
 
@@ -102,6 +109,32 @@ afterEach(async () => {
 });
 
 describe('ingestion phase attribution', () => {
+  it('loads cursor state only for discovered files while preserving unchanged-file offsets', async () => {
+    const stats = await runSessionIngestOnce();
+    expect(probe.statePaths).toHaveLength(1);
+    expect(new Set(probe.statePaths[0])).toEqual(new Set([
+      probe.unchangedPath,
+      probe.unchangedPath.replace('019f4fa9-4a09-78c0-8a35-d7e3382d1f8f', '019f4fa9-4a09-78c0-8a35-d7e3382d1f80'),
+    ]));
+    expect(stats.filesScanned).toBe(2);
+    expect(stats.filesIngested).toBe(1);
+    expect(stats.turnsInserted).toBe(1);
+    expect(probe.queries.filter(q => q.includes('INSERT INTO harness_shared.session_ingest_state'))).toHaveLength(1);
+  });
+
+  it('does not fetch historical cursor state when an adapter discovers no files', async () => {
+    const codex = FILE_ADAPTERS[0];
+    FILE_ADAPTERS.splice(0, FILE_ADAPTERS.length, {
+      ...codex, roots: () => [{ root: join(root, 'no-sessions'), dirDepth: 0 }],
+    });
+    const stats = await runSessionIngestOnce();
+    expect(stats.errors).toBe(0);
+    expect(stats.filesScanned).toBe(0);
+    expect(stats.phaseMs!.state).toBe(0);
+    expect(probe.queries.some(q => q.includes('FROM harness_shared.session_ingest_state') &&
+      q.includes('last_inference_id') && !q.includes('LIMIT'))).toBe(false);
+  });
+
   it('separates discovery, unchanged metadata, decoding and writes without rereading unchanged bytes', async () => {
     const stats = await runSessionIngestOnce();
     expect(stats.errors).toBe(0);
@@ -115,6 +148,7 @@ describe('ingestion phase attribution', () => {
     expect(stats.phaseMs!.metadataBackfill).toBeGreaterThan(0);
     expect(stats.metadataBackfills).toEqual([
       { sourceKind: 'codex', operation: 'sessionOwners', requested: 2, updated: 3,
+        inputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         startedAtMs: expect.any(Number), durationMs: 7, status: 'completed' },
       { sourceKind: 'codex', operation: 'codexAdvSessions', requested: 1, updated: 1,
         startedAtMs: expect.any(Number), durationMs: 7, status: 'completed' },
@@ -132,6 +166,7 @@ describe('ingestion phase attribution', () => {
     expect(failed.errorSample).toContain('codex owner backfill: injected owner backfill failure');
     expect(failed.metadataBackfills).toEqual([
       { sourceKind: 'codex', operation: 'sessionOwners', requested: 2,
+        inputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         startedAtMs: expect.any(Number), durationMs: 7, status: 'failed' },
       { sourceKind: 'codex', operation: 'codexAdvSessions', requested: 1, updated: 1,
         startedAtMs: expect.any(Number), durationMs: 7, status: 'completed' },
@@ -142,6 +177,29 @@ describe('ingestion phase attribution', () => {
     expect(retried.skipped).toBeUndefined();
     expect(retried.errors).toBe(0);
     expect(retried.metadataBackfills?.[0]).toMatchObject({ updated: 3, status: 'completed' });
+    expect(retried.metadataBackfills?.[0].inputSha256).toBe(failed.metadataBackfills?.[0].inputSha256);
+  });
+
+  it('fingerprints the exact bound owner inputs and distinguishes changed owners at equal cardinality', async () => {
+    const fingerprint = () => createHash('sha256').update(JSON.stringify(probe.ownerParams)).digest('hex');
+    const initial = await runSessionIngestOnce();
+    const initialHash = initial.metadataBackfills![0].inputSha256;
+    expect(initialHash).toBe(fingerprint());
+    expect(probe.ownerParams[0]).toHaveLength(2);
+    const queryCount = probe.queries.filter(q => q.includes('UPDATE harness_shared.session_turns AS turns')).length;
+    expect(queryCount).toBe(1);
+    const line = sessionIngestLogLine(initial)!;
+    expect(line).toContain(initialHash);
+    expect(line).not.toContain('phase-owner');
+    for (const sessionId of probe.ownerParams[0]) expect(line).not.toContain(sessionId);
+
+    await writeFile(join(root, 'su-codex-homes', 'session-4242', 'papercusp-diagnostics.json'),
+      '{"lockOwnerSid":"changed-phase-owner"}');
+    const changed = await runSessionIngestOnce();
+    expect(changed.metadataBackfills![0].requested).toBe(initial.metadataBackfills![0].requested);
+    expect(changed.metadataBackfills![0].inputSha256).toBe(fingerprint());
+    expect(changed.metadataBackfills![0].inputSha256).not.toBe(initialHash);
+    expect(changed.metadataBackfills![1]).not.toHaveProperty('inputSha256');
   });
 
   it('retains failed-write time while preserving the failed file offset and releasing the sweep latch', async () => {
@@ -149,7 +207,7 @@ describe('ingestion phase attribution', () => {
     const failed = await runSessionIngestOnce();
     expect(failed.errors).toBe(1);
     expect(failed.filesIngested).toBe(0);
-    expect(failed.phaseMs!.writes).toBe(14); // failed insert plus best-effort error bookkeeping
+    expect(failed.phaseMs!.writes).toBe(21); // failed insert and both error-bookkeeping writes
     expect(probe.queries.some((q) => q.includes('INSERT INTO harness_shared.session_ingest_state'))).toBe(false);
     probe.failInsert = false;
     const retried = await runSessionIngestOnce();

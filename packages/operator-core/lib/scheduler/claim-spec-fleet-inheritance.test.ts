@@ -12,7 +12,7 @@
  * (sqlOverride + a mocked fleet-membership-store — no PG), plus the tool's
  * exactly-one-of-{cupId,fleet} arg contract.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 
 const membershipMock = vi.fn(
@@ -32,9 +32,10 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: {} }),
 }));
 
-import { getClaimSpec, clearClaimSpec, fleetSpecBeeKey } from './claim-spec-store';
-import { DEFAULT_CLAIM_SPEC } from './claim-spec';
+import { getClaimSpec, setClaimSpec, clearClaimSpec, fleetSpecBeeKey } from './claim-spec-store';
+import { DEFAULT_CLAIM_SPEC, claimSpecSchema } from './claim-spec';
 import setClaimSpecTool from '../agent-tools/scheduler/set_claim_spec';
+import healthTool from '../endpoint-route/routes/misc/health';
 
 /** A minimal spec that passes validateClaimSpec. */
 const laneSpec = (specId: string) => ({
@@ -58,6 +59,67 @@ function makeSqlStub(queue: unknown[][]) {
 beforeEach(() => {
   membershipMock.mockReset();
   membershipMock.mockResolvedValue(null);
+});
+afterEach(() => vi.unstubAllGlobals());
+
+describe('shared claim-spec reader compatibility (D-025)', () => {
+  const candidate = () => ({ ...laneSpec('adoption-lane'), revisionAdoption: 'first' as const });
+  const supportedHealth = { ok: true, sha: 'a'.repeat(40),
+    claimSpec: { specVersion: '1.0', revisionAdoption: ['first'] } };
+
+  it('refuses a newer writer against an older strict reader before touching the stored lane', async () => {
+    // The older root schema accepts the incumbent and rejects exactly the additive field.
+    const olderReader = claimSpecSchema.omit({ revisionAdoption: true });
+    expect(olderReader.safeParse(laneSpec('incumbent')).success).toBe(true);
+    expect(olderReader.safeParse(candidate()).success).toBe(false);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => Response.json(
+      url.includes(':3070/') ? { ok: true, sha: 'b'.repeat(40) } : supportedHealth,
+    )));
+    const { sql, calls } = makeSqlStub([]);
+    const result = await setClaimSpec({ cupId: 'fleet:f', workspaceId: 'ws1', spec: candidate() }, sql);
+    expect(result.ok).toBe(false);
+    expect(result.errors.join(' ')).toContain('release-operator');
+    expect(calls).toEqual([]);
+  });
+
+  it.each([3170, 3271])('also qualifies the consuming reader on port %s', async (port) => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => Response.json(
+      url.includes(`:${port}/`) ? { ok: true, sha: 'b'.repeat(40) } : supportedHealth,
+    )));
+    const { sql, calls } = makeSqlStub([]);
+    const result = await setClaimSpec({ cupId: 'fleet:f', spec: candidate() }, sql);
+    expect(result.ok).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it('keeps unknown or failed capability reads distinct from support', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('unreachable'); }));
+    const { sql, calls } = makeSqlStub([]);
+    const result = await setClaimSpec({ cupId: 'fleet:f', spec: candidate() }, sql);
+    expect(result.ok).toBe(false);
+    expect(result.errors).toHaveLength(3);
+    expect(calls).toEqual([]);
+  });
+
+  it('preserves the opt-in after every reader attests it, and leaves rollback writes available', async () => {
+    const fetch = vi.fn(async () => Response.json(supportedHealth));
+    vi.stubGlobal('fetch', fetch);
+    const qualified = makeSqlStub([[], [{ revision: 2 }]]);
+    expect((await setClaimSpec({ cupId: 'fleet:f', spec: candidate() }, qualified.sql)).ok).toBe(true);
+    expect(qualified.calls.join(' ')).toContain('"revisionAdoption":"first"');
+    expect(fetch).toHaveBeenCalledTimes(3);
+    fetch.mockClear();
+    const rollback = makeSqlStub([[], [{ revision: 3 }]]);
+    expect((await setClaimSpec({ cupId: 'fleet:f', spec: laneSpec('incumbent') }, rollback.sql)).ok).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('publishes the running reader capability through the existing health route', async () => {
+    const response = (healthTool as unknown as { handler: () => Response }).handler();
+    const body = await response.json();
+    expect(body.claimSpec).toEqual({ specVersion: '1.0', revisionAdoption: ['first'] });
+    expect(claimSpecSchema.safeParse(candidate()).success).toBe(true);
+  });
 });
 
 describe('fleetSpecBeeKey', () => {

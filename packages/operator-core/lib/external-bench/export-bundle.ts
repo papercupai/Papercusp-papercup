@@ -13,7 +13,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { defaultBenchResultsDir, resolveArmFile, type PreservedArmRun } from './preserved-runs';
+import { defaultBenchResultsDir, readPreservedRun, type PreservedArmRun, type PreservedRunSummary, type ResolvedPerTask } from './preserved-runs';
 
 export interface ExportPrediction {
   instance_id: string;
@@ -28,6 +28,10 @@ export interface ExportBundle {
   nonEmptyPatches: number;
   taskIds: string[];
   predictions: ExportPrediction[];
+  /** Assigned-outcome metadata including missing grader measurements. */
+  summary: PreservedRunSummary;
+  outcomes: ResolvedPerTask[];
+  assignmentIdentityComplete: boolean;
   regradeCommand: string;
   readme: string;
 }
@@ -46,13 +50,16 @@ function regradeCommandFor(arm: string): string {
   ].join('\n');
 }
 
-function readmeFor(run: PreservedArmRun, arm: string, nonEmpty: number): string {
-  const total = run.perTask?.length ?? 0;
+function readmeFor(run: PreservedArmRun, summary: PreservedRunSummary, arm: string, nonEmpty: number): string {
+  const total = summary.taskCount;
   return [
     `# ${run.runId ?? arm} — SWE-bench Pro export bundle`,
     '',
     `Arm: **${arm}**. Tasks: ${total} (${nonEmpty} with a non-empty patch).`,
     run.startedAt ? `Run started: ${run.startedAt}.` : '',
+    `Primary assigned outcome: ${summary.resolvedPct == null ? 'inconclusive' : `${summary.resolvedCount}/${total}`}.`,
+    `Conditional graded quality: ${summary.conditionalResolvedPct == null ? 'unavailable' : `${summary.resolvedCount}/${summary.gradedCount}`}.`,
+    `Assigned: ${total}; attempted: ${summary.attemptedCount}; absent: ${summary.absentCount}; missing grader measurements: ${summary.missingGradeCount}.`,
     '',
     '## What this is',
     'A reproducibility bundle: the per-instance patches this arm produced + the exact',
@@ -70,7 +77,8 @@ function readmeFor(run: PreservedArmRun, arm: string, nonEmpty: number): string 
     '',
     '## Caveats (integrity — see plan D-027)',
     '- Empty diffs (no patch) score as UNRESOLVED, never silently dropped.',
-    '- Model: opus; verify no sonnet/haiku leak in the source run before trusting the number.',
+    `- Recorded source model: ${run.model ?? 'unknown'}; configured aliases are not measured execution identity.`,
+    '- Generation failures and absent attempts remain assigned outcomes; missing grader measurement is inconclusive.',
     '- A subset is indicative, not the full ~731-task set; a single seed has uncaptured variance.',
     '- The number is only as honest as these caveats — do not present it cleaner than they are.',
   ]
@@ -83,20 +91,19 @@ function readmeFor(run: PreservedArmRun, arm: string, nonEmpty: number): string 
 export function buildExportBundle(runId: string, opts: { baseDir?: string } = {}): ExportBundle | null {
   const baseDir = opts.baseDir ?? defaultBenchResultsDir();
   const dir = join(baseDir, runId);
-  const arm = resolveArmFile(dir);
-  if (!arm) return null;
-  const armPath = join(dir, `${arm}.json`);
-  if (!existsSync(armPath)) return null;
-
-  let run: PreservedArmRun;
-  try {
-    run = JSON.parse(readFileSync(armPath, 'utf8')) as PreservedArmRun;
-  } catch {
-    return null;
-  }
-  const perTask = run.perTask ?? [];
+  const detail = readPreservedRun(runId, baseDir);
+  if (!detail) return null;
+  const { run, summary } = detail;
+  const arm = run.arm;
+  const frozenIds = Array.isArray(run.config?.taskIds)
+    ? run.config.taskIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0) : [];
+  const taskIds = [...new Set([...frozenIds, ...detail.perTask.map(t => t.instanceId)])];
+  const observed = new Map(detail.perTask.map(t => [t.instanceId, t]));
+  const outcomes: ResolvedPerTask[] = taskIds.map(instanceId => observed.get(instanceId) ?? {
+    instanceId, taskStatus: 'todo', resolved: null,
+  });
   const diffsDir = join(dir, `diffs-${arm}`);
-  const predictions: ExportPrediction[] = perTask.map((t) => {
+  const predictions: ExportPrediction[] = outcomes.map((t) => {
     const dp = join(diffsDir, `${t.instanceId}.diff`);
     const patch = existsSync(dp) ? readFileSync(dp, 'utf8') : '';
     return { instance_id: t.instanceId, patch, prefix: `arm-${arm}` };
@@ -106,11 +113,14 @@ export function buildExportBundle(runId: string, opts: { baseDir?: string } = {}
   return {
     runId,
     arm,
-    taskCount: perTask.length,
+    taskCount: summary.taskCount,
     nonEmptyPatches,
-    taskIds: perTask.map((t) => t.instanceId),
+    taskIds,
     predictions,
+    summary,
+    outcomes,
+    assignmentIdentityComplete: taskIds.length === summary.taskCount,
     regradeCommand: regradeCommandFor(arm),
-    readme: readmeFor(run, arm, nonEmptyPatches),
+    readme: readmeFor(run, summary, arm, nonEmptyPatches),
   };
 }

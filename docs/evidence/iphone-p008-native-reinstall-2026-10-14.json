@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native actual uninstall/reinstall clears old pairing",
+  "command": [
+    "python3",
+    "tools/ios-ci.py",
+    "--mode",
+    "simulator",
+    "--reinstall-ui",
+    "--pair-payload-file",
+    "/Volumes/BuildDataNew/native-iphone/private-WI-10004735-reinstall-20261014T1458Z/pair.json"
+  ],
+  "startedAt": "2026-10-14T15:01:57.446246+00:00",
+  "finishedAt": "2026-10-14T15:35:51.671568+00:00",
+  "exitCode": 0,
+  "summary": "The maintained Mac VM simulator runner passed 60 native unit tests, 5 UI smoke tests and three separate reinstall phases, each with zero failures or skips. Visible pairing against an owned real operator was followed by an ordinary relaunch without a payload or credential seed, which retained authorized reads. Actual simctl uninstall removed the original app data container; reinstall created a different container. Two subsequent launches, without credential-wipe arguments, displayed pairing onboarding and no Operator UI. All 356 declared retained artifact hashes and byte sizes were verified locally, along with archive, result and reinstall receipts; screenshots were visually reviewed. This records an already-completed development simulator run and does not close the whole P-008 acceptance bar.",
+  "assertions": [
+    {
+      "id": "PapercupTests",
+      "passed": true,
+      "evidence": "Retained unit-1-summary.json: 60 passed, 0 failed, 0 skipped; SHA256 6316379a39abbcb8358fb89fb01291f96b358351ddc38906439894f8be0ce2e0."
+    },
+    {
+      "id": "PapercupUITests selected smoke suite",
+      "passed": true,
+      "evidence": "Retained ui-smoke-summary.json: 5 passed, 0 failed, 0 skipped; SHA256 4ceb6ac06d2b361c7b74711e6e79151a6bd85d1cf475283ab5c1547f74aea5e2."
+    },
+    {
+      "id": "PapercupUITests/PairFlowUITests/testPairBeforeActualReinstall",
+      "passed": true,
+      "evidence": "Retained reinstall-pair-summary.json: 1 passed, 0 failed, 0 skipped; SHA256 e1583b6fdc28fc2dda753bf1137d8052e22a53bae88a5fc639c893d70055b014. Actual visible pairing loaded the owned disposable workspace."
+    },
+    {
+      "id": "PapercupUITests/PairFlowUITests/testAuthorizedRelaunchBeforeActualReinstall",
+      "passed": true,
+      "evidence": "Retained reinstall-relaunch-summary.json: 1 passed, 0 failed, 0 skipped; SHA256 a0d359837ad1a2d87c31fbc1c2e627906ecc7cda5afcb8ec5a51bed52c0d8690. No pairing payload or launch-argument credential seed was supplied; persisted credentials authorized a real Inbox read."
+    },
+    {
+      "id": "OS uninstall and distinct replacement data container",
+      "passed": true,
+      "evidence": "reinstall.json records successful simctl uninstall, failed post-uninstall get_app_container plus absent original directory, successful install and a different existing data container. SHA256 3da96d1543181ccdc02463b03bee4a8e72de0d9615ea1b02c6b48d5b086dfe2f."
+    },
+    {
+      "id": "PapercupUITests/PairFlowUITests/testActualReinstallClearsOldPairing",
+      "passed": true,
+      "evidence": "Retained reinstall-onboarding-summary.json: 1 passed, 0 failed, 0 skipped; SHA256 141c89ba89d0736f52f551a8c659314d72898b2d19d388308907b014252541ac. Both ordinary post-reinstall launches showed Pair with your desktop, Scan QR and Paste manually, with no Operator or Pair again UI."
+    }
+  ],
+  "workItemId": "WI-10004735",
+  "sourceWorkItemId": "WI-10007213",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "spec": "AUTO-BAR-R-2-P-008@2",
+  "repository": "papercup-rust-mobile (canonical independent mobile repository)",
+  "sourceCommitAtExecution": "4b14e898f859cce93794f48ac1d47c3cb42bec7c",
+  "sourceDirtyAtExecution": true,
+  "sourceFingerprint": "a27b8bc9cec096016510895cfd53dde164f9d55d0171ebc12712e1303b0acb85",
+  "sourceAdmission": "The retained native result pins the exact dirty source content, including source-admission changes. Host and guest fingerprints were compared before execution. No claim of a clean release candidate or current complete-source equivalence is made.",
+  "maintainedInstruments": {
+    "runnerPath": "tools/ios-ci.py",
+    "testPath": "ios/PapercupUITests/PairFlowUITests.swift",
+    "runnerTestPath": "tools/tests/ios-ci-runner-test.py",
+    "resultGuardPath": "tools/build-scripts/check-xctest-summary.py",
+    "operatorFixturePath": "packages/operator-core/lib/native-device-fixture.ts",
+    "operatorFixtureTestPath": "packages/operator-core/lib/native-device-fixture.test.ts",
+    "receiptTimeFileHashes": {
+      "tools/ios-ci.py": "aed6cffc32c6767a3f684f551d601c163fece88dcc4fa72c36f65c44a23fb48f",
+      "ios/PapercupUITests/PairFlowUITests.swift": "14ea77b249d3168f243d37e780334aa926229f199b511b9d6e85a686d65cc0fd",
+      "tools/build-scripts/check-xctest-summary.py": "8093276f7f5d3526ec173784dce32dea8242782d80cbcb9865ede684e2d1d898"
+    },
+    "hashScope": "These named-file hashes were read while writing this receipt; the executed complete-source identity is the separate retained sourceFingerprint."
+  },
+  "toolchain": {
+    "xcode": "Xcode 16.4 Build 16F6",
+    "simulatorSDK": "18.5",
+    "simulatorRuntime": "iOS 18.6 (22G86)",
+    "device": "iPhone 16 Pro x86_64",
+    "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"
+  },
+  "reinstall": {
+    "bundleId": "com.papercuspai.operator.mobile",
+    "originalDataContainerId": "6DCC9945-0FC3-45F5-8592-5B66EA6CFE31",
+    "installedDataContainerId": "EB2AB88B-3691-40F8-B60F-C7BBDE34DB62",
+    "uninstallVerified": true,
+    "newDataContainerVerified": true,
+    "ordinaryRelaunchAuthorized": true,
+    "reinstalledOnboardingVerified": true
+  },
+  "retainedEvidence": {
+    "root": ".papercusp/evidence/WI-10004735-reinstall-20261014T1501Z",
+    "pathBase": "Operating account home directory; this retained evidence root is outside the staging checkout.",
+    "attempt": "/Volumes/BuildDataNew/native-iphone/evidence-WI-10004735-reinstall-20261014T1501Z/attempts/20261014T150157Z-beadc7ce",
+    "archive": "native-artifacts.tar.gz",
+    "archiveBytes": 6891520,
+    "archiveSha256": "10466f790c5c0340ea25f3445b9d621da36f6ffb6728626c330fe1441ce4d0a9",
+    "resultPath": "result.json",
+    "resultSha256": "ef9de4f0cd29f22e650ebd36550b667152fdb83e50443dd2c2ad71c43c400f3b",
+    "reinstallPath": "reinstall.json",
+    "reinstallSha256": "3da96d1543181ccdc02463b03bee4a8e72de0d9615ea1b02c6b48d5b086dfe2f",
+    "verificationFile": "local-artifact-verification.json",
+    "verificationSha256": "36732b1d6b83e8e17fabb75e9e7153a91c077a0bec53342bf01f79265bac1fd5",
+    "verifiedArtifactCount": 356,
+    "mismatches": [],
+    "integrityProcedure": "Check archive/result/reinstall SHA256 against local-artifact-verification.json. Read every artifact declared in result.json directly from the tar; compare byte size and SHA256. Compare separate result/reinstall files with their tar entries and screenshot copies with declared hashes. This does not execute native tests.",
+    "nativeJobId": "0mv88nb9xjdg4imgv8j",
+    "fixtureJobId": "0mv88gecxwrqc821764",
+    "jobDisposition": "Terminal exit0 and owned runtime cleanup recorded in the WI-10004735 2026-10-14T15:40Z checkpoint. Do not rerun these completed jobs."
+  },
+  "screenshots": [
+    {
+      "label": "reinstall-original-authorized",
+      "file": "DA2F183E-6C52-4C54-BFFE-E60A2D7ABC53.png",
+      "sha256": "068b91848adf51ed2c1e1c2eb4ace85f0003983b2c34f38b6dfd59f2c80072ca",
+      "review": "The owned disposable workspace displays authorized Inbox content. Its red release card is private fixture content, not a current live-gate observation."
+    },
+    {
+      "label": "reinstall-positive-ordinary-relaunch",
+      "file": "66471FC4-D89D-4D02-8BB0-FFCC7F8D7638.png",
+      "sha256": "095dde6f2dd3a7af8439cc9a90f0b87e1bfc1472823ce96b5ef896f405ddca0a",
+      "review": "Ordinary relaunch retains the disposable workspace and authorized Inbox content."
+    },
+    {
+      "label": "actual-reinstall-onboarding-1",
+      "file": "1F77CFBD-EDD1-4856-9A88-48DF031EB8EF.png",
+      "sha256": "e8b20571dd4391c64cc0f129ea7605a452d155c02c1767c33d2f93237c5f61fb",
+      "review": "Fresh pairing onboarding with current Settings → Remote access → Pair a phone instructions, Scan QR and Paste manually; no authorized tab bar."
+    },
+    {
+      "label": "actual-reinstall-onboarding-2",
+      "file": "57038BA9-D39E-4CE9-8156-47A264B8F7A8.png",
+      "sha256": "e8b20571dd4391c64cc0f129ea7605a452d155c02c1767c33d2f93237c5f61fb",
+      "review": "Hash-identical to the reviewed first onboarding screenshot; the retained XCTest attachment manifest identifies the second launch."
+    }
+  ],
+  "disclosedGaps": [
+    "Historical exact-source simulator evidence; the dirty execution fingerprint is not a release-admissible signed candidate manifest.",
+    "No Xcode 26, physical cellular-radio, production APNs, signed IPA, App Store, TestFlight or final shipment claim.",
+    "No native expiry, workspace-switch, live disconnect/recovery, public HTTPS chat or accepted hosted/BYOC target claim from this journey.",
+    "Other P-008 rows and the separate P-016 WI-10006956 target/custody dependency remain open.",
+    "No native proof was rerun to reconstruct this receipt."
+  ]
+}

@@ -139,7 +139,7 @@ describe('resolveDreamPassConfig', () => {
 });
 
 describe('resolveDreamReviewConfig', () => {
-  it('ships a stricter independent-review default than the cheap dreamer', () => {
+  it('uses the canonical learning model with a stricter review rubric', () => {
     expect(DEFAULT_DREAM_REVIEW_CONFIG).toEqual({
       model: LEARNING_MODEL_SPEC,
       duplicateSimilarityThreshold: 0.85,

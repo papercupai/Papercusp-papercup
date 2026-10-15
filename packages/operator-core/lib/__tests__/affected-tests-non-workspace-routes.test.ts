@@ -340,3 +340,37 @@ describe('affected-tests: templates/ reaches every workspace that tests it (EI-2
     }
   });
 });
+
+/**
+ * WI-6554700010008507 — the same class in `libs/papercusp/plugins/`, the bundled first-party
+ * plugins. A manifest-only edit (an Asana setup.credentials key the schema refuses, which makes
+ * the loader drop the whole package) selected ZERO workspaces, so the guard written for exactly
+ * that defect — plugin-loader's "every bundled first-party plugin manifest validates" — never ran
+ * under scoped verification.
+ */
+describe('affected-tests: the libs/papercusp/plugins/ route (WI-6554700010008507)', () => {
+  const MANIFEST = 'libs/papercusp/plugins/asana/papercusp.json';
+  const MANIFEST_GUARD = 'packages/plugin-loader/src/manifest-validate.test.ts';
+
+  it('routes a bundled plugin manifest change to the manifest guard and the provider-package tests', () => {
+    const selected = affectedFor([MANIFEST]);
+    expect(
+      selected,
+      'A bundled plugin manifest change no longer selects @papercusp/plugin-loader, so a manifest ' +
+        'the schema refuses passes scoped verification. Check NON_WORKSPACE_PATH_ROUTES.',
+    ).toContain('@papercusp/plugin-loader');
+    expect(selected).toContain('@papercusp/operator-core');
+  });
+
+  it('CONTROL: a sibling path outside plugins/ in the same submodule does not pick up the route', () => {
+    // libs/papercusp/plugins-<x> is not the plugins dir; the prefix keeps its trailing slash.
+    expect(affectedFor(['libs/papercusp/plugins-notes.md'])).not.toContain('@papercusp/plugin-loader');
+  });
+
+  it('THE RATCHET: the routed workspace still holds the every-bundled-manifest guard', () => {
+    expect(existsSync(resolve(REPO_ROOT, MANIFEST_GUARD))).toBe(true);
+    expect(readFileSync(resolve(REPO_ROOT, MANIFEST_GUARD), 'utf8')).toContain(
+      'every bundled first-party plugin manifest validates',
+    );
+  });
+});

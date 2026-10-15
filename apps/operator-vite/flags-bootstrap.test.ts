@@ -16,9 +16,40 @@ import {
   flagsBootstrapPlugin,
   injectFlagsSeed,
   seedIndexHtmlWithFlags,
+  seedIndexHtmlWithWorkspace,
 } from './flags-bootstrap';
 
 const PLUGIN_NAME = 'papercusp-flags-bootstrap';
+
+describe('dev workspace identity before React mounts', () => {
+  const html = '<html><head></head><body><script type="module" src="/src/main.tsx"></script></body></html>';
+  it('seeds a bare load from the proxied API host, before the provider bundle', async () => {
+    const urls: string[] = [];
+    const result = await seedIndexHtmlWithWorkspace(html, '/harness', 'http://127.0.0.1:4321', async (url) => {
+      urls.push(url);
+      return { ok: true, json: async () => ({ current: 'isolated-workspace' }) };
+    });
+    expect(urls).toEqual(['http://127.0.0.1:4321/api/workspaces']);
+    expect(result.indexOf('window.__PAPERCUSP_WS__="isolated-workspace"')).toBeLessThan(result.indexOf('src="/src/main.tsx"'));
+    expect(result).toContain('window.__PAPERCUSP_WS__="isolated-workspace"');
+  });
+  it('preserves an explicit window workspace without consulting the global registry', async () => {
+    const result = await seedIndexHtmlWithWorkspace(html, '/adv?ws=other-window', 'http://localhost', async () => {
+      throw new Error('must not fetch registry');
+    });
+    expect(result).toContain('window.__PAPERCUSP_WS__="other-window"');
+  });
+  it('escapes script terminators in a workspace id', async () => {
+    const result = await seedIndexHtmlWithWorkspace(html, '/?ws=%3C%2Fscript%3E', 'http://localhost');
+    expect(result).toContain('window.__PAPERCUSP_WS__="\\u003c/script\\u003e"');
+    expect(result).not.toContain('="</script>"');
+  });
+  it('leaves an unavailable registry to the browser fallback', async () => {
+    expect(await seedIndexHtmlWithWorkspace(html, '/', 'http://localhost', async () => {
+      throw new Error('offline');
+    })).toBe(html);
+  });
+});
 
 async function pluginNamesFor(command: 'build' | 'serve'): Promise<string[]> {
   const config = await resolveConfig(

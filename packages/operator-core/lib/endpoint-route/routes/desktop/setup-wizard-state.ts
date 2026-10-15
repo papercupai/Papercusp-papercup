@@ -6,7 +6,7 @@
  * the route's prior `gatePrincipal` helper is gone; the route-stack
  * runs the gate.
  */
-import { readOperatorState, writeOperatorState } from '../../../operator-state-pg';
+import { readOperatorState, updateOperatorState } from '../../../operator-state-pg';
 import { ensureInstallId } from '../../../setup-wizard-install-id';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -90,7 +90,7 @@ const patch = defineTool({
 export async function mergeSetupWizardState(
   body: Record<string, unknown>,
 ): Promise<SetupWizardState> {
-  const current = (await readOperatorState<SetupWizardState>(KEY)) ?? defaults();
+  return updateOperatorState<SetupWizardState>(KEY, defaults(), (current) => {
   const next: SetupWizardState = { ...current };
 
   if (typeof body.last_visited_step === 'string') {
@@ -136,8 +136,8 @@ export async function mergeSetupWizardState(
     next.step_status = merged;
   }
   next.updated_at = new Date().toISOString();
-  await writeOperatorState(KEY, next);
   return next;
+  });
 }
 
 export default [get, patch];

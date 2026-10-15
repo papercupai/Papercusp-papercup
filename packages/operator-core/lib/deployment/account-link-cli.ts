@@ -33,6 +33,7 @@ import { updateAccountPool, accountStatus, type AccountStatusRow } from './accou
 import { papercuspPath } from '../papercusp-root';
 import { trackDetached } from '../detached-imports';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
+import { WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN } from '@papercusp/deployment-driver';
 
 const ID_RE = /^[A-Za-z0-9._-]+$/;
 // Match the authorize URL / the minted token in the CLI's (ANSI-stripped) output.
@@ -88,6 +89,18 @@ export function resolveCliBin(
   const name = provider === 'codex' ? 'codex' : 'claude';
   const override = provider === 'codex' ? env.CODEX_BIN : env.CLAUDE_BIN;
   if (override) return override; // explicit operator override — trust it verbatim
+  if (env.PAPERCUSP_DISTRIBUTION_PROFILE === 'vm-release') {
+    // The release's bin/claude and bin/codex launch psu sessions; they are not
+    // vendor login CLIs. Bootstrap publishes the credential-free vendor tools
+    // here for the customer identity and its readiness probes (D-423).
+    const vendor = `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/${name}`;
+    try {
+      accessSync(vendor, constants.X_OK);
+      return vendor;
+    } catch {
+      throw new Error(`the ${providerLabel(provider)} vendor login CLI is missing from the customer agent toolchain (${vendor}) — repair or upgrade the workspace host`);
+    }
+  }
   const home = homedir();
   const candidates = [
     ...(env.PATH ?? '').split(':').filter(Boolean).map((d) => `${d}/${name}`),
@@ -291,14 +304,15 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
       : `.setup-${accountId}-${randomBytes(4).toString('hex')}`,
   );
   await mkdir(configDir, { recursive: true });
-  const bin = resolveCliBin(provider);
-  const spawnEnv = {
-    ...process.env,
-    PATH: cliSpawnPath(bin),
-    ...(provider === 'codex' ? { CODEX_HOME: configDir } : { CLAUDE_CONFIG_DIR: configDir }),
-  };
+  let bin: string;
   let pty: IPty;
   try {
+    bin = resolveCliBin(provider);
+    const spawnEnv = {
+      ...process.env,
+      PATH: cliSpawnPath(bin),
+      ...(provider === 'codex' ? { CODEX_HOME: configDir } : { CLAUDE_CONFIG_DIR: configDir }),
+    };
     pty = provider === 'codex'
       ? spawn(bin, ['login', '--device-auth'], {
         name: 'xterm-256color',

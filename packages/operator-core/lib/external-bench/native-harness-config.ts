@@ -20,6 +20,7 @@
  * spine) is the independent variable under test (D-004).
  */
 import type { BenchTask } from './types';
+import { benchDefaultModelId } from './model-registry-snapshot';
 
 /** Baseline B's arm id on the run-result row — the LOCKED vocab (P-011/P-010 schema, su-66ad9). */
 export const BASELINE_B_ARM = 'baseline-b-native';
@@ -59,7 +60,7 @@ export interface NativeHarnessConfig {
 }
 
 export const DEFAULT_NATIVE_HARNESS_CONFIG: NativeHarnessConfig = {
-  model: 'claude-opus-4-8',
+  model: benchDefaultModelId(),
   permissionMode: 'bypassPermissions',
   isolateConfig: true,
   maxRetries: 2,

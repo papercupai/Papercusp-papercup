@@ -17,7 +17,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 const h = vi.hoisted(() => ({ url: '' }));
 vi.mock('../embedded-pg-discovery', () => ({
@@ -57,6 +57,16 @@ function makeReport() {
     startedAt: '2026-01-01T00:00:00Z', finishedAt: '2026-01-01T00:01:00Z',
     totalCostUsd: 1.25, capBreaches: ['cap-x'],
     timeout: { cause: 'wallclock_deadline', stage: 'sut_session_send', turnIndex: 0 },
+    llmCallDiagnostics: {
+      events: [{
+        callId: 'storage-call', attempt: 1, phase: 'transport-error', observedAt: '2026-01-01T00:00:10Z',
+        label: 'gateway-pool', endpointOrigin: 'http://127.0.0.1:8788', loopback: true,
+        governorMode: 'shared-provider', requestedAccount: null, servedAccount: 'account-a',
+        providerRequestId: null, status: 503, transportFailureCode: 'ETIMEDOUT', callerAborted: false,
+      }],
+      total: 1,
+      omitted: 0,
+    },
     turns: [firstTurn, secondTurn],
     toolInvocations: [], continueChainRows: [],
   };
@@ -90,6 +100,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -150,6 +161,16 @@ describe('persistRunReport (PG)', () => {
         cause: 'wallclock_deadline',
         stage: 'sut_session_send',
         turnIndex: 0,
+      },
+      llmCallDiagnostics: {
+        events: [{
+          callId: 'storage-call', attempt: 1, phase: 'transport-error', observedAt: '2026-01-01T00:00:10Z',
+          label: 'gateway-pool', endpointOrigin: 'http://127.0.0.1:8788', loopback: true,
+          governorMode: 'shared-provider', requestedAccount: null, servedAccount: 'account-a',
+          providerRequestId: null, status: 503, transportFailureCode: 'ETIMEDOUT', callerAborted: false,
+        }],
+        total: 1,
+        omitted: 0,
       },
     });
     // transcript compressed on write → decompressTranscript restores the flattened rawSseTape.

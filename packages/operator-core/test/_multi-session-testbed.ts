@@ -128,6 +128,13 @@ export class MultiSessionTestbed {
     return Array.from({ length: count }, (_, i) => this.session(`s${i + 1}`));
   }
 
+  /** {@link ownerElectionDeps} over the sessions this testbed minted (WI-10008189). */
+  ownerElectionDeps<D extends { getSession?: unknown; getLatestSessionForOwner?: unknown }>(
+    deps: D,
+  ): Pick<D, 'getSession' | 'getLatestSessionForOwner'> {
+    return ownerElectionDeps(this.sessions, deps);
+  }
+
   /**
    * Bind a REAL live control socket to `ownerId` in the isolated discovery dir,
    * writing the discovery `.json` with a live pid so the operator's real
@@ -240,8 +247,10 @@ export class MultiSessionTestbed {
    * WI-2339 pidIsPsuHost gate is bypassed — see `findHost` for why: the stand-in
    * host records `process.pid`, whose cmdline lacks the psu-host marker.)
    */
-  findPsuHostDep(): (ownerId: string) => PsuPtyHost | null {
-    return (ownerId: string) => findLiveHost(ownerId, this.psuPtyDir, { verifyIdentity: () => true });
+  findPsuHostDep(): (ownerId: string) => Promise<PsuPtyHost | null> {
+    // The executor's seam is async (`typeof findLiveHostAsync`, 4f98f5cd90). Keep the
+    // synchronous discovery (no janitor side effects in tests) behind that contract.
+    return async (ownerId: string) => findLiveHost(ownerId, this.psuPtyDir, { verifyIdentity: () => true });
   }
 
   async destroy(): Promise<void> {
@@ -291,7 +300,51 @@ export function makeDelivery(
     source: partial.source ?? null,
     wakeHandle: partial.wakeHandle ?? null,
     note: partial.note ?? null,
+    turnProof: partial.turnProof ?? null,
+    turnStartedAt: partial.turnStartedAt ?? null,
+    pickupDeadlineAt: partial.pickupDeadlineAt ?? null,
   };
+}
+
+type OwnerElectionGetSession = (id: number) => Promise<Record<string, unknown> | null>;
+
+/**
+ * Hermetic owner-election deps for an `executeWake` rig (WI-10008189).
+ *
+ * When the handle's adv-session reads as not alive, executeWake elects the coord owner's
+ * NEWEST adv-session before it injects or resumes (`getLatestSessionForOwner`, wake-executor.ts),
+ * and parks unless that row and the re-read handle row both name the delivery's subscriber.
+ * Rigs that predate the election return partial rows (no `id`, `coordOwnerId: null`) and never
+ * inject the election dep, so it fell through to the REAL `latestAdvSessionByCoordOwner` PG read
+ * and every resume cell parked. Same class as EI-21249035020170568 (`claimResume`).
+ *
+ * This wraps the rig's `getSession` so a row lacking an `id` or an owner is stamped with the
+ * requested id and the testbed session that minted it, and models "no successor exists": the
+ * owner's latest row is the one its handle names. A cell that tests a successor or an
+ * unverifiable owner passes its own `getLatestSessionForOwner`, which wins.
+ */
+export function ownerElectionDeps<D extends { getSession?: unknown; getLatestSessionForOwner?: unknown }>(
+  sessions: readonly TestSession[],
+  deps: D,
+): Pick<D, 'getSession' | 'getLatestSessionForOwner'> {
+  const ownerOf = (id: number): string | null =>
+    sessions.find((s) => s.advSessionId === id)?.ownerId ?? null;
+  const inner = deps.getSession as OwnerElectionGetSession | undefined;
+  const getSession: OwnerElectionGetSession | undefined = inner
+    ? async (id) => {
+        const row = await inner(id);
+        if (!row) return row;
+        return { ...row, id: row.id ?? id, coordOwnerId: row.coordOwnerId ?? ownerOf(id) };
+      }
+    : undefined;
+  const getLatestSessionForOwner =
+    deps.getLatestSessionForOwner ??
+    (async (ownerId: string) => {
+      const s = sessions.find((x) => x.ownerId === ownerId);
+      if (!s || !getSession) return null;
+      return getSession(s.advSessionId);
+    });
+  return { getSession, getLatestSessionForOwner } as Pick<D, 'getSession' | 'getLatestSessionForOwner'>;
 }
 
 /** A handle for a session that backs an adv-session (claude by default). */

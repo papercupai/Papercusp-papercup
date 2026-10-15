@@ -1,0 +1,19 @@
+{
+  "kind": "original-truncated-publication-view-from-backup",
+  "snapshotId": "c9928d4f16a0fd1d120360da8963ce38",
+  "sourceObject": "k5bc3c0a9fc118554d96568a098cc4ff8/su-codex-homes/session-37302/sessions/2026/10/08/rollout-2026-10-08T10-32-12-01a11bed-cfb3-7220-a6cb-d2fff983ab17.jsonl",
+  "sourceFileObject": "Ix9b3e78c6605fab68d841c29ac6333e86",
+  "sourceBytes": 5524513,
+  "sourceSha256": "89834d7dda12524abc038e06a2c749e0d2d5585298cb95b7e5d7d171562f36aa",
+  "originalCallId": "call_11ac14b9cd8941dd882bd51c8eb5e755",
+  "originalCallLine": 1039,
+  "originalOutputLine": 1044,
+  "originalOutputAt": "2026-10-08T16:21:09.423Z",
+  "originalViewSha256": "e239ee787e5a989f5e9e38790bf471a1ff2331a3cb1cc08d1bf99139afeface9",
+  "originalViewChars": 11306,
+  "originalShellExitCode": 0,
+  "originalTokenCount": 21069,
+  "pairedSource": "text(await tools.mcp__papercusp_su__tools_invoke({name:\"capability:bash_output\",args:{task_id:\"0muzp1x1a2qbh8p1ki2\",peek:true,tail:14}}));\ntext(await tools.exec_command({cmd:\"jq '{ok, accountId, resultKeys:(.result|keys), result: .result}' /mnt/backup/p012-bake-fire105/aws-b-p012r70-20261007t125744z/publish.B-contained.json\",yield_time_ms:30000,max_output_tokens:2800}));\ntext(await tools.clock__curr_time({}));\n",
+  "scope": "Exact original jq view retains the original truncation warning and missing middle; it is not the full missing publish.B-contained.json. No sourceScan reconstruction or new cloud verdict.",
+  "recoveryTaskId": "0mv5t1x2ob9y0hd1mmm"
+}

@@ -1,0 +1,23 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=mail-round-3",
+  "value": [
+    {
+      "id": "AAMkAGI2-msg-2",
+      "conversationId": "AAQkAGI2-conv-quarterly",
+      "subject": "RE: Quarterly numbers",
+      "bodyPreview": "Adding the board deck for context.",
+      "body": { "contentType": "html", "content": "<p>Adding the board deck for context.</p>" },
+      "from": { "emailAddress": { "name": "Grace Hopper", "address": "grace@contoso.example" } },
+      "toRecipients": [{ "emailAddress": { "name": "Owner", "address": "owner@contoso.example" } }],
+      "receivedDateTime": "2026-10-05T10:02:00Z",
+      "internetMessageId": "<msg-2@contoso.example>",
+      "categories": ["Finance", "Archived"],
+      "isRead": true
+    },
+    {
+      "id": "AAMkAGI2-msg-3",
+      "@removed": { "reason": "deleted" }
+    }
+  ]
+}

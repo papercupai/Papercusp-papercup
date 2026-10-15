@@ -48,9 +48,14 @@ import {
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseTestPassReuseHealth, type TestPassReuseHealth } from './release/test-pass-reuse-report';
 import { parseGateRoundPhases, type GateRoundPhases } from './release/gate-round-phases';
+import { readGateNonVerdictReasons, reconstructGateFireDays, type GateFireDay } from './release/gate-fire-ledger';
+import { resolveWorkspaceForHarness } from './harness/workspace-for-harness';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { parseRepairTickLegs, type StoredRepairTickLegs } from './release/repair-tick-legs-snapshot';
 import { readFreezeAndConverge, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
+import { computeGreenMainSlo, syncTalliesFromDeltaCoverage, type GreenMainSlo } from './release/green-main-slo';
+import type { GreenMainSloPassResult } from './release/green-main-slo-watchdog';
+import { readVerdictRateWindow } from './release/gate-verdict-rate-alarm';
 import { pipelineName } from './release/pipeline-name';
 import { isAdmissionSyntheticCommitDate } from './release/admission-commit-date';
 import {
@@ -68,6 +73,25 @@ export type FrozenRepairQueueReadProjection =
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
+
+export interface GateFireHistory {
+  windowHours: 24;
+  fires: number;
+  verdictRecords: number;
+  noVerdictAborts: number;
+  skippedStarts: number;
+}
+
+/** Preserve the ledger's distinctions: a fire/skip/abort is not a completed test verdict. */
+export function summarizeGateFireHistory(days: GateFireDay[]): GateFireHistory {
+  return days.reduce<GateFireHistory>((sum, day) => ({
+    windowHours: 24,
+    fires: sum.fires + day.fires,
+    verdictRecords: sum.verdictRecords + day.verdictsGreen + day.verdictsRed,
+    noVerdictAborts: sum.noVerdictAborts + day.noVerdicts,
+    skippedStarts: sum.skippedStarts + day.skips,
+  }), { windowHours: 24, fires: 0, verdictRecords: 0, noVerdictAborts: 0, skippedStarts: 0 });
+}
 
 export interface RoutineInfo {
   name: string;
@@ -89,6 +113,14 @@ export interface RoutineInfo {
      */
     expiresAtMs: number | null;
   } | null;
+}
+
+/** Stable, privacy-bounded projection of one git-sync content-quarantine key. */
+export interface GitSyncContentError {
+  /** Superproject-relative path, suitable for exact matching against a pipeline query. */
+  path: string;
+  /** Detector name only; persisted keys can also carry importer paths and are not echoed. */
+  detector: string;
 }
 
 export interface GitPipelineSnapshot {
@@ -113,6 +145,8 @@ export interface GitPipelineSnapshot {
     lastErrors: string[];
     /** Live-lock paths that caused a whole repo commit group to defer. */
     skippedPaths?: GitSyncSkippedPath[];
+    /** Files excluded from commits by the last pass's content guards. */
+    contentErrors?: GitSyncContentError[];
     /**
      * The member's EFFECTIVE push mode this tick: `'push'`, or `'commit-only:<reason>'`
      * where reason is the hive git mode (`bridged` / `p2p-only`) or `config`.
@@ -196,6 +230,8 @@ export interface GitPipelineSnapshot {
      * refire in flight), and this is what tells the two apart.
      */
     consecutiveNoVerdict: number;
+    /** Exact 24h ledger window; null means this read could not be measured. */
+    fireHistory?: GateFireHistory | null;
     lastGreenAtMs: number | null;
     /**
      * EI-20706962612084953: the last verdict's OWN green-ness, as STATED by the writer
@@ -331,6 +367,18 @@ export interface GitPipelineSnapshot {
      * queue is healthy, and NOT that it is stuck.
      */
     convergence?: StoredFrozenRepairConvergence | null;
+    /**
+     * P-016 (green-main-cycle-time-2026-10-08, AUTO-BAR-R-13; D-030): the green-main SLO —
+     * time since green, time since any verdict, repair-round cycle time, queue idle time,
+     * rounds so far, red-adding admissions, per-fleet sync red rate — plus the breaches that
+     * page or alert. Computed by the SAME pure function the watchdog pages from
+     * (`computeGreenMainSlo`), over the same `lastGreenAt` and persisted queue this snapshot
+     * reads, so the panel and the page cannot disagree.
+     *
+     * `unreadable` names inputs that could not be read this snapshot: their metrics are null
+     * because they are UNKNOWN, not because they are healthy. Null `slo` = not computed.
+     */
+    slo?: (GreenMainSlo & { unreadable: Array<GreenMainSloPassResult['readErrors'][number]['input']> }) | null;
     /**
      * P-013 (plan gate-file-level-test-reuse-2026-09-27): what per-test-file pass reuse did in
      * the latest gate round — files reused of candidates, a lower bound on test time saved, any
@@ -529,6 +577,7 @@ export interface GitPipelineSnapshot {
     /** EI-210996: systemd-owned terminal tuple, available even after SIGKILL/OOM. */
     terminalEvidence?: {
       source: 'systemd-exec-stop-post';
+      observedAtMs?: number | null;
       candidate: string | null;
       serviceResult: string;
       exitCode: string;
@@ -887,18 +936,75 @@ export function gateFailingTestsMeasurement(input: {
     ? { failingTests, measured: true, provenance: 'measured' }
     : { failingTests: [], measured: null, provenance: 'unknown' };
 }
-function skippedPathArr(v: unknown): GitSyncSkippedPath[] {
+/**
+ * Parse git-sync's persisted `last_skipped_paths` back into its union type.
+ *
+ * WI-10006493: this used to accept ONLY the lock-holder shape (`owner` + `intent`), so every
+ * guard deferral — a migration whose reservation was refused, or a superproject path held by
+ * the migration dependency fence — was silently dropped here. dev:pipeline_position then saw
+ * no reason the path was stuck and told the caller to force `git-sync:run`, which defers the
+ * same path again on the next tick. Each variant is now validated on its own.
+ */
+export function skippedPathArr(v: unknown): GitSyncSkippedPath[] {
   if (!Array.isArray(v)) return [];
-  return v.filter((x): x is GitSyncSkippedPath => {
-    if (!x || typeof x !== 'object') return false;
+  const strings = (u: unknown): string[] | undefined =>
+    Array.isArray(u) ? u.filter((s): s is string => typeof s === 'string') : undefined;
+  const out: GitSyncSkippedPath[] = [];
+  for (const x of v) {
+    if (!x || typeof x !== 'object') continue;
     const r = x as Record<string, unknown>;
-    return (
-      typeof r.scope === 'string' &&
-      typeof r.path === 'string' &&
-      typeof r.owner === 'string' &&
-      typeof r.intent === 'string'
-    );
-  });
+    if (typeof r.scope !== 'string' || typeof r.path !== 'string') continue;
+    if (typeof r.owner === 'string' && typeof r.intent === 'string') {
+      out.push({ scope: r.scope, path: r.path, owner: r.owner, intent: r.intent });
+      continue;
+    }
+    if (typeof r.detail !== 'string') continue;
+    if (r.reason === 'migration-reservation') {
+      out.push({ scope: r.scope, path: r.path, reason: 'migration-reservation', detail: r.detail });
+    } else if (r.reason === 'migration-dependency-fence') {
+      const blockingMigrations = strings(r.blockingMigrations);
+      const blockingAgents = strings(r.blockingAgents);
+      const blockingWorkItems = strings(r.blockingWorkItems);
+      out.push({
+        scope: r.scope,
+        path: r.path,
+        reason: 'migration-dependency-fence',
+        detail: r.detail,
+        ...(blockingMigrations ? { blockingMigrations } : {}),
+        ...(blockingAgents ? { blockingAgents } : {}),
+        ...(blockingWorkItems ? { blockingWorkItems } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Parse git-sync's persisted `last_content_errors` keys without carrying the human
+ * error text or importer path into pipeline-position output. The writer format is
+ * `<scope>/<file> [<detector>]`; `superproject` and legacy `root` scopes map to the
+ * queried superproject-relative path, while submodule scope prefixes already form
+ * that path when joined with the file.
+ */
+export function contentErrorArr(v: unknown): GitSyncContentError[] {
+  if (!Array.isArray(v)) return [];
+  const out: GitSyncContentError[] = [];
+  for (const entry of v) {
+    if (typeof entry !== 'string') continue;
+    const marker = entry.lastIndexOf(' [');
+    if (marker <= 0 || !entry.endsWith(']')) continue;
+    const scopedPath = entry.slice(0, marker);
+    const detector = entry.slice(marker + 2, -1).match(/^[a-z0-9_-]+/i)?.[0];
+    if (!detector) continue;
+    const path = scopedPath.startsWith('superproject/')
+      ? scopedPath.slice('superproject/'.length)
+      : scopedPath.startsWith('root/')
+        ? scopedPath.slice('root/'.length)
+        : scopedPath;
+    if (!path) continue;
+    out.push({ path, detector });
+  }
+  return out;
 }
 function dateMs(v: unknown): number | null {
   if (v instanceof Date) return v.getTime();
@@ -951,12 +1057,20 @@ export function toRoutineInfo(r: RoutineRow | undefined): RoutineInfo | null {
  * propagate: an unreadable safety control is UNKNOWN and must fail the ordinary deploy closed.
  */
 export async function readReleaseTriggerControl(slug: string = DEFAULT_SLUG): Promise<RoutineInfo | null> {
+  return readPipelineRoutineControl(slug, 'release-trigger');
+}
+
+/** Strict configuration read: absence is distinct from an unreadable control store. */
+export async function readPipelineRoutineControl(
+  slug: string = DEFAULT_SLUG,
+  name: 'release-trigger' | 'green-checkpoint',
+): Promise<RoutineInfo | null> {
   const { sql } = getOrgPg();
   const rows = await sql<RoutineRow[]>`
     SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at, group_slug
       FROM harness_shared.routines
      WHERE install_slug = ${slug}
-       AND name = 'release-trigger'
+       AND name = ${name}
      LIMIT 1
   `;
   return toRoutineInfo(rows[0]);
@@ -1107,6 +1221,8 @@ export function pinProvenGateCorrection(
 
 /** Options for `gitPipelineSnapshot` (overview-tab-expansion P-001). */
 export interface GitPipelineSnapshotOpts {
+  /** Optional source-only progress for isolated preflight diagnostics; never includes row data. */
+  onProgress?: (stage: string) => void;
   /**
    * Permit the release-gate git read to lazily boot the spawner sidecar. Pure
    * diagnostic compositions pass false so a standalone read never creates an
@@ -1125,6 +1241,7 @@ export interface GitPipelineSnapshotOpts {
     terminal_marker?: boolean;
     terminal_evidence?: {
       source: 'systemd-exec-stop-post';
+      observed_at_ms?: number | null;
       candidate: string | null;
       service_result: string;
       exit_code: string;
@@ -1156,6 +1273,7 @@ export function mapActiveRun(r: {
   terminal_marker?: boolean;
   terminal_evidence?: {
     source: 'systemd-exec-stop-post';
+    observed_at_ms?: number | null;
     candidate: string | null;
     service_result: string;
     exit_code: string;
@@ -1198,6 +1316,7 @@ export function mapActiveRun(r: {
       ? {
           terminalEvidence: {
             source: r.terminal_evidence.source,
+            ...(r.terminal_evidence.observed_at_ms === undefined ? {} : { observedAtMs: r.terminal_evidence.observed_at_ms }),
             candidate: r.terminal_evidence.candidate,
             serviceResult: r.terminal_evidence.service_result,
             exitCode: r.terminal_evidence.exit_code,
@@ -1307,6 +1426,17 @@ export async function gitPipelineSnapshot(
   opts: GitPipelineSnapshotOpts = {},
 ): Promise<GitPipelineSnapshot> {
   const { sql } = getOrgPg();
+  const observe = async <T>(name: string, read: PromiseLike<T>): Promise<T> => {
+    opts.onProgress?.(name + ':start');
+    try {
+      const value = await read;
+      opts.onProgress?.(name + ':ready');
+      return value;
+    } catch (error) {
+      opts.onProgress?.(name + ':failed');
+      throw error;
+    }
+  };
 
   // EI-21544761852770720: every read below is independent.  Starting the
   // routines read, conflict read, window summaries, and deploy snapshot in
@@ -1315,13 +1445,13 @@ export async function gitPipelineSnapshot(
   // reads could intermittently cross it.  Start the complete fan-out before
   // consuming any result; the derivation below still observes exactly one
   // settled result from each source and retains every existing fail-soft path.
-  const routineRowsPromise = sql<RoutineRow[]>`
+  const routineRowsPromise = observe('routines', sql<RoutineRow[]>`
     SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at, group_slug
       FROM harness_shared.routines
      WHERE install_slug = ${slug}
-       AND name IN ('git-sync', 'green-checkpoint', 'release-trigger')
-  `.catch(() => [] as RoutineRow[]);
-  const openConflictRowsPromise = sql<
+       AND name IN ('git-sync', 'green-checkpoint', 'release-trigger', 'sync-batch-delta-check')
+  `.catch(() => [] as RoutineRow[]));
+  const openConflictRowsPromise = observe('conflicts', sql<
     {
       escalation: Record<string, unknown>;
       mtime_ms: unknown;
@@ -1334,11 +1464,24 @@ export async function gitPipelineSnapshot(
        AND (escalation::jsonb ->> 'kind') = 'git-sync-conflict'
      ORDER BY mtime_ms DESC
      LIMIT 1
-  `.catch(() => []);
-  const dayPromise = summarizePipelineWindow(slug, 24 * 60 * 60);
-  const weekPromise = summarizePipelineWindow(slug, 7 * 24 * 60 * 60);
-  const recentPromise = recentPipelineEvents(slug, 25);
-  const deployPromise = devDeployState({ useSpawnerSidecar: opts.useSpawnerSidecar });
+  `.catch(() => []));
+  const dayPromise = observe('day', summarizePipelineWindow(slug, 24 * 60 * 60));
+  const weekPromise = observe('week', summarizePipelineWindow(slug, 7 * 24 * 60 * 60));
+  const recentPromise = observe('recent', recentPipelineEvents(slug, 25));
+  const deployPromise = observe('deploy', devDeployState({ useSpawnerSidecar: opts.useSpawnerSidecar }));
+  const fireHistoryPromise = observe('fire-history', resolveWorkspaceForHarness(slug)
+    .then((workspaceId) => reconstructGateFireDays(sql, { workspaceId, installSlug: slug }, { sinceDays: 1 }))
+    .then(summarizeGateFireHistory)
+    .catch(() => null));
+  // P-016: the newest verdict-bearing ledger row (green OR red), for the SLO's no-verdict clock.
+  // `undefined` = unreadable (the SLO reports it as unknown), `null` = no verdict ever recorded.
+  const lastVerdictPromise = observe('last-verdict', resolveWorkspaceForHarness(slug)
+    .then((workspaceId) => readVerdictRateWindow(sql, { workspaceId, installSlug: slug }))
+    .then((w): number | null | undefined => w.lastVerdictBearingAtMs)
+    .catch((): undefined => undefined));
+  const nonVerdictReasonsPromise = observe('non-verdict-reasons', resolveWorkspaceForHarness(slug)
+    .then((workspaceId) => readGateNonVerdictReasons(sql, { workspaceId, installSlug: slug }))
+    .catch(() => null));
 
   // The three pipeline routines + git-sync's latest metadata, in one read.
   const routineRows = await routineRowsPromise;
@@ -1421,11 +1564,12 @@ export async function gitPipelineSnapshot(
   }
 
   // EI-19399662484764592: derived from `recent` BELOW — no extra query. See pickRetriageVerdict.
-  const [day, week, recent, deploy] = await Promise.all([
+  const [day, week, recent, deploy, fireHistory] = await Promise.all([
     dayPromise,
     weekPromise,
     recentPromise,
     deployPromise,
+    fireHistoryPromise,
   ]);
 
   // WI-4489: is the recorded RED still trustworthy? The green pin is the ground truth (it only
@@ -1497,8 +1641,8 @@ export async function gitPipelineSnapshot(
   // Keep the release override reader out of this module's import graph. Pot
   // wake tools import pipeline types transitively and must perform no DB I/O
   // merely by loading their definitions.
-  const { releaseCheckpointConfig, releaseCheckpointConfigReady } = await import('./release-checkpoint-config');
-  await releaseCheckpointConfigReady;
+  const { releaseCheckpointConfig, releaseCheckpointConfigReady } = await observe('config-import', import('./release-checkpoint-config'));
+  await observe('config-ready', releaseCheckpointConfigReady);
   const stallConfig = releaseCheckpointConfig();
   const inRoutineStalled = deriveInRoutineGateStalled({
     consecutiveReds: measuredConsecutiveReds,
@@ -1608,6 +1752,25 @@ export async function gitPipelineSnapshot(
   });
   const freezeAndConverge = repairQueueProjection.freezeAndConverge;
 
+  // P-016: the SLO over the same lastGreenAt + persisted queue read above. Per-sync red rate comes
+  // from the sync-batch delta check's own coverage ledger; absent/malformed → null (unknown).
+  const lastVerdictAtMs = await lastVerdictPromise;
+  const nonVerdictReasons = await nonVerdictReasonsPromise;
+  const syncDeltaMeta = (byName('sync-batch-delta-check')?.metadata ?? {}) as Record<string, unknown>;
+  const slo: NonNullable<GitPipelineSnapshot['gate']['slo']> = {
+    ...computeGreenMainSlo({
+      installSlug: slug,
+      nowMs: Date.now(),
+      lastGreenAtMs: num(gateHealth.lastGreenAt),
+      lastVerdictAtMs: lastVerdictAtMs ?? null,
+      queue: persistedRepairQueue,
+      syncTallies: syncTalliesFromDeltaCoverage(syncDeltaMeta.sync_delta),
+      nonVerdictReasons,
+    }),
+    unreadable: [...(lastVerdictAtMs === undefined ? ['lastVerdictAt' as const] : []),
+      ...(nonVerdictReasons === null ? ['nonVerdictReasons' as const] : [])],
+  };
+
   // P-001: "judging vs idle" — probe the live checkpoint unit ONLY when opted in
   // (the dev.gitPipeline derived-read producer; see the interface note). Best-effort:
   // a probe failure yields null (not probed), never a broken snapshot.
@@ -1637,8 +1800,12 @@ export async function gitPipelineSnapshot(
         });
       }
       if (resolvedActiveRunRoot) {
-        const probe = opts.probeActiveRun ?? (await import('./release-checkpoint-launch')).checkActiveCheckpointRun;
-        activeRun = mapActiveRun(probe(resolvedActiveRunRoot));
+        // WI-10005268: the real probe runs off the event loop (checkActiveCheckpointRunAsync).
+        activeRun = mapActiveRun(
+          opts.probeActiveRun
+            ? opts.probeActiveRun(resolvedActiveRunRoot)
+            : await (await import('./release-checkpoint-launch')).checkActiveCheckpointRunAsync(resolvedActiveRunRoot),
+        );
         const authorityProbe =
           opts.probeProcessAuthority ??
           (opts.probeActiveRun
@@ -1670,6 +1837,7 @@ export async function gitPipelineSnapshot(
       lastConflicts: strArr(meta.last_conflicts),
       lastErrors: strArr(meta.last_errors),
       skippedPaths: skippedPathArr(meta.last_skipped_paths),
+      contentErrors: contentErrorArr(meta.last_content_errors),
       // EI-18812945811758018: 'push' | 'commit-only:<reason>' | null (older rows, before
       // git-sync recorded it). NEVER default this to 'push' — an absent mode is UNKNOWN,
       // and guessing "it pushes" is what made an empty lastPushed read as a fault.
@@ -1714,6 +1882,7 @@ export async function gitPipelineSnapshot(
       // evidence about the CODE, never evidence that this gate's runs started producing verdicts.
       // Zeroing this on that basis would hide a wedged writer behind someone else's green.
       consecutiveNoVerdict: num(gateHealth.consecutiveNoVerdict) ?? 0,
+      fireHistory,
       // A stalled-streak alert can't survive proof the streak it was raised on has already ended.
       stalled: gateStalled,
       lastFiredAtMs: gcLastFiredMs,
@@ -1782,6 +1951,7 @@ export async function gitPipelineSnapshot(
       // this to JSON null when a cycle retires, so an absent/null/unrecognized blob must
       // read as "not measured" rather than as a convergence summary with holes in it.
       convergence: parseFrozenRepairConvergence(gateHealth['convergence']),
+      slo,
       // P-013: same shape-checked discipline — an absent or wrong-typed blob reads as null.
       testPassReuse: parseTestPassReuseHealth(gateHealth['testPassReuse']),
       roundPhases: parseGateRoundPhases(gateHealth['roundPhases']),

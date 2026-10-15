@@ -24,14 +24,14 @@ import {
   type CapabilitySamplingOptions,
   type CapabilitySamplingResult,
 } from './capability-sampler';
-import type { CapabilityManifest, CapabilityPacket } from './capability-contracts';
+import { capabilityHash, type CapabilityManifest, type CapabilityPacket } from './capability-contracts';
 import { dreamCapabilityRun, type BeginCapabilityRunInput, type DreamRunCall } from './dream-run-provenance';
 import { verifyCapabilityPacket } from './capability-packets';
 import { DreamAdmissionError, type DreamGovernorPreflight, type RecordDreamSpendResult } from './dream-governor';
 import type { DreamPassUsage } from './dream-pass';
 import type { SinkDreamInsightResult } from './dream-sink';
 import type { DreamRun, DreamRunMode, FinalizeDreamRunInput } from './dream-run-store';
-import { DreamPilotPinSchema, requireDreamPilotProtocol, type DreamPilotPin } from './dream-evaluation';
+import { DreamPilotPinSchema, requireDreamPilotProtocol, applyDreamGraphTreatment, type DreamPilotPin } from './dream-evaluation';
 
 export interface DreamCycleInput {
   workspaceId: string;
@@ -62,6 +62,7 @@ export interface DreamCycleDeps {
   loadPackets: (signal: AbortSignal) => Promise<CapabilityPacket[]>;
   loadHistory: () => Promise<DreamRun[]>;
   reviewSources: (packets: CapabilityPacket[]) => CapabilityReviewSources;
+  verifyPacket?: typeof verifyCapabilityPacket;
   loadProblems?: () => Promise<DreamProblemContext>;
   beginRun: (input: {
     runId: string;
@@ -139,15 +140,24 @@ export function dreamCallOwnerId(
   return `system:dream:${key}:${phase}`;
 }
 const record = (value: unknown) => JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+class DreamUnpricedModelError extends Error {
+  constructor(model: string) {
+    super('Dream cannot admit an unpriced model: ' + model);
+    this.name = 'DreamUnpricedModelError';
+  }
+}
 /** List-price admission estimate, not a promise about the final provider bill. */
 export function estimateDreamCall(input: Parameters<ScoutLlmCall>[0]): number {
   const bytes = Buffer.byteLength((input.system ?? '') + JSON.stringify(input.messages), 'utf8') + 256;
   const estimate = costFromTokens(input.model, {
+    // This is one request, not an aggregate. Tiered models need its complete
+    // input bound to select the rate; bytes conservatively bound token count.
+    requestInputTokens: bytes,
     inputTokens: bytes,
     outputTokens: (input.maxTokens ?? 4096) + (input.thinkingBudgetTokens ?? 0),
   });
   if (!estimate.priced || !Number.isFinite(estimate.usd) || estimate.usd <= 0)
-    throw new Error('Dream cannot admit an unpriced model: ' + input.model);
+    throw new DreamUnpricedModelError(input.model);
   return estimate.usd;
 }
 async function abortable<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
@@ -183,6 +193,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
         cycle: config,
         manifestRevision: input.manifest.revision,
         scope: { workspaceId: input.workspaceId, potSlug: input.potSlug },
+        samplerHash: capabilityHash(JSON.stringify(input.sampler ?? {})),
       }
     : null;
   // Validate the protocol pin and policy before any adapter can perform work.
@@ -190,6 +201,9 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
   if (pilot) requireDreamPilotProtocol(pilot, { ...pilotConfig!, sourceSnapshot: pilot.protocol.sourceSnapshot });
   if (pilot?.matchedPairIndex !== undefined && pilot.matchedPairIndex + config.maxDreamsPerCycle > 50)
     throw new Error('Matched Dream cycle exceeds the bounded pair assignment window');
+  const graphComparison = pilot?.protocol.comparison?.graphAblation;
+  if (graphComparison && pilot!.matchedPairIndex! + config.maxDreamsPerCycle > graphComparison.attemptsPerTreatment)
+    throw new Error('Graph comparison exceeds its preregistered assignment window');
   const now = deps.now ?? Date.now;
   const result: DreamCycleResult = {
     fired: false,
@@ -280,6 +294,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
                   arm: pilot.arm as 'uniform-pair' | 'structured-pair' | 'structured-triple',
                   ...(pilot.protocol.comparison ? { inputHash: pilot.protocol.comparison.inputHash } : {}),
                   ...(pilot.matchedPairIndex !== undefined ? { matchedPairIndex: pilot.matchedPairIndex + index } : {}),
+                  ...(pilot.graphTreatment ? { graphTreatment: pilot.graphTreatment } : {}),
                 },
               }
             : {}),
@@ -419,7 +434,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
       try {
         packets ??= await local('packet:catalogue', 'packet', () => deps.loadPackets(signal));
         history ??= await local('retrieval:history', 'retrieval', deps.loadHistory);
-        const snapshot = await local('retrieval:snapshot', 'retrieval', () =>
+        const verifiedSnapshot = await local('retrieval:snapshot', 'retrieval', () =>
           (deps.buildSnapshot ?? buildCapabilitySamplingSnapshot)({
             rootPath: input.rootPath,
             manifest: input.manifest,
@@ -427,6 +442,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
             scope: { workspaceId: input.workspaceId, potSlug: input.potSlug, repositoryId: input.repositoryId },
           }),
         );
+        const snapshot = applyDreamGraphTreatment(verifiedSnapshot, pilot);
         result.sources = {
           units: input.manifest.units.length,
           eligible: snapshot.eligible.length,
@@ -458,6 +474,11 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
           exposures: matchedIndex !== undefined ? {} : exposures,
           history: matchedIndex !== undefined ? [] : past.map((p) => ({ pairKey: p.selection.pairKey, selectedAt: p.selectedAt })),
         });
+        if (graphComparison && sampling.status === 'selected' &&
+            [sampling.selection.a, sampling.selection.b, ...(sampling.selection.c ? [sampling.selection.c.entry] : [])]
+              .some(entry => !snapshot.eligible.some(current => current.packet.unit.id === entry.packet.unit.id &&
+                current.contentVersion === entry.contentVersion && JSON.stringify(current.packet) === JSON.stringify(entry.packet))))
+          throw new Error('Graph comparison sample differs from its verified treatment');
         latest = await deps.recordSelection({ runId, capability: sampling });
         if (sampling.status === 'no-pair') {
           await finish({ runId, status: 'no-pair', outcome: { verdict: 'no-pair', reason: sampling.reason } });
@@ -474,7 +495,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
             sources: deps.reviewSources(packets!), dreamerModel: pass.model, config: reviewConfig,
             signal, cycleDeadlineMs: deadlineMs,
           }, {
-            verifyPacket: verifyCapabilityPacket,
+            verifyPacket: deps.verifyPacket ?? verifyCapabilityPacket,
             rerank: (query, priors, options) => local('rerank:preflight', 'rerank', () =>
               (deps.rerank ?? rerankCapabilityPriors)(query, priors, options)),
           }),
@@ -533,7 +554,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
               problemContext,
             },
             {
-              verifyPacket: verifyCapabilityPacket,
+              verifyPacket: deps.verifyPacket ?? verifyCapabilityPacket,
               rerank: (query, priors, options) =>
                 local('rerank', 'rerank', () => (deps.rerank ?? rerankCapabilityPriors)(query, priors, options)),
             },
@@ -550,6 +571,12 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
           await finish({ runId, status: 'accepted' });
         }
       } catch (error) {
+        if (error instanceof DreamUnpricedModelError &&
+            !dreamCapabilityRun(latest)?.calls.some((call) => call.phase === 'generation')) {
+          // Price admission runs before a generation call is recorded. Preserve that
+          // known no-call outcome so quality metrics do not treat it as missing spend.
+          outcome = { ...(outcome ?? {}), generationSkipped: true };
+        }
         // A sibling control can settle after the review aborts; drain its accounting first.
         await Promise.allSettled([...pending]);
         await finish({

@@ -212,6 +212,7 @@ describe('fail open with a typed reason', () => {
 
   it.each([
     [401, 'unauthorized'],
+    [402, 'payment-required'],
     [422, 'rejected'],
     [500, 'http-error'],
   ] as const)('HTTP %i ⇒ %s on the first attempt, no retry', async (status, reason) => {
@@ -221,6 +222,48 @@ describe('fail open with a typed reason', () => {
     expect(out).toMatchObject({ kind: 'inconclusive', reason, status, attempts: 1 });
     expect(calls).toHaveLength(1);
     expect(sleeps).toHaveLength(0);
+  });
+
+  it('after a 402, sends nothing for the cooldown, then probes the provider again (WI-10005692)', async () => {
+    const billing = { detail: { error_type: 'billing_error', message: 'no available credits' } };
+    const { fn, calls } = scriptedFetch([
+      { status: 402, body: billing },
+      { status: 402, body: billing },
+      { status: 200, body: CHOICE_OK },
+    ]);
+    let clock = 1_000_000;
+    const { c } = client(fn, { now: () => clock, paymentRequiredCooldownMs: 60_000 });
+
+    expect(await c.decide(choiceRequest)).toMatchObject({ kind: 'inconclusive', reason: 'payment-required', status: 402, attempts: 1 });
+    expect(calls).toHaveLength(1);
+
+    // Inside the window: answered at once, nothing sent, no status.
+    clock += 59_999;
+    const suspended = await c.decide(choiceRequest);
+    expect(suspended).toMatchObject({ kind: 'inconclusive', reason: 'payment-required', attempts: 0 });
+    expect(suspended.kind === 'inconclusive' && suspended.status).toBeUndefined();
+    expect(calls).toHaveLength(1);
+
+    // Window over: one probe. Still 402, so the window re-arms from now.
+    clock += 1;
+    expect(await c.decide(choiceRequest)).toMatchObject({ reason: 'payment-required', status: 402, attempts: 1 });
+    expect(calls).toHaveLength(2);
+    clock += 30_000;
+    expect(await c.decide(choiceRequest)).toMatchObject({ reason: 'payment-required', attempts: 0 });
+    expect(calls).toHaveLength(2);
+
+    // Credits back: the next probe after the window answers.
+    clock += 30_000;
+    expect(await c.decide(choiceRequest)).toMatchObject({ kind: 'answered' });
+    expect(calls).toHaveLength(3);
+  });
+
+  it('paymentRequiredCooldownMs: 0 turns the 402 suspension off', async () => {
+    const { fn, calls } = scriptedFetch([{ status: 402, body: { detail: 'billing' } }]);
+    const { c } = client(fn, { paymentRequiredCooldownMs: 0 });
+    await c.decide(choiceRequest);
+    await c.decide(choiceRequest);
+    expect(calls).toHaveLength(2);
   });
 
   it('keeps the 422 body as the detail so the offending field is visible, and never leaks the key', async () => {
@@ -234,6 +277,18 @@ describe('fail open with a typed reason', () => {
     const { fn } = scriptedFetch([new TypeError('fetch failed: ECONNRESET')]);
     const out = await client(fn).c.decide(choiceRequest);
     expect(out).toMatchObject({ kind: 'inconclusive', reason: 'network-error' });
+  });
+
+  it('a network fault with an EMPTY message still records why (WI-10005372)', async () => {
+    // Node's connect failure on every address of a multi-address host: message '', cause in code/errors.
+    const perAddress = Object.assign(new Error('connect ECONNREFUSED 104.18.24.46:443'), { code: 'ECONNREFUSED' });
+    const fault = Object.assign(new AggregateError([perAddress], ''), { code: 'ECONNREFUSED' });
+    const { fn } = scriptedFetch([fault]);
+    const out = await client(fn).c.decide(choiceRequest);
+    expect(out).toMatchObject({ kind: 'inconclusive', reason: 'network-error' });
+    expect(out.kind === 'inconclusive' && out.detail).toBe(
+      'AggregateError [ECONNREFUSED] (Error [ECONNREFUSED]: connect ECONNREFUSED 104.18.24.46:443)',
+    );
   });
 
   it('a hung request ⇒ timeout within the deadline', async () => {
@@ -445,6 +500,97 @@ describe('call observer', () => {
     expect(out.kind).toBe('answered');
     expect(onCall).toHaveBeenCalledTimes(1);
     resolveSlow();
+  });
+});
+
+// ── Host load (P-001: was a timeout the provider's fault or ours?) ──
+
+/** Burn the calling thread synchronously, like a spawn() or a sync file read does. */
+function blockThread(ms: number): void {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
+    // spin
+  }
+}
+
+describe('host load on the observed record', () => {
+  it('starts the meter before the request and ends it after the outcome, recording its value', async () => {
+    const order: string[] = [];
+    const records: DecisionCallRecord[] = [];
+    const { fn: inner } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    const fn: FetchLike = (url, init) => {
+      order.push('fetch');
+      return inner(url, init);
+    };
+    await client(fn, {
+      onCall: (r) => void records.push(r),
+      hostLoad: () => {
+        order.push('start');
+        return () => {
+          order.push('end');
+          return { busyMs: 42, utilization: 0.6 };
+        };
+      },
+    }).c.decide(choiceRequest);
+    expect(order).toEqual(['start', 'fetch', 'end']);
+    expect(records[0]?.hostLoad).toEqual({ busyMs: 42, utilization: 0.6 });
+  });
+
+  it('hostLoad: null turns the measurement off and records null', async () => {
+    const records: DecisionCallRecord[] = [];
+    const { fn } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    await client(fn, { hostLoad: null, onCall: (r) => void records.push(r) }).c.decide(choiceRequest);
+    expect(records[0]?.hostLoad).toBeNull();
+  });
+
+  it('a meter that throws at start or at end never reaches the decision; it records null', async () => {
+    const { fn } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    const records: DecisionCallRecord[] = [];
+    const atStart = await client(fn, {
+      onCall: (r) => void records.push(r),
+      hostLoad: () => {
+        throw new Error('meter broke');
+      },
+    }).c.decide(choiceRequest);
+    const atEnd = await client(fn, {
+      onCall: (r) => void records.push(r),
+      hostLoad: () => () => {
+        throw new Error('meter broke');
+      },
+    }).c.decide(choiceRequest);
+    expect([atStart.kind, atEnd.kind]).toEqual(['answered', 'answered']);
+    expect(records.map((r) => r.hostLoad)).toEqual([null, null]);
+  });
+
+  it('default meter: an answer held up by a busy thread records high utilization', async () => {
+    const records: DecisionCallRecord[] = [];
+    const { fn: inner } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    const busy: FetchLike = async (url, init) => {
+      const res = await inner(url, init);
+      blockThread(120); // the answer is here, but the thread is busy elsewhere
+      return res;
+    };
+    await client(busy, { onCall: (r) => void records.push(r) }).c.decide(choiceRequest);
+    const load = records[0]?.hostLoad;
+    expect(load).not.toBeNull();
+    expect(load!.busyMs).toBeGreaterThanOrEqual(100);
+    expect(load!.utilization).toBeGreaterThan(0.5);
+  });
+
+  it('default meter: a call that waits idle on the network records low utilization', async () => {
+    const records: DecisionCallRecord[] = [];
+    const { fn: inner } = scriptedFetch([{ status: 200, body: CHOICE_OK }]);
+    const slowProvider: FetchLike = async (url, init) => {
+      await new Promise((r) => setTimeout(r, 200)); // the provider is slow; the thread is idle
+      return inner(url, init);
+    };
+    await client(slowProvider, { onCall: (r) => void records.push(r) }).c.decide(choiceRequest);
+    const load = records[0]?.hostLoad;
+    expect(load).not.toBeNull();
+    // Positive control for the comparison: the call really did span the 200 ms wait.
+    expect(records[0]!.outcome.latencyMs).toBeGreaterThanOrEqual(190);
+    expect(load!.utilization).toBeLessThan(0.5);
+    expect(load!.busyMs).toBeLessThan(100);
   });
 });
 

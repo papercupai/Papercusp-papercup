@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "p008-owner-update-same-query-sample-v1",
+  "workItem": "WI-10002830",
+  "captured": {
+    "before": {
+      "observed_at": "2026-10-01 18:06:45.721473+00",
+      "pid": 3565425,
+      "backend_start": "2026-10-01 16:52:45.216001+00",
+      "application_name": "pcusp:org-admin:p3240705",
+      "query_start": "2026-10-01 17:48:12.265015+00",
+      "query_id": "-9170796359460262385",
+      "state": "active",
+      "wait_event_type": "IO",
+      "wait_event": "DataFileRead",
+      "blocking_pids": [],
+      "query_hash": "30af7b390b49a1d85cdb105be9582eb2"
+    },
+    "proc": {
+      "status": "completed",
+      "exit_code": 0,
+      "output": "{\"hz\": 100, \"before\": {\"at\": \"2026-10-01T18:06:46.461116+00:00\", \"mono\": 167685.601263981, \"pid\": 3565425, \"startTicks\": \"16324435\", \"minorFaults\": 381787, \"majorFaults\": 0, \"userTicks\": 11577, \"systemTicks\": 5204, \"io\": {\"rchar\": 7863323901, \"wchar\": 276774535, \"syscr\": 961661, \"syscw\": 33809, \"read_bytes\": 8579756032, \"write_bytes\": 290369536, \"cancelled_write_bytes\": 1826816}}, \"after\": {\"at\": \"2026-10-01T18:06:49.461500+00:00\", \"mono\": 167688.601629636, \"pid\": 3565425, \"startTicks\": \"16324435\", \"minorFaults\": 381787, \"majorFaults\": 0, \"userTicks\": 11585, \"systemTicks\": 5214, \"io\": {\"rchar\": 7885106429, \"wchar\": 276799111, \"syscr\": 964320, \"syscw\": 33812, \"read_bytes\": 8601710592, \"write_bytes\": 290394112, \"cancelled_write_bytes\": 1826816}}, \"sameIncarnation\": true, \"delta\": {\"elapsedMs\": 3000.3656549961306, \"userCpuMs\": 80.0, \"systemCpuMs\": 100.0, \"minorFaults\": 0, \"majorFaults\": 0, \"io\": {\"rchar\": 21782528, \"wchar\": 24576, \"syscr\": 2659, \"syscw\": 3, \"read_bytes\": 21954560, \"write_bytes\": 24576, \"cancelled_write_bytes\": 0}}}\n",
+      "bash_id": "7c077b55-2d2",
+      "task_id": "0mupuixby128r2up8co"
+    },
+    "after": {
+      "observed_at": "2026-10-01 18:06:49.816542+00",
+      "pid": 3565425,
+      "backend_start": "2026-10-01 16:52:45.216001+00",
+      "application_name": "pcusp:org-admin:p3240705",
+      "query_start": "2026-10-01 17:48:12.265015+00",
+      "query_id": "-9170796359460262385",
+      "state": "active",
+      "wait_event_type": "IO",
+      "wait_event": "DataFileRead",
+      "blocking_pids": [],
+      "query_hash": "30af7b390b49a1d85cdb105be9582eb2"
+    },
+    "sameQuery": true
+  },
+  "initialFailure": {
+    "taskId": "0mupuhqo11c7t51v8ff",
+    "exitCode": 1,
+    "error": "EACCES reading /proc/3565425/io; no counter interval"
+  },
+  "limits": [
+    "One bounded interval; not whole-query sustained wait attribution.",
+    "No executed UPDATE plan or exact bound-input map was recovered.",
+    "No shared-host restart, production mutation or acceptance claim."
+  ]
+}

@@ -206,8 +206,14 @@ describe('HOST_GLOBAL_RESOURCES', () => {
     expect(resourceLockDomain('bg-host')).not.toBe(lockCoordinationDomain());
   });
 
-  it('does not include an unrelated per-target resource (e.g. staging-server)', () => {
-    expect(HOST_GLOBAL_RESOURCES.has('staging-server')).toBe(false);
+  it.each(['staging-server', 'staging-server-cooldown'])(
+    'routes the shared staging target %s to the same host domain as dev-server', resource => {
+      expect(HOST_GLOBAL_RESOURCES.has(resource)).toBe(true);
+      expect(resourceLockDomain(resource)).toBe(hostGlobalLockDomain());
+      expect(resourceLockDomain(resource)).not.toBe(lockCoordinationDomain());
+    });
+  it('keeps unrelated per-tree resources in their caller domain', () => {
+    expect(HOST_GLOBAL_RESOURCES.has('some-unregistered-resource')).toBe(false);
   });
 });
 
@@ -221,7 +227,6 @@ describe('resourceLockDomain', () => {
   });
 
   it('resolves a non-member to lockCoordinationDomain() (the caller-tree-scoped domain)', () => {
-    expect(resourceLockDomain('staging-server')).toBe(lockCoordinationDomain());
     expect(resourceLockDomain('some-unregistered-resource')).toBe(lockCoordinationDomain());
   });
 

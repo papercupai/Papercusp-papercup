@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native simulator revocation, ordinary relaunch and fresh pairing",
+  "command": [
+    "/Applications/Xcode-16.4.0.app/Contents/Developer/usr/bin/xcodebuild",
+    "test-without-building",
+    "-project", "ios/Papercup.xcodeproj",
+    "-scheme", "Papercup",
+    "-destination", "platform=iOS Simulator,id=D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB",
+    "-derivedDataPath", "ios/build/dd",
+    "-resultBundlePath", "/Volumes/BuildDataNew/native-iphone/evidence-WI-10004735-paste-menu-20261014T1010Z/selected-live-ui/live-revocation-ui.xcresult",
+    "-only-testing:PapercupUITests/PairFlowUITests/testLiveRevocationAndRepairing"
+  ],
+  "startedAt": "2026-10-14T10:24:57.772Z",
+  "finishedAt": "2026-10-14T10:26:38.642Z",
+  "exitCode": 0,
+  "summary": "One maintained XCUITest passed with zero failures or skips against an owned isolated real operator API forwarded over loopback. It exercised visible manual pairing, authorized workspace loading, actual backend device revocation, native Pair again guidance, credential clearing across ordinary process relaunch, and fresh pairing with a different device identity. This is a retained development simulator result; public HTTPS, hosted accounts, whole P-008 acceptance, signing and public distribution remain unverified by this run. No test was rerun to author this receipt.",
+  "assertions": [
+    {
+      "id": "PapercupUITests/PairFlowUITests/testLiveRevocationAndRepairing",
+      "passed": true,
+      "evidence": "Retained selected-live-ui/live-revocation-ui-summary.json: Passed, 1 passed, 0 failed, 0 skipped; SHA256 90a92a410104200af477ad493fcad9f9fce4b76fcce02217fb2da319fec5f42b. The maintained test drives real desktop device DELETE and token mint controls; four retained screenshots document authorized, revoked, cleared and repaired UI states."
+    }
+  ],
+  "workItemId": "WI-10004735",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "spec": "AUTO-REQ-M-001-P-008@2",
+  "repository": "papercup-rust-mobile (canonical independent mobile repository)",
+  "sourceCommitAtExecution": "3325f7872aea0b4e4a508877c31ae3d5625d54ba",
+  "sourceDirtyAtExecution": true,
+  "sourceFingerprint": "9fe7467f80924a5f9055a9e9b4b76e25ec55842c05a9fbe9d34ef1584c53a62b",
+  "postRunSource": {
+    "commit": "697acfaf24b62de3cbb5ca79120aa95705916015",
+    "dirty": false,
+    "fingerprintMatchesExecution": true,
+    "note": "Read on receipt authoring. The executed dirty tree is identified by its full source fingerprint, not by its base commit alone."
+  },
+  "testPath": "ios/PapercupUITests/PairFlowUITests.swift",
+  "testSha256": "0c116cdb7a3d106a26c58c560f76665006eb4822e93b06cd0c63f16b7b545ba1",
+  "runnerPath": "tools/ios-ci.py",
+  "runnerSha256": "5e27183cd91dfbf1d7b97642c280a5952202a77f0b60f393e6cc5b6715d91661",
+  "resultGuardPath": "tools/build-scripts/check-xctest-summary.py",
+  "resultGuardSha256": "8093276f7f5d3526ec173784dce32dea8242782d80cbcb9865ede684e2d1d898",
+  "toolchain": {
+    "xcode": "Xcode 16.4 Build 16F6",
+    "simulatorSDK": "18.5",
+    "simulatorRuntime": "iOS 18.6",
+    "device": "iPhone 16 Pro x86_64",
+    "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"
+  },
+  "retainedEvidence": {
+    "verificationFile": ".papercusp/evidence/WI-10004735-paste-menu-20261014T1012Z/local-artifact-verification.json",
+    "archive": ".papercusp/evidence/WI-10004735-paste-menu-20261014T1012Z/native-artifacts.tar.gz",
+    "pathBase": "Operating account home directory; these retained evidence paths are outside the staging checkout.",
+    "archiveSha256": "9780c6f8ed1b62dfb7eb5255b80e6495c7fd0d587964a8ded1acf4f2fccd19e7",
+    "archiveBytes": 2201600,
+    "verifiedArtifactCount": 59,
+    "integrityProcedure": "Verify archive SHA256, then read each of the 59 inventory entries directly from the tar and compare its byte length and SHA256. Repeated without executing native tests on 2026-10-14.",
+    "resultPath": "selected-live-ui/result.json",
+    "summaryPath": "selected-live-ui/live-revocation-ui-summary.json",
+    "summarySha256": "90a92a410104200af477ad493fcad9f9fce4b76fcce02217fb2da319fec5f42b",
+    "nativeJobId": "0mv7yqfla19tcdn8eo9",
+    "fixtureJobId": "0mv7y9w93p2jm1gna83",
+    "jobs": "Both terminal exit 0 in the predecessor checkpoint; do not rerun them."
+  },
+  "screenshots": [
+    { "label": "live-authorized-before-revocation", "file": "D938CDA6-18B7-4378-A8DF-2291B458FB06.png", "sha256": "14c0746290f8223152246b514b5e849b4e20b1cb9bb6a833dc1ded66fc6326d8" },
+    { "label": "live-revoked-offers-pair-again", "file": "EA5B4B37-C7FD-4AE0-A871-F524803E18FA.png", "sha256": "824578b1f0adcb6cfb31c91e96dcaf99ae4281539e73cb28547331ed16d148c0" },
+    { "label": "live-revoked-keychain-cleared", "file": "14BAE281-83C7-4EEA-98B3-CA9725D022A8.png", "sha256": "0faa2d40a7fa1a965dca09c966c211b1a49d3efe80a1774df62a1d25259903f5" },
+    { "label": "live-repaired-authorized-workspace", "file": "7837F97B-C693-41B2-BC4C-87EA60C01E3B.png", "sha256": "5aa14d76ba2eff71589b6ab4116f5daa6b9cc51c6151354ea8e104e5b07f8ef3" }
+  ],
+  "disclosedGaps": [
+    "This loopback development fixture does not exercise public HTTPS or Cloudflare; EI-25946131547854574 remains open for actual native public HTTPS evidence.",
+    "No supported hosted-account or paid-mode acceptance claim is made.",
+    "No cellular network, APNs delivery, physical-device, signed IPA, App Store or TestFlight acceptance claim is made.",
+    "Other P-008 R-2 requirements and P-016 BYOC dependencies remain open.",
+    "Prior integration evidence binding 44242 is retained separately; this receipt supplements it."
+  ]
+}

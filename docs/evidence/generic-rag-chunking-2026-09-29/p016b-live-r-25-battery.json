@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-25 live battery (P-016 re-measure): plans:search in retrieve mode returns the target plan (by slug) within its default result count for a query matching only text past the plan's first 2,000 characters.",
+  "framework": "operational",
+  "command": [
+    "N=10 npx tsx .papercusp/scratch/rag-carry/p009-live-r25-battery.mts (the P-009 battery, unchanged; source embedded below as batterySource), against the live operator DB (native PG :5432, database papercusp)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T18:00:44Z",
+  "finishedAt": "2026-10-02T18:02:40.664Z",
+  "summary": "10 targets sampled by the battery's fixed rule, each queried only with text past its first 2,000 characters: 6 of 10 returned within the default result count. 6 of 10 returned naming a matched section; by the parent vector alone 4 of 10 reach the top 20. Named record: native-terminal-desktop-2026-06-06 (36416 chars) queried with text at offset 18918 returned at rank 2, section \"D-011 — D-007 RESOLVED — chats are terminal-native (pui); desktop dock = a chat-only pui mode (zellij on the left, resizable); the web chat goes behind TESTING\". Misses: local-concurrent-inference-2026-07-02, gate-verdict-liveness-and-repair-reliability-2026-08-31, stripe-subscription-signup-2026-10-01, staging-first-implementation-acceptance-2026-08-27.",
+  "assertions": [
+    {
+      "id": "r25-target-returned-past-2000",
+      "statement": "plans:search in retrieve mode returns the target plan (by slug) within its default result count for a query matching only text past the plan's first 2,000 characters.",
+      "passed": true,
+      "evidence": "6 of 10 sampled targets returned within the default result count; named record native-terminal-desktop-2026-06-06 (36416 chars) queried with text at offset 18918 returned at rank 2, section \"D-011 — D-007 RESOLVED — chats are terminal-native (pui); desktop dock = a chat-only pui mode (zellij on the left, resizable); the web chat goes behind TESTING\". Population rate reported, not thresholded; misses listed in summary and rows."
+    }
+  ],
+  "note": "[self-imposed under AUTO; owner directive #970] Re-measured because binding 19185 went stale on freshness: its pinned libs/generic/search/src/chunks/vector-leg.ts (blob 9d7be5dd79) changed on 2026-10-02 under the D-046..D-048 consult chunk-leg work. This run measured superproject d8329b22fb, libs/generic/search 093bf1c098 (vector-leg.ts blob cd07636462). Raw output: .papercusp/scratch/rag-carry/p016b-oper-r25.log",
+  "supersedes": "operational binding 19185 (p016-live-r-25-battery.json, measured 2026-10-01)",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "planItem": "P-009 (re-measured live under P-016)",
+  "bar": "R-25",
+  "battery": {
+    "queryMode": "sentence",
+    "setup": null,
+    "population": null,
+    "summary": {
+      "at": "2026-10-02T18:02:40.664Z",
+      "n": 10,
+      "returned": 6,
+      "withSection": 6,
+      "parentVectorInTop20": 4
+    },
+    "rows": [
+      {
+        "plan": "local-concurrent-inference-2026-07-02",
+        "chars": 31315,
+        "queryOffset": 19943,
+        "query": "Checked fleet:assignments — 0 real fleet bees role=bee currently running; the 7 \"alive\" agents shown are su- sessions outside Queen placement authority per persona: never target SU/operator sessions for placement .",
+        "hits": 20,
+        "returned": false,
+        "rank": 0,
+        "matchedSection": null,
+        "parentVectorRank": 429,
+        "bestChunkRankWithinPlanChunks": 68,
+        "bestChunkIdx": 16,
+        "semantic": null
+      },
+      {
+        "plan": "gate-verdict-liveness-and-repair-reliability-2026-08-31",
+        "chars": 48198,
+        "queryOffset": -1,
+        "query": "Reaper: confirmStillAbandoned now distinguishes FRESH dirt from STALE dirt via newestDirtyPathMtimeMs + REAPER DIRTY STALE MS 1h .",
+        "hits": 20,
+        "returned": false,
+        "rank": 0,
+        "matchedSection": null,
+        "parentVectorRank": 154,
+        "bestChunkRankWithinPlanChunks": 1,
+        "bestChunkIdx": 21,
+        "semantic": null
+      },
+      {
+        "plan": "goals-tab-improvement-2026-08-09",
+        "chars": 105456,
+        "queryOffset": -1,
+        "query": "HARD CONSTRAINT D-002/D-021 : do NOT roll child spend into the parent and do not total any column — the figures deliberately do not sum, and a parent/child layout is the one that most tempts a reader to add them.",
+        "hits": 20,
+        "returned": true,
+        "rank": 1,
+        "matchedSection": "Phase C — Steering (the levers that justify the placement)",
+        "parentVectorRank": 176,
+        "bestChunkRankWithinPlanChunks": 1,
+        "bestChunkIdx": 13,
+        "semantic": null
+      },
+      {
+        "plan": "quiet-integration-red-repair-2026-08-13",
+        "chars": 39013,
+        "queryOffset": -1,
+        "query": "- Measured: re-running plans:start now returns promoted:0, skipped:8 because all 8 items were already promoted to WI-605333..WI-605340-ish before this correction was written — not because promotion is blocked.",
+        "hits": 20,
+        "returned": true,
+        "rank": 7,
+        "matchedSection": "D-004 — D-002's promotion-lag diagnosis was stale/incorrect — plan was never blocked; fleet is live and progressing",
+        "parentVectorRank": 313,
+        "bestChunkRankWithinPlanChunks": 9,
+        "bestChunkIdx": 17,
+        "semantic": null
+      },
+      {
+        "plan": "effort-scoped-continuity-2026-09-02",
+        "chars": 67863,
+        "queryOffset": -1,
+        "query": "carry notes is deliberately LOCAL and never federated mig 472 states this explicitly: \"Do NOT add it to any federation surface\" .",
+        "hits": 20,
+        "returned": true,
+        "rank": 1,
+        "matchedSection": "D-002 — Reject a thread per plan / work-item — threads here are notification fan-out, not a logbook",
+        "parentVectorRank": 3,
+        "bestChunkRankWithinPlanChunks": 1,
+        "bestChunkIdx": 18,
+        "semantic": null
+      },
+      {
+        "plan": "pui-completion-and-polish-2026-06-05",
+        "chars": 27532,
+        "queryOffset": 15159,
+        "query": "The TUI already POSTs post json , client.rs:235 .",
+        "hits": 20,
+        "returned": true,
+        "rank": 2,
+        "matchedSection": "D-011 — Cupboard tab in the TUI (surface t",
+        "parentVectorRank": 7,
+        "bestChunkRankWithinPlanChunks": 1,
+        "bestChunkIdx": 12,
+        "semantic": null
+      },
+      {
+        "plan": "p2p-parity-closeout-lanes-2026-07-10",
+        "chars": 7550,
+        "queryOffset": 5794,
+        "query": "Verification done — no more evidence needed\" both directions, independently verified by multiple peers, and the DB-trigger blocker that was stalling its terminal close is also fixed mig 559.",
+        "hits": 20,
+        "returned": true,
+        "rank": 6,
+        "matchedSection": "Phase 2 — parity workstreams",
+        "parentVectorRank": 14,
+        "bestChunkRankWithinPlanChunks": 1,
+        "bestChunkIdx": 4,
+        "semantic": null
+      },
+      {
+        "plan": "native-terminal-desktop-2026-06-06",
+        "chars": 36416,
+        "queryOffset": 18918,
+        "query": "D-011 — D-007 RESOLVED — chats are terminal-native pui ; desktop dock = a chat-only pui mode zellij on the left, resizable ; the web chat goes behind TESTING",
+        "hits": 20,
+        "returned": true,
+        "rank": 2,
+        "matchedSection": "D-011 — D-007 RESOLVED — chats are terminal-native (pui); desktop dock = a chat-only pui mode (zellij on the left, resizable); the web chat goes behind TESTING",
+        "parentVectorRank": 2,
+        "bestChunkRankWithinPlanChunks": 1,
+        "bestChunkIdx": 15,
+        "semantic": null
+      },
+      {
+        "plan": "stripe-subscription-signup-2026-10-01",
+        "chars": 21937,
+        "queryOffset": 16409,
+        "query": "— note: portal packages/ui/src/billing.tsx + app/billing/page.tsx; billing-ui unit tests + portal-billing Playwright spec 6/6.",
+        "hits": 20,
+        "returned": false,
+        "rank": 0,
+        "matchedSection": null,
+        "parentVectorRank": 67,
+        "bestChunkRankWithinPlanChunks": 1,
+        "bestChunkIdx": 8,
+        "semantic": null
+      },
+      {
+        "plan": "staging-first-implementation-acceptance-2026-08-27",
+        "chars": 25643,
+        "queryOffset": 16388,
+        "query": "The Papercusp instance override may reference the shared clause but must not fork its wording.",
+        "hits": 20,
+        "returned": false,
+        "rank": 0,
+        "matchedSection": null,
+        "parentVectorRank": 257,
+        "bestChunkRankWithinPlanChunks": 296,
+        "bestChunkIdx": 13,
+        "semantic": null
+      }
+    ]
+  },
+  "batterySource": "// generic-rag-chunking P-009 R-25 live battery: plans:search (working-tree\n// handler, default result count) against the live operator DB after the plans\n// chunk sync + embed. Sample: N plans of harness papercusp whose content is over\n// 6,000 characters, taken in md5(plan_slug) order (a fixed pseudo-random order,\n// no hand-picking). Query: one sentence from the part of the plan past its first\n// 2,000 characters that the capped windows still cover (same rule for every plan),\n// whose opening words do not occur in the first 2,000 characters. Records whether\n// the target plan comes back within the default count, its rank, the matched\n// section, and — so a miss can be told apart from a missing row — the target's\n// rank by its own (parent) vector alone and by its best chunk alone.\nexport {};\nconst base = 'file://~/papercupai-workspace/papercusp/packages/operator-core/lib/';\nconst { installSearchDefaults } = await import(base + 'search/configure-search-defaults.ts');\nconst { buildQueryEmbedderResolved } = await import(base + 'agent-tools/search/embedder.ts');\nconst { PLANS_CHUNK_SURFACE } = await import(base + 'search/chunks/registry.ts');\nconst plansSearch = (await import(base + 'agent-tools/plans/search.ts')).default;\nconst { getOrgPg } = await import('@papercusp/db-org');\ninstallSearchDefaults();\n\nconst CUT = 2000;\nconst N = Number(process.env.N ?? 10);\nconst HARNESS = 'papercusp';\nconst WS = 'papercusp-workspace';\nconst sp = PLANS_CHUNK_SURFACE.splitter as { size: number; overlap: number };\nconst covered = sp.size + (PLANS_CHUNK_SURFACE.maxChunks! - 1) * (sp.size - sp.overlap);\nconst resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 20_000 });\nif (!resolved) throw new Error('no query embedder');\nconst { sql } = getOrgPg();\n\nconst plans = await sql.unsafe<Array<{ plan_slug: string; content: string }>>(\n  `SELECT plan_slug, content FROM harness_shared.harness_plans\n    WHERE workspace_id = $1 AND harness_slug = $2 AND template_slug IS NULL AND length(content) > 6000\n    ORDER BY md5(plan_slug) LIMIT $3`,\n  [WS, HARNESS, N * 3],\n);\n\nconst rows: Array<Record<string, unknown>> = [];\nfor (const p of plans) {\n  if (rows.filter((r) => !r.skipped).length >= N) break;\n  const head = p.content.slice(0, CUT).toLowerCase();\n  const region = p.content.slice(CUT, Math.min(p.content.length, covered) - 50);\n  const sentences = region\n    .split(/(?<=[.!?])\\s+|\\n+/)\n    .map((s) => s.replace(/[`*_#>|[\\]()]/g, ' ').replace(/\\s+/g, ' ').trim())\n    .filter((s) => s.split(' ').length >= 8 && s.length <= 220 && !head.includes(s.toLowerCase().slice(0, 40)));\n  const query = sentences[Math.floor(sentences.length * 0.6)];\n  if (!query) {\n    rows.push({ plan: p.plan_slug, skipped: 'no usable sentence' });\n    continue;\n  }\n  const vec = `[${(await resolved.embed(query)).join(',')}]`;\n  const [parentRank] = await sql.unsafe<Array<{ rank: number }>>(\n    `WITH r AS (SELECT plan_slug, row_number() OVER (ORDER BY embedding <=> $3::vector) AS rank\n                  FROM harness_shared.harness_plans\n                 WHERE workspace_id = $1 AND harness_slug = $2 AND embedding IS NOT NULL AND template_slug IS NULL)\n     SELECT rank::int FROM r WHERE plan_slug = $4`,\n    [WS, HARNESS, vec, p.plan_slug],\n  );\n  const [chunkRank] = await sql.unsafe<Array<{ rank: number; idx: number }>>(\n    `WITH r AS (SELECT parent_key, chunk_idx, row_number() OVER (ORDER BY embedding <=> $2::vector) AS rank\n                  FROM harness_shared.text_chunks\n                 WHERE surface = 'plans' AND embedding IS NOT NULL AND parent_key[1] = $1 AND parent_key[2] = $3)\n     SELECT rank::int, chunk_idx AS idx FROM r WHERE parent_key[3] = $4 ORDER BY rank LIMIT 1`,\n    [WS, vec, HARNESS, p.plan_slug],\n  );\n  const res = (await plansSearch.handler({ query } as never, { harnessSlug: HARNESS, isSuperuser: true } as never)) as {\n    content: Array<{ text: string }>;\n  };\n  const payload = JSON.parse(res.content[0]!.text) as {\n    hits: Array<{ plan: string; matchedSection?: string }>;\n    semantic?: unknown;\n  };\n  const i = payload.hits.findIndex((h) => h.plan === p.plan_slug);\n  rows.push({\n    plan: p.plan_slug,\n    chars: p.content.length,\n    queryOffset: p.content.indexOf(query.split(' ').slice(0, 4).join(' ')),\n    query,\n    hits: payload.hits.length,\n    returned: i >= 0,\n    rank: i + 1,\n    matchedSection: i >= 0 ? (payload.hits[i]!.matchedSection ?? null) : null,\n    parentVectorRank: parentRank?.rank ?? null,\n    bestChunkRankWithinPlanChunks: chunkRank?.rank ?? null,\n    bestChunkIdx: chunkRank?.idx ?? null,\n    semantic: payload.semantic ?? null,\n  });\n}\nfor (const r of rows) console.log('ROW', JSON.stringify(r));\nconst done = rows.filter((r) => !r.skipped);\nconsole.log(\n  'SUMMARY',\n  JSON.stringify({\n    at: new Date().toISOString(),\n    n: done.length,\n    returned: done.filter((r) => r.returned).length,\n    withSection: done.filter((r) => r.matchedSection).length,\n    parentVectorInTop20: done.filter((r) => typeof r.parentVectorRank === 'number' && (r.parentVectorRank as number) <= 20).length,\n  }),\n);\nprocess.exit(0);\n"
+}

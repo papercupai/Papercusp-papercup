@@ -60,6 +60,11 @@ function runHook(
         HOME: process.env.HOME,
         PAPERCUSP_SID: SID,
         PAPERCUSP_OPERATOR_URL: baseUrl,
+        // A loopback pin also falls back to the local MCP proxy (inject/core.mjs
+        // operatorBases, WI-10005007; default port 9071). Point that fallback at
+        // the stub too, or a case that cannot reach the stub silently reaches the
+        // REAL operator through the box's proxy and gets a live Orientation back.
+        PAPERCUSP_MCP_PROXY_PORT: new URL(baseUrl).port,
         PAPERCUSP_WORKSPACE: 'ws-test',
         PAPERCUSP_HARNESS_SLUG: 'papercusp',
         // Never inherit real proxy env into the hermetic call.
@@ -128,7 +133,9 @@ describe('userpromptsubmit-memory.sh', () => {
   it('operator down (unreachable port) → fail-open silent, exit 0', async () => {
     const out = await runHook(
       { prompt: LONG_PROMPT },
-      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' },
+      // Both transports down: the pin AND its loopback proxy fallback. Leaving the
+      // fallback on the real :9071 made this case pass or fail with the live box.
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', PAPERCUSP_MCP_PROXY_PORT: '1' },
     );
     expect(out.status).toBe(0);
     expect(out.stdout.trim()).toBe('');

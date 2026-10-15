@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { searchForWorkspaceRoot } from 'vite';
@@ -12,6 +15,7 @@ import {
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- guard script is plain .mjs and intentionally has no declaration file.
 } from '../../../scripts/check-vitest-config-enrollment.mjs';
+import { FOREIGN_HIVE_SUBMODULES } from '../../../scripts/lib/foreign-hive-submodules.mjs';
 
 describe('Vitest config enrollment guard', () => {
   it('recognizes the shared base and the gate-participation fragment', () => {
@@ -76,6 +80,56 @@ describe('Vitest config enrollment guard', () => {
         'vitest.config.ts',
       ),
     ).toBe(false);
+  });
+
+  // WI-6554700010009161: the root declares `!apps/*-checkpoint`; npm does not treat an excluded
+  // directory as a workspace, so the guard must not collect its config either.
+  it('honours negated workspace patterns when collecting declared configs', () => {
+    const root = mkdtempSync(join(tmpdir(), 'vitest-enrollment-negation-'));
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ workspaces: ['apps/*', '!apps/*-checkpoint'] }));
+      for (const app of ['drill', 'drill-checkpoint']) {
+        const dir = join(root, 'apps', app);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'package.json'), '{}');
+        writeFileSync(join(dir, 'vitest.config.ts'), 'export default {};');
+      }
+      const paths = collectVitestConfigs(root).map((config: { path: string }) => config.path);
+      expect(paths).toEqual(['apps/drill/vitest.config.ts']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // WI-6554700010009815: a registered foreign-hive submodule (scripts/lib/foreign-hive-submodules.mjs)
+  // is another hive's code, judged by that hive's gate. The guard must not collect its config, neither
+  // as a declared workspace nor nested under one, so it needs no PLAIN_CONFIG_EXEMPTIONS entry. A
+  // sibling that merely shares the path prefix is still collected.
+  it('skips registered foreign-hive submodules when collecting declared configs', () => {
+    expect(FOREIGN_HIVE_SUBMODULES.length).toBeGreaterThan(0);
+    for (const { path: hive } of FOREIGN_HIVE_SUBMODULES) {
+      const parent = hive.split('/').slice(0, -1).join('/');
+      expect(parent, `${hive} must sit under a parent directory`).not.toBe('');
+      expect(PLAIN_CONFIG_EXEMPTIONS.has(`${hive}/vitest.config.ts`)).toBe(false);
+      // As a workspace (`<parent>/*`), then nested under a workspace rooted at <parent>.
+      for (const workspaces of [[`${parent}/*`], [parent]]) {
+        const root = mkdtempSync(join(tmpdir(), 'vitest-enrollment-foreign-hive-'));
+        try {
+          writeFileSync(join(root, 'package.json'), JSON.stringify({ workspaces }));
+          mkdirSync(join(root, parent), { recursive: true });
+          writeFileSync(join(root, parent, 'package.json'), '{}');
+          for (const app of [hive, `${hive}-sibling`]) {
+            mkdirSync(join(root, app), { recursive: true });
+            writeFileSync(join(root, app, 'package.json'), '{}');
+            writeFileSync(join(root, app, 'vitest.config.ts'), 'export default {};');
+          }
+          const paths = collectVitestConfigs(root).map((config: { path: string }) => config.path);
+          expect(paths, JSON.stringify(workspaces)).toEqual([`${hive}-sibling/vitest.config.ts`]);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      }
+    }
   });
 
   it('keeps every declared workspace config enrolled at repository HEAD', () => {
@@ -178,4 +232,59 @@ describe('Vitest config enrollment guard: stale exemptions and nested workspace 
     expect(mutated[0].content).not.toBe(real[0].content);
     expect(findNestedRootConfigsWithoutServerFragment(mutated, viteRootOf)).toEqual([BLOOM_GRID]);
   });
+});
+
+// WI-6554700010009145: under the committed-source loader, scripts/test-files.mjs makes Vite load
+// every config with configLoader 'native', i.e. a plain Node `import()` of the .ts file as ES. A
+// config that reads CommonJS globals (`__dirname`, `require`) then throws and the whole group
+// collects 0 tests. This imports each config the way Vite's nativeImportConfigFile does, in a
+// separate Node process (inside Vitest the import would go through Vite's transform instead).
+describe('Vitest config native loading', () => {
+  const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const IMPORT_EACH = [
+    "import { pathToFileURL } from 'node:url';",
+    'const failures = [];',
+    'for (const file of JSON.parse(process.argv[1])) {',
+    '  try {',
+    "    const mod = await import(pathToFileURL(file).href + '?t=' + Date.now());",
+    "    if (typeof mod.default !== 'object' && typeof mod.default !== 'function') failures.push(file + ': default export is ' + typeof mod.default);",
+    '  } catch (error) {',
+    "    failures.push(file + ': ' + String(error?.message ?? error).split('\\n')[0]);",
+    '  }',
+    '}',
+    'process.stdout.write(JSON.stringify(failures));',
+  ].join('\n');
+  const nativeImportFailures = (files: string[]): string[] =>
+    JSON.parse(
+      execFileSync(process.execPath, ['--input-type=module', '-e', IMPORT_EACH, JSON.stringify(files)], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        env: { ...process.env, NODE_OPTIONS: '' },
+        timeout: 120_000,
+      }),
+    ) as string[];
+
+  it('loads the root config and every declared workspace config as native ES', () => {
+    const files = [
+      join(REPO_ROOT, 'vitest.config.ts'),
+      ...collectVitestConfigs().map(({ path }: { path: string }) => join(REPO_ROOT, path)),
+    ];
+    expect(files.length).toBeGreaterThan(1);
+    const failures = nativeImportFailures(files);
+    expect(failures, failures.join('\n')).toEqual([]);
+  }, 150_000);
+
+  // Falsifiability control: a config that reads `__dirname` must be reported by the same import.
+  it('reports a config that reads the CommonJS __dirname', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-config-'));
+    try {
+      const bad = join(dir, 'vitest.config.ts');
+      writeFileSync(bad, "import { resolve } from 'node:path';\nexport default { root: resolve(__dirname) };\n");
+      const failures = nativeImportFailures([bad]);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain('__dirname is not defined');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

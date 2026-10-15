@@ -1,0 +1,2603 @@
+{
+  "schemaVersion": 1,
+  "plane": "live-current-build-operator-api",
+  "incomplete": false,
+  "pid": 475792,
+  "counterPid": 1360199,
+  "buildSha": "80fbc954da",
+  "startedAt": "2026-10-02T23:45:58.797Z",
+  "samples": [
+    {
+      "label": "idle-0-start",
+      "at": 1790984759827,
+      "pid": 1360199,
+      "uptime": 350.713013623,
+      "memory": {
+        "rss": 382316544,
+        "heapTotal": 167809024,
+        "heapUsed": 163861368,
+        "external": 72097152,
+        "arrayBuffers": 580809
+      },
+      "heap": {
+        "total_heap_size": 167809024,
+        "total_heap_size_executable": 2785280,
+        "total_physical_size": 167555072,
+        "total_available_size": 137477608408,
+        "used_heap_size": 163861592,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4210752,
+        "peak_malloced_memory": 91473224,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 114688,
+        "used_global_handles_size": 97984,
+        "external_memory": 72097152,
+        "total_allocated_bytes": 735230208
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 2621440,
+          "space_used_size": 1381160,
+          "space_available_size": 715864,
+          "physical_space_size": 2621440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 118751232,
+          "space_used_size": 117245072,
+          "space_available_size": 1190880,
+          "physical_space_size": 118738944
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2621440,
+          "space_used_size": 2261056,
+          "space_available_size": 360064,
+          "physical_space_size": 2617344
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 9961472,
+          "space_used_size": 9190864,
+          "space_available_size": 768880,
+          "physical_space_size": 9728000
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 30892032,
+          "space_used_size": 30839800,
+          "space_available_size": 0,
+          "physical_space_size": 30892032
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 163840,
+          "space_used_size": 160256,
+          "space_available_size": 0,
+          "physical_space_size": 163840
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 2797568,
+          "space_used_size": 2787912,
+          "space_available_size": 0,
+          "physical_space_size": 2797568
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 4990948,
+        "bytecode_and_metadata_size": 7602008,
+        "external_script_source_size": 71514301,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 475792,
+        "startTicks": "3084296",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 764403712,
+        "rssBytes": 839114752,
+        "anonymousBytes": 759742464
+      },
+      "counterOs": {
+        "pid": 1360199,
+        "startTicks": "3186988",
+        "parentPid": 1360076,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 339119104,
+        "rssBytes": 401100800,
+        "anonymousBytes": 336429056
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": "spawner",
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 1360076,
+          "startTicks": "3186980",
+          "parentPid": 475792,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "b155c0d7c36edcbf9c752e1230b0e3d53fbfd0b05f799f673d54d34ac1c942d1",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9139200,
+          "rssBytes": 49336320,
+          "anonymousBytes": 8921088
+        },
+        {
+          "pid": 1360199,
+          "startTicks": "3186988",
+          "parentPid": 1360076,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 339119104,
+          "rssBytes": 401100800,
+          "anonymousBytes": 336429056
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 764403712
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9139200
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 339119104
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1112662016,
+        "appeared": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296"
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980"
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988"
+          }
+        ],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 76.5257180000001
+    },
+    {
+      "label": "idle-0-end",
+      "at": 1790984761912,
+      "pid": 1360199,
+      "uptime": 352.797177388,
+      "memory": {
+        "rss": 382316544,
+        "heapTotal": 167809024,
+        "heapUsed": 163884872,
+        "external": 72097152,
+        "arrayBuffers": 580809
+      },
+      "heap": {
+        "total_heap_size": 167809024,
+        "total_heap_size_executable": 2785280,
+        "total_physical_size": 167559168,
+        "total_available_size": 137477584896,
+        "used_heap_size": 163885096,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4210752,
+        "peak_malloced_memory": 91473224,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 114688,
+        "used_global_handles_size": 97984,
+        "external_memory": 72097152,
+        "total_allocated_bytes": 738084824
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 2621440,
+          "space_used_size": 1398040,
+          "space_available_size": 698984,
+          "physical_space_size": 2621440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 118751232,
+          "space_used_size": 117248208,
+          "space_available_size": 1187736,
+          "physical_space_size": 118738944
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2621440,
+          "space_used_size": 2261056,
+          "space_available_size": 360064,
+          "physical_space_size": 2617344
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 9961472,
+          "space_used_size": 9191160,
+          "space_available_size": 768584,
+          "physical_space_size": 9728000
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 30892032,
+          "space_used_size": 30839800,
+          "space_available_size": 0,
+          "physical_space_size": 30892032
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 163840,
+          "space_used_size": 160256,
+          "space_available_size": 0,
+          "physical_space_size": 163840
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 2797568,
+          "space_used_size": 2787912,
+          "space_available_size": 0,
+          "physical_space_size": 2797568
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 4990948,
+        "bytecode_and_metadata_size": 7602008,
+        "external_script_source_size": 71514301,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 475792,
+        "startTicks": "3084296",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 764404736,
+        "rssBytes": 839114752,
+        "anonymousBytes": 759742464
+      },
+      "counterOs": {
+        "pid": 1360199,
+        "startTicks": "3186988",
+        "parentPid": 1360076,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 339119104,
+        "rssBytes": 401100800,
+        "anonymousBytes": 336429056
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": "spawner",
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 1360076,
+          "startTicks": "3186980",
+          "parentPid": 475792,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "b155c0d7c36edcbf9c752e1230b0e3d53fbfd0b05f799f673d54d34ac1c942d1",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9140224,
+          "rssBytes": 49336320,
+          "anonymousBytes": 8921088
+        },
+        {
+          "pid": 1360199,
+          "startTicks": "3186988",
+          "parentPid": 1360076,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 339119104,
+          "rssBytes": 401100800,
+          "anonymousBytes": 336429056
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 764404736
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9140224
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 339119104
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1112664064,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 63.24233499999991
+    },
+    {
+      "label": "ordinary-0-end",
+      "at": 1790984762516,
+      "pid": 1360199,
+      "uptime": 353.401196347,
+      "memory": {
+        "rss": 382316544,
+        "heapTotal": 167809024,
+        "heapUsed": 163900720,
+        "external": 72097152,
+        "arrayBuffers": 580809
+      },
+      "heap": {
+        "total_heap_size": 167809024,
+        "total_heap_size_executable": 2785280,
+        "total_physical_size": 167559168,
+        "total_available_size": 137477569048,
+        "used_heap_size": 163900944,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4210752,
+        "peak_malloced_memory": 91473224,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 114688,
+        "used_global_handles_size": 97984,
+        "external_memory": 72097152,
+        "total_allocated_bytes": 740671400
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 2621440,
+          "space_used_size": 1413320,
+          "space_available_size": 683704,
+          "physical_space_size": 2621440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 118751232,
+          "space_used_size": 117248432,
+          "space_available_size": 1187512,
+          "physical_space_size": 118738944
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2621440,
+          "space_used_size": 2261056,
+          "space_available_size": 360064,
+          "physical_space_size": 2617344
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 9961472,
+          "space_used_size": 9191160,
+          "space_available_size": 768584,
+          "physical_space_size": 9728000
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 30892032,
+          "space_used_size": 30839800,
+          "space_available_size": 0,
+          "physical_space_size": 30892032
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 163840,
+          "space_used_size": 160256,
+          "space_available_size": 0,
+          "physical_space_size": 163840
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 2797568,
+          "space_used_size": 2787912,
+          "space_available_size": 0,
+          "physical_space_size": 2797568
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 4990948,
+        "bytecode_and_metadata_size": 7602008,
+        "external_script_source_size": 71514301,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 475792,
+        "startTicks": "3084296",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 766199808,
+        "rssBytes": 842870784,
+        "anonymousBytes": 761503744
+      },
+      "counterOs": {
+        "pid": 1360199,
+        "startTicks": "3186988",
+        "parentPid": 1360076,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 339119104,
+        "rssBytes": 401100800,
+        "anonymousBytes": 336429056
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": "spawner",
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 1360076,
+          "startTicks": "3186980",
+          "parentPid": 475792,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "b155c0d7c36edcbf9c752e1230b0e3d53fbfd0b05f799f673d54d34ac1c942d1",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9139200,
+          "rssBytes": 49336320,
+          "anonymousBytes": 8921088
+        },
+        {
+          "pid": 1360199,
+          "startTicks": "3186988",
+          "parentPid": 1360076,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 339119104,
+          "rssBytes": 401100800,
+          "anonymousBytes": 336429056
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 766199808
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9139200
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 339119104
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1114458112,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 88.84443199999987
+    },
+    {
+      "label": "idle-1-start",
+      "at": 1790984762755,
+      "pid": 1360199,
+      "uptime": 353.640705483,
+      "memory": {
+        "rss": 382316544,
+        "heapTotal": 167809024,
+        "heapUsed": 163916112,
+        "external": 72097152,
+        "arrayBuffers": 580809
+      },
+      "heap": {
+        "total_heap_size": 167809024,
+        "total_heap_size_executable": 2785280,
+        "total_physical_size": 167559168,
+        "total_available_size": 137477553656,
+        "used_heap_size": 163916336,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4210752,
+        "peak_malloced_memory": 91473224,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 114688,
+        "used_global_handles_size": 97984,
+        "external_memory": 72097152,
+        "total_allocated_bytes": 743023368
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 2621440,
+          "space_used_size": 1428600,
+          "space_available_size": 668424,
+          "physical_space_size": 2621440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 118751232,
+          "space_used_size": 117248544,
+          "space_available_size": 1187400,
+          "physical_space_size": 118738944
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2621440,
+          "space_used_size": 2261056,
+          "space_available_size": 360064,
+          "physical_space_size": 2617344
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 9961472,
+          "space_used_size": 9191160,
+          "space_available_size": 768584,
+          "physical_space_size": 9728000
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 30892032,
+          "space_used_size": 30839800,
+          "space_available_size": 0,
+          "physical_space_size": 30892032
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 163840,
+          "space_used_size": 160256,
+          "space_available_size": 0,
+          "physical_space_size": 163840
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 2797568,
+          "space_used_size": 2787912,
+          "space_available_size": 0,
+          "physical_space_size": 2797568
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 4990948,
+        "bytecode_and_metadata_size": 7602008,
+        "external_script_source_size": 71514301,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 475792,
+        "startTicks": "3084296",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 766198784,
+        "rssBytes": 842870784,
+        "anonymousBytes": 761503744
+      },
+      "counterOs": {
+        "pid": 1360199,
+        "startTicks": "3186988",
+        "parentPid": 1360076,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 339118080,
+        "rssBytes": 401100800,
+        "anonymousBytes": 336429056
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": "spawner",
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 1360076,
+          "startTicks": "3186980",
+          "parentPid": 475792,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "b155c0d7c36edcbf9c752e1230b0e3d53fbfd0b05f799f673d54d34ac1c942d1",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9138176,
+          "rssBytes": 49336320,
+          "anonymousBytes": 8921088
+        },
+        {
+          "pid": 1360199,
+          "startTicks": "3186988",
+          "parentPid": 1360076,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 339118080,
+          "rssBytes": 401100800,
+          "anonymousBytes": 336429056
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 766198784
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9138176
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 339118080
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1114455040,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 92.33648499999981
+    },
+    {
+      "label": "idle-1-end",
+      "at": 1790984764889,
+      "pid": 1360199,
+      "uptime": 355.775061785,
+      "memory": {
+        "rss": 382316544,
+        "heapTotal": 167809024,
+        "heapUsed": 163931504,
+        "external": 72097152,
+        "arrayBuffers": 580809
+      },
+      "heap": {
+        "total_heap_size": 167809024,
+        "total_heap_size_executable": 2785280,
+        "total_physical_size": 167559168,
+        "total_available_size": 137477538264,
+        "used_heap_size": 163931728,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4210752,
+        "peak_malloced_memory": 91473224,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 114688,
+        "used_global_handles_size": 97984,
+        "external_memory": 72097152,
+        "total_allocated_bytes": 745146576
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 2621440,
+          "space_used_size": 1443880,
+          "space_available_size": 653144,
+          "physical_space_size": 2621440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 118751232,
+          "space_used_size": 117248656,
+          "space_available_size": 1187288,
+          "physical_space_size": 118738944
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2621440,
+          "space_used_size": 2261056,
+          "space_available_size": 360064,
+          "physical_space_size": 2617344
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 9961472,
+          "space_used_size": 9191160,
+          "space_available_size": 768584,
+          "physical_space_size": 9728000
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 30892032,
+          "space_used_size": 30839800,
+          "space_available_size": 0,
+          "physical_space_size": 30892032
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 163840,
+          "space_used_size": 160256,
+          "space_available_size": 0,
+          "physical_space_size": 163840
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 2797568,
+          "space_used_size": 2787912,
+          "space_available_size": 0,
+          "physical_space_size": 2797568
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 4990948,
+        "bytecode_and_metadata_size": 7602008,
+        "external_script_source_size": 71514301,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 475792,
+        "startTicks": "3084296",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 766177280,
+        "rssBytes": 842870784,
+        "anonymousBytes": 761503744
+      },
+      "counterOs": {
+        "pid": 1360199,
+        "startTicks": "3186988",
+        "parentPid": 1360076,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 339117056,
+        "rssBytes": 401100800,
+        "anonymousBytes": 336429056
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": "spawner",
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 1360076,
+          "startTicks": "3186980",
+          "parentPid": 475792,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "b155c0d7c36edcbf9c752e1230b0e3d53fbfd0b05f799f673d54d34ac1c942d1",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9138176,
+          "rssBytes": 49336320,
+          "anonymousBytes": 8921088
+        },
+        {
+          "pid": 1360199,
+          "startTicks": "3186988",
+          "parentPid": 1360076,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 339117056,
+          "rssBytes": 401100800,
+          "anonymousBytes": 336429056
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 766177280
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9138176
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 339117056
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1114432512,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 68.52250699999968
+    },
+    {
+      "label": "ordinary-1-end",
+      "at": 1790984765191,
+      "pid": 1360199,
+      "uptime": 356.076576081,
+      "memory": {
+        "rss": 382316544,
+        "heapTotal": 167809024,
+        "heapUsed": 163946896,
+        "external": 72097152,
+        "arrayBuffers": 580809
+      },
+      "heap": {
+        "total_heap_size": 167809024,
+        "total_heap_size_executable": 2785280,
+        "total_physical_size": 167559168,
+        "total_available_size": 137477522872,
+        "used_heap_size": 163947120,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4210752,
+        "peak_malloced_memory": 91473224,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 114688,
+        "used_global_handles_size": 97984,
+        "external_memory": 72097152,
+        "total_allocated_bytes": 747040472
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 2621440,
+          "space_used_size": 1459160,
+          "space_available_size": 637864,
+          "physical_space_size": 2621440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 118751232,
+          "space_used_size": 117248768,
+          "space_available_size": 1187176,
+          "physical_space_size": 118738944
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2621440,
+          "space_used_size": 2261056,
+          "space_available_size": 360064,
+          "physical_space_size": 2617344
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 9961472,
+          "space_used_size": 9191160,
+          "space_available_size": 768584,
+          "physical_space_size": 9728000
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 30892032,
+          "space_used_size": 30839800,
+          "space_available_size": 0,
+          "physical_space_size": 30892032
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 163840,
+          "space_used_size": 160256,
+          "space_available_size": 0,
+          "physical_space_size": 163840
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 2797568,
+          "space_used_size": 2787912,
+          "space_available_size": 0,
+          "physical_space_size": 2797568
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 4990948,
+        "bytecode_and_metadata_size": 7602008,
+        "external_script_source_size": 71514301,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 475792,
+        "startTicks": "3084296",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 766246912,
+        "rssBytes": 842940416,
+        "anonymousBytes": 761573376
+      },
+      "counterOs": {
+        "pid": 1360199,
+        "startTicks": "3186988",
+        "parentPid": 1360076,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 339119104,
+        "rssBytes": 401100800,
+        "anonymousBytes": 336429056
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": "spawner",
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 1360076,
+          "startTicks": "3186980",
+          "parentPid": 475792,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "b155c0d7c36edcbf9c752e1230b0e3d53fbfd0b05f799f673d54d34ac1c942d1",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9139200,
+          "rssBytes": 49336320,
+          "anonymousBytes": 8921088
+        },
+        {
+          "pid": 1360199,
+          "startTicks": "3186988",
+          "parentPid": 1360076,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 339119104,
+          "rssBytes": 401100800,
+          "anonymousBytes": 336429056
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 766246912
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9139200
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 339119104
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1114505216,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 66.4923319999998
+    },
+    {
+      "label": "idle-2-start",
+      "at": 1790984765387,
+      "pid": 1360199,
+      "uptime": 356.272705371,
+      "memory": {
+        "rss": 382316544,
+        "heapTotal": 167809024,
+        "heapUsed": 163962288,
+        "external": 72097152,
+        "arrayBuffers": 580809
+      },
+      "heap": {
+        "total_heap_size": 167809024,
+        "total_heap_size_executable": 2785280,
+        "total_physical_size": 167559168,
+        "total_available_size": 137477507480,
+        "used_heap_size": 163962512,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4210752,
+        "peak_malloced_memory": 91473224,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 114688,
+        "used_global_handles_size": 97984,
+        "external_memory": 72097152,
+        "total_allocated_bytes": 748705056
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 2621440,
+          "space_used_size": 1474440,
+          "space_available_size": 622584,
+          "physical_space_size": 2621440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 118751232,
+          "space_used_size": 117248880,
+          "space_available_size": 1187064,
+          "physical_space_size": 118738944
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2621440,
+          "space_used_size": 2261056,
+          "space_available_size": 360064,
+          "physical_space_size": 2617344
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 9961472,
+          "space_used_size": 9191160,
+          "space_available_size": 768584,
+          "physical_space_size": 9728000
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 30892032,
+          "space_used_size": 30839800,
+          "space_available_size": 0,
+          "physical_space_size": 30892032
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 163840,
+          "space_used_size": 160256,
+          "space_available_size": 0,
+          "physical_space_size": 163840
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 2797568,
+          "space_used_size": 2787912,
+          "space_available_size": 0,
+          "physical_space_size": 2797568
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 4990948,
+        "bytecode_and_metadata_size": 7602008,
+        "external_script_source_size": 71514301,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 475792,
+        "startTicks": "3084296",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 766249984,
+        "rssBytes": 842940416,
+        "anonymousBytes": 761573376
+      },
+      "counterOs": {
+        "pid": 1360199,
+        "startTicks": "3186988",
+        "parentPid": 1360076,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 339120128,
+        "rssBytes": 401100800,
+        "anonymousBytes": 336429056
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": "spawner",
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 1360076,
+          "startTicks": "3186980",
+          "parentPid": 475792,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "b155c0d7c36edcbf9c752e1230b0e3d53fbfd0b05f799f673d54d34ac1c942d1",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9139200,
+          "rssBytes": 49336320,
+          "anonymousBytes": 8921088
+        },
+        {
+          "pid": 1360199,
+          "startTicks": "3186988",
+          "parentPid": 1360076,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 339120128,
+          "rssBytes": 401100800,
+          "anonymousBytes": 336429056
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 766249984
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9139200
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 339120128
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1114509312,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 67.72678200000064
+    },
+    {
+      "label": "idle-2-end",
+      "at": 1790984767515,
+      "pid": 1360199,
+      "uptime": 358.401111926,
+      "memory": {
+        "rss": 382316544,
+        "heapTotal": 167809024,
+        "heapUsed": 163977680,
+        "external": 72097152,
+        "arrayBuffers": 580809
+      },
+      "heap": {
+        "total_heap_size": 167809024,
+        "total_heap_size_executable": 2785280,
+        "total_physical_size": 167559168,
+        "total_available_size": 137477491856,
+        "used_heap_size": 163978136,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4210752,
+        "peak_malloced_memory": 91473224,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 114688,
+        "used_global_handles_size": 97984,
+        "external_memory": 72097152,
+        "total_allocated_bytes": 750146296
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 2621440,
+          "space_used_size": 1489720,
+          "space_available_size": 607304,
+          "physical_space_size": 2621440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 118751232,
+          "space_used_size": 117249776,
+          "space_available_size": 1186168,
+          "physical_space_size": 118738944
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2621440,
+          "space_used_size": 2261056,
+          "space_available_size": 360064,
+          "physical_space_size": 2617344
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 9961472,
+          "space_used_size": 9191160,
+          "space_available_size": 768584,
+          "physical_space_size": 9728000
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 30892032,
+          "space_used_size": 30839800,
+          "space_available_size": 0,
+          "physical_space_size": 30892032
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 163840,
+          "space_used_size": 160256,
+          "space_available_size": 0,
+          "physical_space_size": 163840
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 2797568,
+          "space_used_size": 2787912,
+          "space_available_size": 0,
+          "physical_space_size": 2797568
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 4990948,
+        "bytecode_and_metadata_size": 7602008,
+        "external_script_source_size": 71514301,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 475792,
+        "startTicks": "3084296",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 766272512,
+        "rssBytes": 842940416,
+        "anonymousBytes": 761573376
+      },
+      "counterOs": {
+        "pid": 1360199,
+        "startTicks": "3186988",
+        "parentPid": 1360076,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 339121152,
+        "rssBytes": 401100800,
+        "anonymousBytes": 336429056
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": "spawner",
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 1360076,
+          "startTicks": "3186980",
+          "parentPid": 475792,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "b155c0d7c36edcbf9c752e1230b0e3d53fbfd0b05f799f673d54d34ac1c942d1",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9140224,
+          "rssBytes": 49336320,
+          "anonymousBytes": 8921088
+        },
+        {
+          "pid": 1360199,
+          "startTicks": "3186988",
+          "parentPid": 1360076,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 339121152,
+          "rssBytes": 401100800,
+          "anonymousBytes": 336429056
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 766272512
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9140224
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 339121152
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1114533888,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 67.17949699999917
+    },
+    {
+      "label": "ordinary-2-end",
+      "at": 1790984767917,
+      "pid": 1360199,
+      "uptime": 358.802504228,
+      "memory": {
+        "rss": 382316544,
+        "heapTotal": 167809024,
+        "heapUsed": 163993856,
+        "external": 72097152,
+        "arrayBuffers": 580809
+      },
+      "heap": {
+        "total_heap_size": 167809024,
+        "total_heap_size_executable": 2785280,
+        "total_physical_size": 167559168,
+        "total_available_size": 137477475992,
+        "used_heap_size": 163994000,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4210752,
+        "peak_malloced_memory": 91473224,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 1,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 114688,
+        "used_global_handles_size": 97984,
+        "external_memory": 72097152,
+        "total_allocated_bytes": 751358072
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 2621440,
+          "space_used_size": 1504728,
+          "space_available_size": 592296,
+          "physical_space_size": 2621440
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 118751232,
+          "space_used_size": 117249888,
+          "space_available_size": 1186056,
+          "physical_space_size": 118738944
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 2621440,
+          "space_used_size": 2261056,
+          "space_available_size": 360064,
+          "physical_space_size": 2617344
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 9961472,
+          "space_used_size": 9191160,
+          "space_available_size": 768584,
+          "physical_space_size": 9728000
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 2097152,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 30892032,
+          "space_used_size": 30839800,
+          "space_available_size": 0,
+          "physical_space_size": 30892032
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 163840,
+          "space_used_size": 160256,
+          "space_available_size": 0,
+          "physical_space_size": 163840
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 2797568,
+          "space_used_size": 2787912,
+          "space_available_size": 0,
+          "physical_space_size": 2797568
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 4990948,
+        "bytecode_and_metadata_size": 7602008,
+        "external_script_source_size": 71514301,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 475792,
+        "startTicks": "3084296",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 766312448,
+        "rssBytes": 842981376,
+        "anonymousBytes": 761614336
+      },
+      "counterOs": {
+        "pid": 1360199,
+        "startTicks": "3186988",
+        "parentPid": 1360076,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 339121152,
+        "rssBytes": 401100800,
+        "anonymousBytes": 336429056
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": "spawner",
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 1360076,
+          "startTicks": "3186980",
+          "parentPid": 475792,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "b155c0d7c36edcbf9c752e1230b0e3d53fbfd0b05f799f673d54d34ac1c942d1",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9139200,
+          "rssBytes": 49336320,
+          "anonymousBytes": 8921088
+        },
+        {
+          "pid": 1360199,
+          "startTicks": "3186988",
+          "parentPid": 1360076,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "88ba9e0c13c0bc5524cfc8710833e562060c3c0a2282f8d7c0de89ff389f2113",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 339121152,
+          "rssBytes": 401100800,
+          "anonymousBytes": 336429056
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 475792,
+            "startTicks": "3084296",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 766312448
+          },
+          {
+            "pid": 1360076,
+            "startTicks": "3186980",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9139200
+          },
+          {
+            "pid": 1360199,
+            "startTicks": "3186988",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 339121152
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1114572800,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 68.02080899999964
+    }
+  ],
+  "windows": [
+    {
+      "window": 0,
+      "startedAt": "2026-10-02T23:46:02.165Z",
+      "endedAt": "2026-10-02T23:46:02.639Z"
+    },
+    {
+      "window": 1,
+      "startedAt": "2026-10-02T23:46:05.112Z",
+      "endedAt": "2026-10-02T23:46:05.319Z"
+    },
+    {
+      "window": 2,
+      "startedAt": "2026-10-02T23:46:07.821Z",
+      "endedAt": "2026-10-02T23:46:08.312Z"
+    }
+  ],
+  "requests": [
+    {
+      "window": 0,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20424,
+      "responseSha256": "3d581507257f78f007920a589687c6eb7055adb385acfebca482472685f87e11",
+      "elapsedMs": 265.40074000000004
+    },
+    {
+      "window": 0,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20424,
+      "responseSha256": "b93e0e1f63dfc47f32ecf39f1dede39bbe8bdcc81d2d74284597b9e1d4f42893",
+      "elapsedMs": 268.7009539999999
+    },
+    {
+      "window": 0,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "4c099832bd6910983fcd2ccec9c972e95ca84776e668f5fdb9ea9ad72a0349d9",
+      "elapsedMs": 25.856847000000016
+    },
+    {
+      "window": 0,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "06598cbb7bd2eeb19b07b2604fb4cdb659f9406322663001166b15ddddb9abff",
+      "elapsedMs": 27.865420000000086
+    },
+    {
+      "window": 0,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "18fa37c747b3696f88a0eda2e727d8f5d116abcdcd0d9d2835453ce55e879ed1",
+      "elapsedMs": 26.3074459999998
+    },
+    {
+      "window": 0,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "c1fe6ee9e2786a5dd9c603d62338ce90baf46b1b71b12f8489b02c300f09d8df",
+      "elapsedMs": 27.89553899999919
+    },
+    {
+      "window": 0,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "90223dcf400936fe29e289922380b9bda80c18326a167a0ababc79e6de6a8eb0",
+      "elapsedMs": 23.70798399999967
+    },
+    {
+      "window": 0,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "6f14085f12cbb0fa05e70bb80ee3727eaa2e3db81cd183f3a49b6c9d32cd2e33",
+      "elapsedMs": 24.03543500000069
+    },
+    {
+      "window": 1,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "4f1dd9f66247efb741fec0e0b8fdd92262d352cf520fd838e9e89510a611093b",
+      "elapsedMs": 21.18503999999939
+    },
+    {
+      "window": 1,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "d73e37c0078f4be0e8ad728ee9672c2b45450d10a90ba4d2b2e225fe8a5993b1",
+      "elapsedMs": 21.2596939999994
+    },
+    {
+      "window": 1,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "ab723052f97f1d6bb801a384c47b18fed8872c80f81de2788096e789b1fce62a",
+      "elapsedMs": 17.61772099999962
+    },
+    {
+      "window": 1,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "91385b33b90c4520e48ac78c63df49df8c3d04fb56ca40ed81291312f1cc94de",
+      "elapsedMs": 18.328381999999692
+    },
+    {
+      "window": 1,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "0eb9d50fc3ff28d0855603ea75c3778e18fbe2039bfbffe09f41119bb3faf0f0",
+      "elapsedMs": 16.874226999999337
+    },
+    {
+      "window": 1,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "46372d17a730a554a8dc7cc9864fc47676f0d6d71b21a0f94a03a07b7e0709e3",
+      "elapsedMs": 17.869998000000123
+    },
+    {
+      "window": 1,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "ab93df20e5d9fac01730f28496baa70d671e0624661a763d0c9e3908b22eaf30",
+      "elapsedMs": 18.47236900000007
+    },
+    {
+      "window": 1,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "ab93df20e5d9fac01730f28496baa70d671e0624661a763d0c9e3908b22eaf30",
+      "elapsedMs": 19.491935000000012
+    },
+    {
+      "window": 2,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "db341829ea85b5dea318ae495fede0166b3928fb9d91b0c8e59c375e352017d4",
+      "elapsedMs": 25.34149400000024
+    },
+    {
+      "window": 2,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "dbbc1173402025f735cd3b95d7487e52ec179843773496f8b4ddec24e6961f8d",
+      "elapsedMs": 27.36102800000117
+    },
+    {
+      "window": 2,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "1d2f9820fc7c894f40f80a3c6d50bdab2d98bf9e8b901710674372f0a09a22b7",
+      "elapsedMs": 21.29697599999963
+    },
+    {
+      "window": 2,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "9c1c269664c0242f60fc01aed7a02312d925a78fdf52d4ac606bbcc7d0f9c882",
+      "elapsedMs": 22.412535999999818
+    },
+    {
+      "window": 2,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "ffc81b61fc40ddd0c9efabdfc347e11a93a6d9b845c72dbf1766c3f914a9b89f",
+      "elapsedMs": 21.8480580000014
+    },
+    {
+      "window": 2,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "b245fa4e3012398294d40c31e3e13988c84016ff63f515957d57656a6b987cc4",
+      "elapsedMs": 22.875919000000067
+    },
+    {
+      "window": 2,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "67496d1c5b2310f04e08ac493ae8b4b9b413583a02096a7bdab992c07a8e7dd5",
+      "elapsedMs": 20.73999200000071
+    },
+    {
+      "window": 2,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20423,
+      "responseSha256": "c6fcda86fba3f039d64bdd4910dae35327c5213dafb038253f598627ac975608",
+      "elapsedMs": 22.139289999999164
+    }
+  ],
+  "operations": [],
+  "cleanup": {
+    "inspector": {
+      "closed": true
+    },
+    "processIdentityPreserved": true,
+    "counterIdentityPreserved": true
+  },
+  "metricDefinitions": {
+    "pssBytes": "smaps_rollup Pss kernel kB times 1024",
+    "heapAndNative": "V8/Node counters, overlapping with PSS; no additive native-residual estimate",
+    "heapSpaces": "V8 getHeapSpaceStatistics per-space bytes; space membership can change across GC",
+    "heapCode": "V8 getHeapCodeStatistics bytes; code/source counters overlap heap/external and do not identify retainers",
+    "pinnedState": "Reachable logical payloads under named roots; not total retained heap/native bytes",
+    "observerMs": "wall time for inspector counter read and proc descendant census"
+  },
+  "limits": {
+    "windows": 3,
+    "idleMs": 2000,
+    "requestsPerWindow": 8,
+    "concurrency": 2,
+    "descendantsPerSample": 64
+  },
+  "operatorCacheEntries": false,
+  "limitations": [
+    "Counters cover one explicitly selected main/descendant PID; HTTP request assignment remains unknown.",
+    "Ambient workload is uncontrolled; idle means no probe HTTP requests.",
+    "No paired intervention, allocation profiler, retainer graph or physical-savings claim.",
+    "A maintained sibling entry is bound to the main build only by its observed path/executable/ancestry; its loaded build is not advertised separately.",
+    "Current disk bundle hash is recorded separately from the health-reported loaded build."
+  ],
+  "healthBefore": {
+    "sha": "80fbc954da",
+    "version": "0.0.0",
+    "at": "2026-10-02T23:45:58.915Z"
+  },
+  "bundle": {
+    "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+    "argvEntry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/hono-host.mjs",
+    "diskSha256": "58f0e5d5a2617153a6404d2cab76fcfeaf8b3c54b0d33b6913ab770e197ef5cd",
+    "diskSha256After": "58f0e5d5a2617153a6404d2cab76fcfeaf8b3c54b0d33b6913ab770e197ef5cd"
+  },
+  "counterBundle": {
+    "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+    "argvEntry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-80fbc954daba.YOfh9P/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+    "diskSha256": "91d3eef33cdbbc8110c597bc287b4f1ff7937b6da93115e550f655058a5b6b4d",
+    "loadedBuild": "unknown",
+    "role": "maintained-spawner-descendant"
+  },
+  "inspectorWasOpen": false,
+  "inspector": {
+    "pid": 1360199,
+    "port": 9229,
+    "openedByProbe": true
+  },
+  "healthAfter": {
+    "sha": "80fbc954da",
+    "version": "0.0.0",
+    "at": "2026-10-02T23:46:08.550Z"
+  },
+  "endedAt": "2026-10-02T23:46:08.718Z"
+}

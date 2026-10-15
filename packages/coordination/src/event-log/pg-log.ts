@@ -81,15 +81,18 @@ export interface PgCoordLogOptions {
  * (`prepare: false`), so parse a string defensively — same posture as
  * PgPresenceStore's `parseFiles`.
  *
- * WI-3912: also BACKSTOPS `ts`/`msg_id` from the row's own NOT-NULL columns
- * when `body` itself is missing/blank them. Every LOCAL write path
+ * WI-3912: also BACKSTOPS a missing/blank `ts` from the row's own NOT-NULL
+ * column and canonicalizes `msg_id` from its indexed column. Every LOCAL write
+ * path
  * (appendLine/putEvent/putEvents) stamps the columns FROM the envelope, so
  * body and column agree by construction for local rows — but a FEDERATED
  * remote row folds whatever the peer sent as `body` verbatim (fold-apply
  * does not re-validate CoordEnvelope shape), so a malformed/incomplete
  * remote envelope (observed live: coord_event_log id 458510, a deliberate
  * `origin=remote` test probe body with no `ts`/`msg_id` at all) can land in
- * the log with a body that violates the CoordEnvelope contract. Every
+ * the log with a body that violates the CoordEnvelope contract. Older rows can
+ * also contain a non-empty body.msg_id that differs from the indexed row id;
+ * the column identity must win so feed and by-id reads agree. Every
  * reader downstream (feed.ts's `compareByTsThenId`, which calls
  * `.localeCompare` on `a.ts`/`a.msg_id` unconditionally) assumed that
  * contract always holds — ONE such row made `coord:feed` throw a
@@ -100,13 +103,14 @@ export interface PgCoordLogOptions {
  * future malformed row, local or remote) in one place instead of hardening
  * every consumer's sort/compare call individually.
  */
-function parseBody(v: unknown, fallback?: { ts?: unknown; msg_id?: unknown }): CoordEnvelope {
+export function parseBody(v: unknown, fallback?: { ts?: unknown; msg_id?: unknown }): CoordEnvelope {
   const parsed = (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown>;
   if ((typeof parsed.ts !== 'string' || !parsed.ts) && fallback?.ts != null) {
     parsed.ts = fallback.ts instanceof Date ? fallback.ts.toISOString() : String(fallback.ts);
   }
-  if ((typeof parsed.msg_id !== 'string' || !parsed.msg_id) && fallback?.msg_id != null) {
-    parsed.msg_id = String(fallback.msg_id);
+  if (fallback?.msg_id != null) {
+    const rowMsgId = String(fallback.msg_id);
+    if (parsed.msg_id !== rowMsgId) parsed.msg_id = rowMsgId;
   }
   return parsed as CoordEnvelope;
 }
@@ -620,8 +624,18 @@ export class PgCoordLog implements CoordEventLog {
     surface: LineSurface,
     writerKey: string,
     line: CoordEnvelope,
+    hooks?: {
+      /** Join a producer's existing transaction so its state and notification commit together. */
+      transactionSql?: import('postgres').TransactionSql;
+      /** Producers validating several sources can require one coherent snapshot. */
+      transactionOptions?: 'isolation level repeatable read';
+      /** Prepare a fresh line on the SAME transaction as its append. Replays skip preparation. */
+      prepare?: (tx: import('postgres').Sql | import('postgres').TransactionSql) => Promise<CoordEnvelope>;
+      /** A producer's commit-boundary assertion; throwing rolls back the append. */
+      afterAppend?: (tx: import('postgres').Sql | import('postgres').TransactionSql) => Promise<void>;
+    },
   ): Promise<AppendLineIfAbsentResult> {
-    return withPgContentionRetry(async () => {
+    const perform = async () => {
       await this.opts.ensureSchema();
       const sql = this.opts.getSql();
       const workspaceId = this.resolveWs();
@@ -634,7 +648,7 @@ export class PgCoordLog implements CoordEventLog {
       // even caller-provided NULs become the six printable characters
       // `\u0000` before the value crosses the driver boundary.
       const lockKey = JSON.stringify([workspaceId, surface, line.msg_id]);
-      return sql.begin(async (tx) => {
+      const append = async (tx: import('postgres').Sql | import('postgres').TransactionSql) => {
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
         const existing = await tx<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
           SELECT id, body, ts, msg_id
@@ -654,20 +668,52 @@ export class PgCoordLog implements CoordEventLog {
             envelope: parseBody(existing[0].body, existing[0]),
           };
         }
+        const prepared = hooks?.prepare ? await hooks.prepare(tx) : line;
+        if (prepared.msg_id !== line.msg_id) throw new Error('append preparation changed replay identity');
         const inserted = await tx<{ id: string | number }[]>`
           INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, ts)
-          VALUES (${workspaceId}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::text::jsonb, ${line.harness_slug ?? null}, ${line.ts}::timestamptz)
+          VALUES (${workspaceId}, ${surface}, ${writerKey}, ${prepared.msg_id}, ${JSON.stringify(prepared)}::text::jsonb, ${prepared.harness_slug ?? null}, ${prepared.ts}::timestamptz)
           RETURNING id
         `;
+        await hooks?.afterAppend?.(tx);
         const raw = inserted[0]?.id;
         const sequence = typeof raw === 'number' ? raw : Number(raw);
         return {
           created: true,
           sequence: Number.isFinite(sequence) ? sequence : null,
-          envelope: line,
+          envelope: prepared,
         };
-      });
-    }, this.opts.contentionRetry);
+      };
+      if (hooks?.transactionSql) return append(hooks.transactionSql);
+      if (!hooks?.transactionOptions) return sql.begin(append);
+      // Repeatable-read snapshots must begin AFTER replay serialization. An
+      // advisory lock taken inside that transaction would freeze a waiter's
+      // snapshot before the winning insert and admit a duplicate on release.
+      const reserved = await sql.reserve();
+      try {
+        await reserved`SELECT pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
+        // postgres.js ReservedSql's declarations inherit begin(), but its
+        // runtime exposes only the query tag and release(). Keep every command
+        // on that reserved connection and explicitly settle the transaction.
+        await reserved.unsafe('BEGIN ISOLATION LEVEL REPEATABLE READ');
+        try {
+          const result = await append(reserved);
+          await reserved.unsafe('COMMIT');
+          return result;
+        } catch (error) {
+          await reserved.unsafe('ROLLBACK');
+          throw error;
+        }
+      } finally {
+        try {
+          await reserved`SELECT pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
+        } finally {
+          reserved.release();
+        }
+      }
+    };
+    // A surrounding producer owns retry/rollback; an aborted SQL transaction cannot be retried in place.
+    return hooks?.transactionSql ? perform() : withPgContentionRetry(perform, this.opts.contentionRetry);
   }
 
   async readLines(surface: LineSurface, _opts: ReadLinesOpts = {}): Promise<CoordEnvelope[]> {
@@ -1059,18 +1105,27 @@ export class PgCoordLog implements CoordEventLog {
    */
   async readEventsBoundedCursor(
     surface: EventSurface,
-    opts: { limit: number; kinds?: string[]; beforeId?: number },
+    opts: { limit: number; kinds?: string[]; from?: string; beforeId?: number; beforeTs?: string; beforeMsgId?: string },
   ): Promise<CoordLogCursorPage> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const from = typeof opts.from === 'string' ? opts.from : null;
     const beforeId =
       typeof opts.beforeId === 'number' && Number.isFinite(opts.beforeId) ? Math.floor(opts.beforeId) : null;
+    const beforeTs = typeof opts.beforeTs === 'string' && opts.beforeTs ? opts.beforeTs : null;
+    const beforeTsPredicate = beforeTs
+      ? opts.beforeMsgId
+        ? sql`AND (body->>'ts')::timestamptz <= ${beforeTs}::timestamptz`
+        : sql`AND (body->>'ts')::timestamptz < ${beforeTs}::timestamptz`
+      : sql``;
     const rows = await sql<{ id: number; body: unknown; ts: Date; msg_id: string }[]>`
       SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kindPredicate(sql, kinds)}
+         ${from !== null ? sql`AND body->>'from' = ${from}` : sql``}
+         ${beforeTsPredicate}
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
        ORDER BY id DESC
        LIMIT ${limit + 1}
@@ -1090,25 +1145,45 @@ export class PgCoordLog implements CoordEventLog {
   }
 
   /** The line-surface sibling of {@link readEventsBoundedCursor} — same
-   *  `id < beforeId` cursor, plus the existing `sinceTs`/`planSlug` pushdowns. */
+   *  `id < beforeId` cursor, plus the existing time/plan pushdowns. */
   async readLinesBoundedCursor(
     surface: LineSurface,
-    opts: { limit: number; sinceTs?: string; planSlug?: string; kinds?: string[]; beforeId?: number },
+    opts: {
+      limit: number;
+      sinceTs?: string;
+      planSlug?: string;
+      kinds?: string[];
+      from?: string;
+      beforeId?: number;
+      beforeTs?: string;
+      beforeMsgId?: string;
+    },
   ): Promise<CoordLogCursorPage> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     const limit = Math.max(1, Math.min(Math.floor(opts.limit) || 1, 1000));
     const kinds = opts.kinds?.filter((k) => typeof k === 'string' && k.trim());
+    const from = typeof opts.from === 'string' ? opts.from : null;
     const sinceTs = typeof opts.sinceTs === 'string' && opts.sinceTs ? opts.sinceTs : null;
     const planSlug = typeof opts.planSlug === 'string' && opts.planSlug ? opts.planSlug : null;
     const beforeId =
       typeof opts.beforeId === 'number' && Number.isFinite(opts.beforeId) ? Math.floor(opts.beforeId) : null;
+    const beforeTs = typeof opts.beforeTs === 'string' && opts.beforeTs ? opts.beforeTs : null;
+    const beforeTsPredicate = beforeTs
+      ? opts.beforeMsgId
+        // Line-surface column ts is stamped from body.ts on write; keep the
+        // boundary bucket for the caller's exact composite msg_id tie-break.
+        ? sql`AND ts <= ${beforeTs}::timestamptz`
+        : sql`AND ts < ${beforeTs}::timestamptz`
+      : sql``;
     const rows = await sql<{ id: number; body: unknown; ts: Date; msg_id: string }[]>`
       SELECT id, body, ts, msg_id FROM harness_shared.coord_event_log
        WHERE workspace_id = ${this.resolveWs()} AND surface = ${surface}
          ${kindPredicate(sql, kinds)}
+         ${from !== null ? sql`AND body->>'from' = ${from}` : sql``}
          ${sinceTs ? sql`AND body->>'ts' > ${sinceTs}` : sql``}
          ${planSlug ? sql`AND body->>'plan_slug' = ${planSlug}` : sql``}
+         ${beforeTsPredicate}
          ${beforeId !== null ? sql`AND id < ${beforeId}` : sql``}
        ORDER BY id DESC
        LIMIT ${limit + 1}

@@ -50,13 +50,21 @@ const measurement = {
 };
 
 describe('repo-file evidence mutation-probe fence', () => {
+  it('refuses globbed fixture SQL while its owning repository has a mutation-probe lock', async () => {
+    writeFileSync(join(nestedRoot, 'input.sql'), 'SELECT 1;\n');
+    lockState.activeLocks = [{ coordinationDomain: resolve(nestedRoot), path: 'input.sql', intent: 'mutation probe' }];
+    await expect(measureRepoFilesEvidenceDetailedAtRoot(root, {
+      ...measurement, fixtureGlobs: ['libs/papercusp/*.sql'],
+    })).rejects.toThrow(`repo_measurement_mutation_probe_active:${resolve(nestedRoot)}:input.sql`);
+  });
+
   it('measures nested-repository files when no mutation-probe lock is active', async () => {
     const result = await measureRepoFilesEvidenceDetailedAtRoot(root, measurement);
 
     expect(result.files.map((file) => file.path)).toEqual(['libs/papercusp/source.ts']);
     expect(lockState.calls).toEqual([
-      { coordinationDomain: resolve(nestedRoot), paths: ['source.ts'] },
-      { coordinationDomain: resolve(nestedRoot), paths: ['source.ts'] },
+      { coordinationDomain: resolve(nestedRoot), paths: ['source.ts'], includeWaiting: false },
+      { coordinationDomain: resolve(nestedRoot), paths: ['source.ts'], includeWaiting: false },
     ]);
   });
 

@@ -4,25 +4,24 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: A script that imports the agent-tools registry never exits — call process.exit
-description: Importing '@papercusp/operator-core/lib/agent-tools/index.ts' (the defineTool registry barrel) opens keep-alive handles, so a one-shot tsx script hangs after finishing instead of exiting — and a spawnSync caller blocks forever. End such scripts with an explicit process.exit.
+title: "A script that imports the agent-tools registry never exits — call process.exit"
+description: "Importing '@papercusp/operator-core/lib/agent-tools/index.ts' (the defineTool registry barrel) opens keep-alive handles, so a one-shot tsx script hangs after finishing instead of exiting — and a spawnSync caller blocks forever. End such scripts with an explicit process.exit."
+type: Convention
 discovered: 2026-06-05
-tags: [scripts, agent-tools, tsx, process-exit, spawnsync, gotcha]
+tags: ["scripts", "agent-tools", "tsx", "process-exit", "spawnsync", "gotcha"]
 status: active
 documents:
-  - scripts/gen-tool-catalog.ts
-  - scripts/gen-doc-tool-catalog.ts
-  - scripts/gen-doc-plans-index.ts
-  - scripts/gen-doc-projections.ts
-  - packages/operator-core/lib/agent-tools/index.ts
-  - packages/agent-mcp/dist/index.d.ts
+  - "scripts/gen-tool-catalog.ts"
+  - "scripts/gen-doc-tool-catalog.ts"
+  - "scripts/gen-doc-plans-index.ts"
+  - "scripts/gen-doc-projections.ts"
+  - "packages/operator-core/lib/agent-tools/index.ts"
 plans:
-  - starlight-projection-generators-2026-06-05
-  - docs-and-memory-as-projections-2026-06-05
+  - "starlight-projection-generators-2026-06-05"
+  - "docs-and-memory-as-projections-2026-06-05"
 normative: true
 governs:
-  - writing a script that imports the agent-tools registry
-type: Convention
+  - "writing a script that imports the agent-tools registry"
 generated:
   by: agent
   at: 2026-06-05

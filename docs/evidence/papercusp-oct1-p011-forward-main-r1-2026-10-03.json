@@ -1,0 +1,4025 @@
+{
+  "schemaVersion": 1,
+  "plane": "live-current-build-operator-api",
+  "incomplete": false,
+  "pid": 3051078,
+  "counterPid": 3051078,
+  "buildSha": "46ab00ca41",
+  "startedAt": "2026-10-03T04:22:53.326Z",
+  "samples": [
+    {
+      "label": "idle-0-start",
+      "at": 1791001374217,
+      "pid": 3051078,
+      "uptime": 362.885030118,
+      "memory": {
+        "rss": 939491328,
+        "heapTotal": 717651968,
+        "heapUsed": 607043472,
+        "external": 102238300,
+        "arrayBuffers": 19364451
+      },
+      "heap": {
+        "total_heap_size": 717651968,
+        "total_heap_size_executable": 13975552,
+        "total_physical_size": 717516800,
+        "total_available_size": 137028458192,
+        "used_heap_size": 607043712,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 119025544,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1192008,
+        "used_global_handles_size": 955392,
+        "external_memory": 102238300,
+        "total_allocated_bytes": 5306278112
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 126615552,
+          "space_used_size": 49666304,
+          "space_available_size": 17438464,
+          "physical_space_size": 126480384
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 465043456,
+          "space_used_size": 438320368,
+          "space_available_size": 25574040,
+          "physical_space_size": 465043456
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 13631488,
+          "space_used_size": 12417024,
+          "space_available_size": 1212800,
+          "physical_space_size": 13631488
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 17825792,
+          "space_used_size": 14640088,
+          "space_available_size": 3159960,
+          "physical_space_size": 17825792
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 8683520,
+          "space_used_size": 8668632,
+          "space_available_size": 58440232,
+          "physical_space_size": 8683520
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 81088512,
+          "space_used_size": 80857544,
+          "space_available_size": 0,
+          "physical_space_size": 81088512
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 344064,
+          "space_used_size": 340288,
+          "space_available_size": 0,
+          "physical_space_size": 344064
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 4419584,
+          "space_used_size": 2138064,
+          "space_available_size": 0,
+          "physical_space_size": 4419584
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 16876970,
+        "bytecode_and_metadata_size": 7395472,
+        "external_script_source_size": 79988243,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 925145088,
+        "rssBytes": 1008541696,
+        "anonymousBytes": 919408640
+      },
+      "counterOs": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 925145088,
+        "rssBytes": 1008541696,
+        "anonymousBytes": 919408640
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": null,
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 3111252,
+          "startTicks": "4854034",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eda80047ac2ee3c9ff689bed77a5ea82dce0f039575d70ba0fc31d01195da877",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9939968,
+          "rssBytes": 50139136,
+          "anonymousBytes": 9723904
+        },
+        {
+          "pid": 3111272,
+          "startTicks": "4854043",
+          "parentPid": 3111252,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e3cc2e6441722ae49bc99091eb3f1d4f737b0b053060f5595375b661857420a0",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 341314560,
+          "rssBytes": 404332544,
+          "anonymousBytes": 339927040
+        },
+        {
+          "pid": 3237476,
+          "startTicks": "4872154",
+          "parentPid": 3051078,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2835456,
+          "rssBytes": 8761344,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237895,
+          "startTicks": "4872199",
+          "parentPid": 3237476,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2831360,
+          "rssBytes": 6950912,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237897,
+          "startTicks": "4872199",
+          "parentPid": 3237895,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "771add40c49bd0e1abd76c4a6e604b081cb49c5effd862b959e6a485109e3c1f",
+            "script": "/home/builduser/.papercusp/bin/psu",
+            "esbuildService": false
+          },
+          "pssBytes": 378880,
+          "rssBytes": 3772416,
+          "anonymousBytes": 372736
+        },
+        {
+          "pid": 3237900,
+          "startTicks": "4872200",
+          "parentPid": 3237897,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e60b453a853a6e19591618fff212c730d498cb2763b4d4925e2c66784c001625",
+            "script": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 59643904,
+          "rssBytes": 118124544,
+          "anonymousBytes": 59301888
+        },
+        {
+          "pid": 3243400,
+          "startTicks": "4873134",
+          "parentPid": 3237900,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "2b8fe94cc4332cd9e0093792031d03d8087db78d18b8313a5d2c61138bda9755",
+            "script": "/home/builduser/.local/node25/bin/codex",
+            "esbuildService": false
+          },
+          "pssBytes": 10338304,
+          "rssBytes": 50995200,
+          "anonymousBytes": 10121216
+        },
+        {
+          "pid": 3243471,
+          "startTicks": "4873139",
+          "parentPid": 3243400,
+          "executable": "/home/builduser/.local/node25/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+          "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+          "command": {
+            "sha256": "399abe608c0356f71da102868337cbb1d644cd756f0b28fadf813b8817fc5da7",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 111269888,
+          "rssBytes": 245452800,
+          "anonymousBytes": 108781568
+        },
+        {
+          "pid": 3269513,
+          "startTicks": "4877260",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eec881b90da011c5ed6827036d4bc09c826120d9dacdd8d2d0bc8441b62645be",
+            "script": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus",
+            "esbuildService": false
+          },
+          "pssBytes": 94190592,
+          "rssBytes": 147681280,
+          "anonymousBytes": 84520960
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 925145088
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9939968
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 341314560
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2835456
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2831360
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 378880
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 59643904
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 10338304
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139",
+            "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+            "role": "other-descendant",
+            "pssBytes": 111269888
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 94190592
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1557888000,
+        "appeared": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209"
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034"
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043"
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154"
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199"
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199"
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200"
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134"
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139"
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260"
+          }
+        ],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 1217.2564920000002
+    },
+    {
+      "label": "idle-0-end",
+      "at": 1791001377439,
+      "pid": 3051078,
+      "uptime": 366.106883476,
+      "memory": {
+        "rss": 939491328,
+        "heapTotal": 717651968,
+        "heapUsed": 608196776,
+        "external": 102346775,
+        "arrayBuffers": 19472926
+      },
+      "heap": {
+        "total_heap_size": 717651968,
+        "total_heap_size_executable": 13975552,
+        "total_physical_size": 717516800,
+        "total_available_size": 137027304880,
+        "used_heap_size": 608197016,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 119025544,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1192008,
+        "used_global_handles_size": 955616,
+        "external_memory": 102346775,
+        "total_allocated_bytes": 5308157936
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 126615552,
+          "space_used_size": 50792152,
+          "space_available_size": 16312616,
+          "physical_space_size": 126480384
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 465043456,
+          "space_used_size": 438344296,
+          "space_available_size": 25550104,
+          "physical_space_size": 465043456
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 13631488,
+          "space_used_size": 12417024,
+          "space_available_size": 1212800,
+          "physical_space_size": 13631488
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 17825792,
+          "space_used_size": 14640384,
+          "space_available_size": 3159664,
+          "physical_space_size": 17825792
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 8683520,
+          "space_used_size": 8668632,
+          "space_available_size": 58440232,
+          "physical_space_size": 8683520
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 81088512,
+          "space_used_size": 80857544,
+          "space_available_size": 0,
+          "physical_space_size": 81088512
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 344064,
+          "space_used_size": 340288,
+          "space_available_size": 0,
+          "physical_space_size": 344064
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 4419584,
+          "space_used_size": 2138064,
+          "space_available_size": 0,
+          "physical_space_size": 4419584
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 16876970,
+        "bytecode_and_metadata_size": 7395472,
+        "external_script_source_size": 79988243,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 925143040,
+        "rssBytes": 1008541696,
+        "anonymousBytes": 919408640
+      },
+      "counterOs": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 925143040,
+        "rssBytes": 1008541696,
+        "anonymousBytes": 919408640
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": null,
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 3111252,
+          "startTicks": "4854034",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eda80047ac2ee3c9ff689bed77a5ea82dce0f039575d70ba0fc31d01195da877",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9938944,
+          "rssBytes": 50139136,
+          "anonymousBytes": 9723904
+        },
+        {
+          "pid": 3111272,
+          "startTicks": "4854043",
+          "parentPid": 3111252,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e3cc2e6441722ae49bc99091eb3f1d4f737b0b053060f5595375b661857420a0",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 341314560,
+          "rssBytes": 404332544,
+          "anonymousBytes": 339927040
+        },
+        {
+          "pid": 3237476,
+          "startTicks": "4872154",
+          "parentPid": 3051078,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2835456,
+          "rssBytes": 8761344,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237895,
+          "startTicks": "4872199",
+          "parentPid": 3237476,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2831360,
+          "rssBytes": 6950912,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237897,
+          "startTicks": "4872199",
+          "parentPid": 3237895,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "771add40c49bd0e1abd76c4a6e604b081cb49c5effd862b959e6a485109e3c1f",
+            "script": "/home/builduser/.papercusp/bin/psu",
+            "esbuildService": false
+          },
+          "pssBytes": 378880,
+          "rssBytes": 3772416,
+          "anonymousBytes": 372736
+        },
+        {
+          "pid": 3237900,
+          "startTicks": "4872200",
+          "parentPid": 3237897,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e60b453a853a6e19591618fff212c730d498cb2763b4d4925e2c66784c001625",
+            "script": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 59641856,
+          "rssBytes": 118124544,
+          "anonymousBytes": 59301888
+        },
+        {
+          "pid": 3243400,
+          "startTicks": "4873134",
+          "parentPid": 3237900,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "2b8fe94cc4332cd9e0093792031d03d8087db78d18b8313a5d2c61138bda9755",
+            "script": "/home/builduser/.local/node25/bin/codex",
+            "esbuildService": false
+          },
+          "pssBytes": 10338304,
+          "rssBytes": 50995200,
+          "anonymousBytes": 10121216
+        },
+        {
+          "pid": 3243471,
+          "startTicks": "4873139",
+          "parentPid": 3243400,
+          "executable": "/home/builduser/.local/node25/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+          "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+          "command": {
+            "sha256": "399abe608c0356f71da102868337cbb1d644cd756f0b28fadf813b8817fc5da7",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 111342592,
+          "rssBytes": 245526528,
+          "anonymousBytes": 108855296
+        },
+        {
+          "pid": 3269513,
+          "startTicks": "4877260",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eec881b90da011c5ed6827036d4bc09c826120d9dacdd8d2d0bc8441b62645be",
+            "script": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus",
+            "esbuildService": false
+          },
+          "pssBytes": 94189568,
+          "rssBytes": 147681280,
+          "anonymousBytes": 84520960
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 925143040
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9938944
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 341314560
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2835456
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2831360
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 378880
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 59641856
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 10338304
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139",
+            "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+            "role": "other-descendant",
+            "pssBytes": 111342592
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 94189568
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1557954560,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 147.387874
+    },
+    {
+      "label": "ordinary-0-end",
+      "at": 1791001377972,
+      "pid": 3051078,
+      "uptime": 366.639390494,
+      "memory": {
+        "rss": 934100992,
+        "heapTotal": 708968448,
+        "heapUsed": 561012336,
+        "external": 91698939,
+        "arrayBuffers": 8825090
+      },
+      "heap": {
+        "total_heap_size": 708968448,
+        "total_heap_size_executable": 13975552,
+        "total_physical_size": 708833280,
+        "total_available_size": 137083172664,
+        "used_heap_size": 561012576,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 119025544,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1192008,
+        "used_global_handles_size": 950464,
+        "external_memory": 91698939,
+        "total_allocated_bytes": 5315505072
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 126615552,
+          "space_used_size": 11937856,
+          "space_available_size": 55166912,
+          "physical_space_size": 126480384
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 465043456,
+          "space_used_size": 438575824,
+          "space_available_size": 25318416,
+          "physical_space_size": 465043456
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 13631488,
+          "space_used_size": 12460800,
+          "space_available_size": 1169024,
+          "physical_space_size": 13631488
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 17825792,
+          "space_used_size": 14703224,
+          "space_available_size": 3096808,
+          "physical_space_size": 17825792
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 67108864,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 81088512,
+          "space_used_size": 80857544,
+          "space_available_size": 0,
+          "physical_space_size": 81088512
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 344064,
+          "space_used_size": 340288,
+          "space_available_size": 0,
+          "physical_space_size": 344064
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 4419584,
+          "space_used_size": 2138064,
+          "space_available_size": 0,
+          "physical_space_size": 4419584
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 16929502,
+        "bytecode_and_metadata_size": 7430576,
+        "external_script_source_size": 79988243,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 918234112,
+        "rssBytes": 1003593728,
+        "anonymousBytes": 912465920
+      },
+      "counterOs": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 918234112,
+        "rssBytes": 1003593728,
+        "anonymousBytes": 912465920
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": null,
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 3111252,
+          "startTicks": "4854034",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eda80047ac2ee3c9ff689bed77a5ea82dce0f039575d70ba0fc31d01195da877",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9937920,
+          "rssBytes": 50139136,
+          "anonymousBytes": 9723904
+        },
+        {
+          "pid": 3111272,
+          "startTicks": "4854043",
+          "parentPid": 3111252,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e3cc2e6441722ae49bc99091eb3f1d4f737b0b053060f5595375b661857420a0",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 341311488,
+          "rssBytes": 404332544,
+          "anonymousBytes": 339927040
+        },
+        {
+          "pid": 3237476,
+          "startTicks": "4872154",
+          "parentPid": 3051078,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2835456,
+          "rssBytes": 8761344,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237895,
+          "startTicks": "4872199",
+          "parentPid": 3237476,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2831360,
+          "rssBytes": 6950912,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237897,
+          "startTicks": "4872199",
+          "parentPid": 3237895,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "771add40c49bd0e1abd76c4a6e604b081cb49c5effd862b959e6a485109e3c1f",
+            "script": "/home/builduser/.papercusp/bin/psu",
+            "esbuildService": false
+          },
+          "pssBytes": 378880,
+          "rssBytes": 3772416,
+          "anonymousBytes": 372736
+        },
+        {
+          "pid": 3237900,
+          "startTicks": "4872200",
+          "parentPid": 3237897,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e60b453a853a6e19591618fff212c730d498cb2763b4d4925e2c66784c001625",
+            "script": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 59639808,
+          "rssBytes": 118124544,
+          "anonymousBytes": 59301888
+        },
+        {
+          "pid": 3243400,
+          "startTicks": "4873134",
+          "parentPid": 3237900,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "2b8fe94cc4332cd9e0093792031d03d8087db78d18b8313a5d2c61138bda9755",
+            "script": "/home/builduser/.local/node25/bin/codex",
+            "esbuildService": false
+          },
+          "pssBytes": 10336256,
+          "rssBytes": 50995200,
+          "anonymousBytes": 10121216
+        },
+        {
+          "pid": 3243471,
+          "startTicks": "4873139",
+          "parentPid": 3243400,
+          "executable": "/home/builduser/.local/node25/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+          "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+          "command": {
+            "sha256": "399abe608c0356f71da102868337cbb1d644cd756f0b28fadf813b8817fc5da7",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 111342592,
+          "rssBytes": 245526528,
+          "anonymousBytes": 108855296
+        },
+        {
+          "pid": 3269513,
+          "startTicks": "4877260",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eec881b90da011c5ed6827036d4bc09c826120d9dacdd8d2d0bc8441b62645be",
+            "script": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus",
+            "esbuildService": false
+          },
+          "pssBytes": 94184448,
+          "rssBytes": 147681280,
+          "anonymousBytes": 84520960
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 918234112
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9937920
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 341311488
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2835456
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2831360
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 378880
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 59639808
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 10336256
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139",
+            "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+            "role": "other-descendant",
+            "pssBytes": 111342592
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 94184448
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1551032320,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 154.35953700000027
+    },
+    {
+      "label": "idle-1-start",
+      "at": 1791001378256,
+      "pid": 3051078,
+      "uptime": 366.923183703,
+      "memory": {
+        "rss": 934100992,
+        "heapTotal": 708968448,
+        "heapUsed": 561288408,
+        "external": 91708124,
+        "arrayBuffers": 8834275
+      },
+      "heap": {
+        "total_heap_size": 708968448,
+        "total_heap_size_executable": 13975552,
+        "total_physical_size": 708833280,
+        "total_available_size": 137082896592,
+        "used_heap_size": 561288648,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 119025544,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1192008,
+        "used_global_handles_size": 950464,
+        "external_memory": 91708124,
+        "total_allocated_bytes": 5317424160
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 126615552,
+          "space_used_size": 12205992,
+          "space_available_size": 54898776,
+          "physical_space_size": 126480384
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 465043456,
+          "space_used_size": 438583760,
+          "space_available_size": 25310480,
+          "physical_space_size": 465043456
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 13631488,
+          "space_used_size": 12460800,
+          "space_available_size": 1169024,
+          "physical_space_size": 13631488
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 17825792,
+          "space_used_size": 14703224,
+          "space_available_size": 3096808,
+          "physical_space_size": 17825792
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 67108864,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 81088512,
+          "space_used_size": 80857544,
+          "space_available_size": 0,
+          "physical_space_size": 81088512
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 344064,
+          "space_used_size": 340288,
+          "space_available_size": 0,
+          "physical_space_size": 344064
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 4419584,
+          "space_used_size": 2138064,
+          "space_available_size": 0,
+          "physical_space_size": 4419584
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 16929502,
+        "bytecode_and_metadata_size": 7430576,
+        "external_script_source_size": 79988243,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 918233088,
+        "rssBytes": 1003593728,
+        "anonymousBytes": 912465920
+      },
+      "counterOs": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 918233088,
+        "rssBytes": 1003593728,
+        "anonymousBytes": 912465920
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": null,
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 3111252,
+          "startTicks": "4854034",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eda80047ac2ee3c9ff689bed77a5ea82dce0f039575d70ba0fc31d01195da877",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9936896,
+          "rssBytes": 50139136,
+          "anonymousBytes": 9723904
+        },
+        {
+          "pid": 3111272,
+          "startTicks": "4854043",
+          "parentPid": 3111252,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e3cc2e6441722ae49bc99091eb3f1d4f737b0b053060f5595375b661857420a0",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 341310464,
+          "rssBytes": 404332544,
+          "anonymousBytes": 339927040
+        },
+        {
+          "pid": 3237476,
+          "startTicks": "4872154",
+          "parentPid": 3051078,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2835456,
+          "rssBytes": 8761344,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237895,
+          "startTicks": "4872199",
+          "parentPid": 3237476,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2831360,
+          "rssBytes": 6950912,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237897,
+          "startTicks": "4872199",
+          "parentPid": 3237895,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "771add40c49bd0e1abd76c4a6e604b081cb49c5effd862b959e6a485109e3c1f",
+            "script": "/home/builduser/.papercusp/bin/psu",
+            "esbuildService": false
+          },
+          "pssBytes": 378880,
+          "rssBytes": 3772416,
+          "anonymousBytes": 372736
+        },
+        {
+          "pid": 3237900,
+          "startTicks": "4872200",
+          "parentPid": 3237897,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e60b453a853a6e19591618fff212c730d498cb2763b4d4925e2c66784c001625",
+            "script": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 59638784,
+          "rssBytes": 118124544,
+          "anonymousBytes": 59301888
+        },
+        {
+          "pid": 3243400,
+          "startTicks": "4873134",
+          "parentPid": 3237900,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "2b8fe94cc4332cd9e0093792031d03d8087db78d18b8313a5d2c61138bda9755",
+            "script": "/home/builduser/.local/node25/bin/codex",
+            "esbuildService": false
+          },
+          "pssBytes": 10335232,
+          "rssBytes": 50995200,
+          "anonymousBytes": 10121216
+        },
+        {
+          "pid": 3243471,
+          "startTicks": "4873139",
+          "parentPid": 3243400,
+          "executable": "/home/builduser/.local/node25/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+          "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+          "command": {
+            "sha256": "399abe608c0356f71da102868337cbb1d644cd756f0b28fadf813b8817fc5da7",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 111342592,
+          "rssBytes": 245526528,
+          "anonymousBytes": 108855296
+        },
+        {
+          "pid": 3269513,
+          "startTicks": "4877260",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eec881b90da011c5ed6827036d4bc09c826120d9dacdd8d2d0bc8441b62645be",
+            "script": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus",
+            "esbuildService": false
+          },
+          "pssBytes": 94184448,
+          "rssBytes": 147681280,
+          "anonymousBytes": 84520960
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 918233088
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9936896
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 341310464
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2835456
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2831360
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 378880
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 59638784
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 10335232
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139",
+            "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+            "role": "other-descendant",
+            "pssBytes": 111342592
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 94184448
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1551027200,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 163.49418700000024
+    },
+    {
+      "label": "idle-1-end",
+      "at": 1791001380431,
+      "pid": 3051078,
+      "uptime": 369.098173007,
+      "memory": {
+        "rss": 947732480,
+        "heapTotal": 722890752,
+        "heapUsed": 608759064,
+        "external": 99374267,
+        "arrayBuffers": 14379164
+      },
+      "heap": {
+        "total_heap_size": 722890752,
+        "total_heap_size_executable": 14237696,
+        "total_physical_size": 722755584,
+        "total_available_size": 137022026288,
+        "used_heap_size": 608759304,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 119025544,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1192008,
+        "used_global_handles_size": 965696,
+        "external_memory": 99374267,
+        "total_allocated_bytes": 5370065024
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 126615552,
+          "space_used_size": 43517656,
+          "space_available_size": 23587112,
+          "physical_space_size": 126480384
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 465043456,
+          "space_used_size": 441075472,
+          "space_available_size": 22817200,
+          "physical_space_size": 465043456
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 13893632,
+          "space_used_size": 12573120,
+          "space_available_size": 1318816,
+          "physical_space_size": 13893632
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 18087936,
+          "space_used_size": 14890888,
+          "space_available_size": 3171256,
+          "physical_space_size": 18087936
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 13398016,
+          "space_used_size": 13367296,
+          "space_available_size": 53741568,
+          "physical_space_size": 13398016
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 81088512,
+          "space_used_size": 80857544,
+          "space_available_size": 0,
+          "physical_space_size": 81088512
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 344064,
+          "space_used_size": 340288,
+          "space_available_size": 0,
+          "physical_space_size": 344064
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 4419584,
+          "space_used_size": 2138064,
+          "space_available_size": 0,
+          "physical_space_size": 4419584
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 17078022,
+        "bytecode_and_metadata_size": 7525192,
+        "external_script_source_size": 79988243,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 931887104,
+        "rssBytes": 1017245696,
+        "anonymousBytes": 926117888
+      },
+      "counterOs": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 931887104,
+        "rssBytes": 1017245696,
+        "anonymousBytes": 926117888
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": null,
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 3111252,
+          "startTicks": "4854034",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eda80047ac2ee3c9ff689bed77a5ea82dce0f039575d70ba0fc31d01195da877",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9938944,
+          "rssBytes": 50139136,
+          "anonymousBytes": 9723904
+        },
+        {
+          "pid": 3111272,
+          "startTicks": "4854043",
+          "parentPid": 3111252,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e3cc2e6441722ae49bc99091eb3f1d4f737b0b053060f5595375b661857420a0",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 341312512,
+          "rssBytes": 404332544,
+          "anonymousBytes": 339927040
+        },
+        {
+          "pid": 3237476,
+          "startTicks": "4872154",
+          "parentPid": 3051078,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2835456,
+          "rssBytes": 8761344,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237895,
+          "startTicks": "4872199",
+          "parentPid": 3237476,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2831360,
+          "rssBytes": 6950912,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237897,
+          "startTicks": "4872199",
+          "parentPid": 3237895,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "771add40c49bd0e1abd76c4a6e604b081cb49c5effd862b959e6a485109e3c1f",
+            "script": "/home/builduser/.papercusp/bin/psu",
+            "esbuildService": false
+          },
+          "pssBytes": 378880,
+          "rssBytes": 3772416,
+          "anonymousBytes": 372736
+        },
+        {
+          "pid": 3237900,
+          "startTicks": "4872200",
+          "parentPid": 3237897,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e60b453a853a6e19591618fff212c730d498cb2763b4d4925e2c66784c001625",
+            "script": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 59650048,
+          "rssBytes": 118132736,
+          "anonymousBytes": 59310080
+        },
+        {
+          "pid": 3243400,
+          "startTicks": "4873134",
+          "parentPid": 3237900,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "2b8fe94cc4332cd9e0093792031d03d8087db78d18b8313a5d2c61138bda9755",
+            "script": "/home/builduser/.local/node25/bin/codex",
+            "esbuildService": false
+          },
+          "pssBytes": 10337280,
+          "rssBytes": 50995200,
+          "anonymousBytes": 10121216
+        },
+        {
+          "pid": 3243471,
+          "startTicks": "4873139",
+          "parentPid": 3243400,
+          "executable": "/home/builduser/.local/node25/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+          "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+          "command": {
+            "sha256": "399abe608c0356f71da102868337cbb1d644cd756f0b28fadf813b8817fc5da7",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 111047680,
+          "rssBytes": 245231616,
+          "anonymousBytes": 108560384
+        },
+        {
+          "pid": 3269513,
+          "startTicks": "4877260",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eec881b90da011c5ed6827036d4bc09c826120d9dacdd8d2d0bc8441b62645be",
+            "script": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus",
+            "esbuildService": false
+          },
+          "pssBytes": 94185472,
+          "rssBytes": 147681280,
+          "anonymousBytes": 84520960
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 931887104
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9938944
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 341312512
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2835456
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2831360
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 378880
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 59650048
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 10337280
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139",
+            "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+            "role": "other-descendant",
+            "pssBytes": 111047680
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 94185472
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1564404736,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 152.55885800000033
+    },
+    {
+      "label": "ordinary-1-end",
+      "at": 1791001380680,
+      "pid": 3051078,
+      "uptime": 369.347392321,
+      "memory": {
+        "rss": 947732480,
+        "heapTotal": 722890752,
+        "heapUsed": 613049664,
+        "external": 100568253,
+        "arrayBuffers": 15573150
+      },
+      "heap": {
+        "total_heap_size": 722890752,
+        "total_heap_size_executable": 14237696,
+        "total_physical_size": 722755584,
+        "total_available_size": 137017735672,
+        "used_heap_size": 613049904,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 119025544,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1192008,
+        "used_global_handles_size": 968064,
+        "external_memory": 100568253,
+        "total_allocated_bytes": 5381021696
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 126615552,
+          "space_used_size": 47568168,
+          "space_available_size": 19536600,
+          "physical_space_size": 126480384
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 465043456,
+          "space_used_size": 441202520,
+          "space_available_size": 22690136,
+          "physical_space_size": 465043456
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 13893632,
+          "space_used_size": 12650688,
+          "space_available_size": 1241248,
+          "physical_space_size": 13893632
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 18087936,
+          "space_used_size": 14926360,
+          "space_available_size": 3135784,
+          "physical_space_size": 18087936
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 13398016,
+          "space_used_size": 13367296,
+          "space_available_size": 53741568,
+          "physical_space_size": 13398016
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 81088512,
+          "space_used_size": 80857544,
+          "space_available_size": 0,
+          "physical_space_size": 81088512
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 344064,
+          "space_used_size": 340288,
+          "space_available_size": 0,
+          "physical_space_size": 344064
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 4419584,
+          "space_used_size": 2138064,
+          "space_available_size": 0,
+          "physical_space_size": 4419584
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 17171434,
+        "bytecode_and_metadata_size": 7525192,
+        "external_script_source_size": 79988243,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 931233792,
+        "rssBytes": 1017352192,
+        "anonymousBytes": 926224384
+      },
+      "counterOs": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 931233792,
+        "rssBytes": 1017352192,
+        "anonymousBytes": 926224384
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": null,
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 3111252,
+          "startTicks": "4854034",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eda80047ac2ee3c9ff689bed77a5ea82dce0f039575d70ba0fc31d01195da877",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9937920,
+          "rssBytes": 50139136,
+          "anonymousBytes": 9723904
+        },
+        {
+          "pid": 3111272,
+          "startTicks": "4854043",
+          "parentPid": 3111252,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e3cc2e6441722ae49bc99091eb3f1d4f737b0b053060f5595375b661857420a0",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 341310464,
+          "rssBytes": 404332544,
+          "anonymousBytes": 339927040
+        },
+        {
+          "pid": 3237476,
+          "startTicks": "4872154",
+          "parentPid": 3051078,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2835456,
+          "rssBytes": 8761344,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237895,
+          "startTicks": "4872199",
+          "parentPid": 3237476,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2831360,
+          "rssBytes": 6950912,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237897,
+          "startTicks": "4872199",
+          "parentPid": 3237895,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "771add40c49bd0e1abd76c4a6e604b081cb49c5effd862b959e6a485109e3c1f",
+            "script": "/home/builduser/.papercusp/bin/psu",
+            "esbuildService": false
+          },
+          "pssBytes": 378880,
+          "rssBytes": 3772416,
+          "anonymousBytes": 372736
+        },
+        {
+          "pid": 3237900,
+          "startTicks": "4872200",
+          "parentPid": 3237897,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e60b453a853a6e19591618fff212c730d498cb2763b4d4925e2c66784c001625",
+            "script": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 59648000,
+          "rssBytes": 118132736,
+          "anonymousBytes": 59310080
+        },
+        {
+          "pid": 3243400,
+          "startTicks": "4873134",
+          "parentPid": 3237900,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "2b8fe94cc4332cd9e0093792031d03d8087db78d18b8313a5d2c61138bda9755",
+            "script": "/home/builduser/.local/node25/bin/codex",
+            "esbuildService": false
+          },
+          "pssBytes": 10336256,
+          "rssBytes": 50995200,
+          "anonymousBytes": 10121216
+        },
+        {
+          "pid": 3243471,
+          "startTicks": "4873139",
+          "parentPid": 3243400,
+          "executable": "/home/builduser/.local/node25/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+          "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+          "command": {
+            "sha256": "399abe608c0356f71da102868337cbb1d644cd756f0b28fadf813b8817fc5da7",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 111047680,
+          "rssBytes": 245231616,
+          "anonymousBytes": 108560384
+        },
+        {
+          "pid": 3269513,
+          "startTicks": "4877260",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eec881b90da011c5ed6827036d4bc09c826120d9dacdd8d2d0bc8441b62645be",
+            "script": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus",
+            "esbuildService": false
+          },
+          "pssBytes": 94187520,
+          "rssBytes": 147681280,
+          "anonymousBytes": 84520960
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 931233792
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9937920
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 341310464
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2835456
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2831360
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 378880
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 59648000
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 10336256
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139",
+            "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+            "role": "other-descendant",
+            "pssBytes": 111047680
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 94187520
+          }
+        ],
+        "notChecked": [
+          {
+            "pid": 3316443,
+            "parentPid": 3051078,
+            "reason": "read-race-or-unavailable"
+          }
+        ],
+        "censusComplete": false,
+        "observedPssBytes": 1563747328,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 173.99092799999926
+    },
+    {
+      "label": "idle-2-start",
+      "at": 1791001381379,
+      "pid": 3051078,
+      "uptime": 370.046772447,
+      "memory": {
+        "rss": 947732480,
+        "heapTotal": 722890752,
+        "heapUsed": 616548872,
+        "external": 105023279,
+        "arrayBuffers": 18978280
+      },
+      "heap": {
+        "total_heap_size": 722890752,
+        "total_heap_size_executable": 14237696,
+        "total_physical_size": 722755584,
+        "total_available_size": 137014236448,
+        "used_heap_size": 616549112,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 119025544,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1192008,
+        "used_global_handles_size": 969056,
+        "external_memory": 105023279,
+        "total_allocated_bytes": 5387714984
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 126615552,
+          "space_used_size": 50860200,
+          "space_available_size": 16244568,
+          "physical_space_size": 126480384
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 465043456,
+          "space_used_size": 441344112,
+          "space_available_size": 22548528,
+          "physical_space_size": 465043456
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 13893632,
+          "space_used_size": 12689920,
+          "space_available_size": 1202016,
+          "physical_space_size": 13893632
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 18087936,
+          "space_used_size": 14952712,
+          "space_available_size": 3109432,
+          "physical_space_size": 18087936
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 13398016,
+          "space_used_size": 13367296,
+          "space_available_size": 53741568,
+          "physical_space_size": 13398016
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 81088512,
+          "space_used_size": 80857544,
+          "space_available_size": 0,
+          "physical_space_size": 81088512
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 344064,
+          "space_used_size": 340288,
+          "space_available_size": 0,
+          "physical_space_size": 344064
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 4419584,
+          "space_used_size": 2138064,
+          "space_available_size": 0,
+          "physical_space_size": 4419584
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 17222305,
+        "bytecode_and_metadata_size": 7526936,
+        "external_script_source_size": 79988243,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 932072448,
+        "rssBytes": 1017434112,
+        "anonymousBytes": 926306304
+      },
+      "counterOs": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 932072448,
+        "rssBytes": 1017434112,
+        "anonymousBytes": 926306304
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": null,
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 3111252,
+          "startTicks": "4854034",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eda80047ac2ee3c9ff689bed77a5ea82dce0f039575d70ba0fc31d01195da877",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9937920,
+          "rssBytes": 50139136,
+          "anonymousBytes": 9723904
+        },
+        {
+          "pid": 3111272,
+          "startTicks": "4854043",
+          "parentPid": 3111252,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e3cc2e6441722ae49bc99091eb3f1d4f737b0b053060f5595375b661857420a0",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 341310464,
+          "rssBytes": 404332544,
+          "anonymousBytes": 339927040
+        },
+        {
+          "pid": 3237476,
+          "startTicks": "4872154",
+          "parentPid": 3051078,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2835456,
+          "rssBytes": 8761344,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237895,
+          "startTicks": "4872199",
+          "parentPid": 3237476,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2831360,
+          "rssBytes": 6950912,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237897,
+          "startTicks": "4872199",
+          "parentPid": 3237895,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "771add40c49bd0e1abd76c4a6e604b081cb49c5effd862b959e6a485109e3c1f",
+            "script": "/home/builduser/.papercusp/bin/psu",
+            "esbuildService": false
+          },
+          "pssBytes": 378880,
+          "rssBytes": 3772416,
+          "anonymousBytes": 372736
+        },
+        {
+          "pid": 3237900,
+          "startTicks": "4872200",
+          "parentPid": 3237897,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e60b453a853a6e19591618fff212c730d498cb2763b4d4925e2c66784c001625",
+            "script": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 59648000,
+          "rssBytes": 118132736,
+          "anonymousBytes": 59310080
+        },
+        {
+          "pid": 3243400,
+          "startTicks": "4873134",
+          "parentPid": 3237900,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "2b8fe94cc4332cd9e0093792031d03d8087db78d18b8313a5d2c61138bda9755",
+            "script": "/home/builduser/.local/node25/bin/codex",
+            "esbuildService": false
+          },
+          "pssBytes": 10336256,
+          "rssBytes": 50995200,
+          "anonymousBytes": 10121216
+        },
+        {
+          "pid": 3243471,
+          "startTicks": "4873139",
+          "parentPid": 3243400,
+          "executable": "/home/builduser/.local/node25/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+          "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+          "command": {
+            "sha256": "399abe608c0356f71da102868337cbb1d644cd756f0b28fadf813b8817fc5da7",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 111226880,
+          "rssBytes": 245411840,
+          "anonymousBytes": 108740608
+        },
+        {
+          "pid": 3269513,
+          "startTicks": "4877260",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eec881b90da011c5ed6827036d4bc09c826120d9dacdd8d2d0bc8441b62645be",
+            "script": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus",
+            "esbuildService": false
+          },
+          "pssBytes": 94187520,
+          "rssBytes": 147681280,
+          "anonymousBytes": 84520960
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 932072448
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9937920
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 341310464
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2835456
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2831360
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 378880
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 59648000
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 10336256
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139",
+            "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+            "role": "other-descendant",
+            "pssBytes": 111226880
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 94187520
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1564765184,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 153.41927899999973
+    },
+    {
+      "label": "idle-2-end",
+      "at": 1791001383544,
+      "pid": 3051078,
+      "uptime": 372.211568408,
+      "memory": {
+        "rss": 947732480,
+        "heapTotal": 722890752,
+        "heapUsed": 617829256,
+        "external": 105072418,
+        "arrayBuffers": 19027419
+      },
+      "heap": {
+        "total_heap_size": 722890752,
+        "total_heap_size_executable": 14237696,
+        "total_physical_size": 722755584,
+        "total_available_size": 137012956064,
+        "used_heap_size": 617829496,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 119025544,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1192008,
+        "used_global_handles_size": 969312,
+        "external_memory": 105072418,
+        "total_allocated_bytes": 5392251528
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 126615552,
+          "space_used_size": 52114744,
+          "space_available_size": 14990024,
+          "physical_space_size": 126480384
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 465043456,
+          "space_used_size": 441369944,
+          "space_available_size": 22522696,
+          "physical_space_size": 465043456
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 13893632,
+          "space_used_size": 12689920,
+          "space_available_size": 1202016,
+          "physical_space_size": 13893632
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 18087936,
+          "space_used_size": 14953272,
+          "space_available_size": 3108872,
+          "physical_space_size": 18087936
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 13398016,
+          "space_used_size": 13367296,
+          "space_available_size": 53741568,
+          "physical_space_size": 13398016
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 81088512,
+          "space_used_size": 80857544,
+          "space_available_size": 0,
+          "physical_space_size": 81088512
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 344064,
+          "space_used_size": 340288,
+          "space_available_size": 0,
+          "physical_space_size": 344064
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 4419584,
+          "space_used_size": 2138064,
+          "space_available_size": 0,
+          "physical_space_size": 4419584
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 17222305,
+        "bytecode_and_metadata_size": 7527392,
+        "external_script_source_size": 79988243,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 932062208,
+        "rssBytes": 1017434112,
+        "anonymousBytes": 926306304
+      },
+      "counterOs": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 932062208,
+        "rssBytes": 1017434112,
+        "anonymousBytes": 926306304
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": null,
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 3111252,
+          "startTicks": "4854034",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eda80047ac2ee3c9ff689bed77a5ea82dce0f039575d70ba0fc31d01195da877",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9933824,
+          "rssBytes": 50139136,
+          "anonymousBytes": 9723904
+        },
+        {
+          "pid": 3111272,
+          "startTicks": "4854043",
+          "parentPid": 3111252,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e3cc2e6441722ae49bc99091eb3f1d4f737b0b053060f5595375b661857420a0",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 341301248,
+          "rssBytes": 404332544,
+          "anonymousBytes": 339927040
+        },
+        {
+          "pid": 3237476,
+          "startTicks": "4872154",
+          "parentPid": 3051078,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2834432,
+          "rssBytes": 8761344,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237895,
+          "startTicks": "4872199",
+          "parentPid": 3237476,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2831360,
+          "rssBytes": 6950912,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237897,
+          "startTicks": "4872199",
+          "parentPid": 3237895,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "771add40c49bd0e1abd76c4a6e604b081cb49c5effd862b959e6a485109e3c1f",
+            "script": "/home/builduser/.papercusp/bin/psu",
+            "esbuildService": false
+          },
+          "pssBytes": 378880,
+          "rssBytes": 3772416,
+          "anonymousBytes": 372736
+        },
+        {
+          "pid": 3237900,
+          "startTicks": "4872200",
+          "parentPid": 3237897,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e60b453a853a6e19591618fff212c730d498cb2763b4d4925e2c66784c001625",
+            "script": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 59642880,
+          "rssBytes": 118132736,
+          "anonymousBytes": 59310080
+        },
+        {
+          "pid": 3243400,
+          "startTicks": "4873134",
+          "parentPid": 3237900,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "2b8fe94cc4332cd9e0093792031d03d8087db78d18b8313a5d2c61138bda9755",
+            "script": "/home/builduser/.local/node25/bin/codex",
+            "esbuildService": false
+          },
+          "pssBytes": 10333184,
+          "rssBytes": 50995200,
+          "anonymousBytes": 10121216
+        },
+        {
+          "pid": 3243471,
+          "startTicks": "4873139",
+          "parentPid": 3243400,
+          "executable": "/home/builduser/.local/node25/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+          "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+          "command": {
+            "sha256": "399abe608c0356f71da102868337cbb1d644cd756f0b28fadf813b8817fc5da7",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 111816704,
+          "rssBytes": 246001664,
+          "anonymousBytes": 109330432
+        },
+        {
+          "pid": 3269513,
+          "startTicks": "4877260",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eec881b90da011c5ed6827036d4bc09c826120d9dacdd8d2d0bc8441b62645be",
+            "script": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus",
+            "esbuildService": false
+          },
+          "pssBytes": 94183424,
+          "rssBytes": 147681280,
+          "anonymousBytes": 84520960
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 932062208
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9933824
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 341301248
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2834432
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2831360
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 378880
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 59642880
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 10333184
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139",
+            "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+            "role": "other-descendant",
+            "pssBytes": 111816704
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 94183424
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1565318144,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 205.4845889999997
+    },
+    {
+      "label": "ordinary-2-end",
+      "at": 1791001384173,
+      "pid": 3051078,
+      "uptime": 372.840558875,
+      "memory": {
+        "rss": 942448640,
+        "heapTotal": 718667776,
+        "heapUsed": 578123616,
+        "external": 95362184,
+        "arrayBuffers": 9317185
+      },
+      "heap": {
+        "total_heap_size": 718667776,
+        "total_heap_size_executable": 14237696,
+        "total_physical_size": 718532608,
+        "total_available_size": 137065978784,
+        "used_heap_size": 578123856,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 119025544,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1192008,
+        "used_global_handles_size": 962656,
+        "external_memory": 95362184,
+        "total_allocated_bytes": 5400140776
+      },
+      "heapSpaces": [
+        {
+          "space_name": "read_only_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_space",
+          "space_size": 126615552,
+          "space_used_size": 14609384,
+          "space_available_size": 52495384,
+          "physical_space_size": 126480384
+        },
+        {
+          "space_name": "old_space",
+          "space_size": 473432064,
+          "space_used_size": 451730344,
+          "space_available_size": 20477744,
+          "physical_space_size": 473432064
+        },
+        {
+          "space_name": "code_space",
+          "space_size": 13893632,
+          "space_used_size": 12704704,
+          "space_available_size": 1187232,
+          "physical_space_size": 13893632
+        },
+        {
+          "space_name": "shared_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_space",
+          "space_size": 18087936,
+          "space_used_size": 14965704,
+          "space_available_size": 3096440,
+          "physical_space_size": 18087936
+        },
+        {
+          "space_name": "shared_trusted_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "new_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 67108864,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "large_object_space",
+          "space_size": 81874944,
+          "space_used_size": 81636200,
+          "space_available_size": 0,
+          "physical_space_size": 81874944
+        },
+        {
+          "space_name": "code_large_object_space",
+          "space_size": 344064,
+          "space_used_size": 340288,
+          "space_available_size": 0,
+          "physical_space_size": 344064
+        },
+        {
+          "space_name": "shared_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "shared_trusted_large_object_space",
+          "space_size": 0,
+          "space_used_size": 0,
+          "space_available_size": 0,
+          "physical_space_size": 0
+        },
+        {
+          "space_name": "trusted_large_object_space",
+          "space_size": 4419584,
+          "space_used_size": 2138064,
+          "space_available_size": 0,
+          "physical_space_size": 4419584
+        }
+      ],
+      "heapCode": {
+        "code_and_metadata_size": 17243786,
+        "bytecode_and_metadata_size": 7527392,
+        "external_script_source_size": 79988243,
+        "cpu_profiler_metadata_size": 0
+      },
+      "hostFacts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "os": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 924006400,
+        "rssBytes": 1009377280,
+        "anonymousBytes": 918249472
+      },
+      "counterOs": {
+        "pid": 3051078,
+        "startTicks": "4847209",
+        "parentPid": 4229,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "command": {
+          "sha256": "15c349a1f90e569953af58e56fe88d796e0f5610c8ec112ded041d657071daef",
+          "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+          "esbuildService": false
+        },
+        "pssBytes": 924006400,
+        "rssBytes": 1009377280,
+        "anonymousBytes": 918249472
+      },
+      "configuredHostRole": {
+        "clusterRole": "primary",
+        "requestOnly": true,
+        "configuredSidecar": null,
+        "requestAssignment": "unknown",
+        "allocationOwner": "unknown"
+      },
+      "descendants": [
+        {
+          "pid": 3111252,
+          "startTicks": "4854034",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eda80047ac2ee3c9ff689bed77a5ea82dce0f039575d70ba0fc31d01195da877",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/systemd-scope-env-runner.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 9934848,
+          "rssBytes": 50139136,
+          "anonymousBytes": 9723904
+        },
+        {
+          "pid": 3111272,
+          "startTicks": "4854043",
+          "parentPid": 3111252,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e3cc2e6441722ae49bc99091eb3f1d4f737b0b053060f5595375b661857420a0",
+            "script": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/spawner-sidecar.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 341429248,
+          "rssBytes": 404459520,
+          "anonymousBytes": 340054016
+        },
+        {
+          "pid": 3237476,
+          "startTicks": "4872154",
+          "parentPid": 3051078,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2835456,
+          "rssBytes": 8761344,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237895,
+          "startTicks": "4872199",
+          "parentPid": 3237476,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "760ca6092c41812ac24ece87e9b2fc9caa20fd71f576b0cea0421e41da15a13f",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 2831360,
+          "rssBytes": 6950912,
+          "anonymousBytes": 5160960
+        },
+        {
+          "pid": 3237897,
+          "startTicks": "4872199",
+          "parentPid": 3237895,
+          "executable": "/usr/bin/bash",
+          "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+          "command": {
+            "sha256": "771add40c49bd0e1abd76c4a6e604b081cb49c5effd862b959e6a485109e3c1f",
+            "script": "/home/builduser/.papercusp/bin/psu",
+            "esbuildService": false
+          },
+          "pssBytes": 378880,
+          "rssBytes": 3772416,
+          "anonymousBytes": 372736
+        },
+        {
+          "pid": 3237900,
+          "startTicks": "4872200",
+          "parentPid": 3237897,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "e60b453a853a6e19591618fff212c730d498cb2763b4d4925e2c66784c001625",
+            "script": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/psu-launcher.mjs",
+            "esbuildService": false
+          },
+          "pssBytes": 59644928,
+          "rssBytes": 118132736,
+          "anonymousBytes": 59310080
+        },
+        {
+          "pid": 3243400,
+          "startTicks": "4873134",
+          "parentPid": 3237900,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "2b8fe94cc4332cd9e0093792031d03d8087db78d18b8313a5d2c61138bda9755",
+            "script": "/home/builduser/.local/node25/bin/codex",
+            "esbuildService": false
+          },
+          "pssBytes": 10334208,
+          "rssBytes": 50995200,
+          "anonymousBytes": 10121216
+        },
+        {
+          "pid": 3243471,
+          "startTicks": "4873139",
+          "parentPid": 3243400,
+          "executable": "/home/builduser/.local/node25/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+          "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+          "command": {
+            "sha256": "399abe608c0356f71da102868337cbb1d644cd756f0b28fadf813b8817fc5da7",
+            "script": null,
+            "esbuildService": false
+          },
+          "pssBytes": 111816704,
+          "rssBytes": 246001664,
+          "anonymousBytes": 109330432
+        },
+        {
+          "pid": 3269513,
+          "startTicks": "4877260",
+          "parentPid": 3051078,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "command": {
+            "sha256": "eec881b90da011c5ed6827036d4bc09c826120d9dacdd8d2d0bc8441b62645be",
+            "script": "/home/builduser/.papercusp/vendor/gitnexus/node_modules/.bin/gitnexus",
+            "esbuildService": false
+          },
+          "pssBytes": 94184448,
+          "rssBytes": 147681280,
+          "anonymousBytes": 84520960
+        }
+      ],
+      "inventory": {
+        "observed": [
+          {
+            "pid": 3051078,
+            "startTicks": "4847209",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "named-main",
+            "pssBytes": 924006400
+          },
+          {
+            "pid": 3111252,
+            "startTicks": "4854034",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 9934848
+          },
+          {
+            "pid": 3111272,
+            "startTicks": "4854043",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "maintained-spawner-descendant",
+            "pssBytes": 341429248
+          },
+          {
+            "pid": 3237476,
+            "startTicks": "4872154",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2835456
+          },
+          {
+            "pid": 3237895,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 2831360
+          },
+          {
+            "pid": 3237897,
+            "startTicks": "4872199",
+            "executableSha256": "bc5945feb8bd26203ebfafea5ce1878bb2e32cb8fb50ab7ae395cfb1e1aaaef1",
+            "role": "other-descendant",
+            "pssBytes": 378880
+          },
+          {
+            "pid": 3237900,
+            "startTicks": "4872200",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 59644928
+          },
+          {
+            "pid": 3243400,
+            "startTicks": "4873134",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 10334208
+          },
+          {
+            "pid": 3243471,
+            "startTicks": "4873139",
+            "executableSha256": "12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+            "role": "other-descendant",
+            "pssBytes": 111816704
+          },
+          {
+            "pid": 3269513,
+            "startTicks": "4877260",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "role": "other-descendant",
+            "pssBytes": 94184448
+          }
+        ],
+        "notChecked": [],
+        "censusComplete": true,
+        "observedPssBytes": 1557396480,
+        "appeared": [],
+        "notObservedSincePrevious": [],
+        "definition": "Serial PSS observations of the named process and bounded descendant tree; not cgroup memory or an atomic service total.",
+        "allocationOwner": "unknown",
+        "compilerCaller": "unknown",
+        "workerRequestAssignment": "unknown",
+        "lifetimeDefinition": "Not observed is not proof of exit. Roles identify executable/entry only, not retained allocation owners or HTTP routing."
+      },
+      "observerMs": 167.4189860000006
+    }
+  ],
+  "windows": [
+    {
+      "window": 0,
+      "startedAt": "2026-10-03T04:22:57.813Z",
+      "endedAt": "2026-10-03T04:22:58.134Z"
+    },
+    {
+      "window": 1,
+      "startedAt": "2026-10-03T04:23:00.589Z",
+      "endedAt": "2026-10-03T04:23:00.862Z"
+    },
+    {
+      "window": 2,
+      "startedAt": "2026-10-03T04:23:04.050Z",
+      "endedAt": "2026-10-03T04:23:04.383Z"
+    }
+  ],
+  "requests": [
+    {
+      "window": 0,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "8daa3d708ef5abdfd2cd821ca4573d500a661b1c89540b6b04876e9eea4d6562",
+      "elapsedMs": 78.9471909999993
+    },
+    {
+      "window": 0,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "eca924601da9bec10000b72c1a4d121f042c4b8fbdeef3b732b6fc71076331bd",
+      "elapsedMs": 78.67577099999926
+    },
+    {
+      "window": 0,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "a7e59beea81e1c110d1bf394ec8f7df54ce1f430e1607c26ce18355a6fa54939",
+      "elapsedMs": 21.364550000000236
+    },
+    {
+      "window": 0,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "2b2dc20f712e0ca804a92dc38309051656fe695c15c32998e0a8a98876d731ad",
+      "elapsedMs": 23.05018100000052
+    },
+    {
+      "window": 0,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "9486720b0e7adfb1710a280a4262a0e50559013c9b30136154d448f0b04dea20",
+      "elapsedMs": 30.434556000000157
+    },
+    {
+      "window": 0,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "6ee7572b553545345cf1d1cfeee18388230d304461e663d63039b175d3d135bc",
+      "elapsedMs": 33.147665999999845
+    },
+    {
+      "window": 0,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "46b225db919dc976f9576cd7a477bcfa7e1566a89712059a0b72b101407ca609",
+      "elapsedMs": 19.034333999999944
+    },
+    {
+      "window": 0,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "b318ac2d78ed721944b8a2f0f285a221aa8a82945e07f50d2ca0169e049fed6d",
+      "elapsedMs": 20.814236000000164
+    },
+    {
+      "window": 1,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "c1400dc047d65a2d77663b806572c37afc1d8ef4974b6b00ce3aa2a15dcc37b1",
+      "elapsedMs": 19.72743300000002
+    },
+    {
+      "window": 1,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "6f76e6dfc5a2bf3721702d06d235c5386676f4559122c916b4eda5f6eb889746",
+      "elapsedMs": 21.45108699999946
+    },
+    {
+      "window": 1,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "f3a74705b31d70eb4b36a20fd05f54d3f426606d9628ec3e3bcf62badbbe48f1",
+      "elapsedMs": 19.48616100000072
+    },
+    {
+      "window": 1,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "a7347ead75584a08a0672b1d6f8c363279304e19085438d0a97b81a4b5115aa5",
+      "elapsedMs": 20.317353000000367
+    },
+    {
+      "window": 1,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "9fdfee8fa885043a4435b46d67878d23e60a783e0225f09986e02b9fd78636cb",
+      "elapsedMs": 16.381328999999823
+    },
+    {
+      "window": 1,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "c6e33eb41abb8b8688660c6369327dbc232de24413faf7ad1421ac592557236a",
+      "elapsedMs": 23.125355999998646
+    },
+    {
+      "window": 1,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "c0e92504b01f14a15611a6ddf8c20e3a40f0fd425c778c87adbed28611ffc6bc",
+      "elapsedMs": 21.732546000001093
+    },
+    {
+      "window": 1,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20477,
+      "responseSha256": "3a32609aee63fd3678d842d59a0422439cd71076d36eeb5a5e4e31310b20d6fa",
+      "elapsedMs": 24.14520100000118
+    },
+    {
+      "window": 2,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20519,
+      "responseSha256": "939becc5178c13eef0e7a9846720ceab477e649762b18826513bdae2a6923cb0",
+      "elapsedMs": 19.989204999999856
+    },
+    {
+      "window": 2,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20519,
+      "responseSha256": "4ef7e76d11d666ac106f13ec840712a7af0044aa1984597fa1072b9d6fc1cd0d",
+      "elapsedMs": 20.071172999998453
+    },
+    {
+      "window": 2,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20519,
+      "responseSha256": "32dd1bb3fbca5023689d5ee7bd6e0d482891b606f21c60799bd3ccff4e5ff0d1",
+      "elapsedMs": 52.69062599999961
+    },
+    {
+      "window": 2,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20519,
+      "responseSha256": "12a4b65d988351174287b53104d16a252ae037005d8c5fda36fbe4e0c8f35179",
+      "elapsedMs": 53.91402199999902
+    },
+    {
+      "window": 2,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20519,
+      "responseSha256": "3aa0db40705ea3b132fe954b2359f87304c6781b5da7d69961f32e168216d055",
+      "elapsedMs": 22.958776999999827
+    },
+    {
+      "window": 2,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20519,
+      "responseSha256": "8a74cb837ec9801af0f36444d4b36e428d562a64ee1ee6738fe78cd2e36db5d4",
+      "elapsedMs": 24.340195000000676
+    },
+    {
+      "window": 2,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20519,
+      "responseSha256": "dde3393864ebfd31633fa51795b6bb4c848df8c8e38aa2a4e9246d6a72f7762e",
+      "elapsedMs": 21.97285699999884
+    },
+    {
+      "window": 2,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20519,
+      "responseSha256": "b212ac0ac8ebea573529ee3cea968cbcbfbf9b77e79c35d120ef82a1f037a696",
+      "elapsedMs": 23.061623999999938
+    }
+  ],
+  "operations": [],
+  "cleanup": {
+    "inspector": {
+      "closed": true
+    },
+    "processIdentityPreserved": true,
+    "counterIdentityPreserved": true
+  },
+  "metricDefinitions": {
+    "pssBytes": "smaps_rollup Pss kernel kB times 1024",
+    "heapAndNative": "V8/Node counters, overlapping with PSS; no additive native-residual estimate",
+    "heapSpaces": "V8 getHeapSpaceStatistics per-space bytes; space membership can change across GC",
+    "heapCode": "V8 getHeapCodeStatistics bytes; code/source counters overlap heap/external and do not identify retainers",
+    "pinnedState": "Reachable logical payloads under named roots; not total retained heap/native bytes",
+    "observerMs": "wall time for inspector counter read and proc descendant census"
+  },
+  "limits": {
+    "windows": 3,
+    "idleMs": 2000,
+    "requestsPerWindow": 8,
+    "concurrency": 2,
+    "descendantsPerSample": 64
+  },
+  "operatorCacheEntries": false,
+  "limitations": [
+    "Counters cover one explicitly selected main/descendant PID; HTTP request assignment remains unknown.",
+    "Ambient workload is uncontrolled; idle means no probe HTTP requests.",
+    "No paired intervention, allocation profiler, retainer graph or physical-savings claim.",
+    "Sibling build identity is read from its PID-bound server capability when available; missing advertisements stay unknown.",
+    "Current disk bundle hash is recorded separately from the health-reported loaded build."
+  ],
+  "healthBefore": {
+    "sha": "46ab00ca41",
+    "version": "0.0.0",
+    "at": "2026-10-03T04:22:53.473Z"
+  },
+  "bundle": {
+    "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+    "argvEntry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+    "diskSha256": "aa46ab1241e0ff33f3809bee9e3c3130e941109212f0ab27ae086ab3138034d2",
+    "diskSha256After": "aa46ab1241e0ff33f3809bee9e3c3130e941109212f0ab27ae086ab3138034d2"
+  },
+  "counterBundle": {
+    "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+    "argvEntry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-46ab00ca410d.R4xG3R/checkout/apps/operator/dist-host/hono-host.mjs",
+    "diskSha256": "aa46ab1241e0ff33f3809bee9e3c3130e941109212f0ab27ae086ab3138034d2",
+    "loadedBuild": "unknown",
+    "role": "named-main",
+    "diskSha256After": "aa46ab1241e0ff33f3809bee9e3c3130e941109212f0ab27ae086ab3138034d2"
+  },
+  "inspectorWasOpen": false,
+  "inspector": {
+    "pid": 3051078,
+    "port": 9229,
+    "openedByProbe": true
+  },
+  "descendantExitRaces": 1,
+  "healthAfter": {
+    "sha": "46ab00ca41",
+    "version": "0.0.0",
+    "at": "2026-10-03T04:23:04.561Z"
+  },
+  "endedAt": "2026-10-03T04:23:06.306Z"
+}

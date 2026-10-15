@@ -37,7 +37,7 @@ const PriorSchema = z
     evidenceHash: hash.nullable(),
     locator: z
       .discriminatedUnion('kind', [
-        z.object({ kind: z.literal('code'), id: ref }).strict(),
+        z.object({ kind: z.literal('code'), id: ref, path: ref.optional() }).strict(),
         z.object({ kind: z.literal('plan'), id: ref }).strict(),
         z.object({ kind: z.literal('dream'), id: ref }).strict(),
         z.object({ kind: z.literal('idea'), id: ref, subref: ref }).strict(),
@@ -180,8 +180,8 @@ export async function preflightCapabilityReview(
 ): Promise<{ ready: boolean; reason: string; note: string; nextCheck?: CapabilityReviewNextCheck }> {
   const config = resolveDreamReviewConfig(options.config);
   const fail = (reason: string, note: string) => ({ ready: false, reason, note: note.slice(0, 600), nextCheck: capabilityReviewNextCheck(reason, [note]) });
-  if (!options.dreamerModel.trim() || options.dreamerModel.trim().toLowerCase() === config.model.trim().toLowerCase())
-    return fail('reviewer-not-independent', 'A different reviewer model and dreamer provenance are required.');
+  if (!options.dreamerModel.trim())
+    return fail('reviewer-not-independent', 'Dreamer model provenance is required to record this review.');
   const deadline = Math.min(Date.now() + config.timeoutMs, options.cycleDeadlineMs ?? Infinity);
   const controller = new AbortController();
   const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
@@ -549,8 +549,8 @@ export async function runCapabilityDreamReview(
     return finish('unverified', reason, message);
   };
   const dreamer = options.dreamerModel.trim().toLowerCase();
-  if (!dreamer || dreamer === config.model.toLowerCase())
-    return unavailable('reviewer-not-independent', 'A different reviewer model and dreamer provenance are required.');
+  if (!dreamer)
+    return unavailable('reviewer-not-independent', 'Dreamer model provenance is required to record this review.');
   const problemContext = scopeDreamProblems(options.problemContext?.evidence ?? [], scope, options.problemContext?.mode);
   if (problemContext.evidence.length ? !candidate.problemFit || candidate.problemFit.refs.some(ref => !problemContext.evidence.some(p => p.ref === ref)) : candidate.problemFit !== undefined)
     return unavailable('problem-evidence-unavailable', 'The proposed problem fit is not bound to supplied in-scope reports.');

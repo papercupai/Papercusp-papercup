@@ -127,6 +127,23 @@ describe('reconcileStampedAuthority (EI-21574559473613348)', () => {
       expect(out.contentIdentityDowngrade).toBe(false);
     });
 
+    it('does not blame content identity when a later evidence finding lowered a committed base grade', () => {
+      // A requirement-disposition finding can lower otherwise sufficient evidence from
+      // `authorityByEvidence: committed` to the final `computed: proposed`. The matching
+      // stored proposal is that finding's outcome, not a DB-side content-identity downgrade.
+      const out = reconcileStampedAuthority({
+        ...closeDeclaringFiles,
+        computed: 'proposed',
+        persisted: 'proposed',
+        authorityByEvidence: 'committed',
+        inProcessContentIdentityMissing: false,
+      });
+
+      expect(out.stampedAuthority).toBe('proposed');
+      expect(out.divergedFromComputed).toBe(false);
+      expect(out.contentIdentityDowngrade).toBe(false);
+    });
+
     it('does not claim a content-identity downgrade when no files were declared', () => {
       // Both the TS guard and the SQL trigger skip a close with an empty filesChanged —
       // there is nothing whose content could be proven.

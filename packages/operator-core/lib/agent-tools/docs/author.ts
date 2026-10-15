@@ -25,6 +25,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import {
   normalizeDocStatus,
   parseFrontmatterBlock,
@@ -42,6 +43,11 @@ import { resolveHarnessScope, isEngineeringDocsSentinel } from '../_harness-scop
 import { engineeringAdapter, invalidateEngineeringAdapter } from './_engineering-adapter';
 import { refreshDocPageSections } from '../../search/doc-embed-sync';
 import { findMdxCompileError } from '../../content-lint/mdx';
+import { completedResultPayload } from '../abort-completion-payload';
+import graphQuery from '../gitnexus/query';
+import { generateNativeArchitecture } from '../../harness/docs/native-architecture';
+import type { CodeIntelAnswer } from '../../code-intelligence/contracts';
+import { promotedFromSchema, validatePromotedFrom } from '../../promotion-lineage';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
 
@@ -67,7 +73,11 @@ export function normalizeSlug(
     const parts = s.split('/');
     const leaf = parts.pop() ?? '';
     if (!leaf) return { ok: false, error: 'slug_required' };
-    const sectionRes = normalizeSection(parts.join('/'));
+    // `/branding` (a leading slash and no dir) is docs-root-absolute: route it to the
+    // root explicitly. Left as '' it would fall to the agent-insights default, so
+    // `/branding` and `//branding` would land in different places (WI-6554700010011197).
+    const dir = parts.join('/');
+    const sectionRes = normalizeSection(/^\/*$/.test(dir) ? DOCS_ROOT_SECTION : dir);
     if (!sectionRes.ok) return sectionRes;
     s = leaf;
     if (!/^[a-z0-9][a-z0-9-]*$/.test(s)) {
@@ -81,8 +91,19 @@ export function normalizeSlug(
   return { ok: true, slug: s };
 }
 
-/** Normalize/validate a section dir under the docs root. Default agent-insights. */
+/**
+ * The `section` value that addresses the docs ROOT itself — `index.mdx`, `branding.mdx`,
+ * `performance.mdx` (WI-6554700010011197). It must be explicit: an absent or empty section
+ * keeps the agent-insights default, so a bare slug can never silently land at the root.
+ */
+export const DOCS_ROOT_SECTION = '/';
+
+/**
+ * Normalize/validate a section dir under the docs root. Default agent-insights; an
+ * all-slash value (`'/'`) is the docs root and normalizes to {@link DOCS_ROOT_SECTION}.
+ */
 export function normalizeSection(raw: string | undefined): { ok: true; section: string } | { ok: false; error: string } {
+  if (raw !== undefined && /^\s*\/+\s*$/.test(raw)) return { ok: true, section: DOCS_ROOT_SECTION };
   const s = (raw ?? 'agent-insights').trim().replace(/^\/+|\/+$/g, '');
   if (!s) return { ok: true, section: 'agent-insights' };
   if (s.split('/').some((seg) => seg === '..' || seg === '.' || seg === '')) {
@@ -92,6 +113,16 @@ export function normalizeSection(raw: string | undefined): { ok: true; section: 
     return { ok: false, error: 'section_must_be_kebab_path — lowercase letters, digits, dashes, slashes only' };
   }
   return { ok: true, section: s };
+}
+
+/**
+ * The read ref (`<section>/<slug>`, extensionless) and canonical doc id (`ref.mdx`) for a
+ * normalized section + slug. The docs-root section contributes no dir: `branding`, not
+ * `//branding` — the single place that composition happens, so the two cannot disagree.
+ */
+export function docRefFor(section: string, slug: string): { ref: string; docId: string } {
+  const ref = section === DOCS_ROOT_SECTION ? slug : `${section}/${slug}`;
+  return { ref, docId: `${ref}.mdx` };
 }
 
 /**
@@ -570,6 +601,7 @@ const argsSchema = z.object({
       'Kebab-case file slug or canonical doc path (optional .md/.mdx; e.g. "named-fleet-vs-ephemeral-swarm" or "agent-insights/named-fleet-vs-ephemeral-swarm"). A path routes its subdirectory to section and becomes <section>/<slug>.mdx.',
     ),
   title: z.string().min(1).max(200).describe('Human title (frontmatter `title`).'),
+  promotedFrom: promotedFromSchema.optional(),
   description: z
     .string()
     .min(1)
@@ -596,6 +628,12 @@ const argsSchema = z.object({
     .describe(
       'What this doc documents (its drift anchor): repo file paths (packages/.../foo.ts), globs (src/**), feature ids (F-3), or "path :: symbol". STRONGLY recommended — without it the doc is NOT drift-tracked.',
     ),
+  architecture: z.object({
+    name: z.string().min(1),
+    file: z.string().min(1),
+    paths: z.array(z.string().min(1)).min(1).max(32),
+    limit: z.number().int().min(1).max(50).optional(),
+  }).optional().describe('Append a compiler-generated architecture section for this exact symbol and bounded source scope. Each static relationship cites current source hashes; stale or uncited evidence refuses before saving. Uses the existing graph:query context and doc drift anchors.'),
   tags: z.union([z.string(), z.array(z.string())]).optional().describe('Topic tags (frontmatter `tags`). A PROCEDURAL ordered-steps doc is the RUNBOOK genre: tag it `runbook`, end the slug `-runbook`, and say "runbook" in title/description so docs:search ranks it (agent-insights/runbooks-convention).'),
   plans: z.union([z.string(), z.array(z.string())]).optional().describe('Related plan slugs (frontmatter `plans`).'),
   normative: z.boolean().optional().describe('Optional OKF normative classification. On overwrite, omitted preserves the existing value.'),
@@ -606,7 +644,7 @@ const argsSchema = z.object({
   section: z
     .string()
     .optional()
-    .describe('Docs-root-relative section dir. Default "agent-insights" (the runbook/insight section).'),
+    .describe('Docs-root-relative section dir. Default "agent-insights" (the runbook/insight section). "/" = the docs root itself (e.g. branding.mdx).'),
   status: z
     .enum(['active', 'superseded', 'draft', 'current', 'retired'])
     .optional()
@@ -632,6 +670,29 @@ const argsSchema = z.object({
     ),
 });
 
+export function docsAuthorAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  const storageHarness = payload?.storageHarness;
+  const ref = payload?.ref;
+  if (
+    payload?.ok === true &&
+    typeof storageHarness === 'string' &&
+    storageHarness.trim().length > 0 &&
+    typeof ref === 'string' &&
+    ref.trim().length > 0
+  ) {
+    return { status: 'recorded', effectRef: `docs-author:${storageHarness}:${ref}` };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'docs:author result did not confirm the saved canonical document after the deadline',
+    failures: ['missing-saved-doc-ref'],
+  };
+}
+
 export default defineTool({
   name: 'docs:author',
   description:
@@ -650,6 +711,7 @@ export default defineTool({
     ],
   },
   capability: 'docs:write',
+  abortCompletionReceipt: docsAuthorAbortCompletionReceipt,
   requirePrincipal: false,
   agentRoles: ['documenter', 'doc-steward', 'operator', 'worker', 'architect', 'cup', 'curator'],
   modality: ['text'],
@@ -657,6 +719,7 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { harnessSlug?: string; isSuperuser?: boolean; metadata?: (d: Record<string, unknown>) => void };
     const warnings: string[] = [];
+    const promotedFrom = await validatePromotedFrom(args.promotedFrom, ctx.workspaceId);
 
     const slugRes = normalizeSlug(args.slug);
     if (!slugRes.ok) return err(slugRes.error);
@@ -685,8 +748,10 @@ export default defineTool({
     // forms explicit so a caller can pass the returned `ref` directly to
     // docs:get instead of guessing whether `path` is a filesystem id or a read
     // slug.
-    const ref = `${section}/${slug}`;
-    const docId = `${ref}.mdx`;
+    const { ref, docId } = docRefFor(section, slug);
+    if (section !== DOCS_ROOT_SECTION && paths.sources?.[section.split('/')[0]]) {
+      return err('file_authoritative_source — edit the namespaced corpus source file with its file lock, then harness_docs:anchor/verify; docs:author must not create a second canonical copy');
+    }
     const abs = safeJoinUnderRoot(paths.docsRoot, docId);
     if (!abs) return err('path_traversal — section/slug resolved outside the docs root');
 
@@ -706,7 +771,7 @@ export default defineTool({
     // (composeDoc strips leading frontmatter itself, so passing the already-stripped
     // body through is equivalent for the untouched case and simpler to read.)
     const preambleCheck = stripReadPreamble(stripCheck.body);
-    const authoredBody = preambleCheck.body;
+    let authoredBody = preambleCheck.body;
     if (preambleCheck.stripped) {
       warnings.push(
         "a docs:get read preamble (`# <title>` + `URL: …`) was stripped from `body` — that header is added by the READ surface, not part of the doc. " +
@@ -732,7 +797,21 @@ export default defineTool({
     }
     const descWarning = descriptionLengthWarning(description);
     if (descWarning) warnings.push(descWarning);
-    const documents = args.documents === undefined ? normalizeList(existingFrontmatter.documents) : normalizeList(args.documents);
+    let documents = args.documents === undefined ? normalizeList(existingFrontmatter.documents) : normalizeList(args.documents);
+    if (args.architecture) {
+      try {
+        const generated = await generateNativeArchitecture(paths.repoRoot, args.architecture, async request => {
+          const result = await graphQuery.handler(graphQuery.args.parse({ op: 'context', name: request.name,
+            file_path: request.file, paths: request.paths, limit: request.limit ?? 50 }),
+          { ...ctx, projectDir: paths.repoRoot } as never) as { data: CodeIntelAnswer };
+          return result.data;
+        });
+        authoredBody = `${authoredBody.trimEnd()}\n\n${generated.body}\n`;
+        documents = [...new Set([...documents, ...generated.documents])];
+      } catch (error) {
+        return err(error instanceof Error ? error.message : String(error));
+      }
+    }
     if (!documents.length) {
       warnings.push('no `documents` provided — the doc is NOT drift-tracked; pass `documents` (files/symbols it covers) so the drift sweep can flag it when that code changes.');
     }
@@ -774,7 +853,7 @@ export default defineTool({
         : inheritedGoverns !== undefined
           ? { governs: inheritedGoverns }
           : {}),
-      preservedFrontmatter: existingFrontmatter,
+      preservedFrontmatter: { ...existingFrontmatter, ...(promotedFrom !== undefined ? { promotedFrom } : {}) },
     };
     const content = composeDoc(fm, authoredBody);
 

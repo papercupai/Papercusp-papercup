@@ -1,0 +1,702 @@
+{
+  "schemaVersion": "p011-request-heap-independent-v1",
+  "proof": {
+    "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r2-2026-10-03.json",
+    "sha256": "76c8e92b253001a1be3aef697e99d9c76a09c0a1c07e0a3719f97c5cb3666a0b",
+    "bytes": 997501,
+    "result": {
+      "requests": {
+        "processIdentity": "4185824:8213736:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "warm": [
+          {
+            "requestId": "6c566824-98bc-4417-bb4a-3b1fdcdd6bb2",
+            "queries": [
+              "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",5,3]",
+              "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",8,3]"
+            ]
+          }
+        ],
+        "windows": [
+          {
+            "window": 0,
+            "requests": [
+              {
+                "requestId": "084afa7e-e3d5-4002-b7b1-74799ffc779f",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",34,3]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",37,3]"
+                ]
+              },
+              {
+                "requestId": "16aabdab-5634-4bb1-a653-db2260dab45f",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",14,3]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",21,3]"
+                ]
+              },
+              {
+                "requestId": "637c1160-cef5-44d6-8405-799cbd3f8be2",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",3,3]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",9,3]"
+                ]
+              },
+              {
+                "requestId": "aff82e8a-b6b0-471f-9eea-02f28067367c",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",24,3]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",25,3]"
+                ]
+              },
+              {
+                "requestId": "b15ea32e-43cd-4696-b53f-0cfaa9c41867",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",17,3]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",31,3]"
+                ]
+              },
+              {
+                "requestId": "b6173e3b-1f2d-4778-ace6-9f48fcbe14d7",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",41,3]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",50,3]"
+                ]
+              },
+              {
+                "requestId": "e9a55d7e-321c-4be0-890b-faf053135011",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",19,3]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",27,3]"
+                ]
+              },
+              {
+                "requestId": "f50193fa-0043-4b6b-8d5d-871c787c6069",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",38,3]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",43,3]"
+                ]
+              }
+            ],
+            "idlePssDeltaBytes": 183296,
+            "ordinaryPssDeltaBytes": 1454080,
+            "ordinaryAllocatedBytes": 16661064
+          },
+          {
+            "window": 1,
+            "requests": [
+              {
+                "requestId": "01f1ee16-2bf4-4f32-bc1f-043043892846",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",26,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",44,4]"
+                ]
+              },
+              {
+                "requestId": "14044ee5-9c89-4901-a253-bee475aac46c",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",2,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",5,4]"
+                ]
+              },
+              {
+                "requestId": "5a5c8952-fcab-4d95-ae1a-b2fecdfb05fc",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",16,7]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",23,4]"
+                ]
+              },
+              {
+                "requestId": "62847839-8380-4578-a641-502b45410865",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",45,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",6,4]"
+                ]
+              },
+              {
+                "requestId": "67df051a-280e-4f9c-9a13-b1e63f818775",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",42,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",7,4]"
+                ]
+              },
+              {
+                "requestId": "899b8964-8cd8-4ed5-9d42-ec8ad554e767",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",15,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",41,4]"
+                ]
+              },
+              {
+                "requestId": "a81710d9-ed4a-47d2-9ad9-225a62e1148a",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",11,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",8,4]"
+                ]
+              },
+              {
+                "requestId": "e0b38fc8-db2c-4ab4-9847-4b16762c558c",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",47,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",51,4]"
+                ]
+              }
+            ],
+            "idlePssDeltaBytes": -500736,
+            "ordinaryPssDeltaBytes": -31744,
+            "ordinaryAllocatedBytes": 10598928
+          },
+          {
+            "window": 2,
+            "requests": [
+              {
+                "requestId": "106a794b-9934-49fe-a066-1375ab5e18c5",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",14,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",9,4]"
+                ]
+              },
+              {
+                "requestId": "1ff49d7c-1e9e-4369-ae14-1d03347351d1",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",20,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",50,4]"
+                ]
+              },
+              {
+                "requestId": "3a5c7838-dcf0-4fe7-b10a-92d73dd051f7",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",31,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",43,4]"
+                ]
+              },
+              {
+                "requestId": "67eca1e8-8078-4014-987d-b02701355e5b",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",17,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",25,4]"
+                ]
+              },
+              {
+                "requestId": "a6cdcbd2-1451-42af-9431-e6b262cc8e1a",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",27,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",34,4]"
+                ]
+              },
+              {
+                "requestId": "c092fad0-2e08-4470-9eaa-4eba3399cf19",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",21,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",37,4]"
+                ]
+              },
+              {
+                "requestId": "d65c75fa-08da-40a0-80f6-f5be0e80b862",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",19,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",3,4]"
+                ]
+              },
+              {
+                "requestId": "e7bba4de-ec5a-47ff-a4bf-b51dcb0b8848",
+                "queries": [
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",24,4]",
+                  "[\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",38,4]"
+                ]
+              }
+            ],
+            "idlePssDeltaBytes": 39936,
+            "ordinaryPssDeltaBytes": 37888,
+            "ordinaryAllocatedBytes": 10335176
+          }
+        ],
+        "requestCount": 24,
+        "queryCount": 48,
+        "retainedOwner": "unobserved",
+        "workerCloneIdentity": "unobserved",
+        "nativePhysicalOwnership": "unknown",
+        "fullExecutedSourceGraph": "unknown",
+        "physicalSavings": "unmeasured"
+      },
+      "owners": {
+        "processIdentity": "4185824:8213736:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "recordedBuildSha": "50810dd9ff209a622be6164af9042f15764ea271",
+        "snapshotSha256": "4019a9ad58251aa401b8bacc6a7eb3290bc88c5c01e5e36595cea9ab42b6530a",
+        "owners": [
+          {
+            "owner": "@papercusp/memory:host",
+            "id": 1927767,
+            "index": 963883,
+            "selfSizeBytes": 32,
+            "dominatorRetainedV8Bytes": 1480,
+            "observedDirectParentIndexes": [
+              292260,
+              963882
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/memory.local-embedder-worker",
+            "id": 1927791,
+            "index": 963895,
+            "selfSizeBytes": 136,
+            "dominatorRetainedV8Bytes": 1848,
+            "observedDirectParentIndexes": [
+              292260,
+              963894
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.harnessCoreCaches",
+            "id": 1047189,
+            "index": 523594,
+            "selfSizeBytes": 56,
+            "dominatorRetainedV8Bytes": 312,
+            "observedDirectParentIndexes": [
+              292260,
+              523593
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "id": 1047199,
+            "index": 523599,
+            "selfSizeBytes": 48,
+            "dominatorRetainedV8Bytes": 1328,
+            "observedDirectParentIndexes": [
+              292260,
+              523598
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.snapshot-fold-slots",
+            "id": 1047431,
+            "index": 523715,
+            "selfSizeBytes": 40,
+            "dominatorRetainedV8Bytes": 144,
+            "observedDirectParentIndexes": [
+              292260,
+              523714
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/lexicon:host",
+            "id": 1047487,
+            "index": 523743,
+            "selfSizeBytes": 32,
+            "dominatorRetainedV8Bytes": 320,
+            "observedDirectParentIndexes": [
+              292260,
+              523742
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.repoCitationTrackingCache",
+            "id": 8202441,
+            "index": 4101220,
+            "selfSizeBytes": 64,
+            "dominatorRetainedV8Bytes": 1192,
+            "observedDirectParentIndexes": [
+              292260,
+              4101219
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.agentsAcrossWorkspaceCache",
+            "id": 4849739,
+            "index": 2424869,
+            "selfSizeBytes": 48,
+            "dominatorRetainedV8Bytes": 48,
+            "observedDirectParentIndexes": [
+              292260,
+              2424868
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.midTurnMemoryAdmission",
+            "id": 8726259,
+            "index": 4363129,
+            "selfSizeBytes": 64,
+            "dominatorRetainedV8Bytes": 576,
+            "observedDirectParentIndexes": [
+              292260,
+              4244768
+            ],
+            "directParentsNotChecked": 0
+          }
+        ],
+        "verifiedNodes": [
+          {
+            "id": 1047189,
+            "index": 523594,
+            "selfSizeBytes": 56,
+            "dominatorRetainedV8Bytes": 312,
+            "observedDirectParentIndexes": [
+              292260,
+              523593
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 1047199,
+            "index": 523599,
+            "selfSizeBytes": 48,
+            "dominatorRetainedV8Bytes": 1328,
+            "observedDirectParentIndexes": [
+              292260,
+              523598
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 1047431,
+            "index": 523715,
+            "selfSizeBytes": 40,
+            "dominatorRetainedV8Bytes": 144,
+            "observedDirectParentIndexes": [
+              292260,
+              523714
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 1047487,
+            "index": 523743,
+            "selfSizeBytes": 32,
+            "dominatorRetainedV8Bytes": 320,
+            "observedDirectParentIndexes": [
+              292260,
+              523742
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 1927767,
+            "index": 963883,
+            "selfSizeBytes": 32,
+            "dominatorRetainedV8Bytes": 1480,
+            "observedDirectParentIndexes": [
+              292260,
+              963882
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 1927791,
+            "index": 963895,
+            "selfSizeBytes": 136,
+            "dominatorRetainedV8Bytes": 1848,
+            "observedDirectParentIndexes": [
+              292260,
+              963894
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 4849739,
+            "index": 2424869,
+            "selfSizeBytes": 48,
+            "dominatorRetainedV8Bytes": 48,
+            "observedDirectParentIndexes": [
+              292260,
+              2424868
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 8202441,
+            "index": 4101220,
+            "selfSizeBytes": 64,
+            "dominatorRetainedV8Bytes": 1192,
+            "observedDirectParentIndexes": [
+              292260,
+              4101219
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 8726259,
+            "index": 4363129,
+            "selfSizeBytes": 64,
+            "dominatorRetainedV8Bytes": 576,
+            "observedDirectParentIndexes": [
+              292260,
+              4244768
+            ],
+            "directParentsNotChecked": 0
+          }
+        ],
+        "scope": "Historical private snapshot; no new runtime measurement.",
+        "definition": "Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.",
+        "nativePhysicalOwnership": "unknown",
+        "productionSavings": "unmeasured",
+        "loadedBuildIdentity": "unknown"
+      },
+      "foundQueryObjectIds": [],
+      "weakObjectGaps": [
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",14,4,\"106a794b-9934-49fe-a066-1375ab5e18c5\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",14,4,\"106a794b-9934-49fe-a066-1375ab5e18c5\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",14,4,\"106a794b-9934-49fe-a066-1375ab5e18c5\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",17,4,\"67eca1e8-8078-4014-987d-b02701355e5b\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",17,4,\"67eca1e8-8078-4014-987d-b02701355e5b\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",17,4,\"67eca1e8-8078-4014-987d-b02701355e5b\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",19,4,\"d65c75fa-08da-40a0-80f6-f5be0e80b862\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",19,4,\"d65c75fa-08da-40a0-80f6-f5be0e80b862\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",19,4,\"d65c75fa-08da-40a0-80f6-f5be0e80b862\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",20,4,\"1ff49d7c-1e9e-4369-ae14-1d03347351d1\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",20,4,\"1ff49d7c-1e9e-4369-ae14-1d03347351d1\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",20,4,\"1ff49d7c-1e9e-4369-ae14-1d03347351d1\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",21,4,\"c092fad0-2e08-4470-9eaa-4eba3399cf19\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",21,4,\"c092fad0-2e08-4470-9eaa-4eba3399cf19\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",21,4,\"c092fad0-2e08-4470-9eaa-4eba3399cf19\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",24,4,\"e7bba4de-ec5a-47ff-a4bf-b51dcb0b8848\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",24,4,\"e7bba4de-ec5a-47ff-a4bf-b51dcb0b8848\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",24,4,\"e7bba4de-ec5a-47ff-a4bf-b51dcb0b8848\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",25,4,\"67eca1e8-8078-4014-987d-b02701355e5b\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",25,4,\"67eca1e8-8078-4014-987d-b02701355e5b\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",25,4,\"67eca1e8-8078-4014-987d-b02701355e5b\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",27,4,\"a6cdcbd2-1451-42af-9431-e6b262cc8e1a\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",27,4,\"a6cdcbd2-1451-42af-9431-e6b262cc8e1a\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",27,4,\"a6cdcbd2-1451-42af-9431-e6b262cc8e1a\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",3,4,\"d65c75fa-08da-40a0-80f6-f5be0e80b862\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",3,4,\"d65c75fa-08da-40a0-80f6-f5be0e80b862\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",3,4,\"d65c75fa-08da-40a0-80f6-f5be0e80b862\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",31,4,\"3a5c7838-dcf0-4fe7-b10a-92d73dd051f7\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",31,4,\"3a5c7838-dcf0-4fe7-b10a-92d73dd051f7\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",31,4,\"3a5c7838-dcf0-4fe7-b10a-92d73dd051f7\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",34,4,\"a6cdcbd2-1451-42af-9431-e6b262cc8e1a\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",34,4,\"a6cdcbd2-1451-42af-9431-e6b262cc8e1a\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",34,4,\"a6cdcbd2-1451-42af-9431-e6b262cc8e1a\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",37,4,\"c092fad0-2e08-4470-9eaa-4eba3399cf19\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",37,4,\"c092fad0-2e08-4470-9eaa-4eba3399cf19\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",37,4,\"c092fad0-2e08-4470-9eaa-4eba3399cf19\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",38,4,\"e7bba4de-ec5a-47ff-a4bf-b51dcb0b8848\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",38,4,\"e7bba4de-ec5a-47ff-a4bf-b51dcb0b8848\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",38,4,\"e7bba4de-ec5a-47ff-a4bf-b51dcb0b8848\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",43,4,\"3a5c7838-dcf0-4fe7-b10a-92d73dd051f7\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",43,4,\"3a5c7838-dcf0-4fe7-b10a-92d73dd051f7\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",43,4,\"3a5c7838-dcf0-4fe7-b10a-92d73dd051f7\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",50,4,\"1ff49d7c-1e9e-4369-ae14-1d03347351d1\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",50,4,\"1ff49d7c-1e9e-4369-ae14-1d03347351d1\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",50,4,\"1ff49d7c-1e9e-4369-ae14-1d03347351d1\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",9,4,\"106a794b-9934-49fe-a066-1375ab5e18c5\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",9,4,\"106a794b-9934-49fe-a066-1375ab5e18c5\"]",
+          "phase": "resolvedRows",
+          "status": "unobserved"
+        },
+        {
+          "tuple": "[\"org-admin\",\"4b92b8dd-5776-48a7-9ab3-876fa8d9ea61\",null,\"8f3e4cc5-940b-46d6-96d1-d595b2dea9ed\",9,4,\"106a794b-9934-49fe-a066-1375ab5e18c5\"]",
+          "phase": "responseValue",
+          "status": "unobserved"
+        }
+      ],
+      "missingLiveRegistryTuples": [],
+      "timing": {
+        "writeMs": 16453,
+        "summaryMs": 117239
+      },
+      "workerCloneIdentity": "unobserved",
+      "nativePhysicalOwnership": "unknown",
+      "physicalSavings": "unmeasured"
+    }
+  },
+  "independentOf": "No producer/inspector import; exact raw HTTP/query/weak metadata/graph conservation.",
+  "limitations": [
+    "Saved private snapshot with forced GC and synchronous write; no new runtime measurement.",
+    "Collected targets remain explicit gaps; worker-clone and native physical ownership unobserved.",
+    "Producer assertion FAILED on unobserved response links; its harness tag was omitted. This scoped raw audit repairs neither.",
+    "Full executed source graph, full P011 acceptance and production savings remain unmeasured."
+  ]
+}

@@ -27,6 +27,7 @@ export {
   deriveRecipeAuthority,
   findVolatileCoordinationOwnerId,
   findVolatileRunArtifactLiteral,
+  findVolatileSessionIdLiteral,
   findVolatileTaskIdLiteral,
 } from './recipe-authority-derive';
 export type {
@@ -355,6 +356,51 @@ export function recipeRevision(
   return hash.digest('hex');
 }
 
+export interface RecipeAuthorityRevisionDiagnostics {
+  version: 1;
+  computedRevision: string;
+  suppliedRevision?: string;
+  /** Updated-at is non-secret and is needed to compare the exact value at each handler boundary. */
+  updatedAt: string;
+  /** Fingerprints keep script and contract contents out of stale-authority error responses. */
+  inputFingerprints: {
+    script: string;
+    bindingSchema: string | null;
+    capabilityManifest: string | null;
+  };
+}
+
+function sha256Fingerprint(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * Minimal, non-secret evidence for comparing the exact revision inputs used by
+ * recipes:get and recipes:run. The response packet is attached to the normal
+ * tool invocation, whose existing ledger records the serving process identity.
+ */
+export function recipeRevisionDiagnostics(input: {
+  script: string;
+  updatedAt: string;
+  contract?: RecipeRevisionContract;
+  suppliedRevision?: string | null;
+}): RecipeAuthorityRevisionDiagnostics {
+  const contract = input.contract ?? {};
+  return {
+    version: 1,
+    computedRevision: recipeRevision(input.script, input.updatedAt, contract),
+    ...(input.suppliedRevision != null ? { suppliedRevision: input.suppliedRevision } : {}),
+    updatedAt: input.updatedAt,
+    inputFingerprints: {
+      script: sha256Fingerprint(input.script),
+      bindingSchema:
+        contract.bindingSchema == null ? null : sha256Fingerprint(canonicalContractJson(contract.bindingSchema)),
+      capabilityManifest:
+        contract.capabilityManifest == null ? null : sha256Fingerprint(canonicalContractJson(contract.capabilityManifest)),
+    },
+  };
+}
+
 export async function buildRecipeAuthorityRecommendation(input: {
   script: string;
   updatedAt: string;
@@ -478,6 +524,13 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
         'control an unrelated/ended task while appearing to audit the current lane. Declare the task handle as a ' +
         'runtime binding or resolve it from live process authority each run; no authority proof can make a frozen ' +
         'task id reusable.'
+      );
+    case 'volatile-session-id-literal':
+      return (
+        `the recipe script embeds the native session id \`${cause.sessionId}\` as a fixed session value, ` +
+        'which names one reporter rather than the current caller. Reusing the recipe can return a plausible empty ' +
+        'log for the wrong session; declare the id as a validated runtime binding or resolve the current session ' +
+        'from live context each run.'
       );
     case 'volatile-coordination-owner-id':
       return (

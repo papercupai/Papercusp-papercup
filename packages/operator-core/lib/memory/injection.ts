@@ -26,6 +26,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { redactSensitiveText } from '../sensitive-text';
 import { isIdentityPackageHit, packageRecallEligibility, shapeIdentityPackageHits,
   wearerPackageResourcesOrEmpty } from '../blueprint/package-memory-visibility';
 import { getSessionBriefAmbientExcludedRefs } from '../session-brief';
@@ -33,6 +34,9 @@ import { getMemoryBackend, type MemoryEntry, type SearchLegStats } from './backe
 // Type-only: erased at build, so `recall-stats` stays a dynamic import on the
 // telemetry path (see the writer below) rather than being pulled in eagerly.
 import type { CorpusAdmissionDropReason, CorpusAdmissionStats, RecallAdmissionStats } from './recall-stats';
+import { pushSearchFloors } from './push-search-floors';
+export { MEMORY_INJECTION_COSINE_FLOOR, MEMORY_INJECTION_LEX_FLOOR, pushSearchFloors } from './push-search-floors';
+export type { PushSearchFloors } from './push-search-floors';
 import { admittedByLeg, collapseNearDuplicates } from './recall-admission';
 // P-003. Pure — no I/O, no PG, and its two imports are type-only, so this stays
 // a static import while the SNAPSHOT read (which does pull the search graph)
@@ -55,6 +59,7 @@ import {
   withMemoryTimeout,
   createMemoryWorkDeadline,
   type MemoryWorkDeadline,
+  type MemoryTimeoutTelemetry,
 } from './op-deadline';
 
 // P-016: Mirrors EPHEMERAL_BENCHMARK_SLUG_RE in harness/improvements/watchdog.ts.
@@ -82,6 +87,10 @@ const EPHEMERAL_SLUG_RE =
  */
 
 export interface MemoryInjectionInput {
+  /** Server host trust controls access to the added knowledge corpora. */
+  knowledgeSourcesAllowed?: boolean;
+  /** Reader authority supplied by a server-owned port, never by prompt text. */
+  reportViewer?: import('../report-library').ReportViewer;
   /** Shared with prompt preparation and both recall legs; phases cannot reset it. */
   deadline?: MemoryWorkDeadline;
   /**
@@ -302,152 +311,6 @@ function reinjectWindowMs(): number {
   return Number.isFinite(raw) && raw >= 0 ? raw : 120_000;
 }
 
-/**
- * Auto-inject relevance floor (memory-backend-improve-and-hybrid P-001 / P-031 /
- * D-003; RE-CALIBRATED by context-injection-audit-2026-07-28 P-050 / D-058).
- * The PUSH path applies an absolute cosine floor so an off-topic turn is NOT
- * injected with nearest-neighbour noise — the hard-negative FP fix, where there
- * is no LLM in the loop to filter the inject. The push path FAVORS PRECISION: an
- * irrelevant inject pollutes the turn, a missed one is recoverable via the pull
- * path.
- *
- * ⚠ THE PREVIOUS VALUE (0.45) WAS MEASURED WHOLLY INERT — not weak, INERT. In the
- * 2026-08-02 re-sweep (150 gold queries, real corpus.v1, production `cosine-gated`
- * contract) floor 0.45 was IDENTICAL TO NO FLOOR AT ALL in every column: hard-neg
- * FP@5 100%, R@10 98%, MRR 0.92, exact-id MRR 1.00, 0 positives emptied — the same
- * row as floor 0.00. D-006 calibrated 0.45 when the classes were separable
- * (hard-negatives ~0.385 vs real hits ~0.51-0.58); the embedder flip to harrier@1024
- * (P-014/P-015) moved the whole distribution up and nobody re-swept, so the floor
- * sat BELOW the weakest off-topic query's top score (0.4658) and could not reject
- * a single one. The stale doc-comment that used to live here quoted the old space's
- * numbers (FP@5 100%→17%, R@10 ~82%) and read as if it still held.
- *
- * 0.58 is BOTH the F1-max (0.947) and the knee of the marginal-cost curve:
- *   0.52 → 0.58 buys 56 points of FP for 6 points of recall;
- *   0.58 → 0.62 buys 24 more points of FP for 17 points of recall.
- *
- * ⚠ THE ACCEPTED FP RATE IS 27% (8 of 30 hard negatives still admit something),
- * and it is accepted DELIBERATELY, not overlooked. Zero FP is reachable only at
- * 0.65, which empties 45 of 150 queries and halves R@10 (98% → 52%) — the classes
- * genuinely OVERLAP in embedding space (hard-neg tops span 0.4658-0.6250 vs
- * on-topic min 0.5500), so no threshold both admits every real hit and rejects
- * every hard negative. n=30 on that class, so read 27% as ~±16pp at 95%, not as a
- * precise constant.
- *
- * MEASURED COST of 0.45 → 0.58: R@10 98% → 92%, exact-id MRR 1.00 → 0.91, and 4 of
- * 120 positive queries return nothing. The exact-id loss is the one to watch: under
- * `cosine-gated` a lexical-only hit is inadmissible, so a high cosine floor also
- * suppresses exact-identifier lookups the lexical leg would otherwise have caught.
- * If that becomes the binding cost, the fix is an admissible exact-identifier
- * lexical path — NOT lowering this floor back into inertness.
- *
- * ⚠ VALID ONLY UNDER `cosine-gated`. Under `floored-union` the lexical leg admits
- * independently of this value and backfills whatever the floor rejects (D-008), so
- * this number does not transfer to the pull path.
- *
- * Env-tunable via PAPERCUSP_MEMORY_MIN_SCORE; `<= 0` disables.
- *
- * Exported so the bench instruments measure at the EXACT production floor — a
- * single source of truth, not a copied magic number. (`recall-stats.ts`'s
- * COSINE_ADMISSION_FLOOR is a deliberate NON-copy: see the note there.) The
- * `injectMin*` readers below default to these (env-overridable).
- */
-export const MEMORY_INJECTION_COSINE_FLOOR = 0.58;
-export const MEMORY_INJECTION_LEX_FLOOR = 0.4;
-
-function injectMinScore(): number | undefined {
-  const raw = Number(process.env.PAPERCUSP_MEMORY_MIN_SCORE);
-  if (Number.isFinite(raw)) return raw > 0 ? raw : undefined;
-  return MEMORY_INJECTION_COSINE_FLOOR;
-}
-
-/**
- * Hybrid-only PUSH lexical-admission bar (P-031 / D-006). The hybrid backend's
- * default lexical bar (0.30) is recall-favoring for the pull path; the no-LLM
- * push path TIGHTENS it to 0.40 so generic lexical token-overlap on an off-topic
- * turn isn't admitted (cuts push FP at a small exact-id cost). Ignored by
- * non-hybrid backends. Env-tunable.
- */
-function injectMinLexScore(): number | undefined {
-  const raw = Number(process.env.PAPERCUSP_MEMORY_MIN_LEX_SCORE);
-  if (Number.isFinite(raw)) return raw >= 0 ? raw : undefined;
-  return MEMORY_INJECTION_LEX_FLOOR;
-}
-
-/**
- * PUSH-path fusion mode (context-injection-audit-2026-07-28 P-032 / F-B, D-010).
- * THE fix that makes the injected block sized by relevance instead of by K.
- *
- * The hybrid default is `floored-union`, where the lexical leg admits hits on
- * `minLexScore` ALONE — independently of the cosine leg's FP floor — and the
- * fusion then returns `slice(0, limit)`. So the cosine leg could return ZERO and
- * the block still came back FULL, refilled by lexical token-overlap: measured at
- * 97% of turn-start recalls returning exactly the pool-limit sums (D-005), with a
- * 0.0% zero-hit rate. The limit was acting as a TARGET, not a ceiling.
- *
- * Note what was NOT the problem, because it is the natural thing to reach for and
- * it does not work (D-008): the 0.45 cosine floor was firing correctly the whole
- * time. Raising it removes cosine hits and the lexical leg simply back-fills the
- * freed slots — less relevance, same K. The size is decided by ADMISSION, so
- * admission is what has to change.
- *
- * Under `cosine-gated` the candidate set is seeded ONLY from cosine hits
- * (hybrid-fusion.ts) — lexical-only admission is skipped — so membership is
- * governed by the cosine floor and the result is naturally 0..K. A real ceiling.
- * The lexical leg still contributes its RANK to the fused score, so exact-id
- * matches keep re-ranking cosine hits to the top; what is given up is a
- * lexical-only hit the cosine leg missed entirely.
- *
- * PUSH ONLY — deliberately not set on the HybridBackend construction
- * (configure.ts), so the PULL path keeps `floored-union`. A human running
- * memory:search wants recall and can discard a bad hit; auto-injection has no
- * LLM filter downstream, so it wants precision. Same asymmetry that already
- * justifies the push path's tighter minLexScore above. Env-tunable for a
- * one-flip revert if the zero-hit rate overshoots.
- */
-function injectFusionMode(): 'floored-union' | 'cosine-gated' {
-  return process.env.PAPERCUSP_MEMORY_FUSION_MODE === 'floored-union' ? 'floored-union' : 'cosine-gated';
-}
-
-/**
- * THE PUSH-PATH ADMISSION CONTRACT, read in ONE place (P-002).
- *
- * These three values decide TOGETHER which entries an auto-injection may admit:
- * the cosine floor, the lexical bar, and the fusion mode that says whether a
- * lexical-only hit is admissible at all. The third is not a detail — under
- * `floored-union` the lexical leg admits independently of the cosine floor, so
- * the floor's effect on the ADMITTED SET is a function of all three, never of
- * `minScore` alone (D-010, and the reason D-008's "just raise the floor" fails).
- *
- * Exported so the P-002 recurrence guard measures THE CONSTRUCTION THIS PATH
- * RUNS instead of a copy of it — which is the difference between a guard and a
- * decoration. The failure mode is already in the tree: `bench/precision-monitor.ts`
- * documents itself as measuring "the EXACT production push floor" and hardcodes
- * `fusionMode: 'floored-union'` — the value this path STOPPED using when D-010
- * flipped the push default to `cosine-gated`. A copied constant cannot notice it
- * has gone stale, so that monitor has been reporting a shape production no longer
- * runs. A guard frozen the same way would pass forever against the shape it
- * captured on the day it was written.
- *
- * Reading the live values (env overrides included) makes the guard track a
- * retune automatically and FAIL if the floor is removed outright.
- */
-export interface PushSearchFloors {
-  /** Absolute cosine floor for the cosine leg; `undefined` = disabled. */
-  minScore: number | undefined;
-  /** Normalized lexical admission bar; `undefined` = the backend default. */
-  minLexScore: number | undefined;
-  /** Whether a lexical-only hit may be admitted at all. */
-  fusionMode: 'floored-union' | 'cosine-gated';
-}
-
-export function pushSearchFloors(): PushSearchFloors {
-  return {
-    minScore: injectMinScore(),
-    minLexScore: injectMinLexScore(),
-    fusionMode: injectFusionMode(),
-  };
-}
 
 /**
  * PUSH-path diversity re-rank λ (context-injection-audit-2026-07-28 P-034 / F-D,
@@ -521,9 +384,11 @@ function injectBudgetChars(): number {
  * Two levers reach ~8.8 slots and they are NOT equivalent in cost:
  *   - PAPERCUSP_TURN_START_BUDGET_CHARS 4000 -> 8000: ~2x the context spend.
  *   - MAX_ENTRY_CHARS 900 -> 450 (this one): the SAME spend, more entries.
- * The asymmetry favors the clamp: a clamped line keeps scope + id + lede and says
- * "memory:search for the rest", so it stays RECOVERABLE; an entry dropped for budget is
- * invisible to the agent and unrecoverable. The owner was given all three options
+ * The asymmetry favors the clamp: a clamped line keeps scope + id + lede and asks the
+ * agent to have an authorized memory reader retrieve the full entry. It stays
+ * RECOVERABLE without promising that every recipient can call `memory:search`;
+ * an entry dropped for budget is invisible to the agent and unrecoverable. The
+ * owner was given all three options
  * (clamp / raise budget / wait for more data) against the D-089 measurement and picked
  * the clamp, declining the other two [owner 2026-08-09].
  *
@@ -551,6 +416,8 @@ const MAX_ENTRY_CHARS = 450;
 const SLOW_INJECTION_LOG_MS = 750;
 
 export async function buildMemoryContextBlock(input: MemoryInjectionInput): Promise<string | null> {
+  const { sessionAllowsAmbientContext } = await import('../capability-envelope/session-confinement-port');
+  if (!await sessionAllowsAmbientContext({ ownerId: input.session?.sessionId, workspaceId: input.workspaceId })) return null;
   const ownsDeadline = !input.deadline;
   const deadline = input.deadline ?? createMemoryWorkDeadline(MEMORY_INJECT_TIMEOUT_MS);
   input = { ...input, deadline };
@@ -597,7 +464,7 @@ export async function buildMemoryContextBlock(input: MemoryInjectionInput): Prom
     noteCorpusLegHealth(corpus);
     const block = composeWithCorpus(memoryBlock, corpus);
     if (!memoryTimedOut) return block;
-    const notice = '⚠ Memory retrieval was DEGRADED this turn (memory leg: timed-out) — recover missing recall with memory:search.';
+    const notice = '⚠ Memory retrieval was DEGRADED this turn (memory leg: timed-out) — ask an authorized memory reader to recover missing recall before relying on it.';
     return block ? `${block}\n\n${notice}` : notice;
   } finally {
     if (ownsDeadline) deadline.close();
@@ -646,8 +513,36 @@ interface CorpusLegResult {
   dropped: Record<CorpusAdmissionDropReason, number>;
   sessionDedup: number;
   legs: Record<string, unknown> | null;
+  stages?: Record<string, unknown>[];
   retrievalDepth: number;
   rerank: string;
+}
+
+/** Both memory success and early exits record the concurrently completed corpus. */
+function corpusAdmissionStats(corpus: CorpusLegResult | null): CorpusAdmissionStats | null {
+  return corpus ? {
+    outcome: corpus.outcome,
+    returned: corpus.candidateCount,
+    selected: corpus.selected,
+    admitted: corpus.lines.length,
+    dropped: corpus.dropped,
+    gate: corpus.gate ? {
+      verdict: corpus.gate.verdict,
+      reasons: [...corpus.gate.reasons],
+      dropped: corpus.gate.verdict === 'sit-out' ? corpus.selected : 0,
+    } : null,
+    sessionDedup: corpus.sessionDedup,
+    embedderAvailable: corpus.embedderAvailable,
+    legs: corpus.legs,
+    ...(corpus.stages ? { stages: corpus.stages } : {}),
+    retrievalDepth: corpus.retrievalDepth,
+    rerank: corpus.rerank,
+  } : null;
+}
+
+function memoryTimeoutTelemetry(error: unknown): MemoryTimeoutTelemetry | undefined {
+  if (!(error instanceof MemoryTimeoutError) || error.elapsedMs === null) return undefined;
+  return { scope: error.scope, phase: error.phase, elapsedMs: error.elapsedMs };
 }
 
 const emptyCorpusDrops = (): Record<CorpusAdmissionDropReason, number> => ({
@@ -882,9 +777,12 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
 
       const res = await deadline.run(() => recallCorpusContext({
         signal: deadline.signal,
+        deadline,
         queryText,
         workspaceId: input.workspaceId,
         harnessSlugs: input.harnessSlugs ?? [],
+        reportViewer: input.reportViewer,
+        knowledgeSourcesAllowed: input.knowledgeSourcesAllowed,
         declaredWorkItemId,
         ambientExcludedRefs,
         // ⚠ This value is the caller's coord ownerId (`su-xxxx…`), NOT a native
@@ -913,6 +811,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         dropped: countCorpusDrops(res.dropped),
         sessionDedup: 0,
         legs: (res.legs as Record<string, unknown> | null | undefined) ?? null,
+        ...(res.stages ? { stages: res.stages as unknown as Record<string, unknown>[] } : {}),
         retrievalDepth: res.retrievalDepth ?? 0,
         rerank: res.rerank ?? 'nothing-to-reorder',
       } satisfies Pick<
@@ -1028,13 +927,13 @@ function composeWithCorpus(memoryBlock: string | null, corpus: CorpusLegResult |
     // one of them silently.
     //
     // Emitting one line converts an unknown-unknown into a known-degraded the
-    // agent can act on, and `memory:search` is the recovery the rest of this
-    // module already points at for budget-dropped entries.
+    // agent can act on. Ask an authorized memory reader for recovery rather than
+    // assuming this recipient can call a memory tool.
     if (corpus && CORPUS_DEGRADED_OUTCOMES.has(corpus.outcome)) {
       const marker =
         `⚠ Memory retrieval was DEGRADED this turn (corpus leg: ${corpus.outcome}) — ` +
         'context you would normally have is MISSING, not absent. ' +
-        'Recover it on demand with memory:search before relying on recall.';
+        'Ask an authorized memory reader to recover it before relying on recall.';
       return memoryBlock ? `${memoryBlock}\n\n${marker}` : marker;
     }
     return memoryBlock;
@@ -1056,7 +955,11 @@ async function buildBlockInner(
   onRendered: (block: string | null) => void = () => {},
 ): Promise<string | null> {
   const deadline = input.deadline!;
-  const rendered = (block: string | null) => { onRendered(block); return block; };
+  const rendered = (block: string | null) => {
+    const safeBlock = block === null ? null : redactSensitiveText(block);
+    onRendered(safeBlock);
+    return safeBlock;
+  };
   // P-042 (F-J): normalize the accepted forms ONCE, here, so the three readers
   // below share one query object. P-044 (F-L) then splits what is ISSUED into
   // two texts, one per fusion leg: `queryText` (the user text) is embedded by
@@ -1089,10 +992,13 @@ async function buildBlockInner(
     .filter((slug) => typeof slug === 'string' && slug.length > 0)
     .slice(0, MAX_HARNESS_FANOUT);
   let earlyStatsSchedule: Promise<void> | null = null;
-  const writeEarlyZeroRecallStats = (): Promise<void> => {
+  const writeEarlyZeroRecallStats = (timeout?: MemoryTimeoutTelemetry): Promise<void> => {
     if (earlyStatsSchedule) return earlyStatsSchedule;
     earlyStatsSchedule = (async () => {
       try {
+        // The outer builder already joins this promise. Preserve its completed
+        // receipts even when the independent memory backend cannot run.
+        const corpus = await corpusP.catch(() => null);
         const { sql } = getOrgPg();
         const { recordRecallStats } = await import('./recall-stats');
         // Join only the SCHEDULING boundary. The insert itself stays
@@ -1133,6 +1039,8 @@ async function buildBlockInner(
             truncated: false,
             dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, jev: 0, nearDuplicate: 0, budget: 0 },
             byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
+            corpus: corpusAdmissionStats(corpus),
+            ...(timeout ? { timeout } : {}),
           },
         });
       } catch (error) {
@@ -1164,7 +1072,7 @@ async function buildBlockInner(
     }
   } catch (err) {
     noteMemoryFailure(err);
-    await writeEarlyZeroRecallStats();
+    await writeEarlyZeroRecallStats(memoryTimeoutTelemetry(err));
     return null;
   } finally {
     mark('availableMs', Date.now() - tAvail);
@@ -1244,27 +1152,7 @@ async function buildBlockInner(
         // completed build has actually invoked the writer rather than merely
         // leaving an untracked async continuation behind.
         const corpus = await corpusP.catch(() => null);
-        admission.corpus = corpus
-          ? {
-              outcome: corpus.outcome,
-              returned: corpus.candidateCount,
-              selected: corpus.selected,
-              admitted: corpus.lines.length,
-              dropped: corpus.dropped,
-              gate: corpus.gate
-                ? {
-                    verdict: corpus.gate.verdict,
-                    reasons: [...corpus.gate.reasons],
-                    dropped: corpus.gate.verdict === 'sit-out' ? corpus.selected : 0,
-                  }
-                : null,
-              sessionDedup: corpus.sessionDedup,
-              embedderAvailable: corpus.embedderAvailable,
-              legs: corpus.legs,
-              retrievalDepth: corpus.retrievalDepth,
-              rerank: corpus.rerank,
-            }
-          : null;
+        admission.corpus = corpusAdmissionStats(corpus);
         const { sql } = getOrgPg();
         const { recordRecallStats } = await import('./recall-stats');
         // Join only scheduling; the queued insert remains fire-and-forget.
@@ -1431,6 +1319,7 @@ async function buildBlockInner(
     }
   } catch (err) {
     noteMemoryFailure(err);
+    const timeout = memoryTimeoutTelemetry(err);
     if (!(err instanceof MemoryTimeoutError) && process.env.NODE_ENV !== 'test') {
       console.warn('[memory-injection] search failed:', (err as Error).message);
     }
@@ -1446,6 +1335,7 @@ async function buildBlockInner(
         truncated: false,
         dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, jev: 0, nearDuplicate: 0, budget: 0 },
         byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
+        ...(timeout ? { timeout } : {}),
       },
     );
     return null;
@@ -1573,6 +1463,19 @@ async function buildBlockInner(
           harnessHits = harnessHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
           hiveHits = hiveHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
         }
+        const { loadOutcomeCounts, applyOutcomeRerank } = await import('./surfaced-outcomes');
+        const counts = await deadline.run(() => loadOutcomeCounts(sql, [
+          ...userResults.map(h => h.id), ...harnessHits.map(({ hit }) => hit.id), ...hiveHits.map(({ hit }) => hit.id),
+        ]), 'outcomes');
+        userResults = applyOutcomeRerank(userResults, counts);
+        const rerank = <T extends { hit: MemoryEntry }>(rows: T[]): T[] => {
+          const ranked = applyOutcomeRerank(rows.map(row => row.hit), counts);
+          const order = new Map(ranked.map((hit, i) => [hit.id, i]));
+          return rows.map(row => ({ ...row, hit: ranked.find(hit => hit.id === row.hit.id) ?? row.hit }))
+            .sort((a, b) => (order.get(a.hit.id) ?? 0) - (order.get(b.hit.id) ?? 0));
+        };
+        harnessHits = rerank(harnessHits);
+        hiveHits = rerank(hiveHits);
       } catch {
         /* hygiene, never load-bearing */
       } finally {
@@ -1818,7 +1721,7 @@ async function buildBlockInner(
         // >900-char prefix are never mistaken for near-duplicates.
         const boundedText =
           annotatedText.length > MAX_ENTRY_CHARS
-            ? `${annotatedText.slice(0, MAX_ENTRY_CHARS)}… (truncated — memory:search for the rest)`
+            ? `${annotatedText.slice(0, MAX_ENTRY_CHARS)}… (truncated — ask an authorized memory reader for the full entry)`
             : annotatedText;
         return {
           line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${boundedText}`,
@@ -1883,7 +1786,7 @@ async function buildBlockInner(
     if (lines.length === 0) return rendered(null);
     if (truncated) {
       lines.push(
-        '- (more learnings withheld this turn — the memory budget is full; memory:search pulls the rest on demand)',
+        '- (more learnings withheld this turn — the memory budget is full; ask an authorized memory reader to retrieve omitted entries on demand)',
       );
     }
 

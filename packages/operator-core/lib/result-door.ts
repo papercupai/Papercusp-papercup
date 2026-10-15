@@ -36,17 +36,28 @@
  *   - non-text content items (images, resource links) — passed through intact.
  *
  * Kill-switch: PAPERCUSP_RESULT_DOOR_OFF=1 bypasses entirely (operational
- * rollback, mirrors PAPERCUSP_INJECTION_DOOR_OFF). Fail-soft: any error while
- * capping/spilling returns the ORIGINAL result untouched — the door must never
- * turn a good result into a failure.
+ * rollback, mirrors PAPERCUSP_INJECTION_DOOR_OFF). Unexpected errors while
+ * capping/spilling remain fail-soft and return the ORIGINAL result untouched.
+ * A recognized hard spill-write failure instead returns a bounded
+ * `output_spill_failed` error, or a receipt-preserving projection for committed
+ * writes (`scheduler:get_next`, `improvements:agent-review`, `coord:send`,
+ * `work_items:complete`, and `work_items:set_blocker`). A bounded timeout keeps
+ * a typed pending cursor while its already-started writer continues; neither
+ * path re-exposes an over-budget result.
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { projectBoundedPayload, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
+import { dirname } from 'node:path';
+import type { ScratchWriteTimings } from './scratch-gc';
+import { withBoundedTimeout } from './bounded-timeout';
+import { projectBoundedPayload, type BoundedPayloadRecovery, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
+import { compactLeaderBriefForResultDoor } from './agent-tools/fleet/leader-brief-shape';
+import { decode } from '@papercusp/result-encoding';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 import { buildSpillIndex } from './result-door-index';
+import { COORD_SEND_RECEIPT_RECOVERY, isCoordSendDeliveryDiagnostic } from './agent-tools/coordination/tools/inbox-content-bounds';
 import { classifyProjectionBody, type ProjectionBodyShape } from './result-projection';
 import {
   buildOutputEnvelope,
@@ -57,7 +68,10 @@ import {
 } from './output-envelope';
 import {
   contentMetadata,
+  persistVolatileScratchReference,
   scratchReferencePayloadByteOffset,
+  storeVolatileScratchReference,
+  VOLATILE_SCRATCH_REFERENCE_TTL_MS,
   writeScratchReference,
   type ScratchReferenceManifest,
 } from './scratch-reference';
@@ -67,6 +81,8 @@ import {
  *  (getDoorConstantsSync — workspace defaults ⟵ per-session override); un-configured,
  *  it is exactly this value. */
 export const RESULT_DOOR_TOKENS = computeTurnDoors(0).resultEach;
+const RESULT_DOOR_SCRATCH_WRITE_WAIT_MS = 30_000;
+const RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS = 5_000;
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOOL_SEGMENT_REGEX = /^[A-Za-z0-9._:-]+$/;
@@ -88,6 +104,10 @@ export interface DoorableResult {
 export interface ResultDoorOpts {
   /** Canonical tool name (colon form) — names the scratch subdir + pointer line. */
   toolName: string;
+  /** When the outer call is tools:invoke, the nested target whose result reached this door. */
+  nestedTargetToolName?: string;
+  /** Effective per-call effect, including a tool's effectForCall classification. */
+  effect?: 'read' | 'write';
   /** Caller's workspace id; '*'/invalid shapes spill under 'unscoped'. */
   workspaceId?: string | null;
   /** Spawn run id when it is a UUID; otherwise a fresh UUID names the spill dir. */
@@ -113,9 +133,43 @@ export interface ResultDoorOpts {
    * Collector for spill writes deferred off the main thread (WI-10004533). When given,
    * every spill file is written with fs.promises and its promise lands here; the result
    * names files that are NOT on disk yet. Use applyResultDoorAsync rather than passing
-   * this by hand — it awaits the writes and never returns a dangling cursor.
+   * this by hand — it waits boundedly and returns a typed pending cursor if a write runs
+   * past its deadline.
    */
   deferredScratchWrites?: Promise<void>[];
+  /** A spill that outlives the bounded request wait may finish after the response.
+   *  The transport uses this callback to backfill its invocation row on late settlement. */
+  onLateScratchWriteSettled?: (settlement: ResultDoorLateScratchWriteSettlement) => void | Promise<void>;
+  /** Persist the bounded-wait timeout before registering the late-settlement backfill. */
+  onScratchWritePending?: (timeout: ResultDoorScratchWriteTimeout) => void | Promise<void>;
+  /** Phase attribution for awaited spill writes, including failed writes. */
+  onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
+  /** MCP request ID attached to process-local scratch mutex holder diagnostics. */
+  requestTraceId?: string;
+  /** Internal replay of a deferred failure: cap honestly without retrying filesystem I/O. */
+  scratchWriteFailure?: { error: unknown };
+}
+
+export interface ResultDoorLateScratchWriteSettlement {
+  status: 'persisted' | 'failed';
+  spillPath: string;
+  spillUri: string;
+  originalBytes: number;
+  returnedContextBytes: number;
+  reason: string;
+  aggregateOutputEscape: boolean;
+  errorCode?: string;
+}
+
+export interface ResultDoorScratchWriteTimeout {
+  timeoutMs: number;
+  timedOutAt: string;
+  spillPath: string;
+  spillUri: string;
+  originalBytes: number;
+  returnedContextBytes: number;
+  reason: string;
+  aggregateOutputEscape: boolean;
 }
 
 export interface ResultDoorAggregateScope {
@@ -247,16 +301,169 @@ export function resetResultDoorAggregatesForTests(): void {
 const INNER_TRUNCATION_MARKER_REGEX =
   /(?:"((?:\w+_truncated|\w+Truncated))"|(?<![\w"])((?:\w+_truncated|\w+Truncated)))\s*:\s*true\b/g;
 const INNER_TRUNCATION_TEXT_REGEX = /(?:…|\.\.\.)\[TRUNCATED[^\]]*\]/g;
+const INNER_PARTIAL_FLAG_CANDIDATE_REGEX = /(?<!\\)"_partial"\s*:\s*true\b/;
+const SUMMARY_NOTICE_JSON_CANDIDATE_REGEX = /(?<!\\)"summaryNotice"\s*:\s*\{/;
+const SUMMARY_NOTICE_TEXT_MARKER_REGEX = /^\s*summaryNotice\s*:\s*\{\s*truncated\s*:\s*true\b/m;
 
-/** Distinct `*_truncated: true` / `*Truncated: true` marker names found in
- *  `text` (capped — this feeds advisory wording, not an audit). Empty when
- *  none are present. */
-function detectInnerTruncationMarkers(text: string): string[] {
+// coord:thread intentionally returns a bounded window/page and marks fields
+// that have field-specific recovery routes: follow next_page_offset for rows,
+// or use coord:read with the entry's msg_id for omitted envelope details.
+// Those markers are part of its documented response contract, not evidence
+// that this result-door call failed or that its own spill discarded data.
+const COORD_THREAD_RECOVERABLE_TRUNCATION_MARKERS = new Set([
+  'entries_truncated',
+  'thread_metadata_truncated',
+  'thread_entry_truncated',
+  'summary_truncated',
+  'body_truncated',
+  'sections_truncated',
+  'to_truncated',
+]);
+
+function hasPartialFlag(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasPartialFlag);
+  if (value === null || typeof value !== 'object') return false;
+  const object = value as Record<string, unknown>;
+  return object._partial === true || Object.values(object).some(hasPartialFlag);
+}
+
+/** _partial can mark a row or a keyed map. Parse JSON after a cheap candidate
+ *  check so examples embedded in escaped string values do not become markers. */
+function hasStructuredPartialFlag(text: string): boolean {
+  if (!INNER_PARTIAL_FLAG_CANDIDATE_REGEX.test(text)) return false;
+  const jsonSlice = findJsonPrefixSlice(text);
+  try {
+    const value = JSON.parse(jsonSlice ? text.slice(jsonSlice.start, jsonSlice.end) : text);
+    return hasPartialFlag(value);
+  } catch {
+    return false;
+  }
+}
+
+function hasTruncatedSummaryNotice(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasTruncatedSummaryNotice);
+  if (value === null || typeof value !== 'object') return false;
+  const object = value as Record<string, unknown>;
+  const notice = object.summaryNotice;
+  if (notice !== null && typeof notice === 'object' && !Array.isArray(notice)) {
+    if ((notice as Record<string, unknown>).truncated === true) return true;
+  }
+  return Object.values(object).some(hasTruncatedSummaryNotice);
+}
+
+/** code:run marks its already-bounded return with `summaryNotice.truncated`.
+ *  Parse JSON so an example inside a string is not treated as live metadata;
+ *  accept the dedicated bare-text marker form used by diagnostic renderings. */
+function hasStructuredSummaryNoticeTruncation(text: string): boolean {
+  if (SUMMARY_NOTICE_TEXT_MARKER_REGEX.test(text)) return true;
+  if (!SUMMARY_NOTICE_JSON_CANDIDATE_REGEX.test(text)) return false;
+  const jsonSlice = findJsonPrefixSlice(text);
+  try {
+    const value = JSON.parse(jsonSlice ? text.slice(jsonSlice.start, jsonSlice.end) : text);
+    return hasTruncatedSummaryNotice(value);
+  } catch {
+    return false;
+  }
+}
+
+function innerTruncationRecoveryInstruction(
+  toolName: string,
+  markers: readonly string[],
+  nestedTargetToolName?: string,
+): string {
+  if (toolName === 'coord:send') return COORD_SEND_RECEIPT_RECOVERY;
+  const recoveryTarget = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  if (recoveryTarget === 'code:run' && markers.includes('summaryNotice.truncated')) {
+    return (
+      'Read the original unshaped return through `summaryNotice.rawSummaryCursor` with `capability:read`, ' +
+      'following `next_cursor`; the ordinary result-door spill contains only the emitted bounded summary. ' +
+      'If `rawSummaryCursor.status` is `unavailable`, re-run code:run with a smaller return split into bounded slices.'
+    );
+  }
+  if (recoveryTarget === 'work_items:get' && markers.includes('checkpointTruncated')) {
+    return 'The work-item checkpoint was clipped before this result door. Read the exact stored text with work_items:get { id, checkpointOnly:true, offset:0, limit:512 }; follow checkpointPage.nextOffset and restart at offset 0 if checkpointContentHash changes. payloadTier:\'full\' cannot restore checkpoint text already clipped by the tool.';
+  }
+  if (recoveryTarget === 'work_items:get' && markers.includes('bodyTruncated')) {
+    return (
+      'A work-item comment body was clipped by work_items:get\'s threadWindow shaper ' +
+      '(bodyTruncated/bodyChars). Re-read the same work item with payloadTier:\'full\' ' +
+      'and a narrow dispatch projection selecting results[].threadWindow.posts[].body. ' +
+      'Keep the projection narrow so the full response fits the result door; a spill ' +
+      'cannot restore body bytes omitted by the upstream shaper.'
+    );
+  }
+  if (markers.includes('textTruncated') && toolName === 'work_items:get') {
+    return 'The clipped prior-attempt record has a field-specific recovery handle: read its rawRef and pass it in priorAttemptRefs to work_items:get. payloadTier:\'full\' does not expand source text already clipped by the tool.';
+  }
+  if (markers.includes('textTruncated') && toolName === 'tools:invoke') {
+    if (nestedTargetToolName === 'work_items:get') {
+      return 'The nested work_items:get target marked prior-attempt text as textTruncated. Read the affected record rawRef and pass it in priorAttemptRefs to work_items:get. payloadTier:\'full\' does not expand source text already clipped by the tool, and work_items:get has no wider per-field limit argument.';
+    }
+    const target = nestedTargetToolName ? ' (' + nestedTargetToolName + ')' : '';
+    return 'The nested target' + target + ' already marked a field as truncated. Re-read through that target\'s documented field-specific recovery handle or narrower arguments; tools:invoke has no generic per-field limit.';
+  }
+  if (toolName === 'capability:read') {
+    return (
+      'capability:read has no per-field limit; `limit` counts lines. For exact long text, re-read the original ' +
+      'file with `byte_offset` + `byte_limit` (without `evidence_class`) and follow the returned `next_cursor`.'
+    );
+  }
+  return 'The ' + toolName + ' result already marked a field as truncated. Re-read using that field\'s documented recovery handle or narrower arguments; a wider per-field limit may not exist.';
+}
+
+function upstreamProjectionRecoveryInstruction(
+  toolName: string,
+  nestedTargetToolName?: string,
+  innerTruncationMarkers: readonly string[] = [],
+  effect?: 'read' | 'write',
+): string {
+  const recoveryToolName = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  const writeRecovery =
+    recoveryToolName === 'scorecards:emit'
+      ? 'scorecards:emit may have recorded a card. Do NOT repeat this non-idempotent emit to recover fields omitted upstream; ' +
+        'page the reference for its emitted receipt and inspect the scorecard ledger before any follow-up.'
+      : `${recoveryToolName ? `The ${recoveryToolName} write` : 'The nested write'} may have committed. ` +
+        'Do NOT repeat the write to recover fields omitted by upstream shaping; page the reference for its emitted receipt, ' +
+        'then read the operation’s authoritative state before deciding on any follow-up.';
+  const projectionRecovery =
+    effect === 'write' || recoveryToolName === 'scorecards:emit'
+      ? writeRecovery
+      : !recoveryToolName || recoveryToolName === 'tools:invoke'
+        ? 'The outer `tools:invoke` result does not identify a re-callable nested target. ' +
+          'Use the original target\'s documented recovery route; `tools:invoke` cannot invoke itself.'
+        : `Re-call ${recoveryToolName} with payloadTier:'full' (or narrower args) for the missing detail. ` +
+          `If your client validates against the target tool schema, use \`tools:invoke { name:'${recoveryToolName}', args:{ …original args, payloadTier:'full' } }\`. `;
+  if (recoveryToolName === 'coord:send') return COORD_SEND_RECEIPT_RECOVERY;
+  if (recoveryToolName === 'plans:start') return PLANS_START_RECEIPT_RECOVERY;
+  if (innerTruncationMarkers.length === 0) return projectionRecovery;
+
+  // Upstream payload shaping and tool-owned field bounds are independent loss
+  // sources. Keep both recovery routes visible: e.g. work_items:get's clipped
+  // prior-attempt text needs priorAttemptRefs, while other tier-omitted fields
+  // need a full-tier or narrower re-read.
+  return (
+    `${innerTruncationRecoveryInstruction(toolName, innerTruncationMarkers, nestedTargetToolName)} ` +
+    `For other fields omitted by the upstream payload projection, ${projectionRecovery}`
+  );
+}
+
+/** Distinct truncation and partial marker names found in text (capped — this
+ *  feeds advisory wording, not an audit). Empty when none are present. */
+function detectInnerTruncationMarkers(
+  text: string | readonly string[],
+  toolName: string,
+  nestedTargetToolName?: string,
+): string[] {
+  const textItems = typeof text === 'string' ? [text] : [...text];
+  const sourceText = textItems.join('\n\n');
+  const diagnosticToolName = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
   const found = new Set<string>();
   INNER_TRUNCATION_MARKER_REGEX.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = INNER_TRUNCATION_MARKER_REGEX.exec(text))) {
-    found.add(m[1] ?? m[2]);
+  while ((m = INNER_TRUNCATION_MARKER_REGEX.exec(sourceText))) {
+    const marker = m[1] ?? m[2];
+    if (isCoordSendDeliveryDiagnostic(diagnosticToolName, marker)) continue;
+    found.add(marker);
     if (found.size >= 5) break;
   }
   // Work-item and other custom shapers also put the cutoff directly in the
@@ -264,8 +471,20 @@ function detectInnerTruncationMarkers(text: string): string[] {
   // named marker for that shape so a hard reference spill cannot promise bytes
   // that the upstream shaper never serialized.
   INNER_TRUNCATION_TEXT_REGEX.lastIndex = 0;
-  if (INNER_TRUNCATION_TEXT_REGEX.test(text)) found.add('textTruncated');
+  if (INNER_TRUNCATION_TEXT_REGEX.test(sourceText)) found.add('textTruncated');
+  if (textItems.some(hasStructuredPartialFlag)) found.add('_partial');
+  if (textItems.some(hasStructuredSummaryNoticeTruncation)) found.add('summaryNotice.truncated');
   return [...found];
+}
+
+function hasOnlyRecoverableCoordThreadMarkers(
+  markers: readonly string[],
+  toolName: string,
+  nestedTargetToolName?: string,
+): boolean {
+  const target = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  return target === 'coord:thread' && markers.length > 0 &&
+    markers.every((marker) => COORD_THREAD_RECOVERABLE_TRUNCATION_MARKERS.has(marker));
 }
 
 /**
@@ -315,6 +534,14 @@ function detectInnerTruncationMarkers(text: string): string[] {
  * `pipe`, which on a JSON body is the all-or-nothing trap this hint exists to
  * warn about — a no-match returns an EMPTY body that reads like a filter that
  * worked. Callers that have already classified MUST pass their shape.
+ *
+ * oversized-tool-results-reduction-2026-10-12#D-005 changed the `pipe` half:
+ * `applyProjection` now renders a pipe-only JSON body with 2-space indentation
+ * before the line operators run, so `grep`/`head` cut it by field line instead
+ * of keeping all or nothing. `pick` still leads (it returns JSON; `pipe` returns
+ * lines), but the hint no longer claims `pipe` cannot reduce a JSON body. This
+ * hint is emitted by the same build that runs `applyProjection`, so the two
+ * cannot disagree.
  */
 export function buildProjectionHint(
   textItems: ReadonlyArray<{ text: string }>,
@@ -328,13 +555,21 @@ export function buildProjectionHint(
   // tokens per 6d to fix a correctness bug. Every variant below is now AT OR
   // UNDER the constant's 420. Keep it that way: measure a wording change here,
   // do not eyeball it.
-  const lead = ` ⓘ Get only what you need in ONE call instead of paging this spill: `;
+  const lead = ' ⓘ ';
+  // Keep these hints short: `next` shares the output budget with the retained
+  // preview. A longer variant evicted `_projection.omitted` samples from an
+  // events:status result, hiding which history rows were cut (EI-25740925774324505).
   const asString = ` \`projection\` also accepts a JSON STRING.`;
+  const searchIt = ` Search: \`capability:read { file_path, query:"terms" }\`, then view_lines.`;
   let shape: { json: unknown; lineCount: number };
+  let hasOversizedLine: boolean;
   try {
     // A caller-supplied classification is authoritative: it is the one the door
     // actually acted on when it wrote the spill. Only re-derive when absent.
     shape = preClassified ?? classifyProjectionBody(textItems);
+    hasOversizedLine = textItems.some(({ text }) =>
+      text.split(/\r?\n/).some((line) => Buffer.byteLength(line, 'utf8') > CAPABILITY_READ_MAX_BYTE_PAGE),
+    );
   } catch {
     // Fail-soft to the payload-agnostic wording rather than losing the hint.
     return (
@@ -344,24 +579,33 @@ export function buildProjectionHint(
   }
   if (shape.json) {
     return (
-      `${lead}\`projection: { pick: ["results[].id","results[].state"] }\`. This body is JSON on ` +
-      `${shape.lineCount} line(s), so \`pick\` is what reduces it — the \`pipe\` line-operators are ` +
-      `all-or-nothing here (a no-match returns an EMPTY body, which reads like a filter that ` +
-      `worked).${asString}`
+      `${lead}JSON (${shape.lineCount} line(s)): \`projection: { pick: ["results[].id"] }\`; ` +
+      `\`pick\` is what reduces it; \`pipe\` filters the indented lines.${asString}${searchIt}`
     );
   }
+  // capability:read's scratch-reference guard runs inside the handler, before
+  // dispatch-level projection can shrink the returned content. A line beyond
+  // the byte-page threshold therefore needs the exact byte-page cursor.
+  if (hasOversizedLine) {
+    return (
+      `${lead}${shape.lineCount} lines of non-JSON text include a line over ` +
+      `${CAPABILITY_READ_MAX_BYTE_PAGE} bytes; use capability:read cursor.args ` +
+      `(byte_offset+byte_limit; no raw) and follow next_cursor.`
+    );
+  }
+  // The spill's own query mode filters the saved body inside capability:read,
+  // before it renders a line window and checks that window against the result
+  // door. Dispatch-level `projection.pipe` runs later and cannot recover from
+  // that handler refusal, so point multi-line spills at the bounded query path.
   if (shape.lineCount > 1) {
     return (
-      `${lead}\`projection: { pipe: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }\`. This body ` +
-      `is ${shape.lineCount} lines of non-JSON text, so the line-operators are what reduce it: grep ` +
-      `(fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count, applied in ` +
-      `order. \`pick\` does not apply here (it selects JSON fields).${asString}`
+      `${lead}${shape.lineCount} lines of non-JSON text: search the spill with ` +
+      `\`capability:read { file_path, query:"terms" }\` (all terms, context and coverage), then view_lines.${asString}`
     );
   }
   return (
-    ` ⓘ \`projection\` cannot help here: a single non-JSON line, so \`pick\` (JSON fields) and the ` +
-    `\`pipe\` line-operators are both all-or-nothing on it. Page the spill with a bounded read, or ` +
-    `re-call ${toolName} with narrower arguments.`
+    `${lead}\`projection\` cannot help with one non-JSON line; \`pick\` and \`pipe\` cannot narrow it. Page the spill or re-call ` +
+    `${toolName} with narrower arguments.`
   );
 }
 
@@ -410,7 +654,15 @@ const PIPELINE_POSITION_TOOL = 'dev:pipeline_position';
  * render exactly like a failed one (EI-23481355842555588).
  */
 const COORD_SEND_DELIVERY_PRESERVE_PATHS = [
+  'ok',
+  'partial',
+  'counts.ok',
+  'counts.failed',
+  'deliveryFailureWarning',
   'results[].msg_id',
+  'results[].ok',
+  'results[].error',
+  'results[].to',
   'results[].queued',
   'results[].woken',
   'results[].wakeOutcome',
@@ -422,6 +674,297 @@ const COORD_SEND_DELIVERY_PRESERVE_PATHS = [
   'results[].wake.pickupConfirmed',
   'results[].wake.recipient_absent',
 ] as const;
+
+/**
+ * `work_items:complete` is a write. If its oversized response cannot be saved,
+ * callers still need the per-item write verdicts so they can inspect persisted
+ * state instead of replaying the close. Keep these ahead of the echoed workItem
+ * and completion records, which are the bulk that caused the spill.
+ */
+const WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS = [
+  'ok',
+  'counts.ok',
+  'counts.failed',
+  'results[].ok',
+  'results[].id',
+  'results[].error',
+  'results[].stateError',
+  'results[].stateWarning',
+  'results[].aliased',
+  'results[].requestedState',
+  'results[].appliedState',
+  'results[].completionAuthority',
+  'results[].countsTowardBurnDown',
+  'results[].authorityWarning',
+  'results[].requirementShortfallWarning',
+  'results[].terminalConflictWarning',
+  'results[].workItem.id',
+  'results[].workItem.state',
+  'results[].workItem.terminalCompletionRef',
+  'results[].finish.complete',
+  'results[].finishFailed',
+] as const;
+
+/**
+ * `work_items:set_blocker` can persist the typed blocker before its oversized
+ * response is spilled. Keep enough of each row to identify committed and
+ * partial writes, then let callers read the authoritative current blocker
+ * state instead of replaying the mutation when scratch storage is unavailable.
+ */
+const WORK_ITEMS_SET_BLOCKER_RECEIPT_PRESERVE_PATHS = [
+  'ok',
+  'counts.ok',
+  'counts.failed',
+  'results[].ok',
+  'results[].id',
+  'results[].changed',
+  'results[].error',
+  'results[].code',
+  'results[].partialOutcome.blockerHistoryPersisted',
+  'results[].partialOutcome.lifecycleApplied',
+  'results[].partialOutcome.currentState',
+  'results[].partialOutcome.activeBlockerCount',
+  'results[].partialOutcome.recoveryAction',
+  'results[].activeBlockers[].kind',
+  'results[].activeBlockers[].ref',
+  'results[].activeBlockers[].capability',
+  'results[].activeBlockers[].summary',
+  'results[].activeBlockers[].nextVerb',
+  'results[].activeBlockers[].status',
+  'results[].capabilityDisposition.capability',
+  'results[].capabilityDisposition.disposition',
+  'results[].capabilityDispositions[].capability',
+  'results[].capabilityDispositions[].disposition',
+  'results[].workItem.id',
+  'results[].workItem.state',
+  'results[].workItem.harness',
+  'results[].autoCleared',
+] as const;
+
+/**
+ * work_items:release can clear a claim before its oversized response is spilled.
+ * Keep the release outcome and current row identity so callers can verify state
+ * instead of replaying the release when scratch storage is unavailable.
+ */
+const WORK_ITEMS_RELEASE_RECEIPT_PRESERVE_PATHS = [
+  'ok',
+  'counts.ok',
+  'counts.failed',
+  'results[].ok',
+  'results[].id',
+  'results[].error',
+  'results[].released',
+  'results[].previousAssignee',
+  'results[].noop',
+  'results[].forced',
+  'results[].claimHold',
+  'results[].claimHoldFailed',
+  'results[].claimHoldRelease.condition',
+  'results[].claimHoldRelease.trigger',
+  'results[].claimHoldRelease.owner',
+  'results[].workItem.id',
+  'results[].workItem.state',
+  'results[].workItem.assignee',
+  'results[].workItem.harness',
+] as const;
+
+/**
+ * `scorecards:emit` can commit a card before its oversized response is spilled.
+ * Keep its durable write receipt and the degenerate-distribution verdict
+ * addressable if the spill fails, so callers do not replay a non-idempotent
+ * emit to recover them.
+ */
+const SCORECARDS_EMIT_SPILL_PRESERVE_PATHS = [
+  'ok',
+  'committed',
+  'completionReceipt',
+  'canonicalRatings.degenerate-distribution.rating',
+  'created',
+  'issueId',
+  'previousIssueId',
+] as const;
+
+// A failed admission does not roll back approval or promotion. Retain the
+// committed legs beside the refusal; the immutable spill holds full diagnostics.
+const PLANS_START_RECEIPT_PRESERVE_PATHS = [
+  'ok', 'counts.ok', 'counts.failed',
+  'results[].ok', 'results[].slug', 'results[].harnessSlug', 'results[].error',
+  'results[].autoApproved', 'results[].transitioned',
+  'results[].promotion.promoted', 'results[].promotion.skipped',
+  'results[].promotion.flagOff', 'results[].promotionError',
+  'results[].promotedBlock.changed', 'results[].promotedBlock.rows',
+  'results[].promotedBlockError',
+  'results[].admission.ready', 'results[].admission.reason',
+  'results[].admission.message', 'results[].admissionError',
+  'results[].claimSpecBinding.ok', 'results[].claimSpecBindingError',
+  'results[].message', 'results[].promotion.workItems[].workItemId',
+] as const;
+
+const PLANS_START_RECEIPT_RECOVERY =
+  'plans:start may have approved the plan and promoted items before returning a refusal. ' +
+  'Do NOT repeat plans:start to recover its receipt. Page the original response with capability:read; ' +
+  'fields already omitted upstream cannot be recovered from that copy. Read plans:get for each preserved ' +
+  'slug/harnessSlug and work_items:get for promoted workItemIds to inspect current state before follow-up.';
+
+const FLEET_ADMISSION_RECEIPT_PRESERVE_PATHS = [
+  'ok', 'error', 'reason', 'message', 'blockingPlanItemIds', 'blockingWorkItemIds', 'namedFloors',
+  'repairCall', 'repairCall.tool', 'repairCall.args', 'repairCall.effect', 'blockerCounts',
+  'fleet', 'plan', 'harness',
+] as const;
+
+function isFleetLaunchCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'fleet:launch-on-plan' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'fleet:launch-on-plan');
+}
+
+function isPlansStartCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'plans:start' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'plans:start');
+}
+
+function isWorkItemsCompleteCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'work_items:complete' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:complete');
+}
+
+function isWorkItemsSetBlockerCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'work_items:set_blocker' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:set_blocker');
+}
+
+function isWorkItemsReleaseCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'work_items:release' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:release');
+}
+
+function isWorkItemsGetCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'work_items:get' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:get');
+}
+
+function isScorecardsEmitCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
+  return input.toolName === 'scorecards:emit' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'scorecards:emit');
+}
+
+const WORK_ITEMS_COMPLETE_SPILL_RECOVERY =
+  'The work_items:complete write may already have committed before its response spill failed. Do NOT repeat this call. ' +
+  'Read each preserved results[].id with work_items:get and inspect the current item state and completionAuthority ' +
+  'before deciding any follow-up; the omitted echo cannot be recovered.';
+
+const WORK_ITEMS_RELEASE_SPILL_RECOVERY =
+  'The work_items:release write may already have unassigned or parked one or more items. Do NOT repeat this call. ' +
+  'Read the affected item IDs with work_items:get and inspect current assignee, state, claimHold, and checkpoint before deciding any follow-up.';
+
+const SCORECARDS_EMIT_SPILL_RECOVERY =
+  'scorecards:emit may have recorded a card before its response spill failed. Do NOT repeat this non-idempotent emit. ' +
+  'Use the preserved committed flag, completionReceipt, issueId, and canonicalRatings.degenerate-distribution.rating ' +
+  'to determine the write outcome; the omitted response bytes cannot be recovered.';
+
+const SCORECARDS_EMIT_UNKNOWN_SPILL_RECOVERY =
+  'The scorecards:emit write outcome is unknown. Do NOT repeat this non-idempotent emit. Re-read the target or ' +
+  'scorecard ledger to resolve whether it committed before any retry.';
+
+function workItemsBulkReceiptBody(
+  result: DoorableResult,
+  accept: (value: JsonObject) => boolean = (value) => Array.isArray(value.results),
+): JsonObject | undefined {
+  const textBodies = result.content.filter(isTextItem).map((item) => {
+    try {
+      return JSON.parse(item.text) as unknown;
+    } catch {
+      const toon = /^format:\s*toon\s*\r?\n/.exec(item.text);
+      if (!toon) return null;
+      try {
+        return decode(item.text.slice(toon[0].length), 'toon');
+      } catch {
+        return null;
+      }
+    }
+  });
+  return [result.structuredContent, ...textBodies].find(
+    (value): value is JsonObject => isJsonObject(value) && accept(value),
+  );
+}
+
+function workItemsSetBlockerReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): { body: JsonObject; readArgs: { ids: string[]; harness?: string } } | undefined {
+  if (!isWorkItemsSetBlockerCall(opts)) return undefined;
+  const body = workItemsBulkReceiptBody(result);
+  if (!body || !Array.isArray(body.results)) return undefined;
+  const rows = body.results.filter(isJsonObject);
+  const committedRows = rows.filter((row) =>
+    row.changed === true ||
+    (isJsonObject(row.partialOutcome) &&
+      (row.partialOutcome.blockerHistoryPersisted === true || row.partialOutcome.dependencyEdgesMayBePersisted === true)),
+  );
+  const ids = [...new Set(committedRows.flatMap((row) =>
+    typeof row.id === 'string' && row.id.length > 0 ? [row.id] : [],
+  ))];
+  if (ids.length === 0) return undefined;
+  const harnesses = [...new Set(committedRows.flatMap((row) =>
+    isJsonObject(row.workItem) && typeof row.workItem.harness === 'string' ? [row.workItem.harness] : [],
+  ))];
+  return {
+    body,
+    readArgs: { ids, ...(harnesses.length === 1 ? { harness: harnesses[0] } : {}) },
+  };
+}
+
+function workItemsReleaseReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): { body: JsonObject; readArgs: { ids: string[]; harness?: string } } | undefined {
+  if (!isWorkItemsReleaseCall(opts)) return undefined;
+  const body = workItemsBulkReceiptBody(result);
+  if (!body || !Array.isArray(body.results)) return undefined;
+  const rows = body.results.filter(isJsonObject);
+  const ids = [...new Set(rows.flatMap((row) =>
+    typeof row.id === 'string' && row.id.length > 0 ? [row.id] : [],
+  ))];
+  if (ids.length === 0) return undefined;
+  const harnesses = [...new Set(rows.flatMap((row) =>
+    isJsonObject(row.workItem) && typeof row.workItem.harness === 'string' ? [row.workItem.harness] : [],
+  ))];
+  return {
+    body,
+    readArgs: { ids, ...(harnesses.length === 1 ? { harness: harnesses[0] } : {}) },
+  };
+}
+
+function workItemsReleaseRecovery(
+  receipt: NonNullable<ReturnType<typeof workItemsReleaseReceipt>>,
+) {
+  const args = JSON.stringify(receipt.readArgs);
+  return {
+    cursor: { kind: 'release-outcome-check', tool: 'work_items:get', args: receipt.readArgs },
+    next:
+      'The work_items:release write may already have unassigned or parked ' +
+      receipt.readArgs.ids.join(', ') + '. Do NOT repeat this call. Read work_items:get ' + args +
+      ' and inspect current assignee, state, claimHold, and checkpoint before follow-up.',
+  };
+}
+
+function workItemsSetBlockerRecovery(
+  receipt: NonNullable<ReturnType<typeof workItemsSetBlockerReceipt>>,
+) {
+  const args = JSON.stringify(receipt.readArgs);
+  return {
+    cursor: { kind: 'committed-blocker-write', tool: 'work_items:get', args: receipt.readArgs },
+    next:
+      `The work_items:set_blocker write committed for ${receipt.readArgs.ids.join(', ')}. ` +
+      `Do NOT repeat this mutation. Read work_items:get ${args} and inspect each item's current blockers ` +
+      'and lifecycle before deciding any follow-up; the omitted response details cannot be recovered.',
+  };
+}
+
+const WORK_ITEMS_SET_BLOCKER_SPILL_RECOVERY =
+  'The work_items:set_blocker write may already have committed before its response spill failed. ' +
+  'Do NOT repeat this mutation. Read work_items:get for the submitted item ids and inspect current blockers ' +
+  'and lifecycle before deciding any follow-up; the omitted response details cannot be recovered.';
+
 /**
  * `dev:pipeline_position`'s marker argument exists to settle these verdicts,
  * but the handler's compact response places them after the verbose gate/queue
@@ -429,6 +972,7 @@ const COORD_SEND_DELIVERY_PRESERVE_PATHS = [
  * this later, generic door has to project the response again.
  */
 const PIPELINE_POSITION_PRESERVE_PATHS = [
+  'currentBuildTestRoute',
   'changeInCandidate.markerJudging',
   'changeInCandidate.markerNext',
   'changeInCandidate.judgingSha',
@@ -444,6 +988,132 @@ type JsonObject = Record<string, unknown>;
 
 function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function scorecardsEmitReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): JsonObject | undefined {
+  if (!isScorecardsEmitCall(opts)) return undefined;
+  const textBodies = result.content.filter(isTextItem).map((item) => {
+    try {
+      return JSON.parse(item.text) as unknown;
+    } catch {
+      const toon = /^format:\s*toon\s*\r?\n/.exec(item.text);
+      if (!toon) return null;
+      try {
+        return decode(item.text.slice(toon[0].length), 'toon');
+      } catch {
+        return null;
+      }
+    }
+  });
+  const body = [result.structuredContent, ...textBodies].find((value): value is JsonObject =>
+    isJsonObject(value) && isJsonObject(value.completionReceipt));
+  if (!body) return undefined;
+
+  const receipt = isJsonObject(body.completionReceipt) ? body.completionReceipt : {};
+  const committed = receipt.status === 'recorded'
+    ? true
+    : receipt.status === 'not-recorded'
+      ? false
+      : undefined;
+  return {
+    ...body,
+    ...(committed !== undefined ? { committed } : {}),
+  };
+}
+
+function schedulerClaimReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): { body: JsonObject; readArgs: { id: string; harness?: string } } | undefined {
+  if (opts.toolName !== 'scheduler:get_next' &&
+      !(opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'scheduler:get_next')) {
+    return undefined;
+  }
+  const body = [result.structuredContent, ...result.content.filter(isTextItem).map((item) => {
+    try {
+      return JSON.parse(item.text) as unknown;
+    } catch {
+      return null;
+    }
+  })].find((value): value is JsonObject => {
+    if (!isJsonObject(value) || !isJsonObject(value.claimReceipt)) return false;
+    return value.claimReceipt.committed === true && typeof value.claimReceipt.workItemId === 'string';
+  });
+  if (!body || !isJsonObject(body.claimReceipt)) return undefined;
+  const id = body.claimReceipt.workItemId as string;
+  if (!id) return undefined;
+  const harness = isJsonObject(body.workItem) && typeof body.workItem.harness === 'string'
+    ? body.workItem.harness
+    : undefined;
+  return { body, readArgs: { id, ...(harness ? { harness } : {}) } };
+}
+
+function schedulerClaimRecovery(claim: NonNullable<ReturnType<typeof schedulerClaimReceipt>>) {
+  return {
+    cursor: { kind: 'committed-claim', tool: 'work_items:get', args: claim.readArgs },
+    next:
+      `The scheduler claim for ${claim.readArgs.id} is committed. Do not retry scheduler:get_next. ` +
+      `Read work_items:get ${JSON.stringify(claim.readArgs)} ` +
+      'for the current item details, then check its governing plan decisions before acting.',
+  };
+}
+
+type AgentReviewClaimReceipt = {
+  body: JsonObject;
+  readArgs: { id: string; harness?: string };
+  ideaId?: string;
+};
+
+function agentReviewClaimReceipt(
+  result: DoorableResult,
+  opts: { toolName: string; nestedTargetToolName?: string },
+): AgentReviewClaimReceipt | undefined {
+  if (opts.toolName !== 'improvements:agent-review' &&
+      !(opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'improvements:agent-review')) {
+    return undefined;
+  }
+  const body = [result.structuredContent, ...result.content.filter(isTextItem).map((item) => {
+    try {
+      return JSON.parse(item.text) as unknown;
+    } catch {
+      return null;
+    }
+  })].find((value): value is JsonObject => {
+    if (!isJsonObject(value) || value.claimed !== true || !isJsonObject(value.workItem)) return false;
+    return typeof value.workItem.id === 'string';
+  });
+  if (!body || !isJsonObject(body.workItem)) return undefined;
+
+  const workItem = body.workItem;
+  const id = typeof workItem.id === 'string' ? workItem.id : undefined;
+  if (!id) return undefined;
+  const harness = typeof workItem.harness === 'string' ? workItem.harness : undefined;
+  const gradeWith = isJsonObject(body.gradeWith) ? body.gradeWith : undefined;
+  const ideaId = typeof body.ledgerIdeaId === 'string'
+    ? body.ledgerIdeaId
+    : typeof gradeWith?.ideaId === 'string'
+      ? gradeWith.ideaId
+      : undefined;
+  return {
+    body,
+    readArgs: { id, ...(harness ? { harness } : {}) },
+    ...(ideaId ? { ideaId } : {}),
+  };
+}
+
+function agentReviewClaimRecovery(claim: AgentReviewClaimReceipt) {
+  return {
+    cursor: { kind: 'committed-review-claim', tool: 'work_items:get', args: claim.readArgs },
+    next:
+      `The peer-review claim for ${claim.readArgs.id} is committed. Do not retry improvements:agent-review. ` +
+      `Read work_items:get ${JSON.stringify(claim.readArgs)} for the full item details` +
+      (claim.ideaId
+        ? `, then grade its routed idea with blender:grade-idea { ideaId: ${JSON.stringify(claim.ideaId)} }.`
+        : '.'),
+  };
 }
 
 /** Keep evaluator decisions inline; verbose evidence remains in the spill. */
@@ -521,6 +1191,144 @@ function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: st
   if (!toolName.includes('.') && !toolName.includes(':')) toolName = `tool:${toolName}`;
   const runId = opts.runId && UUID_V4_REGEX.test(opts.runId) ? opts.runId : randomUUID();
   return { workspaceId, toolName, runId };
+}
+
+function cacheFailedSpill(input: {
+  opts: ResultDoorOpts;
+  payload: Buffer | string;
+  mediaType: string;
+  content: ReturnType<typeof contentMetadata>;
+  evidence?: ReturnType<typeof detectResultEvidence>;
+  bodyOffsetInPayload?: number;
+}): NonNullable<ReturnType<typeof storeVolatileScratchReference>> | null {
+  try {
+    const parts = scratchParts(input.opts);
+    return storeVolatileScratchReference({
+      payload: input.payload,
+      workspaceId: parts.workspaceId,
+      ownerId: input.opts.ownerId,
+      audience: input.opts.ownerId ? 'owner' : 'workspace',
+      mediaType: input.mediaType,
+      content: input.content,
+      evidence: input.evidence,
+      bodyOffsetInPayload: input.bodyOffsetInPayload,
+    });
+  } catch {
+    // The emergency cache is strictly best-effort; the caller still returns a
+    // bounded, explicitly unavailable cursor if the fallback itself cannot fit.
+    return null;
+  }
+}
+
+function volatileScratchRecovery(
+  fallback: NonNullable<ReturnType<typeof storeVolatileScratchReference>>,
+  bodyComplete: boolean,
+  toolName: string,
+  spillErrorCode: string | null = null,
+  spillErrorSummary: string | null = null,
+) {
+  const spillDiagnostic = [
+    spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : null,
+    spillErrorSummary,
+  ].filter(Boolean).join('; ');
+  const persistenceStatus = spillErrorCode === 'ETIMEDOUT'
+    ? 'Primary scratch persistence exceeded its response deadline; its writer may still settle'
+    : 'Primary scratch persistence failed';
+  return {
+    cursor: {
+      kind: 'volatile-scratch-page',
+      tool: 'capability:read',
+      reason: 'spill-write-failed',
+      ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+      ...(spillErrorSummary ? { errorDetail: spillErrorSummary } : {}),
+      args: { uri: fallback.uri, byte_offset: 0, byte_limit: 3_072 },
+      uri: fallback.uri,
+      maxByteLimit: CAPABILITY_READ_MAX_BYTE_PAGE,
+      dataEncoding: 'base64',
+      expiresAt: fallback.manifest.expiresAt,
+      ...(fallback.manifest.bodyOffsetInPayload !== undefined
+        ? { bodyOffsetInPayload: fallback.manifest.bodyOffsetInPayload, ...(!bodyComplete ? { bodyComplete: false } : {}) }
+        : {}),
+    },
+    next:
+      persistenceStatus +
+      (spillDiagnostic ? ' (' + spillDiagnostic + ')' : '') +
+      '; an exact in-process copy is available until ' + fallback.manifest.expiresAt + '. ' +
+      `Read cursor.args with capability:read and follow next_cursor until eof. This URI is not a file and is ` +
+      `lost on server restart or cache eviction. ` +
+      (bodyComplete
+        ? 'The copy preserves the exact bytes received by the result door from ' + toolName + '.'
+        : 'The copy preserves the bytes received by the result door from ' + toolName + '; fields already omitted upstream remain absent.'),
+  };
+}
+
+function preferVolatileScratchRecovery(
+  volatileRecovery: ReturnType<typeof volatileScratchRecovery> | undefined,
+  fallback: BoundedPayloadRecovery,
+  volatileNote: string = fallback.next,
+): BoundedPayloadRecovery {
+  return volatileRecovery
+    ? { cursor: volatileRecovery.cursor, next: volatileRecovery.next + ' ' + volatileNote }
+    : fallback;
+}
+
+function volatileScratchRecoveryForTool(
+  recovery: ReturnType<typeof volatileScratchRecovery>,
+  toolName: string,
+  nestedTargetToolName?: string,
+) {
+  const target = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  const note = target === 'coord:send'
+    ? 'The delivery outcome is unknown; do NOT repeat the send until checking coord:feed or coord:inbox. ' +
+      COORD_SEND_RECEIPT_RECOVERY
+    : target === 'work_items:complete'
+      ? 'The complete work_items:complete response is available in the volatile page above. ' +
+        'Do NOT repeat this call; read work_items:get to confirm current item state before follow-up.'
+      : target === 'work_items:set_blocker'
+        ? 'The work_items:set_blocker mutation may have committed. Do NOT repeat it; read work_items:get to inspect current blocker state.'
+        : target === 'scorecards:emit'
+          ? 'The scorecards:emit outcome must be established from the volatile page and scorecard ledger. ' +
+            'Do NOT repeat this non-idempotent emit; inspect completionReceipt if present.'
+          : target === 'improvements:agent-review'
+            ? 'The peer-review claim may have committed. Do NOT repeat improvements:agent-review; inspect the claim before follow-up.'
+            : target === 'plans:start'
+              ? PLANS_START_RECEIPT_RECOVERY
+              : undefined;
+  return note
+    ? { cursor: recovery.cursor, next: recovery.next + ' ' + note }
+    : recovery;
+}
+
+function spillFailureDetails(error: unknown, candidatePaths: Array<string | undefined>) {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : undefined;
+  const rawMessage = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : typeof record?.message === 'string'
+        ? record.message
+        : error == null
+          ? 'empty rejection'
+          : (() => {
+              try { return JSON.stringify(error) ?? String(error); }
+              catch { return String(error); }
+            })();
+  const code = typeof record?.code === 'string' ? record.code : 'unknown error';
+  const name = error instanceof Error
+    ? error.name
+    : typeof record?.name === 'string'
+      ? record.name
+      : 'Error';
+  let safeMessage = rawMessage.replace(/[\r\n\t]+/g, ' ').trim();
+  const paths = [...new Set(candidatePaths.filter((path): path is string => Boolean(path)))];
+  for (const path of paths.sort((a, b) => b.length - a.length)) {
+    safeMessage = safeMessage.replaceAll(path, '<scratch path>');
+  }
+  return {
+    error: rawMessage,
+    code,
+    summary: `${name}${safeMessage ? `: ${safeMessage}` : ''}`.slice(0, 240),
+  };
 }
 
 interface JsonPrefixSlice {
@@ -699,7 +1507,8 @@ export function detectResultEvidence(content: readonly unknown[]): Array<{
 type SpillReason =
   | 'aggregate-output-budget-exceeded'
   | 'non-text-result-budget-exceeded'
-  | 'explicit-full-request-overflow';
+  | 'explicit-full-request-overflow'
+  | 'under-budget-partial-result';
 
 /**
  * The one actionable fact each spill reason implies, stated where the MODEL
@@ -719,24 +1528,90 @@ type SpillReason =
  */
 function spillRecoveryNote(
   reason: SpillReason,
-  input: { upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] } = {},
+  input: { toolName: string; nestedTargetToolName?: string; effect?: 'read' | 'write'; upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] },
 ): string {
+  const referenceReader =
+    'The `uri` in `content` is a framed scratch-reference container, not a raw JSON file. ' +
+    'Read it with `capability:read` to validate and unwrap its manifest before parsing the payload. ';
   const recoverable =
-    'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ';
+    'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ' +
+    referenceReader;
   const innerTruncationMarkers = input.innerTruncationMarkers ?? [];
+  const recoveryTarget = input.toolName === 'tools:invoke' ? input.nestedTargetToolName : input.toolName;
+  if (isPlansStartCall(input)) {
+    return (input.upstreamProjection || innerTruncationMarkers.length > 0
+      ? 'The reference preserves only the emitted response; already-omitted fields cannot be recovered by paging. ' + referenceReader
+      : recoverable) + PLANS_START_RECEIPT_RECOVERY;
+  }
+  if (isWorkItemsCompleteCall(input)) {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves only the completion response emitted by the tool; already-omitted fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      'The work_items:complete write may already have committed. Do NOT repeat this call; page the reference for the emitted receipt and read work_items:get for each result id to confirm current item state.'
+    );
+  }
+  if (isWorkItemsSetBlockerCall(input)) {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves only the blocker response emitted by the tool; already-omitted fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      'The work_items:set_blocker write may already have committed. Do NOT repeat it; page the reference for the receipt and read work_items:get to inspect current blockers before follow-up.'
+    );
+  }
+  if (isWorkItemsReleaseCall(input)) {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves only the release response emitted by the tool; already-omitted fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      'The work_items:release response may include a committed release. Page the reference for its receipt, then read work_items:get to verify current state before follow-up. Do NOT repeat the release.'
+    );
+  }
+  if (isScorecardsEmitCall(input)) {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves only the scorecards:emit response; already-omitted fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      'scorecards:emit may have recorded a card. Do NOT repeat this non-idempotent emit; page the reference for the emitted receipt and inspect the scorecard ledger before any retry.'
+    );
+  }
+  if (input.toolName === 'coord:send' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'coord:send')) {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves the emitted send receipt; upstream-omitted receipt fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      COORD_SEND_RECEIPT_RECOVERY
+    );
+  }
   if (input.upstreamProjection) {
     return (
       'The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. ' +
+      referenceReader +
       'However, the tool had already applied a lossy upstream projection before this spill; omitted fields were ' +
-      'never serialized and paging this reference cannot recover them. Re-call the tool with payloadTier:\'full\' ' +
-      '(or narrower arguments) for the missing detail.'
+      'never serialized and paging this reference cannot recover them. ' +
+      upstreamProjectionRecoveryInstruction(
+        input.toolName,
+        input.nestedTargetToolName,
+        innerTruncationMarkers,
+        input.effect,
+      )
     );
   }
   if (innerTruncationMarkers.length > 0) {
     return (
       'The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. ' +
-      `However, the TOOL ITSELF already truncated field(s) before this spill (${innerTruncationMarkers.join(', ')}); ` +
-      'paging this reference cannot recover those omitted fields. Re-call the tool with a wider per-field limit.'
+      referenceReader +
+      `However, the emitted result already carries upstream partial marker(s) (${innerTruncationMarkers.join(', ')}); ` +
+      `paging this reference cannot recover the omitted fields, rows, or text. ${innerTruncationRecoveryInstruction(input.toolName, innerTruncationMarkers, input.nestedTargetToolName)}`
+    );
+  }
+  if (reason === 'under-budget-partial-result') {
+    return (
+      'The emitted result was already marked partial before it reached this result door. ' +
+      referenceReader +
+      'The reference preserves what the tool emitted for inspection; ' +
+      upstreamProjectionRecoveryInstruction(input.toolName, input.nestedTargetToolName, [], input.effect)
     );
   }
   if (reason === 'aggregate-output-budget-exceeded') {
@@ -745,7 +1620,11 @@ function spillRecoveryNote(
       `${input.aggregateMode === 'compatibility' ? '2-second compatibility cohort' : 'explicit output cohort'} ` +
       'consumed the shared budget. This does not prove they were parallel siblings. ' +
       'Read the spill in bounded byte pages, or retry in a NEW output cohort; reissuing ' +
-      'within the same cohort can spill again.'
+      'within the same cohort can spill again. To fan out WIDE without spending this budget, ' +
+      'use ONE code:run only for compact output; oversized summaries are clipped and marked ' +
+      '`summaryNotice.truncated`, which that spill cannot restore. For complete long text, ' +
+      'page this spill or fetch bounded slices (a re-issue after this spill is not counted ' +
+      'against you by the batch-hint).'
     );
   }
   if (reason === 'explicit-full-request-overflow') {
@@ -756,6 +1635,10 @@ function spillRecoveryNote(
     // inline than 'trimmed' does, i.e. worse than the tier the caller opted
     // out of. Spilling the untouched full body and saying so plainly is
     // honest about the size AND strictly recoverable, unlike that reprojection.
+    if (recoveryTarget === 'work_items:get' && innerTruncationMarkers.includes('checkpointTruncated')) {
+      return 'The explicit full work_items:get response exceeded the door, and its checkpoint was already clipped by the tool. The spill cannot restore that text. ' +
+        innerTruncationRecoveryInstruction(input.toolName, innerTruncationMarkers, input.nestedTargetToolName);
+    }
     return (
       `${recoverable}This is the RAW, unshaped payload you explicitly requested with payloadTier:'full' ` +
       "(or an equivalent transport-cap exemption) — it does not fit inline at this size. If you don't need " +
@@ -795,17 +1678,18 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   nonTextBytes: number;
   doorTokens: number;
   aggregate?: ResultDoorAggregateReservation;
+  onSpillFailure?: (error: unknown) => void;
 }): T {
   const upstreamProjection = (
     input.result._meta as
       | { payloadProjection?: { truncated?: unknown } }
       | undefined
   )?.payloadProjection;
-  const innerTruncationMarkers = upstreamProjection
-    ? []
-    : detectInnerTruncationMarkers(
-        input.result.content.filter(isTextItem).map((item) => item.text).join('\n\n'),
-      );
+  const innerTruncationMarkers = detectInnerTruncationMarkers(
+    input.result.content.filter(isTextItem).map((item) => item.text),
+    input.opts.toolName,
+    input.opts.nestedTargetToolName,
+  );
   const sourceWasPartial = Boolean(upstreamProjection?.truncated) || innerTruncationMarkers.length > 0;
   const payload = JSON.stringify({
     content: input.result.content,
@@ -815,9 +1699,12 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   let spillUri: string | null = null;
   let spillError: string | null = null;
   let spillErrorCode: string | null = null;
+  let spillErrorSummary: string | null = null;
   let manifest: ScratchReferenceManifest | null = null;
+  let volatileFallback: NonNullable<ReturnType<typeof storeVolatileScratchReference>> | null = null;
   const evidence = detectResultEvidence(input.result.content);
   try {
+    if (input.opts.scratchWriteFailure) throw input.opts.scratchWriteFailure.error;
     const parts = scratchParts(input.opts);
     // EI-21282689413153947: NOT `.json` — every spill is a self-describing
     // scratch reference (magic + manifest + payload), so a `.json` name lies
@@ -838,30 +1725,55 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       content: contentMetadata(input.result.content),
       evidence,
       deferredWrites: input.opts.deferredScratchWrites,
+      requestTraceId: input.opts.requestTraceId,
+      onScratchWriteTiming: input.opts.onScratchWriteTiming,
+      // This spill path stores the JSON MCP content envelope directly as the
+      // scratch payload. Declare byte zero as its machine-readable body so the
+      // manifest has the same explicit framing contract as shaped text spills.
+      bodyOffsetInPayload: 0,
     });
   } catch (err) {
-    spillError = err instanceof Error ? err.message : String(err);
-    spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
+    input.onSpillFailure?.(err);
+    const details = spillFailureDetails(err, [
+      ...(spillPath ? [spillPath, dirname(spillPath)] : []),
+      process.env.PAPERCUSP_SCRATCH_ROOT,
+    ]);
+    spillError = details.error;
+    spillErrorCode = details.code;
+    spillErrorSummary = details.summary;
     spillPath = null;
     spillUri = null;
+    volatileFallback = cacheFailedSpill({
+      opts: input.opts,
+      payload,
+      mediaType: 'application/json',
+      content: contentMetadata(input.result.content),
+      evidence,
+      bodyOffsetInPayload: 0,
+    });
   }
 
   const firstText = input.result.content.find(isTextItem)?.text ?? '';
   const preview = firstText
     ? firstText.slice(0, 240)
     : `[${input.result.content.map((item) => String((item as { type?: unknown }).type ?? 'unknown')).join(', ')}]`;
-  const reference: OutputReferenceContentItem | null = spillUri && manifest
+  const referenceUri = spillUri && manifest ? spillUri : volatileFallback?.uri;
+  const referenceManifest = manifest ?? volatileFallback?.manifest;
+  const reference: OutputReferenceContentItem | null = referenceUri && referenceManifest
     ? {
         kind: 'reference',
-        uri: spillUri,
+        uri: referenceUri,
         preview,
-        byteCount: manifest.byteCount,
-        sha256: manifest.sha256,
-        expiresAt: manifest.expiresAt,
-        ...(manifest.ownerId ? { ownerId: manifest.ownerId } : {}),
-        audience: manifest.audience,
+        byteCount: referenceManifest.byteCount,
+        sha256: referenceManifest.sha256,
+        expiresAt: referenceManifest.expiresAt,
+        ...(referenceManifest.ownerId ? { ownerId: referenceManifest.ownerId } : {}),
+        audience: referenceManifest.audience,
       }
     : null;
+  const volatileRecovery = volatileFallback
+    ? volatileScratchRecovery(volatileFallback, !sourceWasPartial, input.opts.toolName, spillErrorCode, spillErrorSummary)
+    : undefined;
   const evidenceReferences: OutputEvidenceReferenceContentItem[] = reference
     ? [...new Set(evidence.map((entry) => entry.evidenceClass))].map((evidenceClass) => ({
         ...reference,
@@ -870,6 +1782,402 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         preview: `${evidenceClass} evidence`,
       }))
     : [];
+  const schedulerClaim = schedulerClaimReceipt(input.result, input.opts);
+  const boundedSchedulerClaim = schedulerClaim
+    ? projectBoundedPayload(schedulerClaim.body, {
+        toolName: 'scheduler:get_next',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: ['ok', 'claimReceipt', 'claimReceipt.committed', 'claimReceipt.workItemId'],
+        preserveTopLevelKeys: ['ok', 'claimReceipt'],
+        recovery: preferVolatileScratchRecovery(volatileRecovery, schedulerClaimRecovery(schedulerClaim)),
+      })
+    : undefined;
+  if (boundedSchedulerClaim) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedSchedulerClaim) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath,
+          spillUri,
+          spillFailed: spillPath == null,
+          spillError,
+          spillErrorCode,
+          ...(volatileFallback
+            ? { volatileFallbackUri: volatileFallback.uri, volatileFallbackExpiresAt: volatileFallback.manifest.expiresAt }
+            : {}),
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
+  const agentReviewClaim = spillPath == null ? agentReviewClaimReceipt(input.result, input.opts) : undefined;
+  const boundedAgentReviewClaim = agentReviewClaim
+    ? projectBoundedPayload(agentReviewClaim.body, {
+        toolName: 'improvements:agent-review',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: [
+          'ok', 'mode', 'claimed', 'workItem.id', 'workItem.title', 'workItem.harness',
+          'ledgerIdeaId', 'gradeWith.ideaId',
+        ],
+        preserveTopLevelKeys: ['ok', 'mode', 'claimed', 'ledgerIdeaId', 'gradeWith'],
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          agentReviewClaimRecovery(agentReviewClaim),
+        ),
+      })
+    : undefined;
+  if (boundedAgentReviewClaim) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedAgentReviewClaim) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath,
+          spillUri,
+          spillFailed: spillPath == null,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
+  const coordSendReceipt = spillPath == null &&
+    (input.opts.toolName === 'coord:send' ||
+      (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send'))
+    ? [input.result.structuredContent, ...input.result.content.filter(isTextItem).map((item) => {
+        try {
+          return JSON.parse(item.text) as unknown;
+        } catch {
+          return null;
+        }
+      })].find((value): value is Record<string, unknown> =>
+        isJsonObject(value) && Array.isArray(value.results))
+    : undefined;
+  const boundedCoordSendReceipt = coordSendReceipt
+    ? projectBoundedPayload(coordSendReceipt, {
+        toolName: 'coord:send',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: input.doorTokens * CHARS_PER_TOKEN_ESTIMATE,
+        preservePaths: COORD_SEND_DELIVERY_PRESERVE_PATHS,
+        preserveTopLevelKeys: ['ok', 'partial', 'counts', 'deliveryFailureWarning'],
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          {
+            cursor: {
+              kind: 'unavailable',
+              tool: 'coord:send',
+              args: {},
+              reason: 'spill-write-failed',
+              ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+            },
+            next:
+              'The coord:send delivery receipt is preserved here, but oversized message details could not be saved. ' +
+              'The delivery outcome is unknown; do NOT repeat the send until checking coordination state. ' +
+              COORD_SEND_RECEIPT_RECOVERY,
+          },
+          COORD_SEND_RECEIPT_RECOVERY,
+        ),
+      })
+    : undefined;
+  if (boundedCoordSendReceipt) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedCoordSendReceipt) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath: null,
+          spillUri: null,
+          spillFailed: true,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
+  const completionReceipt = spillPath == null && isWorkItemsCompleteCall(input.opts)
+    ? workItemsBulkReceiptBody(input.result)
+    : undefined;
+  const boundedCompletionReceipt = completionReceipt
+    ? projectBoundedPayload(completionReceipt, {
+        toolName: 'work_items:complete',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS,
+        preserveTopLevelKeys: ['ok', 'counts', 'results'],
+        recovery: volatileRecovery
+          ? {
+              cursor: volatileRecovery.cursor,
+              next:
+                'Read _projection.cursor.args with capability:read and follow next_cursor to EOF. ' +
+                'Do NOT repeat work_items:complete; verify current item state with work_items:get.',
+            }
+          : {
+              cursor: {
+                kind: 'unavailable',
+                tool: 'work_items:complete',
+                args: {},
+                reason: 'spill-write-failed',
+                ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+              },
+              next: WORK_ITEMS_COMPLETE_SPILL_RECOVERY,
+            },
+      })
+    : undefined;
+  if (boundedCompletionReceipt) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedCompletionReceipt) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath: null,
+          spillUri: null,
+          spillFailed: true,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
+  const setBlockerReceipt = spillPath == null ? workItemsSetBlockerReceipt(input.result, input.opts) : undefined;
+  const boundedSetBlockerReceipt = setBlockerReceipt
+    ? projectBoundedPayload(setBlockerReceipt.body, {
+        toolName: 'work_items:set_blocker',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: WORK_ITEMS_SET_BLOCKER_RECEIPT_PRESERVE_PATHS,
+        preserveTopLevelKeys: ['ok', 'counts', 'results'],
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          workItemsSetBlockerRecovery(setBlockerReceipt),
+        ),
+      })
+    : undefined;
+  if (boundedSetBlockerReceipt) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedSetBlockerReceipt) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath: null,
+          spillUri: null,
+          spillFailed: true,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
+  const releaseReceipt = spillPath == null ? workItemsReleaseReceipt(input.result, input.opts) : undefined;
+  const boundedReleaseReceipt = releaseReceipt
+    ? projectBoundedPayload(releaseReceipt.body, {
+        toolName: 'work_items:release',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: WORK_ITEMS_RELEASE_RECEIPT_PRESERVE_PATHS,
+        preserveTopLevelKeys: ['ok', 'counts', 'results'],
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          workItemsReleaseRecovery(releaseReceipt),
+        ),
+      })
+    : undefined;
+  if (boundedReleaseReceipt) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedReleaseReceipt) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath: null,
+          spillUri: null,
+          spillFailed: true,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
+  const scorecardReceipt = spillPath == null ? scorecardsEmitReceipt(input.result, input.opts) : undefined;
+  const boundedScorecardReceipt = scorecardReceipt
+    ? projectBoundedPayload(scorecardReceipt, {
+        toolName: 'scorecards:emit',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: SCORECARDS_EMIT_SPILL_PRESERVE_PATHS,
+        preserveTopLevelKeys: ['ok', 'committed', 'completionReceipt', 'created', 'issueId', 'previousIssueId', 'canonicalRatings'],
+        recovery: preferVolatileScratchRecovery(
+          volatileRecovery,
+          {
+            cursor: {
+              kind: 'unavailable',
+              tool: 'scorecards:emit',
+              args: {},
+              reason: 'spill-write-failed',
+              ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+            },
+          next: SCORECARDS_EMIT_SPILL_RECOVERY,
+          },
+          'The full scorecards:emit response is available in the volatile page above. ' +
+            'Do NOT repeat this non-idempotent emit; inspect completionReceipt and the preserved commit status before follow-up.',
+        ),
+      })
+    : undefined;
+  if (boundedScorecardReceipt) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedScorecardReceipt) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath: null,
+          spillUri: null,
+          spillFailed: true,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
+  const startReceipt = isPlansStartCall(input.opts) ? workItemsBulkReceiptBody(input.result) : undefined;
+  const fleetAdmissionReceipt = isFleetLaunchCall(input.opts)
+    ? workItemsBulkReceiptBody(input.result, (value) => value.error === 'admission_refused')
+    : undefined;
+  const admissionReceipt = startReceipt ?? fleetAdmissionReceipt;
+  if (admissionReceipt) {
+    const receiptTool = startReceipt ? 'plans:start' : 'fleet:launch-on-plan';
+    const receiptPaths = startReceipt ? PLANS_START_RECEIPT_PRESERVE_PATHS : FLEET_ADMISSION_RECEIPT_PRESERVE_PATHS;
+    const next = startReceipt ? PLANS_START_RECEIPT_RECOVERY
+      : 'Inspect the preserved repairCall before retrying. Page the original admission and promotion details with capability:read.';
+    const recovery: BoundedPayloadRecovery = reference
+      ? {
+          cursor: { kind: 'scratch-page', tool: 'capability:read', args: { file_path: reference.uri, byte_offset: 0, byte_limit: 3_072 } },
+          next,
+        }
+      : {
+          cursor: { kind: 'unavailable', tool: 'plans:get', args: {}, reason: 'spill-write-failed' },
+          next,
+        };
+    // A nested door must keep the ORIGINAL full-details cursor, rather than
+    // replacing it with a page containing only the already-bounded receipt.
+    const priorProjection = fleetAdmissionReceipt?._projection;
+    const priorRecovery = isJsonObject(priorProjection) && isJsonObject(priorProjection.cursor)
+      ? { cursor: priorProjection.cursor, next: String(priorProjection.next ?? next) } as BoundedPayloadRecovery
+      : undefined;
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(projectBoundedPayload(admissionReceipt, {
+        toolName: receiptTool, tier: 'trimmed', forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: input.doorTokens * CHARS_PER_TOKEN_ESTIMATE,
+        preservePaths: receiptPaths,
+        recovery: priorRecovery ?? preferVolatileScratchRecovery(volatileRecovery, recovery),
+      })) }],
+      _meta: { ...(input.result._meta ?? {}), resultDoor: {
+        truncated: true, structural: true, spillPath, spillUri,
+        spillFailed: spillPath == null, spillError, spillErrorCode,
+        originalChars: input.sourceBytes, reason: input.reason,
+      } },
+    } as T;
+  }
+  const spillDiagnostic = [spillErrorCode, spillErrorSummary].filter(Boolean).join('; ') || 'unknown error';
   const envelope = reference
     ? buildOutputEnvelope(
         {
@@ -880,23 +2188,56 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
             reason: input.reason,
             spilledItems: input.result.content.length,
             recoverable: !sourceWasPartial,
-            note: spillRecoveryNote(input.reason, {
-              upstreamProjection: Boolean(upstreamProjection?.truncated),
-              innerTruncationMarkers,
-              aggregateMode: input.aggregate?.mode,
-            }),
+            note: volatileFallback
+              ? volatileScratchRecoveryForTool(
+                  volatileRecovery!,
+                  input.opts.toolName,
+                  input.opts.nestedTargetToolName,
+                ).next
+              : spillRecoveryNote(input.reason, {
+                  toolName: input.opts.toolName,
+                  nestedTargetToolName: input.opts.nestedTargetToolName,
+                  effect: input.opts.effect,
+                  upstreamProjection: Boolean(upstreamProjection?.truncated),
+                  innerTruncationMarkers,
+                  aggregateMode: input.aggregate?.mode,
+                }),
           },
         },
         { summaryBudgetChars: 0 },
       )
-    : buildOutputEnvelope(
+      : buildOutputEnvelope(
         {
           summary: '',
           state: 'error',
           error: {
             code: 'output_spill_failed',
-            message: `Output exceeded its hard budget and the spill write failed (${spillErrorCode ?? 'unknown error'}).`,
-            retryable: true,
+            message:
+              input.opts.toolName === 'coord:send' ||
+              (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send')
+                ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
+                  'The coord:send delivery outcome is unknown; do NOT repeat the send until you check coordination state with coord:feed or the recipient\'s coord:inbox.'
+                : isWorkItemsCompleteCall(input.opts)
+                  ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
+                    'The work_items:complete write may already have committed; do NOT repeat it. Read the requested items with work_items:get before deciding any follow-up.'
+                : isWorkItemsSetBlockerCall(input.opts)
+                  ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
+                    WORK_ITEMS_SET_BLOCKER_SPILL_RECOVERY
+                  : isWorkItemsReleaseCall(input.opts)
+                    ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
+                      WORK_ITEMS_RELEASE_SPILL_RECOVERY
+                  : isScorecardsEmitCall(input.opts)
+                    ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
+                      SCORECARDS_EMIT_UNKNOWN_SPILL_RECOVERY
+                : `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}).`,
+            retryable: !(
+              input.opts.toolName === 'coord:send' ||
+              (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send') ||
+              isWorkItemsCompleteCall(input.opts) ||
+              isWorkItemsSetBlockerCall(input.opts) ||
+              isWorkItemsReleaseCall(input.opts) ||
+              isScorecardsEmitCall(input.opts)
+            ),
           },
         },
         { summaryBudgetChars: 0 },
@@ -915,6 +2256,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         spillFailed: spillPath == null,
         spillError,
         spillErrorCode,
+        ...(volatileFallback
+          ? { volatileFallbackUri: volatileFallback.uri, volatileFallbackExpiresAt: volatileFallback.manifest.expiresAt }
+          : {}),
         originalChars: input.sourceBytes,
         originalBytes: input.sourceBytes,
         nonTextChars: input.nonTextBytes,
@@ -933,10 +2277,12 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
 /**
  * applyResultDoor for request handlers: identical output, but any spill file is written
  * with fs.promises instead of blocking the event loop, and awaited before this resolves —
- * so a returned cursor always names a file that exists (WI-10004533). If a deferred write
- * fails, the result is re-doored synchronously so it carries the honest spill-failure
- * shape (WI-36047) rather than a reference to a file that was never written. That rare
- * retry reserves the aggregate cohort a second time; it can only tighten the budget.
+ * so a returned cursor normally names a file that exists (WI-10004533). The wait is bounded:
+ * a hard write failure is re-doored without a filesystem retry, while a deadline timeout
+ * keeps a typed pending cursor because the background writer still owns its quota reservation
+ * and may finish later. A volatile in-process copy is returned alongside that pending state so
+ * a later write failure does not strand the omitted bytes. Late settlement is reported to the
+ * transport for telemetry backfill.
  */
 export async function applyResultDoorAsync<T extends DoorableResult>(
   result: T,
@@ -945,9 +2291,538 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   const deferred: Promise<void>[] = [];
   const doored = applyResultDoor(result, { ...opts, deferredScratchWrites: deferred });
   if (deferred.length === 0) return doored;
-  const settled = await Promise.allSettled(deferred);
-  if (settled.every((s) => s.status === 'fulfilled')) return doored;
-  return applyResultDoor(result, { ...opts, deferredScratchWrites: undefined });
+  const writeSettlements = Promise.allSettled(deferred);
+  const boundedWrites = await withBoundedTimeout(writeSettlements, {
+    fallback: null,
+    timeoutMs: RESULT_DOOR_SCRATCH_WRITE_WAIT_MS,
+    label: 'result-door scratch spill write',
+  });
+  if (boundedWrites.degraded || boundedWrites.value === null) {
+    const error = boundedWrites.reason === 'timeout'
+      ? Object.assign(
+          new Error(`result-door scratch spill write exceeded ${RESULT_DOOR_SCRATCH_WRITE_WAIT_MS}ms`),
+          { code: 'ETIMEDOUT' },
+        )
+      : boundedWrites.error ?? new Error('result-door scratch spill write did not settle');
+    if (boundedWrites.reason === 'timeout') {
+      const pendingResult = markPendingScratchWrite(doored, error, opts);
+      if (pendingResult) {
+        await recordPendingScratchWriteTimeout(pendingResult, opts);
+        observeLateScratchWrite(writeSettlements, pendingResult, opts);
+        const volatileFallback = applyResultDoor(result, {
+          ...opts,
+          deferredScratchWrites: undefined,
+          scratchWriteFailure: { error },
+        });
+        const recoveryFallback = await persistTimedOutScratchFallback(volatileFallback, opts);
+        return attachPendingScratchFallback(recoveryFallback, pendingResult) ?? pendingResult;
+      }
+    }
+    const failedResult = applyResultDoor(result, {
+      ...opts,
+      deferredScratchWrites: undefined,
+      scratchWriteFailure: { error },
+    });
+    return failedResult;
+  }
+  const settled = boundedWrites.value;
+  const failure = settled.find((s) => s.status === 'rejected');
+  if (!failure || failure.status !== 'rejected') return doored;
+  const failedResult = applyResultDoor(result, { ...opts, deferredScratchWrites: undefined,
+    scratchWriteFailure: { error: failure.reason } });
+  return failedResult;
+}
+
+async function persistTimedOutScratchFallback<T extends DoorableResult>(
+  fallback: T,
+  opts: ResultDoorOpts,
+): Promise<T> {
+  const resultDoor = recordAt(fallback._meta?.resultDoor);
+  const volatileUri = typeof resultDoor?.volatileFallbackUri === 'string'
+    ? resultDoor.volatileFallbackUri
+    : null;
+  if (!volatileUri) return fallback;
+
+  const parts = scratchParts(opts);
+  const persisted = await withBoundedTimeout(
+    persistVolatileScratchReference(volatileUri, {
+      workspaceId: parts.workspaceId,
+      ownerId: opts.ownerId,
+    }),
+    {
+      fallback: null,
+      timeoutMs: RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS,
+      label: 'result-door durable timeout recovery',
+    },
+  );
+  if (persisted.degraded || !persisted.value) return fallback;
+
+  return promoteVolatileScratchFallback(
+    fallback,
+    volatileUri,
+    persisted.value.uri,
+    persisted.value.manifest,
+  );
+}
+
+function promoteVolatileScratchFallback<T extends DoorableResult>(
+  fallback: T,
+  volatileUri: string,
+  durableUri: string,
+  manifest: ScratchReferenceManifest,
+): T {
+  const rewrite = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      return value
+        .replaceAll(volatileUri, durableUri)
+        .replaceAll('exact in-process copy', 'exact workspace-scoped durable copy')
+        .replaceAll(
+          'This URI is not a file and is lost on server restart or cache eviction.',
+          'This URI is stored in the workspace-scoped payload spool.',
+        );
+    }
+    if (Array.isArray(value)) return value.map(rewrite);
+    const row = recordAt(value);
+    if (!row) return value;
+
+    const rewritten = Object.fromEntries(Object.entries(row).map(([key, entry]) => [key, rewrite(entry)]));
+    const args = recordAt(row.args);
+    if (
+      row.kind === 'volatile-scratch-page' &&
+      (row.uri === volatileUri || args?.uri === volatileUri)
+    ) {
+      return {
+        ...rewritten,
+        kind: 'durable-scratch-page',
+        uri: durableUri,
+        expiresAt: manifest.expiresAt,
+        args: { ...(recordAt(rewritten.args) ?? {}), uri: durableUri, byte_offset: 0, byte_limit: 3_072 },
+      };
+    }
+    return rewritten;
+  };
+
+  const content = fallback.content.map((item) => {
+    if (!isTextItem(item)) return item;
+    try {
+      return { ...item, text: JSON.stringify(rewrite(JSON.parse(item.text))) };
+    } catch {
+      return { ...item, text: item.text.replaceAll(volatileUri, durableUri) };
+    }
+  });
+  const resultDoor = recordAt(fallback._meta?.resultDoor);
+  return {
+    ...fallback,
+    content,
+    ...(fallback.structuredContent !== undefined ? { structuredContent: rewrite(fallback.structuredContent) } : {}),
+    _meta: {
+      ...(fallback._meta ?? {}),
+      ...(resultDoor
+        ? {
+            resultDoor: {
+              ...resultDoor,
+              durableFallbackUri: durableUri,
+              durableFallbackExpiresAt: manifest.expiresAt,
+              recoveryCursor: rewrite(resultDoor.recoveryCursor),
+              outputEnvelope: rewrite(resultDoor.outputEnvelope),
+            },
+          }
+        : {}),
+    },
+  } as T;
+}
+
+function attachPendingScratchFallback<T extends DoorableResult>(fallback: T, pending: T): T | null {
+  const fallbackDoor = recordAt(fallback._meta?.resultDoor);
+  const pendingDoor = recordAt(pending._meta?.resultDoor);
+  const fallbackCursor = recordAt(fallbackDoor?.recoveryCursor);
+  const pendingCursor = recordAt(pendingDoor?.recoveryCursor);
+  const fallbackCanRecover = fallbackCursor?.kind === 'volatile-scratch-page' ||
+    fallbackCursor?.kind === 'durable-scratch-page' ||
+    fallbackCursor?.kind === 'release-outcome-check';
+  if (!fallbackCanRecover || !fallbackDoor || !pendingDoor || !pendingCursor) {
+    return null;
+  }
+
+  return {
+    ...fallback,
+    _meta: {
+      ...(fallback._meta ?? {}),
+      resultDoor: {
+        ...fallbackDoor,
+        spillPending: true,
+        spillFailed: false,
+        pendingSpill: {
+          ...(typeof pendingDoor.spillPath === 'string' ? { path: pendingDoor.spillPath } : {}),
+          ...(typeof pendingDoor.spillUri === 'string' ? { uri: pendingDoor.spillUri } : {}),
+          cursor: pendingCursor,
+        },
+      },
+    },
+  } as T;
+}
+
+function markPendingScratchWrite<T extends DoorableResult>(
+  result: T,
+  error: unknown,
+  opts: ResultDoorOpts,
+): T | null {
+  const meta = result._meta ?? {};
+  const sourceDoorMeta = recordAt(meta.resultDoor);
+  const spillPath = typeof sourceDoorMeta?.spillPath === 'string' ? sourceDoorMeta.spillPath : null;
+  const spillUri = typeof sourceDoorMeta?.spillUri === 'string' ? sourceDoorMeta.spillUri : null;
+  if (!sourceDoorMeta || !spillPath || !spillUri) return null;
+
+  const sourceCursor = recordAt(sourceDoorMeta.recoveryCursor);
+  const pendingCursor = {
+    ...(sourceCursor ?? {}),
+    kind: 'pending-spill',
+    tool: 'capability:read',
+    args: {
+      ...(recordAt(sourceCursor?.args) ?? {}),
+      file_path: spillPath,
+    },
+    path: spillPath,
+    uri: spillUri,
+    reason: 'spill-write-pending',
+    errorCode: 'ETIMEDOUT',
+    retryAfterMs: 1_000,
+  };
+  const coordSendCall = opts.toolName === 'coord:send' ||
+    (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'coord:send');
+  const operationName = opts.toolName === 'tools:invoke' && opts.nestedTargetToolName
+    ? opts.nestedTargetToolName
+    : opts.toolName;
+  const pendingNext = coordSendCall
+    ? `The spill write exceeded ${RESULT_DOOR_SCRATCH_WRITE_WAIT_MS}ms and is still running. ` +
+      'The coord:send delivery outcome may be unknown; do NOT repeat the send until you check coordination ' +
+      'state with coord:feed or the recipient\'s coord:inbox. The pending URI/path in _projection.cursor ' +
+      'is not a durable recovery guarantee. Retry capability:read after it becomes readable; if late ' +
+      'settlement reports failed, the overflow is unavailable from this result.'
+    : `The spill write exceeded ${RESULT_DOOR_SCRATCH_WRITE_WAIT_MS}ms and is still running. ` +
+      `Do NOT repeat ${operationName}; the pending URI/path in _projection.cursor is not a durable ` +
+      `recovery guarantee. Retry capability:read after it becomes readable; if late settlement reports ` +
+      `failed, the overflow is unavailable from this result.`;
+
+  let outputEnvelope = recordAt(sourceDoorMeta.outputEnvelope);
+  const sourceIncomplete = recordAt(outputEnvelope?.incomplete);
+  if (outputEnvelope && sourceIncomplete) {
+    outputEnvelope = {
+      ...outputEnvelope,
+      incomplete: { ...sourceIncomplete, note: pendingNext },
+    };
+  }
+
+  const content = result.content.map((item) => {
+    if (!isTextItem(item)) return item;
+    try {
+      const body = recordAt(JSON.parse(item.text));
+      if (!body) return item;
+      const projection = recordAt(body._projection);
+      const incomplete = recordAt(body.incomplete);
+      if (!projection && !incomplete) return item;
+      return {
+        ...item,
+        text: JSON.stringify({
+          ...body,
+          ...(incomplete ? { incomplete: { ...incomplete, note: pendingNext } } : {}),
+          _projection: {
+            ...(projection ?? {}),
+            kind: projection?.kind ?? 'bounded-payload',
+            truncated: true,
+            cursor: pendingCursor,
+            next: pendingNext,
+          },
+        }),
+      };
+    } catch {
+      return item;
+    }
+  });
+
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  return {
+    ...result,
+    content,
+    _meta: {
+      ...meta,
+      resultDoor: {
+        ...sourceDoorMeta,
+        spillPending: true,
+        spillFailed: false,
+        spillError: errorMessage.slice(0, 240),
+        spillErrorCode: 'ETIMEDOUT',
+        recoveryCursor: pendingCursor,
+        ...(outputEnvelope ? { outputEnvelope } : {}),
+      },
+    },
+  } as T;
+}
+
+function observeLateScratchWrite<T extends DoorableResult>(
+  writeSettlements: Promise<PromiseSettledResult<void>[]>,
+  pendingResult: T,
+  opts: ResultDoorOpts,
+): void {
+  const callback = opts.onLateScratchWriteSettled;
+  const meta = recordAt(pendingResult._meta?.resultDoor);
+  const spillPath = typeof meta?.spillPath === 'string' ? meta.spillPath : null;
+  const spillUri = typeof meta?.spillUri === 'string' ? meta.spillUri : null;
+  if (!callback || !meta || !spillPath || !spillUri) return;
+
+  const aggregate = recordAt(meta.aggregate);
+  const settlementBase = {
+    spillPath,
+    spillUri,
+    originalBytes: typeof meta.originalBytes === 'number' ? meta.originalBytes : 0,
+    returnedContextBytes: measureResultContextBytes(pendingResult),
+    reason: typeof meta.reason === 'string' ? meta.reason : 'per-result-budget-exceeded',
+    aggregateOutputEscape:
+      meta.reason === 'aggregate-output-budget-exceeded' || aggregate?.exceeded === true,
+  };
+  void writeSettlements.then(async (settled) => {
+    const failure = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+    const errorCode = failure && failure.reason && typeof failure.reason === 'object' &&
+      'code' in failure.reason && typeof failure.reason.code === 'string'
+      ? failure.reason.code
+      : undefined;
+    try {
+      await callback({
+        ...settlementBase,
+        status: failure ? 'failed' : 'persisted',
+        ...(errorCode ? { errorCode } : {}),
+      });
+    } catch (callbackError) {
+      console.warn(
+        `[result-door] late scratch-write settlement callback failed: ${callbackError instanceof Error ? callbackError.message : String(callbackError)}`,
+      );
+    }
+  });
+}
+
+async function recordPendingScratchWriteTimeout<T extends DoorableResult>(
+  pendingResult: T,
+  opts: ResultDoorOpts,
+): Promise<void> {
+  const callback = opts.onScratchWritePending;
+  const meta = recordAt(pendingResult._meta?.resultDoor);
+  const spillPath = typeof meta?.spillPath === 'string' ? meta.spillPath : null;
+  const spillUri = typeof meta?.spillUri === 'string' ? meta.spillUri : null;
+  if (!callback || !meta || !spillPath || !spillUri) return;
+
+  const aggregate = recordAt(meta.aggregate);
+  try {
+    await callback({
+      timeoutMs: RESULT_DOOR_SCRATCH_WRITE_WAIT_MS,
+      timedOutAt: new Date().toISOString(),
+      spillPath,
+      spillUri,
+      originalBytes: typeof meta.originalBytes === 'number' ? meta.originalBytes : 0,
+      returnedContextBytes: measureResultContextBytes(pendingResult),
+      reason: typeof meta.reason === 'string' ? meta.reason : 'per-result-budget-exceeded',
+      aggregateOutputEscape:
+        meta.reason === 'aggregate-output-budget-exceeded' || aggregate?.exceeded === true,
+    });
+  } catch (callbackError) {
+    console.warn(
+      `[result-door] pending scratch-write timeout callback failed: ${callbackError instanceof Error ? callbackError.message : String(callbackError)}`,
+    );
+  }
+}
+
+function isScorecardsGetResult(opts: ResultDoorOpts): boolean {
+  return opts.toolName === 'scorecards:get' ||
+    (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'scorecards:get');
+}
+
+function recordAt(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/** Discovery schemas are executable contracts, including compact signatures.
+ * Generic prose clipping must never leave a damaged contract under argSchema.
+ * Reuse the existing source cursor for schemas that cannot fit atomically. */
+function repairDiscoverySchemaProjection(
+  sourceValue: unknown,
+  projected: Record<string, unknown>,
+  targetBytes: number,
+): void {
+  const source = recordAt(sourceValue);
+  if (!Array.isArray(source?.hits) || !Array.isArray(projected.hits)) return;
+  const sourceSchemas = new Map<string, string>();
+  for (const value of source.hits) {
+    const hit = recordAt(value);
+    if (typeof hit?.tool === 'string' && typeof hit.argSchema === 'string') {
+      sourceSchemas.set(hit.tool, hit.argSchema);
+    }
+  }
+  const clipped: Array<{ hit: Record<string, unknown>; schema: string }> = [];
+  for (const value of projected.hits) {
+    const hit = recordAt(value);
+    const schema = typeof hit?.tool === 'string' ? sourceSchemas.get(hit.tool) : undefined;
+    if (!hit || schema === undefined || hit.argSchema === schema) continue;
+    delete hit.argSchema;
+    hit.argSchemaUnavailable = true;
+    clipped.push({ hit, schema });
+  }
+  // Remove every damaged schema first so a large early hit cannot crowd out
+  // a later usable schema. Account for UTF-8, as the transport door does.
+  const metadata = recordAt(projected._projection);
+  for (const { hit, schema } of clipped) {
+    delete hit.argSchemaUnavailable;
+    hit.argSchema = schema;
+    if (metadata) metadata.returnedChars = JSON.stringify(projected).length;
+    if (Buffer.byteLength(JSON.stringify(projected), 'utf8') > targetBytes) {
+      delete hit.argSchema;
+      hit.argSchemaUnavailable = true;
+    }
+  }
+  if (metadata) metadata.returnedChars = JSON.stringify(projected).length;
+}
+
+function retainedPrefixLength(source: string, projected: string): number {
+  let length = 0;
+  while (length < source.length && length < projected.length && source[length] === projected[length]) {
+    length += 1;
+  }
+  return length;
+}
+
+function scorecardEvidenceReadCall(issueId: string, criterionKey: string, evidenceOffset: number) {
+  return {
+    tool: 'scorecards:get',
+    args: { issueId, criterionKey, evidenceOffset },
+  };
+}
+
+/** Keep scorecards:get's paging contract truthful across this later projection. */
+function repairScorecardsGetProjection(sourceValue: unknown, projected: Record<string, unknown>): void {
+  const source = recordAt(sourceValue);
+  const sourceScorecard = recordAt(source?.scorecard);
+  const sourceRead = recordAt(source?.evidenceRead);
+  const sourceCriteria = Array.isArray(sourceScorecard?.criteria)
+    ? sourceScorecard.criteria.map(recordAt).filter((row): row is Record<string, unknown> => row != null)
+    : [];
+  if (!sourceScorecard || !sourceRead || sourceCriteria.length === 0) return;
+
+  const targetScorecard = recordAt(projected.scorecard) ?? {
+    issueId: sourceScorecard.issueId,
+    criteria: [],
+  };
+  projected.scorecard = targetScorecard;
+  const targetRead = {
+    ...sourceRead,
+    ...(recordAt(projected.evidenceRead) ?? {}),
+  };
+  projected.evidenceRead = targetRead;
+
+  if (sourceRead.scope === 'selected-criterion') {
+    const sourceCriterion = sourceCriteria[0];
+    const key = typeof sourceCriterion.key === 'string' ? sourceCriterion.key : null;
+    const sourcePage = typeof sourceCriterion.evidence === 'string' ? sourceCriterion.evidence : null;
+    const issueId = typeof sourceScorecard.issueId === 'string' ? sourceScorecard.issueId : null;
+    const sourceOffset = typeof sourceRead.offset === 'number' ? sourceRead.offset : 0;
+    if (!key || sourcePage == null || !issueId) return;
+
+    const targetCriteria = Array.isArray(targetScorecard.criteria)
+      ? targetScorecard.criteria.map(recordAt).filter((row): row is Record<string, unknown> => row != null)
+      : [];
+    const targetCriterion = targetCriteria.find((row) => row.key === key);
+    const projectedPage = typeof targetCriterion?.evidence === 'string' ? targetCriterion.evidence : '';
+    const retainedChars = retainedPrefixLength(sourcePage, projectedPage);
+    const pageWasClipped = retainedChars < sourcePage.length;
+
+    targetScorecard.criteria = [{
+      ...(targetCriterion ?? {}),
+      key,
+      ...(typeof sourceCriterion.rating === 'string' ? { rating: sourceCriterion.rating } : {}),
+      evidence: pageWasClipped ? sourcePage.slice(0, retainedChars) : sourcePage,
+    }];
+
+    if (pageWasClipped) {
+      const nextOffset = sourceOffset + retainedChars;
+      targetRead.complete = false;
+      targetRead.reason = 'outer-result-door-clipped-page';
+      targetRead.instruction =
+        'The outer result door clipped this page. Continue from evidenceRead.next; if its offset does not advance, read the _projection.cursor to recover the original page.';
+      targetRead.next = scorecardEvidenceReadCall(issueId, key, nextOffset);
+    } else if (sourceRead.complete === false && sourceRead.next === undefined) {
+      const nextOffset = sourceOffset + sourcePage.length;
+      targetRead.complete = false;
+      targetRead.next = scorecardEvidenceReadCall(issueId, key, nextOffset);
+    }
+    return;
+  }
+
+  if (sourceRead.complete === true) {
+    const targetCriteria = Array.isArray(targetScorecard.criteria)
+      ? targetScorecard.criteria.map(recordAt).filter((row): row is Record<string, unknown> => row != null)
+      : [];
+    const evidenceIntact = sourceCriteria.every((sourceCriterion) => {
+      const key = sourceCriterion.key;
+      const sourceEvidence = sourceCriterion.evidence;
+      if (typeof key !== 'string' || typeof sourceEvidence !== 'string') return false;
+      const targetCriterion = targetCriteria.find((row) => row.key === key);
+      return targetCriterion?.evidence === sourceEvidence;
+    });
+    if (evidenceIntact && targetCriteria.length === sourceCriteria.length) return;
+
+    const issueId = typeof sourceScorecard.issueId === 'string' ? sourceScorecard.issueId : null;
+    if (!issueId) return;
+    targetScorecard.criteria = [];
+    targetRead.complete = false;
+    targetRead.reason = 'outer-result-door-clipped-card';
+    targetRead.instruction =
+      'The outer result door clipped card evidence. Read every indexed criterion and concatenate its pages before grading; this index is not evidence of a missing probe.';
+    targetRead.criteria = sourceCriteria.flatMap((criterion) => {
+      if (typeof criterion.key !== 'string' || typeof criterion.evidence !== 'string') return [];
+      return [{
+        key: criterion.key,
+        ...(typeof criterion.rating === 'string' ? { rating: criterion.rating } : {}),
+        evidenceChars: criterion.evidence.length,
+        read: scorecardEvidenceReadCall(issueId, criterion.key, 0),
+      }];
+    });
+  }
+}
+
+function isScratchReferenceBytePageResult(
+  result: DoorableResult,
+  opts: Pick<ResultDoorOpts, 'toolName' | 'nestedTargetToolName'>,
+): boolean {
+  const targetToolName = opts.toolName === 'tools:invoke'
+    ? opts.nestedTargetToolName
+    : opts.toolName;
+  if (targetToolName !== 'capability:read' || result.content.length !== 1) return false;
+  const item = result.content[0];
+  if (!isTextItem(item)) return false;
+
+  try {
+    const page = recordAt(JSON.parse(item.text));
+    return page?.ok === true &&
+      page.encoding === 'base64' &&
+      Number.isSafeInteger(page.byte_offset) &&
+      Number.isSafeInteger(page.byte_length) &&
+      Number.isSafeInteger(page.total_bytes) &&
+      recordAt(page.reference) !== null;
+  } catch {
+    return false;
+  }
+}
+
+function isScratchReferenceReadResult(
+  result: DoorableResult,
+  opts: Pick<ResultDoorOpts, 'toolName' | 'nestedTargetToolName'>,
+): boolean {
+  const targetToolName = opts.toolName === 'tools:invoke'
+    ? opts.nestedTargetToolName
+    : opts.toolName;
+  const capabilityReadMeta = (
+    result._meta as { capabilityRead?: { source?: unknown } } | undefined
+  )?.capabilityRead;
+  return targetToolName === 'capability:read' && capabilityReadMeta?.source === 'scratch-reference';
 }
 
 /**
@@ -1005,6 +2880,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const explicitFullRequest = Boolean(
       (result._meta as { explicitFullRequest?: unknown } | undefined)?.explicitFullRequest,
     );
+    let explicitFullSpillFailed = false;
+    let explicitFullSpillError: unknown;
     let totalChars = 0;
     let textBytes = 0;
     // D-021 activates the old WI-36613 detector: non-text content is now a live
@@ -1017,7 +2894,14 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       } else nonTextChars += nonTextSize(it);
     }
     const sourceBytes = textBytes + nonTextChars;
-    const aggregate = opts.aggregateScope
+    // A scratch-reference byte page is itself the recovery transport for a
+    // result-door spill. Re-spilling it only creates another reference and
+    // forces capability:read to recurse. The page is already sized to fit the
+    // per-result door by capability:read; ordinary reads still consume the
+    // aggregate fan-out budget.
+    const recoveryBytePage = isScratchReferenceBytePageResult(result, opts);
+    const scratchReferenceRead = isScratchReferenceReadResult(result, opts);
+    const aggregate = opts.aggregateScope && !recoveryBytePage
       ? reserveAggregateBytes(
           opts.aggregateScope,
           sourceBytes,
@@ -1061,9 +2945,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // would have: worse than the tier the caller explicitly opted out of.
     // Spilling the untouched full body and pointing at it is honest about the
     // size and strictly recoverable in full, which the generic reprojection
-    // is not.
+    // is not. If persistence fails for an ordinary result, continue into the
+    // existing bounded projector instead of replacing readable content with an
+    // error envelope. coord:send keeps its specialized failure result: when a
+    // receipt is present it preserves delivery fields, and when no receipt can
+    // be recovered it must retain the non-retryable unknown-delivery verdict.
     if (explicitFullRequest && sourceBytes > budgetChars) {
-      return spillResultAsReferenceEnvelope({
+      const spilled = spillResultAsReferenceEnvelope({
         result,
         opts,
         reason: 'explicit-full-request-overflow',
@@ -1071,40 +2959,44 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         nonTextBytes: nonTextChars,
         doorTokens,
         aggregate,
+        onSpillFailure: (error) => {
+          explicitFullSpillFailed = true;
+          explicitFullSpillError = error;
+        },
       });
+      const coordSendCall = opts.toolName === 'coord:send' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'coord:send');
+      if (!explicitFullSpillFailed || coordSendCall) return spilled;
     }
 
     if (sourceBytes <= budgetChars) {
-      // EI-19361771982678588: FITTING THE DOOR IS NOT BEING COMPLETE. This
-      // early return is the fast path for an ordinary small result — but a
-      // result that was tier-trimmed upstream and THEN landed under the door
-      // budget took this path too, and every truncation disclosure below is
-      // downstream of here. So the more aggressively a tool trimmed its own
-      // payload, the more likely it was to say nothing about it: the warning
-      // fired only when the *already-trimmed* body still overflowed. The
-      // facts:list case that motivated this cleared the door by 245 chars out
-      // of ~6,000 — a slightly tighter trim would have gone silent.
-      //
-      // Nothing to spill (the omitted rows were never serialized), so this
-      // discloses in-band and returns; the identity fast-path is preserved for
-      // the overwhelmingly common untruncated case.
-      if (!upstreamProjection?.truncated) return result;
-      const fastPathNotices: string[] = [];
-      if (upstreamProjection?.truncated) {
-        fastPathNotices.push(
-          `\n[⚠ PARTIAL RESULT — this fit the per-result door, but it is NOT the tool's full ` +
-            `output: it was tier-projected upstream (payloadProjection: tier=${upstreamProjection.tier} ` +
-            `forced=${upstreamProjection.forced} omittedCount=${upstreamProjection.omittedCount}, ` +
-            `${upstreamProjection.returnedChars} of ${upstreamProjection.originalChars} chars). Those ` +
-            `${upstreamProjection.omittedCount} field(s)/row(s) were never serialized, so nothing ` +
-            `downstream can recover them and their ABSENCE HERE IS NOT EVIDENCE THEY DO NOT EXIST. ` +
-            `Re-call ${opts.toolName} with payloadTier:'full' (or narrower args) for the missing detail.]`,
-        );
-      }
-      return {
-        ...result,
-        content: [...items, ...fastPathNotices.map((text) => ({ type: 'text' as const, text }))],
-      } as T;
+      // Fitting the door does not make an upstream-projected value complete.
+      // Row/map partial sentinels and clipped-string markers can be the only
+      // disclosure; route them through the typed incomplete envelope so a
+      // downstream caller cannot infer success from a short body. coord:thread
+      // is the exception when every marker is one of its documented,
+      // field-specific continuations; those flags are the usable response.
+      const innerTruncationMarkers = detectInnerTruncationMarkers(
+        items.filter(isTextItem).map((item) => item.text),
+        opts.toolName,
+        opts.nestedTargetToolName,
+      );
+      const threadMarkersRecoverable = hasOnlyRecoverableCoordThreadMarkers(
+        innerTruncationMarkers,
+        opts.toolName,
+        opts.nestedTargetToolName,
+      );
+      if (!upstreamProjection?.truncated &&
+        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable || scratchReferenceRead)) return result;
+      return spillResultAsReferenceEnvelope({
+        result,
+        opts,
+        reason: 'under-budget-partial-result',
+        sourceBytes,
+        nonTextBytes: nonTextChars,
+        doorTokens,
+        aggregate,
+      });
     }
 
     const textItems = items.filter(isTextItem);
@@ -1170,16 +3062,23 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     let fsPath: string | null = null;
     let uri: string | null = null;
     let spillError: string | null = null;
-    // The FOOTER is model-facing prose and gets the terse errno only. A raw fs
-    // error message embeds the full failing path (`ENOTDIR: not a directory,
-    // mkdir '/…/scratch/ws-1/plans:get/…'`), which would put a filesystem path
-    // back into a footer whose entire job here is to name NO path — and a reader
-    // that sees one will try to page it. The full message stays on `_meta`.
+    // The unavailable cursor is model-facing: it carries the terse errno and a
+    // bounded, path-redacted error summary. A raw fs error embeds the full path
+    // (`ENOTDIR: not a directory, mkdir '/…/scratch/ws-1/plans:get/…'`), so keep
+    // that unredacted message private in `_meta` while preserving the cause for
+    // diagnosis in `errorDetail` and the recovery text.
     let spillErrorCode: string | null = null;
+    let spillErrorSummary: string | null = null;
     let spillManifest: ScratchReferenceManifest | null = null;
+    let volatileFallback: NonNullable<ReturnType<typeof storeVolatileScratchReference>> | null = null;
     const noteSpillFailure = (err: unknown): void => {
-      spillError = err instanceof Error ? err.message : String(err);
-      spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
+      const details = spillFailureDetails(err, [
+        ...(fsPath ? [fsPath, dirname(fsPath)] : []),
+        process.env.PAPERCUSP_SCRATCH_ROOT,
+      ]);
+      spillError = details.error;
+      spillErrorCode = details.code;
+      spillErrorSummary = details.summary;
       spillManifest = null;
       fsPath = null;
       uri = null;
@@ -1193,13 +3092,15 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // A path we cannot even NAME is the store-absent case: cap, disclose, move on.
       noteSpillFailure(err);
     }
-    // EI-18745696571494110: no upstream `_meta` marker fired, but the tool may
-    // have still truncated individual FIELDS inside its own body (coord:inbox's
-    // per-entry `body_truncated`, a list's `summary_truncated`, …) — check only
-    // when upstreamProjection didn't already explain the shortfall, since that
-    // case is more severe (the WHOLE result is a partial projection) and takes
-    // priority over a field-level marker.
-    const innerTruncationMarkers = upstreamProjection ? [] : detectInnerTruncationMarkers(fullText);
+    // A result can carry BOTH a payload-tier projection marker and tool-owned
+    // field markers. They describe different losses and can have different
+    // recovery routes (for example work_items:get's priorAttemptRefs handle), so
+    // the broader projection must not suppress the field-level diagnosis.
+    const innerTruncationMarkers = detectInnerTruncationMarkers(
+      textItems.map((item) => item.text),
+      opts.toolName,
+      opts.nestedTargetToolName,
+    );
     const header = upstreamProjection
       ? `# result-door spill — an ALREADY-PROJECTED (partial) tool result\n` +
         `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
@@ -1208,8 +3109,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         `forced=${upstreamProjection.forced} originalChars=${upstreamProjection.originalChars} ` +
         `returnedChars=${upstreamProjection.returnedChars} omittedCount=${upstreamProjection.omittedCount}.\n` +
         `# The ${upstreamProjection.omittedCount} omitted field(s)/row(s) were NEVER serialized and are ` +
-        `NOT recoverable from this file — re-call ${opts.toolName} with payloadTier:'full' ` +
-        `(or narrower args) for the missing detail.\n` +
+        `NOT recoverable from this file — ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers, opts.effect)}\n` +
         `# What follows is only that already-partial projection, further capped at the ` +
         `per-result door (${doorTokens} tokens) below.\n\n`
       : innerTruncationMarkers.length > 0
@@ -1219,8 +3119,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           `# detected marker(s): ${innerTruncationMarkers.join(', ')} — these mark field(s) the tool cut\n` +
           `# short BEFORE this door ever ran. This file holds everything the tool DID emit, but the\n` +
           `# marked field(s) are themselves incomplete and were never fully serialized — paging this\n` +
-          `# file will NOT recover them. Re-call ${opts.toolName} with a wider per-field limit/budget\n` +
-          `# argument for the missing detail.\n\n`
+          `# file will NOT recover them. ${innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName)}\n\n`
         : // EI-18762253154342502: never claim "FULL" unconditionally — no marker firing
           // proves nothing was cut upstream, only that no DETECTED marker was found (a
           // tool can truncate a field with a plain ellipsis and no `_truncated` flag,
@@ -1256,6 +3155,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const spillPrefix = header + spillBodyRecipe + spillAdvisoryPrefix + (spillIndex ? `${spillIndex}\n` : '');
     if (fsPath != null) {
       try {
+        if (explicitFullSpillFailed) throw explicitFullSpillError;
+        if (opts.scratchWriteFailure) throw opts.scratchWriteFailure.error;
         const parts = scratchParts(opts);
         spillManifest = writeScratchReference({
           filePath: fsPath,
@@ -1267,6 +3168,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           content: contentMetadata(items),
           evidence: spillEvidence,
           deferredWrites: opts.deferredScratchWrites,
+          requestTraceId: opts.requestTraceId,
+          onScratchWriteTiming: opts.onScratchWriteTiming,
           // EI-21949915395361184: put the boundary IN THE FILE, not only in the cursor
           // this call returns. Ten reports across five months all describe the same
           // consumer — one holding the path and nothing else — and every guess that
@@ -1281,9 +3184,20 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       } catch (err) {
         // WI-36047: the write failed — fall through to the CAP anyway, and null
         // the path so no footer, no `_meta`, and no telemetry backfill advertises
-        // a spill file that is not there. Truncate-without-recovery, never no-cap.
+        // a spill file that is not there. The bounded volatile cache below is a
+        // short-lived recovery path; when it cannot retain the body we still cap.
         noteSpillFailure(err);
       }
+    }
+    if (spillError !== null) {
+      volatileFallback = cacheFailedSpill({
+        opts,
+        payload: spillPrefix + spillBodyText,
+        mediaType: 'text/plain',
+        content: contentMetadata(items),
+        evidence: spillEvidence,
+        ...(bodyShape.json != null ? { bodyOffsetInPayload: Buffer.byteLength(spillPrefix, 'utf8') } : {}),
+      });
     }
 
     const baseResultDoorMeta = {
@@ -1301,6 +3215,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
        *  model-facing footer, which gets `spillErrorCode` instead). */
       spillError,
       spillErrorCode,
+      ...(volatileFallback
+        ? { volatileFallbackUri: volatileFallback.uri, volatileFallbackExpiresAt: volatileFallback.manifest.expiresAt }
+        : {}),
       originalChars: totalChars,
       /** Exact UTF-8 bytes as they reached the door. Unlike originalChars this
        * remains comparable to intermediateBytes for non-ASCII payloads. */
@@ -1332,12 +3249,24 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // written first, so both forms carry the same schema-valid capability:read
     // cursor and no client ever has to parse a chopped prefix plus a prose footer.
     const parsedJsonBody = bodyShape.json != null;
-    // A valid JSON body can still be only the tool's emitted SAMPLE: custom
-    // shapers such as plans:get mark clipped record fields with
-    // `body_truncated:true`.  It is safe to expose the spill for inspection,
-    // but it is NOT safe to advertise the byte boundary as an exact, complete
-    // JSON recovery point — the omitted records were never serialized.
-    const partialJsonBody = parsedJsonBody && innerTruncationMarkers.length > 0;
+    // A valid JSON body can still be only a sample: custom shapers mark field
+    // cutoffs in the body, while payload-tier marks an upstream projection in
+    // metadata. Both make the spill incomplete; neither removes the byte locator.
+    const upstreamJsonProjection = Boolean(upstreamProjection?.truncated);
+    const partialJsonBody =
+      parsedJsonBody && (upstreamJsonProjection || innerTruncationMarkers.length > 0);
+    const partialJsonSource = upstreamJsonProjection
+      ? 'upstream payloadProjection'
+      : `the tool marked ${innerTruncationMarkers.join(', ')}`;
+    const partialJsonReRead = upstreamJsonProjection
+      ? upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers, opts.effect)
+      : innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName);
+    const agentReviewClaim = fsPath == null ? agentReviewClaimReceipt(result, opts) : undefined;
+    // The claim committed before the optional scratch write. Recover the item
+    // through a read, using the same receipt contract as the hard-spill path.
+    const schedulerClaim = fsPath == null ? schedulerClaimReceipt(result, opts) : undefined;
+    const setBlockerReceipt = fsPath == null ? workItemsSetBlockerReceipt(result, opts) : undefined;
+    const releaseReceipt = fsPath == null ? workItemsReleaseReceipt(result, opts) : undefined;
     // TWO different byte streams reach a caller here, and ONE offset cannot
     // serve both — EI-21239097430071791 followed this cursor exactly as written
     // and landed mid-body, because the offset was measured against a stream the
@@ -1359,8 +3288,21 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const bodyOffsetInFile = spillManifest == null
       ? null
       : scratchReferencePayloadByteOffset(spillManifest) + spillPrefixBytes;
-    const recovery =
-      fsPath != null && uri != null
+    const bodyComplete = !upstreamProjection?.truncated && innerTruncationMarkers.length === 0;
+    const volatileRecovery = volatileFallback
+      ? volatileScratchRecovery(volatileFallback, bodyComplete, opts.toolName, spillErrorCode, spillErrorSummary)
+      : undefined;
+    const recovery = schedulerClaim
+      ? preferVolatileScratchRecovery(volatileRecovery, schedulerClaimRecovery(schedulerClaim))
+      : agentReviewClaim
+        ? preferVolatileScratchRecovery(volatileRecovery, agentReviewClaimRecovery(agentReviewClaim))
+      : setBlockerReceipt
+        ? preferVolatileScratchRecovery(volatileRecovery, workItemsSetBlockerRecovery(setBlockerReceipt))
+      : releaseReceipt
+        ? preferVolatileScratchRecovery(volatileRecovery, workItemsReleaseRecovery(releaseReceipt))
+      : volatileRecovery
+        ? volatileScratchRecoveryForTool(volatileRecovery, opts.toolName, opts.nestedTargetToolName)
+      : fsPath != null && uri != null
         ? {
             cursor: {
               kind: 'scratch-page',
@@ -1408,24 +3350,22 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                 : {}),
             },
             next:
-              // `response.data` rather than a bare `data`: naming the field's OWNER
-              // is what stops the misread, and stating the file's encoding outright
-              // beats the old "begins with a text header" hint that left the reader
-              // to infer it. Both are paid for by tightening the trailing sentence
-              // — this pointer is NET SHORTER than the ambiguous version it
-              // replaced, which is the only reason it clears WI-5656 below.
-              `Use capability:read with _projection.cursor.args; file_path is an encoded ` +
-              `scratch-reference, not JSON. For each page, validate response.data as canonical ` +
-              `base64 and decoded.length===byte_length; follow next_cursor; parse JSON only at ` +
-              `eof:true + next_cursor:null. ` +
+              // Some callers (including Codex functions.exec) have no base64 codec.
+              // The cursor points to a manifest-bearing scratch file, not the JSON body;
+              // offer plaintext line windows and retain the validated byte-page path.
+              `Use capability:read cursor.args (byte_offset+byte_limit; no raw). ` +
+              `Plaintext: raw:true+offset/limit lines. ` +
+              `file_path-only truncates long lines; Scratch ref, not JSON; ` +
+              `response.data canonical base64; runtime codec; decoded.length===byte_length; ` +
+              `follow next_cursor; ` +
+              `parse only at eof:true+next_cursor:null. ` +
               (partialJsonBody
-                ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The tool marked ` +
-                  `${innerTruncationMarkers.join(', ')}; this JSON is partial (bodyComplete:false) and ` +
-                  `paging cannot recover omitted fields. Re-call ${opts.toolName} with a wider per-field limit.`
-                : `recover spill; ` +
-                  (parsedJsonBody
-                    ? `JSON starts after cursor.bodyOffsetInPayload in response.data.`
-                    : `the spill opens with a text header.`)) +
+                ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The source is already ` +
+                  `partial (${partialJsonSource}); this JSON is partial (bodyComplete:false) and ` +
+                  `paging cannot recover omitted fields. ${partialJsonReRead}`
+                : parsedJsonBody
+                  ? `JSON at response.data[cursor.bodyOffsetInPayload].`
+                  : `the spill opens with a text header.`) +
               // Keep the JSON recovery pointer compact. The payload projector budgets
               // the pointer together with the retained JSON preview; page-integrity
               // and EOF gating are load-bearing, so the contract above is deliberately
@@ -1444,11 +3384,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                   ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +
                     `(tier=${upstreamProjection.tier}, forced=${upstreamProjection.forced}, ` +
                     `omittedCount=${upstreamProjection.omittedCount}); paging cannot recover those omitted ` +
-                    `fields. Re-call ${opts.toolName} with payloadTier:'full' for full detail.`
+                  `fields. ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers, opts.effect)}`
                   : innerTruncationMarkers.length > 0
                     ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
                       `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +
-                      `recover those fields. Re-call ${opts.toolName} with a wider per-field limit.`
+                      `recover those fields. ${innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName)}`
                     : ` No upstream truncation marker was detected; that does not prove the tool emitted ` +
                       `every field in full.`) +
               buildProjectionHint(textItems, opts.toolName, bodyShape),
@@ -1459,16 +3399,50 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               tool: opts.toolName,
               args: {},
               reason: 'spill-write-failed',
+              ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+              ...(spillErrorSummary ? { errorDetail: spillErrorSummary } : {}),
             },
             next:
-              `The result was structurally bounded, but its spill write failed ` +
-              `(${spillErrorCode ?? 'unknown error'}), so the omitted bytes are NOT recoverable and no ` +
-              `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
-              (upstreamProjection
-                ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
-                  `so those fields were never serialized either.`
-                : '') +
-              buildProjectionHint(textItems, opts.toolName, bodyShape),
+              isPlansStartCall(opts)
+                ? PLANS_START_RECEIPT_RECOVERY
+                : isWorkItemsCompleteCall(opts)
+                ? WORK_ITEMS_COMPLETE_SPILL_RECOVERY +
+                  (upstreamProjection
+                    ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                      `so those fields were never serialized either.`
+                    : '')
+                : isWorkItemsSetBlockerCall(opts)
+                  ? WORK_ITEMS_SET_BLOCKER_SPILL_RECOVERY +
+                    (upstreamProjection
+                      ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                        `so those fields were never serialized either.`
+                      : '')
+                : isWorkItemsReleaseCall(opts)
+                  ? WORK_ITEMS_RELEASE_SPILL_RECOVERY +
+                    (upstreamProjection
+                      ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                        `so those fields were never serialized either.`
+                      : '')
+                : isScorecardsEmitCall(opts)
+                  ? SCORECARDS_EMIT_SPILL_RECOVERY +
+                    ' Spill write error: ' +
+                    (spillErrorCode && spillErrorCode !== 'unknown error'
+                      ? spillErrorCode
+                      : spillErrorSummary ?? 'unknown error') +
+                    '.' +
+                    (upstreamProjection
+                      ? ` The tool also tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                        `so those fields were never serialized either.`
+                      : '')
+                  : `The result was structurally bounded, but its spill write failed ` +
+                    `(${spillErrorCode && spillErrorCode !== 'unknown error' ? spillErrorCode : spillErrorSummary ?? 'unknown error'}), ` +
+                    `so the omitted bytes are NOT recoverable and no ` +
+                    `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
+                    (upstreamProjection
+                      ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                        `so those fields were never serialized either.`
+                      : '') +
+                    buildProjectionHint(textItems, opts.toolName, bodyShape),
           };
     // plans:get's item text is the semantic payload of the detail read, not an
     // optional identity field. Promote it through the generic fallback so a
@@ -1484,9 +3458,112 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // (EI-22186855527494865). `items[].text` follows: also load-bearing, but an
     // items array announces its own truncation in band, so a cut there is visible.
     const preservePaths = [
+      ...(schedulerClaim ? ['ok', 'claimReceipt', 'claimReceipt.committed', 'claimReceipt.workItemId'] : []),
+      ...(opts.toolName === 'rubrics:amend'
+        ? ['review.state', 'review.conversationId', 'review.previewPostRef', 'review.next', 'ok', 'dryRun']
+        : []),
+      ...(isScorecardsGetResult(opts)
+        ? [
+            'scorecard.issueId',
+            'scorecard.criteria[].key',
+            'scorecard.criteria[].rating',
+            'scorecard.criteria[].evidence',
+            'evidenceRead.complete',
+            'evidenceRead.scope',
+            'evidenceRead.offset',
+            'evidenceRead.totalChars',
+            'evidenceRead.next',
+            'evidenceRead.criteria',
+          ]
+        : []),
+      ...(isScorecardsEmitCall(opts) ? SCORECARDS_EMIT_SPILL_PRESERVE_PATHS : []),
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
-      ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
-      ...(opts.toolName === 'coord:send' ? COORD_SEND_DELIVERY_PRESERVE_PATHS : []),
+      ...(opts.toolName === PIPELINE_POSITION_TOOL ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === PIPELINE_POSITION_TOOL)
+        ? PIPELINE_POSITION_PRESERVE_PATHS
+        : []),
+      ...(opts.toolName === 'coord:send' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'coord:send')
+        ? COORD_SEND_DELIVERY_PRESERVE_PATHS
+        : []),
+      ...(agentReviewClaim
+        ? [
+            'ok', 'mode', 'claimed', 'workItem.id', 'workItem.title', 'workItem.harness',
+            'ledgerIdeaId', 'gradeWith.ideaId',
+          ]
+        : []),
+      // Exact events:status snapshots carry the only in-band identity for the
+      // requested key. Preserve the success bit and event/watermark first, then
+      // keep history keys selectable. Oversized arrays stay domain-only; the
+      // containing envelope's partial flag and omission entry disclose the cut.
+      // The scratch cursor remains the route to the complete contents.
+      ...(opts.toolName === 'events:status'
+        ? [
+            'ok',
+            'event_inspection.event',
+            'event_inspection.current_generation',
+            'event_inspection.current_state',
+            'event_inspection.resync',
+            'event_inspection.declarations',
+            'event_inspection.waiters',
+            'event_inspection.wake_outcomes',
+          ]
+        : []),
+      ...(opts.toolName === 'work_items:links'
+        ? [
+            'coverage.selectedCount',
+            'coverage.checkedCount',
+            'coverage.complete',
+            'coverage.linkedCount',
+          ]
+        : []),
+      // work_items:get reports the selected/checked source set before its own
+      // tier shaper, then appends a stage-labeled detail count and bounded
+      // omitted-ID handles. Preserve those qualifiers through this later,
+      // independent projection. Row ids/stub markers stay selectable too, so a
+      // caller can reconcile inline rows or follow the spill cursor for rows
+      // this door could not render.
+      ...(isWorkItemsGetCall(opts)
+        ? [
+            'results[].id',
+            'results[].ok',
+            'results[].availability',
+            // A bounded comment window is an explicitly requested continuation
+            // surface. Keep its read bounds and post content ahead of the bulky
+            // checkpoint projection below: otherwise one large checkpoint can
+            // consume the result budget before a selected objection reaches the
+            // model. These same paths are needed when the outer MCP tool is
+            // `tools:invoke`; its depth-limited door must retain the nested
+            // target's contract instead of reducing each post to `{id}`.
+            'results[].threadWindow.total',
+            'results[].threadWindow.shown',
+            'results[].threadWindow.posts[].id',
+            'results[].threadWindow.posts[].thread_id',
+            'results[].threadWindow.posts[].author_id',
+            'results[].threadWindow.posts[].body',
+            'results[].threadWindow.posts[].created_ts',
+            'results[].threadWindow.topics',
+            'results[].threadWindow.createdAt',
+            // A spill-write failure removes the recovery path for the omitted
+            // bytes. Keep the checkpoint itself ahead of diagnostic bulk so a
+            // continuation read still carries useful state inline; the normal
+            // field clip remains marked and the full-note hash stays available.
+            'results[].checkpoint',
+            'results[].checkpointContentHash',
+            'results[].checkpointUpdatedAtMs',
+            'results[].checkpointBody',
+            'results[].checkpointReadFailed',
+            'results[]._stub',
+            'read.requested',
+            'read.available',
+            'read.absent',
+            'read.unavailable',
+            'read.detailRows',
+            'read.stubbedRows',
+            '_shapeNote.stubbed.count',
+            '_shapeNote.dropped',
+          ]
+        : []),
       // work_items:complete writes these fields before its bulky echoes, and its
       // tier shaper deliberately spreads them through unchanged. The generic
       // result-door is a later, independent projection seam, though: without an
@@ -1497,17 +3574,30 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // the evidence that it is not counted and why. Keep correlation first,
       // then the authority/count verdict, then the explanatory warnings; values
       // still obey the projector's normal string and transport budgets.
-      ...(opts.toolName === 'work_items:complete'
-        ? [
-            'results[].ok',
-            'results[].id',
-            'results[].completionAuthority',
-            'results[].countsTowardBurnDown',
-            'results[].authorityWarning',
-            'results[].requirementShortfallWarning',
-          ]
+      ...(isWorkItemsCompleteCall(opts)
+        ? WORK_ITEMS_COMPLETE_RECEIPT_PRESERVE_PATHS
         : []),
+      ...(isWorkItemsSetBlockerCall(opts)
+        ? WORK_ITEMS_SET_BLOCKER_RECEIPT_PRESERVE_PATHS
+        : []),
+      ...(isWorkItemsReleaseCall(opts)
+        ? WORK_ITEMS_RELEASE_RECEIPT_PRESERVE_PATHS
+        : []),
+      ...(isPlansStartCall(opts) ? PLANS_START_RECEIPT_PRESERVE_PATHS : []),
+      ...(isFleetLaunchCall(opts) && bodyShape.json != null &&
+        isJsonObject(bodyShape.json.parsed) && bodyShape.json.parsed.error === 'admission_refused'
+        ? FLEET_ADMISSION_RECEIPT_PRESERVE_PATHS : []),
       ...(opts.preservePaths ?? []),
+      // code:run's `summary` is the script's authored return value; `state` is
+      // replay support added by the sandbox. The generic identity projector
+      // ranks `state` ahead of ordinary fields, so a large store() value could
+      // consume the whole door and erase the useful script result. Keep the
+      // summary ahead of that replay state while the normal result-door budget
+      // continues to bound both and the spill keeps the full response recoverable.
+      ...(opts.toolName === 'code:run' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'code:run')
+        ? ['summary', 'summaryNotice.truncated', 'summaryNotice.rawSummaryCursor']
+        : []),
     ];
     const structuralProjectionWarning = extractStructuralProjectionWarning(result, textItems, jsonItemIndex);
     // The warning is a separate model-facing content item, so reserve its
@@ -1523,11 +3613,36 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       parsedJsonBody && opts.toolName === SPEC_TEST_ADEQUACY_TOOL
         ? compactSpecTestAdequacyBody(bodyShape.json!.parsed)
         : null;
-    const projected = projectBoundedPayload(
-      evaluatorCompactBody ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
+    // Full fleet indexes can outgrow even the domain emergency shaper. The
+    // source body has already been spilled above; retain the atomic numeric
+    // contract inline instead of walking early obligation fields until the
+    // generic budget runs out before it encounters the queue metrics.
+    const leaderBriefCore = parsedJsonBody &&
+      (opts.toolName === 'fleet:leader-brief' || opts.nestedTargetToolName === 'fleet:leader-brief') &&
+      recovery?.cursor
+      ? compactLeaderBriefForResultDoor(bodyShape.json!.parsed)
+      : null;
+    const leaderBriefPreview = leaderBriefCore ? {
+      ...leaderBriefCore,
+      _partial: true,
+      _projection: {
+        kind: 'bounded-payload', truncated: true, tier: 'trimmed', forced: true,
+        originalChars: totalChars, cursor: recovery!.cursor,
+        next: 'Page this cursor for the emitted snapshot, including all indexes and secondary metrics.',
+      },
+    } : null;
+    const leaderBriefFits = leaderBriefPreview !== null &&
+      Buffer.byteLength(JSON.stringify(leaderBriefPreview), 'utf8') <= structuralTargetChars;
+    const projected = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
+      evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {
       toolName: opts.toolName,
-      tier: 'trimmed',
+      // `work_items:get` is the continuity read. If its spill cannot be
+      // written, a trimmed 800-character string ceiling can leave too little
+      // of the checkpoint to resume safely. The same transport target still
+      // caps the whole response; the standard string ceiling only reallocates
+      // that bounded space to the explicitly preserved checkpoint path.
+      tier: isWorkItemsGetCall(opts) ? 'standard' : 'trimmed',
       forced: true,
       originalChars: totalChars,
       targetChars: structuralTargetChars,
@@ -1538,6 +3653,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // work_items:list), so keep an array root while retaining the metadata
       // out-of-band for this process and in `_meta.resultDoor` below.
       preserveArrayRoot: parsedJsonBody && Array.isArray(bodyShape.json!.parsed),
+      // This door retains the containing envelope, omission counts and spill
+      // cursor. Keep nested arrays iterable as domain rows; bare array roots
+      // still carry their own marker because they have no containing object.
+      arrayTruncation: 'envelope',
       // These roots contain model-facing state that cannot be reconstructed
       // from the generic identity fields. Keep them visible even if
       // projection metadata forces the final identity-only fallback;
@@ -1545,11 +3664,29 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(opts.toolName === 'coord:orient'
         ? { preserveTopLevelKeys: ['self', 'recovery'] as const }
         : opts.toolName === 'events:status'
-          ? { preserveTopLevelKeys: ['event_inspection'] as const }
-          : {}),
+          ? { preserveTopLevelKeys: ['ok', 'event_inspection'] as const }
+          : schedulerClaim
+            ? { preserveTopLevelKeys: ['ok', 'claimReceipt'] as const }
+            : agentReviewClaim
+              ? { preserveTopLevelKeys: ['ok', 'mode', 'claimed', 'workItem', 'ledgerIdeaId', 'gradeWith'] as const }
+              : {}),
+      ...(isWorkItemsCompleteCall(opts)
+        ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
+        : isWorkItemsSetBlockerCall(opts)
+          ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
+          : isWorkItemsReleaseCall(opts)
+            ? { preserveTopLevelKeys: ['ok', 'counts', 'results'] as const }
+        : {}),
       ...(evaluatorCompactBody == null && preservePaths.length > 0 ? { preservePaths } : {}),
       bulkEnvelope: opts.bulkEnvelope,
     });
+    if (isScorecardsGetResult(opts) && parsedJsonBody && evaluatorCompactBody == null) {
+      repairScorecardsGetProjection(bodyShape.json!.parsed, projected);
+    }
+    if (parsedJsonBody && (opts.toolName === 'tools:find' ||
+      (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'tools:find'))) {
+      repairDiscoverySchemaProjection(bodyShape.json!.parsed, projected, structuralTargetChars);
+    }
     const structuralText = JSON.stringify(projected);
     let inserted = false;
     const structuralContent: Array<{ type: 'text'; text: string } | Record<string, unknown>> = [];
@@ -1576,6 +3713,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         resultDoor: {
           ...baseResultDoorMeta,
           structural: true,
+          ...(leaderBriefFits ? { compactProjection: 'fleet:leader-brief-numeric-core' } : {}),
           ...(evaluatorCompactBody != null
             ? { compactProjection: 'evaluator-specific:plans:evaluate-spec-test-adequacy' }
             : {}),

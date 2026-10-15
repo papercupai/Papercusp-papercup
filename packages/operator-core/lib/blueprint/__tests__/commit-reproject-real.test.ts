@@ -1,9 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { realGitCommit } from '../commit-reproject-real';
+import type { Sql } from 'postgres';
+
+const h = vi.hoisted(() => ({ commitAndReproject: vi.fn() }));
+vi.mock('../commit-reproject', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../commit-reproject')>()),
+  commitAndReproject: h.commitAndReproject,
+}));
+
+import { acceptProposalViaCommit, realGitCommit } from '../commit-reproject-real';
 
 /**
  * P-016 — the git wiring of commit → reproject, exercised against a REAL temp git
@@ -19,6 +27,10 @@ function git(cwd: string, ...args: string[]): string {
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'cr-real-'));
+  h.commitAndReproject.mockResolvedValue({
+    ok: true, committed: true, commit: 'commit-1', contentHash: 'hash-1',
+    editedPath: '.papercusp/prompts/worker.md', blueprintPath: '.papercusp/blueprint.yaml',
+  });
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -67,5 +79,108 @@ describe('realGitCommit', () => {
     writeFileSync(join(dir, 'x.md'), 'y');
     const sha = await realGitCommit(dir, ['x.md'], 'should not commit');
     expect(sha).toBeNull();
+  });
+});
+
+function gymSql(initialStatus = 'pending') {
+  let status = initialStatus;
+  let learningLifecycle: Record<string, unknown> | null = null;
+  const receiptWrites: Record<string, unknown>[] = [];
+  const unsafe = vi.fn(async (query: string, params?: unknown[]) => {
+    if (query.includes('SELECT * FROM harness_shared.gym_proposals')) {
+      return [{
+        id: 'proposal-1', workspace_id: 'ws-1', status, created_at: 1, decided_at: 2,
+        original_md: 'old prompt', proposed_md: 'new prompt',
+        learning_lifecycle: learningLifecycle,
+        candidate_verdict: {
+          candidateId: 'candidate-1', parentId: 'parent-1', recordedAt: '2026-10-01T00:00:00.000Z',
+          hashes: { variantHash: 'variant-hash', parentHash: 'parent-hash', taskHash: 'task-hash' },
+          evaluation: { gateResults: [{ gate: 'real-anchor-no-regress', status: 'pass' }] },
+        },
+      }];
+    }
+    if (query.includes('SET learning_lifecycle = receipt.payload::jsonb')) {
+      const payloads = params?.[2] as string[];
+      for (const payload of payloads) {
+        learningLifecycle = JSON.parse(payload) as Record<string, unknown>;
+        receiptWrites.push(learningLifecycle);
+      }
+      return [];
+    }
+    throw new Error(`unexpected unsafe query: ${query}`);
+  });
+  const tag = async (strings: TemplateStringsArray) => {
+    const query = strings.join(' ');
+    if (query.includes('UPDATE harness_shared.gym_proposals SET status')) {
+      if (status !== 'pending') return { count: 0 };
+      status = 'accepted';
+      return { count: 1 };
+    }
+    if (query.includes('SELECT 1 FROM harness_shared.gym_proposals')) {
+      return status === 'accepted' ? [{ '?column?': 1 }] : [];
+    }
+    throw new Error(`unexpected tagged query: ${query}`);
+  };
+  const sql = Object.assign(tag, {
+    unsafe,
+    begin: async (callback: (tx: unknown) => unknown) => callback(sql),
+  }) as unknown as Sql;
+  return { sql, receiptWrites, unsafe, get status() { return status; }, get learningLifecycle() { return learningLifecycle; } };
+}
+
+describe('acceptProposalViaCommit lifecycle receipt', () => {
+  it('writes and refreshes the accepted Gym snapshot without granting common promotion authority', async () => {
+    const db = gymSql();
+    const result = await acceptProposalViaCommit(db.sql, {
+      workspaceId: 'ws-1', harnessSlug: 'alpha', harnessDir: dir,
+      proposalId: 'proposal-1', role: 'worker', proposedMd: 'new prompt', now: 3,
+    });
+    const replay = await acceptProposalViaCommit(db.sql, {
+      workspaceId: 'ws-1', harnessSlug: 'alpha', harnessDir: dir,
+      proposalId: 'proposal-1', role: 'worker', proposedMd: 'new prompt', now: 4,
+    });
+
+    expect(result).toMatchObject({ ok: true, proposalMarked: true });
+    expect(replay).toMatchObject({ ok: true, proposalMarked: false });
+    expect(db.status).toBe('accepted');
+    expect(db.receiptWrites).toHaveLength(2);
+    expect(db.learningLifecycle).toMatchObject({
+      producer: 'gym', sourceRef: 'gym:proposal-1', contract: null, promotionAllowed: false,
+      lifecycle: {
+        stage: 'activation',
+        decision: { status: 'partial', value: { verdict: 'accepted' } },
+        activation: { status: 'partial' },
+      },
+    });
+  });
+
+  it('repairs a missing receipt for a previously accepted proposal', async () => {
+    const db = gymSql('accepted');
+    const result = await acceptProposalViaCommit(db.sql, {
+      workspaceId: 'ws-1', harnessSlug: 'alpha', harnessDir: dir,
+      proposalId: 'proposal-1', role: 'worker', proposedMd: 'new prompt', now: 4,
+    });
+
+    expect(result).toMatchObject({ ok: true, proposalMarked: false });
+    expect(db.receiptWrites).toHaveLength(1);
+    expect(db.learningLifecycle).toMatchObject({ contract: null, promotionAllowed: false, lifecycle: { stage: 'activation' } });
+  });
+
+  it('does not write a receipt when commit or reprojection fails', async () => {
+    h.commitAndReproject.mockResolvedValueOnce({
+      ok: false, committed: false, commit: null, contentHash: null,
+      editedPath: '.papercusp/prompts/worker.md', blueprintPath: '.papercusp/blueprint.yaml', reason: 'reproject failed',
+    });
+    const db = gymSql();
+    const result = await acceptProposalViaCommit(db.sql, {
+      workspaceId: 'ws-1', harnessSlug: 'alpha', harnessDir: dir,
+      proposalId: 'proposal-1', role: 'worker', proposedMd: 'new prompt', now: 5,
+    });
+
+    expect(result).toMatchObject({ ok: false, proposalMarked: false });
+    expect(db.status).toBe('pending');
+    expect(db.receiptWrites).toHaveLength(0);
+    expect(db.learningLifecycle).toBeNull();
+    expect(db.unsafe).not.toHaveBeenCalled();
   });
 });

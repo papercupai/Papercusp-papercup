@@ -43,7 +43,7 @@
  * behaviour under test, which is the exact false verdict the parse gate below
  * exists to prevent (EI-21430792829614962).
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -101,7 +101,13 @@ function runProbe(args: string[], extraEnv: Record<string, string | undefined> =
     cwd: scratch,
     encoding: 'utf8',
     timeout: 60_000,
-    env: {
+    env: probeEnv(extraEnv),
+  });
+  return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+}
+
+function probeEnv(extraEnv: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  return {
       ...process.env,
       TMPDIR: scratch,
       // Scrub the AMBIENT value so every case below measures what the PROBE
@@ -115,10 +121,12 @@ function runProbe(args: string[], extraEnv: Record<string, string | undefined> =
       // the right scrub rather than "0": pc-heavy tests `= "1"`, and the probe
       // reports via `${PC_HEAVY_BYPASS:-unset}`, which treats empty as unset.
       PC_HEAVY_BYPASS: '',
+      // Same class (WI-10005002): the probe REFUSES --in-tree when this is "1",
+      // so a suite launched from a foreground capability:bash call reported ~16
+      // false reds. The cases that test that refusal set it via extraEnv.
+      PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '',
       ...extraEnv,
-    },
-  });
-  return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+  };
 }
 
 const GOOD = 'value = GOOD\n';
@@ -153,6 +161,8 @@ function runLockedProbe(
     PAPERCUSP_HONO_PORT: '',
     PAPERCUSP_MCP_PROXY_BASE: '',
     PAPERCUSP_MCP_PROXY_TARGET_PORT: '3070',
+    // ...process.env above re-adds the launcher's marker after runProbe's scrub (WI-10005002).
+    PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '',
     ...extraEnv,
   });
   // spawnSync reports null when the child died on a signal; -1 keeps that distinct from every real exit code.
@@ -411,6 +421,12 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).not.toContain('mutant applied:');
   });
 
+  // One --in-tree --sweep-lock-held probe runs the sweep fence TWICE: once before
+  // the (possibly expensive) baseline, so a missing lock fails fast, and again
+  // immediately before mutation, to refresh the lease and catch a lock that
+  // changed while the baseline ran (scripts/mutation-probe.sh; WI-10005000).
+  const SWEEP_FENCE_CALLS = ['coord:presence', 'locks:queue', 'locks:heartbeat'];
+
   it.each(['3070', '9071'])('retries a local :%s transport timeout once through staging :3170', (port) => {
     const primaryUrl = 'http://127.0.0.1:' + port;
     const endpointEnv: Record<string, string> = port === '9071'
@@ -433,8 +449,10 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    // Only the first fence check meets the injected timeout and recovers through
+    // staging. The fallback is per call, so the second check returns to the primary.
     expect(calls.filter((call) => call.tool === 'coord:presence').map((call) => call.targetUrl))
-      .toEqual([primaryUrl, 'http://127.0.0.1:3170']);
+      .toEqual([primaryUrl, 'http://127.0.0.1:3170', primaryUrl]);
   });
 
   it('retries a timeout through staging when TMPDIR is UNSET (WI-10004679)', () => {
@@ -479,8 +497,10 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).toContain("verified this session's live file lock");
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    // The first fence check's heartbeat times out and recovers through staging; the
+    // second check's heartbeat goes back to the primary (per-call fallback).
     expect(calls.filter((call) => call.tool === 'locks:heartbeat').map((call) => call.targetUrl))
-      .toEqual(['http://127.0.0.1:3070', 'http://127.0.0.1:3170']);
+      .toEqual(['http://127.0.0.1:3070', 'http://127.0.0.1:3170', 'http://127.0.0.1:3070']);
   });
 
   it('does not reroute authentication or input failures to staging', () => {
@@ -553,6 +573,10 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
 
     expect(code).toBe(2);
     expect(out).toContain("no live file lock for 'subject.txt'");
+    // ORDER, not just call count (EI-24673276803601762): the fence must refuse BEFORE the
+    // (possibly expensive) baseline guard runs. Until 25489f80b8 the only fence call sat
+    // after the baseline, so a missing lock cost a full baseline run before refusing.
+    expect(out).not.toContain('running baseline guard');
     expect(out).not.toContain('mutant applied:');
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
   });
@@ -572,9 +596,12 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     // No locks:list: the git-sync lease is not consulted unless opted in (EI-24712906810240170).
-    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
-    expect(calls[1].args).toMatchObject({ paths: ['subject.txt'], coordination_domain: scratch });
-    expect(calls[2].args).toMatchObject({ ttl_sec: 1200, coordination_domain: scratch });
+    // Both fence checks (pre-baseline and pre-mutation) must verify AND extend the lock.
+    expect(calls.map((call) => call.tool)).toEqual([...SWEEP_FENCE_CALLS, ...SWEEP_FENCE_CALLS]);
+    for (const offset of [0, SWEEP_FENCE_CALLS.length]) {
+      expect(calls[offset + 1].args).toMatchObject({ paths: ['subject.txt'], coordination_domain: scratch });
+      expect(calls[offset + 2].args).toMatchObject({ ttl_sec: 1200, coordination_domain: scratch });
+    }
     // Every call must send a projection the real dispatch accepts (WI-10002758).
     for (const call of calls) {
       const projection = JSON.parse(call.projection);
@@ -594,7 +621,7 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(code).toBe(0);
     expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
+    expect(calls.map((call) => call.tool)).toEqual([...SWEEP_FENCE_CALLS, ...SWEEP_FENCE_CALLS]);
     for (const call of calls) {
       expect(call.workspace, call.tool).toBe('probe-workspace');
       expect(call.harness, call.tool).toBe('probe-harness');
@@ -725,6 +752,127 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
  * that had started refusing everything.
  */
 describe('mutation-probe.sh assertion-evidence gate', () => {
+  const cargoPass = 'running 1 test\ntest guard ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n';
+  const cargoFail = 'running 1 test\ntest guard ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\nerror: test failed, to rerun pass --lib\n';
+  function cargoGuard(failure: string, exitCode = 101) {
+    // JSON string literals here are arguments to node, never shell payloads.
+    return `test -f "{}" && node -e 'process.stdout.write(process.env.PAPERCUSP_MUTATION_PHASE === "mutant" ? ${JSON.stringify(failure)} : ${JSON.stringify(cargoPass)}); process.exit(process.env.PAPERCUSP_MUTATION_PHASE === "mutant" ? ${exitCode} : 0)'`;
+  }
+
+  it('credits Cargo exit 101 only after named tests execute and fail', () => {
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/', '--test', cargoGuard(cargoFail),
+    ]);
+    expect(status).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(out).toContain('guard_exit=101');
+    expect(out).toContain('assertion_evidence=cargo-libtest-failed-tests');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it.each([
+    ['compilation', 'error[E0308]: mismatched types\nerror: could not compile guard (lib test) due to 1 previous error\n'],
+    ['setup', 'error: failed to run custom build command for guard\n'],
+    ['empty selection', 'running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n'],
+    ['ignored tests', 'running 1 test\ntest guard ... ignored\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'],
+    ['missing named failure', 'running 1 test\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'],
+    ['different test binary', 'running 1 test\ntest guard ... FAILED\nrunning 0 tests\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n'],
+    ['later compile error', cargoFail + 'error: could not compile another crate\n'],
+    ['unrecognized runner', 'guard command failed\n'],
+    ['other runner evidence', 'Tests 1 failed (1)\n'],
+  ])('refuses Cargo-style exit 101 from %s', (_label, failure) => {
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/', '--test', cargoGuard(failure),
+    ]);
+    expect(status).toBe(2);
+    expect(out).toMatch(/MUTATION_PROBE_RESULT verdict=(harness-error|inconclusive)/);
+    expect(out).toContain('guard_exit=101');
+    expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('does not credit executed Cargo failures under an unrelated exit status', () => {
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/', '--test', cargoGuard(cargoFail, 2),
+    ]);
+    expect(status).toBe(2);
+    expect(out).toContain('verdict=harness-error');
+  });
+
+  it('refuses a green Cargo baseline that selected no tests', () => {
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/',
+      '--test', 'test -f "{}" && printf "running 0 tests\\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\\n"',
+    ]);
+    expect(status).toBe(2);
+    expect(out).toContain('zero_selection=cargo-libtest-zero-passed');
+    expect(out).not.toContain('mutant applied:');
+  });
+
+  it('accepts a Cargo baseline with empty binaries alongside a passing selected test', () => {
+    const guard = cargoGuard(cargoFail) + '; rc=$?; printf "running 0 tests\\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\\n"; exit "$rc"';
+    const { status, out } = runProbe([
+      '--file', subject, '--mutate', 's/GOOD/BAD/', '--test', guard,
+    ]);
+    expect(status).toBe(0);
+    expect(out).toContain('assertion_evidence=cargo-libtest-failed-tests');
+  });
+
+  function historicalCargoProbe(failure: string, emptyBaseline = false) {
+    // Build a before-fix object in the suite's throwaway repo; no shared-tree
+    // index, branch, commit or source is changed by this historical fixture.
+    const snapshotRoot = mkdtempSync(join(scratch, 'cargo-history-'));
+    git(snapshotRoot, ['init', '-q']);
+    const snapshotName = 'cargo-history.txt';
+    const snapshot = join(snapshotRoot, snapshotName);
+    writeFileSync(snapshot, 'value = BAD\n');
+    const blob = git(snapshotRoot, ['hash-object', '-w', snapshot]);
+    const tree = spawnSync('git', ['mktree'], {
+      cwd: snapshotRoot, encoding: 'utf8', input: `100644 blob ${blob}\t${snapshotName}\n`,
+    });
+    expect(tree.status, tree.stderr).toBe(0);
+    const commit = spawnSync('git', ['-c', 'user.name=Probe fixture', '-c', 'user.email=probe@example.invalid', 'commit-tree', tree.stdout.trim()], {
+      cwd: snapshotRoot, encoding: 'utf8', input: 'Historical Cargo fixture\n',
+    });
+    expect(commit.status, commit.stderr).toBe(0);
+    git(snapshotRoot, ['update-ref', 'HEAD', commit.stdout.trim()]);
+    // Historical mode requires a committed source at HEAD. Check the fixture
+    // precondition before invoking the script, rather than accepting admission
+    // refusals as evidence about the Cargo classifier.
+    expect(git(snapshotRoot, ['show', `HEAD:${snapshotName}`])).toBe('value = BAD');
+    writeFileSync(snapshot, GOOD);
+    const pass = emptyBaseline ? 'running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n' : cargoPass;
+    const guard = `node -e 'const bad=require("node:fs").readFileSync(process.argv[1],"utf8").includes("BAD"); process.stdout.write(bad ? ${JSON.stringify(failure)} : ${JSON.stringify(pass)}); process.exit(bad ? 101 : 0)' "{}"`;
+    return runProbe([
+      '--file', snapshot, '--against-commit', commit.stdout.trim(),
+      '--must-be-absent', 'GOOD', '--positive-control', 'value =',
+      '--calibration', 'grep -q "value =" "{}"', '--test', guard,
+    ]);
+  }
+
+  it('credits an executed Cargo exit-101 failure in historical mode', () => {
+    const { status, out } = historicalCargoProbe(cargoFail);
+    expect(status, out).toBe(0);
+    expect(out).toContain('mode=historical verdict=caught');
+    expect(out).toContain('historical_exit=101');
+    expect(out).toContain('assertion_evidence=cargo-libtest-failed-tests');
+  });
+
+  it('refuses a Cargo compilation failure in historical mode', () => {
+    const { status, out } = historicalCargoProbe('error: could not compile guard\n');
+    expect(status, out).toBe(2);
+    expect(out).toContain('mode=historical verdict=harness-error');
+    expect(out).toContain('historical_exit=101');
+  });
+
+  it('refuses historical scoring when the current Cargo snapshot selected no tests', () => {
+    const { status, out } = historicalCargoProbe(cargoFail, true);
+    expect(status, out).toBe(2);
+    expect(out).toContain('mode=historical verdict=harness-error');
+    expect(out).toContain('zero_selection=cargo-libtest-zero-passed');
+    expect(out).toContain('historical_exit=-1');
+  });
+
   const setupFailure = [
     // The reporter count below includes the failed setup hook, though no assertion ran.
     'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf "FAIL setup hook: Hook timed out in 120000ms\\n"; printf "Tests 2 skipped (2)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed skippedTests=2\\n"; else printf "Tests 1 passed (1)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed skippedTests=0\\n"; fi',
@@ -911,6 +1059,70 @@ describe('mutation-probe.sh unparseable-mutant gate', () => {
  *   - the in-tree guard runs under a wall-clock ceiling, and tripping it is a
  *     harness-error, never a verdict.
  */
+describe('mutation-probe.sh orphaned-snapshot recovery (EI-24673390474513566)', () => {
+  // SIGKILL is the one signal the probe's EXIT/TERM/INT traps cannot answer, so it
+  // is the faithful model of "the probe died mid-mutant": the subject stays
+  // mutated and the admission manifest stays behind. The NEXT probe in the same
+  // checkout must find the dead owner, restore the subject from the snapshot,
+  // and then run normally — not refuse forever, and not test the mutant.
+  it('restores a subject left mutated by a SIGKILLed in-tree probe, then runs normally', async () => {
+    const marker = join(scratch, 'orphan-mutant-phase-reached');
+    rmSync(marker, { force: true });
+    const child = spawn(
+      'bash',
+      [
+        PROBE,
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', `grep -q GOOD {} || { touch '${marker}'; sleep 30; }`,
+        '--in-tree',
+        '--accept-sweep-race',
+      ],
+      { cwd: scratch, detached: true, stdio: 'ignore', env: probeEnv() },
+    );
+    const exited = new Promise((done) => child.once('exit', done));
+    try {
+      const deadline = Date.now() + 45_000;
+      while (!existsSync(marker)) {
+        if (Date.now() > deadline) throw new Error('probe never reached its mutant phase');
+        await new Promise((tick) => setTimeout(tick, 100));
+      }
+      // The mutant is on disk and the probe is alive inside its guard.
+      expect(readFileSync(subject, 'utf8')).not.toBe(GOOD);
+      process.kill(-child.pid!, 'SIGKILL');
+      await exited;
+      // No trap ran, so nothing restored it: this is the orphaned state.
+      expect(readFileSync(subject, 'utf8')).not.toBe(GOOD);
+
+      const { status, out } = runProbe([
+        '--file', subject,
+        '--mutate', 's/GOOD/BAD/',
+        '--test', 'grep -q GOOD {}',
+        '--in-tree',
+        '--accept-sweep-race',
+      ]);
+
+      expect(out).toContain('restoring subject from orphaned original snapshot');
+      expect(out).not.toContain('active snapshot');
+      expect(out).not.toContain('invalid snapshot manifest');
+      // A verdict here proves the baseline ran on the RESTORED bytes: had the
+      // subject still been mutated, `grep -q GOOD` would fail the baseline.
+      expect(status).toBe(0);
+      expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+      expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          process.kill(-child.pid!, 'SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+      writeFileSync(subject, GOOD);
+    }
+  }, 120_000);
+});
+
 describe('mutation-probe.sh in-tree dirty-window ceiling', () => {
   // Echoes the inherited value so the assertion reads the CHILD's environment
   // rather than this test process's, then behaves like the ordinary subject

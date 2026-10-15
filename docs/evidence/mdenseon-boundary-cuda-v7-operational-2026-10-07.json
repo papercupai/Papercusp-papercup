@@ -1,0 +1,479 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "mdenseon P-006 CUDA boundary v6 (fp32, TF32 off): actual-device parity re-verification",
+  "framework": "operational",
+  "command": [
+    "$HOME/.cache/papercusp/model-validation/venvs/mdenseon-boundary-py312-v1/bin/python",
+    ".papercusp/scratch/p006-v6-operational.py",
+    "docs/evidence/mdenseon-boundary-cuda-v7-operational-2026-10-07.json"
+  ],
+  "numpy": "2.5.3",
+  "exitCode": 0,
+  "startedAt": "2026-10-07T08:26:01.134557+00:00",
+  "finishedAt": "2026-10-07T08:26:01.287583+00:00",
+  "summary": "9/10 CUDA boundary cells reproduce their stored parity and pass the fixed vector gates (including single 8192 and over-limit truncation to 8192, plus a padded 5-input batch); mixed-length [2,8192] is an explicit device-capacity allocation failure under production GPU co-tenancy (D-007). No inference performed by this verifier.",
+  "assertions": [
+    {
+      "id": "v6-request-and-recipe-identity",
+      "passed": true,
+      "evidence": "request sha256 fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4; all 10 cells carry deviceRecipe python-ort-cuda-fp32-tf32-0, CUDAExecutionProvider first, use_tf32=0"
+    },
+    {
+      "id": "v6-measured-cells-reproduce-and-pass-fixed-gates",
+      "passed": true,
+      "evidence": "single-short-query tokens=[6] minCos=1.000000000 maxAbs=2.533e-07; single-short-document tokens=[7] minCos=1.000000000 maxAbs=3.278e-07; single-unicode tokens=[16] minCos=0.999999940 maxAbs=5.513e-07; single-code tokens=[28] minCos=0.999999940 maxAbs=1.304e-07; single-whitespace tokens=[11] minCos=0.999999940 maxAbs=1.020e-07; single-empty tokens=[5] minCos=1.000000000 maxAbs=1.490e-07; single-full-8192 tokens=[8192] minCos=0.999999940 maxAbs=2.503e-06; single-over-limit tokens=[8192] minCos=0.999999940 maxAbs=2.772e-06; padded tokens=[6, 16, 28, 11, 5] minCos=0.999999940 maxAbs=3.278e-07 \u2014 recomputed from actualVectors vs referenceVectors, gates cosine>=0.99999 maxAbs<=3e-05; reference vectors equal the pre-inference .reference.json"
+    },
+    {
+      "id": "v6-mixed-length-explicit-capacity-failure",
+      "passed": true,
+      "evidence": "mixed-length [2,8192] inference-failed: ONNX Runtime BFCArena allocation failure at /layers.0/attn/MatMul/MatMulScaleFusion/; device memory before inference {\"index\": 0, \"totalMiB\": 24576.0, \"usedMiB\": 19750.0, \"freeMiB\": 4369.0}; no actual vectors recorded; PyTorch reference vectors retained (mdenseon-adoption-measurements-2026-10-01#D-007)"
+    },
+    {
+      "id": "v6-no-missing-cells",
+      "passed": true,
+      "evidence": "promised cells ['single-short-query', 'single-short-document', 'single-unicode', 'single-code', 'single-whitespace', 'single-empty', 'single-full-8192', 'single-over-limit', 'padded', 'mixed-length']; every promised cell has exactly one immutable result or failure file"
+    }
+  ],
+  "evidencePlane": "tree",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "specId": "MDENSE-actual-parity-cell",
+  "workItemId": "WI-10004540",
+  "producer": {
+    "script": "packages/operator-core/lib/memory/bench/mdenseon-vectors.py",
+    "invocation": "--boundary-request boundary-request-v6.json --boundary-device cuda --boundary-cuda-tf32 0",
+    "durableTaskId": "0muwbck0f6b08el1uw6",
+    "producerExit": 1,
+    "producerExitReason": "mixed-length allocation failure raised after its failure.json was written"
+  },
+  "gpuCoTenants": "papercup-embed-sidecar.service PID 714750 5982 MiB; tsx node PID 8737 1818 MiB; kokoro 1020 MiB (nvidia-smi 2026-10-06T07:04Z after v6 exit)",
+  "runDirectory": "$HOME/.cache/papercusp/model-validation/mdenseon-boundary-WI10004540-20261001/boundary-cuda-v6",
+  "cells": [
+    {
+      "cell": "single-short-query",
+      "status": "measured",
+      "caseIds": [
+        "short-query"
+      ],
+      "tokenLengths": [
+        6
+      ],
+      "inputShapeActuallyInferred": [
+        1,
+        6
+      ],
+      "minimumCosine": 1.0,
+      "maximumAbsoluteError": 2.5331974029541016e-07,
+      "storedParityReproduced": true,
+      "passedFixedVectorGates": true,
+      "storedVerdict": true,
+      "referenceFileMatches": true,
+      "singleBatchParity": null,
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 11675.0,
+        "freeMiB": 12444.0
+      },
+      "inferenceMs": 334.92432899947744,
+      "referenceMs": 1164.6541610025452,
+      "resultSha256": "1ffcb34975c7a8f3c18507ab9d77caa2789ed26f2f3963b25fba6edadd22eb88",
+      "referenceSha256": "9f72bdd95f2856997358eed146ef47d6f69986bc378a6b12310c64db84d3cccc",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    },
+    {
+      "cell": "single-short-document",
+      "status": "measured",
+      "caseIds": [
+        "short-document"
+      ],
+      "tokenLengths": [
+        7
+      ],
+      "inputShapeActuallyInferred": [
+        1,
+        7
+      ],
+      "minimumCosine": 1.0,
+      "maximumAbsoluteError": 3.2782554626464844e-07,
+      "storedParityReproduced": true,
+      "passedFixedVectorGates": true,
+      "storedVerdict": true,
+      "referenceFileMatches": true,
+      "singleBatchParity": null,
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 11685.0,
+        "freeMiB": 12434.0
+      },
+      "inferenceMs": 72.3570429981919,
+      "referenceMs": 67.65894099953584,
+      "resultSha256": "825766a577b9a52834265c7a7016adb0ca0f3c2c7d351c7febc93cd3d44427bf",
+      "referenceSha256": "5017b1fd05739f09e839f1e4f003732edc14936af76a6bdbbfbe8cc41657ba0f",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    },
+    {
+      "cell": "single-unicode",
+      "status": "measured",
+      "caseIds": [
+        "unicode"
+      ],
+      "tokenLengths": [
+        16
+      ],
+      "inputShapeActuallyInferred": [
+        1,
+        16
+      ],
+      "minimumCosine": 0.9999999403953552,
+      "maximumAbsoluteError": 5.513429641723633e-07,
+      "storedParityReproduced": true,
+      "passedFixedVectorGates": true,
+      "storedVerdict": true,
+      "referenceFileMatches": true,
+      "singleBatchParity": null,
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 11685.0,
+        "freeMiB": 12434.0
+      },
+      "inferenceMs": 108.02566300117178,
+      "referenceMs": 81.53434300038498,
+      "resultSha256": "e8132faf1005ad49457df26af045f94d6df95c7d2d2f5613e405eeda5ef45d87",
+      "referenceSha256": "5f9a048d847d7074d6e3e9b09837bb44d216ee556dae514dd307cc89943bc2e2",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    },
+    {
+      "cell": "single-code",
+      "status": "measured",
+      "caseIds": [
+        "code"
+      ],
+      "tokenLengths": [
+        28
+      ],
+      "inputShapeActuallyInferred": [
+        1,
+        28
+      ],
+      "minimumCosine": 0.9999999403953552,
+      "maximumAbsoluteError": 1.30385160446167e-07,
+      "storedParityReproduced": true,
+      "passedFixedVectorGates": true,
+      "storedVerdict": true,
+      "referenceFileMatches": true,
+      "singleBatchParity": null,
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 11685.0,
+        "freeMiB": 12434.0
+      },
+      "inferenceMs": 98.03844699490583,
+      "referenceMs": 114.36213199340273,
+      "resultSha256": "43661803f16112fe6263c1ee5f0172d480fc27cad138777e13dae0ee6db289b0",
+      "referenceSha256": "6d27d40e35cea8196971f6ee1cceea8a54507a679e520e938b15ee37d49216f6",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    },
+    {
+      "cell": "single-whitespace",
+      "status": "measured",
+      "caseIds": [
+        "whitespace"
+      ],
+      "tokenLengths": [
+        11
+      ],
+      "inputShapeActuallyInferred": [
+        1,
+        11
+      ],
+      "minimumCosine": 0.9999999403953552,
+      "maximumAbsoluteError": 1.019798219203949e-07,
+      "storedParityReproduced": true,
+      "passedFixedVectorGates": true,
+      "storedVerdict": true,
+      "referenceFileMatches": true,
+      "singleBatchParity": null,
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 11685.0,
+        "freeMiB": 12434.0
+      },
+      "inferenceMs": 82.43115599907469,
+      "referenceMs": 77.54933000251185,
+      "resultSha256": "64a3d7ef399d7a0de4309490ceb191509495f5748c8b3e225db042fe6b1fdd85",
+      "referenceSha256": "77d93d2b2868b9313a7aba96d3dfb1871c63f93ba11ebdd30d7f96fb48bca7fe",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    },
+    {
+      "cell": "single-empty",
+      "status": "measured",
+      "caseIds": [
+        "empty"
+      ],
+      "tokenLengths": [
+        5
+      ],
+      "inputShapeActuallyInferred": [
+        1,
+        5
+      ],
+      "minimumCosine": 1.0,
+      "maximumAbsoluteError": 1.4901161193847656e-07,
+      "storedParityReproduced": true,
+      "passedFixedVectorGates": true,
+      "storedVerdict": true,
+      "referenceFileMatches": true,
+      "singleBatchParity": null,
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 11685.0,
+        "freeMiB": 12434.0
+      },
+      "inferenceMs": 81.73024200368673,
+      "referenceMs": 59.65171199932229,
+      "resultSha256": "769d3128c6a60f470a3ae379b9ed4b744cca156e5484894ff94eb247e3f7bcfa",
+      "referenceSha256": "62c48fd058a0edd50cec627baec493c2aba6ab15685857bdf1074216e5863e63",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    },
+    {
+      "cell": "single-full-8192",
+      "status": "measured",
+      "caseIds": [
+        "full-8192"
+      ],
+      "tokenLengths": [
+        8192
+      ],
+      "inputShapeActuallyInferred": [
+        1,
+        8192
+      ],
+      "minimumCosine": 0.9999999403953552,
+      "maximumAbsoluteError": 2.5033950805664062e-06,
+      "storedParityReproduced": true,
+      "passedFixedVectorGates": true,
+      "storedVerdict": true,
+      "referenceFileMatches": true,
+      "singleBatchParity": null,
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 11614.0,
+        "freeMiB": 12505.0
+      },
+      "inferenceMs": 1941.8765180016635,
+      "referenceMs": 197715.73760500178,
+      "resultSha256": "3f2012a6ffa423f2b31878fb757459b304f566b35748994bee0a408497a58425",
+      "referenceSha256": "edab79c22adbc0d52c3b8e91d5e9e26fbefcc2a389cf7159e54a276f4e27940a",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    },
+    {
+      "cell": "single-over-limit",
+      "status": "measured",
+      "caseIds": [
+        "over-limit"
+      ],
+      "tokenLengths": [
+        8192
+      ],
+      "inputShapeActuallyInferred": [
+        1,
+        8192
+      ],
+      "minimumCosine": 0.9999999403953552,
+      "maximumAbsoluteError": 2.771615982055664e-06,
+      "storedParityReproduced": true,
+      "passedFixedVectorGates": true,
+      "storedVerdict": true,
+      "referenceFileMatches": true,
+      "singleBatchParity": null,
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 19750.0,
+        "freeMiB": 4369.0
+      },
+      "inferenceMs": 1171.8216300068889,
+      "referenceMs": 162253.89196600008,
+      "resultSha256": "eac5936a4ace11da551122cf6f68935e3ebff52c4bf9df26430e07bb65de05a5",
+      "referenceSha256": "74c04ff492e6db9354c97f080f771a8bbe0997f8badcf17940b77561798cb780",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    },
+    {
+      "cell": "padded",
+      "status": "measured",
+      "caseIds": [
+        "short-query",
+        "unicode",
+        "code",
+        "whitespace",
+        "empty"
+      ],
+      "tokenLengths": [
+        6,
+        16,
+        28,
+        11,
+        5
+      ],
+      "inputShapeActuallyInferred": [
+        5,
+        28
+      ],
+      "minimumCosine": 0.9999999403953552,
+      "maximumAbsoluteError": 3.2782554626464844e-07,
+      "storedParityReproduced": true,
+      "passedFixedVectorGates": true,
+      "storedVerdict": true,
+      "referenceFileMatches": true,
+      "singleBatchParity": {
+        "count": 5,
+        "minimumCosine": 1.0,
+        "maximumAbsoluteError": 4.470348358154297e-07,
+        "worstCosineLabel": "short-query",
+        "worstAbsoluteErrorLabel": "unicode",
+        "cases": [
+          {
+            "label": "short-query",
+            "cosine": 1.0,
+            "maximumAbsoluteError": 2.2351741790771484e-07
+          },
+          {
+            "label": "unicode",
+            "cosine": 1.0,
+            "maximumAbsoluteError": 4.470348358154297e-07
+          },
+          {
+            "label": "code",
+            "cosine": 1.0,
+            "maximumAbsoluteError": 1.3364478945732117e-07
+          },
+          {
+            "label": "whitespace",
+            "cosine": 1.0,
+            "maximumAbsoluteError": 1.1920928955078125e-07
+          },
+          {
+            "label": "empty",
+            "cosine": 1.0,
+            "maximumAbsoluteError": 7.264316082000732e-08
+          }
+        ]
+      },
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 19750.0,
+        "freeMiB": 4369.0
+      },
+      "inferenceMs": 129.878096995526,
+      "referenceMs": 764.6944430016447,
+      "resultSha256": "e93e1010fd61bf10217989e4748a60673514ff3c313628154b202332a09a268b",
+      "referenceSha256": "8f5b829d415d89de40a4b16a7dfbb984568a0375b9d324f88e62af3e865c9ded",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    },
+    {
+      "cell": "mixed-length",
+      "status": "inference-failed",
+      "caseIds": [
+        "short-query",
+        "full-8192"
+      ],
+      "tokenLengths": [
+        6,
+        8192
+      ],
+      "inputShapeActuallySubmitted": [
+        2,
+        8192
+      ],
+      "actual8192Completed": false,
+      "allocationFailure": true,
+      "failingNode": "/layers.0/attn/MatMul/MatMulScaleFusion/",
+      "gpuMemoryBeforeInference": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 19750.0,
+        "freeMiB": 4369.0
+      },
+      "gpuMemoryAfterFailure": {
+        "index": 0,
+        "totalMiB": 24576.0,
+        "usedMiB": 19750.0,
+        "freeMiB": 4369.0
+      },
+      "referenceMs": 459301.86942600267,
+      "referenceFileMatches": true,
+      "failureSha256": "ae51f6738648b22c77a691ec79d92d9a9e0f5b5d8363fb7d496bb64b2ea75a11",
+      "referenceSha256": "2cfefb924ad8e9570a7bc6cca5c418aed9a5559fa79c805e237a00fcf363c3e7",
+      "deviceRecipe": "python-ort-cuda-fp32-tf32-0",
+      "requestSha256": "fe81c18961d88e4df90909f3a2c2817ce884c4c73b485a3f1ffbe3efb50987a4",
+      "providers": [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider"
+      ],
+      "useTf32": "0"
+    }
+  ],
+  "problems": []
+}

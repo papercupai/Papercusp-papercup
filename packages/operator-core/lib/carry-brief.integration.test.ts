@@ -37,9 +37,14 @@ async function seedWorkItem(
     takenBy?: string | null;
     createdAtMs?: number;
     createdBy?: string;
+    lane?: string | null;
   } = {},
 ): Promise<void> {
-  const payload: postgres.JSONValue = opts.createdBy ? { _ei: { created_by: opts.createdBy } } : {};
+  // `lane` is a GENERATED column (payload->>'lane'), so it is seeded via payload.
+  const payload: postgres.JSONValue = {
+    ...(opts.createdBy ? { _ei: { created_by: opts.createdBy } } : {}),
+    ...(opts.lane ? { lane: opts.lane } : {}),
+  };
   await db.adminSql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, item_kind,
@@ -108,6 +113,16 @@ describe('readDeferredWorkItems — selective PostgreSQL parity', () => {
       createdAtMs: SESSION_STARTED_AT_MS - 1,
       createdBy: OWNER,
     });
+    // WI-10004968: observation-lane reflections (e.g. a loop:checkpoint insight)
+    // are never claimable work, whether authored or commented this session.
+    await seedWorkItem('EI-observation-authored', {
+      kind: 'change',
+      createdAtMs: SESSION_STARTED_AT_MS + 5,
+      createdBy: OWNER,
+      lane: 'observation',
+    });
+    await seedWorkItem('EI-observation-commented', { kind: 'change', lane: 'observation' });
+    await seedThread('thread-observation', 'issue', 'EI-observation-commented', [OWNER]);
     await seedWorkItem('WI-unrelated-history', { kind: 'feature' });
     await seedThread(
       'thread-unrelated-history',
@@ -130,7 +145,14 @@ describe('readDeferredWorkItems — selective PostgreSQL parity', () => {
       ]),
     );
     expect(rows.map((row) => row.id)).not.toEqual(
-      expect.arrayContaining(['EI-terminal', 'EI-assigned', 'EI-old', 'WI-unrelated-history']),
+      expect.arrayContaining([
+        'EI-terminal',
+        'EI-assigned',
+        'EI-old',
+        'EI-observation-authored',
+        'EI-observation-commented',
+        'WI-unrelated-history',
+      ]),
     );
     expect(rows.find((row) => row.id === 'WI-commented-feature')).toMatchObject({
       harness: HARNESS,

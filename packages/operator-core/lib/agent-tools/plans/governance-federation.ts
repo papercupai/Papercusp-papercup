@@ -43,6 +43,9 @@ export type GovernanceEventBody =
 
 export type GovernanceEventKind = GovernanceEventBody['kind'];
 
+/** Immutable facts carried by the existing hive-settings projection. */
+export const PLAN_ADMISSION_GOVERNANCE_EVENT_PREFIX = 'governanceEvent.v1.';
+
 export interface FederatedGovernanceEvent {
   readonly eventId: string;
   readonly potId: string;
@@ -50,7 +53,9 @@ export interface FederatedGovernanceEvent {
   readonly originPeerId: string;
   readonly occurredAtMs: number;
   readonly body: GovernanceEventBody;
-  /** Signature over `governanceEventDigest`; verification is injected. */
+  /** Current eligible signer identity and key epoch; absent legacy records cannot authorize. */
+  readonly authorization?: { readonly memberId: string; readonly keyEpoch: number };
+  /** Signature over canonical domain-separated governanceEventSigningBytes. */
   readonly signature: string;
 }
 

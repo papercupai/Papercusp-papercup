@@ -20,6 +20,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { withPlanLock } from '../with-plan-lock';
+import { writePlanIndexRows } from '../plan-index-rows';
 import { rubricTemplateDataAuthoringSchema } from '../rubric-template';
 import { setupPlanPgFixture, registerHarnessProject, type PlanPgFixture } from './_pg-tool-fixture';
 import { buildAcceptanceBarSeed } from '../../../acceptance-bar-seed';
@@ -75,7 +76,7 @@ async function write(md: string): Promise<void> {
     { slug: SLUG, intent: 'plan-index-rows test write', harnessSlug: HARNESS, workspaceId: wsId, ttlSec: 30 },
     async () => ({ newBody: md, value: { ok: true } }),
   );
-  if (res.kind !== 'applied') throw new Error(`plan write was busy: ${JSON.stringify(res.busy)}`);
+  if (res.kind !== 'applied') throw new Error(`plan write failed: ${JSON.stringify(res)}`);
   // This helper exercises index synchronization, not activation. Keep the fixture
   // draft so the central activation gate cannot turn a refusal into a false success.
   expect(res.value.ok).toBe(true);
@@ -219,6 +220,79 @@ describe('migration 675 — plan_items / plan_decisions stay in lockstep with co
        WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
     `;
     expect(decisions[0].n).toBe(0);
+  });
+});
+
+// WI-6554700010008467: a census on 2026-10-11 found 27 plans whose plan_items
+// matched content while harness_plans.items held removed items and stale
+// statuses. writePlanIndexRows is the only plan_items writer, so it now writes
+// the jsonb twins as well. These tests drive it directly, as a caller that forgot
+// the jsonb would.
+describe('writePlanIndexRows keeps the jsonb twins equal to the rows', () => {
+  const scope = () => ({ workspaceId: wsId, harnessSlug: HARNESS, planSlug: SLUG });
+  const asTx = (sql: postgres.Sql) => sql as unknown as Parameters<typeof writePlanIndexRows>[0];
+  const item = (id: string, text: string, status: string) => ({
+    id, text, status, importance: '', blockedBy: [], decisionRefs: [], phase: null,
+  });
+  // The BAR describe below creates this plan fresh; leave no row behind.
+  afterAll(async () => {
+    await admin`
+      DELETE FROM harness_shared.harness_plans
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+  });
+  // xmin is the id of the transaction that wrote the current row version. Any
+  // executed UPDATE (even a no-op SET) writes a new version and moves it; an
+  // UPDATE whose WHERE filters the row out does not.
+  async function jsonbRow(): Promise<{ items: unknown; decisions: unknown; xmin: string }> {
+    const rows = await admin`
+      SELECT items, decisions, xmin::text AS xmin FROM harness_shared.harness_plans
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+    return rows[0] as unknown as { items: unknown; decisions: unknown; xmin: string };
+  }
+
+  it('overwrites a stale jsonb even when the caller wrote only the rows', async () => {
+    await write(body({ items: ['- **P-001** `todo` first item', '- **P-002** `todo` second item'] }));
+    // The drift the census measured: jsonb keeps an item content no longer has.
+    await admin`
+      UPDATE harness_shared.harness_plans
+         SET items = ${JSON.stringify([{ id: 'P-001', status: 'todo' }, { id: 'P-099', status: 'done' }])}::text::jsonb
+       WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+    const nextItems = [item('P-001', 'first item', 'done'), item('P-002', 'second item', 'wip')];
+    const nextDecisions = [{ id: 'D-001', title: 'kept', body: 'b', date: null, itemRefs: [], affects: [] }];
+    await writePlanIndexRows(asTx(admin), scope(), { items: nextItems, decisions: nextDecisions });
+
+    const row = await jsonbRow();
+    expect(row.items).toEqual(nextItems);
+    expect(row.decisions).toEqual(nextDecisions);
+    const rows = await itemRows();
+    expect(rows.map((r) => [r.item_id, r.status])).toEqual([
+      ['P-001', 'done'],
+      ['P-002', 'wip'],
+    ]);
+  });
+
+  it('leaves the plan row untouched when the jsonb already matches', async () => {
+    const same = [item('P-001', 'first item', 'done')];
+    await writePlanIndexRows(asTx(admin), scope(), { items: same, decisions: [] });
+    const before = await jsonbRow();
+    await writePlanIndexRows(asTx(admin), scope(), { items: same, decisions: [] });
+    const after = await jsonbRow();
+    // No new row version, so emit_change_notify_trg does not fire. updated_at
+    // cannot detect this: its trigger ignores items/decisions, so it stays put
+    // with or without the guard (mutation probe 2, test_runs:21044378).
+    expect(after.xmin).toBe(before.xmin);
+    expect(after.items).toEqual(same);
+
+    // Calibration: a write that DOES change the jsonb must move xmin, or the
+    // equality above would pass whether or not the guard exists.
+    const changed = [item('P-001', 'first item', 'wip')];
+    await writePlanIndexRows(asTx(admin), scope(), { items: changed, decisions: [] });
+    const rewritten = await jsonbRow();
+    expect(rewritten.xmin).not.toBe(after.xmin);
+    expect(rewritten.items).toEqual(changed);
   });
 });
 

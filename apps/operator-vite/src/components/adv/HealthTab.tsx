@@ -33,6 +33,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
+import { operatorUi } from '@papercusp/operator-ui/seam';
 import { ArrowUpRight, HeartPulse } from 'lucide-react';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { CATEGORICAL, TONE as THEME_TONE } from '@/app/harness/theme';
@@ -104,7 +105,8 @@ function unwrapTool(raw: unknown): Record<string, unknown> {
 export default function HealthTab() {
   const sync = useSyncQuery<SystemHealth>({ queryName: 'health.snapshot', args: {}, staleTime: 15_000 });
   const historySync = useSyncQuery<HealthHistoryRow>({ queryName: 'health.history', args: {}, staleTime: 60_000 });
-  const [, setTab] = useQueryState('tab', parseAsString);
+  const navigation = operatorUi().advNavigation;
+  const [, setDestination] = useQueryState(navigation?.param ?? 'tab', parseAsString);
   const [expandedKey, setExpandedKey] = useQueryState('healthPanel', parseAsString);
   const health = sync.data?.[0];
   // Shape-guard the history row (fail-soft, D-B): the tab must degrade to
@@ -157,7 +159,7 @@ export default function HealthTab() {
     const m = href.match(/^\/adv\?tab=([\w-]+)/);
     if (m) {
       e.preventDefault();
-      void setTab(m[1]);
+      void setDestination(navigation?.targets[m[1]] ?? m[1]);
     }
   };
 

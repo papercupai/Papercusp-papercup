@@ -66,6 +66,104 @@
 export const INJECTION_PORTS = ['turn-start', 'mid-turn'] as const;
 export type InjectionPort = (typeof INJECTION_PORTS)[number];
 
+/** Independent source annotations accompany the EXACT emitted text, not a pre-clipping excerpt. */
+export interface DeliveredContextFragment {
+  sourceRef: string;
+  /** Independent equivalent-fact label; distinct source IDs can carry the same fact. */
+  factKey: string;
+  text: string;
+  requiredQualifiers?: readonly string[];
+  correct?: boolean;
+  current?: boolean;
+  authoritative?: boolean;
+  scopeAllowed?: boolean;
+  referencesResolve?: boolean;
+}
+
+export interface DeliveredContextAttempt {
+  attemptId: string;
+  sessionId: string;
+  epoch: number;
+  port: string;
+  /** null means the final block was not observed; '' is an observed abstention. */
+  block: string | null;
+  fragments: readonly DeliveredContextFragment[];
+  /** Independently checked headings/notices; all other block text needs annotation. */
+  framingText?: readonly string[];
+  /** undefined = unlabelled opportunity, [] = independently confirmed no needed context. */
+  requiredFactKeys?: readonly string[];
+  alreadyInContext?: readonly string[];
+  retrievedFactKeys?: readonly string[];
+  admittedFactKeys?: readonly string[];
+  /** Content budget and final framing overhead are separate contracts. */
+  contentBudgetChars?: number;
+  firstEntryException?: boolean;
+  deliveredTokens?: number;
+  harmfulTaskEffect?: boolean;
+}
+
+/**
+ * Grade delivery from prompt records. A unique ledger is deliberately NOT an input:
+ * stamp uniqueness cannot distinguish one delivery from two concurrent/retried deliveries.
+ * Fact labels and authority/currentness verdicts come from an independent evaluator;
+ * their absence remains unknown. This does not infer semantic truth from word overlap.
+ */
+export function assessDeliveredContext(attempts: readonly DeliveredContextAttempt[]) {
+  const seen = new Map<string, string>();
+  const results = attempts.map((attempt) => {
+    const failures: string[] = [], unknown: string[] = [];
+    const delivered = new Set<string>();
+    let contentChars = 0, observedFragments = 0;
+    let remaining = attempt.block ?? '';
+    if (attempt.block === null) unknown.push('final-block-unobserved');
+    for (const fragment of attempt.fragments) {
+      if (!fragment.text.trim() || attempt.block === null || !remaining.includes(fragment.text)) {
+        unknown.push(`fragment-not-observed:${fragment.sourceRef}`); continue;
+      }
+      remaining = remaining.replace(fragment.text, '');
+      contentChars += fragment.text.length;
+      observedFragments++;
+      delivered.add(fragment.factKey);
+      const identity = JSON.stringify([attempt.sessionId, attempt.epoch, fragment.factKey]);
+      const prior = seen.get(identity);
+      if (prior !== undefined) failures.push(`duplicate-delivery:${fragment.factKey}:${prior}`);
+      else seen.set(identity, attempt.attemptId);
+      if (attempt.alreadyInContext?.includes(fragment.factKey)) failures.push(`already-in-context:${fragment.factKey}`);
+      for (const field of ['correct', 'current', 'authoritative', 'scopeAllowed', 'referencesResolve'] as const) {
+        if (fragment[field] === false) failures.push(`${field}:${fragment.sourceRef}`);
+        else if (fragment[field] !== true) unknown.push(`${field}:${fragment.sourceRef}`);
+      }
+      if (fragment.requiredQualifiers === undefined) unknown.push(`qualifiers-unlabelled:${fragment.sourceRef}`);
+      for (const qualifier of fragment.requiredQualifiers ?? []) {
+        if (!fragment.text.includes(qualifier)) failures.push(`condition-lost:${fragment.sourceRef}:${qualifier}`);
+      }
+    }
+    const missing = [...new Set(attempt.block === null ? [] : attempt.requiredFactKeys ?? [])]
+      .filter((key) => !delivered.has(key) && !attempt.alreadyInContext?.includes(key))
+      .map((factKey) => ({ factKey, stage: attempt.retrievedFactKeys === undefined ? 'unknown'
+        : !attempt.retrievedFactKeys.includes(factKey) ? 'retrieval'
+        : attempt.admittedFactKeys === undefined ? 'unknown'
+        : !attempt.admittedFactKeys.includes(factKey) ? 'admission' : 'delivery' }));
+    if (attempt.requiredFactKeys === undefined) unknown.push('opportunity-unlabelled');
+    else if (missing.length) failures.push(...missing.map((m) => `missing-required:${m.factKey}:${m.stage}`));
+    else if (attempt.requiredFactKeys.length === 0 && delivered.size > 0) failures.push('unneeded-context');
+    for (const framing of attempt.framingText ?? []) remaining = remaining.replace(framing, '');
+    if (remaining.trim()) unknown.push('block-content-unlabelled');
+    if (attempt.contentBudgetChars !== undefined && contentChars > attempt.contentBudgetChars &&
+      !(attempt.firstEntryException === true && observedFragments === 1)) failures.push('content-budget-exceeded');
+    if (attempt.harmfulTaskEffect === true) failures.push('harmful-task-effect');
+    return { attemptId: attempt.attemptId, failures, unknown, missing, contentChars,
+      finalBlockChars: attempt.block?.length ?? null,
+      usefulFactsPerToken: attempt.block !== null && attempt.deliveredTokens && attempt.requiredFactKeys !== undefined
+        ? [...delivered].filter((key) => attempt.requiredFactKeys!.includes(key)).length / attempt.deliveredTokens : null,
+      usefulSuccess: failures.length ? false : unknown.length ? null : true,
+      verdict: failures.length ? 'broken' : unknown.length ? 'unknown' : 'healthy' };
+  });
+  return { attempted: results.length, usefulSuccesses: results.filter((r) => r.usefulSuccess === true).length,
+    usefulFailures: results.filter((r) => r.usefulSuccess === false).length,
+    usefulUnknown: results.filter((r) => r.usefulSuccess === null).length, results };
+}
+
 export type InjectionDeliveryOutcome =
   /** The injection ran and returned context. */
   | 'recalled'

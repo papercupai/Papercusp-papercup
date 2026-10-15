@@ -1,0 +1,774 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "mdenseon P-007 real-weight sidecar robustness: candidate + both incumbents, frozen input, every phase",
+  "framework": "operational",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    ".papercusp/scratch/p007-robustness-operational.mts",
+    "--out=docs/evidence/mdenseon-robustness-v2-operational-2026-10-07.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-07T08:24:00.230Z",
+  "finishedAt": "2026-10-07T08:24:00.343Z",
+  "summary": "All 3 real-weight runs (mdenseon v3, gemma v3, harrier v3; one harness revision, one frozen input) passed every phase gate with no suspended window; crash/restart recovered with identity intact and no inline rescue, the old worker retired within the bound; bounded soak completed. Defects found on the way: mdenseon v1 aborted with SIGABRT 134 in its crash phase (WI-10006567); gemma v1 and harrier v1 rescued shutdown-rejected requests by inline main-thread inference (WI-10006602); the v2 harness timed the old worker's retire drain as recovery and was frozen mid-soak by pc-heavy PSI admission (plan D-010). Every v3 run is post-fix.",
+  "assertions": [
+    {
+      "id": "mdenseon-saved-summary-rederived",
+      "passed": true,
+      "evidence": "re-derived summary 6c6b60d52b8f vs saved 6c6b60d52b8f; formatVersion=2"
+    },
+    {
+      "id": "mdenseon-not-suspended",
+      "passed": true,
+      "evidence": "stall detector schedstat; 0 stall(s), 0 not-scheduled; invalidReasons=[]"
+    },
+    {
+      "id": "mdenseon-verdict-pass",
+      "passed": true,
+      "evidence": "summary.verdict=pass failures=0 log EXIT=0"
+    },
+    {
+      "id": "mdenseon-identity-real-weights",
+      "passed": true,
+      "evidence": "expected {\"model\":\"mdenseon\",\"modelRev\":\"a5fdb000f7a21da96c3bddde3a782ef777316df3\",\"runtime\":\"node-onnx-worker\",\"dims\":768}; inputPin.sha256=704805f5a037a71c04e311be41657faa987ba20c7af66584fb1eabee2f5d7c8d; inputSha256=6536aad3f4d4676a638346b49adb8e02babb22c865b67c7ac19459511a8a1d75 (hashJson(input)=6536aad3f4d4676a638346b49adb8e02babb22c865b67c7ac19459511a8a1d75); 924 successful samples, 0 with identity drift; 12 deliberate failures ({\"timeout\":1,\"cancellation\":3,\"crash\":8}), 0 unexpected; armPin={\"manifestPath\":\"$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v7.json\",\"manifestSha256\":\"78f"
+    },
+    {
+      "id": "mdenseon-every-phase-logged",
+      "passed": true,
+      "evidence": "phase start/end lines present for 9/9 phases"
+    },
+    {
+      "id": "mdenseon-crash-restart-recovered",
+      "passed": true,
+      "evidence": "cycles=2/2; per cycle active-at-crash/interrupted/rescued/recoveredMs/oldWorkerRetiredMs = 4/4/0/16904/12603, 4/4/0/10925/18647; bound 45000ms; recovery probes=2 (held to identity + reference parity)"
+    },
+    {
+      "id": "mdenseon-bounded-soak",
+      "passed": true,
+      "evidence": "soak 180869ms vs declared 180000ms with 4 clients"
+    },
+    {
+      "id": "mdenseon-event-loop-responsive",
+      "passed": true,
+      "evidence": "healthz p99 7.29ms over 1093 samples; event-loop p99 max across phases 15.80ms"
+    },
+    {
+      "id": "gemma-saved-summary-rederived",
+      "passed": true,
+      "evidence": "re-derived summary 64b9c1e5ca0e vs saved 64b9c1e5ca0e; formatVersion=2"
+    },
+    {
+      "id": "gemma-not-suspended",
+      "passed": true,
+      "evidence": "stall detector schedstat; 0 stall(s), 0 not-scheduled; invalidReasons=[]"
+    },
+    {
+      "id": "gemma-verdict-pass",
+      "passed": true,
+      "evidence": "summary.verdict=pass failures=0 log EXIT=0"
+    },
+    {
+      "id": "gemma-identity-real-weights",
+      "passed": true,
+      "evidence": "expected {\"model\":\"gemma\",\"modelRev\":\"onnx-community/embeddinggemma-300m-ONNX\",\"runtime\":\"node-onnx-worker\",\"dims\":768}; inputPin.sha256=704805f5a037a71c04e311be41657faa987ba20c7af66584fb1eabee2f5d7c8d; inputSha256=6536aad3f4d4676a638346b49adb8e02babb22c865b67c7ac19459511a8a1d75 (hashJson(input)=6536aad3f4d4676a638346b49adb8e02babb22c865b67c7ac19459511a8a1d75); 927 successful samples, 0 with identity drift; 12 deliberate failures ({\"timeout\":1,\"cancellation\":3,\"crash\":8}), 0 unexpected; armPin={\"manifestPath\":\"$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v7.json\",\"manifestSha256\":\"78f"
+    },
+    {
+      "id": "gemma-every-phase-logged",
+      "passed": true,
+      "evidence": "phase start/end lines present for 9/9 phases"
+    },
+    {
+      "id": "gemma-crash-restart-recovered",
+      "passed": true,
+      "evidence": "cycles=2/2; per cycle active-at-crash/interrupted/rescued/recoveredMs/oldWorkerRetiredMs = 4/4/0/2670/8596, 4/4/0/2157/9898; bound 45000ms; recovery probes=2 (held to identity + reference parity)"
+    },
+    {
+      "id": "gemma-bounded-soak",
+      "passed": true,
+      "evidence": "soak 180696ms vs declared 180000ms with 4 clients"
+    },
+    {
+      "id": "gemma-event-loop-responsive",
+      "passed": true,
+      "evidence": "healthz p99 5.50ms over 912 samples; event-loop p99 max across phases 11.23ms"
+    },
+    {
+      "id": "harrier-saved-summary-rederived",
+      "passed": true,
+      "evidence": "re-derived summary aaafab74394a vs saved aaafab74394a; formatVersion=2"
+    },
+    {
+      "id": "harrier-not-suspended",
+      "passed": true,
+      "evidence": "stall detector schedstat; 0 stall(s), 0 not-scheduled; invalidReasons=[]"
+    },
+    {
+      "id": "harrier-verdict-pass",
+      "passed": true,
+      "evidence": "summary.verdict=pass failures=0 log EXIT=0"
+    },
+    {
+      "id": "harrier-identity-real-weights",
+      "passed": true,
+      "evidence": "expected {\"model\":\"harrier\",\"modelRev\":\"onnx-community/harrier-oss-v1-0.6b-ONNX\",\"runtime\":\"node-onnx-worker\",\"dims\":1024}; inputPin.sha256=704805f5a037a71c04e311be41657faa987ba20c7af66584fb1eabee2f5d7c8d; inputSha256=6536aad3f4d4676a638346b49adb8e02babb22c865b67c7ac19459511a8a1d75 (hashJson(input)=6536aad3f4d4676a638346b49adb8e02babb22c865b67c7ac19459511a8a1d75); 366 successful samples, 0 with identity drift; 12 deliberate failures ({\"timeout\":1,\"cancellation\":3,\"crash\":8}), 0 unexpected; armPin={\"manifestPath\":\"$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v7.json\",\"manifestSha256\":\"78f"
+    },
+    {
+      "id": "harrier-every-phase-logged",
+      "passed": true,
+      "evidence": "phase start/end lines present for 9/9 phases"
+    },
+    {
+      "id": "harrier-crash-restart-recovered",
+      "passed": true,
+      "evidence": "cycles=2/2; per cycle active-at-crash/interrupted/rescued/recoveredMs/oldWorkerRetiredMs = 4/4/0/40183/29187, 4/4/0/7669/29257; bound 45000ms; recovery probes=2 (held to identity + reference parity)"
+    },
+    {
+      "id": "harrier-bounded-soak",
+      "passed": true,
+      "evidence": "soak 183815ms vs declared 180000ms with 4 clients"
+    },
+    {
+      "id": "harrier-event-loop-responsive",
+      "passed": true,
+      "evidence": "healthz p99 4.04ms over 1422 samples; event-loop p99 max across phases 12.81ms"
+    }
+  ],
+  "evidencePlane": "tree",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "specId": "AUTO-BAR-R-6-P-007",
+  "relatedSpecIds": [
+    "MDENSE-restart-result-identity"
+  ],
+  "workItemId": "WI-10004541",
+  "defectsFound": [
+    {
+      "workItemId": "WI-10006567",
+      "run": "robustness-mdenseon-v1",
+      "exitCode": 134,
+      "phase": "crash",
+      "note": "worker terminate during in-flight ONNX inference aborted the host; fixed by the retire handshake in libs/generic/memory + libs/generic/rerank"
+    },
+    {
+      "workItemId": "WI-10006602",
+      "runs": [
+        "robustness-gemma-v1",
+        "robustness-harrier-v1"
+      ],
+      "exitCode": 1,
+      "phase": "crash",
+      "note": "shutdown rejection of in-flight requests was rescued by inline main-thread inference in builders with an inline fallback (gemma: ~10s event-loop block, 2 healthz failures; harrier: 66s recovery, 1 healthz failure); fixed by the typed EmbedWorkerShutdownError that every builder re-throws"
+    },
+    {
+      "decision": "mdenseon-adoption-measurements-2026-10-01#D-010",
+      "runs": [
+        "robustness-gemma-v2",
+        "robustness-harrier-v2"
+      ],
+      "exitCode": 1,
+      "phase": "crash+soak",
+      "note": "harness defects: (1) the recovery probe waited for shutdownLocalEmbedder, which awaits the old worker's retire drain (probe started +28.4s/+29.0s on harrier), so recovery timed drain + reload; (2) pc-heavy PSI admission froze the harness + in-process sidecar mid-soak (sampler gaps 6.9s gemma, 21.4s harrier); the only failed /healthz sample of each run was the first after the gap. Fixed by concurrent recovery probing + a schedstat main-thread stall detector that grades a frozen run invalid."
+    }
+  ],
+  "input": {
+    "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-input-v1.json",
+    "sha256": "704805f5a037a71c04e311be41657faa987ba20c7af66584fb1eabee2f5d7c8d",
+    "bytes": 13147
+  },
+  "armManifest": {
+    "path": "$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v7.json",
+    "sha256": "78f97d1b622d5507c80a44b9f2a0fe1b582897f94f14f671cfe08f302614bbc1"
+  },
+  "runs": [
+    {
+      "model": "mdenseon",
+      "taskId": "0muwlfjphbngvkf1ojx",
+      "output": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-mdenseon-v3.json",
+        "sha256": "e4550c03c9db35365024f484aede0dbd36ab3b9d81682bbd224b0dd93a7b62fa",
+        "bytes": 1025221
+      },
+      "log": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-mdenseon-v3.log",
+        "sha256": "4fa477237d9f55ab940593f2d527654fd35247534f454e856b147ddf27c42252",
+        "bytes": 1937
+      },
+      "samplesFile": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-mdenseon-v3.json.samples.jsonl",
+        "sha256": "48d27f1729f4f2c5f9a2581b6e707c4dea4047c8c21916c46651e46b057fb861",
+        "bytes": 486821
+      },
+      "expected": {
+        "model": "mdenseon",
+        "modelRev": "a5fdb000f7a21da96c3bddde3a782ef777316df3",
+        "runtime": "node-onnx-worker",
+        "dims": 768
+      },
+      "startedAt": "2026-10-06T11:27:19.205Z",
+      "finishedAt": "2026-10-06T11:31:54.388Z",
+      "verdict": "pass",
+      "samples": 936,
+      "healthSamples": 1093,
+      "healthzP99Ms": 7.2926469999947585,
+      "phases": [
+        {
+          "phase": "reference",
+          "start": "2026-10-06T11:27:19.212Z",
+          "end": "2026-10-06T11:27:50.614Z"
+        },
+        {
+          "phase": "concurrency",
+          "start": "2026-10-06T11:27:50.614Z",
+          "end": "2026-10-06T11:27:55.969Z"
+        },
+        {
+          "phase": "saturation",
+          "start": "2026-10-06T11:27:55.970Z",
+          "end": "2026-10-06T11:28:04.533Z"
+        },
+        {
+          "phase": "coalescing",
+          "start": "2026-10-06T11:28:04.533Z",
+          "end": "2026-10-06T11:28:04.598Z"
+        },
+        {
+          "phase": "bypass",
+          "start": "2026-10-06T11:28:04.599Z",
+          "end": "2026-10-06T11:28:05.031Z"
+        },
+        {
+          "phase": "timeout",
+          "start": "2026-10-06T11:28:05.031Z",
+          "end": "2026-10-06T11:28:08.756Z"
+        },
+        {
+          "phase": "cancellation",
+          "start": "2026-10-06T11:28:08.756Z",
+          "end": "2026-10-06T11:28:17.926Z"
+        },
+        {
+          "phase": "crash",
+          "start": "2026-10-06T11:28:17.927Z",
+          "end": "2026-10-06T11:28:53.500Z"
+        },
+        {
+          "phase": "soak",
+          "start": "2026-10-06T11:28:53.501Z",
+          "end": "2026-10-06T11:31:54.370Z"
+        }
+      ],
+      "crash": [
+        {
+          "cycle": 0,
+          "startedBeforeCrash": {
+            "active": 4,
+            "pending": 4
+          },
+          "interrupted": 4,
+          "rescued": 0,
+          "workerAfterCrash": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false,
+            "recycling": false
+          },
+          "recoveredMs": 16904.38173300001,
+          "retiredMs": 12603.023557
+        },
+        {
+          "cycle": 1,
+          "startedBeforeCrash": {
+            "active": 4,
+            "pending": 4
+          },
+          "interrupted": 4,
+          "rescued": 0,
+          "workerAfterCrash": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false,
+            "recycling": false
+          },
+          "recoveredMs": 10925.214123000012,
+          "retiredMs": 18646.611140000023
+        }
+      ],
+      "cancellation": {
+        "releaseMs": 77.40283599999384,
+        "drainMs": 8781.843813999993,
+        "atAbort": {
+          "depth": 0,
+          "active": 3
+        }
+      },
+      "soak": {
+        "lateEarlyP95Ratio": 0.9892033686635732,
+        "rssGrowthMiB": -1842.515972222222,
+        "requests": 837
+      },
+      "rssMedianMiBByPhase": {
+        "reference": 1505,
+        "concurrency": 2644,
+        "saturation": 2644,
+        "coalescing": null,
+        "bypass": 2644,
+        "timeout": 2644,
+        "cancellation": 2646,
+        "crash": 3783,
+        "soak": 3226
+      },
+      "eventLoop": {
+        "reference": {
+          "p50Ms": 10.100735,
+          "p99Ms": 11.198463,
+          "maxMs": 41.680895
+        },
+        "concurrency": {
+          "p50Ms": 10.100735,
+          "p99Ms": 10.821631,
+          "maxMs": 15.015935
+        },
+        "saturation": {
+          "p50Ms": 10.092543,
+          "p99Ms": 10.772479,
+          "maxMs": 11.362303
+        },
+        "coalescing": {
+          "p50Ms": 10.092543,
+          "p99Ms": 10.092543,
+          "maxMs": 10.092543
+        },
+        "bypass": {
+          "p50Ms": 10.092543,
+          "p99Ms": 15.802367,
+          "maxMs": 15.802367
+        },
+        "timeout": {
+          "p50Ms": 10.092543,
+          "p99Ms": 11.091967,
+          "maxMs": 11.935743
+        },
+        "cancellation": {
+          "p50Ms": 10.108927,
+          "p99Ms": 11.673599,
+          "maxMs": 15.319039
+        },
+        "crash": {
+          "p50Ms": 10.100735,
+          "p99Ms": 12.263423,
+          "maxMs": 63.176703
+        },
+        "soak": {
+          "p50Ms": 10.100735,
+          "p99Ms": 11.337727,
+          "maxMs": 152.305663
+        }
+      },
+      "stallDetector": {
+        "source": "schedstat",
+        "config": {
+          "tickMs": 100,
+          "stallMs": 1000,
+          "scheduledFractionMin": 0.1
+        }
+      },
+      "harnessStalls": []
+    },
+    {
+      "model": "gemma",
+      "taskId": "0muwlfjphbngvkf1ojx",
+      "output": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-gemma-v3.json",
+        "sha256": "fb25d85813b619e36db167d89e8a92fddd25c792d4e7214fb82e1bfd95b30c46",
+        "bytes": 968463
+      },
+      "log": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-gemma-v3.log",
+        "sha256": "ca0741e1470662638966f8f441a418b5a01c23102be029038e31ba6c951d4bfc",
+        "bytes": 1881
+      },
+      "samplesFile": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-gemma-v3.json.samples.jsonl",
+        "sha256": "ee8d64c5a9810a718105389e36488dd0c6f511026e2385aea1609e3594a09ff2",
+        "bytes": 487097
+      },
+      "expected": {
+        "model": "gemma",
+        "modelRev": "onnx-community/embeddinggemma-300m-ONNX",
+        "runtime": "node-onnx-worker",
+        "dims": 768
+      },
+      "startedAt": "2026-10-06T11:32:34.921Z",
+      "finishedAt": "2026-10-06T11:36:24.713Z",
+      "verdict": "pass",
+      "samples": 939,
+      "healthSamples": 912,
+      "healthzP99Ms": 5.501969999997527,
+      "phases": [
+        {
+          "phase": "reference",
+          "start": "2026-10-06T11:32:34.932Z",
+          "end": "2026-10-06T11:32:42.361Z"
+        },
+        {
+          "phase": "concurrency",
+          "start": "2026-10-06T11:32:42.361Z",
+          "end": "2026-10-06T11:32:47.039Z"
+        },
+        {
+          "phase": "saturation",
+          "start": "2026-10-06T11:32:47.039Z",
+          "end": "2026-10-06T11:32:56.142Z"
+        },
+        {
+          "phase": "coalescing",
+          "start": "2026-10-06T11:32:56.142Z",
+          "end": "2026-10-06T11:32:56.222Z"
+        },
+        {
+          "phase": "bypass",
+          "start": "2026-10-06T11:32:56.222Z",
+          "end": "2026-10-06T11:32:56.717Z"
+        },
+        {
+          "phase": "timeout",
+          "start": "2026-10-06T11:32:56.717Z",
+          "end": "2026-10-06T11:32:58.846Z"
+        },
+        {
+          "phase": "cancellation",
+          "start": "2026-10-06T11:32:58.846Z",
+          "end": "2026-10-06T11:33:05.481Z"
+        },
+        {
+          "phase": "crash",
+          "start": "2026-10-06T11:33:05.481Z",
+          "end": "2026-10-06T11:33:24.000Z"
+        },
+        {
+          "phase": "soak",
+          "start": "2026-10-06T11:33:24.000Z",
+          "end": "2026-10-06T11:36:24.696Z"
+        }
+      ],
+      "crash": [
+        {
+          "cycle": 0,
+          "startedBeforeCrash": {
+            "active": 4,
+            "pending": 4
+          },
+          "interrupted": 4,
+          "rescued": 0,
+          "workerAfterCrash": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false,
+            "recycling": false
+          },
+          "recoveredMs": 2669.7000839999964,
+          "retiredMs": 8595.561548999998
+        },
+        {
+          "cycle": 1,
+          "startedBeforeCrash": {
+            "active": 4,
+            "pending": 4
+          },
+          "interrupted": 4,
+          "rescued": 0,
+          "workerAfterCrash": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false,
+            "recycling": false
+          },
+          "recoveredMs": 2156.8104190000013,
+          "retiredMs": 9898.464135999995
+        }
+      ],
+      "cancellation": {
+        "releaseMs": 4.0922109999955865,
+        "drainMs": 6325.637987000002,
+        "atAbort": {
+          "depth": 0,
+          "active": 3
+        }
+      },
+      "soak": {
+        "lateEarlyP95Ratio": 1.2373050182019458,
+        "rssGrowthMiB": -537.7416232638889,
+        "requests": 840
+      },
+      "rssMedianMiBByPhase": {
+        "reference": 1290,
+        "concurrency": 1563,
+        "saturation": 1497,
+        "coalescing": null,
+        "bypass": 1504,
+        "timeout": 1501,
+        "cancellation": 1517,
+        "crash": 3335,
+        "soak": 2511
+      },
+      "eventLoop": {
+        "reference": {
+          "p50Ms": 10.100735,
+          "p99Ms": 11.182079,
+          "maxMs": 20.824063
+        },
+        "concurrency": {
+          "p50Ms": 10.100735,
+          "p99Ms": 10.731519,
+          "maxMs": 11.649023
+        },
+        "saturation": {
+          "p50Ms": 10.100735,
+          "p99Ms": 11.231231,
+          "maxMs": 134.086655
+        },
+        "coalescing": {
+          "p50Ms": 10.092543,
+          "p99Ms": 10.100735,
+          "maxMs": 10.100735
+        },
+        "bypass": {
+          "p50Ms": 10.100735,
+          "p99Ms": 10.838015,
+          "maxMs": 10.838015
+        },
+        "timeout": {
+          "p50Ms": 10.092543,
+          "p99Ms": 10.903551,
+          "maxMs": 14.630911
+        },
+        "cancellation": {
+          "p50Ms": 10.100735,
+          "p99Ms": 10.854399,
+          "maxMs": 11.255807
+        },
+        "crash": {
+          "p50Ms": 10.100735,
+          "p99Ms": 10.911743,
+          "maxMs": 19.775487
+        },
+        "soak": {
+          "p50Ms": 10.100735,
+          "p99Ms": 11.182079,
+          "maxMs": 170.524671
+        }
+      },
+      "stallDetector": {
+        "source": "schedstat",
+        "config": {
+          "tickMs": 100,
+          "stallMs": 1000,
+          "scheduledFractionMin": 0.1
+        }
+      },
+      "harnessStalls": []
+    },
+    {
+      "model": "harrier",
+      "taskId": "0muwlfjphbngvkf1ojx",
+      "output": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-harrier-v3.json",
+        "sha256": "220c45449f10d954fcfb6ba397b7e51400d7093736782f88c47588e9249708cb",
+        "bytes": 739049
+      },
+      "log": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-harrier-v3.log",
+        "sha256": "4280be77c15f8b81cc179ce829ec0835e0f07902fdec4a43ebc29880d9985414",
+        "bytes": 1919
+      },
+      "samplesFile": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-robustness-WI10004541-20261006/robustness-harrier-v3.json.samples.jsonl",
+        "sha256": "a6ea3ce0d32ff53a128242b339ddb093310a16e215f3aa8f0cdeefacbda402e2",
+        "bytes": 199852
+      },
+      "expected": {
+        "model": "harrier",
+        "modelRev": "onnx-community/harrier-oss-v1-0.6b-ONNX",
+        "runtime": "node-onnx-worker",
+        "dims": 1024
+      },
+      "startedAt": "2026-10-06T11:37:35.590Z",
+      "finishedAt": "2026-10-06T11:43:34.245Z",
+      "verdict": "pass",
+      "samples": 378,
+      "healthSamples": 1422,
+      "healthzP99Ms": 4.039369999998598,
+      "phases": [
+        {
+          "phase": "reference",
+          "start": "2026-10-06T11:37:35.603Z",
+          "end": "2026-10-06T11:38:01.747Z"
+        },
+        {
+          "phase": "concurrency",
+          "start": "2026-10-06T11:38:01.747Z",
+          "end": "2026-10-06T11:38:20.401Z"
+        },
+        {
+          "phase": "saturation",
+          "start": "2026-10-06T11:38:20.401Z",
+          "end": "2026-10-06T11:38:50.356Z"
+        },
+        {
+          "phase": "coalescing",
+          "start": "2026-10-06T11:38:50.356Z",
+          "end": "2026-10-06T11:38:50.946Z"
+        },
+        {
+          "phase": "bypass",
+          "start": "2026-10-06T11:38:50.946Z",
+          "end": "2026-10-06T11:38:53.007Z"
+        },
+        {
+          "phase": "timeout",
+          "start": "2026-10-06T11:38:53.007Z",
+          "end": "2026-10-06T11:39:00.262Z"
+        },
+        {
+          "phase": "cancellation",
+          "start": "2026-10-06T11:39:00.262Z",
+          "end": "2026-10-06T11:39:20.956Z"
+        },
+        {
+          "phase": "crash",
+          "start": "2026-10-06T11:39:20.956Z",
+          "end": "2026-10-06T11:40:30.419Z"
+        },
+        {
+          "phase": "soak",
+          "start": "2026-10-06T11:40:30.419Z",
+          "end": "2026-10-06T11:43:34.234Z"
+        }
+      ],
+      "crash": [
+        {
+          "cycle": 0,
+          "startedBeforeCrash": {
+            "active": 4,
+            "pending": 4
+          },
+          "interrupted": 4,
+          "rescued": 0,
+          "workerAfterCrash": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false,
+            "recycling": false
+          },
+          "recoveredMs": 40183.265669000015,
+          "retiredMs": 29187.259068000014
+        },
+        {
+          "cycle": 1,
+          "startedBeforeCrash": {
+            "active": 4,
+            "pending": 4
+          },
+          "interrupted": 4,
+          "rescued": 0,
+          "workerAfterCrash": {
+            "alive": false,
+            "disabled": false,
+            "pendingCount": 0,
+            "keepAlive": false,
+            "recycling": false
+          },
+          "recoveredMs": 7668.703084000008,
+          "retiredMs": 29256.903017999983
+        }
+      ],
+      "cancellation": {
+        "releaseMs": 30.36775299999863,
+        "drainMs": 20204.188244999998,
+        "atAbort": {
+          "depth": 0,
+          "active": 3
+        }
+      },
+      "soak": {
+        "lateEarlyP95Ratio": 1.0197978546146877,
+        "rssGrowthMiB": -493.7776470455774,
+        "requests": 279
+      },
+      "rssMedianMiBByPhase": {
+        "reference": 2519,
+        "concurrency": 3671,
+        "saturation": 3466,
+        "coalescing": 3466,
+        "bypass": 3466,
+        "timeout": 3468,
+        "cancellation": 3455,
+        "crash": 4178,
+        "soak": 5086
+      },
+      "eventLoop": {
+        "reference": {
+          "p50Ms": 10.108927,
+          "p99Ms": 12.812287,
+          "maxMs": 62.521343
+        },
+        "concurrency": {
+          "p50Ms": 10.108927,
+          "p99Ms": 11.812863,
+          "maxMs": 24.477695
+        },
+        "saturation": {
+          "p50Ms": 10.100735,
+          "p99Ms": 11.165695,
+          "maxMs": 14.155775
+        },
+        "coalescing": {
+          "p50Ms": 10.100735,
+          "p99Ms": 10.772479,
+          "maxMs": 10.985471
+        },
+        "bypass": {
+          "p50Ms": 10.100735,
+          "p99Ms": 10.788863,
+          "maxMs": 10.878975
+        },
+        "timeout": {
+          "p50Ms": 10.100735,
+          "p99Ms": 11.214847,
+          "maxMs": 15.196159
+        },
+        "cancellation": {
+          "p50Ms": 10.108927,
+          "p99Ms": 11.370495,
+          "maxMs": 16.220159
+        },
+        "crash": {
+          "p50Ms": 10.100735,
+          "p99Ms": 11.427839,
+          "maxMs": 20.692991
+        },
+        "soak": {
+          "p50Ms": 10.100735,
+          "p99Ms": 11.182079,
+          "maxMs": 995.098623
+        }
+      },
+      "stallDetector": {
+        "source": "schedstat",
+        "config": {
+          "tickMs": 100,
+          "stallMs": 1000,
+          "scheduledFractionMin": 0.1
+        }
+      },
+      "harnessStalls": []
+    }
+  ]
+}

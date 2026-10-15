@@ -98,12 +98,29 @@ describe('P-014 delegated drain recovery', () => {
     expect(registerMock).toHaveBeenCalledWith(expect.objectContaining({
       holderOwnerId: 'su-holder', leaderOwnerId: 'su-new-leader',
       expectedLeaderOwnerId: 'su-leader', declaredBy: 'goal-drain-fleet-watchdog',
+      identity: expect.objectContaining({ ownerId: 'goal-drain-fleet-watchdog' }),
     }));
     expect(launchMock).toHaveBeenCalledTimes(1);
     expect(launchMock).toHaveBeenCalledWith(expect.objectContaining({
       mode: 'auto', fleet: 'goal-drain-g-1', slug: 'papercusp',
     }));
     expect(result.actions).toMatchObject({ leaderLaunched: true, memberLaunched: false });
+  });
+
+  // WI-10004787: a watchdog-relaunched drain member ran 400+ calls stamped
+  // goal_id NULL because its launch carried no --launched-by, the only seam
+  // through which bootstrap-su inherits the goal. Both shapes must name the holder.
+  it('launches a replacement leader AND worker on behalf of the goal holder (goal inheritance)', async () => {
+    observed.set('su-leader', verdict('su-leader', 'ended'));
+    launchMock
+      .mockResolvedValueOnce({ ok: true, ownerId: 'su-new-leader' })
+      .mockResolvedValueOnce({ ok: true, ownerId: 'su-new-worker' });
+    const result = await defaultRelaunchDrainFleet(sql, alert, goal);
+    expect(result.actions).toMatchObject({ leaderLaunched: true, memberLaunched: true });
+    expect(launchMock).toHaveBeenCalledTimes(2);
+    for (const [opts] of launchMock.mock.calls) {
+      expect(opts).toMatchObject({ launchedBy: 'su-holder', fleet: 'goal-drain-g-1', headless: true });
+    }
   });
 
   it('fills only the missing worker when delegated leadership is live', async () => {

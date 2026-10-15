@@ -45,8 +45,14 @@ describe('buildHiveRekeyBootDeps fail-closed scope', () => {
     h.potHomeSlugForHarness.mockRejectedValue(new Error('registry unavailable'));
 
     await expect(buildHiveRekeyBootDeps({ workspaceId: 'ws', harnessSlug: 'hive' })).rejects.toThrow(
-      /failed closed \(compose confirmed Hive dependencies\): registry unavailable/,
+      /failed closed \(resolve Hive scope\): registry unavailable/,
     );
+    // WI-6554700010008455: no Hive is confirmed when the lookup itself throws, so the
+    // verdict must never name the compose step (which would send a reader after it).
+    await expect(buildHiveRekeyBootDeps({ workspaceId: 'ws', harnessSlug: 'hive' })).rejects.not.toThrow(
+      /compose confirmed Hive dependencies/,
+    );
+    expect(h.resolveLocalGithubIdentity).not.toHaveBeenCalled();
     expect(h.recordBootEvent).toHaveBeenCalledWith(
       'ws',
       'hive',
@@ -59,7 +65,7 @@ describe('buildHiveRekeyBootDeps fail-closed scope', () => {
     h.potHomeSlugForHarness.mockResolvedValue('home-hive');
 
     await expect(buildHiveRekeyBootDeps({ workspaceId: 'ws', harnessSlug: 'member' })).rejects.toThrow(
-      /failed closed.*no epoch-key source for confirmed Hive/,
+      /failed closed \(compose confirmed Hive dependencies\): no epoch-key source for confirmed Hive/,
     );
     expect(h.recordBootEvent).toHaveBeenCalledWith(
       'ws',

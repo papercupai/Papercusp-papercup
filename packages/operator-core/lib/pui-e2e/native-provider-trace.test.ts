@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createAdaptorServer } from '@hono/node-server';
-import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
+import { nativeProviderRequestSignal, nativeProviderTraceOrigin, nativeRpcReceiptSummary } from './native-provider-trace';
 
 describe('native provider trace resume', () => {
   const gateway = 'http://127.0.0.1:4321';
@@ -63,5 +63,18 @@ describe('native provider trace resume', () => {
         server.closeAllConnections(); server.close(() => resolve());
       })));
     }
+  });
+
+  it('summarizes bounded RPC receipt metadata without copying frame payloads', () => {
+    const summary = nativeRpcReceiptSummary([
+      { sequence: 1, phase: 'write-started', frame: { id: 'one', method: 'prompt', secret: 'redact-me' } },
+      { sequence: 2, phase: 'write-completed', frame: { id: 'one', method: 'prompt' } },
+      { sequence: 3, phase: 'received', frame: { id: 'one', type: 'response', result: 'private answer' } },
+    ], { peerId: 'peer', emitted: 8, exited: true, pendingWrites: 0 }, { max: 2, totalObserved: 8 });
+    expect(summary).toMatchObject({ total: 8, retained: 2, omitted: 6, receiptState: { peerId: 'peer', exited: true } });
+    expect(summary).not.toHaveProperty('secret');
+    expect(JSON.stringify(summary)).not.toContain('redact-me');
+    expect(JSON.stringify(summary)).not.toContain('private answer');
+    expect(summary).toHaveProperty('receipts.0.frame.keys');
   });
 });

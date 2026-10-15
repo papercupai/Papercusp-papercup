@@ -6,7 +6,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { shellSafeId, buildSuperuserMcpUrl, buildConsoleEnvelope } from './console-launcher';
 import {
   SPAWN_PATH_DIRS_ENV,
@@ -384,10 +384,17 @@ describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 202
 });
 
 describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () => {
-  const ORIGINAL = process.env.PAPERCUSP_MCP_PROXY_BASE;
+  const routingKeys = ['PAPERCUSP_HONO_PORT', 'PAPERCUSP_BG_HOST_AGENTS_MCP_BASE',
+    'PAPERCUSP_MCP_PROXY_BASE', 'PAPERCUSP_MCP_PROXY_TARGET_PORT', 'PAPERCUSP_MCP_STAGING_PROXY_PORT'];
+  const originalRouting = new Map(routingKeys.map(key => [key, process.env[key]]));
+  beforeEach(() => {
+    for (const key of routingKeys) delete process.env[key];
+  });
   afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
-    else process.env.PAPERCUSP_MCP_PROXY_BASE = ORIGINAL;
+    for (const [key, value] of originalRouting) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 
   it('uses the stable proxy fallback for a long-lived session when no proxy base is configured', async () => {
@@ -413,6 +420,44 @@ describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () =
       skipMcpJson: true,
     });
     expect(envelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
+  });
+
+  it.each([
+    ['same-runtime proxy', 'http://127.0.0.1:9271', '3271', 'http://127.0.0.1:9271', '9271'],
+    ['live proxy', 'http://127.0.0.1:9071', '3070', 'http://localhost:3271', '3271'],
+  ])('honors an explicit background runtime in both the launch env and MCP config (%s)', async (_name, proxy, targetPort, pinnedBase, pinnedPort) => {
+    const keys = ['PAPERCUSP_HONO_PORT', 'PAPERCUSP_BG_HOST_AGENTS_MCP_BASE',
+      'PAPERCUSP_MCP_PROXY_BASE', 'PAPERCUSP_MCP_PROXY_TARGET_PORT'];
+    const saved = new Map(keys.map(key => [key, process.env[key]]));
+    process.env.PAPERCUSP_HONO_PORT = '3271';
+    process.env.PAPERCUSP_BG_HOST_AGENTS_MCP_BASE = 'http://127.0.0.1:9071';
+    process.env.PAPERCUSP_MCP_PROXY_BASE = proxy;
+    process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT = targetPort;
+    try {
+      const ordinary = await buildConsoleEnvelope({
+        workspaceId: 'default', slug: null, operatorBaseUrl: 'http://localhost:3271',
+        runCommand: 'true',
+      });
+      const pinned = await buildConsoleEnvelope({
+        workspaceId: 'default', slug: null, operatorBaseUrl: 'http://localhost:3271',
+        agentMcpBaseUrl: 'http://localhost:3271', runCommand: 'true',
+      });
+      expect(ordinary.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
+      expect(pinned.env.PAPERCUSP_OPERATOR_URL).toBe(pinnedBase);
+      for (const [envelope, port] of [[ordinary, '9071'], [pinned, pinnedPort]] as const) {
+        const servers = JSON.parse(envelope.mcpJsonContents).mcpServers;
+        expect(Object.values(servers)).toHaveLength(1);
+        const { url } = Object.values(servers)[0] as { url: string };
+        expect(new URL(url).port).toBe(port);
+        expect(new URL(url).searchParams.get('workspace')).toBe('default');
+      }
+      expect(pinned.env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('');
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it('keeps a fleet session off the staging host port unless an A/B endpoint is explicit', async () => {

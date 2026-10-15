@@ -110,6 +110,7 @@ function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
     description: null,
     owner: null,
     leaderOwnerId: null,
+    leaderMissingSinceMs: null,
     colorScheme: null,
     controlState: 'active',
     fleetType: 'single',
@@ -415,6 +416,7 @@ describe('applyFleetControl', () => {
       byOwnerId: callerRef.ownerId,
       leaderOwnerId: callerRef.ownerId,
       reason: 'release cut',
+      resumeGate: 'fleet:backend:resume',
     });
     expect(clearPauseHoldsM).not.toHaveBeenCalled();
   });
@@ -669,6 +671,9 @@ describe('applyFleetControl', () => {
           unattributedClaimHolds: 0,
           pendingAgentReview: 0,
           revisionRequestedAgentReview: 0,
+          revisionReproductionValidation: 0,
+          revisionContentAdoptionCandidates: 0,
+          revisionLegacyException: 0,
         },
       },
       spec: { specId: 'bug-drain', revision: 4, source: 'cup' as const },

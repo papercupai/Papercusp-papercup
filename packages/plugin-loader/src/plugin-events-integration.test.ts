@@ -30,17 +30,14 @@ function makeLoadedPlugin(opts: {
     content: [{ type: 'text', text: 'ok' }],
   });
   return {
-    dir: '/tmp/never',
+    path: '/tmp/never',
+    source: 'project',
     plugin: {
       name: opts.name,
       version: '0.1.0',
       papercusp: '^0.1.0',
       capabilities: [],
       tools: { [opts.toolName]: handler },
-    } as never,
-    manifest: {
-      name: opts.name,
-      version: '0.1.0',
     } as never,
     toolDefinitions: [
       {
@@ -155,7 +152,8 @@ describe('plugin events from JSON manifests (T3.2)', () => {
       content: [{ type: 'text', text: 'ok' }],
     });
     const lp: LoadedPlugin = {
-      dir: '/tmp/never',
+      path: '/tmp/never',
+      source: 'project',
       plugin: {
         name: 'demo-plugin',
         version: '0.1.0',
@@ -163,7 +161,6 @@ describe('plugin events from JSON manifests (T3.2)', () => {
         capabilities: [],
         tools: { good: handler, bad: handler },
       } as never,
-      manifest: { name: 'demo-plugin', version: '0.1.0' } as never,
       toolDefinitions: [
         {
           name: 'good',

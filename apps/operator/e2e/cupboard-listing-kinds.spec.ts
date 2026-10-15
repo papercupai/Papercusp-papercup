@@ -106,18 +106,23 @@ test.describe('Cupboard storefront — three listing kinds (E4)', () => {
         'and inspect the trace/screenshot attached to this failure.',
     );
 
-    // All kinds visible initially: 4 cards, one per kind.
-    await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(4);
-    // Action buttons reflect each listing's action.
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="view-hive"]')).toHaveCount(1); // hive-bound harness row
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="fork"]')).toHaveCount(1);      // blueprint
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="install"]')).toHaveCount(2);   // plugin + pack
+    // All kinds visible initially. Hive-first browse (P-002): the hive-bound
+    // harness row folds into ONE card for its owning hive (no kind badge, opened
+    // via "View <pot>"); every other kind is a plain badged listing card.
+    await expect(page.getByTestId('cupboard-hive-card')).toHaveCount(1);
+    await expect(page.getByTestId('cupboard-hive-card-open')).toHaveCount(1);
+    await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(3);
+    // Action buttons reflect each plain listing's action. The `fork` action is
+    // retired: listingActionFor() (packages/operator-core/lib/cupboard/types.ts)
+    // maps blueprint, plugin and pack all to 'install' (clone the listing).
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="fork"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="install"]')).toHaveCount(3);   // blueprint + plugin + pack
 
-    // Filter to Blueprints → one blueprint card, action = fork.
+    // Filter to Blueprints → one blueprint card, action = install.
     await page.getByTestId('cupboard-kind-tab-blueprint').click();
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(1);
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveAttribute('data-kind', 'blueprint');
-    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'fork');
+    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'install');
 
     // Filter to Plugins → one plugin card, action = install.
     await page.getByTestId('cupboard-kind-tab-plugin').click();
@@ -125,10 +130,12 @@ test.describe('Cupboard storefront — three listing kinds (E4)', () => {
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveAttribute('data-kind', 'plugin');
     await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'install');
 
-    // Back to Harnesses → the hive-bound row's action is View Hive (per-harness
-    // join is retired; a legacy row without hive_pubkey would have NO button).
+    // Back to Harnesses → still hive-first: the hive-bound row is reached
+    // through its hive card (per-harness join is retired), and no plain
+    // listing card or per-row action renders for it.
     await page.getByTestId('cupboard-kind-tab-harness').click();
-    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'view-hive');
+    await expect(page.getByTestId('cupboard-hive-card-open')).toHaveCount(1);
+    await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(0);
   });
 
   test('per-Hive rollup groups a project\'s facets together (D-005)', async ({ page }) => {

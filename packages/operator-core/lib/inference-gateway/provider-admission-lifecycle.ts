@@ -47,8 +47,17 @@
 
 import { shedTierCaps } from '@papercusp/papercusp-shared/agent';
 
+import { classifyUpstreamOutcome, type UpstreamOutcome, type UpstreamOutcomeClass } from './upstream-outcome-classifier';
+
 /** Provider lanes that admit real upstream inference work. */
 export type ProviderLaneId = 'claude' | 'codex';
+
+/**
+ * Identifies ONE client request across all of its failover attempts, so the
+ * request adds congestion pressure at most once (plan D-001). The gateway passes
+ * the request span's id.
+ */
+export type UpstreamRequestKey = string | number;
 
 /**
  * The only thing the lifecycle needs from a queue. Narrow on purpose: it keeps
@@ -59,6 +68,11 @@ export type ProviderLaneId = 'claude' | 'codex';
 export interface ProviderLaneQueue {
   setMaxConcurrent(n: number): void;
   setTierCap(tier: number, cap: number): void;
+  /**
+   * Requests WAITING for a slot (`PriorityAdmissionQueue.size`). Optional: a lane
+   * that cannot report it simply never takes the deep-queue recovery path.
+   */
+  readonly size?: number;
 }
 
 export interface ProviderLaneRegistration {
@@ -89,18 +103,32 @@ export interface ProviderAdmissionWindowPolicy {
   readonly increaseStep?: number;
   /** Consecutive clean successes that earn ONE additive increase. */
   readonly healthySamplesPerIncrease?: number;
-  /** Multiplicative-decrease factor applied on a sustained-throttle trip. */
+  /**
+   * Multiplicative-decrease factor applied when congestion pressure trips. Clamped
+   * to at least {@link MIN_CONTRACTION_FRACTION}: one contraction removes at most a
+   * quarter of the window (owner directive #1830: "be less aggressive").
+   */
   readonly contractionFraction?: number;
   /**
-   * Net throttle pressure (throttles minus successes, floored at 0) that trips
-   * ONE contraction. A leaky bucket, so a lone transient 429 among successes
-   * never shrinks a lane.
+   * Net congestion pressure (distinct congested requests minus successes, floored
+   * at 0) that trips ONE contraction. A leaky bucket, so a lone transient 429 or a
+   * lone slow prompt among successes never shrinks a lane.
    */
   readonly contractionThreshold?: number;
 }
 
 export interface ProviderAdmissionLifecycleOptions extends ProviderAdmissionWindowPolicy {
   readonly lanes: readonly ProviderLaneRegistration[];
+  /**
+   * Live count of healthy (serviceable, non-walled) accounts on a lane, or null when
+   * unknown. A contraction never takes a lane below this count, so congestion can
+   * never throttle a lane to fewer requests than it has usable accounts
+   * (plan gateway-admission-congestion-only-2026-10-13#P-002, "a floor sized to
+   * healthy accounts"; WI-6554700010012367). It is read at contraction time only:
+   * it never raises a window, and null, zero or a count at or below
+   * `minimumWindow` leaves the configured floor in charge.
+   */
+  readonly healthyAccountsFor?: (lane: ProviderLaneId) => number | null | undefined;
   /** Injected clock. Present so the lifecycle never reads an ambient one. */
   readonly now?: () => number;
   readonly log?: (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -120,7 +148,14 @@ export interface ProviderLaneWindowSnapshot {
   readonly cleanStreak: number;
   readonly contractions: number;
   readonly expansions: number;
+  /** Requests whose transport failure added congestion pressure (once per request). */
   readonly hardFailures: number;
+  /** Outcomes the classifier ruled account-scoped (out-of-usage, weekly wall, auth): the window ignored them. */
+  readonly accountScopedOutcomes: number;
+  /** Outcomes the classifier ruled neutral (routed-around 429, client error, cancel). */
+  readonly neutralOutcomes: number;
+  /** Congestion outcomes dropped because the same request had already added its one unit of pressure. */
+  readonly dedupedCongestion: number;
   /** EPOCH for `contractions` / `expansions` / `hardFailures`: epoch-ms of this lane's REGISTRATION.
    *
    *  These counters are monotonic for the life of the PROCESS, not for the life of the deployment: a lane
@@ -153,8 +188,23 @@ export const INITIAL_PROVIDER_ADMISSION_WINDOW = 8;
 const DEFAULT_MINIMUM_WINDOW = 4;
 const DEFAULT_INCREASE_STEP = 1;
 const DEFAULT_HEALTHY_SAMPLES_PER_INCREASE = 5;
-const DEFAULT_CONTRACTION_FRACTION = 0.5;
+/**
+ * The smallest fraction of the window a contraction may keep: one contraction
+ * removes at most 25% (WI-6554700010011426). The old 0.5 halved the window on every
+ * trip, so a few slow prompts pinned the Codex lane at its floor of 4 with 100+
+ * requests queued while upstream answered in seconds.
+ */
+export const MIN_CONTRACTION_FRACTION = 0.75;
+const DEFAULT_CONTRACTION_FRACTION = MIN_CONTRACTION_FRACTION;
 const DEFAULT_CONTRACTION_THRESHOLD = 6;
+/**
+ * How long a request's "already pressured" mark is remembered. It must outlive one
+ * request's whole failover ladder (several TTFB deadlines back to back); after that
+ * the mark is only memory.
+ */
+const PRESSURED_REQUEST_TTL_MS = 30 * 60_000;
+/** Hard bound on remembered request keys per lane, so a herd cannot grow the map without limit. */
+const PRESSURED_REQUEST_MAX_KEYS = 8_192;
 
 function positiveInt(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : fallback;
@@ -176,7 +226,12 @@ interface LaneState {
   contractions: number;
   expansions: number;
   hardFailures: number;
-  /** Epoch-ms at which this lane was registered — the reset point for the three counters above. */
+  accountScopedOutcomes: number;
+  neutralOutcomes: number;
+  dedupedCongestion: number;
+  /** Requests that already added their one unit of congestion pressure → epoch-ms they did (insertion-ordered). */
+  readonly pressuredRequests: Map<UpstreamRequestKey, number>;
+  /** Epoch-ms at which this lane was registered — the reset point for the counters above. */
   readonly countersSinceMs: number;
   lastChangeAtMs: number | null;
 }
@@ -191,6 +246,7 @@ export class ProviderAdmissionLifecycle {
   readonly #now: () => number;
   readonly #log: (level: 'info' | 'warn' | 'error', message: string) => void;
   readonly #minimumWindow: number;
+  readonly #healthyAccountsFor: ((lane: ProviderLaneId) => number | null | undefined) | undefined;
   readonly #initialWindow: number;
   readonly #increaseStep: number;
   readonly #healthySamplesPerIncrease: number;
@@ -217,10 +273,31 @@ export class ProviderAdmissionLifecycle {
       options.healthySamplesPerIncrease,
       DEFAULT_HEALTHY_SAMPLES_PER_INCREASE,
     );
-    this.#contractionFraction = fraction(options.contractionFraction, DEFAULT_CONTRACTION_FRACTION);
+    this.#contractionFraction = Math.max(
+      MIN_CONTRACTION_FRACTION,
+      fraction(options.contractionFraction, DEFAULT_CONTRACTION_FRACTION),
+    );
     this.#contractionThreshold = positiveInt(options.contractionThreshold, DEFAULT_CONTRACTION_THRESHOLD);
+    this.#healthyAccountsFor = options.healthyAccountsFor;
 
     for (const lane of options.lanes) this.#register(lane);
+  }
+
+  /**
+   * The floor a contraction respects on one lane: the configured minimum, raised to
+   * the lane's live healthy-account count when that count is known and larger. A
+   * throwing or non-finite reader is treated as unknown, never as zero.
+   */
+  #floorFor(lane: ProviderLaneId): number {
+    let healthy: number | null | undefined;
+    try {
+      healthy = this.#healthyAccountsFor?.(lane);
+    } catch {
+      healthy = null;
+    }
+    return typeof healthy === 'number' && Number.isFinite(healthy) && healthy > this.#minimumWindow
+      ? Math.floor(healthy)
+      : this.#minimumWindow;
   }
 
   #register(registration: ProviderLaneRegistration): void {
@@ -240,6 +317,10 @@ export class ProviderAdmissionLifecycle {
       contractions: 0,
       expansions: 0,
       hardFailures: 0,
+      accountScopedOutcomes: 0,
+      neutralOutcomes: 0,
+      dedupedCongestion: 0,
+      pressuredRequests: new Map(),
       // The counters above start at zero HERE, so registration time is their epoch. Recorded rather than
       // inferred so a reader never has to guess whether a 0 means "never" or "not since this process".
       // Uses the injected clock (assigned first in the constructor, before any #register call) rather than
@@ -276,12 +357,21 @@ export class ProviderAdmissionLifecycle {
     for (const [tier, cap] of Object.entries(shed)) lane.queue.setTierCap(Number(tier), cap);
   }
 
-  /** A clean upstream outcome on this lane. */
+  /**
+   * A clean upstream outcome on this lane.
+   *
+   * Recovery is FASTER while demand is waiting and nothing is congested: with
+   * requests queued for a slot and zero pressure, every clean success earns an
+   * increase, not every Nth. A lane contracted by a passing burst therefore
+   * reopens at the rate its own successes prove capacity, instead of crawling back
+   * one slot per `healthySamplesPerIncrease` successes while 100+ requests wait.
+   */
   recordSuccess(id: ProviderLaneId): void {
     const lane = this.#lane(id);
     if (lane.pressure > 0) lane.pressure -= 1;
     lane.cleanStreak += 1;
-    if (lane.cleanStreak < this.#healthySamplesPerIncrease) return;
+    const demandWaiting = lane.pressure === 0 && (lane.queue.size ?? 0) > 0;
+    if (!demandWaiting && lane.cleanStreak < this.#healthySamplesPerIncrease) return;
     lane.cleanStreak = 0;
     lane.expansions += 1;
     lane.lastChangeAtMs = this.#now();
@@ -289,44 +379,93 @@ export class ProviderAdmissionLifecycle {
     this.#apply(lane);
     this.#log(
       'info',
-      `inference-gateway: ${id} admission window → ${lane.window} (capless expansion, peak ${lane.observedPeak})`,
+      `inference-gateway: ${id} admission window → ${lane.window} (capless expansion${demandWaiting ? ', demand waiting' : ''}, peak ${lane.observedPeak})`,
     );
   }
 
   /**
-   * An upstream throttle on this lane. Sustained pressure — not a lone 429 —
-   * trips one multiplicative contraction.
+   * THE entry point for every non-success upstream outcome, on every lane
+   * (P-001). The shared classifier decides what the window hears:
+   *
+   *  - `account-scoped` (out-of-usage, weekly wall, auth) — counted, never shrinks
+   *    the window: the account is parked by the router, not by admission;
+   *  - `neutral` (a routed-around 429, a client error, a cancel) — counted only;
+   *  - `congestion` (a 429 nothing could route around, a transport/TTFB failure) —
+   *    adds pressure, at most ONCE per request (`requestKey`, plan D-001), and the
+   *    window contracts only once that pressure is SUSTAINED across
+   *    `contractionThreshold` distinct requests net of successes (P-002);
+   *  - `success` — same as {@link recordSuccess}.
+   *
+   * A missing `requestKey` means the caller cannot identify the request; each
+   * such outcome then counts on its own (it still needs the sustained threshold).
    */
-  recordThrottle(id: ProviderLaneId): void {
+  recordOutcome(id: ProviderLaneId, outcome: UpstreamOutcome, requestKey?: UpstreamRequestKey): UpstreamOutcomeClass {
     const lane = this.#lane(id);
-    lane.pressure += 1;
-    if (lane.pressure < this.#contractionThreshold) return;
-    this.#contract(lane, 'sustained upstream throttle');
+    const verdict = classifyUpstreamOutcome(outcome);
+    switch (verdict) {
+      case 'success':
+        this.recordSuccess(id);
+        break;
+      case 'account-scoped':
+        lane.accountScopedOutcomes += 1;
+        break;
+      case 'neutral':
+        lane.neutralOutcomes += 1;
+        break;
+      case 'congestion':
+        this.#addCongestion(lane, outcome.kind === 'transport-failure', requestKey);
+        break;
+    }
+    return verdict;
   }
 
-  /**
-   * An admitted request that died upstream. Contracts immediately: the slot was
-   * spent and produced nothing, which is stronger evidence than at-the-door
-   * throttling.
-   */
-  recordHardFailure(id: ProviderLaneId): void {
-    const lane = this.#lane(id);
-    lane.hardFailures += 1;
-    this.#contract(lane, 'admitted request failed hard');
+  #addCongestion(lane: LaneState, transport: boolean, requestKey: UpstreamRequestKey | undefined): void {
+    if (requestKey !== undefined) {
+      const now = this.#now();
+      this.#prunePressured(lane, now);
+      if (lane.pressuredRequests.has(requestKey)) {
+        // The same request failing over again is ONE slow request, not more
+        // congestion: this is what stops a few huge prompts walking the window
+        // down one failover attempt at a time.
+        lane.dedupedCongestion += 1;
+        return;
+      }
+      lane.pressuredRequests.set(requestKey, now);
+    }
+    if (transport) lane.hardFailures += 1;
+    lane.pressure += 1;
+    if (lane.pressure < this.#contractionThreshold) return;
+    this.#contract(lane, transport ? 'sustained upstream transport failures' : 'sustained upstream throttle');
+  }
+
+  #prunePressured(lane: LaneState, now: number): void {
+    const marks = lane.pressuredRequests;
+    for (const [key, at] of marks) {
+      // Insertion-ordered, so the first live entry ends the sweep.
+      if (now - at <= PRESSURED_REQUEST_TTL_MS && marks.size < PRESSURED_REQUEST_MAX_KEYS) break;
+      marks.delete(key);
+    }
   }
 
   #contract(lane: LaneState, reason: string): void {
     lane.pressure = 0;
     lane.cleanStreak = 0;
-    const next = Math.max(this.#minimumWindow, Math.floor(lane.window * this.#contractionFraction));
-    if (next === lane.window) return;
+    // Round UP so one contraction never removes more than the configured share;
+    // but always remove at least one slot, or a small window could never contract.
+    // Never below the lane's healthy-account floor (P-002).
+    const floor = this.#floorFor(lane.id);
+    const next = Math.max(
+      floor,
+      Math.min(lane.window - 1, Math.ceil(lane.window * this.#contractionFraction)),
+    );
+    if (next >= lane.window) return;
     lane.contractions += 1;
     lane.lastChangeAtMs = this.#now();
     lane.window = next;
     this.#apply(lane);
     this.#log(
       'warn',
-      `inference-gateway: ${lane.id} admission window → ${lane.window} (${reason}; floor ${this.#minimumWindow}, peak ${lane.observedPeak})`,
+      `inference-gateway: ${lane.id} admission window → ${lane.window} (${reason}; floor ${floor}, peak ${lane.observedPeak})`,
     );
   }
 
@@ -346,12 +485,15 @@ export class ProviderAdmissionLifecycle {
       lane: lane.id,
       window: lane.window,
       observedPeak: lane.observedPeak,
-      minimumWindow: this.#minimumWindow,
+      minimumWindow: this.#floorFor(lane.id),
       pressure: lane.pressure,
       cleanStreak: lane.cleanStreak,
       contractions: lane.contractions,
       expansions: lane.expansions,
       hardFailures: lane.hardFailures,
+      accountScopedOutcomes: lane.accountScopedOutcomes,
+      neutralOutcomes: lane.neutralOutcomes,
+      dedupedCongestion: lane.dedupedCongestion,
       countersSinceMs: lane.countersSinceMs,
       lastChangeAtMs: lane.lastChangeAtMs,
     });

@@ -1,3 +1,4 @@
+import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import {
   assertWorkspaceHostSecretIsolation,
   type CloudCredentialRef,
@@ -68,6 +69,9 @@ export const AWS_WORKSPACE_HOST_PERMISSION_ACTIONS = [
   'ec2:DescribeSubnets',
   'ec2:DescribeImages',
   'ec2:DescribeInstances',
+  'ec2:DescribeInstanceStatus',
+  'ec2:DescribeInstanceTypes',
+  'ec2:DescribeAvailabilityZones',
   'ec2:DescribeVolumes',
   'ec2:DescribeSnapshots',
   'ec2:RunInstances',
@@ -82,19 +86,86 @@ export const AWS_WORKSPACE_HOST_PERMISSION_ACTIONS = [
   'ec2:DeleteVolume',
   'ec2:CreateSnapshot',
   'ec2:DeleteSnapshot',
+  // WI-10005389: a spot host is launched by a PERSISTENT spot request, and terminating its instance
+  // while that request is still open makes EC2 launch a replacement. Destroy cancels it first.
+  'ec2:CancelSpotInstanceRequests',
+  // WI-10005454: the teardown census reads live spot requests, so a request that survived destroy
+  // is visible to the zero-orphan proof instead of only to the cancel step.
+  'ec2:DescribeSpotInstanceRequests',
+  // aws-byoc-gcp-parity D-009: the client already makes these calls as the customer role
+  // (security-group inbound check, console output, launch-template discovery).
+  'ec2:DescribeSecurityGroups',
+  'ec2:DescribeLaunchTemplates',
+  'ec2:GetConsoleOutput',
   'ssm:DescribeInstanceInformation',
   'ssm:GetConnectionStatus',
   'ssm:StartSession',
   'ssm:TerminateSession',
+  // aws-byoc-gcp-parity D-013: the host bootstrap is pushed over Run Command after the data volume
+  // attaches (EC2 UserData's 16 KiB cap cannot carry it), and the push waits for its invocation.
+  'ssm:SendCommand',
+  'ssm:GetCommandInvocation',
   'iam:GetRole',
   'iam:GetInstanceProfile',
   'iam:PassRole',
+  'iam:SimulatePrincipalPolicy',
   'kms:DescribeKey',
   'kms:CreateGrant',
   'servicequotas:GetServiceQuota',
   'servicequotas:ListServiceQuotas',
+  'servicequotas:GetAWSDefaultServiceQuota',
+  'pricing:GetProducts',
 ] as const;
 export type AwsWorkspaceHostPermissionAction = (typeof AWS_WORKSPACE_HOST_PERMISSION_ACTIONS)[number];
+
+/**
+ * WI-10006815: a launch builds the host's root volume from the AMI's snapshot, which is encrypted
+ * with the PUBLISHER's key, and EBS re-encrypts it to the host key with the launching principal's
+ * permission on that source key. DescribeKey + CreateGrant are not enough: the instance dies
+ * `Client.InvalidKMSKey.InvalidState`. Measured 2026-10-06 in 413781344298 as the operator role:
+ * CreateVolume from the AMI snapshot failed both re-encrypted and on the snapshot's own key, and
+ * succeeded once exactly these two actions were granted through EC2 only.
+ *
+ * Kept out of AWS_WORKSPACE_HOST_PERMISSION_ACTIONS on purpose: that list is granted on `*` with
+ * no condition, and Decrypt must never be usable outside EC2. A publisher key in another account
+ * must ALSO allow the customer account in its key policy (an identity policy alone is not enough
+ * across accounts).
+ */
+export const AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS = ['kms:Decrypt', 'kms:ReEncryptFrom'] as const;
+export type AwsWorkspaceHostImageKeyAction = (typeof AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS)[number];
+/** Every action the preflight proves the role holds. */
+export type AwsWorkspaceHostPreflightAction = AwsWorkspaceHostPermissionAction | AwsWorkspaceHostImageKeyAction;
+
+export const AWS_WORKSPACE_HOST_IMAGE_KEY_SID = 'PapercuspImageKeyUse';
+
+export interface AwsWorkspaceHostImageKeyStatement {
+  Sid: string;
+  Effect: 'Allow';
+  Action: AwsWorkspaceHostImageKeyAction[];
+  Resource: string;
+  Condition: { StringLike: { 'kms:ViaService': string } };
+}
+
+/** The EC2 service endpoint KMS reports as `kms:ViaService` for a launch in `region` (`*` = any). */
+export function awsEc2ViaService(region: string): string {
+  return `ec2.${region}.amazonaws.com`;
+}
+
+/**
+ * The grant that lets EBS decrypt the AMI snapshot for a launch, usable only through EC2.
+ * `region` `*` serves the standalone policy, which is written before a region is chosen.
+ */
+export function awsWorkspaceHostImageKeyStatement(
+  options: { region?: string; resource?: string; sid?: string } = {},
+): AwsWorkspaceHostImageKeyStatement {
+  return {
+    Sid: options.sid ?? AWS_WORKSPACE_HOST_IMAGE_KEY_SID,
+    Effect: 'Allow',
+    Action: [...AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS],
+    Resource: options.resource ?? '*',
+    Condition: { StringLike: { 'kms:ViaService': awsEc2ViaService(options.region ?? '*') } },
+  };
+}
 
 export interface AwsWorkspaceHostQuotaRequirement {
   serviceCode: string;
@@ -158,7 +229,7 @@ export interface AwsKmsKeyEvidence {
 }
 
 export interface AwsWorkspaceHostPermissionEvidence {
-  action: AwsWorkspaceHostPermissionAction;
+  action: AwsWorkspaceHostPreflightAction;
   allowed: boolean;
   evidenceRef: string;
   reason?: string;
@@ -171,6 +242,8 @@ export interface AwsWorkspaceHostQuotaEvidence extends AwsWorkspaceHostQuotaRequ
 
 export interface AwsWorkspaceHostPermissionRequest {
   actions: readonly AwsWorkspaceHostPermissionAction[];
+  /** Simulated with `kms:ViaService` = this region's EC2 endpoint (WI-10006815). */
+  imageKeyActions: readonly AwsWorkspaceHostImageKeyAction[];
   region: string;
   subnetId: string;
   imageId: string;
@@ -214,6 +287,8 @@ export interface AwsWorkspaceHostPreflightIssue {
     | 'probe-failed';
   message: string;
   remediation: string;
+  /** Present on fail-closed authority refusals (WI-10005197): what compared, what lifts it, who can. */
+  refusal?: RefusalContract;
 }
 
 export interface AwsWorkspaceHostPreflightRequest {
@@ -405,6 +480,7 @@ export async function preflightAwsWorkspaceHostConnection(
   const now = request.now ?? (() => new Date().toISOString());
   const permissionRequest: AwsWorkspaceHostPermissionRequest = {
     actions: AWS_WORKSPACE_HOST_PERMISSION_ACTIONS,
+    imageKeyActions: AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS,
     region: request.selection.region,
     subnetId: request.selection.subnetId,
     imageId: request.selection.imageId,
@@ -509,7 +585,7 @@ export async function preflightAwsWorkspaceHostConnection(
 
   const permissionValues = permissions.ok ? permissions.value : [];
   const permissionByAction = new Map(permissionValues.map((entry) => [entry.action, entry]));
-  for (const action of AWS_WORKSPACE_HOST_PERMISSION_ACTIONS) {
+  for (const action of [...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS, ...AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS]) {
     const evidence = permissionByAction.get(action);
     if (!evidence) {
       issues.push({
@@ -522,6 +598,13 @@ export async function preflightAwsWorkspaceHostConnection(
         code: 'permission-denied',
         message: `Permission '${action}' is denied${evidence.reason ? `: ${evidence.reason}` : '.'}`,
         remediation: `Grant '${action}' to the selected role with the narrowest applicable resource scope.`,
+        refusal: {
+          observed: { action, allowed: 'false', reason: evidence.reason ?? null },
+          liftsWhen:
+            `the selected IAM role is granted '${action}' (an AWS account administrator attaches it with the ` +
+            'narrowest applicable resource scope) and the preflight is re-run. Re-running unchanged cannot pass',
+          whoCanMakeItTrue: ['owner'],
+        } satisfies RefusalContract,
       });
     }
   }

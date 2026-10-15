@@ -326,10 +326,13 @@ export class NodeWorkspaceHostSystem implements WorkspaceHostSystem {
   ): Promise<void> {
     // Resolve names through the platform command rather than carrying uid/gid assumptions across
     // provider images. Account names are validated by the adapter before reaching this seam.
+    // WI-10004607: workspace directories live under a customer-writable root. The final path can
+    // be replaced with a symlink after its component walk, so non-recursive chown must change the
+    // link itself instead of following it to a root-owned target.
     await new Promise<void>((resolve, reject) => {
       execFile(
         "chown",
-        [...(recursive ? ["-R"] : []), `${owner}:${group}`, path],
+        [...(recursive ? ["-R"] : ["-h"]), `${owner}:${group}`, path],
         (error) => (error ? reject(error) : resolve()),
       );
     });

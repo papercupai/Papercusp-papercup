@@ -16,6 +16,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { listReports } from '../../report-library';
 import {
+  reportsLibraryDisabled,
   resolveViewer,
   resolveWorkspaceId,
   toReportSummary,
@@ -76,6 +77,8 @@ export default defineTool({
     limit: z.number().int().min(1).max(200).optional().describe('default 50, max 200'),
   }),
   async handler(args, ctx) {
+    const disabled = await reportsLibraryDisabled();
+    if (disabled) return { data: disabled };
     const sql = getOrgPg().sql;
     const reports = await listReports(sql, {
       workspaceId: resolveWorkspaceId(ctx),

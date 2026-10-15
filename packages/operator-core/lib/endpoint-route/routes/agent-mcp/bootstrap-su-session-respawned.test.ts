@@ -22,6 +22,16 @@ let routes: { method: string; path: string; handler: (req: Request) => Promise<R
 beforeAll(async () => {
   const mod = await import('./bootstrap-su');
   routes = mod.default as unknown as typeof routes;
+  // Install spies after the route graph loads: hoisted import-actual factories
+  // for these mutually dependent modules deadlock bootstrap-su collection.
+  const control = await import('../../../agent-tools/coordination/control-anchor');
+  const binding = await import('../../../blueprint/operation-worker-binding');
+  const db = await import('@papercusp/db-org');
+  vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql: readiness.sql } as unknown as ReturnType<typeof db.getOrgPg>);
+  vi.spyOn(control, 'preparePendingControlTransition').mockImplementation(readiness.pending as typeof control.preparePendingControlTransition);
+  vi.spyOn(control, 'applyRelaunchedActivation').mockImplementation(readiness.apply);
+  vi.spyOn(binding, 'readActiveOperationWorkerClaimBinding').mockImplementation(readiness.binding as typeof binding.readActiveOperationWorkerClaimBinding);
+  vi.spyOn(binding, 'readActiveOperationModelPolicy').mockImplementation(readiness.policy as typeof binding.readActiveOperationModelPolicy);
 }, 30_000);
 
 const reanchorMock = vi.hoisted(() =>
@@ -40,6 +50,15 @@ const clearContextUsageMock = vi.hoisted(() => vi.fn());
 const clearContextAnchorMock = vi.hoisted(() => vi.fn());
 const clearContextEstimateMock = vi.hoisted(() => vi.fn(async () => {}));
 const bindTasksMock = vi.hoisted(() => vi.fn(async (): Promise<string[]> => ['task-bound']));
+const readiness = vi.hoisted(() => ({
+  launch: vi.fn(async (): Promise<unknown> => null),
+  pending: vi.fn(async (): Promise<unknown> => null),
+  apply: vi.fn(async () => true),
+  binding: vi.fn(async (): Promise<unknown> => ({ status: 'bound', receipt: { sessionId: 42 } })),
+  policy: vi.fn(async (): Promise<unknown> => ({ status: 'bound', attestation: { nativeSessionId: '1d70c364-c3dd-4dc0-a014-2bbfdd4ccd3f' } })),
+  sql: vi.fn(async () => [{ agent: 'codex' }]),
+}));
+
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -54,6 +73,7 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
   claimAdvSessionResume: vi.fn(async () => false),
   reanchorAdvSessionNativeId: reanchorMock,
   reanchorAdvSessionNativeIdByOwner: reanchorByOwnerMock,
+  readSuLaunchSpecByOwner: readiness.launch,
 }));
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
@@ -78,6 +98,12 @@ beforeEach(() => {
   reanchorMock.mockResolvedValue({ reanchored: true, owner: 'su-resp-owner' });
   reanchorByOwnerMock.mockResolvedValue({ reanchored: true, owner: 'su-interactive-owner' });
   bindTasksMock.mockResolvedValue(['task-bound']);
+  readiness.launch.mockResolvedValue(null);
+  readiness.pending.mockResolvedValue(null);
+  readiness.apply.mockResolvedValue(true);
+  readiness.binding.mockResolvedValue({ status: 'bound', receipt: { sessionId: 42 } });
+  readiness.policy.mockResolvedValue({ status: 'bound', attestation: { nativeSessionId: FRESH_ID } });
+  readiness.sql.mockResolvedValue([{ agent: 'codex' }]);
 });
 afterEach(() => { vi.clearAllMocks(); });
 
@@ -97,6 +123,37 @@ async function postRespawned(body: unknown): Promise<Response> {
 }
 
 describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)', () => {
+  it('confirms an accepted worker only after launch-proven activation and exact native attestation are ready', async () => {
+    const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'launch-state' };
+    readiness.launch.mockResolvedValue({ acceptedOperation: { kind: 'blueprint-operation-worker', modelPolicy: {} } });
+    readiness.pending.mockResolvedValue({ generation: 3, state: { activation: { desired: revision } } });
+    const response = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, reanchored: true });
+    expect(readiness.apply).toHaveBeenCalledWith('su-resp-owner', expect.any(String), 3, revision);
+    expect(readiness.policy).toHaveBeenCalledWith(expect.any(String), 'su-resp-owner', 'codex');
+    expect(reanchorMock.mock.invocationCallOrder[0]).toBeLessThan(readiness.apply.mock.invocationCallOrder[0]);
+    expect(readiness.apply.mock.invocationCallOrder[0]).toBeLessThan(readiness.policy.mock.invocationCallOrder[0]);
+  });
+
+  it('does not acknowledge native binding as operation readiness when activation remains unavailable', async () => {
+    readiness.launch.mockResolvedValue({ acceptedOperation: { kind: 'blueprint-operation-worker', modelPolicy: {} } });
+    readiness.binding.mockResolvedValue({ status: 'unavailable', reason: 'identity is not applied' });
+    const response = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ ok: false, error: 'accepted operation identity is not ready' });
+    expect(readiness.policy).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { nativeSessionId: 'another-worker' }])('refuses an absent or foreign attestation sink: %j', async (attestation) => {
+    readiness.launch.mockResolvedValue({ acceptedOperation: { kind: 'blueprint-operation-worker', modelPolicy: {} } });
+    readiness.policy.mockResolvedValue({ status: 'bound', attestation });
+    const response = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ ok: false, error: 'accepted operation attestation is not ready' });
+    expect(bindTasksMock).not.toHaveBeenCalled();
+  });
+
   it('re-anchors a valid { advSessionId, sessionId } and reports the outcome', async () => {
     const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
     expect(res.status).toBe(200);

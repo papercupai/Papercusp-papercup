@@ -62,7 +62,7 @@ done`,
       `tsx scripts/agent-capacity/load-driver.ts --sweep --agents 4 --corpus ${rec} ` +
         '--sessions claude-exc-typical-2-20261001T000000,claude-mea-typical-1-20261001T000000,' +
         'codex-exc-light-3-20261001T000000,codex-mea-light-3-20261001T000000 ' +
-        `--out ${path.join(home, 'capacity/runs/replay-n4')} --isolation systemd`,
+        `--out ${path.join(home, 'capacity/runs/replay-n4')} --isolation systemd --path recorded`,
     );
     // Real sessions run in caprec.slice, replays in capdrv.slice, each sampled from a held slice.
     expect(log('systemd-run.log')).toMatch(/--slice=caprec\.slice --unit=hold-caprec-n4 /);

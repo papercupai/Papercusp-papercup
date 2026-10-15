@@ -30,7 +30,7 @@ export default defineTool({
   name: 'goals:apply-package-update',
   needsWorkspaceTx: true,
   description:
-    "Apply a newer goal-package version to ONE packaged goal instance (P-018). Dry-run by default: without confirm it returns the PLAN (mode + per-field diff + withheld fields); confirm:true applies. A never-started install stub gets a FULL refresh (= what a fresh install would seed); a started instance gets CONTRACT fields only (title, body, killCriterion, tripwires with `current` preserved, IO schemas) — operational tuning (standing, budgets, launchSettings) and live state are never touched. Emits a package_updated plan event the owning agent's next orient folds.",
+    "Apply a newer goal-package version to ONE packaged goal instance (P-018). Dry-run by default: without confirm it returns the PLAN (mode + per-field diff + withheld fields); confirm:true applies. A never-started install stub gets a FULL refresh (= what a fresh install would seed); a started instance gets CONTRACT fields only (title, body, killCriterion, tripwires with `current` preserved, IO schemas, merged typed-property declarations) — stored property values, policy/CAS provenance, operational tuning (standing, budgets, launchSettings) and live state are preserved. Emits a package_updated plan event the owning agent's next orient folds.",
   guidance: {
     when: "goals:get (or the HUD) shows packageUpdate.updateAvailable on a packaged goal and the update should be adopted — plan first, then re-call with confirm:true.",
     notWhen:

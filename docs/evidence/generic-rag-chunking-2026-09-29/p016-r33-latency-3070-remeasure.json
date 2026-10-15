@@ -1,0 +1,4280 @@
+{
+  "bench": "chunk-search-latency",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "bar": "R-33",
+  "baselineDecision": "D-024",
+  "loadRuleDecision": "D-038",
+  "ports": [
+    3070
+  ],
+  "rounds": 3,
+  "startedAt": "2026-10-02T10:03:17.729Z",
+  "finishedAt": "2026-10-02T10:12:16.431Z",
+  "loadavgStart": [
+    71.77,
+    77.48,
+    84.69
+  ],
+  "loadavgEnd": [
+    71.27,
+    76.22,
+    82.69
+  ],
+  "loadMatch": {
+    "matched": true,
+    "band": {
+      "1m": {
+        "min": 55.9,
+        "max": 83.9
+      },
+      "5m": {
+        "min": 60.7,
+        "max": 91.1
+      },
+      "15m": {
+        "min": 72.2,
+        "max": 108.2
+      }
+    },
+    "start": [
+      71.77,
+      77.48,
+      84.69
+    ],
+    "end": [
+      71.27,
+      76.22,
+      82.69
+    ],
+    "outOfBand": []
+  },
+  "cores": 128,
+  "querySetHash": "a7b47c0b2e7aa900f19185f6a8f9d57626b18bf635a9b0c9d42c810464af2e10",
+  "queries": [
+    "green checkpoint gate stays red after the fix lands",
+    "git-sync push stalled for hours",
+    "embedding backfill coverage for work items",
+    "file lock held by a dead session",
+    "mutation probe restores the file after the test",
+    "carry-respawn loses background bash tasks",
+    "fleet leader stand-down wind-down order",
+    "HNSW iterative scan returns too few rows",
+    "chunk long documents before embedding them",
+    "desktop app webview headless verification",
+    "postgres connection pool exhausted under load",
+    "owner directive disposition and the orders list",
+    "acceptance rubric vetting and independent grading",
+    "release deploy auto-rollback crash loop",
+    "frozen repair queue admit paths",
+    "session transcript search by owner",
+    "consult router picks the wrong expert",
+    "SSE sync invalidation after a write commits",
+    "feature flag default off dark allowlist",
+    "migration number allocator reservation race",
+    "typecheck baseline errors in operator-vite",
+    "mcp proxy handshake starvation under load",
+    "work item claim conflict with a live peer",
+    "loop rewake not guaranteed after compaction",
+    "embed sidecar down so search degrades to lexical only",
+    "plan decision recorded for a cross-lane ruling",
+    "test affected selects zero workspaces",
+    "task manager cgroup kill by task id",
+    "reciprocal rank fusion of lexical and semantic legs",
+    "stale deploy sha on port 3070"
+  ],
+  "consultRunsThisTree": true,
+  "perPort": {
+    "3070": {
+      "build": {
+        "ok": true,
+        "service": "papercusp-operator",
+        "sha": "f52b2457ba",
+        "version": "0.0.0",
+        "ts": "2026-10-02T10:03:17.720Z"
+      },
+      "summary": {
+        "plans": {
+          "n": 90,
+          "ok": 90,
+          "errors": 0,
+          "degraded": 0,
+          "transportRetries": 0,
+          "p50": 1271,
+          "p95": 3020,
+          "max": 3366,
+          "perRoundP95": [
+            3155,
+            2661,
+            3020
+          ],
+          "firstErrors": []
+        },
+        "turns": {
+          "n": 90,
+          "ok": 90,
+          "errors": 0,
+          "degraded": 26,
+          "transportRetries": 0,
+          "p50": 1742,
+          "p95": 3145,
+          "max": 5890,
+          "perRoundP95": [
+            3274,
+            2437,
+            2178
+          ],
+          "firstErrors": []
+        },
+        "work_item": {
+          "n": 90,
+          "ok": 90,
+          "errors": 0,
+          "degraded": 0,
+          "transportRetries": 0,
+          "p50": 1696,
+          "p95": 2911,
+          "max": 3508,
+          "perRoundP95": [
+            2541,
+            3302,
+            2764
+          ],
+          "firstErrors": []
+        },
+        "work_items_search": {
+          "n": 90,
+          "ok": 90,
+          "errors": 0,
+          "degraded": 12,
+          "transportRetries": 0,
+          "p50": 512,
+          "p95": 1601,
+          "max": 2019,
+          "perRoundP95": [
+            1914,
+            1351,
+            1446
+          ],
+          "firstErrors": []
+        },
+        "consult": {
+          "n": 90,
+          "ok": 90,
+          "errors": 0,
+          "degraded": 0,
+          "transportRetries": 0,
+          "p50": 25,
+          "p95": 38,
+          "max": 45,
+          "perRoundP95": [
+            39,
+            33,
+            30
+          ],
+          "firstErrors": []
+        }
+      },
+      "r33": [
+        {
+          "site": "plans",
+          "p95": 3020,
+          "baselineP95": 1652,
+          "bound": 2065,
+          "withinBound": false
+        },
+        {
+          "site": "turns",
+          "p95": 3145,
+          "baselineP95": 1392,
+          "bound": 1740,
+          "withinBound": false
+        },
+        {
+          "site": "work_item",
+          "p95": 2911,
+          "baselineP95": 1609,
+          "bound": 2011.3,
+          "withinBound": false
+        },
+        {
+          "site": "work_items_search",
+          "p95": 1601,
+          "baselineP95": 400,
+          "bound": 500,
+          "withinBound": false
+        },
+        {
+          "site": "consult",
+          "p95": 38,
+          "baselineP95": 14,
+          "bound": 17.5,
+          "withinBound": false
+        }
+      ]
+    }
+  },
+  "samples": {
+    "3070": {
+      "plans": [
+        {
+          "round": 0,
+          "q": 0,
+          "ms": 1245.1887500000012,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2593
+        },
+        {
+          "round": 0,
+          "q": 1,
+          "ms": 2049.937410999999,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2587
+        },
+        {
+          "round": 0,
+          "q": 2,
+          "ms": 1116.3889490000001,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5681
+        },
+        {
+          "round": 0,
+          "q": 3,
+          "ms": 126.05787000000419,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5128
+        },
+        {
+          "round": 0,
+          "q": 4,
+          "ms": 207.05165300000226,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5536
+        },
+        {
+          "round": 0,
+          "q": 5,
+          "ms": 1174.937561000006,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4176
+        },
+        {
+          "round": 0,
+          "q": 6,
+          "ms": 2794.3375749999977,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2585
+        },
+        {
+          "round": 0,
+          "q": 7,
+          "ms": 2856.0163369999937,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2589
+        },
+        {
+          "round": 0,
+          "q": 8,
+          "ms": 3154.621895000004,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2591
+        },
+        {
+          "round": 0,
+          "q": 9,
+          "ms": 777.5756600000022,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4803
+        },
+        {
+          "round": 0,
+          "q": 10,
+          "ms": 3259.8969859999925,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2587
+        },
+        {
+          "round": 0,
+          "q": 11,
+          "ms": 1662.9176609999995,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2595
+        },
+        {
+          "round": 0,
+          "q": 12,
+          "ms": 2156.0056179999956,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2597
+        },
+        {
+          "round": 0,
+          "q": 13,
+          "ms": 2200.6798220000055,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5729
+        },
+        {
+          "round": 0,
+          "q": 14,
+          "ms": 2585.5847350000113,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2593
+        },
+        {
+          "round": 0,
+          "q": 15,
+          "ms": 1238.9286780000111,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2596
+        },
+        {
+          "round": 0,
+          "q": 16,
+          "ms": 2546.301403999998,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2594
+        },
+        {
+          "round": 0,
+          "q": 17,
+          "ms": 129.5846259999962,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4440
+        },
+        {
+          "round": 0,
+          "q": 18,
+          "ms": 1952.3976969999785,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1370
+        },
+        {
+          "round": 0,
+          "q": 19,
+          "ms": 3085.4578899999906,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2590
+        },
+        {
+          "round": 0,
+          "q": 20,
+          "ms": 145.57268899999326,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4889
+        },
+        {
+          "round": 0,
+          "q": 21,
+          "ms": 2815.6484459999774,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2592
+        },
+        {
+          "round": 0,
+          "q": 22,
+          "ms": 111.21497099997941,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5182
+        },
+        {
+          "round": 0,
+          "q": 23,
+          "ms": 2030.6313169999921,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2586
+        },
+        {
+          "round": 0,
+          "q": 24,
+          "ms": 135.87480600000708,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5129
+        },
+        {
+          "round": 0,
+          "q": 25,
+          "ms": 144.05412300000899,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5401
+        },
+        {
+          "round": 0,
+          "q": 26,
+          "ms": 2097.580370999989,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2585
+        },
+        {
+          "round": 0,
+          "q": 27,
+          "ms": 1531.1507510000083,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2587
+        },
+        {
+          "round": 0,
+          "q": 28,
+          "ms": 1647.9318280000007,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2590
+        },
+        {
+          "round": 0,
+          "q": 29,
+          "ms": 135.038796000008,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5631
+        },
+        {
+          "round": 1,
+          "q": 0,
+          "ms": 1136.2710739999893,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2593
+        },
+        {
+          "round": 1,
+          "q": 1,
+          "ms": 2099.9588569999905,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2587
+        },
+        {
+          "round": 1,
+          "q": 2,
+          "ms": 1105.8336899999995,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5681
+        },
+        {
+          "round": 1,
+          "q": 3,
+          "ms": 124.74575500001083,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5128
+        },
+        {
+          "round": 1,
+          "q": 4,
+          "ms": 134.36252399999648,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5536
+        },
+        {
+          "round": 1,
+          "q": 5,
+          "ms": 1270.785143999994,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4176
+        },
+        {
+          "round": 1,
+          "q": 6,
+          "ms": 2517.7691259999992,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2585
+        },
+        {
+          "round": 1,
+          "q": 7,
+          "ms": 2434.3952159999753,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2589
+        },
+        {
+          "round": 1,
+          "q": 8,
+          "ms": 2003.517221999995,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2591
+        },
+        {
+          "round": 1,
+          "q": 9,
+          "ms": 792.1969509999617,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4803
+        },
+        {
+          "round": 1,
+          "q": 10,
+          "ms": 2661.035791000002,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2587
+        },
+        {
+          "round": 1,
+          "q": 11,
+          "ms": 1470.4595180000179,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2595
+        },
+        {
+          "round": 1,
+          "q": 12,
+          "ms": 1779.2595309999888,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2597
+        },
+        {
+          "round": 1,
+          "q": 13,
+          "ms": 1020.0610890000244,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5729
+        },
+        {
+          "round": 1,
+          "q": 14,
+          "ms": 2223.0485099999933,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1371
+        },
+        {
+          "round": 1,
+          "q": 15,
+          "ms": 1149.0074059999897,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2596
+        },
+        {
+          "round": 1,
+          "q": 16,
+          "ms": 2126.8190969999996,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2594
+        },
+        {
+          "round": 1,
+          "q": 17,
+          "ms": 150.892685000028,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4440
+        },
+        {
+          "round": 1,
+          "q": 18,
+          "ms": 1715.286267999967,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1370
+        },
+        {
+          "round": 1,
+          "q": 19,
+          "ms": 2227.3765940000303,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2590
+        },
+        {
+          "round": 1,
+          "q": 20,
+          "ms": 101.03293799998937,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4889
+        },
+        {
+          "round": 1,
+          "q": 21,
+          "ms": 2800.063811000029,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2592
+        },
+        {
+          "round": 1,
+          "q": 22,
+          "ms": 104.93509300000733,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5182
+        },
+        {
+          "round": 1,
+          "q": 23,
+          "ms": 1920.7030410000007,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2586
+        },
+        {
+          "round": 1,
+          "q": 24,
+          "ms": 134.81291699997382,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5129
+        },
+        {
+          "round": 1,
+          "q": 25,
+          "ms": 104.3104610000155,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5401
+        },
+        {
+          "round": 1,
+          "q": 26,
+          "ms": 2088.4330210000044,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2585
+        },
+        {
+          "round": 1,
+          "q": 27,
+          "ms": 1192.4979820000008,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2587
+        },
+        {
+          "round": 1,
+          "q": 28,
+          "ms": 1253.9352700000163,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2590
+        },
+        {
+          "round": 1,
+          "q": 29,
+          "ms": 135.3168149999692,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5631
+        },
+        {
+          "round": 2,
+          "q": 0,
+          "ms": 1096.1825529999915,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2593
+        },
+        {
+          "round": 2,
+          "q": 1,
+          "ms": 2112.978016000008,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2587
+        },
+        {
+          "round": 2,
+          "q": 2,
+          "ms": 1113.4221869999892,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 7401
+        },
+        {
+          "round": 2,
+          "q": 3,
+          "ms": 90.3161989999935,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5128
+        },
+        {
+          "round": 2,
+          "q": 4,
+          "ms": 127.60206800000742,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5536
+        },
+        {
+          "round": 2,
+          "q": 5,
+          "ms": 1097.8423959999927,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4176
+        },
+        {
+          "round": 2,
+          "q": 6,
+          "ms": 2530.959305999975,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2585
+        },
+        {
+          "round": 2,
+          "q": 7,
+          "ms": 1700.5665600000066,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2589
+        },
+        {
+          "round": 2,
+          "q": 8,
+          "ms": 2121.0778939999873,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2591
+        },
+        {
+          "round": 2,
+          "q": 9,
+          "ms": 727.5364210000262,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4803
+        },
+        {
+          "round": 2,
+          "q": 10,
+          "ms": 3365.5388500000117,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2587
+        },
+        {
+          "round": 2,
+          "q": 11,
+          "ms": 1335.149870000023,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2595
+        },
+        {
+          "round": 2,
+          "q": 12,
+          "ms": 1811.5756269999547,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2597
+        },
+        {
+          "round": 2,
+          "q": 13,
+          "ms": 1084.0269369999878,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5729
+        },
+        {
+          "round": 2,
+          "q": 14,
+          "ms": 2495.4921159999794,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2593
+        },
+        {
+          "round": 2,
+          "q": 15,
+          "ms": 1245.4014040000038,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2596
+        },
+        {
+          "round": 2,
+          "q": 16,
+          "ms": 2170.5927390000434,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2594
+        },
+        {
+          "round": 2,
+          "q": 17,
+          "ms": 86.80592299997807,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4440
+        },
+        {
+          "round": 2,
+          "q": 18,
+          "ms": 467.19446500000777,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5416
+        },
+        {
+          "round": 2,
+          "q": 19,
+          "ms": 2626.7309280000045,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2590
+        },
+        {
+          "round": 2,
+          "q": 20,
+          "ms": 101.26074599998537,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4889
+        },
+        {
+          "round": 2,
+          "q": 21,
+          "ms": 3019.8475390000385,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2592
+        },
+        {
+          "round": 2,
+          "q": 22,
+          "ms": 190.5158779999474,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5182
+        },
+        {
+          "round": 2,
+          "q": 23,
+          "ms": 1897.0132059999742,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2586
+        },
+        {
+          "round": 2,
+          "q": 24,
+          "ms": 118.87095500004943,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5129
+        },
+        {
+          "round": 2,
+          "q": 25,
+          "ms": 1181.8684179999982,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1371
+        },
+        {
+          "round": 2,
+          "q": 26,
+          "ms": 1725.831354999973,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2585
+        },
+        {
+          "round": 2,
+          "q": 27,
+          "ms": 1490.2769430000335,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2587
+        },
+        {
+          "round": 2,
+          "q": 28,
+          "ms": 1248.4781339999754,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 2590
+        },
+        {
+          "round": 2,
+          "q": 29,
+          "ms": 608.9341309999581,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5631
+        }
+      ],
+      "turns": [
+        {
+          "round": 0,
+          "q": 0,
+          "ms": 1853.5446490000031,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 6409
+        },
+        {
+          "round": 0,
+          "q": 1,
+          "ms": 1497.3854559999963,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5977
+        },
+        {
+          "round": 0,
+          "q": 2,
+          "ms": 1551.6548489999986,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4947
+        },
+        {
+          "round": 0,
+          "q": 3,
+          "ms": 3258.864346000002,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4848
+        },
+        {
+          "round": 0,
+          "q": 4,
+          "ms": 964.4142629999988,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5717
+        },
+        {
+          "round": 0,
+          "q": 5,
+          "ms": 1865.3393579999974,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5394
+        },
+        {
+          "round": 0,
+          "q": 6,
+          "ms": 858.6402959999978,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5141
+        },
+        {
+          "round": 0,
+          "q": 7,
+          "ms": 900.3246660000004,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5653
+        },
+        {
+          "round": 0,
+          "q": 8,
+          "ms": 2684.1111010000022,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5393
+        },
+        {
+          "round": 0,
+          "q": 9,
+          "ms": 2637.886083999998,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4933
+        },
+        {
+          "round": 0,
+          "q": 10,
+          "ms": 2310.71590000001,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4908
+        },
+        {
+          "round": 0,
+          "q": 11,
+          "ms": 2207.694420999993,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4950
+        },
+        {
+          "round": 0,
+          "q": 12,
+          "ms": 2337.695881000007,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4842
+        },
+        {
+          "round": 0,
+          "q": 13,
+          "ms": 637.2541740000015,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5614
+        },
+        {
+          "round": 0,
+          "q": 14,
+          "ms": 2086.008575999993,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5811
+        },
+        {
+          "round": 0,
+          "q": 15,
+          "ms": 2010.5053480000206,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4907
+        },
+        {
+          "round": 0,
+          "q": 16,
+          "ms": 781.5395920000155,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 7542
+        },
+        {
+          "round": 0,
+          "q": 17,
+          "ms": 1869.5833599999896,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5456
+        },
+        {
+          "round": 0,
+          "q": 18,
+          "ms": 2507.6013699999894,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4916
+        },
+        {
+          "round": 0,
+          "q": 19,
+          "ms": 732.458415000001,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5678
+        },
+        {
+          "round": 0,
+          "q": 20,
+          "ms": 2380.3825300000026,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5927
+        },
+        {
+          "round": 0,
+          "q": 21,
+          "ms": 767.1901819999912,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5714
+        },
+        {
+          "round": 0,
+          "q": 22,
+          "ms": 2315.219612999994,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5729
+        },
+        {
+          "round": 0,
+          "q": 23,
+          "ms": 700.514285000012,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5595
+        },
+        {
+          "round": 0,
+          "q": 24,
+          "ms": 786.1086920000089,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5831
+        },
+        {
+          "round": 0,
+          "q": 25,
+          "ms": 718.3566369999899,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5871
+        },
+        {
+          "round": 0,
+          "q": 26,
+          "ms": 3274.2636510000157,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4854
+        },
+        {
+          "round": 0,
+          "q": 27,
+          "ms": 4531.647740999993,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4854
+        },
+        {
+          "round": 0,
+          "q": 28,
+          "ms": 898.5379630000098,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5523
+        },
+        {
+          "round": 0,
+          "q": 29,
+          "ms": 3145.317076999985,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4944
+        },
+        {
+          "round": 1,
+          "q": 0,
+          "ms": 5890.306543999992,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4832
+        },
+        {
+          "round": 1,
+          "q": 1,
+          "ms": 1601.0099429999827,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5977
+        },
+        {
+          "round": 1,
+          "q": 2,
+          "ms": 1664.4916720000037,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4947
+        },
+        {
+          "round": 1,
+          "q": 3,
+          "ms": 2341.1030829999945,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4848
+        },
+        {
+          "round": 1,
+          "q": 4,
+          "ms": 638.3709210000234,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5717
+        },
+        {
+          "round": 1,
+          "q": 5,
+          "ms": 2177.8618089999945,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5394
+        },
+        {
+          "round": 1,
+          "q": 6,
+          "ms": 708.6929729999974,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5141
+        },
+        {
+          "round": 1,
+          "q": 7,
+          "ms": 612.3575350000174,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5653
+        },
+        {
+          "round": 1,
+          "q": 8,
+          "ms": 1554.4256269999896,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5393
+        },
+        {
+          "round": 1,
+          "q": 9,
+          "ms": 1907.2906170000206,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4933
+        },
+        {
+          "round": 1,
+          "q": 10,
+          "ms": 1799.906185000029,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4908
+        },
+        {
+          "round": 1,
+          "q": 11,
+          "ms": 2437.0873830000055,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4950
+        },
+        {
+          "round": 1,
+          "q": 12,
+          "ms": 1867.7055330000003,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4842
+        },
+        {
+          "round": 1,
+          "q": 13,
+          "ms": 579.0899520000094,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5614
+        },
+        {
+          "round": 1,
+          "q": 14,
+          "ms": 1798.9423589999788,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5811
+        },
+        {
+          "round": 1,
+          "q": 15,
+          "ms": 1863.5411860000459,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4907
+        },
+        {
+          "round": 1,
+          "q": 16,
+          "ms": 532.987536999979,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5708
+        },
+        {
+          "round": 1,
+          "q": 17,
+          "ms": 1703.154046999989,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1403
+        },
+        {
+          "round": 1,
+          "q": 18,
+          "ms": 2131.1675599999726,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 6736
+        },
+        {
+          "round": 1,
+          "q": 19,
+          "ms": 953.2980809999863,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5678
+        },
+        {
+          "round": 1,
+          "q": 20,
+          "ms": 1770.0213720000465,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5927
+        },
+        {
+          "round": 1,
+          "q": 21,
+          "ms": 556.2918630000204,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5714
+        },
+        {
+          "round": 1,
+          "q": 22,
+          "ms": 2141.462427999999,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5729
+        },
+        {
+          "round": 1,
+          "q": 23,
+          "ms": 916.8523920000298,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5595
+        },
+        {
+          "round": 1,
+          "q": 24,
+          "ms": 674.8182469999883,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5831
+        },
+        {
+          "round": 1,
+          "q": 25,
+          "ms": 592.680457999988,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5871
+        },
+        {
+          "round": 1,
+          "q": 26,
+          "ms": 2349.8935969999875,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4854
+        },
+        {
+          "round": 1,
+          "q": 27,
+          "ms": 1745.4574779999675,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4854
+        },
+        {
+          "round": 1,
+          "q": 28,
+          "ms": 1024.4573920000112,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5523
+        },
+        {
+          "round": 1,
+          "q": 29,
+          "ms": 1741.9582130000344,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4944
+        },
+        {
+          "round": 2,
+          "q": 0,
+          "ms": 1823.960390000022,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4832
+        },
+        {
+          "round": 2,
+          "q": 1,
+          "ms": 1820.5523120000144,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5977
+        },
+        {
+          "round": 2,
+          "q": 2,
+          "ms": 1690.0821149999974,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4947
+        },
+        {
+          "round": 2,
+          "q": 3,
+          "ms": 1961.2519319999847,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4848
+        },
+        {
+          "round": 2,
+          "q": 4,
+          "ms": 593.068900000013,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5717
+        },
+        {
+          "round": 2,
+          "q": 5,
+          "ms": 1608.0150199999916,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5394
+        },
+        {
+          "round": 2,
+          "q": 6,
+          "ms": 522.9890080000041,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5141
+        },
+        {
+          "round": 2,
+          "q": 7,
+          "ms": 1772.471589999972,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1388
+        },
+        {
+          "round": 2,
+          "q": 8,
+          "ms": 1643.2141570000094,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5393
+        },
+        {
+          "round": 2,
+          "q": 9,
+          "ms": 1931.0220229999977,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4933
+        },
+        {
+          "round": 2,
+          "q": 10,
+          "ms": 1822.4238509999705,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4908
+        },
+        {
+          "round": 2,
+          "q": 11,
+          "ms": 1714.8932090000017,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4950
+        },
+        {
+          "round": 2,
+          "q": 12,
+          "ms": 1810.224596999993,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4842
+        },
+        {
+          "round": 2,
+          "q": 13,
+          "ms": 547.2817930000019,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5614
+        },
+        {
+          "round": 2,
+          "q": 14,
+          "ms": 1556.6138669999782,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5811
+        },
+        {
+          "round": 2,
+          "q": 15,
+          "ms": 2209.397204000037,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4907
+        },
+        {
+          "round": 2,
+          "q": 16,
+          "ms": 626.7807720000274,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5708
+        },
+        {
+          "round": 2,
+          "q": 17,
+          "ms": 2178.4605290000327,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1403
+        },
+        {
+          "round": 2,
+          "q": 18,
+          "ms": 1953.293069999956,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4916
+        },
+        {
+          "round": 2,
+          "q": 19,
+          "ms": 555.5561539999908,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5678
+        },
+        {
+          "round": 2,
+          "q": 20,
+          "ms": 1864.3386630000314,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 7762
+        },
+        {
+          "round": 2,
+          "q": 21,
+          "ms": 808.4906239999691,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5714
+        },
+        {
+          "round": 2,
+          "q": 22,
+          "ms": 2100.4043250000104,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5729
+        },
+        {
+          "round": 2,
+          "q": 23,
+          "ms": 669.9974480000092,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5595
+        },
+        {
+          "round": 2,
+          "q": 24,
+          "ms": 564.8474520000163,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5831
+        },
+        {
+          "round": 2,
+          "q": 25,
+          "ms": 608.1016570000211,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5871
+        },
+        {
+          "round": 2,
+          "q": 26,
+          "ms": 1781.7989560000715,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4854
+        },
+        {
+          "round": 2,
+          "q": 27,
+          "ms": 1901.5397489999887,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4854
+        },
+        {
+          "round": 2,
+          "q": 28,
+          "ms": 1425.7406569999876,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5523
+        },
+        {
+          "round": 2,
+          "q": 29,
+          "ms": 1724.10596299998,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4944
+        }
+      ],
+      "work_item": [
+        {
+          "round": 0,
+          "q": 0,
+          "ms": 2199.204512999997,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4855
+        },
+        {
+          "round": 0,
+          "q": 1,
+          "ms": 1605.085364000006,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4918
+        },
+        {
+          "round": 0,
+          "q": 2,
+          "ms": 1314.7275780000055,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4856
+        },
+        {
+          "round": 0,
+          "q": 3,
+          "ms": 2015.4972599999965,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4855
+        },
+        {
+          "round": 0,
+          "q": 4,
+          "ms": 3111.548426000001,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4956
+        },
+        {
+          "round": 0,
+          "q": 5,
+          "ms": 1882.0810330000022,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4931
+        },
+        {
+          "round": 0,
+          "q": 6,
+          "ms": 2055.8613380000024,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4832
+        },
+        {
+          "round": 0,
+          "q": 7,
+          "ms": 2004.8156690000033,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4884
+        },
+        {
+          "round": 0,
+          "q": 8,
+          "ms": 1878.4345259999973,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4863
+        },
+        {
+          "round": 0,
+          "q": 9,
+          "ms": 1755.701721000005,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4882
+        },
+        {
+          "round": 0,
+          "q": 10,
+          "ms": 2022.6065539999981,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4888
+        },
+        {
+          "round": 0,
+          "q": 11,
+          "ms": 2541.0294999999896,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4916
+        },
+        {
+          "round": 0,
+          "q": 12,
+          "ms": 1543.3595360000036,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4897
+        },
+        {
+          "round": 0,
+          "q": 13,
+          "ms": 1644.121306999994,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4971
+        },
+        {
+          "round": 0,
+          "q": 14,
+          "ms": 1729.131693999996,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4954
+        },
+        {
+          "round": 0,
+          "q": 15,
+          "ms": 1483.776555999997,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4881
+        },
+        {
+          "round": 0,
+          "q": 16,
+          "ms": 1599.844367999991,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4853
+        },
+        {
+          "round": 0,
+          "q": 17,
+          "ms": 1649.2788020000153,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4839
+        },
+        {
+          "round": 0,
+          "q": 18,
+          "ms": 2198.950657999987,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4968
+        },
+        {
+          "round": 0,
+          "q": 19,
+          "ms": 1872.5556309999956,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4912
+        },
+        {
+          "round": 0,
+          "q": 20,
+          "ms": 1719.5725699999894,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4932
+        },
+        {
+          "round": 0,
+          "q": 21,
+          "ms": 2518.6713689999888,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4854
+        },
+        {
+          "round": 0,
+          "q": 22,
+          "ms": 2308.4977929999877,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4943
+        },
+        {
+          "round": 0,
+          "q": 23,
+          "ms": 1614.2033450000163,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4881
+        },
+        {
+          "round": 0,
+          "q": 24,
+          "ms": 1918.5460059999896,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1401
+        },
+        {
+          "round": 0,
+          "q": 25,
+          "ms": 2000.9721780000255,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4914
+        },
+        {
+          "round": 0,
+          "q": 26,
+          "ms": 1895.9289939999871,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4846
+        },
+        {
+          "round": 0,
+          "q": 27,
+          "ms": 1665.9048410000105,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4914
+        },
+        {
+          "round": 0,
+          "q": 28,
+          "ms": 2001.6720339999883,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4838
+        },
+        {
+          "round": 0,
+          "q": 29,
+          "ms": 1854.081097999995,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4868
+        },
+        {
+          "round": 1,
+          "q": 0,
+          "ms": 3302.2555529999954,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4855
+        },
+        {
+          "round": 1,
+          "q": 1,
+          "ms": 1870.5142639999976,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4918
+        },
+        {
+          "round": 1,
+          "q": 2,
+          "ms": 1390.8421420000086,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4856
+        },
+        {
+          "round": 1,
+          "q": 3,
+          "ms": 3508.019580000022,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4855
+        },
+        {
+          "round": 1,
+          "q": 4,
+          "ms": 2854.4772980000125,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4956
+        },
+        {
+          "round": 1,
+          "q": 5,
+          "ms": 2109.0301749999926,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4931
+        },
+        {
+          "round": 1,
+          "q": 6,
+          "ms": 1455.7538799999747,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4832
+        },
+        {
+          "round": 1,
+          "q": 7,
+          "ms": 1731.3678509999881,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4884
+        },
+        {
+          "round": 1,
+          "q": 8,
+          "ms": 1458.1416339999996,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4863
+        },
+        {
+          "round": 1,
+          "q": 9,
+          "ms": 1685.7721550000133,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4882
+        },
+        {
+          "round": 1,
+          "q": 10,
+          "ms": 2091.6407550000004,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4888
+        },
+        {
+          "round": 1,
+          "q": 11,
+          "ms": 2269.92916400003,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4916
+        },
+        {
+          "round": 1,
+          "q": 12,
+          "ms": 1450.2583219999797,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4897
+        },
+        {
+          "round": 1,
+          "q": 13,
+          "ms": 1485.1852650000365,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1403
+        },
+        {
+          "round": 1,
+          "q": 14,
+          "ms": 1434.7781390000018,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4954
+        },
+        {
+          "round": 1,
+          "q": 15,
+          "ms": 1410.5753679999616,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4881
+        },
+        {
+          "round": 1,
+          "q": 16,
+          "ms": 1434.5547729999525,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4853
+        },
+        {
+          "round": 1,
+          "q": 17,
+          "ms": 1518.835046000022,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4839
+        },
+        {
+          "round": 1,
+          "q": 18,
+          "ms": 1357.4180160000105,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4968
+        },
+        {
+          "round": 1,
+          "q": 19,
+          "ms": 1591.4359839999815,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4912
+        },
+        {
+          "round": 1,
+          "q": 20,
+          "ms": 1527.707640000037,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4932
+        },
+        {
+          "round": 1,
+          "q": 21,
+          "ms": 1620.870895,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4854
+        },
+        {
+          "round": 1,
+          "q": 22,
+          "ms": 2311.1343769999803,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4943
+        },
+        {
+          "round": 1,
+          "q": 23,
+          "ms": 1696.2095299999928,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4881
+        },
+        {
+          "round": 1,
+          "q": 24,
+          "ms": 2910.843689000001,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1401
+        },
+        {
+          "round": 1,
+          "q": 25,
+          "ms": 1885.710103999998,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4914
+        },
+        {
+          "round": 1,
+          "q": 26,
+          "ms": 1810.822874000005,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4846
+        },
+        {
+          "round": 1,
+          "q": 27,
+          "ms": 1485.708031999995,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4914
+        },
+        {
+          "round": 1,
+          "q": 28,
+          "ms": 2020.8345620000036,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4838
+        },
+        {
+          "round": 1,
+          "q": 29,
+          "ms": 1511.583105000027,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4868
+        },
+        {
+          "round": 2,
+          "q": 0,
+          "ms": 2658.1975139999995,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4855
+        },
+        {
+          "round": 2,
+          "q": 1,
+          "ms": 2464.6061470000423,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4918
+        },
+        {
+          "round": 2,
+          "q": 2,
+          "ms": 1412.5569440000108,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4856
+        },
+        {
+          "round": 2,
+          "q": 3,
+          "ms": 2042.0768299999763,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4855
+        },
+        {
+          "round": 2,
+          "q": 4,
+          "ms": 2764.437138999987,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4956
+        },
+        {
+          "round": 2,
+          "q": 5,
+          "ms": 1724.5686330000171,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4931
+        },
+        {
+          "round": 2,
+          "q": 6,
+          "ms": 1407.5364440000267,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4832
+        },
+        {
+          "round": 2,
+          "q": 7,
+          "ms": 1474.5459830000182,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4884
+        },
+        {
+          "round": 2,
+          "q": 8,
+          "ms": 1548.550855999987,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4863
+        },
+        {
+          "round": 2,
+          "q": 9,
+          "ms": 1489.951528000005,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4882
+        },
+        {
+          "round": 2,
+          "q": 10,
+          "ms": 1694.8471499999869,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4888
+        },
+        {
+          "round": 2,
+          "q": 11,
+          "ms": 2267.648221999989,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4916
+        },
+        {
+          "round": 2,
+          "q": 12,
+          "ms": 1403.65101099998,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4897
+        },
+        {
+          "round": 2,
+          "q": 13,
+          "ms": 2092.8333609999972,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1403
+        },
+        {
+          "round": 2,
+          "q": 14,
+          "ms": 1273.6274219999905,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4954
+        },
+        {
+          "round": 2,
+          "q": 15,
+          "ms": 1269.1452430000063,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4881
+        },
+        {
+          "round": 2,
+          "q": 16,
+          "ms": 1373.4688619999797,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4853
+        },
+        {
+          "round": 2,
+          "q": 17,
+          "ms": 1628.5119009999908,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4839
+        },
+        {
+          "round": 2,
+          "q": 18,
+          "ms": 1591.0169060000335,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4968
+        },
+        {
+          "round": 2,
+          "q": 19,
+          "ms": 1593.7710689999512,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4912
+        },
+        {
+          "round": 2,
+          "q": 20,
+          "ms": 2963.644605999987,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4932
+        },
+        {
+          "round": 2,
+          "q": 21,
+          "ms": 2097.8114640000276,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4854
+        },
+        {
+          "round": 2,
+          "q": 22,
+          "ms": 1801.6840160000138,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4943
+        },
+        {
+          "round": 2,
+          "q": 23,
+          "ms": 1533.3721960000112,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4881
+        },
+        {
+          "round": 2,
+          "q": 24,
+          "ms": 1444.327626000042,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1401
+        },
+        {
+          "round": 2,
+          "q": 25,
+          "ms": 1432.7462829999859,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 1402
+        },
+        {
+          "round": 2,
+          "q": 26,
+          "ms": 1885.8791590000037,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4846
+        },
+        {
+          "round": 2,
+          "q": 27,
+          "ms": 1694.75034899998,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4914
+        },
+        {
+          "round": 2,
+          "q": 28,
+          "ms": 1651.649022000027,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4838
+        },
+        {
+          "round": 2,
+          "q": 29,
+          "ms": 1654.1965959999943,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4868
+        }
+      ],
+      "work_items_search": [
+        {
+          "round": 0,
+          "q": 0,
+          "ms": 109.28661699999793,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5597
+        },
+        {
+          "round": 0,
+          "q": 1,
+          "ms": 100.73043000000325,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5661
+        },
+        {
+          "round": 0,
+          "q": 2,
+          "ms": 106.16361200000392,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5670
+        },
+        {
+          "round": 0,
+          "q": 3,
+          "ms": 124.11317399999825,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5584
+        },
+        {
+          "round": 0,
+          "q": 4,
+          "ms": 1337.479097000003,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5845
+        },
+        {
+          "round": 0,
+          "q": 5,
+          "ms": 1512.9114039999986,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5721
+        },
+        {
+          "round": 0,
+          "q": 6,
+          "ms": 150.47390299999097,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5321
+        },
+        {
+          "round": 0,
+          "q": 7,
+          "ms": 1601.4221700000053,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5861
+        },
+        {
+          "round": 0,
+          "q": 8,
+          "ms": 1913.918472999998,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5671
+        },
+        {
+          "round": 0,
+          "q": 9,
+          "ms": 133.13369699999748,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5283
+        },
+        {
+          "round": 0,
+          "q": 10,
+          "ms": 144.522369000013,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5899
+        },
+        {
+          "round": 0,
+          "q": 11,
+          "ms": 1387.3715459999949,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5817
+        },
+        {
+          "round": 0,
+          "q": 12,
+          "ms": 126.68337499999325,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5662
+        },
+        {
+          "round": 0,
+          "q": 13,
+          "ms": 121.66358199999377,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5767
+        },
+        {
+          "round": 0,
+          "q": 14,
+          "ms": 1312.438982000007,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5875
+        },
+        {
+          "round": 0,
+          "q": 15,
+          "ms": 1184.843968000001,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5789
+        },
+        {
+          "round": 0,
+          "q": 16,
+          "ms": 1369.6577629999956,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5856
+        },
+        {
+          "round": 0,
+          "q": 17,
+          "ms": 172.4978879999835,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5839
+        },
+        {
+          "round": 0,
+          "q": 18,
+          "ms": 159.21504999999888,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5763
+        },
+        {
+          "round": 0,
+          "q": 19,
+          "ms": 1486.3327700000082,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5932
+        },
+        {
+          "round": 0,
+          "q": 20,
+          "ms": 128.1471850000089,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5871
+        },
+        {
+          "round": 0,
+          "q": 21,
+          "ms": 1324.2663069999835,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5769
+        },
+        {
+          "round": 0,
+          "q": 22,
+          "ms": 1452.2855229999986,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5886
+        },
+        {
+          "round": 0,
+          "q": 23,
+          "ms": 126.85963000002084,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5944
+        },
+        {
+          "round": 0,
+          "q": 24,
+          "ms": 143.4501089999976,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5596
+        },
+        {
+          "round": 0,
+          "q": 25,
+          "ms": 1425.173844999983,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5723
+        },
+        {
+          "round": 0,
+          "q": 26,
+          "ms": 1658.806402999995,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4952
+        },
+        {
+          "round": 0,
+          "q": 27,
+          "ms": 111.26574999999139,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5935
+        },
+        {
+          "round": 0,
+          "q": 28,
+          "ms": 1691.3211329999904,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5738
+        },
+        {
+          "round": 0,
+          "q": 29,
+          "ms": 2019.1925539999793,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5858
+        },
+        {
+          "round": 1,
+          "q": 0,
+          "ms": 117.7364499999967,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5597
+        },
+        {
+          "round": 1,
+          "q": 1,
+          "ms": 100.3591449999949,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5661
+        },
+        {
+          "round": 1,
+          "q": 2,
+          "ms": 95.6990330000117,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5670
+        },
+        {
+          "round": 1,
+          "q": 3,
+          "ms": 177.43728799998644,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5584
+        },
+        {
+          "round": 1,
+          "q": 4,
+          "ms": 1257.5876010000065,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5845
+        },
+        {
+          "round": 1,
+          "q": 5,
+          "ms": 1305.9206829999748,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5721
+        },
+        {
+          "round": 1,
+          "q": 6,
+          "ms": 138.7538760000025,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5321
+        },
+        {
+          "round": 1,
+          "q": 7,
+          "ms": 1429.9676850000396,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5861
+        },
+        {
+          "round": 1,
+          "q": 8,
+          "ms": 1290.8686220000382,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5671
+        },
+        {
+          "round": 1,
+          "q": 9,
+          "ms": 96.7171049999888,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5283
+        },
+        {
+          "round": 1,
+          "q": 10,
+          "ms": 111.56502999999793,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5899
+        },
+        {
+          "round": 1,
+          "q": 11,
+          "ms": 1270.726198999968,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5817
+        },
+        {
+          "round": 1,
+          "q": 12,
+          "ms": 103.53166699997382,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5662
+        },
+        {
+          "round": 1,
+          "q": 13,
+          "ms": 91.39133299997775,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5767
+        },
+        {
+          "round": 1,
+          "q": 14,
+          "ms": 1167.363320000004,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5875
+        },
+        {
+          "round": 1,
+          "q": 15,
+          "ms": 1149.7537160000065,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5789
+        },
+        {
+          "round": 1,
+          "q": 16,
+          "ms": 1228.0760710000177,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5856
+        },
+        {
+          "round": 1,
+          "q": 17,
+          "ms": 117.7033320000046,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5839
+        },
+        {
+          "round": 1,
+          "q": 18,
+          "ms": 96.4971019999939,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5763
+        },
+        {
+          "round": 1,
+          "q": 19,
+          "ms": 1169.1838350000326,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5932
+        },
+        {
+          "round": 1,
+          "q": 20,
+          "ms": 512.3488420000067,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5871
+        },
+        {
+          "round": 1,
+          "q": 21,
+          "ms": 1351.0856550000026,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5769
+        },
+        {
+          "round": 1,
+          "q": 22,
+          "ms": 1351.1415399999823,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5886
+        },
+        {
+          "round": 1,
+          "q": 23,
+          "ms": 117.92326499999035,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5944
+        },
+        {
+          "round": 1,
+          "q": 24,
+          "ms": 86.65051500004483,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5596
+        },
+        {
+          "round": 1,
+          "q": 25,
+          "ms": 1186.147988999961,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5723
+        },
+        {
+          "round": 1,
+          "q": 26,
+          "ms": 1129.6276790000265,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4952
+        },
+        {
+          "round": 1,
+          "q": 27,
+          "ms": 121.1104640000267,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5935
+        },
+        {
+          "round": 1,
+          "q": 28,
+          "ms": 1158.9548539999523,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5738
+        },
+        {
+          "round": 1,
+          "q": 29,
+          "ms": 1133.993938999949,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5858
+        },
+        {
+          "round": 2,
+          "q": 0,
+          "ms": 101.81746099999873,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5597
+        },
+        {
+          "round": 2,
+          "q": 1,
+          "ms": 94.49673900002381,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5661
+        },
+        {
+          "round": 2,
+          "q": 2,
+          "ms": 97.82612799998606,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5670
+        },
+        {
+          "round": 2,
+          "q": 3,
+          "ms": 110.31777299998794,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5584
+        },
+        {
+          "round": 2,
+          "q": 4,
+          "ms": 1209.1636819999549,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5845
+        },
+        {
+          "round": 2,
+          "q": 5,
+          "ms": 1259.324545999989,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5721
+        },
+        {
+          "round": 2,
+          "q": 6,
+          "ms": 97.99495800002478,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5321
+        },
+        {
+          "round": 2,
+          "q": 7,
+          "ms": 1294.4204869999667,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5861
+        },
+        {
+          "round": 2,
+          "q": 8,
+          "ms": 1379.1743620000198,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5671
+        },
+        {
+          "round": 2,
+          "q": 9,
+          "ms": 106.6109830000205,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5283
+        },
+        {
+          "round": 2,
+          "q": 10,
+          "ms": 131.69340499996906,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5899
+        },
+        {
+          "round": 2,
+          "q": 11,
+          "ms": 1186.800251000037,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5817
+        },
+        {
+          "round": 2,
+          "q": 12,
+          "ms": 112.52716300002066,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5662
+        },
+        {
+          "round": 2,
+          "q": 13,
+          "ms": 96.88188800000353,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5767
+        },
+        {
+          "round": 2,
+          "q": 14,
+          "ms": 1091.816353000002,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5875
+        },
+        {
+          "round": 2,
+          "q": 15,
+          "ms": 1113.2345710000372,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5789
+        },
+        {
+          "round": 2,
+          "q": 16,
+          "ms": 1140.463369999954,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5856
+        },
+        {
+          "round": 2,
+          "q": 17,
+          "ms": 100.8431490000221,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5839
+        },
+        {
+          "round": 2,
+          "q": 18,
+          "ms": 208.41809000005014,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5763
+        },
+        {
+          "round": 2,
+          "q": 19,
+          "ms": 1432.4614430000074,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5932
+        },
+        {
+          "round": 2,
+          "q": 20,
+          "ms": 109.13411800004542,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5871
+        },
+        {
+          "round": 2,
+          "q": 21,
+          "ms": 1445.7157780000125,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5769
+        },
+        {
+          "round": 2,
+          "q": 22,
+          "ms": 1311.2568389999797,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5886
+        },
+        {
+          "round": 2,
+          "q": 23,
+          "ms": 97.6043490000302,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5944
+        },
+        {
+          "round": 2,
+          "q": 24,
+          "ms": 103.68656699999701,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5596
+        },
+        {
+          "round": 2,
+          "q": 25,
+          "ms": 1235.1373870000243,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5723
+        },
+        {
+          "round": 2,
+          "q": 26,
+          "ms": 1195.5974680000218,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 4952
+        },
+        {
+          "round": 2,
+          "q": 27,
+          "ms": 180.55806399998255,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5935
+        },
+        {
+          "round": 2,
+          "q": 28,
+          "ms": 1221.4596039999742,
+          "retries": 0,
+          "ok": true,
+          "degraded": true,
+          "bytes": 5738
+        },
+        {
+          "round": 2,
+          "q": 29,
+          "ms": 1519.8378159999847,
+          "retries": 0,
+          "ok": true,
+          "degraded": false,
+          "bytes": 5858
+        }
+      ]
+    },
+    "consult": [
+      {
+        "round": 0,
+        "q": 0,
+        "ms": 21.554815999996208,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 1,
+        "ms": 18.124385999995866,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 2,
+        "ms": 22.61427900000126,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 3,
+        "ms": 26.755529000001843,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 4,
+        "ms": 29.341584000001603,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 5,
+        "ms": 36.37306499999249,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 6,
+        "ms": 35.503209999995306,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 7,
+        "ms": 37.91212299998733,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 8,
+        "ms": 37.13131900000735,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 9,
+        "ms": 38.842107000004034,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 10,
+        "ms": 34.07813700000406,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 11,
+        "ms": 32.43851799999538,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 12,
+        "ms": 27.90327699999034,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 13,
+        "ms": 35.94761100001051,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 14,
+        "ms": 25.137558999995235,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 15,
+        "ms": 31.848101999989012,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 16,
+        "ms": 32.27291200001491,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 17,
+        "ms": 39.23176400002558,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 18,
+        "ms": 44.56748900000821,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 19,
+        "ms": 35.762109000002965,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 20,
+        "ms": 27.277104000007967,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 21,
+        "ms": 33.359098000015365,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 22,
+        "ms": 29.156687999988208,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 23,
+        "ms": 30.93927500001155,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 24,
+        "ms": 29.276771000004373,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 25,
+        "ms": 32.663197999994736,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 26,
+        "ms": 32.572122999990825,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 27,
+        "ms": 29.987793000007514,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 28,
+        "ms": 35.06734500001767,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 0,
+        "q": 29,
+        "ms": 23.462546000024304,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 0,
+        "ms": 21.954649999999674,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 1,
+        "ms": 28.1689990000159,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 2,
+        "ms": 18.75936100000399,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 3,
+        "ms": 45.01977299997816,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 4,
+        "ms": 32.024892999994336,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 5,
+        "ms": 32.605091999983415,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 6,
+        "ms": 21.6506759999902,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 7,
+        "ms": 27.003395000007004,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 8,
+        "ms": 26.629765000019688,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 9,
+        "ms": 22.675774000003003,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 10,
+        "ms": 33.25345499999821,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 11,
+        "ms": 21.860340999963228,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 12,
+        "ms": 24.755393000028562,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 13,
+        "ms": 18.787157999991905,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 14,
+        "ms": 23.69149200001266,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 15,
+        "ms": 18.446440999978222,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 16,
+        "ms": 21.91620099998545,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 17,
+        "ms": 21.89977000001818,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 18,
+        "ms": 22.8241520000156,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 19,
+        "ms": 24.833896999945864,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 20,
+        "ms": 20.887568000005558,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 21,
+        "ms": 24.17174000001978,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 22,
+        "ms": 32.02508099999977,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 23,
+        "ms": 27.487112000002526,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 24,
+        "ms": 21.503827000036836,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 25,
+        "ms": 21.819826999970246,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 26,
+        "ms": 21.358137999952305,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 27,
+        "ms": 28.28142499999376,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 28,
+        "ms": 21.228787999949418,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 1,
+        "q": 29,
+        "ms": 20.951262999966275,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 0,
+        "ms": 22.060431999969296,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 1,
+        "ms": 20.907759999972768,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 2,
+        "ms": 19.31539000000339,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 3,
+        "ms": 21.39988899999298,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 4,
+        "ms": 23.17732600000454,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 5,
+        "ms": 23.438310000055935,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 6,
+        "ms": 20.09702699998161,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 7,
+        "ms": 23.274514999997336,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 8,
+        "ms": 26.57421599997906,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 9,
+        "ms": 25.763393000001088,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 10,
+        "ms": 29.372501999954693,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 11,
+        "ms": 27.295538000005763,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 12,
+        "ms": 22.819298000016715,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 13,
+        "ms": 22.464474000036716,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 14,
+        "ms": 22.805261000001337,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 15,
+        "ms": 23.923828000028152,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 16,
+        "ms": 23.562040999997407,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 17,
+        "ms": 22.195636999967974,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 18,
+        "ms": 22.03265199996531,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 19,
+        "ms": 25.474498000054155,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 20,
+        "ms": 26.350909000029787,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 21,
+        "ms": 33.94538300001295,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 22,
+        "ms": 25.58692599995993,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 23,
+        "ms": 22.4889630000107,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 24,
+        "ms": 18.357447000045795,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 25,
+        "ms": 29.548975999990944,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 26,
+        "ms": 19.569974999991246,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 27,
+        "ms": 20.984062000061385,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 28,
+        "ms": 19.71362199995201,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      },
+      {
+        "round": 2,
+        "q": 29,
+        "ms": 19.55652900005225,
+        "retries": 0,
+        "ok": true,
+        "degraded": false,
+        "bytes": 0
+      }
+    ]
+  }
+}

@@ -15,7 +15,9 @@ import {
   type EmbeddingProfileId,
   type PgvectorIndexOperatorClass,
 } from '@papercusp/memory';
+import { createEmbeddingSpace, type EmbeddingSpace } from '@papercusp/search';
 import { canonicalJson } from './authority/authority-rpc-envelope';
+import { lexicalLeg, rrfTerm } from './search/lexical/rank';
 import type { IdentityRecipeClassConformanceReport } from './agent-identities/recipe-provider-conformance';
 
 export type JsonObject = Record<string, unknown>;
@@ -66,39 +68,28 @@ export const CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE: CapabilityClassVectorStora
     indexName: 'capability_class_registry_embedding_hnsw_idx',
   });
 
+// Built lazily: a module-scope createEmbeddingSpace call breaks partial
+// vi.mock('@papercusp/search') factories in importers' tests (WI-10004518).
+let capabilityClassEmbeddingSpace: EmbeddingSpace | null = null;
+
+function getCapabilityClassEmbeddingSpace(): EmbeddingSpace {
+  return (capabilityClassEmbeddingSpace ??= createEmbeddingSpace({
+    storageLabel: `storage ${CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE.table}.${CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE.column}`,
+    storage: CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE,
+    indexOperatorClassFor: (metric) => pgvectorMetricSpec(metric as EmbeddingDistanceMetric)?.indexOperatorClass,
+  }));
+}
+
+/** The stored-space rules live in @papercusp/search (shared-vector-search P-001,
+ * WI-10004433); this table only supplies its storage contract. */
 export function validateCapabilityClassVectorStorageCompatibility(
   profile: Pick<EmbedderProfileSpec, 'profileId' | 'targetDims' | 'distanceMetric'>,
 ): string[] {
-  const storage = CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE;
-  const problems: string[] = [];
-  if (!storage.acceptedProfileIds.includes(profile.profileId)) {
-    problems.push(
-      `storage ${storage.table}.${storage.column} does not accept profile ${profile.profileId}; ` +
-        `accepted=${storage.acceptedProfileIds.join(',') || '(none)'}`,
-    );
-  }
-  if (storage.dimensions !== profile.targetDims) {
-    problems.push(
-      `storage ${storage.table}.${storage.column} has ${storage.dimensions} dimensions; ` +
-        `profile ${profile.profileId} emits ${profile.targetDims}`,
-    );
-  }
-  if (storage.distanceMetric !== profile.distanceMetric) {
-    problems.push(
-      `storage ${storage.table}.${storage.column} uses ${storage.distanceMetric}; ` +
-        `profile ${profile.profileId} requires ${profile.distanceMetric}`,
-    );
-  }
-  const metric = pgvectorMetricSpec(storage.distanceMetric);
-  if (!metric) {
-    problems.push(`storage ${storage.table}.${storage.column} has unsupported metric ${storage.distanceMetric}`);
-  } else if (metric.indexOperatorClass !== storage.indexOperatorClass) {
-    problems.push(
-      `storage ${storage.table}.${storage.column} index ${storage.indexName} uses ` +
-        `${storage.indexOperatorClass}; ${storage.distanceMetric} requires ${metric.indexOperatorClass}`,
-    );
-  }
-  return problems;
+  return getCapabilityClassEmbeddingSpace().validateCompatibility({
+    profileId: profile.profileId,
+    dimensions: profile.targetDims,
+    distanceMetric: profile.distanceMetric,
+  });
 }
 
 export function capabilityClassVectorStorageAcceptsProfile(
@@ -351,29 +342,43 @@ export async function listCapabilityClasses(
     ? sql`embedding IS NOT NULL AND embedding_profile = ${embeddingProfileId}`
     : sql`FALSE`;
 
+  // The lexical leg goes through the lexical seam (BM25 when available, else ts_rank over
+  // title_tsv); BM25 is OR-semantic by construction, so it gets the bare tokens.
+  const leg = textQuery
+    ? await lexicalLeg(sql, {
+        table: 'capability_class_registry',
+        query: tokens.join(' '),
+        legacy: {
+          score: sql`ts_rank(title_tsv, to_tsquery('english', ${textQuery}))`,
+          match: sql`title_tsv @@ to_tsquery('english', ${textQuery})`,
+        },
+      })
+    : null;
+
   let rows: ClassDbRow[];
-  if (textQuery && embeddingLiteral) {
+  if (leg && embeddingLiteral) {
+    // Lexical and cosine legs fuse by reciprocal rank (plan
+    // bm25-lexical-search-evoke-adoption-2026-10-10 D-004); a row counts in the cosine leg
+    // only when its cosine is positive.
     rows = await sql<ClassDbRow[]>`
       SELECT ${CLASS_SELECT(sql)},
-             GREATEST(
-               ts_rank(title_tsv, to_tsquery('english', ${textQuery})),
-               0.4 * ts_rank(title_tsv, to_tsquery('english', ${textQuery}))
-                 + 0.6 * CASE WHEN ${exactEmbedding}
-                              THEN 1 - (embedding <=> ${embeddingLiteral}::vector)
-                              ELSE 0 END
-             ) AS score
+             (${rrfTerm(sql, leg.match, leg.score)} + ${rrfTerm(
+               sql,
+               sql`(${exactEmbedding} AND (embedding <=> ${embeddingLiteral}::vector) < 1)`,
+               sql`1 - (embedding <=> ${embeddingLiteral}::vector)`,
+             )})::float8 AS score
         FROM harness_shared.capability_class_registry
        WHERE workspace_id = ${workspaceId} ${statusClause} ${tagClause}
-         AND (title_tsv @@ to_tsquery('english', ${textQuery}) OR ${exactEmbedding})
+         AND (${leg.match} OR ${exactEmbedding})
        ORDER BY score DESC, updated_at DESC, id, version DESC
        LIMIT ${limit * (opts.includeVersions ? 1 : 4)}`;
-  } else if (textQuery) {
+  } else if (leg) {
     rows = await sql<ClassDbRow[]>`
-      SELECT ${CLASS_SELECT(sql)}, ts_rank(title_tsv, to_tsquery('english', ${textQuery})) AS score
+      SELECT ${CLASS_SELECT(sql)}, (${leg.score})::float8 AS score
         FROM harness_shared.capability_class_registry
        WHERE workspace_id = ${workspaceId} ${statusClause} ${tagClause}
-         AND title_tsv @@ to_tsquery('english', ${textQuery})
-       ORDER BY score DESC, updated_at DESC, id, version DESC
+         AND ${leg.match}
+       ORDER BY ${leg.order}, updated_at DESC, id, version DESC
        LIMIT ${limit * (opts.includeVersions ? 1 : 4)}`;
   } else {
     rows = await sql<ClassDbRow[]>`

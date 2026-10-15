@@ -110,7 +110,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await org.adminSql`
-    DELETE FROM harness_shared.personal_documents WHERE user_id IN (${userId}, ${otherUserId})`;
+    DELETE FROM harness_shared.documents WHERE user_id IN (${userId}, ${otherUserId})`;
 });
 
 /**

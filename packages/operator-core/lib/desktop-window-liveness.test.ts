@@ -10,12 +10,30 @@ import {
   pidHasWindowAncestor,
   windowOwningPids,
   gatherOnDesktopSessions,
+  getActiveWindowId,
+  __resetActiveWindowCache,
+  X11_PROBE_SIDECAR_VAR,
   type OpenWindow,
   type DesktopCandidateSession,
 } from './desktop-window-liveness';
 import { WINDOW_TITLE_PREFIX, __resetIsWindowsDesktopHostCache } from './windows-desktop-windows';
 
 const listWindowsByTitleMock = vi.fn();
+// vi.hoisted: the mock factory below runs before module-level consts initialize,
+// and it configures this mock at factory time.
+const { execFileViaSidecarMock } = vi.hoisted(() => ({ execFileViaSidecarMock: vi.fn() }));
+
+// The X11 probes' spawn seam. Delegates to the REAL implementation unless a test
+// stubs a call, so every pre-existing test sees exactly the old behaviour.
+vi.mock('./fleet/git-via-sidecar', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./fleet/git-via-sidecar')>();
+  execFileViaSidecarMock.mockImplementation(actual.execFileViaSidecar);
+  return {
+    ...actual,
+    execFileViaSidecar: (...args: Parameters<typeof actual.execFileViaSidecar>) =>
+      execFileViaSidecarMock(...args),
+  };
+});
 
 // Keep the real parseSessionIdFromWindowTitle/WINDOW_TITLE_PREFIX/isWindowsDesktopHost
 // (desktop-window-liveness.ts's own matcher + platform-detection logic depends on
@@ -187,6 +205,61 @@ describe('listOpenWindows (TTL-cached wmctrl spawn seam)', () => {
   });
 });
 
+// EI-24748208098755918: an async execFile still forks synchronously on the caller's
+// event loop, at a cost that scales with the parent's RSS (49.7 ms in one :3070
+// worker profile). The presence path probes X11 every few seconds, so both probes
+// must go through the spawner-sidecar seam, which falls back locally on its own.
+describe('X11 probes fork through the spawner-sidecar seam (EI-24748208098755918)', () => {
+  const prevDisplay = process.env.DISPLAY;
+  beforeEach(() => {
+    __resetActiveWindowCache();
+    __resetIsWindowsDesktopHostCache();
+    process.env.DISPLAY = ':42';
+  });
+  afterEach(() => {
+    if (prevDisplay === undefined) delete process.env.DISPLAY;
+    else process.env.DISPLAY = prevDisplay;
+    execFileViaSidecarMock.mockClear();
+  });
+
+  it('listOpenWindows runs wmctrl via execFileViaSidecar, carrying the operator display env', async () => {
+    execFileViaSidecarMock.mockResolvedValueOnce({
+      stdout: '0x04200007  0 469879 thinkpad SH[adv:42]: my plan\n',
+      stderr: '',
+    });
+    const out = await listOpenWindows();
+    expect(out).toEqual<OpenWindow[]>([{ wid: '0x04200007', pid: 469879, title: 'SH[adv:42]: my plan' }]);
+    expect(execFileViaSidecarMock).toHaveBeenCalledTimes(1);
+    const [command, args, opts] = execFileViaSidecarMock.mock.calls[0];
+    expect(command).toBe('wmctrl');
+    expect(args).toEqual(['-lp']);
+    expect(opts).toMatchObject({
+      subsystem: 'desktop-window-liveness:wmctrl',
+      sidecarVar: X11_PROBE_SIDECAR_VAR,
+      env: { DISPLAY: ':42' },
+    });
+  });
+
+  it('getActiveWindowId runs xprop via the same seam', async () => {
+    execFileViaSidecarMock.mockResolvedValueOnce({
+      stdout: '_NET_ACTIVE_WINDOW(WINDOW): window id # 0x4200007\n',
+      stderr: '',
+    });
+    expect(await getActiveWindowId()).toBe(0x4200007);
+    const [command, args, opts] = execFileViaSidecarMock.mock.calls[0];
+    expect(command).toBe('xprop');
+    expect(args).toEqual(['-root', '_NET_ACTIVE_WINDOW']);
+    expect(opts).toMatchObject({ subsystem: 'desktop-window-liveness:xprop', env: { DISPLAY: ':42' } });
+  });
+
+  it('a failed probe degrades to no windows and unknown focus, never a throw', async () => {
+    execFileViaSidecarMock.mockRejectedValueOnce(new Error('wmctrl exited 1'));
+    execFileViaSidecarMock.mockRejectedValueOnce(new Error('xprop: unable to open display'));
+    await expect(listOpenWindows()).resolves.toEqual([]);
+    await expect(getActiveWindowId()).resolves.toBeNull();
+  });
+});
+
 describe('listOpenWindows — Windows-desktop-host branch (P-019, enumerates via listWindowsByTitle, not wmctrl)', () => {
   it('on a Windows desktop host with no injected deps.run, maps listWindowsByTitle results into OpenWindow[]', async () => {
     setPlatform('win32'); // isWindowsDesktopHost()'s defensive win32 fallback leg — see its own module tests for the real WSL /proc/version leg
@@ -334,5 +407,160 @@ describe('gatherOnDesktopSessions — WI-1967 windowSignalUnknown (Windows conse
       deps: { listWindows: noWindows, isWindowsHost: () => false, readWindowsCache: () => null },
     });
     expect(sets.windowSignalUnknown).toBe(false);
+  });
+});
+
+describe('gatherOnDesktopSessions targeted owner lookup', () => {
+  it('bounds per-owner host checks for a full presence roster', async () => {
+    const owners = Array.from({ length: 24 }, (_, i) => `su-owner-${i}`);
+    const rows = owners.map((ownerId, i) => ({
+      id: i + 1,
+      coord_owner_id: ownerId,
+      session_id: `session-${i}`,
+      window_id: null,
+      pid: null,
+    }));
+    let activeLookups = 0;
+    let maxActiveLookups = 0;
+    const findHost = vi.fn(async (ownerId: string) => {
+      activeLookups++;
+      maxActiveLookups = Math.max(maxActiveLookups, activeLookups);
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+      activeLookups--;
+      return { ownerId, pid: 200 + owners.indexOf(ownerId) };
+    });
+
+    const result = await gatherOnDesktopSessions({
+      ownerIds: owners,
+      nowMs: 1_000,
+      ttlMs: 0,
+      deps: {
+        listWindows: async () => [{ wid: '0x1', pid: 100, title: 'Terminal' }],
+        listCandidates: async () => rows,
+        findHost,
+        listHosts: async () => [],
+        readStat: async (pid) => `${pid} (psu-pty-host) S 100 1 0 0 0 0 0`,
+      },
+    });
+
+    expect(maxActiveLookups).toBeGreaterThan(1);
+    expect(maxActiveLookups).toBeLessThanOrEqual(8);
+    expect(findHost).toHaveBeenCalledTimes(owners.length);
+    expect(result.owners).toEqual(new Set(owners));
+  });
+
+  it('uses per-owner host lookup and does not seed the full-roster cache', async () => {
+    const windows: OpenWindow[] = [{ wid: '0x1', pid: 100, title: 'Terminal' }];
+    const targetCandidate = {
+      id: 7,
+      coord_owner_id: 'su-target',
+      session_id: 'session-target',
+      window_id: null,
+      pid: null,
+    };
+    const listCandidates = vi.fn(async (_maxAgeSec: number, _ownerIds?: readonly string[]) => [targetCandidate]);
+    const findHost = vi.fn(async (ownerId: string) => ({ ownerId, pid: 200 }));
+    const listHosts = vi.fn(async () => [{ ownerId: 'su-full', pid: 300 }]);
+    const readStat = async () => '200 (psu-pty-host) S 100 1 0 0 0 0 0';
+    const listWindows = async () => windows;
+    const diagnostics: Array<{ name: string; elapsedMs: number; status: 'ok' | 'error' }> = [];
+
+    const targeted = await gatherOnDesktopSessions({
+      ownerIds: ['su-target'],
+      nowMs: 1_000,
+      ttlMs: 5_000,
+      deps: { listWindows, listCandidates, findHost, listHosts, readStat },
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    expect(listCandidates).toHaveBeenCalledWith(43_200, ['su-target']);
+    expect(findHost).toHaveBeenCalledWith('su-target');
+    expect(listHosts).not.toHaveBeenCalled();
+    expect(targeted.owners).toEqual(new Set(['su-target']));
+    expect(targeted.sessionIds).toEqual(new Set(['session-target']));
+    expect(targeted.advSessionIds).toEqual(new Set([7]));
+    expect(diagnostics.map(({ name, status }) => ({ name, status }))).toEqual([
+      { name: 'listOpenWindows', status: 'ok' },
+      { name: 'listCandidates', status: 'ok' },
+      { name: 'findLiveHost', status: 'ok' },
+      { name: 'pidAncestry', status: 'ok' },
+    ]);
+    expect(diagnostics.every(({ elapsedMs }) => Number.isFinite(elapsedMs) && elapsedMs >= 0)).toBe(true);
+
+    const full = await gatherOnDesktopSessions({
+      nowMs: 1_001,
+      ttlMs: 5_000,
+      deps: {
+        listWindows,
+        listCandidates: vi.fn(async () => []),
+        listHosts,
+        readStat: async () => '300 (psu-pty-host) S 100 1 0 0 0 0 0',
+      },
+    });
+
+    expect(listHosts).toHaveBeenCalledTimes(1);
+    expect(full.owners).toEqual(new Set(['su-full']));
+  });
+});
+
+describe('gatherOnDesktopSessions full-roster ancestry fanout', () => {
+  it('accepts a synchronous full-host roster provider', async () => {
+    const host = { ownerId: 'su-sync', pid: 200 };
+    const result = await gatherOnDesktopSessions({
+      ttlMs: 0,
+      deps: {
+        listWindows: async () => [{ wid: '0x1', pid: 99, title: 'Terminal' }],
+        listCandidates: async () => [{
+          id: 1,
+          coord_owner_id: host.ownerId,
+          session_id: 'session-sync',
+          window_id: null,
+          pid: null,
+        }],
+        listHosts: () => [host],
+        readStat: async () => '200 (psu-pty-host) S 99 1 0 0 0 0 0',
+      },
+    });
+
+    expect(result.owners).toEqual(new Set([host.ownerId]));
+    expect(result.sessionIds).toEqual(new Set(['session-sync']));
+  });
+
+  it('bounds independent host walks and keeps successful matches when one proc read fails', async () => {
+    const hosts = Array.from({ length: 12 }, (_, i) => ({ ownerId: `su-${i}`, pid: 1_000 + i }));
+    const rows = hosts.map((host, i) => ({
+      id: i + 1,
+      coord_owner_id: host.ownerId,
+      session_id: `session-${i}`,
+      window_id: null,
+      pid: null,
+    }));
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    const diagnostics: Array<{ name: string; elapsedMs: number; status: 'ok' | 'error' }> = [];
+
+    const result = await gatherOnDesktopSessions({
+      ttlMs: 0,
+      deps: {
+        listWindows: async () => [{ wid: '0x1', pid: 99, title: 'Terminal' }],
+        listCandidates: async () => rows,
+        listHosts: async () => hosts,
+        readStat: async (pid) => {
+          activeReads++;
+          maxActiveReads = Math.max(maxActiveReads, activeReads);
+          await new Promise<void>((resolve) => setTimeout(resolve, 5));
+          activeReads--;
+          if (pid === 1_005) throw new Error('transient proc read failure');
+          return `${pid} (psu-pty-host) S 99 ${pid} ${pid} 0 -1 0`;
+        },
+      },
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    expect(maxActiveReads).toBeGreaterThan(1);
+    expect(maxActiveReads).toBeLessThanOrEqual(8);
+    expect(result.owners).toEqual(new Set(hosts.filter((host) => host.pid !== 1_005).map((host) => host.ownerId)));
+    expect(result.sessionIds).toEqual(new Set(rows.filter((row) => row.id !== 6).map((row) => row.session_id)));
+    expect(diagnostics.find(({ name }) => name === 'pidAncestry')?.status).toBe('ok');
   });
 });

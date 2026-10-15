@@ -386,7 +386,6 @@ const HAND_APPLIED_EVENT_MIGRATION_HOLDOUTS: Readonly<Record<string, string>> = 
   'lib/events/await/predicate-watch.integration.test.ts':
     'applies 871 by file path (with a .DRAFT fallback) on top of createOrgTestDb',
   'lib/pot/soak-report.integration.test.ts': 'applies 163 + 387 only; reads event_wake_deliveries alone',
-  'lib/task-manager/store.integration.test.ts': 'applies 632 only, for event_key_fires',
   'lib/verification-attempts/attempt-ledger.integration.test.ts': 'applies 632 only, for event_key_fires',
 };
 

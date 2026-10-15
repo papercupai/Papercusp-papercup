@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "evidencePlane": "live",
+  "name": "R-10 finished-installer inspection: the distributed 0.0.25 GUI installers carry no gitnexus (D-006)",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "AUTO-BAR-R-10-P-005",
+  "workItemId": "WI-10003960",
+  "subjectCommit": "b47ce3957a026af5f605030226dabf73a784a870",
+  "command": [
+    ".papercusp/scratch/osr/r1006/r10-installer-inspect.sh: download each installer the live alpha channel links (desktop-v0.0.25-alpha/ on the public R2 channel), extract it (dpkg-deb -x / tar -xzf / 7z x), extract nested .7z/.zst/.tar one level, then grep -rlai 'gitnexus' and the positive control grep -rlai 'papercusp' over every extracted file, and count plugins/ directories and sidecar/source.tar.zst"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T11:24:36Z",
+  "finishedAt": "2026-10-06T17:01:37Z",
+  "summary": "The live channel distributes three 0.0.25 GUI installers (R-15 census). The Linux .deb (2081 files) and the macOS .app.tar.gz (2080 files) contain ZERO files mentioning gitnexus, while the positive control finds 'papercusp' in 116 and 116 files, so the instrument is not vacuous. Neither ships a plugins/ directory or the staged source tree (sidecar/source.tar.zst): the GUI sidecar carries the SPA and the desktop binary only, so no gitnexus-bridge plugin or gitnexus.* tool ships in them. The installer source selection (papercusp-desktop/bin/lib/source-tree-selection.sh) excludes gitnexus-bridge for any build that stages source.",
+  "assertions": [
+    {
+      "id": "linux-deb-no-gitnexus",
+      "passed": true,
+      "evidence": "Papercusp GUI_0.0.25_amd64.deb sha256 7fdae6ab530ca5a92b99c6ffbfe18404c96981756031422709f5a29846faff2b: 2081 files extracted, gitnexus in 0, positive control 'papercusp' in 116"
+    },
+    {
+      "id": "macos-app-no-gitnexus",
+      "passed": true,
+      "evidence": "Papercusp GUI.app.tar.gz sha256 b4b78a52ec0856a13e0417dc2537d8ef74b326f8bfcf665efca1ab63df4b5c84: 2080 files extracted, gitnexus in 0, positive control 'papercusp' in 116"
+    },
+    {
+      "id": "no-plugin-population-shipped",
+      "passed": true,
+      "evidence": "plugins/ directories: deb 0, macOS 0; sidecar/source.tar.zst: deb 0, macOS 0"
+    },
+    {
+      "id": "installer-selection-excludes-gitnexus",
+      "passed": true,
+      "evidence": "papercusp-desktop/bin/lib/source-tree-selection.sh excludes ./libs/papercusp/plugins/gitnexus-bridge and ./node_modules/@papercupai/gitnexus-bridge (D-006). That selection's falsifiability is not proven by this artifact: it is a separate clean as-committed binding on AUTO-BAR-R-10-P-005 (test row 20846634 pass, mutant row 20846667 caught, clone 6d1ebd0c22)."
+    }
+  ],
+  "limitations": [
+    "The Windows installer Papercusp GUI_0.0.25_x64-setup.exe (sha256 d8972d7627a9686a0167271805e420e800108c831a9aa3dc34a3cd8de84a3033) is an NSIS package that 7-Zip 16.02 on this host recognises but refuses to extract ('Is not archive'), so its payload was NOT inspected. It is built from the same 0.0.25 source and the same SPA bundle as the two inspected installers.",
+    "This measures the installers distributed today (0.0.25). The unpublished D-013 builds (0.0.26-0.0.28) were not inspected here."
+  ]
+}

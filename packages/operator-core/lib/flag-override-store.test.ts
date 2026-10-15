@@ -114,6 +114,40 @@ describe('installFlagOverrideStore', () => {
     await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(true);
   });
 
+  it('the FIRST global write seeds @global from the legacy workspace row (WI-10005101)', async () => {
+    // Measured 2026-10-01: one flags:set created '@global' with only its own key, and every
+    // other legacy override (WATCHDOG_AUTO_CLOSE among them) silently reverted to default.
+    readOperatorState.mockImplementation(async (_table: string, workspace?: string) => {
+      if (workspace === GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID) return null; // pre-cutover: no global row
+      return { [DEFAULT_OFF_FLAG]: true, other: false };
+    });
+    writeOperatorState.mockResolvedValue(undefined);
+    installFlagOverrideStore();
+    const { setFlagOverride } = await import('@papercusp/flags/server');
+    await setFlagOverride(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, true);
+    expect(writeOperatorState).toHaveBeenCalledWith(
+      FLAG_OVERRIDES_STATE_KEY,
+      { [DEFAULT_OFF_FLAG]: true, other: false, [FLAGS.CODEX_GATEWAY_OAUTH_PROXY]: true },
+      GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+    );
+  });
+
+  it('once @global exists, a write never re-merges legacy rows (no resurrection)', async () => {
+    readOperatorState.mockImplementation(async (_table: string, workspace?: string) => {
+      if (workspace === GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID) return { kept: true };
+      return { [DEFAULT_OFF_FLAG]: true };
+    });
+    writeOperatorState.mockResolvedValue(undefined);
+    installFlagOverrideStore();
+    const { setFlagOverride } = await import('@papercusp/flags/server');
+    await setFlagOverride(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, true);
+    expect(writeOperatorState).toHaveBeenCalledWith(
+      FLAG_OVERRIDES_STATE_KEY,
+      { kept: true, [FLAGS.CODEX_GATEWAY_OAUTH_PROXY]: true },
+      GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
+    );
+  });
+
   it('an empty global row is a cutover marker and does not resurrect legacy values after clear', async () => {
     readOperatorState.mockImplementation(async (_table: string, workspace?: string) => {
       if (workspace === GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID) return {};

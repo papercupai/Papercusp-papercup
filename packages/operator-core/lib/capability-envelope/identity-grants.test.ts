@@ -6,6 +6,7 @@ import {
   CAPABILITY_CLASS_ID_PATTERN, CAPABILITY_CLASS_VERSION_PATTERN, type PotCapabilityProviderBindingRow,
 } from '../capability-class-registry-store';
 import { resolveIdentityGrantEnvelope } from './blueprint-envelopes';
+import { identityRefusalContract } from './identity-refusal-contract';
 import { grantProviderToolReach, type GrantProviderEvidence } from '../agent-identities/grant-provider-kinds';
 import { recipeProviderPins } from '../cupboard/capability-grant-resolver';
 
@@ -56,6 +57,24 @@ describe('P-005 applied identity capability grants', () => {
   ])('refuses a current provider that differs from the applied pin: %j', (over) => {
     const result = resolveIdentityGrantEnvelope({ ...fixture(), bindings: [binding(over)] });
     expect(result).toMatchObject({ allowedTools: [], failures: [{ code: 'capability_unsatisfied', classRef: CLASS, cause: 'provider-changed' }] });
+  });
+
+  it('WI-10005197: every resolver refusal carries the lift condition for its cause', () => {
+    // The envelope is a union (`applied:false` carries no failures), so narrow before reading.
+    const failuresOf = (envelope: ReturnType<typeof resolveIdentityGrantEnvelope>) => envelope.applied ? envelope.failures : [];
+    const failures = [
+      ...failuresOf(resolveIdentityGrantEnvelope({ ...fixture(), appliedSpecificationRevision: 'b'.repeat(64) })), // stale-artifact
+      ...failuresOf(resolveIdentityGrantEnvelope({ ...fixture(), ceilings: null })),                              // policy-unavailable
+      ...failuresOf(resolveIdentityGrantEnvelope({ ...fixture(), bindings: [] })),                                // provider-unbound
+      ...failuresOf(resolveIdentityGrantEnvelope({ ...fixture(), bindings: [binding({ providerVersion: '2.0.0' })] })), // provider-changed
+    ];
+    expect(failures.map((failure) => failure.cause).sort())
+      .toEqual(['policy-unavailable', 'provider-changed', 'provider-unbound', 'stale-artifact']);
+    for (const failure of failures) {
+      expect(failure.refusal).toEqual(identityRefusalContract(failure.cause));
+      expect(failure.refusal?.liftsWhen).toBeTruthy();
+      expect(failure.refusal?.whoCanMakeItTrue.length).toBeGreaterThan(0);
+    }
   });
 
   it.each(['retired', 'removed'])('revokes immediately when the provider is %s, with the old artifact still applied', (status) => {

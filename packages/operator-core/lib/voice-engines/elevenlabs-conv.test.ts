@@ -33,7 +33,14 @@ vi.mock('../commands/registry', () => ({
   runQuery: (...a: unknown[]) => runQuery(...(a as [])),
 }));
 
-import { askOperatorViaSse, buildClientTools, buildClientToolCatalog } from './elevenlabs-conv';
+import {
+  askOperatorViaSse,
+  buildClientTools,
+  buildClientToolCatalog,
+  createTwoTierTranscript,
+  routeVoiceMessageToTranscript,
+} from './elevenlabs-conv';
+import { VOICE_BRAIN_EMPTY_QUESTION_LINE, VOICE_BRAIN_FAILURE_LINE } from '@papercusp/chat-protocol';
 import { list } from '../commands/registry';
 
 /** Build a Response whose body is an SSE stream of the given lines. */
@@ -292,9 +299,10 @@ describe('buildClientTools — reflexive client-tool dispatch', () => {
 
   const tools = () => buildClientTools({ workspace: 'ws-1', tabId: 'tab-9', endSession });
 
-  it('exposes end_conversation, ask_operator, reflexive commands + queries (dotted ids normalized)', () => {
+  it('exposes end_conversation, ask_operator, ask_papercup, reflexive commands + queries (dotted ids normalized)', () => {
     expect(Object.keys(tools()).sort()).toEqual([
       'ask_operator',
+      'ask_papercup',
       'end_conversation',
       'panel_toggle',
       'status_summary',
@@ -333,6 +341,140 @@ describe('buildClientTools — reflexive client-tool dispatch', () => {
       (c) => (c[0] as { kind: string }).kind === 'command',
     );
     expect((cmdCall![0] as { browser?: string[] }).browser).toEqual(['required']);
+  });
+});
+
+describe('ask_papercup — two-tier voice brain tool (voice-two-tier P-003)', () => {
+  const tools = () => buildClientTools({ workspace: 'ws-1', tabId: 'tab-9', endSession: async () => {} });
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => { warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+  afterEach(() => warn.mockRestore());
+
+  it('returns Papercup’s spoken answer for the question, sent to operator-converse with an abort signal', async () => {
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(new Response(JSON.stringify({ turns: [] }), { status: 200, headers: { 'content-type': 'application/json' } })),
+    );
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(sseResponse([
+        'event: delta\ndata: {"text":"<say>You have two meetings today.</say>"}\n\n',
+        'event: done\ndata: {}\n\n',
+      ])),
+    );
+    const out = await tools().ask_papercup({ question: 'what is on my calendar' });
+    expect(out).toBe('You have two meetings today.');
+    const [historyCall, converseCall] = fetchSpy.mock.calls;
+    expect(historyCall[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(converseCall[0]).toBe('/api/agent-mcp/operator-converse');
+    expect(converseCall[1].signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(converseCall[1].body as string);
+    expect(body.messages.at(-1)).toEqual({ role: 'user', content: 'what is on my calendar' });
+    expect(body.modality).toBe('voice');
+  });
+
+  it('speaks the shared failure line when operator-converse refuses', async () => {
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(new Response(JSON.stringify({ turns: [] }), { status: 200, headers: { 'content-type': 'application/json' } })),
+    );
+    fetchSpy.mockImplementationOnce(() => Promise.resolve(new Response('nope', { status: 502 })));
+    await expect(tools().ask_papercup({ question: 'hi' })).resolves.toBe(VOICE_BRAIN_FAILURE_LINE);
+    expect(warn).toHaveBeenCalledWith('[el-conv:ask_papercup] failed');
+  });
+
+  it('asks for the question again instead of calling the brain when it is empty', async () => {
+    await expect(tools().ask_papercup({ question: '  ' })).resolves.toBe(VOICE_BRAIN_EMPTY_QUESTION_LINE);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[el-conv:ask_papercup] empty-question');
+  });
+
+  it('leaves ask_operator’s own fallback line unchanged when operator-converse refuses', async () => {
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(new Response(JSON.stringify({ turns: [] }), { status: 200, headers: { 'content-type': 'application/json' } })),
+    );
+    fetchSpy.mockImplementationOnce(() => Promise.resolve(new Response('nope', { status: 502 })));
+    await expect(askOperatorViaSse({ text: 'hi' })).resolves.toBe('I had trouble just then — say that again?');
+  });
+});
+
+describe('two-tier transcript — every voice turn reaches the conversation (voice-two-tier P-005, D-008)', () => {
+  const historyOk = () =>
+    Promise.resolve(new Response(JSON.stringify({ turns: [] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => { warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+  afterEach(() => warn.mockRestore());
+
+  /** The turn bodies posted to the conversation, with the conversation id they went to. */
+  function postedTurns(): Array<{ conversationId: string; role: string; text: string; source: string; elConvId: unknown }> {
+    return fetchSpy.mock.calls
+      .filter(([url, init]) => typeof url === 'string' && /\/api\/operator\/conversations\/[^/]+\/turns$/.test(url) && init?.method === 'POST')
+      .map(([url, init]) => ({
+        conversationId: (url as string).split('/')[4]!,
+        ...JSON.parse(init.body as string),
+      }));
+  }
+
+  it('hands Papercup’s answer to the transcript hook, but never a failure line', async () => {
+    const answered: string[] = [];
+    const tools = buildClientTools({
+      workspace: 'ws-1',
+      tabId: 'tab-9',
+      endSession: async () => {},
+      onBrainAnswer: (say) => answered.push(say),
+    });
+    fetchSpy.mockImplementationOnce(historyOk);
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(sseResponse(['event: delta\ndata: {"text":"<say>Standup is at nine.</say>"}\n\n'])),
+    );
+    await expect(tools.ask_papercup({ question: 'when is standup' })).resolves.toBe('Standup is at nine.');
+    fetchSpy.mockImplementationOnce(historyOk);
+    fetchSpy.mockImplementationOnce(() => Promise.resolve(new Response('nope', { status: 502 })));
+    await expect(tools.ask_papercup({ question: 'and lunch?' })).resolves.toBe(VOICE_BRAIN_FAILURE_LINE);
+    expect(answered).toEqual(['Standup is at nine.']);
+  });
+
+  it('routes the user’s words and the front’s replies, ignoring empty or unknown messages', () => {
+    const calls: string[] = [];
+    const transcript = {
+      userSaid: async (t: string) => { calls.push(`user:${t}`); },
+      frontSaid: async (t: string) => { calls.push(`front:${t}`); },
+      brainAnswered: async () => {},
+      noteBrainAnswer: () => {},
+    };
+    routeVoiceMessageToTranscript(transcript, { message: 'What time is it?', source: 'user' });
+    routeVoiceMessageToTranscript(transcript, { message: 'Let me check.', source: 'ai' });
+    routeVoiceMessageToTranscript(transcript, { message: '', source: 'user' });
+    routeVoiceMessageToTranscript(transcript, { message: 'debug', source: 'system' });
+    routeVoiceMessageToTranscript(transcript, { message: 42, source: 'ai' });
+    expect(calls).toEqual(['user:What time is it?', 'front:Let me check.']);
+  });
+
+  it('writes the user turn, the front reply and the brain answer once each into the pinned conversation', async () => {
+    fetchSpy.mockImplementation((url: string) =>
+      /\/turns$/.test(url)
+        ? Promise.resolve(new Response('{}', { status: 201 }))
+        : Promise.reject(new Error(`unexpected fetch: ${url}`)),
+    );
+    const transcript = createTwoTierTranscript({ conversationId: 'conv-pinned', elConvId: () => 'el-77' });
+    routeVoiceMessageToTranscript(transcript, { message: 'Is the build green?', source: 'user' });
+    routeVoiceMessageToTranscript(transcript, { message: 'One moment, asking Papercup.', source: 'ai' });
+    await transcript.brainAnswered('Yes, the build passed ten minutes ago.');
+    routeVoiceMessageToTranscript(transcript, { message: 'Yes, the build passed ten minutes ago.', source: 'ai' });
+    await transcript.frontSaid('');
+    expect(postedTurns()).toEqual([
+      { conversationId: 'conv-pinned', role: 'user', text: 'Is the build green?', source: 'voice_stt', elConvId: 'el-77' },
+      { conversationId: 'conv-pinned', role: 'assistant', text: 'One moment, asking Papercup.', source: 'voice_tts', elConvId: 'el-77' },
+      { conversationId: 'conv-pinned', role: 'assistant', text: 'Yes, the build passed ten minutes ago.', source: 'voice_tts', elConvId: 'el-77' },
+    ]);
+  });
+
+  it('drops a turn rather than writing it into another conversation when the pinned one is gone', async () => {
+    fetchSpy.mockImplementation((url: string) =>
+      /\/turns$/.test(url)
+        ? Promise.resolve(new Response('gone', { status: 404 }))
+        : Promise.reject(new Error(`unexpected fetch: ${url}`)),
+    );
+    const transcript = createTwoTierTranscript({ conversationId: 'conv-archived', elConvId: () => null });
+    await transcript.userSaid('Hello?');
+    expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual(['/api/operator/conversations/conv-archived/turns']);
   });
 });
 

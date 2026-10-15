@@ -31,6 +31,12 @@ export const COMPLETION_SETTLEMENT_HEALTH_KEY = 'completion_settlement_health';
 export const NEVER_ATTEMPTED_WAIT_FIRES_LIMIT = 3;
 /** Consecutive measured fires with a floor rejection before the guard fails. */
 export const FLOOR_REJECTED_CONSECUTIVE_FIRES_LIMIT = 2;
+/**
+ * EI-24807349327024992: consecutive measured fires on which the exact-tree lookup returned
+ * nothing for at least one row before the guard fails. One fire is a transient (a git timeout
+ * under load); a run of them means rows are being skipped instead of settled.
+ */
+export const LOOKUP_UNAVAILABLE_CONSECUTIVE_FIRES_LIMIT = 3;
 
 export type SettlementFireObservation =
   | {
@@ -40,6 +46,8 @@ export type SettlementFireObservation =
       residual: number;
       unreadable: number;
       floorRejected: number;
+      /** Rows skipped because the exact-tree lookup returned nothing (nothing written for them). */
+      lookupUnavailable: number;
       /** DB count after the pass; null when the count itself could not be read. */
       neverAttemptedRemaining: number | null;
     }
@@ -58,9 +66,11 @@ export interface CompletionSettlementHealth {
   residual: number | null;
   unreadable: number | null;
   floor_rejected: number | null;
+  lookup_unavailable: number | null;
   never_attempted_remaining: number | null;
   consecutive_never_attempted_fires: number;
   consecutive_floor_rejected_fires: number;
+  consecutive_lookup_unavailable_fires: number;
   verdict: 'ok' | 'failing';
   reasons: string[];
 }
@@ -93,6 +103,14 @@ export function advanceCompletionSettlementHealth(
         : 0
       : count(prev.consecutive_floor_rejected_fires);
 
+  // Same rule as the floor streak. `count` treats an older observation without the field as 0.
+  const lookupUnavailableStreak =
+    observation.outcome === 'completed'
+      ? count(observation.lookupUnavailable) > 0
+        ? count(prev.consecutive_lookup_unavailable_fires) + 1
+        : 0
+      : count(prev.consecutive_lookup_unavailable_fires);
+
   const reasons: string[] = [];
   if (neverAttemptedStreak >= NEVER_ATTEMPTED_WAIT_FIRES_LIMIT) {
     reasons.push(
@@ -107,6 +125,14 @@ export function advanceCompletionSettlementHealth(
         `consecutive measured fires (limit ${FLOOR_REJECTED_CONSECUTIVE_FIRES_LIMIT}); the TS proof and the floor disagree`,
     );
   }
+  if (lookupUnavailableStreak >= LOOKUP_UNAVAILABLE_CONSECUTIVE_FIRES_LIMIT) {
+    reasons.push(
+      `lookup-unavailable: the exact-tree lookup returned nothing for ` +
+        `${observation.outcome === 'completed' ? count(observation.lookupUnavailable) : 'an unmeasured number of'} ` +
+        `row(s) on ${lookupUnavailableStreak} consecutive measured fires (limit ${LOOKUP_UNAVAILABLE_CONSECUTIVE_FIRES_LIMIT}); ` +
+        'those closes are skipped, not settled — check git ls-tree latency and the 5s lookup timeout',
+    );
+  }
 
   const completed = observation.outcome === 'completed' ? observation : null;
   return {
@@ -117,9 +143,11 @@ export function advanceCompletionSettlementHealth(
     residual: completed ? completed.residual : null,
     unreadable: completed ? completed.unreadable : null,
     floor_rejected: completed ? completed.floorRejected : null,
+    lookup_unavailable: completed ? count(completed.lookupUnavailable) : null,
     never_attempted_remaining: observation.neverAttemptedRemaining,
     consecutive_never_attempted_fires: neverAttemptedStreak,
     consecutive_floor_rejected_fires: floorRejectedStreak,
+    consecutive_lookup_unavailable_fires: lookupUnavailableStreak,
     verdict: reasons.length > 0 ? 'failing' : 'ok',
     reasons,
   };

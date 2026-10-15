@@ -1,0 +1,9 @@
+BEGIN
+# 1 raises and resolutions per signature (window: since 2026-10-11 04:00Z, up to the observation)
+agents-stranded|58|58|9.1|2026-10-11 00:36:05.278109-04|2026-10-11 10:39:17.487579-04
+agents-wedged|41|41|7.8|2026-10-11 00:36:04.606947-04|2026-10-11 10:39:17.473859-04
+# 2 the observed raise (count vs threshold, severity, audience) and its body hash
+2026-10-11 10:39:17.473859-04|mv3ximlh-0000-02a6d7c861d04258b5347327d44b3744|blocker|["human"]|[infra-liveness] 11 agent session(s) cannot take a turn (pending-turn-stuck 9, quota-blocked 2; threshold 10) — wakes to them land and nothing happens. coord:presence reports each as suspect with its wedged class; a single class at this scale is one shared cause (a quota-walled account, a dead credential, a launcher fault). e.g. su-0d2affd0-2198-4734-b54f-186234343375, su-0f38adbc-c692-4dfe-8ed2-4b5404762ff7, su-25a3d4d3-cb70-4685-a0de-d8fd1cd4f918|6bc75c3e563acd4f1b6264e170b61c8a529345b3971033e8341dacb7b84a20f3
+# 3 how that raise was resolved
+2026-10-11 10:39:24.367-04|system:infra-liveness-alarm|auto-resolved|infra-liveness signal 'agents-wedged' cleared (condition recovered) — no per-signature evidence recorded
+COMMIT

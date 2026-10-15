@@ -28,8 +28,12 @@ export interface ModelPrice {
   cacheWritePerMtok: number;
 }
 
+import { MODEL_PRICES, PRICE_TABLE_VERSION as MODEL_PRICING_VERSION, normalizeModelId } from '@papercusp/model-pricing';
+
 const CACHE_READ_MULT = 0.1;
 const CACHE_WRITE_5M_MULT = 1.25;
+/** A dated snapshot suffix (`-20251101`, `-2026-09`, `-2026-09-23`) — the only extension that inherits a price. */
+const DATED_SUFFIX_RE = /^-(?:\d{8}|\d{4}-\d{2}(?:-\d{2})?)$/;
 
 /** Build a ModelPrice from base input/output, deriving cache prices by multiplier. */
 function price(inputPerMtok: number, outputPerMtok: number): ModelPrice {
@@ -49,6 +53,13 @@ function round4(n: number): number {
 export interface PriceTable {
   version: string;
   prices: Record<string, ModelPrice>;
+  /**
+   * How an id that is not a key resolves. `prefix` (default; V1): the longest key that prefixes the id, so a
+   * newer model whose id extends an older key (`claude-opus-5-5` vs `claude-opus-5`) silently takes the older
+   * price. `snapshot`: the normalized id (vendor prefix, `:effort` and `[1m]` removed) must equal a key, or be
+   * a DATED snapshot of one; anything else is unknown and {@link priceRun} refuses it.
+   */
+  match?: 'prefix' | 'snapshot';
 }
 
 /**
@@ -68,6 +79,38 @@ export const PRICE_TABLE_V1: PriceTable = {
   },
 };
 
+/**
+ * price-table-v2 — DERIVED from `@papercusp/model-pricing` (the platform's single price source) rather than
+ * hand-maintained, so a model added there is priced here with no second edit. Its version embeds the
+ * model-pricing table version, so a stored row still names the exact prices it was costed under. Matching is
+ * `snapshot` (see {@link PriceTable.match}). Cache prices use model-pricing's explicit value when it quotes
+ * one, else the documented multipliers. Long-context surcharges are NOT applied (as in V1).
+ *
+ * V1 stays the default for now: changing the default re-prices every emitted row, and the frozen-protocol
+ * emitter that consumes it belongs to the benchmark-modernization plan.
+ */
+export const PRICE_TABLE_V2: PriceTable = {
+  version: `price-table-v2+${MODEL_PRICING_VERSION}`,
+  match: 'snapshot',
+  prices: Object.fromEntries(
+    Object.entries(MODEL_PRICES).map(([id, p]) => [
+      id,
+      {
+        inputPerMtok: p.in,
+        outputPerMtok: p.out,
+        cacheReadPerMtok: p.cacheRead ?? round4(p.in * CACHE_READ_MULT),
+        cacheWritePerMtok: p.cacheWrite ?? round4(p.in * CACHE_WRITE_5M_MULT),
+      },
+    ]),
+  ),
+};
+
+/** Every published table by version, so a stored `price_table_version` can be re-priced exactly. */
+export function priceTableForVersion(version: string): PriceTable | null {
+  for (const t of [PRICE_TABLE_V1, PRICE_TABLE_V2]) if (t.version === version) return t;
+  return null;
+}
+
 export const DEFAULT_PRICE_TABLE = PRICE_TABLE_V1;
 
 /** The raw token counts that drive cost. cacheRead/cacheWrite are optional. */
@@ -84,7 +127,15 @@ export interface RunTokens {
  * `claude-opus-4-8` both resolve to the Opus 4.8 row). Returns null if unknown.
  */
 export function resolveModelPrice(modelId: string, table: PriceTable = DEFAULT_PRICE_TABLE): ModelPrice | null {
-  if (table.prices[modelId]) return table.prices[modelId];
+  if (Object.hasOwn(table.prices, modelId)) return table.prices[modelId];
+  if (table.match === 'snapshot') {
+    const norm = normalizeModelId(modelId);
+    if (Object.hasOwn(table.prices, norm)) return table.prices[norm];
+    const dated = Object.keys(table.prices)
+      .filter((key) => norm.startsWith(key) && DATED_SUFFIX_RE.test(norm.slice(key.length)))
+      .sort((a, b) => b.length - a.length)[0];
+    return dated ? table.prices[dated] : null;
+  }
   let best: { key: string; price: ModelPrice } | null = null;
   for (const [key, p] of Object.entries(table.prices)) {
     if (modelId.startsWith(key) && (best === null || key.length > best.key.length)) {

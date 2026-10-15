@@ -1,25 +1,74 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { createImplementationReadiness, sealImplementationAcceptance, countWorkItemPresentationStages, intakeStageAdmitsClaim, implementationReadinessAdmitsClaim } from './harness/improvements/agent-review-policy';
+import { getBuildInfo } from './build-info';
+import { readProcessIdentity } from './process-identity';
+import { reapStrandedAdmissionRuns } from './admission-runs-reaper';
+import { flushFallbackObservations, observeFallback } from './degradation/fallback-observations';
+import { configureRuntimeVintageStore, InMemoryRuntimeVintageStore, reportRuntimeVintage, resetRuntimeVintageStore } from './runtime-vintage';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  scopePolicy: undefined as import('./work-scope-policy').WorkScopePolicy | null | undefined,
+  // undefined ⇒ the real policy (none under VITEST). A test sets it to exercise the work-scope hold.
+  scopeTerms: undefined as {
+    exact: string[];
+    likePrefixes: string[];
+    exceptions?: {
+      exactHarnesses: string[];
+      harnessLikePrefixes: string[];
+      plans: string[];
+      goals: string[];
+      workItems: string[];
+    };
+  } | null | undefined,
+  scopeDecisions: [] as Array<{ harness?: string | null; verdict: string; note?: string }>,
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+// Exercise the actual routine action against this file's disposable PG; registering it
+// must not start the host's routine engine or announce fixtures to live agents.
+vi.mock('./harness/routines/system-actions', () => ({ registerSystemAction: vi.fn() }));
+vi.mock('./work-items-events', () => ({ emitWorkItemClaimableEvent: vi.fn() }));
+vi.mock('./work-scope-policy', async (orig) => {
+  const actual = await orig<typeof import('./work-scope-policy')>();
+  return {
+    ...actual,
+    isHarnessInScope: (slug: string | null | undefined) =>
+      h.scopePolicy === undefined ? actual.isHarnessInScope(slug) : actual.isHarnessInScope(slug, h.scopePolicy),
+    evaluateWorkScope: (subject: import('./work-scope-policy').WorkScopeSubject) =>
+      h.scopePolicy === undefined ? actual.evaluateWorkScope(subject) : actual.evaluateWorkScope(subject, h.scopePolicy),
+    workScopeSqlTerms: (...args: Parameters<typeof actual.workScopeSqlTerms>) =>
+      h.scopeTerms === undefined ? actual.workScopeSqlTerms(...args) : h.scopeTerms,
+    recordWorkScopeDecision: async (d: Parameters<typeof actual.recordWorkScopeDecision>[0]) => {
+      if (h.scopeTerms === undefined) return actual.recordWorkScopeDecision(d);
+      h.scopeDecisions.push({ harness: d.harness, verdict: d.verdict, note: d.note });
+    },
+  };
+});
 
 const {
+  ADMISSION_REVIEW_MOOT_OUTCOME,
   admissionPairKey,
   applyReviewedAdmissionCleanup,
+  closeMootAdmissionReviews,
+  DEFAULT_FAIL_OPEN_BATCH_SIZE,
   judgedPairsMissingAdjudication,
   persistAdmissionPlan,
   previewReviewedAdmissionCleanup,
   readAdmissionMergeSnapshots,
   readPendingBatch,
   readWorkItemAdmissionSnapshot,
+  readWorkItemAdmissionQueueHealth,
   readWorkItemAdmissionProducerPressure,
   readWorkItemReadinessProjection,
+  readPromoterLiveness,
+  readPromoterWindow,
   runWorkItemAdmissionFailOpen,
   runWorkItemAdmissionPromoter,
   WORK_ITEM_ADMISSION_PROMOTER,
@@ -34,6 +83,7 @@ const WS = 'default';
 const HARNESS = 'papercusp';
 const NOW = Date.parse('2026-08-26T12:00:00Z');
 let db: FreshPgDb;
+let vintage: InMemoryRuntimeVintageStore;
 
 const DDL = `
   CREATE EXTENSION IF NOT EXISTS vector;
@@ -64,12 +114,31 @@ const DDL = `
     condition_key text,
     lane text,
     payload jsonb,
+    agent_review_projection jsonb GENERATED ALWAYS AS (
+      NULLIF(payload -> 'agentReview', 'null'::jsonb)
+    ) STORED,
+    implementation_readiness_projection jsonb GENERATED ALWAYS AS (
+      NULLIF(payload -> 'implementationReadiness', 'null'::jsonb)
+    ) STORED,
+    implementation_readiness_enrolled boolean GENERATED ALWAYS AS (
+      payload ? 'implementationReadiness'
+    ) STORED,
+    reopen_history_projection jsonb GENERATED ALWAYS AS (
+      NULLIF(payload -> 'reopenHistory', 'null'::jsonb)
+    ) STORED,
+    external_blockers_projection jsonb GENERATED ALWAYS AS (
+      NULLIF(payload -> 'externalBlockers', 'null'::jsonb)
+    ) STORED,
     see_also text[],
     origin text NOT NULL DEFAULT 'local',
+    -- WI-10006515: issueOwnAuthorWhereSql reads author_pubkey to tell an own-node row stranded
+    -- at origin='remote' from a true peer row.
+    author_pubkey text,
     completion_ref jsonb,
     terminal_completion_ref text,
     authority text,
     source_plan_slug text,
+    goal_id text,
     source_plan_item_ids text[],
     created_ts bigint,
     updated_ts bigint,
@@ -181,14 +250,34 @@ beforeAll(async () => {
   db = await createFreshPgDb('work-items-admission-promoter');
   h.sql = db.sql;
   await db.sql.unsafe(DDL);
+  // Promoter fallbacks are real buffered writes. createFreshPgDb provisions the
+  // fallback_observations sink for every fixture (WI-6554700010013241); this file asserts the
+  // column the promoter's correlated writes depend on is present.
+  const [fallbackSchema] = await db.sql`SELECT data_type FROM information_schema.columns
+    WHERE table_schema = 'harness_shared' AND table_name = 'fallback_observations' AND column_name = 'correlation_id'`;
+  expect(fallbackSchema?.data_type).toBe('uuid');
 }, 60_000);
 
-afterAll(async () => db?.cleanup());
+afterAll(async () => {
+  await flushFallbackObservations();
+  resetRuntimeVintageStore();
+  await db?.cleanup();
+});
 
 beforeEach(async () => {
+  await flushFallbackObservations();
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.dedup_edges,
     harness_shared.dedup_adjudications, harness_shared.admission_runs,
-    harness_shared.work_item_occurrences, harness_shared.routines RESTART IDENTITY`;
+    harness_shared.work_item_occurrences, harness_shared.routines, harness_shared.fallback_observations RESTART IDENTITY`;
+  h.scopeTerms = undefined;
+  h.scopePolicy = undefined;
+  h.scopeDecisions.length = 0;
+  vintage = new InMemoryRuntimeVintageStore();
+  configureRuntimeVintageStore(vintage);
+  await reportRuntimeVintage({
+    workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+    treeSha: 'a'.repeat(40), bundleVersion: 'runtime-fixture',
+  });
 });
 
 it('renews request authorization after model work and before any admission mutation', async () => {
@@ -224,14 +313,17 @@ async function seedItem(input: {
   expectedCostCents?: number | null;
   closedTs?: number | null;
   authority?: string | null;
+  sourcePlanSlug?: string | null;
+  goalId?: string | null;
   origin?: string;
+  authorPubkey?: string | null;
 }): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, parent_id,
        taken_by, admission, admitted_at, first_claimed_at, condition_key, lane, payload,
-       created_ts, updated_ts, closed_ts, authority, expected_cost_cents, origin, embedding, embedding_mode,
-       embedding_profile)
+       created_ts, updated_ts, closed_ts, authority, expected_cost_cents, origin, author_pubkey, source_plan_slug, goal_id,
+       embedding, embedding_mode, embedding_profile)
     VALUES (${input.workspaceId ?? WS}, ${input.harness ?? HARNESS}, ${input.id},
             ${input.title ?? 'vitest clone failure'},
             ${input.summary ?? 'same finding and same retry remedy'}, ${input.status ?? 'open'}, ${input.itemKind ?? 'bug'},
@@ -242,7 +334,7 @@ async function seedItem(input: {
             ${JSON.stringify(input.payload ?? {})}::text::jsonb,
             ${input.createdAtMs ?? NOW - 10_000}, ${input.createdAtMs ?? NOW - 10_000},
             ${input.closedTs ?? null}, ${input.authority ?? null}, ${input.expectedCostCents ?? null},
-            ${input.origin ?? 'local'},
+            ${input.origin ?? 'local'}, ${input.authorPubkey ?? null}, ${input.sourcePlanSlug ?? null}, ${input.goalId ?? null},
             ${input.vector === undefined ? '[1,0,0]' : input.vector}::vector,
             ${input.vector === null ? null : 'gemma'},
             ${input.vector === null ? null : (input.embeddingProfile ?? null)})`;
@@ -262,6 +354,220 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
 }
 
 describe('work-item admission promoter (real Postgres)', () => {
+  it.each([false, true])('excludes typed source and direct child lineage in either screening direction (reverse=%s)', async (reverse) => {
+    await seedItem({ id: 'WI-source-record', itemKind: 'ticket', admission: reverse ? 'pending' : null });
+    await seedItem({ id: 'WI-report', admission: reverse ? 'admitted' : 'pending', payload: {
+      admission: { sourceKind: 'record', sourceKey: 'WI-source-record' },
+    } });
+    await seedItem({ id: 'WI-reproduction-child', parentId: 'WI-report', admission: reverse ? 'pending' : 'auto' });
+    await seedItem({ id: 'WI-independent', admission: 'admitted' });
+    for (const target of reverse ? ['WI-source-record', 'WI-reproduction-child'] : ['WI-report']) {
+      const window = await readPromoterWindow(db.sql, {
+        workspaceId: WS, harnessSlug: HARNESS, batchSize: 1,
+        targetItemIds: [target], recentTerminalDays: 30, nowMs: NOW,
+      });
+      expect(window.pairRows.some(pair => [pair.a.id, pair.b.id].includes('WI-report') &&
+        [pair.a.id, pair.b.id].some(id => id === 'WI-source-record' || id === 'WI-reproduction-child'))).toBe(false);
+      expect(window.pairRows.some(pair => [pair.a.id, pair.b.id].includes('WI-independent'))).toBe(true);
+    }
+  });
+
+  it.each([HARNESS, 'papercusp/*'])('screens a harness admitted by the %s scope exception', async (exception) => {
+    const harness = exception === HARNESS ? HARNESS : 'papercusp/drill';
+    h.scopePolicy = {
+      mode: 'enforce', allowHarnesses: ['home-only'],
+      exceptions: [{ harness: exception, reason: 'Owner-authorized drill' }],
+    };
+    h.scopeTerms = { exact: ['home-only'], likePrefixes: [] };
+    await seedItem({ id: 'WI-exception', harness, vector: null });
+    const llmCall = vi.fn();
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: harness, runId: 'promoter-harness-exception',
+      sql: db.sql, llmCall, now: () => NOW,
+    });
+    expect(result).toMatchObject({ promoted: 1, held: 0, modelCalled: false });
+    expect(llmCall).not.toHaveBeenCalled();
+    const [item] = await db.sql`SELECT admission FROM harness_shared.work_items WHERE feature_id = 'WI-exception'`;
+    expect(item.admission).toBe('admitted');
+    const [run] = await db.sql`SELECT detail->>'status' AS status FROM harness_shared.admission_runs WHERE id = 'promoter-harness-exception'`;
+    expect(run.status).toBe('complete');
+  });
+
+  it('keeps a neighbouring harness pending when its scope exception does not match', async () => {
+    h.scopePolicy = {
+      mode: 'enforce', allowHarnesses: ['home-only'],
+      exceptions: [{ harness: 'papercusp/*', reason: 'Owner-authorized drill' }],
+    };
+    h.scopeTerms = { exact: ['home-only'], likePrefixes: [] };
+    await seedItem({ id: 'WI-held-scope', harness: 'unrelated-app', vector: null });
+    const llmCall = vi.fn();
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: 'unrelated-app', runId: 'promoter-unmatched-scope',
+      sql: db.sql, llmCall, now: () => NOW,
+    });
+    expect(result).toMatchObject({ promoted: 0, modelCalled: false });
+    expect(llmCall).not.toHaveBeenCalled();
+    const [item] = await db.sql`SELECT admission FROM harness_shared.work_items WHERE feature_id = 'WI-held-scope'`;
+    expect(item.admission).toBe('pending');
+    expect(await db.sql`SELECT id FROM harness_shared.admission_runs WHERE id = 'promoter-unmatched-scope'`).toEqual([]);
+    expect(h.scopeDecisions).toContainEqual(expect.objectContaining({ harness: 'unrelated-app', verdict: 'held' }));
+  });
+
+  it('records the actual producing runtime process and preserves it during stranded recovery', async () => {
+    const build = getBuildInfo();
+    const identity = readProcessIdentity(process.pid);
+    await reportRuntimeVintage({
+      workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+      treeSha: build.sha, bundleVersion: build.version,
+    });
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-actual', sql: db.sql,
+      llmCall: vi.fn(), now: () => NOW,
+    });
+    const [run] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-actual'`;
+    expect(run.detail.producingRuntime).toMatchObject({
+      host: hostname(), pid: process.pid, processIdentity: identity,
+      buildSha: build.sha, version: build.version,
+      buildIdentityStatus: build.sha ? 'matched-boot-record' : 'unknown',
+    });
+    if (process.platform === 'linux' || process.platform === 'darwin') expect(identity).toEqual(expect.any(String));
+    // Simulate a producer dying with its original run-start detail still stored.
+    await db.sql`
+      UPDATE harness_shared.admission_runs
+         SET started_at = to_timestamp(${NOW - 3 * 60 * 60_000} / 1000.0), finished_at = NULL,
+             detail = jsonb_set(detail, '{status}', '"running"'::jsonb)
+       WHERE id = 'runtime-actual'`;
+    const reaped = await reapStrandedAdmissionRuns(db.sql, {
+      workspaceId: WS, reaperRunId: 'runtime-reaper', nowMs: NOW,
+    });
+    expect(reaped.map(row => row.id)).toEqual(['runtime-actual']);
+    const [recovered] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-actual'`;
+    expect(recovered.detail.status).toBe('failed');
+    expect(recovered.detail.producingRuntime).toEqual(run.detail.producingRuntime);
+  });
+
+  it('retains the producing runtime through completion and same-run replay', async () => {
+    await seedItem({ id: 'WI-runtime-a' });
+    await seedItem({ id: 'WI-runtime-b' });
+    const model = judgementCall('r-finding-merge');
+    let original: Record<string, unknown> | undefined;
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-complete', sql: db.sql, now: () => NOW,
+      llmCall: async (input) => {
+        const [running] = await db.sql`
+          SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-complete'`;
+        expect(running.detail.status).toBe('running');
+        original = running.detail.producingRuntime;
+        expect(original).toMatchObject({
+          schemaVersion: 1, host: hostname(), pid: process.pid,
+          buildSha: 'a'.repeat(40), version: 'runtime-fixture',
+          buildIdentityStatus: 'matched-boot-record', buildIdentitySource: 'runtime-vintage-kernel-pin',
+        });
+        expect(original!.observedAt).toEqual(expect.any(String));
+        // A later process/build must never re-label the original run.
+        await reportRuntimeVintage({
+          workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+          treeSha: 'b'.repeat(40), bundleVersion: 'later-runtime',
+        });
+        return model(input);
+      },
+    });
+    expect(original).toBeDefined();
+    const [complete] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-complete'`;
+    expect(complete.detail.status).toBe('complete');
+    expect(complete.detail.producingRuntime).toEqual(original);
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-complete', sql: db.sql,
+      llmCall: vi.fn(), now: () => NOW,
+    });
+    const [replayed] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-complete'`;
+    expect(replayed.detail.producingRuntime).toEqual(original);
+  });
+
+  it('retains the producing runtime when the model fails', async () => {
+    await seedItem({ id: 'WI-runtime-fail-a' });
+    await seedItem({ id: 'WI-runtime-fail-b' });
+    let original: Record<string, unknown> | undefined;
+    await expect(runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-failed', sql: db.sql, now: () => NOW,
+      llmCall: async () => {
+        const [running] = await db.sql`
+          SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-failed'`;
+        original = running.detail.producingRuntime;
+        await reportRuntimeVintage({
+          workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+          treeSha: 'b'.repeat(40), bundleVersion: 'later-runtime',
+        });
+        throw new Error('runtime witness model failure');
+      },
+    })).rejects.toThrow('runtime witness model failure');
+    expect(original).toBeDefined();
+    const [failed] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-failed'`;
+    expect(failed.detail.status).toBe('failed');
+    expect(failed.detail.producingRuntime).toEqual(original);
+  });
+
+  it('records unknown build identity and preserves it through fail-open completion', async () => {
+    vintage.rows.clear();
+    await runWorkItemAdmissionFailOpen({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-unknown', sql: db.sql, now: () => NOW,
+    });
+    const [run] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-unknown'`;
+    expect(run.detail.status).toBe('complete');
+    expect(run.detail.mode).toBe('fail-open');
+    expect(run.detail.producingRuntime).toMatchObject({
+      buildSha: null, buildIdentityStatus: 'unknown', buildIdentityReason: 'boot-record-absent',
+      host: hostname(), pid: process.pid,
+    });
+  });
+
+  it.each(['stale-process', 'missing-sha', 'ambiguous'] as const)(
+    'keeps an unverifiable producing runtime UNKNOWN (%s)', async kind => {
+      if (kind === 'stale-process') {
+        await vintage.report({
+          workspaceId: WS, unit: 'fixture-producer', pid: process.pid,
+          treeSha: 'a'.repeat(40), extra: { kernelProcessIdentity: 'replaced-process' },
+        });
+      } else {
+        await reportRuntimeVintage({
+          workspaceId: WS, unit: kind === 'ambiguous' ? 'second-unit' : 'fixture-producer',
+          pid: process.pid, treeSha: kind === 'missing-sha' ? null : 'a'.repeat(40),
+        });
+      }
+      await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: `runtime-${kind}`, sql: db.sql,
+        llmCall: vi.fn(), now: () => NOW,
+      });
+      const [run] = await db.sql`
+        SELECT detail FROM harness_shared.admission_runs WHERE id = ${`runtime-${kind}`}`;
+      expect(run.detail.producingRuntime).toMatchObject({
+        buildSha: null, environmentFingerprint: null, buildIdentityStatus: 'unknown',
+        buildIdentityReason: kind === 'stale-process' ? 'boot-process-identity-mismatch'
+          : kind === 'missing-sha' ? 'boot-record-unverifiable' : 'boot-record-ambiguous',
+      });
+    },
+  );
+
+  it('does not backfill a legacy run with the replaying runtime identity', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.admission_runs (id, workspace_id, harness_slug, run_kind, started_at, detail)
+      VALUES ('runtime-legacy', ${WS}, ${HARNESS}, 'promoter-tick', now(), '{"status":"running"}'::jsonb)`;
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS, harnessSlug: HARNESS, runId: 'runtime-legacy', sql: db.sql,
+      llmCall: vi.fn(), now: () => NOW,
+    });
+    const [run] = await db.sql`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'runtime-legacy'`;
+    expect(run.detail.status).toBe('complete');
+    expect(run.detail).not.toHaveProperty('producingRuntime');
+  });
+
   it('does not compare equal-mode rows whose exact stored profiles differ', async () => {
     await seedItem({
       id: 'WI-gemma',
@@ -960,9 +1266,10 @@ describe('work-item admission promoter (real Postgres)', () => {
         admission: string;
         payload: { admissionMerge?: { canonicalId?: string } } | null;
         terminal_reason: string | null;
+        terminal_completion_ref: string | null;
       }>
     >`
-      SELECT wi.feature_id, wi.status, wi.admission, wi.payload, wi.terminal_reason
+      SELECT wi.feature_id, wi.status, wi.admission, wi.payload, wi.terminal_reason, wi.terminal_completion_ref
         FROM harness_shared.work_items wi ORDER BY feature_id`;
     expect(rows[0]).toMatchObject({ feature_id: 'WI-1', status: 'open', admission: 'admitted' });
     for (const [index, row] of rows.slice(1).entries()) {
@@ -971,7 +1278,11 @@ describe('work-item admission promoter (real Postgres)', () => {
         status: 'dropped',
         admission: 'admitted',
         terminal_reason: expect.stringContaining('duplicate of WI-1'),
+        // WI-6554700010008454: the disposition also lands on the canonical drop column,
+        // which is the only one WorkItem readers (the burn-down cohort audit) can see.
+        terminal_completion_ref: expect.stringContaining('duplicate of WI-1'),
       });
+      expect(row.terminal_completion_ref).toBe(row.terminal_reason);
       expect(row.payload).toMatchObject({
         admissionMerge: {
           schemaVersion: 2,
@@ -1204,15 +1515,17 @@ describe('work-item admission promoter (real Postgres)', () => {
       schemaVersion: 2,
       state: 'complete',
       canonicalId: keyedId,
+      mergedAtMs: NOW,
       prior: {
         status: 'open',
         admission: 'admitted',
+        takenBy: null,
         sourcePlanSlug: 'source-plan',
         sourcePlanItemIds: ['P-003'],
         seeAlso: ['WI-outgoing'],
       },
       canonical: {
-        prior: { sourcePlanSlug: null, sourcePlanItemIds: null, seeAlso: ['WI-canonical-existing'] },
+        prior: { takenBy: null, sourcePlanSlug: null, sourcePlanItemIds: null, seeAlso: ['WI-canonical-existing'] },
         applied: { sourcePlanSlug: 'source-plan', sourcePlanItemIds: ['P-003'] },
       },
       transfers: {
@@ -1275,6 +1588,13 @@ describe('work-item admission promoter (real Postgres)', () => {
       async () =>
         db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-live-holder', updated_ts = updated_ts + 1
                 WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-loser'`,
+      'snapshot-drift',
+    ],
+    [
+      'canonical claim',
+      async () =>
+        db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-live-canonical-holder', updated_ts = updated_ts + 1
+                WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'WI-canonical'`,
       'snapshot-drift',
     ],
     [
@@ -1410,6 +1730,10 @@ describe('work-item admission promoter (real Postgres)', () => {
       sql: db.sql,
       llmCall: judgementCall('r-finding-merge'),
       now: () => NOW,
+      // A TARGETED run keeps the historical read, so the model judges the pair and the
+      // persistence guard itself refuses the write. A scheduled tick never asks (WI-10004724;
+      // see 'drops a pair whose counterpart is permanently unresolvable' below).
+      targetItemIds: ['WI-canonical', 'WI-loser'],
     });
     expect(result).toMatchObject({
       promoted: 0,
@@ -1422,6 +1746,186 @@ describe('work-item admission promoter (real Postgres)', () => {
       SELECT status FROM harness_shared.work_items WHERE feature_id = 'WI-loser'`;
     expect(loser?.status).toBe('open');
   }, 60_000);
+
+  describe('scheduled-tick prescreen (WI-10004724)', () => {
+    const distinctCall = () =>
+      vi.fn(async (input: { messages: Array<{ content: string }> }) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'fixture distinct' })) },
+          inputTokens: 100,
+          outputTokens: 20,
+        };
+      });
+    const promptKeys = (call: ReturnType<typeof distinctCall>, index = 0) =>
+      [...call.mock.calls[index]![0].messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
+    const admissionOf = async (id: string) =>
+      (await db.sql<Array<{ admission: string }>>`
+        SELECT admission FROM harness_shared.work_items WHERE feature_id = ${id}`)[0]?.admission;
+
+    it.each(['pending', 'unreviewed'])('screens a %s reproduction-validation bug without granting implementation authority', async (admission) => {
+      const agentReview = {
+        status: 'revision-requested', revisionKind: 'reproduction',
+        submittedBy: 'su-reporter', ledgerIdeaId: 'idea-validation', round: 1,
+      };
+      const implementationReadiness = {
+        schemaVersion: 'implementation-readiness-v1', status: 'not-ready', source: 'agent-review',
+        reason: 'fixture-reproduction-required', updatedAt: '2026-08-26T11:00:00.000Z',
+      };
+      await seedItem({ id: 'WI-existing', admission: 'admitted', createdAtMs: NOW - 20_000 });
+      await seedItem({
+        id: 'WI-validation', admission, createdAtMs: NOW - 10_000,
+        payload: { agentReview, implementationReadiness },
+      });
+      const modelCall = distinctCall();
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: `prescreen-validation-${admission}`,
+        sql: db.sql, llmCall: modelCall, now: () => NOW,
+      });
+
+      expect(modelCall).toHaveBeenCalledTimes(1);
+      expect(promptKeys(modelCall)).toEqual(['WI-existing::WI-validation']);
+      expect(result).toMatchObject({ promoted: 1, merged: 0, held: 0, guardRefusals: [] });
+      expect(result.prescreen).toMatchObject({ selected: 1, selfBlocked: 0, deferred: 0 });
+      const [row] = await db.sql<Array<{ admission: string; payload: Record<string, unknown>; taken_by: string | null }>>`
+        SELECT admission, payload, taken_by FROM harness_shared.work_items WHERE feature_id = 'WI-validation'`;
+      expect(row).toMatchObject({ admission: 'admitted', taken_by: null, payload: { agentReview, implementationReadiness } });
+      const claimInput = { payload: row!.payload, kind: 'bug', title: 'vitest clone failure', summary: 'same finding and same retry remedy', createdAtMs: NOW - 10_000 };
+      expect(intakeStageAdmitsClaim(claimInput)).toBe(true);
+      expect(implementationReadinessAdmitsClaim(claimInput)).toBe(false);
+    }, 60_000);
+
+    it('keeps a reproduction-validation duplicate pending when the destructive merge guard refuses it', async () => {
+      const agentReview = {
+        status: 'revision-requested', revisionKind: 'reproduction',
+        submittedBy: 'su-reporter', ledgerIdeaId: 'idea-validation', round: 1,
+      };
+      await seedItem({ id: 'WI-existing', admission: 'admitted', createdAtMs: NOW - 20_000 });
+      await seedItem({ id: 'WI-validation', payload: { agentReview }, createdAtMs: NOW - 10_000 });
+      const modelCall = judgementCall('r-finding-merge');
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'prescreen-validation-duplicate',
+        sql: db.sql, llmCall: modelCall, now: () => NOW,
+      });
+
+      expect(modelCall).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, guardRefusals: [{ reason: 'review-gated' }] });
+      const [row] = await db.sql<Array<{ admission: string; status: string; payload: Record<string, unknown> }>>`
+        SELECT admission, status, payload FROM harness_shared.work_items WHERE feature_id = 'WI-validation'`;
+      expect(row).toMatchObject({ admission: 'pending', status: 'open', payload: { agentReview } });
+      expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+      expect(await db.sql`SELECT 1 FROM harness_shared.work_item_occurrences`).toHaveLength(0);
+    }, 60_000);
+
+    it('skips an older self-blocked re-review row and refills the batch with the row behind it', async () => {
+      // Before the prescreen the oldest row took the only slot every tick, was refused
+      // (review-gated), and the movable row behind it was never reached.
+      await seedItem({
+        id: 'WI-review-gated',
+        title: 'Old re-review row',
+        admission: 'unreviewed',
+        createdAtMs: NOW - 90_000,
+        vector: '[0,1,0]',
+        payload: {
+          agentReview: { status: 'revision-requested', submittedBy: 'su-author', ledgerIdeaId: 'idea-r', round: 1 },
+        },
+      });
+      await seedItem({ id: 'WI-movable', title: 'Fresh distinct filing', createdAtMs: NOW - 10_000, vector: '[0,0,1]' });
+      const modelCall = distinctCall();
+
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'prescreen-self-blocked',
+        sql: db.sql,
+        llmCall: modelCall,
+        batchSize: 1,
+        now: () => NOW,
+      });
+
+      expect(modelCall).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ batchSize: 1, promoted: 1, held: 0, guardRefusals: [] });
+      expect(result.prescreen).toMatchObject({ selected: 1, selfBlocked: 1, deferred: 0 });
+      expect(result.prescreen?.samples).toContainEqual({
+        itemId: 'WI-review-gated',
+        class: 'self-blocked',
+        reason: 'review-gated',
+        blockedBy: null,
+      });
+      expect(await admissionOf('WI-movable')).toBe('admitted');
+      expect(await admissionOf('WI-review-gated')).toBe('unreviewed');
+      const [run] = await db.sql<Array<{ prescreen: { selfBlocked: number } }>>`
+        SELECT detail->'prescreen' AS prescreen FROM harness_shared.admission_runs WHERE id = 'prescreen-self-blocked'`;
+      expect(run?.prescreen.selfBlocked).toBe(1);
+    }, 60_000);
+
+    it('drops a pair whose counterpart is permanently unresolvable and promotes without a model call', async () => {
+      await seedItem({ id: 'WI-remote-twin', admission: 'admitted', origin: 'remote', createdAtMs: NOW - 20_000 });
+      await seedItem({ id: 'WI-local', admission: 'pending', createdAtMs: NOW - 10_000 });
+      const modelCall = distinctCall();
+
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'prescreen-unresolvable',
+        sql: db.sql,
+        llmCall: modelCall,
+        now: () => NOW,
+      });
+
+      expect(modelCall).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ flaggedPairs: 0, promoted: 1, held: 0, guardRefusals: [] });
+      expect(result.prescreen).toMatchObject({ unresolvablePairs: 1, protectedPairs: 0, forcedHolds: 0 });
+      expect(await admissionOf('WI-local')).toBe('admitted');
+      expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    }, 60_000);
+
+    it('defers a row whose only twin is protected, holds one with a movable twin, and releases both when the protection lifts', async () => {
+      // alpha: the pending row's ONLY twin is claimed → deferred (no slot, no model).
+      await seedItem({ id: 'WI-alpha-claimed', title: 'alpha finding', admission: 'admitted', vector: '[1,0,0]', takenBy: 'su-holder', createdAtMs: NOW - 50_000 });
+      await seedItem({ id: 'WI-alpha-new', title: 'alpha finding', vector: '[1,0,0]', createdAtMs: NOW - 10_000 });
+      // beta: one claimed twin + one movable twin → judged on the movable pair, then HELD.
+      await seedItem({ id: 'WI-beta-claimed', title: 'beta finding', admission: 'admitted', vector: '[0,0,1]', takenBy: 'su-holder', createdAtMs: NOW - 40_000 });
+      await seedItem({ id: 'WI-beta-free', title: 'beta finding', admission: 'admitted', vector: '[0,0,1]', createdAtMs: NOW - 30_000 });
+      await seedItem({ id: 'WI-beta-new', title: 'beta finding', vector: '[0,0,1]', createdAtMs: NOW - 5_000 });
+
+      const first = distinctCall();
+      const tick1 = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'prescreen-protected-1', sql: db.sql, llmCall: first, now: () => NOW,
+      });
+      expect(first).toHaveBeenCalledTimes(1);
+      expect(promptKeys(first)).toEqual(['WI-beta-free::WI-beta-new']);
+      expect(tick1).toMatchObject({ promoted: 0, held: 1, guardRefusals: [] });
+      expect(tick1.prescreen).toMatchObject({ selected: 1, deferred: 1, protectedPairs: 2, forcedHolds: 1 });
+      expect(await admissionOf('WI-alpha-new')).toBe('pending');
+      expect(await admissionOf('WI-beta-new')).toBe('pending');
+      expect(
+        await db.sql`SELECT verdict FROM harness_shared.dedup_adjudications WHERE a = 'WI-beta-free' AND b = 'WI-beta-new'`,
+      ).toEqual([{ verdict: 'distinct' }]);
+
+      // Unchanged state: both rows are now deferred and the tick spends NO model time.
+      const second = distinctCall();
+      const tick2 = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'prescreen-protected-2', sql: db.sql, llmCall: second, now: () => NOW,
+      });
+      expect(second).not.toHaveBeenCalled();
+      expect(tick2).toMatchObject({ batchSize: 0, promoted: 0, held: 0 });
+      expect(tick2.prescreen).toMatchObject({ selected: 0, deferred: 2 });
+
+      // The claims end: nothing is memoized, so both rows re-enter and are judged at once.
+      await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL, updated_ts = updated_ts + 1
+                    WHERE feature_id IN ('WI-alpha-claimed', 'WI-beta-claimed')`;
+      const third = distinctCall();
+      const tick3 = await runWorkItemAdmissionPromoter({
+        workspaceId: WS, harnessSlug: HARNESS, runId: 'prescreen-protected-3', sql: db.sql, llmCall: third, now: () => NOW,
+      });
+      expect(promptKeys(third).sort()).toEqual(['WI-alpha-claimed::WI-alpha-new', 'WI-beta-claimed::WI-beta-new']);
+      expect(tick3).toMatchObject({ promoted: 2, held: 0 });
+      expect(await admissionOf('WI-alpha-new')).toBe('admitted');
+      expect(await admissionOf('WI-beta-new')).toBe('admitted');
+    }, 90_000);
+  });
 
   it('allows a terminal canonical with applicable completion evidence', async () => {
     await seedItem({ id: 'WI-canonical', admission: 'admitted', status: 'done', createdAtMs: NOW - 20_000 });
@@ -1445,22 +1949,37 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(loser).toEqual({ status: 'dropped', canonical: 'WI-canonical' });
   }, 60_000);
 
-  it('refuses a merge endpoint that already participates in an active dependency', async () => {
+  it('never merges or judges a loser that already participates in an active dependency', async () => {
     await seedItem({ id: 'WI-canonical', admission: 'admitted', createdAtMs: NOW - 20_000 });
     await seedItem({ id: 'WI-loser', admission: 'pending', createdAtMs: NOW - 10_000 });
     await db.sql`
       INSERT INTO harness_shared.work_item_deps
         (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction)
       VALUES (${WS}, 'issue', 'WI-dependent', 'issue', 'WI-loser', 'blocks', 'settled')`;
+    const modelCall = judgementCall('r-finding-merge');
     const result = await runWorkItemAdmissionPromoter({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'promoter-active-dependency',
       sql: db.sql,
-      llmCall: judgementCall('r-finding-merge'),
+      llmCall: modelCall,
       now: () => NOW,
     });
-    expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, guardRefusals: [{ reason: 'active-dependency' }] });
+    // The same endpointProtection branch that refuses the write at persistence now skips the
+    // row before any model call (WI-10004724). The persist-time refusal for a dependency that
+    // appears AFTER judging is covered by 'invalidates the judgement when an incoming dependency…'.
+    expect(modelCall).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ batchSize: 0, promoted: 0, merged: 0, held: 0, guardRefusals: [] });
+    expect(result.prescreen).toMatchObject({ selfBlocked: 1 });
+    expect(result.prescreen?.samples).toContainEqual({
+      itemId: 'WI-loser',
+      class: 'self-blocked',
+      reason: 'active-dependency',
+      blockedBy: null,
+    });
+    const [loser] = await db.sql<Array<{ status: string; admission: string }>>`
+      SELECT status, admission FROM harness_shared.work_items WHERE feature_id = 'WI-loser'`;
+    expect(loser).toEqual({ status: 'open', admission: 'pending' });
     expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
   }, 60_000);
 
@@ -1567,6 +2086,154 @@ describe('work-item admission promoter (real Postgres)', () => {
         },
       },
     });
+  });
+
+  describe('overdue claimed fail-open re-review (WI-6554700010008443)', () => {
+    const overdueReview = {
+      admissionReview: {
+        state: 'pending',
+        enteredAt: '2026-08-26T10:00:00Z',
+        reviewDueAt: '2026-08-26T11:00:00Z',
+        retryOwner: 'system:work-item-admission-promoter',
+        retryAttempts: 0,
+      },
+    };
+
+    it('gives a claimed overdue row a head turn, judges it, promotes a distinct verdict and advances its watermark', async () => {
+      // Three older, never-retried unclaimed rows would win oldest-first; before the fix the claimed
+      // row was also demoted last and then self-blocked as 'claimed', so it was never judged.
+      // Distinct titles and no vectors: no row has a duplicate candidate, so the judgement is model-free.
+      for (const [index, id] of ['WI-older-a', 'WI-older-b', 'WI-older-c'].entries()) {
+        await seedItem({
+          id,
+          title: `unrelated older finding ${index}`,
+          admission: 'unreviewed',
+          vector: null,
+          payload: overdueReview,
+          createdAtMs: NOW - 90_000 + index,
+        });
+      }
+      await seedItem({
+        id: 'WI-claimed-rereview',
+        title: 'claimed overdue finding',
+        admission: 'unreviewed',
+        vector: null,
+        takenBy: 'su-worker',
+        payload: overdueReview,
+        createdAtMs: NOW - 10_000,
+      });
+
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'promoter-claimed-rereview',
+        sql: db.sql,
+        llmCall: vi.fn(),
+        now: () => NOW,
+        batchSize: 1,
+      });
+
+      expect(result).toMatchObject({ batchSize: 1, promoted: 1, merged: 0, held: 0 });
+      const rows = await db.sql<Array<{ feature_id: string; admission: string; taken_by: string | null; payload: Record<string, any> }>>`
+        SELECT feature_id, admission, taken_by, payload FROM harness_shared.work_items ORDER BY feature_id`;
+      const byId = new Map(rows.map((row) => [row.feature_id, row]));
+      expect(byId.get('WI-claimed-rereview')).toMatchObject({
+        admission: 'admitted',
+        taken_by: 'su-worker',
+        payload: { admissionReview: { state: 'reviewed', retryAttempts: 1 } },
+      });
+      for (const id of ['WI-older-a', 'WI-older-b', 'WI-older-c']) {
+        expect(byId.get(id)?.admission).toBe('unreviewed');
+      }
+    });
+
+    it('holds a claimed overdue row judged a duplicate: never merged, reason persisted, watermark advanced, pair left unadjudicated', async () => {
+      await seedItem({ id: 'WI-canonical', admission: 'admitted', vector: '[1,0,0]', createdAtMs: NOW - 30_000 });
+      await seedItem({
+        id: 'WI-claimed-dup',
+        admission: 'unreviewed',
+        vector: '[1,0,0]',
+        takenBy: 'su-worker',
+        payload: overdueReview,
+        createdAtMs: NOW - 20_000,
+      });
+
+      const result = await runWorkItemAdmissionPromoter({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'promoter-claimed-dup',
+        sql: db.sql,
+        llmCall: judgementCall('r-finding-merge'),
+        now: () => NOW,
+      });
+
+      expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, modelCalled: true });
+      const rows = await db.sql<Array<{ feature_id: string; status: string; admission: string; taken_by: string | null; payload: Record<string, any> }>>`
+        SELECT feature_id, status, admission, taken_by, payload FROM harness_shared.work_items ORDER BY feature_id`;
+      const byId = new Map(rows.map((row) => [row.feature_id, row]));
+      expect(byId.get('WI-canonical')).toMatchObject({ status: 'open', admission: 'admitted' });
+      const held = byId.get('WI-claimed-dup');
+      expect(held).toMatchObject({
+        status: 'open',
+        admission: 'unreviewed',
+        taken_by: 'su-worker',
+        payload: {
+          admissionReview: { state: 'pending', retryAttempts: 1 },
+          admissionHold: { runId: 'promoter-claimed-dup' },
+        },
+      });
+      expect(held?.payload.admissionHold.reason).toContain('duplicate of WI-canonical');
+      expect(held?.payload.admissionReview.lastRetryAt).toEqual(expect.any(String));
+      const adjudications = await db.sql`SELECT a, b FROM harness_shared.dedup_adjudications`;
+      expect(adjudications).toHaveLength(0);
+    });
+  });
+
+  it('persists a hold reason on a still-pending row and does not rewrite it while the reason is unchanged (WI-6554700010008443)', async () => {
+    await seedItem({ id: 'WI-admitted-twin', admission: 'admitted', vector: '[1,0,0]', createdAtMs: NOW - 30_000 });
+    await seedItem({ id: 'WI-pending-held', admission: 'pending', vector: '[1,0,0]', createdAtMs: NOW - 20_000 });
+    const holdCall = vi.fn(async (input: { messages: Array<{ content: string }> }) => {
+      const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
+      return {
+        text: '',
+        json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'hold' as const, reason: 'fixture ambiguous' })) },
+        inputTokens: 10,
+        outputTokens: 5,
+        costUsd: 0,
+      };
+    });
+    const readHeld = async () => {
+      const [row] = await db.sql<Array<{ admission: string; updated_ts: string; payload: Record<string, any> }>>`
+        SELECT admission, updated_ts, payload FROM harness_shared.work_items WHERE feature_id = 'WI-pending-held'`;
+      return row!;
+    };
+
+    const first = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-pending-hold-1',
+      sql: db.sql,
+      llmCall: holdCall,
+      now: () => NOW,
+    });
+    expect(first).toMatchObject({ promoted: 0, merged: 0, held: 1 });
+    const afterFirst = await readHeld();
+    expect(afterFirst).toMatchObject({
+      admission: 'pending',
+      payload: { admissionHold: { reason: 'fixture ambiguous', runId: 'promoter-pending-hold-1' } },
+    });
+
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-pending-hold-2',
+      sql: db.sql,
+      llmCall: holdCall,
+      now: () => NOW + 60_000,
+    });
+    const afterSecond = await readHeld();
+    expect(afterSecond.payload.admissionHold.runId).toBe('promoter-pending-hold-1');
+    expect(String(afterSecond.updated_ts)).toBe(String(afterFirst.updated_ts));
   });
 
   it('terminalizes an unreviewed duplicate with a terminal review outcome', async () => {
@@ -1810,6 +2477,84 @@ describe('work-item admission promoter (real Postgres)', () => {
     ]);
   });
 
+  it('binds fail-open receipts to their exact producing runs even when timestamps coincide', async () => {
+    const legacyReceipt = { actor: 'system:work-item-admission-fail-open', at: new Date(NOW).toISOString() };
+    await seedItem({ id: 'WI-legacy-run', admission: 'unreviewed', payload: { admissionFailOpen: legacyReceipt } });
+    const run = (runId: string) => runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId,
+      sql: db.sql,
+      now: () => NOW,
+      onNewlyAdmitted: async () => {},
+    });
+
+    await seedItem({ id: 'WI-run-a', createdAtMs: NOW - 61 * 60_000, vector: null });
+    expect((await run('fail-open-exact-a')).autoPromoted).toEqual(['WI-run-a']);
+    await seedItem({ id: 'WI-run-b', createdAtMs: NOW - 61 * 60_000, vector: null });
+    expect((await run('fail-open-exact-b')).autoPromoted).toEqual(['WI-run-b']);
+
+    const rows = await db.sql<Array<{
+      feature_id: string;
+      receipt: { at: string; runId?: string };
+      producing_run: string | null;
+      producing_runtime: Record<string, unknown> | null;
+    }>>`
+      SELECT wi.feature_id, wi.payload->'admissionFailOpen' AS receipt,
+             ar.id AS producing_run, ar.detail->'producingRuntime' AS producing_runtime
+        FROM harness_shared.work_items wi
+        LEFT JOIN harness_shared.admission_runs ar
+          ON ar.workspace_id = wi.workspace_id
+         AND ar.id = wi.payload #>> '{admissionFailOpen,runId}'
+       WHERE wi.workspace_id = ${WS} AND wi.harness_slug = ${HARNESS}
+       ORDER BY wi.feature_id`;
+    expect(rows.map(({ feature_id, producing_run }) => ({ feature_id, producing_run }))).toEqual([
+      { feature_id: 'WI-legacy-run', producing_run: null },
+      { feature_id: 'WI-run-a', producing_run: 'fail-open-exact-a' },
+      { feature_id: 'WI-run-b', producing_run: 'fail-open-exact-b' },
+    ]);
+    expect(rows[0]!.receipt).toEqual(legacyReceipt); // no guessed historical backfill
+    expect(rows[1]!.receipt.at).toBe(rows[2]!.receipt.at); // timestamps cannot identify this producer
+    expect(rows[1]!.receipt.runId).toBe('fail-open-exact-a'); // the second tick preserves the first receipt
+    for (const row of rows.slice(1)) {
+      expect(row.producing_runtime).toMatchObject({ schemaVersion: 1, pid: process.pid });
+    }
+  });
+
+  it('caps each fail-open update at the oldest eligible rows', async () => {
+    const firstCreatedAt = NOW - 2 * 60 * 60_000;
+    const count = DEFAULT_FAIL_OPEN_BATCH_SIZE + 1;
+    for (let index = 0; index < count; index += 1) {
+      await seedItem({
+        id: `WI-fail-open-batch-${String(index).padStart(3, '0')}`,
+        createdAtMs: firstCreatedAt + index,
+        vector: null,
+      });
+    }
+
+    const result = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'fail-open-bounded-batch',
+      sql: db.sql,
+      now: () => NOW,
+    });
+
+    expect(result.autoPromoted).toHaveLength(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+    const pending = await db.sql<Array<{ feature_id: string; admission: string }>>`
+      SELECT feature_id, admission
+        FROM harness_shared.work_items
+       WHERE admission = 'pending'
+       ORDER BY created_ts ASC, feature_id ASC`;
+    expect(pending).toEqual([{
+      feature_id: `WI-fail-open-batch-${String(count - 1).padStart(3, '0')}`,
+      admission: 'pending',
+    }]);
+    const [run] = await db.sql<Array<{ batch_size: number }>>`
+      SELECT batch_size FROM harness_shared.admission_runs WHERE id = 'fail-open-bounded-batch'`;
+    expect(run?.batch_size).toBe(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+  });
+
   // The promoter is seeded per-harness by a hand-run script that defaults to the operator home
   // harness, so in practice only ONE harness ever has one. A harness-scoped fail-open therefore
   // guarantees liveness for that harness and silently starves every other one: measured
@@ -1887,6 +2632,64 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(foreign).toEqual({ admission: 'pending' });
     });
 
+    it('applies harness and named-subject exceptions to admission and the held census', async () => {
+      const old = NOW - 61 * 60_000;
+      h.scopeTerms = {
+        exact: [HARNESS],
+        likePrefixes: [],
+        exceptions: {
+          exactHarnesses: ['recipe-app'],
+          harnessLikePrefixes: [],
+          plans: ['exception-plan'],
+          goals: ['exception-goal'],
+          workItems: ['WI-item-exception'],
+        },
+      };
+      await seedItem({ id: 'WI-scope-home', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-harness-exception', harness: 'recipe-app', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-plan-exception', harness: 'email', sourcePlanSlug: 'exception-plan', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-goal-exception', harness: 'calendar', goalId: 'exception-goal', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-item-exception', harness: 'email', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-held', harness: 'work-scope-exception-unmatched', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-fresh-exception', harness: 'recipe-app', createdAtMs: NOW - 59 * 60_000, vector: null });
+      await seedItem({
+        id: 'WI-foreign-exception',
+        harness: 'email',
+        workspaceId: 'some-other-workspace',
+        sourcePlanSlug: 'exception-plan',
+        createdAtMs: old,
+        vector: null,
+      });
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'fail-open-work-scope-exceptions',
+        sql: db.sql,
+        now: () => NOW,
+        scope: 'workspace',
+      });
+
+      expect(result.autoPromoted).toEqual([
+        'WI-goal-exception',
+        'WI-harness-exception',
+        'WI-item-exception',
+        'WI-plan-exception',
+        'WI-scope-home',
+      ]);
+      expect(result.heldByScope).toEqual({ 'work-scope-exception-unmatched': 1 });
+      const rows = await db.sql<Array<{ feature_id: string; admission: string }>>`
+        SELECT feature_id, admission
+          FROM harness_shared.work_items
+         WHERE feature_id = ANY(${['WI-fresh-exception', 'WI-foreign-exception', 'WI-held']}::text[])
+         ORDER BY feature_id`;
+      expect(rows).toEqual([
+        { feature_id: 'WI-foreign-exception', admission: 'pending' },
+        { feature_id: 'WI-fresh-exception', admission: 'pending' },
+        { feature_id: 'WI-held', admission: 'pending' },
+      ]);
+    });
+
     // Widening the harness axis must not weaken the age floor on the rows it newly reaches.
     it('still honours the two-tick age floor in the harnesses it newly reaches', async () => {
       await seedItem({ id: 'WI-neighbour-old', createdAtMs: NOW - 61 * 60_000, vector: null, harness: 'email' });
@@ -1907,6 +2710,115 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(rows).toEqual([
         { feature_id: 'WI-neighbour-fresh', admission: 'pending' },
         { feature_id: 'WI-neighbour-old', admission: 'unreviewed' },
+      ]);
+    });
+
+    it.each([false, true])('does not admit or report terminal pending rows (scope policy: %s)', async (withPolicy) => {
+      // The production scope-decision log is throttled once per harness/process.
+      // Keep this census cohort separate from the following log-assertion case.
+      const platformHome = `operator:terminal-control-${WS}`;
+      const otherPot = 'terminal-control-other-pot';
+      const old = NOW - 61 * 60_000;
+      h.scopeTerms = withPolicy ? { exact: [HARNESS], likePrefixes: [] } : null;
+      const terminalStates = ['done', 'dropped', 'deprecated', 'passed', 'failed', 'resolved', 'closed'];
+      for (const harness of [HARNESS, platformHome, otherPot]) {
+        for (const status of terminalStates) {
+          await seedItem({
+            id: `WI-terminal-${harness}-${status}`,
+            status,
+            harness,
+            createdAtMs: old,
+            vector: null,
+            payload: { retainedTerminalReceipt: status },
+          });
+        }
+      }
+      await seedItem({ id: 'WI-live-home', createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-live-platform', harness: platformHome, createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-live-other', harness: otherPot, createdAtMs: old, vector: null });
+      await seedItem({ id: 'WI-live-legacy', createdAtMs: old, vector: null });
+      await db.sql`UPDATE harness_shared.work_items SET status = NULL WHERE feature_id = 'WI-live-legacy'`;
+      const onNewlyAdmitted = vi.fn(async (_rows: readonly { id: string; harness: string }[]) => {});
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: `fail-open-terminal-control-${withPolicy}`,
+        sql: db.sql,
+        now: () => NOW,
+        scope: 'workspace',
+        onNewlyAdmitted,
+      });
+
+      const expectedAdmitted = withPolicy
+        ? ['WI-live-home', 'WI-live-legacy']
+        : ['WI-live-home', 'WI-live-legacy', 'WI-live-other', 'WI-live-platform'];
+      expect(result.autoPromoted).toEqual(expectedAdmitted);
+      expect(onNewlyAdmitted).toHaveBeenCalledOnce();
+      expect(onNewlyAdmitted.mock.calls[0]?.[0].map((row) => row.id).sort()).toEqual(expectedAdmitted);
+      expect(result.heldByScope).toEqual(withPolicy ? { [otherPot]: 1, [platformHome]: 1 } : {});
+      const [run] = await db.sql<Array<{ misHomed: unknown; held: unknown }>>`
+        SELECT detail->'misHomedByScope' AS "misHomed", detail->'heldByScope' AS held
+          FROM harness_shared.admission_runs WHERE id = ${`fail-open-terminal-control-${withPolicy}`}`;
+      expect(run).toEqual({
+        misHomed: withPolicy ? { [platformHome]: 1 } : {},
+        held: withPolicy ? { [otherPot]: 1, [platformHome]: 1 } : {},
+      });
+      const terminalRows = await db.sql<Array<{
+        status: string; admission: string; admitted_at: string | null; admitted_by: string | null;
+        updated_ts: string; payload: Record<string, unknown>;
+      }>>`
+        SELECT status, admission, admitted_at, admitted_by, updated_ts, payload
+          FROM harness_shared.work_items WHERE feature_id LIKE 'WI-terminal-%'`;
+      expect(terminalRows).toHaveLength(terminalStates.length * 3);
+      for (const row of terminalRows) {
+        expect(row).toMatchObject({
+          admission: 'pending', admitted_at: null, admitted_by: null,
+          payload: { retainedTerminalReceipt: row.status },
+        });
+        expect(Number(row.updated_ts)).toBe(old);
+        expect(row.payload).not.toHaveProperty('admissionReview');
+        expect(row.payload).not.toHaveProperty('admissionFailOpen');
+      }
+    });
+
+    // WI-10004723 (P-003): the work-scope hold must tell a mis-homed platform row apart from another
+    // pot's deliberately held work. Measured 2026-10-01: 14 learning-loop alarms sat 6 days in
+    // `operator:papercusp-workspace`, reported by every tick as a "deliberate hold".
+    it('reports a held row in the platform non-pot harness as mis-homed, not as a deliberate hold', async () => {
+      const platformHome = `operator:${WS}`;
+      h.scopeTerms = { exact: [HARNESS], likePrefixes: [] };
+      await seedItem({ id: 'WI-home', createdAtMs: NOW - 61 * 60_000, vector: null });
+      await seedItem({ id: 'WI-misHomed', createdAtMs: NOW - 61 * 60_000, vector: null, harness: platformHome });
+      await seedItem({ id: 'WI-other-pot', createdAtMs: NOW - 61 * 60_000, vector: null, harness: 'email' });
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'fail-open-mis-homed',
+        sql: db.sql,
+        now: () => NOW,
+        scope: 'workspace',
+      });
+
+      expect(result.autoPromoted).toEqual(['WI-home']);
+      expect(result.heldByScope).toEqual({ email: 1, [platformHome]: 1 });
+      const [run] = await db.sql<Array<{ misHomed: unknown; held: unknown }>>`
+        SELECT detail->'misHomedByScope' AS "misHomed", detail->'heldByScope' AS held
+          FROM harness_shared.admission_runs WHERE id = 'fail-open-mis-homed'`;
+      // Control: `email` is held too, but it is another pot's harness, so it is NOT mis-homed.
+      expect(run).toEqual({ misHomed: { [platformHome]: 1 }, held: { email: 1, [platformHome]: 1 } });
+      const notes = Object.fromEntries(h.scopeDecisions.map((d) => [d.harness ?? '', d.note ?? '']));
+      expect(notes[platformHome]).toMatch(/^MIS-HOMED: 1 .*work_items:rehome/);
+      expect(notes.email).toMatch(/deliberate hold/);
+      expect(notes.email).not.toMatch(/MIS-HOMED/);
+      // Neither held row is admitted; both stay pending (never deleted).
+      const held = await db.sql<Array<{ feature_id: string; admission: string }>>`
+        SELECT feature_id, admission FROM harness_shared.work_items
+         WHERE feature_id <> 'WI-home' ORDER BY feature_id`;
+      expect(held).toEqual([
+        { feature_id: 'WI-misHomed', admission: 'pending' },
+        { feature_id: 'WI-other-pot', admission: 'pending' },
       ]);
     });
   });
@@ -2008,10 +2920,54 @@ describe('work-item admission promoter (real Postgres)', () => {
       source: 'p005-queue-health',
       level: 'normal',
       pending: 1,
-      latencySampleSize: 2,
-      p95Ms: 4800,
+      // The cumulative snapshot above retains the historical fixture samples;
+      // current pressure only samples first claims within one liveness window.
+      latencySampleSize: 0,
+      p95Ms: null,
       maxIdeators: null,
     });
+  });
+
+  it('restores producer capacity after terminal backlog drains without erasing historical latency (EI-25814378379068278)', async () => {
+    for (const status of ['done', 'dropped', 'resolved']) await seedItem({ id: `EI-terminal-${status}`, status });
+    await seedItem({ id: 'EI-observation' });
+    await db.sql`UPDATE harness_shared.work_items SET lane = 'observation' WHERE feature_id = 'EI-observation'`;
+    await seedItem({ id: 'EI-live' });
+    await seedItem({ id: 'EI-old-slow', admission: 'admitted', status: 'done' });
+    await seedItem({ id: 'EI-recent-fast', admission: 'admitted', status: 'done' });
+    await db.sql`UPDATE harness_shared.work_items SET admitted_at = now() - interval '11 days',
+      first_claimed_at = now() - interval '1 day' WHERE feature_id = 'EI-old-slow'`;
+    await db.sql`UPDATE harness_shared.work_items SET admitted_at = now() - interval '3 minutes',
+      first_claimed_at = now() - interval '1 minute' WHERE feature_id = 'EI-recent-fast'`;
+
+    const health = await readWorkItemAdmissionQueueHealth({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
+    expect(health.pending).toBe(5);
+    expect(health.promotedToFirstClaim.sampleSize).toBe(2);
+    expect(health.promotedToFirstClaim.p95Ms).toBeGreaterThan(180 * 60_000);
+    expect(health.producerPressure).toMatchObject({
+      pending: 1, latencyWindowMs: 90 * 60_000,
+      promotedToFirstClaim: { sampleSize: 1, p50Ms: 120_000, p95Ms: 120_000 },
+    });
+    await expect(readWorkItemAdmissionProducerPressure({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql }))
+      .resolves.toMatchObject({ level: 'normal', pending: 1, maxIdeators: null });
+
+    await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = 'EI-live'`;
+    await expect(readWorkItemAdmissionProducerPressure({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql }))
+      .resolves.toMatchObject({ level: 'normal', pending: 0 });
+    await db.sql`UPDATE harness_shared.work_items SET admitted_at = now() - interval '4 hours',
+      first_claimed_at = now() - interval '1 minute' WHERE feature_id = 'EI-recent-fast'`;
+    await expect(readWorkItemAdmissionProducerPressure({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql }))
+      .resolves.toMatchObject({ level: 'deep', pending: 0, maxIdeators: 1 });
+  });
+
+  it('persists buffered fallback observations in the disposable promoter database (EI-25815421487979701)', async () => {
+    const correlationId = '93cec0c7-780e-449c-8c49-236654daeb08';
+    expect(observeFallback('admission.fixture-dependency', { eligible: 2, applied: 0, reason: 'fixture-probe' },
+      { sql: db.sql, workspaceId: WS, correlationId })).toBe(true);
+    expect(await flushFallbackObservations()).toMatchObject({ failed: 0 });
+    const rows = await db.sql`SELECT eligible, applied, reason, correlation_id
+      FROM harness_shared.fallback_observations WHERE mechanism = 'admission.fixture-dependency'`;
+    expect(rows).toEqual([{ eligible: 2, applied: 0, reason: 'fixture-probe', correlation_id: correlationId }]);
   });
 
   it('rolls queue health up over the admission-pipeline population, never an unadmitted row payload (WI-10003692)', async () => {
@@ -2227,7 +3183,7 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(projection.flow).toMatchObject({
       arrivals: 8,
       terminalInWindow: 1,
-      verifiedCompletionsInWindow: 1,
+      verifiedCompletionsInWindow: 0,
       retainedReopenEventsInWindow: 1,
       reopenedItemsInWindow: 1,
       readyExpectedCost: { coveredRows: 1, totalRows: 2, pricedSubtotalCents: 250, cents: null },
@@ -2251,6 +3207,94 @@ describe('work-item admission promoter (real Postgres)', () => {
     ).toBe(projection.headline.population);
   });
 
+  // bug-queue-legitimacy D-007/D-008 (P-010 category b): the revision-requested reason splits
+  // into reproduction (claimable validation work) and content (the adopt-next discovery pool),
+  // and with the legacy exception the three sum exactly to revisionRequestedAgentReview.
+  it('splits revision-requested rows into an exact reproduction/content/legacy partition', async () => {
+    const review = (submittedBy: string, revisionKind?: string) => ({
+      agentReview: {
+        status: 'revision-requested',
+        submittedBy,
+        ledgerIdeaId: `idea-${submittedBy}`,
+        round: 1,
+        ...(revisionKind ? { revisionKind } : {}),
+      },
+    });
+    await seedItem({ id: 'WI-rev-repro', admission: 'admitted', itemKind: 'bug', payload: review('su-author', 'reproduction') });
+    await seedItem({ id: 'WI-rev-content', admission: 'admitted', payload: review('su-author', 'content') });
+    // A revision written before D-006 carries no revisionKind: it is a content revision.
+    await seedItem({ id: 'WI-rev-pre-d006', admission: 'admitted', payload: review('su-author') });
+    await seedItem({ id: 'WI-rev-legacy', admission: 'admitted', payload: review('system:legacy-agent-review') });
+    await seedItem({ id: 'WI-rev-pending', admission: 'admitted', payload: { agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'idea-p', round: 1 } } });
+
+    const projection = await readWorkItemReadinessProjection({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      sql: db.sql,
+      now: () => NOW,
+      windowDays: 30,
+    });
+
+    const r = projection.reasons;
+    expect(r).toMatchObject({
+      revisionRequestedAgentReview: 4,
+      revisionReproductionValidation: 1,
+      revisionContentAdoptionCandidates: 2,
+      legacyRevisionException: 1,
+      pendingAgentReview: 1,
+    });
+    expect(r.revisionReproductionValidation + r.revisionContentAdoptionCandidates + r.legacyRevisionException)
+      .toBe(r.revisionRequestedAgentReview);
+  });
+
+  it('partitions accepted work once and matches the shared classifier without counting legacy or duplicate closes as delivery', async () => {
+    const title = 'Repair trailing token';
+    const summary = 'Parser loses the final token';
+    const sealed = sealImplementationAcceptance({
+      source: { kind: 'bug', title, summary },
+      proposal: { problem: summary, evidence: ['parser.test.ts failure'], outcome: 'Preserve trailing token', scope: 'Parser only', completionCheck: 'Regression passes' },
+      authority: { kind: 'agent-review', reviewer: 'reviewer', submittedBy: 'author', round: 1 },
+      reason: 'independent reviewer accepted', acceptedAt: '2026-08-26T11:00:00.000Z',
+      // P-006: a bug's acceptance carries its reproduction receipt.
+      reproduction: { kind: 'failing-test', ref: 'parser.test.ts', buildSha: 'abcdef1' },
+    });
+    if (!sealed.ok) throw new Error('fixture must seal');
+    const ready = createImplementationReadiness({ status: 'ready', source: 'agent-review', reason: 'accepted', updatedAt: '2026-08-26T11:00:00.000Z', evidence: { acceptance: sealed.contract } });
+    const rows = [
+      { id: 'ready', status: 'open', payload: { implementationReadiness: ready } },
+      { id: 'active', status: 'open', assignee: 'worker', payload: { implementationReadiness: ready } },
+      // Keeps accepted-ready (1) and accepted-active (2) unequal. With one of each, a writer that
+      // counted one stage under the other's FILTER matched the classifier by arithmetic accident
+      // (mutation probe 2026-10-01, test run 20440804: an active->ready FILTER swap survived).
+      { id: 'active-2', status: 'open', assignee: 'worker-2', payload: { implementationReadiness: ready } },
+      { id: 'blocked', status: 'open', payload: { implementationReadiness: ready, _claimHold: true } },
+      { id: 'failed-retryable', status: 'failed', payload: { implementationReadiness: ready } },
+      { id: 'delivered', status: 'done', completionAuthority: 'committed', payload: { implementationReadiness: ready } },
+      { id: 'duplicate', status: 'deprecated', completionAuthority: 'committed', payload: { implementationReadiness: ready } },
+      { id: 'legacy-close', status: 'done', completionAuthority: 'committed', payload: {} },
+      { id: 'candidate', status: 'open', payload: { implementationReadiness: { ...ready, evidence: {} } } },
+      { id: 'unknown', status: 'open', payload: {} },
+      { id: 'stale', status: 'open', payload: { implementationReadiness: ready }, title: 'Changed problem' },
+    ];
+    for (const row of rows) await seedItem({
+      id: row.id, title: row.title ?? title, summary, itemKind: 'bug', status: row.status,
+      takenBy: row.assignee, payload: row.payload, authority: row.completionAuthority,
+      closedTs: ['done','deprecated'].includes(row.status) ? NOW - 1000 : null, admission: 'admitted',
+    });
+    await seedItem({ id: 'foreign-workspace', title, summary, payload: { implementationReadiness: ready }, workspaceId: 'other' });
+    await seedItem({ id: 'foreign-harness', title, summary, payload: { implementationReadiness: ready }, harness: 'other' });
+    await seedItem({ id: 'observation', payload: { lane: 'observation' }, admission: 'admitted' });
+    await db.sql`UPDATE harness_shared.work_items SET lane = 'observation' WHERE feature_id = 'observation'`;
+    const actual = await readWorkItemReadinessProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, now: () => NOW });
+    const expected = countWorkItemPresentationStages(rows.map(row => ({ ...row, kind: 'bug', title: row.title ?? title, summary })));
+    expect(actual.presentation).toEqual({ ...expected, writer: 'readWorkItemReadinessProjection', classifier: 'deriveWorkItemPresentationStage' });
+    expect(actual.presentation?.population).toBe(actual.headline.population);
+    expect(Object.values(actual.presentation!.counts).reduce((a, b) => a + b, 0)).toBe(rows.length);
+    expect(actual.presentation).toMatchObject({ remainingBugs: 5, verifiedCompletions: 1, counts: { 'terminal-other': 2, candidate: 2, observation: 0, 'accepted-ready': 1, 'accepted-active': 2 } });
+    expect(actual.flow.verifiedCompletionsInWindow).toBe(1);
+    expect(actual.scope).toMatchObject({ workspaceId: WS, harnessSlug: HARNESS, population: 'root issue-family rows excluding observation-lane records' });
+  });
+
   it('keeps workspace-wide readiness set-based, primary-key indexable, and payload-narrow', () => {
     const source = readFileSync(new URL('./work-items-admission-promoter.ts', import.meta.url), 'utf8');
     const start = source.indexOf('export async function readWorkItemReadinessProjection');
@@ -2269,16 +3313,101 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(reader).toContain('WITH occurrence_counts AS MATERIALIZED');
     expect(reader).toContain('active_dependency_refs AS MATERIALIZED');
     expect(reader).not.toContain('readIssueOccurrenceCounts(');
+    expect(reader).toContain('wi.agent_review_projection AS agent_review');
+    expect(reader).toContain('wi.implementation_readiness_projection AS implementation_readiness');
+    expect(reader).toContain('wi.implementation_readiness_enrolled AS readiness_enrolled');
+    expect(reader).toContain('wi.reopen_history_projection AS reopen_history');
+    expect(reader).toContain('wi.external_blockers_projection AS external_blockers');
     expect(dependencyReader).toContain("blocker.harness_slug = split_part(d.blocker_ref, '#', 1)");
     expect(dependencyReader).toContain("blocker.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)");
     expect(reader).toContain('LEFT JOIN active_dependency_refs dependency');
-    expect(reader).toContain('LEFT JOIN LATERAL jsonb_to_record');
+    expect(reader).not.toContain('jsonb_to_record');
+    expect(reader).not.toContain('wi.payload');
     expect(reader).toContain('COALESCE(wi.claim_hold, FALSE)');
     expect(reader).toContain('COALESCE(wi.needs_owner_action, FALSE)');
     expect(reader).not.toContain("blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref");
     expect(dependencyReader).not.toContain("blocker.harness_slug || '#' || blocker.feature_id = d.blocker_ref");
     expect(reader).not.toMatch(/^\s*wi\.payload,\s*$/m);
     expect(reader).not.toContain("COALESCE(s.payload, '{}'::jsonb)");
+
+    const draftMigration = new URL(
+      '../../../libs/papercusp/libs/db/sql/1294-work-item-readiness-payload-projections.sql.DRAFT',
+      import.meta.url,
+    );
+    const armedMigration = new URL(
+      '../../../libs/papercusp/libs/db/sql/1294-work-item-readiness-payload-projections.sql',
+      import.meta.url,
+    );
+    const migration = readFileSync(existsSync(draftMigration) ? draftMigration : armedMigration, 'utf8');
+    for (const column of [
+      'agent_review_projection',
+      'implementation_readiness_projection',
+      'implementation_readiness_enrolled',
+      'reopen_history_projection',
+      'external_blockers_projection',
+    ]) {
+      expect(migration).toContain(`ADD COLUMN IF NOT EXISTS ${column}`);
+    }
+    expect(migration).toContain("NULLIF(payload -> 'implementationReadiness', 'null'::jsonb)");
+    expect(migration).toContain("payload ? 'implementationReadiness'");
+  });
+
+  it('keeps stored readiness payload projections synchronized and preserves explicit JSON null presence', async () => {
+    await seedItem({
+      id: 'WI-generated-projections',
+      payload: {
+        agentReview: null,
+        implementationReadiness: null,
+        reopenHistory: null,
+        externalBlockers: null,
+      },
+    });
+
+    const [nullPayload] = await db.sql`
+      SELECT agent_review_projection,
+             implementation_readiness_projection,
+             implementation_readiness_enrolled,
+             reopen_history_projection,
+             external_blockers_projection
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS}
+         AND harness_slug = ${HARNESS}
+         AND feature_id = 'WI-generated-projections'`;
+    expect(nullPayload).toEqual({
+      agent_review_projection: null,
+      implementation_readiness_projection: null,
+      implementation_readiness_enrolled: true,
+      reopen_history_projection: null,
+      external_blockers_projection: null,
+    });
+
+    const replacementPayload = {
+      agentReview: { status: 'pending' },
+      implementationReadiness: { schemaVersion: 'implementation-readiness-v1', status: 'ready' },
+      reopenHistory: [],
+      externalBlockers: [],
+    };
+    const updatedRows = await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = ${JSON.stringify(replacementPayload)}::text::jsonb
+       WHERE workspace_id = ${WS}
+         AND harness_slug = ${HARNESS}
+         AND feature_id = 'WI-generated-projections'
+      RETURNING payload,
+                agent_review_projection,
+                implementation_readiness_projection,
+                implementation_readiness_enrolled,
+                reopen_history_projection,
+                external_blockers_projection`;
+    expect(updatedRows).toHaveLength(1);
+    expect(updatedRows[0]).toEqual({
+      payload: replacementPayload,
+      agent_review_projection: { status: 'pending' },
+      implementation_readiness_projection: replacementPayload.implementationReadiness,
+      implementation_readiness_enrolled: true,
+      reopen_history_projection: [],
+      external_blockers_projection: [],
+    });
   });
 
   it('uses writer status over finished_at and keeps outcome totals unit-separated', async () => {
@@ -2370,4 +3499,398 @@ describe('readPendingBatch resolver-input priority (P-006)', () => {
     // stamp.ts's contract) rather than left for a reader to rediscover by surprise.
     expect(batch.map((item) => item.id)).toEqual(['WI-6', 'WI-5']);
   });
+
+  it('rotates scheduled ambiguous reviews behind never-reviewed and less-recently reviewed rows', async () => {
+    await seedPending({ id: 'WI-repeat', createdAtMs: NOW - 30_000, dedupCandidates: [{ id: 'WI-twin' }] });
+    await seedPending({ id: 'WI-earlier-review', createdAtMs: NOW - 20_000 });
+    await seedPending({ id: 'WI-never-reviewed', createdAtMs: NOW - 10_000 });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET admission = 'unreviewed', payload = payload || jsonb_build_object('admissionReview',
+           CASE feature_id
+             WHEN 'WI-repeat' THEN jsonb_build_object('state', 'pending', 'retryAttempts', 176,
+               'lastRetryAt', to_jsonb(to_timestamp(${NOW - 1_000} / 1000.0)))
+             WHEN 'WI-earlier-review' THEN jsonb_build_object('state', 'pending', 'retryAttempts', 1,
+               'lastRetryAt', to_jsonb(to_timestamp(${NOW - 10_000} / 1000.0)))
+             ELSE jsonb_build_object('state', 'pending', 'retryAttempts', 0)
+           END)`;
+    const next = () => readPendingBatch(db.sql, WS, HARNESS, 2, undefined, { demoteGuardBlocked: true });
+    expect((await next()).map((item) => item.id)).toEqual(['WI-never-reviewed', 'WI-earlier-review']);
+    await db.sql`
+      UPDATE harness_shared.work_items SET payload = payload || jsonb_build_object('admissionReview',
+        jsonb_build_object('state', 'pending', 'retryAttempts', 1, 'lastRetryAt', to_jsonb(to_timestamp(${NOW} / 1000.0))))
+       WHERE feature_id = 'WI-never-reviewed'`;
+    expect((await next()).map((item) => item.id)).toEqual(['WI-earlier-review', 'WI-repeat']);
+    // Explicit target reads retain resolver candidate/FIFO priority.
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 2,
+      ['WI-repeat', 'WI-earlier-review', 'WI-never-reviewed'])).map((item) => item.id))
+      .toEqual(['WI-repeat', 'WI-earlier-review']);
+  });
+
+  it('treats malformed retry timestamps as unmeasured and retains model-free candidate priority', async () => {
+    await seedPending({ id: 'WI-retried', createdAtMs: NOW - 20_000, dedupCandidates: [{ id: 'WI-twin' }] });
+    await seedPending({ id: 'WI-malformed', createdAtMs: NOW - 10_000 });
+    await db.sql`
+      UPDATE harness_shared.work_items SET admission = 'unreviewed',
+        payload = payload || jsonb_build_object('admissionReview', jsonb_build_object('state', 'pending',
+          'lastRetryAt', CASE WHEN feature_id = 'WI-malformed' THEN '2026-02-31T12:00:00Z'
+                             ELSE '2026-08-26T10:00:00Z' END))`;
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 2, undefined,
+      { demoteGuardBlocked: true })).map((item) => item.id)).toEqual(['WI-malformed', 'WI-retried']);
+    // The no-model path still prioritizes rows it can resolve without judging.
+    await db.sql`
+      UPDATE harness_shared.work_items SET payload = payload - 'dedupCandidates'
+       WHERE feature_id = 'WI-retried'`;
+    await db.sql`
+      UPDATE harness_shared.work_items SET payload = payload || '{"dedupCandidates":[{"id":"WI-twin"}]}'::jsonb
+       WHERE feature_id = 'WI-malformed'`;
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 2, undefined,
+      { demoteGuardBlocked: true, preferModelFree: true })).map((item) => item.id))
+      .toEqual(['WI-retried', 'WI-malformed']);
+  });
+});
+
+// WI-10004725 / plan work-queue-bulk-cleanup-remediation-2026-10-01 P-007. Measured 2026-10-01:
+// 1,084 of papercusp's 2,176 fail-open rows still "owed" a duplication review although their item
+// was already terminal, and the LLM spend pause stopped the only path that promotes rows without a
+// model, so the debt could only grow.
+describe('review-debt policy (P-007): moot terminal reviews and the no-model pass', () => {
+  const PENDING_REVIEW = {
+    admissionFailOpen: { reason: 'pending-age-exceeded-two-promoter-ticks' },
+    admissionReview: {
+      state: 'pending',
+      enteredAt: '2026-08-26T10:00:00Z',
+      reviewDueAt: '2026-08-26T11:00:00Z',
+      retryOwner: 'system:work-item-admission-promoter',
+      retryAttempts: 0,
+      alert: { key: 'work-item-admission-review-debt', state: 'open' },
+    },
+  };
+
+  async function reviewRow(id: string) {
+    const [row] = await db.sql<Array<{ admission: string; status: string; payload: Record<string, any> }>>`
+      SELECT admission, status, payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    return row!;
+  }
+
+  it('closes a terminal row\'s owed review as review-moot with a reason, and leaves open rows owing it', async () => {
+    await seedItem({ id: 'WI-moot-done', admission: 'unreviewed', status: 'done', vector: null, payload: PENDING_REVIEW });
+    // No admissionReview block at all: an unreviewed row with an absent state still owes review.
+    await seedItem({ id: 'WI-moot-implicit', admission: 'unreviewed', status: 'dropped', vector: null });
+    await seedItem({ id: 'WI-still-open', admission: 'unreviewed', status: 'open', vector: null, payload: PENDING_REVIEW });
+    // Already reviewed: the sweep must never rewrite a finished review.
+    await seedItem({
+      id: 'WI-reviewed-done',
+      admission: 'admitted',
+      status: 'done',
+      vector: null,
+      payload: { admissionReview: { state: 'reviewed', retryAttempts: 1, reviewedBy: 'system:work-item-admission-promoter' } },
+    });
+
+    const result = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'fail-open-review-moot',
+      sql: db.sql,
+      now: () => NOW,
+      onNewlyAdmitted: async () => {},
+    });
+
+    expect(result.reviewMoot).toEqual({ closed: 2, byHarness: { [HARNESS]: 2 }, truncatedByLimit: false });
+    // Closed BEFORE the debt census, so the census reports the real remaining debt.
+    expect(result.reviewDebt).toMatchObject({ pending: 1, terminal: 2, reReviewed: 1 });
+
+    const done = await reviewRow('WI-moot-done');
+    expect(done).toMatchObject({
+      admission: 'admitted',
+      status: 'done',
+      payload: {
+        // Fail-open provenance survives the close.
+        admissionFailOpen: { reason: 'pending-age-exceeded-two-promoter-ticks' },
+        admissionReview: {
+          state: 'terminal',
+          terminalOutcome: ADMISSION_REVIEW_MOOT_OUTCOME,
+          reviewedBy: 'system:work-item-admission-fail-open',
+          retryAttempts: 0,
+          alert: { key: 'work-item-admission-review-debt', state: 'cleared' },
+        },
+      },
+    });
+    expect(done.payload.admissionReview.mootReason).toContain('item was already done');
+    const implicit = await reviewRow('WI-moot-implicit');
+    expect(implicit.payload.admissionReview).toMatchObject({ state: 'terminal', terminalOutcome: 'review-moot' });
+    expect(implicit.payload.admissionReview.mootReason).toContain('item was already dropped');
+
+    expect(await reviewRow('WI-still-open')).toMatchObject({
+      admission: 'unreviewed',
+      payload: { admissionReview: { state: 'pending', alert: { state: 'open' } } },
+    });
+    expect((await reviewRow('WI-reviewed-done')).payload.admissionReview).toEqual({
+      state: 'reviewed',
+      retryAttempts: 1,
+      reviewedBy: 'system:work-item-admission-promoter',
+    });
+
+    // The per-tick trend is durable on the ledger, beside reviewDebt.
+    const [ledger] = await db.sql<Array<{ detail: Record<string, any> }>>`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'fail-open-review-moot'`;
+    expect(ledger!.detail.reviewMoot).toEqual({ closed: 2, byHarness: { [HARNESS]: 2 }, truncatedByLimit: false });
+  });
+
+  it('follows the fail-open scope: a workspace tick reaches a neighbour harness, a harness tick does not', async () => {
+    await seedItem({ id: 'WI-home-done', admission: 'unreviewed', status: 'done', vector: null });
+    await seedItem({ id: 'WI-email-done', admission: 'unreviewed', status: 'done', vector: null, harness: 'email' });
+    await seedItem({
+      id: 'WI-other-tenant-done',
+      admission: 'unreviewed',
+      status: 'done',
+      vector: null,
+      workspaceId: 'some-other-workspace',
+    });
+
+    const harnessTick = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'fail-open-moot-harness',
+      sql: db.sql,
+      now: () => NOW,
+      onNewlyAdmitted: async () => {},
+    });
+    expect(harnessTick.reviewMoot).toEqual({ closed: 1, byHarness: { [HARNESS]: 1 }, truncatedByLimit: false });
+    expect((await db.sql`SELECT admission FROM harness_shared.work_items WHERE harness_slug = 'email'`)[0]).toEqual({
+      admission: 'unreviewed',
+    });
+
+    const workspaceTick = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'fail-open-moot-workspace',
+      sql: db.sql,
+      now: () => NOW,
+      scope: 'workspace',
+      onNewlyAdmitted: async () => {},
+    });
+    expect(workspaceTick.reviewMoot).toEqual({ closed: 1, byHarness: { email: 1 }, truncatedByLimit: false });
+    const [foreign] = await db.sql<Array<{ admission: string }>>`
+      SELECT admission FROM harness_shared.work_items WHERE workspace_id = 'some-other-workspace'`;
+    expect(foreign).toEqual({ admission: 'unreviewed' });
+  });
+
+  it('bounds one call and drains the rest oldest-first on the next', async () => {
+    for (let i = 0; i < 3; i++) {
+      await seedItem({
+        id: `WI-moot-${i}`,
+        admission: 'unreviewed',
+        status: 'done',
+        vector: null,
+        createdAtMs: NOW - (10 - i) * 60_000,
+      });
+    }
+    const first = await closeMootAdmissionReviews(db.sql, { workspaceId: WS, harnessSlug: HARNESS, nowMs: NOW, limit: 2 });
+    expect(first).toEqual({ closed: 2, byHarness: { [HARNESS]: 2 }, truncatedByLimit: true });
+    const remaining = await db.sql<Array<{ feature_id: string }>>`
+      SELECT feature_id FROM harness_shared.work_items WHERE admission = 'unreviewed'`;
+    expect(remaining.map((row) => row.feature_id)).toEqual(['WI-moot-2']);
+
+    const second = await closeMootAdmissionReviews(db.sql, { workspaceId: WS, harnessSlug: HARNESS, nowMs: NOW, limit: 2 });
+    expect(second).toEqual({ closed: 1, byHarness: { [HARNESS]: 1 }, truncatedByLimit: false });
+    expect(await closeMootAdmissionReviews(db.sql, { workspaceId: WS, nowMs: NOW })).toEqual({
+      closed: 0,
+      byHarness: {},
+      truncatedByLimit: false,
+    });
+  });
+
+  it('no-model pass promotes candidate-free rows and leaves paired rows untouched for the model', async () => {
+    await seedItem({ id: 'WI-solo', title: 'a uniquely worded standalone finding', vector: null });
+    await seedItem({ id: 'WI-twin-pending', createdAtMs: NOW - 20_000 });
+    await seedItem({ id: 'WI-twin-unreviewed', admission: 'unreviewed', createdAtMs: NOW - 19_000, payload: PENDING_REVIEW });
+    const llmCall = vi.fn();
+
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-no-model-pass',
+      sql: db.sql,
+      llmCall,
+      now: () => NOW,
+      noModel: true,
+      onNewlyAdmitted: async () => {},
+    });
+
+    expect(llmCall).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ promoted: 1, merged: 0, modelCalled: false, flaggedPairs: 1, deferredToModel: 2 });
+    expect(result.held).toBe(2);
+    expect((await reviewRow('WI-solo')).admission).toBe('admitted');
+    // Deferred, not held: nothing is written, so the re-review watermark only counts real reviews.
+    expect(await reviewRow('WI-twin-pending')).toMatchObject({ admission: 'pending', payload: {} });
+    expect((await reviewRow('WI-twin-unreviewed')).payload.admissionReview).toEqual(PENDING_REVIEW.admissionReview);
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+
+    const [ledger] = await db.sql<Array<{ run_kind: string; model_id: string | null; tokens_in: string; detail: Record<string, any> }>>`
+      SELECT run_kind, model_id, tokens_in::text, detail FROM harness_shared.admission_runs WHERE id = 'promoter-no-model-pass'`;
+    expect(ledger).toMatchObject({
+      run_kind: 'promoter-tick',
+      model_id: null,
+      tokens_in: '0',
+      detail: { status: 'complete', mode: 'promoter-no-model', deferredToModel: 2, modelCostUsd: 0 },
+    });
+
+    // The same rows with the model available are judged, so the deferral is the flag doing the work.
+    const modelRun = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-model-pass',
+      sql: db.sql,
+      llmCall: judgementCall('r-remedy-keep'),
+      now: () => NOW,
+      onNewlyAdmitted: async () => {},
+    });
+    expect(modelRun).toMatchObject({ promoted: 2, modelCalled: true });
+    expect(modelRun.deferredToModel).toBeUndefined();
+  });
+
+  it('a no-model tick never satisfies the model promoter\'s liveness alarm', async () => {
+    const nowMs = Date.now();
+    await db.sql`
+      INSERT INTO harness_shared.routines (id, install_slug, workspace_id, name, active, created_at)
+      VALUES ('rt-promoter', ${HARNESS}, ${WS}, ${WORK_ITEM_ADMISSION_PROMOTER}, true,
+              to_timestamp(${nowMs - 4 * 60 * 60_000} / 1000.0))`;
+    await seedItem({ id: 'WI-solo', title: 'a uniquely worded standalone finding', vector: null });
+    await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'promoter-no-model-liveness',
+      sql: db.sql,
+      llmCall: vi.fn(),
+      noModel: true,
+      onNewlyAdmitted: async () => {},
+    });
+
+    expect(await readPromoterLiveness(db.sql, WS, HARNESS, nowMs, 90)).toMatchObject({ stale: true });
+    // Positive control: the identical row recorded as a MODEL tick does clear the alarm, so the
+    // stale verdict above is the mode filter, not a row the reader cannot see.
+    await db.sql`
+      UPDATE harness_shared.admission_runs
+         SET detail = jsonb_set(detail, '{mode}', '"promoter"')
+       WHERE id = 'promoter-no-model-liveness'`;
+    expect(await readPromoterLiveness(db.sql, WS, HARNESS, nowMs, 90)).toMatchObject({ stale: false });
+  });
+
+  it('production fail-open wiring promotes without model spend while the model routine is paused', async () => {
+    const { makeWorkItemAdmissionFailOpenAction } =
+      await import('./harness/routines/work-item-admission-promoter-action');
+    const nowMs = Date.now();
+    await db.sql`
+      INSERT INTO harness_shared.routines (id, install_slug, workspace_id, name, active, created_at)
+      VALUES ('rt-spend-paused', ${HARNESS}, ${WS}, ${WORK_ITEM_ADMISSION_PROMOTER}, true,
+              to_timestamp(${nowMs - 4 * 60 * 60_000} / 1000.0))`;
+    await db.sql`
+      INSERT INTO harness_shared.admission_runs
+        (id, workspace_id, harness_slug, run_kind, finished_at, detail)
+      VALUES ('recent-model-success', ${WS}, ${HARNESS}, 'promoter-tick', clock_timestamp(),
+              '{"mode":"promoter","status":"complete"}'::jsonb)`;
+    await seedItem({ id: 'WI-pause-solo', title: 'a uniquely worded standalone finding', vector: null, createdAtMs: nowMs - 10_000 });
+    await seedItem({ id: 'WI-pause-twin-pending', createdAtMs: nowMs - 20_000 });
+    await seedItem({ id: 'WI-pause-twin-unreviewed', admission: 'unreviewed', payload: PENDING_REVIEW, createdAtMs: nowMs - 19_000 });
+    const log = vi.fn();
+    const action = makeWorkItemAdmissionFailOpenAction({
+      // Only outward notifications are replaced: liveness, both admission paths,
+      // the no-model callback's throw-on-model guard, and reaping remain production code.
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log,
+    });
+    const ctx = { installSlug: HARNESS, workspaceId: WS, triggerConfig: {}, payloadTemplate: null };
+
+    await action(ctx);
+    expect(log.mock.calls.at(-1)![0]).toContain('no-model=skipped(promoter live)');
+    expect((await reviewRow('WI-pause-solo')).admission).toBe('pending');
+    expect(await db.sql`SELECT id FROM harness_shared.admission_runs WHERE detail->>'mode' = 'promoter-no-model'`).toHaveLength(0);
+
+    // The private routine's spend pause is the only changed input. No fleet policy,
+    // shared routine, live ledger, credentials or model transport is touched.
+    await db.sql`UPDATE harness_shared.routines SET active = false WHERE id = 'rt-spend-paused'`;
+    await action(ctx);
+    expect(log.mock.calls.at(-1)![0]).toMatch(/no-model run=.* promoted=1 merged=0 deferred-to-model=2/);
+    expect(log.mock.calls.at(-1)![0]).toContain('reaped-stranded=0');
+    expect((await reviewRow('WI-pause-solo')).admission).toBe('admitted');
+    expect(await reviewRow('WI-pause-twin-pending')).toMatchObject({ admission: 'pending', payload: {} });
+    expect((await reviewRow('WI-pause-twin-unreviewed')).payload.admissionReview).toEqual(PENDING_REVIEW.admissionReview);
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    const [ledger] = await db.sql`
+      SELECT run_kind, model_id, tokens_in::text, tokens_out::text, detail
+        FROM harness_shared.admission_runs WHERE detail->>'mode' = 'promoter-no-model'`;
+    expect(ledger).toMatchObject({
+      run_kind: 'promoter-tick', model_id: null, tokens_in: '0', tokens_out: '0',
+      detail: { status: 'complete', mode: 'promoter-no-model', deferredToModel: 2, modelCostUsd: 0 },
+    });
+    expect(await readPromoterLiveness(db.sql, WS, HARNESS, Date.now(), 90)).toMatchObject({ stale: true, active: false });
+  });
+
+  it('orders the no-model window: candidate-free pending rows first, unreviewed rows last', async () => {
+    const insert = async (id: string, admission: string, createdAtMs: number, payload: Record<string, unknown>) => {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
+           admission, payload, created_ts, updated_ts)
+        VALUES (${WS}, ${HARNESS}, ${id}, 'title', 'summary', 'open', 'bug', ${admission},
+                ${db.sql.json(payload as unknown as Parameters<typeof db.sql.json>[0])}, ${createdAtMs}, ${createdAtMs})`;
+    };
+    const stamped = { dedupCandidates: [{ id: 'WI-9', similarity: 0.91, method: 'semantic-hard' }] };
+    await insert('WI-unreviewed-plain', 'unreviewed', NOW - 50_000, {});
+    await insert('WI-pending-stamped', 'pending', NOW - 40_000, stamped);
+    await insert('WI-pending-plain', 'pending', NOW - 30_000, {});
+
+    const noModel = await readPendingBatch(db.sql, WS, HARNESS, 10, undefined, { preferModelFree: true });
+    expect(noModel.map((item) => item.id)).toEqual(['WI-pending-plain', 'WI-pending-stamped', 'WI-unreviewed-plain']);
+    // Control: the model promoter's own order is unchanged (candidate-stamped first, then FIFO).
+    const model = await readPendingBatch(db.sql, WS, HARNESS, 10);
+    expect(model.map((item) => item.id)).toEqual(['WI-pending-stamped', 'WI-unreviewed-plain', 'WI-pending-plain']);
+  });
+});
+
+describe('own-node rows stranded at origin=remote (WI-10006515)', () => {
+  it('promotes an OWN-NODE row stranded at origin=remote and still refuses a true peer row as remote-owned', async () => {
+    // K-own is one of THIS workspace's keys: a local row carries it. K-peer never appears locally.
+    // Distinct titles/summaries and no vectors, so no dedup pair forms and no model is consulted.
+    const own = { vector: null, authorPubkey: 'K-own' } as const;
+    await seedItem({ ...own, id: 'WI-own-anchor', title: 'anchor row for the local key', summary: 'alpha', admission: 'admitted', origin: 'local', createdAtMs: NOW - 60_000 });
+    await seedItem({ ...own, id: 'WI-own-strand', title: 'own row stranded by a sync echo', summary: 'bravo', admission: 'pending', origin: 'remote', createdAtMs: NOW - 10_000 });
+    await seedItem({ id: 'WI-peer', title: 'genuine peer authored row', summary: 'charlie', admission: 'pending', origin: 'remote', authorPubkey: 'K-peer', vector: null, createdAtMs: NOW - 20_000 });
+
+    const snapshots = await readAdmissionMergeSnapshots(db.sql, {
+      workspaceId: WS, harnessSlug: HARNESS, ids: ['WI-own-strand', 'WI-peer'],
+    });
+    expect(snapshots.get('WI-own-strand')?.ownNode).toBe(true);
+    // Absent, not false: a row that is not own-node keeps its snapshot fingerprint unchanged.
+    expect(snapshots.get('WI-peer')).toBeDefined();
+    expect('ownNode' in snapshots.get('WI-peer')!).toBe(false);
+
+    // Well-formed if reached, so an unexpected call fails the assertion below instead of crashing the run.
+    const llmCall = vi.fn(async () => ({ text: '', json: { judgements: [] }, inputTokens: 0, outputTokens: 0 }));
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'own-node-strand',
+      sql: db.sql,
+      targetItemIds: ['WI-own-strand', 'WI-peer'],
+      llmCall,
+      now: () => NOW,
+    });
+
+    expect(llmCall).not.toHaveBeenCalled();
+    expect(result.promoted).toBe(1);
+    expect(result.guardRefusals).toEqual([
+      expect.objectContaining({ reason: 'remote-owned', detail: expect.stringContaining('WI-peer') }),
+    ]);
+    const rows = await db.sql<Array<{ feature_id: string; admission: string }>>`
+      SELECT feature_id, admission FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ANY(ARRAY['WI-own-strand','WI-peer']::text[])
+       ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: 'WI-own-strand', admission: 'admitted' },
+      { feature_id: 'WI-peer', admission: 'pending' },
+    ]);
+  }, 60_000);
 });

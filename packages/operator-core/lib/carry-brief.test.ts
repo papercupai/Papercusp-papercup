@@ -531,6 +531,39 @@ describe('note-citation hydration + post-note delta (cold-carry-system-hardening
     ).toEqual([]);
   });
 
+  it('resolves a three-digit WI suffix to one held long id and leaves ambiguous aliases unresolved', () => {
+    const held = [
+      {
+        id: 'WI-6554700010008548',
+        title: 'Held item',
+        body: null,
+        harness: 'papercusp',
+        checkpoint: null,
+      },
+    ];
+    const fullId = { kind: 'work-item' as const, id: 'WI-6554700010008548' };
+
+    // The short token used to resolve as the unrelated literal WI-548. The
+    // carry lookup now follows the unique held item, and a simultaneous full
+    // reference deduplicates to that same authoritative id.
+    expect(detectCarryNoteRefs('resume WI-548', held)).toEqual([fullId]);
+    expect(detectCarryNoteRefs('resume WI-548 (WI-6554700010008548)', held)).toEqual([fullId]);
+
+    // A real short id remains resolvable when no held long id claims its suffix.
+    expect(detectCarryNoteRefs('inspect WI-548', [])).toEqual([
+      { kind: 'work-item', id: 'WI-548' },
+    ]);
+
+    // If two live held rows share the suffix, do not choose either one or
+    // hydrate a potentially unrelated literal row into a false TERMINAL claim.
+    expect(
+      detectCarryNoteRefs('resume WI-548', [
+        ...held,
+        { ...held[0]!, id: 'WI-7777700010008548' },
+      ]),
+    ).toEqual([]);
+  });
+
   it('P-002: hydrates the ids the note cites via the injected seam and renders them under the note', async () => {
     const brief = await buildCarryBrief(
       'su-abc',
@@ -918,6 +951,16 @@ describe('unverifiedFocusRefs / renderFocusIntegrityWarning (EI-2213122758449948
       carryNoteUpdatedAtMs: Date.now(),
     },
     heldItems: [{ id: 'WI-3319', title: null, body: null, harness: 'papercusp', checkpoint: null }],
+    deferredItems: [
+      {
+        id: 'WI-6554700010010741',
+        title: 'Acceptance review-target reservation',
+        body: null,
+        harness: 'papercusp',
+        kind: 'task',
+        source: 'commented',
+      },
+    ],
     directives: [],
     directivesTotalOpen: 0,
     walls: [],
@@ -940,6 +983,12 @@ describe('unverifiedFocusRefs / renderFocusIntegrityWarning (EI-2213122758449948
     expect(warning).toContain('⚠ FOCUS INTEGRITY');
     expect(warning).toContain('WI-2140920');
     expect(warning).toContain('carry-note e5729a1f033a');
+  });
+
+  it('does NOT flag this session\'s commented-on review target, even though it is not held', () => {
+    const refs = unverifiedFocusRefs('Continue grading WI-6554700010010741.', brief);
+    expect(refs).toEqual({ workItemIds: [], carryHashes: [] });
+    expect(renderFocusIntegrityWarning(refs)).toBe('');
   });
 
   it('does NOT flag the owner\'s own held item id or its own loop carry-note hash (no false positive)', () => {
@@ -1085,6 +1134,37 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out).toContain('durable spill/log/work-item evidence');
     expect(out).toContain('fresh exec');
     expect(out.indexOf('CARRIED TRANSIENT EXEC HANDLE')).toBeLessThan(out.indexOf('You HELD'));
+  });
+
+  it('detects device-auth exec handle lists in a held work-item body and avoids relaunch advice', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      workspaceId: 'ws-test',
+      loop: null,
+      heldItems: [{
+        id: 'EI-24725415810702425',
+        title: 'pending native Codex device-login process',
+        body: 'Launched codex login --device-auth via exec_command; saved exec handles 12345/23456/34567 are process-local.',
+        harness: 'papercusp',
+        checkpoint: null,
+        holderProof: { ownerId: 'x', workspaceId: 'ws-test' },
+      }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+    const warning = out.slice(out.indexOf('CARRIED DEVICE-AUTH EXEC HANDLE'), out.indexOf('You HELD'));
+
+    expect(warning).toContain('prior code has expired');
+    expect(warning).toContain('capability:bash` tracked-task flow');
+    expect(warning).toContain('capability:bash_output');
+    expect(warning).not.toContain('fresh exec');
+    expect(warning).not.toContain('12345');
   });
 
   it('P-029: renders NEVER-DROP fact keys, ahead of the owner-scoped standing-facts block', () => {
@@ -2041,6 +2121,8 @@ describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)'
     );
     expect(out).toContain('STALE');
     expect(out).toContain('historical, NOT your current agenda');
+    expect(out).toContain('Inactive loop @papercusp (inactive, every 900s)');
+    expect(out).not.toContain('Armed loop @');
     // The stale imperatives themselves must NOT ride the brief verbatim.
     expect(out).not.toContain('nudge the leader');
   });
@@ -2074,6 +2156,8 @@ describe('renderCarryBriefText — the full brief (P-004 recovery-hook payload)'
       now,
     );
     expect(inactiveFresh).toContain('finish the drill');
+    expect(inactiveFresh).toContain('Inactive loop @papercusp (inactive, every 900s)');
+    expect(inactiveFresh).not.toContain('Armed loop @');
   });
 });
 
@@ -2127,8 +2211,10 @@ describe('owner directives in the brief (EI-11484)', () => {
       expect(out).toContain('[FOR THIS SESSION]');
       expect(out).toContain(ownText);
       expect(out).toContain('[FYI');
-      expect(out).toContain('recorded by su-peer-s');
-      expect(out).toContain('orders:get #21');
+      // P-006 (WI-6554700010009314): FYI ids are grouped under their recording
+      // session beneath one legend that carries the lookup pointer.
+      expect(out).toContain('• su-peer-sess: #21');
+      expect(out).toContain('orders:get #<id>');
       expect(out).not.toContain(peerText);
     }
   });
@@ -2502,6 +2588,9 @@ describe('readDeferredWorkItems — session-authored/commented unheld work', () 
     expect(calls[0]!.text).toContain("item_kind IN ('feature', 'chunk')");
     expect(calls[0]!.text).toContain('wi.taken_by IS NULL');
     expect(calls[0]!.text).toContain('wi.status IS NULL OR wi.status <> ALL');
+    // WI-10004968: BOTH candidate branches (authored + commented) must exclude
+    // observation-lane reflection rows, or they render as unclaimed work.
+    expect(calls[0]!.text.match(/wi\.lane IS DISTINCT FROM 'observation'/g)).toHaveLength(2);
     expect(calls[0]!.text).toContain('created_at >=');
     expect(calls[0]!.params).toContain('ws-test');
     expect(calls[0]!.params).toContain('su-abc');

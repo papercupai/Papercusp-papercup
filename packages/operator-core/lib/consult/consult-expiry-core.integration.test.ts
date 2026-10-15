@@ -16,25 +16,37 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
+import { continueCascadeDispatchCore } from './cascade-core';
 import { consultExpiryFindSilentResponders, consultExpiryNotifyRequester } from './consult-expiry-adapters';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { currentRequestWorkspaceId } from '../workspace-als';
 import { sendMessage } from '../agent-tools/coordination/messages';
+import type { TaskRow } from '../task-manager/types';
 
 // Execute the REAL message writer + REAL PG replay backend, but never resolve
 // synthetic requester ids against the live agent roster or use the live DB.
-const coordFixture = vi.hoisted(() => ({ log: null as PgCoordLog | null }));
+const coordFixture = vi.hoisted(() => ({
+  log: null as PgCoordLog | null,
+  sql: null as Sql | null,
+}));
 vi.mock('../agent-tools/coordination/recipient-resolve', () => ({
   resolveBestEffortAgainstRoster: async (to: string[]) => to,
 }));
 vi.mock('../agent-tools/coordination/log', async (original) => ({
   ...await original<typeof import('../agent-tools/coordination/log')>(),
+  // The message writer seals through this seam before appending. Both paths
+  // must use the same isolated PG; retaining the production SQL resolver here
+  // leaks to the live database even though coordLog itself is rebound.
+  coordSql: () => {
+    if (!coordFixture.sql) throw new Error('coord fixture SQL is not initialized');
+    return coordFixture.sql;
+  },
+  coordHasPgFastPath: () => true,
   coordLog: {
     appendLineIfAbsent: (...args: Parameters<PgCoordLog['appendLineIfAbsent']>) =>
       coordFixture.log!.appendLineIfAbsent(...args),
@@ -67,21 +79,16 @@ const MIGRATION_963 = existsSync(MIGRATION_963_ARMED) ? MIGRATION_963_ARMED : `$
 const MIGRATION_1225 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/1225-consult-dispatch-attempts.sql', import.meta.url),
 );
+const MIGRATION_1302 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql', import.meta.url),
+);
 
 let rootSql: Sql;
+let fixtureDb: MigratedTestDb;
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `consulte_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  fixtureDb = await createFreshTestDb({ prefix: 'consulte' });
+  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
   // The expiry sweep projects the fine-grained terminal state onto this coarse
   // parent in the same transaction, so the fixture includes the columns that
@@ -98,7 +105,13 @@ beforeAll(async () => {
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_844, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_1225, 'utf8'));
+  // Empty disclosure ledger for these synthetic requesters, using the real
+  // schema. Keep the production sealing check active rather than mocking it
+  // away; its FK needs only this parent identity table in the isolated fixture.
+  await rootSql.unsafe('CREATE TABLE harness_shared.users (id uuid PRIMARY KEY)');
+  await rootSql.unsafe(readFileSync(MIGRATION_1302, 'utf8'));
   await ensureCoordEventLogTable(rootSql);
+  coordFixture.sql = rootSql;
   coordFixture.log = new PgCoordLog({
     getSql: () => rootSql,
     ensureSchema: async () => {},
@@ -111,7 +124,10 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  coordFixture.sql = null;
+  coordFixture.log = null;
+  try { await rootSql?.end({ timeout: 5 }); }
+  finally { await fixtureDb?.drop(); }
 });
 
 // ── Fixture builders ─────────────────────────────────────────────────────
@@ -228,6 +244,29 @@ async function setDigest(id: string, digest: unknown[]) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('sweepExpiredConsults', () => {
+  it('recovers queued cascade launches before expiry and preserves a live continuation lease', async () => {
+    const live = await seedConsult({ routing: { ...menuSnapshot(['resp-1']), cascadeDispatch: {
+      version: 1, cursor: 0, responder: 'resp-1', leaseUntil: FUTURE,
+    } } });
+    const recover = await seedConsult({ routing: { ...menuSnapshot(['resp-1']), cascadeDispatch: {
+      version: 1, cursor: 0, responder: 'resp-1', leaseUntil: PAST,
+    } } });
+    const { deps, alerts } = makeDeps();
+    const resumed: string[] = [];
+    deps.resumeCascadeDispatch = async (workspace, id) => {
+      expect(workspace).toBe(WS);
+      resumed.push(id);
+      await rootSql`UPDATE harness_shared.consult_state SET routing = routing - 'cascadeDispatch', expires_at = ${FUTURE}::timestamptz
+        WHERE workspace_id = ${workspace} AND conversation_id = ${id}`;
+      return true;
+    };
+    await sweepExpiredConsults(deps);
+    expect(resumed).toEqual([recover]);
+    expect(await stateOf(live)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+    expect(await stateOf(recover)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
+    expect(alerts).toHaveLength(0);
+    await rootSql`DELETE FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id IN (${live}, ${recover})`;
+  });
   it('flips ONLY past-due open rows to expired; hard-blocked rows get the latched park-key emit', async () => {
     const hardDue = await seedConsult({ latency: 'hard-blocked', conversationUpdatedAt: FUTURE });
     const proceedDue = await seedConsult({ latency: 'proceed' });
@@ -525,7 +564,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']),
     });
     const { deps, reachCalls } = makeDeps({ withReach: true });
-    const detectorCalls: Array<ReadonlyArray<{ conversationId: string; answeringOwnerId: string | null; routedAt: string }>> = [];
+    const detectorCalls: Array<ReadonlyArray<{ conversationId: string; requesterId?: string; answeringOwnerId: string | null; routedAt: string }>> = [];
     deps.findSilentResponders = async (rows) => {
       detectorCalls.push(rows);
       return new Set([id]);
@@ -538,6 +577,8 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(detectorCalls[0]).toContainEqual({
       workspaceId: WS,
       conversationId: id,
+      requesterId: 'req-1',
+      sourceOwnerId: 'resp-1',
       answeringOwnerId: 'resp-1-fork',
       routedAt,
     });
@@ -592,6 +633,108 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(reachCalls).toHaveLength(1);
     expect(reachCalls[0]).toMatchObject({ responder: 'resp-2', conversationId: id, workspaceId: WS });
   });
+
+  it.each(['resp-prior-fork', 'resp-prior', 'req-1'])('recovers a reserved cascade answerer after a thrown launch with non-answerer posts from %s', async (priorAuthor) => {
+    const id = await seedConsult({
+      expiresAt: FUTURE,
+      cascadeCursor: 1,
+      updatedAt: new Date(NOW.getTime() - 60_000).toISOString(),
+      routing: {
+        ...menuSnapshot(['resp-prior', 'resp-1', 'resp-2'], ['resp-prior-fork']),
+        cascadeDispatch: { version: 1, cursor: 1, responder: 'resp-1', summary: 's', body: 'b', attempts: 0 },
+      },
+    });
+    const continuation = {
+      getSql: () => rootSql,
+      now: () => NOW,
+      dispatch: () => async (opts: { onAnsweringOwner?: (owner: string) => void | Promise<void> }) => {
+        await opts.onAnsweringOwner?.('reserved-fork');
+        throw new Error('failed after reservation');
+      },
+    };
+    await expect(continueCascadeDispatchCore(WS, id, continuation)).rejects.toThrow('failed after reservation');
+    const recoveryAt = new Date(NOW.getTime() + 30_001);
+    expect(await continueCascadeDispatchCore(WS, id, {
+      ...continuation, now: () => recoveryAt,
+    })).toBe(false);
+    const [reservation] = await rootSql`
+      SELECT routing #>> '{cascadeDispatch,leaseUntil}' AS backoff,
+             routing #>> '{selection,selected,1,answeringOwnerId}' AS answerer
+      FROM harness_shared.consult_state WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    expect(reservation.answerer).toBe('reserved-fork');
+    expect(Date.parse(reservation.backoff)).toBeLessThan(recoveryAt.getTime());
+
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    deps.now = () => recoveryAt;
+    const detector = consultExpiryFindSilentResponders({
+      getPresence: async () => null,
+      resolveSessionStates: async () => new Map([['reserved-fork', { sessionState: 'ended' }]]),
+      getThreadStore: () => ({
+        getThreadByParent: async () => ({ thread_id: 'prior-decline' }) as never,
+        listRecentPosts: async () => ({ total: 1, posts: [{ author_id: priorAuthor }] }),
+      }),
+      now: () => recoveryAt,
+    });
+    deps.findSilentResponders = (rows) => detector(rows.filter((row) => row.conversationId === id));
+
+    await sweepExpiredConsults(deps);
+
+    expect(await cascadeRow(id)).toMatchObject({
+      state: 'awaiting_responder', closed_at: null, responder_id: 'resp-2', cascade_cursor: 2,
+      cascade_digest: [{ ownerId: 'resp-1', kind: 'dispatch_failed' }],
+    });
+    expect(reachCalls.filter((call) => call.conversationId === id)).toEqual([
+      expect.objectContaining({ responder: 'resp-2', conversationId: id }),
+    ]);
+  });
+
+  it.each(['terminal', 'missing', 'live-task', 'answerer-post'] as const)(
+    'recovers a ghost reserved launch through the existing cascade with requester follow-ups (%s)',
+    async (evidence) => {
+      const id = await seedConsult({
+        expiresAt: FUTURE,
+        updatedAt: new Date(NOW.getTime() - 60_000).toISOString(),
+        routing: menuSnapshot(['resp-1', 'resp-2'], ['reserved-fork']),
+      });
+      const { deps, reachCalls } = makeDeps({ withReach: true });
+      const task = {
+        workspaceId: WS, class: 'agent-session',
+        state: evidence === 'live-task' ? 'running' : 'ended_unobserved',
+        endedAt: evidence === 'live-task' ? null : new Date(NOW.getTime() - 10 * 60_000).toISOString(),
+        detail: { consultAnswer: { conversationId: id, sourceOwnerId: 'resp-1', answeringOwnerId: 'reserved-fork' } },
+      } as TaskRow;
+      const detector = consultExpiryFindSilentResponders({
+        getPresence: async () => null,
+        resolveSessionStates: async () => new Map(),
+        listAnsweringTasks: async (workspaceId, owner) => {
+          expect(workspaceId).toBe(WS);
+          expect(owner).toBe('reserved-fork');
+          return evidence === 'missing' ? [] : [task];
+        },
+        getThreadStore: () => ({
+          getThreadByParent: async () => ({ thread_id: id }) as never,
+          listRecentPosts: async () => ({ total: 2, posts: [
+            { author_id: 'req-1' },
+            { author_id: evidence === 'answerer-post' ? 'reserved-fork' : 'req-1' },
+          ] }),
+        }),
+        now: () => NOW,
+      });
+      deps.findSilentResponders = (rows) => detector(rows.filter((row) => row.conversationId === id));
+      await sweepExpiredConsults(deps);
+      const row = await cascadeRow(id);
+      if (evidence === 'terminal') {
+        expect(row).toMatchObject({ state: 'awaiting_responder', closed_at: null, responder_id: 'resp-2', cascade_cursor: 1 });
+        expect(row.cascade_digest).toMatchObject([{ ownerId: 'resp-1', kind: 'dispatch_failed' }]);
+        expect(reachCalls.filter((call) => call.conversationId === id)).toEqual([
+          expect.objectContaining({ responder: 'resp-2', conversationId: id }),
+        ]);
+      } else {
+        expect(row).toMatchObject({ state: 'awaiting_responder', responder_id: 'resp-1', cascade_cursor: 0, cascade_digest: [] });
+        expect(reachCalls.filter((call) => call.conversationId === id)).toEqual([]);
+      }
+    },
+  );
 
   it('does not treat a parked knowledge source as silent while its forked answerer is live', async () => {
     const routedAt = new Date(NOW.getTime() - 60_000).toISOString();
@@ -940,12 +1083,15 @@ describe('P-005 requester alert — real message writer and PG replay boundary',
     });
     const first = makeDeps({ withReach: true });
     first.deps.findSilentResponders = async () => new Set([id]);
+    let persistenceFailure: unknown;
     first.deps.notifyRequester = consultExpiryNotifyRequester(async (identity, opts) => {
-      await sendMessage(identity, mutate ? { ...opts, msgId: undefined } : opts);
+      try { await sendMessage(identity, mutate ? { ...opts, msgId: undefined } : opts); }
+      catch (error) { persistenceFailure = error; throw error; }
       throw new Error('transport acknowledgement lost AFTER commit');
     });
     const attempted = await sweepExpiredConsults(first.deps);
     expect(attempted.requesterAlertFailures).toContain(id);
+    expect(persistenceFailure, 'real requester-alert persistence must succeed before injecting acknowledgement loss').toBeUndefined();
     expect(await stateOf(id, ws)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
     const original = (await durableAlerts(id))[0].body;
 
@@ -1299,5 +1445,125 @@ describe('P-003 idle answering sessions end at the consult window (WI-10003199)'
 
     expect(r.answerFailures.find((f) => f.conversationId === id)).toMatchObject({ recorded: true, stopOutcome: 'stop threw: ledger down' });
     expect(String((await attemptsOf(id)).at(-1)?.detail)).toContain('stop threw: ledger down');
+  });
+});
+
+// ── a requester's proceed-reconciliation survives the sweep's terminal writes ──
+// EI-23764501791910357 slice 3. `outcome.reconciliation` (written by consult:reconcile)
+// is what discharges a proceed-consult's reconciliation obligation. The sweep's two
+// outcome-REPLACING terminal writers — the cascade-exhausted expiry and the P-014
+// review-conversion flip — must carry it forward, or a sweep landing after the
+// requester reconciled would silently RE-OPEN the debt.
+describe.each(['confirmed', 'rescoped', 'reversed', 'moot'] as const)('sweepExpiredConsults — carries a recorded reconciliation through the terminal write (EI-23764501791910357): %s', (disposition) => {
+  const RECONCILIATION = {
+    disposition,
+    note: 'kept going on my assumption, narrowed scope when the answer arrived',
+    by: 'req-1',
+    at: PAST,
+    consult_state: 'awaiting_responder',
+  };
+  const cand = (ownerId: string, score: number, similarity: number) => ({
+    ownerId,
+    score,
+    relevance: score,
+    signals: { similarity },
+    liveness: 'live',
+  });
+
+  async function reconcileRow(id: string) {
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET outcome = ${rootSql.json({ reconciliation: RECONCILIATION } as never)}
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+  }
+  async function outcomeOf(id: string) {
+    const rows = (await rootSql`
+      SELECT state, outcome FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`) as unknown as Array<{ state: string; outcome: unknown }>;
+    const row = rows[0]!;
+    return { state: row.state, outcome: typeof row.outcome === 'string' ? JSON.parse(row.outcome) : row.outcome };
+  }
+
+  it('terminal expiry WITH collected answers: the answered-flavored outcome lands BESIDE the reconciliation', async () => {
+    const routing = {
+      relevanceFloor: 0.5,
+      simFloor: 0.4,
+      candidates: [cand('ans-a', 0.9, 0.8), cand('exp-b', 0.8, 0.7)],
+      selection: {
+        min: 1,
+        max: 2,
+        selected: ['ans-a', 'exp-b'].map((ownerId) => ({
+          ownerId, via: 'floor', score: 0.8, relevance: 0.8, similarity: 0.7, liveness: 'live',
+        })),
+      },
+    };
+    const id = await seedConsult({ latency: 'hard-blocked', routing, cascadeCursor: 1 });
+    await setDigest(id, [{ ownerId: 'ans-a', kind: 'answer', at: PAST, excerpt: 'a real answer' }]);
+    await reconcileRow(id);
+    const { deps } = makeDeps({ withReach: true });
+    await sweepExpiredConsults(deps);
+
+    expect(await outcomeOf(id)).toEqual({
+      state: 'expired',
+      outcome: {
+        disposition: 'cascade_exhausted_with_answers',
+        answers: 1,
+        answered_by: ['ans-a'],
+        reconciliation: RECONCILIATION,
+      },
+    });
+  });
+
+  it('terminal expiry with ZERO answers: the reconciliation-only outcome is left intact (a NULL new outcome must not erase it)', async () => {
+    const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot(['only-r']) });
+    await reconcileRow(id);
+    const { deps } = makeDeps({ withReach: true });
+    await sweepExpiredConsults(deps);
+
+    expect(await outcomeOf(id)).toEqual({ state: 'expired', outcome: { reconciliation: RECONCILIATION } });
+  });
+
+  it('CONTROL: terminal expiry with zero answers and NO reconciliation still writes a NULL outcome (not "{}" or a JSON null)', async () => {
+    const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot(['only-r']) });
+    const { deps } = makeDeps({ withReach: true });
+    await sweepExpiredConsults(deps);
+
+    const [{ sql_null }] = (await rootSql`
+      SELECT outcome IS NULL AS sql_null FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`) as unknown as Array<{ sql_null: boolean }>;
+    expect(sql_null).toBe(true);
+  });
+
+  it('P-014 review conversion: the converted_to_review_work_item outcome lands BESIDE the reconciliation', async () => {
+    seq += 1;
+    const id = `conv-recon-review-${seq}`;
+    const at = (offsetMin: number) => new Date(NOW.getTime() + offsetMin * 60_000).toISOString();
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question,
+         latency_contract, expires_at, routing, cascade_cursor, exchanges_used, created_at, updated_at, outcome)
+      VALUES
+        (${WS}, ${id}, 'req-1', 'resp-1', 'awaiting_responder', 'Vet acceptance rubric R rev 2',
+         'proceed', ${at(50)}::timestamptz,
+         ${rootSql.json({ policy: 'rubric-vetting', ...menuSnapshot(['resp-1', 'resp-2']) } as never)}, 0, 0,
+         ${at(-70)}::timestamptz, ${at(-70)}::timestamptz,
+         ${rootSql.json({ reconciliation: RECONCILIATION } as never)})`;
+    await rootSql`
+      INSERT INTO harness_shared.coord_conversations (workspace_id, id, kind, state, updated_at)
+      VALUES (${WS}, ${id}, 'consult', 'open', ${at(-70)}::timestamptz)`;
+    const base = makeDeps({ withReach: true });
+    base.deps.fileReviewWorkItem = async (req) => ({ id: `WI-review-${req.conversationId}` });
+    await sweepExpiredConsults(base.deps);
+
+    expect(await outcomeOf(id)).toEqual({
+      state: 'expired',
+      outcome: {
+        disposition: 'converted_to_review_work_item',
+        work_item_id: `WI-review-${id}`,
+        review_kind: 'rubric-vetting',
+        silent_responder: 'resp-1',
+        reconciliation: RECONCILIATION,
+      },
+    });
   });
 });

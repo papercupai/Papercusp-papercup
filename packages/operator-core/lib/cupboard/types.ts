@@ -29,6 +29,19 @@
  * change. Clients reject unknown versions to fail fast on
  * server-newer-than-client mismatch.
  */
+import type { ResolvedListingCoords } from './resolve-listing-by-kind';
+
+/** Portable installation receipt shared by installers and commerce transports. */
+export interface InstalledPluginProvenance {
+  readonly schema: 'papercusp.plugin-installation/v1';
+  readonly name: string;
+  readonly version: string;
+  readonly listing: ResolvedListingCoords;
+  readonly contentSource: 'r2' | 'github';
+  readonly contentFingerprint: string;
+  readonly hadListing: boolean;
+}
+
 export const CUPBOARD_SCHEMA_VERSION = 1 as const;
 export type CupboardSchemaVersion = typeof CUPBOARD_SCHEMA_VERSION;
 

@@ -46,7 +46,7 @@ beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = 'ws-x'`;
   await org.adminSql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = 'ws-x'`;
   await org.adminSql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = 'ws-x'`;
-  await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = 'ws-x'`;
+  await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = 'ws-x'`;
   await org.adminSql`DELETE FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS}`;
   await org.adminSql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug = ${HARNESS}`;
   await org.adminSql`
@@ -108,7 +108,7 @@ describe('listPlanRuns enrichment (P-022)', () => {
   it('folds external-trigger provenance onto the existing plan-run row', async () => {
     const id = await seedRun({ outcome: 'success', launchedAt: 1_780_000_000_000, durationMs: 5000 });
     const sources = await org.adminSql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status, config)
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, status, config)
       VALUES ('ws-x', 'slack', 'connected', '{"teamId":"T1"}'::jsonb)
       RETURNING id`;
     const bindings = await org.adminSql<Array<{ id: string }>>`
@@ -125,7 +125,7 @@ describe('listPlanRuns enrichment (P-022)', () => {
          plan_run_ref, started_at, completed_at)
       VALUES ('ws-x', ${bindings[0].id}, 'slack:message-1', 'succeeded',
               ${JSON.stringify({ trigger: { payload: { text: 'Ship the release', channelId: 'C1' } } })}::text::jsonb,
-              ${JSON.stringify({ slackThreadReply: { channelId: 'C1', threadId: '1777.1', messageTs: '1777.2' } })}::text::jsonb,
+              ${JSON.stringify({ gmailDraft: { draftId: 'draft-1', subject: 'Re: Ship the release' } })}::text::jsonb,
               1, ${String(id)}, now(), now())`;
 
     const run = (await listPlanRuns(TEMPLATE, { harnessSlug: HARNESS }))[0]!;
@@ -136,10 +136,13 @@ describe('listPlanRuns enrichment (P-022)', () => {
       policyDisposition: 'ran',
       planRun: { id, status: 'done', durationMs: 5000 },
     });
-    expect(run.triggerRun?.outcomeLinks[0]).toMatchObject({
-      kind: 'slack-thread',
-      href: expect.stringContaining('https://app.slack.com/client/T1/C1/'),
-    });
+    expect(run.triggerRun?.outcomeLinks).toEqual([
+      {
+        kind: 'gmail-draft',
+        label: 'Re: Ship the release',
+        href: 'https://mail.google.com/mail/u/0/#drafts/draft-1',
+      },
+    ]);
   });
 });
 

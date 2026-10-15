@@ -57,6 +57,7 @@ import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
+import { isInForeignHive } from './lib/foreign-hive-submodules.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const ROOTS = ['libs', 'packages', 'apps'];
@@ -239,6 +240,9 @@ export function scanTree() {
       const rel = relative(ROOT, file);
       // The mechanism itself is exempt — it IS the sanctioned pin.
       if (rel.startsWith('libs/generic/module-singleton/')) continue;
+      // A foreign hive's pins follow its OWN hive's conventions and are judged by that hive's
+      // gate (scripts/lib/foreign-hive-submodules.mjs), so they are not this tree's population.
+      if (isInForeignHive(rel)) continue;
 
       let src;
       try {

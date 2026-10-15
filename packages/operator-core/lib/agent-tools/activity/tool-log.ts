@@ -122,14 +122,35 @@ function ownerResolutionError(failure: OwnerResolutionFailure) {
   };
 }
 
+const toolLogBaseArgs = z.object({
+  /** Scope to one owner (coordination id); the literal 'self' resolves you. */
+  owner: z.string().min(1).max(256).optional(),
+  /** Scope to one native session id. */
+  session_id: z.string().min(1).max(256).optional(),
+  /** Only calls strictly after this absolute ISO timestamp. Relative durations are not supported. */
+  since: isoBoundary.optional(),
+  /** Calls at or before this absolute ISO timestamp. Relative durations are not supported. */
+  until: isoBoundary.optional(),
+  /** Itemized-line budget; older successes decay first (default 40). */
+  max_lines: z.number().int().min(5).max(200).optional(),
+  /** Touched-set size on the decay line (default 8, integer 1-25). */
+  top_k: z
+    .number()
+    .int()
+    .min(1)
+    .max(25)
+    .optional()
+    .describe('Touched-set size on the decay line (default 8; maximum 25).'),
+});
+
 export default defineTool({
   name: 'activity:tool-log',
   profile: 'engineer',
   description:
-    "Compact deterministic tool-call log for a session or owner: one short line per call (tool + primary target + ✓/✗), consecutive same-tool runs collapsed ×N, over-budget history decayed to per-tool counts + top-K touched files/commands (error lines survive longest). Rendered from the same ledger activity:recent reads, at a fraction of the tokens — the post-compaction / peer-catch-up view of what a session actually did.",
+    "Compact deterministic tool-call log for one session or owner: one short line per call (tool + primary target + ✓/✗), consecutive same-tool runs collapsed ×N, over-budget history decayed to per-tool counts + top-K touched files/commands (error lines survive longest). Pass at least one of `owner` or `session_id`; since/until narrow that scope and cannot replace it. Rendered from the same ledger activity:recent reads, at a fraction of the tokens — the post-compaction / peer-catch-up view of what a session actually did.",
   capability: 'activity:read',
   guidance: {
-    when: "You want the cheap chronological picture of what a session DID (yours pre-compaction, or a peer's) — not the full row stream. Pass owner:'self' for your own trail; use absolute ISO 8601 timestamps for since/until to window it (relative durations such as '-15 min' are not supported).",
+    when: "You want the cheap chronological picture of what a session DID (yours pre-compaction, or a peer's) — not the full row stream. Pass `owner:'self'` for your own trail or `session_id` for a native session; at least one is required. Use absolute ISO 8601 timestamps for since/until to narrow that scope (relative durations such as '-15 min' are not supported).",
     notWhen: 'For raw rows with detail payloads use `activity:recent`; for the agent-authored turn notes use `journal:recent`.',
     seeAlso: ['activity:recent (raw ledger rows)', 'journal:recent (per-turn journal notes)'],
     // EI-21837773431817305 — the mirror image of activity:recent's redirects, filed by a
@@ -139,7 +160,7 @@ export default defineTool({
     // of `session_id`, so the divergence is genuinely hard to predict from either side.
     argRedirects: {
       limit:
-        'max_lines — this tool budgets ITEMIZED LINES rather than rows (default 40, 5-200), and older successes decay out first, so it is a display budget and not a row count. RENAME the key rather than dropping it, or you silently get the default 40 lines. `limit` is the spelling used by the sibling raw-row read, activity:recent. Use `top_k` to size the touched-set on the decay line.',
+        'max_lines — this tool budgets ITEMIZED LINES rather than rows (default 40, 5-200), and older successes decay out first, so it is a display budget and not a row count. RENAME the key rather than dropping it, or you silently get the default 40 lines. `limit` is the spelling used by the sibling raw-row read, activity:recent. Use `top_k` (default 8, integer 1-25) to size the touched-set on the decay line.',
       // EI-21149038705756492 — filed alongside `limit` by the SAME rejection: a cold-wake
       // monitor arrived with the remembered `ownerId` + `limit` pair and got one bare
       // unrecognized-key list naming neither remedy. `limit` above was repaired and this
@@ -165,20 +186,10 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   rolesQuota: { operator: { perRun: 60 } },
   result: ACTIVITY_TOOL_LOG_RESULT_SCHEMA,
-  args: z.object({
-    /** Scope to one owner (coordination id); the literal 'self' resolves you. */
-    owner: z.string().min(1).max(256).optional(),
-    /** Scope to one native session id. */
-    session_id: z.string().min(1).max(256).optional(),
-    /** Only calls strictly after this absolute ISO timestamp. Relative durations are not supported. */
-    since: isoBoundary.optional(),
-    /** Only calls at or before this absolute ISO timestamp. Relative durations are not supported. */
-    until: isoBoundary.optional(),
-    /** Itemized-line budget; older successes decay first (default 40). */
-    max_lines: z.number().int().min(5).max(200).optional(),
-    /** Touched-set size on the decay line (default 8). */
-    top_k: z.number().int().min(1).max(25).optional(),
-  }),
+  args: z.union([
+    toolLogBaseArgs.extend({ owner: z.string().min(1).max(256) }),
+    toolLogBaseArgs.extend({ session_id: z.string().min(1).max(256) }),
+  ]),
   async handler(args, ctx) {
     const identity = args.owner ? resolveAgentIdentity(ctx) : null;
     const requestedOwnerId = args.owner === 'self' ? identity!.ownerId : args.owner;

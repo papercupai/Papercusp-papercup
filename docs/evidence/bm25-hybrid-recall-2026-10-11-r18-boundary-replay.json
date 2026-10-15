@@ -1,0 +1,786 @@
+{
+  "kind": "bm25-hybrid-recall-diagnostic-replay",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "startedAt": "2026-10-11T21:32:58.486Z",
+  "generatedAt": "2026-10-11T21:33:04.930Z",
+  "replayFrom": "docs/evidence/bm25-hybrid-recall-2026-10-11-r18-d032-b.json",
+  "replayIndices": [
+    47,
+    24,
+    54,
+    31
+  ],
+  "replayReps": 3,
+  "sampleFingerprint": "087fe0e1a03d2b49dc1e37977db56233a5f577f08850ba01d6600e83c7504433",
+  "embeddingsPrecomputed": true,
+  "judged": false,
+  "rows": [
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 48.7,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 35,
+          "semantic:embeddings": 7
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 52.3,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 39,
+          "semantic:embeddings": 5
+        },
+        "attrib": {
+          "pgExecMs": 19.7,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 9.8,
+          "loopDelayMaxMs": 10.5,
+          "psiIoAvg10": 34.5,
+          "schedBeforeSkewMs": 0.2,
+          "schedAfterSkewMs": 0.7,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 18.1,
+          "pgRunqMs": 0.2,
+          "clientRunqMs": 1.1,
+          "pgBackendsUnseen": 2,
+          "pgBackendsLateBaselined": 2,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 3,
+            "activeSamples": 2,
+            "byEvent": {
+              "CPU": 2
+            },
+            "maxPollGapMs": 23.7
+          },
+          "waitPollsExcluded": 0,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 34.3,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 24,
+          "semantic:embeddings": 7
+        },
+        "attrib": {
+          "pgExecMs": 3.9,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 8.9,
+          "loopDelayMaxMs": 10.5,
+          "psiIoAvg10": 34.5,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.4,
+          "pgPidsMeasured": 1,
+          "pgCpuMs": 23.4,
+          "pgRunqMs": 0,
+          "clientRunqMs": 0.1,
+          "pgBackendsUnseen": 0,
+          "pgBackendsLateBaselined": 0,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 0,
+            "byEvent": {},
+            "maxPollGapMs": 23.2
+          },
+          "waitPollsExcluded": 0,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 34.8,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 24,
+          "semantic:embeddings": 8
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 125.6,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 114,
+          "semantic:embeddings": 6
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 1113.2,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 113,
+          "semantic:embeddings": 6
+        },
+        "attrib": {
+          "pgExecMs": 10.4,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 20.8,
+          "loopDelayMaxMs": 10.6,
+          "psiIoAvg10": 34.5,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.3,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 120.5,
+          "pgRunqMs": 0.2,
+          "clientRunqMs": 0.3,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 7,
+            "activeSamples": 7,
+            "byEvent": {
+              "Client:ClientRead": 1,
+              "CPU": 6
+            },
+            "maxPollGapMs": 25.2
+          },
+          "waitPollsExcluded": 0,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 47.5,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 37,
+          "semantic:embeddings": 6
+        },
+        "attrib": {
+          "pgExecMs": 8.9,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 7.4,
+          "loopDelayMaxMs": 10.1,
+          "psiIoAvg10": 37.67,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "pgPidsMeasured": 1,
+          "pgCpuMs": 33.7,
+          "pgRunqMs": 0.2,
+          "clientRunqMs": 0,
+          "pgBackendsUnseen": 0,
+          "pgBackendsLateBaselined": 0,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 2,
+            "byEvent": {
+              "CPU": 2
+            },
+            "maxPollGapMs": 22.8
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 44.5,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 35,
+          "semantic:embeddings": 5
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 42.8,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 33,
+          "semantic:embeddings": 5
+        },
+        "attrib": {
+          "pgExecMs": 14.4,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 6.6,
+          "loopDelayMaxMs": 10.6,
+          "psiIoAvg10": 37.67,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "pgPidsMeasured": 1,
+          "pgCpuMs": 11,
+          "pgRunqMs": 0,
+          "clientRunqMs": 0,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 1,
+            "byEvent": {
+              "CPU": 1
+            },
+            "maxPollGapMs": 22.8
+          },
+          "waitPollsExcluded": 0,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 58.3,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 47,
+          "semantic:embeddings": 5
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 30.9,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 23,
+          "semantic:embeddings": 5
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 34.6,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 27,
+          "semantic:embeddings": 5
+        },
+        "attrib": {
+          "pgExecMs": 4.9,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 7.4,
+          "loopDelayMaxMs": 9.9,
+          "psiIoAvg10": 37.67,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.1,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 20.2,
+          "pgRunqMs": 0,
+          "clientRunqMs": 0,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 1,
+            "byEvent": {
+              "CPU": 1
+            },
+            "maxPollGapMs": 22.9
+          },
+          "waitPollsExcluded": 0,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 115,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 106,
+          "semantic:embeddings": 4
+        },
+        "attrib": {
+          "pgExecMs": 13.9,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 2,
+          "clientCpuMs": 10.6,
+          "loopDelayMaxMs": 11.3,
+          "psiIoAvg10": 37.67,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 81.6,
+          "pgRunqMs": 0.1,
+          "clientRunqMs": 1.1,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 5,
+            "activeSamples": 4,
+            "byEvent": {
+              "CPU": 4
+            },
+            "maxPollGapMs": 23.2
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 98.8,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 90,
+          "semantic:embeddings": 4
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 35.7,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 30,
+          "semantic:embeddings": 3
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 47,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 37,
+          "semantic:embeddings": 5
+        },
+        "attrib": {
+          "pgExecMs": 8.6,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 8.6,
+          "loopDelayMaxMs": 10.4,
+          "psiIoAvg10": 37.67,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 20.2,
+          "pgRunqMs": 0.1,
+          "clientRunqMs": 0,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 3,
+            "activeSamples": 2,
+            "byEvent": {
+              "CPU": 2
+            },
+            "maxPollGapMs": 21.9
+          },
+          "waitPollsExcluded": 0,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 39.2,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 30,
+          "semantic:embeddings": 4
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 43,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 32,
+          "semantic:embeddings": 6
+        },
+        "attrib": {
+          "pgExecMs": 17.1,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 5.6,
+          "loopDelayMaxMs": 10.4,
+          "psiIoAvg10": 37.67,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 13.9,
+          "pgRunqMs": 0,
+          "clientRunqMs": 0.5,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 1,
+            "byEvent": {
+              "CPU": 1
+            },
+            "maxPollGapMs": 22.1
+          },
+          "waitPollsExcluded": 0,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 27.5,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 21,
+          "semantic:embeddings": 4
+        },
+        "attrib": {
+          "pgExecMs": 4.7,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 6.1,
+          "loopDelayMaxMs": 10.2,
+          "psiIoAvg10": 37.67,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 21.5,
+          "pgRunqMs": 0,
+          "clientRunqMs": 0,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 2,
+            "byEvent": {
+              "CPU": 2
+            },
+            "maxPollGapMs": 22.7
+          },
+          "waitPollsExcluded": 0,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 24.5,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 17,
+          "semantic:embeddings": 5
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 103.4,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 92,
+          "semantic:embeddings": 6
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 113.7,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 105,
+          "semantic:embeddings": 4
+        },
+        "attrib": {
+          "pgExecMs": 6.5,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 9,
+          "loopDelayMaxMs": 10.6,
+          "psiIoAvg10": 37.67,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 85.8,
+          "pgRunqMs": 0.1,
+          "clientRunqMs": 0.1,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 5,
+            "activeSamples": 4,
+            "byEvent": {
+              "CPU": 4
+            },
+            "maxPollGapMs": 23.2
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 43.1,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 34,
+          "semantic:embeddings": 5
+        },
+        "attrib": {
+          "pgExecMs": 8.3,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 1,
+          "clientCpuMs": 9.8,
+          "loopDelayMaxMs": 10.6,
+          "psiIoAvg10": 41.17,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "pgPidsMeasured": 3,
+          "pgCpuMs": 14.9,
+          "pgRunqMs": 0,
+          "clientRunqMs": 0,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 1,
+            "byEvent": {
+              "CPU": 1
+            },
+            "maxPollGapMs": 22.3
+          },
+          "waitPollsExcluded": 0,
+          "waitSamplerFailed": false
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 55.2,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 44,
+          "semantic:embeddings": 6
+        },
+        "dumpActive": false
+      }
+    }
+  ]
+}

@@ -818,6 +818,8 @@ export async function readPotSoakReport(
     sql<PipelineAggRow[]>`
       SELECT count(*) FILTER (
                WHERE kind = 'green_checkpoint'
+                 -- Deliberately NOT a 'skipped-%' prefix: 'skipped-misconfigured' (a gate that
+                 -- can never promote, WI-10006317) must count as an unsuccessful gate fire.
                  AND status NOT IN ('skipped-disabled', 'skipped-locked')
              )::int AS green_total,
              count(*) FILTER (

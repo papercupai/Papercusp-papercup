@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "image": { "id": "papercusp-workspace-host" },
-  "source": { "repository": "https://github.com/Papercusp/papercusp.git" },
+  "source": {},
   "baseImage": {
     "architecture": "x86_64",
     "reference": "projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260826",

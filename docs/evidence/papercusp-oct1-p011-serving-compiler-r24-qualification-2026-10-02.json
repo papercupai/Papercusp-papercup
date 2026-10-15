@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005344",
+  "parentWorkItem": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "planItem": "P-011",
+  "rawEvidence": {
+    "path": "docs/evidence/papercusp-oct1-p011-serving-compiler-r24-2026-10-02.json",
+    "bytes": 32204,
+    "sha256": "d3929023e6b7586ff35b382989a266594cd0da41a6d201ab03bfb3a056ee3ead",
+    "originalReceipt": {
+      "sha256": "0edfffc806e7b9c098fd32d93e97a628472c12bcac6f921daf720a4bdaf0175f",
+      "bytes": 32255,
+      "artifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/originals/0edfffc806e7b9c098fd32d93e97a628472c12bcac6f921daf720a4bdaf0175f.json"
+      }
+    }
+  },
+  "test": {
+    "file": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "sha256": "1898b7f7c99a4b4515b05f9dcf7f8e82059ce37c22a70b7f5db4bbe87db8cd1d",
+    "bytes": 67909,
+    "namePattern": "attributes the serving HTTP mutation-fence compiler",
+    "passed": 1,
+    "failed": 0,
+    "filteredSkipped": 7,
+    "ledgerId": 20493645,
+    "ledgerStatus": "pass",
+    "harness": "papercusp",
+    "source": "local",
+    "commitSha": "6789c24c9aae11e10cf158e1f24522f92abf36f1",
+    "worktreeDirty": true,
+    "routerProvenance": "named test path clean post-run; complete executed graph currentness unknown"
+  },
+  "servingArtifact": {
+    "sourceDirectory": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-3e4e69880f2d.0m9uj7/checkout/apps/operator/dist-host",
+    "healthSha": "3e4e69880f",
+    "beforeHealthObservedAt": "2026-10-02T07:13:10.706Z",
+    "afterHealthObservedAt": "2026-10-02T07:19:15.296Z",
+    "bundleSha256": "ba55a2d10b6fe513503f76f27f3fb3e041bfbcfd1795f25e49fa0962763e95c3",
+    "workerSha256": "fc4febf9df144a3a704fb29d5dd3dc6a7e4350bda29d17511bfcc0819187fb00",
+    "runtime": "disposable copies of the selected staging generation; independent private full-operator request-only processes and private database; root node_modules symlink is shared"
+  },
+  "observed": {
+    "controlForkCalls": 0,
+    "compilerForkCalls": 3,
+    "namedCaller": "testImportClosures -> mutationProbeRefusal -> runTestFilesCore -> HTTP tool dispatch",
+    "identicalTestingRequests": 3,
+    "resourceSamplesPerCohort": 5,
+    "nodeWorkers": 3,
+    "esbuildDescendants": 3,
+    "esbuildExecutableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+    "nativeDescendantPeakPssKiB": [
+      22888,
+      22052,
+      17916
+    ],
+    "nodeWorkerPeakPssKiB": [
+      71854,
+      71721,
+      71722
+    ],
+    "compilerNativeSamples": [
+      3,
+      4,
+      4
+    ],
+    "nodeWorkerSamples": [
+      24,
+      23,
+      24
+    ],
+    "controlParentPssKiB": [
+      920582,
+      926239,
+      926370,
+      926499,
+      926516
+    ],
+    "compilerParentPssKiB": [
+      920095,
+      926019,
+      926202,
+      926383,
+      926439
+    ],
+    "debuggerPauses": 0,
+    "unreaped": [],
+    "leasesReleased": true,
+    "hostsReaped": true
+  },
+  "sampler": {
+    "intervalMs": 20,
+    "control": {
+      "ticks": 109,
+      "totalMs": 40.3604309999846,
+      "maxMs": 16.222395000000688
+    },
+    "compiler": {
+      "ticks": 158,
+      "totalMs": 482.81366699998034,
+      "maxMs": 48.193459999998595
+    },
+    "change": "Cache executable SHA by device/inode/size/mtime; warm parent identity; record polling work. Do not interpret the nominal interval as a measured hard sampling deadline.",
+    "causality": "R24 observes children after this repair. Different serving bundle from R23 means this is not an isolated causal A/B of executable-hash caching."
+  },
+  "sourceFingerprintsObservedPostRun": [
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "sha256": "e6f6d3888d527ebfee97a62dc83111e0bf01997e26cfb87512db86fe8b2df91c"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "sha256": "162b5115921d326ec78d064a9e2ab38d3affd1a1d551f42363a6a958464d21c0"
+    },
+    {
+      "path": "apps/operator/bin/malloc-arena-reexec.ts",
+      "sha256": "eeebd281309f74833765e49130272c1476487f3a76da403be5ecc7d2671e8283"
+    }
+  ],
+  "limitations": [
+    "Unsupported-extension lease is the independent control; code-module lease is the compiler intervention. Requests and source bytes match, but lease type differs.",
+    "All requests are refused mutation preflights. No tests start inside these hosts.",
+    "One-second idle is bounded fixture idle, not an ordinary production baseline.",
+    "V8 heap/external/ArrayBuffers counters and executable PSS are separate quantities, not a total native allocation estimate.",
+    "Historical 4.2 GiB services and their callers remain unconfirmed. No production memory reduction is established.",
+    "Seven filtered tests did not execute; no full-suite claim.",
+    "Complete executed source graph and ambient deployment acceptance remain unknown. This supports the P-011 caller/resource subtask only; R-8/R-9 and final shipment remain open."
+  ],
+  "previousFailedAttempts": {
+    "R20": 20488672,
+    "R21": 20488708,
+    "R22": 20488728,
+    "R23": 20491229,
+    "note": "Failed attempts and raw artifacts remain preserved. R23 ledger is unscoped (harnessSlug null); R24 is explicitly harness-bound."
+  }
+}

@@ -54,7 +54,9 @@ function breach(name: string, kind: CoverageBreach['kind']): CoverageBreach {
 }
 
 /** A pass in which everything injection reads is healthy. */
-const HEALTHY: SurfaceCoverage[] = [surface(PARENT), surface(CHUNKS), surface(WORK_ITEM_VEC)];
+const HEALTHY: SurfaceCoverage[] = [surface(PARENT), surface(CHUNKS), surface(WORK_ITEM_VEC),
+  surface('harness_shared.harness_plans.embedding'), surface('harness_shared.doc_sections.embedding'),
+  surface('harness_shared.text_chunks.embedding:plans'), surface('harness_shared.text_chunks.embedding:report')];
 
 describe('injection source list stays pinned to the real corpus leg', () => {
   it('matches CORPUS_SOURCE_NAMES exactly', () => {
@@ -75,7 +77,7 @@ describe('healthy pass', () => {
     const r = assessInjectionReach(HEALTHY, []);
     expect(r.breaches).toEqual([]);
     expect(r.degraded).toBe(false);
-    expect(r.semanticSourceCount).toBe(2);
+    expect(r.semanticSourceCount).toBe(5);
     // The single-point-of-failure note is for the ONE-source case, which this no
     // longer is — see the two-sources-now block below for why that changed.
     expect(r.warning).toBeNull();
@@ -125,7 +127,7 @@ describe('work_items.embedding IS injection coverage since P-005', () => {
     // Attributing an unrelated surface here is the original misreading with a new
     // face, so it keeps a failing control of its own.
     const r = assessInjectionReach(HEALTHY, [
-      breach('harness_shared.harness_plans.embedding', 'total-coverage'),
+      breach('harness_shared.harness_decisions.body_embedding', 'total-coverage'),
     ]);
     expect(r.breaches).toEqual([]);
     expect(r.degraded).toBe(false);

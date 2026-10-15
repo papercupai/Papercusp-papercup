@@ -18,9 +18,11 @@ interface Schema {
   items?: Schema;
   default?: unknown;
   description?: string;
+  title?: string;
   minLength?: number;
   maximum?: number;
   exclusiveMinimum?: number;
+  anyOf?: Schema[];
 }
 
 interface Props {
@@ -64,7 +66,7 @@ export default function SchemaForm({ schema, value, onChange }: Props) {
         return (
           <label key={key} className="pc-dev-form-row">
             <span className="pc-dev-form-key">
-              {key}
+              {child.title || key}
               {isReq && <em className="pc-dev-req">*</em>}
               {child.description && (
                 <span className="pc-dev-form-hint" title={child.description}>
@@ -86,6 +88,21 @@ function renderField(
   value: unknown,
   setValue: (v: unknown) => void,
 ) {
+  // Zod emits nullable fields as anyOf:[<field>,{type:'null'}].
+  // Preserve the field's control and value type rather than treating the
+  // whole union as an untyped string. More complex unions use JSON input.
+  if (schema.anyOf) {
+    const alternatives = schema.anyOf.filter(child => child.type !== 'null');
+    if (alternatives.length === 1 && alternatives.length < schema.anyOf.length) {
+      return renderField(key, alternatives[0], value, setValue);
+    }
+    return <textarea className="pc-dev-input pc-dev-input-multi" rows={3}
+      value={value === undefined ? '' : JSON.stringify(value)}
+      onChange={event => {
+        try { setValue(event.target.value.trim() === '' ? undefined : JSON.parse(event.target.value)); }
+        catch { /* keep typing */ }
+      }} />;
+  }
   if (Array.isArray(schema.enum)) {
     const cur = ((value as string) ?? (schema.default as string) ?? '') || '_none';
     return (
@@ -121,7 +138,7 @@ function renderField(
         className="pc-dev-input pc-dev-input-multi"
         rows={3}
         placeholder='["item", …]'
-        value={Array.isArray(value) ? JSON.stringify(value) : ''}
+        value={Array.isArray(value) || value === null ? JSON.stringify(value) : ''}
         onChange={(e) => {
           try {
             const v = e.target.value.trim() === '' ? undefined : JSON.parse(e.target.value);

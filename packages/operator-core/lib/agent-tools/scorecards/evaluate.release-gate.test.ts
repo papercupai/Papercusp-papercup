@@ -15,9 +15,21 @@ import { mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
+  const lookup = vi.fn();
+  const readRubricWithoutSeeding = vi.fn(async (rubricId: string) => {
+    const rubric = await lookup(rubricId);
+    return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+  });
+  const readRubric = vi.fn(async (rubricId: string) => {
+    const rubric = await lookup(rubricId);
+    return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+  });
   return {
     ...actual,
-    getRubric: vi.fn(),
+    getRubric: lookup,
+    getRubricWithoutSeeding: lookup,
+    readRubricWithoutSeeding,
+    readRubric,
     getRubricPlanRevision: vi.fn(async () => 3),
     readRubricPlanRevision: vi.fn(async () => ({ ok: true as const, revision: 3 })),
   };
@@ -35,7 +47,7 @@ vi.mock('../../harness/improvements/capture-core', () => ({ captureImprovement: 
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: vi.fn(async () => {}) }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
-import { getRubric } from '../../rubrics';
+import { getRubricWithoutSeeding, readRubric, readRubricWithoutSeeding } from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import {
   listScorecards,
@@ -113,7 +125,9 @@ const blocked = (reasonCode: string): ScorecardReleaseGateBinding => ({
   failingTests: reasonCode === 'gate-not-green' ? ['lint:tsc'] : [],
 });
 
-const getRubricM = vi.mocked(getRubric);
+const getRubricM = vi.mocked(getRubricWithoutSeeding);
+const readRubricM = vi.mocked(readRubric);
+const readRubricWithoutSeedingM = vi.mocked(readRubricWithoutSeeding);
 const listScorecardsM = vi.mocked(listScorecards);
 const releaseBindingM = vi.mocked(resolveScorecardReleaseGateBinding);
 const captureM = vi.mocked(captureImprovement);
@@ -156,6 +170,14 @@ const RELEASE_ISSUE: EngineerIssue = {
 beforeEach(() => {
   vi.clearAllMocks();
   getRubricM.mockResolvedValue(RELEASE_RUBRIC);
+  readRubricWithoutSeedingM.mockImplementation(async (rubricId) => {
+    const rubric = await getRubricM(rubricId);
+    return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
+  });
+  readRubricM.mockImplementation(async (rubricId) => {
+    const rubric = await getRubricM(rubricId);
+    return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
+  });
   listScorecardsM.mockResolvedValue([]);
   releaseBindingM.mockResolvedValue(bound());
   mockResolvedTyped(captureM, {

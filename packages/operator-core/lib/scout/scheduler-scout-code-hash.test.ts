@@ -12,10 +12,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   recordScoutTick: vi.fn(async (_input: Record<string, unknown>) => {}),
   currentScoutCodeHash: vi.fn<() => string | null>(() => 'hash-live-123'),
+  // Null by default so the WI-5397 cases below see only their own stamp.
+  hostBuildSha: vi.fn<() => string | null>(() => null),
 }));
 
 vi.mock('./tick-ledger', () => ({ recordScoutTick: mocks.recordScoutTick }));
 vi.mock('./scout-code-identity', () => ({ currentScoutCodeHash: mocks.currentScoutCodeHash }));
+vi.mock('../serving-host-identity', () => ({
+  getServingHostIdentity: () => ({ host: 'test-host', processId: 1, buildSha: mocks.hostBuildSha() }),
+}));
 vi.mock('../workspace-brain-scope', () => ({
   isWorkspaceCoordinationOn: async () => false,
   workspaceBrainScopeKey: (workspaceId: string) => workspaceId,
@@ -78,5 +83,44 @@ describe("buildScoutTickDeps().recordTick — scoutCodeHash stamp (WI-5397)", ()
     await deps().recordTick!({ status: 'gated', gate: 'no-trigger' });
     const call = mocks.recordScoutTick.mock.calls[0]![0] as { detail?: Record<string, unknown> };
     expect(call.detail).toEqual({ scoutCodeHash: 'hash-only' });
+  });
+});
+
+describe('buildScoutTickDeps().recordTick — hostBuildSha stale-host stamp (P-006, EI-18700942267136001)', () => {
+  beforeEach(() => {
+    mocks.recordScoutTick.mockClear();
+    mocks.hostBuildSha.mockReturnValue(null);
+  });
+
+  const deps = () =>
+    buildScoutTickDeps({
+      harnessSlug: 'papercup',
+      runCycle: async () => ({ provenance: [] }),
+      readIdleRatio: async () => 1,
+      readFrictionSignals: async () => 0,
+    });
+
+  it('stamps the build the running host LOADED on ran, gated and error ticks alike, beside scoutCodeHash', async () => {
+    mocks.currentScoutCodeHash.mockReturnValue('hash-live-123');
+    mocks.hostBuildSha.mockReturnValue('e447980feb0000000000000000000000000000ab');
+    await deps().recordTick!({ status: 'ran', detail: { cycleId: 'c1' } });
+    await deps().recordTick!({ status: 'gated', gate: 'min-interval' });
+    await deps().recordTick!({ status: 'error', detail: { error: 'boom' } });
+    const details = mocks.recordScoutTick.mock.calls.map((c) => (c[0] as { detail?: Record<string, unknown> }).detail);
+    expect(details).toEqual([
+      { cycleId: 'c1', scoutCodeHash: 'hash-live-123', hostBuildSha: 'e447980feb0000000000000000000000000000ab' },
+      { scoutCodeHash: 'hash-live-123', hostBuildSha: 'e447980feb0000000000000000000000000000ab' },
+      { error: 'boom', scoutCodeHash: 'hash-live-123', hostBuildSha: 'e447980feb0000000000000000000000000000ab' },
+    ]);
+  });
+
+  it('carries the build stamp alone when the code hash is unreadable, and omits it when the build is unproven', async () => {
+    mocks.currentScoutCodeHash.mockReturnValue(null);
+    mocks.hostBuildSha.mockReturnValue('abc1234');
+    await deps().recordTick!({ status: 'gated', gate: 'no-trigger' });
+    mocks.hostBuildSha.mockReturnValue(null);
+    await deps().recordTick!({ status: 'gated', gate: 'no-trigger' });
+    const details = mocks.recordScoutTick.mock.calls.map((c) => (c[0] as { detail?: Record<string, unknown> }).detail);
+    expect(details).toEqual([{ hostBuildSha: 'abc1234' }, undefined]);
   });
 });

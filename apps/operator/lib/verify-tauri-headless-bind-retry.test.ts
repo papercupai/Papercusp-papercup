@@ -23,7 +23,8 @@
  * Tauri/Xvfb/sidecar stack, so this wiring can only be asserted at the wiring
  * site, not by running it in CI.
  */
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -39,6 +40,157 @@ const SCRIPT =
   process.env.PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
 const BUILD_RS = resolve(__dirname, '../../../papercusp-desktop/src-tauri/build.rs');
+
+describe('WI-6554700010008930 — boot bind evidence survives retry and cleanup', () => {
+  const capture = src.match(/retain_boot_attempt_evidence\(\) \{[\s\S]*?\n\}/)?.[0];
+  const bindProbe = src.match(/verify_reserved_port_pair\(\) \{[\s\S]*?\n\}/)?.[0];
+
+  it('measures actual binds and distinguishes an occupied pair from an invalid probe', async () => {
+    expect(bindProbe).toBeTruthy();
+    const holder = createServer();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.once('error', reject);
+        holder.listen(0, '127.0.0.1', resolve);
+      });
+      const address = holder.address();
+      if (!address || typeof address === 'string') throw new Error('expected TCP listener');
+      const probe = (port: number, env = process.env) => spawnSync('bash', ['-c', `
+        set -eu
+        DEV_PORT="$1"; PTY_PORT=0
+        ${bindProbe}
+        verify_reserved_port_pair
+      `, '_', String(port)], { encoding: 'utf8', timeout: 10_000, env });
+      const occupied = probe(address.port);
+      expect(occupied.status, occupied.stderr).toBe(3);
+      expect(occupied.stderr).toContain('EADDRINUSE');
+      await new Promise<void>(resolve => holder.close(() => resolve()));
+      const free = probe(address.port);
+      expect(free.status, free.stderr).toBe(0);
+      const invalid = probe(65536);
+      expect(invalid.status).toBe(2);
+      expect(invalid.stderr).toContain('ERR_SOCKET_BAD_PORT');
+      expect(invalid.stderr).not.toContain('EADDRINUSE');
+      const failedChild = probe(address.port, { ...process.env, NODE_OPTIONS: '--require=/papercusp-missing-bind-probe-preload.cjs' });
+      expect(failedChild.status).toBe(1);
+      expect(failedChild.stderr).not.toContain('VERIFY_TAURI_PORT_BIND_PROBE');
+    } finally {
+      if (holder.listening) await new Promise<void>(resolve => holder.close(() => resolve()));
+    }
+  });
+
+  it('accepts an allocated pair only after the real bind probe, and fails closed on unknown outcomes', () => {
+    const pick = src.match(/pick_and_lock_ports\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(pick).toContain('if verify_reserved_port_pair; then return 0;');
+    expect(pick.indexOf('fed_acquire_port_lock "$PTY_PORT"')).toBeLessThan(pick.indexOf('verify_reserved_port_pair'));
+    const result = spawnSync('bash', ['-c', `
+      set -eu
+      PORT_BASE=34567; PORT_LOCK_DIR=/unused
+      fed_pick_free_port() { echo "$1"; }
+      fed_acquire_port_lock() { return 0; }
+      fed_release_port_locks() { echo released; }
+      verify_reserved_port_pair() { return 2; }
+      ${pick}
+      pick_and_lock_ports
+      echo incorrectly-accepted
+    `], { encoding: 'utf8', timeout: 10_000 });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('unmeasured or invalid');
+    expect(result.stdout).not.toContain('incorrectly-accepted');
+  });
+
+  function captureAttempt(dir: string, port: number, env: NodeJS.ProcessEnv = process.env) {
+    expect(capture).toBeTruthy();
+    return spawnSync('bash', ['-c', `
+      set -eu
+      WORK="$1"
+      VH_RUN_DIR="$1/retained"
+      LOG="$1/tauri.log"
+      BOOT_ATTEMPTS=1
+      DEV_PORT="$2"
+      PTY_PORT="$2"
+      ${capture}
+      retain_boot_attempt_evidence
+    `, '_', dir, String(port)], { encoding: 'utf8', timeout: 10_000, env });
+  }
+
+  it('retains a real listener identity and log before the listener exits, without overwriting it later', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verifier-bind-evidence-'));
+    const holder = createServer();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.once('error', reject);
+        holder.listen(0, '127.0.0.1', resolve);
+      });
+      const address = holder.address();
+      if (!address || typeof address === 'string') throw new Error('expected TCP listener');
+      writeFileSync(join(dir, 'tauri.log'), 'fatal EADDRINUSE on selected port\n');
+      const run = captureAttempt(dir, address.port);
+      expect(run.status, run.stderr).toBe(0);
+      const evidence = join(dir, 'retained/phases/boot/operator-startup/attempt-1');
+      const original = readFileSync(join(evidence, 'listeners.json'), 'utf8');
+      const report = JSON.parse(original);
+      expect(report.observations[0].status, JSON.stringify(report.observations[0])).toBe('listening');
+      if (report.observations[0].holderStatus === 'measured') {
+        expect(report.observations[0].listeners.flatMap((x: { holders: unknown[] }) => x.holders))
+          .toContainEqual(expect.objectContaining({ pid: process.pid, startTimeTicks: expect.any(String) }));
+      } else {
+        expect(report.observations[0]).toMatchObject({ holderStatus: 'unknown', holderErrorCode: expect.anything() });
+      }
+      await new Promise<void>(resolve => holder.close(() => resolve()));
+      expect(captureAttempt(dir, address.port).status).toBe(0);
+      expect(readFileSync(join(evidence, 'listeners.json'), 'utf8')).toBe(original);
+      rmSync(join(dir, 'tauri.log'));
+      expect(readFileSync(join(evidence, 'tauri.log'), 'utf8')).toBe('fatal EADDRINUSE on selected port\n');
+      expect(original).not.toMatch(/cmdline|environ|NODE_OPTIONS/);
+    } finally {
+      if (holder.listening) await new Promise<void>(resolve => holder.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 7])('distinguishes an empty socket read from an unmeasured failed read (exit %s)', status => {
+    const dir = mkdtempSync(join(tmpdir(), 'verifier-bind-query-'));
+    try {
+      const bin = join(dir, 'bin');
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'ss'), `#!/bin/sh\necho private-diagnostic-must-not-be-retained >&2\nexit ${status}\n`, { mode: 0o755 });
+      writeFileSync(join(dir, 'tauri.log'), 'attempt log\n');
+      const run = captureAttempt(dir, 34567, { ...process.env, PATH: `${bin}:${process.env.PATH}` });
+      expect(run.status, run.stderr).toBe(0);
+      const text = readFileSync(join(dir, 'retained/phases/boot/operator-startup/attempt-1/listeners.json'), 'utf8');
+      expect(JSON.parse(text).observations[0]).toMatchObject(status === 0
+        ? { status: 'free', listeners: [] }
+        : { status: 'unknown', exitStatus: status });
+      expect(text).not.toContain('private-diagnostic-must-not-be-retained');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('preserves measured socket presence when optional process attribution fails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verifier-bind-attribution-'));
+    try {
+      const bin = join(dir, 'bin');
+      mkdirSync(bin);
+      writeFileSync(join(bin, 'ss'), '#!/bin/sh\nif [ "$1" = "-tlnpH" ]; then exit 7; fi\necho "LISTEN 0 128 127.0.0.1:34567 0.0.0.0:*"\n', { mode: 0o755 });
+      writeFileSync(join(dir, 'tauri.log'), 'attempt log\n');
+      const run = captureAttempt(dir, 34567, { ...process.env, PATH: `${bin}:${process.env.PATH}` });
+      expect(run.status, run.stderr).toBe(0);
+      const report = JSON.parse(readFileSync(join(dir, 'retained/phases/boot/operator-startup/attempt-1/listeners.json'), 'utf8'));
+      expect(report.observations[0]).toMatchObject({ status: 'listening', holderStatus: 'unknown', holderErrorCode: 7,
+        listeners: [{ localAddress: '127.0.0.1:34567', holders: [] }] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('captures before killing an attempt, changing ports, or cleaning the source on final exit', () => {
+    const retry = src.slice(src.indexOf('  retain_boot_attempt_evidence || boot_failure_diag'), src.indexOf('# EI-10387 recurrence guard'));
+    expect(retry.indexOf('retain_boot_attempt_evidence')).toBeLessThan(retry.indexOf('kill -TERM -- -$TAURI_PID'));
+    expect(retry.indexOf('retain_boot_attempt_evidence')).toBeLessThan(retry.indexOf('pick_and_lock_ports'));
+    const teardown = src.match(/teardown\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(teardown).toContain('if ! retain_boot_attempt_evidence; then');
+    expect(teardown.indexOf('retain_boot_attempt_evidence')).toBeLessThan(teardown.indexOf('"$WORK/stop.sh"'));
+    expect(teardown.indexOf('retain_boot_attempt_evidence')).toBeLessThan(teardown.indexOf('cleanup_operator_source_snapshot'));
+  });
+});
 
 /**
  * The variable name out of bash's `set -u` diagnostic ("foo: unbound variable"), or
@@ -251,6 +403,7 @@ DISPLAY_NUM=90
 TAURI_OWNER_SID=probe-owner
 TAURI_LAUNCH_PROVENANCE=agent:probe-owner
 MEMORY_LIMIT_MB=1024
+NATIVE_CARGO_DISK_RESERVATION_FILE=
 SPA_ENV_LINE=
 ISOLATED_ENV_LINE=
 ISOLATED_UNSET_LINE=

@@ -1,10 +1,11 @@
 /**
- * harness:phase_path — resolve the on-disk path for a harness slug
+ * harness:phase_path — find the on-disk directory for a harness slug
  * + phase (staging | testing | production). Looks up the project in
  * the harness registry, then defers to phasePath() for the
  * convention/config-override resolution.
  */
 
+import { statSync } from 'node:fs';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { phasePath } from '../../harness-phases';
@@ -14,7 +15,7 @@ import { harnessRequiredResult, resolveConcreteHarnessSlug } from '../_harness-s
 export default defineTool({
   name: 'harness:phase_path',
   profile: 'engineer',
-  description: 'Resolve the on-disk path for a (harness_slug, phase) pair. Phase = staging|testing|production.',
+  description: 'Find the existing on-disk directory for a (harness_slug, phase) pair. Phase = staging|testing|production.',
   guidance: {
     when: 'You need the absolute filesystem path for a harness phase before reading files inside it.',
     notWhen: 'For listing files INSIDE the phase dir, use `harness:markdown_index` or `harness:list_features`. This tool only resolves the dir path.',
@@ -43,6 +44,17 @@ export default defineTool({
       return { content: [{ type: 'text', text: JSON.stringify({ slug, phase: args.phase, found: false, path: null }) }] };
     }
     const path = phasePath(project, args.phase);
+    try {
+      if (!statSync(path).isDirectory()) {
+        return { content: [{ type: 'text', text: JSON.stringify({ slug, phase: args.phase, found: false, path: null }) }] };
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return { content: [{ type: 'text', text: JSON.stringify({ slug, phase: args.phase, found: false, path: null }) }] };
+      }
+      throw error;
+    }
     return { content: [{ type: 'text', text: JSON.stringify({ slug, phase: args.phase, found: true, path }) }] };
   },
 });

@@ -13,16 +13,20 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 import { lexiconFor } from '@papercusp/lexicon';
+import { projectAdvRoster, type RosterSnapshot } from '@papercusp/operator-core/lib/sync-resolver/adv-roster-read';
 
 const H = vi.hoisted(() => ({
   active: [] as unknown[],
+  hasData: true,
+  error: null as Error | null,
+  failureCount: 0,
   queryOpts: null as Record<string, unknown> | null,
 }));
 
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: Record<string, unknown>) => {
     H.queryOpts = opts;
-    return { data: [{ active: H.active }] };
+    return { data: H.hasData ? [{ active: H.active }] : [], error: H.error, failureCount: H.failureCount };
   },
   onSyncBusEvent: () => () => {},
 }));
@@ -88,6 +92,9 @@ function agent(over: Partial<RosterAgent> = {}): RosterAgent {
 const Pill = () => (<TooltipProvider><AgentsRunningPill /></TooltipProvider>);
 
 beforeEach(() => {
+  H.hasData = true;
+  H.error = null;
+  H.failureCount = 0;
   H.active = [
     agent({ ownerId: 'q1', agent: 'queen', role: 'queen', fleetSlug: null }),
     agent({ ownerId: 'b1', agent: 'gizmo', role: 'bee', fleetSlug: 'atlas-fleet', fleetColor: '#d8b4fe', feature: 'F-1' }),
@@ -281,12 +288,90 @@ describe('thinkingStreamUrl (pure — EI-16982: ended=1 for archive-rematerializ
 });
 
 describe('<AgentsRunningPill>', () => {
-  it('refreshes the filesystem-derived thinking gauge inside its 10s activity window', () => {
+  it.each([false, true])('does not report zero while the roster is loading, open=%s', (open) => {
+    H.hasData = false;
+    nuqs.open = open;
+    render(<Pill />);
+    const pill = screen.getByTestId('agents-running-pill');
+    expect(pill.textContent).toContain('Loading agents…');
+    expect(pill.textContent).not.toContain('0 agents running');
+    expect(pill.getAttribute('aria-busy')).toBe('true');
+    expect(screen.queryByTestId('agents-running-empty')).toBeNull();
+    if (open) expect(screen.getByTestId('agents-roster-status').textContent).toContain('Loading agents…');
+  });
+
+  it.each([false, true])('shows an unavailable roster instead of zero after a failed read, open=%s', (open) => {
+    H.hasData = false;
+    H.error = new Error('HTTP 500');
+    nuqs.open = open;
+    render(<Pill />);
+    const pill = screen.getByTestId('agents-running-pill');
+    expect(pill.textContent).toContain('Agents unavailable');
+    expect(pill.textContent).not.toContain('0 agents running');
+    expect(pill.getAttribute('aria-busy')).toBe('false');
+    expect(screen.queryByTestId('agents-running-empty')).toBeNull();
+    if (open) expect(screen.getByTestId('agents-roster-status').textContent).toContain('Agents unavailable');
+  });
+
+  it('exposes a failed initial attempt while the query is still retrying without a terminal error', () => {
+    H.hasData = false;
+    H.failureCount = 1;
+    nuqs.open = true;
+    render(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('Agents unavailable');
+    expect(screen.getByTestId('agents-running-pill').getAttribute('aria-busy')).toBe('false');
+    expect(screen.getByTestId('agents-roster-status').textContent).toContain('Agents unavailable');
+    expect(screen.queryByTestId('agents-running-empty')).toBeNull();
+  });
+
+  it.each(['retrying', 'exhausted'])('marks retained counts as outdated during a %s refresh, then clears the warning on recovery', (phase) => {
+    nuqs.open = true;
+    H.error = phase === 'exhausted' ? new Error('HTTP 500') : null;
+    H.failureCount = 1;
+    const view = render(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('3 agents running');
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('update failed');
+    expect(screen.getByText('Could not refresh agents. Showing the last loaded roster.')).toBeTruthy();
+    H.error = null;
+    H.failureCount = 0;
+    view.rerender(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).not.toContain('update failed');
+    expect(screen.queryByText('Could not refresh agents. Showing the last loaded roster.')).toBeNull();
+  });
+
+  it('reports a measured zero only after a successful empty response replaces a failed initial read', () => {
+    H.hasData = false;
+    H.error = new Error('HTTP 500');
+    nuqs.open = true;
+    const view = render(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('Agents unavailable');
+    H.hasData = true;
+    H.error = null;
+    H.active = [];
+    view.rerender(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('0 agents running');
+    expect(screen.getByTestId('agents-running-empty').textContent).toContain('No agents running');
+    expect(screen.queryByTestId('agents-roster-status')).toBeNull();
+  });
+
+  it('refreshes lifecycle-derived thinking between database invalidations', () => {
     render(<Pill />);
     expect(H.queryOpts).toMatchObject({
       queryName: 'advRoster.list',
       pollIntervalMs: 5_000,
+      args: { workspaceId: null, endedLimit: 50, view: 'header' },
     });
+  });
+
+  it('loads the full roster when opened and returns to the compact badge read when closed', () => {
+    const view = render(<Pill />);
+    expect(H.queryOpts?.args).toMatchObject({ view: 'header' });
+    nuqs.open = true;
+    view.rerender(<Pill />);
+    expect(H.queryOpts?.args).toEqual({ workspaceId: null, endedLimit: 50 });
+    nuqs.open = false;
+    view.rerender(<Pill />);
+    expect(H.queryOpts?.args).toMatchObject({ view: 'header' });
   });
 
   // [owner 2026-09-15] "if there are no agents running the pill disappears
@@ -294,7 +379,7 @@ describe('<AgentsRunningPill>', () => {
   // `return null` at zero, which read as a missing feature during the post-boot
   // hydration window (WI-37363).
   it('stays mounted at zero and reads "0 agents running", without the is-running state class', () => {
-    H.active = [agent({ liveness: 'live', sessionState: 'parked' })];
+    H.active = [agent({ liveness: 'live', sessionState: 'ended', loopArmed: true })];
     render(<Pill />);
     const pill = screen.getByTestId('agents-running-pill');
     expect(pill.textContent).toContain('0 agents running');
@@ -302,7 +387,7 @@ describe('<AgentsRunningPill>', () => {
   });
 
   it('at zero, the popover shows an honest empty note instead of a blank roster', () => {
-    H.active = [agent({ liveness: 'live', sessionState: 'parked' })];
+    H.active = [agent({ liveness: 'live', sessionState: null })];
     nuqs.open = true;
     render(<Pill />);
     expect(screen.getByTestId('agents-running-empty').textContent).toContain('No agents running');
@@ -326,14 +411,52 @@ describe('<AgentsRunningPill>', () => {
     );
   });
 
-  it('shows a "thinking" count in the pill when agents are actively thinking', () => {
-    H.active = [agent({ ownerId: 'a1', transcriptFresh: true }), agent({ ownerId: 'a2', transcriptFresh: false })];
+  it.each([false, true])('distinguishes living sessions from ongoing turns with the roster open=%s', (open) => {
+    nuqs.open = open;
+    const live = Array.from({ length: 120 }, (_, i) => agent({
+      ownerId: `live-${i}`, agent: ['claude', 'codex', 'omp'][i % 3],
+      transcriptFresh: i < 20, thinkingResolvable: i < 20,
+      machineLabel: i % 2 ? 'remote' : 'desktop', isLocal: i % 2 === 0,
+    }));
+    const betweenTurns = Array.from({ length: 80 }, (_, i) => agent({
+      ownerId: `idle-${i}`, agent: ['claude', 'codex', 'omp'][i % 3],
+      sessionState: i % 2 ? 'parked' : 'recorded', liveness: 'stale', loopArmed: false,
+      transcriptFresh: true,
+    }));
+    const active = [...live, ...betweenTurns, ...['draining', 'suspect', 'ended'].map(
+      (sessionState) => agent({ ownerId: sessionState, sessionState, transcriptFresh: true, loopArmed: true }),
+    ), agent({ ownerId: 'unknown', sessionState: null, transcriptFresh: true })];
+    H.active = projectAdvRoster({ active } as RosterSnapshot, open ? 'full' : 'header').active;
+    // Control: the old gauge reports exactly the misleading twenty, even
+    // though the authoritative roster has 120 ongoing turns across backends.
+    expect(live.filter(isTranscriptFresh)).toHaveLength(20);
     render(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('200 agents running');
+    expect(screen.getByTestId('agents-thinking-count').textContent).toContain('120 thinking');
+  });
+
+  it('updates the count when a turn parks or ends despite recent transcript output', () => {
+    H.active = [agent({ ownerId: 'a1', transcriptFresh: false }), agent({ ownerId: 'a2', transcriptFresh: false })];
+    const view = render(<Pill />);
+    expect(screen.getByTestId('agents-thinking-count').textContent).toContain('2 thinking');
+    H.active = [agent({ ownerId: 'a1', sessionState: 'parked', transcriptFresh: true }),
+      agent({ ownerId: 'a2', transcriptFresh: false })];
+    view.rerender(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('2 agents running');
     expect(screen.getByTestId('agents-thinking-count').textContent).toContain('1 thinking');
+    H.active = [agent({ ownerId: 'a1', sessionState: 'parked', liveness: 'stale' }),
+      agent({ ownerId: 'a2', sessionState: 'recorded', liveness: 'stale' })];
+    view.rerender(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('2 agents running');
+    expect(screen.queryByTestId('agents-thinking-count')).toBeNull();
+    H.active = [agent({ sessionState: 'ended', transcriptFresh: true })];
+    view.rerender(<Pill />);
+    expect(screen.getByTestId('agents-running-pill').textContent).toContain('0 agents running');
+    expect(screen.queryByTestId('agents-thinking-count')).toBeNull();
   });
 
   it('renders a pulsing thinking dot on an actively-thinking row', () => {
-    H.active = [agent({ ownerId: 'a1', transcriptFresh: true })];
+    H.active = [agent({ ownerId: 'a1', transcriptFresh: false, thinkingResolvable: false })];
     nuqs.open = true;
     render(<Pill />);
     expect(screen.getAllByTestId('thinking-dot').length).toBeGreaterThan(0);
@@ -360,7 +483,8 @@ describe('<AgentsRunningPill>', () => {
     ];
     render(<Pill />);
     const pill = screen.getByTestId('agents-running-pill');
-    expect(pill.textContent).toContain('1 agent running');
+    expect(pill.textContent).toContain('2 agents running');
+    expect(screen.getByTestId('agents-thinking-count').textContent).toContain('1 thinking');
   });
 
   it('opens the fleet-grouped roster popover with headers + rows', () => {

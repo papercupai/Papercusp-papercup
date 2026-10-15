@@ -23,7 +23,12 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import * as path from 'node:path';
+import * as url from 'node:url';
+import * as crypto from 'node:crypto';
+import { createContext, Script } from 'node:vm';
+import ts from 'typescript';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 // @ts-expect-error -- .mjs guard script, no type declarations
 import { usesEagerExecFilePromisify } from '../../../scripts/check-no-eager-execfile-promisify.mjs';
@@ -322,10 +327,522 @@ const NAIVE_LINE_RE = String.raw`\/\/.*$`;
 // (`const t = loadTypescript(); t.createSourceFile(...)`) parses an AST just as surely as one
 // spelled `ts.`, and the module-name string it required is blanked by the masking itself.
 // check-no-unenrolled-detached-spawn.mjs read as 'unmasked' on exactly that alias (2026-09-28).
-const PARSES_AST = /from\s*['"]typescript['"]|\.createSourceFile\s*\(|@babel\/parser|\bacorn\b|ts-morph/;
+// `@typescript-eslint/typescript-estree` / `/parser` are parsers too: check-bundle-free-refs.mjs
+// walks an ESTree + scope-manager AST and its `.test(` calls read identifier NAMES, never raw
+// source, yet read as 'unmasked' because only the four parsers above were named (EI-25706078725120945).
+const PARSES_AST =
+  /from\s*['"]typescript['"]|\.createSourceFile\s*\(|@babel\/parser|@typescript-eslint\/(?:typescript-estree|parser)['"]|\bacorn\b|ts-morph/;
 const SCANS_CODE_FILES = /\.tsx?['"`]|\.mjs['"`]|\.jsx['"`]|\.cts['"`]|\.mts['"`]/;
 const TEXT_MATCHES = /\.test\s*\(|\.match(All)?\s*\(|\.includes\s*\(|\.exec\s*\(/;
 const READS_FILES = /readFileSync|execFileSync\s*\(\s*['"](rg|grep)['"]/;
+
+/**
+ * Observe the guard's executable file selectors, rather than extension mentions in its
+ * imports or fixtures (EI-20077125623815751). The filesystem and process APIs below are
+ * inert: only module SOURCE is loaded from disk; guard reads see fixture contents, and
+ * writes, subprocesses and unsupported modules make the result explicitly unknown.
+ * Unknown never means clean. A positive read remains evidence even if a later operation
+ * is unsupported; a negative result requires the complete synchronous fixture execution.
+ */
+function observeReaderCorpus(entry: string, inventory: string[], sources?: Record<string, string>, options: { testCallbacks?: boolean; argv?: string[] } = {}) {
+  const root = path.resolve(SCRIPTS_DIR, '..');
+  const reads = new Set<string>();
+  const unsupported = new Set<string>();
+  let enumerated = false;
+  let directoryEntriesVisited = 0;
+  let asynchronous = false;
+  let exited = false;
+  let completedTests = 0;
+  let unsupportedTestSelection = false;
+  const testBodies: Array<() => unknown> = [];
+  const testHooks: Array<() => unknown> = [];
+  const absolute = (p: unknown) => p instanceof URL ? fileURLToPath(p) : path.resolve(root, String(p));
+  const relative = (p: unknown) => path.relative(root, absolute(p)).replaceAll('\\', '/');
+  const deny = (operation: string): never => { unsupported.add(operation); throw new Error(operation); };
+  const files = new Set(inventory);
+  const directories = new Set(['']);
+  const childNames = new Map<string, Set<string>>();
+  for (const f of files) {
+    let child = f;
+    for (;;) {
+      const parent = path.posix.dirname(child);
+      const dir = parent === '.' ? '' : parent;
+      directories.add(dir);
+      if (!childNames.has(dir)) childNames.set(dir, new Set());
+      childNames.get(dir)!.add(path.posix.basename(child));
+      if (!dir) break;
+      child = dir;
+    }
+  }
+  // Index immediate children once. Filtering the complete inventory for every
+  // directory made CSS-only walks exhaust the VM budget before their first read.
+  const directoryChildren = new Map([...childNames].map(([dir, names]) => [dir, [...names].sort()]));
+  const read = (p: unknown, encoding?: unknown) => {
+    const rel = relative(p);
+    reads.add(rel);
+    // JSON is input to several selectors' preflight (a corrupt/empty baseline can exit
+    // before scanning). Preserve tracked repository metadata, never host configuration.
+    const text = rel.endsWith('.json') && !sources && files.has(rel) ? readFileSync(path.resolve(root, rel), 'utf8') : rel.endsWith('.json') ? '{}' : '';
+    return encoding ? text : Buffer.from(text);
+  };
+  const fs = new Proxy({
+    readFileSync: read,
+    existsSync: (p: unknown) => files.has(relative(p)) || directories.has(relative(p)),
+    realpathSync: absolute,
+    statSync: (p: unknown) => ({ isFile: () => files.has(relative(p)), isDirectory: () => directories.has(relative(p)), size: 0 }),
+    lstatSync: (p: unknown) => ({ isFile: () => files.has(relative(p)), isDirectory: () => directories.has(relative(p)), isSymbolicLink: () => false, size: 0 }),
+    readdirSync: (p: unknown, options?: { withFileTypes?: boolean }) => {
+      enumerated = true;
+      const dir = relative(p);
+      const prefix = dir ? dir + '/' : '';
+      const names = directoryChildren.get(dir) ?? [];
+      directoryEntriesVisited += names.length;
+      return options?.withFileTypes ? names.map(name => ({ name, isDirectory: () => directories.has(prefix + name), isFile: () => files.has(prefix + name), isSymbolicLink: () => false })) : names;
+    },
+  }, { get(target, key) { return key in target ? target[key as keyof typeof target] : (..._args: unknown[]) => deny('fs.' + String(key)); } });
+  const enumerate = () => { enumerated = true; return { files: [...files], unscanned: [] }; };
+  const tracked = { listTrackedFiles: enumerate, listFilesIncludingUntracked: enumerate, describeUnscanned: () => '', declaredSubmodules: () => [] };
+  const childProcess = new Proxy({}, { get: (_target, key) => (...args: unknown[]) => {
+    const command = [args[0], ...(Array.isArray(args[1]) ? args[1] : [])].join(' ');
+    if (String(key).startsWith('exec') && /^git\s+(?:ls-files|grep)\b/.test(command)) {
+      enumerated = true;
+      return inventory.join(command.includes('-z') ? '\0' : '\n');
+    }
+    return deny('child_process.' + String(key) + ': ' + command);
+  } });
+  const exit = { corpusExit: true };
+  const moduleCache = new Map<string, { exports: Record<string, unknown> }>();
+  const context = createContext({
+    Buffer, URL, URLSearchParams,
+    console: { log() {}, error() {}, warn() {} },
+    process: { argv: ['node', path.resolve(root, entry), ...(options.argv ?? [])], env: {}, cwd: () => root, exit: (code = 0) => { exited = true; if (code !== 0) unsupported.add('early nonzero exit: ' + code); throw exit; }, exitCode: 0, platform: process.platform },
+    __observePromise: (value: unknown) => {
+      if (value && typeof (value as PromiseLike<unknown>).then === 'function') {
+        asynchronous = true;
+        Promise.resolve(value).catch(() => {});
+      }
+      return value;
+    },
+    // An async guard may install its own .catch(() => process.exit(1)); observing
+    // only its initial promise would leave that rejection chain running after the
+    // census returned. Do not execute async bodies in this synchronous observer.
+    __unsupportedAsync: () => { asynchronous = true; return Promise.resolve(undefined); },
+    setTimeout: () => deny('setTimeout'), setInterval: () => deny('setInterval'),
+  }, { codeGeneration: { strings: false, wasm: false } });
+  const runCallback = (callback: () => unknown) => {
+    context.__corpusCallback = callback;
+    return new Script('__observePromise(__corpusCallback())').runInContext(context, { timeout: 500 });
+  };
+  const register = (suite: boolean) => {
+    const fn = (_name: unknown, callback?: () => unknown) => {
+      if (!callback) { unsupported.add('vitest missing callback'); return; }
+      if (suite) runCallback(callback);
+      else testBodies.push(callback);
+    };
+    return Object.assign(fn, {
+      only: () => { unsupportedTestSelection = true; unsupported.add('vitest exclusive selection'); },
+      skip: () => { unsupported.add('vitest skipped callback'); },
+      todo: () => { unsupported.add('vitest todo callback'); },
+      each: () => { unsupported.add('vitest parameterized callback'); return () => {}; },
+    });
+  };
+  const vitest = {
+    describe: register(true), it: register(false), test: register(false),
+    // Assertions and mocks can change control flow. Do not pretend they passed.
+    expect: () => deny('vitest assertion'),
+    vi: new Proxy({}, { get: (_target, key) => () => deny('vitest.vi.' + String(key)) }),
+    beforeAll: (callback: () => unknown) => { testHooks.push(callback); },
+    beforeEach: (callback: () => unknown) => { testHooks.push(callback); },
+    afterAll: () => { unsupported.add('vitest afterAll'); },
+    afterEach: () => { unsupported.add('vitest afterEach'); },
+  };
+  const load = (specifier: string, importer: string): unknown => {
+    const builtin = specifier.replace(/^node:/, '');
+    if (specifier === 'vitest' && options.testCallbacks) return vitest;
+    if (builtin === 'fs') return fs;
+    if (builtin === 'path') return path;
+    if (builtin === 'url') return url;
+    if (builtin === 'crypto') return crypto;
+    if (builtin === 'child_process') return childProcess;
+    if (builtin === 'os') return { homedir: () => '/fixture-home', tmpdir: () => '/fixture-tmp', platform: () => process.platform };
+    if (builtin === 'module') return { createRequire: () => (s: string) => load(s, importer) };
+    let filename = specifier.startsWith('.') ? path.resolve(path.dirname(importer), specifier) : specifier.startsWith('@papercusp/operator-core/') ? path.resolve(root, 'packages/operator-core', specifier.slice('@papercusp/operator-core/'.length)) : path.resolve(root, specifier);
+    if (filename.endsWith('/scripts/lib/tracked-files.mjs')) return tracked;
+    if (!specifier.startsWith('.') && !specifier.startsWith('/') && !specifier.startsWith('@papercusp/operator-core/') && importer !== root) return deny('module: ' + specifier);
+    const candidates = [filename, filename + '.ts', filename + '.mjs', filename + '.js', path.join(filename, 'index.ts')];
+    filename = candidates.find(f => sources ? path.relative(root, f) in sources : existsSync(f)) ?? filename;
+    if (!filename.startsWith(root + path.sep)) return deny('module outside repository');
+    if (moduleCache.has(filename)) return moduleCache.get(filename)!.exports;
+    const source = sources ? sources[path.relative(root, filename)] : readFileSync(filename, 'utf8');
+    if (source === undefined) return deny('missing module: ' + path.relative(root, filename));
+    const module = { exports: {} };
+    moduleCache.set(filename, module);
+    const code = ts.transpileModule(source, {
+      // TypeScript preserves ESM for a .mjs input even when CommonJS is requested.
+      // Parse the same bytes as .ts so the VM receives a require-based module.
+      fileName: filename.replace(/\.[cm]js$/, '.ts'),
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, esModuleInterop: true },
+      transformers: { before: [ctx => {
+        const visit: ts.Visitor = node => {
+          if (ts.isFunctionDeclaration(node) && node.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+            return ts.factory.updateFunctionDeclaration(node, node.modifiers, node.asteriskToken, node.name, node.typeParameters, node.parameters, node.type,
+              ts.factory.createBlock([ts.factory.createReturnStatement(ts.factory.createCallExpression(ts.factory.createIdentifier('__unsupportedAsync'), undefined, []))]));
+          }
+          if ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) && node.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword)) {
+            const body = ts.factory.createBlock([ts.factory.createReturnStatement(ts.factory.createCallExpression(ts.factory.createIdentifier('__unsupportedAsync'), undefined, []))]);
+            return ts.isArrowFunction(node) ? ts.factory.updateArrowFunction(node, node.modifiers, node.typeParameters, node.parameters, node.type, node.equalsGreaterThanToken, body) : ts.factory.updateFunctionExpression(node, node.modifiers, node.asteriskToken, node.name, node.typeParameters, node.parameters, node.type, body);
+          }
+          if (ts.isPropertyAccessExpression(node) && ts.isMetaProperty(node.expression) && node.name.text === 'url') return ts.factory.createStringLiteral(url.pathToFileURL(filename).href);
+          if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'main') return ts.factory.createCallExpression(ts.factory.createIdentifier('__observePromise'), undefined, [ts.visitEachChild(node, visit, ctx)]);
+          return ts.visitEachChild(node, visit, ctx);
+        };
+        return sf => ts.visitNode(sf, visit) as ts.SourceFile;
+      }] },
+    }).outputText.replace(/^#![^\n]*\n/, '\n');
+    context.__module = module;
+    context.__require = (s: string) => load(s, filename);
+    context.__filename = filename;
+    context.__dirname = path.dirname(filename);
+    new Script(`(function(require,module,exports,__filename,__dirname){${code}\n})(__require,__module,__module.exports,__filename,__dirname)`, { filename }).runInContext(context, { timeout: 500 });
+    return module.exports;
+  };
+  try { load(path.resolve(root, entry), root); }
+  catch (error) { if (error !== exit) unsupported.add(String(error)); }
+  if (options.testCallbacks && !unsupportedTestSelection) {
+    // Hook ordering/state is not modeled. Their reads remain positive evidence,
+    // but any hook makes a negative classification explicitly unsupported.
+    if (testHooks.length) unsupported.add('vitest lifecycle hooks');
+    for (const callback of [...testHooks, ...testBodies]) {
+      try { runCallback(callback); completedTests++; }
+      catch (error) { if (error !== exit) unsupported.add(String(error)); }
+    }
+  }
+  const codeReads = [...reads].filter(f => /\.[cm]?[jt]sx?$/.test(f)).sort();
+  const status = codeReads.length ? 'source' : unsupported.size || asynchronous || (!completedTests && ((!enumerated && !reads.size) || (!exited && !reads.size))) ? 'unknown' : 'non-source';
+  return { status, codeReads, reads: [...reads].sort(), unsupported: [...unsupported].sort(), asynchronous, directoryEntriesVisited };
+}
+
+// Exact-source reviews from WI12281 concern the default CLI's DIRECT text consumer.
+// They do not classify arbitrary exported helpers, CLI input paths or child builds.
+const REVIEWED_READER_CORPUS: Record<string, { sha256: string; reason: string }> = {
+  'check-docs-mirror.mjs': { sha256: '8018f05a09ac6e3e8208e086957e55b2cee30ea5b3688864deed5df39116b5b8', reason: 'Default .md/.mdx byte fingerprints and git path/time metadata; exported extension arrays are outside this invocation.' },
+  'check-fleet-auth.mjs': { sha256: '1eb35e6bdbcfa86039834757fa4bc865dc8a517ab38f9befd8327e1d9ffa40a2', reason: 'Host /proc, fixed .env and credential JSON plus auth diagnostics; no real credentials or auth probes are executed here.' },
+  'check-installed-patch-postimages.mjs': { sha256: 'b9a16e60051949a3d9c4154098ae99df55b86e02b53fc3d3bf770453866ece0d', reason: 'Patch header metadata and git byte hashes of installed targets, not JS/TS token matching.' },
+  'check-mac-bash-portability.mjs': { sha256: '6bd7ca888080d8affba90c95c7e8742997f012adffcfcf97550d776ac5b4bfd1', reason: 'Shell entry points and a .sh-only invocation closure; shell analysis is outside this JS/TS census.' },
+  'check-mdx.mjs': { sha256: 'd9802964aae5a84e47c4514630b50084f7161a12b86367e8927455ab31e7d611', reason: 'Default git inventory restricted to .mdx documentation, asynchronously compiled as MDX.' },
+  'check-peer-dep-conflicts.mjs': { sha256: '85339c2018f8247451cdf4f10ff719dcf36b3b269ff491f3d672e007e0f7a3af', reason: 'Workspace globs select package.json manifests, lock JSON and dependency package.json metadata.' },
+  'check-reachable-advisories.mjs': { sha256: 'ed17468fca3e2a6d4cc1099ab2dc0af3f911026e645ba6335cd172405ee3bc6b', reason: 'Default package manifests, baseline JSON and npm JSON diagnostics; optional fixture paths are unrestricted.' },
+  'check-rust-advisories.mjs': { sha256: '0b301c96b171e6b58480ac40736325628de5801a1aef567dc340b5fe5a9c6fec', reason: 'Default Cargo.lock, baseline JSON and OSV records; explicit --lock/--osv-json paths are outside this review.' },
+  'check-systemd-dropins-installed.mjs': { sha256: '1d83d17d6c4a7c7ccdc9a1160cb6d91026f95f83678b893002ae2d4be42c828a', reason: 'Tracked service/slice/scope .conf inputs, systemctl properties/live prefix-unit names and fixed autostart .desktop bytes; source re-reviewed after 839a99e8ea.' },
+  'check-vite-externalized-warnings.mjs': { sha256: '70fe3293f3b40271c07994c416c7b266cc49a27450f9792d783982f79c0a3d7d', reason: 'Baseline JSON and child build diagnostics; child source loading is distinct from this direct text consumer.' },
+};
+
+// WI12476: these are SOURCE REVIEWS, not successful sandbox executions. A denied
+// import/assertion can stop the inert VM before a real selector runs. Exact bytes
+// pin the reviewed direct text consumers without allowing their effects to run.
+// Scope is test callbacks in the default inert environment (no env overrides).
+// Imports loading implementation code are not themselves direct text consumers.
+const REVIEWED_TEST_READER_CORPUS: Record<string, { sha256: string; status: 'source' | 'non-source'; reason: string }> = {
+  'apps/operator-vite/src/__tests__/dark-flag-route-contract.test.ts': { sha256: '322a839a3d202eb7cd478ab0fba70eba245e7a99b53747ea6eb5571a4919695f', status: 'source', reason: 'listSourceFiles selects non-test .ts/.tsx route files; gatedRoutes reads and strips their bytes.' },
+  'apps/operator-vite/src/__tests__/no-server-leak-in-client-graph.test.ts': { sha256: 'cc75f6b293ce65d632e7d839c84047b13f545eda5ea03cee1d3bfa5b36552f81', status: 'source', reason: 'Reads vite.config.ts and traverses client/workspace JS/TS imports, then inspects each selected source.' },
+  'apps/operator/app/_components/monaco-cdn.test.ts': { sha256: '97a5d44ac35a76868e1c036e76b6a2110a6b942a47730df711ad3616cd336824', status: 'source', reason: 'Async live TypeScript enumeration and fixed live-source-files.ts/Monaco runtime reads; fs/promises is unsupported by the VM.' },
+  'apps/operator/app/_components/porcupine-cdn.test.ts': { sha256: '632e01f0b5fbba4b1c12ec5740075ee32c1e79248fe3bc9ac9aa745173f6e5df', status: 'source', reason: 'Async fixed Porcupine engine TypeScript reads, alongside shell setup and model bytes.' },
+  'apps/operator/app/_components/vditor-cdn.test.ts': { sha256: 'f302eb4a6012012d5fa492b77d1593ce4c648afd501de061dc725e02eccd5652', status: 'source', reason: 'Reads MarkdownEditor.tsx and enumerated live TypeScript constructors, plus fixed JavaScript bundles.' },
+  'apps/operator/lib/chat-actions/ctx-wiring.test.ts': { sha256: '3e260183930b03b2453e8195dccb0d4e165378e214bf3ce4c6b6b7f36f1622ac', status: 'source', reason: 'actionModules reads sibling .ts action files; CTX_SITE reads SessionChatModal.tsx for supplied keys.' },
+  'apps/operator/scripts/__tests__/backup-tier-split.test.ts': { sha256: 'd86d3c6ec7bd334ac6b24335958ecaac01f6b6a15809514fb3d05a1343ae487b', status: 'non-source', reason: 'Default direct reads are two .sh backup scripts. Env override paths and child shell execution are outside this review.' },
+  'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts': { sha256: 'f4c869ba15625bec7f98c2640c2b882f1190f451c2b200671f51560e5ba903b0', status: 'source', reason: 'Directly reads affected-tests.mjs, green-checkpoint.ts, cache/scheduler/launcher sources and capability TypeScript.' },
+  'packages/operator-core/lib/agent-tools/coordination/dispatch-intervention-reachable.test.ts': { sha256: 'f51d25a475aa5c9f609ed595180790b0eb58cde392f5953bcf474705b5663e34', status: 'source', reason: 'INVOKE_TS is a fixed orchestrator invoke.ts path; describe callback reads it to parse seed lists.' },
+  'packages/operator-core/lib/chat-protocol-nodenext-export-extensions.test.ts': { sha256: 'f60b1c861e7c5e0752aaca5f1112c04ec5e321ab44a9109cd79c76f85d7c528b', status: 'source', reason: 'publishedSourceFiles enumerates chat-protocol/src .ts files and tests read each selected file.' },
+  'packages/operator-core/lib/coord/holder-context.test.ts': { sha256: '7e7cad5f5ec7c295f47a75ffea03af7d5569bba9716529b9cef41e02b8f839fe', status: 'source', reason: 'readRepoFile selects fixed holder-context/lock/tool TypeScript; parity traversal reads selected .ts/.tsx sources.' },
+  'packages/operator-core/lib/desktop-acl-command-sync.test.ts': { sha256: '22ec2dd8eb9ad20680f781a3494ec1af387ed096240688a3b962688997c14582', status: 'non-source', reason: 'Direct consumers are fixed main.rs, build.rs and capabilities/default.json; Rust is outside this JS/TS corpus.' },
+  'packages/operator-core/lib/doc-claims/staging-sync-target-ref.test.ts': { sha256: '2bcc36e9d842fc7c72809edf7e224b3762977280a05c05326e97f6e0105bd05a', status: 'non-source', reason: 'Fixed sync-staging-checkout.sh and CLAUDE.md text consumers, plus inline shell control strings.' },
+  'packages/operator-core/lib/doc-claims/system-closer-identity-registration.test.ts': { sha256: '560618e85f39a71c0a035a41546aa5d2371f83667954b47c8d71731ea567b36f', status: 'source', reason: 'walk traverses registered source roots and readFileSync consumes selected TypeScript terminal-state sites.' },
+  'packages/operator-core/lib/execute-action-dispatch-contract.test.ts': { sha256: '0ce39f4d8085efe61432c14484d2e41019e72318a6e6609d7c50a1fc8959c405', status: 'source', reason: 'Reads execute-action.ts and recursively selected source emitters; duplicate __dirname blocks VM execution, not these selectors.' },
+  'packages/operator-core/lib/harness/improvements/recursion-safety-invariants.test.ts': { sha256: '41747440bacff704c38e819dae21a4bc3693d30909497a661343b5420648ed7e', status: 'source', reason: 'TypeScript source walk reads and strips files to find recordBehaviorChange call sites.' },
+  'packages/operator-core/lib/inference-gateway/egress-pool-resolution.test.ts': { sha256: '44d56a3cccb38072bdf91fd1b4ce1aa1c3f7edbe03db90e42ceba9f233cbde6d', status: 'source', reason: 'readdirSync(DIR) selects gateway .ts files; the guard reads and strips each candidate.' },
+  'packages/operator-core/lib/scheduler/claimability-snapshot-projection-covers-floors.test.ts': { sha256: '8fd085a521e8381112eb791d41e6d2128c0c9a4fafa15d63cfa328489084c0e9', status: 'non-source', reason: 'No direct file reads: stripComments consumes SQL rendered by the real query builder and inline SQL controls.' },
+  'packages/operator-core/lib/search/search-engine-mock-completeness.test.ts': { sha256: '9d242066f01c4812e592fa0f89685be40cd485b7a4a38f3490456f349079b778', status: 'source', reason: 'walkTests selects .test.ts files and scanSource consumes their bytes, alongside fixed binding policy source.' },
+  'packages/operator-core/lib/sync-interest-single-contract.test.ts': { sha256: 'f587b3cbc136355bd6d310cc37792ee13cc842ab127d4dc5979c6cbad95e9bcf', status: 'source', reason: 'SCAN_ROOTS traverses apps/packages/libs, reads selected source files and a fixed probe route.' },
+  'templates/papercusp-ui/checks/theme-tokens.test.ts': { sha256: 'b39ed85da2a53cb8c5fad3a1c909e430640b367e94ac5eba5eb504638f511355', status: 'non-source', reason: 'Default inert environment has no TEMPLATE_CHECKS_CONFIG and skips the suite. Configured paths are unrestricted and explicitly outside this review.' },
+  // Positive executed-selector receipts from the last full census. Pin their exact
+  // bytes so known baseline readers are not re-executed in the VM on every test run.
+  'apps/operator-vite/src/lib/operator-core-client-boundary.test.ts': { sha256: 'ee2ad96fc5695c051cb545dee0028f8e4eea19fe93b59d012f2265e3eaaae3c1', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'apps/operator/app/_lints/design-primitives.test.ts': { sha256: '977074d3f6c22715256fd7f1f5e390d73a26d9ec57bdf948f59a64204c7bde2a', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'apps/operator/app/_lints/popper-stacking.test.ts': { sha256: '2d8e59806ea952917efbcc354366f3b4f37d97e42c418958487a7e876af01285', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'apps/operator/scripts/__tests__/watchdog-journald-independence.test.ts': { sha256: '50501eb8844fff98aee2073201de942232509f9d1e62f597b9717df7dd0f0ee6', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/__tests__/not-checked-non-gating-mirror.test.ts': { sha256: '2efce506875ee71b0c09e4ce400c9e3cad4a7e8212c14db3afb0744a14ef5aba', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/agent-tools/capability/base-dir.test.ts': { sha256: 'e1b2cd8b13a6282958927b2ef1397d425eae1f0f028df2a5c7f5a62d89ca467c', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/agent-tools/coordination/partial-jsonb-index-alignment.test.ts': { sha256: 'c8e1d7758a34a5f391ce2e184ba1f724a7a595653bbe8f5cae3ba1f2a325a09e', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/agent-tools/tool-tree-root.test.ts': { sha256: '7b848a0480b806abd402098d7f5ddb732ad3a19e0ceb965c20c577c7aa2a48e4', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/agent-tools/work_items/swallowed-work-item-read-guard.test.ts': { sha256: '157038cf8552068f221201e0a2d51e0df8af979fc4437d284b7dd4b516ed2250', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/conversation-context-projection-index.test.ts': { sha256: '9860317bacaeb6083f96448f8362cde6953246b3866f6b4972fdf77913bfb6a4', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/deployment/account-pool-write-path.test.ts': { sha256: '118b68a2bda22174250c5a9edaf786f84e374741c653a820caf47fbe15822267', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/doc-claims/identity-recovery-door.test.ts': { sha256: 'd83b35245bbec7abbb3512acd3c20aebd36ff34822ee7ca0198a6904d70e1623', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/goal-launch-resolver-coverage.test.ts': { sha256: 'a91c0b215fd6f6ee82ee06418fdab9f30ded3a75ea46a79c5cf7524ea22ba327', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/payload-object-shape-guard.test.ts': { sha256: '40a4898d106131adc42840dac049f62f84349eab05cc42c0f00dd699baf06e84', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/pg-stat-activity-role-visibility-guard.test.ts': { sha256: '022f1f6f4176665b0c0121d0556cc14529c69a8470de3ce2a84529f85b09d369', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/release/green-stall-watchdog-presence-columns.test.ts': { sha256: '787c5dab23c071892d4b72596ff0b0982d1d427d0e5ec24ecd6b656b13561cb4', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/sync-resolver/no-embedding-in-list-projection.test.ts': { sha256: 'a0c976cec9fbc6ad90d89270b33d98b1a792f6b3f174ba3119704f51b07800a7', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/sync-resolver/workspace-filter-coverage.test.ts': { sha256: '06058af28c780af53ef71767c0c3af2899c2745ff0c61ab031f318ac6ed1591b', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/sync/hyperbee/projections/__tests__/lww-guard-registry-lint.test.ts': { sha256: '8157b5e45793dfedd5dffb46a74de615a8f7dfb55781284342f38e611d04ab62', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/work-item-born-claimable.test.ts': { sha256: 'acf79adb2e6bdefe908f2ac9558ee38ed597e34410df305c5077021d5e6020d5', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/work-item-claim-freshness.kind-gate.test.ts': { sha256: 'f7883be5d412353dc77dac53a20211f70005c2dd83207eb0295ef06373dba9ac', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+  'packages/operator-core/lib/workspace-reg-current-guard.test.ts': { sha256: 'b5e0354d403a97f7f354dd03e819ac68a3b629308df32260bf1f8bdba40ed82f', status: 'source', reason: 'Executed selector census observed JS/TS source reads; exact test bytes pin that positive source result.' },
+};
+
+beforeAll(() => {
+  // Fail at the pre-run boundary, before the expensive inert corpus census.
+  // Concurrent edits need a content review, never an automatic hash refresh.
+  for (const [file, review] of Object.entries(REVIEWED_READER_CORPUS)) {
+    expect(crypto.createHash('sha256').update(readFileSync(join(SCRIPTS_DIR, file), 'utf8')).digest('hex'), file + ': reviewed source drifted; reclassify before the census').toBe(review.sha256);
+  }
+  for (const [file, review] of Object.entries(REVIEWED_TEST_READER_CORPUS)) {
+    expect(crypto.createHash('sha256').update(readFileSync(join(SCRIPTS_DIR, '..', file), 'utf8')).digest('hex'), file + ': reviewed test source drifted; reclassify before the census').toBe(review.sha256);
+  }
+});
+
+function reviewedReaderCorpus(entry: string, result: ReturnType<typeof observeReaderCorpus>, source: string, argv: string[] = []) {
+  const review = REVIEWED_READER_CORPUS[path.basename(entry)];
+  if (!review || argv.length || crypto.createHash('sha256').update(source).digest('hex') !== review.sha256) {
+    return { ...result, review: undefined };
+  }
+  return {
+    ...result,
+    status: result.status === 'source' ? 'source' : 'non-source',
+    review: { ...review, scope: 'default CLI direct text consumer' },
+  };
+}
+
+function reviewedTestReaderCorpus(entry: string, result: ReturnType<typeof observeReaderCorpus>, source: string, scope: { testCallbacks: boolean; defaultEnvironment: boolean }) {
+  const review = REVIEWED_TEST_READER_CORPUS[entry];
+  if (!scope.testCallbacks || !scope.defaultEnvironment || !review || crypto.createHash('sha256').update(source).digest('hex') !== review.sha256) {
+    return { ...result, review: undefined };
+  }
+  return {
+    ...result,
+    // Positive executed reads always win. Preserve the original VM receipts:
+    // reviewed status must never fabricate a codeReads entry or suppress denial.
+    status: result.status === 'source' ? 'source' : review.status,
+    review: { ...review, scope: 'test callbacks, default inert environment, direct text consumers', originalStatus: result.status },
+  };
+}
+
+function observeReviewedTestReaderCorpus(
+  entry: string,
+  source: string,
+  scope: { testCallbacks: boolean; defaultEnvironment: boolean },
+  observe: () => ReturnType<typeof observeReaderCorpus>,
+) {
+  const review = REVIEWED_TEST_READER_CORPUS[entry];
+  const exactSourceReview =
+    scope.testCallbacks &&
+    scope.defaultEnvironment &&
+    review?.status === 'source' &&
+    crypto.createHash('sha256').update(source).digest('hex') === review.sha256;
+  if (exactSourceReview) {
+    // The exact-byte review is already positive source evidence. Re-executing the whole
+    // test module in the inert VM adds no coverage and made this census exceed Vitest's
+    // 60s timeout as the tracked test population grew (EI-25889569648954031).
+    return reviewedTestReaderCorpus(
+      entry,
+      { status: 'source', codeReads: [], reads: [], unsupported: [], asynchronous: false, directoryEntriesVisited: 0 },
+      source,
+      scope,
+    );
+  }
+  return reviewedTestReaderCorpus(entry, observe(), source, scope);
+}
+
+// Keep assertion evidence bounded even when a recursive reader selects the tree.
+function corpusReceipt(result: ReturnType<typeof observeReaderCorpus> | undefined) {
+  if (!result) return { status: 'not-observed' };
+  return { ...result, codeReadCount: result.codeReads.length, codeReads: result.codeReads.slice(0, 3), readCount: result.reads.length, reads: result.reads.slice(0, 3), unsupported: result.unsupported.slice(0, 4) };
+}
+
+describe('reader corpus comes from executed selection, not quoted extensions', () => {
+  const entry = 'scripts/corpus-fixture.mjs';
+  const inventory = ['packages/example/src/main.ts', 'packages/example/src/view.tsx', 'apps/operator/scripts/systemd/example.service', 'docs/example.md', 'package.json'];
+  const run = (source: string, extra: Record<string, string> = {}) => observeReaderCorpus(entry, inventory, { [entry]: source, ...extra });
+  const enumerate = `import { readFileSync } from 'node:fs'; import { execFileSync } from 'node:child_process'; const files = execFileSync('git', ['ls-files'], { encoding: 'utf8' }).split('\\n');`;
+
+  it('directory traversal visits only immediate children, independent of unrelated inventory', () => {
+    const styles = Array.from({ length: 30 }, (_, i) => `styles/group-${i}/nested/leaf.css`);
+    const unrelated = Array.from({ length: 100 }, (_, i) => `unrelated/group-${i}/main.ts`);
+    const source = `import { readFileSync, readdirSync, statSync } from 'node:fs'; import { join } from 'node:path';
+      function walk(dir) { for (const name of readdirSync(dir)) { const file = join(dir, name); if (statSync(file).isDirectory()) walk(file); else if (file.endsWith('.css')) readFileSync(file, 'utf8'); } }
+      walk('styles');`;
+    const result = observeReaderCorpus(entry, [...styles, ...unrelated], { [entry]: source });
+    expect(result.status, JSON.stringify(result)).toBe('non-source');
+    expect(result.reads).toEqual([...styles].sort());
+    expect(result.directoryEntriesVisited).toBe(90);
+  });
+
+  it('sees regex-selected TS without any quoted code extension', () => {
+    const source = enumerate + String.raw`for (const f of files) { if (!/\.(ts|tsx)$/.test(f)) continue; readFileSync(f, 'utf8'); }`;
+    expect(SCANS_CODE_FILES.test(source), 'the old extension-mention rule must miss this control').toBe(false);
+    const result = run(source);
+    expect(result.codeReads, JSON.stringify(result)).toEqual(inventory.slice(0, 2));
+  });
+
+  it('follows selection through a predicate function and a filtered list', () => {
+    const source = enumerate + String.raw`const accepted = f => /\.tsx?$/.test(f); const selected = files.filter(accepted); function scan(f) { readFileSync(f, 'utf8'); } for (const f of selected) scan(f);`;
+    expect(SCANS_CODE_FILES.test(source)).toBe(false);
+    expect(run(source).status, JSON.stringify(run(source))).toBe('source');
+    expect(run(source).codeReads).toEqual(inventory.slice(0, 2));
+  });
+
+  it('does not treat a helper import as a source scan', () => {
+    const source = `import { accept } from './selector.mjs';` + enumerate + `for (const f of files) if (accept(f)) readFileSync(f, 'utf8');`;
+    expect(SCANS_CODE_FILES.test(source)).toBe(true);
+    const result = run(source, { 'scripts/selector.mjs': `export const accept = f => f.endsWith('.service');` });
+    expect(result.status).toBe('non-source');
+    expect(result.reads).toEqual(['apps/operator/scripts/systemd/example.service']);
+  });
+
+  it('keeps a genuine scanner whose only quoted extension is its helper import', () => {
+    const source = `import { accept } from './selector.mjs';` + enumerate + `for (const f of files) if (accept(f)) readFileSync(f, 'utf8');`;
+    expect(run(source, { 'scripts/selector.mjs': String.raw`export const accept = f => /\.tsx?$/.test(f);` }).status).toBe('source');
+  });
+
+  it('does not confuse an entrypoint self-reference with its JSON corpus', () => {
+    const source = `import { readFileSync } from 'node:fs'; if (process.argv[1].endsWith('corpus-fixture.mjs')) JSON.parse(readFileSync('package.json', 'utf8'));`;
+    expect(SCANS_CODE_FILES.test(source)).toBe(true);
+    expect(run(source).status).toBe('non-source');
+  });
+
+  it('does not count an extension regex held as fixture data', () => {
+    const source = `import { readFileSync } from 'node:fs'; const fixture = '/\\.tsx?$/'; JSON.parse(readFileSync('package.json', 'utf8'));`;
+    expect(run(source).status).toBe('non-source');
+  });
+
+  it('reports unsupported execution as unknown, with no clean inference', () => {
+    const result = run(`import { readFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; spawnSync('node', ['other-guard.mjs']); readFileSync('packages/example/src/main.ts', 'utf8');`);
+    expect(result.status).toBe('unknown');
+    expect(result.unsupported.join(' ')).toContain('child_process.spawnSync');
+  });
+
+  it('runs a real CLI shebang through the same module wrapper', () => {
+    const result = run('#!/usr/bin/env node\n' + enumerate + String.raw`for (const f of files) if (/\.tsx?$/.test(f)) readFileSync(f, 'utf8');`);
+    expect(result.status, JSON.stringify(result)).toBe('source');
+  });
+
+  it('does not infer a non-source corpus from an early failed preflight', () => {
+    const result = run(`import { readFileSync } from 'node:fs'; readFileSync('package.json', 'utf8'); process.exit(1); readFileSync('packages/example/src/main.ts', 'utf8');`);
+    expect(result.status).toBe('unknown');
+    expect(result.unsupported).toContain('early nonzero exit: 1');
+  });
+
+  it('does not leave an async CLI rejection chain alive after a synchronous census', () => {
+    const result = run(`async function main() { throw new Error('fixture rejection'); } main().catch(() => process.exit(1));`);
+    expect(result.status).toBe('unknown');
+    expect(result.asynchronous).toBe(true);
+  });
+
+  it('retains a measured code read when a later operation is unsupported', () => {
+    const result = run(`import { readFileSync, writeFileSync } from 'node:fs'; readFileSync('packages/example/src/main.ts', 'utf8'); writeFileSync('package.json', '{}');`);
+    expect(result.status).toBe('source');
+    expect(result.unsupported.join(' ')).toContain('fs.writeFileSync');
+  });
+
+  describe('Vitest callback corpus', () => {
+    const runTest = (body: string, extra: Record<string, string> = {}) => {
+      const testEntry = 'scripts/corpus-fixture.test.ts';
+      return observeReaderCorpus(testEntry, inventory, { [testEntry]: body, ...extra }, { testCallbacks: true });
+    };
+    const imports = "import { describe, it } from 'vitest'; import { readFileSync } from 'node:fs'; import { execFileSync } from 'node:child_process';";
+
+    it('observes regex selection inside a registered test callback', () => {
+      const body = imports + String.raw`describe('guard', () => { it('scan', () => { const files = execFileSync('git', ['ls-files'], {encoding: 'utf8'}).split('\n'); for (const f of files) if (/\.tsx?$/.test(f)) readFileSync(f, 'utf8'); }); });`;
+      expect(SCANS_CODE_FILES.test(body)).toBe(false);
+      expect(runTest(body).codeReads).toEqual(inventory.slice(0, 2));
+    });
+
+    it('follows a delegated selector without using its import extension as evidence', () => {
+      const body = imports + "import { select } from './selector.mjs'; it('scan', () => { for (const f of select(execFileSync('git', ['ls-files'], {encoding:'utf8'}).split('\\n'))) readFileSync(f, 'utf8'); });";
+      expect(runTest(body, { 'scripts/selector.mjs': String.raw`export const select = files => files.filter(f => /\.tsx?$/.test(f));` }).status).toBe('source');
+      expect(runTest(body, { 'scripts/selector.mjs': "export const select = files => files.filter(f => f.endsWith('.service'));" }).status).toBe('non-source');
+    });
+
+    it('does not count fixture extensions or import-only helpers as code reads', () => {
+      const result = runTest(imports + "import './selector.mjs'; it('metadata', () => { const fixture = 'a.ts'; readFileSync('package.json', 'utf8'); });", { 'scripts/selector.mjs': "export const fixture = 'b.ts';" });
+      expect(result.status).toBe('non-source');
+      expect(result.codeReads).toEqual([]);
+    });
+
+    it('retains skipped and asynchronous callbacks as unknown', () => {
+      expect(runTest(imports + "it.skip('scan', () => readFileSync('a.ts', 'utf8'));").status).toBe('unknown');
+      expect(runTest(imports + "it('scan', async () => readFileSync('a.ts', 'utf8'));").status).toBe('unknown');
+    });
+
+    it('does not run ordinary callbacks after an unsupported exclusive selection', () => {
+      const result = runTest(imports + "it('not-selected', () => readFileSync('a.ts', 'utf8')); it.only('selected', () => readFileSync('package.json', 'utf8'));");
+      expect(result.status).toBe('unknown');
+      expect(result.codeReads).toEqual([]);
+      expect(result.unsupported).toContain('vitest exclusive selection');
+    });
+
+    it('continues other callbacks after denial and never runs real effects', () => {
+      const result = runTest(imports + "import { writeFileSync } from 'node:fs'; it('denied', () => writeFileSync('/fixture-denied', 'x')); it('source', () => readFileSync('packages/example/src/main.ts', 'utf8'));");
+      expect(result.status).toBe('source');
+      expect(result.unsupported.join(' ')).toContain('fs.writeFileSync');
+    });
+  });
+
+  it('invalidates source-reviewed classifications on drift or explicit CLI arguments', () => {
+    const entry = 'scripts/check-rust-advisories.mjs';
+    const source = readFileSync(join(SCRIPTS_DIR, 'check-rust-advisories.mjs'), 'utf8');
+    const unknown = { status: 'unknown', codeReads: [], reads: [], unsupported: ['async'], asynchronous: true, directoryEntriesVisited: 0 };
+    expect(reviewedReaderCorpus(entry, unknown, source).status).toBe('non-source');
+    expect(reviewedReaderCorpus(entry, unknown, source + '\nreadFileSync("new.ts");').status).toBe('unknown');
+    expect(reviewedReaderCorpus(entry, unknown, source, ['--lock', 'new.ts']).status).toBe('unknown');
+    expect(reviewedReaderCorpus(entry, { ...unknown, status: 'source', codeReads: ['new.ts'] }, source).status).toBe('source');
+  });
+
+  it('test reviews invalidate on drift and never turn a denied VM into observed reads', () => {
+    const entry = 'apps/operator/app/_components/monaco-cdn.test.ts';
+    const source = readFileSync(join(SCRIPTS_DIR, '..', entry), 'utf8');
+    const unknown = { status: 'unknown', codeReads: [], reads: [], unsupported: ['fs/promises'], asynchronous: false, directoryEntriesVisited: 0 };
+    const scope = { testCallbacks: true, defaultEnvironment: true };
+    const reviewed = reviewedTestReaderCorpus(entry, unknown, source, scope);
+    expect(reviewed.status).toBe('source');
+    expect(reviewed.codeReads).toEqual([]);
+    expect(reviewed.unsupported).toEqual(['fs/promises']);
+    expect(reviewed.review?.originalStatus).toBe('unknown');
+    expect(reviewedTestReaderCorpus(entry, unknown, source + '\n', scope).status).toBe('unknown');
+    expect(reviewedTestReaderCorpus(entry, unknown, source, { ...scope, testCallbacks: false }).status).toBe('unknown');
+  });
+
+  it('non-source reviews cannot hide positive reads or classify a configured template invocation', () => {
+    const entry = 'templates/papercusp-ui/checks/theme-tokens.test.ts';
+    const source = readFileSync(join(SCRIPTS_DIR, '..', entry), 'utf8');
+    const unknown = { status: 'unknown', codeReads: [], reads: [], unsupported: ['skipIf'], asynchronous: false, directoryEntriesVisited: 0 };
+    const scope = { testCallbacks: true, defaultEnvironment: true };
+    expect(reviewedTestReaderCorpus(entry, unknown, source, scope).status).toBe('non-source');
+    expect(reviewedTestReaderCorpus(entry, unknown, source, { ...scope, defaultEnvironment: false }).status).toBe('unknown');
+    expect(reviewedTestReaderCorpus(entry, { ...unknown, status: 'source', codeReads: ['configured.ts'] }, source, scope).status).toBe('source');
+  });
+
+  it('uses exact-byte positive test reviews without re-executing the reviewed module', () => {
+    const entry = 'apps/operator-vite/src/__tests__/dark-flag-route-contract.test.ts';
+    const source = readFileSync(join(SCRIPTS_DIR, '..', entry), 'utf8');
+    const scope = { testCallbacks: true, defaultEnvironment: true };
+    let observations = 0;
+    const reviewed = observeReviewedTestReaderCorpus(entry, source, scope, () => {
+      observations += 1;
+      throw new Error('exact-byte source review should not re-run the census VM');
+    });
+    expect(observations).toBe(0);
+    expect(reviewed.status).toBe('source');
+    expect(reviewed.review?.originalStatus).toBe('source');
+
+    const changed = observeReviewedTestReaderCorpus(entry, source + '\n', scope, () => {
+      observations += 1;
+      return { status: 'unknown', codeReads: [], reads: [], unsupported: [], asynchronous: false, directoryEntriesVisited: 0 };
+    });
+    expect(observations).toBe(1);
+    expect(changed.status).toBe('unknown');
+  });
+});
 
 /**
  * A call to one of the shared module's OWN exports. WI-37801 follow-up: a definition whose
@@ -549,19 +1066,10 @@ describe('the copy-pasted stripComments population is SHRINK-ONLY', () => {
  * `pg-read-query.test.ts` whose control fixture self-matched. It was fixed by hand because
  * no ratchet could see it.
  *
- * ⚠⚠ THE MASK IS PER CALL SITE, AND GETTING IT WRONG SILENTLY EMPTIES THE POPULATION.
- * The first cut of this block masked with `stripCommentsAndStrings` throughout and measured
- * ZERO offenders — which read as "nothing to ratchet, ship it". It was a TAUTOLOGICAL zero:
- * `SCANS_CODE_FILES` detects a guard by a QUOTED extension (`'.ts'`), and the strings variant
- * empties string CONTENTS, so that predicate can never match under it. The detector would have
- * been 100% inert while looking green. Hence two views of every file, each matched by what it
- * is actually able to see:
- *   - comments-only  -> the SCANNER predicates, whose quarry legitimately lives in a string.
- *   - +strings       -> `definesPrivateStripper`, whose quarry is a code-form definition and
- *                       NEVER a string literal.
- * The strings view is also what cures the self-match: THIS FILE quotes hand-rolled strippers
- * as deliberately-wrong control fixtures (see the probe controls below), and under a
- * comments-only mask it flags ITSELF — the very class it exists to detect, one level up.
+ * WI12280: the quoted-extension proxy missed regex/delegated selectors and counted
+ * imports/fixture strings as corpus evidence. Inert module and test-callback execution
+ * now measures that selection. Unsupported execution stays unknown, never clean.
+ * Definition detection still masks strings, so quoted control strippers do not self-match.
  *
  * The naive-regex `includes()` arms of `classifyMasking` are deliberately NOT reused here.
  * They are sound only for a `.mjs` guard, where containing `\/\*[\s\S]*?\*\/` as text MEANS
@@ -586,10 +1094,10 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
       // WI-10004176: a plain `rm` stays in the index until git-sync commits it — drop those.
       .filter((f) => existsSync(join(REPO_ROOT, f)));
 
-  const isTreeScanningGuard = (commentsOnlyView: string): boolean =>
-    SCANS_CODE_FILES.test(commentsOnlyView) &&
-    TEXT_MATCHES.test(commentsOnlyView) &&
-    READS_FILES.test(commentsOnlyView);
+  const inventory = execFileSync('git', ['ls-files', '-z'], { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\0').filter(Boolean);
+  const census = new Map<string, ReturnType<typeof observeReaderCorpus>>();
+  const isTreeScanningGuard = (raw: string): boolean =>
+    observeReaderCorpus('scripts/census-control.test.ts', inventory, { 'scripts/census-control.test.ts': raw }, { testCallbacks: true }).status === 'source';
 
   const measureTestPopulation = (): string[] => {
     const found: string[] = [];
@@ -601,42 +1109,46 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
         continue; // tracked but absent (mid-sweep deletion) is not this guard's business
       }
       if (!MIGHT_DEFINE_STRIPPER.test(raw)) continue;
-      if (!isTreeScanningGuard(stripCommentsOnly(raw, rel))) continue;
       if (!definesPrivateStripper(stripCommentsAndStrings(raw, rel))) continue;
-      found.push(rel);
+      if (!census.has(rel)) census.set(rel, observeReviewedTestReaderCorpus(rel, raw, { testCallbacks: true, defaultEnvironment: true }, () => observeReaderCorpus(rel, inventory, undefined, { testCallbacks: true })));
+      if (census.get(rel)!.status !== 'non-source') found.push(rel);
     }
     return found.sort();
   };
 
   /**
-   * SHRINK-ONLY, exactly like the scripts/ baseline above. These 30 are pre-existing debt
-   * measured at adoption; the ratchet exists to stop the 31st, not to force a 30-file
-   * migration in one change. Remove an entry when its file imports the shared stripper.
+   * Source-reader debt reconciled by executable receipts in WI12280. Unsupported
+   * modules are recorded separately below and cannot silently graduate to this baseline.
    */
   const TEST_BASELINE = new Set([
+    'apps/operator-vite/src/__tests__/dark-flag-route-contract.test.ts',
     'apps/operator-vite/src/__tests__/no-server-leak-in-client-graph.test.ts',
     'apps/operator-vite/src/lib/operator-core-client-boundary.test.ts',
+    'apps/operator/app/_components/monaco-cdn.test.ts',
+    'apps/operator/app/_components/porcupine-cdn.test.ts',
+    'apps/operator/app/_components/vditor-cdn.test.ts',
     'apps/operator/app/_lints/design-primitives.test.ts',
     'apps/operator/app/_lints/popper-stacking.test.ts',
     'apps/operator/lib/chat-actions/ctx-wiring.test.ts',
+    'apps/operator/scripts/__tests__/watchdog-journald-independence.test.ts',
     'packages/operator-core/lib/__tests__/affected-tests-passing-verdict-cache.test.ts',
     'packages/operator-core/lib/__tests__/not-checked-non-gating-mirror.test.ts',
     'packages/operator-core/lib/agent-tools/capability/base-dir.test.ts',
     'packages/operator-core/lib/agent-tools/coordination/dispatch-intervention-reachable.test.ts',
+    'packages/operator-core/lib/agent-tools/coordination/partial-jsonb-index-alignment.test.ts',
     'packages/operator-core/lib/agent-tools/tool-tree-root.test.ts',
     'packages/operator-core/lib/agent-tools/work_items/swallowed-work-item-read-guard.test.ts',
+    'packages/operator-core/lib/conversation-context-projection-index.test.ts',
     'packages/operator-core/lib/chat-protocol-nodenext-export-extensions.test.ts',
-    // holder-context.test.ts:452 `export function stripComments(src: string)` — the clearest
-    // instance in the corpus, and an EXPORTED one, so its blindness is reachable by importers.
     'packages/operator-core/lib/coord/holder-context.test.ts',
     'packages/operator-core/lib/deployment/account-pool-write-path.test.ts',
-    'packages/operator-core/lib/desktop-acl-command-sync.test.ts',
     'packages/operator-core/lib/doc-claims/identity-recovery-door.test.ts',
     'packages/operator-core/lib/doc-claims/system-closer-identity-registration.test.ts',
     'packages/operator-core/lib/execute-action-dispatch-contract.test.ts',
     'packages/operator-core/lib/goal-launch-resolver-coverage.test.ts',
     'packages/operator-core/lib/harness/improvements/recursion-safety-invariants.test.ts',
     'packages/operator-core/lib/inference-gateway/egress-pool-resolution.test.ts',
+    'packages/operator-core/lib/payload-object-shape-guard.test.ts',
     'packages/operator-core/lib/pg-stat-activity-role-visibility-guard.test.ts',
     'packages/operator-core/lib/release/green-stall-watchdog-presence-columns.test.ts',
     'packages/operator-core/lib/search/search-engine-mock-completeness.test.ts',
@@ -645,23 +1157,35 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
     'packages/operator-core/lib/sync-resolver/workspace-filter-coverage.test.ts',
     'packages/operator-core/lib/sync/hyperbee/projections/__tests__/lww-guard-registry-lint.test.ts',
     'packages/operator-core/lib/work-item-born-claimable.test.ts',
+    'packages/operator-core/lib/work-item-claim-freshness.kind-gate.test.ts',
     'packages/operator-core/lib/workspace-reg-current-guard.test.ts',
   ]);
 
+  // Every current baseline entry has exact-byte positive source evidence. New
+  // candidates still run through the inert VM; a review drift fails before the census.
+  const TEST_UNRESOLVED_CORPUS = new Set<string>();
+
   it('no NEW .test.ts tree-scanning guard hand-rolls its own comment stripper', () => {
-    const added = measureTestPopulation().filter((f) => !TEST_BASELINE.has(f));
+    const added = measureTestPopulation().filter((f) => !TEST_BASELINE.has(f) && !TEST_UNRESOLVED_CORPUS.has(f));
     expect(
       added,
       'These tree-scanning guards hand-roll a comment stripper instead of importing ' +
         'scripts/lib/strip-comments-and-strings.mjs. Being a .test.ts rather than a scripts/*.mjs ' +
-        'does not change the defect (EI-23769743489199449) — it only used to hide it.',
+        'does not change the defect (EI-23769743489199449) — it only used to hide it. ' +
+        JSON.stringify(added.map(file => ({ file, ...corpusReceipt(census.get(file)) }))),
     ).toEqual([]);
   });
 
   it('the baseline does not carry entries that are already migrated (it must stay honest)', () => {
     const population = measureTestPopulation();
-    const stale = [...TEST_BASELINE].filter((f) => !population.includes(f));
-    expect(stale, 'Already-migrated test guards still listed in TEST_BASELINE — remove them.').toEqual([]);
+    const stale = [...TEST_BASELINE].filter((f) => !population.includes(f) || census.get(f)?.status !== 'source');
+    expect(stale, 'Baseline entries without positive source evidence — classify unknowns separately or remove migrated entries. ' + JSON.stringify(stale.map(file => ({ file, ...corpusReceipt(census.get(file)) })))).toEqual([]);
+  });
+
+  it('an unresolved test cannot become a source reader without exposure review', () => {
+    measureTestPopulation();
+    const changed = [...TEST_UNRESOLVED_CORPUS].filter(f => census.get(f)?.status !== 'unknown');
+    expect(changed, 'Reclassify from these receipts, never a blind list update: ' + JSON.stringify(changed.map(file => ({ file, ...corpusReceipt(census.get(file)) })))).toEqual([]);
   });
 
   // ---- falsifiability: controls that must keep answering both ways (never tree mutation) ----
@@ -673,7 +1197,7 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
       'function stripComments(s) { return s.replace(/x/g, ""); }',
       'if (src.includes("token")) throw new Error("boom");',
     ].join('\n');
-    expect(isTreeScanningGuard(stripCommentsOnly(offender, 'control.test.ts'))).toBe(true);
+    expect(isTreeScanningGuard("import { readFileSync } from 'node:fs';\n" + offender)).toBe(true);
     expect(definesPrivateStripper(stripCommentsAndStrings(offender, 'control.test.ts'))).toBe(true);
   });
 
@@ -729,7 +1253,8 @@ describe('tree-scanning guards written as .test.ts are IN the ratchet (WI-100020
 describe('guards that scan UNMASKED source are visible, and the population is SHRINK-ONLY', () => {
   /**
    * check-/lint- guards that read JS/TS source and text-match against it without masking
-   * comments or strings first. May SHRINK, never GROW.
+   * comments or strings first. May SHRINK, never GROW with new debt. Correcting a
+   * measurement may reveal an old member; document that independently of new debt.
    *
    * Being on this list is not automatically a bug — a guard whose token cannot appear in prose
    * is safe, and some (check-no-nul-in-source, check-no-control-bytes, check-smart-quotes) are
@@ -747,6 +1272,10 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // than forcing a redundant second mask into the wrapper.
     'check-bundled-cli-entry-guards.mjs',
     'check-constant-conditional.mjs',
+    // Measurement correction EI-20077125623815751: this existing byte/line guard
+    // reads JS/TS even when the old quoted-extension rule missed it. Conflict markers
+    // inside literals remain real conflicts, so masking would hide broken merges.
+    'check-conflict-markers.mjs',
     // check-declared-deps-extracted.mjs reads package.json/package-lock.json and package-local
     // manifests, then imports runtime entrypoints in child processes. It never reads JS/TS
     // source to text-match code tokens; the census prefilter is fooled by its documented .mjs
@@ -785,6 +1314,10 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // ALSO masking strings dropped 8 rows, every one real code and not one a phantom. So it
     // cannot pass probeStringLiteralBlindness and is correctly absent from the cases table
     // above — "migrate it to the full stripper" is a REGRESSION, and its own header says so.
+    // Reviewed WI-10006055: this wrapper matches Vite process diagnostics and
+    // delegates generated HTML/asset inspection to bundle-budget.mjs. Its file
+    // reads are build output; it never text-matches code tokens against source.
+    'check-bundle-budget.mjs',
     'check-generic-first.mjs',
     // check-github-identity-terms.mjs STAYS (audited 2026-08-10, WI-37717) — and this entry is
     // the "exposure considered" kind, not the "needs a stripper" kind. Its corpus is `.md`/`.mdx`
@@ -891,7 +1424,10 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // ⚠ The MARKER window still reads RAW text: a justification is normally written AS a comment
     // (`// sql-snippet-justified: …`), so masking it would blank every justification in the repo
     // and turn the guard into a false-positive machine. `--self-test` case 4 pins that.
-    'check-systemd-startlimit-placement.mjs',
+    // Reviewed WI-10006055: every readFileSync parses a package.json manifest;
+    // includes() tests CLI argv. The quoted .mjs is an imported helper, not a
+    // JS/TS scan target. A source masker would change none of these inputs.
+    'check-partial-install.mjs',
     // ⚠ KNOWN FALSE POSITIVE, not debt — remove this entry when EI-20077125623815751 lands.
     // This guard never reads JS/TS source: it reads `package.json` and regex-tests
     // `JSON.stringify(declared)`. Its ONLY quoted-extension evidence is its own IMPORT
@@ -916,30 +1452,66 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     //   INSERT INTO t VALUES ('a--b'), (workspace_id ... DEFAULT 'default')
     // reported NOTHING. The SQL path it needed did not exist until this WI added it — the
     // shared stripper was a TypeScript parser that returned SQL completely unmasked.
+    // ⚠ KNOWN FALSE POSITIVE, not debt — remove this entry when EI-20077125623815751 lands.
+    // Runs lints against a committed snapshot; reads only JSON owner markers, and its `.test(` /
+    // `.includes(` calls run over argv, SHAs and workspace names. Its only quoted-extension
+    // evidence is an import specifier (`'../libs/test-config/src/tmpdir-guard.ts'`, added
+    // 2026-10-10) — the check-tracked-src-entry-dist.mjs shape (EI-25706078725120945).
+    'lint-as-committed.mjs',
     'lint-tsc-workspaces.mjs',
   ]);
 
+  // Default-consumer reviews resolve the original ten unknowns at exact source bytes.
+  // A changed/unreviewed consumer still fails as unknown; a measured source read
+  // always overrides a review and needs its own exposure assessment.
+  const UNRESOLVED_CORPUS = new Set<string>([]);
+
+  const inventory = execFileSync('git', ['ls-files', '-z'], { cwd: path.resolve(SCRIPTS_DIR, '..'), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\0').filter(Boolean);
+  const census = new Map<string, ReturnType<typeof reviewedReaderCorpus>>();
   const measureUnmasked = (): string[] =>
     GUARD_SCRIPTS().filter((f) => {
       const masked = maskedSourceOf(f);
-      if (!(SCANS_CODE_FILES.test(masked) && TEXT_MATCHES.test(masked) && READS_FILES.test(masked))) return false;
-      return classifyMasking(masked) === 'unmasked';
+      if (!(TEXT_MATCHES.test(masked) && READS_FILES.test(masked))) return false;
+      if (classifyMasking(masked) !== 'unmasked') return false;
+      if (!census.has(f)) census.set(f, reviewedReaderCorpus('scripts/' + f, observeReaderCorpus('scripts/' + f, inventory), readFileSync(join(SCRIPTS_DIR, f), 'utf8')));
+      // Unknown is conservatively retained. An unsupported operation must not hide a
+      // source scanner, and its receipt stays available in the assertion diagnostics.
+      return census.get(f)!.status !== 'non-source';
     });
 
   it('no NEW guard text-matches code tokens against source it never masked', () => {
-    const added = measureUnmasked().filter((f) => !SCANS_UNMASKED_SOURCE.has(f));
+    const added = measureUnmasked().filter((f) => !SCANS_UNMASKED_SOURCE.has(f) && !UNRESOLVED_CORPUS.has(f));
     expect(
       added,
-      `These guards scan JS/TS source and text-match against it WITHOUT masking comments or strings. ` +
+      `These guards read unmasked JS/TS source or their executable corpus could not be determined. ` +
         `A guard's error message quotes the very token it detects, so prose that discusses the rule ` +
         `mints phantom offenders and reds the gate on a comment (EI-20045405992394901). Import ` +
-        `stripCommentsOnly / stripCommentsAndStrings from scripts/lib/strip-comments-and-strings.mjs.`,
+        `stripCommentsOnly / stripCommentsAndStrings from scripts/lib/strip-comments-and-strings.mjs for measured source readers; resolve unknowns before classifying them. ` +
+        JSON.stringify(added.map(file => ({ file, ...corpusReceipt(census.get(file)) }))),
     ).toEqual([]);
   });
 
   it('the unmasked baseline does not carry entries that already mask (it must stay honest)', () => {
     const stale = [...SCANS_UNMASKED_SOURCE].filter((f) => !measureUnmasked().includes(f));
-    expect(stale, 'These guards now mask their source — remove them from SCANS_UNMASKED_SOURCE.').toEqual([]);
+    expect(stale, 'These guards now mask their source or demonstrably read a non-code corpus — remove them from SCANS_UNMASKED_SOURCE. ' + JSON.stringify(stale.map(file => ({ file, ...corpusReceipt(census.get(file)) })))).toEqual([]);
+  });
+
+  it('an unresolved reader cannot become a source reader without an exposure review', () => {
+    measureUnmasked();
+    const nowSource = [...UNRESOLVED_CORPUS].filter(f => census.get(f)?.status === 'source');
+    expect(nowSource, 'These previously unknown readers now have positive source-read evidence; review their masking rather than silently retaining an unknown exemption.').toEqual([]);
+  });
+
+  it('the real systemd reader is non-source while the regex-only conflict reader is source', () => {
+    measureUnmasked();
+    expect(census.get('check-systemd-startlimit-placement.mjs')?.status).toBe('non-source');
+    expect(census.get('check-conflict-markers.mjs')?.status).toBe('source');
+  });
+
+  it('default-consumer reviews remain bound to the exact reviewed script bytes', () => {
+    for (const [file, review] of Object.entries(REVIEWED_READER_CORPUS)) {
+      expect(crypto.createHash('sha256').update(readFileSync(join(SCRIPTS_DIR, file), 'utf8')).digest('hex'), file + ': review source changed; reclassify its direct consumer').toBe(review.sha256);
+    }
   });
 
   // CONTROL. The rule this replaced was `/^(export\s+)?function\s+stripComments/m` — it keyed on

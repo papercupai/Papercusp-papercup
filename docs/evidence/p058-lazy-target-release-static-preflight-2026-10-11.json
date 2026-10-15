@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 fresh lazy-target release ARM static import preflight",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    ".papercusp/scratch/p058-lazy-target-release-20261011/run-equivalent.mjs",
+    "static"
+  ],
+  "cwd": ".",
+  "startedAt": "2026-10-11T18:17:44.723Z",
+  "finishedAt": "2026-10-11T18:17:51.095Z",
+  "timestampsScope": "Owned container generation directory creation and final saved cleanup receipt",
+  "exitCode": 1,
+  "assertions": [
+    {
+      "id": "arm-static-external-resolution",
+      "passed": false,
+      "evidence": "Owned ARM static task0mv459kskyrtaik16q4 failed with ERR_MODULE_NOT_FOUND for js-tiktoken before canonical boot."
+    },
+    {
+      "id": "exact-owned-static-cleanup",
+      "passed": true,
+      "evidence": "Saved ownership receipt7100b7cb records container6e5f3809 removed=true and cleanupPending=false."
+    },
+    {
+      "id": "frozen-inputs-remain-unchanged",
+      "passed": true,
+      "evidence": "Postfailure task0mv45iu3j11m8b0vhwj completed0 after checking the full frozen source, all four release artifacts and the entire retained overlay."
+    }
+  ],
+  "summary": "Fresh exact-source release build passed. ARM static imports then failed because js-tiktoken and its base64-js dependency are absent from the retained old diagnostic overlay. The owned static container was removed. Canonical 60000ms boot was not attempted on this new bundle; no installed, trusted or shipped acceptance.",
+  "workItemId": "EI-25708127159467940",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "producerTaskId": "0mv459kskyrtaik16q4",
+  "sourceCommit": "af73da044b9c67adc47a9a5044968b6139578a8a",
+  "candidateAccepted": false,
+  "originalDeadlineMs": 60000,
+  "canonicalBootAttempted": false,
+  "staticResult": {
+    "status": "failed",
+    "errorCode": "ERR_MODULE_NOT_FOUND",
+    "missingSpecifier": "js-tiktoken",
+    "requiredDependency": "base64-js",
+    "containerId": "6e5f38098ee373f122296c8d58a4bac9cc53acfb43fa968e9ac4928b7ac3710a",
+    "removed": true,
+    "cleanupPending": false,
+    "ownershipPath": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/static-resolution/.native-producer-owner-bzkeCl/ownership.json",
+    "ownershipSha256": "7100b7cbd44214c0033155009494574ba4a7c673853f46410eea6ca7765b34e6"
+  },
+  "preparation": {
+    "taskId": "0mv44v44l6f9apr19jq",
+    "status": "passed",
+    "sourceCaptureFiles": 39157,
+    "sourceReceiptSha256": "aeb4412d7f46519b1b4cc4fa110052c6ff9336a71718c38b58ac413754daef29",
+    "initialStrictHashPrepareTask": "0mv44mrev1qyqar8ir3",
+    "initialStrictHashPrepareOutcome": "failed; original capture and output preserved"
+  },
+  "dependencies": {
+    "taskId": "0mv44y6pb1ltctz91rj",
+    "status": "passed",
+    "equivalent": true,
+    "droppedLinks": [],
+    "inputCount": 20,
+    "runtimeSourceFiles": 19,
+    "receiptSha256": "a560e02671dcbc57420790afde9979e94cf96e73ff7a49c9743f4c9494c79bf6",
+    "equivalenceSha256": "2b6c095c8a4503f341fe9f645612e9f2fb6dcb08e213e5c9d2ee40489e15f246"
+  },
+  "build": {
+    "taskId": "0mv453poo1cr2eb11br",
+    "status": "passed",
+    "profile": "release",
+    "artifacts": {
+      "serve.mjs": {
+        "sha256": "9fdec4840e5c9407e1ea52eb15c5a8815d38ba9b40702f6f3d3a3dbab0449caa",
+        "bytes": 56552547
+      },
+      "serve.mjs.meta.json": {
+        "sha256": "c23a1686f7dc2896f8f894e3a6579079de7df5ca9fa91a0e1b44d7d74d20d2ef",
+        "bytes": 10066686
+      },
+      "spawner-sidecar.mjs": {
+        "sha256": "a53f70dd54afc032f6fa06f3a2d54a83ef9cb7f464ec0e6d4d077d801ac35be6",
+        "bytes": 53980640
+      },
+      "spawner-sidecar.mjs.meta.json": {
+        "sha256": "5ae96da0467bf897b07ffcf916cb79927807819de4259f7f1dfd8b131a386518",
+        "bytes": 9869529
+      }
+    },
+    "receiptSha256": "e9f1096ff7d1aa4245765f76bda7a1b65b6cdd4078fd51b12184f04fffe75cc4"
+  },
+  "scope": "Current HOST release-profile bundle in preserved ARM runtime; full desktop/native artifact acceptance remains separate",
+  "retainedOverlaySha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+  "newExternalSpecifiers": [
+    "js-tiktoken"
+  ],
+  "postFailureStabilityCheck": {
+    "status": "passed",
+    "taskId": "0mv45iu3j11m8b0vhwj",
+    "exitCode": 0,
+    "finishedAt": "2026-10-11T18:24:14.734Z",
+    "scope": "Complete frozen source, all four release artifacts and entire retained overlay remained unchanged after failed static resolution"
+  },
+  "scriptSha256": "318ba185f1920ec6967659abbfd5b756b43eba2a28673126d950779cf745a2d7",
+  "signed": false,
+  "published": false
+}

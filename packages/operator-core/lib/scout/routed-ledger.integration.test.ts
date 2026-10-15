@@ -32,7 +32,9 @@ const {
   readPendingOutcomeCandidates,
   getScoutLensWeights,
   buildScoutOutcomeReaders,
+  readLensRecency,
 } = await import('./routed-ledger');
+const { rosterForBudget } = await import('./cycle-deps');
 const invalidate = vi.mocked((await import('../sync-sse')).notifySyncInvalidate);
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 // EI-11978: prove the aged-out win is genuinely OUTSIDE the raw feed window, so
@@ -82,6 +84,53 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('rotates the real capped roster across zero-route Scout attempts (EI-24926443593885283)', async () => {
+    const workspace = 'ws-scout-zero-route-rotation';
+    const visited: string[] = [];
+    const base = Date.parse('2026-10-03T00:00:00Z');
+    for (let cycle = 0; cycle < 4; cycle++) {
+      const recency = await readLensRecency({ workspaceId: workspace });
+      const lens = rosterForBudget(1, undefined, recency).lenses![0];
+      visited.push(lens);
+      const detail = JSON.stringify({ ideators: [{ lens, ideas: 0 }] });
+      const at = new Date(base + cycle * 1000).toISOString();
+      await db.adminSql`
+        INSERT INTO harness_shared.scout_ticks
+          (workspace_id, install_slug, origin, status, ideas_routed, tick_at, detail)
+        VALUES (${workspace}, '@singleton', 'scout', 'ran', 0, ${at}::timestamptz, ${detail}::text::jsonb)`;
+    }
+    expect(visited).toEqual(['analogical', 'first-principles', 'reframing', 'constraint-removal']);
+    const counts = await db.adminSql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.scout_routed_ideas WHERE workspace_id = ${workspace}`;
+    expect(counts[0].n).toBe(0); // Fairness did not depend on a routed artifact.
+  });
+
+  it('attempt recency excludes other workspaces, origins, failures and malformed slot metadata', async () => {
+    const workspace = 'ws-scout-attempt-isolation';
+    const success = JSON.stringify({ ideators: [{ lens: 'reframing', ideas: 0 }] });
+    const failed = JSON.stringify({ ideators: [{ lens: 'analogical', error: 'transport failed' }] });
+    const other = JSON.stringify({ ideators: [{ lens: 'first-principles' }] });
+    await db.adminSql`
+      INSERT INTO harness_shared.scout_ticks
+        (workspace_id, install_slug, origin, status, tick_at, detail)
+      VALUES
+        (${workspace}, '@singleton', 'scout', 'ran', '2026-10-03T00:00:01Z'::timestamptz, ${success}::text::jsonb),
+        (${workspace}, '@singleton', 'scout', 'ran', '2026-10-03T00:00:02Z'::timestamptz, ${failed}::text::jsonb),
+        (${workspace}, '@singleton', 'su-ideate', 'ran', '2026-10-03T00:00:03Z'::timestamptz, ${other}::text::jsonb),
+        (${workspace}, '@singleton', 'scout', 'error', '2026-10-03T00:00:04Z'::timestamptz, ${other}::text::jsonb),
+        ('other-scout-workspace', '@singleton', 'scout', 'ran', '2026-10-03T00:00:05Z'::timestamptz, ${other}::text::jsonb),
+        (${workspace}, '@singleton', 'scout', 'ran', '2026-10-03T00:00:06Z'::timestamptz, '{"ideators":{}}'::jsonb)`;
+    expect(await readLensRecency({ workspaceId: workspace })).toEqual({ reframing: Date.parse('2026-10-03T00:00:01Z') });
+    expect(await readLensRecency({ workspaceId: workspace, origin: 'su-ideate' })).toEqual({});
+  });
+
+  it('preserves historical routing recency when a lens has no attempt metadata', async () => {
+    const recency = await readLensRecency({ workspaceId: WS });
+    expect(recency.analogical).toBeGreaterThan(0);
+    expect(recency['first-principles']).toBeGreaterThan(0);
+    expect(recency.reframing).toBeGreaterThan(0);
   });
 
   it('reads back routed provenance, newest-first, scoped to the workspace', async () => {
@@ -516,6 +565,18 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
 
     beforeAll(async () => {
       const sql = db.adminSql;
+      // A LIVE gym (plan scout-su-ideate-pipeline-gaps-2026-10-08 P-002): an enabled
+      // autoloop AND an active gym-cycle routine on this harness. Without both, the gym
+      // rail is paused (paused-rails.ts) and a non-terminal gym idea is 'unresolvable',
+      // not 'pending' — the paused case is asserted explicitly at the end of this block.
+      await sql`
+        INSERT INTO harness_shared.gym_autoloop_config (workspace_id, harness_slug, enabled, updated_at)
+        VALUES (${WS}, ${HARNESS}, true, ${Date.now()})
+        ON CONFLICT (workspace_id, harness_slug) DO UPDATE SET enabled = true`;
+      await sql`
+        INSERT INTO harness_shared.routines (id, install_slug, name, trigger_kind, trigger_config, target_role, active, workspace_id)
+        VALUES ('gym3-gym-cycle', ${HARNESS}, 'gym-cycle', 'schedule', '{}'::jsonb, 'worker', true, ${WS})
+        ON CONFLICT (id) DO UPDATE SET active = true`;
       // A Scout-seeded candidate that STILL holds its QD niche (the reigning
       // elite) — router.ts always writes routedRef = `gym:<candidateId>`,
       // which is NEVER a gym_proposals.id (a compound `${variantId}__${role}`
@@ -568,6 +629,29 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       });
       const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
       expect(report.byLens['first-principles']).toMatchObject({ won: 0, lost: 0, pending: 1 });
+    });
+
+    it('P-002: with the gym-cycle routine paused, the still-undecided gym idea is unresolvable and leaves pending; decided ones keep their verdict', async () => {
+      await db.adminSql`
+        UPDATE harness_shared.routines SET active = false
+         WHERE workspace_id = ${WS} AND install_slug = ${HARNESS} AND name = 'gym-cycle'`;
+      try {
+        const report = await getScoutLensOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+        expect(report.byLens['first-principles']).toMatchObject({ won: 0, lost: 0, pending: 0, unresolvable: 1 });
+        // A verdict reached before the pause still decides (not reclassified).
+        expect(report.byLens.analogical).toMatchObject({ won: 1, lost: 0, pending: 0, unresolvable: 0 });
+        expect(report.byLens.reframing).toMatchObject({ won: 0, lost: 1, pending: 0, unresolvable: 0 });
+
+        await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
+        const [row] = await db.adminSql<{ outcome: string | null }[]>`
+          SELECT outcome FROM harness_shared.scout_routed_ideas
+           WHERE workspace_id = ${WS} AND idea_id = 'i-qd-underreview'`;
+        expect(row.outcome).toBe('unresolvable');
+      } finally {
+        await db.adminSql`
+          UPDATE harness_shared.routines SET active = true
+           WHERE workspace_id = ${WS} AND install_slug = ${HARNESS} AND name = 'gym-cycle'`;
+      }
     });
   });
 

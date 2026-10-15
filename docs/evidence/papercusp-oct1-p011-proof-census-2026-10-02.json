@@ -1,0 +1,555 @@
+{
+  "observedInboxAcceptance": {
+    "workItem": "WI-10005825",
+    "qualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-observed-pair-r1-qualification-2026-10-03.json",
+      "bytes": 11068,
+      "sha256": "2366ca36b2038ff2752adc43c4d7ee3e8d075c479c76a030b5f1831984a2b4c7"
+    },
+    "raw": {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-observed-pair-r1-2026-10-03.json",
+      "bytes": 174994,
+      "sha256": "a58a80a6b1aa8f54f3f1e81a4b15acd1868866e94f0156d4fc39f0b49ed729a2"
+    },
+    "testRuns": [
+      20635247,
+      20635269,
+      20635291
+    ],
+    "observedPairs": [
+      {
+        "baselineArm": 0,
+        "candidateArm": 1,
+        "pssGrowthDifferenceBytes": 188961792,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 243861720
+      },
+      {
+        "baselineArm": 3,
+        "candidateArm": 2,
+        "pssGrowthDifferenceBytes": 46391296,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 223179064
+      }
+    ],
+    "status": "Verified scoped current-source private resource/functionality comparison with eight-client overlap in every window; full parent acceptance remains open.",
+    "scope": "Order-reversed arms, exact raw contents and response outcomes, graceful private cleanup. Cumulative allocation is not retained/native allocation; no production/historical saving or full executed graph claim.",
+    "preservesPriorCensus": {
+      "bytes": 41967,
+      "sha256": "4fc8fc8aef485d484b1c80d98455f7e8bc9c2c19540fccfb3c37600dd1cef109"
+    }
+  },
+  "forwardBaseline": {
+    "workItem": "WI-10005816",
+    "qualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-forward-baseline-qualification-r1-2026-10-03.json",
+      "sha256": "43c6d01d721890e54830969361a2a1ca0dce61ee37d745e1c42c91d8c956244f",
+      "bytes": 11316
+    },
+    "scope": "New bounded main and maintained-spawner current-build baseline; physical savings, allocation owner and request assignment remain unmeasured. Prior dispositions and bindings preserved."
+  },
+  "schemaVersion": 1,
+  "workItem": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010",
+    "requiredLayer": "integration",
+    "requiredEvidencePlane": "live",
+    "declarationRepair": "WI-10005390; plan decision D-020. Revision 1 put live in the executable-layer field; revision 2 preserves the behavior and falsifier and requires live separately as an evidence plane.",
+    "historicalRevision": {
+      "revision": 1,
+      "fingerprint": "325a3240536eb81d70fc4fca6e7b8636db9f0b5e1e2dc3ae34fdb3b65f3faa31",
+      "bindings": [
+        21377,
+        21383,
+        21384
+      ],
+      "scope": "Existing bindings remain at revision 1; this census update does not rebind or promote their historical proof."
+    }
+  },
+  "recordedAt": "2026-10-02T08:27:23Z",
+  "qualificationUpdatedAt": "2026-10-03T02:02:19.196Z",
+  "status": "partial-evidence-qualified-acceptance-open",
+  "newTestRuns": [],
+  "selectedSourceOracleMutation": {
+    "workItem": "WI-10005810",
+    "path": "docs/evidence/papercusp-oct1-p011-oracle-mutation-r1-2026-10-03.json",
+    "bytes": 27793,
+    "sha256": "f61419bb19ecb377a335fb9f7a49152dddfb9cb5ab276a6b72303dad2b53cda3",
+    "binding": 23104,
+    "bindingKind": "counterexample",
+    "baselineTestRuns": [
+      20622425,
+      20622427
+    ],
+    "mutantTestRun": 20622428,
+    "outcome": "Both unmodified controls52PASS; mutant46FAIL6PASS/36filteredSKIP. Exact46corruption assertions fail; six raw/headline positives pass. Shared oracle unchanged.",
+    "scope": "Executable red capability for saved historical inbox/expiry/compiler data guards only. Prior dispositions, spawner fields and ordinary bindings preserved; live acceptance and shipment open."
+  },
+  "selectedSourceOracleAcceptance": {
+    "workItem": "WI-10005793",
+    "path": "docs/evidence/papercusp-oct1-p011-selected-resource-oracles-r2-2026-10-03.json",
+    "bytes": 8788,
+    "sha256": "833ba76bb8170ffc9a8c8411083495d7855183a383661ba7de1de975afa1d61b",
+    "testRun": 20616349,
+    "binding": 23101,
+    "bindingKind": "test",
+    "oraclePath": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "oracleSha256": "50e8b9d619999e5f0f09bdb8f832f53924a27814a0d89c6707f70d69df145375",
+    "outcome": "52 focused assertions passed, 36 unrelated assertions filtered. Three saved raw receipts accepted, 46 targeted data corruptions rejected (inbox18/expiry12/compiler16), and three fabricated-headline controls ignored. Focused typecheck had zero errors.",
+    "method": "Independent raw counter arithmetic, regenerated inbox input and expected outcomes, expiry reachability and useful-entry counts, compiler caller/executable ancestry and cleanup. No cohort emitter or reduction headline determines acceptance.",
+    "bindingQualification": "Ordinary passing assertion evidence derived from harness-scoped local-dirty ledger20616349. Not a failed mutation-probe run. Independent readback returned spec/source/test/testRun current under server-measured repo-files scope; L3/L4 remain false and disclosed gaps remain explicit.",
+    "historicalBindings": {
+      "23100": "Preserved unretracted; source/spec/testRun current, test stale after this maintained oracle extension.",
+      "23099": "Preserved unretracted; source/spec/test/testRun current on readback. Its separate emitter is unchanged.",
+      "scope": "Freshness describes saved receipts and named test bytes, not current loaded runtime or complete executed graph. No older binding was superseded or retracted."
+    },
+    "inbox": {
+      "pssGrowthDifferenceBytes": 210301952,
+      "cumulativeV8AllocationGrowthDifferenceBytes": 288349304,
+      "rawCopies": [8, 1],
+      "preservedBodyCodeUnits": 8388608,
+      "responsesPerHost": 24,
+      "limits": "Historical private comparison only. Actual per-request overlap timestamps and production savings are unmeasured; original GC-events and source-drift qualifications remain intact."
+    },
+    "expiry": {
+      "expiredReachable": [438, 0],
+      "usefulEntries": 604,
+      "heapUsedDifferenceBytes": 163653752,
+      "pssDifferenceBytes": -17983488,
+      "physicalPssReductionObserved": false,
+      "limits": "Heap/root reclamation only. Cumulative V8 allocation, process startTicks, useful body parity and production savings are unmeasured."
+    },
+    "compiler": {
+      "tracedForks": [0, 3],
+      "nativeDescendants": 3,
+      "nativeExecutableSha256": "fd49340cbb5f7ca3ce6f313db78d056de21f07338135ec8dfad63294a304fd2c",
+      "nativeSampleCounts": [3, 4, 4],
+      "limits": "Historical private preflight invocation and final cleanup only. These arms do not compare an optimization or establish original 4.2GiB recovery, current named-source identity or production savings."
+    },
+    "failedAttempt": {
+      "path": "docs/evidence/papercusp-oct1-p011-selected-resource-oracles-r1-2026-10-03.json",
+      "bytes": 6618,
+      "sha256": "7a54ef2db6e019ad602f3324e6fa73cc4fb2053065a7652acf4a31cd3a34dd20",
+      "testRun": 20616343,
+      "status": "fail",
+      "reason": "New caller oracle initially treated the saved source map as an array. Object.keys and map-shaped corruption fixed the validator; original failure retained. EI-24926545500039739."
+    },
+    "scope": "Saved historical private receipt acceptance only. All eight source dispositions and earlier spawner fields are preserved verbatim. Matched live/native/retained-owner acceptance, independent plan grading and shipment remain open."
+  },
+  "spawnerEntryComparison": {
+    "harnessScopedLoadedBuildBaseline": {
+      "workItem": "WI-10005776",
+      "status": "supporting-partial-live-proof-bound-parent-acceptance-open",
+      "purpose": "New necessary harness-scoped acceptance window, not replay or reattribution of completed WI-10005751.",
+      "raw": {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r2-2026-10-03.json",
+        "bytes": 90667,
+        "sha256": "815683d4ead0586284e6589759e368201d29218c3d8ffdc82aee76ab72966495",
+        "startedAt": "2026-10-03T02:25:08.807Z",
+        "endedAt": "2026-10-03T02:25:16.932Z"
+      },
+      "qualification": {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r2-qualification-2026-10-03.json",
+        "bytes": 5707,
+        "sha256": "9d7fa375bf61c5d974071f6b22ac6f0376d29fd9f00eb43f8687c1cb680d8d4e"
+      },
+      "testRun": 20610426,
+      "ledgerHarness": "papercusp",
+      "ledgerWorkspace": "papercusp-workspace",
+      "ledgerTestLayer": "integration",
+      "ledgerScope": "Local-dirty execution with explicit PAPERCUSP_TEST_RUN_HARNESS=papercusp; named test clean and stamped at 9430f04e7a72, eight named source paths stable, full imported graph unknown.",
+      "specBinding": 23099,
+      "bindingFingerprint": "4b9bd085d3e3a606e9aaa18e5d74bd2aa7aa79dfa3226cf986e3e86b7a508f61",
+      "bindingDisposition": "Append-only operational/live supporting evidence at P011 revision 2. No older binding superseded; L3/L4 and oracleIndependent remain false.",
+      "identity": {
+        "mainPid": 874325,
+        "mainStartTicks": "4121617",
+        "spawnerPid": 1030026,
+        "spawnerStartTicks": "4146224",
+        "expectedMainHealthSha": "ea48489b8d",
+        "expectedSiblingBakedShaReadFromDisk": "ea48489b8d",
+        "advertisedSpawnerSha": "ea48489b8d",
+        "source": "PID-bound loaded server cancellation capability",
+        "serverGeneration": "53b56bec-2faa-4f49-b20c-2688e69004dc",
+        "connectionId": "94412751-6aaf-4a18-b131-ac0c033234e9",
+        "siblingDiskSha256": "ce0377ab0e2c2e42e6042794b0cd86c9262e2189ba16dc9dc348269b507b41a4",
+        "diskIsLoadedProof": false
+      },
+      "coverage": "Focused maintained integration test 1PASS/12filteredSKIP; nine counter samples, three ambient idle/ordinary windows and 24 read requests.",
+      "cleanup": "Inspector closed; main/counter identities preserved. Shared staging lease and raw/qualification file locks released.",
+      "preservedProof": "Original R1 raw be2f3fad, qualification cda3fc14, NULL-harness run20609442 and completed WI-10005751 stay unchanged. Existing binding23004 and all older source dispositions remain separate.",
+      "scope": "Loaded identity and harness-scoped binding verified only for this new window. No matched live counterfactual, retained/native ownership, historical identity or recovery, full graph, parent clause fulfillment, independent acceptance or shipment."
+    },
+    "loadedBuildIdentityGuards": {
+      "workItem": "WI-10005751",
+      "status": "source-unit-verified-live-acceptance-open",
+      "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-identity-guards-r1-2026-10-03.json",
+      "bytes": 11191,
+      "sha256": "fb64bc1f8b3560a72ede8583efb7b1e0f82df9ff4ab76d2649e47fafa344a687",
+      "testRunIds": [20595153, 20595154, 20595155, 20595156],
+      "scope": "Maintained packaged build and PID/connection reader guards; 59 executed tests pass, one actual-live test disabled. Both packaged controls clean up gracefully. Router HEAD moved and full transitive source provenance remains UNKNOWN.",
+      "qualification": "Cached BuildInfo is now advertised by the loaded server through its existing cancellation capability and readiness generation. The baked-SHA control ignores mismatched runtime SHA; unstamped control advertises null. Existing saved standalone live baseline remains unchanged with loaded build UNKNOWN; no present-live or savings claim.",
+      "next": "Scoped loaded-identity child WI-10005751 is now done/committed. The separate new actualLoadedBuildBaseline below verifies its current observation window; retain this saved guard, original baseline timestamps, bindings22985/23004 and every older disposition."
+    },
+    "actualLoadedBuildBaseline": {
+      "workItem": "WI-10005751",
+      "completion": "Authoritative appliedState done, completionAuthority committed, finish.complete true; no repeated close.",
+      "raw": {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r1-2026-10-03.json",
+        "bytes": 90678,
+        "sha256": "be2f3fad2fd1a060ab969df894daeb50d38b48278bf8ca4eafc9fd1c45e6aacd",
+        "startedAt": "2026-10-03T02:02:08.232Z",
+        "endedAt": "2026-10-03T02:02:19.196Z"
+      },
+      "qualification": {
+        "path": "docs/evidence/papercusp-oct1-p011-spawner-loaded-build-live-r1-qualification-2026-10-03.json",
+        "bytes": 4704,
+        "sha256": "cda3fc144953b69d4dac33b7e445f4ab1eedcceb2f9874a9488d6c279f6ff638"
+      },
+      "testRun": 20609442,
+      "outcome": "Maintained test-file router terminal exit0; focused live test1PASS/12filteredSKIP. Saved guard outcomes remain separate.",
+      "ledgerScope": "Local workspace papercusp-workspace, harness_slug NULL; worktreeDirty true, named test path clean at 3eb2684bff, full imported source graph unknown.",
+      "specBinding": null,
+      "bindingDisposition": "Harness-scoped binding refused test_run_not_found/scopeMismatch because real test_run20609442 has harness_slug NULL. No binding was persisted. The next necessary executable acceptance run must set PAPERCUSP_TEST_RUN_HARNESS=papercusp; do not fabricate or relabel the existing ledger row.",
+      "identity": {
+        "mainPid": 3589357,
+        "mainStartTicks": "3924125",
+        "managedRunnerPid": 4025538,
+        "managedRunnerStartTicks": "3980880",
+        "spawnerPid": 4025592,
+        "spawnerStartTicks": "3980889",
+        "expectedMainHealthSha": "9450e8d2e1",
+        "expectedSiblingBakedShaReadFromDisk": "9450e8d2e1",
+        "advertisedSpawnerSha": "9450e8d2e1",
+        "source": "PID-bound loaded server cancellation capability",
+        "serverGeneration": "1ea3a38e-3c81-4fd4-b4fd-6ee52dbcd524",
+        "connectionId": "1ac85333-0564-405a-b2c0-15fbadf372ef",
+        "siblingDiskSha256": "9e709c1d09a0f67ade1ac782b16e54740e3b4572db2d71660f5b162d90a46cc9",
+        "diskIsLoadedProof": false
+      },
+      "coverage": "Nine PID-bound counter samples, three ambient idle/ordinary windows and24 read requests. Exact sibling/configured spawner role verified; loaded advertisement read separately from main health and disk expectation.",
+      "cleanup": "Probe inspector closed; main and spawner identities preserved; report locks and staging shared lease released. No target-module import, profiler, forced GC, restart or native agent.",
+      "scope": "Loaded identity verified only for this window. Historical sibling UNKNOWN stays unchanged. HTTP assignment, allocation ownership, live paired savings, full graph, parent clause fulfillment, independent acceptance and shipment remain open."
+    },
+    "measurementWorkItem": "WI-10005706",
+    "completion": "Saved actual close applied done with committed authority; this census does not repeat completion or tests.",
+    "originalQualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-spawner-boot-pair-r2-qualification-2026-10-02.json",
+      "bytes": 7244,
+      "sha256": "19235b3dadc726e320ec73cc2a542a7bf09e7cc9954be652cc502ba21504f28d",
+      "testRun": 20576077
+    },
+    "finalSafeQualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-current-standalone-memory-qualification-r1-2026-10-02.json",
+      "bytes": 8208,
+      "sha256": "63c05df2c76310a76efd93eb124081d10bb091fb35edbb99c92feec98b009011",
+      "testRun": 20584302
+    },
+    "finalSafeRaw": {
+      "path": "docs/evidence/papercusp-oct1-p011-spawner-safe-boot-pair-r3-2026-10-02.json",
+      "bytes": 277233,
+      "sha256": "a4650f459bd06d407650144d52d3716dce98e31a35cae7c5e7eb042b3a5981e9"
+    },
+    "coverage": "Each saved comparison has four full/standalone/standalone/full private arms, 48 PID/start-bound samples, 12 windows and 52 harmless owned commands. The maintained server and IPC workload are shared; concurrency and graceful cleanup passed with no forced cleanup or unreaped descendants.",
+    "finalSafePairs": [
+      {
+        "baselineArm": 0,
+        "candidateArm": 1,
+        "finalPssReductionBytes": 419844096,
+        "finalCumulativeV8AllocationReductionBytes": 1031421856
+      },
+      {
+        "baselineArm": 3,
+        "candidateArm": 2,
+        "finalPssReductionBytes": 433133568,
+        "finalCumulativeV8AllocationReductionBytes": 1061171864
+      }
+    ],
+    "independentOracleAcceptance": {
+      "workItem": "WI-10005787",
+      "path": "docs/evidence/papercusp-oct1-p011-spawner-resource-oracle-r1-2026-10-03.json",
+      "bytes": 2863,
+      "sha256": "a41cc615d8699d325fe1730c3770536bd731cc292cfa6564b9b117151e798603",
+      "testRun": 20611983,
+      "binding": 23100,
+      "bindingKind": "test",
+      "oracleSha256": "5dd62aa8debd3e352f033adc1747356373e0cf40f911e9711ae880f00111167f",
+      "outcome": "Exact saved final-safe receipt accepted; sixteen data-corruption counterexamples rejected. Canonical focused assertion suite17PASS/19filteredSKIP, focused typecheck0errors.",
+      "method": "Independent raw PID/start-bound kernel PSS and cumulative V8 allocation arithmetic, exact phase/IPC outcome populations, actual concurrency timestamps, allocator/artifact identity and cleanup checks. The oracle does not import the cohort writer or trust its reduction/concurrency headlines.",
+      "counterexamples": "RSS-only, missing/reset allocation, reused PID, wrong inspector, allocator mismatch, omitted/changed workload, false concurrency label, omitted idle phase, source/artifact drift, unreaped child, forced cleanup, one-pair-only PSS/allocation reduction.",
+      "bindingQualification": "Ordinary passing test evidence with server-derived run facts and scoped L4 metadata. It is not a failed mutation-probe run; both refused counterexample/caller-outcome bindings created no row. No older evidence or false oracle/L4 metadata was changed or retracted.",
+      "limits": "Audit of immutable historical private receipt only. No runtime replay, live paired savings, retained/native attribution or complete executed-source proof. Other selected sources, parent fulfillment, independent plan grading and shipment remain open."
+    },
+    "definitions": "PSS is kernel smaps_rollup Pss kB multiplied by 1024 for one identified PID; allocation is cumulative V8 total_allocated_bytes, not retained or native allocation. GC events were not recorded.",
+    "provenance": "Ten named sources were stable before/after each run. The original ledger local-dirty and unknown full source/router graph qualifications remain intact even after commit settlement.",
+    "actualStandaloneBaseline": {
+      "path": "docs/evidence/papercusp-oct1-p011-live-standalone-r1-2026-10-02.json",
+      "bytes": 90360,
+      "sha256": "6d6acbec35a4d1851809dc64de151025d8d0540acfc88b4b83736f7f1853a90e",
+      "testRun": 20584857,
+      "specBinding": 22985,
+      "evidencePlane": "live",
+      "scope": "Nine counter samples and 24 read-only HTTP requests across three actual staging windows. Node digest, exact maintained sibling path, ancestry, PID/start identity and configured spawner role are bound. Inspector closed and both process identities were preserved.",
+      "identityLimits": "Main health identifies build 80fbc954da; sibling disk digest is 91d3eef33cdbbc8110c597bc287b4f1ff7937b6da93115e550f655058a5b6b4d. Independently advertised loaded sibling build remains unknown. Ambient HTTP assignment to the sidecar is unknown.",
+      "bindingLimits": "Original operational binding 22985 at PERF-OCT1-P011-MEMORY revision 2 supports the bounded live baseline only and remains unknown for source/test currentness. New binding 23004 independently remeasures the exact saved raw/qualification receipts and unchanged named emitter; its freshness scope is those files, not current serving behavior or the complete executed source graph. No matched live counterfactual, production recovery or clause fulfillment is claimed.",
+      "receiptFreshness": {
+        "binding": 23004,
+        "previousBinding": 22985,
+        "observedAt": "2026-10-02T23:46:08.718Z",
+        "measurement": {
+          "schemaVersion": 1,
+          "kind": "repo-files",
+          "sourcePaths": [
+            "docs/evidence/papercusp-oct1-p011-live-standalone-r1-2026-10-02.json",
+            "docs/evidence/papercusp-oct1-p011-current-standalone-memory-qualification-r1-2026-10-02.json"
+          ],
+          "testPaths": [
+            "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts"
+          ]
+        },
+        "sourceFingerprint": "sha256-file-set-v1:f91d8a6d8b0c8ab7c773fb74c2a52f270a6e600fb3be582d84c5b0580dd16148",
+        "testFingerprint": "sha256-file-set-v1:9e65344f483a82b90e9ddb7d425ef5666a1edefd0fdc53423dc2dda669c14fc9",
+        "readback": "plans:get-spec-evidence independently returned server-measured current for spec, source, test and saved testRun; original 22985 remains preserved with unknown source/test. The observation timestamp is unchanged and no measurement was replayed.",
+        "adequacy": {
+          "selection": "PERF-OCT1-P011-MEMORY@2; evidenceRef file:docs/evidence/papercusp-oct1-p011-live-standalone-r1-2026-10-02.json only",
+          "evaluatorBuild": "d740fc3802",
+          "verdict": "fail",
+          "passing": ["traceability", "correct-layer", "execution-integrity", "freshness"],
+          "remaining": ["falsifiability", "oracle-independence", "plan-class-risk-floor", "disclosed-gap"],
+          "requiredProofFloor": "l4",
+          "scope": "Filtered receipt adequacy only. This does not replace the complete clause evaluation, remove older stale or disclosed-gap rows, establish independent acceptance, or verify current runtime adoption."
+        }
+      }
+    },
+    "acceptance": "Final-safe private resource reduction and separately bounded actual standalone observation are verified within their recorded scopes. Parent memory acceptance, historical attribution, R-8/R-9 and shipment remain open. Original R2 and older cohorts were not replayed."
+  },
+  "remainingAcceptanceContract": {
+    "rubric": "acceptance-papercusp-log-performance-remediation-2026-09-23",
+    "revision": 4,
+    "barSetHash": "5904970706dc80a764b9bdf41d5a62ed92ee16b6fe3a113a49ec0a845401b9e5",
+    "r8": "Live-plane disposition for each gateway/proxy, portal-watchdog, repeated-background-work, migration-rendezvous, historical-polling and diagnostic-scan lead; distinguishing evidence and regression guards or evidenced non-defect dispositions. Preserve backup, auth and correctness invariants.",
+    "r9": "Deployed-plane final comparison for all nine requirements; same corpus/cache/concurrency/transport, errors and missing metrics retained, 30-minute normal workload plus isolated burst, native acceptance and known limitations. Obtain independent acceptance under the current contract and verify final green deployed build/behavior through the existing gate owner. Any unverified required outcome remains unmet.",
+    "status": "Open. The current plan acceptance evaluator returned satisfied false with acceptance_bar_contract_not_ready; this read is not a live release-gate operation."
+  },
+  "inboxPhysicalComparison": {
+    "measurementWorkItem": "WI-10005482",
+    "testRunId": 20542013,
+    "guardTestRunId": 20541975,
+    "recordedTestLayer": "integration",
+    "evidencePlane": "isolated-current-build-operator-api",
+    "raw": {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-2026-10-02.json",
+      "bytes": 78023,
+      "sha256": "8da0585c8cd1155c563aed2dc092a7413ff90b5a0fc7095873b7dcdde0c4ae58"
+    },
+    "qualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-qualification-2026-10-02.json",
+      "bytes": 11603,
+      "sha256": "92dd036710ba15b19af37ef62e24bbfd190216c848d46587670746ed6faef0b2"
+    },
+    "coverage": "Two independent private HTTP hosts from one emitted bundle with one guarded historical cache-key intervention; each has eleven PID/startTicks-bound resource samples, three idle/workload windows and twenty-four responses at concurrency eight. Exact full raw input contents remain unchanged; both hosts are reaped with no observed descendants or debugger pauses.",
+    "observedDifferenceInChanges": {
+      "pssBytes": 210301952,
+      "heapUsedBytes": 278221224,
+      "totalAllocatedBytes": 288349304
+    },
+    "definition": "Baseline completion-idle minus before, less shared completion-idle minus before. V8 cumulative allocation, heap usage and Linux PSS are separate overlapping measures; these deltas are not additive.",
+    "sourceCurrentness": "All nine named inputs were stable during the saved run. Seven still match at qualification time; scripts/cdp-inspector.mjs and the test emitter changed later. Full executed graph remains unknown. This is historical scoped evidence, not a current-suite or actual live-worker claim.",
+    "acceptance": "Establishes the selected full-inbox key mechanism, exact raw-context preservation and concurrent response parity in the private fixture. Unforced counter trajectories differ and GC events were not recorded; one sequential pair cannot establish statistical production savings, removable native bytes or latency non-regression. No new run, acceptance binding or shipment claim was created."
+  },
+  "liveCurrentBuildBaseline": {
+    "qualificationWorkItem": "WI-10005427",
+    "measurementWorkItem": "WI-10005423",
+    "testRunId": 20506274,
+    "bindingId": 21632,
+    "specRevision": 2,
+    "recordedTestLayer": "integration",
+    "evidencePlane": "live",
+    "raw": {
+      "path": "docs/evidence/papercusp-oct1-p011-live-baseline-r2-2026-10-02.json",
+      "sha256": "ff780bdf6a585d5d9ec29aa59867597fa91daa4396ad831c2871763b0bbc726f",
+      "originalReceipt": {
+        "sha256": "6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54",
+        "bytes": 231465,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/6deac926453b673f0d91abbf33f855ab8b0c8d94f722e9b50fe660e175d4cf54.json"
+        }
+      }
+    },
+    "qualificationPath": "docs/evidence/papercusp-oct1-p011-live-baseline-r2-qualification-2026-10-02.json",
+    "identity": "Saved staging main PID3857646/startTicks21953189/executableSHA7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627; health-loaded build247b9ed162. Disk bundle hash is separately recorded.",
+    "coverage": "9 samples, three 2000ms idle windows, 24 workItems.byHarness(limit32) HTTP responses at concurrency2; no forced GC/profiler/Debugger/malloc_trim. Own inspector closed and process identity preserved.",
+    "limits": "Main PID only, ambient workload uncontrolled; every sample reaches64-descendant cap. HTTP may run in sibling workers. The24 response hashes differ and are not parity proof. No complete service total, native residual, retained-owner or paired-savings inference.",
+    "sourceCurrentness": "Historical binding21632 was current for two named source/test files when recorded. Test emitter subsequently changed under WI-10005429; saved measurement is historical source evidence. Full transitive executed-source and current-runtime acceptance remain unknown.",
+    "acceptance": "Adds actual current-build baseline evidence to revision2's live plane. Retained-owner attribution, selected-intervention paired resources/functionality or non-defect dispositions, independent acceptance and shipment remain open."
+  },
+  "ordinaryBaseline": {
+    "child": "WI-10005366",
+    "testRunId": 20499766,
+    "bindingId": 21377,
+    "recordedTestLayer": "integration",
+    "raw": {
+      "path": "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-2026-10-02.json",
+      "sha256": "41caf25628f5f2f2a0b478990b50aaaa2d6f251ea3a8e1394590ae9d54a32d7d",
+      "originalReceipt": {
+        "sha256": "02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694",
+        "bytes": 491153,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/02d77a4f46a12ae9c0863d78e375ba60f619992f087e6bc8e58288a08a5eb694.json"
+        }
+      }
+    },
+    "qualification": {
+      "path": "docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-qualification-2026-10-02.json",
+      "sha256": "72c068c0fe6217f3c56e9fef48dd444964644c8d20e849f5d401c4f58d747cbd",
+      "originalReceipt": {
+        "sha256": "48de8af35e9016c0c909c1fa10d478f0da60fdcbf8317a2aba030a837b6ca1dd",
+        "bytes": 3769,
+        "artifact": {
+          "slug": "papercusp",
+          "rel_path": "evidence/originals/48de8af35e9016c0c909c1fa10d478f0da60fdcbf8317a2aba030a837b6ca1dd.json"
+        }
+      }
+    },
+    "buildSha": "5689cb42afea859733423d0a361c20e79078f4fa",
+    "bundleSha256": "8a97736b596731b4acf603e37684396f33f0c51a598551ed1b201d2214fe14e8",
+    "coverage": "13 PID/startTicks-bound samples; three 2000 ms idle windows; 24 exact 128-row HTTP responses at concurrency 8; zero forced profiler/GC/queryObjects operations; host cleanup verified.",
+    "servingArtifactStable": false,
+    "fullTransitiveSourceCurrentness": "unknown",
+    "namedSourceCurrentness": "Seven named files match the recorded test-side SHA256 values. Six also match the selected serving checkout; the test file differs from that checkout, as explicitly recorded in R2 qualification.",
+    "sampleDefinitions": "PSS is smaps_rollup kernel kB converted to bytes. Heap, external and ArrayBuffer are Node/V8 counters; they do not form a disjoint additive partition of PSS.",
+    "unforcedIdleObservation": {
+      "interval": "idle-2-start to idle-2-end",
+      "pssBytes": [
+        962311168,
+        675415040
+      ],
+      "heapUsedBytes": [
+        567014528,
+        422440600
+      ],
+      "arrayBufferBytes": [
+        72542031,
+        1115965
+      ],
+      "interpretation": "A bounded observation of counters decreasing during idle. No GC-cause, native-allocation, leak, or intervention-reduction conclusion follows."
+    },
+    "acceptance": "Supports the pinned private HTTP baseline only. Its integration execution layer matches revision 2's layer taxonomy, but its private evidence plane does not fulfill actual live/current-build memory acceptance. The sampler test changed after R2, so R2's named-test currentness is stale."
+  },
+  "passiveCurrentServiceCensus": {
+    "path": "docs/evidence/papercusp-oct1-p011-passive-current-r12-recovered-2026-10-02.json",
+    "sha256": "bce829bf016b4e86a9db796b85920b40bf03279172eecd451858d28c38d78cbd",
+    "bytes": 7240,
+    "originalToolInvocationId": 31408670,
+    "originalTaskId": "0muri59h45nd2s2bq1c",
+    "at": "2026-10-02T21:55:47.889131+00:00",
+    "coverage": "Captured cgroup membership: 22/22 release-service processes and 1/1 staging-service process sampled, zero missed reads, unchanged systemd MainPID. Serial PSS sums are 11048488960 and 715548672 bytes. Only top-five and esbuild rows were persisted.",
+    "observation": "The five persisted release top rows have the Node executable hash and candidate hono-host.mjs basename, with same-sample parent PID178515. No esbuild service was observed in either captured membership.",
+    "limits": "Single passive snapshot, not matched resource comparison. Original argv parser selects a JavaScript-looking argument, so exact entry, worker configuration, request assignment and allocation ownership remain unverified. No loaded build fingerprint or historical compiler recovery proof.",
+    "recovery": "Recovered the existing completed exit0 command's original JSON prefix from its durable log; no census replay. The prior returned string was truncated by code:run summary bounding. New artifact preserves parsed values and source hashes."
+  },
+  "sourceDispositions": [
+    {
+      "source": "Spawner full-host boot import and initialization graph",
+      "owner": "WI-10004890",
+      "measurementOwner": "WI-10005706",
+      "state": "verified-private-entry-reduction-with-bounded-live-baseline",
+      "evidence": "spawnerEntryComparison exact original and final-safe qualifications; saved test runs 20576077, 20584302 and 20584857; operational live binding 22985 at spec revision 2.",
+      "mechanism": "The full-host entry initializes its broader HTTP/host import graph before entering the same maintained spawner server. The existing standalone entry preserves the final boot-safety contract while excluding that graph.",
+      "matchedResult": "Both order-reversed final-safe private pairs show lower PSS and cumulative V8 allocation with identical harmless IPC workload and passing concurrency/cleanup checks; exact differences are recorded above.",
+      "guard": "Maintained service-memory-attribution integration comparison plus the saved standalone boot/build/lifecycle/RPC adoption guards and exact sibling/configured-role live baseline guards.",
+      "falsifier": "Equivalent final-safe entry comparison loses readiness, workload outcomes, concurrency or cleanup; either pair lacks the claimed PSS/allocation reduction; or a live/production savings claim lacks a matched live counterfactual and loaded-build attribution.",
+      "limits": "Private entry effect is not unique retained/native ownership, historical recovery or production savings. Historical sibling loaded build remains unknown; a separate later actualLoadedBuildBaseline verifies its own advertised loaded identity only. Full executed source graph, ambient HTTP assignment, independent acceptance and shipment remain unknown or open."
+    },
+    {
+      "source": "Full inbox cache keys duplicate identical raw input across display variants",
+      "owner": "WI-10004890",
+      "state": "verified-scoped-sharing-and-resource-observation",
+      "evidence": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-2026-10-02.json; qualification sibling; saved test_runs:20542013 and test_runs:20541975",
+      "mechanism": "Display-only limit, ambient and intent dimensions split full-read raw cache values. The existing normalized full-read key shares one raw value while bounded reads retain their retrieval dimensions.",
+      "matchedResult": "Same exact 256-row fixture with 8388608 body string units and three windows of eight concurrent display variants: eight raw copies on baseline versus one on candidate, full-content digests and response IDs/summaries/counts equal. Observed growth difference is 210301952 PSS bytes and 288349304 cumulative allocated bytes.",
+      "guard": "Maintained service-memory-attribution.integration.test.ts counterfactual/cache-API/exact-namespace guards and opt-in paired physical cohort; three guards and one paired test passed in the saved ledger.",
+      "falsifier": "Equivalent full-read variants create duplicate raw entries, any complete raw body digest changes, concurrent response outcomes differ, bounded retrieval dimensions are collapsed, or the test leaves a private host/descendant alive.",
+      "limits": "One sequential private-host pair and correlated windows; unforced counter trajectories differ and GC events were not recorded, measured production variant frequency is unknown, and two diagnostic sources changed afterward. No precise production/retained/native savings or current-suite claim."
+    },
+    {
+      "source": "Hard-expired cache roots",
+      "owner": "EI-24812912892068980",
+      "state": "verified-scoped-reduction",
+      "evidence": "docs/evidence/papercusp-oct1-p011-cache-root-shapes-r9-2026-10-01.json; docs/evidence/papercusp-oct1-p011-cache-resource-comparison-r10-2026-10-01.json",
+      "mechanism": "Cold entries stayed strongly reachable below LRU capacity after hard expiry. Ordinary reads now scan a bounded number of entries and delete hard-expired roots.",
+      "matchedResult": "Equivalent 1042-entry fixture: 438 hard-expired reachable entries become zero; 604 useful entries remain. Heap difference after diagnostic collection is 163653752 bytes. PSS did not decrease.",
+      "guard": "packages/operator-core/lib/cache-retention.performance.integration.test.ts; saved runs 20440084 and 20440113. The recurring control removes pruning without requiring historical Git objects.",
+      "falsifier": "Equivalent fixture retains any of the 438 expired roots after the bounded read sweep, loses one of the 604 useful entries, or changes returned values/invalidation/single-flight behavior.",
+      "limits": "Synthetic bodies and diagnostic GC establish root/heap reclamation, not production retained-byte totals, physical savings or production p95."
+    },
+    {
+      "source": "Closure compiler worker lifetime",
+      "owner": "WI-10005114",
+      "state": "verified-scoped-lifecycle-reduction",
+      "evidence": "docs/evidence/papercusp-oct1-p011-esbuild-comparison-r12-2026-10-01.json; docs/evidence/papercusp-oct1-p011-esbuild-fork-comparison-r14-2026-10-01.json; docs/evidence/papercusp-oct1-p011-serving-compiler-r24-2026-10-02.json",
+      "matchedResult": "Saved inline/fork fixture: native compiler idle PSS 140925 KiB versus fork caller 4791 KiB after owned worker exit. R24 independently observes the exercised HTTP caller and executable-identified compiler descendants, followed by cleanup.",
+      "guard": "Compiler and mutation-allowlist project suites; cleanup regression WI-10005185 has saved 77 passing tests with zero skips.",
+      "falsifier": "The exercised closure call returns before its owned worker/process group exits, retains executable-identified descendants, or kills an unrelated concurrent compiler.",
+      "limits": "Disposable-worker proof does not identify the original long-lived 4.2 GiB services or establish production memory recovery."
+    },
+    {
+      "source": "Historical long-lived esbuild services",
+      "owner": "EI-24815884898197408",
+      "state": "unresolved-attribution",
+      "evidence": "docs/evidence/papercusp-oct1-p011-passive-service-mapping-r11-2026-10-01.json",
+      "observation": "Historical four-service census totals about 4.2 GiB PSS. Three rechecked ancestors were live HTTP workers; the fourth exited before ancestry recheck. Orphan/leak findings are not established.",
+      "nextDistinguishingObservation": "Bind a future high-PSS native descendant to executable hash, PID/startTicks, live ancestry, actual invoking compiler path and equivalent completed-work/idle resource windows. Absence in a later census cannot establish recovery of the historical instance.",
+      "falsifier": "A supported non-defect lifetime disposition would be overturned by repeated post-completion retention in the same verified owner and workload. No such disposition is claimed here."
+    },
+    {
+      "source": "Historical PostgreSQL parse/DataRow allocations",
+      "owner": "WI-10004890",
+      "state": "unresolved-retainer-and-initiating-query",
+      "evidence": "docs/evidence/papercusp-oct1-memory-attribution-2026-10-01.json",
+      "observation": "Saved sampled allocation stacks locate the decoder; they do not identify the initiating query, unique retained bytes or owning root. Async stacks and bounded query-result diagnostic rings cannot reconstruct a missing historical initiating call.",
+      "relatedWork": "WI-10004929/P-013 is done: matched query-latency and invalidation-rate evidence, with response parity. Its recorded completion supplies no matched PSS/retainer attribution.",
+      "nextDistinguishingObservation": "Identify a current decoded-result owner, capture matched named-query workload and PSS/allocation windows, and compare owner reachability across equivalent completion/idle phases without mutating production profiling.",
+      "falsifier": "A bounded-query non-defect disposition would be overturned by reachable completed results accumulating under equivalent calls while useful-context cardinality stays constant. No universal non-defect disposition is claimed here."
+    },
+    {
+      "source": "Background host freed-but-retained own-log pages",
+      "owner": "WI-10005291",
+      "state": "peer-reported-allocator-discriminator-durable-fix-open",
+      "evidence": "WI-10005291 comments 1155211, 1155215 and 1155216; .papercusp/scratch/p017/mem-probe.mts; .papercusp/scratch/p017/trim-guard.py",
+      "observedBy": "su-fa4c1948-0cb1-4552-a7a3-dc274c5e1b0a",
+      "observedAt": "2026-10-02T08:54:40Z/2026-10-02T08:54:56Z",
+      "identity": "bg-host PID 1496983, booted 07:57:15Z; peer reports unchanged main PID after intervention. No source/build fingerprint or startTicks supplied by this census.",
+      "measurement": {
+        "counter": "VmRSS",
+        "unit": "kernel kB",
+        "before": 12132104,
+        "immediatelyAfter": 3571284,
+        "tenSecondsAfter": 3557368,
+        "intervention": "Peer's guarded gdb call malloc_trim(0); result 1; 4853 ms wall time. No intervention or repeat measurement by this session."
+      },
+      "interpretation": "The trim discriminator supports freed-but-retained glibc pages for this instance. Raw own-log bytes in resident chunks did not establish that those chunks remained live. The earlier heap-ceiling and live-native interpretations were retracted. MALLOC_ARENA_MAX was already 2.",
+      "nextDistinguishingObservation": "The assigned owner must identify the boot pass and verify a durable intervention under equivalent boot/workload with build identity, allocation ownership, PSS and functionality measurements.",
+      "limits": "Peer-reported RSS mitigation is not P011's matched PSS reduction, production retained-root census, a durable fix, or attribution of the operator's historical parser/compiler memory. The separate allocation-rate sample overlapped the hourly sweep and does not establish steady state."
+    },
+    {
+      "source": "Anonymous/native and cgroup remainder",
+      "owner": "WI-10004890",
+      "state": "unresolved-allocation-owner",
+      "evidence": "docs/evidence/papercusp-oct1-p011-passive-service-mapping-r11-2026-10-01.json; docs/evidence/papercusp-oct1-p011-ordinary-baseline-r2-2026-10-02.json",
+      "observation": "Anonymous mappings are not synonymous with native allocations. Cgroup memory includes file cache, kernel memory and descendants. Heap/external/ArrayBuffer counters overlap and cannot be subtracted from PSS to obtain a native total.",
+      "nextDistinguishingObservation": "Use allocation-owner evidence and a matched intervention, with unchanged useful workload and PID/startTicks identity, before attributing an anonymous/PSS remainder.",
+      "falsifier": "An allocator-fragmentation claim is rejected unless owner-specific allocation/free behavior distinguishes it from live data or code and shows the claimed PSS effect."
+    }
+  ],
+  "acceptanceGaps": [
+    "Actual current-build main-process and maintained standalone baselines, historical private inbox comparison and final-safe private spawner comparison are recorded separately; broader live retained-owner/native/descendant acceptance remains open. Integration is the executable layer.",
+    "Historical compiler caller and remaining parser/native retained ownership remain unresolved.",
+    "Complete executed-source currentness is unknown; each saved cohort has its own named-source bounds and drift qualification.",
+    "R8/R9 final comparison, independent acceptance and verified shipment remain open."
+  ],
+  "scope": "Evidence census and source qualification under existing P-011. No replay, new service, profiler mutation, cache clearing, service restart or live-gate operation."
+}

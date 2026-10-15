@@ -85,6 +85,41 @@ describe("templates/ dir ⇄ reference manifests (P-006 anti-drift pin)", () => 
     expect(dirs.sort()).toEqual([...known].sort());
   });
 
+  /**
+   * Recurrence guard for EI-25226279926810608: app-scope templates vendor a
+   * standalone copy of template-kit. Its workspace-only test tooling is not
+   * part of that copy's runtime supply chain; leaving a private @papercusp/*
+   * dependency in the copied manifest makes a fresh app install query npm for
+   * an unpublished package and fail before its checks can run.
+   */
+  it("app-scope vendored template kits have no unresolved private package dependencies", () => {
+    const dependencySections = [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ] as const;
+
+    for (const template of REFERENCE_TEMPLATES.filter((ref) => ref.scope === "app")) {
+      const packagePath = join(TEMPLATES_DIR, template.id, "template-kit", "package.json");
+      expect(existsSync(packagePath), template.id + ": missing vendored template-kit package.json").toBe(true);
+
+      const pkg = JSON.parse(readFileSync(packagePath, "utf8")) as Record<string, unknown>;
+      const privateDependencies = dependencySections.flatMap((section) => {
+        const entries = pkg[section];
+        if (!entries || typeof entries !== "object" || Array.isArray(entries)) return [];
+        return Object.keys(entries as Record<string, unknown>).filter(
+          (name) => name.startsWith("@papercusp/") && name !== "@papercusp/template-kit",
+        );
+      });
+
+      expect(
+        privateDependencies,
+        template.id + ": vendored template-kit depends on workspace-only packages",
+      ).toEqual([]);
+    }
+  });
+
   it("declared blueprints and contracts exist as starter files", () => {
     for (const ref of REFERENCE_TEMPLATES) {
       for (const b of ref.blueprints ?? []) {

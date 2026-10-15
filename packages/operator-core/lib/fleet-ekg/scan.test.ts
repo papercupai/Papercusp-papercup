@@ -152,11 +152,11 @@ describe('runFleetEkgTick', () => {
     expect(alarm).not.toHaveBeenCalled();
   });
 
-  it('an already-notified shift never re-alarms (re-scan idempotence)', async () => {
+  it('an already-notified shift refreshes its condition without another owner page', async () => {
     const { deps, alarm, markNotified } = fakeDeps({}, { alreadyNotified: true });
     const result = await runFleetEkgTick('ws-1', deps);
     expect(result.alarmed).toBe(0);
-    expect(alarm).not.toHaveBeenCalled();
+    expect(alarm).toHaveBeenCalledWith(expect.objectContaining({ notifyOwner: false }));
     expect(markNotified).not.toHaveBeenCalled();
   });
 

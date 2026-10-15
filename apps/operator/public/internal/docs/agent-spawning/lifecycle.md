@@ -1,7 +1,7 @@
 # Lifecycle
 URL: /internal/docs/agent-spawning/lifecycle
 
->-
+The fleet flow — spawn → inspect → cancel — including status transitions, cross-restart durability, orphan reclaim, and what happens when things fail. NOTE: the launch verb named here, `cup:spawn`, REFUSES as of 2026-08-09 (the Mug · Kettle · Cup/nursery tier is retired); launch with `fleet:launch-on-plan` instead. Everything after the launch — status transitions, durability, reclaim, parent-wake — is unchanged and still live.
 
 :::caution\[`cup:spawn` REFUSES — the launch verb below is retired]
 The Mug · Kettle · Cup/nursery **role tier** was **retired 2026-08-09** (owner-directed);

@@ -56,13 +56,14 @@ export const SEARCH_STACK_TOOLS: readonly string[] = [
 export const SECONDARY_STRATUM_TOOLS: readonly string[] = ['memory:search', 'recipes:search'];
 
 /** "mid/long" = at least this many whitespace-separated terms (D-079's census). */
-export const MIN_QUERY_TERMS = 3;
+export const MIN_QUERY_TERMS = 1;
 
 /** One stratum's measured size, as the census reports it. */
 export interface QueryStratum {
   tool: string;
   /** Distinct mid/long queries this tool contributed. */
   distinct: number;
+  usageCount?: number;
 }
 
 /** How many queries a stratum is allocated out of the total sample. */
@@ -77,6 +78,27 @@ export interface SampledQuery {
   tool: string;
   query: string;
   terms: number;
+  usageCount?: number;
+}
+
+/** The same frozen interval must constrain both the census and the draw. */
+export interface QueryWindow { since: string; until: string; maxTerms?: number }
+
+function windowPredicate(window?: QueryWindow): string {
+  if (!window) return '';
+  const iso = (value: string): string => {
+    if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,3})?Z$/.test(value) || !Number.isFinite(Date.parse(value))) {
+      throw new Error('window timestamps must be valid UTC ISO timestamps');
+    }
+    return new Date(value).toISOString();
+  };
+  const since = iso(window.since), until = iso(window.until);
+  if (since >= until) throw new Error('window since must precede until');
+  if (window.maxTerms !== undefined && (!Number.isInteger(window.maxTerms) || window.maxTerms < 1)) {
+    throw new Error('maxTerms must be a positive integer');
+  }
+  return ` AND created_at >= '${since}'::timestamptz AND created_at < '${until}'::timestamptz` +
+    (window.maxTerms === undefined ? '' : ` AND array_length(regexp_split_to_array(btrim(args_json->>'query'), '\\s+'), 1) <= ${window.maxTerms}`);
 }
 
 const TOOL_NAME = /^[a-z][a-z0-9_]*:[a-z][a-z0-9_-]*$/;
@@ -124,16 +146,18 @@ export function queryCensusSql(
   workspaceId: string,
   tools: readonly string[] = SEARCH_STACK_TOOLS,
   minTerms: number = MIN_QUERY_TERMS,
+  window?: QueryWindow,
 ): string {
   assertWorkspace(workspaceId);
   assertToolNames(tools);
   return (
-    `SELECT tool_name AS tool, count(DISTINCT btrim(args_json->>'query'))::int AS distinct` +
+    `SELECT tool_name AS tool, count(DISTINCT btrim(args_json->>'query'))::int AS distinct, count(*)::int AS "usageCount"` +
     ` FROM harness_shared.tool_invocations` +
     ` WHERE workspace_id = '${workspaceId}'` +
     ` AND tool_name IN (${toolList(tools)})` +
     ` AND coalesce(btrim(args_json->>'query'), '') <> ''` +
     ` AND ${minTermsPredicate(minTerms)}` +
+    windowPredicate(window) +
     ` GROUP BY 1 ORDER BY 2 DESC`
   );
 }
@@ -151,6 +175,7 @@ export function querySampleSql(
   want: number,
   seed: string,
   minTerms: number = MIN_QUERY_TERMS,
+  window?: QueryWindow,
 ): string {
   assertWorkspace(workspaceId);
   assertToolNames([tool]);
@@ -160,14 +185,15 @@ export function querySampleSql(
   }
   return (
     `SELECT '${tool}' AS tool, q AS query,` +
-    ` array_length(regexp_split_to_array(q, '\\s+'), 1)::int AS terms` +
+    ` array_length(regexp_split_to_array(q, '\\s+'), 1)::int AS terms, "usageCount"` +
     ` FROM (` +
-    `SELECT DISTINCT btrim(args_json->>'query') AS q` +
+    `SELECT DISTINCT btrim(args_json->>'query') AS q, count(*) OVER (PARTITION BY btrim(args_json->>'query'))::int AS "usageCount"` +
     ` FROM harness_shared.tool_invocations` +
     ` WHERE workspace_id = '${workspaceId}'` +
     ` AND tool_name = '${tool}'` +
     ` AND coalesce(btrim(args_json->>'query'), '') <> ''` +
     ` AND ${minTermsPredicate(minTerms)}` +
+    windowPredicate(window) +
     `) d` +
     ` ORDER BY md5(q || '${seed}') LIMIT ${want}`
   );

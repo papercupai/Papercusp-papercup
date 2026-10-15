@@ -10,6 +10,7 @@ import type { Sql } from 'postgres';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import type { SessionState } from '../coordination/presence-wakeability';
 
 export const SESSION_SOURCE_KINDS = ['claude', 'omp', 'codex', 'agent_chat'] as const;
 export const SESSION_TURN_REF_PREFIX = 'session_turn:';
@@ -23,6 +24,118 @@ export const SESSION_READ_REFRESH_TIMEOUT_MS = 5_000;
 // the explicit-target path.
 export const SESSION_TARGET_REFRESH_TIMEOUT_MS = SESSION_READ_REFRESH_TIMEOUT_MS;
 export type SessionSourceKind = (typeof SESSION_SOURCE_KINDS)[number];
+
+export type SessionRefreshFailureReason =
+  | 'owner_lookup_timeout'
+  | 'owner_lookup_aborted'
+  | 'owner_lookup_error'
+  | 'liveness_lookup_timeout'
+  | 'liveness_lookup_aborted'
+  | 'liveness_lookup_error'
+  | 'resolve_timeout'
+  | 'resolve_aborted'
+  | 'resolve_error'
+  | 'transcript_unavailable'
+  | 'ingest_timeout'
+  | 'ingest_aborted'
+  | 'ingest_error';
+
+/** Bounded, anonymized cause families for thrown transcript-ingest errors. */
+export type SessionIngestFailureSubtype =
+  | 'filesystem_missing'
+  | 'filesystem_access'
+  | 'filesystem_io'
+  | 'filesystem_capacity'
+  | 'network_connection'
+  | 'database_connection'
+  | 'database_integrity'
+  | 'database_transaction'
+  | 'database_resource'
+  | 'database_operator'
+  | 'database_other'
+  | 'unknown';
+
+const SESSION_INGEST_FAILURE_SUBTYPES = new Set<SessionIngestFailureSubtype>([
+  'filesystem_missing',
+  'filesystem_access',
+  'filesystem_io',
+  'filesystem_capacity',
+  'network_connection',
+  'database_connection',
+  'database_integrity',
+  'database_transaction',
+  'database_resource',
+  'database_operator',
+  'database_other',
+  'unknown',
+]);
+
+function classifySessionIngestError(error: unknown): SessionIngestFailureSubtype {
+  let code: unknown;
+  try {
+    code = typeof error === 'object' && error !== null
+      ? (error as { code?: unknown }).code
+      : undefined;
+  } catch {
+    return 'unknown';
+  }
+  if (typeof code !== 'string') return 'unknown';
+  const normalized = code.toUpperCase();
+  if (normalized === 'ENOENT') return 'filesystem_missing';
+  if (normalized === 'EACCES' || normalized === 'EPERM') return 'filesystem_access';
+  if (normalized === 'EIO' || normalized === 'EBADF') return 'filesystem_io';
+  if (normalized === 'EMFILE' || normalized === 'ENFILE' || normalized === 'ENOSPC') {
+    return 'filesystem_capacity';
+  }
+  if (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'].includes(normalized)) {
+    return 'network_connection';
+  }
+  if (!/^[0-9A-Z]{5}$/.test(normalized)) return 'unknown';
+  if (normalized.startsWith('08')) return 'database_connection';
+  if (normalized.startsWith('23')) return 'database_integrity';
+  if (normalized.startsWith('40')) return 'database_transaction';
+  if (normalized.startsWith('53')) return 'database_resource';
+  if (normalized.startsWith('57')) return 'database_operator';
+  return 'database_other';
+}
+
+function safeSessionIngestFailureSubtype(error: unknown): SessionIngestFailureSubtype | undefined {
+  let subtype: unknown;
+  try {
+    subtype = typeof error === 'object' && error !== null
+      ? (error as { sessionIngestFailureSubtype?: unknown }).sessionIngestFailureSubtype
+      : undefined;
+  } catch {
+    return undefined;
+  }
+  return typeof subtype === 'string' && SESSION_INGEST_FAILURE_SUBTYPES.has(subtype as SessionIngestFailureSubtype)
+    ? subtype as SessionIngestFailureSubtype
+    : undefined;
+}
+
+export interface SessionRefreshReceipt {
+  attempted: number;
+  refreshed: number;
+  /** Candidate owners whose current session state was not confirmed refreshable. */
+  unconfirmed?: number;
+  /** Confirmed-refreshable owners left outside the bounded 20-session refresh. */
+  skipped?: number;
+  /** Aggregated, anonymized failure categories; never includes owner/session ids or raw errors. */
+  failureReasons?: Partial<Record<SessionRefreshFailureReason, number>>;
+  /** Safe bounded error families; populated only for thrown ingest errors. */
+  failureSubtypes?: Partial<Record<SessionIngestFailureSubtype, number>>;
+}
+
+function failedSessionRefresh(reason: SessionRefreshFailureReason): SessionRefreshReceipt {
+  return { attempted: 1, refreshed: 0, failureReasons: { [reason]: 1 } };
+}
+
+function boundedFailureReason(
+  stage: 'owner_lookup' | 'liveness_lookup' | 'resolve' | 'ingest',
+  reason: 'timeout' | 'aborted' | 'error' | undefined,
+): SessionRefreshFailureReason {
+  return `${stage}_${reason ?? 'error'}` as SessionRefreshFailureReason;
+}
 
 export interface SessionSelector {
   sessionId: string;
@@ -121,6 +234,10 @@ export interface WindowTurn {
 interface LiveRefreshDeps {
   resolve?: (ownerId: string) => Promise<{ filePath: string; sessionId: string } | null>;
   ingest?: (filePath: string, opts: { owner: string; sessionId: string }) => Promise<unknown>;
+  resolveStates?: (
+    subjects: readonly { ownerId: string }[],
+    opts: { hydrateBatch: true },
+  ) => Promise<ReadonlyMap<string, { sessionState: SessionState | null }>>;
 }
 
 interface TargetSessionRow {
@@ -156,17 +273,35 @@ export async function refreshResolvedSessionBeforeRead(
   owner: string,
   deps: Pick<TargetRefreshDeps, 'ingest'> = {},
   label = 'sessions:live refresh',
-): Promise<{ attempted: number; refreshed: number }> {
+): Promise<SessionRefreshReceipt> {
   const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
   const refresh = await withBoundedTimeout(
-    () => ingest(target.filePath, { owner, sessionId: target.sessionId }),
+    async () => {
+      try {
+        return await ingest(target.filePath, { owner, sessionId: target.sessionId });
+      } catch (error) {
+        const subtype = classifySessionIngestError(error);
+        // withBoundedTimeout logs its error message. Replace the raw exception
+        // before it reaches that logger; only the fixed subtype may cross the
+        // refresh boundary or appear in the search response.
+        const safeError = new Error(`transcript ingest failed (${subtype})`);
+        Object.assign(safeError, { sessionIngestFailureSubtype: subtype });
+        throw safeError;
+      }
+    },
     {
       fallback: undefined,
       timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
       label,
     },
   );
-  return { attempted: 1, refreshed: refresh.degraded ? 0 : 1 };
+  if (refresh.degraded) {
+    const reason = boundedFailureReason('ingest', refresh.reason);
+    const failed = failedSessionRefresh(reason);
+    const subtype = reason === 'ingest_error' ? safeSessionIngestFailureSubtype(refresh.error) : undefined;
+    return subtype ? { ...failed, failureSubtypes: { [subtype]: 1 } } : failed;
+  }
+  return { attempted: 1, refreshed: 1 };
 }
 
 async function resolveTargetSessionTranscript(
@@ -216,7 +351,7 @@ export async function refreshTargetSessionBeforeRead(
   sourceKind: string | null | undefined,
   sessionId: string,
   deps: TargetRefreshDeps = {},
-): Promise<{ attempted: number; refreshed: number }> {
+): Promise<SessionRefreshReceipt> {
   if (!sessionId || sourceKind === 'agent_chat') return { attempted: 0, refreshed: 0 };
 
   const rows = await sql<TargetSessionRow[]>`
@@ -244,8 +379,9 @@ export async function refreshTargetSessionBeforeRead(
       label: 'sessions:read target resolve',
     },
   );
+  if (resolved.degraded) return failedSessionRefresh(boundedFailureReason('resolve', resolved.reason));
   const target = resolved.value;
-  if (!target) return { attempted: 1, refreshed: 0 };
+  if (!target) return failedSessionRefresh('transcript_unavailable');
 
   return refreshResolvedSessionBeforeRead(
     target,
@@ -266,30 +402,88 @@ export async function refreshLiveSessionsBeforeRead(
   sql: Sql,
   owners?: readonly string[] | null,
   deps: LiveRefreshDeps = {},
-): Promise<{ attempted: number; refreshed: number }> {
-  let ownerIds = [...new Set((owners ?? []).filter(Boolean))].slice(0, 20);
-  if (ownerIds.length === 0) {
-    const ownerRead = await withBoundedTimeout<Array<{ owner: string }>>(
-      sql<Array<{ owner: string }>>`
-        SELECT DISTINCT coord_owner_id AS owner
-          FROM harness_shared.adv_sessions
-         WHERE ended_at IS NULL
-           AND agent = 'codex'
-           AND coord_owner_id IS NOT NULL
-         ORDER BY coord_owner_id
-         LIMIT 20`,
-      {
-        fallback: [],
-        timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
-        label: 'sessions:live owner lookup',
-      },
-    );
-    ownerIds = ownerRead.value.map((row) => row.owner);
+): Promise<SessionRefreshReceipt> {
+  // Search filters can carry durable owner sets (notably fleet ever-members)
+  // so the indexed read remains postmortem-safe. Treat adv_sessions as a broad
+  // candidate source only: ended_at IS NULL is not process liveness, since an
+  // abrupt death can leave an unended row behind. Resolve the canonical session
+  // state for every candidate before applying the 20-owner refresh bound.
+  const requestedOwners = owners == null ? null : [...new Set(owners.filter(Boolean))];
+  const hasExplicitOwnerScope = requestedOwners !== null;
+  if (hasExplicitOwnerScope && requestedOwners.length === 0) return { attempted: 0, refreshed: 0 };
+
+  const ownerRead = await withBoundedTimeout<Array<{ owner: string }>>(
+    () => hasExplicitOwnerScope
+      ? sql<Array<{ owner: string }>>`
+          SELECT DISTINCT coord_owner_id AS owner
+            FROM harness_shared.adv_sessions
+           WHERE ended_at IS NULL
+             AND agent IN ('claude', 'omp', 'codex')
+             AND coord_owner_id = ANY(${requestedOwners!}::text[])
+        ORDER BY coord_owner_id`
+      : sql<Array<{ owner: string }>>`
+          SELECT DISTINCT coord_owner_id AS owner
+            FROM harness_shared.adv_sessions
+           WHERE ended_at IS NULL
+             AND agent = 'codex'
+             AND coord_owner_id IS NOT NULL
+        ORDER BY coord_owner_id`,
+    {
+      fallback: [],
+      timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+      label: hasExplicitOwnerScope ? 'sessions:live owner scope lookup' : 'sessions:live owner lookup',
+    },
+  );
+  if (ownerRead.degraded) {
+    const reason = boundedFailureReason('owner_lookup', ownerRead.reason);
+    return { attempted: 0, refreshed: 0, failureReasons: { [reason]: 1 } };
   }
-  if (ownerIds.length === 0) return { attempted: 0, refreshed: 0 };
+  const candidateOwners = [...new Set(ownerRead.value.map((row) => row.owner).filter(Boolean))];
+  if (candidateOwners.length === 0) return { attempted: 0, refreshed: 0 };
+
+  const resolveStates = deps.resolveStates ??
+    (await import('../coordination/liveness-oracle')).resolveSessionStates;
+  const liveness = await withBoundedTimeout(
+    () => resolveStates(candidateOwners.map((ownerId) => ({ ownerId })), { hydrateBatch: true }),
+    {
+      fallback: new Map<string, { sessionState: SessionState | null }>(),
+      timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+      label: 'sessions:live liveness lookup',
+    },
+  );
+  if (liveness.degraded) {
+    const reason = boundedFailureReason('liveness_lookup', liveness.reason);
+    return {
+      attempted: 0,
+      refreshed: 0,
+      unconfirmed: candidateOwners.length,
+      failureReasons: { [reason]: 1 },
+    };
+  }
+
+  const refreshableOwners: string[] = [];
+  let unconfirmed = 0;
+  for (const ownerId of candidateOwners) {
+    const state = liveness.value.get(ownerId)?.sessionState;
+    if (state === 'live' || state === 'parked' || state === 'draining') {
+      refreshableOwners.push(ownerId);
+    } else if (state == null || state === 'recorded' || state === 'suspect') {
+      // Unknown, recorded-only, and suspect owners are not proof of a current
+      // transcript that can be tailed. Keep that uncertainty visible to search.
+      unconfirmed += 1;
+    }
+    // `ended` is positive evidence that read-time refresh is not applicable.
+  }
+  const ownerIds = refreshableOwners.slice(0, 20);
+  const skipped = Math.max(0, refreshableOwners.length - ownerIds.length);
+  const coverage = {
+    ...(unconfirmed > 0 ? { unconfirmed } : {}),
+    ...(skipped > 0 ? { skipped } : {}),
+  };
+  if (ownerIds.length === 0) return { attempted: 0, refreshed: 0, ...coverage };
 
   const resolve = deps.resolve ?? (await import('../../search/self-session')).resolveSelfSession;
-  const results = await Promise.all(ownerIds.map(async (owner) => {
+  const results = await Promise.all(ownerIds.map(async (owner): Promise<SessionRefreshReceipt> => {
     const resolved = await withBoundedTimeout(
       () => resolve(owner),
       {
@@ -298,16 +492,48 @@ export async function refreshLiveSessionsBeforeRead(
         label: 'sessions:live resolve',
       },
     );
-    if (!resolved.value) return false;
-    const refreshed = await refreshResolvedSessionBeforeRead(
+    if (resolved.degraded) return failedSessionRefresh(boundedFailureReason('resolve', resolved.reason));
+    if (!resolved.value) return failedSessionRefresh('transcript_unavailable');
+    return refreshResolvedSessionBeforeRead(
       resolved.value,
       owner,
       { ingest: deps.ingest },
       'sessions:live refresh',
     );
-    return refreshed.refreshed > 0;
   }));
-  return { attempted: ownerIds.length, refreshed: results.filter(Boolean).length };
+  const failureReasons: NonNullable<SessionRefreshReceipt['failureReasons']> = {};
+  const failureSubtypes: NonNullable<SessionRefreshReceipt['failureSubtypes']> = {};
+  for (const result of results) {
+    for (const [reason, count] of Object.entries(result.failureReasons ?? {})) {
+      const key = reason as SessionRefreshFailureReason;
+      failureReasons[key] = (failureReasons[key] ?? 0) + (count ?? 0);
+    }
+    for (const [subtype, count] of Object.entries(result.failureSubtypes ?? {})) {
+      const key = subtype as SessionIngestFailureSubtype;
+      failureSubtypes[key] = (failureSubtypes[key] ?? 0) + (count ?? 0);
+    }
+  }
+  return {
+    attempted: ownerIds.length,
+    refreshed: results.reduce((total, result) => total + result.refreshed, 0),
+    ...coverage,
+    ...(Object.keys(failureReasons).length > 0 ? { failureReasons } : {}),
+    ...(Object.keys(failureSubtypes).length > 0 ? { failureSubtypes } : {}),
+  };
+}
+
+/**
+ * A window turn plus the two fields the D-006 transcript exclusion decides on
+ * (personal-vault/transcript-exclusion.ts). `owner`/`at` are for that decision
+ * only — strip them with `toWindowTurn` before a window leaves the tool.
+ */
+export interface StampedWindowTurn extends WindowTurn {
+  owner: string | null;
+  at: string | null;
+}
+
+export function toWindowTurn({ owner: _owner, at: _at, ...turn }: StampedWindowTurn): WindowTurn {
+  return turn;
 }
 
 /** ±context turns around one hit (per-turn text bounded for token economy). */
@@ -319,11 +545,12 @@ export async function hydrateWindow(
   aroundIdx: number,
   context: number,
   perTurnChars = 700,
-): Promise<WindowTurn[]> {
+): Promise<StampedWindowTurn[]> {
   const lo = Math.max(0, aroundIdx - context);
   const hi = aroundIdx + context;
-  const rows = await sql<Array<{ turn_idx: number; speaker: string; ts: string | null; text: string }>>`
-    SELECT turn_idx, speaker, ts::text AS ts, left(text, ${perTurnChars}) AS text
+  const rows = await sql<Array<{ turn_idx: number; speaker: string; ts: string | null; text: string; owner: string | null; at: string | null }>>`
+    SELECT turn_idx, speaker, ts::text AS ts, left(text, ${perTurnChars}) AS text,
+           owner, COALESCE(ts, ingested_at)::text AS at
       FROM harness_shared.session_turns
      WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
        AND source_kind = ${sourceKind} AND session_id = ${sessionId}
@@ -333,7 +560,36 @@ export async function hydrateWindow(
   return rows.map((row) => ({
     ref: formatSessionTurnRef(sourceKind, sessionId, row.turn_idx),
     ...row,
+    owner: row.owner ?? null,
+    at: row.at ?? row.ts ?? null,
   }));
+}
+
+/**
+ * Owner and record time of specific indexed turns, keyed by
+ * `formatSessionTurnRef`. Hybrid search hits carry neither, and the D-006
+ * transcript exclusion needs both. A turn absent from the index is absent from
+ * the map, which the exclusion treats as unattributed.
+ */
+export async function loadTurnStamps(
+  sql: Sql,
+  workspaceId: string,
+  keys: ReadonlyArray<{ sourceKind: string; sessionId: string; turnIdx: number }>,
+): Promise<Map<string, { owner: string | null; at: string | null }>> {
+  const out = new Map<string, { owner: string | null; at: string | null }>();
+  if (keys.length === 0) return out;
+  const rows = await sql<Array<{ source_kind: string; session_id: string; turn_idx: number; owner: string | null; at: string | null }>>`
+    SELECT t.source_kind, t.session_id, t.turn_idx, t.owner, COALESCE(t.ts, t.ingested_at)::text AS at
+      FROM harness_shared.session_turns t
+      JOIN unnest(${keys.map((k) => k.sourceKind)}::text[], ${keys.map((k) => k.sessionId)}::text[], ${keys.map((k) => k.turnIdx)}::int[])
+           AS k(source_kind, session_id, turn_idx)
+        ON t.source_kind = k.source_kind AND t.session_id = k.session_id AND t.turn_idx = k.turn_idx
+     WHERE (t.workspace_id = ${workspaceId} OR t.workspace_id = 'default')
+  `;
+  for (const row of rows) {
+    out.set(formatSessionTurnRef(row.source_kind, row.session_id, row.turn_idx), { owner: row.owner ?? null, at: row.at ?? null });
+  }
+  return out;
 }
 
 /**

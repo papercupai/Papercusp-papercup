@@ -21,7 +21,7 @@ import * as path from 'node:path';
 import type {
   AcceptanceMatrixFile, Candidate, EvidenceRow, Exclusion, Verdict,
 } from './release-acceptance';
-import { runReleaseAcceptance } from './release-acceptance-run';
+import { runChildWithLiveLog, runReleaseAcceptance } from './release-acceptance-run';
 
 // Mutation-probe seam (copy-out tier): PUI_RELEASE_ACCEPTANCE_SUBJECT substitutes a mutated
 // copy of release-acceptance.ts for EVERY importer — this suite and release-acceptance-run.ts,
@@ -174,6 +174,34 @@ describe('P-012 release check over the committed contract (fixture evidence)', (
       .toContain(`capability 'Invented row' is in acceptance-matrix.json but not in PUBLIC_RELEASE_UX.md`);
     expect(check(complete, { matrix: { ...matrix, capabilities: { ...matrix.capabilities, [target]: [] } } }).refusals)
       .toContain(`required capability '${target}' on ${PLATFORM} has no installed-product evidence for (no installed-product test mapped)`);
+  });
+});
+
+describe('P-012 release acceptance child progress log', () => {
+  test('streams output before the child exits and retains its exact exit code', { timeout: 10_000 }, async () => {
+    const work = mkdtempSync(path.join(tmpdir(), 'pui-acceptance-live-log-'));
+    const logPath = path.join(work, 'vitest-scripted.log');
+    const marker = 'PUI_ACCEPTANCE_PROGRESS_READY';
+    let settled = false;
+    try {
+      const running = runChildWithLiveLog(process.execPath, [
+        '-e', `process.stdout.write(${JSON.stringify(marker)}); setTimeout(() => process.exit(23), 700);`,
+      ], { cwd: work, timeout: 5_000 }, logPath).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      await vi.waitFor(() => {
+        expect(readFileSync(logPath, 'utf8')).toContain(marker);
+      }, { interval: 10, timeout: 2_000 });
+      expect(settled).toBe(false);
+
+      const result = await running;
+      expect(result).toMatchObject({ status: 23, signal: null });
+      expect(readFileSync(logPath, 'utf8')).toContain('child exit: code=23');
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
   });
 });
 

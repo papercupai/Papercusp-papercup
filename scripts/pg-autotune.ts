@@ -50,17 +50,19 @@
  * connections; pooled clients reconnect. A reload drops nothing.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   databaseTuningToSettings,
   deriveDatabaseTuning,
   detectResourceSignals,
   diffPgSettings,
+  findShadowingPgAssignments,
   requiredPgHugePagesForTarget,
   type PgLiveSetting,
 } from '@papercusp/resource-profile';
+import { OPTIONAL_PRELOAD_LIBRARIES, presentPreloadLibraries } from '@papercusp/embedded-postgres-server';
 
 const args = process.argv.slice(2);
 const has = (f: string) => args.includes(f);
@@ -104,6 +106,7 @@ const service = opt('--service', 'postgresql@18-main.service');
 const port = opt('--port', '5432');
 const nrHugePagesPath = opt('--nr-hugepages', '/proc/sys/vm/nr_hugepages');
 const dropIn = join(confDir, '10-papercusp-autotune.conf');
+const pgBinDir = opt('--pg-bindir', '/usr/lib/postgresql/18/bin');
 
 // Native PG = a dedicated DB (embeddedPg:false) → the textbook PGTune fractions.
 const signals = detectResourceSignals({ embeddedPg: false });
@@ -162,9 +165,22 @@ else console.log('current (live):  <unreachable — PG is wedged or down>');
 // libraries is postmaster-level (needs a restart), which --apply already does.
 // (infra-perf-reliability-audit-round4 P-020.)
 const livePreload = psql('show shared_preload_libraries') ?? '';
+// pg_textsearch (BM25 lexical ranking, plan bm25-lexical-search-evoke-adoption-2026-10-10
+// P-004) is preloaded by the same rule embedded PG uses: only when the server's own binary
+// tree holds the library, because naming a missing library in shared_preload_libraries
+// stops the postmaster from starting. The live server names its BINDIR; --pg-bindir is the
+// fallback when it cannot be asked.
+const serverBinDir = psql("select setting from pg_config where name = 'BINDIR'") || pgBinDir;
+const optionalPreload = presentPreloadLibraries(join(serverBinDir, 'postgres'));
+const missingOptional = OPTIONAL_PRELOAD_LIBRARIES.filter((l) => !optionalPreload.includes(l));
+if (missingOptional.length) {
+  console.log(`optional preload not installed under ${serverBinDir}/../lib: ${missingOptional.join(', ')}`);
+}
 const preloadLibs = Array.from(
   new Set(
-    [...livePreload.split(','), 'pg_stat_statements'].map((s) => s.trim()).filter(Boolean),
+    [...livePreload.split(','), 'pg_stat_statements', ...optionalPreload]
+      .map((s) => s.trim())
+      .filter(Boolean),
   ),
 );
 const preloadValue = `'${preloadLibs.join(',')}'`;
@@ -260,8 +276,24 @@ if (fileOnDisk === null) {
   console.log('  drop-in:      ✓ byte-identical to the generated content');
 }
 
+// (3) A later conf.d file that sets a managed key wins over the drop-in, so the drop-in
+// can be byte-identical and the server still never run its value.
+let confFiles: Array<{ name: string; text: string }> = [];
+try {
+  confFiles = readdirSync(confDir)
+    .filter((name) => name.endsWith('.conf'))
+    .map((name) => ({ name, text: readFileSync(join(confDir, name), 'utf8') }));
+} catch {
+  confFiles = [];
+}
+const shadowing = findShadowingPgAssignments(confFiles, basename(dropIn), Object.keys(target));
+for (const s of shadowing) {
+  console.log(`  shadowed:     ✗ ${join(confDir, s.file)}:${s.line} sets ${s.key} after ${basename(dropIn)}, ` +
+    'so its value replaces the managed one');
+}
+
 if (check) {
-  const bad = fileDrift || (drift ? !drift.inSync : true);
+  const bad = fileDrift || shadowing.length > 0 || (drift ? !drift.inSync : true);
   if (bad) {
     console.error(
       '\n✗ DRIFT. The live cluster and/or the managed drop-in do not match the tuning ' +
@@ -276,6 +308,16 @@ if (check) {
 if (!apply) {
   console.log('\n--print only. Re-run with --apply to write the drop-in and apply it.');
   process.exit(0);
+}
+
+if (shadowing.length > 0) {
+  console.error(
+    `\n✗ refusing to apply: ${[...new Set(shadowing.map((s) => s.file))].join(', ')} in ${confDir} ` +
+      'override managed settings (listed above). Delete those assignment lines from that file; ' +
+      'the managed drop-in already sets them (fold any value you still need into the ' +
+      'resource-profile source first). Its other settings can stay. No PostgreSQL config was changed.',
+  );
+  process.exit(1);
 }
 
 if (enableHugePages && (reservedHugePages === null || reservedHugePages < requiredHugePages)) {

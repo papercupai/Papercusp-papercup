@@ -8,18 +8,21 @@
  * output as trustworthy turns a temporary gap into an authoritative lie.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, rm, stat, symlink, truncate, utimes, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   acquireLspProjectLease,
   canaryReadinessIsStable,
   certifyCanaryAnswer,
   ensureOpen,
+  withLspSnapshotEvidence,
   evictIfLanguageServiceDead,
   healthForAnswer,
   probeLanguageServiceLiveness,
@@ -29,12 +32,15 @@ import {
   resolveSymbolSearchScope,
   specForLanguage,
   typescriptInitializationOptions,
+  typescriptWorkspaceMemoryMb,
   resolveServerBin,
+  resolveLspVendorDir,
+  resolveTsserverPath,
   symbolSearchEmptyCaveat,
   type LspReadinessIntent,
   type LspReadinessStrategy,
 } from './lsp-adapter.ts';
-import { isTrustworthyEmpty, type BackendHealth } from './contracts.ts';
+import { isTrustworthyEmpty, sourceIdentityContinuity, type BackendHealth, type CodeIntelAnswer } from './contracts.ts';
 
 type Client = {
   health: BackendHealth;
@@ -289,7 +295,7 @@ describe('WI-40250 — an unknown language refuses instead of falling through to
   it('REFUSES an unknown language loudly, and never hands back another server', () => {
     // Cast is the whole point: this simulates a plain-JS caller, a persisted
     // value, or a request payload carrying a language the union does not know.
-    const unknown = 'python' as unknown as Parameters<typeof specForLanguage>[0];
+    const unknown = 'cobol' as unknown as Parameters<typeof specForLanguage>[0];
 
     expect(() => specForLanguage(unknown)).toThrow(/Unknown LSP language/);
     // The regression signature: before the fix this returned the rust-analyzer
@@ -298,7 +304,7 @@ describe('WI-40250 — an unknown language refuses instead of falling through to
   });
 
   it('names the known languages in the refusal, so the fix is obvious at the call site', () => {
-    const unknown = 'python' as unknown as Parameters<typeof specForLanguage>[0];
+    const unknown = 'cobol' as unknown as Parameters<typeof specForLanguage>[0];
     expect(() => specForLanguage(unknown)).toThrow(/typescript/);
     expect(() => specForLanguage(unknown)).toThrow(/rust/);
   });
@@ -314,7 +320,7 @@ describe('WI-40250 — an unknown language refuses instead of falling through to
  * the merge-resolver, a human's editor) left the SHARED server answering about
  * text that no longer exists, fleet-wide, while certifying it healthy.
  *
- * The fix is a pull-based stat (mtime+size) on every call. These tests fail if
+ * The fix is a pull-based content hash on every call. These tests fail if
  * anyone restores the open-once shape: the important assertion is that a
  * mutated file forces didClose + didOpen carrying the NEW text — not a no-op.
  */
@@ -360,6 +366,62 @@ describe('ensureOpen — disk freshness and readiness invalidation', () => {
     const stamp = (client as unknown as { openDocs: Map<string, { mtimeMs: number; size: number }> }).openDocs.get(uri);
     expect(stamp).toBeDefined();
     expect(stamp!.size).toBe('export const a = 1;\n'.length);
+    expect(client.openDocs.get(uri)!.contentHash).toBe(createHash('sha256').update(sent[0].params.textDocument.text!).digest('hex'));
+  });
+
+  const answer = (sites: CodeIntelAnswer['sites'] = [{ path: 'subject.ts', line1: 1, kind: null }]): CodeIntelAnswer => ({
+    backend: 'lsp-adapter', intent: 'definition', query: 'a', sites,
+    truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
+    freshness: { health: 'healthy', indexedAt: null, staleVsDisk: false, indexedCommit: null },
+    latencyMs: 1, error: null,
+  });
+
+  it('keeps sent-text identities after a disk edit, then requires re-resolution after reopening', async () => {
+    await ensureOpen(client, file);
+    const snapshot = new Map(client.openDocs);
+    const first = withLspSnapshotEvidence(answer(), client, snapshot, dir);
+    const oldId = first.evidence!.siteIdentities[0].versionedSymbolId;
+    expect(oldId).not.toBeNull();
+    await writeFile(file, '// changed by a peer\nexport const a = 2;\n');
+    const retained = withLspSnapshotEvidence(answer(), client, snapshot, dir);
+    expect(retained.evidence).toEqual(first.evidence);
+    expect(retained.freshness.staleVsDisk).toBeNull();
+    await ensureOpen(client, file);
+    const fresh = withLspSnapshotEvidence(answer([{ path: 'subject.ts', line1: 2, kind: null }]), client, new Map(client.openDocs), dir);
+    expect(sourceIdentityContinuity(oldId, fresh.evidence!.siteIdentities[0].versionedSymbolId)).toBe('needs-resolution');
+    expect(first.evidence!.siteIdentities[0].versionedSymbolId).toBe(oldId);
+    const raced = withLspSnapshotEvidence(answer(), client, snapshot, dir);
+    expect(raced.sites).toEqual([]);
+    expect(raced.error).toMatch(/snapshot changed during/);
+    expect(raced.freshness.health).toBe('degraded');
+    expect(raced.evidence!.sourceScope.sourceFingerprint).toBeNull();
+  });
+
+  it('leaves unopened returned files and legacy stamps unversioned', async () => {
+    const uri = await ensureOpen(client, file);
+    await writeFile(join(dir, 'unopened.ts'), 'export const other = 1;\n');
+    const result = withLspSnapshotEvidence(answer([{ path: 'unopened.ts', line1: 1, kind: null }]), client, new Map(client.openDocs), dir);
+    expect(result.evidence!.siteIdentities[0]).toMatchObject({ contentHash: null, versionedSymbolId: null });
+    expect(result.evidence!.sourceScope.supportingFiles.map(source => source.path)).toEqual(['subject.ts']);
+    client.openDocs.set(uri, { mtimeMs: 0, size: 0 });
+    const legacy = withLspSnapshotEvidence(answer(), client, new Map(client.openDocs), dir);
+    expect(legacy.evidence!.sourceScope.sourceFingerprint).toBeNull();
+    expect(legacy.evidence!.siteIdentities[0].versionedSymbolId).toBeNull();
+  });
+
+  it('rejects a closed or replaced snapshot even when replacement text is identical', async () => {
+    const uri = await ensureOpen(client, file);
+    const snapshot = new Map(client.openDocs);
+    client.openDocs.set(uri, { ...client.openDocs.get(uri)! });
+    expect(withLspSnapshotEvidence(answer([]), client, snapshot, dir).error).toMatch(/snapshot changed/);
+    client.openDocs.delete(uri);
+    expect(withLspSnapshotEvidence(answer(), client, snapshot, dir).evidence!.siteIdentities).toEqual([]);
+  });
+
+  it('does not retain source proof when sending didOpen fails', async () => {
+    client.connection.sendNotification = vi.fn().mockRejectedValue(new Error('closed connection'));
+    await expect(ensureOpen(client, file)).rejects.toThrow('closed connection');
+    expect(client.openDocs.size).toBe(0);
   });
 
   it('invalidates the server idle period BEFORE opening a new document (WI-2142941)', async () => {
@@ -379,6 +441,18 @@ describe('ensureOpen — disk freshness and readiness invalidation', () => {
 
     expect(sent).toEqual([]);
     expect((client as unknown as { idleSince: number | null }).idleSince).toBe(123);
+  });
+
+  it('refreshes changed bytes even when a peer preserves file size and mtime', async () => {
+    const uri = await ensureOpen(client, file);
+    const before = await stat(file);
+    sent.length = 0;
+    await writeFile(file, 'export const a = 2;\n');
+    await utimes(file, before.atime, before.mtime);
+    await ensureOpen(client, file);
+    expect(sent.map(row => row.method)).toEqual(['textDocument/didClose', 'textDocument/didOpen']);
+    expect(sent[1]?.params.textDocument.text).toBe('export const a = 2;\n');
+    expect(client.openDocs.get(uri)?.contentHash).toBe(createHash('sha256').update('export const a = 2;\n').digest('hex'));
   });
 
   it('a file mutated on disk forces didClose + didOpen carrying the NEW text — never a silent stale serve', async () => {
@@ -413,15 +487,217 @@ describe('ensureOpen — disk freshness and readiness invalidation', () => {
     expect(sent).toEqual([]);
   });
 
-  it('an unstattable file keeps the copy we hold rather than dropping it', async () => {
+  it('refuses a deleted source and closes its retained document before any query can reuse it', async () => {
     const uri = await ensureOpen(client, file);
     sent.length = 0;
+    client.certifiedReadiness = new Set<LspReadinessIntent>(['references']);
+    client.quiescent = true;
 
     await rm(file);
-    const again = await ensureOpen(client, file);
+    await expect(ensureOpen(client, file)).rejects.toMatchObject({ code: 'ENOENT' });
 
-    expect(again).toBe(uri);
-    expect(sent).toEqual([]);
+    expect(client.openDocs.has(uri)).toBe(false);
+    expect(client.certifiedReadiness.size).toBe(0);
+    expect(client.quiescent).toBeNull();
+    expect(sent).toEqual([{ method: 'textDocument/didClose', params: { textDocument: { uri } } }]);
+
+    // Recreating the path must load the new text, never revive the old copy.
+    await writeFile(file, 'export const recreated = 2;\n');
+    await ensureOpen(client, file);
+    expect(sent.at(-1)?.method).toBe('textDocument/didOpen');
+    expect(sent.at(-1)?.params.textDocument.text).toBe('export const recreated = 2;\n');
+  });
+
+  it('invalidates a deleted document even when its close notification fails', async () => {
+    const uri = await ensureOpen(client, file);
+    client.certifiedReadiness = new Set<LspReadinessIntent>(['references']);
+    await rm(file);
+    client.connection.sendNotification = vi.fn().mockRejectedValue(new Error('closed connection'));
+
+    await expect(ensureOpen(client, file)).rejects.toThrow('closed connection');
+    expect(client.openDocs.has(uri)).toBe(false);
+    expect(client.certifiedReadiness.size).toBe(0);
+  });
+});
+
+describe('WI-41095 — independently copied vendor binding', () => {
+  let parent: string;
+  let vendor: string;
+  let tsserver: string;
+  let launcher: string;
+
+  beforeEach(async () => {
+    vi.stubEnv('PAPERCUSP_LSP_VENDOR_DIR', undefined);
+    vi.stubEnv('PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB', '8192');
+    parent = await mkdtemp(join(tmpdir(), 'wi41095-vendor-binding-'));
+    vendor = join(parent, 'copied-vendor');
+    const compiler = join(vendor, 'node_modules', '@typescript', 'old');
+    await mkdir(join(compiler, 'lib'), { recursive: true });
+    await writeFile(join(compiler, 'package.json'), '{"name":"typescript","version":"6.0.3"}');
+    tsserver = join(compiler, 'lib', 'tsserver.js');
+    await writeFile(tsserver, '// declared server entry');
+    await writeFile(join(compiler, 'lib', 'typescript.js'), "module.exports = { version: 'declared-copy' };");
+    const server = join(vendor, 'node_modules', 'typescript-language-server');
+    await mkdir(server);
+    await writeFile(join(server, 'cli.js'), '// declared wrapper entry');
+    await mkdir(join(vendor, 'node_modules', '.bin'));
+    launcher = join(vendor, 'node_modules', '.bin', 'typescript-language-server');
+    await symlink('../typescript-language-server/cli.js', launcher);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(parent, { recursive: true, force: true });
+  });
+
+  it('retains the maintained default and selects only a canonical configured root', async () => {
+    expect(resolveLspVendorDir()).toBe(join(homedir(), '.papercusp', 'vendor', 'lsp'));
+    vi.stubEnv('PAPERCUSP_LSP_VENDOR_DIR', vendor);
+    expect(resolveLspVendorDir()).toBe(vendor);
+    const alias = join(parent, 'vendor-alias');
+    await symlink(vendor, alias);
+    for (const invalid of ['', './vendor', `${vendor}/..`, alias, tsserver, join(parent, 'missing')])
+      expect(() => resolveLspVendorDir(invalid)).toThrow('PAPERCUSP_LSP_VENDOR_DIR');
+  });
+
+  it('binds the launcher, tsserver initialization, identity and cache compiler to the same copy', () => {
+    const spec = specForLanguage('typescript');
+    expect(spec.resolveBin(vendor)).toBe(launcher);
+    expect(resolveTsserverPath(vendor)).toBe(tsserver);
+    expect(spec.initializationOptions(parent, undefined, vendor)).toMatchObject({ tsserver: { path: tsserver } });
+    expect(spec.identityFiles!(vendor)).toEqual([tsserver]);
+    expect(createRequire(resolveTsserverPath(vendor))('./typescript.js').version).toBe('declared-copy');
+  });
+
+  it('captures the selected root at module bootstrap across every production lookup', async () => {
+    vi.stubEnv('PAPERCUSP_LSP_VENDOR_DIR', vendor);
+    vi.resetModules();
+    try {
+      const adapter = await import('./lsp-adapter.ts');
+      vi.stubEnv('PAPERCUSP_LSP_VENDOR_DIR', join(parent, 'later-installation'));
+      expect(adapter.LSP_VENDOR_DIR).toBe(vendor);
+      expect(adapter.resolveServerBin('typescript')).toBe(launcher);
+      expect(adapter.resolveTsserverPath()).toBe(tsserver);
+      const spec = adapter.specForLanguage('typescript');
+      expect(spec.initializationOptions(parent)).toMatchObject({ tsserver: { path: tsserver } });
+      expect(spec.identityFiles!()).toEqual([tsserver]);
+    } finally { vi.resetModules(); }
+  });
+
+  it('refuses an ancestor compiler rather than borrowing from the donor installation', async () => {
+    const ancestor = join(parent, 'node_modules', '@typescript', 'old', 'lib');
+    await mkdir(ancestor, { recursive: true });
+    await writeFile(join(ancestor, 'tsserver.js'), '// ambient compiler');
+    await rm(join(vendor, 'node_modules', '@typescript'), { recursive: true });
+    expect(() => resolveTsserverPath(vendor)).toThrow('escapes vendor root');
+    expect(() => specForLanguage('typescript').initializationOptions(parent, undefined, vendor))
+      .toThrow('escapes vendor root');
+  });
+
+  it('refuses a compiler symlink outside the declared root', async () => {
+    const outside = join(parent, 'external-tsserver.js');
+    await writeFile(outside, '// external compiler');
+    await rm(tsserver);
+    await symlink(outside, tsserver);
+    expect(() => resolveTsserverPath(vendor)).toThrow('escapes vendor root');
+  });
+
+  it('refuses a wrapper symlink outside the declared root before launch', async () => {
+    const outside = join(parent, 'external-wrapper.js');
+    await writeFile(outside, '// external wrapper');
+    await rm(launcher);
+    await symlink(outside, launcher);
+    expect(() => specForLanguage('typescript').resolveBin(vendor)).toThrow('escapes vendor root');
+  });
+
+  it('reports an incomplete selected installation instead of returning a home server', async () => {
+    await rm(launcher);
+    expect(specForLanguage('typescript').resolveBin(vendor)).toBeNull();
+    await rm(join(vendor, 'node_modules', '@typescript'), { recursive: true });
+    expect(() => resolveTsserverPath(vendor)).toThrow(`No tsserver.js found under ${vendor}`);
+  });
+});
+
+describe('WI-41095 — workspace source sizing', () => {
+  const tsserverPath = createRequire(import.meta.url).resolve('@typescript/old/lib/tsserver.js');
+  let root: string;
+
+  beforeEach(async () => {
+    vi.stubEnv('PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB', '');
+    root = await mkdtemp(join(tmpdir(), 'wi41095-heap-policy-'));
+    await writeFile(join(root, 'source.ts'), 'export const value = 1;');
+    await writeFile(join(root, 'tsconfig.json'), '{"include":["*.ts"]}');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('increases the launched budget as the same configured project grows', async () => {
+    const small = typescriptInitializationOptions(tsserverPath, undefined, root).maxTsServerMemory!;
+    // Sparse fixtures do not allocate large source buffers in the test worker.
+    await truncate(join(root, 'source.ts'), 80 * 1024 * 1024);
+    const large = typescriptInitializationOptions(tsserverPath, undefined, root).maxTsServerMemory!;
+    await truncate(join(root, 'source.ts'), 160 * 1024 * 1024);
+    const larger = typescriptInitializationOptions(tsserverPath, undefined, root).maxTsServerMemory!;
+    expect(large).toBeGreaterThan(small);
+    expect(larger).toBeGreaterThan(large);
+  });
+
+  it('uses compiler extends/exclude rules without omitting test roots', async () => {
+    await writeFile(join(root, 'base.json'), '{"include":["*.ts"],"exclude":["excluded.ts"]}');
+    await writeFile(join(root, 'tsconfig.json'), '{"extends":"./base.json"}');
+    await writeFile(join(root, 'excluded.ts'), '');
+    await truncate(join(root, 'excluded.ts'), 160 * 1024 * 1024);
+    const before = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    await writeFile(join(root, 'source.test.ts'), '');
+    await truncate(join(root, 'source.test.ts'), 80 * 1024 * 1024);
+    const after = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    expect(after).toBeGreaterThan(before);
+    await rm(join(root, 'excluded.ts'));
+    expect(typescriptWorkspaceMemoryMb(root, tsserverPath)).toBe(after);
+  });
+
+  it('refuses invalid project configuration rather than returning the old ceiling', async () => {
+    await writeFile(join(root, 'tsconfig.json'), '{"compilerOptions":{"target":"invalid"}}');
+    expect(() => typescriptWorkspaceMemoryMb(root, tsserverPath)).toThrow('Cannot size TypeScript project');
+    vi.stubEnv('PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB', '9216');
+    expect(typescriptInitializationOptions(tsserverPath, undefined, root).maxTsServerMemory).toBe(9216);
+    expect(typescriptInitializationOptions(tsserverPath, 8192, root).maxTsServerMemory).toBe(8192);
+    expect(typescriptInitializationOptions(tsserverPath, null, root)).not.toHaveProperty('maxTsServerMemory');
+  });
+
+  it('sizes inferred and JavaScript projects rather than reverting to a fixed ceiling', async () => {
+    await rm(join(root, 'tsconfig.json'));
+    const small = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    await truncate(join(root, 'source.ts'), 80 * 1024 * 1024);
+    expect(typescriptWorkspaceMemoryMb(root, tsserverPath)).toBeGreaterThan(small);
+    await rm(join(root, 'source.ts'));
+    await writeFile(join(root, 'jsconfig.json'), '{"include":["*.js"]}');
+    await writeFile(join(root, 'source.js'), '');
+    await truncate(join(root, 'source.js'), 80 * 1024 * 1024);
+    expect(typescriptWorkspaceMemoryMb(root, tsserverPath)).toBeGreaterThan(small);
+  });
+
+  it('follows named project references, deduplicates roots and terminates cycles', async () => {
+    await mkdir(join(root, 'project'));
+    await writeFile(join(root, 'tsconfig.json'), '{"files":[],"references":[{"path":"./project/tsconfig.build.json"}]}');
+    await writeFile(join(root, 'project', 'tsconfig.build.json'), '{"include":["../source.ts"],"references":[{"path":"../tsconfig.json"}]}');
+    const small = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    await truncate(join(root, 'source.ts'), 80 * 1024 * 1024);
+    const large = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    expect(large).toBeGreaterThan(small);
+    await writeFile(join(root, 'project', 'tsconfig.json'), '{"include":["../source.ts"]}');
+    expect(typescriptWorkspaceMemoryMb(root, tsserverPath)).toBe(large);
+  });
+
+  it.each(['invalid', '-1', '0', 'Infinity', '1.5'])('refuses invalid memory setting %s before a child starts', setting => {
+    vi.stubEnv('PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB', setting);
+    expect(() => typescriptInitializationOptions(tsserverPath, undefined, root)).toThrow('positive integer');
+    // Explicit caller choices take precedence over an unrelated bad setting.
+    expect(typescriptInitializationOptions(tsserverPath, 8192, root).maxTsServerMemory).toBe(8192);
+    expect(typescriptInitializationOptions(tsserverPath, null, root)).not.toHaveProperty('maxTsServerMemory');
   });
 });
 
@@ -659,6 +935,33 @@ describe('workspace_symbols search scope', () => {
     expect(scope.root).toBe(pkg);
   });
 
+  it('roots JavaScript file and directory searches at their configured jsconfig project', async () => {
+    const pkg = join(dir, 'javascript-project');
+    await mkdir(join(pkg, 'src'), { recursive: true });
+    await writeFile(join(pkg, 'jsconfig.json'), '{"compilerOptions":{"allowJs":true},"include":["src/*.js"]}\n');
+    const anchor = join(pkg, 'src', 'control.js');
+    await writeFile(anchor, 'export function target() { return 1; }\n');
+    for (const input of [anchor, join(pkg, 'src')]) {
+      expect(resolveSymbolSearchScope('typescript', input, dir)).toEqual({ root: pkg, anchor, error: null });
+    }
+  });
+
+  it('refuses directory searches across nested JavaScript projects and deduplicates their markers', async () => {
+    await writeFile(join(dir, 'tsconfig.json'), '{}\n');
+    for (const name of ['first', 'second']) {
+      const pkg = join(dir, name);
+      await mkdir(pkg);
+      await writeFile(join(pkg, 'jsconfig.json'), '{"compilerOptions":{"allowJs":true}}\n');
+      await writeFile(join(pkg, 'control.js'), 'export const target = 1;\n');
+    }
+    await writeFile(join(dir, 'first', 'tsconfig.json'), '{}\n');
+    const scope = resolveSymbolSearchScope('typescript', dir, dir);
+    expect(scope.anchor).toBeNull();
+    expect(scope.error).toContain('2 nested tsconfig/jsconfig project(s)');
+    expect(scope.error).toContain(join(dir, 'first'));
+    expect(scope.error).toContain(join(dir, 'second'));
+  });
+
   it('refuses an anchored TypeScript search with no tsconfig above the anchor', async () => {
     await mkdir(join(dir, 'loose'), { recursive: true });
     const anchor = join(dir, 'loose', 'x.ts');
@@ -670,6 +973,58 @@ describe('workspace_symbols search scope', () => {
     const scope = resolveSymbolSearchScope('typescript', anchor, dir);
     expect(scope.error).toMatch(/tsconfig\.json/);
     expect(scope.error).toMatch(/'file'/);
+  });
+
+  // P-002 (gitnexus-deterministic-integration-2026-10-05, D-010): an agent
+  // replacing `grep -rn "export function X" <dir>` knows a DIRECTORY, and a
+  // directory used to die with a raw EISDIR from being opened as a document.
+  it('resolves a TypeScript DIRECTORY anchor to its project and an openable non-test source', async () => {
+    const pkg = join(dir, 'packages', 'operator-core');
+    await mkdir(join(pkg, 'lib', 'memory'), { recursive: true });
+    await writeFile(join(pkg, 'tsconfig.json'), '{"compilerOptions":{}}\n');
+    await writeFile(join(pkg, 'lib', 'memory', 'a.test.ts'), 'export const t = 1;\n');
+    await writeFile(join(pkg, 'lib', 'memory', 'types.d.ts'), 'export type T = 1;\n');
+    await writeFile(join(pkg, 'lib', 'memory', 'store.ts'), 'export function store() {}\n');
+
+    const scope = resolveSymbolSearchScope('typescript', join(pkg, 'lib', 'memory'), dir);
+    expect(scope.error).toBeNull();
+    expect(scope.root).toBe(pkg);
+    // A real source, never the directory (EISDIR), a declaration file, or a
+    // test file that a tsconfig may exclude into an inferred project.
+    expect(scope.anchor).toBe(join(pkg, 'lib', 'memory', 'store.ts'));
+  });
+
+  it('refuses a directory anchor that spans NESTED tsconfig projects, naming them', async () => {
+    for (const lib of ['alpha', 'beta']) {
+      await mkdir(join(dir, 'libs', 'generic', lib, 'src'), { recursive: true });
+      await writeFile(join(dir, 'libs', 'generic', lib, 'tsconfig.json'), '{}\n');
+      await writeFile(join(dir, 'libs', 'generic', lib, 'src', 'index.ts'), 'export const x = 1;\n');
+    }
+    const scope = resolveSymbolSearchScope('typescript', join(dir, 'libs', 'generic'), dir);
+    // Answering for one project would read as ABSENCE for symbols in the other.
+    expect(scope.error).toMatch(/2 nested tsconfig\/jsconfig project/);
+    expect(scope.error).toContain(join(dir, 'libs', 'generic', 'alpha'));
+    expect(scope.anchor).toBeNull();
+  });
+
+  it('refuses a directory anchor that holds no TypeScript source to open', async () => {
+    const pkg = join(dir, 'packages', 'docs-only');
+    await mkdir(join(pkg, 'notes'), { recursive: true });
+    await writeFile(join(pkg, 'tsconfig.json'), '{}\n');
+    await writeFile(join(pkg, 'notes', 'README.md'), '# x\n');
+    const scope = resolveSymbolSearchScope('typescript', join(pkg, 'notes'), dir);
+    expect(scope.error).toMatch(/no TypeScript source/);
+    expect(scope.error).toMatch(/'file'/);
+  });
+
+  it('roots a rust DIRECTORY anchor at the crate holding it, opening nothing', async () => {
+    const crate = join(dir, 'apps', 'tui');
+    await mkdir(join(crate, 'src'), { recursive: true });
+    await writeFile(join(crate, 'Cargo.toml'), '[package]\nname = "tui"\n');
+    const scope = resolveSymbolSearchScope('rust', join(crate, 'src'), dir);
+    expect(scope.error).toBeNull();
+    expect(scope.root).toBe(crate);
+    expect(scope.anchor).toBeNull();
   });
 
   /**

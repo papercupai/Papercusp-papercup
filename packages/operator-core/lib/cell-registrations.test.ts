@@ -28,6 +28,7 @@ import {
   HOST_MEMORY_PRESSURE_CELL,
   MEMORY_CGROUP_ATTRIBUTION_CELL,
   GOAL_PORTFOLIO_THROUGHPUT_CELL,
+  LSP_ADMISSION_CELL,
   BUILTIN_CELLS,
   registerBuiltinCells,
 } from './cell-registrations';
@@ -40,10 +41,34 @@ const OPERATOR_PIPELINE_CELLS = [
   GATE_OWNER_BRIEF_CELL,
   GATE_QUALIFICATION_CELL,
   GATE_RETRIAGE_CELL,
-  GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
 ];
+
+describe('LSP admission registration under the D-038 contract', () => {
+  beforeEach(() => __resetCellRegistryForTests());
+
+  it('registers the real built-ins while preserving unknown daemon measurements', () => {
+    expect(validateCellSpec(LSP_ADMISSION_CELL)).toEqual([]);
+    expect(() => registerBuiltinCells()).not.toThrow();
+    expect(getCell('lsp.admission', { ownerId: 'su-anyone', harnessSlug: 'papercusp' })?.unknownHoist).toBe(
+      'unknown',
+    );
+  });
+
+  it('rejects a nullable admission snapshot without its unknown hoist', () => {
+    const invalid = { ...LSP_ADMISSION_CELL, unknownHoist: undefined };
+    expect(validateCellSpec(invalid).map((rejection) => rejection.rule)).toContain('unknown-not-hoisted');
+  });
+
+  it('rejects pairing the unknown hoist as a measured subject', () => {
+    const invalid = {
+      ...LSP_ADMISSION_CELL,
+      assessment: { ...LSP_ADMISSION_CELL.assessment!, measuredBy: { unknown: 'measurement' } },
+    };
+    expect(validateCellSpec(invalid).map((rejection) => rejection.rule)).toContain('measured-by-hoist-paired');
+  });
+});
 
 /**
  * P-006. The value of this suite is not "a cell is registered" — it is that the
@@ -145,6 +170,13 @@ describe('P-007: the four verdict cells', () => {
     },
   );
 
+  it('allows a target-harness fixer to discover its scoped ownership cell', () => {
+    registerBuiltinCells();
+    expect(getCell(GATE_OWNERSHIP_CELL.cell, {
+      ownerId: 'su-target-fixer', roles: ['operator'], harnessSlug: 'slack-asana-bug-drill',
+    })?.changeSignal).toEqual(GATE_OWNERSHIP_CELL.changeSignal);
+  });
+
   it.each(NEW_CELLS.map((c) => [c.cell, c] as const))('%s validates with zero rejections', (_id, spec) => {
     expect(validateCellSpec(spec)).toEqual([]);
   });
@@ -196,6 +228,9 @@ describe('P-007: the four verdict cells', () => {
       'governor.recovery',
       'governor.resources',
       'host.memoryPressure',
+      'lsp.admission',
+      'lsp.readiness',
+      'lsp.warmServers',
       'memory.cgroupAttribution',
       // directive-visibility-and-ownership-2026-09-22 P-007: "what is owed on directive N,
       // and by whom". Nullable on purpose — an id that does not exist in this workspace has
@@ -207,6 +242,10 @@ describe('P-007: the four verdict cells', () => {
       // population is 0. One cell could not state both truths.
       'testing.census.population',
       'testing.coverage.floor',
+      // verification-system-improvements-2026-10-10 P-002: the requirement-contract health
+      // read (contract coverage by cohort, evidence-bound share, triage gaps, stale
+      // acceptance, VAL-* residue), resolved through plans:verification-health.
+      'verification.health',
       // workspace-work-scope-policy-2026-09-04 / WI-2145092: "is this workspace confined to
       // an allow-list of harnesses?" — the D-003 residue, resolved through the read-only
       // lens workspace:work_scope_status (the control tool is write-capable, which the cell
@@ -464,6 +503,17 @@ describe('P-007: the four verdict cells', () => {
     expect(safeAction).toContain('current-verdict reruns');
     expect(safeAction).toContain('does not reserve independently registered `GATE_SYSTEM_DEV`');
     expect(safeAction).toContain('under its own work-item/plan lane and file locks');
+  });
+
+  it('held-live tells the existing gate holder to continue before telling peers to stand down', () => {
+    const safeAction = GATE_OWNERSHIP_CELL.assessment!.codes['held-live']!.safeAction!;
+
+    expect(safeAction).toContain('gate.ownership.takenBy');
+    expect(safeAction).toContain('your verified owner identity');
+    expect(safeAction).toContain('If they match, you are the existing gate holder: continue `LIVE_GATE_OPS`');
+    expect(safeAction).toContain('Do not stand down because your own claim is held-live');
+    expect(safeAction).toContain('If a different live owner holds it');
+    expect(safeAction.indexOf('If they match')).toBeLessThan(safeAction.indexOf('Do not take over'));
   });
 
   /**

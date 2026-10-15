@@ -93,3 +93,20 @@ export async function seedHiveReleaseRoutines(opts: {
   };
   return { seeded: true, routines: seededNames, undo };
 }
+
+/** Delete only this pot's two per-hive release routines in its owning workspace.
+ *  Idempotent and safe to call before the harness registry entry is removed. */
+export async function teardownHiveReleaseRoutines(opts: {
+  sql: postgres.Sql;
+  workspaceId: string;
+  potSlug: string;
+}): Promise<{ deleted: string[] }> {
+  const rows = await opts.sql<{ name: string }[]>`
+    DELETE FROM harness_shared.routines
+     WHERE workspace_id = ${opts.workspaceId}
+       AND install_slug = ${opts.potSlug}
+       AND name IN ('green-checkpoint', 'release-trigger')
+    RETURNING name
+  `;
+  return { deleted: rows.map((row) => row.name) };
+}

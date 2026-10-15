@@ -82,6 +82,18 @@ describe('planItemsToAttention (plan-item source of plans:attention)', () => {
     expect(p3.tier).toBe('decision');
   });
 
+  it('keeps a needs-human decision from a shipped plan in the attention feed', () => {
+    const shipped = MIXED.replace('status: active', 'status: shipped');
+    const shippedItems = planItemsToAttention(
+      [{ parsed: parsePlan(shipped, { filePath: 't-2026-05-31.md' }) }],
+      'papercup',
+    );
+    const decision = shippedItems.find((item) => item.itemRef === 'P-003');
+
+    expect(decision?.needsHuman).toBe(true);
+    expect(decision?.tier).toBe('decision');
+  });
+
   it('surfaces a computed-blocked item with effective status blocked (alert tier, not needs-human)', () => {
     const p4 = items.find((i) => i.itemRef === 'P-004')!;
     expect(p4.status).toBe('blocked'); // effectiveStatus: blocked-by P-002 (not done)

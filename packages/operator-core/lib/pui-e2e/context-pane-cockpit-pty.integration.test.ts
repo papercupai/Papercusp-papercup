@@ -34,7 +34,7 @@ import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { spawnSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { screenContains, VtScreen } from './vt-screen';
@@ -522,6 +522,36 @@ function configureHudCockpitFixture(fake: FakeOperator): void {
   });
   fake.jsonRoutes.set(`GET /api/harness/${HUD_HARNESS}/agent-chats/chat-hud-e2e/approvals`, {
     approvals: [],
+  });
+  // pui-chat-first-ux D-030: Agent Chat's front door only opens a chat whose
+  // session inventory row places it in the launch directory; a chat with no
+  // snapshot belongs to no directory and is never opened. The pane launches
+  // from REPO_ROOT, so the ended session records that directory (realpath, the
+  // way pui reads its own current_dir).
+  fake.jsonRoutes.set(`GET /api/harness/${HUD_HARNESS}/agent-chats/chat-hud-e2e/su-session`, {
+    ok: true,
+    descriptor: {
+      identity: {
+        agentChatId: 'chat-hud-e2e',
+        advSessionId: 4242,
+        backend: 'claude',
+        nativeSessionId: 'native-hud-e2e',
+        ownerId: 'su-hud-e2e',
+        workspaceId: 'ws-e2e',
+        harnessSlug: HUD_HARNESS,
+      },
+      lifecycle: 'ended',
+      runtimeGeneration: 1,
+      role: 'operator',
+      carry: 'warm',
+      modes: [],
+      capabilities: { commands: {}, features: {} },
+      backendExtension: { backend: 'claude' },
+    },
+    floorSequence: 0,
+    lastSequence: 2,
+    terminal: true,
+    launchCwd: realpathSync(REPO_ROOT),
   });
   fake.jsonRoutes.set('GET /api/admin/plans/list', {
     plans: [

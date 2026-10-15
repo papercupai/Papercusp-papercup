@@ -34,6 +34,9 @@ import {
   type GitSyncCollisionProbe,
   type GitSyncCollisionProbeDeps,
   type GitSyncRestartBarrierDeps,
+  probeInFlightLocalSync,
+  waitForInFlightLocalSync,
+  type InFlightLocalSyncProbeDeps,
 } from './gate-collision-guard';
 import type { StoredInFlightRetriage } from './in-flight-retriage';
 
@@ -589,6 +592,33 @@ describe('staging-sync restart collision guard', () => {
       detail: { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: null },
     });
   });
+
+  it.each([
+    { code: 'EACCES', message: 'flock could not open the lock', stderr: 'Permission denied' },
+    { code: 64, message: 'flock invocation failed', stderr: 'Invalid argument' },
+    { code: null, message: 'flock timed out', signal: 'SIGTERM' },
+  ])('retains the failed probe diagnostic without claiming a held lock: $message', async (failure) => {
+    const verdict = await checkStagingSyncCollision('staging', async () => {
+      throw Object.assign(new Error(failure.message), failure);
+    });
+    expect(verdict).toMatchObject({
+      blocked: true,
+      kind: 'probe-failed',
+      detail: { lockHeld: null, probeError: failure },
+    });
+    expect(verdict.note).toContain('Nothing was restarted');
+  });
+
+  it('bounds child output and retains non-Error probe failures', async () => {
+    const verbose = await checkStagingSyncCollision('staging', async () => {
+      throw Object.assign(new Error('m'.repeat(800)), { stderr: 's'.repeat(800), signal: 'x'.repeat(100) });
+    });
+    expect(verbose.detail.probeError).toEqual({ code: null, message: 'm'.repeat(500),
+      stderr: 's'.repeat(500), signal: 'x'.repeat(64) });
+    const primitive = await checkStagingSyncCollision('staging', async () => { throw null; });
+    expect(primitive).toMatchObject({ blocked: true, kind: 'probe-failed',
+      detail: { lockHeld: null, probeError: { code: null, message: 'null' } } });
+  });
 });
 
 describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
@@ -811,5 +841,185 @@ describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
       owner: 'system:dev-restart:git-sync-barrier:42:uuid',
       lockId: 'barrier-1',
     });
+  });
+
+  it('EI-25556999491855818: signals a held barrier release only after its transaction confirms deletion', async () => {
+    let confirmRelease!: (receipt: { released: number; exclusiveResources: string[] }) => void;
+    const release = vi.fn(() => new Promise<{ released: number; exclusiveResources: string[] }>((resolve) => {
+      confirmRelease = resolve;
+    }));
+    const emitReleased = vi.fn();
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({ release, emitReleased }));
+    if (!result.acquired) throw new Error('expected barrier');
+    expect(emitReleased).not.toHaveBeenCalled();
+
+    const pending = result.release();
+    expect(emitReleased).not.toHaveBeenCalled();
+    confirmRelease({ released: 1, exclusiveResources: ['git-sync'] });
+    await pending;
+
+    expect(emitReleased).toHaveBeenCalledExactlyOnceWith('git-sync', 'workspace-domain');
+    release.mockResolvedValueOnce({ released: 0, exclusiveResources: [] });
+    await result.release();
+    expect(emitReleased).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    undefined,
+    { released: 0, exclusiveResources: [] },
+    { released: 1, exclusiveResources: ['another-resource'] },
+  ])('does not signal a release without a matching deletion receipt (%j)', async (receipt) => {
+    const emitReleased = vi.fn();
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({
+      release: vi.fn(async () => receipt),
+      emitReleased,
+    }));
+    if (!result.acquired) throw new Error('expected barrier');
+    await result.release();
+    expect(emitReleased).not.toHaveBeenCalled();
+  });
+
+  it('does not signal a failed release', async () => {
+    const emitReleased = vi.fn();
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({
+      release: vi.fn(async () => { throw new Error('pg down'); }),
+      emitReleased,
+    }));
+    if (!result.acquired) throw new Error('expected barrier');
+    await expect(result.release()).rejects.toThrow('pg down');
+    expect(emitReleased).not.toHaveBeenCalled();
+  });
+
+  it('signals actual queued-exclusive cleanup once after a transient release failure while preserving the refusal', async () => {
+    const contention = Object.assign(new Error('workspace lock timed out'), {
+      name: 'WorkspaceContendedError',
+      pgCode: '57014',
+    });
+    const release = vi.fn()
+      .mockRejectedValueOnce(contention)
+      .mockResolvedValueOnce({ released: 1, exclusiveResources: ['git-sync'] });
+    const emitReleased = vi.fn();
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({
+      acquire: async () => ({ ok: false, reason: 'drain_timeout', holders: [], lock_id: 'queued-exclusive' }),
+      release,
+      emitReleased,
+    }), { maxDrainSec: 20 });
+    expect(result).toMatchObject({ acquired: false, reason: 'drain_timeout' });
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(emitReleased).toHaveBeenCalledExactlyOnceWith('git-sync', 'workspace-domain');
+  });
+
+  it('extends the lease by holdExtraSec so a post-acquire wait cannot eat the kill-handoff window', async () => {
+    const acquire = vi.fn<GitSyncRestartBarrierDeps['acquire']>(async ({ ttlSec }) => ({
+      ok: true,
+      lock_id: 'held',
+      expires_ts: new Date(ttlSec * 1000),
+    }));
+    const deps: GitSyncRestartBarrierDeps = {
+      resolveDomain: () => 'workspace-domain',
+      newOwner: () => 'system:dev-restart:git-sync-barrier:1:x',
+      acquire,
+      release: vi.fn(async () => undefined),
+    };
+    await acquireGitSyncRestartBarrier(null, deps, { maxDrainSec: 120, holdExtraSec: 30 });
+    await acquireGitSyncRestartBarrier(null, deps, { maxDrainSec: 120 });
+    expect(acquire.mock.calls[0][0].ttlSec).toBe(120 + 30 + GIT_SYNC_RESTART_BARRIER_TTL_SEC);
+    expect(acquire.mock.calls[1][0].ttlSec).toBe(120 + GIT_SYNC_RESTART_BARRIER_TTL_SEC);
+  });
+});
+
+// WI-6554700010010484 (P-031): the lease-keyed checks cannot see a pass whose leases
+// lapsed; this probe reads the commit process's own writer-backed activity marker.
+describe('probeInFlightLocalSync', () => {
+  const NOW = 1_800_000_000_000;
+  const TARGET_CGROUP = '/user.slice/papercusp-bg-host.service';
+  const marker = (over: Record<string, unknown> = {}) => ({
+    active: true,
+    phase: 'local-sync',
+    started_at: NOW - 120_000,
+    updated_at: NOW - 5_000,
+    completed_at: null,
+    outcome_status: null,
+    owner: 'system:git-sync:4242:fire',
+    owner_pid: 4242,
+    ...over,
+  });
+  const deps = (
+    activity: unknown[],
+    processes: Record<number, { alive: boolean | null; cgroupPath: string | null }> = {
+      4242: { alive: true, cgroupPath: TARGET_CGROUP },
+    },
+  ): InFlightLocalSyncProbeDeps => ({
+    readActivityRows: async () => activity.map((a, i) => ({ installSlug: `slug-${i}`, activity: a })),
+    readProcess: (pid) => processes[pid] ?? { alive: false, cgroupPath: null },
+    readTargetCgroup: () => TARGET_CGROUP,
+    freshForMs: 660_000,
+    nowMs: () => NOW,
+  });
+
+  it('reports a fresh local-sync pass whose live owner shares the target cgroup', async () => {
+    const probe = await probeInFlightLocalSync('bg-host', deps([marker()]));
+    expect(probe).toMatchObject({
+      probeFailed: false,
+      targetCgroupPath: TARGET_CGROUP,
+      inFlight: [{ installSlug: 'slug-0', ownerPid: 4242, updatedAtMs: NOW - 5_000, cgroupRelation: 'same' }],
+    });
+  });
+
+  it.each([
+    ['a post-legs marker (legs re-take their own lock by design)', marker({ phase: 'post-legs' })],
+    ['a completed marker', marker({ active: false, phase: 'complete' })],
+    ['a stale heartbeat beyond the idle-timeout bound', marker({ updated_at: NOW - 700_000 })],
+    ['a marker with no valid owner pid', marker({ owner_pid: null })],
+  ])('ignores %s', async (_label, activity) => {
+    const probe = await probeInFlightLocalSync('bg-host', deps([activity]));
+    expect(probe).toMatchObject({ probeFailed: false, inFlight: [] });
+  });
+
+  it('ignores a dead owner and a sibling-cgroup owner, but fails closed on an unreadable one', async () => {
+    const probe = await probeInFlightLocalSync(
+      'bg-host',
+      deps([marker({ owner_pid: 1 }), marker({ owner_pid: 2 }), marker({ owner_pid: 3 })], {
+        1: { alive: false, cgroupPath: null },
+        2: { alive: true, cgroupPath: '/user.slice/run-r1234.scope' },
+        3: { alive: null, cgroupPath: null },
+      }),
+    );
+    expect(probe.inFlight).toEqual([expect.objectContaining({ ownerPid: 3, cgroupRelation: 'unknown' })]);
+  });
+
+  it('reports probeFailed when the marker rows cannot be read', async () => {
+    const failing: InFlightLocalSyncProbeDeps = {
+      ...deps([]),
+      readActivityRows: async () => {
+        throw new Error('pool exhausted');
+      },
+    };
+    expect(await probeInFlightLocalSync('dev', failing)).toEqual({
+      probeFailed: true,
+      targetCgroupPath: null,
+      inFlight: [],
+    });
+  });
+
+  it('waitForInFlightLocalSync returns as soon as the pass settles, else after the budget', async () => {
+    let reads = 0;
+    let clock = NOW;
+    const settling: InFlightLocalSyncProbeDeps = {
+      ...deps([]),
+      readActivityRows: async () => [{ installSlug: 'papercusp', activity: reads++ < 2 ? marker() : marker({ active: false, phase: 'complete' }) }],
+    };
+    const sleep = vi.fn(async (ms: number) => {
+      clock += ms;
+    });
+    const settled = await waitForInFlightLocalSync('bg-host', { waitSec: 10, deps: settling, sleep, nowMs: () => clock });
+    expect(settled.inFlight).toEqual([]);
+    expect(sleep).toHaveBeenCalledTimes(2);
+
+    clock = NOW;
+    sleep.mockClear();
+    const stuck = await waitForInFlightLocalSync('bg-host', { waitSec: 3, deps: deps([marker()]), sleep, nowMs: () => clock });
+    expect(stuck.inFlight).toHaveLength(1);
+    expect(sleep).toHaveBeenCalledTimes(3);
   });
 });

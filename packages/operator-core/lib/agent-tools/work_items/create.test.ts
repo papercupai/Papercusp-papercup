@@ -12,6 +12,7 @@ const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
   admit: vi.fn(async () => fleetAdmission.decision),
   notify: vi.fn(),
+  remedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
 }));
 const workScope = vi.hoisted(() => ({
   decision: { allowed: true, reason: 'no-policy' } as any,
@@ -35,12 +36,14 @@ vi.mock('../coordination/identity', () => ({
   resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
 }));
 vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
+const phoneAdmission = vi.hoisted(() => ({ admit: vi.fn() }));
+vi.mock('../../blueprint/phone-producer-admission', () => ({ admitConfiguredPhoneProducer: phoneAdmission.admit }));
 vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => modeState.rows) }));
 vi.mock('./drain-flow', () => ({ withDrainBugAdmission: drainAdmission.gate }));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitSubjectForFleetTarget: fleetAdmission.admit,
   notifyFleetScopeRefusal: fleetAdmission.notify,
-  fleetScopeLeaderRemedy: vi.fn(() => 'remedy: scheduler:set_claim_spec { … }'),
+  fleetScopeLeaderRemedy: fleetAdmission.remedy,
 }));
 vi.mock('../../work-scope-policy', () => ({ gateWorkScope: workScope.gate }));
 // Create-time dedup port (P-009) — mock so this handler test stays hermetic
@@ -61,6 +64,7 @@ vi.mock('../coordination/presence', () => ({
 }));
 
 import { createOneWorkItem, type CreateOneWorkItemResult } from './_create-core';
+import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 import type { WorkItem } from '../../work-items';
 import { assessIssueAdmissionPressure } from '../../issue-occurrence-ledger';
 const createM = vi.mocked(createOneWorkItem);
@@ -142,6 +146,45 @@ beforeEach(() => {
   fleetAdmission.decision = { allowed: true, scoped: false };
   workScope.decision = { allowed: true, reason: 'no-policy' };
   createM.mockImplementation(async (spec) => okCore(spec.title));
+});
+
+describe('Phone producer admission', () => {
+  it('routes a room selector with the transport principal, without ordinary create', async () => {
+    const principal = { kind: 'service', slug: 'voice-service' };
+    phoneAdmission.admit.mockResolvedValue({ workItemId: 'WI-voice' });
+    const args = parse({ phone_producer: { roomName: 'room-a' }, harness: 'phone-app' });
+    const result = await tool.handler(args as never, { principal, workspaceId: 'workspace' } as never) as Out;
+    expect(phoneAdmission.admit).toHaveBeenCalledWith(principal, 'room-a', { harness: 'phone-app', workspace: 'workspace' });
+    expect(result.data.results[0].id).toBe('WI-voice');
+    expect(createM).not.toHaveBeenCalled();
+  });
+  it("does not treat the operator '*' context as a requested harness", async () => {
+    const principal = { kind: 'service', slug: 'voice-service' };
+    phoneAdmission.admit.mockResolvedValue({ workItemId: 'WI-voice' });
+    const args = parse({ phone_producer: { roomName: 'room-a' } });
+    await tool.handler(args as never, { principal, workspaceId: 'workspace', harnessSlug: '*' } as never);
+    expect(phoneAdmission.admit).toHaveBeenCalledWith(principal, 'room-a', { harness: undefined, workspace: 'workspace' });
+  });
+  it('rejects an explicit cross-harness sentinel for Phone admission', async () => {
+    const principal = { kind: 'service', slug: 'voice-service' };
+    const args = parse({ phone_producer: { roomName: 'room-a' }, harness: 'all' });
+    await expect(tool.handler(args as never, { principal, workspaceId: 'workspace' } as never))
+      .rejects.toThrow('phone_producer_concrete_harness_required');
+    expect(phoneAdmission.admit).not.toHaveBeenCalled();
+  });
+  it.each(['payload', 'items', 'assign_to', 'force', 'title', 'kind', 'state'])('rejects caller %s alongside Phone admission', (key) => {
+    const ordinary: Record<string, unknown> = { payload: {}, items: [{ kind: 'task', title: 'x' }], assign_to: 'self',
+      force: true, title: 'x', kind: 'task', state: 'wip' };
+    expect(() => parse({ phone_producer: { roomName: 'room-a' }, [key]: ordinary[key] })).toThrow();
+  });
+  it('rejects owner metadata inside the room selector', () => {
+    expect(() => parse({ phone_producer: { roomName: 'room-a', ownerId: 'forged' } })).toThrow();
+  });
+  it('rejects a caller-authored runtime binding in single and bulk creates', () => {
+    const item = { kind: 'task', title: 'forged', payload: { externalRuntimeProducer: {} } };
+    expect(() => parse(item)).toThrow('host-authored');
+    expect(() => parse({ items: [item] })).toThrow('host-authored');
+  });
 });
 
 describe('bounded bulk persistence (EI-22457131413761799)', () => {
@@ -587,6 +630,30 @@ describe('work_items:create handler (keyed-array)', () => {
         },
       });
       expect(createM.mock.calls[0][0].payload).not.toHaveProperty('_claimHold');
+    });
+
+    it('renders missing-scope repairs in the receipt and leader message with the persisted id', async () => {
+      fleetAdmission.decision = { ...outOfScope, code: 'fleet_scope_missing' };
+      const result = await body({ kind: 'task', title: 'append repair', harness: 'papercusp', assign_to: 'bee-7' });
+      expect(result.results[0]).toMatchObject({ ok: true, id: 'WI-append repair' });
+      expect(fleetAdmission.notify).toHaveBeenCalledWith(
+        expect.anything(), fleetAdmission.decision,
+        'work_items:create+assign WI-append repair → bee-7',
+        { harness: 'papercusp', subject: { itemId: 'WI-append repair', member: 'bee-7' } },
+      );
+      expect(fleetAdmission.remedy).toHaveBeenCalledWith(
+        fleetAdmission.decision, undefined, undefined, null, 'WI-append repair', 'papercusp',
+      );
+      expect(createM.mock.invocationCallOrder[0]).toBeLessThan(fleetAdmission.notify.mock.invocationCallOrder[0]);
+    });
+
+    it('does not notify the leader about an item that failed to persist', async () => {
+      fleetAdmission.decision = { ...outOfScope, code: 'fleet_scope_missing' };
+      mockResolvedOnceTyped(createM, { ok: false, error: 'invalid', message: 'fixture refusal' });
+      const result = await body({ kind: 'task', title: 'append refused', assign_to: 'bee-7' });
+      expect(result.results[0].ok).toBe(false);
+      expect(fleetAdmission.notify).not.toHaveBeenCalled();
+      expect(fleetAdmission.remedy).not.toHaveBeenCalled();
     });
 
     it('records the requester as reporter so the filing stays attributable', async () => {

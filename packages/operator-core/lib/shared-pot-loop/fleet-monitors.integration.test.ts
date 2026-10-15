@@ -130,11 +130,17 @@ describe('P-012 + P-013 — the live-fleet monitor family on real failure states
 
       // ════ 3. P-013: outbox health ════
       // The pipeline writes above left fresh undrained rows on B.
-      const tight = await scanOutboxHealth(b.sql, { maxDepth: 0, maxAgeMs: 1 });
+      const tight = await scanOutboxHealth(b.sql, {
+        maxDepth: 0, maxAgeMs: 1, workspaceId: rig.workspaceId, harness: HARNESS,
+      });
       expect(tight.undrainedDepth).toBeGreaterThan(0);
       expect(tight.breaches.length).toBeGreaterThan(0);
       expect((await rig.converge()).fixedPoint).toBe(true);
-      const healthy = await scanOutboxHealth(b.sql, { maxDepth: 10_000, maxAgeMs: 30 * 60_000 });
+      // Canonical cells retain template-plan and pot-member CDC in other
+      // scopes. Judge the same harness stream that converge() actually drains.
+      const healthy = await scanOutboxHealth(b.sql, {
+        maxDepth: 10_000, maxAgeMs: 30 * 60_000, workspaceId: rig.workspaceId, harness: HARNESS,
+      });
       expect(healthy.undrainedDepth).toBe(0);
       expect(healthy.breaches).toEqual([]);
 

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "git-sync turn-scoped commit hold — P-007 live-plane check, replayed from immutable git history + turn journal",
+  "framework": "shell",
+  "command": [
+    "bash",
+    "-c",
+    "C=c9ef14669aba7be123459e663de5e19ac6b17096; D=docs/evidence/git-sync-turn-hold-live-check-2026-10-11; git show --name-status --format= $C; git log --all --format=%H -- $D/part-a.md $D/part-b.md; TZ=UTC git log staging --since=2026-10-11T06:29:01Z --until=2026-10-11T06:36:47Z --format=%H%x20%an -- .; TZ=UTC git log staging --since=2026-10-11T06:29:01Z --until=2026-10-11T06:36:47Z --format=%H -- $D | wc -l; TZ=UTC git log -1 --date=iso-strict-local --format=%cd $C; sudo -n -u postgres psql -d papercusp -At -c \"SELECT source, turn_ts FROM harness_shared.session_turn_journal WHERE session_id='5c59a364-6574-4ea9-8bbf-8a6113057c72' AND turn_ts BETWEEN '2026-10-11T06:36:00Z' AND '2026-10-11T06:53:00Z'\""
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-11T08:25:25.122Z",
+  "finishedAt": "2026-10-11T08:25:27.792Z",
+  "summary": "Live check (plan git-sync-turn-scoped-commit-hold-2026-10-11 P-007, AUTO-BAR-R-6-P-007), run 2026-10-11 ~06:21-06:53Z on the canonical staging tree with the turn hold ON: one real agent turn (claude session 5c59a364) wrote part-a.md (06:21:59Z) then part-b.md (06:29:01Z) under docs/evidence/git-sync-turn-hold-live-check-2026-10-11/. This replay re-measures the outcome from immutable sources at 08:25Z: 22 papercusp-git-sync commits landed on staging between the second edit and the journaled turn end, none touching either file; the files' ONLY commit anywhere is c9ef14669a (06:52:58Z), which adds exactly both of them together, after the turn end was journaled (mechanical, 06:36:47.944Z). Original readings: issue-thread-WI-6554700010008397 posts 1173683 and 1173714. Edit timestamps are carried from post 1173714, not re-measured here.",
+  "assertions": [
+    {
+      "id": "both-files-land-in-one-commit",
+      "passed": true,
+      "evidence": "git show --name-status c9ef14669a => exactly 'A docs/evidence/git-sync-turn-hold-live-check-2026-10-11/part-a.md' and 'A .../part-b.md' (2 files)."
+    },
+    {
+      "id": "no-partial-commit-anywhere",
+      "passed": true,
+      "evidence": "git log --all -- part-a.md part-b.md => exactly one commit, c9ef14669aba7be123459e663de5e19ac6b17096. No commit on any ref ever contained only one of the two files."
+    },
+    {
+      "id": "git-sync-ticked-during-the-turn",
+      "passed": true,
+      "evidence": "git log staging --since=06:29:01Z --until=06:36:47Z => 22 commits, all authored by papercusp-git-sync; the same window restricted to the live-check directory => 0 commits. The sweep ran repeatedly mid-turn and held both turn-edited files."
+    },
+    {
+      "id": "commit-follows-journaled-turn-end",
+      "passed": true,
+      "evidence": "session_turn_journal for session 5c59a364-6574-4ea9-8bbf-8a6113057c72: one mechanical turn end at 2026-10-11T06:36:47.944Z in [06:36, 06:53]; c9ef14669a committer date 2026-10-11T06:52:58+00:00, i.e. after the journaled turn end."
+    }
+  ]
+}

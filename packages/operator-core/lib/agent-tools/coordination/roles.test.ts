@@ -15,11 +15,37 @@ import {
   COORD_REPLY_ROLES,
   COORD_READ_ROLES,
   COORD_ROLES,
+  DESKTOP_AGENT_ROLES,
   QUEEN_PLACEMENT_ROLES,
   WORK_ITEM_LIFECYCLE_ROLES,
 } from './roles';
 
 describe('COORD_ROLES', () => {
+  test('researcher reaches every morning AI operation dependency without broad coordination or placement', { timeout: 60_000 }, async () => {
+    // EI-25392637620560983: requiredTools passed the identity/listing gates,
+    // but the independent dispatch role gate rejected get, claim and send.
+    const required = [
+      '../capability/fetch.js', '../capability/read.js',
+      '../work_items/get.js', '../work_items/claim.js', '../work_items/complete.js',
+      '../plans/get.js', '../reports/publish.js', '../reports/get.js',
+      '../reports/list.js', './tools/send.js',
+    ];
+    const tools = await Promise.all(required.map(async (path) => (await import(path)).default));
+    expect(tools.filter((tool) => !tool.agentRoles?.includes('researcher')).map((tool) => tool.name))
+      .toEqual([]);
+    // Keep the extension on the concrete tools; joining any of these sets
+    // would also open unrelated writers, readers, or placement surfaces.
+    for (const roles of [COORD_ROLES, COORD_READ_ROLES, COORD_REPLY_ROLES,
+      WORK_ITEM_LIFECYCLE_ROLES, QUEEN_PLACEMENT_ROLES, DESKTOP_AGENT_ROLES]) {
+      expect(roles).not.toContain('researcher');
+    }
+    for (const path of ['../work_items/create.js', '../work_items/set_state.js',
+      './tools/escalate.js', '../gym/judge.js']) {
+      const { default: tool } = await import(path);
+      expect(tool.agentRoles, `${tool.name}: researcher must not gain this surface`).not.toContain('researcher');
+    }
+  });
+
   test('acceptance judge can read and settle its own owner directives without general coordination writes', async () => {
     const [get, list, summarize, disposition, record] = await Promise.all([
       import('../orders/get.js'),
@@ -41,18 +67,29 @@ describe('COORD_ROLES', () => {
   });
 
   test('acceptance judge can consume coordination reads without becoming a general coordinator', async () => {
-    const [{ default: inbox }, { default: read }, { default: orient }, { default: cupMail }] = await Promise.all([
+    const [
+      { default: inbox },
+      { default: read },
+      { default: orient },
+      { default: whoami },
+      { default: cupMail },
+      { default: assignments },
+    ] = await Promise.all([
       import('./tools/inbox.js'),
       import('./tools/read.js'),
       import('./tools/orient.js'),
+      import('./tools/whoami.js'),
       import('../fleet/cup_mail.js'),
+      import('../fleet/assignments.js'),
     ]);
 
     for (const [name, tool] of [
       ['coord:inbox', inbox],
       ['coord:read', read],
       ['coord:orient', orient],
+      ['coord:whoami', whoami],
       ['fleet:cup_mail', cupMail],
+      ['fleet:assignments', assignments],
     ] as const) {
       expect(tool.agentRoles, `${name} must admit judge`).toContain('judge');
     }
@@ -141,6 +178,16 @@ describe('COORD_ROLES', () => {
     expect(QUEEN_PLACEMENT_ROLES).toContain('mug');
   });
 
+  test('AUTH INVARIANT (agent-multi-desktops D-013): the worker cup may own desktops; read-mostly roles may not', () => {
+    for (const excluded of ['papercup', 'papercup-deep', 'kettle']) {
+      expect(DESKTOP_AGENT_ROLES, `${excluded} must never own a desktop`).not.toContain(excluded);
+    }
+    expect(DESKTOP_AGENT_ROLES).toContain('cup');
+    // Every placement role keeps desktop access — the set only ever GROWS by cup.
+    for (const role of QUEEN_PLACEMENT_ROLES) expect(DESKTOP_AGENT_ROLES).toContain(role);
+    expect(DESKTOP_AGENT_ROLES.length).toBe(QUEEN_PLACEMENT_ROLES.length + 1);
+  });
+
   test(
     'the COORD_ROLES-gated idea/work-item tools actually admit bee (the consumer half)',
     // The dynamic imports below pull the tool modules' FULL transitive graph
@@ -176,6 +223,8 @@ describe('COORD_ROLES', () => {
       // would also expose unrelated coordination tools.
       const { default: workItemsGet } = await import('../work_items/get.js');
       const { default: searchFulltext } = await import('../search/fulltext.js');
+      const { default: rubricSearch } = await import('../rubrics/search.js');
+      const { default: planRevisions } = await import('../plans/revisions-list.js');
       const { default: scorecardsEvaluate } = await import('../scorecards/evaluate.js');
       const { default: pgQuery } = await import('../dev/pg_query.js');
       const { default: degenerateCheck } = await import('../gates/degenerate-check.js');
@@ -183,6 +232,8 @@ describe('COORD_ROLES', () => {
       for (const [name, tool] of [
         ['work_items:get', workItemsGet],
         ['search:fulltext', searchFulltext],
+        ['rubrics:search', rubricSearch],
+        ['plans:revisions', planRevisions],
         ['scorecards:evaluate', scorecardsEvaluate],
         ['dev:pg_query', pgQuery],
         ['gates:degenerate-check', degenerateCheck],

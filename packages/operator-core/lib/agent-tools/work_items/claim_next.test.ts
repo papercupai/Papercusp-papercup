@@ -21,6 +21,13 @@ const fleet = vi.hoisted(() => ({
 // touch real PG, and so tests below can assert it was invoked (self-scoped, by assignee).
 const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
 const premisePort = vi.hoisted(() => ({ get: vi.fn() }));
+const explicitAssigneeM = vi.hoisted(() => ({
+  resolve: vi.fn(async (raw: string, callerOwnerId: string, _workspaceId?: string | null) =>
+    ({ ok: true as const, ownerId: raw.trim() === 'self' ? callerOwnerId : raw.trim() }) as
+      | { ok: true; ownerId: string }
+      | { ok: false; code: string; message: string; candidates?: string[] },
+  ),
+}));
 
 vi.mock('../../events/await/store', () => ({
   cancelClaimableAwaits: cancelClaimableAwaitsM,
@@ -38,6 +45,11 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => identity,
   resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
+}));
+
+vi.mock('../coordination/recipient-resolve', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/recipient-resolve')>()),
+  resolveExplicitAgentOwnerId: explicitAssigneeM.resolve,
 }));
 
 vi.mock('../../work-item-claim-lease-wiring', () => ({
@@ -129,6 +141,10 @@ async function body(args: unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  explicitAssigneeM.resolve.mockImplementation(async (raw, callerOwnerId) => ({
+    ok: true,
+    ownerId: raw.trim() === 'self' ? callerOwnerId : raw.trim(),
+  }));
   identity.ownerId = 'su-me';
   identity.workspaceId = 'ws-1';
   flag.schedulerSpecClaim = true;
@@ -171,6 +187,21 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
     await body({ harness: 'papercusp', assignee: 'su-other' });
 
     expect(getNextForBeeM).toHaveBeenCalledWith(expect.objectContaining({ cupId: 'su-other' }));
+    expect(claimNextM).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unknown explicit assignee before selecting or claiming work', async () => {
+    explicitAssigneeM.resolve.mockResolvedValue({
+      ok: false,
+      code: 'assignee_unknown',
+      message: 'No known owner matches noop-do-not-use.',
+    });
+
+    const b = await body({ harness: 'papercusp', assignee: 'noop-do-not-use' });
+
+    expect(explicitAssigneeM.resolve).toHaveBeenCalledWith('noop-do-not-use', 'su-me', 'ws-1');
+    expect(b).toMatchObject({ ok: false, error: 'assignee_unknown' });
+    expect(getNextForBeeM).not.toHaveBeenCalled();
     expect(claimNextM).not.toHaveBeenCalled();
   });
 
@@ -330,6 +361,6 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
     // EI-15777: same paused-miss branch must cancel the caller's OWN standing
     // work-item:claimable await(s) (self-scoped by assignee/ownerId) so a compliant
     // peer stand-down doesn't keep re-waking this member on a pull it can't make.
-    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-me');
+    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-me', { includeStanding: true });
   });
 });

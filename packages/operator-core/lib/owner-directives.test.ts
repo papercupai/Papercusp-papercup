@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   OWNER_DIRECTIVES_BLOCK_CHAR_CAP,
   OWNER_DIRECTIVES_BLOCK_HEADER,
+  OWNER_DIRECTIVES_FYI_LEGEND,
   renderOwnerDirectiveRow,
   renderOwnerDirectivesBlock,
   type OwnerDirectiveRow,
@@ -147,19 +148,22 @@ describe('renderOwnerDirectivesBlock', () => {
 
   it('WI-10002888: the viewer’s own row renders first and is never the one the cap folds away', () => {
     const viewer = 'su-current-session';
-    // [FYI] rows render a short pointer, not the verbatim text, so it takes many
-    // older peer rows to exhaust the char cap on their own. Then the viewer's own
-    // directive comes LAST, which is the order the oldest-first fetch supplies.
-    const peers = Array.from({ length: 200 }, (_, i) => row({ id: i + 1, recordedBy: `su-peer-${i % 3}` }));
-    const own = row({ id: 470, recordedBy: viewer, verbatimText: 'carry the plans to shipped' });
+    // [FYI] rows render as bare grouped ids (~6 chars each), so it takes well over
+    // a thousand older peer rows to exhaust the char cap on their own. Then the
+    // viewer's own directive comes LAST, which is the order the oldest-first fetch
+    // supplies. Its id is outside the peer range so the control cannot hit a peer.
+    const peers = Array.from({ length: 1500 }, (_, i) => row({ id: i + 1, recordedBy: `su-peer-${i % 3}` }));
+    const own = row({ id: 99999, recordedBy: viewer, verbatimText: 'carry the plans to shipped' });
     const out = renderOwnerDirectivesBlock([...peers, own], { nowMs: NOW, viewerOwnerId: viewer })!;
     const lines = out.split('\n');
-    expect(lines[1]).toContain('#470');
+    expect(lines[1]).toContain('#99999');
     expect(lines[1]).toContain('[FOR THIS SESSION]');
+    expect(out.length).toBeLessThanOrEqual(OWNER_DIRECTIVES_BLOCK_CHAR_CAP + 200);
     expect(out).toMatch(/\+\d+ more open — orders:list/);
-    // Control: without a viewer the given order is kept, so the same input hides #470.
+    // Control: without a viewer the given order is kept, so the same input hides #99999.
     const ledger = renderOwnerDirectivesBlock([...peers, own], { nowMs: NOW })!;
-    expect(ledger).not.toContain('#470');
+    expect(ledger).not.toContain('#99999');
+    expect(ledger).toMatch(/\+\d+ more open — orders:list/);
   });
 
   it('labels mixed workspace rows by the session that can act on each one', () => {
@@ -174,10 +178,38 @@ describe('renderOwnerDirectivesBlock', () => {
 
     expect(ownLine).toContain('[FOR THIS SESSION]');
     expect(ownLine).toContain(ownText);
-    expect(peerLine).toContain('[FYI');
-    expect(peerLine).toContain('not an action assignment for this session');
-    expect(peerLine).toContain('orders:get #45');
-    expect(peerLine).not.toContain(peerText);
+    // The peer id sits under the [FYI] legend, attributed to its recording
+    // session, and never carries the peer's words.
+    const lines = out.split('\n');
+    const legendAt = lines.indexOf(OWNER_DIRECTIVES_FYI_LEGEND);
+    expect(legendAt).toBeGreaterThan(lines.indexOf(ownLine));
+    expect(lines.indexOf(peerLine)).toBeGreaterThan(legendAt);
+    expect(OWNER_DIRECTIVES_FYI_LEGEND).toContain('[FYI]');
+    expect(OWNER_DIRECTIVES_FYI_LEGEND).toContain('not an action assignment for this session');
+    expect(OWNER_DIRECTIVES_FYI_LEGEND).toContain('orders:get #<id>');
+    expect(peerLine).toContain('su-peer-s');
+    expect(peerLine).not.toContain('[FOR THIS SESSION]');
+    expect(out).not.toContain(peerText);
+  });
+
+  it('P-006: [FYI] rows collapse to one legend plus one id line per recording session', () => {
+    const viewer = 'su-current-session';
+    const own = row({ id: 1713, recordedBy: viewer, verbatimText: 'audit the oversized tool calls' });
+    const recorders = ['su-aaaaaaaa-1', 'su-bbbbbbbb-2', 'su-cccccccc-3'];
+    const peers = Array.from({ length: 11 }, (_, i) => row({ id: 400 + i, recordedBy: recorders[i % 3] }));
+    const out = renderOwnerDirectivesBlock([own, ...peers], { nowMs: NOW, viewerOwnerId: viewer })!;
+    const lines = out.split('\n');
+    // header, own row, legend, three recorder lines — nothing per id.
+    expect(lines).toHaveLength(6);
+    expect(lines[1]).toContain('#1713');
+    expect(lines[2]).toBe(OWNER_DIRECTIVES_FYI_LEGEND);
+    expect(lines[3]).toBe('  • su-aaaaaaaa-: #400 #403 #406 #409');
+    for (const p of peers) expect(out).toContain(`#${p.id}`);
+    expect(out).not.toContain('more open');
+    // The per-row form spent ~150 chars of disclaimer on each FYI id.
+    const perRow = peers.map((p) => renderOwnerDirectiveRow(p, NOW, viewer)).join('\n').length;
+    const grouped = lines.slice(2).join('\n').length;
+    expect(grouped).toBeLessThan(perRow / 3);
   });
 });
 

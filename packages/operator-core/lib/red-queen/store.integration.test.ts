@@ -18,7 +18,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 const { insertDrillRow, updateDrillDetected, updateDrillTriaged, updateDrillResolved, markDrillFailed, expireStaleDrills, readDrillOutcomes } =
   await import('./store');
@@ -46,6 +46,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -66,7 +67,7 @@ beforeAll(async () => {
       resolved_with_evidence boolean NOT NULL DEFAULT false, issue_id text,
       mttsh_detect_ms bigint, mttsh_triage_ms bigint, mttsh_fix_ms bigint, mttsh_total_ms bigint,
       leak_check_passed boolean, leak_check jsonb,
-      planted_artifacts jsonb, payload jsonb, error text,
+      planted_artifacts jsonb, payload jsonb, error text, learning_lifecycle jsonb,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
       CONSTRAINT red_queen_drills_status_check CHECK (status IN ('planted','detected','triaged','resolved','failed','expired')),
       CONSTRAINT red_queen_drills_expected_kind_check CHECK (expected_kind IN ('bug','change'))

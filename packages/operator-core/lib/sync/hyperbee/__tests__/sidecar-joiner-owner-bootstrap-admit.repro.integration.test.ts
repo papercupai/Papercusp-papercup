@@ -69,10 +69,19 @@ import {
   FILL_WORKSPACE_ID_DDL,
   HARNESS_ISSUES_CONSOLIDATED_FED_DDL,
 } from '../../../../test/_work-items-schema';
-import { _resetForTests as resetDbOrgPools } from '@papercusp/db-org';
+import {
+  _resetForTests as resetDbOrgPools,
+  _resetStoreIdentityForTests,
+  pinnedStoreIdentity,
+} from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
+import {
+  _resetLongLivedAdminPoolsForTests,
+  boundAdminPoolUrl,
+  getLongLivedAdminPool,
+} from '../../../long-lived-admin-pool';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { mutateHarnessRegistry } from '../../../harness-registry';
 import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-set';
@@ -155,6 +164,13 @@ const WORKSPACE_ID = 'ws-sidecar-bootstrap';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 
+function resetFixturePoolState(): void {
+  // Each scenario owns a different OrgTestDb. Its process-level cursor pool and
+  // identity pin must not survive that fixture, independently of db-org's pools.
+  _resetLongLivedAdminPoolsForTests();
+  _resetStoreIdentityForTests();
+}
+
 // EI/WI-4027: `notifyRegistryChanged` (harness-registry.ts) fires a best-effort,
 // self-caught, fire-and-forget dynamic import of ./sync-sse after every registry
 // mutation — not wired up in this test's env, so it lands as
@@ -183,6 +199,7 @@ afterEach(async () => {
       // best-effort
     }
   }
+  resetFixturePoolState();
   _resetCacheForTests();
   _resetBootHistoryForTests();
 });
@@ -549,6 +566,76 @@ async function runScenario(
   return { joinerAdmittedOwner, joinerEvents };
 }
 
+describe('SIDECAR fixture pool lifecycle', () => {
+  it('warns on an unreset database rotation and starts clean after fixture reset', async () => {
+    const first = await createOrgTestDb();
+    cleanups.push(() => first.cleanup());
+    const second = await createOrgTestDb();
+    cleanups.push(() => second.cleanup());
+    const previous = {
+      adminUrl: process.env.HARNESS_ADMIN_DATABASE_URL,
+      skipDiscovery: process.env.PAPERCUSP_SKIP_PG_DISCOVERY,
+      pgbouncer: process.env.PAPERCUSP_PGBOUNCER,
+    };
+    cleanups.push(() => {
+      if (previous.adminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+      else process.env.HARNESS_ADMIN_DATABASE_URL = previous.adminUrl;
+      if (previous.skipDiscovery === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+      else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = previous.skipDiscovery;
+      if (previous.pgbouncer === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
+      else process.env.PAPERCUSP_PGBOUNCER = previous.pgbouncer;
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+    });
+    const routeTo = (database: OrgTestDb) => {
+      process.env.HARNESS_ADMIN_DATABASE_URL = database.adminDsn;
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+      process.env.PAPERCUSP_PGBOUNCER = '0';
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      _resetStoreIdentityForTests();
+    };
+    const label = 'pg-merge-cursor-store';
+    resetFixturePoolState();
+    routeTo(first);
+    const firstPool = getLongLivedAdminPool(label);
+    cleanups.push(() => firstPool.end({ timeout: 1 }));
+    expect((await firstPool`SELECT current_database() AS name`)[0].name).toBe(first.dbName);
+    // The identity query is fire-and-forget and independent of the content query.
+    // Settle its pin before resetting global state for the next intentional DB.
+    await vi.waitFor(() => expect(pinnedStoreIdentity()?.database).toBe(first.dbName));
+    expect(boundAdminPoolUrl(label)).toBe(first.adminDsn);
+
+    routeTo(second);
+    // Resolver cache resets alone leave the registry bound to the old fixture.
+    expect(boundAdminPoolUrl(label)).toBe(first.adminDsn);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const secondPool = getLongLivedAdminPool(label);
+      cleanups.push(() => secondPool.end({ timeout: 1 }));
+      expect((await secondPool`SELECT current_database() AS name`)[0].name).toBe(second.dbName);
+      await vi.waitFor(() => expect(pinnedStoreIdentity()?.database).toBe(second.dbName));
+      expect(boundAdminPoolUrl(label)).toBe(second.adminDsn);
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        '[db] pg-merge-cursor-store pool rebound: target changed since it was built — rebuilding',
+      );
+
+      resetFixturePoolState();
+      routeTo(first);
+      expect(boundAdminPoolUrl(label)).toBeNull();
+      warn.mockClear();
+      const freshPool = getLongLivedAdminPool(label);
+      cleanups.push(() => freshPool.end({ timeout: 1 }));
+      expect((await freshPool`SELECT current_database() AS name`)[0].name).toBe(first.dbName);
+      await vi.waitFor(() => expect(pinnedStoreIdentity()?.database).toBe(first.dbName));
+      expect(boundAdminPoolUrl(label)).toBe(first.adminDsn);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('SIDECAR fresh-joiner owner-bootstrap-admit (EMPTY pot_members, real loadHiveOwnerDevicePubkey) — D-052/D-053', () => {
   it(
     'JOINER booted on a HIVE binding admits the owner log via the directory-cache owner-bootstrap',
@@ -708,8 +795,8 @@ describe('SIDECAR fresh-joiner FULL CHAIN — TOPIC-bound joiner: admit → rost
           announceIdentityOverride: idOwner.override,
           verifyBindingOverride: async (_pk, _login, userId) =>
             userId === idJoiner.userId ? 'verified' : 'fail',
-          applyOverride: (op) => {
-            ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, owner.handle.ownLog.keyHex);
+          applyOverride: (op, ctx) => {
+            ownerApply ??= buildOwnerApply(dbOwner.sql, HIVE_HOME, ctx.ownLogKeyHex);
             return ownerApply(op);
           },
         },

@@ -13,6 +13,15 @@ const row = (kind: string, count: number, latestId = '42'): PtyHostEventAggregat
   lastAt: '2026-09-25 14:00:00+00',
 });
 
+/** Every host function whose call site names an event kind. The two drill helpers
+ * write host events through appendHostEvent's `kind` pass-through. */
+const HOST_EVENT_PRODUCERS = new Set([
+  'appendHostEvent',
+  'emitEvent',
+  'recordAdoptedCarryDrillEvent',
+  'recordAdoptedCarryDrillTerminal',
+]);
+
 /** Walk the host's emitter expressions instead of counting only literal calls.
  * A new computed form must be resolved here before its class can silently pass. */
 function emittedHostKinds(hostSource: string): string[] {
@@ -20,7 +29,7 @@ function emittedHostKinds(hostSource: string): string[] {
   const calls: ts.CallExpression[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
-        (node.expression.text === 'appendHostEvent' || node.expression.text === 'emitEvent')) calls.push(node);
+        HOST_EVENT_PRODUCERS.has(node.expression.text)) calls.push(node);
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -39,6 +48,28 @@ function emittedHostKinds(hostSource: string): string[] {
     return undefined;
   };
 
+  const returnedProperty = (expression: ts.Expression, name: string): ts.Expression | undefined => {
+    if (ts.isParenthesizedExpression(expression)) return returnedProperty(expression.expression, name);
+    if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
+      const helper = bindingBefore(expression.expression.text, expression);
+      if (helper && ts.isArrowFunction(helper) && ts.isBlock(helper.body)) {
+        const returns = helper.body.statements
+          .filter(ts.isReturnStatement)
+          .flatMap((statement) => statement.expression ? [statement.expression] : []);
+        return returns.map((value) => returnedProperty(value, name)).find(Boolean);
+      }
+    }
+    if (!ts.isObjectLiteralExpression(expression)) return undefined;
+    const property = expression.properties.find((candidate) => {
+      if (!ts.isPropertyAssignment(candidate) && !ts.isShorthandPropertyAssignment(candidate)) return false;
+      return (ts.isIdentifier(candidate.name) || ts.isStringLiteral(candidate.name)) && candidate.name.text === name;
+    });
+    if (!property) return undefined;
+    if (ts.isPropertyAssignment(property)) return property.initializer;
+    if (ts.isShorthandPropertyAssignment(property)) return bindingBefore(property.name.text, property);
+    return undefined;
+  };
+
   const resolve = (expression: ts.Expression, seen = new Set<ts.Node>()): string[] => {
     if (seen.has(expression)) throw new Error(`cyclic PTY event kind: ${expression.getText(source)}`);
     seen.add(expression);
@@ -51,6 +82,13 @@ function emittedHostKinds(hostSource: string): string[] {
       const initializer = bindingBefore(expression.text, expression);
       if (initializer) return resolve(initializer, seen);
     }
+    if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
+      const initializer = bindingBefore(expression.expression.text, expression);
+      if (initializer) {
+        const propertyValue = returnedProperty(initializer, expression.name.text);
+        if (propertyValue) return resolve(propertyValue, seen);
+      }
+    }
     if (ts.isTemplateExpression(expression) && expression.getText(source) === '`${msg.mode}-inject-error`') {
       const guarded = hostSource.includes("if (msg.mode === 'reset' || msg.mode === 'recycle')");
       if (!guarded) throw new Error('PTY inject-error mode guard changed');
@@ -59,14 +97,21 @@ function emittedHostKinds(hostSource: string): string[] {
     throw new Error(`unresolved PTY event kind: ${expression.getText(source)}`);
   };
 
-  const hostCalls = calls.filter((call) => (call.expression as ts.Identifier).text === 'appendHostEvent');
+  const callee = (call: ts.CallExpression) => (call.expression as ts.Identifier).text;
+  const hostCalls = calls.filter((call) => callee(call) === 'appendHostEvent');
   const delegated = hostCalls.filter((call) => call.arguments[1]?.getText(source) === 'kind');
-  expect(delegated).toHaveLength(1); // makeCarryRearm's pass-through into appendHostEvent.
+  // makeCarryRearm's emitEvent and recordAdoptedCarryDrillEvent pass `kind` through;
+  // their callers are the producers counted below.
+  expect(delegated).toHaveLength(2);
   const direct = hostCalls.filter((call) => !delegated.includes(call));
-  const emitted = calls.filter((call) => (call.expression as ts.Identifier).text === 'emitEvent');
-  expect(emitted).toHaveLength(7); // every pass-through producer is included in this census.
-  return [...new Set([...direct, ...emitted].flatMap((call) => {
-    const kind = call.arguments[call.expression.getText(source) === 'emitEvent' ? 0 : 1];
+  const emitted = calls.filter((call) => callee(call) === 'emitEvent');
+  expect(emitted).toHaveLength(9); // every pass-through producer is included in this census.
+  // recordAdoptedCarryDrillTerminal delegates into recordAdoptedCarryDrillEvent with `kind`.
+  const drill = calls.filter((call) =>
+    callee(call).startsWith('recordAdoptedCarryDrill') && call.arguments[0]?.getText(source) !== 'kind');
+  expect(drill.length).toBeGreaterThan(0);
+  return [...new Set([...direct, ...emitted, ...drill].flatMap((call) => {
+    const kind = call.arguments[callee(call) === 'appendHostEvent' ? 1 : 0];
     if (!kind || !ts.isExpression(kind)) throw new Error('PTY event kind argument missing');
     return resolve(kind);
   }))].sort();
@@ -79,14 +124,17 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('submit-verify-exhausted')).toBe('failure');
     expect(classifyPtyHostEvent('turn-delivered')).toBe('routine');
     expect(classifyPtyHostEvent('duplicate-delivery-id')).toBe('routine');
+    // WI-6554700010008412: a quota latch released at the provider's stated reset.
+    expect(classifyPtyHostEvent('quota-block-expired-at-reset')).toBe('recovered');
   });
 
   it('covers the existing and newly logged host failure classes', () => {
     for (const kind of [
       'busy-gate-expired', 'respawn-carry-dropped', 'host-code-stale',
-      'quota-block-detected', 'control-payload-unaddressed',
+      'quota-block-detected', 'auth-block-detected', 'control-payload-unaddressed',
       'pty-load-failed', 'pty-spawn-failed', 'resume-finalization-report-failed',
       'resume-finalization-callback-failed', 'startup-turn-dropped',
+      'kickoff-refusal-unreported-terminating',
       'session-port-delivery-ack-failed', 'managed-kickoff-failed',
       'gated-delivery-pipeline-error', 'control-socket-error',
       'control-socket-rebind-failed', 'session-scope-cleanup-partial',
@@ -109,6 +157,64 @@ describe('PTY host event classification for Blender', () => {
     expect(patterns[0]?.detail).toContain('Failure signal');
   });
 
+  it('keeps an extended startup-frame wait routine until its terminal timeout', () => {
+    expect(classifyPtyHostEvent('launch-kickoff-backend-frame-wait-extended')).toBe('routine');
+    expect(classifyPtyHostEvent('launch-kickoff-backend-frame-timeout')).toBe('failure');
+  });
+
+  it('omits startup dialog control actions while retaining a failed Escape write', () => {
+    const actions = ['codex-startup-update-dialog-escape-sent', 'codex-startup-update-dialog-escape-skipped'];
+    for (const kind of actions) expect(classifyPtyHostEvent(kind), kind).toBe('routine');
+    expect(classifyPtyHostEvent('codex-startup-update-dialog-escape-failed')).toBe('failure');
+    expect(classifyPtyHostEvent('codex-startup-update-dialog-future-outcome')).toBe('unclassified');
+    const patterns = buildPtyHostHealthPatterns([
+      ...actions.map(kind => row(kind, 20)),
+      row('codex-startup-update-dialog-escape-failed', 1),
+    ]);
+    expect(patterns.map(pattern => pattern.ref)).toEqual(['pty-host:kind:codex-startup-update-dialog-escape-failed']);
+  });
+
+  it('omits normal parking lifecycle signals while retaining failed parking and delivery outcomes', () => {
+    const lifecycle = ['child-parked', 'child-park-deferred', 'child-unparked', 'parked-delivery-held'];
+    const failures = ['child-park-failed', 'child-unpark-failed', 'parked-delivery-refused'];
+    for (const kind of lifecycle) expect(classifyPtyHostEvent(kind), kind).toBe('routine');
+    for (const kind of failures) expect(classifyPtyHostEvent(kind), kind).toBe('failure');
+    expect(classifyPtyHostEvent('child-park-new-outcome')).toBe('unclassified');
+    expect(buildPtyHostHealthPatterns([
+      ...lifecycle.map(kind => row(kind, 20)),
+      ...failures.map(kind => row(kind, 1)),
+    ]).map(pattern => pattern.ref).sort()).toEqual(failures.map(kind => `pty-host:kind:${kind}`).sort());
+  });
+
+  it('keeps startup hold diagnostics distinct from the terminal stuck drop', () => {
+    expect(classifyPtyHostEvent('kickoff-held-for-codex-frame')).toBe('routine');
+    expect(classifyPtyHostEvent('kickoff-codex-frame-hold-ended')).toBe('routine');
+    expect(classifyPtyHostEvent('codex-starting-stuck-snapshot')).toBe('routine');
+    expect(classifyPtyHostEvent('codex-starting-stuck-early-drop')).toBe('failure');
+    const patterns = buildPtyHostHealthPatterns([
+      row('kickoff-held-for-codex-frame', 1),
+      row('kickoff-codex-frame-hold-ended', 1),
+      row('codex-starting-stuck-snapshot', 1),
+      row('codex-starting-stuck-early-drop', 1),
+    ]);
+    expect(patterns.map(pattern => pattern.ref)).toEqual(['pty-host:kind:codex-starting-stuck-early-drop']);
+  });
+
+  it('retains abandoned resumes, rejected provenance and forced predecessor stops without counting stop diagnostics', () => {
+    const failures = ['child-unpark-abandoned', 'wake-provenance-rejected', 'respawn-predecessor-force-kill'];
+    for (const kind of failures) expect(classifyPtyHostEvent(kind), kind).toBe('failure');
+    expect(classifyPtyHostEvent('respawn-predecessor-stop-started')).toBe('routine');
+    expect(classifyPtyHostEvent('respawn-predecessor-stop-finished')).toBe('routine');
+    const patterns = buildPtyHostHealthPatterns([
+      row('respawn-predecessor-stop-started', 20),
+      row('respawn-predecessor-stop-finished', 20),
+      ...failures.map(kind => row(kind, 1)),
+    ]);
+    expect(patterns.map(pattern => pattern.ref).sort()).toEqual(failures.map(kind => `pty-host:kind:${kind}`).sort());
+    for (const pattern of patterns) expect(pattern.detail).toContain('Failure signal');
+    expect(classifyPtyHostEvent('respawn-predecessor-future-outcome')).toBe('unclassified');
+  });
+
   it('keeps failed role MCP readiness while omitting a ready connection', () => {
     const patterns = buildPtyHostHealthPatterns([
       row('launch-role-mcp-ready', 20),
@@ -120,6 +226,14 @@ describe('PTY host event classification for Blender', () => {
       'pty-host:kind:launch-role-mcp-unavailable',
     ]);
     expect(patterns[0]?.detail).toContain('Failure signal');
+  });
+
+  it('keeps intentional delivery cancellation and duplicate suppression routine', () => {
+    const cancellations = ['delivery-cancellation-requested', 'delivery-cancelled-before-write', 'duplicate-cancelled-delivery-id'];
+    for (const kind of cancellations) expect(classifyPtyHostEvent(kind), kind).toBe('routine');
+    expect(buildPtyHostHealthPatterns(cancellations.map(kind => row(kind, 3)))).toEqual([]);
+    expect(classifyPtyHostEvent('delivery-cancellation-failed')).toBe('failure');
+    expect(classifyPtyHostEvent('delivery-cancellation-new-outcome')).toBe('unclassified');
   });
 
   it('classifies every kind observed in the production 24-hour host-event census', () => {
@@ -156,14 +270,27 @@ describe('PTY host event classification for Blender', () => {
     );
     const kinds = emittedHostKinds(hostSource);
     expect(kinds.length).toBeGreaterThan(0);
+    expect(kinds).toContain('pty-spawned');
     expect(kinds.filter((kind) => classifyPtyHostEvent(kind) === 'unclassified')).toEqual([]);
+    expect(classifyPtyHostEvent('pty-spawned')).toBe('routine');
     expect(classifyPtyHostEvent('inject-mutex-force-released')).toBe('recovered');
     expect(classifyPtyHostEvent('mcp-reconnect-completed')).toBe('recovered');
     expect(classifyPtyHostEvent('control-payload-rejected')).toBe('failure');
     expect(classifyPtyHostEvent('persona-refresh-skipped')).toBe('failure');
     expect(classifyPtyHostEvent('headless-codex-model-choice-select-existing')).toBe('routine');
+    expect(classifyPtyHostEvent('hooks-observation-result')).toBe('routine');
+    expect(classifyPtyHostEvent('kickoff-waiting-for-codex-startup')).toBe('routine');
+    expect(classifyPtyHostEvent('launch-kickoff-quota-rejected')).toBe('failure');
+    expect(classifyPtyHostEvent('quota-recovery-resumed')).toBe('recovered');
+    expect(classifyPtyHostEvent('respawn-predecessor-stop-pending')).toBe('failure');
+    expect(classifyPtyHostEvent('session-port-delivery-ack-pending')).toBe('failure');
+    expect(classifyPtyHostEvent('submit-verify-recovery-resubmit')).toBe('recovered');
     // Pending is a non-terminal slow-echo state; confirmed/unconfirmed carry the verdict.
     expect(classifyPtyHostEvent('launch-kickoff-marker-echo-pending')).toBe('routine');
+    // WI-10004943: replacing a stuck fresh Codex child is a recovery; the
+    // replacement failing is a failure.
+    expect(classifyPtyHostEvent('launch-kickoff-fresh-child-retry')).toBe('recovered');
+    expect(classifyPtyHostEvent('launch-kickoff-fresh-child-failed')).toBe('failure');
     expect(classifyPtyHostEvent('launch-kickoff-marker-echo-confirmed')).toBe('routine');
     expect(classifyPtyHostEvent('launch-kickoff-marker-echo-unconfirmed')).toBe('failure');
   });

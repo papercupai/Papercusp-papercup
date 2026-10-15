@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "WOE progress table P-006: original R21 actual-goal readback",
+  "framework": "operational",
+  "command": ["scripts/verify-tauri-headless.sh"],
+  "commandScope": "Imports the original completed verifier receipts. The full invocation is retained in /tmp/woe-p006-r21-20261012T222921Z.log and its admission receipt.",
+  "startedAt": "2026-10-12T22:29:36.000Z",
+  "finishedAt": "2026-10-12T22:56:24.130Z",
+  "exitCode": 0,
+  "summary": "Original R21 passed preparation, desktop boot and the actual-goal native assertion on committed c0c010ed source. Independent stored goal and migration reads matched the rendered worklist, totals and completion chart. Native test binding 39842 separately preserves the original paired runtime witness and is server-measured current.",
+  "planSlug": "woe-progress-table-2026-10-08",
+  "workItemId": "WI-10007685",
+  "sourceCommit": "c0c010edb34b795ba3f38a44da7b787521b0ff9d",
+  "evidencePlane": "live",
+  "evidenceRuntime": "desktop-shell",
+  "nativeRun": {
+    "harness": "verify-tauri-headless",
+    "runId": "20261012T222934Z-1332517",
+    "journeyRunId": "20261012T225414Z-2470663",
+    "testRunId": 21164777,
+    "nativeTestBindingId": 39842,
+    "runtimeFingerprint": "0f8bd64492aeef7d195008550c75c3b52c15d2b25fa5edecbbbfd6df706704e8",
+    "database": "Shared actual-goal database with read-only observations",
+    "goalId": "work-on-everything-fresh-grading-and-improvement-60d3a8"
+  },
+  "assertions": [
+    {
+      "id": "real-goal-table-has-plan-rows",
+      "passed": true,
+      "evidence": "Original real-goal-table-readback.json records 265 DOM plan rows, unavailable=false and pending=false. The native assertion opened the retained table from the Design C overview."
+    },
+    {
+      "id": "real-goal-stored-picks-match-dom",
+      "passed": true,
+      "evidence": "Sorted original expected and DOM selected {id,label} arrays match exactly. In worklist count is 10, matching all ten stored references."
+    },
+    {
+      "id": "real-goal-totals-and-chart-present",
+      "passed": true,
+      "evidence": "Original DOM readback records six totals tiles and the completion chart text."
+    },
+    {
+      "id": "migration-and-live-opt-in-declaration",
+      "passed": true,
+      "evidence": "Original ledger read contains 1430-woe-worklist-only-picked-plans.sql with SHA256 8b7caafe0a941d67ea73bf114b717cd41e9a53ce2ad070f5dedc35003c87a901; original live collection.defaultSelected is false."
+    },
+    {
+      "id": "actual-goal-observations-remain-read-only",
+      "passed": true,
+      "evidence": "Original stored before and after goal observations are byte-equivalent JSON values and the captured DOM writes array is empty."
+    }
+  ],
+  "retainedArtifacts": [
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/result.json",
+      "sha256": "51bbb6b5a82f4f12b8c0054c21ec56a63bcb18ecee052ad1a28afd2c9be9e5e8"
+    },
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/phases/prepare/verifier-source-receipt.json",
+      "sha256": "78b35c2c7829651d794ebba64a91cbff5b6120bc7b6492e069059dcb1b0ab0ef"
+    },
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/phases/assert/playwright/ongoing-work-native-collec-2c448-ogress-table-without-writes-chromium/real-goal-table-readback.json",
+      "sha256": "f5f08fa74bc12ed14e6390e8d0f262875125a465f96258cf39e2b195456f7b46"
+    },
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261012T222934Z-1332517/phases/assert/playwright/ongoing-work-native-collec-2c448-ogress-table-without-writes-chromium/native-completed-runtime.json",
+      "sha256": "862f4ee287acd28c677b14f0326831960777fcc21440ac30ff03076203ea24f3"
+    }
+  ]
+}

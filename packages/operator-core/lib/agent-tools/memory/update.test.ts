@@ -14,8 +14,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../memory/backend', () => ({
   getMemoryBackend: vi.fn(),
 }));
+vi.mock('../../memory/surfaced-outcomes', async (original) => ({
+  ...(await original<typeof import('../../memory/surfaced-outcomes')>()),
+  captureSurfacedOutcome: vi.fn(async () => ({ ok: true })),
+}));
 
 import update from './update';
+import { captureSurfacedOutcome } from '../../memory/surfaced-outcomes';
 import { getMemoryBackend } from '../../memory/backend';
 
 type FakeBackend = {
@@ -47,6 +52,17 @@ const CLEAN_STAMP = { possible_secret: false, possible_secret_classes: [] };
 
 describe('memory:update handler (bulk keyed-array)', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('records contradiction for successful updates in the caller session, excluding failed items', async () => {
+    const b = fakeBackend();
+    b.update.mockImplementation(async (id: string) => {
+      if (id === VID2) throw new Error('write failed');
+    });
+    useBackend(b);
+    const ctx = { uiClientId: 'corrector' } as Parameters<typeof update.handler>[1];
+    await update.handler({ ids: [VID, VID2], content: 'correction' }, ctx);
+    expect(captureSurfacedOutcome).toHaveBeenCalledExactlyOnceWith(ctx, [VID], 'contradicted');
+  });
 
   it('inline { id, content } → one ok result; backend.update called with the text patch', async () => {
     const b = fakeBackend();

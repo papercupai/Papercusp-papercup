@@ -152,5 +152,30 @@ export async function writePlanIndexRows(
     `;
   }
 
+  // WI-6554700010008467: this function is the ONLY writer of plan_items and
+  // plan_decisions, so it also writes their jsonb twins on harness_plans from the
+  // SAME index. Readers keep the jsonb as the whole-array fast path
+  // (normalize-plan-items-decisions-to-rows-2026-07-26#D-002), but the acceptance
+  // gate reads plan_items. A census on 2026-10-11 found 27 plans where the rows
+  // matched content and the jsonb did not. That means some writer rewrote the rows
+  // without the jsonb. With both copies written here, no caller can produce that
+  // disagreement. The arrays are stringified exactly as every caller writes them.
+  // The IS DISTINCT FROM guard therefore makes the usual case (caller already wrote
+  // the same arrays) a no-op: no new row version is written. Without it, every
+  // call would rewrite the row, and emit_change_notify_trg (AFTER UPDATE, no WHEN
+  // clause) would send a harness_plans.changed sync notification each time.
+  // updated_at cannot show this: set_harness_plans_updated_at does not compare
+  // items/decisions. The test observes the row's xmin instead.
+  const itemsJson = JSON.stringify(idx.items ?? []);
+  const decisionsJson = JSON.stringify(idx.decisions ?? []);
+  await tx`
+    UPDATE harness_shared.harness_plans
+       SET items = ${itemsJson}::text::jsonb,
+           decisions = ${decisionsJson}::text::jsonb
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       AND plan_slug = ${planSlug}
+       AND (items IS DISTINCT FROM ${itemsJson}::text::jsonb
+            OR decisions IS DISTINCT FROM ${decisionsJson}::text::jsonb)
+  `;
   return { items: items.length, decisions: decisions.length };
 }

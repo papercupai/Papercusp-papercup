@@ -16,14 +16,15 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { createFleetMock, setLeaderMock, setSpecMock, presenceMock, couplingMock, potHomeSlugMock } = vi.hoisted(() => ({
-  createFleetMock: vi.fn(), setLeaderMock: vi.fn(), setSpecMock: vi.fn(),
+const { createFleetMock, setLeaderMock, getFleetMock, takeLeadershipMock, setSpecMock, presenceMock, couplingMock, potHomeSlugMock } = vi.hoisted(() => ({
+  createFleetMock: vi.fn(), setLeaderMock: vi.fn(), getFleetMock: vi.fn(), takeLeadershipMock: vi.fn(), setSpecMock: vi.fn(),
   presenceMock: vi.fn(), couplingMock: vi.fn(), potHomeSlugMock: vi.fn(),
 }));
 vi.mock('../agent-fleets-store', async (load) => ({
   ...(await load<Record<string, unknown>>()),
   createFleetIfAbsent: createFleetMock,
   setFleetLeader: setLeaderMock,
+  getFleet: getFleetMock,
 }));
 vi.mock('../scheduler/claim-spec-store', async (load) => ({
   ...(await load<Record<string, unknown>>()),
@@ -41,6 +42,9 @@ vi.mock('../coord/couplings', async (load) => ({
   ...(await load<Record<string, unknown>>()),
   declareCoupling: couplingMock,
 }));
+vi.mock('../agent-tools/fleet_registry/take-leadership-core', () => ({
+  takeFleetLeadership: (...a: unknown[]) => takeLeadershipMock(...a),
+}));
 
 import { validateClaimSpec } from '../scheduler/claim-spec';
 import { claimSpecIsGoalScoped } from '../system-health/goal-drain-fleet-watchdog';
@@ -50,6 +54,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   createFleetMock.mockResolvedValue({ created: true, record: {} });
   setLeaderMock.mockResolvedValue({});
+  getFleetMock.mockResolvedValue({
+    workspaceId: 'ws', fleetSlug: 'goal-drain-g-1', leaderOwnerId: 'su-old',
+  });
+  takeLeadershipMock.mockResolvedValue({
+    leader: 'su-new', previousLeader: 'su-old', control: { errors: [] },
+  });
   setSpecMock.mockResolvedValue({ ok: true, revision: 1, errors: [] });
   presenceMock.mockResolvedValue(null);
   couplingMock.mockResolvedValue({ state: 'coupled' });
@@ -74,30 +84,76 @@ describe('P-014 delegated drain leadership', () => {
     }));
   });
 
-  it('does not couple or label a leader whose compare-and-set lost', async () => {
-    setLeaderMock.mockResolvedValueOnce(null);
+  it('does not couple or label a leader when the registry snapshot no longer matches the CAS', async () => {
+    getFleetMock.mockResolvedValueOnce({
+      workspaceId: 'ws', fleetSlug: 'goal-drain-g-1', leaderOwnerId: 'su-current',
+    });
     const result = await registerGoalDrainFleetLeader({
       workspaceId: 'ws', goalId: 'g-1', fleetSlug: 'goal-drain-g-1',
       holderOwnerId: 'su-holder', leaderOwnerId: 'su-leader',
       declaredBy: 'goal-drain-fleet-watchdog', expectedLeaderOwnerId: 'su-old',
+      identity: { ownerId: 'su-watchdog', ownerLabel: 'watchdog', source: 'principal', workspaceId: 'ws', userId: null },
     });
     expect(result.registered).toBe(false);
-    expect(setLeaderMock).toHaveBeenCalledWith('ws', 'goal-drain-g-1', 'su-leader', undefined, 'su-old');
+    expect(takeLeadershipMock).not.toHaveBeenCalled();
+    expect(setLeaderMock).not.toHaveBeenCalled();
     expect(presenceMock).not.toHaveBeenCalled();
     expect(couplingMock).not.toHaveBeenCalled();
   });
 
-  it('records the actual recovery actor and returns missing coupling as a partial result', async () => {
+  it('uses the shared leadership transfer before coupling the replacement leader', async () => {
     couplingMock.mockResolvedValueOnce(null);
+    const identity = {
+      ownerId: 'su-watchdog', ownerLabel: 'watchdog', source: 'principal', workspaceId: 'ws', userId: null,
+    } as const;
+    const result = await registerGoalDrainFleetLeader({
+      workspaceId: 'ws', goalId: 'g-1', fleetSlug: 'goal-drain-g-1',
+      holderOwnerId: 'su-holder', leaderOwnerId: 'su-new',
+      declaredBy: 'goal-drain-fleet-watchdog', expectedLeaderOwnerId: 'su-old',
+      identity,
+      harnessSlug: 'papercusp-test',
+    });
+    expect(result).toMatchObject({ registered: true, coupled: false });
+    expect(takeLeadershipMock).toHaveBeenCalledWith(
+      'ws',
+      expect.objectContaining({ fleetSlug: 'goal-drain-g-1', leaderOwnerId: 'su-old' }),
+      identity,
+      'su-new',
+      { harnessSlug: 'papercusp-test' },
+    );
+    expect(setLeaderMock).not.toHaveBeenCalled();
+    expect(presenceMock).not.toHaveBeenCalled();
+    expect(couplingMock).toHaveBeenCalledWith(expect.objectContaining({
+      agentA: 'su-holder', agentB: 'su-new', declaredBy: 'goal-drain-fleet-watchdog',
+    }));
+  });
+
+  it('refuses to replace a recorded leader without an actor identity', async () => {
     const result = await registerGoalDrainFleetLeader({
       workspaceId: 'ws', goalId: 'g-1', fleetSlug: 'goal-drain-g-1',
       holderOwnerId: 'su-holder', leaderOwnerId: 'su-new',
       declaredBy: 'goal-drain-fleet-watchdog', expectedLeaderOwnerId: 'su-old',
     });
-    expect(result).toMatchObject({ registered: true, coupled: false });
-    expect(couplingMock).toHaveBeenCalledWith(expect.objectContaining({
-      agentA: 'su-holder', agentB: 'su-new', declaredBy: 'goal-drain-fleet-watchdog',
-    }));
+    expect(result).toMatchObject({ registered: false, coupled: false });
+    expect(result.warning).toContain('requires an actor identity');
+    expect(setLeaderMock).not.toHaveBeenCalled();
+    expect(presenceMock).not.toHaveBeenCalled();
+    expect(couplingMock).not.toHaveBeenCalled();
+  });
+
+  it('allows an identity-less initial install only into a leaderless fleet', async () => {
+    getFleetMock.mockResolvedValueOnce({
+      workspaceId: 'ws', fleetSlug: 'goal-drain-g-1', leaderOwnerId: null,
+    });
+    const result = await registerGoalDrainFleetLeader({
+      workspaceId: 'ws', goalId: 'g-1', fleetSlug: 'goal-drain-g-1',
+      holderOwnerId: 'su-holder', leaderOwnerId: 'su-new',
+      declaredBy: 'operator-ui', expectedLeaderOwnerId: null,
+    });
+    expect(result.registered).toBe(true);
+    expect(setLeaderMock).toHaveBeenCalledWith('ws', 'goal-drain-g-1', 'su-new', undefined, null);
+    expect(presenceMock).toHaveBeenCalledWith('ws', 'su-new', 'goal-drain-g-1', 'leader');
+    expect(takeLeadershipMock).not.toHaveBeenCalled();
   });
 });
 

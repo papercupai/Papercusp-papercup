@@ -1,0 +1,436 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 exact9785 SDK lazy release original ARM boot deadline",
+  "command": [
+    "node",
+    ".papercusp/scratch/p058-sdk-lazy-release-9785c3e6-20261011/supplemental-closure.mjs",
+    "qualify2"
+  ],
+  "cwd": ".",
+  "startedAt": "2026-10-12T21:37:47.485Z",
+  "finishedAt": "2026-10-12T21:52:39.786Z",
+  "timestampsScope": "Original first recorded source-guard phase through observed JOB END; fresh recovery timestamps are separate",
+  "exitCode": 1,
+  "summary": "Exact9785 HOST release qualification: 6 assertions pass, 2 fail; original child budget 60000ms preserved. Installed-native and trusted paired publication remain separate.",
+  "workItemId": "WI-10007352",
+  "lifecycleWorkItemId": "EI-25807252338401800",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "producerTaskId": "0mv5rwi231qhqb1926a",
+  "sourceCommit": "9785c3e6ac4c07d952021e194717ac2da8ecfbab",
+  "evidencePlane": "private ARM current-build qualification",
+  "candidateAccepted": false,
+  "originalDeadlineMs": 60000,
+  "failure": "podman failed (SIGTERM): boot import closure FAILED: spawnSync /opt/papercusp/sidecar/bin/node ETIMEDOUT\n{\"executable\":\"/opt/papercusp/sidecar/bin/node\",\"cwd\":\"/opt/papercusp/sidecar\",\"elapsedMs\":60409,\"pid\":30,\"status\":null,\"signal\":\"SIGTERM\",\"errorCode\":\"ETIMEDOUT\",\"allocatorCap\":\"2\",\"home\":\"/tmp/papercusp-boot-imports-t7w2kK\",\"receiptObserved\":false}\n[child stdout tail]\n\n[child stderr tail]",
+  "ownership": {
+    "schemaVersion": 1,
+    "engine": "podman",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "leaseTimeoutMs": 15000,
+    "leaseRoot": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/original-deadline-qualification2/.native-producer-owner-1Acf3m",
+    "clockRoot": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/original-deadline-qualification2/.native-producer-owner-1Acf3m/clock",
+    "status": "failed",
+    "containerName": "papercusp-native-045ca065-be1d-4c26-853a-54c22ca2a8e7",
+    "ownerToken": "9d5d110b-df10-4bd0-bdd1-2a88c9f9f7b9",
+    "cleanupPending": false,
+    "containerId": "b2adf246ca11f8c74574da0603b56d7de7b4279afbadd590ecc0c188869c56da",
+    "error": "podman failed (SIGTERM): boot import closure FAILED: spawnSync /opt/papercusp/sidecar/bin/node ETIMEDOUT\n{\"executable\":\"/opt/papercusp/sidecar/bin/node\",\"cwd\":\"/opt/papercusp/sidecar\",\"elapsedMs\":60409,\"pid\":30,\"status\":null,\"signal\":\"SIGTERM\",\"errorCode\":\"ETIMEDOUT\",\"allocatorCap\":\"2\",\"home\":\"/tmp/papercusp-boot-imports-t7w2kK\",\"receiptObserved\":false}\n[child stdout tail]\n\n[child stderr tail]",
+    "removed": true
+  },
+  "build": {
+    "status": "passed",
+    "startedAt": "2026-10-11T22:49:54.274Z",
+    "finishedAt": "2026-10-11T23:07:07.182Z",
+    "sourceCommit": "9785c3e6ac4c07d952021e194717ac2da8ecfbab",
+    "sourceReceiptSha256": "96ddd8ca0253926857185988823029c9d03e7e6ac8d310038d15e8d3bdfab7e9",
+    "argv": [
+      "bash",
+      "scripts/pc-heavy.sh",
+      "bash",
+      "apps/operator/bin/bundle-host.sh",
+      "bin/serve.ts",
+      "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/release-output/serve.mjs",
+      "release"
+    ],
+    "cwd": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-sdk-lazy-source-9785c3e6-20261011",
+    "exitCode": 0,
+    "profile": "release",
+    "artifacts": {
+      "serve.mjs": {
+        "sha256": "a4527dc75ab7e046db175d60519cb397c20703958462720000c2aceec86bc54b",
+        "bytes": 56797966
+      },
+      "serve.mjs.meta.json": {
+        "sha256": "1b9200775a525b95339b26bdf72da2d181e45f88914e8b91b1effc5dfe126eee",
+        "bytes": 10088435
+      },
+      "spawner-sidecar.mjs": {
+        "sha256": "6b549a0bcf4d6311f1af61abbe53c2a37fb5605c4d836184f596684712df8064",
+        "bytes": 54215851
+      },
+      "spawner-sidecar.mjs.meta.json": {
+        "sha256": "a270b419e48d0419b130c74f87623b69f1262f6029250c07a7b781f25b4fcd0b",
+        "bytes": 9891700
+      }
+    },
+    "candidateAccepted": false
+  },
+  "dependencies": {
+    "status": "passed",
+    "sourceCommit": "9785c3e6ac4c07d952021e194717ac2da8ecfbab",
+    "donor": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-memory-hydration-source-20261011",
+    "mode": "maintained full install-equivalent locked hardlink snapshot",
+    "stamp": "donor=/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-memory-hydration-source-20261011\nmode=hardlink\ntrees=98\ntakenAtUtc=2026-10-11T22:48:00Z\n",
+    "dependencyEquivalenceSha256": "83c2b333ccb1b83930250587cd764f900561e3729ce22259cea1e5e15a28bc38",
+    "runtimeBindingSha256": "8916906bb029f72db08babd93aae8918a6d1c3a4feeaa4f9d3f1ecf06dacc904",
+    "sourceReceiptSha256": "96ddd8ca0253926857185988823029c9d03e7e6ac8d310038d15e8d3bdfab7e9",
+    "candidateAccepted": false
+  },
+  "supplemental": {
+    "inventory": {
+      "sha256": "4481af5cf402a15957a0dd9ab8b86fcc3b261dd54db84a74480b2593c212edea",
+      "bytes": 22442452,
+      "entries": 44,
+      "elfFiles": []
+    },
+    "added": [
+      "js-tiktoken",
+      "viem/utils"
+    ],
+    "removed": [
+      "@aws-sdk/client-ec2",
+      "@aws-sdk/client-ssm",
+      "viem"
+    ],
+    "roots": [
+      "js-tiktoken"
+    ]
+  },
+  "canonicalClosureTests": {
+    "status": "passed",
+    "priorPath": "/mnt/backup/portable-server-p058/memory-hydration-release-20261011/supplemental-canonical-tests.json",
+    "priorSha256": "820da55999a09a856f98daf0f2b5390839896392e4cbff5d4b26e92591749bd8",
+    "priorBuilderSha256": "589a6152e53fd17c2429b551e82ce676fcd3f59d98f004dfd51763a5e05e4f19",
+    "builderSha256": "85b95bf692542543630f5145309438b7d6b2593fe9c69fbd5934676bd1f1af2f",
+    "testSha256": "fd07c593c2950661bdc6d4b84fdcceecb5e7c148d744a3048563e668d6dde17b",
+    "exactHelpers": [
+      {
+        "name": "resolve_pkg_source",
+        "sha256": "f3f128a3f18e6436c20e3223edb65fd69cfaa561306314da30164d4af44a819f"
+      },
+      {
+        "name": "pkg_dest_for_source",
+        "sha256": "4bea6ab3f4f0032d4b632f84b03cf2593580afa672354e2af4a803c159732097"
+      },
+      {
+        "name": "prune_transformers_model_fragments",
+        "sha256": "b6ac8fbe3e113fc509bf742864efc08f98aa624f8ec050719aca2607ea46375f"
+      },
+      {
+        "name": "prune_foreign_prebuilds",
+        "sha256": "5ca6001370243c8e372ebd91cd3176591ef7c814b646beff96c01fdb96fab5e3"
+      },
+      {
+        "name": "prune_foreign_onnx_bins",
+        "sha256": "9207cdafbaee206fc76cef4765c728cb0346fc182aaf1aa22b7d12539a677358"
+      },
+      {
+        "name": "prune_onnx_gpu_providers",
+        "sha256": "0f90bf41788daacf99da9a4b91e882a4db2131356ded7061ed5a48b037d8dc6d"
+      },
+      {
+        "name": "prune_unused_odiff_payload",
+        "sha256": "6601cdf9aad71dca7f711cec4db59fc6931d1f4fe9dd10c2654156206a3269ca"
+      },
+      {
+        "name": "copy_pkg_closure",
+        "sha256": "174bd9a84c2b0a340e75e7ddfd0f5a8493dcd3c910f1ec55bd36451229b2d108"
+      },
+      {
+        "name": "assert_runtime_dependency_closure",
+        "sha256": "878c402a8578b477beb4da5d0149e0c82da905785954ff017f3e9b8fd7c7213d"
+      }
+    ],
+    "replayed": false,
+    "scope": "Identical canonical test and all nine extracted copier helpers retain saved five-test proof; unrelated Vite builder section changed and has no inherited pass claim; new artifact acceptance remains separate"
+  },
+  "staticResolution": {
+    "status": "passed",
+    "specifiers": [
+      "@dbos-inc/dbos-sdk",
+      "@lydell/node-pty",
+      "@mcp-ui/server",
+      "@papercusp/embedded-postgres-server/src/migration-runner.js",
+      "@smithy/core",
+      "@smithy/core/cbor",
+      "@smithy/core/checksum",
+      "@smithy/core/client",
+      "@smithy/core/config",
+      "@smithy/core/endpoints",
+      "@smithy/core/protocols",
+      "@smithy/core/retry",
+      "@smithy/core/schema",
+      "@smithy/core/serde",
+      "acorn",
+      "fast-check",
+      "js-tiktoken",
+      "mingo",
+      "mingo/operators/query",
+      "mingo/util",
+      "typescript",
+      "undici",
+      "viem/accounts",
+      "viem/chains",
+      "viem/utils"
+    ],
+    "ownership": {
+      "schemaVersion": 1,
+      "engine": "podman",
+      "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+      "platform": "linux/arm64",
+      "leaseTimeoutMs": 15000,
+      "leaseRoot": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/static-resolution2/.native-producer-owner-BdAhgh",
+      "clockRoot": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/static-resolution2/.native-producer-owner-BdAhgh/clock",
+      "status": "completed",
+      "containerName": "papercusp-native-ef05948c-08d3-49a2-b96e-a30fc5c5e732",
+      "ownerToken": "402e0e3c-e623-4bb8-80a2-0f28468f085e",
+      "cleanupPending": false,
+      "containerId": "587fcafdb74a3b2cd60714380119fe8a7bb452939408a61c4dd382148b6465c3",
+      "exitCode": 0,
+      "removed": true
+    }
+  },
+  "postExecutionBindings": {
+    "originalAfterBinding": "interrupted",
+    "originalBeforeAfterIntervalVerified": false,
+    "freshCurrentBinding": {
+      "sourceReceiptSha256": "96ddd8ca0253926857185988823029c9d03e7e6ac8d310038d15e8d3bdfab7e9",
+      "buildSha256": "37f991bd85a733b8ac96a1beeee8e8fd9e69421a87dd09da8a2475f096b66536",
+      "builderSha256": "85b95bf692542543630f5145309438b7d6b2593fe9c69fbd5934676bd1f1af2f",
+      "canonicalTestSha256": "fd07c593c2950661bdc6d4b84fdcceecb5e7c148d744a3048563e668d6dde17b",
+      "helperSha256": "478ec0548be8792d553d3f722cc904b230bcbc8fcd2cc39c7b611fe89d2e9137",
+      "oldOverlay": {
+        "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+        "bytes": 136031718,
+        "entries": 27985,
+        "elfFiles": []
+      },
+      "inputs": [
+        {
+          "name": "base64-js",
+          "dir": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-sdk-lazy-source-9785c3e6-20261011/node_modules/base64-js",
+          "version": "1.5.1",
+          "inventory": {
+            "sha256": "ac22aff4d3c00bc0bbfa6868a56debfd7cc235f738bf428a523f42c985ec65f0",
+            "bytes": 9624,
+            "entries": 7,
+            "elfFiles": []
+          }
+        },
+        {
+          "name": "js-tiktoken",
+          "dir": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-arm-sdk-lazy-source-9785c3e6-20261011/node_modules/js-tiktoken",
+          "version": "1.0.21",
+          "inventory": {
+            "sha256": "14d59d3180b203e838c44023b6fcb9b8c0a1e454d9745fcc7cf981b7d30e3342",
+            "bytes": 22432828,
+            "entries": 35,
+            "elfFiles": []
+          }
+        }
+      ]
+    },
+    "runtimeEnvironmentBinding": {
+      "evidenceSha256": "bfc1ee6f47fa06c7fbc7b51e7b0e7ee76267d9e24d410d048c6863dfa5bc0ea5",
+      "environment": {
+        "CONTAINERS_STORAGE_CONF": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-storage.conf",
+        "CONTAINERS_CONF": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-containers.conf",
+        "XDG_RUNTIME_DIR": "/run/user/1000/p058-amd8-oci"
+      },
+      "unset": [
+        "CONTAINER_HOST"
+      ],
+      "configHashes": {
+        "CONTAINERS_STORAGE_CONF": "32d27a26eb39a35be52005de497b4ec80cc17955ceff178d82c1b1e0bec3aaf6",
+        "CONTAINERS_CONF": "5aabfd07777b9c02e3132080ab796f5e5d1860faa6420a60e4de587612999715"
+      }
+    }
+  },
+  "recovery": {
+    "startedAt": "2026-10-12T22:09:55.868Z",
+    "finishedAt": "2026-10-12T22:17:42.054Z",
+    "nativeShellSessionId": 99391,
+    "producerReplayed": false,
+    "helperSha256": "9cf4afba9bdd8b518373eeed121084696e758d5de55bb11ac5c0664775ca787c",
+    "runnerSha256": "2dcf5730b79a0d815be04d7a27304384f9aa6c178136b64f1ac0d352cc7af1b3"
+  },
+  "producer": {
+    "originalWrapperStatus": "timed_out",
+    "originalWrapperExitCode": 143,
+    "originalWrapperTimeoutMs": 900000,
+    "originalWrapperDeadlineAt": "2026-10-12T21:52:39.491Z",
+    "originalRunnerSha256": "08bfb0fe5daf525a9800fe52823bf251061391bba26a1bf5e7e900548a5dad2f"
+  },
+  "lifecycleRegression": {
+    "command": [
+      "node",
+      "--test",
+      "--test-global-setup=papercusp-desktop/test/monorepo-host-preflight.mjs",
+      "papercusp-desktop/test/server-container.test.js"
+    ],
+    "nativeShellSessionId": 7299,
+    "exitCode": 0,
+    "passed": 132,
+    "failed": 0,
+    "skipped": 0,
+    "files": [
+      {
+        "path": "papercusp-desktop/bin/lib/server-container.mjs",
+        "sha256": "9cf4afba9bdd8b518373eeed121084696e758d5de55bb11ac5c0664775ca787c"
+      },
+      {
+        "path": "papercusp-desktop/test/server-container.test.js",
+        "sha256": "80c628ec5beba97655569769d838736df8b593f296b5ef132b47e4ddde8bd9d5"
+      }
+    ]
+  },
+  "artifactRefs": [
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/source-receipt.json",
+      "sha256": "96ddd8ca0253926857185988823029c9d03e7e6ac8d310038d15e8d3bdfab7e9"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/executor-binding.json",
+      "sha256": "ccb28312a8ff850302a62068cd99f7b93159c2955c7928918d28eff14572a47b"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/historical-input-bindings.json",
+      "sha256": "33375fb5c4f29b96ae09b5fd217a47db63912d2deefb4af151f988023b8ce262"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/dependency-equivalence.json",
+      "sha256": "83c2b333ccb1b83930250587cd764f900561e3729ce22259cea1e5e15a28bc38"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/dependencies.json",
+      "sha256": "95f94b54cab9303a87304954a6bf05dd756d61a1b0ff8c232dc7b2866b2835a8"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/build.json",
+      "sha256": "37f991bd85a733b8ac96a1beeee8e8fd9e69421a87dd09da8a2475f096b66536"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/build.log",
+      "sha256": "53b4017fcc9a23cc98604019f13b1e1ae98e94840072bf01d9083ed9c9448bdc"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/supplemental-binding.json",
+      "sha256": "e8837df60c1033d239f98484080a4308deebe79c592d13efb3eb5a45f9fe9b82"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/supplemental-copier.sh",
+      "sha256": "c8c9f1b3701e9daa89da00bf40fd746aa3c6d48e9808e7967483a475f2f0b9d1"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/supplemental-copier.log",
+      "sha256": "48dbe2c8006ff10f6903d4343da20e01769694ce1ef1fba43fc243eef94bf437"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/supplemental-canonical-tests-adopted.json",
+      "sha256": "bc8c0cfc1aaaa58e241b39b71413fd6bbb9c717bcb7cc1548f3b8d29bf8aacd0"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/static2-config.json",
+      "sha256": "e663e78ab002c2339a58e67cef88f7ed81cdb08222e97bc50e10cb5899e67d84"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/static2.json",
+      "sha256": "38982efdf3fed3d9ad685c1201b5c05f35a987d8835e65146b344469fb25fed1"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/qualify2-config.json",
+      "sha256": "911848192b04230461f800231e3bd9663bd2ab0af183d4320dd1a465b22fb49b"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/qualify2-reconciled.json",
+      "sha256": "c444dadddc440cea1d940e297156711172da2f3a26d2284e99f9ff5619acbcc1"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/qualify2-binding-recovery.log",
+      "sha256": "845e38abccc877d2bf6412a7edabec541b498f3221ba620205290af8a66c59c4"
+    },
+    {
+      "path": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-sdk-lazy-release-9785c3e6-20261011/supplemental-closure.original-08bfb0fe.mjs",
+      "sha256": "08bfb0fe5daf525a9800fe52823bf251061391bba26a1bf5e7e900548a5dad2f"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/sdk-lazy-release-9785c3e6-20261011/original-deadline-qualification2/.native-producer-owner-1Acf3m/ownership.json",
+      "sha256": "dd13822ad5fea6f98005e9e11eb66389aa7fcd309a2b24d121bd9729b64eaa57"
+    },
+    {
+      "path": ".papercusp/scratch/bash-d0ba9ae2-0d7.log",
+      "sha256": "b181a7457c28dafa42ebb4257b12550a5be287de14dd5f9d58468964372e44c4"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "captured-source-and-release-build",
+      "passed": true,
+      "evidence": "39216 captured source files and all four emitted artifacts match a fresh current binding; source 9785c3e6ac4c07d952021e194717ac2da8ecfbab. The original post-execution interval was interrupted."
+    },
+    {
+      "id": "maintained-dependency-closure-suite",
+      "passed": true,
+      "evidence": "The identical canonical node:test file and all nine copier helper bodies retain the saved five-test proof. No test replay or inherited Vite/native-verifier claim."
+    },
+    {
+      "id": "supplemental-pure-js-closure",
+      "passed": true,
+      "evidence": "Maintained copier staged base64-js, js-tiktoken; complete 44-entry inventory 4481af5cf402a15957a0dd9ab8b86fcc3b261dd54db84a74480b2593c212edea. Exact added/removed static specifiers and new package roots are recorded independently."
+    },
+    {
+      "id": "arm-static-external-resolution",
+      "passed": true,
+      "evidence": "25 emitted static external specifiers plus base64-js resolve in pinned arm64/Node v24.18.1/uid1001; exact static container removed."
+    },
+    {
+      "id": "original60000ms-boot-imports",
+      "passed": false,
+      "evidence": "podman failed (SIGTERM): boot import closure FAILED: spawnSync /opt/papercusp/sidecar/bin/node ETIMEDOUT\n{\"executable\":\"/opt/papercusp/sidecar/bin/node\",\"cwd\":\"/opt/papercusp/sidecar\",\"elapsedMs\":60409,\"pid\":30,\"status\":null,\"signal\":\"SIGTERM\",\"errorCode\":\"ETIMEDOUT\",\"allocatorCap\":\"2\",\"home\":\"/tmp/papercusp-boot-imports-t7w2kK\",\"receiptObserved\":false}\n[child stdout tail]\n\n[child stderr tail]"
+    },
+    {
+      "id": "owned-producer-cleanup",
+      "passed": true,
+      "evidence": "Original exact producer removed=true, cleanupPending=false; preserved ownership receipt dd13822ad5fea6f98005e9e11eb66389aa7fcd309a2b24d121bd9729b64eaa57."
+    },
+    {
+      "id": "fresh-current-binding-reconciliation",
+      "passed": true,
+      "evidence": "Current source/build/overlay/supplement and private engine config match saved binding, verified without another ARM producer."
+    },
+    {
+      "id": "original-complete-post-execution-binding",
+      "passed": false,
+      "evidence": "The 900000ms original wrapper timed out during post-execution inventory. Fresh current reconciliation cannot establish the interrupted original interval."
+    }
+  ],
+  "counts": {
+    "passed": 6,
+    "failed": 2,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "limitations": [
+    "Changed HOST release plus supplemental pure-JS closure in preserved ARM runtime; this does not establish assembled or installed native acceptance.",
+    "Earlier failed candidates and original run21122594 retain their exact historical scope and verdicts.",
+    "Static AWS/viem removals do not establish those optional capabilities at runtime; this evidence measures boot import closure only.",
+    "Trusted registry/signing selection, paired publication and final shipment remain open.",
+    "Original ARM child failed at 60409ms; the wrapper independently timed out after 900000ms. Successful cleanup or fresh binding cannot make either verdict pass."
+  ],
+  "evidenceSerialization": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs::serializeIdentitySafeJson",
+    "scope": "Public copy only; private receipts and hashes remain unchanged."
+  }
+}

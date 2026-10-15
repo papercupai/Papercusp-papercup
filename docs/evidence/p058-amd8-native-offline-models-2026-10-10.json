@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "cwd": ".",
+  "assertions": [
+    {
+      "id": "dogfood-qualified-pinned-assets",
+      "passed": true,
+      "evidence": "Dogfood verifies exact model files through the maintained producer verifier; wrong profile, contract/verifier binding, changed bytes and vm-release snapshot mismatch refuse; qualification leaves the payload snapshot absent."
+    },
+    {
+      "id": "native-output-falsifiers",
+      "passed": true,
+      "evidence": "Wrong dimensions, non-finite values and zero vectors refuse."
+    },
+    {
+      "id": "actual-gemma-worker",
+      "passed": true,
+      "evidence": "Gemma returned three finite nonzero 768-dimensional vectors using the bound packaged worker/Node; relevant cosine 0.8006672430144347 exceeds unrelated 0.3819035724309831; pinned assets match before and after."
+    },
+    {
+      "id": "actual-harrier-worker",
+      "passed": true,
+      "evidence": "Harrier returned three finite nonzero 1024-dimensional vectors using the bound packaged worker/Node; relevant cosine 0.6546442668820862 exceeds unrelated 0.3104810449963342; pinned assets match before and after."
+    }
+  ],
+  "name": "P-058 fresh exact AMD8 post-sweep offline local-model qualification",
+  "command": [
+    "bash",
+    "scripts/pc-heavy.sh",
+    "--",
+    "env",
+    "PAPERCUSP_MODEL_INFERENCE_BINDING=$HOME/papercupai-workspace/papercusp/.papercusp/portable-release/p058-amd8-postsweep-20261010/models-host-binding.json",
+    "PAPERCUSP_TRANSFORMERS_LOCAL_ONLY=1",
+    "HF_HUB_OFFLINE=1",
+    "TRANSFORMERS_OFFLINE=1",
+    "/mnt/backup/portable-server-p058/amd-native-build8-20261009/native-amd64-release8/bin/node",
+    "--test",
+    "papercusp-desktop/test/installed-local-model-inference.test.js"
+  ],
+  "startedAt": "2026-10-10T02:58:13Z",
+  "finishedAt": "2026-10-10T02:58:57Z",
+  "exitCode": 0,
+  "summary": "All four canonical Node tests passed against the fresh post-sweep AMD8 extracted payload. Gemma and Harrier executed with the exact packaged Node and unmodified worker; pinned local model assets and compatibility were checked before and after. Binding, test, contract, verifier, native stamp and provenance hashes matched across the run.",
+  "workItemId": "WI-10008034",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "taskId": "0mv1t16k5d0esuh5636",
+  "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+  "evidencePlane": "extracted-payload",
+  "distributionProfile": "dogfood",
+  "testPath": "papercusp-desktop/test/installed-local-model-inference.test.js",
+  "testSha256": "0b8a2d475254f0dd71e8e0d8ac13e0485d2ed9b342ee27b67bd5b5ed27318c52",
+  "nodeSha256": "31e214a604403cf3afddd264e7b367fe559980459453bd9738a3977260a564db",
+  "workerSha256": "55db52efb109a460e8b1ea01d58d322a3d786fdef2640d7b49e675aefb3735d4",
+  "productContractSha256": "8b81dbca5a2b1e4f6d1a160a28cad7183556581bbd89233d56a9e90c9c284e43",
+  "modelVerifierSha256": "46a42a06bb8b6d7640f5a37cdeaaadbe3b53a98c77001740b23a1e88be57919b",
+  "nativeStampSha256": "2eed6fe80e9dc2e28e16f0aff52595d4bc917cd0b7c61cabadfe9887c2325912",
+  "nativeProvenanceSha256": "5051f9d29c6447221bb969cabb364cfad5303a86f49ed68be45cc4c4082c5ced",
+  "payloadInventorySha256": "c9a14d0b62bfaebf56fa8d743227931f4fa0dac9febed9a379bab67a726b1311",
+  "nativeQualificationReceiptSha256": "a8accc1d104496ba030a181cd4b42abf6a9ad1bf5ededfdba12727c71fa3f8bd",
+  "bindingSha256": "686f78d3ac457717b020ca5784143974a177c6fb46f23cc2d2b7829d43cc62f4",
+  "rawLogSha256": "c2ab1a22167edc7ee5a96f46dab9d3a3edca3ed8b30a54e3e03b5e28489d39c4",
+  "artifactRoot": "/mnt/backup/portable-server-p058/amd-native-build8-20261009",
+  "bindingFile": ".papercusp/portable-release/p058-amd8-postsweep-20261010/models-host-binding.json",
+  "rawLogFile": "models1.log",
+  "measurements": [
+    {
+      "evidencePlane": "extracted-payload",
+      "model": "embeddinggemma-300m-ONNX",
+      "dimensions": 768,
+      "relevantCosine": 0.8006672430144347,
+      "unrelatedCosine": 0.3819035724309831,
+      "remoteFetch": "disabled",
+      "distributionProfile": "dogfood",
+      "workerSha256": "55db52efb109a460e8b1ea01d58d322a3d786fdef2640d7b49e675aefb3735d4",
+      "modelAssetsSha256": "390c44e5eaefed07cade0790a2fe1027fa0fac3620a0fda42dac03a2110a020f"
+    },
+    {
+      "evidencePlane": "extracted-payload",
+      "model": "harrier-oss-v1-0.6b-ONNX",
+      "dimensions": 1024,
+      "relevantCosine": 0.6546442668820862,
+      "unrelatedCosine": 0.3104810449963342,
+      "remoteFetch": "disabled",
+      "distributionProfile": "dogfood",
+      "workerSha256": "55db52efb109a460e8b1ea01d58d322a3d786fdef2640d7b49e675aefb3735d4",
+      "modelAssetsSha256": "390c44e5eaefed07cade0790a2fe1027fa0fac3620a0fda42dac03a2110a020f"
+    }
+  ],
+  "counts": {
+    "passed": 4,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0
+  },
+  "testDurationMs": 40663.045776,
+  "hashesStable": true,
+  "networkIsolation": "offline environment and local-only worker controls; host namespace",
+  "disclosures": [
+    "Exact extracted-payload AMD8 evidence; the host network namespace was available, with remote fetch disabled by maintained local-only/offline controls.",
+    "Installer parity, rootless OCI/SBOM, trusted publication/signatures and whole-release acceptance are separate pending proofs.",
+    "The damaged build7 tree is preserved; historical byte equality of its deleted population is not established."
+  ]
+}

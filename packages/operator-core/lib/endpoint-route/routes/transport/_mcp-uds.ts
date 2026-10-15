@@ -2,9 +2,9 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { mkdtemp, chmod, lstat, rmdir } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { createControlPlaneTempDirAsync } from '../../../control-plane-temp.mjs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage, MessageExtraInfo } from '@modelcontextprotocol/sdk/types.js';
@@ -267,7 +267,9 @@ export async function startAgentMcpServer(options: {
 }): Promise<AgentMcpListener> {
   if (!Number.isSafeInteger(options.port) || options.port < 1 || options.port > 65535)
     throw new RangeError('Invalid operator port');
-  const directory = await mkdtemp(join(options.runtimeDir ?? tmpdir(), 'pmcp-'));
+  const directory = options.runtimeDir
+    ? await mkdtemp(join(options.runtimeDir, 'pmcp-'))
+    : await createControlPlaneTempDirAsync('pmcp-', 'socket');
   await chmod(directory, 0o700);
   const socketPath = join(directory, 'agent.sock');
   const endpoint: AgentMcpEndpoint = Object.freeze({

@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "cwd": ".",
+  "name": "P-058 AMD8 rootless Server OCI boot, SBOM and immutable preserved archive qualification",
+  "command": [
+    "node",
+    "--input-type=module"
+  ],
+  "executedShellCommand": "set -euo pipefail\nset -o noclobber\ntest ! -e /mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3/amd8-oci3-archive-validation.json\nnode --input-type=module > /mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3/amd8-oci3-archive-validation2.log 2>&1 <<'NODE'\nimport assert from 'node:assert/strict';\nimport {readFile,writeFile} from 'node:fs/promises';\nimport {hashFile,verifyServerContainerArchive} from './papercusp-desktop/bin/lib/server-container.mjs';\nconst base='/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3';\nconst preservationPath=base+'/papercusp-server-amd64-c2b9e2f99075.oci.tar.preservation.json';\nconst preservationSha256=await hashFile(preservationPath);\nconst p=JSON.parse(await readFile(preservationPath,'utf8'));\nconst receiptPath=base+'/papercusp-server-amd64-c2b9e2f99075/build.json';\nconst r=JSON.parse(await readFile(receiptPath,'utf8'));\nassert.equal(p.imageId,'sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0');\nassert.equal(p.imageId,r.imageId); assert.equal(p.sourceCommit,r.sourceCommit); assert.equal(p.platform,r.platform); assert.equal(p.tag,r.tag);\nassert.equal(p.archiveSha256,'3a9e81d987dac5990599b11f8ce8de65287d5e85fc7c88f5b921214ad42adb2f');\nassert.equal(await hashFile(receiptPath),'cf4b760a2f761daad7fffea8510a3d482f51d14ec255856791a81d4ded557068');\nassert.equal(await hashFile(r.sbomPath),r.sbomSha256);\nconst helperPath='./papercusp-desktop/bin/lib/server-container.mjs';\nconst helperSha256=await hashFile(helperPath);\nassert.equal(helperSha256,'d50b786520bae56cc830a5ed850a0308af10b6af2ae7fd1ceb156bf55ca86c57');\nconsole.log('Starting maintained archive verification '+new Date().toISOString());\nconst verification=await verifyServerContainerArchive({archive:p.archive,receiptPath,archiveSha256:p.archiveSha256});\nassert.equal(await hashFile(preservationPath),preservationSha256);\nassert.equal(await hashFile(helperPath),helperSha256);\nconst validation={schemaVersion:1,kind:'papercusp-server-local-archive-validation',accepted:true,scope:'preserved archive identity, source, platform and complete referenced blob graph',verifiedAtUtc:new Date().toISOString(),...verification,preservationPath,preservationSha256,helperSha256,sbomPath:r.sbomPath,sbomSha256:r.sbomSha256,bootVerification:r.bootVerification,signed:r.signed,published:r.published};\nconst output=base+'/amd8-oci3-archive-validation.json';\nawait writeFile(output,JSON.stringify(validation,null,2)+'\\n',{flag:'wx'});\nconsole.log(JSON.stringify({output,validationSha256:await hashFile(output),...validation}));\nNODE",
+  "startedAt": "2026-10-10T05:26:38.423Z",
+  "finishedAt": "2026-10-10T05:27:08.792Z",
+  "exitCode": 0,
+  "summary": "The existing AMD8 immutable OCI image booted as non-root with an empty private writable home and ready DBOS/PostgreSQL/vector/schema. Its SBOM digest matched. The maintained archive validator accepted the exact preserved OCI configuration, manifest and layers against the completed build receipt and preservation hash.",
+  "workItemId": "WI-10008034",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "taskId": "0mv1yc27amxd2vv1vki",
+  "buildTaskId": "0mv1xat3m1fhjtzjzd0",
+  "preservationTaskId": "0mv1xsmov13krnsb119",
+  "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+  "evidencePlane": "local-rootless-oci-and-preserved-archive",
+  "imageId": "sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0",
+  "platform": "linux/amd64",
+  "artifactRoot": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3",
+  "validationPath": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3/amd8-oci3-archive-validation.json",
+  "validationSha256": "a1b90d27fab31583dac65e32c722506dec5127699bcaa5e4779b0ba0a3eef8b8",
+  "validation": {
+    "schemaVersion": 1,
+    "kind": "papercusp-server-local-archive-validation",
+    "accepted": true,
+    "scope": "preserved archive identity, source, platform and complete referenced blob graph",
+    "verifiedAtUtc": "2026-10-10T05:27:08.792Z",
+    "archive": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3/papercusp-server-amd64-c2b9e2f99075.oci.tar",
+    "archiveSha256": "3a9e81d987dac5990599b11f8ce8de65287d5e85fc7c88f5b921214ad42adb2f",
+    "receiptPath": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3/papercusp-server-amd64-c2b9e2f99075/build.json",
+    "receiptSha256": "cf4b760a2f761daad7fffea8510a3d482f51d14ec255856791a81d4ded557068",
+    "imageId": "sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0",
+    "platform": "linux/amd64",
+    "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+    "manifestDigest": "sha256:b17f8d80f655101a961f6d7d4c954fba1eb0d4df1c3df04283949c9576c63deb",
+    "configDigest": "sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0",
+    "verifiedBlobCount": 4,
+    "preservationPath": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3/papercusp-server-amd64-c2b9e2f99075.oci.tar.preservation.json",
+    "preservationSha256": "bb0fe9bce1254b75af0f09fb8d364ae65a19a107f4902ad49cab42e68c8b0e46",
+    "helperSha256": "d50b786520bae56cc830a5ed850a0308af10b6af2ae7fd1ceb156bf55ca86c57",
+    "sbomPath": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3/papercusp-server-amd64-c2b9e2f99075/sbom.cdx.json",
+    "sbomSha256": "40f6b1a94af07946203b98fd85c74cdb43f04af559bf56614347a5faa618a955",
+    "bootVerification": {
+      "schemaVersion": 1,
+      "imageId": "sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0",
+      "platform": "linux/amd64",
+      "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+      "verifiedAtUtc": "2026-10-10T05:09:05.221Z",
+      "homeVerification": {
+        "uid": 1001,
+        "gid": 1001,
+        "homeUid": 1001,
+        "homeGid": 1001,
+        "mode": 448,
+        "empty": true,
+        "writable": true
+      },
+      "arch": "x64",
+      "node": "v24.18.1",
+      "ready": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "ready": true,
+          "dbos": true,
+          "dbosEnabled": true,
+          "ts": "2026-10-10T05:09:00.793Z"
+        }
+      },
+      "health": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+          "version": "0.0.26",
+          "ts": "2026-10-10T05:09:00.803Z"
+        }
+      },
+      "database": {
+        "vectorReady": true,
+        "schemaReady": true,
+        "serverVersion": "18.3"
+      }
+    },
+    "signed": false,
+    "published": false
+  },
+  "testPath": "papercusp-desktop/test/server-container.test.js",
+  "testSha256": "e308c7f5e27c1700cab26e98a2e713058cad0d907afee5836b76b50d2aab146f",
+  "regressionTestRunId": 20968112,
+  "assertions": [
+    {
+      "id": "non-root-empty-private-writable-home",
+      "passed": true,
+      "evidence": "Actual OCI3 home preflight measured uid/gid1001, home owner1001, mode0700, empty:true and writable:true."
+    },
+    {
+      "id": "server-ready-and-source-identity",
+      "passed": true,
+      "evidence": "Actual immutable image readiness and health returned200; DBOS enabled/ready, Node24.18.1 x64, health source matched58d5a1c744632d7bf72772a0f97e4c338ef0d04b."
+    },
+    {
+      "id": "postgres-vector-schema",
+      "passed": true,
+      "evidence": "Actual boot measured PostgreSQL18.3, vectorReady:true and schemaReady:true."
+    },
+    {
+      "id": "sbom-digest",
+      "passed": true,
+      "evidence": "Completed build SBOM bytes rehashed to40f6b1a94af07946203b98fd85c74cdb43f04af559bf56614347a5faa618a955 matching build receipt."
+    },
+    {
+      "id": "preserved-archive-and-receipt-identity",
+      "passed": true,
+      "evidence": "Maintained validator rehashed archive3a9e81d9 and receiptcf4b760a before/after, accepted exact source/platform/image configuration and checked the complete referenced manifest/config/layer graph; preservation and helper unchanged across verification."
+    }
+  ],
+  "counts": {
+    "passed": 5,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0
+  },
+  "disclosures": [
+    "Local AMD64 boot/SBOM/archive evidence only; signed:false and published:false.",
+    "Final native installer parity, trusted multiarch manifest/signatures, independent final release and instance transfer acceptance remain separate.",
+    "Qualification reused an immutable retained image; unobserved Containerfile hash remains null in the original build receipt.",
+    "Damaged build7 is preserved. This evidence does not establish historical whole-tree equality for deleted files."
+  ]
+}

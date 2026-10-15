@@ -7,7 +7,7 @@
  *     vitest-fail-on-console red every unrelated suite that imports the catalog,
  *     re-creating the fleet-wide blast radius the fix exists to shrink.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   BUDGET,
   HARD_CAP,
@@ -254,6 +254,17 @@ describe('reportViolations (EI-18685386548651513 — tiered: budget=log-only, ha
 });
 
 describe('defaultEscalateHardCap (EI-18689219855601091 — authoritative watchdogKey pre-filter)', () => {
+  const originalArgv = process.argv;
+  beforeEach(() => {
+    process.argv = originalArgv.slice(0, 2);
+    vi.stubEnv('PAPERCUSP_DISABLE_BACKGROUND_TASKS', '0');
+    findIssuesByWatchdogKeysMock.mockReset().mockResolvedValue([]);
+    captureImprovementMock.mockReset().mockResolvedValue({ ok: true });
+  });
+  afterEach(() => {
+    process.argv = originalArgv;
+    vi.unstubAllEnvs();
+  });
   const violation: BudgetViolation = {
     name: 'dev:pg_query',
     weight: HARD_CAP + 50,
@@ -261,6 +272,29 @@ describe('defaultEscalateHardCap (EI-18689219855601091 — authoritative watchdo
     grandfathered: false,
     cutAtLeast: HARD_CAP + 50 - BUDGET,
   };
+
+  it.each([
+    { mode: 'background tasks disabled', env: '1', argv: [] },
+    { mode: 'import-only CLI', env: '0', argv: ['--verify-boot-imports'] },
+  ])('keeps $mode warnings without any database lookup or capture', async ({ env, argv }) => {
+    vi.stubEnv('PAPERCUSP_DISABLE_BACKGROUND_TASKS', env);
+    process.argv = [...process.argv.slice(0, 2), ...argv];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      reportViolations([violation]);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(findIssuesByWatchdogKeysMock).not.toHaveBeenCalled();
+      expect(captureImprovementMock).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('preserves ordinary escalation when the import-only token is not the CLI command', async () => {
+    process.argv.push('serve', '--verify-boot-imports');
+    await defaultEscalateHardCap(violation);
+    expect(findIssuesByWatchdogKeysMock).toHaveBeenCalledWith(['tool-weight-hard-cap:dev:pg_query']);
+    expect(captureImprovementMock).toHaveBeenCalledTimes(1);
+  });
 
   it('skips capture entirely when an OPEN issue already carries this watchdogKey', async () => {
     findIssuesByWatchdogKeysMock.mockReset().mockResolvedValue([{ id: 'EI-1', state: 'open' }]);

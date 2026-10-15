@@ -48,14 +48,19 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { getEncoding } from 'js-tiktoken';
+import { minimatch } from 'minimatch';
 
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { firstPartyCallersOffthread } from './first-party-callers-offthread.ts';
+import { LSP_VENDOR_DIR } from './lsp-adapter.ts';
+import { getBuildInfo } from '../build-info.ts';
 
 import {
   DEFAULT_RESOURCE_BUDGET,
@@ -511,11 +516,352 @@ export interface PackArtifact {
   readonly path: string | null;
   readonly preview: string;
   readonly provenance: PackProvenance;
+  /** P021: captured retrieval evidence; inference/model usage is not measured. */
+  readonly bundle?: {
+    readonly kind: 'captured-source';
+    readonly sourcePaths: readonly string[] | null;
+    readonly sha256: string;
+    readonly truncated: boolean;
+    readonly totalChars: number;
+    readonly retainedChars: number;
+    readonly tokens: { readonly tokenizer: 'o200k_base'; readonly source: number | null;
+      readonly measuredPrefix: number; readonly measuredChars: number; readonly retained: number; readonly budget: number };
+    readonly expansion: { readonly tool: 'capability:read'; readonly args: { readonly file_path: string;
+      readonly byte_offset: 0; readonly byte_limit: 4096 }; readonly sha256: string };
+    readonly limitations: readonly string[];
+  };
+}
+
+let packTokenizer: ReturnType<typeof getEncoding> | undefined;
+/** Preserve an exact source prefix and count it with the maintained tokenizer.
+ * Large documents retain unknown totals; never report an extrapolation as tokens. */
+function packPreview(document: string, path: string, selected: readonly string[] | null) {
+  const tokenizer = packTokenizer ??= getEncoding('o200k_base');
+  const budget = DEFAULT_RESOURCE_BUDGET.resultTokensMax;
+  const prefix = (chars: number) => document.slice(0, chars > 0 && /[\uD800-\uDBFF]/.test(document[chars - 1]) ? chars - 1 : chars);
+  let preview = prefix(Math.min(document.length, PACK_PREVIEW_CHARS));
+  let retained = tokenizer.encode(preview, [], []).length;
+  while (retained > budget) {
+    preview = prefix(Math.min(preview.length - 1, Math.floor(preview.length * budget / retained)));
+    retained = tokenizer.encode(preview, [], []).length;
+  }
+  // BPE on a long, uninterrupted source string has superlinear cost. A small
+  // sample is measured exactly; the whole-document count remains unknown.
+  const measured = prefix(Math.min(document.length, 256));
+  const measuredPrefix = measured === preview ? retained : tokenizer.encode(measured, [], []).length;
+  const sha256 = createHash('sha256').update(document).digest('hex');
+  const bundle: NonNullable<PackArtifact['bundle']> = { kind: 'captured-source', sourcePaths: selected, sha256,
+    truncated: preview.length < document.length, totalChars: document.length, retainedChars: preview.length,
+    tokens: { tokenizer: 'o200k_base', source: measured.length === document.length ? measuredPrefix : null,
+      measuredPrefix, measuredChars: measured.length, retained, budget },
+    expansion: { tool: 'capability:read', args: { file_path: path, byte_offset: 0, byte_limit: 4096 }, sha256 },
+    limitations: ['Captured source text is retrieval evidence; it does not establish runtime execution or inferred architecture.',
+      ...(measured.length < document.length ? ['Total source tokens are unknown beyond the measured 256-character prefix.'] : []),
+      ...(selected === null ? ['Source path enumeration could not be parsed; no completeness claim is made.'] : [])] };
+  return { preview, bundle };
 }
 
 export interface PackerResult {
   readonly answer: CodeIntelAnswer;
   readonly artifact: PackArtifact | null;
+}
+
+/** P-010 extends the existing diff/graph plane; no separate index or service. */
+export interface ChangeReportRequest {
+  readonly symbol: string;
+  readonly file: string;
+  readonly line1?: number;
+  readonly paths?: readonly string[];
+  readonly limit?: number;
+  readonly phase?: 'pre-edit' | 'pre-review';
+  readonly previousFingerprint?: string;
+}
+
+export interface NativeChangeReport {
+  readonly subject: ChangeReportRequest;
+  readonly changed: readonly { path: string; line1: number | null; patch: string }[];
+  readonly consumers: readonly SymbolSite[];
+  readonly relevantTests: readonly SymbolSite[];
+  readonly interfaces: {
+    readonly status: 'measured' | 'unknown';
+    readonly diagnostics: NonNullable<import('./first-party-callers').FirstPartyCallersAnswer['interfaces']>['diagnostics'];
+    readonly registrations: NonNullable<import('./first-party-callers').FirstPartyCallersAnswer['interfaces']>['registrations'];
+    readonly mismatchedConsumers: readonly SymbolSite[];
+    readonly truncated: boolean;
+    readonly limitations: readonly string[];
+  };
+  readonly testReach: {
+    readonly symbol: string;
+    readonly file: string;
+    readonly status: 'found' | 'not-found-in-scope' | 'unknown';
+    readonly tests: readonly SymbolSite[];
+    readonly paths: readonly { testPath: string; siteIndices: readonly number[]; walk: 'forward' | 'reverse' }[];
+    readonly executionCoverage: 'unmeasured';
+    readonly gapSuggestion: string | null;
+  };
+  readonly recheck: readonly { path: string; reason: string }[];
+  readonly sourceFingerprint: string;
+  readonly freshness: 'first-read' | 'unchanged' | 'changed' | 'unmeasured';
+  readonly provenance: { commit: string | null; dirty: boolean | null; baseCommit: string | null;
+    runtime: ReturnType<typeof getBuildInfo>; graph: CodeIntelAnswer['evidence'] };
+  readonly limitations: readonly string[];
+  readonly bundle: NativeEvidenceBundle;
+}
+
+export interface ChangeReportEffects {
+  readonly exec?: ExecFn;
+  readonly graph?: (request: ChangeReportRequest, root: string) => Promise<CodeIntelAnswer>;
+  readonly writeArtifact?: (body: string) => Promise<string>;
+}
+
+export interface NativeEvidenceBundle {
+  readonly kind: 'native-source-path';
+  readonly repositoryId: string | null;
+  readonly sourceFingerprint: string | null;
+  /** Complete records only. Omitted records remain in the captured artifact. */
+  readonly context: {
+    readonly sources: readonly NativeSourceExcerpt[];
+    readonly symbols: readonly { site: SymbolSite; versionedSymbolId: string | null; contentHash: string | null }[];
+    readonly paths: NonNullable<CodeIntelAnswer['traversal']>['paths'];
+    readonly edges: NonNullable<CodeIntelAnswer['evidence']>['relationships'];
+  };
+  readonly omitted: { readonly sources: number; readonly symbols: number; readonly paths: number; readonly edges: number };
+  readonly coverage: { readonly sourceCompleteness: 'unverified'; readonly inspectedFiles: readonly string[];
+    readonly inspectedFilesTotal: number; readonly unavailableFiles: readonly string[];
+    readonly unavailableFilesTotal: number; readonly fileListsTruncated: boolean;
+    readonly backendTruncated: boolean; readonly traversalOutcome: string | null };
+  readonly tokens: { readonly tokenizer: 'o200k_base'; readonly source: number | null;
+    readonly measuredPrefix: number; readonly measuredChars: number; readonly retained: number;
+    readonly processed: number; readonly budget: number };
+  readonly expansion: NonNullable<PackArtifact['bundle']>['expansion'];
+  readonly limitations: readonly string[];
+}
+
+interface NativeSourceExcerpt {
+  readonly path: string;
+  readonly contentHash: string;
+  readonly line1: number;
+  readonly text: string;
+  readonly excerptChars: number;
+  readonly truncated: boolean;
+}
+
+/** Reuse the pack scratch plane. Capture graph records and literal excerpts,
+ * then select whole records for the result budget; never re-run on expansion. */
+async function nativeEvidenceBundle(answer: CodeIntelAnswer, captured: ReadonlyMap<string, string>,
+  write: (body: string) => Promise<string>): Promise<NativeEvidenceBundle> {
+  const evidence = answer.evidence;
+  const sites: { site: SymbolSite; versionedSymbolId: string | null; contentHash: string | null }[] =
+    [answer.traversal?.start, answer.traversal?.target].filter(site => site !== undefined)
+    .map(site => ({ site: site.site, versionedSymbolId: site.versionedSymbolId, contentHash: site.contentHash }));
+  for (const [siteIndex, site] of answer.sites.entries()) {
+    const identity = evidence?.siteIdentities.find(row => row.siteIndex === siteIndex);
+    sites.push({ site, versionedSymbolId: identity?.versionedSymbolId ?? null, contentHash: identity?.contentHash ?? null });
+  }
+  for (const edge of evidence?.relationships ?? []) for (const endpoint of [edge.source, edge.target]) {
+    if (endpoint && !sites.some(row => row.versionedSymbolId === endpoint.versionedSymbolId
+      && row.site.path === endpoint.site.path && row.site.line1 === endpoint.site.line1)) sites.push(endpoint);
+  }
+  const sources: NativeSourceExcerpt[] = [];
+  const seen = new Set<string>();
+  const sourceHashes = new Map([...captured].map(([path, source]) =>
+    [path, createHash('sha256').update(source).digest('hex')]));
+  const sourceLines = new Map([...captured].map(([path, source]) => [path, source.split('\n')]));
+  for (const { site, contentHash } of sites) {
+    const source = captured.get(site.path);
+    const key = `${site.path}:${site.line1}`;
+    if (source === undefined || !contentHash || !site.line1 || !Number.isInteger(site.line1) || site.line1 < 1 || seen.has(key)
+      || sourceHashes.get(site.path) !== contentHash) continue;
+    seen.add(key);
+    const lines = sourceLines.get(site.path)!;
+    if (site.line1 > lines.length) continue;
+    const text = lines.slice(site.line1 - 1, site.line1 + 2).join('\n');
+    sources.push({ path: site.path, contentHash, line1: site.line1, text: text.slice(0, 4096),
+      excerptChars: text.length, truncated: text.length > 4096 });
+  }
+  const full = { sources, symbols: sites, paths: answer.traversal?.paths ?? [], edges: evidence?.relationships ?? [] };
+  const inspectedFiles = [...captured.keys()];
+  const unavailableFiles = (evidence?.sourceScope.supportingFiles ?? []).filter(file => !captured.has(file.path)).map(file => file.path);
+  const coverage: NativeEvidenceBundle['coverage'] = { sourceCompleteness: 'unverified', inspectedFiles: inspectedFiles.slice(0, 32),
+    inspectedFilesTotal: inspectedFiles.length, unavailableFiles: unavailableFiles.slice(0, 32), unavailableFilesTotal: unavailableFiles.length,
+    fileListsTruncated: inspectedFiles.length > 32 || unavailableFiles.length > 32,
+    backendTruncated: answer.truncation.truncated, traversalOutcome: answer.traversal?.outcome ?? null };
+  const limitations = ['Excerpts are inspected literal source; edge knowledge/origin remain the producer\'s observed, inferred or unknown classification.',
+    'Static paths do not establish runtime execution, executed test coverage or repository completeness.',
+    ...(unavailableFiles.length ? ['Changed, secret-denied, unavailable or non-symbol compiler inputs have no current source excerpt.'] : []),
+    ...(sources.some(source => source.truncated) ? ['Captured line excerpts are capped at 4096 characters; longer line tails were not captured.'] : [])];
+  const document = JSON.stringify({ kind: 'native-source-path', sourceScope: evidence?.sourceScope ?? null,
+    context: full, coverage: { ...coverage, inspectedFiles, unavailableFiles, fileListsTruncated: false }, limitations });
+  const path = await write(document);
+  const context: { sources: NativeSourceExcerpt[]; symbols: typeof sites;
+    paths: [...typeof full.paths]; edges: [...typeof full.edges] } = { sources: [], symbols: [], paths: [], edges: [] };
+  // The same conservative character ceiling as pack previews keeps tokenizer
+  // work bounded even for a pathological uninterrupted source word.
+  for (const key of ['sources', 'symbols', 'paths', 'edges'] as const) {
+    for (const record of full[key]) {
+      const candidate = { ...context, [key]: [...context[key], record] };
+      if (JSON.stringify(candidate).length <= PACK_PREVIEW_CHARS) Object.assign(context, candidate);
+    }
+  }
+  const retainedText = JSON.stringify(context);
+  const tokenizer = packTokenizer ??= getEncoding('o200k_base');
+  let retained = tokenizer.encode(retainedText, [], []).length;
+  let processed = retained;
+  const budget = DEFAULT_RESOURCE_BUDGET.resultTokensMax;
+  // JSON escaping can increase token density. Drop whole records, preserving
+  // valid structured context and the expansion route rather than slicing JSON.
+  while (retained > budget) {
+    const key = (['edges', 'paths', 'symbols', 'sources'] as const).find(group => context[group].length);
+    if (!key) break;
+    context[key].pop();
+    retained = tokenizer.encode(JSON.stringify(context), [], []).length;
+    processed += retained;
+  }
+  const measured = document.slice(0, 256);
+  const measuredPrefix = tokenizer.encode(measured, [], []).length;
+  const sha256 = createHash('sha256').update(document).digest('hex');
+  return { kind: 'native-source-path', repositoryId: evidence?.sourceScope.repositoryId ?? null,
+    sourceFingerprint: evidence?.sourceScope.sourceFingerprint ?? null, context,
+    omitted: { sources: full.sources.length - context.sources.length, symbols: full.symbols.length - context.symbols.length,
+      paths: full.paths.length - context.paths.length, edges: full.edges.length - context.edges.length }, coverage,
+    tokens: { tokenizer: 'o200k_base', source: document.length <= 256 ? measuredPrefix : null,
+      measuredPrefix, measuredChars: measured.length, retained, processed: processed + measuredPrefix, budget },
+    expansion: { tool: 'capability:read', args: { file_path: path, byte_offset: 0, byte_limit: 4096 }, sha256 }, limitations };
+}
+
+/** Bounded, current-source consequence evidence for a named edit or review. */
+export async function nativeChangeReport(args: PackerArgs, subject: ChangeReportRequest,
+  effects: ChangeReportEffects = {}): Promise<{ answer: CodeIntelAnswer; report: NativeChangeReport }> {
+  const root = realpathSync(args.rootPath);
+  if (!args.include.length || args.include.length > 32 || args.include.some(pattern => pattern.startsWith('-')))
+    throw new Error('Change report requires 1..32 explicit include patterns without option-shaped values.');
+  if (args.baseRef?.startsWith('-') || (args.baseRef && /[\r\n\0]/.test(args.baseRef)))
+    throw new Error('Change-report baseRef must be a revision, not an option.');
+  const safePath = (path: string) => {
+    if (!path.trim() || isAbsolute(path) || path.includes('\\') || path.split('/').includes('..'))
+      throw new Error('Change-report paths must be repository-relative paths without parent traversal.');
+    const abs = resolve(root, path);
+    if (existsSync(abs)) {
+      const rel = relative(root, realpathSync(abs));
+      if (rel === '..' || rel.startsWith('../') || isAbsolute(rel)) throw new Error('Change-report source escapes the repository.');
+    }
+    return path;
+  };
+  safePath(subject.file);
+  const paths = [...(subject.paths?.length ? subject.paths : ['.'])].map(safePath);
+  if (paths.length > 50 || !/^[A-Za-z_$][\w$]*$/.test(subject.symbol))
+    throw new Error('Change report requires one identifier and at most 50 source roots.');
+  const limit = subject.limit ?? 100;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error('Change-report limit must be 1..500.');
+  const exec = effects.exec ?? defaultExec;
+  const limitations: string[] = [];
+  const git = await readGitProvenance(root, args.baseRef, exec);
+  let patch = '';
+  try {
+    patch = (await exec('git', ['diff', '--no-ext-diff', '--unified=3', ...(args.baseRef ? [args.baseRef] : []),
+      '--', ...args.include, ...SECRET_DENY_GLOBS.map(glob => `:(exclude,glob)${glob}`)],
+    { cwd: root, timeoutMs: 15_000, maxBuffer: 256 * 1024 })).stdout;
+  } catch (error) { limitations.push(`Diff could not be measured: ${error instanceof Error ? error.message : String(error)}`); }
+  const changed: { path: string; line1: number | null; patch: string }[] = [];
+  for (const section of patch.split(/(?=^diff --git )/m).filter(Boolean)) {
+    const file = /^\+\+\+ b\/(.+)$/m.exec(section)?.[1] ?? /^--- a\/(.+)$/m.exec(section)?.[1];
+    if (!file) continue;
+    const line = /^@@ .* \+(\d+)/m.exec(section)?.[1];
+    changed.push({ path: file, line1: line ? Number(line) : null, patch: section.slice(0, 4_000) });
+    if (section.length > 4_000) limitations.push(`Diff excerpt truncated for ${file}.`);
+    if (changed.length >= 32) { limitations.push('Changed-file report capped at 32 files.'); break; }
+  }
+  if (!patch && subject.phase !== 'pre-edit') limitations.push('No diff was measured; a named subject alone does not establish an edited behavior.');
+  const graph = effects.graph ?? ((request: ChangeReportRequest, graphRoot: string) => firstPartyCallersOffthread({
+    vendorDir: LSP_VENDOR_DIR, root: graphRoot, op: 'impact', name: request.symbol,
+    filePath: request.file, line1: request.line1, paths, limit, direction: 'downstream', maxDepth: 5, maxPaths: 20, includeInterfaces: true,
+  }));
+  const answer = await graph(subject, root);
+  if (answer.error) limitations.push(answer.error);
+  limitations.push('Consequences are static compiler call paths in the requested source scope; runtime execution and non-code consumers remain unverified.');
+  limitations.push(...(answer.evidence?.graphScope.limitations ?? answer.coverage?.limitations ?? []));
+  if (answer.truncation.truncated) limitations.push('Consumer results were truncated; omitted consumers remain unverified.');
+  if (!answer.evidence?.sourceScope.sourceFingerprint) limitations.push('Compiler input identity was not measured.');
+  // Literal locations are the oracle. No comment or generated prose becomes a consumer.
+  const consumers = [...answer.sites];
+  const relevantTests = consumers.filter(site => /(?:\.(?:test|spec)\.[^.]+$|\/(?:__tests__|tests)\/)/.test(site.path));
+  const recheck = changed.filter(file => /(?:\.(?:md|mdx)$|(?:^|\/)evidence\/)/.test(file.path))
+    .map(file => ({ path: file.path, reason: 'Changed documentation or evidence must be checked against the current consumer/source identity.' }));
+  for (const site of consumers) if (/\.(?:md|mdx)$/.test(site.path))
+    recheck.push({ path: site.path, reason: 'Source-derived reference to the edited symbol.' });
+  const hash = createHash('sha256').update(patch).update(answer.evidence?.sourceScope.sourceFingerprint ?? 'unmeasured');
+  // Hash every actual compiler input again AFTER analysis. An edit during a
+  // worker run is a stale report, even when HEAD and file mtimes did not move.
+  let measured = Boolean(answer.evidence?.sourceScope.sourceFingerprint);
+  const captured = new Map<string, string>();
+  const excerptPaths = new Set([subject.file, ...answer.sites.map(site => site.path),
+    ...[answer.traversal?.start, answer.traversal?.target].flatMap(site => site ? [site.site.path] : []),
+    ...(answer.evidence?.relationships ?? []).flatMap(edge => [edge.source, edge.target].flatMap(site => site ? [site.site.path] : []))]);
+  for (const file of answer.evidence?.sourceScope.supportingFiles ?? []) {
+    if (file.representation !== 'full-source') { measured = false; continue; }
+    try {
+      safePath(file.path);
+      const bytes = readFileSync(join(root, file.path));
+      const source = bytes.toString('utf8');
+      const current = createHash('sha256').update(bytes).digest('hex');
+      hash.update(file.path).update(current);
+      if (current !== file.contentHash) { measured = false; limitations.push(`Source changed during analysis: ${file.path}.`); }
+      else if (excerptPaths.has(file.path) && Buffer.from(source).equals(bytes)
+        && !SECRET_DENY_GLOBS.some(pattern => minimatch(file.path, pattern, { dot: true }))) captured.set(file.path, source);
+    } catch { measured = false; limitations.push(`Source is no longer readable: ${file.path}.`); }
+  }
+  const sourceFingerprint = hash.digest('hex');
+  // Per-symbol reach reuses the compiler's versioned paths. Never turn an
+  // unresolved callback, bounded negative or source drift into a test-gap claim.
+  const relationships = new Map(answer.evidence?.relationships.map(edge => [edge.siteIndex, edge]) ?? []);
+  const testPaths = new Set(relevantTests.map(site => site.path));
+  const sourceHashes = new Map(answer.evidence?.sourceScope.supportingFiles.map(file => [file.path, file.contentHash]) ?? []);
+  const reachPaths: { testPath: string; siteIndices: readonly number[]; walk: 'forward' | 'reverse' }[] = [];
+  let rejectedReachPath = false;
+  for (const path of answer.traversal?.paths ?? []) {
+    const edges = path.siteIndices.map(index => relationships.get(index));
+    if (!path.siteIndices.length || !path.siteIndices.every((index, offset) => {
+      const edge = relationships.get(index);
+      const from = path.walk === 'reverse' ? edge?.target : edge?.source;
+      const previous = offset ? (path.walk === 'reverse' ? edges[offset - 1]?.source : edges[offset - 1]?.target)
+        : answer.traversal?.start;
+      return edge?.origin === 'compiler' && edge.knowledge === 'observed' && edge.binding === 'direct'
+        && Boolean(edge.source?.versionedSymbolId && edge.target?.versionedSymbolId)
+        && from?.versionedSymbolId === previous?.versionedSymbolId
+        && sourceHashes.get(edge.source!.site.path) === edge.source!.contentHash
+        && sourceHashes.get(edge.target!.site.path) === edge.target!.contentHash
+        && Boolean(answer.sites[index])
+        && /^[a-f0-9]{64}$/.test(edge.source?.contentHash ?? '') && /^[a-f0-9]{64}$/.test(edge.target?.contentHash ?? '');
+    })) { rejectedReachPath = true; continue; }
+    for (const testPath of new Set(path.siteIndices.map(index => answer.sites[index]?.path).filter(file => file && testPaths.has(file))))
+      reachPaths.push({ testPath: testPath!, siteIndices: [...path.siteIndices], walk: path.walk });
+  }
+  const completeReach = measured && !answer.error && Boolean(answer.traversal)
+    && answer.traversal?.outcome !== 'incomplete' && !answer.truncation.truncated && !rejectedReachPath;
+  const reachStatus = measured && !answer.error && reachPaths.length ? 'found'
+    : completeReach ? 'not-found-in-scope' : 'unknown';
+  const testReach: NativeChangeReport['testReach'] = { symbol: subject.symbol, file: subject.file,
+    status: reachStatus, tests: measured && !answer.error
+      ? relevantTests.filter(site => reachPaths.some(path => path.testPath === site.path)) : [],
+    paths: measured && !answer.error ? reachPaths : [], executionCoverage: 'unmeasured',
+    gapSuggestion: reachStatus === 'not-found-in-scope'
+      ? `No static test reach for ${subject.symbol} was found in the requested scope; add a calling test and run the baseline suite.` : null };
+  limitations.push('Static test reach suggests tests to run; it does not establish executed coverage or passing tests.');
+  const capturedInterfaces = (answer as import('./first-party-callers').FirstPartyCallersAnswer).interfaces;
+  const interfaceMeasured = measured && !answer.error && capturedInterfaces?.status === 'measured';
+  const interfaces: NativeChangeReport['interfaces'] = { status: interfaceMeasured ? 'measured' : 'unknown',
+    diagnostics: interfaceMeasured ? capturedInterfaces.diagnostics : [], registrations: interfaceMeasured ? capturedInterfaces.registrations : [],
+    mismatchedConsumers: interfaceMeasured ? capturedInterfaces.diagnostics.filter(diagnostic =>
+      consumers.some(consumer => consumer.path === diagnostic.site.path)).map(diagnostic => diagnostic.site) : [],
+    truncated: capturedInterfaces?.truncated ?? false,
+    limitations: capturedInterfaces?.limitations ?? ['Interface diagnostics and static registrations were not supplied by the compiler worker.'] };
+  const bundle = await nativeEvidenceBundle(answer, captured,
+    effects.writeArtifact ?? (body => defaultWriteArtifact(body, 'native-source-path', 'markdown')));
+  return { answer, report: { subject, changed, consumers, relevantTests, interfaces, testReach, recheck, sourceFingerprint,
+    freshness: !measured ? 'unmeasured' : !subject.previousFingerprint ? 'first-read'
+      : subject.previousFingerprint === sourceFingerprint ? 'unchanged' : 'changed',
+    provenance: { ...git, runtime: getBuildInfo(), graph: answer.evidence }, limitations: [...new Set(limitations)], bundle,
+  } };
 }
 
 // ───────────────────────── injected effects ─────────────────────────
@@ -542,7 +888,7 @@ export interface PackerEffects {
   readonly now: () => Date;
 }
 
-const defaultWriteArtifact = async (body: string, engine: PackerEngine, format: PackFormat): Promise<string> => {
+const defaultWriteArtifact = async (body: string, engine: PackerEngine | 'native-source-path', format: PackFormat): Promise<string> => {
   const dir = join(homedir(), '.papercusp', 'scratch', 'packs');
   await mkdir(dir, { recursive: true });
   const sha = createShortHash(body);
@@ -717,6 +1063,6 @@ export async function packerFacade(
       latencyMs: Date.now() - started,
       error: null,
     },
-    artifact: { path, preview: document.slice(0, PACK_PREVIEW_CHARS), provenance },
+    artifact: { path, ...packPreview(document, path, selected), provenance },
   };
 }

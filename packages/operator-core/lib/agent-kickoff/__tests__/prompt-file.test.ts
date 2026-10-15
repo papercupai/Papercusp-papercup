@@ -13,7 +13,9 @@
  * brief now resolves + carries its content, so the regression can't return.
  */
 import { readFileSync } from 'node:fs';
+import { sep } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { controlPlaneTempCandidates } from '../../control-plane-temp.mjs';
 
 // renderFeatureBody (WI-5383: migrated off getLegacyClient) reads the feature
 // row via harnessQuery — mock it explicitly, or the REAL implementation runs
@@ -40,6 +42,7 @@ describe('buildKickoffPromptFile new-plan', () => {
     // file read threw, and this came back null → the launch dropped the brief.
     expect(path).not.toBeNull();
     expect(path).toMatch(/new-plan\.md$/);
+    expect(controlPlaneTempCandidates('payload').some((root) => path!.startsWith(root + sep))).toBe(true);
   });
 
   it('writes the new-plan interview brief body into the file', async () => {

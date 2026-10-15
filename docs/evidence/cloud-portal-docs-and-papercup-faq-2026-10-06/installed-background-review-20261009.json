@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "scope": "Disposable installed background public-manual review; no production shipment claim",
+  "workItem": "WI-10006921",
+  "testFile": "packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts",
+  "testName": "propagates a real Git-sync source change into accountable FAQ and guide review without model calls",
+  "result": { "exitCode": 0, "passed": 1, "failed": 0, "filtered": 49 },
+  "testSource": {
+    "sha256": "44839f82a05732b60649b25684870aac5b8f6171a4ae6ab737bf3c95b4612d7b",
+    "runnerHead": "be90772aa9",
+    "runnerStartedAt": "2026-10-09T02:17:55.965Z",
+    "uncommittedRequestedPaths": 0,
+    "requestedPaths": 1,
+    "importedSourceProvenance": "UNKNOWN"
+  },
+  "installedRuntime": {
+    "bundleSha256": "6c9452acc06190feaa5216a21e9f83b85b9b8b1ef4d912905ae1f81f7e7037a8",
+    "healthSha": "5a4930238f",
+    "backgroundWorkers": 1,
+    "docStewardEnabled": false,
+    "dbosRoutinesEnabled": false
+  },
+  "fixtureGit": {
+    "baseline": "61a1cdb1674dc0b8f981e989d4dcdbaa0553c67b",
+    "changedHead": "d60a348dea3491e7603914ac83ccb6de3970b26d",
+    "committer": "production git-sync:run on private fixture",
+    "remote": "none"
+  },
+  "observed": {
+    "faq": { "status": "review", "source": "manual", "reverifyAttempts": 0 },
+    "quickstart": { "status": "review", "source": "manual", "reverifyAttempts": 0 },
+    "unrelatedHarnessTemplates": { "status": "fresh", "source": "manual" },
+    "allThreeLastVerifiedSha": "61a1cdb1674dc0b8f981e989d4dcdbaa0553c67b",
+    "spawnedAgentsBefore": 0,
+    "spawnedAgentsAfter": 0,
+    "modelTargetOpenCount": 0,
+    "modelSendCount": 0,
+    "cleanupFailures": [],
+    "ownedRootRemoved": true,
+    "postgresShutdownObserved": true
+  },
+  "retainedEvidence": {
+    "log": "/tmp/su73-background-manual-0220.log",
+    "logSha256": "a94c60cf2e22aabc938b8f5b847a3834a282265dab902353456602950ceb77ff",
+    "case": "/tmp/su73-background-manual-evidence-0220/background-manual-review-9652f26a-0500-4d71-a040-7005e665e6f7/case.json",
+    "caseSha256": "8ac08c62652ddad1ecf3c62e5fd13e77ccfb93f04052b31036b7c568b8e4ada9",
+    "launch": "/tmp/su73-background-manual-evidence-0220/public-manual-host-deaa732c-e88b-403c-86f2-8102dbff801e/launch.json",
+    "cleanupGuardsLog": "/tmp/su73-manual-cleanup-guards-0155.log"
+  },
+  "fixtureDefects": [
+    "EI-25464416528321103",
+    "EI-25465293320635240",
+    "EI-25465552027632476"
+  ],
+  "remaining": [
+    "Sensitive guide approval and full R-7 outcome",
+    "Final product journeys, privacy, live-state and artifact provenance",
+    "Three real novice participants and independent acceptance",
+    "Exact production shipment",
+    "Owned unconfirmed sentinel issue EI-25465494437288816"
+  ]
+}

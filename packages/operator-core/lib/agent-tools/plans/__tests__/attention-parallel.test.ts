@@ -245,6 +245,51 @@ describe('plans:attention — parallel source aggregation (P-005)', () => {
     expect(ended.body).toContain('STRANDED');
   });
 
+  // Owner-attention ledger (EI-23783029010995961): the owner's card says what happens if they never answer.
+  it('discloses the default-if-unanswered on a needs-human work-item card, and says so when none is declared', async () => {
+    const human = (ref: string, extra: Record<string, unknown> = {}) => ({
+      kind: 'human',
+      capability: 'product-decision',
+      capabilitySource: 'explicit',
+      ref,
+      summary: 'Pick the pricing tier.',
+      nextVerb: 'work_items:set_blocker { clear: true }',
+      status: 'active',
+      createdAt: '2026-10-01T00:00:00.000Z',
+      createdBy: 'su-asker',
+      updatedAt: '2026-10-01T00:00:00.000Z',
+      ...extra,
+    });
+    const row = (id: string, summary: string | null, blocker: Record<string, unknown> | null) => ({
+      feature_id: id,
+      title: `title of ${id}`,
+      summary,
+      harness_slug: 'papercusp',
+      item_kind: 'change',
+      taken_by: null,
+      payload: { needsHuman: true, ...(blocker ? { externalBlockers: [blocker] } : {}) },
+      updated_ts: '2026-10-01T00:00:00.000Z',
+      state_changed_at: '2026-10-01T00:00:00.000Z',
+      status: 'open',
+    });
+    M.readNeedsHumanWorkItems.mockResolvedValue([
+      row('WI-declared', 'The pricing question.', human('decision:a', { defaultIfUnanswered: 'proceeds with the cheaper tier', decideBy: '2026-10-15T00:00:00Z' })),
+      row('WI-legacy', 'A legacy ask.', human('decision:b')),
+      row('WI-no-blocker', null, null),
+    ]);
+
+    const items = allItems(await run()).filter((item) => item.kind === 'work-item-needs-human');
+    const byId = (id: string) => items.find((item) => item.id === `work-item-needs-human:${id}`)!;
+    expect(byId('WI-declared').body).toBe(
+      'The pricing question.\n\nDefault if unanswered: proceeds with the cheaper tier (decide by 2026-10-15T00:00:00Z)',
+    );
+    expect(byId('WI-legacy').body).toBe(
+      'A legacy ask.\n\nNo default declared — the item stays parked until you answer.',
+    );
+    // No summary and no typed ask: the card keeps its pre-existing title fallback, no invented disclosure.
+    expect(byId('WI-no-blocker').body).toBe('title of WI-no-blocker');
+  });
+
   it('aggregates items from MULTIPLE independent parallel sources (none dropped)', async () => {
     M.listEscalations.mockResolvedValue([
       { msg_id: 'esc-1', severity: 'critical', summary: 'an escalation', plan_slug: null, options: [], from: 'su-x' },

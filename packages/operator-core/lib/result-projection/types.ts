@@ -142,6 +142,8 @@ export interface ProjectionReport {
   applied: boolean;
   /** The normalized spec, as applied. */
   spec: ProjectionSpec;
+  /** Index in the returned content array for the projected body text item. */
+  bodyContentIndex?: number;
   linesIn: number;
   linesOut: number;
   charsIn: number;

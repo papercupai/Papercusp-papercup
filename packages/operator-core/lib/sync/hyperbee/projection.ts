@@ -160,7 +160,7 @@ export interface TableProjection<Row> {
     delTs?: number,
     delHlc?: string,
     provenance?: ProvenanceContext,
-  ) => Promise<void>;
+  ) => Promise<void | false>;
   /**
    * p2p-join-catchup-speed-2026-09-23 P-002 (WI-10002479): OPTIONAL read-only
    * lookup of the federation order (`fed_hlc`, `fed_ts`) STORED on the physical
@@ -649,7 +649,7 @@ export async function applyOpVia(
     // P-018/D-012: thread the SAME provenance the put path resolves, so an author-
     // scoped deleter can authorize a tombstone by row OWNERSHIP (the unforgeable
     // source-log identity) — rejecting a stranger-member's delete in an open hive.
-    await p.deleteFromPg(op.hbKey, op.ts, op.hlc, resolveOpProvenance(op, applyOpts));
+    if ((await p.deleteFromPg(op.hbKey, op.ts, op.hlc, resolveOpProvenance(op, applyOpts))) === false) return false;
     return true;
   }
   const row = p.decodeValue(op.value);

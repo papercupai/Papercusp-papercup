@@ -1,0 +1,118 @@
+{
+  "schemaVersion": "p011-staging-domain-live-publication-evidence-v1",
+  "workItem": "EI-25181611831349662",
+  "parent": "WI-10006124",
+  "status": "two-live-declarations-and-current-native-same-owner-correspondence-verified",
+  "reuse": "Existing register_resource publisher, typed declaration reader, current staging MCP, native MCP and named-resource lifecycle. No runtime was restarted by this session, no test matrix replayed.",
+  "runtime": {
+    "currentBuildSha": "cf272b6803",
+    "publisherSourceSha256": "63d8005018c2e5e2525f3ab04dadaebcd4ba5cace12ff071e54ccfe4b275ff4d",
+    "nativeHandler": "Default Papercusp MCP dispatch; exact loaded process/build attribution was not established by the lease receipt.",
+    "runtimeFinalRead": "{\"health\": {\"ok\": true, \"service\": \"papercusp-operator\", \"sha\": \"cf272b6803\", \"version\": \"0.0.0\", \"ts\": \"2026-10-06T00:12:48.946Z\"}, \"pid\": \"4151495\", \"candidateHead\": \"cf272b6803f838f1ee6a0e10684b74dd8f4ccaa1\", \"candidatePublisherSha256\": \"63d8005018c2e5e2525f3ab04dadaebcd4ba5cace12ff071e54ccfe4b275ff4d\", \"canonicalPublisherSha256\": \"63d8005018c2e5e2525f3ab04dadaebcd4ba5cace12ff071e54ccfe4b275ff4d\"}\n"
+  },
+  "registration": {
+    "resources": [
+      "staging-server",
+      "staging-server-cooldown"
+    ],
+    "created": [
+      false,
+      false
+    ],
+    "existingPolicyPreserved": true,
+    "observedVia": "Current staging handler on explicit port3170; returned existing resource policies. Typed maintained registry reader subsequently returned host-global for both keys.",
+    "cooldownAndCurrentRefusal": "{\n  \"ok\": true,\n  \"created\": false,\n  \"resource\": {\n    \"resource\": \"staging-server-cooldown\",\n    \"description\": \"Internal debounce marker for staging-server restarts (WI-4221) — never acquired directly by agents. Held (never released) for a short TTL immediately after a real restart so a redundant restart requested within the window is coalesced instead of re-executed.\",\n    \"rule_text\": \"Not for direct use — acquired/left-to-expire only by dev:restart { target: \\\"staging\\\" }.\",\n    \"enforcement\": \"advisory\",\n    \"match_patterns\": [],\n    \"max_holders\": null\n  }\n}\n{\n  \"ok\": false,\n  \"reason\": \"holds_shared\",\n  \"holders\": [\n    {\n      \"owner\": \"su-7db4feb8-04cb-46ce-80c2-844aa23006d2\",\n      \"owner_label\": \"su · su-7db4f\",\n      \"mode\": \"shared\",\n      \"status\": \"held\",\n      \"reason\": \"EI-25181611831349662 bounded legacy/native reader after current declaration; compare exact shared row without restart.\",\n      \"expires_ts\": \"2026-10-06T00:12:43.882Z\"\n    }\n  ]\n}\nmcp-call: the tool answered ok:false (holds_shared). The result above is complete; exiting 5 so a `|| fail` guard sees the refusal. (EI-24654733539966460)\n"
+  },
+  "sharedCorrespondence": {
+    "resource": "staging-server",
+    "owner": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+    "currentAndNativeLockId": "4e8908cb-cade-476a-9387-f424754512e7",
+    "currentReceipt": "{\n  \"ok\": true,\n  \"created\": true,\n  \"resource\": {\n    \"resource\": \"staging-server-restart-cooldown\",\n    \"description\": \"\",\n    \"rule_text\": \"\",\n    \"enforcement\": \"advisory\",\n    \"match_patterns\": [],\n    \"max_holders\": null\n  }\n}\n{\n  \"ok\": true,\n  \"lock_id\": \"4e8908cb-cade-476a-9387-f424754512e7\",\n  \"mode\": \"shared\",\n  \"status\": \"held\",\n  \"owner\": \"su-7db4feb8-04cb-46ce-80c2-844aa23006d2\",\n  \"expires_ts\": \"2026-10-06T00:12:30.450Z\"\n}\n",
+    "nativeObservation": {
+      "ok": true,
+      "lock_id": "4e8908cb-cade-476a-9387-f424754512e7",
+      "mode": "shared",
+      "status": "held",
+      "owner": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+      "expires_ts": "2026-10-06T00:12:43.882Z"
+    },
+    "writerContract": "tryAcquireResource reads an existing shared row for the same coordination domain/resource/owner and refreshes it, returning its existing lock_id. Both calls returned one exact UUID."
+  },
+  "exclusiveRefusals": {
+    "count": 2,
+    "observed": "Both current staging and native handlers returned ok:false/reason:holds_shared while the same caller held the shared lease.",
+    "nativeReceipt": {
+      "content": [
+        {
+          "type": "text",
+          "text": "format: toon\nok: false\nreason: holds_shared\nholders[1]{owner,owner_label,mode,status,reason,expires_ts}:\n  su-7db4feb8-04cb-46ce-80c2-844aa23006d2,su · su-7db4f,shared,held,EI-25181611831349662 bounded legacy/native reader after current declaration; compare exact shared row without restart.,\"2026-10-06T00:12:43.882Z\""
+        },
+        {
+          "type": "text",
+          "text": "See also: locks:list (find the exact registered resource name + rule first); locks:release_resource (release after use / after a restart); locks:heartbeat_resource (keep a long hold alive past its TTL)"
+        },
+        {
+          "type": "text",
+          "text": "See also: tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)"
+        }
+      ]
+    },
+    "scope": "Same-owner no-upgrade predicate only. This is not a distinct-owner drain or dev:restart body execution test."
+  },
+  "typedRegistryAfterRelease": {
+    "command": "node --import tsx --input-type=module; readResourceCoordinationDomainKinds and listLiveResourceDomains via maintained su-lock-store exports; pool.end in finally",
+    "result": "{\"kinds\":{\"staging-server\":\"host-global\",\"staging-server-cooldown\":\"host-global\",\"staging-server-restart-cooldown\":null},\"domains\":{\"staging-server\":[],\"staging-server-cooldown\":[],\"staging-server-restart-cooldown\":[]}}\n"
+  },
+  "cleanup": {
+    "release": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"ok\":true,\"results\":[{\"ok\":true,\"lock_id\":\"4e8908cb-cade-476a-9387-f424754512e7\",\"released\":1,\"released_modes\":[\"shared\"],\"exclusive_resources\":[],\"expired\":false}],\"counts\":{\"ok\":1,\"failed\":0}}"
+        },
+        {
+          "type": "text",
+          "text": "See also: locks:acquire_resource (the paired acquire); locks:heartbeat_resource (extend a long hold instead of releasing)"
+        },
+        {
+          "type": "text",
+          "text": "See also: tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)"
+        }
+      ]
+    },
+    "knownLiveResourceDomainsAfterRelease": {
+      "staging-server": [],
+      "staging-server-cooldown": [],
+      "staging-server-restart-cooldown": []
+    },
+    "accidentalAlias": {
+      "resource": "staging-server-restart-cooldown",
+      "created": true,
+      "maintainedKey": false,
+      "declaredKind": null,
+      "leased": false,
+      "cleanupItem": "EI-25186634079278490",
+      "assignee": null,
+      "status": "open-pending-review; ordinary claim refused not_claimable; no supported registry-removal verb found",
+      "accountability": "Self-owned root incident EI-25181611831349662 carries cleanup as unresolved residue. Initial capture assignment was cleared by review; corrected in comment1158404."
+    }
+  },
+  "sourceProof": {
+    "qualification": "docs/evidence/papercusp-oct5-p011-staging-domain-publication-r1-qualification-2026-10-05.json",
+    "sha256": "99efbf23f6bd72a2cc324fe06bd02d0a7d1b3331102fb07d0a95ee2bfa3803d6",
+    "receiptLinksChecked": 18,
+    "mismatches": 0,
+    "r5Qualification": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r5-qualification-2026-10-05.json",
+    "r5Sha256": "c18de46df079b679e7763323acc1ed675b0de631054d0ae13ab57c533af3c441",
+    "r5LinksChecked": 20,
+    "r5Mismatches": 0
+  },
+  "limitations": [
+    "Registry sibling-holder preflight is not an atomic fence against an old acquisition beginning between the preflight and publication.",
+    "No distinct-owner live negative restart contender, legacy bg-host synchronous restart cache validation, or whole-fleet exclusion census was exercised.",
+    "No native agent, profiler, GC, private-PG fixture or R5 cohort was launched.",
+    "Original R3 unknown joins, R4 failure and all broader P011/D021/nativephysical/worker/fullgraph/ship requirements remain open.",
+    "Unused accidental registration has a pending-review cleanup item whose assignee was cleared; the self-owned root incident carries unresolved cleanup. It is not disposed.",
+    "LIVE_GATE_OPS remains peer-owned and stopped for this session."
+  ]
+}

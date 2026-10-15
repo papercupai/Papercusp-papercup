@@ -31,10 +31,9 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
-import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { priorNonHelpfulResponders } from './get-feedback-core';
 import {
   CASCADE_DIGEST_MAX_ENTRIES,
@@ -62,6 +61,7 @@ const MIGRATION_844 = fileURLToPath(
 );
 
 let rootSql: Sql;
+let fixtureDb: MigratedTestDb;
 let seq = 0;
 
 /**
@@ -167,17 +167,8 @@ const ask = (over?: { workspaceId?: string; requesterId?: string; question?: str
   );
 
 beforeAll(async () => {
-  const adminUri = await getTestPg();
-  const dbName = `nonhelpful_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
+  fixtureDb = await createFreshTestDb({ prefix: 'nonhelpful' });
+  rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
   // Landing pad for the migration's coord_conversations kind-CHECK widening
   // (the real table is migration-132-owned).
@@ -199,7 +190,8 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await rootSql?.end({ timeout: 5 });
+  try { await rootSql?.end({ timeout: 5 }); }
+  finally { await fixtureDb?.drop(); }
 });
 
 describe('WI-10002406: a decline evicted from the digest window is still remembered', () => {

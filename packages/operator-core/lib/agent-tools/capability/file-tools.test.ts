@@ -13,14 +13,48 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { toJsonSchema } from '@papercusp/tooldef';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
-import readTool, { capabilityReadSeeAlso, MAX_FILE_BYTES } from './read';
+import readTool, { capabilityReadSeeAlso, DEFAULT_LIMIT, MAX_FILE_BYTES } from './read';
 import writeTool, { emptyWriteWouldDestroy, looksLikeDisplayFormattedRead } from './write';
 import editTool from './edit';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
-import { writeScratchReference } from '../../scratch-reference';
+import * as scratchReference from '../../scratch-reference';
+import {
+  DURABLE_SCRATCH_REFERENCE_SCHEME,
+  storeVolatileScratchReference,
+  writeScratchReference,
+} from '../../scratch-reference';
+
+const editCaptureMocks = vi.hoisted(() => ({
+  useCoordinatedLock: false,
+  recordEditAttribution: vi.fn(),
+}));
+
+vi.mock('../locks/file-lock-guard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../locks/file-lock-guard')>();
+  const guardFileLock = vi.fn(async (...args: Parameters<typeof actual.guardFileLock>) => {
+    const [ctx, paths, spec, run] = args;
+    if (!editCaptureMocks.useCoordinatedLock) return actual.guardFileLock(ctx, paths, spec, run);
+    return {
+      acquired: true as const,
+      coordinated: true,
+      result: await run({
+        coordinated: true,
+        paths: ['src/captured.ts'],
+        newlyHeld: ['src/captured.ts'],
+        coordinationDomain: '/repo',
+        ownerId: 'owner-123',
+      }),
+    };
+  });
+  return { ...actual, guardFileLock };
+});
+
+vi.mock('../../edit-attribution', () => ({
+  recordEditAttribution: editCaptureMocks.recordEditAttribution,
+}));
 
 const DIR = mkNonRepoTmpDir('cap-file-');
 const baseCtx = {
@@ -36,6 +70,11 @@ const ctx = baseCtx as never;
 function parse(r: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(r.content[0].text);
 }
+
+afterEach(() => {
+  editCaptureMocks.useCoordinatedLock = false;
+  editCaptureMocks.recordEditAttribution.mockReset();
+});
 
 describe('capability:read', () => {
   it('does not append human guidance to machine-oriented read modes', () => {
@@ -137,6 +176,55 @@ describe('capability:read', () => {
 
     expect(r.content[0].text).toBe(original);
     expect(r.content[0].text).not.toContain(`${f} (`);
+  });
+
+  it('reports line-window metadata for raw reads capped by the default limit', async () => {
+    const f = join(DIR, 'r-raw-capped.txt');
+    const lines = Array.from({ length: DEFAULT_LIMIT + 3 }, (_, i) => `line-${i + 1}`);
+    writeFileSync(f, `${lines.join('\n')}\n`);
+    const codeCtx = { ...baseCtx, codeMode: true } as never;
+
+    const first = (await readTool.handler!({ file_path: f, raw: true }, codeCtx)) as {
+      content: Array<{ text: string }>;
+      structuredContent?: {
+        body: string;
+        total_lines: number;
+        start_line: number | null;
+        end_line: number | null;
+        has_more: boolean;
+      };
+    };
+    const firstWindow = `${lines.slice(0, DEFAULT_LIMIT).join('\n')}\n`;
+    expect(first.content[0].text).toBe(firstWindow);
+    expect(first.structuredContent).toMatchObject({
+      body: firstWindow,
+      total_lines: DEFAULT_LIMIT + 3,
+      start_line: 1,
+      end_line: DEFAULT_LIMIT,
+      has_more: true,
+    });
+
+    const last = (await readTool.handler!({
+      file_path: f,
+      offset: DEFAULT_LIMIT + 1,
+      limit: 5,
+      raw: true,
+    }, codeCtx)) as {
+      content: Array<{ text: string }>;
+      structuredContent?: {
+        total_lines: number;
+        start_line: number | null;
+        end_line: number | null;
+        has_more: boolean;
+      };
+    };
+    expect(last.structuredContent).toMatchObject({
+      total_lines: DEFAULT_LIMIT + 3,
+      start_line: DEFAULT_LIMIT + 1,
+      end_line: DEFAULT_LIMIT + 3,
+      has_more: false,
+    });
+    expect(last.content[0].text).toBe(`${lines.slice(DEFAULT_LIMIT).join('\n')}\n`);
   });
 
   it('redacts credential-bearing config line reads and refuses exact read modes', async () => {
@@ -285,7 +373,7 @@ describe('capability:read', () => {
     expect(Buffer.concat(recovered)).toEqual(original);
   });
 
-  it('accepts a result-door papercusp://scratch URI as a byte-page alias', async () => {
+  it('recovers a long single-line result-door papercusp://scratch URI through byte pages', async () => {
     const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
     const scratchRoot = join(DIR, 'result-door-scratch');
     const uri = 'papercusp://scratch/test-workspace/work_items:get/77777777-8888-4999-8aaa-bbbbbbbbbbbb/spill.md';
@@ -296,21 +384,66 @@ describe('capability:read', () => {
       '77777777-8888-4999-8aaa-bbbbbbbbbbbb',
       'spill.md',
     );
-    const original = Buffer.from('spill header\nrecovered bytes\n', 'utf8');
+    const original = Buffer.from(JSON.stringify({ payload: 'x'.repeat(6_100) }), 'utf8');
     process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, original);
+    const trackedPhases = new Set<string>();
+    const trackedCtx = {
+      ...baseCtx,
+      phases: {
+        track: async (phase: string, work: () => Promise<unknown>) => {
+          trackedPhases.add(phase);
+          return work();
+        },
+        addCompleted: (phase: string) => trackedPhases.add(phase),
+      },
+    };
 
     try {
-      const r = (await readTool.handler!({ uri, byte_offset: 0, byte_limit: 512 }, ctx)) as {
+      const lineRead = (await readTool.handler!({ uri }, trackedCtx as never)) as {
         content: Array<{ text: string }>;
         isError?: boolean;
       };
-      expect(r.isError).not.toBe(true);
-      const page = parse(r) as { ok: boolean; data: string; byte_length: number };
-      expect(page.ok).toBe(true);
-      expect(Buffer.from(page.data, 'base64')).toEqual(original);
-      expect(page.byte_length).toBe(original.length);
+      expect(lineRead.isError).not.toBe(true);
+      expect(lineRead.content[0].text).toContain('[line truncated]');
+      expect([...trackedPhases]).toEqual(expect.arrayContaining([
+        'capability:read:scratch:stat',
+        'capability:read:scratch:file-read',
+        'capability:read:scratch:scratch-reference-parse',
+      ]));
+
+      const recovered: Buffer[] = [];
+      let byteOffset = 0;
+      let eof = false;
+      while (!eof && recovered.length < 100) {
+        const r = (await readTool.handler!(
+          { uri, byte_offset: byteOffset, byte_limit: 997 },
+          ctx,
+        )) as { content: Array<{ text: string }>; isError?: boolean };
+        expect(r.isError).not.toBe(true);
+        const page = parse(r) as {
+          ok: boolean;
+          encoding: string;
+          data: string;
+          byte_length: number;
+          eof: boolean;
+          next_cursor: { args: { byte_offset: number } } | null;
+        };
+        expect(page.ok).toBe(true);
+        expect(page.encoding).toBe('base64');
+        const bytes = Buffer.from(page.data, 'base64');
+        expect(bytes.length).toBe(page.byte_length);
+        recovered.push(bytes);
+        eof = page.eof;
+        if (!eof) {
+          expect(page.next_cursor).not.toBeNull();
+          byteOffset = page.next_cursor!.args.byte_offset;
+        }
+      }
+
+      expect(eof).toBe(true);
+      expect(Buffer.concat(recovered)).toEqual(original);
     } finally {
       if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
       else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
@@ -351,13 +484,145 @@ describe('capability:read', () => {
     expect(lines.content[0].text).not.toContain('first line');
   });
 
+  it('reads durable scratch-spool URIs as exact byte pages with the caller manifest context', async () => {
+    const payload = Buffer.from('durable result-page bytes', 'utf8');
+    const manifest = writeScratchReference({
+      filePath: join(DIR, 'durable-reference.spill'),
+      payload,
+      workspaceId: 'ws-1',
+      ownerId: 'su-owner',
+      audience: 'owner',
+      mediaType: 'text/plain',
+    });
+    const uri = DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'a'.repeat(64);
+    const durableReader = vi.spyOn(
+      scratchReference,
+      'readDurableScratchReference',
+    ).mockResolvedValue({ manifest, payload });
+    const ownerCtx = {
+      ...baseCtx,
+      workspaceId: 'ws-1',
+      uiClientId: 'su-owner',
+      isSuperuser: true,
+    };
+
+    try {
+      const first = (await readTool.handler!({
+        uri,
+        byte_offset: 2,
+        byte_limit: 4,
+      }, ownerCtx as never)) as { content: Array<{ text: string }>; isError?: boolean };
+      expect(first.isError).not.toBe(true);
+      const firstPage = parse(first) as {
+        encoding: string;
+        data: string;
+        byte_offset: number;
+        byte_length: number;
+        eof: boolean;
+        next_cursor: { tool: string; args: Record<string, unknown> } | null;
+      };
+      expect(firstPage).toMatchObject({
+        encoding: 'base64',
+        byte_offset: 2,
+        byte_length: 4,
+        eof: false,
+        next_cursor: {
+          tool: 'capability:read',
+          args: { file_path: uri, byte_offset: 6, byte_limit: 4 },
+        },
+      });
+      expect(Buffer.from(firstPage.data, 'base64')).toEqual(payload.subarray(2, 6));
+
+      const next = (await readTool.handler!(
+        firstPage.next_cursor!.args as never,
+        ownerCtx as never,
+      )) as { content: Array<{ text: string }>; isError?: boolean };
+      expect(next.isError).not.toBe(true);
+      const nextPage = parse(next) as { byte_offset: number; data: string };
+      expect(nextPage.byte_offset).toBe(6);
+      expect(Buffer.from(nextPage.data, 'base64')).toEqual(payload.subarray(6, 10));
+      expect(durableReader).toHaveBeenNthCalledWith(1, uri, {
+        workspaceId: 'ws-1',
+        ownerId: 'su-owner',
+      });
+      expect(durableReader).toHaveBeenNthCalledWith(2, uri, {
+        workspaceId: 'ws-1',
+        ownerId: 'su-owner',
+      });
+    } finally {
+      durableReader.mockRestore();
+    }
+  });
+
+  it('rejects line, query, and view modes on durable and volatile scratch references', async () => {
+    const payload = Buffer.from('scratch mode guard payload', 'utf8');
+    const manifest = writeScratchReference({
+      filePath: join(DIR, 'durable-mode-guard.spill'),
+      payload,
+      workspaceId: 'ws-1',
+      ownerId: 'su-owner',
+      audience: 'owner',
+      mediaType: 'text/plain',
+    });
+    const durableUri = DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'b'.repeat(64);
+    const durableReader = vi.spyOn(
+      scratchReference,
+      'readDurableScratchReference',
+    ).mockResolvedValue({ manifest, payload });
+    const volatile = storeVolatileScratchReference({
+      payload,
+      workspaceId: 'ws-1',
+      ownerId: 'su-owner',
+      audience: 'owner',
+      mediaType: 'text/plain',
+    });
+    expect(volatile).not.toBeNull();
+    if (!volatile) throw new Error('volatile scratch reference was not stored');
+    const ownerCtx = {
+      ...baseCtx,
+      workspaceId: 'ws-1',
+      uiClientId: 'su-owner',
+      isSuperuser: true,
+    };
+
+    try {
+      for (const entry of [
+        { uri: durableUri, missingWindow: 'durable_reference_requires_byte_window' },
+        { uri: volatile.uri, missingWindow: 'volatile_reference_requires_byte_window' },
+      ]) {
+        const missing = (await readTool.handler!(
+          { uri: entry.uri } as never,
+          ownerCtx as never,
+        )) as { content: Array<{ text: string }>; isError?: boolean };
+        expect(missing.isError).toBe(true);
+        expect(parse(missing).reason).toBe(entry.missingWindow);
+
+        for (const mode of [
+          { query: 'payload' },
+          { view_lines: { offset: 1, limit: 1 } },
+        ]) {
+          const mixed = (await readTool.handler!(
+            { uri: entry.uri, byte_offset: 0, byte_limit: 4, ...mode } as never,
+            ownerCtx as never,
+          )) as { content: Array<{ text: string }>; isError?: boolean };
+          expect(mixed.isError).toBe(true);
+          expect(parse(mixed).reason).toBe('mixed_window_modes');
+        }
+      }
+      expect(durableReader).not.toHaveBeenCalled();
+    } finally {
+      durableReader.mockRestore();
+    }
+  });
+
   it('selects only requested MCP content items and rejects the wrong owner', async () => {
     const f = join(DIR, 'owner-reference.json');
+    const nestedJson = JSON.stringify({ results: [{ checkpoint: 'saved' }] });
     writeScratchReference({
       filePath: f,
       payload: JSON.stringify({
         content: [
-          { type: 'text', text: 'omit me' },
+          { type: 'text', text: nestedJson },
           { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
           { type: 'text', text: 'keep me too' },
         ],
@@ -388,6 +653,16 @@ describe('capability:read', () => {
         { type: 'image', mimeType: 'image/png' },
       ],
     });
+
+    const nestedSelected = parse((await readTool.handler!(
+      { file_path: f, content_indexes: [0] },
+      ownerCtx as never,
+    )) as { content: Array<{ text: string }> }) as {
+      content: Array<{ text: string }>;
+      results?: unknown;
+    };
+    expect(nestedSelected.content[0].text).toBe(nestedJson);
+    expect(nestedSelected).not.toHaveProperty('results');
 
     const denied = (await readTool.handler!(
       {
@@ -442,6 +717,28 @@ describe('capability:read', () => {
     expect(parse(unsigned).reason).toBe('forbidden_reference');
   });
 
+  it('marks a scratch-reference read whose stored payload may contain producer truncation markers', async () => {
+    const f = join(DIR, 'partial-result-door-reference.spill');
+    writeScratchReference({
+      filePath: f,
+      payload: '# result-door spill\n{"outputTailTruncated":true,"textTruncated":true}\n',
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'text/markdown',
+    });
+
+    const result = (await readTool.handler!({ file_path: f, offset: 1, limit: 4 }, {
+      ...baseCtx,
+      workspaceId: 'ws-1',
+    } as never)) as {
+      content: Array<{ text: string }>;
+      _meta?: { capabilityRead?: { source?: string } };
+    };
+
+    expect(result.content[0].text).toContain('"outputTailTruncated":true');
+    expect(result._meta).toMatchObject({ capabilityRead: { source: 'scratch-reference' } });
+  });
+
   it('resolves one typed evidence class from a shared result-door reference', async () => {
     const f = join(DIR, 'evidence-reference.json');
     writeScratchReference({
@@ -470,6 +767,76 @@ describe('capability:read', () => {
     });
   });
 
+  it('resolves typed evidence from an ordinary JSON spill using its declared body offset', async () => {
+    const f = join(DIR, 'ordinary-json-evidence-reference.txt');
+    const prefix = '# Result summary and paging guidance\n\n';
+    const body = JSON.stringify({
+      ok: true,
+      results: [{ id: 'EI-123', workItem: { id: 'EI-123', state: 'open' } }],
+    });
+    writeScratchReference({
+      filePath: f,
+      payload: `${prefix}${body}`,
+      workspaceId: 'ws-1',
+      mediaType: 'text/plain',
+      content: [{ index: 0, type: 'text', byteCount: Buffer.byteLength(body) }],
+      evidence: [{ evidenceClass: 'work-item', contentIndex: 0, jsonPointers: ['/results/0/workItem'] }],
+      bodyOffsetInPayload: Buffer.byteLength(prefix),
+    });
+
+    const selected = (await readTool.handler!(
+      { file_path: f, evidence_class: 'work-item' },
+      { ...baseCtx, workspaceId: 'ws-1' } as never,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+
+    expect(selected.isError).not.toBe(true);
+    expect(parse(selected)).toMatchObject({
+      ok: true,
+      evidence_class: 'work-item',
+      evidence: [{
+        contentIndex: 0,
+        jsonPointer: '/results/0/workItem',
+        value: { id: 'EI-123', state: 'open' },
+      }],
+    });
+  });
+
+  it('directs text scratch spills to byte windows when evidence selection needs JSON', async () => {
+    const f = join(DIR, 'markdown-evidence-reference.txt');
+    const payload = '## Work item\nID: EI-123\n';
+    writeScratchReference({
+      filePath: f,
+      payload,
+      workspaceId: 'ws-1',
+      mediaType: 'text/markdown',
+      evidence: [{ evidenceClass: 'work-item', contentIndex: 0, jsonPointers: ['/id'] }],
+    });
+    const readCtx = { ...baseCtx, workspaceId: 'ws-1' } as never;
+
+    const selected = (await readTool.handler!(
+      { file_path: f, evidence_class: 'work-item' },
+      readCtx,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(selected.isError).toBe(true);
+    expect(parse(selected)).toMatchObject({
+      ok: false,
+      reason: 'evidence_not_selectable',
+      message: 'scratch reference JSON body is not valid JSON. Use line or byte windows for text or Markdown spills.',
+    });
+
+    const bytes = (await readTool.handler!(
+      { file_path: f, byte_offset: 0, byte_limit: 256 },
+      readCtx,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(bytes.isError).not.toBe(true);
+    expect(parse(bytes)).toMatchObject({
+      ok: true,
+      encoding: 'base64',
+      data: Buffer.from(payload).toString('base64'),
+      eof: true,
+    });
+  });
+
   it('advertises and enforces evidence-class window exclusivity', async () => {
     const published = toJsonSchema(readTool.args as never) as {
       anyOf?: Array<{
@@ -482,7 +849,9 @@ describe('capability:read', () => {
       }>;
     };
     const branches = published.anyOf ?? published.oneOf ?? [];
-    expect(branches).toHaveLength(4);
+    // Query and searched-view modes were added after the original four branches;
+    // keep them in the published schema contract and test their exclusivity too.
+    expect(branches).toHaveLength(6);
 
     const evidenceBranch = branches.find((branch) => branch.required?.includes('evidence_class'));
     expect(evidenceBranch).toBeDefined();
@@ -499,6 +868,17 @@ describe('capability:read', () => {
     const contentBranch = branches.find((branch) => branch.required?.includes('content_indexes'));
     expect(contentBranch?.properties?.evidence_class?.not).toBeDefined();
     expect(contentBranch?.properties?.tail?.not).toBeDefined();
+
+    const queryBranch = branches.find((branch) => branch.required?.includes('query'));
+    expect(queryBranch?.properties?.offset?.not).toBeDefined();
+    expect(queryBranch?.properties?.byte_offset?.not).toBeDefined();
+    expect(queryBranch?.properties?.evidence_class?.not).toBeDefined();
+
+    const viewBranch = branches.find((branch) => branch.required?.includes('view_lines'));
+    expect(viewBranch?.properties?.query?.not).toBeDefined();
+    expect(viewBranch?.properties?.offset?.not).toBeDefined();
+    expect(viewBranch?.properties?.byte_offset?.not).toBeDefined();
+    expect(viewBranch?.properties?.evidence_class?.not).toBeDefined();
 
     const lineBranch = branches.find((branch) => !branch.required?.length);
     expect(lineBranch?.properties?.evidence_class?.not).toBeDefined();
@@ -526,6 +906,19 @@ describe('capability:read', () => {
         expect(description, `${field} description must name ${peer}`).toContain(peer);
       }
     }
+
+    for (const field of ['offset', 'limit', 'tail']) {
+      const description = lineBranch?.properties?.[field]?.description;
+      expect(description, `${field} must explain scratch-reference size limits`).toContain(
+        'Scratch-reference line windows can be refused when selected text exceeds the response-size limit',
+      );
+      expect(description).toContain('byte_offset+byte_limit');
+    }
+
+    const contentIndexesDescription = contentBranch?.properties?.content_indexes?.description;
+    expect(contentIndexesDescription).toContain("under the response's content field");
+    expect(contentIndexesDescription).toContain('it does not parse JSON serialized inside');
+    expect(contentIndexesDescription).toContain('Use evidence_class');
 
     const argsSchema = readTool.args as unknown as {
       safeParse: (value: unknown) => { success: boolean };
@@ -639,6 +1032,23 @@ describe('capability:read', () => {
     expect(bounded.content[0].text).toContain('tail-marker');
     expect(bounded.content[0].text).not.toContain('too_large');
 
+    const raw = (await readTool.handler!({ file_path: f, tail: 1, raw: true }, {
+      ...baseCtx,
+      codeMode: true,
+    } as never)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+      structuredContent?: Record<string, unknown>;
+    };
+    expect(raw.isError).not.toBe(true);
+    expect(raw.content[0].text).toContain('tail-marker');
+    expect(raw.structuredContent).toMatchObject({
+      total_lines: lineCount,
+      start_line: lineCount,
+      end_line: lineCount,
+      has_more: false,
+    });
+
     const unbounded = (await readTool.handler!({ file_path: f }, ctx)) as {
       content: Array<{ text: string }>;
       isError?: boolean;
@@ -723,7 +1133,15 @@ describe('capability:read', () => {
       };
       // Raw mode's own contract: the text body is the exact source span.
       expect(r.content[0].text).toBe('one\ntwo\nthree\n');
-      expect(r.structuredContent).toEqual({ ok: true, file_path: f, body: 'one\ntwo\nthree\n' });
+      expect(r.structuredContent).toEqual({
+        ok: true,
+        file_path: f,
+        body: 'one\ntwo\nthree\n',
+        total_lines: 3,
+        start_line: 1,
+        end_line: 3,
+        has_more: false,
+      });
     });
 
     it('still returns a real object — not a vanished falsy value — for an empty raw window', async () => {
@@ -741,7 +1159,15 @@ describe('capability:read', () => {
       // this bug's `cur.content ?? cur.text ?? ''` fallback could not tell apart
       // from "the field was never there".
       expect(typeof r.structuredContent).toBe('object');
-      expect(r.structuredContent).toEqual({ ok: true, file_path: f, body: '' });
+      expect(r.structuredContent).toEqual({
+        ok: true,
+        file_path: f,
+        body: '',
+        total_lines: 1,
+        start_line: null,
+        end_line: null,
+        has_more: false,
+      });
     });
 
     it('costs a non-code-mode caller nothing on all three affected return sites', async () => {
@@ -771,8 +1197,24 @@ describe('capability:read', () => {
       )) as { structuredContent?: Record<string, unknown> };
 
       expect(direct.structuredContent).toMatchObject({ body: 'x\ny', total_lines: 2 });
-      expect(directRaw.structuredContent).toEqual({ ok: true, file_path: f, body: 'x\ny\n' });
-      expect(directRawEmpty.structuredContent).toEqual({ ok: true, file_path: f, body: '' });
+      expect(directRaw.structuredContent).toEqual({
+        ok: true,
+        file_path: f,
+        body: 'x\ny\n',
+        total_lines: 2,
+        start_line: 1,
+        end_line: 2,
+        has_more: false,
+      });
+      expect(directRawEmpty.structuredContent).toEqual({
+        ok: true,
+        file_path: f,
+        body: '',
+        total_lines: 2,
+        start_line: null,
+        end_line: null,
+        has_more: false,
+      });
     });
 
     it('preserves requestedStructured through the projected MCP transport', async () => {
@@ -998,6 +1440,96 @@ describe('capability:write', () => {
 });
 
 describe('capability:edit', () => {
+  it('leaves direct capability edits to PostToolUse attribution', async () => {
+    editCaptureMocks.useCoordinatedLock = true;
+    const f = join(DIR, 'edit-attribution.txt');
+    writeFileSync(f, 'old value\n');
+
+    const result = (await editTool.handler!(
+      { file_path: f, old_string: 'old value', new_string: 'new value' },
+      { ...baseCtx, workspaceId: 'workspace-1', dispatchCallId: 'dispatch-edit-1' } as never,
+    )) as { content: Array<{ text: string }> };
+
+    expect(parse(result).ok).toBe(true);
+    expect(editCaptureMocks.recordEditAttribution).not.toHaveBeenCalled();
+  });
+
+  it('records frozen repair hunks for code-mode child edits using the edit dispatch id', async () => {
+    editCaptureMocks.useCoordinatedLock = true;
+    const f = join(DIR, 'edit-code-mode.txt');
+    writeFileSync(f, 'old old\n');
+    const dispatchTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, recorded: true }) }],
+    });
+
+    const result = (await editTool.handler!(
+      { file_path: f, old_string: 'old', new_string: 'new', replace_all: true },
+      {
+        ...baseCtx,
+        workspaceId: 'workspace-1',
+        dispatchCallId: 'dispatch-edit-code-mode',
+        codeMode: true,
+        dispatchTool,
+      } as never,
+    )) as { content: Array<{ text: string }> };
+
+    expect(parse(result).ok).toBe(true);
+    expect(editCaptureMocks.recordEditAttribution).toHaveBeenCalledWith({
+      repoRoot: '/repo',
+      files: ['src/captured.ts'],
+      agentId: 'owner-123',
+      intent: 'capability:edit',
+      workspaceId: 'workspace-1',
+      dispatchCallId: 'dispatch-edit-code-mode',
+    });
+    expect(dispatchTool).toHaveBeenCalledWith('release:repair-queue', {
+      op: 'record-edit',
+      path: 'src/captured.ts',
+      hunk: { kind: 'edit', old: 'old', new: 'new', replaceAll: true },
+      toolUseId: 'dispatch-edit-code-mode',
+      editIndex: 0,
+      atMs: expect.any(Number),
+    });
+  });
+
+  it('records frozen repair hunks for indirect dispatch edits as well as code-mode edits', async () => {
+    editCaptureMocks.useCoordinatedLock = true;
+    const f = join(DIR, 'edit-indirect.txt');
+    writeFileSync(f, 'old value\n');
+    const dispatchTool = vi.fn().mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, recorded: true }) }],
+    });
+
+    const result = (await editTool.handler!(
+      { file_path: f, old_string: 'old value', new_string: 'new value' },
+      {
+        ...baseCtx,
+        workspaceId: 'workspace-1',
+        dispatchCallId: 'dispatch-edit-indirect',
+        indirectDispatch: true,
+        dispatchTool,
+      } as never,
+    )) as { content: Array<{ text: string }> };
+
+    expect(parse(result).ok).toBe(true);
+    expect(editCaptureMocks.recordEditAttribution).toHaveBeenCalledWith({
+      repoRoot: '/repo',
+      files: ['src/captured.ts'],
+      agentId: 'owner-123',
+      intent: 'capability:edit',
+      workspaceId: 'workspace-1',
+      dispatchCallId: 'dispatch-edit-indirect',
+    });
+    expect(dispatchTool).toHaveBeenCalledWith('release:repair-queue', {
+      op: 'record-edit',
+      path: 'src/captured.ts',
+      hunk: { kind: 'edit', old: 'old value', new: 'new value' },
+      toolUseId: 'dispatch-edit-indirect',
+      editIndex: 0,
+      atMs: expect.any(Number),
+    });
+  });
+
   it('replaces a unique string', async () => {
     const f = join(DIR, 'e.txt');
     writeFileSync(f, 'const x = 1;\nconst y = 2;\n');

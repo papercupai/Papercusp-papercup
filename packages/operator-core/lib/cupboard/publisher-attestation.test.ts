@@ -4,7 +4,7 @@
  * Best-effort contract: success returns gist id + pubkey; ANY failure → null.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { resolvePublisherAttestation, type AttestationDeps } from './publisher-attestation';
 
 describe('resolvePublisherAttestation (item 1)', () => {
@@ -40,5 +40,33 @@ describe('resolvePublisherAttestation (item 1)', () => {
       deps({ ensureGist: async () => { throw new Error('gist api down'); } }),
     );
     expect(r).toBeNull();
+  });
+
+  // WI-10006733: without a hint ensureGist walks every gist on the account.
+  it('passes the device cached gist to ensureGist as a verify-first hint', async () => {
+    const ensureGist = vi.fn(async () => 'gist-known');
+    const knownGistIdFor = vi.fn(async () => 'gist-known');
+    const r = await resolvePublisherAttestation(deps({ ensureGist, knownGistIdFor }));
+    expect(knownGistIdFor).toHaveBeenCalledWith({
+      keychainId: 'kc-1',
+      pubkeyBase64: 'PK',
+      githubUserId: 1,
+    });
+    expect(ensureGist).toHaveBeenCalledWith(expect.objectContaining({ knownGistId: 'gist-known' }));
+    expect(r).toEqual({ attestation_gist_id: 'gist-known', publisher_device_pubkey: 'PK' });
+  });
+
+  it('sends no hint when none is known, and a failing hint lookup is not fatal', async () => {
+    for (const knownGistIdFor of [
+      async () => undefined,
+      async () => {
+        throw new Error('cache unreadable');
+      },
+    ]) {
+      const ensureGist = vi.fn(async (_input: Parameters<AttestationDeps['ensureGist']>[0]) => 'gist123');
+      const r = await resolvePublisherAttestation(deps({ ensureGist, knownGistIdFor }));
+      expect(ensureGist.mock.calls[0]?.[0]).not.toHaveProperty('knownGistId');
+      expect(r).toEqual({ attestation_gist_id: 'gist123', publisher_device_pubkey: 'PK' });
+    }
   });
 });

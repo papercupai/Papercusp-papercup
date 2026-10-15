@@ -80,6 +80,7 @@ import {
   startAuthorityRpcServer,
   claimVia,
 } from './_cross-peer-rig';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
 import {
   lockAuthorityForHive,
   queryPresenceRowsForHive,
@@ -146,6 +147,9 @@ vi.mock('@papercusp/flags/server', async () => {
   };
 });
 
+// Registered BEFORE the file's own hooks so the stub outlives substrate teardown,
+// which can still run a merge pass (WI-6554700010008561 / WI-10007530).
+stubHivePolicyReadsForSuite();
 afterEach(rigAfterEach);
 
 describe('cross-peer coordination on a shared Hive — presence federation → authority election', () => {

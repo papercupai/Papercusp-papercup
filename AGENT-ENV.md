@@ -9,7 +9,7 @@ GENERATED from the real config (package.json, the vite config, the on-disk
 layout), so they cannot drift out of sync the way a hand-written note does.
 
 - **Repo root:** `@papercupai/papercusp-monorepo`
-- **Package manager:** `npm@11.12.1`
+- **Package manager:** `npm@11.19.0`
 
 ## Where shared code lives
 

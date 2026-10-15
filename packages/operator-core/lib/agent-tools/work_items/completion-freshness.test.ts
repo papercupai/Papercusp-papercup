@@ -5,9 +5,14 @@
  * spawn-free HEAD observation.  These tests pin the three honest outcomes:
  * current, changed, and not observable.
  */
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   completionFreshnessForEvidence,
+  completionTreeStamp,
   completionTreeContentIdentityMatches,
   unprovenContentIdentityPaths,
   describeUnprovenContentIdentity,
@@ -19,6 +24,84 @@ const identity: CompletionTreeContentIdentity[] = [
 ];
 const stored = { repositoryRoot: '/repo', headSha: 'a'.repeat(40), contentIdentity: identity };
 const current = { repositoryRoot: '/repo', headSha: 'b'.repeat(40), contentIdentity: identity };
+
+function gitFixture(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    killSignal: 'SIGKILL',
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  }).trim();
+}
+
+function initializeIgnoreFixture(root: string): void {
+  gitFixture(root, 'init', '-q');
+  gitFixture(root, 'config', 'user.email', 'completion-ignore@example.test');
+  gitFixture(root, 'config', 'user.name', 'Completion Ignore Fixture');
+  gitFixture(root, 'config', 'commit.gpgsign', 'false');
+  writeFileSync(join(root, '.gitignore'), ['reports/*.json', '!reports/keep.json', ''].join('\n'));
+  gitFixture(root, 'add', '--', '.gitignore');
+  gitFixture(root, 'commit', '-qm', 'baseline');
+  mkdirSync(join(root, 'reports'), { recursive: true });
+  writeFileSync(join(root, 'reports', 'ignored.json'), '{"report":true}\n');
+  writeFileSync(join(root, 'reports', 'keep.json'), '{"keep":true}\n');
+}
+
+describe('completionTreeStamp Git ignore status (WI-10004491)', () => {
+  it('records ignored and negated ignore-pattern results for present files absent from HEAD', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'completion-ignore-status-'));
+    try {
+      initializeIgnoreFixture(root);
+      const stamp = await completionTreeStamp({
+        repoRoot: root,
+        filesChanged: ['reports/ignored.json', 'reports/keep.json'],
+      });
+
+      expect(stamp?.contentIdentity?.map(({ path, gitIgnoreStatus }) => [path, gitIgnoreStatus])).toEqual([
+        ['reports/ignored.json', 'ignored'],
+        ['reports/keep.json', 'not-ignored'],
+      ]);
+      const rows = unprovenContentIdentityPaths(stamp);
+      expect(rows).toEqual([
+        { path: 'reports/ignored.json', reason: 'gitignored-path', settles: 'never' },
+        { path: 'reports/keep.json', reason: 'missing-from-commit', settles: 'sweep' },
+      ]);
+      const advice = describeUnprovenContentIdentity(rows, 2)!;
+      expect(advice).toContain('MIXED');
+      expect(advice).toContain("'reports/ignored.json' is ignored by Git");
+      expect(advice).toContain('reports/keep.json');
+      expect(advice).not.toContain('WAITING SETTLES THIS');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps ignore status unknown when the bounded probe fails and avoids promising settlement', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'completion-ignore-status-unknown-'));
+    try {
+      initializeIgnoreFixture(root);
+      const stamp = await completionTreeStamp({
+        repoRoot: root,
+        filesChanged: ['reports/ignored.json'],
+        gitIgnoreStatusProbe: async () => undefined,
+      });
+      const rows = unprovenContentIdentityPaths(stamp);
+      const advice = describeUnprovenContentIdentity(rows, 1)!;
+
+      expect(stamp?.contentIdentity?.[0]?.gitIgnoreStatus).toBe('unknown');
+      expect(rows).toEqual([
+        { path: 'reports/ignored.json', reason: 'gitignore-status-unknown', settles: 'unknown' },
+      ]);
+      expect(advice).toContain('WAITING IS UNVERIFIED');
+      expect(advice).toContain('unknown Git ignore status');
+      expect(advice).toContain('Verify the ignore rules');
+      expect(advice).not.toContain('WAITING SETTLES THIS');
+      expect(advice).not.toContain('WAITING WILL NOT SETTLE THIS');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
   it('returns no signal when terminal evidence has no valid tree stamp', async () => {
@@ -266,6 +349,21 @@ describe('unprovenContentIdentityPaths (EI-21970667079827352)', () => {
         contentIdentity: [{ path: 'a.ts', workingTreeBlobSha: sha('c'), headBlobSha: null }],
       }),
     ).toEqual([{ path: 'a.ts', reason: 'missing-from-commit', settles: 'sweep' }]);
+  });
+
+  it('uses measured not-ignored status instead of the legacy scratch-prefix rule', () => {
+    expect(
+      unprovenContentIdentityPaths({
+        contentIdentity: [
+          {
+            path: '.papercusp/scratch/keep.mts',
+            workingTreeBlobSha: sha('c'),
+            headBlobSha: null,
+            gitIgnoreStatus: 'not-ignored',
+          },
+        ],
+      }),
+    ).toEqual([{ path: '.papercusp/scratch/keep.mts', reason: 'missing-from-commit', settles: 'sweep' }]);
   });
 
   it('classifies documented gitignored scratch paths as never-settling, not sweep-pending', () => {

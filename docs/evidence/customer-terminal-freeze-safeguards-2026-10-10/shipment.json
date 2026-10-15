@@ -1,0 +1,419 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Customer terminal safeguard final signed GUI and Server package inspection",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "-"
+  ],
+  "startedAt": "2026-10-11T00:25:57.958443+00:00",
+  "finishedAt": "2026-10-11T00:28:10.395902+00:00",
+  "exitCode": 0,
+  "summary": "Exact signed final Debian GUI/Server archives carry both native GNOME preparation calls and the operator/fleet Node preparation chain from the tested source.",
+  "assertions": [
+    {
+      "id": "gui-signature",
+      "passed": true,
+      "evidence": "Updater signature verifies using the exact public key found inside the final ELF."
+    },
+    {
+      "id": "gui-native-launchers",
+      "passed": true,
+      "evidence": "Disassembly shows console and external launcher functions each directly calling GNOME preparation."
+    },
+    {
+      "id": "gui-archive-members",
+      "passed": true,
+      "evidence": "SHA-256 of actual archived native and sidecar members equals the retained payload bytes."
+    },
+    {
+      "id": "server-signature",
+      "passed": true,
+      "evidence": "Updater signature verifies using the exact public key found inside the final ELF."
+    },
+    {
+      "id": "server-native-launchers",
+      "passed": true,
+      "evidence": "Disassembly shows console and external launcher functions each directly calling GNOME preparation."
+    },
+    {
+      "id": "server-archive-members",
+      "passed": true,
+      "evidence": "SHA-256 of actual archived native and sidecar members equals the retained payload bytes."
+    },
+    {
+      "id": "bundled-node-launchers",
+      "passed": true,
+      "evidence": "AST inspection of the actual archived Server sidecar confirms spawnConsole -> spawnConsolePrepared -> prepareGnomeTerminal, and spawnInTerminal -> prepareGnomeTerminal."
+    },
+    {
+      "id": "tested-source-parity",
+      "passed": true,
+      "evidence": "Six safeguard feature file hashes in the frozen build match the canonical source used by the accepted tests."
+    }
+  ],
+  "planSlug": "customer-terminal-freeze-safeguards-2026-10-10",
+  "artifactRoot": "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb",
+  "runtimeArtifacts": [
+    {
+      "path": "Papercusp GUI_0.0.26_amd64.deb",
+      "sha256": "ce6799a0659d2059d3ef72ed2c94672e80820213c416cd56322f554b2536d453",
+      "bytes": 104136388
+    },
+    {
+      "path": "Papercusp GUI_0.0.26_amd64.deb.sig",
+      "sha256": "e50a9ca5116770e8b0afdce7907838223611079d4e6ee16da43fb2dbf4cfe0d1",
+      "bytes": 396
+    },
+    {
+      "path": "Papercusp GUI_0.0.26_amd64/data/usr/bin/papercusp-desktop",
+      "sha256": "67494c3696eff8c923c8d32b6067d25ee7e22b799d774afd30aade74c3f7e433",
+      "bytes": 435134328
+    },
+    {
+      "path": "Papercusp Server_0.0.26_amd64.deb",
+      "sha256": "1dd383bd39a69c33a13a9f26639018e2e9815805f1c92f48a0c2ecfaaa9982e8",
+      "bytes": 4168326818
+    },
+    {
+      "path": "Papercusp Server_0.0.26_amd64.deb.sig",
+      "sha256": "ea9afc4245fa0a0e948f3e02a9900bc81aa5332911a43aaaab7b75ba5a212b54",
+      "bytes": 396
+    },
+    {
+      "path": "Papercusp Server_0.0.26_amd64/data/usr/bin/papercusp-server",
+      "sha256": "20345ab0027d3c9a3ffe18a34f93a3b043c95d9e0c50a454b8eee9d07310322e",
+      "bytes": 435124208
+    },
+    {
+      "path": "Papercusp Server_0.0.26_amd64/data/usr/lib/Papercusp Server/sidecar/serve.mjs",
+      "sha256": "9158da36d9bf2d54d76fb7249644096118ef08c3dc0c2672e9735cd831ee3307",
+      "bytes": 80651002
+    },
+    {
+      "path": "Papercusp Server_0.0.26_amd64/data/usr/lib/Papercusp Server/sidecar/build-provenance.json",
+      "sha256": "599b32e074363e1f0e9fe5357eb0f83e595a9c88d3b1201f554fa7a736ddf8ce",
+      "bytes": 1071
+    }
+  ],
+  "sourceSha": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+  "desktopSubmoduleSha": "09337970dcd8679d73f14558d31dbac57630107b",
+  "featureSourceHashes": {
+    "packages/operator-core/lib/gnome-terminal-profile.mjs": "7e3f5a3b17ae8805e879d1c868a33310bf5441ab6f01465b69b693ee4327d7f7",
+    "packages/operator-core/lib/gnome-terminal-policy.json": "0dbaa9d2be3c77f201ad1a08a5bf7ed0ff41ada304e5f04f44dfaf8de8aad4a3",
+    "packages/operator-core/lib/console-spawn.ts": "0c116b82b2e95ecedfe6f7e6918e9ba4bb486154782051369858077c3cdf68f8",
+    "packages/operator-core/lib/terminal-spawn.ts": "9b059327e38d0415a5d83e61e35216edbef879bbf2fa03b268b760f4545d41ae",
+    "papercusp-desktop/src-tauri/src/native_console.rs": "1cd8d93d8405a7fbecdbb500f4475fd3cb853d2eab04afa230831c81b46eea20",
+    "apps/operator/scripts/psu-terminal-output.mjs": "b0759d82c0fa5c7af12be3352d818dbec3517caa466979fc165457574efebf68"
+  },
+  "packages": [
+    {
+      "variant": "GUI",
+      "packagePath": "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp GUI_0.0.26_amd64.deb",
+      "sha256": "ce6799a0659d2059d3ef72ed2c94672e80820213c416cd56322f554b2536d453",
+      "signature": {
+        "valid": true,
+        "algo": "ED",
+        "keyId": "449908a7d47d3a5d"
+      },
+      "nativeBinary": {
+        "path": "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp GUI_0.0.26_amd64/data/usr/bin/papercusp-desktop",
+        "sha256": "67494c3696eff8c923c8d32b6067d25ee7e22b799d774afd30aade74c3f7e433",
+        "embeddedUpdaterKeyMatches": true,
+        "sourceShaEmbedded": true,
+        "launcherPaths": [
+          {
+            "function": "spawn_linux_with",
+            "symbol": "papercusp_desktop::native_console::spawn_linux_with",
+            "address": "0000000001550d20",
+            "bytes": 1799,
+            "preparationCalls": [
+              "1550f4e:\te8 bd 2d 00 00       \tcall   1553d10 <papercusp_desktop::native_console::prepare_linux_terminal_args>"
+            ]
+          },
+          {
+            "function": "spawn_external_with",
+            "symbol": "papercusp_desktop::native_console::spawn_external_with",
+            "address": "0000000001552040",
+            "bytes": 2133,
+            "preparationCalls": [
+              "155227e:\te8 8d 1a 00 00       \tcall   1553d10 <papercusp_desktop::native_console::prepare_linux_terminal_args>"
+            ]
+          }
+        ]
+      },
+      "archiveMembers": {
+        "usr/bin/papercusp-desktop": {
+          "sha256": "67494c3696eff8c923c8d32b6067d25ee7e22b799d774afd30aade74c3f7e433",
+          "bytes": 435134328
+        }
+      }
+    },
+    {
+      "variant": "Server",
+      "packagePath": "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64.deb",
+      "sha256": "1dd383bd39a69c33a13a9f26639018e2e9815805f1c92f48a0c2ecfaaa9982e8",
+      "signature": {
+        "valid": true,
+        "algo": "ED",
+        "keyId": "449908a7d47d3a5d"
+      },
+      "nativeBinary": {
+        "path": "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64/data/usr/bin/papercusp-server",
+        "sha256": "20345ab0027d3c9a3ffe18a34f93a3b043c95d9e0c50a454b8eee9d07310322e",
+        "embeddedUpdaterKeyMatches": true,
+        "sourceShaEmbedded": true,
+        "launcherPaths": [
+          {
+            "function": "spawn_linux_with",
+            "symbol": "papercusp_desktop::native_console::spawn_linux_with",
+            "address": "0000000001550460",
+            "bytes": 1799,
+            "preparationCalls": [
+              "155068e:\te8 bd 2d 00 00       \tcall   1553450 <papercusp_desktop::native_console::prepare_linux_terminal_args>"
+            ]
+          },
+          {
+            "function": "spawn_external_with",
+            "symbol": "papercusp_desktop::native_console::spawn_external_with",
+            "address": "0000000001551780",
+            "bytes": 2133,
+            "preparationCalls": [
+              "15519be:\te8 8d 1a 00 00       \tcall   1553450 <papercusp_desktop::native_console::prepare_linux_terminal_args>"
+            ]
+          }
+        ]
+      },
+      "archiveMembers": {
+        "usr/lib/Papercusp Server/sidecar/build-provenance.json": {
+          "sha256": "599b32e074363e1f0e9fe5357eb0f83e595a9c88d3b1201f554fa7a736ddf8ce",
+          "bytes": 1071
+        },
+        "usr/lib/Papercusp Server/sidecar/serve.mjs": {
+          "sha256": "9158da36d9bf2d54d76fb7249644096118ef08c3dc0c2672e9735cd831ee3307",
+          "bytes": 80651002
+        },
+        "usr/bin/papercusp-server": {
+          "sha256": "20345ab0027d3c9a3ffe18a34f93a3b043c95d9e0c50a454b8eee9d07310322e",
+          "bytes": 435124208
+        }
+      }
+    }
+  ],
+  "nodeLauncherProof": [
+    {
+      "function": "spawnConsole",
+      "directCall": "spawnConsolePrepared",
+      "bodySha256": "c304cefe41a48612855ede6c564e3fbf7cfcae5e7e44ff082934f077b8b89508"
+    },
+    {
+      "function": "spawnConsolePrepared",
+      "directCall": "prepareGnomeTerminal",
+      "bodySha256": "30ecb7025897595ef94fa0150769fe0668f2962cd1fe670db511bbb49e2fcd04"
+    },
+    {
+      "function": "spawnInTerminal",
+      "directCall": "prepareGnomeTerminal",
+      "bodySha256": "8d3eb64a15c5986a7261a752bedb2fbe1fc7935d2cd617eb447b78552431fd07"
+    }
+  ],
+  "sidecarProvenance": {
+    "version": "0.0.26",
+    "buildSha": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+    "reused": false,
+    "gitHead": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+    "gitDirty": false,
+    "dirtySource": {
+      "schemaVersion": 1,
+      "capturedAtUtc": "2026-10-10T22:01:06Z",
+      "status": "captured",
+      "repositories": [
+        {
+          "label": "primary",
+          "gitHead": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+          "files": []
+        }
+      ]
+    },
+    "gitHeadAtEmit": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+    "gitDirtyAtEmit": true,
+    "releaseHostSha256": null,
+    "sidecar": null,
+    "builtAtUtc": "2026-10-10T22:23:11Z",
+    "artifacts": [
+      {
+        "name": "serve.mjs",
+        "bytes": 80651002,
+        "sha256": "9158da36d9bf2d54d76fb7249644096118ef08c3dc0c2672e9735cd831ee3307",
+        "sig": false,
+        "mtimeEpochSec": 1791670028,
+        "mtimeUtc": "2026-10-10T22:07:08Z",
+        "completedAtUtc": "2026-10-10T22:07:08Z"
+      },
+      {
+        "name": "bin/node",
+        "bytes": 105653744,
+        "sha256": "31e214a604403cf3afddd264e7b367fe559980459453bd9738a3977260a564db",
+        "sig": false,
+        "mtimeEpochSec": 1791670839,
+        "mtimeUtc": "2026-10-10T22:20:39Z",
+        "completedAtUtc": "2026-10-10T22:20:39Z"
+      }
+    ]
+  },
+  "nativeBuildProvenance": {
+    "buildSha": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+    "builtAtMs": 1791671567736,
+    "dirty": true,
+    "source": "build-deb-repacked.sh"
+  },
+  "sourceDelta": {
+    "trackedFiles": [
+      " M package-lock.json"
+    ],
+    "numstat": [
+      "9\t1\tpackage-lock.json"
+    ],
+    "interpretation": "Generated package-lock dependency workspace/link metadata changed; original dirty flags remain unchanged."
+  },
+  "testProofRefs": {
+    "sourceSuites": [
+      21000665,
+      21000666,
+      21000667,
+      21000676,
+      21000681,
+      21000682
+    ],
+    "nativeAggregate": 21007968,
+    "nativeMutation": 21008542,
+    "profileMutation": 21005889,
+    "ptyMutation": 21008478,
+    "resizeMutation": 21008824,
+    "stressReceipt": "docs/evidence/customer-terminal-freeze-safeguards-2026-10-10/stress.json"
+  },
+  "commandsExecuted": [
+    [
+      "git",
+      "-C",
+      "/home/builduser/.papercusp/scratch/customer-terminal-source-714072d2b2.zSJqsQ/source",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "git",
+      "-C",
+      "/home/builduser/.papercusp/scratch/customer-terminal-source-714072d2b2.zSJqsQ/source/papercusp-desktop",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "ar",
+      "t",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp GUI_0.0.26_amd64.deb"
+    ],
+    [
+      "node",
+      "papercusp-desktop/bin/verify-tauri-signature.mjs",
+      "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVEM0E3REQ0QTcwODk5NDQKUldSRW1RaW4xSDA2WGZzZVFiRHhaeG5iVXpWRUZxTnpZTG1BNWduQ2RnKzZjQUt1Y3FoMDJCZTUK",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp GUI_0.0.26_amd64.deb",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp GUI_0.0.26_amd64.deb.sig",
+      "--json"
+    ],
+    [
+      "nm",
+      "-S",
+      "-C",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp GUI_0.0.26_amd64/data/usr/bin/papercusp-desktop"
+    ],
+    [
+      "objdump",
+      "-Cd",
+      "--start-address=0x1550d20",
+      "--stop-address=0x1551427",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp GUI_0.0.26_amd64/data/usr/bin/papercusp-desktop"
+    ],
+    [
+      "objdump",
+      "-Cd",
+      "--start-address=0x1552040",
+      "--stop-address=0x1552895",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp GUI_0.0.26_amd64/data/usr/bin/papercusp-desktop"
+    ],
+    [
+      "dpkg-deb",
+      "--fsys-tarfile",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp GUI_0.0.26_amd64.deb"
+    ],
+    [
+      "ar",
+      "t",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64.deb"
+    ],
+    [
+      "node",
+      "papercusp-desktop/bin/verify-tauri-signature.mjs",
+      "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVEM0E3REQ0QTcwODk5NDQKUldSRW1RaW4xSDA2WGZzZVFiRHhaeG5iVXpWRUZxTnpZTG1BNWduQ2RnKzZjQUt1Y3FoMDJCZTUK",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64.deb",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64.deb.sig",
+      "--json"
+    ],
+    [
+      "nm",
+      "-S",
+      "-C",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64/data/usr/bin/papercusp-server"
+    ],
+    [
+      "objdump",
+      "-Cd",
+      "--start-address=0x1550460",
+      "--stop-address=0x1550b67",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64/data/usr/bin/papercusp-server"
+    ],
+    [
+      "objdump",
+      "-Cd",
+      "--start-address=0x1551780",
+      "--stop-address=0x1551fd5",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64/data/usr/bin/papercusp-server"
+    ],
+    [
+      "dpkg-deb",
+      "--fsys-tarfile",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64.deb"
+    ],
+    [
+      "node",
+      "--input-type=module",
+      "-e",
+      "import fs from 'node:fs';import {createHash} from 'node:crypto';import {parseExpressionAt} from 'acorn';\nconst bundle=fs.readFileSync(process.argv[1],'utf8');const proofs=[];\nfor(const [name,callee] of [['spawnConsole','spawnConsolePrepared'],['spawnConsolePrepared','prepareGnomeTerminal'],['spawnInTerminal','prepareGnomeTerminal']]){\nlet pos=bundle.indexOf('function '+name+'(');if(pos<0)throw Error('missing '+name);if(bundle.slice(pos-6,pos)==='async ')pos-=6;\nconst ast=parseExpressionAt(bundle,pos,{ecmaVersion:'latest',sourceType:'module'});const calls=[];\nfunction walk(node){if(!node||typeof node!=='object')return;if(node!==ast.body&&/Function|ArrowFunction/.test(node.type))return;if(node.type==='CallExpression'&&node.callee.type==='Identifier')calls.push(node.callee.name);for(const v of Object.values(node)){if(Array.isArray(v))v.forEach(walk);else if(v&&typeof v==='object')walk(v);}}\nwalk(ast.body);if(!calls.includes(callee))throw Error('missing direct call: '+callee);proofs.push({function:name,directCall:callee,bodySha256:createHash('sha256').update(bundle.slice(ast.body.start,ast.body.end)).digest('hex')});}console.log(JSON.stringify(proofs));",
+      "/mnt/backup/customer-terminal-native-target.PfNyjp/debug/bundle/deb/Papercusp Server_0.0.26_amd64/data/usr/lib/Papercusp Server/sidecar/serve.mjs"
+    ],
+    [
+      "git",
+      "-C",
+      "/home/builduser/.papercusp/scratch/customer-terminal-source-714072d2b2.zSJqsQ/source",
+      "status",
+      "--porcelain",
+      "--untracked-files=no",
+      "--ignore-submodules=dirty"
+    ],
+    [
+      "git",
+      "-C",
+      "/home/builduser/.papercusp/scratch/customer-terminal-source-714072d2b2.zSJqsQ/source",
+      "diff",
+      "--numstat"
+    ]
+  ],
+  "verificationProcedure": "Verify both updater signatures using the public key embedded in each ELF; stream the actual Debian archive members and compare their SHA-256 with retained native/Node payloads; disassemble both console/external functions; parse the archived serve.mjs function bodies; rehash the six tested feature sources.",
+  "scope": "Confirmed GNOME reflow and stalled-output safeguards. Original intermittent GUI renderer freeze WI-10007670 remains a separate open investigation. Packages are final signed artifacts; this receipt does not claim deployment of the operator on port3070.",
+  "publicEvidenceExport": {
+    "method": "scripts/lib/identity-leak-patterns.mjs#serializeIdentitySafeJson",
+    "normalization": "Contributor home owner in recorded command operands replaced with canonical builduser; artifact paths, package identities, source hashes and test proof remain unchanged.",
+    "privateReceiptSha256": "0d1dfd9d0f1966b5cf8855a6cc3656d9a5465fba1c41bfe3636f24947181afb8",
+    "privateReceiptRef": "/tmp/customer-terminal-shipment-private-identity.json"
+  }
+}

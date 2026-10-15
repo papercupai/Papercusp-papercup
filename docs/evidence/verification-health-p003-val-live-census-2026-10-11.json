@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "verification.health live read on the staging operator for SPEC-P-003-VAL-LIVE-CENSUS@1 (valBlockPlans eq 0 after VAL-* retirement)",
+  "plan": "verification-system-improvements-2026-10-10",
+  "workItems": ["WI-6554700010008355"],
+  "decisions": ["D-001", "D-008", "D-013", "D-046"],
+  "servingOperator": {
+    "port": 3170,
+    "service": "papercusp-operator (staging)",
+    "buildShaBefore": "be37bee805",
+    "buildShaAfter": "be37bee805",
+    "note": "Per D-046 a staging-operator read is live evidence until the green gate promotes the cell source. /api/health was read immediately before and after the tool call. Both cell source files (packages/operator-core/lib/verification-health.ts, packages/operator-core/lib/agent-tools/plans/verification-health.ts) were clean against HEAD at measurement time."
+  },
+  "command": [
+    "curl -s 127.0.0.1:3170/api/health",
+    "node scripts/mcp-call.mjs plans:verification-health '{}' --client su-6ea9fa20-b815-4d82-b223-73a74096bcaf --harness papercusp --port 3170",
+    "curl -s 127.0.0.1:3170/api/health",
+    "sudo -n -u postgres psql -d papercusp (census of harness_shared.harness_plans for workspace papercusp-workspace with VAL_BLOCK_HEADER_PG_PATTERN)"
+  ],
+  "startedAt": "2026-10-11T12:12:00.398Z",
+  "finishedAt": "2026-10-11T12:12:04.779Z",
+  "measuredAt": "2026-10-11T12:12:00.413Z",
+  "exitCode": 0,
+  "rawRead": {
+    "path": ".papercusp/scratch/verif/lc-20261011T121200Z.vh.json",
+    "sha256": "4e6eaee0b4db3a582ec86c71e79df99f5c5374827d3ca661190d64d55fe3702f"
+  },
+  "cell": {
+    "valBlockPlans": 0,
+    "activePlans": 14,
+    "breaches": 0,
+    "measurementErrors": []
+  },
+  "crossCheck": {
+    "method": "Independent sudo psql census at 2026-10-11T12:12:03Z against :5432 over harness_shared.harness_plans (workspace_id papercusp-workspace), using the cell's block-header pattern (^|\\n)[ \\t]{1,8}-[ \\t]+\\*{0,2}\\[VAL- (VAL_BLOCK_HEADER_PG_PATTERN in packages/operator-core/lib/verification-health.ts). A bare LIKE '%[VAL-%' also counts prose mentions, so the partition reports both.",
+    "rawPath": ".papercusp/scratch/verif/lc-20261011T121200Z.census.txt",
+    "rawSha256": "bf47abcf56c1c4e1537f0368e82bd1f3178ef0eddbf3359fa97ad14707cdd4e1",
+    "partition": [
+      { "archived": false, "block": false, "mention": false, "plans": 2274 },
+      { "archived": false, "block": false, "mention": true, "plans": 4 },
+      { "archived": true, "block": false, "mention": false, "plans": 136 }
+    ],
+    "valBlockPlansNonArchived": 0,
+    "valBlockPlansArchived": 0,
+    "nullContentNonArchived": 0
+  },
+  "summary": "The live verification-health cell on :3170 (be37bee805) reports valBlockPlans 0 over 14 active plans with no measurement errors. An independent Postgres census with the same pattern finds 0 non-archived and 0 archived plans carrying a [VAL- block among 2,414 plans; 4 non-archived plans only mention [VAL- in prose. Both regex controls behave as expected.",
+  "assertions": [
+    { "id": "val-live-census-cell-zero", "passed": true, "evidence": "plans:verification-health on :3170 returned valBlockPlans 0, breaches 0, measurementErrors [] (build be37bee805 before and after)." },
+    { "id": "val-live-census-not-vacuous", "passed": true, "evidence": "The cell measured 14 active plans; the census partition covers 2,278 non-archived plans with 0 null-content rows, so the zero is not an empty population." },
+    { "id": "val-live-census-sql-agrees", "passed": true, "evidence": "The independent census counts 0 non-archived plans whose content matches the block-header pattern." },
+    { "id": "val-live-census-pattern-controls", "passed": true, "evidence": "Control block line '  - **[VAL-001]** must pass' matches the pattern; prose 'VAL-* blocks like [VAL-001] are retired' does not." }
+  ]
+}

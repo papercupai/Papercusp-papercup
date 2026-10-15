@@ -1,0 +1,95 @@
+{
+  "schemaVersion": "p011-spawner-resource-oracle-v1",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "startedAt": "2026-10-03T02:50:50.962Z",
+  "endedAt": "2026-10-03T02:50:51.010Z",
+  "incomplete": false,
+  "accepted": true,
+  "counterexamples": [
+    {
+      "id": "rss-only",
+      "rejection": "PSS required"
+    },
+    {
+      "id": "allocation-missing",
+      "rejection": "cumulative V8 allocation required"
+    },
+    {
+      "id": "allocation-reset",
+      "rejection": "cumulative V8 allocation required"
+    },
+    {
+      "id": "pid-reused",
+      "rejection": "sample identity"
+    },
+    {
+      "id": "wrong-inspector",
+      "rejection": "process identity"
+    },
+    {
+      "id": "allocator-changed",
+      "rejection": "allocator mismatch"
+    },
+    {
+      "id": "workload-omitted",
+      "rejection": "equivalent command outcomes"
+    },
+    {
+      "id": "outcome-changed",
+      "rejection": "equivalent command outcomes"
+    },
+    {
+      "id": "concurrency-label-lies",
+      "rejection": "actual command concurrency"
+    },
+    {
+      "id": "idle-phase-omitted",
+      "rejection": "matched phases"
+    },
+    {
+      "id": "source-drift",
+      "rejection": "source drift"
+    },
+    {
+      "id": "artifact-drift",
+      "rejection": "within-mode artifact drift"
+    },
+    {
+      "id": "unreaped-child",
+      "rejection": "cleanup or capability"
+    },
+    {
+      "id": "forced-cleanup",
+      "rejection": "cleanup or capability"
+    },
+    {
+      "id": "pss-only-one-pair",
+      "rejection": "both pairs must reduce PSS"
+    },
+    {
+      "id": "allocation-only-one-pair",
+      "rejection": "both pairs must reduce cumulative V8 allocation"
+    }
+  ],
+  "expectedCounterexamples": 16,
+  "fixture": {
+    "path": "docs/evidence/papercusp-oct1-p011-spawner-safe-boot-pair-r3-2026-10-02.json",
+    "sha256": "a4650f459bd06d407650144d52d3716dce98e31a35cae7c5e7eb042b3a5981e9"
+  },
+  "oracle": {
+    "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "sha256": "5dd62aa8debd3e352f033adc1747356373e0cf40f911e9711ae880f00111167f",
+    "independentOf": "No cohort-writer import or reduction/concurrency headline used; raw OS/V8 counters and command timestamps determine acceptance."
+  },
+  "scope": "Counterexample acceptance of the exact saved private spawner receipt only; no runtime cohort replay.",
+  "limits": [
+    "Cumulative V8 allocation is not retained or native allocation.",
+    "Unforced counters include transient state; GC events were not recorded.",
+    "Historical named-source scope and full executed graph unknown are preserved.",
+    "Other selected sources, live paired savings, parent fulfillment, independent plan grading and shipment remain open."
+  ]
+}

@@ -173,4 +173,14 @@ describe('check-ungated-mug-kettle --check-file: a verdict may not be broader th
     expect(code).toBe(0);
     expect(out).toMatch(/GATED/);
   });
+
+  it('the full guard sets a failing process status when it reports NEW UNGATED findings', () => {
+    const source = fs.readFileSync(GUARD, 'utf8');
+    const start = source.indexOf('if (offenders.length) {');
+    const end = source.indexOf('\nif (activeGuidanceFailed(activeGuidance)) {', start);
+
+    expect(start, 'the full guard must retain its offender-reporting branch').toBeGreaterThan(-1);
+    expect(end, 'the offender branch must end before the guidance verdict').toBeGreaterThan(start);
+    expect(source.slice(start, end)).toMatch(/process\.exitCode\s*=\s*1/);
+  });
 });

@@ -9,7 +9,13 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/setup/setup-tools.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 
 const h = vi.hoisted(() => {
   const store = new Map<string, unknown>();
@@ -18,6 +24,11 @@ const h = vi.hoisted(() => {
     read: vi.fn(async (k: string) => store.get(k) ?? null),
     write: vi.fn(async (k: string, v: unknown) => {
       store.set(k, v);
+    }),
+    update: vi.fn(async <T>(k: string, fallback: T, mutate: (current: T) => T) => {
+      const next = mutate((store.get(k) ?? fallback) as T);
+      store.set(k, next);
+      return next;
     }),
     creds: { current: {} as Record<string, string | undefined> },
     collect: vi.fn(async () => ({
@@ -29,6 +40,7 @@ const h = vi.hoisted(() => {
 vi.mock('../../operator-state-pg', () => ({
   readOperatorState: h.read,
   writeOperatorState: h.write,
+  updateOperatorState: h.update,
 }));
 vi.mock('../../setup-wizard-install-id', () => ({ ensureInstallId: vi.fn() }));
 vi.mock('../../credentials', () => ({
@@ -82,6 +94,7 @@ const wizard = () => h.store.get('setup_wizard_state') as Record<string, unknown
 beforeEach(() => {
   h.store.clear();
   h.creds.current = {};
+  h.update.mockClear();
   vi.mocked(clearOpenAiEmbedHardExhaustion).mockClear();
 });
 
@@ -91,6 +104,8 @@ describe('setup:set_telemetry', () => {
     expect(wizard()?.telemetry_enabled).toBe(true);
     expect(body(await call(setTelemetry, { enabled: false }))).toEqual({ telemetry_enabled: false });
     expect(wizard()?.telemetry_enabled).toBe(false);
+    expect(h.update).toHaveBeenCalledTimes(2);
+    expect(h.update).toHaveBeenLastCalledWith('setup_wizard_state', { step_status: {} }, expect.any(Function));
   });
 });
 

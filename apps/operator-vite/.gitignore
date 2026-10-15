@@ -6,6 +6,10 @@ dist.next
 dist.prev
 .vite-build.log
 .vite-build-failure.json
+# WI-10008303: per-build source-read marker (bin/vite-build-singleflight touches
+# .vite-build-source-read.<pid> for the build's lifetime). git-sync swept a live
+# one into 459247f5 — it is transient scratch, never committed.
+.vite-build-source-read.*
 node_modules
 .vite
 

@@ -20,8 +20,9 @@
  *    clears the timer + closes the LISTEN connection. Resilient: a drain error
  *    is logged, not fatal.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { configureScheduledRegistry, getManaged, resetScheduledRegistry } from '@papercusp/scheduled-registry';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   drainOutboxOnce,
@@ -29,6 +30,7 @@ import {
   OUTBOX_GC_AGE_MS,
 } from './outbox-drain';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
+import { outboxRowToLocalWriteOp, type OutboxRow } from './feature-issue-op-keys';
 
 const WS = 'ws_drain';
 const SLUG = 'drain';
@@ -49,6 +51,7 @@ function makeFakeHandle(opts?: {
   const handle = {
     workspaceId: opts?.workspaceId ?? WS,
     harnessSlug: opts?.harnessSlug ?? SLUG,
+    ownLog: { keyHex: 'ab'.repeat(32) },
     async append(op: LocalWriteOp): Promise<void> {
       calls += 1;
       if (opts?.throwOnCall && calls === opts.throwOnCall) {
@@ -150,7 +153,9 @@ describe('outbox-drain (Stage 3, real PG)', () => {
         enqueued_at_ms BIGINT NOT NULL DEFAULT ((EXTRACT(epoch FROM now()) * 1000)::bigint),
         drained_at   BIGINT,
         -- mig 495 (WI-2136): the drain now stamps the own-log key it appended into
-        drained_log_key TEXT
+        drained_log_key TEXT,
+        op_hlc TEXT,
+        quarantined_at BIGINT
       );
       CREATE INDEX substrate_outbox_drain_idx
         ON harness_shared.substrate_outbox (workspace_id, harness_slug, drained_at, id);
@@ -162,8 +167,17 @@ describe('outbox-drain (Stage 3, real PG)', () => {
   });
 
   beforeEach(async () => {
+    // This fixture deliberately measures real polling. The registry otherwise
+    // keeps default intervals inert inside Vitest workers; opt in through its
+    // existing injected backend rather than weakening production inertness.
+    configureScheduledRegistry({
+      setIntervalImpl: (fn, ms) => setInterval(fn, ms),
+      clearIntervalImpl: (timer) => clearInterval(timer as ReturnType<typeof setInterval>),
+    });
     await db.sql`TRUNCATE harness_shared.substrate_outbox RESTART IDENTITY`;
   });
+
+  afterEach(() => resetScheduledRegistry());
 
   it('drains undrained rows in id order, appends each, marks drained, returns count', async () => {
     await seedOutbox(db.sql, { table_name: 'harness_features_consolidated', op: 'put', key: 'F-1', row: featureRow('F-1') });
@@ -414,6 +428,107 @@ describe('outbox-drain (Stage 3, real PG)', () => {
   });
 
   // ── startOutboxDrain ─────────────────────────────────────────────────────────
+  it('an exact quarantined coord replay preserves the wire op and cannot acknowledge its original before append', async () => {
+    const originalId = await seedOutbox(db.sql, {
+      table_name: 'coord_event_log', op: 'put', key: 'm-replay',
+      row: { harness_slug: SLUG, msg_id: 'm-replay', surface: 'messages',
+        writer_key: null, body: { summary: 'already-authored message' }, ts: Date.now() },
+    });
+    await db.sql`UPDATE harness_shared.substrate_outbox
+      SET quarantined_at = ${Date.now()}, op_hlc = '001791976456564:00000:2764ac50e15ec6af'
+      WHERE id = ${originalId}`;
+    const [original] = await db.sql`SELECT table_name, op, key, row, ts, op_hlc
+      FROM harness_shared.substrate_outbox WHERE id = ${originalId}`;
+    const expectedOp = outboxRowToLocalWriteOp(original as unknown as OutboxRow);
+    const copy = () => db.sql`
+      INSERT INTO harness_shared.substrate_outbox
+        (workspace_id, harness_slug, table_name, op, key, row, ts, op_hlc)
+      SELECT o.workspace_id, o.harness_slug, o.table_name, o.op, o.key, o.row, o.ts, o.op_hlc
+      FROM harness_shared.substrate_outbox o
+      WHERE o.id = ${originalId} AND o.workspace_id = ${WS} AND o.harness_slug = ${SLUG}
+        AND o.drained_at IS NULL AND o.quarantined_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM harness_shared.substrate_outbox c
+          WHERE c.id > o.id AND c.workspace_id = o.workspace_id AND c.harness_slug = o.harness_slug
+            AND c.table_name = o.table_name AND c.op = o.op AND c.key = o.key
+            AND c.row IS NOT DISTINCT FROM o.row AND c.ts = o.ts AND c.op_hlc IS NOT DISTINCT FROM o.op_hlc)
+      RETURNING id`;
+    const [replay] = await copy();
+    expect(replay).toBeDefined();
+    expect(await copy(), 'a retry must reuse the exact copy, even while undrained').toHaveLength(0);
+    const { handle, appends } = makeFakeHandle();
+    const acknowledge = () => db.sql`
+      UPDATE harness_shared.substrate_outbox o
+      SET drained_at = c.drained_at, drained_log_key = c.drained_log_key
+      FROM harness_shared.substrate_outbox c
+      WHERE o.id = ${originalId} AND o.workspace_id = ${WS} AND o.harness_slug = ${SLUG}
+        AND o.drained_at IS NULL AND o.quarantined_at IS NOT NULL
+        AND c.id = ${replay.id} AND c.id > o.id
+        AND c.workspace_id = o.workspace_id AND c.harness_slug = o.harness_slug
+        AND c.table_name = o.table_name AND c.op = o.op AND c.key = o.key
+        AND c.row IS NOT DISTINCT FROM o.row AND c.ts = o.ts AND c.op_hlc IS NOT DISTINCT FROM o.op_hlc
+        AND c.drained_at IS NOT NULL AND c.drained_log_key = ${handle.ownLog.keyHex}
+      RETURNING o.id`;
+    expect(await acknowledge(), 'an undelivered copy is no receipt').toHaveLength(0);
+    handle.append = async () => { throw new Error('append unavailable'); };
+    await expect(drainOutboxOnce(handle, db.sql)).rejects.toThrow('append unavailable');
+    expect(await acknowledge(), 'a failed append is no receipt').toHaveLength(0);
+    handle.append = async op => { appends.push(op); };
+    expect(await drainOutboxOnce(handle, db.sql)).toBe(1);
+    expect(appends).toEqual([expectedOp]); // outbox id/enqueue time never enter the wire op
+    await db.sql`UPDATE harness_shared.substrate_outbox SET op_hlc = 'different' WHERE id = ${replay.id}`;
+    expect(await acknowledge(), 'a delivered copy with a different causal identity cannot acknowledge the original').toHaveLength(0);
+    await db.sql`UPDATE harness_shared.substrate_outbox SET op_hlc = ${original.op_hlc} WHERE id = ${replay.id}`;
+    expect(await acknowledge()).toHaveLength(1);
+    expect(await acknowledge(), 'acknowledgment is idempotent').toHaveLength(0);
+    const [receipt] = await db.sql`SELECT drained_at, drained_log_key, quarantined_at
+      FROM harness_shared.substrate_outbox WHERE id = ${originalId}`;
+    expect(receipt.drained_at).not.toBeNull();
+    expect(receipt.drained_log_key).toBe(handle.ownLog.keyHex);
+    expect(receipt.quarantined_at, 'preserve the original quarantine history').not.toBeNull();
+  });
+
+  it.each(['boot', 'live'] as const)('manual clear of a %s quarantine retries in the same process with real PG', async (origin) => {
+    const id = await seedOutbox(db.sql, {
+      table_name: 'harness_features_consolidated', op: 'put',
+      key: 'F-RETRY', row: featureRow('F-RETRY'),
+    });
+    if (origin === 'boot') {
+      await db.sql`UPDATE harness_shared.substrate_outbox SET quarantined_at = ${Date.now()} WHERE id = ${id}`;
+    }
+    let repaired = false;
+    const append = vi.fn(async () => {
+      if (!repaired) return new Promise<void>(() => {});
+    });
+    const { handle } = makeFakeHandle();
+    handle.append = append;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const drain = startOutboxDrain(handle, db.sql, {
+      pollMs: 25, _rowTimeoutMs: 15, _rowQuarantineThreshold: 3,
+      _passTimeoutMs: 0, _backlogStallMs: 0, _onStallEpisode: () => {},
+    });
+    try {
+      expect(getManaged('hyperbee-outbox-drain-poll'), 'real poll backend must be armed before DB waits').toBeDefined();
+      await vi.waitFor(async () => {
+        const [r] = await db.sql`SELECT quarantined_at, drained_at FROM harness_shared.substrate_outbox WHERE id = ${id}`;
+        expect(r.quarantined_at).not.toBeNull();
+        expect(r.drained_at).toBeNull();
+      }, { timeout: 5000 });
+      expect(append).toHaveBeenCalledTimes(origin === 'boot' ? 0 : 3);
+      repaired = true;
+      await db.sql`UPDATE harness_shared.substrate_outbox SET quarantined_at = NULL WHERE id = ${id}`;
+      await vi.waitFor(async () => {
+        const [r] = await db.sql`SELECT quarantined_at, drained_at FROM harness_shared.substrate_outbox WHERE id = ${id}`;
+        expect(r.quarantined_at).toBeNull();
+        expect(r.drained_at).not.toBeNull();
+      }, { timeout: 5000 });
+      expect(append).toHaveBeenCalledTimes(origin === 'boot' ? 1 : 4);
+    } finally {
+      await drain.stop();
+      errSpy.mockRestore(); warnSpy.mockRestore();
+    }
+  });
+
   it('startOutboxDrain runs an initial catch-up drain immediately', async () => {
     await seedOutbox(db.sql, { table_name: 'harness_features_consolidated', op: 'put', key: 'F-INIT', row: featureRow('F-INIT') });
     const { handle, appends } = makeFakeHandle();
@@ -462,6 +577,7 @@ describe('outbox-drain (Stage 3, real PG)', () => {
     const { handle, appends } = makeFakeHandle();
     const drain = startOutboxDrain(handle, db.sql, { pollMs: 50 });
     try {
+      expect(getManaged('hyperbee-outbox-drain-poll'), 'real poll backend must be armed before DB waits').toBeDefined();
       // No initial row; insert AFTER start so only the poll can catch it.
       await new Promise((r) => setTimeout(r, 100));
       await seedOutbox(db.sql, { table_name: 'harness_features_consolidated', op: 'put', key: 'F-POLL', row: featureRow('F-POLL') });

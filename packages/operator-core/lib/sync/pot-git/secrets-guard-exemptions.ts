@@ -144,7 +144,9 @@ export async function listSecretsGuardPathExemptions(workspaceId: string, sql?: 
 export type PotWaiverOutcome =
   | { potHomeSlug: string; outcome: 'signed'; policyVersion: number }
   | { potHomeSlug: string; outcome: 'unchanged'; policyVersion: number }
-  | { potHomeSlug: string; outcome: 'not_owner_swarm' | 'no_owner_pubkey' | 'write_failed'; detail?: string };
+  // Failure codes mirror hive-policy-author's MutateHivePolicyResult failure union
+  // one-for-one (mutatePotWaivers forwards `res.code` verbatim).
+  | { potHomeSlug: string; outcome: 'not_owner_swarm' | 'no_owner_pubkey' | 'write_failed' | 'policy_version_conflict'; detail?: string };
 
 export interface SecretsGuardShareSeams {
   /** Forwarded to mutateHivePolicyIfChanged (resolve/read/sign/pubkey/write). */

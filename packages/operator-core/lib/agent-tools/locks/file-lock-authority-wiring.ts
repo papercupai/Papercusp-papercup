@@ -59,20 +59,33 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 
 import {
   registerFileLockAuthorityOps,
+  isNativeEditProofForPaths,
+  type FileLockReleaseParams,
+  FILE_LOCK_OP_KINDS,
+  hookOperationStoreIdentity,
+  decodeHookOperationPrepare,
+  finishHookLockOperationSchema,
+  emitReleaseLockEvents,
   type FileLockCoordinator,
 } from '../../authority/file-lock-authority-ops';
 import {
   configureFileLockDomainResolver,
   configureFileLockHiveResolver,
+  routeFileLockOp,
 } from '../../authority/file-lock-routing';
 import { wireAuthorityRpcTransport } from '../../authority/transport-wiring';
+import { registerReportAttachmentRpc } from '../../harness/improvements/report-attachment-rpc';
+import { registerSellerReceiptRpc } from '../../cupboard/seller-receipt-rpc';
 import { wireAuthorityRpcSwarmTransport } from '../../authority/authority-rpc-swarm-wiring';
 import { wireLockEventStream } from '../../authority/lock-event-wiring';
 import { wirePeerEviction } from '../../authority/eviction-wiring';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { inWorkspaceTxn } from './in-workspace-txn';
-import { tryAcquire, tryRelease, readQueue, getTxPool } from './su-lock-store';
+import { tryAcquire, tryRelease, tryFinishHookOperation, readQueue, getTxPool } from './su-lock-store';
+import { recordEditAttributionStrict } from '../../edit-attribution';
+import { noteShaTokenRelease } from '../../authority/sha-token-registry';
+import { recordLockEvent } from '../../authority/lock-event-stream';
 
 // ── Authority-side store adapter ────────────────────────────────────────────────
 /**
@@ -83,6 +96,7 @@ import { tryAcquire, tryRelease, readQueue, getTxPool } from './su-lock-store';
  */
 export function adaptSuLockStore(): FileLockCoordinator {
   return {
+    operationStoreIdentity: hookOperationStoreIdentity,
     async acquire(p) {
       const r = await inWorkspaceTxn(p.coordinationDomain, p.owner, (tx) =>
         tryAcquire(tx, {
@@ -94,6 +108,7 @@ export function adaptSuLockStore(): FileLockCoordinator {
           ttlSec: p.ttlSec,
           goalRef: p.goalRef,
           automatic: p.automatic,
+          operation: p.operation,
         }),
         { paths: p.paths },
       );
@@ -103,12 +118,14 @@ export function adaptSuLockStore(): FileLockCoordinator {
           lockId: r.lock_id,
           expiresTs: r.expires_ts.toISOString(),
           newlyHeld: r.newly_held,
+          ...(p.operation ? { operationId: p.operation.id } : {}),
         };
       }
       return {
         ok: false,
         busy: r.busy.map((b) => ({ path: b.path, owner: b.owner })),
-        ...('reason' in r && r.reason === 'queued_waiter'
+        ...(p.operation ? { operationId: p.operation.id } : {}),
+        ...('reason' in r
           ? { reason: r.reason }
           : {}),
         ...('retryable' in r && r.retryable
@@ -118,6 +135,7 @@ export function adaptSuLockStore(): FileLockCoordinator {
     },
 
     async release(p) {
+      if (p.operation) return finishHookOperationAtAuthority(p);
       const r = await inWorkspaceTxn(p.coordinationDomain, p.owner, (tx) =>
         tryRelease(tx, {
           coordinationDomain: p.coordinationDomain,
@@ -144,6 +162,80 @@ export function adaptSuLockStore(): FileLockCoordinator {
       return readQueue(sql, { coordinationDomain: p.coordinationDomain, paths: p.paths });
     },
   };
+}
+
+/** Completion validates the stored operation inside its transaction. A strict
+ * ledger failure rolls back release; duplicate proofs use the operation UUID. */
+export async function finishHookOperationAtAuthority(p: FileLockReleaseParams): ReturnType<FileLockCoordinator['release']> {
+  const operation = p.operation;
+  if (!operation || !finishHookLockOperationSchema.safeParse({ ...operation, ttl_sec: operation.ttlSec }).success ||
+      !['cancelled', 'completed'].includes(operation.outcome)) {
+    return { ok: false, reason: 'operation_conflict' };
+  }
+  const proof = p.nativeEditProof;
+  if ((operation.outcome === 'cancelled' && proof) ||
+      (proof && !isNativeEditProofForPaths(proof, operation.paths))) {
+    return { ok: false, reason: 'operation_proof_conflict', operationId: operation.id };
+  }
+  return inWorkspaceTxn(p.coordinationDomain, p.owner, async (tx) => {
+    const result = await tryFinishHookOperation(tx, {
+      coordinationDomain: p.coordinationDomain, owner: p.owner, ownerLabel: null,
+      paths: operation.paths, intent: operation.intent, ttlSec: operation.ttlSec,
+      automatic: true, operation, outcome: operation.outcome,
+    });
+    if (!result.ok) return { ...result, operationId: operation.id };
+    if (proof) {
+      // Covers a lost acquire reply and a deliberately retained hold as well as
+      // paths released now. Only the validated operation's requested scope wins.
+      await recordEditAttributionStrict({
+        repoRoot: p.coordinationDomain, files: result.requestedPaths, agentId: p.owner,
+        intent: `PostToolUse:${proof.source}:${proof.tool ?? proof.tools?.join(',')}`,
+        goalRef: result.goalRef ?? undefined, dispatchCallId: operation.id,
+      });
+    }
+    return { ...result, operationId: operation.id, attributed: proof ? result.requestedPaths : [] };
+  }, { paths: operation.paths });
+}
+
+/** Finish must use the pin prepared BEFORE acquire. Never re-prepare on a
+ * changed authority and never search another domain for a matching hold. */
+export async function routeHookOperationFinish(p: FileLockReleaseParams, authority: string | undefined): Promise<Record<string, unknown>> {
+  const operation = p.operation;
+  if (!operation || !authority) return { ok: false, reason: 'operation_authority_unknown' };
+  try {
+    const routed = await routeFileLockOp(p.coordinationDomain, {
+      authorityFence: {
+        expected: authority,
+        localStoreIdentity: hookOperationStoreIdentity,
+        prepare: (): Awaited<ReturnType<FileLockCoordinator['release']>> => ({ ok: false, reason: 'operation_authority_unknown' }),
+      },
+      local: () => finishHookOperationAtAuthority(p),
+      remote: {
+        kind: FILE_LOCK_OP_KINDS.release, payload: p,
+        prepare: { kind: FILE_LOCK_OP_KINDS.queue,
+          payload: { owner: p.owner, coordinationDomain: p.coordinationDomain, operationPrepare: true },
+          decode: decodeHookOperationPrepare },
+        decode: (raw): Awaited<ReturnType<FileLockCoordinator['release']>> => {
+          const r = raw as Awaited<ReturnType<FileLockCoordinator['release']>>;
+          if (r.operationId !== operation.id) throw new Error('operation response unavailable');
+          return r;
+        },
+      },
+    });
+    const r = routed.value;
+    if (r.ok && r.released) {
+      noteShaTokenRelease(p.coordinationDomain, r.released, p.publishedSha ?? null, Date.now());
+      if (routed.scope && routed.via !== 'remote-authority') {
+        emitReleaseLockEvents((event) => void recordLockEvent(event), {
+          scope: routed.scope, owner: p.owner, released: r.released, ts: Date.now(), publishedSha: p.publishedSha,
+        });
+      }
+    }
+    return { ok: r.ok, reason: r.reason, operation_id: r.operationId, released: r.released,
+      requested_paths: r.requestedPaths, attributed: r.attributed, held_before: r.heldBefore, state: r.state };
+  } catch (err) {
+    return { ok: false, reason: (err as { reason?: string }).reason ?? 'operation_authority_unknown', operation_id: operation.id };
+  }
 }
 
 // ── Requesting-side resolver snapshot ───────────────────────────────────────────
@@ -198,6 +290,8 @@ export function wireFileLockAuthority(): void {
   // configurePeerAddressResolver / PAPERCUSP_AUTHORITY_PEER_ADDRESSES). No address →
   // fail-open, exactly the pre-wiring behavior.
   wireAuthorityRpcTransport();
+  registerReportAttachmentRpc();
+  registerSellerReceiptRpc();
   // shared-hive-hardening P-001 / D-005 (owner-ratified option c): compose the
   // Hyperswarm-mux RPC transport IN FRONT of the HTTP one so NAT'd desktop peers
   // are reachable over the existing connection. Async (resolves the device signer

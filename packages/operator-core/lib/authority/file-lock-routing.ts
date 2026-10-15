@@ -39,6 +39,8 @@
 import {
   routeToAuthority,
   routeToAuthorityForHive,
+  localAuthorityFenceKey,
+  AuthorityFenceError,
   type AuthorityOp,
   type LockAuthorityDeps,
   type RouteResult,
@@ -135,6 +137,13 @@ export async function routeFileLockOp<T>(
   if (!harnessSlug) {
     // No federated harness for this checkout → there is no remote authority to
     // defer to. Run locally (single box / unmanaged repo).
+    if (op.authorityFence) {
+      const key = await localAuthorityFenceKey(`domain:${domain}`, deps, op.authorityFence.localStoreIdentity?.());
+      if (!op.authorityFence.expected) {
+        return { value: op.authorityFence.prepare(key), via: 'local-authority' };
+      }
+      if (op.authorityFence.expected !== key) throw new AuthorityFenceError('operation_authority_changed');
+    }
     return { value: await op.local(), via: 'local-authority' };
   }
 
@@ -151,10 +160,10 @@ export async function routeFileLockOp<T>(
   // cached (remote-peers-cache) so the per-edit lock hook pays a cached boolean, not
   // a shared_presence query. A stale "no peers" only costs a missed serialization
   // (fail-open, D-004) for up to the cache TTL after a peer appears.
-  const hasPeers =
-    scope.kind === 'hive' ? hasRemoteHivePeers(scope.key, deps) : hasRemotePeers(scope.key, deps);
-  if (!deps.skipRemotePeersFastPath && !(await hasPeers)) {
-    return { value: await op.local(), via: 'local-authority', scope: scope.key };
+  if (!op.authorityFence && !deps.skipRemotePeersFastPath) {
+    const hasPeers = scope.kind === 'hive'
+      ? await hasRemoteHivePeers(scope.key, deps) : await hasRemotePeers(scope.key, deps);
+    if (!hasPeers) return { value: await op.local(), via: 'local-authority', scope: scope.key };
   }
 
   const result =

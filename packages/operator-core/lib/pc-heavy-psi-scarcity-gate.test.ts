@@ -38,6 +38,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { pcHeavyFixtureOptions } from './testing/pc-heavy-fixture';
+
 // lib -> operator-core -> packages -> <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 // ⚠ Every reference to the subject MUST go through this constant — the mutation-probe
@@ -191,18 +193,12 @@ function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     PC_HEAVY_MEM_PSI_MIN_VICTIM_MIB: '0',
     PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: 'max',
     PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '100',
-    // Coalescing keys a run on `git status --untracked-files=all` + `git diff --binary HEAD` of
-    // the cwd's worktree, so with it on, this suite's startup cost depends on how dirty the
-    // enclosing checkout is. The suite asserts the PSI decision, never coalescing.
-    PC_HEAVY_COALESCE: '0',
     ...extra,
   };
 }
 
 function startAdmission(extra: Record<string, string> = {}): ChildProcess {
-  // cwd: the private temp dir, which is not a git worktree. Nothing the subject does may depend on
-  // the state of whichever checkout the test happens to run from.
-  const child = spawn('bash', [PC_HEAVY, 'sleep', '30'], { env: baseEnv(extra), cwd: dir });
+  const child = spawn('bash', [PC_HEAVY, 'sleep', '30'], pcHeavyFixtureOptions(dir, baseEnv(extra)));
   child.stdout?.resume();
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk: string) => {

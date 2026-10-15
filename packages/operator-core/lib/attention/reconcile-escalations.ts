@@ -51,6 +51,7 @@ import { listLoopStanddownOwners } from '../harness/routines/release-pause-ttl';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { classifyItemActivity, isActivelyWorked } from '../item-activity';
 import { getWorkItem, TERMINAL_WORK_ITEM_STATES } from '../work-items';
+import { observeFallback } from '../degradation/fallback-observations';
 
 /** Resolver identity stamped on auto-reconciled escalations (audit trail). */
 export const RECONCILE_OWNER = 'system:attention-reconcile';
@@ -967,6 +968,7 @@ export async function rerouteUnackedEscalationsOnce(
   const validateArtifactRefFn = opts.validateArtifactRefFn ?? validateEscalationArtifactRef;
   const sendFn = opts.sendMessageFn ?? sendMessage;
   const wakeFn = opts.wakeRecipientsFn ?? wakeRecipients;
+  const workspaceId = opts.workspaceId ?? coordWorkspaceId();
   // Fails OPEN, at the CALL boundary as well as inside the reader: acquiring the
   // handle can throw before the reader's own try/catch is reached. This guard
   // only ever SUPPRESSES a delivery, so an unreadable stand-down must degrade to
@@ -976,11 +978,14 @@ export async function rerouteUnackedEscalationsOnce(
     opts.listLoopStanddownOwnersFn ??
     (async (at: number) => {
       try {
-        return await listLoopStanddownOwners(coordSql(), {
-          workspaceId: opts.workspaceId ?? coordWorkspaceId(),
+        const owners = await listLoopStanddownOwners(coordSql(), {
+          workspaceId,
           nowMs: at,
         });
+        observeFallback('workspace-routing-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'escalation-standdown' }, { workspaceId });
+        return owners;
       } catch (e) {
+        observeFallback('workspace-routing-read', { eligible: 1, applied: 0, reason: 'standdown-read-failed', scope: 'escalation-standdown' }, { workspaceId });
         console.warn(
           `[escalation-sla-reroute] stand-down read failed (non-fatal, failing open): ${e instanceof Error ? e.message : String(e)}`,
         );
@@ -990,7 +995,6 @@ export async function rerouteUnackedEscalationsOnce(
   const nowMs = opts.nowMs ?? Date.now();
   const slaMs = opts.slaMs ?? ESCALATION_REROUTE_SLA_MS;
   const limit = opts.limit ?? ESCALATION_REROUTE_BATCH_LIMIT;
-  const workspaceId = opts.workspaceId ?? coordWorkspaceId();
 
   const opens = (await listEscalationsFn({ status: 'open' })) as unknown as EscalationRerouteInput[];
   const pastSlaAgentRows = opens.filter((e) => isRerouteEligible(e, nowMs, slaMs, new Set()));

@@ -27,6 +27,7 @@
  * lets the GC (and every routine) keep firing.
  */
 import type { Sql } from 'postgres';
+import { observeFallback } from '../degradation/fallback-observations';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
 /**
@@ -152,12 +153,14 @@ export const STALE_ROUTINE_FIRE_NO_OUTPUT_MS = ((): number => {
   const v = Number(raw);
   const fallback = `falling back to ${DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS}ms`;
   if (!Number.isFinite(v) || v <= 0) {
+    observeFallback('routine-config', { eligible: 1, applied: 0, reason: 'invalid-number', scope: 'reaper-fire-window' });
     console.warn(
       `[dbos-reaper] PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS=${raw} is not a positive number; ${fallback}.`,
     );
     return DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS;
   }
   if (v <= NO_OUTPUT_OVERRIDE_FLOOR_MS || v >= NO_OUTPUT_OVERRIDE_CEILING_MS) {
+    observeFallback('routine-config', { eligible: 1, applied: 0, reason: 'unsafe-timing-order', scope: 'reaper-fire-window' });
     console.warn(
       `[dbos-reaper] PAPERCUSP_DBOS_REAPER_FIRE_NO_OUTPUT_MS=${v}ms would break the green-gate timing chain ` +
         `(must be strictly between SELF_WATCHDOG_MS=${NO_OUTPUT_OVERRIDE_FLOOR_MS}ms and ` +
@@ -168,6 +171,7 @@ export const STALE_ROUTINE_FIRE_NO_OUTPUT_MS = ((): number => {
     );
     return DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS;
   }
+  observeFallback('routine-config', { eligible: 1, applied: 1, reason: 'applied', scope: 'reaper-fire-window' });
   return v;
 })();
 /** WI-1416: the FAST-orphan window for a routineFire in the genuinely anomalous
@@ -376,9 +380,28 @@ export async function reapDeadExecutorWorkflows(
        WHERE status IN ('PENDING', 'ENQUEUED')
          AND (
            (
-             name = 'routinesTick'
+             -- WI-10000846: the sweeps run in their own scheduled tick; the same
+             -- no-progress rule that used to cover them inside routinesTick applies.
+             name IN ('routinesTick', 'routinesSweepTick')
              AND (
-               updated_at < ${staleSchedulerAt}
+               -- EI-25221129396992808: judge silence by the latest PROGRESS, not
+               -- updated_at alone. DBOS bumps workflow_status.updated_at only on a
+               -- status transition, never per step checkpoint, so a live tick that
+               -- is still firing routines (measured: working ticks avg 78s, max
+               -- 272s) read as wedged after 90s and was CANCELLED mid-run. Its
+               -- steps kept going but it never landed SUCCESS, so the routine-engine
+               -- liveness reader saw 6-9 min gaps and paged a false
+               -- health-tick-stale. A genuinely wedged step still checkpoints
+               -- nothing for the whole window and is reaped exactly as before.
+               GREATEST(
+                 updated_at,
+                 COALESCE(
+                   (SELECT max(op.completed_at_epoch_ms)
+                      FROM dbos.operation_outputs op
+                     WHERE op.workflow_uuid = dbos.workflow_status.workflow_uuid),
+                   0
+                 )
+               ) < ${staleSchedulerAt}
                OR (
                  created_at < ${staleSchedulerAt}
                  AND NOT EXISTS (

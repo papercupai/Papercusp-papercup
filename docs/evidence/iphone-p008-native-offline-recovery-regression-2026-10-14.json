@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native operator outage restores inbox data before relaunch",
+  "command": ["tools/ios-ci.py:simulator", "--force", "--paired-ui", "--offline-recovery-ui", "PapercupUITests/PairFlowUITests/testOwnedOperatorOfflineThenRecoversWithoutRepairing"],
+  "startedAt": "2026-10-14T22:56:36.493660+00:00",
+  "finishedAt": "2026-10-14T23:07:46.360268+00:00",
+  "exitCode": 0,
+  "summary": "The maintained Mac VM runner passed 60 unit tests, 5 UI smoke tests and 1 selected actual-operator outage test with zero failures or skips. After the owned operator stopped and a replacement became ready, the original paired phone displayed authorized inbox content before relaunch, with no HTTP 502 error or pairing prompt. Ordinary Keychain relaunch also displayed the inbox. All 283 declared native artifacts matched their retained hashes and sizes. Fixture cleanup, private-input removal and exclusive Mac lease release were verified. This closes the selected data-recovery regression; broader P-008 remains open.",
+  "assertions": [
+    {"id": "native outage data recovery before relaunch", "passed": true, "evidence": "paired-ui-summary.json records 1 passed, 0 failed, 0 skipped. The strengthened XCTest requires loaded inbox content and rejects the HTTP 502 error before the recovered screenshot and ordinary relaunch. Reviewed image 66103AF6-F0C3-4079-8BB1-FD9B1BCF6240.png shows authorized inbox cards with the offline banner and HTTP 502 message absent."},
+    {"id": "native unit and smoke phases", "passed": true, "evidence": "unit-1-summary.json records 60 passed, 0 failed, 0 skipped; ui-smoke-summary.json records 5 passed, 0 failed, 0 skipped."},
+    {"id": "actual operator replacement preserves pairing", "passed": true, "evidence": "runtime.json records stoppedPid 3779604 at 23:05:43.611Z, restoredPid 228358 at 23:06:40.110Z, recovery readiness at 23:07:13.242Z and originalDevicePreserved true. The maintained fixture retained its private database and signing identity across the interruption."},
+    {"id": "artifact integrity", "passed": true, "evidence": "local-artifact-verification.json rehashed all 283 result.json artifacts directly from native-artifacts.tar.gz and recorded zero mismatches."},
+    {"id": "fixture and resource cleanup", "passed": true, "evidence": "Native and fixture durable tasks completed with exit 0. runtime.json records processCleanupVerified, cloudCleanupVerified and cleanupVerified true at 23:11:36.239Z. Direct probes found the three owned processes absent, ports 46179, 35511 and 34695 closed, private HOME/runtime/Postgres directories absent and both Linux pair payloads absent. The inspected guest directory contained only pair-payload.json and was removed. locks:release_resource returned released:1, expired:false for Mac lease a1d8b52a-76d1-438f-8818-0908a0b153ff."}
+  ],
+  "workItemId": "WI-10004735",
+  "regressionWorkItemId": "EI-25990527987022733",
+  "sourceWorkItemId": "WI-10007213",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "spec": "AUTO-BAR-R-2-P-008@2",
+  "repository": "papercup-rust-mobile (canonical independent mobile repository)",
+  "sourceCommitAtExecution": "56bb1b34e5143763d79b0112f71f704b5d3f03d3",
+  "sourceDirtyAtExecution": true,
+  "sourceFingerprint": "a38267753b714424c7ac92ea2085fe1f2d163ec847ec237b429cef9a020be688",
+  "canonicalSourceAtPreflight": {"commit": "790c276c0aa2b4d7dd1b715cdf1d63ccb446679f", "dirty": false, "fingerprint": "a38267753b714424c7ac92ea2085fe1f2d163ec847ec237b429cef9a020be688"},
+  "sourceAdmission": "Guest bytes matched the clean canonical mobile fingerprint before execution. Guest Git metadata remained dirty at an older commit. This is development simulator evidence; it does not admit a signed release candidate.",
+  "toolchain": {"xcode": "Xcode 16.4 Build 16F6", "simulatorSDK": "18.5", "simulatorRuntime": "iOS 18.6", "device": "iPhone 16 Pro x86_64", "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"},
+  "rootCause": "The shared cache cleared its failed-poll marker after a successful request, but suppressed Updated when the payload equalled the cached bytes. The subscriber kept displaying its prior error. Recovery now emits Updated once even for identical payloads; later unchanged successful polls remain quiet.",
+  "recurrenceGuards": [
+    "crates/papercup-core/src/cache.rs:polling_notifies_recovery_when_payload_is_unchanged requires one recovery notification and quiet subsequent unchanged polls. The saved issue checkpoint records the old implementation failing this negative control and all 9 focused cache tests passing after the fix; these completed tests were not rerun for recovery.",
+    "ios/PapercupUITests/PairFlowUITests.swift:testOwnedOperatorOfflineThenRecoversWithoutRepairing requires authorized inbox content and no HTTP 502 message before relaunch, exercising the actual native subscriber against an owned interrupted operator.",
+    "EI-25993266439317211 freezes isolated-runtime migration inputs across restarts; its registered real-Postgres supervisor integration verifies current supervisor bytes and two boots around a late private SQL addition. The repaired fixture was used for this run."
+  ],
+  "retainedEvidence": {
+    "root": ".papercusp/evidence/EI-25990527987022733-native-20261014T2257Z",
+    "pathBase": "Operating account home directory; retained evidence is outside the staging checkout.",
+    "attempt": "20261014T225636Z-393b4eeb",
+    "archive": "native-artifacts.tar.gz",
+    "archiveSha256": "a07286fad6f9a226090f34b63a5a760167afffb5490dbb495ddb07aeddcc599d",
+    "archiveBytes": 8919040,
+    "resultPath": "result.json",
+    "resultSha256": "f501fbdabaf772abbd2ebefae148bf421db2c78d46c4c75290cfaa54c94a6069",
+    "verificationFile": "local-artifact-verification.json",
+    "verifiedArtifactCount": 283,
+    "mismatches": [],
+    "nativeJobId": "0mv8ploy61ojk67h1ld",
+    "fixtureJobId": "0mv8pi2wsspww2b1hi2",
+    "jobDisposition": "Both terminal completed/exit0; do not rerun these completed jobs."
+  },
+  "screenshots": [
+    {"file": "4D45DF91-39D0-44F3-8D00-19189BC20544.png", "review": "Authorized inbox content and tabs are visible before the operator stops."},
+    {"file": "DED70C31-F796-4E61-8007-1A302DAE25FD.png", "review": "Desktop offline banner and HTTP 502 inbox error appear during the outage; pairing remains present."},
+    {"file": "66103AF6-F0C3-4079-8BB1-FD9B1BCF6240.png", "review": "Before relaunch, authorized inbox cards have returned; both the offline banner and HTTP 502 inbox error are absent."},
+    {"file": "7EE95C09-2149-423D-9A77-8256EBAC485C.png", "review": "Ordinary relaunch retains pairing and displays authorized inbox content."}
+  ],
+  "fixture": {
+    "sourceSha256": "6f19b019597e956b9ffe4163df27acedd5ad1f1e635f1987ac2e014720ca066a",
+    "guardWorkItems": ["EI-25988799389518903", "EI-25993266439317211"],
+    "launch": "scripts/with-test-pg.mjs --isolated-runtime=operator-api; fixture fourth positional argument 55",
+    "readyAt": "2026-10-14T22:55:16.702Z",
+    "interruptionSeconds": 55,
+    "originalDevicePreserved": true,
+    "protectedBoundaryBeforeAndAfter": {"/api/health": 404, "/api/workspaces": 404, "/api/device/desktop/mint-pair-token": 404, "/api/device/heartbeat": 401},
+    "cleanupVerified": true,
+    "finishedAt": "2026-10-14T23:11:36.239Z"
+  },
+  "priorEvidence": "docs/evidence/iphone-p008-native-offline-recovery-2026-10-14.json retains the original false-positive detector result and HTTP 502 screenshot; this receipt records the subsequent regression verification.",
+  "disclosedGaps": [
+    "Broader P-008 and accepted hosted/BYOC cloud target acceptance remain open.",
+    "Executed source retains dirty guest Git metadata; no clean signed candidate admission.",
+    "Simulator evidence does not measure physical cellular radio, production APNs delivery, Bluetooth hardware or battery endurance.",
+    "No Xcode 26, signed IPA, App Store, TestFlight or final shipment claim."
+  ]
+}

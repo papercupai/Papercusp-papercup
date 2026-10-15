@@ -27,7 +27,7 @@ const issueFloorMissM = vi.hoisted(() => vi.fn());
 const terminalExhaustionM = vi.hoisted(() => vi.fn());
 const planTerminalityM = vi.hoisted(() => vi.fn());
 const leaderLivenessM = vi.hoisted(() => vi.fn());
-const featureFamilyMatchM = vi.hoisted(() => vi.fn());
+const featureFamilyBreakdownM = vi.hoisted(() => vi.fn());
 const fleetScopedMissM = vi.hoisted(() => vi.fn());
 const cooldownMissM = vi.hoisted(() => vi.fn());
 
@@ -67,9 +67,10 @@ vi.mock('../../scheduler/fleet-scope-admission', async (importOriginal) => ({
   diagnoseFleetScopeTerminalExhaustion: terminalExhaustionM,
   diagnoseFleetScopePlanTerminality: planTerminalityM,
   diagnoseFleetScopeLeaderLiveness: leaderLivenessM,
+  reconcileFleetScopeLeaderSuccession: vi.fn(async () => null),
   // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 — none of this
   // file's fixtures do (survivors/drained are both 22), so this is a defensive stub only.
-  diagnoseFleetScopeFeatureFamilyMatch: featureFamilyMatchM,
+  diagnoseFleetScopeFeatureFamilyExclusions: featureFamilyBreakdownM,
   fleetScopedMiss: fleetScopedMissM,
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
@@ -107,7 +108,7 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     terminalExhaustionM.mockResolvedValue(null);
     planTerminalityM.mockResolvedValue(null);
     leaderLivenessM.mockResolvedValue(null);
-    featureFamilyMatchM.mockResolvedValue(null);
+    featureFamilyBreakdownM.mockResolvedValue(null);
     fleetScopedMissM.mockReturnValue({ ok: false, error: 'miss', windDown: false });
   });
 
@@ -170,14 +171,15 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     const zeroMatches = { matchedByFilter: 0, claimable: 0, excluded: {} as never };
     getNextForBeeM.mockResolvedValue(null);
     issueFloorMissM.mockResolvedValue(zeroMatches);
-    terminalExhaustionM.mockResolvedValue({ matchedByFilter: 2, terminalMatchedByFilter: 2 });
+    const exhaustion = { matchedByFilter: 2, terminalMatchedByFilter: 2, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 };
+    terminalExhaustionM.mockResolvedValue(exhaustion);
 
     const res = await call();
 
     expect(res.ok).toBe(false);
     expect(getNextForBeeM).toHaveBeenCalledTimes(1);
     expect(terminalExhaustionM).toHaveBeenCalledTimes(1);
-    expect(missOpts()?.terminalExhaustion).toEqual({ matchedByFilter: 2, terminalMatchedByFilter: 2 });
+    expect(missOpts()?.terminalExhaustion).toEqual(exhaustion);
   });
 
   it('passes plan terminality and leader liveness to the zero-match miss verdict', async () => {
@@ -199,13 +201,14 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     // diagnostic then observes terminality and leader loss and carries both
     // transitions into the miss verdict.
     planTerminalityM.mockResolvedValueOnce(activePlan).mockResolvedValueOnce(planTerminality);
-    leaderLivenessM.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    // Preflight uses the succession seam; this diagnostic reads liveness once.
+    leaderLivenessM.mockResolvedValueOnce(false);
 
     const res = await call();
 
     expect(res.ok).toBe(false);
     expect(planTerminalityM).toHaveBeenCalledTimes(2);
-    expect(leaderLivenessM).toHaveBeenCalledTimes(2);
+    expect(leaderLivenessM).toHaveBeenCalledOnce();
     expect(missOpts()).toMatchObject({ planTerminality, leaderLiveness: false });
   });
 
@@ -225,7 +228,7 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ workItem: { id: 'WI-feature', harness: 'papercusp' }, claimedUnder: 'drain', specSource: 'fleet' });
     issueFloorMissM.mockResolvedValue(zeroMatches);
-    featureFamilyMatchM.mockResolvedValue(3);
+    featureFamilyBreakdownM.mockResolvedValue({ matchedByFilter: 3, claimable: 3, excluded: { claimFloors: 0, reservedPlanLane: 0 } });
 
     const res = await call();
 
@@ -243,6 +246,19 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
 
     expect(getNextForBeeM).toHaveBeenCalledTimes(1);
     expect(missOpts()?.divergenceRecheck).toBeUndefined();
+  });
+
+  it('EI-24905216534076710: forwards pre-floor held feature matches without another claim attempt', async () => {
+    getNextForBeeM.mockResolvedValue(null);
+    issueFloorMissM.mockResolvedValue({ matchedByFilter: 0, claimable: 0, excluded: {} });
+    const featureBreakdown = { matchedByFilter: 1, claimable: 0, excluded: { claimFloors: 1, reservedPlanLane: 0 } };
+    featureFamilyBreakdownM.mockResolvedValue(featureBreakdown);
+
+    await call();
+
+    expect(getNextForBeeM).toHaveBeenCalledTimes(1);
+    expect(fleetScopedMissM.mock.calls[0]?.[2]).toMatchObject({ featureBreakdown });
+    expect(featureFamilyBreakdownM).toHaveBeenCalledTimes(1);
   });
 
   it('a retry that THROWS leaves the original reading in place and still refuses to claim confirmation', async () => {

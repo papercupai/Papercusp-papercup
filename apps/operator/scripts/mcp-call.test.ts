@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -10,22 +10,34 @@ import { describe, expect, it } from 'vitest';
 
 import {
   MCP_CALL_TOOL_NOT_OK_EXIT,
+  MCP_CALL_PROJECTED_RESULT_EXIT,
+  projectedResultReason,
   toolResultNotOkReason,
   buildMcpCallParams,
   buildMcpSessionQuery,
+  isForeignNativeSessionRejection,
+  shouldRetryWithoutNativeSession,
   isInvokedDirectly,
   parseSse,
   parseArgs,
   jsonSourceKind,
   readJsonArgs,
   resolveMcpClientId,
+  resolveMcpCallOrigin,
   resolveMcpRole,
   resolveMcpWorkspace,
   resolveCandidatePorts,
   resolveMcpProxyPort,
+  superuserTokenPaths,
+  superuserTokenPath,
+  resolveOperatorUrlPort,
   isRecoverableAuthorityDenial,
   buildFallbackWarning,
-  // @ts-expect-error -- plain .mjs launcher script, no type declarations.
+  buildSuperuserBearerDiagnostic,
+  isInvalidSuperuserBearerResult,
+  buildUnreachableDiagnostic,
+  buildConnectionRetryDiagnostic,
+  fetchWithConnectionRecovery,
 } from '../../../scripts/mcp-call.mjs';
 
 describe('mcp-call argument parsing', () => {
@@ -194,12 +206,59 @@ describe('mcp-call argument parsing', () => {
     expect(resolveCandidatePorts({}, {
       PAPERCUSP_HONO_PORT: '3271',
       PAPERCUSP_MCP_PROXY_PORT: '9171',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9172',
     })).toEqual({
       configuredPort: '3271',
       candidatePorts: ['3271', '3070', '9171'],
       pinned: false,
     });
     expect(resolveMcpProxyPort({ PAPERCUSP_MCP_PROXY_PORT: '9171' })).toBe('9171');
+  });
+
+  it('uses the configured local operator URL instead of silently defaulting to :3070', () => {
+    expect(resolveOperatorUrlPort({ PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071/api/mcp' }))
+      .toBe('9071');
+    expect(resolveCandidatePorts({}, { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071/api/mcp' }))
+      .toEqual({ configuredPort: '9071', candidatePorts: ['9071', '3070'], pinned: false });
+    expect(() => resolveOperatorUrlPort({ PAPERCUSP_OPERATOR_URL: 'https://operator.example' }))
+      .toThrow('loopback HTTP operator');
+  });
+
+  // WI-10006600: an isolated verify-tauri-headless sidecar mints its own bearer
+  // under PAPERCUSP_HOME; reading ~/.papercusp instead presented the REAL user's
+  // token and every call was refused superuser_invalid_bearer.
+  it('reads the superuser token from PAPERCUSP_HOME before the home fallback, like the operator', () => {
+    expect(superuserTokenPath({ PAPERCUSP_HOME: '/tmp/iso/papercusp-home' }, '/home/u'))
+      .toBe('/tmp/iso/papercusp-home/superuser-token');
+    expect(superuserTokenPath({}, '/home/u')).toBe('/home/u/.papercusp/superuser-token');
+    expect(superuserTokenPath({ PAPERCUSP_HOME: '' }, '/home/u')).toBe('/home/u/.papercusp/superuser-token');
+  });
+
+  it('matches ptool token precedence and only recognizes the exact pre-dispatch bearer refusal', () => {
+    expect(superuserTokenPaths({
+      PAPERCUSP_MCP_TOKEN_FILE: '  /tmp/explicit-token  ',
+      PAPERCUSP_HOME: '/tmp/isolated',
+    }, '/home/u')).toEqual(['/tmp/explicit-token']);
+    expect(superuserTokenPaths({ PAPERCUSP_HOME: ' /tmp/isolated ' }, '/home/u')).toEqual([
+      '/tmp/isolated/superuser-token',
+      '/home/u/.papercusp/superuser-token',
+    ]);
+    expect(superuserTokenPaths({ PAPERCUSP_HOME: '/home/u/.papercusp' }, '/home/u')).toEqual([
+      '/home/u/.papercusp/superuser-token',
+    ]);
+
+    expect(isInvalidSuperuserBearerResult({
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
+    })).toBe(true);
+    expect(isInvalidSuperuserBearerResult({
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: authorization_denied' }],
+    })).toBe(false);
+    expect(isInvalidSuperuserBearerResult({
+      isError: true,
+      content: [{ type: 'text', text: 'mcp_auth_failed: superuser_invalid_bearer' }],
+    })).toBe(false);
   });
 
   it('keeps an explicitly pinned operator port fail-closed', () => {
@@ -221,6 +280,17 @@ describe('mcp-call argument parsing', () => {
     expect(isRecoverableAuthorityDenial(stale)).toBe(true);
     expect(isRecoverableAuthorityDenial('authorization_denied: role is not allowed')).toBe(false);
     expect(isRecoverableAuthorityDenial('current session authority could not be read')).toBe(false);
+  });
+
+  it('explains which local bearer path and port an invalid-bearer refusal used', () => {
+    const diagnostic = buildSuperuserBearerDiagnostic({
+      tokenPath: '/tmp/scoped-home/superuser-token',
+      port: '3070',
+    });
+    expect(diagnostic).toContain('port 3070');
+    expect(diagnostic).toContain('/tmp/scoped-home/superuser-token');
+    expect(diagnostic).toContain('superuser_invalid_bearer');
+    expect(diagnostic).toContain('did not substitute another token');
   });
 });
 
@@ -267,6 +337,76 @@ describe('mcp-call fallback diagnostics', () => {
 
     expect(warning).toContain('The environment setting is canonical');
     expect(warning).not.toMatch(/port is STALE|may be stale/);
+  });
+});
+
+describe('mcp-call connection refusal diagnostics', () => {
+  const refused = () => new TypeError('fetch failed', {
+    cause: Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' }),
+  });
+
+  it('keeps retries scoped to this mcp-call process instead of inferring an operator restart', async () => {
+    let nowMs = 1_000;
+    let fetchCalls = 0;
+    const retryMessages: string[] = [];
+    const success = new Response('ok');
+
+    const result = await fetchWithConnectionRecovery('http://localhost:3170', {}, {
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        if (fetchCalls === 1) throw refused();
+        return success;
+      },
+      retryWindowMs: 25,
+      retryDelayMs: 10,
+      sleepImpl: async (ms: number) => { nowMs += ms; },
+      now: () => nowMs,
+      onRetry: ({ attempt, delayMs, remainingMs }: { attempt: number; delayMs: number; remainingMs: number }) => {
+        retryMessages.push(buildConnectionRetryDiagnostic({
+          port: '3170', attempt, delayMs, remainingMs,
+        }));
+      },
+    });
+
+    expect(result).toBe(success);
+    expect(fetchCalls).toBe(2);
+    expect(retryMessages).toHaveLength(1);
+    expect(retryMessages[0]).toContain('connection to port 3170 was refused from this mcp-call process');
+    expect(retryMessages[0]).toContain('does not identify the cause');
+    expect(retryMessages[0]).not.toMatch(/operator may be restarting|operator is restarting/);
+  });
+
+  it('limits an exhausted refusal diagnosis to this caller and the exact endpoints tried', () => {
+    const diagnostic = buildUnreachableDiagnostic({
+      attempts: [{ port: '3170', error: refused() }],
+      configuredPort: '3170',
+      pinned: true,
+    });
+
+    expect(diagnostic).toContain('Every connection attempt was refused before an MCP request could be sent');
+    expect(diagnostic).toContain("this mcp-call process's attempts to the listed ports");
+    expect(diagnostic).toContain('same execution environment that ran mcp-call');
+    expect(diagnostic).toContain('does not identify why a connection was refused');
+    expect(diagnostic).not.toMatch(/operator may be restarting|operator is restarting/);
+  });
+});
+
+describe('mcp-call call-origin declaration', () => {
+  it('marks managed session identities as agent-origin and leaves system clients unmarked', () => {
+    const client = 'su-6ab684ac-35e9-4fd1-a992-169c86dfdda5';
+    const env = { PAPERCUSP_SID: client };
+    const origin = resolveMcpCallOrigin(client, env);
+    const query = buildMcpSessionQuery({ client, workspace: 'papercusp-workspace', origin });
+
+    expect(origin).toBe('agent');
+    expect(query.get('origin')).toBe('agent');
+    expect(resolveMcpCallOrigin('system-staging-sync-review-alarm', env)).toBeUndefined();
+    expect(resolveMcpCallOrigin('vm-rig-probe', {})).toBeUndefined();
+  });
+
+  it('uses the stable spawn identity when no session id is available', () => {
+    const client = 's-76543210-1234-5678-9abc-def012345678';
+    expect(resolveMcpCallOrigin(client, { PAPERCUSP_SPAWN_ID: client })).toBe('agent');
   });
 });
 
@@ -346,6 +486,94 @@ describe('mcp-call result-format contract', () => {
       format: 'json',
       harness: 'papercusp',
     });
+  });
+
+  it('preserves the current Codex incarnation when the fallback reuses an owner id', () => {
+    const client = 'su-retained-owner';
+    for (const nativeSession of ['native-predecessor', 'native-successor']) {
+      const query = buildMcpSessionQuery({
+        client, workspace: 'papercusp-workspace',
+        env: { PAPERCUSP_SID: client, CODEX_SESSION_ID: nativeSession },
+      });
+      expect(query.get('client')).toBe(client);
+      expect(query.get('native_session')).toBe(nativeSession);
+    }
+  });
+
+  it('sends the Claude session id, not an inherited Codex id, from a Claude session (WI-10006008)', () => {
+    const client = 'su-claude';
+    const query = buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace',
+      env: {
+        PAPERCUSP_SID: client,
+        PAPERCUSP_AGENT: 'claude',
+        CLAUDE_CODE_SESSION_ID: 'claude-native',
+        CODEX_SESSION_ID: 'stale-codex-from-parent-shell',
+      },
+    });
+    expect(query.get('native_session')).toBe('claude-native');
+    // A Claude session with no Claude id sends none rather than the Codex one.
+    expect(buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace',
+      env: { PAPERCUSP_SID: client, PAPERCUSP_AGENT: 'claude', CODEX_SESSION_ID: 'stale-codex' },
+    }).has('native_session')).toBe(false);
+    // Codex keeps its current behaviour.
+    expect(buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace',
+      env: { PAPERCUSP_SID: client, PAPERCUSP_AGENT: 'codex', CODEX_SESSION_ID: 'codex-native', CLAUDE_CODE_SESSION_ID: 'claude-x' },
+    }).get('native_session')).toBe('codex-native');
+  });
+
+  it('prefers the launcher-bound Claude id when /clear rotates the current session id', () => {
+    const client = 'su-claude';
+    const query = buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace',
+      env: {
+        PAPERCUSP_SID: client,
+        PAPERCUSP_AGENT: 'claude',
+        PAPERCUSP_NATIVE_SESSION_ID: 'bound-at-launch',
+        CLAUDE_CODE_SESSION_ID: 'rotated-after-clear',
+        CODEX_SESSION_ID: 'stale-codex-from-parent-shell',
+      },
+    });
+
+    expect(query.get('native_session')).toBe('bound-at-launch');
+  });
+
+  it('retries only the exact foreign-session pre-dispatch refusal for an inherited Codex id', () => {
+    const client = 'su-cold-codex';
+    const env = { PAPERCUSP_SID: client, CODEX_SESSION_ID: 'inherited-native-id' };
+    const query = buildMcpSessionQuery({ client, workspace: 'papercusp-workspace', env });
+    const refusal = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }],
+    };
+
+    expect(isForeignNativeSessionRejection(refusal)).toBe(true);
+    expect(shouldRetryWithoutNativeSession(refusal, { client, query, env })).toBe(true);
+    expect(shouldRetryWithoutNativeSession({
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: authorization_denied' }],
+    }, { client, query, env })).toBe(false);
+    expect(shouldRetryWithoutNativeSession(refusal, {
+      client,
+      query,
+      env: { ...env, PAPERCUSP_NATIVE_SESSION_ID: 'launcher-bound-id' },
+    })).toBe(false);
+    expect(buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace', env, nativeSessionOverride: null,
+    }).has('native_session')).toBe(false);
+  });
+
+  it('does not attach the current native session to another or legacy client', () => {
+    expect(buildMcpSessionQuery({
+      client: 'su-other', workspace: 'papercusp-workspace',
+      env: { PAPERCUSP_SID: 'su-current', CODEX_SESSION_ID: 'native-current' },
+    }).has('native_session')).toBe(false);
+    expect(buildMcpSessionQuery({
+      client: 'su-current', workspace: 'papercusp-workspace',
+      env: { PAPERCUSP_SID: 'su-current' },
+    }).has('native_session')).toBe(false);
   });
 
   it('maps --all-workspaces to the unscoped workspace wildcard', () => {
@@ -446,6 +674,138 @@ describe('mcp-call shell-safe JSON input', () => {
 
 const MCP_CALL_SCRIPT = fileURLToPath(new URL('../../../scripts/mcp-call.mjs', import.meta.url));
 
+describe('mcp-call standalone deployment', () => {
+  it('runs when deployed as the only file in /tmp', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mcp-call-standalone-'));
+    const standaloneScript = join(root, 'mcp-call.mjs');
+    try {
+      await writeFile(standaloneScript, await readFile(MCP_CALL_SCRIPT, 'utf8'));
+      const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done, fail) => {
+        const child = spawn(process.execPath, [standaloneScript, '--help'], {
+          env: { ...process.env, PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170/api/mcp' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+        child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+        child.on('error', fail);
+        child.on('close', (code) => done({ code, stdout, stderr }));
+      });
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stderr).toContain('usage: node scripts/mcp-call.mjs');
+      expect(result.stderr).not.toContain('ERR_MODULE_NOT_FOUND');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+type McpCallFetchFixture = {
+  home: string;
+  isolatedHome: string;
+  logPath: string;
+  preloadPath: string;
+};
+
+async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) => Promise<T>): Promise<T> {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-call-fetch-fixture-'));
+  const home = join(root, 'home');
+  const isolatedHome = join(root, 'isolated');
+  const logPath = join(root, 'fetch-log.jsonl');
+  const preloadPath = join(root, 'fetch-stub.mjs');
+  await mkdir(join(home, '.papercusp'), { recursive: true });
+  await mkdir(isolatedHome, { recursive: true });
+  const preloadSource = [
+    "import { appendFileSync } from 'node:fs';",
+    'globalThis.fetch = async (input, init = {}) => {',
+    '  const request = {',
+    '    url: String(input),',
+    "    authorization: new Headers(init.headers).get('authorization'),",
+    "    body: JSON.parse(String(init.body ?? '{}'))," ,
+    '  };',
+    "  appendFileSync(process.env.MCP_CALL_FETCH_LOG, JSON.stringify(request) + '\\n');",
+    '  const mode = process.env.MCP_CALL_FETCH_MODE;',
+    "  if (mode === 'transport-reset') {",
+    "    throw new TypeError('fetch failed', { cause: Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }) });",
+    '  }',
+    '  let result;',
+    "  if (mode === 'always-invalid' || (mode === 'token-fallback' && request.authorization === 'Bearer isolated-invalid')) {",
+    "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }] };",
+    "  } else if (mode === 'generic-auth') {",
+    "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: authorization_denied' }] };",
+    "  } else if (mode === 'foreign-native' && new URL(request.url).searchParams.has('native_session')) {",
+    "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }] };",
+    '  } else {',
+    "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };",
+    '  }',
+    "  const raw = 'data: ' + JSON.stringify({ jsonrpc: '2.0', id: request.body.id, result }) + '\\n\\n';",
+    "  return new Response(raw, { status: 200, headers: { 'content-type': 'text/event-stream' } });",
+    '};',
+  ].join('\n');
+  await writeFile(preloadPath, preloadSource);
+  try {
+    return await run({ home, isolatedHome, logPath, preloadPath });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+function runMcpCallWithArgs(args: string[], envOverrides: NodeJS.ProcessEnv = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((done, fail) => {
+    const env = { ...process.env };
+    for (const key of [
+      'PAPERCUSP_HOME',
+      'PAPERCUSP_MCP_TOKEN_FILE',
+      'PAPERCUSP_HONO_PORT',
+      'PAPERCUSP_OPERATOR_URL',
+      'PAPERCUSP_MCP_PROXY_PORT',
+    ]) delete env[key];
+    for (const [key, value] of Object.entries(envOverrides)) {
+      if (value === undefined) delete env[key];
+      else env[key] = value;
+    }
+    const child = spawn(process.execPath, [MCP_CALL_SCRIPT, ...args], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', fail);
+    child.on('close', (code) => done({ code, stdout, stderr }));
+  });
+}
+
+function runMcpCallWithFetchFixture(
+  fixture: McpCallFetchFixture,
+  args: string[] = [],
+  envOverrides: NodeJS.ProcessEnv = {},
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return runMcpCallWithArgs([
+    'work_items:create',
+    '{}',
+    '--client',
+    'mcp-call-fetch-fixture',
+    '--workspace',
+    'test-ws',
+    ...args,
+  ], {
+    HOME: fixture.home,
+    PAPERCUSP_HOME: fixture.isolatedHome,
+    MCP_CALL_FETCH_LOG: fixture.logPath,
+    NODE_OPTIONS: '--import=' + fixture.preloadPath,
+    ...envOverrides,
+  });
+}
+
+async function readMcpCallFetchLog(path: string): Promise<Array<{ url: string; authorization: string | null; body: { params: unknown } }>> {
+  const raw = await readFile(path, 'utf8').catch(() => '');
+  return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+
 /** Run `run` against a local MCP endpoint that answers every tools/call with `toolResult`. */
 async function withFakeMcpEndpoint<T>(
   toolResult: unknown,
@@ -475,21 +835,143 @@ async function withFakeMcpEndpoint<T>(
 }
 
 /** Spawn the real script with stdout on a pipe, the way a shell `$(...)` reads it. */
-function runMcpCall(port: number, home: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((done, fail) => {
-    const child = spawn(
-      process.execPath,
-      [MCP_CALL_SCRIPT, 'work_items:create', '{}', '--port', String(port), '--client', 'mcp-call-exit-test', '--workspace', 'test-ws'],
-      { env: { ...process.env, HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
-    child.on('error', fail);
-    child.on('close', (code) => done({ code, stdout, stderr }));
-  });
+function runMcpCall(port: number, home: string, extraArgs: string[] = []): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return runMcpCallWithArgs([
+    'work_items:create',
+    '{}',
+    '--port',
+    String(port),
+    '--client',
+    'mcp-call-exit-test',
+    '--workspace',
+    'test-ws',
+    ...extraArgs,
+  ], { HOME: home });
 }
+
+describe('mcp-call actual CLI token and endpoint recovery', () => {
+  it('retries an inherited foreign Codex session without changing the client or call', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'test-token\n');
+      const run = await runMcpCallWithFetchFixture(fixture, [
+        '--port',
+        '3170',
+        '--idempotency-key',
+        'native-session-fallback-1',
+      ], {
+        MCP_CALL_FETCH_MODE: 'foreign-native',
+        PAPERCUSP_SID: 'mcp-call-fetch-fixture',
+        PAPERCUSP_NATIVE_SESSION_ID: undefined,
+        CODEX_SESSION_ID: 'inherited-foreign-session',
+      });
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({ ok: true });
+      expect(requests).toHaveLength(2);
+      const firstUrl = new URL(requests[0].url);
+      const secondUrl = new URL(requests[1].url);
+
+      expect(firstUrl.searchParams.get('client')).toBe('mcp-call-fetch-fixture');
+      expect(firstUrl.searchParams.get('native_session')).toBe('inherited-foreign-session');
+      expect(secondUrl.searchParams.get('client')).toBe('mcp-call-fetch-fixture');
+      expect(secondUrl.searchParams.has('native_session')).toBe(false);
+      expect(requests[0].body.params).toEqual(requests[1].body.params);
+      expect((requests[1].body.params as { _meta: { idempotencyKey: string } })._meta.idempotencyKey)
+        .toBe('native-session-fallback-1');
+      expect(run.stderr).toContain('retrying once with the same client identity');
+    });
+  });
+
+  it('retries the same request with the shared token only after exact bearer refusal', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-invalid\n');
+      await writeFile(join(fixture.home, '.papercusp', 'superuser-token'), 'shared-valid\n');
+      const run = await runMcpCallWithFetchFixture(fixture, [
+        '--port',
+        '3170',
+        '--idempotency-key',
+        'dummy-token-fallback-1',
+      ], { MCP_CALL_FETCH_MODE: 'token-fallback' });
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({ ok: true });
+      expect(requests.map((request) => request.authorization)).toEqual([
+        'Bearer isolated-invalid',
+        'Bearer shared-valid',
+      ]);
+      expect(requests[0].url).toBe(requests[1].url);
+      expect(requests[0].body.params).toEqual(requests[1].body.params);
+      expect((requests[0].body.params as { _meta: { idempotencyKey: string } })._meta.idempotencyKey)
+        .toBe('dummy-token-fallback-1');
+    });
+  });
+
+  it.each(['missing', 'empty'])('skips a %s isolated token before sending and uses the shared token', async (isolatedState) => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      if (isolatedState === 'empty') await writeFile(join(fixture.isolatedHome, 'superuser-token'), '');
+      await writeFile(join(fixture.home, '.papercusp', 'superuser-token'), 'shared-valid\n');
+      const run = await runMcpCallWithFetchFixture(fixture, ['--port', '3170']);
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].authorization).toBe('Bearer shared-valid');
+    });
+  });
+
+  it('keeps PAPERCUSP_MCP_TOKEN_FILE authoritative after an invalid-bearer refusal', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      const explicitPath = join(fixture.home, 'explicit-token');
+      await writeFile(explicitPath, 'explicit-invalid\n');
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      await writeFile(join(fixture.home, '.papercusp', 'superuser-token'), 'shared-valid\n');
+      const run = await runMcpCallWithFetchFixture(fixture, ['--port', '3170'], {
+        PAPERCUSP_MCP_TOKEN_FILE: explicitPath,
+        MCP_CALL_FETCH_MODE: 'always-invalid',
+      });
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(1);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].authorization).toBe('Bearer explicit-invalid');
+    });
+  });
+
+  it('does not substitute a token for a generic tool authorization error', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      await writeFile(join(fixture.home, '.papercusp', 'superuser-token'), 'shared-valid\n');
+      const run = await runMcpCallWithFetchFixture(fixture, ['--port', '3170'], {
+        MCP_CALL_FETCH_MODE: 'generic-auth',
+      });
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(1);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].authorization).toBe('Bearer isolated-valid');
+    });
+  });
+
+  it('stops on an unknown transport outcome instead of trying more endpoints or tokens', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      await writeFile(join(fixture.home, '.papercusp', 'superuser-token'), 'shared-valid\n');
+      const run = await runMcpCallWithFetchFixture(fixture, [], {
+        PAPERCUSP_HONO_PORT: '41001',
+        PAPERCUSP_MCP_PROXY_PORT: '41002',
+        MCP_CALL_FETCH_MODE: 'transport-reset',
+      });
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(4);
+      expect(run.stderr).toContain('check a write outcome before retrying it');
+      expect(requests).toHaveLength(1);
+      expect(new URL(requests[0].url).port).toBe('41001');
+      expect(requests[0].authorization).toBe('Bearer isolated-valid');
+    });
+  });
+});
 
 describe('mcp-call ok:false exit status (EI-24654733539966460)', () => {
   it('reports a top-level or batch-entry refusal, and nothing else', () => {
@@ -521,5 +1003,43 @@ describe('mcp-call ok:false exit status (EI-24654733539966460)', () => {
     const run = await withFakeMcpEndpoint({ ok: true, id: 'EI-1' }, runMcpCall);
     expect(run.code, run.stderr).toBe(0);
     expect(JSON.parse(run.stdout)).toEqual({ ok: true, id: 'EI-1' });
+  });
+});
+
+// EI-24678010189721217: a door-projected rubrics:amend dry-run turned preview.approval.bars
+// into placeholder strings, and two agents posted them as an approval (posts 1151113, 1153517).
+describe('mcp-call door-projected partial result (EI-24678010189721217)', () => {
+  const PLACEHOLDER = '[omitted: depth limit — recover: see _projection.cursor]';
+  const projected = {
+    ok: true,
+    preview: { approval: { kind: 'acceptance-bar-amendment-approval', bars: [PLACEHOLDER, PLACEHOLDER] } },
+    _partial: true,
+    _projection: { kind: 'bounded-payload', truncated: true, next: `see ${PLACEHOLDER}` },
+  };
+
+  it('names the placeholder paths, and passes a clean body and prose that only quotes a placeholder', () => {
+    expect(projectedResultReason(projected))
+      .toBe('door-projected partial result: placeholder value(s) at $.preview.approval.bars[0], $.preview.approval.bars[1]');
+    expect(projectedResultReason({ ok: true, summary: `long text…[TRUNCATED +5001 chars — see _projection.cursor]` }))
+      .toBe('door-projected partial result: placeholder value(s) at $.summary');
+    expect(projectedResultReason({ ok: true, _partial: true, rows: [] })).toBe('door-projected partial result: root _partial marker');
+    for (const clean of [
+      { ok: true, preview: { approval: { bars: [{ barKey: 'r-01', hash: 'abc' }] } } },
+      { ok: true, summary: `bars became '${PLACEHOLDER}' strings (EI-24678010189721217)` },
+      [PLACEHOLDER, 'x'].join(' '), null, undefined,
+    ]) {
+      expect(projectedResultReason(clean)).toBeNull();
+    }
+  });
+
+  it('exits 6 with the partial body still on stdout, and --allow-partial keeps exit 0', async () => {
+    const run = await withFakeMcpEndpoint(projected, runMcpCall);
+    expect(run.code, run.stderr).toBe(MCP_CALL_PROJECTED_RESULT_EXIT);
+    expect(JSON.parse(run.stdout)).toEqual(projected);
+    expect(run.stderr).toContain('the result above is INCOMPLETE (door-projected partial result: placeholder value(s) at $.preview.approval.bars[0]');
+
+    const allowed = await withFakeMcpEndpoint(projected, (port: number, home: string) => runMcpCall(port, home, ['--allow-partial']));
+    expect(allowed.code, allowed.stderr).toBe(0);
+    expect(allowed.stderr).toContain('--allow-partial given');
   });
 });

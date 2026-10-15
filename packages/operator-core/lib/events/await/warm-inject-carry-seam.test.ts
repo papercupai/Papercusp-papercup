@@ -94,16 +94,24 @@ function warmInjectDelivery(over: Partial<DeliveryWork> = {}): DeliveryWork {
  *  fresh-hive fork), no live psu-pty host. Mirrors the wake-executor.test.ts
  *  exited-claude cell; every OS-touching rung is injected deterministic. */
 function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
+  // The drained bee's adv-session row (the wake handle's advSessionId 91).
+  const beeSessionRow = {
+    id: 91,
+    pid: 999111,
+    endedAt: null,
+    agent: 'claude',
+    sessionId: BEE_SESSION_ID,
+    coordOwnerId: BEE_OWNER,
+    cwd: BEE_CWD,
+    label: null, // not a hive operator → Channel 2 resume, not hive-fresh-wake
+  };
   return {
-    getSession: (async () => ({
-      pid: 999111,
-      endedAt: null,
-      agent: 'claude',
-      sessionId: BEE_SESSION_ID,
-      coordOwnerId: BEE_OWNER,
-      cwd: BEE_CWD,
-      label: null, // not a hive operator → Channel 2 resume, not hive-fresh-wake
-    })) as never,
+    getSession: (async () => beeSessionRow) as never,
+    // A dead pid makes executeWake elect the owner's CURRENT adv-session before it
+    // resumes, so a delayed wake never resumes a dead predecessor. The production
+    // lookup reads PG; keep the fixture hermetic by making the drained bee's own row
+    // the owner's latest. The successor-row election is covered in wake-executor.test.ts.
+    getLatestSessionForOwner: (async () => beeSessionRow) as never,
     findPty: (() => null) as never,
     write: (() => true) as never,
     spawnManagedPty: (() => ({ id: 'pty-x' })) as never,

@@ -21,6 +21,14 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('../../memory/surfaced-outcomes', async (original) => ({
+  ...(await original<typeof import('../../memory/surfaced-outcomes')>()),
+  loadOutcomeCounts: vi.fn(async () => new Map()),
+}));
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: vi.fn() }),
+}));
 // Spread the REAL module and override only defineTool: a hand-listed factory
 // strands every export the tool graph later starts importing — AGENT_ROLES did
 // exactly that (testing/run.ts), breaking collection across this directory.
@@ -41,7 +49,8 @@ vi.mock('../../memory/backend', () => ({
   },
 }));
 
-import list from './list';
+import list, { MEMORY_LIST_DEFAULT_LIMIT } from './list';
+import { loadOutcomeCounts } from '../../memory/surfaced-outcomes';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import type { MemoryEntry } from '../../memory/backend';
 
@@ -172,6 +181,51 @@ describe('memory:list — temporal passthrough + response contract', () => {
     useBackend(backend);
     const out = parse(await list.handler({}, ctx));
     expect(out.ok).toBe(true);
-    expect(out.results).toEqual([{ id: 'm1', memory: 'the user prefers nuqs', metadata: { kind: 'preference' } }]);
+    expect(out.results).toEqual([{ id: 'm1', memory: 'the user prefers nuqs', metadata: { kind: 'preference' }, outcomeCounts: null }]);
+  });
+
+  it('returns used and contradicted counts for each listed memory without inventing missing counts', async () => {
+    useBackend(okBackend([
+      { id: 'm1', text: 'first', scope: 'user-1' } as MemoryEntry,
+      { id: 'm2', text: 'second', scope: 'user-1' } as MemoryEntry,
+    ]).backend);
+    vi.mocked(loadOutcomeCounts).mockResolvedValueOnce(new Map([['m1', { used: 3, contradicted: 2 }]]));
+    const out = parse(await list.handler({}, ctx));
+    expect(out.results).toMatchObject([
+      { id: 'm1', outcomeCounts: { used: 3, contradicted: 2 } },
+      { id: 'm2', outcomeCounts: null },
+    ]);
+  });
+
+  it('reports unavailable outcome counts explicitly while preserving the memory list', async () => {
+    useBackend(okBackend([{ id: 'm1', text: 'first', scope: 'user-1' } as MemoryEntry]).backend);
+    vi.mocked(loadOutcomeCounts).mockRejectedValueOnce(new Error('counts unavailable'));
+    expect(parse(await list.handler({}, ctx))).toMatchObject({
+      ok: true, results: [{ id: 'm1', outcomeCounts: null }], outcomeCountsUnavailable: 'counts unavailable',
+    });
+  });
+});
+
+describe('memory:list — bounded by default (oversized-tool-results-reduction-2026-10-12 P-003)', () => {
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ id: `m${i}`, text: `fact ${i}`, scope: 'user-1' }) as MemoryEntry);
+  type Page = { ok: boolean; results: Array<{ id: string }>; total: number; truncated?: boolean; next_offset?: number };
+
+  it('returns at most MEMORY_LIST_DEFAULT_LIMIT rows but reports the full total', async () => {
+    useBackend(okBackend(many(MEMORY_LIST_DEFAULT_LIMIT + 50)).backend);
+    const out = parse(await list.handler({}, ctx)) as unknown as Page;
+    expect(out.results).toHaveLength(MEMORY_LIST_DEFAULT_LIMIT);
+    expect(out.total).toBe(MEMORY_LIST_DEFAULT_LIMIT + 50);
+    expect(out.truncated).toBe(true);
+    expect(out.next_offset).toBe(MEMORY_LIST_DEFAULT_LIMIT);
+  });
+
+  it('pages with offset and stops marking truncation on the last page', async () => {
+    useBackend(okBackend(many(25)).backend);
+    const out = parse(await list.handler({ limit: 10, offset: 20 }, ctx)) as unknown as Page;
+    expect(out.results.map((r) => r.id)).toEqual(['m20', 'm21', 'm22', 'm23', 'm24']);
+    expect(out.total).toBe(25);
+    expect(out.truncated).toBeUndefined();
+    expect(out.next_offset).toBeUndefined();
   });
 });

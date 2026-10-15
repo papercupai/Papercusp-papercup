@@ -259,7 +259,7 @@ export function buildSwarmBenchReport(resultsByArm: Record<string, readonly Swar
     deltas,
     caveats: [
       'FAIRNESS (D-001): the centralized (hive) arm sees only the AGGREGATED LOCAL views/messages the agents already have — NOT the global grid. A global-view queen would violate SwarmBench\'s local-only premise (cheating). The delta measures whether centralizing decentralized-local info beats peer self-organization.',
-      'NOT THE PRODUCTION HIVE (D-005): the hive arm is a SwarmBench-specific aggregated-local coordinator, not the production Queen-over-backlog (which places bees on work_items across a task backlog). Frame this as a coordination-topology A/B on opus-4.8, not "our production Queen ran SwarmBench".',
+      'NOT THE PRODUCTION HIVE (D-005): the hive arm is a SwarmBench-specific aggregated-local coordinator, not the production Queen-over-backlog (which places bees on work_items across a task backlog). Frame this as a coordination-topology A/B on one registry-pinned model, not "our production Queen ran SwarmBench".',
       'Scores are CONTINUOUS per-task sim metrics (not pass-rates); the sim is seed-stochastic, so report mean±SE over multiple seeds. Infra-failed scenarios are excluded, not scored 0.',
     ],
   };

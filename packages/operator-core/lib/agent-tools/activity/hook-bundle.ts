@@ -55,7 +55,9 @@ export interface ActivityHookBundleRequest {
   since_ts?: string | null;
   force_resync?: boolean;
   /**
-   * "My GLANCE snapshot aged out — refresh that leg." NOT a resync.
+   * `true` means "my GLANCE snapshot aged out — refresh that leg"; `false`
+   * means the client has a fresh snapshot and the server may skip GLANCE while
+   * delivering an inbox delta. Omitted keeps the older full-fold behavior.
    *
    * The client used to express this by setting `force_resync`, which is a
    * request to replace EVERYTHING. Measured over a 3h window, that made
@@ -112,7 +114,7 @@ export interface ActivityHookBundleDeps {
    * non-boolean result fail open to the existing full fold.
    */
   ownerRelevantDelta?: (ownerId: string, afterId: string, throughId: string) => Promise<boolean>;
-  inbox: (sinceTs: string | null | undefined, ctx: ToolContext) => Promise<Record<string, unknown> | null>;
+  inbox: (sinceTs: string | null | undefined, ctx: ToolContext, systemNoticeState?: unknown) => Promise<Record<string, unknown> | null>;
   glance: (ctx: ToolContext) => Promise<Record<string, unknown> | null>;
   /** Server-owned two-phase cursor for the windowed inbox surface. */
   readInboxCursor: (ownerId: string) => Promise<AckResult>;
@@ -229,10 +231,12 @@ const defaultDeps: ActivityHookBundleDeps = {
   // the DELIVERY path — it owns the server-side cursor for surface 'inbox' — so
   // it passes its committed floor through the internal seam instead. Agents get
   // a VIEW; only a caller holding a real cursor gets a delta.
-  inbox: async (sinceTs, ctx) => {
+  inbox: async (sinceTs, ctx, systemNoticeState) => {
     return parseToolPayload(
       await inboxTool.handler(
-        (sinceTs ? { __deliveryFloorTs: sinceTs } : {}) as Parameters<typeof inboxTool.handler>[0],
+        { ...(sinceTs ? { __deliveryFloorTs: sinceTs } : {}),
+          __systemNoticeState: systemNoticeState ?? {},
+        } as Parameters<typeof inboxTool.handler>[0],
         ctx,
       ),
     );
@@ -336,6 +340,38 @@ function inboxDidAdvance(inbox: Record<string, unknown> | null, sinceTs: string 
 }
 
 /**
+ * The inbox surface as the native hooks consume it (WI-6554700010010423).
+ *
+ * Both consumers echo the server-rendered `injection` verbatim and read `entries`
+ * only as a signal: the Claude hook (posttooluse-activity-report.sh) checks whether
+ * the list is empty to decide whether to show the context gauge, and OMP's
+ * `consumeInboxDelta` (coord-hook.ts) checks its length and falls back to each
+ * entry's `ts` when `summary.newest_ts` is absent. Neither reads `recent`.
+ *
+ * Shipping full entry bodies made `entries` ~83% of a fold (15.5KB of 18.7KB,
+ * measured 2026-10-13) on the hottest tool on the box (~7.4k calls/h), so the
+ * bundle carries one `{ msg_id, ts }` stub per entry and drops `recent`. Call this
+ * only AFTER the cursor/census reads above, which use the full surface. Full
+ * bodies stay one `coord:inbox` read away.
+ */
+export function hookInboxSurface(inbox: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(inbox)) {
+    if (key === 'recent' || key === '__systemNoticeState') continue;
+    out[key] = key === 'entries' && Array.isArray(value) ? value.map(hookInboxEntryStub) : value;
+  }
+  return out;
+}
+
+function hookInboxEntryStub(entry: unknown): Record<string, unknown> {
+  const e = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
+  return {
+    ...(e.msg_id !== undefined ? { msg_id: e.msg_id } : {}),
+    ...(e.ts !== undefined ? { ts: e.ts } : {}),
+  };
+}
+
+/**
  * Return a stamped bundle.  Matching generations intentionally return no
  * surfaces: the client keeps its last full snapshot.  On mismatch both
  * surfaces are replaced together.  A partial hydrate is marked incomplete and
@@ -359,29 +395,39 @@ export async function buildActivityHookBundle(
   // The call itself is the ACK; if the prior turn died, its pending floor is
   // promoted and the next changed heartbeat re-reads from that floor.
   const [generation, inboxCursor] = await Promise.all([deps.generation(), deps.readInboxCursor(ownerId)]);
+  const delta = sameHostCoordGenerationDelta(request.generation, generation);
   let changed = request.force_resync === true || request.generation !== generation;
+  let relevanceUncertain = false;
   if (changed && request.force_resync !== true && deps.ownerRelevantDelta) {
-    const delta = sameHostCoordGenerationDelta(request.generation, generation);
     if (delta) {
       try {
         // Only an exact negative result closes the second gate. Any thrown or
         // malformed outcome keeps `changed=true`, preserving fail-open delivery.
         const relevant = await deps.ownerRelevantDelta(ownerId, delta.afterId, delta.throughId);
         if (relevant === false) changed = false;
+        else if (relevant !== true) relevanceUncertain = true;
       } catch {
         /* relevance uncertainty hydrates through the existing path */
+        relevanceUncertain = true;
       }
+    } else {
+      relevanceUncertain = true;
     }
   }
-  // THE SPLIT (WI-10002436 compromise B). `changed` is, and stays, the INBOX
-  // gate — every condition above it is untouched, so delivery cannot regress by
-  // construction. The glance leg simply stops being welded to it: a client whose
-  // display cache aged out now refreshes THAT leg alone instead of forcing the
-  // inbox through a hydration it did not need.
+  // `changed` remains the INBOX gate. A current client explicitly says when its
+  // cached display is fresh; a relevant inbox delta then does not also pay for
+  // GLANCE. Old clients omit the flag and keep the full-fold behavior. Baselines,
+  // resyncs, epoch changes, and uncertain relevance still hydrate both surfaces.
   //
-  // `glanceOnly` is deliberately `!changed && …`: when the inbox gate is already
-  // open both surfaces hydrate together exactly as before.
-  const glanceOnly = !changed && request.glance_stale === true;
+  const fullResync =
+    request.force_resync === true ||
+    request.generation == null ||
+    (changed && delta === null) ||
+    relevanceUncertain;
+  const hydrateGlance = changed
+    ? request.glance_stale !== false || fullResync
+    : request.glance_stale === true;
+  const glanceOnly = !changed && hydrateGlance;
   const gateMs = deps.now().getTime() - startedMs;
   const base: Omit<ActivityHookBundle, 'complete' | 'surfaces'> = {
     schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
@@ -414,6 +460,7 @@ export async function buildActivityHookBundle(
         inboxAdvanced: false,
         inboxTotal: null,
         glanceOnly: false,
+        glanceHydrated: false,
       }),
     );
     return { ...base, complete: true };
@@ -446,6 +493,7 @@ export async function buildActivityHookBundle(
         inboxAdvanced: false,
         inboxTotal: null,
         glanceOnly: true,
+        glanceHydrated: true,
       }),
     );
     return {
@@ -455,7 +503,12 @@ export async function buildActivityHookBundle(
     };
   }
 
-  const legacyWatermark = await deps.readWatermark(ownerId).catch(() => null);
+  // The legacy watermark is only a migration baseline. Once the server cursor
+  // has a committed floor, committedInboxFloor() is authoritative and this
+  // extra per-fold database read cannot affect the inbox query.
+  const legacyWatermark = inboxCursor.baseline
+    ? await deps.readWatermark(ownerId).catch(() => null)
+    : null;
   const durableLegacyFloor = legacyWatermark
     ? pickUnreadCursor(legacyWatermark.messages_since_ts, legacyWatermark.messages_shown_ts)
     : null;
@@ -467,18 +520,21 @@ export async function buildActivityHookBundle(
     : committedInboxFloor(inboxCursor);
 
   const [inbox, glance] = await Promise.all([
-    deps.inbox(sinceTs, ctx).catch(() => null),
-    deps.glance(ctx).catch(() => null),
+    (inboxCursor.committed?.systemNoticeState === undefined
+      ? deps.inbox(sinceTs, ctx)
+      : deps.inbox(sinceTs, ctx, inboxCursor.committed.systemNoticeState)).catch(() => null),
+    hydrateGlance ? deps.glance(ctx).catch(() => null) : Promise.resolve(null),
   ]);
-  let complete = inbox !== null && glance !== null;
+  let complete = inbox !== null && (!hydrateGlance || glance !== null);
   if (complete) {
-    // Do not advance the server cursor until both replacement surfaces were
-    // assembled. A stage failure is an incomplete fold: the client retains its
-    // generation and the next heartbeat re-delivers from the same committed
-    // floor, preserving at-least-once delivery.
+    // Do not advance the server cursor until the requested inbox replacement
+    // was assembled (and GLANCE too when requested). A stage failure is an
+    // incomplete fold: the next heartbeat re-delivers from the committed floor.
     try {
       await deps.stageInboxCursor(ownerId, {
         since_ts: inboxNewestTimestamp(inbox) ?? sinceTs,
+        ...(inbox && Object.prototype.hasOwnProperty.call(inbox, '__systemNoticeState')
+          ? { systemNoticeState: inbox.__systemNoticeState } : {}),
       });
     } catch {
       complete = false;
@@ -494,21 +550,21 @@ export async function buildActivityHookBundle(
       gen: generation,
       foldMs: endedMs - startedMs,
       gateMs,
-      // Everything past the gate decision: the watermark read, both surface
-      // hydrations and the cursor stage. gateMs + hydrateMs therefore accounts
-      // for the whole fold, leaving no unattributed remainder to guess at.
+      // Everything past the gate decision: the watermark read, requested
+      // surface hydrations and the cursor stage. gateMs + hydrateMs therefore
+      // accounts for the whole fold, leaving no unattributed remainder to guess at.
       hydrateMs: endedMs - startedMs - gateMs,
       inboxAdvanced: inboxDidAdvance(inbox, sinceTs),
       inboxTotal: inboxTotalCount(inbox),
-      // The inbox gate opened, so both legs hydrated together on this path.
       glanceOnly: false,
+      glanceHydrated: hydrateGlance,
     }),
   );
   return {
     ...base,
     complete,
     surfaces: {
-      ...(inbox ? { inbox } : {}),
+      ...(inbox ? { inbox: hookInboxSurface(inbox) } : {}),
       ...(glance ? { glance } : {}),
     },
   };

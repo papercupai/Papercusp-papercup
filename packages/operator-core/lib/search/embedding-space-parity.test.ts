@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { buildEmbeddingSpaceParityFixture, censusFilterCallSites, renderRecordedSql, recordingSql } from './embedding-space-parity-cases';
+import { buildEmbeddingSpaceParityFixture, censusFilterCallSites, chunkSurfaceSpaceColumns, renderRecordedSql, recordingSql } from './embedding-space-parity-cases';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const FIXTURE = fileURLToPath(new URL('../../../../libs/generic/search/src/__fixtures__/embedding-space-parity-cases.json', import.meta.url));
@@ -24,6 +24,10 @@ describe('embedding-space parity fixture', () => {
     const committed = JSON.parse(readFileSync(FIXTURE, 'utf8')) as unknown;
     const rebuilt = JSON.parse(JSON.stringify(buildEmbeddingSpaceParityFixture(REPO_ROOT))) as unknown;
     expect(rebuilt).toEqual(committed);
+  });
+
+  it('does not send parentless semantic-only surfaces through the vector-leg census', () => {
+    expect(chunkSurfaceSpaceColumns().some((entry) => entry.surface === 'report')).toBe(false);
   });
 
   it('the census sees the known filter call sites (positive control)', () => {

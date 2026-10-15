@@ -51,7 +51,14 @@ export default defineTool({
       cupboard: config.gateSecretRef ? `configured (${config.cupboardUrl})` : 'not-configured (PAPERCUSP_RECONCILIATION_GATE_SECRET_REF)',
       chain: config.chainRpcUrl ? 'receipts verified on chain' : 'Worker records trusted (no PAPERCUSP_RECONCILIATION_CHAIN_RPC_URL)',
       bank: 'not-configured (no bank feed connected)',
-      safe: 'not-configured (no Safe reader)',
+      safe:
+        config.safe.status === 'configured'
+          ? config.chainRpcUrl
+            ? `Safe ${config.safe.safeAddress} read on chain from block ${config.safe.fromBlock}`
+            : 'Safe configured, but PAPERCUSP_RECONCILIATION_CHAIN_RPC_URL is missing'
+          : config.safe.status === 'invalid'
+            ? config.safe.detail
+            : 'not-configured (PAPERCUSP_RECONCILIATION_SAFE_ADDRESS)',
     };
     if (!args.confirm) {
       return text({ ok: true, dryRun: true, workspaceId, mode: args.mode, rails, note: 'Re-run with confirm:true to reconcile.' });

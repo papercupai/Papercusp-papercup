@@ -10,7 +10,7 @@ import {
   failControlTransitionActivation,
   markControlTransitionPrepared,
 } from './agent-tools/coordination/control-anchor';
-import { recordCurrentSessionIdentityActivation } from './session-identity-attribution';
+import { recordCurrentSessionIdentityActivation, recordSessionIdentityReanchor } from './session-identity-attribution';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const migration = resolve(here, '../../../libs/papercusp/libs/db/sql/1149-session-identity-activation-spans.sql');
@@ -21,6 +21,8 @@ const indexedSpansMigration = resolve(here, '../../../libs/papercusp/libs/db/sql
 // (control-anchor -> applySessionPackageResources), so it reads this table even
 // when the compiled artifact journals no package.
 const packageInstallationsMigration = resolve(here, '../../../libs/papercusp/libs/db/sql/1232-blueprint-package-installations.sql');
+// WI-10004494 gap 3: the recorder stamps the slotted layer set of the applied revision.
+const layerRefsMigration = resolve(here, '../../../libs/papercusp/libs/db/sql/1295-activation-event-specification-layer-refs.sql');
 const WS = 'identity-activation-test';
 const OWNER = 'su-identity-test';
 const SPEC_A = 'a'.repeat(64);
@@ -91,6 +93,7 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, migration);
   await applyMigrationForTest(db.sql, carryMigration);
   await applyMigrationForTest(db.sql, indexedSpansMigration);
+  await applyMigrationForTest(db.sql, layerRefsMigration);
   await db.sql.unsafe(`
     DO $r$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
     DO $r$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $r$;
@@ -198,6 +201,167 @@ describe('P-009 activation span views', () => {
       source: 'control' as const, revision, sql: db.sql };
     await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('inserted');
     await expect(recordCurrentSessionIdentityActivation(input)).resolves.toBe('replayed');
+  });
+
+  // WI-10004917: applied events were written only on control transitions, so a CLI
+  // relaunch that changed no control state left the new native id with no span, and
+  // the owner-by-native-session oracle (the goal-brief R-3 probe's exact query) read
+  // that incarnation's turns as foreign.
+  it('opens a span for each re-anchored native incarnation, idempotently (WI-10004917)', async () => {
+    const owner = 'su-reanchor-span';
+    const revision = { specificationRevision: SPEC_B, stateRevision: 'reanchor-state' };
+    const activation = {
+      schemaVersion: 1, attribution: { actorId: owner, principalId: owner, sessionId: owner },
+      desired: revision, prepared: revision, applied: revision, status: 'applied',
+    };
+    await db.sql`INSERT INTO harness_shared.adv_sessions VALUES
+      (95,${WS},${owner},'reanchor-old','2026-09-12T00:00:00Z',NULL)`;
+    await db.sql`INSERT INTO harness_shared.session_briefs
+      (owner_id,workspace_id,native_session_id,control_generation,control_state)
+      VALUES (${owner},${WS},NULL,40,${JSON.stringify({ activation, stack: ['domain:researcher'] })}::text::jsonb)`;
+    await expect(recordCurrentSessionIdentityActivation({
+      workspaceId: WS, ownerId: owner, generation: 40, phase: 'applied', source: 'control',
+      revision, recordedAt: '2026-09-12T00:01:00Z', sql: db.sql,
+    })).resolves.toBe('inserted');
+    const ownersOf = (native: string) => db.sql`
+      SELECT DISTINCT owner_id, workspace_id FROM harness_shared.session_identity_activation_spans
+       WHERE native_session_id = ${native}`;
+    const reanchor = (native: string) => recordSessionIdentityReanchor({
+      workspaceId: WS, ownerId: owner, nativeSessionId: native, sql: db.sql });
+
+    // Positive control: the oracle cannot resolve the relaunched incarnation yet.
+    expect(await ownersOf('reanchor-new')).toEqual([]);
+    expect(await ownersOf('reanchor-old')).toEqual([{ owner_id: owner, workspace_id: WS }]);
+
+    await db.sql`UPDATE harness_shared.adv_sessions SET session_id='reanchor-new' WHERE id=95`;
+    await expect(reanchor('reanchor-new')).resolves.toBe('inserted');
+    // A retried or duplicated report converges on the one span.
+    await expect(reanchor('reanchor-new')).resolves.toBe('replayed');
+    expect(await ownersOf('reanchor-new')).toEqual([{ owner_id: owner, workspace_id: WS }]);
+
+    const spans = () => db.sql<Array<{ native_session_id: string; source: string; open: boolean; stack_refs: string[] }>>`
+      SELECT native_session_id, source, active_until IS NULL AS open, stack_refs
+        FROM harness_shared.session_identity_activation_spans
+       WHERE owner_id = ${owner} ORDER BY active_from, activation_event_id`;
+    // The predecessor's span closes at the re-anchor; the new one carries the same stack.
+    expect(await spans()).toEqual([
+      { native_session_id: 'reanchor-old', source: 'control', open: false, stack_refs: ['domain:researcher'] },
+      { native_session_id: 'reanchor-new', source: 'reanchor', open: true, stack_refs: ['domain:researcher'] },
+    ]);
+
+    // A later return to an earlier id (a --resume rung) opens a fresh span, not a replay.
+    await expect(reanchor('reanchor-old')).resolves.toBe('inserted');
+    expect((await spans()).map((row) => [row.native_session_id, row.open])).toEqual([
+      ['reanchor-old', false], ['reanchor-new', false], ['reanchor-old', true],
+    ]);
+  });
+
+  it('records nothing for a re-anchor while no revision is applied (WI-10004917)', async () => {
+    const owner = 'su-reanchor-unapplied';
+    const revision = { specificationRevision: SPEC_B, stateRevision: 'unapplied-state' };
+    const activation = {
+      schemaVersion: 1, attribution: { actorId: owner, principalId: owner, sessionId: owner },
+      desired: revision, prepared: null, applied: null, status: 'desired',
+    };
+    await db.sql`INSERT INTO harness_shared.session_briefs
+      (owner_id,workspace_id,native_session_id,control_generation,control_state)
+      VALUES (${owner},${WS},NULL,3,${JSON.stringify({ activation })}::text::jsonb)`;
+    await expect(recordSessionIdentityReanchor({
+      workspaceId: WS, ownerId: owner, nativeSessionId: 'unapplied-native', sql: db.sql,
+    })).resolves.toBe('missing');
+    await expect(recordSessionIdentityReanchor({
+      workspaceId: WS, ownerId: 'su-no-brief', nativeSessionId: 'unapplied-native', sql: db.sql,
+    })).resolves.toBe('missing');
+    const [{ n }] = await db.sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM harness_shared.session_identity_activation_events
+       WHERE owner_id IN (${owner}, 'su-no-brief')`;
+    expect(n).toBe(0);
+  });
+
+  // WI-10004494 gap 3 (migration 1295). Metering used to re-resolve a span's layers from the launch
+  // record, which churns its revision per relaunch and evicts identityHistory past 12, so most
+  // spans lost them. The recorder now stamps them while the artifact is reachable.
+  it('stamps the slotted layer set of the recorded revision and keeps it after the launch record moves on', async () => {
+    const owner = 'su-layer-stamp';
+    const specHist = '1'.repeat(64);
+    const specCurrent = '2'.repeat(64);
+    const specUnknown = '3'.repeat(64);
+    const layerInput = (ref: string, slots?: string[]) => ({
+      kind: 'blueprint-layer', ref,
+      document: { id: ref, ...(slots ? { slots: slots.map((slot) => ({ slot })) } : {}) },
+    });
+    const artifact = (specificationRevision: string, inputs: unknown[]) => ({ specificationRevision, inputs });
+    const setRecord = (launchSpec: unknown) => db.sql`
+      UPDATE harness_shared.adv_sessions SET launch_spec = ${JSON.stringify(launchSpec)}::text::jsonb WHERE id = 9501`;
+    const record = async (specificationRevision: string, generation: number) => {
+      const revision = { specificationRevision, stateRevision: `stamp-state-${generation}` };
+      const activation = {
+        schemaVersion: 1, attribution: { actorId: owner, principalId: 'principal-stamp', sessionId: 'session-stamp' },
+        desired: revision, prepared: revision, applied: revision, status: 'applied',
+      };
+      await db.sql`INSERT INTO harness_shared.session_briefs
+        (owner_id,workspace_id,native_session_id,control_generation,control_state)
+        VALUES (${owner},${WS},'native-stamp',${generation},${JSON.stringify({ activation, stack: [] })}::text::jsonb)
+        ON CONFLICT (owner_id) DO UPDATE
+          SET control_generation = EXCLUDED.control_generation, control_state = EXCLUDED.control_state`;
+      await expect(recordCurrentSessionIdentityActivation({
+        workspaceId: WS, ownerId: owner, generation, phase: 'applied', source: 'control', revision, sql: db.sql,
+      })).resolves.toBe('inserted');
+    };
+    const stampOf = async (generation: number) => {
+      const rows = await db.sql<Array<{ refs: unknown }>>`
+        SELECT specification_layer_refs AS refs FROM harness_shared.session_identity_activation_events
+         WHERE workspace_id = ${WS} AND owner_id = ${owner} AND control_generation = ${generation}`;
+      expect(rows).toHaveLength(1);
+      return rows[0]!.refs;
+    };
+    const histLayers = ['collaboration-stance:su-collaborator', 'domain:papercusp-engineer'];
+
+    await db.sql`INSERT INTO harness_shared.adv_sessions (id,workspace_id,coord_owner_id,session_id,started_at,launch_spec)
+      VALUES (9501,${WS},${owner},'native-stamp','2026-10-01T00:00:00Z','{}'::jsonb)`;
+    try {
+      await setRecord({
+        specificationRevision: specCurrent,
+        specificationArtifact: artifact(specCurrent, [layerInput('base')]),
+        identityHistory: [
+          // Same container revision, but the artifact hashes to another revision: never read.
+          { specificationRevision: specHist, specificationArtifact: artifact('4'.repeat(64), [layerInput('decoy', ['domain'])]) },
+          { specificationRevision: specHist, specificationArtifact: artifact(specHist, [
+            layerInput('base'),
+            layerInput('papercusp-engineer', ['domain']),
+            layerInput('su-collaborator', ['collaboration-stance']),
+          ]) },
+        ],
+      });
+      await record(specHist, 1);    // from identityHistory, slot-qualified and sorted
+      await record(specCurrent, 2); // the current artifact: known, nothing slotted
+      await record(specUnknown, 3); // no artifact hashes to it anywhere
+      expect(await stampOf(1)).toEqual(histLayers);
+      expect(await stampOf(2)).toEqual([]);
+      // NULL (unknown) must stay distinct from [] (known, none slotted): only NULL is a gap.
+      expect(await stampOf(3)).toBeNull();
+
+      // The record relaunches and evicts the entry. A later activation of the same revision still
+      // gets its layers, from the stamp already taken rather than the now-lossy record.
+      await setRecord({ specificationRevision: specCurrent, specificationArtifact: artifact(specCurrent, []), identityHistory: [] });
+      await record(specHist, 4);
+      expect(await stampOf(4)).toEqual(histLayers);
+
+      // The migration's backfill fills only what is NULL and reachable now, never rewriting a stamp.
+      await setRecord({
+        specificationRevision: specUnknown,
+        specificationArtifact: artifact(specUnknown, [layerInput('researcher', ['domain'])]),
+        identityHistory: [{ specificationRevision: specHist, specificationArtifact: artifact(specHist, []) }],
+      });
+      await applyMigrationForTest(db.sql, layerRefsMigration);
+      expect(await stampOf(3)).toEqual(['domain:researcher']);
+      expect(await stampOf(1)).toEqual(histLayers);
+      expect(await stampOf(4)).toEqual(histLayers);
+    } finally {
+      await db.sql`DELETE FROM harness_shared.session_identity_activation_events WHERE owner_id = ${owner}`;
+      await db.sql`DELETE FROM harness_shared.session_briefs WHERE owner_id = ${owner}`;
+      await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 9501`;
+    }
   });
 
   it('preserves intermediate carry usage after reanchor without widening owner, workspace or applied-time attribution', async () => {

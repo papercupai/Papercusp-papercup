@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 import {
   buildReachabilityCensus,
   classifyGuard,
+  extractTestExecutionEvidence,
   resolveImplementationPaths,
   selectGuardScripts,
   ACKNOWLEDGED_UNREACHABLE,
@@ -34,6 +35,7 @@ import {
   stripComments,
   computeCoverage,
   deriveScanScope,
+  hasEnumeratingLsFiles,
   scanScopeSources,
   workspaceOfPath,
   parseRepoWideRegistrations,
@@ -100,6 +102,18 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
     expect(r.tiers).not.toContain('test');
   });
 
+  it('does NOT credit a fixture mention beside execution of a different guard', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: cmd,
+      corpora: corpora({
+        test: `const fixture = "npm run lint:x; scripts/check-x.mjs";\nspawnSync('node', ['scripts/check-y.mjs']);`,
+      }),
+    });
+    expect(r.tiers).not.toContain('test');
+    expect(r.blocking).toBe(false);
+  });
+
   it('does NOT credit a guard off a SHARED runner path that names no guard in particular', () => {
     // `scripts/test-files.mjs` is the implementation of lint:tool-prompts, lint:plane-guards
     // AND lint:design-primitives, so any test naming that runner credited all three.
@@ -129,10 +143,55 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
   });
 
   it('DOES credit a test that runs the guard by npm name, including argv spelling', () => {
-    for (const invocation of ["npm run lint:x", "spawnSync('npm', ['run', 'lint:x'])"]) {
+    for (const invocation of ["execSync('npm run lint:x')", "spawnSync('npm', ['run', 'lint:x'])"]) {
       const r = classifyGuard({ name: 'lint:x', command: cmd, corpora: corpora({ test: invocation }) });
       expect(r.tiers, invocation).toContain('test');
     }
+  });
+
+  it('DOES credit runGuardScript when its executable arguments name this guard', () => {
+    const r = classifyGuard({
+      name: 'lint:x',
+      command: cmd,
+      corpora: corpora({ test: "runGuardScript('node', ['scripts/check-x.mjs'], { cwd: REPO_ROOT })" }),
+    });
+    expect(r.tiers).toContain('test');
+  });
+
+  it('binds an imported scanTree call to the guard module it actually scans', () => {
+    const evidence = extractTestExecutionEvidence(
+      `import { scanTree as runScan } from '../../../../scripts/check-x.mjs'; runScan();`,
+      'packages/operator-core/lib/__tests__/x.test.ts',
+    );
+    expect(evidence.implementationPaths).toContain('scripts/check-x.mjs');
+  });
+
+  it('resolves a guard path assigned through a nullish fallback before executing it', () => {
+    const evidence = extractTestExecutionEvidence(
+      `
+        import { join } from 'node:path';
+        const GUARD_REL = 'scripts/check-x.mjs';
+        const GUARD = process.env.GUARD_UNDER_TEST ?? join(ROOT, GUARD_REL);
+        execFileSync('node', [GUARD, '--list']);
+      `,
+      'packages/operator-core/lib/__tests__/x.test.ts',
+    );
+    expect(evidence.implementationPaths).toContain('scripts/check-x.mjs');
+  });
+
+  it('keeps a path composed from the repository root as one executed script argument', () => {
+    const evidence = extractTestExecutionEvidence(
+      `
+        import { join as pathJoin, resolve as pathResolve } from 'node:path';
+        const REPO_ROOT = pathResolve(pathJoin(__dirname, '..', '..', '..', '..'));
+        const GUARD_REL = 'scripts/check-x.mjs';
+        const GUARD = process.env.GUARD_UNDER_TEST ?? pathJoin(REPO_ROOT, GUARD_REL);
+        execFileSync('node', [GUARD, '--list']);
+      `,
+      'apps/operator/scripts/__tests__/x.test.ts',
+    );
+
+    expect([...evidence.implementationPaths]).toEqual(['../../../../scripts/check-x.mjs']);
   });
 
   it('does not let a LONGER guard name credit its own prefix', () => {
@@ -140,7 +199,7 @@ describe('classifyGuard — the `test` tier takes EXECUTION evidence only', () =
     const r = classifyGuard({
       name: 'lint:x',
       command: 'node scripts/check-x.mjs',
-      corpora: corpora({ test: 'npm run lint:x-extended' }),
+      corpora: corpora({ test: "spawnSync('npm', ['run', 'lint:x-extended'])" }),
     });
     expect(r.tiers).not.toContain('test');
   });
@@ -604,6 +663,63 @@ describe('deriveScanScope', () => {
   });
 });
 
+/**
+ * Measured 2026-10-12 (WI-6554700010009165). scripts/lint-as-committed.mjs gained a
+ * single-path `git ls-files -- <one file>` membership probe on 2026-10-08. The bare
+ * `'ls-files'` match scored the runner `repo-wide` → `partial`, and the SHRINK-ONLY
+ * partial set red-pinned `lint:guard-reachability`, though nothing enumerated the tree.
+ */
+describe('hasEnumeratingLsFiles — a single-path membership probe enumerates nothing', () => {
+  /** The exact probe scripts/lint-as-committed.mjs carries. */
+  const AS_COMMITTED_PROBE =
+    "const tracked = spawnSync('git', ['-C', dirname(priorTarget), 'ls-files', '--', basename(priorTarget)],\n" +
+    "  { encoding: 'utf8', timeout: 15000 });";
+
+  it('does not read the as-committed probe as a whole-tree scan', () => {
+    expect(hasEnumeratingLsFiles(AS_COMMITTED_PROBE)).toBe(false);
+    expect(deriveScanScope(AS_COMMITTED_PROBE).kind).toBe('undetermined');
+  });
+
+  it('accepts flags before `--` and a bare runtime identifier as the one pathspec', () => {
+    expect(hasEnumeratingLsFiles('git(["ls-files", "--error-unmatch", "--", repoPath])')).toBe(false);
+    expect(hasEnumeratingLsFiles("run('git', ['ls-files', '--stage', '--', parentRelativePath,])")).toBe(false);
+  });
+
+  it('CONTROL: the probe beside a real enumeration is still repo-wide', () => {
+    expect(deriveScanScope(`${AS_COMMITTED_PROBE}\nconst all = git(['ls-files', '-z']);`).kind).toBe('repo-wide');
+  });
+
+  it.each([
+    ["git(['ls-files', '--', '*.ts', '*.tsx'])", 'string-literal globs'],
+    ["execFileSync('git', ['ls-files', '*.test.ts'])", 'a glob with no `--`'],
+    ["run('git', ['ls-files', '-z', '--', ...absolutePaths], { cwd: root })", 'a spread pathspec'],
+    ["git(['ls-files', '--', first, second])", 'two pathspecs'],
+    ["git(['ls-files', '--', cfg.root])", 'a member expression'],
+    ["git('ls-files')", 'no pathspec at all'],
+    ["git(['ls-files', '-z', '--recurse-submodules'])", 'flags only'],
+    ["const DOCS_PREFIX = 'apps/docs/';\ngit(['ls-files', '-z', '--', DOCS_PREFIX])", 'a directory-prefix constant'],
+    ["const pathspec = `${dir}/*.sql`;\ngit(['ls-files', '--others', '--', pathspec])", 'a glob-bound identifier'],
+  ])('still reads %s as an enumeration (%s)', (src) => {
+    expect(hasEnumeratingLsFiles(src)).toBe(true);
+    expect(deriveScanScope(src).kind).toBe('repo-wide');
+  });
+
+  it('the as-committed row is no longer scored `partial` (CONTROL: a real enumeration still is)', () => {
+    const row = { name: 'lint:as-committed', tier: 'test', blocking: true, impls: ['scripts/lint-as-committed.mjs'] };
+    const args = {
+      row,
+      enforcingTestPaths: ['packages/operator-core/lib/__tests__/lint-as-committed.test.ts'],
+      workspaceDirs: ['apps/operator', 'packages/operator-core'],
+    };
+    // Positive control: this exact row DOES score `partial` once its source really enumerates,
+    // so the `undetermined` below is the probe rule speaking, not an artifact of the row setup.
+    const enumerating = `${AS_COMMITTED_PROBE}\nconst all = git(['ls-files', '-z']);`;
+    expect(computeCoverage({ ...args, implSource: enumerating }).verdict).toBe('partial');
+    // The probe alone is no scan-shape claim, so coverage is honestly unmeasured.
+    expect(computeCoverage({ ...args, implSource: AS_COMMITTED_PROBE }).verdict).toBe('undetermined');
+  });
+});
+
 describe('parseRepoWideRegistrations', () => {
   const src = [
     'const REPO_WIDE_INVARIANT_GUARDS = [',
@@ -621,6 +737,21 @@ describe('parseRepoWideRegistrations', () => {
     // Over-crediting here would silently mark a partially-covered guard as full — the
     // same false-green this whole axis exists to remove.
     expect(parseRepoWideRegistrations(src).has('lint:not-registered')).toBe(false);
+  });
+
+  it('resolves a static constant used by a live repo-wide registration', () => {
+    const constantBacked = [
+      "const AUTHORED_DOC_GUARD_SCRIPT = 'gen:authored-docs:check';",
+      'const REPO_WIDE_INVARIANT_GUARDS = [',
+      "  { workspace: '@papercusp/operator-core', script: AUTHORED_DOC_GUARD_SCRIPT },",
+      '];',
+      "const unrelated = { script: 'lint:not-registered' };",
+    ].join('\n');
+
+    expect([...parseRepoWideRegistrations(constantBacked)]).toEqual(['gen:authored-docs:check']);
+    expect(parseRepoWideRegistrationPairs(constantBacked)).toEqual([
+      { workspace: '@papercusp/operator-core', script: 'gen:authored-docs:check' },
+    ]);
   });
 
   it('returns an empty set when the block is absent, never a crash', () => {

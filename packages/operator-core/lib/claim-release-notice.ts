@@ -51,6 +51,7 @@
  */
 
 import type postgres from 'postgres';
+import { getServingHostIdentity } from './serving-host-identity';
 
 /** One claim that was taken away from its holder without the holder releasing it. */
 export interface InvoluntaryClaimRelease {
@@ -109,6 +110,13 @@ export async function recordInvoluntaryClaimReleases(
   if (released.length === 0) return result;
 
   // ── Leg 1: the append-only audit trail ────────────────────────────────────
+  const servingHost = getServingHostIdentity();
+  const emitter = {
+    host: servingHost.host,
+    pid: process.pid,
+    processId: servingHost.processId,
+    buildSha: servingHost.buildSha,
+  };
   for (const row of released) {
     try {
       await sql.unsafe(
@@ -126,6 +134,9 @@ export async function recordInvoluntaryClaimReleases(
             reason: row.reason ?? opts.reason,
             harness: opts.harness,
             involuntary: true,
+            // Preserve the process that made the release decision, including an
+            // honest null buildSha when the loaded artifact cannot prove its source.
+            emitter,
           }),
           opts.workspaceId,
         ],

@@ -320,6 +320,56 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  it('lets the stamped rubric-vetting answerer author the attestation for their own critique', async () => {
+    readVettingConsultCritique.mockResolvedValue(
+      critique({ critics: ['su-routed-reviewer'], routedVettingCritic: 'su-routed-reviewer' }),
+    );
+    const resolveAcceptanceSeatSuccession = vi.fn().mockResolvedValue({
+      eligible: false,
+      reason: 'caller_not_accountable_for_plan',
+      authorSessionState: 'live',
+    });
+    const res = await emitScorecard(
+      vettingArgs() as never,
+      { createdBy: 'su-routed-reviewer', ctxHarness: 'papercusp' },
+      {
+        sameAcceptanceAuthor: async () => false,
+        resolveAcceptanceSeatSuccession: resolveAcceptanceSeatSuccession as never,
+      },
+    );
+    expect(res).toMatchObject({ ok: true, created: true });
+    expect(resolveAcceptanceSeatSuccession).not.toHaveBeenCalled();
+    const payload = captureImprovement.mock.calls[0][0] as {
+      payloadExtra: { observation: { vetting?: Record<string, unknown> } };
+    };
+    expect(payload.payloadExtra.observation.vetting).toMatchObject({
+      consultId: 'conv-vet-1',
+      critics: ['su-routed-reviewer'],
+    });
+  });
+
+  it('does not let an unselected consult poster bypass the author-or-plan-seat boundary', async () => {
+    readVettingConsultCritique.mockResolvedValue(
+      critique({ critics: ['su-unselected-reviewer'] }),
+    );
+    const resolveAcceptanceSeatSuccession = vi.fn().mockResolvedValue({
+      eligible: false,
+      reason: 'caller_not_accountable_for_plan',
+      authorSessionState: 'live',
+    });
+    const res = await emitScorecard(
+      vettingArgs() as never,
+      { createdBy: 'su-unselected-reviewer', ctxHarness: 'papercusp' },
+      {
+        sameAcceptanceAuthor: async () => false,
+        resolveAcceptanceSeatSuccession: resolveAcceptanceSeatSuccession as never,
+      },
+    );
+    expect(res.ok).toBe(false);
+    expect(resolveAcceptanceSeatSuccession).toHaveBeenCalledTimes(1);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('allows an accountable successor for a dead author and stamps the vetting seat', async () => {
     const succession = {
       succeededFrom: 'su-author',

@@ -31,6 +31,14 @@ const M = vi.hoisted(() => ({
     harnessSlug: slug,
   })),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: 'papercup' })),
+  // P-007: the batched freshness/acceptance read is the only DB touch of the
+  // derived lifecycle; the pure per-row derivation below it stays REAL.
+  readPlanListLifecycleSignals: vi.fn(
+    async (_input?: unknown): Promise<{
+      activity: Map<string, { lastActivityAt: string | null; liveClaims: number }> | null;
+      acceptance: Map<string, string> | null;
+    }> => ({ activity: new Map(), acceptance: new Map() }),
+  ),
 }));
 
 vi.mock('./source', async (orig) => {
@@ -44,6 +52,10 @@ vi.mock('./source', async (orig) => {
   };
 });
 vi.mock('./_ctx-opts', () => ({ ctxToPlanSourceOpts: M.ctxToPlanSourceOpts }));
+vi.mock('./list-derived-lifecycle', async (orig) => {
+  const actual = await orig<typeof import('./list-derived-lifecycle')>();
+  return { ...actual, readPlanListLifecycleSignals: M.readPlanListLifecycleSignals };
+});
 vi.mock('../../issue-blocks-merge', async (orig) => {
   const actual = await orig<typeof import('../../issue-blocks-merge')>();
   return {
@@ -128,6 +140,8 @@ beforeEach(async () => {
   setL2EnabledForTests(false);
   M.listPlanIndexRows.mockReset();
   M.listPlanIndexRows.mockResolvedValue([]);
+  M.readPlanListLifecycleSignals.mockReset();
+  M.readPlanListLifecycleSignals.mockResolvedValue({ activity: new Map(), acceptance: new Map() });
   setFlagOverridesForTest({ [CACHE_LAYER]: false });
   await _refreshCacheLayerForTests();
 });
@@ -224,13 +238,21 @@ describe('plans:list — groupBy aggregates', () => {
       row({ planSlug: 'superseded-abandonment', status: 'superseded', items: [liveItem] }),
       row({ planSlug: 'shipped-debt', status: 'shipped', items: [liveItem] }),
     ]);
+    // A live claim on a linked work item is activity at read time, so the
+    // shipped-with-live-items plan reads `active`, not merely stale.
+    M.readPlanListLifecycleSignals.mockResolvedValue({
+      activity: new Map([['shipped-debt', { lastActivityAt: null, liveClaims: 1 }]]),
+      acceptance: new Map(),
+    });
 
     const filtered = await run({ compact: true, lifecycleDisposition: 'contradicted', limit: 1 });
     expect(filtered.plans).toEqual([
       expect.objectContaining({
         slug: 'shipped-debt',
-        lifecycle: expect.objectContaining({
+        derivedLifecycle: expect.objectContaining({
           verdict: 'active',
+          liveClaims: 1,
+          unmeasured: [],
           disposition: 'contradicted',
           contradiction: expect.objectContaining({ evidence: expect.stringContaining('1 of 1 items are still live') }),
         }),
@@ -249,9 +271,95 @@ describe('plans:list — groupBy aggregates', () => {
       expect.arrayContaining([
         expect.objectContaining({
           slug: 'superseded-abandonment',
-          lifecycle: expect.objectContaining({ disposition: 'agreed' }),
+          derivedLifecycle: expect.objectContaining({ disposition: 'agreed' }),
         }),
       ]),
+    );
+  });
+
+  it('filters and groups by the DERIVED lifecycle verdict, read from activity rather than stored status', async () => {
+    const item = (status: string) => ({
+      id: 'P-001',
+      text: 'x',
+      status,
+      importance: 'normal',
+      blockedBy: [],
+      decisionRefs: [],
+      phase: null,
+    });
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    // Every plan's stored status says `active`; only the derived verdict tells them apart.
+    M.listPlanIndexRows.mockResolvedValue([
+      row({ planSlug: 'dormant', items: [item('todo')] }),
+      row({ planSlug: 'claimed', items: [item('todo')] }),
+      row({ planSlug: 'recent-work-item', items: [item('todo')] }),
+      row({ planSlug: 'built', items: [item('done')] }),
+      row({ planSlug: 'built-awaiting', items: [item('done')] }),
+    ]);
+    M.readPlanListLifecycleSignals.mockResolvedValue({
+      activity: new Map([
+        ['claimed', { lastActivityAt: null, liveClaims: 2 }],
+        ['recent-work-item', { lastActivityAt: yesterday, liveClaims: 0 }],
+      ]),
+      acceptance: new Map([['built-awaiting', 'acceptance-built-awaiting']]),
+    });
+
+    // `lifecycle` is a JS post-filter, so `limit` must not be pushed into the SQL.
+    const stalled = await run({ lifecycle: 'stalled', limit: 1 });
+    expect(stalled.plans).toEqual([
+      expect.objectContaining({
+        slug: 'dormant',
+        status: 'active',
+        derivedLifecycle: expect.objectContaining({
+          verdict: 'stalled',
+          lastActivityAt: '2026-07-01T00:00:00.000Z',
+          liveClaims: 0,
+          unmeasured: [],
+        }),
+      }),
+    ]);
+    expect((stalled.plans[0] as { derivedLifecycle: { idleDays: number } }).derivedLifecycle.idleDays).toBeGreaterThan(30);
+    expect(M.listPlanIndexRows.mock.calls[0]?.[0]).not.toHaveProperty('limit');
+    expect(M.readPlanListLifecycleSignals).toHaveBeenCalledWith({
+      workspaceId: 'ws-groupby',
+      planSlugs: expect.arrayContaining(['dormant', 'claimed', 'recent-work-item', 'built', 'built-awaiting']),
+    });
+
+    const active = await run({ lifecycle: 'active' });
+    expect(active.plans.map((p) => (p as { slug: string }).slug).sort()).toEqual(['claimed', 'recent-work-item']);
+
+    const grouped = await run({ groupBy: 'lifecycle', aggregateOnly: true });
+    expect(grouped.groups).toEqual([
+      { key: 'active', count: 2 },
+      { key: 'awaiting-acceptance', count: 1 },
+      { key: 'implementation-complete', count: 1 },
+      { key: 'stalled', count: 1 },
+    ]);
+
+    // compact rows carry the derived lifecycle too: liveness never falls back to `status`.
+    const compact = await run({ compact: true });
+    for (const plan of compact.plans as Array<{ itemCounts: unknown; derivedLifecycle: { verdict: string } }>) {
+      expect(plan.itemCounts).toBeNull();
+      expect(typeof plan.derivedLifecycle.verdict).toBe('string');
+    }
+  });
+
+  it('reports a failed activity read as unmeasured instead of defaulting to no activity', async () => {
+    M.listPlanIndexRows.mockResolvedValue([
+      row({
+        planSlug: 'unknown-activity',
+        items: [{ id: 'P-001', text: 'x', status: 'todo', importance: 'normal', blockedBy: [], decisionRefs: [], phase: null }],
+      }),
+    ]);
+    M.readPlanListLifecycleSignals.mockResolvedValue({ activity: null, acceptance: null });
+
+    const { plans } = await run({});
+    expect(plans[0]).toMatchObject({
+      slug: 'unknown-activity',
+      derivedLifecycle: { liveClaims: null },
+    });
+    expect((plans[0] as { derivedLifecycle: { unmeasured: string[] } }).derivedLifecycle.unmeasured).toContain(
+      'linked-work-item',
     );
   });
 

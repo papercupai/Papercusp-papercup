@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-533 AWS resumed 50-agent native io2 comparison",
+  "framework": "operational",
+  "workItemId": "WI-6554700010013766",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "instance": "m7i.2xlarge",
+  "storage": "256 GiB encrypted io2, 6000 IOPS",
+  "model": "gpt-6-luna",
+  "effort": "low",
+  "resumeNative": true,
+  "warmHistoryAgents": 50,
+  "warmHistoryRounds": 6,
+  "freshWarmRounds": 1,
+  "warmConcurrency": 5,
+  "arms": {
+    "none": {"agents": 50, "failed": 0, "echoP50Sec": 0.283, "replyP50Sec": 20.239, "allDoneSec": 25.649},
+    "zram-lz4": {"agents": 50, "failed": 0, "echoP50Sec": 0.306, "replyP50Sec": 28.24, "allDoneSec": 35.674, "compressionRatio": 3.02},
+    "zram-zstd": {"agents": 50, "failed": 0, "echoP50Sec": 0.319, "replyP50Sec": 17.897, "allDoneSec": 24.647, "compressionRatio": 4.33},
+    "io2-pc3": {"agents": 50, "failed": 0, "echoP50Sec": 0.938, "replyP50Sec": 40.392, "allDoneSec": 49.904},
+    "io2-pc0": {"agents": 50, "failed": 0, "echoP50Sec": 6.774, "replyP50Sec": 56.694, "allDoneSec": 61.185}
+  },
+  "wakeCount": 250,
+  "wakeFailures": 0,
+  "rawArchive": {"path": "/tmp/p533-aws-resume-final.tgz", "sha256": "9798fdbdee1999a85606048682f8481812f213ae5dae3cbc1ad57412cee13a2b"},
+  "sourceSha256": "911a72471ddd0bf02dfb2c5a444972c67763a5fcfdfbf7492543a18fef0e3a66",
+  "limits": ["Resumed native sessions make timing descriptive rather than a fresh-process baseline.", "The AWS provider route was kept healthy by pre-batch checks; no blocking in-flight health observer was used."]
+}

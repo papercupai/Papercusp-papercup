@@ -117,17 +117,22 @@ describe('handleWebhookDelivery refusals before any database read', () => {
     expect(res.body.error).toBe('body_too_large');
   });
 
-  it('400 for a body that is not a JSON object', async () => {
-    for (const body of ['not json', '[1,2]', '"text"', 'null', '']) {
+  it('400 for a non-empty body that is not a JSON object', async () => {
+    // An EMPTY body is a provider's subscription handshake (linear-asana-task-sync D-016, Asana
+    // X-Hook-Secret), so it is decided after the source lookup: a webhook source still refuses it
+    // invalid_body (providers/connector-push.integration.test.ts, "the generic webhook path").
+    for (const body of ['not json', '[1,2]', '"text"', 'null']) {
       const res = await handleWebhookDelivery(request(body), deps);
       expect(res.status, body).toBe(400);
       expect(res.body.error, body).toBe('invalid_body');
     }
   });
 
-  it('404 for a source id that is not a uuid', async () => {
-    const res = await handleWebhookDelivery(request(BODY, 'not-a-uuid'), deps);
-    expect(res.status).toBe(404);
-    expect(res.body).toEqual({ ok: false, error: 'not_found' });
+  it('404 for a source id that is not a uuid, with or without a body', async () => {
+    for (const body of [BODY, '']) {
+      const res = await handleWebhookDelivery(request(body, 'not-a-uuid'), deps);
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ ok: false, error: 'not_found' });
+    }
   });
 });

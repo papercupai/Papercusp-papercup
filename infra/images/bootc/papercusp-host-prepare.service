@@ -8,8 +8,8 @@ Documentation=file:///usr/libexec/papercusp/host-prepare.sh
 # running before local-fs would write into the pre-mount directory and the work
 # would vanish. The script's final assertion reads the live nftables table, so
 # merely enabling both units without this edge is a boot race.
-After=local-fs.target nftables.service
-Requires=local-fs.target nftables.service
+After=local-fs.target systemd-tmpfiles-setup.service nftables.service
+Requires=local-fs.target systemd-tmpfiles-setup.service nftables.service
 Before=sshd.service
 
 [Service]

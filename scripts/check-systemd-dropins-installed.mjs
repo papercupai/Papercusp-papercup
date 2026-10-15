@@ -41,10 +41,26 @@
  * confirmed by a second read before it is reported, so one anomalous answer cannot fail the
  * gate or make the supervision reconciler file a false work-item.
  *
- * SCOPE, stated so a reader does not over-trust a pass: user-scope `*.service.d/*.conf`
- * drop-ins, plus the Diodon/zeitgeist lifecycle on a host with an active graphical
- * session. Root-owned system units installed by `sudo install` (per the README's
- * user-manager-watchdog section) are a different mechanism and are NOT covered here.
+ * SCOPE, stated so a reader does not over-trust a pass: user-scope `*.service.d/*.conf` and
+ * `*.slice.d/*.conf` drop-ins (read with `systemctl --user`; slices since WI-6554700010010449,
+ * papercusp.slice's CPUWeight), SYSTEM-scope drop-ins tracked under
+ * `scripts/systemd/system/<unit>.{service,slice}.d/*.conf` (read with plain `systemctl`;
+ * installed as root-owned copies by `sudo install`, so the check is "is it in the unit's
+ * DropInPaths", never "is it a symlink"), plus the Diodon/zeitgeist lifecycle on a host with
+ * an active graphical session. Root-owned system UNIT FILES (not drop-ins) installed per the
+ * README's user-manager-watchdog section are a different mechanism and are NOT covered here.
+ * System drop-ins were added for papercusp-performance-audit-2026-10-12 P-008
+ * (WI-6554700010009308): the PostgreSQL serving-path weights live on system units.
+ *
+ * PREFIX DROP-INS (WI-6554700010012202). A directory named `<prefix>-.<type>.d` is a systemd
+ * prefix drop-in: it applies to every unit whose name starts with `<prefix>-`. The freeze fix
+ * (WI-6554700010011963) ships `system/session-.scope.d/55-no-swap.conf`, which keeps Xorg and the
+ * login session out of swap; the session number changes at each login, so there is no fixed unit
+ * to check. Such a drop-in is checked against every LIVE matching unit (`systemctl list-units
+ * '<prefix>-*.<type>'`). No live match is UNIT-ABSENT (there is nothing to judge, e.g. a headless
+ * host with no login session); a failed listing is UNREADABLE, never drift. System `*.scope.d`
+ * directories are collected for this reason; a scope only exists while it runs, so a scope
+ * drop-in is only meaningful in prefix form.
  *
  * Usage:
  *   node scripts/check-systemd-dropins-installed.mjs           # gate
@@ -86,9 +102,9 @@ function sleepSync(ms) {
  * systemctl's own first stderr line (or the exit status / signal). A failure is kept as a
  * failure — collapsing it into empty output is the defect this guard once had.
  */
-function runSystemctl(args) {
+function runSystemctl(args, scope = 'user') {
   try {
-    const stdout = execFileSync('systemctl', ['--user', ...args], {
+    const stdout = execFileSync('systemctl', scope === 'user' ? ['--user', ...args] : args, {
       stdio: 'pipe',
       encoding: 'utf8',
       timeout: 15_000,
@@ -132,11 +148,11 @@ function parseShowBlocks(stdout) {
  * is retried. Returns { units: Map<unit, props> } or, when every attempt failed,
  * { error } naming the last failure.
  */
-function showUnits(units, properties, required = []) {
+function showUnits(units, properties, required = [], scope = 'user') {
   const args = ['show', '--property=Id', ...properties.map((p) => `--property=${p}`), ...units];
   let error = 'no read attempted';
   for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt++) {
-    const read = runSystemctl(args);
+    const read = runSystemctl(args, scope);
     if (read.ok) {
       const blocks = parseShowBlocks(read.stdout);
       const complete =
@@ -182,20 +198,106 @@ function installedSymlink(path) {
   }
 }
 
-/** Collect tracked drop-ins as { unit, confPath, confName }. */
+/**
+ * Collect tracked drop-ins as { unit, confPath, confName, scope }. User drop-ins live directly
+ * under scripts/systemd/<unit>.service.d/; system drop-ins under scripts/systemd/system/,
+ * where a slice can carry one too (CPUWeight on system-postgresql.slice).
+ */
 function trackedDropIns() {
   if (!existsSync(systemdDir)) return [];
   const found = [];
-  for (const entry of readdirSync(systemdDir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !entry.name.endsWith('.service.d')) continue;
-    const unit = entry.name.slice(0, -2); // "foo.service.d" -> "foo.service"
-    const dir = join(systemdDir, entry.name);
-    for (const conf of readdirSync(dir)) {
-      if (!conf.endsWith('.conf')) continue;
-      found.push({ unit, confName: conf, confPath: join(dir, conf) });
+  const collect = (root, scope, suffixes) => {
+    if (!existsSync(root)) return;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !suffixes.some((s) => entry.name.endsWith(s))) continue;
+      const unit = entry.name.slice(0, -2); // "foo.service.d" -> "foo.service"
+      const dir = join(root, entry.name);
+      for (const conf of readdirSync(dir)) {
+        if (!conf.endsWith('.conf')) continue;
+        found.push({ unit, confName: conf, confPath: join(dir, conf), scope });
+      }
     }
+  };
+  // User slices carry drop-ins too: papercusp.slice's CPUWeight (WI-6554700010010449).
+  collect(systemdDir, 'user', ['.service.d', '.slice.d']);
+  // System scopes: the session-.scope.d prefix drop-in (WI-6554700010012202).
+  collect(join(systemdDir, 'system'), 'system', ['.service.d', '.slice.d', '.scope.d']);
+  return found.sort((a, b) =>
+    `${a.scope}/${a.unit}/${a.confName}`.localeCompare(`${b.scope}/${b.unit}/${b.confName}`),
+  );
+}
+
+/** `session-.scope` -> `session-*.scope`; null when the name is not a prefix drop-in. */
+function prefixUnitPattern(unit) {
+  const m = /^(.+-)\.([a-z]+)$/.exec(unit);
+  return m ? `${m[1]}*.${m[2]}` : null;
+}
+
+/**
+ * Live units matching a glob, from `systemctl list-units --all --plain --no-legend`. A
+ * successful call with no rows is a real "none running" answer; a failed call is retried and
+ * then returned as { error }, never as an empty list.
+ */
+function listLiveUnits(pattern, scope) {
+  const [head, type] = [pattern.slice(0, pattern.indexOf('*')), pattern.slice(pattern.lastIndexOf('.'))];
+  let error = 'no read attempted';
+  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt++) {
+    const read = runSystemctl(['list-units', '--all', '--plain', '--no-legend', pattern], scope);
+    if (read.ok) {
+      const units = read.stdout
+        .split('\n')
+        .map((line) => line.trim().split(/\s+/)[0])
+        .filter((u) => u && u.startsWith(head) && u.endsWith(type) && u.length > head.length + type.length);
+      return { units: [...new Set(units)].sort() };
+    }
+    error = read.error;
+    if (attempt < READ_ATTEMPTS) sleepSync(RETRY_DELAYS_MS[attempt - 1] ?? 0);
   }
-  return found.sort((a, b) => `${a.unit}/${a.confName}`.localeCompare(`${b.unit}/${b.confName}`));
+  return { error: `${error} (after ${READ_ATTEMPTS} attempts)` };
+}
+
+/**
+ * Replace each prefix drop-in with one entry per live unit it applies to. The entry keeps the
+ * prefix name in `dropInUnit`, which names the directory the drop-in is installed in.
+ */
+function expandPrefixDropIns(entries) {
+  const concrete = [];
+  const absent = [];
+  const unreadable = [];
+  const errors = [];
+  const listings = new Map();
+  for (const d of entries) {
+    const pattern = prefixUnitPattern(d.unit);
+    if (!pattern) {
+      concrete.push(d);
+      continue;
+    }
+    const key = `${d.scope}:${pattern}`;
+    if (!listings.has(key)) {
+      const listing = listLiveUnits(pattern, d.scope);
+      listings.set(key, listing);
+      if (listing.error) errors.push(`${d.scope} scope list-units ${pattern}: ${listing.error}`);
+    }
+    const listing = listings.get(key);
+    if (listing.error) unreadable.push(d);
+    else if (listing.units.length === 0) absent.push({ ...d, reason: `no live ${pattern} in ${d.scope} scope` });
+    else for (const unit of listing.units) concrete.push({ ...d, unit, dropInUnit: d.unit });
+  }
+  return { concrete, absent, unreadable, errors };
+}
+
+/** Read LoadState + DropInPaths for each scope's units; merge into one Map keyed by scope+unit. */
+function showTracked(entries) {
+  const units = new Map();
+  const errors = [];
+  for (const scope of ['user', 'system']) {
+    const scoped = [...new Set(entries.filter((d) => d.scope === scope).map((d) => d.unit))];
+    if (scoped.length === 0) continue;
+    const read = showUnits(scoped, ['LoadState', 'DropInPaths'], ['LoadState', 'DropInPaths'], scope);
+    if (read.error) errors.push(scope === 'user' ? read.error : `system scope: ${read.error}`);
+    for (const [unit, props] of read.units ?? []) units.set(`${scope}:${unit}`, props);
+  }
+  return { units, errors };
 }
 
 /** Names of the drop-ins a unit has loaded, from its DropInPaths property. */
@@ -203,9 +305,9 @@ function loadedDropInNames(props) {
   return new Set(props.DropInPaths.split(/\s+/).filter(Boolean).map((p) => basename(p)));
 }
 
-const dropIns = trackedDropIns();
+const tracked = trackedDropIns();
 
-if (dropIns.length === 0) {
+if (tracked.length === 0) {
   console.log('systemd drop-in install check: no tracked *.service.d/*.conf found — nothing to verify.');
   process.exit(0);
 }
@@ -215,26 +317,27 @@ if (!userSystemdAvailable()) {
   // user systemd session) is not broken by an environment fact.
   console.log(
     `systemd drop-in install check: SKIPPED — no user systemd manager reachable.\n` +
-      `  ${dropIns.length} tracked drop-in(s) were NOT verified. This check only means anything on a host that runs these units.`,
+      `  ${tracked.length} tracked drop-in(s) were NOT verified. This check only means anything on a host that runs these units.`,
   );
   process.exit(0);
 }
 
+const expanded = expandPrefixDropIns(tracked);
+const dropIns = expanded.concrete;
 const missing = [];
 const installed = [];
-const unitAbsent = [];
-const unreadable = [];
-const readErrors = [];
+const unitAbsent = [...expanded.absent];
+const unreadable = [...expanded.unreadable];
+const readErrors = [...expanded.errors];
 
-const trackedUnits = [...new Set(dropIns.map((d) => d.unit))];
-const firstRead = showUnits(trackedUnits, ['LoadState', 'DropInPaths'], ['LoadState', 'DropInPaths']);
-if (firstRead.error) readErrors.push(firstRead.error);
+const firstRead = showTracked(dropIns);
+readErrors.push(...firstRead.errors);
 
 const suspects = [];
 for (const d of dropIns) {
-  const props = firstRead.units?.get(d.unit);
+  const props = firstRead.units.get(`${d.scope}:${d.unit}`);
   if (!props) unreadable.push(d);
-  else if (props.LoadState === 'not-found') unitAbsent.push({ ...d, reason: 'unit not present in user scope' });
+  else if (props.LoadState === 'not-found') unitAbsent.push({ ...d, reason: `unit not present in ${d.scope} scope` });
   else if (loadedDropInNames(props).has(d.confName)) installed.push(d);
   else suspects.push(d);
 }
@@ -243,13 +346,12 @@ for (const d of dropIns) {
 // single anomalous answer must not fail the gate or file a work-item on its own.
 if (suspects.length > 0) {
   sleepSync(RETRY_DELAYS_MS[0] ?? 0);
-  const suspectUnits = [...new Set(suspects.map((d) => d.unit))];
-  const confirm = showUnits(suspectUnits, ['LoadState', 'DropInPaths'], ['LoadState', 'DropInPaths']);
-  if (confirm.error) readErrors.push(`confirmation read: ${confirm.error}`);
+  const confirm = showTracked(suspects);
+  readErrors.push(...confirm.errors.map((e) => `confirmation read: ${e}`));
   for (const d of suspects) {
-    const props = confirm.units?.get(d.unit);
+    const props = confirm.units.get(`${d.scope}:${d.unit}`);
     if (!props) unreadable.push(d);
-    else if (props.LoadState === 'not-found') unitAbsent.push({ ...d, reason: 'unit not present in user scope' });
+    else if (props.LoadState === 'not-found') unitAbsent.push({ ...d, reason: `unit not present in ${d.scope} scope` });
     else if (loadedDropInNames(props).has(d.confName)) installed.push(d);
     else missing.push(d);
   }
@@ -297,12 +399,25 @@ if (missing.length > 0) {
       `   The unit is running WITHOUT the configuration this repo believes it has.\n` +
       `   (Confirmed by two separate reads.)\n`,
   );
-  for (const { unit, confName, confPath } of missing) {
+  for (const { unit, dropInUnit, confName, confPath, scope } of missing) {
     const rel = confPath.slice(repoRoot.length + 1);
     console.error(`  ${unit}  <-  ${confName}`);
     console.error(`     tracked at: ${rel}`);
-    console.error(`     install:    mkdir -p ~/.config/systemd/user/${unit}.d \\`);
-    console.error(`                 && ln -sfn "${confPath}" ~/.config/systemd/user/${unit}.d/${confName} \\`);
+    if (scope === 'system') {
+      // Root-owned copy, not a symlink into a user's home: the system manager must not load
+      // configuration a non-root user can rewrite. A prefix drop-in installs into the PREFIX
+      // directory (session-.scope.d), never the live unit's own (session-2.scope.d).
+      console.error(
+        `     install:    sudo install -D -m0644 "${confPath}" /etc/systemd/system/${dropInUnit ?? unit}.d/${confName} \\`,
+      );
+      console.error(`                 && sudo systemctl daemon-reload`);
+      console.error(
+        `     then verify: systemctl show ${unit} --property=DropInPaths --value | tr ' ' '\\n' | grep ${confName}\n`,
+      );
+      continue;
+    }
+    console.error(`     install:    mkdir -p ~/.config/systemd/user/${dropInUnit ?? unit}.d \\`);
+    console.error(`                 && ln -sfn "${confPath}" ~/.config/systemd/user/${dropInUnit ?? unit}.d/${confName} \\`);
     console.error(`                 && systemctl --user daemon-reload`);
     console.error(
       `     then verify: systemctl --user show ${unit} --property=DropInPaths --value | tr ' ' '\\n' | grep ${confName}\n`,

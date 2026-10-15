@@ -1,0 +1,52 @@
+{
+  "irVersion": "0.1",
+  "surface": "dao-ui-concepts",
+  "ecosystem": "react-tailwind",
+  "a11y": { "landmark": "main", "headingLevel": 1 },
+  "layout": {
+    "kind": "stack", "direction": "vertical", "ref": "dao-concept-preview",
+    "children": [
+      {
+        "kind": "header", "ref": "concept-selector",
+        "a11y": { "role": "navigation", "ariaLabel": { "key": "dao.concept.navigation", "default": "Choose a DAO interface concept" } },
+        "children": [
+          { "kind": "component", "ref": "concept-button", "label": { "key": "dao.concept.choose", "default": "Commons, Assembly or Workbench" }, "interactions": ["select-concept"] },
+          { "kind": "component", "ref": "screen-select", "label": { "key": "dao.screen.choose", "default": "Open any interface" }, "interactions": ["select-screen"] }
+        ]
+      },
+      {
+        "kind": "stack", "direction": "horizontal", "ref": "dao-workspace",
+        "children": [
+          { "kind": "menu", "ref": "dao-navigation", "a11y": { "role": "navigation", "ariaLabel": { "key": "dao.navigation.label", "default": "DAO sections" } }, "label": { "key": "dao.navigation.title", "default": "DAO navigation" }, "interactions": ["navigate"] },
+          {
+            "kind": "raw", "ref": "concept-content", "ecosystem": "react-tailwind",
+            "spec": {
+              "why-raw": "Preview-only standalone HTML uses existing registry primitive semantics; no production React bindings are added during exploration.",
+              "directions": { "commons": "Public discovery and community participation", "assembly": "Organization sidebar, governance snapshots and action panels", "workbench": "Dark project workspace, project tree, execution board and evidence" },
+              "screens": ["directory", "overview", "join", "members", "proposals", "vote", "delegation", "work", "treasury", "funding", "reputation", "ownership", "returns", "marketplace", "billing", "jobs", "records", "settings", "inbox"],
+              "invariants": ["Fictional data and no external mutation", "Member plan voting, treasury signatures and ownership governance remain separate", "Equity returns are additional shares", "Membership, reputation and ownership remain distinct", "Testnet examples and incomplete security assurance are explicit"]
+            },
+            "children": [
+              { "kind": "component", "ref": "primary-action" },
+              { "kind": "component", "ref": "search-input" },
+              { "kind": "component", "ref": "terms-checkbox" },
+              { "kind": "component", "ref": "transaction-review" },
+              { "kind": "component", "ref": "status-notice" },
+              { "kind": "component", "ref": "record-table" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "components": [
+    { "id": "concept-button", "registry": "action.secondary" },
+    { "id": "screen-select", "registry": "control.select" },
+    { "id": "primary-action", "registry": "action.primary" },
+    { "id": "search-input", "registry": "control.text" },
+    { "id": "terms-checkbox", "registry": "control.checkbox" },
+    { "id": "transaction-review", "registry": "overlay.modal" },
+    { "id": "status-notice", "registry": "feedback.banner" },
+    { "id": "record-table", "registry": "data.rich-grid" }
+  ]
+}

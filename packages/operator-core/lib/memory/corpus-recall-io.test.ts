@@ -8,15 +8,35 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMemoryWorkDeadline } from './op-deadline';
+import { currentStageDiagnosticContext } from '../sync/hyperbee/stage-stall-log';
+import type { pgResultDiagnosticSnapshot } from '@papercusp/db-org';
 
+type PgDiagnosticRow = ReturnType<typeof pgResultDiagnosticSnapshot>['results'][number];
+const pgDiagnosticRows = vi.hoisted(() => [] as Array<Partial<PgDiagnosticRow>>);
 const runHybridSearch = vi.fn();
 const buildQueryEmbedder = vi.fn(async () => (async () => [0.1, 0.2]) as unknown);
 const getFlag = vi.fn(async () => true);
+const planSource = vi.fn(() => ({ name: 'plan' }));
+const docSource = vi.fn(() => ({ name: 'doc' }));
+const reportSource = vi.fn(() => ({ name: 'report' }));
+vi.mock('../agent-tools/search/knowledge-sources', () => ({ createPlanSearchSource: planSource, createDocSearchSource: docSource }));
+vi.mock('../agent-tools/search/report-source', () => ({ createReportSearchSource: reportSource }));
 
 /** The owner→own-session lookup runs through this tagged template. Default: the
  *  caller owns nothing, i.e. no exclusions. */
 const sql = vi.fn(async (..._args: unknown[]) => [] as Array<{ session_id: string }>);
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await orig<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql }),
+    pgResultDiagnosticSnapshot: (pool: string, limit?: number) => {
+      const snapshot = actual.pgResultDiagnosticSnapshot(pool, limit);
+      return { ...snapshot, results: pgDiagnosticRows.slice(-(limit ?? 32)) as typeof snapshot.results };
+    },
+  };
+});
 // Partial mock over `importOriginal`, never a hand-listed factory: a factory
 // replaces the module wholesale, so ANY export a transitively-imported module
 // touches at load time (configureSearchDefaults via P-017, createEmbeddingSpace
@@ -35,9 +55,15 @@ vi.mock('../agent-tools/search/sources', () => ({
     { name: 'work_item' },
     { name: 'session_turn' },
     { name: 'coord_message' },
+    { name: 'plan' },
+    { name: 'doc' },
+    { name: 'report' },
   ],
 }));
-vi.mock('../agent-tools/search/embedder', () => ({ buildQueryEmbedder }));
+vi.mock('../agent-tools/search/embedder', async () => ({
+  ...(await import('../search/embedder-mode-registry')),
+  buildQueryEmbedder,
+}));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { MEMORY_CORPUS_RECALL: 'papercusp-memory-corpus-recall' } }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag }));
 
@@ -72,6 +98,8 @@ const base = { queryText: QUERY, workspaceId: 'ws-1' };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  runHybridSearch.mockReset();
+  pgDiagnosticRows.length = 0;
   sql.mockResolvedValue([]);
   getFlag.mockResolvedValue(true);
   buildQueryEmbedder.mockResolvedValue((async () => [0.1, 0.2]) as unknown);
@@ -105,15 +133,283 @@ it('does not start a second corpus search after the parent prompt expired', asyn
   expect(runHybridSearch).toHaveBeenCalledOnce();
 });
 
+it('cancels the session_turn BM25 catalog read inside its bounded read-only transaction', async () => {
+  const { SEARCH_SOURCES } = await vi.importActual<typeof import('../agent-tools/search/sources')>('../agent-tools/search/sources');
+  const { resetBm25Availability } = await import('../search/lexical/rank');
+  resetBm25Availability();
+  const sessionTurn = SEARCH_SOURCES.find((source) => source.name === 'session_turn')!;
+  const controller = new AbortController();
+  const reason = new Error('source budget expired');
+  let resolveCatalogStart!: (source: string) => void;
+  const catalogStarted = new Promise<string>((resolve) => { resolveCatalogStart = resolve; });
+  const transactionQueries: string[] = [];
+  const rawQueries: string[] = [];
+  let rejectCatalog!: (error: unknown) => void;
+  const cancel = vi.fn(() => rejectCatalog(new Error('postgres query canceled')));
+
+  const tag = (source: 'raw' | 'transaction') => (strings: TemplateStringsArray) => {
+    const query = strings.join('?');
+    (source === 'raw' ? rawQueries : transactionQueries).push(query);
+    if (query.includes('FROM pg_index')) {
+      resolveCatalogStart(source);
+      const pending = new Promise<never>((_resolve, reject) => { rejectCatalog = reject; });
+      controller.signal.addEventListener('abort', () => rejectCatalog(reason), { once: true });
+      return Object.assign(pending, {
+        cancel,
+        executed: true,
+        active: true,
+      });
+    }
+    return Promise.resolve([]);
+  };
+  const tx = Object.assign(tag('transaction'), { unsafe: vi.fn(() => Promise.resolve([])) });
+  const begin = vi.fn(async (callback: (transaction: unknown) => Promise<unknown>) => callback(tx));
+  const sourceSql = Object.assign(tag('raw'), {
+    begin,
+    unsafe: vi.fn(() => Promise.resolve([])),
+  }) as never;
+
+  const sourceCall = sessionTurn.lexical({
+    sql: sourceSql,
+    query: 'unique cancellation query',
+    workspaceId: 'ws-1',
+    scopeFilter: null,
+    limit: 3,
+    signal: controller.signal,
+  });
+  const sourceAssertion = expect(sourceCall).rejects.toBe(reason);
+
+  expect(await catalogStarted).toBe('transaction');
+  controller.abort(reason);
+  await sourceAssertion;
+
+  expect(begin).toHaveBeenCalledOnce();
+  expect(transactionQueries[0]).toMatch(/SET TRANSACTION READ ONLY/i);
+  expect(transactionQueries.some((query) => query.includes('FROM pg_index'))).toBe(true);
+  expect(rawQueries.some((query) => query.includes('FROM pg_index'))).toBe(false);
+  expect(cancel).toHaveBeenCalledOnce();
+  resetBm25Availability();
+});
+
+it('uses the owning SQL client cache so a second session_turn call skips only the availability transaction', async () => {
+  const { SEARCH_SOURCES } = await vi.importActual<typeof import('../agent-tools/search/sources')>('../agent-tools/search/sources');
+  const { resetBm25Availability } = await import('../search/lexical/rank');
+  resetBm25Availability();
+  const sessionTurn = SEARCH_SOURCES.find((source) => source.name === 'session_turn')!;
+  const transactionQueries: string[] = [];
+  let beginCount = 0;
+  const tx = Object.assign((strings: TemplateStringsArray) => {
+    const query = strings.join('?');
+    transactionQueries.push(query);
+    return Promise.resolve([]);
+  }, { unsafe: vi.fn(() => Promise.resolve([])) });
+  const sourceSql = Object.assign(
+    (strings: TemplateStringsArray) => Promise.resolve([]),
+    {
+      unsafe: vi.fn(() => Promise.resolve([])),
+      begin: async (callback: (transaction: unknown) => Promise<unknown>) => {
+        beginCount++;
+        return callback(tx);
+      },
+    },
+  ) as never;
+  const params = {
+    sql: sourceSql,
+    query: 'two words',
+    workspaceId: 'ws-1',
+    scopeFilter: null,
+    limit: 3,
+  };
+
+  await sessionTurn.lexical(params);
+  expect(beginCount).toBe(2); // availability miss + primary read
+  expect(transactionQueries.filter((query) => query.includes('FROM pg_index'))).toHaveLength(1);
+
+  await sessionTurn.lexical(params);
+  expect(beginCount).toBe(3); // cache hit adds no availability transaction
+  expect(transactionQueries.filter((query) => query.includes('FROM pg_index'))).toHaveLength(1);
+  resetBm25Availability();
+});
+
 describe('recallCorpusContext — the contract handed to the search engine', () => {
-  it('reads ONLY the session_turn + work_item sources', async () => {
+  it('reads the registered session/work-item and complete knowledge sources', async () => {
     runHybridSearch.mockResolvedValue(ok());
     await recallCorpusContext(base);
     const [sources] = runHybridSearch.mock.calls[0];
     expect((sources as Array<{ name: string }>).map((s) => s.name).sort()).toEqual([
+      'doc',
+      'plan',
+      'report',
       'session_turn',
       'work_item',
     ]);
+  });
+
+  it('binds agent visibility and ambient exclusions before source ranking', async () => {
+    runHybridSearch.mockResolvedValue(ok([hit({ source: 'doc', source_id: 'harness:papercusp:repair',
+      excerpt: 'http2 transport prerequisite: keep snapshot', meta: { section: 'Repair' } })]));
+    const excluded = new Set(['report:R-secret']);
+    const result = await recallCorpusContext({ ...base,harnessSlugs: ['papercusp'],
+      excludeOwnerId: 'su-me',ambientExcludedRefs: excluded });
+    expect(planSource).toHaveBeenCalledWith({ harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });
+    expect(docSource).toHaveBeenCalledWith({ harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });
+    expect(reportSource).toHaveBeenCalledWith({ ownerId: 'su-me',potSlug: 'papercusp' },
+      { harnessSlugs: ['papercusp'],automatic: true,excludedRefs: excluded });
+    expect(result.block).toContain('doc:');
+    expect(result.block).toContain('docs:get');
+    expect(result.block).toContain('keep snapshot');
+  });
+
+  it('preserves the prose query profile across memoization instead of borrowing a mem0 profile', async () => {
+    const { stampEmbedderMode,embedderModeOf,embedderProfileIdOf } = await import('../search/embedder-mode-registry');
+    const { EMBEDDER_DIM_SPECS } = await import('@papercusp/memory');
+    const prose = vi.fn(async()=>Array(EMBEDDER_DIM_SPECS.gemma.targetDims).fill(0.1));
+    stampEmbedderMode(prose,'gemma',EMBEDDER_DIM_SPECS.gemma.profileId);
+    buildQueryEmbedder.mockResolvedValue(prose);
+    await warmCorpusEmbedder();
+    prose.mockClear(); // Warmup has its own probe; count only the recall's query.
+    runHybridSearch.mockResolvedValue(ok());
+    await recallCorpusContext(base);
+    const options = runHybridSearch.mock.calls[0][1];
+    expect(options.embedder).not.toBe(prose);
+    expect(embedderModeOf(options.embedder)).toBe('gemma');
+    expect(embedderProfileIdOf(options.embedder)).toBe(EMBEDDER_DIM_SPECS.gemma.profileId);
+    expect(embedderProfileIdOf(options.embedder)).not.toBe(EMBEDDER_DIM_SPECS.local.profileId);
+    expect(await options.embedder('transport')).toHaveLength(EMBEDDER_DIM_SPECS.gemma.targetDims);
+    expect(await options.embedder('transport')).toHaveLength(EMBEDDER_DIM_SPECS.gemma.targetDims);
+    expect(prose).toHaveBeenCalledOnce();
+  });
+
+  it('does not widen a public-host recall into plan/doc/report corpora', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockResolvedValue({ ...ok(),legs: engine.emptyLegs() });
+    const result = await recallCorpusContext({ ...base,knowledgeSourcesAllowed: false });
+    expect(runHybridSearch.mock.calls[0][0].map((s: { name: string })=>s.name).sort())
+      .toEqual(['session_turn','work_item']);
+    expect(planSource).not.toHaveBeenCalled();
+    expect(docSource).not.toHaveBeenCalled();
+    expect(reportSource).not.toHaveBeenCalled();
+    expect(result.stages?.[0]?.lexical.sourceCalls).toEqual(expect.arrayContaining(
+      ['plan','doc','report'].map(source => expect.objectContaining({ source,status: 'not-run',rows: null,
+        reason: 'knowledge source not granted by host' })),
+    ));
+  });
+
+  it('joins terminal PG query identity and timing to one corpus source call', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockImplementation(engine.runHybridSearch);
+    const { SEARCH_SOURCES } = await import('../agent-tools/search/sources');
+    const source = SEARCH_SOURCES.find(candidate => candidate.name === 'session_turn')!;
+    const mutableSource = source as unknown as { lexical?: typeof source.lexical };
+    const oldLexical = mutableSource.lexical;
+    let nextQueryId = 187;
+    mutableSource.lexical = async () => {
+      const context = currentStageDiagnosticContext();
+      expect(context?.attemptId).toBeTruthy();
+      pgDiagnosticRows.push({
+        pool: 'org-admin',
+        connectionId: 7,
+        queryId: nextQueryId++,
+        backendPid: 4812,
+        elapsedMs: 11,
+        preBuildMs: 2,
+        status: 'ok',
+        correlation: context ?? undefined,
+      });
+      return [];
+    };
+    try {
+      const result = await recallCorpusContext({ ...base, knowledgeSourcesAllowed: false });
+      const sourceCall = result.stages?.[0]?.lexical.sourceCalls?.find(call => call.source === 'session_turn');
+      expect(sourceCall?.queryDiagnostics).toMatchObject({
+        attemptId: expect.any(String),
+        timing: 'query-build-to-terminal-not-acquisition',
+        coverage: 'completed-query-results-only',
+        snapshotCapacity: 32,
+        queries: [expect.objectContaining({
+          connectionId: 7,
+          queryId: 187,
+          backendPid: 4812,
+          elapsedMs: 11,
+          preBuildMs: 2,
+          status: 'ok',
+        })],
+      });
+    } finally {
+      if (oldLexical) mutableSource.lexical = oldLexical;
+      else delete mutableSource.lexical;
+      runHybridSearch.mockReset();
+    }
+  });
+
+  it('keeps a doc section and source receipts through the real engine when a plan source stalls', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockImplementation(engine.runHybridSearch);
+    let stalledSignal: AbortSignal | undefined;
+    planSource.mockImplementation(() => ({ name: 'plan', lexical: async (params: { signal?: AbortSignal }) => {
+      stalledSignal = params.signal;
+      return await new Promise<never>(() => {});
+    } }));
+    const row = hit({ source: 'doc',source_id: 'harness:papercusp:repair',
+      excerpt: 'http2 transport repair prerequisite: keep snapshot',score: 1,
+      meta: { section: 'Repair' } });
+    docSource.mockImplementation(() => ({ name: 'doc',lexical: async () => [{ key: 'doc:repair',row,score: 1 }] }));
+    reportSource.mockImplementation(() => ({ name: 'report',lexical: async () => [] }));
+    process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS = '800';
+    try {
+      const result = await recallCorpusContext({ ...base,harnessSlugs: ['papercusp'],excludeOwnerId: 'su-me' });
+      expect(result.outcome).toBe('ok');
+      expect(result.block).toContain('keep snapshot');
+      expect(stalledSignal?.aborted).toBe(true);
+      expect(result.stages?.[0]?.lexical.sourceCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: 'plan',status: 'timed-out',rows: null }),
+        expect.objectContaining({ source: 'doc',status: 'ran',rows: 1 }),
+        expect.objectContaining({ source: 'report',status: 'ran',rows: 0 }),
+      ]));
+      expect(result.stages?.[0]?.semantic.sourceCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ source: 'plan',status: 'not-run' }),
+      ]));
+    } finally {
+      planSource.mockImplementation(() => ({ name: 'plan' }));
+      docSource.mockImplementation(() => ({ name: 'doc' }));
+      reportSource.mockImplementation(() => ({ name: 'report' }));
+    }
+  });
+
+  it('retains healthy sources when both plan rankers stall under a shorter native caller deadline', async () => {
+    const engine = await vi.importActual<typeof import('@papercusp/search')>('@papercusp/search');
+    runHybridSearch.mockImplementation(engine.runHybridSearch);
+    await warmCorpusEmbedder();
+    const stalled = vi.fn(async () => await new Promise<never>(() => {}));
+    planSource.mockImplementation(() => ({ name: 'plan', lexical: stalled, embedding: stalled }));
+    const row = hit({ source: 'doc', source_id: 'harness:papercusp:repair',
+      excerpt: 'http2 transport repair prerequisite: keep snapshot', score: 1,
+      meta: { section: 'Repair' } });
+    docSource.mockImplementation(() => ({ name: 'doc', lexical: async () => [{ key: 'doc:repair', row, score: 1 }] }));
+    reportSource.mockImplementation(() => ({ name: 'report', lexical: async () => [] }));
+    const deadline = createMemoryWorkDeadline(400);
+    try {
+      const result = await recallCorpusContext({ ...base, harnessSlugs: ['papercusp'],
+        excludeOwnerId: 'su-me', signal: deadline.signal, deadline });
+      expect(result.outcome).toBe('ok');
+      expect(result.block).toContain('keep snapshot');
+      expect(result.stages).toHaveLength(2);
+      for (const stage of result.stages!) {
+        expect(stage.lexical.sourceCalls).toEqual(expect.arrayContaining([
+          expect.objectContaining({ source: 'plan', status: 'timed-out', rows: null }),
+          expect.objectContaining({ source: 'doc', status: 'ran', rows: 1 }),
+        ]));
+        expect(stage.semantic.sourceCalls).toEqual(expect.arrayContaining([
+          expect.objectContaining({ source: 'plan', status: 'timed-out', rows: null }),
+        ]));
+      }
+      expect(deadline.signal.aborted).toBe(false);
+    } finally {
+      deadline.close();
+      planSource.mockImplementation(() => ({ name: 'plan' }));
+      docSource.mockImplementation(() => ({ name: 'doc' }));
+      reportSource.mockImplementation(() => ({ name: 'report' }));
+    }
   });
 
   it('enables the recency re-rank (P-009) with the documented tunables', async () => {
@@ -124,16 +420,20 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
     expect(recency).toEqual({
       halfLifeMs: CORPUS_RECENCY_HALF_LIFE_MS,
       weight: CORPUS_RECENCY_WEIGHT,
+      getTime: expect.any(Function),
     });
   });
 
-  it('leaves getTime at the engine default — both sources populate hit.ts', async () => {
-    // Overriding getTime here would mask the work_item projection: the leg would
-    // keep working while `ts` silently went missing from the SQL again.
+  it('preserves source timestamps and keeps current procedural/plan guidance eligible', async () => {
     runHybridSearch.mockResolvedValue(ok());
     await recallCorpusContext(base);
     const [, ctx] = runHybridSearch.mock.calls[0];
-    expect((ctx as { recency?: Record<string, unknown> }).recency).not.toHaveProperty('getTime');
+    const getTime = (ctx as { recency: { getTime: (hit: { source: string; ts: string }) => unknown } }).recency.getTime;
+    const ts = '2026-01-01T00:00:00Z';
+    expect(getTime({ source: 'work_item',ts })).toBe(ts);
+    expect(getTime({ source: 'report',ts })).toBe(ts);
+    expect(getTime({ source: 'doc',ts })).not.toBe(ts);
+    expect(getTime({ source: 'plan',ts })).not.toBe(ts);
   });
 
   it('does NOT enable the fresh-candidate window — it labels hits lexical-fresh', async () => {

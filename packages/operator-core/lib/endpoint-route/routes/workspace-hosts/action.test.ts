@@ -6,7 +6,12 @@ import { WorkspaceHostCustomerAcceptanceError } from '../../../workspace-host/cu
 import { WorkspaceHostReleaseCleanupError } from '../../../workspace-host/release-cleanup-release-receipt';
 import { WorkspaceHostReleaseShipmentError } from '../../../workspace-host/release-shipment-green-receipt';
 import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
+import { WorkspaceHostProvisioningRequestError } from '../../../workspace-host/provisioning-runner';
 import type { WorkspaceHostRequestForwarder } from '../../../workspace-host/controller-forwarding';
+import {
+  WORKSPACE_HOST_FENCE_REFUSED_CODE,
+  WorkspaceHostControllerFenceError,
+} from '../../../workspace-host/observability-store';
 
 const CTX: RouteContext = {
   principal: null,
@@ -279,6 +284,47 @@ describe('POST /workspace-hosts/action destroy', () => {
     );
   });
 
+  // aws-byoc-gcp-parity-2026-10-01 P-003: lifecycle actions were refused 501 for every non-GCP host,
+  // so an AWS host could be provisioned but never torn down. The gate now follows the providers that
+  // have a controller-independent destroy census.
+  it('admits a destroy for an AWS host, which has a destroy census, and still refuses a provider without one', async () => {
+    type StoredTarget = NonNullable<Awaited<ReturnType<WorkspaceHostActionRouteDependencies['readTarget']>>>;
+    type StoredConnection = NonNullable<Awaited<ReturnType<WorkspaceHostActionRouteDependencies['readConnection']>>>;
+    const hostFor = (target: 'aws' | 'azure'): StoredTarget => ({
+      id: 'host-1',
+      name: `${target} host`,
+      connectionId: 'connection-1',
+      target,
+      observedState: 'running',
+      hostGeneration: 1,
+      desiredRevision: 1,
+      observedRevision: 1,
+      desired: { ...desired, target, scope: { kind: 'account', id: '413781344298' }, region: 'us-east-1' },
+      resources: [],
+    });
+    const connectionFor = (target: 'aws' | 'azure'): StoredConnection => ({
+      id: 'connection-1',
+      target,
+      status: 'connected',
+      connection: { target, cloudCredentialRef: { kind: 'cloud', ref: `${target}-role://papercusp-workspace-host` } },
+    });
+    const { canary: _canary, ...ordinaryDestroy } = destroyBody;
+
+    const aws = harness();
+    aws.readTarget.mockResolvedValue(hostFor('aws'));
+    aws.readConnection.mockResolvedValue(connectionFor('aws'));
+    const admitted = await post(aws.dependencies, ordinaryDestroy);
+    expect(admitted.status).toBe(200);
+    expect(aws.startDestroy).toHaveBeenCalledWith(expect.objectContaining({ hostId: 'host-1', disposition: 'discard' }));
+
+    const azure = harness();
+    azure.readTarget.mockResolvedValue(hostFor('azure'));
+    azure.readConnection.mockResolvedValue(connectionFor('azure'));
+    const refused = await post(azure.dependencies, ordinaryDestroy);
+    expect(refused.status).toBe(501);
+    expect(azure.startDestroy).not.toHaveBeenCalled();
+  });
+
   it('returns a terminal offboarding result when the host is already absent', async () => {
     const { dependencies, startDestroy } = harness();
     startDestroy.mockResolvedValueOnce({
@@ -384,6 +430,33 @@ describe('POST /workspace-hosts/action destroy', () => {
     });
   });
 
+  // WI-10005474: a reused operationId whose workflow already ended in a fence refusal rethrows that
+  // refusal inside the admission window; it is a conflict naming the refusal, not a generic 500.
+  it('maps a controller-fence refusal to a typed 409 for destroy and lifecycle actions', async () => {
+    const { dependencies, startDestroy, startLifecycle } = harness();
+    startDestroy.mockRejectedValueOnce(new WorkspaceHostControllerFenceError('host-1'));
+    const destroyed = await post(dependencies, destroyBody);
+    expect(destroyed.status).toBe(409);
+    await expect(destroyed.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace-host destroy refused: a newer operation or controller holds this host',
+      reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+      hostId: 'host-1',
+    });
+
+    startLifecycle.mockRejectedValueOnce(new WorkspaceHostControllerFenceError('host-1'));
+    const upgraded = await post(dependencies, {
+      action: 'upgrade',
+      workspaceId: 'host-1',
+      operationId: 'op-upgrade-fenced-1',
+    });
+    expect(upgraded.status).toBe(409);
+    await expect(upgraded.json()).resolves.toMatchObject({
+      reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+      error: 'workspace-host upgrade refused: a newer operation or controller holds this host',
+    });
+  });
+
   it('returns a typed 503 when the DBOS controller cannot be discovered', async () => {
     const { dependencies, readTarget, readConnection, startDestroy, startLifecycle } = harness();
     dependencies.provisioningAvailable = () => false;
@@ -402,6 +475,52 @@ describe('POST /workspace-hosts/action destroy', () => {
     expect(readConnection).not.toHaveBeenCalled();
     expect(startDestroy).not.toHaveBeenCalled();
     expect(startLifecycle).not.toHaveBeenCalled();
+  });
+
+  // WI-10004957: right after a bg-host restart /api/health is already ok while DBOS is still
+  // launching. A request in that window must wait for the in-flight launch, not 503.
+  it('waits for an in-flight DBOS launch instead of refusing 503 or forwarding', async () => {
+    const { dependencies, startDestroy } = harness();
+    let launched = false;
+    dependencies.provisioningAvailable = () => launched;
+    const awaitProvisioning = vi.fn(async () => {
+      launched = true;
+      return true;
+    });
+    dependencies.awaitProvisioning = awaitProvisioning;
+    const forwardRequest = vi.fn<WorkspaceHostRequestForwarder>(async () => null);
+    dependencies.forwardRequest = forwardRequest;
+
+    const response = await post(dependencies, destroyBody);
+
+    expect(response.status).not.toBe(503);
+    expect(awaitProvisioning).toHaveBeenCalledTimes(1);
+    expect(forwardRequest).not.toHaveBeenCalled();
+    expect(startDestroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses 503 when the bounded launch wait ends without DBOS', async () => {
+    const { dependencies, startDestroy } = harness();
+    dependencies.provisioningAvailable = () => false;
+    const awaitProvisioning = vi.fn(async () => false);
+    dependencies.awaitProvisioning = awaitProvisioning;
+    dependencies.forwardRequest = vi.fn<WorkspaceHostRequestForwarder>(async () => null);
+
+    const response = await post(dependencies, destroyBody);
+
+    expect(response.status).toBe(503);
+    expect(awaitProvisioning).toHaveBeenCalledTimes(1);
+    expect(startDestroy).not.toHaveBeenCalled();
+  });
+
+  it('does not wait when provisioning is already available', async () => {
+    const { dependencies } = harness();
+    const awaitProvisioning = vi.fn(async () => true);
+    dependencies.awaitProvisioning = awaitProvisioning;
+
+    await post(dependencies, destroyBody);
+
+    expect(awaitProvisioning).not.toHaveBeenCalled();
   });
 });
 
@@ -734,6 +853,29 @@ describe('POST /workspace-hosts/action existing-host lifecycle', () => {
     expect(body.message).not.toContain('replaced the boot disk');
   });
 
+  it.each(['gcp', 'aws'] as const)('hydrates a desktop %s restore from persisted config and rebinds current credentials', async (target) => {
+    const h = harness();
+    const source = { ...desired, target, scope: { kind: target === 'aws' ? 'account' as const : 'project' as const, id: target === 'aws' ? '123456789012' : 'project-1' }, labels: undefined,
+      provider: { sourceSetting: 'kept' } };
+    h.readTarget.mockResolvedValue({ ...(await h.readTarget('workspace_1', 'host-1'))!, target, desired: source });
+    h.readConnection.mockResolvedValue({ id: 'connection-1', target, status: 'connected', connection: {
+      target, cloudCredentialRef: { kind: 'cloud', ref: 'resolver://current' }, provider: { currentSetting: 'bound' },
+    } });
+    const snapshot = { target, hostId: 'host-1', providerId: 'snapshot-1' };
+    const response = await post(h.dependencies, { action: 'restore', workspaceId: 'host-1', name: 'Restored host', snapshot, desired: { hostId: 'host-restored' } });
+    expect(response.status).toBe(200);
+    expect(h.startLifecycle).toHaveBeenCalledWith(expect.objectContaining({ action: 'restore', snapshot, name: 'Restored host',
+      desired: { ...source, hostId: 'host-restored', credentials: { cloudCredentialRef: { kind: 'cloud', ref: 'resolver://current' } },
+        provider: { sourceSetting: 'kept', currentSetting: 'bound' } } }));
+  });
+
+  it.each(['host-1', 'bad host', ''])('refuses invalid or same-host desktop restore identity %s', async (hostId) => {
+    const h = harness();
+    const response = await post(h.dependencies, { action: 'restore', workspaceId: 'host-1', snapshot: { target: 'gcp', hostId: 'host-1', providerId: 'snapshot-1' }, desired: { hostId } });
+    expect(response.status).toBe(422);
+    expect(h.startLifecycle).not.toHaveBeenCalled();
+  });
+
   it('threads explicit upgrade and restore inputs without inventing provider defaults', async () => {
     const { dependencies, startLifecycle } = harness();
     const image = { id: 'projects/images/global/images/papercusp-v2', version: '2' };
@@ -761,6 +903,27 @@ describe('POST /workspace-hosts/action existing-host lifecycle', () => {
     await expect(restore.json()).resolves.toMatchObject({ hostId: 'host-restored-1' });
     expect(startLifecycle).toHaveBeenLastCalledWith(
       expect.objectContaining({ action: 'restore', snapshot, desired: restored, canary }),
+    );
+  });
+
+  it('maps a pre-enqueue lifecycle request refusal to HTTP 422', async () => {
+    const { dependencies, startLifecycle } = harness();
+    startLifecycle.mockRejectedValueOnce(new WorkspaceHostProvisioningRequestError(['upgrade image is required']));
+
+    const response = await post(dependencies, {
+      action: 'upgrade',
+      workspaceId: 'host-1',
+      operationId: 'op-upgrade-preflight-1',
+    });
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace-host upgrade request rejected',
+      problems: ['upgrade image is required'],
+    });
+    expect(startLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'upgrade', operationId: 'op-upgrade-preflight-1' }),
     );
   });
 

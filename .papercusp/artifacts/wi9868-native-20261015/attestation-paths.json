@@ -1,0 +1,62 @@
+[
+  {
+    "path": "libs/generic/tooldef/src/phase-tracker.test.ts",
+    "repo": "libs/generic/tooldef",
+    "commit": "62b595e8176831f2765b5003137025c866fd0077",
+    "matches": true
+  },
+  {
+    "path": "packages/operator-core/lib/system-health/kernel-leak-watchdog.test.ts",
+    "repo": ".",
+    "commit": "dc5496c1d7b18c7e4d0aff17918108b025a3cfc5",
+    "matches": true
+  },
+  {
+    "path": "packages/operator-core/lib/issues-list-query-plan.integration.test.ts",
+    "repo": ".",
+    "commit": "dc5496c1d7b18c7e4d0aff17918108b025a3cfc5",
+    "matches": true
+  },
+  {
+    "path": "packages/operator-core/lib/agent-tools/coordination/unanswered-directed-query-plan.integration.test.ts",
+    "repo": ".",
+    "commit": "dc5496c1d7b18c7e4d0aff17918108b025a3cfc5",
+    "matches": true
+  },
+  {
+    "path": "packages/operator-core/lib/scout/signal-accumulator.test.ts",
+    "repo": ".",
+    "commit": "dc5496c1d7b18c7e4d0aff17918108b025a3cfc5",
+    "matches": true
+  },
+  {
+    "path": "libs/generic/memory/src/canonical-store.test.ts",
+    "repo": "libs/generic/memory",
+    "commit": "5457b72040302f24ee73a8398f4e5492249b9928",
+    "matches": true
+  },
+  {
+    "path": "packages/operator-core/lib/systemd-nice-cpuweight-guard.test.ts",
+    "repo": ".",
+    "commit": "dc5496c1d7b18c7e4d0aff17918108b025a3cfc5",
+    "matches": true
+  },
+  {
+    "path": "apps/operator/lib/docker-reclaim-leaked-testcontainers.test.ts",
+    "repo": ".",
+    "commit": "dc5496c1d7b18c7e4d0aff17918108b025a3cfc5",
+    "matches": true
+  },
+  {
+    "path": "libs/test-config/src/testcontainer-last-used.test.ts",
+    "repo": "libs/test-config",
+    "commit": "5b8f436b450010bd27e363652a784a6cdfd71760",
+    "matches": true
+  },
+  {
+    "path": "apps/operator/lib/bundle-budget-eager-closure.test.ts",
+    "repo": ".",
+    "commit": "dc5496c1d7b18c7e4d0aff17918108b025a3cfc5",
+    "matches": true
+  }
+]

@@ -610,7 +610,9 @@ describe('the race guard itself detects a check-then-act pool memo (non-vacuity)
   // VERBATIM the real pre-fix accessor from libs/papercusp/plugins/jira-sync/index.ts
   // at be301cf9^ (the last commit before the WI-37473 fix), not a reconstruction — so
   // this control provably reproduces the bug that shipped, and stays a permanent
-  // regression witness after the real file is fixed.
+  // regression witness after the real file is fixed. (The jira-sync plugin itself
+  // was later deleted — linear-asana-task-sync-2026-10-05 P-009 — so the commit
+  // above is the only place that source survives.)
   const RACED = `
 let _pgClient: any = null;
 async function pg() {

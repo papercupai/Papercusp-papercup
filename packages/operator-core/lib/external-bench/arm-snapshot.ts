@@ -13,9 +13,20 @@
  *
  * The merge is pure + unit-tested (no disk in the core); the launchers call {@link writeArmSnapshotMerged},
  * which read-modify-writes the file.
+ *
+ * MODEL PIN (WI-10008259, R-9): every arm snapshot records the model-registry snapshot its model was resolved
+ * from and the evaluated model itself. The write refuses a snapshot without that pin, and a merge refuses to
+ * combine two runs pinned to DIFFERENT registry snapshots: a per-task rerun after the registry moved on would
+ * otherwise mix results from two models under one arm.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type { CoordEvent } from '@papercusp/bench-metrics';
+import {
+  assertModelInSnapshot,
+  assertModelRegistrySnapshot,
+  type EvaluatedModel,
+  type ModelRegistrySnapshot,
+} from './model-registry-snapshot';
 
 /** One per-task row in an arm snapshot (the launcher-persisted shape; lenient — additive fields kept). */
 export interface ArmSnapshotPerTask {
@@ -47,7 +58,30 @@ export interface ArmSnapshot {
   totals?: { costUsd: number; tokensIn: number; tokensOut: number };
   perTask: ArmSnapshotPerTask[];
   coordEvents?: CoordEvent[];
+  /** The model-registry snapshot this arm's model was resolved from (R-9). Required by the writer. */
+  modelRegistry?: ModelRegistrySnapshot;
+  /** The model this arm evaluated, resolved from {@link ArmSnapshot.modelRegistry}. Required by the writer. */
+  evaluatedModel?: EvaluatedModel;
   [k: string]: unknown;
+}
+
+/**
+ * Refuse an arm snapshot that is not pinned to a verified registry snapshot, or whose evaluated model was not
+ * resolved from that snapshot. Returns the snapshot unchanged so callers can chain it.
+ */
+export function assertArmModelPin(snapshot: ArmSnapshot, where = `arm ${snapshot.arm}`): ArmSnapshot {
+  const registry = assertModelRegistrySnapshot(snapshot.modelRegistry, where);
+  const model = snapshot.evaluatedModel;
+  if (!model || typeof model.modelId !== 'string' || !model.modelId) {
+    throw new Error(`${where}: arm snapshot has no evaluatedModel; resolve it with pinEvaluatedModel() before writing`);
+  }
+  if (model.snapshotId !== registry.snapshotId) {
+    throw new Error(
+      `${where}: evaluatedModel was resolved from registry snapshot ${model.snapshotId}, not the pinned ${registry.snapshotId}`,
+    );
+  }
+  assertModelInSnapshot(model, registry, where);
+  return snapshot;
 }
 
 /**
@@ -67,6 +101,19 @@ export interface ArmSnapshot {
  * Pure — no disk. {@link writeArmSnapshotMerged} wraps it with the file read/write.
  */
 export function mergeArmSnapshot(existing: ArmSnapshot | null, incoming: ArmSnapshot): ArmSnapshot {
+  const priorPin = existing?.modelRegistry?.snapshotId;
+  const newPin = incoming.modelRegistry?.snapshotId;
+  if (priorPin && newPin && priorPin !== newPin) {
+    throw new Error(
+      `mergeArmSnapshot: arm ${incoming.arm} is pinned to model-registry snapshot ${priorPin}; ` +
+        `a rerun resolved against ${newPin} would mix two models in one arm. Rerun with the existing pin or start a new output dir.`,
+    );
+  }
+  const priorModel = existing?.evaluatedModel?.modelId;
+  const newModel = incoming.evaluatedModel?.modelId;
+  if (priorModel && newModel && priorModel !== newModel) {
+    throw new Error(`mergeArmSnapshot: arm ${incoming.arm} evaluated ${priorModel}; a rerun on ${newModel} cannot merge into it`);
+  }
   const byId = new Map<string, ArmSnapshotPerTask>();
   for (const t of existing?.perTask ?? []) byId.set(t.instanceId, t);
   for (const t of incoming.perTask) byId.set(t.instanceId, t); // incoming wins for re-run instances
@@ -89,6 +136,8 @@ export function mergeArmSnapshot(existing: ArmSnapshot | null, incoming: ArmSnap
     wallMs: pick(incoming.wallMs, existing?.wallMs),
     peakConcurrentBees: pick(incoming.peakConcurrentBees, existing?.peakConcurrentBees),
     coordEvents: pick(incoming.coordEvents, existing?.coordEvents),
+    modelRegistry: pick(incoming.modelRegistry, existing?.modelRegistry),
+    evaluatedModel: pick(incoming.evaluatedModel, existing?.evaluatedModel),
     taskCount: perTask.length,
     nonEmptyDiffs,
     totals: { costUsd: totalCost, tokensIn: totalTokIn, tokensOut: totalTokOut },
@@ -115,7 +164,7 @@ export function readArmSnapshot(path: string): ArmSnapshot | null {
  * merged snapshot that was written (so the caller can log/print it).
  */
 export function writeArmSnapshotMerged(path: string, incoming: ArmSnapshot): ArmSnapshot {
-  const merged = mergeArmSnapshot(readArmSnapshot(path), incoming);
+  const merged = assertArmModelPin(mergeArmSnapshot(readArmSnapshot(path), incoming), `${path}`);
   writeFileSync(path, JSON.stringify(merged, null, 2), 'utf8');
   return merged;
 }

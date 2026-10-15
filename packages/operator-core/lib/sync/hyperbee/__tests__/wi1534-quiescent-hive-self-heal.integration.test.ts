@@ -85,7 +85,9 @@ describe('WI-1534 quiescent-hive integration (WI-3593): real hasStalledLogs-driv
       // hasStalledLogs-held FAST cadence at work — the slow keepalive alone
       // (60s) could never fire inside this test's timeout.
       const { peerA, peerB } = await bootTwoHivePeers({
-        swarmTiming: { refreshMs: 40, fastWindowMs: 250, slowRefreshMs: 60_000 },
+        // stalledMaxRefreshMs scales the WI-10005270 backoff cap (30 s at a
+        // 2.5 s refresh) by the same 1/62.5 as refreshMs.
+        swarmTiming: { refreshMs: 40, fastWindowMs: 250, slowRefreshMs: 60_000, stalledMaxRefreshMs: 500 },
       });
       const aKey = peerA.handle.ownLog.keyHex;
 

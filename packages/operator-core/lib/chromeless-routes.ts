@@ -31,6 +31,11 @@ export function isChromelessPath(pathname: string): boolean {
   return CHROMELESS_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
+/** DAO Management owns the full page, including the existing entity launcher. */
+export function isDaoWorkspacePath(pathname: string): boolean {
+  return ['/daos', '/dao'].some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
 /**
  * Whether the operator's steering sidebar belongs on this route.
  *
@@ -43,7 +48,7 @@ export function isChromelessPath(pathname: string): boolean {
  * contract can be read; `/adv` outside the portal keeps the rail.
  */
 export function routeHasSteeringSidebar(pathname: string, search = ''): boolean {
-  return !isChromelessPath(pathname) && !isPortalEmbedLocation(pathname, search);
+  return !isChromelessPath(pathname) && !isDaoWorkspacePath(pathname) && !isPortalEmbedLocation(pathname, search);
 }
 
 // Portal-hosted /adv documents use a query contract rather than a new route.

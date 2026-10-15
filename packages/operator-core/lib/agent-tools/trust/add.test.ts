@@ -185,7 +185,10 @@ describe('trust:remove — workspace resolution (privilege boundary) + bulk enve
 describe('trust:list — workspace resolution (privilege boundary)', () => {
   it('(a) principal workspace is honoured', async () => {
     const tool = await listTool();
-    const res = body(await tool.handler({}, ctxWith({ workspaceId: 'ws-1', slug: 'owner' })));
+    const result = await tool.handler({}, ctxWith({ workspaceId: 'ws-1', slug: 'owner' }));
+    const res = body(result);
+    expect(result.data).toEqual(res);
+    expect(result.content).toBeUndefined();
     expect(listTrustedUsers).toHaveBeenCalledWith('ws-1');
     expect(activeWorkspaceId).not.toHaveBeenCalled();
     expect(res).toMatchObject({ ok: true, workspaceId: 'ws-1', count: 1 });

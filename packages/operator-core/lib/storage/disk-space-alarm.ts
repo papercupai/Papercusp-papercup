@@ -17,83 +17,29 @@
  * Read-only — it can never affect the system it watches.
  */
 import { promisify } from 'node:util';
-import { statfs as statfsCb } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { stat as statCb, statfs as statfsCb, statSync } from 'node:fs';
+import { tmpdir, homedir, hostname } from 'node:os';
+import { dirname, join } from 'node:path';
+import { RETENTION_POLICY, type RetentionClass } from './retention-policy';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
-import { escalateAlarm } from '../alarm-attention';
+import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+export const DISK_SPACE_ALARM_CONDITION_KEY = 'alarm:disk-space';
 import { notifySyncInvalidate } from '../sync-sse';
 import { workspacesRoot } from '../workspace-registry';
+import { listDiskRootChildrenAsync, type DiskRootChildScan } from './disk';
+import type { CensusDeviceView } from './disk-consumer-census';
+import type { DiskReclaimReceipt } from './disk-reclaim';
+import { activeWorkspaceId } from '../workspace-registry';
 
+const statPath = promisify(statCb);
 const statfs = promisify(statfsCb);
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
 
-function envNum(name: string, fallback: number): number {
-  const v = Number(process.env[name]);
-  return Number.isFinite(v) && v > 0 ? v : fallback;
-}
-
-// ── Policy ─────────────────────────────────────────────────────────────────────
-
-export interface DiskAlarmPolicy {
-  /** Flag when free space drops below this fraction of total (0–1). */
-  freePctMin: number;
-  /** …or below this absolute byte floor (catches a huge disk that is %-fine but
-   *  nearly out in absolute terms). */
-  freeBytesMin: number;
-  /** Flag when free inodes drop below this fraction of total (0–1). Skipped on
-   *  filesystems that do not report inodes (totalInodes === 0, e.g. btrfs). */
-  freeInodesPctMin: number;
-  /** CRITICAL tier (EI-20090527288494606): below this fraction, a breach stops
-   *  being "getting full" and becomes "writes are about to fail" — it escalates
-   *  to a human instead of only toasting. Must be TIGHTER than freePctMin. */
-  criticalFreePctMin: number;
-  /** …or below this absolute byte floor. Must be TIGHTER than freeBytesMin. */
-  criticalFreeBytesMin: number;
-  /**
-   * Ceiling on the PERCENTAGE-derived write-headroom reserve (EI-23337577023503501).
-   *
-   * Only {@link detectCriticalWriteHeadroom} / {@link criticalWriteHeadroomBytes}
-   * honour this — the alarm tiers deliberately do not (see below). A percentage
-   * floor is a proxy for "this filesystem is nearly full", which is the right
-   * question for a HUMAN CLEANUP NUDGE and the wrong one for a WRITER: a writer's
-   * transient demand is ABSOLUTE and does not scale with volume size, so the same
-   * 2% that means 400 MiB on a 20 GiB disk means 149 GiB on a 7.45 TiB archive
-   * volume — a reserve no run has ever needed, which froze this repo's green
-   * checkpoint for 32 consecutive reds while 47.9 GiB sat free (24x the absolute
-   * floor). Measured over 826 paired checkpoint runs, a run's net consumption was
-   * p50 0.1 GiB, p90 3.6 GiB, p99 34 GiB, max 57.7 GiB — and the same series has a
-   * MINIMUM of -74.5 GiB (peers freeing space mid-run), so that upper tail is
-   * shared-box noise in both directions rather than gate demand. 64 GiB therefore
-   * covers the largest delta ever observed, with margin, and still refuses a
-   * genuinely doomed write.
-   */
-  criticalFreeBytesCap: number;
-}
-
-export const DEFAULT_DISK_POLICY: DiskAlarmPolicy = {
-  freePctMin: 0.1, // 10%
-  freeBytesMin: 5 * GIB,
-  freeInodesPctMin: 0.05, // 5%
-  criticalFreePctMin: 0.02, // 2%
-  criticalFreeBytesMin: 2 * GIB,
-  criticalFreeBytesCap: 64 * GIB,
-};
-
-export function diskPolicyFromEnv(): DiskAlarmPolicy {
-  return {
-    freePctMin: envNum('PAPERCUSP_DISK_ALARM_FREE_PCT', DEFAULT_DISK_POLICY.freePctMin * 100) / 100,
-    freeBytesMin: envNum('PAPERCUSP_DISK_ALARM_FREE_GB', DEFAULT_DISK_POLICY.freeBytesMin / GIB) * GIB,
-    freeInodesPctMin: envNum('PAPERCUSP_DISK_ALARM_FREE_INODES_PCT', DEFAULT_DISK_POLICY.freeInodesPctMin * 100) / 100,
-    criticalFreePctMin:
-      envNum('PAPERCUSP_DISK_ALARM_CRITICAL_PCT', DEFAULT_DISK_POLICY.criticalFreePctMin * 100) / 100,
-    criticalFreeBytesMin:
-      envNum('PAPERCUSP_DISK_ALARM_CRITICAL_GB', DEFAULT_DISK_POLICY.criticalFreeBytesMin / GIB) * GIB,
-    criticalFreeBytesCap:
-      envNum('PAPERCUSP_DISK_ALARM_CRITICAL_CAP_GB', DEFAULT_DISK_POLICY.criticalFreeBytesCap / GIB) * GIB,
-  };
-}
+import { DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
+export { DEFAULT_DISK_POLICY, diskPolicyFromEnv, type DiskAlarmPolicy } from './disk-space-policy';
 
 /** The watched filesystems (one statfs per path). Defaults to the workspaces root plus the
  *  process temp root: test module caches can live on a separate filesystem and fill it while the
@@ -104,14 +50,53 @@ export function watchedPaths(): string[] {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const all = [workspacesRoot(), tmpdir(), ...extra];
+  const all = ['/', workspacesRoot(), '/mnt/data', tmpdir(), ...extra];
   return [...new Set(all)]; // dedup identical paths
+}
+
+/** The mount point that holds `path`: walk up while st_dev stays the same. Null when
+ *  `path` does not exist. */
+export function mountPointOf(path: string, stat: (p: string) => { dev: number } = (p) => statSync(p)): string | null {
+  let cur = path;
+  let dev: number;
+  try { dev = stat(cur).dev; } catch { return null; }
+  for (;;) {
+    const parent = dirname(cur);
+    if (parent === cur) return cur;
+    try { if (stat(parent).dev !== dev) return cur; } catch { return cur; }
+    cur = parent;
+  }
+}
+
+/** The alarm's OWN sampling set: watchedPaths() plus the mount point of every absolute
+ *  retention-policy root. A volume that holds retained data then cannot fill unwatched
+ *  (WI-6554700010011387: /mnt/backup reached 92% and the DB backup failed on its headroom
+ *  with no alarm, because no list named it). Derived from the policy, so a new volume is
+ *  watched as soon as a class names it. Deliberately NOT folded into watchedPaths(): the
+ *  release gate reuses that set for WRITE admission, and a volume the suite never writes
+ *  to must not hold the gate. `~` roots resolve under the home volume, already watched. */
+export function alarmWatchedPaths(
+  policy: readonly RetentionClass[] = RETENTION_POLICY,
+  stat?: (p: string) => { dev: number },
+): string[] {
+  const out = new Set(watchedPaths());
+  for (const cls of policy) {
+    for (const root of cls.roots) {
+      if (!root.startsWith('/')) continue;
+      const literal = root.includes('*') ? dirname(root.slice(0, root.indexOf('*')) + 'x') : root;
+      const mount = mountPointOf(literal, stat);
+      if (mount) out.add(mount);
+    }
+  }
+  return [...out];
 }
 
 // ── Pure detection ─────────────────────────────────────────────────────────────
 
 export interface DiskSnapshot {
   path: string;
+  /** Other watched paths on the same device; retain bind-mount attribution roots. */
+  aliases?: string[];
   totalBytes: number;
   freeBytes: number;
   /** 0–1, freeBytes/totalBytes. */
@@ -125,7 +110,7 @@ export interface DiskSnapshot {
 
 export type DiskBreachKind = 'low-bytes' | 'low-inodes';
 
-/** 'warning' = getting full (toast only). 'critical' = writes are about to fail
+/** 'warning' = below the headroom target. 'critical' = writes are about to fail
  *  (escalates to a human). See EI-20090527288494606. */
 export type DiskBreachSeverity = 'warning' | 'critical';
 
@@ -332,17 +317,13 @@ export function describeWriteHeadroomBreaches(
   );
 }
 
-function fmtGb(bytes: number): string {
-  return `${(bytes / GIB).toFixed(1)} GB`;
-}
-
 /** Build the alarm toast body. Pure — unit-testable. */
 export function formatDiskAlarmToast(breaches: DiskBreach[]): { level: string; message: string; description: string } {
   const lines = breaches
     .map((b) => {
       const bits: string[] = [];
       if (b.kinds.includes('low-bytes')) {
-        bits.push(`${fmtGb(b.freeBytes)} free (${(b.freePct * 100).toFixed(1)}% of ${fmtGb(b.totalBytes)})`);
+        bits.push(`${fmtGiB(b.freeBytes)} free (${(b.freePct * 100).toFixed(1)}% of ${fmtGiB(b.totalBytes)})`);
       }
       if (b.kinds.includes('low-inodes')) {
         bits.push(`${(b.freeInodesPct * 100).toFixed(1)}% inodes free`);
@@ -362,16 +343,50 @@ export function formatDiskAlarmToast(breaches: DiskBreach[]): { level: string; m
 
 // ── Impure sampling + emit (injectable; never throws) ──────────────────────────
 
-export interface DiskAlarmDeps {
-  /** Injectable for tests — defaults to a `statfs` probe of watchedPaths(). */
+export interface DiskAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'resolve'> {
+  /** Saved census and reclaim receipt; no new disk walk on the alert path. */
+  readContext?: () => Promise<DiskAlarmContext>;
+  /** Bounded consumer attribution, sampled only when a filesystem breaches. */
+  attributeUsage?: () => Promise<DiskRootChildScan>;
+  /** Injectable for tests — defaults to a `statfs` probe of alarmWatchedPaths(). */
   sample?: () => Promise<DiskSnapshot[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
   emitToast?: (t: { level: string; message: string; description: string }) => Promise<void>;
   /** Injectable for tests — defaults to notifyAttention (mobile push + desktop
    *  native notification + a durable attention_notifications row). */
-  escalate?: (t: { title: string; body: string }) => Promise<void>;
+  escalate?: AlarmAttentionDeps['notify'];
   /** Injectable for tests — the persistent cross-restart cooldown floor. */
   recentlyEscalated?: () => Promise<boolean>;
+}
+
+export interface DiskAlarmContext {
+  devices: CensusDeviceView[];
+  receipt: DiskReclaimReceipt | null;
+}
+
+export async function readDiskAlarmContext(sql = getOrgPg().sql, workspaceId = activeWorkspaceId()): Promise<DiskAlarmContext> {
+  const { readDiskConsumerCensus } = await import('./disk-consumer-census');
+  const { readReclaimReceipt } = await import('./disk-reclaim');
+  const [census, receipt] = await Promise.all([
+    readDiskConsumerCensus(sql as never, { expectedDevices: ['/', '/mnt/data'], limit: 5 }),
+    readReclaimReceipt(sql, workspaceId),
+  ]);
+  return { devices: census.devices, receipt };
+}
+
+export function formatDiskAlarmContext(context: DiskAlarmContext): string {
+  const devices = ['/', '/mnt/data'].map((path) => {
+    const device = context.devices.find((d) => d.device === path);
+    if (!device || device.missing) return `${path}: census missing`;
+    const status = [device.stale ? 'stale' : '', device.complete ? '' : 'partial'].filter(Boolean).join(', ');
+    const consumers = (device.consumers ?? []).slice(0, 5)
+      .map((c) => `${c.consumer}: ${fmtGiB(c.bytes)}`).join('; ');
+    return `${path} (${device.sampledAt}${status ? '; ' + status : ''}): ${consumers || 'no measured consumers'}`;
+  });
+  const receipt = context.receipt;
+  return '\nSaved disk census:\n' + devices.join('\n') + '\n' + (receipt
+    ? `Last reclaim (${receipt.finishedAt}; ${receipt.complete ? 'complete' : 'partial'}): /settings/storage?reclaim=${encodeURIComponent(receipt.id)}`
+    : 'No reclaim receipt recorded yet; /settings/storage');
 }
 
 /**
@@ -425,9 +440,9 @@ export function formatDiskEscalation(
     title:
       tier === 0
         ? ESCALATION_TITLE
-        : `${ESCALATION_TITLE} — worsening (tier ${tier}: under ${fmtGb(rungCeiling)} free)`,
+        : `${ESCALATION_TITLE} — worsening (tier ${tier}: under ${fmtGiB(rungCeiling)} free)`,
     body:
-      `${worst.path}: ${fmtGb(worst.freeBytes)} free (${(worst.freePct * 100).toFixed(1)}% of ${fmtGb(worst.totalBytes)})${others}. ` +
+      `${worst.path}: ${fmtGiB(worst.freeBytes)} free (${(worst.freePct * 100).toFixed(1)}% of ${fmtGiB(worst.totalBytes)})${others}. ` +
       (tier > 0
         ? `Free space has halved ${tier}× below the critical reserve since this alarm first fired — it re-escalates on each halving, not once per cooldown. `
         : '') +
@@ -439,8 +454,18 @@ export function formatDiskEscalation(
  * so correctness-critical writers can reuse the alarm's statfs interpretation. */
 export async function sampleDiskSnapshots(paths: string[] = watchedPaths()): Promise<DiskSnapshot[]> {
   const out: DiskSnapshot[] = [];
+  const seenDevices = new Map<string, DiskSnapshot>();
   for (const path of paths) {
     try {
+      const fsIdentity = await statPath(path);
+      const device = String(fsIdentity.dev);
+      const existing = seenDevices.get(device);
+      if (existing) {
+        if (path !== existing.path && !existing.aliases?.includes(path)) {
+          (existing.aliases ??= []).push(path);
+        }
+        continue;
+      }
       const fsst = await statfs(path);
       const bsize = Number(fsst.bsize) || 0;
       const blocks = Number(fsst.blocks) || 0;
@@ -458,9 +483,10 @@ export async function sampleDiskSnapshots(paths: string[] = watchedPaths()): Pro
         freeInodes: ffree,
         freeInodesPct: files > 0 ? ffree / files : 0,
       });
+      seenDevices.set(device, out[out.length - 1]!);
     } catch (err) {
       // A single unreadable path must not sink the whole probe.
-      console.warn(`[disk-space-alarm] statfs(${path}) failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
+      console.warn(`[disk-space-alarm] stat/statfs(${path}) failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
     }
   }
   return out;
@@ -495,7 +521,7 @@ export async function runDiskSpaceAlarmOnce(
   deps: DiskAlarmDeps = {},
   policy: DiskAlarmPolicy = diskPolicyFromEnv(),
 ): Promise<{ checked: number; breaches: DiskBreach[]; escalated: boolean }> {
-  const sample = deps.sample ?? sampleDiskSnapshots;
+  const sample = deps.sample ?? (() => sampleDiskSnapshots(alarmWatchedPaths()));
   const emitToast = deps.emitToast ?? defaultEmitToast;
   const escalate = deps.escalate;
   const recentlyEscalated = deps.recentlyEscalated;
@@ -509,31 +535,71 @@ export async function runDiskSpaceAlarmOnce(
   }
 
   const breaches = detectLowSpace(snapshots, policy);
+  let attribution = '';
+  const alarmData: Record<string, unknown> = { host: hostname(), consumers: {} };
   if (breaches.length > 0) {
+    let savedContext = '';
     try {
-      await emitToast(formatDiskAlarmToast(breaches));
+      const context = await (deps.readContext ?? readDiskAlarmContext)();
+      savedContext = formatDiskAlarmContext(context);
+      alarmData.consumers = Object.fromEntries(['/', '/mnt/data'].map((path) => [path,
+        context.devices.find((device) => device.device === path)?.consumers?.slice(0, 5).map((consumer) => consumer.consumer) ?? [],
+      ]));
+      alarmData.reclaimReceiptId = context.receipt?.id ?? null;
+    }
+    catch { savedContext = '\nSaved census/receipt unavailable; /settings/storage'; }
+    try {
+      const breachedPaths = breaches.flatMap((breach) => [
+        ...(snapshots.find((snapshot) => snapshot.path === breach.path)?.aliases ?? []),
+        breach.path,
+      ]);
+      const usage = await (deps.attributeUsage ?? (() => listDiskRootChildrenAsync({
+        // A separate temporary/extra filesystem can breach while both known
+        // Papercusp roots are healthy. Inspect the breached paths first so the
+        // shared scan budget cannot expire before reaching their consumers.
+        roots: [...new Set([...breachedPaths, join(homedir(), '.papercusp'), workspacesRoot()])],
+        budget: { deadlineMs: Date.now() + 2_000 }, maxChildren: 1_000, followSymlinks: false,
+      })))();
+      const consumers = [...usage.entries].sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 5);
+      attribution = `\nDisk consumers (${usage.truncated ? 'partial scan; largest measured' : 'largest measured'}; logical bytes):\n` +
+        consumers.map((c) => `• ${c.path}: ${fmtGiB(c.sizeBytes)}`).join('\n');
+    } catch {
+      attribution = '\nDisk consumer attribution unavailable; free-space breach still applies.';
+    }
+    attribution += savedContext;
+    try {
+      const toast = formatDiskAlarmToast(breaches);
+      await emitToast({ ...toast, description: toast.description + attribution });
     } catch (err) {
       console.warn(`[disk-space-alarm] toast emit failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
     }
   }
 
-  // CRITICAL tier (EI-20090527288494606): the toast above is a UI-only surface —
+  // Human attention rail (EI-20090527288494606): the toast is a UI-only surface —
   // it fired 318 times over 8 days while this box sat under 1% free and NOTHING
   // consumed it, so the condition was only ever discovered by a build dying
-  // mid-copy. A critical breach must reach a human on a rail that leaves a
+  // mid-copy. A warning-floor breach must reach a human on a rail that leaves a
   // durable record. Best-effort + never throws, exactly like the toast.
   let escalated = false;
   const critical = breaches.filter((b) => b.severity === 'critical');
-  if (critical.length > 0) {
-    const request = formatDiskEscalation(critical, policy);
+  if (breaches.length > 0) {
+    const request = critical.length > 0 ? formatDiskEscalation(critical, policy) : {
+      title: 'Disk below headroom target',
+      body: formatDiskAlarmToast(breaches).description,
+    };
     escalated = await escalateAlarm(
       {
         ...request,
+        body: request.body + attribution,
         cooldownMs: ESCALATE_COOLDOWN_MS,
         source: 'disk-space-alarm',
+        conditionKey: DISK_SPACE_ALARM_CONDITION_KEY,
+        data: alarmData,
       },
-      { notify: escalate, recentlyEscalated },
+      { notify: escalate, recentlyEscalated, broadcast: deps.broadcast },
     );
+  } else if (snapshots.length > 0) {
+    await resolveAlarm(DISK_SPACE_ALARM_CONDITION_KEY, 'disk-space-alarm', deps);
   }
   return { checked: snapshots.length, breaches, escalated };
 }

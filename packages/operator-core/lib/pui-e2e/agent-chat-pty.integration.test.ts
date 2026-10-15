@@ -20,28 +20,30 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
 import { Session as InspectorSession } from 'node:inspector';
-import { performance } from 'node:perf_hooks';
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { parseSseStream } from '@papercusp/sse';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
 import type { SuRpcEngine } from '../su-session-rpc-engine';
-import type { RpcFrame, SuStdioPeer, SuStdioPeerOptions } from '../su-session-stdio-peer';
+import type { RpcFrame, SuStdioPeer, SuStdioPeerOptions, SuStdioReceipt } from '../su-session-stdio-peer';
 import { _armSuClientLeaseTimersForTest, suClientLeaseDiagnostics } from '../su-session-client-lease';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
-import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
+import { paneContains, screenContains, screenHasApprovalQuestion, screenHasAssistantReply, screenIsSendReady as isSendReady, SEND_READY_MARKERS, VtScreen } from './vt-screen';
 import { describeObserverBlock, pollUntil } from './poll-until';
 import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
-import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
-import { HARNESS_TAG } from './release-acceptance';
+import { nativeProviderRequestSignal, nativeProviderTraceOrigin, nativeRpcReceiptSummary } from './native-provider-trace';
+import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalFollowupDecline, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, suToolApproval } from './release-acceptance';
+import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
-import { sessionProcessHolder } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+import { throwIfProviderRefused } from '../su-session-attached-live-rate-limit';
+import { isClaudeConfigDirLaunchReady, sessionProcessHolder, sessionTranscriptFile } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
 // that load on the shared box trips at random; fail-on-console turned it into
@@ -52,7 +54,7 @@ const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
   backend: process.env.PUI_REAL_BACKEND ?? 'claude',
   mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'wrapped-question' | 'edit' | 'stream' | 'approval'
-    | 'engine-death' | 'stream-loss' | 'auth-expired' | 'rate-limit',
+    | 'engine-death' | 'stream-loss' | 'auth-expired' | 'rate-limit' | 'plan-usage',
   successText: 'PUI structured engine replied',
   // The success-mode Read tool's result. P-004 sets a multi-line value to prove
   // the collapsed preview and the Ctrl+R expansion.
@@ -106,6 +108,9 @@ const scriptedEngine = vi.hoisted(() => ({
   // decides "the answer was lost".
   questionVerdicts: [] as Array<{ behavior: string; updatedInput?: Record<string, unknown>; message?: string }>,
   requests: [] as string[],
+  // P-026: every mid-session model/effort switch the engine asked the SDK for,
+  // in order (setModel then, for a spec with an effort, applyFlagSettings).
+  modelSwitches: [] as Array<{ model?: string; effort?: string }>,
   sdkPermissions: [] as Array<{ mode: string | undefined; bypass: boolean | undefined }>,
   // Which agent the SDK was asked to run (P-007): the prompt kind, the MCP
   // servers it may load, and whether the psu hook set is silenced.
@@ -408,6 +413,29 @@ vi.mock('../su-session-claude-engine', async (original) => {
                 }).catch((error: Error) => output.destroy(error));
               continue;
             }
+            if (scriptedEngine.mode === 'plan-usage') {
+              // pui-chat-first-ux P-029: a TodoWrite call, per-message usage
+              // and a priced result, in the Agent SDK's own record shapes, so
+              // the real Claude adapter derives the descriptor's usage + plan.
+              // Context = 10 + 169,980 + 0 + 10 = 170,000 of 200,000 (85%).
+              const usage = { input_tokens: 10, cache_read_input_tokens: 169_980, cache_creation_input_tokens: 0, output_tokens: 10 };
+              output.write({ type: 'assistant', session_id: nativeId, parent_tool_use_id: null, message: { usage, content: [
+                { type: 'tool_use', id: 'pui-e2e-todo', name: 'TodoWrite', input: { todos: [
+                  { content: 'Read the file', status: 'completed', activeForm: 'Reading the file' },
+                  { content: 'Fix the bug', status: 'in_progress', activeForm: 'Fixing the bug' },
+                  { content: 'Run the tests', status: 'pending', activeForm: 'Running the tests' },
+                ] } },
+              ] } });
+              output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
+                { type: 'tool_result', tool_use_id: 'pui-e2e-todo', content: 'Todos have been modified successfully.' },
+              ] } });
+              output.write({ type: 'assistant', session_id: nativeId, parent_tool_use_id: null, message: { usage, content: [
+                { type: 'text', text: scriptedEngine.successText },
+              ] } });
+              output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false,
+                total_cost_usd: 0.42, modelUsage: { 'claude-pui-e2e': { contextWindow: 200_000 } } });
+              continue;
+            }
             output.write({ type: 'assistant', session_id: nativeId, message: { content: [
               { type: 'tool_use', id: 'pui-e2e-tool', name: 'Read', input: { file_path: 'README.md' } },
             ] } });
@@ -433,6 +461,11 @@ vi.mock('../su-session-claude-engine', async (original) => {
           },
           mcpServerStatus: async () => [{ name: 'papercusp-su', status: 'connected' as const }],
           interrupt: async () => { result(); },
+          // P-026: the streaming-input switch the engine makes before a turn.
+          setModel: async (model?: string) => { scriptedEngine.modelSwitches.push({ model }); },
+          applyFlagSettings: async (settings: { effortLevel?: string | null }) => {
+            scriptedEngine.modelSwitches.push({ effort: settings.effortLevel ?? undefined });
+          },
           close: () => { native?.stdin.end(); output.end(); },
         };
       };
@@ -473,7 +506,10 @@ vi.mock('../su-session-rpc-engine', async (original) => {
     scriptedEngine.rpcLaunches.push({ backend: args[1].backend, identity: args[2].identity ?? 'su',
       promptFile: args[0].promptFile, cwd: args[0].cwd, accountRoute: args[2].accountRoute ?? null });
     const engine = actual.startSuRpcEngine(args[0], args[1], args[2]);
-    scriptedEngine.engines.push(engine);
+    const index = scriptedEngine.engines.push(engine) - 1;
+    // Exact resume reuses its host, including its replay buffer. Observe that
+    // host once, just as the Claude fixture does (WI-10004198).
+    if (scriptedEngine.engines.slice(0, index).some((other) => other.adapter.host === engine.adapter.host)) return engine;
     void (async () => {
       for await (const { event } of engine.adapter.host.subscribe()) scriptedEngine.events.push(event);
     })();
@@ -547,6 +583,51 @@ const OWNER = 'pui-agent-chat-e2e-owner';
 const REAL_PLAN = 'pui-native-acceptance-plan';
 const REAL_APPROVAL_WORK_ITEM = 'EI-90000006';
 const execFileAsync = promisify(execFile);
+let operatorProcessBundleDir: string | undefined;
+let operatorProcessBundlePath: string | undefined;
+
+function buildOperatorProcessBundle(): string {
+  if (operatorProcessBundlePath && existsSync(operatorProcessBundlePath)) return operatorProcessBundlePath;
+  const startedAt = performance.now();
+  const bundleDir = mkdtempSync(path.join(tmpdir(), 'pui-operator-process-bundle-'));
+  const bundlePath = path.join(bundleDir, 'operator-process.mjs');
+  const entry = path.join(REPO_ROOT, 'packages', 'operator-core', 'lib', 'pui-e2e', 'operator-process.mts');
+  const script = path.join(REPO_ROOT, 'apps', 'operator', 'bin', 'bundle-host.sh');
+  // Reuse the bundler's existing VITEST-only census seam, just like
+  // bundle-host-fallback.test.ts. This private fixture has no restricted
+  // holdings; its build must not open the protected live org-admin database.
+  // The production census still runs normally outside a test process.
+  const censusPath = path.join(bundleDir, 'restricted-hold-census.json');
+  writeFileSync(censusPath, '[]\n');
+  const result = spawnSync('bash', [script, entry, bundlePath, 'development'], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      PAPERCUSP_BUNDLE_ALLOW_STALE_START: '0',
+      PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: censusPath,
+    },
+    encoding: 'utf8',
+    timeout: 300_000,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  if (result.error || result.status !== 0 || !existsSync(bundlePath)) {
+    rmSync(bundleDir, { recursive: true, force: true });
+    throw new Error(
+      `PUI operator fixture bundle failed (status=${result.status}, signal=${result.signal}):\n${output.slice(-8_000)}`,
+      { cause: result.error },
+    );
+  }
+  operatorProcessBundleDir = bundleDir;
+  operatorProcessBundlePath = bundlePath;
+  console.info('PUI_OPERATOR_PROCESS_BUNDLE_READY', JSON.stringify({
+    entry: path.relative(REPO_ROOT, entry), bundlePath,
+    bundleSha256: createHash('sha256').update(readFileSync(bundlePath)).digest('hex'),
+    buildMs: Math.round(performance.now() - startedAt), runner: 'bundle-host.sh',
+    runtime: 'plain-node', tsxLoader: false, censusSource: 'private-test-fixture',
+  }));
+  return bundlePath;
+}
 
 // Opt-in diagnosis uses the actual worker (including cold module evaluation),
 // preserves every console warning, and writes no request bodies or credentials.
@@ -566,6 +647,50 @@ function traceTiming(kind: string, fields: Record<string, unknown> = {}): void {
     timingTrace.push({ atMs: performance.now(), kind, ...fields });
   }
 }
+
+type ActiveLaunchEventLoopDiagnostic = { finish: (reason: string) => void };
+const activeLaunchEventLoopDiagnostics = new Set<ActiveLaunchEventLoopDiagnostic>();
+
+function beginLaunchEventLoopDiagnostic(input: { agent_chat_id?: unknown; harness_slug?: unknown } | null) {
+  if (process.env.PUI_LAUNCH_EVENT_LOOP_DIAGNOSTICS !== '1') return null;
+
+  const resolutionMs = 10;
+  const histogram = monitorEventLoopDelay({ resolution: resolutionMs });
+  const startedAt = performance.now();
+  const chatId = typeof input?.agent_chat_id === 'string' ? input.agent_chat_id : null;
+  const harnessSlug = typeof input?.harness_slug === 'string' ? input.harness_slug : null;
+  // Match launchStageTracer's key exactly: workspace:harness:agent_chat_id.
+  const correlationId = chatId && harnessSlug ? `${WORKSPACE}:${harnessSlug}:${chatId}` : null;
+  let finished = false;
+  histogram.enable();
+
+  const diagnostic: ActiveLaunchEventLoopDiagnostic = {
+    finish(reason) {
+      if (finished) return;
+      finished = true;
+      histogram.disable();
+      activeLaunchEventLoopDiagnostics.delete(diagnostic);
+      const sampleCount = Number(histogram.count);
+      const toMs = (value: number) => sampleCount > 0 && Number.isFinite(value)
+        ? Number((value / 1_000_000).toFixed(2)) : null;
+      console.info('PUI_LAUNCH_EVENT_LOOP_DIAGNOSTIC', JSON.stringify({
+        correlationId,
+        reason,
+        elapsedMs: Number((performance.now() - startedAt).toFixed(2)),
+        resolutionMs,
+        sampleCount,
+        minMs: toMs(histogram.min),
+        meanMs: toMs(histogram.mean),
+        maxMs: toMs(histogram.max),
+        p50Ms: toMs(histogram.percentile(50)),
+        p99Ms: toMs(histogram.percentile(99)),
+      }));
+    },
+  };
+  activeLaunchEventLoopDiagnostics.add(diagnostic);
+  return diagnostic;
+}
+
 function profileCommand(method: string): Promise<unknown> {
   return new Promise((resolve, reject) => timingInspector!.post(method, (error, result) => {
     if (error) reject(error);
@@ -654,6 +779,7 @@ function ensurePuiBinary(): string {
   }
   if (process.env.PUI_BIN) {
     if (!existsSync(process.env.PUI_BIN)) throw new Error('The explicit PUI_BIN artifact does not exist');
+    assertInstalledPuiStore(process.env.PUI_BIN, process.env.PUI_RELEASE_STORE);
     return process.env.PUI_BIN;
   }
   const built = spawnSync('cargo', ['build', '--locked', '--bin', 'pui'], {
@@ -673,8 +799,50 @@ function ensurePuiBinary(): string {
 /** Approval-card headlines (pui-chat-first-ux P-008): a native tool is asked
  * about by action and target, `Allow Update(calc.js)?`; the SU's own tool by
  * server and verb words, `Allow papercusp-su · work items claimable (MCP)?`. */
-const NATIVE_APPROVAL_HEADLINE = /^Allow ([A-Z][A-Za-z ]*?)(?:\(.*\))?\?$/;
 const SU_APPROVAL_HEADLINE = /^Allow (papercusp-su · .+) \(MCP\)\?$/;
+
+/** An approval card as pui draws it on screen (pui-chat-first-ux D-028, Claude
+ * Code's permission prompt): the call's title (`Update(calc.js)`,
+ * `papercusp-su · work items claimable (MCP)`), the change between `╌` rules,
+ * the question (`Do you want to proceed?`), then `❯ 1. Yes` / `2. Yes, and
+ * don't ask again …` / `3. No, and tell … what to do instead`. `lines` are
+ * screen lines with box characters blanked and trimmed. */
+interface ScreenApproval {
+  /** The title line, e.g. `Read(/tmp/x/notes.md)`. */
+  title: string;
+  /** The tool word of a native title (`Read`, `Update`, `Bash`), else undefined. */
+  native?: string;
+  /** The SU tool a papercusp-su title names, e.g. `papercusp-su · work items claimable`. */
+  suTool?: string;
+  /** Mounted MCP calls use native Write permission, so approve once only. */
+  rememberSuTool?: boolean;
+  /** The index of the title line in `lines`. */
+  at: number;
+}
+const APPROVAL_QUESTION = /^Do you want .+\?$/;
+const APPROVAL_RULE = /^╌+$/;
+function screenApproval(lines: string[]): ScreenApproval | undefined {
+  const question = lines.findIndex((line) => APPROVAL_QUESTION.test(line));
+  if (question < 1) return undefined;
+  let at = question - 1;
+  if (APPROVAL_RULE.test(lines[at])) {
+    at -= 1;
+    while (at > 0 && !APPROVAL_RULE.test(lines[at])) at -= 1;
+    at -= 1;
+  }
+  const title = lines[at];
+  if (at < 0 || !title) return undefined;
+  const suApproval = suToolApproval(title);
+  const suTool = suApproval?.tool;
+  const native = suTool ? undefined : /^([A-Z][A-Za-z ]*?)(?:\(.*\))?$/.exec(title)?.[1];
+  return { title, native, suTool, rememberSuTool: suApproval?.remember, at };
+}
+/** The digit that picks one answer of a visible approval card: `yes` (once),
+ * `always` (`Yes, and don't ask again …` / `Yes, and allow all edits …`) or `no`. */
+function approvalOptionKey(lines: string[], answer: 'yes' | 'always' | 'no'): string | undefined {
+  const label = answer === 'yes' ? 'Yes(?: \\(|$)' : answer === 'always' ? 'Yes, and ' : 'No, and tell ';
+  return lines.map((line) => new RegExp(`^(?:[›❯] )?(\\d)\\. ${label}`).exec(line)?.[1]).find(Boolean);
+}
 
 /** The composer is ready to send. pui-chat-first-ux P-021 made the full-screen
  * chat's composer quiet: its footer reads `? for shortcuts` on an empty box and
@@ -682,12 +850,6 @@ const SU_APPROVAL_HEADLINE = /^Allow (papercusp-su · .+) \(MCP\)\?$/;
  * the boxed `Message — Enter send` title. All three mean the same state, so one
  * suite drives builds from before and after P-021. (Not `Enter to send`: the
  * failure sentences say "press Enter to send your message again".) */
-const SEND_READY_MARKERS = ['Message — Enter send', '? for shortcuts', 'Enter sends'] as const;
-
-function isSendReady(screen: string): boolean {
-  return SEND_READY_MARKERS.some((marker) => screenContains(screen, marker));
-}
-
 /** An open question card on screen. P-020 heads the card with its question;
  * a build from before P-020 heads it `▾ Needs your answer`. A question too
  * long for the border falls back to the plain `Question` heading. */
@@ -696,6 +858,21 @@ function isQuestionCardOpen(screen: string, question: string): boolean {
     || screenContains(screen, `┌ ${question}`)
     || screenContains(screen, '┌ Question ');
 }
+
+// pui-chat-first-ux-2026-09-28 P-003 / R-03: the default chat screen shows
+// only model, directory, context and cost. These are the token classes the
+// falsifier names — session ids, sequence numbers, lifecycle and
+// reconciliation states, pot/role/store names, operator URLs, account routes
+// and "unknown" usage rows. They belong in `pui doctor` or Ctrl+O details.
+// Module scope: the P-003 chat-first cases and the P-024 case both scan for them.
+const CHAT_JARGON: readonly RegExp[] = [
+  /\badv \d/, /\bseq \d/, /reconciliation/, /waiting-for-owner/, /SU session/, /SU · /,
+  new RegExp(`pot ${HARNESS}`), /role operator/, /\bstore /, /https?:\/\//, /\baccount \S/, /unknown/,
+  // WI-10004211: the approval card once titled itself after the server that raised it.
+  /Operator asks/,
+];
+const chatJargonIn = (frame: string): string[] =>
+  CHAT_JARGON.filter((pattern) => pattern.test(frame)).map(String);
 
 class PuiPane {
   readonly pty: IPty;
@@ -718,8 +895,11 @@ class PuiPane {
   // usually gathered after a `finally` has stopped the pane: keep what was on
   // screen before the quit key so the evidence shows the failing frame.
   private stoppedScreen: string | undefined;
+  private stoppedRawLength: number | undefined;
+  private readonly providerEventsBefore = scriptedEngine.events.length;
   // Longest the observing event loop was blocked during any wait (WI-10003175).
   private observerMaxLateMs = 0;
+  private readonly inputTraceLog: string | undefined;
 
   /** SU tool approvals this pane answered, in order. */
   get answeredSuToolApprovals(): readonly string[] { return this.suToolApprovals ?? []; }
@@ -736,19 +916,20 @@ class PuiPane {
   settleSuToolApproval(): boolean {
     if (!this.suToolApprovals || Date.now() - this.suToolApprovalAt < 750) return false;
     const lines = this.screen().split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim());
-    const tool = lines.map((line) => SU_APPROVAL_HEADLINE.exec(line)?.[1]).find(Boolean);
-    const readAt = tool ? -1 : lines.findIndex((line) => /^(Read|Search)$/.test(NATIVE_APPROVAL_HEADLINE.exec(line)?.[1] ?? ''));
-    // The full path is in the headline (outside the launch directory) or on
-    // the line under it (inside, where the headline shows it relative).
+    const card = screenApproval(lines);
+    const tool = card?.suTool;
+    const readAt = !card || tool || !/^(Read|Search)$/.test(card.native ?? '') ? -1 : card.at;
+    // The full path is in the title (outside the launch directory) or on the
+    // line under it (inside, where the title shows it relative).
     const readPath = readAt < 0 ? undefined
       : [...this.nativeReadPaths].find((p) => lines.slice(readAt, readAt + 4).some((line) => line.includes(p)));
     if (!tool && !readPath) return false;
-    const option = (label: string) => lines.map((line) => new RegExp(`^(?:› )?(\\d)\\. ${label}\\b`).exec(line)?.[1]).find(Boolean);
-    const pick = readPath ? option('Approve') : option('Always allow') ?? option('Approve');
+    const pick = readPath || card?.rememberSuTool === false ? approvalOptionKey(lines, 'yes')
+      : approvalOptionKey(lines, 'always') ?? approvalOptionKey(lines, 'yes');
     if (!pick) return false;
     this.pty.write(pick);
     if (tool) this.suToolApprovals.push(tool);
-    else this.nativeReadApprovals.push(`${NATIVE_APPROVAL_HEADLINE.exec(lines[readAt])?.[1]} ${readPath}`);
+    else this.nativeReadApprovals.push(`${card?.native} ${readPath}`);
     this.suToolApprovalAt = Date.now();
     return true;
   }
@@ -772,11 +953,14 @@ class PuiPane {
   ) {
     this.cols = options.cols ?? 150;
     this.rows = options.rows ?? 44;
-    // Bare `pui` is chat-first (pui-chat-first-ux P-001): one full-screen
-    // conversation with no tab strip or footer. The clauses in this file drive
-    // the full HUD surface (tabs, boards, `o`), which `pui hud` still is — the
-    // workbench's own HUD pane runs exactly that. Tests of the bare default pass
-    // `args: []` explicitly.
+    this.inputTraceLog = options.env?.PUI_INPUT_TRACE_LOG;
+    // The chat surface (pui-chat-first-ux P-001) is `pui --solo`: one
+    // full-screen conversation with no zellij, tab strip or footer. Bare `pui`
+    // wraps that same surface in the chat workbench (P-030: the chat as the
+    // main zellij pane, workbench panes beside it), so chat tests pass
+    // `args: ['--solo']`. The clauses in this file drive the full HUD surface
+    // (tabs, boards, `o`), which `pui hud` still is — the workbenches' own HUD
+    // pane runs exactly that.
     this.pty = ptySpawn(bin, options.args ?? ['hud'], {
       name: 'xterm-256color',
       cols: this.cols,
@@ -820,6 +1004,11 @@ class PuiPane {
 
   screen(): string {
     if (this.setupDriverError) throw this.setupDriverError;
+    return this.failureScreen();
+  }
+
+  /** Failure reporting must not throw the setup error it is reporting. */
+  failureScreen(): string {
     const vt = new VtScreen(this.rows, this.cols);
     vt.feed(this.raw);
     return vt.text();
@@ -827,8 +1016,8 @@ class PuiPane {
 
   /** The raw PTY stream from `offset` on, escapes included — what a terminal
    *  receives. P-013 reads its SGR sequences and replays it incrementally. */
-  rawSince(offset = 0): string {
-    return this.raw.slice(offset);
+  rawSince(offset = 0, options: { beforeStop?: boolean } = {}): string {
+    return this.raw.slice(offset, options.beforeStop ? this.stoppedRawLength : undefined);
   }
 
   get size(): { cols: number; rows: number } {
@@ -838,6 +1027,10 @@ class PuiPane {
   resize(cols: number, rows: number): void {
     this.cols = cols;
     this.rows = rows;
+    if (this.inputTraceLog) {
+      appendFileSync(this.inputTraceLog,
+        `at_ms=${Date.now()} stage=pty-resize cols=${cols} rows=${rows}\n`);
+    }
     this.pty.resize(cols, rows);
   }
 
@@ -867,13 +1060,20 @@ class PuiPane {
 
   failureEvidence(): Record<string, unknown> {
     return {
-      screen: this.stoppedScreen ?? this.screen(),
+      operatorRendezvous: [...this.raw.matchAll(/PUI_OPERATOR_RENDEZVOUS (\{[^\r\n]*\})/g)]
+        .slice(-8).map((match) => {
+          try { return JSON.parse(match[1]); } catch { return { decodeError: true }; }
+        }),
+      screen: this.stoppedScreen ?? this.failureScreen(),
       screenFrozenAtStop: this.stoppedScreen !== undefined,
       observerMaxLateMs: this.observerMaxLateMs,
+      inputTrace: this.inputTraceLog && existsSync(this.inputTraceLog)
+        ? readFileSync(this.inputTraceLog, 'utf8') : undefined,
       traffic: sessionTraffic,
       commands: commandPosts.map(({ type, commandId }) => ({ type, commandId })),
       commandReplies,
       nativeFrames: nativeFrameDiagnostics,
+      nativeRpcReceipts: nativeRpcReceiptSummaries,
       engines: scriptedEngine.engines.map((engine) => {
         const descriptor = engine.adapter.host.descriptor();
         return { pid: engine.pid(), identity: descriptor.identity, lifecycle: descriptor.lifecycle,
@@ -886,6 +1086,10 @@ class PuiPane {
   }
 
   write(keys: string): void {
+    if (keys === 'm' && this.inputTraceLog) {
+      appendFileSync(this.inputTraceLog,
+        `at_ms=${Date.now()} stage=pty-write bytes=6d key=m\n`);
+    }
     this.pty.write(keys);
   }
 
@@ -903,10 +1107,17 @@ class PuiPane {
     this.pty.write('\x1b[120;5u');
   }
 
-  async waitFor(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
+  private checkProviderCapacity(stage: string): void {
+    if (scriptedEngine.real) {
+      throwIfProviderRefused(scriptedEngine.events.slice(this.providerEventsBefore), stage);
+    }
+  }
+
+  async waitFor(needle: string | readonly string[], opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const { ok, maxLateMs } = await pollUntil(() => screenContains(this.screen(), needle), {
       timeoutMs,
+      beforeCheck: () => this.checkProviderCapacity(`Waiting for ${JSON.stringify(needle)}`),
       onMiss: () => { this.settleSuToolApproval(); },
     });
     this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
@@ -918,11 +1129,24 @@ class PuiPane {
     );
   }
 
+  async waitForApprovalQuestion(question: string, choice: string): Promise<void> {
+    const { ok, maxLateMs } = await pollUntil(() => screenHasApprovalQuestion(this.screen(), question, choice), {
+      timeoutMs: 25_000,
+      beforeCheck: () => this.checkProviderCapacity('Waiting for the native approval question and its choice'),
+      onMiss: () => { this.settleSuToolApproval(); },
+    });
+    this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
+    if (!ok) throw new Error(`Native approval question and choice were not rendered in the same card:\n${this.screen()}`);
+  }
+
   /** Wait until the composer is ready to send (see SEND_READY_MARKERS). */
   async waitForSendReady(opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
-    const { ok, maxLateMs } = await pollUntil(() => isSendReady(this.screen()), {
+    const { ok, maxLateMs } = await pollUntil(() => isSendReady(
+      this.screen(), this.setupDriverRunning,
+    ), {
       timeoutMs,
+      beforeCheck: () => this.checkProviderCapacity('Waiting for send readiness'),
       onMiss: () => { this.settleSuToolApproval(); },
     });
     this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
@@ -947,7 +1171,10 @@ class PuiPane {
    */
   async waitForGone(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
-    const { ok, maxLateMs } = await pollUntil(() => !screenContains(this.screen(), needle), { timeoutMs });
+    const { ok, maxLateMs } = await pollUntil(() => !screenContains(this.screen(), needle), {
+      timeoutMs,
+      beforeCheck: () => this.checkProviderCapacity(`Waiting for ${JSON.stringify(needle)} to leave the screen`),
+    });
     this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
     if (ok) return;
     throw new Error(
@@ -959,13 +1186,18 @@ class PuiPane {
 
   async waitForReply(needle: string | RegExp): Promise<void> {
     try {
-      await vi.waitFor(() => {
+      const outcome = await pollUntil(() => {
         // Match the rendered assistant bubble itself. History can scroll the
         // echoed owner request away (especially after a long interrupted reply),
         // and a context-dependent answer need not occur in the request at all.
         this.settleSuToolApproval();
-        expect(screenHasAssistantReply(this.screen(), needle)).toBe(true);
-      }, { timeout: 120_000, interval: 100 });
+        return screenHasAssistantReply(this.screen(), needle);
+      }, {
+        timeoutMs: 120_000, intervalMs: 100,
+        beforeCheck: () => this.checkProviderCapacity('Waiting for the rendered native reply'),
+      });
+      this.observerMaxLateMs = Math.max(this.observerMaxLateMs, outcome.maxLateMs);
+      expect(outcome.ok).toBe(true);
     } catch (cause) {
       const engineState = scriptedEngine.engines.map((engine) => ({ pid: engine.pid(),
         lifecycle: engine.adapter.host.descriptor().lifecycle,
@@ -978,8 +1210,9 @@ class PuiPane {
   }
 
   async stop(): Promise<void> {
+    this.stoppedRawLength ??= this.raw.length;
     try {
-      this.stoppedScreen ??= this.screen();
+      this.stoppedScreen ??= this.failureScreen();
     } catch {
       /* no screen to keep */
     }
@@ -1059,9 +1292,10 @@ async function close(server: ServerType | undefined): Promise<void> {
   ]);
 }
 
-async function putViewState(tab: string): Promise<void> {
+async function putViewState(tab: string, scope?: 'pot' | 'all'): Promise<void> {
   const { putViewState: put } = await import('../tui-workbench-store');
   await put(OWNER, { tab, harness: HARNESS, operator_dock_open: false,
+    ...(scope ? { scope } : {}),
     ...(scriptedEngine.real && process.env.PUI_REAL_PLAN === '1' ? { plan_filter: [REAL_PLAN] } : {}) });
 }
 
@@ -1108,6 +1342,118 @@ async function seedAgentChat(input: SeedAgentChat): Promise<void> {
        ${input.featureId ?? null}, ${input.title}, ${JSON.stringify(input.transcript)}::text::jsonb,
        ${input.inputTokens ?? 0}, ${input.outputTokens ?? 0}, ${input.costCents ?? 0},
        ${input.createdAt ?? now}, ${now}, ${input.runtimeClass ?? null})`;
+}
+
+/**
+ * pui-chat-first-ux D-030: Agent Chat's front door only opens a chat whose
+ * session inventory row places it in PUI's launch directory. A seeded chat
+ * with no adv session has no snapshot, so it belongs to no directory, and a
+ * default launch never lands on it (EI-25245893959522241). Bind an adv session
+ * launched in `cwd` to the chat through the production bind call; the
+ * snapshot route then rehydrates it with `launchCwd = cwd`.
+ * The seed is ended-archived with a resumable native id and transcript file.
+ * PUI auto-resumes it on landing through the maintained engine protocol.
+ * The pane's default cwd is REPO_ROOT; PUI reads its own current_dir, which
+ * the kernel reports resolved, hence realpath.
+ */
+async function seedBoundSuSession(input: {
+  agentChatId: string; cwd?: string;
+  /** The seeded chat's turns, written as the native Claude transcript a real
+   * session leaves. A resumed host replays history ONLY from that file
+   * (su-session-claude-adapter.ts findClaudeTranscript), so without it a
+   * reconnected seeded chat shows 'No messages yet'. */
+  transcript?: Array<{ role: string; content: string }>;
+}): Promise<number> {
+  const { bindSuSessionToAdvSession } = await import('../su-session-persistence');
+  const { launchContextPathFor } = await import('../su-launch-context');
+  const cwd = input.cwd ?? realpathSync(REPO_ROOT);
+  const nativeSessionId = `native-${input.agentChatId}`;
+  // An ENDED pui session, as a real launch leaves it once its engine exits.
+  // Selecting it resumes through su-session-resume.ts. A seed with a live pid
+  // is refused there ('saved native process is still alive').
+  const [row] = await db.adminSql<Array<{ id: number }>>`
+    INSERT INTO harness_shared.adv_sessions
+      (workspace_id, mode, agent, session_id, coord_owner_id, pid, ended_at, cwd, launch_spec)
+    VALUES (${WORKSPACE}, 'omp', 'claude', ${nativeSessionId}, ${OWNER},
+            ${null}, ${new Date()}, ${cwd},
+            -- A pui-launched session records its launch spec. launch-su's
+            -- attach refuses a workspace-scoped row for a harness-scoped chat,
+            -- and a reconnect reads the owner's newest v1 spec for its scope.
+            ${JSON.stringify({ v: 1, agent: 'claude', workspaceId: WORKSPACE, harnessSlug: HARNESS })}::jsonb)
+    RETURNING id`;
+  const advSessionId = Number(row.id);
+  // What a real launch leaves for the resume: a launch-ready Claude config dir
+  // (.claude.json with mcpServers, the shape of a pruned fleet copy) and the
+  // saved full instruction artifact. Without them the resume refuses with
+  // 'The saved Claude SU configuration is not ready' (WI-10003592 attempt 7).
+  const configDir = path.join(home, 'seeded-claude', input.agentChatId);
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(configDir, '.claude.json'), JSON.stringify({ mcpServers: {} }));
+  if (input.transcript?.length) {
+    // The same record shape the scripted engine persists for a live turn.
+    const projectDir = path.join(configDir, 'projects', 'pui-e2e');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(path.join(projectDir, `${nativeSessionId}.jsonl`), input.transcript.map((turn, index) =>
+      JSON.stringify(turn.role === 'user'
+        ? { type: 'user', uuid: `${nativeSessionId}-${index}`, sessionId: nativeSessionId,
+          message: { role: 'user', content: turn.content } }
+        : { type: 'assistant', uuid: `${nativeSessionId}-${index}`, sessionId: nativeSessionId,
+          message: { role: 'assistant', content: [{ type: 'text', text: turn.content }] } })).join('\n') + '\n');
+  }
+  const promptFile = launchContextPathFor(advSessionId);
+  mkdirSync(path.dirname(promptFile), { recursive: true });
+  // psu refuses a persona file under 2000 bytes as an unrendered playbook
+  // (context-trimming-tiers P-016), so the stand-in is a full-size artifact.
+  writeFileSync(promptFile, `# Seeded SU launch context for ${input.agentChatId}\n\n`
+    + 'Fixture playbook line: a real launch renders the full SU persona here.\n'.repeat(40));
+  const supported = { state: 'supported', implementation: 'native' } as const;
+  const descriptor = {
+    identity: {
+      agentChatId: input.agentChatId,
+      advSessionId,
+      backend: 'claude',
+      nativeSessionId,
+      ownerId: OWNER,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+    },
+    lifecycle: 'ended',
+    runtimeGeneration: 1,
+    role: 'su',
+    model: null,
+    accountServed: null,
+    accountRoute: 'default',
+    carry: 'warm',
+    modes: [],
+    capabilities: {
+      commands: {
+        owner_turn: supported, interrupt: supported, resume: supported,
+        fork: { state: 'unsupported', reason: 'seeded ended session' },
+        focus: { state: 'supported', implementation: 'host' }, end: supported,
+      },
+      features: {
+        'tool-events': supported, 'interactive-cards': supported, 'reasoning-stream': supported,
+        usage: supported, compaction: supported, approvals: supported, context: supported, modes: supported,
+      },
+    },
+    backendExtension: { backend: 'claude', configDir, configDirSource: 'live-process' },
+  } as unknown as SuSessionDescriptor;
+  const result = await bindSuSessionToAdvSession({
+    advSessionId, agentChatId: input.agentChatId, workspaceId: WORKSPACE, descriptor,
+  });
+  expect(result.status, `bind seeded session for ${input.agentChatId}`).toBe('bound');
+  // Preflight the scope checks launch-su and the reconnect apply, so a seed
+  // they would refuse fails here in milliseconds rather than as a 40 s
+  // screen timeout (WI-10003592 attempt audit).
+  const { getAdvSession, readSuLaunchSpecByOwner } = await import('../adv-sessions');
+  const { parseSuLaunchSpecRecord } = await import('../su-persona-render');
+  const stored = await getAdvSession(advSessionId);
+  expect(stored?.harnessSlug, 'seeded adv session harness').toBe(HARNESS);
+  const spec = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(OWNER));
+  expect({ agent: spec?.agent, workspaceId: spec?.workspaceId, harnessSlug: spec?.harnessSlug },
+    'owner launch spec the reconnect reads').toEqual({ agent: 'claude', workspaceId: WORKSPACE, harnessSlug: HARNESS });
+  expect(isClaudeConfigDirLaunchReady(configDir), 'seeded Claude config dir the resume checks').toBe(true);
+  return advSessionId;
 }
 
 /** Publish seeded Agent Chat transcript rows through the real sessions index. */
@@ -1160,8 +1506,20 @@ let previousEnv: Record<string, string | undefined>;
 let sessionTraffic: Array<Record<string, unknown>> = [];
 let launchRequests: unknown[] = [];
 let attachedCapability: 'current' | 'missing' | 'disabled' | 'unsafe' = 'current';
-type TransportFault = 'none' | 'startup-disconnect' | 'refuse' | 'lost-ack' | 'wrong-command-ack' | 'wrong-session-ack';
+type TransportFault = 'none' | 'startup-disconnect' | 'refuse' | 'lost-ack' | 'wrong-command-ack' | 'wrong-session-ack'
+  | 'hang-snapshot';
 let transportFault: TransportFault = 'none';
+// 'hang-snapshot' (pui-chat-first-ux P-024): every SU-session snapshot read —
+// the readiness read a send makes first — stalls until released, as an
+// operator that accepts the connection and never answers would.
+let hungSnapshotHold: Promise<void> = Promise.resolve();
+let releaseHungSnapshots: () => void = () => {};
+let hungSnapshotReads = 0;
+function hangSnapshotReads(): void {
+  hungSnapshotHold = new Promise<void>((resolve) => { releaseHungSnapshots = resolve; });
+  hungSnapshotReads = 0;
+  transportFault = 'hang-snapshot';
+}
 let commandPosts: SuSessionCommand[] = [];
 let commandReplies: Array<{ status: number; replayed?: boolean }> = [];
 let cardReplies: Array<{ path: string; status: number }> = [];
@@ -1171,6 +1529,7 @@ let configurationWarnings: string[] = [];
 let intentPivotWarnings: string[] = [];
 let timeoutDegradations: string[] = [];
 let nativeFrameDiagnostics: Array<Record<string, unknown>> = [];
+let nativeRpcReceiptSummaries: Array<Record<string, unknown>> = [];
 let readOmpDiagnosticState: (() => Promise<Record<string, unknown>>) | undefined;
 let nativeProviderOrigin: string | undefined;
 const nativeProviderEvents: Array<Record<string, unknown>> = [];
@@ -1233,8 +1592,10 @@ async function openAgentChat(pane: PuiPane): Promise<void> {
 
 async function completeNewSessionSetup(pane: PuiPane): Promise<void> {
   await pane.waitFor('New session — 1 Context');
+  await pane.waitFor('Connection: Connected');
   pane.write('/');
   pane.write(HARNESS);
+  await pane.waitFor(`Project search: ${HARNESS}`);
   pane.enter(); // finish search, not a launch
   await pane.waitFor(`> ${HARNESS}`);
   pane.enter(); // explicitly choose this project's stable identity
@@ -1288,8 +1649,14 @@ async function openComposer(pane: PuiPane, reviewNewSession = true): Promise<voi
     pane.enter();
     await pane.waitFor(`mode ${mode}`);
   }
-  pane.write('i');
   if (reviewNewSession) pane.reviewNextNewSession();
+  pane.write('i');
+  if (reviewNewSession) {
+    // The new-session wizard is driven asynchronously from PTY output. Wait
+    // for the composer itself before callers type, so input cannot land in a
+    // context/runtime selector and disappear during setup.
+    await pane.waitForSendReady({ timeoutMs: 60_000 });
+  }
 }
 
 async function waitForSavedTurn(content: string): Promise<PersistedChat> {
@@ -1332,13 +1699,29 @@ async function waitForCorrelatedReply(
   const chat = await waitForSavedTurn(prompt);
   const command = chat.transcript.find((turn) => turn.content === prompt)?.su_command?.command;
   if (command?.type !== 'owner_turn') throw new Error('Greeting/follow-up lacks a durable owner-turn receipt');
-  await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining([
+  const acceptedSequence = events.find((event) => event.type === 'command_result'
+    && event.commandId === command.commandId)?.sequence ?? 0;
+  const outcome = await pollUntil(() => events.some((event) => event.type === 'transcript'
+    && event.phase === 'completed' && event.role === 'assistant' && event.channel === 'text'
+    && event.turnId === command.turnId
+    && (typeof reply === 'string' ? event.content === reply : reply.test(event.content ?? ''))), {
+    timeoutMs: 120_000, intervalMs: 100,
+    // vi.waitFor retries thrown errors, including a definitive provider refusal.
+    // Keep that evidence outside the retrying assertion and scope it to this turn.
+    beforeCheck: () => {
+      if (scriptedEngine.real) throwIfProviderRefused(
+        events.filter((event) => event.sequence >= acceptedSequence), 'Waiting for the correlated native reply',
+      );
+    },
+  });
+  expect(outcome.ok).toBe(true);
+  expect(events).toEqual(expect.arrayContaining([
     expect.objectContaining({
       type: 'transcript', phase: 'completed', role: 'assistant', channel: 'text',
       content: typeof reply === 'string' ? reply : expect.stringMatching(reply),
       turnId: command.turnId, session: command.target,
     }),
-  ])), { timeout: 120_000, interval: 100 });
+  ]));
   return chat;
 }
 
@@ -1404,6 +1787,7 @@ async function stopEngines(): Promise<void> {
 
 beforeAll(async () => {
   vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
+  operatorProcessBundlePath = buildOperatorProcessBundle();
   bin = ensurePuiBinary();
   binarySha256 = createHash('sha256').update(readFileSync(bin)).digest('hex');
   home = mkdtempSync(path.join(tmpdir(), 'pui-agent-chat-e2e-'));
@@ -1465,6 +1849,7 @@ beforeAll(async () => {
     'PAPERCUSP_SESSION_CLAUDE_DIR',
     'PAPERCUSP_SESSION_MCP_DIR',
     'PAPERCUSP_EMBED_DEVICE',
+    'PAPERCUSP_MEMORY_EMBEDDER',
   ];
   previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
@@ -1487,7 +1872,11 @@ beforeAll(async () => {
     // availability. Keep incidental CUDA allocation failures from turning a
     // correctly recovered embedding fallback into a console-warning failure.
     PAPERCUSP_EMBED_DEVICE: 'cpu',
+    // The UI journeys do not test model provisioning. Prevent an inherited
+    // workspace preference from loading local model files absent in this fixture.
+    PAPERCUSP_MEMORY_EMBEDDER: 'disabled',
   });
+  expect(process.env.PAPERCUSP_MEMORY_EMBEDDER).toBe('disabled');
   // The org fixture reuses numeric ids. Resolve the actual writers' roots
   // before any bootstrap so they cannot replace a real user's native home.
   const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
@@ -1565,6 +1954,36 @@ beforeAll(async () => {
       }
       return changed;
     });
+    if (scriptedEngine.backend === 'codex') {
+      const stdio = await import('../su-session-stdio-peer');
+      const startPeer = stdio.startSuStdioPeer;
+      vi.spyOn(stdio, 'startSuStdioPeer').mockImplementation(async (options) => {
+        const receipts: SuStdioReceipt[] = [];
+        let totalObserved = 0;
+        const peer = await startPeer({ ...options, onReceipt(receipt) {
+          totalObserved += 1;
+          // Retain timing and RPC identifiers only; native prompts, tool input,
+          // results and credentials never enter the diagnostic buffer.
+          const { id, type, method, command } = receipt.frame;
+          receipts.push({ ...receipt, frame: { id, type, method, command } });
+          if (receipts.length > 50) receipts.shift();
+          options.onReceipt?.(receipt);
+        } });
+        let logged = false;
+        return { ...peer, async close() {
+          try { await peer.close(); }
+          finally {
+            if (!logged) {
+              logged = true;
+              const summary = { scope: 'parent-operator', backend: 'codex', pid: peer.pid(),
+                ...nativeRpcReceiptSummary(receipts, peer.receiptState?.(), { max: 50, totalObserved }) };
+              nativeRpcReceiptSummaries.push(summary);
+              console.info('PUI_CODEX_RPC_DIAGNOSTIC', JSON.stringify(summary));
+            }
+          }
+        } };
+      });
+    }
     if (scriptedEngine.backend === 'omp') {
       const stdio = await import('../su-session-stdio-peer');
       const startPeer = stdio.startSuStdioPeer;
@@ -1718,12 +2137,19 @@ beforeAll(async () => {
         transportFault = 'none';
         return Response.json({ error: 'PUI-E2E startup connection interrupted' }, { status: 503 });
       }
+      if (transportFault === 'hang-snapshot' && request.method === 'GET'
+        && /\/agent-chats\/[^/]+\/su-session$/.test(pathname)) {
+        hungSnapshotReads += 1;
+        await hungSnapshotHold;
+      }
       const host = scriptedEngine.engines.at(-1)?.adapter.host;
       if (isCommand && transportFault === 'refuse') host?.transition('starting', 'injected readiness withdrawal');
       let response: Response;
+      const launchEventLoopDiagnostic = isLaunch ? beginLaunchEventLoopDiagnostic(launchInput) : null;
       try {
         response = await app.fetch(request, env);
       } catch (error) {
+        launchEventLoopDiagnostic?.finish('dispatch-error');
         console.info('PUI_REQUEST_FAILURE', JSON.stringify({ path: pathname,
           message: error instanceof Error ? error.message : String(error) }));
         throw error;
@@ -1796,8 +2222,10 @@ beforeAll(async () => {
           // text/event-stream into a parse exception and an artificial HTTP 500.
           const observed = response.clone();
           void (async () => {
+            let sawLaunchResult = false;
             for await (const event of parseSseStream(observed.body)) {
               if (event.event !== 'launch-result') continue;
+              sawLaunchResult = true;
               const terminal = JSON.parse(event.data) as { httpStatus?: number; body?: Record<string, unknown> };
               const body = terminal.body ?? {};
               Object.assign(observation, {
@@ -1809,9 +2237,16 @@ beforeAll(async () => {
                 ...(body.error ? { errorCode: body.code,
                   error: (typeof body.error === 'string' ? body.error : JSON.stringify(body.error)).slice(0, 500) } : {}),
               });
+              launchEventLoopDiagnostic?.finish('launch-result');
             }
-          })().catch((error: unknown) => console.info('PUI_LAUNCH_STREAM_OBSERVATION_FAILURE',
-            error instanceof Error ? error.message : String(error)));
+            if (!sawLaunchResult) launchEventLoopDiagnostic?.finish('stream-ended-without-result');
+          })().catch((error: unknown) => {
+            launchEventLoopDiagnostic?.finish('stream-error');
+            console.info('PUI_LAUNCH_STREAM_OBSERVATION_FAILURE',
+              error instanceof Error ? error.message : String(error));
+          });
+        } else if (isLaunch) {
+          launchEventLoopDiagnostic?.finish('response');
         }
       }
       return response;
@@ -1853,11 +2288,17 @@ afterAll(async () => {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
+      if (operatorProcessBundleDir) rmSync(operatorProcessBundleDir, { recursive: true, force: true });
+      operatorProcessBundleDir = undefined;
+      operatorProcessBundlePath = undefined;
       if (home) rmSync(home, { recursive: true, force: true });
     },
   ]);
 }, 120_000);
 
+afterEach(() => {
+  for (const diagnostic of activeLaunchEventLoopDiagnostics) diagnostic.finish('test-finished');
+});
 afterEach(stopEngines);
 // A session end schedules delayed maintenance (the archive pass, the lease
 // release). Stop what a case scheduled when it ends, so a pass never lands in
@@ -1881,6 +2322,8 @@ beforeEach(async () => {
   commandPosts = [];
   commandReplies = [];
   cardReplies = [];
+  releaseHungSnapshots();
+  hungSnapshotReads = 0;
   transportFault = 'none';
   scriptedEngine.mode = 'success';
   scriptedEngine.successText = 'PUI structured engine replied';
@@ -1901,6 +2344,7 @@ beforeEach(async () => {
   scriptedEngine.questionPrompt = 'Keep or change the draft title?';
   scriptedEngine.questionOptions = ['Keep', 'Change'];
   scriptedEngine.requests = [];
+  scriptedEngine.modelSwitches = [];
   scriptedEngine.sdkPermissions = [];
   scriptedEngine.sdkSessions = [];
   scriptedEngine.sdkCwds = [];
@@ -1914,6 +2358,7 @@ beforeEach(async () => {
   intentPivotWarnings = [];
   timeoutDegradations = [];
   nativeFrameDiagnostics = [];
+  nativeRpcReceiptSummaries = [];
   if (scriptedEngine.real) {
     const error = console.error.bind(console);
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
@@ -1924,11 +2369,26 @@ beforeEach(async () => {
         // in acceptance evidence. Never rewrite the user's global config.
         configurationWarnings.push(args[0]);
         console.info('PUI_CONFIG_REPAIR_DIAGNOSTIC', args[0]);
+      } else if (scriptedEngine.backend === 'codex' && args.length === 1
+        && args[0] === "psu: repaired this session's codex home config/hooks/instructions in place (existing rollouts were preserved).") {
+        // WI-10006770: a resumed Codex SU session re-runs the canonical
+        // codex-home refresh through the operator; when it rewrites the
+        // session's config/hooks the launcher reports it on stderr. That repair
+        // is the readiness fix under test, so keep its notice as evidence.
+        configurationWarnings.push(args[0]);
+        console.info('PUI_CONFIG_REPAIR_DIAGNOSTIC', args[0]);
       } else error(...args);
     });
+  }
+  // The host-load advisories below (D-024 degradations, launch-stage timing)
+  // apply to EVERY run: the scripted-engine cases launch through the same
+  // in-process operator. When this filter was real-engine only, a stall line
+  // failed a passing scripted case (AUTO-BAR-R-04-P-010, WI-10006559). The
+  // engine- and fresh-DB-specific allowances stay real-engine only.
+  {
     const warn = console.warn.bind(console);
     vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
-      if (args[0] === '[mcp-initialize-stage]') {
+      if (scriptedEngine.real && args[0] === '[mcp-initialize-stage]') {
         // Optional memory enrichment has a bounded production fallback in a
         // fresh test DB. Retain that diagnostic and prove the actual MCP
         // connection works; any other warning remains a test failure.
@@ -1936,13 +2396,13 @@ beforeEach(async () => {
         expect(['base', 'enriched', 'timeout']).toContain(detail.outcome);
         initializeWarnings.push(detail);
         console.info('PUI_MCP_INITIALIZE_DIAGNOSTIC', JSON.stringify(detail));
-      } else if (args.length === 1 && args[0] === '[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010).') {
+      } else if (scriptedEngine.real && args.length === 1 && args[0] === '[memory-injection] block build exceeded the 2000ms prompt-build deadline — omitting the section this turn; the in-flight build will serve the next one (P-010).') {
         // A fresh isolated DB can take the documented optional-enrichment
         // fallback. Preserve the exact diagnostic; hard memory/SU errors and
         // every other warning still fail this test (EI-22628413686876169).
         optionalMemoryWarnings.push(String(args[0]));
         console.info('PUI_OPTIONAL_MEMORY_DIAGNOSTIC', args[0]);
-      } else if (args.length === 1 && args[0] === '[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback') {
+      } else if (scriptedEngine.real && args.length === 1 && args[0] === '[bounded-timeout] intent-pivot-embed exceeded 1500ms — degrading to fallback') {
         // detectIntentPivot deliberately returns the lexical method within
         // this budget. Its unit suite exercises that fallback. Retain this
         // exact advisory diagnostic in native acceptance; unexpected warnings
@@ -1961,7 +2421,7 @@ beforeEach(async () => {
         timeoutDegradations.push(args[0]);
         console.info('PUI_TIMEOUT_DEGRADATION_DIAGNOSTIC', args[0]);
       } else if (args.length === 1 && typeof args[0] === 'string'
-        && /^\[su-launch\] \S+ (stage=\S+ took \d+ms|not finished after \d+ms; stalled in stage=\S+ for \d+ms)$/.test(args[0])) {
+        && /^\[su-launch\] \S+ (stage=\S+ took \d+ms|not finished after \d+ms; stalled in stage=\S+ for \d+ms(; this report ran \d+ms late \(event loop delayed\))?)$/.test(args[0])) {
         // The launch stage tracer (su-session-attached-launch.ts) reports a slow
         // or still-running launch step so a stall names its step. On a slow
         // host that report is advisory, like D-024's degradations: the
@@ -2015,6 +2475,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       outputTokens: 0,
       costCents: 0,
     });
+    await seedBoundSuSession({ agentChatId: chatId });
     await putViewState('Operator');
 
     const pane = new PuiPane(bin, operatorPort, home);
@@ -2182,6 +2643,9 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       id: alpha.id, title: alpha.title, runtimeClass: 'su-session',
       transcript: turns('alpha'), createdAt: now + 120_000, updatedAt: now + 120_000,
     });
+    // D-030: both conversations were started in the pane's directory.
+    await seedBoundSuSession({ agentChatId: alpha.id, transcript: turns('alpha') });
+    await seedBoundSuSession({ agentChatId: beta.id, transcript: turns('beta') });
     // Durable work context: one canonical task per session, keyed only by its
     // own session id — the same rows the Context projection reads.
     for (const [sessionId, content] of [[alpha.id, alpha.task], [beta.id, beta.task]]) {
@@ -2290,10 +2754,23 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       id: active.id, title: active.title, runtimeClass: 'su-session', transcript: turns(active.answer),
       createdAt: now + 300_000, updatedAt: now + 300_000,
     });
+    // D-030: the active conversation was started in the pane's directory.
+    // It is ended and resumable, so the compose stage reconnects it.
+    await seedBoundSuSession({ agentChatId: active.id, transcript: turns(active.answer) });
     await seedAgentChat({
       id: unrelated.id, title: unrelated.title, runtimeClass: 'su-session', featureId: unrelated.workItem,
       transcript: turns(unrelated.answer), createdAt: now + 400_000, updatedAt: now + 400_000,
     });
+    // Every native chat in the list needs a canonical snapshot. An unbound
+    // su-session stamp makes inventory admission fail for the ENTIRE list.
+    const unrelatedCwd = path.join(home, 'r07-unrelated-project');
+    mkdirSync(unrelatedCwd, { recursive: true });
+    await seedBoundSuSession({ agentChatId: unrelated.id, cwd: unrelatedCwd, transcript: turns(unrelated.answer) });
+    for (const [chatId, cwd] of [[active.id, realpathSync(REPO_ROOT)], [unrelated.id, unrelatedCwd]]) {
+      const snapshot = await fetch(`http://127.0.0.1:${operatorPort}/api/harness/${HARNESS}/agent-chats/${chatId}/su-session`);
+      expect(snapshot.status, `R07 canonical inventory for ${chatId}`).toBe(200);
+      expect(await snapshot.json(), 'R07 inventory must name its actual launch directory').toMatchObject({ launchCwd: cwd });
+    }
     for (const [sessionId, content] of [[active.id, active.task], [unrelated.id, unrelated.task]]) {
       await db.adminSql`
         INSERT INTO harness_shared.session_tasks
@@ -2472,10 +2949,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     await putViewState('Sessions');
 
     stage = 'open-sessions';
-    // The server-backed search below reaches the embedding leg, whose HNSW
-    // capability probe warns deterministically against this fixture's Postgres
-    // (measured: run 218aa430, alone). Allowed, never required — the same
-    // contract as work-items-urgent.test.ts — and any OTHER warning fails.
+    // This server-backed identity search runs with embedding disabled by the
+    // fixture, so it checks lexical matching without requiring model assets.
+    // Keep the existing allowance for this Postgres' HNSW capability warning
+    // if that probe runs (measured: run 218aa430, alone); any OTHER warning fails.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     pane = new PuiPane(bin, operatorPort, home);
     try {
@@ -2731,7 +3208,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
   /** A chat-first pui in a fresh directory whose engine has answered once. */
   async function chatWithRunningEngine(tag: string) {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), `pui-p009-${tag}-`)));
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
     const enginesBefore = scriptedEngine.engines.length;
     scriptedEngine.mode = 'success';
     scriptedEngine.successText = `P9 reply ${tag}`;
@@ -2770,7 +3247,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
    * anything is typed, and after the pick it must still show it exactly once
    * (not an empty pane until the next send, not a replayed duplicate). */
   async function resumeNewest(chat: RunningChat): Promise<PuiPane> {
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: chat.launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: chat.launchDir });
     await pane.waitFor(`Claude · ${chat.launchDir}`, { timeoutMs: 40_000 });
     await pane.waitFor(chat.reply, { timeoutMs: 30_000 });
     pane.write('/resume');
@@ -2994,6 +3471,28 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
 });
 
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
+  test('operator process preflight rejects an answering host with the wrong identity', async () => {
+    let identity = {
+      schemaVersion: 1, workspaceId: WORKSPACE,
+      agentChat: { scope: `workspace:${WORKSPACE}` },
+    };
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url ?? '');
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(identity));
+    });
+    const port = await listen(server);
+    try {
+      await verifyOperatorProcessIdentity(port);
+      identity = { ...identity, agentChat: { scope: 'workspace:wrong' } };
+      await expect(verifyOperatorProcessIdentity(port)).rejects.toThrow();
+      expect(requests).toEqual(['/api/tui/identity', '/api/tui/identity']);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   test('cleanup reports its own failure without replacing an earlier semantic failure', async () => {
     const primary = new Error('same-native identity mismatch');
     const paneCleanup = new Error('pane cleanup failed');
@@ -3177,12 +3676,16 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await pane.stop(); }
   });
 
-  test('new-session setup reconnects with an endpoint-scoped token and preserves the exact draft', async () => {
+  test('new-session setup reconnects with an endpoint-scoped token and preserves the exact draft', async ({ onTestFailed }) => {
     const prompt = '  reconnect exact λ draft  ';
     const requiredToken = 'pui-fixture-new-operator';
     const credentials: Array<string | undefined> = [];
+    const reconnectTraffic: Array<{ at: string; method: string; path: string; credential: string }> = [];
     const proxy = createServer((req, res) => {
       credentials.push(req.headers.authorization);
+      reconnectTraffic.push({ at: new Date().toISOString(), method: req.method ?? '', path: req.url ?? '',
+        credential: req.headers.authorization === undefined ? 'absent'
+          : req.headers.authorization === `Bearer ${requiredToken}` ? 'new' : 'other' });
       if (req.headers.authorization !== `Bearer ${requiredToken}`) {
         res.writeHead(401, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'operator token required' }));
@@ -3200,6 +3703,23 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     });
     const proxyPort = await listen(proxy);
     const pane = new PuiPane(bin, operatorPort, home, { operatorToken: 'pui-fixture-old-operator' });
+    let reconnectStage = 'open-setup';
+    onTestFailed(() => {
+      const out = process.env.PUI_REVIEW_FRAMES_DIR;
+      if (out) {
+        mkdirSync(out, { recursive: true });
+        writeFileSync(path.join(out, 'setup-reconnect.raw'), pane.rawSince(0, { beforeStop: true })
+          .replaceAll(requiredToken, '<fixture-token>')
+          .replaceAll('pui-fixture-old-operator', '<old-fixture-token>'));
+      }
+      console.info('PUI_SETUP_RECONNECT_FAILURE', JSON.stringify({
+        stage: reconnectStage, proxyPort, traffic: reconnectTraffic,
+        screen: pane.failureEvidence().screen,
+        // Cursor-jump diffs may split status text. The retained raw stream
+        // lets an independent terminal decoder check the rendered oracle.
+        rawTrace: out ? path.join(out, 'setup-reconnect.raw') : null,
+      }));
+    });
     try {
       await openComposer(pane, false);
       pane.write(prompt);
@@ -3209,11 +3729,16 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await pane.waitFor('Operator connection');
       pane.write('\x15'); // Ctrl-U clears the address.
       pane.write(`http://127.0.0.1:${proxyPort}`);
+      reconnectStage = 'refused-endpoint';
       pane.enter();
       await pane.waitFor('Connection: Unavailable');
+      // stderr shares the terminal with Ratatui. The old diagnostic print
+      // could interleave with a frame even when this status happened to render.
+      expect(pane.rawSince()).not.toContain('PUI_OPERATOR_RENDEZVOUS ');
       expect(credentials.length).toBeGreaterThan(0);
       expect(credentials.every((token) => token === undefined)).toBe(true);
       expect(launchRequests).toEqual([]);
+      reconnectStage = 'new-credential';
       pane.write('e');
       await pane.waitFor('Operator connection');
       pane.write('\t');
@@ -3223,10 +3748,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.enter(); // Finish token entry; reconnect still needs confirmation.
       await pane.waitFor('Credential entered');
       expect(launchRequests).toEqual([]);
+      reconnectStage = 'authenticated-endpoint';
       pane.enter();
       await pane.waitFor('Connection: Connected');
       expect(credentials).toContain(`Bearer ${requiredToken}`);
       expect(pane.screen()).not.toContain(requiredToken);
+      reconnectStage = 'exact-draft';
       await completeNewSessionSetup(pane);
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
       expect(scriptedEngine.requests).toEqual([prompt]);
@@ -3616,16 +4143,27 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       { headers: { authorization: `Bearer ${readSuperuserToken()}` } });
     expect(served.status).toBe(200);
     const config = await served.json() as {
-      effectiveTiers: Array<{ name: string; spec: string; loopCapability?: { executable?: boolean } }>;
+      effectiveTiers: Array<{ name: string; spec: string; backend?: string | null; loopCapability?: { executable?: boolean } }>;
       effortLevels: string[];
       launchableModes: Array<{ title: string }>;
     };
     expect(config.effectiveTiers.length).toBeGreaterThan(0);
-    const disabledTiers = config.effectiveTiers.filter((tier) => tier.loopCapability?.executable === false);
+    // WI-10006652: a chat's /model offers only the tiers that run on its
+    // engine (a tier with no backend runs on every engine), mirroring
+    // `tier_runs_on` in apps/tui/src/app.rs. Other engines' tiers are absent.
+    const engine = scriptedEngine.backend;
+    const chatTiers = config.effectiveTiers.filter((tier) => !tier.backend || tier.backend === engine
+      || (tier.backend === 'claude-code' && engine === 'claude'));
+    expect(chatTiers.length).toBeGreaterThan(0);
+    const disabledTiers = chatTiers.filter((tier) => tier.loopCapability?.executable === false);
     const launches = () => sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')
       .reduce((total, entry) => total + Number(entry.count ?? 1), 0);
 
-    pane = new PuiPane(bin, operatorPort, home);
+    const inputTraceLog = process.env.PUI_INPUT_TRACE_LOG?.trim()
+      || path.join(home, 'pui-input-trace.log');
+    mkdirSync(path.dirname(inputTraceLog), { recursive: true });
+    writeFileSync(inputTraceLog, '');
+    pane = new PuiPane(bin, operatorPort, home, { env: { PUI_INPUT_TRACE_LOG: inputTraceLog } });
     try {
       stage = 'launch';
       await openComposer(pane);
@@ -3649,33 +4187,57 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
 
       stage = 'pickers';
       // Every row comes from the operator's own inventory; the default row is
-      // named and an unsupported tier stays visible with its reason.
+      // named and an unsupported tier stays visible with its reason. On this
+      // live conversation the default row keeps its running model (P-026).
+      const modelRows = ['Keep the current model',
+        ...chatTiers.map((tier) => `${tier.name} — ${tier.spec}`),
+        ...disabledTiers.map((tier) => `${tier.name} — ${tier.spec} — not settable`),
+        ...(disabledTiers.length > 0 ? ['not executable by Agent Chat loop'] : [])];
+      const modelFrames: string[] = [];
+      for (let attempt = 0; attempt < 20; attempt++) {
+        if (attempt > 0) pane.resize(attempt % 2 === 1 ? 161 : 160, 48);
+        stage = attempt === 0 ? 'pickers' : `pickers:model-repeat-${attempt + 1}`;
+        modelFrames.push(await picker(pane, 'm', 'Model', modelRows));
+      }
+      stage = 'pickers';
       const frames = {
-        model: await picker(pane, 'm', 'Model', ['Default (',
-          ...config.effectiveTiers.map((tier) => `${tier.name} — ${tier.spec}`),
-          ...disabledTiers.map((tier) => `${tier.name} — ${tier.spec} — not settable`),
-          ...(disabledTiers.length > 0 ? ['not executable by Agent Chat loop'] : [])]),
+        model: modelFrames[0]!,
         effort: await picker(pane, 'e', 'Effort', ['Model/default effort', ...config.effortLevels]),
         account: await picker(pane, 'a', 'Account route', ['Auto (gateway routing)', 'Default system account']),
         mode: await picker(pane, 'u', 'Launch mode', ['Manual (no launch mode)', ...config.launchableModes.map((mode) => mode.title)]),
         conversation: await picker(pane, 'l', 'Conversation', []),
       };
       for (const frame of Object.values(frames)) expect(frame).not.toContain(readSuperuserToken());
+      const chatRows = new Set(chatTiers.map((tier) => `${tier.name} — ${tier.spec}`));
+      for (const tier of config.effectiveTiers) {
+        const row = `${tier.name} — ${tier.spec}`;
+        if (!chatRows.has(row)) expect(frames.model, `${row} runs on ${tier.backend}, not ${engine}`).not.toContain(row);
+      }
 
-      stage = 'restart-required-pick';
-      const executable = config.effectiveTiers.findIndex((tier) => tier.loopCapability?.executable !== false);
+      // D-025 (P-026): a model pick on a live conversation rides on its next
+      // turn. It opens no new-session route and launches nothing; reopening
+      // the picker marks the picked tier for the next turn (or as current
+      // when the session already runs it).
+      stage = 'next-turn-pick';
+      const executable = chatTiers.findIndex((tier) => tier.loopCapability?.executable !== false);
       expect(executable).toBeGreaterThanOrEqual(0);
+      const picked = chatTiers[executable]!;
       const before = launches();
       pane.write('m');
       await pane.waitFor('Model — Enter select');
       pane.write('j'.repeat(executable + 1));
       pane.enter();
-      await pane.waitFor('New session — 1 Context');
-      await pane.waitFor('Applies to a new session');
-      const routeFrame = pane.screen();
+      await pane.waitForGone('Model — Enter select');
       expect(launches()).toBe(before);
+      pane.write('m');
+      await pane.waitFor('Model — Enter select');
+      const routeFrame = pane.screen();
+      const pickedRow = `${picked.name} — ${picked.spec}`;
+      expect(routeFrame.includes(`${pickedRow} · next turn`) || routeFrame.includes(`${pickedRow} · current`),
+        routeFrame).toBe(true);
+      expect(routeFrame).not.toContain('New session — 1 Context');
       pane.escape();
-      await pane.waitForGone('New session');
+      await pane.waitForGone('Model — Enter select');
       await pane.waitFor(prompt);
       // Nothing launched; the running conversation keeps its one SU session.
       expect(launches()).toBe(before);
@@ -3685,7 +4247,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(binding.sessions).toBe(1);
       console.info('PUI_SETTINGS_PICKERS_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
         servedTiers: config.effectiveTiers.map((tier) => tier.spec), disabledTiers: disabledTiers.map((tier) => tier.spec),
-        pickedTier: config.effectiveTiers[executable].spec, frames, routeFrame }));
+        chatTiers: chatTiers.map((tier) => tier.spec), pickedTier: picked.spec, frames, routeFrame,
+        modelAttemptCount: modelFrames.length,
+        inputTrace: readFileSync(inputTraceLog, 'utf8') }));
     } finally { await pane?.stop().catch(() => {}); }
   }, 240_000);
 
@@ -3805,19 +4369,6 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     }
   });
 
-  // pui-chat-first-ux-2026-09-28 P-003 / R-03: the default chat screen shows
-  // only model, directory, context and cost. These are the token classes the
-  // falsifier names — session ids, sequence numbers, lifecycle and
-  // reconciliation states, pot/role/store names, operator URLs, account routes
-  // and "unknown" usage rows. They belong in `pui doctor` or Ctrl+O details.
-  const CHAT_JARGON: readonly RegExp[] = [
-    /\badv \d/, /\bseq \d/, /reconciliation/, /waiting-for-owner/, /SU session/, /SU · /,
-    new RegExp(`pot ${HARNESS}`), /role operator/, /\bstore /, /https?:\/\//, /\baccount \S/, /unknown/,
-    // WI-10004211: the approval card once titled itself after the server that raised it.
-    /Operator asks/,
-  ];
-  const chatJargonIn = (frame: string): string[] =>
-    CHAT_JARGON.filter((pattern) => pattern.test(frame)).map(String);
   // pui-chat-first-ux-2026-09-28 R-01: the chrome a default launch must not
   // show — the workbench tab strip (h:Overview, 1:Agent Chat), zellij's tab bar
   // ("Zellij (<session>)") and mode bar (LOCK … PANE), and the workbench's
@@ -3842,14 +4393,15 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await pane.stop(); }
   }, 90_000);
 
-  // pui-chat-first-ux-2026-09-28 P-001 acceptance. Owner #783: `pui` must start
-  // the way `claude` / `codex` do — one conversation, full screen, in the
+  // pui-chat-first-ux-2026-09-28 P-001 acceptance. Owner #783: the chat must
+  // start the way `claude` / `codex` do — one conversation, full screen, in the
   // directory it was started from, ready to type. No zellij, no workbench tab
-  // strip, no key press before the first word.
-  test('P-001: bare `pui` opens one full-screen chat in its launch directory, ready to type', async ({ onTestFailed }) => {
+  // strip, no key press before the first word. Since P-030 that surface is
+  // `pui --solo` (and the main pane of bare `pui`'s chat workbench, below).
+  test('P-001: `pui --solo` opens one full-screen chat in its launch directory, ready to type', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p001-launch-')));
     const prompt = `P1 chat-first ${randomUUID().slice(0, 8)}`;
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
     onTestFailed(() => console.info('PUI_P001_FAILURE', JSON.stringify({
       launchDir, sdkCwds: scriptedEngine.sdkCwds, requests: scriptedEngine.requests, ...pane.failureEvidence(),
     })));
@@ -3912,6 +4464,169 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     }
   }, 120_000);
 
+  // pui-chat-first-ux-2026-09-28 P-030 acceptance. Owner #1277 "I also want to
+  // retain the extra zellij panes we had": bare `pui` opens the chat as the
+  // main, focused zellij pane with the workbench panes (HUD, wake, network,
+  // work) beside it, in its own pid-keyed session that nothing can hijack.
+  // Ending the chat ends `pui` and leaves no session behind.
+  const zellijAvailable = spawnSync('zellij', ['--version']).status === 0;
+  // PuiPane's env carries no XDG_RUNTIME_DIR, so the zellij server it starts
+  // listens under /tmp/zellij-<uid>; query that same socket directory.
+  const paneZellij = (args: string[]) => spawnSync('zellij', args, {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, TERM: 'xterm-256color' },
+    timeout: 15_000,
+  });
+  const listSessions = () => paneZellij(['list-sessions', '--no-formatting']).stdout ?? '';
+  const startChatWorkbench = (cols: number, rows: number) => {
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p030-launch-')));
+    // The workbench layout starts every pane (the chat included) as `pui …`
+    // from PATH. Put the binary under test first, or the panes run whatever
+    // `pui` is installed (~/.cargo/bin) and the test judges a stale build.
+    const pane = new PuiPane(bin, operatorPort, home, {
+      args: [], cwd: launchDir, cols, rows,
+      env: { PATH: `${path.dirname(bin)}:${process.env.PATH ?? '/usr/bin:/bin'}` },
+    });
+    const session = `pui-chat-${pane.pty.pid}`;
+    const exited = new Promise<number>((resolve) => pane.pty.onExit(({ exitCode }) => resolve(exitCode)));
+    const cleanup = async () => {
+      await pane.stop();
+      paneZellij(['kill-session', session]);
+      paneZellij(['delete-session', session]);
+      rmSync(launchDir, { recursive: true, force: true });
+    };
+    return { launchDir, pane, session, exited, cleanup };
+  };
+
+  test.skipIf(!zellijAvailable)('P-030: bare `pui` opens the chat as the focused main pane with the workbench panes beside it', async ({ onTestFailed }) => {
+    const wb = startChatWorkbench(200, 50);
+    onTestFailed(() => console.info('PUI_P030_FAILURE', JSON.stringify({
+      session: wb.session, sessions: listSessions(), ...wb.pane.failureEvidence(),
+    })));
+    try {
+      // The child chat and zellij's tab-bar plugin render independently. Wait
+      // for both in one frame within the existing startup deadline, before
+      // taking the workbench snapshot (WI-10007999).
+      await wb.pane.waitFor([`Claude · ${wb.launchDir}`, `Zellij (${wb.session})`], { timeoutMs: 90_000 });
+      expect(wb.pane.screen()).toMatch(/Zellij \(pui-chat-\d+\)/);
+      expect(listSessions()).toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
+      // The running session carries the chat pane and every workbench pane,
+      // and the chat pane has focus. Read with `list-panes --json`, retried:
+      // zellij 0.44.3's `dump-layout` exits 0 with EMPTY stdout on most calls
+      // (0 of 20 on a healthy session, measured 2026-10-06), so it cannot be
+      // the instrument; `list-panes --json` answered 20 of 20.
+      type ZellijPane = { is_plugin: boolean; is_focused: boolean; title: string; terminal_command: string | null };
+      const command = (pane: ZellijPane) => pane.terminal_command ?? '';
+      await vi.waitFor(() => {
+        const listed = paneZellij(['--session', wb.session, 'action', 'list-panes', '--json', '--all']);
+        expect(listed.status, listed.stderr).toBe(0);
+        const panes = (JSON.parse(listed.stdout) as ZellijPane[]).filter((pane) => !pane.is_plugin);
+        const chat = panes.find((pane) => /(^|\/)pui --solo --workbench-pane$/.test(command(pane)));
+        expect(chat, JSON.stringify(panes)).toMatchObject({ is_focused: true });
+        for (const board of ['hud --side-pane', 'wake-pane', 'network-pane']) {
+          expect(panes.some((pane) => new RegExp(`(^|/)pui ${board}$`).test(command(pane))), `${board} pane in ${JSON.stringify(panes)}`).toBe(true);
+        }
+      }, { timeout: 15_000, interval: 250 });
+      // pui-chat-first-ux D-034 (WI-10006754): the HUD side pane is ~70
+      // columns of this 200-column terminal, under the full board's 80. It
+      // draws the compact summary, never "Terminal too small".
+      await vi.waitFor(() => {
+        const frame = wb.pane.screen();
+        expect(frame, frame).not.toContain('too small');
+        expect(frame, frame).toMatch(/Needs you \(\d+\)/);
+        expect(frame, frame).toMatch(/Agents \(\d+ live\)/);
+        expect(frame, frame).toMatch(/Plans \(\d+\)/);
+        expect(frame, frame).toContain('Alt+z full board');
+      }, { timeout: 30_000, interval: 250 });
+      // Keyboard focus is the chat: typed text lands in its message box.
+      wb.pane.write('p030 focus probe');
+      await wb.pane.waitFor('p030 focus probe', { timeoutMs: 10_000 });
+      for (let i = 0; i < 'p030 focus probe'.length; i += 1) wb.pane.write('\u007f');
+      await wb.pane.waitForGone('p030 focus probe', { timeoutMs: 10_000 });
+      const frame = wb.pane.screen();
+      // Ending the chat ends `pui`: the launcher exits and the session is gone.
+      wb.pane.write('/exit');
+      wb.pane.enter();
+      expect(await Promise.race([
+        wb.exited,
+        new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 30_000)),
+      ])).toBe(0);
+      expect(listSessions()).not.toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
+      console.info('PUI_P030_CHAT_WORKBENCH_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, session: wb.session, frame }));
+    } finally { await wb.cleanup(); }
+  }, 180_000);
+
+  // pui-chat-first-ux D-033 (owner 2026-10-06, WI-10006739): Avi launched bare
+  // `pui` in a 92x26 terminal and saw no panes. The P-030 build zoomed the chat
+  // over them below 120 columns, and nothing on screen said so. Now the panes
+  // open visible at every width and the chat's footer names Alt+z.
+  test.skipIf(!zellijAvailable)('P-030 / D-033: at 92 columns the side panes open visible, the footer names Alt+z, and Alt+z hides and shows them', async ({ onTestFailed }) => {
+    const wb = startChatWorkbench(92, 26);
+    onTestFailed(() => console.info('PUI_P030_NARROW_FAILURE', JSON.stringify({
+      session: wb.session, sessions: listSessions(), ...wb.pane.failureEvidence(),
+    })));
+    // A zellij pane frame title: the pane name between the border glyphs.
+    const paneTitle = (name: string) => new RegExp(`[┌─] ${name} [─┐]`);
+    try {
+      await wb.pane.waitFor('Claude ·', { timeoutMs: 90_000 });
+      // Visible from the start: no key press, at the owner's own width.
+      await vi.waitFor(() => {
+        const frame = wb.pane.screen();
+        expect(paneTitle('hud').test(frame), frame).toBe(true);
+        expect(frame, frame).toContain('Alt+z panes');
+      }, { timeout: 15_000, interval: 250 });
+      const opened = wb.pane.screen();
+      // Stays visible: nothing zooms the chat a moment after it starts (the
+      // removed P-030 zoom retried for up to 8s).
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect(paneTitle('hud').test(wb.pane.screen()), wb.pane.screen()).toBe(true);
+      // One key hides them …
+      wb.pane.write('\u001bz');
+      await vi.waitFor(() => expect(paneTitle('hud').test(wb.pane.screen()), wb.pane.screen()).toBe(false), { timeout: 15_000, interval: 250 });
+      const hidden = wb.pane.screen();
+      // … the hint is still on screen to bring them back …
+      expect(hidden).toContain('Alt+z panes');
+      // … and the same key brings them back.
+      wb.pane.write('\u001bz');
+      await vi.waitFor(() => expect(paneTitle('hud').test(wb.pane.screen()), wb.pane.screen()).toBe(true), { timeout: 15_000, interval: 250 });
+      // pui-chat-first-ux D-034 (WI-10006754): every side pane shows real
+      // content in its ~30-column column, never "Terminal too small". The HUD
+      // is the expanded pane of the stack and draws the compact summary.
+      await vi.waitFor(() => {
+        const frame = wb.pane.screen();
+        expect(frame, frame).not.toContain('too small');
+        expect(frame, frame).toMatch(/Needs you \(\d+\)/);
+        expect(frame, frame).toMatch(/Agents \(\d+ live\)/);
+        expect(frame, frame).toContain('Alt+z full board');
+      }, { timeout: 30_000, interval: 250 });
+      const hud = wb.pane.screen();
+      // Moving focus down the stack expands each board in turn.
+      const moveFocus = (direction: 'right' | 'down') => {
+        const moved = paneZellij(['--session', wb.session, 'action', 'move-focus', direction]);
+        expect(moved.status, moved.stderr).toBe(0);
+      };
+      moveFocus('right');
+      moveFocus('down');
+      await vi.waitFor(() => {
+        const frame = wb.pane.screen();
+        expect(paneTitle('wake').test(frame), frame).toBe(true);
+        expect(frame, frame).toContain('Staged wakes');
+        expect(frame, frame).not.toContain('too small');
+      }, { timeout: 15_000, interval: 250 });
+      const wake = wb.pane.screen();
+      moveFocus('down');
+      await vi.waitFor(() => {
+        const frame = wb.pane.screen();
+        expect(paneTitle('network').test(frame), frame).toBe(true);
+        // Stacked, not split: both boards' headlines are on screen.
+        expect(frame.match(/Network /g)?.length ?? 0, frame).toBeGreaterThanOrEqual(2);
+        expect(frame, frame).not.toContain('too small');
+      }, { timeout: 15_000, interval: 250 });
+      const network = wb.pane.screen();
+      console.info('PUI_P030_NARROW_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, session: wb.session, opened, hidden, hud, wake, network }));
+    } finally { await wb.cleanup(); }
+  }, 180_000);
+
   // pui-chat-first-ux-2026-09-28 P-016 (D-004 / D-005 for Codex and OMP): the
   // same identity rule as P-007's Claude case above. Outside every registered
   // checkout a Codex or OMP chat runs that CLI's own identity — no SU playbook,
@@ -3956,7 +4671,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         const prompt = `P16 ${backend} ${tag}`;
         replyText = `P16 ${backend} reply ${tag}`;
         const launches = scriptedEngine.rpcLaunches.length;
-        const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd });
+        // Retained acceptance checkouts have long absolute paths. Fit the full
+        // cwd in the footer so this identity oracle cannot wait on clipped text.
+        const pane = new PuiPane(bin, operatorPort, home, {
+          args: ['--solo'], cwd, cols: Math.max(160, cwd.length + label.length + 40),
+        });
         try {
           await pane.waitFor(`${label} · ${cwd}`, { timeoutMs: 40_000 });
           pane.write(prompt);
@@ -3983,7 +4702,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(own.launch).toMatchObject({ backend, identity: 'coding-assistant', cwd: outside });
         expect(own.native.args).not.toContain(own.launch.promptFile);
         expect(own.native.args).not.toContain('--system-prompt');
-        const sealed = readFileSync(own.launch.promptFile, 'utf8');
+        const sealed = read(own.launch.promptFile);
         if (backend === 'codex') {
           expect(own.native.codexConfig ?? '').not.toMatch(/mcp_servers\.["']?papercusp-su/);
           expect(own.native.codexConfig ?? '').not.toMatch(/project_doc_max_bytes\s*=\s*0/);
@@ -4006,7 +4725,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
           // The outside chat's AGENTS.md is not the SU playbook render.
           expect(own.native.codexAgents).not.toBe(su.native.codexAgents);
           expect(su.native.codexConfig).toMatch(/mcp_servers\.["']?papercusp-su/);
-          expect(su.native.codexAgents).toBe(readFileSync(su.launch.promptFile, 'utf8'));
+          expect(su.native.codexAgents).toBe(read(su.launch.promptFile));
         } else {
           expect(su.native.args).toEqual(expect.arrayContaining(['--system-prompt', su.launch.promptFile]));
           expect(su.native.ompServers).toContain('papercusp-su');
@@ -4059,7 +4778,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     // returns, so that pass never lands in a later case (measured: it failed
     // PUI-APPROVAL-DENY when it did).
     const jobsBefore = maintenance.jobs.length;
-    const warn = console.warn.bind(console);
+    // The file-wide beforeEach already spies console.warn, and vi.spyOn returns
+    // that same spy. Chain to its filter, never to the spy itself: once this
+    // implementation replaces the filter, the spy would call itself forever.
+    const current = console.warn;
+    const filtered = vi.isMockFunction(current) ? current.getMockImplementation() : undefined;
+    const warn = filtered ?? current.bind(console);
     const archiveWarn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
       if (args.length === 1 && typeof args[0] === 'string'
         && /^\[session-archive\] adv \d+ not resolvable \(agent=omp, owner=[^,]+, native=null, omp=null\) — left for the disk-side reconciler$/.test(args[0])) {
@@ -4098,7 +4822,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       replyText = `WI164 auto reply ${tag}`;
       const requestsBefore = launchRequests.length;
       const enginesBefore = scriptedEngine.rpcLaunches.length;
-      const quick = new PuiPane(bin, operatorPort, home, { args: [], cwd });
+      const quick = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd });
       try {
         await quick.waitFor(`OMP · ${cwd}`, { timeoutMs: 40_000 });
         quick.write(prompt);
@@ -4182,7 +4906,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p004-composer-')));
     writeFileSync(path.join(launchDir, 'parity-notes.md'), '# parity notes\n');
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
     let stage = 'ready';
     onTestFailed(() => console.info('PUI_P004_COMPOSER_FAILURE', JSON.stringify({
       stage, launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
@@ -4276,7 +5000,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-004: the default chat transcript streams markdown, collapses tool output, shows diffs and prompts inline, and leaves clean scrollback', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p004-transcript-')));
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
     let stage = 'ready';
     onTestFailed(() => console.info('PUI_P004_TRANSCRIPT_FAILURE', JSON.stringify({
       stage, launchDir, requests: scriptedEngine.requests, verdicts: scriptedEngine.approvalVerdicts, ...pane.failureEvidence(),
@@ -4300,7 +5024,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(md).not.toContain('## Parity heading');
       expect(md).not.toContain('`inline code`');
 
-      // Tool output: a three-line preview, Ctrl+R shows it all and hides it again.
+      // Tool output: a finished call collapses to one summary line, the way
+      // Claude Code prints `⎿ Read 8 lines` (P-025); Ctrl+R shows it all and
+      // hides it again.
       stage = 'tool-output';
       scriptedEngine.mode = 'success';
       scriptedEngine.successText = `P4 tool reply ${tag}`;
@@ -4308,12 +5034,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(`read ${tag}`);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
-      await pane.waitFor(`⎿ tool row 1 ${tag}`);
-      expect(pane.screen()).toContain(`tool row 3 ${tag}`);
-      expect(pane.screen()).not.toContain(`tool row 8 ${tag}`);
-      expect(pane.screen()).toContain('+5 lines (Ctrl+R to expand)');
+      await pane.waitFor('Read 8 lines  (Ctrl+R to expand)');
+      expect(pane.screen()).not.toContain(`tool row 1 ${tag}`);
       pane.write('\u0012');
       await pane.waitFor(`tool row 8 ${tag}`);
+      expect(pane.screen()).toContain(`⎿ tool row 1 ${tag}`);
       pane.write('\u0012');
       await pane.waitForGone(`tool row 8 ${tag}`);
 
@@ -4328,15 +5053,17 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(pane.screen()).toMatch(/\+\s+let introduced = 3;/);
       expect(pane.screen()).toMatch(/-\s+let dropped = 2;/);
 
-      // Permission prompts: inline, in plain words, answered with 1 (allow) / 2 (deny).
+      // Permission prompts: inline, in plain words, answered with 1 (Yes) / 2 (No).
+      // Claude offers no remembered rule here, so there is no "don't ask again"
+      // row and No is option 2 (D-028).
       stage = 'approval';
       scriptedEngine.mode = 'approval';
       scriptedEngine.successText = `P4 approval reply ${tag}`;
       pane.write(`approve ${tag}`);
       pane.enter();
       await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(2), { timeout: 60_000, interval: 100 });
-      await pane.waitFor('Approve');
-      await pane.waitFor('Decline');
+      await pane.waitFor('Do you want to run this command?');
+      await pane.waitFor('2. No, and tell Claude');
       const prompt = pane.screen();
       const shown = scriptedEngine.approvalRequests.filter((r) => prompt.includes(String(r.input.command)));
       expect(shown, prompt).toHaveLength(1);
@@ -4346,7 +5073,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(scriptedEngine.approvalVerdicts[0]).toMatchObject({ tag: shown[0].tag, verdict: { behavior: 'allow' } });
       const peer = scriptedEngine.approvalRequests.find((r) => r.tag !== shown[0].tag);
       await pane.waitFor(String(peer?.input.command));
-      await pane.waitFor('Decline');
+      await pane.waitFor('2. No, and tell Claude');
       pane.write('2');
       await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2), { timeout: 30_000, interval: 100 });
       expect(scriptedEngine.approvalVerdicts[1]).toMatchObject({ tag: peer?.tag, verdict: { behavior: 'deny' } });
@@ -4386,7 +5113,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-013: a tool call renders above the answer it produced', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p013-order-')));
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
     onTestFailed(() => console.info('PUI_P013_ORDER_FAILURE', JSON.stringify({
       launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
     })));
@@ -4398,6 +5125,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(`explain ${tag}`);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      // The finished call is one summary line (P-025); Ctrl+R shows its output.
+      await pane.waitFor('Read 1 line');
+      pane.write('\u0012');
       await pane.waitFor(`P13 tool output ${tag}`);
       const frame = pane.screen();
       const lines = frame.split('\n');
@@ -4425,7 +5155,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-018: the mouse wheel scrolls the conversation and a drag copies what it covers', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p018-mouse-')));
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
     const rowText = (n: number): string => `p18 row ${String(n).padStart(2, '0')} ${tag}`;
     const sgr = (button: number, col: number, row: number, release = false): string =>
       `\x1b[<${button};${col};${row}${release ? 'm' : 'M'}`;
@@ -4505,7 +5235,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-011: tool previews, an approval card and the session picker redraw over prior content with no stale characters', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p011-')));
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
     let stage = 'ready';
     let incremental = '';
     let clean = '';
@@ -4534,16 +5264,26 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(`read ${tag}`);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      // The finished call is one summary line (P-025); Ctrl+R shows the output
+      // whose redraw this stage checks, and hides it again before the card.
+      // The summary counts the numbered file lines (tool_display.rs
+      // `is_numbered_line`), so the trailing coloured line is not one of them.
+      await pane.waitFor('Read 2 lines');
+      pane.write('\u0012');
       await pane.waitFor(`const p011 = require('node:test'); // ${tag}`);
       incremental = pane.screen();
       // The tab is expanded where the text enters, and no control character
       // other than the terminal's own escape sequences ever reaches the PTY.
-      expect(incremental).toMatch(new RegExp(`⎿ {6}1 {2}const p011 = require\\('node:test'\\); // ${tag}`));
+      // P-025: the expanded output drops the lines' shared indent, so the
+      // line number's padding is not asserted, only the expanded tab.
+      expect(incremental).toMatch(new RegExp(`⎿ +1 {2}const p011 = require\\('node:test'\\); // ${tag}`));
       expect(incremental).toContain('coloured ok');
       expect(incremental).not.toContain('[32m');
       expect(pane.rawSince(rawStart)).not.toContain('\t');
       clean = await cleanRepaint();
       expect(incremental.split('\n')).toEqual(clean.split('\n'));
+      pane.write('\u0012');
+      await pane.waitForGone(`const p011 = require('node:test'); // ${tag}`);
 
       // The approval card draws over the tool preview above. Its arguments
       // carry a tab and a newline, the characters that shifted P-005's card.
@@ -4555,7 +5295,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       ];
       pane.write(`approve ${tag}`);
       pane.enter();
-      await pane.waitFor('Approve', { timeoutMs: 60_000 });
+      await pane.waitFor('Do you want to run this command?', { timeoutMs: 60_000 });
       await pane.waitFor(`P11-${tag}`);
       await new Promise((resolve) => setTimeout(resolve, 500));
       incremental = pane.screen();
@@ -4586,7 +5326,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p003-launch-')));
     const prompt = `P3 failed start ${randomUUID().slice(0, 8)}`;
     scriptedEngine.mode = 'startup-exit';
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
     onTestFailed(() => console.info('PUI_P003_FAILURE', JSON.stringify({
       launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
     })));
@@ -4659,7 +5399,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       .filter((entry) => entry.method === 'POST' && entry.path === '/api/adv/sessions/launch-su' && entry.status === 200)
       .reduce((total, entry) => total + Number(entry.count ?? 1), 0);
     // Bare `pui`: the plan's guard is the default launch, chat-first (P-001).
-    const pane = new PuiPane(bin, operatorPort, home, { args: [] });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'] });
     onTestFailed(() => console.info('PUI_P002_FAILURE', JSON.stringify({
       stage, nativePid, recoveredAfterMs, requests: scriptedEngine.requests, sdkSessions: scriptedEngine.sdkSessions,
       commandPosts: commandPosts.length, traffic: sessionTraffic, ...pane.failureEvidence(),
@@ -4920,8 +5660,15 @@ function installedManifest(): Record<string, unknown> {
     return manifest;
 }
 /** A real engine's approval for the SU's own papercusp-su call (D-021). */
-function isSuToolApprovalCard(card: { prompt: string }): boolean {
-  return SU_APPROVAL_HEADLINE.test(card.prompt.split('\n')[0] ?? '');
+function isSuToolApprovalCard(card: { prompt: string; approval?: { title: string } | null }): boolean {
+  return SU_APPROVAL_HEADLINE.test(card.prompt.split('\n')[0] ?? '')
+    || Boolean(suToolApproval(card.approval?.title ?? ''));
+}
+
+/** D-028: an approval card names its tool call in `approval.title` (a command
+ * is `Bash(<command>)`) above the question, so match the title and the prompt. */
+function cardMentions(card: { prompt: string; approval?: { title: string } | null }, text: string) {
+  return card.prompt.includes(text) || (card.approval?.title.includes(text) ?? false);
 }
 
 function pendingNativeCards(events: SuSessionEvent[] = scriptedEngine.events) {
@@ -4947,6 +5694,67 @@ function nativeQuestionToolStart(events: SuSessionEvent[], turnId: string, direc
       value && typeof value === 'object' && !Array.isArray(value)
       && (value as Record<string, unknown>).question === question);
   });
+}
+
+async function verifyOperatorProcessIdentity(port: number) {
+  const response = await fetch(`http://127.0.0.1:${port}/api/tui/identity`, {
+    signal: AbortSignal.timeout(3_000),
+  });
+  const identity = await response.json();
+  expect(response.status, JSON.stringify({ port, identity })).toBe(200);
+  expect(identity).toMatchObject({
+    schemaVersion: 1,
+    workspaceId: WORKSPACE,
+    agentChat: { scope: `workspace:${WORKSPACE}` },
+  });
+}
+
+async function verifyOperatorProcessViewState(port: number, scope?: 'pot' | 'all') {
+  const response = await fetch(`http://127.0.0.1:${port}/api/tui/view-state?owner=${encodeURIComponent(OWNER)}`, {
+    signal: AbortSignal.timeout(3_000),
+  });
+  const body = await response.json();
+  expect(response.status, JSON.stringify({ port, owner: OWNER, body })).toBe(200);
+  expect(body).toMatchObject({ state: { tab: 'Plans', harness: HARNESS,
+    ...(scope ? { scope } : {}) } });
+}
+
+/** Bounded reads of the exact setup prerequisites, including their bodies.
+ * HTTP 200 on unrelated configuration routes does not prove projects loaded. */
+async function operatorSetupProbe(port: number) {
+  const read = async (route: string) => {
+    const startedAt = Date.now();
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+        signal: AbortSignal.timeout(3_000),
+      });
+      const body = await response.json();
+      return { route, status: response.status, durationMs: Date.now() - startedAt,
+        workspaceId: body.workspaceId,
+        projects: Array.isArray(body.projects)
+          ? body.projects.map((project: { slug?: string }) => project.slug) : undefined };
+    } catch (error) {
+      return { route, durationMs: Date.now() - startedAt,
+        error: redactSensitiveText(cleanupErrorText(error)) };
+    }
+  };
+  return Promise.all(['/api/tui/identity', '/api/harness/projects/lite'].map(read));
+}
+
+/** Post-failure diagnostics only: a successful fresh probe cannot establish
+ * why an earlier startup request failed. Keep the installed client's full
+ * error chain alongside the server request timings without launching a model. */
+async function operatorFailureProbe(port: number) {
+  const probe = await operatorSetupProbe(port);
+  const doctor = await promisify(execFile)(bin, ['doctor'], {
+    timeout: 15_000, maxBuffer: 32_000,
+    env: { PATH: process.env.PATH, HOME: home, PUI_OPERATOR: `http://127.0.0.1:${port}` },
+  }).then(({ stdout, stderr }) => ({ output: redactSensitiveText(stdout + stderr) }))
+    .catch((doctorError) => ({
+      error: redactSensitiveText(cleanupErrorText(doctorError)),
+      output: redactSensitiveText(String(doctorError?.stdout ?? '') + String(doctorError?.stderr ?? '')),
+    }));
+  return { probe, doctor };
 }
 
 async function startOperatorProcess(port = 0) {
@@ -4975,8 +5783,13 @@ async function startOperatorProcess(port = 0) {
   // its reporter and DROPPED this journey's verdict (WI-10004247 runs D-F).
   // Keep the text, but not in stack-frame shape.
   const inertOutput = () => output.replace(/^(\s*)at /gm, '$1| at ');
-  const child = fork(path.join(__dirname, 'operator-process.mts'), [], {
-    cwd: REPO_ROOT, execArgv: ['--import', 'tsx'],
+  const bundlePath = operatorProcessBundlePath;
+  if (!bundlePath || !existsSync(bundlePath)) {
+    throw new Error('PUI operator fixture bundle must be built before the test cases start');
+  }
+  const processStartupStartedAt = performance.now();
+  const child = fork(bundlePath, [], {
+    cwd: REPO_ROOT, execArgv: [],
     env: { ...process.env, PUI_OPERATOR_FIXTURE_WORKSPACE: WORKSPACE, PUI_OPERATOR_FIXTURE_PORT: String(port) },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
@@ -4996,7 +5809,8 @@ async function startOperatorProcess(port = 0) {
     if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
     if (['ready', 'shutdown-stage', 'stopped'].includes(message.type)) {
       console.info('PUI_OPERATOR_PROCESS_STAGE', JSON.stringify({ type: message.type, stage: message.stage,
-        pid: message.pid, instanceId: message.instanceId, workers: message.workers, at: new Date().toISOString() }));
+        pid: message.pid, instanceId: message.instanceId, port: message.port,
+        workers: message.workers, at: new Date().toISOString() }));
       if (message.stage) shutdownStages.push(message.stage);
     }
     if (message.descriptor) descriptors.set(message.descriptor.identity.agentChatId, message.descriptor);
@@ -5045,8 +5859,33 @@ async function startOperatorProcess(port = 0) {
       }
       expect(ready, inertOutput()).toBeDefined();
     }, { timeout: 120_000, interval: 100 });
-  } catch (error) { await stop().catch(() => {}); throw error; }
-  return { ...ready!, events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
+    const startupMs = Math.round(performance.now() - processStartupStartedAt);
+    console.info('PUI_OPERATOR_PROCESS_READY', JSON.stringify({
+      pid: ready!.pid, instanceId: ready!.instanceId, port: ready!.port,
+      startupMs, runtime: 'plain-node-bundle',
+    }));
+    // The IPC announcement proves listen() completed; exercise the exact
+    // bounded identity route the client needs before spending a PTY deadline.
+    await verifyOperatorProcessIdentity(ready!.port);
+  } catch (error) {
+    // Vitest does not consistently render expect's custom message, so a late
+    // or blocked fixture boot otherwise loses the only child-side evidence.
+    console.info('PUI_OPERATOR_PROCESS_START_FAILURE', JSON.stringify({
+      pid: child.pid ?? null,
+      exitCode: child.exitCode,
+      signalCode: child.signalCode,
+      ready: Boolean(ready),
+      startupError: startupError ? redactSensitiveText(startupError.message) : null,
+      diagnosticLevels: diagnostics.slice(-10).map(({ level }) => level),
+      output: inertOutput().slice(-8_000),
+      startupMs: Math.round(performance.now() - processStartupStartedAt),
+      error: redactSensitiveText(error instanceof Error ? error.message : String(error)),
+    }));
+    await stop().catch(() => {});
+    throw error;
+  }
+  return { ...ready!, startupMs: Math.round(performance.now() - processStartupStartedAt),
+    events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
 }
 
 function cleanupErrorText(error: unknown): string {
@@ -5075,6 +5914,32 @@ async function preservePrimaryFailureDuringCleanup(
     cleanupFailures: cleanupFailures.map(({ label, error }) => ({ label, error: cleanupErrorText(error) })),
   });
 }
+
+describe.skipIf(scriptedEngine.real)('PUI cold operator view restoration', () => {
+  test('restores the seeded Plans harness before any owner key', async () => {
+    // All-pots scope intentionally hides the selected harness in the footer.
+    // Seed pot scope so the first restored frame can expose both saved fields
+    // before optional list data arrives, without sending any owner key.
+    await putViewState('Plans', 'pot');
+    const process = await startOperatorProcess();
+    let pane: PuiPane | undefined;
+    try {
+      await verifyOperatorProcessViewState(process.port, 'pot');
+      pane = new PuiPane(bin, process.port, home);
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      expect(pane.screen()).toContain(HARNESS);
+    } catch (error) {
+      console.info('PUI_COLD_VIEW_RESTORE_FAILURE', JSON.stringify({
+        diagnostics: process.diagnostics,
+        ...pane?.failureEvidence(),
+      }));
+      throw error;
+    } finally {
+      await pane?.stop().catch(() => {});
+      await process.stop();
+    }
+  }, 240_000);
+});
 
 /**
  * P-007 conversation-editor spec clauses.
@@ -5941,10 +6806,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     if (!peer) throw new Error('The approval fixture must raise two distinct requests');
     const focused = scriptedEngine.approvalRequests.find((r) => r.tag === focusedTag);
     if (!focused) throw new Error(`No approval request tagged ${focusedTag}`);
-    // Options are exactly Approve(1)/Decline(2): the non-question branch passes
-    // that pair with no free-text escape hatch appended.
-    await pane.waitFor('Approve');
-    await pane.waitFor('Decline');
+    // Options are exactly Yes(1)/No(2) (D-028): Claude offers no remembered
+    // rule for these calls, so there is no "don't ask again" row and no
+    // free-text escape hatch is appended.
+    await pane.waitFor('1. Yes');
+    await pane.waitFor('2. No, and tell Claude');
     expect(scriptedEngine.approvalVerdicts).toHaveLength(0);
     return { focused, peer };
   };
@@ -5962,7 +6828,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
       expect(launchRequests[0]).toMatchObject({ account: null });
       expect((launchRequests[0] as { mode?: unknown }).mode ?? null).toBeNull();
-      const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
+      const peerCard = pendingNativeCards().find((card) => cardMentions(card, String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
 
       pane.write('1'); // Approve
@@ -6049,7 +6915,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     try {
       const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval collapse probe');
       const peerCommand = String(peer.input.command);
-      const peerCard = pendingNativeCards().find((card) => card.prompt.includes(peerCommand));
+      const peerCard = pendingNativeCards().find((card) => cardMentions(card, peerCommand));
       expect(peerCard, pane.screen()).toBeDefined();
       const before = pane.rawSince(0).length;
 
@@ -6066,7 +6932,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
           interval: 50,
         });
         await pane.waitFor(peerCommand);
-        await pane.waitFor('Decline');
+        await pane.waitFor('2. No, and tell Claude');
         // Keep holding well past the moment the peer became answerable.
         await new Promise((resolve) => setTimeout(resolve, 1_000));
       } finally {
@@ -6148,7 +7014,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
       expect(launchRequests[0]).toMatchObject({ account: null });
       expect((launchRequests[0] as { mode?: unknown }).mode ?? null).toBeNull();
-      const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
+      const peerCard = pendingNativeCards().find((card) => cardMentions(card, String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
 
       pane.write('2'); // Decline
@@ -6477,15 +7343,324 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
     const spawnedAt = performance.now();
     const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40, silentTerminal: true });
     try {
-      await pane.waitFor('Starting PUI', { timeoutMs: 10_000 });
+      // pui-chat-first-ux P-031 (G-1) dropped the 2 s keyboard-protocol probe,
+      // so a silent terminal no longer holds the progress line on screen: it is
+      // written before the first frame and that frame's clear replaces it within
+      // milliseconds. A rendered-screen poll can miss it, so read the PTY bytes:
+      // the line must precede the first-frame clear (CSI 2J).
       await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
       const usableMs = performance.now() - spawnedAt;
+      const startup = pane.rawSince(0);
+      const progressAt = startup.indexOf('Starting PUI');
+      expect(progressAt, JSON.stringify(startup.slice(0, 400))).toBeGreaterThanOrEqual(0);
+      const firstClear = startup.indexOf('\u001b[2J');
+      expect(firstClear === -1 || progressAt < firstClear, JSON.stringify(startup.slice(0, 400))).toBe(true);
       await pane.waitForGone('Starting PUI');
       console.info('PUI_P013_STARTUP_PROGRESS_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, optimised: optimised(), progressMs, usableMs,
       }));
     } finally {
       await pane.stop().catch(() => {});
+    }
+  });
+
+  /** From `act()`, the first millisecond each named condition held on the
+   *  rendered screen, and the worker's lateness over the whole window. */
+  async function renderTimeline(
+    pane: PuiPane,
+    act: () => void,
+    marks: Record<string, (screen: string) => boolean>,
+    timeoutMs: number,
+  ): Promise<{ at: Record<string, number>; workerLateMs: number }> {
+    await lateness.begin();
+    const vt = new VtScreen(pane.size.rows, pane.size.cols);
+    vt.feed(pane.rawSince(0));
+    const names = Object.keys(marks);
+    const at: Record<string, number> = {};
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        subscription.dispose();
+        reject(new Error(`not all of ${names.join(', ')} rendered within ${timeoutMs}ms (seen ${JSON.stringify(at)}):\n${vt.text()}`));
+      }, timeoutMs);
+      const subscription = pane.pty.onData((chunk) => {
+        vt.feed(chunk);
+        const screen = vt.text();
+        for (const name of names) if (at[name] === undefined && marks[name](screen)) at[name] = performance.now() - started;
+        if (!names.every((name) => at[name] !== undefined)) return;
+        clearTimeout(timer);
+        subscription.dispose();
+        resolve();
+      });
+      const started = performance.now();
+      act();
+    });
+    return { at, workerLateMs: await lateness.end() };
+  }
+
+  // pui-chat-first-ux-2026-09-28 P-024 (D-021), R-03 of owner #1276: "I just
+  // said hi to claude and there is no indication of what was happening". P-023
+  // found the first message met a still-starting engine and was refused. Now a
+  // message shows at once with a Claude-style working line; a stalled engine
+  // says it is starting and the message goes when it is ready; a hung operator
+  // is named in one plain sentence within 5s. Never silence.
+  test('P-024: "hi" shows at once with a working line; a stalled engine and a hung operator each say so', { timeout: 240_000 }, async ({ onTestFailed }) => {
+    const ENTER_FEEDBACK_MS = 100;
+    const HUNG_OPERATOR_SENTENCE_MS = 5_000;
+    // WI-10006644: a connected-but-silent operator is running (a stalled event
+    // loop), so the sentence says it is busy and the send keeps retrying; it
+    // must not tell the owner to restart a server other sessions are using.
+    const HUNG_SENTENCE = 'Papercusp is busy; still trying to send your message';
+    // ui.rs draws it as `<spinner> <phase>… (<n>s[ · …] · Esc to interrupt)`.
+    const WORKING_LINE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (Starting Claude|Still starting Claude[^…]*|Thinking|Working)… \((\d+)s[^)]* · Esc to interrupt\)/;
+    /** The working line, when at least `sent` "hi" lines sit in the transcript
+     *  above it. The transcript marks a sent line `❯ hi` (a held one `> hi`);
+     *  the composer, which draws `> ` too, is below the working line. */
+    const working = (screen: string, sent: number): RegExpExecArray | null => {
+      const lines = screen.split('\n');
+      const row = lines.findIndex((line) => WORKING_LINE.test(line));
+      if (row < 0) return null;
+      const hi = lines.slice(0, row).filter((line) => /(^|\s)[❯>] hi$/.test(line.replace(/[│┃]/g, ' ').trimEnd()));
+      return hi.length >= sent ? WORKING_LINE.exec(lines[row]) : null;
+    };
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p024-launch-')));
+    let releaseInitialization!: () => void;
+    scriptedEngine.initialization = new Promise<void>((resolve) => { releaseInitialization = resolve; });
+    let stage = 'compose';
+    const measured: Record<string, unknown> = {};
+    const inputTracePath = path.join(launchDir, 'input-timing.log');
+    const pane = new PuiPane(bin, operatorPort, home, {
+      args: ['--solo'], cwd: launchDir,
+      ...(process.env.PUI_INPUT_TRACE_LOG ? { env: { PUI_INPUT_TRACE_LOG: inputTracePath } } : {}),
+    });
+    onTestFailed(() => console.info('PUI_P024_FAILURE', JSON.stringify({
+      stage, launchDir, measured, hungSnapshotReads, requests: scriptedEngine.requests,
+      inputTrace: existsSync(inputTracePath) ? readFileSync(inputTracePath, 'utf8') : null,
+      ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      pane.write('hi');
+      await pane.waitFor('Enter sends');
+
+      // 1. The engine is stalled: its initialization does not finish until released.
+      stage = 'stalled-engine';
+      measured.enterWriteAtMs = Date.now();
+      const enterSamples = [await renderedAfter(pane, () => {
+        measured.enterWriteAtMs = Date.now();
+        pane.enter();
+      }, (screen) => working(screen, 1) !== null, 10_000)];
+      // Preserve the raw sample and its classification even when the budget
+      // assertion throws; the failure hook must retain the evidence it judges.
+      measured.enterSamples = enterSamples;
+      measured.enterJudgement = judgeBudget(enterSamples, ENTER_FEEDBACK_MS);
+      const enter = assertBudget('P-024 Enter to the message and its working line',
+        enterSamples, ENTER_FEEDBACK_MS);
+      measured.enterMs = enter.observedMs;
+      measured.enterWorkerLateMs = enter.maxWorkerLateMs;
+      expect(working(pane.screen(), 1)?.[1], pane.screen()).toMatch(/^(Still s|S)tarting Claude/);
+      // A live line, not a still frame: the seconds count up …
+      await vi.waitFor(() => expect(Number(working(pane.screen(), 1)?.[2] ?? -1)).toBeGreaterThanOrEqual(2),
+        { timeout: 10_000, interval: 100 });
+      // … and past 5s it says the message waits for the engine, not that it failed.
+      await pane.waitFor('your message will send when it is ready', { timeoutMs: 15_000 });
+      const stalled = pane.screen();
+      measured.stalledFrame = stalled;
+      expect(stalled).not.toMatch(/stopped before it was ready|did not become ready|taking too long|not answering/);
+      expect(chatJargonIn(stalled), stalled).toEqual([]);
+      expect(scriptedEngine.requests).toEqual([]);
+      stage = 'engine-ready';
+      releaseInitialization();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitForSendReady();
+      expect(scriptedEngine.requests).toEqual(['hi']);
+
+      // 2. The operator hangs: it holds every readiness read and never answers.
+      stage = 'hung-operator';
+      pane.write('hi');
+      await pane.waitFor('Enter sends');
+      hangSnapshotReads();
+      const hung = await renderTimeline(pane, () => pane.enter(), {
+        working: (screen) => working(screen, 2) !== null,
+        sentence: (screen) => screen.includes(HUNG_SENTENCE),
+      }, 20_000);
+      measured.hung = hung;
+      // Positive control: the reads really hung, and the sentence is the bound
+      // firing, not an early refusal.
+      expect(hungSnapshotReads).toBeGreaterThanOrEqual(1);
+      expect(hung.at.sentence).toBeGreaterThanOrEqual(3_500);
+      expect(hung.at.working).toBeLessThan(hung.at.sentence);
+      assertBudget('P-024 hung operator to its plain sentence',
+        [{ ms: hung.at.sentence, workerLateMs: hung.workerLateMs }], HUNG_OPERATOR_SENTENCE_MS);
+      const failed = pane.screen();
+      expect(chatJargonIn(failed), failed).toEqual([]);
+      expect(failed.match(/Papercusp is busy/g)).toHaveLength(1);
+      expect(failed).not.toMatch(/restart/i);
+      expect(scriptedEngine.requests).toEqual(['hi']);
+
+      // The operator answers again: the retrying send delivers the message by
+      // itself (no Enter), once.
+      stage = 'operator-back';
+      transportFault = 'none';
+      releaseHungSnapshots();
+      await vi.waitFor(() => expect(scriptedEngine.requests).toEqual(['hi', 'hi']), { timeout: 30_000, interval: 100 });
+      await pane.waitForSendReady();
+      console.info('PUI_P024_INSTANT_FEEDBACK_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, optimised: optimised(), launchDir,
+        enterMs: enter.observedMs, enterWorkerLateMs: enter.maxWorkerLateMs,
+        enterWriteAtMs: measured.enterWriteAtMs,
+        inputTrace: existsSync(inputTracePath) ? readFileSync(inputTracePath, 'utf8') : null,
+        hungWorkingMs: hung.at.working, hungSentenceMs: hung.at.sentence, hungWorkerLateMs: hung.workerLateMs,
+        stalledFrame: stalled, hungFrame: failed,
+      }));
+    } finally {
+      transportFault = 'none';
+      releaseHungSnapshots();
+      releaseInitialization();
+      await pane.stop().catch(() => {});
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  });
+
+  // pui-chat-first-ux-2026-09-28 P-026 (D-025), owner #1276: "how can I switch
+  // models?". /model on a running conversation lists this engine's tiers and
+  // names the running model on Keep. The pick changes nothing until the next
+  // message; the engine then switches before that turn (no new session) and
+  // the footer and /status name the new model.
+  test('P-026: /model on a running conversation switches the engine from the next turn', { timeout: 240_000 }, async ({ onTestFailed }) => {
+    const { readSuperuserToken } = await import('../superuser-token');
+    const served = await fetch(`http://127.0.0.1:${operatorPort}/api/agent-config`,
+      { headers: { authorization: `Bearer ${readSuperuserToken()}` } });
+    expect(served.status).toBe(200);
+    const { effectiveTiers: tiers } = await served.json() as {
+      effectiveTiers: Array<{ name: string; spec: string; backend?: string; loopCapability?: { executable?: boolean } }>;
+    };
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p026-launch-')));
+    let stage = 'first-turn';
+    const frames: Record<string, string> = {};
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
+    onTestFailed(() => console.info('PUI_P026_FAILURE', JSON.stringify({
+      stage, launchDir, frames, tiers, switches: scriptedEngine.modelSwitches, requests: scriptedEngine.requests,
+      ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      pane.write('hi');
+      await pane.waitFor('Enter sends');
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 30_000 });
+      await pane.waitForSendReady();
+      const engines = scriptedEngine.engines.length;
+      const engine = scriptedEngine.engines.at(-1) as ClaudeSuEngine;
+      const running = engine.adapter.host.descriptor().model ?? null;
+      // A settable Claude tier (no backend, or Claude's) other than the running model.
+      const base = (spec: string) => spec.split(':')[0];
+      const index = tiers.findIndex((tier) => tier.loopCapability?.executable !== false
+        && (!tier.backend || tier.backend === 'claude' || tier.backend === 'claude-code')
+        && base(tier.spec) !== base(running ?? ''));
+      expect(index, JSON.stringify({ running, tiers })).toBeGreaterThanOrEqual(0);
+      const picked = tiers[index];
+
+      stage = 'picker';
+      pane.write('/model');
+      await pane.waitFor('/model');
+      pane.enter();
+      await pane.waitFor('Model — Enter select');
+      await pane.waitFor(running ? `Keep the current model (${running})` : 'Keep the current model');
+      await pane.waitFor(`${picked.name} — ${picked.spec}`);
+      frames.picker = pane.screen();
+      pane.write('j'.repeat(index + 1));
+      pane.enter();
+      await pane.waitForGone('Model — Enter select');
+      // P-029 / D-029: the footer names the approvals mode between the model
+      // and the directory once the session reports it.
+      const approvals = engine.adapter.host.descriptor().approvals;
+      await pane.waitFor(`next turn: ${picked.spec} · ${approvals ? `${approvals} · ` : ''}${launchDir}`);
+      frames.pending = pane.screen();
+      // The pick alone switches nothing: a turn's model never changes under it.
+      expect(scriptedEngine.modelSwitches).toEqual([]);
+
+      stage = 'second-turn';
+      pane.write('again');
+      await pane.waitFor('Enter sends');
+      pane.enter();
+      await vi.waitFor(() => expect(scriptedEngine.requests).toEqual(['hi', 'again']), { timeout: 30_000, interval: 100 });
+      await pane.waitForSendReady();
+      const [model, effort] = picked.spec.split(':');
+      expect(scriptedEngine.modelSwitches, 'the engine switched before the turn, once').toEqual(
+        [{ model }, ...(effort ? [{ effort }] : [])]);
+      expect(engine.adapter.host.descriptor().model).toBe(picked.spec);
+      expect(scriptedEngine.engines, 'a live switch keeps the one running session').toHaveLength(engines);
+      await pane.waitFor(`${picked.spec} · ${approvals ? `${approvals} · ` : ''}${launchDir}`);
+      await pane.waitForGone(`next turn: ${picked.spec}`);
+      frames.switched = pane.screen();
+      expect(chatJargonIn(frames.switched), frames.switched).toEqual([]);
+
+      stage = 'status';
+      pane.write('/status');
+      await pane.waitFor('/status');
+      pane.enter();
+      await pane.waitFor(`Model ${picked.spec} · account`);
+      frames.status = pane.screen();
+      expect(frames.status).toContain('engine Claude');
+      console.info('PUI_P026_MODEL_SWITCH_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, launchDir, running, picked: picked.spec, switches: scriptedEngine.modelSwitches, frames,
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  });
+
+  // pui-chat-first-ux-2026-09-28 P-029 (D-029, D-031), owner #1276: the
+  // footer shows context left and cost and warns near the limit; the agent's
+  // todo list renders as a checklist above the message box. The engine's own
+  // records (SDK shapes) go through the real adapter, host, stream and pui.
+  test('P-029: the footer shows context and cost, warns near the limit, and the todo list is a checklist above the box', { timeout: 180_000 }, async ({ onTestFailed }) => {
+    scriptedEngine.mode = 'plan-usage';
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p029-launch-')));
+    let stage = 'turn';
+    const frames: Record<string, string> = {};
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
+    onTestFailed(() => console.info('PUI_P029_FAILURE', JSON.stringify({
+      stage, launchDir, frames, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      pane.write('fix the bug');
+      await pane.waitFor('Enter sends');
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 30_000 });
+      await pane.waitForSendReady();
+      const engine = scriptedEngine.engines.at(-1) as ClaudeSuEngine;
+      const descriptor = engine.adapter.host.descriptor();
+      expect(descriptor.usage).toMatchObject({ contextTokens: 170_000, contextWindow: 200_000, costUsd: 0.42 });
+      expect(descriptor.plan?.map((item) => item.status)).toEqual(['completed', 'in_progress', 'pending']);
+
+      stage = 'checklist';
+      await pane.waitFor('◐ Fix the bug');
+      await pane.waitFor('Context 85% full: /compact');
+      await pane.waitFor('$0.42');
+      frames.checklist = pane.screen();
+      const rows = frames.checklist.split('\n');
+      const at = (needle: string) => rows.findIndex((row) => row.includes(needle));
+      const [read, fix, run] = [at('☑ Read the file'), at('◐ Fix the bug'), at('☐ Run the tests')];
+      expect(read >= 0 && read < fix && fix < run, frames.checklist).toBe(true);
+      // The checklist sits directly on the message box's top rule.
+      expect(rows[run + 1]?.trim().startsWith('─'), frames.checklist).toBe(true);
+      expect(chatJargonIn(frames.checklist), frames.checklist).toEqual([]);
+
+      stage = 'status';
+      pane.write('/status');
+      await pane.waitFor('/status');
+      pane.enter();
+      await pane.waitFor('context 170000/200000 (15% left)');
+      frames.status = pane.screen();
+      expect(frames.status).toContain('cost $0.42');
+      console.info('PUI_P029_STATUS_CONTEXT_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frames }));
+    } finally {
+      scriptedEngine.mode = 'success';
+      await pane.stop().catch(() => {});
+      rmSync(launchDir, { recursive: true, force: true });
     }
   });
 
@@ -6574,6 +7749,117 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
 });
 
 describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${scriptedEngine.backend} engine`, () => {
+  for (const { name, verifyViewState } of [
+    { name: 'without observer reads', verifyViewState: false },
+    { name: 'with observer view-state read', verifyViewState: true },
+  ]) {
+  test(`operator OS cold startup verifies identity before native launch ${name}`, async () => {
+    const first = await startOperatorProcess();
+    // No REST prewarming: exercise the installed client's own cold probe.
+    const pane = new PuiPane(bin, first.port, home, { cwd: journeyDir('cold-identity') });
+    let primaryFailure: { error: unknown } | null = null;
+    try {
+      // The restart fixture verifies the seeded state concurrently with PUI's
+      // initial probe. Keep an isolated control for that observer interaction.
+      if (verifyViewState) await verifyOperatorProcessViewState(first.port);
+      await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      // Plans intentionally skips account reads. Enter the account-bearing
+      // Overview pane through the installed client so this request is cold
+      // and the oracle cannot wait for traffic that navigation never sent.
+      pane.write('h');
+      // Observe the client's own cold request; never warm the catalog with a
+      // preparatory REST call. Duplicate ESM loading formerly stalled this
+      // request for 30s and starved the three-second identity probe.
+      const accountStatus = () => first.diagnostics.find(({ args }) =>
+          args[0] === 'PUI_OPERATOR_CONFIG_REQUEST_END'
+          && (args[1] as { toolName?: string } | undefined)?.toolName === 'accounts:status');
+      await vi.waitFor(() => expect(accountStatus(),
+        'the installed client must finish its cold account-status request').toBeDefined(),
+      { timeout: 40_000, interval: 100 });
+      // This completed span and its historical maximum cannot improve with
+      // another wait. Fail immediately rather than spending 40s retrying it.
+      const span = accountStatus()!.args[1] as {
+        status: number; durationMs: number; eventLoopDelayMaxMsSinceReady: number;
+      };
+      expect(span.status).not.toBe(408);
+      expect(span.durationMs).toBeLessThan(3_000);
+      expect(span.eventLoopDelayMaxMsSinceReady).toBeLessThan(3_000);
+      expect(first.descriptors.size).toBe(0);
+      expect(first.events).toEqual([]);
+      expect(first.responses).toEqual([]);
+      console.info('PUI_OPERATOR_COLD_IDENTITY_PREFLIGHT', JSON.stringify({
+        binarySha256, verifyViewState, diagnostics: first.diagnostics, screen: pane.screen(), nativeLaunches: 0,
+      }));
+    } catch (error) {
+      primaryFailure = { error };
+      const diagnosis = await operatorFailureProbe(first.port);
+      console.info('PUI_OPERATOR_COLD_IDENTITY_FAILURE', JSON.stringify({
+        binarySha256, verifyViewState, diagnostics: first.diagnostics, screen: pane.failureScreen(),
+        ...diagnosis, responses: first.responses, output: first.output(),
+      }));
+      throw error;
+    } finally {
+      await preservePrimaryFailureDuringCleanup(primaryFailure, [
+        { label: 'cold identity pane', run: () => pane.stop() },
+        { label: 'cold identity operator', run: () => first.stop() },
+      ]);
+    }
+  }, 300_000);
+  }
+
+  test('operator OS process setup selects the seeded project before native launch', async () => {
+    const first = await startOperatorProcess();
+    const pane = new PuiPane(bin, first.port, home, { cwd: journeyDir('process-context') });
+    const frames: Record<string, string> = {};
+    let primaryFailure: { error: unknown } | null = null;
+    try {
+      const prerequisites = await operatorSetupProbe(first.port);
+      console.info('PUI_OPERATOR_CONTEXT_PREREQUISITES', JSON.stringify(prerequisites));
+      expect(prerequisites).toEqual([
+        expect.objectContaining({ status: 200, workspaceId: WORKSPACE }),
+        expect.objectContaining({ status: 200, projects: expect.arrayContaining([HARNESS]) }),
+      ]);
+      await verifyOperatorProcessViewState(first.port);
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      // Isolate project lookup from the asynchronous wizard driver and
+      // provider execution; review never reaches the launch step here.
+      await openComposer(pane, false);
+      pane.write('Retain this draft while I review the project.');
+      pane.enter();
+      await pane.waitFor('New session — 1 Context');
+      await pane.waitFor('Connection: Connected');
+      frames.connected = pane.screen();
+      pane.write('/');
+      pane.write(HARNESS);
+      await pane.waitFor(`Project search: ${HARNESS}`);
+      frames.searching = pane.screen();
+      pane.enter();
+      await pane.waitFor(`> ${HARNESS}`);
+      pane.enter();
+      await pane.waitFor('New session — 2 Runtime');
+      expect(first.responses.filter(({ path: responsePath }) =>
+        responsePath === '/api/adv/sessions/launch-su')).toEqual([]);
+      expect(first.events).toEqual([]);
+      console.info('PUI_OPERATOR_CONTEXT_PREFLIGHT', JSON.stringify({
+        binarySha256, project: HARNESS, screen: pane.screen(), nativeLaunches: 0,
+      }));
+    } catch (error) {
+      primaryFailure = { error };
+      const diagnosis = await operatorFailureProbe(first.port);
+      console.info('PUI_OPERATOR_CONTEXT_PREFLIGHT_FAILURE', JSON.stringify({
+        diagnostics: first.diagnostics, screen: pane.failureScreen(),
+        frames, ...diagnosis, responses: first.responses, output: first.output(),
+      }));
+      throw error;
+    } finally {
+      await preservePrimaryFailureDuringCleanup(primaryFailure, [
+        { label: 'project-selection pane', run: () => pane.stop() },
+        { label: 'project-selection operator', run: () => first.stop() },
+      ]);
+    }
+  }, 180_000);
+
   // WI-10004247: each journey launches `pui` from its own directory. The
   // workbench lands on, and resumes, the newest resumable chat started in its
   // launch directory (P-010 / D-008), so a shared directory put the previous
@@ -6611,6 +7897,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const questionCards = () => pendingNativeCards().filter((pending) => !isSuToolApprovalCard(pending));
         const cardDeadline = Date.now() + 120_000;
         while (questionCards().length === 0 && Date.now() < cardDeadline) {
+          throwIfProviderRefused(scriptedEngine.events, 'Native question');
           pane.settleSuToolApproval();
           const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
           // An SU tool approval parks the turn too; the pane answers it.
@@ -6742,7 +8029,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     const processMarker = `pui-process-${shortMarkerId()}`;
     const { prompt: greeting, reply: greetingReply } = markerRequest(processMarker);
     const approvalEnabled = process.env.PUI_REAL_APPROVAL === '1';
-    const approvalResult = `PUI-PERMISSION-FIXTURE-${randomUUID()}`;
+    const approvalResult = `Temporary text note ${randomUUID()}`;
     // Codex's `on-request` policy asks only when a command must leave its
     // workspace-write sandbox. The fixture home lives under the system temp
     // root, which Codex may write without escalation; targeting it would let
@@ -6751,15 +8038,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     // must honor the explicit approval before the exact effect can occur.
     const approvalFixturePath = path.join(
       path.dirname(REPO_ROOT),
-      `.pui-approval-fixture-${randomUUID()}.txt`,
+      `.pui-note-${randomUUID()}.txt`,
     );
-    // Ask for the ordinary outcome in ordinary language. Security-attestation
-    // rhetoric and instructions not to inspect the task correctly make a real
-    // provider stop and ask what is actually being tested, which exercises
-    // provider policy rather than the PUI permission transport. The fixture
-    // pre-assigns the task and the AUTO launch authorizes execution; native
-    // toolApproval:'prompt' still requires the real Bash card below.
-    const approvalRequest = `Continue the already-assigned PUI acceptance task ${REAL_APPROVAL_WORK_ITEM}. Use Bash to create the temporary fixture file '${approvalFixturePath}' containing exactly '${approvalResult}' followed by a newline.`;
+    // Start the session before sending work so its actual native owner is
+    // known. A controller-owned seed is not a task assigned to that SU.
     const first = await startOperatorProcess();
     const launchDir = journeyDir('restore');
     const pane = new PuiPane(bin, first.port, home, { cwd: launchDir });
@@ -6770,8 +8052,35 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     let approvalStart: Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> | undefined;
     let approvalEnd: Extract<SuSessionEvent, { type: 'tool'; phase: 'completed' }> | undefined;
     try {
-      await openComposer(pane);
+      await verifyOperatorProcessViewState(first.port);
+      // beforeEach seeds Plans with this fixture's harness. Any owner key
+      // cancels pending view-state restoration, so the cold OS child must
+      // show that state before openComposer sends Escape/o. The generic
+      // startup footer can still belong to the default papercup context.
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      await openComposer(pane, !approvalEnabled);
       if (approvalEnabled) {
+        pane.escape();
+        pane.write('s');
+        await pane.waitFor('Enter attach/resume · n New');
+        pane.reviewNextNewSession();
+        pane.write('n');
+        await pane.waitForSendReady({ timeoutMs: 60_000 });
+        await vi.waitFor(() => expect(first.descriptors.size).toBe(1), { timeout: 60_000, interval: 100 });
+        const nativeOwner = [...first.descriptors.values()][0].identity.ownerId;
+        expect(nativeOwner).toBeTruthy();
+        const assigned = await db.adminSql`
+          UPDATE harness_shared.work_items
+             SET taken_by = ${nativeOwner}, taken_at = now(), last_progress_at = now()
+           WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+             AND feature_id = ${REAL_APPROVAL_WORK_ITEM}
+          RETURNING taken_by`;
+        expect(assigned).toEqual([{ taken_by: nativeOwner }]);
+        const approvalRequest = nativeApprovalRequest({ backend: scriptedEngine.backend,
+          workItem: REAL_APPROVAL_WORK_ITEM, ownerId: nativeOwner,
+          notePath: approvalFixturePath, noteText: approvalResult });
+        console.info('PUI_APPROVAL_TASK_ASSIGNMENT', JSON.stringify({ workItem: REAL_APPROVAL_WORK_ITEM, ownerId: nativeOwner }));
+        const approvalEventsBefore = first.events.length;
         pane.write(approvalRequest);
         pane.enter();
         const approvalChat = await waitForSavedTurn(approvalRequest);
@@ -6780,13 +8089,24 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         if (approvalCommand?.type !== 'owner_turn') {
           throw new Error('Approval probe lacks a durable owner-turn receipt');
         }
-        const approvalLabel = scriptedEngine.backend === 'omp' ? 'Confirm' : 'Approve';
+        // D-028: every engine's tool approval answers 1 Yes / 2 Yes, and don't
+        // ask again … / 3 No, and tell … what to do instead.
+        const approvalLabel = 'Yes';
         const pendingCards = () => pendingNativeCards(first.events);
-        await vi.waitFor(
-          () => expect(pendingCards().some((card) => card.prompt.includes(approvalFixturePath))).toBe(true),
-          { timeout: 120_000, interval: 100 },
-        );
-        const targetApprovalCard = pendingCards().find((card) => card.prompt.includes(approvalFixturePath));
+        const approvalWait = await pollUntil(() => {
+          pane.settleSuToolApproval();
+          if (scriptedEngine.real) {
+            throwIfProviderRefused(first.events.slice(approvalEventsBefore), 'Native tool approval');
+          }
+          const pending = pendingCards();
+          if (pending.some((card) => cardMentions(card, approvalFixturePath))) return true;
+          if (nativeApprovalTurnSettled(first.events.slice(approvalEventsBefore), approvalCommand.turnId, pending.length > 0)) {
+            throw new Error('The native approval turn settled without the requested tool card; inspect PUI_OPERATOR_PROCESS_FAILURE for its reply');
+          }
+          return false;
+        }, { timeoutMs: 120_000, intervalMs: 100 });
+        expect(approvalWait.ok, `the native tool must request approval within 120 seconds; pending cards: ${pendingCards().map((card) => card.approval?.title ?? card.prompt.split('\n')[0]).join('; ') || 'none'}`).toBe(true);
+        const targetApprovalCard = pendingCards().find((card) => cardMentions(card, approvalFixturePath));
         if (!targetApprovalCard) throw new Error('Native tool approval card disappeared before it could be answered');
         approvalCard = targetApprovalCard;
         if (approvalCard.presentation?.kind !== 'radio' || !approvalCard.presentation.options) {
@@ -6794,8 +8114,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }
         const approvalIndex = approvalCard.presentation.options.findIndex((option) => option.label === approvalLabel);
         expect(approvalIndex).toBeGreaterThanOrEqual(0);
-        await pane.waitFor(approvalCard.prompt.split('\n', 1)[0] ?? approvalCard.prompt);
-        await pane.waitFor(approvalLabel);
+        await pane.waitForApprovalQuestion(
+          approvalCard.approval?.question ?? approvalCard.prompt.split('\n', 1)[0] ?? approvalCard.prompt,
+          `${approvalIndex + 1}. ${approvalLabel}`,
+        );
         frames.approval = pane.screen();
         const childCardReplies = () => first.responses.filter(({ path: responsePath }) =>
           responsePath.endsWith('/card-response'));
@@ -6838,21 +8160,64 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             }),
           ]),
         );
-        // The approval clause is the authorized tool effect, not a provider's
-        // optional prose after it. A post-tool provider error settles the host
-        // in `waiting-for-owner` but deliberately does not render `· ready ·`;
-        // wait on the producer-of-record lifecycle before sending the separate
-        // greeting used by the restart/resume clause.
-        await vi.waitFor(() => {
-          expect(first.events.some((event) =>
-            event.type === 'lifecycle' &&
-            event.state === 'waiting-for-owner' &&
-            event.sequence > (approvalEnd?.sequence ?? -1),
-          )).toBe(true);
-        }, { timeout: 120_000, interval: 100 });
+        // Retain this completed clause even if the later OS-restart clause
+        // fails and afterAll removes the private native home and note.
+        console.info('PUI_OPERATOR_NATIVE_APPROVAL_RECEIPT', JSON.stringify({
+          backend: scriptedEngine.backend,
+          session: approvalCommand.target,
+          turnId: approvalCommand.turnId,
+          correlationId: approvalCard.correlationId,
+          choice: approvalLabel,
+          cardReplyStatus: childCardReplies().at(-1)?.status,
+          toolCallId: approvalStart?.callId,
+          toolCompleted: approvalEnd?.isError === false,
+          exactEffectVerified: true,
+          effectSha256: createHash('sha256').update(readFileSync(approvalFixturePath)).digest('hex'),
+        }));
+        const declinedFollowups = new Set<string>();
+        const settled = await pollUntil(async () => {
+          pane.settleSuToolApproval();
+          const pending = pendingCards();
+          const followup = pending.find((card) => !isSuToolApprovalCard(card));
+          if (followup) {
+            const opened = first.events.find((event) => event.type === 'card' && event.phase === 'opened'
+              && event.card.correlationId === followup.correlationId);
+            const choice = opened && nativeApprovalFollowupDecline(opened, {
+              turnId: approvalCommand.turnId, afterSequence: approvalEnd!.sequence, notePath: approvalFixturePath,
+            });
+            if (!choice || declinedFollowups.has(followup.correlationId) || declinedFollowups.size >= 3) {
+              throw new Error(`Unresolved native follow-up after the verified file effect: ${followup.correlationId}`);
+            }
+            // An optional verification is a separate permission request. Say
+            // No through its own installed card; never grant it or remember Yes.
+            await pane.waitForApprovalQuestion(choice.question, `${choice.key}. ${choice.label}`);
+            const repliesBefore = childCardReplies().length;
+            pane.write(choice.key);
+            await vi.waitFor(() => {
+              expect(childCardReplies()).toHaveLength(repliesBefore + 1);
+              expect(childCardReplies().at(-1)).toMatchObject({ status: 200 });
+              expect(first.events.some((event) => event.type === 'card' && event.phase === 'closed'
+                && event.correlationId === followup.correlationId && event.resolution === 'submitted')).toBe(true);
+            }, { timeout: 15_000, interval: 100 });
+            declinedFollowups.add(followup.correlationId);
+            console.info('PUI_OPERATOR_NATIVE_FOLLOWUP_DECLINED', JSON.stringify({
+              turnId: approvalCommand.turnId, correlationId: followup.correlationId,
+              choice: choice.label, cardReplyStatus: childCardReplies().at(-1)?.status,
+            }));
+            return false;
+          }
+          return nativeApprovalTurnSettled(first.events.slice(approvalEventsBefore), approvalCommand.turnId, pending.length > 0);
+        }, { timeoutMs: 120_000, intervalMs: 100,
+          beforeCheck: () => throwIfProviderRefused(first.events.slice(approvalEventsBefore), 'After native file approval'),
+        });
+        expect(settled.ok, 'the approval turn must settle without an open native card before the next prompt').toBe(true);
+        // The lifecycle event can precede the PUI applying it. Observe the
+        // installed input affordance too, so no greeting keys are dropped.
+        await pane.waitForSendReady({ timeoutMs: 120_000 });
         frames.approved = pane.screen();
       }
       pane.write(greeting);
+      await pane.waitFor(greeting);
       pane.enter();
       await pane.waitForReply(greetingReply);
       const chat = await waitForSavedTurn(greeting);
@@ -6881,17 +8246,40 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         );
       }
       frames.beforeRestart = pane.screen();
+      if (scriptedEngine.real) {
+        const extension = saved!.backendExtension;
+        const nativeTranscriptPath = sessionTranscriptFile({
+          id: saved!.identity.advSessionId,
+          agent: saved!.identity.backend,
+          sessionId: saved!.identity.nativeSessionId,
+          ompThreadId: saved!.identity.nativeSessionId,
+          coordOwnerId: saved!.identity.ownerId,
+          ...(extension.backend === 'omp' ? { agentHome: extension.agentHome } : {}),
+          ...(extension.backend === 'codex' ? { codexHome: extension.codexHome } : {}),
+          ...(extension.backend === 'claude' ? { configDir: extension.configDir } : {}),
+        });
+        expect(nativeTranscriptPath, 'the exact native transcript must be locatable before exiting').toBeTruthy();
+        console.info('PUI_OPERATOR_PRE_RESTART_RECEIPT', JSON.stringify({
+          descriptor: saved,
+          nativeTranscriptPath,
+          transcriptSha256: createHash('sha256').update(readFileSync(nativeTranscriptPath!)).digest('hex'),
+          approvalEnabled,
+          greetingVerified: true,
+        }));
+      }
     } catch (error) {
+      const diagnosis = await operatorFailureProbe(first.port);
       console.info(
         'PUI_OPERATOR_PROCESS_FAILURE',
         JSON.stringify({
           output: first.output(),
+          ...diagnosis,
           diagnostics: first.diagnostics,
           descriptors: [...first.descriptors.values()],
           events: first.events.slice(-30),
           readiness: first.readiness.slice(-10),
           responses: first.responses.slice(-20),
-          screen: pane.screen(),
+          screen: pane.failureScreen(),
         }),
       );
       throw error;
@@ -6920,14 +8308,43 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(second.pid).not.toBe(first.pid);
       expect(second.instanceId).not.toBe(first.instanceId);
       await openAgentChat(resumedPane);
-      await resumedPane.waitFor(`chat ${chatId!.slice(0, 12)}`);
+      // The streaming HTTP 200 precedes the actual attach result. Start the
+      // screen-label oracle only after that result, under the existing native
+      // readiness budget, and report a terminal refusal rather than timing out
+      // on a label that cannot exist until the engine attaches.
+      const { attachOutcomeForSession } = await import('./attach-observation');
+      let attachOutcome: Record<string, unknown> | undefined;
+      await vi.waitFor(() => {
+        attachOutcome = attachOutcomeForSession(second.diagnostics, saved!.identity.advSessionId);
+        expect(attachOutcome, 'the restarted operator must publish its terminal attach outcome').toBeDefined();
+      }, { timeout: 120_000, interval: 100 });
+      expect(attachOutcome, 'the restarted operator must accept the saved engine attachment').toMatchObject({
+        status: 'ok', httpStatus: 200,
+      });
+      try {
+        await resumedPane.waitFor(`chat ${chatId!.slice(0, 12)}`);
+      } catch (error) {
+        // WI-10006770: tell "the label moved behind Ctrl+O (R-03)" apart from
+        // "the resumed chat never attached to its engine": record the details
+        // view, which carries the SU session line when a session is attached.
+        resumedPane.write('\x0f');
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}\n--- Ctrl+O details at timeout ---\n${resumedPane.screen()}`,
+          { cause: error },
+        );
+      }
       frames.selectedConversation = resumedPane.screen();
+      // An accepted attach restores history before the native executor is
+      // ready. Keep the existing readiness budget ahead of composer keys;
+      // otherwise the shorter chooser wait aborts a valid startup before its
+      // readiness result (or bounded startup failure) can be observed.
+      await resumedPane.waitFor('· ready ·', { timeoutMs: 120_000 });
       resumedPane.escape();
       await resumedPane.waitFor('i type · v speak');
       resumedPane.write('i');
       await resumedPane.waitForReply(greetingReply);
       frames.history = resumedPane.screen();
-      await resumedPane.waitFor('· ready ·', { timeoutMs: 120_000 });
       // The optional approval probe precedes `greeting`, so "my first
       // greeting" is ambiguous there: a real model can correctly recall the
       // permission-fixture marker instead. Name the expected historical
@@ -6996,7 +8413,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           responses: second.responses.slice(-20),
           frames,
           readiness: second.readiness,
-          screen: resumedPane.screen(),
+          screen: resumedPane.failureScreen(),
         }),
       );
       throw error;
@@ -7074,6 +8491,72 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     await engine.done;
   }, 900_000);
 
+  // WI-10006653 (P-032): on Codex the footer and /status showed no context
+  // during a live conversation, only after /resume, because the live
+  // app-server path ignored thread/tokenUsage/updated while the resume replay
+  // read the rollout's token_count. A live reply must fill both, no resume.
+  test('a live reply reports context left in the footer and /status without a resume', async () => {
+    installedManifest();
+    const nonce = shortMarkerId();
+    const { prompt, reply, replyPattern } = markerRequest(`pui-usage-${nonce}`, 'Hi. ');
+    // The footer under test is the chat-first one (P-029), so launch the way
+    // a user does: `pui --solo` in a directory, on the configured backend
+    // (pui reads it at startup, as in the P-016 case). The workbench composer
+    // has no such footer.
+    const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
+    const saved = await readAgentConfig();
+    const backend = scriptedEngine.backend === 'codex' || scriptedEngine.backend === 'omp'
+      ? scriptedEngine.backend : 'claude-code';
+    await writeAgentConfig({ ...saved, backend });
+    const launchDir = journeyDir('usage');
+    const label = scriptedEngine.backend === 'codex' ? 'Codex' : scriptedEngine.backend === 'omp' ? 'OMP' : 'Claude';
+    // The public launch selectors carry the requested inference route; process
+    // environment alone is not a selection made by a bare PUI launch.
+    const pane = new PuiPane(bin, operatorPort, home, {
+      args: p005PuiLaunchArgs({ model: process.env.PUI_REAL_MODEL, account: process.env.PUI_REAL_ACCOUNT ?? 'default' }),
+      cwd: launchDir,
+    });
+    try {
+      await pane.waitFor(`Message ${label}`, { timeoutMs: 40_000 });
+      await pane.waitFor(launchDir, { timeoutMs: 40_000 });
+      pane.write(prompt);
+      await pane.waitFor('Enter sends');
+      pane.enter();
+      await waitForCorrelatedReply(prompt, replyPattern);
+      // waitForReply matches the workbench's assistant bubble; the chat-first
+      // transcript draws the reply as a plain `● <text>` row (P-029 case).
+      await pane.waitFor(reply, { timeoutMs: 120_000 });
+      await pane.waitForSendReady({ timeoutMs: 120_000 });
+      const engine = scriptedEngine.engines.at(-1);
+      expect(engine, 'the reply came from a live engine in this process').toBeDefined();
+      expect(engine!.adapter.host.descriptor().accountRoute).toBe(process.env.PUI_REAL_ACCOUNT ?? 'default');
+      expect(sessionTraffic.find((entry) => entry.path === '/api/adv/sessions/launch-su'
+        && entry.agent === scriptedEngine.backend)).toMatchObject({
+        ...(process.env.PUI_REAL_MODEL ? { model: process.env.PUI_REAL_MODEL } : {}),
+        account: process.env.PUI_REAL_ACCOUNT ?? 'default',
+      });
+      await vi.waitFor(
+        () => expect(engine!.adapter.host.descriptor().usage?.contextTokens ?? 0).toBeGreaterThan(0),
+        { timeout: 30_000, interval: 100 },
+      );
+      await pane.waitFor('% context left', { timeoutMs: 30_000 });
+      pane.write('/status');
+      pane.enter();
+      await pane.waitFor('% left)', { timeoutMs: 15_000 });
+      // WI-10006652: the live engine reports its own model catalog (Claude's
+      // SDK list, Codex `model/list`), and /model opens on it, not on the
+      // workspace's routing tiers.
+      expect(engine!.adapter.host.descriptor().models?.length ?? 0).toBeGreaterThan(0);
+      pane.write('/model');
+      pane.enter();
+      await pane.waitFor('Keep the current model', { timeoutMs: 15_000 });
+      expect(pane.screen()).not.toContain('[owner');
+    } finally {
+      await pane.stop();
+      await writeAgentConfig(saved);
+    }
+  }, 240_000);
+
   test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
     const manifest = installedManifest();
     const nonce = shortMarkerId();
@@ -7089,13 +8572,17 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     // found by its text). A marker such as `PUI-CANCELLED-<id>` in the request
     // was read by a real OMP model as a cancellation signal: it answered with
     // the marker and 'Task cancelled.' instead of counting (WI-10004247 class F).
-    const longRequest = `Please write the numbers from 1 through 10000, one per line, with no other text. Do not summarize or use tools. (List id: ${nonce})`;
+    // Ten thousand lines can elicit an output-limit refusal before any numeric
+    // stream starts. Admit a bounded response while retaining the independent
+    // running/delta/paint-before-completion assertions below.
+    const longRequest = nativeInterruptRequest(nonce);
     const { prompt: followup, reply: followupReply, replyPattern: followupReplyPattern } =
       markerRequest(`pui-continued-${nonce}`, 'Do not resume the interrupted task. ');
     const launchDir = journeyDir('greeting');
     const pane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
     const frames: Record<string, string> = {};
     let streamingEvidence: Record<string, unknown> | undefined;
+    let interruptTurnId: string | undefined;
     try {
       await openComposer(pane);
       pane.write(greeting);
@@ -7127,7 +8614,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           event.type === 'tool' && event.phase === 'started' && JSON.stringify(event.input).includes(fixturePath),
       );
       expect(readStart, 'the model must actually request the generated fixture').toBeDefined();
-      expect(pane.screen()).toContain(readStart!.name);
+      // tool_display.rs renders Codex's commandExecution as Bash(command),
+      // the same readable row as Claude/OMP. Keep the native receipt proof
+      // above and below, and assert the product's human-facing name here.
+      expect(pane.screen()).toContain(readStart!.name === 'commandExecution' ? 'Bash(' : readStart!.name);
+      if (readStart!.name === 'commandExecution') expect(pane.screen()).not.toContain('commandExecution');
       const readEnd = scriptedEngine.events.find(
         (event) =>
           event.type === 'tool' &&
@@ -7142,6 +8633,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       const longChat = await waitForSavedTurn(longRequest);
       const longCommand = longChat.transcript.find((turn) => turn.content === longRequest)?.su_command?.command;
       if (longCommand?.type !== 'owner_turn') throw new Error('Interrupt target lacks an owner-turn receipt');
+      interruptTurnId = longCommand.turnId;
       // The engine's completed owner-turn receipt follows the native input
       // acknowledgement, not model completion. Interrupt real inference after
       // that receipt; a refused sleep command cannot stand in for running work.
@@ -7167,18 +8659,20 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       // the `isSendReady(...)).toBe(false)` assertion below keeps this
       // journey's input-lock contract independent of which footer branch owns.
       await pane.waitFor('Agent Chat · Running · Ctrl+X cancel');
+      // A native approval or an early completed reply cannot produce the
+      // required live stream by waiting longer. Detect that boundary now and
+      // preserve this turn's events below instead of masking it as no text.
+      const interruptText = () => scriptedEngine.events.flatMap((event) =>
+        event.type === 'transcript' && event.role === 'assistant' && event.phase === 'delta'
+          && event.turnId === longCommand.turnId ? [event.content] : []).join('');
+      await vi.waitUntil(() => engine.adapter.host.descriptor().lifecycle !== 'running'
+        || /\b1\s+2\s+3\b/.test(interruptText()),
+      { timeout: 120_000, interval: 100 });
+      expect(engine.adapter.host.descriptor().lifecycle,
+        'the inline interruption stimulus reached approval or completion before its native numeric stream').toBe('running');
       await vi.waitFor(
         () => {
-          const partialText = scriptedEngine.events
-            .flatMap((event) =>
-              event.type === 'transcript' &&
-              event.role === 'assistant' &&
-              event.phase === 'delta' &&
-              event.turnId === longCommand.turnId
-                ? [event.content]
-                : [],
-            )
-            .join('');
+          const partialText = interruptText();
           expect(partialText, 'native text must reach the host before completion').toMatch(/\b1\s+2\s+3\b/);
           // Read the FIRST pane column, not one bar off each end: the agent-chat pane
           // is rendered beside the Presence rail (`│5302 …││● claude  su │`), so
@@ -7317,11 +8811,15 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         // Reopening from the same directory lands on the saved conversation
         // and resumes it (D-008): no picker step, one resumed engine.
         await resumedPane.waitFor(`chat ${firstChat.id.slice(0, 12)}`);
-        resumedPane.escape();
-        await resumedPane.waitFor('i type · v speak');
+        // Finish the existing bounded native-startup wait before leaving the
+        // resume view. The composer marker can render while the native engine
+        // is still starting; waiting for it first can stop the test before its
+        // readiness result or startup diagnostic is observed.
         await vi.waitFor(() => expect(scriptedEngine.engines).toHaveLength(2), { timeout: 120_000, interval: 100 });
         const resumedEngine = scriptedEngine.engines[1];
         await resumedEngine.ready;
+        resumedPane.escape();
+        await resumedPane.waitFor('i type · v speak');
         expect(resumedEngine.adapter.host.recent.map(({ event }) => event)).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
@@ -7404,6 +8902,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           binary: bin,
           binarySha256,
           frames,
+          interruptTurnId,
+          interruptEvents: interruptTurnId ? scriptedEngine.events.filter((event) =>
+            'turnId' in event && event.turnId === interruptTurnId) : undefined,
           nativeState,
           intentPivotWarnings,
           timeoutDegradations,
@@ -7416,9 +8917,50 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     }
   }, 600_000);
 
+  /**
+   * P-005 agents inherit Papercusp's file-lock instructions. A tmpdir under
+   * /dev/shm is outside every supported lock domain, so a real Codex run asks
+   * to bypass the lock instead of editing. Use a disposable managed suite-app
+   * checkout and commit its seed files so edits have a meaningful Git diff.
+   */
+  function createP005ReviewWorkspace(files: { calc: string; test: string; packageJson: string }): string {
+    const workspacesRoot = path.resolve(
+      process.env.PAPERCUSP_WORKSPACES_ROOT?.trim() || path.join(homedir(), '.papercusp-workspaces'),
+    );
+    const appsRoot = path.join(workspacesRoot, 'pui-p005-review', '.papercusp', 'apps');
+    mkdirSync(appsRoot, { recursive: true });
+    const launchDir = realpathSync(mkdtempSync(path.join(appsRoot, 'review-')));
+    const git = (...args: string[]): string => {
+      const result = spawnSync('git', args, { cwd: launchDir, encoding: 'utf8' });
+      if (result.status !== 0) {
+        throw new Error(`P-005 review workspace Git ${args[0] ?? '(empty args)'} failed: ${result.stderr || result.error?.message || result.status}`);
+      }
+      return result.stdout.trim();
+    };
+    try {
+      git('init', '--quiet', '--initial-branch=staging');
+      writeFileSync(path.join(launchDir, 'calc.js'), files.calc);
+      writeFileSync(path.join(launchDir, 'calc.test.js'), files.test);
+      writeFileSync(path.join(launchDir, 'package.json'), files.packageJson);
+      git('add', 'calc.js', 'calc.test.js', 'package.json');
+      git('-c', 'core.hooksPath=/dev/null', '-c', 'user.name=PUI acceptance fixture',
+        '-c', 'user.email=pui-acceptance@papercusp.invalid', 'commit', '--quiet', '-m', 'Seed P-005 review workspace');
+      const repoRoot = realpathSync(git('rev-parse', '--show-toplevel'));
+      if (repoRoot !== launchDir) throw new Error(`P-005 review Git root ${repoRoot} does not match ${launchDir}`);
+      const managedPath = path.relative(realpathSync(workspacesRoot), repoRoot).split(path.sep);
+      if (managedPath.length !== 4 || managedPath[1] !== '.papercusp' || managedPath[2] !== 'apps') {
+        throw new Error(`P-005 review workspace is outside the managed suite-app lock domain: ${repoRoot}`);
+      }
+      return launchDir;
+    } catch (error) {
+      rmSync(launchDir, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
   // pui-chat-first-ux-2026-09-28 P-005: the side-by-side review against Claude
   // Code and Codex CLI. These are the five tasks the review driver
-  // (.papercusp/scratch/p005-side-by-side.mts) gives stock `claude` and `codex`,
+  // (p005-side-by-side.mts) gives stock `claude` and `codex`,
   // run in a fresh launch directory against this fresh operator: what a new
   // user sees, with no shared workspace backlog for the engine to orient to.
   // Opt-in because it spends real model turns: PUI_REVIEW_FRAMES_DIR receives
@@ -7428,16 +8970,31 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     async ({ onTestFailed }) => {
       const out = process.env.PUI_REVIEW_FRAMES_DIR!;
       mkdirSync(out, { recursive: true });
-      const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p005-review-')));
       const calc = 'function add(a, b) {\n  return a + b;\n}\n\nfunction mul(a, b) {\n  return a * b;\n}\n\nmodule.exports = { add, mul };\n';
-      writeFileSync(path.join(launchDir, 'calc.js'), calc);
-      writeFileSync(path.join(launchDir, 'calc.test.js'), "const test = require('node:test');\nconst assert = require('node:assert');\nconst { add, mul } = require('./calc');\n\ntest('add', () => assert.strictEqual(add(2, 3), 5));\ntest('mul', () => assert.strictEqual(mul(2, 3), 6));\n");
-      writeFileSync(path.join(launchDir, 'package.json'), JSON.stringify({ name: 'p005-proj', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n');
+      const launchDir = createP005ReviewWorkspace({
+        calc,
+        test: "const test = require('node:test');\nconst assert = require('node:assert');\nconst { add, mul } = require('./calc');\n\ntest('add', () => assert.strictEqual(add(2, 3), 5));\ntest('mul', () => assert.strictEqual(mul(2, 3), 6));\n",
+        packageJson: JSON.stringify({ name: 'p005-proj', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n',
+      });
+      const relativeLaunchDir = path.relative(home, launchDir);
+      const visibleLaunchDir = relativeLaunchDir === '..' || relativeLaunchDir.startsWith(`..${path.sep}`)
+        || path.isAbsolute(relativeLaunchDir)
+        ? launchDir
+        : `~/${relativeLaunchDir.split(path.sep).join('/')}`;
       const frame = (label: string, screen: string) => writeFileSync(path.join(out, `${label}.txt`), screen);
       const log: Array<Record<string, unknown>> = [];
       const approvals: string[] = [];
       const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-      let pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
+      const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
+      const saved = await readAgentConfig();
+      const backend = scriptedEngine.backend === 'codex' || scriptedEngine.backend === 'omp'
+        ? scriptedEngine.backend : 'claude-code';
+      await writeAgentConfig({ ...saved, backend });
+      const backendLabel = scriptedEngine.backend === 'codex' ? 'Codex' : scriptedEngine.backend === 'omp' ? 'OMP' : 'Claude';
+      const launchArgs = p005PuiLaunchArgs(scriptedEngine.real ? {
+        model: process.env.PUI_REAL_MODEL, account: process.env.PUI_REAL_ACCOUNT,
+      } : {});
+      let pane = new PuiPane(bin, operatorPort, home, { args: launchArgs, cwd: launchDir, cols: 120, rows: 40 });
       onTestFailed(() => {
         try { frame('failure', pane.screen()); } catch { /* pane gone */ }
         console.info('PUI_P005_REVIEW_FAILURE', JSON.stringify({ launchDir, log, approvals, ...pane.failureEvidence() }));
@@ -7449,8 +9006,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         if (Date.now() - approvedAt < 750) return;
         const screen = pane.screen();
         const lines = screen.split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim());
-        const tool = lines.map((line) => NATIVE_APPROVAL_HEADLINE.exec(line)?.[1]).find(Boolean);
-        const pick = tool && lines.map((line) => /^(?:› )?(\d)\. Approve\b/.exec(line)?.[1]).find(Boolean);
+        const tool = screenApproval(lines)?.native;
+        const pick = tool && approvalOptionKey(lines, 'yes');
         if (!tool || !pick) return;
         frame(`${label}-approval-${approvals.length + 1}`, screen);
         pane.pty.write(pick);
@@ -7468,9 +9025,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         if (Date.now() - skippedAt < 1_500 || Date.now() - approvedAt < 5_000) return;
         const open = pendingNativeCards().filter((card) => !isSuToolApprovalCard(card));
         const screen = pane.screen();
-        // Tool approvals are cards too; only a card with no `Allow <tool>?` is a question.
-        const approval = screen.split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim())
-          .some((line) => NATIVE_APPROVAL_HEADLINE.test(line) || SU_APPROVAL_HEADLINE.test(line));
+        // Tool approvals are cards too; only a card with no `Do you want …?` is a question.
+        const approval = Boolean(screenApproval(screen.split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim())));
         if (!open.length || approval || !screen.includes('Esc skip')) return;
         frame(`${label}-question-${questions.length + 1}`, screen);
         questions.push(`${label}: ${open[0].prompt}`);
@@ -7517,7 +9073,14 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             nextProgressFrame += 15_000;
           }
           const events = scriptedEngine.events.slice(eventsBefore);
+          if (scriptedEngine.real) throwIfProviderRefused(events, `P-005 ${label}`);
           const replies = events.filter((event) => event.type === 'transcript' && event.role === 'assistant' && event.channel === 'text');
+          // Only delta/completed transcript events carry `content`; `started` has none.
+          const blocked = reviewBlockingReason(replies.map((event) => ('content' in event ? String(event.content ?? '') : '')).join('\n'));
+          if (blocked) {
+            frame(`${label}-blocked`, pane.screen());
+            throw new Error(`${label} cannot run: ${blocked}`);
+          }
           if (firstReplyMs === null && replies.length) firstReplyMs = Math.round(performance.now() - started);
           const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
           const completed = replies.filter((event) => event.type === 'transcript' && event.phase === 'completed');
@@ -7540,9 +9103,22 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }
       };
       try {
-        await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
+        // --model names the chosen model in the footer. The composer names
+        // the backend independently, just as it does after a resume.
+        await pane.waitFor(`Message ${backendLabel}`, { timeoutMs: 60_000 });
+        await pane.waitFor(visibleLaunchDir, { timeoutMs: 60_000 });
         frame('00-ready', pane.screen());
         const greeting = await turn('01-greeting', 'hi');
+        expect(scriptedEngine.engines.at(-1)?.adapter.host.descriptor().identity.backend,
+          'the review must exercise the requested real backend').toBe(scriptedEngine.backend);
+        if (scriptedEngine.real) {
+          expect(launchRequests.at(-1), 'the review must send its chosen route through the real launch API').toMatchObject({
+            ...(process.env.PUI_REAL_MODEL ? { model: process.env.PUI_REAL_MODEL } : {}),
+            ...(process.env.PUI_REAL_ACCOUNT ? { account: process.env.PUI_REAL_ACCOUNT } : {}),
+          });
+          expect(scriptedEngine.engines.at(-1)?.adapter.host.descriptor().accountRoute,
+            'the maintained engine must receive the chosen account route').toBe(process.env.PUI_REAL_ACCOUNT ?? 'default');
+        }
         const explained = await turn('02-read-explain', 'Read calc.js and explain what it does in two sentences.');
         expect(explained).toMatch(/add/i);
         await turn('03-edit', 'Edit calc.js so that add() accepts an optional third number and adds it too.');
@@ -7559,8 +9135,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const exitedCleanly = await Promise.race([pane['exit'].then(() => true), sleep(20_000).then(() => false)]);
         log.push({ label: '05a-exit', exitedCleanly, exitMs: Math.round(performance.now() - exitStarted) });
         await pane.stop().catch(() => {});
-        pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
-        await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
+        pane = new PuiPane(bin, operatorPort, home, { args: launchArgs, cwd: launchDir, cols: 120, rows: 40 });
+        // Restoring model/settings replaces the footer's backend label with
+        // the selected model. The composer still names the backend; require
+        // that and the directory independently rather than a pre-model footer.
+        await pane.waitFor(`Message ${backendLabel}`, { timeoutMs: 60_000 });
+        await pane.waitFor(visibleLaunchDir, { timeoutMs: 60_000 });
         // WI-10004162: the owner's own turns contain 'calc.js', so waiting for
         // that passed over a pane with every agent reply missing. An agent
         // block header is what proves the saved conversation was restored.
@@ -7618,6 +9198,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         frame('05c-resumed', pane.screen());
         expect(pane.screen(), 'the resumed chat still shows the agent replies').toMatch(AGENT_BLOCK);
         const recalled = await turn('05-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.');
+        expect(scriptedEngine.engines.at(-1)?.adapter.host.descriptor().identity.backend,
+          'the resumed review must exercise the requested real backend').toBe(scriptedEngine.backend);
         expect(recalled).toMatch(/third|optional|three/i);
         // A history replay landing after the send would be folded into this
         // reply (the P-006 review saw the greeting twice at its start).
@@ -7680,7 +9262,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const lifecycle: Array<[number, string]> = [];
         const record: Record<string, unknown> = { run, lifecycle };
         current = record;
-        pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
+        pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir, cols: 120, rows: 40 });
         const enginesBefore = scriptedEngine.engines.length;
         try {
           await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
@@ -7715,6 +9297,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             const state = engine?.adapter.host.descriptor().lifecycle;
             if (state && lifecycle.at(-1)?.[1] !== state) lifecycle.push([at(), state]);
             const events = scriptedEngine.events.slice(eventsBefore);
+            if (scriptedEngine.real) throwIfProviderRefused(events, `P-012 launch ${run}`);
             if (record.ownerTurnMs === undefined && events.some((e) => e.type === 'transcript' && e.role === 'owner')) {
               record.ownerTurnMs = at();
             }

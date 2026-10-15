@@ -27,7 +27,39 @@ export interface AttestationDeps {
     githubUserId: number;
     githubLogin: string;
     token: string;
+    knownGistId?: string;
   }) => Promise<string>;
+  /**
+   * WI-10006733: the gist this SAME device resolved before (announce identity
+   * cache), passed to ensureGist as a verify-first hint so a publish does not
+   * walk every gist on the account. Defaults to the cache only when ensureGist
+   * is the real one, so injected-dependency tests stay hermetic.
+   */
+  knownGistIdFor: (device: {
+    keychainId: string;
+    pubkeyBase64: string;
+    githubUserId: number;
+  }) => Promise<string | undefined>;
+}
+
+async function cachedGistIdFor(device: {
+  keychainId: string;
+  pubkeyBase64: string;
+  githubUserId: number;
+}): Promise<string | undefined> {
+  const { loadCachedLocalAnnounceIdentity } = await import(
+    '../sync/hyperbee/local-announce-identity'
+  );
+  const cached = await loadCachedLocalAnnounceIdentity().catch(() => null);
+  if (
+    !cached ||
+    cached.keychainId !== device.keychainId ||
+    cached.devicePubkeyBase64 !== device.pubkeyBase64 ||
+    cached.githubUserId !== device.githubUserId
+  ) {
+    return undefined;
+  }
+  return cached.attestationGistId || undefined;
 }
 
 export async function resolvePublisherAttestation(
@@ -49,6 +81,9 @@ export async function resolvePublisherAttestation(
       deps?.ensureGist ??
       (async (i: Parameters<AttestationDeps['ensureGist']>[0]) =>
         (await import('../identity/attest')).ensureAttestationGist(i));
+    const knownGistIdFor =
+      deps?.knownGistIdFor ??
+      (deps?.ensureGist ? async () => undefined : cachedGistIdFor);
 
     const identity = await resolveIdentity();
     // The identity union is `{kind:'ok', githubUserId, githubLogin, token}` |
@@ -64,6 +99,11 @@ export async function resolvePublisherAttestation(
     if (githubUserId == null || !githubLogin || !token) return null;
     const keychainId = await keychainIdFor(githubUserId);
     const keypair = await loadKeypair(keychainId);
+    const knownGistId = await knownGistIdFor({
+      keychainId,
+      pubkeyBase64: keypair.pubkeyBase64,
+      githubUserId,
+    }).catch(() => undefined);
     const gistId = await ensureGist({
       keychainId,
       pubkeyBase64: keypair.pubkeyBase64,
@@ -71,6 +111,7 @@ export async function resolvePublisherAttestation(
       githubUserId,
       githubLogin,
       token,
+      ...(knownGistId ? { knownGistId } : {}),
     });
     if (!gistId) return null;
     return { attestation_gist_id: gistId, publisher_device_pubkey: keypair.pubkeyBase64 };

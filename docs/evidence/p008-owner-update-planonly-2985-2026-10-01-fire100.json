@@ -1,0 +1,175 @@
+{
+  "schemaVersion": "p008-owner-update-observed-cardinality-planonly-v1",
+  "workItem": "WI-10002830",
+  "observedRequestedSessions": 2985,
+  "naturalReceiptRef": "docs/evidence/p008-owner-update-completion-2026-10-01-fire100.json",
+  "attempts": [
+    {
+      "taskId": "0mupvwwn044bxoj3rkp",
+      "receiptPath": "/tmp/p008-owner-update-live-planonly-2985-20261001.json",
+      "sha256": "d92820eae475b98810f236035ac52628f3130f5b6e49cfc229ad8fd1ca867387",
+      "receipt": {
+        "startedAt": "2026-10-01T18:45:39.573Z",
+        "sourcePath": "packages/operator-core/lib/search/session-ingest.ts",
+        "sourceSha256": "81276d349520ea93952d19232ede4a677c75a23783984d3b12215177f4395789",
+        "statementSha256": "c33700f42ffa35ce2682fc96000aa49d0d8824cd23d605e682d77c585282df42",
+        "statementMode": "EXPLAIN FORMAT JSON, no ANALYZE",
+        "plans": [],
+        "identity": {
+          "pid": 1808113,
+          "database": "papercusp",
+          "read_only": "on",
+          "statement_timeout": "5s",
+          "lock_timeout": "1s",
+          "server_version_num": "180004",
+          "plan_cache_mode": "auto"
+        },
+        "status": "error",
+        "error": {
+          "message": "canceling statement due to statement timeout",
+          "code": "57014"
+        },
+        "endedAt": "2026-10-01T18:45:47.231Z",
+        "elapsedMs": 7658,
+        "clientClosed": true
+      }
+    },
+    {
+      "taskId": "0mupw1hkv1btozjgydd",
+      "receiptPath": "/tmp/p008-owner-update-live-planonly-2985-pk-20261001.json",
+      "sha256": "d58fb6cb3f168faf490e7540f764b6956f9e9ae61bb89a3db6a74e2a3d00e482",
+      "receipt": {
+        "startedAt": "2026-10-01T18:49:13.374Z",
+        "sourcePath": "packages/operator-core/lib/search/session-ingest.ts",
+        "sourceSha256": "81276d349520ea93952d19232ede4a677c75a23783984d3b12215177f4395789",
+        "statementSha256": "c33700f42ffa35ce2682fc96000aa49d0d8824cd23d605e682d77c585282df42",
+        "statementMode": "EXPLAIN FORMAT JSON, no ANALYZE",
+        "plans": [
+          {
+            "mode": "current-bound-parameters",
+            "requestedSessions": 2985,
+            "sessions": 2985,
+            "paramsSha256": "9c5277af94d1b9cf9d3c3f77591c7bebc94ea31fd4b86be0dbe3991fffa5ba9f",
+            "planSha256": "83cc695fb52b0e26a72bbe6ed95c1426aaf9701b5b2a61745a1cd94b22442362",
+            "elapsedMs": 8,
+            "nodes": [
+              {
+                "depth": 0,
+                "node": "ModifyTable",
+                "operation": "Update",
+                "relation": "session_turns",
+                "rowsEstimated": 0,
+                "startupCost": 0.56,
+                "totalCost": 22784.09
+              },
+              {
+                "depth": 1,
+                "node": "Nested Loop",
+                "join": "Inner",
+                "rowsEstimated": 29677,
+                "startupCost": 0.56,
+                "totalCost": 22784.09
+              },
+              {
+                "depth": 2,
+                "node": "Function Scan",
+                "rowsEstimated": 2985,
+                "startupCost": 0.01,
+                "totalCost": 29.86
+              },
+              {
+                "depth": 2,
+                "node": "Index Scan",
+                "relation": "session_turns",
+                "index": "session_turns_pkey",
+                "rowsEstimated": 10,
+                "startupCost": 0.55,
+                "totalCost": 7.52
+              }
+            ]
+          },
+          {
+            "mode": "generic-plan-control",
+            "planSha256": "9d0463c1164e957c0009a33de51f6a8237613de39dbc3a0693786be7613c458b",
+            "elapsedMs": 2,
+            "nodes": [
+              {
+                "depth": 0,
+                "node": "ModifyTable",
+                "operation": "Update",
+                "relation": "session_turns",
+                "rowsEstimated": 0,
+                "startupCost": 0.56,
+                "totalCost": 70.33
+              },
+              {
+                "depth": 1,
+                "node": "Nested Loop",
+                "join": "Inner",
+                "rowsEstimated": 76,
+                "startupCost": 0.56,
+                "totalCost": 70.33
+              },
+              {
+                "depth": 2,
+                "node": "Function Scan",
+                "rowsEstimated": 10,
+                "startupCost": 0.01,
+                "totalCost": 0.11
+              },
+              {
+                "depth": 2,
+                "node": "Index Scan",
+                "relation": "session_turns",
+                "index": "session_turns_pkey",
+                "rowsEstimated": 8,
+                "startupCost": 0.55,
+                "totalCost": 6.94
+              }
+            ]
+          }
+        ],
+        "identity": {
+          "pid": 1514739,
+          "database": "papercusp",
+          "read_only": "on",
+          "statement_timeout": "5s",
+          "lock_timeout": "1s",
+          "server_version_num": "180004",
+          "plan_cache_mode": "auto"
+        },
+        "stage": "EXPLAIN-generic",
+        "selectedRows": 2985,
+        "uniqueIds": 2985,
+        "status": "ok",
+        "endedAt": "2026-10-01T18:49:13.542Z",
+        "elapsedMs": 168,
+        "clientClosed": true
+      }
+    }
+  ],
+  "selectionControls": {
+    "failedOrder": "DISTINCT ON(session_id), ORDER BY session_id,owner",
+    "successfulOrder": "DISTINCT ON(session_id), ORDER BY session_id,turn_idx",
+    "planOnlyNodes": {
+      "failedOrder": [
+        "Limit",
+        "Unique",
+        "Incremental Sort",
+        "Index Scan session_turns_pkey"
+      ],
+      "PKOrder": [
+        "Limit",
+        "Unique",
+        "Index Scan session_turns_pkey"
+      ]
+    }
+  },
+  "limits": [
+    "Constructed current stored-owner map, not recovered natural-query parameter values.",
+    "UPDATE EXPLAIN without ANALYZE; no production UPDATE executed.",
+    "Planner row counts/costs are estimates, not observed repaired-turn counts or execution latency.",
+    "Changed order and changed time/cache state prevent attributing the first sampler timeout to Incremental Sort.",
+    "No executed live plan, whole-query mechanism, historical cause or app impact established."
+  ]
+}

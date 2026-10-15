@@ -18,6 +18,8 @@ import {
   isNonInstanceRecord,
   readMcpProxyFailureTail,
   mcpProxyFailureLogPath,
+  MCP_PROXY_FAILURE_LOG_MAX_BYTES,
+  MCP_PROXY_READ_CAP_BYTES,
   type McpProxyFailureRecord,
 } from './mcp-proxy-health';
 
@@ -206,6 +208,40 @@ describe('summarizeMcpProxyHealth — classification', () => {
     expect(d.byKind.post_connect_retry).toBe(1);
   });
 
+  describe('critical continuation queue dwell alarm', () => {
+    it('keeps a single normal low-volume wait below the five-minute floor out of the alarm', () => {
+      const d = summarizeMcpProxyHealth(
+        [rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-1', waitedMs: 61_800 })],
+        NOW,
+      );
+      expect(d.criticalContinuationQueueStalls).toBe(0);
+      expect(d.criticalContinuationQueueMaxWaitMs).toBe(61_800);
+    });
+
+    it('counts sustained waits once per trace despite periodic samples', () => {
+      const d = summarizeMcpProxyHealth(
+        [
+          rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-1', waitedMs: 300_000, listenPort: 9071 }),
+          rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-1', waitedMs: 701_000, listenPort: 9071 }),
+          rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-2', waitedMs: 600_000, listenPort: 9071 }),
+        ],
+        NOW,
+      );
+      expect(d.criticalContinuationQueueStalls).toBe(2);
+      expect(d.criticalContinuationQueueMaxWaitMs).toBe(701_000);
+      expect(d.byKind.critical_continuation_queue_wait).toBe(3);
+    });
+
+    it('does not alarm on non-instance sidecar records', () => {
+      const d = summarizeMcpProxyHealth(
+        [rec({ kind: 'critical_continuation_queue_wait', traceId: 'checkpoint-test', waitedMs: 700_000, listenPort: 0 })],
+        NOW,
+      );
+      expect(d.criticalContinuationQueueStalls).toBe(0);
+      expect(d.nonInstance).toBe(1);
+    });
+  });
+
   it('byKind tallies every kind; newestAt is the freshest in-window record', () => {
     const d = summarizeMcpProxyHealth(
       [
@@ -342,6 +378,32 @@ describe('readMcpProxyFailureTail — bounded, fail-soft reader', () => {
     const f = tmpFile();
     writeFileSync(f, '');
     expect(readMcpProxyFailureTail(f)).toEqual([]);
+  });
+
+  it('shares the writer rotation bound and keeps one-hour failures beyond the former 256KiB tail', () => {
+    const f = tmpFile();
+    const missed = JSON.stringify({ ts: iso(30 * 60_000), kind: 'exhausted_refused', status: 503 });
+    const filler = JSON.stringify({ ts: iso(1000), kind: 'recovered', pad: 'x'.repeat(1024) });
+    const body = `${missed}\n${Array.from({ length: 300 }, () => filler).join('\n')}\n`;
+    expect(MCP_PROXY_READ_CAP_BYTES).toBe(MCP_PROXY_FAILURE_LOG_MAX_BYTES);
+    expect(Buffer.byteLength(body)).toBeGreaterThan(256 * 1024);
+    expect(Buffer.byteLength(body)).toBeLessThan(MCP_PROXY_READ_CAP_BYTES);
+    writeFileSync(f, body);
+
+    const recs = readMcpProxyFailureTail(f);
+    expect(recs).not.toBeNull();
+    expect(summarizeMcpProxyHealth(recs!, NOW).hardFailures).toBe(1);
+  });
+
+  it('reads a retained rotation so the health window survives one file rollover', () => {
+    const f = tmpFile();
+    writeFileSync(`${f}.1`, JSON.stringify({ ts: iso(30 * 60_000), kind: 'exhausted_refused', status: 503 }) + '\n');
+    writeFileSync(f, JSON.stringify({ ts: iso(1000), kind: 'recovered' }) + '\n');
+
+    const recs = readMcpProxyFailureTail(f);
+    expect(recs).not.toBeNull();
+    expect(summarizeMcpProxyHealth(recs!, NOW).hardFailures).toBe(1);
+    expect(recs).toHaveLength(2);
   });
 
   it('parses well-formed JSONL records and round-trips through the summarizer', () => {

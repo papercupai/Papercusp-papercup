@@ -1,0 +1,545 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "goal-brief P-007 GOAL trials operational probe (R-7) — counterexample arm-a-blender-plan",
+  "framework": "shell",
+  "command": [
+    "env",
+    "R7_COUNTEREXAMPLE=arm-a-blender-plan",
+    "npx",
+    "tsx",
+    "docs/evidence/goal-brief-p007-trials-operational-probe-2026-09-29.mts"
+  ],
+  "mode": "counterexample",
+  "counterexample": {
+    "id": "arm-a-blender-plan",
+    "targets": "auto-bar-r-7-p-007",
+    "fault": "Arm A plan replaced by duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05 (Blender-origin, created before every trial goal, created by no Arm A goal)",
+    "expected": "r7-arm-a-goal-local-plan=false, auto-bar-r-7-p-007=false, exitCode 1 (caught)"
+  },
+  "exitCode": 1,
+  "startedAt": "2026-10-07T02:22:27.979Z",
+  "finishedAt": "2026-10-07T02:22:29.595Z",
+  "summary": "4/7 live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clause AUTO-BAR-R-7-P-007.",
+  "assertions": [
+    {
+      "id": "r7-arm-a-goal-local-plan",
+      "passed": false,
+      "evidence": "plan duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05 goal_id=finish-shipping-the-duplicate-screening-fix-adop-a88411 is_blender_origin=true created 2026-09-05T03:59:01.953317-04:00 inside goal restore-reliable-hourly-papercusp-postgres-backu-9368ec life (2026-09-27T11:05:23.410764-04:00 .. 2026-09-27T15:42:14.709Z); goal-local routed idea created_by=undefined (goal holder su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1); Blender-origin ideas routed to this plan: 1"
+    },
+    {
+      "id": "r7-arm-b-adopted-no-clone",
+      "passed": true,
+      "evidence": "plan duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05 is_blender_origin=true created 2026-09-05T03:59:01.953317-04:00, before goal stop-work-item-duplicate-screening-from-admittin-956e4d (2026-09-27T11:05:48.618244-04:00); Blender idea EI-22406075136912314 still routed_ref=plan:duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05; plans attributed to any Arm B goal: duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05 (exactly the adopted plan, so no clone)"
+    },
+    {
+      "id": "r7-independent-member-claims",
+      "passed": false,
+      "evidence": "every plan work item in both arms was claimed and closed by a session that is neither a goal holder nor the operator, and each arm has at least one claim made by a member of its own drain fleet at claim time (per-claim detail in observations.claims)"
+    },
+    {
+      "id": "r7-organic-terminal-chain",
+      "passed": true,
+      "evidence": "Arm B: 2/2 plan items done by su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61; plan shipped at rev 19 authored by su-59f446b4-77cd-4170-8df7-bac813429af4 (member of goal-drain-ship-adopted-plan-duplicate-screening-keys-81a93e at 2026-09-28T21:34:04.57-04:00, not the operator); independent grade EI-24557350775730459 by su-a8b4d7a8-91f8-4789-a416-5155076fa823 (done); Blender feedback idea outcome=won; goal ship-adopted-plan-duplicate-screening-keys-on-au-81a93e status=achieved"
+    },
+    {
+      "id": "r7-negative-controls",
+      "passed": true,
+      "evidence": "20095653=pass 20095654=pass 20553650=pass 20095657=pass 20095659=pass 20095661=pass 20095663=pass 20553651=pass (all at commit 1e46c027b5,ed336ea0e0)"
+    },
+    {
+      "id": "r7-caps-not-widened",
+      "passed": true,
+      "evidence": "9368ec:killed/1094c of 1000c (measured-goal-breach) 406e99:killed/3013c of 3000c (measured-goal-breach) 8016e1:killed/?c of 1500c 956e4d:killed/1957c of 1000c (measured-goal-breach) a88411:killed/?c of 3000c 81a93e:achieved/?c of 3000c; every breach kill cited the budget still at rest (9368ec 1000c==1000c, 406e99 3000c==3000c, 956e4d 1000c==1000c)"
+    },
+    {
+      "id": "auto-bar-r-7-p-007",
+      "passed": false,
+      "evidence": "4/6 R-7 sub-assertions passed over both trial lineages (r7-arm-a-goal-local-plan=false, r7-arm-b-adopted-no-clone=true, r7-independent-member-claims=false, r7-organic-terminal-chain=true, r7-negative-controls=true, r7-caps-not-widened=true); 10 residual unknown(s) disclosed"
+    }
+  ],
+  "plan": "goal-brief-to-claimed-plan-work-2026-09-23",
+  "residualUnknowns": [
+    "Arm B plan goal attribution now reads finish-shipping-the-duplicate-screening-fix-adop-a88411, not the adopting goal stop-work-item-duplicate-screening-from-admittin-956e4d. Whether the adopting goal ever stamped goal_id (and was later replaced) is not measured here; today the adopting goal is visible only through fleet membership and work-item claims, not on the plan row.",
+    "Arm A WI-10003483 was first claimed at 2026-09-27T11:24:13.405708-04:00 by su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61, who held no membership in any Arm A drain fleet at that instant: independent of the holder, but not provably a goal-fleet claim.",
+    "Arm A WI-10003484 was first claimed at 2026-09-27T11:31:07.587193-04:00 by su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61, who held no membership in any Arm A drain fleet at that instant: independent of the holder, but not provably a goal-fleet claim.",
+    "Budget kills fire AFTER the breach, not at it: measured overshoot 9368ec +9%, 956e4d +96%. The caps were not raised, but enforcement lag let spend run past them (worst: 96%; tracked as WI-10003507).",
+    "Goal-pots spend rollups omit consult forks and orphan sessions. Decision goal-brief-to-claimed-plan-work-2026-09-23#D-016 records real cost of ~$19.44 for Arm A goal 8016e1 against a $15 cap (consult ~$7.19 uncounted) and ~$23.29 of $30 for Arm B goal 81a93e (orphan 2e21e6 ~$8.06 + consult ~$1.98 added by hand). The cap was not widened; the meter under-counted.",
+    "Brief exposure for goal restore-reliable-hourly-papercusp-postgres-backu-9368ec is not exact: the first indexed holder turn is origin=unclassified.",
+    "Brief exposure for goal ship-plan-papercusp-db-backup-invalid-db-2026-09-8016e1 is not exact: the first indexed holder turn is origin=unclassified, 7998 chars (at the 8000-char index cap, so only a prefix is hashed).",
+    "Brief exposure for goal stop-work-item-duplicate-screening-from-admittin-956e4d is not exact: the first indexed holder turn is origin=self-compaction.",
+    "Brief exposure for goal finish-shipping-the-duplicate-screening-fix-adop-a88411 is not exact: the first indexed holder turn is origin=loop-fire, 7997 chars (at the 8000-char index cap, so only a prefix is hashed).",
+    "Brief exposure for goal ship-adopted-plan-duplicate-screening-keys-on-au-81a93e is not exact: the first indexed holder turn is origin=unclassified, 7998 chars (at the 8000-char index cap, so only a prefix is hashed)."
+  ],
+  "observations": {
+    "goals": [
+      {
+        "id": "stop-work-item-duplicate-screening-from-admittin-956e4d",
+        "status": "killed",
+        "budgetCents": 1000,
+        "spentCents": 1957,
+        "spentSource": "goal-pots-rollup",
+        "killReason": "measured-goal-breach",
+        "killedAt": "2026-09-27T15:31:53.101Z",
+        "holder": "su-1b82d5da-e4c7-422a-bd9c-ed9f55282b46",
+        "drainFleet": "goal-drain-stop-work-item-duplicate-screening-from-ad-956e4d",
+        "model": "opus",
+        "effort": "high",
+        "agent": "claude",
+        "carry": "warm",
+        "account": "auto",
+        "createdAt": "2026-09-27T11:05:48.618244-04:00",
+        "workload": "Stop work-item duplicate screening from admitting true duplicates (prose-keyed titleKey drops numerics)"
+      },
+      {
+        "id": "finish-shipping-the-duplicate-screening-fix-adop-a88411",
+        "status": "killed",
+        "budgetCents": 3000,
+        "spentCents": null,
+        "spentSource": "goal-pots-rollup",
+        "killReason": null,
+        "killedAt": null,
+        "holder": "su-0381ae85-e293-4299-a46a-25ed89259d19",
+        "drainFleet": "goal-drain-finish-shipping-the-duplicate-screening-fi-a88411",
+        "model": "opus",
+        "effort": "high",
+        "agent": "claude",
+        "carry": "warm",
+        "account": "auto",
+        "createdAt": "2026-09-27T12:32:20.164924-04:00",
+        "workload": "Finish shipping the duplicate-screening fix (adopted plan duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05)"
+      },
+      {
+        "id": "restore-reliable-hourly-papercusp-postgres-backu-9368ec",
+        "status": "killed",
+        "budgetCents": 1000,
+        "spentCents": 1094,
+        "spentSource": "goal-pots-rollup",
+        "killReason": "measured-goal-breach",
+        "killedAt": "2026-09-27T15:42:14.709Z",
+        "holder": "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",
+        "drainFleet": "goal-drain-restore-reliable-hourly-papercusp-postgres-9368ec",
+        "model": "opus",
+        "effort": "high",
+        "agent": "claude",
+        "carry": "warm",
+        "account": "auto",
+        "createdAt": "2026-09-27T11:05:23.410764-04:00",
+        "workload": "Restore reliable hourly papercusp Postgres backups (dump stale >8h; BACKUP FAILING every hour)"
+      },
+      {
+        "id": "ship-adopted-plan-duplicate-screening-keys-on-au-81a93e",
+        "status": "achieved",
+        "budgetCents": 3000,
+        "spentCents": null,
+        "spentSource": "goal-pots-rollup",
+        "killReason": null,
+        "killedAt": null,
+        "holder": "su-e53d23dc-5460-46bd-af64-60203cd84be5",
+        "drainFleet": "goal-drain-ship-adopted-plan-duplicate-screening-keys-81a93e",
+        "model": "opus",
+        "effort": "high",
+        "agent": "claude",
+        "carry": "warm",
+        "account": "auto",
+        "createdAt": "2026-09-28T21:02:04.839785-04:00",
+        "workload": "Ship adopted plan duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05 (owner-funded ship-only finish, Arm B)"
+      },
+      {
+        "id": "ship-plan-papercusp-db-backup-invalid-db-2026-09-8016e1",
+        "status": "killed",
+        "budgetCents": 1500,
+        "spentCents": null,
+        "spentSource": "goal-pots-rollup",
+        "killReason": null,
+        "killedAt": null,
+        "holder": "su-2b1e9949-5d9f-4127-9977-11579016d9d8",
+        "drainFleet": "goal-drain-ship-plan-papercusp-db-backup-invalid-db-2-8016e1",
+        "model": "opus",
+        "effort": "high",
+        "agent": "claude",
+        "carry": "warm",
+        "account": "auto",
+        "createdAt": "2026-09-28T21:00:59.527045-04:00",
+        "workload": "Ship plan papercusp-db-backup-invalid-db-2026-09-27 (owner-funded ship-only finish, Arm A)"
+      },
+      {
+        "id": "finish-restoring-reliable-hourly-papercusp-postg-406e99",
+        "status": "killed",
+        "budgetCents": 3000,
+        "spentCents": 3013,
+        "spentSource": "goal-pots-rollup",
+        "killReason": "measured-goal-breach",
+        "killedAt": "2026-09-27T16:51:57.240Z",
+        "holder": "su-b604b77f-474f-41d8-902b-10dad4eaef22",
+        "drainFleet": "goal-drain-finish-restoring-reliable-hourly-papercusp-406e99",
+        "model": "opus",
+        "effort": "high",
+        "agent": "claude",
+        "carry": "warm",
+        "account": "auto",
+        "createdAt": "2026-09-27T12:31:48.860238-04:00",
+        "workload": "Finish restoring reliable hourly papercusp Postgres backups (continue plan papercusp-db-backup-invalid-db-2026-09-27 to shipped)"
+      }
+    ],
+    "armA": {
+      "plan": {
+        "plan_slug": "duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+        "status": "shipped",
+        "goal_id": "finish-shipping-the-duplicate-screening-fix-adop-a88411",
+        "is_blender_origin": true,
+        "origin": "local",
+        "created_at": "2026-09-05T03:59:01.953317-04:00",
+        "updated_at": "2026-09-28T21:34:04.481081-04:00",
+        "version": 20
+      },
+      "blenderIdeasOnPlan": [
+        "EI-22406075136912314"
+      ]
+    },
+    "armB": {
+      "plan": {
+        "plan_slug": "duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+        "status": "shipped",
+        "goal_id": "finish-shipping-the-duplicate-screening-fix-adop-a88411",
+        "is_blender_origin": true,
+        "origin": "local",
+        "created_at": "2026-09-05T03:59:01.953317-04:00",
+        "updated_at": "2026-09-28T21:34:04.481081-04:00",
+        "version": 20
+      },
+      "blenderIdea": {
+        "idea_id": "EI-22406075136912314",
+        "outcome": "won",
+        "rail": "plan",
+        "origin": "su-ideate",
+        "created_by": "su-95fb613c-76e3-42c4-8bfd-629ea7487307",
+        "routed_ref": "plan:duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+        "graded_by": "su-a27bb4ec-f650-408f-afe4-ed833919308d"
+      },
+      "plansAttributedToArmBGoals": [
+        {
+          "plan_slug": "duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+          "goal_id": "finish-shipping-the-duplicate-screening-fix-adop-a88411",
+          "created_at": "2026-09-05T03:59:01.953317-04:00"
+        }
+      ]
+    },
+    "claims": {
+      "A": {
+        "holders": [
+          "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",
+          "su-b604b77f-474f-41d8-902b-10dad4eaef22",
+          "su-2b1e9949-5d9f-4127-9977-11579016d9d8"
+        ],
+        "fleets": [
+          "goal-drain-restore-reliable-hourly-papercusp-postgres-9368ec",
+          "goal-drain-finish-restoring-reliable-hourly-papercusp-406e99",
+          "goal-drain-ship-plan-papercusp-db-backup-invalid-db-2-8016e1"
+        ],
+        "claims": [
+          {
+            "item": "WI-10003483",
+            "planItems": [
+              "P-001"
+            ],
+            "status": "done",
+            "firstClaimedAt": "2026-09-27T11:24:13.405708-04:00",
+            "claimer": "su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61",
+            "independentOfHolderAndOperator": true,
+            "drainFleetAtClaim": null
+          },
+          {
+            "item": "WI-10003484",
+            "planItems": [
+              "P-002"
+            ],
+            "status": "done",
+            "firstClaimedAt": "2026-09-27T11:31:07.587193-04:00",
+            "claimer": "su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61",
+            "independentOfHolderAndOperator": true,
+            "drainFleetAtClaim": null
+          }
+        ]
+      },
+      "B": {
+        "holders": [
+          "su-1b82d5da-e4c7-422a-bd9c-ed9f55282b46",
+          "su-0381ae85-e293-4299-a46a-25ed89259d19",
+          "su-e53d23dc-5460-46bd-af64-60203cd84be5"
+        ],
+        "fleets": [
+          "goal-drain-stop-work-item-duplicate-screening-from-ad-956e4d",
+          "goal-drain-finish-shipping-the-duplicate-screening-fi-a88411",
+          "goal-drain-ship-adopted-plan-duplicate-screening-keys-81a93e"
+        ],
+        "claims": [
+          {
+            "item": "WI-10003483",
+            "planItems": [
+              "P-001"
+            ],
+            "status": "done",
+            "firstClaimedAt": "2026-09-27T11:24:13.405708-04:00",
+            "claimer": "su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61",
+            "independentOfHolderAndOperator": true,
+            "drainFleetAtClaim": "goal-drain-stop-work-item-duplicate-screening-from-ad-956e4d"
+          },
+          {
+            "item": "WI-10003484",
+            "planItems": [
+              "P-002"
+            ],
+            "status": "done",
+            "firstClaimedAt": "2026-09-27T11:31:07.587193-04:00",
+            "claimer": "su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61",
+            "independentOfHolderAndOperator": true,
+            "drainFleetAtClaim": "goal-drain-stop-work-item-duplicate-screening-from-ad-956e4d"
+          }
+        ]
+      }
+    },
+    "armBTerminalChain": {
+      "items": [
+        "WI-10003483",
+        "WI-10003484"
+      ],
+      "implementers": [
+        "su-79c9a8bc-085f-4d53-8cc9-b8ff37854d61"
+      ],
+      "ship": {
+        "plan_slug": "duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+        "seq": 19,
+        "author_kind": "agent",
+        "author_id": "su-59f446b4-77cd-4170-8df7-bac813429af4",
+        "at": "2026-09-28T21:34:04.57-04:00"
+      },
+      "shipByFleet": "goal-drain-ship-adopted-plan-duplicate-screening-keys-81a93e",
+      "grade": {
+        "feature_id": "EI-24557350775730459",
+        "status": "done",
+        "created_by": "su-a8b4d7a8-91f8-4789-a416-5155076fa823"
+      },
+      "blenderOutcome": "won",
+      "finalGoalStatus": "achieved",
+      "finalGoalHasOutputs": false
+    },
+    "armATerminalChain": {
+      "ship": {
+        "plan_slug": "duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+        "seq": 19,
+        "author_kind": "agent",
+        "author_id": "su-59f446b4-77cd-4170-8df7-bac813429af4",
+        "at": "2026-09-28T21:34:04.57-04:00"
+      },
+      "planStatus": "shipped"
+    },
+    "negativeControls": [
+      {
+        "id": 20095653,
+        "control": "existing-plans-sufficient: goal-planning-review.test.ts",
+        "status": "pass",
+        "file_path": "packages/operator-core/lib/goal-planning-review.test.ts",
+        "commit_sha": "1e46c027b5323fab151ab6116ac12bbf31db4c2f",
+        "finished_at": "2026-09-29T12:26:04.239-04:00"
+      },
+      {
+        "id": 20095654,
+        "control": "goal planning proof: goal-planning-proof.test.ts",
+        "status": "pass",
+        "file_path": "packages/operator-core/lib/goal-planning-proof.test.ts",
+        "commit_sha": "1e46c027b5323fab151ab6116ac12bbf31db4c2f",
+        "finished_at": "2026-09-29T12:26:04.273-04:00"
+      },
+      {
+        "id": 20553650,
+        "control": "terminal/no-demand after sufficient review + blocked-budget typed refusal (budget.unmeasured/exceeded, cap unchanged): goal-planning-obligation-proof.test.ts",
+        "status": "pass",
+        "file_path": "packages/operator-core/lib/goal-planning-obligation-proof.test.ts",
+        "commit_sha": "ed336ea0e0fa264b045d2071c92f5e43cb7e4fef",
+        "finished_at": "2026-10-02T14:29:07.628-04:00"
+      },
+      {
+        "id": 20095657,
+        "control": "sufficient review; blocked draft never produces an inadmissible launch: agent-obligation-planning-demand.integration.test.ts",
+        "status": "pass",
+        "file_path": "packages/operator-core/lib/agent-obligation-planning-demand.integration.test.ts",
+        "commit_sha": "1e46c027b5323fab151ab6116ac12bbf31db4c2f",
+        "finished_at": "2026-09-29T12:26:27.354-04:00"
+      },
+      {
+        "id": 20095659,
+        "control": "cross-goal/unowned plan never re-attributed; Blender adoption adds no duplicate row: goal-feedback.integration.test.ts",
+        "status": "pass",
+        "file_path": "packages/operator-core/lib/scout/goal-feedback.integration.test.ts",
+        "commit_sha": "1e46c027b5323fab151ab6116ac12bbf31db4c2f",
+        "finished_at": "2026-09-29T12:26:53.299-04:00"
+      },
+      {
+        "id": 20095661,
+        "control": "goal feedback unit: goal-feedback.test.ts",
+        "status": "pass",
+        "file_path": "packages/operator-core/lib/scout/goal-feedback.test.ts",
+        "commit_sha": "1e46c027b5323fab151ab6116ac12bbf31db4c2f",
+        "finished_at": "2026-09-29T12:27:03.761-04:00"
+      },
+      {
+        "id": 20095663,
+        "control": "missing-delivery/attribution reported unknown, not ignored: agent-obligation-reader.test.ts",
+        "status": "pass",
+        "file_path": "packages/operator-core/lib/agent-obligation-reader.test.ts",
+        "commit_sha": "1e46c027b5323fab151ab6116ac12bbf31db4c2f",
+        "finished_at": "2026-09-29T12:27:31.366-04:00"
+      },
+      {
+        "id": 20553651,
+        "control": "absent vs wrong attribution: goal-launch-settings.test.ts",
+        "status": "pass",
+        "file_path": "packages/operator-core/lib/goal-launch-settings.test.ts",
+        "commit_sha": "ed336ea0e0fa264b045d2071c92f5e43cb7e4fef",
+        "finished_at": "2026-10-02T14:29:16.821-04:00"
+      }
+    ],
+    "caps": {
+      "breachKills": [
+        {
+          "id": "restore-reliable-hourly-papercusp-postgres-backu-9368ec",
+          "budgetAtRest": 1000,
+          "budgetCitedAtKill": 1000,
+          "spent": 1094,
+          "overshootPct": 9
+        },
+        {
+          "id": "finish-restoring-reliable-hourly-papercusp-postg-406e99",
+          "budgetAtRest": 3000,
+          "budgetCitedAtKill": 3000,
+          "spent": 3013,
+          "overshootPct": 0
+        },
+        {
+          "id": "stop-work-item-duplicate-screening-from-admittin-956e4d",
+          "budgetAtRest": 1000,
+          "budgetCitedAtKill": 1000,
+          "spent": 1957,
+          "overshootPct": 96
+        }
+      ]
+    },
+    "briefExposure": [
+      {
+        "goal": "restore-reliable-hourly-papercusp-postgres-backu-9368ec",
+        "holder": "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",
+        "sessions": [
+          "da78c1af-cafd-4158-af7c-9e2197c31cf4"
+        ],
+        "firstHolderTurn": {
+          "session_id": "da78c1af-cafd-4158-af7c-9e2197c31cf4",
+          "turn_idx": 0,
+          "turn_origin": null,
+          "ts": "2026-09-27T11:05:27.751-04:00",
+          "chars": 7033,
+          "sha256": "6cf37ebc810f82d26a52883d42ea2806527f8fd5ebf72d22ea9a2f73cf2980db"
+        },
+        "isClassifiedKickoff": false,
+        "truncatedAtIndexCap": false
+      },
+      {
+        "goal": "finish-restoring-reliable-hourly-papercusp-postg-406e99",
+        "holder": "su-b604b77f-474f-41d8-902b-10dad4eaef22",
+        "sessions": [
+          "83018f8d-603a-4fd7-b8b4-0cc47237116a"
+        ],
+        "firstHolderTurn": {
+          "session_id": "83018f8d-603a-4fd7-b8b4-0cc47237116a",
+          "turn_idx": 0,
+          "turn_origin": "fleet-kickoff",
+          "ts": "2026-09-27T12:31:54.122-04:00",
+          "chars": 7312,
+          "sha256": "7b69e5be02cf27db8d4e7aa819c319218cd9a001b7cfd45a325727314a9fad4b"
+        },
+        "isClassifiedKickoff": true,
+        "truncatedAtIndexCap": false
+      },
+      {
+        "goal": "ship-plan-papercusp-db-backup-invalid-db-2026-09-8016e1",
+        "holder": "su-2b1e9949-5d9f-4127-9977-11579016d9d8",
+        "sessions": [
+          "8c02ec99-ee06-4161-af64-5647cf72a89b"
+        ],
+        "firstHolderTurn": {
+          "session_id": "8c02ec99-ee06-4161-af64-5647cf72a89b",
+          "turn_idx": 0,
+          "turn_origin": null,
+          "ts": "2026-09-28T21:16:29.298-04:00",
+          "chars": 7998,
+          "sha256": "bc9e74c2ec9884529a68df4fd16293c759d9bd18ae9ce8f0cdf03ce59242ad27"
+        },
+        "isClassifiedKickoff": false,
+        "truncatedAtIndexCap": true
+      },
+      {
+        "goal": "stop-work-item-duplicate-screening-from-admittin-956e4d",
+        "holder": "su-1b82d5da-e4c7-422a-bd9c-ed9f55282b46",
+        "sessions": [
+          "121552c7-6308-441a-92c4-053af41710d4"
+        ],
+        "firstHolderTurn": {
+          "session_id": "121552c7-6308-441a-92c4-053af41710d4",
+          "turn_idx": 0,
+          "turn_origin": "self-compaction",
+          "ts": "2026-09-27T11:22:11.778-04:00",
+          "chars": 2375,
+          "sha256": "ad630f54a0b9d26a7199e7bdac5f489339720b3b4148cc374979f60b6a415f29"
+        },
+        "isClassifiedKickoff": false,
+        "truncatedAtIndexCap": false
+      },
+      {
+        "goal": "finish-shipping-the-duplicate-screening-fix-adop-a88411",
+        "holder": "su-0381ae85-e293-4299-a46a-25ed89259d19",
+        "sessions": [
+          "1114b7e4-3461-4e16-8556-f1cf380e92ba"
+        ],
+        "firstHolderTurn": {
+          "session_id": "1114b7e4-3461-4e16-8556-f1cf380e92ba",
+          "turn_idx": 0,
+          "turn_origin": "loop-fire",
+          "ts": "2026-09-27T13:57:38.047-04:00",
+          "chars": 7997,
+          "sha256": "5a97b62814979b7b5b76d9e3de590a9740b8aeaf03ca041c8b4fb46f6e1e1c29"
+        },
+        "isClassifiedKickoff": false,
+        "truncatedAtIndexCap": true
+      },
+      {
+        "goal": "ship-adopted-plan-duplicate-screening-keys-on-au-81a93e",
+        "holder": "su-e53d23dc-5460-46bd-af64-60203cd84be5",
+        "sessions": [
+          "057f40b8-a986-4d6a-ad89-dc5ea1b4823c"
+        ],
+        "firstHolderTurn": {
+          "session_id": "057f40b8-a986-4d6a-ad89-dc5ea1b4823c",
+          "turn_idx": 0,
+          "turn_origin": null,
+          "ts": "2026-09-28T21:10:36.836-04:00",
+          "chars": 7998,
+          "sha256": "0e20aed3e5871d2754543a03309507cbfb24b9d95c777e155ad4963b95784961"
+        },
+        "isClassifiedKickoff": false,
+        "truncatedAtIndexCap": true
+      }
+    ],
+    "sourceGeneration": {
+      "planRevisionsAtShip": [
+        {
+          "plan_slug": "duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05",
+          "seq": 19,
+          "author_kind": "agent",
+          "author_id": "su-59f446b4-77cd-4170-8df7-bac813429af4",
+          "at": "2026-09-28T21:34:04.57-04:00"
+        }
+      ],
+      "controlRunCommit": "1e46c027b5 (see negativeControls)"
+    }
+  }
+}

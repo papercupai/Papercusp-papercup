@@ -45,7 +45,7 @@ export type HydratableRef =
   /** A coord message by msg_id (`msg:<id>`). */
   | { kind: 'msg'; id: string }
   /** A work-item by id — WI-/EI-/F- families (`WI-123`, `wi:WI-123`). */
-  | { kind: 'work-item'; id: string }
+  | { kind: 'work-item'; id: string; harness?: string }
   /** A conversation id (exact or unique prefix, resolved in the caller's workspace). */
   | { kind: 'conversation'; id: string }
   /** A plan item (`plan:<slug>#P-001`). */
@@ -234,7 +234,7 @@ export function canonicalRefKey(ref: HydratableRef): string {
     case 'msg':
       return `msg:${ref.id}`;
     case 'work-item':
-      return `work-item:${ref.id}`;
+      return ref.harness ? `work-item:${ref.id}@${ref.harness}` : `work-item:${ref.id}`;
     case 'conversation':
       return `conversation:${ref.id}`;
     case 'plan-item':
@@ -416,12 +416,14 @@ export function isBodyRefEligible(
  * agree on, so a ref hydrated from the body still decorates the summary line.
  */
 export function detectEntryBodyRefs(
-  entry: { summary?: unknown; body?: unknown } | null | undefined,
+  entry: { summary?: unknown; body?: unknown; harness_slug?: unknown; harnessSlug?: unknown } | null | undefined,
   max = DEFAULT_REF_BUDGET.maxRefs,
 ): HydratableRef[] {
   const text = [entry?.summary, entry?.body]
     .filter((v): v is string => typeof v === 'string' && v.length > 0)
     .join(' ');
+  const rawHarness = entry?.harness_slug ?? entry?.harnessSlug;
+  const harness = typeof rawHarness === 'string' ? rawHarness.trim() : '';
   const structuredIds = structuredWorkItemIds(entry);
   return detectBodyRefs(text, max, (id) => {
     // A strict prefix is ambiguous: it may be a different real row, so never
@@ -430,7 +432,7 @@ export function detectEntryBodyRefs(
     return ![...structuredIds].some(
       (structuredId) => structuredId.length > id.length && structuredId.startsWith(id),
     );
-  });
+  }).map((ref) => (harness && ref.kind === 'work-item' ? { ...ref, harness } : ref));
 }
 
 /**

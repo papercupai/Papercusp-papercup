@@ -1,0 +1,432 @@
+{
+  "schemaVersion": "get-feedback-current-native-matrix-v1",
+  "status": "supplemental current-build delivery evidence; not independent acceptance or shipment",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "workItem": "WI-10005889",
+  "requester": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+  "runtime": {
+    "endpoint": "http://127.0.0.1:3170",
+    "buildSha": "42ead3e6b0",
+    "testClass": "operator-api",
+    "scope": "Dispatcher/core/prod/tool/service/Codex-home bytes match current tree. Native verifier block matches; two newer spill-backfill trace fields differ in the whole _mcp-host file. This is staging evidence."
+  },
+  "conversationId": "conv-request-061189b84359f587ca4d669209fa802670bde77c2c17a05e5050cb729d13c44f",
+  "requestKey": "get-feedback-native-current-carrier-20261009-e16e0-1",
+  "acceptanceReceipt": {
+    "verdict": "accepted",
+    "state": "routing",
+    "pending": true,
+    "rawPath": "/tmp/get-feedback-native-request-20261009-1951.json"
+  },
+  "closure": {
+    "state": "closed_answered",
+    "postId": 1169118,
+    "rawPath": "/tmp/get-feedback-native-close-20261009-1957.json",
+    "decision": "Adopt native thread/call, per-call fingerprints and caller-row conjunction; leave unmatched call correlation and universal immutability unverified."
+  },
+  "matrix": {
+    "population": [
+      "claude-source-isolated-fork",
+      "claude-source-isolated-codex-conversion",
+      "supported-non-claude-source-dispatch"
+    ],
+    "partitions": {
+      "checked": [
+        "claude-source-isolated-codex-conversion",
+        "supported-non-claude-source-dispatch"
+      ],
+      "unavailable": [
+        "claude-source-isolated-fork"
+      ],
+      "residual": []
+    },
+    "rows": [
+      {
+        "id": "claude-source-isolated-fork",
+        "sourceOwner": "su-89413428-d12b-49c8-a378-92c79940ccf9",
+        "sourceNativeSessionId": "68806532-f325-4e72-82d3-9f2e128aa765",
+        "classification": "unavailable; not passed",
+        "attempts": [
+          {
+            "rank": 1,
+            "agent": "claude",
+            "model": "fable",
+            "operation": "fork",
+            "outcome": "skipped",
+            "reason": "account-walled"
+          },
+          {
+            "rank": 2,
+            "agent": "claude",
+            "model": "opus",
+            "operation": "fork",
+            "outcome": "skipped",
+            "reason": "account-walled"
+          }
+        ],
+        "measuredReason": "every claude account reads full/paused (10 account(s))",
+        "measurement": "Persisted third dispatch walk at 2026-10-09T19:54:13.049Z. defaultProbeBackendAvailable reads loadAccountPool/poolForProvider/anyAccountAvailable; projection measurement, not a fresh upstream probe.",
+        "nativeSuccess": false
+      },
+      {
+        "id": "claude-source-isolated-codex-conversion",
+        "sourceOwner": "su-89413428-d12b-49c8-a378-92c79940ccf9",
+        "portId": "e2d01b21-6248-4a19-a701-fc3d17ffcf48",
+        "answeringOwner": "su-d41e957e-450a-45fc-9dd4-cff36edae472",
+        "answerPost": 1169111,
+        "typedInvocation": 34874437,
+        "classification": "native port delivered and substantive native reply recorded; physical call correlation remains unverified"
+      },
+      {
+        "id": "supported-non-claude-source-dispatch",
+        "sourceOwner": "su-cb667d2a-6543-4a42-817d-48c566ff6b31",
+        "portId": "1fb89a82-990d-4490-84af-c7d0805f130f",
+        "answeringOwner": "su-cba7ccb2-d21c-497d-82ff-4542c2bec71c",
+        "answerPost": 1169109,
+        "typedInvocation": 34874213,
+        "classification": "native port delivered and substantive native reply recorded; physical call correlation remains unverified"
+      }
+    ],
+    "healthy": "unknown",
+    "reason": "Delivery observations cover the declared matrix. Physical call correlation/non-MCP actor census remains unverified, original quality cohort has a disclosed shortfall, and first disposition handler had a recorded transport failure."
+  },
+  "ports": [
+    {
+      "target_row": "39008",
+      "target_owner": "su-16846131-8519-4a8b-a3d5-6d061c21648b",
+      "target_native": "01a12237-e764-72e0-bcdf-37ec9ff0ce4e",
+      "ended_at": null,
+      "port_id": "50e5ac66-bb5d-4e1b-8782-63f0b8aa293b",
+      "source_adv_session_id": "34882",
+      "target_adv_session_id": "39008",
+      "source_backend": "codex",
+      "target_backend": "codex",
+      "status": "delivered",
+      "source_hash": "28cb3a890a9468cf6334dcb32a53ffe1b8c72beefe2072c2f70fcc66a76d852c",
+      "normalized_hash": "5506e902a28838b09bcc374f6438c9946feb4b496dacfacb2da9eecee3a9aa7c",
+      "rendered_hash": "4f8a32f3c49e9449d4401012ee516c77fafb404dd78f27d8d2e94f4e28c0fd56",
+      "source": {
+        "cwd": "$PAPERCUSP_ROOT",
+        "backend": "codex",
+        "planSlug": null,
+        "snapshot": {
+          "kind": "archive-manifest",
+          "sha256": "28cb3a890a9468cf6334dcb32a53ffe1b8c72beefe2072c2f70fcc66a76d852c",
+          "completeBytes": 3271264,
+          "archiveRelpath": "sessions/2026/10/05/rollout-2026-10-05T22-26-51-01a10f09-00a3-7db3-9ba2-e74836e8d5df.jsonl",
+          "highWaterBytes": 3271264
+        },
+        "harnessSlug": null,
+        "workspaceId": "papercusp-workspace",
+        "advSessionId": 34882,
+        "nativeSessionId": "01a10f09-00a3-7db3-9ba2-e74836e8d5df"
+      },
+      "target": {
+        "model": "gpt-5.6-sol",
+        "account": "auto",
+        "backend": "codex",
+        "ownerId": "su-16846131-8519-4a8b-a3d5-6d061c21648b",
+        "provider": "openai",
+        "contextSize": "trimmed",
+        "contextWindow": 1000000,
+        "launchContextHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "availableInputTokens": 899131
+      },
+      "native_proof": {
+        "nativeRef": "$HOME/.papercusp/su-codex-homes/session-39008/sessions/2026/10/09/rollout-2026-10-09T15-50-51-01a12237-e764-72e0-bcdf-37ec9ff0ce4e.jsonl",
+        "persisted": true,
+        "renderedHash": "4f8a32f3c49e9449d4401012ee516c77fafb404dd78f27d8d2e94f4e28c0fd56"
+      },
+      "bootstrap_receipt": true,
+      "bootstrap_row": 39008,
+      "prepared_at": "2026-10-09 19:50:47.23627+00",
+      "delivered_at": "2026-10-09 19:50:57.732527+00",
+      "sourceOwner": "su-77610b91-024c-4c2d-a5f8-de6a42b2af38"
+    },
+    {
+      "target_row": "39012",
+      "target_owner": "su-cba7ccb2-d21c-497d-82ff-4542c2bec71c",
+      "target_native": "01a12239-c18b-7911-bbc6-d82f5ea08127",
+      "ended_at": null,
+      "port_id": "1fb89a82-990d-4490-84af-c7d0805f130f",
+      "source_adv_session_id": "35173",
+      "target_adv_session_id": "39012",
+      "source_backend": "codex",
+      "target_backend": "codex",
+      "status": "delivered",
+      "source_hash": "1e4705210945f79fe8ef200a9992d545ba7c785eab1e358de3801caefe09ee53",
+      "normalized_hash": "fe655459a7e9e00b95288be151438ccbba201cc448145165605ec8f89a083459",
+      "rendered_hash": "61ad7cedd23ee19ddca0654015fc4f4236c2e2559a2b84494872967a7c9f4640",
+      "source": {
+        "cwd": "$PAPERCUSP_ROOT",
+        "backend": "codex",
+        "planSlug": null,
+        "snapshot": {
+          "kind": "live-jsonl",
+          "sha256": "1e4705210945f79fe8ef200a9992d545ba7c785eab1e358de3801caefe09ee53",
+          "completeBytes": 6235008,
+          "archiveRelpath": null,
+          "highWaterBytes": 6235008
+        },
+        "harnessSlug": null,
+        "workspaceId": "papercusp-workspace",
+        "advSessionId": 35173,
+        "nativeSessionId": "01a113b5-4a6f-79f1-b361-d86a3647e3fa"
+      },
+      "target": {
+        "model": "gpt-5.6-sol",
+        "account": "auto",
+        "backend": "codex",
+        "ownerId": "su-cba7ccb2-d21c-497d-82ff-4542c2bec71c",
+        "provider": "openai",
+        "contextSize": "trimmed",
+        "contextWindow": 1000000,
+        "launchContextHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "availableInputTokens": 899131
+      },
+      "native_proof": {
+        "nativeRef": "$HOME/.papercusp/su-codex-homes/session-39012/sessions/2026/10/09/rollout-2026-10-09T15-52-52-01a12239-c18b-7911-bbc6-d82f5ea08127.jsonl",
+        "persisted": true,
+        "renderedHash": "61ad7cedd23ee19ddca0654015fc4f4236c2e2559a2b84494872967a7c9f4640"
+      },
+      "bootstrap_receipt": true,
+      "bootstrap_row": 39012,
+      "prepared_at": "2026-10-09 19:52:19.127689+00",
+      "delivered_at": "2026-10-09 19:52:59.946393+00",
+      "sourceOwner": "su-cb667d2a-6543-4a42-817d-48c566ff6b31"
+    },
+    {
+      "target_row": "39015",
+      "target_owner": "su-d41e957e-450a-45fc-9dd4-cff36edae472",
+      "target_native": "01a1223a-e212-7633-a036-1e45ca780c09",
+      "ended_at": null,
+      "port_id": "e2d01b21-6248-4a19-a701-fc3d17ffcf48",
+      "source_adv_session_id": "35144",
+      "target_adv_session_id": "39015",
+      "source_backend": "claude",
+      "target_backend": "codex",
+      "status": "delivered",
+      "source_hash": "c5da29a5142fd66d6a5849c024530b27d548912aca564aa28ebf44b1fb8ec809",
+      "normalized_hash": "b661794d9cd2724a94a8d0d8cac88108fdb50053b367beca4657a953bb486cf9",
+      "rendered_hash": "3a4818efa4aa8f6e48d6af46b9cf4aaaa53321d003533b960212d587d89c6b55",
+      "source": {
+        "cwd": "$PAPERCUSP_ROOT",
+        "backend": "claude",
+        "planSlug": null,
+        "snapshot": {
+          "kind": "archive-manifest",
+          "sha256": "c5da29a5142fd66d6a5849c024530b27d548912aca564aa28ebf44b1fb8ec809",
+          "completeBytes": 2980785,
+          "archiveRelpath": "projects/-home-builduser-papercupai-workspace-papercusp/68806532-f325-4e72-82d3-9f2e128aa765.jsonl",
+          "highWaterBytes": 2980785
+        },
+        "harnessSlug": null,
+        "workspaceId": "papercusp-workspace",
+        "advSessionId": 35144,
+        "nativeSessionId": "68806532-f325-4e72-82d3-9f2e128aa765"
+      },
+      "target": {
+        "model": "gpt-5.6-sol",
+        "account": "auto",
+        "backend": "codex",
+        "ownerId": "su-d41e957e-450a-45fc-9dd4-cff36edae472",
+        "provider": "openai",
+        "contextSize": "trimmed",
+        "contextWindow": 1000000,
+        "launchContextHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "availableInputTokens": 899131
+      },
+      "native_proof": {
+        "nativeRef": "$HOME/.papercusp/su-codex-homes/session-39015/sessions/2026/10/09/rollout-2026-10-09T15-54-06-01a1223a-e212-7633-a036-1e45ca780c09.jsonl",
+        "persisted": true,
+        "renderedHash": "3a4818efa4aa8f6e48d6af46b9cf4aaaa53321d003533b960212d587d89c6b55"
+      },
+      "bootstrap_receipt": true,
+      "bootstrap_row": 39015,
+      "prepared_at": "2026-10-09 19:54:04.600367+00",
+      "delivered_at": "2026-10-09 19:54:12.884621+00",
+      "sourceOwner": "su-89413428-d12b-49c8-a378-92c79940ccf9"
+    }
+  ],
+  "typedCalls": [
+    {
+      "id": "34873473",
+      "tool_name": "consult:decline",
+      "coord_owner_id": "su-16846131-8519-4a8b-a3d5-6d061c21648b",
+      "invoked_at": "2026-10-09 19:53:00.088+00",
+      "status": "error",
+      "error_code": "aborted",
+      "serving_build_sha": "42ead3e6b0",
+      "native_session": {
+        "binding": "bound",
+        "carrier": "meta:threadId",
+        "valueFingerprint": "2f8d4eaefc44395afcd7a691b88dde49d0bd097d46c179134c1ceaf044f0a228",
+        "callIdFingerprint": "321cbee4be09b42f21af02fee7e085b6f58d1d62e15fd06cec56c4f7f47ec229",
+        "candidateAdvSessionId": 39008
+      },
+      "launch_record": {
+        "xmin": "832808087",
+        "selection": "caller-row",
+        "advSessionId": "39008"
+      },
+      "settlement": {
+        "stage": "inner_dispatch_settled",
+        "outcome": "tool_error",
+        "traceId": "d6c01d61-cec3-4d1b-8dd3-bc95cb236dd9",
+        "elapsedMs": 76238,
+        "settledAt": "2026-10-09T19:53:00.088Z",
+        "afterDeadline": true,
+        "phaseTimingsMs": {
+          "advisory": 0,
+          "resultDoor": 0,
+          "advisoryFlagReads": 0,
+          "postDispatchToSettlement": 0
+        }
+      }
+    },
+    {
+      "id": "34874213",
+      "tool_name": "consult:reply",
+      "coord_owner_id": "su-cba7ccb2-d21c-497d-82ff-4542c2bec71c",
+      "invoked_at": "2026-10-09 19:54:13.056+00",
+      "status": "ok",
+      "error_code": null,
+      "serving_build_sha": "42ead3e6b0",
+      "native_session": {
+        "binding": "bound",
+        "carrier": "meta:threadId",
+        "valueFingerprint": "c57d651313db088572ff47cd9e8e83b0e6148c80a0c55fac03ac8b8108924a2e",
+        "callIdFingerprint": "f4f53a3d0d24fd43869a66ab136439c0982920fca916f93bea62a267d81f8851",
+        "candidateAdvSessionId": 39012
+      },
+      "launch_record": {
+        "xmin": "832820818",
+        "selection": "caller-row",
+        "advSessionId": "39012"
+      },
+      "settlement": {
+        "stage": "inner_dispatch_settled",
+        "outcome": "success",
+        "traceId": "71c279e5-badb-4c37-b60d-a9568b2bcfe8",
+        "elapsedMs": 11017,
+        "settledAt": "2026-10-09T19:54:13.057Z",
+        "afterDeadline": false,
+        "phaseTimingsMs": {
+          "advisory": 0,
+          "resultDoor": 0,
+          "advisoryFlagReads": 0,
+          "postDispatchToSettlement": 0
+        }
+      }
+    },
+    {
+      "id": "34874437",
+      "tool_name": "consult:reply",
+      "coord_owner_id": "su-d41e957e-450a-45fc-9dd4-cff36edae472",
+      "invoked_at": "2026-10-09 19:54:38.996+00",
+      "status": "ok",
+      "error_code": null,
+      "serving_build_sha": "42ead3e6b0",
+      "native_session": {
+        "binding": "bound",
+        "carrier": "meta:threadId",
+        "valueFingerprint": "e8d23ed5427d47a55c08a725a35876972cd5c7813eeeb7b965d5622b8d373575",
+        "callIdFingerprint": "5f12f4e95c88f4254977dc8b2c7f4cbd1f45ab08d86ee7b0bd3b62796ffeef4b",
+        "candidateAdvSessionId": 39015
+      },
+      "launch_record": {
+        "xmin": "832831944",
+        "selection": "caller-row",
+        "advSessionId": "39015"
+      },
+      "settlement": null
+    }
+  ],
+  "firstAttempt": {
+    "sourceOwner": "su-77610b91-024c-4c2d-a5f8-de6a42b2af38",
+    "answeringOwner": "su-16846131-8519-4a8b-a3d5-6d061c21648b",
+    "portId": "50e5ac66-bb5d-4e1b-8782-63f0b8aa293b",
+    "postId": 1169106,
+    "classification": "honest decline persisted; native disposition handler timed out",
+    "incident": "EI-25532882040525639",
+    "invocation": 34873473,
+    "scope": "Authentication bound via meta:threadId/caller-row; handler settlement afterDeadline true. This is preserved, not hidden as capacity unavailability."
+  },
+  "sourceClaimEndpoints": {
+    "before": {
+      "path": "/tmp/get-feedback-native-claims-before-20261009-1950.json",
+      "sha256": "b65f89cb3bba75c7bf706947ac8ee512d32d5ebadecc49281ee1745e2a6e46ef",
+      "asOf": "2026-10-09T19:49:31.703Z"
+    },
+    "after": {
+      "path": "/tmp/get-feedback-native-claims-after-20261009-1958.json",
+      "sha256": "1250f3330eeaa0df8703b24308835ca95d1c3142762171822e354bb9420ac86f",
+      "asOf": "2026-10-09T19:57:41.222Z"
+    },
+    "sources": [
+      {
+        "owner": "su-77610b91-024c-4c2d-a5f8-de6a42b2af38",
+        "rowPresent": false,
+        "claims": []
+      },
+      {
+        "owner": "su-cb667d2a-6543-4a42-817d-48c566ff6b31",
+        "rowPresent": true,
+        "claims": [
+          {
+            "type": "work-item",
+            "harnessSlug": "papercusp",
+            "planSlug": null,
+            "id": "EI-25202719592397257",
+            "status": "open",
+            "acquiredTs": "2026-10-06 02:12:45.693978-04",
+            "active": true
+          }
+        ]
+      },
+      {
+        "owner": "su-89413428-d12b-49c8-a378-92c79940ccf9",
+        "rowPresent": false,
+        "claims": []
+      }
+    ],
+    "endpointSignaturesEqual": true,
+    "scope": "Canonical roster endpoint state only. Missing ended-source rows are not an all-row claim census. Equality does not exclude mutate/revert, non-MCP actions or unlogged/system actions."
+  },
+  "physicalCallAudit": {
+    "status": "unknown",
+    "nativeThreadFingerprints": "Verified against target session IDs in stored tool rows; carrier meta:threadId and caller-row selection present.",
+    "callIdLink": "Native JSONL stores outer functions.exec call IDs. Their hashes differ from nested MCP callIdFingerprint observations; no authoritative outer-to-inner mapping has been recovered. Do not assert exact native-call correlation.",
+    "nativeExecCalls": [
+      {
+        "row": 39012,
+        "callId": "call_2316ad0f9c834fc99d34c0a1822e89e9",
+        "sha256": "94880250d952b4da63da81de68e2dea60dd80ecb1412106dec36917f10ac0d36"
+      },
+      {
+        "row": 39015,
+        "callId": "call_naAUutls3yw9OkKRDsuNI2W5",
+        "sha256": "c9d6facbf83c096dbe97168eb1584e3443f186165920f2c70c14bb8b4852f67e"
+      }
+    ]
+  },
+  "originalCohort": {
+    "path": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "eligible": 4,
+    "shortfall": 4,
+    "unchanged": true,
+    "supplementAddsNoOriginalCohortCredit": true
+  },
+  "retainedRawReads": [
+    "/tmp/get-feedback-native-conversation-20261009-1952.json",
+    "/tmp/get-feedback-native-conversation-20261009-1955.json"
+  ],
+  "remaining": [
+    "Exact physical native call correlation and bounded actor census",
+    "Disposition timeout root-cause fix and conventional recurrence guard under EI-25532882040525639",
+    "P004 canonical evidence metadata/integration/L4 gaps",
+    "P009/P010/P011 independent/current proof adequacy",
+    "Independent acceptance and exact shipped artifact"
+  ]
+}

@@ -315,6 +315,31 @@ describe('P-005-native-request-final-delivery-correlation: readVerbatimTail', ()
     ]);
   });
 
+  // EI-25227743201307257: a dialog answer is re-keyed to its own node id, so the
+  // request whose turn raised the dialog must be read from the PARENT node.
+  it('stamps a Claude dialog answer with the request of the turn that raised it (parentRequestId)', async () => {
+    const f = join(sandbox, 'dialog.jsonl');
+    const ask = (uuid: string, parentUuid: string) => JSON.stringify({ type: 'assistant', uuid, parentUuid, message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: `toolu_${uuid}`, name: 'AskUserQuestion', input: {} }] } });
+    const answer = (uuid: string, parentUuid: string, text: string) => JSON.stringify({ type: 'user', uuid, parentUuid, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_${parentUuid}`, content: `Your questions have been answered: "Mic?"="${text}".` }] } });
+    writeFileSync(f, [
+      JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: 'start the session' } }),
+      ask('q1', 'u1'),
+      answer('d1', 'q1', 're-plugged'),
+      JSON.stringify({ type: 'assistant', uuid: 'a2', parentUuid: 'd1', message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'text', text: 'asking again' }] } }),
+      ask('q2', 'a2'),
+      answer('d2', 'q2', 'not at the machine'),
+      JSON.stringify({ type: 'assistant', uuid: 'a3', parentUuid: 'd2', message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'understood' }] } }),
+    ].join('\n') + '\n');
+    const users = (await readVerbatimTail(f, 'claude', 20)).filter((t) => t.speaker === 'user');
+    expect(users).toMatchObject([
+      { text: 'start the session', requestId: 'u1' },
+      { requestId: 'd1', parentRequestId: 'u1' },
+      { requestId: 'd2', parentRequestId: 'd1' },
+    ]);
+    // A root prompt has no parent node, so it carries no link at all.
+    expect(users[0]).not.toHaveProperty('parentRequestId');
+  });
+
   it('uses Codex task completion as the terminal receipt and keeps an errored turn interrupted', async () => {
     const f = join(sandbox, 'codex.jsonl');
     const message = (role: 'user' | 'assistant', text: string, turnId: string, phase?: string) => JSON.stringify({

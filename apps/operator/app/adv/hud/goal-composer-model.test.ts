@@ -17,6 +17,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ceilingToCents,
+  getGoalStartRequestIdentity,
   postGoalStart,
   validateGoalDraft,
   type GoalComposerDraft,
@@ -140,8 +141,34 @@ describe('validateGoalDraft', () => {
   });
 });
 
+describe('getGoalStartRequestIdentity', () => {
+  const args = {
+    title: 'Ship a paid app',
+    killCriterion: 'no paying user by day 30',
+    budgetCents: 50_000,
+    body: 'First release',
+  };
+  const scope = { workspaceId: 'ws-1', harnessSlug: 'papercusp' };
+
+  it('reuses the key for identical validated args and rotates it when args or scope change', () => {
+    const createKey = vi.fn()
+      .mockReturnValueOnce('request-1')
+      .mockReturnValueOnce('request-2')
+      .mockReturnValueOnce('request-3');
+    const first = getGoalStartRequestIdentity(args, scope, null, createKey);
+    const retry = getGoalStartRequestIdentity({ ...args }, scope, first, createKey);
+    const changedArgs = getGoalStartRequestIdentity({ ...args, body: 'Second release' }, scope, retry, createKey);
+    const changedScope = getGoalStartRequestIdentity(args, { ...scope, workspaceId: 'ws-2' }, changedArgs, createKey);
+
+    expect(retry).toBe(first);
+    expect(changedArgs.requestKey).toBe('request-2');
+    expect(changedScope.requestKey).toBe('request-3');
+    expect(createKey).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe('postGoalStart', () => {
-  const opts = { workspaceId: 'ws-1', harnessSlug: 'papercusp' };
+  const opts = { workspaceId: 'ws-1', harnessSlug: 'papercusp', requestKey: 'request-1' };
 
   it('unwraps the goal id and the agent id from the two-layer envelope', async () => {
     const fetchImpl = fetchReturning(
@@ -162,7 +189,11 @@ describe('postGoalStart', () => {
     expect(url).toContain('/api/agent-tools/goals/start');
     expect(url).toContain('ws=ws-1');
     expect(url).toContain('harness=papercusp');
-    expect(JSON.parse(String(init.body))).toMatchObject({ harness: 'papercusp', budgetCents: 1 });
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      harness: 'papercusp',
+      budgetCents: 1,
+      requestKey: 'request-1',
+    });
   });
 
   it('ALWAYS asks goals:start for a HEADLESS agent — no console window', async () => {

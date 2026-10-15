@@ -52,6 +52,14 @@
     // If a future input needs another @types package, ADD it to this array —
     // `types` restricts automatic @types inclusion, so an omission fails at emit time.
     "types": ["node"],
+    // ⚠ Do NOT add `allowImportingTsExtensions` here. It would tolerate a
+    // `.ts`-suffixed relative import in an input's TS graph (TS5097), but it also
+    // changes declaration EMIT: tsc then writes specifiers like
+    // `import("./related-tests.d.mts")` where it wrote `import("./related-tests.mjs")`
+    // (measured 2026-10-13, WI-6554700010010634). A TS source reachable from these
+    // inputs that must also run under plain node imports its sibling by package
+    // self-reference instead (`@papercusp/operator-core/lib/<file>`); both halves are
+    // pinned by packages/operator-core/lib/gen-declarations-ts-extension-imports.test.ts.
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2022",
@@ -69,9 +77,23 @@
   // An explicit list is also the honest surface: a glob would silently start
   // emitting declarations for every future script in the repo.
   "files": [
+    "scripts/mcp-call.mjs",
+    // WI-10007656: native DAO verification and its regression import this fixture.
+    "scripts/fixtures/dao-workbench-identity.mjs",
+    // EI-25217214806027261 — bundle-host's free-reference guard, imported directly by
+    // scripts/check-bundle-free-refs.test.ts (the list's first reason: no TS7016).
+    "scripts/check-bundle-free-refs.mjs",
+    // EI-24834079439388393: ptool's SDK-install race regression imports the
+    // maintained mutex and install boundary directly; keep their types generated.
+    "scripts/lib/fs-mutex.mjs",
+    "scripts/npm-install-safe.mjs",
     "scripts/lib/not-checked.mjs",
     "scripts/lib/git-index-fault.mjs",
+    "scripts/lib/git-optional-locks.mjs",
     "scripts/lib/task-exit-class.mjs",
+    // WI-6554700010009815 — the foreign-hive submodule registry, imported by the
+    // gitmodules-invariants test; keep its types generated.
+    "scripts/lib/foreign-hive-submodules.mjs",
     // WI-42146 / P-047 — the test-certified watermark that decouples the affected-test
     // diff base from the green-main pointer. Registered for this list's first reason: it
     // is imported directly by affected-tests-test-certified-base.test.ts.
@@ -93,6 +115,8 @@
     // red'd on the un-baselined offender and lint:tsc reported the matching TS7016 on
     // the same import, one defect surfacing at two gates.
     "scripts/lib/related-tests.mjs",
+    // WI-10006650: imported directly by e2e-fixture-specs-selection.test.ts.
+    "scripts/lib/e2e-fixture-specs.mjs",
     "scripts/lib/retry-failure-shape.mjs",
     // gate-latency-selection-and-retry-policy-2026-09-06 P-002 — the runner side of the
     // executed-source map (loader + git drift seam). Registered for the same reason as
@@ -102,10 +126,28 @@
     // (D-004). Registered for the same reason as executed-source-map.mjs above: imported
     // directly by test-pass-reuse.test.ts.
     "scripts/lib/test-pass-reuse.mjs",
+    // gitnexus-selective-hardening-and-comparison-2026-09-13 P-008 — the pure snapshot-bound,
+    // source-corroborated graph-suggestion module behind the affected-test selector. Imported
+    // directly by affected-tests-graph-suggestions.test.ts.
+    "scripts/lib/graph-dependency-suggestions.mjs",
+    // P-008 — the out-of-band producer for that snapshot (the only code that reads the graph
+    // backend; fails closed). Imported directly by gen-graph-dependency-snapshot.test.ts.
+    "scripts/gen-graph-dependency-snapshot.mjs",
+    // gate-test-reuse-yield-2026-10-01 P-007 (D-010) — per-table generated-schema drift. Imported
+    // by test-pass-reuse.mjs and directly by schema-symbol-drift.test.ts.
+    "scripts/lib/schema-symbol-drift.mjs",
+    // degradation-signals-on-condition-rail-2026-10-11 P-001 (BAR R-4) — the measuring inventory of
+    // failure signals that bypass the condition rail. Imported directly by
+    // condition-rail-inventory.test.ts; the P-006 lint builds on the same scanner.
+    "scripts/lib/condition-rail-inventory.mjs",
     // EI-24538088938561684 — pass reuse + proof recording for the gate's targeted task re-runs.
     // Imported by apps/operator/lib/release/green-checkpoint.ts (runGateAtRef) and directly by
     // targeted-task-reuse.test.ts.
     "scripts/lib/targeted-task-reuse.mjs",
+    // gate-test-reuse-yield-2026-10-01 P-006 (D-005 §1) — post-verdict pure-lane proof capture.
+    // Imported by apps/operator/lib/release/green-checkpoint.ts (runPostVerdictPureProofCapture)
+    // and directly by pure-lane-proof-capture.test.ts.
+    "scripts/lib/pure-lane-proof-capture.mjs",
     // EI-20812741760514969 — the "where did this run's blast radius come from" reporter.
     // Registered for the FIRST reason this list exists: it is imported directly by
     // affected-tests-changed-path-provenance.test.ts, which is what makes the disclosure
@@ -276,7 +318,14 @@
     // BYOC P-014 — imported directly by the TypeScript-focused controller test and
     // by psu-launcher.mjs; keep its inferred surface generated and drift-checked.
     "apps/operator/scripts/psu-connection-front-controller.mjs",
+    // WI-10006057 — imported by psu-launcher.mjs and its TypeScript test.
+    "apps/operator/scripts/psu-operator-down-diagnosis.mjs",
     "apps/operator/scripts/psu-pty-host.mjs",
+    // WI-10007614: the asynchronous TTY bridge and offline customer diagnostics.
+    "apps/operator/scripts/psu-terminal-output.mjs",
+    // Live terminal repair is imported by its conventional TypeScript regression.
+    "apps/operator/scripts/psu-terminal-repair.mjs",
+    "apps/operator/scripts/psu-terminal-diagnostics.mjs",
     // EI-20228184337467634 — ptool.mjs is imported by TypeScript tests; register
     // its runtime dependency too so the complete CLI import surface is typed.
     "apps/operator/scripts/ptool.mjs",
@@ -330,6 +379,12 @@
     // P-004 — plain-Node test CLIs import this bridge directly; generate its
     // declaration so TypeScript callers cannot silently fall back to TS7016.
     "scripts/lib/governed-test-process.mjs",
+    // WI-6554700010009179 — scripts/r11-window-snapshot.mts imports the strict
+    // evidence-admission reader directly; without a declaration that import is a
+    // TS7016 and every value it returns (devices[], requiredBytes) is untyped `any`.
+    "scripts/lib/disk-reservations.mjs",
+    // EI-25512374287066207 — shared by the armed source and cgroup preloads.
+    "libs/test-config/src/process-termination-observer.mjs",
     // WI-41775 — the MODULE axis of check-lint-guard-reachability: which lib/release
     // detector modules no production path calls. Registered for this list's usual
     // reason: it is imported directly by module-reachability.test.ts, which would
@@ -381,6 +436,30 @@
     "scripts/lib/mutation-probe-window.mjs",
     // shared-vector-search-libraries-2026-09-29 P-007 (WI-10004276): the BORROWABLE.md
     // generator's export index is imported by borrowable-export-index.test.ts.
-    "scripts/gen-borrowable-catalog.mjs"
+    "scripts/gen-borrowable-catalog.mjs",
+    // Shared inspector client is imported by memory and transport contract tests.
+    "scripts/cdp-inspector.mjs",
+    // WI-10008237: the CPU sampler is imported by packages/operator-core/lib/cpu-sample.test.ts.
+    "scripts/cpu-sample.mjs",
+    "scripts/analyze-heap-snapshots.mjs",
+    // WI-10005802: committed-source-loader.test.ts pins that the workspace test launcher
+    // routes explicit files through the router under the committed-source loader.
+    "scripts/workspace-test.mjs",
+    // WI-10005888: apps/operator/lib/public-docs-readiness.test.ts imports the public
+    // manual's source contract.
+    "apps/papercusp-docs/scripts/source-contract.mjs",
+    // EI-25703002383953643 — the import guard found these strict-TypeScript importers
+    // without an enrolled declaration. Keep the inferred surfaces generated so they
+    // cannot absorb TS7016: portal download, startup trace, workspace enrollment,
+    // and the release real-deps test's dependency-lock tree audit.
+    "apps/operator/bin/release/dependency-lock-tree-audit.mjs",
+    "apps/operator/scripts/portal-android-download-launcher.mjs",
+    "scripts/assert-workspace-links.mjs",
+    "scripts/lib/vitest-startup-trace.mjs",
+    // WI-10007180: imported by the isolated reviewer fixture's TypeScript tests.
+    "scripts/reviewer-operator-assert.mjs",
+    // WI-6554700010009433: the cross-leg per-file typecheck primitive, imported by
+    // packages/operator-core/lib/tsc-cross-leg-check.test.ts.
+    "scripts/lib/tsc-cross-leg-check.mjs"
   ]
 }

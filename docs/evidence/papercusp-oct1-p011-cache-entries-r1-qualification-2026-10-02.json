@@ -1,0 +1,506 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005452",
+  "parentWorkItem": "WI-10004890",
+  "planItem": "P-011",
+  "cohort": "operator-cache-entry-attribution-r1",
+  "evidencePlane": "live-current-build",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-cache-entries-r1-2026-10-02.json",
+    "bytes": 760064,
+    "sha256": "8dca7eb621d2066d078d7867fbe694de999d1f259aa0279a7fe6664341d8612c"
+  },
+  "runtime": {
+    "pid": 3395097,
+    "buildSha": "61ea9e254d",
+    "startedAt": "2026-10-02T12:01:16.601Z",
+    "endedAt": "2026-10-02T12:01:31.941Z",
+    "incomplete": false,
+    "cleanup": {
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true
+    },
+    "healthBefore": {
+      "sha": "61ea9e254d",
+      "version": "0.0.0",
+      "at": "2026-10-02T12:01:20.310Z"
+    },
+    "healthAfter": {
+      "sha": "61ea9e254d",
+      "version": "0.0.0",
+      "at": "2026-10-02T12:01:31.572Z"
+    },
+    "bundle": {
+      "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-61ea9e254de3.4jhKOU/checkout/apps/operator/dist-host/hono-host.mjs",
+      "argvEntry": "dist-host/hono-host.mjs",
+      "diskSha256": "0560e38f5164501d13a8ac2486829eb81aa29376eb2d35c99169ab983631eef2",
+      "diskSha256After": "0560e38f5164501d13a8ac2486829eb81aa29376eb2d35c99169ab983631eef2"
+    }
+  },
+  "execution": {
+    "guard": {
+      "testRunId": 20526842,
+      "testsPassed": 9,
+      "testsSkipped": 0
+    },
+    "baseline": {
+      "testRunId": 20526948,
+      "testsPassed": 3,
+      "testsSkipped": 0
+    },
+    "ledger": [
+      {
+        "id": 20526948,
+        "filePath": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+        "status": "pass",
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "startedAt": "2026-10-02T12:01:15.897Z",
+        "finishedAt": "2026-10-02T12:01:32.086Z",
+        "runGroupId": null
+      },
+      {
+        "id": 20526842,
+        "filePath": "packages/operator-core/lib/cdp-inspector.test.ts",
+        "status": "pass",
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "startedAt": "2026-10-02T11:58:31.086Z",
+        "finishedAt": "2026-10-02T11:58:33.605Z",
+        "runGroupId": null
+      }
+    ],
+    "types": {
+      "namedFiles": 2,
+      "errors": 0
+    },
+    "logReceipts": [
+      {
+        "path": "/tmp/su-7db4f-p011-cache-entry-guard-r1.log",
+        "bytes": 4724,
+        "sha256": "4f79b7700cf11ecdd4d289c1a3bdc16967ec2d259904f48cb6a81d00a718df78"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-cache-entry-types-r1.log",
+        "bytes": 1180,
+        "sha256": "c6f7be232579e891fc0b4af9b08ae819e257b9899065e008290ec64e33370617"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-cache-entries-r1.log",
+        "bytes": 5198,
+        "sha256": "4179c48c6ec5bcce986e71f578dae7298e6a410c94b37dc43f9a9702ab2e4736"
+      }
+    ]
+  },
+  "sourceQualification": {
+    "population": [
+      "scripts/cdp-inspector.mjs",
+      "scripts/cdp-inspector.d.mts",
+      "packages/operator-core/lib/cdp-inspector.test.ts",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts"
+    ],
+    "checked": [
+      "scripts/cdp-inspector.mjs",
+      "scripts/cdp-inspector.d.mts",
+      "packages/operator-core/lib/cdp-inspector.test.ts",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts"
+    ],
+    "notChecked": [],
+    "notApplicable": [],
+    "residue": [],
+    "before": {
+      "scripts/cdp-inspector.mjs": "2586fb844e7a268dbc0ecf8d140a0780cb03dac2fb57590d4254e84c531a8384",
+      "scripts/cdp-inspector.d.mts": "b9af90e17cf5b6ec04e07b8e92b316d2169f055b2f0fb97c1bc917ad5627663f",
+      "packages/operator-core/lib/cdp-inspector.test.ts": "f342cb4dfbd7284c8f6e25cc4e06a5fbadab3f3a19ec40750008d029f826d8b2",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "9c6b11d98bc857f1e9a370f7e355322669f10aee7b4e89a16c91c9f8aeed540d"
+    },
+    "after": {
+      "scripts/cdp-inspector.mjs": "2586fb844e7a268dbc0ecf8d140a0780cb03dac2fb57590d4254e84c531a8384",
+      "scripts/cdp-inspector.d.mts": "b9af90e17cf5b6ec04e07b8e92b316d2169f055b2f0fb97c1bc917ad5627663f",
+      "packages/operator-core/lib/cdp-inspector.test.ts": "f342cb4dfbd7284c8f6e25cc4e06a5fbadab3f3a19ec40750008d029f826d8b2",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "9c6b11d98bc857f1e9a370f7e355322669f10aee7b4e89a16c91c9f8aeed540d"
+    },
+    "namedSourcesUnchanged": true,
+    "fullTransitiveGraph": "unknown",
+    "servingSourceGraph": "unknown",
+    "scope": "Hashes pin only these named local reader/declaration/tests. Health and disk bundle identity are separate; they do not establish equivalence with all current staging source."
+  },
+  "observed": {
+    "samples": [
+      {
+        "label": "idle-0-start",
+        "population": 202,
+        "checked": 64,
+        "notChecked": 138,
+        "observerMs": 13.043278999975882,
+        "entries": 9158,
+        "objects": 2695,
+        "partialValues": 6,
+        "pssBytes": 3483507712,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 48,
+            "partialValues": 0,
+            "stringCodeUnits": 14412,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 6,
+            "partialValues": 0,
+            "stringCodeUnits": 22364,
+            "sharedEdges": 1
+          },
+          "coord:inbox": {
+            "checkedValues": 9,
+            "partialValues": 6,
+            "stringCodeUnits": 746595,
+            "sharedEdges": 0
+          },
+          "work_items:list": {
+            "checkedValues": 1,
+            "partialValues": 0,
+            "stringCodeUnits": 705,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-0-end",
+        "population": 206,
+        "checked": 64,
+        "notChecked": 142,
+        "observerMs": 14.030843999935314,
+        "entries": 9158,
+        "objects": 2695,
+        "partialValues": 6,
+        "pssBytes": 3549364224,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 48,
+            "partialValues": 0,
+            "stringCodeUnits": 14412,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 6,
+            "partialValues": 0,
+            "stringCodeUnits": 22364,
+            "sharedEdges": 1
+          },
+          "coord:inbox": {
+            "checkedValues": 9,
+            "partialValues": 6,
+            "stringCodeUnits": 746595,
+            "sharedEdges": 0
+          },
+          "work_items:list": {
+            "checkedValues": 1,
+            "partialValues": 0,
+            "stringCodeUnits": 705,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "ordinary-0-end",
+        "population": 206,
+        "checked": 64,
+        "notChecked": 142,
+        "observerMs": 14.043277999968268,
+        "entries": 9158,
+        "objects": 2695,
+        "partialValues": 6,
+        "pssBytes": 3551236096,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 48,
+            "partialValues": 0,
+            "stringCodeUnits": 14412,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 6,
+            "partialValues": 0,
+            "stringCodeUnits": 22364,
+            "sharedEdges": 1
+          },
+          "coord:inbox": {
+            "checkedValues": 9,
+            "partialValues": 6,
+            "stringCodeUnits": 746595,
+            "sharedEdges": 0
+          },
+          "work_items:list": {
+            "checkedValues": 1,
+            "partialValues": 0,
+            "stringCodeUnits": 705,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-1-start",
+        "population": 206,
+        "checked": 64,
+        "notChecked": 142,
+        "observerMs": 16.412730999989435,
+        "entries": 9158,
+        "objects": 2695,
+        "partialValues": 6,
+        "pssBytes": 3551241216,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 48,
+            "partialValues": 0,
+            "stringCodeUnits": 14412,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 6,
+            "partialValues": 0,
+            "stringCodeUnits": 22364,
+            "sharedEdges": 1
+          },
+          "coord:inbox": {
+            "checkedValues": 9,
+            "partialValues": 6,
+            "stringCodeUnits": 746595,
+            "sharedEdges": 0
+          },
+          "work_items:list": {
+            "checkedValues": 1,
+            "partialValues": 0,
+            "stringCodeUnits": 705,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-1-end",
+        "population": 206,
+        "checked": 64,
+        "notChecked": 142,
+        "observerMs": 18.23279299994465,
+        "entries": 9158,
+        "objects": 2695,
+        "partialValues": 6,
+        "pssBytes": 3556015104,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 48,
+            "partialValues": 0,
+            "stringCodeUnits": 14412,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 6,
+            "partialValues": 0,
+            "stringCodeUnits": 22364,
+            "sharedEdges": 1
+          },
+          "coord:inbox": {
+            "checkedValues": 9,
+            "partialValues": 6,
+            "stringCodeUnits": 746595,
+            "sharedEdges": 0
+          },
+          "work_items:list": {
+            "checkedValues": 1,
+            "partialValues": 0,
+            "stringCodeUnits": 705,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "ordinary-1-end",
+        "population": 206,
+        "checked": 64,
+        "notChecked": 142,
+        "observerMs": 10.400900000007823,
+        "entries": 9158,
+        "objects": 2695,
+        "partialValues": 6,
+        "pssBytes": 3556042752,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 48,
+            "partialValues": 0,
+            "stringCodeUnits": 14412,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 6,
+            "partialValues": 0,
+            "stringCodeUnits": 22364,
+            "sharedEdges": 1
+          },
+          "coord:inbox": {
+            "checkedValues": 9,
+            "partialValues": 6,
+            "stringCodeUnits": 746595,
+            "sharedEdges": 0
+          },
+          "work_items:list": {
+            "checkedValues": 1,
+            "partialValues": 0,
+            "stringCodeUnits": 705,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-2-start",
+        "population": 206,
+        "checked": 64,
+        "notChecked": 142,
+        "observerMs": 11.345893000019714,
+        "entries": 9158,
+        "objects": 2695,
+        "partialValues": 6,
+        "pssBytes": 3556701184,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 48,
+            "partialValues": 0,
+            "stringCodeUnits": 14412,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 6,
+            "partialValues": 0,
+            "stringCodeUnits": 22364,
+            "sharedEdges": 1
+          },
+          "coord:inbox": {
+            "checkedValues": 9,
+            "partialValues": 6,
+            "stringCodeUnits": 746595,
+            "sharedEdges": 0
+          },
+          "work_items:list": {
+            "checkedValues": 1,
+            "partialValues": 0,
+            "stringCodeUnits": 705,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "idle-2-end",
+        "population": 205,
+        "checked": 64,
+        "notChecked": 141,
+        "observerMs": 12.281718999962322,
+        "entries": 8802,
+        "objects": 2587,
+        "partialValues": 6,
+        "pssBytes": 3598770176,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 49,
+            "partialValues": 0,
+            "stringCodeUnits": 14566,
+            "sharedEdges": 0
+          },
+          "coord:inbox": {
+            "checkedValues": 9,
+            "partialValues": 6,
+            "stringCodeUnits": 701119,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 5,
+            "partialValues": 0,
+            "stringCodeUnits": 20836,
+            "sharedEdges": 1
+          },
+          "work_items:list": {
+            "checkedValues": 1,
+            "partialValues": 0,
+            "stringCodeUnits": 705,
+            "sharedEdges": 0
+          }
+        }
+      },
+      {
+        "label": "ordinary-2-end",
+        "population": 205,
+        "checked": 64,
+        "notChecked": 141,
+        "observerMs": 9.184603000059724,
+        "entries": 8802,
+        "objects": 2587,
+        "partialValues": 6,
+        "pssBytes": 3558607872,
+        "namespaces": {
+          "unknown": {
+            "checkedValues": 49,
+            "partialValues": 0,
+            "stringCodeUnits": 14566,
+            "sharedEdges": 0
+          },
+          "coord:inbox": {
+            "checkedValues": 9,
+            "partialValues": 6,
+            "stringCodeUnits": 701119,
+            "sharedEdges": 0
+          },
+          "work_items:get": {
+            "checkedValues": 5,
+            "partialValues": 0,
+            "stringCodeUnits": 20836,
+            "sharedEdges": 1
+          },
+          "work_items:list": {
+            "checkedValues": 1,
+            "partialValues": 0,
+            "stringCodeUnits": 705,
+            "sharedEdges": 0
+          }
+        }
+      }
+    ],
+    "http": {
+      "count": 24,
+      "statuses": [
+        200
+      ],
+      "rows": [
+        32
+      ]
+    }
+  },
+  "definitions": {
+    "stringCodeUnits": "Visited string edge lengths, not UTF-8/retained/physical bytes; strings may share storage.",
+    "sharedEdges": "Already visited object identities under this observation; assigned to the first observed value only.",
+    "population": "Native Map.size of the identified L1 map at each sample.",
+    "checked": "First bounded Map entries in current insertion order; not a representative random sample.",
+    "partialValues": "traversalLimited OR fieldsLimited OR depthLimited; excludes separately reported proxy/accessor/closure/symbol/non-enumerable gaps.",
+    "expiry": "Own data descriptor expiry time versus Date.now; generation-tag freshness is not evaluated.",
+    "pssBytes": "Kernel smaps_rollup Pss kB times 1024 for this main PID; ambient uncontrolled, no intervention."
+  },
+  "conclusion": {
+    "readerVerified": true,
+    "cachePopulationCoverage": "partial",
+    "physicalSavings": "not-measured",
+    "capacityRecommendation": "none",
+    "P011Acceptance": "open",
+    "independentAcceptance": "open",
+    "shipment": "open"
+  },
+  "limits": [
+    "First 64 entries examined; 138–142 additional map entries unexamined in this cohort.",
+    "Six examined payloads traversal-limited in every sample; observed namespace sums are bounded logical observations.",
+    "Unknown key formats expose only key length and digest, without guessed namespace.",
+    "Main process only; request/response may be handled by sibling HTTP workers.",
+    "Ambient workload uncontrolled; idle means no probe HTTP requests.",
+    "No application cache reads/writes, LRU touches, GC, profiler or heap snapshot performed.",
+    "No attribution of historical compiler services, paired physical savings or useful-context parity."
+  ],
+  "next": "Inspect the remaining entry population with the existing bounded entry mode or select protected digests while retaining the same global work/time bounds; inspect actual namespace writers before any cache behavior change. Preserve historical R2/R3 proofs, Audit6/P009 and pending canonical EIs."
+}

@@ -10,9 +10,42 @@ import {
   featureChecker,
   isExternalFileAnchor,
   classifyFileAnchor,
+  nonFileAnchorChecker,
   type AuditCheckers,
   type MemoryWithAnchors,
 } from './audit-anchors';
+
+describe('non-file anchor audit', () => {
+  const refs = [
+    { kind: 'work-item', value: 'WI-123' }, { kind: 'decision', value: 'memory-2026-10-14#D-001' },
+    { kind: 'fact', value: 'guard-rail:safe' }, { kind: 'session-turn', value: 'codex:abc:4' },
+    { kind: 'report', value: 'rpt_12345678-1234-1234-1234-123456789abc' },
+  ] as const;
+  it.each(refs)('marks missing $kind evidence broken and restores it when it resolves', async anchor => {
+    let present = false;
+    const checker = nonFileAnchorChecker({ query: async (_query, params) => {
+      expect(params?.[0]).toBe('ws');
+      return { rows: present ? [{}] : [] };
+    } });
+    const options = { memories: [{ memoryId: 'm', workspaceId: 'ws', anchors: [anchor] }],
+      checkers: { file: checker, plan: checker, migration: checker, feature: checker, [anchor.kind]: checker } };
+    expect((await runAnchorAudit(options)).broken[0].hasBroken).toBe(true);
+    present = true;
+    expect((await runAnchorAudit(options)).broken).toEqual([]);
+  });
+  it('refuses to validate a fact after retraction and scopes the live-state query', async () => {
+    let retracted = false;
+    const checker = nonFileAnchorChecker({ query: async (query, params) => {
+      expect(query).toContain('retracted_at IS NULL');
+      expect(query).toContain('superseded_at IS NULL');
+      expect(params).toEqual(['ws', 'safe']);
+      return { rows: retracted ? [] : [{}] };
+    } });
+    expect(await checker({ kind: 'fact', value: 'safe' }, { memoryId: 'm', workspaceId: 'ws', anchors: [] })).toEqual({ ok: true });
+    retracted = true;
+    expect(await checker({ kind: 'fact', value: 'safe' }, { memoryId: 'm', workspaceId: 'ws', anchors: [] })).toMatchObject({ ok: false });
+  });
+});
 
 const okChecker = async () => ({ ok: true } as const);
 const fixedNow = () => '2026-05-25T00:00:00.000Z';

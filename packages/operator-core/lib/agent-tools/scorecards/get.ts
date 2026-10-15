@@ -7,30 +7,101 @@ import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors'
 import { getDoorConstantsSync } from '../../context-doors-config';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { readScorecardEvidence, type ScorecardEvidenceRow } from '../../scorecards';
+import {
+  classifyGradingAuditCurrentness,
+  readScorecardEvidence,
+  readScorecardRecipeHeader,
+  type ScorecardEvidenceRow,
+  type ScorecardRecipeHeader,
+} from '../../scorecards';
+import { getRubricWithoutSeeding } from '../../rubrics';
+import { GRADING_INTEGRITY_RUBRIC_REF } from '../../grading-integrity';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import {
+  createStageAttempt,
+  logIfStageStalls,
+  traceStageAwait,
+  withStageAttempt,
+} from '../../sync/hyperbee/stage-stall-log';
+import {
+  namedQueryStageTimings,
+  traceNamedQueryStage,
+  withNamedQueryDiagnosticContext,
+} from '../db-diagnostic-correlation-wiring';
+import {
+  OBSERVATION_ATTRIBUTIONS,
+  OBSERVATION_UNKNOWN_REASONS,
+} from '../../harness/improvements/observation-types';
+
+const SCORECARD_GET_DIAGNOSTIC_STAGE = {
+  evidenceRead: 'scorecards-get-evidence-read',
+  gradingAuditRubricRead: 'scorecards-get-rubric-read',
+} as const;
+type ScorecardGetDiagnosticStage = (typeof SCORECARD_GET_DIAGNOSTIC_STAGE)[keyof typeof SCORECARD_GET_DIAGNOSTIC_STAGE];
 
 export const scorecardGetArgs = z.object({
   issueId: z
     .string()
     .min(1)
     .max(120)
-    .describe('the scorecard issue id (EI-/WI-) whose criterion evidence must be re-run'),
+    .optional()
+    .describe('the scorecard issue id (EI-/WI-) whose criterion evidence must be re-run; preferred over the id alias'),
+  id: z
+    .string()
+    .min(1)
+    .max(120)
+    .optional()
+    .describe('Compatibility alias for issueId for generic id-based read callers; issueId wins when both are supplied.'),
   criterionKey: z.string().min(1).max(200).optional()
     .describe('Read one criterion from an oversized card index. Evidence remains exact; follow evidenceRead.next until complete.'),
+  indexOffset: z.number().int().min(0).optional()
+    .describe('Resume a paged criterion index at evidenceRead.next.args.indexOffset.'),
   evidenceOffset: z.number().int().min(0).optional()
     .describe('UTF-16 offset from evidenceRead.next for one criterion. Concatenate pages in order; never grade from an incomplete page.'),
+  rerunRecipeOffset: z.number().int().min(0).optional()
+    .describe('UTF-16 offset from rerunRecipeRead.read or next. Concatenate JSON chunks and parse only after rerunRecipeRead.complete.'),
+}).refine(({ issueId, id }) => issueId !== undefined || id !== undefined, {
+  message: 'issueId or id is required',
+  path: ['issueId'],
+}).refine(({ criterionKey, indexOffset }) => criterionKey === undefined || indexOffset === undefined, {
+  message: 'criterionKey and indexOffset cannot be combined',
+  path: ['indexOffset'],
+}).refine(({ rerunRecipeOffset, criterionKey, indexOffset, evidenceOffset }) =>
+  rerunRecipeOffset === undefined ||
+  (criterionKey === undefined && indexOffset === undefined && evidenceOffset === undefined), {
+  message: 'rerunRecipeOffset cannot be combined with criterion or index paging',
+  path: ['rerunRecipeOffset'],
 });
 
 // Bound the JSON-encoded result before both payload shaping and the later MCP
 // result door. The latter is much smaller than the shared 30k payload ceiling;
-// if it clips a complete criterion page, evidenceRead.complete lies about what
-// reached the model. Keep the exact same effective door settings as the host.
+// the result door must preserve paging truth when its own projection clips a page.
+
+// The handler body is serialized again as an MCP content item. Reserve room for
+// that wire envelope so tools:invoke's outer result door cannot force-project a
+// complete evidence page down to its generic string limit while leaving
+// evidenceRead.complete unchanged.
+const RESULT_DOOR_SERIALIZATION_RESERVE_CHARS = 256;
+
+function fitsInlineResult(result: unknown, budgetChars: number): boolean {
+  const text = JSON.stringify(result);
+  // tools:invoke wraps the JSON body in an MCP text block; quoted JSON recipe
+  // chunks gain another escape layer there. Budget that actual envelope too.
+  return Buffer.byteLength(text, 'utf8') <= budgetChars &&
+    Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text }] }), 'utf8') <= budgetChars;
+}
+
 function inlineResultBudgetChars(ownerId?: string | null): number {
   const resultDoorChars =
     computeTurnDoors(0, getDoorConstantsSync(ownerId)).resultEach * CHARS_PER_TOKEN_ESTIMATE;
-  return Math.max(1, Math.min(Math.floor(PAYLOAD_TIER_HARD_CEILING_CHARS / 2), resultDoorChars));
+  return Math.max(
+    1,
+    Math.min(
+      Math.floor(PAYLOAD_TIER_HARD_CEILING_CHARS / 2),
+      resultDoorChars - RESULT_DOOR_SERIALIZATION_RESERVE_CHARS,
+    ),
+  );
 }
 
 const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset = 0) => ({
@@ -38,37 +109,318 @@ const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset 
   args: { issueId, criterionKey, evidenceOffset },
 });
 
+const criterionIndexReadCall = (issueId: string, indexOffset: number) => ({
+  tool: 'scorecards:get',
+  args: { issueId, indexOffset },
+});
+
+const rerunRecipeReadCall = (issueId: string, rerunRecipeOffset = 0) => ({
+  tool: 'scorecards:get' as const,
+  args: { issueId, rerunRecipeOffset },
+});
+
+const rerunRecipeReadCallSchema = z.object({
+  tool: z.literal('scorecards:get'),
+  args: z.object({ issueId: z.string(), rerunRecipeOffset: z.number().int().nonnegative() }),
+});
+
+const evidenceReadCallSchema = z.object({
+  tool: z.literal('scorecards:get'),
+  args: z.object({
+    issueId: z.string(),
+    criterionKey: z.string().optional(),
+    evidenceOffset: z.number().int().nonnegative().optional(),
+    indexOffset: z.number().int().nonnegative().optional(),
+  }).passthrough().refine(({ criterionKey, indexOffset }) =>
+    (criterionKey !== undefined) !== (indexOffset !== undefined)),
+}).passthrough();
+
+const scorecardEvidenceCriterionSchema = z.object({
+  key: z.string(),
+  rating: z.string(),
+  evidence: z.string(),
+  evidenceRef: z.string().optional(),
+  evidenceKind: z.string().optional(),
+  positiveControlRef: z.string().optional(),
+  absenceClaim: z.boolean().optional(),
+  unknownReason: z.enum(OBSERVATION_UNKNOWN_REASONS).optional(),
+  attribution: z.enum(OBSERVATION_ATTRIBUTIONS).optional(),
+  nextEvidenceAction: z.string().optional(),
+  suggestion: z.string().optional(),
+  remediation: z.string().optional(),
+  disregard: z.string().optional(),
+}).passthrough();
+
+const scorecardSubjectRubricCurrentnessSchema = z.object({
+  state: z.enum(['current', 'stale', 'unknown']),
+  reason: z.enum([
+    'current',
+    'meaning-unchanged',
+    'subject-rubric-mismatch',
+    'recorded-identity-missing',
+    'live-identity-missing',
+    'revision-mismatch',
+    'meaning-revision-mismatch',
+    'criteria-hash-mismatch',
+  ]),
+  recordedRevision: z.number().nullable(),
+  currentRevision: z.number().nullable(),
+  recordedCriteriaHash: z.string().nullable(),
+  currentCriteriaHash: z.string().nullable(),
+}).passthrough();
+
+const scorecardRubricCurrentnessSchema = z.object({
+  state: z.enum(['current', 'stale', 'unknown']),
+  reason: z.enum([
+    'current',
+    'recorded-identity-missing',
+    'live-identity-missing',
+    'revision-mismatch',
+    'meaning-revision-mismatch',
+    'criteria-hash-mismatch',
+  ]),
+  recordedRevision: z.number().nullable(),
+  currentRevision: z.number().nullable(),
+  recordedCriteriaHash: z.string().nullable(),
+  currentCriteriaHash: z.string().nullable(),
+}).passthrough();
+
+const scorecardEvidenceSchema = z.object({
+  issueId: z.string(),
+  createdAt: z.string(),
+  createdBy: z.string().nullable(),
+  rubricRef: z.string(),
+  rubricRevision: z.number().optional(),
+  rubricMeaningRevision: z.number().optional(),
+  criteriaHash: z.string().optional(),
+  rerunRecipe: z.record(z.string(), z.unknown()).optional(),
+  rubricCurrentness: scorecardRubricCurrentnessSchema,
+  evidenceFingerprint: z.string().optional(),
+  sourceHive: z.string().optional(),
+  subject: z.object({
+    kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
+    ref: z.string(),
+    windowStart: z.string().optional(),
+    windowEnd: z.string().optional(),
+  }).passthrough().optional(),
+  criteria: z.array(scorecardEvidenceCriterionSchema),
+  rollup: z.object({
+    verdict: z.enum(['exemplary', 'pass', 'partial', 'fail', 'severe', 'unassessable']),
+    criticalKeys: z.array(z.string()),
+    criticalFailures: z.array(z.string()),
+    criticalUnknowns: z.array(z.string()),
+    coverage: z.object({
+      rated: z.number(),
+      required: z.number(),
+      sufficient: z.boolean(),
+    }).passthrough(),
+  }).passthrough().optional(),
+  nKeys: z.number().int().nonnegative(),
+  missingKeys: z.array(z.string()),
+  extraKeys: z.array(z.string()),
+  rubricResolved: z.boolean(),
+  synthesized: z.boolean(),
+  gradingAudit: z.object({
+    state: z.enum(['pending', 'awaiting-reemit', 'passed', 'failed', 'cancelled']),
+    metaRubricRef: z.string(),
+    stampedAt: z.string(),
+    rubricRevision: z.number().optional(),
+    criteriaHash: z.string().optional(),
+    dispatchReservation: z.object({
+      key: z.string(),
+      reservedAt: z.string(),
+    }).passthrough().optional(),
+    reemitRequired: z.object({
+      code: z.literal('grading_audit_evaluator_changed'),
+      at: z.string(),
+      reason: z.string(),
+    }).passthrough().optional(),
+    auditIssueId: z.string().optional(),
+    auditor: z.string().optional(),
+    auditedAt: z.string().optional(),
+  }).passthrough().optional(),
+  gradingAuditCurrentness: z.object({
+    state: z.enum(['current', 'stale', 'unknown']),
+    reason: z.string(),
+    recordedRevision: z.number().nullable(),
+    currentRevision: z.number().nullable(),
+    recordedCriteriaHash: z.string().nullable(),
+    currentCriteriaHash: z.string().nullable(),
+  }).passthrough().optional(),
+  provisional: z.object({
+    violatableKeys: z.array(z.string()),
+    stampedAt: z.string(),
+  }).passthrough().optional(),
+  retracted: z.object({
+    at: z.string(),
+    by: z.string(),
+    reason: z.string(),
+  }).passthrough().optional(),
+  subjectRubricCurrentness: scorecardSubjectRubricCurrentnessSchema.optional(),
+  supersededBy: z.string().optional(),
+  auditTarget: z.object({
+    current: z.boolean().nullable(),
+    superseded: z.boolean(),
+    supersededBy: z.string().nullable(),
+    retracted: z.boolean(),
+    subjectRubricCurrentness: scorecardSubjectRubricCurrentnessSchema.nullable(),
+  }).passthrough(),
+}).passthrough();
+
+const scorecardRecipeHeaderSchema = scorecardEvidenceSchema.omit({
+  criteria: true,
+  nKeys: true,
+  missingKeys: true,
+  extraKeys: true,
+  rubricResolved: true,
+});
+
+const scorecardEvidenceReadSchema = z.object({
+  complete: z.boolean(),
+  reason: z.string().optional(),
+  instruction: z.string().optional(),
+  criteria: z.array(z.object({
+    key: z.string(),
+    rating: z.string(),
+    evidenceChars: z.number().int().nonnegative(),
+    read: evidenceReadCallSchema,
+  }).passthrough()).optional(),
+  scope: z.enum(['selected-criterion', 'criterion-index']).optional(),
+  offset: z.number().int().nonnegative().optional(),
+  totalChars: z.number().int().nonnegative().optional(),
+  totalCriteria: z.number().int().nonnegative().optional(),
+  next: evidenceReadCallSchema.optional(),
+}).passthrough();
+
+const scorecardGetDiagnosticsSchema = z.object({
+  schemaVersion: z.literal('scorecards-get-diagnostics-v1'),
+  correlationId: z.string().uuid(),
+  handlerState: z.enum(['running', 'completed', 'failed']),
+  handlerElapsedMs: z.number().int().nonnegative(),
+  omittedStages: z.number().int().nonnegative(),
+  stages: z.array(z.object({
+    // Stage strings come only from traceNamedQueryStage's source-owned names;
+    // caller arguments and database error text are never copied into this field.
+    stage: z.string().min(1).max(64),
+    elapsedMs: z.number().int().nonnegative(),
+    outcome: z.enum(['pending', 'fulfilled', 'rejected']),
+  })),
+});
+
+const scorecardGetResultSchema = z.object({
+  ok: z.boolean(),
+  diagnostics: scorecardGetDiagnosticsSchema.optional(),
+  scorecard: z.union([scorecardEvidenceSchema, scorecardRecipeHeaderSchema]).optional(),
+  evidenceRead: scorecardEvidenceReadSchema.optional(),
+  rerunRecipeRead: z.object({
+    complete: z.boolean(),
+    encoding: z.literal('json'),
+    totalChars: z.number().int().nonnegative(),
+    offset: z.number().int().nonnegative().optional(),
+    chunk: z.string().optional(),
+    read: rerunRecipeReadCallSchema.optional(),
+    next: rerunRecipeReadCallSchema.optional(),
+  }).optional(),
+  error: z.string().optional(),
+  retryable: z.boolean().optional(),
+  pgCode: z.string().optional(),
+  message: z.string().optional(),
+}).passthrough();
+
 function boundedEvidenceRead(
   scorecard: ScorecardEvidenceRow,
   args: z.infer<typeof scorecardGetArgs>,
+  issueId: string,
   inlineBudgetChars: number,
 ) {
+  // A replay recipe can be larger than the whole result door. Repeating it on
+  // every evidence page makes both index and criterion reads unrecoverable.
+  // Keep the audit header and page the exact JSON through this same reader.
+  const encodedRecipe = scorecard.rerunRecipe === undefined ? undefined : JSON.stringify(scorecard.rerunRecipe);
+  const { rerunRecipe: _recipe, ...withoutRecipe } = scorecard;
+  if (args.rerunRecipeOffset !== undefined) {
+    if (encodedRecipe === undefined) return { ok: false as const, error: 'rerun_recipe_not_found' };
+    const offset = args.rerunRecipeOffset;
+    if (offset > encodedRecipe.length || (offset === encodedRecipe.length && offset !== 0)) {
+      return { ok: false as const, error: 'invalid_rerun_recipe_offset' };
+    }
+    let count = Math.min(inlineBudgetChars, encodedRecipe.length - offset);
+    const page = () => ({
+      ok: true as const,
+      scorecard: { ...withoutRecipe, criteria: [] },
+      evidenceRead: { complete: false, reason: 'rerun-recipe-page' },
+      rerunRecipeRead: {
+        complete: offset + count === encodedRecipe.length,
+        encoding: 'json' as const,
+        offset,
+        totalChars: encodedRecipe.length,
+        chunk: encodedRecipe.slice(offset, offset + count),
+        ...(offset + count < encodedRecipe.length ? { next: rerunRecipeReadCall(issueId, offset + count) } : {}),
+      },
+    });
+    let result = page();
+    while (!fitsInlineResult(result, inlineBudgetChars) && count > 1) {
+      count = Math.max(1, Math.floor(count / 2));
+      result = page();
+    }
+    // Metadata can itself exceed this owner's inline allowance even after the
+    // recipe is removed. Preserve the complete page for the shared result door
+    // to spill with a recovery cursor instead of discarding it as an error.
+    return result;
+  }
+  const pageRecipe = encodedRecipe !== undefined && encodedRecipe.length > inlineBudgetChars / 3;
+  const recipeRead = pageRecipe ? {
+    rerunRecipeRead: {
+      complete: false,
+      encoding: 'json' as const,
+      totalChars: encodedRecipe.length,
+      read: rerunRecipeReadCall(issueId),
+    },
+  } : {};
+  if (pageRecipe) scorecard = withoutRecipe;
   if (args.criterionKey === undefined) {
     if (args.evidenceOffset !== undefined) {
       return { ok: false as const, error: 'criterion_required_for_offset' };
     }
-    const full = { ok: true as const, scorecard, evidenceRead: { complete: true } };
-    if (JSON.stringify(full).length <= inlineBudgetChars) return full;
-    const index = {
-      ok: true as const,
-      scorecard: { ...scorecard, criteria: [] },
-      evidenceRead: {
-        complete: false,
-        reason: 'card-exceeds-inline-budget',
-        instruction: 'Evidence has NOT been read. Read every indexed criterion and concatenate its pages before grading; this index is not evidence of a missing probe.',
-        criteria: scorecard.criteria.map(({ key, rating, evidence }) => ({
-          key, rating, evidenceChars: evidence.length,
-          read: evidenceReadCall(args.issueId, key),
-        })),
-      },
-    };
-    if (JSON.stringify(index).length > inlineBudgetChars) {
-      return {
-        ok: false as const,
-        error: 'scorecard_index_exceeds_inline_budget',
-        message: 'No evidence was read. Select a criterionKey from the source rubric and read its pages.',
-      };
+    const full = { ok: true as const, scorecard, evidenceRead: { complete: true }, ...recipeRead };
+    if (args.indexOffset === undefined && fitsInlineResult(full, inlineBudgetChars)) return full;
+
+    const indexOffset = args.indexOffset ?? 0;
+    if (indexOffset > scorecard.criteria.length || (indexOffset === scorecard.criteria.length && indexOffset > 0)) {
+      return { ok: false as const, error: 'invalid_criterion_index_offset' };
     }
+    const metadata = { ...scorecard, criteria: [] };
+    const page = (count: number) => {
+      const endOffset = indexOffset + count;
+      const completeIndex = endOffset === scorecard.criteria.length;
+      return {
+        ok: true as const,
+        scorecard: metadata,
+        ...recipeRead,
+        evidenceRead: {
+          complete: false,
+          reason: args.indexOffset === undefined ? 'card-exceeds-inline-budget' : 'criterion-index-page',
+          instruction: 'Evidence has NOT been read. For a criterion-index page, follow evidenceRead.next until the full index is assembled; then read every indexed criterion and concatenate its pages before grading.',
+          criteria: scorecard.criteria.slice(indexOffset, endOffset).map(({ key, rating, evidence }) => ({
+            key, rating, evidenceChars: evidence.length,
+            read: evidenceReadCall(issueId, key),
+          })),
+          scope: 'criterion-index' as const,
+          offset: indexOffset,
+          totalCriteria: scorecard.criteria.length,
+          ...(!completeIndex ? { next: criterionIndexReadCall(issueId, endOffset) } : {}),
+        },
+      };
+    };
+    let count = scorecard.criteria.length - indexOffset;
+    let index = page(count);
+    while (!fitsInlineResult(index, inlineBudgetChars) && count > 1) {
+      count = Math.max(1, Math.floor(count / 2));
+      index = page(count);
+    }
+    // The result door owns the final transport budget and can spill this whole
+    // page. A local inline-budget refusal here would discard the only index or
+    // criterion cursor for an otherwise readable scorecard.
     return index;
   }
   const criterion = scorecard.criteria.find(({ key }) => key === args.criterionKey);
@@ -84,23 +436,59 @@ function boundedEvidenceRead(
     return {
       ok: true as const,
       scorecard: { ...scorecard, criteria: [{ ...criterion, evidence: criterion.evidence.slice(offset, nextOffset) }] },
+      ...recipeRead,
       evidenceRead: {
         complete,
         scope: 'selected-criterion',
         offset,
         totalChars: criterion.evidence.length,
         instruction: 'Concatenate this criterion’s pages in offset order. Complete applies only to this criterion; audit every key from the card index.',
-        ...(!complete ? { next: evidenceReadCall(args.issueId, criterion.key, nextOffset) } : {}),
+        ...(!complete ? { next: evidenceReadCall(issueId, criterion.key, nextOffset) } : {}),
       },
     };
   };
   let result = page();
-  while (JSON.stringify(result).length > inlineBudgetChars && count > 1) {
+  while (!fitsInlineResult(result, inlineBudgetChars) && count > 1) {
     count = Math.max(1, Math.floor(count / 2));
     result = page();
   }
-  if (JSON.stringify(result).length > inlineBudgetChars) {
-    return { ok: false as const, error: 'scorecard_metadata_exceeds_inline_budget' };
+  // Keep the complete page when non-evidence metadata is the part that cannot
+  // fit inline; the shared result door can expose it through a recoverable ref.
+  return result;
+}
+
+function boundedRerunRecipeHeaderRead(
+  scorecard: ScorecardRecipeHeader & {
+    gradingAuditCurrentness?: ReturnType<typeof classifyGradingAuditCurrentness>;
+  },
+  offset: number,
+  issueId: string,
+  inlineBudgetChars: number,
+) {
+  const encodedRecipe = scorecard.rerunRecipe === undefined ? undefined : JSON.stringify(scorecard.rerunRecipe);
+  if (encodedRecipe === undefined) return { ok: false as const, error: 'rerun_recipe_not_found' };
+  if (offset > encodedRecipe.length || (offset === encodedRecipe.length && offset !== 0)) {
+    return { ok: false as const, error: 'invalid_rerun_recipe_offset' };
+  }
+  const { rerunRecipe: _recipe, ...header } = scorecard;
+  let count = Math.min(inlineBudgetChars, encodedRecipe.length - offset);
+  const page = () => ({
+    ok: true as const,
+    scorecard: header,
+    evidenceRead: { complete: false, reason: 'rerun-recipe-page' },
+    rerunRecipeRead: {
+      complete: offset + count === encodedRecipe.length,
+      encoding: 'json' as const,
+      offset,
+      totalChars: encodedRecipe.length,
+      chunk: encodedRecipe.slice(offset, offset + count),
+      ...(offset + count < encodedRecipe.length ? { next: rerunRecipeReadCall(issueId, offset + count) } : {}),
+    },
+  });
+  let result = page();
+  while (!fitsInlineResult(result, inlineBudgetChars) && count > 1) {
+    count = Math.max(1, Math.floor(count / 2));
+    result = page();
   }
   return result;
 }
@@ -109,15 +497,15 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read ONE rubric scorecard by issue id using an evidence-first projection. The scorecard includes its stored evidenceFingerprint when present, so auditors can verify the exact evidence scope. Small cards return exact criterion evidence. Oversized cards return evidenceRead.complete:false and a criterion index: follow each read, then evidenceRead.next, concatenating pages before grading. Never interpret an index or incomplete page as missing evidence. criterionKey narrows the existing read; evidenceOffset resumes it. History-only payload is omitted.',
+    'Read one rubric scorecard by issue id. Pass issueId (preferred) or id (compatibility alias); issueId wins. The evidence fingerprint scopes the read. Small cards return exact criterion evidence. Oversized cards expose an index through evidenceRead and recipes through rerunRecipeRead. Follow returned cursors, concatenate exact JSON chunks, and parse only when complete; audit metadata stays on every page. Never treat an incomplete page or index as missing evidence. Use criterionKey to select a criterion; use indexOffset, evidenceOffset, or rerunRecipeOffset to resume pages. History-only payload is omitted. For spec-test-adequacy cards, direct rerunRecipe.args measure current evidence freshness; scorecardId replay reconstructs the creation-time grading for an audit.',
   guidance: {
-    when: 'You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation.',
+    when: 'Audit one existing scorecard and re-run every probe named in its criterion evidence. Use issueId from scorecards:list or a grading-audit reservation; id is a compatibility alias. For grade-the-grader comparison of a spec-test-adequacy card, call plans:evaluate-spec-test-adequacy with its harness, slug, and scorecardId: issueId to reproduce the emission-time ratings.',
     notWhen:
-      'You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.',
+      'Use the stored rerunRecipe.args when checking current evidence freshness; that live remeasurement may differ from the emitted rating after evidence changes. Use scorecards:list for history, trends, or multiple rows; rubrics:get for rubric definitions; scorecards:emit to file a scorecard.',
     chaining:
-      'scorecards:get { issueId } → if evidenceRead.complete:false, follow the criterion index, then fetch independent criterion roots with Promise.all (keep each criterion’s evidenceRead.next page loop sequential) → concatenate every complete page → re-run every evidence probe → scorecards:emit the grading-integrity audit. A partial read cannot establish probe absence.',
+      'Follow rerunRecipeRead.read/next sequentially. Concatenate complete pages as exact JSON chunks and parse only when complete. For a spec-test-adequacy grading audit, call plans:evaluate-spec-test-adequacy with { harness, slug, scorecardId: issueId } and no direct selectors; compare rows[].ratings to the card and confirm historicalAuditOnly.asOf matches the card creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. For oversized cards, page evidenceRead.next through the criterion index, then fetch each criterion’s evidence pages in small Promise.all groups. Resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Read one criterion’s pages sequentially. Emit the grading-integrity audit last.',
     returns:
-      'Returns `{ ok, scorecard, evidenceRead }`. The scorecard includes `evidenceFingerprint` when recorded. Full reads contain every exact criterion; an oversized read contains criteria:[] plus an explicit index, not absent evidence. Criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next; concatenate before grading.',
+      'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
   },
   capability: 'coord:read',
@@ -129,44 +517,130 @@ export default defineTool({
   // remains active as a final safety rail.
   ignoreSessionPayloadTier: true,
   args: scorecardGetArgs,
-  result: z
-    .object({
-      ok: z.boolean(),
-      scorecard: z.unknown().optional(),
-      evidenceRead: z.unknown().optional(),
-      error: z.string().optional(),
-      retryable: z.boolean().optional(),
-      pgCode: z.string().optional(),
-      message: z.string().optional(),
-    })
-    .passthrough(),
+  result: scorecardGetResultSchema,
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
+    return withNamedQueryDiagnosticContext('scorecards:get', async (correlationId) => {
+      const handlerStartedAt = performance.now();
+      const diagnosticAttempt = createStageAttempt({ rowId: '', onEvent: () => {} });
+      let handlerState: 'running' | 'completed' | 'failed' = 'running';
+      let handlerCompleted = false;
+      const makeDiagnostics = (state: typeof handlerState) => {
+        const timing = namedQueryStageTimings();
+        return {
+          schemaVersion: 'scorecards-get-diagnostics-v1' as const,
+          correlationId,
+          handlerState: state,
+          handlerElapsedMs: Math.max(0, Math.round(performance.now() - handlerStartedAt)),
+          omittedStages: timing?.omittedStages ?? 0,
+          stages: timing?.stages ?? [],
+        };
+      };
+      const recordDiagnostics = (state: typeof handlerState) => {
+        const diagnostics = makeDiagnostics(state);
+        // Metadata is a replacement snapshot. Include the complete timing state
+        // on every update so a client timeout can still identify the pending phase.
+        try {
+          ctx.metadata?.({ scorecardsGetDiagnostics: diagnostics });
+        } catch {
+          /* Observability must not change the scorecard read result. */
+        }
+        return diagnostics;
+      };
+      const respond = (data: Record<string, unknown>) => {
+        handlerState = 'completed';
+        handlerCompleted = true;
+        return { data: { ...data, diagnostics: recordDiagnostics(handlerState) } };
+      };
+      const runDiagnosticStage = async <T>(stage: ScorecardGetDiagnosticStage, run: () => PromiseLike<T>): Promise<T> => {
+        const pending = traceNamedQueryStage(stage, () => withStageAttempt(diagnosticAttempt, () =>
+          logIfStageStalls(
+            'scorecards:get',
+            `${stage} correlation=${correlationId}`,
+            traceStageAwait(stage, run),
+          ),
+        ));
+        // The first snapshot records the pending stage before the server or
+        // client timeout can obscure which await was in flight.
+        recordDiagnostics('running');
+        try {
+          return await pending;
+        } finally {
+          recordDiagnostics('running');
+        }
+      };
+
+      recordDiagnostics('running');
       try {
-        const result = await readScorecardEvidence(args.issueId);
-        if (result.kind === 'not_found') {
-          return { data: { ok: false as const, error: `scorecard '${args.issueId}' not found` } };
-        }
-        if (result.kind === 'not_scorecard') {
-          return { data: { ok: false as const, error: `'${args.issueId}' is not a scorecard` } };
-        }
-        return { data: boundedEvidenceRead(result.scorecard, args, inlineResultBudgetChars(identity.ownerId)) };
+        return await runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
+          try {
+            const issueId = args.issueId ?? args.id;
+            if (!issueId) {
+              return respond({ ok: false, error: 'issueId or id is required' });
+            }
+            const recipePage = args.rerunRecipeOffset !== undefined;
+            const result = await runDiagnosticStage(
+              SCORECARD_GET_DIAGNOSTIC_STAGE.evidenceRead,
+              () => recipePage ? readScorecardRecipeHeader(issueId) : readScorecardEvidence(issueId),
+            );
+            if (result.kind === 'not_found') {
+              return respond({ ok: false, error: `scorecard '${issueId}' not found` });
+            }
+            if (result.kind === 'not_scorecard') {
+              return respond({ ok: false, error: `'${issueId}' is not a scorecard` });
+            }
+            const gradingAuditRubric = result.scorecard.gradingAudit
+              ? await runDiagnosticStage(
+                  SCORECARD_GET_DIAGNOSTIC_STAGE.gradingAuditRubricRead,
+                  () => getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF),
+                ).catch(() => null)
+              : null;
+            const scorecard = result.scorecard.gradingAudit
+              ? {
+                  ...result.scorecard,
+                  gradingAuditCurrentness: classifyGradingAuditCurrentness(
+                    result.scorecard.gradingAudit,
+                    gradingAuditRubric,
+                  ),
+                }
+              : result.scorecard;
+            if (recipePage) {
+              return respond(boundedRerunRecipeHeaderRead(
+                scorecard as ScorecardRecipeHeader & {
+                  gradingAuditCurrentness?: ReturnType<typeof classifyGradingAuditCurrentness>;
+                },
+                args.rerunRecipeOffset!,
+                issueId,
+                inlineResultBudgetChars(identity.ownerId),
+              ));
+            }
+            return respond(boundedEvidenceRead(
+              scorecard as ScorecardEvidenceRow,
+              args,
+              issueId,
+              inlineResultBudgetChars(identity.ownerId),
+            ));
+          } catch (error) {
+            if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
+              return respond({
+                ok: false,
+                error: 'timeout',
+                retryable: true,
+                ...(error instanceof OrgTxnTimeoutError ? { pgCode: error.pgCode } : {}),
+                message:
+                  `scorecards:get read hit transient database contention: ${error.message}. ` +
+                  'No scorecard was returned; retry shortly.',
+              });
+            }
+            throw error;
+          }
+        });
       } catch (error) {
-        if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
-          return {
-            data: {
-              ok: false as const,
-              error: 'timeout',
-              retryable: true,
-              ...(error instanceof OrgTxnTimeoutError ? { pgCode: error.pgCode } : {}),
-              message:
-                `scorecards:get read hit transient database contention: ${error.message}. ` +
-                'No scorecard was returned; retry shortly.',
-            },
-          };
-        }
+        handlerState = 'failed';
+        recordDiagnostics(handlerState);
         throw error;
+      } finally {
+        diagnosticAttempt.finish(handlerCompleted ? 'fulfilled' : 'rejected');
       }
     });
   },

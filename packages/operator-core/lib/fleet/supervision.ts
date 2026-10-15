@@ -121,6 +121,7 @@ export function buildRelaunchInput(
       parentSpawnId: row.parentSpawnId,
       parentRole: row.parentRole ?? undefined,
       turnTrigger: 'supervised-restart',
+      replacesSpawnId: spawnId,
       // Idempotent: a duplicate crash report for the same spawn (a retried tool call)
       // must not place a SECOND replacement agent.
       idempotencyKey: `supervised-restart:${spawnId}`,

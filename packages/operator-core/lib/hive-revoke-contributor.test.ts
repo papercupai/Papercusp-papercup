@@ -12,6 +12,7 @@ function seams(over: Partial<RevokeHiveContributorSeams> = {}): RevokeHiveContri
     resolveOwnerGithubUserId: async () => 1,
     loadTargetPubkeys: async () => ['t-pk-1', 't-pk-2'],
     publishRevocation: async () => ({ live: false }),
+    resolveSelfDevicePubkey: async () => 'self-pk',
     ...over,
   };
 }
@@ -132,5 +133,101 @@ describe('revokeHiveContributor', () => {
     expect(
       await revokeHiveContributor(input, seams({ publishRevocation: async () => { throw new Error('pg down'); } })),
     ).toMatchObject({ ok: false, code: 'revoke_failed', detail: 'pg down' });
+  });
+});
+
+// WI-10006415: a single-device revoke at Hive scope, and the owner self-lockout guard.
+// The live case: test VMs joined the owner's pot under the OWNER's own GitHub login, so the
+// owner's pot_members row attests the tower's device AND the departed VMs' devices. A
+// whole-member revoke of the owner's id would also revoke the tower's own device.
+describe('revokeHiveContributor — devicePubkey (one device) and the self-lockout guard', () => {
+  const OWNER = 1;
+  const ownerInput = { workspaceId: 'ws', potHomeSlug: 'alpha', githubUserId: OWNER };
+  const ownerDevices = async () => ['self-pk', 'vm-pk-1', 'vm-pk-2'];
+
+  function capture() {
+    const calls: string[][] = [];
+    return {
+      calls,
+      publishRevocation: async (_ws: string, _slug: string, _owner: number, pks: string[]) => {
+        calls.push(pks);
+        return { live: true };
+      },
+    };
+  }
+
+  it('narrows the revoke to the ONE named device of another member', async () => {
+    const p = capture();
+    const r = await revokeHiveContributor({ ...input, devicePubkey: 't-pk-2' }, seams({ publishRevocation: p.publishRevocation }));
+    expect(r).toEqual({ ok: true, revokedPubkeys: ['t-pk-2'], live: true });
+    expect(p.calls).toEqual([['t-pk-2']]);
+  });
+
+  it("not_member_device when the key is not one of the member's attested devices — nothing is published", async () => {
+    const p = capture();
+    const r = await revokeHiveContributor({ ...input, devicePubkey: 'stranger-pk' }, seams({ publishRevocation: p.publishRevocation }));
+    expect(r).toMatchObject({ ok: false, code: 'not_member_device' });
+    expect(p.calls).toEqual([]);
+  });
+
+  it("revokes ONE departed device of the owner's own identity and leaves this Swarm's device alone", async () => {
+    const p = capture();
+    const r = await revokeHiveContributor(
+      { ...ownerInput, devicePubkey: 'vm-pk-1' },
+      seams({ loadTargetPubkeys: ownerDevices, publishRevocation: p.publishRevocation }),
+    );
+    expect(r).toEqual({ ok: true, revokedPubkeys: ['vm-pk-1'], live: true });
+    expect(p.calls).toEqual([['vm-pk-1']]);
+  });
+
+  it("self_device: a whole-member revoke of the owner's own identity would revoke this Swarm's device", async () => {
+    const p = capture();
+    const r = await revokeHiveContributor(ownerInput, seams({ loadTargetPubkeys: ownerDevices, publishRevocation: p.publishRevocation }));
+    expect(r).toMatchObject({ ok: false, code: 'self_device' });
+    expect((r as { detail?: string }).detail).toMatch(/pass devicePubkey/);
+    expect(p.calls).toEqual([]);
+  });
+
+  it("self_device: naming this Swarm's own device is refused", async () => {
+    const p = capture();
+    const r = await revokeHiveContributor(
+      { ...ownerInput, devicePubkey: 'self-pk' },
+      seams({ loadTargetPubkeys: ownerDevices, publishRevocation: p.publishRevocation }),
+    );
+    expect(r).toMatchObject({ ok: false, code: 'self_device' });
+    expect(p.calls).toEqual([]);
+  });
+
+  it.each([
+    ['resolves to null', async () => null],
+    ['throws', async (): Promise<string | null> => { throw new Error('keychain locked'); }],
+  ])("self_device (fail closed) when this Swarm's own device %s and the target is the owner", async (_label, resolveSelf) => {
+    const p = capture();
+    const r = await revokeHiveContributor(
+      { ...ownerInput, devicePubkey: 'vm-pk-1' },
+      seams({ loadTargetPubkeys: ownerDevices, publishRevocation: p.publishRevocation, resolveSelfDevicePubkey: resolveSelf }),
+    );
+    expect(r).toMatchObject({ ok: false, code: 'self_device' });
+    expect(p.calls).toEqual([]);
+  });
+
+  it("does not read this Swarm's own device when revoking ANOTHER contributor", async () => {
+    let selfReads = 0;
+    const r = await revokeHiveContributor(
+      input,
+      seams({ resolveSelfDevicePubkey: async () => { selfReads += 1; return 'self-pk'; } }),
+    );
+    expect(r).toMatchObject({ ok: true, revokedPubkeys: ['t-pk-1', 't-pk-2'] });
+    expect(selfReads).toBe(0);
+  });
+
+  it('bad_target for an empty devicePubkey, before any owner or target lookup', async () => {
+    let ownerLookups = 0;
+    const r = await revokeHiveContributor(
+      { ...input, devicePubkey: '  ' },
+      seams({ loadOwnerKeyStatus: async () => { ownerLookups += 1; return { kind: 'ok', pubkeyBase64: 'hive-pk' }; } }),
+    );
+    expect(r).toMatchObject({ ok: false, code: 'bad_target' });
+    expect(ownerLookups).toBe(0);
   });
 });

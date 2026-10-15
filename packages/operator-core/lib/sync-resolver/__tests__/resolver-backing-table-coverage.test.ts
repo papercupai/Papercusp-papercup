@@ -65,11 +65,31 @@ import { OPERATOR_STATE_SYNC_NAMES } from '../../operator-state-pg';
  * from a bug.
  */
 const PUSH_EXEMPT: Record<string, string> = {
+  // DAO drafts share onboarding's JSONB row, but mutateLaunches publishes after
+  // its row-lock write commits. Invalidating on every onboarding write would
+  // refetch the DAO view for unrelated tutorial progress. dao-launch-store.test.ts
+  // pins committed revisions and silence on refused mutations.
+  // RE-ARM: bridge this table if another writer changes dao_launches without
+  // that committed producer push, or mutateLaunches stops publishing.
+  'dao.launches :: harness_shared.setup_wizard_state':
+    'dao-launch-store mutateLaunches pushes dao.launches after its committed write; bridge the table if another DAO draft writer appears or that push is removed.',
+
   // The only production writer is consult-expert-routing-set, which pushes this
   // singleton query after its committed write. RE-ARM: bridge the table when a
   // second writer is introduced or that explicit producer push is removed.
   'consult.expertRouting :: harness_shared.operator_consult_expert_routing':
     'the sole write route pushes consult.expertRouting after commit; bridge this table if another writer appears or the route stops pushing.',
+
+  // P-005 inherited governance policy (WI-6554700010011434). Every write to these two tables is
+  // ONE store.upsertLayer transaction, reached only through governance-policy/control.ts
+  // #setGovernancePolicyLayer (the governance:policy tool and the /api/governance-policy/* routes
+  // both call it), which pushes governancePolicy.state after commit (control.test.ts pins the push).
+  // RE-ARM: bridge both tables (emit_change_notify trigger + TABLE_TO_QUERY_NAMES entry) if any
+  // writer calls upsertLayer directly or control.ts stops pushing.
+  'governancePolicy.state :: harness_shared.governance_policy_layers':
+    'governance-policy/control.ts is the sole writer and pushes governancePolicy.state after each committed upsertLayer; bridge the table if a direct upsertLayer writer appears or that push is removed.',
+  'governancePolicy.state :: harness_shared.governance_policy_layer_versions':
+    'version rows are written only inside the same upsertLayer transaction, reached only via control.ts, which pushes governancePolicy.state after commit; bridge the table if that changes.',
 
   // P-030 foreign conversation projection: these are deliberately NOT given
   // another per-row invalidation producer. session_turns/tool_invocations are
@@ -100,6 +120,15 @@ const PUSH_EXEMPT: Record<string, string> = {
   'planLock.byPath :: papercusp_su.agent_file_locks':
     'lock rows live in a different database (papercusp_su), unreachable by an operator-DB trigger; the lock writers push explicitly via notifyPlanLockChange.',
 
+  // integrations.tickets (linear-asana-task-sync P-007): work_items supplies only each source's
+  // mirrored-record COUNT. Records are written by a connector sync pass, which also stamps the
+  // source's data_sources row (sync_last_success_at), and data_sources IS bridged (mig 1399). Adding
+  // integrations.tickets to work_items' bridge would refetch the page on every work-item write in
+  // the workspace. RE-ARM: bridge it if records ever arrive without a data_sources write (a
+  // webhook path that writes records directly, P-008).
+  'integrations.tickets :: harness_shared.work_items':
+    'record counts move only during a connector sync pass, which also writes the bridged data_sources row; a work_items bridge would refetch on every work-item write.',
+
   // plans.attentionBulkRun (inbox-bulk-resolve-2026-08-23, mig 912): every writer to
   // both tables pushes explicitly — createRun/reportOutcomes (agent-tools/inbox/
   // bulk-run.ts) and the admin bulk-resolve route each fire
@@ -126,6 +155,15 @@ const PUSH_EXEMPT: Record<string, string> = {
   // RE-ARM: only if presence gains a debounced / coalesced change producer.
   'sidebar.hives :: harness_shared.shared_presence':
     'continuous presence heartbeat; per-row notify = notify-storm. Poll-only by design.',
+
+  // Local desktops reads the desktop-session roster and each session owner's current claim.
+  // Registry writes explicitly announce desktops.local; claims are lease-renewed and the
+  // visible grid refreshes them on its visible tick instead of emitting a row notification.
+  // RE-ARM: replace these with mapped, appropriately scoped producers if either contract changes.
+  'desktops.local :: harness_shared.desktop_sessions':
+    'desktop-session-registry calls announceRosterChange() after roster-visible writes; keep that push on every registry writer.',
+  'desktops.local :: harness_shared.work_item_claims':
+    'claim attribution refreshes on the visible grid tick; per-row NOTIFY would fire on lease-renewal heartbeats. Add a scoped/debounced producer before requiring immediate refresh.',
 
   // The derived-reads precompute substrate. These six resolvers are plain SELECTs against the
   // snapshot table, and the PRODUCER already pushes for them: derived-reads/registry.ts fires
@@ -443,7 +481,6 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'snapshotsConsolidated.bySlug',
   'storage.usage',
   'taskManager.inventory',
-  'testing.assertionsByHarness',
   'toastLog.recent',
   'trust.list',
   'usage.spend',
@@ -458,7 +495,6 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'voicePrefs.workspace',
   'weather.current',
   'workItems.delta24h',
-  'workItems.detail',
   'workItems.stats',
 ];
 
@@ -468,7 +504,7 @@ const UNDECLARED_BASELINE: readonly string[] = [
  * a quiet append (the DARK_FLAGS_HIGH_WATERMARK pattern, and for the same reason — that watermark
  * got silently bumped 22→24→25→26 for the same bug class until it was split and pinned).
  */
-const UNDECLARED_CEILING = 191;
+const UNDECLARED_CEILING = 182;
 
 /** Does a write to `table` invalidate `name`, through either invalidation surface? */
 function tableInvalidates(table: string, name: string): boolean {
@@ -607,6 +643,7 @@ describe('sync resolvers — the undeclared baseline is a shrink-only ratchet', 
 
   it('every registry entry either declares backingTables or is in the baseline', () => {
     const undeclared = allNames.filter((n) => !hasBackingTablesDeclaration(n)).sort();
+    const declaredInBaseline = UNDECLARED_BASELINE.filter(hasBackingTablesDeclaration);
     expect(
       undeclared,
       `The set of registry entries WITHOUT a backingTables declaration has changed.\n` +
@@ -614,7 +651,8 @@ describe('sync resolvers — the undeclared baseline is a shrink-only ratchet', 
         `Do NOT append it to UNDECLARED_BASELINE — the baseline is closed, and appending re-opens exactly ` +
         `the hole this guard exists to close.\n` +
         `  • Just declared one that used to be undeclared? Remove it from UNDECLARED_BASELINE and lower ` +
-        `UNDECLARED_CEILING to match. That is one more panel whose liveness is now provable.`,
+        `UNDECLARED_CEILING to match. That is one more panel whose liveness is now provable.\n` +
+        `  Already declared baseline entries: [${declaredInBaseline.join(', ')}]`,
     ).toEqual([...UNDECLARED_BASELINE].sort());
   });
 

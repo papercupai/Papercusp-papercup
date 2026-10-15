@@ -48,6 +48,7 @@ import {
   type CodexRateLimitBucket,
 } from './codex-oauth-proxy';
 import { describeFetchError } from '../loopback-fetch';
+import { scrubErrorText } from './error-body-scrub';
 
 /** Upstream root. Mirrors gateway.ts DEFAULT_UPSTREAM; env-tunable for a staging/mock upstream. */
 const UPSTREAM = process.env.PAPERCUSP_GATEWAY_UPSTREAM || 'https://api.anthropic.com';
@@ -62,6 +63,9 @@ export const CAPACITY_PROBE_SWEEP_TIMEOUT_MS = Number(process.env.PAPERCUSP_CAPA
 const PROBE_CONCURRENCY = Number(process.env.PAPERCUSP_CAPACITY_PROBE_CONCURRENCY) || 3;
 export const CAPACITY_PROBE_TIMEOUT_ERROR = 'capacity probe deadline exceeded';
 export const CAPACITY_PROBE_NOT_STARTED_ERROR = `${CAPACITY_PROBE_TIMEOUT_ERROR} before account probe started`;
+/** Refusal diagnostics must not turn a header probe into an unbounded body download. */
+export const CAPACITY_PROBE_REFUSAL_MAX_BYTES = 8192;
+export const CAPACITY_PROBE_REFUSAL_TIMEOUT_MS = 1000;
 
 /** The unified-window projection a probe recovered from upstream response headers. */
 export interface CapacityWindows {
@@ -69,6 +73,8 @@ export interface CapacityWindows {
   windowResetAt?: number;
   utilization7d?: number;
   windowResetAt7d?: number;
+  usageCreditsAvailable?: boolean;
+  creditBalance?: import('../deployment/account-pool').AccountCreditBalance;
   /** Codex only: which METER the reading came from — `premium` (the meter the pool projection
    *  describes) or `base_model_inference` (the Luna reserve tier, a separate budget that must
    *  never be projected into the premium slots — EI-22103680502746318). Absent for Anthropic. */
@@ -90,7 +96,16 @@ export interface CapacityProbeResult {
   before: CapacityWindows;
   /** True when upstream's 7d reading is materially below the stored one ⇒ the stored wall was STALE. */
   unwalls: boolean;
-  /** Transport/credential failure detail. Non-fatal: one bad account never fails the sweep. */
+  /** Bounded, sanitized evidence from the last upstream HTTP refusal, never a capacity reading. */
+  httpRefusal?: {
+    status: number;
+    bodyState: 'parsed' | 'unstructured' | 'truncated' | 'timed-out' | 'unavailable';
+    errorType?: string;
+    errorCode?: string;
+    message?: string;
+    requestId?: string;
+  };
+  /** Transport/credential/no-header failure detail. Non-fatal: one bad account never fails the sweep. */
   error?: string;
 }
 
@@ -131,6 +146,8 @@ export function storedWindows(a: ClaudeAccount): CapacityWindows {
     windowResetAt: r.windowResetAt,
     utilization7d: r.utilization7d,
     windowResetAt7d: r.windowResetAt7d,
+    ...(r.usageCreditsAvailable !== undefined ? { usageCreditsAvailable: r.usageCreditsAvailable } : {}),
+    ...(r.creditBalance ? { creditBalance: r.creditBalance } : {}),
   };
 }
 
@@ -222,6 +239,78 @@ function remainingMs(deadlineAt: number, now: () => number): number {
   return Math.max(0, deadlineAt - now());
 }
 
+/** Read only a small complete refusal body; incomplete bodies never expose raw fragments. */
+async function readHttpRefusal(
+  res: Response,
+  token: string,
+  timeoutMs: number,
+  abort: () => void,
+): Promise<NonNullable<CapacityProbeResult['httpRefusal']>> {
+  const clean = (value: unknown, limit = 128): string | undefined => {
+    if (typeof value !== 'string') return undefined;
+    const text = scrubErrorText(value, [token]).replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+    return text ? text.slice(0, limit) : undefined;
+  };
+  const diagnostic: NonNullable<CapacityProbeResult['httpRefusal']> = {
+    status: res.status,
+    bodyState: 'unavailable',
+    ...(clean(res.headers.get('request-id') ?? res.headers.get('x-request-id'))
+      ? { requestId: clean(res.headers.get('request-id') ?? res.headers.get('x-request-id')) }
+      : {}),
+  };
+  const reader = res.body?.getReader();
+  if (!reader) return diagnostic;
+  let stopped = false;
+  try {
+    const bytes = await withDeadline(async () => {
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      while (!stopped) {
+        const part = await reader.read();
+        if (stopped) return null;
+        if (part.done) {
+          const body = new Uint8Array(size);
+          let offset = 0;
+          for (const chunk of chunks) {
+            body.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          return body;
+        }
+        size += part.value.byteLength;
+        if (size > CAPACITY_PROBE_REFUSAL_MAX_BYTES) return null;
+        chunks.push(part.value);
+      }
+      return null;
+    }, Math.min(timeoutMs, CAPACITY_PROBE_REFUSAL_TIMEOUT_MS), 'HTTP refusal body', abort);
+    if (!bytes) return { ...diagnostic, bodyState: 'truncated' };
+    const text = new TextDecoder().decode(bytes);
+    try {
+      const body: unknown = JSON.parse(text);
+      const record = body !== null && typeof body === 'object' && !Array.isArray(body)
+        ? body as Record<string, unknown> : {};
+      const error = record.error !== null && typeof record.error === 'object' && !Array.isArray(record.error)
+        ? record.error as Record<string, unknown> : {};
+      return {
+        ...diagnostic,
+        bodyState: 'parsed',
+        ...(clean(error.type) ? { errorType: clean(error.type) } : {}),
+        ...(clean(error.code) ? { errorCode: clean(error.code) } : {}),
+        ...(clean(error.message, 512) ? { message: clean(error.message, 512) } : {}),
+        ...(!diagnostic.requestId && clean(record.request_id) ? { requestId: clean(record.request_id) } : {}),
+      };
+    } catch {
+      return { ...diagnostic, bodyState: 'unstructured', ...(clean(text, 512) ? { message: clean(text, 512) } : {}) };
+    }
+  } catch (error) {
+    return { ...diagnostic, bodyState: isTimeoutError(error) ? 'timed-out' : 'unavailable' };
+  } finally {
+    stopped = true;
+    void reader.cancel().catch(() => undefined);
+    abort();
+  }
+}
+
 function noReadingResult(account: ClaudeAccount, error: string): CapacityProbeResult {
   return {
     accountId: account.id,
@@ -290,6 +379,8 @@ export async function probeAccountCapacity(
   }
 
   const failures: string[] = [];
+  let lastStatus: number | undefined;
+  let httpRefusal: CapacityProbeResult['httpRefusal'];
   for (const egress of probeEgressCandidates(account)) {
     const route = describeEgress(egress);
     const routeTimeoutMs = remainingMs(deadlineAt, now);
@@ -319,6 +410,7 @@ export async function probeAccountCapacity(
             { 'content-type': 'application/json', 'anthropic-version': ANTHROPIC_VERSION },
             claudeAuthModeForRef(account.credentialRef),
             token,
+            account.anthropicWorkspaceId,
           ),
           body: JSON.stringify({
             model: CAPACITY_PROBE_MODEL,
@@ -332,16 +424,18 @@ export async function probeAccountCapacity(
         'fetch',
         () => ac.abort(),
       );
-      // Drain the body so the socket releases cleanly — we never inspect it.
-      void res.text().catch(() => undefined);
-
+      lastStatus = res.status;
       const h: Record<string, string | undefined> = {};
       res.headers.forEach((v, k) => {
         h[k.toLowerCase()] = v;
       });
       const windows = parseCapacityHeaders(h);
       const sawHeader = Object.keys(windows).length > 0;
+      // A real upstream quota refusal wins over a positive wallet balance.
+      if (res.status === 429) windows.usageCreditsAvailable = false;
       if (sawHeader) {
+        void res.body?.cancel().catch(() => undefined);
+        ac.abort();
         return {
           ...base,
           ok: true,
@@ -349,6 +443,12 @@ export async function probeAccountCapacity(
           windows,
           unwalls: provesUnwall(before, windows, fullUtil),
         };
+      }
+      if (!res.ok) {
+        httpRefusal = await readHttpRefusal(res, token, remainingMs(deadlineAt, now), () => ac.abort());
+      } else {
+        void res.body?.cancel().catch(() => undefined);
+        ac.abort();
       }
       failures.push(`${route}: HTTP ${res.status} carried no anthropic-ratelimit-unified-* header`);
     } catch (e) {
@@ -360,6 +460,8 @@ export async function probeAccountCapacity(
   return {
     ...base,
     ok: false,
+    ...(lastStatus !== undefined ? { status: lastStatus } : {}),
+    ...(httpRefusal ? { httpRefusal } : {}),
     windows: {},
     unwalls: false,
     error: failures.join('; '),
@@ -485,6 +587,7 @@ export async function probeCodexAccountCapacity(
         h[k.toLowerCase()] = v;
       });
       const windows = parseCapacityHeaders(h);
+      if (windows.creditBalance && chatgptAccountId) windows.creditBalance.walletId = chatgptAccountId;
       const sawHeader = Object.keys(windows).length > 0;
       if (sawHeader) {
         return {

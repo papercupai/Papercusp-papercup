@@ -129,6 +129,9 @@ const ROWS: SeedRow[] = [
       // catch. With it, F-agree exercises the 'gate' value and F-absent (no payload at all)
       // exercises the null/negation polarity, on both engines, for every op.
       ideaLifecycle: { triageDecision: 'gate' },
+      // P-005: `item_class` reads payload.sourceRole — stamp it so F-agree is 'ideation' and
+      // F-absent is 'work', exercising both values on both engines (non-vacuous parity).
+      sourceRole: 'Scout',
     },
   },
   {
@@ -308,7 +311,7 @@ interface Probe {
 
 function buildProbes(): Probe[] {
   const out: Probe[] = [];
-  const push = (name: string, leaf: FilterLeaf) => {
+  const push = (name: string, leaf: FilterNode) => {
     out.push({ name, filter: leaf });
     out.push({ name: `not:{${name}}`, filter: { not: leaf } });
   };
@@ -324,6 +327,27 @@ function buildProbes(): Probe[] {
     // `word` takes a literal, not a pattern — strip the wildcards for its probe.
     const literal = g.value.replace(/\*/g, '');
     push(`${g.field} word ${literal}`, { field: g.field, op: 'word', value: literal } as FilterLeaf);
+  }
+
+  // Same-field word alternatives share a compiled regex. Exercise its literal
+  // escaping, overlapping alternatives, case, empty words and NULLs against
+  // the independent evaluator and actual mapped rows, both bare and negated.
+  for (const field of ['title', 'summary', 'plan'] as const) {
+    for (const values of [
+      ['p2p', 'data path', 'LOSSY', 'federation', PLAN],
+      ['p2', 'p2p', 'p2p-release', 'infra', 'infra'],
+      ['x.y', '(infra)', 'a|b', '[p2p]', '95%', 'not dead'],
+      ['', 'replication', 'replication_soak', 'plan-alpha'],
+    ]) {
+      const any = values.map((value): FilterLeaf => ({ field, op: 'word', value }));
+      push(`${field} grouped literal words ${JSON.stringify(values)}`, { any });
+    }
+    push(`${field} grouped words with a nested alternative`, { any: [
+      { field, op: 'word', value: 'p2p' },
+      { not: { field: 'goal', op: '=', value: 'G-1' } },
+      { field, op: 'word', value: PLAN },
+      { field: 'tags', op: 'word', value: 'infra' },
+    ] });
   }
 
   // Combinators over a NULL-valued leaf: a poisoned leaf must not contaminate its siblings.
@@ -647,5 +671,82 @@ describe('WI-5995 — a json-array `!=` must not silently eat the backlog', () =
     const admitted = await sqlAdmits({ field: 'tags', op: '!=', value: 'infra' });
     expect(admitted.has('F-agree')).toBe(false);
     expect(admitted.has('F-column-only')).toBe(false);
+  });
+});
+
+describe('EI-25503081061868211 — plan fallback preserves scope without rereading absent keys', () => {
+  it('retains every payload fallback, column precedence, empty strings and absent-plan negation', async () => {
+    const harness = 'plan-key-parity';
+    const fixtures: Array<{ id: string; column?: string; payload: unknown; plan: string | null }> = [
+      { id: 'column', column: 'column-plan', payload: { plan_item: { plan_slug: 'p2p' } }, plan: 'column-plan' },
+      { id: 'empty-column', column: '', payload: { source_plan_slug: 'p2p' }, plan: '' },
+      { id: 'snake-plan', payload: { plan_item: { plan_slug: 'p2p', slug: 'later' } }, plan: 'p2p' },
+      { id: 'snake-slug', payload: { plan_item: { slug: 'snake-plan' } }, plan: 'snake-plan' },
+      { id: 'camel-plan', payload: { planItem: { plan_slug: 'camel-plan' } }, plan: 'camel-plan' },
+      { id: 'camel-slug', payload: { planItem: { slug: 'p2p' } }, plan: 'p2p' },
+      { id: 'top-level', payload: { source_plan_slug: 'top-plan' }, plan: 'top-plan' },
+      { id: 'mixed-fallbacks', payload: { plan_item: {}, planItem: { slug: 'p2p' }, source_plan_slug: 'later' }, plan: 'p2p' },
+      { id: 'malformed-parent', payload: { plan_item: 'p2p', planItem: [], source_plan_slug: 'top-plan' }, plan: 'top-plan' },
+      { id: 'empty-payload-plan', payload: { plan_item: { plan_slug: '', slug: 'p2p' } }, plan: '' },
+      { id: 'unrelated-key', payload: { body: 'plan_item planItem source_plan_slug p2p' }, plan: null },
+      { id: 'null-payload', payload: null, plan: null },
+      { id: 'array-payload', payload: ['plan_item', 'p2p'], plan: null },
+      { id: 'scalar-payload', payload: 'source_plan_slug', plan: null },
+    ];
+    for (const f of fixtures) {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts,
+           source_plan_slug, payload, title)
+        VALUES (${harness}, ${f.id}, 'feature', 'open', ${WS}, 0, 0,
+          ${f.column ?? null}, ${db.sql.json(f.payload as never)}, ${f.id})`;
+    }
+    const admitted = async (filter: FilterNode) => (await db.sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items
+      WHERE harness_slug = ${harness} AND ${compileFilter(db.sql as never, filter)}
+      ORDER BY feature_id`).map(r => r.feature_id);
+    for (const value of new Set(fixtures.map(f => f.plan).filter((p): p is string => p !== null))) {
+      expect(await admitted({ field: 'plan', op: '=', value }), value)
+        .toEqual(fixtures.filter(f => f.plan === value).map(f => f.id).sort());
+    }
+    expect(await admitted({ field: 'plan', op: 'word', value: 'p2p' }))
+      .toEqual(fixtures.filter(f => f.plan === 'p2p').map(f => f.id).sort());
+    expect(await admitted({ not: { field: 'plan', op: 'word', value: 'p2p' } }))
+      .toEqual(fixtures.filter(f => f.plan !== 'p2p').map(f => f.id).sort());
+  });
+
+  it('avoids repeated TOAST reads for a complete large-payload cohort without plan keys', async () => {
+    const harness = 'plan-key-toast-cost';
+    // Distinct hashes resist compression; the body stays present and exceeds the
+    // TOAST threshold. The guard compares buffer work, not machine-dependent time.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, status, workspace_id, created_ts, updated_ts, payload, title)
+      SELECT ${harness}, 'toast-' || n, 'feature', 'open', ${WS}, 0, 0,
+        jsonb_build_object('body', (SELECT string_agg(md5(n::text || ':' || b::text), '')
+          FROM generate_series(1, 2048) b)), 'body retained'
+      FROM generate_series(1, 64) n`;
+    const optimized = db.sql`
+      SELECT count(*)::int n FROM harness_shared.work_items WHERE harness_slug = ${harness}
+      AND ${compileFilter(db.sql as never, { not: { field: 'plan', op: 'word', value: 'p2p' } })}`;
+    // Independent, unguarded reference retains the original full fallback meaning.
+    const reference = db.sql`
+      SELECT count(*)::int n FROM harness_shared.work_items WHERE harness_slug = ${harness}
+      AND NOT COALESCE((COALESCE(source_plan_slug,
+        payload->'plan_item'->>'plan_slug', payload->'plan_item'->>'slug',
+        payload->'planItem'->>'plan_slug', payload->'planItem'->>'slug',
+        payload->>'source_plan_slug') ~* '(^|[^A-Za-z0-9])p2p([^A-Za-z0-9]|$)'), false)`;
+    expect((await optimized)[0]?.n).toBe(64);
+    expect((await reference)[0]?.n).toBe(64);
+    const bufferReads = async (query: typeof optimized) => {
+      const rows = await db.sql`EXPLAIN (ANALYZE, BUFFERS, TIMING OFF, FORMAT JSON) ${query}`;
+      const plan = rows[0]!['QUERY PLAN'][0].Plan;
+      return Number(plan['Shared Hit Blocks'] ?? 0) + Number(plan['Shared Read Blocks'] ?? 0);
+    };
+    const referenceReads = await bufferReads(reference);
+    const optimizedReads = await bufferReads(optimized);
+    expect(referenceReads, 'the corpus must exercise out-of-line payload reads').toBeGreaterThan(128);
+    expect(optimizedReads, `optimized=${optimizedReads}, reference=${referenceReads}`)
+      .toBeLessThan(referenceReads / 2);
   });
 });

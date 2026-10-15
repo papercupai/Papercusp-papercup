@@ -1,0 +1,23 @@
+diff --git a/node_modules/vitest/node_modules/@vitest/utils/dist/source-map/node.js b/node_modules/vitest/node_modules/@vitest/utils/dist/source-map/node.js
+index b1e322a..1cbf786 100644
+--- a/node_modules/vitest/node_modules/@vitest/utils/dist/source-map/node.js
++++ b/node_modules/vitest/node_modules/@vitest/utils/dist/source-map/node.js
+@@ -5,7 +5,17 @@ import convertSourceMap from 'convert-source-map';
+ // based on vite
+ // https://github.com/vitejs/vite/blob/84079a84ad94de4c1ef4f1bdb2ab448ff2c01196/packages/vite/src/node/server/sourcemap.ts#L149
+ function extractSourcemapFromFile(code, filePath) {
+-	const map = (convertSourceMap.fromSource(code) || convertSourceMap.fromMapFileSource(code, createConvertSourceMapReadMap(filePath)))?.toObject();
++	// Papercusp patch (WI-6554700010008868): files that GENERATE source maps (tsx, esbuild) carry the
++	// literal "//# sourceMappingURL=data:application/json;base64," at a line start inside a template
++	// string. convert-source-map JSON-parses the base64-decoded JavaScript after it, and that
++	// SyntaxError replaced the test failure whose stack named the file. An unparseable map is no map.
++	let converter;
++	try {
++		converter = convertSourceMap.fromSource(code) || convertSourceMap.fromMapFileSource(code, createConvertSourceMapReadMap(filePath));
++	} catch {
++		return undefined;
++	}
++	const map = converter?.toObject();
+ 	return map ? { map } : undefined;
+ }
+ function createConvertSourceMapReadMap(originalFileName) {

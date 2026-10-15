@@ -220,6 +220,8 @@ describe('plans:revision-transcript — ordinary agent-session branches', () => 
         sourceKind,
         `${sourceKind}-session`,
         { query: 'requirement', cursor: 3, limit: 9 },
+        // D-006: the caller's identities (none resolvable in this fixture: fail closed).
+        [null],
       );
       expect(body).toMatchObject({
         available: true,

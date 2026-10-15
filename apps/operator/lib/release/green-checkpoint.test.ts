@@ -19,9 +19,16 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { linuxProcStateFromStat } from "@papercusp/operator-core/lib/process-identity";
+import { buildCheckpointSystemdArgv } from "@papercusp/operator-core/lib/release-checkpoint-launch";
+import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-head-admission";
+import { captureGateSuiteVerdictReplay } from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 import {
   runGreenCheckpoint,
+  archivePureProofCapture,
   recordDerivedFreezeDispositionWithDeadline,
+  runPostVerdictStepWithDeadline,
+  POST_VERDICT_DEADLINE_RECORD_BOUND_MS,
+  type PostVerdictStepDeadline,
   emitInconclusiveCheckpointVerdict,
   checkpointVerdictSiblingKeys,
   checkpointCandidateProvenance,
@@ -98,9 +105,10 @@ import {
   outputHasDeterministicFailureSignature,
   acquireCheckpointRunLock,
   checkpointRunLockSkipSummary,
-  activateScheduledCheckpointRunner,
+  activateCheckpointQualificationRunner,
   scheduledAttemptPinnedCandidate,
-  startScheduledQualificationProgress,
+  scheduledAttemptPrewarmTarget,
+  startCheckpointQualificationProgress,
   checkpointRunIdFromScheduledEnv,
   createCheckpointTerminalEventBuffer,
   emitTerminalCheckpointResult,
@@ -108,6 +116,7 @@ import {
   checkpointRunLockDir,
   buildTerminationCheckpointResult,
   createTerminationSignalHandler,
+  createNormalCheckpointFinalizer,
   armSelfWatchdog,
   checkpointSweepTargets,
   sweepCheckpointSurvivors,
@@ -118,6 +127,8 @@ import {
   GREEN_CHECKPOINT_MAX_FORKS,
   GREEN_CHECKPOINT_RESERVED_MAX_FORKS,
   SELF_WATCHDOG_MS,
+  SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS,
+  terminalVerdictRecordOptions,
   MANUAL_SELF_WATCHDOG_ENV,
   MIN_MANUAL_SELF_WATCHDOG_MS,
   SUITE_KILL_BUDGET_MIRROR_MS,
@@ -146,6 +157,11 @@ import {
   formatGateLineageLine,
   computeGateLineage,
   retireInFlightCandidateAfterResult,
+  liveIncumbentAfterAttachConflict,
+  ownCgroupUnits,
+  runnerUnitIsOwn,
+  checkpointQualificationAttachmentRefusalSummary,
+  attachRaceSkipSummary,
   matchFailingFilesToChanged,
   unmatchedFailingFiles,
   failingFilesUncommitted,
@@ -163,9 +179,22 @@ import {
   orchestratorStdoutTag,
   selectFixerCapacityRows,
   resolveReleaseFixerProvider,
+  decideGatePreconditionRetry,
+  gatePreconditionRetryDelayMsFromEnv,
+  DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS,
+  DEFAULT_REFIRE_RUN_BUDGET_MS,
 } from "./green-checkpoint";
+import type {
+  FrozenRepairBoundedLifeRecord,
+  FrozenRepairBoundedLifeState,
+} from "@papercusp/operator-core/lib/release/frozen-repair-bounded-life";
+import type {
+  FrozenRepairCarryRecord,
+  FrozenRepairPendingCarry,
+} from "@papercusp/operator-core/lib/release/frozen-repair-carry";
 import { git, revParse, advanceReady } from "./git-ops";
 import {
+  gateOperatorPgEnv,
   releaseConfig,
   type GreenCheckpointCapacityMode,
 } from "./release-config";
@@ -208,6 +237,96 @@ it("WI-10003241: a stalled optional freeze disposition cannot retain the checkpo
   }
 });
 
+it("WI-6554700010009547: a stalled post-verdict step names itself on entry and resolves at its deadline", async () => {
+  vi.useFakeTimers();
+  try {
+    const logs: string[] = [];
+    const running = runPostVerdictStepWithDeadline(
+      "frozen-repair leg routing",
+      () => new Promise(() => {}),
+      (line) => logs.push(line),
+      40,
+    );
+    // The entry line is written BEFORE the step is awaited: a run killed mid-stall still
+    // names the step it was stuck in.
+    expect(logs).toEqual(["frozen-repair leg routing started (deadline 40ms)"]);
+    await vi.advanceTimersByTimeAsync(40);
+    expect(await running).toBe(false);
+    expect(logs).toEqual([
+      "frozen-repair leg routing started (deadline 40ms)",
+      "frozen-repair leg routing deadline-exceeded in 40ms",
+    ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("WI-6554700010010213: a post-verdict deadline overrun is recorded once, not only logged", async () => {
+  vi.useFakeTimers();
+  try {
+    const recorded: PostVerdictStepDeadline[] = [];
+    const running = runPostVerdictStepWithDeadline(
+      "frozen-repair leg routing",
+      () => new Promise(() => {}),
+      () => {},
+      40,
+      async (info) => {
+        recorded.push(info);
+      },
+    );
+    await vi.advanceTimersByTimeAsync(40);
+    expect(await running).toBe(false);
+    expect(recorded).toEqual([
+      { label: "frozen-repair leg routing", deadlineMs: 40, elapsedMs: 40 },
+    ]);
+
+    // A step that completes in time records nothing.
+    const quiet: PostVerdictStepDeadline[] = [];
+    expect(
+      await runPostVerdictStepWithDeadline(
+        "derived freeze-disposition write",
+        async () => {},
+        () => {},
+        40,
+        async (info) => {
+          quiet.push(info);
+        },
+      ),
+    ).toBe(true);
+    expect(quiet).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("WI-6554700010010213: a hung deadline recorder cannot re-hang the post-verdict step", async () => {
+  vi.useFakeTimers();
+  try {
+    const logs: string[] = [];
+    let settled = false;
+    const running = recordDerivedFreezeDispositionWithDeadline(
+      () => new Promise(() => {}),
+      (line) => logs.push(line),
+      30,
+      () => new Promise(() => {}),
+    ).then((completed) => {
+      settled = true;
+      return completed;
+    });
+    await vi.advanceTimersByTimeAsync(30);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(POST_VERDICT_DEADLINE_RECORD_BOUND_MS);
+    expect(await running).toBe(false);
+    expect(logs).toEqual([
+      "derived freeze-disposition write started (deadline 30ms)",
+      "derived freeze-disposition write deadline-exceeded in 30ms",
+      `derived freeze-disposition write deadline record did not finish within ${POST_VERDICT_DEADLINE_RECORD_BOUND_MS}ms; abandoned`,
+    ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 let repo: string;
 async function commit(
   file: string,
@@ -221,6 +340,95 @@ async function commit(
   await git(repo, ["commit", "--no-verify", "-q", "-m", msg]);
   return revParse(repo, "HEAD");
 }
+
+describe('P-014 replay before gate mutation', () => {
+  it('captures an exhausted frozen queue verdict that returns before any canonical suite', async () => {
+    const frozen = await commit('candidate.txt', 'candidate', 'candidate');
+    const { createFrozenCandidateRepairQueue } = await import('@papercusp/operator-core/lib/release/frozen-candidate-repair-queue');
+    const queue = { ...createFrozenCandidateRepairQueue({ candidate: frozen, base: null,
+      failingTests: ['product.test.ts'], nowMs: Date.now() }), phase: 'blocked' as const,
+      blockedReason: 'attempts-exhausted' as const, attempts: 3 };
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async () => {};
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(result.reason).toBe('repair-in-progress');
+    expect(result.suiteVerdictReplay).toMatchObject({ suiteMeasured: false,
+      decisions: expect.arrayContaining([expect.objectContaining({ kind: 'frozen-queue' })]) });
+    expect(calls).not.toContain('runGreen');
+  });
+
+  it('a downstream hold mismatch stops before setup and promotion even when the suite still agrees', async () => {
+    const snapshot = prior();
+    snapshot.decisions!.push({ kind: 'post-gate-action', args: ['block'], expected: false });
+    const { deps, calls } = stubDeps(true); deps.readLastSuiteVerdictReplay = async () => snapshot;
+    const result = await runGreenCheckpoint(cfg(), deps);
+    expect(result.suiteReplayCanary).toMatchObject({ status: 'mismatch', detail: expect.stringContaining('post-gate-action') });
+    expect(calls).toEqual([]);
+  });
+
+  it('retains a performance hold observation in the measured verdict snapshot', async () => {
+    await commit('candidate.txt', 'candidate', 'candidate');
+    const { deps, calls } = stubDeps(true);
+    deps.perfGate = async () => ({ action: 'block', summary: 'recorded perf block' });
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(result.reason).toBe('perf-held');
+    expect(result.suiteVerdictReplay?.decisions).toContainEqual({ kind: 'post-gate-action', args: ['block'], expected: true });
+    expect(calls).not.toContain('advance');
+  });
+  const prior = () => captureGateSuiteVerdictReplay({ candidate: 'a'.repeat(40), runId: 'prior', measuredAtMs: 1 }, {
+    green: false, infraFault: false, failures: ['product.test.ts'], rootScripts: {}, failingCasesByFile: null,
+  });
+
+  it('a changed historical verdict reaches neither setup, suite, nor promotion', async () => {
+    const snapshot = prior(); snapshot.expected.disposition = 'green';
+    const { deps, calls } = stubDeps(true);
+    deps.readLastSuiteVerdictReplay = async () => snapshot;
+    const result = await runGreenCheckpoint(cfg(), deps, { candidateHint: 'b'.repeat(40) });
+    expect(result).toMatchObject({ advanced: false, green: null, reason: 'infra-inconclusive',
+      candidate: 'b'.repeat(40), suiteReplayCanary: { status: 'mismatch' } });
+    expect(result.failingTests).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  it('unavailable replay history stays inconclusive without blaming product tests', async () => {
+    const { deps, calls } = stubDeps(true);
+    deps.readLastSuiteVerdictReplay = async () => { throw new Error('history unavailable'); };
+    const result = await runGreenCheckpoint(cfg(), deps);
+    expect(result).toMatchObject({ advanced: false, green: null, suiteReplayCanary: { status: 'unreadable' } });
+    expect(calls).toEqual([]);
+  });
+
+  it('keeps pinned provenance and the owning fire identity on an early replay rejection', async () => {
+    const snapshot = prior(); snapshot.expected.disposition = 'green';
+    const { deps, calls } = stubDeps(true);
+    deps.readLastSuiteVerdictReplay = async () => snapshot;
+    deps.gateFireId = 'replay-fixture-fire';
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate: 'b'.repeat(40), candidateSource: 'pinned' });
+    expect(result).toMatchObject({ candidateSource: 'pinned', gateFireId: 'replay-fixture-fire',
+      advanced: false, green: null, suiteReplayCanary: { status: 'mismatch' } });
+    expect(calls).toEqual([]);
+  });
+
+  it('a matched replay permits the ordinary gate and captures its new observations', async () => {
+    await commit('candidate.txt', 'candidate', 'candidate');
+    const { deps, calls } = stubDeps(true);
+    deps.readLastSuiteVerdictReplay = async () => prior();
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(calls).toContain('runGreen');
+    expect(result.suiteReplayCanary?.status).toBe('passed');
+    expect(result.suiteVerdictReplay).toMatchObject({ version: 1, candidate: result.candidate,
+      input: { green: true, failures: [] }, expected: { disposition: 'green' } });
+  });
+
+  it('legacy history bootstraps from a real measurement rather than a canned verdict', async () => {
+    await commit('candidate.txt', 'candidate', 'candidate');
+    const { deps } = stubDeps(true); deps.readLastSuiteVerdictReplay = async () => null;
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(result.suiteReplayCanary?.status).toBe('bootstrap');
+    expect(result.suiteVerdictReplay?.expected.disposition).toBe('green');
+  });
+});
 
 function stubDeps(
   green: boolean,
@@ -332,6 +540,222 @@ describe("EI-210512: green-checkpoint disk-headroom preflight", () => {
     expect(result).toMatchObject({ green: true, reason: "advanced" });
     expect(calls.some((call) => call.startsWith("setup:"))).toBe(true);
     expect(calls).toContain("runGreen");
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-022: a typed setup-precondition refusal (no verdict) is
+// retried ONCE in-process after a short delay instead of idling until the next hourly tick.
+// Measured 2026-10-12: four consecutive fires refused on headroom, each mid-setup (exit 77
+// thrown from setupTree after the preflight passed), and each waited an hour for the next tick.
+describe("P-022: one bounded short-delay retry after a typed precondition refusal", () => {
+  const MIN = 60_000;
+  const exit77 = () =>
+    new Error(
+      "bash /repo/apps/operator/bin/release/dependency-generation.sh exited 77: " +
+        "[dependency-generation] DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=0 avail=1 required=2",
+    );
+  const exit76 = () =>
+    new Error(
+      "bash /repo/apps/operator/bin/release/dependency-generation.sh exited 76: " +
+        "[dependency-generation] DEPENDENCY_GENERATION_LOCK_TIMEOUT waited=600s",
+    );
+  /** Wires the retry seams onto stub deps and records every seam call in `calls`. */
+  const withRetrySeams = (deps: CheckpointDeps, calls: string[], delayMs = 5 * MIN) => {
+    const slept: number[] = [];
+    const logs: string[] = [];
+    deps.preconditionRetryDelayMs = delayMs;
+    deps.preconditionRetrySleep = async (ms) => {
+      slept.push(ms);
+      calls.push(`sleep:${ms}`);
+    };
+    deps.reclaimDependencyHeadroom = async () => {
+      calls.push("reclaim");
+      return "dependency retention complete: 3/3 store(s) pruned; free 49.93 → 61.20 GiB";
+    };
+    const log = deps.log;
+    deps.log = (line) => {
+      logs.push(line);
+      log(line);
+    };
+    return { slept, logs };
+  };
+  const seed = async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    return { ready, candidate };
+  };
+
+  it("a preflight headroom refusal returns before any setup work, then reclaims, waits and retries exactly once", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    const { slept } = withRetrySeams(deps, calls);
+    let probes = 0;
+    deps.checkDiskHeadroom = async () => {
+      probes += 1;
+      calls.push(`headroom:${probes}`);
+      return probes === 1
+        ? { ok: false, blocker: "disk-headroom", summary: "dependency copy cannot start: HEADROOM_INSUFFICIENT" }
+        : { ok: true, summary: "dependency-copy headroom ok" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(result.preconditionRetry).toMatchObject({
+      blocker: "disk-headroom",
+      delayMs: 5 * MIN,
+      firstSummary: "dependency copy cannot start: HEADROOM_INSUFFICIENT",
+    });
+    expect(result.preconditionRetry?.cleanup).toContain("3/3 store(s) pruned");
+    expect(probes).toBe(2);
+    // Refusal BEFORE setup: nothing materializes until the retried pass's own preflight passes.
+    const firstSetup = calls.findIndex((c) => c.startsWith("setup:"));
+    expect(firstSetup).toBeGreaterThan(calls.indexOf("headroom:2"));
+    expect(calls.indexOf("reclaim")).toBeLessThan(calls.indexOf("headroom:2"));
+    expect(calls.filter((c) => c === "reclaim")).toHaveLength(1);
+    // The wait is chunked so liveness is reported at least every minute; it sums to the delay.
+    expect(slept.every((ms) => ms <= MIN)).toBe(true);
+    expect(slept.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(5 * MIN);
+    expect(slept.reduce((a, b) => a + b, 0)).toBeGreaterThan(4 * MIN);
+  });
+
+  it("a second refusal in the same run is final: no further retry, the refusal is reported", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    const { logs } = withRetrySeams(deps, calls);
+    let probes = 0;
+    deps.checkDiskHeadroom = async () => {
+      probes += 1;
+      return { ok: false, summary: `still short (${probes})` };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: null, reason: "disk-headroom", summary: "still short (2)" });
+    expect(result.preconditionRetry).toMatchObject({ blocker: "disk-headroom", firstSummary: "still short (1)" });
+    expect(probes).toBe(2);
+    expect(calls.filter((c) => c === "reclaim")).toHaveLength(1);
+    expect(calls.some((c) => c.startsWith("setup:"))).toBe(false);
+    expect(calls).not.toContain("runGreen");
+    expect(logs.some((l) => l.includes("GATE_PRECONDITION_RETRY skipped blocker=disk-headroom reason=bound-exhausted"))).toBe(true);
+  });
+
+  it("setup's own exit 77 thrown mid-materialization is retried once, with retention reclaim", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    withRetrySeams(deps, calls);
+    const setup = deps.setupTree;
+    let setups = 0;
+    deps.setupTree = async (ref, options) => {
+      setups += 1;
+      if (setups === 1) throw exit77();
+      return setup(ref, options);
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(result.preconditionRetry?.blocker).toBe("disk-headroom");
+    expect(result.preconditionRetry?.firstSummary).toContain("exit 77");
+    expect(setups).toBe(2);
+    expect(calls.filter((c) => c === "reclaim")).toHaveLength(1);
+  });
+
+  it("setup's exit 76 (copy lock) is retried once WITHOUT disk reclaim; a second one propagates to the crash handler", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    withRetrySeams(deps, calls);
+    let setups = 0;
+    deps.setupTree = async () => {
+      setups += 1;
+      throw exit76();
+    };
+
+    await expect(runGreenCheckpoint(cfg(), deps, { candidate, noPush: true })).rejects.toThrow(/exited 76/);
+    expect(setups).toBe(2);
+    expect(calls).not.toContain("reclaim");
+    expect(calls.some((c) => c.startsWith("sleep:"))).toBe(true);
+  });
+
+  it("a wedged copy lock at preflight is classified like setup's exit 76 and retried without reclaim", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    withRetrySeams(deps, calls);
+    let probes = 0;
+    deps.checkDiskHeadroom = async () => {
+      probes += 1;
+      return { ok: false, blocker: "copy-lock", summary: "DEPENDENCY_GENERATION_LOCK_BUSY state=wedged" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: null, reason: "infra-inconclusive", preconditionBlocker: "copy-lock" });
+    expect(result.preconditionRetry?.cleanup).toBe("not run (copy-lock refusal)");
+    expect(probes).toBe(2);
+    expect(calls).not.toContain("reclaim");
+  });
+
+  it("does not retry when the delay plus a full pass would overrun the run budget", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    const { logs } = withRetrySeams(deps, calls);
+    deps.checkDiskHeadroom = async () => ({ ok: false, summary: "short" });
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+      runStartedAtMs: Date.now() - 60 * MIN,
+    });
+
+    expect(result).toMatchObject({ green: null, reason: "disk-headroom" });
+    expect(result.preconditionRetry).toBeUndefined();
+    expect(calls).not.toContain("reclaim");
+    expect(logs.some((l) => l.includes("reason=deadline"))).toBe(true);
+  });
+
+  it("a caller that supplies no retry delay keeps the historical single-pass refusal", async () => {
+    const { candidate } = await seed();
+    const { deps, calls } = stubDeps(true);
+    let probes = 0;
+    deps.checkDiskHeadroom = async () => {
+      probes += 1;
+      return { ok: false, summary: "short" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { candidate, noPush: true });
+
+    expect(result).toMatchObject({ green: null, reason: "disk-headroom", preconditionBlocker: "disk-headroom" });
+    expect(result.preconditionRetry).toBeUndefined();
+    expect(probes).toBe(1);
+    expect(calls.some((c) => c.startsWith("setup:"))).toBe(false);
+  });
+
+  it("decideGatePreconditionRetry bounds: verdict, blocker, attempt count and run budget", () => {
+    const base = { retriesSoFar: 0, elapsedMs: 0, delayMs: 5 * MIN, budgetMs: DEFAULT_REFIRE_RUN_BUDGET_MS };
+    expect(decideGatePreconditionRetry({ ...base, result: { green: null, preconditionBlocker: "disk-headroom" } }))
+      .toEqual({ retry: true, blocker: "disk-headroom" });
+    expect(decideGatePreconditionRetry({ ...base, result: { green: null } }))
+      .toEqual({ retry: false, reason: "no-blocker" });
+    // A rendered verdict is never retried, whatever it is stamped with.
+    expect(decideGatePreconditionRetry({ ...base, result: { green: false, preconditionBlocker: "copy-lock" } }))
+      .toEqual({ retry: false, reason: "no-blocker" });
+    expect(decideGatePreconditionRetry({ ...base, retriesSoFar: 1, result: { green: null, preconditionBlocker: "copy-lock" } }))
+      .toEqual({ retry: false, reason: "bound-exhausted" });
+    // 110 min budget: 45 min elapsed + 5 min delay + 60 min full pass fits exactly; 46 does not.
+    expect(decideGatePreconditionRetry({ ...base, elapsedMs: 45 * MIN, result: { green: null, preconditionBlocker: "disk-headroom" } }).retry)
+      .toBe(true);
+    expect(decideGatePreconditionRetry({ ...base, elapsedMs: 46 * MIN, result: { green: null, preconditionBlocker: "disk-headroom" } }))
+      .toEqual({ retry: false, reason: "deadline" });
+  });
+
+  it("the retry delay defaults to 5 minutes and accepts only a finite non-negative override", () => {
+    expect(DEFAULT_GATE_PRECONDITION_RETRY_DELAY_MS).toBe(5 * MIN);
+    expect(gatePreconditionRetryDelayMsFromEnv({})).toBe(5 * MIN);
+    expect(gatePreconditionRetryDelayMsFromEnv({ PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS: "90000" })).toBe(90_000);
+    expect(gatePreconditionRetryDelayMsFromEnv({ PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS: "0" })).toBe(0);
+    expect(gatePreconditionRetryDelayMsFromEnv({ PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS: "-1" })).toBe(5 * MIN);
+    expect(gatePreconditionRetryDelayMsFromEnv({ PAPERCUSP_GATE_PRECONDITION_RETRY_DELAY_MS: "soon" })).toBe(5 * MIN);
   });
 });
 
@@ -679,6 +1103,138 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
       repairHead: frozen,
     });
   });
+
+  it("P-013: the terminal handler routes the failing legs of the queue the tick ended holding", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      attempts: 0,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+      signature: [],
+    };
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.dispatchFrozenRepairFixer = async () => ({
+      spawnId: "fixer",
+      runId: "run",
+    });
+    const route = vi.fn(async (_input: unknown) => undefined);
+    deps.routeFrozenRepairLegsToAgents = route;
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(route).toHaveBeenCalled();
+    expect(route.mock.calls.at(-1)?.[0]).toMatchObject({
+      pipeline: expect.any(String),
+      queue: {
+        candidate: frozen,
+        repairHead: frozen,
+        failingTests: ["lib/broken.test.ts"],
+      },
+    });
+  });
+
+  it("P-013: a green tick routes queue:null so every open leg item resolves", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const route = vi.fn(async (_input: unknown) => undefined);
+    deps.routeFrozenRepairLegsToAgents = route;
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result.green).toBe(true);
+    expect(route).toHaveBeenCalled();
+    expect(route.mock.calls.at(-1)?.[0]).toMatchObject({ queue: null });
+  });
+
+  it("WI-6554700010009547: leg routing runs through the bounded, entry-logged post-verdict step", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    deps.routeFrozenRepairLegsToAgents = async () => {
+      throw new Error("condition bridge down");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    // A routing failure stays non-fatal, and the step is attributable from the run log.
+    expect(result.green).toBe(true);
+    expect(logs).toContain(
+      "frozen-repair leg routing started (deadline 60000ms)",
+    );
+    expect(logs).toContain(
+      "frozen-repair leg routing failed: condition bridge down",
+    );
+  });
+
+  it("WI-6554700010009615: the return funnel enters the post-verdict phase before its post-verdict steps", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const order: string[] = [];
+    deps.enterPostVerdictPhase = () => {
+      order.push("enter");
+    };
+    deps.recordDerivedFreezeDisposition = async () => {
+      order.push("disposition");
+    };
+    deps.routeFrozenRepairLegsToAgents = async () => {
+      order.push("route");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result.green).toBe(true);
+    expect(order).toEqual(["enter", "disposition", "route"]);
+  });
+
+  it("WI-6554700010009615: a throwing post-verdict hook is logged and never fails the tick", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    deps.enterPostVerdictPhase = () => {
+      throw new Error("watchdog gone");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result.green).toBe(true);
+    expect(logs).toContain("warn: post-verdict watchdog tighten failed: watchdog gone");
+  });
 });
 
 describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
@@ -703,16 +1259,21 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.recordDerivedFreezeDisposition = async (value) => {
       observation = value;
     };
+    // P-013: an unreadable queue is NOT "no queue" — routing it as null would resolve
+    // every open leg item on a read fault, so the terminal handler must skip routing.
+    const routeLegs = vi.fn(async (_input: unknown) => undefined);
+    deps.routeFrozenRepairLegsToAgents = routeLegs;
 
     const result = await runGreenCheckpoint(cfg(), deps, {
       candidate,
       noPush: true,
     });
+    expect(routeLegs).not.toHaveBeenCalled();
 
     expect(result).toMatchObject({
       advanced: false,
       green: null,
-      reason: "repair-in-progress",
+      reason: "infra-inconclusive",
       repairQueueRead: {
         status: "unreadable",
         reason: "schema-newer-than-reader",
@@ -728,6 +1289,37 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       repairQueue: null,
       repairQueueRead: { status: "unreadable" },
     });
+  });
+
+  it("classifies a thrown legacy frozen-queue read as transient inconclusive", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps } = stubDeps(true);
+    const setupTree = vi.fn(async () => undefined);
+    const runGreen = vi.fn(async () => ({ green: true, summary: "must not run" }));
+    deps.setupTree = setupTree;
+    deps.runGreen = runGreen;
+    deps.readFrozenRepairQueue = async () => {
+      throw new Error("chunkStoreVectorColumns is not defined");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate,
+      green: null,
+      reason: "infra-inconclusive",
+    });
+    expect(result.summary).toContain(
+      "frozen repair queue read failed — refusing to cut a moving candidate",
+    );
+    expect(setupTree).not.toHaveBeenCalled();
+    expect(runGreen).not.toHaveBeenCalled();
   });
 
   it("persists the immutable candidate before setup or its first suite", async () => {
@@ -879,6 +1471,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
     let queue: FrozenCandidateRepairQueue | null = null;
     const dispatchedHeads: string[] = [];
+    const dispatchedEvidence: unknown[] = [];
     let tipRetests = 0;
     deps.runGreen = async () => {
       calls.push("runGreen");
@@ -889,6 +1482,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         failingFiles: [
           { file: "lib/broken.test.ts", workspace: "@papercusp/web" },
         ],
+        logPath: "/tmp/checkpoint-exact-run.log",
         isolationNote:
           "isolation: 1 file STILL FAILED at the candidate — real break, gate stays red",
       };
@@ -902,8 +1496,9 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
     };
-    deps.dispatchFrozenRepairFixer = async (next) => {
+    deps.dispatchFrozenRepairFixer = async (next, evidence) => {
       dispatchedHeads.push(next.repairHead);
+      dispatchedEvidence.push(evidence);
       return { spawnId: "fixer-1", runId: "run-1" };
     };
     deps.frozenRepairFixerAlive = async () => true;
@@ -927,6 +1522,12 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         fixerSpawnId: "fixer-1",
       },
     });
+    expect(first.checkpointEvidence).toMatchObject({
+      logPath: "/tmp/checkpoint-exact-run.log",
+      runId: "initial-proof-run",
+      integrationRoot: cfg().integrationRoot,
+    });
+    expect(dispatchedEvidence).toEqual([first.checkpointEvidence]);
     // EI-208045: the queue returns before moving-tip re-triage. Even though this fixture
     // deliberately carries the old candidate-framed "real break" isolation note and a
     // newer tip whose test would pass, the emitted result can never combine that note with
@@ -967,11 +1568,13 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     // EI-22767271786772554: a canonical red at a DISTINCT repair head is durable in
     // convergenceRounds even after the queue moves back to awaiting-fixer. The public
     // result must project that judgment instead of inferring "not-judged" from phase.
+    const priorQueue = await deps.readFrozenRepairQueue!();
+    expect(priorQueue).not.toBeNull();
     queue = {
-      ...queue!,
+      ...priorQueue!,
       repairHead: movingTip,
       convergenceRounds: [
-        ...(queue?.convergenceRounds ?? []),
+        ...(priorQueue?.convergenceRounds ?? []),
         {
           round: 2,
           head: movingTip,
@@ -1379,7 +1982,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const measured: string[] = [];
     deps.runGateAtRef = async (head) => {
       measured.push(head);
-      if (outcome === "unavailable") return null;
+      if (outcome === "unavailable") throw new Error("verification unavailable");
       if (outcome === "superseded" && measured.length === 1 && cell.queue) {
         cell.queue = {
           ...cell.queue, repairHead: newer,
@@ -1849,7 +2452,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       attempts: 1,
       fixerSpawnId: "fixer-1",
     });
-    expect(queue?.dispatchReservation).toBeUndefined();
+    expect((await deps.readFrozenRepairQueue!())?.dispatchReservation).toBeUndefined();
   });
 
   it("renews the frozen-repair reservation throughout a slow dispatch", async () => {
@@ -3222,6 +3825,143 @@ describe("in-flight candidate retirement ownership", () => {
   );
 });
 
+describe("qualification attach race (WI-6554700010009570)", () => {
+  const incumbentRunner = {
+    id: "gate-fire-scheduled",
+    candidate: "0a16d4a6fa0000000000000000000000000000aa",
+    reservedAtMs: 1,
+    evidenceRefs: [],
+    pid: 3842170,
+    pidIdentity: "start:123",
+    unit: "papercup-green-checkpoint-scheduled",
+  };
+  const conflict = (runner: typeof incumbentRunner | null, runId: string | null = "4bbfb5d7-run") => ({
+    status: "conflict",
+    transaction: { runId, candidate: "0a16d4a6fa0000000000000000000000000000aa", currentPhysicalRunner: runner },
+  });
+  const self = { pid: 4000001, runId: "8d95fde3-run" };
+
+  it("reports a candidate refusal with matching own-unit ids without claiming launcher skew (P-033)", () => {
+    const runner = { ...incumbentRunner, id: 'same-fire', unit: 'own.scope' };
+    const summary = checkpointQualificationAttachmentRefusalSummary({
+      ...conflict(runner), refusalReason: 'candidate-mismatch',
+      transaction: { ...conflict(runner).transaction, attemptId: 'attempt-1' },
+    }, { attemptId: 'attempt-1', gateFireId: 'same-fire', candidate: 'different-candidate', runId: self.runId }, ['own.scope']);
+    expect(summary).toContain('refusalReason=candidate-mismatch');
+    expect(summary).toContain('reservation id and transported gateFireId agree (same-fire)');
+    expect(summary).toContain('candidate=different-candidate');
+    expect(summary).not.toContain('version skew');
+    expect(summary).not.toContain('disagree');
+  });
+
+  it("claims own-unit launcher skew only for different physical ids (P-033)", () => {
+    const runner = { ...incumbentRunner, id: 'reserved-fire', unit: 'own.scope' };
+    const summary = checkpointQualificationAttachmentRefusalSummary({
+      ...conflict(runner), refusalReason: 'runner-held',
+      transaction: { ...conflict(runner).transaction, attemptId: 'attempt-1' },
+    }, { attemptId: 'attempt-1', gateFireId: 'attached-fire', candidate: 'candidate-1', runId: self.runId }, ['own.scope']);
+    expect(summary).toContain('reservation id and the transported gateFireId attached-fire disagree');
+    expect(summary).toContain('version skew');
+    expect(summary).toContain('refusalReason=runner-held');
+    expect(checkpointQualificationAttachmentRefusalSummary({ status: 'missing-identity' }, {
+      candidate: null, runId: self.runId,
+    }, [])).toBe('checkpoint qualification runner attachment refused: missing-identity; refusalReason=unknown');
+  });
+
+  it("names a LIVE different runner so the losing fire stands down instead of crashing", async () => {
+    const probe = vi.fn(async () => "live" as const);
+    const incumbent = await liveIncumbentAfterAttachConflict(conflict(incumbentRunner), self, probe);
+    expect(incumbent).toEqual({
+      runner: incumbentRunner,
+      runId: "4bbfb5d7-run",
+      candidate: "0a16d4a6fa0000000000000000000000000000aa",
+    });
+    expect(probe).toHaveBeenCalledWith(incumbentRunner);
+    const summary = attachRaceSkipSummary(incumbent!);
+    expect(summary).toContain("runId 4bbfb5d7");
+    expect(summary).toContain("pid 3842170");
+    expect(summary).toContain("on 0a16d4a6fa00");
+  });
+
+  it.each(["dead", "unknown"] as const)("keeps the crash path when the incumbent is %s", async (liveness) => {
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(incumbentRunner), self, async () => liveness),
+    ).resolves.toBeNull();
+  });
+
+  it("keeps the crash path when the liveness probe throws", async () => {
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(incumbentRunner), self, async () => {
+        throw new Error("systemctl unavailable");
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("never treats this process, its own runId, a missing runner or a non-conflict refusal as an incumbent", async () => {
+    const live = vi.fn(async () => "live" as const);
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict({ ...incumbentRunner, pid: self.pid }), self, live),
+    ).resolves.toBeNull();
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(incumbentRunner, self.runId), self, live),
+    ).resolves.toBeNull();
+    await expect(liveIncumbentAfterAttachConflict(conflict(null), self, live)).resolves.toBeNull();
+    await expect(
+      liveIncumbentAfterAttachConflict({ ...conflict(incumbentRunner), status: "terminal" }, self, live),
+    ).resolves.toBeNull();
+    await expect(liveIncumbentAfterAttachConflict({ status: "missing-identity" }, self, live)).resolves.toBeNull();
+    expect(live).not.toHaveBeenCalled();
+  });
+
+  it("never treats a reservation recorded under THIS process's own unit as a live incumbent (WI-6554700010009727)", async () => {
+    // Measured 2026-10-13 03:51Z: a manual reservation with pid and runId null, whose unit was the CLI's
+    // own unit; the probe said `live` because it was probing the caller, and the run stood down on itself.
+    const ownManual = {
+      ...incumbentRunner,
+      id: "manual:e4939c92:1791863496390",
+      pid: null,
+      pidIdentity: null,
+      unit: "papercup-green-checkpoint-manual-1fxzuva.service",
+    };
+    const live = vi.fn(async () => "live" as const);
+    const units = ["user@1000.service", "papercup-green-checkpoint-manual-1fxzuva.service"];
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(ownManual as never, null), { ...self, units }, live),
+    ).resolves.toBeNull();
+    expect(live).not.toHaveBeenCalled();
+    // A DIFFERENT unit stays a real incumbent even when this process knows its own units.
+    await expect(
+      liveIncumbentAfterAttachConflict(conflict(incumbentRunner), { ...self, units }, live),
+    ).resolves.not.toBeNull();
+  });
+
+  it("reads this process's systemd units from a cgroup v2 path and fails open to [] when unreadable", () => {
+    expect(
+      ownCgroupUnits(
+        () => "0::/user.slice/user-1000.slice/user@1000.service/app.slice/papercup-green-checkpoint-manual-1fxzuva.service\n",
+      ),
+    ).toEqual(["user@1000.service", "papercup-green-checkpoint-manual-1fxzuva.service"]);
+    expect(
+      ownCgroupUnits(() => "0::/user.slice/user-1000.slice/user@1000.service/papercusp-checkpoint-e4939c92.scope/sub\n"),
+    ).toEqual(["user@1000.service", "papercusp-checkpoint-e4939c92.scope"]);
+    expect(
+      ownCgroupUnits(() => {
+        throw new Error("ENOENT");
+      }),
+    ).toEqual([]);
+    expect(runnerUnitIsOwn({ unit: "a.service" }, ["a.service"])).toBe(true);
+    expect(runnerUnitIsOwn({ unit: "a.service" }, ["b.service"])).toBe(false);
+    expect(runnerUnitIsOwn({ unit: null }, ["a.service"])).toBe(false);
+    expect(runnerUnitIsOwn({ unit: "a.service" }, undefined)).toBe(false);
+  });
+
+  it("stands down on the lock-loser terminal, which never retires the holder's in-flight marker", async () => {
+    const clear = vi.fn(async () => {});
+    await expect(retireInFlightCandidateAfterResult({ reason: "skipped-locked" }, clear)).resolves.toBe(false);
+    expect(clear).not.toHaveBeenCalled();
+  });
+});
+
 describe("acquireCheckpointRunLock", () => {
   it('uses the scheduled wrapper runId for its child and preserves legacy sentinel behavior', () => {
     const shared = 'ae4f7c6c-56c6-4bb6-8d38-633a23f94a4f';
@@ -3258,10 +3998,10 @@ describe("acquireCheckpointRunLock", () => {
     await buffer.flush(result, false);
     expect(emitted).toHaveLength(1);
   });
-  it("reports scheduled runner phases against the reserved attempt and stops before terminal output", async () => {
+  it("reports qualification runner phases against the reserved attempt and stops before terminal output", async () => {
     const record = vi.fn(async (..._args: unknown[]) => ({ status: 'updated' as const, transaction: {} as never }));
     const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
-    const progress = startScheduledQualificationProgress({
+    const progress = startCheckpointQualificationProgress({
       target, attemptId: 'attempt-1', gateFireId: 'fire-1', runId: 'run-1', pid: process.pid,
     }, record, 60_000);
     progress.note('phase:suite');
@@ -3276,24 +4016,84 @@ describe("acquireCheckpointRunLock", () => {
     progress.note('phase:suite');
     expect(record).toHaveBeenCalledTimes(3);
   });
-  it("activates the exact scheduled reservation and refuses missing identity", async () => {
+  it("logs bounded, redacted details for scheduled qualification progress failures", async () => {
+    const unsafeError = `database unavailable\npassword=unit-test-secret ${"x".repeat(400)}`;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
+      const refused = vi.fn(async (..._args: unknown[]) => ({
+        status: 'unreadable' as const,
+        error: unsafeError,
+      }));
+      const refusedProgress = startCheckpointQualificationProgress({
+        target, attemptId: 'attempt-1', gateFireId: 'fire-1', runId: 'run-1', pid: process.pid,
+      }, refused, 60_000);
+      refusedProgress.note('phase:suite');
+      await refusedProgress.stop();
+
+      const rejected = vi.fn(async (..._args: unknown[]) => { throw new Error(unsafeError); });
+      const rejectedProgress = startCheckpointQualificationProgress({
+        target, attemptId: 'attempt-2', gateFireId: 'fire-2', runId: 'run-2', pid: process.pid,
+      }, rejected, 60_000);
+      rejectedProgress.note('phase:suite');
+      await rejectedProgress.stop();
+
+      expect(warn).toHaveBeenCalledTimes(2);
+      const lines = warn.mock.calls.map(([message]) => String(message));
+      expect(lines[0]).toContain('scheduled runner progress refused: unreadable');
+      expect(lines[1]).toContain('scheduled runner progress failed');
+      for (const line of lines) {
+        expect(line).toContain('database unavailable');
+        expect(line).not.toContain('unit-test-secret');
+        expect(line).not.toMatch(/[\r\n]/);
+        expect(line.length).toBeLessThan(400);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it("keeps qualification progress fresh while dependency preflight is pending", async () => {
+    vi.useFakeTimers();
+    try {
+      const record = vi.fn(async (..._args: unknown[]) => ({ status: 'updated' as const, transaction: {} as never }));
+      const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
+      const progress = startCheckpointQualificationProgress({
+        target, attemptId: 'manual-attempt-1', gateFireId: 'manual-fire-1', runId: 'run-1', pid: process.pid,
+      }, record, 10);
+      let preflightFinished = false;
+      const preflight = new Promise<void>((resolve) => {
+        setTimeout(() => { preflightFinished = true; resolve(); }, 35);
+      });
+
+      await vi.advanceTimersByTimeAsync(35);
+      await preflight;
+      await progress.stop();
+
+      expect(preflightFinished).toBe(true);
+      expect(record).toHaveBeenCalled();
+      expect(record.mock.calls.some(([, input]) => (input as { phase: string }).phase === 'materializing')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("attaches manual or scheduled CLI processes to the exact qualification reservation", async () => {
     const reserve = vi.fn(async () => ({ status: 'updated' as const, transaction: {} as never }));
     const target = { workspaceId: 'ws-1', installSlug: 'papercusp' };
     const input = {
-      scheduled: true, target, attemptId: 'attempt-1', gateFireId: 'fire-1',
+      target, attemptId: 'attempt-1', gateFireId: 'fire-1',
       runId: 'run-1', candidate: 'candidate-1', pid: process.pid,
     };
-    const result = await activateScheduledCheckpointRunner(input, reserve);
+    const result = await activateCheckpointQualificationRunner(input, reserve);
     expect(result.status).toBe('updated');
     expect(reserve).toHaveBeenCalledWith(target, expect.objectContaining({
       attemptId: 'attempt-1', runnerId: 'fire-1', runId: 'run-1',
       candidate: 'candidate-1', pid: process.pid, pidIdentity: expect.stringMatching(/:\d+$/),
       started: true, evidenceRefs: ['checkpoint-run:run-1'],
     }));
-    expect((await activateScheduledCheckpointRunner({ ...input, gateFireId: undefined }, reserve)).status)
+    expect((await activateCheckpointQualificationRunner({ ...input, gateFireId: undefined }, reserve)).status)
       .toBe('missing-identity');
-    expect((await activateScheduledCheckpointRunner({ ...input, scheduled: false }, reserve)).status)
-      .toBe('not-scheduled');
+    expect((await activateCheckpointQualificationRunner({ ...input, attemptId: undefined }, reserve)).status)
+      .toBe('not-qualifying');
     expect(reserve).toHaveBeenCalledTimes(1);
   });
   it("a scheduled fire that joined a pinned attempt judges that attempt's candidate, not tip (WI-10002602)", async () => {
@@ -3316,6 +4116,31 @@ describe("acquireCheckpointRunLock", () => {
     expect(unread).not.toHaveBeenCalled();
     expect(await scheduledAttemptPinnedCandidate(base, vi.fn(async () => ({ status: 'none' as const })))).toBeNull();
     expect(await scheduledAttemptPinnedCandidate(base, vi.fn(async () => { throw new Error('pg down'); }))).toBeNull();
+  });
+  it("a joined scheduled attempt prewarms the runnable frozen repair candidate", async () => {
+    const assess = vi.fn(async () => ({
+      proceed: true as const,
+      reason: 'clear' as const,
+      candidate: 'repair-head-sha',
+      candidateSource: 'frozen-repair-queue' as const,
+      repairQueue: null,
+      frozenLineageIdentity: null,
+      queueDecision: 'verify-repair' as const,
+      nextAttempt: null,
+      fixerSpawnId: null,
+      fixerAlive: null,
+    }));
+
+    const selected = await scheduledAttemptPrewarmTarget('frozen-candidate-sha', {
+      assess,
+      root: '/checkpoint',
+    });
+
+    expect(assess).toHaveBeenCalledWith('frozen-candidate-sha', '/checkpoint');
+    expect(selected).toEqual({
+      candidate: 'repair-head-sha',
+      candidateSource: 'frozen-repair-queue',
+    });
   });
   it("blocks a second live checkpoint process from mutating the same checkpoint tree", () => {
     const lockDir = join(
@@ -3688,9 +4513,76 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(onFire).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(1);
-    expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling");
+    expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling", expect.objectContaining({
+      idleBudgetMs: 1000, hardCeilingMs: 2500, tightenedBecause: null,
+    }));
     expect(release).toHaveBeenCalledTimes(1);
     expect(kill).toHaveBeenCalledWith(-999, "SIGKILL");
+  });
+
+  it("WI-6554700010009615: tighten pulls the absolute ceiling in, and progress cannot push past it", () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const onFire = vi.fn();
+    const logs: string[] = [];
+    const watchdog = armSelfWatchdog(
+      { release },
+      {
+        ms: 10_000,
+        hardCeilingMs: 10_000,
+        kill,
+        pid: 999,
+        log: (m) => logs.push(m),
+        onFire,
+      },
+    );
+
+    vi.advanceTimersByTime(1000);
+    expect(
+      watchdog.tighten({ hardCeilingMs: 2000, reason: "post-verdict return funnel" }),
+    ).toBe(true);
+    expect(logs.some((l) => l.startsWith("self-watchdog tightened (post-verdict return funnel)"))).toBe(true);
+
+    // Real progress resets the idle budget but re-arms against the TIGHTENED ceiling.
+    vi.advanceTimersByTime(1500);
+    watchdog.progress();
+    vi.advanceTimersByTime(499);
+    expect(onFire).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling", expect.objectContaining({
+      idleBudgetMs: 10_000, hardCeilingMs: 3000, tightenedBecause: 'post-verdict return funnel',
+    }));
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(-999, "SIGKILL");
+    // The fire line names the tightening, so a post-verdict kill is not misread as a 3h overrun.
+    expect(logs.some((l) => l.includes("(tightened: post-verdict return funnel)"))).toBe(true);
+  });
+
+  it("WI-6554700010009615: tighten never extends a deadline and is inert once cancelled", () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const onFire = vi.fn();
+    const watchdog = armSelfWatchdog(
+      { release },
+      { ms: 5000, hardCeilingMs: 5000, kill, pid: 999, log: () => {}, onFire },
+    );
+
+    vi.advanceTimersByTime(1000);
+    expect(watchdog.tighten({ hardCeilingMs: 60_000, reason: "looser" })).toBe(false);
+    vi.advanceTimersByTime(3999);
+    expect(onFire).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onFire).toHaveBeenCalledTimes(1);
+
+    const cancelled = armSelfWatchdog(
+      { release },
+      { ms: 5000, hardCeilingMs: 5000, kill, pid: 999, log: () => {}, onFire },
+    );
+    cancelled.cancel();
+    expect(cancelled.tighten({ hardCeilingMs: 10, reason: "after cancel" })).toBe(false);
+    vi.advanceTimersByTime(10_000);
+    expect(onFire).toHaveBeenCalledTimes(1);
   });
 
   it("releases the lock and SIGKILLs its own process GROUP (negative pid) once the deadline elapses", () => {
@@ -3804,6 +4696,38 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     await vi.advanceTimersByTimeAsync(1000);
     expect(order).toEqual(["emit:start", "emit:done", "kill:-999:SIGKILL"]);
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  /** WI-6554700010009547: run 85de8fa0's onFire entered signed shard publication (30s deadline)
+   *  and was SIGKILLed at the old 8s grace, losing the marker, events and notify. The PRODUCTION
+   *  default grace must outlast a step that slow, and the watchdog record must skip shards. */
+  it("WI-6554700010009547: the default onFire grace outlasts a 30s step, and the watchdog verdict record skips signed shards", async () => {
+    const order: string[] = [];
+    const kill = vi.fn((p: number, sig: NodeJS.Signals) =>
+      order.push(`kill:${p}:${sig}`),
+    );
+    armSelfWatchdog(
+      { release: vi.fn() },
+      {
+        ms: 1000,
+        kill,
+        pid: 999,
+        log: () => {},
+        // No onFireGraceMs: the production default is what is under test.
+        onFire: async () => {
+          order.push("emit:start");
+          await new Promise((resolve) => setTimeout(resolve, 30_000));
+          order.push("emit:done");
+        },
+      },
+    );
+    await vi.advanceTimersByTimeAsync(1000 + 30_000);
+    expect(order).toEqual(["emit:start", "emit:done", "kill:-999:SIGKILL"]);
+    expect(SELF_WATCHDOG_SIGNED_SHARD_DEADLINE_MS).toBe(0);
+    expect(terminalVerdictRecordOptions("self-watchdog")).toEqual({
+      signedShardDeadlineMs: 0,
+    });
+    expect(terminalVerdictRecordOptions("normal")).toEqual({});
   });
 
   it("WI-4528: a WEDGED onFire can never block the guaranteed kill — the grace bounds it", async () => {
@@ -4029,6 +4953,50 @@ describe("WI-39607: a normally-exiting run sweeps its own survivors", () => {
     expect(killed).toContain(253520);
     expect(killed).not.toContain(213099);
     expect(kill).toHaveBeenCalledWith(253520, "SIGKILL");
+  });
+});
+
+describe("EI-257879: checkpoint cleanup preserves its launcher output transport", () => {
+  it.each([0, 23])("drains the verdict and preserves producer exit %i while reaping workers", (exitCode) => {
+    const root = mkdtempSync(join(tmpdir(), "checkpoint-output-sweep-"));
+    try {
+      mkdirSync(join(root, "node_modules/.bin"), { recursive: true });
+      const log = join(root, "run.log");
+      const evidence = join(root, "sweep.json");
+      // Run the real selector in an isolated process group, without a suite or systemd.
+      // The fixture occupies tsx's launcher slot and leaves one live worker to reap.
+      writeFileSync(join(root, "node_modules/.bin/tsx"), `#!${process.execPath}
+const { spawn, spawnSync } = require('node:child_process');
+const { writeFileSync } = require('node:fs');
+const checkpointSweepTargets = ${checkpointSweepTargets.toString()};
+const worker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+worker.once('spawn', () => {
+  const table = spawnSync('ps', ['-eo', 'pid=,ppid=,pgid='], { encoding: 'utf8' }).stdout.trim().split('\\n').map(line => {
+    const [pid, ppid, pgid] = line.trim().split(/\\s+/).map(Number);
+    return { pid, ppid, pgid };
+  });
+  const pgid = table.find(row => row.pid === process.pid).pgid;
+  const targets = checkpointSweepTargets(table, process.pid, pgid);
+  process.stdout.write('\\x1b[32m__GREEN_CHECKPOINT_RESULT__ fixture-verdict\\x1b[0m\\n', () => {
+    for (const pid of targets) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    writeFileSync(${JSON.stringify(evidence)}, JSON.stringify({ worker: worker.pid, targets }));
+    process.exit(${exitCode});
+  });
+});
+`, { mode: 0o755 });
+      const inner = buildCheckpointSystemdArgv(root, log, process.env.PATH ?? "/usr/bin:/bin").at(-1)!;
+      const result = spawnSync("bash", ["-c", inner], {
+        cwd: root, detached: true, encoding: "utf8", timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(existsSync(evidence), result.stderr + readFileSync(log, "utf8")).toBe(true);
+      const swept = JSON.parse(readFileSync(evidence, "utf8"));
+      expect(swept.targets).toContain(swept.worker);
+      expect(result.status).toBe(exitCode);
+      expect(readFileSync(log, "utf8")).toBe("__GREEN_CHECKPOINT_RESULT__ fixture-verdict\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -4370,15 +5338,24 @@ describe("runGreenCheckpoint", () => {
     const { deps } = stubDeps(true);
     deps.log = (line) => logs.push(line);
 
-    const prior = process.env.DATABASE_URL;
+    // databaseEvidence() prefers HARNESS_ADMIN_DATABASE_URL / HARNESS_DATABASE_URL over
+    // DATABASE_URL (release-config.ts), and every agent shell on the dev box carries
+    // HARNESS_ADMIN_DATABASE_URL — so clear the higher-precedence keys too, or this test
+    // asserts on the ambient operator DSN instead of the value it set.
+    const keys = ["HARNESS_ADMIN_DATABASE_URL", "HARNESS_DATABASE_URL", "DATABASE_URL"] as const;
+    const prior = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    delete process.env.HARNESS_ADMIN_DATABASE_URL;
+    delete process.env.HARNESS_DATABASE_URL;
     // the measured real-world value: a transient gym-loop DB carrying 0 of the pot's tables
     process.env.DATABASE_URL =
       "postgres://test:secretpw@localhost:32787/papercusp_gym_loop_ab12cd";
     try {
       await runGreenCheckpoint(cfg(), deps, { noPush: true });
     } finally {
-      if (prior === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = prior;
+      for (const k of keys) {
+        if (prior[k] === undefined) delete process.env[k];
+        else process.env[k] = prior[k];
+      }
     }
 
     const evidence = logs.filter((line) => line.includes("database:"));
@@ -5463,6 +6440,57 @@ describe("runGreenCheckpoint", () => {
     );
   });
 
+  it.each([true, false])("P-035: repair preflight uses the frozen delta and preserves the full gate verdict (green=%s)", async (fullGateGreen) => {
+    const pin = await commit("packages/operator-core/lib/backlog.ts", "export const backlog = 1;\n", "pin");
+    await git(repo, ["branch", "ready", pin]);
+    const frozen = await commit("packages/operator-core/lib/backlog.ts", "export const backlog = 2;\n", "frozen backlog");
+    const repaired = await commit("packages/operator-core/lib/repair.ts", "export const repair = 1;\n", "repair delta");
+    // Model the ref published by a real admission; a synthetic repair commit
+    // without it must correctly fail the frozen-lineage promotion guard.
+    await git(repo, ["update-ref", frozenLineageRef(frozen), repaired]);
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: pin,
+      repairHead: repaired,
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: [],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(fullGateGreen, fullGateGreen ? [] : ["lint:tsc"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => { queue = next; };
+    const ranges: Array<{ from: string; to: string }> = [];
+    deps.changedFilesForRange = async (from, to) => {
+      ranges.push({ from, to });
+      return from === frozen
+        ? ["packages/operator-core/lib/repair.ts"]
+        : ["packages/operator-core/lib/backlog.ts", "packages/operator-core/lib/repair.ts"];
+    };
+    const checked: string[][] = [];
+    deps.runChangedFileTypecheckPreflight = async (files, range) => {
+      checked.push(files);
+      expect(range).toEqual({ from: frozen, to: repaired });
+      return { status: "passed", summary: "repair delta passes" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(ranges).toContainEqual({ from: frozen, to: repaired });
+    expect(checked).toEqual([["packages/operator-core/lib/repair.ts"]]);
+    // A regression inherited from the frozen candidate still blocks promotion even
+    // when the narrower provisional check passes. The full gate remains the authority.
+    expect(calls).toContain("runGreen");
+    expect(result.advanced, JSON.stringify(result)).toBe(fullGateGreen);
+    expect(result.green, JSON.stringify(result)).toBe(fullGateGreen);
+    expect(calls.includes("advance")).toBe(fullGateGreen);
+  });
+
   it("WI-38422: a failed changed-file typecheck returns the ordinary not-green verdict without entering the affected sweep", async () => {
     const c1 = await commit(
       "packages/operator-core/lib/a.ts",
@@ -5483,6 +6511,21 @@ describe("runGreenCheckpoint", () => {
       status: "failed",
       summary: "packages/operator-core/lib/a.ts(1,14): error TS2322",
       failingSignatures: ["lint:tsc"],
+      failureInventory: {
+        ran: true,
+        output: "POST_SUITE_RESULT status=failed\n",
+        failingSignatures: ["lint:tsc:scripts", "lint:guard-reachability"],
+        records: [
+          { id: "lint:tsc:scripts", status: "failed", durationMs: 5 },
+          { id: "lint:guard-reachability", status: "failed", durationMs: 7 },
+          {
+            id: "spa-build",
+            status: "skipped",
+            skipReason: "early changed-file typecheck failure already blocks promotion",
+            durationMs: 0,
+          },
+        ],
+      },
     });
 
     const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -5493,11 +6536,25 @@ describe("runGreenCheckpoint", () => {
       from: c1,
       green: false,
       reason: "not-green",
-      failingTests: ["lint:tsc"],
+      failingTests: [
+        "lint:tsc",
+        "lint:tsc:scripts",
+        "lint:guard-reachability",
+      ],
+      postSuiteMeasured: true,
+      postSuiteLegs: expect.arrayContaining([
+        expect.objectContaining({ id: "lint:tsc:scripts", status: "failed" }),
+        expect.objectContaining({
+          id: "lint:guard-reachability",
+          status: "failed",
+        }),
+      ]),
     });
     expect(r.summary).toContain(
       "Early changed-file typecheck failed before the affected-test sweep",
     );
+    expect(r.summary).toContain("Early non-test gate inventory");
+    expect(r.summary).toContain("POST_SUITE_RESULT status=failed");
     expect(calls).not.toContain("runGreen");
     expect(calls).not.toContain("advance");
     expect(
@@ -6851,10 +7908,23 @@ describe("runGreenCheckpoint", () => {
         return true;
       };
 
+      let finalized = false;
+      const finalize = createNormalCheckpointFinalizer({
+        claimTerminal: () => {
+          if (finalized) return false;
+          finalized = true;
+          return true;
+        },
+        emitResult: async () => { calls.push("finalResult"); },
+        captureProofs: async () => { calls.push("captureProofs"); },
+        releaseAndExit: () => { calls.push("releaseAndExit"); },
+      });
       const r = await runGreenCheckpoint(cfg(), deps, {
         candidate: c2,
         noPush: true,
       });
+      await finalize(r);
+      await finalize(r); // A repeated normal callback cannot re-capture or release twice.
 
       // The overall run still resolves green, advanced to the tip — recording the
       // superseded pass must not change the final outcome.
@@ -6871,6 +7941,14 @@ describe("runGreenCheckpoint", () => {
       const secondRunGreen = calls.lastIndexOf("runGreen");
       expect(calls.indexOf("recordVerdict")).toBeGreaterThanOrEqual(0);
       expect(calls.indexOf("recordVerdict")).toBeLessThan(secondRunGreen);
+      // Exercise the CLI's production finalizer on the real recursive result, after both runs.
+      expect(run).toBe(2);
+      expect(calls.indexOf("finalResult")).toBeGreaterThan(secondRunGreen);
+      expect(calls.indexOf("captureProofs")).toBeGreaterThan(calls.indexOf("finalResult"));
+      expect(calls.indexOf("releaseAndExit")).toBeGreaterThan(calls.indexOf("captureProofs"));
+      for (const event of ["finalResult", "captureProofs", "releaseAndExit"]) {
+        expect(calls.filter((call) => call === event)).toHaveLength(1);
+      }
     });
 
     it("the cheap tip re-triage runs BEFORE any prefix-salvage work", async () => {
@@ -8088,6 +9166,59 @@ describe("runGreenCheckpoint", () => {
     ).toBe(true);
   });
 
+  it("EI-22752586902645795: re-broadcasts the held-gate alert when frozen repair verification is unavailable", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      attempts: 1,
+      openedAtMs: now - 4 * 60 * 60 * 1000,
+      updatedAtMs: now - 1_000,
+      fixerSpawnId: null,
+      failingTests: ["lint:identity-leak"],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(false);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    const targetedRuns: string[] = [];
+    deps.runGateAtRef = async (_ref, gateIds) => {
+      targetedRuns.push(...gateIds);
+      throw new Error("dependency-prewarm-missing (exit 74)");
+    };
+    deps.heldGateMs = async () => 4 * 60 * 60 * 1000;
+    const broadcasts: Array<{ summary: string; body?: string }> = [];
+    deps.broadcast = async (summary, body) => {
+      broadcasts.push({ summary, body });
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(targetedRuns).toEqual(["lint:identity-leak"]);
+    expect(result).toMatchObject({
+      green: null,
+      reason: "repair-in-progress",
+      repairQueue: { phase: "ready-to-verify", candidate: frozen },
+    });
+    expect(calls).not.toContain("runGreen");
+    expect(
+      broadcasts.some(
+        ({ summary }) => summary.includes("URGENT") && summary.includes("held 4h"),
+      ),
+    ).toBe(true);
+    expect(
+      broadcasts.find(({ summary }) => summary.includes("URGENT"))?.body,
+    ).toContain("dependency-prewarm-missing");
+  });
+
   it("docs-audit #2: no louder alert within the first 2h (fresh hold ⇒ heldGateMs null/small)", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);
@@ -8192,6 +9323,7 @@ describe("runGreenCheckpoint", () => {
       unmeasured: 0,
       alarms: [],
       offReasons: [],
+      recorder: null,
       headline: "per-file reuse: 7 of 10 candidate file(s) reused",
     };
 
@@ -9434,6 +10566,12 @@ describe("evaluateDeployStaleness (silent-drought alarm)", () => {
 // already tested above with stub deps; these cover the pure pieces of the heavy
 // path that don't need a real suite-run.
 describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () => {
+  it("prevents optional Git index writes in repair tasks and preserves an explicit caller policy", () => {
+    expect(buildGreenCheckpointEnv(null, {}).GIT_OPTIONAL_LOCKS).toBe("0");
+    expect(buildGreenCheckpointEnv(null, { GIT_OPTIONAL_LOCKS: "" }).GIT_OPTIONAL_LOCKS).toBe("0");
+    expect(buildGreenCheckpointEnv(null, { GIT_OPTIONAL_LOCKS: "1" }).GIT_OPTIONAL_LOCKS).toBe("1");
+  });
+
   it("admits only canonical execution substrate and explicit gate-owned values", () => {
     const src = {
       PATH: "/usr/bin",
@@ -9472,6 +10610,38 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
     // pure — never mutates the caller's env object
     expect(src.PAPERCUSP_FLAG_DEMO).toBe("1");
     expect(src.INVOCATION_ID).toBe("systemd-run-a");
+  });
+
+  // WI-6554700010008606: bash sources ~/.bashrc for a non-interactive `-c` shell whose
+  // stdin is a socket (Node's spawnSync pipes are socketpairs) when its shell level is
+  // below 2. With no SHLVL in the suite env, every test `bash -c` in the gate ran the
+  // HOST's rc, which re-exported NODE_OPTIONS over the test's own value: the desktop leg
+  // went red in the gate (2 of 2 runs) and passed in every interactive shell.
+  it("pins SHLVL so a test's `bash -c` never sources the host ~/.bashrc", () => {
+    const home = mkdtempSync(join(tmpdir(), "gate-shlvl-home-"));
+    try {
+      writeFileSync(join(home, ".bashrc"), "export NODE_OPTIONS=HIJACKED_BY_BASHRC\n");
+      const override = "--require=/test/override.cjs";
+      const probe = (env: Record<string, string | undefined>) =>
+        spawnSync("bash", ["-c", 'printf %s "$NODE_OPTIONS"'], {
+          encoding: "utf8",
+          env: { ...env, HOME: home, NODE_OPTIONS: override },
+        }).stdout;
+      const env = buildGreenCheckpointEnv("base123", {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: "/home/t",
+        SHLVL: "7", // a launcher's value is identity, never inherited
+      });
+      expect(env.SHLVL).toBe("1");
+      expect(probe(env)).toBe(override);
+      // Control: the identical spawn without the pin. Where bash is built with
+      // SSH_SOURCE_BASHRC (Debian/Ubuntu, this box) it sources the rc and the override is
+      // lost — the pin above is what prevents that. Elsewhere bash never reads the rc here.
+      const { SHLVL: _unpinned, ...unpinned } = env;
+      expect(["HIJACKED_BY_BASHRC", override]).toContain(probe(unpinned));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   // WI-6583: HARNESS_SLUG is a non-`PAPERCUSP_`-prefixed test-run-attribution
@@ -9564,6 +10734,32 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
       "verifier-run",
     );
     expect(noProof.AFFECTED_TASK_VERDICT_PROOF_GROUP).toBeUndefined();
+  });
+
+  it("WI-10005212: carries the frozen review clock into the candidate-suite env (affected guard legs)", () => {
+    const openedAtMs = Date.parse("2026-10-01T10:39:52.720Z");
+    const frozen = buildGreenCheckpointEnv(
+      "b",
+      partialEnv({}),
+      "run",
+      "shared",
+      null,
+      "cand",
+      openedAtMs,
+    );
+    expect(frozen.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS).toBe(
+      String(openedAtMs),
+    );
+    // A non-frozen run must not inherit a host-leaked clock.
+    const notFrozen = buildGreenCheckpointEnv(
+      "b",
+      partialEnv({ PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS: "1" }),
+      "run",
+    );
+    expect(notFrozen.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS).toBeUndefined();
+    expect(() =>
+      buildGreenCheckpointEnv("b", partialEnv({}), "run", "shared", null, "c", -5),
+    ).toThrow(/openedAtMs/);
   });
 
   it("sets GREEN_CHECKPOINT=1 and AFFECTED_BASE only when a base is given", () => {
@@ -10036,6 +11232,49 @@ describe("realCheckpointDeps.runGreen — checkpoint-log retention (WI-224710)",
     expect(
       readdirSync(logDir).filter((name) => name.endsWith(".log")),
     ).toHaveLength(1);
+  });
+
+  it("retains actual pure-capture receipts for the gate ledger's 90-day evidence window", async () => {
+    const nestedLogDir = join(logDir, "managed-hive");
+    mkdirSync(nestedLogDir);
+    const receipt = (runId: string) => ({
+      version: 1 as const, runId, gateFireId: `fire-${runId}`, pid: 123,
+      processStartedAtMs: 1, judgedSha: "a".repeat(40), resolvedAtMs: 70,
+      terminalEmissionCompletedAtMs: 90, verdictRecordedAtMs: 80,
+      promotion: { candidate: "a".repeat(12), recordedAtMs: 60,
+        promoted: false, reason: "not-green" },
+      capture: null, archivedAtMs: 210,
+    });
+    const captures = [15, 89, 91].map((ageDays) => {
+      const file = archivePureProofCapture(nestedLogDir, receipt(`age-${ageDays}`), () => {});
+      expect(file).not.toBeNull();
+      const bytes = readFileSync(file!, "utf8");
+      const old = new Date(Date.now() - ageDays * 24 * 60 * 60 * 1000);
+      utimesSync(file!, old, old);
+      return { file: file!, bytes, ageDays };
+    });
+    const diagnostic = join(nestedLogDir, "pure-proof-capture-age-15.log");
+    const unrelated = join(nestedLogDir, "unrelated.json");
+    for (const file of [diagnostic, unrelated]) {
+      writeFileSync(file, "old diagnostic");
+      const old = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+      utimesSync(file, old, old);
+    }
+    const exec: CheckpointExec = async (cmd, args) => {
+      if (cmd === "git" && args[0] === "grep") return { code: 1, stdout: "", stderr: "" };
+      return { code: 0, stdout: "Test Files  1 passed (1)\n", stderr: "" };
+    };
+    const config = releaseConfig({ checkpointRoot: tree, checkpointLogDir: logDir,
+      greenCmd: "npm run test:affected", spaBuildWorkspace: "" });
+
+    expect((await realCheckpointDeps(config, exec).runGreen(tree, "base")).green).toBe(true);
+
+    for (const { file, bytes, ageDays } of captures) {
+      if (ageDays < 90) expect(readFileSync(file, "utf8")).toBe(bytes);
+      else expect(existsSync(file)).toBe(false);
+    }
+    expect(existsSync(diagnostic)).toBe(false);
+    expect(existsSync(unrelated)).toBe(false);
   });
 });
 
@@ -12228,8 +13467,13 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
      *  time measurement, so exercising it needs a confirm that actually costs time — the
      *  real one is tens of minutes. */
     confirmDelayMs?: number;
-  }): { deps: CheckpointDeps; calls: string[] } {
+  }): {
+    deps: CheckpointDeps;
+    calls: string[];
+    executions: Array<Parameters<CheckpointDeps["runGreen"]>[2]>;
+  } {
     const calls: string[] = [];
+    const executions: Array<Parameters<CheckpointDeps["runGreen"]>[2]> = [];
     let runGreenN = 0;
     const deps: CheckpointDeps = {
       setupTree: async (ref) => {
@@ -12239,7 +13483,8 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
           throw new Error(`pinned runtime build failed at ${ref.slice(0, 7)}`);
         }
       },
-      runGreen: async () => {
+      runGreen: async (_tree, _base, execution) => {
+        executions.push(execution);
         runGreenN++;
         if (runGreenN === 1) {
           calls.push("runGreen:candidate");
@@ -12302,7 +13547,7 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
         : {}),
       log: () => {},
     };
-    return { deps, calls };
+    return { deps, calls, executions };
   }
 
   beforeEach(() => {
@@ -12357,7 +13602,7 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
 
     it("WI-38298: recovers to a later green prefix after the first prefix confirm is red", async () => {
       const { c2, c3, c4 } = await chain();
-      const { deps, calls } = partialDeps({
+      const { deps, calls, executions } = partialDeps({
         candidateFailingTests: [FAILING],
         affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
         changedFiles: {
@@ -12380,6 +13625,14 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
       expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(2);
       expect(calls).toContain(`setup:${c2.slice(0, 7)}`);
       expect(calls).toContain(`setup:${c3.slice(0, 7)}`);
+      expect(executions[1]).toMatchObject({
+        candidate: c2,
+        headAtStart: c2,
+      });
+      expect(executions[2]).toMatchObject({
+        candidate: c3,
+        headAtStart: c3,
+      });
     });
 
     it("classifies an unbuildable initial prefix and recovers to a later confirmed prefix", async () => {
@@ -12642,7 +13895,7 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
 
   it("advances `main` to the longest GREEN prefix and holds the red tip", async () => {
     const { c2, c3, c4 } = await chain();
-    const { deps, calls } = partialDeps({
+    const { deps, calls, executions } = partialDeps({
       candidateFailingTests: ["@ws/failing"],
       affected: {
         [c2]: ["@ws/other"],
@@ -12664,6 +13917,10 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
     expect(await revParse(repo, "ready")).toBe(c3); // FF'd to the longest clean prefix, NOT the red tip
     expect(calls).toContain("runGreen:confirm");
     expect(calls).toContain("advance:" + c3.slice(0, 7));
+    expect(executions[1]).toMatchObject({
+      candidate: c3,
+      headAtStart: c3,
+    });
     // EI-19329608646178878: the confirm step (`runGreen:confirm`) checked out `prefixTip`
     // (c3) via setupTree — the checkpoint tree must be restored to the run's TRUE candidate
     // (c4) afterward, so a live probe of that checkout (candidateSource:'run-probe' on the
@@ -12889,7 +14146,7 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
   it("is ON by default — without PAPERCUSP_PARTIAL_GREEN_GATE set, a red tip still salvages the green prefix", async () => {
     delete process.env.PAPERCUSP_PARTIAL_GREEN_GATE; // no arming needed (default-on, 2026-07-01)
     const { c3, c2, c4 } = await chain();
-    const { deps } = partialDeps({
+    const { deps, executions } = partialDeps({
       candidateFailingTests: ["@ws/failing"],
       affected: {
         [c2]: ["@ws/other"],
@@ -12905,6 +14162,8 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
       reason: "advanced-prefix",
       advancedTo: c3,
     });
+    expect(executions).toHaveLength(2);
+    expect(executions[1]).toMatchObject({ candidate: c3, headAtStart: c3 });
   });
 
   it("opt-out: PAPERCUSP_PARTIAL_GREEN_GATE=0 holds a red candidate exactly as before (strict tip-only gating)", async () => {
@@ -13252,6 +14511,123 @@ describe("quiet-cut — never judge a tip younger than the quiet window (2026-07
       candidate: c3,
     });
     expect(r).toMatchObject({ advanced: true, candidate: c3 });
+  });
+
+  // P-010 (green-main-cycle-time-2026-10-08, D-026/D-027): the first fresh cut after a retire
+  // must hold the retired queue's admitted fixes; the quiet cut can step back past one.
+  describe("P-010 carry of a retired frozen queue's fixes into the next fresh cut", () => {
+    function pendingCarry(path: string, blob: string): FrozenRepairPendingCarry {
+      return {
+        schemaVersion: 1,
+        fromCandidate: "c".repeat(40),
+        fromRepairHead: "d".repeat(40),
+        reason: "bounded-life",
+        retiredAtMs: 1_800_000_000_000,
+        admitted: [{ path, blob }],
+        truncated: false,
+      };
+    }
+
+    function withCarry(deps: CheckpointDeps, pending: FrozenRepairPendingCarry | Error, consumed = true) {
+      const logs: string[] = [];
+      const consume = vi.fn(async (_p: FrozenRepairPendingCarry, _r: FrozenRepairCarryRecord) => consumed);
+      const read = vi.fn(async () => {
+        if (pending instanceof Error) throw pending;
+        return pending;
+      });
+      deps.readFrozenRepairPendingCarry = read;
+      deps.consumeFrozenRepairCarry = consume;
+      deps.log = (line: string) => logs.push(line);
+      return { logs, consume, read };
+    }
+
+    it("judges the staging tip when the quiet cut lacks an admitted fix, and records the carry", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await datedCommit("b.txt", "c2", 300); // the quiet pick — no fix yet
+      const c3 = await commit("fix.ts", "fixed\n", "c3"); // the admitted fix, committed seconds ago
+      const pending = pendingCarry("fix.ts", await git(repo, ["rev-parse", `${c3}:fix.ts`]));
+      const { deps } = stubDeps(true);
+      const { consume, logs } = withCarry(deps, pending);
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({ advanced: true, candidate: c3, green: true });
+      expect(consume).toHaveBeenCalledTimes(1);
+      const [consumedPending, record] = consume.mock.calls[0]!;
+      expect(consumedPending).toBe(pending);
+      expect(record).toMatchObject({
+        initialCandidate: c2,
+        initialMissing: ["fix.ts"],
+        judgedCandidate: c3,
+        advancedToTip: true,
+        entries: [{ path: "fix.ts", status: "carried" }],
+      });
+      expect(logs.some((line) => line.includes("lacked 1 fix(es), judging the staging tip instead"))).toBe(true);
+    });
+
+    it("keeps the quiet cut when it already holds every admitted fix", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await datedCommit("fix.ts", "c2", 300); // the fix landed before the quiet window
+      await commit("c.txt", "now\n", "c3");
+      const { deps } = stubDeps(true);
+      const { consume } = withCarry(deps, pendingCarry("fix.ts", await git(repo, ["rev-parse", `${c2}:fix.ts`])));
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({ advanced: true, candidate: c2 });
+      expect(consume.mock.calls[0]?.[1]).toMatchObject({
+        initialCandidate: c2,
+        judgedCandidate: c2,
+        advancedToTip: false,
+        entries: [{ path: "fix.ts", status: "carried" }],
+      });
+    });
+
+    it("never reads or consumes the carry for an explicitly pinned candidate", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await datedCommit("b.txt", "c2", 300);
+      await commit("fix.ts", "fixed\n", "c3");
+      const { deps } = stubDeps(true);
+      const { read, consume } = withCarry(deps, pendingCarry("fix.ts", "0".repeat(40)));
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true, candidate: c2 });
+
+      expect(r).toMatchObject({ candidate: c2 });
+      expect(read).not.toHaveBeenCalled();
+      expect(consume).not.toHaveBeenCalled();
+    });
+
+    it("an unreadable carry keeps the quiet cut and leaves the carry pending", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      const c2 = await datedCommit("b.txt", "c2", 300);
+      await commit("fix.ts", "fixed\n", "c3");
+      const { deps } = stubDeps(true);
+      const { consume, logs } = withCarry(deps, new Error("pg unavailable"));
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({ candidate: c2 });
+      expect(consume).not.toHaveBeenCalled();
+      expect(logs.some((line) => line.includes("P-010 pending carry unreadable"))).toBe(true);
+    });
+
+    it("a carry replaced before it is recorded still judges the tip, and says the next cut assesses the newer one", async () => {
+      const c1 = await datedCommit("a.txt", "c1", 600);
+      await git(repo, ["branch", "ready", c1]);
+      await datedCommit("b.txt", "c2", 300);
+      const c3 = await commit("fix.ts", "fixed\n", "c3");
+      const { deps } = stubDeps(true);
+      const { logs } = withCarry(deps, pendingCarry("fix.ts", await git(repo, ["rev-parse", `${c3}:fix.ts`])), false);
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({ candidate: c3 });
+      expect(logs.some((line) => line.includes("the next fresh cut assesses the newer carry"))).toBe(true);
+    });
   });
 });
 
@@ -13722,6 +15098,66 @@ describe("P-005: post-suite low-memory scheduling and timing evidence", () => {
     "lint:no-raw-setinterval",
   ] as const;
 
+  // WI-10006055: the plane lints census the LIVE plane, but the suite env is DSN-free by
+  // design, so they resolved ~/.papercusp/embedded-pg.json — on 2026-10-10 the installed
+  // Papercusp Server sidecar (522 rows) — and red-pinned the gate with `0/522`.
+  it("hands ONLY the live-plane lints the gate's operator DSN", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "green-postsuite-plane-dsn-"));
+    try {
+      writeFileSync(
+        join(dir, "package.json"),
+        JSON.stringify({
+          name: "fixture",
+          scripts: Object.fromEntries(
+            ["lint:tsc", "lint:migrations", "lint:plane-producers", "lint:plane-ratchet"].map(
+              (script) => [script, `node ${script}.mjs`],
+            ),
+          ),
+        }),
+      );
+      const seen = new Map<string, string | undefined>();
+      const exec: CheckpointExec = async (cmd, args, opts) => {
+        const runIndex = args.indexOf("run");
+        const id = cmd === "npm" && runIndex >= 0 ? args[runIndex + 1]! : cmd;
+        seen.set(id, opts?.env?.HARNESS_ADMIN_DATABASE_URL);
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      const operatorPgEnv = gateOperatorPgEnv({
+        DATABASE_URL: "postgresql://op@localhost:5432/papercusp",
+      });
+      // Calibration: the helper must produce the variable pg-url.mjs ranks FIRST, or a
+      // passing assertion below could come from a key no resolver reads.
+      expect(operatorPgEnv).toEqual({
+        HARNESS_ADMIN_DATABASE_URL: "postgresql://op@localhost:5432/papercusp",
+      });
+
+      await runPostSuiteLegs(dir, { NODE_ENV: "test" }, exec, "apps/operator", {
+        operatorPgEnv,
+      });
+
+      expect(seen.get("lint:plane-producers")).toBe("postgresql://op@localhost:5432/papercusp");
+      expect(seen.get("lint:plane-ratchet")).toBe("postgresql://op@localhost:5432/papercusp");
+      // WI-6554700010009206: lint:migrations is a live-plane lint too (its PG leg reads the
+      // reservation ledger from the operator DB), so it gets the DSN as well.
+      expect(seen.get("lint:migrations")).toBe("postgresql://op@localhost:5432/papercusp");
+      // Every other leg stays DSN-free: the candidate suite must never reach the host DB.
+      expect(seen.has("lint:tsc")).toBe(true);
+      expect(seen.get("lint:tsc")).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("gateOperatorPgEnv follows databaseEvidence's precedence and is empty without a DSN", () => {
+    expect(
+      gateOperatorPgEnv({ HARNESS_ADMIN_DATABASE_URL: "postgresql://a/x", DATABASE_URL: "postgresql://b/y" }),
+    ).toEqual({ HARNESS_ADMIN_DATABASE_URL: "postgresql://a/x" });
+    expect(gateOperatorPgEnv({ HARNESS_DATABASE_URL: "postgresql://h/z" })).toEqual({
+      HARNESS_ADMIN_DATABASE_URL: "postgresql://h/z",
+    });
+    expect(gateOperatorPgEnv({})).toEqual({});
+  });
+
   it("caps the measured lint group at two children and keeps sequential/downstream legs outside it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "green-postsuite-budget-"));
     try {
@@ -13852,6 +15288,7 @@ describe("P-005: post-suite low-memory scheduling and timing evidence", () => {
         "lint:design-primitives",
         "lint:no-control-bytes",
         "lint:guard-reachability",
+        "lint:condition-rail",
         "lint:mock-cast-escape",
         "lint:timer-classification",
         "lint:no-raw-setinterval",
@@ -15022,11 +16459,13 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
     const movingTip = await commit("c", "3", "current staging tip");
+    const roundAtMs = Date.now() - 15 * 60 * 1_000;
     let queue: FrozenCandidateRepairQueue | null = {
       ...unassignedQueue(frozen, ready),
       attempts: 0,
       openedAtMs: Date.now() - 16 * 60 * 1_000,
       updatedAtMs: Date.now() - 15 * 60 * 1_000,
+      convergenceRounds: [{ round: 1, head: frozen, failingCount: 1, atMs: roundAtMs }],
     };
     const { deps, calls } = stubDeps(true);
     deps.readFrozenRepairQueue = async () => queue;
@@ -15072,6 +16511,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
       reason: "repair-in-progress",
     });
     expect(result.candidate).not.toBe(movingTip);
+    expect(dispositions[0]?.repairProgress?.rounds).toEqual([
+      { round: 1, head: frozen, atMs: roundAtMs },
+    ]);
     expect(result.summary).toContain("held");
     expect(result.summary).toContain("op: 'admit'");
     expect(calls.filter((c) => c === "escalate")).toHaveLength(1);
@@ -15327,5 +16769,295 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     });
     expect(line).not.toContain("Retry after");
     expect(line).toContain("usage-walled");
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-021 / D-023: a frozen queue's life is bounded. A queue that
+// made no new failing-count low in 4 rounds, or is older than 24h, is retired (once per install
+// per 24h) and the same pass re-cuts at the newest known-good commit or the staging tip, with the
+// queue's admitted fixes carried and recorded.
+describe("P-021: bounded frozen-queue life — retire, re-cut and carry", () => {
+  const HOUR = 60 * 60 * 1_000;
+
+  async function frozenLineage() {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const knownGood = await commit("c", "3", "known-good point, before the fix");
+    const tip = await commit("lib/fix.ts", "fixed", "the admitted fix");
+    const fixBlob = (await git(repo, ["rev-parse", `${tip}:lib/fix.ts`])).trim();
+    return { ready, frozen, knownGood, tip, fixBlob };
+  }
+
+  function queueWith(input: {
+    frozen: string;
+    ready: string;
+    tip: string;
+    fixBlob: string;
+    failingCounts: number[];
+    ageMs: number;
+  }): FrozenCandidateRepairQueue {
+    const now = Date.now();
+    return {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: input.frozen,
+      base: input.ready,
+      repairHead: input.frozen,
+      attempts: 1,
+      openedAtMs: now - input.ageMs,
+      updatedAtMs: now - 1_000,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+      signature: [],
+      convergenceRounds: input.failingCounts.map((failingCount, index) => ({
+        round: index + 1,
+        head: input.frozen,
+        failingCount,
+        atMs: now - input.ageMs + index * 1_000,
+      })),
+      admissions: [
+        {
+          atMs: now - 2_000,
+          actor: "su-test",
+          source: { ref: "staging", sha: input.tip },
+          fromRepairHead: input.frozen,
+          toRepairHead: input.frozen,
+          paths: ["lib/fix.ts"],
+          unchanged: [],
+          blobs: { "lib/fix.ts": input.fixBlob },
+        },
+      ],
+    };
+  }
+
+  function boundedLifeDeps(queue: FrozenCandidateRepairQueue, state: FrozenRepairBoundedLifeState | null) {
+    const { deps } = stubDeps(true);
+    const retired: FrozenRepairBoundedLifeRecord[] = [];
+    const escalations: string[] = [];
+    deps.readFrozenRepairQueueState = async () => ({ status: "value", queue });
+    deps.readFrozenRepairBoundedLifeState = async () => state;
+    deps.retireFrozenRepairQueueForBoundedLife = vi.fn(async (_queue, record) => {
+      retired.push(record);
+      return { retired: true };
+    });
+    deps.recordFrozenRepairBoundedLifeEscalation = vi.fn(async () => undefined);
+    deps.escalate = vi.fn(async (summary: string) => {
+      escalations.push(summary);
+    });
+    deps.dispatchFrozenRepairFixer = async () => ({ spawnId: "fixer", runId: "run" });
+    return { deps, retired, escalations };
+  }
+
+  it("retires a non-improving queue and re-cuts at the staging tip carrying the admitted fix", async () => {
+    const lineage = await frozenLineage();
+    // 3 -> 5 -> 8 -> 12 -> 28: four rounds since the low of 3 (the ad82b273 shape).
+    const queue = queueWith({ ...lineage, failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR });
+    const { deps, retired, escalations } = boundedLifeDeps(queue, null);
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toMatchObject({
+      trigger: "non-improving",
+      roundsSinceLow: 4,
+      lowestFailingCount: 3,
+      latestFailingCount: 28,
+      candidate: lineage.frozen,
+      recutTarget: lineage.tip,
+      recutTargetSource: "staging-tip",
+      carriedPaths: [{ path: "lib/fix.ts", status: "contained" }],
+      readmitPaths: [],
+    });
+    // The re-cut: this same pass judged the tip, not the frozen candidate.
+    expect(result.candidate).toBe(lineage.tip);
+    expect(result.green).toBe(true);
+    expect(escalations.some((line) => line.includes("retired by the bounded-life rule (non-improving)"))).toBe(true);
+  });
+
+  it("retires an over-24h queue that is still improving, re-cutting at a known-good point and listing the fix to re-admit", async () => {
+    const lineage = await frozenLineage();
+    const queue = queueWith({ ...lineage, failingCounts: [10, 8, 6], ageMs: 25 * HOUR });
+    const { deps, retired } = boundedLifeDeps(queue, null);
+    deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toMatchObject({
+      trigger: "age",
+      roundsSinceLow: 0,
+      recutTarget: lineage.knownGood,
+      recutTargetSource: "known-good",
+      // The known-good point predates the fix, so the carry names it for re-admission.
+      carriedPaths: [{ path: "lib/fix.ts", status: "absent-at-target" }],
+      readmitPaths: ["lib/fix.ts"],
+    });
+    expect(result.candidate).toBe(lineage.knownGood);
+  });
+
+  it("never retires while the failing count still makes new lows inside 24h", async () => {
+    const lineage = await frozenLineage();
+    const queue = queueWith({ ...lineage, failingCounts: [10, 8, 9, 9, 6], ageMs: 23 * HOUR });
+    const { deps, retired } = boundedLifeDeps(queue, null);
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
+    expect(retired).toHaveLength(0);
+    expect(result.candidate).not.toBe(lineage.tip);
+  });
+
+  it("keeps the frozen queue when the locked retire refuses (live fixer) — no re-cut", async () => {
+    const lineage = await frozenLineage();
+    const queue = queueWith({ ...lineage, failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR });
+    const { deps } = boundedLifeDeps(queue, null);
+    deps.retireFrozenRepairQueueForBoundedLife = vi.fn(async () => ({ retired: false, refusal: "live-fixer" }));
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(deps.retireFrozenRepairQueueForBoundedLife).toHaveBeenCalledTimes(1);
+    expect(result.candidate).not.toBe(lineage.tip);
+  });
+
+  it("escalates instead of retiring a second time inside the 24h window, once per candidate", async () => {
+    const lineage = await frozenLineage();
+    const queue = queueWith({ ...lineage, failingCounts: [3, 5, 8, 12, 28], ageMs: 5 * HOUR });
+    const lastRetireAtMs = Date.now() - 2 * HOUR;
+    const lastRetire = {
+      schemaVersion: 1,
+      trigger: "age",
+      retiredAtMs: lastRetireAtMs,
+      candidate: "0".repeat(40),
+      repairHead: "0".repeat(40),
+      openedAtMs: lastRetireAtMs - 30 * HOUR,
+      ageMs: 30 * HOUR,
+      roundsRecorded: 2,
+      roundsSinceLow: 0,
+      lowestFailingCount: 1,
+      latestFailingCount: 1,
+      recutTarget: lineage.frozen,
+      recutTargetSource: "staging-tip",
+      carriedPaths: [],
+      readmitPaths: [],
+      carryTruncated: false,
+    } satisfies FrozenRepairBoundedLifeRecord;
+    const state: FrozenRepairBoundedLifeState = {
+      schemaVersion: 1,
+      lastRetire,
+      lastRateLimitedEscalation: null,
+      history: [lastRetire],
+    };
+    const first = boundedLifeDeps(queue, state);
+
+    await runGreenCheckpoint(cfg(), first.deps, { noPush: true });
+
+    expect(first.deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
+    expect(first.escalations.filter((line) => line.includes("bounded-life non-improving bound"))).toHaveLength(1);
+    expect(first.deps.recordFrozenRepairBoundedLifeEscalation).toHaveBeenCalledWith(
+      expect.objectContaining({ candidate: lineage.frozen, lastRetireAtMs }),
+    );
+
+    const second = boundedLifeDeps(queue, {
+      ...state,
+      lastRateLimitedEscalation: {
+        candidate: lineage.frozen,
+        trigger: "non-improving",
+        atMs: Date.now() - 1_000,
+        lastRetireAtMs,
+      },
+    });
+    await runGreenCheckpoint(cfg(), second.deps, { noPush: true });
+    expect(second.deps.retireFrozenRepairQueueForBoundedLife).not.toHaveBeenCalled();
+    expect(second.escalations.filter((line) => line.includes("bounded-life"))).toHaveLength(0);
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-012: a fresh cut (no frozen queue) judges the newest staging
+// commit the per-sync batch check passed, when that commit is on the tip's lineage and strictly
+// ahead of the green pin. Every fresh candidate's verdict records where it came from (freezeCut)
+// and which legs were red in its first round (redLegsAtR1).
+describe("P-012: fresh cut from the newest known-good point", () => {
+  async function knownGoodLineage() {
+    const ready = await commit("a", "1", "green pin");
+    await git(repo, ["branch", "ready", ready]);
+    const knownGood = await commit("b", "2", "per-sync check passed here");
+    const tip = await commit("c", "3", "unjudged by the per-sync check");
+    return { ready, knownGood, tip };
+  }
+
+  it("judges the known-good commit instead of the bare tip and records the cut on the verdict", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(true);
+    deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.candidate).toBe(lineage.knownGood);
+    expect(result.freezeCut).toEqual({
+      source: "known-good",
+      reason: "known-good-selected",
+      candidate: lineage.knownGood,
+      tip: lineage.tip,
+      knownGood: lineage.knownGood,
+    });
+    expect(result.redLegsAtR1).toEqual({ candidate: lineage.knownGood, source: "known-good", legs: [] });
+  });
+
+  it("falls back to the tip when the known-good commit is the green pin (never re-judges main)", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(true);
+    deps.resolveKnownGoodRecutTarget = async () => lineage.ready;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.candidate).toBe(lineage.tip);
+    expect(result.freezeCut).toMatchObject({
+      source: "staging-tip",
+      reason: "known-good-not-ahead-of-green",
+      candidate: lineage.tip,
+      knownGood: lineage.ready,
+    });
+  });
+
+  it("judges the tip with the reason recorded when the known-good reader throws", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(true);
+    deps.resolveKnownGoodRecutTarget = async () => {
+      throw new Error("routines row unreadable");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.candidate).toBe(lineage.tip);
+    expect(result.freezeCut).toMatchObject({ source: "staging-tip", reason: "known-good-unreadable" });
+  });
+
+  it("records the red legs of a known-good candidate's first round", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    const suite = deps.runGreen;
+    // The real runner maps each failing file to its workspace (`failingFiles`); that is what
+    // makes the suite leg red rather than unattributed.
+    deps.runGreen = async (...args) => ({
+      ...(await suite(...args)),
+      failingFiles: [{ workspace: "@papercusp/operator", file: "lib/broken.test.ts" }],
+    });
+    deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.green).toBe(false);
+    expect(result.redLegsAtR1).toEqual({ candidate: lineage.knownGood, source: "known-good", legs: ["suite"] });
+  });
+
+  it("a red round that names no failing file and no failed leg is recorded as unattributed", async () => {
+    const lineage = await knownGoodLineage();
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    deps.resolveKnownGoodRecutTarget = async () => lineage.knownGood;
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result.redLegsAtR1?.legs).toEqual(["unattributed"]);
   });
 });

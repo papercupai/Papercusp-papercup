@@ -36,6 +36,7 @@ import {
   type GemmaEmbedKind,
 } from '@papercusp/memory';
 import { buildSidecarFirstReranker, type RerankScoreFn } from '@papercusp/rerank';
+import { observeFallback } from '../degradation/fallback-observations';
 import {
   describeUnfitSidecar,
   embedSidecarEnabled,
@@ -246,6 +247,31 @@ function reportSidecarTransition(subject: string) {
  * `buildHarrierEmbedder({kind})` calls at the cascade seams — same EmbedFn
  * shape, same vectors, same dims.
  */
+/**
+ * P-531: the per-attempt ensure hook for a sidecar THIS process spawns (or
+ * adopts on the shared local port). Such a sidecar may exit after an idle
+ * period, and the client calls this before each attempt to re-launch it.
+ * Returns undefined when no local sidecar is in play: an explicit URL points
+ * at a sidecar another process supervises (e.g. a systemd unit), and a null
+ * URL with the local sidecar disabled means pure in-process.
+ *
+ * WI-10005932: a null URL with the local sidecar ENABLED is a sidecar that did
+ * not come up in time (P-532d: a contended cold boot timed out its first
+ * start). That still gets the hook, so the client stays sidecar-only and picks
+ * up the URL on a later attempt. Returning undefined there built the in-process
+ * model in the main Server and kept it next to the sidecar for good.
+ */
+export function localSidecarEnsure(
+  deps: SidecarWiringDeps,
+  url: string | null,
+  capability: string,
+  sidecarEnabled: () => boolean = embedSidecarEnabled,
+): (() => Promise<unknown>) | undefined {
+  if (deps.resolveUrl()) return undefined;
+  if (url === null && !sidecarEnabled()) return undefined;
+  return () => deps.ensure([capability]);
+}
+
 export async function buildSidecarAwareEmbedder(
   model: 'gemma' | 'local' | 'harrier',
   kind: GemmaEmbedKind,
@@ -259,6 +285,7 @@ export async function buildSidecarAwareEmbedder(
     model,
     kind,
     url,
+    ensure: localSidecarEnsure(deps, url, EMBED_SIDECAR_CAP_EMBED),
     // Same text the lib's own default emits — only the channel differs, and
     // only under a test runner. See reportSidecarTransition.
     onTransition: reportSidecarTransition(`[sidecar-embedder] ${model}:${kind}`),
@@ -306,8 +333,53 @@ export async function buildSidecarAwareReranker(
   // reporter, so it is the same latent red on a different sidecar capability —
   // fixed here at the same time rather than waiting for it to be filed too.
   return buildSidecarFirstReranker({
+    observeFallback,
     model,
     url,
+    ensure: localSidecarEnsure(deps, url, EMBED_SIDECAR_CAP_RERANK),
     onTransition: reportSidecarTransition(`[sidecar-reranker] ${model}`),
   });
+}
+
+/**
+ * Whether THIS process has an embed-sidecar story at all (an explicit URL, or the
+ * spawn-locally opt-in), decided WITHOUT ensuring it. `resolveProcessSidecarUrl`
+ * answers by ENSURING the sidecar, which spawns the child when it is down. A
+ * background caller must not do that just to learn it has nothing to embed (D-050).
+ */
+export function processSidecarConfigured(deps: Pick<SidecarWiringDeps, 'resolveUrl'> = defaultDeps): boolean {
+  return Boolean(deps.resolveUrl()) || embedSidecarEnabled();
+}
+
+/**
+ * `buildSidecarAwareEmbedder`, with the sidecar resolution (and so any spawn)
+ * deferred to the first real embed call (D-050, P-532c).
+ *
+ * This is for BACKGROUND callers that rebuild on a cadence. The 5-min embed
+ * backfill sweep re-resolves its embedder every tick. Built eagerly, each
+ * resolution ensured the sidecar, so a fully drained Server respawned its ~2 GB
+ * embed child on every sweep and the idle exit never held (cap-p532c: the
+ * sidecar was up about 5 min of every 10 with zero real embeds). Interactive
+ * callers keep the eager builder, because their warm-up exists to pay the spawn
+ * before a user is waiting.
+ *
+ * A failed first build is not cached; the next call retries it.
+ */
+export function buildDeferredSidecarAwareEmbedder(
+  model: 'gemma' | 'local' | 'harrier',
+  kind: GemmaEmbedKind,
+  deps: SidecarWiringDeps = defaultDeps,
+): EmbedFn {
+  let built: Promise<EmbedFn> | null = null;
+  return async (text: string, signal?: AbortSignal): Promise<number[]> => {
+    signal?.throwIfAborted();
+    if (!built) {
+      built = buildSidecarAwareEmbedder(model, kind, deps).catch((e: unknown) => {
+        built = null;
+        throw e;
+      });
+    }
+    const embed = await built;
+    return embed(text, signal);
+  };
 }

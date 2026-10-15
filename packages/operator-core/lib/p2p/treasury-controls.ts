@@ -54,6 +54,7 @@ export interface TreasuryTransferRequest {
   readonly amountMicros: bigint;
   readonly settlementReceiptHash: string;
   readonly policyApproved: boolean;
+  readonly payeeId?: string;
 }
 
 export type TreasuryAuthorization = { ok: true; safeTxHash: string; request: TreasuryTransferRequest } | { ok: false; code: 'config-invalid' | 'role-disabled' | 'policy-not-approved' | 'token-not-allowed' | 'recipient-not-allowed' | 'amount-exceeds-role-cap' | 'invalid-request'; detail: string };
@@ -68,7 +69,7 @@ export function authorizeTreasuryTransfer(config: SafeTreasuryConfig, request: T
   if (!ADDRESS.test(request.token) || !role.allowedTokens.map((t) => t.toLowerCase()).includes(request.token.toLowerCase())) return { ok: false, code: 'token-not-allowed', detail: 'token is outside the role allowlist' };
   if (!ADDRESS.test(request.recipient) || !role.allowedRecipients.map((r) => r.toLowerCase()).includes(request.recipient.toLowerCase())) return { ok: false, code: 'recipient-not-allowed', detail: 'recipient is outside the role allowlist' };
   if (request.amountMicros <= 0n || request.amountMicros > role.maxAmountMicros || !request.settlementReceiptHash.trim()) return { ok: false, code: 'amount-exceeds-role-cap', detail: 'amount must be positive, within role cap, and bound to a settlement receipt' };
-  const txBody = { amountMicros: request.amountMicros.toString(), chainId: config.chainId, recipient: request.recipient.toLowerCase(), role: request.role, safeAddress: config.safeAddress.toLowerCase(), settlementReceiptHash: request.settlementReceiptHash, token: request.token.toLowerCase() };
+  const txBody = { amountMicros: request.amountMicros.toString(), chainId: config.chainId, recipient: request.recipient.toLowerCase(), role: request.role, safeAddress: config.safeAddress.toLowerCase(), settlementReceiptHash: request.settlementReceiptHash, token: request.token.toLowerCase(), ...(request.payeeId !== undefined ? { payeeId: request.payeeId } : {}) };
   return { ok: true, safeTxHash: createHash('sha256').update(canonicalJson(txBody)).digest('hex'), request };
 }
 
@@ -119,6 +120,7 @@ export function validateSafeDeployment(deployment: SafeDeploymentRecord): SafeDe
 /** One share of a reconciled settlement, routed as a single bounded transfer. */
 export interface PlannedTreasuryTransfer {
   readonly share: RevenueShare;
+  readonly payeeId?: string;
   readonly role: TreasuryRole;
   readonly token: string;
   readonly recipient: string;
@@ -162,6 +164,8 @@ export function planTreasuryRouting(input: {
   readonly token: string;
   readonly role: TreasuryRole;
   readonly routedShares: readonly RevenueShare[];
+  /** Resolved from authenticated signed wallet bindings by the production edge. */
+  readonly componentPayees?: Readonly<Record<string, { readonly walletAddress: string; readonly chainId: number }>>;
   /** Owner-gated. Mainnet capital moves only when the owner has said so. */
   readonly mainnetCapitalApproved: boolean;
 }): TreasuryRoutingResult {
@@ -183,6 +187,30 @@ export function planTreasuryRouting(input: {
   for (const share of input.routedShares) {
     const amountMicros = input.reconciliation.allocationsMicros[share] ?? 0n;
     if (amountMicros <= 0n) continue;
+    if (share === 'component') {
+      const amounts = input.reconciliation.componentAllocationsMicros;
+      if (!amounts || Object.values(amounts).some((amount) => amount < 0n) ||
+          Object.values(amounts).reduce((sum, amount) => sum + amount, 0n) !== amountMicros) {
+        return { ok: false, code: 'transfer-not-authorized', detail: 'component payout needs exact reconciled author allocations' };
+      }
+      for (const [payeeId, authorAmount] of Object.entries(amounts).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+        if (authorAmount === 0n) continue;
+        const payee = input.componentPayees?.[payeeId];
+        if (!payee || payee.chainId !== input.config.chainId) {
+          return { ok: false, code: 'transfer-not-authorized', detail: `component author ${payeeId} needs a verified wallet on the treasury chain` };
+        }
+        const authorized = authorizeTreasuryTransfer(input.config, {
+          role: input.role, token: input.token, recipient: payee.walletAddress,
+          amountMicros: authorAmount, settlementReceiptHash: input.reconciliation.receiptHash,
+          payeeId, policyApproved: true,
+        });
+        if (!authorized.ok) return { ok: false, code: 'transfer-not-authorized', detail: `${payeeId}: ${authorized.detail}` };
+        transfers.push({ share, payeeId, role: input.role, token: input.token,
+          recipient: payee.walletAddress, amountMicros: authorAmount,
+          settlementReceiptHash: input.reconciliation.receiptHash, safeTxHash: authorized.safeTxHash });
+      }
+      continue;
+    }
     const authorized = authorizeTreasuryTransfer(input.config, {
       role: input.role,
       token: input.token,
@@ -239,7 +267,7 @@ export function buildTreasuryTransferEvent(input: {
   for (const [share, amount] of Object.entries(input.reconciliation.allocationsMicros)) {
     allocations[share] = amount.toString();
   }
-  const key = `treasury:${input.reconciliation.receiptHash}:${input.transfer.share}`;
+  const key = `treasury:${input.reconciliation.receiptHash}:${input.transfer.share}${input.transfer.payeeId !== undefined ? `:${encodeURIComponent(input.transfer.payeeId)}` : ''}`;
   return {
     eventId: key,
     streamId: input.streamId,
@@ -259,6 +287,7 @@ export function buildTreasuryTransferEvent(input: {
       distributableMicros: input.reconciliation.distributableMicros.toString(),
       allocationsMicros: allocations,
       share: input.transfer.share,
+      ...(input.transfer.payeeId !== undefined ? { payeeId: input.transfer.payeeId } : {}),
       role: input.transfer.role,
       amountMicros: input.transfer.amountMicros.toString(),
       token: input.transfer.token,

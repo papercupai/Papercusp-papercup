@@ -28,6 +28,7 @@
  */
 import { useMemo } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import { useWorkRefVisibility } from '@papercusp/operator-ui/papercup-chat';
 import { WorkRefPill, type WorkRefPillProps } from './WorkRefPill';
 import type { WorkRefKind } from './parse-work-refs';
 import type { HarnessStatus } from '../../harness/theme';
@@ -76,15 +77,16 @@ export interface HydratedWorkRefPillProps extends Omit<WorkRefPillProps, 'state'
  * `WorkRefPill` (P-003) unchanged.
  */
 export function HydratedWorkRefPill({ kind, id, harnessSlug, planSlug, ...rest }: HydratedWorkRefPillProps) {
+  const visibility = useWorkRefVisibility();
   const workItemQuery = useSyncQuery<WorkItemDetailRow>({
     queryName: 'workItems.detail',
     args: { harnessSlug, id },
-    enabled: kind === 'work-item' && !!harnessSlug,
+    enabled: visibility.enabled && kind === 'work-item' && !!harnessSlug,
   });
   const planItemQuery = useSyncQuery<PlanItemRowLike>({
     queryName: 'plans.items',
     args: { slug: planSlug ?? '' },
-    enabled: kind === 'plan-item' && !!planSlug,
+    enabled: visibility.enabled && kind === 'plan-item' && !!planSlug,
   });
 
   const { state, title } = useMemo(() => {
@@ -99,5 +101,11 @@ export function HydratedWorkRefPill({ kind, id, harnessSlug, planSlug, ...rest }
     return { state: asHarnessStatus(row?.item?.effectiveStatus), title: row?.item?.text ?? null };
   }, [kind, id, planSlug, workItemQuery.data, planItemQuery.data]);
 
-  return <WorkRefPill id={id} kind={kind} state={state} title={title} {...rest} />;
+  return (
+    <span ref={visibility.ref} style={{ display: 'inline-flex' }}
+      onFocusCapture={() => visibility.setFocused(true)}
+      onBlurCapture={() => visibility.setFocused(false)}>
+      <WorkRefPill id={id} kind={kind} state={state} title={title} {...rest} />
+    </span>
+  );
 }

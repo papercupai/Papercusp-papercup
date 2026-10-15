@@ -80,17 +80,39 @@ export function coordDeafBudgetMs(env: NodeJS.ProcessEnv = process.env): number 
  *  can be ~70 rows). Returns ISO strings keyed by owner; absent key = no read
  *  on record. Fail-soft: any error returns an empty map (callers treat
  *  unknown as not-flaggable, never as deaf). */
-export async function lastInboxReadAtBatch(ownerIds: string[]): Promise<Map<string, string>> {
+export async function lastInboxReadAtBatch(
+  ownerIds: string[],
+  opts: {
+    /**
+     * Count an `activity:report` only when it carried a `hook_bundle` — the one form
+     * that folds the coord inbox. Lifecycle reports (SessionStart/End/Stop from
+     * lifecycle-report.sh), pre-tool reports and nudges call activity:report WITHOUT
+     * one and read no mail. Deafness detection leaves this off on purpose (crediting
+     * any activity:report can only reduce false-deaf flags). Wake suppression MUST set
+     * it: there a non-read counted as a read retires a wake that was never seen
+     * (WI-6554700010009285 — measured 2026-10-12: a relaunched CLI's
+     * "▶ session started" lifecycle report at 17:18:47Z, no hook_bundle, retired a
+     * message-less inbox-wake and no turn ran).
+     */
+    foldedOnly?: boolean;
+    /** Injected for tests; defaults to the org database. */
+    sql?: ReturnType<typeof getOrgPg>['sql'];
+  } = {},
+): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const ids = ownerIds.filter(Boolean);
   if (!ids.length) return out;
   try {
-    const { sql } = getOrgPg();
+    const sql = opts.sql ?? getOrgPg().sql;
+    const foldedOnly = opts.foldedOnly === true;
     const rows = await sql<{ coord_owner_id: string; last_read: string | Date }[]>`
       SELECT coord_owner_id, MAX(invoked_at) AS last_read
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ANY(${ids})
          AND tool_name = ANY(${[...COORD_READ_TOOL_NAMES]})
+         AND (NOT ${foldedOnly}::boolean
+              OR tool_name NOT IN ('activity:report', 'activity_report')
+              OR args_json ? 'hook_bundle')
        GROUP BY coord_owner_id
     `;
     for (const r of rows) {

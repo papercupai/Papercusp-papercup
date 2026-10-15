@@ -1,0 +1,1074 @@
+{
+  "r172TerminalDiagnosticCurrent": {
+    "scope": "One changed cold r172 diagnostic after repaired schema preflight. Honest terminal FAIL; no product/root-cause/R7/shipment acceptance.",
+    "verifierRun": "20261002T080301Z-1987766",
+    "published": {
+      "id": "perfrun-1790928678733-efv34f",
+      "recorded": 25,
+      "status": "fail"
+    },
+    "metrics": {
+      "popupMs": 812,
+      "popupBudgetMs": 1500,
+      "fcpMs": 1351,
+      "fcpBudgetMs": 3000,
+      "lcpMs": 4819,
+      "lcpBudgetMs": 4000
+    },
+    "actualLcp": {
+      "tag": "P",
+      "className": "pclsb-acct__foot",
+      "startupCandidateMatches": true
+    },
+    "candidateIntervals": [
+      {
+        "selector": ".pclsb-acct__foot",
+        "matchesActualLcp": true,
+        "times": {
+          "firstObservedAtMs": 3162,
+          "firstFrameQueuedAtMs": 3162,
+          "firstFrameAtMs": 4692,
+          "firstFrameReadCompletedAtMs": 4693.000000000001,
+          "firstCompanionTimerAtMs": 4794.000000000001,
+          "firstFrameOutcome": "eligible",
+          "frameReads": 1,
+          "firstCompanionTimerStopReason": "completed",
+          "totalObserverWorkMs": 2.0000000000009095
+        },
+        "operationTotalsMs": {
+          "connection-check": 0,
+          "computed-style": 0,
+          "visibility-check": 1.0000000000009095,
+          "parent-element": 0,
+          "bounding-rect": 0,
+          "viewport-check": 0
+        },
+        "operationCount": 27
+      },
+      {
+        "selector": ".plans-pane__masthead-subtitle",
+        "matchesActualLcp": false,
+        "times": {
+          "firstObservedAtMs": 3162,
+          "firstFrameQueuedAtMs": 3162,
+          "firstFrameAtMs": 4693.000000000001,
+          "firstFrameReadCompletedAtMs": 4694,
+          "firstCompanionTimerAtMs": 4794.000000000001,
+          "firstFrameOutcome": "eligible",
+          "frameReads": 1,
+          "firstCompanionTimerStopReason": "completed",
+          "totalObserverWorkMs": 0.9999999999990905
+        },
+        "operationTotalsMs": {
+          "connection-check": 0,
+          "computed-style": 0,
+          "visibility-check": 0,
+          "parent-element": 0,
+          "bounding-rect": 0,
+          "viewport-check": 0
+        },
+        "operationCount": 33
+      }
+    ],
+    "collection": {
+      "status": "bound",
+      "path": "~/papercupai-workspace/papercusp/tools/perf-test/wdio/results/measures-48549371-7c47-464b-ac37-6fed1bf849f9.jsonl",
+      "retained": false,
+      "scope": "this launcher collection only; never legacy fallback"
+    },
+    "interpretation": "Actual footer queue-to-frame1530ms; frame read1ms at available clock resolution. This observation fits the small-read/large-queue alternative rather than style-read domination in this sample. It does not explain r170134ms, establish forced layout/product cause, or provide a paired observer-off comparison.",
+    "rawReferences": {
+      "~/.papercusp/perf/p007-native-current/r172-instrument-manifest.json": {
+        "sha256": "f5b7ead71668f65c00a37c6a76191ccafdbfcd6f0ca5b9fa1981453d69e074e6",
+        "bytes": 16838
+      },
+      "~/.papercusp/perf/p007-native-current/r172-run-assertion.sh": {
+        "sha256": "4a912cc21965d0251fdef130627fc8f2069d2f0696ec106490257d51a9133c95",
+        "bytes": 10274
+      },
+      "~/.papercusp/perf/p007-native-current/r172-owned-runtime-identity.json": {
+        "sha256": "033a031af7bc83850ce0f6c92da3008727ef037664d3b4ad2cf10af4a529921a",
+        "bytes": 4941
+      },
+      "~/.papercusp/perf/p007-native-current/run-172-diagnostic-result.json": {
+        "sha256": "a601081d019ed13d6118c190cb64f221dc00dcc963201d80499a61a938fd97f1",
+        "bytes": 1247
+      },
+      "~/.papercusp/perf/p007-native-current/run-172-popup-native-timing.log": {
+        "sha256": "4d88b217fd02f06129067e8b165309982e8facf53b7cf383b5bbff866f7fd112",
+        "bytes": 89304
+      },
+      "~/.papercusp/perf/p007-native-current/r172-native-process.jsonl": {
+        "sha256": "e6fe2d2e23bb2a8490415468836bf8ea74276a532cb2fe39fd8fd9871ff6e0b9",
+        "bytes": 827366
+      },
+      "~/.papercusp/perf/p007-native-current/r172-gstreamer-log-inventory.json": {
+        "sha256": "d1b5bbd615f4e318932aea77ff60b8ee237c3919837f47f3c6f634085653d184",
+        "bytes": 490
+      },
+      "~/.papercusp/perf/p007-native-current/run-172-owned-api-tauri.log": {
+        "sha256": "47b1f510a1f135735ba7332ed6f156f3d620f0b0743502fb0053684685a72347",
+        "bytes": 94226
+      },
+      "/tmp/p007-r172-verifier-current.log": {
+        "sha256": "c518359a324dbfa03ce6e2850d78f4c9d9bfca06aacc07295e77555574c4b3f3",
+        "bytes": 10757
+      },
+      "~/.local/state/verification-harness/verify-tauri-headless/20261002T080301Z-1987766/result.json": {
+        "sha256": "dbcd3d4beb4c5ceefcd5cb70e446e6e7307e97dde4ac6568f1597065eb2cbbce",
+        "bytes": 1677
+      }
+    },
+    "summaryRef": "~/.papercusp/perf/p007-native-current/r172-native-summary.json",
+    "summarySha256": "4b9b6d61b503f5fba13d82e6b76b7b2538c27046e5e8c5bdef8fabd2d1e88c37",
+    "cleanupRef": "~/.papercusp/perf/p007-native-current/r172-cleanup-receipt.json",
+    "cleanupSha256": "ae531c6b606b76bc44de51aefa9f55a7284870e4f83a0e9ad1ecef94442910c9",
+    "cleanup": {
+      "scope": "Only identity-bound r172 runtime/private roots; no global port or unrelated process claim",
+      "at": "2026-10-02T08:19:54.513426+00:00",
+      "remainingExactNonceOrPrivateHomeProcesses": [],
+      "sampledPidStates": {
+        "2320900": "absent",
+        "2331477": "absent",
+        "2501218": "absent",
+        "2502003": "absent",
+        "2502162": "absent",
+        "2505901": "absent",
+        "2507119": "absent"
+      },
+      "allSampledOwnedPidsAbsent": true,
+      "removedPrivateRoots": [
+        "~/.papercusp/perf/p007-native-current/r172-private-home",
+        "~/.papercusp/perf/p007-native-current/r172-profile-data",
+        "~/.papercusp/perf/p007-native-current/r172-profile-cache",
+        "~/.papercusp/perf/p007-native-current/r172-profile-config",
+        "/dev/shm/p007-r172-d1608f11-20261002T080116Z"
+      ],
+      "removedMatchedStaleIpc": [],
+      "defaultAdvertUntouched": true,
+      "sourceSnapshotAbsent": true,
+      "workSpaAbsent": true,
+      "workSmallLogsPreserved": "/tmp/verify-tauri-headless.ktBr2Z",
+      "rawHashesVerified": true,
+      "summarySha256": "4b9b6d61b503f5fba13d82e6b76b7b2538c27046e5e8c5bdef8fabd2d1e88c37"
+    },
+    "next": "Finish only identity-bound cleanup; preserve old r171 failure. No unchanged native rerun. Next use this read/queue partition to select a justified controlled follow-up; current P006 clean proof binding can progress independently.",
+    "limits": [
+      "Native/media-suppression diagnostic only; no product repair.",
+      "Frame/timer/read intervals and LCP are separate events; no CPU/load cause inferred.",
+      "Bound singleton unique measure collection was removed by the maintained launcher; rows/hash cannot be reconstructed from that missing JSONL. Published ledger/log remains separate evidence.",
+      "Boot passed but187556ms includes other startup activity; native-abort markers are not counted independent incidents or causal proof.",
+      "P006/P008 acceptance remains separate."
+    ]
+  },
+  "sharedSchemaReadinessFire161": {
+    "scope": "Read-only preflight and canonical source/fixture verification. No new native popup/LCP result or P007/R7 acceptance.",
+    "rootCause": "The existing dev PG probe only selected SELECT 1; the verifier copied dependencies and built its private API before boot could discover pending migrations and a backup rendezvous conflict.",
+    "reused": "Extend dev-operator-pg-probe.mjs with --require-applied-schema and invoke it from the maintained verifier before WORK allocation. Import defaultSkipFile and compareMigrationFilenames from the pure runner subpath; query the existing schema_migrations ledger. No shared DDL, new service, table or migration runner.",
+    "contract": "Normal dev-launcher reachability fallback is preserved. Readiness selects the launcher's sourced .env.local then the admin resolver precedence, reports only a URL fingerprint, and uses a read-only PG connection with statement_timeout=3000ms, connect_timeout=3s, a 5000ms probe deadline and 8s shell timeout/1s kill grace. Ready exits0, pending75, unavailable74. Isolated DB mode skips this shared target check and retains its existing migrated private PG route.",
+    "sourceSha256": {
+      "papercusp-desktop/bin/dev-operator-pg-probe.mjs": "c741bf150854d01cff52228ee5f97b192a07ae7cb4e6cdfc3198f3bf9ddf8aab",
+      "papercusp-desktop/test/dev-operator-pg-probe.test.js": "be7f4f83ea028e4865d4586db11be4fe772b394cfdb3e75f867a74726f005cd1",
+      "scripts/verify-tauri-headless.sh": "572a97da11a10d64bfa06d260543ef042399d354627f0b65860d53bf081940d3",
+      "apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts": "a554416f6f7d8665d858daa4d00c07c6b8f78489402af9fa719ec920aeb29383",
+      "libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js": "e3deef8c81da9420e7401814cbf98b886ba010208a26189b681d0e41a6583cd5"
+    },
+    "verification": {
+      "nodeCommand": "node --test papercusp-desktop/test/dev-operator-pg-probe.test.js papercusp-desktop/test/test-registry-coverage.test.js",
+      "nodeResult": "19 PASS, 0 FAIL/skip, exit0; includes real probe CLI and real shell-preflight fixtures, migration selection/order, no DDL, exact sourced-env target, unavailable/missing corpus, deadline/client close, isolated skip and normal launcher fallback.",
+      "preFixNodeResult": "3 PASS, 8 FAIL, exit1 on old source before readiness implementation.",
+      "verifierCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/verify-tauri-headless-env.test.ts apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts apps/operator/lib/verify-tauri-headless-ready-seed.test.ts apps/operator/lib/verify-tauri-headless-isolated-db.test.ts apps/operator/lib/verify-tauri-headless-install-guard.test.ts apps/operator/lib/verify-tauri-headless-help.test.ts apps/operator/lib/verify-tauri-headless-build-budget.test.ts apps/operator/lib/verify-tauri-headless-assertion-preflight.test.ts",
+      "initialVerifierResult": "78 PASS, 4 FAIL. The existing snapshot fixtures omitted the current vh_probe_admitted_exec wrapper and assumed a one-line rsync command. No production admission behavior was changed to make those tests pass.",
+      "fixtureRepair": "Forward the actual rsync command through a fixture admission seam and remove shell line continuations in the ordering assertion. First recheck25PASS1FAIL revealed replacement whitespace; final focused26PASS0skip exit0.",
+      "terminalLedgerRows": {
+        "apps/operator/lib/verify-tauri-headless-env.test.ts": 20496591,
+        "apps/operator/lib/verify-tauri-headless-source-snapshot.test.ts": 20496615,
+        "apps/operator/lib/verify-tauri-headless-ready-seed.test.ts": 20496587,
+        "apps/operator/lib/verify-tauri-headless-isolated-db.test.ts": 20496590,
+        "apps/operator/lib/verify-tauri-headless-install-guard.test.ts": 20496592,
+        "apps/operator/lib/verify-tauri-headless-help.test.ts": 20496589,
+        "apps/operator/lib/verify-tauri-headless-build-budget.test.ts": 20496588,
+        "apps/operator/lib/verify-tauri-headless-assertion-preflight.test.ts": 20496594
+      },
+      "ledgerVerification": "testing:runs read all eight exact terminal rows as pass. Snapshot row20496615 commitf4e9ce8812d; other seven at5fdc5322753. Automatic git-sync moved HEAD during the final snapshot run, so its aggregate router provenance was unknown; use the terminal ledger and bound source hashes, not an exact whole-tree HEAD claim.",
+      "syntaxAndDiff": "bash -n verifier, node --check probe and both root/desktop git diff --check exit0. Desktop probe test remains registered in npm test via test:shell; registry guard passed.",
+      "logSha256": {
+        "/tmp/p007-schema-preflight-fire161-red.log": "fb48799494c81ad6878211134b82824b64b21e644abc194a250eb854e479f7ed",
+        "/tmp/p007-schema-preflight-fire161-final.log": "4c7fa301011e750e38d6836c431110ec5b4fa5029d22c87bc0338ba069cd636b",
+        "/tmp/p007-schema-preflight-fire161-verifier.log": "e386dfc11c156efcdec165eeaea4f8477c7d1305429128ffca8daf015974e2e4",
+        "/tmp/p007-schema-preflight-fire161-snapshot-fixed.log": "0dedc153320127667009f5a09a8edeb1bca9e7036c813139d12aee2a7124b54f",
+        "/tmp/p007-schema-preflight-fire161-snapshot-final.log": "6a651ec362ed1020eb11bb9644df274f057c32cf2827940389ec6c66bb9925ae"
+      }
+    },
+    "boundedCurrentSharedRead": {
+      "procedure": "Execute only the real shared_schema_readiness_preflight function with canonical REPO_DIR/DESKTOP_DIR and VERIFY_TAURI_ISOLATED_DB=0; no verifier preparation or native launch.",
+      "source": "env:DATABASE_URL",
+      "targetFingerprint": "c942ee8b9c119f1e62d4016bb52dc6cabbf6f15fa7a77bdf9da269f2ab70ece8",
+      "sqlDir": "~/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql",
+      "status": "ready",
+      "totalKnown": 1134,
+      "pendingCount": 0,
+      "pendingFiles": [],
+      "exit": 0,
+      "measuredDuring": "2026-10-02T07:43-07:44Z"
+    },
+    "limits": "Readiness is a dated ledger read, not permission to bypass backup or a future boot guarantee. Recheck before any expensive attempt; new migrations/env/source changes can invalidate it. No source corpus content-drift certificate, whole import-graph identity, historical backup-cause change, native collection adoption, popup/FCP/LCP or frozen cohort acceptance is claimed.",
+    "next": "At a fresh context verify claims, current source/manifest and schema readiness, then prepare one changed native diagnostic manifest. Preserve r171 boot failure; no unchanged native replay, P2P, shared restart or LIVE_GATE_OPS. Separate P006/P008 acceptance remains open."
+  },
+  "r171BootFailureRecoveredFire160": {
+    "scope": "Terminal verifier boot failure recovered from Fire159. WDIO never started; no popup, FCP, LCP, new operation-row or isolated-collection adoption result.",
+    "runId": "20261002T064622Z-474152",
+    "manifestRef": "$HOME/.papercusp/perf/p007-native-current/r171-instrument-manifest.json",
+    "manifestSha256": "c8473370b0355a213195aef46688012f82dab3a93829d34dcb59763790ac8947",
+    "rebind": "Fire159 reviewed the stable per-user display/port reservation-root change and passed the maintained two-test guard. This manifest supersedes the Fire154 preparation fingerprint for the launched attempt.",
+    "resultRef": "$HOME/.local/state/verification-harness/verify-tauri-headless/20261002T064622Z-474152/result.json",
+    "resultSha256": "267e62bb52bb1bce5fd74d5a30f82bc80d651e41848d7eec2b3bcaa11284c66a",
+    "verifierLogRef": "/tmp/p007-r171-verifier-fire159.log",
+    "verifierLogSha256": "1697019b30a7dcb9a1cf7597c2450f2cc4e7506ca758f046be6897efa5b8d5f1",
+    "verdict": "fail",
+    "firstFailure": { "phase": "boot", "step": "launch-attempt-1", "reasonCode": "exit-1" },
+    "assertionStatus": "blocked",
+    "measuredPhaseDurationsMs": { "prepare": 324855, "boot": 269454, "assert": 0 },
+    "failureEvidence": {
+      "pendingMigration": "1339-session-gate-suppressed-ask-kind.sql",
+      "backupLockedRelationReportedByBootProof": "session_pending_gates",
+      "requestOnlyPreflightTimeoutMs": 20000,
+      "nativeAddonAbort": "Code134 follows the request-serving startup refusal in the log. The abort's independent native mechanism is unproven; it is not a renderer or LCP result."
+    },
+    "cleanupVerification": {
+      "receiptLog": ".papercusp/scratch/bash-44edaee9-e2b.log",
+      "procedure": "Read the official result, retained verifier log and exact per-launch nonce from /tmp/verify-tauri-headless.UBS4x4/launch.sh; reduce current procfs checks to identities bearing that exact nonce. Never signal or remove another runtime.",
+      "launchMarkerRecovered": true,
+      "remainingExactLaunchMarkedPids": [],
+      "recordedAbortedPid1237725Absent": true,
+      "recordedLastNodePid1275726Absent": true,
+      "sourceSnapshotRemoved": ".papercusp/tmp/verify-tauri-headless.qsYO8n",
+      "workSpaRemoved": "/tmp/verify-tauri-headless.UBS4x4/spa",
+      "smallWorkLogsRetained": "/tmp/verify-tauri-headless.UBS4x4",
+      "unstartedAssertionFilesAbsent": ["r171-owned-runtime-identity.json", "run-171-diagnostic-result.json", "run-171-popup-native-timing.log", "r171-native-process.jsonl", "r171-private-home", "r171-profile-data", "r171-profile-cache", "r171-profile-config"],
+      "diagnosticTmpfsRootAbsent": "/dev/shm/p007-r171-d1608f11-20261002T062500Z",
+      "proofHold": "Selected Fire159 hold67995ef3-ff96-4300-a154-cb164366bbfc released/read back with held_before0. No global port-absence claim."
+    },
+    "detectorAudit": "The shared-DB verifier spent its prepare phase copying dependencies and building the owned API before boot discovered the pending migration/backup conflict. Existing install, syntax, ownership and isolated-PG guards do not establish shared target-schema readiness. Do not repeat this failed expensive attempt unchanged.",
+    "reuseCandidate": "Extend the existing papercusp-desktop/bin/dev-operator-pg-probe.mjs and maintained verifier preflight, reusing the migration runner's eligible-file rules and read-only migration ledger. Preserve normal default launcher fallback and the opt-in isolated-DB route; never bypass the backup rendezvous or apply shared DDL in a read-only preflight.",
+    "next": "Implement and test bounded shared target-schema readiness before heavy verifier preparation, with exact DB/env binding and an explicit unavailable/pending outcome. Re-read applicable plan decisions and locks before editing. Keep the retained boot failure distinct from an eventual changed runtime attempt. P007 cause/product/R7/cohort and separate P006/P008 acceptance remain open."
+  },
+  "r171PreparationFire154": {
+    "scope": "Dated Fire154 preparation only. Later Fire159 launched with rebound manifestc8473370b035 and failed before assertions; see r171BootFailureRecoveredFire160. No performance result, adoption, product cause or R7 acceptance.",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r171-instrument-manifest.json",
+    "manifestSha256": "a68625cb4100caf0b5a4d509489bd7984042896eba461cbb33a7a3af5cc4a466",
+    "assertionSha256": "9afef2369afc4f300d45959fd2ec1163e401b77794203ec43d5c65cb99821a74",
+    "spaIndexSha256": "8f3453583e2c4642dcd4a76d68caf8415067b2c5455444a130bd469ebb0fd3bc",
+    "reused": "Independent r170 app/raw baseline copy, maintained early/Web Vitals builders and derived owned native assertion. Existing isolated JSONL collection and v5 sampler. No new runtime/service/app scaffold.",
+    "verification": "r170 terminal/cleanup hashes match. Only four of its21 selected bindings changed: startup probe, Node tests, measure writer and WDIO config. All21 rebound to current source; final87PASS and separate tsc logs bound. Two payloads freshly compiled, exact single-script index reconstruction and independent baseline identity PASS. Assertion bash syntax PASS. Fresh private HOME/profiles/tmpfs root absent. Artifact lock released after preparation.",
+    "controlledChangeRef": "firstFrameOperationGuardsFire154",
+    "measureChangeRef": "measurePersistenceIsolationFire152",
+    "hypothesis": "Actual-node-matched first-frame interval is dominated by computed-style, visibility-property or traversal reads.",
+    "alternative": "Rectangle/viewport reads dominate, or read intervals are small while queue-to-frame delay is large.",
+    "requiredObservation": "Ordered bounded first-frame operation rows and actual LCP candidate identity, both callback intervals, honest popup/LCP verdict and singleton logged unique collection path. Preserve exact collection rows/hash only if retained; missing/unpublished state remains explicit.",
+    "attemptAudit": "Shared reset/read contamination class now guarded by Fire152 real launcher/worker tests. Aggregate frame-operation ambiguity now guarded by Fire154 direct/bundled fixtures. The red run's fractional-clock fixture was corrected deterministically. Existing timeout/lifecycle evidence stays separate; no unchanged native replay.",
+    "limits": "Read partitions localize observer work only. No paired observer-off comparison; forced-layout or initiating product cause cannot be inferred. Original frozen SPA whole graph, private current API, media restriction and clock limits remain. P006/P008 acceptance remains separate.",
+    "next": "Fresh-context live claims/source/manifest/readiness checks, then one changed diagnostic via the maintained desktop-native verifier. Preserve terminal receipt and identity-checked owned cleanup. No source-tree cleanup, P2P, shared restart or LIVE_GATE_OPS."
+  },
+  "firstFrameOperationGuardsFire154": {
+    "scope": "Maintained startup observer and controlled direct/bundled Node guards only. No native adoption, forced-layout attribution, product cause or P007/R7 acceptance.",
+    "detectorGap": "The r170 first-frame interval134ms combined connection, up to32 ancestor style lookups/property checks/traversal, rectangle and viewport reads. The aggregate did not distinguish which observer operation occupied that interval.",
+    "reused": "Extend the existing first-frame report and early self-contained probe builder; no new collector, service, schema or product read.",
+    "change": "Retain ordered operation/depth/start/end/duration/threw rows for the first frame only, maximum99 per candidate. Preserve short-circuit property order, independent footer/subtitle identity,32-ancestor/frame caps and existing exception handling. Later frames do not append rows. Timing overhead remains observer work.",
+    "controlledGuard": "A clock-controlled bundled fixture records connection0ms, two style lookups5ms each, element visibility13ms, parent visibility0ms, two parent reads4ms each, rectangle7ms and viewport24ms:62ms aggregate. Direct guards preserve each throwing operation and omit private errors; first-frame-only/candidate independence and bundled32-ancestor cap guards pass.",
+    "red": "82PASS5FAIL0skip exit1: four new operation guards fail against old source, plus an existing fractional-clock exact-duration fixture fails with8636.999999999998 versus8637. This fifth failure is separately recorded, not attributed to the detector gap.",
+    "fixtureFix": "Node computes duration by subtracting start from end. The existing exact8637ms fixture used fractional performance.now(); Math.floor now supplies an integer fixture start. The exact assertion is retained and production measurement precision is unchanged.",
+    "green": "Initial87PASS0skip exit0. After the deterministic fixture correction, final87PASS0fail0skip exit0 and separate package tsc exit0. JSON/source/diff verification required before native preparation.",
+    "commands": [
+      "npm --prefix tools/perf-test/wdio run test:unit",
+      "npm --prefix tools/perf-test/wdio run typecheck"
+    ],
+    "sourceHashes": {
+      "tools/perf-test/wdio/startup-storage-probe.ts": "f453b14745eb23616330abccd587defb38e20a32bef00e8b19ddddbfa5851b04",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "f14c980769769ece13f0fc0563717d11b3a71f7ffacc2b88adac1c5339441d03",
+      "tools/perf-test/wdio/web-vitals-probe.ts": "a538a91400867c8f598026a75198783e1504bcc887c76ead017145e642835fc4",
+      "tools/perf-test/wdio/package.json": "d135380869d1d4063d2cfc8f9ff978a88de0f75b80bbab62614c02c68053457b",
+      "tools/perf-test/wdio/tsconfig.json": "6877007d5b926ffd8f76196a43df5209e584eccc7f084bbf17da965b51d88511"
+    },
+    "logHashes": {
+      "/tmp/p007-frame-partitions-red-fire154.log": "de00690f8c962f4f9e0a58af8d0ef959a89e07cba68d3e841d25e7de4b3badb3",
+      "/tmp/p007-frame-partitions-green-fire154.log": "1f02921d0ed3a18ccc359ec9bddca99ee96e101bce3f4607b0772a3f5bd889c4",
+      "/tmp/p007-frame-partitions-tsc-fire154.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+      "/tmp/p007-frame-partitions-final-fire154.log": "49d15f696fbf3733d0289bb7da540db62d5e5441a25ab61eae40817dc7ba3473",
+      "/tmp/p007-frame-partitions-final-tsc-fire154.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "limits": "Controlled durations prove partition semantics, not native observer overhead or r170 product causation. No paired observer-off control exists. Previous r170 startup/test bindings are historical. Media, API, original-SPA graph and clock limits remain.",
+    "next": "Fresh bound payload/manifest and ONE justified changed native diagnostic, recover exact logged per-run collection path and preserve terminal verdict plus owned cleanup. P007 root/initiatingcaller/product/R7/frozen5cold5warm and independent P006/P008 stay OPEN. No unchanged native replay, P2P, shared restart or LIVE_GATE_OPS."
+  },
+  "measurePersistenceIsolationFire152": {
+    "scope": "Maintained WDIO collection writer and actual launcher/worker process boundary only. No native performance rerun, product latency repair, cause attribution, R7 or shipment acceptance.",
+    "recovery": "Fresh managed context recovered newer Fire149 terminal checkpoint instead of trusting stale pending-run wake note. Exact r170 summary28c1a7b8506e and cleanup124f075e6967 match. No native relaunch or carried exec handle used.",
+    "rootCause": "perf-report.ts used one fixed results/measures.jsonl across launcher lifetimes. Each onPrepare and successful publication reset deleted that same file; append-safe JSONL did not isolate concurrent runs. PAPERCUSP_PERF_RUN_ID identifies a reusable build profile, not a collection lifetime.",
+    "distinguishingTest": "Canonical Node suite copies the dependency-free writer into a private fixture and keeps two launcher processes alive. A forks a worker that records its over-budget receipt; B prepares/resets, then forks its own worker. Inspect both reads and A completion cleanup while B remains alive. Distinct and same named profiles both fail on the original writer: A's stored receipt becomes an empty array immediately after B prepares.",
+    "alternativeHypothesis": "A named launcher already owns an independent collection and B reset cannot affect A's recorded outcome.",
+    "predictions": {
+      "sharedFile": "A reads [] after B reset and launcher paths coincide.",
+      "independentFile": "A keeps its exact failing receipt, B keeps its own successful receipt, and neither reset removes the other's outcome. Workers inherit their launcher path."
+    },
+    "durableFix": "Extend existing JSONL writer: launcher prepareMeasures allocates an exclusive fresh measures-UUID.jsonl, replaces any inherited collection path before preflight, and passes the selected path through PAPERCUSP_PERF_MEASURES_PATH to actual forked workers. Read/reset/write have no legacy shared-file fallback. A failed publish retains only its own file. No receipt/table/service change.",
+    "reuseRationale": "Reused existing collection file, reset/read/write functions, onPrepare/onComplete lifecycle and Node regression suite. Existing runId is a reusable profile and driver ports are transport identities, so neither can bind collection lifetimes. The internal inherited path extends the existing cross-process environment seam.",
+    "verification": {
+      "red": "Canonical npm unit script ran all80 tests:78PASS2FAIL0skip exit1. Both new concurrent launcher cases observed actual[] versus expected failing run-A receipt after B reset.",
+      "initialGreen": "80PASS0skip exit0; separate package typecheck exit0.",
+      "finalGreen": "83PASS0fail0skip exit0; separate package typecheck exit0. Includes distinct/same/unnamed overlapping launchers, inherited prior collection replacement, exact worker path/receipt identity, per-run read/reset isolation, legacy-file refusal and retained unpublished/crashed receipt. Fixture roots and launcher children are cleaned in each test's finally.",
+      "commands": [
+        "npm --prefix tools/perf-test/wdio run test:unit",
+        "npm --prefix tools/perf-test/wdio run typecheck",
+        "git diff --check -- tools/perf-test/wdio/perf-report.ts tools/perf-test/wdio/perf-report.node-test.ts tools/perf-test/wdio/wdio.conf.ts"
+      ],
+      "sourceHashes": {
+        "tools/perf-test/wdio/perf-report.ts": "a476c06fb67a8bd75fd2be24b6c7b070f298a7ff51d05d05ee1c7b9de08c7891",
+        "tools/perf-test/wdio/perf-report.node-test.ts": "b7bca67653e2ddbafdf4b7063b2e02505c7eb7d2ac2256b0adb1910b19026872",
+        "tools/perf-test/wdio/wdio.conf.ts": "98022d5ea6f120b531ab0e2a6c202d0bfcd104f03fac10b4660ecb32a353ad70",
+        "tools/perf-test/wdio/package.json": "d135380869d1d4063d2cfc8f9ff978a88de0f75b80bbab62614c02c68053457b",
+        "tools/perf-test/wdio/tsconfig.json": "6877007d5b926ffd8f76196a43df5209e584eccc7f084bbf17da965b51d88511"
+      },
+      "logHashes": {
+        "/tmp/p007-measure-isolation-red-fire152.log": "684b11ea895f043b70846118771779c17bfc4512c26819b3e7bacf7edcc50a74",
+        "/tmp/p007-measure-isolation-green-fire152.log": "fcce586ed80c2c052d5d158ca1e2769a0793086de53bedb4a9f4ddd8439b9d92",
+        "/tmp/p007-measure-isolation-tsc-fire152.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+        "/tmp/p007-measure-isolation-final-fire152.log": "14e9aaa3eed691653868ffd779b8dc5f9261b8db1eeedcf483ad687e7532fc4e",
+        "/tmp/p007-measure-isolation-final-tsc-fire152.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+      }
+    },
+    "limits": "The controlled reproduction establishes the measurement-persistence defect class, not that a historical native r170/r169 receipt was contaminated. Native adoption of the new collection path is not yet measured. Three r170 source bindings are now historical; native preparation must bind the revised writer, config and Node guards. The popup/LCP budgets still failed in r170; geometry observer cost134ms, media/API/clock/original-SPA limits remain.",
+    "next": "Audit bounded geometry observer calls and their timing before any justified changed native run. New assertions must recover the logged per-run collection path instead of the old shared measures.jsonl. Preserve P007 root/product/R7/frozen5cold5warm and separate P006/P008 acceptance as OPEN. No unchanged native replay, P2P, shared restart or LIVE_GATE_OPS."
+  },
+  "r170LifecycleTerminalFire149": {
+    "scope": "ONE changed r170 diagnostic completed FAIL. Native v5 lifecycle detector adoption only; no performance repair, cause, R7 or shipment acceptance.",
+    "managedTask": "0muqithvq6lk7ndmy4e",
+    "verifierRun": "20261002T052650Z-2041770",
+    "perfrun": "perfrun-1790919120676-qu9dgf",
+    "verifierExit": 1,
+    "suiteExit": 1,
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r170-native-summary.json",
+    "summarySha256": "28c1a7b8506ef1a3e90f9e9169464dca03e990fa1e2133faf40db232869efd9c",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r170-cleanup-receipt.json",
+    "cleanupSha256": "124f075e69677d55b51b4adcc3f4e97145c01ceb4381549641634d9d1c0ed380",
+    "startup": {
+      "fcpMs": 1618,
+      "lcpMs": 5341,
+      "actualLcp": ".pclsb-acct__foot",
+      "footerActualNodeMatch": true,
+      "subtitleActualNodeMatch": false,
+      "observedAtMs": 4769,
+      "queuedAtMs": 4769,
+      "frameAtMs": 4820,
+      "readCompletedAtMs": 4954,
+      "timerAtMs": 5006,
+      "frameDelayMs": 51,
+      "timerDelayMs": 237,
+      "geometryReadDurationMs": 134
+    },
+    "popup": {
+      "durationMs": 1937,
+      "budgetMs": 1500,
+      "requestStartedMs": 40,
+      "responseHeadersMs": 1289,
+      "responseReadyMs": 1333,
+      "contentReadyMs": 1355,
+      "previewRenderedMs": 1921,
+      "unit": "cumulative click-to-phase milliseconds",
+      "sessionLossObserved": false,
+      "attemptTimeoutObserved": false
+    },
+    "lifecycle": "Header native-process-probe-v5;210 samples;1 zombie observation followed by missing renderer entries and9 procfs-missing observations across two owned lifetimes. Zombie stateZ establishes not-reaped at that read only. Signal/exit remain null; missing-entry reaping remains unknown. These occur during suite completion after a measured popup; r169 unexpected session loss did not recur.",
+    "observerLimits": "Footer first geometry read134ms; sampler total1608.04ms/max39.05ms. These are measured observer work, not zero-overhead or product causation proof. No paired observer-off control exists.",
+    "sourceCurrentness": "All21 current source/config bindings and payload hashes match after run. Frozen SPA original complete source graph remains unknown. Private API975693d8ea/bundledd4c6485c307 is separately bound.",
+    "cleanupVerified": "Five owned PIDs and source absent; preserved raw hashes and tmpfsdevice29/inode6952833 match. Only r170 private HOME/profiles/tmpfs and exact original dead-runtime stale socket/per-port advert removed. Default peer advert preserved;33700 refused at cleanup. Verifier log root retained for evidence.",
+    "measurePersistenceAudit": "perf-report.ts141-142 uses a fixed results/measures.jsonl; resetMeasures removes that same path. Dated25-row snapshot matches emitted FCP/LCP/popup values but is not independent run-isolation proof. This source finding needs controlled concurrent-launcher verification before the acceptance cohort.",
+    "limits": "Media restriction, current API, distinct clocks, observer work and unpaired run remain confounds. Controlled Fire142 timeout proof stays separate. Product/cause/R7/frozen fivecold/fivewarm and separateP006/P008 remain OPEN.",
+    "next": "Verify maintained measurement persistence isolation using concurrent named launchers and exact reset/read/write semantics; extend the existing result path with canonical guards if collision is reproduced. Audit134ms forced geometry observation before another justified native run. Never unchangedr170/r169/older, P2P, shared restart or LIVE_GATE_OPS."
+  },
+  "r170PreparationFire149": {
+    "scope": "Fresh r170 preparation only; native result pending. Verified v5 lifecycle sampler is the changed detector, with current paired callbacks and popup timeout driver preserved.",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r170-instrument-manifest.json",
+    "manifestSha256": "26c79cafa0032b705a461993ce5e6c1c6b89e92c83fef661d1c0d2ba3e38cff7",
+    "assertionSha256": "2c479cf2fe25f8203a7594ce62c1ce736bb86aa128f851362ef6a66c99e1b269",
+    "spaIndexSha256": "26f8d3a28bfadcbc5b94374697843292aceb5cdcb4fb0b95e916697eadb918b0",
+    "verification": "Independent app and raw baseline, exact single-script index reconstruction,21 source/config bindings, two freshly compiled payloads, source/log fingerprints for78PASS and separate tsc, fresh owned roots absent, assertion bash syntax PASS.",
+    "reused": "Maintained probe builders, baseline and frozen app from r169, existing assertion and desktop-native verifier route. No new collector, service, or app scaffold.",
+    "attemptAudit": "r168 late-total/phase-start gap repaired by maintained driver guards Fire142; r169 prior-owned disappearance gap repaired by v5 sampler Fire147 with78PASS. No unchanged native replay. Both detector classes are guarded before this fresh diagnostic.",
+    "hypothesis": "On repeated session loss, exact previously owned native identities have missing or replaced procfs entries.",
+    "alternative": "The same lifetime remains present or zombie despite discovery/session loss; unavailable reads stay inconclusive.",
+    "requiredObservation": "Retain exact per-lifetime v5 observations, actualLCP candidate join, paired timer/frame/read times and popup attempt-scoped timing or honest session loss. Missing PID entries cannot identify exit signal or reaping.",
+    "limits": "Original whole frozen SPA graph unknown; current private API, separate clocks, media restriction and observer work remain confounds. Guard proof and this preparation do not establish product repair, cause, R7, or shipment.",
+    "next": "One changed owned native diagnostic through scripts/verify-tauri-headless.sh, preserve terminal verdict and identity-checked owned cleanup. P006/P008 acceptance remains separate."
+  },
+  "nativeLifecycleGuardFire147": {
+    "scope": "Current maintained sampler v5 and real Node suite only; no new native popup run, causal performance result or P007/R7 acceptance.",
+    "nativeSession": "01a0faf9-8eb8-7592-b491-7a32e2ee21e6",
+    "rootCause": "The v4 collector followed current descendants only. Previously observed owned identities were forgotten when absent from discovery, so empty samples could not distinguish disappearance, zombies, reparenting, PID reuse or incomplete discovery.",
+    "alternativeHypothesis": "A missing subtree row can be a still-present process with reparented ancestry or unavailable children discovery; a lost WebDriver session alone does not establish process death or signal.",
+    "distinguishingTest": "Six maintained Node fixture cases exercise two bounded stat reads on previously owned identities, including missing/appearing entries, zombies, reparenting, PID replacement, malformed/denied/oversized reads and reboot races. A real subprocess is observed by the running sampler, terminated by its actual parent with SIGTERM, reaped by that parent, then observed missing by the sampler.",
+    "predictedObservations": {
+      "hypothesis": "The old collector exposes no per-identity lifecycle evidence; the extended sampler retains the exact earlier identity and records procfs-missing after actual removal.",
+      "alternativeHypothesis": "Reparented or incompletely discovered same-lifetime processes remain same-identity-present; zombies are not-reaped; PID races and inaccessible reads never become a death or signal assertion."
+    },
+    "actualObservation": "Baseline71PASS; six new guards failed against old source (71PASS6FAIL). Initial implementation passed76/77; after the real-process guard77/78, both failures were the existing boot-race error-message assertion. Corrected message restores identity/boot wording. Final78PASS0skip exit0, separate typecheck exit0. Actual parent received SIGTERM; the sampler retained the old lifetime with signal/exitCode null and reaping unknown.",
+    "fix": "Extend collectOwnedWebKitSample and the existing separate sampler with at most64 previous-owned lifetime references and two4096-byte stat reads for missing identities. Buffer lifecycle observations with existing sample persistence/byte/time limits; no new collector/service. Header v5 declares provenance and non-child wait-status limits.",
+    "sourceHashes": {
+      "tools/perf-test/wdio/native-process-probe.ts": "1aca8f8ee8e53d2966138250711dac26482a029d1607f1c2281bbc2c6ca1efea",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "1c10d7aa9a6d51046d48597663109ca2cda90618a25157e67f0858a93c3f0084"
+    },
+    "commands": [
+      "npm --prefix tools/perf-test/wdio run test:unit",
+      "npm --prefix tools/perf-test/wdio run typecheck"
+    ],
+    "logHashes": {
+      "/tmp/p007-native-lifecycle-baseline-fire147.log": "1f50d74649b1f33fda166a0289440e9914f65f4bd80dfe6cddeb638396d48352",
+      "/tmp/p007-native-lifecycle-red-fire147.log": "99ae0c514944dcb2a146534636466fc658d4604762ec86550c7d5c22a33a9e4b",
+      "/tmp/p007-native-lifecycle-green-fire147.log": "6409f3b30c308612993876ae1ef44bbdb0aba4c946fbe1f5ccbd10ccc6a92c55",
+      "/tmp/p007-native-lifecycle-final-fire147.log": "3d7eb8b04bbf7a33a92bdd2fc7c724065e829fb84446c39035672091ccd5fd29",
+      "/tmp/p007-native-lifecycle-verified-fire147.log": "8a2f014ea34bd402449fee18e4445ec56a5f41584c57ad11d78adb7d8f2a7845",
+      "/tmp/p007-native-lifecycle-verified-tsc-fire147.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "verificationCorrection": "An intermediate commentary incorrectly called the first implementation green by reading the final typecheck shell status; immediately retracted. The retained unit logs show the actual single failure, and final unit/typecheck commands ran separately.",
+    "expensiveAttemptAudit": "r168 lacked late-total/phase-start evidence: the maintained attempt driver was repaired and verified in Fire142. r169 lost its session before popup navigation and lacked per-identity disappearance evidence: v5 now has the maintained recurrence guards above. Neither failed native run is replayed unchanged; a future changed r170 must bind current source and artifact identities before launch.",
+    "limits": "Procfs reads are observations, not waitpid receipts. Missing/replaced PID entries cannot identify signal, exit code, crash cause or completed reaping. Observer overhead is unpaired. Original frozen SPA graph, separate clocks, media-discovery restriction and changing private API remain confounds.",
+    "next": "Prepare an independent r170 artifact/raw baseline/current paired payload and attempt driver manifest binding v5 sampler and78PASS proof; verify source/payload/shell/index/assertion hashes, then one changed maintained native diagnostic and owned cleanup. No unchanged r169/older, P2P, shared restart or LIVE_GATE_OPS. P006/P008 acceptance remains separate."
+  },
+  "r169PairedTerminalFire146": {
+    "scope": "Recovered ONE changed cold r169 terminal failure; native paired scheduling evidence only, popup unmeasurable; no root/product/R7 acceptance.",
+    "verifierRun": "20261002T043124Z-2539815",
+    "perfrun": "perfrun-1790915950251-q8779p",
+    "verifierExit": 1,
+    "suiteExit": 1,
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r169-native-summary.json",
+    "summarySha256": "a6082fa59c8def6a3cb4cb864e6f94004e558165655e432661876a5e3f15b2e0",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r169-cleanup-receipt.json",
+    "cleanupSha256": "9defeea88e9251cb8a0f92c6a836dc551cb88df8664a0200197efb70493aa2b0",
+    "rawLogSha256": "63e963ee8e71ac86ddcacfdebf9a012f7ee97404df0b2d46c9e90804b331fcc8",
+    "nativeTraceSha256": "3ad818bdf5a49ca3e398904315c0bfb574cf9f7229deb2c8545b218d5f19b3ff",
+    "crashEvidenceSha256": "e400a0bd34fca4881f1275d4a6b86212453924b6e8dd5e9f30bfc58e3e882bcc",
+    "startup": {
+      "fcpMs": 1314,
+      "lcpMs": 4716,
+      "actualLcp": ".pclsb-acct__foot",
+      "footerActualNodeMatch": true,
+      "subtitleActualNodeMatch": false,
+      "footerDomObservedAtMs": 3523,
+      "pairedQueuedAtMs": 3524,
+      "frameAtMs": 4578,
+      "readCompletedAtMs": 4579,
+      "companionTimerAtMs": 4723,
+      "timerStopReason": "completed",
+      "frameDelayMs": 1054,
+      "timerDelayMs": 1199,
+      "firstReadDurationMs": 1
+    },
+    "discrimination": "The prompt-timer/frame-only prediction is contradicted: both paired callbacks are late, while the measured first geometry read takes 1ms. This identifies paired scheduling behavior, not main-thread or initiating-caller cause.",
+    "popup": "UNMEASURABLE: terminal WebDriver session loss at spec line121 before popup navigation. No attempt timeout, captured start, phase timestamp or late total was observed; source guard proof remains separate.",
+    "crashEvidence": "Bounded journal/coredump reads for owned app2922434 and renderer2922894 during04:38:58..04:39:12Z returned no records. Session crash-or-hang label and missing appsink warning do not establish signal or cause.",
+    "crashDetectorAudit": "Maintained v4 sampler discovers only current owned descendants. The last app/renderer snapshot spans1790915949083..9090ms. First following sample spans1790915949190..9191ms: no process rows, but app2922434 exe readlink is ENOENT. Later samples have empty process/unavailable arrays. Correction: the first missing sample was unavailable, not clean absence. This does not distinguish death, zombie/reaping or loss from discovery. No per-identity disappearance or exit-status record exists; onComplete stops the sampler after publication and then reaps the driver. Extend this existing probe rather than add another collector.",
+    "upstreamWarningRead": {
+      "url": "https://chromium.googlesource.com/external/github.com/WebKit/webkit/+/f27346baf833b1134f43b57d859570103117aa87/Source/WebCore/platform/graphics/gstreamer/GStreamerSinksWorkarounds.cpp",
+      "scope": "Selected upstream commit, not identity-matched installed WebKit source",
+      "observation": "The missing-appsink warning branch logs and returns false; it does not abort in this function. This read prevents treating the warning as independent proof of r169 termination."
+    },
+    "sourceCurrentness": "All16 manifest source fingerprints match on recovery. Exact prepared payload/driver was exercised; the complete original frozen SPA graph remains unknown.",
+    "cleanupVerified": "Five owned PIDs, source and socket absent; tmpfs root device29/inode6916821 and retained log hashes verified before removal. Only r169 private HOME/profiles/tmpfs removed; port33700 refused at cleanup. Default IPC advert belonged elsewhere and was preserved. Manifest file hold already released (held_before0).",
+    "limits": "Current API1c45fb4a2c/bundle8b933419e5c5, distinct page/native clocks, disabled media discovery and observer work remain confounds. Sampler605.94ms total/38.30ms max; page observer durations are measured scope, not a zero-overhead baseline.",
+    "next": "Extend the maintained native probe with bounded identity-checked disappearance observations and explicit unknown signal/reaping semantics; guard process reparenting/reuse and incomplete discovery in its canonical Node suite. Then select a justified changed native intervention, preserving media/API/observer limitations. Do not replay unchanged r169 or older; root/product/R7/frozen five-cold/five-warm acceptance remain open."
+  },
+  "r169PreparationFire144": {
+    "scope": "Fresh r169 artifact preparation with current frame-first companion timer and attempt timeout driver; native run and product/R7 remain unverified at this boundary.",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r169-instrument-manifest.json",
+    "manifestSha256": "067d34372fffb74c823e1d839bfdf0639b3c15bf7fddc9b14ad28c716fc25196",
+    "assertionSha256": "8f462606c6bab34b1750bff838985bfe7197c197f82323d8f5b2964a9670d5dd",
+    "startupPayloadSha256": "4579b65ee114b895478b9daa05e8be8fb15e75c8de2331e48970fa4cc3be465a",
+    "spaIndexSha256": "26f8d3a28bfadcbc5b94374697843292aceb5cdcb4fb0b95e916697eadb918b0",
+    "verification": "All five Fire142 source and five log hashes match; independent copied app and raw baseline; exact single-script index reconstruction and sixteen current source bindings pass. Assertion bash syntax passes. Existing canonical43 plus Node71 test proof and typecheck retained without unchanged replay.",
+    "reused": "Maintained buildStartupStorageProbeScript/buildWebVitalsBundle/writeStartupStorageDiagnosticIndex, frozen r168 app and exact raw baseline, prior maintained assertion and scripts/verify-tauri-headless.sh desktop-native route.",
+    "preparationFriction": "tsx ESM named import refused before payload writes; this CJS package's maintained require route compiled the payload successfully. No native attempt was launched by that refusal.",
+    "requiredObservation": "Actual LCP candidate join and paired queued/timer/frame/read intervals; postwait captured start, phase startTime and total. Missing or cancelled timer stays null; ambiguous timeout stays inconclusive.",
+    "limits": "Saved SPA complete original graph unknown; new API, separate clocks, media restriction and observer work remain confounds. Source guards alone do not establish native cause or acceptance.",
+    "next": "One changed native verifier run with this manifest and identity-checked cleanup of only its new owned processes and roots; never unchanged r168 or earlier replay."
+  },
+  "attemptTimeoutGuardFire142": {
+    "scope": "Fire142 current-source timeout detector and attempt provenance guard; no new native run or product/R7 acceptance",
+    "rootCause": "The wait may expire before endInteraction emits a measure and consumes its start. The follow-up driver snapshot omitted completed measures and phase startTime, and the classifier interpreted absent start as never began. Previous phases survived driver reset if the next handler never began.",
+    "alternativeHypothesis": "A truly void click has no current begin, phase or total; old or different-start entries cannot establish this attempt.",
+    "distinguishingTest": "Canonical classifier red cases plus maintained Node VM tests execute serialized driver helpers against the real User Timing API and real begin/phase/end writers. Complete after the wait boundary, consume the start, then read the attempt; compare with an unbound click and earlier/different starts.",
+    "predictedObservations": {
+      "hypothesis": "The old classifier discards a completed sample and phases cannot be attributed; the new observation retains the real total after consumption.",
+      "alternativeHypothesis": "The new unbound click clears prior phases and yields no current begin or measure, so it remains void."
+    },
+    "actualObservation": "Classifier26PASS3FAIL before fix ->29PASS0skip. Existing mark writers14PASS0skip. Node first pass68PASS3FAIL caught serialized __name dependency; corrected self-contained callbacks yield71PASS0skip. Exact 8637ms measure retained and old/different starts excluded. Package typecheckPASS.",
+    "fix": "Extend existing classifier with measured/inconclusive outcomes and observed-begin evidence; extend maintained app-mount driver helpers with synchronous trigger timestamp, captured start and attempt-scoped total/phase snapshot. Retain late completed duration, refuse ambiguous timing instead of void retry, and remove unsupported no-dashboard wording. No new service/table/timer or product mark change.",
+    "r168Limit": "Raw r168 has no post-timeout total count or phase startTime. Its13 raw hashes still match, but whether late completion, expired/cleared start or another mechanism caused that run remains unproven. Never replay unchanged r168.",
+    "sources": {
+      "libs/generic/gui-readiness/src/interaction-measure.ts": "9e11ce05f1fc2a350d0e5eb28a76bbf3d2ac03ef92a16d74f278c42a1bff0a7f",
+      "libs/generic/gui-readiness/src/interaction-measure.test.ts": "f0d1ea6888a01b59d5afb282484ec2e91f253354c423e7d1e2e35efae28f541d",
+      "tools/perf-test/wdio/app-mount.ts": "0b17d0a749e689152189bb8ab985d82901f3bc691fc23a2dda74a2d752699c29",
+      "tools/perf-test/wdio/specs/plan-popup-open.perf.spec.ts": "3edaed9f131ae3173e2575daa05d481a2a9cdf720caba1fd8b28035dce6fe309",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "e3b98fe8fae025338a05fed16574ff05de2c89082a6d9eddce190927774c1b06"
+    },
+    "logs": {
+      "/tmp/p007-fire142-attempt-race-red.log": "3d9cb421851024cf432aa6c01d9c53af5bd5b0a48999df3146003616122df317",
+      "/tmp/p007-fire142-attempt-race-green.log": "a672dc0e48c6c79f96cd8538ec9e64985bff6cee737e5aa9ac2d591549ffce9f",
+      "/tmp/p007-fire142-attempt-native-guards.log": "98d85a4f39e72c1901ca226f6258f7cd5292230d99190397f637deddd99aa8c8",
+      "/tmp/p007-fire142-attempt-native-guards-r2.log": "d8c56e565cd5037fe548abb6db9f36ed0377a01e51e3eb60b371b336a4e70332",
+      "/tmp/p007-fire142-attempt-typecheck-r2.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "commands": [
+      "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- libs/generic/gui-readiness/src/interaction-measure.test.ts apps/operator/app/_components/perf/perf-marks.test.ts",
+      "npm --prefix tools/perf-test/wdio run test:unit",
+      "npm --prefix tools/perf-test/wdio run typecheck"
+    ],
+    "next": "Fresh successor verify source/log hashes, then prepare new r169 from maintained frozen artifacts with current paired-timer payload and updated driver. Verify independent manifest/source/index/payload/assertion hashes and owned native route before ONE changed run. Recover true total after wait expiry plus captured begin and phase startTime. No root/initiatingcaller/product/R7/frozen cohort claim from guards alone."
+  },
+  "r168PairedDiagnosticFire139": {
+    "scope": "Fire139 changed native r168 plus durable frame-first timer guard; not product/root/R7 acceptance",
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r168-native-summary.json",
+    "summarySha256": "4eb476748242f2f862119bf4965541358eefdfe4d13f1f8c9a696b314dd909ee",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r168-cleanup-receipt.json",
+    "cleanupSha256": "f878a8035a620aa958420ab505c145887614f79cd8f2cbb32f3a5c502b3e0d6f",
+    "rawHashesVerified": 13,
+    "verifierRun": "20261002T033409Z-2146715",
+    "receipt": {
+      "id": "perfrun-1790912480746-sazn5x",
+      "recorded": 10,
+      "status": "fail"
+    },
+    "suiteExit": 1,
+    "webVitalsLine": "[0-0] web-vitals: ready — observed [FCP=1807 LCP=6642]; not-applicable [INP(interaction) CLS(unavailable) TTFB(unavailable)]",
+    "popup": {
+      "status": "UNMEASURABLE",
+      "reason": "attempt timeout without start mark; void sample",
+      "slug": "goal-agent-behavior-feedback-2026-09-06",
+      "popupNumber": null,
+      "attemptDiagnosis": {
+        "verdict": "void",
+        "reason": "no start mark exists, so this attempt never began timing"
+      },
+      "unfinished": {
+        "outcome": "timeout",
+        "placeholder": null,
+        "startMarkAgeMs": null,
+        "phases": [
+          {
+            "ms": 5486,
+            "name": "plan-popup-open:phase:styles-ready"
+          },
+          {
+            "ms": 68,
+            "name": "plan-popup-open:phase:detail-mounted"
+          },
+          {
+            "ms": 5457,
+            "name": "plan-popup-open:phase:content-ready"
+          },
+          {
+            "ms": 14,
+            "name": "plan-popup-open:phase:popup-render-started"
+          },
+          {
+            "ms": 43,
+            "name": "plan-popup-open:phase:detail-render-started"
+          },
+          {
+            "ms": 14,
+            "name": "plan-popup-open:phase:popup-module-ready"
+          },
+          {
+            "ms": 5287,
+            "name": "plan-popup-open:phase:response-ready"
+          },
+          {
+            "ms": 5488,
+            "name": "plan-popup-open:phase:renderer-ready"
+          },
+          {
+            "ms": 0,
+            "name": "plan-popup-open:phase:popup-url-update-queued"
+          },
+          {
+            "ms": 8637,
+            "name": "plan-popup-open:phase:preview-rendered"
+          },
+          {
+            "ms": 4840,
+            "name": "plan-popup-open:phase:response-headers"
+          },
+          {
+            "ms": 14,
+            "name": "plan-popup-open:phase:popup-module-requested"
+          },
+          {
+            "ms": 66,
+            "name": "plan-popup-open:phase:request-started"
+          },
+          {
+            "ms": 5459,
+            "name": "plan-popup-open:phase:data-ready"
+          }
+        ]
+      },
+      "schedulerBeforeClickLogged": true,
+      "limitations": "Generic suite error cannot establish the dashboard never appeared. No start mark means no timed interaction; no route or product cause established."
+    },
+    "pairedIntervals": {
+      "actualLcpCandidateJoin": true,
+      "firstFrameQueuedAtMs": 4767,
+      "firstFrameAtMs": 6283,
+      "firstFrameReadCompletedAtMs": 6284,
+      "queuedToFrameMs": 1516,
+      "frameReadMs": 1,
+      "timerAtMs": null,
+      "timerStopReason": "eligible-frame",
+      "conclusion": "Frame/read intervals observed; timer cancelled at eligibility, so no paired-callback discrimination."
+    },
+    "milestoneAttribution": "Actual LCP is Accounts footer; sidebar/container true, shell false, fallback null",
+    "cleanupScope": "Seven observed owned PIDs and source/socket/private home/profiles/tmpfs removed or absent. Port33700 already accepts connections again; no global port absence or peer cleanup claim. Work/logs preserved. No signals sent.",
+    "sourceGuard": {
+      "rootCause": "stopCandidate(eligible-frame) cleared the independently queued companion timer; callback also rejected eligible-frame state. This censored frame-first ordering. Not the product latency cause.",
+      "fix": "Preserve a pending timer after eligibility and accept its callback while the probe is active; explicit stop/replacement/deadline still cancel. No extra timer or layout read.",
+      "recurrenceGuard": "Direct and bundled canonical tests cover timer-first/frame-first order, max two timers, immutable first frame times and cancellation after eligibility.",
+      "red": "66PASS2FAIL0skip; both expected2 pending companions, actual0",
+      "green": "68PASS0FAIL0skip and package typecheckPASS",
+      "sourceSha256": {
+        "tools/perf-test/wdio/startup-storage-probe.ts": "4076bc7ce5e2181954d50a01c8999019ab78ff4c15805fc4017a4aa406aee227",
+        "tools/perf-test/wdio/perf-report.node-test.ts": "936f2951b5fa9af5149e7b22a6a7ebaa78f2aa91bdbd50bc1c49f1d84ff556f8"
+      },
+      "logSha256": {
+        "/tmp/p007-fire139-frame-first-red.log": "bd3d622dc8a4fb74bf745eba47b10afe8479500ad58eff760df5d0b95e2077eb",
+        "/tmp/p007-fire139-frame-first-green.log": "aaa6d2a926244eb36c6ba0f989b24226e58d8cf6de1f734c451877a7a385ed08",
+        "/tmp/p007-fire139-frame-first-typecheck.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+      }
+    },
+    "limitations": "Broad callback delay versus frame-specific delay remains unproven. No main-thread/import/paint cause, initiating caller or whole original SPA graph; new API9b403cf7 and clocks/media/observer confounds retained.",
+    "next": "Audit current AND selected frozen begin/phase/end/clear/cancel writers and attempt-scoped phase freshness, plus classifyAttemptTimeout no-start semantics BEFORE any new expensive run. Do not infer no popup from generic UNMEASURABLE wording. Source timer guard68PASS is separate; r168 payload/manifest is dated and must not be reused as current.",
+    "correction": "Earlier row-to-dashboard attribution was wrong: pre-click scheduler log and request/preview phases exist. Only absence of the start/total at timeout is established. The classifier inference never began conflicts with these phases; mechanism and attempt freshness need audit."
+  },
+  "pairedFramePreparationFire135": {
+    "scope": "Fire135 source/bundled guards and fresh r168 preparation; no new native run, root cause, product repair or R7 acceptance",
+    "reused": "Existing installStartupStorageProbe lifetimes, MutationObserver/frame reads, compilation/index writers and canonical Node suite",
+    "gap": "r167 footer observation3264ms then firstFrame4662ms lacked request/timer/read-completion intervals. Static Accounts footer is outside loading; selected frozen lazy wrapper preloads23 indexed dependencies then shim/src. Full original graph and import duration remain unknown.",
+    "change": "One zero-delay timer per first candidate frame (maximum2), queued/frame/timer/read-completed timestamps and first outcome. Cancelled/unavailable/overdue callbacks remain null; existing bounds, cleanup and work accounting retained.",
+    "sourceSha256": {
+      "tools/perf-test/wdio/startup-storage-probe.ts": "921941fe76dd8b34c723d7d951e1ed910c2cc70eb043abc6843703ea6c995d5b",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "d717c2a5cd289e4070f1cb8630b55612c8e7e77cc61a2591f9710ae011c3a5d1",
+      "libs/generic/sync/src/lazy-with-retry.ts": "5c29752f6b9704e8de0231da4d0312b2aaa14c3ea195a16e343d26cbdbd84812"
+    },
+    "tests": {
+      "command": "npm --prefix tools/perf-test/wdio run test:unit; npm --prefix tools/perf-test/wdio run typecheck",
+      "pass": 67,
+      "fail": 0,
+      "skip": 0,
+      "typecheck": "PASS",
+      "unitLog": "/tmp/p007-fire135-frame-unit-final.log",
+      "typecheckLog": "/tmp/p007-fire135-frame-type-final.log",
+      "redLog": "/tmp/p007-fire135-frame-red.log",
+      "scope": "Current Fire135 source guards;64PASS3FAIL red,final67PASS0skip+tsc",
+      "unitLogSha256": "ff10bca4f77535a9fa65a217803c17d8dd4024a221610f545d48d83287bfca57",
+      "typecheckLogSha256": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+      "redLogSha256": "a5f191fc46ca42706997f258a801584ac55eb1bbfb22df5f6fa57b421fa5a80d"
+    },
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r168-instrument-manifest.json",
+    "manifestSha256": "bcad7d1075d5af4e3bc90c6560eedfb9c4d50696efa04e5815de0415c859770c",
+    "assertion": "$HOME/.papercusp/perf/p007-native-current/r168-run-assertion.sh",
+    "assertionSha256": "59d77782439ab8caa1f883d62faef8bb2b4435992ace6949249d87d0ef75c5c5",
+    "spaIndex": "$HOME/.papercusp/perf/p007-native-current/r168-app/usr/lib/Papercusp GUI/sidecar/spa/index.html",
+    "spaIndexSha256": "44ae2508c172197d8147154bc83edb6c75f3d5cd88839da0916fda6de2327c30",
+    "payloadSha256": {
+      "$HOME/.papercusp/perf/p007-native-current/r168-startup-storage-probe.js": "bdd2c7cc48942d8c4f43e8d125b91b8a88bad4c089e2043ea0fc4cce51c73cf8",
+      "$HOME/.papercusp/perf/p007-native-current/r168-web-vitals-probe.js": "58b2528bc893a3529c64cbc49be4c70b4fce9cb3a4d5d63a7c76f940a8bb6a7a"
+    },
+    "preparationRecovery": {
+      "partialBaselineSha256": "711caf7d3fab86ee356a08402d872441fa96f525b5371ce9615b1b99e37657c7",
+      "measuredDifference": "Exactly one injected newline after <head>",
+      "fixedBy": "Copied exact saved r165 raw baseline after hash verification; assertion now hashes raw baseline and requires absent early-probe marker."
+    },
+    "predictions": {
+      "hypothesis": "True actual LCP candidate join, timerAt close to queuedAt while frameAt is later and readCompletedAt is close to frameAt; callback scheduling distinction only",
+      "alternative": "TimerAt/frameAt both much later than queuedAt, or readCompletedAt far after frameAt. Cancelled/unavailable/overdue timer remains null and does not distinguish hypotheses."
+    },
+    "portCaution": "Prior port33700 has been reused; verifier selects fresh free ports and validates only its own runtime. Never kill/delete another holder.",
+    "limits": "Timer/rAF scheduling policies differ; observations discriminate callback/read intervals, not an import, paint or main-thread root cause. Actual LCP candidate identity required. Media restriction, observer work, new API and clocks remain confounds.",
+    "next": "Verify current source/manifest/assertion/payload hashes, then ONE changed r168 maintained native verifier. No unchanged r167/r166/r165/r164/r163 replay; P007/R7 and P006/P008 acceptance remain open."
+  },
+  "scope": "P007 source-qualified diagnostic history and current host localization; recorded threshold failures, not root-cause verification or R7 acceptance",
+  "workItem": "WI-10002829",
+  "r167HostDiagnosticFire134": {
+    "scope": "ONE changed cold host-milestone diagnostic on new payload/SPA/manifest; native suite failed, no root/product/R7 acceptance",
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r167-native-summary.json",
+    "summarySha256": "8979884eb992e69cdec514f89141fc69d20050cb37219faf1010936e67470851",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r167-cleanup-receipt.json",
+    "cleanupSha256": "ce233b18955771a1bd09478617130be7748f12ede5426c2f1d4016f2a2860af3",
+    "verifierRun": "20261002T025022Z-3056190",
+    "receipt": "perfrun-1790909702586-xvy0f9",
+    "verdict": "Parent and suite exit1; FAIL popup4949ms/FCP1501ms/LCP4822ms. Native receipt is retained with the original thresholds.",
+    "actualLcp": "P.pclsb-acct__foot joins the first footer node true; Plans subtitle is a different node false.",
+    "hostLocalization": "Expanded Accounts sidebar and fallback first observed1427ms. Footer joins the first sidebar true and Accounts container true; container/footer first observed3264ms. Footer first frame4662ms, eligible4664ms, actual LCP4822ms. This localizes observation intervals inside the Accounts branch and after candidate discovery; it does not identify import, insertion or paint cause.",
+    "unavailableAttribution": "Operator-shell containmentfalse forbids shell timing attribution. Fallback containmentnull at candidate discovery does not negate its earlier observation. Page resources list is empty and gives no import/fetch timing proof.",
+    "nativeSink": "Owned renderer3434203 initial environment retains four empty discovery paths. Measured fd38 target/inode6827731 and source-file stat match the tmpfs log on device29; root inode6827608. GST relative574-to811 span0.888023ms is separate from page epoch time; initiating caller and loaded core maps remain unmeasured.",
+    "confounds": "Sampler300samples/3239.519241ms total work is an observer cost, not independent latency attribution. Prepared API bundle6b62ca6ec805 differs from prior diagnostics; no paired comparison. Original whole saved SPA source/build graph is unknown. Media restriction remains diagnostic only.",
+    "cleanupVerification": "Exact5 recorded native/API/bridge/driver PIDs absent; port33700 refused; private source snapshot, socket, home, three profiles and identity/hash-checked tmpfs logs/root removed. Unrelated default advert and work logs preserved; no signals sent. All current source/payload/raw references match.",
+    "next": "Cheaply trace current and exact frozen Accounts lazy/mount/frame path to discriminate within-branch work from the later frame interval before changing diagnostics. Do not replay unchanged r167/r166/r165/r164/r163. Root/product/R7/five-cold-five-warm remain open."
+  },
+  "r167HostMilestonePreparationFire134": {
+    "scope": "Fresh canonical host milestone payload on an independent saved diagnostic SPA; native outcome recorded separately in r167HostDiagnosticFire134, no product repair or R7 acceptance",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r167-instrument-manifest.json",
+    "manifestSha256": "89fe6978a5523383a741fac473e5fcde6ec656958b14e6d0a9d37266bd6098ab",
+    "assertion": "$HOME/.papercusp/perf/p007-native-current/r167-run-assertion.sh",
+    "assertionSha256": "94f18cab134b8473733223c42b9522cf317d2b94d5a108055d21f5c837d33e0d",
+    "spaIndexSha256": "073d94f1b008670550f54fb236a6f489002f257048670b1704f0de8dfd9042ff",
+    "earlyPayloadSha256": "f8ac89ac15a7f2829e4f5c36468f8dfc81e9c8079bd49d2f8ecff74d0c834a1a",
+    "webVitalsPayloadSha256": "58b2528bc893a3529c64cbc49be4c70b4fce9cb3a4d5d63a7c76f940a8bb6a7a",
+    "verification": "Exact Fire131 FINAL current source/test/log hashes matched without a redundant test replay. Fresh buildStartupStorageProbeScript/buildWebVitalsBundle and writeStartupStorageDiagnosticIndex produced a singleton early script in an independent index; bash syntax and source/shell/preflight/manifest containment guards passed.",
+    "recovery": "Post-carry partial r167 assertion existed without manifest/payload/SPA/runtime. Corrected stale operatorShell containment needle to the actual compiled milestoneMatchesAtFirstObservation field before launching.",
+    "predictions": "True first-host containment plus actual LCP candidate identity can distinguish before-host observation from delay within Accounts branch. False/null joins forbid attribution; callback time is not insertion/import completion/paint, and unobserved fallback is not proof of no suspension.",
+    "limits": "Saved baseline complete original source/build graph remains unknown. Empty discovery is a diagnostic media restriction; native observer work, current prepared API and separate clocks remain confounds. P006/P008 acceptance is separate."
+  },
+  "r166DiagnosticRecoveredFire129": {
+    "scope": "Recovered terminal r166 two-candidate native diagnostic; fail and identity-checked cleanup, no new runtime launched on fire129",
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r166-native-summary.json",
+    "summarySha256": "1cd462b10142071b99f2f4e47553c1e4e6af8a033a5855fd1edcec3cf27f76cf",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r166-cleanup-receipt.json",
+    "cleanupSha256": "c7e255d218d66a6cd4702d1311c4ec13ac599b4b536805688c4d9dfbd2b89b38",
+    "verifierRun": "20261002T013407Z-1614351",
+    "receipt": "perfrun-1790905138611-miy4il",
+    "verdict": "FAIL; popup4036ms exceeded1500ms, FCP2226ms passed3000ms, LCP7642ms exceeded4000ms",
+    "actualLcp": "P.pclsb-acct__foot; footer identity true and Plans subtitle identity false",
+    "footerObservation": "First DOM6892ms, first frame/eligible7556ms, actual LCP7642ms; geometry/ancestor styles are not paint, clipping or occlusion",
+    "subtitleObservation": "First DOM4393ms, first frame5502ms/eligible5503ms; false actual-node join prevents subtitle attribution",
+    "fontObservation": "Initially loaded; ready418ms, no observed events; scoped FontFaceSet lifecycle only",
+    "nativeObservation": "Renderer1911244 actual env captured; fd38 captured tmpfs path/inode6773772. Root device29/inode6773648 and preserved log hashes verified before removal; no separate file-inode stat was retained. GST init_pre574 to successful811 span1.188364ms; initiating caller/core maps unmeasured.",
+    "limits": "Sampler266samples/2393.539651ms work and render3+2ms are unpaired. Different API bundle dbc30505e557 vs r165 eb21c5707e; no cross-run speedup attribution. FontFaceSet ready418/no events is scoped, not no font-delay proof; Long Tasks unsupported and resources[] empty are not absence-of-work evidence. GST relative/page performance.now/native Date.now remain separate clocks. Empty discovery disables media capability, diagnostic only; no initiating native caller, product/R7 or5cold5warm claim.",
+    "interpretation": "True footer identity joins first DOM observation6892ms, first frame/geometry eligibility7556ms to actual LCP7642ms. Subtitle observation4393ms/eligibility5503ms has false actual-node join. Most elapsed document time precedes footer observation; callback and frame delay do not prove insertion/paint or a lazy/server/native root cause. Static footer is outside loading conditional in current AccountsTab source; original frozen source/build graph unknown.",
+    "cleanupResult": "Recorded7PIDs absent, port33700 refused, source removed by verifier. Exact tmpfs root inode/device and copied log hashes verified before removal. Own socket/private home/three profiles removed; unrelated default advert and work logs preserved. Both deliberate input holds released.",
+    "sourceProof": "Current six source hashes/two bundled payloads match manifest. Saved61PASS0skip+tsc logs hashes match; no unnecessary test replay.",
+    "next": "Cheaply trace footer mount/visibility and account-tab host in current source and exact frozen compiled output; any next native run must change a justified diagnostic and have explicit same-node attribution. Do not replay unchanged r166/r165/r164/r163; retain product/R7 acceptance limits."
+  },
+  "actualLcpSensorPreparationFire126": {
+    "scope": "Dated dual-candidate maintained source/payload guards at Fire126; host milestone extension now supersedes source. No product repair or R7 acceptance.",
+    "renderPath": {
+      "source": "apps/operator/app/_components/plans/PlansPane.tsx",
+      "observation": "The static Plans subtitle is in the masthead before the planList.loading conditional. OperatorChatSidebar.tsx lazy-loads PlansPane under its plansOpen Suspense branch. No measured lazy-load/mount or server-data cause is asserted.",
+      "savedCompiledPath": "r165-app sidecar/spa assets: OperatorChatSidebar-b2e0287f.js loads PlansPane-96d43bfe.js, which imports the masthead-bearing PlanPopupModal-c59aee92.js. Selected saved compiled structure agrees with the current source; original complete source/build graph remains unknown."
+    },
+    "reused": "installStartupStorageProbe, buildStartupStorageProbeScript, buildWebVitalsBundle and the canonical perf-report.node-test.ts suite",
+    "change": "One shared bounded DOM observer tracks the footer and Plans subtitle independently. Existing footer fields remain footer-only; render.candidates holds separate timings and startupCandidates holds actual LCP identity matches per selector. Missing LCP elements/unobserved/replaced candidates return null; a different observed node returns false. Font lifecycle is document-scoped and frame eligibility is not paint.",
+    "regression": "Pre-fix canonical suite:57PASS3FAIL0skip; two candidate tests expose missing per-candidate reporting and the third exposes premature observation shutdown. Final canonical suite:61PASS0FAIL0skip; exact bundled Web Vitals callback tested against subtitle, footer and absent LCP elements. Package typecheck PASS.",
+    "sourceSha256": {
+      "tools/perf-test/wdio/startup-storage-probe.ts": "57bec1bbff36659ed83c4c407e1986c56ec916841f34beaf9428cb892f373033",
+      "tools/perf-test/wdio/web-vitals-probe.ts": "a538a91400867c8f598026a75198783e1504bcc887c76ead017145e642835fc4",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "beb09a15f313d3094a7cab357caf1e3f2a613704bf10f40dad139b9797f1c1f8"
+    },
+    "commands": [
+      "npm --prefix tools/perf-test/wdio run test:unit",
+      "npm --prefix tools/perf-test/wdio run typecheck"
+    ],
+    "logs": {
+      "/tmp/p007-fire126-subtitle-red.log": "b83e9b063cb90dd949b4f8ed7ffcd187889282471a20f652bd88b4d23a6397be",
+      "/tmp/p007-fire126-subtitle-unit.log": "35114dc7db8673e9989527654202895de20f79f92fdb97b2b0f5159e43581126",
+      "/tmp/p007-fire126-subtitle-type.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "nextPredictions": {
+      "lateDom": "If actual LCP matches a candidate and its first DOM observation is near LCP, investigate before-node mount/lazy work; this does not identify the root cause.",
+      "lateEligibility": "If actual LCP matches a candidate observed earlier but eligibility is near LCP, inspect its ancestor/geometry/render path.",
+      "laterPaint": "If actual LCP matches an early eligible candidate yet LCP is later, insertion and simple geometry are insufficient; investigate paint/font/native work with observer and API limits.",
+      "unavailable": "False/null join or unavailable/capped candidate cannot explain the actual LCP. Retain honest thresholds and all failed cohorts."
+    }
+  },
+  "r165DiagnosticFire125": {
+    "scope": "ONE changed cold native footer sensor run; failed performance verdict and verified owned cleanup; no product repair or R7 acceptance",
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r165-native-summary.json",
+    "summarySha256": "cf735d1b85a22b175b634c30bae9dbb12317ad01a1d8900c67fde246d098f7ee",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r165-cleanup-receipt.json",
+    "cleanupSha256": "47dfa4eb6e46f092b1221ff6878d291fab69f68902c9f21db73152434f8a4a14",
+    "verifierRun": "20261002T005934Z-3078364",
+    "receipt": "perfrun-1790903140889-egszbx",
+    "verdict": "FAIL; popup660ms/FCP1650ms passed, LCP4587ms exceeded4000ms",
+    "actualLcp": "SPAN.plans-pane__masthead-subtitle; startupCandidateMatches:null",
+    "footerObservation": "First DOM5276ms; first frame/eligible frame6449ms; frame eligibility is geometry/ancestor-style evidence, not paint, clipping or occlusion",
+    "fontObservation": "FontFaceSet initially loaded, ready320ms, no observed events; this is not a general no-font-delay claim",
+    "nativeObservation": "Owned renderer3503808 environment and fd38 matched tmpfs log inode6750275/device29; GST init0.935ms; registry absent after run; loaded-core maps not measured",
+    "interpretation": "The actual LCP differs from the selected footer and its callback identity join is unobserved. Footer timestamps cannot explain this LCP. Current source and frozen compiled output share the static Plans masthead class/text, but original complete source/build graph and this node's insertion/eligibility timing are unknown.",
+    "limits": "Render work2ms and sampler work2294ms are unpaired. API bundle eb21c5707e differs from r164. GST/page/native clocks remain distinct. Media discovery suppression is diagnostic only; no causal speedup, initiating caller or product/R7 claim.",
+    "cleanupResult": "Parent verifier terminal exit1; owned API/bridge/driver/app/renderer processes and source absent, port33701 refused. Exact tmpfs root device/inode and saved log hashes verified before removal; private home/profiles removed, unrelated default advert preserved, work logs retained. Both frozen-input holds released.",
+    "next": "Before another changed native run, trace and instrument the actual LCP subject in the maintained early sensor; retain explicit true/false/null node joins and original provenance limits. Do not replay unchanged r165/r164/r163."
+  },
+  "r165PreparationFire125": {
+    "scope": "Pre-launch preparation evidence for r165; the completed diagnostic and limitations are stored separately above",
+    "manifest": "$HOME/.papercusp/perf/p007-native-current/r165-instrument-manifest.json",
+    "manifestSha256": "9682a939a12906f8ef46b5ea39c6f96f7aadcd4802b8e5656c5e4c69169e62b4",
+    "assertionSha256": "847d9aa120d9b108f8e868e744f7f9fb67640f5979d4603414ab95988687f44d",
+    "installedSpaIndexSha256": "291783ce57ddc1445657eba87cef0b3cd70ce9459b04540e199e4fd039b22178",
+    "startupPayloadSha256": "db31a3f73d5d8c2f5d755d7805d7ea32992af23974860909f386d0e5808e8828",
+    "webVitalsPayloadSha256": "af8af0c9f6bc427a4e66e71f00dbf3485c1b86483004fd2204f38ccef36db114",
+    "guards": "Current six source hashes, shell, actual GUI sidecar/spa index, preflight, verifier, saved unit/typecheck logs, both regenerated bundles and fresh output/root checks passed before launch; bash syntax passed",
+    "preservedLimits": "Original frozen application source/build graph remains unknown. Existing empty media discovery and tmpfs GST sink remain diagnostic only. Same-node identity is required for timing attribution; frame eligibility is not paint. Observer work and API changes remain unpaired.",
+    "preparationCorrection": "Exact base-index hash refused a leftover insertion newline before native launch; consume the one injected newline and verify original baseline hash. First shell exit0 masked the Node failure; corrected preparation used set -e and explicit receipts.",
+    "routeEvidence": "dev:pipeline_position desktop-native read timed out; recovered its maintained serving-runtimes.ts writer: native verifier with provenance, freshness and owned teardown. No serving-runtime evidence was returned by the timed-out call.",
+    "verifierLog": "$HOME/.papercusp/perf/p007-native-current/run-165-verifier-prepare-boot.log"
+  },
+  "renderProbePreparationFire122": {
+    "scope": "Maintained early diagnostic sensor and source/bundle audit; no new native run, product fix or R7 acceptance",
+    "sourceHead": "771eeb8a2fd73ae8eacf5ec320739358b026cec0",
+    "savedLcp": {
+      "receipt": "perfrun-1790899858998-30l02o",
+      "tag": "P",
+      "className": "pclsb-acct__foot",
+      "renderMs": 5417,
+      "loadMs": 0,
+      "size": 13275
+    },
+    "sourceAudit": {
+      "component": "packages/operator-ui/src/accounts/AccountsTab.tsx",
+      "componentSha256": "abf7723ee34ef0416ac58070682fe44ba8af69f5b54ac8ab36399884a024d61d",
+      "adapterSha256": "a6e8dbff573a1e702ddbd3469ebdb67d011d96fcc88d309531d11d49d7412ecc",
+      "railSourceSha256": "b69b98c0d1102c29d222b9c06d032a2d844a4b74f9ce6a434dfcfbb3595738c5",
+      "observations": [
+        "The source and compiled Accounts component render the footer outside the accounts loading/list conditional.",
+        "The compiled rail uses Accounts as its default, an open-rail conditional and a lazy panel under Suspense.",
+        "Correction: hydration controls rail width, not the Accounts mount conditional. No measured after-hydration mount ordering is asserted.",
+        "The saved trace has no first DOM/frame candidate timestamps, no font lifecycle evidence and an empty resource timing list. Request/LCP proximity is not a render cause."
+      ],
+      "frozenAssetSha256": {
+        "src-a219fb19.js": "4b360754c896aa1d5541381829d122c5c56be34c8e9472af7ff6f7be7d94c63a",
+        "AccountsTab-d66f6c68.js": "a3e0354e847799258531be205e240db1b7f5afdfa356803a66e94c761f8d86c2",
+        "left-sidebar.styles-5de3ec84.js": "0707514eeed26ba991deee6be119d2a7ca0709d2be990f52ccf26f67bed72a8b",
+        "LeftSidebar-2bf966fe.js": "37d6750312b30713813c7d56afad753f727752d1bf5ce96081a4554f32dabc2f"
+      },
+      "provenance": "First three exact asset hashes match r132-spa-manifest.json. This rail filename is absent from r132/r144 manifests. These reads establish saved compiled structure and selected asset continuity, not whole-module current-source or build-graph provenance."
+    },
+    "sensor": {
+      "reused": "installStartupStorageProbe and its existing diagnostic index/bundle; readPageStartupTrace already snapshots its report before IPC",
+      "fields": "firstObservedAtMs, firstFrameAtMs, firstEligibleFrameAtMs, frameReads, mutationCallbacks, totalObserverWorkMs, stopReason, unavailable, fonts",
+      "lcpJoin": "startupCandidateMatches compares the actual LCP DOM node with the observed candidate; null is unobserved and false cannot inherit its timing",
+      "limits": "1000 mutation callbacks, 32 frame reads, 8 font events, 60-second deadline; cancellation and explicit unavailable/candidate-replaced states",
+      "interpretation": "Frame geometry/ancestor styles are eligibility evidence, not actual paint, clipping or occlusion. Observer work is unpaired; native behavior and latency remain unmeasured."
+    },
+    "verification": {
+      "unitCommand": "npm --prefix tools/perf-test/wdio run test:unit",
+      "typecheckCommand": "npm --prefix tools/perf-test/wdio run typecheck",
+      "red": "Two added guards failed before implementation: missing render report. Existing 55 tests passed.",
+      "final": "58 passed, 0 failed, 0 skipped; typecheck exit 0. Both injected bundles compile.",
+      "sourceSha256": "e2dd1dfaff95210a5bb52d6d20b7b718fb10e4d0b9e90e90af76139d1e12cd5b",
+      "vitalsSha256": "626487a11a0e1409109809e0aeb36dc73391de08931059c70bab9a7fc1f32452",
+      "testSha256": "6ac0182b00890412e45d72cc6f98a8173104cd24651fb4f4e4b7de6ab091231b",
+      "unitLog": "/tmp/p007-render-unit-fire122-final.log",
+      "unitLogSha256": "5f61a982fdec22a3d4d763d95cb44562d4d1d7f39567b09afd5f3d98b3950ea7",
+      "typecheckLog": "/tmp/p007-render-typecheck-fire122-final.log",
+      "typecheckLogSha256": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d"
+    },
+    "next": "Prepare a new owned frozen diagnostic SPA containing both updated probes and verify source/shell/SPA identities before one changed cold native run. Never reinterpret r164 as this sensor's runtime proof. Preserve empty browser profiles, API identity/observer limits, cleanup and diagnostic-only media suppression."
+  },
+  "r164Diagnostic": {
+    "scope": "One changed cold native tmpfs GST-output diagnostic; product repair and R7 acceptance remain open",
+    "verifierRun": "20261002T000746Z-3608343",
+    "verifierExit": 1,
+    "phases": {
+      "prepare": "pass",
+      "boot": "pass",
+      "assert": "fail"
+    },
+    "receipt": "perfrun-1790899858998-30l02o",
+    "popupMs": 835,
+    "fcpMs": 1162,
+    "lcpMs": 5417,
+    "verdict": "fail",
+    "intervention": "Retained r163 cold profiles, empty plugin discovery and INFO categories; moved GST_DEBUG_FILE to owned per-PID tmpfs files. The v4 descriptor probe adds unpaired observer work.",
+    "ownedRenderer": {
+      "pid": 3783338,
+      "environment": "Captured GST_DEBUG_FILE and all four empty plugin paths",
+      "descriptor": 38,
+      "path": "/dev/shm/p007-r164-d1608f11-20261001T234500Z/gst.3783338.log",
+      "inode": "6708905",
+      "device": 29,
+      "mountId": "35",
+      "mountEvidence": "Current audit mountinfo resolves sampled mnt_id 35 to tmpfs at /dev/shm; the sampled descriptor matches the live file inode/device. Renderer mount-namespace identity was not saved.",
+      "descriptorSamples": {
+        "captured": 170,
+        "notOpen": 18,
+        "unavailable": 1
+      },
+      "mappedCore": "Unavailable: extra live audit failed at ESM/CJS import before its body; no maps artifact was created"
+    },
+    "gstreamer": {
+      "firstTwoInfoGapMs": 0.026812,
+      "initSpanMs": 0.662399,
+      "registryValidationToUnchangedMs": 0.004399,
+      "registryCacheAbsentAfterRun": true,
+      "journalWaitSamples": 0,
+      "population": "189 retained samples of the owned renderer main task; other threads and unsampled intervals are outside this observation"
+    },
+    "interpretation": "Supports selected GST log-sink contribution to r163 delay; this single unpaired run does not establish a causal effect size or initiating caller. Empty discovery still disables media diagnostically.",
+    "remainingLcp": {
+      "element": "P.pclsb-acct__foot",
+      "source": "packages/operator-ui/src/accounts/AccountsTab.tsx:494",
+      "adapter": "apps/operator-vite/src/components/left-sidebar/AccountsTab.tsx re-exports the maintained component",
+      "frozenModule": "$HOME/.papercusp/perf/p007-native-current/r160-spa/assets/src-a219fb19.js",
+      "scope": "Exact class/footer text match current source and frozen module, not whole-module provenance or delay cause. The footer is outside the current source's account-loading conditional; do not assume accounts.pool gates it."
+    },
+    "api": {
+      "sha": "aecf5f4f70",
+      "bundleSha256": "588c451d0109017010877a7ebf26a4e8e764a05c8743f97a3a7ebec6bdcc20fb",
+      "baselineSha": "d1a2e44b61",
+      "baselineBundleSha256": "c05486235c14ef338eac3886228f0362f3972ebddb687fca3ed0dfff403c2268",
+      "comparison": "Different bundles; no causal popup/page comparison"
+    },
+    "observer": {
+      "samples": 229,
+      "sampleWorkMs": 1729.112352,
+      "storageCap": 200,
+      "storageDropped": 217,
+      "scope": "Work duration is not paired latency overhead; GST/native/page clocks remain distinct"
+    },
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r164-native-summary.json",
+    "summarySha256": "1624e677a4189c8d3692df62137429ea57c9efe66df3d54a6d599e3014da2ff9",
+    "cleanup": "$HOME/.papercusp/perf/p007-native-current/r164-cleanup-receipt.json",
+    "cleanupSha256": "487dd48ddf95ba3b3650cdc0ec8616768a307958660d1376fc3d06c2c44253aa",
+    "cleanupResult": "Owned API/bridge/native processes and source absent, port closed. Exact stale socket, inode/device-checked tmpfs root and preserved logs, private home and three profiles removed; unrelated advert and harness logs preserved. Frozen input lock released, no pending exec.",
+    "next": "Trace the footer's actual render trigger and frozen-module provenance before a changed diagnostic/product fix; keep R7 five-cold/five-warm acceptance open"
+  },
+  "baseline": {
+    "summary": "$HOME/.papercusp/perf/p007-native-current/r163-native-summary.json",
+    "sha256": "66d699b86e39599ad20a3b40832d31283ceb76aae70e2302ae430f26f4c02138",
+    "rendererPid": 858394,
+    "firstTwoInitLogGapMs": 9057.767828,
+    "initSpanMs": 9059.146176,
+    "initialGST_DEBUG_FILE": "measured absent",
+    "savedActualDescriptorEvidence": "unavailable; v3 trace has no descriptor fields and owned runtime has already ended"
+  },
+  "vendorSource": {
+    "archiveUrl": "https://archive.ubuntu.com/ubuntu/pool/main/g/gstreamer1.0/gstreamer1.0_1.24.2.orig.tar.xz",
+    "archiveSha256": "9cafdd23bd180f1681c56cd3a6879a8497ccf24da6f422a6b6f356fa074a8481",
+    "debianArchiveUrl": "https://archive.ubuntu.com/ubuntu/pool/main/g/gstreamer1.0/gstreamer1.0_1.24.2-1ubuntu0.1.debian.tar.xz",
+    "debianArchiveSha256": "a2e8ac4ff91003ca640e62c2d29afa1cee706ecc0988a28aa3c3e23e12e1591b",
+    "gst.cSha256": "84e1780ada601f3b6f883113fd85c605428260ec5c1657b214d8bc10a8f172a0",
+    "gstinfo.cSha256": "df96d44a840f0612ecbd8a57fe53ce457d5408283b66638f5224278c22c2a64b",
+    "patchSeries": [
+      "CVE-2024-47606.patch"
+    ],
+    "patchesTouchGstOrGstinfo": false,
+    "observations": [
+      "gst.c:574 and :575 are adjacent GST_INFO calls with no registry operation between them.",
+      "gstinfo.c:397-415 selects GST_DEBUG_FILE, stdout for '-', or stderr by default and registers the default handler.",
+      "gstinfo.c:620-625 invokes registered handlers synchronously; additional runtime handlers cannot be excluded from source alone.",
+      "gstinfo.c:1431-1443 formats the message then records elapsed time before the output call.",
+      "Linux no-color path gstinfo.c:1660-1666 calls fprintf and fflush. No fsync is asserted.",
+      "The interval between log timestamps includes the first handler's work and the second preamble; it is not an isolated write duration."
+    ]
+  },
+  "runnerTopology": {
+    "assertion": "$HOME/.papercusp/perf/p007-native-current/r163-run-assertion.sh:78",
+    "assertionOutput": "WDIO stdout and stderr redirected to run-163-popup-native-timing.log",
+    "driverSource": "tools/perf-test/wdio/wdio.conf.ts:668-671 uses inherited stdout/stderr",
+    "tauriDriverInstallRecord": "tauri-driver 2.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
+    "tauriDriverBinarySha256": "5830f9af7b64b79aac0cf2ad4e64f07c7a3cf59a24a11a1878a9643978ffe5e7",
+    "tauriDriverArchiveUrl": "https://static.crates.io/crates/tauri-driver/tauri-driver-2.0.6.crate",
+    "tauriDriverArchiveSha256": "24dc39bd26a65361c1c8e067636bbff1d9dd7e2fc58ff874edfba33acab0e6d0",
+    "tauriDriverWebdriverRsSha256": "806d234eaf505e8027f7fba86489449dcdb39576ed53b43d0edd440813ba9527",
+    "tauriDriverSourceObservation": "webdriver.rs:49-60 sends native WebDriver stdout to null and leaves stderr inherited; main.rs:42-44 spawns the command. Source version agrees with installation record, not a reproducible-build attestation.",
+    "webKitWebDriverBinarySha256": "488118541ba1dbeaca658073af84322900485b9435bc4fbb43eb1faf21db8b70",
+    "missingSeam": "Actual WebKit app/renderer stderr forwarding or reopening was not measured in r163. Source routing is an inference, not historical descriptor proof."
+  },
+  "currentStorageSnapshot": {
+    "measuredBy": "code:run task 0muq6b97z4djm6f13v3 exit0",
+    "wdioLogAndBufferedNativeTrace": {
+      "mount": "/",
+      "source": "/dev/nvme1n1p2",
+      "fsType": "ext4",
+      "device": "259:3"
+    },
+    "verifierTauriLog": {
+      "path": "/tmp/pcv/verify-tauri-headless.6qFGsJ/tauri.log",
+      "mount": "/tmp",
+      "source": "/dev/nvme0n1[/tmp]",
+      "fsType": "xfs"
+    },
+    "alternativeLogDestination": {
+      "mount": "/dev/shm",
+      "fsType": "tmpfs"
+    },
+    "limitation": "Current mount lookup does not prove the historical renderer descriptor or a shared-storage causal mechanism."
+  },
+  "discrimination": {
+    "hypothesis": "Synchronous GST debug output to the inherited ext4-backed stderr materially contributes to the startup gap.",
+    "alternativeHypothesis": "Other native work, another handler or scheduling sustains the gap independently of the selected GST log output.",
+    "nextPreparation": "The prior v4 preparation was exercised in r164: selected renderer GST environment/file descriptor was measured; loaded-core mapping remains unavailable. New footer render preparation is recorded separately in renderProbePreparationFire122.",
+    "changedDiagnostic": "One new cold diagnostic may retain r163 inputs and category thresholds but set GST_DEBUG_FILE to an owned tmpfs path. Measure actual renderer environment and descriptor/mount, preserve all logs after sampling, then remove only owned files. No unchanged r163 rerun.",
+    "predictedObservations": {
+      "hypothesis": "Verified GST output descriptor moves to tmpfs; adjacent-message gap and journal-wait samples fall materially. A result is support only, because one unpaired run and API differences remain confounded.",
+      "alternativeHypothesis": "Verified tmpfs GST output still exhibits the adjacent-message/startup gap or native blocking elsewhere. This refutes sufficiency of moving this output but does not assign a new cause."
+    },
+    "stopConditions": [
+      "Descriptor/environment intervention unavailable or mismatched",
+      "No changed diagnostic input",
+      "Source/shell/SPA/identity guard failure"
+    ],
+    "acceptanceLimits": [
+      "Empty plugin paths disable media and remain diagnostic only",
+      "Clocks remain separate",
+      "Observer work is not measured paired overhead",
+      "API bundle differences prevent causal popup comparison",
+      "P007 root repair and R7 five-cold/five-warm acceptance remain open"
+    ]
+  },
+  "verification": {
+    "command": "npm --prefix tools/perf-test/wdio run test:unit; npm --prefix tools/perf-test/wdio run typecheck",
+    "tests": {
+      "pass": 55,
+      "fail": 0,
+      "skip": 0
+    },
+    "typecheck": "PASS",
+    "sourceSha256": "38d063260c2ca2bff26957f0bb80631fa9b875b431c731db5d2849f87a098426",
+    "testSha256": "6790e3e326d77cf6528063681dfd0ca1ca86cf27012e70695535930cef135de0",
+    "unitLog": "/tmp/p007-descriptor-unit-20261001-r3.log",
+    "unitLogSha256": "697802553b1303339930baccd65b661701b08ee033e7c25f927d1d5d7de2e40e",
+    "typecheckLog": "/tmp/p007-descriptor-typecheck-20261001-r3.log",
+    "typecheckLogSha256": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+    "coverage": "Canonical Node fixtures guard owned lifetime and descriptor replacement, unreadable/oversized/partial discovery, exact large counters and exclusion of unrelated descriptors. Maintained real-fork integration observes actual fd2 capture and buffered persistence. These tests do not measure a Tauri log-sink intervention.",
+    "preparedManifest": "$HOME/.papercusp/perf/p007-native-current/r164-instrument-manifest.json",
+    "preparedAssertion": "$HOME/.papercusp/perf/p007-native-current/r164-run-assertion.sh",
+    "preparation": "Source/shell/SPA/preflight/fresh-output and tmpfs-root absence checks plus bash syntax passed. No native diagnostic launched."
+  },
+  "toolFriction": "First read-only code:run inventory wrapper returned HTTP502/outcome_unknown. No identical job was retried. Later ledger lookup did not show that inventory task in the returned window; its launch outcome remains unknown. Two later reduced audits completed exit0. No DRAIN incidental issue was filed.",
+  "artifactReferenceConvention": {
+    "home": "Resolve literal $HOME prefixes using the actual home directory. Repository-relative source paths resolve from the canonical staging root. These references preserve original artifact identities and SHA256 checks; they are not new runtime proof."
+  },
+  "actualHostMilestonePreparationFire131": {
+    "scope": "Maintained early DOM sensor preparation and selected frozen compiled topology; no new native run, import completion timing, cause, product repair or R7 acceptance",
+    "reused": "installStartupStorageProbe shared MutationObserver, buildStartupStorageProbeScript and canonical perf-report.node-test.ts suite; no new service or probe lifecycle",
+    "sourceObservation": "LeftSidebar defaults to accounts with lsb=true, renders the active tab only under presentedOpen, and wraps its lazy AccountsTab in Suspense. The footer is static outside AccountsTab loading/list conditional. Suite collects startup Web Vitals before the popup interaction.",
+    "frozenObservation": "Exact r166 LeftSidebar-2bf966fe.js retains accounts default, expanded accounts host attributes and Suspense fallback. Its lazy AccountsTab-d66f6c68.js shim imports src-a219fb19.js, which contains accounts.pool and the static footer. This checks selected compiled edges, not original complete source/build provenance or duration.",
+    "change": "Track first DOM observations of operator shell, expanded accounts sidebar, Suspense fallback and Accounts container. Retain each first node and join its containment at candidate discovery as true/false/null. No layout or text reads in mutation callbacks; four selectors,1000 reads each,60s deadline, cleanup and work accounting reuse existing lifecycle. Shared attribute filter includes data-tab/data-collapsed so host activation without child insertion is observed.",
+    "regression": "Initial red61PASS2FAIL0skip (missing milestone fields), then63PASS. Final attribute-only host activation guard63PASS1FAIL0skip exposed omitted data-collapsed/data-tab observation. Final canonical64PASS0FAIL0skip and package tscPASS. Bundled chronological host tests separate early sidebar/late Accounts/footer, first-node replacement and unavailable containment; existing caps/deadline/unavailable/cleanup guards also cover milestones.",
+    "sourceSha256": {
+      "tools/perf-test/wdio/startup-storage-probe.ts": "b6c5c845582f95d1bc9f1e5fc49a4da5cae840efec5b5b6a8be545c5fc1aaf8b",
+      "tools/perf-test/wdio/perf-report.node-test.ts": "5e73d9800597ab350de6c873b632911272d9ef58a1df53708ef94d6060bb8466",
+      "apps/operator-vite/src/components/left-sidebar/LeftSidebar.tsx": "b69b98c0d1102c29d222b9c06d032a2d844a4b74f9ce6a434dfcfbb3595738c5",
+      "apps/operator-vite/src/components/left-sidebar/AccountsTab.tsx": "a6e8dbff573a1e702ddbd3469ebdb67d011d96fcc88d309531d11d49d7412ecc",
+      "packages/operator-ui/src/accounts/AccountsTab.tsx": "abf7723ee34ef0416ac58070682fe44ba8af69f5b54ac8ab36399884a024d61d",
+      "packages/operator-ui/src/accounts/accounts-tab.styles.ts": "f8c4bb0926794b067c4d3d04b56ba5a47f60b09f957fe12cccb781a6573f5aee"
+    },
+    "selectedCompiledSha256": {
+      "LeftSidebar-2bf966fe.js": "37d6750312b30713813c7d56afad753f727752d1bf5ce96081a4554f32dabc2f",
+      "AccountsTab-d66f6c68.js": "a3e0354e847799258531be205e240db1b7f5afdfa356803a66e94c761f8d86c2",
+      "src-a219fb19.js": "4b360754c896aa1d5541381829d122c5c56be34c8e9472af7ff6f7be7d94c63a"
+    },
+    "logs": {
+      "/tmp/p007-fire131-milestones-red.log": "c4ee92dedd24674682ad4e698435ae41c44207b0d22af54b64a6e0892cd6b368",
+      "/tmp/p007-fire131-milestones-unit.log": "44ac4718c1c1e0d21a75f0ea5902c519549bc348170667c2c6ced7a5819c8edd",
+      "/tmp/p007-fire131-milestones-type.log": "9ac6de55d160f6d9ab7546cc350839287f90ff20ea6c95c292fb05fa93171a0d",
+      "/tmp/p007-fire131-milestones-attribute-red.log": "b95e89b77a68915ebc02c7151847704c0846e9ff930ce60d348b87b66cd425fd"
+    },
+    "predictions": {
+      "beforeHost": "Matched shell/sidebar first observed near the actual candidate => investigate before-host work; callback time does not establish insertion.",
+      "insideHost": "Matched expanded accounts sidebar observed early, fallback observed, matched Accounts container late => delay inside the Accounts mount branch; does not prove lazy import caused it.",
+      "afterContainer": "Matched Accounts container and candidate early, eligible frame/LCP late => host/module mount timing is insufficient.",
+      "unavailable": "False/null host containment or actual LCP join forbids host timing attribution. Unobserved fallback is not proof there was no suspension."
+    },
+    "identityLeakRemediation": "Current evidence document was quarantined for machine-specific home path literals. Replace them with resolvable $HOME references while preserving underlying artifact hashes; use registered identity-leak content lint to guard the document.",
+    "next": "Compile fresh early/WV payloads into a new private diagnostic SPA, bind exact changed source/artifact hashes with existing maintained preparation, then one justified changed native diagnostic. Never replay unchanged r166/r165/r164/r163. Native caller/product/R7/five-cold-five-warm remain open."
+  }
+}

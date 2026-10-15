@@ -1,0 +1,702 @@
+{
+  "schemaVersion": "p011-request-heap-independent-v1",
+  "proof": {
+    "path": "docs/evidence/papercusp-oct5-p011-request-retainers-r3-2026-10-05.json",
+    "sha256": "0b67e72bf878b0c6174192692c8cfbc036aeca76ff0a902342d0a243d1baeff7",
+    "bytes": 1012267,
+    "result": {
+      "requests": {
+        "processIdentity": "1748660:275082:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "warm": [
+          {
+            "requestId": "fddf4d51-f93c-4e6f-867f-3a0438050612",
+            "queries": [
+              "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",37,3]",
+              "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",41,3]"
+            ]
+          }
+        ],
+        "windows": [
+          {
+            "window": 0,
+            "requests": [
+              {
+                "requestId": "0bc4cd65-85aa-4b95-9754-4d75d46fe620",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",18,3]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",21,3]"
+                ]
+              },
+              {
+                "requestId": "0f25a7ed-deba-4e16-911e-1ff24a10f625",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",13,3]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",27,3]"
+                ]
+              },
+              {
+                "requestId": "1afbe062-54e0-4371-bc55-cc6519c28b79",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",43,3]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",7,3]"
+                ]
+              },
+              {
+                "requestId": "64279734-1efb-4fac-962d-924a5f99e48c",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",17,3]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",5,3]"
+                ]
+              },
+              {
+                "requestId": "7d170542-cc8d-4dd1-b9a7-271f0cb9ee98",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",4,3]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",40,3]"
+                ]
+              },
+              {
+                "requestId": "870a5840-a2b4-4531-82d7-5c9cf855cbc7",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",14,3]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",26,3]"
+                ]
+              },
+              {
+                "requestId": "cdf31045-be36-4532-9633-d7416929bd29",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",10,3]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",16,3]"
+                ]
+              },
+              {
+                "requestId": "dec2c6e4-b843-44f3-9517-cefa75998a21",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",20,3]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",24,3]"
+                ]
+              }
+            ],
+            "idlePssDeltaBytes": 57344,
+            "ordinaryPssDeltaBytes": 1276928,
+            "ordinaryAllocatedBytes": 24058448
+          },
+          {
+            "window": 1,
+            "requests": [
+              {
+                "requestId": "008ff5f9-7d59-4810-9e35-97472f31e7f9",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",2,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",53,3]"
+                ]
+              },
+              {
+                "requestId": "163c218d-5a15-4c17-ae4b-36912d7bc435",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",15,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",22,4]"
+                ]
+              },
+              {
+                "requestId": "4058372c-24a7-4d3f-ab50-2129481cab35",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",39,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",44,4]"
+                ]
+              },
+              {
+                "requestId": "5d333173-7061-442a-8aeb-a1d51dbd543b",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",11,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",19,4]"
+                ]
+              },
+              {
+                "requestId": "82a53555-ac08-442e-92e4-58ff73c44e94",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",35,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",52,3]"
+                ]
+              },
+              {
+                "requestId": "88b800ac-84da-4dd5-b1df-4f10796229f7",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",3,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",36,3]"
+                ]
+              },
+              {
+                "requestId": "8e60dd43-a518-4b66-aece-ebe26a0ddb9d",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",49,3]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",8,4]"
+                ]
+              },
+              {
+                "requestId": "e738ec18-0b57-4413-8029-5105c75283ad",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",12,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",9,4]"
+                ]
+              }
+            ],
+            "idlePssDeltaBytes": 753664,
+            "ordinaryPssDeltaBytes": 4774912,
+            "ordinaryAllocatedBytes": 9904392
+          },
+          {
+            "window": 2,
+            "requests": [
+              {
+                "requestId": "614623fd-11c1-49a7-9ae6-2ecc9fd3c471",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",17,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",43,4]"
+                ]
+              },
+              {
+                "requestId": "66013456-41e2-41c8-8b4d-fd51c498cf82",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",14,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",24,4]"
+                ]
+              },
+              {
+                "requestId": "9b538411-c912-4645-b902-a96a23b2f0f6",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",10,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",18,4]"
+                ]
+              },
+              {
+                "requestId": "c3622443-6f6e-4ba7-a451-b9e55c4eb015",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",45,7]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",5,4]"
+                ]
+              },
+              {
+                "requestId": "d118ae01-5177-48fd-b71b-49e198aefcc2",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",13,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",37,4]"
+                ]
+              },
+              {
+                "requestId": "d40ad1bb-e221-4afc-b51c-b036cd349365",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",41,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",7,4]"
+                ]
+              },
+              {
+                "requestId": "ee4ea190-1f1f-46e4-9d3f-bdff83d7ec36",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",21,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",40,4]"
+                ]
+              },
+              {
+                "requestId": "f53de453-b140-4d1a-8b38-75c88841dee2",
+                "queries": [
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",20,4]",
+                  "[\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",26,4]"
+                ]
+              }
+            ],
+            "idlePssDeltaBytes": 26624,
+            "ordinaryPssDeltaBytes": 15360,
+            "ordinaryAllocatedBytes": 8888432
+          }
+        ],
+        "requestCount": 24,
+        "queryCount": 48,
+        "retainedOwner": "unobserved",
+        "workerCloneIdentity": "unobserved",
+        "nativePhysicalOwnership": "unknown",
+        "fullExecutedSourceGraph": "unknown",
+        "physicalSavings": "unmeasured"
+      },
+      "owners": {
+        "processIdentity": "1748660:275082:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "recordedBuildSha": "ad82b273dc9c29151e363b11d8b524d993d1b72c",
+        "snapshotSha256": "b1c11e1d023c16fc5febecfe95782b00d7fbdcacf5e66aa5ce68da3fde6d1870",
+        "owners": [
+          {
+            "owner": "@papercusp/memory:host",
+            "id": 2651245,
+            "index": 1325622,
+            "selfSizeBytes": 32,
+            "dominatorRetainedV8Bytes": 1480,
+            "observedDirectParentIndexes": [
+              378160,
+              3176110
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/memory.local-embedder-worker",
+            "id": 2651437,
+            "index": 1325718,
+            "selfSizeBytes": 136,
+            "dominatorRetainedV8Bytes": 1848,
+            "observedDirectParentIndexes": [
+              378160,
+              3176119
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.harnessCoreCaches",
+            "id": 1965365,
+            "index": 982682,
+            "selfSizeBytes": 56,
+            "dominatorRetainedV8Bytes": 312,
+            "observedDirectParentIndexes": [
+              378160,
+              3227783
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "id": 1964699,
+            "index": 982349,
+            "selfSizeBytes": 48,
+            "dominatorRetainedV8Bytes": 1328,
+            "observedDirectParentIndexes": [
+              378160,
+              3227784
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.snapshot-fold-slots",
+            "id": 2194673,
+            "index": 1097336,
+            "selfSizeBytes": 40,
+            "dominatorRetainedV8Bytes": 144,
+            "observedDirectParentIndexes": [
+              378160,
+              1857373
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/lexicon:host",
+            "id": 2200007,
+            "index": 1100003,
+            "selfSizeBytes": 32,
+            "dominatorRetainedV8Bytes": 320,
+            "observedDirectParentIndexes": [
+              378160,
+              1857395
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.repoCitationTrackingCache",
+            "id": 2398743,
+            "index": 1199371,
+            "selfSizeBytes": 64,
+            "dominatorRetainedV8Bytes": 1192,
+            "observedDirectParentIndexes": [
+              378160,
+              1199370
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.agentsAcrossWorkspaceCache",
+            "id": 3272291,
+            "index": 1636145,
+            "selfSizeBytes": 48,
+            "dominatorRetainedV8Bytes": 48,
+            "observedDirectParentIndexes": [
+              378160,
+              2485497
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "owner": "@papercusp/operator-core.midTurnMemoryAdmission",
+            "id": 9017315,
+            "index": 4508657,
+            "selfSizeBytes": 64,
+            "dominatorRetainedV8Bytes": 576,
+            "observedDirectParentIndexes": [
+              378160,
+              4574055
+            ],
+            "directParentsNotChecked": 0
+          }
+        ],
+        "verifiedNodes": [
+          {
+            "id": 1964699,
+            "index": 982349,
+            "selfSizeBytes": 48,
+            "dominatorRetainedV8Bytes": 1328,
+            "observedDirectParentIndexes": [
+              378160,
+              3227784
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 1965365,
+            "index": 982682,
+            "selfSizeBytes": 56,
+            "dominatorRetainedV8Bytes": 312,
+            "observedDirectParentIndexes": [
+              378160,
+              3227783
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 2194673,
+            "index": 1097336,
+            "selfSizeBytes": 40,
+            "dominatorRetainedV8Bytes": 144,
+            "observedDirectParentIndexes": [
+              378160,
+              1857373
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 2200007,
+            "index": 1100003,
+            "selfSizeBytes": 32,
+            "dominatorRetainedV8Bytes": 320,
+            "observedDirectParentIndexes": [
+              378160,
+              1857395
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 2398743,
+            "index": 1199371,
+            "selfSizeBytes": 64,
+            "dominatorRetainedV8Bytes": 1192,
+            "observedDirectParentIndexes": [
+              378160,
+              1199370
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 2651245,
+            "index": 1325622,
+            "selfSizeBytes": 32,
+            "dominatorRetainedV8Bytes": 1480,
+            "observedDirectParentIndexes": [
+              378160,
+              3176110
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 2651437,
+            "index": 1325718,
+            "selfSizeBytes": 136,
+            "dominatorRetainedV8Bytes": 1848,
+            "observedDirectParentIndexes": [
+              378160,
+              3176119
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 3272291,
+            "index": 1636145,
+            "selfSizeBytes": 48,
+            "dominatorRetainedV8Bytes": 48,
+            "observedDirectParentIndexes": [
+              378160,
+              2485497
+            ],
+            "directParentsNotChecked": 0
+          },
+          {
+            "id": 9017315,
+            "index": 4508657,
+            "selfSizeBytes": 64,
+            "dominatorRetainedV8Bytes": 576,
+            "observedDirectParentIndexes": [
+              378160,
+              4574055
+            ],
+            "directParentsNotChecked": 0
+          }
+        ],
+        "scope": "Historical private snapshot; no new runtime measurement.",
+        "definition": "Per-node dominator-owned V8 self_size; incoming parents are not dominators. Never sum overlapping retained sizes.",
+        "nativePhysicalOwnership": "unknown",
+        "productionSavings": "unmeasured",
+        "loadedBuildIdentity": "unknown"
+      },
+      "weakPhaseRegistration": "observed-complete",
+      "foundQueryObjectIds": [],
+      "weakObjectGaps": [
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",10,4,\"9b538411-c912-4645-b902-a96a23b2f0f6\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",10,4,\"9b538411-c912-4645-b902-a96a23b2f0f6\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",10,4,\"9b538411-c912-4645-b902-a96a23b2f0f6\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",13,4,\"d118ae01-5177-48fd-b71b-49e198aefcc2\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",13,4,\"d118ae01-5177-48fd-b71b-49e198aefcc2\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",13,4,\"d118ae01-5177-48fd-b71b-49e198aefcc2\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",14,4,\"66013456-41e2-41c8-8b4d-fd51c498cf82\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",14,4,\"66013456-41e2-41c8-8b4d-fd51c498cf82\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",14,4,\"66013456-41e2-41c8-8b4d-fd51c498cf82\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",17,4,\"614623fd-11c1-49a7-9ae6-2ecc9fd3c471\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",17,4,\"614623fd-11c1-49a7-9ae6-2ecc9fd3c471\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",17,4,\"614623fd-11c1-49a7-9ae6-2ecc9fd3c471\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",18,4,\"9b538411-c912-4645-b902-a96a23b2f0f6\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",18,4,\"9b538411-c912-4645-b902-a96a23b2f0f6\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",18,4,\"9b538411-c912-4645-b902-a96a23b2f0f6\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",20,4,\"f53de453-b140-4d1a-8b38-75c88841dee2\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",20,4,\"f53de453-b140-4d1a-8b38-75c88841dee2\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",20,4,\"f53de453-b140-4d1a-8b38-75c88841dee2\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",21,4,\"ee4ea190-1f1f-46e4-9d3f-bdff83d7ec36\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",21,4,\"ee4ea190-1f1f-46e4-9d3f-bdff83d7ec36\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",21,4,\"ee4ea190-1f1f-46e4-9d3f-bdff83d7ec36\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",24,4,\"66013456-41e2-41c8-8b4d-fd51c498cf82\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",24,4,\"66013456-41e2-41c8-8b4d-fd51c498cf82\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",24,4,\"66013456-41e2-41c8-8b4d-fd51c498cf82\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",26,4,\"f53de453-b140-4d1a-8b38-75c88841dee2\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",26,4,\"f53de453-b140-4d1a-8b38-75c88841dee2\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",26,4,\"f53de453-b140-4d1a-8b38-75c88841dee2\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",37,4,\"d118ae01-5177-48fd-b71b-49e198aefcc2\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",37,4,\"d118ae01-5177-48fd-b71b-49e198aefcc2\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",37,4,\"d118ae01-5177-48fd-b71b-49e198aefcc2\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",40,4,\"ee4ea190-1f1f-46e4-9d3f-bdff83d7ec36\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",40,4,\"ee4ea190-1f1f-46e4-9d3f-bdff83d7ec36\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",40,4,\"ee4ea190-1f1f-46e4-9d3f-bdff83d7ec36\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",41,4,\"d40ad1bb-e221-4afc-b51c-b036cd349365\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",41,4,\"d40ad1bb-e221-4afc-b51c-b036cd349365\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",41,4,\"d40ad1bb-e221-4afc-b51c-b036cd349365\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",43,4,\"614623fd-11c1-49a7-9ae6-2ecc9fd3c471\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",43,4,\"614623fd-11c1-49a7-9ae6-2ecc9fd3c471\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",43,4,\"614623fd-11c1-49a7-9ae6-2ecc9fd3c471\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",45,7,\"c3622443-6f6e-4ba7-a451-b9e55c4eb015\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",45,7,\"c3622443-6f6e-4ba7-a451-b9e55c4eb015\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",45,7,\"c3622443-6f6e-4ba7-a451-b9e55c4eb015\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",5,4,\"c3622443-6f6e-4ba7-a451-b9e55c4eb015\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",5,4,\"c3622443-6f6e-4ba7-a451-b9e55c4eb015\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",5,4,\"c3622443-6f6e-4ba7-a451-b9e55c4eb015\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",7,4,\"d40ad1bb-e221-4afc-b51c-b036cd349365\"]",
+          "phase": "decodedResult",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",7,4,\"d40ad1bb-e221-4afc-b51c-b036cd349365\"]",
+          "phase": "resolvedRows",
+          "status": "collected"
+        },
+        {
+          "tuple": "[\"org-admin\",\"fbc788bf-582a-4959-aa5e-86faf790302b\",null,\"ce95c4a4-b889-4a16-b01d-8b8893d139c6\",7,4,\"d40ad1bb-e221-4afc-b51c-b036cd349365\"]",
+          "phase": "responseValue",
+          "status": "collected"
+        }
+      ],
+      "missingLiveRegistryTuples": [],
+      "timing": {
+        "writeMs": 13118,
+        "summaryMs": 96381
+      },
+      "workerCloneIdentity": "unobserved",
+      "nativePhysicalOwnership": "unknown",
+      "physicalSavings": "unmeasured"
+    }
+  },
+  "independentOf": "No producer/inspector import; exact raw HTTP/query/weak metadata/graph conservation.",
+  "limitations": [
+    "Saved private snapshot with forced GC and synchronous write; no new runtime measurement.",
+    "Registered WeakRefs do not prove target liveness; collected targets remain explicit gaps.",
+    "Worker-clone/native physical ownership, full executed graph, full P011 acceptance and shipment remain open."
+  ]
+}

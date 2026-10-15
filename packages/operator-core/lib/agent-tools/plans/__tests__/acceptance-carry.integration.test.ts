@@ -73,6 +73,8 @@ describe('P-025 transactional acceptance carry', () => {
       accountableOwnerId: 'su-carry-driver',
     });
 
+    // A refused move names its door in `skipped`/`blindReview`; surface it on failure.
+    expect(result.skipped, JSON.stringify(result)).toBeUndefined();
     expect(result).toMatchObject({
       applied: true,
       from: 'ready',
@@ -105,6 +107,27 @@ describe('P-025 transactional acceptance carry', () => {
       taken_by: 'su-carry-driver',
       payload: { gateObservation: 'pending', blockerCode: null },
     });
+  }, 60_000);
+
+  it('gates the plan under its registered workspace when the ambient workspace differs — WI-6554700010010577', async () => {
+    // The plan lives in the fixture workspace. Point the process-level workspace
+    // (activeWorkspaceId()'s env pin) elsewhere: the blind review gate must read the
+    // plan under the scope the plan lock resolved, or it finds no plan and refuses
+    // the move as blind_review_unavailable.
+    const slug = PLAN('ambient');
+    await registerHarnessProject(admin, workspaceId, HARNESS);
+    await seedPlan(admin, workspaceId, HARNESS, slug, body(slug));
+    const prev = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = 'zzz-ambient-not-the-plan-workspace';
+    let result: Awaited<ReturnType<typeof applyPlanDrainTransition>>;
+    try {
+      result = await applyPlanDrainTransition(slug, HARNESS, { accountableOwnerId: 'su-carry-driver' });
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = prev;
+    }
+    expect(result.skipped, JSON.stringify(result)).toBeUndefined();
+    expect(result).toMatchObject({ applied: true, to: 'awaiting-acceptance', acceptanceCarry: { outcome: 'created' } });
   }, 60_000);
 
   it('rolls back both records when the coupled handoff is interrupted', async () => {
@@ -175,6 +198,43 @@ describe('P-025 transactional acceptance carry', () => {
          AND payload->>'acceptanceDrainPlan' = ${`${workspaceId}/${HARNESS}/${slug}`}
     `;
     expect(rows).toEqual([{ taken_by: 'driver-a' }]);
+  }, 60_000);
+
+  it('mints no carry for a template instance (a scheduled run plan) — WI-6554700010010577', async () => {
+    const slug = PLAN('instance');
+    await registerHarnessProject(admin, workspaceId, HARNESS);
+    await seedPlan(admin, workspaceId, HARNESS, slug, body(slug));
+    // A run instance is a plan cloned from a template: the gate skips it
+    // ('template-instance') and retireRunInstancePlan supersedes it when the run settles.
+    await admin`
+      UPDATE harness_shared.harness_plans SET template_slug = 'zzz-carry-template'
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+    `;
+
+    const result = await applyPlanDrainTransition(slug, HARNESS, { accountableOwnerId: 'su-carry-driver' });
+    expect(result).toMatchObject({
+      applied: true,
+      to: 'awaiting-acceptance',
+      acceptanceCarry: { outcome: 'exempt-template-instance', id: null },
+    });
+    // The direct handoff (the plans:set-status caller's path) reports the same exemption.
+    const direct = await admin.begin(async (tx) =>
+      ensureAcceptanceDrainCarryInTransaction(tx, {
+        workspaceId,
+        harnessSlug: HARNESS,
+        planSlug: slug,
+        accountableOwnerId: 'su-carry-driver',
+      }),
+    );
+    expect(direct).toMatchObject({ outcome: 'exempt-template-instance', id: null });
+
+    const items = await admin`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${HARNESS}
+         AND payload->>'acceptanceDrainPlan' = ${`${workspaceId}/${HARNESS}/${slug}`}
+    `;
+    expect(items).toEqual([]);
   }, 60_000);
 
   it('refreshes one keyed filing across blocker changes and readiness while preserving age evidence', async () => {

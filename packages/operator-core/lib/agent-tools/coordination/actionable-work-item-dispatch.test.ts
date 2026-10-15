@@ -71,7 +71,7 @@ function deps(patch: Partial<ActionableWorkItemDispatchDeps> = {}): ActionableWo
       keys: owners.map((owner) => `coord:inbox-wake:${owner}`),
       queued: 1,
       woken: 1,
-      pickupConfirmed: false as const,
+      pickupConfirmed: false as const, pickup: [],
       staged: 0,
       stagedTargets: [],
       fanoutCapped: [],
@@ -82,6 +82,57 @@ function deps(patch: Partial<ActionableWorkItemDispatchDeps> = {}): ActionableWo
 }
 
 describe('assignActionableWorkItems', () => {
+  it('does not wake an accepted bug whose reproduction became stale after assignment', async () => {
+    const held = { ...issueWorkItem('WI-STALE-BUG', 'open', 'su-fixer'), kind: 'bug' as const };
+    const d = deps({ observe: vi.fn(async () => ({
+      item: held, available: false, claimedBy: 'su-fixer', gated: true,
+      reproductionRefused: { status: 'refuted', detail: 'reproduce again before fixing', checkedAt: '2026-10-09T00:00:00Z' },
+    })) });
+    const result = await assignAndWakeActionableWorkItems({ workItemIds: [held.id], targetAgent: 'su-fixer' }, d);
+    expect(result.assignment.retained).toEqual([]);
+    expect(result.assignment.skipped[0]).toMatchObject({ code: 'admission_gated', reason: 'reproduce again before fixing' });
+    expect(d.claim).not.toHaveBeenCalled();
+    expect(d.wake).not.toHaveBeenCalled();
+  });
+
+  it('carries the authenticated dispatch actor into the atomic claim (EI-25163151398656476)', async () => {
+    const d = deps({ observe: vi.fn(async (id) => ({ item: issueWorkItem(id), available: true, claimedBy: null })) });
+    const result = await assignActionableWorkItems(
+      { workItemIds: ['EI-dispatched'], targetAgent: 'su-member', actor: 'su-leader', harness: 'email' },
+      d,
+    );
+    expect(result.assigned).toEqual(['EI-dispatched']);
+    expect(d.claim).toHaveBeenCalledWith('EI-dispatched', 'su-member', {
+      harness: 'email', assignedBy: 'su-leader',
+    });
+  });
+
+  it('atomically transfers a caller-held item to the dispatched target', async () => {
+    const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'wip', assignee));
+    const d = deps({
+      observe: vi.fn(async (id) => ({
+        item: issueWorkItem(id, 'wip', 'su-holder'),
+        available: false,
+        claimedBy: 'su-holder',
+      })),
+      claim,
+    });
+
+    const result = await assignActionableWorkItems(
+      { workItemIds: ['EI-TRANSFER'], targetAgent: 'su-target', actor: 'su-holder', harness: 'email' },
+      d,
+    );
+
+    expect(result.assigned).toEqual(['EI-TRANSFER']);
+    expect(result.skipped).toEqual([]);
+    expect(result.executionWorkItemIds).toEqual(['EI-TRANSFER']);
+    expect(claim).toHaveBeenCalledWith('EI-TRANSFER', 'su-target', {
+      harness: 'email',
+      assignedBy: 'su-holder',
+      fromHolder: 'su-holder',
+    });
+  });
+
   it('claims only the current dependency frontier and preserves blocked descendants', async () => {
     const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
     const d = deps({
@@ -122,7 +173,11 @@ describe('assignActionableWorkItems', () => {
       })),
     });
 
-    const result = await assignActionableWorkItems({ workItemIds: ['WI-HELD'], targetAgent: 'agent-email-stable' }, d);
+    const result = await assignActionableWorkItems({
+      workItemIds: ['WI-HELD'],
+      targetAgent: 'agent-email-stable',
+      actor: 'agent-sender',
+    }, d);
 
     expect(claim).not.toHaveBeenCalled();
     expect(result.executionWorkItemIds).toEqual([]);
@@ -519,7 +574,7 @@ describe('assignAndWakeActionableWorkItems', () => {
       keys: owners.map((owner) => `coord:inbox-wake:${owner}`),
       queued: 1,
       woken: 1,
-      pickupConfirmed: false as const,
+      pickupConfirmed: false as const, pickup: [],
       staged: 0,
       stagedTargets: [],
       fanoutCapped: [],
@@ -581,7 +636,7 @@ describe('assignAndWakeActionableWorkItems', () => {
       keys: owners.map((owner) => `coord:inbox-wake:${owner}`),
       queued: 1,
       woken: 1,
-      pickupConfirmed: false as const,
+      pickupConfirmed: false as const, pickup: [],
       staged: 0,
       stagedTargets: [],
       fanoutCapped: [],
@@ -641,7 +696,7 @@ describe('assignAndWakeActionableWorkItems', () => {
         keys: owners.map((owner) => `coord:inbox-wake:${owner}`),
         queued: 0,
         woken: 0,
-        pickupConfirmed: false as const,
+        pickupConfirmed: false as const, pickup: [],
         staged: 0,
         stagedTargets: [],
         fanoutCapped: [],
@@ -681,6 +736,68 @@ describe('assignAndWakeActionableWorkItems', () => {
     expect(result.wake?.queued).toBe(1);
     expect(result.ok).toBe(true);
     expect(result.failure).toBeUndefined();
+  });
+
+  // WI-6554700010010397: a stable name whose every adopter ended used to fail as a
+  // generic target_absent naming one dead session id, which hid the repair.
+  describe('when the wake reaches nobody', () => {
+    const unreached = () =>
+      vi.fn(async (owners: readonly string[]) => ({
+        targets: [...owners],
+        keys: owners.map((owner) => `coord:inbox-wake:${owner}`),
+        queued: 0,
+        woken: 0,
+        pickupConfirmed: false as const,
+        pickup: [],
+        staged: 0,
+        stagedTargets: [],
+        fanoutCapped: [],
+        timedOutTargets: [],
+      }));
+
+    it('names the stable agent name and its ended adopters as target_adopter_gone', async () => {
+      const d = deps({
+        resolveTarget: vi.fn(async () => ({
+          requested: 'bug-triage',
+          ownerId: 'su-newest-dead',
+          present: false,
+          sessionState: null,
+          wakeable: false,
+          adoptedBy: ['su-newest-dead', 'su-a', 'su-b', 'su-c', 'su-d'],
+        })),
+        wake: unreached(),
+      });
+
+      const result = await assignAndWakeActionableWorkItems(
+        { workItemIds: ['WI-READY'], targetAgent: 'bug-triage' },
+        d,
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.assignment.assigned).toEqual(['WI-READY']);
+      expect(result.failure).toMatchObject({
+        code: 'target_adopter_gone',
+        target: 'bug-triage',
+        recoverable: true,
+        queuePreserved: true,
+      });
+      expect(result.failure?.message).toContain('agent name "bug-triage"');
+      expect(result.failure?.message).toContain('su-newest-dead, su-a, su-b, +2 more');
+      expect(result.failure?.message).toContain('plan_items:adopt_name { name: "bug-triage" }');
+    });
+
+    it('keeps target_absent for a raw owner id that was never adopted as a name', async () => {
+      const d = deps({
+        resolveTarget: vi.fn(async ({ targetAgent }) =>
+          target(targetAgent, { present: false, sessionState: null, wakeable: false }),
+        ),
+        wake: unreached(),
+      });
+
+      const result = await assignAndWakeActionableWorkItems({ workItemIds: ['WI-READY'], targetAgent: 'su-raw' }, d);
+
+      expect(result.failure).toMatchObject({ code: 'target_absent', target: 'su-raw' });
+    });
   });
 });
 
@@ -751,6 +868,7 @@ describe('resolveStableAgentTarget', () => {
       ownerId: 'su-newest-dead',
       present: false,
       wakeable: false,
+      adoptedBy: ['su-newest-dead', 'su-live'],
     });
   });
 
@@ -814,5 +932,86 @@ describe('EI-226378 legacy fleet-scope recovery propagation', () => {
       harness: 'email',
       legacyFleetScopeDowngradeAdmission,
     });
+  });
+});
+
+// WI-10005197: the fail-closed dispatch skips that no caller can lift by retrying carry a
+// RefusalContract, so the recipient learns what was observed, what lifts the refusal and who
+// can lift it. The additive `refusal` field must never replace the existing code/reason.
+describe('dispatch skip refusal contracts (WI-10005197)', () => {
+  it('dependency_blocked names the unresolved blockers and when the refusal lifts', async () => {
+    const d = deps({ blockers: vi.fn(async () => [{ ref: 'WI-ROOT-A', kind: 'feature' }, { ref: 'WI-ROOT-B', kind: 'feature' }]) });
+
+    const result = await assignActionableWorkItems(
+      { workItemIds: ['WI-BLOCKED'], targetAgent: 'agent-email-stable', harness: 'email' },
+      d,
+    );
+
+    expect(d.claim).not.toHaveBeenCalled();
+    const skipped = result.skipped[0];
+    expect(skipped).toMatchObject({ workItemId: 'WI-BLOCKED', code: 'dependency_blocked', blockers: ['WI-ROOT-A', 'WI-ROOT-B'] });
+    expect(skipped?.refusal?.observed).toEqual({ workItemId: 'WI-BLOCKED', unresolvedBlockers: 'WI-ROOT-A,WI-ROOT-B' });
+    expect(skipped?.refusal?.liftsWhen).toMatch(/terminal state|blocked-by link is removed/);
+    expect(skipped?.refusal?.whoCanMakeItTrue).toEqual(['another-agent', 'owner']);
+  });
+
+  it('plan_lane_blocked names the plan item and its effective status', async () => {
+    const d = deps({
+      observe: vi.fn(async (id) => ({
+        item: workItem(id),
+        available: false,
+        claimedBy: null,
+        planItemBlocked: {
+          reason: 'plan-item run#P-002 is effectively blocked (blocked-by: P-001)',
+          planSlug: 'run',
+          itemId: 'P-002',
+          effectiveStatus: 'blocked',
+        },
+      })),
+    });
+
+    const result = await assignActionableWorkItems({ workItemIds: ['WI-PLAN'], targetAgent: 'agent-email-stable' }, d);
+
+    expect(d.claim).not.toHaveBeenCalled();
+    const skipped = result.skipped[0];
+    expect(skipped).toMatchObject({
+      workItemId: 'WI-PLAN',
+      code: 'plan_lane_blocked',
+      reason: 'plan-item run#P-002 is effectively blocked (blocked-by: P-001)',
+    });
+    expect(skipped?.refusal?.observed).toEqual({
+      workItemId: 'WI-PLAN',
+      planSlug: 'run',
+      planItemId: 'P-002',
+      effectiveStatus: 'blocked',
+    });
+    expect(skipped?.refusal?.liftsWhen).toMatch(/no longer blocked/);
+    expect(skipped?.refusal?.whoCanMakeItTrue).toEqual(['another-agent', 'owner']);
+  });
+
+  it('authority_denied names the target and actor, and the claim spec that would admit the item', async () => {
+    const d = deps({
+      authorize: vi.fn(async () => ({ allowed: false as const, reason: 'effective member override denies this exact id' })),
+    });
+
+    const result = await assignActionableWorkItems(
+      { workItemIds: ['WI-DENIED'], targetAgent: 'agent-email-stable', actor: 'su-leader', harness: 'email' },
+      d,
+    );
+
+    expect(d.claim).not.toHaveBeenCalled();
+    const skipped = result.skipped[0];
+    expect(skipped).toMatchObject({
+      workItemId: 'WI-DENIED',
+      code: 'authority_denied',
+      reason: 'effective member override denies this exact id',
+    });
+    expect(skipped?.refusal?.observed).toEqual({
+      workItemId: 'WI-DENIED',
+      targetAgent: 'agent-email-stable',
+      actor: 'su-leader',
+    });
+    expect(skipped?.refusal?.liftsWhen).toMatch(/scheduler:set_claim_spec/);
+    expect(skipped?.refusal?.whoCanMakeItTrue).toEqual(['another-agent', 'owner']);
   });
 });

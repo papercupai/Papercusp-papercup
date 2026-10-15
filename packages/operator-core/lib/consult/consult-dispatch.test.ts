@@ -21,7 +21,9 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
+import type { NativeConsultBoundary } from './native-consult';
 import {
   analyzeClaudeResumeTranscriptFile,
   __resetClaudeResumeTranscriptCacheForTests,
@@ -37,6 +39,10 @@ import {
   launchLogFailureReason,
   makeConsultReachDispatcher,
   planDispatchOperation,
+  renderCitedTurnsBlock,
+  BRIEF_FALLBACK_REASONS,
+  BRIEF_TURN_TEXT_MAX,
+  BRIEF_TOTAL_TEXT_MAX,
   SOURCE_COOLDOWN_MS,
   SOURCE_FAILURE_LOOKBACK_MS,
   SOURCE_LAUNCH_FAILURE_THRESHOLD,
@@ -51,12 +57,14 @@ import {
 /** The cool-down clock every fake dispatch runs at. */
 const NOW_MS = Date.parse('2026-09-26T12:00:00.000Z');
 import { buildAgentLaunchCommand, injectLaunchedByArg } from '../agent-launch-core';
+import { checkConsultSessionPortTranscript } from './resume-transcript-preflight';
 import {
   DEFAULT_EXPERT_MODEL_ALLOWLIST,
   normalizeExpertModelAllowlist,
   resolveExpertModelAllowlist,
   type AllowedExpertModel,
 } from './expert-model-allowlist';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 
 const CTX: ConsultDispatchContext = {
   workspaceId: 'ws-dispatch',
@@ -82,6 +90,7 @@ interface Fakes {
   calls: {
     spawn: Array<{
       envelope: { env: Record<string, string>; greetingCmd: string; cwd: string };
+      writeMcpJson?: boolean;
       coordOwnerId?: string | null;
       label?: string | null;
     }>;
@@ -89,6 +98,8 @@ interface Fakes {
     capacity: Array<{ agent: string; workspaceId: string }>;
     /** Task ids the dispatcher asked to stop after a failed rank. */
     stopped: Array<string | null | undefined>;
+    /** The never-ran marker passed with each stop, index-aligned to `stopped` (WI-10006690). */
+    stoppedNeverRan: Array<{ answeringOwnerId: string } | null>;
     /** Launch logs the dispatcher read a failure reason from. */
     logReads: Array<string | null | undefined>;
     /** Every walk the dispatcher asked to persist (WI-10003197). */
@@ -104,11 +115,15 @@ function makeFakes(
     spawnStatuses?: Array<'ok' | 'error' | 'no-proof' | 'exit-2'>;
     /** What the launch-log reader reports for a failed rank. */
     logReason?: string | null;
+    /** Durable log path returned for a failed spawn. */
+    errorLogPath?: string;
     /** The source's persisted dispatch walks the cool-down reads (WI-10003198). */
     sourceRecords?: PersistedDispatchRecord[];
   } = {},
 ): Fakes {
-  const calls: Fakes['calls'] = { spawn: [], verify: [], capacity: [], stopped: [], logReads: [], recorded: [] };
+  const calls: Fakes['calls'] = {
+    spawn: [], verify: [], capacity: [], stopped: [], stoppedNeverRan: [], logReads: [], recorded: [],
+  };
   let mintSeq = 0;
   let spawnSeq = 0;
   const statuses = opts.spawnStatuses ?? [];
@@ -127,10 +142,16 @@ function makeFakes(
       endedBy: 'self',
       live: false,
       advSessionId: 7,
-      binding: null,
+      binding: {
+        coordOwnerId: 'su-expert',
+        sessionId: (opts.source?.sessionId as string | null | undefined) ?? 'sess-1',
+        startedAt: '2026-09-22T00:00:00Z',
+      },
       ...(opts.source ?? {}),
     }),
     checkResumeTranscript: async () => ({ available: true, detail: 'fixture transcript' }),
+    checkPortTranscript: async () => ({ available: true, detail: 'fixture port source' }),
+    checkEvidenceIncarnationOwnedBy: async () => false,
     // REAL composer + REAL injector: see the file header.
     buildAgentLaunchCommand,
     injectLaunchedByArg,
@@ -138,7 +159,14 @@ function makeFakes(
     spawnHeadless: async (o: Fakes['calls']['spawn'][number]) => {
       calls.spawn.push(o);
       const status = statuses[spawnSeq++] ?? 'ok';
-      if (status === 'error') return { status: 'error', code: 500, error: 'fixture spawn failure' };
+      if (status === 'error') {
+        return {
+          status: 'error',
+          code: 500,
+          error: 'fixture spawn failure',
+          ...(opts.errorLogPath ? { logPath: opts.errorLogPath } : {}),
+        };
+      }
       return {
         status: 'ok',
         pid: 42,
@@ -155,6 +183,8 @@ function makeFakes(
       };
     },
     fetchContextPressure: async () => new Map(),
+    estimateTranscriptTokens: async () => null,
+    bucketTranscriptPressure: async () => null,
     verifyResumeStarted: async (ownerId: string, o: { timeoutMs?: number } = {}) => {
       calls.verify.push({ ownerId, ...o });
       return { started: true, waitedMs: 900 };
@@ -164,8 +194,9 @@ function makeFakes(
       return { available: true, detail: `${agent} fixture headroom` };
     },
     mintOwnerId: () => `su-answer-${++mintSeq}`,
-    stopFailedLaunch: async (taskId: string | null | undefined) => {
+    stopFailedLaunch: async (taskId: string | null | undefined, neverRan?: { answeringOwnerId: string }) => {
       calls.stopped.push(taskId);
+      calls.stoppedNeverRan.push(neverRan ?? null);
       return `stopped task ${taskId}`;
     },
     readLaunchLogReason: async (logPath: string | null | undefined) => {
@@ -179,16 +210,64 @@ function makeFakes(
     // Same for the cool-down reader (WI-10003198): no history ⇒ no cool-down.
     readSourceDispatchRecords: async () => opts.sourceRecords ?? [],
     readReviewerModel: async () => null,
+    isConsultOpen: async () => true,
     // No transcript is poisoned unless a test says so; never read the real fs here.
     analyzeClaudeTranscript: () => null,
     nowMs: () => NOW_MS,
     // The first-turn wait (WI-10004645) never sleeps for real in unit tests.
     sleepMs: async () => {},
     loadRanks: async () => RANKS,
+    // P-002: a brief launch quotes the cited turns; never read real transcripts here.
+    readCitedTurns: async (_ws: string, _sessionId: string, turnIndices: readonly number[]) =>
+      turnIndices.map((turn_idx) => ({ turn_idx, speaker: 'assistant', ts: null, text: `fixture cited turn ${turn_idx}` })),
     ...over,
   } as unknown as Partial<ConsultDispatchDeps>;
   return { deps, calls };
 }
+
+describe('consult child runtime routing (EI-25158565040432475)', () => {
+  it.each([
+    { port: '3170', target: 'claude', operation: 'fork' },
+    { port: '3170', target: 'codex', operation: 'convert' },
+    { port: '3271', target: 'claude', operation: 'fork' },
+    { port: '3271', target: 'codex', operation: 'convert' },
+  ] as const)('keeps $operation preparation on its spawning :$port runtime', async ({ port, target, operation }) => {
+    const originalHono = process.env.PAPERCUSP_HONO_PORT;
+    const originalDesktop = process.env.OPERATOR_DEV_PORT;
+    const originalOperator = process.env.PAPERCUSP_OPERATOR_URL;
+    try {
+      process.env.PAPERCUSP_HONO_PORT = port;
+      delete process.env.OPERATOR_DEV_PORT;
+      process.env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:9071';
+      const inputs: Array<Parameters<ConsultDispatchDeps['buildConsoleEnvelope']>[0]> = [];
+      const { deps } = makeFakes({
+        loadRanks: async () => [{ rank: 1, agent: target, model: target === 'codex' ? 'sol' : 'opus' }],
+      });
+      const buildEnvelope = deps.buildConsoleEnvelope;
+      if (!buildEnvelope) throw new Error('makeFakes must provide buildConsoleEnvelope');
+      deps.buildConsoleEnvelope = async (input) => {
+        inputs.push(input);
+        return buildEnvelope(input);
+      };
+      const result = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(result).toMatchObject({ dispatched: true, operation });
+      expect(inputs).toHaveLength(1);
+      expect(inputs[0]).toMatchObject({
+        operatorBaseUrl: `http://localhost:${port}`,
+        agentMcpBaseUrl: `http://localhost:${port}`,
+      });
+    } finally {
+      for (const [key, value] of Object.entries({
+        PAPERCUSP_HONO_PORT: originalHono,
+        OPERATOR_DEV_PORT: originalDesktop,
+        PAPERCUSP_OPERATOR_URL: originalOperator,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});
 
 describe('planDispatchOperation (D-009 walk shape)', () => {
   it('a claude source forks; claude → other backend converts', () => {
@@ -197,26 +276,24 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
     expect(planDispatchOperation({ agent: 'claude', live: false }, { agent: 'omp' })).toEqual({ operation: 'convert' });
   });
 
-  it('an OMP source cannot fork at all — OMP has no native branch command', () => {
+  it('an OMP source uses the maintained isolated port on its own backend', () => {
     expect(planDispatchOperation({ agent: 'omp', live: false }, { agent: 'omp' })).toMatchObject({
-      operation: null,
-      reason: 'fork-unsupported',
+      operation: 'convert',
     });
   });
 
-  it('a codex source cannot fork: the pre-pinned consult identity needs a tracked fork, which is claude-only', () => {
+  it('a live or ended Codex source uses the maintained isolated port on its own backend', () => {
     // The launcher refuses an untracked fork for a pinned id, so planning this as
     // a fork launched a session that died at boot (conv-muhi8wkf, 2026-09-25).
     for (const live of [false, true]) {
       expect(planDispatchOperation({ agent: 'codex', live }, { agent: 'codex' })).toMatchObject({
-        operation: null,
-        reason: 'fork-unsupported',
+        operation: 'convert',
       });
     }
   });
 
-  it('a non-Claude source cannot convert: the transform is claude-source-only, so the rank is SKIPPED', () => {
-    for (const source of ['codex', 'omp', '', null] as Array<string | null>) {
+  it('an unsupported source backend remains skipped before launch', () => {
+    for (const source of ['', null] as Array<string | null>) {
       const verdict = planDispatchOperation({ agent: source, live: false }, { agent: 'claude' });
       // A skip, never an error: D-009 §3 is explicit that this must not end the
       // consult, because the next rank may still be reachable.
@@ -225,10 +302,14 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
     }
   });
 
-  it('a LIVE claude source defers conversion (the port continues the source identity) but still forks', () => {
+  it.each(['claude', 'codex', 'omp'])('refuses named %s personas on conversion ranks', (agent) => {
+    expect(planDispatchOperation({ agent, live: false, role: 'reviewer' }, { agent: 'codex' }))
+      .toMatchObject({ operation: null, reason: 'conversion-unavailable' });
+  });
+
+  it('a LIVE claude source can use an isolated conversion and still supports native forks', () => {
     expect(planDispatchOperation({ agent: 'claude', live: true }, { agent: 'codex' })).toMatchObject({
-      operation: null,
-      reason: 'convert-needs-live-source-identity',
+      operation: 'convert',
     });
     // The whole point of D-002: a live expert is reachable by FORK, so liveness
     // never costs the consult its rank-1 pick.
@@ -237,6 +318,98 @@ describe('planDispatchOperation (D-009 walk shape)', () => {
 });
 
 describe('dispatchConsultResponder — the fork leg', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('ports authenticated earlier %s evidence through the tracked row without substituting its current transcript', async (sourceAgent) => {
+    const historicalId = 'd4bbbcd2-b811-4c0e-ae78-8755f763186d';
+    for (const targetAgent of ['claude', 'codex', 'omp'] as const) {
+      const source = {
+        agent: sourceAgent, sessionId: historicalId, live: true,
+        binding: { coordOwnerId: 'su-expert', sessionId: 'current-native', startedAt: '2026-09-22T00:00:00Z' },
+      };
+      const before = structuredClone(source);
+      const { deps, calls } = makeFakes({
+        loadRanks: async () => [{ rank: 1, agent: targetAgent, model: targetAgent === 'codex' ? 'sol' : 'opus' }],
+        checkEvidenceIncarnationOwnedBy: async (target: { ownerId: string }, id: string) =>
+          target.ownerId === 'su-expert' && id === historicalId,
+      }, { source });
+      const result = await dispatchConsultResponder({ ...OPTS,
+        evidence: [{ session_id: historicalId, turn_idx: 1, sim: 0.8 }],
+      }, CTX, deps);
+      expect(result).toMatchObject({ dispatched: true, operation: 'convert', answeringOwnerId: 'su-answer-1' });
+      expect(calls.spawn).toHaveLength(1);
+      expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--resume=7');
+      expect(calls.spawn[0]!.envelope.greetingCmd).not.toContain('--fork');
+      expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--owner-id=su-answer-1');
+      expect(calls.spawn[0]!.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN).toBe(JSON.stringify({
+        sessionId: historicalId, turnIndices: [1], contextTurns: 2,
+      }));
+      expect(source).toEqual(before);
+    }
+  });
+
+  it.each(['foreign-owner', 'unavailable-proof', 'proof-error', 'untracked-row'] as const)('refuses historical evidence with %s before launch', async (control) => {
+    const historicalId = 'd4bbbcd2-b811-4c0e-ae78-8755f763186d';
+    const { deps, calls } = makeFakes({
+      checkEvidenceIncarnationOwnedBy: async () => {
+        if (control === 'proof-error') throw new Error('ownership read failed');
+        return control !== 'unavailable-proof';
+      },
+    }, { source: { sessionId: historicalId,
+      advSessionId: control === 'untracked-row' ? 0 : 7,
+      binding: { coordOwnerId: control === 'foreign-owner' ? 'su-foreign' : 'su-expert',
+        sessionId: 'current-native', startedAt: '2026-09-22T00:00:00Z' },
+    } });
+    const result = await dispatchConsultResponder({ ...OPTS,
+      evidence: [{ session_id: historicalId, turn_idx: 1, sim: 0.8 }],
+    }, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it.each(['sess-1', 'different-thread'])('requires the exact tracked OMP thread-only binding (%s)', async (threadId) => {
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'omp', model: 'opus' }],
+    }, { source: { agent: 'omp', sessionId: 'sess-1', ompThreadId: 'sess-1',
+      binding: { coordOwnerId: 'su-expert', sessionId: null, ompThreadId: threadId, startedAt: '2026-09-22T00:00:00Z' } } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.dispatched).toBe(threadId === 'sess-1');
+    expect(calls.spawn).toHaveLength(threadId === 'sess-1' ? 1 : 0);
+    if (threadId !== 'sess-1') expect(result.attempts[0]).toMatchObject({ reason: 'source-session-untracked' });
+  });
+
+  it.each(['claude', 'codex', 'omp'] as const)('reaches all three targets from fresh and ended %s sources under separate answer identities', async (sourceAgent) => {
+    for (const live of [false, true]) {
+      for (const targetAgent of ['claude', 'codex', 'omp'] as const) {
+        const { deps, calls } = makeFakes({
+          loadRanks: async () => [{ rank: 1, agent: targetAgent, model: targetAgent === 'codex' ? 'sol' : 'opus' }],
+        }, { source: { agent: sourceAgent, live, endedAt: live ? null : '2026-09-22T00:00:00Z' } });
+        const result = await dispatchConsultResponder(OPTS, CTX, deps);
+        expect(result).toMatchObject({ dispatched: true, answeringOwnerId: 'su-answer-1', agent: targetAgent });
+        expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--owner-id=su-answer-1');
+        expect(calls.spawn[0]!.coordOwnerId).not.toBe(OPTS.sourceOwnerId);
+        expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--launched-by=su-requester');
+        if (result.operation === 'convert') {
+          expect(calls.spawn[0]!.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN).toBe(JSON.stringify({
+            sessionId: 'sess-1', turnIndices: [1], contextTurns: 2,
+          }));
+          expect(calls.spawn[0]!.envelope.greetingCmd).not.toContain('--fork');
+        }
+      }
+    }
+  });
+
+  // P-002 / D-008: an untracked binding is briefed instead (see the brief suite
+  // below); a binding naming ANOTHER owner contests the turns' attribution and
+  // still refuses before any launch.
+  it.each([{ coordOwnerId: 'su-other-owner', sessionId: 'sess-1', startedAt: '2026-09-22T00:00:00Z' },
+    { coordOwnerId: 'su-expert', sessionId: 'different-native-session', startedAt: '2026-09-22T00:00:00Z' }])
+  ('refuses a source binding that contests the evidence attribution before launch (%j)', async (binding) => {
+    const { deps, calls } = makeFakes({}, { source: { binding } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    expect(result.attempts.every((attempt) => attempt.reason === 'source-session-untracked')).toBe(true);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
   it('forks a dead claude source under a freshly PRE-PINNED identity', async () => {
     const { deps, calls } = makeFakes();
     const r = await dispatchConsultResponder(OPTS, CTX, deps);
@@ -269,10 +442,38 @@ describe('dispatchConsultResponder — the fork leg', () => {
     expect(calls.spawn[0]!.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('EXACT TRANSCRIPT EVIDENCE: sess-1#1');
     expect(calls.spawn[0]!.envelope.env.BASE).toBe('1');
     expect(calls.spawn[0]!.envelope.cwd).toBe('/recorded/cwd');
+    expect(calls.spawn[0]!.writeMcpJson).toBe(true);
     expect(calls.spawn[0]!.coordOwnerId).toBe('su-answer-1');
     // Verification polls the ANSWERING identity — the pre-pin is what makes that
     // possible for a fork at all.
     expect(calls.verify[0]).toMatchObject({ ownerId: 'su-answer-1', timeoutMs: DISPATCH_VERIFY_TIMEOUT_MS });
+  });
+
+  it('stamps the fork identity before spawnHeadless can process a first reply', async () => {
+    const { deps } = makeFakes();
+    let responderId = 'su-expert';
+    let replyDuringSpawn: 'accepted' | 'not_a_participant' = 'not_a_participant';
+    const spawn = deps.spawnHeadless!;
+    deps.spawnHeadless = async (options) => {
+      // A newly forked child can take its first turn before spawnHeadless
+      // returns its kickoff receipt. Model the consult reply gate at that point.
+      replyDuringSpawn = responderId === options.coordOwnerId ? 'accepted' : 'not_a_participant';
+      return spawn(options);
+    };
+
+    const r = await dispatchConsultResponder(
+      {
+        ...OPTS,
+        onAnsweringOwner: async (ownerId) => {
+          responderId = ownerId;
+        },
+      },
+      CTX,
+      deps,
+    );
+
+    expect(replyDuringSpawn).toBe('accepted');
+    expect(r).toMatchObject({ dispatched: true, operation: 'fork', answeringOwnerId: 'su-answer-1' });
   });
 
   it('publishes the fork responder before startup verification can admit a first reply', async () => {
@@ -312,7 +513,12 @@ describe('dispatchConsultResponder — the fork leg', () => {
     const result = await dispatchConsultResponder(OPTS, CTX, deps);
 
     expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent });
-    expect(calls.spawn[0]!.envelope.greetingCmd).toContain(`--account=${account}`);
+    const cmd = calls.spawn[0]!.envelope.greetingCmd;
+    expect(cmd).toContain(`--account=${account}`);
+    // A port keeps the source expert's coordination identity. The requester is
+    // the process launcher, not the parent of that existing identity; stamping
+    // it would make acceptance-lineage treat the expert as the requester's child.
+    expect(cmd).toContain('--launched-by=su-requester');
   });
 
   it('FORKS a LIVE source rather than refusing it — the retired reviver refused here', async () => {
@@ -383,8 +589,47 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(cmd).not.toContain('--fork');
     // A conversion continues the SOURCE identity (the port's authority
     // invariant), so there is nothing to pre-pin and nothing pinned.
-    expect(cmd).not.toContain('--owner-id');
-    expect(r.answeringOwnerId).toBe('su-expert');
+    expect(cmd).toContain('--owner-id=su-answer-1');
+    expect(r.answeringOwnerId).toBe('su-answer-1');
+  });
+
+  it('does not start a reviewer when the consult closes during async capacity preflight', async () => {
+    let consultOpen = true;
+    let answeringOwnerStamped = false;
+    const { deps, calls } = makeFakes({
+      probeBackendAvailable: async () => {
+        consultOpen = false;
+        return { available: true, detail: 'backend has headroom' };
+      },
+      isConsultOpen: async () => consultOpen,
+    });
+    const r = await dispatchConsultResponder({
+      ...OPTS,
+      onAnsweringOwner: () => { answeringOwnerStamped = true; },
+    }, CTX, deps);
+
+    expect(r).toMatchObject({ dispatched: false, answeringOwnerId: null });
+    expect(r.attempts).toMatchObject([{ outcome: 'skipped', reason: 'consult-closed' }]);
+    expect(answeringOwnerStamped).toBe(false);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('re-checks consult state after the async answering-owner stamp and before spawn', async () => {
+    let statusReads = 0;
+    let answeringOwnerStamped = false;
+    const { deps, calls } = makeFakes({
+      isConsultOpen: async () => ++statusReads === 1,
+    });
+    const r = await dispatchConsultResponder({
+      ...OPTS,
+      onAnsweringOwner: () => { answeringOwnerStamped = true; },
+    }, CTX, deps);
+
+    expect(statusReads).toBe(2);
+    expect(answeringOwnerStamped).toBe(true);
+    expect(r).toMatchObject({ dispatched: false, answeringOwnerId: null });
+    expect(r.attempts).toMatchObject([{ outcome: 'skipped', reason: 'consult-closed' }]);
+    expect(calls.spawn).toHaveLength(0);
   });
 
   it('skips a rank whose LAUNCH fails and dispatches the next', async () => {
@@ -395,6 +640,29 @@ describe('dispatchConsultResponder — the walk', () => {
       [1, 'failed', 'launch-failed'],
       [2, 'dispatched', undefined],
     ]);
+  });
+
+  it('records the failed spawn log path and launcher reason before trying the next rank', async () => {
+    const reason = 'psu: refusing unmanaged fork su-answer-1: could not recover adv row #29351';
+    const { deps, calls } = makeFakes({}, {
+      spawnStatuses: ['error', 'ok'],
+      logReason: reason,
+      errorLogPath: '/logs/x-1.log',
+    });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(calls.logReads).toEqual(['/logs/x-1.log']);
+    expect(r.attempts[0]).toMatchObject({
+      outcome: 'failed',
+      reason: 'launch-failed',
+      launchError: reason,
+      launchLogPath: '/logs/x-1.log',
+    });
+    expect(r.attempts[0]!.detail).toContain(`launcher said: ${reason}`);
+    expect(calls.recorded[0]!.result.attempts[0]).toMatchObject({
+      launchError: reason,
+      launchLogPath: '/logs/x-1.log',
+    });
+    expect(r).toMatchObject({ dispatched: true, agent: 'codex' });
   });
 
   it('treats an unpersisted kickoff as a FAILED rank — an unsubmitted brief is a phantom responder', async () => {
@@ -412,6 +680,9 @@ describe('dispatchConsultResponder — the walk', () => {
     expect(calls.stopped).toEqual(['task-1']);
     expect(r.attempts[0]!.detail).toMatch(/stopped task task-1/);
     expect(r).toMatchObject({ dispatched: true });
+    // WI-10006690: the kickoff never landed, so the rank never ran a turn and its
+    // freshly minted answering identity's row is closed with the stop.
+    expect(calls.stoppedNeverRan).toEqual([{ answeringOwnerId: 'su-answer-1' }]);
   });
 
   it('never stops the session of a DISPATCHED rank (CONTROL)', async () => {
@@ -443,6 +714,92 @@ describe('dispatchConsultResponder — the walk', () => {
     const r = await dispatchConsultResponder(OPTS, CTX, deps);
     expect(r.attempts[0]).toMatchObject({ rank: 1, operation: 'fork', reason: 'source-context-critical' });
     expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+  });
+
+  // WI-10004888: the owner-level read measures the owner's CURRENT session, but a
+  // fork replays the evidence-selected session, which was an older transcript at
+  // 90.6% of the same limit while the owner read 81% ('high'). The fork started
+  // over its limit and could only decline, burning a grading cascade slot.
+  describe('the fork SOURCE transcript is bucketed, not only the owner', () => {
+    const sourceTranscript = '/fixture/evidence-session.jsonl';
+    function transcriptFakes(bucket: 'ok' | 'high' | 'critical' | null) {
+      const seen: { estimated: string[]; bucketed: Array<[string, number]> } = { estimated: [], bucketed: [] };
+      const { deps } = makeFakes({
+        fetchContextPressure: async () => new Map([['su-expert', 'high']]),
+        checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: sourceTranscript }),
+        estimateTranscriptTokens: async (path: string) => {
+          seen.estimated.push(path);
+          return 407_627;
+        },
+        bucketTranscriptPressure: async (ownerId: string, tokens: number) => {
+          seen.bucketed.push([ownerId, tokens]);
+          return bucket;
+        },
+      });
+      return { deps, seen };
+    }
+
+    it('a CRITICAL source transcript blocks the fork ranks even when the owner reads high', async () => {
+      const { deps, seen } = transcriptFakes('critical');
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(seen.estimated).toEqual([sourceTranscript]);
+      expect(seen.bucketed).toEqual([['su-expert', 407_627]]);
+      expect(r.attempts[0]).toMatchObject({ rank: 1, operation: 'fork', reason: 'source-context-critical' });
+      expect(r.attempts[0].detail).toContain('407627 tokens');
+      expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
+    it('a non-critical source transcript leaves the fork rank eligible', async () => {
+      const { deps } = transcriptFakes('high');
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r.attempts.some((a) => a.reason === 'source-context-critical')).toBe(false);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork' });
+    });
+
+    it('an unreadable estimate fails open on this leg (the owner-level gate already fails closed)', async () => {
+      const { deps } = transcriptFakes('critical');
+      deps.estimateTranscriptTokens = async () => {
+        throw new Error('EACCES');
+      };
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r.attempts.some((a) => a.reason === 'source-context-critical')).toBe(false);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork' });
+    });
+  });
+
+  describe('a Claude source with a persisted provider context rejection', () => {
+    it.each([false, true])('checks the actual provider rejection; recovered=%s', async (recovered) => {
+      const dir = mkdtempSync(join(tmpdir(), 'consult-context-preflight-'));
+      const path = join(dir, 'source.jsonl');
+      try {
+        const error = JSON.stringify({
+          type: 'assistant', error: 'invalid_request', isApiErrorMessage: true,
+          message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'Prompt is too long' }] },
+        });
+        writeFileSync(path, [error, ...(recovered
+          ? [JSON.stringify({ type: 'system', subtype: 'compact_boundary' })]
+          : [JSON.stringify({ type: 'user', message: { role: 'user', content: 'Answer the exact consult.' } })])].join('\n'));
+        const { deps, calls } = makeFakes({
+          fetchContextPressure: async () => new Map([['su-expert', 'ok']]),
+          checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: path }),
+          estimateTranscriptTokens: async () => 100,
+          bucketTranscriptPressure: async () => 'ok',
+          analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
+        });
+        const result = await dispatchConsultResponder(OPTS, CTX, deps);
+        expect(calls.spawn).toHaveLength(1);
+        if (recovered) {
+          expect(result).toMatchObject({ dispatched: true, operation: 'fork' });
+          expect(result.attempts.some(a => a.reason === 'source-context-critical')).toBe(false);
+        } else {
+          expect(result.attempts[0]).toMatchObject({ operation: 'fork', outcome: 'skipped', reason: 'source-context-critical' });
+          expect(result.attempts[0].detail).toContain('Prompt is too long');
+          expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   // WI-10004260: two acceptance-grading forks of sources whose transcripts
@@ -537,8 +894,44 @@ describe('dispatchConsultResponder — the walk', () => {
       });
       expect(r.attempts[0]!.detail).toContain("'EndConversation'");
       expect(calls.stopped).toEqual(['task-1']);
+      // CONTROL (WI-10006690): this rank booted and replied, so its launcher reports
+      // its own end. The stop must not also mark its row never-ran.
+      expect(calls.stoppedNeverRan).toEqual([null]);
       // The conversion leg is not a Claude session, so it is not re-checked.
       expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
+    it('rejects a context wall in the answering fork and continues through conversion', async () => {
+      const { deps, calls } = makeFakes({
+        analyzeClaudeTranscript: (path: string) => path === '/native/answer.jsonl' ? {
+          trailingMissingToolReferenceTurns: 0,
+          lastMissingToolReferenceName: null,
+          assistantTurnsSinceLastPrompt: 1,
+          trailingContextLimitTurns: 1,
+          lastContextLimitEvidence: 'Prompt is too long',
+        } : null,
+      });
+      const result = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(result.attempts[0]).toMatchObject({ operation: 'fork', outcome: 'failed', reason: 'first-turn-rejected' });
+      expect(result.attempts[0].detail).toContain('provider context-limit rejection (Prompt is too long)');
+      expect(calls.stopped).toEqual(['task-1']);
+      expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
+    it('stops a first-turn account-rate rejection and reaches the next backend without poisoning the source', async () => {
+      const { deps, calls } = makeFakes({
+        analyzeClaudeTranscript: (path: string) => path === '/native/answer.jsonl' ? {
+          trailingMissingToolReferenceTurns: 0, lastMissingToolReferenceName: null,
+          assistantTurnsSinceLastPrompt: 1, trailingAccountWallTurns: 1,
+          lastAccountWallEvidence: "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.",
+        } : null,
+      });
+      const result = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(result.attempts[0]).toMatchObject({ operation: 'fork', outcome: 'failed', reason: 'account-walled' });
+      expect(result.attempts[0].detail).toContain("provider account rejection (API Error: Request rejected (429) · This request would exceed your account's rate limit.");
+      expect(calls.stopped).toEqual(['task-1']);
+      expect(result.attempts.some(attempt => attempt.reason === 'source-transcript-poisoned')).toBe(false);
+      expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
     });
 
     it('CONTROL: a fork whose first reply has not been rejected stays dispatched', async () => {
@@ -685,6 +1078,46 @@ describe('dispatchConsultResponder — the walk', () => {
       });
       const r = await dispatchConsultResponder(OPTS, CTX, deps);
       expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+      // WI-10006676: the dispatch stands, but its record must say the first reply
+      // was never judged — a silent record reads like a fork judged clean.
+      const dispatched = r.attempts.find((a) => a.outcome === 'dispatched');
+      expect(dispatched?.detail).toContain(
+        'First reply not checked for a provider rejection: its transcript /native/answer.jsonl could not be read.',
+      );
+    });
+
+    it('a Claude fork whose kickoff proof names no native transcript says its first reply was not checked', async () => {
+      const { deps } = makeFakes();
+      const realSpawn = deps.spawnHeadless!;
+      deps.spawnHeadless = (async (o: Parameters<typeof realSpawn>[0]) => {
+        const res = await realSpawn(o);
+        return res.status === 'ok'
+          ? { ...res, kickoffProof: { persisted: true, nativeRef: null, reason: null } }
+          : res;
+      }) as typeof realSpawn;
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+      const dispatched = r.attempts.find((a) => a.outcome === 'dispatched');
+      expect(dispatched?.detail).toContain(
+        'First reply not checked for a provider rejection: the kickoff proof named no native transcript.',
+      );
+    });
+
+    it('a readable, clean first reply leaves the record without an unchecked note (control)', async () => {
+      const { deps } = makeFakes({
+        analyzeClaudeTranscript: () => ({
+          trailingMissingToolReferenceTurns: 0,
+          lastMissingToolReferenceName: null,
+          assistantTurnsSinceLastPrompt: 1,
+          trailingContextLimitTurns: 0,
+          lastContextLimitEvidence: null,
+        }),
+      });
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+      const dispatched = r.attempts.find((a) => a.outcome === 'dispatched');
+      expect(dispatched?.detail).toBeDefined();
+      expect(dispatched?.detail).not.toContain('First reply not');
     });
   });
 
@@ -705,16 +1138,146 @@ describe('dispatchConsultResponder — the walk', () => {
   it('an OMP source with no OMP-reachable rank exhausts by SKIP, never by error', async () => {
     const { deps } = makeFakes(
       { loadRanks: async () => [...RANKS, { rank: 3, agent: 'omp', model: 'grok' }] as AllowedExpertModel[] },
-      { source: { agent: 'omp', ompThreadId: 'thr-1', sessionId: null, resumeId: '9' } },
+      { source: { agent: 'omp', ompThreadId: 'thr-1', sessionId: 'thr-1', resumeId: '9' } },
     );
     const r = await dispatchConsultResponder({ ...OPTS, evidence: undefined }, CTX, deps);
     expect(r.dispatched).toBe(false);
     expect(r.attempts.map((a) => [a.agent, a.reason])).toEqual([
-      ['claude', 'conversion-unavailable'],
-      ['codex', 'conversion-unavailable'],
-      ['omp', 'fork-unsupported'],
+      ['claude', 'evidence-span-unavailable'],
+      ['codex', 'evidence-span-unavailable'],
+      ['omp', 'evidence-span-unavailable'],
     ]);
     expect(r.attempts.every((a) => a.outcome === 'skipped')).toBe(true);
+  });
+
+  it('skips non-plain conversion sources before any conversion spawn, briefs them instead, while retaining native forks', async () => {
+    const blocked = makeFakes({
+      probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
+      checkPortTranscript: async () => { throw new Error('role refusal must precede transcript reads'); },
+    }, { source: { role: 'reviewer' } });
+    const result = await dispatchConsultResponder(OPTS, CTX, blocked.deps);
+    // The conversion path still refuses a non-plain source before reading or launching it …
+    expect(result.attempts.slice(0, 2).map((a) => a.reason)).toEqual(['account-walled', 'conversion-unavailable']);
+    expect(result.attempts[1].detail).toContain('plain tracked SU');
+    // … and P-002 / D-008 answers that intentional skip with a fresh briefed session.
+    // Only the rank the port skipped ON PURPOSE is briefed; the already-walled rank is not retried.
+    expect(result).toMatchObject({ dispatched: true, operation: 'brief', agent: 'codex' });
+    expect(result.attempts.filter((a) => a.operation === 'brief').map((a) => [a.agent, a.outcome]))
+      .toEqual([['codex', 'dispatched']]);
+    expect(blocked.calls.spawn).toHaveLength(1);
+    expect(blocked.calls.spawn[0]!.envelope.greetingCmd).not.toContain('--fork');
+
+    const fork = makeFakes({}, { source: { role: 'reviewer' } });
+    expect(await dispatchConsultResponder(OPTS, CTX, fork.deps)).toMatchObject({ dispatched: true, operation: 'fork' });
+    expect(fork.calls.spawn).toHaveLength(1);
+  });
+
+  it('dispatches a Codex-source-only selection through a fresh cited-turn brief when conversion is unavailable', async () => {
+    const { deps, calls } = makeFakes({
+      loadRanks: async () => [{ rank: 1, agent: 'codex', model: 'sol' }],
+      probeBackendAvailable: async () => ({ available: true, detail: 'codex fixture headroom' }),
+    }, { source: { agent: 'codex', role: 'reviewer', binding: null } });
+
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+
+    // This is the clause's falsifier fixture: the only selected expert is a
+    // Codex source. A conversion refusal must still produce an answering
+    // session via the cited-turn fallback, rather than ending with no launch.
+    expect(result).toMatchObject({
+      dispatched: true,
+      operation: 'brief',
+      agent: 'codex',
+      model: 'sol',
+    });
+    expect(result.attempts).toEqual([
+      expect.objectContaining({ agent: 'codex', operation: null, reason: 'source-session-untracked', outcome: 'skipped' }),
+      expect.objectContaining({ agent: 'codex', operation: 'brief', outcome: 'dispatched' }),
+    ]);
+    expect(calls.spawn).toHaveLength(1);
+    const spawn = calls.spawn[0]!;
+    expect(spawn.coordOwnerId).not.toBe(OPTS.sourceOwnerId);
+    expect(spawn.envelope.greetingCmd).toContain('--owner-id=su-answer-1');
+    expect(spawn.envelope.greetingCmd).not.toContain('--resume');
+    expect(spawn.envelope.greetingCmd).not.toContain('--fork');
+    expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('fixture cited turn 1');
+    expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('sess-1#1');
+    expect(spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT).toContain('NOT your own history');
+  });
+
+  it('rejects a real cyclic source once for every conversion rank without launching it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'consult-port-cycle-'));
+    const path = join(dir, 'source.jsonl');
+    writeFileSync(path, [
+      JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: 'a1', message: { role: 'user', content: 'question' } }),
+      JSON.stringify({ type: 'assistant', uuid: 'a1', parentUuid: 'u1', message: { role: 'assistant', content: 'answer' } }),
+    ].join('\n') + '\n');
+    let reads = 0;
+    try {
+      const { deps, calls } = makeFakes({
+        loadRanks: async () => [...RANKS, { rank: 3, agent: 'codex', model: 'astra' }],
+        probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
+        checkResumeTranscript: async () => ({ available: true, detail: 'exact fixture source', transcriptPath: path }),
+        checkPortTranscript: async (...args: Parameters<typeof checkConsultSessionPortTranscript>) => {
+          reads++;
+          return checkConsultSessionPortTranscript(...args);
+        },
+      });
+      const result = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(result.dispatched).toBe(false);
+      expect(result.attempts.map((a) => a.reason)).toEqual([
+        'account-walled', 'conversion-unavailable', 'conversion-unavailable',
+      ]);
+      expect(result.attempts.slice(1).every((a) => a.detail.includes('cycle detected'))).toBe(true);
+      expect(reads).toBe(1);
+      expect(calls.spawn).toHaveLength(0);
+      expect(calls.recorded[0].result).toEqual(result);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('lets the normal next-expert delivery reach a portable source after a preflight refusal', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'consult-port-fallback-'));
+    const path = join(dir, 'source.jsonl');
+    writeFileSync(path, JSON.stringify({ type: 'user', uuid: 'u1', parentUuid: null,
+      message: { role: 'user', content: 'eligible evidence' } }) + '\n');
+    try {
+      // No readable cited turns, so the P-002 brief fallback cannot answer this source either.
+      const rejected = makeFakes({ readCitedTurns: async () => [] }, { source: { role: 'reviewer' } });
+      rejected.deps.loadRanks = async () => [RANKS[1]];
+      const first = await makeConsultReachDispatcher(CTX, rejected.deps)({
+        responder: OPTS.sourceOwnerId, conversationId: OPTS.conversationId,
+        summary: 'Review', body: 'Exact evidence', evidence: OPTS.evidence,
+      });
+      expect(first.queued).toBe(0);
+      expect(rejected.calls.spawn).toHaveLength(0);
+
+      const eligible = makeFakes({
+        loadRanks: async () => [RANKS[1]],
+        checkResumeTranscript: async () => ({ available: true, detail: 'exact source', transcriptPath: path }),
+        checkPortTranscript: checkConsultSessionPortTranscript,
+      });
+      const next = await makeConsultReachDispatcher(CTX, eligible.deps)({
+        responder: OPTS.sourceOwnerId, conversationId: OPTS.conversationId,
+        summary: 'Review', body: 'Exact evidence', evidence: OPTS.evidence,
+      });
+      expect(next).toMatchObject({ queued: 1, pickupConfirmed: true,
+        dispatch: { dispatched: true, operation: 'convert' } });
+      expect(eligible.calls.spawn).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on unknown conversion eligibility', async () => {
+    const { deps, calls } = makeFakes({
+      probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
+      checkPortTranscript: async () => { throw new Error('source read interrupted'); },
+    });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.attempts[1]).toMatchObject({ outcome: 'skipped', reason: 'conversion-unavailable' });
+    expect(result.attempts[1].detail).toContain('source read interrupted');
+    expect(calls.spawn).toHaveLength(0);
   });
 
   it('refuses before any launch when the source transcript is gone', async () => {
@@ -797,6 +1360,18 @@ describe('launchLogFailureReason (the launcher’s own words, from a real log)',
     expect(reason).not.toContain('older than the recent-session window');
   });
 
+  it('preserves an unrecoverable transcript graph refusal instead of only its exit status', () => {
+    const refusal = 'psu: POST /api/adv/sessions/port/inspect (HTTP 409) — ' +
+      'unrecoverable Claude transcript graph: cycle detected at cede960f-af9d-49c8-96e8-9d6b3f845536';
+    const log = '\x1b]0;consult-convert\x07psu: inspecting Claude transcript graph\r\n' +
+      `\x1b[31m${refusal}\x1b[0m\r\n` +
+      '[papercusp] initial terminal command exited with status 1; headless launch exiting.\r\n';
+    expect(launchLogFailureReason(log)).toBe(
+      `${refusal} · [papercusp] initial terminal command exited with status 1`,
+    );
+    expect(launchLogFailureReason('psu: inspecting Claude transcript graph\n')).toBeNull();
+  });
+
   it('extracts an account wall drawn mid-line, never the brief text it is drawn beside', () => {
     // Keeping the whole rendered line would clip to its START — the consult
     // brief — which is exactly what the first version of this parser reported.
@@ -806,6 +1381,24 @@ describe('launchLogFailureReason (the launcher’s own words, from a real log)',
   it('reports the LAST failure when a log holds several', () => {
     const log = 'psu: tracked resume failed: first\npsu: refusing fork: second\n';
     expect(launchLogFailureReason(log)).toBe('psu: refusing fork: second');
+  });
+
+  it.each(['Context limit reached · /clear to continue', 'Prompt is too long'])
+    ('reports the actual terminal context rejection: %s', (failure) => {
+      expect(launchLogFailureReason(`consult brief\x1b[1B  ⎿  ${failure}\n`)).toBe(failure);
+      expect(launchLogFailureReason(`The request quotes ${failure} for investigation.\n`)).toBeNull();
+    });
+
+  it.each([
+    'psu: V1 targetBackend must be codex|omp',
+    'psu: consult evidence refs are not all present in the exact source session (0/1)',
+  ])('preserves the session-port validation refusal: %s', (failure) => {
+    const log = 'psu: last active model in this session: gpt-6-luna:max\n' +
+      `${failure}\n[ papercusp greeting ]\n` +
+      '[papercusp] initial terminal command exited with status 1; headless launch exiting.\n';
+    expect(launchLogFailureReason(log)).toBe(
+      `${failure} · [papercusp] initial terminal command exited with status 1`,
+    );
   });
 
   it('falls back to the exit status alone, and is null for a log with no failure', () => {
@@ -900,6 +1493,8 @@ describe('dispatchConsultResponder — every walk is persisted on its consult (W
     expect(r.attempts[0]!.detail).toContain('exited with status 2');
     expect(r.attempts[0]!.detail).toContain(`launcher said: ${reason}`);
     expect(calls.stopped).toEqual(['task-1']);
+    // WI-10006690: the host never registered, so the row is closed as never-ran.
+    expect(calls.stoppedNeverRan).toEqual([{ answeringOwnerId: 'su-answer-1' }]);
     expect(calls.logReads).toEqual(['/logs/x-1.log']);
     expect(r).toMatchObject({ dispatched: true, agent: 'codex' });
   });
@@ -944,6 +1539,7 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
           reason: 'launch-exited',
           detail: 'y'.repeat(5000),
           launchError: 'z'.repeat(1000),
+          launchLogPath: '/logs/failed-launch.log',
         },
         { rank: 2, agent: 'codex', model: 'sol', operation: 'convert', outcome: 'skipped', detail: 'short' },
       ],
@@ -961,6 +1557,7 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
     expect(e.detail.endsWith('…')).toBe(true);
     expect((e.attempts[0]!.detail as string).length).toBe(DISPATCH_RECORD_TEXT_MAX);
     expect((e.attempts[0]!.launchError as string).length).toBe(300);
+    expect(e.attempts[0]!.launchLogPath).toBe('/logs/failed-launch.log');
   });
 
   it('omits reason and launchError when a rank has none, rather than writing null', () => {
@@ -977,6 +1574,108 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
 });
 
 describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes)', () => {
+  const leasedBoundary = (): Extract<NativeConsultBoundary, { status: 'measured' }> => ({
+    status: 'measured', capturedAt: '2026-09-26T12:00:00.000Z', completedAt: '2026-09-26T12:00:01.000Z',
+    readScope: 'fixture source and plan-lease endpoint', sourceAdvSessionId: 7,
+    sourceNativeSessionId: 'sess-1', sourceOwnerId: 'su-expert',
+    snapshot: { kind: 'live-jsonl', highWaterBytes: 12, completeBytes: 12, sha256: 'fixture-prefix',
+      archiveRelpath: null, fileIdentity: null },
+    claims: { checked: [], truncated: false, scope: 'no work-item claims' },
+    planClaims: { checked: [{ workspaceId: CTX.workspaceId, harnessSlug: 'papercusp', planSlug: 'source-plan',
+      itemId: 'P-001', claimId: 'source-lease-incarnation', owner: 'su-expert', livenessMode: 'activity',
+      ttlSec: 120, acquiredTs: '2026-09-26T11:59:00.000Z', expiresTs: '2026-09-26T12:01:00.000Z',
+      lastActivityTs: '2026-09-26T12:00:00.000Z', expired: false }],
+    truncated: false, scope: 'source-owner plan lease' },
+  });
+
+  it.each(['empty', 'expired', 'unmeasured'] as const)(
+    'refuses a selected native source with %s plan leases before a cascade launch', async state => {
+      const boundary = leasedBoundary();
+      if (state === 'empty') boundary.planClaims.checked = [];
+      if (state === 'expired') boundary.planClaims.checked[0]!.expiresTs = boundary.completedAt;
+      let captured = 0;
+      const { deps, calls } = makeFakes({
+        readDispatchChoice: async () => ({ reviewerModel: null,
+          nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex',
+            requireSourcePlanClaims: true } }),
+        captureNativeBoundary: async () => {
+          captured++;
+          return state === 'unmeasured' ? { status: 'unknown', reason: 'canonical claim reader unavailable' } : boundary;
+        },
+      });
+      const result = await makeConsultReachDispatcher(CTX, deps)({
+        responder: 'su-expert', conversationId: 'conv-native-lease', summary: 'native probe',
+        body: 'selected source lost its lease', evidence: OPTS.evidence,
+      });
+      expect(captured).toBe(1);
+      expect(result.dispatch).toMatchObject({ dispatched: false, attempts: [],
+        detail: expect.stringContaining(state === 'unmeasured' ? 'not measured' : 'nonexpired source plan lease missing') });
+      expect(calls.spawn).toHaveLength(0);
+      expect(calls.capacity).toHaveLength(0);
+      expect(calls.recorded[0]!.result.dispatched).toBe(false);
+    },
+  );
+
+  it('allows a native source with a measured nonexpired plan lease and no work-item claims', async () => {
+    const { deps, calls } = makeFakes({
+      readDispatchChoice: async () => ({ reviewerModel: null,
+        nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex',
+          requireSourcePlanClaims: true } }),
+      captureNativeBoundary: async () => leasedBoundary(),
+    });
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: 'su-expert', conversationId: 'conv-native-lease', summary: 'native probe',
+      body: 'source with a plan-only claim', evidence: OPTS.evidence,
+    });
+    expect(result.dispatch).toMatchObject({ dispatched: true, agent: 'codex' });
+    expect(calls.spawn).toHaveLength(1);
+  });
+
+  it('never substitutes seed models when the configured native target is absent', async () => {
+    const { deps, calls } = makeFakes({
+      readDispatchChoice: async () => ({ reviewerModel: null,
+        nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } }),
+      loadRanks: async () => [],
+    });
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: 'su-expert', conversationId: 'conv-native-empty', summary: 'native probe', body: 'next responder',
+      evidence: OPTS.evidence,
+    });
+    expect(result.dispatch).toMatchObject({ dispatched: false, attempts: [],
+      detail: expect.stringContaining('no configured allowed model') });
+    expect(calls.spawn).toHaveLength(0);
+    expect(calls.capacity).toHaveLength(0);
+  });
+
+  it('keeps native backend constraints on a later cascade and preserves a walled target as unavailable', async () => {
+    const { deps, calls } = makeFakes({
+      readDispatchChoice: async () => ({ reviewerModel: null,
+        nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } }),
+      probeBackendAvailable: async () => ({ available: false, detail: 'target account unavailable' }),
+    });
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: 'su-expert', conversationId: 'conv-native', summary: 'native probe', body: 'next responder',
+      evidence: OPTS.evidence,
+    });
+    expect(result.dispatch.dispatched).toBe(false);
+    expect(result.dispatch.attempts).toEqual([expect.objectContaining({ agent: 'codex', reason: 'account-walled' })]);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('rechecks native source state before a later cascade instead of using a changed live source', async () => {
+    const { deps, calls } = makeFakes({
+      readDispatchChoice: async () => ({ reviewerModel: null,
+        nativeConsult: { sourceBackend: 'claude', sourceState: 'ended', targetBackend: 'codex' } }),
+    }, { source: { live: true } });
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: 'su-expert', conversationId: 'conv-native', summary: 'native probe', body: 'next responder',
+      evidence: OPTS.evidence,
+    });
+    expect(result.dispatch.dispatched).toBe(false);
+    expect(result.dispatch.detail).toContain('source state');
+    expect(calls.spawn).toHaveLength(0);
+  });
+
   it('keeps a saved reviewer model and effort on a later cascade leg', async () => {
     const { deps, calls } = makeFakes({
       readReviewerModel: async () => ({ agent: 'codex', model: 'sol', effort: 'xhigh' }),
@@ -989,6 +1688,46 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
     expect(result.dispatch).toMatchObject({ agent: 'codex', model: 'sol:xhigh' });
     expect(calls.spawn).toHaveLength(1);
     expect(calls.spawn[0]!.envelope.greetingCmd).toContain('sol');
+  });
+
+  it.each([RUBRIC_VETTING_POLICY, ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY])(
+    'loads the persisted %s reviewer choice on a later dispatch without substituting the default rank', async (policy) => {
+      const db = await import('@papercusp/db-org');
+      const sql = vi.fn(async () => [{ policy,
+        reviewer_model: { agent: 'codex', model: 'sol', effort: 'xhigh' }, native_consult: null }]);
+      const spy = vi.spyOn(db, 'getOrgPg');
+      mockOrgPgSql(spy, sql);
+      try {
+        const { deps, calls } = makeFakes({ readReviewerModel: undefined });
+        const result = await makeConsultReachDispatcher(CTX, deps)({
+          responder: 'su-expert', conversationId: 'conv-saved-review', summary: 'review', body: 'next reviewer',
+          evidence: OPTS.evidence,
+        });
+        expect(sql).toHaveBeenCalled();
+        expect(result.dispatch).toMatchObject({ agent: 'codex', model: 'sol:xhigh', dispatched: true });
+        expect(calls.spawn).toHaveLength(1);
+        expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--account=auto');
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it('rejects a saved reviewer model on an unrelated policy before launching', async () => {
+    const db = await import('@papercusp/db-org');
+    const spy = vi.spyOn(db, 'getOrgPg');
+    mockOrgPgSql(spy, vi.fn(async () => [{
+      policy: 'ordinary-consult', reviewer_model: { agent: 'codex', model: 'sol' }, native_consult: null,
+    }]));
+    try {
+      const { deps, calls } = makeFakes({ readReviewerModel: undefined });
+      await expect(makeConsultReachDispatcher(CTX, deps)({
+        responder: 'su-expert', conversationId: 'conv-invalid-policy', summary: 'review', body: 'next reviewer',
+      })).rejects.toThrow('outside an authorized review policy');
+      expect(calls.spawn).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('refuses a reviewer model removed from the allowlist without launching a substitute', async () => {
@@ -1064,7 +1803,8 @@ describe('consultDispatchBrief', () => {
       summary: 'S',
       body: 'B',
     });
-    expect(brief).toContain('CONVERTED onto another backend');
+    expect(brief).toContain('isolated answering session');
+    expect(brief).toContain('NEW identity');
     expect(brief).not.toContain('FORK of');
   });
 
@@ -1168,7 +1908,7 @@ describe('buildAgentLaunchCommand ownerId rule (the pre-pin this dispatch depend
     expect(() =>
       buildAgentLaunchCommand({ mode: 'resume', sessionId: 'sid', agent: 'claude', ownerId: 'su-new' }),
     ).toThrow(/same-backend resume/);
-    expect(() =>
+    expect(
       buildAgentLaunchCommand({
         mode: 'resume',
         sessionId: 'sid',
@@ -1176,7 +1916,7 @@ describe('buildAgentLaunchCommand ownerId rule (the pre-pin this dispatch depend
         targetAgent: 'claude',
         ownerId: 'su-new',
       }),
-    ).toThrow(/same-backend resume/);
+    ).toContain('--owner-id=su-new');
   });
 });
 
@@ -1332,5 +2072,112 @@ describe('answer-window failure records (WI-10003199, P-003)', () => {
     // Not a reset: failed launches on either side of it still add up to the threshold.
     const cd = sourceCooldownFrom([launchFail(1), expiry(2), launchFail(3), launchFail(4)], T0);
     expect(cd?.failures).toBe(SOURCE_LAUNCH_FAILURE_THRESHOLD);
+  });
+});
+
+// consult-backed-parking-2026-10-12 P-002 / D-008: a source the session port
+// skips ON PURPOSE (untracked native, non-plain-SU) is answered by a FRESH
+// session under its own identity, briefed with the expert's cited turns.
+describe('cited-turn brief launch for unforkable sources (P-002, D-008)', () => {
+  it('covers exactly the two intentional session-port skips', () => {
+    expect([...BRIEF_FALLBACK_REASONS].sort()).toEqual(['conversion-unavailable', 'source-session-untracked']);
+  });
+
+  it('launches a fresh briefed session for an untracked native source instead of refusing', async () => {
+    const reads: Array<{ sessionId: string; turnIndices: readonly number[] }> = [];
+    const { deps, calls } = makeFakes({
+      readCitedTurns: async (_ws: string, sessionId: string, turnIndices: readonly number[]) => {
+        reads.push({ sessionId, turnIndices });
+        return [{ turn_idx: 1, speaker: 'assistant', ts: '2026-09-22T00:00:01Z', text: 'the expert explained the lock order' }];
+      },
+    }, { source: { binding: null } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result).toMatchObject({ dispatched: true, operation: 'brief', agent: 'claude', model: 'opus' });
+    expect(reads).toEqual([{ sessionId: 'sess-1', turnIndices: [1] }]);
+    // Every port rank is still recorded as skipped before the brief rank dispatches.
+    expect(result.attempts.filter((a) => a.reason === 'source-session-untracked').length).toBeGreaterThan(0);
+    expect(result.attempts.at(-1)).toMatchObject({ operation: 'brief', outcome: 'dispatched' });
+    expect(calls.spawn).toHaveLength(1);
+    const spawn = calls.spawn[0]!;
+    // A distinct answering identity, never the expert's session.
+    expect(spawn.coordOwnerId).not.toBe(OPTS.sourceOwnerId);
+    expect(spawn.envelope.greetingCmd).not.toContain('--fork');
+    expect(spawn.envelope.greetingCmd).not.toContain('sess-1');
+    expect(spawn.envelope.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN).toBeUndefined();
+    expect(spawn.envelope.env.CODEX_HOME).toBeUndefined();
+    // The kickoff carries the quoted turn and says it is evidence, not history.
+    const kickoff = spawn.envelope.env.PAPERCUSP_KICKOFF_PROMPT ?? '';
+    expect(kickoff).toContain('the expert explained the lock order');
+    expect(kickoff).toContain('sess-1#1');
+    expect(kickoff).toContain('NOT your own history');
+  });
+
+  it('records evidence-span-unavailable per brief rank when no evidence span was supplied', async () => {
+    const { deps, calls } = makeFakes({}, { source: { binding: null } });
+    const { evidence: _omit, ...noEvidence } = OPTS;
+    const result = await dispatchConsultResponder(noEvidence, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    const briefs = result.attempts.filter((a) => a.operation === 'brief');
+    expect(briefs.length).toBe(RANKS.length);
+    expect(briefs.every((a) => a.outcome === 'skipped' && a.reason === 'evidence-span-unavailable')).toBe(true);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it.each([
+    ['empty', async () => []],
+    ['throwing', async () => { throw new Error('archive offline'); }],
+  ] as const)('records evidence-span-unavailable when the cited-turn read is %s', async (_label, readCitedTurns) => {
+    const { deps, calls } = makeFakes({ readCitedTurns }, { source: { binding: null } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    const briefs = result.attempts.filter((a) => a.operation === 'brief');
+    expect(briefs.length).toBe(RANKS.length);
+    expect(briefs.every((a) => a.reason === 'evidence-span-unavailable')).toBe(true);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('records account-walled for a brief rank whose backend is walled and briefs the next rank', async () => {
+    const { deps, calls } = makeFakes({
+      probeBackendAvailable: async (agent: string) => ({ available: agent !== 'claude', detail: 'provider capacity' }),
+    }, { source: { binding: null } });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result).toMatchObject({ dispatched: true, operation: 'brief', agent: 'codex' });
+    expect(result.attempts.filter((a) => a.operation === 'brief').map((a) => a.reason ?? a.outcome))
+      .toEqual(['account-walled', 'dispatched']);
+    expect(calls.spawn).toHaveLength(1);
+  });
+
+  it('does not brief a source whose binding names another owner', async () => {
+    const { deps, calls } = makeFakes({}, {
+      source: { binding: { coordOwnerId: 'su-other-owner', sessionId: 'sess-1', startedAt: '2026-09-22T00:00:00Z' } },
+    });
+    const result = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(result.dispatched).toBe(false);
+    expect(result.attempts.some((a) => a.operation === 'brief')).toBe(false);
+    expect(calls.spawn).toHaveLength(0);
+  });
+});
+
+describe('renderCitedTurnsBlock (P-002 brief evidence)', () => {
+  const source = { ownerId: 'su-expert', sessionId: 'sess-9' };
+
+  it('orders turns by index and labels them as quoted evidence', () => {
+    const out = renderCitedTurnsBlock(source, [
+      { turn_idx: 7, speaker: 'user', ts: null, text: 'second' },
+      { turn_idx: 3, speaker: 'assistant', ts: '2026-10-01T00:00:00Z', text: 'first' },
+    ]);
+    expect(out.indexOf('sess-9#3')).toBeLessThan(out.indexOf('sess-9#7'));
+    expect(out).toContain("quoted from su-expert's session sess-9");
+    expect(out).toContain('you are not that session');
+  });
+
+  it('caps each turn and the total quoted text', () => {
+    const long = 'x'.repeat(BRIEF_TURN_TEXT_MAX + 100);
+    const turns = Array.from({ length: Math.ceil(BRIEF_TOTAL_TEXT_MAX / BRIEF_TURN_TEXT_MAX) + 2 },
+      (_, i) => ({ turn_idx: i, speaker: 'assistant', ts: null, text: long }));
+    const out = renderCitedTurnsBlock(source, turns);
+    expect(out).not.toContain('x'.repeat(BRIEF_TURN_TEXT_MAX + 1));
+    expect(out).toContain('brief cap');
+    expect(out.length).toBeLessThan(BRIEF_TOTAL_TEXT_MAX + 2_000);
   });
 });

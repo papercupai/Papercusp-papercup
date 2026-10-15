@@ -35,6 +35,15 @@ describe('plan revision snapshot repair guards', () => {
     expect(planRevisionRepairPlanMatches(expected, { ...actual, archived: true })).toBe(false);
   });
 
+  it('matches structured template data when a backfill depends on an exact source snapshot', () => {
+    const expectedWithData = { ...expected, templateData: { characteristic: 'spec-test-adequacy' } };
+    expect(planRevisionRepairPlanMatches(expectedWithData, actual)).toBe(true);
+    expect(planRevisionRepairPlanMatches(expectedWithData, {
+      ...actual,
+      templateData: { characteristic: 'different' },
+    })).toBe(false);
+  });
+
   it('requires an exact, unique revision-id set before applying a chain repair', () => {
     expect(planRevisionRepairRevisionIdsMatch([11, 12], [{ id: 11 }, { id: 12 }])).toBe(true);
     expect(planRevisionRepairRevisionIdsMatch([11, 12], [{ id: 12 }, { id: 11 }])).toBe(true);

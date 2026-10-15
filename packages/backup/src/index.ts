@@ -19,6 +19,11 @@
  */
 
 export {
+  generateStateCensus, collectStateCensus, verifyStateCensus, assertStateCensusComplete, backupCacheCensusDeclarations, databaseCensusSnapshotCoverage,
+  type StateClass, type CensusKind, type CensusEntry, type CensusDeclaration, type CensusRoot,
+} from './state-census';
+
+export {
   configureBackup,
   configureBackupStepRunner,
   type BackupHost,

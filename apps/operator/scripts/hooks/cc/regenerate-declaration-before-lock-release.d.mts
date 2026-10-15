@@ -3,13 +3,68 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // apps/operator/scripts/hooks/cc/regenerate-declaration-before-lock-release.mjs and regenerate.
 /**
+ * One-line summary of a failed generator run, DIAGNOSTICS FIRST.
+ *
+ * WI-6554700010010911: `npmRun` used `stdio: 'ignore'`, so a failed emit reached the
+ * agent as a bare `Command failed: npm run --silent gen:declarations ...` with no
+ * compiler output. The lock-release callers keep only the first 200 characters of
+ * stderr, so the compiler's own `error TSnnnn` lines lead and the exit status
+ * follows; with no such line, the output tail stands in for them.
+ */
+export function describeGeneratorFailure(label: any, error: any): string;
+/**
+ * Every repo-relative, non-node_modules file `tsc -p tsconfig.declarations.json`
+ * reads. `--outDir` is load-bearing, not cosmetic: without it the generated `.d.mts`
+ * siblings are also emit targets, so tsc reports TS5055 ("would overwrite input
+ * file") and exits 1. With `--listFilesOnly` nothing is written to that directory.
+ */
+export function listDeclarationsGraph(repoRoot: any): string[];
+/**
+ * The declarations program graph as a Set, served from the shared cache while it is
+ * fresh. `opts.compute` / `opts.now` are test seams; production callers pass neither.
+ * A cache that cannot be read or written only costs a recompute — never a failure.
+ *
+ * @param {string} repoRoot
+ * @param {{ compute?: (root: string) => string[], now?: () => number, ttlMs?: number }} [opts]
+ * @returns {Set<string>}
+ */
+export function cachedDeclarationsGraph(repoRoot: string, opts?: {
+    compute?: (root: string) => string[];
+    now?: () => number;
+    ttlMs?: number;
+}): Set<string>;
+/** Drop the cached graph so the next lookup sees an edit's new or removed imports. */
+export function invalidateDeclarationsGraph(repoRoot: any): void;
+/**
+ * The subset of `paths` that are source files in the declarations program graph,
+ * repo-relative and de-duplicated. Paths that cannot be graph sources never pay for
+ * a lookup, so an all-non-source list returns `[]` without touching the cache.
+ *
+ * WI-6554700010011061: git-sync's commit-time declarations trigger asks THIS function
+ * (out of process, via `--declarations-graph-members`) rather than re-implementing
+ * the graph rule, so the edit hook and the commit path share one rule and one cache.
+ * Running it out of process also keeps the synchronous 3-5s tsc listing off the
+ * bg-host event loop.
+ *
+ * @param {string} repoRoot
+ * @param {string[]} paths absolute or repo-relative
+ * @param {{ declarationsGraph: (root: string) => Set<string> }} [deps]
+ * @returns {string[]}
+ */
+export function declarationsGraphMembers(repoRoot: string, paths: string[], deps?: {
+    declarationsGraph: (root: string) => Set<string>;
+}): string[];
+/**
  * Which artifacts this edit stranded, without running anything.
  *
  * Exported as the pure seam the tests assert on: proving the SELECTION rule needs
- * no npm, no generator and no writes. Returns `{ id, selected }` and never throws
- * — an entry that cannot decide is simply absent.
+ * no npm and no generator. Returns `{ id, selected }` and never throws — an entry
+ * that cannot decide is simply absent. `deps.declarationsGraph` replaces the cached
+ * program-graph lookup (the only part that may read or write the scratch cache).
  */
-export function selectDerivedArtifacts(repoRoot: any, paths: any): {
+export function selectDerivedArtifacts(repoRoot: any, paths: any, deps?: Readonly<{
+    declarationsGraph: (repoRoot: any) => Set<string>;
+}>): {
     id: string;
     selected: any;
 }[];
@@ -21,5 +76,8 @@ export function selectDerivedArtifacts(repoRoot: any, paths: any): {
  * because they emit unrelated artifacts. Every failure is still surfaced — the
  * aggregated throw is what the callers turn into a recorded release error.
  */
-export function regenerateForPaths(repoRoot: any, paths: any): number;
+export function regenerateForPaths(repoRoot: any, paths: any, deps?: Readonly<{
+    declarationsGraph: (repoRoot: any) => Set<string>;
+}>): number;
 export function regenerateForHookPayload(payload: any): number;
+export const DECLARATIONS_GRAPH_TTL_MS: number;

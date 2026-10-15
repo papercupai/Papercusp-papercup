@@ -77,13 +77,16 @@ describe('bumpFederationRefusedOp', () => {
     try {
       const throwingSql = ((_s: TemplateStringsArray, ..._v: unknown[]) =>
         Promise.reject(new Error('pg down'))) as unknown as OrgSql;
+      const recover = vi.fn(async () => {});
       await expect(
         bumpFederationRefusedOp(
           { workspaceId: 'ws', harnessSlug: 'h', sourceHive: 's', tableTag: 't', reason: 'malformed' },
           throwingSql,
+          recover,
         ),
       ).resolves.toBeUndefined();
       expect(warn).toHaveBeenCalledOnce();
+      expect(recover).toHaveBeenCalledOnce();
     } finally {
       warn.mockRestore();
     }

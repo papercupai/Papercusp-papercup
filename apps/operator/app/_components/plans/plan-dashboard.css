@@ -412,6 +412,125 @@
   background: rgb(var(--accent-rgb) / 0.06);
 }
 
+.plan-dash__chip--warn {
+  color: color-mix(in srgb, var(--warn) 65%, var(--fg));
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+/* ── Note age (derived-status-not-hand-written-2026-10-12 P-005) ────────── */
+/* A note the plan has moved past: warn border, dimmed prose. */
+.plan-dash__now--stale {
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--warn) 7%, transparent),
+    transparent
+  );
+}
+
+.plan-dash__now--stale .plan-dash__now-text {
+  opacity: 0.7;
+}
+
+.plan-dash__now-age {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--fg-mute);
+}
+
+.plan-dash__now-age--moved-past {
+  color: color-mix(in srgb, var(--warn) 60%, var(--fg));
+}
+
+/* ── STATUS card: derived from the item graph (P-005) ─────────────────── */
+.plan-dash__status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-dash__status-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.plan-dash__status-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-dash__status-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+}
+
+.plan-dash__status-kind {
+  flex: 0 0 auto;
+  min-width: 76px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.plan-dash__status-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--fg);
+}
+
+.plan-dash__status-holders,
+.plan-dash__status-blockers {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-dash__status-row--blocked .plan-dash__status-blockers {
+  color: color-mix(in srgb, var(--warn) 60%, var(--fg));
+}
+
+.plan-dash__status-more {
+  font-size: 11px;
+  color: var(--fg-mute);
+}
+
+.plan-dash__status-gate {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--fg-dim);
+}
+
+.plan-dash__status-gate--refused {
+  color: color-mix(in srgb, var(--warn) 60%, var(--fg));
+}
+
+.plan-dash__status-gate--ok {
+  color: color-mix(in srgb, var(--accent) 55%, var(--fg));
+}
+
+.plan-dash__status-verb {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+}
+
 /* ── Items (grouped, the substance column's core) ──────────────────────── */
 .plan-dash__items {
   display: flex;

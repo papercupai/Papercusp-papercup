@@ -138,9 +138,123 @@ export function repairTickClearedQueueSignature(
   queue: { repairHead: string; failingTests?: readonly string[] | null },
 ): boolean {
   if (!snapshot || !snapshot.ok) return false;
-  if (repairTickLegsCurrent(snapshot, queue.repairHead) !== true) return false;
-  const failing = queue.failingTests ?? [];
-  if (failing.length === 0) return false;
-  const passed = new Set(snapshot.legs.filter((leg) => leg.status === 'pass').map((leg) => leg.id));
-  return failing.every((id) => passed.has(id));
+  const { contradicted, actionable } = partitionSameHeadContradictions(queue.failingTests, snapshot, queue.repairHead);
+  return actionable.length === 0 && contradicted.length > 0;
+}
+
+/** The result of {@link partitionSameHeadContradictions}. Both lists keep input order. */
+export interface SameHeadContradictionPartition {
+  /** Queue entries the latest repair tick re-ran AT the queue's current repairHead and saw
+   *  pass. A fixer handed one of these is asked to fix something its own head passes. */
+  contradicted: string[];
+  /** Every other entry: still a red nothing at this head has contradicted. */
+  actionable: string[];
+}
+
+/**
+ * PURE (WI-10007494): split a frozen queue's failing signature into the entries the latest
+ * repair tick CONTRADICTED at the same head and the entries that remain actionable.
+ *
+ * An entry is contradicted only when all of these hold:
+ *   - the tick was measured at the queue's current repairHead (a tick from an earlier head
+ *     is evidence about different code, so it contradicts nothing);
+ *   - the tick recorded a leg with exactly that id, and every such leg passed;
+ *   - the tick's own `failingSignatures` does not name it.
+ * A test FILE entry is never a tick leg id, so it always stays actionable.
+ *
+ * This only narrows what a fixer is TOLD to fix. The queue signature keeps every entry
+ * (`retireRepairSignatureOnLegPass` deliberately leaves same-head contradictions in it), so
+ * the verification after the fixer's admission still re-measures the contradicted legs.
+ */
+export function partitionSameHeadContradictions(
+  failingTests: readonly string[] | null | undefined,
+  snapshot: StoredRepairTickLegs | null,
+  repairHead: string | null,
+): SameHeadContradictionPartition {
+  const failing = failingTests ?? [];
+  if (!snapshot || repairTickLegsCurrent(snapshot, repairHead) !== true) {
+    return { contradicted: [], actionable: [...failing] };
+  }
+  const passed = new Set<string>();
+  const notPassed = new Set<string>(snapshot.failingSignatures);
+  for (const leg of snapshot.legs) {
+    if (leg.status === 'pass') passed.add(leg.id);
+    else notPassed.add(leg.id);
+  }
+  const contradicted: string[] = [];
+  const actionable: string[] = [];
+  for (const id of failing) {
+    if (passed.has(id) && !notPassed.has(id)) contradicted.push(id);
+    else actionable.push(id);
+  }
+  return { contradicted, actionable };
+}
+
+/**
+ * PURE (WI-10007494): what a frozen-repair fixer should be told to fix.
+ *
+ * Narrows ONLY the mixed case: some entries contradicted at the same head AND at least one
+ * real red left. Then the fixer gets the real reds, and the contradicted entries come back
+ * separately so the brief can name them as do-not-fix.
+ *
+ * Every other case returns the input unchanged. An all-contradicted signature belongs to the
+ * retest path (`repairTickClearedQueueSignature` → `frozenRepairRedIsUnmeasured`), not to a
+ * fixer with an empty target list. No contradiction means there is nothing to narrow.
+ */
+export function releaseFixerTargetsAfterSameHeadContradictions(
+  failingTests: readonly string[] | null | undefined,
+  snapshot: StoredRepairTickLegs | null,
+  repairHead: string | null,
+): { targets: string[]; sameHeadContradicted: string[] } {
+  const { contradicted, actionable } = partitionSameHeadContradictions(failingTests, snapshot, repairHead);
+  if (contradicted.length > 0 && actionable.length > 0) {
+    return { targets: actionable, sameHeadContradicted: contradicted };
+  }
+  return { targets: [...(failingTests ?? [])], sameHeadContradicted: [] };
+}
+
+/** What `release:repair-queue { op:'get' }` reports about same-head contradictions. */
+export interface SameHeadContradictionAnnotation {
+  status: 'contradicted';
+  /** Signature entries the latest repair tick re-ran at this exact repairHead and saw pass. */
+  entries: string[];
+  /** True when no signature entry is left that the tick did not contradict. */
+  allContradicted: boolean;
+  /** The short head the tick measured at (a prefix of the live repairHead). */
+  measuredAtHead: string;
+  measuredAtMs: number;
+  note: string;
+}
+
+/**
+ * PURE (WI-10007509): the read-side twin of the fixer narrowing. A fixer reads its targets
+ * from `release:repair-queue get`, which lists the full signature, so that read has to mark
+ * the entries the latest repair tick contradicted at the same head. Otherwise a reader of
+ * the queue sees the contradicted leg as a red to fix while the kickoff says not to.
+ *
+ * Unlike {@link releaseFixerTargetsAfterSameHeadContradictions} this also reports the
+ * all-contradicted case: a reader should learn that the queue needs a re-verification, not
+ * an edit. Returns null when nothing at the live head was contradicted.
+ */
+export function sameHeadContradictionAnnotation(
+  failingTests: readonly string[] | null | undefined,
+  snapshot: StoredRepairTickLegs | null,
+  repairHead: string | null,
+): SameHeadContradictionAnnotation | null {
+  const { contradicted, actionable } = partitionSameHeadContradictions(failingTests, snapshot, repairHead);
+  if (!snapshot || contradicted.length === 0) return null;
+  const allContradicted = actionable.length === 0;
+  return {
+    status: 'contradicted',
+    entries: contradicted,
+    allContradicted,
+    measuredAtHead: snapshot.head,
+    measuredAtMs: snapshot.atMs,
+    note:
+      'The latest repair tick re-ran these entries at this repairHead and they passed. ' +
+      'They stay in the signature and the next verification re-measures them; do not edit code to fix them' +
+      (allContradicted
+        ? '. No other entry is left, so this queue needs a re-verification, not a fix.'
+        : '; fix the remaining entries.'),
+  };
 }

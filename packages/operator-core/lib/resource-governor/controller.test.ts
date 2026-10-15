@@ -29,9 +29,11 @@ function verdict(input: {
       ? 'provider.rateLimited'
       : input.resource === 'database'
         ? 'database.waitP95Ms'
-        : input.resource === 'memory'
-          ? 'memory.psiFullPct'
-          : 'cpu.psiSomePct';
+        : input.resource === 'io'
+          ? 'io.psiFullPct'
+          : input.resource === 'memory'
+            ? 'memory.psiFullPct'
+            : 'cpu.psiSomePct';
   return {
     schemaVersion: HEALTH_ANALYSIS_SCHEMA_VERSION,
     scopeId: 'simulation',
@@ -167,6 +169,25 @@ describe('CaplessAdaptiveController', () => {
     expect(lane(decision, 'background').desiredWindow).toBe(110);
   });
 
+  it('contracts only classes with explicit custom I/O demand when I/O is attributed', () => {
+    const controller = new CaplessAdaptiveController({ initialWindow: 100, contractionCooldownMs: 0 });
+    const decision = controller.step({
+      verdict: verdict({ state: 'degraded', severity: 'critical', resource: 'io' }),
+      classes: [
+        { admissionClass: 'background-read', demand: { custom: { 'resource:io': 9 } } },
+        { admissionClass: 'background-write', demand: { custom: { io: 1 } } },
+        { admissionClass: 'service', demand: { cpuWeight: 1 } },
+      ],
+    });
+    expect(lane(decision, 'background-read').desiredWindow).toBe(55);
+    expect(lane(decision, 'background-write').desiredWindow).toBe(95);
+    expect(lane(decision, 'service').desiredWindow).toBe(100);
+    expect(lane(decision, 'background-read').feedback[0]).toMatchObject({
+      resource: 'io',
+      attributableShare: 0.9,
+    });
+  });
+
   it('temporarily pauses the responsible class on severe progress loss while preserving control', () => {
     const controller = new CaplessAdaptiveController({ initialWindow: 40, severePauseMs: 2_000 });
     const degraded = controller.step({
@@ -215,6 +236,38 @@ describe('CaplessAdaptiveController', () => {
     }
     expect(lane(recovered, 'inference').feedback).toHaveLength(0);
     expect(lane(recovered, 'inference').desiredWindow).toBe(18);
+  });
+
+  it('honours a caller-supplied per-class floor on a cold start and through contraction (WI-10006946)', () => {
+    const controller = new CaplessAdaptiveController({ initialWindow: 1, contractionCooldownMs: 0 });
+    const cold = controller.step({
+      verdict: verdict(),
+      classes: [
+        { admissionClass: 'critical-lane', inFlight: 0, demand: { databaseConnections: 1 }, minimumWindow: 8 },
+        { admissionClass: 'ordinary', inFlight: 0, demand: { databaseConnections: 1 } },
+      ],
+    });
+    expect(lane(cold, 'critical-lane')).toMatchObject({ desiredWindow: 8, availableStarts: 8 });
+    expect(lane(cold, 'ordinary')).toMatchObject({ desiredWindow: 1, availableStarts: 1 });
+
+    const contracted = controller.step({
+      verdict: verdict({ state: 'degraded', severity: 'critical', resource: 'database', atMs: START + 1 }),
+      classes: [
+        { admissionClass: 'critical-lane', inFlight: 6, demand: { databaseConnections: 1 }, minimumWindow: 8 },
+      ],
+      atMs: START + 1,
+    });
+    // Critical feedback would halve 8 -> 4; the floor stops it at 8.
+    expect(lane(contracted, 'critical-lane').desiredWindow).toBe(8);
+    expect(lane(contracted, 'critical-lane').feedback[0]?.desiredWindowAfter).toBe(8);
+
+    // Dropping the floor restores ordinary contraction for the same feedback.
+    const unfloored = controller.step({
+      verdict: verdict({ state: 'degraded', severity: 'critical', resource: 'database', atMs: START + 2 }),
+      classes: [{ admissionClass: 'critical-lane', inFlight: 6, demand: { databaseConnections: 1 } }],
+      atMs: START + 2,
+    });
+    expect(lane(unfloored, 'critical-lane').desiredWindow).toBe(4);
   });
 
   it('holds the current window when degradation is not actionably attributed', () => {

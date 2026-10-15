@@ -9,24 +9,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ControlOutcome } from '@papercusp/control-mutation';
 import type { WorkScopePolicy } from '../../../work-scope-policy';
 
-vi.mock('../../../work-scope-control', async () => {
-  // Hermetic: the real module pulls the control harness (db-org) — mock the two mutations
-  // and rebuild the body schema locally so the route still validates its input shape.
-  const { z } = await import('zod');
+vi.mock('../../../gateway-control/control-harness', () => ({ runControlMutation: vi.fn() }));
+vi.mock('../../../work-scope-control', async (importOriginal) => {
+  // Keep the real shared validation; only the write helpers are replaced.
+  const original = await importOriginal<typeof import('../../../work-scope-control')>();
   return {
+    ...original,
     applyWorkScopeSet: vi.fn(),
     applyWorkScopeClear: vi.fn(),
-    workScopeSetSchema: z.object({
-      mode: z.enum(['enforce', 'off']).default('enforce'),
-      allowHarnesses: z.array(z.string().min(1)).min(1),
-      exceptions: z.array(z.object({ harness: z.string().optional(), reason: z.string() })).optional(),
-      reason: z.string().min(3),
-      dryRun: z.boolean().optional(),
-    }),
   };
 });
 
-import { applyWorkScopeClear, applyWorkScopeSet } from '../../../work-scope-control';
+import { applyWorkScopeClear, applyWorkScopeSet, workScopeSetSchema } from '../../../work-scope-control';
 import routes from './set';
 
 const [setRoute, clearRoute] = routes;
@@ -104,6 +98,27 @@ describe('POST /api/work-scope/set', () => {
     vi.mocked(applyWorkScopeSet).mockResolvedValue(outcome());
     await call(setRoute, '/work-scope/set', { mode: 'off', allowHarnesses: ['x'], reason: 'why not' }, null);
     expect(vi.mocked(applyWorkScopeSet).mock.calls[0]![1]).toBe('admin:operator');
+  });
+
+  it('forwards an expiring exception parsed by the real shared schema', async () => {
+    vi.mocked(applyWorkScopeSet).mockResolvedValue(outcome());
+    const exceptions = [{ harness: 'portal', expiresAt: '2030-01-02T03:04:05Z', reason: 'temporary work' }];
+    const input = workScopeSetSchema.parse({ allowHarnesses: ['papercusp'], exceptions, reason: 'bounded policy' });
+    const { status } = await call(setRoute, '/work-scope/set', input);
+    expect(status).toBe(200);
+    expect(applyWorkScopeSet).toHaveBeenCalledWith(
+      { mode: 'enforce', allowHarnesses: ['papercusp'], exceptions, reason: 'bounded policy' },
+      'admin:tester',
+      { dryRun: undefined },
+    );
+  });
+
+  it('the shared route input rejects malformed expiry before a mutation', () => {
+    expect(() => workScopeSetSchema.parse({
+      allowHarnesses: ['papercusp'], reason: 'bounded policy',
+      exceptions: [{ harness: 'portal', reason: 'temporary work', expiresAt: 'not-a-date' }],
+    })).toThrow();
+    expect(applyWorkScopeSet).not.toHaveBeenCalled();
   });
 
   it('answers ok:false / 502 when the harness REVERTED the write — never a green toast for a policy that did not persist', async () => {

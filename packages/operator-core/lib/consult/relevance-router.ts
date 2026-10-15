@@ -59,12 +59,20 @@
  * reaches memory/configure, which opens PG at import time).
  */
 import type { Sql } from 'postgres';
+import { randomUUID } from 'node:crypto';
+import { D006_TRANSCRIPT_RULE, restrictedOwnerSql, restrictedTranscriptSummary } from '../personal-vault/transcript-exclusion';
 import {
   proseProfilePredicateSql,
   type ProseProfileSelection,
 } from '../search/prose-vector-dims';
 import { selectRanked, type Selected, type SelectionVia } from '@papercusp/ranked-selection';
 import { withIterativeScan } from '@papercusp/search';
+import { lexicalLeg } from '../search/lexical/rank';
+import { withDeadlineFallback } from '../sync-resolver/attention-counts';
+import { categoryOf, searchTools } from '../cupboard/tools-search';
+import type { ToolDiscoveryEntry } from '../cupboard/tools-discovery';
+import type { RerankScoreFn } from '@papercusp/rerank';
+import type { NativeConsultConstraints } from './native-consult';
 
 /** Same shape as `@papercusp/search`'s Embedder, declared locally to keep this
  * module's import graph free of the search engine (only the TYPE is shared). */
@@ -125,8 +133,10 @@ export interface TurnEvidence {
   turn_idx: number;
   ts: string | null;
   sim: number;
-  /** Present only on embed-free lexical fallback evidence. This is a
-   * ts_rank_cd score, never a cosine similarity. */
+  /** Present only on embed-free lexical fallback evidence. This is the turn's
+   * lexical score (BM25, or ts_rank_cd when BM25 is unavailable) divided by the
+   * best turn's score for the same question, so it lies in (0, 1] whatever the
+   * engine; never a cosine similarity. */
   lexicalRank?: number;
 }
 
@@ -148,6 +158,16 @@ export type ConsultLivenessReading = string | null | ConsultLiveness;
 
 export interface RoutingCandidate {
   ownerId: string;
+  /** Independent, bounded evidence about an explicitly named technical subject.
+   * Absence is the legacy/general-question contract, not a failed measurement. */
+  subjectEvidence?: { subject: string; status: 'supported' | 'mismatch' | 'unmeasured'; score: number | null };
+  /** Every requested source anchor must independently clear its evidence floor. */
+  subjectEvidenceCoverage?: {
+    status: 'supported' | 'mismatch' | 'unmeasured';
+    required: string[];
+    evidence: Array<{ subject: string; status: 'supported' | 'mismatch' | 'unmeasured'; score: number | null }>;
+    unresolved: string[];
+  };
   /**
    * Stage-1 QUALIFICATION score in [0,1] (D-001 §1) — the similarity /
    * verification / authorship blend renormalized by the weight total. Carries
@@ -196,6 +216,14 @@ export interface RoutingCandidate {
 
 export interface RoutingSnapshot {
   query: string;
+  /** This routing execution, separate from consultation delivery. */
+  measurement?: ExpertiseRoutingReceipt;
+  /** Set by consultation creation; absent on legacy rows, never inferred. */
+  deliveryIntent?: 'dispatch' | 'retrieval-only';
+  /** Complete expanded source refs persisted before the first dispatch. */
+  subjectRefs?: string[];
+  /** Public-manual document refs that could not be fully expanded. */
+  unresolvedSubjectRefs?: string[];
   /**
    * The stage-1 floor actually applied, against `candidate.relevance` (D-001).
    * Deliberately NOT named `floor`: the retired field of that name gated the
@@ -211,9 +239,25 @@ export interface RoutingSnapshot {
   recencyHalfLifeDays: number;
   candidates: RoutingCandidate[];
   computedAt: string;
+  /**
+   * D-006 / P-013: transcript turns dropped because their owner has held a
+   * personal-data disclosure (personal-vault/transcript-exclusion.ts). The
+   * answer session forks a routed expert's whole transcript, so such an expert
+   * is never routable; counted here rather than silently dropped.
+   */
+  withheld?: { restricted_turns: number; restricted_owners: number; rule: string };
   /** Set when the instrument itself was degraded — 'embed-unavailable' means
    * similarity could not be measured at all (≠ measured and found nothing). */
-  degraded?: 'embed-unavailable';
+  degraded?: 'embed-unavailable' | 'evidence-unavailable';
+  subjectValidation?: {
+    subject?: string;
+    subjects: string[];
+    threshold: number;
+    evaluated: number;
+    unmeasured: number;
+    limit: number;
+    unresolved: string[];
+  };
   /** The bounded retrieval leg used while the semantic instrument was down. */
   fallback?: 'lexical';
   /** Min/max responder-selection provenance (consult-min-max-and-rubric-vetting
@@ -235,8 +279,18 @@ export interface RoutingSnapshot {
   policy?: string;
   /** A per-review launch constraint copied into every cascade step. */
   reviewerModel?: import('./get-feedback-core').ConsultReviewerModel;
+  nativeConsult?: import('./native-consult').NativeConsultConstraints;
+  nativeConsultSources?: import('./native-consult').NativeConsultSourceObservation[];
+  nativeConsultPool?: RoutingCandidate[];
+  /** Candidates removed from this pool because the dispatch walk could not
+   * open their transcript (no native file, no archive) — WI-6554700010009982.
+   * Present only when at least one was removed, so the disclosure is legible. */
+  undispatchableSources?: import('./source-dispatchability').SourceDispatchabilityObservation[];
   /** Consumer copy persists so generic decline/expiry/revival keeps its subject. */
-  cascade?: import('./grading-cascade').SourceAuditCascadeMeta | import('./grading-cascade').GradingCascadeMeta;
+  cascade?:
+    | import('./grading-cascade').SourceAuditCascadeMeta
+    | import('./grading-cascade').GradingCascadeMeta
+    | import('./decision-review').DecisionReviewCascadeMeta;
 }
 
 /** How a responder entered the selected set (D-002): 'floor' = cleared both
@@ -375,6 +429,7 @@ export interface RouteResult {
 }
 
 export interface ConsultRouteParams {
+  telemetry?: { caller: string; policy: string; buildSha: string | null; correlationId?: string };
   workspaceId: string;
   /** The asking agent — excluded from candidacy ("no one knows more than you
    * do" must be reachable, D-003). */
@@ -382,6 +437,13 @@ export interface ConsultRouteParams {
   question: string;
   /** Optional exact durable subject whose transcript mentions may justify this route. */
   subjectRef?: string | null;
+  /** Every source ref must have supported transcript evidence for floor qualification. */
+  subjectRefs?: string[];
+  /** Refs to public-manual documents whose source anchors could not be read completely. */
+  unresolvedSubjectRefs?: string[];
+  /** Internal native acceptance population, applied before retrieval bounds.
+   * Registration is a hint; dispatch still resolves the exact live source. */
+  nativeConsult?: NativeConsultConstraints;
   /** Additional owners excluded from candidacy — D-007(7) manual cascade: a
    * decliner is excluded on the requester's re-call, never auto-cascaded. */
   excludeOwners?: string[];
@@ -408,6 +470,11 @@ export interface ConsultRouteParams {
 }
 
 export interface ConsultRouteDeps {
+  /** Same local crossencoder as prose search; no hosted credential required. */
+  scoreSubjectEvidence?: (subject: string, texts: string[], deadline: number) => Promise<Array<number | null>>;
+  recordTelemetry?: (receipt: ExpertiseRoutingReceipt) => void | Promise<void>;
+  monotonicNow?: () => number;
+  measure?: <T>(stage: ExpertiseRoutingStage, work: () => Promise<T>) => Promise<T>;
   getSql: () => Sql;
   /** null = no embedder available this host right now (honest degrade). */
   embed: ConsultEmbedder | null;
@@ -422,18 +489,162 @@ export interface ConsultRouteDeps {
   now?: () => Date;
 }
 
-/** Path-ish tokens ("code in question", D-002 authorship signal): anything
- * with a slash that looks like a repo path. Capped so the SQL stays bounded. */
+/** Infer source paths from filename shape or explicit path notation. An
+ * unmarked prose pair such as before/after cannot identify repository code.
+ * Extensionless paths remain usable when quoted, rooted or directory-marked.
+ * Capped so the SQL stays bounded. */
 export function extractPathTokens(question: string, cap = 4): string[] {
-  const matches = question.match(/(?:[\w@.-]+\/)+[\w.-]+/g) ?? [];
   const seen = new Set<string>();
-  for (const m of matches) {
+  for (const match of question.matchAll(/(?:\.{1,2}\/|\/)?(?:[\w@.-]+\/)+[\w.-]+\/?/g)) {
+    const m = match[0];
     // Trim trailing punctuation a sentence contributes ("...in foo/bar.ts.")
     const t = m.replace(/[.,;:!?)]+$/, '');
-    if (t.includes('/') && t.length >= 3) seen.add(t);
+    const quoted = question[match.index - 1] === '`' && question[match.index + m.length] === '`';
+    const marked = quoted || t.startsWith('/') || /^\.{1,2}\//.test(t) || t.endsWith('/');
+    const filename = /(?:^|\/)[^/]*\.[a-z0-9_-]+$/i.test(t);
+    if (t.length >= 3 && (marked || filename)) seen.add(t);
     if (seen.size >= cap) break;
   }
   return [...seen];
+}
+
+export const SUBJECT_EVIDENCE_MIN_SCORE = 0.5;
+export const SUBJECT_EVIDENCE_OWNER_LIMIT = 8;
+export const SUBJECT_EVIDENCE_TEXT_LIMIT = 4_000;
+export const SUBJECT_EVIDENCE_TIMEOUT_MS = 4_000;
+
+/** Narrow the corpus before bounded retrieval/validation can spend its budget
+ * on incompatible sources. This does not assert liveness or boundary safety:
+ * the exact native resolver and pre-dispatch source observation remain required.
+ * Ended history can survive a registry reanchor; live evidence must name the
+ * current registered native incarnation so old turns cannot borrow a live owner. */
+function nativeSourcePopulationSql(sql: Sql, params: ConsultRouteParams) {
+  const constraint = params.nativeConsult;
+  if (!constraint) return sql`TRUE`;
+  const state = constraint.sourceState === 'live'
+    ? sql`a.ended_at IS NULL AND
+        CASE WHEN a.agent = 'omp' THEN COALESCE(a.omp_thread_id, a.session_id)
+             ELSE a.session_id END = session_turns.session_id`
+    : sql`a.ended_at IS NOT NULL`;
+  const claimed = constraint.requireSourcePlanClaims ? sql`EXISTS (
+    SELECT 1 FROM harness_shared.plan_item_claims c
+     WHERE c.workspace_id = a.workspace_id AND c.owner = a.coord_owner_id
+       AND c.expires_ts > clock_timestamp()
+  )` : sql`TRUE`;
+  return sql`session_turns.source_kind = ${constraint.sourceBackend} AND EXISTS (
+    SELECT 1 FROM harness_shared.adv_sessions a
+     WHERE a.workspace_id = ${params.workspaceId}
+       AND a.coord_owner_id = session_turns.owner
+       AND a.agent = ${constraint.sourceBackend}
+       AND a.role IS NULL
+       AND ${state}
+       AND ${claimed}
+  )`;
+}
+
+/** Name the problem's primary tool/path, independently of generic decision words.
+ * A crossencoder can recognise a paraphrase without an exact identifier mention. */
+export function expertiseSubject(question: string): string | null {
+  const tool = question.match(/\b[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*\b/i)?.[0];
+  return tool ?? extractPathTokens(question, 1)[0] ?? null;
+}
+
+/** Compare the registered primary action, excluding operational notes that can
+ * make an unrelated system look like expertise. Names and dotted versions stay
+ * intact; a sentence boundary needs punctuation followed by a new capitalised
+ * sentence. A missing contract is unknown, never a bare-name expertise proof. */
+function subjectEvidenceAction(toolDescription?: string | null): string | null {
+  const action = toolDescription?.trim().split(/(?<=[.!?])\s+(?=[A-Z])/u, 1)[0];
+  return action ? action.slice(0, 1_500) : null;
+}
+
+const TOOL_SUBJECT_PATTERN = /^[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*$/i;
+
+export function subjectEvidenceQuery(subject: string, toolDescription?: string | null): string | null {
+  if (!TOOL_SUBJECT_PATTERN.test(subject)) {
+    // Compare the primary question with competing primary actions, rather than
+    // letting secondary delivery/recovery instructions qualify an unrelated
+    // passage. Keep all context preceding the question; retrieval and responder
+    // briefs continue to receive the full request.
+    const end = subject.indexOf('?');
+    return end < 0 ? subject : subject.slice(0, end + 1);
+  }
+  const action = subjectEvidenceAction(toolDescription);
+  return action ? `${subject}\n${action}` : null;
+}
+
+/** An explicit contextual adjunct is not the issue the question asks about.
+ * Keep the full question, but measure its interrogative clause independently:
+ * matching only the context cannot establish evidence for that issue. Unknown
+ * syntax stays intact; this is not a domain-keyword or lexical-overlap gate. */
+function subjectEvidenceTargets(query: string): string[] {
+  const issue = query.match(/^(?:for|in|with|regarding|about|given)\b[\s\S]*?,\s*((?:what|which|who|whose|where|when|why|how|can|could|should|does|do|is|are|will|would)\b[\s\S]*)$/i)?.[1];
+  return issue ? [query, issue] : [query];
+}
+
+export const SUBJECT_EVIDENCE_CONTRAST_LIMIT = 3;
+export interface SubjectContract { name: string; description: string }
+
+/** Reuse tool discovery to nominate contrasting systems, never to establish
+ * expertise. Nominate the same primary action that the crossencoder scores:
+ * operational notes otherwise crowd real competing systems out of the cap. */
+export function subjectContrasts(subject: string, text: string, contracts: readonly SubjectContract[]): SubjectContract[] {
+  const entries: ToolDiscoveryEntry[] = contracts.filter(c => c.description.trim() && categoryOf(c.name) !== categoryOf(subject))
+    .map(c => ({ tool: c.name, category: categoryOf(c.name), description: subjectEvidenceAction(c.description)!,
+      status: 'available', provider: { kind: 'builtin', name: c.name } }));
+  return searchTools(entries, text, { limit: SUBJECT_EVIDENCE_CONTRAST_LIMIT })
+    .map(c => ({ name: c.tool, description: c.description! }));
+}
+
+/** A relevance score is not a probability of expertise. Require the named
+ * contract to beat the strongest competing system as well as the original
+ * evidence floor. Equal contracts leave attribution unmeasured. The midpoint
+ * preserves the preregistered 0.5 decision boundary; this changes evidence,
+ * never transcript similarity floors. */
+export function contrastedSubjectScore(target: number | null, contrasts: readonly (number | null)[]): number | null {
+  if (target === null || !Number.isFinite(target) || target < 0 || target > 1 || !contrasts.length ||
+    contrasts.some(s => s === null || !Number.isFinite(s) || s < 0 || s > 1)) return null;
+  const strongest = Math.max(...contrasts as number[]);
+  if (target === strongest) return null;
+  return Math.min(target, 0.5 + (target - strongest) / 2);
+}
+
+let subjectScorer: Promise<RerankScoreFn> | null = null;
+export async function scoreSubjectEvidence(subject: string, texts: string[], deadline: number,
+  deps: { scorer?: RerankScoreFn; contracts?: readonly SubjectContract[] } = {}): Promise<Array<number | null>> {
+  const { listAllProjectedTools } = await import('@papercusp/tooldef');
+  const contracts = deps.contracts ?? listAllProjectedTools().flatMap(t => t.expose.mcp
+    ? [{ name: t.expose.mcp.name, description: t.description }] : []);
+  const query = subjectEvidenceQuery(subject, contracts.find(c => c.name === subject)?.description);
+  if (!query) return texts.map(() => null);
+  if (!deps.scorer && !subjectScorer) {
+    subjectScorer = import('../memory/embed-sidecar-wiring').then(async ({ buildSidecarAwareReranker }) => {
+      return buildSidecarAwareReranker();
+    }).catch(error => { subjectScorer = null; throw error; });
+  }
+  const scorer = deps.scorer ?? await subjectScorer!;
+  // Explicit source paths identify code directly. A natural question has no
+  // registered target contract, but still needs the same competing-action
+  // qualification: absolute similarity overcredits generic procedural overlap.
+  if (!TOOL_SUBJECT_PATTERN.test(subject) && extractPathTokens(subject).includes(subject)) {
+    return scorer(query, texts, { deadline });
+  }
+  const targets = TOOL_SUBJECT_PATTERN.test(subject) ? [query] : subjectEvidenceTargets(query);
+  // At most 24 passages × (2 targets + 3 contrasts), all on the same 4s deadline.
+  // Reverse retrieval asks which contract explains THIS passage, avoiding the
+  // procedural vocabulary that made broad tool descriptions and natural
+  // questions false friends. For a natural question the full query is retained.
+  return Promise.all(texts.map(async text => {
+    const contrasts = subjectContrasts(subject, text, contracts);
+    if (!contrasts.length || Date.now() >= deadline) return null;
+    const scores = await scorer(text, [...targets, ...contrasts.map(c => subjectEvidenceQuery(c.name, c.description)!)], { deadline })
+      .catch(() => null);
+    if (scores === null) return null;
+    if (scores.length !== contrasts.length + targets.length) return null;
+    const alternatives = scores.slice(targets.length);
+    const qualified = scores.slice(0, targets.length).map(target => contrastedSubjectScore(target, alternatives));
+    return qualified.some(score => score === null) ? null : Math.min(...qualified as number[]);
+  }));
 }
 
 /** Build a case-insensitive whole-reference matcher for transcript evidence.
@@ -444,6 +655,23 @@ function exactSubjectMentionPattern(subjectRef: string): string {
 }
 
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
+
+/**
+ * Each lexical-fallback row's score divided by the best row's score for the same question,
+ * so `lexicalRank` lies in (0, 1] under either engine. A BM25 score is unbounded: clamped
+ * as-is it would read 1 for nearly every owner and leave the owner order to the id
+ * tie-break. Dividing by the best score keeps the order and is engine-independent.
+ */
+export function relativeLexicalRanks<T extends { lexicalRank: number | string }>(
+  rows: readonly T[],
+): Array<T & { lexicalRank: number }> {
+  const scores = rows.map((r) => Number(r.lexicalRank));
+  const top = Math.max(0, ...scores.filter(Number.isFinite));
+  return rows.map((r, i) => {
+    const score = scores[i]!;
+    return { ...r, lexicalRank: top > 0 && Number.isFinite(score) ? clamp01(score / top) : 0 };
+  });
+}
 
 const MS_PER_DAY = 86_400_000;
 
@@ -518,10 +746,12 @@ export interface RoutingFloors {
  * caller can qualify on the recency-bearing comparison score by mistake.
  */
 export function meetsRoutingFloors(
-  candidate: { relevance: number; signals: { similarity: number } },
+  candidate: { relevance: number; signals: { similarity: number }; subjectEvidence?: RoutingCandidate['subjectEvidence']; subjectEvidenceCoverage?: RoutingCandidate['subjectEvidenceCoverage'] },
   floors: RoutingFloors,
 ): boolean {
-  return candidate.signals.similarity >= floors.simFloor && candidate.relevance >= floors.relevanceFloor;
+  return (!candidate.subjectEvidence || candidate.subjectEvidence.status === 'supported') &&
+    (!candidate.subjectEvidenceCoverage || candidate.subjectEvidenceCoverage.status === 'supported') &&
+    candidate.signals.similarity >= floors.simFloor && candidate.relevance >= floors.relevanceFloor;
 }
 
 /**
@@ -540,9 +770,11 @@ export function meetsRoutingFloors(
  */
 export function snapshotCandidateQualifies(
   snapshot: { relevanceFloor?: unknown; floor?: unknown; simFloor?: unknown } | null | undefined,
-  candidate: { relevance?: unknown; score?: unknown; signals?: { similarity?: unknown } | null } | null | undefined,
+  candidate: { relevance?: unknown; score?: unknown; signals?: { similarity?: unknown } | null; subjectEvidence?: { status?: unknown } | null; subjectEvidenceCoverage?: { status?: unknown } | null } | null | undefined,
 ): boolean {
   const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  if (candidate?.subjectEvidence && candidate.subjectEvidence.status !== 'supported') return false;
+  if (candidate?.subjectEvidenceCoverage && candidate.subjectEvidenceCoverage.status !== 'supported') return false;
   const simFloor = num(snapshot?.simFloor);
   const similarity = num(candidate?.signals?.similarity) ?? 0;
   // An unreadable floor must never admit anyone: a missing floor is an unknown
@@ -613,10 +845,119 @@ function annotateLiveness(
  * three bounded SQL reads; returns the D-008 snapshot for the caller to
  * persist into consult_state.routing.
  */
-export async function routeConsult(
+/**
+ * D-006 / P-013: an expert who has ever held a personal-data disclosure is not
+ * a routable transcript source (the answer session forks its WHOLE transcript).
+ * Both routing queries exclude such experts in SQL (`restrictedOwnerSql`), so
+ * they never take a candidate slot. The count reported for them covers every
+ * such expert and does not depend on the question — a per-question count would
+ * confirm a guess about a restricted transcript's content. Throws
+ * `disclosure_ledger_unavailable` when the ledger cannot be read: a consult is
+ * refused, never routed unfiltered.
+ */
+async function restrictedExpertsWithheld(
+  sql: unknown,
+  params: Pick<ConsultRouteParams, 'workspaceId' | 'requesterId' | 'excludeOwners'>,
+): Promise<RoutingSnapshot['withheld']> {
+  const summary = await restrictedTranscriptSummary(sql as Sql, {
+    workspaceId: params.workspaceId,
+    excludeOwners: [params.requesterId, ...(params.excludeOwners ?? [])],
+  });
+  if (summary.owners === 0) return undefined;
+  return { restricted_turns: summary.turns, restricted_owners: summary.owners, rule: D006_TRANSCRIPT_RULE };
+}
+
+export type ExpertiseRoutingStage = 'disclosure' | 'embedding' | 'transcripts' | 'verification' | 'authorship' | 'liveness' | 'ranking' | 'evidence';
+export interface ExpertiseRoutingReceipt {
+  schemaVersion: 1;
+  correlationId: string;
+  workspaceId: string;
+  requesterId: string;
+  caller: string;
+  policy: string;
+  buildSha: string | null;
+  startedAt: string;
+  durationMs: number;
+  outcome: 'returned' | 'degraded' | 'threw';
+  verdict: RouteResult['verdict'] | null;
+  errorCode: string | null;
+  /** Missing means not exercised, never a zero-duration observation. */
+  stages: Partial<Record<ExpertiseRoutingStage, {
+    durationMs: number;
+    outcome: 'returned' | 'threw';
+    /** Safe structured cause for failed stages, including recovered failures.
+     * Absent on legacy receipts and successful stages; never raw error text. */
+    errorCode?: string;
+  }>>;
+}
+
+function routingErrorCode(error: unknown): string {
+  // Sidecar wrappers retain the provider cause. Bound traversal for malformed
+  // or cyclic chains, and do not let diagnostic getters replace route behavior.
+  try {
+    for (let depth = 0; depth < 4 && error && typeof error === 'object'; depth++) {
+      const cause = error as { code?: unknown; name?: unknown; cause?: unknown };
+      if (typeof cause.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(cause.code)) return cause.code;
+      if (cause.name === 'AbortError') return 'ABORT_ERR';
+      if (cause.name === 'TimeoutError') return 'ETIMEDOUT';
+      error = cause.cause;
+    }
+  } catch { /* diagnostics must not replace the original result or exception */ }
+  return 'routing_exception';
+}
+
+/** Measure the shared seam, including exceptions before a consult row exists. */
+export async function routeConsult(params: ConsultRouteParams, deps: ConsultRouteDeps): Promise<RouteResult> {
+  const clock = deps.monotonicNow ?? (() => performance.now());
+  const started = clock();
+  const receipt: ExpertiseRoutingReceipt = {
+    schemaVersion: 1, correlationId: params.telemetry?.correlationId ?? randomUUID(),
+    workspaceId: params.workspaceId, requesterId: params.requesterId,
+    caller: params.telemetry?.caller ?? 'unattributed', policy: params.telemetry?.policy ?? 'unknown',
+    buildSha: params.telemetry?.buildSha ?? null,
+    startedAt: (deps.now?.() ?? new Date()).toISOString(), durationMs: 0,
+    outcome: 'threw', verdict: null, errorCode: null, stages: {},
+  };
+  const elapsed = (at: number) => Math.max(0, Math.round((clock() - at) * 10) / 10);
+  const measure: NonNullable<ConsultRouteDeps['measure']> = async (stage, work) => {
+    const at = clock();
+    try {
+      const value = await work();
+      receipt.stages[stage] = { durationMs: elapsed(at), outcome: 'returned' };
+      return value;
+    } catch (error) {
+      receipt.stages[stage] = { durationMs: elapsed(at), outcome: 'threw', errorCode: routingErrorCode(error) };
+      throw error;
+    }
+  };
+  try {
+    const result = await routeConsultCore(params, { ...deps, measure });
+    receipt.verdict = result.verdict;
+    receipt.outcome = result.snapshot.degraded || Object.values(receipt.stages).some(s => s.outcome === 'threw')
+      ? 'degraded' : 'returned';
+    receipt.durationMs = elapsed(started);
+    if (params.telemetry || deps.recordTelemetry) result.snapshot.measurement = structuredClone(receipt);
+    return result;
+  } catch (error) {
+    // Raw error text can contain questions, SQL values or credentials.
+    receipt.errorCode = routingErrorCode(error);
+    throw error;
+  } finally {
+    if (receipt.outcome === 'threw') receipt.durationMs = elapsed(started);
+    if (deps.recordTelemetry) {
+      try {
+        // Diagnostics never change routing or extend its acknowledgement.
+        void Promise.resolve(deps.recordTelemetry(structuredClone(receipt))).catch(() => {});
+      } catch { /* synchronous recorder failures are diagnostic, too */ }
+    }
+  }
+}
+
+async function routeConsultCore(
   params: ConsultRouteParams,
   deps: ConsultRouteDeps,
 ): Promise<RouteResult> {
+  const measure: NonNullable<ConsultRouteDeps['measure']> = deps.measure ?? ((_stage, work) => work());
   // `now` stamps the snapshot. It is deliberately NOT read by any scoring path
   // any more: stage 1 has no time term and stage 2 compares candidates against
   // each other, so wall-clock cannot reach the ranking (D-001).
@@ -633,9 +974,18 @@ export async function routeConsult(
   const evidencePerOwner = params.evidencePerOwner ?? 3;
   const subjectRef = params.subjectRef?.trim() || null;
   const subjectPattern = subjectRef ? exactSubjectMentionPattern(subjectRef) : null;
+  const inferredSubject = expertiseSubject(params.question);
+  // Natural questions still require problem-specific evidence. Reducing one to
+  // generic procedural words, or skipping validation when no code is named,
+  // lets unrelated continuation history borrow semantic qualification.
+  const subjectRefs = [...new Set((params.subjectRefs !== undefined ? params.subjectRefs : [inferredSubject ?? params.question])
+    .map(ref => ref.trim()).filter(Boolean))];
+  const unresolvedSubjectRefs = [...new Set((params.unresolvedSubjectRefs ?? []).map(ref => ref.trim()).filter(Boolean))];
 
   const base: Omit<RoutingSnapshot, 'candidates'> = {
     query: params.question,
+    ...(subjectRefs.length ? { subjectRefs } : {}),
+    ...(unresolvedSubjectRefs.length ? { unresolvedSubjectRefs } : {}),
     relevanceFloor: floors.relevanceFloor,
     simFloor: floors.simFloor,
     weights,
@@ -644,16 +994,22 @@ export async function routeConsult(
   };
 
   const sql = deps.getSql();
+  const withheld = await measure('disclosure', () => restrictedExpertsWithheld(sql, params));
+  if (withheld) base.withheld = withheld;
+  const notRestricted = (sql as unknown as Sql)`NOT ${restrictedOwnerSql(sql as unknown as Sql, 'session_turns')}`;
+  const nativePopulation = nativeSourcePopulationSql(sql as unknown as Sql, params);
   const vec = deps.embed && deps.embeddingProfile
-    ? await deps.embed(params.question).catch(() => null)
+    ? await measure('embedding', () => deps.embed!(params.question)).catch(() => null)
     : null;
   if (!vec || vec.length === 0) {
-    // The semantic instrument is unavailable, but the session-turn index still
-    // has the same bounded lexical contract as search: `text_tsv` generated
-    // from the first 20k chars, `plainto_tsquery('english', ...)`, and
-    // `ts_rank_cd` ordered best-first. This is retrieval provenance, not a
-    // semantic qualification path: qualified stays empty and every candidate
-    // is labeled as lexical fallback for the minimum-fill/manual-review layer.
+    // The semantic instrument is unavailable, but the session-turn corpus still
+    // has the same bounded lexical contract as search: the first 20k chars,
+    // ranked best-first by the shared lexical seam (BM25 over
+    // `session_turns_bm25`, else `ts_rank_cd` over `text_tsv`; plan
+    // bm25-lexical-search-evoke-adoption-2026-10-10 P-005). This is retrieval
+    // provenance, not a semantic qualification path: qualified stays empty and
+    // every candidate is labeled as lexical fallback for the
+    // minimum-fill/manual-review layer.
     let lexicalRows: Array<{
       owner: string;
       session_id: string;
@@ -662,27 +1018,38 @@ export async function routeConsult(
       lexicalRank: number;
     }> = [];
     try {
-      lexicalRows = (await sql`
+      const pg = sql as unknown as Sql;
+      const tq = pg`plainto_tsquery('english', ${params.question})`;
+      lexicalRows = (await measure('transcripts', async () => {
+        const leg = await lexicalLeg(pg, {
+          table: 'session_turns',
+          query: params.question,
+          legacy: { score: pg`ts_rank_cd(text_tsv, ${tq})`, match: pg`text_tsv @@ ${tq}` },
+        });
+        return sql`
         SELECT owner, session_id, turn_idx,
                COALESCE(ts, ingested_at) AS ts,
-               ts_rank_cd(text_tsv, plainto_tsquery('english', ${params.question})) AS "lexicalRank"
+               ${leg.score} AS "lexicalRank"
           FROM harness_shared.session_turns
          WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
            AND owner IS NOT NULL
            AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
            AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
-           AND text_tsv @@ plainto_tsquery('english', ${params.question})
+           AND ${leg.match}
            AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
-      ORDER BY "lexicalRank" DESC, COALESCE(ts, ingested_at) DESC
+           AND ${notRestricted}
+           AND ${nativePopulation}
+      ORDER BY ${leg.order}, COALESCE(ts, ingested_at) DESC
          LIMIT ${turnLimit}
-      `) as unknown as Array<{
+      `;
+      })) as unknown as Array<{
         owner: string;
         session_id: string;
         turn_idx: number;
         ts: string | Date | null;
         lexicalRank: number;
       }>;
-      lexicalRows = lexicalRows.map((r) => ({ ...r, lexicalRank: Number(r.lexicalRank) }));
+      lexicalRows = relativeLexicalRanks(lexicalRows);
     } catch {
       // A partially migrated host may not have text_tsv yet. The semantic
       // instrument is already degraded, so preserve an honest empty result and
@@ -718,11 +1085,12 @@ export async function routeConsult(
     const owners = [...byOwner.keys()];
     let livenessByOwner: Record<string, ConsultLivenessReading> = {};
     if (deps.getLiveness && owners.length > 0) {
-      livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
+      livenessByOwner = await measure('liveness', () => deps.getLiveness!(owners)).catch(() => ({}));
     }
     // No candidate can qualify on this path (similarity was never measured), so
     // the stage-2 reference is the freshest candidate overall — freshness stays
     // relative here too, purely as an audit signal.
+    const snapshotCandidates = await measure('ranking', async () => {
     const lexicalReferenceMs = maxTimestamp([...byOwner.values()].map((o) => o.newestTs));
     const candidates: RoutingCandidate[] = owners.map((ownerId) => {
       const owner = byOwner.get(ownerId)!;
@@ -752,7 +1120,8 @@ export async function routeConsult(
       };
     });
     candidates.sort((a, b) => b.score - a.score || a.ownerId.localeCompare(b.ownerId));
-    const snapshotCandidates = candidates.slice(0, maxCandidates);
+    return candidates.slice(0, maxCandidates);
+    });
     return {
       // NOT `no_qualified_responder`: that verdict asserts a MEASURED conclusion
       // about the peer population, and on this path nothing was measured — the
@@ -783,27 +1152,61 @@ export async function routeConsult(
   //      over-filtering starves the router.
   //    - withIterativeScan: without it the HNSW scan stops at hnsw.ef_search
   //      and silently under-returns (WI-37603).
-  const turnRows = (await withIterativeScan(sql as never, (s) => (s as unknown as Sql)`
-    SELECT owner, session_id, turn_idx,
-           COALESCE(ts, ingested_at) AS ts,
-           1 - (text_embedding <=> ${qVec}::vector) AS sim
-      FROM harness_shared.session_turns
-     WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
+  const fetchedTurnRows = (await measure('transcripts', () => withIterativeScan(sql as never, (s) => {
+    const tx = s as unknown as Sql;
+    const turnFilter = tx`(workspace_id = ${params.workspaceId} OR workspace_id = 'default')
        AND text_embedding IS NOT NULL
-       AND ${proseProfilePredicateSql(sql, deps.embeddingProfile, 'text_embedding_profile', 'text_embedding_mode')}
+       AND ${proseProfilePredicateSql(tx, deps.embeddingProfile, 'text_embedding_profile', 'text_embedding_mode')}
        AND owner IS NOT NULL
        AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
        AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
        AND (${subjectPattern}::text IS NULL OR COALESCE(text, '') ~* ${subjectPattern})
-  ORDER BY text_embedding <=> ${qVec}::vector
-     LIMIT ${turnLimit}
-  `)) as unknown as Array<{
+       AND ${notRestricted}
+       AND ${nativePopulation}`;
+    const columns = tx`owner, session_id, turn_idx, COALESCE(ts, ingested_at) AS ts,
+      left(COALESCE(text, ''), ${SUBJECT_EVIDENCE_TEXT_LIMIT}) AS "subjectText"`;
+    if (params.nativeConsult?.sourceState === 'live') {
+      // A global HNSW scan can exhaust max_scan_tuples before encountering
+      // any of these sparse current incarnations, even with iterative scan.
+      // Use indexed native-session lookups first, then rank their exact
+      // eligible population. Keep the canonical eligibility predicate above.
+      return tx`WITH native_sources AS MATERIALIZED (
+        SELECT DISTINCT a.coord_owner_id AS native_owner,
+          CASE WHEN a.agent = 'omp' THEN COALESCE(a.omp_thread_id, a.session_id)
+               ELSE a.session_id END AS native_session_id
+          FROM harness_shared.adv_sessions a
+         WHERE a.workspace_id = ${params.workspaceId}
+           AND a.agent = ${params.nativeConsult.sourceBackend}
+           AND a.role IS NULL AND a.ended_at IS NULL
+      ), native_turns AS MATERIALIZED (
+        SELECT ${columns}, text_embedding
+          FROM native_sources n
+          CROSS JOIN LATERAL (
+            SELECT * FROM harness_shared.session_turns
+             WHERE session_id = n.native_session_id AND owner = n.native_owner
+               AND ${turnFilter}
+            OFFSET 0
+          ) session_turns
+      ) SELECT owner, session_id, turn_idx, ts, "subjectText",
+               1 - (text_embedding <=> ${qVec}::vector) AS sim
+          FROM native_turns
+      ORDER BY text_embedding <=> ${qVec}::vector
+         LIMIT ${turnLimit}`;
+    }
+    return tx`SELECT ${columns}, 1 - (text_embedding <=> ${qVec}::vector) AS sim
+        FROM harness_shared.session_turns
+       WHERE ${turnFilter}
+    ORDER BY text_embedding <=> ${qVec}::vector
+       LIMIT ${turnLimit}`;
+  }))) as unknown as Array<{
     owner: string;
     session_id: string;
     turn_idx: number;
     ts: string | Date | null;
     sim: number;
+    subjectText: string;
   }>;
+  const turnRows = fetchedTurnRows;
 
   if (turnRows.length === 0) {
     return {
@@ -866,13 +1269,13 @@ export async function routeConsult(
   //    Do not "restore" the longer name here; change the schema first or not at all.
   //    (`closed_at` DOES exist on harness_shared.consult_state — that is why the
   //    other consult modules use it correctly and only this query was wrong.)
-  const verRows = (await sql`
+  const verRows = (await measure('verification', () => sql`
     SELECT terminal_owner AS owner, count(*)::int AS c
       FROM harness_shared.work_items
      WHERE terminal_owner = ANY(${owners}::text[])
        AND authority = 'committed'
   GROUP BY terminal_owner
-  `) as unknown as Array<{ owner: string; c: number }>;
+  `)) as unknown as Array<{ owner: string; c: number }>;
   const verByOwner = new Map(verRows.map((r) => [r.owner, r.c]));
 
   // 4) Authorship: only when the question names code paths. Matches the
@@ -881,7 +1284,7 @@ export async function routeConsult(
   const authByOwner = new Map<string, number>();
   if (pathTokens.length > 0) {
     const patterns = pathTokens.map((t) => `%${t}%`);
-    const authRows = (await sql`
+    const authRows = (await measure('authorship', () => sql`
       SELECT terminal_owner AS owner, count(DISTINCT feature_id)::int AS c
         FROM harness_shared.work_items w,
              LATERAL jsonb_array_elements_text(w.payload->'paths') AS p(path)
@@ -889,17 +1292,86 @@ export async function routeConsult(
          AND jsonb_typeof(w.payload->'paths') = 'array'
          AND p.path ILIKE ANY(${patterns}::text[])
     GROUP BY terminal_owner
-    `) as unknown as Array<{ owner: string; c: number }>;
+    `)) as unknown as Array<{ owner: string; c: number }>;
     for (const r of authRows) authByOwner.set(r.owner, r.c);
+  }
+
+  // Similar words and a general completion history do not establish expertise
+  // in a named system. Validate a bounded above-floor pool against its primary
+  // subject; keep mismatches/unmeasured candidates for labelled minimum fill.
+  const subjectCoverageByOwner = new Map<string, NonNullable<RoutingCandidate['subjectEvidenceCoverage']>>();
+  if (subjectRefs.length || unresolvedSubjectRefs.length) {
+    const eligible = owners.filter(ownerId => {
+      const similarity = clamp01(Math.max(...byOwner.get(ownerId)!.sims));
+      const c = verByOwner.get(ownerId) ?? 0;
+      return meetsRoutingFloors({ relevance: relevanceOf({ similarity,
+        verification: c / (c + VERIFICATION_SATURATION_K), authorship: clamp01((authByOwner.get(ownerId) ?? 0) / 2) }, weights),
+        signals: { similarity } }, floors);
+    }).sort((a, b) => Math.max(...byOwner.get(b)!.sims) - Math.max(...byOwner.get(a)!.sims) || a.localeCompare(b));
+    const unmeasuredEvidence = subjectRefs.map(subject => ({ subject, status: 'unmeasured' as const, score: null }));
+    for (const ownerId of eligible) subjectCoverageByOwner.set(ownerId, {
+      status: 'unmeasured', required: subjectRefs, evidence: unmeasuredEvidence.map(row => ({ ...row })),
+      unresolved: unresolvedSubjectRefs,
+    });
+    const boundedOwners = eligible.slice(0, SUBJECT_EVIDENCE_OWNER_LIMIT);
+    const passages = boundedOwners.flatMap(ownerId => turnRows.filter(r => r.owner === ownerId)
+      .slice(0, Math.min(evidencePerOwner, 3)).map(r => ({ ownerId, text: r.subjectText })));
+    const usable = passages.filter(p => typeof p.text === 'string' && p.text.trim());
+    if (usable.length && subjectRefs.length) {
+      try {
+        const deadline = Date.now() + SUBJECT_EVIDENCE_TIMEOUT_MS;
+        const { value: scoreBySubject } = await measure('evidence', () => withDeadlineFallback((async () => {
+          const all: Array<Array<number | null>> = [];
+          for (const subject of subjectRefs) {
+            if (Date.now() >= deadline) {
+              all.push(usable.map(() => null));
+              continue;
+            }
+            const scores = await (deps.scoreSubjectEvidence ?? scoreSubjectEvidence)(subject, usable.map(p => p.text), deadline)
+              .catch(() => usable.map(() => null));
+            all.push(scores.length === usable.length ? scores : usable.map(() => null));
+          }
+          return all;
+        })(), SUBJECT_EVIDENCE_TIMEOUT_MS, () => subjectRefs.map(() => usable.map(() => null))));
+        for (const ownerId of boundedOwners) {
+          const evidence = subjectRefs.map((subject, subjectIndex) => {
+            const scores = scoreBySubject[subjectIndex] ?? [];
+            const observed = usable.flatMap((p, passageIndex) => p.ownerId === ownerId &&
+              typeof scores[passageIndex] === 'number' && Number.isFinite(scores[passageIndex]) &&
+              scores[passageIndex]! >= 0 && scores[passageIndex]! <= 1 ? [scores[passageIndex] as number] : []);
+            if (!observed.length) return { subject, status: 'unmeasured' as const, score: null };
+            const score = Math.max(...observed);
+            return { subject, status: score >= SUBJECT_EVIDENCE_MIN_SCORE ? 'supported' as const : 'mismatch' as const, score };
+          });
+          const status = unresolvedSubjectRefs.length || evidence.some(row => row.status === 'unmeasured')
+            ? 'unmeasured'
+            : evidence.some(row => row.status === 'mismatch') ? 'mismatch' : 'supported';
+          subjectCoverageByOwner.set(ownerId, { status, required: subjectRefs, evidence, unresolved: unresolvedSubjectRefs });
+        }
+      } catch { /* unknown remains explicit, including capped or unavailable owners */ }
+    }
+    const coverage = [...subjectCoverageByOwner.values()];
+    const unmeasured = coverage.filter(row => row.status === 'unmeasured').length;
+    base.subjectValidation = {
+      ...(subjectRefs.length === 1 ? { subject: subjectRefs[0] } : {}),
+      subjects: subjectRefs,
+      threshold: SUBJECT_EVIDENCE_MIN_SCORE,
+      evaluated: coverage.length - unmeasured,
+      unmeasured,
+      limit: SUBJECT_EVIDENCE_OWNER_LIMIT,
+      unresolved: unresolvedSubjectRefs,
+    };
+    if (unmeasured) base.degraded = 'evidence-unavailable';
   }
 
   // 5) Liveness annotation (never a gate here — D-008 §5).
   let livenessByOwner: Record<string, ConsultLivenessReading> = {};
   if (deps.getLiveness) {
-    livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
+    livenessByOwner = await measure('liveness', () => deps.getLiveness!(owners)).catch(() => ({}));
   }
 
   // 6) STAGE 1 — QUALIFY, with no time term anywhere (D-001 §1).
+  const { qualified, snapshotCandidates } = await measure('ranking', async () => {
   const scored = owners.map((ownerId) => {
     const o = byOwner.get(ownerId)!;
     const similarity = clamp01(Math.max(...o.sims));
@@ -913,6 +1385,12 @@ export async function routeConsult(
       relevance: relevanceOf(signals, weights),
       newestTs: o.newestTs,
       evidence: o.evidence,
+      ...(subjectCoverageByOwner.has(ownerId) ? {
+        subjectEvidenceCoverage: subjectCoverageByOwner.get(ownerId)!,
+        ...(subjectCoverageByOwner.get(ownerId)!.evidence.length === 1
+          ? { subjectEvidence: subjectCoverageByOwner.get(ownerId)!.evidence[0] }
+          : {}),
+      } : {}),
     };
   });
 
@@ -944,6 +1422,8 @@ export async function routeConsult(
       relativeAgeDays,
       signals: { ...s.signals, freshness },
       evidence: s.evidence,
+      ...(s.subjectEvidence ? { subjectEvidence: s.subjectEvidence } : {}),
+      ...(s.subjectEvidenceCoverage ? { subjectEvidenceCoverage: s.subjectEvidenceCoverage } : {}),
       ...annotateLiveness(livenessByOwner[s.ownerId]),
     };
   });
@@ -954,9 +1434,11 @@ export async function routeConsult(
 
   const qualified = candidates.filter((c) => qualifiedIds.has(c.ownerId)).slice(0, maxQualified);
   const snapshotCandidates = boundedSnapshot(candidates, qualified, maxCandidates);
+  return { qualified, snapshotCandidates };
+  });
 
   return {
-    verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',
+    verdict: qualified.length > 0 ? 'routed' : base.degraded === 'evidence-unavailable' ? 'relevance_unmeasured' : 'no_qualified_responder',
     qualified,
     snapshot: { ...base, candidates: snapshotCandidates },
     queryVec: vec,

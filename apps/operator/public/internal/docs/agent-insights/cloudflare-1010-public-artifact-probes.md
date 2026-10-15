@@ -1,0 +1,33 @@
+# Cloudflare 1010 in public artifact probes
+URL: /internal/docs/agent-insights/cloudflare-1010-public-artifact-probes
+
+Use an artifact's real download client when proving public access. A controlled default Python UA refusal can identify Cloudflare browser-signature blocking without proving the object is missing or the release is broken.
+
+## Measured boundary
+
+On 2026-10-10, EI-25547977646535056 tested the exact published r5 workspace-host bundle `e41d9a609acd73cab9c22db0f21772e34431d9beb351a0c537a43d468e686382` at `cupboard.papercusp.com`. No artifact was changed.
+
+| Controlled HEAD probe                                            | Python-urllib/3.12 UA | curl/8.5.0 UA |
+| ---------------------------------------------------------------- | --------------------- | ------------- |
+| Same Python urllib client, proxies disabled, CF EWR              | 403                   | 200           |
+| Same curl client, HTTP/1.1, IPv4 pinned to 104.21.73.140, CF EWR | 403                   | 200           |
+
+The successful responses reported the pinned 2,078,896,593-byte bundle. These HEAD probes establish response/access behavior, not downloaded-byte integrity. Original full-byte/signature evidence stays in `/mnt/backup/cloud-e2e-workspace-host-20261010r5/public-verification/receipt.json`.
+
+An independent default-Python GET returned literal `error code: 1010\n`. Cloudflare's [1010 documentation](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-1xxx-errors/error-1010/) identifies browser-signature blocking. Its [Browser Integrity Check documentation](https://developers.cloudflare.com/waf/tools/browser-integrity-check/) explains the header check. This distinguishes the refusal from an absent artifact and from a failure inherent to Python's TLS implementation. It does not identify the zone's exact rule configuration.
+
+## Probe discipline
+
+Use the production download client and its normal headers for acceptance. Record URL/digest, method, client, relevant headers, status, response type, CF Ray/region, and downloaded hash when applicable. If a second client fails, retain that failure separately; never turn one supported-client success into an arbitrary-client claim.
+
+For a 403, capture a bounded error body before inferring origin. Compare within the same client and address/region while changing one request field. A changed user agent is a diagnostic control, not a repair or permission to spoof a different production client. A positive control should fetch an already-known object using the same instrument.
+
+The Worker public route checks finalized content-addressed objects and returns 404 or 200; its current `serveArtifact` does not branch on request user agent. Local Worker tests cannot certify the external Cloudflare security layer. Any policy repair needs the current setting/rule read, authorization for the security change, and post-change production-client verification. Keep the incident open until that requirement is settled.
+
+## Evidence and limitation
+
+Durable task `0mv28dlwp1irwn701it`, terminal exit 0: `.papercusp/scratch/bash-453f4e4b-c8f.log`. Error-body evidence: `.papercusp/scratch/bash-82ac3fb9-322.log`.
+
+Read-only task `0mv28i4uq16zkb4z1qm`, terminal exit 0: `.papercusp/scratch/bash-32f69b1a-97d.log`. The existing credential can read zone `18a856a6054a8fd19778947a8fbcfc18`; `settings/browser_check` returned 403/code 9109. Its value and any custom rule remain unread. No security setting was changed. Previous r2.dev memories describe precedent, not proof of this zone's configuration.
+
+This diagnosis does not satisfy Cloud auth, image/provider lifecycle, or shipment acceptance.

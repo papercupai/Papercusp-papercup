@@ -23,15 +23,18 @@
  * assembly that drifted would make a "refreshed" prompt quietly differ from a fresh
  * one, which is worse than staleness because nothing would report it.
  *
- * FAIL-SOFT IS THE CONTRACT. Every failure returns 200 `{ ok: false, reason }`
- * rather than an error status, because the only correct caller behaviour is
- * identical in all of them: keep the inherited render and respawn anyway. A respawn
+ * Render failures return 200 `{ ok: false, reason }` so the caller can keep the
+ * inherited render and respawn. A funding refusal is a separate typed reason:
+ * the caller must stop instead of reusing an unfunded identity. A respawn
  * that died because the operator was briefly unreachable would lose the whole
  * session, which is strictly worse than running a stale prompt. The `reason` exists
  * so the failure is diagnosable instead of silent.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { chmodSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
+// ASYNC fs only (WI-10005227): this handler runs on bg-host's event loop, and a sync
+// rename over an existing ~150 KB file blocked it 567 ms on ext4 (journal wait +
+// auto_da_alloc data flush). fs/promises moves that wait to the libuv threadpool.
+import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
 import { readSuLaunchSpecByOwner, recordSuLaunchSpec } from '../../../adv-sessions';
 import { isSuAgent } from '../../../su-agents';
 import { launchContextDir } from '../../../su-launch-context';
@@ -40,7 +43,7 @@ import {
   rebuildSuLaunchArtifact,
   suPersonaRefreshPathFor,
 } from '../../../su-persona-render';
-import { CORS_HEADERS, composeModePromptSection, gatePrincipal, jsonRes } from './bootstrap-su';
+import { CORS_HEADERS, composeModePromptSection, gatePrincipal, jsonRes } from './bootstrap-su-shared';
 import { requestSessionIdentityActivation } from '../../../agent-tools/coordination/control-anchor';
 
 const personaRefresh = defineTool({
@@ -81,7 +84,8 @@ const personaRefresh = defineTool({
         return jsonRes({ ok: false, reason: 'unsupported-agent', agent: record.agent });
       }
 
-      const rebuilt = await rebuildSuLaunchArtifact({
+      const { rebuildSuLaunchArtifactFunded } = await import('../../../cupboard/identity-activation-restart');
+      const funded = await rebuildSuLaunchArtifactFunded({
         ownerId: coordOwnerId,
         operatorBaseUrl: new URL(req.url).origin,
         record,
@@ -90,19 +94,19 @@ const personaRefresh = defineTool({
           drainMode: record.drainMode,
           loopArmed: record.loopArmed,
         }),
-      });
-      const { artifact, promptText, spec } = rebuilt;
+      }, { rebuild: rebuildSuLaunchArtifact });
+      const { artifact, promptText, spec } = funded.rebuilt;
 
       // Write atomically to a path that is NOT the inherited one. The caller's
       // fallback is the file it already has, so that file must stay intact and
       // known-good — rewriting it in place would destroy the fallback at exactly the
       // moment a bad render made the fallback necessary.
       const promptFile = suPersonaRefreshPathFor(coordOwnerId);
-      mkdirSync(launchContextDir(), { recursive: true });
+      await mkdir(launchContextDir(), { recursive: true });
       const tmp = `${promptFile}.tmp-${process.pid}`;
-      writeFileSync(tmp, promptText, { mode: 0o600 });
-      chmodSync(tmp, 0o600);
-      renameSync(tmp, promptFile);
+      await writeFile(tmp, promptText, { mode: 0o600 });
+      await chmod(tmp, 0o600);
+      await rename(tmp, promptFile);
 
       // P-009: a carry-respawn is a new host-delivery attempt even when the
       // content hashes happen to be unchanged. Persist the current immutable
@@ -143,8 +147,21 @@ const personaRefresh = defineTool({
         specificationRevision: artifact.specificationRevision,
         stateRevision: artifact.stateRevision,
         compositionSource: artifact.compositionSource,
+        identityActivationRefusal: funded.identityActivationRefusal,
+        removedLayerRefs: funded.removedLayerRefs,
       });
     } catch (err) {
+      const { isIdentityActivationRefusedError } = await import('../../../cupboard/identity-activation-gate');
+      if (isIdentityActivationRefusedError(err)) {
+        const { IDENTITY_ACTIVATION_REFUSED_REASON } = await import('../../../cupboard/identity-activation-restart');
+        return jsonRes({
+          ok: false,
+          reason: IDENTITY_ACTIVATION_REFUSED_REASON,
+          error: err.code,
+          detail: err.message,
+          refused: err.refused,
+        });
+      }
       return jsonRes({
         ok: false,
         reason: 'render-failed',

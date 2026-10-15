@@ -59,6 +59,12 @@ function providerLabel(provider: AccountProvider): string {
   return provider === 'codex' ? 'Codex' : 'Claude';
 }
 
+function accountCredentialLabel(row: Pick<AccountRow, 'provider' | 'credentialRef'>): string {
+  return accountProvider(row) === 'claude' && row.credentialRef.startsWith('apikey:')
+    ? 'Anthropic API · paid credits'
+    : providerLabel(accountProvider(row));
+}
+
 function providerCredentialHint(provider: AccountProvider): string {
   return provider === 'codex'
     ? 'Codex accounts use a bearer token or env:NAME reference for the OpenAI-compatible gateway route.'
@@ -82,6 +88,7 @@ export default function DeployAccountsPage() {
   const [label, setLabel] = useQueryState('label', parseAsString.withDefault(''));
 
   const [value, setValue] = useState(''); // the pasted token / bundle — secret, useState only
+  const [anthropicWorkspaceId, setAnthropicWorkspaceId] = useState('');
   const [busy, setBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -94,7 +101,7 @@ export default function DeployAccountsPage() {
   // server-side (account-link-cli.ts) and relays its link, so claude.ai accepts it (the CLI does
   // the client handshake a hand-built URL can't — accounts-pool-tab D-016). The setup-token paste
   // tab stays as the manual fallback.
-  const [linkMode, setLinkMode] = useState<'oauth' | 'token'>('oauth');
+  const [linkMode, setLinkMode] = useState<'oauth' | 'token' | 'api-key'>('oauth');
   const [provider, setProvider] = useState<'claude' | 'codex'>('claude');
   const [authorizeUrl, setAuthorizeUrl] = useState<string | null>(null);
   const [linkId, setLinkId] = useState<string | null>(null);
@@ -175,6 +182,7 @@ export default function DeployAccountsPage() {
     setAccountId('');
     setLabel('');
     setValue('');
+    setAnthropicWorkspaceId('');
     setAddError(null);
     setAuthorizeUrl(null);
     setLinkId(null);
@@ -190,7 +198,7 @@ export default function DeployAccountsPage() {
       return;
     }
     if (!value.trim()) {
-      setAddError(provider === 'codex' ? 'Paste a Codex/OpenAI bearer token or env:NAME reference.' : 'Paste a setup-token (sk-ant-oat…) or a .credentials.json bundle.');
+      setAddError(linkMode === 'api-key' ? 'Paste an Anthropic Console API key (sk-ant-api… or sk-ant-usr…).' : provider === 'codex' ? 'Paste a Codex/OpenAI bearer token or env:NAME reference.' : 'Paste a setup-token (sk-ant-oat…) or a .credentials.json bundle.');
       return;
     }
     setBusy(true);
@@ -198,7 +206,7 @@ export default function DeployAccountsPage() {
       const r = await fetch('/api/admin/deploy-accounts/register', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountId, label: label || undefined, provider, value: value.trim() }),
+        body: JSON.stringify({ accountId, label: label || undefined, provider, value: value.trim(), ...(linkMode === 'api-key' ? { credentialType: 'api-key', ...(anthropicWorkspaceId.trim() ? { anthropicWorkspaceId: anthropicWorkspaceId.trim() } : {}) } : {}) }),
       });
       const j = await r.json();
       if (!j.ok) throw new Error(j.error || 'register failed');
@@ -212,7 +220,7 @@ export default function DeployAccountsPage() {
     } finally {
       setBusy(false);
     }
-  }, [accountId, label, provider, value, resetForm, refresh]);
+  }, [accountId, label, provider, value, linkMode, anthropicWorkspaceId, resetForm, refresh]);
 
   // OAuth mode step A: start the provider CLI and capture its browser-login URL.
   const startOAuth = useCallback(async () => {
@@ -241,12 +249,13 @@ export default function DeployAccountsPage() {
     }
   }, [accountId, label, provider]);
 
-  // While a claude OAuth link is held open, poll its server-side status: claude CLI ≥2.1.200
+  // Both providers install browser-approved credentials server-side. Poll the held link
+  // so the wizard observes completion for Codex as well as Claude. Claude CLI ≥2.1.200
   // runs a localhost callback listener, so a SAME-MACHINE browser approval delivers the code
   // straight to the CLI ("You're all set up … close this window" — no code shown) and the server
   // auto-finalizes. Without this poll that path looked like "nothing happened" (2026-07-03).
   useEffect(() => {
-    if (!linkId || !authorizeUrl || provider !== 'claude') return;
+    if (!linkId || !authorizeUrl) return;
     let stopped = false;
     const tick = async () => {
       try {
@@ -261,11 +270,17 @@ export default function DeployAccountsPage() {
         if (j.status === 'completed') {
           stopped = true;
           resetForm();
-          toast.success(`Claude account "${accountId}" linked via browser login`);
+          toast.success(`${providerLabel(provider)} account "${accountId}" linked via browser login`);
           await refresh();
         } else if (j.status === 'failed') {
           stopped = true;
           setAddError(j.error || 'link failed');
+        } else if (j.status === 'unknown') {
+          stopped = true;
+          setAuthorizeUrl(null);
+          setLinkId(null);
+          setUserCode(null);
+          setAddError('The login link expired or the workspace restarted. Generate a new authorize link.');
         }
       } catch {
         /* transient — next tick retries */
@@ -378,7 +393,7 @@ export default function DeployAccountsPage() {
             : 'Enter an account ID to continue.'
         : value.trim()
           ? 'Ready to link this account.'
-          : provider === 'codex' ? 'Paste a bearer token or env reference to continue.' : 'Paste a setup-token or credentials bundle to continue.';
+          : activeLinkMode === 'api-key' ? 'Paste an Anthropic API key to continue.' : provider === 'codex' ? 'Paste a bearer token or env reference to continue.' : 'Paste a setup-token or credentials bundle to continue.';
   const providerCounts = accounts.reduce(
     (acc, account) => {
       acc[accountProvider(account)] += 1;
@@ -472,6 +487,7 @@ export default function DeployAccountsPage() {
               className={`pc-da__mode${linkMode === 'oauth' ? ' is-active' : ''}`}
               onClick={() => {
                 setLinkMode('oauth');
+                setValue('');
                 setAddError(null);
               }}
             >
@@ -484,11 +500,32 @@ export default function DeployAccountsPage() {
               className={`pc-da__mode${linkMode === 'token' ? ' is-active' : ''}`}
               onClick={() => {
                 setLinkMode('token');
+                setValue('');
+                setAuthorizeUrl(null);
+                setLinkId(null);
                 setAddError(null);
               }}
             >
               {provider === 'codex' ? 'Paste a bearer token' : 'Paste a setup-token'}
             </button>
+            {provider === 'claude' && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={linkMode === 'api-key'}
+                className={`pc-da__mode${linkMode === 'api-key' ? ' is-active' : ''}`}
+                onClick={() => {
+                  setLinkMode('api-key');
+                  setValue('');
+                  setAuthorizeUrl(null);
+                  setLinkId(null);
+                  setCode('');
+                  setAddError(null);
+                }}
+              >
+                Anthropic API key
+              </button>
+            )}
           </div>
 
           <label className="pc-da__field">
@@ -508,7 +545,7 @@ export default function DeployAccountsPage() {
                     <>
                       2 · We'll start a Codex device login for this account and show you the OpenAI device code.
                       Open the link signed in as the <strong>target ChatGPT/Codex account</strong>, enter the code,
-                      then complete the link. The credential is written server-side and never returned to the browser.
+                      then return here when the login is approved. The credential is written server-side and never returned to the browser.
                     </>
                   ) : (
                     <>
@@ -565,12 +602,33 @@ export default function DeployAccountsPage() {
                   <div className="pc-da__step">
                     <span className="pc-da__step-label">3 · Complete after the browser confirms login</span>
                     <p className="pc-da__step-hint">
-                      Codex polls the device login in the held CLI process. When the browser says the login is complete, click Complete link.
+                      Codex polls the device login in the held CLI process. When the browser says the login is complete, return here. The account will appear automatically.
                     </p>
                   </div>
                 )}
               </>
             )
+          ) : activeLinkMode === 'api-key' ? (
+            <>
+              <div className="pc-da__step">
+                <span className="pc-da__step-label">2 · Use Anthropic API credits</span>
+                <p className="pc-da__step-hint">
+                  This account uses paid Anthropic API credits, billed separately from a Claude Max subscription.
+                  The gateway uses API credits when no subscription account has included allowance available.
+                  Create a key in the <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noreferrer">Anthropic Console</a>.
+                </p>
+              </div>
+              <div className="pc-da__field">
+                <label htmlFor="anthropic-api-key">3 · Anthropic API key</label>
+                <input id="anthropic-api-key" type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="sk-ant-api… or sk-ant-usr…" autoComplete="off" spellCheck={false} aria-describedby="anthropic-api-key-hint" />
+                <small id="anthropic-api-key-hint">Stored privately on this machine. The key is never shown in the account list.</small>
+              </div>
+              <div className="pc-da__field">
+                <label htmlFor="anthropic-workspace-id">Anthropic workspace ID (required for user-scoped keys)</label>
+                <input id="anthropic-workspace-id" value={anthropicWorkspaceId} onChange={(e) => setAnthropicWorkspaceId(e.target.value)} placeholder="wrkspc_…" autoComplete="off" spellCheck={false} aria-describedby="anthropic-workspace-hint" />
+                <small id="anthropic-workspace-hint">Use the workspace ID from the Anthropic Console. Keys scoped to one workspace can leave this blank.</small>
+              </div>
+            </>
           ) : (
             <>
               <div className="pc-da__step">
@@ -816,7 +874,7 @@ function accountColumns(
       header: 'Provider',
       width: 0.75,
       toCopyText: (a) => a.provider || 'claude',
-      render: ({ row }) => <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(row))}</span>,
+      render: ({ row }) => <span className="pc-da__pill pc-da__pill--neutral">{accountCredentialLabel(row)}</span>,
     },
     {
       key: 'status',
@@ -977,7 +1035,7 @@ function AccountCard({
       <AccountIdentity row={account} headroom={headroom} />
       <div className="pc-da__card-badges">
         {accountStatus(account)}
-        <span className="pc-da__pill pc-da__pill--neutral">{providerLabel(accountProvider(account))}</span>
+        <span className="pc-da__pill pc-da__pill--neutral">{accountCredentialLabel(account)}</span>
         <DefaultToggle
           row={account}
           defaultAccountId={defaultAccountId}

@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-005 live: an unknown provider package and trigger pack install through the Cupboard route and appear on the generic Settings -> Integrations page (card with app registration and masked credentials; pack section with a provider-filled channel picker, saved and armed)",
+  "framework": "shell",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    ".papercusp/scratch/p005-fixtures/headless-p005.sh",
+    "(launched by .papercusp/scratch/p005-fixtures/launch-p005.sh with VERIFY_TAURI_ISOLATED_DB=1, a private PAPERCUSP_HOME, VERIFY_TAURI_SOURCE_REF pinned and the acceptance inputs checked byte-identical to that ref; the fixture provider p005-fixture-chat and pack p005-fixture-pack are served from local fixture repos through a git url rewrite scoped to the isolated webview profile)"
+  ],
+  "startedAt": "2026-10-11T11:46:05.713Z",
+  "finishedAt": "2026-10-11T11:53:54.121Z",
+  "exitCode": 0,
+  "summary": "verify-tauri-headless run 20261011T114603Z-172649 verdict=pass (passed=3 failed=0 blocked=0 skipped=0), isolated DB and private home, superproject 260c15f506, libs/papercusp 7c0fa73eec. A fixture provider the app has never heard of (p005-fixture-chat: daemon runtime, chat-message datatype, chat.channels capability, declared credentials and app registration) installed through POST /api/cupboard/install-plugin (409 review, then 200 on accept), as did a fixture trigger pack. Without an app update the page then showed a card for the provider, with a Create Fixture Chat app link, Copy definition, and docs link from the package's app registration; two masked, unconfigured credential fields; a format refusal on the page for a malformed bot token and a 422 from the server with nothing stored or echoed; saving valid values marked both configured; the credentials read-back carried no token or secret; and the card showed connected. The pack section rendered its channel input as a dropdown filled from the provider's chat.channels options (#general, #bugs), the choice C-bugs saved (PUT 200, status configured, nothing unmet), and Arm turned the pack on (Armed, 1 of 1 triggers on).",
+  "assertions": [
+    { "id": "page-renders", "passed": true, "evidence": "OK page rendered (Settings -> Integrations in the isolated desktop)." },
+    { "id": "install-unknown-provider-through-cupboard-route", "passed": true, "evidence": "INSTALL_PROVIDER first=409 second=200; review.provider {id:p005-fixture-chat, contractVersion:1, runtime:daemon, datatypes:[chat-message], capabilities:[chat.channels]}; result ok:true installed to the isolated global plugin root." },
+    { "id": "install-trigger-pack-through-cupboard-route", "passed": true, "evidence": "INSTALL_PACK status=200 ok:true name p005-fixture-pack, review.triggerPack {targetCount:1, bindingCount:1}." },
+    { "id": "generic-card-for-installed-provider", "passed": true, "evidence": "OK card for the installed provider (no provider-specific page code; same running build)." },
+    { "id": "app-registration-from-package", "passed": true, "evidence": "APP_REGISTRATION create=true createText=\"Create Fixture Chat app\" defName=\"Papercusp fixture\" docs=true buttons=[\"Copy definition\"]" },
+    { "id": "declared-credentials-masked", "passed": true, "evidence": "OK two masked, unconfigured credential fields (bot_token, signing_secret)." },
+    { "id": "format-refused-on-page", "passed": true, "evidence": "FORMAT_REFUSAL Bot token does not have the expected format" },
+    { "id": "format-refused-by-server-nothing-stored", "passed": true, "evidence": "SERVER_REFUSAL putStatus=422 putEchoes=false storedAny=false" },
+    { "id": "valid-values-saved", "passed": true, "evidence": "OK valid values saved; both fields configured" },
+    { "id": "stored-values-never-read-back", "passed": true, "evidence": "READBACK leaksToken=false leaksSecret=false (credentials list carries key/label/help/pattern/hosts/configured/savedAt only); OK stored values never read back" },
+    { "id": "provider-connected", "passed": true, "evidence": "CONNECTED Saved credentials ● connected" },
+    { "id": "pack-input-is-a-provider-picker", "passed": true, "evidence": "DROPDOWN [C-general=#general, C-bugs=#bugs]; OPTIONS_API status=200 capability chat.channels groups[0] provider p005-fixture-chat options #general, #bugs (Bug reports)." },
+    { "id": "pack-settings-save", "passed": true, "evidence": "CHANNEL_CHOSEN C-bugs; PACK_SAVE_PUTS [PUT 200 {ok:true, status:configured, unmet:[], armed:false}]" },
+    { "id": "pack-arms", "passed": true, "evidence": "ARM_BUTTON text=Arm p005-fixture-pack disabled=false; PACK_STATUS Armed · 1 of 1 triggers on" }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": ["P-005", "P-001", "P-004"],
+  "specs": ["SPEC-R-2-P-005", "SPEC-R-3-P-005", "SPEC-R-2-P-001", "SPEC-R-2-P-004"],
+  "evidencePlane": "live",
+  "harnessRun": {
+    "harness": "verify-tauri-headless",
+    "runId": "20261011T114603Z-172649",
+    "verdict": "pass",
+    "evidenceDir": "~/.local/state/verification-harness/verify-tauri-headless/20261011T114603Z-172649",
+    "superprojectRef": "260c15f506a8f17d830ba9da1d9edc6eb3eb4c10",
+    "packageRef": "libs/papercusp@7c0fa73eec95deabaa9db7b61b99d34cd7e03407",
+    "testedInputs": [
+      "papercusp-desktop/src-tauri/src/endpoint_ipc.rs",
+      "libs/generic/ipc-endpoint-server/src/server.ts",
+      "apps/operator/app/settings/integrations/page.tsx",
+      "apps/operator/app/settings/integrations/ProviderAppRegistration.tsx",
+      "packages/operator-core/lib/integrations/provider-options.ts",
+      "packages/operator-core/lib/integrations/ticket-integrations.ts"
+    ]
+  },
+  "limitations": [
+    "The provider and pack are fixtures served from local repos through a git url rewrite scoped to the isolated operator; the real slack/bug-triage packages are exercised by the P-006 run and the P-008 drill, and public Cupboard listings are P-011 (D-014).",
+    "Earlier attempts failed on 'pack settings did not save'; the root cause (a 90 s invalidation dedupe window swallowing the post-save refresh) is recorded on WI-6554700010008312 and this run is the first attempt after the fix.",
+    "Screenshots were written to the run's private scratch (/tmp/su0dd6-p005-headless/) and are not committed."
+  ]
+}

@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { readRepoFile } from '@papercusp/test-config';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { createPgHiveEvalStore } from './store-pg';
 import { readHiveEvalInstanceSummaries } from './trend-read';
 import type { HiveEvalRunRow, HiveEvalScoreRow, InstanceManifest } from './store';
@@ -78,6 +78,7 @@ describe('readHiveEvalInstanceSummaries (HE-07 trend, migrations 264 + 268)', ()
     const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
     try {
       await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+      await markManagedTestDatabase(admin, dbName);
     } finally {
       await admin.end({ timeout: 5 });
     }

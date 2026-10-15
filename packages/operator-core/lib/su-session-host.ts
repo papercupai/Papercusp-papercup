@@ -12,6 +12,11 @@ import {
   SU_SESSION_PROTOCOL_VERSION,
   SU_SESSION_SCHEMA,
   isSuSessionCommandType,
+  isSuApprovalsMode,
+  type SuApprovalsMode,
+  type SuPlanItem,
+  type SuSessionModelOption,
+  type SuSessionUsage,
   type SuSessionBackend,
   type SuSessionCommand,
   type SuSessionCommandResultEvent,
@@ -328,6 +333,79 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     } as SuSessionEventInput<B>);
   }
 
+  /** P-026: publish the model the engine now runs on, after it applied an
+   * owner's switch, so the footer and /status read the engine's model rather
+   * than the PUI's guess. Keep the full owner-selected spec separately:
+   * native observations can report only the resolved id and must not erase
+   * a selected effort. */
+  updateModel(model: string | null): SuSessionEvent<B> | null {
+    if (this.descriptorValue.model === model && this.descriptorValue.ownerSelectedModel === model) return null;
+    return this.emit({
+      type: 'session',
+      descriptor: { ...this.descriptorValue, model, ownerSelectedModel: model },
+    } as SuSessionEventInput<B>);
+  }
+
+  /** D-026: publish the approvals mode the engine now runs in, after it applied
+   * an owner's switch, so /status reads the engine's mode. */
+  updateApprovals(approvals: SuApprovalsMode): SuSessionEvent<B> | null {
+    if (this.descriptorValue.approvals === approvals) return null;
+    return this.emit({
+      type: 'session',
+      descriptor: { ...this.descriptorValue, approvals },
+    } as SuSessionEventInput<B>);
+  }
+
+  /** D-029/D-031: merge fresh usage measurements into the descriptor. A field
+   * the engine did not report keeps its last value; nothing is guessed. Emits
+   * only when a value actually changed, so a repeated record costs nothing. */
+  updateUsage(usage: SuSessionUsage): SuSessionEvent<B> | null {
+    const measured = Object.fromEntries(
+      Object.entries(usage).filter(([, value]) => typeof value === 'number' && Number.isFinite(value) && value >= 0),
+    ) as SuSessionUsage;
+    const next: SuSessionUsage = { ...(this.descriptorValue.usage ?? {}), ...measured };
+    const previous = this.descriptorValue.usage ?? {};
+    const keys = new Set([...Object.keys(previous), ...Object.keys(next)]) as Set<keyof SuSessionUsage>;
+    if (![...keys].some((key) => previous[key] !== next[key])) return null;
+    return this.emit({
+      type: 'session',
+      descriptor: { ...this.descriptorValue, usage: next },
+    } as SuSessionEventInput<B>);
+  }
+
+  /** D-029/D-031: replace the agent's todo/plan list. Emits only on change. */
+  updatePlan(plan: readonly SuPlanItem[]): SuSessionEvent<B> | null {
+    const next: readonly SuPlanItem[] = plan.map((item) => ({ text: item.text, status: item.status }));
+    if (JSON.stringify(this.descriptorValue.plan ?? null) === JSON.stringify(next)) return null;
+    return this.emit({
+      type: 'session',
+      descriptor: { ...this.descriptorValue, plan: next },
+    } as SuSessionEventInput<B>);
+  }
+
+  /** WI-10006652: publish the models the engine reports it can switch to, so a
+   * client's /model lists those instead of the workspace's routing tiers.
+   * Rows without an id or label are dropped; emits only on change. */
+  updateModels(models: readonly SuSessionModelOption[]): SuSessionEvent<B> | null {
+    const next: readonly SuSessionModelOption[] = models
+      .filter((model) => model.id.trim() && model.label.trim())
+      .map((model) => ({
+        id: model.id,
+        label: model.label,
+        ...(model.description ? { description: model.description } : {}),
+        ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
+        ...(model.efforts?.length ? { efforts: [...model.efforts] } : {}),
+        ...(model.defaultEffort ? { defaultEffort: model.defaultEffort } : {}),
+        ...(model.isDefault ? { isDefault: true } : {}),
+      }));
+    if (!next.length) return null;
+    if (JSON.stringify(this.descriptorValue.models ?? null) === JSON.stringify(next)) return null;
+    return this.emit({
+      type: 'session',
+      descriptor: { ...this.descriptorValue, models: next },
+    } as SuSessionEventInput<B>);
+  }
+
   /** Attach one replacement engine to a descriptor-only restored host. Keep
    * its channel and replay receipts; an existing executor cannot be displaced. */
   attachRuntime(options: Pick<SuSessionHostOptions<B>, 'descriptor' | 'executeCommand' | 'runtimeReady'>): void {
@@ -419,6 +497,16 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
       streamReady: Boolean(this.descriptorValue.identity.nativeSessionId) && !this.disposed && this.runtimeReady(),
       runtimeReconciliation: this.runtimeReconciliation,
     };
+  }
+
+  /**
+   * True when THIS process holds an engine for the session (an executor was
+   * attached at launch or by a resume). A descriptor-only host rebuilt from the
+   * durable row is false: on a clustered operator that is the signal to route
+   * the request to the worker that does hold it (WI-10003879).
+   */
+  hasRuntime(): boolean {
+    return Boolean(this.executeCommand) && !this.disposed;
   }
 
   get subscriberCount(): number {
@@ -556,6 +644,14 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     if (command.type !== 'owner_turn') return this.startCommand(command);
     if (typeof command.content !== 'string' || !command.content.trim() || !command.turnId) {
       throw new SuSessionHostError('invalid_command', 'owner turn requires turnId and non-empty content');
+    }
+    // P-026: an omitted model keeps the current one; a present one must be a spec.
+    if (command.model !== undefined && (typeof command.model !== 'string' || !command.model.trim())) {
+      throw new SuSessionHostError('invalid_command', 'owner turn model must be a non-empty model[:effort] spec');
+    }
+    // D-026: an omitted approvals mode keeps the current one.
+    if (command.approvals !== undefined && !isSuApprovalsMode(command.approvals)) {
+      throw new SuSessionHostError('invalid_command', 'owner turn approvals must be one of ask, auto-edit, read-only');
     }
     const fingerprint = canonicalJson(command);
     const pending = this.durableCommands.get(command.commandId);
@@ -831,11 +927,19 @@ export function registerSuSessionHost<B extends SuSessionBackend>(host: SuSessio
   };
 }
 
-export function getRegisteredSuSessionHost(input: {
+export function getRegisteredSuSessionHost(input: { workspaceId: string; advSessionId: number } | {
   workspaceId: string;
   harnessSlug: string | null;
   agentChatId: string;
 }): RegisteredHost | null {
+  if ('advSessionId' in input) {
+    if (!Number.isSafeInteger(input.advSessionId) || input.advSessionId <= 0) return null;
+    for (const host of registry().values()) {
+      const identity = host.descriptor().identity;
+      if (identity.workspaceId === input.workspaceId && identity.advSessionId === input.advSessionId) return host;
+    }
+    return null;
+  }
   const key = hostChannelKey({
     workspaceId: input.workspaceId,
     harnessSlug: input.harnessSlug,

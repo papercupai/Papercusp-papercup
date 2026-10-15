@@ -136,6 +136,32 @@ describe('pot-git defaultRunGit', () => {
     expect(r.stdout).toBe('from-sidecar\n');
   });
 
+  it('reports local child output as progress activity', async () => {
+    sidecarEnabledMock = () => false;
+    const onProgress = vi.fn();
+
+    const r = await runGitLocal(['--version'], repo, { onProgress });
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('git version');
+    expect(onProgress).toHaveBeenCalled();
+  });
+
+  it('forwards the progress callback to the sidecar transport', async () => {
+    sidecarEnabledMock = () => true;
+    const onProgress = vi.fn();
+    sidecarRunMock = (...a: unknown[]) => {
+      const opts = a[4] as { onProgress?: () => void } | undefined;
+      opts?.onProgress?.();
+      return Promise.resolve({ code: 0, stdout: 'from-sidecar\n', stderr: '' });
+    };
+
+    const r = await defaultRunGit(['rev-parse', 'HEAD'], repo, { onProgress });
+
+    expect(r.code).toBe(0);
+    expect(onProgress).toHaveBeenCalledOnce();
+  });
+
   it('passes the C locale through to the sidecar so output stays parse-stable', async () => {
     // Every caller parses git's human-readable output; a host LANG leaking
     // through would change that text and break the parsing at the root.
@@ -168,7 +194,13 @@ describe('pot-git defaultRunGit', () => {
       { timeoutMs: 30_000, signal: controller.signal });
     let pid = 0;
     try {
-      await vi.waitFor(async () => { pid = Number(await readFile(receipt, 'utf8')); expect(pid).toBeGreaterThan(0); });
+      // vi.waitFor defaults to a 1s budget. Spawning git, which then runs the alias
+      // shell that writes the receipt, exceeded that under gate load (ENOENT at
+      // 33144c00, WI-10008204), so give the spawn the room its own 30s timeout implies.
+      await vi.waitFor(
+        async () => { pid = Number(await readFile(receipt, 'utf8')); expect(pid).toBeGreaterThan(0); },
+        { timeout: 15_000, interval: 50 },
+      );
       controller.abort();
       expect((await result).code).toBe(-1);
       expect(() => process.kill(pid, 0)).toThrow();
@@ -176,7 +208,7 @@ describe('pot-git defaultRunGit', () => {
       controller.abort();
       await result;
     }
-  }, 15_000);
+  }, 30_000);
 });
 
 describe('pot-git local-spawn RSS admission (EI-20282995952031769)', () => {

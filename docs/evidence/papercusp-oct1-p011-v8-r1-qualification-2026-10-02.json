@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005562",
+  "parent": "WI-10004890",
+  "plane": "live-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-v8-main-r1-2026-10-02.json",
+    "sha256": "1c6840909e300b90916346e1a1e9bf452e95eb009059c0838ff76038920a685d",
+    "bytes": 111469
+  },
+  "loadedBuild": "16bae9573a",
+  "pid": 1339818,
+  "startTicks": "852619",
+  "samples": 9,
+  "requests": 24,
+  "windows": 3,
+  "limits": {
+    "windows": 3,
+    "idleMs": 2000,
+    "requestsPerWindow": 8,
+    "concurrency": 2,
+    "descendantsPerSample": 64
+  },
+  "cleanup": {
+    "inspector": {
+      "closed": true
+    },
+    "processIdentityPreserved": true,
+    "counterIdentityPreserved": true
+  },
+  "resourceRanges": {
+    "pssBytes": {
+      "minimum": 751950848,
+      "maximum": 792780800
+    },
+    "heapUsedBytes": {
+      "minimum": 462315120,
+      "maximum": 503360784
+    },
+    "oldSpaceUsedBytes": {
+      "minimum": 391786992,
+      "maximum": 394310288
+    }
+  },
+  "codeCounterRanges": {
+    "code_and_metadata_size": {
+      "minimum": 14545418,
+      "maximum": 15242020
+    },
+    "bytecode_and_metadata_size": {
+      "minimum": 5986392,
+      "maximum": 6033952
+    },
+    "external_script_source_size": {
+      "minimum": 76349218,
+      "maximum": 76349218
+    },
+    "cpu_profiler_metadata_size": {
+      "minimum": 0,
+      "maximum": 0
+    }
+  },
+  "namedSourceFilesCapturedAfter": {
+    "scripts/cdp-inspector.mjs": {
+      "sha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968",
+      "bytes": 37242
+    },
+    "scripts/cdp-inspector.d.mts": {
+      "sha256": "ca7a282e7d688010ea83e53ca076b2c7b2b2f2ae3fbce25f25444201d1b30703",
+      "bytes": 11879
+    },
+    "packages/operator-core/lib/cdp-inspector.test.ts": {
+      "sha256": "61dc4a566b5b5bd25654eae2613571a384d58be7daab9dd2462ab9f689fef3d0",
+      "bytes": 38544
+    },
+    "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": {
+      "sha256": "718a591e8b23b36509fa455a7eae17c867b515afedb105d08d7992b827fe3f0c",
+      "bytes": 37654
+    }
+  },
+  "fullExecutedSourceGraph": "unknown",
+  "guardLedgers": [
+    20548490,
+    20548498
+  ],
+  "liveLedger": 20548521,
+  "testQualification": "Unit guard 15 PASS/0 SKIP; baseline guard 10 PASS/1 opt-in SKIP; actual live 11 PASS/0 SKIP. Reporter worktreeDirty true. Post-run router named test file clean is distinct from full graph provenance.",
+  "typecheck": "Two named TypeScript files clean in existing full program; no project-global claim.",
+  "selectedRootLimits": [
+    {
+      "owner": "@papercusp/operator-core.operatorCache",
+      "traversalLimited": false,
+      "depthLimited": 0
+    },
+    {
+      "owner": "@papercusp/db-org.pg-query-family-memo",
+      "traversalLimited": false,
+      "depthLimited": 0
+    },
+    {
+      "owner": "__papercuspProjectedToolRegistry",
+      "traversalLimited": true,
+      "depthLimited": 338
+    },
+    {
+      "owner": "@papercusp/operator-core.pluginHostRuntime",
+      "traversalLimited": false,
+      "depthLimited": 0
+    }
+  ],
+  "interpretation": {
+    "configuredHost": {
+      "clusterRole": "primary",
+      "requestOnly": true,
+      "configuredSidecar": null,
+      "requestAssignment": "unknown",
+      "allocationOwner": "unknown"
+    },
+    "sameEntryDescendantsObserved": 0,
+    "oldSpace": "Direct per-space bytes narrow the V8 segment; they identify neither object type nor exclusive retainer.",
+    "counterOverlap": "Code, source, heap, external and PSS overlap. No additive residual/native estimate.",
+    "physicalSavings": "not measured",
+    "historicalCompilerRecovery": "unknown",
+    "spawnerComparison": "not observed in this cohort; no absence or recovery beyond bounded sampled tree/time"
+  },
+  "acceptanceLimits": [
+    "Ambient workload uncontrolled; idle means no probe requests.",
+    "No GC, heap snapshot or allocation profiler.",
+    "Selected payload traversal omits closures/symbols/non-enumerable/unpinned/native state; projected registry remains limited.",
+    "No paired intervention or current-plan/independent acceptance/shipment conclusion."
+  ],
+  "descendant": {
+    "liveLedger": 20548545,
+    "raw": {
+      "path": "docs/evidence/papercusp-oct1-p011-v8-descendant-r1-2026-10-02.json",
+      "sha256": "b556e2ded17b6017f89bc14ac28248f767d7fd79d1154d2a5709b01d5326c232",
+      "bytes": 129332
+    },
+    "counterPid": 2245476,
+    "startTicks": "958230",
+    "loadedBuild": "16bae9573a",
+    "origin": "A bounded ordinary capability:bash true command through staging started this configured spawner after the main cohort; not a passive preexisting spawner baseline.",
+    "samples": 9,
+    "requests": 24,
+    "windows": 3,
+    "cleanup": {
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true,
+      "counterIdentityPreserved": true
+    },
+    "configuredHost": {
+      "clusterRole": "primary",
+      "requestOnly": true,
+      "configuredSidecar": "spawner",
+      "requestAssignment": "unknown",
+      "allocationOwner": "unknown"
+    },
+    "resourceRanges": {
+      "pssBytes": {
+        "minimum": 623792128,
+        "maximum": 625921024
+      },
+      "heapUsedBytes": {
+        "minimum": 426183440,
+        "maximum": 428747816
+      },
+      "oldSpaceUsedBytes": {
+        "minimum": 367592432,
+        "maximum": 368527352
+      }
+    },
+    "codeCounterRanges": {
+      "code_and_metadata_size": {
+        "minimum": 7429801,
+        "maximum": 7891819
+      },
+      "bytecode_and_metadata_size": {
+        "minimum": 12863880,
+        "maximum": 12875192
+      },
+      "external_script_source_size": {
+        "minimum": 76339172,
+        "maximum": 76339172
+      },
+      "cpu_profiler_metadata_size": {
+        "minimum": 0,
+        "maximum": 0
+      }
+    },
+    "selectedRootLimits": [
+      {
+        "owner": "@papercusp/operator-core.operatorCache",
+        "traversalLimited": false,
+        "depthLimited": 0
+      },
+      {
+        "owner": "@papercusp/db-org.pg-query-family-memo",
+        "traversalLimited": false,
+        "depthLimited": 0
+      },
+      {
+        "owner": "__papercuspProjectedToolRegistry",
+        "traversalLimited": true,
+        "depthLimited": 338
+      },
+      {
+        "owner": "@papercusp/operator-core.pluginHostRuntime",
+        "traversalLimited": false,
+        "depthLimited": 0
+      }
+    ],
+    "comparisonLimits": [
+      "Sequential ambient windows after intentional sidecar start; no matched savings intervention.",
+      "Requests were sent to main staging listener; sidecar HTTP request assignment not established.",
+      "Direct V8 categories identify neither allocation stacks nor exclusive retained owners.",
+      "Historical compiler memory recovery remains unknown."
+    ]
+  }
+}

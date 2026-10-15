@@ -1,0 +1,232 @@
+{
+  "schemaVersion": "phone-p009-policy-preparation-v1",
+  "workItem": "WI-10004987",
+  "plan": "phone-public-telephone-service-2026-10-01",
+  "planRevision": 21,
+  "planContentHash": "7477ae57f696280234517dcd89c67560da76066e6a33f822e68ae8a1c4156b37",
+  "purpose": "Prepare the remaining P009 privacy lifecycle implementation using existing Phone seams while approved carrier/media/privacy facts remain unanswered. This is a preparation artifact, not implementation acceptance.",
+  "sourceRootRef": "managed-app:phone-app",
+  "sourceFiles": [
+    {
+      "path": "packages/data/src/types.ts",
+      "sha256": "c7103961edd0519cfecc40caefc2d06187ad0e5a355c1319ca91ec0e0ac88e6b"
+    },
+    {
+      "path": "packages/data/src/memory-store.ts",
+      "sha256": "039920afeed0a29f203c6c26da4c2eee6f44e6f4e1532c48069482feb176054b"
+    },
+    {
+      "path": "packages/data/src/postgres-store.ts",
+      "sha256": "172d28b4dfc8c3c7b03c528bd251c2a433d23671ce15630ec841937e2cf2235e"
+    },
+    {
+      "path": "packages/data/src/migrations.ts",
+      "sha256": "1bf8e130c8cd8c3d34803f6000f5698d277c9d5f6445d94169683bb0e4efa33a"
+    },
+    {
+      "path": "packages/data/src/voicemail-persistence.integration.test.ts",
+      "sha256": "e6ba9b9b1d8c4ed73de46170c2f5f9b69c24eb4b5fb32542fd377bb3e509d437"
+    },
+    {
+      "path": "packages/data/src/store-contract.test.ts",
+      "sha256": "3a8c570e693e5f7cd7facf88f14cbe27be6fd8706a89867fae1c0c17777773a9"
+    },
+    {
+      "path": "packages/data/src/call-deletion.integration.test.ts",
+      "sha256": "a9605b24127f13bc663dfb9111a117a58aaa02610e5f4c57e7bdc2fe26f80fc1"
+    },
+    {
+      "path": "apps/sidecar/src/calls.ts",
+      "sha256": "87602a7a28cce923d9356182e76ed81ae8f19b45c7968cb8f0cff3914458bdfd"
+    },
+    {
+      "path": "apps/sidecar/src/api.ts",
+      "sha256": "28ba7be82a421f529836de3f6304dcd7a0a7d2cef833a283ff0872b1d07fd318"
+    },
+    {
+      "path": "apps/sidecar/src/voicemail-persistence.e2e.test.ts",
+      "sha256": "ce49405a1d5832325ee3e4f3f363fc9f8cc47f969f5c5260f251b6cbf86f730f"
+    },
+    {
+      "path": "worker/src/agent.ts",
+      "sha256": "b66ee474afbd21b2d9a7d7080839d1fa1a25bb32ad6d6d454fa1d4a72e716a68"
+    },
+    {
+      "path": "worker/src/sidecar-client.ts",
+      "sha256": "c3916ebd60b444b57776340d22cb1a43516cfb4a416d843d1e189ce967f52ff3"
+    },
+    {
+      "path": "package.json",
+      "sha256": "b7e07ce1385c13d4458228f14bbea73bf641455ca4ce7bb29f8e6a4a4fd55771"
+    }
+  ],
+  "governingScope": {
+    "item": "P-009",
+    "text": "Durable voicemail/transcript, consent-sensitive recording, retention/export/deletion, read-state/notification semantics, interrupted/replayed events and actual history/summary after restart.",
+    "decisions": [
+      "D-003",
+      "D-005",
+      "D-006",
+      "D-009"
+    ],
+    "rubricRef": "acceptance-phone-public-telephone-service-2026-10-01",
+    "rubricRevision": 4,
+    "criteriaHash": "f208eb77d15410f7b9868dc34e877a308ab2ed381b8a3805266ab445861b67cc"
+  },
+  "reuse": [
+    {
+      "surface": "PhoneBackend.storeFor(ownerId) / PhoneStore",
+      "paths": [
+        "packages/data/src/types.ts",
+        "packages/data/src/memory-store.ts",
+        "packages/data/src/postgres-store.ts"
+      ],
+      "use": "Keep retention and lifecycle operations tenant-scoped. Reuse exportCallContent and deleteCallContent; do not introduce a second content store or deletion ledger."
+    },
+    {
+      "surface": "CallLedger",
+      "path": "apps/sidecar/src/calls.ts",
+      "anchors": {
+        "deleteCallContent": 482,
+        "summary": 507,
+        "ingestTranscript": 524,
+        "saveVoicemail": 556,
+        "markVoicemailRead": 582
+      },
+      "use": "Resolve ingest ownership from stored call identity. Keep first-arrival/read-state replay semantics and compute summary from stored call/voicemail outcomes."
+    },
+    {
+      "surface": "Existing deletion tombstone and replay refusal",
+      "paths": [
+        "packages/data/src/migrations.ts",
+        "packages/data/src/call-deletion.integration.test.ts"
+      ],
+      "use": "Use the existing atomic erasure/tombstone operation after policy eligibility. Retain fail-closed active-call, recording-reference and mirrored-content guards."
+    },
+    {
+      "surface": "Existing worker-to-sidecar acknowledgment",
+      "paths": [
+        "worker/src/agent.ts",
+        "worker/src/sidecar-client.ts"
+      ],
+      "use": "Retain durable transcript flush before voicemail write and explicit acknowledged success. A recording reference is not a capture engine or consent approval."
+    }
+  ],
+  "confirmedSourceBehavior": [
+    {
+      "claim": "Memory and Postgres voicemail replay preserve first arrival and owner readAt; a second read transition returns false.",
+      "evidence": [
+        "packages/data/src/memory-store.ts:271",
+        "packages/data/src/postgres-store.ts:367",
+        "packages/data/src/postgres-store.ts:404"
+      ],
+      "limit": "Static source inspection in this preparation pass; historical execution remains separate."
+    },
+    {
+      "claim": "Summary unreadVoicemail derives from stored voicemail readAt, rather than an independently persisted counter.",
+      "evidence": [
+        "apps/sidecar/src/calls.ts:507"
+      ],
+      "limit": "Does not establish a notification delivery policy."
+    },
+    {
+      "claim": "Worker shutdown flushes transcript before deriving the text voicemail and does not infer an audio duration from response latency.",
+      "evidence": [
+        "worker/src/agent.ts:721",
+        "worker/src/agent.ts:739"
+      ],
+      "limit": "A comment about absent Egress is not live proof of approved capture or transcription consent."
+    }
+  ],
+  "existingRecurringGuards": [
+    {
+      "path": "packages/data/src/store-contract.test.ts",
+      "anchors": [
+        485,
+        504,
+        519
+      ],
+      "observes": "First arrival/readAt survive replay; copy isolation; exactly one read transition."
+    },
+    {
+      "path": "packages/data/src/voicemail-persistence.integration.test.ts",
+      "anchors": [
+        35,
+        48,
+        59
+      ],
+      "observes": "Memory and disposable real Postgres concurrent replay, tenant isolation, fresh database connections."
+    },
+    {
+      "path": "apps/sidecar/src/voicemail-persistence.e2e.test.ts",
+      "anchors": [
+        107,
+        117,
+        120,
+        124,
+        127,
+        128
+      ],
+      "observes": "Acknowledged content/read-state/summary survive real sidecar SIGKILL and database restart; foreign tenant remains empty."
+    }
+  ],
+  "pendingPolicyInputs": [
+    {
+      "bar": "R-42",
+      "required": "Approved policy reference and jurisdiction-specific consent requirements for recording and transcription, including revocation and interrupted-call behavior."
+    },
+    {
+      "bar": "R-43",
+      "required": "Approved retention durations, eligibility clock, exclusions/holds and scope covering Phone content, retained media and conversation mirrors."
+    },
+    {
+      "bar": "R-46",
+      "required": "Approved notification recipients, destinations/channels, content minimization, consent/opt-out and replay/delivery policy."
+    },
+    {
+      "bar": "R-47",
+      "required": "Explicit approved enablement for consent-sensitive audio storage. Default absence of approval must not be treated as approval."
+    }
+  ],
+  "readyVerificationWork": [
+    {
+      "scope": "Consent gate",
+      "checks": [
+        "No approved policy or missing required consent refuses the storage/transcription action before its write.",
+        "An approved synthetic policy fixture and consent positive control permit exactly the intended action.",
+        "Revocation or expired authority refuses replay and late callbacks."
+      ],
+      "laneBoundary": "Coordinate actual policy/auth contract with the live P010 source lane; do not duplicate its authority model."
+    },
+    {
+      "scope": "Retention",
+      "checks": [
+        "A policy-defined cutoff removes only eligible tenant content using the existing tombstone transaction.",
+        "An active call, retained recording or mirror without coordinated deletion remains blocked with its reason.",
+        "Crash/replay/rollback preserve atomicity, and later callbacks cannot resurrect erased content.",
+        "Unexpired and held positive controls remain retrievable."
+      ]
+    },
+    {
+      "scope": "Notifications",
+      "checks": [
+        "Only the stored tenant and approved audience receive the permitted payload.",
+        "Replay and restart do not duplicate an approved notification.",
+        "Read-state and delivery-state remain distinct; reading a voicemail does not prove external notification delivery.",
+        "No notification send is enabled before the policy and channel are approved."
+      ]
+    }
+  ],
+  "verification": {
+    "sourceFilesMeasured": 13,
+    "newSoftwareTestsRun": false,
+    "retainedProof": "Read prior WI10004987 terminal defect proofs and existing ledgers by reference; no old test matrix replayed merely to reconstruct history.",
+    "limits": [
+      "No chosen retention period, invented consent rule or notification audience.",
+      "No raw audio capture, media/mirror erasure or external send implemented by this preparation artifact.",
+      "No R42/R43/R46/R47, P009 or public PSTN completion claim.",
+      "R45 binding21012 remains local Phone-store proof only; unexplained first restart failure stays owned under EI-24845567110086010."
+    ]
+  },
+  "next": "Continue policy-independent source work under this P009 lane. Consume the already-open owner inputs once answered, then implement the supplied policy through the reused seams and run meaningful unit/integration/e2e guards. Maintain the current public/media/policy walls without repeating asks."
+}

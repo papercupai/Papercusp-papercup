@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exact iPhone native candidate CI and screenshot inspection (partial release coverage)",
+  "framework": "operational",
+  "command": [
+    "gh",
+    "run",
+    "view",
+    "36876295484",
+    "-R",
+    "Papercusp/papercup-rust-mobile",
+    "--log"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T14:26:06Z",
+  "finishedAt": "2026-10-01T14:35:26Z",
+  "summary": "The exact candidate passed all four CI jobs, 85 normal Rust tests, six runner guard regressions, generated Swift/Kotlin bindings, 39 Swift unit tests, one clean-install UI case with zero failures/skips, current-SDK verification and an unsigned arm64 archive. The retained XCTest screenshot was visually inspected. One explicit live Rust test remained ignored because this run had no private pairing payload. Actual paired UI, physical iPhone, durable reviewer access, signed Apple delivery and public shipment remain unverified.",
+  "assertions": [
+    {
+      "id": "exact-source",
+      "passed": true,
+      "evidence": "Run head_sha and retained source-sha.txt agree: 44e0670c9d94f29c39c84eba68c4f167fdf0bf3f"
+    },
+    {
+      "id": "ci-jobs-completed",
+      "passed": true,
+      "evidence": "Rust, UniFFI, design-token and iPhone release-gate jobs completed successfully."
+    },
+    {
+      "id": "current-sdk",
+      "passed": true,
+      "evidence": "Xcode26.6 build17F113; current-SDK check passed for iPhoneOS26.5."
+    },
+    {
+      "id": "swift-unit-tests",
+      "passed": true,
+      "evidence": "Native job110416490679 log reports39 executed tests with0failures."
+    },
+    {
+      "id": "clean-install-ui",
+      "passed": true,
+      "evidence": "{\"passed\":1,\"failed\":0,\"skipped\":0}"
+    },
+    {
+      "id": "retained-real-screenshot",
+      "passed": true,
+      "evidence": "Actual1206x2622 PNG inspected: current Remote access pairing guidance, Scan QR/Paste manually and Privacy/Support."
+    },
+    {
+      "id": "unsigned-arm64-archive",
+      "passed": true,
+      "evidence": "{\"ApplicationPath\":\"Applications/Papercup.app\",\"Architectures\":[\"arm64\"],\"CFBundleIdentifier\":\"com.papercuspai.operator.mobile\",\"CFBundleShortVersionString\":\"1.0.0\",\"CFBundleVersion\":\"1\",\"SigningIdentity\":\"\",\"Team\":\"\"}"
+    },
+    {
+      "id": "artifact-integrity",
+      "passed": true,
+      "evidence": "Downloaded ZIP SHA256 matches GitHub digest: 911f626052683c4f3fe0a0712aa2f0cd97addcc5e9e54a3276c0be583b581a0d"
+    }
+  ],
+  "candidate": {
+    "sourceRepository": "Papercusp/papercup-rust-mobile",
+    "sourceSha": "44e0670c9d94f29c39c84eba68c4f167fdf0bf3f",
+    "workflowRunId": 36876295484,
+    "workflowUrl": "https://github.com/Papercusp/papercup-rust-mobile/actions/runs/36876295484",
+    "workflowStartedAt": "2026-10-01T14:26:06Z",
+    "workflowUpdatedAt": "2026-10-01T14:35:26Z",
+    "artifactId": 11169492991,
+    "artifactDigest": "sha256:911f626052683c4f3fe0a0712aa2f0cd97addcc5e9e54a3276c0be583b581a0d",
+    "artifactExpiresAt": "2026-10-15T14:34:09Z",
+    "artifactLocalPath": "~/.papercusp/artifacts/iphone-public-release/44e0670c9d94f29c39c84eba68c4f167fdf0bf3f.zip",
+    "xcode": "Xcode26.6 build17F113",
+    "iosSdk": "26.5",
+    "rustNormalTests": 85,
+    "rustIgnoredLiveTests": 1,
+    "runnerGuardTests": 6,
+    "unitTests": 39,
+    "cleanInstallUi": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "screenshot": {
+      "attachmentPath": "ci-release/ui-attachments/F6D5F5A2-C660-4ECE-B82E-8CFBD9CFDFE6.png",
+      "localPath": "~/.papercusp/artifacts/iphone-public-release/44e0670c9d94f29c39c84eba68c4f167fdf0bf3f-clean-install-pairing.png",
+      "sha256": "8d561a8d5b6b4c85b09e5bf7f79fe16381ba1f194c428d9a1a6c0c4971d005cd",
+      "width": 1206,
+      "height": 2622
+    },
+    "archiveVersion": "1.0.0",
+    "archiveBuild": "1",
+    "applicationBinarySha256": "d282e9ff68a840e7a3ad5400a28fa33b4011d47318e2e092054be19656cf86d6",
+    "signed": false,
+    "privacyManifests": [
+      "ci-release/Papercusp.xcarchive/Products/Applications/Papercup.app/ElevenLabs_ElevenLabs.bundle/PrivacyInfo.xcprivacy",
+      "ci-release/Papercusp.xcarchive/Products/Applications/Papercup.app/Frameworks/LiveKitWebRTC.framework/PrivacyInfo.xcprivacy",
+      "ci-release/Papercusp.xcarchive/Products/Applications/Papercup.app/Frameworks/RustLiveKitUniFFI.framework/PrivacyInfo.xcprivacy",
+      "ci-release/Papercusp.xcarchive/Products/Applications/Papercup.app/LiveKit_LiveKit.bundle/PrivacyInfo.xcprivacy",
+      "ci-release/Papercusp.xcarchive/Products/Applications/Papercup.app/PrivacyInfo.xcprivacy"
+    ]
+  },
+  "coverage": {
+    "population": [
+      "source provenance",
+      "current SDK build",
+      "Rust workspace and runner guard CI",
+      "Swift/Kotlin binding generation",
+      "Swift unit tests",
+      "clean-install UI smoke",
+      "pairing screenshot",
+      "unsigned archive",
+      "bundled privacy manifest inventory",
+      "actual paired XCUITest",
+      "LAN/cellular native journey",
+      "physical iPhone and production APNs",
+      "paired candidate screenshots and durable reviewer access",
+      "signed export privacy report and live consent",
+      "distribution rights clearance",
+      "signed IPA export/Apple processing/TestFlight",
+      "Apple approval and public App Store install"
+    ],
+    "checked": [
+      "source provenance",
+      "current SDK build",
+      "Rust workspace and runner guard CI",
+      "Swift/Kotlin binding generation",
+      "Swift unit tests",
+      "clean-install UI smoke",
+      "pairing screenshot",
+      "unsigned archive",
+      "bundled privacy manifest inventory"
+    ],
+    "notChecked": [
+      "actual paired XCUITest",
+      "LAN/cellular native journey",
+      "physical iPhone and production APNs",
+      "paired candidate screenshots and durable reviewer access",
+      "signed export privacy report and live consent",
+      "distribution rights clearance",
+      "signed IPA export/Apple processing/TestFlight",
+      "Apple approval and public App Store install"
+    ],
+    "notApplicable": [],
+    "residue": []
+  }
+}

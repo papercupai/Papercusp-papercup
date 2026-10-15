@@ -88,9 +88,9 @@ export interface RoleEnvelope {
 export const ROLE_ENVELOPES: Partial<Record<string, RoleEnvelope>> = {
   // A dedicated acceptance judge is evidence-only: it may read the frozen
   // launch context and emit one scorecard, but it may not mutate the tree, run
-  // a shell, or use the git subprocess surface.
+  // a shell, use arbitrary Git commands, or access the broad memory family.
   judge: {
-    denyCapabilities: ['capability:fs-write', 'capability:bash', 'capability:git'],
+    denyCapabilities: ['capability:fs-write', 'capability:bash', 'capability:git', 'memory:read', 'search:read'],
   },
   // The SENTINEL — the fleet watcher re-homed onto the always-on, voice-first
   // HERALD (Sentinel-as-Herald). The Herald WATCHES the fleet and NARRATES it to

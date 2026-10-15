@@ -23,10 +23,19 @@
  */
 
 import { Conversation, type VoiceConversation } from '@elevenlabs/client';
+import {
+  ASK_PAPERCUP_TOOL_NAME,
+  answerVoiceQuestion,
+  createVoiceTranscriptWriter,
+  voiceQuestionOf,
+  type VoiceTranscriptWriter,
+} from '@papercusp/chat-protocol';
 import { wsLocalKey } from '../browser-workspace';
+import { persistOperatorVoiceTurn } from '../operator-conversation-client';
 import { runCommand, runQuery, list } from '../commands/registry';
 import type { CommandContext, Definition } from '../commands/types';
 import { OPERATOR_PERSONA_PROMPT } from '../operator-persona';
+import { fetchVoiceSessionPrompt } from './voice-session-prompt-client';
 import { OPERATOR_CONVERSE_PROMPT } from '../operator-converse-prompt';
 import { readOperatorModeFromSession } from '../operator-converse-tags';
 import { eligibleBeats } from '../op-backstory-bank';
@@ -35,6 +44,16 @@ import '../commands/defs';
 
 interface StartArgs {
   agentId: string;
+  /**
+   * Connecting to the two-tier front agent (plan
+   * voice-two-tier-elevenlabs-agent-2026-10-06). Its session prompt comes from
+   * the server (persona + recent turns, workspace-scoped, secrets redacted)
+   * instead of the legacy client-side persona assembly. Set by the engine
+   * wiring (P-007).
+   */
+  twoTier?: boolean;
+  /** Conversation the two-tier session belongs to; the server defaults to the active one. */
+  conversationId?: string;
   conversationToken: string;
   workspace: string;
   tabId: string;
@@ -116,6 +135,17 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
   // end_conversation is rare and the closure cost is one var lookup.
    
   let convRef: { endSession: () => Promise<void> } | null = null;
+  // Two-tier sessions write every voice turn into the conversation text chat
+  // reads (plan D-008): the user's words, the front's replies, Papercup's answer.
+  let convForTranscript: VoiceConversation | null = null;
+  const transcript = args.twoTier
+    ? createTwoTierTranscript({
+        conversationId: args.conversationId,
+        elConvId: () => {
+          try { return (convForTranscript as any)?.getId?.() ?? null; } catch { return null; }
+        },
+      })
+    : null;
   const clientTools = buildClientTools({
     workspace: args.workspace,
     tabId: args.tabId,
@@ -124,6 +154,7 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
       await new Promise((r) => setTimeout(r, 500));
       try { await convRef?.endSession(); } catch { /* tearing down anyway */ }
     },
+    ...(transcript ? { onBrainAnswer: (say: string) => transcript.brainAnswered(say) } : {}),
   });
 
   // Build the session-start prompt — but skip the three preflight
@@ -144,7 +175,12 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
       ? window.localStorage.getItem(wsLocalKey('harnessElShellMode')) !== '0'
       : true;
   let sessionsContext = '';
-  if (!bareMode && !shellMode) {
+  if (!bareMode && args.twoTier) {
+    // Two-tier front agent (P-004): persona + recent turns of this workspace's
+    // conversation, built and secret-redacted on the server.
+    const userName = await fetchUserName().catch(() => null);
+    sessionsContext = await fetchVoiceSessionPrompt({ conversationId: args.conversationId, userName });
+  } else if (!bareMode && !shellMode) {
     const [delegatesBlock, personaName, backstoryBlock] = await Promise.all([
       fetchDelegatesBlock(args.workspace),
       fetchUserName().catch(() => null),
@@ -224,6 +260,7 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
     onMessage: ({ message, source }: { message: string; source: 'user' | 'ai' }) => {
       if (source === 'user') args.onTranscript?.(message);
       else if (source === 'ai') args.onAssistantText?.(message);
+      if (transcript) routeVoiceMessageToTranscript(transcript, { message, source });
     },
     onError: (msg: string) => { args.onError?.(new Error(msg)); },
   };
@@ -276,7 +313,9 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
     if (withOverrides && overridePayload && !bareMode) {
       opts.overrides = overridePayload;
     }
-    return (await Conversation.startSession(opts)) as VoiceConversation;
+    const started = (await Conversation.startSession(opts)) as VoiceConversation;
+    convForTranscript = started;
+    return started;
   };
 
   // Release the prewarm stream RIGHT BEFORE EL's startSession runs so
@@ -424,6 +463,8 @@ export function buildClientTools(opts: {
   workspace: string;
   tabId: string;
   endSession: () => Promise<void>;
+  /** Two-tier sessions: receives Papercup's answer so the transcript records it. */
+  onBrainAnswer?: (say: string) => unknown;
 }): Record<string, (parameters: any) => Promise<string>> {
   const tools: Record<string, (parameters: any) => Promise<string>> = {};
 
@@ -467,7 +508,73 @@ export function buildClientTools(opts: {
   // to call this for every user turn and speak the returned text verbatim.
   tools.ask_operator = async (params: any) => askOperatorViaSse(params);
 
+  // Two-tier voice (plan voice-two-tier-elevenlabs-agent-2026-10-06, P-003):
+  // the ElevenLabs front agent answers small talk itself and calls this for
+  // anything substantive. ElevenLabs speaks the holding line while it runs
+  // (the tool's pre_tool_speech), so this returns only Papercup's answer —
+  // or, past the deadline or on failure, a short line to say instead.
+  tools[ASK_PAPERCUP_TOOL_NAME] = async (params: any) => askPapercupForVoice(params, opts.onBrainAnswer);
+
   return tools;
+}
+
+/**
+ * The `ask_papercup` client tool: Papercup's answer for the same conversation
+ * the text chat uses, under the shared voice deadline. Never throws and never
+ * returns an empty string, so the voice agent always has something to say.
+ */
+export async function askPapercupForVoice(
+  params: unknown,
+  /** Called with Papercup's real answer — never with a timeout or failure line. */
+  onAnswered?: (say: string) => unknown,
+): Promise<string> {
+  const result = await answerVoiceQuestion(voiceQuestionOf(params), async (question, signal) =>
+    converseVoiceTurn({ text: question }, signal),
+  );
+  if (result.outcome === 'answered') {
+    try {
+      // Not awaited: ElevenLabs is waiting on this answer to speak it.
+      void onAnswered?.(result.say);
+    } catch (err) {
+      console.warn(`[el-conv:${ASK_PAPERCUP_TOOL_NAME}] answer hook failed`, err);
+    }
+  } else {
+    console.warn(`[el-conv:${ASK_PAPERCUP_TOOL_NAME}] ${result.outcome}`);
+  }
+  return result.say;
+}
+
+/**
+ * Routes one ElevenLabs message into the conversation transcript: the user's
+ * words as a user turn, the front agent's speech as an assistant turn (its
+ * repeat of Papercup's answer is skipped by the writer). Plan D-008.
+ */
+export function routeVoiceMessageToTranscript(
+  transcript: VoiceTranscriptWriter,
+  message: { message?: unknown; source?: unknown },
+): void {
+  const text = typeof message?.message === 'string' ? message.message : '';
+  if (!text) return;
+  if (message.source === 'user') void transcript.userSaid(text);
+  else if (message.source === 'ai') void transcript.frontSaid(text);
+}
+
+/** The two-tier session's transcript, written into the session's conversation. */
+export function createTwoTierTranscript(opts: {
+  conversationId?: string | null;
+  elConvId: () => string | null;
+}): VoiceTranscriptWriter {
+  return createVoiceTranscriptWriter({
+    write: (turn) =>
+      persistOperatorVoiceTurn({
+        role: turn.role,
+        text: turn.text,
+        source: turn.source,
+        conversationId: opts.conversationId ?? null,
+        elConvId: opts.elConvId(),
+      }),
+    onWriteError: (err, turn) => console.warn(`[el-conv] ${turn.kind} turn not written`, err),
+  });
 }
 
 /**
@@ -486,6 +593,28 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
   const userText = (params?.text ?? '').toString().trim();
   const trigger = typeof params?.trigger === 'string' ? params.trigger : null;
   // No user text + no explicit trigger = nothing to do.
+  if (!userText && !trigger) return '';
+  try {
+    return (await converseVoiceTurn(params)) || '...';
+  } catch (err) {
+    console.warn('[el-conv:ask_operator]', err);
+    return 'I had trouble just then — say that again?';
+  }
+}
+
+/**
+ * One voice turn through /api/agent-mcp/operator-converse for the current
+ * conversation: returns the spoken `<say>` text (plus any voice-card lines),
+ * or '' when the brain said nothing. THROWS when the brain cannot be reached
+ * or refuses — the callers decide what the user hears. `signal` cancels both
+ * requests, so a voice turn abandoned at its deadline stops the brain call.
+ */
+export async function converseVoiceTurn(
+  params: { text?: string; trigger?: string },
+  signal?: AbortSignal,
+): Promise<string> {
+  const userText = (params?.text ?? '').toString().trim();
+  const trigger = typeof params?.trigger === 'string' ? params.trigger : null;
   if (!userText && !trigger) return '';
   // EL agent forwards { trigger: 'open_canvas' | 'user_says_ready' |
   // 'quiet_wait_resume' } per the shell prompt. After the 2026-05-14
@@ -519,7 +648,8 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
   const HISTORY_LIMIT = 30;
   const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
   try {
-    const hRes = await fetch(`/api/operator/conversations?limit=${HISTORY_LIMIT}`);
+    const historyUrl = `/api/operator/conversations?limit=${HISTORY_LIMIT}`;
+    const hRes = signal ? await fetch(historyUrl, { signal }) : await fetch(historyUrl);
     if (hRes.ok) {
       const h = await hRes.json() as {
         turns: Array<{ role: 'user' | 'assistant' | 'system'; text: string }>;
@@ -543,10 +673,11 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
       messages.push({ role: 'user', content: userText });
     }
   }
-  try {
+  {
     const res = await fetch('/api/agent-mcp/operator-converse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
+      ...(signal ? { signal } : {}),
       body: JSON.stringify({
         messages,
         trigger: effectiveTrigger,
@@ -560,7 +691,7 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
     });
     if (!res.ok || !res.body) {
       console.warn('[el-conv:ask_operator] SSE init failed', res.status);
-      return 'I had trouble just then — say that again?';
+      throw new Error(`operator-converse answered HTTP ${res.status}`);
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -647,10 +778,7 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
         out += (out.length > 0 ? ' ' : '') + cardLines.join(' ');
       }
     }
-    return out || '...';
-  } catch (err) {
-    console.warn('[el-conv:ask_operator]', err);
-    return 'I had trouble just then — say that again?';
+    return out;
   }
 }
 

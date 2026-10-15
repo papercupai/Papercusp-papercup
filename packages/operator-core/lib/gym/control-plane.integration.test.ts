@@ -14,7 +14,11 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { createCandidateVersionVerdict } from './loop';
+import { decideAccept, type VariantEval } from './gate-engine';
+import { unmeasuredEvidence } from './gates';
+import { readProducerObservations } from '../experiment/producer-lifecycle-store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -36,6 +40,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -90,7 +95,8 @@ beforeAll(async () => {
       original_md text, proposed_md text NOT NULL, rationale text,
       dev_anchor_delta double precision, cost_delta double precision, probe_status text,
       status text NOT NULL DEFAULT 'pending', created_at bigint NOT NULL, decided_at bigint,
-      task_corpus text NOT NULL DEFAULT 'synthetic', candidate_verdict jsonb
+      task_corpus text NOT NULL DEFAULT 'synthetic', candidate_verdict jsonb,
+      learning_lifecycle jsonb
     )`);
   h.sql = rootSql;
 }, 90_000);
@@ -159,6 +165,46 @@ describe('recordProposal (PG)', () => {
     const rows = await rootSql<{ proposed_md: string }[]>`SELECT proposed_md FROM harness_shared.gym_proposals WHERE id=${id}`;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.proposed_md).toBe('P v2'); // pending row updated
+    const receipts = await readProducerObservations(rootSql, { producer: 'gym', workspaceId: WS });
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      sourceRef: `gym:${id}`, sourceCurrent: true, stage: 'observation',
+      contract: null, promotionAllowed: false, source: { proposed_md: 'P v2', status: 'pending' },
+    });
+  });
+
+  it('persists the detached candidate and rollback receipt through the native proposal writer', async () => {
+    const variant = { promptOverrides: { [AGENT_ROLE]: 'evaluated prompt' } };
+    const parent = { promptOverrides: { [AGENT_ROLE]: 'rollback prompt' } };
+    const measured = (variantId: string, trainAgg: number) => ({
+      evalResult: { variantId, trainAgg, trainVector: [trainAgg], devAnchorAgg: trainAgg,
+        realAnchorAgg: 0, realAnchorEvidence: unmeasuredEvidence(['real-task']), meanCost: 1,
+        regressionEvidence: unmeasuredEvidence(['task']), probeEvidence: unmeasuredEvidence(['probe']) } satisfies VariantEval,
+      costUsd: 2, runIds: [`fixture-run:${variantId}`],
+    });
+    const evaluation = { candidate: measured('v1', 8), parent: measured('baseline', 7),
+      champion: measured('incumbent', 7), thresholds: { epsilon: 0.2, delta: 0.3, costCeiling: 2 }, baselineMeanCost: 1 };
+    const gates = decideAccept(evaluation.candidate.evalResult, evaluation.parent.evalResult,
+      evaluation.champion.evalResult, evaluation.baselineMeanCost, evaluation.thresholds);
+    const candidateVersion = createCandidateVersionVerdict({
+      candidateId: 'v1', parentId: 'baseline', variant, parent, recordedAt: 1,
+      gateResults: gates.results, evaluation,
+    });
+    const expected = JSON.parse(JSON.stringify(candidateVersion));
+    variant.promptOverrides[AGENT_ROLE] = 'later candidate edit';
+    parent.promptOverrides[AGENT_ROLE] = 'later rollback edit';
+    evaluation.candidate.evalResult.trainVector[0] = -100;
+    evaluation.champion.runIds.push('later-run');
+    const id = await propose({ proposedMd: 'evaluated prompt', candidateVersion });
+    const row = (await rootSql`SELECT candidate_verdict FROM harness_shared.gym_proposals WHERE id=${id}`)[0]!;
+    expect(row.candidate_verdict).toEqual(expected);
+    const saved = row.candidate_verdict.evaluation;
+    expect(decideAccept(saved.candidate.evalResult, saved.parent.evalResult, saved.champion.evalResult,
+      saved.baselineMeanCost, saved.thresholds).results).toEqual(row.candidate_verdict.gateResults);
+    const receipts = await readProducerObservations(rootSql, { producer: 'gym', workspaceId: WS });
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({ sourceCurrent: true, promotionAllowed: false, contract: null,
+      source: { candidate_verdict: expected, proposed_md: 'evaluated prompt' } });
   });
 
   it('NEVER resurrects a DECIDED proposal — the conflict-update only touches a still-pending row', async () => {

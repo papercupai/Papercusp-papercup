@@ -24,7 +24,7 @@ const M = vi.hoisted(() => {
       prose: '## Now\nbody\n',
       raw: `slug: ${slug}\n`,
       frontmatter: { slug },
-      now: { state: 's', next: 'n' },
+      now: { state: 's', next: 'n', raw: 's\nn', lineNumber: 1 },
       decisions: [
         {
           id: 'D-001',
@@ -102,8 +102,9 @@ const M = vi.hoisted(() => {
     })),
     planHarnessesForSlugs: vi.fn(async () => new Map<string, string[]>()),
     readPlanBySlug: vi.fn(async (slug: string): Promise<PlanRead> => planFixture(slug)),
-    ctxToPlanSourceOpts: vi.fn(async (ctx: { harnessSlug?: string }) => ({
+    ctxToPlanSourceOpts: vi.fn(async (ctx: { harnessSlug?: string; workspaceId?: string }) => ({
       harnessSlug: ctx.harnessSlug ?? 'papercup',
+      ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}),
     })),
     resolveCtxHarnessSlug: vi.fn(() => 'papercup'),
     resolveEffectiveHarnessSlug: vi.fn(() => 'papercup'),
@@ -133,6 +134,32 @@ const M = vi.hoisted(() => {
       ],
       findings: [],
       summary: 'code truth verified',
+    })),
+    getLatestActivationAudit: vi.fn(async (slug: string) => ({
+      planSlug: slug,
+      harnessSlug: 'papercup',
+      auditSeq: 8,
+      createdBy: 'su-activation-auditor',
+      createdAt: '2026-08-21T00:00:00.000Z',
+      auditKind: 'activation',
+      auditedSha: 'def456',
+      activation: {
+        sourceRanges: [],
+        mappings: [{
+          id: 'M-001',
+          sourceRefs: ['session_turn:codex:owner-session:17'],
+          requirement: 'Keep this plan item traceable to the owner request.',
+          planTargets: ['P-009'],
+          disposition: 'covered',
+        }],
+        repairedOmissions: [],
+        rejectedOrSuperseded: [],
+        unresolvedBlockers: [],
+      },
+      auditedPlanRevision: { id: 9, seq: 9, contentHash: 'plan-hash' },
+      items: [],
+      findings: [],
+      summary: 'owner request mapped to plan item',
     })),
     overlayIssueBlocksForPlan: vi.fn(async (_slug: string, items: unknown[]) => ({
       items,
@@ -167,7 +194,7 @@ vi.mock('../../issue-blocks-merge', async (orig) => {
     overlayIssueBlocksForPlan: M.overlayIssueBlocksForPlan,
   };
 });
-// The linkedFeatures / planItemTests decorations query PG via withWorkspace; in the
+// The lifecycle / linkedFeatures decorations query PG via withWorkspace; in the
 // unit test there's no DB, so make it throw — both reads are wrapped in a non-fatal
 // try/catch and degrade to empty, which is exactly the path we want to exercise.
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -184,6 +211,7 @@ vi.mock('../../rubrics', () => ({
 }));
 vi.mock('../../plan-audits', () => ({
   getLatestPlanAudit: M.getLatestPlanAudit,
+  getLatestActivationAudit: M.getLatestActivationAudit,
 }));
 vi.mock('./get-activation-readiness', () => ({
   previewPlanStartConsult: M.previewPlanStartConsult,
@@ -204,22 +232,24 @@ import { _refreshCacheLayerForTests } from '../../cache/instance';
 
 const CACHE_LAYER = 'papercusp-cache-layer';
 
-const ctx = (workspaceId: string, harnessSlug = 'papercup'): never =>
+const ctx = (workspaceId: string, harnessSlug = 'papercup', role?: string) =>
   ({
     workspaceId,
     harnessSlug,
+    ...(role ? { role } : {}),
     metadata: vi.fn(),
     log: vi.fn(),
     progress: vi.fn(),
-  }) as never;
+  });
 
 const run = async (
   args: Record<string, unknown>,
   workspaceId = 'ws-get',
   harnessSlug = 'papercup',
+  role?: string,
 ): Promise<{ results: Array<Record<string, unknown>> }> =>
   (
-    (await tool.handler(args as never, ctx(workspaceId, harnessSlug))) as {
+    (await tool.handler(args as never, ctx(workspaceId, harnessSlug, role) as never)) as {
       data: { results: Array<Record<string, unknown>> };
     }
   ).data;
@@ -256,6 +286,50 @@ afterEach(async () => {
 });
 
 describe('plans:get — cache wiring', () => {
+  it.each([
+    { mode: 'meta' },
+    { mode: 'sections' },
+    { mode: 'full' },
+    { heading: 'Now' },
+  ])('discloses State narration that went stale after an item completed: %j', async (selection) => {
+    const read = M.readPlanBySlug.getMockImplementation()!;
+    M.readPlanBySlug.mockImplementationOnce(async (slug) => {
+      const fixture = (await read(slug))!;
+      fixture.parsed.now.state = 'P-001 remains open; P-009 reconciliation remains open.';
+      fixture.parsed.now.next = 'Read the existing source checkpoint.';
+      fixture.parsed.now.raw = '**State:** ' + fixture.parsed.now.state + '\n\n**Next:** ' + fixture.parsed.now.next;
+      fixture.parsed.prose = '## Now\n\n' + fixture.parsed.now.raw + '\n';
+      fixture.parsed.items[0].storedStatus = 'done';
+      return fixture;
+    });
+
+    const result = (await run({ slug: 'stale-state', ...selection, includeEnrichments: false })).results[0];
+    if ('heading' in selection) {
+      expect(result.section).toMatchObject({ body: expect.stringContaining('P-001 [done]') });
+      expect((result.section as { body: string }).body).toContain('Stored State');
+      expect((result.section as { body: string }).body).toContain('P-009 reconciliation remains open.');
+      expect(result).not.toHaveProperty('now');
+    } else {
+      expect(result.now).toMatchObject({
+        state: expect.stringContaining('P-001 [done]'),
+        stateDerivation: { contradictions: [expect.objectContaining({ id: 'P-001', status: 'done' })] },
+        next: 'Read the existing source checkpoint.',
+        raw: expect.stringContaining('P-001 remains open; P-009 reconciliation remains open.'),
+      });
+    }
+  });
+
+  it('CONTROL: preserves the same State narration while the named item is open', async () => {
+    const read = M.readPlanBySlug.getMockImplementation()!;
+    M.readPlanBySlug.mockImplementationOnce(async (slug) => {
+      const fixture = (await read(slug))!;
+      fixture.parsed.now.state = 'P-001 remains open; P-009 reconciliation remains open.';
+      return fixture;
+    });
+    const result = (await run({ slug: 'live-state', mode: 'meta', includeEnrichments: false })).results[0];
+    expect(result.now).toMatchObject({ state: 'P-001 remains open; P-009 reconciliation remains open.' });
+  });
+
   it('delivers fresh child history outside the cached plan and resolves the exact recovery read', async () => {
     const first = await run({ slug: 'alpha', mode: 'full' });
     expect(JSON.stringify(first)).toContain('child lesson survives');
@@ -318,7 +392,9 @@ describe('plans:get — cache wiring', () => {
     expect(M.overlayIssueBlocksForPlan).toHaveBeenCalledOnce();
     expect(M.getAcceptanceRubricForPlan).toHaveBeenCalledOnce();
     expect(M.getLatestPlanAudit).toHaveBeenCalledOnce();
-    expect(withWorkspace).toHaveBeenCalledTimes(3);
+    // Lifecycle + linkedFeatures; the planItemTests read is retired with inline VAL-*
+    // (verification-system-improvements-2026-10-10 P-003).
+    expect(withWorkspace).toHaveBeenCalledTimes(2);
   });
 
   it('still honors explicit history requests when the UI default omits incidental history', async () => {
@@ -481,6 +557,31 @@ describe('plans:get — cache wiring', () => {
     expect(M.getLatestPlanAudit).toHaveBeenCalledWith('alpha', {
       workspaceId: 'ws-get',
     });
+  });
+
+  it('surfaces exact activation-audit provenance only to judge callers', async () => {
+    const ordinary = await run({ slug: 'alpha' });
+    expect(ordinary.results[0]).not.toHaveProperty('latestActivationAudit');
+    expect(M.getLatestActivationAudit).not.toHaveBeenCalled();
+
+    const judged = await run({ slug: 'alpha' }, 'ws-get', 'papercup', 'judge');
+    expect(judged.results[0]).toMatchObject({
+      latestActivationAudit: {
+        planSlug: 'alpha',
+        auditSeq: 8,
+        auditKind: 'activation',
+        activation: {
+          mappings: [{
+            id: 'M-001',
+            sourceRefs: ['session_turn:codex:owner-session:17'],
+            requirement: 'Keep this plan item traceable to the owner request.',
+            planTargets: ['P-009'],
+            disposition: 'covered',
+          }],
+        },
+      },
+    });
+    expect(M.getLatestActivationAudit).toHaveBeenCalledWith('alpha', { workspaceId: 'ws-get' });
   });
 
   it('opts into a fresh activation consult preview without caching its time-varying result', async () => {

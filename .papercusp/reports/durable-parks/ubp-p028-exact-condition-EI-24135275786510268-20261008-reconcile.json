@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "ubp-p028-exact-condition-EI-24135275786510268-20261008",
+  "inputSha256": "feb3ce311bd02475c72bf125c690d8f9d9ab348d17fa0d567097a437e5579009",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-08T19:06:15.849Z",
+  "actor": "su-055e916b-4218-4d93-9e0d-4a2c57fe9026",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-24135275786510268",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "ee075917a8fb8ca0bc94dc3151ef8007683be7762fdd910abab4334d679ae3eb",
+      "observedParkFingerprint": "ee075917a8fb8ca0bc94dc3151ef8007683be7762fdd910abab4334d679ae3eb",
+      "reasonCode": "typed-blocker-resolved",
+      "evidence": "reports/durable-parks/ubp-p028-exact-condition-EI-24135275786510268-20261008-proof.json sha256=1f111b9bacee962238670b8885d9bc65822491656d1e1de920c1515414fa2097; canonical root WI-10002823 DONE/committed share-locked; subject re-evaluation remains pending",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/ubp-p028-exact-condition-EI-24135275786510268-20261008-reconcile.json"
+}

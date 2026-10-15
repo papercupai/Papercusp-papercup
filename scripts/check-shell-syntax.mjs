@@ -25,10 +25,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // `.ts` import. Keep the extension here: plain `node scripts/check-shell-syntax.mjs`
 // is the documented/shebang entrypoint, and Node's ESM resolver never guesses
 // `.ts` for an extensionless specifier (the old import died before scanning).
-import { findShellSyntaxError } from '../packages/operator-core/lib/content-lint/shell-syntax.ts';
+import {
+  findShellSyntaxError,
+  ShellSyntaxCheckUnavailableError,
+} from '../packages/operator-core/lib/content-lint/shell-syntax.ts';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 export { findShellSyntaxError };
+
+// The detector's 5s default bounds git-sync's tick. This CI lint has no tick to
+// protect, and under gate load `bash -n` on one script has exceeded 5s
+// (WI-10008204), so it allows longer per file before calling a file unverified.
+const CLI_BASH_TIMEOUT_MS = 20_000;
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -50,6 +58,7 @@ function main() {
     explicit.length > 0 ? { files: explicit, unscanned: [] } : listTrackedFiles(ROOT);
 
   const offenders = [];
+  const unverified = [];
   for (const f of tracked) {
     if (isExcluded(f)) continue;
     if (!f.endsWith('.sh')) continue;
@@ -59,19 +68,34 @@ function main() {
     } catch {
       continue;
     }
-    const hit = findShellSyntaxError(text);
-    if (hit) offenders.push(`${f}:${hit.line ?? '?'}  ${hit.reason}`);
+    try {
+      const hit = findShellSyntaxError(text, { timeoutMs: CLI_BASH_TIMEOUT_MS });
+      if (hit) offenders.push(`${f}:${hit.line ?? '?'}  ${hit.reason}`);
+    } catch (err) {
+      // No verdict (timeout / spawn failure) is NOT a parse failure (WI-10008204).
+      if (!(err instanceof ShellSyntaxCheckUnavailableError)) throw err;
+      unverified.push(`${f}  ${err.message}`);
+    }
   }
 
-  if (offenders.length === 0) {
-    console.log(`✓ every tracked .sh script parses cleanly (bash -n).${describeUnscanned(unscanned)}`);
-    process.exit(0);
+  if (offenders.length > 0) {
+    console.error('✗ syntactically BROKEN shell script(s) — a hard `bash -n` parse failure:\n');
+    for (const o of offenders) console.error('    ' + o);
+    console.error(`\n  ${offenders.length} offender(s). See EI-13192.`);
+    process.exit(1);
   }
 
-  console.error('✗ syntactically BROKEN shell script(s) — a hard `bash -n` parse failure:\n');
-  for (const o of offenders) console.error('    ' + o);
-  console.error(`\n  ${offenders.length} offender(s). See EI-13192.`);
-  process.exit(1);
+  if (unverified.length > 0) {
+    // Exit 2, distinct from 1: these files were NOT shown broken, and they were
+    // not shown clean either, so this run must not print the ✓ line.
+    console.error('? could not verify shell script(s) — `bash -n` gave no verdict:\n');
+    for (const u of unverified) console.error('    ' + u);
+    console.error(`\n  ${unverified.length} unverified. Re-run when the host is less loaded. See WI-10008204.`);
+    process.exit(2);
+  }
+
+  console.log(`✓ every tracked .sh script parses cleanly (bash -n).${describeUnscanned(unscanned)}`);
+  process.exit(0);
 }
 
 const invokedPath = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : '';

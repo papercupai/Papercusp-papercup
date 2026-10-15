@@ -459,6 +459,34 @@ describe('createFailoverPool — recovery horizon + bounded readmit (codex-auto-
     expect(p.earliestAvailableAt!()).toBe(0);
   });
 
+  it('preserves the park cause until recovery and drops it on readmission/reload', () => {
+    const p = createFailoverPool([acct('a'), acct('b')], { now: () => T });
+    p.onExhausted('a', T + 30_000, undefined, { cause: 'cooldown' });
+    expect(p.parkState!('a')).toEqual({ parkedAt: T, until: T + 30_000, cause: 'cooldown' });
+    p.readmit!('a', { reason: 'admin' });
+    p.onExhausted('a', T + 60_000);
+    expect(p.parkState!('a')).toEqual({ parkedAt: T, until: T + 60_000 });
+    p.reload!([acct('b')]);
+    p.reload!([acct('a'), acct('b')]);
+    expect(p.parkState!('a')).toBeUndefined();
+  });
+
+  it.each(['quota', 'auth', undefined] as const)('a concurrent cooldown cannot weaken a %s park', cause => {
+    const p = createFailoverPool([acct('a')], { now: () => T });
+    p.onExhausted('a', T + 3600_000, undefined, { cause });
+    p.onExhausted('a', T + 15_000, undefined, { cause: 'cooldown' });
+    expect(p.parkState!('a')).toEqual({ parkedAt: T, until: T + 3600_000, ...(cause ? { cause } : {}) });
+    expect(p.healthyCount!()).toBe(0);
+  });
+
+  it('a quota refusal supersedes a pending cooldown without shortening its park', () => {
+    const p = createFailoverPool([acct('a')], { now: () => T });
+    p.onExhausted('a', T + 30_000, undefined, { cause: 'cooldown' });
+    p.onExhausted('a', T + 10_000, undefined, { cause: 'quota' });
+    expect(p.parkState!('a')?.cause).toBe('quota');
+    expect(p.parkState!('a')?.until).toBe(T + 30_000);
+  });
+
   it('a transport readmit bounded by maxParkMs REFUSES a park longer than the transport horizon (a usage wall)', () => {
     const logs: string[] = [];
     const p = createFailoverPool([acct('a'), acct('b')], { now: () => T, log: (_l, m) => logs.push(m) });

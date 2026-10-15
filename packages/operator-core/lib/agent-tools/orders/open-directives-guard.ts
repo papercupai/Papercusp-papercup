@@ -1,7 +1,7 @@
 /**
  * open-directives-guard (EI-11484 P4) — the shared soft-block for surfaces that
  * END a re-injection surface (loop:end, fleet:wind-down): while OPEN owner
- * directives exist for the caller's workspace, the first call WARNS and
+ * directives addressed to the caller exist, the first call WARNS and
  * refuses; re-calling with the acknowledge flag proceeds. Mechanical, not
  * judgment: ending the loop is exactly the moment a still-open owner order
  * would lose its wake surface, so the guard makes that loss a conscious act.
@@ -33,13 +33,14 @@ export function buildOpenDirectivesGuard(
   totalOpen: number,
   action: string,
   nowMs: number = Date.now(),
+  viewerOwnerId?: string | null,
 ): OpenDirectivesGuardResult | null {
   if (totalOpen <= 0 || rows.length === 0) return null;
   return {
     ok: false,
     error: 'open_owner_directives',
     openCount: totalOpen,
-    directives: rows.map((r) => renderOwnerDirectiveRow(r, nowMs).trim()),
+    directives: rows.map((r) => renderOwnerDirectiveRow(r, nowMs, viewerOwnerId).trim()),
     note:
       `${totalOpen} OPEN owner directive(s) still awaiting disposition — ${action} removes a surface that ` +
       're-renders them every wake. Close each finished/refused one first via orders:disposition { id, status, ' +
@@ -49,8 +50,10 @@ export function buildOpenDirectivesGuard(
 }
 
 /**
- * The IO wrapper the tools call: null ⇒ proceed (none open, acknowledged, or
- * read failed). GUARD_MAX_ROWS rows are listed; the count covers the rest.
+ * The IO wrapper the tools call: null ⇒ proceed (none addressed to this session,
+ * acknowledged, missing identity/scope, or read failed). Foreign workspace rows
+ * remain visible as FYI in Orientation but do not block this session's stop.
+ * GUARD_MAX_ROWS rows are listed; the count covers the rest.
  */
 export async function checkOpenDirectivesGuard(opts: {
   workspaceId: string | null | undefined;
@@ -60,15 +63,15 @@ export async function checkOpenDirectivesGuard(opts: {
   /** The session being guarded; rows it cleared off its own agenda do not block it. */
   viewerOwnerId?: string | null;
 }): Promise<OpenDirectivesGuardResult | null> {
-  if (opts.acknowledged || !opts.workspaceId) return null;
+  if (opts.acknowledged || !opts.workspaceId || !opts.viewerOwnerId) return null;
   try {
-    const rows = await listOpenOwnerDirectives(opts.workspaceId, 5, opts.sql, opts.viewerOwnerId);
+    const rows = await listOpenOwnerDirectives(opts.workspaceId, 5, opts.sql, opts.viewerOwnerId, opts.viewerOwnerId);
     if (!rows.length) return null;
     const totalOpen =
       rows.length >= 5
-        ? await countOpenOwnerDirectives(opts.workspaceId, opts.sql, opts.viewerOwnerId).catch(() => rows.length)
+        ? await countOpenOwnerDirectives(opts.workspaceId, opts.sql, opts.viewerOwnerId, opts.viewerOwnerId).catch(() => rows.length)
         : rows.length;
-    return buildOpenDirectivesGuard(rows, totalOpen, opts.action);
+    return buildOpenDirectivesGuard(rows, totalOpen, opts.action, undefined, opts.viewerOwnerId);
   } catch {
     return null; // fail-open: never wedge an end/wind-down on a store read
   }

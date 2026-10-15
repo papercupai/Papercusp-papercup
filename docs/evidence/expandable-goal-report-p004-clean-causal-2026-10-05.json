@@ -1,0 +1,809 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03",
+  "workItemId": "WI-10005952",
+  "executor": "su-b9ccbf0d-131b-4a64-aca3-90987d99d842",
+  "observedAt": "2026-10-06T00:01:42.616387+00:00",
+  "scope": "Independent clean-origin suite and actual production-source copy-out causal probes; scoped R5/causal proof, separate from native R4 and mandatory D006 final schema verdict.",
+  "sourceIdentity": {
+    "commitSha": "0f761934772cb6edb9d2eff1b7fe5dee48de1d9a",
+    "cloneRoot": "/tmp/papercusp-lint-as-committed-0f76193477-RHxSK9",
+    "originClean": true,
+    "maintainedRoute": "npm run lint:as-committed -- --ref <sha> --keep -- npm run test:file -- <three paths>; kept clone used by scripts/mutation-probe.sh --relocation overlay",
+    "currentStagingHead": "cf272b6803f838f1ee6a0e10684b74dd8f4ccaa1",
+    "pins": [
+      {
+        "path": "libs/generic/chat-protocol/src/goal-owner-report.ts",
+        "sha256": "6faf3f9604d60f013142336ff972fba1b65792e263bfb00e5efaf06612c62d50",
+        "cleanCloneSha256": "6faf3f9604d60f013142336ff972fba1b65792e263bfb00e5efaf06612c62d50"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1353-report-library-goal-snapshot.sql",
+        "sha256": "82c89e1bc5d1bb23a2f6f2fef832b5834948ea91223c87e58844e7d3466006f0",
+        "cleanCloneSha256": "82c89e1bc5d1bb23a2f6f2fef832b5834948ea91223c87e58844e7d3466006f0"
+      },
+      {
+        "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+        "sha256": "840a6e02476d044d3d5de01c87f365c41e056bd8c8ab4373186a7529ed22dc25",
+        "cleanCloneSha256": "840a6e02476d044d3d5de01c87f365c41e056bd8c8ab4373186a7529ed22dc25"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/log.ts",
+        "sha256": "f8ea364a086b9096f83e50349b05a8587d8491ab03558a4462b08f19e31c2abc",
+        "cleanCloneSha256": "f8ea364a086b9096f83e50349b05a8587d8491ab03558a4462b08f19e31c2abc"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/message-fields.ts",
+        "sha256": "ae4b2741d4c88a13d9fa4bfa8064c762ca294e73113d6d70b1cc4a1f18ccf4f2",
+        "cleanCloneSha256": "ae4b2741d4c88a13d9fa4bfa8064c762ca294e73113d6d70b1cc4a1f18ccf4f2"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/messages.ts",
+        "sha256": "0ef78e175aeb73044067982de38e8e5f1a9c61c65a8f2aed501660436ec61265",
+        "cleanCloneSha256": "0ef78e175aeb73044067982de38e8e5f1a9c61c65a8f2aed501660436ec61265"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/inbox-content-bounds.ts",
+        "sha256": "0eee5bee70becd68bb8c85ba2161c9b0268801c3826469f69fd5e71ba4314892",
+        "cleanCloneSha256": "0eee5bee70becd68bb8c85ba2161c9b0268801c3826469f69fd5e71ba4314892"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/send-chunking.test.ts",
+        "sha256": "bd696de91754c36ea79858e0a55b221e3b5e7c808d3a7465ca50701941182e17",
+        "cleanCloneSha256": "bd696de91754c36ea79858e0a55b221e3b5e7c808d3a7465ca50701941182e17"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/send-chunking.ts",
+        "sha256": "5c599528b1dffc40932f736955a30915658d4946e7b24d9cf68d6a9883640da5",
+        "cleanCloneSha256": "5c599528b1dffc40932f736955a30915658d4946e7b24d9cf68d6a9883640da5"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/send.test.ts",
+        "sha256": "3afee47cd1cae47fa850039988d069a422b42830dc6205e93423313e2085cd9a",
+        "cleanCloneSha256": "3afee47cd1cae47fa850039988d069a422b42830dc6205e93423313e2085cd9a"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/send.ts",
+        "sha256": "a24d20e09d76af82ce5e1bb2ea3d1c1228bb0a9f9e8cc47b5465d1d9032cb702",
+        "cleanCloneSha256": "a24d20e09d76af82ce5e1bb2ea3d1c1228bb0a9f9e8cc47b5465d1d9032cb702"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-owner-report-reference.ts",
+        "sha256": "c8db7ca17acc3438b781b14139ff478ff6ee3fd3e0304ba5ba9e13ddb05f07e9",
+        "cleanCloneSha256": "c8db7ca17acc3438b781b14139ff478ff6ee3fd3e0304ba5ba9e13ddb05f07e9"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-owner-report.ts",
+        "sha256": "ce95c603d9bcd11ecfd378e3078f5972f734eab4da3df84df077c200f2f8334c",
+        "cleanCloneSha256": "ce95c603d9bcd11ecfd378e3078f5972f734eab4da3df84df077c200f2f8334c"
+      },
+      {
+        "path": "packages/operator-core/lib/report-library.integration.test.ts",
+        "sha256": "4a6d6f3b7f9d3943fdfd040db7674a8a715b13a9d5ac6e325927f1cc010ac929",
+        "cleanCloneSha256": "4a6d6f3b7f9d3943fdfd040db7674a8a715b13a9d5ac6e325927f1cc010ac929"
+      },
+      {
+        "path": "packages/operator-core/lib/report-library.ts",
+        "sha256": "30d54b3ff879949335c8fc6e4573ffe47c0f5943a8824dfe32fef893fad56d27",
+        "cleanCloneSha256": "30d54b3ff879949335c8fc6e4573ffe47c0f5943a8824dfe32fef893fad56d27"
+      },
+      {
+        "path": "packages/operator-core/test/fixtures/goal-owner-report.ts",
+        "sha256": "de851e71d8486f897e21ea7ef147748b3ccb1a0d7431b8f82af22f2960a0b89c",
+        "cleanCloneSha256": "de851e71d8486f897e21ea7ef147748b3ccb1a0d7431b8f82af22f2960a0b89c"
+      },
+      {
+        "path": "scripts/lint-as-committed.mjs",
+        "sha256": "60799cbe84c7d394c6234ff63b17e458ff15956cd0ab92f429962408c4198ca6",
+        "cleanCloneSha256": "60799cbe84c7d394c6234ff63b17e458ff15956cd0ab92f429962408c4198ca6"
+      },
+      {
+        "path": "scripts/mutation-probe.sh",
+        "sha256": "6c4fd8ae9a09d7330d6cb642fb5975a0384528b7ea2a659f8ada9924a5cec5f7",
+        "cleanCloneSha256": "6c4fd8ae9a09d7330d6cb642fb5975a0384528b7ea2a659f8ada9924a5cec5f7"
+      }
+    ]
+  },
+  "baseline": {
+    "runIds": [
+      20780050,
+      20780049,
+      20780054
+    ],
+    "testsPassed": 291,
+    "testsFailed": 0,
+    "testsSkipped": 0,
+    "population": [
+      {
+        "filePath": "packages/operator-core/lib/agent-tools/coordination/tools/send.test.ts",
+        "runId": 20780050,
+        "testsPassed": 248
+      },
+      {
+        "filePath": "packages/operator-core/lib/agent-tools/coordination/tools/send-chunking.test.ts",
+        "runId": 20780049,
+        "testsPassed": 13
+      },
+      {
+        "filePath": "packages/operator-core/lib/report-library.integration.test.ts",
+        "runId": 20780054,
+        "testsPassed": 30
+      }
+    ]
+  },
+  "probes": [
+    {
+      "name": "inline",
+      "runGroupId": "p004-clean-inline-20261005-fire15",
+      "command": [
+        "bash",
+        "scripts/mutation-probe.sh",
+        "--file",
+        "/tmp/papercusp-lint-as-committed-0f76193477-RHxSK9/packages/operator-core/lib/agent-tools/coordination/tools/send.ts",
+        "--mutate",
+        "s~kind: 'stamped',~kind: 'refused', result: { ok: false, to: msg.to, error: 'report_reference_required' },~",
+        "--test",
+        "PROBE_SCRIPT={} npm run test:file -- packages/operator-core/lib/agent-tools/coordination/tools/send.test.ts",
+        "--relocation",
+        "overlay",
+        "--expect",
+        "caught"
+      ],
+      "finishedAt": "2026-10-05T23:43:11.676126+00:00",
+      "baselineRun": 20784250,
+      "copyBaselineRun": 20784900,
+      "mutationRun": 20785549,
+      "probeExit": 0,
+      "mutationVerdict": "caught",
+      "mutantExpectedExit": 1,
+      "mutationParse": "unchecked",
+      "assertionEvidence": "test-file-assertion-failure",
+      "assertionFailures": [
+        "GOAL owner-report operation boundary (P-006 / A-05) fails open: a truth read that throws still stamps the report without a truth summary",
+        "GOAL owner-report operation boundary (P-006 / A-05) resolves the live GOAL subject and stamps one complete five-section send",
+        "GOAL owner-report operation boundary (P-006 / A-05) stamps the truth summary and cited ref states when every readable check passes",
+        "REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler INLINE-REPORT-COMPATIBILITY-P004: causal reference-required mutant is caught while valid reference still succeeds",
+        "REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler INLINE-REPORT-COMPATIBILITY-P004: preserves all five inline fields and cadence beside reference delivery",
+        "REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler INLINE-REPORT-COMPATIBILITY-P004: throws truth is inline fail-open and reference fail-closed",
+        "REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler INLINE-REPORT-COMPATIBILITY-P004: unknown truth is inline fail-open and reference fail-closed",
+        "REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler INLINE-REPORT-COMPATIBILITY-P004: unreadable inline truth stays fail-open beside a valid reference"
+      ],
+      "rawRef": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/inline.log",
+      "treeIntegrity": "VERIFIED; clean-origin subject byte-identical before/after"
+    },
+    {
+      "name": "identity",
+      "runGroupId": "p004-clean-identity-20261005-fire15",
+      "command": [
+        "bash",
+        "scripts/mutation-probe.sh",
+        "--file",
+        "/tmp/papercusp-lint-as-committed-0f76193477-RHxSK9/packages/operator-core/lib/report-library.ts",
+        "--mutate",
+        "s~WHERE workspace_id = \\$\\{workspaceId\\} AND report_id = \\$\\{reportId\\} AND \\$\\{gate\\}~WHERE workspace_id = \\${workspaceId} AND (report_id = \\${reportId} OR lineage_id = \\${reportId}) AND \\${gate} ORDER BY published_at DESC, report_id DESC LIMIT 1~",
+        "--test",
+        "PROBE_SCRIPT={} npm run test:file -- packages/operator-core/lib/report-library.integration.test.ts",
+        "--relocation",
+        "overlay",
+        "--expect",
+        "caught"
+      ],
+      "finishedAt": "2026-10-05T23:46:05.479100+00:00",
+      "baselineRun": 20786195,
+      "copyBaselineRun": 20786845,
+      "mutationRun": 20787968,
+      "probeExit": 0,
+      "mutationVerdict": "caught",
+      "mutantExpectedExit": 1,
+      "mutationParse": "unchecked",
+      "assertionEvidence": "test-file-assertion-failure",
+      "assertionFailures": [
+        "report_library store (real PG) REPORT-CAUSAL-IDENTITY-P004: exact-ID detector catches latest-lineage substitution and passes the pinned reader",
+        "report_library store (real PG) REPORT-EXACT-IDENTITY-P001: round-trips the complete pinned GOAL fixture after a successor",
+        "report_library store (real PG) SPEC-P-002-supersede-lineage: a redone report inherits its predecessor lineage and collapses the list"
+      ],
+      "rawRef": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/identity.log",
+      "treeIntegrity": "VERIFIED; clean-origin subject byte-identical before/after"
+    },
+    {
+      "name": "stalesource",
+      "runGroupId": "p004-clean-stalesource-20261005-fire15",
+      "command": [
+        "bash",
+        "scripts/mutation-probe.sh",
+        "--file",
+        "/tmp/papercusp-lint-as-committed-0f76193477-RHxSK9/packages/operator-core/lib/goal-owner-report-reference.ts",
+        "--mutate",
+        "s~const observed = Date\\.parse\\(s\\.observedAt\\);~return; const observed = Date.parse(s.observedAt);~",
+        "--test",
+        "PROBE_SCRIPT={} npm run test:file -- packages/operator-core/lib/report-library.integration.test.ts",
+        "--relocation",
+        "overlay",
+        "--expect",
+        "caught"
+      ],
+      "finishedAt": "2026-10-05T23:48:17.310703+00:00",
+      "baselineRun": 20789316,
+      "copyBaselineRun": 20789356,
+      "mutationRun": 20789421,
+      "probeExit": 0,
+      "mutationVerdict": "caught",
+      "mutantExpectedExit": 1,
+      "mutationParse": "unchecked",
+      "assertionEvidence": "test-file-assertion-failure",
+      "assertionFailures": [
+        "report_library store (real PG) REPORT-CAUSAL-STALE-SOURCE-P004: bypassed admission persists a forbidden stamp; the real transaction refuses",
+        "report_library store (real PG) REPORT-REFERENCE-ADMISSION-P002: future negative persists neither notification nor cadence",
+        "report_library store (real PG) REPORT-REFERENCE-ADMISSION-P002: missing-action negative persists neither notification nor cadence",
+        "report_library store (real PG) REPORT-REFERENCE-ADMISSION-P002: stale-source negative persists neither notification nor cadence",
+        "report_library store (real PG) REPORT-WAKE-FIXTURE: actual holder liveness and wake policy are prerequisites for publication"
+      ],
+      "rawRef": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/stalesource.log",
+      "treeIntegrity": "VERIFIED; clean-origin subject byte-identical before/after"
+    },
+    {
+      "name": "rollback",
+      "runGroupId": "p004-clean-rollback-20261005-fire15",
+      "command": [
+        "bash",
+        "scripts/mutation-probe.sh",
+        "--file",
+        "/tmp/papercusp-lint-as-committed-0f76193477-RHxSK9/packages/operator-core/lib/goal-owner-report-reference.ts",
+        "--mutate",
+        "s~afterAppend: async \\(tx\\) => \\{ await hooks\\?\\.phase\\?\\.\\('before-commit', tx\\); \\},~afterAppend: async (tx) => {},~; s~return result\\.envelope;~await hooks?.phase?.('before-commit', sql); return result.envelope;~",
+        "--test",
+        "PROBE_SCRIPT={} npm run test:file -- packages/operator-core/lib/report-library.integration.test.ts",
+        "--relocation",
+        "overlay",
+        "--expect",
+        "caught"
+      ],
+      "finishedAt": "2026-10-05T23:50:55.057556+00:00",
+      "baselineRun": 20789461,
+      "copyBaselineRun": 20789606,
+      "mutationRun": 20789782,
+      "probeExit": 0,
+      "mutationVerdict": "caught",
+      "mutantExpectedExit": 1,
+      "mutationParse": "unchecked",
+      "assertionEvidence": "test-file-assertion-failure",
+      "assertionFailures": [
+        "report_library store (real PG) REPORT-CAUSAL-ORPHAN-CADENCE-P004: stamp-first mutant is caught and aborted real delivery leaves neither record",
+        "report_library store (real PG) REPORT-REFERENCE-ATOMIC-P002: before-commit fault rolls back notification AND stamp before repaired control"
+      ],
+      "rawRef": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/rollback.log",
+      "treeIntegrity": "VERIFIED; clean-origin subject byte-identical before/after"
+    }
+  ],
+  "ledgerCoverage": {
+    "population": [
+      20780049,
+      20780050,
+      20780054,
+      20784250,
+      20784900,
+      20785549,
+      20786195,
+      20786845,
+      20787968,
+      20789316,
+      20789356,
+      20789421,
+      20789461,
+      20789606,
+      20789782
+    ],
+    "checked": [
+      20780049,
+      20780050,
+      20780054,
+      20784250,
+      20784900,
+      20785549,
+      20786195,
+      20786845,
+      20787968,
+      20789316,
+      20789356,
+      20789421,
+      20789461,
+      20789606,
+      20789782
+    ],
+    "notChecked": [],
+    "notApplicable": [],
+    "residue": [],
+    "allRowsOriginClean": true
+  },
+  "currentBindings": [
+    {
+      "id": 24057,
+      "evidenceKind": "mutation",
+      "evidenceRef": "test-run 20789782 mutation-probe mutant fail packages/operator-core/lib/report-library.integration.test.ts @0f761934772c",
+      "details": {
+        "adequacy": {
+          "outcome": "caught",
+          "skipped": false,
+          "executed": true,
+          "targeted": "report-causal-regressions-p004",
+          "collected": true,
+          "testLayer": "integration",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 24053,
+      "evidenceKind": "mutation",
+      "evidenceRef": "test-run 20789421 mutation-probe mutant fail packages/operator-core/lib/report-library.integration.test.ts @0f761934772c",
+      "details": {
+        "adequacy": {
+          "outcome": "caught",
+          "skipped": false,
+          "executed": true,
+          "targeted": "report-causal-regressions-p004",
+          "collected": true,
+          "testLayer": "integration",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 24051,
+      "evidenceKind": "mutation",
+      "evidenceRef": "test-run 20787968 mutation-probe mutant fail packages/operator-core/lib/report-library.integration.test.ts @0f761934772c",
+      "details": {
+        "adequacy": {
+          "outcome": "caught",
+          "skipped": false,
+          "executed": true,
+          "targeted": "report-causal-regressions-p004",
+          "collected": true,
+          "testLayer": "integration",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 24046,
+      "evidenceKind": "mutation",
+      "evidenceRef": "test-run 20785549 mutation-probe mutant fail packages/operator-core/lib/agent-tools/coordination/tools/send.test.ts @0f761934772c",
+      "details": {
+        "adequacy": {
+          "outcome": "caught",
+          "skipped": false,
+          "executed": true,
+          "targeted": "report-causal-regressions-p004",
+          "collected": true,
+          "testLayer": "unit",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 24045,
+      "evidenceKind": "mutation",
+      "evidenceRef": "test-run 20785549 mutation-probe mutant fail packages/operator-core/lib/agent-tools/coordination/tools/send.test.ts @0f761934772c",
+      "details": {
+        "adequacy": {
+          "outcome": "caught",
+          "skipped": false,
+          "executed": true,
+          "targeted": "auto-bar-r-5-p-004",
+          "collected": true,
+          "testLayer": "unit",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 24044,
+      "evidenceKind": "test",
+      "evidenceRef": "packages/operator-core/lib/report-library.integration.test.ts",
+      "details": {
+        "adequacy": {
+          "outcome": "passed",
+          "skipped": false,
+          "executed": true,
+          "collected": true,
+          "testLayer": "integration",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 24043,
+      "evidenceKind": "test",
+      "evidenceRef": "packages/operator-core/lib/report-library.integration.test.ts",
+      "details": {
+        "adequacy": {
+          "outcome": "passed",
+          "skipped": false,
+          "executed": true,
+          "collected": true,
+          "testLayer": "integration",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 24042,
+      "evidenceKind": "test",
+      "evidenceRef": "packages/operator-core/lib/agent-tools/coordination/tools/send-chunking.test.ts",
+      "details": {
+        "adequacy": {
+          "outcome": "passed",
+          "skipped": false,
+          "executed": true,
+          "collected": true,
+          "testLayer": "unit",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 24041,
+      "evidenceKind": "test",
+      "evidenceRef": "packages/operator-core/lib/agent-tools/coordination/tools/send.test.ts",
+      "details": {
+        "adequacy": {
+          "outcome": "passed",
+          "skipped": false,
+          "executed": true,
+          "collected": true,
+          "testLayer": "unit",
+          "falsifiable": true,
+          "pathReachable": true,
+          "fixtureCalibrated": true,
+          "oracleIndependent": true
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    },
+    {
+      "id": 24040,
+      "evidenceKind": "test",
+      "evidenceRef": "packages/operator-core/lib/agent-tools/coordination/tools/send.test.ts",
+      "details": {
+        "adequacy": {
+          "outcome": "passed",
+          "skipped": false,
+          "executed": true,
+          "collected": true,
+          "testLayer": "unit"
+        }
+      },
+      "currentness": {
+        "overall": "current",
+        "dimensions": {
+          "spec": "current",
+          "source": "current",
+          "test": "current",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+        },
+        "staleReasons": [],
+        "unknownReasons": [],
+        "comparisonSupplied": true,
+        "provenance": "server-measured"
+      }
+    }
+  ],
+  "scopedAdequacy": {
+    "R5": {
+      "specId": "AUTO-BAR-R-5-P-004",
+      "revision": 4,
+      "bindingIds": [
+        24040,
+        24042,
+        24043,
+        24045
+      ],
+      "verdict": "pass",
+      "scorecardId": "EI-25185924449826099"
+    },
+    "causal": {
+      "specId": "REPORT-CAUSAL-REGRESSIONS-P004",
+      "revision": 1,
+      "bindingIds": [
+        24041,
+        24044,
+        24046,
+        24051,
+        24053,
+        24057
+      ],
+      "verdict": "pass",
+      "scorecardId": "EI-25185939288597555"
+    },
+    "governing": false,
+    "independentGradingAudit": "pending; automatic non-author router",
+    "rawRef": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/evaluator-complete.json"
+  },
+  "withdrawnHistoricalBindings": [
+    23994,
+    23987,
+    23986,
+    23985,
+    23983,
+    23982,
+    23981,
+    23980,
+    23977,
+    23976,
+    23960,
+    23969,
+    23957,
+    23968,
+    23956,
+    23955,
+    23954
+  ],
+  "withdrawalReason": "Clean reruns supersede dirty-origin proof; original rows/runs remain historical UNKNOWN. No metadata relabelling or deletion.",
+  "rawRefs": [
+    {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/actual-test-ledger.json",
+      "byteCount": 15329,
+      "sha256": "188e161a2ffc9470e948e7813fa0a807c18237aeb6f1a30d9bdf3f6da74c6243"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/server-currentness.json",
+      "byteCount": 10725,
+      "sha256": "685e7353f5550301953dec72327f3f710048904b3fa7f2e9441133e194c7398e"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/evaluator-complete.json",
+      "byteCount": 347202,
+      "sha256": "584e70e018f5c5c2986a1402097b8bcd983d004c4a07e1109282ad9c34157a15"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/probe-command-results.json",
+      "byteCount": 3328,
+      "sha256": "7bb3973bf1ae33816fe6c53329213dfccf146c277de22b860256ff6b23c3c610"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/baseline.log",
+      "byteCount": 22062,
+      "sha256": "4b837c24e2271bb7f21d0d9e4cdaa59fd5268c1d386328d2da280d59fc33d64e"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/inline.log",
+      "byteCount": 64569,
+      "sha256": "2bf77e491e8533f3ea711e751193ebe5204e0ac1a3bbbe1ba5b214ab794ed15c"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/identity.log",
+      "byteCount": 31124,
+      "sha256": "2fc871104fc9d1e33cdc392ca098d955673e50dcc82253a45e7a9be9708685ab"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/stalesource.log",
+      "byteCount": 44170,
+      "sha256": "c0a697993c6331f782ce06df305b9a7e7f48ddb39570b1efce5d18caeb4c04a6"
+    },
+    {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/rollback.log",
+      "byteCount": 29960,
+      "sha256": "d145724babbd80c718278fe0e58a7084176f7a6b56f7a05785a8ba2cc7149680"
+    }
+  ],
+  "rawArtifactResolver": {
+    "schemaVersion": 1,
+    "scheme": "local-state:",
+    "baseEnvironmentVariable": "XDG_STATE_HOME",
+    "fallback": {
+      "environmentVariable": "HOME",
+      "relativePath": ".local/state"
+    },
+    "resolution": "Strip local-state:, then join the remaining relative path to XDG_STATE_HOME when nonempty; otherwise join it to HOME/.local/state. Verify SHA256 and byteCount before consuming each raw artifact.",
+    "relativeRoot": "verification-harness/goal-report-p004-clean/20261005-0f761934772c",
+    "exampleCommand": [
+      "node",
+      "--input-type=module",
+      "-e",
+      "import {readFileSync} from 'node:fs'; import {join} from 'node:path'; import {createHash} from 'node:crypto'; const d=JSON.parse(readFileSync('docs/evidence/expandable-goal-report-p004-clean-causal-2026-10-05.json','utf8')); const base=process.env.XDG_STATE_HOME || join(process.env.HOME,'.local/state'); for(const a of [...d.rawRefs,d.artifactRepair.originalArtifact]){const p=join(base,a.path.slice('local-state:'.length)); const b=readFileSync(p); if(b.length!==a.byteCount || createHash('sha256').update(b).digest('hex')!==a.sha256)throw new Error('raw artifact identity mismatch');} console.log('raw artifact identities verified');"
+    ]
+  },
+  "artifactRepair": {
+    "rootCause": "The original artifact used hardcoded developer home paths in its raw references, which the maintained git-sync identity-leak detector rejects. The raw evidence was intact; the reference format was not portable.",
+    "repair": "Reuse the existing local-state: resolver contract from the separately recorded R4 and D006 artifacts. Only reference spelling and this resolver metadata changed; original ledger, probe, binding and evaluator evidence remains intact.",
+    "originalArtifact": {
+      "path": "local-state:verification-harness/goal-report-p004-clean/20261005-0f761934772c/original-artifact.json",
+      "byteCount": 30132,
+      "sha256": "284e8b5ba4eafad23e22b346c63f41d92bc98f167a2cc94ee1edcf7c7db11741"
+    },
+    "verification": "Run the rawArtifactResolver exampleCommand and every matching DEFAULT_CONTENT_DETECTORS entry against this path before claiming content admission. The original pre-repair file fails identity-leak; the repaired file must pass without an exemption."
+  },
+  "separateObligations": {
+    "R4Artifact": "docs/evidence/expandable-goal-report-p004-r4-tauri-2026-10-05.json",
+    "D006Artifact": "docs/evidence/expandable-goal-report-p004-d006-integration-2026-10-05.json",
+    "D006Verdict": "FAILED; final repaired schema-only rerun still required before P004 closure",
+    "finalAcceptance": "owned by fleet leader; not asserted",
+    "shipment": "not asserted"
+  },
+  "omissions": [
+    "Mutation-parser status is unchecked; actual failed assertions establish detection.",
+    "This suite/probe cohort is not the schema-wide selected integration population.",
+    "No final source/import/environment identity or shipment claim is made by these scoped bindings.",
+    "Independent grading audits for these newly emitted cards are not yet confirmed."
+  ]
+}

@@ -37,28 +37,7 @@ export function parseSummaryFailedCounts(text: any): {
     testFiles: number;
     tests: number;
 } | null;
-/**
- * How many tests actually EXECUTED, read from vitest's `Tests` summary row. Skipped is not
- * executed — that distinction IS the bug: `Tests  20 skipped (20)` is a run that measured nothing.
- *
- * Returns null when there is no readable summary row (e.g. `--reporter=json`), which the caller
- * must treat as UNVERIFIED rather than as a measured zero: fabricating a red on an unreadable
- * count is the opposite, equally expensive mistake.
- *
- * ANSI is stripped FIRST. vitest colourises this row, and EI-18819483316574031 is the same
- * trap's previous instance — a matcher that skipped the strip passed every hand-written test and
- * never once fired on real coloured output.
- *
- * ⚠ MOVED HERE from `scripts/test-files.mjs` (P-006 / R-8 sub-req 5) and re-exported there, the
- * same single-writer consolidation WI-37607 applied to `parseTransformFailure`. It moved because
- * it gained a SECOND consumer: `scripts/affected-tests.mjs`, the path the release promise runs
- * on, which already imports every other vitest parser from this seam precisely so they are not
- * "three hand-kept-in-sync copies". A private copy for the gate would reintroduce exactly that.
- *
- * @param {string} output combined stdout+stderr of a `vitest run` invocation
- * @returns {number | null} tests executed, or null when unreadable
- */
-export function testsExecutedFrom(output: string): number | null;
+export function testsExecutedFrom(output: any): any;
 /**
  * EI-19380376466745152 — A SKIPPED ASSERTION IS AN ABSENT MEASUREMENT WEARING A PASS.
  *

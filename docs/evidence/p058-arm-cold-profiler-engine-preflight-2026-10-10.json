@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P-058 retained ARM cold profiler engine preflight failures",
+  "command": [
+    "$HOME/.local/node25/bin/node",
+    "--input-type=module"
+  ],
+  "commandPathNormalization": "Exact inline commands are retained by producer task IDs and SHA256; host home prefixes are normalized.",
+  "cwd": ".",
+  "startedAt": "2026-10-10T15:43:08.760Z",
+  "finishedAt": "2026-10-10T15:52:15.725Z",
+  "timestampSources": "startedAt is derived from the first producer tool-returned deadline minus its declared 90000ms timeout; finishedAt is the post-reconciliation receipt readback turn. The second attempt's engine events carry direct phase timestamps.",
+  "exitCode": 1,
+  "summary": "Two lightweight retained ARM cold-profiler preflights failed before yielding a profile. Phase-instrumented attempt measured Docker create timeout60056ms before guest entry. Its uncertain create later produced the exact owned container, which bounded reconciliation removed. Original server startup cause remains unknown.",
+  "workItemId": "EI-25608208328004035",
+  "relatedWorkItemIds": [
+    "EI-25604028797058995",
+    "EI-25500068013952985"
+  ],
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "retained-arm-cold-collector-prerequisite",
+  "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+  "platform": "linux/arm64",
+  "sourceCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+  "assertions": [
+    {
+      "id": "cold-target-profile",
+      "passed": false,
+      "evidence": "No profile result from either retained ARM attempt; second attempt never reached Docker start or guest-enter."
+    },
+    {
+      "id": "durable-engine-stage-attribution",
+      "passed": true,
+      "evidence": "Second attempt persisted engine begin/end events; create elapsed60056ms, no start verb. Timing events are retained and hashed."
+    },
+    {
+      "id": "exact-late-create-cleanup",
+      "passed": true,
+      "evidence": "Interrupted second create had no initial immutableID. Reconciliation later matched exact image and ownerlabel, adopted6ea18983, and removed it; first ownedad747eff is also removed. Both receipts now cleanupPending=false."
+    },
+    {
+      "id": "frozen-inputs-current-readback",
+      "passed": true,
+      "evidence": "Nineteen frozen source inputs and four current collector inputs matched pinned hashes on post-attempt readback."
+    }
+  ],
+  "attempts": [
+    {
+      "taskId": "0mv2kcw4suddkuk1x68",
+      "out": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck1-z5Tmev",
+      "outerTimeoutMs": 90000,
+      "status": "timed_out",
+      "cleanupTaskId": "0mv2kgea31poo4fl3v1",
+      "ownership": {
+        "receiptFile": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck1-z5Tmev/.native-producer-owner-eVzI9A/ownership.json",
+        "sha256": "0622b77ff376f65e8f9dfc044a56ecc62d3df4e9a130c87a01bfd5e2a79efd5a",
+        "status": "failed",
+        "containerId": "ad747effdbccab922e95364ea772a78bf899aca543834d1eebdf6a9b274837a0",
+        "removed": true,
+        "cleanupPending": false,
+        "error": "docker failed (ABORT_ERR)"
+      },
+      "hostCommandSha256": "7d6b6d8c14db7865f33ff1dc34b031a2c6d012359d654fa1448794b473c28977"
+    },
+    {
+      "taskId": "0mv2kj9q6kw38s3sg06",
+      "out": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck2-oubEQP",
+      "outerTimeoutMs": 90000,
+      "status": "failed",
+      "exitCode": 143,
+      "cleanupTaskId": "0mv2knhgoxtfizm9cvl",
+      "ownership": {
+        "receiptFile": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck2-oubEQP/.native-producer-owner-z4ykL3/ownership.json",
+        "sha256": "2cc74048ebf5f19f7a07e262a4a4a41844c36f817d492f28881bf5a0a54dfe38",
+        "status": "failed",
+        "containerId": "6ea18983714d2180b8192a49182e2e513364e4fa8855c04d73c987ed301d5148",
+        "removed": true,
+        "cleanupPending": false,
+        "error": "docker failed (143)"
+      },
+      "enginePhasesFile": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/inspector-cold-precheck2-oubEQP/engine-phases.jsonl",
+      "enginePhasesSha256": "f0fa950e1743142a92ac3fd55eaa119cb82c08402994251e86db41996c192b39",
+      "createEnd": {
+        "phase": "end",
+        "verb": "create",
+        "elapsedMs": 60056,
+        "at": "2026-10-10T15:49:11.180Z"
+      },
+      "verbsObserved": [
+        "create",
+        "inspect"
+      ],
+      "guestEntryObserved": false,
+      "hostCommandSha256": "b0e38cf92b1aae5e00c1cdac316499a9054fcfd780ab3ff50f47cb8a027bedab"
+    }
+  ],
+  "controlReads": [
+    {
+      "taskId": "0mv2kkws740a40yqbrw",
+      "probe": "docker-version-read",
+      "elapsedMs": 79,
+      "serverVersion": "29.4.0"
+    },
+    {
+      "taskId": "0mv2kpy6f45npad180g",
+      "probe": "docker-storage-configuration",
+      "elapsedMs": 991,
+      "driver": "overlay2",
+      "backingFilesystem": "extfs",
+      "dockerRootDir": "/var/lib/docker"
+    }
+  ],
+  "sourceHashes": {
+    "scripts/cpu-sample.mjs": "c6a2d23604fc9ec1454233a2df1df9ef4eb4167cff3e3ac65fb96a202a43cb55",
+    "packages/operator-core/lib/cpu-sample.test.ts": "54022256db859f53bd3e3ffdaba61e74b70ebc99dd2abc5dd041dcb228a7daf9"
+  },
+  "conventionalRegression": {
+    "path": "packages/operator-core/lib/cpu-sample.test.ts",
+    "sha256": "54022256db859f53bd3e3ffdaba61e74b70ebc99dd2abc5dd041dcb228a7daf9",
+    "testRunId": 20986902,
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Local focused host suite; exact source and test bytes subsequently confirmed committed. No global clean-worktree currentness claim."
+  },
+  "limitations": [
+    "Docker create-delay root cause is unresolved; responsive control reads do not identify its mechanism.",
+    "No actual ARM cold-profile acceptance, fresh source server boot, installed-native, signing/publication or instance-transfer acceptance.",
+    "Original canonical server deadline60000ms was unchanged and no fullserver producer was launched by these preflights."
+  ]
+}

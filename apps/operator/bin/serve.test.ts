@@ -35,6 +35,18 @@ const operatorJson = () => join(pcDir(), "operator.json");
 const tokenFile = () => join(pcDir(), "superuser-token");
 const lockFile = () => join(pcDir(), "operator.lock");
 const serveSrc = readFileSync(join(__dirname, "serve.ts"), "utf8");
+
+it('qualifies packaged tool imports before any singleton or Postgres boot', () => {
+  const main = serveSrc.slice(serveSrc.indexOf('async function main():'));
+  const probe = main.indexOf('argv[0] === "--verify-boot-imports"');
+  expect(probe).toBeGreaterThan(-1);
+  const branch = main.slice(probe, main.indexOf('\n  }', probe));
+  expect(branch).toContain('await import("@papercusp/operator-core/lib/agent-tools/index")');
+  expect(branch).toContain('PAPERCUSP_BOOT_IMPORTS_OK');
+  expect(branch).toContain('process.exit(0)');
+  expect(main.indexOf('pg = await ensurePostgres()')).toBeGreaterThan(probe);
+  expect(main.indexOf('if (!acquireColdStartLock())')).toBeGreaterThan(probe);
+});
 const repoRoot = join(__dirname, "../../..");
 const tsx = join(repoRoot, "node_modules/.bin/tsx");
 
@@ -60,7 +72,7 @@ beforeAll(async () => {
 describe("vm-release boot ordering (D-043 / P-050)", () => {
   it("installs the runtime flag store before any other import graph can read a flag", () => {
     const flagStore = serveSrc.indexOf('import "./boot-flag-store";');
-    const firstHostImport = serveSrc.indexOf('import { fileURLToPath, pathToFileURL }');
+    const firstHostImport = serveSrc.search(/import\s*\{[^}]*fileURLToPath[^}]*\}\s*from\s*["']node:url["']/);
     expect(flagStore).toBeGreaterThan(-1);
     expect(firstHostImport).toBeGreaterThan(flagStore);
   });
@@ -74,6 +86,41 @@ describe("vm-release boot ordering (D-043 / P-050)", () => {
     expect(ensureReuse).toBeGreaterThan(policy);
     expect(sticky).toBeGreaterThan(ensureReuse);
     expect(effectivePort).toBeGreaterThan(sticky);
+  });
+});
+
+describe("embedded PG host credential continuity (EI-25943879774522083)", () => {
+  const credentialsFile = () => join(pcDir(), "embedded-pg-credentials.json");
+
+  afterEach(() => rmSync(credentialsFile(), { force: true }));
+
+  it("keeps an unkeyed developer cluster on the existing default path", () => {
+    expect(serve.embeddedPgCredentialsFile({})).toBeUndefined();
+  });
+
+  it("selects generated credentials for a first explicit opt-in", () => {
+    expect(serve.embeddedPgCredentialsFile({ PAPERCUSP_PG_HOST_CREDENTIALS: "1" }))
+      .toBe(credentialsFile());
+  });
+
+  it("selects generated credentials on the first vm-release boot", () => {
+    expect(serve.embeddedPgCredentialsFile({ PAPERCUSP_DISTRIBUTION_PROFILE: "vm-release" }))
+      .toBe(credentialsFile());
+  });
+
+  it("reuses stored credentials after the opt-in flag is absent on restart", () => {
+    mkdirSync(pcDir(), { recursive: true });
+    // Selection must be sticky; the embedded server separately validates the
+    // stored secrets and refuses corrupt files instead of regenerating them.
+    writeFileSync(credentialsFile(), "{}");
+    expect(serve.embeddedPgCredentialsFile({})).toBe(credentialsFile());
+  });
+
+  it("cannot fall back to public defaults by unsetting the flag on a keyed cluster", () => {
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(credentialsFile(), "{}");
+    expect(serve.embeddedPgCredentialsFile({ PAPERCUSP_PG_HOST_CREDENTIALS: "0" }))
+      .toBe(credentialsFile());
   });
 });
 
@@ -522,6 +569,78 @@ describe("parent-death watch cannot go blind (EI-19486216732882752)", () => {
       );
       expect(signals).toEqual(["SIGTERM"]);
     });
+
+    describe("off-desktop sidecars (WI-6554700010011963: 16 orphaned sidecars held 99 GiB)", () => {
+      const withoutDesktop = (fn: () => void) => {
+        const prev = process.env.PAPERCUSP_DESKTOP;
+        delete process.env.PAPERCUSP_DESKTOP;
+        try { fn(); } finally {
+          if (prev === undefined) delete process.env.PAPERCUSP_DESKTOP;
+          else process.env.PAPERCUSP_DESKTOP = prev;
+        }
+      };
+
+      it("REGRESSION: a sidecar launched by a non-desktop host self-terminates once its declared parent is dead", () => {
+        // Measured shape: an LSP daemon launched by a superseded :3170 staging generation.
+        // PAPERCUSP_DESKTOP was unset, PAPERCUSP_DESKTOP_PARENT_PID=3750613 was gone, and
+        // the daemon had been reparented to systemd --user (4054). The old desktop-only gate
+        // returned before arming, so it ran for 2.5 days.
+        withoutDesktop(() => {
+          const signals: NodeJS.Signals[] = [];
+          serve.startSidecarParentDeathWatch(
+            { expectedPpid: 3750613, declaredByLauncher: true, currentPpid: () => 4054, parentAlive: () => false, parentIdentity: () => null },
+            (signal) => signals.push(signal),
+          );
+          expect(signals).toEqual(["SIGTERM"]);
+        });
+      });
+
+      it("does NOT fire for a healthy cluster-pinned sidecar whose direct ppid is a worker, not the declared host", () => {
+        // Live shape: declared parent 1516711 (host primary) is alive, and the direct parent is
+        // worker 867346. The desktop ppid-equality test would wrongly fire here.
+        withoutDesktop(() => {
+          const signals: NodeJS.Signals[] = [];
+          serve.startSidecarParentDeathWatch(
+            { expectedPpid: 1516711, declaredByLauncher: true, currentPpid: () => 867346, parentAlive: () => true, parentIdentity: () => "777" },
+            (signal) => signals.push(signal),
+          );
+          expect(signals).toEqual([]);
+        });
+      });
+
+      it("treats a RECYCLED declared parent pid as dead (PIDs wrap about daily on the dev box)", () => {
+        withoutDesktop(() => {
+          const identities = ["1000", "2000"]; // arm-time start ticks, then a NEW process on the same pid
+          const signals: NodeJS.Signals[] = [];
+          serve.startSidecarParentDeathWatch(
+            { expectedPpid: 3750613, declaredByLauncher: true, currentPpid: () => 4054, parentAlive: () => true, parentIdentity: () => identities.shift() ?? "2000" },
+            (signal) => signals.push(signal),
+          );
+          expect(signals).toEqual(["SIGTERM"]);
+        });
+      });
+
+      it("stays inert off-desktop when the launcher declared NO parent (no contract to enforce)", () => {
+        withoutDesktop(() => {
+          const signals: NodeJS.Signals[] = [];
+          serve.startSidecarParentDeathWatch(
+            { expectedPpid: 3750613, declaredByLauncher: false, currentPpid: () => 4054, parentAlive: () => false, parentIdentity: () => null },
+            (signal) => signals.push(signal),
+          );
+          expect(signals).toEqual([]);
+        });
+      });
+
+      it("keeps serve's OWN watch desktop-only: a hand-launched serve may outlive its shell", () => {
+        withoutDesktop(() => {
+          let fired = 0;
+          serve.startParentDeathWatch(() => void fired++, {
+            expectedPpid: 3750613, declaredByLauncher: true, currentPpid: () => 4054, parentAlive: () => false, parentIdentity: () => null,
+          });
+          expect(fired).toBe(0);
+        });
+      });
+    });
   });
 });
 
@@ -638,6 +757,35 @@ describe("buildIdentityMismatch (EI-9002)", () => {
         { sha: null, version: "unknown" },
       ),
     ).toBe(false);
+  });
+});
+
+describe("runningOperatorIsNewer (WI-10005958)", () => {
+  const newer = (running: string, mine: string) =>
+    serve.runningOperatorIsNewer({ version: running }, { version: mine });
+
+  it("a release launcher never replaces a running dev/rig compose", () => {
+    // The measured case: installed 0.0.26 vs a rig sidecar reporting 0.0.0.
+    expect(newer("0.0.0", "0.0.26")).toBe(true);
+  });
+
+  it("a dev launcher may always replace, whatever is running", () => {
+    expect(newer("0.0.26", "0.0.0")).toBe(false);
+    expect(newer("0.0.0", "0.0.0")).toBe(false);
+  });
+
+  it("release vs release: only a strictly greater running version is newer", () => {
+    expect(newer("0.0.27", "0.0.26")).toBe(true);
+    expect(newer("0.1.0", "0.0.99")).toBe(true);
+    expect(newer("0.0.25", "0.0.26")).toBe(false);
+    // Equal triples (a sha-only mismatch, or a pre-release suffix) keep the
+    // EI-9002 replace behaviour.
+    expect(newer("0.0.26", "0.0.26")).toBe(false);
+    expect(newer("0.0.24-alpha", "0.0.24")).toBe(false);
+  });
+
+  it("an unparseable version is never treated as newer", () => {
+    expect(newer("unknown", "0.0.26")).toBe(false);
   });
 });
 
@@ -1384,6 +1532,35 @@ describe("--ensure reconciliation frees the sticky port before it is resolved (E
           PAPERCUSP_DESKTOP: "1",
         }),
       ).toBe(op.port);
+    } finally {
+      op.kill();
+    }
+  });
+
+  it("refuses to replace a NEWER running operator and leaves it alive (WI-10005958)", async () => {
+    const op = await spawnFakeOperator();
+    try {
+      writeDiscovery(op.pid, op.port, { version: "0.0.0", sha: "rig-sha" });
+      await expect(
+        serve.reconcileEnsure({ sha: "installed-sha", version: "0.0.26" }, {}),
+      ).rejects.toThrow(/NEWER build[\s\S]*PAPERCUSP_ALLOW_OPERATOR_DOWNGRADE/);
+      expect(serve.pidAlive(op.pid)).toBe(true);
+    } finally {
+      op.kill();
+    }
+  });
+
+  it("PAPERCUSP_ALLOW_OPERATOR_DOWNGRADE=1 restores the EI-9002 replace for a newer operator", async () => {
+    const op = await spawnFakeOperator();
+    try {
+      writeDiscovery(op.pid, op.port, { version: "0.0.0", sha: "rig-sha" });
+      expect(
+        await serve.reconcileEnsure(
+          { sha: "installed-sha", version: "0.0.26" },
+          { PAPERCUSP_ALLOW_OPERATOR_DOWNGRADE: "1" },
+        ),
+      ).toBeNull();
+      expect(serve.pidAlive(op.pid)).toBe(false);
     } finally {
       op.kill();
     }

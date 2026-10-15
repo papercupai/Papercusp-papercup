@@ -14,6 +14,10 @@ const { sendMessage, insertValues, notifySyncInvalidate } = vi.hoisted(() => ({
 }));
 
 vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage }));
+vi.mock('./severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true),
+  broadcastSevereEventResolved: vi.fn(async () => true) }));
+vi.mock('./agent-tools/coordination/tools/conditions', () => ({ readConditionEnvelopes: async () => [],
+  computeConditionStates: () => [] }));
 vi.mock('./sync-sse', () => ({ notifySyncInvalidate }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
@@ -31,6 +35,8 @@ import {
   initAgentGovernorObserver,
   _resetAgentGovernorObserver,
   GOVERNOR_ESCALATION_MIN_PAUSE_MS,
+  flushAgentGovernorAlarms,
+  governorAlarmConditionKey,
 } from './agent-governor-observer';
 import { getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
@@ -89,6 +95,25 @@ describe('agent-governor-observer (RB-009)', () => {
     getGovernor('anthropic', 'opus').penalize({ retryAfterMs: 60_000 });
     await flush();
     expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the sustained bucket through cooldown and resolves after the governor admits again', async () => {
+    let clock = Date.now();
+    const broadcast = vi.fn(async () => true);
+    const resolve = vi.fn(async () => true);
+    initAgentGovernorObserver({ broadcast, resolve, recentlyEscalated: async () => true });
+    const g = getGovernor('anthropic', 'condition-coverage', { now: () => clock });
+    g.penalize({ retryAfterMs: GOVERNOR_ESCALATION_MIN_PAUSE_MS + 1000 });
+    await flushAgentGovernorAlarms();
+    const conditionKey = governorAlarmConditionKey('anthropic:condition-coverage');
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ conditionKey }));
+    expect(await g.acquire({}, { maxWaitMs: 0 })).toBeNull();
+    await flushAgentGovernorAlarms();
+    expect(resolve).not.toHaveBeenCalled();
+    clock = g.snapshot().pausedUntil;
+    (await g.acquire())?.();
+    await flushAgentGovernorAlarms();
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ conditionKey }));
   });
 
   it('reset removes the old listener before a reinitialization (injected policy stays current)', async () => {

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { loadHarnessSpend } from '../load-spend';
+import { loadHarnessPipelineSpend, loadHarnessSpend } from '../load-spend';
 
 type RunQuery = <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
 
@@ -144,5 +144,44 @@ describe('loadHarnessSpend', () => {
     });
     expect(out.harnessTotalUsdThisWeek).toBe(0);
     expect(out.tokensThisWeek).toBe(0);
+  });
+});
+
+describe('loadHarnessPipelineSpend', () => {
+  const sample = { run_id: 'worker', archived: true, sample_id: 12,
+    cost_usd: '0.4', cost_source: 'provider', usage_provenance: { backend: 'codex' } };
+  const read = (rows: unknown[]) => loadHarnessPipelineSpend({ workspace_id: 'ws',
+    harness_slug: 'gym', runQuery: makeRunQuery([{ match: /agent_usage_samples/, rows }]) });
+
+  it('keeps provider, estimate, source identity and provenance separately', async () => {
+    const out = await read([sample, { ...sample, sample_id: 13, cost_usd: '0.2', cost_source: 'estimated' }]);
+    expect(out.knownUsd).toBeCloseTo(0.6);
+    expect(out).toMatchObject({ providerUsd: 0.4, estimatedUsd: 0.2, complete: true, measured: false,
+      samples: [{ sampleId: '12', runId: 'worker', costSource: 'provider', provenance: sample.usage_provenance },
+        { sampleId: '13', costSource: 'estimated' }] });
+  });
+
+  it('distinguishes an explicit measured zero from absent usage', async () => {
+    expect(await read([{ ...sample, cost_usd: 0 }])).toMatchObject({ knownUsd: 0, complete: true, measured: true });
+    expect(await read([])).toMatchObject({ knownUsd: 0, complete: false, measured: false });
+    expect(await read([{ ...sample, sample_id: null, cost_usd: null, cost_source: null }]))
+      .toMatchObject({ knownUsd: 0, complete: false, measured: false, missingRunIds: ['worker'], samples: [] });
+  });
+
+  it.each([null, -1, 'NaN', 'Infinity'])('retains unknown or invalid cost %s without fabricating zero', async (cost) => {
+    const out = await read([sample, { ...sample, run_id: 'unpriced', sample_id: 13, cost_usd: cost }]);
+    expect(out).toMatchObject({ knownUsd: 0.4, complete: false, measured: false, missingRunIds: ['unpriced'] });
+    expect(out.samples[1].costUsd).toBeNull();
+  });
+
+  it('keeps orphan or unclassified samples incomplete', async () => {
+    expect(await read([{ ...sample, archived: false }])).toMatchObject({ knownUsd: 0.4, complete: false, measured: false });
+    expect(await read([{ ...sample, cost_source: null }])).toMatchObject({ knownUsd: 0, complete: false, measured: false });
+  });
+
+  it('propagates a query failure instead of returning a measured zero', async () => {
+    const error = new Error('usage ledger unavailable');
+    await expect(loadHarnessPipelineSpend({ workspace_id: 'ws', harness_slug: 'gym',
+      runQuery: makeRunQuery([{ match: /agent_usage_samples/, rows: () => { throw error; } }]) })).rejects.toBe(error);
   });
 });

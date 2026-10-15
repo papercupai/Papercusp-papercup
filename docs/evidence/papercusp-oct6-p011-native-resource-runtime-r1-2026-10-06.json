@@ -1,0 +1,257 @@
+{
+  "schemaVersion": "p011-native-resource-runtime-evidence-v1",
+  "workItem": "EI-25181611831349662",
+  "status": "native-diagnostic-and-installed-storage-fence-observed",
+  "scope": "Exact sampled background MCP diagnostic process and the existing configured live locks side database. No foreign-owner confirmed restart or wholefleet exclusion assertion.",
+  "recovery": {
+    "staleWake": 324,
+    "newestLoopContentHash": "096192ef5b9e",
+    "rootCheckpointContentHash": "3010054174c4",
+    "previousAtomicUnit": "docs/evidence/papercusp-oct6-p011-host-global-atomic-fence-r1-2026-10-06.json",
+    "previousAtomicReceiptsResolved": 14,
+    "previousAtomicReceiptMismatches": 0,
+    "previousPrivatePgDirectoriesAbsent": 6,
+    "noTestReplay": true
+  },
+  "nativeCacheReceipt": {
+    "tool": "dev:cache_stats",
+    "args": {
+      "tool": "locks:acquire_resource",
+      "resource": "staging-server"
+    },
+    "data": {
+      "ok": true,
+      "telemetryVersion": 2,
+      "pid": 3191246,
+      "clusterSize": 1,
+      "sampledWorkers": 1,
+      "perWorkerCaveat": null,
+      "uptimeSec": 285,
+      "resourceDomainKinds": {
+        "source": "current-process",
+        "loaded": true,
+        "declarationCount": 230,
+        "loadedAtMs": 1791253055860,
+        "lastError": null,
+        "declaration": {
+          "resource": "staging-server",
+          "kind": "host-global"
+        },
+        "limitations": "Cached declarations only; a cold or failed refresh may be incomplete. The effective resolver also uses maintained resource-name rules. This read does not refresh the cache."
+      },
+      "toolCount": 0,
+      "totals": {
+        "hits": 0,
+        "misses": 0,
+        "stale": 0,
+        "bypass": 0,
+        "deadline": 0,
+        "l2Hits": 0,
+        "l2Misses": 0,
+        "l2Errors": 0,
+        "missAbsent": 0,
+        "missInvalidated": 0,
+        "missHardExpired": 0,
+        "builds": 0,
+        "buildsCompleted": 0,
+        "buildErrors": 0,
+        "buildMs": 0,
+        "maxBuildMs": 0
+      },
+      "killSwitchLikelyOff": false,
+      "perTool": []
+    }
+  },
+  "nativePgSourceReceipt": {
+    "tool": "dev:pg_health",
+    "args": {
+      "localOnly": true,
+      "resultLimitPerPool": 1
+    },
+    "data": {
+      "pid": 3191246,
+      "capturedAt": "2026-10-06T02:18:47.061Z",
+      "source": "current-process",
+      "coverage": "completed-results-in-selected-pools-only",
+      "org-app-processInstanceId": "d1771dfd-d5c4-4d0d-a74c-7a3cbb253240",
+      "org-app-buildSha": "f5256361c8",
+      "org-app-poolInstanceId": "6244c990-0fb1-4a32-b616-bc6c4995743a",
+      "org-admin-processInstanceId": "d1771dfd-d5c4-4d0d-a74c-7a3cbb253240",
+      "org-admin-buildSha": "f5256361c8",
+      "org-admin-poolInstanceId": "f3b0c4e6-8da5-46dc-80f0-4ae1f4ddbb26",
+      "org-admin-lossless-bigint-processInstanceId": "d1771dfd-d5c4-4d0d-a74c-7a3cbb253240",
+      "org-admin-lossless-bigint-buildSha": "f5256361c8",
+      "org-admin-lossless-bigint-poolInstanceId": "95520a1c-b4c9-4a0b-8130-adecf055f201"
+    }
+  },
+  "storageReadReceipt": {
+    "capturedAt": "2026-10-06T02:19:56.449Z",
+    "readerPid": 3495901,
+    "bootstrapCalled": false,
+    "identity": [
+      {
+        "database": "papercusp_su",
+        "port": 5432,
+        "backend_pid": 3498513
+      }
+    ],
+    "migrations": [
+      {
+        "key": "migration:031-host-global-resource-exclusion.sql",
+        "value": "2026-10-06T01:59:11.819Z"
+      },
+      {
+        "key": "migration:032-host-global-resource-snapshot-fence.sql",
+        "value": "2026-10-06T01:59:11.823Z"
+      }
+    ],
+    "functionCount": 1,
+    "volatility": "v",
+    "functionBodySha256": "c88661061699de2a8c971ad84346f4fb0e34e7467b9303015d2ace25bfdb0c73",
+    "functionBodyMatchesCurrentMigration": true,
+    "triggers": [
+      {
+        "name": "trg_host_global_resource_exclusion",
+        "enabled": "O",
+        "definition": "CREATE TRIGGER trg_host_global_resource_exclusion BEFORE INSERT OR UPDATE OF coordination_domain, resource, mode, status, expires_ts ON public.agent_resource_locks FOR EACH ROW EXECUTE FUNCTION enforce_host_global_resource_exclusion()"
+      }
+    ],
+    "declarations": [
+      {
+        "resource": "staging-server",
+        "coordination_domain_kind": "host-global"
+      },
+      {
+        "resource": "staging-server-cooldown",
+        "coordination_domain_kind": "host-global"
+      }
+    ],
+    "releasedLease": [
+      {
+        "rows": 0
+      }
+    ],
+    "nativeProcess": {
+      "pid": 3191246,
+      "ppid": 4054,
+      "startTicks": "4181460",
+      "canonicalCwd": true,
+      "argv": [
+        "node",
+        "dist-host/hono-host.mjs"
+      ]
+    }
+  },
+  "lease": {
+    "acquireArgs": {
+      "resource": "staging-server",
+      "mode": "shared",
+      "ttl_sec": 180,
+      "reason": "EI-25181611831349662: protect staging during native handler/cache attribution and read-only restart preview"
+    },
+    "acquire": {
+      "ok": true,
+      "lock_id": "bcb0b5c0-6653-4c0b-b148-dbaceb8a4f61",
+      "mode": "shared",
+      "status": "held",
+      "owner": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+      "expires_ts": "2026-10-06T02:20:36.224Z"
+    },
+    "releaseArgs": {
+      "lock_id": "bcb0b5c0-6653-4c0b-b148-dbaceb8a4f61"
+    },
+    "release": {
+      "ok": true,
+      "results": [
+        {
+          "ok": true,
+          "lock_id": "bcb0b5c0-6653-4c0b-b148-dbaceb8a4f61",
+          "released": 1,
+          "released_modes": [
+            "shared"
+          ],
+          "exclusive_resources": [],
+          "expired": false
+        }
+      ],
+      "counts": {
+        "ok": 1,
+        "failed": 0
+      }
+    },
+    "cleanupObservedAt": "2026-10-06T02:19:56.449Z"
+  },
+  "restartPreview": {
+    "args": {
+      "target": "staging",
+      "confirm": false,
+      "max_drain_sec": 0
+    },
+    "observed": {
+      "ok": true,
+      "dry_run": true,
+      "target": "staging"
+    },
+    "qualification": "The native handler's dry-run response was observed between same-PID cache samples. The broad code:run result was shaped and partially omitted; this preserves only its visible dry-run fields. No exclusive drain or restart-body refusal was measured."
+  },
+  "assertions": {
+    "cacheAndPgDiagnosticsSamePid": true,
+    "nativeProcessPidMatches": true,
+    "cachedStagingDeclarationHostGlobal": true,
+    "sameBuildAcrossSelectedPgPoolSources": true,
+    "installedFunctionMatchesForwardMigration": true,
+    "installedTriggerEnabled": true,
+    "nativeRegistryDeclarationsHostGlobal": true,
+    "sharedLeaseReleasedBeforeExpiry": true,
+    "releasedLeaseAbsentAtRead": true
+  },
+  "verification": {
+    "performed": "Native supported cache/PG diagnostics; configured-store read-only transactions; exact OS PID/startTicks identity; source receipt resolution and JSON assertions.",
+    "newTestRuns": 0,
+    "existingRegressionEvidence": "Prior maintained suite:24PASS0skip and focused1file typecheck clean, scoped to private PostgreSQL. The earlier failed and all-skipped runs remain preserved.",
+    "servicesRestartedByThisSession": 0,
+    "migrationsExplicitlyRunByThisSession": 0
+  },
+  "receipts": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/cache_stats.ts",
+      "bytes": 8849,
+      "sha256": "2c3939811168e8bdbb902f20dd316b6ec80244db25a587b5f6b98292c7426a35"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/pg_health.ts",
+      "bytes": 5899,
+      "sha256": "3d4dfe8bd1208e3cfbf4122240d6c01e1e40cc81f111437945ac81e53f0f2e33"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/restart.ts",
+      "bytes": 134234,
+      "sha256": "f64bd78976e4de7867f5f7536f3d82d1ccf7fbcdccfe336b0143fa98896a11c4"
+    },
+    {
+      "path": "libs/papercusp/packages/locks/src/sql/031-host-global-resource-exclusion.sql",
+      "bytes": 2771,
+      "sha256": "1a4359a8afc9550b49a1d6e85b3c1b00ab795b05f3d9e9faa1bf6cc129bd5247"
+    },
+    {
+      "path": "libs/papercusp/packages/locks/src/sql/032-host-global-resource-snapshot-fence.sql",
+      "bytes": 2084,
+      "sha256": "404d3af63a19bdcfaa2ffe90fbf89486d19a40fb1254e1949a4d11b87d62ed4e"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct6-p011-host-global-atomic-fence-r1-2026-10-06.json",
+      "bytes": 11049,
+      "sha256": "c576015b2c938a7bd54526f806c4e3f571d15af1b9342f9eff50725912e481a6"
+    }
+  ],
+  "limits": [
+    "The previously absent native cache field is now present only for sampled PID3191246/buildf5256361c8; previous PID2407601 absence remains a historical sample.",
+    "Pool source build identity and source containment do not freeze the complete executing import graph or attest every worker.",
+    "The storage query ran in a separate reader PID and did not invoke bootstrap; it establishes installed database state, not the MCP handler's connection identity.",
+    "The restart preview did not test foreign-owner refusal, cleanup of a declined foreign reservation, or restart-body exclusion.",
+    "Live foreign-owner restart-body refusal and wholefleet exclusion remain open.",
+    "Bootstrap EI-25192639607333252 remains terminal-recorded with proposed completion authority; alias EI-25186634079278490 remains pending review. No settlement, review or cleanup mutation was made.",
+    "Original R3 unknown joins, R4 failure, fullP011@2/D021/native physical/all8/fullgraph/fullindependent/P010R8R9/final shipment and owner-origin activation walls remain open.",
+    "No shared restart, new agent, profiler, GC, producer replay or LIVE_GATE_OPS action."
+  ]
+}

@@ -1,0 +1,237 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Preserved clean native Work on Everything Design C acceptance",
+  "framework": "playwright",
+  "command": [
+    "scripts/run-operator-e2e-isolated.sh",
+    "e2e/ongoing-work-native-collection.spec.mts",
+    "--grep",
+    "Work on Everything Design C cockpit and priority editor stay readable in the native viewport",
+    "--workers=1"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-11T02:23:42.950Z",
+  "finishedAt": "2026-10-11T02:24:48.101Z",
+  "summary": "Original frozen-source Design C case passed with zero skips. The same-renderer old flex-shrink control clipped a row, while fixed rows passed clipping-ancestor visibility assertions; trusted keyboard reorder, review and discard passed. Four original screenshots remain. Current-build evidence only; final green deployed artifact is still unverified.",
+  "sourceCommit": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+  "sourceFingerprints": [
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.css",
+      "sha256": "d7096305e9a055a71e7edfe8179dc66d6c00581378f1b756d1fa1fd7321eb34d"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+      "sha256": "94ba1817c1de069c9872805779686972e01ac64fbf7219439c03c8df6187e2aa"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+      "sha256": "4fac202bd156214e6cb45065d33ea05494bb9e552d8ff7983632fe6c9aeb5416"
+    },
+    {
+      "path": "apps/operator/bin/release/dependency-generation.sh",
+      "sha256": "5b492c7b39cae658cea95cede714d43eaba6bfe20f44ce2f7b24b75c2069ed9d"
+    },
+    {
+      "path": "apps/operator/e2e/_native-bridge-json.ts",
+      "sha256": "360138c795953ba39e6f50842a3a1c2df0356ebe52bda260a31b417970a25222"
+    },
+    {
+      "path": "apps/operator/e2e/_ongoing-work-native-fixture.ts",
+      "sha256": "1e66e308b82314f2d61be4536753789f308d1dd81e8d624e7daa26fc2084ac39"
+    },
+    {
+      "path": "apps/operator/e2e/ongoing-work-native-collection.spec.mts",
+      "sha256": "426efff592972c8210ec62e1a55fc14374fa9ee0d182f108864ada279688a3b3"
+    },
+    {
+      "path": "apps/operator/lib/verify-tauri-headless-env.test.ts",
+      "sha256": "69f52e51ef20030222a7df06ebd0ea3a0245947d9e87d1384f7ee7abdfa999f4"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "9b593ec7353a963a8174548a2da6e6f73354de0f5a2e88b08059fce2806d06f7"
+    },
+    {
+      "path": "package.json",
+      "sha256": "e3b318883fd7b8774198bb223b2b06cffc6f15f83249d41dab1ace687c1d14fe"
+    },
+    {
+      "path": "packages/operator-core/lib/gnome-terminal-policy.json",
+      "sha256": "0dbaa9d2be3c77f201ad1a08a5bf7ed0ff41ada304e5f04f44dfaf8de8aad4a3"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-rubric-stewardship.test.ts",
+      "sha256": "02cf7f8851d99d65c06320903d841bf0670b0cbcef483f4f214a41a02114afa2"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+      "sha256": "7b4b013d6b43ecc954ff5c221778c8e6daf00bdfbc4c935aa2cce5f71bf3fef0"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/cargo-target-root.sh",
+      "sha256": "e7298435cd9dfc1938872e428af7cfd2971e0bc73428aa3d89ff9e15313a800a"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/claim-target-dir.sh",
+      "sha256": "fb83411ed7568dc1d8e78d15f86eb5491756241e4701864efee2d56da836b411"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/disk-preflight.sh",
+      "sha256": "350330b39fb27eb4fd036dcbc65fe29a00699d15e403a31860d929eb321d08bf"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/federation-asserts.sh",
+      "sha256": "a45d8f36ef4ded807a5200da767fc5afb308d4a2094bcd83826e0acf8739780d"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/pinned-deps.sh",
+      "sha256": "feb123e7a2d6b6a98099cee259c9a9e164eface3fe6e6031f21aba7a5f2d075d"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/release-artifacts.sh",
+      "sha256": "21f61d842fe20a3824e070588b29b55070ca10e41cbd74e603b07c0af83ae72d"
+    },
+    {
+      "path": "papercusp-desktop/bin/tauri-guarded",
+      "sha256": "3e9e66ca194ab185eb3cbd30f1df2cb250778133ddf3fc602b69c50276b646b0"
+    },
+    {
+      "path": "papercusp-desktop/package-lock.json",
+      "sha256": "1234d89f2767f7c4d2b16e9d51532f5f0614dc52df349e861b8589648d4a2c8d"
+    },
+    {
+      "path": "papercusp-desktop/package.json",
+      "sha256": "5fa72473d2d3269775a0ceeb9b3f256fd32e0da0a1886cb855b87fc64ba99191"
+    },
+    {
+      "path": "papercusp-desktop/src-tauri/src/main.rs",
+      "sha256": "f9befd1c42017782d2f8e6a8da4f3675b63f5293e57ad5863bd949d9bf84187b"
+    },
+    {
+      "path": "papercusp-desktop/src-tauri/src/native_console.rs",
+      "sha256": "1cd8d93d8405a7fbecdbb500f4475fd3cb853d2eab04afa230831c81b46eea20"
+    },
+    {
+      "path": "papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs",
+      "sha256": "70a2d5207490b03a23114ebbb02790ceb69f40596ee7340bb3b81589c94e3769"
+    },
+    {
+      "path": "papercusp-desktop/test/monorepo-host-preflight.mjs",
+      "sha256": "fbc35e5679ed948f9844780498405b52772d848931620e3f7a59b7d703e40f0f"
+    },
+    {
+      "path": "papercusp-desktop/test/native-console-gnome.test.js",
+      "sha256": "5ce2969bfe56d665adf15f4ef0c401c3a58659ccd39516547cb1416cfe9accef"
+    },
+    {
+      "path": "scripts/lib/budgeted-task-scheduler.mjs",
+      "sha256": "a0459b73241f77549dcab346a695b91a2fab391fca613ac856dc1b587f1392f8"
+    },
+    {
+      "path": "scripts/lib/committed-source-loader.mjs",
+      "sha256": "5276a65979b6a6aff39810edfe41149871a690ac458446a4053c38351a4b58fb"
+    },
+    {
+      "path": "scripts/lib/node-test-host-preflight.mjs",
+      "sha256": "8f04a13c47f68170c95a5cf00d2b99634d6d39aabb53eb662f5767d2825d4a58"
+    },
+    {
+      "path": "scripts/lib/spa-require-built.sh",
+      "sha256": "b3b10e8e677dc9b8b05471922095594d6a288b24d8cfff03163e361eceaafaf7"
+    },
+    {
+      "path": "scripts/npm-install-safe.mjs",
+      "sha256": "4547042c36f71042e157a343805532077ea7dcc31dee8a77acc092192f86dd95"
+    },
+    {
+      "path": "scripts/pc-heavy.sh",
+      "sha256": "78c76f24ac80d7f8e32a0bfe49a3970e0a224c2506521c068035b635093c7904"
+    },
+    {
+      "path": "scripts/restricted-hold-tree-gate.mjs",
+      "sha256": "9d0c8cfa4d9ea10f00c77ef36f74c5002dca6d0ab7542e46980f424f8870ba10"
+    },
+    {
+      "path": "scripts/run-operator-e2e-isolated.sh",
+      "sha256": "74e7e1a5ac39a08daf14016f2168ffaa41a768511781482bd208b63e65bd2a0c"
+    },
+    {
+      "path": "scripts/source-preview.mjs",
+      "sha256": "778020173c1bb14caae0cd9213c4a8afe9db8cfca4e16b42d5e37fc0c1601284"
+    },
+    {
+      "path": "scripts/verify-tauri-headless.sh",
+      "sha256": "48bc7df869f3fdc32b65af2ed5fd8ae4cde77fe05772752a089a812e0c3a2560"
+    }
+  ],
+  "originalTaskId": "0mv36tntjdzsvz21bsp",
+  "sharedTestRunId": 21024594,
+  "sharedRunGroupId": "operator-e2e-isolated-20261011T021204Z-2387825",
+  "completedRuntime": {
+    "kind": "verification-harness",
+    "verifierRunId": "20261011T021211Z-2391020",
+    "journeyHarness": "native-journey",
+    "journeyRunId": "20261011T022343Z-3011642"
+  },
+  "manifestPath": "~/.local/state/verification-harness/native-journey/20261011T022343Z-3011642/phases/native/manifest.json",
+  "manifestSha256": "a1e12d0cad1998fd312d129d46440e854a4f1a6835a5d06a80f9d8263622a0a3",
+  "sourceReceiptPath": "~/.local/state/verification-harness/verify-tauri-headless/20261011T021211Z-2391020/phases/prepare/verifier-source-receipt.json",
+  "sourceReceiptSha256": "643dbf1c6857ee55ff6a800b791aa36401835aa394f28c75ecb8c767b6583925",
+  "evidenceRoot": "~/.local/state/verification-harness/verify-tauri-headless/20261011T021211Z-2391020",
+  "assertions": [
+    {
+      "id": "native-stewardship-duties",
+      "passed": true,
+      "evidence": "Three duties render as Not measured for an empty isolated goal, without an improvement claim."
+    },
+    {
+      "id": "native-old-shrink-negative-control",
+      "passed": true,
+      "evidence": "The same native renderer with flex-shrink 1 violates the row visibility detector despite three DOM rows."
+    },
+    {
+      "id": "native-fixed-row-visibility",
+      "passed": true,
+      "evidence": "Each of three plan rows has positive height and visibleHeight >= min(height,32)-1 beyond clipping ancestors."
+    },
+    {
+      "id": "native-keyboard-reorder",
+      "passed": true,
+      "evidence": "Owned native window focus and trusted Shift/Space events drive the offered move-up control."
+    },
+    {
+      "id": "native-review-discard",
+      "passed": true,
+      "evidence": "Staged scope changes open review and discard restores the original selection; no Apply click."
+    }
+  ],
+  "screenshots": [
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261011T021211Z-2391020/phases/assert/playwright/ongoing-work-native-collec-326f3-able-in-the-native-viewport-chromium/goal-cockpit.png",
+      "sha256": "ec6cb8060206f29b2c33c7b0bab84c0e9c578fbd33d9e9002a2b7df930655127",
+      "visuallyInspected": false
+    },
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261011T021211Z-2391020/phases/assert/playwright/ongoing-work-native-collec-326f3-able-in-the-native-viewport-chromium/review-1280.png",
+      "sha256": "5d6ab1f7b22c58a27c3ba32f54f14bcd9df0cd6e35dd41fb750535be859a17de",
+      "visuallyInspected": false
+    },
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261011T021211Z-2391020/phases/assert/playwright/ongoing-work-native-collec-326f3-able-in-the-native-viewport-chromium/worklist-1280.png",
+      "sha256": "26aeddba4bed1488efd6267f02c3e00463009775bd3ddd71cb609009b575815c",
+      "visuallyInspected": true
+    },
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261011T021211Z-2391020/phases/assert/playwright/ongoing-work-native-collec-326f3-able-in-the-native-viewport-chromium/worklist-old-shrink-1280.png",
+      "sha256": "4a0997915863e257c92352aaeed1853a3b90245c7e05274f5c552ee7433597ad",
+      "visuallyInspected": true
+    }
+  ],
+  "limitations": [
+    "Current-build native evidence does not satisfy deployed R-7 or SPEC-WOE-SHIP.",
+    "Raw geometry, key and cockpit attachment bodies were discarded by successful trace cleanup. Assertions and screenshots are retained; no exact per-row metrics are invented. Owned WI-6554700010008367 fixes file retention for future runs.",
+    "The later retention-only spec edit is separate from this immutable original execution. No rerun was made to reconstruct discarded history.",
+    "Original historical reporter loss and observer termination triggers remain separately owned and unmeasured."
+  ]
+}

@@ -16,6 +16,7 @@ import {
   reconstructArgs,
 } from '@papercusp/result-encoding';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
+import { WORK_ITEM_ID_PATTERN } from '../work-items';
 import { PRE_PROMPT_REGISTRY } from './pre-prompt-registry-config';
 import './work_items/set_state';
 import './work_items/claim';
@@ -53,6 +54,7 @@ describe('PRE_PROMPT_REGISTRY', () => {
   it('hardens the positional work-item claim id with columnOverrides (D-007 residual, EI-7927)', () => {
     const claim = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:claim');
     expect(claim?.columnOverrides?.id?.pattern).toBe('^(?:(?:WI|F|EI)-\\d+|F-FIX-\\d+|PR-\\d+-P-\\d+)$');
+    expect(claim?.columnOverrides?.id?.pattern).toBe(WORK_ITEM_ID_PATTERN);
   });
 
   it('reconstructs a promoted F-FIX work-item id through the real claim registry projection', () => {

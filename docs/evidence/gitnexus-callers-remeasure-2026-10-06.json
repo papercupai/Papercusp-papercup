@@ -1,0 +1,930 @@
+{
+ "tally": {
+  "no-callers": 1,
+  "resolved": 38,
+  "error": 1
+ },
+ "rows": [
+  {
+   "name": "DBOSUnexpectedStepError",
+   "handler": {
+    "error": null,
+    "sites": 0,
+    "noLine": 0,
+    "ms": 2060
+   },
+   "grepCheck": {
+    "grepLines": 1,
+    "omittedByKind": {
+     "comment": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 0,
+    "candidateFiles": 4,
+    "libSites": 0,
+    "closure": {
+     "resolved": 0,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "acknowledgeControlTransition",
+   "handler": {
+    "error": null,
+    "sites": 24,
+    "noLine": 0,
+    "ms": 2455
+   },
+   "grepCheck": {
+    "grepLines": 28,
+    "omittedByKind": {
+     "comment": 3
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 3,
+    "candidateFiles": 14,
+    "libSites": 24,
+    "closure": {
+     "resolved": 22,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "amendRubric",
+   "handler": {
+    "error": null,
+    "sites": 46,
+    "noLine": 0,
+    "ms": 2363
+   },
+   "grepCheck": {
+    "grepLines": 47,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 13,
+    "libSites": 46,
+    "closure": {
+     "resolved": 46,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "applyShippedDocVectorSeed",
+   "handler": {
+    "error": null,
+    "sites": 9,
+    "noLine": 0,
+    "ms": 1692
+   },
+   "grepCheck": {
+    "grepLines": 10,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 2,
+    "candidateFiles": 6,
+    "libSites": 9,
+    "closure": {
+     "resolved": 8,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "attributionMapForRepo",
+   "handler": {
+    "error": null,
+    "sites": 10,
+    "noLine": 0,
+    "ms": 1912
+   },
+   "grepCheck": {
+    "grepLines": 11,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 6,
+    "libSites": 10,
+    "closure": {
+     "resolved": 10,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "buildCarryBrief",
+   "handler": {
+    "error": null,
+    "sites": 50,
+    "noLine": 0,
+    "ms": 3630
+   },
+   "grepCheck": {
+    "grepLines": 54,
+    "omittedByKind": {
+     "comment": 4
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [
+     "packages/operator-core/lib/events/await/wake-executor.ts:3153"
+    ],
+    "declarations": 6,
+    "candidateFiles": 20,
+    "libSites": 50,
+    "closure": {
+     "resolved": 45,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "bulkDedupInFlight",
+   "handler": {
+    "error": null,
+    "sites": 2,
+    "noLine": 0,
+    "ms": 1901
+   },
+   "grepCheck": {
+    "grepLines": 3,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 4,
+    "libSites": 2,
+    "closure": {
+     "resolved": 2,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "claimAdvSessionResume",
+   "handler": {
+    "error": null,
+    "sites": 10,
+    "noLine": 0,
+    "ms": 2630
+   },
+   "grepCheck": {
+    "grepLines": 13,
+    "omittedByKind": {
+     "comment": 1,
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 18,
+    "libSites": 10,
+    "closure": {
+     "resolved": 10,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "compileLaunchSpecificationArtifact",
+   "handler": {
+    "error": null,
+    "sites": 38,
+    "noLine": 0,
+    "ms": 3136
+   },
+   "grepCheck": {
+    "grepLines": 39,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 2,
+    "candidateFiles": 18,
+    "libSites": 38,
+    "closure": {
+     "resolved": 37,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "createHostedDesktopBackend",
+   "handler": {
+    "error": null,
+    "sites": 4,
+    "noLine": 0,
+    "ms": 2173
+   },
+   "grepCheck": {
+    "grepLines": 5,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 6,
+    "libSites": 4,
+    "closure": {
+     "resolved": 4,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "createOrgTestDb",
+   "handler": {
+    "error": null,
+    "sites": 467,
+    "noLine": 0,
+    "ms": 12288
+   },
+   "grepCheck": {
+    "grepLines": 482,
+    "omittedByKind": {
+     "comment": 13,
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 176,
+    "candidateFiles": 437,
+    "libSites": 466,
+    "closure": {
+     "resolved": 276,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "deriveSessionState",
+   "handler": {
+    "error": null,
+    "sites": 30,
+    "noLine": 0,
+    "ms": 2443
+   },
+   "grepCheck": {
+    "grepLines": 32,
+    "omittedByKind": {
+     "comment": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 22,
+    "libSites": 30,
+    "closure": {
+     "resolved": 30,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "drainQueuedEpochContent",
+   "handler": {
+    "error": null,
+    "sites": 15,
+    "noLine": 0,
+    "ms": 1784
+   },
+   "grepCheck": {
+    "grepLines": 16,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 10,
+    "libSites": 15,
+    "closure": {
+     "resolved": 15,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "ensureHeapSampling",
+   "handler": {
+    "error": null,
+    "sites": 5,
+    "noLine": 0,
+    "ms": 1183
+   },
+   "grepCheck": {
+    "grepLines": 6,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 4,
+    "candidateFiles": 3,
+    "libSites": 5,
+    "closure": {
+     "resolved": 1,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "estimatePrice",
+   "handler": {
+    "error": null,
+    "sites": 6,
+    "noLine": 0,
+    "ms": 5150
+   },
+   "grepCheck": {
+    "grepLines": 20,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 14,
+    "candidateFiles": 16,
+    "libSites": 6,
+    "closure": {
+     "resolved": 6,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "fetch",
+   "handler": {
+    "error": "the callers worker exited (SIGABRT) before answering: FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory",
+    "sites": 0,
+    "noLine": 0,
+    "ms": 59931
+   },
+   "grepCheck": {
+    "probeFailed": 124
+   }
+  },
+  {
+   "name": "gcVerifyInstances",
+   "handler": {
+    "error": null,
+    "sites": 25,
+    "noLine": 0,
+    "ms": 1740
+   },
+   "grepCheck": {
+    "grepLines": 27,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 5,
+    "libSites": 25,
+    "closure": {
+     "resolved": 25,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "gitSidecarEnabled",
+   "handler": {
+    "error": null,
+    "sites": 30,
+    "noLine": 0,
+    "ms": 2878
+   },
+   "grepCheck": {
+    "grepLines": 35,
+    "omittedByKind": {
+     "comment": 2,
+     "string": 2
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 27,
+    "libSites": 30,
+    "closure": {
+     "resolved": 30,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "hostedAwsHostStackFragment",
+   "handler": {
+    "error": null,
+    "sites": 4,
+    "noLine": 0,
+    "ms": 1626
+   },
+   "grepCheck": {
+    "grepLines": 5,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 6,
+    "libSites": 4,
+    "closure": {
+     "resolved": 4,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "intakeConfidenceRefusal",
+   "handler": {
+    "error": null,
+    "sites": 5,
+    "noLine": 0,
+    "ms": 2169
+   },
+   "grepCheck": {
+    "grepLines": 7,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 4,
+    "libSites": 5,
+    "closure": {
+     "resolved": 5,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "joinSharedHarness",
+   "handler": {
+    "error": null,
+    "sites": 11,
+    "noLine": 0,
+    "ms": 2144
+   },
+   "grepCheck": {
+    "grepLines": 14,
+    "omittedByKind": {
+     "string": 1,
+     "comment": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 6,
+    "libSites": 11,
+    "closure": {
+     "resolved": 11,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "listLiveSessionPresence",
+   "handler": {
+    "error": null,
+    "sites": 8,
+    "noLine": 0,
+    "ms": 1968
+   },
+   "grepCheck": {
+    "grepLines": 9,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 9,
+    "libSites": 8,
+    "closure": {
+     "resolved": 8,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "mapLiveLockHoldingsForRepo",
+   "handler": {
+    "error": null,
+    "sites": 3,
+    "noLine": 0,
+    "ms": 2256
+   },
+   "grepCheck": {
+    "grepLines": 4,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 2,
+    "candidateFiles": 5,
+    "libSites": 3,
+    "closure": {
+     "resolved": 3,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "openAppChannel",
+   "handler": {
+    "error": null,
+    "sites": 5,
+    "noLine": 0,
+    "ms": 1813
+   },
+   "grepCheck": {
+    "grepLines": 8,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 3,
+    "candidateFiles": 7,
+    "libSites": 5,
+    "closure": {
+     "resolved": 5,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "planWorkspaceHostRecovery",
+   "handler": {
+    "error": null,
+    "sites": 9,
+    "noLine": 0,
+    "ms": 2279
+   },
+   "grepCheck": {
+    "grepLines": 10,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 4,
+    "candidateFiles": 5,
+    "libSites": 9,
+    "closure": {
+     "resolved": 9,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "promotePlanItems",
+   "handler": {
+    "error": null,
+    "sites": 63,
+    "noLine": 0,
+    "ms": 4383
+   },
+   "grepCheck": {
+    "grepLines": 65,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 4,
+    "candidateFiles": 21,
+    "libSites": 63,
+    "closure": {
+     "resolved": 61,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "readCell",
+   "handler": {
+    "error": null,
+    "sites": 86,
+    "noLine": 0,
+    "ms": 3676
+   },
+   "grepCheck": {
+    "grepLines": 90,
+    "omittedByKind": {
+     "string": 3
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 33,
+    "libSites": 86,
+    "closure": {
+     "resolved": 85,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "readSocialPost",
+   "handler": {
+    "error": null,
+    "sites": 2,
+    "noLine": 0,
+    "ms": 2303
+   },
+   "grepCheck": {
+    "grepLines": 3,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 4,
+    "libSites": 2,
+    "closure": {
+     "resolved": 2,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "recordEditAttribution",
+   "handler": {
+    "error": null,
+    "sites": 12,
+    "noLine": 0,
+    "ms": 2408
+   },
+   "grepCheck": {
+    "grepLines": 13,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 8,
+    "libSites": 12,
+    "closure": {
+     "resolved": 12,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "registerDesktopSession",
+   "handler": {
+    "error": null,
+    "sites": 65,
+    "noLine": 0,
+    "ms": 2551
+   },
+   "grepCheck": {
+    "grepLines": 67,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 9,
+    "libSites": 65,
+    "closure": {
+     "resolved": 65,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "requirePrincipal",
+   "handler": {
+    "error": null,
+    "sites": 25,
+    "noLine": 0,
+    "ms": 13071
+   },
+   "grepCheck": {
+    "grepLines": 49,
+    "omittedByKind": {
+     "comment": 12,
+     "string": 11
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 7,
+    "candidateFiles": 931,
+    "libSites": 25,
+    "closure": {
+     "resolved": 25,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "resolveClassFireTarget",
+   "handler": {
+    "error": null,
+    "sites": 10,
+    "noLine": 0,
+    "ms": 2511
+   },
+   "grepCheck": {
+    "grepLines": 12,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 2,
+    "candidateFiles": 6,
+    "libSites": 10,
+    "closure": {
+     "resolved": 4,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "resolveWorkspaceHostInitializationOperationsForHost",
+   "handler": {
+    "error": null,
+    "sites": 26,
+    "noLine": 0,
+    "ms": 2077
+   },
+   "grepCheck": {
+    "grepLines": 28,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 8,
+    "libSites": 26,
+    "closure": {
+     "resolved": 26,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "runGoldSet",
+   "handler": {
+    "error": null,
+    "sites": 20,
+    "noLine": 0,
+    "ms": 1980
+   },
+   "grepCheck": {
+    "grepLines": 22,
+    "omittedByKind": {
+     "comment": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 10,
+    "candidateFiles": 17,
+    "libSites": 20,
+    "closure": {
+     "resolved": 20,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "runWorkspaceHostDestroy",
+   "handler": {
+    "error": null,
+    "sites": 53,
+    "noLine": 0,
+    "ms": 2495
+   },
+   "grepCheck": {
+    "grepLines": 54,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 2,
+    "candidateFiles": 7,
+    "libSites": 53,
+    "closure": {
+     "resolved": 52,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "sendMessage",
+   "handler": {
+    "error": null,
+    "sites": 343,
+    "noLine": 0,
+    "ms": 9347
+   },
+   "grepCheck": {
+    "grepLines": 369,
+    "omittedByKind": {
+     "comment": 19,
+     "string": 4,
+     "declaration": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [
+     "packages/operator-core/lib/agent-tools/fleet/place_batch.ts:107"
+    ],
+    "declarations": 69,
+    "candidateFiles": 226,
+    "libSites": 343,
+    "closure": {
+     "resolved": 284,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "setKernelEnforcementResolver",
+   "handler": {
+    "error": null,
+    "sites": 6,
+    "noLine": 0,
+    "ms": 2524
+   },
+   "grepCheck": {
+    "grepLines": 7,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 6,
+    "libSites": 6,
+    "closure": {
+     "resolved": 6,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "splitMarkdown",
+   "handler": {
+    "error": null,
+    "sites": 15,
+    "noLine": 0,
+    "ms": 2769
+   },
+   "grepCheck": {
+    "grepLines": 18,
+    "omittedByKind": {
+     "string": 2
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 5,
+    "candidateFiles": 11,
+    "libSites": 15,
+    "closure": {
+     "resolved": 15,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "supportsContext1m",
+   "handler": {
+    "error": null,
+    "sites": 12,
+    "noLine": 0,
+    "ms": 3705
+   },
+   "grepCheck": {
+    "grepLines": 14,
+    "omittedByKind": {
+     "string": 1
+    },
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 4,
+    "libSites": 12,
+    "closure": {
+     "resolved": 12,
+     "closureOnlySites": []
+    }
+   }
+  },
+  {
+   "name": "validateScorecardCompleteness",
+   "handler": {
+    "error": null,
+    "sites": 13,
+    "noLine": 0,
+    "ms": 3681
+   },
+   "grepCheck": {
+    "grepLines": 14,
+    "omittedByKind": {},
+    "omittedCallLines": [],
+    "sitesGrepCannotSee": [],
+    "declarations": 1,
+    "candidateFiles": 9,
+    "libSites": 13,
+    "closure": {
+     "resolved": 13,
+     "closureOnlySites": []
+    }
+   }
+  }
+ ]
+}

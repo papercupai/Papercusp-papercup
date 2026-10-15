@@ -35,7 +35,10 @@
  * A request body travels whole in `http.request`, bounded by
  * {@link HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES} so the frame stays under the
  * relay's 1 MiB message cap. Chat and launch bodies are a few KiB; a larger body is
- * refused with `request_body_too_large` rather than truncated.
+ * refused with `request_body_too_large` rather than truncated. Device-http may
+ * opt into bounded upload assembly: `http.request {bodyChunked:true}`, ordered
+ * `http.body` chunks, then `http.end`. Each chunk is separately sealed on BYOC;
+ * other planes retain the inline-only policy.
  */
 
 export const HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES = 512 * 1024;
@@ -86,6 +89,7 @@ export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   // Sync transport behind useSyncQuery (chat lists, session rosters).
   { method: 'GET', pattern: /^\/api\/zero-harness\/rest-query$/, surface: 'sync read' },
   { method: 'GET', pattern: /^\/api\/zero-harness\/sse$/, surface: 'sync stream' },
+  { method: 'POST', pattern: new RegExp(`^/api/harness/${SEG}/insights/diagnostic-export$`), surface: 'explicit customer-local aggregate export' },
   // "Ask Papercup" agent chats (portal agent-chats.ts).
   { method: 'GET', pattern: new RegExp(`^/api/harness/${SEG}/agent-chats$`), surface: 'agent chats list' },
   { method: 'POST', pattern: new RegExp(`^/api/harness/${SEG}/agent-chats$`), surface: 'agent chat create' },
@@ -101,10 +105,67 @@ export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   { method: 'POST', pattern: /^\/api\/agent-mcp\/operator-converse$/, surface: 'operator converse' },
   { method: 'GET', pattern: /^\/api\/agent-config$/, surface: 'agent settings read' },
   { method: 'POST', pattern: /^\/api\/agent-config$/, surface: 'agent settings save' },
+  // Native Settings pages run on the customer's workspace machine. These
+  // exact routes complement the sync reads above; admitting a Settings page's
+  // query while rejecting its save leaves a form that can never apply edits.
+  // This remains a method/path allowlist, never an /api/* or admin wildcard.
+  { method: 'POST', pattern: /^\/api\/agent-config\/test$/, surface: 'agent settings test' },
+  { method: 'GET', pattern: /^\/api\/profile$/, surface: 'profile settings read' },
+  { method: 'POST', pattern: /^\/api\/profile$/, surface: 'profile settings save' },
+  { method: 'GET', pattern: /^\/api\/auth\/me$/, surface: 'user account settings read' },
+  { method: 'PATCH', pattern: /^\/api\/auth\/me$/, surface: 'user account settings save' },
+  { method: 'POST', pattern: /^\/api\/auth\/change-password$/, surface: 'user account password settings' },
+  { method: 'GET', pattern: /^\/api\/desktop\/setup-wizard-state$/, surface: 'settings setup status' },
+  { method: 'GET', pattern: /^\/api\/agent-mcp\/(?:omp-config|operator-conv-voice|operator-credentials|operator-el-spend|operator-el-subscription|operator-elevenlabs-voices|operator-stats|operator-voice-engine-health)$/, surface: 'operator settings read' },
+  { method: 'POST', pattern: /^\/api\/agent-mcp\/(?:consult-expert-routing-set|identity-management|omp-config|operator-conv-voice|operator-elevenlabs-test|operator-standing-approvals|operator-tts-preview|operator-voice-provision|p2p-grant-set|p2p-settings-set|pot-override-set|storage-prune|trust-set)$/, surface: 'operator settings save' },
+  { method: 'POST', pattern: /^\/api\/admin\/inbox\/automation-policy$/, surface: 'autonomy settings save' },
+  { method: 'PUT', pattern: /^\/api\/agent-mcp\/(?:operator-budget|operator-config|operator-credentials|operator-tts-spend|operator-voice-prefs)$/, surface: 'operator settings save' },
+  { method: 'DELETE', pattern: /^\/api\/agent-mcp\/operator-preferences$/, surface: 'operator preference reset' },
+  { method: 'GET', pattern: /^\/api\/backups(?:\/healthcheck)?$/, surface: 'backup settings read' },
+  { method: 'PUT', pattern: /^\/api\/backups$/, surface: 'backup settings save' },
+  { method: 'POST', pattern: /^\/api\/backups\/(?:snapshots|maintenance|verify)$/, surface: 'backup settings action' },
+  { method: 'GET', pattern: /^\/api\/credentials(?:\/search-providers)?$/, surface: 'API key settings read' },
+  { method: 'POST', pattern: /^\/api\/credentials(?:\/search-providers)?$/, surface: 'API key settings save' },
+  { method: 'GET', pattern: /^\/api\/plugins\/(?:global|enabled|config|tools|runtime\/status)$/, surface: 'plugin settings read' },
+  { method: 'GET', pattern: /^\/api\/installed$/, surface: 'installed plugin settings' },
+  { method: 'PUT', pattern: /^\/api\/plugins\/config$/, surface: 'plugin settings save' },
+  { method: 'GET', pattern: /^\/api\/provision\/state$/, surface: 'plugin provisioning read' },
+  { method: 'POST', pattern: /^\/api\/provision\/run$/, surface: 'plugin provisioning' },
+  { method: 'GET', pattern: /^\/api\/oauth\/start$/, surface: 'integration settings sign-in' },
+  { method: 'POST', pattern: /^\/api\/oauth\/verify-paste$/, surface: 'integration settings sign-in' },
+  { method: 'GET', pattern: /^\/api\/desktop\/install\/omp-integration$/, surface: 'OMP integration read' },
+  { method: 'POST', pattern: /^\/api\/desktop\/install\/omp-integration$/, surface: 'OMP integration install' },
+  { method: 'DELETE', pattern: /^\/api\/desktop\/install\/omp-integration$/, surface: 'OMP integration remove' },
+  { method: 'GET', pattern: /^\/api\/user\/(?:embed-device|jev-settings|knowledge-pack-settings|memory\/(?:backend|feedback|reembed)|personal-vault|search)$/, surface: 'user settings read' },
+  { method: 'POST', pattern: /^\/api\/user\/(?:embed-device|jev-settings|knowledge-pack-settings|memory(?:\/(?:audit|backend|pause|reembed))?)$/, surface: 'user settings save' },
+  { method: 'PATCH', pattern: /^\/api\/user\/(?:memory|preferences|personal-vault(?:\/integrations\/google\/capabilities)?)$/, surface: 'user settings save' },
+  { method: 'DELETE', pattern: /^\/api\/user\/(?:memory|preferences|personal-vault(?:\/(?:grants|imports|integrations\/(?:google|facebook)))?)$/, surface: 'user settings remove' },
+  { method: 'POST', pattern: /^\/api\/user\/personal-vault\/(?:import|imports\/retry|grants(?:\/preview)?)$/, surface: 'personal vault settings save' },
+  { method: 'GET', pattern: new RegExp(`^/api/pot/${SEG}/policy(?:/rate)?$`), surface: 'pot policy read' },
+  { method: 'POST', pattern: new RegExp(`^/api/pot/${SEG}/policy$`), surface: 'pot policy save' },
+  { method: 'GET', pattern: /^\/api\/publish-credentials$/, surface: 'publishing settings read' },
+  { method: 'POST', pattern: /^\/api\/publish-credentials\/rotate$/, surface: 'publishing settings rotate' },
+  { method: 'DELETE', pattern: /^\/api\/publish-credentials$/, surface: 'publishing settings remove' },
+  { method: 'GET', pattern: /^\/api\/admin\/deploy-accounts(?:\/session-override)?$/, surface: 'deployment account settings read' },
+  { method: 'GET', pattern: /^\/api\/admin\/inference-gateway\/stats$/, surface: 'deployment account settings stats' },
+  // Provider CLIs may spend 30s producing a URL and another 30s producing a
+  // device code; completion may wait 60s for the credential. Let the account
+  // route's finite watchdog answer instead of losing its result at the relay's
+  // 30s header boundary. The portal consumes this same route-budget decision.
+  { method: 'POST', pattern: /^\/api\/admin\/deploy-accounts\/(?:link-start|link-complete)$/, surface: 'deployment account login', awaitsRouteBudget: true },
+  { method: 'POST', pattern: /^\/api\/admin\/deploy-accounts\/(?:session-override|register|link-status|remove)$/, surface: 'deployment account settings save' },
+  { method: 'POST', pattern: /^\/api\/flags\/set$/, surface: 'storage settings flag' },
+  { method: 'GET', pattern: /^\/api\/workspaces$/, surface: 'remote access workspace list' },
+  { method: 'POST', pattern: /^\/api\/remote-access(?:\/(?:pause|revoke|scopes|own-tunnel\/enabled|portal-relay\/(?:consent|connect|cancel|disconnect)))?$/, surface: 'remote access settings save' },
+  { method: 'POST', pattern: /^\/api\/device\/desktop\/mint-pair-token$/, surface: 'remote access device pairing' },
+  { method: 'GET', pattern: /^\/api\/device\/qr\.svg$/, surface: 'remote access pairing QR' },
+  { method: 'GET', pattern: /^\/api\/connected-apps\/device\/pending$/, surface: 'remote access pending devices' },
+  { method: 'POST', pattern: /^\/api\/connected-apps(?:\/(?:rotate|device\/decision))?$/, surface: 'remote access connected app' },
   // Sessions (portal agent-sessions.ts PORTAL_SESSION_ROUTES + history) and "new session".
   { method: 'GET', pattern: /^\/api\/adv\/session\/thinking$/, surface: 'session transcript stream' },
   { method: 'POST', pattern: /^\/api\/admin\/coordination\/sessions\/list$/, surface: 'sessions list' },
   { method: 'POST', pattern: /^\/api\/admin\/coord\/send$/, surface: 'session message' },
+  { method: 'POST', pattern: /^\/api\/adv\/sessions\/close-window$/, surface: 'confirmed managed session stop' },
   { method: 'GET', pattern: /^\/api\/adv\/sessions\/ended$/, surface: 'ended sessions' },
   { method: 'GET', pattern: /^\/api\/adv\/sessions\/search-transcripts$/, surface: 'transcript search' },
   { method: 'POST', pattern: /^\/api\/adv\/sessions\/launch-su$/, surface: 'new session' },
@@ -196,6 +257,9 @@ export function localOperatorOrigin(env: NodeJS.ProcessEnv = process.env): strin
 export type OperatorHttpSend = (payload: Record<string, unknown>) => void;
 export type OperatorHttpAudit = (action: string, detail: string) => void;
 export type OperatorHttpFetch = (url: string, init: RequestInit) => Promise<Response>;
+/** Private in-process route composition. Undefined leaves an ordinary request
+ * on the existing loopback route; a claimed request must return its response. */
+export type OperatorHttpRequestHandler = (request: Request) => Promise<Response | undefined>;
 
 export interface OperatorHttpChannelOptions {
   /**
@@ -208,18 +272,39 @@ export interface OperatorHttpChannelOptions {
   audit: OperatorHttpAudit;
   origin?: string;
   fetch?: OperatorHttpFetch;
+  /** Host-owned callback, never serialized on the relay. Receives only an
+   * allowlisted request with filtered headers and this request's lifetime. */
+  handleRequest?: OperatorHttpRequestHandler;
   headerTimeoutMs?: number;
+  /** Opt-in upload assembly for device-http; other planes keep inline-only bodies. */
+  maxChunkedRequestBodyBytes?: number;
   /** Route policy. Defaults to the operator-http allowlist. */
   decideRoute?: (method: unknown, path: unknown) => OperatorHttpRouteDecision;
   /** Header policy. Defaults to the operator-http allowlist plus the principal stamp. */
   requestHeaders?: (input: unknown) => Record<string, string>;
   /** Response headers relayed back. Defaults to the operator-http set. */
   responseHeaders?: ReadonlySet<string>;
+  /**
+   * Body policy, run after the route and size checks and before anything is forwarded. It may
+   * rewrite the body or refuse the request (the refusal is answered as `http.error`). Defaults
+   * to forwarding the body unchanged.
+   */
+  requestBody?: (route: { method: string; path: string }, body: Buffer | undefined) => OperatorHttpBodyDecision;
 }
+
+export type OperatorHttpBodyDecision =
+  | { ok: true; body: Buffer | undefined }
+  | { ok: false; code: string; status: number };
 
 /** One relay channel's in-flight requests (`operator-http`, or `app-http` with its own policy). */
 export class OperatorHttpChannel {
   private readonly inflight = new Map<string, AbortController>();
+  private readonly uploads = new Map<string, {
+    payload: Record<string, unknown>;
+    chunks: Buffer[];
+    bytes: number;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   private readonly origin: string;
   private readonly fetchImpl: OperatorHttpFetch;
   private readonly headerTimeoutMs: number;
@@ -242,7 +327,7 @@ export class OperatorHttpChannel {
   }
 
   get inflightCount(): number {
-    return this.inflight.size;
+    return this.inflight.size + this.uploads.size;
   }
 
   /** Handle one client frame. Resolves when a request's response has fully streamed. */
@@ -251,6 +336,7 @@ export class OperatorHttpChannel {
     const requestId = typeof payload.requestId === 'string' && payload.requestId.length <= 128 ? payload.requestId : null;
     if (!requestId) return;
     if (type === 'http.abort') {
+      this.dropUpload(requestId);
       // Forget it BEFORE aborting: the request's catch reads absence as "the
       // client asked", which needs no reply — versus a header timeout, which does.
       const controller = this.inflight.get(requestId);
@@ -258,8 +344,56 @@ export class OperatorHttpChannel {
       controller?.abort();
       return;
     }
+    if (this.options.maxChunkedRequestBodyBytes && (type === 'http.body' || type === 'http.end')) {
+      const upload = this.uploads.get(requestId);
+      if (!upload) {
+        this.options.send({ type: 'http.error', requestId, code: 'upload_not_started', status: 400 });
+        return;
+      }
+      if (type === 'http.end') {
+        this.dropUpload(requestId);
+        await this.request(requestId, upload.payload, Buffer.concat(upload.chunks, upload.bytes));
+        return;
+      }
+      const data = payload.data;
+      const chunk = typeof data === 'string' ? Buffer.from(data, 'base64') : null;
+      if (!chunk || chunk.length === 0 || chunk.toString('base64') !== data ||
+          chunk.length > HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES) {
+        this.dropUpload(requestId);
+        this.options.send({ type: 'http.error', requestId, code: 'invalid_body_chunk', status: 400 });
+        return;
+      }
+      if (upload.bytes + chunk.length > this.options.maxChunkedRequestBodyBytes) {
+        this.dropUpload(requestId);
+        this.options.send({ type: 'http.error', requestId, code: 'request_body_too_large', status: 413 });
+        return;
+      }
+      upload.chunks.push(chunk);
+      upload.bytes += chunk.length;
+      return;
+    }
     if (type !== 'http.request') {
       this.options.send({ type: 'http.error', requestId, code: 'unsupported_frame' });
+      return;
+    }
+    if (this.uploads.has(requestId)) {
+      this.options.send({ type: 'http.error', requestId, code: 'request_id_in_use' });
+      return;
+    }
+    if (payload.bodyChunked === true) {
+      const fail = (code: string, status: number) => this.options.send({ type: 'http.error', requestId, code, status });
+      if (!this.options.maxChunkedRequestBodyBytes) return fail('unsupported_frame', 400);
+      if (this.inflight.has(requestId)) return fail('request_id_in_use', 400);
+      if (this.inflightCount >= HOSTED_OPERATOR_HTTP_MAX_INFLIGHT) return fail('too_many_requests', 429);
+      const route = this.decideRoute(payload.method, payload.path);
+      if (!route.ok) return fail(route.code, route.code === 'route_not_relayed' ? 403 : 400);
+      if (route.method === 'GET' || payload.body !== undefined) return fail('invalid_body', 400);
+      const timer = setTimeout(() => {
+        this.dropUpload(requestId);
+        fail('request_body_timeout', 408);
+      }, this.headerTimeoutMs);
+      timer.unref?.();
+      this.uploads.set(requestId, { payload, chunks: [], bytes: 0, timer });
       return;
     }
     await this.request(requestId, payload);
@@ -267,16 +401,23 @@ export class OperatorHttpChannel {
 
   close(): void {
     this.closed = true;
+    for (const requestId of this.uploads.keys()) this.dropUpload(requestId);
     for (const controller of this.inflight.values()) controller.abort();
     this.inflight.clear();
   }
 
-  private async request(requestId: string, payload: Record<string, unknown>): Promise<void> {
+  private dropUpload(requestId: string): void {
+    const upload = this.uploads.get(requestId);
+    if (upload) clearTimeout(upload.timer);
+    this.uploads.delete(requestId);
+  }
+
+  private async request(requestId: string, payload: Record<string, unknown>, uploadedBody?: Buffer): Promise<void> {
     const fail = (code: string, status?: number) => {
       this.options.send({ type: 'http.error', requestId, code, ...(status ? { status } : {}) });
     };
     if (this.inflight.has(requestId)) return fail('request_id_in_use');
-    if (this.inflight.size >= HOSTED_OPERATOR_HTTP_MAX_INFLIGHT) return fail('too_many_requests', 429);
+    if (this.inflightCount >= HOSTED_OPERATOR_HTTP_MAX_INFLIGHT) return fail('too_many_requests', 429);
 
     const decision = this.decideRoute(payload.method, payload.path);
     if (!decision.ok) {
@@ -284,11 +425,19 @@ export class OperatorHttpChannel {
       return fail(decision.code, decision.code === 'route_not_relayed' ? 403 : 400);
     }
 
-    let body: Buffer | undefined;
-    if (payload.body !== undefined) {
+    let body: Buffer | undefined = uploadedBody;
+    if (uploadedBody === undefined && payload.body !== undefined) {
       if (decision.method === 'GET' || typeof payload.body !== 'string') return fail('invalid_body', 400);
       body = Buffer.from(payload.body, 'base64');
       if (body.byteLength > HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES) return fail('request_body_too_large', 413);
+    }
+    if (this.options.requestBody) {
+      const verdict = this.options.requestBody({ method: decision.method, path: decision.path }, body);
+      if (!verdict.ok) {
+        this.options.audit('operator_http_denied', `${decision.method} ${decision.path.split('?')[0]} ${verdict.code}`);
+        return fail(verdict.code, verdict.status);
+      }
+      body = verdict.body;
     }
 
     const controller = new AbortController();
@@ -297,15 +446,48 @@ export class OperatorHttpChannel {
     timer?.unref?.();
     const logLine = `${decision.method} ${decision.path.split('?')[0]}`;
     let headersSent = false;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const cancelReader = () => { void reader?.cancel().catch(() => {}); };
+    const ownsRequest = () => !this.closed && !controller.signal.aborted
+      && this.inflight.get(requestId) === controller;
     try {
-      const response = await this.fetchImpl(`${this.origin}${decision.path}`, {
+      const url = `${this.origin}${decision.path}`;
+      const init: RequestInit = {
         method: decision.method,
         headers: this.requestHeaders(payload.headers),
         ...(body ? { body: new Uint8Array(body) } : {}),
         redirect: 'manual',
         signal: controller.signal,
-      });
+      };
+      // Bound even a private handler that ignores cancellation. Its eventual
+      // rejection is still consumed; it cannot publish into a reused request id.
+      let onAbort: (() => void) | undefined;
+      const operation = (async () => {
+        const handled = this.options.handleRequest
+          ? await this.options.handleRequest(new Request(url, init)) : undefined;
+        if (!ownsRequest()) {
+          void handled?.body?.cancel().catch(() => {});
+          throw new Error('operator_request_aborted');
+        }
+        const response = handled ?? await this.fetchImpl(url, init);
+        if (!ownsRequest()) {
+          void response.body?.cancel().catch(() => {});
+          throw new Error('operator_request_aborted');
+        }
+        return response;
+      })();
+      let response: Response;
+      try {
+        response = await Promise.race([operation, new Promise<never>((_resolve, reject) => {
+          onAbort = () => reject(new Error('operator_request_aborted'));
+          controller.signal.addEventListener('abort', onAbort, { once: true });
+          if (controller.signal.aborted) onAbort();
+        })]);
+      } finally {
+        if (onAbort) controller.signal.removeEventListener('abort', onAbort);
+      }
       clearTimeout(timer);
+      if (!ownsRequest()) { void response.body?.cancel().catch(() => {}); return; }
       const headers: Record<string, string> = {};
       response.headers.forEach((value, name) => {
         if (this.responseHeaders.has(name.toLowerCase())) headers[name.toLowerCase()] = value;
@@ -314,27 +496,36 @@ export class OperatorHttpChannel {
       headersSent = true;
       this.options.audit('operator_http_request', `${logLine} ${response.status}`);
       if (response.body) {
-        const reader = response.body.getReader();
+        reader = response.body.getReader();
+        controller.signal.addEventListener('abort', cancelReader, { once: true });
+        if (!ownsRequest()) { cancelReader(); return; }
         for (;;) {
           const { done, value } = await reader.read();
+          if (!ownsRequest()) return;
           if (done) break;
           for (let offset = 0; offset < value.byteLength; offset += HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES) {
+            if (!ownsRequest()) return;
             const chunk = value.subarray(offset, Math.min(value.byteLength, offset + HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES));
             this.options.send({ type: 'http.body', requestId, data: Buffer.from(chunk).toString('base64') });
           }
         }
       }
-      this.options.send({ type: 'http.end', requestId });
+      if (ownsRequest()) this.options.send({ type: 'http.end', requestId });
     } catch {
       clearTimeout(timer);
       // An abort the CLIENT asked for needs no reply; the client already forgot it.
-      if (this.closed || !this.inflight.has(requestId)) return;
+      if (this.closed || this.inflight.get(requestId) !== controller) return;
       if (controller.signal.aborted && !headersSent) fail('operator_timeout', 504);
       else if (controller.signal.aborted) return;
       else fail(headersSent ? 'operator_stream_failed' : 'operator_unreachable', 502);
     } finally {
       clearTimeout(timer);
+      controller.signal.removeEventListener('abort', cancelReader);
+      reader?.releaseLock();
       if (this.inflight.get(requestId) === controller) this.inflight.delete(requestId);
+      // A captured private port must expire after the HTTP response completes,
+      // as well as on abort/detach. Completion cannot leave reusable authority.
+      controller.abort();
     }
   }
 }

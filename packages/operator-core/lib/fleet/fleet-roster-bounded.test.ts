@@ -19,13 +19,19 @@ const {
   fetchWakeabilityMock,
   listFleetAssignmentsMock,
   recordedLiveOwnerIdsMock,
+  endedRecordedOwnerIdsMock,
   fetchSelfWakeMock,
+  findLiveHostMock,
+  findLiveHostAsyncMock,
 } = vi.hoisted(() => ({
   fetchPresenceTier1Mock: vi.fn(),
   fetchWakeabilityMock: vi.fn(),
   listFleetAssignmentsMock: vi.fn(),
   recordedLiveOwnerIdsMock: vi.fn(),
+  endedRecordedOwnerIdsMock: vi.fn(),
   fetchSelfWakeMock: vi.fn(),
+  findLiveHostMock: vi.fn(),
+  findLiveHostAsyncMock: vi.fn(),
 }));
 
 vi.mock('../agent-tools/coordination/presence-tier1', async (importOriginal) => {
@@ -44,13 +50,21 @@ vi.mock('./assignments', async (importOriginal) => {
 // mock it like the other non-injectable legs so this file stays PG-free.
 vi.mock('../adv-sessions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../adv-sessions')>();
-  return { ...actual, recordedLiveOwnerIds: recordedLiveOwnerIdsMock };
+  return { ...actual, recordedLiveOwnerIds: recordedLiveOwnerIdsMock, endedRecordedOwnerIds: endedRecordedOwnerIdsMock };
 });
 // EI-19407725333778711: the forward-looking self-wake leg also hits PG — mock it
 // like every other non-injectable leg so this file stays PG-free.
 vi.mock('../agent-tools/coordination/presence-selfwake', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../agent-tools/coordination/presence-selfwake')>();
   return { ...actual, fetchSelfWake: fetchSelfWakeMock };
+});
+vi.mock('../events/await/psu-pty-discovery', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../events/await/psu-pty-discovery')>();
+  return {
+    ...actual,
+    findLiveHost: findLiveHostMock,
+    findLiveHostAsync: findLiveHostAsyncMock,
+  };
 });
 
 // Imported AFTER the mocks so the mocked bindings are the ones wired in.
@@ -86,10 +100,14 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     fetchWakeabilityMock.mockReset();
     listFleetAssignmentsMock.mockReset();
     recordedLiveOwnerIdsMock.mockReset();
+    endedRecordedOwnerIdsMock.mockReset();
     fetchSelfWakeMock.mockReset();
+    findLiveHostMock.mockReset();
+    findLiveHostAsyncMock.mockReset().mockResolvedValue(null);
     // Default: the recorded leg answers promptly with "nobody recorded-live" —
     // the pre-existing tests' degradedLegs expectations stay exact.
     recordedLiveOwnerIdsMock.mockResolvedValue(new Set<string>());
+    endedRecordedOwnerIdsMock.mockResolvedValue(new Set<string>());
     // Same treatment for the self-wake leg (EI-19407725333778711): answer
     // promptly by default so every pre-existing degradedLegs expectation in
     // this file keeps asserting EXACTLY the leg it was written to assert.
@@ -113,6 +131,139 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     expect(result.degradedLegs).toEqual([]);
     expect(result.entries).toHaveLength(1);
     expect(result.entries[0].agentId).toBe('su-1');
+  });
+
+  it('uses async psu-host discovery in the request path without calling the sync lookup', async () => {
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map([
+      ['su-1', { wakeable: true, liveTurn: true }],
+    ]));
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    findLiveHostAsyncMock.mockResolvedValue({ ownerId: 'su-1', pid: 12345 });
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      readPresence: async () => [{ ...pres('su-1'), agentRole: 'su', tty: '/dev/pts/1' }],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(result.degradedLegs).toEqual([]);
+    expect(findLiveHostAsyncMock).toHaveBeenCalledWith('su-1');
+    expect(findLiveHostMock).not.toHaveBeenCalled();
+  });
+
+  it('degrades a stalled psu-host discovery leg within the roster budget', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    findLiveHostAsyncMock.mockReturnValue(neverSettles<never>());
+
+    let completed = false;
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      readPresence: async () => [{ ...pres('su-1'), agentRole: 'su' }],
+    }).then((result) => {
+      completed = true;
+      return result;
+    });
+
+    await vi.advanceTimersByTimeAsync(FLEET_ROSTER_SUBREAD_TIMEOUT_MS - 1);
+    expect(completed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await resultPromise;
+
+    expect(result.degradedLegs).toContain('psuHosts');
+    expect(result.entries).toHaveLength(1);
+    expect(findLiveHostAsyncMock).toHaveBeenCalledWith('su-1');
+    warnSpy.mockRestore();
+  });
+
+  it('reads the durable leader through the liveness legs even when it has no presence row', async () => {
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    recordedLiveOwnerIdsMock.mockResolvedValue(new Set(['su-leader']));
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      leaderOwnerId: 'su-leader',
+      readPresence: async () => [],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(fetchWakeabilityMock).toHaveBeenCalledWith(['su-leader']);
+    expect(recordedLiveOwnerIdsMock).toHaveBeenCalledWith(['su-leader']);
+    expect(result.leaderEntry).toBeNull();
+    expect(result.leaderLiveness).toEqual({
+      ownerId: 'su-leader',
+      presenceRow: false,
+      recordedLive: true,
+      sessionState: 'recorded',
+      complete: true,
+    });
+  });
+
+  it('keeps a missing leader unknown when the recorded-session leg degrades', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    recordedLiveOwnerIdsMock.mockRejectedValue(new Error('session ledger unavailable'));
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      leaderOwnerId: 'su-leader',
+      readPresence: async () => [],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+
+    expect(result.degradedLegs).toContain('recorded');
+    expect(result.leaderLiveness).toMatchObject({
+      ownerId: 'su-leader',
+      presenceRow: false,
+      recordedLive: null,
+      complete: false,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fleet-roster:recorded failed'));
+    warn.mockRestore();
+  });
+
+  it('folds the latest recorded end into leader liveness despite a warm wake-await', async () => {
+    vi.setSystemTime(new Date('2026-07-10T10:00:10Z'));
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map([
+      ['su-leader', { wakeable: true, liveTurn: false }],
+    ]));
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    endedRecordedOwnerIdsMock.mockResolvedValue(new Set(['su-leader']));
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes', leaderOwnerId: 'su-leader',
+      readPresence: async () => [{ ...pres('su-leader'), agentRole: 'su', fleetRole: 'leader' }],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+    expect(endedRecordedOwnerIdsMock).toHaveBeenCalledWith(['su-leader']);
+    expect(result.leaderLiveness).toMatchObject({ sessionState: 'ended', recordedLive: false, complete: true });
+  });
+
+  it('keeps leader liveness incomplete when the recorded end read fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    endedRecordedOwnerIdsMock.mockRejectedValue(new Error('session end ledger unavailable'));
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes', leaderOwnerId: 'su-leader', readPresence: async () => [],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+    expect(result.degradedLegs).toContain('recorded');
+    expect(result.leaderLiveness).toMatchObject({ recordedLive: null, complete: false });
+    warn.mockRestore();
   });
 
   it('enriches a multi-fleet leader without adding it to the queried roster', async () => {

@@ -13,9 +13,8 @@ import {
   getFleet,
   getFleetHeadcountTarget,
   projectFleetHeadcountState,
-  FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
 } from '../../agent-fleets-store';
-import { executingOwnersSince } from '../../fleet/assignments';
+import { countedMemberSet, readFleetMemberSilence } from './silent-member';
 import {
   listFleetRosterDiagnosed,
   splitFleetRosterCounts,
@@ -26,6 +25,7 @@ import {
   type FleetRosterDegradedLeg,
 } from '../../fleet/fleet-roster';
 import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
+import { findLiveHostAsync } from '../../events/await/psu-pty-discovery';
 import { getCompletionIntegrityStats, type CompletionIntegrityStats } from '../../work-items';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { AdvSessionEndedBy } from '../../adv-sessions';
@@ -36,6 +36,8 @@ import { fleetEverMembers } from '../../fleet-membership-store';
 import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
 import { getLoopStatuses } from '../../harness/routines/loop';
 import type { LifecycleBackoffInfo, LoopStatus } from '../../harness/routines/loop';
+import { FLEET_LEADER_MISSING_GRACE_MS } from '../../scheduler/fleet-scope-admission';
+import { isLeaderPresentSessionState } from '../../fleet/leader-presence';
 
 /**
  * WI-3818: bound the two OPTIONAL legs — completionStats (harness-scoped
@@ -485,7 +487,26 @@ export default defineTool({
       !queriedRosterIds.has(fleet.leaderOwnerId)
         ? [...rosterResult.entries, rosterResult.leaderEntry]
         : rosterResult.entries;
-    const reconciledRoster = reconcileFleetStatusLiveness(rosterForLiveness);
+    const visibleHostIds = rosterForLiveness
+      .filter((member) => member.tty != null && member.agentRole != null && member.agentRole !== 'cup')
+      .map((member) => member.agentId);
+    const visibleHostsResult = await withBoundedTimeout((async () => {
+      const hosts = new Map<string, unknown | null>();
+      for (let i = 0; i < visibleHostIds.length; i += 16) {
+        await Promise.all(visibleHostIds.slice(i, i + 16).map(async (ownerId) => {
+          hosts.set(ownerId, await findLiveHostAsync(ownerId).catch(() => null));
+        }));
+      }
+      return hosts;
+    })(), {
+      fallback: new Map<string, unknown | null>(visibleHostIds.map((id) => [id, { lookupTimedOut: true }])),
+      timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+      label: 'fleet:status:psuHosts',
+    });
+    const reconciledRoster = reconcileFleetStatusLiveness(
+      rosterForLiveness,
+      (ownerId) => visibleHostsResult.value.get(ownerId) ?? null,
+    );
     const roster = reconciledRoster.filter((member) => queriedRosterIds.has(member.agentId));
     const completionStats = completionStatsResult.value;
     const runningBees = runningBeesResult.value;
@@ -501,10 +522,11 @@ export default defineTool({
     const headcountExecutingResult = await withBoundedTimeout(
       headcountCurrentResult.value == null
         ? Promise.resolve(null)
-        : executingOwnersSince(
-            headcountCurrentResult.value,
-            FLEET_HEADCOUNT_EXECUTION_WINDOW_MS,
-          ),
+        : // P-007 / R-17: the same silence rule the headcount governor applies, so
+          // this read cannot count a seat the writer has decided to refill.
+          readFleetMemberSilence(headcountCurrentResult.value, {
+            fleetPaused: fleet.controlState === 'winding-down',
+          }).then(countedMemberSet),
       {
         fallback: null,
         timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
@@ -592,9 +614,9 @@ export default defineTool({
     // still-heartbeating row can otherwise mask a dead session — see EI-5858) — filter
     // those out before counting, but keep them in the full `members[]` list below (still
     // wants full visibility, including who died or is still bootstrapping, for the
-    // leader/owner reading this). `recorded` is also non-live: it is a launch-window
-    // session state with no live presence, and the leader vacancy calculation below
-    // already treats it as vacant.
+    // leader/owner reading this). A `recorded` row is not counted as a runnable roster
+    // member; the separate recorded-session liveness leg still decides whether the
+    // durable leader is positively live.
     const liveRoster = roster.filter(
       (m) => !['ended', 'suspect', 'draining', 'recorded'].includes(m.sessionState ?? ''),
     );
@@ -615,9 +637,35 @@ export default defineTool({
     const leaderMember = fleet.leaderOwnerId
       ? reconciledRoster.find((member) => member.agentId === fleet.leaderOwnerId)
       : undefined;
-    const leaderSessionState = leaderMember?.sessionState ?? null;
-    const leaderVacant =
-      fleet.leaderOwnerId == null || ['ended', 'recorded'].includes(leaderSessionState ?? '');
+    const leaderRecordedLive = rosterResult.leaderLiveness?.recordedLive === true;
+    const leaderSessionState = leaderMember?.sessionState ?? (leaderRecordedLive ? 'recorded' : null);
+    const leaderEvidenceComplete =
+      fleet.leaderOwnerId == null || rosterResult.leaderLiveness?.complete === true;
+    const leaderLive =
+      isLeaderPresentSessionState(leaderSessionState) ||
+      (leaderEvidenceComplete && (leaderSessionState === 'recorded' || leaderRecordedLive));
+    const leaderVacant = fleet.leaderOwnerId == null || (leaderEvidenceComplete && !leaderLive);
+    const leaderMissingSinceMs = leaderVacant ? fleet.leaderMissingSinceMs ?? null : null;
+    const leaderMissingGraceRemainingMs = leaderMissingSinceMs == null
+      ? null
+      : Math.max(0, leaderMissingSinceMs + FLEET_LEADER_MISSING_GRACE_MS - Date.now());
+    const leaderVacancy = {
+      state: fleet.leaderOwnerId == null
+        ? 'unassigned'
+        : !leaderEvidenceComplete
+          ? 'unknown'
+          : leaderLive
+            ? 'leader-live'
+            : 'complete-absence',
+      vacant: leaderVacant,
+      livenessComplete: leaderEvidenceComplete,
+      recordedLive: fleet.leaderOwnerId == null
+        ? null
+        : rosterResult.leaderLiveness?.recordedLive ?? null,
+      missingSinceMs: leaderMissingSinceMs,
+      graceMs: FLEET_LEADER_MISSING_GRACE_MS,
+      graceRemainingMs: leaderMissingGraceRemainingMs,
+    };
     const leaderLiveness = fleet.leaderOwnerId
       ? {
           agentId: fleet.leaderOwnerId,
@@ -629,6 +677,18 @@ export default defineTool({
             : false,
           lastActiveSecAgo: leaderMember?.lastActiveSecAgo ?? null,
           presenceRow: leaderMember != null,
+        }
+      : null;
+    const blockedLiveMemberCount = fleet.leaderOwnerId != null && leaderVacant
+      ? liveRoster.filter((member) => member.fleetRole === 'member' && member.sessionState === 'live').length
+      : 0;
+    const leadershipBlockage = blockedLiveMemberCount > 0
+      ? {
+          reason: leaderSessionState === 'ended'
+            ? 'registered-leader-ended' as const
+            : 'registered-leader-missing' as const,
+          leaderOwnerId: fleet.leaderOwnerId!,
+          liveMemberCount: blockedLiveMemberCount,
         }
       : null;
 
@@ -704,9 +764,11 @@ export default defineTool({
       description: fleet.description,
       leader: leaderLiveness,
       leaderId: fleet.leaderOwnerId,
-      leaderLive: leaderLiveness?.sessionState === 'live',
+      leaderLive,
       leaderSessionState,
       leaderVacant,
+      leaderVacancy,
+      ...(leadershipBlockage ? { leadershipBlockage } : {}),
       // P-009 (H4): the typed control state — 'winding-down' means members must
       // checkpoint + release and pull no new work until fleet:resume.
       controlState: fleet.controlState,

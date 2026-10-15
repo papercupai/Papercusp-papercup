@@ -29,6 +29,21 @@
  */
 import { budgetExceeded, type IsoBudgetCap } from '@papercusp/bench-metrics';
 import { costFromTokens } from '@papercusp/model-pricing';
+import { createHash, randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
+import { createScopedNativeSandboxSpawn } from '@papercusp/orchestrator/fleet-srt-spawn';
+import { SCOPED_INFERENCE_GATEWAY_ENV } from '@papercusp/orchestrator/codex-gateway-config';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { currentBenchAssignmentId, currentBenchAttemptLabel, currentStockBenchHarnessDriver, liveCurrentSuBenchPorts,
+  requireCurrentBenchHostBinding, beginCurrentBenchNativeSession, type CurrentSuBenchOptions, type CurrentSuBenchObservations,
+  type CurrentStockBenchPorts } from './current-su';
+import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
+import type { DbScope } from './reproducibility/db';
+import type { BenchHarnessOps } from './bench-harness-live';
+import { managedSpawn } from '../task-manager/managed-spawn';
+import { materializeDockerExecWrapper, validateDockerExecTarget } from './container-exec-target';
+import { redactSensitiveText } from '../sensitive-text';
 import type { ChatEvent, RunAgentChatOptions } from '../agent-chat-stream';
 import {
   BASELINE_B_ARM,
@@ -48,6 +63,170 @@ import type {
 } from './types';
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** Current stock arm: native CLI only, with no Papercusp persona, MCP catalog,
+ * blueprint materialization or feature pipeline. Reuse the current assignment
+ * verifier, native task/session registries, sandbox and complete cost reader. */
+export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx: PapercuspUnifiedToolContext,
+  observations: CurrentSuBenchObservations, db: Pick<DbScope, 'sql'> = {}) {
+  const common = liveCurrentSuBenchPorts(ctx, observations, opts, db);
+  const containerExec = observations.containerExec && structuredClone(observations.containerExec);
+  if (containerExec) {
+    validateDockerExecTarget(containerExec);
+    if (containerExec.hookBridge || containerExec.sessionRelocation?.sessionEnv !== 'CODEX_HOME' || !containerExec.originRewrites)
+      throw new Error('Stock native container requires a relocated clean home and gateway rewrite without host hooks.');
+  }
+  const pending = new Map<string, Promise<void>>();
+  const taskFinishes = new Map<string, Promise<void>>();
+  const streamErrors = new Map<string, string>();
+  const ports: CurrentStockBenchPorts = {
+    ...common,
+    readCompletion: async () => null,
+    async killTask(id) {
+      const result = await common.killTask(id);
+      await taskFinishes.get(id);
+      return result;
+    },
+    async getTask(id) {
+      const task = await common.getTask(id);
+      if (task && !['pending', 'running'].includes(task.state)) await taskFinishes.get(id);
+      return task && streamErrors.has(id) ? { ...task, detail: { ...task.detail, nativeStreamError: streamErrors.get(id) } } : task;
+    },
+    async launchNative({ handle, task, context }) {
+      const verifySession = beginCurrentBenchNativeSession(observations, opts, handle);
+      const [{ recordAdvSession, reanchorAdvSessionNativeId, markAdvSessionEnded }, { bindLiveAgentSessionTasksToNativeSession },
+        { runAgentChat }] = await Promise.all([import('../adv-sessions'), import('../task-manager/store'), import('../agent-chat-stream')]);
+      const ownerId = `benchmark-stock-${randomUUID()}`;
+      const label = `${currentBenchAttemptLabel(opts.runId, handle)}solver`;
+      const sessionKey = await recordAdvSession({ agent: 'codex', role: null, mode: 'console', workspaceId: opts.workspaceId,
+        coordOwnerId: ownerId, cwd: handle.worktreePath, label });
+      if (sessionKey == null) throw new Error('Stock benchmark session enrollment failed; no native process started.');
+      const home = codexHomeForSessionKey(sessionKey);
+      let child: import('node:child_process').ChildProcess | undefined, taskId: string | undefined;
+      let wrapperDir: string | undefined;
+      let nativeSessionId: string | undefined, linked = Promise.resolve();
+      let resolveStarted!: (value: string) => void, rejectStarted!: (error: unknown) => void;
+      const started = new Promise<string>((resolve, reject) => { resolveStarted = resolve; rejectStarted = reject; });
+      const pump = async () => {
+        let error: string | undefined;
+        try {
+          await fs.mkdir(dirname(home), { recursive: true });
+          // Never reuse an old home or import host context/credentials.
+          await fs.mkdir(home, { mode: 0o700 });
+          const stream = runAgentChat({ backend: 'codex', agentCmd: 'codex', model: `${opts.model}:${opts.effort}`,
+            cwd: handle.worktreePath, promptText: buildNativeHarnessPrompt(task) + context.contextText,
+            isolateConfig: true, isolateDir: home, codexGateway: observations.nativeGateway,
+            permissionMode: 'bypassPermissions', ownerId, signal: opts.signal,
+            onNativeSession: id => {
+              if (nativeSessionId && nativeSessionId !== id) { error = 'Stock native session changed during one assignment.'; child?.kill('SIGTERM'); return; }
+              if (nativeSessionId) return;
+              nativeSessionId = id;
+              linked = linked.then(async () => {
+                if (!taskId) throw new Error('Stock native session was observed before task enrollment.');
+                const receipt = await reanchorAdvSessionNativeId(sessionKey, id);
+                if (receipt.owner !== ownerId) throw new Error('Stock native session registry binding failed.');
+                const tasks = await bindLiveAgentSessionTasksToNativeSession({ workspaceId: opts.workspaceId,
+                  coordOwnerId: ownerId, sessionId: id, initialTaskId: taskId }, db.sql);
+                if (!Array.isArray(tasks) || tasks.length !== 1 || tasks[0] !== taskId) throw new Error('Stock native task registry binding failed.');
+              }).catch(async failure => {
+                // The child handle may be only the managed launcher. Retire its
+                // ledgered subtree through the same owner-aware cleanup seam.
+                if (taskId) {
+                  const retired = await common.killTask(taskId);
+                  if (!retired.ok && retired.error !== 'already_gone' && retired.error !== 'task_not_found')
+                    throw new Error(`${errMsg(failure)} Native task cleanup failed: ${retired.error}`);
+                } else child?.kill('SIGTERM');
+                throw failure;
+              });
+              // The stream and link run concurrently; pump joins the rejection
+              // before finalization even if stream iteration itself throws.
+              void linked.catch(() => {});
+            },
+            spawnProcess: async (command, args, options) => {
+              const host = requireCurrentBenchHostBinding(observations, opts);
+              verifySession();
+              if (opts.signal?.aborted) throw new Error('Stock native assignment was cancelled before process creation.');
+              if (!['codex', 'codex.js'].includes(basename(command)) || options.cwd !== handle.worktreePath || options.env?.CODEX_HOME !== home)
+                throw new Error('Stock native identity transport cannot be observed in this host.');
+              const env: NodeJS.ProcessEnv = { PATH: options.env.PATH, LANG: options.env.LANG, LC_ALL: options.env.LC_ALL,
+                TERM: options.env.TERM, TZ: options.env.TZ, HOME: home, CODEX_HOME: home, PAPERCUSP_AGENT: 'codex',
+                PAPERCUSP_SID: ownerId, PAPERCUSP_OPERATOR_URL: observations.nativeGateway!.baseURL,
+                [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(observations.nativeGateway) };
+              if (task.instanceId !== host.taskId) throw new Error('Stock native task differs from its host assignment.');
+              const register = async (binary: string, argv: string[], spawnOptions: import('node:child_process').SpawnOptions) => managedSpawn(binary, argv,
+                  { class: 'agent-session', title: label, argv: [], cwd: handle.worktreePath, harnessSlug: handle.slug,
+                    launchedBy: ctx.principal!.slug, workItemId: handle.featureId,
+                    runtimeMaxSec: Math.max(1, Math.ceil((opts.driveTimeoutMs ?? 60_000) / 1000)), detail: { label, coordOwnerId: ownerId,
+                      executionKind: 'stock-native', assignmentId: currentBenchAssignmentId(opts.runId, opts.armId, task.instanceId, opts.seed) } },
+                  { workspaceId: opts.workspaceId, requireRegistration: true, spawnOptions });
+              let spawned: Awaited<ReturnType<typeof register>>;
+              if (containerExec) {
+                // Docker is the native OS boundary. Host SRT would conceal its
+                // socket/mounts; the existing wrapper relocates only this clean
+                // home, rewrites its gateway and runs in the task's /app.
+                const wrapper = materializeDockerExecWrapper(containerExec);
+                wrapperDir = wrapper.dir;
+                spawned = await register(wrapper.wrapperPath, ['--no-daemon', ...args],
+                  { ...options, cwd: handle.worktreePath, env });
+              } else {
+                const sandbox = createScopedNativeSandboxSpawn({ env, cwd: handle.worktreePath });
+                if (!sandbox) throw new Error('Stock native sandbox is unavailable; no process started.');
+                spawned = await sandbox(command, args, { ...options, cwd: handle.worktreePath, env }, register);
+              }
+              child = spawned.child; taskId = spawned.taskId;
+              resolveStarted(taskId!);
+              return child!;
+            },
+          });
+          for await (const event of stream) if (event.type === 'error')
+            error = redactSensitiveText(`${event.message}${event.stderr?.trim() ? `\n${event.stderr.trim()}` : ''}`);
+          await linked;
+          if (!taskId) throw new Error(error ?? 'Stock native process never started.');
+          if (error) throw new Error(error);
+        } catch (failure) { error = errMsg(failure); rejectStarted(failure); }
+        finally {
+          try { await linked; }
+          catch (failure) {
+            const message = errMsg(failure);
+            error = error && error !== message ? `${error}; ${message}` : message;
+            rejectStarted(failure);
+          }
+          if (child && child.exitCode === null && child.signalCode === null && taskId) await common.killTask(taskId);
+          if (taskId && error) streamErrors.set(taskId, error);
+          if (wrapperDir) await fs.rm(wrapperDir, { recursive: true, force: true });
+          await markAdvSessionEnded(sessionKey, child?.exitCode ?? null, child?.signalCode ? 'signal' : 'self',
+            { signal: child?.signalCode, throwOnError: true });
+          if (nativeSessionId) {
+            const [{ ingestInteractiveUsage }, { defaultAdapters }] = await Promise.all([
+              import('../interactive-usage/ingest-claude-transcripts'), import('../interactive-usage/ingest-adapters')]);
+            const adapter = defaultAdapters().find(value => value.name === 'codex');
+            if (!adapter) throw new Error('Canonical Codex usage adapter is unavailable.');
+            await ingestInteractiveUsage({ adapters: [{ ...adapter, root: join(home, 'sessions'), ownerId, advSessionId: sessionKey }],
+              includeIsolationRoots: false, maxFilesPerTick: 1000, maxBytesPerFile: 8_388_608 }, { ...db, workspaceId: opts.workspaceId });
+          }
+        }
+      };
+      const finishing = pump();
+      pending.set(handle.slug, finishing);
+      finishing.catch(rejectStarted);
+      const id = await started;
+      taskFinishes.set(id, finishing);
+      return { agentStarted: true, tasks: [{ taskId: id }] };
+    },
+    async collectCost(input) {
+      return common.collectCost!(input);
+    },
+  };
+  const lifecycle: BenchHarnessOps = {
+    now: Date.now,
+    createHarness: async ({ checkout }) => ({ slug: `stock-native-${createHash('sha256').update(currentBenchAssignmentId(opts.runId,
+      opts.armId, checkout.dir, opts.seed)).digest('hex').slice(0, 24)}`, featureId: 'native-assignment', worktreePath: checkout.dir }),
+    addFeature: async () => {}, driveToDone: async () => { throw new Error('Native assignment driver was not composed.'); },
+    collectCost: input => ports.collectCost!(input),
+    teardown: async ({ handle }) => { await pending.get(handle.slug); pending.delete(handle.slug); },
+  };
+  return currentStockBenchHarnessDriver(lifecycle, ports, opts);
+}
 
 /** A spawn of the native harness — production binds `runAgentChat` (backend 'claude-code'). */
 export type SpawnNativeAgent = (opts: RunAgentChatOptions) => AsyncIterable<ChatEvent>;

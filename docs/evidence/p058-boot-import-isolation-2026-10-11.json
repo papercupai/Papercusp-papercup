@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 boot-import isolation against Node sockets and subprocesses",
+  "cwd": "papercusp-desktop",
+  "command": [
+    "node",
+    "--test",
+    "--test-global-setup=test/monorepo-host-preflight.mjs",
+    "test/verify-sidecar-bundle-spa-layout.test.js"
+  ],
+  "startedAt": "2026-10-11T02:06:19Z",
+  "finishedAt": "2026-10-11T02:06:54Z",
+  "exitCode": 0,
+  "summary": "42 passed, 0 failed, 0 skipped on Node25.9.0. The existing packaged-import preload rejects Node socket connections and subprocess launches, including caught errors with printed success receipts; a real in-bundle postgres-js driver is refused before a temporary loopback listener receives a connection. This is source regression proof, not ARM startup, installed-native or shipped release acceptance.",
+  "workItemId": "EI-25645801549248672",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "sourceHashes": {
+    "papercusp-desktop/bin/verify-sidecar-bundle.sh": "add797198d2c7f3f9b56cc014d6d560d801ad9fbe060973165c51c9ef3a3badc",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js": "5d002ab946aeb73f31c7d2774ce767c9190c9fe721e4ff5c10b14c2e057c20b7"
+  },
+  "sourceHashesStable": true,
+  "runtime": {
+    "node": "v25.9.0",
+    "arch": "x64",
+    "platform": "linux"
+  },
+  "observations": {
+    "tests": 42,
+    "passed": 42,
+    "failed": 0,
+    "skipped": 0,
+    "actualSharedDatabaseContact": "not measured; no shared database used by the tests",
+    "preFixCounterexample": {
+      "fakeLoopbackContacts": 1,
+      "subprocessProbeAccepted": true
+    },
+    "socketCoverage": [
+      "ESM node:net.createConnection",
+      "ESM node:net.Socket.connect",
+      "CommonJS net.connect",
+      "ESM node:tls.connect",
+      "actual packaged postgres-js"
+    ],
+    "canonicalChildDeadlineMs": 60000
+  },
+  "assertions": [
+    {
+      "id": "full-verifier-suite",
+      "passed": true,
+      "evidence": "Native linkage, namespace, receipt, layout and allocator/deadline regressions pass42/42 with0skip."
+    },
+    {
+      "id": "node-socket-isolation",
+      "passed": true,
+      "evidence": "Four socket entry points receive a temporary live loopback endpoint; observed listener contacts0, failed qualification and receiptObserved:true after caught errors."
+    },
+    {
+      "id": "postgres-driver-isolation",
+      "passed": true,
+      "evidence": "The actual copied postgres-js source reaches the guard from its asynchronous connection timer, exits1 with receiptObserved:false, and makes0 loopback listener contacts."
+    },
+    {
+      "id": "subprocess-isolation",
+      "passed": true,
+      "evidence": "ESM spawnSync and CommonJS execFileSync attempts refuse qualification even when exceptions are caught and a success receipt is printed."
+    },
+    {
+      "id": "no-startup-inference",
+      "passed": true,
+      "evidence": "The original60000ms ARM startup failure remains open. No new ARM producer or Server startup was executed for this regression."
+    }
+  ]
+}

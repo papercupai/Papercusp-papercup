@@ -82,6 +82,26 @@ describe('migration pre-apply lint', () => {
     expect(() => lint(withoutAcknowledgement)).toThrow(/narrowing-unique-index/);
   });
 
+  it('accepts the benchmark archive status migration through the actual boot safety checks', () => {
+    const filename = '1434-benchmark-ungraded-archive-state.sql';
+    const migrationSqlDir = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
+    const migrationText = readFileSync(join(migrationSqlDir, filename), 'utf8');
+    const lint = (sqlText: string) =>
+      assertMigrationPassesPreApplyLints({ filename, sqlText, sqlDir: migrationSqlDir });
+
+    expect(() => lint(migrationText)).not.toThrow();
+
+    // Raw-SQL fixtures strip transaction wrappers and miss boot refusals. Keep
+    // both refusal controls on the unmodified file's production lint path.
+    expect(() => lint(`BEGIN;\n${migrationText}\nCOMMIT;`)).toThrow(/top-level transaction control/);
+    const withoutAcknowledgement = migrationText.replace(
+      /^[ \t]*--[ \t]*FORWARD-COMPAT:[^\r\n]*(?:\r?\n|$)/m,
+      '',
+    );
+    expect(withoutAcknowledgement).not.toBe(migrationText);
+    expect(() => lint(withoutAcknowledgement)).toThrow(/drop-constraint/);
+  });
+
   it('does not grandfather a newly pending file through frozen exemptions', () => {
     const dir = sqlDir();
     writeFileSync(join(dir, '972-completion-authority-content-identity-floor.sql'), 'BEGIN; SELECT 1; COMMIT;');

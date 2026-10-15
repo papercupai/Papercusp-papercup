@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Hosted Android API36 16KB native run 36934685043 attempt1",
+  "framework": "operational",
+  "command": [
+    "GitHub Actions",
+    "ci.yml",
+    "android_only=true",
+    "run=36934685043",
+    "attempt=1",
+    "job=110612081207"
+  ],
+  "startedAt": "2026-10-01T22:22:51Z",
+  "finishedAt": "2026-10-01T23:04:08Z",
+  "exitCode": 0,
+  "summary": "Existing manually dispatched run succeeded. Cache miss executed host and native stages. Runner requires actual SDK36 and PAGE_SIZE16384 before instrumentation. Scope is historical debug source; latest hint and APK-retention edits are not verified by this run.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "4a94c915b79e40f2138b41a48b2909b15b818872",
+  "runUrl": "https://github.com/Papercusp/papercup-rust-mobile/actions/runs/36934685043/job/110612081207",
+  "artifactId": 11198769319,
+  "apkSha256": "d9aa82e99d4987eeddc427e501d6600ce82259d4a4269537e5eeef8597d6333e",
+  "apkBytesRetained": false,
+  "rawEvidence": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/run-36934685043-attempt-1/job.log",
+    "sha256": "40ca0f0483cb9ca9615fd48105d6c524d69310d773da87761a9aa765d5db7025"
+  },
+  "uniqueXmlResults": [
+    {
+      "path": "android-ci-proof/native-results/connected/debug/TEST-emulator-5554 - 16-_app-.xml",
+      "sha256": "871261856cc8edcd191e62f97985f58b78aa8566369faba521e3b22b4cc26a50"
+    }
+  ],
+  "nativeCounts": {
+    "tests": 1,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "unitCounts": {
+    "tests": 56,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "assertions": [
+    {
+      "id": "executed-native-tests",
+      "passed": true,
+      "evidence": "Unique native XML timestamp 2026-10-01T23:03:46; launcherActivityStarts ran and passed."
+    },
+    {
+      "id": "executed-unit-tests",
+      "passed": true,
+      "evidence": "Unique debug and release unit XML, six suites each, 28 tests each."
+    },
+    {
+      "id": "successful-exact-job",
+      "passed": true,
+      "evidence": "Exact run/attempt/job complete with successful host and native steps."
+    }
+  ],
+  "disclosedGaps": [
+    "Historical artifact omits APK bytes; owned WI-10005143 fixes retention, pending automatic containing-source proof.",
+    "No current automatic scheduled success yet.",
+    "Signed minified journeys, physical-phone and public Play install remain pending."
+  ]
+}

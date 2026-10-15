@@ -20,6 +20,14 @@ const assertFactMock = vi.fn(async (_arg: Record<string, unknown>) => ({}) as ne
 const isRegisteredHiveMock = vi.fn(async (_ws: string, _slug: string) => true);
 const insertProbeMock = vi.fn(async (_stamped: unknown) => ({}) as Record<string, unknown>);
 const notifyAttentionMock = vi.fn(async (_arg: Record<string, unknown>) => undefined);
+const broadcastMock = vi.fn(async () => true);
+const resolveMock = vi.fn(async () => true);
+
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: () => broadcastMock() }));
+vi.mock('../alarm-attention', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../alarm-attention')>()),
+  resolveAlarm: () => resolveMock(),
+}));
 
 vi.mock('../agent-facts/store', () => ({
   assertFact: (arg: Record<string, unknown>) => assertFactMock(arg),
@@ -102,6 +110,8 @@ describe('system:gate-canary-sweep', () => {
     isRegisteredHiveMock.mockClear();
     insertProbeMock.mockClear();
     notifyAttentionMock.mockClear();
+    broadcastMock.mockClear();
+    resolveMock.mockClear();
     unsafeCalls.length = 0;
     escalationRows = {};
     isRegisteredHiveMock.mockResolvedValue(true);

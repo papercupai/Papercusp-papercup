@@ -1,0 +1,227 @@
+{
+  "schemaVersion": "p011-request-query-independent-v1",
+  "proof": {
+    "path": "docs/evidence/papercusp-oct1-p011-request-ordinary-r4-2026-10-03.json",
+    "sha256": "75d53593c9533426a1c2dbfb4c0f30cc90318a7402b00d0f22d80bf691ebb830",
+    "bytes": 745779,
+    "result": {
+      "processIdentity": "3285806:7698012:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "warm": [
+        {
+          "requestId": "d83cabd1-0ea4-481c-a66f-ef737713efcb",
+          "queries": [
+            "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",12,3]",
+            "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",25,3]"
+          ]
+        }
+      ],
+      "windows": [
+        {
+          "window": 0,
+          "requests": [
+            {
+              "requestId": "0fbcc35b-7698-46ee-9598-61fb5802277c",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",15,3]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",26,3]"
+              ]
+            },
+            {
+              "requestId": "1f6892c8-5a1b-4a66-a906-0fffb05d17ad",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",19,3]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",31,3]"
+              ]
+            },
+            {
+              "requestId": "2aacf95e-1d0f-4912-a7af-186e891a797e",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",30,3]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",42,3]"
+              ]
+            },
+            {
+              "requestId": "4a21f82f-6291-46d4-a80b-a906a37fd9d6",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",11,3]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",9,3]"
+              ]
+            },
+            {
+              "requestId": "51a86835-378a-46f9-b8d8-6c63e1e760e0",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",27,3]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",40,3]"
+              ]
+            },
+            {
+              "requestId": "a5335242-259f-4442-872c-1451dff834ba",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",22,3]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",46,3]"
+              ]
+            },
+            {
+              "requestId": "c98abe90-4825-46f2-8bf1-be090acb43d0",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",17,3]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",45,3]"
+              ]
+            },
+            {
+              "requestId": "f2103923-0beb-4c28-81d7-34c77ccc3bd4",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",29,3]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",3,3]"
+              ]
+            }
+          ],
+          "idlePssDeltaBytes": 201728,
+          "ordinaryPssDeltaBytes": 1975296,
+          "ordinaryAllocatedBytes": 19249688
+        },
+        {
+          "window": 1,
+          "requests": [
+            {
+              "requestId": "037e8552-5d2f-4202-aebb-b0cb5ae3622c",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",16,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",43,4]"
+              ]
+            },
+            {
+              "requestId": "2d6294bc-5938-4812-a22d-73f3f5d918ba",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",24,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",50,4]"
+              ]
+            },
+            {
+              "requestId": "48572568-d180-4b07-908a-142ca2b9c4d2",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",35,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",38,4]"
+              ]
+            },
+            {
+              "requestId": "857ee1cb-b3c1-45bc-afa3-c162a9ecc987",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",2,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",52,3]"
+              ]
+            },
+            {
+              "requestId": "b896365a-5752-4636-ac53-178098c560e1",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",21,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",39,4]"
+              ]
+            },
+            {
+              "requestId": "d696462c-be87-416a-a245-634f1f9080dd",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",14,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",20,4]"
+              ]
+            },
+            {
+              "requestId": "d94367c0-243c-402b-a17d-b1076428b60a",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",49,3]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",53,3]"
+              ]
+            },
+            {
+              "requestId": "e71d5b62-b366-41ea-b4f1-34ef53db3a9a",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",34,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",48,3]"
+              ]
+            }
+          ],
+          "idlePssDeltaBytes": -194560,
+          "ordinaryPssDeltaBytes": 1241088,
+          "ordinaryAllocatedBytes": 9537640
+        },
+        {
+          "window": 2,
+          "requests": [
+            {
+              "requestId": "07537cf3-a599-488d-bfea-e0e69794dbd2",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",30,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",46,4]"
+              ]
+            },
+            {
+              "requestId": "1c5fb203-2bd9-41f1-99ea-a87039b273a9",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",26,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",28,7]"
+              ]
+            },
+            {
+              "requestId": "3768d0be-d48a-40cb-813d-30ea16f8ffb2",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",25,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",40,4]"
+              ]
+            },
+            {
+              "requestId": "4e4e8942-93ba-417e-b7f3-4cf966492560",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",15,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",29,4]"
+              ]
+            },
+            {
+              "requestId": "566108eb-482e-4a73-ab4f-e5f77f5342d8",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",19,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",31,4]"
+              ]
+            },
+            {
+              "requestId": "8dbc579f-afbd-48f0-96e6-e4bff603018d",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",27,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",3,4]"
+              ]
+            },
+            {
+              "requestId": "d0ca9eed-c6df-4d2f-8d52-b157edfa735f",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",42,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",45,4]"
+              ]
+            },
+            {
+              "requestId": "e837d339-938a-4676-8b72-ca33c89a3998",
+              "queries": [
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",12,4]",
+                "[\"a96427c4-3786-458c-a7e5-0cf0c8ea0a35\",null,\"3f285d02-7dd6-44af-8ce6-3f47edd24efa\",9,4]"
+              ]
+            }
+          ],
+          "idlePssDeltaBytes": 21504,
+          "ordinaryPssDeltaBytes": 450560,
+          "ordinaryAllocatedBytes": 7762528
+        }
+      ],
+      "requestCount": 24,
+      "queryCount": 48,
+      "retainedOwner": "unobserved",
+      "workerCloneIdentity": "unobserved",
+      "nativePhysicalOwnership": "unknown",
+      "fullExecutedSourceGraph": "unknown",
+      "physicalSavings": "unmeasured"
+    }
+  },
+  "independentOf": "No emitter/helper import; exact UUID and query tuples conserved against terminal raw pool rows.",
+  "limitations": [
+    "Saved private ordinary process only; no new runtime or snapshot.",
+    "No raw snapshot, decoded-object heap IDs, worker-clone identity or retained-owner acceptance.",
+    "Build-recorded artifact; full executed source graph and production savings remain unmeasured."
+  ]
+}

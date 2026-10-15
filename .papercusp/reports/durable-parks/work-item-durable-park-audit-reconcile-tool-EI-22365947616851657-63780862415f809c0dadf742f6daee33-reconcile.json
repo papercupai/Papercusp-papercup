@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-22365947616851657:63780862415f809c0dadf742f6daee33",
+  "inputSha256": "63780862415f809c0dadf742f6daee336dbfac0aa96cf4d631f8266521434644",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:22:36.786Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-22365947616851657",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "8eb52dd3dcd3bad373ac034cfce63afcd1db349a7e6619486f9b3d6a9522d86d",
+      "observedParkFingerprint": "8eb52dd3dcd3bad373ac034cfce63afcd1db349a7e6619486f9b3d6a9522d86d",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:WI-10002829 (condition: 'Promoted plan P-001 WI-10002823 and P-007 WI-10002829 are terminal with backend performance freshness and native route coverage verified; then settle this older parent issue without duplicate work.'). Re-read 2026-10-10T22:22Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): WI-10002829 status=done, taken_by none; EI-22365947616851657 status=open, taken_by null. Condition clause beyond the trigger, verified: the condition names BOTH WI-10002823 (P-001) and WI-10002829 (P-007). Both are status=done. WI-10002823 completion evidence: 'Restored the backend performance-series producer ... current integration/counterexample/census proof and committed live-series evidence both pass' (backend performance freshness). WI-10002829 completion evidence: 'P-007 packaged Tauri/WDIO plan-popup and Web Vitals acceptance is verified on the named private build. Ten frozen native runs ...' (native route coverage). The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-22365947616851657-63780862415f809c0dadf742f6daee33-reconcile.json"
+}

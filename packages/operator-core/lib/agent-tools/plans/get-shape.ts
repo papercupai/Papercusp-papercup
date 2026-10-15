@@ -185,11 +185,14 @@ function shapeResult(res: unknown, tier: TierName): unknown {
     }
   }
 
-  // trimmed only: the UI decoration maps (feature badges, test-coverage badges)
-  // are per-item objects an agent placing work rarely needs — drop them LOUDLY.
+  const shipReadiness = shapeShipReadiness(r.shipReadiness);
+  if (shipReadiness !== r.shipReadiness) out.shipReadiness = shipReadiness;
+
+  // trimmed only: the UI decoration map (feature badges) is a per-item object
+  // an agent placing work rarely needs — drop it LOUDLY.
   if (tier === "trimmed") {
     const omitted: string[] = [];
-    for (const key of ["linkedFeatures", "planItemTests"] as const) {
+    for (const key of ["linkedFeatures"] as const) {
       const v = r[key];
       if (v && typeof v === "object" && Object.keys(v as object).length > 0) {
         delete out[key];
@@ -204,6 +207,160 @@ function shapeResult(res: unknown, tier: TierName): unknown {
     }
   }
 
+  return out;
+}
+
+/** Reason groups kept per bar, and sample ids kept per reason, in a proof-history summary. */
+const PROOF_REASONS_PER_BAR = 8;
+const PROOF_SAMPLES_PER_REASON = 3;
+
+interface ProofReasonGroup {
+  reason: string;
+  count: number;
+  sampleSpecIds: string[];
+  sampleIds: unknown[];
+}
+
+/**
+ * Summarize one bar's `proof.history`: counts of the ACTIVE rows by currentness,
+ * and each stale/unknown reason with its count plus a few spec ids and evidence
+ * ids to start a repair from. The marker is in band (`TRUNCATED`) so a
+ * `projection.pick` of the summary alone still says rows were cut.
+ */
+export function summarizeProofHistory(history: unknown[]): Record<string, unknown> {
+  const active = history.filter(
+    (row): row is Record<string, unknown> =>
+      !!row && typeof row === "object" && (row as { activeAttempt?: unknown }).activeAttempt === true,
+  );
+  const byCurrentness: Record<string, number> = {};
+  const groups = new Map<string, ProofReasonGroup>();
+  for (const row of active) {
+    const currentness = (row.currentness ?? null) as {
+      overall?: unknown;
+      staleReasons?: unknown;
+      unknownReasons?: unknown;
+    } | null;
+    const overall = typeof currentness?.overall === "string" ? currentness.overall : "unrecorded";
+    byCurrentness[overall] = (byCurrentness[overall] ?? 0) + 1;
+    const reasons = [
+      ...(Array.isArray(currentness?.staleReasons) ? currentness.staleReasons : []),
+      ...(Array.isArray(currentness?.unknownReasons) ? currentness.unknownReasons : []),
+    ];
+    for (const raw of reasons) {
+      const reason = typeof raw === "string" ? raw : JSON.stringify(raw);
+      let group = groups.get(reason);
+      if (!group) {
+        group = { reason, count: 0, sampleSpecIds: [], sampleIds: [] };
+        groups.set(reason, group);
+      }
+      group.count += 1;
+      const specId = row.specId;
+      if (
+        typeof specId === "string" &&
+        group.sampleSpecIds.length < PROOF_SAMPLES_PER_REASON &&
+        !group.sampleSpecIds.includes(specId)
+      ) {
+        group.sampleSpecIds.push(specId);
+      }
+      if (group.sampleIds.length < PROOF_SAMPLES_PER_REASON) group.sampleIds.push(row.id);
+    }
+  }
+  const ranked = [...groups.values()].sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+  return {
+    rows: history.length,
+    activeRows: active.length,
+    byCurrentness,
+    reasons: ranked.slice(0, PROOF_REASONS_PER_BAR),
+    ...(ranked.length > PROOF_REASONS_PER_BAR ? { reasonsOmitted: ranked.length - PROOF_REASONS_PER_BAR } : {}),
+    rowsCut: `[TRUNCATED ${history.length} proof rows summarized — recover: ${SHAPE_RECOVER_HINT}]`,
+  };
+}
+
+/**
+ * `shipReadiness` (opt-in) carries the acceptance BAR contract snapshot, and
+ * each bar's `proof.history` re-lists EVERY evidence row ever bound to it, raw
+ * `details` included. Measured 2026-10-13 (oversized-tool-results-reduction-
+ * 2026-10-12 P-006; 24h, transport=mcp): 125 shipReadiness reads were 4% of
+ * plans:get calls but 43% of its bytes (p50 228KB, p90 615KB), and
+ * proof.history was ~93% of the snapshot in the largest spills. Replacing the
+ * rows with summarizeProofHistory cut those snapshots 78-93%.
+ *
+ * The verdict (`satisfied`, `code`, `repairAction`, `message`) and every per-bar
+ * count and state are untouched; the shaper runs after the handler, so nothing
+ * the handler derived from the full rows changes. Full rows: payloadTier:'full'.
+ *
+ * Second cut, measured 2026-10-13 08:45Z (same plan item, :3170, 12h): after
+ * the history summary a 7-bar default-tier body was still ~45KB, so it spilled
+ * at the result door, whose notice says to pass payloadTier:'full'; every
+ * shipReadiness read since 07:30Z was then an explicit full read (98-842KB, one
+ * owner polling six times in 30 min). Per bar ~4KB of the remainder is contract
+ * PROSE (requirement ~1.9KB, method, falsifier), and sourceRevisions (revision
+ * pins for drift detection) was 13.7KB. Browse tiers keep a marked 160-char
+ * head of each prose field plus its full length, and the pins as counts.
+ */
+const BAR_PROSE_KEYS = ["requirement", "method", "falsifier"] as const;
+const BAR_PROSE_HEAD_CHARS = 160;
+const SHIP_READINESS_FULL = "payloadTier:'full'";
+
+function shapeShipReadiness(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const sr = value as Record<string, unknown>;
+  const snap = sr.acceptanceBarContractSnapshot as Record<string, unknown> | null | undefined;
+  if (!snap || typeof snap !== "object" || !Array.isArray(snap.bars)) return value;
+  let changed = 0;
+  let proseClipped = 0;
+  const bars = snap.bars.map((bar) => {
+    if (!bar || typeof bar !== "object") return bar;
+    let out = bar as Record<string, unknown>;
+    for (const key of BAR_PROSE_KEYS) {
+      const text = out[key];
+      if (typeof text === "string" && text.length > BAR_PROSE_HEAD_CHARS) {
+        out = {
+          ...out,
+          [key]: clip(text, BAR_PROSE_HEAD_CHARS, SHIP_READINESS_FULL),
+          [`${key}_full_chars`]: text.length,
+        };
+        proseClipped += 1;
+      }
+    }
+    const proof = out.proof as Record<string, unknown> | null | undefined;
+    if (proof && typeof proof === "object" && Array.isArray(proof.history) && proof.history.length > 0) {
+      const { history, ...rest } = proof;
+      out = { ...out, proof: { ...rest, historySummary: summarizeProofHistory(history as unknown[]) } };
+      changed += 1;
+    }
+    return out;
+  });
+  const revisions = summarizeSourceRevisions(snap.sourceRevisions);
+  if (revisions !== snap.sourceRevisions) changed += 1;
+  if (changed === 0 && proseClipped === 0) return value;
+  return {
+    ...sr,
+    acceptanceBarContractSnapshot: {
+      ...snap,
+      ...(revisions !== snap.sourceRevisions ? { sourceRevisions: revisions } : {}),
+      bars,
+      ...(proseClipped > 0
+        ? {
+            proseCut: `TRUNCATED ${proseClipped} bar prose field(s) (requirement/method/falsifier) to ${BAR_PROSE_HEAD_CHARS} chars; <key>_full_chars is the length — ${SHIP_READINESS_FULL} for the contract text`,
+          }
+        : {}),
+    },
+  };
+}
+
+/** The snapshot's revision PINS (clause and work-contract rows, scorecard ids) feed the
+ *  handler's drift checks, which already ran; a readiness read needs their counts. */
+function summarizeSourceRevisions(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const rev = value as Record<string, unknown>;
+  const lists = ["clauses", "workContracts", "scorecardIds"].filter(
+    (k) => Array.isArray(rev[k]) && (rev[k] as unknown[]).length > 0,
+  );
+  if (lists.length === 0) return value;
+  const out: Record<string, unknown> = { ...rev };
+  for (const k of lists) out[k] = { count: (rev[k] as unknown[]).length };
+  out.rowsCut = `TRUNCATED ${lists.join(", ")} revision rows to counts — ${SHIP_READINESS_FULL} for the pins`;
   return out;
 }
 

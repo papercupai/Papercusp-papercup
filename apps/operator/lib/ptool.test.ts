@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, it, expect, vi } from 'vitest';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
+import { HEADLESS_BOOT_RECEIPT_MS, KICKOFF_PROOF_WINDOW_MS } from '@papercusp/operator-core/lib/console-spawn';
+import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC } from '@papercusp/operator-core/lib/agent-kickoff/launch-budgets.mjs';
 import { createMcpProxy } from './mcp-proxy/proxy';
 import {
   MCP_TRANSPORT_CAP_MS,
@@ -833,6 +835,31 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
   });
 });
 
+describe('ptool timeoutForTool — code:tools signature reads outlive the MCP cap (EI-25679450978085524)', () => {
+  it.each([
+    ['direct', 'code:tools', {}],
+    ['tools:invoke', 'tools:invoke', { name: 'code:tools' }],
+  ] as const)('%s calls use the foreground budget', (_route, toolName, args) => {
+    const timeout = timeoutForTool(toolName, args);
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — rubrics:amend delivers its foreground receipt (EI-24943513849393693)', () => {
+  it.each([
+    ['direct', 'rubrics:amend', {}],
+    ['tools:invoke', 'tools:invoke', { name: 'rubrics:amend' }],
+  ] as const)('%s call outlives the 40s handler budget and MCP transport cap', (_route, toolName, args) => {
+    const timeout = timeoutForTool(toolName, args);
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(40_000);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool timeoutForTool — dev:pg_query outlives proxy admission and SQL bounds (EI-22701666730811258)', () => {
   it('uses the long-read client deadline for direct calls instead of the flat 30s cutoff', () => {
     const timeout = timeoutForTool('dev:pg_query', { sql: 'SELECT 1', timeoutMs: 10_000 });
@@ -866,14 +893,19 @@ describe('ptool timeoutForTool — dev:pipeline_position outlives the flat clien
 });
 
 describe('ptool timeoutForTool — capability:launch-agent resumes outlive the default client deadline (EI-21314560074357302)', () => {
+  it('outlives the current boot, kickoff-proof and resume-verification windows', () => {
+    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBeGreaterThan(
+      HEADLESS_BOOT_RECEIPT_MS + KICKOFF_PROOF_WINDOW_MS + 30_000 + 5_000,
+    );
+  });
   it('gives exact launch-agent resumes a client deadline beyond the MCP transport cap', () => {
     const timeout = timeoutForTool('capability:launch-agent', {
       resume: { agentId: 'su-example' },
       headless: true,
     });
     expect(timeout).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
-    // launch-agent's 90s handler + MCP settlement buffer (5s), with delivery margin.
-    expect(timeout).toBeGreaterThan(95_000);
+    // The client's deadline must outlive the declared handler plus settlement.
+    expect(timeout).toBeGreaterThan((AGENT_LAUNCH_HANDLER_TIMEOUT_SEC + 5) * 1000);
     expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
@@ -1020,6 +1052,35 @@ describe('ptool timeoutForTool — continuity/control-plane calls outlive the fl
   });
 });
 
+describe('ptool evidence-binding receipt deadline (EI-25634460854216048)', () => {
+  it.each(['plans:bind-spec-evidence', 'tools:invoke'])('%s observes a committed receipt beyond the ordinary client wall without replay', async name => {
+    vi.useFakeTimers();
+    try {
+      const args = name === 'tools:invoke'
+        ? { name: 'plans:bind-spec-evidence', args: { binding: { fromTestRun: 123 } } }
+        : { binding: { fromTestRun: 123 } };
+      const receipt = { content: [{ type: 'text', text: '{"ok":true,"id":35416}' }] };
+      const callTool = vi.fn((_params: unknown, _schema: unknown, options: { timeout: number }) =>
+        new Promise((resolve, reject) => {
+          const clientWall = setTimeout(() => reject(new Error('MCP request timed out; mutation outcome unknown')), options.timeout);
+          setTimeout(() => {
+            clearTimeout(clientWall);
+            resolve(receipt);
+          }, PTOOL_CALL_TOOL_TIMEOUT_MS + 227);
+        }));
+      const result = callToolWithPressureRetry({ callTool }, { name, arguments: args }, {
+        timeoutMs: timeoutForTool(name, args),
+      }).then(value => ({ value }), error => ({ error }));
+      await vi.advanceTimersByTimeAsync(PTOOL_CALL_TOOL_TIMEOUT_MS + 227);
+      expect(await result).toEqual({ value: receipt });
+      expect(callTool).toHaveBeenCalledTimes(1);
+      expect(timeoutForTool(name, args)).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('ptool timeoutForTool — coord:declare-intent and loop:arm outlive the flat client deadline (EI-21863905839650704)', () => {
   // Both tools declare no timeoutSec, so the server bounds them only at the
   // flat 55s MCP_DEADLINE_MS floor. A reporter observed ptool's flat 30s
@@ -1037,6 +1098,39 @@ describe('ptool timeoutForTool — coord:declare-intent and loop:arm outlive the
   });
 
   it.each(OUTCOME_UNKNOWN_MUTATIONS)('%s keeps the long-call deadline through tools:invoke', (name) => {
+    expect(timeoutForTool('tools:invoke', { name })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — sessions:list census outlives the flat client deadline (EI-24857804837312348)', () => {
+  it('uses a client deadline beyond the MCP cap for direct calls', () => {
+    const timeout = timeoutForTool('sessions:list', { mode: 'historical' });
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('keeps the same deadline through tools:invoke', () => {
+    expect(timeoutForTool('tools:invoke', { name: 'sessions:list', args: { mode: 'historical' } }))
+      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — bulk resolver live-action reads outlive the flat client deadline (EI-25227543877278075)', () => {
+  const LIVE_ACTION_TOOLS = [
+    'inbox:bulk-run-manifest',
+    'inbox:bulk-run-act',
+    'inbox:bulk-run-report',
+  ];
+
+  it.each(LIVE_ACTION_TOOLS)('%s gets a deadline beyond the MCP transport cap for direct calls', (name) => {
+    const timeout = timeoutForTool(name, {});
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it.each(LIVE_ACTION_TOOLS)('%s keeps the long-call deadline through tools:invoke', (name) => {
     expect(timeoutForTool('tools:invoke', { name })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
   });
 });

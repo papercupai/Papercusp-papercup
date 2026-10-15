@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   COMPLETION_SETTLEMENT_HEALTH_KEY,
   FLOOR_REJECTED_CONSECUTIVE_FIRES_LIMIT,
+  LOOKUP_UNAVAILABLE_CONSECUTIVE_FIRES_LIMIT,
   NEVER_ATTEMPTED_WAIT_FIRES_LIMIT,
   advanceCompletionSettlementHealth,
   recordCompletionSettlementHealth,
@@ -19,6 +20,7 @@ const completed = (over: Partial<Extract<SettlementFireObservation, { outcome: '
     residual: 3,
     unreadable: 0,
     floorRejected: 0,
+    lookupUnavailable: 0,
     neverAttemptedRemaining: 0,
     ...over,
   }) as SettlementFireObservation;
@@ -122,6 +124,26 @@ describe('advanceCompletionSettlementHealth', () => {
     const fires = run([completed({ floorRejected: 3 }), completed({ floorRejected: 0 }), completed({ floorRejected: 3 })]);
     expect(fires.map((h) => h.consecutive_floor_rejected_fires)).toEqual([1, 0, 1]);
     expect(fires.every((h) => h.verdict === 'ok')).toBe(true);
+  });
+
+  // EI-24807349327024992: a skipped (lookup-unavailable) row is not settled. One fire is a git
+  // timeout under load; a run of them must fail the guard, and a clean fire must reset it.
+  it('fails on consecutive lookup-unavailable fires, holds across a cut-short fire, resets on a clean one', () => {
+    const streak = run(
+      Array.from({ length: LOOKUP_UNAVAILABLE_CONSECUTIVE_FIRES_LIMIT }, () => completed({ lookupUnavailable: 4 })),
+    );
+    expect(streak.slice(0, -1).every((h) => h.verdict === 'ok')).toBe(true);
+    expect(streak.at(-1)!.verdict).toBe('failing');
+    expect(streak.at(-1)!.reasons[0]).toMatch(/^lookup-unavailable: /);
+    expect(streak.at(-1)!.lookup_unavailable).toBe(4);
+
+    const held = run([
+      completed({ lookupUnavailable: 1 }),
+      { outcome: 'budget-exceeded', neverAttemptedRemaining: 0 },
+      completed({ lookupUnavailable: 0 }),
+    ]);
+    expect(held.map((h) => h.consecutive_lookup_unavailable_fires)).toEqual([1, 1, 0]);
+    expect(held[1]!.lookup_unavailable).toBeNull();
   });
 
   it('reports both reasons when both conditions hold', () => {

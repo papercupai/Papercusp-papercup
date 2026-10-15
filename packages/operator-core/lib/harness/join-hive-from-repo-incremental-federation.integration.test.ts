@@ -52,6 +52,7 @@ import { _resetHarnessAdminUrlCacheForTests } from '../embedded-pg-discovery';
 const WORKSPACE_ID = 'ws-wi971-from-repo';
 const TOPIC = 'b'.repeat(64);
 const HIVE_PUBKEY = 'h'.repeat(43) + '=';
+const OWNER_DEVICE_PUBKEY = Buffer.alloc(32, 7).toString('base64');
 const link = (repo: string, id: number) =>
   `papercusp://harness?topic=${TOPIC}&github=acme%2F${repo}&repo_id=${id}`;
 
@@ -163,7 +164,7 @@ describe('joinHiveAsView (WI-971) — real-PG registry + rekey-ordering proof', 
           }),
           upsertHiveIdentity: async () => {},
           resolveHivePubkey: async () => HIVE_PUBKEY,
-          resolveOwnerDevicePubkey: async () => null,
+          resolveOwnerDevicePubkey: async () => OWNER_DEVICE_PUBKEY,
           getLocalHive: async () => null,
         },
       );
@@ -178,7 +179,12 @@ describe('joinHiveAsView (WI-971) — real-PG registry + rekey-ordering proof', 
       //    read again, fresh, from Postgres (not the deps' in-memory return). ──
       const committed = await loadHarnessRegistry(WORKSPACE_ID, { fresh: true });
       const homeRow = committed.projects.find((p) => p.slug === potSlug);
-      expect(homeRow).toMatchObject({ harness_kind: 'hive', remote_hive: true });
+      expect(homeRow).toMatchObject({
+        harness_kind: 'hive',
+        remote_hive: true,
+        hive_pubkey: HIVE_PUBKEY,
+        owner_device_pubkey: OWNER_DEVICE_PUBKEY,
+      });
       for (const slug of memberSlugs) {
         const memberRow = committed.projects.find((p) => p.slug === slug);
         expect(memberRow, `member row for '${slug}' missing from real Postgres`).toMatchObject({

@@ -310,6 +310,16 @@ const TOOLS = [
     },
   },
   {
+    name: 'report_problem', type: 'client', expects_response: true,
+    description: 'Open the Report a problem dialog on the current page.',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+      description: 'No parameters.',
+    },
+  },
+  {
     name: 'workspace_list', type: 'client', expects_response: true,
     description: 'List the workspaces available to the user.',
     parameters: { type: 'object', properties: {}, required: [], description: 'No parameters.' },

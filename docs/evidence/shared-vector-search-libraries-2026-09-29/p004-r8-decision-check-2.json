@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "AUTO-BAR-R-8-P-004: a plan Decision states whether semantic-dupe-guard adopts the library check and cites a committed comparison over at least 50 real filings with both counts for each approach",
+  "framework": "operational",
+  "command": [
+    "plans:get { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', decisionId: 'D-013' } -> title + body saved to a text file",
+    "python3 .papercusp/scratch/rag-carry/p004-r8-check.py <decision-body.txt> <out.json> docs/evidence/shared-vector-search-libraries-2026-09-29/p004-dupe-guard-comparison-2.json D-013",
+    "Recomputation rule (reproducible without the script): rows = the comparison file's .rows; dup = rows whose label is duplicate or closed-as-duplicate; nondup = rows whose label is distinct, related or remedy-keep (unlabelled rows excluded); for each approach a in current, library, hybrid: missed[a] = count(dup where partner not in flagged[a]); falseMerges[a] = count(nondup where partner in flagged[a]); filings = distinct .filing over dup + nondup. Each decision table row '| approach | m/M | f/F |' must equal missed[a]/len(dup) and falseMerges[a]/len(nondup). paired-arms-diverge: count rows whose previous.poolSize differs from poolSize or whose previous.top differs from top[].id; at least one must."
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T02:23:02Z",
+  "finishedAt": "2026-10-02T02:23:02Z",
+  "summary": "The oracle is the R-8 spec text (revision 2), authored before D-005: a Decision must state whether semantic-dupe-guard adopts the library check and cite a committed comparison over >= 50 real work-item filings giving false merges and missed duplicates for each approach. The counts were recomputed from the comparison file's raw rows (label, partner, flagged[approach]) under the file's own definitions, not read from its summary, and compared with the table in D-013 (comparison docs/evidence/shared-vector-search-libraries-2026-09-29/p004-dupe-guard-comparison-2.json). 388 filings; current: missed 61/148, false merges 40/594; library: missed 11/148, false merges 290/594; hybrid: missed 58/148, false merges 40/594. Every assertion passed.",
+  "assertions": [
+    {
+      "id": "decision-states-adoption",
+      "passed": true,
+      "evidence": "D-013 states 'semantic-dupe-guard does NOT adopt the library near-duplicate check' (it keeps its fixed threshold and title co-signal; the library check is adopted by plans:new only, R-7)."
+    },
+    {
+      "id": "decision-cites-committed-comparison",
+      "passed": true,
+      "evidence": "D-013 names docs/evidence/shared-vector-search-libraries-2026-09-29/p004-dupe-guard-comparison-2.json; the file is committed (last commit 83002091fd, HEAD blob fdaae818314d, sha256 ea59c8f8ba623f62)."
+    },
+    {
+      "id": "paired-arms-diverge",
+      "passed": true,
+      "evidence": "recomputed from rows: 892/892 filings saw a larger pool without the observation filter, 469/892 ranked a different top-k."
+    },
+    {
+      "id": "at-least-50-real-filings",
+      "passed": true,
+      "evidence": "388 distinct filings across 742 labelled pairs (>= 50); 537 across all 892 rows, matching the file's counts.filingsObserved=537; filings are real work-item ids (e.g. EI-21032952013504206)."
+    },
+    {
+      "id": "current-counts-stated-and-match-rows",
+      "passed": true,
+      "evidence": "D-013 states current: missed 61/148, false merges 40/594; recomputed from rows: missed 61/148, false merges 40/594."
+    },
+    {
+      "id": "library-counts-stated-and-match-rows",
+      "passed": true,
+      "evidence": "D-013 states library: missed 11/148, false merges 290/594; recomputed from rows: missed 11/148, false merges 290/594."
+    },
+    {
+      "id": "hybrid-counts-stated-and-match-rows",
+      "passed": true,
+      "evidence": "D-013 states hybrid: missed 58/148, false merges 40/594; recomputed from rows: missed 58/148, false merges 40/594."
+    }
+  ],
+  "evidencePlane": "tree",
+  "plan": "shared-vector-search-libraries-2026-09-29",
+  "specId": "AUTO-BAR-R-8-P-004",
+  "subjectCommit": "83002091fde363e1315b56a61d0bebf1fe7b3432",
+  "workItemId": "WI-10004273"
+}

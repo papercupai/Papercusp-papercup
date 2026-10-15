@@ -47,6 +47,7 @@ const { releaseWorkItem, claimWorkItem, getWorkItem, classifyClaimFailure } = aw
 const { assignActionableWorkItems } = await import('./agent-tools/coordination/actionable-work-item-dispatch');
 const { acquireClaimLocal, getClaim } = await import('./work-item-claims');
 const { createOrgTestDb } = await import('../test/_org-test-db');
+const { applyClaimPathReadDeps } = await import('../test/_work-items-schema');
 
 let db: OrgTestDb;
 let sql: Sql;
@@ -55,6 +56,7 @@ beforeAll(async () => {
   db = await createOrgTestDb();
   sql = db.adminSql;
   hoisted.sql = sql;
+  await applyClaimPathReadDeps((ddl) => sql.unsafe(ddl).simple());
 }, 120_000);
 
 afterAll(async () => {
@@ -83,11 +85,18 @@ async function featureTakenBy(id: string): Promise<string | null> {
 }
 
 async function seedIssue(id: string, assignee: string | null, state = 'open'): Promise<void> {
+  // Migrations 1474 + 1477: a local work row may only ENTER `blocked` when it names its blocker.
+  // A fresh (<=15 min) leader-triage reason is the lightest accepted form; other states omit
+  // payload entirely, so their rows are seeded exactly as before.
+  const payload =
+    state === 'blocked'
+      ? sql.json({ blockedReason: 'fixture: seeded blocked', blockedAt: new Date().toISOString() })
+      : null;
   await sql`
     INSERT INTO harness_shared.engineer_issues
-      (workspace_id, issue_id, scope, title, state, assignee, assigned_at, updated_at)
+      (workspace_id, issue_id, scope, title, state, assignee, assigned_at, updated_at${payload ? sql`, payload` : sql``})
     VALUES
-      (${WS}, ${id}, ${`harness:${HARNESS}`}, ${id}, ${state}, ${assignee}, ${assignee ? sql`now()` : null}, now())`;
+      (${WS}, ${id}, ${`harness:${HARNESS}`}, ${id}, ${state}, ${assignee}, ${assignee ? sql`now()` : null}, now()${payload ? sql`, ${payload}` : sql``})`;
 }
 
 async function issueAssignee(id: string): Promise<string | null> {
@@ -103,8 +112,60 @@ async function issueState(id: string): Promise<string | null> {
 }
 
 describe('P-003: work_items:release honesty (non-force) — real two-ledger DB', () => {
+  it('D-006: equal claim endpoints retain a real release/reclaim ABA witness', async () => {
+    const id = 'F-CONSULT-ABA';
+    const owner = 'su-consult-source';
+    await seedFeature(id, owner);
+    await acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, workItemId: id, owner });
+
+    // Observe the canonical table behind the compatibility view. Keep the
+    // pool intact: claimWorkItem owns its own bounded transaction. The fixture
+    // lives only in this disposable database and is removed on every outcome.
+    const [relation] = await sql`SELECT relkind FROM pg_class
+      WHERE oid = 'harness_shared.work_items'::regclass`;
+    expect(relation!.relkind).toBe('r');
+    expect(typeof sql.begin).toBe('function');
+    try {
+      await sql`CREATE TABLE harness_shared.consult_claim_observation
+        (sequence bigserial, old_owner text, new_owner text)`;
+      await sql.unsafe(`CREATE FUNCTION harness_shared.observe_consult_claim() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF OLD.taken_by IS DISTINCT FROM NEW.taken_by THEN
+            INSERT INTO harness_shared.consult_claim_observation (old_owner, new_owner)
+              VALUES (OLD.taken_by, NEW.taken_by);
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await sql.unsafe(`CREATE TRIGGER consult_claim_observer AFTER UPDATE
+        ON harness_shared.work_items FOR EACH ROW
+        EXECUTE FUNCTION harness_shared.observe_consult_claim()`);
+
+      const before = await featureTakenBy(id);
+      expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: 'su-consult-answerer' })).toBeNull();
+      expect(await sql`SELECT * FROM harness_shared.consult_claim_observation`).toHaveLength(0);
+
+      expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: owner })).not.toBeNull();
+      expect(await featureTakenBy(id)).toBeNull();
+      expect(await claimWorkItem(id, owner, { harness: HARNESS })).not.toBeNull();
+      expect(await featureTakenBy(id)).toBe(before);
+      const transitions = await sql<{ old_owner: string | null; new_owner: string | null }[]>`
+        SELECT old_owner, new_owner FROM harness_shared.consult_claim_observation ORDER BY sequence`;
+      expect(transitions).toEqual([
+        { old_owner: owner, new_owner: null },
+        { old_owner: null, new_owner: owner },
+      ]);
+    } finally {
+      await sql.unsafe('DROP TRIGGER IF EXISTS consult_claim_observer ON harness_shared.work_items');
+      await sql.unsafe('DROP FUNCTION IF EXISTS harness_shared.observe_consult_claim()');
+      await sql.unsafe('DROP TABLE IF EXISTS harness_shared.consult_claim_observation');
+    }
+  });
+
   it('non-holder non-force release is refused (returns null; getWorkItem/classify tells release.ts to report not_holder) — taken_by UNCHANGED', async () => {
     await seedFeature('F-HELD-1', 'su-holder');
+    await acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, workItemId: 'F-HELD-1', owner: 'su-holder' });
+    const beforeLease = await getClaim(WS, HARNESS, 'F-HELD-1');
+    expect(beforeLease).not.toBeNull();
 
     // The tool (release.ts) calls releaseWorkItem with expectedAssignee = the CALLER's
     // identity. A non-holder caller's expectedAssignee never matches taken_by, so the
@@ -114,6 +175,7 @@ describe('P-003: work_items:release honesty (non-force) — real two-ledger DB',
 
     expect(result).toBeNull();
     expect(await featureTakenBy('F-HELD-1')).toBe('su-holder'); // untouched — never silently cleared
+    expect(await getClaim(WS, HARNESS, 'F-HELD-1')).toEqual(beforeLease);
     // release.ts's re-read + classify path would now render this as `not_holder` + holder.
     const current = await getWorkItem('F-HELD-1', HARNESS);
     expect(current?.assignee).toBe('su-holder');
@@ -131,6 +193,36 @@ describe('P-003: work_items:release honesty (non-force) — real two-ledger DB',
     expect(await getClaim(WS, HARNESS, 'F-HELD-2')).toBeNull(); // EI-9807's second ledger reconciled too — no divergence left behind
   });
 
+  it.each(['feature', 'issue'] as const)('%s: a refused canonical release preserves its lease even after a matching pre-read', async (family) => {
+    const id = family === 'feature' ? 'F-CAS-REFUSAL' : 'EI-CAS-REFUSAL';
+    const owner = 'su-cas-release-holder';
+    if (family === 'feature') await seedFeature(id, owner);
+    else await seedIssue(id, owner, 'blocked');
+    await acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, workItemId: id, owner });
+    const beforeLease = await getClaim(WS, HARNESS, id);
+    expect(beforeLease).toMatchObject({ owner });
+
+    // Refuse the real UPDATE after the matching pre-read. This distinguishes
+    // a post-CAS cleanup from an early ownership check alone.
+    try {
+      await sql.unsafe(`CREATE FUNCTION harness_shared.refuse_consult_release() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF OLD.workspace_id = '${WS}' AND OLD.feature_id = '${id}'
+            AND NEW.taken_by IS NULL THEN RETURN NULL; END IF;
+          RETURN NEW;
+        END $$`);
+      await sql.unsafe(`CREATE TRIGGER consult_release_refusal BEFORE UPDATE
+        ON harness_shared.work_items FOR EACH ROW
+        EXECUTE FUNCTION harness_shared.refuse_consult_release()`);
+      expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: owner })).toBeNull();
+      expect((await getWorkItem(id, HARNESS))?.assignee).toBe(owner);
+      expect(await getClaim(WS, HARNESS, id)).toEqual(beforeLease);
+    } finally {
+      await sql.unsafe('DROP TRIGGER IF EXISTS consult_release_refusal ON harness_shared.work_items');
+      await sql.unsafe('DROP FUNCTION IF EXISTS harness_shared.refuse_consult_release()');
+    }
+  });
+
   it('issue-family: non-holder non-force release refused, actual holder release clears assignee', async () => {
     await seedIssue('EI-HELD-1', 'su-issue-holder');
 
@@ -141,6 +233,67 @@ describe('P-003: work_items:release honesty (non-force) — real two-ledger DB',
     const released = await releaseWorkItem('EI-HELD-1', { expectedAssignee: 'su-issue-holder' });
     expect(released).not.toBeNull();
     expect(await issueAssignee('EI-HELD-1')).toBeNull();
+  });
+
+  it('D-006: issue-family equal claim endpoints retain canonical release/reclaim history', async () => {
+    const id = 'EI-CONSULT-ABA';
+    const owner = 'su-consult-issue-source';
+    await seedIssue(id, owner, 'blocked');
+    // This is an ownership test over a legacy source claim, independent of
+    // the intake acceptance policy for newly filed issues.
+    await sql`UPDATE harness_shared.work_items SET created_ts = 1
+      WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+    await acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, workItemId: id, owner });
+
+    const [relation] = await sql`SELECT relkind FROM pg_class
+      WHERE oid = 'harness_shared.work_items'::regclass`;
+    expect(relation!.relkind).toBe('r');
+    expect(typeof sql.begin).toBe('function');
+    try {
+      await sql`CREATE TABLE harness_shared.consult_issue_claim_observation
+        (sequence bigserial, old_owner text, new_owner text)`;
+      await sql.unsafe(`CREATE FUNCTION harness_shared.observe_consult_issue_claim() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF OLD.workspace_id = '${WS}' AND OLD.feature_id = '${id}'
+            AND OLD.taken_by IS DISTINCT FROM NEW.taken_by THEN
+            INSERT INTO harness_shared.consult_issue_claim_observation (old_owner, new_owner)
+              VALUES (OLD.taken_by, NEW.taken_by);
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await sql.unsafe(`CREATE TRIGGER consult_issue_claim_observer AFTER UPDATE
+        ON harness_shared.work_items FOR EACH ROW
+        EXECUTE FUNCTION harness_shared.observe_consult_issue_claim()`);
+
+      const before = await issueAssignee(id);
+      const beforeLease = await getClaim(WS, HARNESS, id);
+      expect(beforeLease).toMatchObject({ owner });
+      expect(await releaseWorkItem(id, { expectedAssignee: 'su-consult-issue-answerer' })).toBeNull();
+      expect(await getClaim(WS, HARNESS, id)).toEqual(beforeLease);
+      expect(await claimWorkItem(id, 'su-consult-issue-answerer', { harness: HARNESS })).toBeNull();
+      expect(await issueAssignee(id)).toBe(before);
+      expect(await getClaim(WS, HARNESS, id)).toEqual(beforeLease);
+      expect(await sql`SELECT * FROM harness_shared.consult_issue_claim_observation`).toHaveLength(0);
+
+      expect(await releaseWorkItem(id, { expectedAssignee: owner })).not.toBeNull();
+      expect(await issueAssignee(id)).toBeNull();
+      expect(await getClaim(WS, HARNESS, id)).toBeNull();
+      expect(await claimWorkItem(id, owner, { harness: HARNESS })).not.toBeNull();
+      expect(await issueAssignee(id)).toBe(before);
+      expect(await issueState(id)).toBe('blocked');
+      expect(await acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, workItemId: id, owner })).toMatchObject({ ok: true });
+      expect(await getClaim(WS, HARNESS, id)).toMatchObject({ owner });
+      const transitions = await sql<{ old_owner: string | null; new_owner: string | null }[]>`
+        SELECT old_owner, new_owner FROM harness_shared.consult_issue_claim_observation ORDER BY sequence`;
+      expect(transitions).toEqual([
+        { old_owner: owner, new_owner: null },
+        { old_owner: null, new_owner: owner },
+      ]);
+    } finally {
+      await sql.unsafe('DROP TRIGGER IF EXISTS consult_issue_claim_observer ON harness_shared.work_items');
+      await sql.unsafe('DROP FUNCTION IF EXISTS harness_shared.observe_consult_issue_claim()');
+      await sql.unsafe('DROP TABLE IF EXISTS harness_shared.consult_issue_claim_observation');
+    }
   });
 
   it('issue-family: releasing wip requeues to open so direct actionable dispatch can claim it', async () => {

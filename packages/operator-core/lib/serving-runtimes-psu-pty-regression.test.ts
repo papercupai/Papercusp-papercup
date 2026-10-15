@@ -80,6 +80,7 @@ const git =
     if (args[0] === 'log' && args.includes('--pretty=%H')) return 'c0ffee1234'.padEnd(40, '3');
     if (args[0] === 'log' && args.includes('--pretty=%s')) return 'psu-pty ingest fix';
     if (args[0] === 'rev-list') return '0';
+    if (args[0] === 'merge-base') return args[1];
     if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2]?.endsWith('^{commit}')) {
       return args[2].replace('^{commit}', '').padEnd(40, '0').slice(0, 40);
     }
@@ -127,6 +128,7 @@ describe('psu-pty regression: bg-host runs the fix, :3070 does not ⇒ not block
         localRuntimeHost: 'box',
         readCgroup: async (pid) => (pid === 5151 ? '0::/user.slice/papercusp-bg-host.service' : null),
         probeHealthSha: async (port) => (port === 3070 ? RELEASE_BUILD : null),
+        probeHealthBundle: async () => null,
         fileMtimeMs: async () => startedAtMs - 60_000,
       },
     );

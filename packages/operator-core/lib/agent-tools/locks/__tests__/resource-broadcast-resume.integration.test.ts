@@ -134,12 +134,19 @@ describe('resource broadcast→resume cycle (P-021)', async () => {
           }),
       });
 
-      // Let it acquire (draining) + fire the drain-start broadcast.
-      await sleep(500);
+      // Let it acquire (draining) + fire the drain-start broadcast. Poll instead of
+      // a fixed sleep: the broadcast is async, and under a concurrent suite it
+      // landed after a fixed 500ms, which read as a missing message (WI-10004964).
+      let inboxA = await readInbox(holderA);
+      const sawDrainStart = () =>
+        inboxA.some((m) => m.from === reqId && /draining/i.test(m.summary ?? ''));
+      for (const deadline = Date.now() + 10_000; !sawDrainStart() && Date.now() < deadline; ) {
+        await sleep(100);
+        inboxA = await readInbox(holderA);
+      }
 
       // BROADCAST HALF — the drain-start targeted "release" message reached the holders.
-      const inboxA = await readInbox(holderA);
-      expect(inboxA.some((m) => m.from === reqId && /draining/i.test(m.summary ?? ''))).toBe(true);
+      expect(sawDrainStart()).toBe(true);
 
       // Drain both shared holders → the grant cascade flips R to held + NOTIFYs it.
       await rel(ws, holderA, a.lock_id);

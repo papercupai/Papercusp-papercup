@@ -136,6 +136,15 @@ describe('facts:assert recheck contract', () => {
     it('the schema accepts a bounded exec and refuses unknown keys or an out-of-range exit code', () => {
       expect(assertTool.args.safeParse({ ...base, recheck: { ...recheck, exec } }).success).toBe(true);
       expect(
+        assertTool.args.safeParse({
+          ...base,
+          recheck: {
+            ...recheck,
+            exec: { ...exec, scope: ['libs/test-config/src/pg-managed-test-db-guard.test.ts'] },
+          },
+        }).success,
+      ).toBe(false);
+      expect(
         assertTool.args.safeParse({ ...base, recheck: { ...recheck, exec: { ...exec, shell: 'zsh' } } }).success,
       ).toBe(false);
       expect(

@@ -47,6 +47,7 @@
  */
 import { promises as fsp } from 'node:fs';
 import { join } from 'node:path';
+import { hostname } from 'node:os';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
   readColdBootDrillLedger,
@@ -56,9 +57,11 @@ import {
 } from '../cold-boot-drill-live';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
 import {
   PSU_PTY_DIR,
-  findLiveHost,
+  findLiveHostAsync,
   readHostEventTailAsync,
   type PtyHostEvent,
 } from '../events/await/psu-pty-discovery';
@@ -101,7 +104,53 @@ const WATCHDOG_IDENTITY: AgentIdentity = {
   userId: null,
 };
 
-export interface CarryDrillDropSweepDeps {
+interface CarryConditionDeps {
+  host: () => string;
+  rail?: AlarmAttentionDeps;
+  readOpenConditionKeys: () => Promise<string[]>;
+}
+
+const CARRY_CONDITION_PREFIX = 'alarm:carry-delivery:';
+
+async function readOpenCarryConditions(): Promise<string[]> {
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter((condition) => condition.open && condition.condition_key.startsWith(CARRY_CONDITION_PREFIX))
+    .map((condition) => condition.condition_key);
+}
+
+function carryPrefix(deps: CarryConditionDeps, kind: 'drill' | 'orphan' | 'rate'): string {
+  return `${CARRY_CONDITION_PREFIX}${encodeURIComponent(deps.host())}:${kind}:`;
+}
+
+function carryAttemptKey(prefix: string, subject: string, ts: string): string {
+  return prefix + encodeURIComponent(JSON.stringify([subject, ts]));
+}
+
+function carryAttempt(key: string, prefix: string): [string, string] | null {
+  if (!key.startsWith(prefix)) return null;
+  try {
+    const tuple: unknown = JSON.parse(decodeURIComponent(key.slice(prefix.length)));
+    if (Array.isArray(tuple) && tuple.length === 2 && typeof tuple[0] === 'string' && tuple[0] &&
+        typeof tuple[1] === 'string' && Number.isFinite(Date.parse(tuple[1]))) return [tuple[0], tuple[1]];
+  } catch { /* foreign/malformed condition identities cannot establish recovery */ }
+  return null;
+}
+
+async function openCarryCondition(key: string, summary: string, deps: CarryConditionDeps): Promise<boolean> {
+  try {
+    const event = { conditionKey: key, summary, body: summary, oneShot: true };
+    if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+    else await broadcastSevereEvent(event);
+    return true;
+  } catch { return false; /* the legacy escalation remains independent of condition delivery */ }
+}
+
+async function openCarryKeys(deps: CarryConditionDeps): Promise<string[]> {
+  try { return await deps.readOpenConditionKeys(); } catch { return []; }
+}
+
+export interface CarryDrillDropSweepDeps extends CarryConditionDeps {
   readLedger: () => Promise<ColdBootDrillLedgerEvent[]>;
   escalate: (alert: CarryDrillDropAlert) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
@@ -114,6 +163,13 @@ export interface ProductionCarryDeliveryReading {
   delivered: number;
   dropped: number;
   respawnFailed: number;
+  /**
+   * Host RETIREMENT rows (`respawn-carry-dropped {reason:'superseded'}`, WI-10005752): a real
+   * successor already existed, so a moot older request was retired. NOT a delivery outcome —
+   * excluded from `dropped`, `terminalOutcomes`, `deliveryRate` and `failureReasons`, and
+   * surfaced here so the exclusion is visible rather than silent.
+   */
+  retiredSuperseded: number;
   terminalOutcomes: number;
   /** `null` means the window had no terminal outcomes, not a 0% delivery rate. */
   deliveryRate: number | null;
@@ -131,19 +187,19 @@ export interface OrphanedRespawnAlert {
   capMs: number | null;
 }
 
-export interface OrphanedRespawnSweepDeps {
+export interface OrphanedRespawnSweepDeps extends CarryConditionDeps {
   /** mtime-banded candidate owners; see {@link listOrphanCandidateOwners}. */
   listCandidates: (now: number) => Promise<string[]>;
   readPrior: (ownerId: string, now: number) => Promise<PriorRespawn>;
-  /** Liveness of the owner's pty host. Throwing is treated as ALIVE (stay quiet). */
-  hostLive: (ownerId: string) => boolean;
+  /** Liveness of the owner's pty host. Throwing/rejecting is treated as ALIVE (stay quiet). */
+  hostLive: (ownerId: string) => boolean | Promise<boolean>;
   escalate: (alert: OrphanedRespawnAlert) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
   maxAgeMs: number;
 }
 
-export interface ProductionCarryDeliverySweepDeps {
+export interface ProductionCarryDeliverySweepDeps extends CarryConditionDeps {
   readEvents: (now: number, windowMs: number) => Promise<PtyHostEvent[]>;
   escalate: (reading: ProductionCarryDeliveryReading) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
@@ -176,6 +232,7 @@ export function summarizeProductionCarryDelivery(
   let delivered = 0;
   let dropped = 0;
   let respawnFailed = 0;
+  let retiredSuperseded = 0;
   const failureReasons = new Map<string, number>();
 
   for (const event of events) {
@@ -188,6 +245,13 @@ export function summarizeProductionCarryDelivery(
       continue;
     }
     if (kind !== 'respawn-carry-dropped' && kind !== 'respawn-failed') continue;
+    // A retirement is not a failed delivery (see carry-respawn-outcome RESPAWN_RETIRED_REASON):
+    // counting it measured ~5.4k such rows against ~1.6k deliveries across the owner ledgers,
+    // which would pin the rate under the floor with no continuation actually lost.
+    if (kind === 'respawn-carry-dropped' && event.reason === 'superseded') {
+      retiredSuperseded += 1;
+      continue;
+    }
 
     const reason = typeof event.reason === 'string' && event.reason.trim() ? event.reason.trim() : 'unknown';
     const reasonKey = kind === 'respawn-failed' ? `respawn-failed:${reason}` : reason;
@@ -203,6 +267,7 @@ export function summarizeProductionCarryDelivery(
     delivered,
     dropped,
     respawnFailed,
+    retiredSuperseded,
     terminalOutcomes,
     deliveryRate: terminalOutcomes > 0 ? delivered / terminalOutcomes : null,
     failureReasons: Object.fromEntries([...failureReasons.entries()].sort(([a], [b]) => a.localeCompare(b))),
@@ -221,8 +286,8 @@ export async function readRecentProductionCarryEvents(
   maxBytes: number = PRODUCTION_CARRY_SCAN_TAIL_BYTES,
 ): Promise<PtyHostEvent[]> {
   const events: PtyHostEvent[] = [];
-  for (const ownerId of await listRecentHostEventOwners(dir, now - windowMs)) {
-    events.push(...(await readHostEventTailAsync(ownerId, dir, maxBytes)));
+  for (const ownerId of await listRecentHostEventOwners(dir, now - windowMs, true)) {
+    events.push(...(await readHostEventTailAsync(ownerId, dir, maxBytes, { requireComplete: true })));
   }
   return events;
 }
@@ -243,11 +308,12 @@ export async function readRecentProductionCarryEvents(
  * pins a worker thread, and the pool (4 by default) is shared with every other async
  * fs call in the process. Sequential holds at most one.
  */
-async function listRecentHostEventOwners(dir: string, cutoff: number): Promise<string[]> {
+async function listRecentHostEventOwners(dir: string, cutoff: number, requireComplete = false): Promise<string[]> {
   let entries;
   try {
     entries = await fsp.readdir(dir, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    if (requireComplete) throw error;
     return [];
   }
   const owners: string[] = [];
@@ -257,7 +323,8 @@ async function listRecentHostEventOwners(dir: string, cutoff: number): Promise<s
     }
     try {
       if ((await fsp.stat(join(dir, entry.name))).mtimeMs < cutoff) continue;
-    } catch {
+    } catch (error) {
+      if (requireComplete) throw error;
       continue;
     }
     owners.push(entry.name.slice(0, -HOST_EVENT_SUFFIX.length));
@@ -297,9 +364,17 @@ export function orphanedRespawnAlert(
   hostLive: boolean,
   opts: { maxAgeMs?: number } = {},
 ): OrphanedRespawnAlert | null {
+  if (hostLive) return null;
+  return orphanedRespawnAlertCandidate(ownerId, prior, opts);
+}
+
+function orphanedRespawnAlertCandidate(
+  ownerId: string,
+  prior: PriorRespawn | null | undefined,
+  opts: { maxAgeMs?: number } = {},
+): OrphanedRespawnAlert | null {
   if (!prior || prior.outcome !== 'pending') return null;
   if (!isDelayedPendingRespawn(prior)) return null;
-  if (hostLive) return null;
   const maxAge = opts.maxAgeMs ?? ORPHANED_RESPAWN_MAX_AGE_MS;
   // An unknown age is NOT treated as recent — same reasoning as the ambient
   // line: guessing "recent" on the rows we know least about nags forever.
@@ -450,10 +525,12 @@ async function defaultEscalateOrphan(alert: OrphanedRespawnAlert): Promise<void>
 
 function sweepDeps(overrides: Partial<CarryDrillDropSweepDeps>): CarryDrillDropSweepDeps {
   return {
-    readLedger: readColdBootDrillLedger,
+    readLedger: () => readColdBootDrillLedger(undefined, { requireComplete: true }),
     escalate: defaultEscalate,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
+    host: hostname,
+    readOpenConditionKeys: readOpenCarryConditions,
     ...overrides,
   };
 }
@@ -467,6 +544,8 @@ function productionSweepDeps(overrides: Partial<ProductionCarryDeliverySweepDeps
     windowMs: PRODUCTION_CARRY_WINDOW_MS,
     minTerminalOutcomes: PRODUCTION_CARRY_MIN_TERMINAL_OUTCOMES,
     deliveryRateFloor: PRODUCTION_CARRY_DELIVERY_RATE_FLOOR,
+    host: hostname,
+    readOpenConditionKeys: readOpenCarryConditions,
     ...overrides,
   };
 }
@@ -484,30 +563,54 @@ export async function runCarryDrillDropSweepOnce(
   const deps = sweepDeps(overrides);
   if (!(await deps.flagEnabled())) return { watermarkMs: sinceMs, escalated: 0, skipped: true };
   const events = await deps.readLedger();
+  const prefix = carryPrefix(deps, 'drill');
+  const openKeys = new Set(await openCarryKeys(deps));
   const { alerts, watermarkMs } = scanCarryDrillDrops(events, sinceMs);
   let escalated = 0;
+  let escalationFailed = false;
   for (const alert of alerts) {
+    const key = carryAttemptKey(prefix, alert.drillId, alert.ts);
+    if (!(await openCarryCondition(key, `Carry drill ${alert.drillId} ${alert.kind} (${alert.reason}) on ${alert.ownerId}`, deps))) {
+      escalationFailed = true;
+    }
+    openKeys.add(key);
     try {
       await deps.escalate(alert);
       escalated += 1;
     } catch {
       // Keep the pre-scan watermark so this row is retried next tick; the
       // escalation-side dedup absorbs any double-fire from the overlap.
-      return { watermarkMs: sinceMs, escalated, skipped: false };
+      escalationFailed = true;
     }
   }
-  return { watermarkMs, escalated, skipped: false };
+  // Absence from an incremental scan (or an unreadable ledger's empty fallback)
+  // says nothing about recovery. Only the matching drill's later terminal delivery does.
+  for (const key of openKeys) {
+    const attempt = carryAttempt(key, prefix);
+    if (!attempt) continue;
+    const [drillId, failedAt] = attempt;
+    const latest = events.filter((event) => event.drillId === drillId &&
+      ['carry-drill-carry-delivered', 'carry-drill-carry-dropped', 'carry-drill-respawn-failed'].includes(event.kind) &&
+      Date.parse(event.ts) >= Date.parse(failedAt) && Date.parse(event.ts) <= deps.now())
+      .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0];
+    if (latest?.kind === 'carry-drill-carry-delivered' && Date.parse(latest.ts) > Date.parse(failedAt)) {
+      await resolveAlarm(key, 'carry-drill-drop-watchdog', deps.rail);
+    }
+  }
+  return { watermarkMs: escalationFailed ? sinceMs : watermarkMs, escalated, skipped: false };
 }
 
 function orphanSweepDeps(overrides: Partial<OrphanedRespawnSweepDeps>): OrphanedRespawnSweepDeps {
   return {
     listCandidates: (now) => listOrphanCandidateOwners(PSU_PTY_DIR, now),
-    readPrior: (ownerId, now) => readPriorRespawnOutcome(ownerId, { dir: PSU_PTY_DIR, now }),
-    hostLive: (ownerId) => findLiveHost(ownerId) != null,
+    readPrior: (ownerId, now) => readPriorRespawnOutcome(ownerId, { dir: PSU_PTY_DIR, now, requireComplete: true }),
+    hostLive: async (ownerId) => (await findLiveHostAsync(ownerId)) != null,
     escalate: defaultEscalateOrphan,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
     maxAgeMs: ORPHANED_RESPAWN_MAX_AGE_MS,
+    host: hostname,
+    readOpenConditionKeys: readOpenCarryConditions,
     ...overrides,
   };
 }
@@ -529,28 +632,53 @@ export async function runOrphanedRespawnSweepOnce(
 
   const now = deps.now();
   const owners = await deps.listCandidates(now);
+  const prefix = carryPrefix(deps, 'orphan');
+  const openKeys = await openCarryKeys(deps);
+  const recovering = openKeys.map((key) => ({ key, attempt: carryAttempt(key, prefix) }))
+    .filter((entry): entry is { key: string; attempt: [string, string] } => entry.attempt != null);
+  const recoveryOwners = recovering.map((entry) => entry.attempt[0]);
   let alerts = 0;
   let escalated = 0;
 
-  for (const ownerId of owners) {
+  for (const ownerId of new Set([...owners, ...recoveryOwners])) {
     let prior: PriorRespawn;
     try {
       prior = await deps.readPrior(ownerId, now);
     } catch {
       continue;
     }
+    const priorTime = prior.ts ? Date.parse(prior.ts) : NaN;
+    for (const entry of recovering.filter((entry) => entry.attempt[0] === ownerId)) {
+      if (prior.outcome === 'delivered' && Number.isFinite(priorTime) &&
+          priorTime > Date.parse(entry.attempt[1]) && priorTime <= now) {
+        await resolveAlarm(entry.key, 'carry-drill-drop-watchdog', deps.rail);
+      }
+    }
+    const alert = orphanedRespawnAlertCandidate(ownerId, prior, { maxAgeMs: deps.maxAgeMs });
+    // Most recent event ledgers are not orphan candidates. Filter them before
+    // touching per-owner discovery files or /proc for a liveness proof.
+    const matchingRecovery = recovering.filter((entry) => entry.attempt[0] === ownerId &&
+      prior.outcome === 'pending' && entry.attempt[1] === prior.ts && priorTime <= now);
+    if (!alert && matchingRecovery.length === 0) continue;
     let live: boolean;
     try {
-      live = deps.hostLive(ownerId);
+      live = await deps.hostLive(ownerId);
     } catch {
       // FAIL SAFE TOWARD SILENCE: liveness is the evidence that turns a delay
       // into a loss. If we could not measure it, we have not established loss —
       // assume alive and stay quiet rather than alarm on a session that is fine.
-      live = true;
+      continue;
     }
-    const alert = orphanedRespawnAlert(ownerId, prior, live, { maxAgeMs: deps.maxAgeMs });
+    if (live) {
+      for (const entry of matchingRecovery) {
+        await resolveAlarm(entry.key, 'carry-drill-drop-watchdog', deps.rail);
+      }
+      continue;
+    }
     if (!alert) continue;
     alerts += 1;
+    if (alert.ts) await openCarryCondition(carryAttemptKey(prefix, ownerId, alert.ts),
+      `Carry-respawn orphaned on ${ownerId}: pending since ${alert.ts} with no live host`, deps);
     try {
       await deps.escalate(alert);
       escalated += 1;
@@ -571,12 +699,19 @@ export async function runProductionCarryDeliverySweepOnce(
 
   const now = deps.now();
   const reading = summarizeProductionCarryDelivery(await deps.readEvents(now, deps.windowMs), now, deps.windowMs);
+  const key = carryPrefix(deps, 'rate') + 'rolling-window';
   const breached =
     reading.terminalOutcomes >= deps.minTerminalOutcomes &&
     reading.deliveryRate != null &&
     reading.deliveryRate < deps.deliveryRateFloor;
-  if (!breached) return { reading, escalated: false, skipped: false };
+  if (!breached) {
+    // A sparse/empty window is unknown, never measured recovery of a low rate.
+    if (reading.terminalOutcomes >= deps.minTerminalOutcomes && reading.deliveryRate != null &&
+        reading.deliveryRate >= deps.deliveryRateFloor) await resolveAlarm(key, 'carry-drill-drop-watchdog', deps.rail);
+    return { reading, escalated: false, skipped: false };
+  }
 
+  await openCarryCondition(key, `Production carry delivery ${reading.delivered}/${reading.terminalOutcomes} below ${deps.deliveryRateFloor}`, deps);
   await deps.escalate(reading);
   return { reading, escalated: true, skipped: false };
 }

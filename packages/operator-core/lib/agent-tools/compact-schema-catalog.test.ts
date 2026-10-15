@@ -20,8 +20,8 @@
  *
  * WHAT IS ASSERTED, and why it is a PROPERTY rather than a threshold:
  *   1. CONTRACT EQUALITY, per tool. Every validity-bearing element of the full
- *      schema — property names (including nested ones), types, the `required`
- *      set, enum/const members, every numeric/length/array bound, oneOf/anyOf/
+ *      schema — property names (including nested ones), the `required` set,
+ *      enum/const members, every numeric/length/array bound, oneOf/anyOf/
  *      allOf/if-then-else discriminators, and `$defs`/`$ref` STRUCTURE — appears
  *      in the compact schema at the SAME path. This is stated as set equality of
  *      a path-keyed projection, so an element that MOVED is caught as well as
@@ -50,11 +50,18 @@
  *     be CAUGHT by the same comparison on real catalog input).
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+// Register the real catalog during collection, like every sibling live-catalog suite
+// (claude-seed-wire-budget, omp-seed-wire-budget, tool-schema-byte-budget, ...). Cold
+// graph transformation belongs here, outside the timed setup hook: importing it inside
+// beforeAll put ~100-200 s of transform under the 120 s hookTimeout, and under fleet
+// load the hook timed out with all 7 tests skipped (measured 2026-10-13, WI-6554700010009813).
+import './index';
 import {
   listAllProjectedTools,
   compactInputSchema,
   compactWireBytes,
   COMPACT_DROPPED_KEYS,
+  isFormatImpliedPattern,
   type ProjectedTool,
 } from '@papercusp/tooldef';
 import { MIN_PLAUSIBLE_CATALOG_SIZE } from './tool-guidance-budget';
@@ -73,6 +80,30 @@ const NAME_KEYED_CONTAINERS = new Set<string>([
   'dependentSchemas',
 ]);
 
+function matchesType(value: unknown, type: unknown): boolean {
+  switch (type) {
+    case 'null': return value === null;
+    case 'object': return value !== null && typeof value === 'object' && !Array.isArray(value);
+    case 'array': return Array.isArray(value);
+    case 'string': return typeof value === 'string';
+    case 'boolean': return typeof value === 'boolean';
+    case 'integer': return typeof value === 'number' && Number.isInteger(value);
+    case 'number': return typeof value === 'number';
+    default: return false;
+  }
+}
+
+/** Normalize only a `type` constraint already entailed by the same enum/const. */
+function typeIsImplied(schema: Record<string, unknown>): boolean {
+  if (!Object.hasOwn(schema, 'type')) return false;
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  if (Object.hasOwn(schema, 'const')) return types.some((type) => matchesType(schema.const, type));
+  return (
+    Array.isArray(schema.enum) &&
+    schema.enum.every((value) => types.some((type) => matchesType(value, type)))
+  );
+}
+
 /** Path marker distinguishing an author-chosen NAME segment from a keyword
  *  segment, so a property literally called `type` can never be confused with
  *  the `type` KEYWORD one level up. Deliberately a printable pair rather than a
@@ -83,11 +114,13 @@ function nameSegment(key: string): string {
 
 /**
  * Project a schema onto its CONTRACT: the sorted set of `path=value` leaves,
- * with prose keywords excluded at every non-name-keyed position.
+ * with prose keywords excluded at every non-name-keyed position, and the two
+ * RESTATEMENTS the reducer may drop normalized away: a `type` its enum/const
+ * already entails, and a `pattern` that is zod's own regex for its `format`.
  *
  * Prose is excluded from BOTH sides on purpose — the contract is what remains
  * once prose is disregarded, so equality of these two projections is exactly
- * the claim "compaction removed only prose".
+ * the claim "compaction removed only prose and restatements".
  */
 function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out: string[]): void {
   if (node === null || typeof node !== 'object') {
@@ -108,8 +141,22 @@ function contractLines(node: unknown, path: string, inNameKeyedMap: boolean, out
   // both constrain nothing). Measured: that asymmetry is the ONLY divergence the
   // live catalog produces, and every instance was an `added` `{}`, never a
   // `missing` constraint.
-  const entries = Object.entries(node as Record<string, unknown>).filter(
-    ([key]) => inNameKeyedMap || !PROSE_KEYS.has(key),
+  const schema = node as Record<string, unknown>;
+  const omitType = !inNameKeyedMap && typeIsImplied(schema);
+  // A `pattern` that is exactly zod's regex for the sibling `format` restates the
+  // format; the reducer drops it (lever 1). Normalize it away on BOTH sides by the
+  // reducer's OWN exported rule so the two cannot drift. The `format` line survives
+  // on both sides, so dropping the format, or a pattern the format does NOT imply,
+  // still shows as `missing`. Without this, the 60 catalog tools with uuid /
+  // date-time / email fields failed on a drop that is not a contract change
+  // (measured 2026-10-13, WI-6554700010009813).
+  const omitPattern = !inNameKeyedMap && isFormatImpliedPattern(schema);
+  const entries = Object.entries(schema).filter(
+    ([key]) =>
+      inNameKeyedMap ||
+      (!PROSE_KEYS.has(key) &&
+        !(key === 'type' && omitType) &&
+        !(key === 'pattern' && omitPattern)),
   );
   if (entries.length === 0) out.push(`${path}={}`);
   for (const [key, value] of entries) {
@@ -183,6 +230,72 @@ function resolveLocalRef(root: unknown, ref: string): unknown {
   return cursor;
 }
 
+/** A one-segment definition ref, `#/$defs/NAME` or `#/definitions/NAME`. */
+const DEFINITION_REF = /^#\/(\$defs|definitions)\/([^/]+)$/;
+
+/** A definition ref whose fragment needs neither pointer- nor percent-escaping,
+ *  so a validator that decodes the fragment (RFC 6901 §6) and one that does not
+ *  resolve it identically. Every ref compaction WRITES must look like this. */
+const URI_SAFE_DEFINITION_REF = /^#\/(?:\$defs|definitions)\/[A-Za-z0-9_.-]+$/;
+
+function isSchemaObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Undo compaction's HOISTING so a compact schema can be compared with its full
+ * schema. Compaction moves a subschema repeated verbatim into one NEW definition
+ * plus `$ref`s: a smaller encoding of the same contract, but it changes the
+ * contract LINES (one `$ref` leaf replaces the subschema's leaves) and the ref
+ * SET. This inlines every lone `$ref` into a definition the compact schema ADDED
+ * (a name absent from the full schema's same map), recursively, then drops
+ * those added definitions.
+ *
+ * Strict by construction: an added definition whose BODY differs from the
+ * subschema it replaced restores the wrong leaves and still fails the contract
+ * check, and a ref with siblings or into an AUTHORED definition is left alone.
+ */
+function inlineHoisted(compact: unknown, full: unknown): unknown {
+  if (!isSchemaObject(compact)) return compact;
+  const fullRoot: Record<string, unknown> = isSchemaObject(full) ? full : {};
+  const added = new Map<string, Map<string, unknown>>();
+  for (const mapKey of ['$defs', 'definitions']) {
+    const defs = compact[mapKey];
+    if (!isSchemaObject(defs)) continue;
+    const fullDefsRaw = fullRoot[mapKey];
+    const fullDefs: Record<string, unknown> = isSchemaObject(fullDefsRaw) ? fullDefsRaw : {};
+    const names = new Map<string, unknown>();
+    for (const [name, body] of Object.entries(defs)) {
+      if (!Object.hasOwn(fullDefs, name)) names.set(name, body);
+    }
+    if (names.size > 0) added.set(mapKey, names);
+  }
+  if (added.size === 0) return compact;
+  const inline = (node: unknown, hops: number): unknown => {
+    if (hops > 64) throw new Error('inlineHoisted: a $ref chain deeper than 64 hops is a hoisting cycle');
+    if (Array.isArray(node)) return node.map((entry) => inline(entry, hops));
+    if (!isSchemaObject(node)) return node;
+    const ref = node.$ref;
+    if (typeof ref === 'string' && Object.keys(node).length === 1) {
+      const match = DEFINITION_REF.exec(ref);
+      if (match) {
+        const [, mapKey, escaped] = match;
+        const name = (escaped ?? '').replace(/~1/g, '/').replace(/~0/g, '~');
+        const body = added.get(mapKey ?? '')?.get(name);
+        if (body !== undefined) return inline(body, hops + 1);
+      }
+    }
+    return Object.fromEntries(Object.entries(node).map(([key, value]) => [key, inline(value, hops)]));
+  };
+  const restored = inline(compact, 0) as Record<string, unknown>;
+  for (const [mapKey, names] of added) {
+    const defs = restored[mapKey] as Record<string, unknown>;
+    for (const name of names.keys()) delete defs[name];
+    if (Object.keys(defs).length === 0 && !Object.hasOwn(fullRoot, mapKey)) delete restored[mapKey];
+  }
+  return restored;
+}
+
 /**
  * CONTROL reducer — deliberately WRONG in a way the contract check must catch.
  * It drops `required` and `enum`, which are exactly the elements a "compact"
@@ -234,9 +347,9 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
   let rows: CatalogRow[] = [];
   let catalogSize = 0;
 
-  beforeAll(async () => {
-    // Side-effect import: registers the catalog listAllProjectedTools() reads.
-    await import('./index');
+  beforeAll(() => {
+    // The catalog listAllProjectedTools() reads was registered by the top-level
+    // side-effect `import './index'` above, during collection.
     const all = listAllProjectedTools();
     catalogSize = all.length;
     rows = all
@@ -277,7 +390,11 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
     const broken: Array<{ name: string; missing: string[]; added: string[] }> = [];
     for (const row of rows) {
       const fullLines = contractOf(row.inputSchema ?? {});
-      const compactLines = contractOf(compactInputSchema(row.inputSchema ?? {}));
+      // Hoisting is a smaller ENCODING of the same contract: undo exactly that,
+      // then demand the projections match line for line.
+      const compactLines = contractOf(
+        inlineHoisted(compactInputSchema(row.inputSchema ?? {}), row.inputSchema ?? {}),
+      );
       if (
         fullLines.length === compactLines.length &&
         fullLines.every((l, i) => l === compactLines[i])
@@ -299,6 +416,25 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
         'partial one — a dropped required field or enum member makes a model emit calls the ' +
         'server rejects.',
     ).toEqual([]);
+  });
+
+  it('removes every redundant type constraint from real compact schemas', () => {
+    const redundant: string[] = [];
+    const visit = (node: unknown, path: string, inNameKeyedMap: boolean): void => {
+      if (node === null || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach((entry, i) => visit(entry, `${path}[${i}]`, false));
+        return;
+      }
+      const schema = node as Record<string, unknown>;
+      if (!inNameKeyedMap && typeIsImplied(schema)) redundant.push(path);
+      for (const [key, value] of Object.entries(schema)) {
+        visit(value, `${path}/${key}`, !inNameKeyedMap && NAME_KEYED_CONTAINERS.has(key));
+      }
+    };
+
+    for (const row of rows) visit(compactInputSchema(row.inputSchema ?? {}), row.name, false);
+    expect(redundant.slice(0, 8), `${redundant.length} real compact schema(s) retained an implied type`).toEqual([]);
   });
 
   it('removes every prose keyword at every depth, and keeps prose-NAMED properties', () => {
@@ -340,28 +476,42 @@ describe('compact schema projection — live catalog (AUTO-BAR-R-3-P-001 / AUTO-
   it('keeps $defs/$ref STRUCTURE resolvable rather than inlining it', () => {
     const unresolved: string[] = [];
     let toolsWithRefs = 0;
+    let toolsWithHoistedRefs = 0;
     for (const row of rows) {
+      const full = row.inputSchema ?? {};
       const fullRefs: string[] = [];
-      refTargets(row.inputSchema ?? {}, fullRefs);
-      if (fullRefs.length === 0) continue;
-      toolsWithRefs += 1;
-      const compact = compactInputSchema(row.inputSchema ?? {});
+      refTargets(full, fullRefs);
+      const compact = compactInputSchema(full);
       const compactRefs: string[] = [];
       refTargets(compact, compactRefs);
-      if ([...fullRefs].sort().join('|') !== [...compactRefs].sort().join('|')) {
+      if (fullRefs.length === 0 && compactRefs.length === 0) continue;
+      if (fullRefs.length > 0) toolsWithRefs += 1;
+      // Hoisting ADDS refs on purpose; undo exactly that before comparing, so an
+      // AUTHORED ref that was inlined or dropped still shows as a changed set.
+      const restoredRefs: string[] = [];
+      refTargets(inlineHoisted(compact, full), restoredRefs);
+      if ([...fullRefs].sort().join('|') !== [...restoredRefs].sort().join('|')) {
         unresolved.push(`${row.name}: ref set changed (inlined or dropped)`);
         continue;
       }
+      const authored = new Set(fullRefs);
+      if (compactRefs.some((ref) => !authored.has(ref))) toolsWithHoistedRefs += 1;
+      // Resolution is checked on the REAL compact schema: every ref a model will
+      // be shown, the hoisted ones included.
       for (const ref of new Set(compactRefs)) {
         if (!ref.startsWith('#')) continue;
         if (resolveLocalRef(compact, ref) === undefined) {
           unresolved.push(`${row.name}: ${ref} no longer resolves`);
+        } else if (!authored.has(ref) && !URI_SAFE_DEFINITION_REF.test(ref)) {
+          unresolved.push(`${row.name}: hoisted ${ref} needs URI escaping`);
         }
       }
     }
     expect(unresolved.slice(0, 5), 'compaction broke $ref resolution').toEqual([]);
     // eslint-disable-next-line no-console
-    console.log(`COMPACT_SCHEMA_CATALOG_REFS toolsWithRefs=${toolsWithRefs}`);
+    console.log(
+      `COMPACT_SCHEMA_CATALOG_REFS toolsWithRefs=${toolsWithRefs} toolsWithHoistedRefs=${toolsWithHoistedRefs}`,
+    );
   });
 
   it('CONTROL: the same comparison CATCHES a reducer that drops required/enum', () => {

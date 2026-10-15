@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Current Android CI retention and required host/native guards",
+  "framework": "operational",
+  "command": [
+    "make",
+    "test-android-runner",
+    "test-android-ci",
+    "then",
+    "cargo",
+    "test",
+    "-p",
+    "papercup-core",
+    "--test",
+    "android_uniffi_abi_guard",
+    "android_ci",
+    "--locked"
+  ],
+  "startedAt": "2026-10-02T00:20:46.818466+00:00",
+  "finishedAt": "2026-10-02T00:21:08.738306+00:00",
+  "exitCode": 0,
+  "summary": "Current committed mobile source: maintained runner/CI guards pass; 16 workflow omission controls and 15 runner phase omissions rejected; Cargo CI integration tests 2 passed, 0 failed, 0 ignored. Scope is local guard capability, including APK retention paths/cache copies. Actual automatic hosted execution and candidate/physical/Play acceptance remain pending.",
+  "sourceCommit": "a8d7d4a618b03c8fd679af610ff804232d59cd2b",
+  "sourceFiles": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "e3962158104c6e61fcfc99409c73e346897521fa5804d564faa25275fd340bc7"
+    },
+    {
+      "path": "tools/run-android-checks.sh",
+      "sha256": "0fe988f4ab8ed39210da22ccb3d2afc3f95e076394645b0c9a5169c8ebee74da"
+    },
+    {
+      "path": "tools/tests/run-android-checks-test.sh",
+      "sha256": "c8bb2b130608c7b9e3da98e4ce2fcd015f87699f2fb5fe81de12d2a8271102ca"
+    },
+    {
+      "path": "tools/tests/android-ci-contract-test.sh",
+      "sha256": "fc6f56b2d1402570723424b876fdec0940b66e87bc2ab364cb695f61800be6fb"
+    },
+    {
+      "path": "crates/papercup-core/tests/android_uniffi_abi_guard.rs",
+      "sha256": "b062d00139d07079f404015bf388896256532e2885c6186d2d1a524b9ec45225"
+    }
+  ],
+  "rawEvidence": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/ci-retention-current-20261002/checks.log",
+    "sha256": "d6ea962b689f1b25b2fa260c0ad5a6f6d591445c1bcf56709b26c29c06f6928d",
+    "metadataPath": "papercup-rust-mobile/android/app/build/ci-evidence/ci-retention-current-20261002/result.json"
+  },
+  "assertions": [
+    {
+      "id": "commands-executed-pass",
+      "passed": true,
+      "evidence": "Both maintained Make targets and the canonical Cargo android_ci integration selection executed successfully."
+    },
+    {
+      "id": "workflow-controls",
+      "passed": true,
+      "evidence": "Workflow controls include rejection of missing retained app/instrumentation APK paths and missing cached APK copies."
+    },
+    {
+      "id": "runner-controls",
+      "passed": true,
+      "evidence": "Required host and native phase omissions were rejected by the maintained runner contract."
+    },
+    {
+      "id": "cargo-ci-integration",
+      "passed": true,
+      "evidence": "android_ci_reachability_rejects_omitted_checks_and_failed_proof_caching and android_ci_results_require_executed_host_and_native_tests both executed."
+    },
+    {
+      "id": "source-preserved",
+      "passed": true,
+      "evidence": "Measured source/test bytes were unchanged across execution."
+    }
+  ]
+}

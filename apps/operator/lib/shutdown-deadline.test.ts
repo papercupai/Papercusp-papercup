@@ -8,7 +8,7 @@
  * REJECT still exits cleanly.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { runShutdownWithDeadline } from './shutdown-deadline';
+import { runShutdownWithDeadline } from './shutdown-deadline.mts';
 
 describe('runShutdownWithDeadline (WI-2667)', () => {
   beforeEach(() => vi.useFakeTimers());

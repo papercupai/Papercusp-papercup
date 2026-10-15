@@ -3,12 +3,14 @@ import {
   ACTIVITY_HOOK_BUNDLE_SCHEMA,
   buildActivityHookBundle,
   hasOwnerRelevantCoordDelta,
+  hookInboxSurface,
   INBOX_CURSOR_SURFACE,
   guardedLegacyInboxFloor,
   sameHostCoordGenerationDelta,
   type ActivityHookBundleDeps,
 } from './hook-bundle';
 import { InMemoryReadCursorStore } from '../coordination/read-cursors';
+import { changedSystemNoticeDelivery } from '../coordination/inbox-visibility';
 
 function deps(generation = 'host-a:42') {
   const inbox = vi.fn(
@@ -47,11 +49,37 @@ function deps(generation = 'host-a:42') {
 }
 
 describe('activity hook bundle', () => {
+  it('commits notice fingerprints with the existing delivery cursor and retries a failed stage', async () => {
+    const d = deps();
+    const row = { msg_id: 'alarm', ts: '2026-07-13T19:59:30.000Z', from: 'system-watchdog',
+      to: ['*'], auto: true, kind: 'message', category: 'severe-event',
+      condition_key: 'compaction:other', summary: 'Compaction over-limit: other' };
+    d.value.inbox = async (_floor, _ctx, state) => {
+      const delivery = changedSystemNoticeDelivery([row], state);
+      return { entries: delivery.entries, summary: { newest_ts: row.ts },
+        injection: delivery.entries.length ? row.summary : '', __systemNoticeState: delivery.state };
+    };
+    const request = { force_resync: true, glance_stale: false };
+    d.stageInboxCursor.mockRejectedValueOnce(new Error('stage failed'));
+    const failed = await buildActivityHookBundle('su-abc', request, {} as never, d.value);
+    expect(failed.complete).toBe(false);
+    expect(failed.surfaces?.inbox?.injection).toBe(row.summary);
+    const retry = await buildActivityHookBundle('su-abc', request, {} as never, d.value);
+    expect(retry.complete).toBe(true);
+    expect(retry.surfaces?.inbox?.injection).toBe(row.summary);
+    expect(retry.surfaces?.inbox).not.toHaveProperty('__systemNoticeState');
+    const repeated = await buildActivityHookBundle('su-abc', request, {} as never, d.value);
+    expect(repeated.surfaces?.inbox?.injection).toBe('');
+    row.summary = 'Compaction recovered: other';
+    const changed = await buildActivityHookBundle('su-abc', request, {} as never, d.value);
+    expect(changed.surfaces?.inbox?.injection).toBe(row.summary);
+  });
+
   it('hydrates inbox + glance once, then skips both for N unchanged heartbeats', async () => {
     const d = deps();
     const first = await buildActivityHookBundle(
       'su-abc',
-      { generation: null, since_ts: '2026-07-13T19:00:00.000Z', force_resync: true },
+      { generation: null, since_ts: '2026-07-13T19:00:00.000Z', force_resync: true, glance_stale: false },
       {} as never,
       d.value,
     );
@@ -93,6 +121,27 @@ describe('activity hook bundle', () => {
     expect(result).toMatchObject({ changed: true, complete: true, generation: 'host-a:43' });
     expect(d.ownerRelevantDelta).toHaveBeenCalledWith('su-abc', '42', '43');
     expect(d.inbox).toHaveBeenCalledWith('2026-07-13T19:00:00.000Z', expect.anything());
+    expect(d.glance).toHaveBeenCalledTimes(1); // omitted freshness keeps legacy full-fold behavior
+  });
+
+  it('delivers a relevant inbox delta without rehydrating a fresh glance snapshot', async () => {
+    const d = deps('host-a:43');
+    const observe = vi.fn();
+    d.value.observe = observe;
+    const result = await buildActivityHookBundle(
+      'su-abc',
+      { generation: 'host-a:42', glance_stale: false },
+      {} as never,
+      d.value,
+    );
+
+    expect(result).toMatchObject({ changed: true, complete: true, generation: 'host-a:43' });
+    expect(result.surfaces?.inbox).toBeDefined();
+    expect(result.surfaces?.glance).toBeUndefined();
+    expect(d.inbox).toHaveBeenCalledTimes(1);
+    expect(d.glance).not.toHaveBeenCalled();
+    expect(d.stageInboxCursor).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({ glanceHydrated: false }));
   });
 
   it('advances through an owner-irrelevant same-host delta without hydrating either surface', async () => {
@@ -172,6 +221,9 @@ describe('activity hook bundle', () => {
       d.value,
     );
     expect(d.inbox).toHaveBeenNthCalledWith(2, '2026-07-13T20:00:00.000Z', expect.anything());
+    // The legacy watermark is needed for the first baseline only; the committed
+    // server cursor makes a later read redundant.
+    expect(d.readWatermark).toHaveBeenCalledTimes(1);
   });
 
   it('uses a null floor when the first-call watermark read fails (fail closed)', async () => {
@@ -582,5 +634,58 @@ describe('activity hook bundle — glance/inbox leg split', () => {
     expect(result.surfaces).toBeUndefined();
     expect(d.glance).not.toHaveBeenCalled();
     expect(d.inbox).not.toHaveBeenCalled();
+  });
+});
+
+// WI-6554700010010423: the native hooks echo `injection` and read `entries` only as
+// an emptiness/length signal (+ `ts` as OMP's cursor fallback), so the bundle ships
+// one { msg_id, ts } stub per entry and no `recent` copy.
+describe('activity hook bundle — inbox surface is slimmed for the hook consumers', () => {
+  const fullEntry = {
+    msg_id: 'm-1',
+    ts: '2026-07-13T19:59:00.000Z',
+    from: 'su-peer',
+    kind: 'message',
+    body: [{ text: 'x'.repeat(2_000) }],
+    summary: 'a long peer message',
+    fieldProvenance: { body: 'authored' },
+  };
+
+  it('keeps injection, summary and the gauge but stubs entries and drops recent', async () => {
+    const d = deps('host-a:43');
+    d.inbox.mockResolvedValueOnce({
+      owner_id: 'su-abc',
+      entries: [fullEntry, { ...fullEntry, msg_id: 'm-2', ts: '2026-07-13T19:59:30.000Z' }],
+      recent: [fullEntry],
+      summary: { newest_ts: '2026-07-13T19:59:30.000Z', total: 2 },
+      injection: '[coord+2]\n- su-pe a long peer message',
+      context_gauge: '',
+    });
+    const result = await buildActivityHookBundle('su-abc', { generation: 'host-a:42' }, {} as never, d.value);
+
+    const inbox = result.surfaces?.inbox as Record<string, unknown>;
+    expect(inbox.entries).toEqual([
+      { msg_id: 'm-1', ts: '2026-07-13T19:59:00.000Z' },
+      { msg_id: 'm-2', ts: '2026-07-13T19:59:30.000Z' },
+    ]);
+    expect(inbox).not.toHaveProperty('recent');
+    expect(inbox).toMatchObject({
+      owner_id: 'su-abc',
+      summary: { newest_ts: '2026-07-13T19:59:30.000Z', total: 2 },
+      injection: '[coord+2]\n- su-pe a long peer message',
+      context_gauge: '',
+    });
+    // The cursor is staged from the FULL surface, before slimming.
+    expect(d.stageInboxCursor).toHaveBeenCalledWith('su-abc', { since_ts: '2026-07-13T19:59:30.000Z' });
+    expect(JSON.stringify(inbox).length).toBeLessThan(400);
+  });
+
+  it('preserves an empty entries list, which the Claude hook reads as "show the gauge"', () => {
+    expect(hookInboxSurface({ entries: [], context_gauge: 'ctx 85%' })).toEqual({ entries: [], context_gauge: 'ctx 85%' });
+  });
+
+  it('leaves a non-array entries value untouched and tolerates non-object entries', () => {
+    expect(hookInboxSurface({ entries: null })).toEqual({ entries: null });
+    expect(hookInboxSurface({ entries: [null, 'x', { ts: 't' }] })).toEqual({ entries: [{}, {}, { ts: 't' }] });
   });
 });

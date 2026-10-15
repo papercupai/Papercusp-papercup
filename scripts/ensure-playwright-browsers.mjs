@@ -13,16 +13,14 @@ import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { browserCachePath } from './lib/playwright-cache-path.mjs';
+import { preparePlaywrightTempDirectory } from './lib/playwright-temp-directory.cjs';
+export { browserCachePath } from './lib/playwright-cache-path.mjs';
+export { preparePlaywrightTempDirectory, PLAYWRIGHT_TEMP_MIN_BYTES, PLAYWRIGHT_TEMP_MIN_INODES } from './lib/playwright-temp-directory.cjs';
 
 const require = createRequire(import.meta.url);
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname);
-
-export function browserCachePath(env = process.env) {
-  const configured = env.PLAYWRIGHT_BROWSERS_PATH;
-  if (configured === '0') return join(repoRoot, 'node_modules', 'playwright-core', '.local-browsers');
-  return resolve(configured || join(env.HOME || process.cwd(), '.cache', 'ms-playwright'));
-}
 
 export function requiredBrowsers(env = process.env) {
   // Playwright's `chromium` project launches chromium-headless-shell in headless
@@ -96,6 +94,8 @@ export function ensurePlaywrightBrowsers({ env = process.env, run = spawnSync } 
 
 if (isCliEntry(import.meta.url)) {
   try {
+    const temp = preparePlaywrightTempDirectory();
+    console.log(`Playwright temporary directory ready: ${temp.path} (${temp.availableBytes} bytes available)`);
     if (process.argv.includes('--check')) {
       const missing = missingPlaywrightBrowsers();
       if (missing.length) throw new Error(`missing browser installation(s): ${missing.join(', ')}`);

@@ -14,6 +14,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  drainOutboxOnce,
   startOutboxDrain,
   DRAIN_PASS_TIMEOUT_MS,
   DRAIN_BACKLOG_STALL_MS,
@@ -97,6 +98,54 @@ const OUTBOX_ROW = {
   ts: 1,
   op_hlc: null,
 };
+
+describe('outbox drain shutdown during an admitted pass', () => {
+  it('does not append rows from a SELECT that completes after stop', async () => {
+    let releaseRows!: (rows: unknown[]) => void;
+    let selected!: () => void;
+    const selectStarted = new Promise<void>(resolve => { selected = resolve; });
+    const rows = new Promise<unknown[]>(resolve => { releaseRows = resolve; });
+    const tag = async (strings: TemplateStringsArray) => {
+      if (/SELECT id, table_name/.test(strings.join(' '))) {
+        selected();
+        return rows;
+      }
+      return Object.assign([], { count: 0 });
+    };
+    tag.listen = () => ({ unlisten: async () => {} });
+    const append = vi.fn(async () => {});
+    const drain = startOutboxDrain(fakeHandle(append), tag as never, {
+      pollMs: 0, _passTimeoutMs: 0, _backlogStallMs: 0,
+    });
+    await selectStarted;
+    await drain.stop();
+    releaseRows([OUTBOX_ROW]);
+    // Let the admitted pass consume the SELECT result; no clock-based delay.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it('records an append already in progress at shutdown and leaves the next row pending', async () => {
+    const controller = new AbortController();
+    let finishAppend!: () => void;
+    let enteredAppend!: () => void;
+    const appendStarted = new Promise<void>(resolve => { enteredAppend = resolve; });
+    const appendDone = new Promise<void>(resolve => { finishAppend = resolve; });
+    const updates: unknown[][] = [];
+    const append = vi.fn(async () => { enteredAppend(); await appendDone; });
+    const pg = fakePg(() => [OUTBOX_ROW, { ...OUTBOX_ROW, id: 2, key: 'F-2' }], {
+      onUpdate: vals => { updates.push(vals); },
+    });
+    const pass = drainOutboxOnce(fakeHandle(append), pg, { signal: controller.signal });
+    await appendStarted;
+    controller.abort();
+    finishAppend();
+    expect(await pass).toBe(1);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(updates).toHaveLength(1);
+    expect(updates[0]?.[2]).toBe(1);
+  });
+});
 
 describe('outbox-drain pass watchdog (WI-2009)', () => {
   it('a hung append times out, escalates, and the loop UN-WEDGES (next pass drains)', async () => {

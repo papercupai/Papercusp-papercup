@@ -39,14 +39,14 @@ describe('social vault scopes are derived from the registry', () => {
   it('maps a scope back to its platform, and refuses a non-social one', () => {
     expect(platformIdForScope('personal:bluesky')).toBe('bluesky');
     expect(platformIdForScope('bluesky')).toBe('bluesky');
-    expect(platformIdForScope('personal:gmail')).toBeNull();
+    expect(platformIdForScope('personal:mail')).toBeNull();
     expect(platformIdForScope('personal:calendar')).toBeNull();
   });
 });
 
 describe('selectGrantedSocialScopes — the trap that would leak Gmail into social:search', () => {
   it('keeps only the social scopes out of a mixed grant', () => {
-    const granted = ['personal:gmail', 'personal:bluesky', 'personal:calendar', 'personal:reddit'];
+    const granted = ['personal:mail', 'personal:bluesky', 'personal:calendar', 'personal:reddit'];
     expect(selectGrantedSocialScopes(granted)).toEqual(['personal:bluesky', 'personal:reddit']);
   });
 
@@ -56,7 +56,7 @@ describe('selectGrantedSocialScopes — the trap that would leak Gmail into soci
     // scope filter for an empty array — so a naive implementation searching
     // "whatever came back" would span the owner's mail. Empty here forces the
     // caller into an explicit refusal instead.
-    expect(selectGrantedSocialScopes(['personal:gmail', 'personal:contacts'])).toEqual([]);
+    expect(selectGrantedSocialScopes(['personal:mail', 'personal:contacts'])).toEqual([]);
   });
 
   it('narrows a partial grant instead of refusing it', () => {
@@ -77,9 +77,9 @@ describe('selectGrantedSocialScopes — the trap that would leak Gmail into soci
     // The deliberately-wrong implementation, kept permanently so the assertion
     // above is known to be catching something rather than restating the code.
     const naive = (granted: readonly string[]) => [...granted];
-    const granted = ['personal:gmail', 'personal:bluesky'];
-    expect(naive(granted)).toContain('personal:gmail');
-    expect(selectGrantedSocialScopes(granted)).not.toContain('personal:gmail');
+    const granted = ['personal:mail', 'personal:bluesky'];
+    expect(naive(granted)).toContain('personal:mail');
+    expect(selectGrantedSocialScopes(granted)).not.toContain('personal:mail');
   });
 });
 
@@ -303,7 +303,7 @@ describe('searchSocialPosts — scoping and minting under a real grant shape', (
         workspaceId,
         userId,
         query: 'anything',
-        grantedScopes: ['personal:gmail', 'personal:calendar'],
+        grantedScopes: ['personal:mail', 'personal:calendar'],
       }),
     ).rejects.toBeInstanceOf(SocialSearchNotGranted);
   });

@@ -28,7 +28,7 @@ import {
   type ResidueGroup,
   type ScannedProcess,
 } from './reconcile';
-import { scanProcesses, type ScanOptions, type ScanResult } from './scan';
+import { scanProcessesAsync, type ScanOptions, type ScanResult } from './scan';
 import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-state';
 import { readJobLogTerminal, type JobLogTerminal } from './job-log-terminal';
 import {
@@ -42,6 +42,33 @@ import {
   upsertUnaccounted,
 } from './store';
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow, type TaskState } from './types';
+import { lstat, readFile, realpath, rm } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join } from 'node:path';
+import { ramTmpRoot } from '@papercusp/orchestrator';
+import { readProcessIdentity } from '../process-identity';
+
+const LIVE_SCOPE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', 'deactivating']);
+
+/** Normal SDK cleanup is in the worker; its SIGKILL leaves this durable receipt. */
+export async function cleanupEndedBrowserDirectory(row: TaskRow,
+  readIdentity: typeof readProcessIdentity = readProcessIdentity): Promise<void> {
+  if (row.class !== 'browser' || !row.pid || !row.processIdentity || !row.cwd ||
+      !isAbsolute(row.cwd) || !/^pc-browser-[A-Za-z0-9]+$/.test(basename(row.cwd)) ||
+      typeof row.detail?.browserSessionId !== 'string' || readIdentity(row.pid) !== null) return;
+  try {
+    if ((await realpath(dirname(row.cwd))) !== (await realpath(ramTmpRoot()))) return;
+    const info = await lstat(row.cwd);
+    if (!info.isDirectory() || info.isSymbolicLink()) return;
+    const receipt = JSON.parse(await readFile(join(row.cwd, '.browser-task.json'), 'utf8'));
+    if (receipt.taskId !== row.taskId || receipt.browserSessionId !== row.detail.browserSessionId ||
+        receipt.workspaceId !== row.workspaceId || readIdentity(row.pid) !== null) return;
+    await rm(row.cwd, { recursive: true, force: true });
+  } catch (error) {
+    // Missing cleanup is idempotent. Other IO failures leave the row live so
+    // the existing reconciler can retry rather than losing the cleanup receipt.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
 
 export interface ReconcileTickDeps {
   scan?: (opts: ScanOptions) => ScanResult | Promise<ScanResult>;
@@ -117,17 +144,22 @@ export interface ReconcileTickResult {
 export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<ReconcileTickResult> {
   const fs = deps.fs ?? nodeCgroupFs;
   const now = deps.now ?? Date.now;
-  const scanFn = deps.scan ?? scanProcesses;
+  // jev-memory-timeouts-to-zero-2026-10-01 P-004: the default scan yields its
+  // kernel IO. The synchronous walk froze bg-host's event loop for 150-185 ms
+  // per tick (782 processes, measured 2026-10-01), stalling every request and
+  // Jev call that host had in flight. The async scanner prefetches the same
+  // files and classifies with the same rules; an injected non-node `fs` without
+  // an `asyncFs` still takes the synchronous path.
+  const scanFn = deps.scan ?? scanProcessesAsync;
   const listLive = deps.listLive ?? listLiveTasks;
 
   const scan = await scanFn({ fs, ...(deps.scanOptions ?? {}) });
   const live = await listLive(deps.workspaceId);
 
-  // D-018: for a live row whose scope is NOT visible in this scan — i.e. about to
-  // strand — ask systemd whether that scope has actually been released before
-  // `reconcile` decides between `stranded` (escape/anomaly) and
-  // `endedUnobserved` (a routine end nobody happened to observe). Only query the
-  // candidates that need it, never every live row.
+  // D-018: for a live row whose scope is NOT visible in this scan, ask systemd
+  // whether it has actually been released. A scoped row stays unresolved unless
+  // systemd positively confirms release; active or unavailable is not evidence
+  // that its processes are gone. Only query candidate units, never every row.
   const seenScopes = new Set<string>();
   for (const p of scan.processes) {
     const unit = scopeUnitOf(p);
@@ -153,12 +185,17 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
         [...terminalByUnit.entries()]
           .filter(([, terminal]) => {
             const state = terminal.activeState;
-            return Boolean(state && !['active', 'activating', 'reloading', 'deactivating'].includes(state));
+            return Boolean(state && !LIVE_SCOPE_ACTIVE_STATES.has(state));
           })
           .map(([unit]) => unit),
       );
 
-  const result = reconcile(live, scan.processes, { now: now(), graceMs: deps.graceMs, releasedScopes });
+  const result = reconcile(live, scan.processes, {
+    now: now(),
+    graceMs: deps.graceMs,
+    releasedScopes,
+    unlistedIdentityByPid: scan.unlistedIdentityByPid,
+  });
   const summary = summarizeReconcile(result);
 
   // ── is this scan trustworthy enough to CLOSE rows? ───────────────────────
@@ -212,27 +249,49 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     if (unit && !scopeDirByUnit.has(unit)) scopeDirByUnit.set(unit, p.cgroupPath);
   }
   const byTaskId = new Map(live.map((r) => [r.taskId, r]));
+  const activeScopeMetricUpdates = result.unresolved.flatMap((verdict) => {
+    const row = byTaskId.get(verdict.taskId);
+    const unit = row?.scopeUnit;
+    if (!unit) return [];
+    const snapshot = terminalByUnit.get(unit);
+    if (!snapshot || !snapshot.activeState || !LIVE_SCOPE_ACTIVE_STATES.has(snapshot.activeState) || !snapshot.cgroupPath) {
+      return [];
+    }
+    const sample = sampleCgroup(absCgroupDir(snapshot.cgroupPath), fs);
+    return [{
+      taskId: row.taskId,
+      metrics: {
+        lastMemoryBytes: sample.memoryBytes,
+        cpuUsec: sample.cpuUsec,
+        pidsCurrent: sample.pidsCurrent,
+        pidsEventsMax: sample.pidsEventsMax,
+      },
+    }];
+  });
 
   const touched = await touchAlive(
-    result.alive.map((a) => {
-      const row = byTaskId.get(a.taskId);
-      const dir = row?.scopeUnit ? scopeDirByUnit.get(row.scopeUnit) : undefined;
-      const sample = dir ? sampleCgroup(absCgroupDir(dir), fs) : null;
-      return {
-        taskId: a.taskId,
-        pid: a.pid,
-        processIdentity: a.processIdentity,
-        metrics: sample
-          ? {
-              lastMemoryBytes: sample.memoryBytes,
-              peakMemoryBytes: sample.peakMemoryBytes,
-              cpuUsec: sample.cpuUsec,
-              pidsCurrent: sample.pidsCurrent ?? a.pidsSeen,
-              pidsEventsMax: sample.pidsEventsMax,
-            }
-          : { pidsCurrent: a.pidsSeen },
-      };
-    }),
+    [
+      ...result.alive.map((a) => {
+        const row = byTaskId.get(a.taskId);
+        const dir = row?.scopeUnit ? scopeDirByUnit.get(row.scopeUnit) : undefined;
+        const sample = dir ? sampleCgroup(absCgroupDir(dir), fs) : null;
+        return {
+          taskId: a.taskId,
+          pid: a.pid,
+          processIdentity: a.processIdentity,
+          metrics: sample
+            ? {
+                lastMemoryBytes: sample.memoryBytes,
+                peakMemoryBytes: sample.peakMemoryBytes,
+                cpuUsec: sample.cpuUsec,
+                pidsCurrent: sample.pidsCurrent ?? a.pidsSeen,
+                pidsEventsMax: sample.pidsEventsMax,
+              }
+            : { pidsCurrent: a.pidsSeen },
+        };
+      }),
+      ...activeScopeMetricUpdates,
+    ],
   );
 
   // ── destructive writes only on a trustworthy scan ────────────────────────
@@ -242,6 +301,11 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   let unaccountedPersisted = 0;
   let residueCleared = 0;
   if (!degraded) {
+    // Clean before terminal persistence; failure must remain eligible next tick.
+    for (const verdict of [...result.stranded, ...result.endedUnobserved]) {
+      const row = byTaskId.get(verdict.taskId);
+      if (row) await cleanupEndedBrowserDirectory(row);
+    }
     strandedCount = await markStranded(result.stranded);
     const endedWithTerminal = result.endedUnobserved.map((verdict) => {
       const scopeUnit = byTaskId.get(verdict.taskId)?.scopeUnit;

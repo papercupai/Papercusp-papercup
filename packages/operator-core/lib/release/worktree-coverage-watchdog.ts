@@ -20,7 +20,10 @@
  *      `env-trees/<id>` D-006 env-operator serving trees (`env-tree-prepare.ts` — force-
  *      recreatable from `origin/<branch>` on every provision, deliberately never committed),
  *      and `.papercusp/worktrees/<slug>` migration/synthesis isolation trees (their OWN
- *      dedicated sync path, not git-sync's).
+ *      dedicated sync path, not git-sync's). The verification harness's pinned
+ *      `release-local/<run>/source` snapshots and workspace-host release-cut
+ *      `.papercusp/wh-release-rN/source` checkouts are also generated release inputs, not
+ *      working branches for git-sync to commit.
  *   3. Nothing else. A dirty worktree that matches NEITHER of the above is a genuine finding
  *      — most likely a stray worktree an agent created (or worked inside) that no routine will
  *      ever commit, i.e. exactly the WI-3449 class.
@@ -37,6 +40,13 @@
  */
 import { execFile } from 'node:child_process';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import {
+  gitSidecarEnabled,
+  isSidecarInfrastructureFault,
+  noteSidecarFallback,
+  runGitViaSpawnerSidecar,
+  type GitRunResult,
+} from '../fleet/git-via-sidecar';
 
 export interface WorktreeInfo {
   /** Absolute worktree path, as reported by `git worktree list --porcelain`. */
@@ -70,6 +80,13 @@ export const KNOWN_UNCOVERED_WORKTREE_PATTERNS: readonly RegExp[] = [
   // Measured 2026-08-14: papercusp-relcut-0016 and -0017-stable each carry 1 dirty file
   // permanently, so without this they are a standing false positive on every sweep.
   /-relcut-/,
+  // Verification-harness release-local sources are pinned snapshots retained as evidence;
+  // bootstrap artifacts such as package-lock.json/.papercusp-pinned-deps are not source edits
+  // for git-sync to preserve. The harness retention workflow owns these run directories.
+  /\/verification-harness\/release-local\/[^/]+\/source$/,
+  // Workspace-host release cuts keep their pinned source under ~/.papercusp/wh-release-rN;
+  // the release-cut lifecycle owns these rebuildable intermediates, not git-sync.
+  /\/\.papercusp\/wh-release-r\d+\/source$/,
 ];
 
 /**
@@ -93,15 +110,67 @@ export interface WorktreeCoverageDeps {
    *  tests; default shells out via execFile. */
   runGit?: (args: string[], cwd: string) => Promise<string>;
   log?: (message: string) => void;
+  attention?: import('../alarm-attention').AlarmAttentionDeps;
 }
 
-function defaultRunGit(args: string[], cwd: string): Promise<string> {
+function runGitLocal(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, timeout: 30_000 }, (err, stdout, stderr) => {
+    execFile('git', args, { cwd, timeout: 30_000, ...(env ? { env } : {}) }, (err, stdout, stderr) => {
       if (err) reject(new Error(stderr?.toString().trim() || err.message));
       else resolve(stdout.toString());
     });
   });
+}
+
+/** Seams for {@link runWatchdogGit}; production uses the real sidecar + local spawn. */
+export interface WatchdogGitSeams {
+  sidecarEnabled?: () => boolean;
+  viaSidecar?: (args: string[], cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv) => Promise<GitRunResult>;
+  local?: (args: string[], cwd: string, env: NodeJS.ProcessEnv) => Promise<string>;
+  onFallback?: (e: unknown) => void;
+}
+
+/**
+ * The default git runner. On the bg-host it runs git inside the spawner sidecar.
+ * The sibling-checkout pass runs three git calls per checkout across ~50
+ * checkouts, and a fork() from the big host process costs ~200 ms each at
+ * ~12 GB RSS. One pass measured 161 forks and ~32 s of blocked main thread
+ * (WI-10005446, 2026-10-02 11:00:46-11:03:56Z). A sidecar fault falls back to
+ * a local spawn: degraded, never broken. A non-zero git exit rejects exactly
+ * as the local path does.
+ */
+export async function runWatchdogGit(
+  args: string[],
+  cwd: string,
+  seams: WatchdogGitSeams = {},
+): Promise<string> {
+  const env = args[0] === 'status'
+    ? { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+    : process.env;
+  const enabled = seams.sidecarEnabled ?? (() => gitSidecarEnabled('PAPERCUSP_WORKTREE_COVERAGE_SPAWN_SIDECAR'));
+  const onFallback = seams.onFallback ?? ((e: unknown) => noteSidecarFallback('worktree-coverage', e));
+  if (enabled()) {
+    let res: GitRunResult | null = null;
+    try {
+      // Pass THIS process's env: the sidecar otherwise runs git under its own env.
+      res = await (seams.viaSidecar ?? runGitViaSpawnerSidecar)(args, cwd, 30_000, env);
+    } catch (e) {
+      onFallback(e);
+    }
+    if (res && isSidecarInfrastructureFault(res)) {
+      onFallback(new Error(res.stderr));
+      res = null;
+    }
+    if (res) {
+      if (res.code !== 0) throw new Error(res.stderr.trim() || `git ${args[0] ?? ''} exited ${res.code}`);
+      return res.stdout;
+    }
+  }
+  return (seams.local ?? runGitLocal)(args, cwd, env);
+}
+
+function defaultRunGit(args: string[], cwd: string): Promise<string> {
+  return runWatchdogGit(args, cwd);
 }
 
 /** Parse `git worktree list --porcelain` output into the set of absolute worktree paths. */
@@ -168,21 +237,28 @@ export async function checkWorktreeCoverage(
 ): Promise<WorktreeCoverageCheckResult> {
   const log = deps.log ?? ((m: string) => console.log(m));
   try {
-    const worktrees = await listWorktreesWithDirtyState(canonicalPath, deps);
+    let scanComplete = true;
+    const runGit = deps.runGit ?? defaultRunGit;
+    const worktrees = await listWorktreesWithDirtyState(canonicalPath, { ...deps,
+      runGit: async (args, cwd) => {
+        try { return await runGit(args, cwd); }
+        catch (e) { scanComplete = false; throw e; }
+      },
+    });
     const uncovered = findUncoveredDirtyWorktrees(worktrees, canonicalPath);
+    const conditionKey = `alarm:worktree-coverage:${encodeURIComponent(normalizeCheckoutPath(canonicalPath))}`;
     if (uncovered.length > 0) {
       const detail = uncovered.map((w) => `${w.path} (${w.dirtyFileCount} dirty)`).join('; ');
-      // A log line, not a notifyAttention() push/SSE alert: this is a "someone should
-      // look eventually" signal (drift that accumulates over hours), not an urgent page —
-      // notifyAttention's own doc reserves its 'needs-human' kind for ≥high-importance
-      // items, which this genuinely isn't. The operator log + this function's return
-      // value (a caller — an admin diagnostic route, a future scheduled digest — can
-      // surface it more visibly) are the right-weight channel for a cheap, infrequent
-      // sweep like this one.
+      const broadcastSevereEvent = deps.attention?.broadcast
+        ?? (await import('../severe-event-broadcast')).broadcastSevereEvent;
+      await broadcastSevereEvent({ conditionKey, summary: 'Uncovered worktree edits', body: detail });
       log(
         `[worktree-coverage-watchdog] ${uncovered.length} worktree(s) carry uncommitted edits ` +
           `no known routine/exclusion covers — likely stranded work (WI-3449 class): ${detail}`,
       );
+    } else if (scanComplete) {
+      const { resolveAlarm } = await import('../alarm-attention');
+      await resolveAlarm(conditionKey, 'worktree-coverage-watchdog', deps.attention);
     }
     return { uncovered };
   } catch (e) {
@@ -603,11 +679,21 @@ export async function checkGitSyncCoverage(
     const { coveredPaths, staleCoverage } = resolveGitSyncCoverage(activeSlugs, projects, existing);
 
     const root = dirname(normalizeCheckoutPath(canonicalPath));
-    const checkouts = await listSiblingCheckoutsWithDirtyState(root, deps);
+    let scanComplete = true;
+    const rawRunGit = deps.runGit ?? defaultRunGit;
+    const runGit = async (args: string[], cwd: string): Promise<string> => {
+      try { return await rawRunGit(args, cwd); }
+      catch (e) {
+        // Non-repositories and missing history are expected. A failed status
+        // read of a real checkout is an incomplete measurement.
+        if (args[0] !== 'log' && !isNotARepoError(e)) scanComplete = false;
+        throw e;
+      }
+    };
+    const checkouts = await listSiblingCheckoutsWithDirtyState(root, { ...deps, runGit });
 
     let linkedWorktreePaths: string[] = [];
     try {
-      const runGit = deps.runGit ?? defaultRunGit;
       linkedWorktreePaths = parseWorktreeListPorcelain(
         await runGit(['worktree', 'list', '--porcelain'], canonicalPath),
       );
@@ -665,6 +751,17 @@ export async function checkGitSyncCoverage(
           `to a path that no longer exists — coverage that sweeps nothing: ` +
           staleCoverage.map((s) => `${s.installSlug} -> ${s.path}`).join('; '),
       );
+    }
+    const conditionKey = `alarm:git-sync-coverage:${encodeURIComponent(normalizeCheckoutPath(canonicalPath))}`;
+    if (uncovered.length > 0 || staleCoverage.length > 0) {
+      const broadcastSevereEvent = deps.attention?.broadcast
+        ?? (await import('../severe-event-broadcast')).broadcastSevereEvent;
+      await broadcastSevereEvent({ conditionKey, summary: 'Git-sync coverage leaves work stranded',
+        body: [...uncovered.map((c) => `${c.path}: ${c.dirtyFileCount} dirty files`),
+          ...staleCoverage.map((s) => `${s.installSlug}: missing ${s.path}`)].join('; ') });
+    } else if (scanComplete) {
+      const { resolveAlarm } = await import('../alarm-attention');
+      await resolveAlarm(conditionKey, 'worktree-coverage-watchdog', deps.attention);
     }
     return { uncovered, staleCoverage, coverageResolved: true };
   } catch (e) {

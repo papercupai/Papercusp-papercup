@@ -21,6 +21,7 @@ import { resolvePhasedProject, harnessDir, safeRead } from '../../../harness-cor
 import { phasePhaseLabel } from '../../../harness-phases';
 import { loadIssuesOrSeed, saveIssues } from '../../../harness-issues';
 import { auditFeatureChange } from '../../../feature-audit';
+import { newFeatureId } from '../../../collision-resistant-id';
 import type { ProjectEntry } from '../../../harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -200,24 +201,17 @@ const promote = defineTool({
     }
 
     if (target === 'feature') {
-      // PG-canonical: F-IDEA-### entry in harness_features (same shape as
-      // the issue-promote path). SELECT (next idea id) + INSERT are related
-      // (id computed then used), so one transaction avoids a TOCTOU gap
-      // between the two round-trips.
+      // PG-canonical: F-IDEA-<tail> entry in harness_features (same shape as
+      // the issue-promote path). scope-unique-identifiers-2026-07-26 P-005: the
+      // id used to be MAX(F-IDEA-n) + 1 over THIS harness's rows, which mints the
+      // same id in every harness of a workspace; the time + random tail needs no
+      // scan and is unique across harnesses, workspaces and federated nodes.
       const [firstLine, ...rest] = content.trim().split('\n');
       const title = firstLine.trim().slice(0, 200);
       const notes = rest.join('\n').trim() || null;
       const ts = Date.now();
       const id = await harnessTransaction(project.slug, async (tx) => {
-        const ideaRows = await tx`
-          SELECT feature_id FROM harness_features
-           WHERE harness_slug = ${project.slug} AND feature_id LIKE 'F-IDEA-%'
-        ` as Array<{ feature_id: string }>;
-        const existingIdeaIds = ideaRows
-          .map((r) => Number(r.feature_id.slice(7)))
-          .filter((n) => Number.isFinite(n));
-        const n = (existingIdeaIds.length ? Math.max(...existingIdeaIds) : 0) + 1;
-        const newId = `F-IDEA-${String(n).padStart(3, '0')}`;
+        const newId = newFeatureId('IDEA');
         await tx`
           INSERT INTO harness_features
             (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,

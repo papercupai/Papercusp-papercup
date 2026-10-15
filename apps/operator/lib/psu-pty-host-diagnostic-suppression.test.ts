@@ -147,6 +147,15 @@ describe('routine host diagnostics are routed, not bare', () => {
     expect(HOST_SRC).toContain('gated delivery pipeline threw for');
     const at = HOST_SRC.indexOf('gated delivery pipeline threw for');
     const window = HOST_SRC.slice(Math.max(0, at - 300), at);
-    expect(window).toContain('process.stderr.write(');
+    expect(window).toContain('writeTerminalDiagnostic(');
+    expect(window).not.toContain('writeHostDiagnostic(');
+  });
+
+  it('routes every runtime diagnostic through the asynchronous terminal writer', () => {
+    const runtime = HOST_SRC.slice(HOST_SRC.indexOf('export function hostThroughPty(o) {'));
+    expect(runtime).toContain('const diagnosticOutput = createTerminalOutput({');
+    expect(runtime).toContain('stdout: process.stderr,');
+    expect(runtime).toContain('terminalOutput.finish(), diagnosticOutput.finish(),');
+    expect(runtime).not.toContain('process.stderr.write(');
   });
 });

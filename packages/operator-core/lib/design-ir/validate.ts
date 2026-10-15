@@ -4,7 +4,7 @@
  * Schema check only ("is this valid IR?"). Anti-pattern checks live
  * in ./lint.ts ("is this *good* IR?"). Both run on every submitted spec.
  */
-import Ajv2020 from 'ajv/dist/2020';
+import Ajv2020 from 'ajv/dist/2020.js';
 import type { ErrorObject } from 'ajv';
 import { uiIrSchema, type UiIr } from './schema';
 

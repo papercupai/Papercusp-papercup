@@ -4,18 +4,52 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  batchHeadBlobLookup,
   normalizeStoredSettlementManifest,
   reconcileProposedCompletionsAtCommit,
   residualPathsForCommit,
   type CompletionSettlementReconcilerDeps,
 } from './completion-settlement-reconciler';
-import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
+import {
+  CompletionSettlementManifestSchema,
+  TERMINAL_COMPLETION_EVIDENCE_KEY,
+} from '../../coord-lifecycle/records';
 import {
   completionBlobHistoryContains,
-  completionHeadBlobMap,
+  completionHeadBlobMap as completionHeadBlobMapWithSidecar,
+  completionWorkingTreeBlobSha,
+  createCompletionBlobHistoryReader,
+  createCompletionHistorySearchMemo,
   type HeadBlobResolution,
 } from '../../agent-tools/work_items/completion-freshness';
 import { isCompletionSettled } from '../../work-item-completion-authority';
+import * as historyGit from '../../agent-tools/work_items/untouched-paths';
+
+// These fixtures own real temporary Git repositories. Keep them on local Git so they do not
+// depend on (or start) the process-wide spawner sidecar; its routing and fallback are covered by
+// untouched-paths-sidecar-route.test.ts.
+const completionHeadBlobMap: typeof completionHeadBlobMapWithSidecar = (
+  repoRoot,
+  headSha,
+  paths,
+  opts = {},
+) => completionHeadBlobMapWithSidecar(repoRoot, headSha, paths, { ...opts, gitBinary: 'git' });
+
+const completionBlobHistoryContainsLocalGit: typeof completionBlobHistoryContains = (
+  repoRoot,
+  fromHeadSha,
+  toCommitSha,
+  path,
+  blobSha,
+  opts = {},
+) => completionBlobHistoryContains(
+  repoRoot,
+  fromHeadSha,
+  toCommitSha,
+  path,
+  blobSha,
+  { ...opts, gitBinary: 'git' },
+);
 
 const SHA = 'a'.repeat(40);
 const TEMP_ROOTS: string[] = [];
@@ -74,6 +108,80 @@ describe('residualPathsForCommit', () => {
     expect(laterWorkingTreeIdentity).not.toEqual(lookup.mock.results[0]?.value);
   });
 
+  // WI-10005343: a legacy manifest (written before out-of-repo artifacts were excluded at close)
+  // can declare `/reports/rpt_…` or `/tmp/…`. `git ls-tree` exits 128 on the whole call for such
+  // a path, which the reconciler read as a transient lookup failure on EVERY pass forever.
+  it('classifies non-repository paths deterministically and never passes them to the tree lookup', async () => {
+    const legacy = {
+      ...manifest,
+      normalizedPaths: ['/reports/rpt_1', 'a.ts', 'plan:/papercusp/x', '../escape.ts', ':(glob)*'],
+      contentIdentity: [
+        { path: '/reports/rpt_1', workingTreeBlobSha: null, headBlobSha: null },
+        { path: 'a.ts', workingTreeBlobSha: 'd'.repeat(40), headBlobSha: null },
+        { path: 'plan:/papercusp/x', workingTreeBlobSha: null, headBlobSha: null },
+        { path: '../escape.ts', workingTreeBlobSha: null, headBlobSha: null },
+        { path: ':(glob)*', workingTreeBlobSha: null, headBlobSha: null },
+      ],
+    };
+    const lookup = vi.fn(
+      () =>
+        new Map([
+          ['a.ts', resolved('d'.repeat(40))],
+          ['plan:/papercusp/x', absent()],
+        ]),
+    );
+    expect(await residualPathsForCommit(legacy, SHA, lookup)).toEqual([
+      { path: '/reports/rpt_1', reason: 'not-a-repository-path' },
+      { path: 'plan:/papercusp/x', reason: 'identity-unavailable' },
+      { path: '../escape.ts', reason: 'not-a-repository-path' },
+      { path: ':(glob)*', reason: 'not-a-repository-path' },
+    ]);
+    expect(lookup).toHaveBeenCalledWith('/repo', SHA, ['a.ts', 'plan:/papercusp/x']);
+  });
+
+  it('records an all-non-repository manifest without any git read', async () => {
+    const outOfRepo = {
+      ...manifest,
+      normalizedPaths: ['/tmp/shot.png'],
+      contentIdentity: [{ path: '/tmp/shot.png', workingTreeBlobSha: null, headBlobSha: null }],
+    };
+    const lookup = vi.fn(() => undefined);
+    expect(await residualPathsForCommit(outOfRepo, SHA, lookup)).toEqual([
+      { path: '/tmp/shot.png', reason: 'not-a-repository-path' },
+    ]);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  // CONTROL against the real reader: the same out-of-repo path makes `git ls-tree` refuse the
+  // whole call, which is the failure the classification above routes around.
+  it('real completionHeadBlobMap measures nothing for an out-of-repo path (the bug this guards)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'settle-outside-'));
+    TEMP_ROOTS.push(root);
+    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+    git('init', '-q');
+    git('config', 'user.email', 't@t');
+    git('config', 'user.name', 't');
+    writeFileSync(join(root, 'a.ts'), 'x\n');
+    git('add', 'a.ts');
+    git('commit', '-q', '-m', 'a');
+    const head = git('rev-parse', 'HEAD');
+    const blob = git('rev-parse', 'HEAD:a.ts');
+    expect(await completionHeadBlobMap(root, head, ['a.ts', '/reports/rpt_1'])).toBeUndefined();
+    const legacy = {
+      ...manifest,
+      repositoryRoot: root,
+      headSha: head,
+      normalizedPaths: ['/reports/rpt_1', 'a.ts'],
+      contentIdentity: [
+        { path: '/reports/rpt_1', workingTreeBlobSha: null, headBlobSha: null },
+        { path: 'a.ts', workingTreeBlobSha: blob, headBlobSha: blob },
+      ],
+    };
+    expect(await residualPathsForCommit(legacy, head, completionHeadBlobMap)).toEqual([
+      { path: '/reports/rpt_1', reason: 'not-a-repository-path' },
+    ]);
+  });
+
   it('persists deterministic residue for partial and mismatched commits', async () => {
     expect(
       await residualPathsForCommit(
@@ -91,11 +199,20 @@ describe('residualPathsForCommit', () => {
     ]);
   });
 
-  it('fails closed when the exact-tree lookup is unavailable', async () => {
-    expect(await residualPathsForCommit(manifest, SHA, () => undefined)).toEqual([
-      { path: 'a.ts', reason: 'identity-unavailable' },
-      { path: 'nested/b.ts', reason: 'identity-unavailable' },
-    ]);
+  // EI-24807349327024992: a whole-batch lookup failure (a 5s `git ls-tree` timeout under load)
+  // measured nothing. It must not become a persisted `identity-unavailable` verdict on every
+  // path — that kept a fully committed close `proposed` for ~3h. Undefined = skip, retry.
+  // CONTROL: one path the lookup DID answer as unresolvable still yields a persisted residue,
+  // so this cannot pass by returning undefined for everything.
+  it('skips (undefined) when the exact-tree lookup is unavailable, but keeps per-path residue', async () => {
+    expect(await residualPathsForCommit(manifest, SHA, () => undefined)).toBeUndefined();
+    expect(
+      await residualPathsForCommit(
+        manifest,
+        SHA,
+        () => new Map([['a.ts', resolved('d'.repeat(40))], ['nested/b.ts', unresolvable('submodule unreadable')]]),
+      ),
+    ).toEqual([{ path: 'nested/b.ts', reason: 'identity-unavailable' }]);
   });
 
   /**
@@ -206,7 +323,7 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
         emittedSha,
         completionHeadBlobMap,
         undefined,
-        completionBlobHistoryContains,
+        completionBlobHistoryContainsLocalGit,
       ),
     ).toEqual([
       { path: 'dirty.ts', reason: 'content-mismatch' },
@@ -219,16 +336,22 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     const settlement = await reconcileProposedCompletionsAtCommit(
       emittedSha,
       { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: root },
-      { sql: settlementSql({ updateHits: [true], manifest: historyManifest }), emit: settlementEmitMock() },
+      {
+        sql: settlementSql({ updateHits: [true], manifest: historyManifest }),
+        lookup: completionHeadBlobMap,
+        workingTreeLookup: completionWorkingTreeBlobSha,
+        historyLookup: completionBlobHistoryContainsLocalGit,
+        emit: settlementEmitMock(),
+      },
     );
     expect(settlement).toMatchObject({ inspected: 1, upgraded: [], residual: 3, unreadable: [], stranded: ['WI-42476'] });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('became unsettleable by waiting'));
     warn.mockRestore();
     expect(
-      await completionBlobHistoryContains(root, closeHeadSha, emittedSha, 'ignored.ts', ignoredSha),
+      await completionBlobHistoryContainsLocalGit(root, closeHeadSha, emittedSha, 'ignored.ts', ignoredSha),
     ).toBe(false);
     expect(
-      await completionBlobHistoryContains(root, '0'.repeat(40), emittedSha, 'superseded.ts', supersededSha),
+      await completionBlobHistoryContainsLocalGit(root, '0'.repeat(40), emittedSha, 'superseded.ts', supersededSha),
     ).toBeUndefined();
   });
 
@@ -278,7 +401,7 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
     const emittedSha = git('rev-parse', 'HEAD');
 
     expect(
-      await completionBlobHistoryContains(
+      await completionBlobHistoryContainsLocalGit(
         root,
         closeHeadSha,
         emittedSha,
@@ -286,6 +409,317 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
         supersededSha,
       ),
     ).toBe(true);
+  });
+
+  // EI-24821039535031884: a git read that hits its deadline is 'unmeasured' (the caller
+  // retries), never undefined (persisted residue). CONTROL: a git that exits non-zero is a
+  // deterministic refusal and stays undefined, so only the timeout outcome flips the answer.
+  // Both git reads are covered: the top-level path runs `git log` alone, and the nested path
+  // runs the gitlink `ls-tree` first.
+  it('answers unmeasured for a timed-out git read and undefined for a git that refuses', async () => {
+    // A shell meant to refuse can itself miss a 200ms deadline (CI run 20871147).
+    // Map measured runner outcomes here; untouched-paths covers the real deadline.
+    const read = vi.spyOn(historyGit, 'streamGitFields').mockResolvedValue('failed');
+    const ask = (path: string) => completionBlobHistoryContains(
+      '/repo', 'a'.repeat(40), 'b'.repeat(40), path, 'c'.repeat(40), { gitBinary: 'git' },
+    );
+    try {
+      for (const path of ['file.ts', 'dir/file.ts']) {
+        read.mockResolvedValueOnce('timeout');
+        expect(await ask(path)).toBe('unmeasured');
+        expect(await ask(path)).toBeUndefined();
+      }
+      expect(new Set(read.mock.calls.map(([args]) => args[2]))).toEqual(new Set(['log', 'ls-tree']));
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  // WI-10005357: a settlement pass resolved every declared path with its own `ls-tree`, per
+  // side. The shared reader must give the SAME verdicts (superproject and submodule paths,
+  // found and not found) while issuing one gitlink read per (repository, commit) once the
+  // paths are announced. A git wrapper logs each real exec, so the counts are measured.
+  it('a shared reader answers exactly like the unshared one with one gitlink read per commit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'completion-history-shared-'));
+    TEMP_ROOTS.push(root);
+    const subRoot = join(root, 'modules', 'nested');
+    mkdirSync(join(root, 'dir', 'deeper'), { recursive: true });
+    mkdirSync(join(root, 'other'), { recursive: true });
+    mkdirSync(join(subRoot, 'src'), { recursive: true });
+    const run = (cwd: string, ...args: string[]) =>
+      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim();
+    for (const repo of [root, subRoot]) {
+      run(repo, 'init', '-q');
+      run(repo, 'config', 'user.email', 'fixture@example.test');
+      run(repo, 'config', 'user.name', 'Settlement Fixture');
+    }
+    const superPaths = ['dir/a.ts', 'dir/b.ts', 'dir/deeper/c.ts', 'other/d.ts'];
+    for (const path of superPaths) writeFileSync(join(root, path), `export const v = "${path} before";\n`);
+    writeFileSync(join(subRoot, 'src', 'file.ts'), 'export const v = "sub before";\n');
+    run(subRoot, 'add', '--', 'src/file.ts');
+    run(subRoot, 'commit', '-q', '-m', 'submodule base');
+    writeFileSync(join(root, '.gitmodules'), '[submodule "nested"]\n\tpath = modules/nested\n\turl = ./nested.git\n');
+    run(root, 'add', '--', '.gitmodules', ...superPaths);
+    run(root, 'update-index', '--add', '--cacheinfo', '160000,' + run(subRoot, 'rev-parse', 'HEAD') + ',modules/nested');
+    run(root, 'commit', '-q', '-m', 'close head');
+    const closeHeadSha = run(root, 'rev-parse', 'HEAD');
+
+    // Commit a close-time blob for every path except other/d.ts, then supersede them all.
+    const blobs = new Map<string, string>();
+    for (const path of superPaths) {
+      writeFileSync(join(root, path), `export const v = "${path} close time";\n`);
+      blobs.set(path, run(root, 'hash-object', '-w', path));
+    }
+    run(root, 'add', '--', 'dir');
+    run(root, 'commit', '-q', '-m', 'close-time blobs');
+    writeFileSync(join(subRoot, 'src', 'file.ts'), 'export const v = "sub close time";\n');
+    blobs.set('modules/nested/src/file.ts', run(subRoot, 'hash-object', 'src/file.ts'));
+    run(subRoot, 'commit', '-q', '-am', 'submodule close time');
+    for (const path of superPaths) writeFileSync(join(root, path), `export const v = "${path} later";\n`);
+    writeFileSync(join(subRoot, 'src', 'file.ts'), 'export const v = "sub later";\n');
+    run(subRoot, 'commit', '-q', '-am', 'submodule later');
+    run(root, 'update-index', '--cacheinfo', '160000,' + run(subRoot, 'rev-parse', 'HEAD') + ',modules/nested');
+    run(root, 'add', '--', ...superPaths);
+    run(root, 'commit', '-q', '-m', 'supersede everything');
+    const emittedSha = run(root, 'rev-parse', 'HEAD');
+
+    const bin = mkdtempSync(join(tmpdir(), 'completion-history-counting-git-'));
+    TEMP_ROOTS.push(bin);
+    const log = join(bin, 'execs.log');
+    const countingGit = join(bin, 'git');
+    writeFileSync(countingGit, `#!/bin/sh\nprintf '%s\\n' "$3" >> '${log}'\nexec git "$@"\n`, { mode: 0o755 });
+    const lsTreeExecs = () => {
+      try {
+        return execFileSync('grep', ['-c', '^ls-tree$', log], { encoding: 'utf8' }).trim();
+      } catch {
+        return '0';
+      }
+    };
+    const paths = [...blobs.keys()];
+    const opts = { gitBinary: countingGit };
+
+    const unshared: unknown[] = [];
+    for (const path of paths) {
+      unshared.push(await completionBlobHistoryContains(root, closeHeadSha, emittedSha, path, blobs.get(path)!, opts));
+    }
+    // Control: other/d.ts's close-time blob never reached a commit; the rest did.
+    expect(unshared).toEqual([true, true, true, false, true]);
+    const unsharedReads = Number(lsTreeExecs());
+    rmSync(log, { force: true });
+
+    const reader = createCompletionBlobHistoryReader();
+    // A real manifest can declare non-file refs (WI-10002141: '/reports/rpt_…'); git refuses a
+    // whole ls-tree that names one, so announcing it must not change any other path's verdict.
+    reader.hint(root, emittedSha, [...paths, '/reports/rpt_fixture', 'plan:/papercusp/fixture']);
+    reader.hint(root, closeHeadSha, paths);
+    const shared = await Promise.all(
+      paths.map((path) => reader.contains(root, closeHeadSha, emittedSha, path, blobs.get(path)!, opts)),
+    );
+    expect(shared).toEqual(unshared);
+    // Unshared: one read per path per side, plus one per side at the submodule level (12).
+    // Shared: one per side in the superproject, one per side in the submodule (4).
+    expect(unsharedReads).toBe(12);
+    expect(Number(lsTreeExecs())).toBe(4);
+    expect(reader.gitlinkReads()).toBe(4);
+  });
+
+  /** A one-repo fixture plus a settlement "pass" that shares a memo across passes. */
+  function historyFixture(prefix: string) {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    TEMP_ROOTS.push(root);
+    const run = (...args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim();
+    run('init', '-q');
+    run('config', 'user.email', 'fixture@example.test');
+    run('config', 'user.name', 'Settlement Fixture');
+    const commit = (message: string, files: Record<string, string>) => {
+      for (const [path, text] of Object.entries(files)) {
+        mkdirSync(join(root, path, '..'), { recursive: true });
+        writeFileSync(join(root, path), text);
+      }
+      run('add', '--', ...Object.keys(files));
+      run('commit', '-q', '-m', message);
+      return run('rev-parse', 'HEAD');
+    };
+    const memo = createCompletionHistorySearchMemo();
+    const pass = async (closeHeadSha: string, toSha: string, blobs: Map<string, string>, ask: readonly string[]) => {
+      const reader = createCompletionBlobHistoryReader(undefined, memo);
+      const paths = [...blobs.keys()];
+      reader.hint(root, toSha, paths);
+      reader.hint(root, closeHeadSha, paths);
+      reader.hintBlobs(root, closeHeadSha, paths.map((path) => ({ path, blobSha: blobs.get(path)! })));
+      const verdicts: unknown[] = [];
+      const exact: unknown[] = [];
+      for (const path of ask) {
+        verdicts.push(await reader.contains(root, closeHeadSha, toSha, path, blobs.get(path)!, { gitBinary: 'git' }));
+        exact.push(await completionBlobHistoryContainsLocalGit(root, closeHeadSha, toSha, path, blobs.get(path)!));
+      }
+      return { verdicts, exact, reads: reader.historyReads(), ancestry: reader.ancestryReads() };
+    };
+    return { root, run, commit, pass };
+  }
+
+  it('WI-10005380: a later pass searches only new commits, in one git log for every pair sharing the range', async () => {
+    const { root, run, commit, pass } = historyFixture('completion-history-memo-');
+    const paths = ['a.ts', 'b.ts', 'dir/c.ts', 'dir/d e.ts'];
+    const closeHeadSha = commit('close head', Object.fromEntries(paths.map((p) => [p, `export const v = "${p} before";\n`])));
+    // Close-time blobs: a.ts and dir/c.ts reach a commit; b.ts and 'dir/d e.ts' do not (yet).
+    const closeText = (path: string) => `export const v = "${path} close time";\n`;
+    const blobs = new Map<string, string>();
+    for (const path of paths) {
+      writeFileSync(join(root, path), closeText(path));
+      blobs.set(path, run('hash-object', '-w', path));
+    }
+    commit('commit some close-time blobs', { 'a.ts': closeText('a.ts'), 'dir/c.ts': closeText('dir/c.ts') });
+    const pass1 = commit('supersede', Object.fromEntries(paths.map((p) => [p, `export const v = "${p} later";\n`])));
+
+    // Pass 1: one shared search for all four pairs, plus the exact check for the two it saw.
+    const first = await pass(closeHeadSha, pass1, blobs, paths);
+    expect(first.verdicts).toEqual([true, false, true, false]);
+    expect(first.verdicts).toEqual(first.exact);
+    expect(first.reads).toBe(3);
+
+    // Pass 2: an unrelated commit landed. The two unmatched pairs share ONE search over the
+    // new commit only (the per-pair check would have run two, each over the whole range).
+    const unmatched = ['b.ts', 'dir/d e.ts'];
+    const pass2 = commit('unrelated', { 'other.ts': 'export const other = 1;\n' });
+    const second = await pass(closeHeadSha, pass2, blobs, unmatched);
+    expect(second.verdicts).toEqual([false, false]);
+    expect(second.verdicts).toEqual(second.exact);
+    expect(second.reads).toBe(1);
+    // The same commit again: already searched through it, so nothing is read.
+    expect((await pass(closeHeadSha, pass2, blobs, unmatched)).reads).toBe(0);
+
+    // Pass 3: b.ts's close-time blob finally lands; the sighting is confirmed exactly.
+    const pass3 = commit('late landing', { 'b.ts': closeText('b.ts') });
+    const third = await pass(closeHeadSha, pass3, blobs, unmatched);
+    expect(third.verdicts).toEqual([true, false]);
+    expect(third.verdicts).toEqual(third.exact);
+    expect(third.reads).toBe(2);
+  });
+
+  it('WI-10005524: a kept match is re-proved at a descendant by one shared merge-base, and searched again at a non-descendant', async () => {
+    const { root, run, commit, pass } = historyFixture('completion-history-kept-match-');
+    const paths = ['a.ts', 'b.ts', 'c.ts'];
+    const closeHeadSha = commit('close head', Object.fromEntries(paths.map((p) => [p, `export const v = "${p} before";\n`])));
+    const closeText = (path: string) => `export const v = "${path} close time";\n`;
+    const blobs = new Map<string, string>();
+    for (const path of paths) {
+      writeFileSync(join(root, path), closeText(path));
+      blobs.set(path, run('hash-object', '-w', path));
+    }
+    // a.ts and b.ts reach a commit and are then superseded; c.ts never does.
+    commit('land a and b', { 'a.ts': closeText('a.ts'), 'b.ts': closeText('b.ts') });
+    const pass1 = commit('supersede', Object.fromEntries(paths.map((p) => [p, `export const v = "${p} later";\n`])));
+
+    const first = await pass(closeHeadSha, pass1, blobs, paths);
+    expect(first.verdicts).toEqual([true, true, false]);
+    expect(first.verdicts).toEqual(first.exact);
+    expect(first.reads).toBe(3); // one shared search + the exact check for each sighting
+
+    // The same commit again: both matches are answered from the memo, nothing is read.
+    const again = await pass(closeHeadSha, pass1, blobs, paths);
+    expect(again.verdicts).toEqual([true, true, false]);
+    expect([again.reads, again.ancestry]).toEqual([0, 0]);
+
+    // A descendant: both matches are re-proved by ONE merge-base, with no history search;
+    // c.ts searches only the new commit.
+    const pass2 = commit('unrelated', { 'other.ts': 'export const other = 1;\n' });
+    const second = await pass(closeHeadSha, pass2, blobs, paths);
+    expect(second.verdicts).toEqual([true, true, false]);
+    expect(second.verdicts).toEqual(second.exact);
+    expect([second.reads, second.ancestry]).toEqual([1, 1]);
+
+    // A commit that does NOT descend from the kept match (a branch cut at close time, as a
+    // submodule gitlink can move): the match must not be trusted. a.ts is searched again
+    // over the whole range and is truthfully not found there.
+    run('checkout', '-q', '-b', 'elsewhere', closeHeadSha);
+    const elsewhere = commit('elsewhere', { 'z.ts': 'export const z = 1;\n' });
+    const third = await pass(closeHeadSha, elsewhere, blobs, ['a.ts']);
+    expect(third.exact).toEqual([false]);
+    expect(third.verdicts).toEqual(third.exact);
+    expect(third.ancestry).toBe(1);
+    expect(third.reads).toBeGreaterThan(0);
+  });
+
+  it('WI-10005380: a blob seen only on a merged-away side branch is found like the per-pair check, and the match is kept', async () => {
+    const { root, run, commit, pass } = historyFixture('completion-history-merge-side-');
+    const base = 'export const v = "base";\n';
+    const closeHeadSha = commit('close head', { 'p.ts': base });
+    const closeText = 'export const v = "close time";\n';
+    writeFileSync(join(root, 'p.ts'), closeText);
+    const blobs = new Map([['p.ts', run('hash-object', '-w', 'p.ts')]]);
+    run('checkout', '-q', '-b', 'side');
+    commit('side sets the close-time blob', { 'p.ts': closeText });
+    commit('side reverts it', { 'p.ts': base });
+    run('checkout', '-q', '-');
+    commit('main moves on', { 'q.ts': 'export const q = 1;\n' });
+    run('merge', '-q', '--no-ff', '-m', 'merge side', 'side');
+    const toSha = run('rev-parse', 'HEAD');
+
+    // The merge is TREESAME to its first parent for p.ts, which a path-limited log would
+    // prune; --find-object turns that simplification off, so the per-pair check walks the
+    // side branch and finds the blob. The batched search must walk it too.
+    const first = await pass(closeHeadSha, toSha, blobs, ['p.ts']);
+    expect(first.exact).toEqual([true]);
+    expect(first.verdicts).toEqual(first.exact);
+    expect(first.reads).toBe(2);
+    // WI-10005524: the exact match is kept, so the next pass at the same commit reads nothing.
+    const second = await pass(closeHeadSha, toSha, blobs, ['p.ts']);
+    expect(second.verdicts).toEqual([true]);
+    expect([second.reads, second.ancestry]).toEqual([0, 0]);
+  });
+
+  it('a shared reader retries an unmeasured gitlink read, reuses settled ones, and shares one in flight', async () => {
+    const bin = mkdtempSync(join(tmpdir(), 'completion-history-reader-'));
+    TEMP_ROOTS.push(bin);
+    const refusingGit = join(bin, 'refusing-git');
+    writeFileSync(refusingGit, '#!/bin/sh\nexit 128\n', { mode: 0o755 });
+    const from = 'a'.repeat(40);
+    const to = 'b'.repeat(40);
+    const reads: Array<{ sha: string; prefixes: readonly string[] }> = [];
+    const reader = createCompletionBlobHistoryReader(async (_root, sha, prefixes) => {
+      reads.push({ sha, prefixes });
+      if (reads.length === 1) return 'unmeasured';
+      return new Map(prefixes.map((prefix) => [prefix, null] as const));
+    });
+    const ask = (path: string) => reader.contains(bin, from, to, path, 'c'.repeat(40), { gitBinary: refusingGit });
+
+    // The first read timed out: nothing was learned, so nothing is kept.
+    expect(await ask('dir/file.ts')).toBe('unmeasured');
+    // Retried at both commits; the refusing `git log` then makes the verdict undefined.
+    expect(await ask('dir/file.ts')).toBeUndefined();
+    expect(reads.map((read) => read.sha)).toEqual([from, from, to]);
+    // Settled answers are reused, and two concurrent asks under a new directory share a read.
+    expect(await ask('dir/again.ts')).toBeUndefined();
+    await Promise.all([ask('other/x.ts'), ask('other/y.ts')]);
+    expect(reads.map((read) => read.sha)).toEqual([from, from, to, from, to]);
+    expect(reader.gitlinkReads()).toBe(5);
+  });
+
+  // WI-10005357 regression (observed live 08:03Z): one announced path git refuses fails the
+  // WHOLE batched ls-tree. The caller's own prefixes must be re-read alone, so its verdict
+  // stays measured (false here) instead of becoming persisted `identity-unavailable` residue.
+  it('a shared reader re-reads its own prefixes when a batch carrying announced extras is refused', async () => {
+    const bin = mkdtempSync(join(tmpdir(), 'completion-history-poisoned-'));
+    TEMP_ROOTS.push(bin);
+    const emptyLogGit = join(bin, 'empty-log-git');
+    writeFileSync(emptyLogGit, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const from = 'a'.repeat(40);
+    const to = 'b'.repeat(40);
+    const reads: string[][] = [];
+    const reader = createCompletionBlobHistoryReader(async (_root, _sha, prefixes) => {
+      reads.push([...prefixes]);
+      return prefixes.includes('bad') ? undefined : new Map(prefixes.map((prefix) => [prefix, null] as const));
+    });
+    reader.hint(bin, to, ['bad/declared.ts']);
+    const ask = (path: string) => reader.contains(bin, from, to, path, 'c'.repeat(40), { gitBinary: emptyLogGit });
+
+    expect(await ask('dir/file.ts')).toBe(false);
+    expect(reads).toEqual([['dir'], ['dir', 'bad'], ['dir']]);
+    // The refused extra was never asked for on its own, so it is not kept: its own ask reads it.
+    expect(await ask('bad/declared.ts')).toBeUndefined();
+    expect(reads.at(-1)).toEqual(['bad']);
   });
 });
 
@@ -363,24 +797,26 @@ describe('reconcileProposedCompletionsAtCommit — liveness', () => {
 
   it('settles independent candidates concurrently and reports completed work', async () => {
     const payload = { [TERMINAL_COMPLETION_EVIDENCE_KEY]: { settlementManifest: manifest } };
+    // WI-10005285: the exact-tree read is now ONE call per pass, so the per-row stage whose
+    // overlap this measures is the write.
+    let active = 0;
+    let peak = 0;
     const sql = vi.fn(async (strings: TemplateStringsArray) => {
       const query = strings.join('?');
       if (query.includes('SELECT feature_id, harness_slug, payload')) {
         return ['WI-FIRST', 'WI-SECOND'].map((feature_id) => ({ feature_id, harness_slug: 'papercusp', payload }));
       }
-      if (query.includes('UPDATE harness_shared.work_items')) return [];
+      if (query.includes('UPDATE harness_shared.work_items')) {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        active -= 1;
+        return [];
+      }
       throw new Error(`unexpected SQL: ${query}`);
     }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
     (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
-    let active = 0;
-    let peak = 0;
-    const lookup = vi.fn(async () => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      active -= 1;
-      return matchingLookup();
-    });
+    const lookup = vi.fn(async () => matchingLookup());
     const onProgress = vi.fn();
 
     const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
@@ -388,8 +824,62 @@ describe('reconcileProposedCompletionsAtCommit — liveness', () => {
     });
 
     expect(peak).toBe(2);
+    expect(lookup).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ inspected: 2, upgraded: [], residual: 0, unreadable: [] });
     expect(onProgress.mock.calls.map(([progress]) => progress.completed)).toEqual([1, 2]);
+  });
+
+  it('writes nothing for a row whose exact-tree lookup returned nothing, and names it lookupUnavailable', async () => {
+    const sql = settlementSql({ updateHits: [true] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      lookup: async () => undefined,
+      emit: settlementEmitMock(),
+    });
+
+    expect(result).toMatchObject({
+      inspected: 1,
+      upgraded: [],
+      residual: 0,
+      unreadable: [],
+      lookupUnavailable: ['WI-42476'],
+    });
+    expect(
+      vi
+        .mocked(sql)
+        .mock.calls.some(([strings]) =>
+          (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'),
+        ),
+    ).toBe(false);
+    expect(warn.mock.calls.some(([line]) => String(line).includes('exact-tree lookup') && String(line).includes('WI-42476'))).toBe(true);
+  });
+
+  // EI-24821039535031884: the per-path history read has the same 5s deadline. A timed-out
+  // history read must skip the row exactly like a failed exact-tree lookup: no write.
+  it('writes nothing for a row whose history read was unmeasured, and names it lookupUnavailable', async () => {
+    const sql = settlementSql({ updateHits: [true] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const historyLookup = vi.fn(async () => 'unmeasured' as const);
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      // a.ts is committed at a later blob, so its proof needs the history read.
+      lookup: () => new Map([['a.ts', resolved('f'.repeat(40))], ['nested/b.ts', resolved('e'.repeat(40))]]),
+      historyLookup,
+      emit: settlementEmitMock(),
+    });
+
+    expect(historyLookup).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ inspected: 1, upgraded: [], residual: 0, unreadable: [], lookupUnavailable: ['WI-42476'] });
+    expect(
+      vi
+        .mocked(sql)
+        .mock.calls.some(([strings]) =>
+          (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'),
+        ),
+    ).toBe(false);
+    expect(warn.mock.calls.some(([line]) => String(line).includes('history read') && String(line).includes('WI-42476'))).toBe(true);
+    warn.mockRestore();
   });
 
   it('stops before a late settlement write when the action signal aborts', async () => {
@@ -491,48 +981,48 @@ describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh'
         version: number;
         generation: number;
         evidenceHash: string;
-        repositoryRoot: string;
-        closeHeadSha: string;
-        emittedCommitSha: string;
-        paths: Array<{
-          path: string;
-          workingTreeBlobSha: string;
-          fromHeadSha: string;
-          toCommitSha: string;
-          proof: string;
+        checkouts: Array<{
+          repositoryRoot: string;
+          closeHeadSha: string;
+          emittedCommitSha: string;
+          paths: Array<{
+            path: string;
+            workingTreeBlobSha: string;
+            fromHeadSha: string;
+            toCommitSha: string;
+            proof: string;
+          }>;
         }>;
       } | null;
       treeStamp?: unknown;
     };
     expect(evidence.historyAttestation).toEqual({
-      version: 1,
+      version: 2,
       generation: manifest.generation,
       evidenceHash: manifest.evidenceHash,
-      repositoryRoot: manifest.repositoryRoot,
-      closeHeadSha: manifest.headSha,
-      emittedCommitSha: SHA,
-      // EI-24710716781971154: a MIXED row. a.ts was superseded (history proof); nested/b.ts is
-      // still exact in the emitted tree. The close-time treeStamp cannot be refreshed (a.ts's
-      // blob is not in this tree), and the migration-1207 floor demands a proof for EVERY
-      // identity entry whose working blob differs from head — so nested/b.ts must be attested
-      // too. Attesting only a.ts (the previous expectation) left the floor rejecting the row
-      // and the trigger reverting the upgrade on every pass.
-      paths: [
-        {
-          path: 'a.ts',
-          workingTreeBlobSha: 'd'.repeat(40),
-          fromHeadSha: manifest.headSha,
-          toCommitSha: SHA,
-          proof: 'exact-path-blob-history',
-        },
-        {
-          path: 'nested/b.ts',
-          workingTreeBlobSha: 'e'.repeat(40),
-          fromHeadSha: manifest.headSha,
-          toCommitSha: SHA,
-          proof: 'exact-path-blob-history',
-        },
-      ],
+      // The superseded path and the exact-in-emitted-tree sibling path are both
+      // bound to this checkout/head. The truthful close-time treeStamp stays intact.
+      checkouts: [{
+        repositoryRoot: manifest.repositoryRoot,
+        closeHeadSha: manifest.headSha,
+        emittedCommitSha: SHA,
+        paths: [
+          {
+            path: 'a.ts',
+            workingTreeBlobSha: 'd'.repeat(40),
+            fromHeadSha: manifest.headSha,
+            toCommitSha: SHA,
+            proof: 'exact-path-blob-history',
+          },
+          {
+            path: 'nested/b.ts',
+            workingTreeBlobSha: 'e'.repeat(40),
+            fromHeadSha: manifest.headSha,
+            toCommitSha: SHA,
+            proof: 'exact-path-blob-history',
+          },
+        ],
+      }],
     });
     expect(evidence.treeStamp).toEqual(originalTreeStamp);
   });
@@ -583,10 +1073,10 @@ describe('reconcileProposedCompletionsAtCommit — WI-1053550 treeStamp refresh'
       (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'));
     const evidence = (updateCall?.[1] as unknown as Record<string, unknown>)[
       TERMINAL_COMPLETION_EVIDENCE_KEY
-    ] as { historyAttestation: { paths: Array<{ path: string }> } };
+    ] as { historyAttestation: { checkouts: Array<{ paths: Array<{ path: string }> }> } };
     // a.ts (history) + nested/b.ts (exact in tree, unproven at close). NOT c.ts (already exact
     // at close), NOT the deletion, NOT the out-of-repo artifact.
-    expect(evidence.historyAttestation.paths.map((p) => p.path)).toEqual(['a.ts', 'nested/b.ts']);
+    expect(evidence.historyAttestation.checkouts[0]?.paths.map((p) => p.path)).toEqual(['a.ts', 'nested/b.ts']);
   });
 
   it('does not count a row the authority floor kept proposed as settled, and emits no settled event', async () => {
@@ -752,7 +1242,9 @@ describe('reconcileProposedCompletionsAtCommit — P-004 settled event', () => {
       }
       if (query.includes('UPDATE harness_shared.work_items')) {
         expect(values).toContain('papercusp');
-        expect(values).toContain(portalRoot);
+        const updatedPayload = values[0] as Record<string, unknown>;
+        const updatedEvidence = updatedPayload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>;
+        expect((updatedEvidence.settlementManifest as { repositoryRoot: string }).repositoryRoot).toBe(portalRoot);
         return [{ feature_id: 'WI-CROSS-HIVE', authority: 'committed' }];
       }
       throw new Error(`unexpected SQL: ${query}`);
@@ -825,8 +1317,8 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
           || values[9] !== evidence.settlementManifest.evidenceHash
         ) return [];
         payload = values[0] as Record<string, unknown>;
-        if (values[1] === 0) authority = 'committed';
-        return [{ feature_id: 'WI-FIXTURE', authority: values[1] === 0 ? 'committed' : 'proposed' }];
+        if (values[1] === true) authority = 'committed';
+        return [{ feature_id: 'WI-FIXTURE', authority: values[1] === true ? 'committed' : 'proposed' }];
       }
       throw new Error(`unexpected SQL: ${query}`);
     }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
@@ -838,19 +1330,30 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
       repositoryRoot: root,
     };
 
-    const partial = await reconcileProposedCompletionsAtCommit(partialSha, scope, { sql, emit });
+    const localGitDeps = {
+      lookup: completionHeadBlobMap,
+      workingTreeLookup: completionWorkingTreeBlobSha,
+      historyLookup: completionBlobHistoryContainsLocalGit,
+      emit,
+    };
+    const partial = await reconcileProposedCompletionsAtCommit(partialSha, scope, { sql, ...localGitDeps });
     expect(partial).toMatchObject({ upgraded: [], residual: 1 });
     expect((payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as {
       settlementManifest: { residualPaths: unknown };
-    }).settlementManifest.residualPaths).toEqual([{ path: 'b.ts', reason: 'missing-from-commit' }]);
+    }).settlementManifest.residualPaths).toEqual([{
+      path: 'b.ts',
+      repositoryRoot: root,
+      headSha: manifest.headSha,
+      reason: 'missing-from-commit',
+    }]);
     expect(isCompletionSettled(authority, true)).toBe(false);
     expect(emit).not.toHaveBeenCalled();
 
     git('add', 'b.ts');
     git('commit', '-q', '-m', 'complete');
     const completeSha = git('rev-parse', 'HEAD');
-    const complete = await reconcileProposedCompletionsAtCommit(completeSha, scope, { sql, emit });
-    const replay = await reconcileProposedCompletionsAtCommit(completeSha, scope, { sql, emit });
+    const complete = await reconcileProposedCompletionsAtCommit(completeSha, scope, { sql, ...localGitDeps });
+    const replay = await reconcileProposedCompletionsAtCommit(completeSha, scope, { sql, ...localGitDeps });
 
     expect(complete).toMatchObject({ upgraded: ['WI-FIXTURE'], residual: 0 });
     expect(replay).toMatchObject({ inspected: 0, upgraded: [], residual: 0 });
@@ -860,6 +1363,182 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
       key: 'work-item:settled:WI-FIXTURE',
       payload: expect.objectContaining({ commitSha: completeSha, generation: manifest.generation }),
     }));
+  });
+});
+
+describe('WI-10005285 — one exact-tree read per settlement pass', () => {
+  function gitFixture() {
+    const root = mkdtempSync(join(tmpdir(), 'completion-settlement-batch-'));
+    TEMP_ROOTS.push(root);
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' }).trim();
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.test');
+    git('config', 'user.name', 'Settlement Fixture');
+    mkdirSync(join(root, 'dir'));
+    const blobs: Record<string, string> = {};
+    for (const path of ['a.ts', 'b.ts', 'c.ts', 'dir/e.ts']) {
+      writeFileSync(join(root, path), `export const v = ${JSON.stringify(path)};\n`);
+      blobs[path] = git('hash-object', path);
+    }
+    git('add', '.');
+    git('commit', '-q', '-m', 'fixture');
+    return { root, blobs, sha: git('rev-parse', 'HEAD') };
+  }
+
+  function rowsSql(rows: Array<{ id: string; paths: string[]; blobs: Record<string, string>; root: string }>) {
+    const updates: Array<{ id: string; residual: number }> = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join('?');
+      if (query.includes('SELECT feature_id, harness_slug, payload')) {
+        return rows.map(({ id, paths, blobs, root }) => ({
+          feature_id: id,
+          harness_slug: 'papercusp',
+          payload: {
+            [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
+              settlementManifest: {
+                ...manifest,
+                repositoryRoot: root,
+                normalizedPaths: paths,
+                contentIdentity: paths.map((path) => ({
+                  path,
+                  workingTreeBlobSha: blobs[path] ?? 'f'.repeat(40),
+                  headBlobSha: null,
+                })),
+              },
+            },
+          },
+        }));
+      }
+      if (query.includes('UPDATE harness_shared.work_items')) {
+        // values: [payload, canCommit, updated_ts, feature_id, ...]
+        const id = String(values[3]);
+        const updatedPayload = values[0] as Record<string, unknown>;
+        const updatedEvidence = updatedPayload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>;
+        const residualPaths = (updatedEvidence.settlementManifest as { residualPaths?: unknown[] }).residualPaths ?? [];
+        const canCommit = values[1] === true;
+        updates.push({ id, residual: residualPaths.length });
+        return [{ feature_id: id, authority: canCommit ? 'committed' : 'proposed' }];
+      }
+      throw new Error(`unexpected SQL: ${query}`);
+    }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
+    (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
+    return { sql, updates };
+  }
+
+  it('answers every row from one real git read, and isolates a row whose path git rejects', async () => {
+    const { root, blobs, sha } = gitFixture();
+    const calls: string[][] = [];
+    const lookup: NonNullable<CompletionSettlementReconcilerDeps['lookup']> = async (repoRoot, headSha, paths, opts) => {
+      calls.push([...paths]);
+      return completionHeadBlobMap(repoRoot, headSha, paths, opts ?? {});
+    };
+    const { sql, updates } = rowsSql([
+      { id: 'WI-AB', paths: ['a.ts', 'b.ts'], blobs, root },
+      { id: 'WI-C', paths: ['c.ts'], blobs, root },
+      // dir/e.ts settles; missing.ts is in no commit, so the row stays residual.
+      { id: 'WI-RESIDUAL', paths: ['dir/e.ts', 'missing.ts'], blobs, root },
+      // Measured live 2026-10-02: an out-of-repo path makes `git ls-tree` exit 128 for the
+      // WHOLE call. It must cost only this row, never the batch.
+      { id: 'WI-OUTSIDE', paths: ['a.ts', '/reports/rpt_fixture'], blobs, root },
+    ]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await reconcileProposedCompletionsAtCommit(
+      sha,
+      { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: root },
+      { sql, lookup, emit: settlementEmitMock() },
+    );
+    warn.mockRestore();
+
+    // ONE batched read over every safe declared path answers every row. Before WI-10005285
+    // this pass made four reads; before WI-10005343 the out-of-repo row still made its own
+    // read, which git refused (exit 128), so it was skipped as lookup-unavailable on every
+    // pass forever. It is now answered from the batch with a deterministic residual.
+    expect(calls).toEqual([['a.ts', 'b.ts', 'c.ts', 'dir/e.ts', 'missing.ts']]);
+    expect(result.upgraded.sort()).toEqual(['WI-AB', 'WI-C']);
+    expect(result.residual).toBe(2);
+    expect(result.lookupUnavailable).toEqual([]);
+    expect(updates.find((u) => u.id === 'WI-RESIDUAL')).toEqual({ id: 'WI-RESIDUAL', residual: 1 });
+    expect(updates.find((u) => u.id === 'WI-OUTSIDE')).toEqual({ id: 'WI-OUTSIDE', residual: 1 });
+  });
+
+  it('gives each row exactly the verdict a per-row read gives it', async () => {
+    const { root, blobs, sha } = gitFixture();
+    const rows = [
+      { id: 'WI-AB', paths: ['a.ts', 'b.ts'], blobs, root },
+      { id: 'WI-DIR', paths: ['dir', 'dir/e.ts'], blobs, root },
+      { id: 'WI-MISSING', paths: ['missing.ts', 'c.ts'], blobs, root },
+    ];
+    const run = async (rowSet: typeof rows) => {
+      const { sql, updates } = rowsSql(rowSet);
+      await reconcileProposedCompletionsAtCommit(
+        sha,
+        { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: root },
+        { sql, lookup: (r, s, p, o) => completionHeadBlobMap(r, s, p, o ?? {}), emit: settlementEmitMock() },
+      );
+      return updates;
+    };
+    const batched = await run(rows);
+    // A single-row pass never batches, so this is the per-row reference answer.
+    const perRow = (await Promise.all(rows.map((row) => run([row])))).flat();
+    const byId = (list: Array<{ id: string; residual: number }>) => [...list].sort((x, y) => x.id.localeCompare(y.id));
+    expect(byId(batched)).toEqual(byId(perRow));
+    expect(byId(batched).map((u) => u.residual)).toEqual([0, 1, 1]);
+  });
+
+  it('falls back to one read per row when the batched read measures nothing, and says so', async () => {
+    const { sql, updates } = rowsSql([
+      { id: 'WI-ONE', paths: ['a.ts'], blobs: { 'a.ts': 'd'.repeat(40) }, root: '/repo' },
+      { id: 'WI-TWO', paths: ['nested/b.ts'], blobs: { 'nested/b.ts': 'e'.repeat(40) }, root: '/repo' },
+    ]);
+    const committed = new Map<string, HeadBlobResolution>([
+      ['a.ts', resolved('d'.repeat(40))],
+      ['nested/b.ts', resolved('e'.repeat(40))],
+    ]);
+    // The union read (two paths) measures nothing; each single-row read works.
+    const lookup = vi.fn(
+      async (_root: string, _sha: string, paths: readonly string[]): Promise<ReadonlyMap<string, HeadBlobResolution> | undefined> =>
+        paths.length > 1 ? undefined : new Map(paths.map((p) => [p, committed.get(p)!] as const)),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await reconcileProposedCompletionsAtCommit(
+      SHA,
+      { installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: '/repo' },
+      { sql, lookup, emit: settlementEmitMock() },
+    );
+
+    expect(lookup).toHaveBeenCalledTimes(3);
+    expect(result.upgraded.sort()).toEqual(['WI-ONE', 'WI-TWO']);
+    expect(updates).toHaveLength(2);
+    expect(warn.mock.calls.some(([line]) => String(line).includes('batched exact-tree read'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('reads the union once for concurrent callers and hands each caller only the paths it asked for', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const base = vi.fn(async (_r: string, _s: string, paths: readonly string[]) => {
+      await gate;
+      return new Map(paths.map((p) => [p, resolved(p.padEnd(40, '0'))] as [string, HeadBlobResolution]));
+    });
+    const onUnavailable = vi.fn();
+    const lookup = batchHeadBlobLookup(base, '/repo', SHA, ['x', 'y', 'x'], undefined, onUnavailable);
+
+    const pending = [lookup('/repo', SHA, ['x']), lookup('/repo', SHA, ['y']), lookup('/repo', SHA, ['x', 'y'])];
+    release();
+    const [x, y, both] = await Promise.all(pending);
+
+    expect(base).toHaveBeenCalledTimes(1);
+    expect(base.mock.calls[0]![2]).toEqual(['x', 'y']);
+    expect([...x!.keys()]).toEqual(['x']);
+    expect([...y!.keys()]).toEqual(['y']);
+    expect([...both!.keys()]).toEqual(['x', 'y']);
+    expect(onUnavailable).not.toHaveBeenCalled();
+    // A different commit is never served from this pass's tree.
+    await lookup('/repo', 'b'.repeat(40), ['x']);
+    expect(base).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -921,6 +1600,35 @@ describe('normalizeStoredSettlementManifest — WI-1409142 stripped-null toleran
     });
   });
 
+  it('restores duplicate paths only when a legacy Set collapsed sibling-checkout identities', () => {
+    const identities = [
+      { path: 'src/shared.ts', repositoryRoot: '/repo-a', workingTreeBlobSha: 'a'.repeat(40) },
+      { path: 'src/shared.ts', repositoryRoot: '/repo-b', workingTreeBlobSha: 'b'.repeat(40) },
+      { path: 'src/only-a.ts', repositoryRoot: '/repo-a', workingTreeBlobSha: 'c'.repeat(40) },
+    ];
+    const repaired = normalizeStoredSettlementManifest({
+      normalizedPaths: ['src/shared.ts', 'src/only-a.ts'],
+      contentIdentity: identities,
+    }) as { normalizedPaths: string[]; contentIdentity: Record<string, unknown>[] };
+
+    expect(repaired.normalizedPaths).toEqual(['src/shared.ts', 'src/shared.ts', 'src/only-a.ts']);
+    expect(CompletionSettlementManifestSchema.safeParse({
+      version: 1,
+      generation: 1,
+      evidenceHash: 'd'.repeat(64),
+      repositoryRoot: '/repo-a',
+      headSha: 'e'.repeat(40),
+      ...repaired,
+      residualPaths: [],
+    }).success).toBe(true);
+
+    const unrelatedMismatch = normalizeStoredSettlementManifest({
+      normalizedPaths: ['src/shared.ts', 'unrelated.ts'],
+      contentIdentity: identities,
+    }) as { normalizedPaths: string[] };
+    expect(unrelatedMismatch.normalizedPaths).toEqual(['src/shared.ts', 'unrelated.ts']);
+  });
+
   it('leaves a value that is not a manifest untouched', () => {
     expect(normalizeStoredSettlementManifest(null)).toBeNull();
     expect(normalizeStoredSettlementManifest('nope')).toBe('nope');
@@ -966,6 +1674,16 @@ describe('WI-10004711 — superseded-before-commit verdict and the one-time clos
     expect(await verdict(undefined, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'content-mismatch' }]);
     // History could not answer: the server's failure, not the closer's.
     expect(await verdict(async () => undefined, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'identity-unavailable' }]);
+  });
+
+  // EI-24821039535031884: a timed-out history read measured nothing, so the row is skipped
+  // (undefined) and retried. CONTROLS in the same test: a deterministic refusal (undefined)
+  // still persists `identity-unavailable`, and a measured `false` still persists a verdict,
+  // so an implementation that returns undefined for every history answer cannot pass.
+  it('skips the row on an unmeasured history read, but persists deterministic and measured answers', async () => {
+    expect(await verdict(async () => 'unmeasured' as const, LATER_BLOB)).toBeUndefined();
+    expect(await verdict(async () => undefined, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'identity-unavailable' }]);
+    expect(await verdict(neverCommitted, LATER_BLOB)).toEqual([{ path: 'a.ts', reason: 'superseded-before-commit' }]);
   });
 
   function strandedSql(storedManifest: unknown, updateHit = true) {
@@ -1023,7 +1741,12 @@ describe('WI-10004711 — superseded-before-commit verdict and the one-time clos
     // schema, or every stranded row would turn into an `unreadable` one on that pass.
     const persisted = first.writes[0]![TERMINAL_COMPLETION_EVIDENCE_KEY]!.settlementManifest;
     expect((persisted as { residualPaths: unknown }).residualPaths)
-      .toEqual([{ path: 'a.ts', reason: 'superseded-before-commit' }]);
+      .toEqual([{
+        path: 'a.ts',
+        repositoryRoot: manifest.repositoryRoot,
+        headSha: manifest.headSha,
+        reason: 'superseded-before-commit',
+      }]);
     const replay = strandedSql(persisted);
     const pass2 = await reconcileProposedCompletionsAtCommit(SHA, scope, strandedDeps(replay.sql, notify));
     expect(pass2).toMatchObject({ inspected: 1, unreadable: [], stranded: [] });
@@ -1057,5 +1780,73 @@ describe('WI-10004711 — superseded-before-commit verdict and the one-time clos
     expect(result.stranded).toEqual(['WI-42476']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('became unsettleable by waiting'));
     warn.mockRestore();
+  });
+});
+
+describe('reconcileProposedCompletionsAtCommit — sibling checkouts', () => {
+  it('settles identical relative paths independently and CAS-merges checkout progress', async () => {
+    const path = 'src/fix.ts';
+    const roots = ['/repo', '/sibling'];
+    const heads = ['1'.repeat(40), '2'.repeat(40)];
+    const blobs = ['3'.repeat(40), '4'.repeat(40)];
+    const commits = ['5'.repeat(40), '6'.repeat(40)];
+    const multiManifest = {
+      version: 1 as const, generation: 9, evidenceHash: '7'.repeat(64),
+      repositoryRoot: roots[0]!, headSha: heads[0]!, normalizedPaths: [path, path],
+      contentIdentity: roots.map((repositoryRoot, index) => ({
+        path, repositoryRoot, headSha: heads[index]!,
+        workingTreeBlobSha: blobs[index]!, headBlobSha: index === 0 ? 'a'.repeat(40) : 'b'.repeat(40),
+      })),
+    };
+    expect(CompletionSettlementManifestSchema.safeParse(multiManifest).success).toBe(true);
+    let payload: Record<string, unknown> = {
+      [TERMINAL_COMPLETION_EVIDENCE_KEY]: {
+        filesChanged: [path],
+        treeStamp: { repositoryRoot: roots[0], headSha: heads[0], contentIdentity: multiManifest.contentIdentity },
+        settlementManifest: multiManifest,
+      },
+    };
+    const queries: string[] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join('?');
+      queries.push(query);
+      if (query.includes('SELECT feature_id, harness_slug, payload')) {
+        return [{ feature_id: 'WI-CHECKOUT', harness_slug: 'papercusp', payload }];
+      }
+      if (query.includes('UPDATE harness_shared.work_items')) {
+        payload = values[0] as Record<string, unknown>;
+        const evidence = payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>;
+        const residuals = (evidence.settlementManifest as { residualPaths?: unknown[] }).residualPaths ?? [];
+        return [{ feature_id: 'WI-CHECKOUT', authority: residuals.length ? 'proposed' : 'committed' }];
+      }
+      throw new Error(`unexpected SQL: ${query}`);
+    }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
+    (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
+    const lookup = vi.fn(async (root: string, _headSha: string, _paths: readonly string[]) =>
+      new Map([[path, resolved(blobs[roots.indexOf(root)]!)]]));
+    const emit = settlementEmitMock();
+
+    const first = await reconcileProposedCompletionsAtCommit(commits[0]!, {
+      installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: roots[0]!,
+    }, { sql, lookup, emit });
+    const firstManifest = (payload[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown>)
+      .settlementManifest as { residualPaths: Array<Record<string, unknown>> };
+    expect(first.upgraded).toEqual([]);
+    expect(firstManifest.residualPaths).toEqual([{
+      path, repositoryRoot: roots[1], headSha: heads[1], reason: 'checkout-not-processed',
+    }]);
+
+    const second = await reconcileProposedCompletionsAtCommit(commits[1]!, {
+      installSlug: 'papercusp', workspaceId: 'papercusp-workspace', repositoryRoot: roots[1]!,
+    }, { sql, lookup, emit });
+    expect(second.upgraded).toEqual(['WI-CHECKOUT']);
+    expect(lookup.mock.calls.map(([root, , paths]) => [root, paths])).toEqual([
+      [roots[0], [path]], [roots[1], [path]],
+    ]);
+    expect(queries.filter((query) => query.includes('SELECT feature_id, harness_slug, payload'))[0])
+      .toContain('jsonb_array_elements');
+    expect(queries.filter((query) => query.includes('UPDATE harness_shared.work_items'))
+      .every((query) => query.includes('IS NOT DISTINCT FROM'))).toBe(true);
+    expect(emit).toHaveBeenCalledTimes(1);
   });
 });

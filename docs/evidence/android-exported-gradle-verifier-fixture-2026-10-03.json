@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Maintained exported Android APK verifier orchestration and failure controls",
+  "framework": "shell",
+  "command": ["make", "test-android-release-provenance"],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T02:03:35.909944638Z",
+  "finishedAt": "2026-10-03T02:05:35.721914349Z",
+  "timestampBasis": "Retained fixture log creation and final-write timestamps bound the two sequential maintained suite runs. The final run verified the source fingerprints below, including the added ABI command and relative receipt paths.",
+  "exitCode": 0,
+  "sourceCommit": "a42daa5cb0d45a256c2c33bec00c5153bae9bb37",
+  "summary": "The maintained provenance suite passed on the final committed verifier, test and review sources. It compiles a real miniature vendored Rust dependency and tests exported APK orchestration with controlled Cargo-ndk/Gradle executors. The APK fixture tests output/config binding and ten rejecting controls; it does not establish real Android app compilation or release acceptance.",
+  "sourceFiles": [
+    {"path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh", "sha256": "43c86c5462dc59fd2f0afcd8cfe9a1ddc2b938319619b5a9c1cece1437b447c5"},
+    {"path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh", "sha256": "11d00b17529c53dee63850c00a8d4f4dae6df163691708968e0b1812ac5936a3"},
+    {"path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md", "sha256": "38f85271c4542bdd4c43369eec1fb09381d61749e4b25340f5ad64a8b3c7577b"}
+  ],
+  "testFiles": [
+    {"path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh", "sha256": "11d00b17529c53dee63850c00a8d4f4dae6df163691708968e0b1812ac5936a3"}
+  ],
+  "assertions": [
+    {"id": "real-vendored-rust-and-existing-provenance-controls", "passed": true, "evidence": "Final make target exited 0; the suite retained its real miniature Rust compilation, eight rejecting source-build controls, recursively pinned source archive, source/version/hash drift and local-credential exclusion checks."},
+    {"id": "external-config-and-retained-output-binding", "passed": true, "evidence": "Fixture receipt verified the external Firebase config digest, retained APK digest, four packaged native library digests, generated Kotlin and nonempty resolved-artifact inventory."},
+    {"id": "personal-config-isolation", "passed": true, "evidence": "Controlled Gradle executor asserted isolated user home excludes gradle.properties/init.d and removes ORG_GRADLE_PROJECT and Picovoice overrides; commands use offline Gradle and frozen Cargo, invoke the existing ABI verifier and contain no absolute fixture-root path."},
+    {"id": "ten-apk-rejecting-controls", "passed": true, "evidence": "Gradle exit23, missing APK, missing DEX, missing ABI, mismatched native bytes, empty resolved inventory, changed Firebase config, absent config, wrong Firebase application ID and missing API36 SDK were rejected. Failed Gradle receipt retains exit/log; invalid-output/preflight failures leave no stale success receipt."}
+  ],
+  "evidenceFiles": [
+    {"path": "papercup-rust-mobile/android/app/build/outputs/exported-apk-verifier-fixture-20261003.log", "sha256": "855f635874893163cbf2e7130352b6a295466932ae72cf68124f5a5691c454ad"}
+  ],
+  "scope": "Maintained fixture regression evidence only. Full Android operational build, signed candidate, licensing, recipient retrieval, native journeys, current paired hosted CI, physical-phone and Play/public installation evidence remain separate."
+}

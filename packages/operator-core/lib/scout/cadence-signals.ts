@@ -45,7 +45,12 @@ export interface LiveAgentCountDeps {
 }
 
 const defaultLiveAgentCountDeps: LiveAgentCountDeps = {
-  listPresence,
+  // WI-10006748: a CALL-TIME wrapper, not the bare binding. `{ listPresence }` read the
+  // imported binding while this module evaluated — the same module-scope read WI-39450
+  // removed for PRESENCE_STALE_MS above — so any suite that bare-mocks the local presence
+  // module and transitively loads scout/run (bootstrap-su does, via agent-tools/mode/set)
+  // crashed at COLLECTION. Deferring the read keeps module load side-effect free.
+  listPresence: (opts) => listPresence(opts),
   now: Date.now,
   staleMs: PRESENCE_STALE_MS,
 };

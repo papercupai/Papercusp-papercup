@@ -137,7 +137,11 @@ describe('e2e egress fixture wiring (P-005)', () => {
       const reExported = new RegExp(`\\b${name}\\b`).test(
         (fixtureSrc.match(/export\s*\{[^}]*\}\s*from\s*'@playwright\/test'/s) ?? [''])[0],
       );
-      const declared = new RegExp(`export\\s+(const|function|type|interface)\\s+${name}\\b`).test(
+      // `async` must be accepted: `export async function waitVisible…` is a
+      // real export the specs compile against (WI-6554700010009816).
+      const declared = new RegExp(
+        `export\\s+(?:async\\s+)?(const|let|function|class|type|interface|enum)\\s+${name}\\b`,
+      ).test(
         fixtureSrc,
       );
       return !reExported && !declared;

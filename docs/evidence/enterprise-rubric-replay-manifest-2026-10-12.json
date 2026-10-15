@@ -1,0 +1,1096 @@
+{
+  "schema": "enterprise-rubric-replay-evidence-v1",
+  "workItem": "WI-10007954",
+  "purpose": "Author preparation addressing exact failed integrity audit EI-25730920471381197 of EI-25728083522387324; independent reviewer must re-read sources and adjudicate every meta criterion. This artifact supplies probes, not ratings or attestation.",
+  "subjectRubric": {
+    "ref": "acceptance-papercusp-enterprise-readiness-roadmap-2026-10-09",
+    "revision": 3,
+    "criteriaHash": "010144d0d9e59297de6571b7d23d51868966831f483ffd1756ecfc6bd62c4717",
+    "barSetHash": "3a2a7e1bc40cd64872a1a7b085bcbc887c5e3147191beb3637ba7d93f016c530",
+    "retrieval": {
+      "tool": "rubrics:get",
+      "args": {
+        "rubricRef": "acceptance-papercusp-enterprise-readiness-roadmap-2026-10-09",
+        "revision": 3,
+        "detail": "full"
+      }
+    }
+  },
+  "subjectPlan": {
+    "slug": "papercusp-enterprise-readiness-roadmap-2026-10-09",
+    "revision": 19,
+    "contentHash": "0a35fd920f91d61a9153a1a0d6a87e03278a30e2be420cf451cbc0da56073559",
+    "snapshotPath": "docs/evidence/enterprise-rubric-plan19-snapshot-2026-10-12.md",
+    "snapshotSHA256": "0a35fd920f91d61a9153a1a0d6a87e03278a30e2be420cf451cbc0da56073559",
+    "source": "plans:get mode full includeRaw true canonical read in this continuation; snapshot bytes are the returned raw source, not rendered prose.",
+    "retrievalAfterCommit": "Use capability:git-evidence readFileAtCommit with the snapshot containing commit and this path. Resolve the containing full commit from git log; verify bytes SHA256 equals contentHash. The reviewer must also compare plans:get current revision/hash before re-rating."
+  },
+  "sourceBindings": [
+    {
+      "criterion": "r-2",
+      "path": "packages/operator-core/lib/auth/hosted/workos-lifecycle-postgres.integration.test.ts",
+      "contentSHA256": "c515aeb0ca003f696d1ec0154b30e9350d83017bc781e5d039b57a44f0d6abdd",
+      "commitSha": "2d2f78698ba70624dcce8e7313671c01ba83664d",
+      "assertionIdentities": [
+        "projects a verified identity exactly once and persists the entity cursor on the receipt ledger",
+        "never grants an upstream membership and marks that signed event ignored",
+        "reduces an existing membership, revokes its hosted session, and clears closure only after delivery"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "2d2f78698ba70624dcce8e7313671c01ba83664d",
+          "path": "packages/operator-core/lib/auth/hosted/workos-lifecycle-postgres.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-3",
+      "path": "packages/operator-core/lib/autonomy/decider.integration.test.ts",
+      "contentSHA256": "8450ad436ed2872c44ab2eacab07791493c29f82383644d5aa05d268dd70b4c9",
+      "commitSha": "bf3c7292ac7647420bd3dae1a54876347ee1882b",
+      "assertionIdentities": [
+        "an owner-lowered + unlocked ceiling in the store ⇒ auto within the cap, end-to-end",
+        "unarmed ⇒ gated even with a lowered ceiling — the arming gate holds"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "bf3c7292ac7647420bd3dae1a54876347ee1882b",
+          "path": "packages/operator-core/lib/autonomy/decider.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-4",
+      "path": "packages/operator-core/lib/data-sources/org-corpus-permissions.integration.test.ts",
+      "contentSHA256": "67befc7250f0b391003860c038312c1471e926e553f18d45987c6f2640c9a50d",
+      "commitSha": "55d9ce4bb022c7ae3fa6aef5a48e96c9250fd2b2",
+      "assertionIdentities": [
+        "returns the document to a granted principal whose mapped identity is on the list",
+        "a membership refresh moves access on the next read, with no cache to invalidate",
+        "revoking a mapping removes access; the identity can then be mapped to someone else",
+        "refuses without a live organization grant, even when the ACL would allow it"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "55d9ce4bb022c7ae3fa6aef5a48e96c9250fd2b2",
+          "path": "packages/operator-core/lib/data-sources/org-corpus-permissions.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-4",
+      "path": "packages/operator-core/lib/data-sources/chat-retrieval-units.integration.test.ts",
+      "contentSHA256": "964417711f4987d111b7651def60a2f8e13cde911319355bce73ab5cb6fade8c",
+      "commitSha": "55d9ce4bb022c7ae3fa6aef5a48e96c9250fd2b2",
+      "assertionIdentities": [
+        "a legal hold keeps held content through delete, erase, edit and retention, then releases it"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "55d9ce4bb022c7ae3fa6aef5a48e96c9250fd2b2",
+          "path": "packages/operator-core/lib/data-sources/chat-retrieval-units.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-6",
+      "path": "packages/operator-core/lib/auth/hosted/billing/budget-store.integration.test.ts",
+      "contentSHA256": "c06ee889093e5d505ed97f0a1a23cf110f48e297c17aea2db323ce6c4fa75061",
+      "commitSha": "202743ceba73f6107991c915144d47787a2e95f5",
+      "assertionIdentities": [
+        "serializes parallel work across separate store instances at the exact organization cap",
+        "deduplicates a lost-response retry after restart and refuses changed request bindings",
+        "retains cancelled/unpriced/incomplete holds, then settles/replays a final bill and replaces a correction"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "202743ceba73f6107991c915144d47787a2e95f5",
+          "path": "packages/operator-core/lib/auth/hosted/billing/budget-store.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-7",
+      "path": "packages/operator-core/lib/data-sources/slack-org-connector.integration.test.ts",
+      "contentSHA256": "470c15357e02cc7c8138f302dbedf06ab67be832af327952b0793a72bb9eaa59",
+      "commitSha": "6e6d1e16bea5d50eb0a2ea3f0a9d20fb544239e9",
+      "assertionIdentities": [
+        "syncs channel membership into team-qualified permission lists and replaces them on change",
+        "backfills paced history pages with thread replies and serves them only to a listed, mapped member",
+        "honours a 429 Retry-After, marks the source degraded, and resumes the same page"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "6e6d1e16bea5d50eb0a2ea3f0a9d20fb544239e9",
+          "path": "packages/operator-core/lib/data-sources/slack-org-connector.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-7",
+      "path": "packages/operator-core/lib/data-sources/live-search-adapter.integration.test.ts",
+      "contentSHA256": "0857b828d9918c285d554a91cc2aa13d504ffa0bd875ddf82075c32914cfb580",
+      "commitSha": "61a6713ec43929e002fbd0c689328321d522ff99",
+      "assertionIdentities": [
+        "injects a fenced live hit, queried as the mapped identity, and writes no corpus row",
+        "refuses without the organization vault grant",
+        "does not query a disabled live source"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "61a6713ec43929e002fbd0c689328321d522ff99",
+          "path": "packages/operator-core/lib/data-sources/live-search-adapter.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-7",
+      "path": "packages/operator-core/lib/data-sources/ticket-admission.integration.test.ts",
+      "contentSHA256": "6d5c40c013a5f3bdc3b220220246bc4f2711c2da49d24d0c0f997ae57be4f420",
+      "commitSha": "d3a5e1b1895a5401458b1e83482edaa9ffaf4c4b",
+      "assertionIdentities": [
+        "admits only tickets a rule matches, attributes every admission, and stays idempotent on re-sync",
+        "refuses a provider without the capability by name, before any host.fetch or provider call, and ledgers nothing"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "d3a5e1b1895a5401458b1e83482edaa9ffaf4c4b",
+          "path": "packages/operator-core/lib/data-sources/ticket-admission.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-8",
+      "path": "packages/operator-core/lib/blueprint/app-operation-contract.integration.test.ts",
+      "contentSHA256": "f3ff70863ca9d7ed3adf98762c370937cb3f0c3e4285bb2b1e6a836f2e31451b",
+      "commitSha": "648446d5a36564fd9808e2b1810f6821a048c2a2",
+      "assertionIdentities": [
+        "reaches a ready terminal result its returned handle reads, with output satisfying the declared resultSchema",
+        "reaches a non-ready terminal result that carries a reason and no output when the work is dropped"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "648446d5a36564fd9808e2b1810f6821a048c2a2",
+          "path": "packages/operator-core/lib/blueprint/app-operation-contract.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-8",
+      "path": "packages/operator-core/lib/blueprint/app-operations-restart-replay.integration.test.ts",
+      "contentSHA256": "d64a5a229cafc1d400a84b4124c7e16a1e3886e3d97877bb56873eec4a8ca498",
+      "commitSha": "800286ee5bd6a965132d73d34e7429bb2ac48616",
+      "assertionIdentities": [
+        "uses a compilable pinned worker fixture and rejects removing its identity pin",
+        "restart while the applied worker holds the item: replay keeps one receipt and one item, completion lands once"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "800286ee5bd6a965132d73d34e7429bb2ac48616",
+          "path": "packages/operator-core/lib/blueprint/app-operations-restart-replay.integration.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    },
+    {
+      "criterion": "r-9",
+      "path": "packages/operator-core/lib/agent-tools/backup/restore.test.ts",
+      "contentSHA256": "588afe69c2c37d400739f3938c5777201bbfd0a5944669b22ea4f38e341199ed",
+      "commitSha": "18ee38757a8797b847b579cb1e1984c31ebde98f",
+      "assertionIdentities": [
+        "derives the same deterministic clone target as WorkspaceBackup",
+        "passes the target before starting the restore and returns its result",
+        "returns a continuation at the deadline and observes a late rejection",
+        "uses the bounded clone helper from the MCP handler and skips the ambient transaction"
+      ],
+      "retrieval": {
+        "tool": "capability:git-evidence",
+        "args": {
+          "op": "readFileAtCommit",
+          "rootHarnessSlug": "papercusp",
+          "commitSha": "18ee38757a8797b847b579cb1e1984c31ebde98f",
+          "path": "packages/operator-core/lib/agent-tools/backup/restore.test.ts"
+        }
+      },
+      "boundary": "Static source/assertion identity only; no passing run or full enterprise outcome inferred."
+    }
+  ],
+  "quotedAssertionCount": 29,
+  "priorNarratedAssertionCount": 27,
+  "assertionCountCorrection": "The exact method strings contain 29 quoted identities across 11 paths. The historical reviewer narrative said 27. This manifest records the literal population, rather than silently copying the narration.",
+  "pairwisePopulation": [
+    "r-1",
+    "r-2",
+    "r-3",
+    "r-4",
+    "r-5",
+    "r-6",
+    "r-7",
+    "r-8",
+    "r-9",
+    "r-10",
+    "r-11",
+    "r-12"
+  ],
+  "primaryObservationDefinitions": {
+    "r-1": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+    "r-2": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+    "r-3": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+    "r-4": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+    "r-5": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+    "r-6": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+    "r-7": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+    "r-8": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+    "r-9": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+    "r-10": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+    "r-11": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+    "r-12": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact."
+  },
+  "pairwiseScan": [
+    {
+      "pair": [
+        "r-1",
+        "r-2"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-2:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-3"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-3:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-4"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-4:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-5"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-5:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-6"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-6:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-7"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-7:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-8"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-8:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-9"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-9:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-10"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-10:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-11"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-1",
+        "r-12"
+      ],
+      "primaryObservationA": "A supported/reuse claim lacks the cited enforcement or duplicates a maintained surface without its recorded justification.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-1:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-3"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-3:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-4"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-4:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-5"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-5:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-6"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-6:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-7"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-7:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-8"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-8:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-9"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-9:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-10"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-10:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-11"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-2",
+        "r-12"
+      ],
+      "primaryObservationA": "An unverified, forged, replayed, delayed or unavailable directory event changes organizational membership/session authority contrary to the directory contract.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-2:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-3",
+        "r-4"
+      ],
+      "primaryObservationA": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "primaryObservationB": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "observationIdentityA": "r-3:primary-observation",
+      "observationIdentityB": "r-4:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-3",
+        "r-5"
+      ],
+      "primaryObservationA": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "primaryObservationB": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "observationIdentityA": "r-3:primary-observation",
+      "observationIdentityB": "r-5:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-3",
+        "r-6"
+      ],
+      "primaryObservationA": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "primaryObservationB": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "observationIdentityA": "r-3:primary-observation",
+      "observationIdentityB": "r-6:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-3",
+        "r-7"
+      ],
+      "primaryObservationA": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "primaryObservationB": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "observationIdentityA": "r-3:primary-observation",
+      "observationIdentityB": "r-7:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-3",
+        "r-8"
+      ],
+      "primaryObservationA": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "primaryObservationB": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "observationIdentityA": "r-3:primary-observation",
+      "observationIdentityB": "r-8:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-3",
+        "r-9"
+      ],
+      "primaryObservationA": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "primaryObservationB": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "observationIdentityA": "r-3:primary-observation",
+      "observationIdentityB": "r-9:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-3",
+        "r-10"
+      ],
+      "primaryObservationA": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "primaryObservationB": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "observationIdentityA": "r-3:primary-observation",
+      "observationIdentityB": "r-10:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-3",
+        "r-11"
+      ],
+      "primaryObservationA": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-3:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-3",
+        "r-12"
+      ],
+      "primaryObservationA": "An expired, bypassed or self-approved grant permits a forbidden action on an actual governed dispatch path.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-3:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-4",
+        "r-5"
+      ],
+      "primaryObservationA": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "primaryObservationB": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "observationIdentityA": "r-4:primary-observation",
+      "observationIdentityB": "r-5:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-4",
+        "r-6"
+      ],
+      "primaryObservationA": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "primaryObservationB": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "observationIdentityA": "r-4:primary-observation",
+      "observationIdentityB": "r-6:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-4",
+        "r-7"
+      ],
+      "primaryObservationA": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "primaryObservationB": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "observationIdentityA": "r-4:primary-observation",
+      "observationIdentityB": "r-7:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-4",
+        "r-8"
+      ],
+      "primaryObservationA": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "primaryObservationB": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "observationIdentityA": "r-4:primary-observation",
+      "observationIdentityB": "r-8:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-4",
+        "r-9"
+      ],
+      "primaryObservationA": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "primaryObservationB": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "observationIdentityA": "r-4:primary-observation",
+      "observationIdentityB": "r-9:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-4",
+        "r-10"
+      ],
+      "primaryObservationA": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "primaryObservationB": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "observationIdentityA": "r-4:primary-observation",
+      "observationIdentityB": "r-10:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-4",
+        "r-11"
+      ],
+      "primaryObservationA": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-4:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-4",
+        "r-12"
+      ],
+      "primaryObservationA": "A forbidden principal or sink receives protected data, a legal hold is erased, or restore fails to preserve required restrictions.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-4:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-5",
+        "r-6"
+      ],
+      "primaryObservationA": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "primaryObservationB": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "observationIdentityA": "r-5:primary-observation",
+      "observationIdentityB": "r-6:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-5",
+        "r-7"
+      ],
+      "primaryObservationA": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "primaryObservationB": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "observationIdentityA": "r-5:primary-observation",
+      "observationIdentityB": "r-7:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-5",
+        "r-8"
+      ],
+      "primaryObservationA": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "primaryObservationB": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "observationIdentityA": "r-5:primary-observation",
+      "observationIdentityB": "r-8:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-5",
+        "r-9"
+      ],
+      "primaryObservationA": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "primaryObservationB": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "observationIdentityA": "r-5:primary-observation",
+      "observationIdentityB": "r-9:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-5",
+        "r-10"
+      ],
+      "primaryObservationA": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "primaryObservationB": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "observationIdentityA": "r-5:primary-observation",
+      "observationIdentityB": "r-10:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-5",
+        "r-11"
+      ],
+      "primaryObservationA": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-5:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-5",
+        "r-12"
+      ],
+      "primaryObservationA": "A required action-event join, redacted SIEM delivery, retention or tamper/replay observation fails its audit contract.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-5:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-6",
+        "r-7"
+      ],
+      "primaryObservationA": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "primaryObservationB": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "observationIdentityA": "r-6:primary-observation",
+      "observationIdentityB": "r-7:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-6",
+        "r-8"
+      ],
+      "primaryObservationA": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "primaryObservationB": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "observationIdentityA": "r-6:primary-observation",
+      "observationIdentityB": "r-8:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-6",
+        "r-9"
+      ],
+      "primaryObservationA": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "primaryObservationB": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "observationIdentityA": "r-6:primary-observation",
+      "observationIdentityB": "r-9:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-6",
+        "r-10"
+      ],
+      "primaryObservationA": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "primaryObservationB": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "observationIdentityA": "r-6:primary-observation",
+      "observationIdentityB": "r-10:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-6",
+        "r-11"
+      ],
+      "primaryObservationA": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-6:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-6",
+        "r-12"
+      ],
+      "primaryObservationA": "Spend admission exceeds approved funding or loses an outstanding liability; changed replay bindings or unpriced holds evade the funding contract.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-6:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-7",
+        "r-8"
+      ],
+      "primaryObservationA": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "primaryObservationB": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "observationIdentityA": "r-7:primary-observation",
+      "observationIdentityB": "r-8:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-7",
+        "r-9"
+      ],
+      "primaryObservationA": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "primaryObservationB": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "observationIdentityA": "r-7:primary-observation",
+      "observationIdentityB": "r-9:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-7",
+        "r-10"
+      ],
+      "primaryObservationA": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "primaryObservationB": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "observationIdentityA": "r-7:primary-observation",
+      "observationIdentityB": "r-10:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-7",
+        "r-11"
+      ],
+      "primaryObservationA": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-7:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-7",
+        "r-12"
+      ],
+      "primaryObservationA": "The selected connector violates provider-version ACL/revocation/deletion/retry/rotation or separately authorized-write qualification.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-7:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-8",
+        "r-9"
+      ],
+      "primaryObservationA": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "primaryObservationB": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "observationIdentityA": "r-8:primary-observation",
+      "observationIdentityB": "r-9:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-8",
+        "r-10"
+      ],
+      "primaryObservationA": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "primaryObservationB": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "observationIdentityA": "r-8:primary-observation",
+      "observationIdentityB": "r-10:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-8",
+        "r-11"
+      ],
+      "primaryObservationA": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-8:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-8",
+        "r-12"
+      ],
+      "primaryObservationA": "The approved employee workflow loses accountable owner acceptance, version/authority/budget binding, or duplicates a side effect on restart/replay/rollback.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-8:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-9",
+        "r-10"
+      ],
+      "primaryObservationA": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "primaryObservationB": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "observationIdentityA": "r-9:primary-observation",
+      "observationIdentityB": "r-10:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-9",
+        "r-11"
+      ],
+      "primaryObservationA": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-9:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-9",
+        "r-12"
+      ],
+      "primaryObservationA": "A selected candidate installation/upgrade/network/recovery profile fails qualification or agreed backup/restore RTO/RPO.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-9:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-10",
+        "r-11"
+      ],
+      "primaryObservationA": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "primaryObservationB": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "observationIdentityA": "r-10:primary-observation",
+      "observationIdentityB": "r-11:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-10",
+        "r-12"
+      ],
+      "primaryObservationA": "Required attributable legal/security/assurance/commercial support approval or an exercised priced obligation is absent or contradicted.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-10:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    },
+    {
+      "pair": [
+        "r-11",
+        "r-12"
+      ],
+      "primaryObservationA": "An attributable independent partner cohort fails a pre-agreed business outcome/cost/review/rework/repeat-use/support threshold or lacks real acceptance.",
+      "primaryObservationB": "Integrated release evidence, exact promoted/served identity, staged rollout/rollback or actual owner release acceptance fails on the final artifact.",
+      "observationIdentityA": "r-11:primary-observation",
+      "observationIdentityB": "r-12:primary-observation",
+      "ratingRule": "Attribute each direct contradiction only to its named primary observation. If it invalidates a preserved prerequisite of the other criterion, that dependent criterion stays unknown rather than being credited healthy or assigned a fabricated second observed failure.",
+      "status": "author-proposed static partition for independent review; no executed hostile fixture or feature acceptance claimed"
+    }
+  ],
+  "coverage": {
+    "population": 66,
+    "recorded": 66,
+    "notChecked": [],
+    "residue": [],
+    "scope": "Complete author-side static partition proposal over the 12 outcome criteria; independent review remains required."
+  },
+  "readerProcedure": [
+    "Read exact rubric3 through immutable rubrics:get and meta-acceptance-rubric revision5.",
+    "Read the committed plan19 raw snapshot and verify SHA256 against the canonical contentHash. Compare current plans:get revision/hash and source-audit binding.",
+    "For each sourceBinding, retrieve every byte page via its capability:git-evidence args; follow next_cursor until eof, verify SHA256 and each literal assertion identity, then inspect the actual assertions and legitimate/hostile controls. No source pin confers a passing test run.",
+    "Review every one of the 66 pairs against the immutable full rubric model/bar/drift/method, not only the two highlighted pairs; correct any partition that double-counts a primary observation or drops a prerequisite.",
+    "Re-rate all six meta criteria from actual findings. A fresh independent card may supersede the audited failed card only through the maintained vetting publication; a separate integrity audit must pass before attestation is asserted."
+  ]
+}

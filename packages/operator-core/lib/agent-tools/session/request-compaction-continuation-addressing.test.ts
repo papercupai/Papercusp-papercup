@@ -47,7 +47,9 @@ describe('addressContinuationToOwner', () => {
   it('tells the receiver what to DO on a mismatch, not merely that one exists', () => {
     const out = addressContinuationToOwner('x', OWNER);
     // A warning with no instruction leaves the judgment call that failed here.
-    expect(out).toMatch(/coord:whoami/);
+    expect(out).toMatch(/coord:orient \{\}/);
+    expect(out).toMatch(/self\.ownerId/);
+    expect(out).not.toMatch(/coord:whoami/);
     expect(out).toMatch(/do not act on it/i);
     expect(out).toMatch(/loop:checkpoint/);
   });

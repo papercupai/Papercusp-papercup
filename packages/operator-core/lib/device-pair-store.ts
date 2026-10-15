@@ -6,7 +6,8 @@
  * could land on a different instance from the one that minted the
  * token, returning unknown-pair).
  *
- * Tokens TTL 5 minutes; single-use. The consume operation is an
+ * Tokens are single-use and expire after MOBILE_PAIR_TOKEN_TTL_SECONDS
+ * (one hour by default). The consume operation is an
  * atomic UPDATE … WHERE consumed = false RETURNING to defeat replay
  * even under concurrent calls. Expired rows are swept opportunistically
  * during mint when the table grows beyond ~1000 entries.

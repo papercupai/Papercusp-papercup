@@ -29,7 +29,8 @@
  * It also degrades safely: a worker killed mid-write leaves one unparseable
  * trailing line, which `readMeasures` skips, instead of corrupting the whole file.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { homedir } from "node:os";
 
@@ -109,6 +110,105 @@ export function assertPrivateIpcFixtureUnchanged(
   }
 }
 
+/** Use the verifier's owned origin and workspace, never the launcher's ambient API. */
+export function bindVerifierEnvironment(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!env.VERIFY_TAURI_PID && !env.VERIFY_TAURI_SOURCE_RECEIPT) return false;
+  if (env.VERIFY_TAURI_ISOLATED_DB !== '1' || env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' ||
+      !env.PAPERCUSP_HOME || !env.PAPERCUSP_WORKSPACE || !env.VERIFY_TAURI_SOURCE_RECEIPT ||
+      !env.VERIFY_TAURI_SOURCE_REF || !env.VERIFY_TAURI_SPA_DIST || !env.PAPERCUSP_PERF_RUN_ID?.trim()) {
+    throw new Error('Verifier-linked WDIO requires a pinned source and isolated database/profile handoff');
+  }
+  const origin = new URL(env.VERIFY_TAURI_DEV_URL || '');
+  if (origin.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(origin.hostname) ||
+      origin.port !== env.VERIFY_TAURI_PORT || origin.pathname !== '/' || origin.search || origin.hash) {
+    throw new Error('Verifier-linked WDIO requires the exact owned loopback origin');
+  }
+  if (!env.VERIFY_TAURI_DISPLAY || [':0', ':1'].includes(env.VERIFY_TAURI_DISPLAY)) {
+    throw new Error('Verifier-linked WDIO requires a private display');
+  }
+  env.DISPLAY = env.VERIFY_TAURI_DISPLAY;
+  env.PAPERCUSP_DEV_API_TARGET = env.VERIFY_TAURI_PORT;
+  env.PAPERCUSP_OPERATOR_URL = origin.origin;
+  env.PAPERCUSP_PERF_WORKSPACE_ID = env.PAPERCUSP_WORKSPACE;
+  for (const name of ['XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME']) {
+    env[name] = path.join(env.PAPERCUSP_HOME, 'wdio-profile', name.toLowerCase());
+  }
+  return true;
+}
+
+function spaFingerprint(root: string): string {
+  if (!lstatSync(root).isDirectory() || !statSync(path.join(root, 'index.html')).isFile()) {
+    throw new Error('Packaged native SPA is incomplete');
+  }
+  const digest = createHash('sha256');
+  function visit(relative: string): void {
+    for (const name of readdirSync(path.join(root, relative)).sort()) {
+      const entry = path.posix.join(relative, name);
+      const file = path.join(root, entry);
+      const stat = lstatSync(file);
+      if (stat.isDirectory()) visit(entry);
+      else if (stat.isFile()) digest.update(JSON.stringify([entry, stat.size])).update(readFileSync(file));
+      else throw new Error('Packaged native SPA contains a symlink or unsupported entry');
+    }
+  }
+  visit('');
+  return digest.digest('hex');
+}
+
+export interface VerifierBuildFixture {
+  sourceCommit: string;
+  sourceReceiptSha256: string;
+  binarySha256: string;
+  spaSha256: string;
+  apiSha: string;
+}
+
+/** A real file is not proof that the packaged shell, SPA and API are one build. */
+export async function assertVerifierBuildFixture(
+  appPath: string,
+  packagedSpa: string,
+  env: NodeJS.ProcessEnv = process.env,
+  fetchHealth: typeof fetch = fetch,
+): Promise<VerifierBuildFixture | null> {
+  if (!bindVerifierEnvironment(env)) return null;
+  const sourceCommit = env.VERIFY_TAURI_SOURCE_REF!;
+  if (!/^[0-9a-f]{40}$/.test(sourceCommit)) throw new Error('Native source ref must be a full commit SHA');
+  if (/(^|\/)debug\//.test(appPath)) throw new Error('Verifier-linked performance acceptance requires a release binary');
+  const receipt = readFileSync(env.VERIFY_TAURI_SOURCE_RECEIPT!);
+  if (JSON.parse(receipt.toString()).sourceCommit !== sourceCommit) {
+    throw new Error('Native source receipt does not match the selected commit');
+  }
+  const binarySource = readBuildIdentity(appPath);
+  if (!binarySource || !sourceCommit.startsWith(binarySource)) {
+    throw new Error('Packaged native binary build identity does not match the selected commit');
+  }
+  const spaSha256 = spaFingerprint(packagedSpa);
+  if (spaSha256 !== spaFingerprint(env.VERIFY_TAURI_SPA_DIST!)) {
+    throw new Error('Packaged native SPA differs from the verifier frozen SPA');
+  }
+  const response = await fetchHealth(`${env.PAPERCUSP_OPERATOR_URL}/api/health`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error('Native API health read failed');
+  const health = await response.json() as { sha?: unknown; bundleStale?: unknown };
+  if (health.bundleStale || typeof health.sha !== 'string' ||
+      !/^[0-9a-f]{7,40}$/.test(health.sha) || !sourceCommit.startsWith(health.sha)) {
+    throw new Error('Native API build identity does not match the selected commit');
+  }
+  return { sourceCommit, sourceReceiptSha256: createHash('sha256').update(receipt).digest('hex'),
+    binarySha256: createHash('sha256').update(readFileSync(appPath)).digest('hex'),
+    spaSha256, apiSha: health.sha };
+}
+
+export function assertVerifierBuildFixtureUnchanged(
+  expected: VerifierBuildFixture | null,
+  current: VerifierBuildFixture | null,
+): void {
+  if (JSON.stringify(expected) !== JSON.stringify(current)) {
+    throw new Error('Packaged native build changed during the measured run');
+  }
+}
+
 /**
  * Mirrors `DesktopPerfMetricUnit` in packages/operator-core/lib/admin-test-suites-shared.ts.
  *
@@ -139,9 +239,26 @@ export interface PerfMeasure {
 }
 
 const RESULTS_DIR = path.resolve(__dirname, "results");
-const MEASURES_PATH = path.join(RESULTS_DIR, "measures.jsonl");
 
-export { MEASURES_PATH };
+// The launcher initializes this BEFORE forking spec workers; workers inherit its
+// exact path. A profile/runId may be reused for a cohort, so it cannot identify
+// one collection lifetime. Never fall back to the old shared measures.jsonl.
+export let MEASURES_PATH: string | null = process.env.PAPERCUSP_PERF_MEASURES_PATH || null;
+
+/** Allocate a fresh collection for this launcher, ignoring inherited prior runs.
+ * A failed preflight cannot consume another launcher's outcomes in onComplete.
+ * Failed publishes retain their own file for recovery instead of contaminating
+ * the next run. This extends the existing JSONL writer, not the receipt schema. */
+export function prepareMeasures(): string {
+  MEASURES_PATH = null;
+  delete process.env.PAPERCUSP_PERF_MEASURES_PATH;
+  mkdirSync(RESULTS_DIR, { recursive: true });
+  const file = path.join(RESULTS_DIR, `measures-${randomUUID()}.jsonl`);
+  writeFileSync(file, '', { flag: 'wx' });
+  process.env.PAPERCUSP_PERF_MEASURES_PATH = file;
+  MEASURES_PATH = file;
+  return file;
+}
 
 /**
  * Context-stamp prefixes: `host:` (the box) and `build:` (the artifact measured).
@@ -343,7 +460,8 @@ export function operatorBaseUrl(): string {
  */
 export function recordMeasure(measure: PerfMeasure): void {
   try {
-    mkdirSync(RESULTS_DIR, { recursive: true });
+    if (!MEASURES_PATH) throw new Error('Measure collection was not prepared by the launcher');
+    mkdirSync(path.dirname(MEASURES_PATH), { recursive: true });
     appendFileSync(MEASURES_PATH, `${JSON.stringify(measure)}\n`, "utf8");
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -488,12 +606,11 @@ export function recordHostPressure(phase: "start" | "end"): void {
 }
 
 /**
- * Discard any measures on disk. Called from `onPrepare` so a file left behind by a
- * previously CRASHED run (one that died before `onComplete` could consume and clear
- * it) is never posted as if it were this run's data — that would report stale
- * timings against the current commit, which is worse than reporting none.
+ * Discard only this launcher's measures. A crashed run's separate file is never
+ * reused, read or deleted by a later launcher, even with the same profile name.
  */
 export function resetMeasures(): void {
+  if (!MEASURES_PATH) return;
   try {
     rmSync(MEASURES_PATH, { force: true });
   } catch {
@@ -503,7 +620,7 @@ export function resetMeasures(): void {
 
 /** Read every recorded measure, skipping any unparseable (partially-written) line. */
 export function readMeasures(): PerfMeasure[] {
-  if (!existsSync(MEASURES_PATH)) return [];
+  if (!MEASURES_PATH || !existsSync(MEASURES_PATH)) return [];
   const measures: PerfMeasure[] = [];
   for (const line of readFileSync(MEASURES_PATH, "utf8").split("\n")) {
     const trimmed = line.trim();

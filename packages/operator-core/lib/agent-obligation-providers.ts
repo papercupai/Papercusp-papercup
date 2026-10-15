@@ -16,18 +16,37 @@ import {
   type AgentObligationMeasurementFailure,
 } from './agent-obligations';
 import type { GoalLaunchRefusal, GoalLaunchResolution, GoalPlanPlacement, GoalPortfolioBrief, GoalPotPlacementAuthority } from './goal-launch-settings';
-import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
+import {
+  describeGoalReviewCoverageGap,
+  goalPlanningPortfolioFingerprint,
+  goalReviewCoverageGaps,
+  type GoalPlanningReview,
+} from './goal-planning-review';
 import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
-import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
+import { GOAL_OWNER_REPORT_HEADING_LIST } from './goal-owner-report';
+import type { PlanAcceptanceGateCode } from './plan-acceptance-gate';
+import type { FleetStaffingRow } from './fleet/fleet-staffing-read';
+import type { StrandedGoalWork } from './goal-stranded-work';
+import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
+import { inboxWakeKey } from './agent-tools/coordination/inbox-wake';
 
-export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v5';
+export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v6';
+/**
+ * v3 (P-009): a no-new-plan review discharges only with a passing coverage map.
+ * v4 (WI-10006710): ...and only when it cites every unplaced or blocked worklist plan.
+ */
+export const GOAL_PLANNING_OBLIGATION_REVISION = 'goal-planning-needed-v4';
+/** Worklist placements nothing is moving: a no-new-plan review must name each one. */
+const UNMOVED_WORKLIST_PLACEMENTS: ReadonlySet<string> = new Set(['unplaced', 'blocked']);
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
-export const WAITING_ON_OBLIGATION_REVISION = 'waiting-on-progress-v1';
+export const WAITING_ON_OBLIGATION_REVISION = 'waiting-on-progress-v2';
+export const FLEET_STAFFING_OBLIGATION_REVISION = 'fleet-staffing-v1';
+export const STRANDED_GOAL_WORK_OBLIGATION_REVISION = 'stranded-goal-work-v1';
 
 interface ProviderBase {
   workspaceId: string;
@@ -62,10 +81,10 @@ export interface GoalPlanningProviderInput extends ProviderBase {
 /** A review selects the next planning action; it never grants launch or ownership authority. */
 export function goalPlanningObligation(input: GoalPlanningProviderInput): AgentObligation {
   const common = {
-    ruleId: 'goal-planning-needed', ruleRevision: 'goal-planning-needed-v2', family: 'planning-needed' as const,
+    ruleId: 'goal-planning-needed', ruleRevision: GOAL_PLANNING_OBLIGATION_REVISION, family: 'planning-needed' as const,
     scope: { workspaceId: input.workspaceId, ownerId: input.ownerId, goalId: input.goalId },
     responsibleOwnerId: input.ownerId,
-    authority: policyAuthority('modes/registry:goal+scout_ticks.goalReview', 'goal-planning-needed-v2'),
+    authority: policyAuthority('modes/registry:goal+scout_ticks.goalReview', GOAL_PLANNING_OBLIGATION_REVISION),
     priority: 'normal' as const, causalRank: 2, sourceGeneration: input.sourceGeneration,
     episode: input.sourceGeneration, applicableDemand: 0, evidence: [] as AgentObligationEvidence[],
     clearsWhen: { id: 'current-evidenced-goal-review', summary: 'A current evidence-backed goal review addresses uncovered needs; actual plan execution remains a separate obligation.', evidenceKind: 'state' as const, sourceRef: 'scout_ticks.detail.goalReview+GoalPortfolioBrief' },
@@ -108,8 +127,32 @@ export function goalPlanningObligation(input: GoalPlanningProviderInput): AgentO
     episode: `review:${fingerprint}:${review.reviewedAt}`, lastSatisfiedAt: review.reviewedAt };
   if (review.disposition === 'existing-plans-sufficient' || review.disposition === 'no-eligible-work') {
     if (review.uncoveredOutcome) return unknown({ code: 'goal-review-conflicting-disposition', detail: 'The no-new-plan disposition also names an uncovered outcome.', retry: 'Resolve the contradictory review evidence before treating planning as satisfied.' });
+    // P-009: a no-new-plan review discharges the nudge only when it shows which
+    // plan covers each recurring need. An unbacked assertion leaves it due.
+    const coverageAction = (summary: string) => ({ kind: 'continue' as const, targetRef: `goal:${input.goalId}`, recoveryRef: 'coord:orient', summary });
+    if (!review.coverage) return defineAgentObligation({ ...measured, title: 'Back the no-new-plan review with a coverage map', status: 'due', applicableDemand: 1,
+      reason: `The current ${review.disposition} review lists no coverage map, so nothing shows which plan covers each recurring need.`,
+      action: coverageAction('Re-record blender:ideate-pass-record goalReview with coverage: each recurring need, its goal work-items (itemRefs) and its planRef. A need spanning 3+ items with no plan means write one (plans:new, then plans:start).'),
+    });
+    const gaps = goalReviewCoverageGaps(review.coverage);
+    if (gaps.length > 0) return defineAgentObligation({ ...measured, title: 'Write a plan for the uncovered need', status: 'due', applicableDemand: gaps.length,
+      reason: gaps.map(describeGoalReviewCoverageGap).join(' '),
+      action: coverageAction('Write and start a plan for each uncovered cluster, staff it, then re-record the review citing it.'),
+    });
+    // WI-10006710: a coverage map that passes the cluster check can still omit a worklist
+    // plan nothing is moving. Measured 2026-10-06 (goal 60d3a8, epoch 21): the 12:19:30Z
+    // review cited three worklist plans, omitted a ready unplaced one with open goal work,
+    // and that plan got no start, staffing or recorded hold for the rest of the tenure.
+    const citedPlans = new Set([...review.planRefs, ...review.coverage.flatMap((entry) => (entry.planRef ? [entry.planRef] : []))]);
+    const unaccounted = portfolio.worklist.filter((plan) => UNMOVED_WORKLIST_PLACEMENTS.has(plan.placement.state) && !citedPlans.has(plan.ref));
+    if (unaccounted.length > 0) return defineAgentObligation({ ...measured, title: 'Account for every unplaced worklist plan', status: 'due', applicableDemand: unaccounted.length,
+      reason: `The current ${review.disposition} review does not cite ${unaccounted.length === 1 ? 'this worklist plan' : 'these worklist plans'}, and nothing is moving ${unaccounted.length === 1 ? 'it' : 'them'}: ${unaccounted.map((plan) => `${plan.ref} (${plan.placement.state})`).join(', ')}.`,
+      action: coverageAction('Place each plan (apply its placement repair), or re-record the review with a coverage entry that cites it as planRef and states why it is held.'),
+    });
+    const planned = review.coverage.filter((entry) => entry.planRef).length;
     return defineAgentObligation({ ...measured, title: 'Current review requires no new plan', status: 'satisfied',
-      reason: review.rationale, changeSignal: { nextDeadlineAt: new Date(reviewedMs + reviewIntervalMs).toISOString(), cancellationRef: `goal:${input.goalId}` },
+      reason: `${review.rationale} Coverage: ${planned} of ${review.coverage.length} mapped needs cite a covering plan.`,
+      changeSignal: { nextDeadlineAt: new Date(reviewedMs + reviewIntervalMs).toISOString(), cancellationRef: `goal:${input.goalId}` },
     });
   }
   const guards = 'Preserve proposal lineage; recheck scope, budget, admission and ownership at mutation time, and use CAS for worklist changes. A review is not a worker claim.';
@@ -222,6 +265,11 @@ const EXACT_PLAN_REFUSAL_GUIDANCE = {
   'family-disagreement': { status: 'blocked', summary: 'reconcile the promoted row family and exact-plan claim filter before retrying' },
   'insufficient-executable-width': { status: 'blocked', summary: 'reconcile occupied lanes and requested seats; launch only a separately verified executable width' },
 } satisfies Record<Exclude<ExactPlanAdmissionReason, 'ready'>, { status: 'blocked' | 'unknown'; summary: string }>;
+
+/** `ref (P-003, P-004)` list for the plans an owner wall holds — shared by reason and brief wording. */
+function ownerWalledSummary(plans: readonly GoalPortfolioPlan[]): string {
+  return plans.map((plan) => `${plan.ref} (${plan.placement.wall?.itemIds.join(', ') ?? 'needs-human'})`).join('; ');
+}
 
 function placementNote(placement: GoalPlanPlacement): string {
   const fleet = placement.fleet
@@ -350,6 +398,13 @@ const LAUNCH_REFUSAL_GUIDANCE = {
 
 export function planPlacementObligation(input: PlanPlacementProviderInput): AgentObligation {
   const scope = { workspaceId: input.workspaceId, ownerId: input.ownerId, goalId: input.goalId };
+  const changeSignal =
+    input.read.status === 'unknown' && input.read.failure.code === 'canonical-obligation-scope-read-failed'
+      ? undefined
+      : {
+          event: goalPlanPlacementChangedKey(input.goalId),
+          cancellationRef: `goal:${input.goalId}`,
+        };
   const common = {
     ruleId: 'goal-plan-placement',
     ruleRevision: PLAN_PLACEMENT_OBLIGATION_REVISION,
@@ -375,10 +430,7 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
       sourceRef:
         'GoalPortfolioBrief.worklist[].placement+resolvePlanClosure+resolveGoalLaunch+classifyGoalPlanFleetCoverage',
     },
-    changeSignal: {
-      event: goalPlanPlacementChangedKey(input.goalId),
-      cancellationRef: `goal:${input.goalId}`,
-    },
+    ...(changeSignal ? { changeSignal } : {}),
     boundary: {
       boundary: 'fleet:launch-on-plan',
       refusalCode: 'goal-plan-placement-prerequisite',
@@ -459,7 +511,13 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     });
   }
 
-  const applicablePlans = portfolio.worklist.filter((plan) => plan.placement.state !== 'terminal');
+  // WI-10005657: an owner-walled plan is neither terminal nor placeable — only
+  // the owner can advance it, so it must create no demand (and no mandate). It
+  // is surfaced by name, never silently dropped.
+  const ownerWalledPlans = portfolio.worklist.filter((plan) => plan.placement.state === 'owner-walled');
+  const applicablePlans = portfolio.worklist.filter(
+    (plan) => plan.placement.state !== 'terminal' && plan.placement.state !== 'owner-walled',
+  );
   // Preserve canonical worklist ordering among feasible next actions. A
   // blocked earlier plan is not a prerequisite for an independent later one.
   // Retain the blocker as the fallback when no placement can advance.
@@ -505,6 +563,30 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     });
   }
 
+  if (applicablePlans.length === 0 && ownerWalledPlans.length > 0) {
+    return defineAgentObligation({
+      ...common,
+      title: 'Every open goal plan is owner-walled — nothing is launchable',
+      // Same shape as `none:`: the generation is policy identity, so an unchanged
+      // wall never becomes a fresh obligation episode on every turn.
+      episode: `owner-walled:${input.sourceGeneration}`,
+      status: 'not-applicable',
+      reason: `every non-terminal worklist plan is waiting on the owner (${ownerWalledSummary(ownerWalledPlans)}); a fleet launch cannot resolve it`,
+      causalRank: 0,
+      applicableDemand: 0,
+      evidence: [
+        ...placementEvidence(input, ownerWalledPlans[0]),
+        ...ownerWalledPlans.map((plan) => evidence(
+          `goal-plan-placement:${plan.ref}:${portfolio.assembledAt}`,
+          portfolio.assembledAt,
+          input.sourceGeneration,
+          placementNote(plan.placement),
+          'plan is owner-walled; no placement demand',
+        )),
+      ],
+    });
+  }
+
   if (applicablePlans.length === 0) {
     return defineAgentObligation({
       ...common,
@@ -518,7 +600,10 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     });
   }
 
-  if (alert) {
+  // An alert naming an owner-walled plan is the cohort watchdog seeing an unstaffed
+  // started plan — true, and deliberately so. The wall is the more specific
+  // writer, so it is not a "writers disagree" conflict.
+  if (alert && !ownerWalledPlans.some((plan) => plan.slug === alert.planSlug)) {
     const alertPlan = portfolio.worklist.find((plan) => plan.slug === alert.planSlug);
     if (!alertPlan || alertPlan.placement.reconciliation.consistent || alertPlan.placement.state === 'terminal') {
       const observed = alertPlan
@@ -556,7 +641,9 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
       // becoming a brand-new obligation episode on every turn.
       episode: `covered:${input.sourceGeneration}`,
       status: 'satisfied',
-      reason: 'every non-terminal worklist plan is working or independently led with a consistent canonical receipt',
+      reason:
+        'every non-terminal worklist plan is working or independently led with a consistent canonical receipt' +
+        (ownerWalledPlans.length ? `; owner-walled plans create no demand: ${ownerWalledSummary(ownerWalledPlans)}` : ''),
       causalRank: 0,
       applicableDemand: applicablePlans.length,
       evidence: [...placementEvidence(input, applicablePlans[0]), ...covered],
@@ -875,7 +962,7 @@ export function ownerReportObligation(input: OwnerReportProviderInput): AgentObl
     evidence: [evidence(reportRef, input.observedAt, input.sourceGeneration, report.obligation)],
     action: {
       kind: 'report',
-      summary: 'send MOVED / COST / OWNER-WALLED / KILLED on a canonical owner-facing rail now',
+      summary: `send ${GOAL_OWNER_REPORT_HEADING_LIST} on a canonical owner-facing rail now`,
       tool: 'coord:send',
       args: { to: ['human'] },
     },
@@ -961,6 +1048,13 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
   acceptance_bar_contract_not_ready: 'author',
   acceptance_bar_not_met: 'author',
   design_evidence_unsatisfied: 'author',
+  // verification-system-improvements P-008 + WI-6554700010008529: the ship recruiter
+  // routes this code to a grader outside the implementer lineage, whose brief carries the
+  // re-observation step. Waiting on that recruit is grader work, as for acceptance_ungraded.
+  independent_verification_missing: 'grader',
+  // P-006: the author recruits a blind reviewer and dispositions its gaps.
+  blind_review_missing: 'author',
+  blind_review_gap_undispositioned: 'author',
 
   // --- the gate could not measure the plan ----------------------------------
   // A failed measurement is not a repair. Ranking these as author work would send
@@ -968,6 +1062,8 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
   acceptance_lineage_unreadable: 'unmeasured',
   design_evidence_unavailable: 'unmeasured',
   spec_coverage_unavailable: 'unmeasured',
+  independent_verification_unavailable: 'unmeasured',
+  blind_review_unavailable: 'unmeasured',
 
   // --- the repair belongs to another node -----------------------------------
   // WI-10004178 / endgame D-095: a federated receiver cannot grade or ship; the
@@ -981,8 +1077,11 @@ export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceG
 
 export interface IndependentVerificationProviderInput extends ProviderBase {
   planSlug: string;
+  /** Canonically observed lifecycle disposition, rather than incomplete prerequisites. */
+  notApplicableReason?: string;
   read: ProviderRead<{
-    gate: PlanAcceptanceGateVerdict;
+    /** The persisted canonical gate verdict (D-039), never an inline gate run. */
+    gate: PlanClosureGateFields;
     evidenceRef: string;
     reviewAgeMs?: number;
     /** False before implementation/audit/rubric makes independent review applicable. */
@@ -1035,10 +1134,12 @@ export function independentVerificationObligation(input: IndependentVerification
   if (!observed || !observed.gradeable) {
     return defineAgentObligation({
       ...common,
-      title: `Plan ${input.planSlug} is not ready for independent verification`,
+      title: input.notApplicableReason
+        ? `Plan ${input.planSlug} has no independent-verification duty`
+        : `Plan ${input.planSlug} is not ready for independent verification`,
       episode: `not-gradeable:${input.sourceGeneration}`,
       status: 'not-applicable',
-      reason: 'implementation, completion audit, or acceptance rubric prerequisites are not complete',
+      reason: input.notApplicableReason ?? 'implementation, completion audit, or acceptance rubric prerequisites are not complete',
       causalRank: 2,
       applicableDemand: 0,
       evidence: [evidence(`plan:${input.planSlug}`, input.observedAt, input.sourceGeneration, 'not gradeable')],
@@ -1469,7 +1570,12 @@ export function waitingOnObligations(input: WaitingOnProviderInput): AgentObliga
       }),
     ];
   }
-  const rows = input.read.value;
+  // Every session keeps this lifecycle watch armed so a delivered inbox message
+  // can resume it. It is wake plumbing, not a dependency the agent is waiting
+  // on; surfacing it as blocked sends the reader to inspect a healthy fixture.
+  const rows = input.read.value.filter(
+    (row) => row.kind !== 'event-await' || row.key !== inboxWakeKey(input.ownerId),
+  );
   if (rows.length === 0) {
     return [
       defineAgentObligation({
@@ -1584,6 +1690,228 @@ export function waitingOnObligations(input: WaitingOnProviderInput): AgentObliga
   );
 }
 
+export interface FleetStaffingProviderInput extends ProviderBase {
+  read: ProviderRead<FleetStaffingRow[]>;
+}
+
+const FLEET_STAFFING_SOURCE = 'fleet-staffing:headcount+under-staffed-alert';
+
+/**
+ * P-005 / D-030 step 6: the fleets this session leads, as obligation rows.
+ *
+ * DUE when a fleet is under-staffed and nothing will restore it: `held` is not
+ * true (not held, unknown, or held back by a no-top-up rule, including an expired
+ * one the governor has not lapsed yet). A held fleet below target, a fleet at
+ * target, and a winding-down fleet produce no row, which is how the obligation
+ * clears. A fleet whose headcount cannot be measured is an UNKNOWN row: unknown
+ * is not zero, so it neither alarms nor reads as staffed.
+ */
+export function fleetStaffingObligations(input: FleetStaffingProviderInput): AgentObligation[] {
+  const common = {
+    ruleId: 'fleet-staffing',
+    ruleRevision: FLEET_STAFFING_OBLIGATION_REVISION,
+    family: 'fleet-staffing' as const,
+    scope: { workspaceId: input.workspaceId, ownerId: input.ownerId },
+    responsibleOwnerId: input.ownerId,
+    causalRank: 2,
+    sourceGeneration: input.sourceGeneration,
+  };
+  if (input.read.status === 'unknown') {
+    return [
+      defineAgentObligation({
+        ...common,
+        title: 'Staffing of the fleets you lead is unavailable',
+        episode: `unknown:${input.sourceGeneration}`,
+        status: 'unknown',
+        priority: 'normal',
+        authority: policyAuthority(FLEET_STAFFING_SOURCE, FLEET_STAFFING_OBLIGATION_REVISION),
+        reason: input.read.failure.detail,
+        applicableDemand: 0,
+        evidence: [],
+        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: FLEET_STAFFING_SOURCE },
+        clearsWhen: {
+          id: 'fleet-staffing-readable',
+          summary: 'the led-fleet staffing read succeeds again',
+          evidenceKind: 'state',
+          sourceRef: FLEET_STAFFING_SOURCE,
+        },
+        measurementFailure: input.read.failure,
+      }),
+    ];
+  }
+  const out: AgentObligation[] = [];
+  for (const row of input.read.value) {
+    const ref = `fleet:${row.fleetSlug}`;
+    const brief = `fleet:leader-brief { fleet: '${row.fleetSlug}' }`;
+    if (row.evaluation == null) {
+      const detail = row.unknownReason ?? 'productive headcount is unmeasured';
+      out.push(
+        defineAgentObligation({
+          ...common,
+          title: `Staffing of fleet ${row.fleetSlug} is unmeasured`,
+          episode: `unknown:${row.fleetSlug}`,
+          status: 'unknown',
+          priority: 'normal',
+          authority: policyAuthority(ref, FLEET_STAFFING_OBLIGATION_REVISION),
+          reason: detail,
+          applicableDemand: 0,
+          evidence: [],
+          action: { kind: 'inspect', summary: `read ${brief} for its headcount`, tool: 'fleet:leader-brief', targetRef: ref },
+          clearsWhen: {
+            id: `fleet-staffing-measured:${row.fleetSlug}`,
+            summary: "the fleet's productive headcount is measurable again",
+            evidenceKind: 'state',
+            sourceRef: ref,
+          },
+          measurementFailure: { code: 'fleet-headcount-unmeasured', detail, retry: brief },
+        }),
+      );
+      continue;
+    }
+    const e = row.evaluation;
+    if (!e.alert || e.held === true) continue;
+    out.push(
+      defineAgentObligation({
+        ...common,
+        title:
+          e.target != null
+            ? `Fleet ${row.fleetSlug} is short ${e.shortfall} of ${e.target} worker(s) and nothing will restore it`
+            : `Fleet ${row.fleetSlug} has no workers and no headcount target`,
+        episode: `fleet:${row.fleetSlug}:${e.target ?? 'none'}:${e.notHeldBecause ?? 'unknown'}`,
+        status: 'due',
+        priority: e.current === 0 ? 'high' : 'normal',
+        authority: policyAuthority(ref, FLEET_STAFFING_OBLIGATION_REVISION),
+        reason: e.reason ?? `${e.current} productive worker(s) against target ${e.target ?? 'none'}`,
+        applicableDemand: 1,
+        evidence: [
+          evidence(
+            ref,
+            input.observedAt,
+            input.sourceGeneration,
+            `current=${e.current}, target=${e.target ?? 'none'}, held=${e.held}, ` +
+              `notHeldBecause=${e.notHeldBecause ?? 'unknown'}`,
+          ),
+        ],
+        action: {
+          kind: 'repair',
+          summary: e.repair ?? 'fleet:headcount-target { target, supervise:true }',
+          tool: 'fleet:headcount-target',
+          targetRef: ref,
+        },
+        clearsWhen: {
+          id: `fleet-staffed:${row.fleetSlug}`,
+          summary: 'the headcount governor holds the fleet, it reaches its target, or it winds down',
+          evidenceKind: 'state',
+          sourceRef: ref,
+        },
+      }),
+    );
+  }
+  return out;
+}
+
+export interface StrandedGoalWorkProviderInput extends ProviderBase {
+  goalId: string;
+  read: ProviderRead<StrandedGoalWork>;
+}
+
+const STRANDED_GOAL_WORK_SOURCE = 'stranded-goal-work:open+unassigned+goal_id';
+
+function strandedAgeLabel(createdAt: string | null, observedAt: string): string {
+  if (!createdAt) return 'age unknown';
+  const hours = Math.max(0, Math.floor((Date.parse(observedAt) - Date.parse(createdAt)) / 3_600_000));
+  return hours >= 48 ? `${Math.floor(hours / 24)}d unassigned` : `${hours}h unassigned`;
+}
+
+/**
+ * P-005 / R-5: goal-created work items left open and unassigned (goal-stranded-work.ts).
+ *
+ * DUE when the goal has any item past the stranded threshold or stamped by a
+ * refused launch. One obligation per goal, not one per item: the holder's
+ * action is a single triage pass (place or drop each), and N rows would crowd
+ * every other obligation off a bounded brief. The count is exact; the sample
+ * names the refusal-stamped items first, then the oldest. An unreadable source
+ * is UNKNOWN, never "nothing stranded". An empty read produces no row, which
+ * is how the obligation clears.
+ */
+export function strandedGoalWorkObligations(input: StrandedGoalWorkProviderInput): AgentObligation[] {
+  const ref = `goal:${input.goalId}`;
+  const common = {
+    ruleId: 'stranded-goal-work',
+    ruleRevision: STRANDED_GOAL_WORK_OBLIGATION_REVISION,
+    family: 'stranded-goal-work' as const,
+    scope: { workspaceId: input.workspaceId, ownerId: input.ownerId, goalId: input.goalId },
+    responsibleOwnerId: input.ownerId,
+    causalRank: 2,
+    sourceGeneration: input.sourceGeneration,
+    authority: policyAuthority(STRANDED_GOAL_WORK_SOURCE, STRANDED_GOAL_WORK_OBLIGATION_REVISION),
+    clearsWhen: {
+      id: `stranded-goal-work-cleared:${input.goalId}`,
+      summary: 'every goal-created item past the threshold or refused at launch is claimed, dropped or finished',
+      evidenceKind: 'state' as const,
+      sourceRef: ref,
+    },
+  };
+  if (input.read.status === 'unknown') {
+    return [
+      defineAgentObligation({
+        ...common,
+        title: 'Stranded goal work is unmeasured',
+        episode: `unknown:${input.sourceGeneration}`,
+        status: 'unknown',
+        priority: 'normal',
+        reason: input.read.failure.detail,
+        applicableDemand: 0,
+        evidence: [],
+        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: ref },
+        measurementFailure: input.read.failure,
+      }),
+    ];
+  }
+  const work = input.read.value;
+  if (work.total <= 0) return [];
+  const hours = Math.round(work.thresholdMs / 3_600_000);
+  const named = work.sample
+    .map((row) =>
+      `${row.id} (${row.placementRefusal ? `launch refused ${row.placementRefusal.reason}` : strandedAgeLabel(row.createdAt, input.observedAt)})`,
+    )
+    .join(', ');
+  const more = work.truncatedByLimit ? ` and ${work.total - work.sample.length} more` : '';
+  return [
+    defineAgentObligation({
+      ...common,
+      title:
+        work.refusedCount > 0
+          ? `${work.total} goal work item(s) are stranded unassigned, ${work.refusedCount} left by a refused launch`
+          : `${work.total} goal work item(s) are stranded unassigned past ${hours}h`,
+      // The episode is the set's shape, not its clock: the same stranded set keeps
+      // one episode across reads, and a newly stranded or newly refused item opens
+      // a new one.
+      episode: `goal:${input.goalId}:${work.total}:${work.refusedCount}:${work.sample.map((row) => row.id).join(',')}`,
+      status: 'due',
+      priority: work.refusedCount > 0 ? 'high' : 'normal',
+      reason: `Stranded: ${named}${more}. Goal-created work that nobody holds is not progressing.`,
+      applicableDemand: work.total,
+      evidence: [
+        evidence(
+          ref,
+          input.observedAt,
+          input.sourceGeneration,
+          `total=${work.total}, refusedAtLaunch=${work.refusedCount}, thresholdHours=${hours}, sample=${work.sample.map((row) => row.id).join(',')}`,
+        ),
+      ],
+      action: {
+        kind: 'repair',
+        summary:
+          'for each stranded item: place it (dispatch it to a live goal fleet, or launch with feature:<id> once a seat is free) ' +
+          "or drop it with work_items:set_state { state: 'dropped', reason }; never raise a ceiling to force a launch",
+        tool: 'work_items:list',
+        targetRef: ref,
+      },
+    }),
+  ];
+}
+
 export function buildAgentObligationAgenda(
   inputs: {
     planPlacement?: PlanPlacementProviderInput;
@@ -1592,6 +1920,8 @@ export function buildAgentObligationAgenda(
     independentVerification?: IndependentVerificationProviderInput[];
     ownerDirectives?: OwnerDirectivesProviderInput;
     waitingOn?: WaitingOnProviderInput;
+    fleetStaffing?: FleetStaffingProviderInput;
+    strandedGoalWork?: StrandedGoalWorkProviderInput;
   },
   evaluatedAt: string,
 ): AgentObligationAgenda {
@@ -1602,6 +1932,8 @@ export function buildAgentObligationAgenda(
     ...(inputs.independentVerification ?? []).map(independentVerificationObligation),
     ...(inputs.ownerDirectives ? ownerDirectiveObligations(inputs.ownerDirectives) : []),
     ...(inputs.waitingOn ? waitingOnObligations(inputs.waitingOn) : []),
+    ...(inputs.fleetStaffing ? fleetStaffingObligations(inputs.fleetStaffing) : []),
+    ...(inputs.strandedGoalWork ? strandedGoalWorkObligations(inputs.strandedGoalWork) : []),
   ];
   return evaluateAgentObligations(obligations, evaluatedAt);
 }

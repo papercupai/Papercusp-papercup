@@ -4,7 +4,20 @@ import { canonicalJson } from '../authority/authority-rpc-envelope';
 
 export type RevenueShare = 'creator' | 'host' | 'component' | 'dao' | 'reserve' | 'tax' | 'operating';
 export const REVENUE_SHARES: readonly RevenueShare[] = ['creator', 'host', 'component', 'dao', 'reserve', 'tax', 'operating'] as const;
-export type RevenueSplitManifest = { readonly version: string; readonly manifestHash: string; readonly sharesBps: Readonly<Record<RevenueShare, number>> };
+/** Exact dependency pins supplied by the identity release's verified closure. */
+export interface ComponentRevenueDependency {
+  readonly packageKind: string;
+  readonly ref: string;
+  readonly revision: string;
+  readonly contentHash: string;
+  readonly author: string;
+}
+export type RevenueSplitManifest = {
+  readonly version: string;
+  readonly manifestHash: string;
+  readonly sharesBps: Readonly<Record<RevenueShare, number>>;
+  readonly componentDependencies?: readonly ComponentRevenueDependency[];
+};
 
 export type SettlementRefusalCode = 'invalid-amount' | 'invalid-split' | 'split-overflow' | 'missing-treasury' | 'cost-exceeds-gross';
 
@@ -17,7 +30,54 @@ export function validateRevenueSplit(manifest: RevenueSplitManifest): { ok: true
     sum += bps;
   }
   if (sum > 10_000) return { ok: false, code: 'split-overflow', detail: `revenue split sums to ${sum} bps, above 10000` };
+  if (manifest.componentDependencies !== undefined) {
+    if (!Array.isArray(manifest.componentDependencies)) {
+      return { ok: false, code: 'invalid-split', detail: 'component dependencies must be an array' };
+    }
+    if (manifest.componentDependencies.length === 0 && manifest.sharesBps.component > 0) {
+      return { ok: false, code: 'invalid-split', detail: 'a component share requires dependency authors' };
+    }
+    const seen = new Set<string>();
+    for (const dependency of manifest.componentDependencies) {
+      if (!dependency || typeof dependency !== 'object' ||
+          ['packageKind', 'ref', 'revision', 'contentHash', 'author'].some((field) =>
+            !Object.hasOwn(dependency, field) || typeof dependency[field as keyof ComponentRevenueDependency] !== 'string')) {
+        return { ok: false, code: 'invalid-split', detail: 'component dependencies need exact pins and named authors' };
+      }
+      const key = canonicalJson([dependency.packageKind, dependency.ref]);
+      if (!dependency.packageKind.trim() || !dependency.ref.trim() || !dependency.revision.trim() ||
+          !dependency.author.trim() || !/^[0-9a-f]{64}$/.test(dependency.contentHash) || seen.has(key)) {
+        return { ok: false, code: 'invalid-split', detail: 'component dependencies must have unique exact pins and named authors' };
+      }
+      seen.add(key);
+    }
+  }
   return { ok: true };
+}
+
+/** One equal unit per unique dependency; coalesce units by author before rounding. */
+function allocateComponents(amountMicros: bigint, dependencies: readonly ComponentRevenueDependency[]): Readonly<Record<string, bigint>> {
+  if (dependencies.length === 0) return {};
+  const weights = new Map<string, bigint>();
+  for (const dependency of dependencies) weights.set(dependency.author, (weights.get(dependency.author) ?? 0n) + 1n);
+  const denominator = BigInt(dependencies.length);
+  const rows = [...weights].map(([author, weight]) => ({
+    author,
+    amount: amountMicros * weight / denominator,
+    remainder: amountMicros * weight % denominator,
+  }));
+  let left = amountMicros - rows.reduce((sum, row) => sum + row.amount, 0n);
+  // Largest remainder, then code-unit ordering: reproducible across peer locales.
+  rows.sort((a, b) => a.remainder === b.remainder
+    ? a.author < b.author ? -1 : a.author > b.author ? 1 : 0
+    : a.remainder > b.remainder ? -1 : 1);
+  for (const row of rows) {
+    if (left === 0n) break;
+    row.amount += 1n;
+    left -= 1n;
+  }
+  rows.sort((a, b) => a.author < b.author ? -1 : a.author > b.author ? 1 : 0);
+  return Object.fromEntries(rows.map((row) => [row.author, row.amount]));
 }
 
 /**
@@ -32,13 +92,22 @@ export function validateRevenueSplit(manifest: RevenueSplitManifest): { ok: true
 export function revenueSplitManifest(input: {
   readonly version: string;
   readonly sharesBps: Readonly<Record<RevenueShare, number>>;
+  readonly componentDependencies?: readonly ComponentRevenueDependency[];
 }): RevenueSplitManifest {
   const body: Record<string, unknown> = { version: input.version };
   const shares: Record<string, number> = {};
   for (const share of REVENUE_SHARES) shares[share] = input.sharesBps[share];
   body.sharesBps = shares;
+  const componentDependencies = input.componentDependencies?.map((dependency) => ({ ...dependency }))
+    .sort((a, b) => {
+      const left = canonicalJson(a);
+      const right = canonicalJson(b);
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+  if (componentDependencies !== undefined) body.componentDependencies = componentDependencies;
   const digest = createHash('sha256').update(canonicalJson(body)).digest('hex');
-  return { version: input.version, manifestHash: `sha256:${digest}`, sharesBps: input.sharesBps };
+  return { version: input.version, manifestHash: `sha256:${digest}`, sharesBps: input.sharesBps,
+    ...(componentDependencies !== undefined ? { componentDependencies } : {}) };
 }
 
 export interface SettlementReceipt {
@@ -48,6 +117,7 @@ export interface SettlementReceipt {
   readonly providerCostMicros: bigint;
   readonly distributableMicros: bigint;
   readonly allocationsMicros: Readonly<Record<RevenueShare, bigint>>;
+  readonly componentAllocationsMicros?: Readonly<Record<string, bigint>>;
   readonly daoTreasury: string;
   readonly splitManifestHash: string;
   readonly receiptHash: string;
@@ -66,6 +136,32 @@ function receiptDigest(input: Omit<SettlementReceipt, 'receiptHash'>): string {
   return createHash('sha256').update(canonicalJson(serializeBigInts(input))).digest('hex');
 }
 
+/** Quote integer shares without manufacturing a settlement receipt or payout. */
+export function quoteRevenueAllocations(input: {
+  distributableMicros: bigint;
+  splitManifest: RevenueSplitManifest;
+}): { readonly ok: true; readonly allocationsMicros: Readonly<Record<RevenueShare, bigint>>;
+  readonly componentAllocationsMicros?: Readonly<Record<string, bigint>> } |
+  { readonly ok: false; readonly code: SettlementRefusalCode; readonly detail: string } {
+  if (typeof input.distributableMicros !== 'bigint' || input.distributableMicros < 0n) {
+    return { ok: false, code: 'invalid-amount', detail: 'distributable micros must be non-negative' };
+  }
+  const split = validateRevenueSplit(input.splitManifest);
+  if (!split.ok) return split;
+  const allocations = {} as Record<RevenueShare, bigint>;
+  let allocated = 0n;
+  for (const share of REVENUE_SHARES) {
+    const amount = input.distributableMicros * BigInt(input.splitManifest.sharesBps[share]) / 10_000n;
+    allocations[share] = amount;
+    allocated += amount;
+  }
+  allocations.dao += input.distributableMicros - allocated;
+  return { ok: true, allocationsMicros: allocations,
+    ...(input.splitManifest.componentDependencies !== undefined ? {
+      componentAllocationsMicros: allocateComponents(allocations.component, input.splitManifest.componentDependencies),
+    } : {}) };
+}
+
 /** Compute integer allocations. Any rounding remainder is assigned to the DAO. */
 export function settleRevenue(input: {
   settlementId: string;
@@ -80,21 +176,18 @@ export function settleRevenue(input: {
   if (!split.ok) return split;
   if (input.providerCostMicros > input.grossMicros) return { ok: false, code: 'cost-exceeds-gross', detail: 'provider cost cannot exceed gross amount' };
   const distributableMicros = input.grossMicros - input.providerCostMicros;
-  const allocations = {} as Record<RevenueShare, bigint>;
-  let allocated = 0n;
-  for (const share of REVENUE_SHARES) {
-    const amount = (distributableMicros * BigInt(input.splitManifest.sharesBps[share]!)) / 10_000n;
-    allocations[share] = amount;
-    allocated += amount;
-  }
-  allocations.dao += distributableMicros - allocated;
+  const quote = quoteRevenueAllocations({ distributableMicros, splitManifest: input.splitManifest });
+  if (!quote.ok) return quote;
   const base: Omit<SettlementReceipt, 'receiptHash'> = {
     settlementId: input.settlementId,
     currency: 'stablecoin-micros',
     grossMicros: input.grossMicros,
     providerCostMicros: input.providerCostMicros,
     distributableMicros,
-    allocationsMicros: allocations,
+    allocationsMicros: quote.allocationsMicros,
+    ...(quote.componentAllocationsMicros !== undefined ? {
+      componentAllocationsMicros: quote.componentAllocationsMicros,
+    } : {}),
     daoTreasury: input.daoTreasury,
     splitManifestHash: input.splitManifest.manifestHash,
   };
@@ -125,6 +218,7 @@ export interface SettlementReconciliation {
   readonly providerCostMicros: bigint;
   readonly distributableMicros: bigint;
   readonly allocationsMicros: Readonly<Record<RevenueShare, bigint>>;
+  readonly componentAllocationsMicros?: Readonly<Record<string, bigint>>;
   readonly daoTreasury: string;
 }
 
@@ -211,6 +305,17 @@ export function reconcileSettlement(input: {
     };
   }
 
+  const expectedComponents = splitManifest.componentDependencies === undefined
+    ? undefined : allocateComponents(expected.component, splitManifest.componentDependencies);
+  const recordedComponents = receipt.componentAllocationsMicros;
+  if (expectedComponents === undefined ? recordedComponents !== undefined
+    : recordedComponents === undefined ||
+      Object.keys(expectedComponents).length !== Object.keys(recordedComponents).length ||
+      Object.entries(expectedComponents).some(([author, amount]) =>
+        !Object.hasOwn(recordedComponents, author) || recordedComponents[author] !== amount)) {
+    return { ok: false, code: 'allocation-mismatch', detail: 'component author allocations do not match the exact dependency split' };
+  }
+
   // The digest last, because it is the cheapest way to catch a field this
   // function does not otherwise re-derive (the settlement id, the treasury
   // address, the currency) having been edited under the row.
@@ -235,6 +340,7 @@ export function reconcileSettlement(input: {
       providerCostMicros: receipt.providerCostMicros,
       distributableMicros: receipt.distributableMicros,
       allocationsMicros: receipt.allocationsMicros,
+      ...(recordedComponents !== undefined ? { componentAllocationsMicros: recordedComponents } : {}),
       daoTreasury: receipt.daoTreasury,
     },
   };

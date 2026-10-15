@@ -6,7 +6,12 @@
  * markShuttingDown() flips it true, idempotent, and the test seam resets it.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { isShuttingDown, markShuttingDown, __resetShutdownStateForTest } from './shutdown-state';
+import {
+  hostShutdownSignal,
+  isShuttingDown,
+  markShuttingDown,
+  __resetShutdownStateForTest,
+} from './shutdown-state';
 
 describe('shutdown-state — per-process drain flag', () => {
   afterEach(() => __resetShutdownStateForTest());
@@ -20,6 +25,17 @@ describe('shutdown-state — per-process drain flag', () => {
     expect(isShuttingDown()).toBe(true);
   });
 
+  it('aborts the shared host-shutdown signal when draining begins', () => {
+    const signal = hostShutdownSignal();
+    expect(signal.aborted).toBe(false);
+
+    markShuttingDown();
+
+    expect(hostShutdownSignal()).toBe(signal);
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toEqual(new Error('operator host is shutting down'));
+  });
+
   it('is idempotent: marking twice stays true (a 2nd SIGTERM is harmless)', () => {
     markShuttingDown();
     markShuttingDown();
@@ -27,8 +43,12 @@ describe('shutdown-state — per-process drain flag', () => {
   });
 
   it('the test reset seam clears it back to false', () => {
+    const oldSignal = hostShutdownSignal();
     markShuttingDown();
     __resetShutdownStateForTest();
     expect(isShuttingDown()).toBe(false);
+    expect(oldSignal.aborted).toBe(true);
+    expect(hostShutdownSignal()).not.toBe(oldSignal);
+    expect(hostShutdownSignal().aborted).toBe(false);
   });
 });

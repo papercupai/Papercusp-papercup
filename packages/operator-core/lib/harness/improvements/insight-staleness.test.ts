@@ -2,6 +2,8 @@
  * insight-staleness tests (learning-system-audit-improvements-2026-06-09 P-051).
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { describe, it, expect } from 'vitest';
 import {
   extractCitedPaths,
@@ -9,11 +11,17 @@ import {
   makeCitationResolver,
   makeRepoPathResolver,
   makeRepoBasenameResolver,
+  listIgnoredPaths,
   collectInsightStalenessSignals,
   DEFAULT_INSIGHT_RESOLUTION_COOLDOWN_MS,
 } from './insight-staleness';
 
 const insight = (slug: string, raw: string, status = 'active') => ({ slug, status, raw });
+
+// Keep the real filesystem/Git assertion without crossing the production
+// process-admission seam, whose ledger opens Postgres (forbidden in unit tests).
+const runLocalGit: typeof import('../../fleet/git-via-sidecar').execFileViaSidecar =
+  (command, args, opts) => promisify(execFile)(command, args, { timeout: opts.timeoutMs });
 
 describe('extractCitedPaths — conservative repo-file extraction', () => {
   it('keeps anchored repo files with extensions; drops globs, placeholders, URLs, dirs', () => {
@@ -408,13 +416,48 @@ describe('scanInsightStaleness — suffix + recency guard (P-011)', () => {
   });
 });
 
+describe('listIgnoredPaths — bounded sidecar probe routing', () => {
+  it('keeps one check-ignore call per path and treats nonzero exits as not ignored', async () => {
+    type SidecarExec = typeof import('../../fleet/git-via-sidecar').execFileViaSidecar;
+    const calls: Array<{ command: string; args: string[]; opts: Parameters<SidecarExec>[2] }> = [];
+    const runExec: SidecarExec = async (command, args, opts) => {
+      calls.push({ command, args, opts });
+      const pathArg = args[args.length - 1];
+      if (pathArg === 'apps/generated.ts') return { stdout: '', stderr: '' };
+      throw Object.assign(new Error('not ignored or path is in a submodule'), {
+        code: pathArg === 'libs/sync/src/file.ts' ? 128 : 1,
+        stdout: '',
+        stderr: 'not ignored',
+      });
+    };
+
+    const ignored = await listIgnoredPaths(
+      '/repo',
+      ['apps/generated.ts', 'apps/source.ts', 'libs/sync/src/file.ts'],
+      runExec,
+    );
+
+    expect(ignored).toEqual(new Set(['apps/generated.ts']));
+    expect(calls.map(({ command, args }) => [command, args])).toEqual([
+      ['git', ['-C', '/repo', 'check-ignore', '-q', '--', 'apps/generated.ts']],
+      ['git', ['-C', '/repo', 'check-ignore', '-q', '--', 'apps/source.ts']],
+      ['git', ['-C', '/repo', 'check-ignore', '-q', '--', 'libs/sync/src/file.ts']],
+    ]);
+    expect(calls[0]?.opts).toMatchObject({
+      subsystem: 'insight-staleness',
+      timeoutMs: 2_000,
+      rpcTimeoutMs: 7_000,
+    });
+  });
+});
+
 // The fs glue: readdir(agent-insights) → frontmatter status parse → existsSync
 // delegation to the (separately-tested) pure scan. Smoke against the REAL docs
 // tree — count-free so it can't drift as insights are added/retired; it pins the
 // wiring (no throw, well-formed signals, the deterministic .mdx path shape).
 describe('collectInsightStalenessSignals — fs glue over the real docs tree', () => {
   it('resolves to an array of well-formed insight-staleness signals', async () => {
-    const signals = await collectInsightStalenessSignals();
+    const signals = await collectInsightStalenessSignals(runLocalGit);
     expect(Array.isArray(signals)).toBe(true);
     for (const s of signals) {
       expect(s.source).toBe('insight-staleness');
@@ -440,7 +483,7 @@ describe('collectInsightStalenessSignals — fs glue over the real docs tree', (
   it('never reports a gitignored (generated) path as missing', async () => {
     const { execFileSync } = await import('node:child_process');
     const { REPO_ROOT } = await import('../../agent-tools/docs/_repo-paths');
-    const signals = await collectInsightStalenessSignals();
+    const signals = await collectInsightStalenessSignals(runLocalGit);
     const blamed = signals.flatMap((s) =>
       [...(s.body ?? '').matchAll(/^ {2}- `([^`]+)`$/gm)].map((m) => m[1]),
     );

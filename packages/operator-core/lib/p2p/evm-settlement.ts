@@ -452,6 +452,10 @@ export function buildSettlementProofEvent(input: {
       providerCostMicros: input.plan.receipt.providerCostMicros.toString(),
       distributableMicros: input.plan.receipt.distributableMicros.toString(),
       allocationsMicros: allocations,
+      ...(input.plan.receipt.componentAllocationsMicros !== undefined ? {
+        componentAllocationsMicros: Object.fromEntries(Object.entries(input.plan.receipt.componentAllocationsMicros)
+          .map(([author, amount]) => [author, amount.toString()])),
+      } : {}),
       daoTreasury: input.plan.receipt.daoTreasury,
       receiptHash: input.plan.receipt.receiptHash,
     },

@@ -62,7 +62,8 @@
  *     round-robin. The already-resolved account arrives as `initialAccount`, so a
  *     double-advance is structurally impossible rather than merely avoided.
  */
-import { claudeAttemptHeaders } from './credential-store';
+import { describeFetchError } from '../loopback-fetch';
+import { claudeAttemptBody, claudeAttemptHeaders } from './credential-store';
 import { presentedSecretsFromHeaders, scrubbedErrorBody } from './error-body-scrub';
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
@@ -197,6 +198,8 @@ export interface ClaudeFetchInit {
   method: string;
   headers: Record<string, string>;
   body: Uint8Array | null;
+  /** Account whose resolved credential is present in these exact headers. */
+  diagnosticAccountId: string;
   signal: AbortSignal;
   dispatcher: unknown;
 }
@@ -558,8 +561,8 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
         // P-006: the credential SHAPE follows the account this attempt landed on, so a rotation
         // from a subscription account to a Console API-key account switches Bearer+oauth-beta
         // for x-api-key mid-request. An account with no recorded mode is a subscription account.
-        headers: claudeAttemptHeaders(opts.baseHeaders, account.authMode ?? 'oauth', token),
-        body: opts.body,
+        headers: claudeAttemptHeaders(opts.baseHeaders, account.authMode ?? 'oauth', token, account.anthropicWorkspaceId),
+        body: claudeAttemptBody(opts.body, account.authMode ?? 'oauth'),
         accountId: account.accountId,
         dispatcher,
       };
@@ -575,17 +578,22 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
           method: prepared.method,
           headers: prepared.headers,
           body: prepared.body,
+          diagnosticAccountId: prepared.accountId,
           signal: context.signal,
           dispatcher: prepared.dispatcher,
         });
       } catch (error) {
+        // A trusted policy refusal at fetch is already classified. Rewriting it
+        // as a retryable network failure would retry a refused reservation and
+        // penalize a provider account that received no request.
+        if (error instanceof GatewayRequestKernelError) throw error;
         // A raw throw normalizes to retryable:FALSE, which would silently disable
         // the transport-failure branch of selectReattempt — one of this lane's
         // three same-account retries (gateway.ts:4212, the sibling-egress rotate).
         // The live handler treats a transport failure as recoverable, so mark it.
         throw new GatewayRequestKernelError(
-          `inference-gateway: claude upstream failed: ${(error as Error).message}`,
-          { code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true },
+          `inference-gateway: claude upstream failed: ${describeFetchError(error)}`,
+          { code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true, cause: error },
         );
       }
       const headers = headersToObject(response.headers);

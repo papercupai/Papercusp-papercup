@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getDatatype, upsertDatatype } from '../datatype-registry-store';
 import { ingestExternalTriggerEvent } from '../external-triggers/ingestion';
-import { buildPersonalAmbientContextBlock, type PersonalAmbientDeps } from './ambient';
+import { buildPersonalAmbientContextBlock, disclosePersonalAmbientResults, type PersonalAmbientDeps } from './ambient';
 import { parsePersonalArchive } from './archive-import';
 import { authorizePersonalAccess } from './authorization';
 import {
@@ -27,7 +27,7 @@ const WS = 'personal-vault-test';
 beforeAll(async () => {
   org = await createOrgTestDb();
   await org.adminSql`
-    ALTER TABLE harness_shared.personal_documents
+    ALTER TABLE harness_shared.documents
       ADD COLUMN IF NOT EXISTS embedding_profile text`;
   const [user] = await org.adminSql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name)
@@ -42,6 +42,8 @@ beforeAll(async () => {
     title: emailType.title,
     description: emailType.description,
     tier: emailType.tier,
+    nature: emailType.nature,
+    audience: emailType.audience,
     workItemKind: emailType.workItemKind,
     payloadSchema: emailType.payloadSchema,
     authoritativeWriter: emailType.authoritativeWriter,
@@ -61,9 +63,9 @@ beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
-  await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE user_id = ${userId}`;
-  await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
+  await org.adminSql`DELETE FROM harness_shared.documents WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_sync_state WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_identity_aliases WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_identities WHERE user_id = ${userId}`;
@@ -93,10 +95,10 @@ describe('Personal Vault core', () => {
     })));
 
     const parsed = parsePersonalArchive('owner-history.zip', archive.toBuffer());
-    expect(parsed).toMatchObject({ sources: ['facebook', 'gmail'], warnings: [] });
+    expect(parsed).toMatchObject({ sources: ['facebook', 'mail'], warnings: [] });
     expect(parsed.documents.map((document) => document.dedupeKey).sort()).toEqual([
       'facebook:facebook-archive-message-1',
-      'gmail:archive-mail-1@example.com',
+      'mail:archive-mail-1@example.com',
     ]);
 
     const first = await upsertPersonalDocuments(org.adminSql, WS, userId, parsed.documents);
@@ -104,20 +106,20 @@ describe('Personal Vault core', () => {
     expect(reimport.ids).toEqual(first.ids);
     const rows = await org.adminSql<Array<{ source: string; n: number }>>`
       SELECT source, count(*)::int AS n
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE workspace_id = ${WS} AND user_id = ${userId}
        GROUP BY source ORDER BY source`;
     expect(rows).toEqual([
       { source: 'facebook', n: 1 },
-      { source: 'gmail', n: 1 },
+      { source: 'mail', n: 1 },
     ]);
 
     const lexical = await searchPersonalDocuments(org.adminSql, WS, userId, {
-      query: 'cobalt notebook', scopes: ['gmail'],
+      query: 'cobalt notebook', scopes: ['mail'],
     });
     expect(lexical).toHaveLength(1);
     expect(lexical[0]).toMatchObject({
-      source: 'gmail',
+      source: 'mail',
       externalId: 'archive-mail-1@example.com',
       lexicalRank: 1,
     });
@@ -125,7 +127,7 @@ describe('Personal Vault core', () => {
     const localEmbedding = new Array(768).fill(0);
     localEmbedding[0] = 1;
     await org.adminSql`
-      UPDATE harness_shared.personal_documents
+      UPDATE harness_shared.documents
          SET embedding = ${JSON.stringify(localEmbedding)}::vector,
              embedding_mode = 'gemma',
              embedding_profile = 'gemma-embeddinggemma-300m-768@v1'
@@ -144,7 +146,7 @@ describe('Personal Vault core', () => {
     });
 
     await org.adminSql`
-      UPDATE harness_shared.personal_documents
+      UPDATE harness_shared.documents
          SET embedding_profile = 'openai-text-embedding-3-small-768@v1'
        WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'facebook'`;
     const mismatched = await searchPersonalDocuments(org.adminSql, WS, userId, {
@@ -157,34 +159,34 @@ describe('Personal Vault core', () => {
 
   it('upserts/dedupes and hybrid-searches with scope, participant, time, and bounded snippets', async () => {
     await upsertPersonalDocuments(org.adminSql, WS, userId, [
-      { source: 'gmail', kind: 'message', externalId: 'm1', occurredAt: '2026-08-21T12:00:00Z', participants: ['ada@example.com'], title: 'Launch notes', text: 'The launch checklist includes privacy verification. '.repeat(30), dedupeKey: 'm1' },
+      { source: 'mail', kind: 'message', externalId: 'm1', occurredAt: '2026-08-21T12:00:00Z', participants: ['ada@example.com'], title: 'Launch notes', text: 'The launch checklist includes privacy verification. '.repeat(30), dedupeKey: 'm1' },
       { source: 'calendar', kind: 'event', externalId: 'e1', occurredAt: '2026-08-20T12:00:00Z', participants: ['bob@example.com'], title: 'Dinner', text: 'Restaurant booking', dedupeKey: 'e1' },
     ]);
     await upsertPersonalDocuments(org.adminSql, WS, userId, [
-      { source: 'gmail', kind: 'message', externalId: 'm1', participants: ['ada@example.com'], title: 'Launch notes', text: 'Updated privacy verification', dedupeKey: 'm1' },
+      { source: 'mail', kind: 'message', externalId: 'm1', participants: ['ada@example.com'], title: 'Launch notes', text: 'Updated privacy verification', dedupeKey: 'm1' },
     ]);
     const results = await searchPersonalDocuments(org.adminSql, WS, userId, {
-      query: 'privacy verification', scopes: ['gmail'], participants: ['ada@example.com'],
+      query: 'privacy verification', scopes: ['mail'], participants: ['ada@example.com'],
       timeRange: { from: '2026-08-01T00:00:00Z' }, snippetChars: 100,
     });
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ source: 'gmail', scopeKey: 'personal:gmail', title: 'Launch notes' });
+    expect(results[0]).toMatchObject({ source: 'mail', scopeKey: 'personal:mail', title: 'Launch notes' });
     expect(results[0]!.snippet.length).toBeLessThanOrEqual(100);
     const count = await org.adminSql<Array<{ n: number }>>`
-      SELECT count(*)::int n FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
+      SELECT count(*)::int n FROM harness_shared.documents WHERE user_id = ${userId}`;
     expect(count[0].n).toBe(2);
   });
 
   it('is default-deny, grants a non-coding role, and hard-denies coding roles', async () => {
     const baseCtx = { workspaceId: WS, role: 'meeting-prep' };
-    expect((await authorizePersonalAccess(org.adminSql, baseCtx, WS, userId, ['gmail'])).allowed).toBe(false);
+    expect((await authorizePersonalAccess(org.adminSql, baseCtx, WS, userId, ['mail'])).allowed).toBe(false);
     await createPersonalGrant(org.adminSql, {
       workspaceId: WS, userId, principalType: 'agent-role', principalId: 'meeting-prep',
-      scopes: ['gmail'], grantedBy: 'owner',
+      scopes: ['mail'], grantedBy: 'owner',
     });
-    const granted = await authorizePersonalAccess(org.adminSql, baseCtx, WS, userId, ['personal:gmail']);
-    expect(granted).toMatchObject({ allowed: true, scopes: ['personal:gmail'] });
-    const coding = await authorizePersonalAccess(org.adminSql, { workspaceId: WS, role: 'worker' }, WS, userId, ['gmail']);
+    const granted = await authorizePersonalAccess(org.adminSql, baseCtx, WS, userId, ['personal:mail']);
+    expect(granted).toMatchObject({ allowed: true, scopes: ['personal:mail'] });
+    const coding = await authorizePersonalAccess(org.adminSql, { workspaceId: WS, role: 'worker' }, WS, userId, ['mail']);
     expect(coding).toMatchObject({ allowed: false, reason: 'coding_agent_denied' });
   });
 
@@ -200,16 +202,16 @@ describe('Personal Vault core', () => {
       + 'Ada requested a renewal timeline review before Friday.',
     ));
     const parsed = parsePersonalArchive('takeout.zip', archive.toBuffer());
-    expect(parsed).toMatchObject({ sources: ['gmail'], warnings: [] });
+    expect(parsed).toMatchObject({ sources: ['mail'], warnings: [] });
     await upsertPersonalDocuments(org.adminSql, WS, userId, parsed.documents);
     await createPersonalGrant(org.adminSql, {
       workspaceId: WS, userId, principalType: 'agent-role', principalId: 'meeting-prep',
-      scopes: ['gmail'], grantedBy: 'owner',
+      scopes: ['mail'], grantedBy: 'owner',
     });
     // Even an explicit grant must not bypass the absolute coding-role fence.
     await createPersonalGrant(org.adminSql, {
       workspaceId: WS, userId, principalType: 'agent-role', principalId: 'worker',
-      scopes: ['gmail'], grantedBy: 'owner',
+      scopes: ['mail'], grantedBy: 'owner',
     });
 
     const build = (role: string) => buildPersonalAmbientContextBlock(
@@ -220,6 +222,7 @@ describe('Personal Vault core', () => {
         authorize: authorizePersonalAccess,
         embedQuery: async () => null,
         search: searchPersonalDocuments,
+        disclose: disclosePersonalAmbientResults,
       } satisfies PersonalAmbientDeps,
     );
 
@@ -233,18 +236,18 @@ describe('Personal Vault core', () => {
   it('owner approval replaces a broader live grant instead of leaving stale access', async () => {
     await createPersonalGrant(org.adminSql, {
       workspaceId: WS, userId, principalType: 'plan-template', principalId: 'meeting-prep',
-      scopes: ['gmail', 'calendar'], grantedBy: 'owner',
+      scopes: ['mail', 'calendar'], grantedBy: 'owner',
     });
     const replacement = await replacePersonalGrant(org.adminSql, {
       workspaceId: WS, userId, principalType: 'plan-template', principalId: 'meeting-prep',
-      scopes: ['gmail'], grantedBy: 'owner',
+      scopes: ['mail'], grantedBy: 'owner',
     });
-    expect(replacement).toMatchObject({ scopes: ['personal:gmail'], revoked: 1 });
+    expect(replacement).toMatchObject({ scopes: ['personal:mail'], revoked: 1 });
     const live = await org.adminSql<Array<{ scopes: string[] }>>`
       SELECT scopes FROM harness_shared.personal_grants
        WHERE user_id = ${userId} AND principal_type = 'plan-template'
          AND principal_id = 'meeting-prep' AND revoked_at IS NULL`;
-    expect(live).toEqual([{ scopes: ['personal:gmail'] }]);
+    expect(live).toEqual([{ scopes: ['personal:mail'] }]);
   });
 
   it('resolves one human across contact email, mail address, and social display name', async () => {
@@ -253,7 +256,7 @@ describe('Personal Vault core', () => {
       participants: ['ada@example.com'], title: 'Ada Lovelace', text: 'ada@example.com', dedupeKey: 'ada-contact',
     }]);
     await upsertPersonalDocuments(org.adminSql, WS, userId, [{
-      source: 'gmail', kind: 'message', externalId: 'mail-ada',
+      source: 'mail', kind: 'message', externalId: 'mail-ada',
       participants: ['Ada Lovelace <ada@example.com>'], title: 'Project Phoenix', text: 'Project Phoenix update', dedupeKey: 'ada-mail',
     }]);
     await upsertPersonalDocuments(org.adminSql, WS, userId, [{
@@ -261,7 +264,7 @@ describe('Personal Vault core', () => {
       participants: ['Ada Lovelace'], title: 'Ada thread', text: 'Project Phoenix follow-up', dedupeKey: 'ada-social',
     }]);
     const rows = await org.adminSql<Array<{ source: string; participant_ids: string[] }>>`
-      SELECT source, participant_ids FROM harness_shared.personal_documents
+      SELECT source, participant_ids FROM harness_shared.documents
        WHERE user_id = ${userId} ORDER BY source`;
     expect(rows.every((row) => row.participant_ids.length === 1)).toBe(true);
     expect(new Set(rows.flatMap((row) => row.participant_ids)).size).toBe(1);
@@ -269,28 +272,28 @@ describe('Personal Vault core', () => {
     const found = await searchPersonalDocuments(org.adminSql, WS, userId, {
       query: 'Project Phoenix', participants: ['ada@example.com'], limit: 10,
     });
-    expect(found.map((row) => row.source).sort()).toEqual(['gmail', 'instagram']);
+    expect(found.map((row) => row.source).sort()).toEqual(['instagram', 'mail']);
   });
 
   it('kill-switches all writes and purge removes documents plus cursor state', async () => {
-    await upsertPersonalDocuments(org.adminSql, WS, userId, [{ source: 'gmail', kind: 'message', title: 'x', dedupeKey: 'x' }]);
-    await setPersonalSyncState(org.adminSql, WS, userId, 'gmail', { historyId: '1' });
-    const deleted = await purgePersonalSource(org.adminSql, WS, userId, 'gmail');
+    await upsertPersonalDocuments(org.adminSql, WS, userId, [{ source: 'mail', kind: 'message', title: 'x', dedupeKey: 'x' }]);
+    await setPersonalSyncState(org.adminSql, WS, userId, 'mail', { historyId: '1' });
+    const deleted = await purgePersonalSource(org.adminSql, WS, userId, 'mail');
     expect(deleted).toMatchObject({ documents: 1, cursors: 1 });
     await setPersonalVaultEnabled(org.adminSql, WS, userId, false, 'owner');
-    await expect(upsertPersonalDocuments(org.adminSql, WS, userId, [{ source: 'gmail', kind: 'message', dedupeKey: 'blocked' }])).rejects.toThrow('personal_vault_disabled');
+    await expect(upsertPersonalDocuments(org.adminSql, WS, userId, [{ source: 'mail', kind: 'message', dedupeKey: 'blocked' }])).rejects.toThrow('personal_vault_disabled');
   });
 
   it('keeps identical external records separate by provider account and purges surgically', async () => {
     const firstSourceId = '00000000-0000-4000-8000-000000000201';
     const secondSourceId = '00000000-0000-4000-8000-000000000202';
     const common = {
-      source: 'gmail',
+      source: 'mail',
       kind: 'message',
       externalId: 'shared-provider-local-id',
       title: 'Account provenance proof',
       text: 'account scoped cobalt record',
-      dedupeKey: 'gmail:shared-provider-local-id',
+      dedupeKey: 'mail:shared-provider-local-id',
     };
     await upsertPersonalDocuments(org.adminSql, WS, userId, [
       { ...common, sourceId: firstSourceId, providerAccountId: 'first@example.com' },
@@ -307,7 +310,7 @@ describe('Personal Vault core', () => {
 
     const first = await searchPersonalDocuments(org.adminSql, WS, userId, {
       query: 'cobalt record',
-      scopes: ['gmail'],
+      scopes: ['mail'],
       sourceIds: [firstSourceId],
       providerAccountIds: ['first@example.com'],
     });
@@ -317,7 +320,7 @@ describe('Personal Vault core', () => {
       providerAccountId: 'first@example.com',
     });
 
-    const removed = await purgePersonalSource(org.adminSql, WS, userId, 'gmail', {
+    const removed = await purgePersonalSource(org.adminSql, WS, userId, 'mail', {
       sourceId: firstSourceId,
       providerAccountId: 'first@example.com',
     });
@@ -329,8 +332,8 @@ describe('Personal Vault core', () => {
       }>
     >`
       SELECT source_id::text, provider_account_id
-        FROM harness_shared.personal_documents
-       WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'gmail'`;
+        FROM harness_shared.documents
+       WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'mail'`;
     expect(remaining).toEqual([
       {
         source_id: secondSourceId,
@@ -339,7 +342,7 @@ describe('Personal Vault core', () => {
     ]);
     const otherUserRows = await org.adminSql<Array<{ n: number }>>`
       SELECT count(*)::int AS n
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE workspace_id = ${WS} AND user_id = ${otherUser.id}
          AND provider_account_id = 'first@example.com'`;
     expect(otherUserRows).toEqual([{ n: 1 }]);
@@ -347,13 +350,17 @@ describe('Personal Vault core', () => {
   });
 
   it('consumes normalized Gmail/Calendar events and paged Google Contacts locally', async () => {
-    const sources = await org.adminSql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources
+    const sources = await org.adminSql<Array<{ id: string; kind: string }>>`
+      INSERT INTO harness_shared.data_sources
         (workspace_id, kind, owner_user_id, provider_account_id, status)
-      VALUES (${WS}, 'gmail', ${userId}, 'owner@example.com', 'ready')
-      RETURNING id`;
-    const sink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, sources[0].id);
-    expect(sink).toMatchObject({ kind: 'personal-vault', ref: `user:${userId}:source:${sources[0].id}` });
+      VALUES
+        (${WS}, 'gmail', ${userId}, 'owner@example.com', 'ready'),
+        (${WS}, 'contacts', ${userId}, 'contacts@example.com', 'connected')
+      RETURNING id, kind`;
+    const gmailSource = sources.find((source) => source.kind === 'gmail')!;
+    const contactsSource = sources.find((source) => source.kind === 'contacts')!;
+    const sink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, gmailSource.id);
+    expect(sink).toMatchObject({ kind: 'personal-vault', ref: `user:${userId}:source:${gmailSource.id}` });
     const event = {
       id: 'live-m1', from: 'ada@example.com', to: ['bob@example.com'],
       subject: 'Live mail', text: 'Hello',
@@ -378,7 +385,14 @@ describe('Personal Vault core', () => {
     const fakeFetch = async () => new Response(JSON.stringify({
       connections: [{ resourceName: 'people/1', names: [{ displayName: 'Ada' }], emailAddresses: [{ value: 'ada@example.com' }] }],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
-    const synced = await syncGoogleContacts(org.adminSql, { workspaceId: WS, userId, accessToken: 'local-test-token', fetchImpl: fakeFetch as typeof fetch });
+    const synced = await syncGoogleContacts(org.adminSql, {
+      workspaceId: WS,
+      userId,
+      sourceId: contactsSource.id,
+      providerAccountId: 'contacts@example.com',
+      accessToken: 'local-test-token',
+      fetchImpl: fakeFetch as typeof fetch,
+    });
     expect(synced).toMatchObject({ contacts: 1, pages: 1, nextPageToken: null });
     const rows = await org.adminSql<Array<{
       source: string;
@@ -386,11 +400,15 @@ describe('Personal Vault core', () => {
       provider_account_id: string | null;
     }>>`
       SELECT source, source_id::text, provider_account_id
-        FROM harness_shared.personal_documents
+        FROM harness_shared.documents
        WHERE user_id = ${userId} ORDER BY source`;
-    expect(rows.map((r) => r.source)).toEqual(['contacts', 'gmail']);
-    expect(rows.find((row) => row.source === 'gmail')).toMatchObject({
-      source_id: sources[0].id,
+    expect(rows.map((r) => r.source)).toEqual(['contacts', 'mail']);
+    expect(rows.find((row) => row.source === 'contacts')).toMatchObject({
+      source_id: contactsSource.id,
+      provider_account_id: 'contacts@example.com',
+    });
+    expect(rows.find((row) => row.source === 'mail')).toMatchObject({
+      source_id: gmailSource.id,
       provider_account_id: 'owner@example.com',
     });
   });

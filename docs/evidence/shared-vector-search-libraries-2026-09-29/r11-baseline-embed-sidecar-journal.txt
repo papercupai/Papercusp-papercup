@@ -1,0 +1,79 @@
+# R-11 rate-check baseline: papercup-embed-sidecar.service journal for the pre-extraction 24h (2026-09-29T23:16:20Z..2026-09-30T23:16:20Z), captured 2026-10-02 by su-e8708a1c for the R-11 rubric revision proposed on EI-24823955272728864.
+# Source: journalctl --user -u papercup-embed-sidecar.service --since @1790723780 --until @1790810180 -o short-iso-precise (local -04:00 timestamps).
+# Redaction 2026-10-02T02:12Z (su-e8708a1c): the operator's absolute home directory is written as $HOME in the NPM_INSTALL_SAFE bash lines (git-sync's identity-leak guard refused the verbatim capture). No other byte changed; no papercup-embed-sidecar engine message is affected.
+2026-09-30T11:22:16.997169-04:00 buildhost systemd[4082]: Stopping papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank)...
+2026-09-30T11:22:16.997619-04:00 buildhost bash[130176]: [embed-sidecar] SIGTERM received, shutting down gracefully
+2026-09-30T11:22:21.296003-04:00 buildhost bash[1645566]: NPM_INSTALL_SAFE guarding reader: $HOME/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh bin/embed-sidecar.ts dist-sidecar/embed-sidecar.mjs (root=$HOME/papercupai-workspace/papercusp, lock=npm-install-79e418157b6a)
+2026-09-30T11:22:21.298953-04:00 buildhost bash[1645652]: → esbuild-bundling bin/embed-sidecar.ts → dist-sidecar/embed-sidecar.mjs (plain-node host entry, no tsx loader)
+2026-09-30T11:22:19.610129-04:00 buildhost systemd[4082]: Stopped papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank).
+2026-09-30T11:22:19.610151-04:00 buildhost systemd[4082]: papercup-embed-sidecar.service: Consumed 3h 56min 45.712s CPU time, 8.0G memory peak, 0B memory swap peak.
+2026-09-30T11:22:19.655225-04:00 buildhost systemd[4082]: Starting papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank)...
+2026-09-30T11:23:00.210376-04:00 buildhost bash[1669329]:   dist-sidecar/embed-sidecar.mjs.tmp.1645652  62.6mb ⚠️
+2026-09-30T11:23:00.210376-04:00 buildhost bash[1669329]: ⚡ Done in 3740ms
+2026-09-30T11:23:00.210376-04:00 buildhost bash[1669329]: ✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.
+2026-09-30T11:23:00.210376-04:00 buildhost bash[1669329]: → ascii-escape: 12,859 non-ASCII chars escaped (62.6 MB → 62.7 MB on disk; the win is in-memory: the source string stays one-byte in every host process)
+2026-09-30T11:23:00.220876-04:00 buildhost bash[1645652]: ✓ bundled: 63M dist-sidecar/embed-sidecar.mjs
+2026-09-30T11:23:01.078446-04:00 buildhost bash[1645652]: ✓ bundled systemd scope environment runner beside the host entry
+2026-09-30T11:23:01.495931-04:00 buildhost bash[1645652]: ✓ bundled pot-git ext bridge beside the host entry
+2026-09-30T11:23:01.496689-04:00 buildhost bash[1645652]: → bundling @papercusp/harness blueprints → dist-sidecar/blueprints
+2026-09-30T11:23:01.778821-04:00 buildhost bash[1645652]:     ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml
+2026-09-30T11:23:01.778948-04:00 buildhost bash[1645652]: → bundling @papercusp/locks DDL → dist-sidecar/sql
+2026-09-30T11:23:02.074916-04:00 buildhost bash[1645652]:     ✓ bundled @papercusp/locks DDL matches the tree (highest migration 931, 30 files)
+2026-09-30T11:23:09.444630-04:00 buildhost bash[1682086]:   dist-sidecar/event-loop-sentinel.worker.mjs.new.1645652.mjs  12.9kb
+2026-09-30T11:23:09.444630-04:00 buildhost bash[1682086]: ⚡ Done in 10ms
+2026-09-30T11:23:14.072174-04:00 buildhost systemd[4082]: Started papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank).
+2026-09-30T11:23:14.122232-04:00 buildhost systemd[4082]: Stopping papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank)...
+2026-09-30T11:23:14.146397-04:00 buildhost systemd[4082]: Stopped papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank).
+2026-09-30T11:23:14.146423-04:00 buildhost systemd[4082]: papercup-embed-sidecar.service: Consumed 32.133s CPU time.
+2026-09-30T11:23:14.205083-04:00 buildhost systemd[4082]: Starting papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank)...
+2026-09-30T11:23:14.284783-04:00 buildhost bash[1689334]: NPM_INSTALL_SAFE guarding reader: $HOME/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh bin/embed-sidecar.ts dist-sidecar/embed-sidecar.mjs (root=$HOME/papercupai-workspace/papercusp, lock=npm-install-79e418157b6a)
+2026-09-30T11:23:14.392340-04:00 buildhost bash[1689709]: → esbuild-bundling bin/embed-sidecar.ts → dist-sidecar/embed-sidecar.mjs (plain-node host entry, no tsx loader)
+2026-09-30T11:23:54.726429-04:00 buildhost bash[1748821]:   dist-sidecar/embed-sidecar.mjs.tmp.1689709  62.6mb ⚠️
+2026-09-30T11:23:54.726429-04:00 buildhost bash[1748821]: ⚡ Done in 4689ms
+2026-09-30T11:23:54.726429-04:00 buildhost bash[1748821]: ✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.
+2026-09-30T11:23:54.726429-04:00 buildhost bash[1748821]: → ascii-escape: 12,859 non-ASCII chars escaped (62.6 MB → 62.7 MB on disk; the win is in-memory: the source string stays one-byte in every host process)
+2026-09-30T11:23:54.816438-04:00 buildhost bash[1689709]: ✓ bundled: 63M dist-sidecar/embed-sidecar.mjs
+2026-09-30T11:23:54.816438-04:00 buildhost bash[1689709]: ✓ bundled systemd scope environment runner beside the host entry
+2026-09-30T11:23:54.866983-04:00 buildhost bash[1689709]: ✓ bundled pot-git ext bridge beside the host entry
+2026-09-30T11:23:54.867074-04:00 buildhost bash[1689709]: → bundling @papercusp/harness blueprints → dist-sidecar/blueprints
+2026-09-30T11:23:55.137409-04:00 buildhost bash[1689709]:     ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml
+2026-09-30T11:23:55.137409-04:00 buildhost bash[1689709]: → bundling @papercusp/locks DDL → dist-sidecar/sql
+2026-09-30T11:23:55.856355-04:00 buildhost bash[1689709]:     ✓ bundled @papercusp/locks DDL matches the tree (highest migration 931, 30 files)
+2026-09-30T11:24:00.604436-04:00 buildhost bash[1758901]:   dist-sidecar/event-loop-sentinel.worker.mjs.new.1689709.mjs  12.9kb
+2026-09-30T11:24:00.604436-04:00 buildhost bash[1758901]: ⚡ Done in 11ms
+2026-09-30T11:24:04.944508-04:00 buildhost bash[1765281]:   dist-sidecar/snapshot-fold.worker.mjs.new.1689709.mjs  25.8kb
+2026-09-30T11:24:04.944508-04:00 buildhost bash[1765281]: ⚡ Done in 19ms
+2026-09-30T11:24:05.225443-04:00 buildhost systemd[4082]: Started papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank).
+2026-09-30T11:24:05.433878-04:00 buildhost systemd[4082]: Stopping papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank)...
+2026-09-30T11:24:05.452100-04:00 buildhost systemd[4082]: Stopped papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank).
+2026-09-30T11:24:05.452124-04:00 buildhost systemd[4082]: papercup-embed-sidecar.service: Consumed 34.362s CPU time.
+2026-09-30T11:24:05.457124-04:00 buildhost systemd[4082]: Starting papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank)...
+2026-09-30T11:24:05.542341-04:00 buildhost bash[1766152]: NPM_INSTALL_SAFE guarding reader: $HOME/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh bin/embed-sidecar.ts dist-sidecar/embed-sidecar.mjs (root=$HOME/papercupai-workspace/papercusp, lock=npm-install-79e418157b6a)
+2026-09-30T11:24:05.608967-04:00 buildhost bash[1766244]: → esbuild-bundling bin/embed-sidecar.ts → dist-sidecar/embed-sidecar.mjs (plain-node host entry, no tsx loader)
+2026-09-30T11:24:18.983248-04:00 buildhost bash[1787752]:   dist-sidecar/embed-sidecar.mjs.tmp.1766244  62.6mb ⚠️
+2026-09-30T11:24:18.983248-04:00 buildhost bash[1787752]: ⚡ Done in 3735ms
+2026-09-30T11:24:18.983248-04:00 buildhost bash[1787752]: ✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.
+2026-09-30T11:24:18.983248-04:00 buildhost bash[1787752]: → ascii-escape: 12,859 non-ASCII chars escaped (62.6 MB → 62.7 MB on disk; the win is in-memory: the source string stays one-byte in every host process)
+2026-09-30T11:24:18.992093-04:00 buildhost bash[1766244]: ✓ bundled: 63M dist-sidecar/embed-sidecar.mjs
+2026-09-30T11:24:18.999812-04:00 buildhost bash[1766244]: ✓ bundled systemd scope environment runner beside the host entry
+2026-09-30T11:24:19.007997-04:00 buildhost bash[1766244]: ✓ bundled pot-git ext bridge beside the host entry
+2026-09-30T11:24:19.008060-04:00 buildhost bash[1766244]: → bundling @papercusp/harness blueprints → dist-sidecar/blueprints
+2026-09-30T11:24:19.230963-04:00 buildhost bash[1766244]:     ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml
+2026-09-30T11:24:19.231084-04:00 buildhost bash[1766244]: → bundling @papercusp/locks DDL → dist-sidecar/sql
+2026-09-30T11:24:19.588269-04:00 buildhost bash[1766244]:     ✓ bundled @papercusp/locks DDL matches the tree (highest migration 931, 30 files)
+2026-09-30T11:24:23.509079-04:00 buildhost bash[1795323]:   dist-sidecar/event-loop-sentinel.worker.mjs.new.1766244.mjs  12.9kb
+2026-09-30T11:24:23.509079-04:00 buildhost bash[1795323]: ⚡ Done in 11ms
+2026-09-30T11:24:27.693121-04:00 buildhost bash[1803231]:   dist-sidecar/snapshot-fold.worker.mjs.new.1766244.mjs  25.8kb
+2026-09-30T11:24:27.693121-04:00 buildhost bash[1803231]: ⚡ Done in 86ms
+2026-09-30T11:24:27.998391-04:00 buildhost systemd[4082]: Started papercup-embed-sidecar.service - Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank).
+2026-09-30T11:24:30.161450-04:00 buildhost bash[1803785]: (node:1803785) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-09-30T11:24:30.161450-04:00 buildhost bash[1803785]: (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-09-30T11:24:30.223899-04:00 buildhost bash[1803785]: [embed-sidecar] listening on http://127.0.0.1:3384
+2026-09-30T11:24:30.224045-04:00 buildhost bash[1803785]: PAPERCUSP_EMBED_SIDECAR_READY port=3384
+2026-09-30T11:24:30.272219-04:00 buildhost bash[1803785]: [embed-sidecar] embedding device setting (boot): auto
+2026-09-30T11:24:33.614795-04:00 buildhost bash[1803785]: [embed-sidecar] harrier:query warm
+2026-09-30T11:24:33.624572-04:00 buildhost bash[1803785]: [embed-sidecar] harrier:document warm
+2026-09-30T11:24:34.525343-04:00 buildhost bash[1803785]: [embed-sidecar] rerank warm
+2026-09-30T11:24:35.368861-04:00 buildhost bash[1803785]: [embed-sidecar] gemma:document warm
+2026-09-30T11:24:35.376592-04:00 buildhost bash[1803785]: [embed-sidecar] gemma:query warm
+2026-09-30T11:25:30.777727-04:00 buildhost bash[1803785]: [flags] No override store installed in this process: runtime overrides (flags:set / POST /api/flags/set) are INVISIBLE here and getFlag() is serving FLAG_DEFAULTS. If this process is expected to observe runtime flag flips, call initFlagOverrideStore() during boot BEFORE any flag is resolved (operator-core: installFlagOverrideStore()). Silence with PAPERCUSP_SILENCE_FLAG_OVERRIDE_WARN=1 if defaults-only is intentional.

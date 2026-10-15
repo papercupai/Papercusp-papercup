@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-005 live: an unknown provider package and trigger pack install through the Cupboard route and appear on the generic Settings -> Integrations page (card with app registration and masked credentials; pack section with a provider-filled channel picker, saved and armed)",
+  "framework": "shell",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    ".papercusp/scratch/p005-fixtures/headless-p005.sh",
+    "(launched by .papercusp/scratch/p005-fixtures/launch-p005.sh with VERIFY_TAURI_ISOLATED_DB=1, a private PAPERCUSP_HOME, VERIFY_TAURI_SOURCE_REF pinned and the acceptance inputs checked byte-identical to that ref; the fixture provider p005-fixture-chat and pack p005-fixture-pack are served from local fixture repos through a git url rewrite scoped to the isolated webview profile)"
+  ],
+  "startedAt": "2026-10-12T13:55:26Z",
+  "finishedAt": "2026-10-12T14:12:19Z",
+  "exitCode": 0,
+  "summary": "verify-tauri-headless run 20261012T135531Z-3844832 verdict=pass (passed=3 failed=0 blocked=0 skipped=0), isolated DB and private home, superproject 2e2c5749a1, libs/papercusp 837416e9c1; all 14 walk assertions re-derived from this run's own log markers and all PASS. Re-run of the 2026-10-11 walk at the current tree for AUTO-BAR-R-2-P-005@4.",
+  "assertions": [
+    {
+      "id": "page-renders",
+      "passed": true,
+      "evidence": "OK page rendered"
+    },
+    {
+      "id": "install-unknown-provider-through-cupboard-route",
+      "passed": true,
+      "evidence": "INSTALL_PROVIDER first=409 second=200 review={\"name\":\"p005-fixture-chat\",\"version\":\"0.1.0\",\"kind\":\"plugin\",\"capabilities\":[],\"dependencies\":{\"tools\":[],\"packs\":[],\"plugins\":[],\"events\":[]},\"provider\":{\"id\":\"p005-fixture-chat\",\"contractVersion\":1,\"runtime\":\"daemon\",\"datatypes\":[\"chat-message\"],\"capabilities\":[\"chat.channels\"],\"oauthScopes\":[],\" result={\"ok\":true,\"name\":\"p005-fixture-chat\",\"version\":\"0.1.0\",\"kind\":\"plugin\",\"capabilities\":[],\"source\":\"https://github.com/p005-fixture/provider\",\"installedTo\":\"/tmp/verify-tauri-headless.JOCa0R/papercusp-home/global-plugins/p005-fixture-chat\",\"granted\":[],\"review\":{\"name\":\"p005-fixture-chat\",\"version\":"
+    },
+    {
+      "id": "install-trigger-pack-through-cupboard-route",
+      "passed": true,
+      "evidence": "INSTALL_PACK status=200 {\"ok\":true,\"name\":\"p005-fixture-pack\",\"version\":\"0.1.0\",\"kind\":\"plugin\",\"capabilities\":[],\"source\":\"https://github.com/p005-fixture/pack\",\"installedTo\":\"/tmp/verify-tauri-headless.JOCa0R/papercusp-home/global-plugins/p005-fixture-pack\",\"granted\":[],\"review\":{\"name\":\"p005-fixture-pack\",\"version\":\"0.1.0\",\"kind\":\"plugin\",\"capabilities\":[],\"dependencies\":{\"tools\":[],\"packs\":[],\"plugins\":[],\"events\":[]},\"triggerPack\":{\"targetCount\":1,\"bindingCount\":1,\"edgeCount\":0,\"sourceKinds\":[\"p005-fixture-chat\"],\"datatypes\":[],\"planTargets\":[{\"id\":\"handle-fixture-message\",\"path\":\"plan.md\",\"slug\":\"p005-fixture-m"
+    },
+    {
+      "id": "generic-card-for-installed-provider",
+      "passed": true,
+      "evidence": "OK card for the installed provider"
+    },
+    {
+      "id": "app-registration-from-package",
+      "passed": true,
+      "evidence": "APP_REGISTRATION create=true createText=\"Create Fixture Chat app\" defName=\"Papercusp fixture\" docs=true buttons=[\"Copy definition\"]"
+    },
+    {
+      "id": "declared-credentials-masked",
+      "passed": true,
+      "evidence": "OK two masked, unconfigured credential fields"
+    },
+    {
+      "id": "format-refused-on-page",
+      "passed": true,
+      "evidence": "FORMAT_REFUSAL Bot token does not have the expected format"
+    },
+    {
+      "id": "format-refused-by-server-nothing-stored",
+      "passed": true,
+      "evidence": "SERVER_REFUSAL putStatus=422 putEchoes=false storedAny=false"
+    },
+    {
+      "id": "valid-values-saved",
+      "passed": true,
+      "evidence": "OK valid values saved; both fields configured"
+    },
+    {
+      "id": "stored-values-never-read-back",
+      "passed": true,
+      "evidence": "READBACK leaksToken=false leaksSecret=false body={\"ok\":true,\"providerId\":\"p005-fixture-chat\",\"credentials\":[{\"key\":\"bot_token\",\"label\":\"Bot token\",\"help\":\"From the fixture app's install page.\",\"helpUrl\":null,\"placeholder\":\"fxb-...\",\"pattern\":\"fxb-[A-Za-z0-9]{8,}\",\"hosts\":[\"p005-fixture.example\"],\"perPrincipal\":false,\"configured\":true,\"savedAt\":\"2026-10-12T14:11:08.290Z\"},{\"key\":\"signing_secret\",\"label\":\"Signing secret\",\"help\":\"Hex string shown u"
+    },
+    {
+      "id": "provider-connected",
+      "passed": true,
+      "evidence": "CONNECTED Saved credentials● connected"
+    },
+    {
+      "id": "pack-input-is-a-provider-picker",
+      "passed": true,
+      "evidence": "DROPDOWN [ \"C-general=#general\", \"C-bugs=#bugs\"; OPTIONS_API status=200 {\"ok\":true,\"capability\":\"chat.channels\",\"groups\":[{\"sourceId\":\"c986ee33-89a0-48b3-af46-0987fa0bb416\",\"provider\":\"p005-fixture-chat\",\"providerName\":\"Fixture Chat\",\"accountLabel\":null,\"options\":[{\"value\":\"C-general\",\"label\":\"#general\"},{\"value\":\"C-bugs\",\"label\":\"#bugs\",\"description\":\"Bug reports\"}],\"truncated\":false,\"error\":null}]}"
+    },
+    {
+      "id": "pack-settings-save",
+      "passed": true,
+      "evidence": "CHANNEL_CHOSEN C-bugs; PACK_SAVE_PUTS [ \"PUT 200 {\\\"ok\\\":true,\\\"installationId\\\":\\\"c87b6ebf-247e-4f6c-805a-07a7c23fd1c8\\\",\\\"status\\\":\\\"configured\\\",\\\"unmet\\\":[],\\\"armed\\\":false,\\\"review\\\":{\\\"fingerprint\\\":\\\"39423bc3721977cbc6eb5932f5dfe7307f7ced2a1298d0cdd74618d7f3ff580a\\\",\\\"reviewed\\\":false}} sent={\\\"inputs\\\":{\\\"channel\\\":\\\"C-bugs\\\"}}\""
+    },
+    {
+      "id": "pack-arms",
+      "passed": true,
+      "evidence": "ARM_BUTTON text=Arm p005-fixture-pack disabled=false; PACK_STATUS Armed · 1 of 1 triggers on"
+    }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": [
+    "P-005",
+    "P-001",
+    "P-004"
+  ],
+  "specs": [
+    "SPEC-R-2-P-005",
+    "SPEC-R-3-P-005",
+    "SPEC-R-2-P-001",
+    "SPEC-R-2-P-004",
+    "AUTO-BAR-R-2-P-005"
+  ],
+  "evidencePlane": "live",
+  "harnessRun": {
+    "harness": "verify-tauri-headless",
+    "runId": "20261012T135531Z-3844832",
+    "verdict": "pass",
+    "evidenceDir": "~/.local/state/verification-harness/verify-tauri-headless/20261012T135531Z-3844832",
+    "superprojectRef": "2e2c5749a12dfa0237dbffb4403c52960ee65f0c",
+    "packageRef": "libs/papercusp@837416e9c14b6dd220a327c0eb50d79122de5559",
+    "testedInputs": [
+      "apps/operator/app/settings/integrations/ProviderAppRegistration.tsx",
+      "apps/operator/app/settings/integrations/page.tsx",
+      "apps/operator/bin/bundle-host-common.sh",
+      "apps/operator/bin/bundle-host.sh",
+      "apps/operator/bin/release/dependency-generation.sh",
+      "apps/operator/e2e/_fake-llm-fixture-child.ts",
+      "apps/operator/e2e/_fake-llm-fixture.ts",
+      "libs/generic/ipc-endpoint-server/src/server.ts",
+      "package-lock.json",
+      "package.json",
+      "packages/operator-core/lib/gnome-terminal-policy.json",
+      "packages/operator-core/lib/integrations/provider-options.ts",
+      "packages/operator-core/lib/integrations/ticket-integrations.ts",
+      "packages/operator-core/lib/process-identity.ts",
+      "packages/operator-core/lib/testing-native-runtime.ts",
+      "packages/operator-core/lib/testing-playwright-reporter.ts",
+      "papercusp-desktop/bin/lib/cargo-target-root.sh",
+      "papercusp-desktop/bin/lib/claim-target-dir.sh",
+      "papercusp-desktop/bin/lib/disk-preflight.sh",
+      "papercusp-desktop/bin/lib/federation-asserts.sh",
+      "papercusp-desktop/bin/lib/pinned-deps.sh",
+      "papercusp-desktop/bin/lib/release-artifacts.sh",
+      "papercusp-desktop/bin/tauri-guarded",
+      "papercusp-desktop/package-lock.json",
+      "papercusp-desktop/package.json",
+      "papercusp-desktop/src-tauri/src/endpoint_ipc.rs",
+      "papercusp-desktop/src-tauri/src/main.rs",
+      "papercusp-desktop/src-tauri/src/native_console.rs",
+      "papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs",
+      "papercusp-desktop/test/monorepo-host-preflight.mjs",
+      "papercusp-desktop/test/native-console-gnome.test.mjs",
+      "scripts/lib/budgeted-task-scheduler.mjs",
+      "scripts/lib/committed-source-loader.mjs",
+      "scripts/lib/node-test-host-preflight.mjs",
+      "scripts/lib/run-in-isolated-netns.sh",
+      "scripts/lib/spa-require-built.sh",
+      "scripts/npm-install-safe.mjs",
+      "scripts/pc-heavy.sh",
+      "scripts/restricted-hold-tree-gate.mjs",
+      "scripts/source-preview.mjs",
+      "scripts/verify-tauri-headless.sh"
+    ]
+  },
+  "limitations": [
+    "The provider and pack are fixtures served from local repos through a git url rewrite scoped to the isolated operator; the real slack/bug-triage packages are exercised by the P-006 run and the P-008 drill, and public Cupboard listings are P-011 (D-014).",
+    "This is a re-run of the 2026-10-11 walk (p005-generic-integrations-live-run.json, harness run 20261011T114603Z-172649) at the current tree, same fixtures and same assertion script; it was made because P-020..P-023 changed sources the earlier evidence covered.",
+    "Assertion evidence strings are the matching marker lines from this run's own log (.papercusp/scratch/p005-desktop-run-20261012T135526Z.log), truncated to 600-900 characters; screenshots stayed in the run's private scratch and are not committed."
+  ],
+  "inRunAssertions": [
+    {
+      "verdict": "PASS",
+      "text": "eval: document.querySelectorAll('[data-provider-credentials=\"p005-fixture-chat\"] input[type=\"password\"]').length === 2"
+    },
+    {
+      "verdict": "PASS",
+      "text": "eval: [...document.querySelectorAll('[data-provider-credentials=\"p005-fixture-chat\"] [data-credential]')].every((f) => f.dataset.configured === 'false')"
+    },
+    {
+      "verdict": "PASS",
+      "text": "eval: [...document.querySelectorAll('[data-provider-credentials=\"p005-fixture-chat\"] input')].every((i) => !i.value.includes('fxb-ABCDEFGH12') && !i.value.includes('deadbeefdeadbeef00'))"
+    }
+  ],
+  "supersedes": "docs/evidence/cupboard-distributable-integrations-2026-10-10/p005-generic-integrations-live-run.json"
+}

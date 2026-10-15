@@ -28,23 +28,68 @@ export interface ShellSyntaxError {
 }
 
 /** Bound the check so a pathological input can never hang git-sync's tick. */
-const BASH_SYNTAX_CHECK_TIMEOUT_MS = 5_000;
+export const BASH_SYNTAX_CHECK_TIMEOUT_MS = 5_000;
+
+export interface FindShellSyntaxErrorOptions {
+  /** Per-call `bash -n` timeout. Defaults to the git-sync tick bound above. */
+  timeoutMs?: number;
+}
+
+/**
+ * Thrown when `bash -n` produced NO verdict: it timed out, could not be spawned,
+ * or was killed by a signal. That is "unknown", never "broken" (WI-10008204).
+ * Before this split a 5s timeout under gate load came back as a syntax error
+ * (`scripts/pc-heavy.sh:?  spawnSync bash ETIMEDOUT`), so a clean script read as
+ * BROKEN, and the git-sync content guard could quarantine a good file. Both
+ * guard call sites already catch a throwing detector (fail-open on the commit
+ * path, fail-closed on revalidation), which is the right handling for "unknown".
+ */
+export class ShellSyntaxCheckUnavailableError extends Error {
+  readonly code: string | null;
+  readonly signal: string | null;
+  constructor(message: string, code: string | null, signal: string | null) {
+    super(message);
+    this.name = 'ShellSyntaxCheckUnavailableError';
+    this.code = code;
+    this.signal = signal;
+  }
+}
 
 /**
  * Run `bash -n` over `text` via stdin (no temp file — the working-tree text is
  * already in memory). Returns `null` when it parses cleanly, or the parsed
- * `{ line, reason }` from bash's own stderr on a syntax error.
+ * `{ line, reason }` from bash's own stderr on a syntax error. Throws
+ * {@link ShellSyntaxCheckUnavailableError} when bash gave no verdict at all.
  */
-export function findShellSyntaxError(text: string): ShellSyntaxError | null {
+export function findShellSyntaxError(
+  text: string,
+  opts: FindShellSyntaxErrorOptions = {},
+): ShellSyntaxError | null {
   try {
     execFileSync('bash', ['-n'], {
       input: text,
       stdio: ['pipe', 'ignore', 'pipe'],
-      timeout: BASH_SYNTAX_CHECK_TIMEOUT_MS,
+      timeout: opts.timeoutMs ?? BASH_SYNTAX_CHECK_TIMEOUT_MS,
     });
     return null;
   } catch (err) {
-    const e = err as { stderr?: Buffer | string | null; message?: string };
+    const e = err as {
+      stderr?: Buffer | string | null;
+      message?: string;
+      status?: number | null;
+      signal?: string | null;
+      code?: string;
+    };
+    // Only a bash that RAN to completion and EXITED non-zero has judged the text.
+    // A spawn-level failure carries `code` (ETIMEDOUT, ENOENT, …); a kill leaves
+    // `status` null and sets `signal`. Neither is a parse verdict.
+    if (e.code != null || e.signal != null || typeof e.status !== 'number') {
+      throw new ShellSyntaxCheckUnavailableError(
+        `bash -n gave no verdict (${e.code ?? e.signal ?? 'no exit status'}): ${e.message ?? String(err)}`,
+        e.code ?? null,
+        e.signal ?? null,
+      );
+    }
     const stderrText = e.stderr != null ? String(e.stderr) : '';
     const raw = stderrText.trim() || (e.message ?? String(err));
     // `bash -n` reading from stdin reports errors like:

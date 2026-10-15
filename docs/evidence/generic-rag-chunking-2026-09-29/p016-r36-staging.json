@@ -1,0 +1,392 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-36: the staging operator (:3170) serves every R-36 chunking path",
+  "framework": "operational",
+  "command": [
+    "curl -s http://127.0.0.1:3170/api/health (read sha)",
+    "dev:pipeline_position { path, payloadTier: 'full' } for each of the 5 R-36 paths; read servingRuntimes[runtime='staging-operator']",
+    "git show 781edde2d8c6d34695f6750e0cc89debad7d9ed7:packages/operator-core/lib/work-items.ts | grep -c \"scan: 'exact'\"",
+    "git show staging:packages/operator-core/lib/work-items.ts | grep -c \"scan: 'exact'\" (positive control)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T21:09:47.472Z",
+  "finishedAt": "2026-10-06T21:21:34.307Z",
+  "summary": "Staging operator :3170 health sha 781edde2d8. dev:pipeline_position reports staging-operator containsChange true, buildShaSource 'health', buildSha 781edde2d8 (matches /api/health) for all 5 R-36 paths. work-items.ts content check: 1 \"scan: 'exact'\" in the staging-operator build, positive control 1 on local staging. Release operator :3070 (d740fc3802) readings recorded as non-gating context: registry.ts and vector-leg.ts not yet served there. Re-read at 21:21:21Z-21:21:34Z with the same result; each path carries both readings with timestamps.",
+  "assertions": [
+    {
+      "id": "health-sha-matches",
+      "passed": true,
+      "evidence": "GET 127.0.0.1:3170/api/health at 2026-10-06T21:09:47Z and 21:10:45Z returned sha 781edde2d8; every staging-operator servingRuntimes entry below reports buildSha 781edde2d8."
+    },
+    {
+      "id": "registry-ts-served",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/search/chunks/registry.ts: staging-operator containsChange true, buildShaSource health, method blob, unknownReason null."
+    },
+    {
+      "id": "engine-ts-served",
+      "passed": true,
+      "evidence": "libs/generic/search/src/chunks/engine.ts: staging-operator containsChange true, buildShaSource health, method blob, unknownReason null."
+    },
+    {
+      "id": "migration-1242-served",
+      "passed": true,
+      "evidence": "libs/papercusp/libs/db/sql/1242-text-chunks.sql: staging-operator containsChange true, buildShaSource health, method blob, unknownReason null."
+    },
+    {
+      "id": "migration-1266-served",
+      "passed": true,
+      "evidence": "libs/papercusp/libs/db/sql/1266-text-chunks-parent-key-stats.sql (D-031): staging-operator containsChange true, buildShaSource health, method blob, unknownReason null."
+    },
+    {
+      "id": "vector-leg-ts-served",
+      "passed": true,
+      "evidence": "libs/generic/search/src/chunks/vector-leg.ts (D-032): staging-operator containsChange true, buildShaSource health, method blob, unknownReason null."
+    },
+    {
+      "id": "work-items-exact-scan-content",
+      "passed": true,
+      "evidence": "git show 781edde2d8c6d34695f6750e0cc89debad7d9ed7:packages/operator-core/lib/work-items.ts | grep -c \"scan: 'exact'\" printed 1 (file 573398 bytes); positive control on local staging printed 1."
+    },
+    {
+      "id": "reread-while-3170-answers",
+      "passed": true,
+      "evidence": "Re-read 21:21:21Z-21:21:34Z after :3170 /api/health answered 781edde2d8 at 21:20:07Z: all 5 paths staging-operator containsChange true, buildShaSource health, buildSha 781edde2d8, unknownReason null. Per-path timestamps are in details.pipelinePosition[].readings."
+    }
+  ],
+  "plan": "generic-rag-chunking-2026-09-29",
+  "bar": "R-36",
+  "spec": "AUTO-BAR-R-36-P-016",
+  "planItem": "P-016",
+  "decisions": [
+    "D-031",
+    "D-032",
+    "D-034"
+  ],
+  "measuredBy": "su-ea145858-8dc8-4602-ae3d-675eb6c2b804",
+  "details": {
+    "stagingOperator": {
+      "port": 3170,
+      "healthSha": "781edde2d8",
+      "healthReadAt": "2026-10-06T21:10:45.956Z",
+      "fullSha": "781edde2d8c6d34695f6750e0cc89debad7d9ed7"
+    },
+    "pipelinePosition": [
+      {
+        "path": "packages/operator-core/lib/search/chunks/registry.ts",
+        "stagingOperator": {
+          "buildSha": "781edde2d8",
+          "buildShaSource": "health",
+          "containsChange": true,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "releaseOperatorContext": {
+          "buildSha": "d740fc3802",
+          "buildShaSource": "health",
+          "containsChange": false,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "readings": [
+          {
+            "readStartedAt": "2026-10-06T21:10:08.763Z",
+            "readFinishedAt": "2026-10-06T21:10:35.203Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": false,
+              "method": "blob",
+              "unknownReason": null
+            }
+          },
+          {
+            "readStartedAt": "2026-10-06T21:21:21.645Z",
+            "readFinishedAt": "2026-10-06T21:21:34.307Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": false,
+              "method": "blob",
+              "unknownReason": null
+            }
+          }
+        ]
+      },
+      {
+        "path": "libs/generic/search/src/chunks/engine.ts",
+        "stagingOperator": {
+          "buildSha": "781edde2d8",
+          "buildShaSource": "health",
+          "containsChange": true,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "releaseOperatorContext": {
+          "buildSha": "d740fc3802",
+          "buildShaSource": "health",
+          "containsChange": true,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "readings": [
+          {
+            "readStartedAt": "2026-10-06T21:10:08.763Z",
+            "readFinishedAt": "2026-10-06T21:10:35.203Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            }
+          },
+          {
+            "readStartedAt": "2026-10-06T21:21:21.645Z",
+            "readFinishedAt": "2026-10-06T21:21:34.079Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            }
+          }
+        ]
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1242-text-chunks.sql",
+        "stagingOperator": {
+          "buildSha": "781edde2d8",
+          "buildShaSource": "health",
+          "containsChange": true,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "releaseOperatorContext": {
+          "buildSha": "d740fc3802",
+          "buildShaSource": "health",
+          "containsChange": true,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "readings": [
+          {
+            "readStartedAt": "2026-10-06T21:10:08.763Z",
+            "readFinishedAt": "2026-10-06T21:10:35.203Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            }
+          },
+          {
+            "readStartedAt": "2026-10-06T21:21:21.645Z",
+            "readFinishedAt": "2026-10-06T21:21:33.936Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            }
+          }
+        ]
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1266-text-chunks-parent-key-stats.sql",
+        "stagingOperator": {
+          "buildSha": "781edde2d8",
+          "buildShaSource": "health",
+          "containsChange": true,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "releaseOperatorContext": {
+          "buildSha": "d740fc3802",
+          "buildShaSource": "health",
+          "containsChange": true,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "readings": [
+          {
+            "readStartedAt": "2026-10-06T21:10:08.763Z",
+            "readFinishedAt": "2026-10-06T21:10:35.203Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            }
+          },
+          {
+            "readStartedAt": "2026-10-06T21:21:21.645Z",
+            "readFinishedAt": "2026-10-06T21:21:34.079Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            }
+          }
+        ]
+      },
+      {
+        "path": "libs/generic/search/src/chunks/vector-leg.ts",
+        "stagingOperator": {
+          "buildSha": "781edde2d8",
+          "buildShaSource": "health",
+          "containsChange": true,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "releaseOperatorContext": {
+          "buildSha": "d740fc3802",
+          "buildShaSource": "health",
+          "containsChange": false,
+          "method": "blob",
+          "unknownReason": null
+        },
+        "readings": [
+          {
+            "readStartedAt": "2026-10-06T21:10:08.763Z",
+            "readFinishedAt": "2026-10-06T21:10:35.203Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": false,
+              "method": "blob",
+              "unknownReason": null
+            }
+          },
+          {
+            "readStartedAt": "2026-10-06T21:21:21.645Z",
+            "readFinishedAt": "2026-10-06T21:21:34.080Z",
+            "stagingOperator": {
+              "buildSha": "781edde2d8",
+              "buildShaSource": "health",
+              "containsChange": true,
+              "method": "blob",
+              "unknownReason": null
+            },
+            "releaseOperatorContext": {
+              "buildSha": "d740fc3802",
+              "buildShaSource": "health",
+              "containsChange": false,
+              "method": "blob",
+              "unknownReason": null
+            }
+          }
+        ]
+      }
+    ],
+    "pipelinePositionReadWindow": {
+      "startedAt": "2026-10-06T21:10:08.763Z",
+      "finishedAt": "2026-10-06T21:10:35.203Z"
+    },
+    "workItemsContentCheck": {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "stagingOperatorBuild": 1,
+      "stagingPositiveControl": 1,
+      "stagingOperatorFileBytes": 573398
+    },
+    "releaseOperatorNote": "Non-gating context: :3070 serves d740fc3802, which lacks registry.ts and vector-leg.ts. Deployment to :3070 follows the fleet green-checkpoint and release pipeline and is not part of the amended R-36 bar.",
+    "healthReads": [
+      {
+        "port": 3170,
+        "at": "2026-10-06T21:09:47Z",
+        "sha": "781edde2d8"
+      },
+      {
+        "port": 3170,
+        "at": "2026-10-06T21:10:45.956Z",
+        "sha": "781edde2d8"
+      },
+      {
+        "port": 3170,
+        "at": "2026-10-06T21:20:07.295Z",
+        "sha": "781edde2d8"
+      },
+      {
+        "port": 3070,
+        "at": "2026-10-06T21:20:07.601Z",
+        "sha": "d740fc3802"
+      }
+    ],
+    "rereadWindow": {
+      "startedAt": "2026-10-06T21:21:21.645Z",
+      "finishedAt": "2026-10-06T21:21:34.307Z",
+      "reason": "Rubric-vetting reply on conv-mux6ek6k (post 1160687) measured :3170 unreachable at 21:16:58Z and asked for a reading taken while :3170 answers, with buildSha and timestamp beside each path. Each path now carries two readings, both with buildSha 781edde2d8 from health."
+    }
+  },
+  "note": "[owner 2026-10-06 directive #1504] R-36 re-measured against the staging operator (:3170) instead of the deployed :3070, per the acceptance BAR amendment previewed in thread-post:1160662. A later window in which :3170 is unreachable or restarting does not falsify these readings: containsChange is a per-build fact and origin/staging only moves forward unless reverted. Drift is a reading taken while :3170 answers that reports a path not served."
+}

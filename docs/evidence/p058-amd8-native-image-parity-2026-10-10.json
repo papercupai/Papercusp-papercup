@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P-058 AMD8 native artifact and exact immutable OCI Server bundle parity",
+  "command": [
+    "node",
+    "--input-type=module"
+  ],
+  "executedShellCommand": "set -euo pipefail\nexport CONTAINERS_STORAGE_CONF=/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-storage.conf\nexport CONTAINERS_CONF=/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-containers.conf\nexport XDG_RUNTIME_DIR=/run/user/1000/p058-amd8-oci\nnode --input-type=module <<'NODE'\nimport assert from 'node:assert/strict';\nimport {readFile,writeFile} from 'node:fs/promises';\nimport {hashFile,verifyServerContainerPayload} from './papercusp-desktop/bin/lib/server-container.mjs';\nconst nativeRoot='/mnt/backup/portable-server-p058/amd-native-build8-20261009/native-amd64-release8';\nconst base='/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3';\nconst receiptPath=base+'/papercusp-server-amd64-c2b9e2f99075/build.json';\nconst output=base+'/amd8-native-image-parity.json';\nconst receiptSha256=await hashFile(receiptPath);\nconst receipt=JSON.parse(await readFile(receiptPath,'utf8'));\nassert.equal(receipt.imageId,'sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0');\nassert.equal(receipt.sourceCommit,'58d5a1c744632d7bf72772a0f97e4c338ef0d04b');\nconst serveSha256=await hashFile(nativeRoot+'/serve.mjs');\nconst mcpProxySha256=await hashFile(nativeRoot+'/mcp-proxy.mjs');\nassert.equal(serveSha256,receipt.payloadVerification.serveSha256);\nassert.equal(mcpProxySha256,receipt.payloadVerification.mcpProxySha256);\nconst startedAt=new Date().toISOString();\nconst observed=await verifyServerContainerPayload({engine:'podman',imageId:receipt.imageId,platform:receipt.platform,serveSha256,mcpProxySha256,nodeVersion:'24.18.1'});\nassert.equal(await hashFile(nativeRoot+'/serve.mjs'),serveSha256);\nassert.equal(await hashFile(nativeRoot+'/mcp-proxy.mjs'),mcpProxySha256);\nassert.equal(await hashFile(receiptPath),receiptSha256);\nconst evidence={schemaVersion:1,kind:'papercusp-server-native-image-parity',accepted:true,scope:'exact current native artifact and immutable image Server bundle digests',startedAt,finishedAt:new Date().toISOString(),nativeRoot,receiptPath,receiptSha256,imageId:receipt.imageId,sourceCommit:receipt.sourceCommit,platform:receipt.platform,serveSha256,mcpProxySha256,observed,hashesStable:true,disclosures:['Native extracted-artifact and immutable image digest parity only; installed native journey remains separate.','Unsigned/unpublished; not a published multiarch release assertion.']};\nawait writeFile(output,JSON.stringify(evidence,null,2)+'\\n',{flag:'wx'});\nconsole.log(JSON.stringify({output,evidenceSha256:await hashFile(output),evidence}));\nNODE",
+  "cwd": ".",
+  "startedAt": "2026-10-10T05:42:19.334Z",
+  "finishedAt": "2026-10-10T05:42:32.638Z",
+  "exitCode": 0,
+  "summary": "The maintained live immutable-image payload probe matched the existing native AMD8 serve.mjs and mcp-proxy.mjs digests and pinned x64 Node24.18.1. Native file and exact image receipt hashes remained stable before and after the probe.",
+  "assertions": [
+    {
+      "id": "same-server-bundle",
+      "passed": true,
+      "evidence": "Native artifact and actual immutable OCI serve.mjs both hash to 1642da02febb53870af1b037a38b59e7cd724aa0cffeada9e810d530ff728f68."
+    },
+    {
+      "id": "same-mcp-bundle",
+      "passed": true,
+      "evidence": "Native artifact and actual immutable OCI mcp-proxy.mjs both hash to 2ac40bfb54ecb0bbaa941916cf2be18c29873e61e5e951540b77410cac05d7ad."
+    },
+    {
+      "id": "exact-image-source-runtime-stable",
+      "passed": true,
+      "evidence": "Exact immutableimagec2b9/source58d5/receiptcf4b760a stayed bound; observed Node24.18.1 x64; native/receipt hashes stable across the networknone/read-only live payload probe."
+    }
+  ],
+  "counts": {
+    "passed": 3,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0
+  },
+  "workItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "specId": "PPC-P-058-1",
+  "specRevision": 2,
+  "taskId": "0mv1yw76c1wosd4e1j4",
+  "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+  "evidencePlane": "native-extracted-artifact-and-local-immutable-oci",
+  "receiptPath": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3/amd8-native-image-parity.json",
+  "receiptSha256": "9ae4fc858ae486862cbbf45c177204cdd0b4a6c9c61ee196dad4f8b96117ecdd",
+  "proof": {
+    "schemaVersion": 1,
+    "kind": "papercusp-server-native-image-parity",
+    "accepted": true,
+    "scope": "exact current native artifact and immutable image Server bundle digests",
+    "startedAt": "2026-10-10T05:42:19.334Z",
+    "finishedAt": "2026-10-10T05:42:32.638Z",
+    "nativeRoot": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/native-amd64-release8",
+    "receiptPath": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci3/papercusp-server-amd64-c2b9e2f99075/build.json",
+    "receiptSha256": "cf4b760a2f761daad7fffea8510a3d482f51d14ec255856791a81d4ded557068",
+    "imageId": "sha256:c2b9e2f9907596e967d56c5ac5d4afcdc44f647b157aeca9d107342e9a1d0bd0",
+    "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+    "platform": "linux/amd64",
+    "serveSha256": "1642da02febb53870af1b037a38b59e7cd724aa0cffeada9e810d530ff728f68",
+    "mcpProxySha256": "2ac40bfb54ecb0bbaa941916cf2be18c29873e61e5e951540b77410cac05d7ad",
+    "observed": {
+      "serveSha256": "1642da02febb53870af1b037a38b59e7cd724aa0cffeada9e810d530ff728f68",
+      "mcpProxySha256": "2ac40bfb54ecb0bbaa941916cf2be18c29873e61e5e951540b77410cac05d7ad",
+      "nodeArch": "x64",
+      "nodeVersion": "v24.18.1"
+    },
+    "hashesStable": true,
+    "disclosures": [
+      "Native extracted-artifact and immutable image digest parity only; installed native journey remains separate.",
+      "Unsigned/unpublished; not a published multiarch release assertion."
+    ]
+  },
+  "helperPath": "papercusp-desktop/bin/lib/server-container.mjs",
+  "helperSha256": "d50b786520bae56cc830a5ed850a0308af10b6af2ae7fd1ceb156bf55ca86c57",
+  "regressionTestRunId": 20968112,
+  "disclosures": [
+    "Native extracted-artifact and immutable image digest parity only; installed native journey remains separate.",
+    "Unsigned/unpublished; not a published multiarch release assertion."
+  ]
+}

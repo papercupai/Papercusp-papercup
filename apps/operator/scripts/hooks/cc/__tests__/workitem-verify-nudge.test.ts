@@ -16,7 +16,7 @@
  * exits 0 with EMPTY stdout, and the hook NEVER creates a work-item.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { join } from 'node:path';
@@ -75,6 +75,81 @@ function run(input: string, extra: Record<string, string> = {}, withSid = true) 
 const payload = (o: object) => JSON.stringify(o);
 const logLines = () =>
   fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean) : [];
+
+async function startMcpStub() {
+  const requestsPath = join(cache, 'mcp-requests.jsonl');
+  fs.rmSync(requestsPath, { force: true });
+  const serverProgram = `
+import http.server, json, sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+        tool = request.get('params', {}).get('name')
+        with open(sys.argv[1], 'a', encoding='utf-8') as log:
+            log.write(json.dumps({'name': tool, 'url': self.path}) + '\\n')
+        if tool == 'flags:get':
+            payload = {'results': [{'ok': True, 'enabled': True}]}
+        elif tool == 'coord:glance':
+            payload = {'self': {'objective': None}}
+        else:
+            payload = {'ok': True}
+        result = {'content': [{'type': 'text', 'text': json.dumps(payload)}]}
+        response = json.dumps({'jsonrpc': '2.0', 'id': request.get('id'), 'result': result}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
+
+    def log_message(self, *_args):
+        pass
+
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+print('READY:' + str(server.server_address[1]), flush=True)
+server.serve_forever()
+`;
+  const server = spawn('python3', ['-u', '-c', serverProgram, requestsPath], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  server.stdout.setEncoding('utf8');
+  server.stderr.setEncoding('utf8');
+  server.stderr.on('data', (chunk) => { stderr += chunk; });
+  const url = await new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      server.kill('SIGTERM');
+      reject(new Error(`MCP stub did not start: ${stderr}`));
+    }, 5000);
+    server.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      const ready = /READY:([0-9]+)/.exec(stdout);
+      if (ready) {
+        clearTimeout(timeout);
+        resolve(`http://127.0.0.1:${ready[1]}`);
+      }
+    });
+    server.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    server.once('exit', (code, signal) => {
+      clearTimeout(timeout);
+      reject(new Error(`MCP stub exited before ready (code=${code}, signal=${signal}): ${stderr}`));
+    });
+  });
+  return {
+    url,
+    requestsPath,
+    stop: async () => {
+      if (server.exitCode !== null || server.signalCode !== null) return;
+      const exited = new Promise<void>((resolve) => server.once('exit', () => resolve()));
+      server.kill('SIGTERM');
+      await exited;
+    },
+  };
+}
 
 describe('cc work-item verify-nudge hook — operator-independent paths', () => {
   it('no PAPERCUSP_SID (plain session) → exit 0, no marker, no nudge', () => {
@@ -165,6 +240,48 @@ describe('cc work-item verify-nudge hook — operator-independent paths', () => 
     expect(r.status).toBe(0);
     expect(logLines().length).toBe(1);
     expect(fs.existsSync(doneMarker())).toBe(true);
+  });
+
+  it('binds flags:get and coord:glance MCP requests to the native session from the hook event', async () => {
+    fs.writeFileSync(editedMarker(), '{}');
+    const stub = await startMcpStub();
+    try {
+      const r = run(payload({ hook_event_name: 'Stop', session_id: 'native-session-from-event' }), {
+        PAPERCUSP_OPERATOR_URL: stub.url,
+        PAPERCUSP_NATIVE_SESSION_ID: 'native-session-from-environment',
+      });
+      expect(r.status).toBe(0);
+      expect(logLines().length).toBe(1);
+
+      const requests = fs.readFileSync(stub.requestsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      for (const tool of ['flags:get', 'coord:glance']) {
+        const request = requests.find((entry) => entry.name === tool);
+        expect(request, `${tool} request was sent`).toBeDefined();
+        expect(new URL(request.url, stub.url).searchParams.get('native_session')).toBe('native-session-from-event');
+      }
+    } finally {
+      await stub.stop();
+    }
+  });
+
+  it('uses PAPERCUSP_NATIVE_SESSION_ID when the hook event has no native session ID', async () => {
+    fs.writeFileSync(editedMarker(), '{}');
+    const stub = await startMcpStub();
+    try {
+      const r = run(payload({ hook_event_name: 'Stop' }), {
+        PAPERCUSP_OPERATOR_URL: stub.url,
+        PAPERCUSP_NATIVE_SESSION_ID: 'native-session-from-environment',
+      });
+      expect(r.status).toBe(0);
+      const requests = fs.readFileSync(stub.requestsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      for (const tool of ['flags:get', 'coord:glance']) {
+        const request = requests.find((entry) => entry.name === tool);
+        expect(request, `${tool} request was sent`).toBeDefined();
+        expect(new URL(request.url, stub.url).searchParams.get('native_session')).toBe('native-session-from-environment');
+      }
+    } finally {
+      await stub.stop();
+    }
   });
 
   it('SessionEnd behaves like Stop (also nudges)', () => {

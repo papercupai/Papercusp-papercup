@@ -24,8 +24,8 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { humanize } from '../shared.js';
-import { renderMdxToMarkdown } from '../render-mdx.js';
-import type { DocPage, DocSource, SectionMeta } from '../types.js';
+import { raceWithAbort, renderMdxToMarkdown, throwIfAborted } from '../render-mdx.js';
+import type { DocContentOptions, DocPage, DocSource, SectionMeta } from '../types.js';
 
 export interface GenericFsAdapterOptions {
   /** Stable identifier for telemetry + cache namespacing. Defaults to `generic-fs:<basename(root)>`. */
@@ -154,16 +154,23 @@ export function genericFsAdapter(root: string, opts: GenericFsAdapterOptions = {
       const { absolutePath: _abs, ...page } = fp;
       return page;
     },
-    async getContent(page: DocPage): Promise<string> {
-      const cache = await buildPages();
-      const fp = cache.get(page.slug);
-      if (!fp) throw new Error(`genericFsAdapter: page ${page.slug} not found`);
-      const content = await readSafe(fp.absolutePath);
-      if (content === null) throw new Error(`genericFsAdapter: could not read ${fp.absolutePath}`);
-      if (/\.mdx$/i.test(fp.absolutePath)) {
-        return await renderMdxToMarkdown(content, fp.absolutePath);
-      }
-      return content;
+    async getContent(page: DocPage, options?: DocContentOptions): Promise<string> {
+      const signal = options?.signal;
+      const work = (async () => {
+        throwIfAborted(signal);
+        const cache = await buildPages();
+        throwIfAborted(signal);
+        const fp = cache.get(page.slug);
+        if (!fp) throw new Error(`genericFsAdapter: page ${page.slug} not found`);
+        const content = await readSafe(fp.absolutePath);
+        if (content === null) throw new Error(`genericFsAdapter: could not read ${fp.absolutePath}`);
+        throwIfAborted(signal);
+        if (/\.mdx$/i.test(fp.absolutePath)) {
+          return await renderMdxToMarkdown(content, fp.absolutePath, signal);
+        }
+        return content;
+      })();
+      return await raceWithAbort(work, signal);
     },
     // WI-1511581: the file exactly as it sits on disk — frontmatter included, MDX
     // unrendered. `readSafe` returning null (missing, not a file, over the size

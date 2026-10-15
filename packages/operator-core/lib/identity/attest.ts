@@ -28,9 +28,9 @@ import {
   verifyEd25519,
 } from './ed25519';
 import {
-  AttestationGistBody,
-  AttestationVerificationResult,
-  DeviceKeypairId,
+  type AttestationGistBody,
+  type AttestationVerificationResult,
+  type DeviceKeypairId,
   ATTESTATION_VERIFY_CACHE_TTL_MS,
   ATTESTATION_VERIFY_NEGATIVE_CACHE_TTL_MS,
   attestationGistFilename,
@@ -248,6 +248,15 @@ export interface CreateAttestationGistInput {
   githubLogin: string;
   /** OAuth token with `gist` scope */
   token: string;
+  /**
+   * WI-10006733: a gist id this device has resolved before (e.g. the announce
+   * identity cache). `ensureAttestationGist` verifies it directly — one request,
+   * or none on a verify-cache hit — and only falls back to the full listing when
+   * it does not verify. The listing walks EVERY gist on the account (10,293 on
+   * papercupai, ~104 pages, ~2 min), so it must not run on the steady-state path.
+   * Ignored by `createAttestationGist`.
+   */
+  knownGistId?: string;
 }
 
 export interface CreateAttestationGistResult {
@@ -393,12 +402,11 @@ async function listAttestationGists(token: string): Promise<AttestationGistListE
  * Signs the canonical payload with the Ed25519 private key from the
  * keychain before publishing, so the gist is self-authenticating.
  */
-export async function createAttestationGist(
-  input: CreateAttestationGistInput,
-): Promise<CreateAttestationGistResult> {
-  const { keychainId, pubkeyBase64, deviceLabel, githubUserId, githubLogin, token } = input;
-
-  // Build the body (minus signature first, then sign)
+/** Sign the canonical device binding without publishing it to GitHub. */
+export async function createDeviceAttestationBody(
+  input: Omit<CreateAttestationGistInput, 'token' | 'knownGistId'>,
+): Promise<AttestationGistBody> {
+  const { keychainId, pubkeyBase64, deviceLabel, githubUserId, githubLogin } = input;
   const unsignedBody: Omit<AttestationGistBody, 'signature_by_device'> = {
     version: 1,
     device_pubkey: pubkeyBase64,
@@ -409,7 +417,14 @@ export async function createAttestationGist(
   };
 
   const signature_by_device = await signPayload(keychainId, unsignedBody);
-  const body: AttestationGistBody = { ...unsignedBody, signature_by_device };
+  return { ...unsignedBody, signature_by_device };
+}
+
+export async function createAttestationGist(
+  input: CreateAttestationGistInput,
+): Promise<CreateAttestationGistResult> {
+  const { pubkeyBase64, token } = input;
+  const body = await createDeviceAttestationBody(input);
 
   const filename = attestationGistFilename(pubkeyBase64);
   const gistPayload = {
@@ -580,6 +595,20 @@ export async function ensureAttestationGist(
   input: CreateAttestationGistInput,
 ): Promise<string> {
   const expectedFilename = attestationGistFilename(input.pubkeyBase64);
+
+  // A verified hint IS a usable binding for this device, so returning it can
+  // never create a duplicate. A hint that does not verify (revoked, deleted,
+  // rate-limited, belongs to another key) establishes nothing either way, so
+  // it falls through to the listing below with every one of its refusals.
+  if (input.knownGistId) {
+    const hinted = await verifyAttestation(
+      input.knownGistId,
+      input.pubkeyBase64,
+      input.githubUserId,
+      { token: input.token },
+    );
+    if (hinted.valid) return input.knownGistId;
+  }
 
   // Creating is safe only after we have positively established that no usable
   // binding exists. A refused or failed listing establishes nothing, so it

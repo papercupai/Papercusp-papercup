@@ -57,6 +57,10 @@ Environment=PHONE_TTS_VENDOR=deepgram
 Environment=PORTAL_TTS_VENDOR=deepgram
 
 ExecStart=${PHONE_NODE_BIN} --import tsx src/agent.ts start
+# Record this start's code identity in the runtime-vintage ledger (WI-10006790): the
+# Phone rubric's assistant-conversation BARs name this unit as their evidenceRuntime.
+# `-` = never fail the unit; the script itself always exits 0.
+ExecStartPost=-${PHONE_NODE_BIN} ${PHONE_VINTAGE_SCRIPT} --unit papercusp-phone-worker.service
 Restart=on-failure
 RestartSec=5
 

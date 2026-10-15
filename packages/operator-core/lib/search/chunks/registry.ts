@@ -119,6 +119,7 @@ export const CHUNK_STORES: readonly ChunkStoreRegistration[] = [
  */
 export const PLANS_CHUNK_SURFACE: PapercuspChunkSurface = {
   surface: 'plans',
+  searchSource: 'plan',
   parent: {
     table: 'harness_shared.harness_plans',
     key: ['workspace_id', 'harness_slug', 'plan_slug'],
@@ -129,6 +130,7 @@ export const PLANS_CHUNK_SURFACE: PapercuspChunkSurface = {
   versionSql: 'p.updated_at',
   splitter: { kind: 'window', size: 1500, overlap: 250 },
   maxChunks: 32,
+  completeBody: true,
   // D-029 (P-015): D-014 chose margin 0, but the live re-run lowered short-row
   // MRR by .0134 against R-2's .01 bound; 0.02 is the smallest margin that meets
   // it on live data (.0054) and keeps tail recall@1 at .890 (.898 at margin 0).
@@ -210,11 +212,27 @@ export const WORK_ITEMS_CHUNK_SURFACE: PapercuspChunkSurface = {
  * (get-feedback-core.ts) stays on the parent vector: it answers a new question
  * with a past answer in place of a live consult, which is a duplicate decision
  * (D-005), not a search.
+ *
+ * Population (D-048): only settled questions are chunked (eligibleSql), the same
+ * predicate the reader filters its slice with. Chunking every question indexed
+ * ~9x more chunks than the reader can return: on 2026-10-02, 2,966 chunks of
+ * which 332 belonged to settled questions. The ANN chunk leg then needed an
+ * in-scan membership filter, an iterative scan and a transaction, and missed
+ * its latency budget. A consult that later settles has no chunks yet, so the
+ * sync engine selects it; one that leaves the set is pruned.
  */
+export function consultSettledPredicate(alias: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/.test(alias)) {
+    throw new Error(`consultSettledPredicate: alias '${alias}' is not a plain identifier`);
+  }
+  return `${alias}.state = 'closed_answered' AND (${alias}.outcome->>'source' IS DISTINCT FROM 'archive')`;
+}
+
 export const CONSULT_QUESTIONS_CHUNK_SURFACE: PapercuspChunkSurface = {
   surface: 'consult_questions',
   parent: { table: 'harness_shared.consult_state', key: ['workspace_id', 'conversation_id'] },
   textSql: 'p.question',
+  eligibleSql: consultSettledPredicate('p'),
   versionSql: 'p.created_at',
   splitter: { kind: 'window', size: 1500, overlap: 250 },
   maxChunks: 8,
@@ -226,6 +244,20 @@ export const CONSULT_QUESTIONS_CHUNK_SURFACE: PapercuspChunkSurface = {
   },
 };
 
+/** Reports are immutable editions; index the whole bounded body, including short reports. */
+export const REPORTS_CHUNK_SURFACE: PapercuspChunkSurface = {
+  surface: 'report',
+  searchSource: 'report',
+  parent: { table: 'harness_shared.report_library', key: ['workspace_id', 'report_id'] },
+  textSql: "concat_ws(E'\\n', p.title, nullif(p.summary, ''), p.body_md)",
+  headerSql: 'left(p.title, 400)',
+  eligibleSql: 'p.retired_at IS NULL',
+  versionSql: 'p.updated_at',
+  minChars: 0,
+  splitter: { kind: 'window', size: 1500, overlap: 250 },
+  maxChunks: 512,
+};
+
 export const CHUNK_SURFACES: readonly PapercuspChunkSurface[] = [
   // Session turns (P-007): the dedicated store above, not the shared table.
   SESSION_TURN_CHUNK_SURFACE,
@@ -233,6 +265,7 @@ export const CHUNK_SURFACES: readonly PapercuspChunkSurface[] = [
   OPERATOR_TURNS_CHUNK_SURFACE,
   WORK_ITEMS_CHUNK_SURFACE,
   CONSULT_QUESTIONS_CHUNK_SURFACE,
+  REPORTS_CHUNK_SURFACE,
 ];
 
 /** Bare table name (the storage-growth-alarm's key form). */
@@ -259,6 +292,14 @@ export function chunkStoreVectorColumns(
  * each of its `searchSources`; the shared store's column goes to every source
  * a registered entry names. Order is preserved and duplicates are dropped.
  */
+/** Shared-store health is measured per collection; sibling vectors cannot fill its deficit. */
+export function chunkCoverageKey(surface: PapercuspChunkSurface,
+  stores: readonly ChunkStoreRegistration[] = CHUNK_STORES): string {
+  const store = stores.find(s => s.table === surfaceStoreTable(surface));
+  if (!store) throw new Error(`no coverage store for ${surface.surface}`);
+  return `${store.table}.${store.embedCol}${surface.store ? '' : `:${surface.surface}`}`;
+}
+
 export function withChunkSearchColumns(
   base: Readonly<Record<string, readonly string[]>>,
   stores: readonly ChunkStoreRegistration[] = CHUNK_STORES,
@@ -275,7 +316,7 @@ export function withChunkSearchColumns(
   for (const surface of surfaces) {
     if (!surface.searchSource) continue;
     const store = byTable.get(surfaceStoreTable(surface));
-    if (store) add(surface.searchSource, `${store.table}.${store.embedCol}`);
+    if (store) add(surface.searchSource, chunkCoverageKey(surface, stores));
   }
   return out;
 }

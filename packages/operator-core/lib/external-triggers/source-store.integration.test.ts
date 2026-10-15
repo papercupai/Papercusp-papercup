@@ -4,7 +4,9 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
   createOwnedExternalTriggerSource,
   disconnectOwnedExternalTriggerSources,
+  getDataSourceRecord,
   getExternalTriggerSource,
+  listDataSourceRecords,
   listOwnedExternalTriggerSources,
   listPollableExternalTriggerSources,
   renameOwnedExternalTriggerSourceAccount,
@@ -29,13 +31,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (sql) await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`.catch(() => {});
+  if (sql) await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`.catch(() => {});
   if (sql && userId) await sql`DELETE FROM harness_shared.users WHERE id = ${userId}`.catch(() => {});
   await org?.cleanup();
 });
 
 beforeEach(async () => {
-  await sql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
 });
 
 describe('external trigger source ownership', () => {
@@ -62,7 +64,7 @@ describe('external trigger source ownership', () => {
 
   it('fails closed for a legacy row even when audit and provider fields look like users', async () => {
     const rows = await sql<Array<{ id: string }>>`
-      INSERT INTO harness_shared.trigger_sources
+      INSERT INTO harness_shared.data_sources
         (workspace_id, kind, status, created_by, config)
       VALUES (
         ${WS}, 'gmail', 'ready', ${userId},
@@ -82,7 +84,7 @@ describe('external trigger source ownership', () => {
         kind: 'gmail',
         ownerUserId: '00000000-0000-0000-0000-000000000000',
       }),
-    ).rejects.toThrow(/trigger_sources_owner_user_id_fkey/);
+    ).rejects.toThrow(/data_sources_owner_user_id_fkey/);
   });
 
   it('lists only pollable owned sources and persists cursor/status transitions', async () => {
@@ -146,10 +148,105 @@ describe('external trigger source ownership', () => {
     expect(degraded.cursor).toEqual(connected.cursor);
     const stored = await sql<Array<{ last_error: string; last_connected_at: Date | null }>>`
       SELECT last_error, last_connected_at
-        FROM harness_shared.trigger_sources
+        FROM harness_shared.data_sources
        WHERE workspace_id = ${WS} AND id = ${pollable.id}::uuid`;
     expect(stored[0].last_error).toBe('provider timeout');
     expect(stored[0].last_connected_at).toBeInstanceOf(Date);
+  });
+
+  it('retries a token-not-connected source after a later same-owner sibling connection', async () => {
+    const recoveredCredential = 'google-workspace:recovered';
+    const foreignCredential = 'google-workspace:foreign-owner';
+    const tokenNotConnected = 'oauth: owner-credential not connected';
+    const retry = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-retry',
+      credentialRef: recoveredCredential,
+      status: 'error',
+    });
+    const calendar = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gcal',
+      ownerUserId: userId,
+      providerAccountId: 'calendar-retry',
+      credentialRef: recoveredCredential,
+      status: 'connected',
+    });
+    const providerRejected = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-provider-rejected',
+      credentialRef: recoveredCredential,
+      status: 'error',
+    });
+    const staleProof = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-stale-proof',
+      credentialRef: recoveredCredential,
+      status: 'error',
+    });
+    const noSibling = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-no-sibling',
+      credentialRef: 'google-workspace:no-sibling',
+      status: 'error',
+    });
+    const [otherOwner] = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.users (username, display_name)
+      VALUES (${'source-recovery-other-' + Date.now()}, 'Other Source Owner')
+      RETURNING id`;
+    const foreignOwnerGmail = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'gmail-foreign-owner',
+      credentialRef: foreignCredential,
+      status: 'error',
+    });
+    const foreignOwnerCalendar = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gcal',
+      ownerUserId: otherOwner.id,
+      providerAccountId: 'calendar-foreign-owner',
+      credentialRef: foreignCredential,
+      status: 'connected',
+    });
+
+    await updateExternalTriggerSourceSyncState(sql, WS, calendar.id, {
+      status: 'connected',
+      lastError: null,
+      connected: true,
+    });
+    await updateExternalTriggerSourceSyncState(sql, WS, foreignOwnerCalendar.id, {
+      status: 'connected',
+      lastError: null,
+      connected: true,
+    });
+    await sql`
+      UPDATE harness_shared.data_sources
+         SET last_error = ${tokenNotConnected},
+             updated_at = now() - interval '5 minutes'
+       WHERE id IN (${retry.id}::uuid, ${noSibling.id}::uuid, ${foreignOwnerGmail.id}::uuid)`;
+    await sql`
+      UPDATE harness_shared.data_sources
+         SET last_error = 'google_gmail_watch_401:Invalid Credentials',
+             updated_at = now() - interval '5 minutes'
+       WHERE id = ${providerRejected.id}::uuid`;
+    await sql`
+      UPDATE harness_shared.data_sources
+         SET last_error = ${tokenNotConnected},
+             updated_at = now() + interval '1 minute'
+       WHERE id = ${staleProof.id}::uuid`;
+
+    const pollable = await listPollableExternalTriggerSources(sql, WS, 'gmail');
+    expect(pollable.map((source) => source.id)).toEqual([retry.id]);
   });
 
   it('lists one owner safely and disconnects selected kinds without deleting rows', async () => {
@@ -289,5 +386,58 @@ describe('external trigger source ownership', () => {
       credentialRef: 'google-workspace:second-field',
       status: 'disabled',
     });
+  });
+});
+
+// enterprise-data-sources P-013 / D-010: the same row read as a data-source record.
+describe('data-source record (migration 1317)', () => {
+  it('gives an owned source its connector defaults and personal scope without the writer naming them', async () => {
+    const source = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      credentialRef: 'google-workspace:data-source-owner',
+      status: 'ready',
+    });
+
+    await expect(getDataSourceRecord(sql, WS, source.id)).resolves.toMatchObject({
+      id: source.id,
+      kind: 'gmail',
+      ownerUserId: userId,
+      syncMode: 'poll',
+      backfillStatus: 'not-requested',
+      scope: 'personal',
+      scopeRef: null,
+      datatypeMappings: { message: 'email-message' },
+      destinationPolicy: { 'email-message': ['document', 'event'] },
+      permissionMapping: { mode: 'owner' },
+    });
+  });
+
+  it('derives organization scope for an unowned row and filters the list by scope', async () => {
+    const [org] = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
+      VALUES (${WS}, 'slack', 'ready')
+      RETURNING id::text AS id`;
+    const [pot] = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.data_sources (workspace_id, kind, status, scope, scope_ref)
+      VALUES (${WS}, 'webhook', 'ready', 'pot', 'research-pot')
+      RETURNING id::text AS id`;
+
+    await expect(getDataSourceRecord(sql, WS, org.id)).resolves.toMatchObject({
+      scope: 'organization',
+      syncMode: 'socket',
+      ownerUserId: null,
+    });
+    const pots = await listDataSourceRecords(sql, WS, { scope: 'pot' });
+    expect(pots.map((r) => [r.id, r.scopeRef, r.syncMode])).toEqual([[pot.id, 'research-pot', 'webhook']]);
+    expect((await listDataSourceRecords(sql, WS)).map((r) => r.id).sort()).toEqual([org.id, pot.id].sort());
+  });
+
+  it('refuses a personal source with no owner', async () => {
+    await expect(
+      sql`INSERT INTO harness_shared.data_sources (workspace_id, kind, status, scope)
+          VALUES (${WS}, 'gmail', 'ready', 'personal')`,
+    ).rejects.toThrow(/data_sources_personal_owner_chk/);
   });
 });

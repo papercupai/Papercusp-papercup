@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import './_loads-registry'; // side-effect import to populate the registry
 import { listTestDomains, universalDomains } from '../testing-domains';
 import { papercuspRegistry, adminRegistry } from '../testing-domains-registry';
+import { remainderToRegex } from '../testing-domain-glob';
 
 describe('testing-domains-registry', () => {
   const domains = listTestDomains();
@@ -44,6 +45,14 @@ describe('testing-domains-registry', () => {
     expect(tiers.has('quick')).toBe(true);
     expect(tiers.has('domain')).toBe(true);
     expect(tiers.has('surface')).toBe(true);
+  });
+
+  it('surfaces TypeScript and native ESM Playwright specs in the existing E2E section', () => {
+    const e2e = domains.find((d) => d.id === 'operator-core')!.sections.find((s) => s.id === 'e2e')!;
+    const matches = (path: string) => e2e.globs!.some((glob) => remainderToRegex(glob).test(path));
+    expect(matches('apps/operator/e2e/backups.spec.ts')).toBe(true);
+    expect(matches('apps/operator/e2e/ongoing-work-native-collection.spec.mts')).toBe(true);
+    expect(matches('apps/operator/e2e/helper.test.ts')).toBe(false);
   });
 
   it('papercusp-su has the four sections from the spec', () => {

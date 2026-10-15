@@ -1,0 +1,55 @@
+#!/bin/sh
+# Rebuild Oracle VirtualBox host modules for a newly installed kernel.
+#
+# INSTALLED AS (root, 0755, byte-identical in BOTH directories — see README.md
+# "VirtualBox kernel-update rebuild hook"):
+#   /etc/kernel/postinst.d/vboxdrv-rebuild
+#   /etc/kernel/header_postinst.d/vboxdrv-rebuild
+#
+# WHY (reboot-residue-service-repairs-2026-10-03 D-004, WI-10005993): Oracle's
+# virtualbox-7.2 package ships NO kernel-update hook, so every kernel update left
+# vboxdrv unbuilt until someone ran `vboxdrv.sh setup` by hand — which is exactly
+# how the 7.0.0-34 reboot left VirtualBox down. The hook was first hand-written on
+# the host; it lives here so it is maintained, reviewed and tested (WI-10006387).
+#
+# CONTRACT:
+#   - $1 is the kernel release being installed (run-parts passes it).
+#   - It NEVER exits non-zero: a failing kernel hook wedges dpkg (WI-38019).
+#     A build failure is reported loudly on stderr and to syslog instead.
+#   - The image hook can run before headers exist; header_postinst.d runs it
+#     again once they do, so a missing build dir is a deferral, not a failure.
+#
+# Test seams (default to the real host paths; the vitest in
+# apps/operator/scripts/__tests__/vboxdrv-rebuild-kernel-hook.test.ts sets them):
+#   VBOXDRV_REBUILD_SETUP        vboxdrv.sh path   (default /usr/lib/virtualbox/vboxdrv.sh)
+#   VBOXDRV_REBUILD_MODULES_DIR  modules root      (default /lib/modules)
+#   VBOXDRV_REBUILD_LOG_DIR      build-log dir     (default /var/log)
+#   VBOXDRV_REBUILD_LOGGER       syslog command    (default logger)
+SETUP="${VBOXDRV_REBUILD_SETUP:-/usr/lib/virtualbox/vboxdrv.sh}"
+MODULES_DIR="${VBOXDRV_REBUILD_MODULES_DIR:-/lib/modules}"
+LOG_DIR="${VBOXDRV_REBUILD_LOG_DIR:-/var/log}"
+LOGGER="${VBOXDRV_REBUILD_LOGGER:-logger}"
+
+KVER="${1:-}"
+[ -n "$KVER" ] || exit 0
+[ -x "$SETUP" ] || exit 0
+if [ ! -d "$MODULES_DIR/$KVER/build" ]; then
+  echo "vboxdrv-rebuild: no headers for $KVER yet; will rebuild when headers install" >&2
+  exit 0
+fi
+LOG="$LOG_DIR/vboxdrv-rebuild-$KVER.log"
+if KERN_VER="$KVER" "$SETUP" setup "$KVER" >"$LOG" 2>&1; then
+  # A zero exit is NOT proof (WI-10006520, spec FAIL-P-003): success is declared only when a
+  # vboxdrv module now exists for exactly this kernel. Oracle's vboxdrv.sh installs it under
+  # misc/; a DKMS build lands under updates/; either may be compressed (.ko.zst / .ko.xz).
+  if [ -n "$(find "$MODULES_DIR/$KVER" -name 'vboxdrv.ko*' -print 2>/dev/null | head -n 1)" ]; then
+    "$LOGGER" -t vboxdrv-rebuild "rebuilt VirtualBox modules for $KVER" 2>/dev/null || true
+  else
+    echo "vboxdrv-rebuild: FAILED — vboxdrv.sh setup exited 0 but no vboxdrv module exists under $MODULES_DIR/$KVER — see $LOG" >&2
+    "$LOGGER" -p user.err -t vboxdrv-rebuild "FAILED: setup exited 0 but no vboxdrv module for $KVER (see $LOG)" 2>/dev/null || true
+  fi
+else
+  echo "vboxdrv-rebuild: FAILED to build VirtualBox modules for $KVER — see $LOG and /var/log/vbox-setup.log" >&2
+  "$LOGGER" -p user.err -t vboxdrv-rebuild "FAILED to build VirtualBox modules for $KVER (see $LOG)" 2>/dev/null || true
+fi
+exit 0

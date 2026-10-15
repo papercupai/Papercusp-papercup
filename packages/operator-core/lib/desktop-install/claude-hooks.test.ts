@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { mergeClaudeHookSettings } from './papercusp-files';
 
 // mergeClaudeHookSettings is the TS port of install-standalone-mcp.sh's merge_* helpers
@@ -58,6 +59,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/guard-operator-desktop.mjs`,
       `${DEST}/pretooluse-content-lint.mjs`,
       `${DEST}/pretooluse-secrets-guard.mjs`,
+      `${DEST}/pretooluse-restricted-egress-guard.mjs`,
       `${DEST}/pretooluse-nul-byte-edit-guard.mjs`,
       `${DEST}/pretooluse-control-bytes-content-guard.mjs`,
       `${DEST}/pretooluse-tool-prompt-weight-guard.mjs`,
@@ -72,6 +74,11 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // wrong matcher rides in unnoticed. (The `toEqual` above still pins install ORDER, which
     // is the part that carries meaning: hooks fire in registration order.)
     const matcherOf = (name: string): string | undefined => hookMatcherOf(cfg, 'PreToolUse', name);
+    // P-007 / BAR R-11: the client-native egress tools — capability:bash is gated server-side.
+    // WI-10005589 / D-012: plus edits of agent runtime files and every non-Papercusp MCP tool.
+    expect(matcherOf('pretooluse-restricted-egress-guard.mjs')).toBe(
+      'Bash|WebFetch|Edit|Write|MultiEdit|NotebookEdit|mcp__(?!papercusp).*',
+    );
 
     expect(matcherOf('pretooluse-locks-acquire.sh')).toBe(FILE_WRITE_MATCHER);
     expect(matcherOf('pretooluse-activity-report.sh')).toBe('*');
@@ -149,11 +156,13 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-locks-release.sh`,
       `${DEST}/posttooluse-activity-report.sh`,
       `${DEST}/posttooluse-write-byte-integrity-guard.mjs`,
+      `${DEST}/posttooluse-su-instance-override-reseed.mjs`,
       `${DEST}/workitem-verify-nudge.sh`,
       `${DEST}/posttooluse-required-field-strand-nudge.mjs`,
       `${DEST}/posttooluse-behavioural-strand-nudge.mjs`,
       `${DEST}/posttooluse-ts-parse-nudge.mjs`,
       `${DEST}/posttooluse-mdx-nudge.mjs`,
+      `${DEST}/posttooluse-launch-prose-budget-nudge.mjs`,
       `${DEST}/posttooluse-no-proc-path-fixture-nudge.mjs`,
       `${DEST}/posttooluse-migration-fixture-drift-nudge.mjs`,
       `${DEST}/posttooluse-migration-forward-compat-nudge.mjs`,
@@ -163,6 +172,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-frozen-candidate-edit-nudge.mjs`,
       `${DEST}/posttooluse-registry-census-drift-nudge.mjs`,
       `${DEST}/posttooluse-cli-entry-nudge.mjs`,
+      `${DEST}/posttooluse-resource-governor-nudge.mjs`,
       `${DEST}/posttooluse-tsc-verdict-stale-nudge.mjs`,
       `${DEST}/posttooluse-proof-stale-nudge.mjs`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
@@ -181,6 +191,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(postMatcherOf('posttooluse-activity-report.sh')).toBe('*'); // activity (+ coord fold)
     expect(postMatcherOf('posttooluse-locks-release.sh')).toBe(FILE_WRITE_MATCHER); // mirrors acquire
     expect(postMatcherOf('posttooluse-write-byte-integrity-guard.mjs')).toBe(FILE_OVERWRITE_MATCHER);
+    expect(postMatcherOf('posttooluse-su-instance-override-reseed.mjs')).toBe(FILE_WRITE_MATCHER);
     // Previously unasserted: under the index form `[3] // strand nudge` was in fact reading THIS
     // hook, so the strand nudge itself had no assertion at all. Both happen to carry the same
     // matcher, which is why the mislabel stayed green — the by-name form makes the gap visible.
@@ -192,6 +203,11 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(postMatcherOf('posttooluse-behavioural-strand-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-ts-parse-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-mdx-nudge.mjs')).toBe(MDX_NUDGE_MATCHER);
+    const launchProseMatcher = new RegExp(postMatcherOf('posttooluse-launch-prose-budget-nudge.mjs')!);
+    for (const tool of ['Edit', 'Write', 'MultiEdit', 'apply_patch', 'Bash', 'exec_command', 'shell_command', 'capability:edit', 'capability:patch', 'capability:bash', 'tools:invoke', 'mcp__papercusp_su__capability_bash', 'mcp__papercusp_su__capability_patch', 'mcp__papercusp_su__tools_invoke']) {
+      expect(launchProseMatcher.test(tool), tool).toBe(true);
+    }
+    expect(launchProseMatcher.test('Read')).toBe(false);
     const mdxMatcher = new RegExp(MDX_NUDGE_MATCHER);
     expect(mdxMatcher.test('docs:author')).toBe(true);
     expect(mdxMatcher.test('mcp__papercusp-su__docs_author')).toBe(true);
@@ -203,8 +219,15 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(postMatcherOf('posttooluse-tool-prompt-weight-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-mock-cast-escape-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-css-design-primitives-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    const frozenEditMatcher = postMatcherOf('posttooluse-frozen-candidate-edit-nudge.mjs')!;
+    expect(frozenEditMatcher).toBe(
+      FILE_WRITE_MATCHER + '|mcp__.*__capability_patch|mcp__.*__tools_invoke',
+    );
+    expect(new RegExp(frozenEditMatcher).test('mcp__papercusp-su__capability_patch')).toBe(true);
+    expect(new RegExp(frozenEditMatcher).test('mcp__papercusp-su__tools_invoke')).toBe(true);
     expect(postMatcherOf('posttooluse-registry-census-drift-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-cli-entry-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-resource-governor-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     // EI-21844056581395228: the ledger half of the artifact-URL delivery guard. It is
     // scoped to the Artifact tool because it only harvests ids from that tool's own
     // responses; the blocking half is matcher-less on Stop (assistant prose is not a
@@ -270,6 +293,16 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
 });
 
 describe('mergeClaudeHookSettings — non-destructive + idempotent', () => {
+  it('keeps the standalone installer wired for direct and tools:invoke-wrapped capability:patch calls', () => {
+    const installer = readFileSync(
+      new URL('../../../../apps/operator/scripts/install-standalone-mcp.sh', import.meta.url),
+      'utf8',
+    );
+    expect(installer).toContain(
+      "'matcher': 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit|patch)|mcp__.*__tools_invoke'",
+    );
+  });
+
   it('never clobbers a user-defined foreign statusLine', () => {
     const cfg = mergeClaudeHookSettings(
       { statusLine: { type: 'command', command: '/usr/local/bin/my-statusline' } },

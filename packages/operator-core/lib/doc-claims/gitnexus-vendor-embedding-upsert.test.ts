@@ -1,6 +1,6 @@
 /**
  * Doc-claim pin: the VENDORED gitnexus 1.6.9 carries the papercusp embedding-upsert backport
- * (patches/gitnexus-vendor+1.6.9-embedding-upsert.patch, applied by
+ * (vendor-patches/gitnexus-vendor+1.6.9-embedding-upsert.patch, applied by
  * scripts/vendor-gitnexus-patch.mjs).
  *
  * WHY. The hourly `gitnexus-reindex` tick spawns `analyze --force --embeddings 0`
@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { analyzeCliPath } from '../harness/routines/gitnexus-reindex-action';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const PATCH_FILE = join(REPO_ROOT, 'patches/gitnexus-vendor+1.6.9-embedding-upsert.patch');
+const PATCH_FILE = join(REPO_ROOT, 'vendor-patches/gitnexus-vendor+1.6.9-embedding-upsert.patch');
 const APPLY_SCRIPT = join(REPO_ROOT, 'scripts/vendor-gitnexus-patch.mjs');
 const MARKER = 'papercusp-patch:gitnexus-1.6.9-embedding-upsert';
 

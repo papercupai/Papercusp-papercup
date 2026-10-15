@@ -1,0 +1,202 @@
+{
+  "armId": "codebase-memory",
+  "version": "dev@339b3f40",
+  "unavailable": null,
+  "treeFingerprint": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
+  "coldIndex": {
+    "wallMs": 228533.87735499998,
+    "peakRssKb": 9593032,
+    "ok": true,
+    "error": null,
+    "loadAvg1": 168.87
+  },
+  "indexBytes": 986954554,
+  "cases": [
+    {
+      "caseId": "selective-scheduler-edge",
+      "intent": "callees",
+      "coldQueryMs": 44282,
+      "warmQueryMs": 16554,
+      "warmSamplesMs": [
+        39720,
+        15015,
+        16554
+      ],
+      "responseBytes": 9243,
+      "estTokens": 2311,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/scheduler/get-next.ts:2779"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/scheduler/get-next.ts:2779"
+      },
+      "returnedSites": [],
+      "error": null
+    },
+    {
+      "caseId": "selective-fingerprint-chain",
+      "intent": "callees",
+      "coldQueryMs": 15355,
+      "warmQueryMs": 14595,
+      "warmSamplesMs": [
+        14595,
+        14286,
+        17682
+      ],
+      "responseBytes": 3229,
+      "estTokens": 808,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:98",
+          "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:74"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:98, packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:74"
+      },
+      "returnedSites": [],
+      "error": null
+    },
+    {
+      "caseId": "selective-external-consumer",
+      "intent": "callers",
+      "coldQueryMs": 14910,
+      "warmQueryMs": 16284,
+      "warmSamplesMs": [
+        16284,
+        18878,
+        13030
+      ],
+      "responseBytes": 2077,
+      "estTokens": 520,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:123",
+          "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:902",
+          "packages/operator-core/lib/design-compare/acceptance.ts:120"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:123, packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:902, packages/operator-core/lib/design-compare/acceptance.ts:120"
+      },
+      "returnedSites": [],
+      "error": null
+    },
+    {
+      "caseId": "selective-route-boundary",
+      "intent": "text-search",
+      "coldQueryMs": 12397,
+      "warmQueryMs": 6861,
+      "warmSamplesMs": [
+        8181,
+        6861,
+        6805
+      ],
+      "responseBytes": 1429,
+      "estTokens": 358,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:48"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:48"
+      },
+      "returnedSites": [
+        "scripts/publish-official-blueprints.mts:217",
+        "packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:2",
+        "packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json:10220",
+        "packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json:11380"
+      ],
+      "error": null
+    },
+    {
+      "caseId": "selective-exact-index-symbol",
+      "intent": "symbol-search",
+      "coldQueryMs": 5591,
+      "warmQueryMs": 8888,
+      "warmSamplesMs": [
+        9702,
+        8888,
+        5898
+      ],
+      "responseBytes": 769,
+      "estTokens": 193,
+      "correct": true,
+      "recall": 1,
+      "grade": {
+        "correct": true,
+        "missing": [],
+        "extra": [],
+        "reason": "all 1 expected site(s) present"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/work-items.ts:7991",
+        "packages/operator-core/lib/scheduler/stop-the-line-floor.integration.test.ts:54"
+      ],
+      "error": null
+    }
+  ],
+  "fixtures": [
+    {
+      "name": "edit",
+      "pass": true,
+      "detail": "all 1 expected site(s) present",
+      "refreshCost": {
+        "wallMs": 164075.44570100005,
+        "peakRssKb": 10142108,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 165.67
+      },
+      "recoveryCost": null,
+      "faultSurfaced": null
+    },
+    {
+      "name": "delete",
+      "pass": true,
+      "detail": "no site from the deleted file is returned",
+      "refreshCost": {
+        "wallMs": 330450.0029630001,
+        "peakRssKb": 1567816,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 123.91
+      },
+      "recoveryCost": null,
+      "faultSurfaced": null
+    },
+    {
+      "name": "refresh-failure",
+      "pass": true,
+      "detail": "fault SURFACED; correct cold=1 while-broken=1 after-restore=1; recovery refresh ok=true",
+      "refreshCost": {
+        "wallMs": 77547.91093300004,
+        "peakRssKb": 88280,
+        "ok": false,
+        "error": "exit 1: _writable_ancestor mode=0775\nlevel=warn msg=daemon.private_dir_group_writable_ancestor mode=0775\nlevel=warn msg=daemon.private_dir_group_writable_ancestor mode=0775\nlevel=warn msg=daemon.private_dir_group_writable_ancestor mode=0775\nlevel=warn msg=daemon.private_dir_group_writable_ancestor mode=0775",
+        "loadAvg1": 202.81
+      },
+      "recoveryCost": {
+        "wallMs": 60699.985566999996,
+        "peakRssKb": 80764,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 145.89
+      },
+      "faultSurfaced": true
+    }
+  ],
+  "error": null,
+  "measuredAt": "2026-10-01T14:49:39.594Z"
+}

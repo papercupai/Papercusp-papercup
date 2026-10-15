@@ -7,7 +7,17 @@
  * enabled, while preserving the in-process fallback on startup failure.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+
+vi.mock('../../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../degradation/fallback-observations')>()),
+  observeFallback: vi.fn(() => true),
+}));
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 
 const h = { lazyOn: false, sidecarOn: false, mergeCursorPgOn: false };
 

@@ -17,9 +17,14 @@ import { PgLinkStore, type LinkRow, type ObjectRef } from '@papercusp/coordinati
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFeatureBlockers } from './dbos/feature-blockers-edges';
-import { getWorkItemDepBlockers, workItemDepEdgeReader, type WorkItemBlockerRequirement } from './dbos/work-item-deps-store';
+import { getWorkItemDepBlockers, workItemDepEdgeReader, type WorkItemBlockerRequirement, type WorkItemDependencyWriterOptions } from './dbos/work-item-deps-store';
 import { selectReady, TERMINAL_STATUSES, type ReadinessNode } from './dbos/frontier-readiness';
 import { activeWorkspaceId } from './workspace-registry';
+import { isDeepStrictEqual } from 'node:util';
+import { randomUUID } from 'node:crypto';
+import { activeWorkItemDependencyRefsSql } from './dbos/work-item-deps-store';
+import { issueOwnAuthorWhereSql } from './work-items-admission';
+import type { WorkItem } from './work-items';
 
 /** Issue-family terminal statuses (work-items.ts ISSUE_FAMILY_STATES: open/resolved/closed).
  *  work-item-status-full-unify (2026-07-19): + the unified terminals (`done`/`dropped`) as a
@@ -59,6 +64,119 @@ export const ALL_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
 ]);
 export const ALL_SUCCESSFUL_STATUSES: ReadonlySet<string> = new Set(['passed', 'resolved', 'done']);
 
+export interface DependencyBlockedRow {
+  state: string;
+  takenBy: string | null;
+  updatedTs: number;
+  payload: unknown;
+  origin: string;
+}
+
+export type DependencyBlockedClearPlan = {
+  outcome: 'cleared' | 'not-blocked' | 'stale-control' | 'external-blocker' | 'reserved' | 'live-dependency';
+  nextPayload?: Record<string, unknown>;
+};
+
+/** Remove only the obsolete dependency status and its generated lease. Independent parks,
+ * review/readiness decisions and owner requirements retain their existing claim floors. */
+export function planDependencyBlockedClear(
+  expected: DependencyBlockedRow,
+  current: DependencyBlockedRow,
+  conditions: {
+    hasLiveDependency: boolean; hasActiveExternalBlocker: boolean;
+    /** The row is at origin='remote' but authored by THIS node's own key (WI-10003565): ours to
+     *  clear, and the clear heals the origin. Absent ⇒ a remote row stays reserved for its peer. */
+    ownNodeAuthored?: boolean;
+  },
+): DependencyBlockedClearPlan {
+  if (current.state !== 'blocked') return { outcome: 'not-blocked' };
+  if (expected.state !== current.state || expected.takenBy !== current.takenBy ||
+      expected.updatedTs !== current.updatedTs || !isDeepStrictEqual(expected.payload, current.payload)) {
+    return { outcome: 'stale-control' };
+  }
+  if (conditions.hasLiveDependency) return { outcome: 'live-dependency' };
+  const payload = current.payload && typeof current.payload === 'object' && !Array.isArray(current.payload)
+    ? current.payload as Record<string, unknown> : {};
+  if (conditions.hasActiveExternalBlocker) return { outcome: 'external-blocker' };
+  if ((current.origin === 'remote' && !conditions.ownNodeAuthored)
+      || payload.needsOwnerAction === true || payload.needsHuman === true) {
+    return { outcome: 'reserved' };
+  }
+  const generatedLease = payload.held_open_reason === 'blocked';
+  const durablePark = typeof payload.claim_hold_by === 'string' && payload.claim_hold_by.trim() !== '';
+  if (String(payload._claimHold) === 'true' && !generatedLease) return { outcome: 'reserved' };
+  const nextPayload = { ...payload };
+  if (generatedLease) {
+    delete nextPayload.held_open_by;
+    delete nextPayload.held_open_at;
+    delete nextPayload.held_open_reason;
+    if (!durablePark) delete nextPayload._claimHold;
+  }
+  return { outcome: 'cleared', nextPayload };
+}
+
+/** The settle and unlink paths share this checked restoration. A locked base-row snapshot
+ * prevents a delayed event from restoring an item whose assignment or controls have moved. */
+export async function reconcileClearedDependencyBlockedState(
+  item: WorkItem,
+  clearedById: string,
+  opts: { sql?: ReturnType<typeof getOrgPg>['sql']; workspaceId?: string } = {},
+): Promise<DependencyBlockedClearPlan['outcome'] | 'plan-blocked'> {
+  if (item.state !== 'blocked' || !item.harness) return 'not-blocked';
+  if (item.sourcePlanSlug || (item.payload && typeof item.payload === 'object' && 'plan_item' in item.payload)) {
+    const { planItemLaneBlockReasonForClaimableEvent } = await import('./scheduler/plan-item-lane-guard');
+    if (await planItemLaneBlockReasonForClaimableEvent(item)) return 'plan-blocked';
+  }
+  const sql = opts.sql ?? getOrgPg().sql;
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const expected: DependencyBlockedRow = {
+    state: item.state, takenBy: item.assignee, updatedTs: Date.parse(item.updatedAt),
+    payload: item.payload, origin: item.origin ?? 'local',
+  };
+  if (!Number.isFinite(expected.updatedTs)) return 'stale-control';
+  return sql.begin(async (tx) => {
+    const rows = await tx<Array<{
+      state: string; taken_by: string | null; updated_ts: number | string; payload: unknown; origin: string;
+      own_node: boolean | null;
+    }>>`
+      SELECT wi.status AS state, wi.taken_by, wi.updated_ts, wi.payload, wi.origin,
+             (wi.origin = 'remote' AND ${issueOwnAuthorWhereSql(tx as unknown as typeof sql, workspaceId)}) AS own_node
+        FROM harness_shared.work_items wi
+       WHERE wi.workspace_id = ${workspaceId} AND wi.harness_slug = ${item.harness} AND wi.feature_id = ${item.id}
+       FOR UPDATE OF wi`;
+    const row = rows[0];
+    if (!row) return 'stale-control';
+    const current: DependencyBlockedRow = {
+      state: row.state, takenBy: row.taken_by, updatedTs: Number(row.updated_ts), payload: row.payload, origin: row.origin,
+    };
+    const blockedRef = item.family === 'feature' ? `${item.harness}#${item.id}` : item.id;
+    const live = await tx<Array<{ blocked_ref: string }>>`
+      SELECT blocked_ref FROM (${activeWorkItemDependencyRefsSql(tx as unknown as typeof sql, {
+        itemWorkspaceId: workspaceId, terminalStates: [...ALL_TERMINAL_STATUSES],
+        successfulStates: [...ALL_SUCCESSFUL_STATUSES],
+      })}) live WHERE blocked_ref = ${blockedRef} LIMIT 1`;
+    const { activeExternalBlockers } = await import('./external-blockers');
+    const plan = planDependencyBlockedClear(expected, current, {
+      hasLiveDependency: live.length > 0, hasActiveExternalBlocker: activeExternalBlockers(current.payload).length > 0,
+      ownNodeAuthored: row.own_node === true,
+    });
+    if (plan.outcome !== 'cleared') return plan.outcome;
+    // An own-node row stranded at origin='remote' is healed in the same write that clears it:
+    // a separate heal would wait on the FOR UPDATE lock this transaction holds.
+    await tx`
+      UPDATE harness_shared.work_items
+         SET status = 'open', payload = ${JSON.stringify(plan.nextPayload)}::text::jsonb, updated_ts = ${Date.now()}
+             ${row.own_node === true ? tx`, origin = 'local'` : tx``}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${item.harness} AND feature_id = ${item.id}`;
+    await tx`
+      INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+      VALUES (${`dependency-clear-${randomUUID()}`}, ${Date.now()}, 'system:dependency-clear', 'work_items:state:unblocked', ${item.id},
+              ${JSON.stringify({ from: 'blocked', to: 'open', clearedById, harness: item.harness })}::text::jsonb,
+              ${workspaceId})`;
+    return 'cleared';
+  });
+}
+
 /** A work-item's minimal identity for readiness (canonical, prefix-stripped id + its status). */
 export interface BlockingNode {
   id: string;
@@ -73,7 +191,7 @@ export interface BlockingNode {
  */
 export interface BlockingStore {
   /** blocked id → its blocker ids, within `harnessSlug` (within-harness, prefix-stripped). */
-  blockersFor(harnessSlug: string): Promise<Map<string, WorkItemBlockerRequirement[]>>;
+  blockersFor(harnessSlug: string, opts?: Pick<WorkItemDependencyWriterOptions, 'sql'>): Promise<Map<string, WorkItemBlockerRequirement[]>>;
 }
 
 /**
@@ -81,15 +199,15 @@ export interface BlockingStore {
  * `work_item_deps` table, so this is no longer a distinct coord_links backend.
  */
 export const coordLinksBlockingStore: BlockingStore = {
-  blockersFor: async (harnessSlug: string) =>
-    new Map([...(await getFeatureBlockers(harnessSlug))].map(([id, blockers]) => [id, blockers.map((blocker) => ({ id: blocker, satisfaction: 'settled' as const }))])),
+  blockersFor: async (harnessSlug, opts) =>
+    new Map([...(await getFeatureBlockers(harnessSlug, opts))].map(([id, blockers]) => [id, blockers.map((blocker) => ({ id: blocker, satisfaction: 'settled' as const }))])),
 };
 
 /**
  * Canonical backend: the dedicated `work_item_deps` table.
  */
 export const workItemDepsBlockingStore: BlockingStore = {
-  blockersFor: (harnessSlug: string) => getWorkItemDepBlockers(harnessSlug),
+  blockersFor: (harnessSlug, opts) => getWorkItemDepBlockers(harnessSlug, opts),
 };
 
 /**

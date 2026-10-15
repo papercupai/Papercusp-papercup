@@ -75,6 +75,8 @@ import * as path from 'node:path';
 import { existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { collectChildOutput } from '../../child-output';
+import { broadcastSevereEvent } from '../../severe-event-broadcast';
+import { resolveAlarm } from '../../alarm-attention';
 
 /** Generation walks every plan + work-item for the harness and renders a multi-MB
  *  artifact; SideStage's ~51-plan archive runs well under a minute, but a larger
@@ -431,6 +433,13 @@ registerSystemAction('project-history-refresh', async (ctx: SystemActionCtx) => 
         WHERE install_slug = $1 AND target_role = 'system:project-history-refresh'`,
       [ctx.installSlug, JSON.stringify({ project_history_health: update.next })],
     );
+    const conditionKey = `alarm:project-history-refresh:${ctx.installSlug}`;
+    if (success) await resolveAlarm(conditionKey, 'project-history-refresh');
+    else if (update.next.consecutiveFailures >= PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD) {
+      await broadcastSevereEvent({ conditionKey, oneShot: true,
+        summary: `Project history for ${ctx.installSlug} has failed ${update.next.consecutiveFailures} consecutive refreshes`,
+      }).catch(() => false);
+    }
     if (update.shouldAlert) {
       const { notifyAttention } = await import('../../attention-notify');
       await notifyAttention({
@@ -452,4 +461,5 @@ registerSystemAction('project-history-refresh', async (ctx: SystemActionCtx) => 
   } catch (e) {
     console.warn(`[project-history-refresh] health bookkeeping skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
-});
+  // WI-10005745: spawns the tree's own CLI bin (libs/papercusp/packages/cli/bin/papercusp).
+}, { executesIntegrationTreeCode: true });

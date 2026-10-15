@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10006809",
+  "plan": "gitnexus-deterministic-integration-2026-10-05",
+  "decision": "D-026",
+  "producer": {
+    "command": "node scripts/gen-graph-dependency-snapshot.mjs --first-party --out <scratch>",
+    "wallSeconds": 25.44,
+    "maxRssKiB": 947992,
+    "derive": {
+      "importers": 22673,
+      "unreadable": 0,
+      "aliasResolved": 2229,
+      "aliasUnresolved": 2,
+      "packageResolved": 11181,
+      "packageUnresolved": 102,
+      "packageAmbiguous": 0,
+      "relativeUnresolved": 1363,
+      "bare": 45248
+    },
+    "written": {
+      "status": "written",
+      "edges": 61358,
+      "input": 70938,
+      "uncorroborated": 9580,
+      "index": "88409fd94d"
+    },
+    "index": {
+      "lastCommit": "88409fd94dfcea7aa9fedcfaede5c2d78ea4b31c",
+      "indexedAt": "2026-10-06T22:26:41.019Z",
+      "backend": "first-party-imports",
+      "backendVersion": null
+    }
+  },
+  "gitnexusSnapshot": {
+    "edges": 52623,
+    "crossLive": 1583,
+    "index": {
+      "lastCommit": "aa838009bd9075bd9d6248d4418401e91ecbc004",
+      "indexedAt": "2026-10-06T17:06:44.378Z",
+      "backend": "gitnexus",
+      "backendVersion": "1.6.9"
+    },
+    "generatedAt": "2026-10-06T17:07:21.644Z"
+  },
+  "comparison": {
+    "firstPartyEdges": 61358,
+    "firstPartyCross": 2617,
+    "overlap": 52513,
+    "crossOverlap": 1582,
+    "crossCoverageOfGitnexusLive": 0.9994,
+    "totalCoverageOfGitnexus": 0.9979,
+    "onlyGitnexus": {
+      "total": 110,
+      "live": 110,
+      "liveCross": 1,
+      "liveCrossByOwnerPair": [
+        [
+          "packages/coordination -> packages/operator-core",
+          1
+        ]
+      ],
+      "sample": [
+        "packages/coordination/src/adapter-wiring.test.ts\tpackages/operator-core/lib/agent-tools/coordination/presence.ts"
+      ]
+    },
+    "onlyFirstParty": {
+      "total": 8845,
+      "cross": 1035
+    }
+  },
+  "rejectedByCorroboration": {
+    "derived": 70939,
+    "rejected": 9580,
+    "byClass": {
+      "index": 8244,
+      "src-injected?": 1243,
+      "other": 93
+    },
+    "samples": {
+      "index": [
+        {
+          "importer": ".papercusp/reports/plan-portfolio-audit-2026-10-06/canonical.mjs",
+          "imported": "libs/generic/plan-parser/src/index.ts"
+        },
+        {
+          "importer": "_retired/harness-dashboard/InsightsPanel.tsx",
+          "imported": "libs/generic/papergrid/grid-core/src/index.ts"
+        },
+        {
+          "importer": "_retired/harness-dashboard/MemoryBrowser.tsx",
+          "imported": "libs/generic/sync/src/index.ts"
+        }
+      ],
+      "src-injected?": [
+        {
+          "importer": "_retired/mug-kettle-deciders/apps/operator-vite/src/components/left-sidebar/AutonomySurfacing.tsx",
+          "imported": "libs/flags/src/client.ts"
+        },
+        {
+          "importer": "_retired/mug-kettle-deciders/apps/operator-vite/src/components/left-sidebar/MugTab.tsx",
+          "imported": "libs/flags/src/client.ts"
+        },
+        {
+          "importer": "_retired/mug-kettle-deciders/apps/operator-vite/src/components/left-sidebar/OverwatchTab.test.tsx",
+          "imported": "libs/test-config/src/nuqs-mock.ts"
+        }
+      ],
+      "other": [
+        {
+          "importer": "apps/operator-public/src/__tests__/hostile-publisher.test.ts",
+          "imported": "packages/operator-core/lib/cupboard/install-recipe-core.ts"
+        },
+        {
+          "importer": "apps/operator-public/src/__tests__/hostile-publisher.test.ts",
+          "imported": "packages/operator-core/lib/cupboard/self-describing-release.ts"
+        },
+        {
+          "importer": "apps/operator-public/src/__tests__/hostile-publisher.test.ts",
+          "imported": "packages/operator-core/lib/p2p/artifact-package.ts"
+        }
+      ]
+    }
+  },
+  "progression": [
+    {
+      "stage": "v1 relative-only",
+      "crossCoverage": 0.4
+    },
+    {
+      "stage": "v2 +tsconfig aliases (first-match) +unique workspace packages",
+      "crossCoverage": 0.54
+    },
+    {
+      "stage": "v3 TypeScript-faithful alias match (exact key equality, longest wildcard)",
+      "crossCoverage": 0.9773
+    },
+    {
+      "stage": "v4 ambiguous package names resolved via Node node_modules lookup onto a claimant",
+      "crossCoverage": 0.9994
+    }
+  ]
+}

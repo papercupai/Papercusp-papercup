@@ -1,0 +1,211 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005600",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "planItem": "P-011",
+  "scope": "Private request-only copy of an exact serving artifact; current native adapter tooling, not production memory savings or final acceptance.",
+  "rawReceipt": {
+    "path": "docs/evidence/papercusp-oct1-p011-heap-retainers-r5-2026-10-02.json",
+    "bytes": 834995,
+    "sha256": "4d4c8291cf5fe529918644cdbe2e2e7175ffadca7d1fd69c7287485669678458"
+  },
+  "run": {
+    "id": 20565307,
+    "status": "pass",
+    "commitSha": "05a86ab572f1fa9ddc6a276655fa0b3e4861b614",
+    "worktreeDirty": true,
+    "source": "local",
+    "durationMs": 209658,
+    "filePath": "packages/operator-core/lib/service-memory-attribution.integration.test.ts"
+  },
+  "preflight": {
+    "pid": 2987513,
+    "startTicks": "1899066",
+    "cwd": "$HOME/papercupai-workspace/papercusp-staging.generations/.candidate-3f8b0356f16b.cYMWO7/checkout/apps/operator",
+    "entry": "$HOME/papercupai-workspace/papercusp-staging.generations/.candidate-3f8b0356f16b.cYMWO7/checkout/apps/operator/dist-host/hono-host.mjs",
+    "hostDirectory": "$HOME/papercupai-workspace/papercusp-staging.generations/.candidate-3f8b0356f16b.cYMWO7/checkout/apps/operator/dist-host",
+    "bundleSha256": "3d36108c643c7745fea0441462f3bb25f7ae091007d5171ffb58793a1f6d9910",
+    "buildSha": "3f8b0356f1",
+    "observedAt": "2026-10-02T20:38:07.971101+00:00",
+    "sources": [
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "sha256": "5a361ea09ca81ecb9220f7f15bf2c9308b045ac5775826f3c462b0be0cd95140"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.d.mts",
+        "sha256": "185e439801109a991ba7ebd47494ed183e19e7487ddfb6df5decb085b6379f4a"
+      },
+      {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "sha256": "f6c53061761d23d76d7cf04bf80dce88f3887849f6fc03c8dbdb3391d8648c3f"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "sha256": "690e0105e8ca6d349d438ce83e83e8bd170c694c4c8c424e14ea72bc8f614318"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      },
+      {
+        "path": "scripts/test-files.mjs",
+        "sha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d"
+      },
+      {
+        "path": "node_modules/@vscode/v8-heap-parser/pkg/nodejs/v8_heap_parser_bg.wasm",
+        "sha256": "20b097dba67b7b52c7c33e721059fb6c1118aebc942b682ad70432b7bf35262b"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.toml",
+        "sha256": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.lock",
+        "sha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded"
+      },
+      {
+        "path": "scripts/heap-retainers-native/src/main.rs",
+        "sha256": "33556ddad92d786e49b7587f9237949ee5104e9aed8a70c8fd019575877c5292"
+      }
+    ],
+    "sourceHead": "58d19872a8626a194f60d1aa822d3b481e325980",
+    "nativeAdapter": {
+      "executable": "$HOME/papercupai-workspace/papercusp/.heap-retainers-cargo-target/release/papercusp-heap-retainers",
+      "sha256": "b8d198605d8cc5864616b2b75a776004bbae00726262525800a623b2e2befe61",
+      "version": "papercusp-heap-retainers 0.1.0",
+      "upstreamCommit": "05edd8131a77790ab0e7bce2eedf5770d6bb83ae"
+    }
+  },
+  "terminal": {
+    "exitCode": 0,
+    "at": "2026-10-02T20:42:18.891338+00:00",
+    "sourcesAfter": [
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "sha256": "103397e864cbe763801a465177a4cf72f06afe9bc2cccb672bf9bdc45dbb2a0a"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.d.mts",
+        "sha256": "185e439801109a991ba7ebd47494ed183e19e7487ddfb6df5decb085b6379f4a"
+      },
+      {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "sha256": "f6c53061761d23d76d7cf04bf80dce88f3887849f6fc03c8dbdb3391d8648c3f"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "sha256": "690e0105e8ca6d349d438ce83e83e8bd170c694c4c8c424e14ea72bc8f614318"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      },
+      {
+        "path": "scripts/test-files.mjs",
+        "sha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d"
+      },
+      {
+        "path": "node_modules/@vscode/v8-heap-parser/pkg/nodejs/v8_heap_parser_bg.wasm",
+        "sha256": "20b097dba67b7b52c7c33e721059fb6c1118aebc942b682ad70432b7bf35262b"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.toml",
+        "sha256": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.lock",
+        "sha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded"
+      },
+      {
+        "path": "scripts/heap-retainers-native/src/main.rs",
+        "sha256": "33556ddad92d786e49b7587f9237949ee5104e9aed8a70c8fd019575877c5292"
+      }
+    ]
+  },
+  "nativeGraph": {
+    "parser": "microsoft/vscode-v8-heap-tools native",
+    "upstreamRevision": "05edd8131a77790ab0e7bce2eedf5770d6bb83ae",
+    "limits": {
+      "maxRetainers": 32,
+      "perClass": 3,
+      "retainerDepth": 1,
+      "top": 20
+    },
+    "receipt": {
+      "executableSha256": "b8d198605d8cc5864616b2b75a776004bbae00726262525800a623b2e2befe61",
+      "inputBytes": 570606835,
+      "inputSha256": "c37f6d1127caf54a9eed9b46c916b27ae250160df8e4929616c713ff7f4cb91f",
+      "elapsedMs": 18325,
+      "status": 0,
+      "signal": null,
+      "stdoutBytes": 76432,
+      "stderrBytes": 0,
+      "errorCode": null
+    },
+    "definition": "Node retained_size is dominator-owned V8 self_size; class retained sizes overlap. Not total native memory or production savings.",
+    "retainerDefinition": "Depth-one unique incoming parents; excludes weak edges, non-root shortcuts, root and the queried node. First essential edge type per parent; no edge names."
+  },
+  "verified": {
+    "nativeBinaryPreflightMatches": true,
+    "censusAndGraphExactInputMatches": true,
+    "groupsReturned": 20,
+    "postSnapshotRowsPreserved": true,
+    "hostReaped": true,
+    "snapshotRemoved": true
+  },
+  "guards": {
+    "unit": {
+      "testRunId": 20559471,
+      "testsPassed": 8,
+      "skipped": 0,
+      "log": "/tmp/su-7db4f-native-adapter-guard-r2.log"
+    },
+    "isolationBoundary": {
+      "testRunId": 20559473,
+      "testsPassed": 1,
+      "filteredSkips": 17,
+      "log": "/tmp/su-7db4f-native-adapter-boundary-r1.log"
+    },
+    "types": {
+      "scopedFiles": 2,
+      "actualErrors": 0,
+      "log": "/tmp/su-7db4f-native-adapter-types-r1.log"
+    },
+    "declarations": {
+      "selectedFiles": 1,
+      "exitCode": 0,
+      "log": "/tmp/su-7db4f-native-adapter-declarations-r1.log"
+    }
+  },
+  "sourceQualification": {
+    "beforeAfterChanged": [
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "before": "5a361ea09ca81ecb9220f7f15bf2c9308b045ac5775826f3c462b0be0cd95140",
+        "after": "103397e864cbe763801a465177a4cf72f06afe9bc2cccb672bf9bdc45dbb2a0a"
+      }
+    ],
+    "beforeAnalyzerResolvedAtSourceHead": true,
+    "currentAnalyzerImport": "Bare Node import observed successful after peer CLI helper correction.",
+    "graphFunctionCurrentProof": "No blanket current source acceptance claimed. R5 records exact executed binary/input; analyzer import-time bytes are not measured.",
+    "fullTransitiveProvenance": "UNKNOWN",
+    "routerHead": "Moved during test; overall test-file result provenance unknown."
+  },
+  "limitations": [
+    "Class retained sizes overlap; never sum them. Dominator-owned V8 self_size is not PSS/RSS/native physical ownership.",
+    "Only top20 classes, up to3 nodes/class and first32 unique essential direct parents/node are returned. These limits cannot prove absence of other owners.",
+    "The snapshot forced GC and a synchronous pause; application startup allocation profiling may also be present. This is not an ordinary unprofiled production baseline or leak test.",
+    "Native R5 did not rerun WASM. R4 same-byte comparison remains historical evidence; precise WASM trap root cause is unknown.",
+    "Serving artifact copy and current analyzer/native binary are distinct evidence planes; production/runtime containment is not inferred.",
+    "P011 physical counterfactual, useful-context/concurrency acceptance, historical compiler disposition, R8/R9, independent acceptance and final shipment remain open."
+  ]
+}

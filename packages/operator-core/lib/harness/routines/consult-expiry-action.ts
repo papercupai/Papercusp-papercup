@@ -39,7 +39,7 @@ registerSystemAction('consult-expiry-sweep', async () => {
     },
     { makeConsultReachDispatcher },
     { upsertConditionWorkItem },
-    { listLiveTasks },
+    { listLiveTasks, listTasks },
     { killTask },
   ] = await Promise.all([
     import('@papercusp/db-org'),
@@ -54,6 +54,14 @@ registerSystemAction('consult-expiry-sweep', async () => {
 
   await sweepExpiredConsults({
     getSql: () => getOrgPg().sql,
+    resumeCascadeDispatch: async (workspaceId, conversationId) => {
+      const { continueCascadeDispatchProd } = await import('../../consult/consult-dispatch');
+      return continueCascadeDispatchProd(workspaceId, conversationId);
+    },
+    resumeRequest: async (workspaceId, conversationId) => {
+      const { continueFeedbackRequestProd } = await import('../../consult/get-feedback-prod');
+      return continueFeedbackRequestProd(workspaceId, conversationId);
+    },
     // P-003 (WI-10003199): a slot whose window closes without a post has its
     // answering session stopped here, at the transition, instead of idling until
     // the task reaper's next pass; the reaper remains the backstop.
@@ -86,6 +94,16 @@ registerSystemAction('consult-expiry-sweep', async () => {
       },
     }),
     findSilentResponders: consultExpiryFindSilentResponders({
+      listAnsweringTasks: async (workspaceId, answeringOwnerId) => {
+        const filter = { workspaceId, coordOwnerId: answeringOwnerId, classes: ['agent-session'], limit: 20 };
+        // Read live rows separately so a capped terminal-history window cannot
+        // hide a live sibling of an older failed launch.
+        const [history, live] = await Promise.all([
+          listTasks({ ...filter, includeEnded: true }),
+          listTasks(filter),
+        ]);
+        return [...new Map([...history, ...live].map((task) => [task.taskId, task])).values()];
+      },
       getPresence: async (ownerId) => {
         const { getPresence } = await import('../../agent-tools/coordination/presence');
         return getPresence(ownerId);
@@ -102,4 +120,32 @@ registerSystemAction('consult-expiry-sweep', async () => {
         }),
     }),
   });
+
+  // consult-backed-parking-2026-10-12 P-006: resolve decision-review parks past their
+  // deadline (R-5/R-17) and read back owner answers to open park questions (R-18). Its
+  // own try: a park fault must never cost the expiry sweep above its tick.
+  try {
+    const sql = getOrgPg().sql as never;
+    const [{ sweepDueParks, pollParkOwnerAnswers }, { makeProdParkSeams, readParkOwnerAnswer }] = await Promise.all([
+      import('../../consult/park-adapters'),
+      import('../../consult/park-prod'),
+    ]);
+    const seamsFor = (workspaceId: string) => makeProdParkSeams(sql, workspaceId);
+    await pollParkOwnerAnswers({ sql, seamsFor, readAnswer: readParkOwnerAnswer });
+    await sweepDueParks({ sql, seamsFor });
+  } catch (e) {
+    console.warn(`[consult-expiry-sweep] park sweep failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  // Park verdict delivery (R-7/R-20/R-21) in its own try: a delivery fault must not cost
+  // the deadline resolution above, and the reverse.
+  try {
+    const sql = getOrgPg().sql as never;
+    const { sweepParkDeliveries } = await import('../../consult/park-delivery-prod');
+    const r = await sweepParkDeliveries({ sql });
+    for (const f of r.failures) {
+      console.warn(`[consult-expiry-sweep] park delivery check failed for ${f.conversationId}: ${f.error}`);
+    }
+  } catch (e) {
+    console.warn(`[consult-expiry-sweep] park delivery sweep failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 });

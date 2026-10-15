@@ -167,11 +167,54 @@ const { buildAgentLaunchCommand } = await import('../../agent-launch-core');
 
 /** SQL the handler actually issued, as (text, values) pairs. */
 const sql: Array<{ text: string; values: unknown[] }> = [];
+const idempotencyRows = new Map<string, {
+  summary: Record<string, unknown>;
+  launchedAt: number;
+  launchedBy: string | null;
+}>();
 let currentGoalArgs: Record<string, unknown> = {};
+// Happy paths exercise launch ordering with a fresh, authoritative measurement.
+// Null deliberately retains the all-empty ledger refusal for the negative control.
+let measuredSpendCents: number | null = 100;
 const runSql = (strings: TemplateStringsArray, ...values: unknown[]) => {
   const text = strings.join(' ? ');
   sql.push({ text, values });
   order.push(/INSERT/i.test(text) ? 'insert' : /DELETE/i.test(text) ? 'delete' : 'sql');
+  if (text.includes('harness_shared.agent_launch_idempotency')) {
+    if (/INSERT INTO/i.test(text)) {
+      const [workspaceId, key, launchedAt, launchedBy, summaryJson] = values as [
+        string, string, number, string | null, string,
+      ];
+      const storageKey = `${workspaceId}:${key}`;
+      if (idempotencyRows.has(storageKey)) return Promise.resolve([]);
+      idempotencyRows.set(storageKey, {
+        summary: JSON.parse(summaryJson) as Record<string, unknown>,
+        launchedAt,
+        launchedBy,
+      });
+      return Promise.resolve([{ idempotency_key: key }]);
+    }
+    if (/UPDATE/i.test(text)) {
+      const [summaryJson, workspaceId, key] = values as [string, string, string];
+      const row = idempotencyRows.get(`${workspaceId}:${key}`);
+      if (!row) return Promise.resolve([]);
+      row.summary = JSON.parse(summaryJson) as Record<string, unknown>;
+      return Promise.resolve([{ idempotency_key: key }]);
+    }
+    if (/SELECT summary, launched_at, launched_by/i.test(text)) {
+      const [workspaceId, key] = values as [string, string];
+      const row = idempotencyRows.get(`${workspaceId}:${key}`);
+      return Promise.resolve(
+        row ? [{ summary: row.summary, launched_at: row.launchedAt, launched_by: row.launchedBy }] : [],
+      );
+    }
+    if (/DELETE/i.test(text) && text.includes('idempotency_key =')) {
+      const [workspaceId, key] = values as [string, string];
+      const removed = idempotencyRows.delete(`${workspaceId}:${key}`);
+      return Promise.resolve(removed ? [{ idempotency_key: key }] : []);
+    }
+    return Promise.resolve([]);
+  }
   if (text.includes('SELECT title, body, kill_criterion, standing,')) {
     return Promise.resolve([{
       title: currentGoalArgs.title,
@@ -181,10 +224,12 @@ const runSql = (strings: TemplateStringsArray, ...values: unknown[]) => {
       launch_settings: null,
       budget_cents: currentGoalArgs.budgetCents ?? null,
       budget_window_sec: currentGoalArgs.budgetWindowSec ?? null,
-      spent_cents: null,
+      spent_cents: measuredSpendCents,
       spent_cents_breakdown: null,
-      spent_cents_at: null,
-      spent_cents_source: null,
+      spent_cents_at: new Date().toISOString(),
+      spent_cents_source: 'goal-lineage-rollup',
+      interactive_usage_freshness_status: 'fresh',
+      interactive_usage_last_ingested_at_ms: Date.now(),
       drain_fleet: null,
     }]);
   }
@@ -235,8 +280,10 @@ const isError = (res: unknown) => !!(res as { isError?: boolean }).isError;
 beforeEach(() => {
   vi.clearAllMocks();
   currentGoalArgs = { ...ARGS };
+  measuredSpendCents = 100;
   order.length = 0;
   sql.length = 0;
+  idempotencyRows.clear();
   setModeCalls.length = 0;
   automintEnabled = true;
   mintMock.mockImplementation(async () => {
@@ -286,6 +333,28 @@ export function stampPrecedesSpawn(recorded: string[]): boolean {
   return stamp !== -1 && spawn !== -1 && stamp < spawn;
 }
 
+describe('goals:start measured budget prerequisite', () => {
+  it('refuses an empty spend ledger before opening any holder', async () => {
+    measuredSpendCents = null;
+    const result = await call();
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toContain('spend CANNOT BE MEASURED');
+    expect(textOf(result)).toContain('no goal-attributed, pot, or session usage samples');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a fresh authoritative measurement at the declared ceiling', async () => {
+    measuredSpendCents = ARGS.budgetCents;
+    const result = await call();
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toContain('budget');
+    expect(textOf(result)).not.toContain('CANNOT BE MEASURED');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('the ordering predicate itself', () => {
   it('accepts stamp-then-spawn and REJECTS spawn-then-stamp', () => {
     expect(stampPrecedesSpawn(['insert', 'mode-set', 'spawn'])).toBe(true);
@@ -297,6 +366,61 @@ describe('the ordering predicate itself', () => {
 });
 
 describe('goals:start — the happy path', () => {
+  it('replays the same start result for an identical request key without spawning twice', async () => {
+    const first = await call({ requestKey: 'composer-request-1' });
+    const replay = await call({ requestKey: 'composer-request-1' });
+
+    expect(isError(first)).toBe(false);
+    expect(isError(replay)).toBe(false);
+    expect(dataOf(replay)).toMatchObject({
+      id: dataOf(first).id,
+      agent_owner_id: dataOf(first).agent_owner_id,
+    });
+    expect(sql.filter((entry) => /INSERT INTO harness_shared\.goals/i.test(entry.text))).toHaveLength(1);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses reuse of a request key when normalized arguments change before any new side effect', async () => {
+    await call({ requestKey: 'composer-request-2' });
+    const changed = await call({ requestKey: 'composer-request-2', title: 'Ship another app' });
+
+    expect(isError(changed)).toBe(true);
+    expect(textOf(changed)).toContain('different goal arguments or scope');
+    expect(sql.filter((entry) => /INSERT INTO harness_shared\.goals/i.test(entry.text))).toHaveLength(1);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns in-progress for a duplicate while the first request is still spawning', async () => {
+    const finishSpawn: { resolve?: (result: SpawnConsoleResult) => void } = {};
+    spawnConsoleMock.mockImplementationOnce(() =>
+      new Promise((resolve) => {
+        finishSpawn.resolve = resolve;
+      }),
+    );
+    const firstPromise = call({ requestKey: 'composer-request-3' });
+    await vi.waitFor(() => expect(spawnConsoleMock).toHaveBeenCalledTimes(1));
+
+    const duplicate = await call({ requestKey: 'composer-request-3' });
+    expect(isError(duplicate)).toBe(true);
+    expect(textOf(duplicate)).toContain('already in progress');
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+
+    if (!finishSpawn.resolve) throw new Error('spawn resolver was not installed before the duplicate check');
+    finishSpawn.resolve(okSpawn());
+    expect(isError(await firstPromise)).toBe(false);
+  });
+
+  it('releases the request claim after a spawn rollback so a safe retry can start', async () => {
+    spawnConsoleMock.mockImplementationOnce(async () => ({ status: 'error', error: 'no display' }) as SpawnConsoleResult);
+    const failed = await call({ requestKey: 'composer-request-4' });
+    const retry = await call({ requestKey: 'composer-request-4' });
+
+    expect(isError(failed)).toBe(true);
+    expect(isError(retry)).toBe(false);
+    expect(sql.filter((entry) => /DELETE FROM harness_shared\.agent_launch_idempotency/i.test(entry.text) && entry.text.includes('idempotency_key ='))).toHaveLength(1);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+  });
+
   it('pins a bounded current-build holder to its spawn host and leaves the default stable', async () => {
     expect(isError(await call({ mcpTarget: 'spawn-host' }))).toBe(false);
     const abInput = buildConsoleEnvelopeMock.mock.calls[0]?.[0] as { operatorBaseUrl: string; agentMcpBaseUrl?: string };
@@ -853,6 +977,8 @@ describe('the kickoff brief', () => {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
       budgetWindowSec: null,
     },
     tripwires: [],

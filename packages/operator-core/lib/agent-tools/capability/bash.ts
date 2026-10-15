@@ -40,6 +40,7 @@ import {
   MAX_BACKGROUND_TIMEOUT_MS,
   snapshotJobResult,
   startBackground,
+  BashTaskConfinementRequiredError,
   waitForJobResponse,
 } from './bash-jobs';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from './foreground-transport-cap';
@@ -52,7 +53,8 @@ import { realpathSoft, resolveCapabilityBaseDir } from './base-dir';
 import { maskIntegrationKey, readIntegrationKey } from '../../integration-credentials';
 import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
-import { BashProvenanceRefusal, resolveBashTaskProvenance } from './bash-task-provenance';
+import { findProviderEgressTargets } from '../../personal-vault/provider-egress.mjs';
+import { BashProvenanceRefusal, resolveCapabilityBashTaskProvenance } from './bash-task-provenance';
 import { listLiveTasks } from '../../task-manager/store';
 import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
@@ -63,9 +65,17 @@ import {
   evaluateFrozenLineageShellCommand,
   frozenLineageShellCommandViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
 import { repoHeadSha } from '../../harness/docs/git-runner';
 import { resolveCapabilityIntegrationRoot } from './base-dir';
 import { classifyCapabilityBashEffect, commandBase, splitClassifiableShell } from './bash-effect';
+import { readRestrictedSourceHoldState } from '../../personal-vault/git-sync-hold';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { RTK_OPT_OUT_PREFIX, rtkCommandForCapabilityBash } from './rtk-rewrite';
+
+/** One-line disclosure attached to a result whose command ran through RTK. */
+export const RTK_RESULT_NOTE = `rtk-compressed (prefix ${RTK_OPT_OUT_PREFIX} for raw output)`;
 
 export { classifyCapabilityBashEffect } from './bash-effect';
 
@@ -359,6 +369,9 @@ const integrationEnvSchema = z
 const bashResultSchema = z
   .object({
     ok: z.boolean(),
+    reason: z.string().optional(),
+    unconfined_reason: z.string().optional(),
+    command_started: z.boolean().optional(),
     bash_id: z.string().optional(),
     task_id: z.string().optional(),
     status: z.enum(['running', 'completed', 'failed', 'killed', 'timed_out']).optional(),
@@ -369,9 +382,11 @@ const bashResultSchema = z
     duration_ms: z.number().nonnegative().optional(),
     cwd: z.string().optional(),
     output: z.string().optional(),
-    truncated: z.boolean().optional(),
+    truncated: z.boolean().optional().describe(
+      'When true, output is a bounded head/tail preview, not complete data; do not parse it. Narrow the command or read log_path.',
+    ),
     total_bytes: z.number().int().nonnegative().optional(),
-    log_path: z.string().optional(),
+    log_path: z.string().optional().describe('Path containing the complete command output when output is truncated.'),
     response_window_ms: z.number().int().nonnegative().optional(),
     timeout_ms: z.number().int().nonnegative().optional(),
     deadline: z.string().optional(),
@@ -408,8 +423,9 @@ export default defineTool({
     // consumable export), which is why it lost to the rg/backtick and background-job
     // guidance. If it needs to be agent-facing again, put it in a doc and point at it.
     when:
-      'fixed-string searches: prefer `rg -F`, else `grep -F`; single-quote — unmatched backtick fails before either tool runs. ' +
-      'Apostrophe regexes break single-quoted arguments; use `rg -F`, `-e` per pattern, or quoted stdin/file. ' +
+      'For `systemd-run`, put `-- executable argv` after options; `&&` starts another command. ' +
+      'Fixed strings: use `rg -F` or `grep -F`; quote backticks before shell use. ' +
+      'Apostrophes break single-quoted regexes; use `-e` or quoted input. ' +
       `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. Bound git history scans with \`-n\`; unbounded refused. do not shell-background child without \`wait\`.`,
     notWhen:
       'Use capability:read/write/edit for one-file ops and capability:git for git. Shell execution strips DB credential env vars, so use dev:pg_query for read-only operator DB queries.',
@@ -422,7 +438,11 @@ export default defineTool({
     // NOTE for whoever edits this next: `seeAlso` is NOT summed by promptWeight()
     // (tool-guidance-budget.ts — description + when + notWhen + chaining + byRole only),
     // so changing this array cannot move the prompt-weight budget in either direction.
-    seeAlso: ['capability:bash_output (read a backgrounded run)', 'capability:git (git actions, gated as git)'],
+    seeAlso: [
+      'capability:bash_output (read a backgrounded run)',
+      'capability:git (git actions, gated as git)',
+      'logs:read { unit, since, grep, limit } (service logs; filters inside journalctl)',
+    ],
   },
   capability: 'capability:bash',
   effectForCall: classifyCapabilityBashEffect,
@@ -472,7 +492,10 @@ export default defineTool({
           `Explicit run_in_background calls default to ${DEFAULT_BACKGROUND_TIMEOUT_MS}. Maximum ${MAX_BACKGROUND_TIMEOUT_MS}. ` +
           `The whole confined task subtree IS terminated only at this execution deadline ` +
           `(systemd RuntimeMaxSec plus the local SIGTERM/SIGKILL path), ` +
-          `so raise this for a job that legitimately runs longer. Deliberately daemonized descendants remain tracked ` +
+          `so budget it for all command wall-clock work, including sleeps, SSH/remote round-trips, retries, and other waits; ` +
+          `raise it when that planned work can run longer. The deadline is FIXED AT LAUNCH and cannot be extended ` +
+          `on a running task (systemd 255 refuses a runtime RuntimeMaxSec change): size it for retries, or chain longer work as separate tasks. ` +
+          `Deliberately daemonized descendants remain tracked ` +
           `inside the same task and share its deadline; use a dedicated service launcher for a different lifetime. ` +
           `Work submitted to an external server can outlive the shell: killing psql does not prove its PostgreSQL query stopped. ` +
           `Use dev:pg_query for bounded diagnostic reads, or set and verify a server-side statement_timeout for native SQL.`,
@@ -495,6 +518,9 @@ export default defineTool({
       .describe(
         'Return the durable job immediately instead of waiting for fast completion. Ordinary calls already yield the same job automatically at yield_after_ms. Read later output via capability:bash_output.',
       ),
+    require_task_confinement: z.boolean().optional().describe(
+      'Require managed task enrollment and cgroup confinement before fork. Refuse without starting the command if unavailable; timeout still bounds the whole task.',
+    ),
     allow_duplicate: z
       .boolean()
       .optional()
@@ -510,8 +536,11 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        'Held work-item this job is for. Overrides your declared goal for task-ledger attribution and the slow-attempt loop gate.',
+        'Held work-item this job is for. Required when you hold multiple work-items or held-item attribution cannot be measured; name one you currently hold. Otherwise optional. Overrides your declared goal for task-ledger attribution and the slow-attempt loop gate.',
       ),
+    parent_task_id: z.string().regex(/^[0-9a-z]{4,64}$/).optional().describe(
+      'Durable task that owns this nested launch. Pass PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID from a managed caller. Must be live and owned by the same caller, workspace, harness and work-item; subtree cancellation then includes this child.',
+    ),
     integration_env: integrationEnvSchema
       .optional()
       .describe(
@@ -544,6 +573,25 @@ export default defineTool({
     // the child's misleading `spawn /usr/bin/bash ENOENT`.
     const cwdError = missingBashCwdError(cwd, Boolean(args.cwd));
     if (cwdError) throw new Error(cwdError);
+    // P-007 / BAR R-11: a session that has read restricted personal data reaches
+    // mail, chat, calendar and social providers only through the gated verbs.
+    // The scan is a pure regex; the disclosure ledger is read only when the
+    // command names a provider host, a sidecar, or the sidecars' secrets.
+    if (findProviderEgressTargets(command).length) {
+      const { checkRestrictedEgress, egressRefusalPayload } = await import('../../personal-vault/binding-enforcement');
+      let egressOwnerId: string | null = null;
+      try {
+        egressOwnerId = resolveAgentIdentity(ctx as unknown as ResolveIdentityCtx).ownerId;
+      } catch {
+        egressOwnerId = null;
+      }
+      const refusal = egressRefusalPayload(
+        await checkRestrictedEgress({ ownerId: egressOwnerId, tool: 'capability:bash', texts: [command] }),
+      );
+      if (refusal) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(refusal) }], isError: true };
+      }
+    }
     const unboundedGitHistorySearch = detectUnboundedGitHistorySearch(command);
     if (unboundedGitHistorySearch) {
       return {
@@ -571,6 +619,7 @@ export default defineTool({
     const frozenLineageRefusal = async () => {
       if (!frozenLineageRoot) return null;
       const verdict = await evaluateFrozenLineageShellCommand(frozenLineageCommand, frozenLineageRoot, {
+        target: resolveHomeGateVerdictTarget(),
         readCheckoutHead: repoHeadSha,
         canonicalizePath: realpathSoft,
         readFrozenRepairQueue: () =>
@@ -597,6 +646,17 @@ export default defineTool({
         isError: true,
       };
     }
+    // WI-6554700010009291 (owner #1759/#1764): this tool replaces native Bash, so
+    // it carries RTK's output compression too. Every gate above and below judges
+    // the ORIGINAL command; only the spawned text is the RTK form. Fail-open: any
+    // RTK problem runs the original command unchanged.
+    const rtk = await rtkCommandForCapabilityBash(command, {
+      cwd,
+      structuredCaller: Boolean(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)),
+      flagEnabled: () => getFlag(FLAGS.CAPABILITY_BASH_RTK, 'system'),
+    });
+    const execCommand = rtk.command;
+    const rtkApplied = rtk.outcome.kind === 'rewritten';
     // EI-21910156647461981: an explicitly detached task survives the caller's
     // carry boundary, so a successor can accidentally launch the exact same
     // command again. Keep this cross-call guard scoped to run_in_background:
@@ -605,7 +665,8 @@ export default defineTool({
     // invariant is enforced separately by the single startBackground call.
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
     if (args.run_in_background && !args.allow_duplicate && workspaceId) {
-      const expectedArgv = ['bash', '-o', 'pipefail', '-c', command];
+      // The live task's argv holds the SPAWNED text, so compare against that.
+      const expectedArgv = ['bash', '-o', 'pipefail', '-c', execCommand];
       const duplicate = (await listLiveTasks(workspaceId)).find(
         (task) =>
           task.class === 'bash-job' &&
@@ -702,8 +763,23 @@ export default defineTool({
     } catch {
       callerSid = '';
     }
+    // WI-10005589 / D-012 (BAR R-11): a session holding a personal disclosure runs
+    // its shell with NO network — the existing bwrap wrapper with --unshare-net,
+    // never srt (whose domain allowlist IS network), and required, so a host with
+    // no working bwrap refuses before spawn. Matching provider names in the text
+    // (above) cannot see a host built at run time; an empty network namespace can.
+    // Fail closed: an unreadable ledger (null) also runs offline.
+    const { readSessionRestriction } = await import('../../personal-vault/binding-enforcement');
+    const sessionRestricted = (await readSessionRestriction(callerSid || null)) !== false;
+    // This runs inside the already-loaded operator bundle, before the only spawn.
+    // A live-tree hold must fence every integration-tree shell, even when this
+    // caller has no personal disclosure; an unknown root/census is fail-closed.
+    const sourceHold = await readRestrictedSourceHoldState(frozenLineageRoot);
+    const runOffline = sessionRestricted || sourceHold !== 'clear';
     const childEnv = {
       ...(desktopEnv ?? {}),
+      // RTK prints a bare `rtk`; its directory joins PATH only when absent.
+      ...(rtk.env ?? {}),
       ...integrationEnv,
       // WI-22952438885573520: local test runs launched through capability:bash
       // already execute in a caller-scoped harness/workspace, but the reporter
@@ -727,10 +803,11 @@ export default defineTool({
       integrationEntries.length > 0 ? ` · integration_env ${JSON.stringify(integrationEnvView)}` : '';
     const processNotice = processTableNotice(command);
 
-    let provenance: Awaited<ReturnType<typeof resolveBashTaskProvenance>>;
+    let provenance: Awaited<ReturnType<typeof resolveCapabilityBashTaskProvenance>>;
     try {
-      provenance = await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null, undefined, {
+      provenance = await resolveCapabilityBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null, undefined, {
         explicitWorkItemId: args.work_item_id ?? null,
+        explicitParentTaskId: args.parent_task_id,
       });
     } catch (error) {
       if (!(error instanceof BashProvenanceRefusal)) throw error;
@@ -763,20 +840,40 @@ export default defineTool({
     // CAP-CONTRACT-P002-YIELD-SAME-JOB@1: every admitted call forks exactly
     // once through the existing durable background/task seam. The only mode
     // difference is how long this request waits before returning that handle.
-    const job = startBackground(
-      {
-        command,
-        cwd,
-        stateDir: ctx.stateDir,
-        ...(!args.run_in_background ? { onChunk: (chunk: string) => ctx.emit('output', chunk) } : {}),
-        sandboxEnabled: sandboxPolicy.enabled,
-        sandboxRequired: sandboxPolicy.required,
-        ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
-        ...(redactValues.length > 0 ? { redactValues } : {}),
-        ...provenance,
-      },
-      executionTimeoutMs,
-    );
+    let job: ReturnType<typeof startBackground>;
+    try {
+      job = startBackground(
+        {
+          command: execCommand,
+          cwd,
+          stateDir: ctx.stateDir,
+          dispatchCallId: ctx.dispatchCallId,
+          ...(!args.run_in_background ? { onChunk: (chunk: string) => ctx.emit('output', chunk) } : {}),
+          sandboxEnabled: runOffline || sandboxPolicy.enabled,
+          sandboxRequired: runOffline || sandboxPolicy.required,
+          requireTaskConfinement: args.require_task_confinement,
+          ...(runOffline ? { sandboxBuildOpts: { denyAllEgress: true, srtBin: null } } : {}),
+          ...(Object.keys(childEnv).length > 0 ? { env: childEnv } : {}),
+          ...(redactValues.length > 0 ? { redactValues } : {}),
+          ...provenance,
+        },
+        executionTimeoutMs,
+      );
+    } catch (error) {
+      if (!(error instanceof BashTaskConfinementRequiredError)) throw error;
+      const payload = {
+        ok: false,
+        reason: 'task_confinement_unavailable',
+        unconfined_reason: error.reason,
+        command_started: false,
+        message: error.message,
+      };
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+        isError: true,
+        ...(ctx.codeMode || ctx.requestedStructured ? { structuredContent: payload } : {}),
+      };
+    }
 
     if (args.run_in_background) {
       // EI-19915289191989412: a command whose LAST pipeline stage is a buffering
@@ -809,6 +906,7 @@ export default defineTool({
         status: 'running',
         cwd,
         log_path: job.logPath,
+        ...(rtkApplied ? { rtk: RTK_RESULT_NOTE } : {}),
         // WI-6677: state the deadline at LAUNCH. It is enforced by SIGTERM/SIGKILL,
         // so a caller who needs longer must know now — not discover it as an
         // unexplained death two hours in.
@@ -864,6 +962,7 @@ export default defineTool({
         truncated: r.truncated,
         total_bytes: r.totalBytes,
         log_path: job.logPath,
+        ...(rtkApplied ? { rtk: RTK_RESULT_NOTE } : {}),
         response_window_ms: responseWindowMs,
         timeout_ms: job.timeoutMs,
         deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
@@ -894,6 +993,7 @@ export default defineTool({
       ` · ${(r.durationMs / 1000).toFixed(1)}s · cwd ${cwd}` +
       (r.truncated ? ` · bounded preview (${r.totalBytes} bytes total)` : '') +
       ` · full output → ${r.logPath}` +
+      (rtkApplied ? ` · ${RTK_RESULT_NOTE}` : '') +
       integrationHeader;
 
     const isError = r.status === 'failed' && r.exitCode === null;

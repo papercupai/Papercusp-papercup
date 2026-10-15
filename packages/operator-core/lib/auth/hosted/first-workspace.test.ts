@@ -6,13 +6,21 @@ import {
   type HostedProviderDelegationRecord,
 } from '../../workspace-host/hosted-provider-delegation';
 import {
+  awsFirstWorkspaceDesiredSpec,
   createHostedFirstWorkspace,
   firstWorkspaceIdentity,
+  GCP_FIRST_WORKSPACE_DEFAULTS,
   gcpFirstWorkspaceDesiredSpec,
+  PAPERCUSP_HOSTED_AWS_PROVISIONING_MODEL,
   type HostedFirstWorkspaceDependencies,
   type HostedFirstWorkspaceRequest,
 } from './first-workspace';
+import {
+  HostedAwsHostInfrastructurePendingError,
+  type HostedAwsHostInfrastructure,
+} from '../../workspace-host/hosted-aws-host-stack';
 import { HostedGcpNotReadyError } from '../../workspace-host/hosted-gcp-hosting';
+import { HostedAwsHostingUnconfiguredError, HostedAwsNotReadyError } from '../../workspace-host/hosted-aws-hosting';
 import { HostedWorkspaceAdmissionError } from './workspace-admission';
 
 const GCP: HostedProviderDelegationConfiguration = {
@@ -30,6 +38,8 @@ const orgPrincipal = (organizationId: string) =>
   `serviceAccount:pco-${organizationId}@papercusp-identity.iam.gserviceaccount.com`;
 const SERVER_PRINCIPAL = orgPrincipal('org-a');
 const HOSTING_PROJECT = 'papercusp-hosted-workspaces';
+/** Papercusp's own AWS hosting account (P-015, D-017). */
+const AWS_HOSTING_ACCOUNT = '888888888888';
 
 const REQUEST: HostedFirstWorkspaceRequest = {
   organizationId: 'org-a',
@@ -44,6 +54,26 @@ const REQUEST: HostedFirstWorkspaceRequest = {
 };
 
 const PAPERCUSP_REQUEST: HostedFirstWorkspaceRequest = { ...REQUEST, hosting: 'papercusp', configuration: undefined };
+
+const AWS_ACCOUNT = '413781344298';
+/** What the customer's stack built (D-009), as the verified role reads it back. */
+const AWS_INFRA: HostedAwsHostInfrastructure = {
+  region: 'eu-west-1',
+  zone: 'eu-west-1a',
+  vpcId: 'vpc-0aaa',
+  subnetId: 'subnet-0private',
+  securityGroupId: 'sg-0noinbound',
+  instanceProfileArn: `arn:aws:iam::${AWS_ACCOUNT}:instance-profile/PapercuspWorkspaceHostInstance-${AWS_ACCOUNT}`,
+  launchTemplateId: 'lt-0abc',
+  kmsKeyArn: `arn:aws:kms:eu-west-1:${AWS_ACCOUNT}:key/1234`,
+  image: { id: 'ami-0ubuntu2404', version: 'ubuntu-noble-24.04-amd64-server-20260918' },
+};
+/** The browser names only the account and region; everything else is server-derived (D-008). */
+const AWS_REQUEST: HostedFirstWorkspaceRequest = {
+  ...REQUEST,
+  label: 'My AWS account',
+  configuration: { provider: 'aws', accountId: AWS_ACCOUNT, region: 'eu-west-1' } as never,
+};
 
 function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
   const records = new Map<string, HostedProviderDelegationRecord>();
@@ -60,11 +90,25 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
     delegationOrganization: (organizationId) => ({
       organizationId,
       gcpTrustedPrincipal: async () => orgPrincipal(organizationId),
+      awsTrustedPrincipal: async () => ({
+        principalArn: `arn:aws:iam::999999999999:role/papercusp/orgs/pco-${organizationId}`,
+        externalIdRef: `resolver://aws-external-id/${organizationId}`,
+      }),
       gcpPapercuspHosting: async (hostId) => {
         reserved.push(hostId);
         return {
           projectId: HOSTING_PROJECT,
           serviceAccountEmail: orgPrincipal(organizationId).slice('serviceAccount:'.length),
+        };
+      },
+      awsPapercuspHosting: async (hostId) => {
+        reserved.push(hostId);
+        return {
+          accountId: AWS_HOSTING_ACCOUNT,
+          region: 'us-east-1',
+          roleArn: `arn:aws:iam::${AWS_HOSTING_ACCOUNT}:role/PapercuspWorkspaceHost-pco-${organizationId}`,
+          trustedPrincipalArn: `arn:aws:iam::999999999999:role/papercusp/orgs/pco-${organizationId}`,
+          externalIdRef: `resolver://aws-external-id/${organizationId}`,
         };
       },
     }),
@@ -75,9 +119,9 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
       records.set(`${input.workspaceId}/${input.connectionId}`, onboarding.record);
       return onboarding;
     }),
-    onboardPapercuspHostedDelegation: vi.fn(async (organizationId, input, hostId) => {
+    onboardPapercuspHostedDelegation: vi.fn(async (organizationId, input, hostId, provider) => {
       const onboarding = buildHostedProviderDelegationOnboarding(
-        await bindPapercuspHostedDelegation(input, deps.delegationOrganization(organizationId), hostId),
+        await bindPapercuspHostedDelegation(input, deps.delegationOrganization(organizationId), hostId, provider),
       );
       records.set(`${input.workspaceId}/${input.connectionId}`, onboarding.record);
       return onboarding;
@@ -104,6 +148,10 @@ function harness(overrides: Partial<HostedFirstWorkspaceDependencies> = {}) {
       resolveSelectable: async () => true,
     }),
     selectWorkspace: vi.fn(async () => ({ sessionId: 'session-rotated', expiresAt: new Date('2030-01-01T00:00:00Z') })),
+    discoverAwsHostInfrastructure: vi.fn(async (record: HostedProviderDelegationRecord) => ({
+      ...AWS_INFRA,
+      region: record.configuration.provider === 'aws' ? record.configuration.region ?? 'us-east-1' : 'none',
+    })),
     ...overrides,
   };
   return { deps, records, ensureProvisioned, resolvedSpecs, admissionOptions, reserved };
@@ -263,24 +311,36 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
         gcpPapercuspHosting: async () => {
           throw new Error('gcp_workspace_host_organization_identity_project_unconfigured');
         },
+        awsTrustedPrincipal: async () => {
+          throw new Error('aws_workspace_host_control_plane_account_unconfigured');
+        },
+        awsPapercuspHosting: async () => {
+          throw new Error('aws_workspace_host_papercusp_hosting_account_unconfigured');
+        },
       }),
     });
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const result = await createHostedFirstWorkspace(deps).run(REQUEST);
     expect(result).toMatchObject({ ok: false, code: 'delegation_source_unavailable', status: 503, retryable: true });
     expect(deps.onboardDelegation).not.toHaveBeenCalled();
-    // The response carries no cause, so the log is the only place an operator can find it.
-    expect(logged).toHaveBeenCalledWith(expect.stringContaining('delegation bind failed'), expect.any(Error));
+    // Keep the failure observable without copying an upstream exception or row data.
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('delegation bind failed'), {
+      code: 'provisioning_failure', fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
     logged.mockRestore();
   });
 
-  it('rejects a malformed attempt key and non-GCP providers', async () => {
+  it('rejects a malformed attempt key, an unsupported provider, and an AWS request without a real account', async () => {
     const { deps } = harness();
     const bootstrap = createHostedFirstWorkspace(deps);
     expect(await bootstrap.run({ ...REQUEST, attemptKey: 'short' })).toMatchObject({ code: 'invalid_request' });
     expect(
-      await bootstrap.run({ ...REQUEST, configuration: { provider: 'aws' } as never }),
+      await bootstrap.run({ ...REQUEST, configuration: { provider: 'azure' } as never }),
     ).toMatchObject({ code: 'provider_not_supported' });
+    expect(
+      await bootstrap.run({ ...REQUEST, configuration: { provider: 'aws' } as never }),
+    ).toMatchObject({ code: 'invalid_request', status: 400 });
+    expect(deps.onboardDelegation).not.toHaveBeenCalled();
   });
 
   it('builds a GCP spec only from a GCP delegation', () => {
@@ -292,7 +352,40 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
       credentialRef: 'delegation://ws-1/conn-1',
       configuration: GCP,
     }).record;
-    expect(gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record })).toMatchObject({ target: 'gcp', hostId: 'host-1' });
+    const spec = gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record });
+    expect(spec).toMatchObject({ target: 'gcp', hostId: 'host-1' });
+    // D-028: a customer-delegated host is not defaulted to spot; its project and bill are the customer's.
+    expect((spec as { provider: Record<string, unknown> }).provider).not.toHaveProperty('provisioningModel');
+  });
+
+  it('never attaches the controller identity to a customer-project VM (WI-10005297)', () => {
+    // The delegation's serviceAccountEmail is the identity Papercusp ACTS AS. On the VM it would
+    // give every agent the controller's power over the customer's project, and GCP refused the
+    // create anyway (SERVICE_ACCOUNT_ACCESS_DENIED: no delegation grants actAs on it).
+    const sources: HostedProviderDelegationRecord['configuration'][] = [
+      GCP,
+      {
+        provider: 'gcp',
+        source: {
+          method: 'workload-identity',
+          projectId: 'customer-project-1',
+          projectNumber: '123456789012',
+          poolId: 'papercusp',
+          providerId: 'papercusp',
+          serviceAccountEmail: 'papercusp-host@customer-project-1.iam.gserviceaccount.com',
+          issuer: 'https://identity.papercusp.com',
+          audience: 'papercusp',
+          subject: 'org-a',
+        },
+      },
+    ];
+    for (const configuration of sources) {
+      const record = { credentialRef: 'delegation://ws-1/conn-1', configuration } as HostedProviderDelegationRecord;
+      const spec = gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record });
+      expect((spec as { provider: Record<string, unknown> }).provider).not.toHaveProperty('serviceAccountEmail');
+      // The controller identity still reaches the provider, as the credential it acts with.
+      expect(spec.credentials).toEqual({ cloudCredentialRef: { kind: 'cloud', ref: 'delegation://ws-1/conn-1' } });
+    }
   });
 
   it('rejects a missing or unknown hosting choice, and bring-your-own-cloud without a configuration', async () => {
@@ -302,6 +395,365 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     expect(await bootstrap.run({ ...REQUEST, hosting: 'someone-else' as never })).toMatchObject({ code: 'invalid_request' });
     expect(await bootstrap.run({ ...REQUEST, configuration: undefined })).toMatchObject({ code: 'invalid_request' });
     expect(deps.onboardDelegation).not.toHaveBeenCalled();
+  });
+
+  describe('VM size from the expected agent count (WI-10006498)', () => {
+    const gcpRecord = () =>
+      buildHostedProviderDelegationOnboarding({
+        organizationId: 'org-a',
+        workspaceId: 'ws-1',
+        connectionId: 'conn-1',
+        label: 'x',
+        credentialRef: 'delegation://ws-1/conn-1',
+        configuration: GCP,
+      }).record;
+
+    it('keeps the default shape when no count is given', () => {
+      expect(gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: gcpRecord() }).size).toBe(GCP_FIRST_WORKSPACE_DEFAULTS.size);
+    });
+
+    it('picks the smallest measured shape that holds the count, at each boundary', () => {
+      const sizeFor = (expectedAgents: number) =>
+        gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: gcpRecord(), expectedAgents }).size;
+      expect(sizeFor(1)).toBe('e2-standard-4');
+      expect(sizeFor(15)).toBe('e2-standard-4');
+      expect(sizeFor(16)).toBe('e2-standard-8');
+      expect(sizeFor(50)).toBe('e2-standard-8');
+      expect(sizeFor(67)).toBe('e2-standard-8');
+      expect(sizeFor(68)).toBe('e2-custom-16-32768');
+      expect(sizeFor(158)).toBe('e2-custom-16-32768');
+    });
+
+    it('refuses a count no measured VM holds instead of provisioning one too small', () => {
+      for (const expectedAgents of [0, -1, 1.5, 159, Number.NaN]) {
+        expect(() => gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: gcpRecord(), expectedAgents })).toThrow(
+          HostedWorkspaceAdmissionError,
+        );
+      }
+    });
+
+    it('rejects a bad count at the request, before any delegation is onboarded', async () => {
+      const { deps } = harness();
+      const bootstrap = createHostedFirstWorkspace(deps);
+      for (const expectedAgents of [0, 159, 2.5, '50' as never]) {
+        expect(await bootstrap.run({ ...PAPERCUSP_REQUEST, expectedAgents })).toMatchObject({ code: 'invalid_request' });
+      }
+      expect(deps.onboardPapercuspHostedDelegation).not.toHaveBeenCalled();
+    });
+
+    it('provisions a Papercusp-hosted workspace on the shape its count needs', async () => {
+      const { deps, resolvedSpecs } = harness();
+      const result = await createHostedFirstWorkspace(deps).run({ ...PAPERCUSP_REQUEST, expectedAgents: 50 });
+      expect(result).toMatchObject({ ok: true });
+      expect(resolvedSpecs[0]).toMatchObject({ size: 'e2-standard-8' });
+    });
+  });
+});
+
+describe('hosted first-workspace in the customer\'s own AWS account (aws-byoc-gcp-parity D-008/D-009)', () => {
+  it('builds the delegation from the account and region alone, discarding any role, principal or ExternalId the browser sent', async () => {
+    const { deps, ensureProvisioned, resolvedSpecs } = harness();
+    const result = await createHostedFirstWorkspace(deps).run({
+      ...AWS_REQUEST,
+      configuration: {
+        provider: 'aws',
+        accountId: AWS_ACCOUNT,
+        region: 'eu-west-1',
+        source: {
+          environment: 'hosted',
+          method: 'customer-role',
+          roleArn: 'arn:aws:iam::111111111111:role/attacker',
+          trustedPrincipalArn: 'arn:aws:iam::999999999999:role/papercusp/orgs/pco-org-b',
+          externalIdRef: 'resolver://aws-external-id/org-b',
+        },
+      } as never,
+    });
+    expect(result).toMatchObject({ ok: true, sessionId: 'session-rotated' });
+    const onboarded = vi.mocked(deps.onboardDelegation).mock.calls[0]![0];
+    expect(onboarded.configuration).toEqual({
+      provider: 'aws',
+      accountId: AWS_ACCOUNT,
+      region: 'eu-west-1',
+      source: {
+        environment: 'hosted',
+        method: 'customer-role',
+        roleArn: `arn:aws:iam::${AWS_ACCOUNT}:role/PapercuspWorkspaceHost-${AWS_ACCOUNT}`,
+        trustedPrincipalArn: 'arn:aws:iam::999999999999:role/papercusp/orgs/pco-org-a',
+        externalIdRef: 'resolver://aws-external-id/org-a',
+      },
+    });
+    // The stack is read back only through the VERIFIED delegation.
+    expect(vi.mocked(deps.discoverAwsHostInfrastructure).mock.calls[0]![0]).toMatchObject({ status: 'verified' });
+    expect(ensureProvisioned).toHaveBeenCalledWith(expect.objectContaining({ provider: 'aws' }));
+    const identity = firstWorkspaceIdentity('org-a', REQUEST.attemptKey);
+    expect(resolvedSpecs[0]).toEqual({
+      hostId: identity.hostId,
+      target: 'aws',
+      scope: { kind: 'account', id: AWS_ACCOUNT },
+      region: 'eu-west-1',
+      zone: 'eu-west-1a',
+      size: 'm6i.xlarge',
+      image: AWS_INFRA.image,
+      data: { encrypted: true, volumeGiB: 100 },
+      credentials: { cloudCredentialRef: { kind: 'cloud', ref: identity.credentialRef } },
+      provider: {
+        vpcId: 'vpc-0aaa',
+        subnetId: 'subnet-0private',
+        securityGroupIds: ['sg-0noinbound'],
+        instanceProfileArn: AWS_INFRA.instanceProfileArn,
+        launchTemplateId: 'lt-0abc',
+        kmsKeyArn: AWS_INFRA.kmsKeyArn,
+      },
+    });
+  });
+
+  it('defaults the region to us-east-1 and refuses an account or region it cannot use', async () => {
+    const { deps } = harness();
+    const bootstrap = createHostedFirstWorkspace(deps);
+    expect(
+      await bootstrap.run({ ...AWS_REQUEST, configuration: { provider: 'aws', accountId: AWS_ACCOUNT } as never }),
+    ).toMatchObject({ ok: true });
+    expect(vi.mocked(deps.onboardDelegation).mock.calls[0]![0].configuration).toMatchObject({ region: 'us-east-1' });
+    for (const configuration of [
+      { provider: 'aws', accountId: '12345', region: 'eu-west-1' },
+      { provider: 'aws', accountId: AWS_ACCOUNT, region: 'us-gov-west-1' },
+      { provider: 'aws', accountId: AWS_ACCOUNT, region: 'cn-north-1' },
+      { provider: 'aws', accountId: AWS_ACCOUNT, region: 'EU-WEST-1' },
+      { provider: 'aws', accountId: AWS_ACCOUNT, region: 7 },
+    ]) {
+      expect(await bootstrap.run({ ...AWS_REQUEST, configuration: configuration as never })).toMatchObject({
+        ok: false,
+        code: 'invalid_request',
+        status: 400,
+      });
+    }
+    expect(deps.onboardDelegation).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses OIDC, which every organization would share', async () => {
+    const { deps } = harness();
+    const result = await createHostedFirstWorkspace(deps).run({
+      ...AWS_REQUEST,
+      configuration: { provider: 'aws', accountId: AWS_ACCOUNT, source: { environment: 'hosted', method: 'oidc' } } as never,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'provider_not_supported', status: 422 });
+    expect(deps.onboardDelegation).not.toHaveBeenCalled();
+  });
+
+  it('returns the stack template, pinned to the chosen region, until the role can be verified', async () => {
+    const { deps } = harness({
+      verifyDelegation: vi.fn(async () => {
+        throw new Error('not yet');
+      }),
+    });
+    const result = await createHostedFirstWorkspace(deps).run(AWS_REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'delegation_pending', status: 409, retryable: true });
+    const template = (result as { template?: { format: string; document: Record<string, any> } }).template!;
+    expect(template.format).toBe('aws-cloudformation-json');
+    expect(template.document.Rules.PapercuspRegion.Assertions[0].Assert).toEqual({
+      'Fn::Equals': [{ Ref: 'AWS::Region' }, 'eu-west-1'],
+    });
+    expect(template.document.Resources.HostLaunchTemplate.Type).toBe('AWS::EC2::LaunchTemplate');
+    expect(deps.discoverAwsHostInfrastructure).not.toHaveBeenCalled();
+  });
+
+  it('treats a replay naming another region as a different grant, never a silent move', async () => {
+    const { deps } = harness();
+    const bootstrap = createHostedFirstWorkspace(deps);
+    expect(await bootstrap.run(AWS_REQUEST)).toMatchObject({ ok: true });
+    const moved = await bootstrap.run({
+      ...AWS_REQUEST,
+      configuration: { provider: 'aws', accountId: AWS_ACCOUNT, region: 'us-west-2' } as never,
+    });
+    expect(moved).toMatchObject({ ok: false, code: 'delegation_conflict' });
+  });
+
+  it('keeps answering with the same steps while the customer\'s stack is still building, admitting nothing', async () => {
+    const { deps, ensureProvisioned } = harness({
+      discoverAwsHostInfrastructure: vi.fn(async () => {
+        throw new HostedAwsHostInfrastructurePendingError('launch-template');
+      }),
+    });
+    const result = await createHostedFirstWorkspace(deps).run(AWS_REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'delegation_pending', status: 409, retryable: true });
+    expect((result as { template?: { format: string } }).template?.format).toBe('aws-cloudformation-json');
+    expect(ensureProvisioned).not.toHaveBeenCalled();
+    expect(deps.selectWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('fails retryably, admitting nothing, when the stack cannot be read', async () => {
+    const { deps, ensureProvisioned } = harness({
+      discoverAwsHostInfrastructure: vi.fn(async () => {
+        throw new Error('hosted_aws_host_infrastructure_ambiguous: log-canary@example.test opaque-credential-canary');
+      }),
+    });
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await createHostedFirstWorkspace(deps).run(AWS_REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'delegation_source_unavailable', status: 503, retryable: true });
+    expect(ensureProvisioned).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('AWS host infrastructure lookup failed'), {
+      code: 'provisioning_failure', fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(JSON.stringify(logged.mock.calls)).not.toMatch(/log-canary|opaque-credential/);
+    logged.mockRestore();
+  });
+
+  it('builds an AWS spec only from an AWS delegation whose stack is in the same region', () => {
+    const configuration: HostedProviderDelegationConfiguration = {
+      provider: 'aws',
+      accountId: AWS_ACCOUNT,
+      region: 'eu-west-1',
+      source: {
+        environment: 'hosted',
+        method: 'customer-role',
+        roleArn: `arn:aws:iam::${AWS_ACCOUNT}:role/PapercuspWorkspaceHost-${AWS_ACCOUNT}`,
+        trustedPrincipalArn: 'arn:aws:iam::999999999999:role/papercusp/orgs/pco-org-a',
+        externalIdRef: 'resolver://aws-external-id/org-a',
+      },
+    };
+    const base = {
+      organizationId: 'org-a',
+      workspaceId: 'ws-1',
+      connectionId: 'conn-1',
+      label: 'x',
+      credentialRef: 'delegation://ws-1/conn-1',
+    };
+    const aws = buildHostedProviderDelegationOnboarding({ ...base, configuration }).record;
+    expect(awsFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: aws, infrastructure: AWS_INFRA })).toMatchObject({
+      target: 'aws',
+      region: 'eu-west-1',
+    });
+    expect(() =>
+      awsFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: aws, infrastructure: { ...AWS_INFRA, region: 'us-east-1' } }),
+    ).toThrow(HostedWorkspaceAdmissionError);
+    const gcp = buildHostedProviderDelegationOnboarding({ ...base, configuration: GCP }).record;
+    expect(() => awsFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: gcp, infrastructure: AWS_INFRA })).toThrow(
+      HostedWorkspaceAdmissionError,
+    );
+  });
+});
+
+describe("hosted first-workspace in Papercusp's AWS cloud (aws-byoc-gcp-parity P-015, D-017)", () => {
+  const AWS_PAPERCUSP_REQUEST: HostedFirstWorkspaceRequest = { ...PAPERCUSP_REQUEST, provider: 'aws' };
+
+  it("reserves the derived host in Papercusp's hosting account, provisions it from the hosting stack, and selects it", async () => {
+    const { deps, records, resolvedSpecs, reserved, admissionOptions } = harness();
+    const result = await createHostedFirstWorkspace(deps).run(AWS_PAPERCUSP_REQUEST);
+    const identity = firstWorkspaceIdentity('org-a', REQUEST.attemptKey);
+    expect(result).toMatchObject({ ok: true, workspaceId: identity.workspaceId, sessionId: 'session-rotated' });
+    // Planned, recorded by the manager, and re-asserted once admitted: the same three as GCP.
+    expect(reserved).toEqual([identity.hostId, identity.hostId, identity.hostId]);
+    expect(deps.onboardPapercuspHostedDelegation).toHaveBeenCalledWith('org-a', expect.anything(), identity.hostId, 'aws');
+    expect(deps.onboardDelegation).not.toHaveBeenCalled();
+    const recorded = records.get(`${identity.workspaceId}/${identity.connectionId}`);
+    expect(recorded?.configuration).toEqual({
+      provider: 'aws',
+      accountId: AWS_HOSTING_ACCOUNT,
+      region: 'us-east-1',
+      source: {
+        environment: 'hosted',
+        method: 'customer-role',
+        roleArn: `arn:aws:iam::${AWS_HOSTING_ACCOUNT}:role/PapercuspWorkspaceHost-pco-org-a`,
+        trustedPrincipalArn: 'arn:aws:iam::999999999999:role/papercusp/orgs/pco-org-a',
+        externalIdRef: 'resolver://aws-external-id/org-a',
+      },
+      papercuspHosted: { hostId: identity.hostId },
+    });
+    // The hosting stack is read back through the verified hosting role, as a customer's is.
+    expect(vi.mocked(deps.discoverAwsHostInfrastructure).mock.calls[0]![0]).toMatchObject({ status: 'verified' });
+    expect(resolvedSpecs[0]).toMatchObject({
+      hostId: identity.hostId,
+      target: 'aws',
+      scope: { kind: 'account', id: AWS_HOSTING_ACCOUNT },
+      region: 'us-east-1',
+      credentials: { cloudCredentialRef: { kind: 'cloud', ref: identity.credentialRef } },
+    });
+    // D-015: set up after it is built, like every portal host.
+    expect(admissionOptions).toEqual([{ bringUp: { requestedAgents: ['omp'] } }]);
+  });
+
+  it('defaults Papercusp hosting to GCP and refuses a cloud it does not offer', async () => {
+    const gcp = harness();
+    expect((await createHostedFirstWorkspace(gcp.deps).run(PAPERCUSP_REQUEST)).ok).toBe(true);
+    expect(gcp.deps.onboardPapercuspHostedDelegation).toHaveBeenCalledWith('org-a', expect.anything(), expect.any(String), 'gcp');
+    const azure = harness();
+    const refused = await createHostedFirstWorkspace(azure.deps).run({ ...PAPERCUSP_REQUEST, provider: 'azure' as never });
+    expect(refused).toMatchObject({ ok: false, code: 'invalid_request', status: 400 });
+    expect(azure.reserved).toEqual([]);
+  });
+
+  it("asks the browser to retry, with nothing to apply, while Papercusp's AWS IAM or hosting stack catches up", async () => {
+    const lagging = harness({
+      delegationOrganization: (organizationId) => ({
+        ...harness().deps.delegationOrganization(organizationId),
+        awsPapercuspHosting: async () => {
+          throw new HostedAwsNotReadyError('aws_workspace_host_papercusp_hosting_principal_not_visible');
+        },
+      }),
+    });
+    const waiting = await createHostedFirstWorkspace(lagging.deps).run(AWS_PAPERCUSP_REQUEST);
+    expect(waiting).toMatchObject({ ok: false, code: 'papercusp_cloud_preparing', retryable: true });
+    expect(waiting).not.toHaveProperty('template');
+
+    const building = harness({
+      discoverAwsHostInfrastructure: vi.fn(async () => {
+        throw new HostedAwsHostInfrastructurePendingError('stack CREATE_IN_PROGRESS');
+      }),
+    });
+    const pending = await createHostedFirstWorkspace(building.deps).run(AWS_PAPERCUSP_REQUEST);
+    expect(pending).toMatchObject({ ok: false, code: 'papercusp_cloud_preparing', retryable: true });
+    expect(pending).not.toHaveProperty('template');
+    expect(building.ensureProvisioned).not.toHaveBeenCalled();
+  });
+
+  it('tells the browser AWS is not offered, without retrying or recording anything, on a deployment with no AWS hosting account', async () => {
+    const unconfigured = harness({
+      delegationOrganization: (organizationId) => ({
+        ...harness().deps.delegationOrganization(organizationId),
+        awsPapercuspHosting: async () => {
+          throw new HostedAwsHostingUnconfiguredError();
+        },
+      }),
+    });
+    const result = await createHostedFirstWorkspace(unconfigured.deps).run(AWS_PAPERCUSP_REQUEST);
+    expect(result).toMatchObject({ ok: false, code: 'papercusp_cloud_provider_unavailable', status: 503, retryable: false });
+    expect(unconfigured.deps.onboardPapercuspHostedDelegation).not.toHaveBeenCalled();
+    expect(unconfigured.ensureProvisioned).not.toHaveBeenCalled();
+    // GCP, the default, is unaffected by the missing AWS account.
+    expect((await createHostedFirstWorkspace(unconfigured.deps).run(PAPERCUSP_REQUEST)).ok).toBe(true);
+  });
+
+  it('refuses a spec for a host other than the one the hosting role is confined to', () => {
+    const record = buildHostedProviderDelegationOnboarding({
+      organizationId: 'org-a',
+      workspaceId: 'ws-1',
+      connectionId: 'conn-1',
+      label: 'AWS',
+      credentialRef: 'encrypted://ws-1/cloud/conn-1',
+      configuration: {
+        provider: 'aws',
+        accountId: AWS_HOSTING_ACCOUNT,
+        region: 'us-east-1',
+        source: {
+          environment: 'hosted',
+          method: 'customer-role',
+          roleArn: `arn:aws:iam::${AWS_HOSTING_ACCOUNT}:role/PapercuspWorkspaceHost-pco-org-a`,
+          trustedPrincipalArn: 'arn:aws:iam::999999999999:role/papercusp/orgs/pco-org-a',
+          externalIdRef: 'resolver://aws-external-id/org-a',
+        },
+        papercuspHosted: { hostId: 'host-reserved' },
+      },
+    }).record;
+    const infrastructure = { ...AWS_INFRA, region: 'us-east-1' };
+    expect(() => awsFirstWorkspaceDesiredSpec({ hostId: 'host-other', record, infrastructure }))
+      .toThrow('Papercusp-hosted delegation reserves a different host');
+    expect(awsFirstWorkspaceDesiredSpec({ hostId: 'host-reserved', record, infrastructure })).toMatchObject({ hostId: 'host-reserved' });
+    // WI-10005389: a new Papercusp-hosted AWS host is spot, like a hosted GCP host (D-028).
+    expect(
+      (awsFirstWorkspaceDesiredSpec({ hostId: 'host-reserved', record, infrastructure }) as { provider: Record<string, unknown> })
+        .provider.provisioningModel,
+    ).toBe(PAPERCUSP_HOSTED_AWS_PROVISIONING_MODEL);
+    expect(PAPERCUSP_HOSTED_AWS_PROVISIONING_MODEL).toBe('spot');
   });
 });
 
@@ -314,7 +766,7 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
     // Reserved to plan the grant, again by the manager that records it (it never takes the
     // configuration from its caller), and re-asserted once the workspace is admitted.
     expect(reserved).toEqual([identity.hostId, identity.hostId, identity.hostId]);
-    expect(deps.onboardPapercuspHostedDelegation).toHaveBeenCalledWith('org-a', expect.anything(), identity.hostId);
+    expect(deps.onboardPapercuspHostedDelegation).toHaveBeenCalledWith('org-a', expect.anything(), identity.hostId, 'gcp');
     // The general entry refuses this method by design (the D-399 binder guard); it must not be used.
     expect(deps.onboardDelegation).not.toHaveBeenCalled();
     expect(records.get(`${identity.workspaceId}/${identity.connectionId}`)?.configuration).toEqual({
@@ -332,7 +784,8 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
       region: 'us-central1',
       zone: 'us-central1-c',
       credentials: { cloudCredentialRef: { kind: 'cloud', ref: identity.credentialRef } },
-      provider: { projectId: HOSTING_PROJECT, network: { mode: 'managed' } },
+      // D-028 (WI-10005210): a new Papercusp-hosted host is spot.
+      provider: { projectId: HOSTING_PROJECT, network: { mode: 'managed' }, provisioningModel: 'spot' },
     });
     expect((resolvedSpecs[0] as { provider: Record<string, unknown> }).provider).not.toHaveProperty('serviceAccountEmail');
   });
@@ -342,10 +795,18 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
     expect((await createHostedFirstWorkspace(hosted.deps).run(PAPERCUSP_REQUEST)).ok).toBe(true);
     expect(hosted.admissionOptions).toEqual([{ bringUp: { requestedAgents: ['omp'] } }]);
 
-    // The customer's own cloud is left exactly as they provisioned it.
+    // aws-byoc-gcp-parity D-015: a GCP host in the customer's own project is set up the same way;
+    // a portal customer has no controller of their own, so without it the workspace would stay
+    // 'provisioning' forever.
     const byoc = harness();
     expect((await createHostedFirstWorkspace(byoc.deps).run(REQUEST)).ok).toBe(true);
-    expect(byoc.admissionOptions).toEqual([{}]);
+    expect(byoc.admissionOptions).toEqual([{ bringUp: { requestedAgents: ['omp'] } }]);
+
+    // D-015 rule 3 (WI-10005354): an AWS host is set up the same way, over SSM as the connection's
+    // own role; before it, an AWS portal workspace stayed 'provisioning' forever.
+    const aws = harness();
+    expect((await createHostedFirstWorkspace(aws.deps).run(AWS_REQUEST)).ok).toBe(true);
+    expect(aws.admissionOptions).toEqual([{ bringUp: { requestedAgents: ['omp'] } }]);
   });
 
   it("ignores any configuration the browser sends: no request can steer Papercusp's cloud", async () => {
@@ -387,6 +848,10 @@ describe("hosted first-workspace in Papercusp's cloud (D-399)", () => {
       organizationId,
       gcpTrustedPrincipal: async () => 'serviceAccount:unused@x.iam.gserviceaccount.com',
       gcpPapercuspHosting: async () => {
+        throw error;
+      },
+      awsTrustedPrincipal: async () => ({ principalArn: 'unused', externalIdRef: 'unused' }),
+      awsPapercuspHosting: async () => {
         throw error;
       },
     });

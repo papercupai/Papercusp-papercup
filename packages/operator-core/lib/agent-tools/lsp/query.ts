@@ -69,7 +69,7 @@ export default defineTool({
       .min(1)
       .optional()
       .describe(
-        'Path to the file the cursor is in (absolute, or relative to the workspace root). Required for symbol/references/implementations/diagnostics/refactor_preview. For workspace_symbols it is not a cursor but an ANCHOR naming which project the symbol index answers for: required for TypeScript (tsserver has no project until a document is opened), optional for rust when rootPath already holds a Cargo.toml. Unanchored and unresolvable, workspace_symbols refuses rather than returning an empty that would read as absence.',
+        'Path to the cursor file. For workspace_symbols it anchors ONE project: TypeScript accepts a source file or directory; Python and Go require a source file in a configured project; Rust permits rootPath containing Cargo.toml. Missing project/build prerequisites refuse.',
       ),
     line1: z
       .number()
@@ -87,10 +87,10 @@ export default defineTool({
       .describe('ZERO-indexed column offset within the line (a column, not a line — LSP convention).'),
     name: z.string().min(1).optional().describe('workspace_symbols: the symbol name to search for.'),
     language: z
-      .enum(['typescript', 'rust'])
+      .enum(['typescript', 'rust', 'python', 'go'])
       .optional()
       .describe(
-        'workspace_symbols: which pinned server answers. Each server has its OWN symbol index, so a TypeScript query cannot see Rust symbols. Default typescript.',
+        'workspace_symbols: which pinned server answers for the anchored project. Default typescript. Supported intents are observed per server version; an unproven empty is refused.',
       ),
     newName: z
       .string()
@@ -131,7 +131,7 @@ export default defineTool({
       language: args.language,
       newName: args.newName,
       limit: args.limit,
-    });
+    }, { workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId, actorId: ctx.principal?.slug });
     return { data: answer };
   },
 });

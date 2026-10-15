@@ -46,7 +46,9 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: |
+          npm install --global "$(node -p "require('./package.json').packageManager")"
+          npm ci --legacy-peer-deps
 
       - name: Doctor (Docker + node)
         run: node scripts/test-doctor.mjs

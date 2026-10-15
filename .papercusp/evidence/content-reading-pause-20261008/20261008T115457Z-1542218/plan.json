@@ -1,0 +1,23 @@
+{
+  "runId": "20261008T115457Z-1542218",
+  "selection": {
+    "only": null,
+    "from": null
+  },
+  "reuseFromRunId": null,
+  "startedAt": "2026-10-08T11:54:59.709Z",
+  "phases": [
+    {
+      "phase": "prepare",
+      "action": "run"
+    },
+    {
+      "phase": "boot",
+      "action": "run"
+    },
+    {
+      "phase": "assert",
+      "action": "run"
+    }
+  ]
+}

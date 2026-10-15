@@ -20,6 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { resolveConversation } from '../conversations';
+import { sanitizeCaptureDiagnostics } from '../answer-capture';
 import { runBulk, bulkContent } from '../../_bulk';
 import { hardText } from '../../limits';
 
@@ -30,6 +31,18 @@ const itemSpec = z.object({
   accepted_post_id: z.number().int().positive().optional().describe('The coord_thread_posts id of the post to accept as the answer.'),
   capture: z.enum(['mem0', 'none']).optional().describe('Where to preserve the answer (D-004). mem0 (default) makes it available to semantic recall; none skips capture.'),
 });
+
+function capturedForResponse(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const raw = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  if (typeof raw.target === 'string') result.target = raw.target;
+  if (typeof raw.ok === 'boolean') result.ok = raw.ok;
+  if (typeof raw.detail === 'string') result.detail = raw.detail;
+  const diagnostics = sanitizeCaptureDiagnostics(raw.diagnostics);
+  if (diagnostics) result.diagnostics = diagnostics;
+  return result;
+}
 
 export default defineTool({
   name: 'conversations:resolve',
@@ -106,7 +119,7 @@ export default defineTool({
           ok: true as const,
           id: res.conversation.id,
           state: res.conversation.state,
-          captured: res.capture,
+          captured: capturedForResponse(res.capture),
           notified_subscribers: res.delivered,
         };
       },

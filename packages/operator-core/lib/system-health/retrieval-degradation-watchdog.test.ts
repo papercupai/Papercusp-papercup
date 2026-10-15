@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import type { LegHealthWindow } from '@papercusp/search';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { observeLegs, setLegHealthObserver, type LegHealthWindow, type SearchLegs } from '@papercusp/search';
 
 import {
   RETRIEVAL_DEGRADATION_FLOOR,
@@ -7,6 +7,8 @@ import {
   judgeRetrievalHealth,
   runRetrievalDegradationSweepOnce,
   type RetrievalVerdict,
+  startRetrievalDegradationWatchdog,
+  retrievalSampleDecision,
 } from './retrieval-degradation-watchdog';
 
 function health(over: Partial<LegHealthWindow> = {}): LegHealthWindow {
@@ -80,6 +82,40 @@ describe('judgeRetrievalHealth', () => {
 
   it('the shipped minimum-sample bar is not vacuous', () => {
     expect(RETRIEVAL_DEGRADATION_MIN_SAMPLES).toBeGreaterThan(1);
+  });
+});
+
+describe('retrieval samples on the durable degradation primitive (P-005)', () => {
+  afterEach(() => setLegHealthObserver(null));
+
+  it('records every authoritative search once, including healthy decisions needed for recovery', () => {
+    const observe = vi.fn((_mechanism: string, _decision: unknown, _opts?: unknown) => true);
+    startRetrievalDegradationWatchdog({ observe });
+    startRetrievalDegradationWatchdog({ observe });
+    const leg = { status: 'ran', candidates: 5, blocked: null };
+    const legs = { lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' }, degraded: true } as SearchLegs;
+    const correlationId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
+    observeLegs(legs, 1000, correlationId);
+    observeLegs({ ...legs, semantic: leg, degraded: false } as SearchLegs, 1001);
+    expect(observe).toHaveBeenCalledTimes(2);
+    expect(observe.mock.calls.map((call) => call.slice(0, 2))).toEqual([
+      ['retrieval', { eligible: 1, applied: 0, reason: 'semantic-blocked' }],
+      ['retrieval', { eligible: 1, applied: 1, reason: 'applied' }],
+    ]);
+    expect(observe.mock.calls[0]?.[2]).toMatchObject({ correlationId });
+  });
+
+  it('does not double count a search when several legs degraded', () => {
+    expect(retrievalSampleDecision({ atMs: 1, degraded: true, semanticBlocked: true, lexicalBlocked: true,
+      semanticEmpty: false, lexicalEmpty: false })).toEqual({ eligible: 1, applied: 0, reason: 'mixed' });
+  });
+
+  it('routes the retained one-shot sweep through the same observation primitive', async () => {
+    const observe = vi.fn(() => true);
+    const result = await runRetrievalDegradationSweepOnce({ flagEnabled: async () => true,
+      readHealth: () => health({ degraded: 90, degradedRate: 0.9, semanticBlocked: 90 }), observe });
+    expect(result).toEqual({ verdict: 'degraded', escalated: 1 });
+    expect(observe).toHaveBeenCalledWith('retrieval', { eligible: 100, applied: 10, reason: 'semantic-leg-blocked' });
   });
 });
 

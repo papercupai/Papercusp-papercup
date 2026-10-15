@@ -1314,8 +1314,17 @@ describe("runWorkspaceHostRemoteInitializerCli", () => {
   );
 
   it("exits 1 when the verify step finds an unready agent", async () => {
+    const report = agentReport({ omp: false });
+    const agents = {
+      ...report.agents,
+      omp: {
+        ...report.agents.omp!,
+        stderrByteCount: 321,
+        stderrByteCountTruncated: false,
+      },
+    };
     const deps = makeDeps({
-      host: new RecordingHost({ agents: agentReport({ omp: false }) }),
+      host: new RecordingHost({ agents: { ...report, agents } }),
     });
     const { io, stdout, stderr } = captureIo(
       [...WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV],
@@ -1323,7 +1332,9 @@ describe("runWorkspaceHostRemoteInitializerCli", () => {
     );
     expect(await runWorkspaceHostRemoteInitializerCli(io, deps)).toBe(1);
     expect(stdout).toEqual([]);
-    expect(stderr.join("")).toMatch(/agent readiness did not pass for: omp/);
+    expect(stderr.join("")).toContain(
+      "agent readiness did not pass for: omp (no-verification-proof; stderr-bytes=321)",
+    );
   });
 
   it("prefixes the stderr diagnostic with the error name and ends it with a newline", async () => {

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "incomplete": true,
+  "sourceStart": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts",
+      "sha256": "3f6cd367c57da2f8b697a8cbb710ce890d12587eb5250d1ee224fad27a801ed1"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/tools/orient-obligations.integration.test.ts",
+      "sha256": "cd973f83491b28b6f6b859369410b53fd736681502717751905285ebbede1f1b"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligation-reader.ts",
+      "sha256": "7056929b1efd36ed22d887c68ceb9463424fcf2b997621f1ea1cb7dc658f3f2a"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligation-providers.ts",
+      "sha256": "ed51f40c7af0d5f8a9c715b2576ffc0b8485dabca7aac4b5616d7f839d13d196"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligations.ts",
+      "sha256": "2251e85797fbf4a3024b23e257fdeaffb1fdc80b6f3a78aa769ba469ab42e225"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-facts/store.ts",
+      "sha256": "94e24a97bb7b3f2cdb24d69fbf444179a265cb991db539ba53d0ccbb165728d7"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-launch-settings.ts",
+      "sha256": "ac05c4fb0a5d11b4e0ae26f7de56b8ea58da7d63a2e15ac25e279c97ef3d9dde"
+    }
+  ],
+  "snapshots": [
+    {
+      "phase": "seeded-guard",
+      "ms": 6201.190494999999,
+      "facts": [],
+      "states": [
+        {
+          "ruleId": "goal-owner-report",
+          "status": "due"
+        },
+        {
+          "ruleId": "goal-plan-placement",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "goal-planning-needed",
+          "status": "due"
+        },
+        {
+          "ruleId": "owner-directive-disposition",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "waiting-on-progress",
+          "status": "not-applicable"
+        }
+      ],
+      "primary": [
+        "goal-owner-report",
+        "goal-planning-needed"
+      ]
+    }
+  ],
+  "scope": "Production orient handler, real GOAL providers and fact store; phase guard only, no full R-5 or shipment claim.",
+  "error": "AssertionError: expected [] to deeply equal [ { scope: 'harness', \u2026(2) }, \u2026(2) ]\n    at read (packages/operator-core/lib/agent-tools/coordination/tools/orient-obligations.integration.test.ts:304:21)\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at packages/operator-core/lib/agent-tools/coordination/tools/orient-obligations.integration.test.ts:326:7\n    at file://node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20",
+  "retainedSource": {
+    "path": "/tmp/su-7db4f-r5-orient-phase-r1-20261002.json",
+    "sha256": "3bba2793ca15adc0d70300f1f9054d909434dde2acbd36033be70352ac6a1738",
+    "normalization": "Repository root removed only from failure stack to avoid machine-specific absolute paths."
+  }
+}

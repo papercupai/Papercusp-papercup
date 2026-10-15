@@ -94,14 +94,14 @@ const status = {
   stats: {
     sources: [
       {
-        source: "gmail",
+        source: "mail",
         source_id: "00000000-0000-4000-8000-000000000101",
         provider_account_id: "owner@example.com",
         documents: 12,
         newest_at: "2026-08-20T12:00:00Z",
       },
       {
-        source: "gmail",
+        source: "mail",
         source_id: "00000000-0000-4000-8000-000000000102",
         provider_account_id: "backup@example.com",
         documents: 4,
@@ -138,7 +138,7 @@ const status = {
   },
   grants: [],
   supportedSources: [
-    "gmail",
+    "mail",
     "calendar",
     "contacts",
     "facebook",
@@ -330,7 +330,7 @@ beforeEach(() => {
           harnessSlug: "papercusp",
           principalType: "plan-template",
           principalId: "meeting-prep-brief",
-          declaredScopes: ["personal:gmail", "personal:calendar"],
+          declaredScopes: ["personal:mail", "personal:calendar"],
         });
       }
       if (
@@ -512,7 +512,7 @@ describe("PersonalVaultSettingsPage", () => {
         /vectors are produced only by the local EmbeddingGemma model/i,
       ),
     ).toBeTruthy();
-    expect(screen.getAllByText("personal:gmail").length).toBeGreaterThanOrEqual(
+    expect(screen.getAllByText("personal:mail").length).toBeGreaterThanOrEqual(
       1,
     );
     expect(screen.getByText("12")).toBeTruthy();
@@ -576,12 +576,12 @@ describe("PersonalVaultSettingsPage", () => {
 
     fireEvent.click(
       within(sourceSection!).getByRole("button", {
-        name: "Purge personal:gmail for owner@example.com",
+        name: "Purge personal:mail for owner@example.com",
       }),
     );
     expect(
       await screen.findByRole("heading", {
-        name: "Purge personal:gmail for owner@example.com?",
+        name: "Purge personal:mail for owner@example.com?",
       }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Permanently purge" }));
@@ -594,7 +594,7 @@ describe("PersonalVaultSettingsPage", () => {
       );
       expect(purgeCall).toBeTruthy();
       expect(JSON.parse(String((purgeCall?.[1] as RequestInit).body))).toEqual({
-        source: "gmail",
+        source: "mail",
         sourceId: "00000000-0000-4000-8000-000000000101",
         providerAccountId: "owner@example.com",
         confirm: true,
@@ -835,10 +835,10 @@ describe("PersonalVaultSettingsPage", () => {
       within(card!).getByRole("button", { name: "Add Facebook Account" }),
     ).toBeTruthy();
     expect(facebookPersonalVaultConnectHref()).toBe(
-      "/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner",
+      "/api/oauth/start?provider=provider%3Afacebook&plugin=provider%3Afacebook&harness=papercusp&field=owner",
     );
     expect(facebookPersonalVaultConnectHref("facebook-user-2")).toBe(
-      "/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner&account=facebook-user-2",
+      "/api/oauth/start?provider=provider%3Afacebook&plugin=provider%3Afacebook&harness=papercusp&field=owner&account=facebook-user-2",
     );
     expect(
       screen.getByRole("note", { name: "Live integration privacy" })
@@ -965,7 +965,7 @@ describe("PersonalVaultSettingsPage", () => {
        `getByText` throws on 0 or 2+, so this pins each declared scope to
        exactly one row of the dialog's list. */
     const approval = within(screen.getByRole("dialog"));
-    expect(approval.getByText("personal:gmail")).toBeTruthy();
+    expect(approval.getByText("personal:mail")).toBeTruthy();
     expect(approval.getByText("personal:calendar")).toBeTruthy();
     expect(
       (
@@ -1021,7 +1021,7 @@ describe("PersonalVaultSettingsPage", () => {
       };
       expect(body.principalType).toBe("agent-role");
       expect(body.principalId).toBe("operator");
-      expect(body.scopes).toEqual(["personal:gmail"]);
+      expect(body.scopes).toEqual(["personal:mail"]);
       expect(new Date(String(body.expiresAt)).getTime()).toBeGreaterThan(
         Date.now(),
       );

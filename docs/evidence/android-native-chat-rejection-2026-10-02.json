@@ -1,0 +1,268 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android native rejected-chat draft and conversation integrity",
+  "framework": "operational",
+  "command": [
+    "android/gradlew",
+    "-p",
+    "android",
+    ":app:connectedDebugAndroidTest",
+    "-Pandroid.testInstrumentationRunnerArguments.class=com.papercuspai.operator.mobile.OperatorChatScreenTest"
+  ],
+  "commandCwd": "papercup-rust-mobile",
+  "startedAt": "2026-10-02T18:51:43.289387392Z",
+  "finishedAt": "2026-10-02T18:54:18.303951588Z",
+  "exitCode": 0,
+  "summary": "Two maintained native Compose/JNI chat rejection and explicit-retry cases passed; 33 debug and 33 release JVM cases plus release lint passed. Maintained native runner and CI guards passed.",
+  "scope": "Owned API36/16KB debug emulator; actual Compose and JNI through HTTP fixtures. Does not verify actual server JWT expiry/revocation, new-pair recovery, Settings navigation draft retention, the full four-test isolated journey, hosted automatic CI, signed candidate, physical phone, Play or public install.",
+  "workItems": [
+    "WI-10005602",
+    "WI-10004768",
+    "WI-10004770",
+    "WI-10004773"
+  ],
+  "repository": "papercup-rust-mobile",
+  "headAtExecution": "333b96754fbdf80d493c20451753c6bff12169a5",
+  "sourceDirtyAtExecution": true,
+  "sourceUnchangedDuringNativeExecution": true,
+  "nativeTests": [
+    "unauthorizedSendKeepsDraftWithoutInventingAPersistedTurn",
+    "forbiddenSendKeepsDraftWithoutInventingAPersistedTurn"
+  ],
+  "testCounts": {
+    "native": {
+      "executed": 2,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "debugJvm": {
+      "executed": 33,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "releaseJvm": {
+      "executed": 33,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "otherCommands": [
+    [
+      "bash",
+      "tools/tests/run-android-checks-test.sh"
+    ],
+    [
+      "bash",
+      "tools/tests/android-ci-contract-test.sh"
+    ],
+    [
+      "android/gradlew",
+      "-p",
+      "android",
+      ":app:testDebugUnitTest",
+      ":app:testReleaseUnitTest",
+      ":app:lintRelease"
+    ]
+  ],
+  "hostExitCode": 0,
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/OperatorChatScreen.kt",
+      "sha256": "46d4664975ff715e2f7845089bc4a2d384773010a51c11a5d78451a84e8f8723"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/OperatorChatScreenTest.kt",
+      "sha256": "13f919abde7d72ead3767f6e6336a53f24c554d15a12bc6bf6aa9d0e4238a2de"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/run-android-checks.sh",
+      "sha256": "8343875e3e8129928db2d043641ab966cb949fdd34c16096dd2aa70954637533"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/run-android-checks-test.sh",
+      "sha256": "cf7239ff4d637dfde74532e97bce925fe8bd4d2204488ce28e2fd6dbf96879c2"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-ci-contract-test.sh",
+      "sha256": "ce07d55c0ac3c0d63011f358dc42b08596239f992791af9de97991ae35f4d6db"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "9e412c8c5f580d75cb5c858f41bdea55c2ba357c8dc6bac20497b6d1b82986e3"
+    },
+    {
+      "path": "papercup-rust-mobile/Cargo.lock",
+      "sha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81"
+    },
+    {
+      "path": "papercup-rust-mobile/crates/papercup-core/src/client.rs",
+      "sha256": "acdee2304bb9ff0ec6412f0f5cdbc6ae306c569363067586bdd9a6712cc636fa"
+    },
+    {
+      "path": "papercup-rust-mobile/crates/papercup-core/src/types.rs",
+      "sha256": "932eb532d8532109ee66189336bbe14c37883269e1ba0b417a5b8e0e5d7f6ad2"
+    },
+    {
+      "path": "papercup-rust-mobile/crates/papercup-bindings/src/lib.rs",
+      "sha256": "0a8e283c1bb2c65d9ada8d5ed30236ec9724328e05f5002b9720ddf71a86cdbe"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/uniffi/papercup/papercup.kt",
+      "sha256": "b73af41412d3f1a22e2c76c8582e31440b357e6b706df796f3206933ab9772e3"
+    }
+  ],
+  "rawEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/fixed2.log",
+      "sha256": "f83f81420f28713303936e65eb06fb357f0524edf82911726fa8a1fd9c2a4e79"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/fixed2-app-debug.apk",
+      "sha256": "f177681b32e2753f239e0d1f2d987331b9025c04cd60b0a31fb21112030cf165"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/fixed2-app-debug-androidTest.apk",
+      "sha256": "4c552eaad819f79189f44b983174b7f22c46e2942f3dc24b34567bc7b6574fb4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/baseline2.log",
+      "sha256": "03f728d75d113865716ec50af28dc32d994bdc998d582c5105ab27ae45fdc522"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/runner-guards.log",
+      "sha256": "ba9ee76071f5810ff32805f75d81ba188e5d85d3da19482ff26782151e5a5f17"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/ci-guards.log",
+      "sha256": "132faf20a88082e76b6cefbbea51bb2f378194c644a77978c1d7a63ff7562d92"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/host.log",
+      "sha256": "646d4f604c99380d89458c571776490ed5e62346d2d24b61ac58745439bbd566"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/cleanup.json",
+      "sha256": "ed58c127f3921aab33a5454837e3f327defd27228475b3df9640d8c2579e412d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/preflight/emulator-boot.json",
+      "sha256": "be35b1cbd9231791ca101f2cc43d5c9ded4b5e18b4e3ebdd9dede763903f6f70"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/fixed2-junit/TEST-android-wi10005602(AVD) - 16-_app-.xml",
+      "sha256": "1f68f0e12501895b6cbf851b19683acd5260c4502b9b1ff9c9c069dde157808d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/chat-ui-20261002-1845/baseline2-junit/TEST-android-wi10005602(AVD) - 16-_app-.xml",
+      "sha256": "5f5158aedc2574daa6a50631247162abcb18c3ac8c736929f67a86a21117db33"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "0955f9893f1304f57cbe9368751f0795b7d970e371f8da4d7f3f7578cbe6f9c7"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "b40ab38d1796f7bc0617b9aa121f1140a57810d19e16e0dceabd06d1cc4fc8a5"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "bd88eee55b3c290e45b824daa509457e9b32e98c3706ed8d2b331c62516549f5"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "72416585ee3c2fd5a43f5dfb25e4b66d086999a63b52fa922e96e790ad587c9c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "0ef1ea6d57f2ca62472149033dcdd8533c5bdae35e1a7390dd112d6f0b32468f"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "a15db71e46b5b6977356e6d07675c763150e706989988d6c15de4efc2e7a27ea"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "ceaabd2cacfe3261c3fc4b39e3ec764a0337be2137fe87e556c7e1365b845cef"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "028a325d00903495a0f7f822f29cc92e19df251579908ac23c27e1abdd699229"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "d50a23bc5442f483fbfa219da2c9d31cac0ef956252a3d12a4a86331418d3bf8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "4165377cb2a8bd19c4f95fb6bab806d9fca275b0df7c1d4ff48a7bcc54875937"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "351adef77b420cdad4d59dc306c139974c99eebd46588e5c34105bf00ef340c0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "db3a0c380ff6555cc52c648b88a6fe666a5d8a4d64868eb566a22c7421a4af79"
+    }
+  ],
+  "emulator": {
+    "api": 36,
+    "pageSizeBytes": 16384,
+    "ownedAvd": "android-wi10005602",
+    "boot": {
+      "serial": "emulator-5584",
+      "bootCompleted": true,
+      "checks": 38,
+      "property": "1",
+      "adbError": "",
+      "transportEvidence": "boot-transports.txt"
+    }
+  },
+  "cleanup": {
+    "serviceStopped": true,
+    "ownedAvdRemoved": true,
+    "ownedEmulatorDisconnected": true
+  },
+  "rootCauseVerification": {
+    "hypothesis": "Android clears input and adds optimistic chat turns before sending, then its authorization-failure branch only removes the assistant bubble.",
+    "alternativeHypothesis": "Native transport or server rejection failed before the screen observed an authorization error.",
+    "distinguishingTest": "Run the maintained 401 and 403 native cases against unchanged source, wait for the typed authorization error and assert that the composer still contains the posted draft; run those cases after the UI correction.",
+    "predictedObservations": {
+      "hypothesis": "The unchanged screen displays the authorization error but its composer is empty; corrected source retains the draft, removes unsent turns and reconciles an explicit retry.",
+      "alternativeHypothesis": "The test fails before the authorization UI is reached, with a transport/decode or native failure."
+    },
+    "actualObservation": "Baseline2 reached the authorization error in both cases and failed with EditableText empty. Fixed2 passed draft retention, absence of unsent bubbles, no automatic replay, explicit retry, single persisted user/assistant turns and empty EditableText after success.",
+    "preparationFailures": "First attempt had no Compose hierarchy; existing notification setup enabled the next attempt to reach the assertions. First fixed attempt used a matcher that also compared placeholder text; its actual EditableText was empty. Both attempts and the audit remain retained; neither is reported as a pass."
+  },
+  "assertions": [
+    {
+      "id": "native-401-403",
+      "passed": true,
+      "evidence": "Both named maintained native cases passed with no failure/error/skip in fixed2 JUnit."
+    },
+    {
+      "id": "automatic-test-registration",
+      "passed": true,
+      "evidence": "The existing paired runner selects OperatorChatScreenTest and requires all four exact named native cases; fingerprints include chat source/test. Thirty-nine maintained paired-proof controls include omitted/skipped/failed chat test refusals. Actual hosted execution remains open."
+    },
+    {
+      "id": "host-and-lint",
+      "passed": true,
+      "evidence": "Maintained host JUnit contains 33 debug and 33 release cases; host command including lintRelease exited 0."
+    },
+    {
+      "id": "native-source-stability",
+      "passed": true,
+      "evidence": "Exact source/test fingerprints before and after fixed2 execution match."
+    },
+    {
+      "id": "fixture-cleanup",
+      "passed": true,
+      "evidence": "Owned emulator service stopped, AVD and ini deleted and emulator absent from adb inventory. No server fixture or stored pairing was created by these chat tests."
+    }
+  ]
+}

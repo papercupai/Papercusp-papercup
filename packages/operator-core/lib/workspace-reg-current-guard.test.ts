@@ -33,6 +33,12 @@ const ALLOW = new Set([
   // only as the new-window-default fallback on a *fetched* registry object
   // (a param), never the server process-global readRegistry().
   'browser-workspace.ts',
+  // Test-only hosted fixture validates registry.current inside its disposable,
+  // private runtime; it does not resolve production request workspaces.
+  'llm-testing/public-manual-hosted-fixture.ts',
+  // Native acceptance fixture verifies/switches an isolated test registry; it
+  // is a CLI/test helper, not a production request handler.
+  'native-device-fixture.ts',
   // First-boot canonical-hive join bootstrap: deliberately makes the joined
   // Papercusp workspace visible as home after a successful join, matching the
   // workspace-management bootstrap writers above.
@@ -88,7 +94,7 @@ describe('P-061: no direct reg.current reads in request-path code', () => {
     expect(
       offenders,
       `These request-path files read reg.current directly — use activeWorkspaceId() instead, ` +
-        `or add the file to the management allowlist if it legitimately manages workspaces:\n` +
+        `or add the file to ALLOW only when its direct read has a documented non-request-path role:\n` +
         offenders.map((f) => `  - ${f}`).join('\n'),
     ).toEqual([]);
   });

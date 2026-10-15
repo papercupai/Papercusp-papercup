@@ -7,6 +7,7 @@ vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-memory' }
 
 import { tagsForTableChange } from '../events/cache-eca-rule';
 import { invalidateUserMemoryViews, USER_MEMORY_SYNC_KEYS } from './invalidate-user-memory-views';
+import { setSessionConfinementResolver } from '../capability-envelope/session-confinement-port';
 import {
   getMemoryBlockBounded,
   getMemoryBlockBoundedResult,
@@ -35,6 +36,20 @@ function controlledBuild(block: string | null = '## Operator memory') {
     },
   };
 }
+
+it('does not serve a previously cached live block after the host imposes frozen context', async () => {
+  const cache = createCache(), build = vi.fn(async () => 'LIVE SECRET');
+  const opts = { cache, sessionId: 'su-frozen' };
+  setSessionConfinementResolver(() => null);
+  try {
+    expect(await getMemoryBlockBounded('private', 'turn-start:su-frozen', build, opts)).toBe('LIVE SECRET');
+    build.mockClear();
+    setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'],
+      denyAmbientContext: true, reason: 'frozen benchmark', imposedBy: 'host' }));
+    expect(await getMemoryBlockBounded('private', 'turn-start:su-frozen', build, opts)).toBeNull();
+    expect(build).not.toHaveBeenCalled();
+  } finally { setSessionConfinementResolver(undefined); }
+});
 
 describe('getMemoryBlockBounded', () => {
   beforeEach(() => {

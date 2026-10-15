@@ -67,6 +67,55 @@ export interface ModelUsage {
   costUsd?: number;
 }
 
+/** Whitelisted provider report for ONE completed request. This is routing/
+ * accounting preparation, not an authenticated billing-account identity,
+ * exact commercial receipt or invoice-finality claim. Keep the reported
+ * charge separate from ModelUsage.costUsd's token-based estimate. Incomplete
+ * or failed streams do not supply this completed-response record. */
+export interface ModelProviderResponse {
+  provider: string;
+  id?: string;
+  modelId?: string;
+  reportedCostUsd?: number;
+}
+
+/** Dispatch intent and early response identity for one request. This is an
+ * obligation observation, including when no generation id arrives; it does
+ * not establish provider acceptance, zero liability, completion or a bill.
+ * Keep every valid conflicting identity for reconciliation, mark uncertainty,
+ * and never include raw provider metadata, credentials or prompt content. */
+export interface ModelProviderRequest {
+  provider: string;
+  /** Exact model selected for this route. */
+  modelId: string;
+  response?: Pick<ModelProviderResponse, 'id' | 'modelId'>;
+  identityUncertain?: boolean;
+}
+
+/** Local identity of the credential actually selected for ONE OpenRouter
+ * request. It is private server context, not a provider billing-account
+ * ownership claim. Declared here (a no-import leaf) rather than in
+ * provider-router.ts so hosted billing code can name it without pulling the
+ * router's credential/gateway graph into every consumer's typecheck
+ * (WI-10006711: the portal build failed on exactly that). */
+export interface OpenRouterRequestContext {
+  readonly modelId: string;
+  readonly servedAccount: string;
+  readonly credentialSha256: string;
+}
+export type OpenRouterRequestCapture = (request: Readonly<ModelProviderRequest>) => Promise<void>;
+
+/** Server-only continuation on the existing observation seam. The owned
+ * consumer awaits it before pulling again; public snapshots omit symbols.
+ * It contains no serializable grant, credential or billing authority. */
+export const MODEL_PROVIDER_REQUEST_CAPTURE = Symbol('model-provider-request-capture');
+
+export async function captureModelProviderRequest(
+  event: Extract<ModelStreamEvent, { type: 'provider_request' }>,
+): Promise<void> {
+  await event[MODEL_PROVIDER_REQUEST_CAPTURE]?.();
+}
+
 export type ModelStopReason =
   | 'end_turn'
   | 'tool_use'
@@ -80,10 +129,13 @@ export type ModelStopReason =
  *  never sees half-parsed arguments. Exactly one terminal event ends a healthy
  *  stream (`stop`); `error` is terminal too. */
 export type ModelStreamEvent =
+  | { type: 'provider_request'; request: ModelProviderRequest; servedAccount?: string;
+      [MODEL_PROVIDER_REQUEST_CAPTURE]?: () => Promise<void> }
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; input: unknown }
-  | { type: 'stop'; reason: ModelStopReason; usage?: ModelUsage; servedAccount?: string }
+  | { type: 'stop'; reason: ModelStopReason; usage?: ModelUsage; servedAccount?: string;
+      providerResponse?: ModelProviderResponse }
   | { type: 'error'; message: string; raw?: unknown };
 
 export interface ModelRequest {
@@ -101,7 +153,8 @@ export interface ModelRequest {
    *  fleet load, so interactive callers should always set one. */
   priority?: string;
   /** Optional per-request inference-gateway account route. Undefined means
-   * gateway auto-routing; direct API-key providers ignore this axis. */
+   * gateway auto-routing. OpenRouter also honors pins in its explicitly supplied
+   * runtime account pool; other direct API-key providers ignore this axis. */
   account?: string;
   /** Stable caller identity forwarded to the inference gateway for routing
    * attribution (owned loop/chat id, not a user-provided label). */

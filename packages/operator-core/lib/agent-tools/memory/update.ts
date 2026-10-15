@@ -29,6 +29,7 @@ import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 import { trackDetached } from '../../detached-imports';
 import { AGENT_TOOL_ACTOR_ID } from '../../memory/feedback';
+import { captureSurfacedOutcome } from '../../memory/surfaced-outcomes';
 
 /** The per-memory patch fields, shared by the inline single, the homogeneous
  *  `ids` default, and each heterogeneous `items[]` entry. */
@@ -153,7 +154,7 @@ export default defineTool({
           'pass { id, …patch } for one, { ids:[…], …patch } for many of the same patch, or items:[{ id, …patch }] for many; each must carry content, supersedes, and/or at least one metadata field (kind, workspaceId, scope)',
       },
     ),
-  async handler(args) {
+  async handler(args, ctx) {
     // Normalize to a per-item list. items[] is heterogeneous; ids[] / inline id
     // share the top-level patch fields.
     const sharedPatch = {
@@ -257,7 +258,7 @@ export default defineTool({
         // clean edit stamps possible_secret:false (vec-safe metadata merge).
         // Metadata-only patches never touch the flag.
         const secrets = it.content !== undefined ? detectPossibleSecrets(it.content) : null;
-        const secretFields = secrets?.matched
+        const secretFields: Record<string, unknown> = secrets?.matched
           ? {
               possible_secret: true as const,
               possible_secret_classes: secrets.classes,
@@ -339,6 +340,8 @@ export default defineTool({
             ...(failureJournalId ? { journaled: true, will_retry: true, journal_id: failureJournalId } : {}),
           };
         }
+        const outcomeCapture = await captureSurfacedOutcome(ctx, [it.id], 'contradicted');
+        if (!outcomeCapture.ok) secretFields.outcomeCapture = outcomeCapture;
         // Learning signal (learning-system-audit P-050): an agent-driven CONTENT
         // correction feeds the extraction-adaptation loop (memory_feedback).
         // Skipped for a metadata-only patch (no text changed to learn from).
@@ -361,12 +364,14 @@ export default defineTool({
               'memory:update supersede',
             );
             if (closed) {
+              await captureSurfacedOutcome(ctx, [it.supersedes], 'contradicted');
               if (journalId) await markJournalCommitted(journalId, it.id);
               return { ok: true as const, id: it.id, superseded: it.supersedes, ...secretFields };
             }
             const after = await withMemoryToolTimeout(backend.get(it.supersedes), 'memory:update supersede reconcile');
             const validity = after?.metadata?.validity as { superseded_by?: unknown } | undefined;
             if (validity?.superseded_by === it.id) {
+              await captureSurfacedOutcome(ctx, [it.supersedes], 'contradicted');
               if (journalId) await markJournalCommitted(journalId, it.id);
               return { ok: true as const, id: it.id, superseded: it.supersedes, ...secretFields };
             }

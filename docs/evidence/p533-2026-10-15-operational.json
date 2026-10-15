@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-533 Google 50 native sessions plus placement and AWS filesystem checks",
+  "framework": "operational",
+  "command": [
+    "sudo env SWAPTIER_LAUNCH_DELAY_SEC=1 python3 /opt/swaptier/swap-tier.py run --out=/var/tmp/hb50-final25 --agents=50 --warm=6 --single=0 --ram-gb=30 --cli=codex --model=gpt-6-luna --effort=low --gateway-url=http://127.0.0.1:18788/v1 --owner=su-c817144f-b276-410c-9685-7baad6e5f9ee --arm=none --arm=zram:lz4 --arm=zram:zstd --arm=hyperdisk@pc3=/dev/disk/by-id/google-swap --arm=hyperdisk@pc0=/dev/disk/by-id/google-swap",
+    "durable pgbench and competing fio procedures retained in the referenced raw artifacts and current session transcript"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-15T05:35:29.623164+00:00",
+  "finishedAt": "2026-10-15T06:08:04.200278+00:00",
+  "summary": "Google full50realLuna-low completed6warmrounds and250/250successfulwakes across5arms; six durable Google placement passes and six AWS filesystem passes had0failedtransactions. AWS50nativecomparison remains pending.",
+  "assertions": [
+    {
+      "id": "google-50-real-model-low",
+      "passed": true,
+      "evidence": "docs/evidence/p533-2026-10-15-hyperdisk-native.json run-start records pinned model, effort and real inference."
+    },
+    {
+      "id": "six-native-warm-rounds",
+      "passed": true,
+      "evidence": "docs/evidence/p533-2026-10-15-hyperdisk-native.json six warm-round rows each agents50/nativeToolVerified true, followed by warmed."
+    },
+    {
+      "id": "250-native-wakes",
+      "passed": true,
+      "evidence": "docs/evidence/p533-2026-10-15-hyperdisk-native.json fivearms times50, everytDone present anderror null; summaryfailed0each;run-end recorded."
+    },
+    {
+      "id": "six-durable-placement-passes",
+      "passed": true,
+      "evidence": "docs/evidence/p533-2026-10-15-threeway-placement.json sixpglogs each numberoffailedtransactions0. Actualrootnotmoved;OSIOsurrogateonly."
+    },
+    {
+      "id": "six-durable-filesystem-passes",
+      "passed": true,
+      "evidence": "docs/evidence/p533-2026-10-15-io2-filesystems.json measured ext4/default,noatime,XFS each2passes0failures."
+    }
+  ],
+  "rawEvidenceSha256": {
+    "docs/evidence/p533-2026-10-15-hyperdisk-native.json": "4753eb4af191b739c81c4439590b1ec0c19f1755d4a39b4ea19372d9c168e344",
+    "docs/evidence/p533-2026-10-15-threeway-placement.json": "703de70f169f75d5b45701e974101f1352f617fc02f41bd16eca2abb50f4bcbc",
+    "docs/evidence/p533-2026-10-15-io2-filesystems.json": "6f942a876b2d9b754294f1c8db58b0928f0ba8ac7d7e04b9aaa2d703f4e8eb61",
+    "scripts/agent-capacity/vm/swap-tier.py": "d79bfa13cecc4efd938c7f45342b7e3d9bd3cbe3fced844e124e3e21d172cedb",
+    "scripts/agent-capacity/vm/swap-tier.test.ts": "9044aea7a111c4fc62f78a4d542b8db7146a6aa4fdeaf58e34a61091cba19f5e"
+  },
+  "measuredGoogleDriverSha256": "3264edca0f8685cb091661ad0f0244c9ab557104d9b75a5b037249b1922c9b21",
+  "limits": [
+    "No AWS50verdict in this artifact",
+    "Googlewarmuphadprivateforwardinterruptionandrecordedcapacityretries",
+    "SixshortpgbenchpassesrepresentfreshsmallDB",
+    "ActualOSrootremainedseparate;OSIOwasafiosurrogate",
+    "Currentdriverhashislatertestedguardversion;measuredGoogleSHAseparate"
+  ],
+  "workItemId": "WI-6554700010013766",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30"
+}

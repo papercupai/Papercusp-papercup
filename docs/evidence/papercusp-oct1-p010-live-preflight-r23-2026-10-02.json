@@ -1,0 +1,654 @@
+{
+  "schemaVersion": 2,
+  "workItem": "WI-10004889",
+  "startedAt": "2026-10-02T00:11:59.710Z",
+  "endedAt": "2026-10-02T00:12:16.727Z",
+  "mode": "live-read-only",
+  "host": "buildhost",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "identity": {
+    "database": "papercusp",
+    "postgres": "PostgreSQL 18.4 (Ubuntu 18.4-1.pgdg24.04+1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, 64-bit",
+    "snapshot": "766579059:766579120:766579059,766579115",
+    "transaction_time": "2026-10-02T00:11:59.791Z",
+    "schema": [
+      {
+        "filename": "1326-chat-rollup-requeue-on-source-routing-change.sql",
+        "sha256": "af4be6f7e5b025e8765f8da919ffd703edb1d41281d88e72179ca93b5ed6f4ff",
+        "applied_at": "2026-10-01T23:50:44.980Z"
+      },
+      {
+        "filename": "1325-work-item-is-agent-work.sql",
+        "sha256": "80b4092ba374cf249480a04d04f539bce632d2be710af33c932847a629abbd16",
+        "applied_at": "2026-10-01T23:39:41.904Z"
+      },
+      {
+        "filename": "1324-rename-trigger-sources-to-data-sources.sql",
+        "sha256": "7888fe1753042d1dca29ac600d4800ce373786436d7aaff675ae309f4ede571b",
+        "applied_at": "2026-10-01T22:43:34.447Z"
+      },
+      {
+        "filename": "1323-work-items-views-nature.sql",
+        "sha256": "ffd9b2fdb27a8679d38a8e883dc37eda01bf24eed11518182f9b20aa2453ae55",
+        "applied_at": "2026-10-01T22:30:16.913Z"
+      },
+      {
+        "filename": "1322-work-items-nature.sql",
+        "sha256": "7a42017f6bdd24219951109c906bcfeeaac8ed34dd47ae5657be0c67faee01c4",
+        "applied_at": "2026-10-01T22:20:07.045Z"
+      }
+    ]
+  },
+  "serving": {
+    "sha": "f655898692",
+    "endpoint": "http://127.0.0.1:3170/api/health"
+  },
+  "fingerprints": {
+    "plan-item-coverage.ts": "187eddb1921a695535eb366d09bf7f1da3116fa1e8964bb4c3207c908203bb93",
+    "fleet/assignments.ts": "c605f51c02da5a86dd6d4269762f27c3fccce4df658ccd617989e7e1a38c83b9"
+  },
+  "diagnostics": [],
+  "incomplete": false,
+  "progress": {
+    "expectedReads": 8,
+    "completedReads": 8,
+    "completedArms": 4
+  },
+  "sourceSha": "aecf5f4f70eb85dc780066b5a4537b87586a3056",
+  "testFingerprint": "5d34d11ae23b05203254669d4ddf6c787895608ff3f09c935da7e6220665a6de",
+  "confidenceMethod": {
+    "metric": "per-window p95 reader wallMs, candidate minus control",
+    "method": "percentile bootstrap of the mean paired difference",
+    "confidence": 0.95,
+    "seed": 268454025,
+    "resamples": 10000,
+    "minimumCompletePairs": 10
+  },
+  "control": "full production coverage then exact plan selection",
+  "candidate": "production planSlug restriction",
+  "profiles": {
+    "concurrency": [
+      1,
+      8
+    ],
+    "windows": 1,
+    "requestsPerSideWindow": 2,
+    "cache": "no coverage result cache; PostgreSQL cache uncontrolled and shared",
+    "connection": "one read-only repeatable-read connection on both sides",
+    "inputs": "JS clock pinned to transaction time; initial measured liveness replayed for both arms"
+  },
+  "populationHash": "4c984e42cb0f83665644126e595b17a25228bee13e58fa75676ce341882c43a2",
+  "samples": [
+    {
+      "concurrency": 1,
+      "window": 0,
+      "arm": "control",
+      "batch": [
+        {
+          "index": 0,
+          "ok": true,
+          "wallMs": 391.12888999999996,
+          "resultHash": "4c984e42cb0f83665644126e595b17a25228bee13e58fa75676ce341882c43a2",
+          "totalCoverageRefs": 7596,
+          "selectedRefs": 17
+        }
+      ],
+      "phases": [
+        {
+          "wallMs": 213.2796730000009,
+          "rows": 907,
+          "ok": true,
+          "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+          "kind": "other"
+        },
+        {
+          "wallMs": 136.40054600000076,
+          "rows": 7856,
+          "ok": true,
+          "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+          "kind": "stamp"
+        },
+        {
+          "wallMs": 19.687722999999096,
+          "rows": 449,
+          "ok": true,
+          "sqlHash": "5b2e5282f4d3045f30d7528e681021fca934745e48157cc7a4eb34ab34cf0606",
+          "kind": "other"
+        },
+        {
+          "wallMs": 1.9824760000010428,
+          "rows": 209,
+          "ok": true,
+          "sqlHash": "065b970988bbe9b080c07e5dcace8483f8405d9b67bb396b846197a4b83c11b5",
+          "kind": "other"
+        },
+        {
+          "wallMs": 3.681018999999651,
+          "rows": 34,
+          "ok": true,
+          "sqlHash": "ca8d3ffa54e6c6d1ba299b95f200393ddfcc919568eb54163e255e754198f0aa",
+          "kind": "other"
+        }
+      ]
+    },
+    {
+      "concurrency": 1,
+      "window": 0,
+      "arm": "control",
+      "batch": [
+        {
+          "index": 1,
+          "ok": true,
+          "wallMs": 14363.019871,
+          "resultHash": "4c984e42cb0f83665644126e595b17a25228bee13e58fa75676ce341882c43a2",
+          "totalCoverageRefs": 7596,
+          "selectedRefs": 17
+        }
+      ],
+      "phases": [
+        {
+          "wallMs": 88.64771999999721,
+          "rows": 907,
+          "ok": true,
+          "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+          "kind": "other"
+        },
+        {
+          "wallMs": 138.52028199999768,
+          "rows": 7856,
+          "ok": true,
+          "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+          "kind": "stamp"
+        },
+        {
+          "wallMs": 14093.276781999997,
+          "rows": 449,
+          "ok": true,
+          "sqlHash": "5b2e5282f4d3045f30d7528e681021fca934745e48157cc7a4eb34ab34cf0606",
+          "kind": "other"
+        },
+        {
+          "wallMs": 2.2335600000005797,
+          "rows": 209,
+          "ok": true,
+          "sqlHash": "065b970988bbe9b080c07e5dcace8483f8405d9b67bb396b846197a4b83c11b5",
+          "kind": "other"
+        },
+        {
+          "wallMs": 3.9015609999987646,
+          "rows": 34,
+          "ok": true,
+          "sqlHash": "ca8d3ffa54e6c6d1ba299b95f200393ddfcc919568eb54163e255e754198f0aa",
+          "kind": "other"
+        }
+      ]
+    },
+    {
+      "concurrency": 1,
+      "window": 0,
+      "arm": "candidate",
+      "batch": [
+        {
+          "index": 0,
+          "ok": true,
+          "wallMs": 71.33329700000104,
+          "resultHash": "4c984e42cb0f83665644126e595b17a25228bee13e58fa75676ce341882c43a2",
+          "totalCoverageRefs": 17,
+          "selectedRefs": 17
+        }
+      ],
+      "phases": [
+        {
+          "wallMs": 52.94768599999952,
+          "rows": 2,
+          "ok": true,
+          "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+          "kind": "other"
+        },
+        {
+          "wallMs": 1.3521049999981187,
+          "rows": 17,
+          "ok": true,
+          "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+          "kind": "stamp"
+        },
+        {
+          "wallMs": 14.923430999999255,
+          "rows": 13,
+          "ok": true,
+          "sqlHash": "ecac9ffe9fee24575dadc7c10e401e2748af28494da0e527ece30e713bc09584",
+          "kind": "other"
+        },
+        {
+          "wallMs": 0.5058809999973164,
+          "rows": 3,
+          "ok": true,
+          "sqlHash": "065b970988bbe9b080c07e5dcace8483f8405d9b67bb396b846197a4b83c11b5",
+          "kind": "other"
+        },
+        {
+          "wallMs": 0.9081569999980275,
+          "rows": 0,
+          "ok": true,
+          "sqlHash": "ca8d3ffa54e6c6d1ba299b95f200393ddfcc919568eb54163e255e754198f0aa",
+          "kind": "other"
+        }
+      ]
+    },
+    {
+      "concurrency": 1,
+      "window": 0,
+      "arm": "candidate",
+      "batch": [
+        {
+          "index": 1,
+          "ok": true,
+          "wallMs": 73.30165300000226,
+          "resultHash": "4c984e42cb0f83665644126e595b17a25228bee13e58fa75676ce341882c43a2",
+          "totalCoverageRefs": 17,
+          "selectedRefs": 17
+        }
+      ],
+      "phases": [
+        {
+          "wallMs": 54.773990000001504,
+          "rows": 2,
+          "ok": true,
+          "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+          "kind": "other"
+        },
+        {
+          "wallMs": 1.6662370000012743,
+          "rows": 17,
+          "ok": true,
+          "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+          "kind": "stamp"
+        },
+        {
+          "wallMs": 15.461254999998346,
+          "rows": 13,
+          "ok": true,
+          "sqlHash": "ecac9ffe9fee24575dadc7c10e401e2748af28494da0e527ece30e713bc09584",
+          "kind": "other"
+        },
+        {
+          "wallMs": 0.4217639999988023,
+          "rows": 3,
+          "ok": true,
+          "sqlHash": "065b970988bbe9b080c07e5dcace8483f8405d9b67bb396b846197a4b83c11b5",
+          "kind": "other"
+        },
+        {
+          "wallMs": 0.5141569999977946,
+          "rows": 0,
+          "ok": true,
+          "sqlHash": "ca8d3ffa54e6c6d1ba299b95f200393ddfcc919568eb54163e255e754198f0aa",
+          "kind": "other"
+        }
+      ]
+    },
+    {
+      "concurrency": 8,
+      "window": 0,
+      "arm": "control",
+      "batch": [
+        {
+          "index": 0,
+          "ok": true,
+          "wallMs": 604.4775770000051,
+          "resultHash": "4c984e42cb0f83665644126e595b17a25228bee13e58fa75676ce341882c43a2",
+          "totalCoverageRefs": 7596,
+          "selectedRefs": 17
+        },
+        {
+          "index": 1,
+          "ok": true,
+          "wallMs": 634.3017050000053,
+          "resultHash": "4c984e42cb0f83665644126e595b17a25228bee13e58fa75676ce341882c43a2",
+          "totalCoverageRefs": 7596,
+          "selectedRefs": 17
+        }
+      ],
+      "phases": [
+        {
+          "wallMs": 88.6415380000035,
+          "rows": 907,
+          "ok": true,
+          "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+          "kind": "other"
+        },
+        {
+          "wallMs": 174.04160099999717,
+          "rows": 907,
+          "ok": true,
+          "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+          "kind": "other"
+        },
+        {
+          "wallMs": 257.50768800000515,
+          "rows": 7856,
+          "ok": true,
+          "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+          "kind": "stamp"
+        },
+        {
+          "wallMs": 339.226837000002,
+          "rows": 7856,
+          "ok": true,
+          "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+          "kind": "stamp"
+        },
+        {
+          "wallMs": 186.64006099999824,
+          "rows": 449,
+          "ok": true,
+          "sqlHash": "5b2e5282f4d3045f30d7528e681021fca934745e48157cc7a4eb34ab34cf0606",
+          "kind": "other"
+        },
+        {
+          "wallMs": 42.29098800000065,
+          "rows": 449,
+          "ok": true,
+          "sqlHash": "5b2e5282f4d3045f30d7528e681021fca934745e48157cc7a4eb34ab34cf0606",
+          "kind": "other"
+        },
+        {
+          "wallMs": 24.32695899999817,
+          "rows": 209,
+          "ok": true,
+          "sqlHash": "065b970988bbe9b080c07e5dcace8483f8405d9b67bb396b846197a4b83c11b5",
+          "kind": "other"
+        },
+        {
+          "wallMs": 24.324133000001893,
+          "rows": 34,
+          "ok": true,
+          "sqlHash": "ca8d3ffa54e6c6d1ba299b95f200393ddfcc919568eb54163e255e754198f0aa",
+          "kind": "other"
+        },
+        {
+          "wallMs": 43.36600499999622,
+          "rows": 209,
+          "ok": true,
+          "sqlHash": "065b970988bbe9b080c07e5dcace8483f8405d9b67bb396b846197a4b83c11b5",
+          "kind": "other"
+        },
+        {
+          "wallMs": 43.36226699999679,
+          "rows": 34,
+          "ok": true,
+          "sqlHash": "ca8d3ffa54e6c6d1ba299b95f200393ddfcc919568eb54163e255e754198f0aa",
+          "kind": "other"
+        }
+      ]
+    },
+    {
+      "concurrency": 8,
+      "window": 0,
+      "arm": "candidate",
+      "batch": [
+        {
+          "index": 0,
+          "ok": true,
+          "wallMs": 164.0676850000018,
+          "resultHash": "4c984e42cb0f83665644126e595b17a25228bee13e58fa75676ce341882c43a2",
+          "totalCoverageRefs": 17,
+          "selectedRefs": 17
+        },
+        {
+          "index": 1,
+          "ok": true,
+          "wallMs": 164.32923300000402,
+          "resultHash": "4c984e42cb0f83665644126e595b17a25228bee13e58fa75676ce341882c43a2",
+          "totalCoverageRefs": 17,
+          "selectedRefs": 17
+        }
+      ],
+      "phases": [
+        {
+          "wallMs": 66.25313399999868,
+          "rows": 2,
+          "ok": true,
+          "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+          "kind": "other"
+        },
+        {
+          "wallMs": 127.26324800000293,
+          "rows": 2,
+          "ok": true,
+          "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+          "kind": "other"
+        },
+        {
+          "wallMs": 62.05463099999906,
+          "rows": 17,
+          "ok": true,
+          "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+          "kind": "stamp"
+        },
+        {
+          "wallMs": 2.0552670000033686,
+          "rows": 17,
+          "ok": true,
+          "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+          "kind": "stamp"
+        },
+        {
+          "wallMs": 17.498305000000983,
+          "rows": 13,
+          "ok": true,
+          "sqlHash": "ecac9ffe9fee24575dadc7c10e401e2748af28494da0e527ece30e713bc09584",
+          "kind": "other"
+        },
+        {
+          "wallMs": 33.119336000003386,
+          "rows": 13,
+          "ok": true,
+          "sqlHash": "ecac9ffe9fee24575dadc7c10e401e2748af28494da0e527ece30e713bc09584",
+          "kind": "other"
+        },
+        {
+          "wallMs": 17.05989799999952,
+          "rows": 3,
+          "ok": true,
+          "sqlHash": "065b970988bbe9b080c07e5dcace8483f8405d9b67bb396b846197a4b83c11b5",
+          "kind": "other"
+        },
+        {
+          "wallMs": 17.05827500000305,
+          "rows": 0,
+          "ok": true,
+          "sqlHash": "ca8d3ffa54e6c6d1ba299b95f200393ddfcc919568eb54163e255e754198f0aa",
+          "kind": "other"
+        },
+        {
+          "wallMs": 1.1824090000009164,
+          "rows": 3,
+          "ok": true,
+          "sqlHash": "065b970988bbe9b080c07e5dcace8483f8405d9b67bb396b846197a4b83c11b5",
+          "kind": "other"
+        },
+        {
+          "wallMs": 1.1781909999990603,
+          "rows": 0,
+          "ok": true,
+          "sqlHash": "ca8d3ffa54e6c6d1ba299b95f200393ddfcc919568eb54163e255e754198f0aa",
+          "kind": "other"
+        }
+      ]
+    }
+  ],
+  "explain": {
+    "control": {
+      "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+      "plan": [
+        {
+          "Plan": {
+            "Node Type": "Index Scan",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Scan Direction": "Forward",
+            "Index Name": "work_items_plan_item_stamp_idx",
+            "Relation Name": "work_items",
+            "Alias": "work_items",
+            "Startup Cost": 0.28,
+            "Total Cost": 69915.79,
+            "Plan Rows": 247834,
+            "Plan Width": 133,
+            "Actual Startup Time": 0.062,
+            "Actual Total Time": 152.516,
+            "Actual Rows": 7856,
+            "Actual Loops": 1,
+            "Disabled": false,
+            "Index Cond": "((((payload -> 'plan_item'::text) ->> 'plan_slug'::text) IS NOT NULL) AND (((payload -> 'plan_item'::text) ->> 'item_id'::text) IS NOT NULL))",
+            "Rows Removed by Index Recheck": 0,
+            "Index Searches": 1,
+            "Shared Hit Blocks": 71704,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0,
+            "Shared I/O Read Time": 0,
+            "Shared I/O Write Time": 0,
+            "Local I/O Read Time": 0,
+            "Local I/O Write Time": 0,
+            "Temp I/O Read Time": 0,
+            "Temp I/O Write Time": 0
+          },
+          "Planning": {
+            "Shared Hit Blocks": 2,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0,
+            "Shared I/O Read Time": 0,
+            "Shared I/O Write Time": 0,
+            "Local I/O Read Time": 0,
+            "Local I/O Write Time": 0,
+            "Temp I/O Read Time": 0,
+            "Temp I/O Write Time": 0
+          },
+          "Planning Time": 0.296,
+          "Triggers": [],
+          "Execution Time": 152.853
+        }
+      ]
+    },
+    "candidate": {
+      "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+      "plan": [
+        {
+          "Plan": {
+            "Node Type": "Index Scan",
+            "Parallel Aware": false,
+            "Async Capable": false,
+            "Scan Direction": "Forward",
+            "Index Name": "work_items_plan_item_stamp_idx",
+            "Relation Name": "work_items",
+            "Alias": "work_items",
+            "Startup Cost": 0.28,
+            "Total Cost": 1412.07,
+            "Plan Rows": 1239,
+            "Plan Width": 133,
+            "Actual Startup Time": 0.089,
+            "Actual Total Time": 0.755,
+            "Actual Rows": 17,
+            "Actual Loops": 1,
+            "Disabled": false,
+            "Index Cond": "((((payload -> 'plan_item'::text) ->> 'plan_slug'::text) IS NOT NULL) AND (((payload -> 'plan_item'::text) ->> 'plan_slug'::text) = 'papercusp-log-performance-remediation-2026-09-23'::text) AND (((payload -> 'plan_item'::text) ->> 'item_id'::text) IS NOT NULL))",
+            "Rows Removed by Index Recheck": 0,
+            "Index Searches": 1,
+            "Shared Hit Blocks": 238,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0,
+            "Shared I/O Read Time": 0,
+            "Shared I/O Write Time": 0,
+            "Local I/O Read Time": 0,
+            "Local I/O Write Time": 0,
+            "Temp I/O Read Time": 0,
+            "Temp I/O Write Time": 0
+          },
+          "Planning": {
+            "Shared Hit Blocks": 2,
+            "Shared Read Blocks": 0,
+            "Shared Dirtied Blocks": 0,
+            "Shared Written Blocks": 0,
+            "Local Hit Blocks": 0,
+            "Local Read Blocks": 0,
+            "Local Dirtied Blocks": 0,
+            "Local Written Blocks": 0,
+            "Temp Read Blocks": 0,
+            "Temp Written Blocks": 0,
+            "Shared I/O Read Time": 0,
+            "Shared I/O Write Time": 0,
+            "Local I/O Read Time": 0,
+            "Local I/O Write Time": 0,
+            "Temp I/O Read Time": 0,
+            "Temp I/O Write Time": 0
+          },
+          "Planning Time": 0.323,
+          "Triggers": [],
+          "Execution Time": 0.78
+        }
+      ]
+    }
+  },
+  "comparisons": [
+    {
+      "concurrency": 1,
+      "differences": [
+        -14289.718217999998
+      ],
+      "interval": null
+    },
+    {
+      "concurrency": 8,
+      "differences": [
+        -469.9724720000013
+      ],
+      "interval": null
+    }
+  ],
+  "limitations": [
+    "SQL wall includes queue/transfer/decoding; not database CPU or isolated JSON extraction.",
+    "Shared PostgreSQL cache is not a cold-cache benchmark.",
+    "This is the production reader on frozen data, not HTTP end-to-end timing.",
+    "Replay fixes exogenous liveness inputs; matrix timings exclude repeated oracle IO."
+  ],
+  "acceptanceScope": "Bounded preflight only. One window and two requests per arm/concurrency do not satisfy the ten-window statistical matrix or macro R4/R5/R9.",
+  "execution": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_P010_LIVE_PROBE=1 PAPERCUSP_P010_WINDOWS=1 PAPERCUSP_P010_REQUESTS=2 PAPERCUSP_P010_PLAN=papercusp-log-performance-remediation-2026-09-23 PAPERCUSP_P010_REPORT=/tmp/su-7db4f-p010-live-preflight-r23.json node scripts/npm-install-safe.mjs --exec-under-lock -- node scripts/test-files.mjs packages/operator-core/lib/plan-item-coverage.performance.integration.test.ts",
+    "nativeSessionId": 74875,
+    "exitCode": 0,
+    "testsPassed": 2,
+    "testsSkipped": 0,
+    "provenance": "stamped",
+    "head": "aecf5f4f70eb85dc780066b5a4537b87586a3056"
+  },
+  "runtimeHold": {
+    "lockId": "2fad2d39-6193-41b9-be95-1d039342ebe4",
+    "resource": "dev-server",
+    "disposition": "released"
+  },
+  "risksForFullMatrix": [
+    "The final serving SHA equality assertion may fail if the staging runtime changes during a long run. Audit source containment across rebuilds or use the appropriate isolated current-build route before launching the expensive matrix.",
+    "The single observed window has no statistical confidence interval and is not a sustained workload measurement."
+  ]
+}

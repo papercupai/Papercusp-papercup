@@ -5,19 +5,18 @@
 import { createAdaptorServer } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { Session as InspectorSession } from 'node:inspector';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { SuSessionHost } from '../su-session-host';
-
-// These workspace TypeScript entrypoints are CommonJS under tsx. Resolve
-// their exports with Node's CJS loader rather than relying on named-export
-// inference across an ESM child-process entrypoint.
-const require = createRequire(import.meta.url);
-const { app } =
-  require('../../../../apps/operator/bin/host-app') as typeof import('../../../../apps/operator/bin/host-app');
-const { getRegisteredSuSessionHost } = require('../su-session-host') as typeof import('../su-session-host');
-const { getAdvSession } = require('../adv-sessions') as typeof import('../adv-sessions');
-const { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } =
-  require('@papercusp/chat-protocol') as typeof import('@papercusp/chat-protocol');
+// Use the production host builder's module graph. Opaque createRequire loads
+// would escape the bundle and resolve relative to its private output directory.
+import { app } from '../../../../apps/operator/bin/host-app';
+import { getRegisteredSuSessionHost } from '../su-session-host';
+import { getAdvSession } from '../adv-sessions';
+import { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } from '@papercusp/chat-protocol';
+import { observeAttachResponse } from './attach-observation';
 
 if (
   !process.send ||
@@ -33,6 +32,35 @@ const instanceId = randomUUID();
 const send = (message: unknown) => {
   if (process.connected) process.send!(message);
 };
+// Record actual event-loop stalls at the private HTTP boundary. Request wall
+// time alone cannot distinguish an awaited database read from a blocked loop.
+const requestLoopDelay = monitorEventLoopDelay({ resolution: 10 });
+requestLoopDelay.enable();
+// Reuse the suite's opt-in CPU-profile directory for this separate OS child.
+// The Vitest worker's profile cannot identify code blocking this HTTP loop.
+const timingDirectory = process.env.PUI_TIMING_DIR;
+const timingInspector = timingDirectory ? new InspectorSession() : null;
+async function profileCommand(method: string): Promise<unknown> {
+  return new Promise((resolve, reject) => timingInspector!.post(method, (error, result) => {
+    if (error) reject(error);
+    else resolve(result);
+  }));
+}
+const timingProfileReady = (async () => {
+  if (!timingInspector) return;
+  timingInspector.connect();
+  await profileCommand('Profiler.enable');
+  await profileCommand('Profiler.start');
+})();
+async function finishTimingProfile(): Promise<void> {
+  if (!timingInspector || !timingDirectory) return;
+  const { profile } = await profileCommand('Profiler.stop') as { profile: unknown };
+  timingInspector.disconnect();
+  mkdirSync(timingDirectory, { recursive: true });
+  const profilePath = join(timingDirectory, `operator-${process.pid}-${instanceId}.json`);
+  writeFileSync(profilePath, JSON.stringify({ instanceId, pid: process.pid, profile }));
+  send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_CPU_PROFILE', { path: profilePath }] });
+}
 const sendAndFlush = async (message: unknown): Promise<void> => {
   if (!process.connected) return;
   await new Promise<void>((resolve, reject) => {
@@ -74,13 +102,21 @@ const server = createAdaptorServer({
       request.method === 'POST' && pathname === '/api/agent-mcp/run-tool'
         ? ((await request.clone().json().catch(() => null)) as { name?: string } | null)
         : null;
-    const configStep = pathname === '/api/agent-config'
+    const configStep = pathname === '/api/tui/identity'
+      ? 'operator-identity'
+      : pathname === '/api/tui/view-state'
+        ? 'view-state'
+        : pathname === '/api/harness/projects/lite'
+          ? 'setup-projects'
+        : pathname.startsWith('/api/tui/')
+          ? 'tui-snapshot'
+      : pathname === '/api/agent-config'
       ? 'agent-config'
       : pathname === '/api/agent-tools/operator/credentials_status'
         ? 'credentials-status'
         : runTool?.name === 'config:tiers-get'
           ? 'tiers-get'
-          : null;
+          : pathname.startsWith('/api/') ? 'operator-api' : null;
     const configStartedAt = Date.now();
     if (configStep) {
       send({
@@ -90,6 +126,7 @@ const server = createAdaptorServer({
           step: configStep,
           method: request.method,
           pathname,
+          toolName: runTool?.name,
           at: new Date(configStartedAt).toISOString(),
         }],
       });
@@ -112,6 +149,8 @@ const server = createAdaptorServer({
             mode?: string;
             carry?: string;
             plan_slug?: string;
+            attach_adv_session_id?: number;
+            attached_engine?: boolean;
           })
         : null;
     const mcpRequest = pathname === '/api/mcp' && request.method === 'POST'
@@ -143,8 +182,10 @@ const server = createAdaptorServer({
           step: configStep,
           method: request.method,
           pathname,
+          toolName: runTool?.name,
           status: response.status,
           durationMs: Date.now() - configStartedAt,
+          eventLoopDelayMaxMsSinceReady: requestLoopDelay.max / 1e6,
           at: new Date().toISOString(),
         }],
       });
@@ -160,6 +201,30 @@ const server = createAdaptorServer({
       });
     }
     if (launch) observe(launch.agent_chat_id, launch.harness_slug);
+    if (launch) {
+      // HTTP 200 alone cannot distinguish exact resume from the legacy
+      // attach-only fallback. Observe a clone without delaying the PUI.
+      const emitAttachResult = (result: Record<string, unknown> | undefined, httpStatus = response.status) => {
+      send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_ATTACH_RESULT', {
+        requestedAdvSessionId: launch.attach_adv_session_id,
+        attachedEngine: launch.attached_engine,
+        httpStatus,
+        contentType: response.headers.get('content-type'),
+        status: result?.status,
+        attached: result?.attached,
+        resumed: result?.resumed,
+        ready: result?.ready,
+        transport: result?.transport,
+        advSessionId: result?.advSessionId,
+        workspaceId: result?.workspaceId,
+        harnessSlug: result?.harnessSlug,
+        code: result?.code,
+        error: result?.error,
+      }] });
+      };
+      void observeAttachResponse(response, emitAttachResult).catch((error) => send({ type: 'diagnostic', level: 'info',
+        args: ['PUI_OPERATOR_ATTACH_OBSERVATION_ERROR', String(error).slice(0, 500)] }));
+    }
     if (tracksReadiness) {
       // Rehydration may itself occur while handling the snapshot request.
       observeSuSessionPath(pathname);
@@ -219,15 +284,34 @@ const server = createAdaptorServer({
     return response;
   },
 });
-await new Promise<void>((resolve, reject) => {
-  server.once('error', reject);
-  server.listen(Number(process.env.PUI_OPERATOR_FIXTURE_PORT ?? 0), '127.0.0.1', resolve);
+// Observe the TCP boundary without reading request bodies or changing replies.
+// A missing route log otherwise conflates an unaccepted connection with a
+// handler that has not reached app.fetch yet.
+let connectionSequence = 0;
+server.on('connection', (socket) => {
+  const connectionId = ++connectionSequence;
+  send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_CONNECTION', {
+    connectionId, phase: 'accepted', at: new Date().toISOString(),
+  }] });
+  socket.once('close', (hadError) => {
+    send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_CONNECTION', {
+      connectionId, phase: 'closed', hadError, at: new Date().toISOString(),
+    }] });
+  });
 });
-const port = (server.address() as AddressInfo).port;
-process.env.PAPERCUSP_HONO_PORT = String(port);
-process.env.PAPERCUSP_OPERATOR_URL = `http://127.0.0.1:${port}`;
-process.env.PAPERCUSP_MCP_PROXY_BASE = `http://127.0.0.1:${port}`;
-send({ type: 'ready', pid: process.pid, instanceId, port });
+async function startFixture(): Promise<void> {
+  await timingProfileReady;
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(Number(process.env.PUI_OPERATOR_FIXTURE_PORT ?? 0), '127.0.0.1', resolve);
+  });
+  const port = (server.address() as AddressInfo).port;
+  process.env.PAPERCUSP_HONO_PORT = String(port);
+  process.env.PAPERCUSP_OPERATOR_URL = `http://127.0.0.1:${port}`;
+  process.env.PAPERCUSP_MCP_PROXY_BASE = `http://127.0.0.1:${port}`;
+  send({ type: 'ready', pid: process.pid, instanceId, port });
+}
+void startFixture();
 
 let stopping = false;
 async function stop({ endSessions = true }: { endSessions?: boolean } = {}): Promise<void> {
@@ -251,6 +335,7 @@ async function stop({ endSessions = true }: { endSessions?: boolean } = {}): Pro
     }
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await finishTimingProfile();
     const { drainDetached } = require('../detached-imports') as typeof import('../detached-imports');
     await drainDetached();
     const { stopInvalidationListener } = require('../sync-sse') as typeof import('../sync-sse');

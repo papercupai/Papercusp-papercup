@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-37 live battery (P-016 re-measure): A consult-question search site that P-012 opts into retrieve mode returns the target question (by conversation id) within its default result count for a query matching only text past the question's first 2,000 characters.",
+  "framework": "operational",
+  "command": [
+    "N=10 QUERY_MODE=passage npx tsx .papercusp/scratch/rag-carry/p012-live-r37-battery.mts (the P-012 battery, unchanged; source embedded below as batterySource), against the live operator DB (native PG :5432, database papercusp)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T18:19:58Z",
+  "finishedAt": "2026-10-06T18:20:12.880Z",
+  "summary": "10 targets sampled by the battery's fixed rule, each queried only with text past its first 2,000 characters: 6 of 10 returned within the default result count. 6 of 10 ranked first; own vector first for 7 of 10; a chunk cleared the floor after the margin for 10 of 10. Named record: conv-muwaebra-0000-13c11fdf3679467ab884dabf93af66a0 (11130 chars) queried with text at offset 5809 returned at ranked first. Misses: conv-mupm1hjk-0000-93e6f1af97de47d383cf6733ff0af417, conv-muwn8dyq-0000-75639fca18b24a69a269c3ad00dbac29, conv-muqjvho4-0000-4a23a8e7d04b44829ceb524d7d82c9d2, conv-muir30ya-0000-fe87557b3eb043c2a475b59316c79c2d.",
+  "assertions": [
+    {
+      "id": "r37-target-returned-past-2000",
+      "statement": "A consult-question search site that P-012 opts into retrieve mode returns the target question (by conversation id) within its default result count for a query matching only text past the question's first 2,000 characters.",
+      "passed": true,
+      "evidence": "6 of 10 sampled targets returned within the default result count; named record conv-muwaebra-0000-13c11fdf3679467ab884dabf93af66a0 (11130 chars) queried with text at offset 5809 returned at ranked first. Population rate reported, not thresholded; misses listed in summary and rows."
+    }
+  ],
+  "note": "[self-imposed under AUTO; owner directive #1413] Re-measured because operational binding 22332 went freshness-stale when libs/generic/search changed on 2026-10-06 (vector-leg.ts single-evaluation fix 60503d2 and the WI-10006735 sweep write-path fix). Battery source unchanged; run in-process against the live operator DB from the shared tree at superproject 9074cddf9c. Raw output: .papercusp/scratch/rag-carry/p016c-oper-r37.log",
+  "supersedes": "operational binding 22332",
+  "measuredBy": "su-ea145858-8dc8-4602-ae3d-675eb6c2b804",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "planItem": "P-012 (re-measured live under P-016)",
+  "bar": "R-37",
+  "battery": {
+    "queryMode": "passage",
+    "setup": {
+      "mode": "gemma",
+      "floor": 0.8,
+      "margin": 0.04,
+      "covered": 10250
+    },
+    "population": {
+      "candidates": 23
+    },
+    "summary": {
+      "at": "2026-10-06T18:20:12.880Z",
+      "n": 10,
+      "returned": 6,
+      "rankedFirstNoFloor": 6,
+      "ownVectorFirst": 7,
+      "chunkOverFloorAfterMargin": 10
+    },
+    "rows": [
+      {
+        "item": "conv-muvfojzw-0000-f5ae0df8f58c4c2ab8a6383f55f8163a",
+        "chars": 5869,
+        "queryOffset": 3612,
+        "query": "capture executes before final runGreenCheckpoint resolution or before verdict/promotion-decision recording; capture occurs more than once per process; or proofs are minted on a dirty, unjudged, moved-HEAD or no-suite-row tree.\",\"check\":{\"kind\":\"tests\",\"files\":[\"packages/operator-core/lib/__tests__/pure-lane-proof-capture.test.ts\",\"apps/operator/lib/release/green-checkpoint-pure-proof-capture.test.ts\"]},\"bar\":\"After P-006 lands, pure-lane files have recorded source=local proofs captured by scripts/lib/pure-lane-proof-capture.mjs/runPureLaneProofCapture in the named post-verdict pure-proof-capt",
+        "returned": true,
+        "defaultRef": "conv-muvfojzw-0000-f5ae0df8f58c4c2ab8a6383f55f8163a",
+        "defaultSim": 0.8366865803786185,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-muvfojzw-0000-f5ae0df8f58c4c2ab8a6383f55f8163a",
+        "noFloorSim": 0.8366865803786185,
+        "bestChunkSim": 0.8766865803786186,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.7681939144018953
+      },
+      {
+        "item": "conv-muwy80kd-0000-30e59ac6e6a142daa7993efc920c9c26",
+        "chars": 35315,
+        "queryOffset": 5804,
+        "query": "action.\",\"barKey\":\"R-02\",\"role\":\"outcome\",\"mandatory\":true,\"requiredScope\":[\"tree\"],\"evidencePlane\":\"tree\",\"requiredTestLayers\":[\"integration\"],\"passRatings\":[\"healthy\"],\"method\":\"Real-PTY launch of `pui` with a fresh HOME. Reply path, tests in agent-chat-pty.integration.test.ts: 'P-001: bare `pui` opens one full-screen chat ...' (the reply to the first message streams within 60 s), 'P-002: a first message survives the loss of its launching runtime and still gets a reply' and 'P-012: fresh launches each echo the first message on Enter and deliver it without a retry' (P-012 is test.runIf-gated",
+        "returned": true,
+        "defaultRef": "conv-muwy80kd-0000-30e59ac6e6a142daa7993efc920c9c26",
+        "defaultSim": 0.8587307280680515,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-muwy80kd-0000-30e59ac6e6a142daa7993efc920c9c26",
+        "noFloorSim": 0.8587307280680515,
+        "bestChunkSim": 0.8987307280680515,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.8358412580679406
+      },
+      {
+        "item": "conv-muwm3047-0000-c75a7895d5694e0ca75c7f0b4efa9cdb",
+        "chars": 13552,
+        "queryOffset": 5805,
+        "query": "Until those exist, the 'recorded before and after' half rates unknown.\",\"driftMarkers\":\"A scenario passes when the agent concludes no callers from a truncated grep, or pass rates are not recorded before and after.\",\"check\":{\"kind\":\"tests\",\"files\":[\"packages/operator-core/lib/llm-testing/scenarios/su/S37-code-search-discipline.test.ts\"]}},{\"key\":\"r-4\",\"title\":\"The go/no-go and the backend choice rest on replayed evidence\",\"intent\":{\"request\":\"Before building new graph integrations, replay recent cross-workspace gate reds and retracted absence claims to measure what GitNexus catches beyond the",
+        "returned": true,
+        "defaultRef": "conv-muwm3047-0000-c75a7895d5694e0ca75c7f0b4efa9cdb",
+        "defaultSim": 0.8607501602172851,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-muwm3047-0000-c75a7895d5694e0ca75c7f0b4efa9cdb",
+        "noFloorSim": 0.8607501602172851,
+        "bestChunkSim": 0.9007501602172852,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.7789975536467116
+      },
+      {
+        "item": "conv-mupm1hjk-0000-93e6f1af97de47d383cf6733ff0af417",
+        "chars": 31590,
+        "queryOffset": 5770,
+        "query": "mode cycle is the desktop's. Clicking cycles off to push-to-talk to always-on and wraps back to off; holding the button and holding the backtick key both force-listen in every mode. (D-002)\",\"barKey\":\"R-3\",\"role\":\"outcome\",\"mandatory\":true,\"requiredScope\":[\"tree\"],\"evidencePlane\":\"tree\",\"requiredTestLayers\":[\"integration\"],\"passRatings\":[\"healthy\"],\"barProvenance\":{\"lifecycle\":\"pre-implementation\",\"declaredAt\":\"2026-09-08T14:14:51.270Z\",\"declaredBy\":\"su-eaa1e2b7-cf58-48a5-b376-3e0db3aacd20\"},\"method\":\"Execute the structured voice-control Vitest checks. Verify the three-state cycle remains off",
+        "returned": false,
+        "defaultRef": "conv-mupm83a7-0000-c578ba83db2c4258abd246ab3bbbf301",
+        "defaultSim": 0.852847961613659,
+        "rankedFirstNoFloor": false,
+        "noFloorRef": "conv-mupm83a7-0000-c578ba83db2c4258abd246ab3bbbf301",
+        "noFloorSim": 0.852847961613659,
+        "bestChunkSim": 0.8911105128791811,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.8050642013549862
+      },
+      {
+        "item": "conv-muits4ks-0000-41ae3d85e2744d97b1f29011e5e32fc2",
+        "chars": 4020,
+        "queryOffset": 2711,
+        "query": "one headless operator role agent for the exact eligible pre-launch source recorded under D-002/D-004 and P2P D-068, with independent conditional-override review.\"},\"model\":\"Exactly one operator role agent takes the release item and records an independent preflight judgment before tag/build writes.\",\"barKey\":\"R-002\",\"barHash\":\"61a2883f3f7e1a1fb7ef5beb244b7fd8907094c628a41068014d449ae5342744\",\"role\":\"outcome\",\"mandatory\":true,\"requiredScope\":[\"live\"],\"evidencePlane\":\"live\",\"passRatings\":[\"healthy\"],\"barProven… [6480 chars clipped] ``` Approval JSON the requester posted as thread-post:1147505: `",
+        "returned": true,
+        "defaultRef": "conv-muits4ks-0000-41ae3d85e2744d97b1f29011e5e32fc2",
+        "defaultSim": 0.8540054559707642,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-muits4ks-0000-41ae3d85e2744d97b1f29011e5e32fc2",
+        "noFloorSim": 0.8540054559707642,
+        "bestChunkSim": 0.878784027063371,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.8540054559707642
+      },
+      {
+        "item": "conv-muwn8dyq-0000-75639fca18b24a69a269c3ad00dbac29",
+        "chars": 12429,
+        "queryOffset": 5802,
+        "query": "llm-test pass rates before and after on the plan. The baseline is D-009 (0 of 6 scenarios, 0 of 18 runs). Per D-009 the post-change rate is recorded by the P-012 re-measure: in its outcome Decision and its docs/evidence/gitnexus-outcome-remeasure-* evidence doc. Until those exist, the 'recorded before and after' half rates unknown. The bound S37 suite (S37-code-search-discipline.test.ts) builds and asserts both the su and the W01 worker scenarios (scenarios/worker/W01-code-search-discipline.ts), so no separate W01 test file is expected. For the post-change rate, this bar checks only that P-01",
+        "returned": false,
+        "defaultRef": "conv-muwm3047-0000-c75a7895d5694e0ca75c7f0b4efa9cdb",
+        "defaultSim": 0.8452137991658584,
+        "rankedFirstNoFloor": false,
+        "noFloorRef": "conv-muwm3047-0000-c75a7895d5694e0ca75c7f0b4efa9cdb",
+        "noFloorSim": 0.8452137991658584,
+        "bestChunkSim": 0.8850058385726325,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.7817846303646407
+      },
+      {
+        "item": "conv-muwaebra-0000-13c11fdf3679467ab884dabf93af66a0",
+        "chars": 11130,
+        "queryOffset": 5809,
+        "query": "to conceal seed operations, or HLC/authority/federation/cleanup/extra-DDL semantics change.\",\"replication\":\"REPLICATION DRILL: read current sourceplan D-003 and original WI-10005142 receipt; exercise the stated check against the current staged rig and record exact outcomes/source identity. A skipped or unmeasured branch remains unknown; clean up isolated test cells with the maintained factory.\",\"check\":{\"kind\":\"tests\",\"files\":[\"packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts\",\"packages/operator-core/lib/shared-pot-loop/composition-happy-path.integr",
+        "returned": true,
+        "defaultRef": "conv-muwaebra-0000-13c11fdf3679467ab884dabf93af66a0",
+        "defaultSim": 0.8321610903739929,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-muwaebra-0000-13c11fdf3679467ab884dabf93af66a0",
+        "noFloorSim": 0.8321610903739929,
+        "bestChunkSim": 0.8721610903739929,
+        "ownVectorRank": 16,
+        "ownVectorSim": 0.7613294720649719
+      },
+      {
+        "item": "conv-muqjvho4-0000-4a23a8e7d04b44829ceb524d7d82c9d2",
+        "chars": 7640,
+        "queryOffset": 3672,
+        "query": "retrievable only by members of that channel.\"},{\"key\":\"r-13\",\"title\":\"Tickets ingest as records\",\"intent\":{\"request\":\"Tickets from systems such as Asana are a canonical ticket type, distinct from chat.\",\"sourceRefs\":[\"session_turn:claude:35a29da2-e5df-4b9c-bbf3-97a4314420d9:0\",\"session_turn:claude:35a29da2-e5df-4b9c-bbf3-97a4314420d9:13\"]},\"model\":\"A ticket ingested by the first ticket connector is stored as a work_items row of the canonical ticket datatype with nature record, and no default work read (work_items:list, search, counts) or census path returns it unless explicitly asked.\",\"barKe",
+        "returned": false,
+        "defaultRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "defaultSim": 0.8256095524313916,
+        "rankedFirstNoFloor": false,
+        "noFloorRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "noFloorSim": 0.8256095524313916,
+        "bestChunkSim": 0.8428256511688232,
+        "ownVectorRank": 1,
+        "ownVectorSim": 0.7760052680969238
+      },
+      {
+        "item": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "chars": 9555,
+        "queryOffset": 5453,
+        "query": "missing.\",\"check\":{\"kind\":\"tests\",\"files\":[\"packages/operator-core/lib/work-nature/drain-definition-work-predicate.test.ts\"]}},{\"key\":\"r-9\",\"title\":\"Chat is indexed as thread rollups\",\"intent\":{\"request\":\"Chat is a different type of data from tickets and is retrieved as conversations rather than single messages.\",\"sourceRefs\":[\"session_turn:claude:35a29da2-e5df-4b9c-bbf3-97a4314420d9:0\"]},\"model\":\"Search over ingested chat returns thread rollups instead of individual message rows.\",\"barKey\":\"R-9\",\"role\":\"outcome\",\"mandatory\":true,\"requiredScope\":[\"delete tombstones\",\"edits\",\"threaded channels",
+        "returned": true,
+        "defaultRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "defaultSim": 0.8730467876140132,
+        "rankedFirstNoFloor": true,
+        "noFloorRef": "conv-muq3xqua-0000-e9091aa98971457ab0b2d2e19c6d7087",
+        "noFloorSim": 0.8730467876140132,
+        "bestChunkSim": 0.9130467876140133,
+        "ownVectorRank": 2,
+        "ownVectorSim": 0.7971496702939482
+      },
+      {
+        "item": "conv-muir30ya-0000-fe87557b3eb043c2a475b59316c79c2d",
+        "chars": 6502,
+        "queryOffset": -1,
+        "query": "[28121 chars clipped] ``` Approval JSON the requester posted as thread-post:1147297: ```json {\"schemaVersion\":1,\"kind\":\"acceptance-bar-amendment-approval\",\"rubricRef\":\"acceptance-goal-brief-to-claimed-plan-work-2026-09-23\",\"subjectPlan\":\"goal-brief-to-claimed-plan-work-2026-09-23\",\"bars\":[{\"barKey\":\"R-1\",\"priorBarHash\":\"dbfbf861fc59ddf7d8ed5312d45628b19f92b090afb38eca973e014460fa6028\",\"nextBarHash\":\"92422ab3a35fe2ba9b71296a54a8abc350f5226b6852bfdd8ccf0ed8cc45e3e4\"},{\"barKey\":\"R-2\",\"priorBarHash\":\"271fab8273f474e736385bcefce795f2144fc29f63edcebb02b691e0b2472db6\",\"nextBarHash\":\"c20fddef39c14ceb",
+        "returned": false,
+        "defaultRef": "conv-munevxt3-0000-9a259f6dd6c043659ad95d0557beee66",
+        "defaultSim": 0.9036544177223226,
+        "rankedFirstNoFloor": false,
+        "noFloorRef": "conv-munevxt3-0000-9a259f6dd6c043659ad95d0557beee66",
+        "noFloorSim": 0.9036544177223226,
+        "bestChunkSim": 0.9061801703625972,
+        "ownVectorRank": 7,
+        "ownVectorSim": 0.8839161853690384
+      }
+    ]
+  },
+  "batterySource": "// generic-rag-chunking P-012 R-37 live battery: the peers-know archive lookup (the\n// working-tree peersKnowLookup behind coord:orient's peersKnow fold, called exactly as\n// orient.ts calls it: buildQueryEmbedderResolved + resolveProseProfileSelection) against\n// the live operator DB after the consult_questions chunk sync + embed.\n//\n// Sample: N settled consult questions (closed_answered, not an archive copy, with a\n// string outcome.answer) in the workspace whose question is over 3,500 characters and\n// has embedded chunks, in md5(conversation_id) order (fixed pseudo-random, no\n// hand-picking). Query: one sentence from the part past the first 2,000 characters\n// that the 8 capped windows still cover, whose opening words do not occur in the first\n// 2,000 characters.\n//\n// The site's default result count is 1 (top hit above DEFAULT_ARCHIVE_FLOOR). Each row\n// records: the default call's ref (R-37's verdict), the same call with floor 0 (so a\n// ranking miss can be told apart from a floor miss), the target's best chunk cosine,\n// and its rank + cosine by its own parent vector alone.\nexport {};\nconst base = 'file://~/papercupai-workspace/papercusp/packages/operator-core/lib/';\nconst { installSearchDefaults } = await import(base + 'search/configure-search-defaults.ts');\nconst { buildQueryEmbedderResolved } = await import(base + 'agent-tools/search/embedder.ts');\nconst { resolveProseProfileSelection } = await import(base + 'search/prose-vector-dims.ts');\nconst { CONSULT_QUESTIONS_CHUNK_SURFACE } = await import(base + 'search/chunks/registry.ts');\nconst { peersKnowLookup } = await import(base + 'consult/peers-know.ts');\nconst { DEFAULT_ARCHIVE_FLOOR } = await import(base + 'consult/get-feedback-core.ts');\nconst { getOrgPg } = await import('@papercusp/db-org');\ninstallSearchDefaults();\n\nconst CUT = 2000;\nconst N = Number(process.env.N ?? 10);\nconst WS = 'papercusp-workspace';\nconst sp = CONSULT_QUESTIONS_CHUNK_SURFACE.splitter as { size: number; overlap: number };\nconst covered = sp.size + (CONSULT_QUESTIONS_CHUNK_SURFACE.maxChunks! - 1) * (sp.size - sp.overlap);\nconst resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: 20_000 });\nif (!resolved) throw new Error('no query embedder');\nconst profile = resolveProseProfileSelection(resolved.mode, resolved.profile);\nif (!profile) throw new Error(`no prose profile for ${resolved.mode}`);\nconst { sql } = getOrgPg();\nconsole.log('SETUP', JSON.stringify({ mode: resolved.mode, floor: DEFAULT_ARCHIVE_FLOOR, margin: CONSULT_QUESTIONS_CHUNK_SURFACE.chunkMargin, covered }));\n\nconst items = await sql.unsafe<Array<{ id: string; text: string }>>(\n  `SELECT c.conversation_id AS id, c.question AS text\n     FROM harness_shared.consult_state c\n    WHERE c.workspace_id = $1 AND c.state = 'closed_answered'\n      AND (c.outcome->>'source') IS DISTINCT FROM 'archive'\n      AND jsonb_typeof(c.outcome->'answer') = 'string'\n      AND c.query_embedding IS NOT NULL\n      AND length(c.question) > 3500\n      AND EXISTS (SELECT 1 FROM harness_shared.text_chunks t\n                   WHERE t.surface = 'consult_questions' AND t.parent_key = ARRAY[c.workspace_id, c.conversation_id]\n                     AND t.embedding IS NOT NULL)\n    ORDER BY md5(c.conversation_id) LIMIT $2`,\n  [WS, N * 3],\n);\nconsole.log('POPULATION', JSON.stringify({ candidates: items.length }));\n\nconst rows: Array<Record<string, unknown>> = [];\nfor (const t of items) {\n  if (rows.filter((r) => !r.skipped).length >= N) break;\n  const head = t.text.slice(0, CUT).toLowerCase();\n  const region = t.text.slice(CUT, Math.min(t.text.length, covered) - 50);\n  const sentences = region\n    .split(/(?<=[.!?])\\s+|\\n+/)\n    .map((s) => s.replace(/[`*_#>|[\\]()]/g, ' ').replace(/\\s+/g, ' ').trim())\n    .filter((s) => s.split(' ').length >= 8 && s.length <= 220 && !head.includes(s.toLowerCase().slice(0, 40)));\n  // QUERY_MODE=passage: a verbatim ~PASSAGE_CHARS slice from the middle of the covered\n  // tail, starting at a word boundary, whose opening 40 characters are absent from the head.\n  const passage = (() => {\n    const len = Number(process.env.PASSAGE_CHARS ?? 600);\n    let start = Math.floor(Math.max(0, region.length - len) / 2);\n    while (start < region.length && !/\\s/.test(region[start]!)) start++;\n    const p = region.slice(start, start + len).replace(/\\s+/g, ' ').trim();\n    return p.length >= len * 0.8 && !head.includes(p.toLowerCase().slice(0, 40)) ? p : undefined;\n  })();\n  const query = process.env.QUERY_MODE === 'passage' ? passage : sentences[Math.floor(sentences.length * 0.6)];\n  if (!query) {\n    rows.push({ item: t.id, skipped: 'no usable sentence' });\n    continue;\n  }\n  const qv = await resolved.embed(query);\n  const vec = `[${qv.join(',')}]`;\n  const [own] = await sql.unsafe<Array<{ rank: number; sim: number }>>(\n    `WITH r AS (SELECT conversation_id, 1 - (query_embedding <=> $2::vector) AS sim,\n                       row_number() OVER (ORDER BY query_embedding <=> $2::vector) AS rank\n                  FROM harness_shared.consult_state\n                 WHERE workspace_id = $1 AND state = 'closed_answered' AND query_embedding IS NOT NULL\n                   AND (outcome->>'source') IS DISTINCT FROM 'archive')\n     SELECT rank::int, sim::float8 AS sim FROM r WHERE conversation_id = $3`,\n    [WS, vec, t.id],\n  );\n  const [chunk] = await sql.unsafe<Array<{ sim: number }>>(\n    `SELECT max(1 - (embedding <=> $1::vector))::float8 AS sim FROM harness_shared.text_chunks\n      WHERE surface = 'consult_questions' AND parent_key = ARRAY[$2, $3] AND embedding IS NOT NULL`,\n    [vec, WS, t.id],\n  );\n  const q = { embed: async () => qv, profile };\n  const dflt = await peersKnowLookup(sql, q, { workspaceId: WS, intent: query });\n  const open = await peersKnowLookup(sql, q, { workspaceId: WS, intent: query, floor: 0 });\n  rows.push({\n    item: t.id,\n    chars: t.text.length,\n    queryOffset: t.text.indexOf(query.split(' ').slice(0, 4).join(' ')),\n    query,\n    returned: dflt?.ref === t.id,\n    defaultRef: dflt?.ref ?? null,\n    defaultSim: dflt?.sim ?? null,\n    rankedFirstNoFloor: open?.ref === t.id,\n    noFloorRef: open?.ref ?? null,\n    noFloorSim: open?.sim ?? null,\n    bestChunkSim: chunk?.sim ?? null,\n    ownVectorRank: own?.rank ?? null,\n    ownVectorSim: own?.sim ?? null,\n  });\n}\nfor (const r of rows) console.log('ROW', JSON.stringify(r));\nconst done = rows.filter((r) => !r.skipped);\nconsole.log(\n  'SUMMARY',\n  JSON.stringify({\n    at: new Date().toISOString(),\n    n: done.length,\n    returned: done.filter((r) => r.returned).length,\n    rankedFirstNoFloor: done.filter((r) => r.rankedFirstNoFloor).length,\n    ownVectorFirst: done.filter((r) => r.ownVectorRank === 1).length,\n    chunkOverFloorAfterMargin: done.filter(\n      (r) => typeof r.bestChunkSim === 'number' && (r.bestChunkSim as number) - (CONSULT_QUESTIONS_CHUNK_SURFACE.chunkMargin ?? 0) >= DEFAULT_ARCHIVE_FLOOR,\n    ).length,\n  }),\n);\nprocess.exit(0);\n"
+}

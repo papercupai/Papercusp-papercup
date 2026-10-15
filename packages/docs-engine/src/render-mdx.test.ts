@@ -4,10 +4,115 @@
  * Tabs/Steps/Card unwrap, unknown-JSX unwrap, self-closing drop, + the preamble.
  * Run with: npx vitest run packages/docs-engine/src/render-mdx.test.ts
  */
-import { describe, expect, it } from 'vitest';
-import { renderMdxToMarkdown, withPreamble } from './render-mdx';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { raceWithAbort, renderMdxToMarkdown, renderMdxToMarkdownUnqueued, setMdxRenderObserver, withPreamble, type MdxRenderObserver } from './render-mdx';
+
+afterEach(() => { setMdxRenderObserver(undefined); vi.restoreAllMocks(); });
+
+describe('MDX primary outcome observations', () => {
+  it('records malformed parses and primary recovery, excluding queued cancellation', async () => {
+    const sink = vi.fn();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setMdxRenderObserver(sink);
+    expect(await renderMdxToMarkdown('Broken <owner> placeholder', '/docs/broken.mdx')).toContain('placeholder');
+    expect(await renderMdxToMarkdown('# Recovered', '/docs/recovered.mdx')).toContain('Recovered');
+    const controller = new AbortController();
+    controller.abort();
+    await expect(renderMdxToMarkdown('# Cancelled', '/docs/cancelled.mdx', controller.signal)).rejects.toThrow('cancelled');
+    expect(sink.mock.calls).toEqual([
+      ['mdx-render', { eligible: 1, applied: 0, reason: 'parse-failed' }],
+      ['mdx-render', { eligible: 1, applied: 1, reason: 'applied' }],
+    ]);
+    expect(warning).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves both primary output and searchable fallback when the observer throws', async () => {
+    const sink = vi.fn<MdxRenderObserver>(() => { throw new Error('storage unavailable'); });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setMdxRenderObserver(sink);
+    expect(await renderMdxToMarkdown('# Primary', '/docs/primary.mdx')).toContain('Primary');
+    expect(await renderMdxToMarkdown('Broken <owner> prose', '/docs/fallback.mdx')).toContain('prose');
+    expect(sink.mock.calls.map(call => call[1].applied)).toEqual([1, 0]);
+  });
+});
 
 const render = (mdx: string) => renderMdxToMarkdown(mdx, '/docs/test.mdx');
+
+/**
+ * Fan out `n` renders the way corpus callers do (Promise.all) while a self-rescheduling
+ * setImmediate pump counts event-loop iterations. Returns the pump count observed as each
+ * render resolved. One distinct value means the whole batch finished inside a single
+ * microtask chain, with no loop turn in between. That is the starvation WI-10004766 measured.
+ */
+async function loopTicksAtEachResolution(
+  renderFn: (mdx: string, path: string) => Promise<string>,
+  n: number,
+): Promise<number[]> {
+  let ticks = 0;
+  let stop = false;
+  const pump = (): void => {
+    ticks += 1;
+    if (!stop) setImmediate(pump);
+  };
+  setImmediate(pump);
+  const doc = '# Title\n\nSome **bold** prose with a [link](https://example.com) and `code`.\n\n- a\n- b\n';
+  const seen = await Promise.all(
+    Array.from({ length: n }, (_, i) => renderFn(doc, `/docs/batch-${i}.mdx`).then(() => ticks)),
+  );
+  stop = true;
+  return seen;
+}
+
+describe('renderMdxToMarkdown — WI-10004766 a corpus batch must not starve the event loop', () => {
+  it('CONTROL: the unqueued render resolves a whole Promise.all batch without one loop turn', async () => {
+    // Calibrates the instrument: if this ever yields >1 distinct value, the probe below
+    // could pass vacuously, so the queued assertion would prove nothing.
+    const seen = await loopTicksAtEachResolution(renderMdxToMarkdownUnqueued, 12);
+    expect(new Set(seen).size).toBe(1);
+  });
+
+  it('the queued render gives the event loop a turn between every page', async () => {
+    const seen = await loopTicksAtEachResolution(renderMdxToMarkdown, 12);
+    expect(new Set(seen).size).toBe(12);
+    for (let i = 1; i < seen.length; i++) expect(seen[i]).toBeGreaterThan(seen[i - 1]!);
+  });
+
+  it('keeps per-call results and order under a concurrent batch', async () => {
+    const out = await Promise.all(['# A', '# B', '# C'].map((m) => render(m)));
+    expect(out.map((s) => s.trim())).toEqual(['# A', '# B', '# C']);
+  });
+
+  it('a malformed doc mid-batch neither rejects nor stalls the pages queued behind it', async () => {
+    const out = await Promise.all([render('# one'), render('broken <owner> placeholder'), render('# three')]);
+    expect(out[0]!.trim()).toBe('# one');
+    expect(out[1]).toContain('placeholder');
+    expect(out[2]!.trim()).toBe('# three');
+  });
+
+  it('does not start an MDX parse that was still queued when its signal aborted', async () => {
+    const active = renderMdxToMarkdown('# active', '/docs/active.mdx');
+    const controller = new AbortController();
+    const queued = renderMdxToMarkdown('# queued', '/docs/queued.mdx', controller.signal);
+    controller.abort();
+
+    await expect(active).resolves.toContain('# active');
+    await expect(queued).rejects.toThrow('cancelled');
+  });
+
+  it('lets one caller stop waiting without cancelling shared work for other readers', async () => {
+    let complete!: (value: string) => void;
+    const shared = new Promise<string>((resolve) => {
+      complete = resolve;
+    });
+    const controller = new AbortController();
+    const caller = raceWithAbort(shared, controller.signal);
+
+    controller.abort();
+    await expect(caller).rejects.toThrow('cancelled');
+    complete('shared result');
+    await expect(shared).resolves.toBe('shared result');
+  });
+});
 
 describe('renderMdxToMarkdown — Callout → blockquote', () => {
   it('maps a typed Callout to a titled blockquote', async () => {

@@ -6,15 +6,54 @@
  * Legacy scratch files remain readable as ordinary files.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { OutputAudience, OutputEvidenceClass } from './output-envelope';
-import { reserveScratchSpace, RETENTION_MS } from './scratch-gc';
+import type { GatewayPayloadSpool } from './inference-gateway/payload-spool';
+import {
+  reserveScratchSpace,
+  noteScratchWriteSettled,
+  writeWithScratchQuota,
+  RETENTION_MS,
+  markNewWorkspaceScratchRoot,
+  markNewWorkspaceScratchRootSync,
+  type ScratchWriteTimings,
+} from './scratch-gc';
 
 export const SCRATCH_REFERENCE_SCHEMA_VERSION = 'papercusp.scratch-reference/v1' as const;
 export const SCRATCH_REFERENCE_MAGIC = `${SCRATCH_REFERENCE_SCHEMA_VERSION}\n`;
+/** Volatile recovery references use the same reader contract without pretending a file exists. */
+export const VOLATILE_SCRATCH_REFERENCE_SCHEME = 'papercusp://scratch-memory';
+export const VOLATILE_SCRATCH_REFERENCE_TTL_MS = 5 * 60 * 1000;
+const VOLATILE_SCRATCH_REFERENCE_MAX_ENTRY_BYTES = 16 * 1024 * 1024;
+const VOLATILE_SCRATCH_REFERENCE_MAX_BYTES = 64 * 1024 * 1024;
+const VOLATILE_SCRATCH_REFERENCE_MAX_ENTRIES = 64;
+const VOLATILE_SCRATCH_REFERENCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** Short-lived durable rescue copies use the same expiry as the volatile fallback. */
+export const DURABLE_SCRATCH_REFERENCE_SCHEME = 'papercusp://scratch-spool';
+export const DURABLE_SCRATCH_REFERENCE_TTL_MS = VOLATILE_SCRATCH_REFERENCE_TTL_MS;
+const DURABLE_SCRATCH_REFERENCE_PAYLOAD_REF = /^[0-9a-f]{64}$/;
+const DURABLE_SCRATCH_REFERENCE_CONTENT_TYPE = 'application/vnd.papercusp.scratch-reference';
+
+interface VolatileScratchReferenceEntry {
+  manifest: ScratchReferenceManifest;
+  payload: Buffer;
+}
+
+interface VolatileScratchReferenceState {
+  entries: Map<string, VolatileScratchReferenceEntry>;
+  bytes: number;
+}
+
+// result-door and capability:read can be loaded through distinct module records in tsx.
+// Pin the fallback store so a reference written by one is readable by the other.
+const volatileScratchState = pinModuleState<VolatileScratchReferenceState>(
+  '@papercusp/operator-core.volatile-scratch-reference',
+  () => ({ entries: new Map(), bytes: 0 }),
+);
 
 export interface ScratchReferenceContentMetadata {
   index: number;
@@ -166,11 +205,51 @@ export function contentMetadata(items: readonly unknown[]): ScratchReferenceCont
   });
 }
 
+function createScratchReferenceManifest(input: {
+  payload: Buffer;
+  workspaceId: string;
+  ownerId?: string | null;
+  audience?: OutputAudience;
+  mediaType: string;
+  content?: readonly ScratchReferenceContentMetadata[];
+  evidence?: readonly ScratchReferenceEvidenceSelector[];
+  nowMs?: number;
+  ttlMs?: number;
+  bodyOffsetInPayload?: number;
+}): ScratchReferenceManifest {
+  const nowMs = input.nowMs ?? Date.now();
+  const audience = input.audience ?? (input.ownerId ? 'owner' : 'workspace');
+  if (audience === 'owner' && !input.ownerId) {
+    throw new ScratchReferenceError('invalid_reference', 'owner audience requires ownerId');
+  }
+  return {
+    schemaVersion: SCRATCH_REFERENCE_SCHEMA_VERSION,
+    createdAt: new Date(nowMs).toISOString(),
+    expiresAt: new Date(nowMs + (input.ttlMs ?? RETENTION_MS)).toISOString(),
+    workspaceId: input.workspaceId,
+    ...(input.ownerId ? { ownerId: input.ownerId } : {}),
+    audience,
+    mediaType: input.mediaType,
+    byteCount: input.payload.length,
+    sha256: sha256(input.payload),
+    content: [...(input.content ?? [])],
+    ...(input.evidence?.length ? { evidence: input.evidence.map((entry) => ({ ...entry, jsonPointers: [...entry.jsonPointers] })) } : {}),
+    ...(input.bodyOffsetInPayload != null &&
+    Number.isSafeInteger(input.bodyOffsetInPayload) &&
+    input.bodyOffsetInPayload >= 0 &&
+    input.bodyOffsetInPayload < input.payload.length
+      ? { bodyOffsetInPayload: input.bodyOffsetInPayload }
+      : {}),
+  };
+}
+
 export function writeScratchReference(input: {
   filePath: string;
   payload: Buffer | string;
   workspaceId: string;
   ownerId?: string | null;
+  /** MCP request correlation used to identify this writer in mutex wait diagnostics. */
+  requestTraceId?: string;
   audience?: OutputAudience;
   mediaType: string;
   content?: readonly ScratchReferenceContentMetadata[];
@@ -188,53 +267,206 @@ export function writeScratchReference(input: {
    * event-loop sentinel to SIGKILL the operator with every in-flight MCP call.
    */
   deferredWrites?: Promise<void>[];
+  /** Request-local phase observer; no paths, payloads or caller identifiers are reported. */
+  onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
 }): ScratchReferenceManifest {
   const payload = Buffer.isBuffer(input.payload) ? input.payload : Buffer.from(input.payload, 'utf8');
-  const nowMs = input.nowMs ?? Date.now();
-  const audience = input.audience ?? (input.ownerId ? 'owner' : 'workspace');
-  if (audience === 'owner' && !input.ownerId) {
-    throw new ScratchReferenceError('invalid_reference', 'owner audience requires ownerId');
-  }
-  const manifest: ScratchReferenceManifest = {
-    schemaVersion: SCRATCH_REFERENCE_SCHEMA_VERSION,
-    createdAt: new Date(nowMs).toISOString(),
-    expiresAt: new Date(nowMs + RETENTION_MS).toISOString(),
-    workspaceId: input.workspaceId,
-    ...(input.ownerId ? { ownerId: input.ownerId } : {}),
-    audience,
-    mediaType: input.mediaType,
-    byteCount: payload.length,
-    sha256: sha256(payload),
-    content: [...(input.content ?? [])],
-    ...(input.evidence?.length ? { evidence: input.evidence.map((entry) => ({ ...entry, jsonPointers: [...entry.jsonPointers] })) } : {}),
-    // Declared only when it actually points INTO this payload. An offset past the end
-    // would send a consumer to EOF and read as "empty body" rather than as a broken
-    // manifest, so it is dropped rather than written down wrong.
-    ...(input.bodyOffsetInPayload != null &&
-    Number.isSafeInteger(input.bodyOffsetInPayload) &&
-    input.bodyOffsetInPayload >= 0 &&
-    input.bodyOffsetInPayload < payload.length
-      ? { bodyOffsetInPayload: input.bodyOffsetInPayload }
-      : {}),
-  };
+  const manifest = createScratchReferenceManifest({ ...input, payload });
   const header = scratchReferenceHeader(manifest);
-  reserveScratchSpace({ workspaceId: input.workspaceId, bytes: header.length + payload.length });
   const bytes = Buffer.concat([header, payload]);
   if (input.deferredWrites) {
     const filePath = input.filePath;
-    const write = (async () => {
-      await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
-      await writeFile(filePath, bytes, { mode: 0o600 });
-    })();
+    const write = writeWithScratchQuota({ workspaceId: input.workspaceId, filePath, bytes: bytes.length,
+      requestTraceId: input.requestTraceId,
+      captureSubphaseTimings: Boolean(input.onScratchWriteTiming),
+      onTiming: input.onScratchWriteTiming }, async (observeAwait) => {
+      // WI-10006512: a root this mkdir creates is marked as a workspace scratch root, so the
+      // scratch GC can later prove it is ours before deleting it.
+      const firstCreated = await observeAwait('file-write', 'mkdir', () =>
+        mkdir(dirname(filePath), { recursive: true, mode: 0o700 }));
+      await observeAwait('file-write', 'workspace-marker', () =>
+        markNewWorkspaceScratchRoot(input.workspaceId, firstCreated));
+      await observeAwait('file-write', 'payload-write-file', () =>
+        writeFile(filePath, bytes, { mode: 0o600 }));
+    });
     // Mark handled now: the caller awaits it later, and a fast failure must not reach the
     // process-level unhandledRejection handler (which terminates the host) first.
     write.catch(() => {});
     input.deferredWrites.push(write);
     return manifest;
   }
-  mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 });
-  writeFileSync(input.filePath, bytes, { mode: 0o600 });
+  reserveScratchSpace({ workspaceId: input.workspaceId, bytes: bytes.length, filePath: input.filePath });
+  let wrote = false;
+  try {
+    markNewWorkspaceScratchRootSync(
+      input.workspaceId,
+      mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 }),
+    );
+    writeFileSync(input.filePath, bytes, { mode: 0o600 });
+    wrote = true;
+  } finally {
+    noteScratchWriteSettled(input.workspaceId, !wrote);
+  }
   return manifest;
+}
+
+/** Store an exact temporary recovery copy when the primary scratch writer fails. */
+export function storeVolatileScratchReference(input: {
+  payload: Buffer | string;
+  workspaceId: string;
+  ownerId?: string | null;
+  audience?: OutputAudience;
+  mediaType: string;
+  content?: readonly ScratchReferenceContentMetadata[];
+  evidence?: readonly ScratchReferenceEvidenceSelector[];
+  nowMs?: number;
+  bodyOffsetInPayload?: number;
+}): { uri: string; manifest: ScratchReferenceManifest } | null {
+  const payloadBytes = Buffer.isBuffer(input.payload)
+    ? input.payload.byteLength
+    : Buffer.byteLength(input.payload, 'utf8');
+  if (payloadBytes > VOLATILE_SCRATCH_REFERENCE_MAX_ENTRY_BYTES) return null;
+
+  const nowMs = input.nowMs ?? Date.now();
+  pruneVolatileScratchReferences(nowMs);
+  const payload = Buffer.from(input.payload);
+  const manifest = createScratchReferenceManifest({
+    ...input,
+    payload,
+    nowMs,
+    ttlMs: VOLATILE_SCRATCH_REFERENCE_TTL_MS,
+  });
+  while (
+    volatileScratchState.entries.size >= VOLATILE_SCRATCH_REFERENCE_MAX_ENTRIES ||
+    volatileScratchState.bytes + payload.length > VOLATILE_SCRATCH_REFERENCE_MAX_BYTES
+  ) {
+    const oldest = volatileScratchState.entries.keys().next().value as string | undefined;
+    if (!oldest) return null;
+    deleteVolatileScratchReference(oldest);
+  }
+
+  const uri = `${VOLATILE_SCRATCH_REFERENCE_SCHEME}/${randomUUID()}`;
+  volatileScratchState.entries.set(uri, { manifest, payload });
+  volatileScratchState.bytes += payload.length;
+  return { uri, manifest };
+}
+
+/** True only for an opaque, well-formed volatile scratch URI. */
+export function isVolatileScratchReferenceUri(uri: string): boolean {
+  const prefix = `${VOLATILE_SCRATCH_REFERENCE_SCHEME}/`;
+  return uri.startsWith(prefix) && VOLATILE_SCRATCH_REFERENCE_ID.test(uri.slice(prefix.length));
+}
+
+/** True only for a content-addressed durable scratch URI. */
+export function isDurableScratchReferenceUri(uri: string): boolean {
+  const prefix = `${DURABLE_SCRATCH_REFERENCE_SCHEME}/`;
+  return uri.startsWith(prefix) && DURABLE_SCRATCH_REFERENCE_PAYLOAD_REF.test(uri.slice(prefix.length));
+}
+
+/**
+ * Copy a still-authorized volatile fallback into the existing workspace-scoped
+ * Postgres payload spool. The embedded scratch manifest remains the authority
+ * for workspace, owner, expiry, and payload integrity; the content-addressed
+ * spool key only locates its framed bytes.
+ *
+ * `spool` is injectable for hermetic tests. Production creates the existing
+ * gateway spool with an expiry no later than the manifest, so its regular
+ * bounded sweeper can reclaim the rescue row without a new cleanup system.
+ */
+export async function persistVolatileScratchReference(
+  uri: string,
+  caller: { workspaceId?: string | null; ownerId?: string | null; nowMs?: number },
+  options: { spool?: GatewayPayloadSpool } = {},
+): Promise<{ uri: string; manifest: ScratchReferenceManifest }> {
+  const fallback = readVolatileScratchReference(uri, caller);
+  const nowMs = caller.nowMs ?? Date.now();
+  const remainingMs = Date.parse(fallback.manifest.expiresAt) - nowMs;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    throw new ScratchReferenceError('expired_reference', 'volatile scratch fallback expired before durable persistence');
+  }
+
+  const framed = Buffer.concat([scratchReferenceHeader(fallback.manifest), fallback.payload]);
+  const payloadSpool = await import('./inference-gateway/payload-spool');
+  if (framed.byteLength > payloadSpool.DEFAULT_MAX_SPOOL_BYTES) {
+    throw new ScratchReferenceError('invalid_reference', 'scratch fallback exceeds the durable payload-spool limit');
+  }
+  const spool = options.spool ?? payloadSpool.createGatewayPayloadSpool({
+    maxBytes: payloadSpool.DEFAULT_MAX_SPOOL_BYTES,
+    ttlMs: remainingMs,
+  });
+  const stored = await spool.spool(framed, { contentType: DURABLE_SCRATCH_REFERENCE_CONTENT_TYPE });
+  if (!stored.payloadRef || !DURABLE_SCRATCH_REFERENCE_PAYLOAD_REF.test(stored.payloadRef)) {
+    throw new ScratchReferenceError('invalid_reference', 'payload spool returned an invalid durable reference');
+  }
+  return {
+    uri: `${DURABLE_SCRATCH_REFERENCE_SCHEME}/${stored.payloadRef}`,
+    manifest: fallback.manifest,
+  };
+}
+
+/** Read and authorize a durable result-door copy from the existing payload spool. */
+export async function readDurableScratchReference(
+  uri: string,
+  caller: { workspaceId?: string | null; ownerId?: string | null; nowMs?: number },
+  options: { spool?: GatewayPayloadSpool } = {},
+): Promise<{ manifest: ScratchReferenceManifest; payload: Buffer }> {
+  if (!isDurableScratchReferenceUri(uri)) {
+    throw new ScratchReferenceError('invalid_reference', 'durable scratch reference URI is malformed');
+  }
+  const payloadRef = uri.slice(`${DURABLE_SCRATCH_REFERENCE_SCHEME}/`.length);
+  const spool = options.spool ?? (await import('./inference-gateway/payload-spool')).createGatewayPayloadSpool();
+  const framed = await spool.read(payloadRef);
+  if (!framed) {
+    throw new ScratchReferenceError('expired_reference', 'durable scratch reference expired or no longer resolves');
+  }
+  const parsed = parseScratchReference(framed);
+  if (!parsed) {
+    throw new ScratchReferenceError('invalid_reference', 'durable payload is not a scratch reference');
+  }
+  authorizeScratchReference(parsed.manifest, caller);
+  return { manifest: parsed.manifest, payload: parsed.payload };
+}
+
+/** Read and authorize one temporary reference. The returned buffer is read-only by convention. */
+export function readVolatileScratchReference(
+  uri: string,
+  caller: { workspaceId?: string | null; ownerId?: string | null; nowMs?: number },
+): { manifest: ScratchReferenceManifest; payload: Buffer } {
+  if (!isVolatileScratchReferenceUri(uri)) {
+    throw new ScratchReferenceError('invalid_reference', 'volatile scratch reference URI is malformed');
+  }
+  const entry = volatileScratchState.entries.get(uri);
+  if (!entry) {
+    throw new ScratchReferenceError(
+      'expired_reference',
+      'in-memory scratch fallback is no longer available; it may have expired or been evicted',
+    );
+  }
+  try {
+    authorizeScratchReference(entry.manifest, caller);
+  } catch (error) {
+    if (error instanceof ScratchReferenceError && error.code === 'expired_reference') {
+      deleteVolatileScratchReference(uri);
+    }
+    throw error;
+  }
+  // Map insertion order is the bounded cache's LRU order.
+  volatileScratchState.entries.delete(uri);
+  volatileScratchState.entries.set(uri, entry);
+  return entry;
+}
+
+function pruneVolatileScratchReferences(nowMs: number): void {
+  for (const [uri, entry] of volatileScratchState.entries) {
+    if (nowMs >= Date.parse(entry.manifest.expiresAt)) deleteVolatileScratchReference(uri);
+  }
+}
+
+function deleteVolatileScratchReference(uri: string): void {
+  const entry = volatileScratchState.entries.get(uri);
+  if (!entry) return;
+  volatileScratchState.entries.delete(uri);
+  volatileScratchState.bytes = Math.max(0, volatileScratchState.bytes - entry.payload.length);
 }
 
 /** Null means a legacy/non-reference scratch file. A matching magic prefix is

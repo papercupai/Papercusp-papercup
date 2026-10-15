@@ -4,7 +4,7 @@
  * resolveHiveReleaseGate runs against the REAL built-in blueprints (coding/work); the
  * registry + operator-home slug are mocked for resolveHiveReleaseEnv. No PG, no network.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -28,6 +28,7 @@ const DSN_ENV_KEYS = [
   'DATABASE_URL',
   'PAPERCUSP_PG_URL',
   'PAPERCUSP_SKIP_PG_DISCOVERY',
+  'PAPERCUSP_DEPENDENCY_GENERATION_ROOT',
 ] as const;
 let savedDsnEnv: Record<string, string | undefined>;
 
@@ -53,6 +54,15 @@ function makeHiveDir(extendsId: string, opts: { git?: boolean; extraKnobs?: stri
   if (opts.git) mkdirSync(join(d, '.git'), { recursive: true });
   return d;
 }
+
+// The FIRST import of ./hive-release-env transforms its whole import graph — measured at
+// 26s of vite transform under fleet load (2026-10-13, WI-6554700010009501), which alone
+// nearly fills the 30s per-test budget and timed the first case out twice. vi.resetModules()
+// below clears evaluated modules, not the transform cache, so paying that cold cost once
+// here, under its own explicit budget, keeps it out of every test's measured budget.
+beforeAll(async () => {
+  await import('./hive-release-env');
+}, 180_000);
 
 beforeEach(() => {
   vi.resetModules();
@@ -161,6 +171,28 @@ describe('resolveHiveReleaseGate', () => {
     const gate = resolveHiveReleaseGate(makeHiveDir('coding-factory'));
     expect(gate?.integrationBranch).toBe('staging');
   });
+
+  it('WI-10006301: a working copy judges the branch git-sync integrates on, never its release ref', async () => {
+    // A create_from_repo pot of a `main`-default repo: without the working-copy branch the
+    // gate judged main against release ref main — permanently up-to-date, never promoted.
+    const { resolveHiveReleaseGate } = await import('./hive-release-env');
+    const direct = resolveHiveReleaseGate(makeHiveDir('coding-factory'), 'main');
+    expect(direct?.integrationBranch).toBe(direct?.releaseRef); // the trap, as configured for a direct pot
+    const copy = resolveHiveReleaseGate(makeHiveDir('coding-factory'), 'main', 'staging');
+    expect(copy?.integrationBranch).toBe('staging');
+    expect(copy?.integrationBranch).not.toBe(copy?.releaseRef);
+  });
+
+  it('WI-10006301: the working-copy branch wins over an explicit blueprint knob (git-sync commits there regardless)', async () => {
+    const { resolveHiveReleaseGate } = await import('./hive-release-env');
+    const gate = resolveHiveReleaseGate(
+      makeHiveDir('coding-factory', { extraKnobs: '  releaseGate:\n    integrationBranch: main' }),
+      'main',
+      'staging',
+    );
+    expect(gate?.integrationBranch).toBe('staging');
+  });
+
 });
 
 describe('resolveHiveReleaseEnv', () => {
@@ -291,6 +323,39 @@ describe('resolveHiveReleaseEnv', () => {
     expect(res.env.PAPERCUSP_INTEGRATION_BRANCH).toBe('master');
   });
 
+  it('WI-10006317: a main-default from-repo pot (integration == release) stays seeded but routes to an explicit misconfigured skip', async () => {
+    // Observed on the P-023 pilot: github_default_branch 'main' resolved integrationBranch
+    // 'main' == releaseRef 'main', so every fire read 'up-to-date' and nothing was ever tested.
+    const mainDir = makeHiveDir('coding-factory', { git: true });
+    const masterDir = makeHiveDir('coding-factory', { git: true });
+    const projects: Array<{ slug: string; path: string; self_repo?: boolean; github_default_branch?: string }> = [
+      { slug: 'main-default', path: mainDir, self_repo: false, github_default_branch: 'main' },
+      { slug: 'master-default', path: masterDir, self_repo: false, github_default_branch: 'master' },
+    ];
+    registryProjects = projects;
+    const { resolveHiveReleaseEnv, resolveCheckpointRouting } = await import('./hive-release-env');
+
+    const res = await resolveHiveReleaseEnv('main-default', 'default');
+    expect(res.enabled).toBe(true); // still seeded — the fault must stay visible
+    expect(res.misconfiguration?.code).toBe('integration-equals-release');
+    const routing = await resolveCheckpointRouting({ installSlug: 'main-default', workspaceId: 'default' }, '/DEFAULT');
+    expect(routing.skip?.misconfigured).toBe(true);
+    expect(routing.skip?.reason).toMatch(/^integration-equals-release: integration branch 'main'/);
+
+    // Control: a pot whose integration branch differs from its release ref is unaffected.
+    const control = await resolveHiveReleaseEnv('master-default', 'default');
+    expect(control.misconfiguration).toBeUndefined();
+    const controlRouting = await resolveCheckpointRouting({ installSlug: 'master-default', workspaceId: 'default' }, '/DEFAULT');
+    expect(controlRouting.skip).toBeUndefined();
+  });
+
+  it('WI-10006317: gateMisconfiguration flags exactly integration == release', async () => {
+    const { gateMisconfiguration } = await import('./hive-release-env');
+    expect(gateMisconfiguration({ integrationBranch: 'main', releaseRef: 'main' })?.code).toBe('integration-equals-release');
+    expect(gateMisconfiguration({ integrationBranch: 'staging', releaseRef: 'main' })).toBeNull();
+    expect(gateMisconfiguration({ integrationBranch: 'main', releaseRef: 'release' })).toBeNull();
+  });
+
   it('WI-5164: a self_repo hive with no github_default_branch recorded still defaults to staging', async () => {
     const dir = makeHiveDir('coding', { git: true });
     registryProjects = [{ slug: 'fresh-init-hive', path: dir, self_repo: true }];
@@ -387,6 +452,50 @@ describe('resolveHiveReleaseEnv — subject-hive DSN routing (EI-207096454630226
 });
 
 describe('resolveCheckpointRouting', () => {
+  it('keeps a foreign hive on its recorded store for scheduled and manual launchers', async () => {
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'subject', path: dir, self_repo: true }];
+    writeFileSync(join(dir, '.papercusp', 'dependency-generation-root'), '/target/gens\n/former/gens\n');
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const { resolveDependencyGenerationRoot, resolveDependencyGenerationRetentionRoots } =
+      await import('../../release/dependency-generation-prebuild');
+    for (const ambient of ['/operator/gens', undefined]) {
+      if (ambient) process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = ambient;
+      else delete process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT;
+      const routing = await resolveCheckpointRouting({ installSlug: 'subject', workspaceId: 'default' }, '/TOOLING');
+      const childEnv = { ...process.env, ...routing.extraEnv };
+      expect(routing.extraEnv.PAPERCUSP_DEPENDENCY_GENERATION_ROOT).toBe('/target/gens');
+      expect(resolveDependencyGenerationRoot(dir, childEnv)).toBe('/target/gens');
+      expect(resolveDependencyGenerationRetentionRoots(dir, childEnv)).toEqual(['/target/gens', '/former/gens']);
+    }
+  });
+
+  it('retains the inherited store fallback when a foreign record is absent or invalid', async () => {
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'subject', path: dir, self_repo: true }];
+    process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = '/operator/gens';
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const { resolveDependencyGenerationRoot } = await import('../../release/dependency-generation-prebuild');
+    for (const record of [undefined, 'relative/store\n/old/gens\n']) {
+      if (record) writeFileSync(join(dir, '.papercusp', 'dependency-generation-root'), record);
+      const routing = await resolveCheckpointRouting({ installSlug: 'subject', workspaceId: 'default' }, '/TOOLING');
+      expect(routing.extraEnv.PAPERCUSP_DEPENDENCY_GENERATION_ROOT).toBeUndefined();
+      expect(resolveDependencyGenerationRoot(dir, { ...process.env, ...routing.extraEnv })).toBe('/operator/gens');
+    }
+  });
+
+  it('leaves operator-home store selection to its existing environment', async () => {
+    const dir = makeHiveDir('coding', { git: true });
+    registryProjects = [{ slug: 'papercusp', path: dir, self_repo: true }];
+    writeFileSync(join(dir, '.papercusp', 'dependency-generation-root'), '/recorded/gens\n');
+    process.env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = '/operator/gens';
+    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const { resolveDependencyGenerationRoot } = await import('../../release/dependency-generation-prebuild');
+    const routing = await resolveCheckpointRouting({ installSlug: 'papercusp', workspaceId: 'default' }, dir);
+    expect(routing.extraEnv).toEqual({});
+    expect(resolveDependencyGenerationRoot(dir, process.env)).toBe('/operator/gens');
+  });
+
   it('no installSlug → default root, empty overlay, no skip (current behavior)', async () => {
     const { resolveCheckpointRouting } = await import('./hive-release-env');
     const r = await resolveCheckpointRouting({ workspaceId: 'default' }, '/DEFAULT');
@@ -402,6 +511,8 @@ describe('resolveCheckpointRouting', () => {
     expect(r.root).toBe('/DEFAULT');
     expect(r.extraEnv).toEqual({});
     expect(r.skip).toBeUndefined();
+    // WI-10006274: the home keeps the fork-derived memory cap, so it carries no foreign greenCmd.
+    expect(r.greenCmd ?? null).toBeNull();
   });
 
   it('keeps caller tooling but binds every home launcher to the registered canonical subject', async () => {
@@ -427,13 +538,16 @@ describe('resolveCheckpointRouting', () => {
   it('gated coding hive → TOOLING root (not the hive) + the hive in extraEnv (P-019)', async () => {
     const dir = makeHiveDir('coding', { git: true });
     registryProjects = [{ slug: 'oddsmith-hive', path: dir, self_repo: true }];
-    const { resolveCheckpointRouting } = await import('./hive-release-env');
+    const { resolveCheckpointRouting, DEFAULT_GREEN_CMD } = await import('./hive-release-env');
     const r = await resolveCheckpointRouting({ installSlug: 'oddsmith-hive', workspaceId: 'default' }, '/DEFAULT');
     // root stays the TOOLING root — green-checkpoint.ts + the setup script live there, not in
     // the hive's repo. The hive is the SUBJECT, carried in extraEnv.
     expect(r.root).toBe('/DEFAULT');
     expect(r.extraEnv.PAPERCUSP_INTEGRATION_ROOT).toBe(dir);
     expect(r.skip).toBeUndefined();
+    // WI-10006274: the memory admission sizes this pot's request from its own gate command,
+    // so the routing must carry it (a coding hive with no testCommand runs the build fallback).
+    expect(r.greenCmd).toBe(DEFAULT_GREEN_CMD);
   });
 
   it('EI-20709645463022690: a gated hive threads clearEnv + the namespaced DSN through to the caller', async () => {

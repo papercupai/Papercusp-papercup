@@ -1,0 +1,104 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "framework": "operational",
+ "name": "R-23: the published public cut's export integrity follows the pinned objects and dependency graph (public head 1a3db574)",
+ "specId": "R-23",
+ "plan": "open-source-release-2026-09-29",
+ "workItemId": "WI-10003960",
+ "evidencePlane": "live",
+ "subjectCommit": "1a3db574b837954299168af89caecf5cb14706e8",
+ "sourceCommit": "8cb8de85071d7c131e9c8dddb27742216cab5c39",
+ "command": [
+  "bash .papercusp/scratch/osr/r23n.sh 1a3db574b837954299168af89caecf5cb14706e8 8cb8de85071d7c131e9c8dddb27742216cab5c39 d20b360237373f31326a9ba287086b625dd8624d /tmp/osr-r23n-1a3db5",
+  "  = snapshot canonical tree (HEAD, branch, porcelain -uall, submodule status --recursive); node scripts/source-preview.mjs export --target public --ref <src> --out <mktemp>/out (release-identity.env + release-host.env loaded); snapshot again; source-preview.mjs gate <out> --target public",
+  "  then python3 .papercusp/scratch/osr/r23n.py: git init --bare + fetch --depth 1 public refs/heads/main; MANIFEST.json source/submodules/notShipped vs git ls-tree gitlinks of <src>; mode-160000 and node_modules counts; every public lockfile's blob vs the same path at <src> resolved through gitlinks (recursive), with d20b3602 (the previous pin) as the negative control; re-export path set and dependency-manifest bytes vs the public tree"
+ ],
+ "startedAt": "2026-10-06T10:38:57Z",
+ "finishedAt": "2026-10-06T10:42:13Z",
+ "summary": "Public head 1a3db574b837954299168af89caecf5cb14706e8 is pinned to Papercusp/papercup@8cb8de85071d7c131e9c8dddb27742216cab5c39 through MANIFEST.json. Every shipped submodule follows its gitlink, and the one unshipped submodule is declared in notShipped. Every public lockfile is byte-identical to the pinned source, and an isolated re-export of the source reproduces the public path set with identical dependency manifests. The re-export left the canonical working tree's HEAD, branch and submodules unchanged.",
+ "assertions": [
+  {
+   "id": "public-head-pinned",
+   "passed": true,
+   "evidence": "fetch of refs/heads/main: head 1a3db574b837954299168af89caecf5cb14706e8, tree 44ccca995fcd7400acd32ba41104decb08f5aeb9; expected head 1a3db574b837954299168af89caecf5cb14706e8"
+  },
+  {
+   "id": "manifest-source-pinned",
+   "passed": true,
+   "evidence": "MANIFEST.json source = {\"repo\": \"Papercusp/papercup\", \"ref\": \"8cb8de85071d7c131e9c8dddb27742216cab5c39\", \"commit\": \"8cb8de85071d7c131e9c8dddb27742216cab5c39\"}; expected commit 8cb8de85071d7c131e9c8dddb27742216cab5c39"
+  },
+  {
+   "id": "submodule-pins-follow-gitlinks",
+   "passed": true,
+   "evidence": "8cb8de85 has 38 gitlinks; MANIFEST.submodules lists 37; symmetric difference [('libs/generic/prospect-contract', '27362e68ad3149865983e3e6f27f7b8d5be621d8')] (notShipped=['libs/generic/prospect-contract']; public files under each: {'libs/generic/prospect-contract': 0}); unexplained=[]"
+  },
+  {
+   "id": "no-gitlinks-or-node-modules-shipped",
+   "passed": true,
+   "evidence": "git ls-tree -r of the public head: 17230 entries, 0 with mode 160000, 0 paths with a node_modules segment"
+  },
+  {
+   "id": "lockfiles-byte-exact",
+   "passed": true,
+   "evidence": "14 lockfiles in the public tree; 14/14 blob ids equal the pinned source blob at 8cb8de85 resolved through gitlinks (LOCK_MATCH=14 LOCK_MISMATCH=0)"
+  },
+  {
+   "id": "lockfile-comparator-negative-control",
+   "passed": true,
+   "evidence": "the same comparator against d20b3602 reports 3 of 14 lockfiles differ, so the instrument distinguishes a non-pinned source"
+  },
+  {
+   "id": "isolated-reexport-dependency-graph",
+   "passed": true,
+   "evidence": "re-export of 8cb8de85 at /tmp/osr-r23n-export.jJxZbY/out: 17230 files; path set vs public tree: 0 only-in-reexport, 0 only-in-public; 0 dependency manifests (package.json/lockfiles/Cargo.toml/.gitmodules) differ byte-wise"
+  },
+  {
+   "id": "shared-tree-invariance",
+   "passed": true,
+   "evidence": "canonical tree before/after the re-export: INVARIANT head same; INVARIANT branch same; INVARIANT submodules same; status lines +6 -0. The added status lines are concurrent peer edits (M .mcp.json.su-parked, M apps/operator/lib/mcp-proxy/proxy.test.ts, M apps/operator/lib/mcp-proxy/proxy.ts, M apps/tui/src/main.rs, M scripts/mcp-call.mjs, ?? packages/operator-core/lib/providers/asana/asana-provider.test.ts); export-named paths: 0."
+  },
+  {
+   "id": "reexport-gate-clean",
+   "passed": true,
+   "evidence": "node scripts/source-preview.mjs gate /tmp/osr-r23n-export.jJxZbY/out --target public: \u2713 audit-release-bundle: clean /   \u2713 audit-release-bundle --scan-dir: clean /   \u2713 gitleaks: clean /   \u2713 trufflehog: clean / GATE: clean / GATE_RC=0"
+  }
+ ],
+ "measurements": {
+  "fetchedHead": "1a3db574b837954299168af89caecf5cb14706e8",
+  "fetchedTree": "44ccca995fcd7400acd32ba41104decb08f5aeb9",
+  "lockfiles": [
+   "apps/pui-companion-proto/Cargo.lock",
+   "apps/pui-zellij-plugin/Cargo.lock",
+   "apps/tui/Cargo.lock",
+   "libs/generic/resumable-download/package-lock.json",
+   "libs/papercusp/apps/desktop/src-tauri/Cargo.lock",
+   "libs/papercusp/packages/cli/package-lock.json",
+   "libs/papercusp/packages/embedded-postgres-server/package-lock.json",
+   "libs/papercusp/packages/harness/docs-viewer/package-lock.json",
+   "package-lock.json",
+   "papercusp-desktop/package-lock.json",
+   "papercusp-desktop/src-tauri/Cargo.lock",
+   "papercusp-desktop/src-tauri/vendor/tao/Cargo.lock",
+   "papercusp-desktop/src-tauri/vendor/tauri-runtime-wry/Cargo.lock",
+   "scripts/heap-retainers-native/Cargo.lock"
+  ],
+  "negativeControlMatch": [
+   "apps/pui-companion-proto/Cargo.lock",
+   "apps/pui-zellij-plugin/Cargo.lock",
+   "apps/tui/Cargo.lock",
+   "libs/generic/resumable-download/package-lock.json",
+   "libs/papercusp/apps/desktop/src-tauri/Cargo.lock",
+   "libs/papercusp/packages/cli/package-lock.json",
+   "libs/papercusp/packages/embedded-postgres-server/package-lock.json",
+   "libs/papercusp/packages/harness/docs-viewer/package-lock.json",
+   "papercusp-desktop/package-lock.json",
+   "papercusp-desktop/src-tauri/vendor/tao/Cargo.lock",
+   "papercusp-desktop/src-tauri/vendor/tauri-runtime-wry/Cargo.lock"
+  ]
+ },
+ "limitations": [
+  "The negative control uses the previous pin d20b3602. Only 3 of 14 lockfiles differ there, so the comparator's discrimination is shown on those three paths."
+ ],
+ "exitCode": 0
+}

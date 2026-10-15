@@ -56,6 +56,7 @@ import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   appendAdvisories,
   stashAdvisory,
@@ -526,6 +527,20 @@ export function resolveHookWorkspace(): string {
   return '';
 }
 
+let _nativeSessionId = '';
+
+function withNativeSessionQuery(url: string, nativeSessionId: string): string {
+  const value = nativeSessionId.trim();
+  if (!value) return url;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set('native_session', value);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 export async function callMcpTool(
   toolName: string,
   args: Record<string, unknown>,
@@ -533,6 +548,7 @@ export async function callMcpTool(
     mcpUrl?: string;
     bearer?: string;
     sessionId?: string;
+    nativeSessionId?: string;
     workspace?: string;
     timeoutMs?: number;
     /** Preserve a structured error for callers that can distinguish a
@@ -551,7 +567,7 @@ export async function callMcpTool(
   const clientParam = `client=${encodeURIComponent(hookOwnerId())}`;
   const withClient = (base: string): string =>
     base.includes('?') ? `${base}&${clientParam}` : `${base}?${clientParam}`;
-  const mcpUrl =
+  const baseMcpUrl =
     env.mcpUrl ??
     (process.env.PAPERCUSP_BUNDLE_URL
       ? withClient(
@@ -565,7 +581,13 @@ export async function callMcpTool(
           ).toString(),
         )
       : null);
-  if (!mcpUrl) return null;
+  if (!baseMcpUrl) return null;
+  const nativeSessionId =
+    env.nativeSessionId ?? (_nativeSessionId || process.env.PAPERCUSP_NATIVE_SESSION_ID || '');
+  const mcpUrl =
+    toolName === 'activity:report' && nativeSessionId
+      ? withNativeSessionQuery(baseMcpUrl, nativeSessionId)
+      : baseMcpUrl;
   let bearer =
     env.bearer ??
     process.env.PAPERCUSP_BUNDLE_ACCESS_TOKEN ??
@@ -743,7 +765,30 @@ interface HookSessionLinkContext {
     getSessionId?: () => string;
     getSessionFile?: () => string | undefined;
     getCwd?: () => string;
+    /** OMP keeps a new session file lazy until the first assistant message.
+     * Managed session-port kickoffs need the user row discoverable before the
+     * model responds, so use the runtime's supported eager-persistence seam. */
+    ensureOnDisk?: () => Promise<void>;
   };
+}
+
+/** Materialize OMP's native session file before a managed kickoff is typed.
+ * This is deliberately a no-op for older/detached runtimes whose context does
+ * not expose the maintained SessionManager method. */
+export async function ensureNativeSessionOnDisk(ctx?: unknown): Promise<boolean> {
+  const ensure = (ctx as HookSessionLinkContext | undefined)?.sessionManager?.ensureOnDisk;
+  if (typeof ensure !== 'function') return false;
+  await ensure.call((ctx as HookSessionLinkContext).sessionManager);
+  return true;
+}
+
+function nativeSessionIdFromContext(ctx: unknown): string {
+  try {
+    const sessionId = (ctx as HookSessionLinkContext | undefined)?.sessionManager?.getSessionId?.();
+    return typeof sessionId === 'string' ? sessionId.trim() : '';
+  } catch {
+    return '';
+  }
 }
 
 function contextCwd(ctx: unknown): string | undefined {
@@ -764,7 +809,7 @@ function currentSessionLinkFromContext(ctx: unknown): {
   if (!Number.isFinite(advSessionId) || advSessionId <= 0) return null;
 
   const c = ctx as HookSessionLinkContext | undefined;
-  const sessionId = c?.sessionManager?.getSessionId?.()?.trim();
+  const sessionId = nativeSessionIdFromContext(ctx);
   if (!sessionId) return null;
 
   const filePath = c?.sessionManager?.getSessionFile?.();
@@ -845,6 +890,15 @@ export async function withDeadline(p: Promise<unknown>, ms: number): Promise<voi
  *  detached). Bounded by SESSION_START_DEADLINE_MS so a slow operator can never
  *  drive the handler past pi's 30s framework cap (WI-3147). */
 export async function onSessionStart(ctx?: unknown): Promise<void> {
+  // OMP lazily creates a native JSONL file until an assistant message exists.
+  // Managed session-port delivery must be able to observe the first user row
+  // while the model is still working, so force the file into the durable store
+  // before any coordination/network work or kickoff can begin.
+  await ensureNativeSessionOnDisk(ctx);
+  // activity:report is identity-preflighted from the MCP request URL. Cache the
+  // native OMP session id supplied by the session_start context so pre-tool,
+  // post-tool, and lifecycle reports all carry verified request context.
+  _nativeSessionId = nativeSessionIdFromContext(ctx) || process.env.PAPERCUSP_NATIVE_SESSION_ID?.trim() || '';
   // Mint the per-process coordination owner id up front (file-locking
   // #2). Every subsequent callMcpTool carries it via `?client=`, so a
   // lock or coordination message authored by this process is always
@@ -888,6 +942,7 @@ export async function onSessionShutdown(): Promise<void> {
   // Activity bridge: a "worker left" lifecycle marker, then the lock backstop.
   await reportLifecycle('shutdown');
   await callMcpTool('locks:release', { all_mine: true });
+  _nativeSessionId = '';
 }
 
 /**
@@ -2742,13 +2797,64 @@ function shouldSendActivityReport(args: Record<string, unknown>, now = Date.now(
 export function _resetActivityReportDedupeForTests(): void {
   activityReportDedupe.clear();
   pendingActivityCalls.clear();
+  pendingHookFallbacks.length = 0;
+  hookFallbacksInFlight = false;
   _hookBundleGeneration = null;
+}
+
+export function _resetNativeSessionIdForTests(): void {
+  _nativeSessionId = '';
 }
 
 /** Stage the input-bearing half of an OMP tool event. The matching tool_result
  * consumes it so telemetry and coordination deltas share ONE post-tool RPC. */
 export function stageActivityReport(event: ToolCallEvent): void {
   pendingActivityCalls.set(event.toolCallId, event);
+}
+
+interface HookFallbackObservation {
+  eligible: 1;
+  applied: 0 | 1;
+  reason: 'lock-keys-empty' | 'lock-request-refused' | 'lock-transport-unavailable' | 'applied';
+  observed_at: string;
+}
+const pendingHookFallbacks: HookFallbackObservation[] = [];
+let hookFallbacksInFlight = false;
+
+/** Self-contained port of the rail writer. Delivery rides the existing activity
+ * RPC; an unavailable operator must never add another wait to an edit. Keep the
+ * original event time and retain unacknowledged samples through reconnection. */
+function observeFallback(
+  _mechanism: 'hook-lock-enforcement',
+  decision: Omit<HookFallbackObservation, 'observed_at'>,
+): void {
+  if (pendingHookFallbacks.length >= 2_000) {
+    pendingHookFallbacks.shift();
+    console.error('[su-locks] observation buffer full; oldest undelivered sample discarded');
+  }
+  pendingHookFallbacks.push({ ...decision, observed_at: new Date().toISOString() });
+}
+
+async function callActivityReport(args: Record<string, unknown>): Promise<unknown> {
+  // Concurrent heartbeats must not send the same pending prefix twice.
+  const batch = hookFallbacksInFlight ? [] : pendingHookFallbacks.slice(0, 64);
+  if (batch.length) hookFallbacksInFlight = true;
+  try {
+    const result = await callMcpTool('activity:report', {
+      ...args,
+      ...(batch.length ? { hook_fallbacks: batch } : {}),
+    });
+    const accepted = (result as { hook_fallbacks_accepted?: unknown } | null)?.hook_fallbacks_accepted;
+    if (typeof accepted === 'number' && Number.isInteger(accepted) && accepted >= 0 && accepted <= batch.length) {
+      const delivered = new Set(batch.slice(0, accepted));
+      for (let i = pendingHookFallbacks.length - 1; i >= 0; i--) {
+        if (delivered.has(pendingHookFallbacks[i])) pendingHookFallbacks.splice(i, 1);
+      }
+    }
+    return result;
+  } finally {
+    if (batch.length) hookFallbacksInFlight = false;
+  }
 }
 
 /**
@@ -2759,7 +2865,7 @@ export function stageActivityReport(event: ToolCallEvent): void {
 export async function reportActivity(event: ToolCallEvent): Promise<void> {
   const args = buildActivityArgs(event);
   if (!shouldSendActivityReport(args)) return;
-  await callMcpTool('activity:report', args);
+  await callActivityReport(args);
 }
 
 /** Report a completed tool and request the generation-aware coordination fold. */
@@ -2768,7 +2874,7 @@ export async function reportActivityResult(event: ToolResultEvent): Promise<Acti
   pendingActivityCalls.delete(event.toolCallId);
   if (!staged) return null;
   const args = buildActivityArgs(staged);
-  const result = (await callMcpTool('activity:report', {
+  const result = (await callActivityReport({
     ...args,
     hook_bundle: {
       generation: _hookBundleGeneration,
@@ -2777,6 +2883,50 @@ export async function reportActivityResult(event: ToolResultEvent): Promise<Acti
     },
   })) as { hook_bundle?: ActivityHookBundle } | null;
   return result?.hook_bundle ?? null;
+}
+
+/** Reuse the installed Claude/Codex checker; append its result without interrupting OMP. */
+export async function launchProseBudgetForResult(
+  event: ToolResultEvent,
+  run: (call: ToolCallEvent) => Promise<string> = runLaunchProseBudgetHook,
+): Promise<string> {
+  const call = pendingActivityCalls.get(event.toolCallId);
+  if (!call || !nativeEditResultSucceeded(event.content)) return '';
+  return run(call);
+}
+
+export async function runLaunchProseBudgetHook(call: ToolCallEvent): Promise<string> {
+  // The desktop and standalone installers already install cc hooks here. Like the
+  // RTK import below, this must work after coord-hook.ts is copied or bundled.
+  const hook = join(process.env.HOME ?? homedir(), '.papercusp/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');
+  const relevantTool = /^(?:edit|write|ast_edit|multi_edit|apply_patch|bash)$/i.test(call.toolName)
+    || /(?:capability[_:-](?:edit|write|multi_?edit|patch|bash)|tools[_:]invoke)$/.test(call.toolName);
+  if (!relevantTool) return '';
+  if (!existsSync(hook)) return '⚠ launch-prose budget NOT checked: the shared PostToolUse hook is not installed.';
+  try {
+    const { shouldCheck } = await import(pathToFileURL(hook).href);
+    if (typeof shouldCheck !== 'function') return '⚠ launch-prose budget NOT checked: the shared PostToolUse hook is outdated.';
+    if (!shouldCheck(call.toolName, call.input)) return '';
+  } catch {
+    return '⚠ launch-prose budget NOT checked: the shared PostToolUse hook could not load.';
+  }
+  return new Promise((done) => {
+    const child = execFile(process.execPath, [hook], {
+      cwd: typeof call.input.cwd === 'string' ? call.input.cwd : process.cwd(),
+      timeout: 25_000, maxBuffer: 256_000,
+    }, (error, stdout) => {
+      if (error) return done('⚠ launch-prose budget NOT checked: the shared PostToolUse hook failed.');
+      if (!stdout.trim()) return done('');
+      try {
+        const result = JSON.parse(stdout);
+        done(typeof result?.hookSpecificOutput?.additionalContext === 'string' ? result.hookSpecificOutput.additionalContext : '');
+      } catch {
+        done('⚠ launch-prose budget NOT checked: the shared PostToolUse hook returned invalid JSON.');
+      }
+    });
+    child.stdin?.end(JSON.stringify({ tool_name: call.toolName, tool_input: call.input,
+      cwd: typeof call.input.cwd === 'string' ? call.input.cwd : process.cwd() }));
+  });
 }
 
 /**
@@ -2788,7 +2938,7 @@ export async function reportActivityResult(event: ToolResultEvent): Promise<Acti
 export async function reportLifecycle(phase: 'start' | 'shutdown'): Promise<void> {
   const harnessSlug = currentHarnessSlug();
   const role = currentLaunchRole();
-  await callMcpTool('activity:report', {
+  await callActivityReport({
     owner: hookOwnerId(),
     agent: 'omp',
     kind: 'lifecycle',
@@ -4779,7 +4929,7 @@ export async function onToolCall(
     // workspace dir. Parses .git/config directly — no git subprocess on the
     // per-edit hot path. Mirrors the cc hook's _repo_origin_url/_norm_origin
     // (parity contract; keep in sync).
-    const repoOriginUrl = (repoRoot: string): string | null => {
+    const repoGitConfigPath = (repoRoot: string): string | null => {
       try {
         const gitEntry = join(repoRoot, '.git');
         let cfgPath: string;
@@ -4801,6 +4951,15 @@ export async function onToolCall(
         } else {
           cfgPath = join(gitEntry, 'config');
         }
+        return cfgPath;
+      } catch {
+        return null;
+      }
+    };
+    const repoOriginUrl = (repoRoot: string): string | null => {
+      try {
+        const cfgPath = repoGitConfigPath(repoRoot);
+        if (cfgPath === null) return null;
         let inOrigin = false;
         for (const line of readFileSync(cfgPath, 'utf8').split('\n')) {
           const s = line.trim();
@@ -4811,6 +4970,18 @@ export async function onToolCall(
           }
         }
         return null;
+      } catch {
+        return null;
+      }
+    };
+    // Match CC's positive zero-remotes proof. Missing/unreadable config is
+    // unknown, and a remote under any name prevents this exemption.
+    const repoHasZeroRemotes = (repoRoot: string): boolean | null => {
+      try {
+        const cfgPath = repoGitConfigPath(repoRoot);
+        if (cfgPath === null) return null;
+        return !readFileSync(cfgPath, 'utf8').split('\n')
+          .some((line) => /^\[remote\s*"/.test(line.trim()));
       } catch {
         return null;
       }
@@ -4856,12 +5027,13 @@ export async function onToolCall(
         // WI-5031: a sibling is only a stranding hazard when it is a checkout
         // of the SAME project as the canonical tree — git-sync commits only
         // the canonical tree, so work left in same-project siblings dies. An
-        // INDEPENDENT repo with a provably different origin remote is
-        // legitimate to edit and falls through to normal lock coordination.
-        // Unreadable origins keep the old refusal (conservative).
+        // An INDEPENDENT repo with a provably different origin or a readable
+        // config declaring zero remotes falls through to lock coordination.
+        // Linked canonical worktrees were rejected above, before exemption.
         const sibOrigin = normalizeOriginUrl(repoOriginUrl(scopeRoot));
         const canonOrigin = normalizeOriginUrl(repoOriginUrl(canonicalTree));
-        if (sibOrigin !== null && canonOrigin !== null && sibOrigin !== canonOrigin) {
+        if ((sibOrigin !== null && canonOrigin !== null && sibOrigin !== canonOrigin)
+          || repoHasZeroRemotes(scopeRoot) === true) {
           continue;
         }
         return {
@@ -4872,9 +5044,9 @@ export async function onToolCall(
             `staging tree (${canonicalTree}); other worktrees are off-limits ` +
             `because work left in them never reaches the auto-committed tree. ` +
             `cd into the staging tree and make this edit there. (An INDEPENDENT ` +
-            `sibling repo — one whose \`origin\` remote provably differs from ` +
-            `the canonical tree's — is exempt; this tree's origin matches the ` +
-            `canonical project or could not be read.)`,
+            `sibling repo — one whose \`origin\` provably differs, or whose ` +
+            `readable config declares zero remotes — is exempt; independence ` +
+            `could not be established for this tree.)`,
         };
       }
     }
@@ -4916,6 +5088,7 @@ export async function onToolCall(
   // the state that persisted undetected for a whole session. Fail open —
   // a harness bug must never wedge the agent — but never silently.
   if (paths.length === 0) {
+    observeFallback('hook-lock-enforcement', { eligible: 1, applied: 0, reason: 'lock-keys-empty' });
     console.error(
       `[su-locks] INVARIANT: ${targets.length} lock target(s) produced 0 keys; ` +
         'lock enforcement is OFF for this tool call (failing open)',
@@ -4967,6 +5140,7 @@ export async function onToolCall(
   // transport problem, and it will recur on every tool call until fixed.
   const structured = asStructuredCallError(result);
   if (structured !== null) {
+    observeFallback('hook-lock-enforcement', { eligible: 1, applied: 0, reason: 'lock-request-refused' });
     console.error(
       `[su-locks] locks:acquire REFUSED THE REQUEST (${structured.error}): ` +
         `${structured.message} — this is a hook defect, not an operator outage; ` +
@@ -4980,6 +5154,7 @@ export async function onToolCall(
   }
 
   if (result == null) {
+    observeFallback('hook-lock-enforcement', { eligible: 1, applied: 0, reason: 'lock-transport-unavailable' });
     // Operator unreachable or call errored — fail open. Cooperative
     // discipline only works when the system is up; blocking edits
     // would wedge the agent. The persisted marker (file-locking #3)
@@ -5001,6 +5176,8 @@ export async function onToolCall(
     busy?: BusyEntry[];
     reason?: string;
   };
+  // A busy/refused lock verdict completed the primary enforcement check too.
+  observeFallback('hook-lock-enforcement', { eligible: 1, applied: 1, reason: 'applied' });
   // Reaching here means the operator answered — a successful hook
   // call, whether the answer was ok or busy.
   if (r.ok === true && typeof r.lock_id === 'string') {
@@ -5053,6 +5230,93 @@ export async function onToolResult(event: ToolResultEvent): Promise<void> {
 /** Test-only: reset the in-memory lock cache between cases. */
 export function _resetToolCallCacheForTests(): void {
   acquiredLocks.clear();
+}
+
+// ── RTK output compression for OMP's native bash (WI-6554700010010472) ──
+//
+// Claude's native Bash gets RTK inside pretooluse-restricted-egress-guard.mjs, Codex's
+// direct shell calls get it from pretooluse-codex-rtk-rewrite.mjs, and capability:bash
+// applies it at its spawn seam. OMP's native `bash` had none of these, so every command
+// in a psu OMP session ran verbatim. This reuses the SAME rewriter (rtkRewriteSync: the
+// vitest exclusion, the RTK_DISABLED=1 opt-out, the size cap, the timeout, the
+// PAPERCUSP_RTK_BIN override, fail-open on a missing binary), so all clients share one
+// policy.
+//
+// OMP contract (pi-coding-agent 18.0.3, extensibility/shared-events.ts
+// ToolCallEventResult): a non-blocking tool_call handler may return `input`, the raw
+// input the tool executes with; the extension wrapper re-resolves approval against it.
+// Every gate in onToolCall judges the ORIGINAL command; only the executed text changes.
+// Fleet roles under the capability-only cutover have no native bash (fleetOmpToolsArgs)
+// and get RTK through capability:bash instead.
+
+/** OMP's native shell tool. */
+export const OMP_BASH_TOOL = 'bash';
+
+/** The shared rewriter's signature (rtkRewriteSync in pretooluse-restricted-egress-guard.mjs). */
+export type RtkRewriteSync = (command: string, opts?: { cwd?: string }) => string | null;
+
+export const RTK_GUARD_MODULE = 'pretooluse-restricted-egress-guard.mjs';
+
+/**
+ * Where the shared rewriter is installed. This file runs as ~/.papercusp/papercusp-coord.ts
+ * (copied by install-standalone-mcp.sh, copied or esbuild-bundled by the desktop
+ * installer), so a static `../cc/` import would resolve to ~/cc and break the install.
+ * Both installers copy hooks/cc to ~/.papercusp/hooks/cc, beside the ../inject/core.mjs
+ * the guard imports.
+ */
+export function rtkGuardModuleCandidates(home: string = process.env.HOME ?? homedir()): string[] {
+  return [join(home, '.papercusp', 'hooks', 'cc', RTK_GUARD_MODULE)];
+}
+
+/** rtkRewriteSync from the first candidate that loads, or null when none does (fail open). */
+export async function importRtkRewriter(candidates: readonly string[]): Promise<RtkRewriteSync | null> {
+  for (const file of candidates) {
+    if (!existsSync(file)) continue;
+    try {
+      const mod = (await import(pathToFileURL(file).href)) as { rtkRewriteSync?: unknown };
+      if (typeof mod.rtkRewriteSync === 'function') return mod.rtkRewriteSync as RtkRewriteSync;
+    } catch {
+      // A module that fails to load leaves commands verbatim; try the next location.
+    }
+  }
+  return null;
+}
+
+let rtkRewriterOnce: Promise<RtkRewriteSync | null> | undefined;
+
+/** The session's rewriter, imported once. */
+function loadRtkRewriter(): Promise<RtkRewriteSync | null> {
+  rtkRewriterOnce ??= importRtkRewriter(rtkGuardModuleCandidates());
+  return rtkRewriterOnce;
+}
+
+/**
+ * The tool_call result with OMP's bash command replaced by its RTK form, or `result`
+ * unchanged when: the call is blocked; it is not OMP's bash; it has no command; it runs
+ * on a PTY (an interactive program); its env sets RTK_DISABLED=1; or RTK has no rewrite.
+ */
+export function ompBashRtkResult<R extends { block?: boolean }>(
+  event: { toolName: string; input?: unknown },
+  result: R,
+  rewrite: RtkRewriteSync | null,
+): R | (R & { input: Record<string, unknown> }) {
+  if (result.block || !rewrite) return result;
+  if (event.toolName !== OMP_BASH_TOOL) return result;
+  if (!event.input || typeof event.input !== 'object') return result;
+  const input = event.input as Record<string, unknown>;
+  const command = input.command;
+  if (typeof command !== 'string' || !command.trim()) return result;
+  if (input.pty === true) return result;
+  const env = input.env && typeof input.env === 'object' ? (input.env as Record<string, unknown>) : null;
+  if (env && String(env.RTK_DISABLED ?? '') === '1') return result;
+  let rewritten: string | null;
+  try {
+    rewritten = rewrite(command, { cwd: typeof input.cwd === 'string' ? input.cwd : undefined });
+  } catch {
+    return result;
+  }
+  if (!rewritten || rewritten === command) return result;
+  return { ...result, input: { ...input, command: rewritten } };
 }
 
 // ── OMP adapter (registration) ───────────────────────────────────────
@@ -5296,8 +5560,11 @@ export default function register(pi: HookApi): void {
     noteStallToolInFlight(true);
     pokeStallWatchdog();
     const result = await safe(() => onToolCall(event, ctx), {});
-    if (!result.block) stageActivityReport(event);
-    return result;
+    if (result.block) return result;
+    stageActivityReport(event);
+    // RTK output compression for the native shell (WI-6554700010010472). Every gate above
+    // judged the original command; only the executed text changes. Fails open.
+    return ompBashRtkResult(event, result, await safe(() => loadRtkRewriter(), null));
   });
 
   pi.on('tool_result', async (event, ctx) => {
@@ -5319,6 +5586,10 @@ export default function register(pi: HookApi): void {
     //    to this completed result matches the Claude/Codex passive
     //    `additionalContext` parity this hook targets. Urgent control cues still arrive at the next tool
     //    boundary (one call later) — an acceptable trade vs. a full livelock.
+    // Read staged input before reportActivityResult consumes it. This runs after
+    // the successful edit and before the completed result reaches the model.
+    const budgetNudge = await safe(() => launchProseBudgetForResult(event), '');
+    if (budgetNudge) stashAdvisory('launch-prose-budget', budgetNudge);
     const bundle = await safe(() => reportActivityResult(event), null);
     const { reminder } = await safe(() => consumeActivityHookBundle(bundle, pi, ctx), { reminder: '' });
     // 3. Drain any bash→tool advisory staged by this tool's tool_call (P-017).

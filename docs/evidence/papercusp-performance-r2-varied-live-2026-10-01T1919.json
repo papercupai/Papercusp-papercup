@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R2 twenty distinct task-topic searches on the instrumented serving build",
+  "framework": "node",
+  "command": ["node", "--input-type=module", "-e", "const originalFetch=globalThis.fetch;globalThis.fetch=async(...a)=>{const start=performance.now();const r=await originalFetch(...a);await r.clone().text();console.error('R2_HTTP_TIMING '+JSON.stringify({ms:Math.round(performance.now()-start),status:r.status}));return r;};process.argv=['node','scripts/mcp-call.mjs','search:fulltext','--json','-','--client',process.env.PAPERCUSP_SID,'--workspace','papercusp-workspace','--harness','papercusp','--port','3170'];await import('./scripts/mcp-call.mjs');"],
+  "commandRepeated": 20,
+  "exitCode": 0,
+  "startedAt": "2026-10-01T19:19:56.472551+00:00",
+  "finishedAt": "2026-10-01T19:20:09.779546+00:00",
+  "summary": "R2 remains red on the instrumented serving build57d558cc1d: twenty distinct task-topic requests yielded HTTP p95 nearest-rank1282ms, max1322ms. All20 requests returned HTTP200/CLI exit0 and all20 canonical invocation rows identify this build. Slow requests spend820–1094ms in retrieval, before83–162ms reranking. The earlier fast twelve-query control does not dispose of this failure.",
+  "assertions": [
+    {"id": "twenty-successful-attributed-requests", "passed": true, "evidence": "Exact self SID, workspace papercusp-workspace, harness papercusp, pinned port3170; all20 requests returned HTTP200 and exit0."},
+    {"id": "representative-http-p95-at-most-one-second", "passed": false, "evidence": "Nearest-rank index19 of20=1282ms; maximum1322ms. No slow request was removed. HTTP timing spans fetch start through complete cloned response-body consumption."}
+  ],
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10004474",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 5,
+  "evidencePlane": "live",
+  "stdinTemplate": {"query": "taskQueries[i]", "scope": ["session_turn"], "limit": 5},
+  "taskQueries": ["corpus recall","furnishedfinder","memory admission","WI-10004474","session native preservation","compaction native id","hook_bundle.glance_stale","literal fallback","coverage graded","staging runtime identity","source proof freshness","execution trace integrity","cold loop wake","model preservation","acceptance rubric","checkpoint lineage","resource lease","session search","recall pointer section clamp","test provenance"],
+  "measurement": {
+    "servingBuild": "57d558cc1d",
+    "verifiedInvocationRows": 20,
+    "httpMilliseconds": [252,218,252,169,1125,1106,106,852,320,240,250,262,1322,1011,375,253,319,1282,326,403],
+    "httpP95NearestRankMs": 1282,
+    "httpMaxMs": 1322,
+    "slowRequests": [
+      {"id":30830803,"query":"session native preservation","ledgerMs":1063,"retrievalMs":913,"rerankMs":147},
+      {"id":30830804,"query":"compaction native id","ledgerMs":1034,"retrievalMs":886,"rerankMs":145},
+      {"id":30830825,"query":"cold loop wake","ledgerMs":1259,"retrievalMs":1094,"rerankMs":162},
+      {"id":30830833,"query":"model preservation","ledgerMs":908,"retrievalMs":820,"rerankMs":83},
+      {"id":30830842,"query":"session search","ledgerMs":1215,"retrievalMs":1079,"rerankMs":132}
+    ]
+  },
+  "residualUnknowns": ["This records a failing current-build check before the transaction-local planner correction was loaded.","The task-topic sample is declared explicitly; it is not a universal workload or concurrency claim.","This is operational evidence; conventional source test results are separate."]
+}

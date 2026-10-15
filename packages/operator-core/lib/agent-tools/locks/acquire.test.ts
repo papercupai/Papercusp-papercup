@@ -59,7 +59,8 @@ vi.mock('../../agent-state-stamp', () => ({
   readAgentStateStamp: vi.fn(() => ({ intentEventId: null, assumptionSetId: null, goalRef: 'WI-current' })),
 }));
 vi.mock('../../authority/file-lock-routing', () => ({ routeFileLockOp: vi.fn() }));
-vi.mock('../../authority/file-lock-authority-ops', () => ({
+vi.mock('../../authority/file-lock-authority-ops', async () => ({
+  ...(await vi.importActual<typeof import('../../authority/file-lock-authority-ops')>('../../authority/file-lock-authority-ops')),
   FILE_LOCK_OP_KINDS: { acquire: 'acquire' },
   // Real (not stubbed) fan-out so WI-1550 coverage below can assert on the
   // resulting recordLockEvent calls, not just that some mock fired.
@@ -91,6 +92,40 @@ const resolveDomainM = vi.mocked(resolveExplicitFileLockDomain);
 const readStampM = vi.mocked(readAgentStateStamp);
 const tool = (await import('./acquire')).default;
 const warningRoot = mkdtempSync(join(tmpdir(), 'locks-acquire-warning-'));
+
+describe('hook operation acquire API', () => {
+  const operation = { id: '71d933be-413a-48b0-83af-8856650a917b', deadline: '2026-06-05T00:30:00Z', authority: 'original' };
+  const request = { paths: ['a.ts'], intent: 'PreToolUse:Edit', hook_operation: operation };
+
+  it('never falls back to a local grant after an operation route fails', async () => {
+    routeM.mockRejectedValue(new Error('lost reply'));
+    const result = body(await call(request));
+    expect(result).toMatchObject({ ok: false, reason: 'operation_authority_unknown', operation_id: operation.id });
+    expect(tryAcquireM).not.toHaveBeenCalled();
+    expect(insertM).not.toHaveBeenCalled();
+  });
+
+  it('returns authority preparation without entering the ordinary waiter queue', async () => {
+    routeM.mockImplementation(async (_domain, op) => ({ value: op.authorityFence!.prepare('pinned') , via: 'local-authority' }));
+    expect(body(await call({ ...request, hook_operation: { ...operation, authority: undefined } })))
+      .toMatchObject({ ok: false, reason: 'operation_authority_required', operation_authority: 'pinned' });
+    expect(tryAcquireM).not.toHaveBeenCalled();
+    expect(insertM).not.toHaveBeenCalled();
+  });
+
+  it('preserves operation expiry and terminal refusal instead of creating a legacy waiter', async () => {
+    routeM.mockResolvedValue({ value: { ok: false, reason: 'operation_finished', operation_id: operation.id }, via: 'remote-authority' });
+    expect(body(await call({ ...request, wait: { max_sec: 30 } }))).toMatchObject({ ok: false, reason: 'operation_finished' });
+    expect(insertM).not.toHaveBeenCalled();
+  });
+
+  it('refuses hook operations on deliberate acquires and asynchronous wake queues', async () => {
+    for (const args of [{ ...request, intent: 'deliberate edit' }, { ...request, wake_on_grant: true }]) {
+      expect(body(await call(args))).toMatchObject({ ok: false, reason: 'operation_conflict' });
+    }
+    expect(routeM).not.toHaveBeenCalled();
+  });
+});
 
 beforeAll(() => {
   writeFileSync(join(warningRoot, 'existing.ts'), 'export const existing = true;\n');
@@ -379,11 +414,12 @@ describe('locks:acquire — outcome branches', () => {
   });
 
   it('identifies the queued waiter on the fast path', async () => {
+    const holderExpires = new Date(Date.now() + 60_000);
     routeM.mockResolvedValue({
       value: {
         ok: false,
         reason: 'queued_waiter',
-        busy: [{ path: 'a.ts', owner: 'queued', owner_label: 'QUEUED', intent: 'edit', expires_ts: new Date(Date.now() + 60_000) }],
+        busy: [{ path: 'a.ts', owner: 'holder', owner_label: 'HOLDER', intent: 'write file', expires_ts: holderExpires }],
       },
       via: 'local-authority',
     });
@@ -391,9 +427,10 @@ describe('locks:acquire — outcome branches', () => {
     expect(b).toMatchObject({
       ok: false,
       reason: 'queued_waiter',
-      busy: [{ path: 'a.ts', owner: 'queued' }],
+      busy: [{ path: 'a.ts', owner: 'holder', expires_ts: holderExpires.toISOString() }],
     });
-    expect(String(b.advice)).toMatch(/queued agent/);
+    expect(String(b.advice)).toMatch(/earlier lock-wait ticket/);
+    expect(String(b.advice)).toMatch(/active holders only/);
   });
 
   it('a WorkspaceContendedError degrades to a structured TRANSIENT workspace_contended (never a false holder, never a raw PG leak) — EI-9478', async () => {
@@ -486,6 +523,36 @@ describe('locks:acquire — outcome branches', () => {
       const b = body(await p);
       expect(b).toMatchObject({ ok: true, lock_id: 'L1', held: ['a.ts'] });
       expect(routeM.mock.calls.length).toBe(2); // one transient miss, then a clean grant
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries a postgres-js CONNECT_TIMEOUT before the workspace transaction starts, then acquires once', async () => {
+    const connectTimeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), {
+      code: 'CONNECT_TIMEOUT',
+    });
+    txnM.mockRejectedValueOnce(connectTimeout);
+    tryAcquireM.mockResolvedValueOnce({
+      ok: true,
+      lock_id: 'L-connect-retry',
+      expires_ts: new Date('2026-02-01T00:00:00Z'),
+      held: ['a.ts'],
+    } as never);
+    routeM.mockImplementation(async (_domain, op) => ({
+      value: await op.local(),
+      via: 'local-authority',
+    }));
+
+    vi.useFakeTimers();
+    try {
+      const p = call({});
+      await vi.runAllTimersAsync();
+      const b = body(await p);
+
+      expect(b).toMatchObject({ ok: true, lock_id: 'L-connect-retry', held: ['a.ts'] });
+      expect(txnM).toHaveBeenCalledTimes(2);
+      expect(tryAcquireM).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -630,6 +697,27 @@ describe('locks:acquire — EI-19324204900062056 blocking-wait connection resili
     expect(b).toMatchObject({ ok: false, ticket_id: 'T-A', busy: [{ path: 'a.ts', owner: 'o2' }] });
     expect(b.reason).not.toBe('wait_connection_unstable');
     expect(pokeM).toHaveBeenCalled();
+  });
+
+  it('retains queued_waiter and the active holder snapshot after a blocking timeout', async () => {
+    const holderExpires = new Date('2026-10-02T03:59:29.604Z');
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-Q', wait_until: new Date(Date.now() - 1000) });
+    statusM.mockResolvedValueOnce({ status: 'waiting' });
+    expireM.mockResolvedValueOnce(undefined);
+    tryAcquireM.mockResolvedValueOnce({
+      ok: false,
+      reason: 'queued_waiter',
+      busy: [{ path: 'a.ts', owner: 'holder', owner_label: 'Holder', intent: 'write file', expires_ts: holderExpires }],
+    });
+
+    const b = body(await call({ wait: { max_sec: 1 } }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'queued_waiter',
+      ticket_id: 'T-Q',
+      busy: [{ path: 'a.ts', owner: 'holder', expires_ts: holderExpires.toISOString() }],
+    });
   });
 
   it('a transient CONNECTION_CLOSED error at the tail (step 6 expireWaiter) degrades to a structured wait_connection_unstable — never a raw thrown/MCP-fatal error', async () => {

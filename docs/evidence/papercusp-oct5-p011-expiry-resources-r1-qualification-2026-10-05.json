@@ -1,0 +1,308 @@
+{
+  "schemaVersion": "p011-expiry-resources-qualification-v1",
+  "measuredAt": "2026-10-05T19:39:11.939037+00:00",
+  "workItem": "WI-10006114",
+  "parent": "WI-10004890",
+  "plan": {
+    "slug": "papercusp-log-performance-remediation-2026-09-23",
+    "item": "P-011",
+    "spec": "PERF-OCT1-P011-MEMORY@2",
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010",
+    "decision": "D-021"
+  },
+  "raw": {
+    "path": "docs/evidence/papercusp-oct5-p011-expiry-resources-r1-2026-10-05.json",
+    "bytes": 26200,
+    "sha256": "1235f94168d6c5815d9c8cc50eda4d66ba96c25050339d5c752cf7b7385403fb"
+  },
+  "oracle": {
+    "path": "docs/evidence/papercusp-oct5-p011-expiry-resources-r1-oracle-2026-10-05.json",
+    "bytes": 4138,
+    "sha256": "1ac952f5941769240c03960b550d8b394ebe22c05531f7b158bbc32b70465a7c"
+  },
+  "sources": [
+    {
+      "path": "libs/generic/cache/src/cache.ts",
+      "bytes": 8089,
+      "sha256": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43"
+    },
+    {
+      "path": "libs/generic/cache/src/l1.ts",
+      "bytes": 2166,
+      "sha256": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977"
+    },
+    {
+      "path": "libs/generic/cache/src/generation-store.ts",
+      "bytes": 1081,
+      "sha256": "9a5994bcf99eddfa65562343415c3c90a5fdb42c8729b4d275277e3891c00c47"
+    },
+    {
+      "path": "packages/operator-core/lib/cache-retention.performance.integration.test.ts",
+      "bytes": 14934,
+      "sha256": "b51702f224f0385a6dcdab77ab3251d8d701e7078561351933f37397b38ecb41"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 96222,
+      "sha256": "4cd059f7604fa7536348d93c0ff8498533fd5758665467ba93c3e2cf4df3508f"
+    },
+    {
+      "path": "scripts/lib/identity-leak-patterns.mjs",
+      "bytes": 44163,
+      "sha256": "9ccce5c5ad56db19caa554f3ac03f00dcc831ea959566e013acec184926cd21d"
+    }
+  ],
+  "logs": [
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-expiry-resources-r1-guards.log",
+      "bytes": 84881,
+      "sha256": "283c796760b95ea6470f5e7377cfed687e23a30fb6faa5226dd3e58ff2fc95d3"
+    },
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-expiry-resources-r2-guards.log",
+      "bytes": 63707,
+      "sha256": "f9d4d9a3ce6b6cbc34b5128d5a21480af30cdf0a9dfb3ca152b342b23fd682ed"
+    },
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-expiry-resources-r1-producer.log",
+      "bytes": 5662,
+      "sha256": "938575620e3cbb1c7406a9d8158bbbdd5e9aa8ea7b7bf13051316cb3e5f5eb83"
+    },
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-expiry-resources-r1-oracle.log",
+      "bytes": 73192,
+      "sha256": "a2ce9209528f2a51f70608426ffaededf59adc754edaa22f0487476e8b98c95d"
+    },
+    {
+      "path": ".papercusp/logs/su-7db4f-p011-expiry-resources-r2-types.log",
+      "bytes": 1242,
+      "sha256": "22df1c30f80e257cbcd3fe5b1780ad48c4c9a52a3bde701fd47710c4656190d2"
+    }
+  ],
+  "namedCacheInputsCurrent": true,
+  "testSourceStable": true,
+  "cohorts": [
+    {
+      "arm": 0,
+      "mode": "baseline",
+      "identity": {
+        "pid": 2297151,
+        "startTicks": "1767786",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "node": "v25.9.0"
+      },
+      "terminalExitCode": 0,
+      "reaped": true,
+      "observedPidAbsent": true,
+      "samples": 5,
+      "expiredReachable": 438,
+      "usefulBefore": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "usefulAfter": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "cleanup": {
+        "entries": 0,
+        "expiredReachable": 0
+      }
+    },
+    {
+      "arm": 1,
+      "mode": "pruned",
+      "identity": {
+        "pid": 2297482,
+        "startTicks": "1767914",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "node": "v25.9.0"
+      },
+      "terminalExitCode": 0,
+      "reaped": true,
+      "observedPidAbsent": true,
+      "samples": 5,
+      "expiredReachable": 0,
+      "usefulBefore": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "usefulAfter": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "cleanup": {
+        "entries": 0,
+        "expiredReachable": 0
+      }
+    },
+    {
+      "arm": 2,
+      "mode": "pruned",
+      "identity": {
+        "pid": 2297938,
+        "startTicks": "1768022",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "node": "v25.9.0"
+      },
+      "terminalExitCode": 0,
+      "reaped": true,
+      "observedPidAbsent": true,
+      "samples": 5,
+      "expiredReachable": 0,
+      "usefulBefore": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "usefulAfter": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "cleanup": {
+        "entries": 0,
+        "expiredReachable": 0
+      }
+    },
+    {
+      "arm": 3,
+      "mode": "baseline",
+      "identity": {
+        "pid": 2298411,
+        "startTicks": "1768131",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "node": "v25.9.0"
+      },
+      "terminalExitCode": 0,
+      "reaped": true,
+      "observedPidAbsent": true,
+      "samples": 5,
+      "expiredReachable": 438,
+      "usefulBefore": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "usefulAfter": {
+        "entries": 604,
+        "sha256": "3d812b7adca84a6841db36a128e5f65795f5d2b102c49ea74a7e2241786ab028"
+      },
+      "cleanup": {
+        "entries": 0,
+        "expiredReachable": 0
+      }
+    }
+  ],
+  "observedResourcePairs": [
+    {
+      "baselineArm": 0,
+      "candidateArm": 1,
+      "ordinaryPssGrowthDifferenceBytes": -4096,
+      "ordinaryAllocatedDifferenceBytes": -665608,
+      "diagnosticHeapDifferenceBytes": 163703144,
+      "diagnosticPssDifferenceBytes": -18124800
+    },
+    {
+      "baselineArm": 3,
+      "candidateArm": 2,
+      "ordinaryPssGrowthDifferenceBytes": -4096,
+      "ordinaryAllocatedDifferenceBytes": -1955720,
+      "diagnosticHeapDifferenceBytes": 163671208,
+      "diagnosticPssDifferenceBytes": -8969216
+    }
+  ],
+  "sourceDisposition": {
+    "source": "Hard-expired cache roots",
+    "rootReclamation": "438 to 0 under the single pruning intervention; all 604 independently regenerated useful bodies preserved.",
+    "physicalPssReductionObserved": false,
+    "ordinaryAllocationReductionObserved": false,
+    "scope": "Four order-reversed private cache processes. Diagnostic GC occurs after the unforced idle/read/idle windows. Root/heap reclamation is distinct from physical savings; unfavorable PSS and allocation deltas retained.",
+    "nativePhysicalOwnership": "unknown",
+    "productionSavings": "unmeasured"
+  },
+  "verification": {
+    "existingCacheGuard": {
+      "testRunId": 20736380,
+      "status": "PASS",
+      "executedTests": 1,
+      "scope": "Before report-path-only adjustment; default recurrence behavior unchanged."
+    },
+    "failedInitialGuard": {
+      "testRunId": 20736379,
+      "status": "FAIL",
+      "cause": "Corruption fixture shortened 250ms to 249ms, still above the 200ms floor; corrected to 199ms. Auditor correctly accepted the original valid interval."
+    },
+    "newIndependentGuards": {
+      "testRunId": 20736634,
+      "status": "PASS",
+      "executedTests": 29,
+      "filteredSkipped": 180
+    },
+    "newProducer": {
+      "testRunId": 20736638,
+      "status": "PASS",
+      "executedTests": 1,
+      "filteredSkipped": 1
+    },
+    "separateSavedRawOracle": {
+      "testRunId": 20736640,
+      "status": "PASS",
+      "executedTests": 1,
+      "filteredSkipped": 208
+    },
+    "types": {
+      "command": "npm run typecheck -- --files=packages/operator-core/lib/cache-retention.performance.integration.test.ts,packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "namedFiles": 2,
+      "errors": 0,
+      "nativeExitCode": 0
+    }
+  },
+  "bindings": [
+    {
+      "id": 23904,
+      "workItem": "WI-10006114",
+      "testRunId": 20736638
+    },
+    {
+      "id": 23905,
+      "workItem": "WI-10006114",
+      "testRunId": 20736640
+    },
+    {
+      "id": 23906,
+      "workItem": "WI-10004890",
+      "testRunId": 20736638
+    },
+    {
+      "id": 23907,
+      "workItem": "WI-10004890",
+      "testRunId": 20736640
+    }
+  ],
+  "bindingQualification": {
+    "testLayer": "integration",
+    "plane": "tree",
+    "aggregateCurrentness": "unknown: test-run-worktree-not-clean",
+    "l4": false,
+    "oldBindingsPreserved": true
+  },
+  "preservedHistoricalReceipts": [
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-cache-resource-comparison-r10-2026-10-01.json",
+      "bytes": 17135,
+      "sha256": "07672507519848b146e761652372f82584222c4e9c20b05e8e607e5ca49d1df5"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-proof-census-2026-10-02.json",
+      "bytes": 43488,
+      "sha256": "ce7f942025573298f90a487a65775c63ec48861b20bde6eb2bcb82a0d6efb950"
+    }
+  ],
+  "stillOpen": [
+    "Full P011/D021 acceptance for the child and parent",
+    "All eight source dispositions and full executed operator graph",
+    "Native physical ownership, worker-clone and shared-serving measurement",
+    "P010/R8/R9 and independent full-plan acceptance/shipment",
+    "Original R1 cache inspector emitter remains unconfirmed; native owner-origin wall pending"
+  ],
+  "residueOwner": "WI-10004890 and WI-10006114 held by the current session",
+  "noHistoricalCohortReplay": true
+}

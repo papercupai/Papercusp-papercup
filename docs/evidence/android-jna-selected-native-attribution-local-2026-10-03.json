@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Selected JNA native source-header attribution delivery through existing collector",
+  "framework": "operational",
+  "command": [
+    "make test-android-library-notices",
+    "JAVA_HOME=\"$(tools/build-scripts/resolve-java-home.sh)\" android/gradlew -p android --console=plain :app:compileDebugAndroidTestKotlin :app:generateReleaseResources :app:mergeReleaseResources -x :app:generateUniFfiKotlin"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T03:20:55.364063-04:00",
+  "finishedAt": "2026-10-03T07:22:51.712560+00:00",
+  "timestampSource": "First retained make log birth time to last retained resource log modification time; actual shell envelopes both exited0.",
+  "exitCode": 0,
+  "summary": "Ten offline supplements through existing collector; selected JNA38-file reference preserves31legalcomments/29distinctcompleteblocks and7unclassifiedpaths. Six variant/phase successes with44rejectingcontrols,release221/222/221 debug227/228/227,249Rust/162texts. Native resource guard compiled and complete release JSON occurs once in compiled resource at132.",
+  "scope": "Selected upstream source-header attribution, local maintained metadata/producer/cache tests and compiled native-test/resource preparation only. Includes platform variants, not an exact Android build-input census, native binary/source equivalence, license choice, original complete native/model rights/notices, source-recipient retrieval/build, final signed candidate, current paired hosted CI, phone or Play acceptance. No new APK or native execution.",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/jna-selected-native.json",
+      "sha256": "61af2ee6d09a74de3ea21c52218b6fdb580f505e40f4b892e6e172e8a06bd774"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/jna-libffi.json",
+      "sha256": "df11fd189242241872651b34a01fc4f838cb8865e96e006c8f0ca37b0f39b9da"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/SOURCES.json",
+      "sha256": "2267f9d02381536e700077b32c85fb2ca3264ca789e0e556d7d9a3ef83ccb0fa"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "48373ef7df8d8def9459e01b34911565fadeb33c49a23ba05378038db777f06e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt",
+      "sha256": "702e28385d0955bd9a9ac8e3f09d06c733aad2f6882c491fb354166c46415c80"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "b6fc493689521544709c0ed4959330931e9cdf5ea1624e95b0ba148939135802"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "48373ef7df8d8def9459e01b34911565fadeb33c49a23ba05378038db777f06e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt",
+      "sha256": "702e28385d0955bd9a9ac8e3f09d06c733aad2f6882c491fb354166c46415c80"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "complete-selected-source-attribution",
+      "passed": true,
+      "evidence": "All38pinnedsource bytes andGitblobs reverified before deriving31identifiedcompletecomments with29distincttexts;7unclassified paths remain explicit. Text61817bytes SHAfb64816cc17a4cabc50fd9ce09db1873d140cb6553119e06b7d22407b68be620."
+    },
+    {
+      "id": "actual-graphs-and-negative-controls",
+      "passed": true,
+      "evidence": "Six actual variant/phase metadata successes with44rejecting controls each, including omitted identified/unclassified JNA source entries and missing/replaced/unlinked supplement text."
+    },
+    {
+      "id": "collector-keeps-original-jna-licenses",
+      "passed": true,
+      "evidence": "Generated JNA row contains originalApache-2.0/LGPL-2.1-or-later plusunchangedrootlibffi/newselectednative references; exactnewtext equals collectorconfig."
+    },
+    {
+      "id": "compiled-complete-release-resource",
+      "passed": true,
+      "evidence": "EntirerawJSON SHAd6c7d4ffe09a51b5ec8d4cb2bebd55bf60ce4928784526639f02b1049cc748b4 occurs exactlyonce in compiledflat SHA8986f3da11e68c7e86719e536ed4eb2874d4a0cc713f78d8a750c1862c62f97e at132."
+    },
+    {
+      "id": "native-text-guard-compilation",
+      "passed": true,
+      "evidence": "compileDebugAndroidTestKotlin exited0 with complete selectednative fingerprint; no native execution."
+    }
+  ],
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-selected-native-notices-20261003.log",
+      "sha256": "68a86344292025190ed070bf636b53c8e80458b4fb4a18286bdd51767701b605"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-selected-native-resources-20261003.log",
+      "sha256": "bb1e0118147a2c5a1c53ed0252f509336876c30710187f9182e34bfdd975edb9"
+    }
+  ],
+  "generatedResources": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-selected-native-d6c7d4ffe09a51b5-aboutlibraries.json",
+      "sha256": "d6c7d4ffe09a51b5ec8d4cb2bebd55bf60ce4928784526639f02b1049cc748b4"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-selected-native-8986f3da11e68c7e-raw_aboutlibraries.json.flat",
+      "sha256": "8986f3da11e68c7e86719e536ed4eb2874d4a0cc713f78d8a750c1862c62f97e"
+    }
+  ],
+  "upstreamEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/jna-SELECTED-NATIVE-HEADERS.json",
+      "sha256": "089fc780fc1352ba32a6f595ee95084086cf4c2a1ccb59e85016590825192924"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/jna-NATIVE-SOURCE-REFERENCE.json",
+      "sha256": "f3ae73b8284fa99287b286d7af49114f901f5ef63baefe7bf49e21351d035101"
+    }
+  ],
+  "variantTransitions": {
+    "release": [
+      221,
+      222,
+      221
+    ],
+    "debug": [
+      227,
+      228,
+      227
+    ]
+  },
+  "nativeExecution": false,
+  "signedCandidateAcceptance": false
+}

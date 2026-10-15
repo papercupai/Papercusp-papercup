@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { createTextCollector } from './child-output';
 
 const h = vi.hoisted(() => ({ home: '' }));
 vi.mock('node:os', async original => ({
@@ -355,7 +356,8 @@ export default function(pi) {
       ], { cwd: h.home, stdio: 'pipe', env });
       const closed = once(child, 'close');
       const frames: Array<Record<string, any>> = [];
-      let output = '', errors = '';
+      let output = '';
+      const errors = createTextCollector(child.stderr, { maxChars: 4_000 });
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
         output += chunk;
@@ -366,13 +368,12 @@ export default function(pi) {
           if (line.trim()) frames.push(JSON.parse(line));
         }
       });
-      child.stderr.on('data', chunk => { errors = (errors + String(chunk)).slice(-4_000); });
       // One journey deadline, not a fresh allowance for every frame.
       const end = Date.now() + (provision ? 60_000 : 15_000);
       const wait = async (predicate: () => boolean) => {
         while (!predicate()) {
           if (Date.now() > end || child.exitCode !== null || child.signalCode !== null)
-            throw new Error(`Native OMP did not complete: ${errors}; ${JSON.stringify(frames.slice(-3))}`);
+            throw new Error(`Native OMP did not complete: ${errors.peek()}; ${JSON.stringify(frames.slice(-3))}`);
           await new Promise(resolve => setTimeout(resolve, 20));
         }
       };

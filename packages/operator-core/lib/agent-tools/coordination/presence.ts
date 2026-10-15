@@ -63,10 +63,10 @@ const store = new PgPresenceStore({
 // local `kill(pid, 0)` probe can trust. See `probeProcessLiveness` below.
 //
 // declare-intent's `writePresence` call is therefore left to pass host/pid
-// through UNCHANGED (undefined) — the store's ON CONFLICT is unconditional
-// (EXCLUDED.host/EXCLUDED.pid), so an undefined `input.host`/`input.pid` here
-// resolves to PgPresenceStore's own column defaults (''/null), never a
-// fabricated value. The `suspect`/`draining` SessionState is derived on the
+// through UNCHANGED (undefined). The store preserves the supervisor's last
+// reported binding on an omitted field, uses unknown defaults on first insert,
+// and accepts explicit clears/rebindings. It never fabricates a process value.
+// The `suspect`/`draining` SessionState is derived on the
 // read path once these values are present; the confirmLiveness UX hint remains
 // the separate follow-up.
 //
@@ -83,7 +83,8 @@ const LOCAL_HOSTNAME = hostname();
  * Always bumps heartbeat_at AND last_active_at (a declared write is genuine
  * activity, D-003). Resolves the populate-once scalars agentRole (D-004, from
  * the identity) + potSlug (from `harnessSlug` via potHomeSlugForHarness) when
- * the caller hasn't already set them. Omitted optional fields reset to defaults.
+ * the caller hasn't already set them. Omitted liveness fields preserve the
+ * supervisor binding; ordinary declared work-state fields reset to defaults.
  */
 export async function writePresence(
   identity: AgentIdentity,
@@ -115,8 +116,8 @@ export async function writePresence(
   }
   // WI-3898 P1: do NOT default host/pid from the operator's OWN process — see
   // the file-header note above. Pass `input.host`/`input.pid` through exactly
-  // as given (undefined for every current in-repo caller); the store's own
-  // column defaults apply.
+  // as given (undefined for intent-only callers); the store preserves an
+  // existing supervisor binding and uses unknown defaults for a fresh row.
   //
   // WI-1546 (Gate DG-3 follow-up): capability tags ARE safe to resolve from
   // this process — unlike host/pid they're a MACHINE-level fact (docker/pg
@@ -301,8 +302,12 @@ export async function setCompactionLimit(
 
 /** Cache the compaction-compliance watchdog's context-size estimate (tokens) for a
  *  session. No-op if the presence row does not exist. agent-managed-compaction. */
-export async function setContextEstimate(ownerId: string, tokens: number): Promise<void> {
-  await store.setContextEstimate(ownerId, tokens);
+export async function setContextEstimate(
+  ownerId: string,
+  tokens: number,
+  expectedSession: { nativeSessionId: string | null; advSessionId?: number | null },
+): Promise<boolean> {
+  return store.setContextEstimate(ownerId, tokens, expectedSession);
 }
 
 /** Invalidate a cached context estimate after the native session is replaced.

@@ -8,14 +8,25 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, cp, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, cp, rename, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { chmod } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { assertStagedSeedCarriesNoIdentity } from './seed-identity-guard.js';
+import Corestore from 'corestore';
+import { openOwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
+import { cutHiveSeed } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
+import { SEED_EXCLUDED_TABLES } from '@papercusp/operator-core/lib/sync/hyperbee/seed-excluded-tables';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   parseGitDepth,
   parseHeadSnapshotTimeoutMs,
   pickGitEncryption,
   assertEpochSealIdentityPresent,
+  assertShippingCutDbTarget,
+  resolveUuidIdempotencyDropPlanInput,
   encodeEpochKeysFile,
   collectSeedEpochKeys,
   graftCorestoreEntry,
@@ -34,7 +45,348 @@ import {
   deriveSourceStoreDirs,
   createFilteredSeedProgressReporter,
   withSeedOutput,
+  readSeedFindingRedactions,
+  readSeedUuidIdempotencyDropPlans,
+  exportSeedUuidIdempotencyCensus,
 } from "./cut-seed-cli";
+
+function spawnCutSeedCli(args: string[], options: { env?: NodeJS.ProcessEnv; timeout?: number } = {}) {
+  // test:file runs under committed-source-loader. Keep that loader in the child, but force the
+  // TypeScript CLI through its ESM path: tsx otherwise classifies this CommonJS-package .ts file
+  // as CJS and the source guard correctly refuses tsx's transformed Module._compile input.
+  const cliPath = fileURLToPath(new URL('./cut-seed-cli.ts', import.meta.url));
+  const cliUrl = pathToFileURL(cliPath).href;
+  const esmTypeScriptResolver = [
+    'export async function resolve(specifier, context, nextResolve) {',
+    '  const resolved = await nextResolve(specifier, context);',
+    '  if (resolved.url.startsWith("file:") &&',
+    '      (new URL(resolved.url).pathname.endsWith(".ts") || new URL(resolved.url).pathname.endsWith(".tsx")) &&',
+    '      !resolved.url.includes("/node_modules/"))',
+    '    return { ...resolved, format: "module-typescript" };',
+    '  return resolved;',
+    '}',
+  ].join('\n');
+  const bootstrap = [
+    'import { register } from "node:module";',
+    `register("data:text/javascript," + encodeURIComponent(${JSON.stringify(esmTypeScriptResolver)}), import.meta.url);`,
+    `process.argv = [process.execPath, ${JSON.stringify(cliPath)}, ...${JSON.stringify(args)}];`,
+    `await import(${JSON.stringify(cliUrl)});`,
+  ].join('\n');
+  const env = options.env ? { ...options.env } : { ...process.env };
+  const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', bootstrap], {
+    encoding: 'utf8', ...options, env,
+  });
+  expect(result.error, result.error?.message).toBeUndefined();
+  expect(result.signal).toBeNull();
+  expect(result.status).not.toBeNull();
+  return result;
+}
+
+describe('D166 private row-drop plan transport', () => {
+  const installedPackages = ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'].sort()
+    .map(name => ({ path: `node_modules/${name}`, name, version: '1.0.0' }));
+  const execution = { sourceCommit: 'a'.repeat(40), gitDirty: false as const, nodeVersion: process.version,
+    dependencyInputSha256: 'b'.repeat(64), installedPackagesSha256: createHash('sha256').update(JSON.stringify(installedPackages)).digest('hex'),
+    dependencyGeneration: `v1-${'d'.repeat(64)}`, installedPackages,
+    excludedEntries: [], excludedEntryCount: 0,
+    loadedModulePaths: ['packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts'],
+    dependencyGenerationSnapshotSha256: 'f'.repeat(64), materializedTreesSha256: '1'.repeat(64),
+    securityPackages: ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'].map(name => ({
+      path: `node_modules/${name}`, name, version: '1.0.0', resolved: `https://registry.npmjs.org/${name}/-/package.tgz`,
+      integrity: 'sha512-' + Buffer.alloc(64).toString('base64'), files: [{ path: 'package.json', sha256: '2'.repeat(64) }] })),
+    directBlobs: ['packages/operator-core/lib/sync/hyperbee/read-merge.ts',
+      'packages/operator-core/lib/sync/hyperbee/log-snapshot.ts',
+      'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts', 'apps/operator/lib/release/cut-seed-cli.ts',
+      'packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts',
+      'packages/operator-core/lib/sync/hyperbee/hive-epoch-aead.ts',
+      'apps/operator/bin/release/dependency-generation.sh', 'scripts/check-lockfile-census.mjs',
+      'packages/operator-core/lib/sync/hyperbee/seed-module-census.mjs']
+      .map(path => ({ path, sha256: 'e'.repeat(64) })) };
+  const deps = { readFrozenExecution: async () => execution };
+  it('exports the actual frozen manifest population read-only and refuses changed source identities', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'uuid-frozen-export-'));
+    const store = new Corestore(join(dir, 'source'));
+    try {
+      await store.ready();
+      const own = await openOwnLog(store);
+      await own.append({ type: 'put', table: 'harness_plans', hbKey: 'row', value: { public: 'unchanged' },
+        ts: 1, schema_version: 1, author_pubkey: '' });
+      await own.append({ type: 'put', table: 'harness_plans', hbKey: 'z-private', value: { body: 'private-fixture-owner' },
+        ts: 2, schema_version: 1, author_pubkey: '' });
+      const seed = await cutHiveSeed({ potId: 'fixture-pot', cutAtEpoch: 0, cutHlc: '0', cutTs: 1,
+        outDir: join(dir, 'seed'), git: null, corestore: { sourceStore: store, coreKeys: [own.keyHex] } });
+      const censusDir = join(dir, 'census'); await mkdir(censusDir, { mode: 0o700 });
+      const manifestBytes = await readFile(seed.manifestPath);
+      const inputs = { storeDir: join(dir, 'seed', 'corestore'), manifestPath: seed.manifestPath,
+        manifestSha256: createHash('sha256').update(manifestBytes).digest('hex'),
+        epochKeysPath: join(dir, 'unused-private-keys.json'), epochKeysSha256: 'b'.repeat(64), outputDir: censusDir,
+        redactValues: ['private-fixture-owner'] };
+      // Real Hypercore/manifest path; only the checkout/dependency environment is a fixture.
+      const configPath = await exportSeedUuidIdempotencyCensus(inputs, deps);
+      const config = JSON.parse(await readFile(configPath, 'utf8'));
+      expect(config.potId).toBe('fixture-pot'); expect(config.sources).toHaveLength(1);
+      expect(config.sources[0]).toMatchObject({ sourceKeyHex: own.keyHex, sourceLength: 2,
+        sourceBlocksRead: 2, rowCount: 2 });
+      const rows = (await readFile(config.sources[0].rowsPath, 'utf8')).trim().split('\n').map(text => JSON.parse(text));
+      const row = rows[0];
+      expect(row).toMatchObject({ table: 'harness_plans', hbKey: 'row', author_pubkey: '', value: { public: 'unchanged' } });
+      expect(rows[1]).toMatchObject({ hbKey: 'z-private', privacyProjection: { disposition: 'drop' } });
+      expect(own.length).toBe(2);
+      expect(config.sources[0].sourceInput.executionBinding).toEqual(execution);
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, manifestSha256: '0'.repeat(64) }, deps)).rejects.toThrow('binding changed');
+      await expect(exportSeedUuidIdempotencyCensus(inputs, deps)).rejects.toThrow('EEXIST');
+      const captureDir = join(dir, 'capture'); await mkdir(captureDir, { mode: 0o700 });
+      const capturedConfigPath = await exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: captureDir,
+        captureOriginalSpan: true }, deps);
+      const capturedConfig = JSON.parse(await readFile(capturedConfigPath, 'utf8'));
+      expect(capturedConfig.originalSpanReplicaDir).toBe(join(captureDir, 'original-signed-span'));
+      expect(capturedConfig.sources[0].sourceInput.sourceHead).toEqual(config.sources[0].sourceInput.sourceHead);
+      expect(capturedConfig.sources[0].sourceInput.proofInventorySha256).toBe(config.sources[0].sourceInput.proofInventorySha256);
+      const originalDir = join(dir, 'original-capture'); await mkdir(originalDir, { mode: 0o700 });
+      const originalConfigPath = await exportSeedUuidIdempotencyCensus({ ...inputs, storeDir: join(dir, 'source'),
+        manifestPath: undefined, manifestSha256: undefined, potId: 'fixture-pot', outputDir: originalDir,
+        captureOriginalSpan: true }, deps);
+      const originalConfig = JSON.parse(await readFile(originalConfigPath, 'utf8'));
+      const originalManifest = JSON.parse(await readFile(originalConfig.sourceManifestPath, 'utf8'));
+      expect(originalManifest).toMatchObject({ sourceSelection: 'enumerateOwnStoreCoreKeys',
+        stores: [{ kind: 'corestore', meta: { coreKeys: [own.keyHex], coreLengths: { [own.keyHex]: 2 } } }] });
+      expect(originalManifest.stores[0].meta.sourceHeads[own.keyHex]).toEqual(originalConfig.sources[0].sourceInput.sourceHead);
+      const replayDir = join(dir, 'original-replay'); await mkdir(replayDir, { mode: 0o700 });
+      const replayInputs = { ...inputs, storeDir: originalConfig.originalSpanReplicaDir,
+        manifestPath: originalConfig.sourceManifestPath, manifestSha256: originalConfig.sourceManifestSha256, outputDir: replayDir };
+      const replayPath = await exportSeedUuidIdempotencyCensus(replayInputs, deps);
+      const replay = JSON.parse(await readFile(replayPath, 'utf8'));
+      expect(replay.sources[0].sourceInput).toEqual(originalConfig.sources[0].sourceInput);
+      const changed = { ...originalManifest, stores: [{ ...originalManifest.stores[0], meta: {
+        ...originalManifest.stores[0].meta, sourceHeads: { [own.keyHex]: {
+          ...originalManifest.stores[0].meta.sourceHeads[own.keyHex], treeHash: '0'.repeat(64) } } } }] };
+      const alteredPath = join(dir, 'changed-original.json'); const alteredBytes = JSON.stringify(changed);
+      await writeFile(alteredPath, alteredBytes, { mode: 0o600 });
+      const refusedHeadDir = join(dir, 'refused-head'); await mkdir(refusedHeadDir, { mode: 0o700 });
+      await expect(exportSeedUuidIdempotencyCensus({ ...replayInputs, outputDir: refusedHeadDir,
+        manifestPath: alteredPath, manifestSha256: createHash('sha256').update(alteredBytes).digest('hex') }, deps))
+        .rejects.toThrow('signed head changed');
+      expect(await readdir(refusedHeadDir)).not.toContain('uuid-census.private.json');
+      const refusedDir = join(dir, 'refused'); await mkdir(refusedDir, { mode: 0o700 });
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir },
+        { readFrozenExecution: async () => { throw new Error('fixture clean execution refused'); } }))
+        .rejects.toThrow('clean execution refused');
+      expect(await readdir(refusedDir)).toEqual([]);
+      const drift = vi.fn().mockResolvedValueOnce(execution).mockResolvedValueOnce({ ...execution, sourceCommit: 'f'.repeat(40) });
+      await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir }, { readFrozenExecution: drift }))
+        .rejects.toThrow('execution changed');
+      expect(await readdir(refusedDir)).not.toContain('uuid-census.private.json');
+    } finally { await store.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('checks exact private bytes and the producer contract before returning bindings', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'seed-uuid-plans-'));
+    await chmod(dir, 0o700);
+    const file = join(dir, 'plans.json');
+    const plans = [{ schema: 'papercusp-uuid-idempotency-row-drop-plan-v1',
+      reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166', sourceKeyHex: 'a'.repeat(64),
+      sourceLength: 1, rows: [{ table: 'plans', hbKey: 'row', valueSha256: 'b'.repeat(64),
+        occurrences: [{ segment: 'segment-000001.blob', line: 1, fieldPath: ['idempotencyKey'] }] }] }];
+    const value = { schema: 'papercusp-uuid-idempotency-row-drop-plan-set-v1', reviewRef: plans[0]!.reviewRef,
+      plans, sourceAuthentication: 'original-envelope-aead',
+      sourceSignatureAndCoverage: 'requires-independent-hypercore-export-validation',
+      privateSourceBindings: { configSha256: 'c'.repeat(64) }, counts: { droppedRows: 1 } };
+    const save = async (data: unknown) => {
+      const bytes = JSON.stringify(data); await writeFile(file, bytes, { mode: 0o600 });
+      return createHash('sha256').update(bytes).digest('hex');
+    };
+    try {
+      const hash = await save(value);
+      expect(await readSeedUuidIdempotencyDropPlans(file, hash)).toEqual(plans);
+      await expect(readSeedUuidIdempotencyDropPlans(file, hash, [])).rejects.toThrow('input invalid');
+      const literals = ['fixture-owner'];
+      const bound = await save({ ...value, privateSourceBindings: { sources: [{ privacyProjectionContext: {
+        schema: 'papercusp-seed-privacy-projection-v1',
+        literalsSha256: createHash('sha256').update(JSON.stringify(literals)).digest('hex'),
+        excludedTablesSha256: createHash('sha256').update(JSON.stringify([...SEED_EXCLUDED_TABLES].sort())).digest('hex'),
+      } }] } });
+      expect(await readSeedUuidIdempotencyDropPlans(file, bound, literals)).toEqual(plans);
+      await expect(readSeedUuidIdempotencyDropPlans(file, bound, ['other-owner'])).rejects.toThrow('input invalid');
+      await expect(readSeedUuidIdempotencyDropPlans(file, '0'.repeat(64))).rejects.toThrow('input invalid');
+      const duplicate = await save({ ...value, plans: [...plans, ...plans] });
+      await expect(readSeedUuidIdempotencyDropPlans(file, duplicate)).rejects.toThrow('input invalid');
+      const original = await save(value);
+      await chmod(file, 0o644);
+      await expect(readSeedUuidIdempotencyDropPlans(file, original)).rejects.toThrow('input invalid');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('requires an exact private file/hash and a fresh, non-reused corestore cut', () => {
+    const valid = {
+      requested: true,
+      file: 'private-plans.json',
+      hash: 'a'.repeat(64),
+      skipCorestoreRefresh: true,
+      reuseCorestore: false,
+      noCorestore: false,
+    };
+    expect(resolveUuidIdempotencyDropPlanInput(valid)).toEqual({ file: valid.file, hash: valid.hash });
+    expect(resolveUuidIdempotencyDropPlanInput({ ...valid, requested: false })).toBeUndefined();
+
+    for (const invalid of [
+      { ...valid, file: undefined },
+      { ...valid, hash: undefined },
+      { ...valid, skipCorestoreRefresh: false },
+      { ...valid, reuseCorestore: true },
+      { ...valid, noCorestore: true },
+    ]) {
+      expect(() => resolveUuidIdempotencyDropPlanInput(invalid))
+        .toThrow('UUID row-drop plans require an exact private file/hash and a fresh cut with --skip-corestore-refresh');
+    }
+  });
+
+  it('refuses an invalid row-drop cut before opening a store or replacing the output', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'seed-uuid-refuse-'));
+    try {
+      const out = join(dir, 'prior-seed'); await mkdir(out);
+      await writeFile(join(out, 'manifest.json'), 'prior bytes');
+      const result = spawnCutSeedCli(['--out', out,
+        '--uuid-idempotency-drop-plans', join(dir, 'missing.json'),
+        '--uuid-idempotency-drop-plans-sha256', 'a'.repeat(64)], { timeout: 30_000 });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('fresh cut with --skip-corestore-refresh');
+      expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior bytes');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('assertShippingCutDbTarget (WI-6554700010012344: a shipping cut never reads a discovered DB)', () => {
+  const base = { workspaceId: 'papercusp-workspace', allowDiscoveredDb: false } as const;
+
+  it('accepts an explicit env DSN and the operator env file', () => {
+    for (const source of ['env', 'operator-env-file'] as const) {
+      expect(() => assertShippingCutDbTarget({ ...base, target: { source, endpoint: 'localhost:5432' } })).not.toThrow();
+    }
+  });
+
+  it('refuses embedded-PG discovery and the port fallback, naming the source and endpoint', () => {
+    for (const [source, endpoint] of [['discovery', 'localhost:19406'], ['fallback', 'localhost:5432']] as const) {
+      let message = '';
+      try {
+        assertShippingCutDbTarget({ ...base, target: { source, endpoint } });
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toContain('REFUSING shipping cut');
+      expect(message).toContain(`via ${source} (${endpoint})`);
+      expect(message).toContain('--workspace-id papercusp-workspace');
+      expect(message).toContain('DATABASE_URL');
+      expect(message).toContain('--allow-discovered-db');
+    }
+  });
+
+  it('lets --allow-discovered-db through with a loud warning', () => {
+    const warn = vi.fn();
+    expect(() =>
+      assertShippingCutDbTarget({
+        ...base,
+        allowDiscoveredDb: true,
+        target: { source: 'discovery', endpoint: 'localhost:19406' },
+        warn,
+      }),
+    ).not.toThrow();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('--allow-discovered-db');
+    expect(String(warn.mock.calls[0]?.[0])).toContain('via discovery (localhost:19406)');
+  });
+
+  it('the CLI refuses --workspace-id before any cut work when no env DSN or operator env file pins the DB', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'seed-db-source-refuse-'));
+    try {
+      const out = join(dir, 'prior-seed'); await mkdir(out);
+      await writeFile(join(out, 'manifest.json'), 'prior bytes');
+      const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_SKIP_PG_DISCOVERY: '1' };
+      for (const key of ['DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'PAPERCUSP_PG_PORT']) {
+        delete env[key];
+      }
+      // A MISSING --reuse-corestore: if the guard ever regresses, the CLI dies at
+      // readReusableCorestore, right after a read-only epoch lookup and BEFORE the git
+      // cut, instead of bundling the whole repo. (--no-git is refused earlier with reuse.)
+      const result = spawnCutSeedCli(['--out', out,
+        '--workspace-id', 'wi-6554700010012344-test',
+        '--reuse-corestore', join(dir, 'missing-corestore')], { timeout: 60_000, env });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('REFUSING shipping cut');
+      expect(result.stderr).toMatch(/via (discovery|fallback) \(/);
+      expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior bytes');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('exact private finding redaction input', () => {
+  async function fixture() {
+    const dir = await mkdtemp(join(tmpdir(), 'seed-private-redaction-'));
+    await chmod(dir, 0o700);
+    const source = join(dir, 'plaintext.jsonl');
+    const report = join(dir, 'findings.json');
+    const meta = join(dir, 'findings.meta.json');
+    const config = join(dir, 'detectors.toml');
+    const secret = ['fixture-view:', 'synthetic-only-pass'].join('');
+    const sourceText = JSON.stringify({ body: 'curl -u ' + secret }) + '\n';
+    const row = { RuleID: 'curl-auth-user', Match: 'curl -u ' + secret, Secret: secret, File: source };
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+    const reportText = JSON.stringify([row]);
+    await Promise.all([
+      writeFile(source, sourceText, { mode: 0o600 }),
+      writeFile(report, reportText, { mode: 0o600 }),
+      writeFile(config, '[extend]\nuseDefault = true\n', { mode: 0o600 }),
+      writeFile(meta, JSON.stringify({ scannerExit: 1, findings: 1, reportSha256: hash(reportText),
+        identity: { blobSha256: hash(sourceText), configSha256: hash('[extend]\nuseDefault = true\n') } }), { mode: 0o600 }),
+    ]);
+    return { dir, source, report, config, secret, digest: hash(JSON.stringify([row.RuleID, row.Match, row.Secret])) };
+  }
+
+  it('resolves only the approved finding from an unchanged private scan', async () => {
+    const f = await fixture();
+    try {
+      expect(await readSeedFindingRedactions(f.report, [f.digest], f.config)).toEqual([f.secret]);
+      await expect(readSeedFindingRedactions(f.report, ['0'.repeat(64)], f.config)).rejects.toThrow('evidence invalid');
+      await expect(readSeedFindingRedactions(f.report, [f.digest, f.digest], f.config)).rejects.toThrow('evidence invalid');
+    } finally { await rm(f.dir, { recursive: true, force: true }); }
+  });
+
+  it('refuses export redaction before reading the report, opening a store or touching prior seed output', async () => {
+    const f = await fixture();
+    try {
+      const out = join(f.dir, 'prior-seed');
+      await mkdir(out);
+      await writeFile(join(out, 'manifest.json'), 'prior seed bytes');
+      const result = spawnCutSeedCli([
+        '--out', out, '--store-dir', join(f.dir, 'absent-store'),
+        '--redact-findings', join(f.dir, 'absent-report.json'),
+        '--redact-finding-digests', f.digest,
+      ], { timeout: 30_000 });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('export redaction is unsupported for sealed content');
+      expect(result.stdout + result.stderr).not.toContain(f.secret);
+      expect(await readFile(join(out, 'manifest.json'), 'utf8')).toBe('prior seed bytes');
+      expect(await readdir(f.dir)).not.toContain('absent-store');
+    } finally { await rm(f.dir, { recursive: true, force: true }); }
+  });
+
+  it('fails closed on changed source/config/report and public evidence permissions without exposing values', async () => {
+    for (const mutation of ['source', 'config', 'report', 'permissions']) {
+      const f = await fixture();
+      try {
+        if (mutation === 'permissions') await chmod(f.report, 0o644);
+        else await writeFile(f[mutation as 'source' | 'config' | 'report'], 'changed', { mode: 0o600 });
+        try {
+          await readSeedFindingRedactions(f.report, [f.digest], f.config);
+          throw new Error('expected refusal');
+        } catch (error) {
+          expect(String(error)).toContain('evidence invalid');
+          expect(String(error)).not.toContain(f.secret);
+          expect(String(error)).not.toContain(f.dir);
+        }
+      } finally { await rm(f.dir, { recursive: true, force: true }); }
+    }
+  });
+});
 
 describe('head-snapshot timeout override', () => {
   it('prefers the explicit CLI value over the environment', () => {
@@ -115,6 +467,38 @@ describe('transactional seed output', () => {
       expect(await readFile(join(out, 'epoch-keys.json'), 'utf8')).toBe('new keys');
       expect(await readFile(join(out, 'corestore', 'data'), 'utf8')).toBe('prior corestore');
       expect(await readdir(root)).toEqual(['seed']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('retains a rejected identity-bearing stage privately without publishing it', async () => {
+    const { root, out } = await fixture();
+    const marker = 'fixture-crossbox-marker';
+    const rejected = Buffer.concat([Buffer.from([0, 255]), Buffer.from(marker)]);
+    try {
+      await expect(withSeedOutput(out, async staged => {
+        await cp(out, staged, { recursive: true });
+        await mkdir(join(staged, 'corestore', 'db'));
+        await writeFile(join(staged, 'corestore', 'db', '000104.blob'), rejected);
+        await assertStagedSeedCarriesNoIdentity({
+          dir: staged,
+          neutralHostname: FIXTURE_BUILD_HOST,
+          env: {},
+          probe: { user: () => undefined, home: () => undefined, hostname: () => 'runner-test' },
+          extraLiterals: [marker],
+        });
+      })).rejects.toThrow(/STAGED SEED CARRIES/);
+      await expectPrior(out);
+      const transactions = (await readdir(root)).filter(name => name.startsWith('.seed-cut-'));
+      expect(transactions).toHaveLength(1);
+      const transaction = join(root, transactions[0]);
+      expect((await stat(transaction)).mode & 0o077).toBe(0);
+      expect(await readFile(join(transaction, 'next', 'corestore', 'db', '000104.blob'))).toEqual(rejected);
+      const receiptPath = join(transaction, 'identity-failure.json');
+      expect((await stat(receiptPath)).mode & 0o077).toBe(0);
+      expect(JSON.parse(await readFile(receiptPath, 'utf8'))).toMatchObject({
+        kind: 'seed-identity',
+        findings: [{ file: 'corestore/db/000104.blob', key: 'release-literal:0', offset: 2, binary: true }],
+      });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -490,6 +874,12 @@ describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
     const run = vi.fn(async (transaction: unknown) => {
       expect(transaction).toBe(tx);
       expect(transactionOpen).toBe(true);
+      // The refresh performs multiple awaited PG reads. The singleton must still
+      // own its transaction when the callback resumes, not just when it starts.
+      // Two turns let an incorrectly returned array-of-promises commit first.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(transactionOpen).toBe(true);
       return 'cut-opened';
     });
 
@@ -498,6 +888,38 @@ describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
     ).resolves.toBe('cut-opened');
     expect(transactionOpen).toBe(false);
     expect(run).toHaveBeenCalledWith(tx);
+  });
+
+  it('rolls back when the cut callback fails after an asynchronous pause', async () => {
+    const tx = vi.fn(async () => [{ acquired: true }]) as never;
+    const events: string[] = [];
+    const failure = new Error('backfill failed');
+    const pg = {
+      begin: vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => {
+        try {
+          const result = await run(tx);
+          events.push('commit');
+          return result;
+        } catch (error) {
+          events.push('rollback');
+          throw error;
+        }
+      }),
+    } as never;
+
+    await expect(withCutSeedSingleton({
+      pg,
+      workspaceId: 'ws-1',
+      hive: 'papercusp',
+      run: async () => {
+        events.push('started');
+        await Promise.resolve();
+        await Promise.resolve();
+        events.push('failed');
+        throw failure;
+      },
+    })).rejects.toBe(failure);
+    expect(events).toEqual(['started', 'failed', 'rollback']);
   });
 });
 
@@ -647,6 +1069,23 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     expect(sleep).toHaveBeenCalledTimes(2);
   });
 
+  it('refuses a quarantine that appears during a changing backlog instead of waiting forever', async () => {
+    const states = [
+      { undrained: 5, quarantined: 0, first_quarantined_id: null },
+      { undrained: 9, quarantined: 1, first_quarantined_id: '42' },
+    ];
+    let calls = 0;
+    const pg = vi.fn(async (strings: TemplateStringsArray) => {
+      expect(strings.join('?')).toContain("to_jsonb(o.*) ->> 'quarantined_at'");
+      return [states[Math.min(calls++, states.length - 1)]];
+    }) as never;
+    const sleep = vi.fn(async () => {});
+    await expect(waitForOperatorDrain({ ...base, pg, sleep, warn: () => {} }))
+      .rejects.toThrow(/1 QUARANTINED.*first id=42.*waiting for zero cannot complete/);
+    expect(calls).toBe(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
   it('resets the stall clock when an external refill raises the backlog', async () => {
     // A second writer can refill rows after the first cut has reached a low-water mark.
     // The refill is new progress to wait on; the old low-water-only detector would throw
@@ -701,6 +1140,7 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     const { sql } = pgReturning([2]);
     let t = 0;
     await expect(
+      // idle-window-ok: this pure drain fixture advances an injected clock by100ms; no child boots.
       waitForOperatorDrain({ ...base, pg: sql, stallMs: 10, now: () => (t += 100), sleep: async () => {}, warn: () => {} }),
     ).rejects.toThrow(/cannot drain on its behalf without corrupting delivery state/);
   });
@@ -821,9 +1261,40 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
     hive: 'papercusp',
     sparse: false,
     wantRefresh: true,
-    pg: {} as never,
+    pg: (async () => []) as never,
     warn: () => {},
   };
+
+  it('refuses existing quarantined rows BEFORE backfill, drain, or opening a read-only snapshot', async () => {
+    const { calls, openStore } = harness({ locked: true });
+    const backfillImpl = vi.fn();
+    const waitImpl = vi.fn();
+    const pg = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.join('?');
+      expect(sql).toContain('drained_at IS NULL');
+      expect(sql).toContain("to_jsonb(o.*) ->> 'quarantined_at'");
+      expect(values).toEqual(['ws', 'papercusp']);
+      return [{ quarantined: 2, first_quarantined_id: '41' }];
+    });
+    await expect(openSourceStoreForCut({
+      ...base, pg: pg as never, openStore,
+      backfillImpl: backfillImpl as never, waitImpl: waitImpl as never,
+    })).rejects.toThrow(/2 QUARANTINED.*first id=41.*refusing to omit them/);
+    expect(backfillImpl).not.toHaveBeenCalled();
+    expect(waitImpl).not.toHaveBeenCalled();
+    expect(calls).toEqual(['open:rw']);
+  });
+
+  it('propagates quarantine preflight read failures without enqueueing a backfill', async () => {
+    const { openStore } = harness({ locked: true });
+    const backfillImpl = vi.fn();
+    await expect(openSourceStoreForCut({
+      ...base, openStore,
+      pg: (async () => { throw new Error('quarantine inspection unavailable'); }) as never,
+      backfillImpl: backfillImpl as never,
+    })).rejects.toThrow('quarantine inspection unavailable');
+    expect(backfillImpl).not.toHaveBeenCalled();
+  });
 
   it('on a LIVE-operator box opens read-only only AFTER the drain completes — the seed must not be a pre-drain snapshot', async () => {
     const { calls, openStore } = harness({ locked: true });

@@ -22,4 +22,8 @@ TimeoutStartSec=90min
 # REQUIRED: the user must provide their key here (or in
 # ~/.config/environment.d/) — without it the script no-ops.
 # Environment=ANTHROPIC_API_KEY=...
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/llm-test-nightly.sh
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+# The script otherwise derives the repo root from its own (snapshot) directory.
+Environment=PAPERCUSP_REPO_ROOT=%h/papercupai-workspace/papercusp
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/llm-test-nightly.sh

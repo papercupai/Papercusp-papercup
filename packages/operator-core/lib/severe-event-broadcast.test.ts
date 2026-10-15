@@ -25,8 +25,14 @@ const M = vi.hoisted(() => ({
   // FALSE because default-OFF IS the delivered end state (D-020) — the tier being ON is
   // the reversible testing escape hatch, not the baseline.
   mugKettleSystemEnabled: vi.fn(async () => false),
+  // WI-6554700010011878: the key's newest condition envelope. Defaults to null (no prior
+  // envelope), so every pre-existing test sees an unchanged broadcast.
+  readLatestConditionEnvelope: vi.fn(async (_key: string) => null as Record<string, unknown> | null),
 }));
 vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage: M.sendMessage }));
+vi.mock('./agent-tools/coordination/tools/conditions', () => ({
+  readLatestConditionEnvelope: M.readLatestConditionEnvelope,
+}));
 vi.mock('./agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: M.wakeRecipients }));
 vi.mock('./pot/started', () => ({ mugKettleSystemEnabled: M.mugKettleSystemEnabled }));
 
@@ -34,10 +40,12 @@ import {
   broadcastSevereEvent,
   broadcastSevereEventResolved,
   broadcastSevereEventResolvedMany,
+  isRepeatOfOpenOneShotAlarm,
 } from './severe-event-broadcast';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  M.readLatestConditionEnvelope.mockImplementation(async () => null);
   M.sendMessage.mockImplementation(async (..._args: unknown[]) => ({ to: [] }) as unknown);
   M.wakeRecipients.mockImplementation(async (..._args: unknown[]) => ({}) as unknown);
 });
@@ -328,5 +336,84 @@ describe('broadcastSevereEventResolvedMany (EI-9030b — one coalesced all-clear
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// WI-6554700010011878 — the one-shot contract is enforced at this chokepoint. Measured
+// 2026-10-14: 75% of the 30-day condition log was one-shot re-alarms repeating a still-open
+// key's summary, which overflowed the condition fold window and re-woke routed owners on
+// every watchdog tick.
+describe('broadcastSevereEvent — one-shot contract (WI-6554700010011878)', () => {
+  const key = 'alarm:ungraded-filings:stale:scout';
+  const summary = 'scout has at least 10 filing(s) ungraded > 2d';
+  const openAlarm = (s: string) => ({ condition_key: key, summary: s, one_shot: true, ts: 't1' });
+
+  it('does not re-send a oneShot alarm that repeats its open key: no broadcast, no routed send, no wake', async () => {
+    M.readLatestConditionEnvelope.mockResolvedValue(openAlarm(summary));
+    const ok = await broadcastSevereEvent({
+      summary,
+      conditionKey: key,
+      oneShot: true,
+      route: { ownerSelector: 'su-owner-1', reason: 'owns scout grading' },
+    });
+    expect(ok).toBe(true); // the alarm is still in effect
+    expect(M.readLatestConditionEnvelope).toHaveBeenCalledWith(key);
+    expect(M.sendMessage).not.toHaveBeenCalled();
+    expect(M.wakeRecipients).not.toHaveBeenCalled();
+  });
+
+  it('sends the first alarm of a key (no prior envelope)', async () => {
+    await broadcastSevereEvent({ summary, conditionKey: key, oneShot: true });
+    expect(M.sendMessage).toHaveBeenCalledOnce();
+    const [, opts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
+    expect(opts.extra).toMatchObject({ condition_key: key, one_shot: true });
+  });
+
+  it('sends a changed summary, because it is new information', async () => {
+    M.readLatestConditionEnvelope.mockResolvedValue(openAlarm('scout has at least 9 filing(s) ungraded > 2d'));
+    await broadcastSevereEvent({ summary, conditionKey: key, oneShot: true });
+    expect(M.sendMessage).toHaveBeenCalledOnce();
+  });
+
+  it('sends after a singular resolution: a new episode', async () => {
+    M.readLatestConditionEnvelope.mockResolvedValue({ condition_key: key, resolves_condition: key, summary });
+    await broadcastSevereEvent({ summary, conditionKey: key, oneShot: true });
+    expect(M.sendMessage).toHaveBeenCalledOnce();
+  });
+
+  it('sends after a batched resolution that names the key in resolves_conditions only', async () => {
+    M.readLatestConditionEnvelope.mockResolvedValue({
+      condition_key: 'other', resolves_condition: 'other', resolves_conditions: ['other', key], summary,
+    });
+    await broadcastSevereEvent({ summary, conditionKey: key, oneShot: true });
+    expect(M.sendMessage).toHaveBeenCalledOnce();
+  });
+
+  it('never reads or suppresses an alarm that did not declare oneShot (level emitters keep their heartbeat)', async () => {
+    M.readLatestConditionEnvelope.mockResolvedValue(openAlarm(summary));
+    await broadcastSevereEvent({ summary, conditionKey: key });
+    expect(M.readLatestConditionEnvelope).not.toHaveBeenCalled();
+    expect(M.sendMessage).toHaveBeenCalledOnce();
+  });
+
+  it('fails OPEN: a read failure still broadcasts', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      M.readLatestConditionEnvelope.mockRejectedValueOnce(new Error('pg down'));
+      await expect(broadcastSevereEvent({ summary, conditionKey: key, oneShot: true })).resolves.toBe(true);
+      expect(M.sendMessage).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('isRepeatOfOpenOneShotAlarm: only an open alarm for the same key with the same summary is a repeat', () => {
+    expect(isRepeatOfOpenOneShotAlarm(null, key, summary)).toBe(false);
+    expect(isRepeatOfOpenOneShotAlarm(openAlarm(summary), key, summary)).toBe(true);
+    expect(isRepeatOfOpenOneShotAlarm(openAlarm(summary), 'another-key', summary)).toBe(false);
+    expect(isRepeatOfOpenOneShotAlarm(openAlarm('older words'), key, summary)).toBe(false);
+    expect(isRepeatOfOpenOneShotAlarm({ ...openAlarm(summary), resolves_condition: key }, key, summary)).toBe(false);
+    expect(isRepeatOfOpenOneShotAlarm({ ...openAlarm(summary), resolves_conditions: [key] }, key, summary)).toBe(false);
   });
 });

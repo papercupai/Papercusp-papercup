@@ -117,9 +117,15 @@ async function mintFork(original: { id: number; coordOwnerId: string; nativeId: 
     cwd: '/home/dev/papercupai-workspace/papercusp',
     planSlug: 'my-plan-2026-07-02',
   };
-  const body = forkBootstrapBody(source); // REAL launcher fn
   const forkSid = `su-${randomUUID()}`;
   const forkNativeId = randomUUID();
+  const body = forkBootstrapBody(source, null, null, forkSid, {
+    launchedBy: original.coordOwnerId,
+    headless: true,
+    sessionPortSourceAdvSessionId: original.id,
+    sessionPortToken: 'inherited-port-token',
+    sessionPortProtocol: 1,
+  }); // REAL launcher fn, including the recorded fork provenance
   const forkRowId = await recordAdvSession({
     agent: body.agent,
     mode: 'console',
@@ -128,6 +134,7 @@ async function mintFork(original: { id: number; coordOwnerId: string; nativeId: 
     cwd: body.cwd,
     coordOwnerId: forkSid,
     sessionId: forkNativeId,
+    launchArgv: body.launch_argv,
   });
   expect(forkRowId).not.toBeNull();
   return { id: forkRowId as number, sid: forkSid, nativeId: forkNativeId, body, source };
@@ -149,8 +156,12 @@ async function readRow(id: number) {
       agent: string | null;
       cwd: string | null;
       ended_at: Date | null;
+      launch_argv: string[] | null;
+      port_id: string | null;
+      port_source_adv_session_id: string | null;
     }>
-  >`SELECT id, coord_owner_id, session_id, workspace_id, plan_slug, agent, cwd, ended_at
+  >`SELECT id, coord_owner_id, session_id, workspace_id, plan_slug, agent, cwd, ended_at,
+           launch_argv, port_id, port_source_adv_session_id
       FROM harness_shared.adv_sessions WHERE id = ${id} LIMIT 1`;
   return rows[0] ?? null;
 }
@@ -198,6 +209,19 @@ describe('psu --resume --fork — server-side fork identity model (real PG)', ()
     expect(forkRow!.plan_slug).toBe('my-plan-2026-07-02');
     expect(forkRow!.agent).toBe('claude');
     expect(forkRow!.ended_at).toBeNull();
+    expect(forkRow!.launch_argv).toEqual(fork.body.launch_argv);
+    expect(forkRow!.launch_argv).toEqual(expect.arrayContaining([
+      `--resume=${original.nativeId}`, '--fork', '--headless',
+      `--owner-id=${fork.sid}`, `--launched-by=${original.coordOwnerId}`,
+    ]));
+    expect(forkRow!.launch_argv!.filter((arg) => /^--resume(?:=|$)/.test(arg)))
+      .toEqual([`--resume=${original.nativeId}`]);
+    expect(forkRow!.launch_argv!.some((arg) => arg.startsWith('--session-port'))).toBe(false);
+    expect(forkRow!.port_id).toBeNull();
+    expect(forkRow!.port_source_adv_session_id).toBeNull();
+    expect(fork.body).not.toHaveProperty('session_port_token');
+    expect(fork.body).not.toHaveProperty('session_port_protocol');
+    expect(fork.body).not.toHaveProperty('session_port_source_adv_session_id');
 
     // The original row is byte-for-byte its old self — forking mutates nothing on it.
     expect(origRow!.coord_owner_id).toBe(original.coordOwnerId);

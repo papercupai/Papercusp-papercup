@@ -111,15 +111,29 @@ export const ALLOWLIST = new Map([
   // If a static way to separate (1) from (2) appears — an awaited `child` whose
   // promise resolves in the same function — the predicate should prefer it and
   // these two should come off the list.
-  ['packages/operator-core/lib/agent-tools/testing/run.ts', 'detached ONLY to lead a process group so a timeout group-kills vitest; the child is awaited and dies with the call'],
+  // testing/run.ts left this list in WI-6554700010009949: it no longer calls spawn/fork.
   ['packages/operator-core/lib/agent-tools/build/typecheck.ts', 'detached ONLY to lead a process group so a timeout group-kills tsc; the child is awaited and dies with the call'],
+  // Same category-(2) lifecycle: the closure worker is bounded by its request
+  // deadline, terminated in `finally`, and awaited through exit before the
+  // preflight settles. `detached` supplies only the POSIX group that cleanup kills.
+  ['packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts', 'detached ONLY to let the request deadline kill the esbuild worker process group; testImportClosures terminates it in finally and awaits worker exit before the preflight settles'],
+  // WI-10006543: the same shape as mutation-probe-fence. One forked worker per graph:query
+  // callers question, killed by group in `finally` and awaited through exit before the call returns.
+  ['packages/operator-core/lib/code-intelligence/first-party-callers-offthread.ts', 'detached ONLY to let the query deadline kill the callers worker process group; firstPartyCallersOffthread terminates it in finally and awaits worker exit before the answer returns'],
+  // WI-6554700010009949: the same category-(2) shape in a TEST fixture (imported only by
+  // the native-ecosystem tests). nativeFixtureProcess awaits the child until `close`; its
+  // deadline timer group-terminates it through processGroupLifetime, and waitForExit
+  // (which throws when group exit is unverified) runs before the function returns.
+  ['packages/operator-core/lib/code-intelligence/native-cli.fixture.ts', 'test fixture: detached ONLY to lead a process group so the private-fixture deadline group-kills the child tree; nativeFixtureProcess awaits close, and processGroupLifetime terminate/waitForExit proves the group exited before it returns (WI-6554700010009949)'],
+  ['packages/operator-core/lib/release/admission-fix-precheck.ts', 'detached ONLY to lead a process group so a timeout (or a stdout-holding grandchild after exit) group-kills the pre-check subtree; the child is awaited and dies with the call (WI-10004928 part 5)'],
   // Same category-(2) shape, verified first-hand (WI-10004340): each spawn site is inside
   // `await new Promise((resolve) => …)` that resolves on the child's `close`, and `detached`
   // exists only so the timeout can `process.kill(-child.pid, 'SIGTERM')` the whole replay /
   // record CLI group. Nothing outlives the awaiting call.
   ['scripts/agent-capacity/load-driver.ts', 'detached ONLY to lead a process group so the replay timeout group-kills the CLI; the child is awaited (Promise resolves on close) and dies with the call'],
   ['scripts/agent-capacity/record-session.ts', 'detached ONLY to lead a process group so the record timeout group-kills the CLI; the child is awaited (Promise resolves on close) and dies with the call'],
-  ['libs/generic/deployment-driver/src/workspace-host-agent-authentication.ts', 'detached ONLY to lead the awaited agent probe process group; timeout and output-limit paths kill runuser plus its descendants, closing inherited pipes before the host initializer exits (EI-22527750869820737)'],
+  // workspace-host-agent-authentication.ts left this list in WI-6554700010009949: it no
+  // longer calls spawn/fork, so it fires no trigger.
   // Surfaced for the FIRST time by the AST trigger: `detached: detach` at :9289, where
   // `const detach = opts.killProcessGroupOnTimeout === true`. The literal-text predicate
   // could not see a computed value, so this file had never been judged at all — it is in
@@ -191,11 +205,9 @@ export const ALLOWLIST = new Map([
   // does not spawn at all.
 
   // ── gym / bench harnesses: throwaway rigs, torn down by their own runner ──
-  ['packages/operator-core/lib/gym/ab-run.ts', 'gym A/B rig: bounded, torn down by its own runner at the end of the cycle, never outlives it'],
-  ['packages/operator-core/lib/gym/blueprint-cycle.ts', 'gym blueprint cycle: bounded rig torn down by its own runner when the cycle ends'],
-  ['packages/operator-core/lib/gym/smoke.ts', 'gym smoke rig: own process group purely so teardown can kill the npx->node tree'],
-  ['packages/operator-core/lib/gym/autoloop-cycle.ts', 'gym autoloop cycle: bounded rig torn down by its own runner'],
-  ['packages/operator-core/lib/gym/wake-mode.ts', 'gym wake-mode rig: bounded, torn down by its own runner'],
+  // gym/{ab-run,blueprint-cycle,smoke,autoloop-cycle,wake-mode}.ts left this list in
+  // WI-6554700010009949: none of them calls spawn/fork any more, so no trigger fires and
+  // their entries only spent the review budget (the 'every entry still fires' test).
   ['packages/operator-core/lib/behaviour-suite/runner-node.ts', 'behaviour-suite runner: a bounded test rig whose lifetime is the suite run itself'],
   ['packages/operator-core/lib/harness/routines/p2p-perf-actions.ts', 'p2p perf bench: a bounded advisory run, reaped by the routine that started it'],
   ['packages/operator-core/lib/harness/routines/cargo-test-action.ts', 'cargo test run: bounded by the test command, reaped by the routine that started it'],

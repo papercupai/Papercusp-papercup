@@ -31,6 +31,10 @@ import { _resetCacheForTests } from '../corestore';
 import { _clearRegistryForTests } from '../projection';
 import { _resetBootHistoryForTests, listBootHistory } from '../boot-history';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
+import { stubHivePolicyReadsForSuite } from './_hive-policy-read-stubs';
+
+// WI-10007530: no PG here, and the merge pass no longer swallows a failed policy read.
+stubHivePolicyReadsForSuite();
 
 /**
  * Keep this suite hermetic. Production resolves re-key dependencies

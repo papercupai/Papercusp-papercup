@@ -19,6 +19,10 @@ import {
   type AdapterLagObservation,
   type IngestLagSweepDeps,
 } from './session-ingest-lag-watchdog';
+import {
+  INTERACTIVE_USAGE_INGEST_LAG_THRESHOLD_MS,
+  evaluateInteractiveUsageFreshness,
+} from '../interactive-usage/freshness';
 
 const HOUR = 3_600_000;
 const obs = (over: Partial<AdapterLagObservation> = {}): AdapterLagObservation => ({
@@ -131,22 +135,29 @@ describe('sessionIngestLagSweep', () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
   const deps = (observations: AdapterLagObservation[], fires = 0) => ({
+    rail: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) },
+    readOpenConditionKeys: async () => [],
     observe: async () => observations,
+    observeInteractiveUsageFreshness: async (_workspaceId: string, nowMs?: number) =>
+      evaluateInteractiveUsageFreshness(nowMs ?? Date.now(), nowMs ?? Date.now()),
     recentWatchdogFires: vi.fn<NonNullable<IngestLagSweepDeps['recentWatchdogFires']>>(async () => fires),
     recordFire: vi.fn<NonNullable<IngestLagSweepDeps['recordFire']>>(async () => undefined as never),
     openEscalation: vi.fn<NonNullable<IngestLagSweepDeps['openEscalation']>>(async () => undefined as never),
   });
 
   it('records a fire and opens ONE escalation for a wedged adapter', async () => {
-    const d = deps([obs({ behindFiles: 2, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * HOUR })]);
+    const d = deps([obs({ behindFiles: 2, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * HOUR, worstPath: '/rollout' })]);
     const res = await sessionIngestLagSweep({}, d);
-    expect(res).toEqual([expect.objectContaining({ sourceKind: 'codex', outcome: 'alerted' })]);
+    expect(res).toEqual([
+      expect.objectContaining({ sourceKind: 'codex', outcome: 'alerted' }),
+      expect.objectContaining({ sourceKind: 'interactive-usage', outcome: 'healthy' }),
+    ]);
     expect(d.recordFire).toHaveBeenCalledTimes(1);
     expect(d.openEscalation).toHaveBeenCalledTimes(1);
   });
 
   it('debounces a repeat fire inside the window', async () => {
-    const d = deps([obs({ behindFiles: 2, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * HOUR })], 1);
+    const d = deps([obs({ behindFiles: 2, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * HOUR, worstPath: '/rollout' })], 1);
     const res = await sessionIngestLagSweep({}, d);
     expect(res[0].outcome).toBe('debounced');
     expect(d.recordFire).not.toHaveBeenCalled();
@@ -157,8 +168,8 @@ describe('sessionIngestLagSweep', () => {
     // means the first alerting adapter suppresses every other one for the rest
     // of the window. The scope key is the source_kind, so assert it is passed.
     const d = deps([
-      obs({ sourceKind: 'codex', behindFiles: 1, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * HOUR }),
-      obs({ sourceKind: 'omp', behindFiles: 1, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * HOUR }),
+      obs({ sourceKind: 'codex', behindFiles: 1, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * HOUR, worstPath: '/codex' }),
+      obs({ sourceKind: 'omp', behindFiles: 1, backlogBytes: 9e6, oldestBacklogAgeMs: 6 * HOUR, worstPath: '/omp' }),
     ]);
     await sessionIngestLagSweep({}, d);
     const scopes = d.recentWatchdogFires.mock.calls.map((c) => c[4]);
@@ -171,6 +182,53 @@ describe('sessionIngestLagSweep', () => {
     const res = await sessionIngestLagSweep({}, d);
     expect(res[0].outcome).toBe('healthy');
     expect(d.recentWatchdogFires).not.toHaveBeenCalled();
+  });
+
+  it('alerts on stale interactive usage freshness without attributing a cause', async () => {
+    const d = {
+      ...deps([]),
+      observeInteractiveUsageFreshness: async () => evaluateInteractiveUsageFreshness(1_000, 2_000_000),
+    };
+    const res = await sessionIngestLagSweep({}, d);
+    expect(res).toEqual([expect.objectContaining({ sourceKind: 'interactive-usage', outcome: 'alerted' })]);
+    expect(d.recordFire).toHaveBeenCalledWith(expect.objectContaining({ source: 'interactive-usage-freshness' }));
+    expect(d.openEscalation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      body: expect.stringContaining('does not establish why samples were not written'),
+    }));
+  });
+
+  it('reports unavailable interactive freshness without alerting as a proven stall', async () => {
+    const d = {
+      ...deps([]),
+      observeInteractiveUsageFreshness: async () => evaluateInteractiveUsageFreshness(null),
+    };
+    const res = await sessionIngestLagSweep({}, d);
+    expect(res).toEqual([expect.objectContaining({ sourceKind: 'interactive-usage', outcome: 'error' })]);
+    expect(d.recordFire).not.toHaveBeenCalled();
+    expect(d.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('alerts when a recent interactive sample has event-to-receipt lag above 15 minutes', async () => {
+    const nowMs = Date.now();
+    const d = {
+      ...deps([]),
+      now: nowMs,
+      observeInteractiveUsageFreshness: async () => evaluateInteractiveUsageFreshness(
+        nowMs - 1_000,
+        nowMs,
+        undefined,
+        INTERACTIVE_USAGE_INGEST_LAG_THRESHOLD_MS + 1,
+      ),
+    };
+    const res = await sessionIngestLagSweep({}, d);
+    expect(res).toEqual([expect.objectContaining({ sourceKind: 'interactive-usage', outcome: 'alerted' })]);
+    expect(d.recentWatchdogFires).toHaveBeenCalledWith(
+      'papercusp-workspace', 'papercusp', 1, 'interactive-usage-freshness', 'interactive',
+    );
+    expect(d.recordFire).toHaveBeenCalledWith(expect.objectContaining({ source: 'interactive-usage-freshness' }));
+    expect(d.openEscalation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      severity: 'advisory', summary: 'Interactive usage ingestion freshness is stale',
+    }));
   });
 
   it('is fail-soft: an observe failure returns an error row, never throws', async () => {

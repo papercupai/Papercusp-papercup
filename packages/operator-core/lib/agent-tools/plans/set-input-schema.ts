@@ -143,6 +143,7 @@ export default defineTool({
         evaluateSetInputSchema(current, args.schema as Record<string, unknown> | null, args.slug),
     );
 
+    if (result.kind === 'refused') return text({ ...result.value }, true);
     if (result.kind === 'busy') {
       return text(
         {

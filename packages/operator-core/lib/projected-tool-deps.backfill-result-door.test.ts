@@ -62,7 +62,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   }),
 }));
 
-import { backfillResultDoorOutputRef, flushPendingTelemetry } from './projected-tool-deps';
+import {
+  backfillResultDoorOutputRef,
+  backfillToolInvocationMetadataByCallId,
+  backfillToolInvocationMetadataByMcpRequestTraceId,
+  EXACT_BACKFILL_WINDOW_SEC,
+  flushPendingTelemetry,
+} from './projected-tool-deps';
 
 describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
   beforeEach(() => {
@@ -135,6 +141,100 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
       's-test',
       'x:one',
       'run-abc',
+      null,
+      null,
+    ]);
+  });
+
+  it('backfills a late spill settlement by its exact reserved URI after the ordinary recency window', async () => {
+    const uri = 'papercusp://scratch/papercusp-workspace/x:late/result-door-1.md';
+    await backfillResultDoorOutputRef({
+      workspaceId: 'ws-test',
+      spawnId: 's-test',
+      toolName: 'x:late',
+      runId: 'run-late',
+      outputRef: uri,
+      outputSize: 4200,
+      matchOutputRef: uri,
+      metadataJson: { spillPending: false, spillFailed: false, spillSettlementStatus: 'persisted' },
+    });
+
+    expect(unsafeCalls[1].sql).toContain('output_ref = $8');
+    expect(unsafeCalls[1].sql).toContain("invoked_at >= now() - interval '30 seconds'");
+    expect(unsafeCalls[1].sql).toContain('OR ($8::text IS NOT NULL AND output_ref = $8)');
+    expect(unsafeCalls[1].params).toEqual([
+      uri,
+      4200,
+      JSON.stringify({ spillPending: false, spillFailed: false, spillSettlementStatus: 'persisted' }),
+      'ws-test',
+      's-test',
+      'x:late',
+      'run-late',
+      uri,
+      null,
+    ]);
+  });
+
+  it('merges late scratch timings into the nested MCP settlement phase snapshot', async () => {
+    const uri = 'papercusp://scratch/papercusp-workspace/x:late-trace/result-door-1.md';
+    const traceId = '2a81dadf-78dc-4eab-96cc-f8193f277c25';
+    const metadataJson = {
+      spillPending: false,
+      spillSettlementStatus: 'persisted',
+      scratchWriteTimings: { count: 1, totalMs: 30_007 },
+      mcpRequestSettlement: {
+        phaseTimingsMs: {
+          scratchWrites: { count: 1, totalMs: 30_007 },
+        },
+      },
+    };
+    await backfillResultDoorOutputRef({
+      workspaceId: 'ws-test',
+      spawnId: 's-test',
+      toolName: 'x:late-trace',
+      mcpRequestTraceId: traceId,
+      outputRef: uri,
+      outputSize: 4200,
+      matchOutputRef: uri,
+      metadataJson,
+    });
+
+    expect(unsafeCalls[1].sql).toContain("metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $3::jsonb ||");
+    expect(unsafeCalls[1].sql).toContain("metadata_json #> '{mcpRequestSettlement,phaseTimingsMs}'");
+    expect(unsafeCalls[1].sql).toContain("jsonb_typeof($3::jsonb #> '{mcpRequestSettlement,phaseTimingsMs}') = 'object'");
+    expect(unsafeCalls[1].params[2]).toBe(JSON.stringify(metadataJson));
+    expect(unsafeCalls[1].params.slice(7)).toEqual([uri, traceId]);
+  });
+
+  it('backfills a result-door spill by exact MCP request trace id beyond the ordinary recency window', async () => {
+    const uri = 'papercusp://scratch/papercusp-workspace/x:trace/result-door-1.md';
+    const traceId = '640b0562-af01-4850-88e9-8ed54f9a032a';
+    const metadataJson = { spillPending: false, spillSettlementStatus: 'persisted' };
+    await backfillResultDoorOutputRef({
+      workspaceId: 'ws-test',
+      spawnId: 's-test',
+      toolName: 'x:trace',
+      runId: 'run-trace',
+      mcpRequestTraceId: traceId,
+      outputRef: uri,
+      outputSize: 4200,
+      metadataJson,
+    });
+
+    expect(unsafeCalls).toHaveLength(2);
+    expect(unsafeCalls[1].sql).toContain("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $9");
+    expect(unsafeCalls[1].sql).toContain("OR ($9::text IS NOT NULL AND metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $9)");
+    expect(unsafeCalls[1].sql).toContain("invoked_at >= now() - interval '30 seconds'");
+    expect(unsafeCalls[1].params).toEqual([
+      uri,
+      4200,
+      JSON.stringify(metadataJson),
+      'ws-test',
+      's-test',
+      'x:trace',
+      'run-trace',
+      null,
+      traceId,
     ]);
   });
 
@@ -158,13 +258,145 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
         returnedContextBytes: 600,
         spilledBytes: 0,
         aggregateOutputEscape: true,
+        spillFailed: true,
+        spillError: 'scratch reservation exceeds workspace quota',
+        spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
       },
     });
     expect(unsafeCalls[1].params.slice(0, 3)).toEqual([
       null,
       null,
-      JSON.stringify({ returnedContextBytes: 600, spilledBytes: 0, aggregateOutputEscape: true }),
+      JSON.stringify({
+        returnedContextBytes: 600,
+        spilledBytes: 0,
+        aggregateOutputEscape: true,
+        spillFailed: true,
+        spillError: 'scratch reservation exceeds workspace quota',
+        spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
+      }),
     ]);
+  });
+
+  it('backfills late scheduler settlement by exact dispatchCallId, never by recency', async () => {
+    await backfillToolInvocationMetadataByCallId({
+      workspaceId: 'ws-test',
+      toolName: 'scheduler:get_next',
+      dispatchCallId: 'dispatch-call-42',
+      metadataJson: {
+        schedulerLateSettlement: {
+          kind: 'claimed',
+          workItemId: 'EI-42',
+          settledAt: '2026-10-07T16:00:00.000Z',
+        },
+      },
+    });
+
+    expect(unsafeCalls).toHaveLength(2);
+    expect(unsafeCalls[0].params).toEqual(['ws-test']);
+    expect(unsafeCalls[1].sql).toContain('UPDATE harness_shared.tool_invocations');
+    expect(unsafeCalls[1].sql).toContain("metadata_json->'schedulerTimeout'->>'dispatchCallId' = $4");
+    // Exact key selects; the 30-second recency JOIN of the result-door backfill
+    // must never be used as the selector here.
+    expect(unsafeCalls[1].sql).not.toContain("interval '30 seconds'");
+    expect(unsafeCalls[1].sql).toContain('invoked_at >= now() - make_interval(secs => $5::int)');
+    expect(unsafeCalls[1].params).toEqual([
+      JSON.stringify({
+        schedulerLateSettlement: {
+          kind: 'claimed',
+          workItemId: 'EI-42',
+          settledAt: '2026-10-07T16:00:00.000Z',
+        },
+      }),
+      'ws-test',
+      'scheduler:get_next',
+      'dispatch-call-42',
+      EXACT_BACKFILL_WINDOW_SEC['dispatch-call-id'],
+    ]);
+  });
+
+  // WI-6554700010008556: an exact key that matches no row used to walk the whole
+  // tool_invocations table backwards (mean 966 ms, max 342 s, ~1 core of DB time).
+  // Every exact-key backfill must carry a recency BOUND, wide enough for the
+  // legitimate late-settlement path and finite, so a miss stays cheap.
+  it('bounds every exact-key backfill search by a finite invoked_at window', async () => {
+    await backfillToolInvocationMetadataByCallId({
+      workspaceId: 'ws-test',
+      toolName: 'scheduler:get_next',
+      dispatchCallId: 'dispatch-call-7',
+      metadataJson: { schedulerLateSettlement: { kind: 'claimed' } },
+    });
+    await backfillToolInvocationMetadataByMcpRequestTraceId({
+      workspaceId: 'ws-test',
+      toolName: 'work_items:get',
+      mcpRequestTraceId: 'trace-7',
+      metadataJson: { mcpRequestSettlement: { outcome: 'success' } },
+    });
+
+    const updates = unsafeCalls.filter((c) => c.sql.includes('UPDATE harness_shared.tool_invocations'));
+    expect(updates).toHaveLength(2);
+    for (const update of updates) {
+      expect(update.sql).toMatch(/AND invoked_at >= now\(\) - make_interval\(secs => \$5::int\)\s+ORDER BY invoked_at DESC/);
+      const windowSec = update.params[4];
+      expect(typeof windowSec).toBe('number');
+      expect(Number.isInteger(windowSec)).toBe(true);
+      expect(windowSec as number).toBeGreaterThan(0);
+      // Finite and bounded: never a whole-table fallback.
+      expect(windowSec as number).toBeLessThanOrEqual(24 * 60 * 60);
+    }
+    // The settle-time MCP path writes and backfills the same recent row; keep
+    // room for flush and clock lag, but no more than an hour.
+    expect(EXACT_BACKFILL_WINDOW_SEC['mcp-request-trace-id']).toBeGreaterThanOrEqual(5 * 60);
+    expect(EXACT_BACKFILL_WINDOW_SEC['mcp-request-trace-id']).toBeLessThanOrEqual(60 * 60);
+    // The late scheduler settlement can land long after the timed-out row.
+    expect(EXACT_BACKFILL_WINDOW_SEC['dispatch-call-id']).toBeGreaterThanOrEqual(
+      EXACT_BACKFILL_WINDOW_SEC['mcp-request-trace-id'],
+    );
+  });
+
+  it('backfills late MCP settlement metadata by exact request trace id, never by recency', async () => {
+    const traceId = '640b0562-af01-4850-88e9-8ed54f9a032a';
+    const metadataJson = {
+      mcpRequestSettlement: {
+        traceId,
+        outcome: 'success',
+        afterDeadline: true,
+        elapsedMs: 56_894,
+        phaseTimingsMs: { resultDoor: 30_662, scratchWrites: { count: 1, totalMs: 12_000 } },
+      },
+    };
+    await backfillToolInvocationMetadataByMcpRequestTraceId({
+      workspaceId: 'ws-test',
+      toolName: 'plans:get-spec-evidence',
+      mcpRequestTraceId: traceId,
+      metadataJson,
+    });
+
+    expect(unsafeCalls).toHaveLength(2);
+    expect(unsafeCalls[0].params).toEqual(['ws-test']);
+    expect(unsafeCalls[1].sql).toContain('UPDATE harness_shared.tool_invocations');
+    expect(unsafeCalls[1].sql).toContain("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4");
+    expect(unsafeCalls[1].sql).toContain("metadata_json #> '{mcpRequestSettlement,phaseTimingsMs}'");
+    expect(unsafeCalls[1].sql).toContain('ORDER BY invoked_at DESC');
+    expect(unsafeCalls[1].sql).not.toContain("interval '30 seconds'");
+    expect(unsafeCalls[1].sql).toContain('invoked_at >= now() - make_interval(secs => $5::int)');
+    expect(unsafeCalls[1].params).toEqual([
+      JSON.stringify(metadataJson),
+      'ws-test',
+      'plans:get-spec-evidence',
+      traceId,
+      EXACT_BACKFILL_WINDOW_SEC['mcp-request-trace-id'],
+    ]);
+  });
+
+  it('does not guess a late MCP invocation when the request trace id is absent', async () => {
+    await backfillToolInvocationMetadataByMcpRequestTraceId({
+      workspaceId: 'ws-test',
+      toolName: 'plans:get-spec-evidence',
+      mcpRequestTraceId: null,
+      metadataJson: { mcpRequestSettlement: { outcome: 'success' } },
+    });
+
+    expect(unsafeCalls).toHaveLength(0);
   });
 
   it('swallows a PG failure and logs a warning instead of throwing', async () => {
@@ -234,6 +466,53 @@ describe('WI-40720 gap 3 — the post-door backfill call site is door-general, n
     expect(handlerSource).toContain('{ spillUri: doorMeta.spillUri }');
   });
 
+  it('correlates both initial spill backfill and late settlement with the MCP request trace id', () => {
+    const lateStart = handlerSource.indexOf('onLateScratchWriteSettled: (settlement) =>');
+    const lateEnd = handlerSource.indexOf('onScratchWriteTiming: (timings) =>', lateStart);
+    expect(lateStart).toBeGreaterThan(-1);
+    expect(lateEnd).toBeGreaterThan(lateStart);
+    expect(handlerSource.slice(lateStart, lateEnd)).toContain(
+      'mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null',
+    );
+
+    const postDoorStart = handlerSource.indexOf(
+      'void backfillResultDoorOutputRef({',
+      handlerSource.indexOf('if (doorMeta?.truncated'),
+    );
+    const postDoorEnd = handlerSource.indexOf('}).catch((err) =>', postDoorStart);
+    expect(postDoorStart).toBeGreaterThan(-1);
+    expect(postDoorEnd).toBeGreaterThan(postDoorStart);
+    expect(handlerSource.slice(postDoorStart, postDoorEnd)).toContain(
+      'mcpRequestTraceId: dispatchSpawnCtx.requestOrigin?.mcpRequestTraceId ?? null',
+    );
+  });
+
+  it('uses the nested tools:invoke target for pending, late, and settled spill backfills', () => {
+    const pendingStart = handlerSource.indexOf(
+      'onScratchWritePending: (timeout) => backfillResultDoorOutputRef({',
+    );
+    const lateStart = handlerSource.indexOf('onLateScratchWriteSettled: (settlement) =>');
+    const lateEnd = handlerSource.indexOf('onScratchWriteTiming: (timings) =>', lateStart);
+    const settledStart = handlerSource.indexOf(
+      'void backfillResultDoorOutputRef({',
+      handlerSource.indexOf('if (doorMeta?.truncated'),
+    );
+    const settledEnd = handlerSource.indexOf('}).catch((err) =>', settledStart);
+
+    expect(pendingStart).toBeGreaterThan(-1);
+    expect(lateStart).toBeGreaterThan(pendingStart);
+    expect(lateEnd).toBeGreaterThan(lateStart);
+    expect(settledStart).toBeGreaterThan(-1);
+    expect(settledEnd).toBeGreaterThan(settledStart);
+
+    const pending = handlerSource.slice(pendingStart, lateStart);
+    const late = handlerSource.slice(lateStart, lateEnd);
+    const settled = handlerSource.slice(settledStart, settledEnd);
+    for (const callSite of [pending, late, settled]) {
+      expect(callSite).toContain('toolName: nestedTargetToolName ?? toolName');
+    }
+  });
+
   it('stamps spillFailed UNCONDITIONALLY, so absent never reads as measured-false', () => {
     // The hard rollback trigger for spill-persistence failure is only falsifiable if the
     // healthy case is stamped too. A conditional spread would omit the key whenever the spill
@@ -242,6 +521,21 @@ describe('WI-40720 gap 3 — the post-door backfill call site is door-general, n
     expect(handlerSource).toContain('spillFailed?: boolean;');
     expect(handlerSource).toContain('spillFailed: doorMeta.spillFailed === true');
     // The negative half of the guard: a conditional stamp is the specific regression.
-    expect(handlerSource).not.toContain('...(doorMeta.spillFailed');
+    expect(handlerSource).not.toContain('...(doorMeta.spillFailed === true ? { spillFailed:');
+  });
+
+  it('wires late spill settlement to the output-ref backfill', () => {
+    expect(handlerSource).toContain('onLateScratchWriteSettled: (settlement) =>');
+    expect(handlerSource).toContain('matchOutputRef: settlement.spillUri');
+    expect(handlerSource).toContain('spillSettlementStatus: settlement.status');
+    expect(handlerSource).toContain('spillPending: false');
+  });
+
+  it('backfills failed spills without a URI and preserves their descriptive error metadata', () => {
+    expect(handlerSource).toContain('spillError?: string | null;');
+    expect(handlerSource).toContain('spillErrorCode?: string | null;');
+    expect(handlerSource).toContain('doorMeta.spillFailed === true || isPreferredDoor(toolName)');
+    expect(handlerSource).toContain('spillError: doorMeta.spillError ?? null');
+    expect(handlerSource).toContain('spillErrorCode: doorMeta.spillErrorCode ?? null');
   });
 });

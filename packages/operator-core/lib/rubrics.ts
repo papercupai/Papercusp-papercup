@@ -31,13 +31,16 @@ import { getOrgPg } from '@papercusp/db-org';
 import { isDeepStrictEqual } from 'node:util';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
+import { boundedPgReadTxn } from './pg-read-query';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
-import type { ServingRuntimeId } from './serving-runtimes';
+import type { EvidenceRuntimeId } from './serving-runtimes';
 import {
   normalizeRequirementSections,
+  requirementSections,
   type RequirementIntent,
   type RequirementAcceptance,
   type RequirementVerification,
+  type RequirementProductionConfiguration,
 } from './requirement-contract';
 import {
   rubricTemplateDataSchema,
@@ -61,6 +64,7 @@ import {
 import { isActivationGateRefusalValue } from './agent-tools/plans/plan-activation-gate';
 import {
   assertCriterionCheckPathsResolve,
+  normalizeCriterionProbeChecks,
   subjectPlanAllowsPlannedPaths,
   type CriterionCheckPathValidation,
 } from './rubrics-criterion-checks';
@@ -70,7 +74,13 @@ import {
 } from './rubrics-citation-checks';
 import { acceptanceBarContractGaps } from './acceptance-bar-contract-completeness';
 import { classifyAmendmentAdditivity } from './acceptance-bar-amendment-additivity';
+import {
+  amendedRequirementBarKeys,
+  diffAmendedCriteriaAgainstRequirements,
+  rerenderAmendedRequirementBlocks,
+} from './acceptance-bar-amendment-requirements-drift';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
+import { assertChangedAcceptanceBarProjectionsAtomic } from './acceptance-bar-projection';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
 // rubric-template.ts (dependency-free, so instruments can import them without this
@@ -83,7 +93,7 @@ export {
   type RubricCriterionWindow,
   type ResolvedCriterionWindow,
 } from './agent-tools/plans/rubric-template';
-import { withPlanLock, bumpUpdatedDate } from './agent-tools/plans/with-plan-lock';
+import { withPlanLock, bumpUpdatedDate, type PlanWritePreimage } from './agent-tools/plans/with-plan-lock';
 import {
   withAcceptanceBarAmendmentTransaction,
   acceptanceBarAmendmentKey,
@@ -111,10 +121,12 @@ import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
 import { deriveIndexFromContent } from './agent-tools/plans/source';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import { summarizeForcedPast } from './agent-tools/plans/forced-past-stamp';
-import { recordPlanRevision } from './agent-tools/plans/revisions';
+import { acquirePlanRevisionAdvisoryLock, recordPlanRevisionInTransaction, type PlanRevisionSql } from './agent-tools/plans/revisions';
 import {
+  applyPlanRevisionSnapshotBackfill,
   applyPlanRevisionSnapshotRepair,
   readPlanRevisionRepairTarget,
+  type PlanRevisionSnapshotBackfillPlan,
   type PlanRevisionRepairScope,
   type PlanRevisionSnapshotRepairSpec,
 } from './agent-tools/plans/revisions-repair';
@@ -200,7 +212,7 @@ export interface RubricCriterion {
   evidencePlane?: AcceptanceEvidencePlane;
   /** deployed/live BARs: the runtime whose build the evidence must be measured on
    * (acceptance-runtime-plane P-002). Absent ⇒ inferred + flagged, never :3070 by default. */
-  evidenceRuntime?: ServingRuntimeId;
+  evidenceRuntime?: EvidenceRuntimeId;
   requiredTestLayers?: string[];
   /** Ratings that satisfy this BAR. Empty/absent remains legacy/unbound. */
   passRatings?: string[];
@@ -220,6 +232,9 @@ export interface RubricCriterion {
    *  from being silently dropped on re-propose, and rubricCompleteness reports criteria
    *  still lacking one. */
   replication?: string;
+  /** P-011: the configuration this bar's proof must run under. When set, bind-spec-evidence
+   *  refuses evidence whose recorded configuration fingerprint is missing or differs. */
+  productionConfiguration?: RequirementProductionConfiguration;
   /** Stable machine-readable instrument binding. `none` means explicitly manual. */
   instrumentKey?: string;
   /** The criterion's STRUCTURED evidence window (EI-12146) — resolve via
@@ -309,8 +324,11 @@ export interface Rubric {
    *  it does not need and block ships it should not — so it stayed unwatched instead, and
    *  a dead health loop became indistinguishable from a healthy one. */
   stalenessWatched?: boolean;
-  /** WHO may grade the plan this rubric governs (generic-acceptance-routing-and-live-plan-
-   *  agent-brief-2026-09-20 D-002 — the rubric is the authority boundary).
+  /** Acceptance-grading authority (generic-acceptance-routing-and-live-plan-agent-brief-
+   *  2026-09-20 D-002): for acceptance-kind plan/goal rubrics, who may file the acceptance grade.
+   *  It does not set standard-kind terminal scorecard authorship; those cards use the separate
+   *  P-013 non-author grading-integrity audit. A standard-kind value may separately inform
+   *  goal-rubric stewardship.
    *
    *  REQUIRED on the record, and resolved EXACTLY ONCE at hydration, deliberately: an
    *  optional field would push a `?? 'independent'` default out to every read site, and a
@@ -573,7 +591,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         mandatory?: boolean;
         requiredScope?: string[];
         evidencePlane?: AcceptanceEvidencePlane;
-        evidenceRuntime?: ServingRuntimeId;
+        evidenceRuntime?: EvidenceRuntimeId;
         passRatings?: string[];
         coversBarKeys?: string[];
         barProvenance?: AcceptanceBarProvenance;
@@ -602,6 +620,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
         driftMarkers: c.driftMarkers ?? '',
         ...(c.ratingScale ? { ratingScale: c.ratingScale } : {}),
         ...(c.replication ? { replication: c.replication } : {}),
+        ...(c.productionConfiguration ? { productionConfiguration: c.productionConfiguration } : {}),
         ...(c.instrumentKey ? { instrumentKey: c.instrumentKey } : {}),
         ...(c.window ? { window: c.window } : {}),
         ...(c.criterionClass ? { criterionClass: c.criterionClass } : {}),
@@ -750,6 +769,27 @@ function parseRubricRevisionSnapshot(snapshot: string): ParsedRubricRevisionSnap
   return null;
 }
 
+/**
+ * WI-10006667: `acceptance-bar-amendment` advances `barContract.subjectPlanRevision`
+ * IN PLACE at the same rubric version — by design, it changes no BAR meaning and
+ * appends no revision snapshot. A legacy current-version proof (snapshot structured
+ * data == row structured data) must therefore ignore exactly that integer pin. Every
+ * other byte of the structured grading data, including the pin's presence, must
+ * still match, so any unrecorded grading change keeps failing closed.
+ */
+export function legacyRubricTemplateDataMatches(snapshotData: unknown, rowData: unknown): boolean {
+  if (isDeepStrictEqual(snapshotData, rowData)) return true;
+  const withoutSubjectPin = (data: unknown): unknown => {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+    const contract = (data as { barContract?: unknown }).barContract;
+    if (!contract || typeof contract !== 'object' || Array.isArray(contract)) return data;
+    const pin = (contract as { subjectPlanRevision?: unknown }).subjectPlanRevision;
+    if (!Number.isInteger(pin)) return data;
+    return { ...(data as Record<string, unknown>), barContract: { ...contract, subjectPlanRevision: 'pin' } };
+  };
+  return isDeepStrictEqual(withoutSubjectPin(snapshotData), withoutSubjectPin(rowData));
+}
+
 /** True when a revision contains no structured rubric snapshot at all. */
 export function isMarkdownOnlyRubricRevisionSnapshot(snapshot: string): boolean {
   return inspectRubricRevisionSnapshot(snapshot).kind === 'markdown-only';
@@ -822,12 +862,29 @@ async function mapRubricPlanRows(rows: RubricPlanRow[]): Promise<Rubric[]> {
 const RUBRIC_STATUS_ORDER: Record<RubricStatus, number> = { active: 0, proposed: 1, retired: 2 };
 function sortRubrics(rubrics: Rubric[]): Rubric[] {
   return rubrics.sort(
-    (a, b) => RUBRIC_STATUS_ORDER[a.status] - RUBRIC_STATUS_ORDER[b.status] || b.updatedAt.localeCompare(a.updatedAt),
+    (a, b) =>
+      RUBRIC_STATUS_ORDER[a.status] - RUBRIC_STATUS_ORDER[b.status] ||
+      b.updatedAt.localeCompare(a.updatedAt) ||
+      a.rubricId.localeCompare(b.rubricId),
   );
 }
 
 /** A kind scope for the library reads: one kind, or 'any' (explicit opt-in to both). */
 export type RubricKindFilter = RubricKind | 'any';
+
+export interface ListRubricsPageResult {
+  rubrics: Rubric[];
+  hasMore: boolean;
+  nextOffset: number | null;
+}
+
+interface RubricPlanPageOptions {
+  status?: RubricStatus;
+  characteristic?: string;
+  subjectPlan?: string;
+  limit: number;
+  offset: number;
+}
 
 /** Every rubric-template plan in the rubric workspace, mapped to Rubric. The single read
  *  path the three public reads filter/search over — which makes it the ONE choke point
@@ -853,18 +910,47 @@ async function loadAllRubrics(kind: RubricKindFilter = 'standard'): Promise<Rubr
 /** The raw plan-row read behind loadAllRubrics, seed-free (the seed itself reads/writes
  *  through paths that land back here — the seed gate above breaks the recursion). */
 async function queryRubricPlans(kind: RubricKindFilter = 'standard'): Promise<Rubric[]> {
+  return (await queryRubricPlansPage(kind, { limit: 500, offset: 0 })).rubrics;
+}
+
+/** Bounded, filter-aware SQL page for rubrics:list. The lookahead row determines
+ * continuation without loading the entire shared rubric library into memory. */
+async function queryRubricPlansPage(
+  kind: RubricKindFilter,
+  page: RubricPlanPageOptions,
+): Promise<ListRubricsPageResult> {
   try {
     const { sql } = getOrgPg();
+    const requestedLimit = page.limit;
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(0, Math.min(Math.floor(requestedLimit), 500))
+      : 100;
+    if (limit === 0) return { rubrics: [], hasMore: false, nextOffset: null };
+    const requestedOffset = page.offset;
+    const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
     // Exclude per-run instance plans (template_slug IS NOT NULL) — a rubric is a
     // top-level plan, not a scheduled instance (D-003). The kind predicate is pushed to
-    // SQL so acceptance rows (one per completed plan, unbounded) never eat the row cap;
-    // the in-process re-filter below keeps the scope honest under mocked-sql tests too.
+    // SQL so acceptance rows (one per completed plan, unbounded) never eat the row cap.
     const kindCond =
       kind === 'any'
         ? sql`TRUE`
         : kind === 'acceptance'
           ? sql`template_data->>'kind' = 'acceptance'`
           : sql`(template_data->>'kind' IS DISTINCT FROM 'acceptance')`;
+    const statusCond =
+      page.status === 'active'
+        ? sql`archived IS NOT TRUE AND status IN ('active', 'ready')`
+        : page.status === 'proposed'
+          ? sql`archived IS NOT TRUE AND (status IS NULL OR status NOT IN ('active', 'ready', 'superseded', 'shipped'))`
+          : page.status === 'retired'
+            ? sql`archived IS TRUE OR status IN ('superseded', 'shipped')`
+            : sql`TRUE`;
+    const characteristicCond = page.characteristic
+      ? sql`template_data->>'characteristic' = ${page.characteristic}`
+      : sql`TRUE`;
+    const subjectPlanCond = page.subjectPlan
+      ? sql`template_data->>'subjectPlan' = ${page.subjectPlan}`
+      : sql`TRUE`;
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
@@ -873,17 +959,89 @@ async function queryRubricPlans(kind: RubricKindFilter = 'standard'): Promise<Ru
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND ${kindCond}
-       LIMIT 500`;
-    return (await mapRubricPlanRows(rows)).filter((r) => kind === 'any' || r.kind === kind);
+         AND ${statusCond}
+         AND ${characteristicCond}
+         AND ${subjectPlanCond}
+       ORDER BY
+         CASE
+           WHEN archived IS TRUE OR status IN ('superseded', 'shipped') THEN 2
+           WHEN status IN ('active', 'ready') THEN 0
+           ELSE 1
+         END,
+         updated_at DESC NULLS LAST,
+         plan_slug ASC
+       LIMIT ${limit + 1}
+       OFFSET ${offset}`;
+    const hasMore = rows.length > limit;
+    const consumedRows = hasMore ? rows.slice(0, limit) : rows;
+    const mapped = await mapRubricPlanRows(consumedRows);
+    const rubrics = mapped.filter(
+      (r) =>
+        (kind === 'any' || r.kind === kind) &&
+        (!page.status || r.status === page.status) &&
+        (!page.characteristic || r.characteristic === page.characteristic) &&
+        (!page.subjectPlan || r.subjectPlan === page.subjectPlan),
+    );
+    return {
+      rubrics: sortRubrics(rubrics),
+      hasMore,
+      nextOffset: hasMore ? offset + limit : null,
+    };
   } catch (error) {
-    return [];
+    return { rubrics: [], hasMore: false, nextOffset: null };
   }
+}
+
+/**
+ * A rubric ref names ONE rubric row per workspace (scope-unique-identifiers-2026-07-26,
+ * WI-6554700010008395). `harness_plans` is keyed (workspace_id, harness_slug, plan_slug),
+ * so nothing in the schema stops two harnesses from holding the same rubric slug, and a
+ * slug-only `LIMIT 1` would then grade against whichever row Postgres returned first.
+ * Every slug-only rubric read refuses that case with this error, naming the candidates.
+ */
+export class RubricRefAmbiguousError extends Error {
+  readonly code = 'rubric_ref_ambiguous';
+  constructor(
+    readonly rubricId: string,
+    readonly harnesses: readonly string[],
+  ) {
+    super(
+      `rubric_ref_ambiguous: rubric '${rubricId}' exists in ${harnesses.length} harnesses of ` +
+        `this workspace (${harnesses.join(', ')}); a rubric ref must name exactly one row. ` +
+        'Retire or rename the duplicate.',
+    );
+    this.name = 'RubricRefAmbiguousError';
+  }
+}
+
+/**
+ * The one row a slug-only rubric read resolves to. Keeps only rows whose slug matches
+ * (mocked-sql fixtures may return a wider set than the predicates describe) and throws
+ * {@link RubricRefAmbiguousError} when more than one harness holds the slug. Callers
+ * query with `ORDER BY harness_slug LIMIT 2` so a duplicate is always observable.
+ */
+export function uniqueRubricRow<T extends { plan_slug: string; harness_slug?: string | null }>(
+  rows: readonly T[],
+  rubricId: string,
+): T | undefined {
+  const matches = rows.filter((candidate) => candidate.plan_slug === rubricId);
+  const harnesses = [...new Set(matches.map((candidate) => candidate.harness_slug ?? ''))].sort();
+  if (harnesses.length > 1) throw new RubricRefAmbiguousError(rubricId, harnesses);
+  return matches[0];
 }
 
 type RubricPlanRowRead =
   | { kind: 'found'; row: RubricPlanRow }
   | { kind: 'missing' }
+  | { kind: 'ambiguous'; error: RubricRefAmbiguousError }
   | { kind: 'error' };
+
+/** A rubric lookup keeps a failed backing read distinct from an authoritative miss. */
+export type RubricLookupResult =
+  | { kind: 'found'; rubric: Rubric }
+  | { kind: 'missing' }
+  | { kind: 'ambiguous'; error: RubricRefAmbiguousError }
+  | { kind: 'read-failed' };
 
 /**
  * Read one rubric-template plan by its explicit slug. Explicit rubric reads are
@@ -895,8 +1053,8 @@ type RubricPlanRowRead =
  */
 async function readRubricPlanRowById(rubricId: string): Promise<RubricPlanRowRead> {
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<RubricPlanRow[]>`
+    const rows = await boundedPgReadTxn<RubricPlanRow[]>(
+      (tx) => tx<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
         FROM harness_shared.harness_plans
@@ -904,12 +1062,13 @@ async function readRubricPlanRowById(rubricId: string): Promise<RubricPlanRowRea
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND plan_slug = ${rubricId}
-       LIMIT 1`;
-    // Client-side slug guard: mocked-sql fixtures may return a wider row set than
-    // the predicates describe, so the explicit id remains authoritative here.
-    const row = rows.find((candidate) => candidate.plan_slug === rubricId);
+       ORDER BY harness_slug
+       LIMIT 2`,
+    );
+    const row = uniqueRubricRow(rows, rubricId);
     return row ? { kind: 'found', row } : { kind: 'missing' };
-  } catch {
+  } catch (error) {
+    if (error instanceof RubricRefAmbiguousError) return { kind: 'ambiguous', error };
     return { kind: 'error' };
   }
 }
@@ -1175,6 +1334,8 @@ export interface ListRubricsFilter {
   status?: RubricStatus;
   characteristic?: string;
   limit?: number;
+  /** Zero-based offset for continuing a bounded list read. */
+  offset?: number;
   /**
    * Kind scope (acceptance-rubrics-on-every-plan-2026-08-11). DEFAULT 'standard': the
    * library reads (and everything downstream of them — the learning surfaces, the
@@ -1194,15 +1355,30 @@ export interface ListRubricsFilter {
   subjectPlan?: string;
 }
 
-/** List rubrics (active first, then proposed, then retired), optionally filtered by
- *  status / characteristic / subjectPlan. Reads rubric-template plans (P-006/P-007).
- *  Standard-kind only unless `kind` opts in (see ListRubricsFilter.kind). */
+/** List one page of rubrics (active first, then proposed, then retired), optionally
+ * filtered by status / characteristic / subjectPlan. Reads rubric-template plans
+ * (P-006/P-007). Standard-kind only unless kind opts in (see ListRubricsFilter.kind). */
+export async function listRubricsPage(filter: ListRubricsFilter = {}): Promise<ListRubricsPageResult> {
+  const requestedLimit = filter.limit ?? 100;
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.min(Math.floor(requestedLimit), 500))
+    : 100;
+  if (limit === 0) return { rubrics: [], hasMore: false, nextOffset: null };
+  const requestedOffset = filter.offset ?? 0;
+  const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
+  if (!process.env.VITEST) await ensureFirstPartyRubricsSeeded();
+  return queryRubricPlansPage(filter.kind ?? 'standard', {
+    status: filter.status,
+    characteristic: filter.characteristic,
+    subjectPlan: filter.subjectPlan,
+    limit,
+    offset,
+  });
+}
+
+/** Array-returning compatibility helper for consumers that need only the first page. */
 export async function listRubrics(filter: ListRubricsFilter = {}): Promise<Rubric[]> {
-  let rubrics = await loadAllRubrics(filter.kind ?? 'standard');
-  if (filter.status) rubrics = rubrics.filter((r) => r.status === filter.status);
-  if (filter.characteristic) rubrics = rubrics.filter((r) => r.characteristic === filter.characteristic);
-  if (filter.subjectPlan) rubrics = rubrics.filter((r) => r.subjectPlan === filter.subjectPlan);
-  return sortRubrics(rubrics).slice(0, Math.min(filter.limit ?? 100, 500));
+  return (await listRubricsPage(filter)).rubrics;
 }
 
 /**
@@ -1242,17 +1418,18 @@ export type RubricPlanRevisionRead = { ok: true; revision: number | null } | { o
 export async function readRubricPlanRevision(rubricId: string): Promise<RubricPlanRevisionRead> {
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ plan_slug: string; version: string | number | null }[]>`
-      SELECT plan_slug, version
+    const rows = await sql<{ plan_slug: string; harness_slug: string; version: string | number | null }[]>`
+      SELECT plan_slug, harness_slug, version
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND plan_slug = ${rubricId}
-       LIMIT 1`;
-    // Client-side slug guard, mirroring getRubric: identical behavior under
-    // mocked-sql fixtures that return the full row set for any query.
-    const row = rows.find((r) => r.plan_slug === rubricId);
+       ORDER BY harness_slug
+       LIMIT 2`;
+    // A slug held by two harnesses throws into the catch below and reads as ok:false:
+    // fail-closed for the strict callers this read exists for.
+    const row = uniqueRubricRow(rows, rubricId);
     if (!row || row.version == null) return { ok: true, revision: null };
     const version = Number(row.version); // bigint arrives as a string
     return { ok: true, revision: Number.isFinite(version) ? version : null };
@@ -1288,8 +1465,9 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND plan_slug = ${rubricId}
-       LIMIT 1`;
-    const row = rows.find((candidate) => candidate.plan_slug === rubricId);
+       ORDER BY harness_slug
+       LIMIT 2`;
+    const row = uniqueRubricRow(rows, rubricId);
     if (!row) return null;
 
     // A plan version is NOT an audit seq: writes can predate tracking or lose a
@@ -1322,10 +1500,11 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
       if (revision === Number(row.version) && latest?.parsed &&
           latest.parsed.rubricRevision === undefined &&
           latest.content_hash === row.content_hash &&
-          isDeepStrictEqual(latest.parsed.templateData, row.template_data)) {
+          legacyRubricTemplateDataMatches(latest.parsed.templateData, row.template_data)) {
         // For the exact CURRENT legacy version, independently equal immutable
         // body + raw structured data prove the contract without rewriting it.
-        parsedSnapshot = latest.parsed;
+        // The row is authoritative for the in-place-advanced subject pin.
+        parsedSnapshot = { ...latest.parsed, templateData: row.template_data };
       }
     }
     if (!parsedSnapshot) return null;
@@ -1352,7 +1531,8 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
     return typeof parsedSnapshot?.criteriaHash === 'string' && parsedSnapshot.criteriaHash.length > 0
       ? { ...historical, criteriaHash: parsedSnapshot.criteriaHash }
       : historical;
-  } catch {
+  } catch (error) {
+    if (error instanceof RubricRefAmbiguousError) throw error;
     return null;
   }
 }
@@ -1360,12 +1540,68 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
 /** Fetch one rubric in full by its slug id — ANY kind: an explicit id is an explicit
  *  opt-in, so the shared grading path resolves acceptance rubrics through the same seam
  *  standards use (plan D-010). Returns null when no rubric carries that id. */
+/**
+ * Resolve only the existing rubric plan row. Unlike getRubric, this deliberately never
+ * falls through to loadAllRubrics, whose first-party lazy seed may write plan rows.
+ * Use it from scorecard reads and preflights that must remain replay-safe. The direct
+ * lookup and delegated-class hydration below are SELECT-only; missing, malformed, or
+ * inaccessible rows return null without attempting a seed/reclaim.
+ */
+export async function getRubricWithoutSeeding(rubricId: string): Promise<Rubric | null> {
+  const result = await readRubricWithoutSeedingResult(rubricId);
+  if (result.kind === 'ambiguous') throw result.error;
+  return result.kind === 'found' ? result.rubric : null;
+}
+
+/**
+ * Read one rubric without seeding, preserving the difference between a missing row
+ * and a failed read. Use this in grading decisions where `null` would become a
+ * misleading "not found" result.
+ */
+export async function readRubricWithoutSeeding(rubricId: string): Promise<RubricLookupResult> {
+  return readRubricWithoutSeedingResult(rubricId);
+}
+
+/**
+ * Resolve one rubric for a writer. A genuine miss keeps getRubric's lazy first-party
+ * seed behavior; a failed direct read never triggers the broader seedable lookup or
+ * turns into an authoritative miss.
+ */
+export async function readRubric(rubricId: string): Promise<RubricLookupResult> {
+  let result = await readRubricWithoutSeedingResult(rubricId);
+  if (result.kind !== 'missing' || process.env.VITEST) return result;
+
+  try {
+    await ensureFirstPartyRubricsSeeded();
+  } catch {
+    return { kind: 'read-failed' };
+  }
+  result = await readRubricWithoutSeedingResult(rubricId);
+  return result;
+}
+
+async function readRubricWithoutSeedingResult(rubricId: string): Promise<RubricLookupResult> {
+  const direct = await readRubricPlanRowById(rubricId);
+  if (direct.kind === 'ambiguous') return direct;
+  if (direct.kind === 'error') return { kind: 'read-failed' };
+  if (direct.kind === 'missing') return direct;
+
+  try {
+    const rubric = (await mapRubricPlanRows([direct.row]))[0];
+    // A present but malformed row cannot safely be presented as a missing rubric.
+    return rubric ? { kind: 'found', rubric } : { kind: 'read-failed' };
+  } catch {
+    return { kind: 'read-failed' };
+  }
+}
+
 export async function getRubric(rubricId: string, revision?: number): Promise<Rubric | null> {
   if (revision !== undefined) return getRubricAtRevision(rubricId, revision);
   // Explicit id-addressed reads are the hot path for scorecard/audit callers.
   // Resolve the target directly before touching the capped shared library scan;
   // acceptance rubrics are hidden from that scan, but never from this lookup.
   const direct = await readRubricPlanRowById(rubricId);
+  if (direct.kind === 'ambiguous') throw direct.error;
   if (direct.kind === 'error') return null;
   if (direct.kind === 'found') {
     const rubric = (await mapRubricPlanRows([direct.row]))[0] ?? null;
@@ -1593,6 +1829,7 @@ export type AcceptanceBarHashInput = Pick<
   | 'mandatory'
   | 'passRatings'
   | 'coversBarKeys'
+  | 'productionConfiguration'
 >;
 
 function normalizedBarText(value: string | undefined): string {
@@ -1665,6 +1902,12 @@ function acceptanceBarHashMaterial(criterion: AcceptanceBarHashInput): readonly 
       ? [['requiredTestLayers', normalizedBarSet(criterion.requiredTestLayers, true)]]
       : []),
     ...(criterion.check !== undefined ? [['check', canonicalAcceptanceBarCheck(criterion.check)]] : []),
+    // P-011, conditional like evidenceRuntime: declaring the configuration a proof must run
+    // under changes which evidence satisfies the bar, so it re-hashes; undeclared bars keep
+    // their hash byte-for-byte.
+    ...(criterion.productionConfiguration
+      ? [['productionConfiguration', canonicalAcceptanceBarCheck(criterion.productionConfiguration)]]
+      : []),
     ['role', criterion.role ?? null],
     ['mandatory', criterion.mandatory ?? false],
     ['passRatings', normalizedBarSet(criterion.passRatings, true)],
@@ -1720,9 +1963,8 @@ export function computeAcceptanceBarSetHash(
  */
 export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterion): ProposeRubricCriterion {
   criterion = normalizeRequirementSections(criterion);
-  const carriesBarContract =
+  const carriesBarContractFields =
     criterion.intent !== undefined ||
-    criterion.bar !== undefined ||
     criterion.barHash !== undefined ||
     criterion.barKey !== undefined ||
     criterion.role !== undefined ||
@@ -1733,14 +1975,29 @@ export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterio
     criterion.requiredTestLayers !== undefined ||
     criterion.passRatings !== undefined ||
     criterion.coversBarKeys !== undefined ||
-    criterion.barProvenance !== undefined;
+    criterion.barProvenance !== undefined ||
+    criterion.productionConfiguration !== undefined;
+  const model = normalizedBarText(criterion.model);
+  const alias = normalizedBarText(criterion.bar);
+  // The read projection mirrors canonical model text into `bar` for every
+  // acceptance criterion. An equal echo on a model-only legacy row is not an
+  // opt-in to the BAR contract; remove that read alias and keep the legacy row
+  // writable. An alias-only input or any explicit BAR field still opts in.
+  const equalLegacyReadAlias =
+    criterion.bar !== undefined &&
+    model.length > 0 &&
+    model === alias &&
+    !carriesBarContractFields;
+  if (equalLegacyReadAlias) {
+    const { bar: _readAlias, ...legacy } = criterion;
+    return legacy;
+  }
+  const carriesBarContract = carriesBarContractFields || criterion.bar !== undefined;
   // A model-only acceptance criterion predates the BAR contract. Preserve it
   // byte-for-byte until migration explicitly marks its cohort/provenance; merely
   // re-proposing a legacy rubric must not pretend its bar was predeclared.
   if (!carriesBarContract) return criterion;
 
-  const model = normalizedBarText(criterion.model);
-  const alias = normalizedBarText(criterion.bar);
   if (model && alias && model !== alias) {
     throw new Error(
       `invalid_args: acceptance criterion '${criterion.key}' supplied conflicting model and bar text; ` +
@@ -1800,8 +2057,11 @@ export interface ProposeRubricInput {
   /** Mark this rubric staleness-watched WITHOUT making it a release gate (P-011) — for an
    *  ongoing HEALTH rubric that must keep being graded but must not block a ship. */
   stalenessWatched?: boolean;
-  /** Who may grade the plan this rubric governs — see Rubric.gradingAuthority (D-002).
-   *  Omitted ⇒ 'independent', the fail-closed default applied at hydration. */
+  /** Acceptance-grading authority (D-002): for acceptance-kind plan/goal rubrics, who may file
+   *  the acceptance grade. It does not set standard-kind terminal scorecard authorship; those
+   *  cards use the separate P-013 non-author grading-integrity audit. A standard-kind value may
+   *  separately inform goal-rubric stewardship. Omitted ⇒ 'independent', the fail-closed default
+   *  applied at hydration. */
   gradingAuthority?: RubricGradingAuthority;
   /** Contract-generation boundary (D-015) — see Rubric.historyResetAt. Normally set via
    *  setRubricHistoryReset() rather than here, because a propose demotes to 'proposed'. */
@@ -1984,9 +2244,18 @@ export function effectiveCriterionInstrumentKey(criterion: {
     return criterion.check.instrumentKey.trim();
   }
   if (criterion.instrumentKey?.trim()) return criterion.instrumentKey.trim();
-  const match = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(criterion.model ?? '');
+  const match = CRITERION_INSTRUMENT_TOKEN.exec(criterion.model ?? '');
   return match?.[1] ?? null;
 }
+
+/**
+ * The legacy trailing `[instrumentKey: <key>|none]` binding token on a criterion's model
+ * prose (WI-4607). The ONE pattern every reader uses. Registered instrument keys are
+ * dotted (`woe.ideation-yield`, `goal-mode.never-implements`); the earlier `[a-z0-9-]+`
+ * copies here and in scorecards.ts could never bind one, so a token binding silently
+ * produced no binding at all (found binding goal-mode-e2e, 2026-10-08, P-003).
+ */
+export const CRITERION_INSTRUMENT_TOKEN = /\[instrumentKey:\s*([a-z0-9][a-z0-9.-]*|none)\]\s*$/;
 
 export interface RubricInstrumentContract {
   valid: boolean;
@@ -2089,6 +2358,7 @@ export function normalizeAcceptanceRubricProposal(
   ratingScale: string[];
   compatibility?: RubricCompatibilityAudit;
 } {
+  criteria = normalizeCriterionProbeChecks(criteria);
   if ((kind ?? 'standard') !== 'acceptance') {
     return { criteria, ratingScale: [...ratingScale] };
   }
@@ -2576,7 +2846,17 @@ async function resolveRubricWriteScope(rubricId: string): Promise<{ workspaceId:
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId}
          AND plan_slug = ${rubricId}
-       LIMIT 1`;
+       ORDER BY harness_slug
+       LIMIT 2`;
+    const holders = [...new Set(rows.map((row) => row.harness_slug))].sort();
+    if (holders.length > 1) {
+      // A write must target one PK row; picking either holder would silently fork the
+      // rubric (WI-6554700010008395). Same fail-closed prefix as the collision below.
+      throw new Error(
+        `invalid_args: proposeRubric: rubricId '${rubricId}' is held by ${holders.length} harnesses ` +
+          `of this workspace (${holders.join(', ')}); retire or rename the duplicate before writing`,
+      );
+    }
     const existing = rows[0];
     if (existing && existing.template !== RUBRIC_TEMPLATE_NAME) {
       throw new Error(
@@ -2654,21 +2934,7 @@ export function preserveRubricPlanBody(
   return bumpUpdatedDate(body, opts.today ?? new Date());
 }
 
-/**
- * EI-10443 audit trail: build the `withPlanLock` afterWrite that appends ONE
- * `plan_revisions` row for a rubric propose/ratify write. The rubric write path went
- * through withPlanLock with NO afterWrite, so the plan revision spine had ZERO rows for
- * every rubric plan (`plan_slug='pot-coordination-health'` returned 0 revisions) — a
- * destructive rubric write (e.g. the loss-guard strip that filed this bug) left no audit
- * trail and could be neither detected nor recovered via `plans:revisions`. Wiring this in
- * gives rubric writes the SAME revision spine every other plans:* write already records.
- *
- * `by` is the acting identity (the proposer/ratifier ownerId the MCP handler resolves and
- * threads through); when absent the row is attributed to a stable system actor so the audit
- * row still lands (auditability > attribution precision). Best-effort by construction —
- * `recordPlanRevision` never throws, so this can never fail the rubric write (it runs
- * post-commit, and withPlanLock awaits it).
- */
+/** Strictly capture a rubric write's immutable revision inside its plan transaction. */
 export function formatRubricRevisionSnapshot(
   writtenBody: string,
   templateData: unknown,
@@ -2710,12 +2976,14 @@ export interface LegacyRubricRevisionRepairResult {
   revisionsToRepair: number;
   revisionsRepaired: number;
   currentRevision?: number;
+  revisionSeq?: number;
   reason?: string;
 }
 
 export interface PreparedLegacyRubricRevisionRepair {
   result: LegacyRubricRevisionRepairResult;
   spec?: PlanRevisionSnapshotRepairSpec;
+  backfillSpec?: PlanRevisionSnapshotBackfillPlan;
 }
 
 function legacyRubricRepairResult(
@@ -2857,8 +3125,40 @@ export async function inspectLegacyRubricRevisionRepair(
 export async function repairLegacyRubricRevisionSnapshots(
   rubricId: string,
   scope: Omit<PlanRevisionRepairScope, 'planSlug'>,
-  opts: { dryRun?: boolean } = {},
+  opts: { dryRun?: boolean; rubricRevision?: number; identity?: AgentIdentity } = {},
 ): Promise<LegacyRubricRevisionRepairResult> {
+  if (opts.rubricRevision !== undefined) {
+    const prepared = await inspectCurrentRubricRevisionBackfill(rubricId, opts.rubricRevision, scope);
+    if (!prepared.backfillSpec) return prepared.result;
+    if (opts.dryRun !== false) return { ...prepared.result, status: 'dry_run' };
+    if (!opts.identity) {
+      return {
+        ...prepared.result,
+        status: 'error',
+        reason: 'resolved writer identity is required to record a current-version backfill',
+      };
+    }
+
+    const applied = await applyPlanRevisionSnapshotBackfill({
+      ...prepared.backfillSpec,
+      identity: opts.identity,
+    });
+    if (applied.status === 'recorded') {
+      return {
+        ...prepared.result,
+        status: 'repaired',
+        revisionsRepaired: 1,
+        revisionSeq: applied.revisionSeq,
+      };
+    }
+    return {
+      ...prepared.result,
+      status: applied.status,
+      revisionsRepaired: 0,
+      ...('reason' in applied && applied.reason ? { reason: applied.reason } : {}),
+    };
+  }
+
   const prepared = await inspectLegacyRubricRevisionRepair(rubricId, scope);
   if (!prepared.spec) return prepared.result;
   if (opts.dryRun !== false) return { ...prepared.result, status: 'dry_run' };
@@ -2876,6 +3176,125 @@ export async function repairLegacyRubricRevisionSnapshots(
     status: applied.status,
     revisionsRepaired: applied.revisionsRepaired,
     ...('reason' in applied && applied.reason ? { reason: applied.reason } : {}),
+  };
+}
+
+/**
+ * Prepare an append-only snapshot for one missing CURRENT standard rubric revision.
+ * This does not reconstruct an older version from today's template_data: the
+ * caller must name the live plan version. Standard rubric template_data writes
+ * advance that version through the rubric revision writer; acceptance rubrics
+ * are excluded because their subject-revision pin has a separate in-place writer.
+ * The append CAS rechecks the exact plan row and full revision chain at apply time.
+ */
+export async function inspectCurrentRubricRevisionBackfill(
+  rubricId: string,
+  rubricRevision: number,
+  scope: Omit<PlanRevisionRepairScope, 'planSlug'>,
+): Promise<PreparedLegacyRubricRevisionRepair> {
+  const planScope: PlanRevisionRepairScope = { ...scope, planSlug: rubricId };
+  const target = await readPlanRevisionRepairTarget(planScope);
+  if (!target) {
+    return { result: legacyRubricRepairResult(rubricId, 'not_found', 0, 0, 'rubric plan row not found') };
+  }
+
+  const { plan, revisions } = target;
+  const inspected = revisions.length;
+  const currentRevision = Number.isFinite(plan.version) ? plan.version : undefined;
+  const reject = (reason: string): PreparedLegacyRubricRevisionRepair => ({
+    result: legacyRubricRepairResult(rubricId, 'not_eligible', inspected, 0, reason, currentRevision),
+  });
+
+  if (!Number.isInteger(rubricRevision) || rubricRevision <= 0) {
+    return reject('rubric revision must be a positive integer');
+  }
+  if (currentRevision !== rubricRevision) {
+    return reject('only the exact current rubric revision can be backfilled');
+  }
+  if (plan.template !== RUBRIC_TEMPLATE_NAME) return reject('rubric plan does not use the rubric template');
+  if (plan.templateSlug !== null) return reject('rubric plan is a template instance, not a rubric definition');
+  if (plan.archived) return reject('rubric plan is archived');
+
+  const parsed = rubricTemplateDataSchema.safeParse(plan.templateData);
+  if (!parsed.success) return reject('current rubric template_data is malformed');
+  if (rubricKindOf(parsed.data) !== 'standard') return reject('acceptance rubrics are outside this backfill');
+  if (parsed.data.classRef) return reject('delegated-class rubrics are outside this backfill');
+  if (plan.contentHash !== hashPlanContent(plan.content)) {
+    return reject('current rubric body hash is inconsistent');
+  }
+
+  const marker = `"rubricRevision": ${rubricRevision},`;
+  const markedRows = revisions.filter((revision) => revision.contentSnapshot.includes(marker));
+  if (markedRows.length > 0) {
+    if (markedRows.length === 1) {
+      const existing = parseRubricRevisionSnapshot(markedRows[0]!.contentSnapshot);
+      if (
+        existing?.rubricRevision === rubricRevision &&
+        markedRows[0]!.contentHash === plan.contentHash &&
+        isDeepStrictEqual(existing.templateData, parsed.data)
+      ) {
+        return {
+          result: legacyRubricRepairResult(rubricId, 'already_repaired', inspected, 0, undefined, currentRevision),
+        };
+      }
+    }
+    return reject('a conflicting or malformed snapshot already claims this rubric revision');
+  }
+
+  const latest = revisions[revisions.length - 1];
+  const latestParsed = latest ? parseRubricRevisionSnapshot(latest.contentSnapshot) : null;
+  // WI-10006335: a latest snapshot that does not parse is not evidence the rubric was
+  // already repaired, so it falls through to the repair instead of dereferencing null.
+  if (
+    latest && latestParsed && latestParsed.rubricRevision === undefined &&
+    latest.contentHash === plan.contentHash &&
+    isDeepStrictEqual(latestParsed.templateData, parsed.data)
+  ) {
+    return {
+      result: legacyRubricRepairResult(rubricId, 'already_repaired', inspected, 0, undefined, currentRevision),
+    };
+  }
+
+  const currentRubric = planRowToRubric({
+    plan_slug: rubricId,
+    workspace_id: plan.workspaceId,
+    harness_slug: plan.harnessSlug,
+    title: null,
+    status: 'active',
+    created: null,
+    updated: null,
+    updated_at: new Date(0).toISOString(),
+    version: plan.version,
+    owner: plan.owner,
+    archived: plan.archived,
+    template_data: parsed.data,
+  });
+  if (!currentRubric?.criteriaHash) return reject('current rubric criteria hash could not be computed');
+
+  const backfillSpec: PlanRevisionSnapshotBackfillPlan = {
+    scope: planScope,
+    expectedPlan: {
+      version: plan.version,
+      contentHash: plan.contentHash,
+      content: plan.content,
+      owner: plan.owner,
+      template: plan.template,
+      templateSlug: plan.templateSlug,
+      archived: plan.archived,
+      templateData: parsed.data,
+    },
+    expectedRevisionIds: revisions.map((revision) => revision.id),
+    contentSnapshot: formatRubricRevisionSnapshot(
+      plan.content,
+      parsed.data,
+      currentRubric.criteriaHash,
+      rubricRevision,
+    ),
+    rationale: `rubrics:repair backfilled missing current standard rubric revision ${rubricRevision} from exact plan state`,
+  };
+  return {
+    result: legacyRubricRepairResult(rubricId, 'repairable', inspected, 1, undefined, currentRevision),
+    backfillSpec,
   };
 }
 
@@ -2903,17 +3322,20 @@ async function rubricRevisionCriteriaHash(
   return rubric?.criteriaHash ?? null;
 }
 
-function rubricRevisionAfterWrite(
+function rubricRevisionInTransaction(
   rubricId: string,
   by: string | undefined,
   rationale: string,
   fallbackTemplateData?: unknown,
   compatibilityAudit?: () => RubricCompatibilityAudit | undefined,
+  onRecorded?: (revision: Awaited<ReturnType<typeof recordPlanRevisionInTransaction>>) => void,
 ): (
+  tx: PlanRevisionSql,
   writtenBody: string,
   scope: { workspaceId: string; harnessSlug: string },
   committedTemplateData: unknown,
   committedVersion?: number,
+  preimage?: PlanWritePreimage | null,
 ) => Promise<void> {
   const identity: AgentIdentity = {
     ownerId: by ?? 'rubrics:system',
@@ -2924,29 +3346,60 @@ function rubricRevisionAfterWrite(
     workspaceId: null,
     userId: null,
   };
-  return async (writtenBody, scope, committedTemplateData, committedVersion) => {
+  return async (tx, writtenBody, scope, committedTemplateData, committedVersion, preimage) => {
+    // EI-25394374042899729: a legacy snapshot can prove only the CURRENT version.
+    // Preserve that binding before it disappears on advance. Reuse the strict
+    // revision spine and its lock; never infer a historical version from audit seq.
+    if (preimage && Number.isSafeInteger(preimage.version) && preimage.version > 0 &&
+        preimage.version !== committedVersion && hashPlanContent(preimage.body) === preimage.contentHash) {
+      await acquirePlanRevisionAdvisoryLock(tx, scope.workspaceId, scope.harnessSlug, rubricId);
+      const marker = `"rubricRevision": ${preimage.version},`;
+      const snapshots = await tx<{ content_hash: string; content_snapshot: string }[]>`
+        WITH scoped AS (
+          SELECT seq, content_hash, content_snapshot, max(seq) OVER () AS latest_seq
+            FROM harness_shared.plan_revisions
+           WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+             AND plan_slug = ${rubricId}
+        )
+        SELECT content_hash, content_snapshot FROM scoped
+         WHERE seq = latest_seq OR position(${marker} in content_snapshot) > 0
+         ORDER BY seq DESC LIMIT 3`;
+      const latest = snapshots[0];
+      const parsed = latest ? parseRubricRevisionSnapshot(latest.content_snapshot) : null;
+      if (snapshots.length === 1 && parsed && parsed.rubricRevision === undefined &&
+          !latest!.content_snapshot.includes(marker) && latest!.content_hash === preimage.contentHash &&
+          isDeepStrictEqual(parsed.templateData, preimage.templateData) &&
+          rubricTemplateDataSchema.safeParse(parsed.templateData).success) {
+        await recordPlanRevisionInTransaction(tx, {
+          planSlug: rubricId,
+          harnessSlug: scope.harnessSlug,
+          workspaceId: scope.workspaceId,
+          content: formatRubricRevisionSnapshot(
+            preimage.body, parsed.templateData,
+            parsed.criteriaHash ?? await rubricRevisionCriteriaHash(parsed.templateData, scope),
+            preimage.version,
+          ),
+          contentHash: preimage.contentHash,
+          rationale: `preserve proven legacy rubric revision ${preimage.version} before ${rationale}`,
+          identity,
+        });
+      }
+    }
     const snapshotTemplateData =
       committedTemplateData !== undefined ? committedTemplateData : fallbackTemplateData;
     const criteriaHash = await rubricRevisionCriteriaHash(snapshotTemplateData, scope);
-    // Thread the (workspaceId, harnessSlug) withPlanLock resolved for THIS write so the
-    // revision lands on the rubric plan's own PK (recordPlanRevision re-resolves through
-    // the same resolvePlanScope — the operator-home short-circuit for the rubric harness).
-    await recordPlanRevision({
+    // withPlanLock has already resolved the concrete scope and holds the plan lock. Capture
+    // the revision in that same transaction so an insert failure rolls back the rubric.
+    const recorded = await recordPlanRevisionInTransaction(tx, {
       planSlug: rubricId,
-      ...(scope?.harnessSlug ? { harnessSlug: scope.harnessSlug } : {}),
-      ...(scope?.workspaceId ? { workspaceId: scope.workspaceId } : {}),
-      // withPlanLock supplies the value committed by this exact transaction.
-      // The fallback keeps auditability best-effort for older callers/tests that
-      // invoke this helper without the third hook argument.
+      harnessSlug: scope.harnessSlug,
+      workspaceId: scope.workspaceId,
       content: formatRubricRevisionSnapshot(
         writtenBody,
         snapshotTemplateData,
         criteriaHash,
         committedVersion,
       ),
-      // The revision hash remains the canonical plan-body fingerprint used by
-      // activation/current-revision comparisons. Only content_snapshot is
-      // enriched with structured rubric data.
       contentHash: hashPlanContent(writtenBody),
       rationale: (() => {
         const compatibility = compatibilityAudit?.();
@@ -2956,6 +3409,32 @@ function rubricRevisionAfterWrite(
       })(),
       identity,
     });
+    onRecorded?.(recorded);
+  };
+}
+
+/** Build the strict rubric revision hook used by other rubric-aware plan writers. */
+export function createRubricRevisionCapture(
+  rubricId: string,
+  by: string | undefined,
+  rationale: string,
+): {
+  recorded: { current: Awaited<ReturnType<typeof recordPlanRevisionInTransaction>> | null };
+  revisionInTransaction: ReturnType<typeof rubricRevisionInTransaction>;
+} {
+  const recorded: { current: Awaited<ReturnType<typeof recordPlanRevisionInTransaction>> | null } = {
+    current: null,
+  };
+  return {
+    recorded,
+    revisionInTransaction: rubricRevisionInTransaction(
+      rubricId,
+      by,
+      rationale,
+      undefined,
+      undefined,
+      (revision) => { recorded.current = revision; },
+    ),
   };
 }
 
@@ -2977,8 +3456,15 @@ function rubricRevisionAfterWrite(
 export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> {
   // Every preflight and writer must inspect the same canonical fields. In
   // particular, a nested verification.check must participate in the check floor.
-  input = { ...input, criteria: input.criteria.map(normalizeRequirementSections) };
   const kind = input.kind ?? 'standard';
+  input = {
+    ...input,
+    criteria: input.criteria.map((criterion) =>
+      kind === 'acceptance'
+        ? normalizeAcceptanceBarCriterion(criterion)
+        : normalizeRequirementSections(criterion),
+    ),
+  };
   // Validate FIRST (fail-loud) before any write, so a malformed rubric never persists a
   // half-state (a body with no/invalid template_data).
   let builtTemplateData = buildRubricTemplateData(input);
@@ -3000,6 +3486,12 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // subjectPlan would never gate anything, silently.
   const stored = await getRubric(input.rubricId);
   if (stored) assertRubricWritable(stored, 'proposeRubric');
+  if (kind === 'acceptance') {
+    assertChangedAcceptanceBarProjectionsAtomic(
+      input.criteria,
+      stored?.kind === 'acceptance' ? stored.criteria.map(normalizeAcceptanceBarCriterion) : [],
+    );
+  }
   if (stored?.subjectHarnessSlug) {
     if ((input.subjectHarnessSlug && input.subjectHarnessSlug !== stored.subjectHarnessSlug) ||
         input.subjectPlan !== stored.subjectPlan) {
@@ -3109,7 +3601,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
       ...(input.by ? { actorId: input.by } : {}),
       ...scope,
       // EI-10443: record a plan_revisions audit row for the propose write.
-      afterWrite: rubricRevisionAfterWrite(
+      revisionInTransaction: rubricRevisionInTransaction(
         input.rubricId,
         input.by,
         `rubrics:propose (${rubricStatus})`,
@@ -3144,6 +3636,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   if (result.kind === 'busy') {
     throw new Error(`proposeRubric: plan '${input.rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
 
   // withPlanLock returns activation-gate refusals as typed domain values so plan
   // tools can render them without throwing. This library API cannot return a partial
@@ -3610,6 +4103,13 @@ export interface AcceptanceBarAmendmentPreview {
    */
   readinessDelta: import('./acceptance-bar-amendment-readiness').AcceptanceBarAmendmentReadinessDelta;
   /**
+   * EI-24816459669484550: ADVISORY, never a refusal. BARs whose amended text (`model`, or
+   * `driftMarkers` for a three-section R-N) disagrees with the subject plan's `## Requirements`
+   * block. The rubric is canonical after seeding and nothing re-renders that block, so the
+   * author sees the drift here instead of an outside reviewer finding it after the apply.
+   */
+  requirementsDrift: import('./acceptance-bar-amendment-requirements-drift').RequirementsDrift;
+  /**
    * EI-24372605712471072: check files and method/replication citations that are not in the
    * tree yet and were accepted only because the subject plan has not started (draft/ready).
    * Each must exist by grading time: scorecards:emit refuses a tests-check file that does
@@ -3951,6 +4451,7 @@ export function buildAcceptanceBarAmendmentCandidate(
         barKey,
         criterionKey: criterion.key,
         title: criterion.title,
+        requirement: requirementSections(criterion),
         barHash: criterion.barHash ?? null,
         model: criterion.model ?? '',
         method: criterion.method ?? '',
@@ -4173,6 +4674,11 @@ async function amendAcceptanceBarRubric(
       }
 
       const amended = applyRubricAmendment(stored, input);
+      amended.criteria = amended.criteria.map(normalizeAcceptanceBarCriterion);
+      assertChangedAcceptanceBarProjectionsAtomic(
+        amended.criteria,
+        stored.criteria.map(normalizeAcceptanceBarCriterion),
+      );
       const built = buildRubricTemplateData(amended);
       await assertRubricCompositionLinksResolve(amended);
       // EI-24372605712471072: before the subject plan starts, its BARs may name proof
@@ -4342,6 +4848,30 @@ async function amendAcceptanceBarRubric(
           `acceptance_bar_amendment_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
         );
       }
+      // Rendering follows every represented field, while proof invalidation follows BAR meaning.
+      // A method-only edit needs both plan locks whenever an explicit requirement block changes.
+      const requirementChangedBars = [...new Set([
+        ...changedBars,
+        ...amendedRequirementBarKeys(
+          stored.criteria as unknown as Array<Record<string, unknown>>,
+          guard.data.criteria as Array<Record<string, unknown>>,
+        ),
+        // Older amendment writers left explicit Requirements stale. Reapplying
+        // the canonical criteria must repair that copy before the no-op return;
+        // no BAR meaning changes and legacy prose remains untouched.
+        ...diffAmendedCriteriaAgainstRequirements({
+          requirementBars: requirements.bars,
+          nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
+          changedBars,
+        }).entries.filter((entry) =>
+          entry.kind === 'text-differs' &&
+          requirements.bars.some((bar) => bar.barKey === entry.barKey && bar.criterion),
+        ).map((entry) => entry.barKey),
+      ])];
+      const requirementsRerender = rerenderAmendedRequirementBlocks(subjectRow.content, {
+        nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
+        changedBars: requirementChangedBars,
+      });
       const desiredMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
       if (!desiredMappings.ok) {
         throw new Error(
@@ -4430,7 +4960,7 @@ async function amendAcceptanceBarRubric(
       // the ship snapshot calls its depth `undeclared` even after its test runs.
       // Reuse the activation seed's completeness rule before outside approval or
       // any revision-invalidating write, while leaving unchanged legacy BARs alone.
-      const missingLayers = candidate.bars.flatMap((bar) =>
+      const changedBarGaps = candidate.bars.flatMap((bar) =>
         changedBars.includes(bar.barKey)
           ? acceptanceBarContractGaps({
               role: bar.role,
@@ -4438,13 +4968,27 @@ async function amendAcceptanceBarRubric(
               check: bar.check,
               requiredTestLayers: bar.requiredTestLayers,
               automatedProofRequired: barRequiresAutomatedProof(bar),
-            })
-              .filter((finding) => finding.gap === 'test_layers_missing')
-              .map((finding) => `${bar.barKey}: ${finding.detail}`)
+            }).map((finding) => ({ gap: finding.gap, line: `${bar.barKey}: ${finding.detail}` }))
           : [],
       );
+      const missingLayers = changedBarGaps.filter((g) => g.gap === 'test_layers_missing').map((g) => g.line);
       if (startedBar && missingLayers.length > 0) {
         throw new Error(`acceptance_bar_amendment_test_layers_missing: ${missingLayers.join('; ')}`);
+      }
+      // WI-10006536: a layer the run ledger never records can never pass correct-layer, on a
+      // started contract or not — refuse it here instead of after proof is bound against it.
+      const unrecordableLayers = changedBarGaps.filter((g) => g.gap === 'test_layer_unrecordable').map((g) => g.line);
+      if (unrecordableLayers.length > 0) {
+        throw new Error(`acceptance_bar_amendment_test_layer_unrecordable: ${unrecordableLayers.join('; ')}`);
+      }
+      // A manual check cannot promise automated test-layer evidence. Refuse this
+      // contract mismatch in the preview path, before rubrics:amend routes an
+      // outside reviewer for a patch that cannot satisfy its declared BAR.
+      const checkLayerMismatches = changedBarGaps
+        .filter((gap) => gap.gap === 'check_layer_mismatch')
+        .map((gap) => gap.line);
+      if (checkLayerMismatches.length > 0) {
+        throw new Error(`acceptance_bar_amendment_check_layer_mismatch: ${checkLayerMismatches.join('; ')}`);
       }
       // A classRef bind is metadata-only: it changes neither the BAR set nor any
       // criterion meaning. Do not make this repair depend on the started contract
@@ -4463,7 +5007,7 @@ async function amendAcceptanceBarRubric(
         }
       }
 
-      if (changedBars.length === 0 && !preview) return {
+      if (changedBars.length === 0 && requirementsRerender.rerendered.length === 0 && !preview) return {
         rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
         subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
         changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
@@ -4599,14 +5143,14 @@ async function amendAcceptanceBarRubric(
             changes,
             revisionMovement: {
               rubric: { from: oldRubricRevision, to: nextRubricRevision },
-              subject: { from: oldSubjectRevision, to: changedBars.length ? nextSubjectRevision : oldSubjectRevision },
+              subject: { from: oldSubjectRevision, to: changedBars.length || requirementsRerender.rerendered.length ? nextSubjectRevision : oldSubjectRevision },
             },
             ...proofPartition,
-            invalidatedScorecardIds: [...snapshot.sourceRevisions.scorecardIds].sort(),
+            invalidatedScorecardIds: changedBars.length ? [...snapshot.sourceRevisions.scorecardIds].sort() : [],
             invalidatedAdequacyCardSubjects: invalidatedAdequacyCardSubjects(
               subjectPlanHint ?? '', snapshot.bars, changedBars, new Set(candidate.bars.map((bar) => bar.barKey)),
             ),
-            authorVerdictBecomesStale: ['accepted', 'rejected'].includes(snapshot.grading.authorVerdict.state),
+            authorVerdictBecomesStale: changedBars.length > 0 && ['accepted', 'rejected'].includes(snapshot.grading.authorVerdict.state),
             reboundWorkItemIds: open.map((row) => row.work_item_id),
             cohortDisposition: {
               cohort: snapshot.plan?.cohort ?? null,
@@ -4616,12 +5160,23 @@ async function amendAcceptanceBarRubric(
             ...(previewImplementers ? { implementers: previewImplementers } : {}),
             ...(approverEligibility ? { approverEligibility } : {}),
             readinessDelta,
+            requirementsDrift: diffAmendedCriteriaAgainstRequirements({
+              requirementBars: requirements.bars,
+              nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
+              changedBars: requirementChangedBars,
+              removedBars,
+            }),
             plannedPaths,
             nextRepair: missingMethod
               ? {
                   code: 'bar_snapshot_method_missing',
                   action: `${floorWarning}Fill every mandatory METHOD before vetting or grading.`,
                 }
+              : changedBars.length === 0
+                ? {
+                    code: 'bar_snapshot_method_updated',
+                    action: 'No BAR meaning changed. Review the updated procedure; existing proof, grades and vetting retain their meaning epoch.',
+                  }
               : {
                   code: 'bar_snapshot_proof_stale',
                   // P-002/P-027: name ONLY the proof this amendment invalidates. Unchanged
@@ -4639,6 +5194,8 @@ async function amendAcceptanceBarRubric(
         };
       }
       const decisionId = allocateNextDecisionId(subjectRow.content);
+      // WI-10006835: re-render each changed BAR's explicit plan block from the amended criterion
+      // in this same transaction, so the plan copy reviewers read cannot lag the canonical rubric.
       const decisionBody = [
         `Amendment-Id: ${idempotencyKey}`,
         `Request-Hash: ${amendmentRequestHash(input)}`,
@@ -4661,10 +5218,13 @@ async function amendAcceptanceBarRubric(
         `Subject plan revision: ${oldSubjectRevision} → ${nextSubjectRevision}`,
         `Changed BARs: ${changedBars.join(', ')}`,
         'Prior evidence, grades, vetting, author verdicts, and ship verdicts remain audit history and are revision-ineligible.',
+        ...(requirementsRerender.rerendered.length
+          ? [`Requirements re-rendered from the amended criterion: ${requirementsRerender.rerendered.join(', ')}`]
+          : []),
       ].join('\n');
       const subjectBody = bumpUpdatedDate(
         appendDecisionToBody(
-          subjectRow.content,
+          requirementsRerender.content,
           decisionId,
           'Acceptance BAR amendment',
           decisionBody,
@@ -4896,6 +5456,39 @@ async function amendAcceptanceBarRubric(
         template_data: guard.data,
       });
       if (!projected) throw new Error(`acceptance_bar_amendment: amended rubric failed projection`);
+      const criteriaHash = await rubricRevisionCriteriaHash(guard.data, rubricScope);
+      if (criteriaHash) projected.criteriaHash = criteriaHash;
+      const revisionIdentity: AgentIdentity = {
+        ownerId: actorId ?? input.by ?? 'rubrics:system',
+        ownerLabel: actorId ?? input.by ?? 'rubrics:system',
+        source: 'static-client',
+        workspaceId: null,
+        userId: null,
+      };
+      const revisionRationale = `acceptance BAR amendment ${idempotencyKey}`;
+      // The custom writer updates the rubric and subject plan under both locks. Keep
+      // both revision snapshots in this transaction too, so failure on either insert
+      // rolls back both plan rows and any earlier revision insert.
+      // Reuse the rubric revision writer's proved-preimage capture. A legacy
+      // activation snapshot is resolvable only while its version is current;
+      // preserve that identity before the acceptance amendment advances it.
+      await rubricRevisionInTransaction(input.rubricId, actorId, revisionRationale)(
+        tx, rubricBody, rubricScope, guard.data, nextRubricRevision,
+        {
+          body: rubricRow.content,
+          contentHash: rubricRow.content_hash,
+          version: oldRubricRevision,
+          templateData: rubricRow.template_data,
+        },
+      );
+      await recordPlanRevisionInTransaction(tx, {
+        planSlug: subjectPlanHint,
+        harnessSlug: subjectScope.harnessSlug,
+        workspaceId: subjectScope.workspaceId,
+        content: subjectBody,
+        rationale: revisionRationale,
+        identity: revisionIdentity,
+      });
       return {
         rubric: projected,
         decisionId,
@@ -4906,8 +5499,8 @@ async function amendAcceptanceBarRubric(
         reboundContracts,
         invalidated: {
           evidence: Number(evidence[0]?.count ?? 0),
-          scorecards: Number(scorecards[0]?.count ?? 0),
-          vetting: Number(vetting[0]?.count ?? 0),
+          scorecards: changedBars.length ? Number(scorecards[0]?.count ?? 0) : 0,
+          vetting: changedBars.length ? Number(vetting[0]?.count ?? 0) : 0,
         },
         evidenceCarriedForward,
         idempotencyKey,
@@ -4919,47 +5512,6 @@ async function amendAcceptanceBarRubric(
   );
   if (!txResult) return null;
   if (txResult.replayed || txResult.preview || txResult.methodOnly) return txResult;
-  // Revision rows are audit history.  The data transaction above remains the
-  // atomic source of truth; these best-effort records make both plans visible
-  // through the existing plan-revisions reader.
-  const identity: AgentIdentity = {
-    ownerId: input.actorId ?? input.by ?? 'rubrics:system',
-    ownerLabel: input.actorId ?? input.by ?? 'rubrics:system',
-    source: 'static-client',
-    workspaceId: null,
-    userId: null,
-  };
-  const criteriaHash =
-    txResult.rubricBody && txResult.templateData
-      ? await rubricRevisionCriteriaHash(txResult.templateData, rubricScope)
-      : null;
-  // The locked projection omits the delegated class revision. Return the same
-  // resolved identity we pin in history, so an amendment receipt agrees with
-  // an immediate getRubric read (EI-24352619832794123).
-  if (criteriaHash) txResult.rubric.criteriaHash = criteriaHash;
-  await Promise.all([
-    txResult.rubricBody && txResult.templateData
-      ? recordPlanRevision({
-          planSlug: input.rubricId,
-          harnessSlug: rubricScope.harnessSlug,
-          workspaceId: rubricScope.workspaceId,
-          content: formatRubricRevisionSnapshot(txResult.rubricBody, txResult.templateData, criteriaHash, txResult.rubricRevision),
-          contentHash: hashPlanContent(txResult.rubricBody),
-          rationale: `acceptance BAR amendment ${txResult.idempotencyKey}`,
-          identity,
-        })
-      : Promise.resolve(null),
-    txResult.subjectBody
-      ? recordPlanRevision({
-          planSlug: subjectPlanHint,
-          harnessSlug: subjectScope.harnessSlug,
-          workspaceId: subjectScope.workspaceId,
-          content: txResult.subjectBody,
-          rationale: `acceptance BAR amendment ${txResult.idempotencyKey}`,
-          identity,
-        })
-      : Promise.resolve(null),
-  ]);
   return txResult;
 }
 
@@ -5134,7 +5686,7 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       intent: `rubrics:amend ${input.rubricId}`,
       ...(input.by ? { actorId: input.by } : {}),
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(
+      revisionInTransaction: rubricRevisionInTransaction(
         input.rubricId,
         input.by,
         'rubrics:amend',
@@ -5154,6 +5706,13 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       // the loss guards and template schema on the same side of the advisory lock
       // as the read-modify-write itself.
       const amended = applyRubricAmendment(stored, input);
+      if (amended.kind === 'acceptance') {
+        amended.criteria = amended.criteria.map(normalizeAcceptanceBarCriterion);
+        assertChangedAcceptanceBarProjectionsAtomic(
+          amended.criteria,
+          stored.criteria.map(normalizeAcceptanceBarCriterion),
+        );
+      }
       const builtTemplateData = buildRubricTemplateData(amended);
       await assertRubricCompositionLinksResolve(amended);
       const templateData = builtTemplateData.data;
@@ -5218,6 +5777,7 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
   if (result.kind === 'busy') {
     throw new Error(`amendRubric: plan '${input.rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   if (!result.value) return null;
   return getRubric(input.rubricId);
 }
@@ -5226,15 +5786,16 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
  *  ratifyRubric's provenance patch. Reads by the same predicates as queryRubricPlans. */
 async function readRawRubricTemplateData(rubricId: string): Promise<Record<string, unknown> | null> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ template_data: unknown }[]>`
-    SELECT template_data
+  const rows = await sql<{ plan_slug: string; harness_slug: string; template_data: unknown }[]>`
+    SELECT plan_slug, harness_slug, template_data
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${rubricsScopeWorkspace()}
        AND template = ${RUBRIC_TEMPLATE_NAME}
        AND template_slug IS NULL
        AND plan_slug = ${rubricId}
-     LIMIT 1`;
-  const d = rows[0]?.template_data;
+     ORDER BY harness_slug
+     LIMIT 2`;
+  const d = uniqueRubricRow(rows, rubricId)?.template_data;
   return d && typeof d === 'object' ? (d as Record<string, unknown>) : null;
 }
 
@@ -5291,7 +5852,7 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
       // EI-10443: record a plan_revisions audit row for the status-flip write. afterWrite
       // only fires when a body was actually written (a no-op ratify — no frontmatter status
       // line — returns newBody:null and records nothing).
-      afterWrite: rubricRevisionAfterWrite(
+      revisionInTransaction: rubricRevisionInTransaction(
         rubricId,
         by,
         'rubrics:ratify → active',
@@ -5312,6 +5873,7 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
   if (result.kind === 'busy') {
     throw new Error(`ratifyRubric: plan '${rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   return getRubric(rubricId);
 }
 
@@ -5337,7 +5899,7 @@ export async function retireAcceptanceRubricForPlan(
         slug: rubric.rubricId,
         intent: `acceptance-rubric retire (subject plan '${planSlug}' ${terminalStatus})`,
         ...scope,
-        afterWrite: rubricRevisionAfterWrite(
+        revisionInTransaction: rubricRevisionInTransaction(
           rubric.rubricId,
           by,
           `acceptance rubric retired with its ${terminalStatus} subject plan`,
@@ -5350,7 +5912,7 @@ export async function retireAcceptanceRubricForPlan(
         return { newBody: bumpUpdatedDate(flipped), value: true };
       },
     );
-    if (result.kind === 'busy') return null;
+    if (result.kind !== 'applied') return null;
     return result.value ? rubric.rubricId : null;
   } catch {
     return null;
@@ -5406,7 +5968,7 @@ export async function retireRubric(rubricId: string, by?: string, reason?: strin
       slug: rubricId,
       intent: `rubrics:retire ${rubricId}`,
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(rubricId, by, `rubrics:retire → retired${reason ? ` (${reason})` : ''}`),
+      revisionInTransaction: rubricRevisionInTransaction(rubricId, by, `rubrics:retire → retired${reason ? ` (${reason})` : ''}`),
     },
     async (current) => {
       if (current === null) return { newBody: null, value: false };
@@ -5418,6 +5980,7 @@ export async function retireRubric(rubricId: string, by?: string, reason?: strin
   if (result.kind === 'busy') {
     throw new Error(`retireRubric: plan '${rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   return getRubric(rubricId);
 }
 
@@ -5464,7 +6027,7 @@ export async function setRubricHistoryReset(rubricId: string, at: string, by?: s
       slug: rubricId,
       intent: `rubrics:set-history-reset ${rubricId}`,
       ...scope,
-      afterWrite: rubricRevisionAfterWrite(rubricId, by, `rubrics:set-history-reset → ${iso}`, {
+      revisionInTransaction: rubricRevisionInTransaction(rubricId, by, `rubrics:set-history-reset → ${iso}`, {
         ...rawData,
         historyResetAt: iso,
       }),
@@ -5481,6 +6044,7 @@ export async function setRubricHistoryReset(rubricId: string, at: string, by?: s
   if (result.kind === 'busy') {
     throw new Error(`setRubricHistoryReset: plan '${rubricId}' is being written by another caller`);
   }
+  if (result.kind === 'refused') throw new Error(`${result.value.code}: ${result.value.message}`);
   return getRubric(rubricId);
 }
 

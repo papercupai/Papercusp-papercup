@@ -8,9 +8,11 @@
  * launch. Ordinary staging edits, focused tests, and explicit repair admission
  * are outside the governed operation set by design.
  */
+import { homedir } from 'node:os';
 import { basename, isAbsolute, relative, resolve } from 'node:path';
 import { atomizePipeline } from '../bash-substitution/atomize';
 import { readFrozenRepairMarker, type FrozenRepairEditMarker } from './frozen-repair-edit-marker';
+import type { GateVerdictTarget } from './gate-verdict-target';
 
 export interface FrozenLineageIdentity {
   candidate: string;
@@ -52,8 +54,10 @@ export function frozenLineageIdentityFromMarker(
   return frozenLineageIdentityFromQueue(marker);
 }
 
-export function readFrozenLineageIdentity(path?: string): FrozenLineageIdentity | null {
-  const marker = path === undefined ? readFrozenRepairMarker() : readFrozenRepairMarker(path);
+export function readFrozenLineageIdentity(
+  targetOrPath: GateVerdictTarget | string | null | undefined,
+): FrozenLineageIdentity | null {
+  const marker = readFrozenRepairMarker(targetOrPath);
   return marker ? frozenLineageIdentityFromMarker(marker) : null;
 }
 
@@ -156,6 +160,8 @@ export type FrozenLineagePolicyVerdict =
 export interface FrozenLineagePolicyProbe {
   /** Injected by tests/callers that already performed the live marker read. */
   marker?: FrozenRepairEditMarker | null;
+  /** Scope for the live marker read when no marker/identity has been injected. */
+  target?: GateVerdictTarget | null;
   /** Injected identity from the authoritative repair_queue reader. */
   identity?: FrozenLineageIdentity | null;
 }
@@ -196,7 +202,11 @@ export function evaluateFrozenLineagePolicy(
   probe: FrozenLineagePolicyProbe = {},
 ): FrozenLineagePolicyVerdict {
   const hasInjectedIdentity = Object.prototype.hasOwnProperty.call(probe, 'identity');
-  const marker = hasInjectedIdentity ? null : 'marker' in probe ? probe.marker : readFrozenRepairMarker();
+  const marker = hasInjectedIdentity
+    ? null
+    : 'marker' in probe
+      ? probe.marker
+      : readFrozenRepairMarker(probe.target);
   const liveIdentity = hasInjectedIdentity
     ? probe.identity ?? null
     : marker
@@ -288,6 +298,8 @@ export interface FrozenLineageShellCommandInput {
 export interface FrozenLineageShellCommandProbe {
   /** Inject one stable marker for a pure test. */
   marker?: FrozenRepairEditMarker | null;
+  /** Scope for the live marker fallback; production adapters pass the home gate target. */
+  target?: GateVerdictTarget | null;
   /** Production/default is the live marker read; a sequence makes CAS races testable. */
   readMarker?: () => FrozenRepairEditMarker | null;
   /** The authoritative persisted repair_queue read; takes precedence over marker I/O. */
@@ -305,7 +317,32 @@ export interface FrozenLineageShellCommandVerdict {
   policy: FrozenLineagePolicyVerdict | null;
 }
 
-function shellWords(atom: string): string[] | null {
+/**
+ * Shell variables assigned to a statically-known literal earlier in the same
+ * command (`R=/abs/path; git -C "$R" …`). Only names whose value is provably
+ * known are present; anything reassigned to something unknowable is removed, so
+ * a reference to it stays an unexpanded `$NAME` and fails closed downstream.
+ */
+type KnownShellVars = ReadonlyMap<string, string>;
+
+const SHELL_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Expand one `$NAME` / `${NAME}` reference starting at `atom[index]` (the `$`).
+ * Returns the replacement and how many characters it consumed, or null when the
+ * reference is not a plain known variable — the caller then keeps the `$`
+ * literally, which `literalPath` refuses, preserving fail-closed behaviour.
+ */
+function expandVariable(atom: string, index: number, vars: KnownShellVars): { value: string; length: number } | null {
+  const braced = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}/.exec(atom.slice(index));
+  const bare = braced ? null : /^\$([A-Za-z_][A-Za-z0-9_]*)/.exec(atom.slice(index));
+  const match = braced ?? bare;
+  if (!match) return null;
+  const value = vars.get(match[1]!);
+  return value === undefined ? null : { value, length: match[0].length };
+}
+
+function shellWords(atom: string, vars: KnownShellVars = new Map()): string[] | null {
   const words: string[] = [];
   let word = '';
   let quote: "'" | '"' | null = null;
@@ -319,7 +356,8 @@ function shellWords(atom: string): string[] | null {
     started = false;
   };
 
-  for (const ch of atom) {
+  for (let index = 0; index < atom.length; index += 1) {
+    const ch = atom[index]!;
     if (escaped) {
       word += ch;
       started = true;
@@ -330,6 +368,16 @@ function shellWords(atom: string): string[] | null {
       escaped = true;
       started = true;
       continue;
+    }
+    // Single quotes suppress expansion; double quotes and bare words do not.
+    if (ch === '$' && quote !== "'") {
+      const expansion = expandVariable(atom, index, vars);
+      if (expansion) {
+        word += expansion.value;
+        started = true;
+        index += expansion.length - 1;
+        continue;
+      }
     }
     if (quote) {
       if (ch === quote) quote = null;
@@ -355,6 +403,11 @@ function shellWords(atom: string): string[] | null {
 }
 
 function literalPath(token: string | undefined, from: string | null): string | null {
+  // `~` and `~/…` expand to the invoking user's home — the same user whose shell
+  // runs the command (EI-25213458345089181: `cd ~/.papercusp-workspaces/clones/<pot>`).
+  // `~user` stays unknowable.
+  if (token === '~') return homedir();
+  if (token?.startsWith('~/')) return resolve(homedir(), token.slice(2));
   if (!token || token === '-' || token.startsWith('~') || /[$`*?[\]{}()]/.test(token)) return null;
   if (isAbsolute(token)) return resolve(token);
   return from ? resolve(from, token) : null;
@@ -364,12 +417,53 @@ function commandName(token: string | undefined): string {
   return basename((token ?? '').replace(/^[({]+/, ''));
 }
 
-function cdTarget(atom: string, cwd: string | null): string | null | undefined {
-  const words = shellWords(atom);
+function cdTarget(atom: string, cwd: string | null, vars: KnownShellVars): string | null | undefined {
+  const words = shellWords(atom, vars);
   if (!words || commandName(words[0]) !== 'cd') return undefined;
   const operands = words.slice(1).filter((word) => word !== '--');
   if (operands.length !== 1) return null;
   return literalPath(operands[0], cwd);
+}
+
+/**
+ * `exit` / `return` — possibly opening a `{ …; }` group — ends the script, so a
+ * `cd X || exit 1` fallback never continues and every later atom runs in X.
+ * A `( exit 1 )` subshell only ends the subshell, so it deliberately does not count.
+ */
+function isTerminatingAtom(raw: string): boolean {
+  const words = shellWords(raw);
+  if (!words) return false;
+  const head = words[0] === '{' ? words[1] : words[0];
+  return head === 'exit' || head === 'return';
+}
+
+/** Leading `export`/`readonly`/`local` keyword of an assignment-only atom. */
+const ASSIGNMENT_KEYWORDS = new Set(['export', 'readonly', 'local']);
+
+/**
+ * Apply one atom's effect on the known-variable map. A standalone literal
+ * assignment (`R=/abs`, `export R=/abs`) records its value; any other mention of
+ * a known name outside an expansion (`R=$(pwd)`, `read R`, `for R in …`,
+ * `unset R`) forgets it, so a stale value can never resolve a later `$R`.
+ */
+function updateKnownShellVars(raw: string, vars: Map<string, string>): void {
+  const words = shellWords(raw, vars);
+  const body = words && ASSIGNMENT_KEYWORDS.has(words[0] ?? '') ? words.slice(1) : words;
+  const assignments = body && body.length > 0 ? body.map((word) => /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s.exec(word)) : [];
+  const unexpandedRaw = /`|\$\(/.test(raw);
+  if (!unexpandedRaw && assignments.length > 0 && assignments.every((match) => match !== null)) {
+    for (const match of assignments) {
+      const [, name, value] = match!;
+      // An unresolved `$X`, a glob, or whitespace (word-split when unquoted) is not a known literal.
+      if (/[$`*?[\]{}()\s]/.test(value!) || value === '') vars.delete(name!);
+      else vars.set(name!, value!);
+    }
+    return;
+  }
+  for (const name of [...vars.keys()]) {
+    if (!SHELL_NAME.test(name)) continue;
+    if (new RegExp(`(^|[^$\\w{])${name}(?![\\w])`).test(raw)) vars.delete(name);
+  }
 }
 
 function peelHeavyWrapper(words: string[]): string[] {
@@ -380,8 +474,8 @@ function peelHeavyWrapper(words: string[]): string[] {
   return out;
 }
 
-function canonicalRootTestCwd(atom: string, cwd: string | null): string | null | undefined {
-  const parsed = shellWords(atom);
+function canonicalRootTestCwd(atom: string, cwd: string | null, vars: KnownShellVars): string | null | undefined {
+  const parsed = shellWords(atom, vars);
   // Tri-state contract (same as cdTarget above): undefined = NOT a canonical-root-test,
   // null = confirmed one whose cwd could not be resolved, string = one at that cwd.
   // An atom shellWords cannot tokenise (unbalanced quote / trailing escape) cannot be
@@ -395,7 +489,14 @@ function canonicalRootTestCwd(atom: string, cwd: string | null): string | null |
   const words = peelHeavyWrapper(parsed);
   const head = commandName(words[0]);
 
-  if (head === 'node' && words[1]?.replace(/^\.\//, '') === 'scripts/affected-tests.mjs') return cwd;
+  if (head === 'node' && words[1]?.replace(/^\.\//, '') === 'scripts/affected-tests.mjs') {
+    // These modes only enumerate the affected-test plan and exit before a suite
+    // runs, so they do not judge a frozen candidate's test verdict.
+    const selectionOnly = words.slice(2).some(
+      (word) => word === '--dry' || word === '--dry-run' || word === '--print-affected',
+    );
+    return selectionOnly ? undefined : cwd;
+  }
   if (head !== 'npm') return undefined;
 
   let effectiveCwd = cwd;
@@ -434,12 +535,13 @@ function canonicalRootTestCwd(atom: string, cwd: string | null): string | null |
     'test:affected:integration',
     'test:all',
     'test:all:integration',
+    'test:integration-only',
   ]);
   return canonicalScripts.has(script) ? effectiveCwd : undefined;
 }
 
-function gitWorktreeAdd(atom: string, cwd: string | null): { cwd: string | null; ref: string } | null {
-  const parsed = shellWords(atom);
+function gitWorktreeAdd(atom: string, cwd: string | null, vars: KnownShellVars): { cwd: string | null; ref: string } | null {
+  const parsed = shellWords(atom, vars);
   if (!parsed) return null;
   const words = peelHeavyWrapper(parsed);
   if (commandName(words[0]) !== 'git') return null;
@@ -497,22 +599,44 @@ export function classifyFrozenLineageShellCommand(
   const parts = atomizePipeline(input.command);
   let effectiveCwd: string | null = resolve(input.cwd);
   let pendingCd: { before: string | null; target: string | null } | null = null;
+  // Inside a `cd X || { …; exit 1; }` fallback group: atoms run where the failed
+  // cd left them, and once the group's exit is reached every LATER atom can only
+  // be running because the cd succeeded, i.e. in X. (The closing `}` is dropped
+  // by the atomizer as shell syntax, so the group's exit is the observable end.)
+  let fallbackGroupTarget: { target: string | null } | null = null;
+  // HOME is inherited by the command's shell; anything else starts unknown.
+  const vars = new Map<string, string>([['HOME', homedir()]]);
 
   for (const part of parts) {
     if (pendingCd) {
       if (part.sepBefore === '&&') effectiveCwd = pendingCd.target;
-      else if (part.sepBefore === '||' || part.sepBefore === '|') effectiveCwd = pendingCd.before;
+      else if (part.sepBefore === '||' && isTerminatingAtom(part.raw)) {
+        // `cd X || exit 1` — the idiom CLAUDE.md prescribes. The fallback never
+        // continues, so everything after it runs in X. Without this, a sibling
+        // checkout's `npm test` was governed as a papercusp root test (P-015).
+        effectiveCwd = pendingCd.target;
+        pendingCd = null;
+        continue;
+      } else if (part.sepBefore === '||' && part.raw.startsWith('{')) {
+        fallbackGroupTarget = { target: pendingCd.target };
+        effectiveCwd = pendingCd.before;
+      } else if (part.sepBefore === '||' || part.sepBefore === '|') effectiveCwd = pendingCd.before;
       else effectiveCwd = pendingCd.before === pendingCd.target ? pendingCd.before : null;
       pendingCd = null;
     }
+    if (fallbackGroupTarget && isTerminatingAtom(part.raw)) {
+      effectiveCwd = fallbackGroupTarget.target;
+      fallbackGroupTarget = null;
+      continue;
+    }
 
-    const target = cdTarget(part.atom, effectiveCwd);
+    const target = cdTarget(part.atom, effectiveCwd, vars);
     if (target !== undefined) {
       pendingCd = { before: effectiveCwd, target };
       continue;
     }
 
-    const cut = gitWorktreeAdd(part.atom, effectiveCwd);
+    const cut = gitWorktreeAdd(part.atom, effectiveCwd, vars);
     if (cut) {
       return {
         kind: 'candidate-worktree-cut',
@@ -523,7 +647,7 @@ export function classifyFrozenLineageShellCommand(
       };
     }
 
-    const testCwd = canonicalRootTestCwd(part.atom, effectiveCwd);
+    const testCwd = canonicalRootTestCwd(part.atom, effectiveCwd, vars);
     if (testCwd !== undefined) {
       return {
         kind: 'canonical-root-test',
@@ -532,6 +656,7 @@ export function classifyFrozenLineageShellCommand(
         checkoutCwd: testCwd,
       };
     }
+    updateKnownShellVars(part.raw, vars);
   }
   return null;
 }
@@ -564,7 +689,9 @@ export async function evaluateFrozenLineageShellCommand(
   }
 
   const hasInjectedMarker = Object.prototype.hasOwnProperty.call(probe, 'marker');
-  const readMarker = hasInjectedMarker ? () => probe.marker ?? null : (probe.readMarker ?? readFrozenRepairMarker);
+  const readMarker = hasInjectedMarker
+    ? () => probe.marker ?? null
+    : (probe.readMarker ?? (() => readFrozenRepairMarker(probe.target)));
   const readLiveIdentity = async (): Promise<FrozenLineageIdentity | null> => {
     if (probe.readFrozenRepairQueue) {
       const queue = await probe.readFrozenRepairQueue();
@@ -648,6 +775,8 @@ export interface UnsafeFrozenCarryInstruction {
 export interface FrozenLineageCarryPolicyInput {
   surface: FrozenLineageCarrySurface;
   text: string;
+  /** Exact workspace/install whose persisted queue governs this carry boundary. */
+  target: GateVerdictTarget | null;
 }
 
 export type FrozenLineageCarryPolicyVerdict =
@@ -682,8 +811,12 @@ const CARRY_PIN_INSTRUCTION_PREFIX =
 const CARRY_EXECUTION_ACTIONS = String.raw`(?:create|check\s*out|checkout|launch|run|test|verify|judge|evaluate)`;
 const CARRY_JUDGED_CONTEXT =
   /\b(?:candidate|judged|canonical(?:\s+(?:test|verification|verdict|run))|verdict|verification|worktree|root\s+test|full[-\s]+suite)\b/i;
+// Candidate/source relations must stay within one clause. Otherwise
+// "candidate fix is uncommitted and no approved staging route was provided"
+// pairs the first clause's "candidate ... is" with the second clause's "staging".
+const CARRY_RELATION_GAP = String.raw`(?:(?!\b(?:and|or|nor|while|unless|because|so)\b|[,;:]).)`;
 const CARRY_NEGATION_BEFORE =
-  /\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|refus(?:e|es|ed|ing)|reject(?:s|ed|ing)?|forbid(?:s|den|ding)?|block(?:s|ed|ing)?)\b(?:\s+\S+){0,7}\s*$/i;
+  /\b(?:not(?!\s+only)|don't|never|cannot|can't|refus(?:e|es|ed|ing)|reject(?:s|ed|ing)?|forbid(?:s|den|ding)?|block(?:s|ed|ing)?)\b(?:\s+\S+){0,7}\s*$/i;
 const CARRY_RETRACTION_AFTER =
   /\b(?:is|are|was|were|has\s+been|have\s+been|must\s+be|will\s+be)\s+(?:wrong|unsafe|invalid|retracted|withdrawn|superseded|rejected|refused|forbidden|blocked)\b/i;
 // A carry row may quote the unsafe wording while explaining why a previous write
@@ -692,6 +825,13 @@ const CARRY_RETRACTION_AFTER =
 // followed by a reporting verb before the candidate relation.
 const CARRY_DIAGNOSTIC_BEFORE =
   /\b(?:refusal|refused|diagnostic|description|describ(?:e|es|ed|ing)|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|error|message|row|prose|text|guard|policy|receipt|checkpoint|run|verdict|note|record|output|log|evidence|result)\b(?:\s+\S+){0,10}\s+(?:say(?:s|ing)?|said|report(?:s|ed|ing)?|match(?:es|ed)?|contain(?:s|ed|ing)?|mention(?:s|ed|ing)?|quot(?:e|es|ed|ing)?|describ(?:e|es|ed|ing)?|explain(?:s|ed|ing)?|read(?:s|ing)?|flag(?:s|ged|ging)?|reject(?:s|ed|ing)?|refus(?:e|es|ed|ing)?|block(?:s|ed|ing)?)\b/i;
+// A false positive can itself be described as a classifier result: “It classified
+// the sentence as selecting staging for the judged candidate.” That reports the
+// guard's prior decision; it does not instruct a successor to select staging.
+// Require both a classification verb and a text-bearing object so ordinary
+// candidate-selection directions remain governed.
+const CARRY_CLASSIFICATION_DIAGNOSTIC_BEFORE =
+  /\bclassif(?:y|ies|ied|ying)\b.{0,80}\b(?:sentence|text|note|prose|statement|clause|phrase|message|receipt)\b.{0,40}\bas\b/i;
 
 // A candidate's distance from a moving branch is measurement prose, not a
 // selection of that branch. Keep this relation list deliberately narrow: broad
@@ -699,6 +839,38 @@ const CARRY_DIAGNOSTIC_BEFORE =
 // remain governed.
 const CARRY_COMPARATIVE_SOURCE_BEFORE =
   /\b(?:behind|ahead\s+of|vs\.?|versus|relative\s+to|compared\s+(?:with|to))\s*$/i;
+
+// P-015: a copular relation ("the candidate is …/at …/from … staging") is the
+// shape of an OBSERVATION as often as of an instruction. Measured false positives
+// all took this path with a bare "candidate" and no directive — "the next
+// candidate is now 9548d219 (staging 14:39Z)", "it serves a candidate checkout
+// built from a LOCAL staging commit", "the candidate C is the canonical checkout
+// superproject HEAD (always staging)". The relation therefore governs only when it
+// names the judged thing explicitly, or the clause is phrased as a directive.
+const CARRY_JUDGED_EXPLICIT =
+  /\bjudged\s+(?:candidate|worktree)\b|\bcanonical\s+(?:test|verification|verdict|run)\b/i;
+const CARRY_DIRECTIVE_VERBS = String.raw`(?:re-?)?(?:use|select|choose|take|derive|pin|cut|base|set|treat|resolve|create|check\s*out|checkout|launch|run|test|verify|judge|evaluate|fire|point|switch|make|move|advance|reset|retarget|promote|trigger)\b`;
+// U+2022 (bullet), U+2014 (em dash) and U+2013 (en dash) are never typed literally: a literal
+// non-ASCII char inside String.raw makes the host bundle's ascii-escape pass skip the WHOLE
+// bundle (WI-6554700010009506). They are spliced in from their code points, so the built
+// RegExp source is byte-identical to the typed form.
+const CARRY_BULLET = String.fromCharCode(0x2022);
+const CARRY_DASHES = String.fromCharCode(0x2014, 0x2013);
+const CARRY_IMPERATIVE_LEAD = new RegExp(
+  String.raw`^(?:[-+${CARRY_BULLET}]\s*|\d+[.)]\s*)?(?:(?:next(?:\s+action)?|then|now|todo|action|step\s*\d+)\s*[:${CARRY_DASHES}-]\s*)?` +
+    // A leading condition/purpose phrase: "If the gate is red, run …", "To re-judge, use …".
+    String.raw`(?:(?:if|when|once|after|before|to|for|on|until)\b[^,]{0,80},\s*)?` +
+    String.raw`(?:(?:and\s+)?(?:then|now|please|also|first|next)\s+)*${CARRY_DIRECTIVE_VERBS}`,
+  'i',
+);
+const CARRY_DIRECTIVE_MODAL = new RegExp(
+  String.raw`\b(?:should|must|needs?\s+to|ha(?:ve|s)\s+to|shall|ought\s+to|going\s+to|let's|let\s+us)\b|\bwill\s+${CARRY_DIRECTIVE_VERBS}`,
+  'i',
+);
+
+function carryClauseIsDirective(clause: string): boolean {
+  return CARRY_IMPERATIVE_LEAD.test(clause) || CARRY_DIRECTIVE_MODAL.test(clause);
+}
 
 function normalizedCarryClause(clause: string): string {
   return clause
@@ -713,6 +885,7 @@ function carryDirectiveIsNegated(clause: string, start: number, end: number): bo
   const after = clause.slice(end, Math.min(clause.length, end + 160));
   if (CARRY_NEGATION_BEFORE.test(before)) return true;
   if (CARRY_DIAGNOSTIC_BEFORE.test(before)) return true;
+  if (CARRY_CLASSIFICATION_DIAGNOSTIC_BEFORE.test(before)) return true;
   if (/\b(?:not|never)\b/i.test(span)) return true;
   if (CARRY_RETRACTION_AFTER.test(after)) return true;
   return false;
@@ -727,7 +900,10 @@ function carryDirectiveIsNegated(clause: string, start: number, end: number): bo
  */
 export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCarryInstruction | null {
   const clauses = text
-    .split(/\n+|[.!?;](?:\s+|$)/)
+    // Keep contrastive facts local. In a containment statement such as “absent
+    // from the frozen candidate, but present on staging”, carrying “candidate”
+    // across “but” misreads the positive-control mention as candidate selection.
+    .split(/\n+|[.!?;](?:\s+|$)|\b(?:but|however|whereas|yet)\b/i)
     .map((clause) => clause.trim())
     .filter(Boolean);
 
@@ -757,31 +933,51 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
         // still catch instructions that actually run or judge against a
         // moving source.
         const directRelationBefore = new RegExp(
-          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|worktree(?!\s+list\b))\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}\s*$`,
+          String.raw`\b(?:candidate|judged\s+candidate|judged\s+worktree|canonical(?:\s+(?:test|verification|verdict|run)))\b${CARRY_RELATION_GAP}{0,140}\b(?:from|at|on|to|is|equals?)\b${CARRY_RELATION_GAP}{0,70}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
+        // Lazy gaps: end the relation at the NEAREST candidate term. A greedy gap
+        // skipped past "a 'candidate' is refused" to the "candidate" inside the
+        // quoted frozen_candidate_lineage_violation code, so the retraction that
+        // follows the real relation was never seen (EI-25241841627586793).
         const directRelationAfter = new RegExp(
-          String.raw`^${pattern}.{0,100}\b(?:as|for)\b.{0,60}\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|worktree)\b`,
+          String.raw`^${pattern}${CARRY_RELATION_GAP}{0,100}?\b(?:as|for)\b${CARRY_RELATION_GAP}{0,60}?\b(?:the\s+)?(?:judged\s+)?(?:candidate|canonical(?:\s+(?:test|verification|verdict|run))?|worktree)\b`,
           'i',
         ).exec(sourceThroughNext);
         const strongAction = new RegExp(
-          String.raw`\b(${CARRY_STRONG_SELECTION_ACTIONS})\b.{0,160}${pattern}\s*$`,
+          String.raw`\b(${CARRY_STRONG_SELECTION_ACTIONS})\b${CARRY_RELATION_GAP}{0,160}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
         const executionAction = new RegExp(
-          String.raw`\b(${CARRY_EXECUTION_ACTIONS})\b.{0,160}${pattern}\s*$`,
+          String.raw`\b(${CARRY_EXECUTION_ACTIONS})\b${CARRY_RELATION_GAP}{0,160}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
+        // P-015: a selection/execution word governs only as an instruction — in a
+        // directive clause, or naming the judged thing explicitly. As a noun or in
+        // narrative ("it serves a candidate checkout built from a LOCAL staging
+        // commit", EI-25229988811743001) it describes state, not a selection.
+        const clauseIsDirective = carryClauseIsDirective(clause);
+        const actionGoverns = (index: number) =>
+          clauseIsDirective || CARRY_JUDGED_EXPLICIT.test(clause.slice(index, sourceEnd));
         const strongActionHasJudgedContext =
-          strongAction !== null && CARRY_JUDGED_CONTEXT.test(clause.slice(strongAction.index, sourceEnd));
+          strongAction !== null &&
+          CARRY_JUDGED_CONTEXT.test(clause.slice(strongAction.index, sourceEnd)) &&
+          actionGoverns(strongAction.index);
         const executionActionHasJudgedContext =
-          executionAction !== null && CARRY_JUDGED_CONTEXT.test(clause.slice(executionAction.index, sourceEnd));
-        const relation = directRelationBefore
+          executionAction !== null &&
+          CARRY_JUDGED_CONTEXT.test(clause.slice(executionAction.index, sourceEnd)) &&
+          actionGoverns(executionAction.index);
+        const relationSpan = directRelationBefore
           ? comparativeSourceRelation
             ? null
             : { index: directRelationBefore.index, end: sourceEnd }
           : directRelationAfter
             ? { index: sourceStart, end: sourceStart + directRelationAfter[0].length }
+            : null;
+        const relation =
+          relationSpan &&
+          (CARRY_JUDGED_EXPLICIT.test(clause.slice(relationSpan.index, relationSpan.end)) || clauseIsDirective)
+            ? relationSpan
             : null;
         const strongActionName = strongAction?.[1]?.toLowerCase() ?? '';
         const pinInstructionPrefix = clause
@@ -833,7 +1029,7 @@ export function evaluateFrozenLineageCarryText(
   input: FrozenLineageCarryPolicyInput,
   probe: FrozenLineagePolicyProbe = {},
 ): FrozenLineageCarryPolicyVerdict {
-  const marker = 'marker' in probe ? probe.marker : readFrozenRepairMarker();
+  const marker = 'marker' in probe ? probe.marker : readFrozenRepairMarker(input.target);
   if (!marker) {
     return {
       allowed: true,

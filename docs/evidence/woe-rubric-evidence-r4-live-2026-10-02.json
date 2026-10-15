@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "work-on-everything-rubric-evidence-hardening R-4 live criterion-ownership read (post decoder-fix deploy)",
+  "framework": "operational",
+  "plan": "work-on-everything-rubric-evidence-hardening-2026-09-20",
+  "acceptanceBar": "R-4",
+  "specClause": "rubric-criterion-ownership@8",
+  "workItem": "WI-10002130",
+  "evidencePlane": "live",
+  "runtime": "operator :3070 build d740fc3802 (carries the continuity-probes.ts projection decoder fix, marker 'classifyProjectionBody(textItems)')",
+  "command": [
+    "node scripts/mcp-call.mjs rubrics:get '{\"rubricRef\":\"work-on-everything-stewardship-health\",\"projection\":{\"pick\":[\"results[].rubric.status\"]}}' --port 3070",
+    "node scripts/mcp-call.mjs rubrics:get '{\"rubricRef\":\"work-on-everything-stewardship-health\",\"detail\":\"full\",\"payloadTier\":\"full\"}' --port 3070"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T17:40:37.371Z",
+  "finishedAt": "2026-10-02T17:41:19.788Z",
+  "recordedBy": "su-d5eaa301-8b78-4d15-a539-00f2803ddfd7",
+  "summary": "Fresh read on the running operator after :3070 began serving d740fc3802, the build that fixes the projected-probe decoder the 2026-09-30 independent grader hit (it rated R-4 degraded because the emit gate reported the declared structured probe STALE). The live stewardship rubric is active at revision 42 with methodRef work-on-everything-stewardship-health-grading-runbook and 15 criteria. The declared R-4 probe (rubrics:get, projection pick results[].rubric.status, expect $.results[0].rubric.status eq 'active') returns exactly {results:[{rubric:{status:'active'}}]}, so the observed value matches the declared expectation. Every R-4 drift marker is not broken and the positive control is present.",
+  "assertions": [
+    {
+      "id": "probe-status-active-projected",
+      "passed": true,
+      "evidence": "17:40:37Z on :3070: the projected probe returned {\"results\":[{\"rubric\":{\"status\":\"active\"}}]}; $.results[0].rubric.status = 'active' equals the declared expectation."
+    },
+    {
+      "id": "rubric-identity",
+      "passed": true,
+      "evidence": "17:41:19Z full read: status 'active', revision 42, methodRef 'work-on-everything-stewardship-health-grading-runbook', 15 criteria."
+    },
+    {
+      "id": "marker-1-dedh-no-per-plan-fleet",
+      "passed": true,
+      "evidence": "delegated-execution-and-drain-health model+method: 0 occurrences each of 'For every plan of this goal', 'for EACH plan', 'members of that fleet actually', 'fails this criterion'; 1 occurrence each of 'is graded under `plan-fleet-materialization`' and 'OWNERSHIP BOUNDARY'."
+    },
+    {
+      "id": "marker-2-claim-flow-no-plan-lease",
+      "passed": true,
+      "evidence": "claim-flow-and-completion-integrity model+method: 0 occurrences of 'plan-item lease' and 'delegated lease'; 1 occurrence of 'the same goal/drain claim spec'."
+    },
+    {
+      "id": "marker-3-e2e-rates-closure-not-plan-fleets",
+      "passed": true,
+      "evidence": "end-to-end-stewardship-closure model+method: 0 occurrences each of 'plan fleet', 'plan-fleet', 'per-plan', 'independently led'."
+    },
+    {
+      "id": "marker-4-pfm-states-obligation",
+      "passed": true,
+      "evidence": "plan-fleet-materialization model+method contains \"An entry in the owner's typed worklist is a plan-execution obligation\" (1), 'independently led plan fleet' (1, the R-4 positive control) and 'HAND-DISPATCH' (1)."
+    }
+  ]
+}

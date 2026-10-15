@@ -46,6 +46,7 @@ mod mux;
 mod network;
 mod notify;
 mod operator_voice_bus;
+mod paste_chips;
 mod plans_board;
 mod reap;
 mod remote_connect;
@@ -90,7 +91,10 @@ use mux::{Multiplexer, MuxAction, Zellij};
 const CLI_HELP: &str = "pui — Papercusp terminal agent
 
 Usage:
-  pui [OPTIONS]              Chat with an agent in the current directory
+  pui [OPTIONS]              Chat with an agent in the current directory, with the
+                             HUD, wake, network and work panes beside it
+                             (Alt+z hides or shows them)
+  pui --solo [OPTIONS]       The chat alone, with no side panes
   pui [OPTIONS] [SUBCOMMAND]
 
 Subcommands:
@@ -113,7 +117,11 @@ Subcommands:
 Options:
   --fleet=<slug>             Join fresh PUI SU sessions to an existing fleet
   --seat=<ref>               Consume that fleet's delegated seat (requires --fleet)
-  -h, --help                 Print this help text
+  --solo                     Open only the chat (no zellij, no side panes)
+  --model=<spec>             Model a new conversation starts on, e.g. opus or gpt-5.5:high
+                             (switch a running one with /model)
+  --account=<route>          Account a new conversation runs on: auto, default, or an account name
+  -h, --help                Print this help text
   -V, --version              Print version information
 
 Remote hosts (the same saved connections psu uses):
@@ -125,6 +133,11 @@ Remote hosts (the same saved connections psu uses):
 
 const PUI_FLEET_ENV: &str = "PUI_FLEET";
 const PUI_SEAT_ENV: &str = "PUI_SEAT";
+/// `pui --model` / `--account` (P-026, D-023): the model and account route a
+/// NEW conversation starts on. Exported like the fleet so the workbench's chat
+/// pane, a child `pui --solo`, starts on the same choice.
+const PUI_MODEL_ENV: &str = "PUI_MODEL";
+const PUI_ACCOUNT_ENV: &str = "PUI_ACCOUNT";
 
 /// Process-wide launch context. The top-level workbench exports it before
 /// zellij starts, so every child `pui hud`/dock pane carries the same fleet and
@@ -134,6 +147,20 @@ struct CliInvocation {
     positionals: Vec<String>,
     fleet: Option<String>,
     seat: Option<String>,
+    /// `--solo`: the chat alone, with no workbench panes around it (P-030).
+    solo: bool,
+    /// [`layout::CHAT_WORKBENCH_PANE_FLAG`]: this process is the chat pane of
+    /// the chat workbench its launcher started (P-030). Undocumented.
+    workbench_pane: bool,
+    /// [`layout::CHAT_WORKBENCH_SIDE_FLAG`]: this `pui hud` is the chat
+    /// workbench's narrow side pane and draws the compact summary (D-034).
+    /// Undocumented.
+    side_pane: bool,
+    /// `--model <spec>`: model[:effort] a new conversation starts on (P-026).
+    model: Option<String>,
+    /// `--account <auto|default|name>`: the account route a new conversation
+    /// starts on (D-023).
+    account: Option<String>,
 }
 
 impl CliInvocation {
@@ -179,6 +206,11 @@ impl CliInvocation {
         let mut positionals = Vec::new();
         let mut fleet = None;
         let mut seat = None;
+        let mut solo = false;
+        let mut workbench_pane = false;
+        let mut side_pane = false;
+        let mut model = None;
+        let mut account = None;
         let mut pending: Option<&'static str> = None;
 
         for arg in args {
@@ -189,18 +221,31 @@ impl CliInvocation {
                 match name {
                     "--fleet" => set_cli_value(&mut fleet, name, &arg)?,
                     "--seat" => set_cli_value(&mut seat, name, &arg)?,
-                    _ => unreachable!("only fleet/seat can be pending"),
+                    "--model" => set_cli_value(&mut model, name, &arg)?,
+                    "--account" => set_cli_value(&mut account, name, &arg)?,
+                    _ => unreachable!("only value flags can be pending"),
                 }
                 continue;
             }
             match arg.as_str() {
                 "--fleet" => pending = Some("--fleet"),
                 "--seat" => pending = Some("--seat"),
+                "--model" => pending = Some("--model"),
+                "--account" => pending = Some("--account"),
+                "--solo" => solo = true,
+                layout::CHAT_WORKBENCH_PANE_FLAG => workbench_pane = true,
+                layout::CHAT_WORKBENCH_SIDE_FLAG => side_pane = true,
                 _ if arg.starts_with("--fleet=") => {
                     set_cli_value(&mut fleet, "--fleet", &arg["--fleet=".len()..])?
                 }
                 _ if arg.starts_with("--seat=") => {
                     set_cli_value(&mut seat, "--seat", &arg["--seat=".len()..])?
+                }
+                _ if arg.starts_with("--model=") => {
+                    set_cli_value(&mut model, "--model", &arg["--model=".len()..])?
+                }
+                _ if arg.starts_with("--account=") => {
+                    set_cli_value(&mut account, "--account", &arg["--account=".len()..])?
                 }
                 _ => positionals.push(arg),
             }
@@ -220,7 +265,27 @@ impl CliInvocation {
             positionals,
             fleet,
             seat,
+            solo,
+            workbench_pane,
+            side_pane,
+            model,
+            account,
         })
+    }
+
+    /// Fill `--model` / `--account` from the launching pui's exported choice.
+    /// An explicit flag wins: unlike a fleet, these are per-launch defaults,
+    /// not an identity two processes could disagree about.
+    fn inherit_chat_launch(mut self, model: Option<&str>, account: Option<&str>) -> Self {
+        let inherited = |value: Option<&str>| {
+            value
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        self.model = self.model.or_else(|| inherited(model));
+        self.account = self.account.or_else(|| inherited(account));
+        self
     }
 
     fn positional(&self, index: usize) -> Option<&str> {
@@ -233,6 +298,12 @@ impl CliInvocation {
         }
         if let Some(seat) = &self.seat {
             std::env::set_var(PUI_SEAT_ENV, seat);
+        }
+        if let Some(model) = &self.model {
+            std::env::set_var(PUI_MODEL_ENV, model);
+        }
+        if let Some(account) = &self.account {
+            std::env::set_var(PUI_ACCOUNT_ENV, account);
         }
     }
 }
@@ -252,10 +323,29 @@ fn print_cli_version(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> 
     if matches!(subcommand, Some("-V") | Some("--version"))
         || matches!(subcommand_arg, Some("-V") | Some("--version"))
     {
-        println!("pui {}", env!("CARGO_PKG_VERSION"));
+        println!(
+            "{}",
+            cli_version_line(
+                install::BUILD_VERSION,
+                install::BUILD_SHA,
+                install::BUILD_DIRTY
+            )
+        );
         true
     } else {
         false
+    }
+}
+
+/// The `pui --version` line: the package version plus the source commit the
+/// binary was built from, so an installed `pui` can be checked against the tree
+/// (pui-chat-first-ux P-032). "uncommitted changes" means apps/tui differed from
+/// that commit at build time.
+fn cli_version_line(version: &str, sha: &str, dirty: &str) -> String {
+    let short = sha.get(..10).unwrap_or(sha);
+    match dirty {
+        "1" => format!("pui {version} ({short}, uncommitted changes)"),
+        _ => format!("pui {version} ({short})"),
     }
 }
 
@@ -264,20 +354,25 @@ fn print_cli_version(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> 
 /// `pui workbench` materializes its primary full TUI as `pui hud`, so `hud` is a
 /// launch-capable mode even though it is spelled as a subcommand. The pinned data
 /// boards remain non-reactive; otherwise every board races to open the same pane.
-/// Bare `pui` is chat-first (P-001): one conversation with no multiplexer, so
-/// it has nowhere to open a pane and must never claim a pending launch.
+/// The chat surface (`pui --solo`, which is also what the chat workbench's main
+/// pane runs — P-030) is never reactive: its workbench `pui hud` pane owns
+/// pending launches, and a solo chat has no multiplexer to open a pane in.
 fn reactive_launch_mode(subcommand: Option<&str>) -> bool {
     matches!(subcommand, Some("hud") | Some("dock-driver"))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Subcommand dispatch — bare `pui` is ONE full-screen chat in the current
-    // directory, the way `claude` and `codex` start (pui-chat-first-ux P-001):
-    //   pui           → chat-first: no zellij, tab strip, fleet rail or boards
-    //   pui workbench → the zellij workbench with every board (D-001)
-    //   pui hud       → just the full HUD (what the workbench's own HUD pane runs;
-    //                   the workbench never launches bare `pui`, so it cannot nest).
+    // Subcommand dispatch (pui-chat-first-ux P-001, reshaped by P-030 / D-020):
+    //   pui           → the chat workbench: the chat is the main, focused zellij
+    //                   pane and the HUD, wake, network and work panes sit beside
+    //                   it (Alt+z hides/shows them). Falls back to the solo chat
+    //                   where zellij cannot run (see `bare_launch`).
+    //   pui --solo    → the chat alone, full screen, no zellij — the way `claude`
+    //                   and `codex` start. The workbench's chat pane runs this.
+    //   pui workbench → the HUD-primary zellij workbench (D-001)
+    //   pui hud       → just the full HUD (what the workbenches' HUD pane runs;
+    //                   no layout launches bare `pui`, so nothing can nest).
     // `pui --connect…` runs pui on a remote host through psu's saved
     // connections (P-017 / D-025). Checked before any other parsing: psu owns
     // every `--connect*` cell, which PUI's own parser would misread as a
@@ -296,7 +391,11 @@ async fn main() -> Result<()> {
         raw_args,
         inherited_fleet.as_deref(),
         inherited_seat.as_deref(),
-    )?;
+    )?
+    .inherit_chat_launch(
+        std::env::var(PUI_MODEL_ENV).ok().as_deref(),
+        std::env::var(PUI_ACCOUNT_ENV).ok().as_deref(),
+    );
     cli.export_launch_env();
     let subcommand = cli.positional(0).map(str::to_string);
     let subcommand_arg = cli.positional(1).map(str::to_string);
@@ -311,6 +410,24 @@ async fn main() -> Result<()> {
     }
     if print_cli_version(subcommand.as_deref(), subcommand_arg.as_deref()) {
         return Ok(());
+    }
+    if subcommand.is_none() {
+        let launch = bare_launch(BareLaunchInputs {
+            solo: cli.solo,
+            in_multiplexer_pane: std::env::var_os("ZELLIJ").is_some_and(|v| !v.is_empty()),
+            interactive: {
+                use std::io::IsTerminal;
+                std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+            },
+            zellij_available: zellij_on_path(),
+        });
+        if launch == BareLaunch::ChatWorkbench {
+            if let Some(code) = run_chat_workbench().await? {
+                std::process::exit(code);
+            }
+            // No backend identity to hand the panes: the solo chat below owns
+            // first-run setup and the plain "what to do" errors (P-031).
+        }
     }
     match subcommand.as_deref() {
         Some("workbench") => return run_workbench().await,
@@ -476,6 +593,24 @@ async fn main() -> Result<()> {
         // rather than painting the workbench's opaque dashboard panels.
         crate::theme::Theme::set_transparent_surfaces(true);
     }
+    // P-030: the chat pane of a chat workbench owns that session's lifetime.
+    let chat_workbench = if chat_first {
+        own_chat_workbench(cli.workbench_pane)
+    } else {
+        None
+    };
+    // pui-chat-first-ux D-033 (owner, 2026-10-06): the side panes open visible
+    // at EVERY terminal width. The P-030 zoom-on-start below 120 columns hid
+    // them all on a 92-column terminal with nothing on screen saying so; the
+    // chat's footer now names Alt+z instead (`ui::workbench_footer_hint`).
+    let chat_workbench_pane = chat_workbench.is_some();
+    // pui-chat-first-ux D-034: the chat workbench's `pui hud` side pane draws
+    // a compact summary in its narrow column instead of "Terminal too small".
+    // It sits beside the chat, so it shares the chat's terminal background.
+    let side_pane = cli.side_pane && subcommand.as_deref() == Some("hud");
+    if side_pane {
+        crate::theme::Theme::set_transparent_surfaces(true);
+    }
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -517,24 +652,29 @@ async fn main() -> Result<()> {
     // send the message. Text keys still arrive as text under this flag. Where
     // the protocol is absent, a trailing `\` + Enter and Alt+Enter still work.
     //
-    // That probe waits up to 2 s in a terminal that never answers it, so show
-    // startup progress first (pui-first-party-public-release P-013: "display
-    // meaningful startup progress immediately"). Cleared before the first frame.
+    // pui-chat-first-ux P-031 (G-1): the flags are pushed WITHOUT first asking
+    // the terminal whether it speaks the protocol. crossterm's
+    // supports_keyboard_enhancement() blocks for up to 2 s when the terminal
+    // never answers, and that one wait made `pui` 2.6x slower to a usable
+    // prompt than Claude Code (2108 ms vs 805 ms, parity checklist row 1). A
+    // terminal without the protocol ignores the push and pop sequences (an
+    // unknown CSI), so nothing is lost by skipping the question.
+    //
+    // Startup progress still shows before the first frame
+    // (pui-first-party-public-release P-013); cleared before the first frame.
     let _ = execute!(
         out,
         crossterm::cursor::MoveTo(0, 0),
         crossterm::style::Print("Starting PUI…")
     );
-    let kbd_enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-    if kbd_enhanced {
-        let _ = execute!(
-            out,
-            crossterm::event::PushKeyboardEnhancementFlags(
-                crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                    | crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            )
-        );
-    }
+    let kbd_enhanced = true;
+    let _ = execute!(
+        out,
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    );
     // ratatui diffs against a blank screen; leave it one.
     let _ = execute!(
         out,
@@ -555,6 +695,8 @@ async fn main() -> Result<()> {
         hive_agent_tabs,
         reactive_launch_panes,
         chat_first,
+        chat_workbench_pane,
+        side_pane,
         kbd_enhanced,
     )
     .await;
@@ -591,6 +733,19 @@ async fn main() -> Result<()> {
     // the error return a closed terminal causes, and before anything is
     // printed: a write to a hung-up terminal must not be able to skip it.
     let exit_note = finish_su_session_on_exit().await;
+    // P-030: in the chat workbench the pane's own screen dies with the session,
+    // so the conversation, the exit note and any error go to the launcher,
+    // which prints them into the real terminal after zellij is gone. Then the
+    // session stops: exiting the chat exits `pui`, as in the solo chat.
+    if let Some(session) = &chat_workbench {
+        finish_chat_workbench_pane(
+            session,
+            EXIT_TRANSCRIPT.get().map(String::as_str),
+            exit_note.as_deref(),
+            result.as_ref().err(),
+        );
+        return result;
+    }
     // pui-chat-first-ux P-004 "clean scrollback": now that the alternate screen
     // is gone, print the conversation to the normal screen so it stays in the
     // terminal's own scrollback (set by `run` for the chat-first surface only).
@@ -769,7 +924,10 @@ static EXIT_TRANSCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new()
 
 #[cfg(test)]
 mod cli_help_tests {
-    use super::{print_cli_help, print_cli_version, CliInvocation, CLI_HELP};
+    use super::{
+        bare_launch, chat_workbench_exit_text, cli_version_line, own_chat_workbench_from,
+        print_cli_help, print_cli_version, BareLaunch, BareLaunchInputs, CliInvocation, CLI_HELP,
+    };
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
@@ -796,6 +954,23 @@ mod cli_help_tests {
     fn top_level_version_is_recognized() {
         assert!(print_cli_version(Some("--version"), None));
         assert!(print_cli_version(Some("-V"), None));
+    }
+
+    #[test]
+    fn version_line_names_the_source_commit() {
+        let sha = "04e663cedf1fec7b1c4c266e361cabe467bbd2bd";
+        assert_eq!(
+            cli_version_line("0.1.0", sha, "0"),
+            "pui 0.1.0 (04e663cedf)"
+        );
+        assert_eq!(
+            cli_version_line("0.1.0", sha, "1"),
+            "pui 0.1.0 (04e663cedf, uncommitted changes)"
+        );
+        assert_eq!(
+            cli_version_line("0.1.0", "unknown", "unknown"),
+            "pui 0.1.0 (unknown)"
+        );
     }
 
     #[test]
@@ -877,12 +1052,170 @@ mod cli_help_tests {
         assert!(CLI_HELP.contains("--connect-login"));
         assert!(CLI_HELP.contains("requires --fleet"));
     }
+
+    /// P-030: `--solo` and the chat pane's owner flag are flags, not
+    /// subcommands, so bare `pui --solo` still reaches the chat surface.
+    #[test]
+    fn solo_and_workbench_pane_flags_leave_no_subcommand() {
+        let solo = CliInvocation::parse(args(&["--solo"]), None, None).unwrap();
+        assert!(solo.solo && !solo.workbench_pane);
+        assert!(solo.positionals.is_empty());
+
+        let pane = CliInvocation::parse(
+            args(&["--solo", crate::layout::CHAT_WORKBENCH_PANE_FLAG]),
+            Some("fed-drill"),
+            None,
+        )
+        .unwrap();
+        assert!(pane.solo && pane.workbench_pane);
+        assert!(pane.positionals.is_empty());
+        assert_eq!(pane.fleet.as_deref(), Some("fed-drill"));
+
+        let bare = CliInvocation::parse(args(&[]), None, None).unwrap();
+        assert!(!bare.solo && !bare.workbench_pane && !bare.side_pane);
+    }
+
+    /// D-034: the chat workbench starts its HUD as `pui hud --side-pane`. The
+    /// flag marks the side pane and leaves `hud` as the only subcommand, so it
+    /// is still the reactive launch owner.
+    #[test]
+    fn side_pane_flag_marks_the_hud_without_adding_a_subcommand() {
+        let hud = CliInvocation::parse(
+            args(&["hud", crate::layout::CHAT_WORKBENCH_SIDE_FLAG]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(hud.side_pane && !hud.workbench_pane && !hud.solo);
+        assert_eq!(hud.positionals, ["hud"]);
+        let plain = CliInvocation::parse(args(&["hud"]), None, None).unwrap();
+        assert!(!plain.side_pane);
+    }
+
+    /// P-026 / D-023: `--model` and `--account` take a value in either form,
+    /// leave no subcommand, and an explicit flag beats the inherited choice.
+    #[test]
+    fn model_and_account_flags_parse_and_beat_the_inherited_choice() {
+        let split = CliInvocation::parse(args(&["--model", "opus:high", "--account", "auto"]), None, None)
+            .unwrap();
+        assert_eq!(split.model.as_deref(), Some("opus:high"));
+        assert_eq!(split.account.as_deref(), Some("auto"));
+        assert!(split.positionals.is_empty());
+
+        let equals = CliInvocation::parse(args(&["--solo", "--model=haiku", "--account=work"]), None, None)
+            .unwrap();
+        assert!(equals.solo);
+        assert_eq!(equals.model.as_deref(), Some("haiku"));
+        assert_eq!(equals.account.as_deref(), Some("work"));
+
+        assert!(CliInvocation::parse(args(&["--model"]), None, None).is_err());
+        assert!(CliInvocation::parse(args(&["--model", "--solo"]), None, None).is_err());
+        assert!(CliInvocation::parse(args(&["--model=a", "--model=b"]), None, None).is_err());
+        assert!(CliInvocation::parse(args(&["--account="]), None, None).is_err());
+
+        let explicit = equals.clone().inherit_chat_launch(Some("sonnet"), Some("default"));
+        assert_eq!(explicit.model.as_deref(), Some("haiku"));
+        assert_eq!(explicit.account.as_deref(), Some("work"));
+        let pane = CliInvocation::parse(args(&["--solo"]), None, None)
+            .unwrap()
+            .inherit_chat_launch(Some(" sonnet "), Some(""));
+        assert_eq!(pane.model.as_deref(), Some("sonnet"));
+        assert_eq!(pane.account, None, "an empty inherited value is no choice");
+    }
+
+    fn inputs() -> BareLaunchInputs {
+        BareLaunchInputs {
+            solo: false,
+            in_multiplexer_pane: false,
+            interactive: true,
+            zellij_available: true,
+        }
+    }
+
+    /// P-030: bare `pui` opens the chat workbench; `--solo`, an enclosing
+    /// zellij pane (no nesting), a non-terminal launch and a missing zellij all
+    /// open the chat alone instead of failing.
+    #[test]
+    fn bare_pui_opens_the_chat_workbench_unless_it_cannot() {
+        assert_eq!(bare_launch(inputs()), BareLaunch::ChatWorkbench);
+        for solo_case in [
+            BareLaunchInputs { solo: true, ..inputs() },
+            BareLaunchInputs { in_multiplexer_pane: true, ..inputs() },
+            BareLaunchInputs { interactive: false, ..inputs() },
+            BareLaunchInputs { zellij_available: false, ..inputs() },
+        ] {
+            assert_eq!(bare_launch(solo_case), BareLaunch::Solo, "{solo_case:?}");
+        }
+    }
+
+    /// Only the chat pane the launcher started — flag AND matching session —
+    /// owns the session. A `pui --solo` typed into the work shell inherits the
+    /// session env but not the flag, so exiting it must not stop the session.
+    #[test]
+    fn only_the_flagged_chat_pane_owns_its_chat_workbench() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let inside: &'static [(&str, &str)] = &[
+            (crate::layout::CHAT_WORKBENCH_SESSION_ENV, "pui-chat-7"),
+            ("ZELLIJ_SESSION_NAME", "pui-chat-7"),
+        ];
+        assert_eq!(
+            own_chat_workbench_from(true, env(inside)).as_deref(),
+            Some("pui-chat-7")
+        );
+        assert_eq!(own_chat_workbench_from(false, env(inside)), None);
+        let elsewhere: &'static [(&str, &str)] = &[
+            (crate::layout::CHAT_WORKBENCH_SESSION_ENV, "pui-chat-7"),
+            ("ZELLIJ_SESSION_NAME", "my-own-session"),
+        ];
+        assert_eq!(own_chat_workbench_from(true, env(elsewhere)), None);
+        assert_eq!(own_chat_workbench_from(true, env(&[])), None);
+    }
+
+    /// The launcher prints the conversation, the exit note and the error that
+    /// ended the chat — the solo chat's scrollback and plain-error behaviour.
+    #[test]
+    fn chat_workbench_exit_text_keeps_transcript_note_and_error() {
+        let err = anyhow::anyhow!("operator unreachable");
+        let text =
+            chat_workbench_exit_text(Some("you: hi\nclaude: hello\n"), Some("Session kept."), Some(&err));
+        assert_eq!(
+            text,
+            "you: hi\nclaude: hello\nSession kept.\npui: operator unreachable\n"
+        );
+        assert_eq!(chat_workbench_exit_text(None, Some("  "), None), "");
+    }
+
+    #[test]
+    fn help_documents_the_chat_workbench_and_solo() {
+        assert!(CLI_HELP.contains("pui --solo"));
+        assert!(CLI_HELP.contains(crate::layout::CHAT_WORKBENCH_TOGGLE_HINT));
+        assert!(!CLI_HELP.contains(crate::layout::CHAT_WORKBENCH_PANE_FLAG));
+    }
 }
 
 #[cfg(test)]
 mod doctor_tests {
-    use super::{operator_failure_lines, operator_failure_status_line};
+    use super::{operator_failure_diagnostic, operator_failure_lines, operator_failure_status_line};
     use crate::http::IdentityMismatchError;
+
+    #[test]
+    fn rendezvous_diagnostic_preserves_the_probe_budget_and_endpoint() {
+        let error = anyhow::Error::new(crate::http::ProbeTimeout {
+            endpoint: "http://127.0.0.1:46389".into(),
+            budget: std::time::Duration::from_secs(3),
+        });
+        let diagnostic = operator_failure_diagnostic("http://127.0.0.1:46389", &error);
+        assert_eq!(diagnostic["kind"], "unreachable");
+        assert_eq!(diagnostic["endpoint"], "http://127.0.0.1:46389");
+        assert_eq!(diagnostic["detail"], error.to_string());
+    }
 
     /// R1 (UI half): the status line must carry the SAME classification doctor
     /// prints. It previously shipped the raw anyhow chain, which names no kind,
@@ -1100,7 +1433,20 @@ mod doctor_session_tests {
 /// A wide terminal shows the whole thing; a narrow one still shows the part
 /// that says where to look, and `pui doctor` prints it in full.
 fn operator_failure_status_line(endpoint_label: &str, error: &anyhow::Error) -> String {
+    // The renderer owns the terminal, including stderr on a PTY. Printing
+    // diagnostics here races its cursor-jump diffs and corrupts the screen;
+    // the classified failure is displayed through BackendIdentity instead.
     http::RendezvousError::classify(endpoint_label, error).status_line()
+}
+
+#[cfg(test)]
+fn operator_failure_diagnostic(endpoint_label: &str, error: &anyhow::Error) -> serde_json::Value {
+    let failure = http::RendezvousError::classify(endpoint_label, error);
+    serde_json::json!({
+        "kind": failure.kind.label(),
+        "endpoint": failure.endpoint,
+        "detail": failure.detail,
+    })
 }
 
 async fn run_doctor() -> Result<()> {
@@ -1316,6 +1662,187 @@ fn require_interactive_terminal(command: &str) -> Result<()> {
     )
 }
 
+/// What bare `pui` opens (pui-chat-first-ux P-030 / D-020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BareLaunch {
+    /// The chat workbench: the chat as the main pane, workbench panes beside it.
+    ChatWorkbench,
+    /// The chat alone, full screen, in this terminal.
+    Solo,
+}
+
+/// The facts [`bare_launch`] decides from — gathered by the caller so the
+/// decision is a pure function the tests can drive.
+#[derive(Debug, Clone, Copy)]
+struct BareLaunchInputs {
+    /// `--solo` was passed.
+    solo: bool,
+    /// Already inside a zellij pane: a workbench there would nest zellij (and
+    /// the chat workbench's own chat pane runs `--solo` for the same reason).
+    in_multiplexer_pane: bool,
+    /// stdin and stdout are a terminal. zellij needs one; without it the
+    /// launch would leave a half-built session behind (EI-22373168217321170).
+    interactive: bool,
+    /// A `zellij` executable is reachable (the bundled one first, see
+    /// `install::prefer_bundled_tools`).
+    zellij_available: bool,
+}
+
+/// Bare `pui` opens the chat workbench unless `--solo` asks for the chat alone
+/// or zellij cannot run here; in every such case the solo chat still works, so
+/// `pui` never fails to start for lack of a multiplexer.
+fn bare_launch(inputs: BareLaunchInputs) -> BareLaunch {
+    if inputs.solo
+        || inputs.in_multiplexer_pane
+        || !inputs.interactive
+        || !inputs.zellij_available
+    {
+        BareLaunch::Solo
+    } else {
+        BareLaunch::ChatWorkbench
+    }
+}
+
+/// Is a `zellij` executable on PATH?
+fn zellij_on_path() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| {
+            std::fs::metadata(dir.join("zellij"))
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+    })
+}
+
+/// The chat workbench session THIS process is the chat pane of, if any: it
+/// was started with [`layout::CHAT_WORKBENCH_PANE_FLAG`] inside the session
+/// its launcher named.
+fn own_chat_workbench(workbench_pane: bool) -> Option<String> {
+    own_chat_workbench_from(workbench_pane, |k| std::env::var(k).ok())
+}
+
+fn own_chat_workbench_from(
+    workbench_pane: bool,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if !workbench_pane {
+        return None;
+    }
+    let mine = env(layout::CHAT_WORKBENCH_SESSION_ENV).filter(|s| !s.is_empty())?;
+    let current = env("ZELLIJ_SESSION_NAME")?;
+    (mine == current).then_some(mine)
+}
+
+/// The text the chat workbench's launcher prints after zellij exits: the
+/// conversation, the engine exit note, and the error that ended the chat.
+fn chat_workbench_exit_text(
+    transcript: Option<&str>,
+    note: Option<&str>,
+    error: Option<&anyhow::Error>,
+) -> String {
+    let mut text = String::new();
+    for part in [
+        transcript.map(str::to_string),
+        note.map(str::to_string),
+        error.map(|e| format!("pui: {e:#}")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|p| !p.trim().is_empty())
+    {
+        text.push_str(part.trim_end());
+        text.push('\n');
+    }
+    text
+}
+
+/// The chat pane of a chat workbench is exiting: leave the exit text for the
+/// launcher, then stop the session (this process included — call it last).
+fn finish_chat_workbench_pane(
+    session: &str,
+    transcript: Option<&str>,
+    note: Option<&str>,
+    error: Option<&anyhow::Error>,
+) {
+    let text = chat_workbench_exit_text(transcript, note, error);
+    if let Ok(path) = std::env::var(layout::CHAT_WORKBENCH_TRANSCRIPT_ENV) {
+        if !path.is_empty() && !text.is_empty() {
+            let _ = std::fs::write(path, text);
+        }
+    }
+    let _ = std::process::Command::new("zellij")
+        .args(["kill-session", session])
+        .output();
+}
+
+/// Bare `pui` (P-030): start this launch's own `pui-chat-<pid>` zellij session
+/// with the chat as the focused main pane, wait for it, then print the
+/// conversation into this terminal's scrollback.
+///
+/// `Ok(None)` = no backend identity resolves. The caller then falls through to
+/// the solo chat, which owns first-run setup and the plain-sentence errors.
+async fn run_chat_workbench() -> Result<Option<i32>> {
+    let Ok((_client, backend)) = selected_backend_identity().await else {
+        return Ok(None);
+    };
+    let session = layout::chat_workbench_session_name(std::process::id());
+    // Never attach to anything. A live session already carrying our name can
+    // only be a leftover from a recycled pid — it is not ours.
+    if reap::live_session_exists(&session) {
+        reap::kill_and_delete(&session);
+    }
+    reap::reap_stale(&session);
+    identity::inherit(&backend);
+    let transcript = chat_workbench_transcript_path(&session)?;
+    let _ = std::fs::remove_file(&transcript);
+    // Exported before zellij starts, so the new session's panes inherit them.
+    std::env::set_var(layout::CHAT_WORKBENCH_SESSION_ENV, &session);
+    std::env::set_var(layout::CHAT_WORKBENCH_TRANSCRIPT_ENV, &transcript);
+    let path = layout::materialize_chat_workbench()?;
+    let argv = layout::launch_argv(&path.to_string_lossy(), &session);
+    let status = zellij_session_command(&argv).status()?;
+    reap::kill_and_delete(&session);
+    if let Ok(text) = std::fs::read_to_string(&transcript) {
+        use std::io::Write as _;
+        let _ = write!(std::io::stdout(), "{text}");
+        let _ = std::fs::remove_file(&transcript);
+    }
+    Ok(Some(status.code().unwrap_or(0)))
+}
+
+/// The zellij process for an app-managed session `argv` (from
+/// [`layout::launch_argv`] or [`layout::attach_argv`]), with this build's
+/// directory first on its `PATH` so the layout's `command "pui"` panes run
+/// the same build as this launcher ([`layout::session_path_env`]).
+fn zellij_session_command(argv: &[String]) -> std::process::Command {
+    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
+    let mut command = std::process::Command::new(prog);
+    command.args(rest);
+    let inherited = std::env::var_os("PATH");
+    if let Some(path) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| layout::session_path_env(&exe, inherited.as_deref()))
+    {
+        command.env("PATH", path);
+    }
+    // No zellij config of the user's own: give the session pui's, so zellij's
+    // first-run wizard never opens over (and takes focus from) the panes.
+    if let Some(dir) = layout::session_config_dir() {
+        command.env("ZELLIJ_CONFIG_DIR", dir);
+    }
+    command
+}
+
+/// Where the chat pane of `session` leaves its exit text for the launcher.
+fn chat_workbench_transcript_path(session: &str) -> Result<std::path::PathBuf> {
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("no home directory"))?
+        .join(".papercusp")
+        .join("pui-chat");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join(format!("{session}.exit.txt")))
+}
+
 async fn run_workbench() -> Result<()> {
     require_interactive_terminal("workbench")?;
     let session = layout::session_name("wb");
@@ -1341,8 +1868,7 @@ async fn run_workbench() -> Result<()> {
         let path = layout::materialize()?;
         layout::launch_argv(&path.to_string_lossy(), &session)
     };
-    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
-    let status = std::process::Command::new(prog).args(rest).status()?;
+    let status = zellij_session_command(&argv).status()?;
     reap::kill_and_delete(&session);
     identity::clear(&session);
     std::process::exit(status.code().unwrap_or(0));
@@ -1386,8 +1912,7 @@ async fn run_chat_dock() -> Result<()> {
         reap::reap_stale(&session);
         layout::launch_argv(&path.to_string_lossy(), &session)
     };
-    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
-    let status = std::process::Command::new(prog).args(rest).status()?;
+    let status = zellij_session_command(&argv).status()?;
     reap::kill_and_delete(&session);
     identity::clear(&session);
     std::process::exit(status.code().unwrap_or(0));
@@ -1410,6 +1935,8 @@ async fn run<B: Backend>(
     hive_agent_tabs: bool,
     reactive_launch_panes: bool,
     chat_first: bool,
+    chat_workbench_pane: bool,
+    side_pane: bool,
     kbd_enhanced: bool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
@@ -1421,6 +1948,12 @@ async fn run<B: Backend>(
     app.require_session_setup = true;
     app.su_launch_fleet = launch_fleet;
     app.su_launch_seat = launch_seat;
+    // P-026 / D-023: `pui --model` / `--account`, exported before zellij starts,
+    // so the chat pane's first conversation starts on them.
+    app.apply_chat_launch_choice(
+        std::env::var(PUI_MODEL_ENV).ok().as_deref(),
+        std::env::var(PUI_ACCOUNT_ENV).ok().as_deref(),
+    );
     // Resolve the same canonical record `pui doctor` prints. This is an
     // independent process inside zellij, but both endpoint variables were
     // normalized/inherited by the session launcher above.
@@ -1442,6 +1975,8 @@ async fn run<B: Backend>(
     // Chat-first (P-001): open on the conversation with the composer already
     // focused, so the first keystroke is the first word of the message.
     app.chat_first = chat_first;
+    app.chat_workbench_pane = chat_workbench_pane;
+    app.side_pane = side_pane;
     if chat_first {
         app.tab = app::Tab::Operator;
         app.chat_composing = true;
@@ -1585,13 +2120,37 @@ async fn run<B: Backend>(
     let mut last_notif_seq = app.notif_seq;
     // Persist the tutorial dismissal exactly once, the first time it closes.
     let mut tutorial_persisted = !app.show_tutorial;
+    // Draw coalescing (WI-10006651). A burst of input — a held Backspace, an
+    // unbracketed paste, a driver's 2000-key clear — queues one event per key,
+    // and a full redraw per queued key made the LAST key's frame (an `@` that
+    // opens the picker) appear seconds late. A plain `Render` therefore waits
+    // while more events are already queued; the deferred frame is drawn the
+    // moment the queue runs dry, before the loop blocks for the next event.
+    let mut render_deferred = false;
 
-    'event_loop: while let Some(ev) = rx.recv().await {
+    'event_loop: loop {
+        let ev = match rx.try_recv() {
+            Ok(ev) => ev,
+            Err(mpsc::error::TryRecvError::Empty) => {
+                if render_deferred {
+                    render_deferred = false;
+                    event::trace_input_detail("deferred-draw-start", "queue=0");
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                    event::trace_input_detail("deferred-draw-complete", "queue=0");
+                }
+                match rx.recv().await {
+                    Some(ev) => ev,
+                    None => break,
+                }
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => break,
+        };
         record_su_session_exit(&app);
         let prior_tab = app.tab;
         let prior_harness = app.harness.clone();
         let prior_context_target = app.context_projection_target.clone();
         let is_key = matches!(ev, Event::Key(_));
+        let is_enter = matches!(&ev, Event::Key(key) if key.code == crossterm::event::KeyCode::Enter);
         let is_tick = matches!(ev, Event::Tick);
         let restoring_view = matches!(ev, Event::ViewStateLoaded(_));
         // The operator voice socket dropped (P-013 reconnect-on-drop): detect it
@@ -1603,7 +2162,28 @@ async fn run<B: Backend>(
                 voice_stream::VoiceEvent::Disconnected
             ))
         );
+        let model_picker_key = matches!(
+            &ev,
+            Event::Key(key)
+                if key.code == crossterm::event::KeyCode::Char('m')
+                    && key.modifiers == crossterm::event::KeyModifiers::NONE
+        );
+        event::trace_input_event("reducer-dispatch", &ev);
         let action = app.update(ev);
+        if is_enter {
+            event::trace_input_detail("enter-reduced", &format!("queued={}", rx.len()));
+        }
+        if model_picker_key {
+            let picker = app
+                .session_picker
+                .as_ref()
+                .map(|picker| format!("{:?}", picker.axis))
+                .unwrap_or_else(|| "none".to_string());
+            event::trace_input_detail(
+                "reducer-state",
+                &format!("tab={:?} composing={} picker={picker}", app.tab, app.chat_composing),
+            );
+        }
         if app.harness != prior_harness {
             app.reset_agent_chat_binding();
             app.agent_chat_role = "operator".to_string();
@@ -1636,8 +2216,10 @@ async fn run<B: Backend>(
         if let Ok(mut selected) = sync_pane.selected.lock() {
             *selected = app.tab;
         }
-        if app.tab != prior_tab && app.tab == app::Tab::Overview {
-            let _ = sync_refetch.send(RefetchSignal::GENERAL);
+        if app.tab != prior_tab {
+            if let Some(signal) = RefetchSignal::for_tab_entry(app.tab) {
+                let _ = sync_refetch.send(signal);
+            }
         }
         // A saved Network view bypasses the normal tab-entry action.
         if restoring_view && app.tab == app::Tab::Network && app.pinned.is_none() {
@@ -1755,8 +2337,19 @@ async fn run<B: Backend>(
         let mut action_queue = vec![action];
         while let Some(action) = action_queue.pop() {
             match action {
+                // Coalesced: see `render_deferred` above the loop.
                 Action::Render => {
-                    terminal.draw(|f| ui::draw(f, &app))?;
+                    // A mouse selection in progress is drawn even with input
+                    // queued: its release copies from that frame (WI-10006861).
+                    if app.draw_now(rx.is_empty()) {
+                        render_deferred = false;
+                        event::trace_input_detail("draw-start", &format!("queued={}", rx.len()));
+                        terminal.draw(|f| ui::draw(f, &app))?;
+                        event::trace_input_detail("draw-complete", &format!("queued={}", rx.len()));
+                    } else {
+                        render_deferred = true;
+                        event::trace_input_detail("draw-deferred", &format!("queued={}", rx.len()));
+                    }
                 }
                 // P-007 transcript copy: emit the OSC 52 sequence the reducer
                 // already built. Written straight to the tty and flushed rather
@@ -2365,7 +2958,9 @@ async fn run<B: Backend>(
                         (pending, existing_chat),
                         session_tx,
                     ));
+                    event::trace_input_detail("initial-send-draw-start", &format!("queued={}", rx.len()));
                     terminal.draw(|f| ui::draw(f, &app))?;
+                    event::trace_input_detail("initial-send-draw-complete", &format!("queued={}", rx.len()));
                 }
                 Action::OpenContinuedSuSession {
                     harness,
@@ -2461,6 +3056,10 @@ async fn run<B: Backend>(
                         load_token,
                         tx.clone(),
                     ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::RefreshAgentChatList { harness } => {
+                    tokio::spawn(agent_chat_list_refresh(harness, tx.clone()));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::CancelChat => {
@@ -5506,19 +6105,22 @@ fn default_operator_chat<'a>(
         if chat.role != "operator" || chat.feature_id.is_some() || chat.archived_at.is_some() {
             return None;
         }
-        if let Some(session) = inventory
+        let session = inventory
             .iter()
-            .find(|entry| entry.agent_chat_id == chat.id)
-        {
-            // pui-chat-first-ux P-010: never reattach a session that was
-            // started in ANOTHER directory — `pui` in project A must not
-            // pick up project B's running session. A session whose
-            // directory is unknown stays eligible (older operators).
-            if let (Some(launch), Some(session_cwd)) = (launch_cwd, session.cwd.as_deref()) {
-                if !crate::su_session::session_in_directory(Some(session_cwd), Some(launch)) {
-                    return None;
-                }
-            }
+            .find(|entry| entry.agent_chat_id == chat.id);
+        // pui-chat-first-ux P-010 / D-030: never land on a session started
+        // in ANOTHER directory — `pui` in project A must not pick up project
+        // B's session. A chat whose directory is unknown (no cwd recorded,
+        // or no inventory row because its snapshot probe failed, e.g. a
+        // session mid-teardown) belongs to no directory, so a PUI that knows
+        // its own directory never lands on it (WI-10006533).
+        if !crate::su_session::session_in_directory(
+            session.and_then(|session| session.cwd.as_deref()),
+            launch_cwd,
+        ) {
+            return None;
+        }
+        if let Some(session) = session {
             return match session.reconciliation {
                 crate::su_session::SuSessionReconciliation::Attached if !session.terminal => {
                     Some(2)
@@ -5546,6 +6148,48 @@ fn default_operator_chat<'a>(
         .map(|(_, chat)| chat)
 }
 
+/// Keep archived chats in the inventory so an ended SU session remains
+/// selectable for transcript inspection after a restart. The default operator
+/// selection still excludes archived rows.
+fn agent_chat_list_options() -> agent_chats::AgentChatListOptions {
+    agent_chats::AgentChatListOptions {
+        include_archived: true,
+        limit: Some(100),
+        ..Default::default()
+    }
+}
+
+/// Refresh only the /resume conversation list (P-027 G-12). Unlike
+/// `agent_chat_load` this never selects or loads a conversation, so a retry
+/// cannot replace the one the owner is in.
+async fn agent_chat_list_refresh(harness: String, tx: UnboundedSender<Event>) {
+    let listed = async {
+        let client = OperatorClient::from_discovery().await?;
+        let summaries = client
+            .list_agent_chats(&harness, &agent_chat_list_options())
+            .await?;
+        let inventory = probe_su_session_inventory(&client, &harness, &summaries).await?;
+        anyhow::Ok((summaries, inventory))
+    }
+    .await;
+    match listed {
+        Ok((summaries, inventory)) => {
+            let _ = tx.send(Event::SuSessionInventory {
+                harness: harness.clone(),
+                selected_chat_id: None,
+                entries: inventory,
+            });
+            let _ = tx.send(Event::AgentChatListLoaded { harness, summaries });
+        }
+        Err(error) => {
+            let _ = tx.send(Event::AgentChatListFailed {
+                harness,
+                message: format!("{error:#}"),
+            });
+        }
+    }
+}
+
 async fn agent_chat_load(
     harness: String,
     selected_chat_id: Option<String>,
@@ -5555,29 +6199,39 @@ async fn agent_chat_load(
     let client = match OperatorClient::from_discovery().await {
         Ok(client) => client,
         Err(error) => {
-            let _ = tx.send(Event::Error(format!("native agent chat: {error}")));
+            let _ = tx.send(Event::AgentChatListFailed {
+                harness,
+                message: format!("{error:#}"),
+            });
             return;
         }
     };
-    let options = agent_chats::AgentChatListOptions {
-        // Keep archived chats in the inventory so an ended SU session remains
-        // selectable for transcript inspection after a restart.  The default
-        // operator selection below still excludes archived rows.
-        include_archived: true,
-        limit: Some(100),
-        ..Default::default()
-    };
+    let options = agent_chat_list_options();
     let summaries = match client.list_agent_chats(&harness, &options).await {
         Ok(chats) => chats,
         Err(error) => {
-            let _ = tx.send(Event::Error(format!("native agent chat: {error}")));
+            // P-027 G-12: a failed list used to surface only as a generic error,
+            // so /resume showed "Loading earlier conversations…" forever.
+            let _ = tx.send(Event::AgentChatListFailed {
+                harness,
+                message: format!("{error:#}"),
+            });
             return;
         }
     };
     // Probe each bounded chat summary against the canonical SU-session route.
-    // A 404 means this is a legacy chat; any successful snapshot is retained
-    // even when terminal so the picker can inspect it after a restart.
-    let inventory = probe_su_session_inventory(&client, &harness, &summaries).await;
+    // A failed probe for a stamped SU session leaves its cwd unknown, so fail
+    // the list visibly instead of letting /resume misreport it as out of scope.
+    let inventory = match probe_su_session_inventory(&client, &harness, &summaries).await {
+        Ok(inventory) => inventory,
+        Err(error) => {
+            let _ = tx.send(Event::AgentChatListFailed {
+                harness,
+                message: format!("{error:#}"),
+            });
+            return;
+        }
+    };
     let selected = if let Some(id) = selected_chat_id.as_deref() {
         match summaries.iter().find(|chat| chat.id == id).cloned() {
             Some(chat) => Some(chat),
@@ -5699,7 +6353,7 @@ async fn probe_su_session_inventory(
     client: &OperatorClient,
     harness: &str,
     summaries: &[agent_chats::AgentChatSummary],
-) -> Vec<crate::su_session::SuSessionInventoryEntry> {
+) -> Result<Vec<crate::su_session::SuSessionInventoryEntry>> {
     // One snapshot request per chat (up to the 100-row list limit). Issued
     // one-at-a-time this held the whole Agent Chat load — and with it the
     // /resume list — for seconds after launch (P-007). Bounded fan-out keeps
@@ -5707,30 +6361,89 @@ async fn probe_su_session_inventory(
     const PROBE_CONCURRENCY: usize = 8;
     let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(PROBE_CONCURRENCY));
     let mut probes = tokio::task::JoinSet::new();
+    let required_probe_count = summaries
+        .iter()
+        .filter(|summary| summary.su_runtime_class.as_deref() == Some("su-session"))
+        .count();
+    let mut required_probe_successes = 0usize;
+    let mut required_probe_errors = Vec::new();
+    let mut probe_task_errors = Vec::new();
+    let launch_is_scoped = crate::su_session::launch_cwd().is_some();
     for summary in summaries {
         let client = client.clone();
         let harness = harness.to_string();
         let chat_id = summary.id.clone();
+        let required = summary.su_runtime_class.as_deref() == Some("su-session");
         let limit = limit.clone();
         probes.spawn(async move {
-            let _permit = limit.acquire_owned().await.ok()?;
-            client
-                .su_session_snapshot(&harness, &chat_id)
-                .await
-                .ok()
-                .map(|snapshot| {
-                    crate::su_session::SuSessionInventoryEntry::from_snapshot(&snapshot)
-                })
+            let result = match limit.acquire_owned().await {
+                Ok(_permit) => client.su_session_snapshot(&harness, &chat_id).await,
+                Err(error) => Err(anyhow::anyhow!("inventory probe admission: {error}")),
+            };
+            (required, chat_id, result)
         });
     }
     let mut entries = Vec::new();
     while let Some(joined) = probes.join_next().await {
-        if let Ok(Some(entry)) = joined {
-            entries.push(entry);
+        match joined {
+            Ok((required, _chat_id, Ok(snapshot))) => {
+                let entry = crate::su_session::SuSessionInventoryEntry::from_snapshot(&snapshot);
+                if required && launch_is_scoped && entry.cwd.is_none() {
+                    required_probe_errors.push(format!(
+                        "{}: SU-session snapshot has no launch directory",
+                        entry.agent_chat_id
+                    ));
+                } else if required {
+                    required_probe_successes += 1;
+                }
+                entries.push(entry);
+            }
+            Ok((true, chat_id, Err(error))) => {
+                required_probe_errors.push(format!("{chat_id}: {error:#}"));
+            }
+            Ok((false, _, Err(_))) => {}
+            Err(error) => probe_task_errors.push(error.to_string()),
         }
     }
+    if let Some(message) = su_inventory_probe_failure_message(
+        required_probe_count,
+        required_probe_successes,
+        &required_probe_errors,
+        &probe_task_errors,
+    ) {
+        anyhow::bail!("{message}");
+    }
     entries.sort_by_key(|entry| entry.adv_session_id);
-    entries
+    Ok(entries)
+}
+
+fn su_inventory_probe_failure_message(
+    required_probe_count: usize,
+    required_probe_successes: usize,
+    required_probe_errors: &[String],
+    probe_task_errors: &[String],
+) -> Option<String> {
+    if required_probe_errors.is_empty()
+        && required_probe_successes >= required_probe_count
+        && (probe_task_errors.is_empty() || required_probe_count == 0)
+    {
+        return None;
+    }
+    Some(format!(
+            "could not determine directory membership for SU session inventory; /resume to retry ({}; {}/{} required probes succeeded; task errors: {})",
+            if required_probe_errors.is_empty() {
+                "one or more probe tasks did not complete".to_string()
+            } else {
+                required_probe_errors.join("; ")
+            },
+            required_probe_successes,
+            required_probe_count,
+            if probe_task_errors.is_empty() {
+                "none".to_string()
+            } else {
+                probe_task_errors.join("; ")
+            }
+        ))
 }
 
 /// Open one PUI SU session and attach its canonical stream.  The first owner
@@ -6296,7 +7009,7 @@ async fn recover_detached_runtime(
 ) -> Option<String> {
     match detached {
         DetachedRuntime::Unrecoverable(reason) => Some(format!(
-            "This session's agent runtime is gone and cannot be resumed ({reason}). Draft retained; start a new session to send it."
+            "This session's agent runtime is gone and cannot be resumed ({reason}). Draft retained; send it again to start the engine afresh."
         )),
         DetachedRuntime::Resumable => {
             *resume_requested = true;
@@ -6323,6 +7036,105 @@ async fn recover_detached_runtime(
 const SU_TURN_ACCEPT_ATTEMPT: Duration = Duration::from_secs(30);
 const SU_TURN_ACCEPT_ATTEMPTS: u32 = 4;
 
+/// pui-chat-first-ux P-024: how long a send may wait on each part of the path
+/// before PUI says so in plain words. The HTTP client bounds only the connect,
+/// so without `operator` a hung operator would leave the owner looking at a
+/// spinner forever.
+#[derive(Clone, Copy, Debug)]
+struct SuSendBudgets {
+    /// One readiness read from the operator.
+    operator: Duration,
+    /// A message typed while the engine is still starting waits this long for it.
+    ready: Duration,
+    /// Gap between readiness reads while the engine starts.
+    poll: Duration,
+    /// WI-10006644: how long an operator that accepts the connection but does
+    /// not answer is retried before the send fails. A stalled event loop is
+    /// transient (10s measured under load); the read is idempotent, so the turn
+    /// is retried rather than handed back with advice to restart a live server.
+    busy: Duration,
+}
+
+impl SuSendBudgets {
+    const LIVE: Self = Self {
+        // The plan allows 5s from Enter to the plain sentence; 4s leaves room
+        // to draw it on a loaded box (the agent-chat-pty P-024 case times it).
+        operator: Duration::from_secs(4),
+        ready: Duration::from_secs(60),
+        poll: Duration::from_millis(250),
+        busy: Duration::from_secs(20),
+    };
+}
+
+/// P-024: a message sent while the engine is still starting waits for it (the
+/// working line shows that it is starting) instead of being refused, which is
+/// what made "hi" fail with "Claude stopped before it was ready" (P-023). Every
+/// way this can fail ends in a plain error within a bounded time, never silence.
+async fn await_su_send_readiness<F, Fut>(
+    read: F,
+    budgets: SuSendBudgets,
+) -> std::result::Result<crate::su_session::SuSessionSnapshot, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<crate::su_session::SuSessionSnapshot>>,
+{
+    await_su_send_readiness_reporting(read, budgets, || {}).await
+}
+
+/// As [`await_su_send_readiness`], calling `on_busy` once when the operator
+/// first fails to answer a read in time (WI-10006644), so the working line can
+/// say so within the P-024 5s bound while the send keeps retrying.
+async fn await_su_send_readiness_reporting<F, Fut, B>(
+    mut read: F,
+    budgets: SuSendBudgets,
+    mut on_busy: B,
+) -> std::result::Result<crate::su_session::SuSessionSnapshot, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<crate::su_session::SuSessionSnapshot>>,
+    B: FnMut(),
+{
+    let started = tokio::time::Instant::now();
+    let mut busy_since: Option<tokio::time::Instant> = None;
+    loop {
+        let snapshot = match tokio::time::timeout(budgets.operator, read()).await {
+            Ok(Ok(snapshot)) => {
+                busy_since = None;
+                snapshot
+            }
+            // A refused or broken connection: the operator is not running.
+            Ok(Err(error)) => return Err(format!("Cannot read session readiness: {error}")),
+            // Connected but silent: a stalled operator, not a stopped one.
+            Err(_) => {
+                let since = *busy_since.get_or_insert_with(|| {
+                    on_busy();
+                    tokio::time::Instant::now()
+                });
+                if since.elapsed() >= budgets.busy {
+                    return Err(format!(
+                        "The operator was busy and did not answer for {}s. Draft retained.",
+                        since.elapsed().as_secs().max(1)
+                    ));
+                }
+                continue;
+            }
+        };
+        if snapshot.terminal {
+            return Err("Session has ended. Draft retained; reconnect to retry.".into());
+        }
+        if snapshot.executor_attached && snapshot.stream_ready {
+            return Ok(snapshot);
+        }
+        if started.elapsed() >= budgets.ready {
+            return Err(format!(
+                "Session did not become ready within {}s. Draft retained.",
+                budgets.ready.as_secs().max(1)
+            ));
+        }
+        tokio::time::sleep(budgets.poll).await;
+    }
+}
+
 async fn send_su_turn_with_client(
     client: &OperatorClient,
     harness: &str,
@@ -6341,22 +7153,25 @@ async fn send_su_turn_with_client(
     let command = if let Some(command) = pending.command.clone() {
         command // Retry the exact committed payload, including its original timestamp.
     } else {
-        let snapshot = match client.su_session_snapshot(harness, chat_id).await {
+        // A connected engine remains usable while waiting for its next owner
+        // turn or after interruption; readiness is separate from that lifecycle.
+        let snapshot = match await_su_send_readiness_reporting(
+            || client.su_session_snapshot(harness, chat_id),
+            SuSendBudgets::LIVE,
+            || {
+                let _ = tx.send(Event::SuSendOperatorBusy {
+                    command_id: pending.command_id.clone(),
+                });
+            },
+        )
+        .await
+        {
             Ok(snapshot) => snapshot,
-            Err(error) => {
-                fail(format!("Cannot read session readiness: {error}"), false);
+            Err(message) => {
+                fail(message, false);
                 return;
             }
         };
-        // A connected engine remains usable while waiting for its next owner
-        // turn or after interruption; readiness is separate from that lifecycle.
-        if !snapshot.executor_attached || !snapshot.stream_ready || snapshot.terminal {
-            fail(
-                "Session is not ready. Draft retained; reconnect to retry.".into(),
-                false,
-            );
-            return;
-        }
         let identity = snapshot.descriptor.identity;
         if !su_turn_target_matches(binding, &identity, harness, chat_id) {
             fail(
@@ -6365,7 +7180,7 @@ async fn send_su_turn_with_client(
             );
             return;
         }
-        serde_json::json!({
+        let mut command = serde_json::json!({
             "schema": crate::su_session::SU_SESSION_SCHEMA,
             "protocolVersion": crate::su_session::SU_SESSION_PROTOCOL_VERSION,
             "type": "owner_turn",
@@ -6374,7 +7189,17 @@ async fn send_su_turn_with_client(
             "target": identity,
             "turnId": format!("pui-turn-{}", pending.command_id),
             "content": pending.content,
-        })
+        });
+        // pui-chat-first-ux P-026 / D-025: the /model pick rides on this turn;
+        // omitted keeps the model the session already runs on.
+        // D-026: the /approvals or Shift+Tab pick rides on this turn too.
+        if let Some(approvals) = pending.approvals.as_deref() {
+            command["approvals"] = serde_json::Value::String(approvals.to_string());
+        }
+        if let Some(model) = pending.model.as_deref() {
+            command["model"] = serde_json::Value::String(model.to_string());
+        }
+        command
     };
     let identity: crate::su_session::SuSessionIdentity =
         match serde_json::from_value(command["target"].clone()) {
@@ -6905,6 +7730,8 @@ fn spawn_sync(
 struct RefetchSignal {
     include_plan_reads: bool,
     include_account_reads: bool,
+    include_memory_reads: bool,
+    include_pipeline_reads: bool,
 }
 
 /// Keep background reads aligned with the pane the workbench currently shows.
@@ -6917,16 +7744,28 @@ struct PaneFetchScope {
 }
 
 impl PaneFetchScope {
-    fn fetches_network(&self) -> bool {
+    fn selected_tab(&self) -> Option<app::Tab> {
         self.pinned
             .or_else(|| self.selected.lock().ok().map(|selected| *selected))
-            == Some(app::Tab::Network)
+    }
+
+    fn fetches_network(&self) -> bool {
+        self.selected_tab() == Some(app::Tab::Network)
+    }
+
+    fn fetches_accounts(&self) -> bool {
+        matches!(
+            self.selected_tab(),
+            Some(app::Tab::Overview | app::Tab::Operator)
+        )
+    }
+
+    fn fetches_memory(&self) -> bool {
+        self.selected_tab() == Some(app::Tab::Memory)
     }
 
     fn fetches_pipeline(&self) -> bool {
-        self.pinned
-            .or_else(|| self.selected.lock().ok().map(|selected| *selected))
-            == Some(app::Tab::Overview)
+        self.selected_tab() == Some(app::Tab::Overview)
     }
 }
 
@@ -6934,11 +7773,31 @@ impl RefetchSignal {
     const FULL: Self = Self {
         include_plan_reads: true,
         include_account_reads: true,
+        include_memory_reads: true,
+        include_pipeline_reads: true,
     };
     const GENERAL: Self = Self {
         include_plan_reads: false,
         include_account_reads: false,
+        include_memory_reads: false,
+        include_pipeline_reads: false,
     };
+
+    fn for_tab_entry(tab: app::Tab) -> Option<Self> {
+        let mut signal = Self::GENERAL;
+        match tab {
+            // The account pool backs both the Overview spend summary and the
+            // Operator chat account picker.
+            app::Tab::Overview => {
+                signal.include_account_reads = true;
+                signal.include_pipeline_reads = true;
+            }
+            app::Tab::Operator => signal.include_account_reads = true,
+            app::Tab::Memory => signal.include_memory_reads = true,
+            _ => return None,
+        }
+        Some(signal)
+    }
 
     fn include_plan_reads(self) -> bool {
         self.include_plan_reads
@@ -6947,6 +7806,8 @@ impl RefetchSignal {
     fn merge(&mut self, other: Self) {
         self.include_plan_reads |= other.include_plan_reads;
         self.include_account_reads |= other.include_account_reads;
+        self.include_memory_reads |= other.include_memory_reads;
+        self.include_pipeline_reads |= other.include_pipeline_reads;
     }
 }
 
@@ -6970,6 +7831,8 @@ fn refetch_signal_for_frame_data(data: &str) -> RefetchSignal {
         include_account_reads: name.starts_with("accounts.")
             || name == "harness_shared.operator_account_pool.changed"
             || name == "harness_shared.operator_account_override.changed",
+        include_memory_reads: false,
+        include_pipeline_reads: false,
     }
 }
 
@@ -7140,6 +8003,19 @@ async fn refetch_loop(
         }
     };
 
+    // Restore before the serial initial reads: slow or unavailable tab data
+    // must not leave the owner in the default harness. The reducer preserves
+    // saved selections until their lists arrive and cancels a late restore
+    // after owner input.
+    match client.get_view_state(&workbench::workbench_owner()).await {
+        Ok(vs) => {
+            let _ = tx.send(Event::ViewStateLoaded(vs));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("view-state: {e}")));
+        }
+    }
+
     // Initial load.
     refetch_all(
         &client,
@@ -7165,17 +8041,6 @@ async fn refetch_loop(
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("toast-log: {e}")));
-        }
-    }
-
-    // Restore the persisted workbench view-state once, after the initial data
-    // load so selections land against populated lists (P12 / D-002).
-    match client.get_view_state(&workbench::workbench_owner()).await {
-        Ok(vs) => {
-            let _ = tx.send(Event::ViewStateLoaded(vs));
-        }
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("view-state: {e}")));
         }
     }
 
@@ -7568,9 +8433,10 @@ fn spawn_first_paint_work_items<S: FirstPaintWorkItems>(
 /// Fetch every panel's data and forward as `Event`s. Errors per-query become
 /// `Event::Error` so one failing endpoint doesn't sink the rest. `pinned`
 /// scopes the fat plans/attention reads to panes that actually render them
-/// (see `pane_fetches_plans` / `pane_fetches_attention`). `signal` skips plan
-/// and account reads on unrelated SSE invalidations. Startup and the 60s safety
-/// tick include both, so missed signals self-heal without a tight poll.
+/// (see `pane_fetches_plans` / `pane_fetches_attention`). `signal` scopes optional
+/// plan, account, memory, and pipeline reads to their relevant invalidation or
+/// active pane. Startup and the 60s safety tick include all scopes for the active
+/// pane, so missed signals self-heal without a tight poll.
 async fn refetch_all(
     client: &OperatorClient,
     tx: &UnboundedSender<Event>,
@@ -7632,7 +8498,7 @@ async fn refetch_all(
     }
     // The pipeline tile belongs to Overview. Its Git subprocesses must not
     // compete with Agent Chat's bounded turn-start reads in the operator.
-    if pane.fetches_pipeline() {
+    if signal.include_pipeline_reads && pane.fetches_pipeline() {
         let _ = tx.send(Event::PipelineStatus(Box::new(
             client.pipeline_status().await,
         )));
@@ -7776,7 +8642,7 @@ async fn refetch_all(
     }
     // Agent Chat account-route picker. The generic run-tool bridge returns
     // live pool rows; an empty pool still leaves the Auto row available.
-    if signal.include_account_reads {
+    if signal.include_account_reads && pane.fetches_accounts() {
         match client.accounts_status().await {
             Ok(status) => {
                 let _ = tx.send(Event::AccountRows(status.accounts));
@@ -7838,14 +8704,36 @@ async fn refetch_all(
     }
     // The Memory tab's list (D-006 Step 2). Preserve backend-disabled,
     // authentication, and transport outcomes as distinct typed states.
-    let _ = tx.send(Event::MemoryLoad(
-        client.memory_list_state(Some(&slug)).await,
-    ));
+    if signal.include_memory_reads && pane.fetches_memory() {
+        let _ = tx.send(Event::MemoryLoad(
+            client.memory_list_state(Some(&slug)).await,
+        ));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn su_resume_does_not_treat_a_failed_directory_probe_as_an_empty_list() {
+        let failure = su_inventory_probe_failure_message(
+            1,
+            0,
+            &["codex-chat: connection reset".to_string()],
+            &[],
+        )
+        .expect("a missing required directory probe must fail the list");
+        assert!(failure.contains("could not determine directory membership"));
+        assert!(failure.contains("/resume to retry"));
+        assert!(failure.contains("0/1 required probes succeeded"));
+
+        assert_eq!(
+            su_inventory_probe_failure_message(1, 1, &[], &[]),
+            None,
+            "a complete successful probe keeps the list usable"
+        );
+    }
 
     fn startup_chat(
         id: &str,
@@ -7896,11 +8784,52 @@ mod tests {
         assert_eq!(pick(Some("/work/b/")).as_deref(), Some("elsewhere"));
         assert_eq!(pick(Some("/work/c")), None);
         assert_eq!(pick(None).as_deref(), Some("elsewhere"));
+        // WI-10006533: a session whose directory is unknown belongs to no
+        // directory, the rule `session_in_directory` states. It used to stay
+        // eligible from anywhere ("older operators").
         let unknown = vec![row("here", Some("/work/a")), row("elsewhere", None)];
         assert_eq!(
             default_operator_chat(&chats, &unknown, Some("/work/c")).map(|chat| chat.id.as_str()),
-            Some("elsewhere")
+            None
         );
+        assert_eq!(
+            default_operator_chat(&chats, &unknown, Some("/work/a")).map(|chat| chat.id.as_str()),
+            Some("here")
+        );
+    }
+
+    /// WI-10006533: the inventory drops a chat whose snapshot request fails
+    /// (a session mid-teardown answers 404). Such a chat used to rank as live
+    /// from ANY directory, so a launch in project B landed on project A's
+    /// conversation and its first send was refused "already bound to a
+    /// different engine or project" (or, with the same engine, joined it).
+    #[test]
+    fn default_operator_chat_never_picks_a_chat_with_no_inventory_row_from_another_launch() {
+        let chats = vec![
+            startup_chat("here", Some("su-session"), "2026-09-07T01:00:00Z"),
+            startup_chat("probe-failed", Some("su-session"), "2026-09-07T02:00:00Z"),
+        ];
+        let here = crate::su_session::SuSessionInventoryEntry {
+            agent_chat_id: "here".into(),
+            adv_session_id: 1,
+            backend: crate::su_session::SuSessionBackend::Claude,
+            lifecycle: crate::su_session::SuSessionLifecycleState::Ready,
+            runtime_generation: 1,
+            native_session_id: "native-here".into(),
+            terminal: false,
+            reconciliation: crate::su_session::SuSessionReconciliation::Attached,
+            cwd: Some("/work/a".into()),
+        };
+        let pick = |inventory: &[crate::su_session::SuSessionInventoryEntry], launch: Option<&str>| {
+            default_operator_chat(&chats, inventory, launch).map(|chat| chat.id.clone())
+        };
+        // A fresh project: nothing there, so a new conversation.
+        assert_eq!(pick(std::slice::from_ref(&here), Some("/work/b")), None);
+        assert_eq!(pick(&[], Some("/work/b")), None);
+        // The launch's own directory still wins over the newer unknown chat.
+        assert_eq!(pick(std::slice::from_ref(&here), Some("/work/a")).as_deref(), Some("here"));
+        // A PUI with no known directory has nothing to scope by.
+        assert_eq!(pick(&[], None).as_deref(), Some("probe-failed"));
     }
 
     /// pui-chat-first-ux P-009 / D-008: quitting a PUI ends its engine, so the
@@ -8063,6 +8992,140 @@ mod tests {
 
     #[test]
     fn initial_turn_snapshot_requires_a_ready_matching_native_runtime() {
+        initial_turn_snapshot_requires_a_ready_matching_native_runtime_body();
+    }
+
+    /// P-024 fixture: a snapshot in the given readiness state.
+    fn readiness_snapshot(
+        attached: bool,
+        ready: bool,
+        terminal: bool,
+    ) -> crate::su_session::SuSessionSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "ok": true,
+            "descriptor": {
+                "identity": {
+                    "agentChatId":"chat-1", "advSessionId":7, "backend":"claude",
+                    "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1",
+                    "harnessSlug":"papercup"
+                },
+                "lifecycle": if attached { "ready" } else { "starting" },
+                "runtimeGeneration": 0,
+                "role": "su",
+                "carry": "warm",
+                "modes": [],
+                "capabilities": {"commands": {}, "features": {}},
+                "backendExtension": {"backend": "claude", "configDir": null, "configDirSource": null}
+            },
+            "floorSequence": 1,
+            "lastSequence": 1,
+            "terminal": terminal,
+            "executorAttached": attached,
+            "streamReady": ready
+        }))
+        .unwrap()
+    }
+
+    const FAST: SuSendBudgets = SuSendBudgets {
+        operator: Duration::from_millis(60),
+        ready: Duration::from_millis(200),
+        poll: Duration::from_millis(10),
+        busy: Duration::from_millis(150),
+    };
+
+    /// P-023 / P-024: "hi" typed while Claude is still starting must wait for
+    /// it, not be refused with "Session is not ready".
+    #[tokio::test]
+    async fn a_send_waits_for_a_starting_engine_then_goes() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counter = reads.clone();
+        let outcome = await_su_send_readiness(
+            move || {
+                let n = counter.get() + 1;
+                counter.set(n);
+                async move { Ok(readiness_snapshot(n >= 3, true, false)) }
+            },
+            FAST,
+        )
+        .await;
+        assert!(outcome.is_ok_and(|s| s.executor_attached));
+        assert_eq!(reads.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_hung_operator_is_reported_within_its_budget() {
+        let started = std::time::Instant::now();
+        let outcome = await_su_send_readiness(
+            std::future::pending::<Result<crate::su_session::SuSessionSnapshot>>,
+            FAST,
+        )
+        .await;
+        let message = outcome.expect_err("a hung operator must not be waited on");
+        assert!(message.contains("operator was busy and did not answer"), "{message}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// WI-10006644: an operator whose event loop stalls for longer than one
+    /// read budget but recovers must not drop the turn. Measured on :3170
+    /// under load: a 10s stall against a 4s read budget.
+    #[tokio::test]
+    async fn a_briefly_stalled_operator_is_retried_not_reported() {
+        let reads = std::cell::Cell::new(0);
+        let outcome = await_su_send_readiness(
+            || {
+                let n = reads.get() + 1;
+                reads.set(n);
+                async move {
+                    if n <= 2 {
+                        // Longer than FAST.operator: this read times out.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Ok(readiness_snapshot(true, true, false))
+                }
+            },
+            FAST,
+        )
+        .await;
+        assert!(outcome.is_ok_and(|s| s.executor_attached), "the third read answers");
+        assert_eq!(reads.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn an_engine_that_never_gets_ready_ends_in_a_plain_error() {
+        let message = await_su_send_readiness(
+            || async { Ok(readiness_snapshot(false, true, false)) },
+            FAST,
+        )
+        .await
+        .expect_err("readiness is bounded");
+        assert!(message.contains("did not become ready within"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn an_ended_session_or_an_operator_error_is_not_retried() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counter = reads.clone();
+        let ended = await_su_send_readiness(
+            move || {
+                counter.set(counter.get() + 1);
+                async { Ok(readiness_snapshot(false, false, true)) }
+            },
+            FAST,
+        )
+        .await
+        .expect_err("an ended session cannot take a turn");
+        assert!(ended.contains("Session has ended"), "{ended}");
+        assert_eq!(reads.get(), 1);
+        let refused = await_su_send_readiness(
+            || async { Err(anyhow::anyhow!("connection refused")) },
+            FAST,
+        )
+        .await
+        .expect_err("an unreachable operator fails at once");
+        assert!(refused.contains("Cannot read session readiness: connection refused"), "{refused}");
+    }
+
+    fn initial_turn_snapshot_requires_a_ready_matching_native_runtime_body() {
         let mut binding: crate::su_session::SuSessionBinding =
             serde_json::from_value(serde_json::json!({
                 "operation":"created", "backend":"claude", "advSessionId":7,
@@ -8556,15 +9619,23 @@ mod tests {
             for signal in signals {
                 merged.merge(signal);
             }
-            assert_eq!(merged, RefetchSignal::FULL);
+            assert_eq!(
+                merged,
+                RefetchSignal {
+                    include_plan_reads: true,
+                    include_account_reads: true,
+                    include_memory_reads: false,
+                    include_pipeline_reads: false,
+                }
+            );
         }
     }
 
     /// Exercise the real refetch fan-out and run-tool wire, not just the
-    /// signal predicate. Unrelated SSE frames must not re-read the account
-    /// pool; startup, account updates, unknown payloads and safety refresh do.
+    /// signal predicate. Generic invalidations must not re-read memory or the
+    /// Overview pipeline; account updates and active-pane refreshes still do.
     #[tokio::test]
-    async fn account_refetch_reads_only_for_account_updates_and_full_refresh() {
+    async fn optional_refetch_reads_follow_invalidation_and_active_pane_scope() {
         use crate::framing::{encode_frame, FrameType};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -8572,8 +9643,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("account-refetch.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let reads = Arc::new(AtomicUsize::new(0));
-        let recorded_reads = reads.clone();
+        let account_reads = Arc::new(AtomicUsize::new(0));
+        let recorded_account_reads = account_reads.clone();
+        let memory_reads = Arc::new(AtomicUsize::new(0));
+        let recorded_memory_reads = memory_reads.clone();
+        let pipeline_reads = Arc::new(AtomicUsize::new(0));
+        let recorded_pipeline_reads = pipeline_reads.clone();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (mut reader, mut writer) = stream.into_split();
@@ -8591,11 +9666,23 @@ mod tests {
                 let tool_body = request["input"]["body"]
                     .as_str()
                     .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok());
-                let is_accounts = request["input"]["path"] == "/api/agent-mcp/run-tool"
-                    && tool_body.as_ref().and_then(|body| body["name"].as_str())
-                        == Some("accounts:status");
+                let tool_name = tool_body.as_ref().and_then(|body| body["name"].as_str());
+                if request["input"]["path"] == "/api/agent-mcp/run-tool" {
+                    match tool_name {
+                        Some("accounts:status") => {
+                            recorded_account_reads.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Some("memory:list") => {
+                            recorded_memory_reads.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Some("state:read") => {
+                            recorded_pipeline_reads.fetch_add(1, Ordering::SeqCst);
+                        }
+                        _ => {}
+                    }
+                }
+                let is_accounts = tool_name == Some("accounts:status");
                 let response = if is_accounts {
-                    recorded_reads.fetch_add(1, Ordering::SeqCst);
                     serde_json::json!({"ok":true,"result":{"content":[{
                         "type":"text", "text":r#"{"accounts":[],"poolVerdict":[]}"#
                     }]}})
@@ -8633,9 +9720,10 @@ mod tests {
         let active_harness = Arc::new(Mutex::new("fixture".into()));
         let active_doc = Arc::new(Mutex::new(None));
         let active_plan = Arc::new(Mutex::new(None));
+        let selected = Arc::new(Mutex::new(app::Tab::Operator));
         let pane = PaneFetchScope {
             pinned: None,
-            selected: Arc::new(Mutex::new(app::Tab::Operator)),
+            selected: selected.clone(),
         };
         for (frame, expected_reads) in [
             (None, 1), // startup
@@ -8661,7 +9749,7 @@ mod tests {
             (Some(r#"{"args":{"x":1}}"#), 7),
             (None, 8), // the same full refresh used by the 60s safety tick
         ] {
-            let previous_reads = reads.load(Ordering::SeqCst);
+            let previous_reads = account_reads.load(Ordering::SeqCst);
             let signal = frame
                 .map(refetch_signal_for_frame_data)
                 .unwrap_or(RefetchSignal::FULL);
@@ -8680,7 +9768,7 @@ mod tests {
             .await
             .expect("fixture refetch completed");
             assert_eq!(
-                reads.load(Ordering::SeqCst),
+                account_reads.load(Ordering::SeqCst),
                 expected_reads,
                 "frame={frame:?}"
             );
@@ -8689,6 +9777,69 @@ mod tests {
                 .count();
             assert_eq!(account_events, expected_reads - previous_reads);
         }
+
+        macro_rules! run_scoped_refetch {
+            ($signal:expr) => {{
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    refetch_all(
+                        &client,
+                        &tx,
+                        &active_harness,
+                        &active_doc,
+                        &active_plan,
+                        &pane,
+                        $signal,
+                    ),
+                )
+                .await
+                .expect("scoped fixture refetch completed");
+            }};
+        }
+
+        assert_eq!(memory_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 0);
+
+        // Account writes still refresh the Overview summary and chat picker,
+        // while an off-pane account invalidate does not fetch the pool.
+        *selected.lock().unwrap() = app::Tab::Network;
+        run_scoped_refetch!(refetch_signal_for_frame_data(r#"{"name":"accounts.pool"}"#));
+        assert_eq!(account_reads.load(Ordering::SeqCst), 8);
+
+        // The Memory pane loads on entry and on its 60s safety refresh. General
+        // tool activity while it remains selected is not a memory invalidation.
+        *selected.lock().unwrap() = app::Tab::Memory;
+        run_scoped_refetch!(refetch_signal_for_frame_data(
+            r#"{"name":"harness_shared.tool_invocations.changed"}"#
+        ));
+        assert_eq!(memory_reads.load(Ordering::SeqCst), 0);
+        run_scoped_refetch!(RefetchSignal::for_tab_entry(app::Tab::Memory).unwrap());
+        assert_eq!(memory_reads.load(Ordering::SeqCst), 1);
+        run_scoped_refetch!(RefetchSignal::FULL);
+        assert_eq!(memory_reads.load(Ordering::SeqCst), 2);
+
+        // Four state cells are read only when entering Overview or on its
+        // safety refresh; generic tool-invocation events do not fan them out.
+        *selected.lock().unwrap() = app::Tab::Overview;
+        run_scoped_refetch!(refetch_signal_for_frame_data(
+            r#"{"name":"harness_shared.tool_invocations.changed"}"#
+        ));
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 0);
+        run_scoped_refetch!(RefetchSignal::for_tab_entry(app::Tab::Overview).unwrap());
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 4);
+        assert_eq!(account_reads.load(Ordering::SeqCst), 9);
+        run_scoped_refetch!(refetch_signal_for_frame_data(r#"{"name":"accounts.pool"}"#));
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 4);
+        assert_eq!(account_reads.load(Ordering::SeqCst), 10);
+        run_scoped_refetch!(refetch_signal_for_frame_data(
+            r#"{"name":"harness_shared.tool_invocations.changed"}"#
+        ));
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 4);
+        assert_eq!(account_reads.load(Ordering::SeqCst), 10);
+        run_scoped_refetch!(RefetchSignal::FULL);
+        assert_eq!(pipeline_reads.load(Ordering::SeqCst), 8);
+        assert_eq!(account_reads.load(Ordering::SeqCst), 11);
+
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
     }
@@ -8741,6 +9892,55 @@ mod tests {
             selected
         }
         .fetches_pipeline());
+    }
+
+    #[test]
+    fn optional_refetch_signals_match_tab_entry_and_visible_surfaces() {
+        let selected = Arc::new(Mutex::new(app::Tab::Operator));
+        let pane = PaneFetchScope {
+            pinned: None,
+            selected: selected.clone(),
+        };
+        for (tab, accounts, memory, pipeline) in [
+            (app::Tab::Operator, true, false, false),
+            (app::Tab::Overview, true, false, true),
+            (app::Tab::Memory, false, true, false),
+            (app::Tab::Network, false, false, false),
+        ] {
+            *selected.lock().unwrap() = tab;
+            assert_eq!(pane.fetches_accounts(), accounts, "{tab:?}");
+            assert_eq!(pane.fetches_memory(), memory, "{tab:?}");
+            assert_eq!(pane.fetches_pipeline(), pipeline, "{tab:?}");
+        }
+
+        assert_eq!(
+            RefetchSignal::for_tab_entry(app::Tab::Operator),
+            Some(RefetchSignal {
+                include_plan_reads: false,
+                include_account_reads: true,
+                include_memory_reads: false,
+                include_pipeline_reads: false,
+            })
+        );
+        assert_eq!(
+            RefetchSignal::for_tab_entry(app::Tab::Memory),
+            Some(RefetchSignal {
+                include_plan_reads: false,
+                include_account_reads: false,
+                include_memory_reads: true,
+                include_pipeline_reads: false,
+            })
+        );
+        assert_eq!(
+            RefetchSignal::for_tab_entry(app::Tab::Overview),
+            Some(RefetchSignal {
+                include_plan_reads: false,
+                include_account_reads: true,
+                include_memory_reads: false,
+                include_pipeline_reads: true,
+            })
+        );
+        assert_eq!(RefetchSignal::for_tab_entry(app::Tab::Network), None);
     }
 
     fn coord_msg(

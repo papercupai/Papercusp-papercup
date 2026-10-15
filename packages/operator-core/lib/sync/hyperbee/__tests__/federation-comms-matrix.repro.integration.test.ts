@@ -444,8 +444,8 @@ async function bootCommsPair(cfg: {
     swarmOverride: swarmAuthor,
     verifyBindingOverride: async (_pk, _login, userId) =>
       userId === idReceiver.userId ? 'verified' : 'fail',
-    applyOverride: (op) => {
-      applyAuthor ??= buildCoordPeerApply(authorDb.adminSql, authorSlug, handleAuthor!.ownLog.keyHex);
+    applyOverride: (op, ctx) => {
+      applyAuthor ??= buildCoordPeerApply(authorDb.adminSql, authorSlug, ctx.ownLogKeyHex);
       return applyAuthor(op);
     },
     mergePollMs: 0,

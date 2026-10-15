@@ -17,9 +17,12 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_bas
 import type { AgentIdentity } from './identity';
 import { sendMessage, resolveMessageRef, getMessageById } from './messages';
 import { openHandoff } from './handoffs';
-import { openEscalation, resolveEscalation } from './escalations';
-import { coordWorkspaceId } from './log';
+import { openEscalation, reopenEscalation, resolveEscalation } from './escalations';
+import { readCoordFeed } from './feed';
+import { coordHasPgFastPath, coordWorkspaceId } from './log';
 import ackTool from './tools/ack';
+import readTool from './tools/read';
+import threadTool from './tools/thread';
 
 let fx: BaselineCoordFixture;
 
@@ -204,6 +207,85 @@ describe('resolveMessageRef (WI-6725)', () => {
     expect(res.message.summary).toBe('take over this work');
   });
 
+  it('EI-25503280746355318: coord:read resolves an idempotent coord:send id returned by coord:feed', async () => {
+    expect(coordHasPgFastPath()).toBe(true);
+    const fullId = `coord-send-${'a'.repeat(64)}`;
+    const sent = await sendMessage(ASKER, {
+      to: [READER.ownerId],
+      msgId: fullId,
+      summary: 'idempotent coord send',
+    });
+
+    const feed = await readCoordFeed({ from: ASKER.ownerId, limit: 20 });
+    const row = feed.rows.find((entry) => entry.msg_id === sent.msg_id);
+    expect(row).toBeDefined();
+    if (!row) return;
+
+    const result = await readTool.handler({ msg_id: row.msg_id }, {} as never);
+    const payload = (result as { data?: unknown }).data as {
+      found: boolean;
+      msg_id: string;
+      message: { msg_id: string; summary?: string } | null;
+    };
+    expect(payload).toMatchObject({
+      found: true,
+      msg_id: fullId,
+      message: { msg_id: fullId, summary: 'idempotent coord send' },
+    });
+  });
+
+  it('EI-25728544049822981: coord:thread resolves a full idempotent coord:send id', async () => {
+    expect(coordHasPgFastPath()).toBe(true);
+    const fullId = `coord-send-${'c'.repeat(64)}`;
+    await sendMessage(ASKER, {
+      to: [READER.ownerId],
+      msgId: fullId,
+      summary: 'idempotent coord send thread root',
+    });
+
+    const result = await threadTool.handler({ root_msg_id: fullId }, {} as never);
+    const payload = (result as { data?: unknown }).data as {
+      root: string;
+      entries: Array<{ msg_id: string; summary?: string }>;
+    };
+    expect(payload.root).toBe(fullId);
+    expect(payload.entries.map((entry) => entry.msg_id)).toContain(fullId);
+    expect(payload.entries[0]?.summary).toBe('idempotent coord send thread root');
+  });
+
+  it('coord:thread names the coord:send full-ID shape when a reference is truncated', async () => {
+    const truncatedId = `coord-send-${'d'.repeat(56)}`;
+    const result = await threadTool.handler({ root_msg_id: truncatedId }, {} as never);
+    const payload = (result as { data?: unknown }).data as { found: boolean; detail?: string };
+    expect(payload.found).toBe(false);
+    expect(payload.detail).toContain("or 'coord-send-<64 hex>'");
+  });
+
+  it('does not call a missing idempotent coord:send ID truncated', async () => {
+    const fullId = `coord-send-${'b'.repeat(64)}`;
+    const resolution = await resolveMessageRef(fullId);
+    expect(resolution).toEqual({ status: 'not-found', msgId: fullId, looksTruncated: false });
+
+    const result = await readTool.handler({ msg_id: fullId }, {} as never);
+    const payload = (result as { data?: unknown }).data as {
+      found: boolean;
+      msg_id: string;
+      detail?: string;
+    };
+    expect(payload).toMatchObject({ found: false, msg_id: fullId });
+    expect(payload.detail).toBeUndefined();
+
+    const partialId = fullId.slice(0, -8);
+    const partialResult = await readTool.handler({ msg_id: partialId }, {} as never);
+    const partialPayload = (partialResult as { data?: unknown }).data as {
+      found: boolean;
+      msg_id: string;
+      detail?: string;
+    };
+    expect(partialPayload).toMatchObject({ found: false, msg_id: partialId });
+    expect(partialPayload.detail).toContain("'<short>-0000-<32 hex>' or 'coord-send-<64 hex>'");
+  });
+
   it('resolves a unique truncated handoff id without confusing it with a miss', async () => {
     const handoff = await openHandoff(ASKER, {
       to: [READER.ownerId],
@@ -264,5 +346,37 @@ describe('resolveMessageRef (WI-6725)', () => {
 
     const res = await resolveMessageRef(middle);
     expect(res.status).toBe('not-found');
+  });
+});
+
+/**
+ * WI-10005375 — coord:read returned the stored escalation record, which says resolved:null by
+ * construction (the resolution is a sibling `escalation_resolved` event). On PG the fold now
+ * reads ONLY that escalation's resolve/reopen rows (coord_event_log_related_msg_id_idx), so this
+ * pins the new targeted SQL against real Postgres through the real coord:read handler.
+ */
+describe('coord:read folds an escalation resolution on Postgres (WI-10005375)', () => {
+  async function coordRead(msgId: string): Promise<{ found: boolean; message: { resolved?: { choice?: string } | null } | null }> {
+    const result = await readTool.handler({ msg_id: msgId }, {} as never);
+    return (result as { data?: unknown }).data as never;
+  }
+
+  it('a resolved escalation reads resolved, an unrelated one stays open, and a reopen reads open again', async () => {
+    // Positive control: this must drive the targeted PG read, not the in-memory replay.
+    expect(coordHasPgFastPath()).toBe(true);
+    const target = await openEscalation(ASKER, { severity: 'question', summary: 'withdrawn ask' });
+    const other = await openEscalation(ASKER, { severity: 'question', summary: 'still-open ask' });
+    expect(target.msg_id).not.toBe(other.msg_id);
+
+    const resolved = await resolveEscalation({ msg_id: target.msg_id, choice: 'superseded', resolver: ASKER.ownerId });
+    expect(typeof resolved).not.toBe('string');
+
+    const before = await coordRead(target.msg_id);
+    expect(before.found).toBe(true);
+    expect(before.message?.resolved?.choice).toBe('superseded');
+    expect((await coordRead(other.msg_id)).message?.resolved ?? null).toBeNull();
+
+    await reopenEscalation({ msg_id: target.msg_id, by: 'owner', note: 'not withdrawn after all' });
+    expect((await coordRead(target.msg_id)).message?.resolved ?? null).toBeNull();
   });
 });

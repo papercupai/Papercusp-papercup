@@ -1,0 +1,658 @@
+{
+  "schemaVersion": "composition-rig-canonical-adoption-v1",
+  "workItem": "WI-10006495",
+  "originalSource": "WI-10005142",
+  "sourcePlan": "composition-rig-canonical-schema-2026-10-06",
+  "stage": "P-002 implementation and focused proof",
+  "sourceSha256": {
+    "packages/operator-core/lib/shared-pot-loop/composition-rig.ts": "970525f6a0931fd71cf80376147896fb1536817dc92fea82ba6d10999d2d420b",
+    "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts": "4b9196964228c4dc6dfa6d292106dd1f607e1d0d1fec533290af12dc99ad66cd",
+    "packages/operator-core/lib/shared-pot-loop/composition-rig-feature-write-schema-drift.test.ts": "dd2ddf50769bced8a525d44e64e71ec07f638815b78d0890a464e5e05b3ccaed",
+    "packages/operator-core/lib/shared-pot-loop/composition-rig-issue-schema-drift.test.ts": "9020a5fb6a5c94040e629ac1f394295e786772c2f90279b95bfad0ca6d2c2a30",
+    "packages/operator-core/lib/shared-pot-loop/federated-cell-setup.ts": "34f561c84ea2c8703dcae8ecc51ec53355027214561fae2f85292908e53a8a91",
+    "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts": "4f5cd94787014b628c862d3689646888e2dd3fb39b66baff251171af646f56f4",
+    "libs/test-config/src/pg-migrate.ts": "c50cb9703f37624ec0ebf4e9bc474145584576e813e4a26a5aa244561bb3a49c",
+    "libs/test-config/src/pg-migrate.integration.test.ts": "c2eda106f654495fe65e1b385dc05ac2826d1e2784255d5c98eff0fbd394f0a8"
+  },
+  "sourceHead": "202743ceba73f6107991c915144d47787a2e95f5",
+  "testConfigHead": "74d8095e5f4022b4348df3c06de264a2bc04f079",
+  "consumerPopulation": [
+    "packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/cross-swarm-supervision.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/outbox-stress.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/lease-steal.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts",
+    "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts"
+  ],
+  "changes": [
+    "Every cell uses createOrgTestDb(adminPoolMax4), keyed by maintained canonical migrations.",
+    "Only rig_side_effects and canonical project/pot/member seeds remain rig-specific.",
+    "Parent pot/home/peer username, per-cell HLC, authority HTTP seam, trust/CDC/projections, extra setup and local effects retained.",
+    "Depth and monitor health use the driven workspace/harness scope; template plan and pot membership CDC remain distinct.",
+    "Real-cell schema/constraints/readiness/capture/federation/cleanup regression controls replace private-DDL inference."
+  ],
+  "testRuns": {
+    "canonicalCells": {
+      "id": 20830477,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "templateKey": "8ac11bd6de104652",
+      "provisioningMs": [
+        25646.384803999998,
+        4918.636811999997
+      ]
+    },
+    "originalHappyPath": {
+      "id": 20830476,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "originalReadinessAndMonitor": {
+      "id": 20831048,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "templateFixture": {
+      "id": 20830538,
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0
+    },
+    "boundedDrops": {
+      "id": 20830542,
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "parserAndSyntax": {
+      "log": "/tmp/wi10006495-focused-01.log",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "typecheck": {
+    "operatorCore": "clean; /tmp/wi10006495-typecheck-01.log",
+    "testConfig": "clean; /tmp/ei25215184-typecheck-02.log"
+  },
+  "priorPreflight": "docs/evidence/composition-rig-canonical-template-spike-2026-10-06.json",
+  "coldBuildCost": "unmeasured; global setup may warm template and keys changed during first run",
+  "boundEvidence": {
+    "r1": 25657,
+    "r2": 25658,
+    "canonicalAdoption": 25659,
+    "readiness": 25813
+  },
+  "incidents": [
+    {
+      "id": "EI-25214693249500099",
+      "state": "done",
+      "completionAuthority": "committed"
+    },
+    {
+      "id": "EI-25215184717616522",
+      "state": "done",
+      "completionAuthority": "committed"
+    }
+  ],
+  "coverage": {
+    "population": [
+      "packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/cross-swarm-supervision.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/outbox-stress.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/lease-steal.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts"
+    ],
+    "checked": [
+      "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts"
+    ],
+    "notChecked": [
+      "packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/cross-swarm-supervision.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/outbox-stress.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/lease-steal.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+      "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts"
+    ],
+    "notApplicable": [],
+    "residue": [
+      "WI-10005142"
+    ]
+  },
+  "remaining": {
+    "sourceCustodian": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+    "nextStage": "P-003 full consumer proof and committed source reconciliation",
+    "metaVetting": "Revision2 exact consult conv-muwdr64k-0000-86e883c9b8aa4f7ca274ddaa043ea102; native router failed expert kickoff, no verdict/attestation claimed.",
+    "sync": "git-sync:run fired and returned in_progress; no completion inferred."
+  },
+  "p002Continuation": {
+    "sourceGuardCommit": "5b1e4a0e65d3c12e8c15b56a64dc20cee867552d",
+    "sourceGuardSha256": "b6b57b4b86ef55d804c5ab1cd0f8641b4233b56c78a34c30e78fbe6ef344a72b",
+    "sourceGuardVerification": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0,
+      "worktreeDirty": true,
+      "log": "/tmp/wi10006495-managed-cleanup-01.log",
+      "remaining": "none; clean committed verification is recorded below",
+      "asCommitted": {
+        "sha": "5b1e4a0e65d3c12e8c15b56a64dc20cee867552d",
+        "root": "/tmp/pcv/papercusp-lint-as-committed-5b1e4a0e65-VnyUia",
+        "log": "/tmp/wi10006495-as-committed-03.log",
+        "testRun": 20835764,
+        "passed": 9,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    },
+    "priorCommittedFocusedProof": {
+      "sha": "6e5179874104e97720c7e781d80b247f53eae6e1",
+      "root": "/tmp/pcv/papercusp-lint-as-committed-6e51798741-jf03Gs",
+      "log": "/tmp/wi10006495-as-committed-02.log",
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "worktreeDirty": false,
+      "testRuns": [
+        20834565,
+        20834566,
+        20834567
+      ]
+    },
+    "cleanupDetectorCorrection": "The new immediate-absence assertion was not the maintained factory contract. A longer wait still failed an unmutated calibration. The current detector requires closed cell connections and either absence, the exact deferred-drop marker or an active targeted DROP. Its real unclosed-clone negative control passes. Original consumer files and factory behavior are unchanged.",
+    "mutationProof": {
+      "missingSatisfaction": {
+        "baseline": 20834757,
+        "mutant": 20834765,
+        "log": "/tmp/wi10006495-satisfaction-mutation-02.log",
+        "verdict": "caught"
+      },
+      "wrongOutboxScope": {
+        "baseline": 20834942,
+        "mutant": 20835424,
+        "log": "/tmp/wi10006495-outbox-mutation-02.log",
+        "verdict": "caught"
+      },
+      "test": "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+      "originSha": "6e5179874104e97720c7e781d80b247f53eae6e1",
+      "relocation": "overlay",
+      "worktreeDirty": false,
+      "sourceIntegrity": "Both official mutation probes verified unchanged source. All local exec sessions completed."
+    },
+    "nativeBindings": {
+      "r1": [
+        26018,
+        26019
+      ],
+      "readiness": [
+        26020,
+        26021
+      ],
+      "r2": [
+        26023,
+        26024
+      ],
+      "canonicalAdoption": [
+        26025,
+        26026
+      ],
+      "withdrawnInvalidCounterexamples": [
+        25912,
+        25983,
+        25985,
+        25987,
+        25989
+      ]
+    },
+    "nativeReview": {
+      "conversation": "conv-muwdr64k-0000-86e883c9b8aa4f7ca274ddaa043ea102",
+      "state": "Original exact critique1159429 exists and C1 was authenticated/applied at rubric3. Exact revised critique1159862 has no construction blockers. Meta attestation is not recorded: canonical plan14 alignment left a guarded subject-revision mismatch; atomic same-criteria reconciliation preview is ready.",
+      "ownedRecovery": "WI-10006539",
+      "launchLog": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-fork-su-9ce1405b-5c29-1479514-1791275501067.normalized.log",
+      "observed": "Historical answering fork9ce received the exact request and then hit Context limit reached. Later native fork74fff posted the full exact revision2 critique at09:05Z. accepted_answer null does not mean no response; the earlier absence inference is retracted.",
+      "critique": {
+        "post": "thread-post:1159429",
+        "author": "su-74fff9fc-08c2-4ec1-8502-156838a62b82",
+        "createdAt": "2026-10-06T09:05:18.385Z",
+        "revision": 2,
+        "criteriaHash": "e6cc2879f1238c583cebec9576db7fdf2704483be2f47f1a065c88ce841d5467",
+        "blockingFinding": "C1: R2/R3 bind ten files while the complete current consumer population is eleven; both omit composition-rig-schema-drift.integration.test.ts and R3 method says ten.",
+        "requiredRepair": "Native immutable BAR amendment: add the existing eleventh consumer to both check.files, change R3 method to eleven, retain intent/scope/falsifiers and explicit assertion-content versus execution-receipt partition; then genuinely re-vet the new revision.",
+        "methodRefinements": "Name composition-rig.ts for R1 source read; cite source D003 in R3; qualify report-plan D008 and name original WI10005120/WI10005142/WI10006170 in R4. Do not add manual-provenance layers pre-emptively.",
+        "approvalBoundary": "Use configured native outside-lineage amendment approval; no self-approval, manual reviewer recruitment, waiver or duplicate review of unchanged revision2. Required revised-rubric review is a new immutable revision.",
+        "sameConfiguredReviewerModel": {
+          "agent": "claude",
+          "model": "fable"
+        }
+      },
+      "boundary": "No owner-typed answer is claimed. Report D010@121 permits the existing owned preflight source/test repair within D008/D009. No waiver, manual reviewer recruitment, actor/model/account/carry/routine/runtime/LIVE_GATE_OPS change made.",
+      "amendment": {
+        "state": "Original exact critique1159429 exists and C1 was authenticated/applied at rubric3. Exact revised critique1159862 has no construction blockers. Meta attestation is not recorded: canonical plan14 alignment left a guarded subject-revision mismatch; atomic same-criteria reconciliation preview is ready.",
+        "patch": {
+          "rubricRef": "acceptance-composition-rig-canonical-schema-2026-10-06",
+          "criteria": [
+            {
+              "key": "r-1",
+              "title": "Use the maintained canonical schema",
+              "intent": {
+                "request": "Use the current migration-keyed canonical org template for every isolated rig cell and record the bounded preflight receipt before replacement.",
+                "rationale": "Engineer-authored explicit contract for the original source repair governed by D-008; no prior agent/steward speech is recast as owner wording.",
+                "constraints": [
+                  "existing source seat; no new actor/fleet/runtime/paid-cap expansion",
+                  "no production claim/query/schema/routine change",
+                  "no LIVE_GATE_OPS or final D006/shipment authority"
+                ],
+                "sourceRefs": [
+                  "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-008",
+                  "work-item:WI-10005142",
+                  "session_turn:codex:01a10f2c-b033-77d2-8cbe-bbb5a4bae4e9:17"
+                ]
+              },
+              "model": "Each isolated rig cell supplies the complete current migration-keyed org schema whose template identity, trigger, RLS, default and seed-outbox behavior and two-cell provisioning cost were recorded by real-PG preflight before replacement.",
+              "bar": "Each isolated rig cell supplies the complete current migration-keyed org schema whose template identity, trigger, RLS, default and seed-outbox behavior and two-cell provisioning cost were recorded by real-PG preflight before replacement.",
+              "barKey": "R-1",
+              "barHash": "215787bd452494829fba56119ddcd4dd5036bdef7aa7b2b13d6e7686859af893",
+              "role": "outcome",
+              "mandatory": true,
+              "requiredScope": [
+                "all isolated composition cells",
+                "current org migration chain",
+                "prior4 schema fixes and work_item_deps.satisfaction"
+              ],
+              "evidencePlane": "tree",
+              "requiredTestLayers": [
+                "integration"
+              ],
+              "passRatings": [
+                "healthy"
+              ],
+              "barProvenance": {
+                "lifecycle": "pre-implementation",
+                "declaredAt": "2026-10-06T05:17:38.673Z",
+                "declaredBy": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe"
+              },
+              "method": "Read original WI-10005142 P001 receipt and sourceplan D-003, read packages/operator-core/lib/shared-pot-loop/composition-rig.ts and verify the rig's cell factory actually uses the maintained current migration-keyed template, then run the two conventional integration controls through testing:run. Confirm all cells carry the four retained fixes+satisfaction and measured RLS/default/capture/cleanup behavior; report cold build cost as unmeasured unless separately exercised.",
+              "driftMarkers": "Any cell uses an empty database plus a manually curated schema/readiness migration slice, lacks a prior retained fix or satisfaction, or lacks an actual canonical-template preflight receipt.",
+              "replication": "REPLICATION DRILL: read current sourceplan D-003 and original WI-10005142 receipt; exercise the stated check against the current staged rig and record exact outcomes/source identity. A skipped or unmeasured branch remains unknown; clean up isolated test cells with the maintained factory.",
+              "check": {
+                "kind": "tests",
+                "files": [
+                  "packages/operator-core/lib/shared-pot-loop/composition-rig-canonical-template.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts"
+                ]
+              }
+            },
+            {
+              "key": "r-2",
+              "title": "Preserve the rig's behavior",
+              "intent": {
+                "request": "Preserve original rig seed rows, HLC, authority leases, CDC/projection, federation intent, cleanup and extra-cell-DDL hooks while adopting the complete schema.",
+                "rationale": "Engineer-authored explicit contract for the original source repair governed by D-008; no prior agent/steward speech is recast as owner wording.",
+                "constraints": [
+                  "existing source seat; no new actor/fleet/runtime/paid-cap expansion",
+                  "no production claim/query/schema/routine change",
+                  "no LIVE_GATE_OPS or final D006/shipment authority"
+                ],
+                "sourceRefs": [
+                  "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-008",
+                  "work-item:WI-10005142"
+                ]
+              },
+              "model": "The original composition rig contract, whose retained migration fixes are supplied by the canonical migration chain rather than hand-layered, remains satisfied during canonical schema adoption, including all retained migration fixes and the parent-pot/member identities, seed outbox scopes, HLC, authority, CDC/projection, federation, cleanup and extra-setup semantics.",
+              "bar": "The original composition rig contract, whose retained migration fixes are supplied by the canonical migration chain rather than hand-layered, remains satisfied during canonical schema adoption, including all retained migration fixes and the parent-pot/member identities, seed outbox scopes, HLC, authority, CDC/projection, federation, cleanup and extra-setup semantics.",
+              "barKey": "R-2",
+              "barHash": "5104ca2bf8c0e5f1df3740145da51ed94307c61a1c08dd21f8837797ddea6de7",
+              "role": "outcome",
+              "mandatory": true,
+              "requiredScope": [
+                "D-003 parent-pot/member/outbox scopes",
+                "original authority/HLC/CDC/federation oracles",
+                "original bootCompositionRig public contract"
+              ],
+              "evidencePlane": "tree",
+              "requiredTestLayers": [
+                "integration"
+              ],
+              "passRatings": [
+                "healthy"
+              ],
+              "barProvenance": {
+                "lifecycle": "pre-implementation",
+                "declaredAt": "2026-10-06T05:17:38.673Z",
+                "declaredBy": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe"
+              },
+              "method": "Compare preserved rig seams and existing consumer assertions with original c9e51dba7a76a90364e6effc1e98e39ac1e36e11e54f687f6265b3099eed5d77 source and D-003. Run the enumerated conventional integration controls via testing:run. Check parent pot/home/username identity and exact CDC scopes explicitly; establish the original claim/authority/federation oracles without production claim/query/schema/routine changes. Rate preservation from assertion CONTENT: the original oracles must remain present and unweakened; deleting or weakening an oracle fails R-2. R-3 separately rates EXECUTION receipts.",
+              "driftMarkers": "Any existing oracle/control is dropped or weakened, parent-pot/member identity is omitted or FK/NOT NULL relaxed, CDC triggers are disabled to conceal seed operations, or HLC/authority/federation/cleanup/extra-DDL semantics change.",
+              "replication": "REPLICATION DRILL: read current sourceplan D-003 and original WI-10005142 receipt; exercise the stated check against the current staged rig and record exact outcomes/source identity. A skipped or unmeasured branch remains unknown; clean up isolated test cells with the maintained factory.",
+              "check": {
+                "kind": "tests",
+                "files": [
+                  "packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/cross-swarm-supervision.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/outbox-stress.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/lease-steal.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts"
+                ]
+              }
+            },
+            {
+              "key": "r-3",
+              "title": "Verify the actual consumer population",
+              "intent": {
+                "request": "Verify exact composition-happy-path and all current bootCompositionRig integration consumers with terminal receipts and conventional recurrence coverage.",
+                "rationale": "Engineer-authored explicit contract for the original source repair governed by D-008; no prior agent/steward speech is recast as owner wording.",
+                "constraints": [
+                  "existing source seat; no new actor/fleet/runtime/paid-cap expansion",
+                  "no production claim/query/schema/routine change",
+                  "no LIVE_GATE_OPS or final D006/shipment authority"
+                ],
+                "sourceRefs": [
+                  "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-008",
+                  "work-item:WI-10005142"
+                ]
+              },
+              "model": "Exact composition-happy-path and the complete current bootCompositionRig consumer population have observed terminal outcomes against the adopted cells, with source/test/schema identities, an explicit coverage partition and conventional template/schema recurrence coverage.",
+              "bar": "Exact composition-happy-path and the complete current bootCompositionRig consumer population have observed terminal outcomes against the adopted cells, with source/test/schema identities, an explicit coverage partition and conventional template/schema recurrence coverage.",
+              "barKey": "R-3",
+              "barHash": "1ebccf6c4e647ec9cd247f0515a7ab08b1eb5244ebc22dcd8ad90a3ed54caf0c",
+              "role": "outcome",
+              "mandatory": true,
+              "requiredScope": [
+                "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/cross-swarm-supervision.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/lease-steal.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/outbox-stress.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+                "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts"
+              ],
+              "evidencePlane": "tree",
+              "requiredTestLayers": [
+                "integration"
+              ],
+              "passRatings": [
+                "healthy"
+              ],
+              "barProvenance": {
+                "lifecycle": "pre-implementation",
+                "declaredAt": "2026-10-06T05:17:38.673Z",
+                "declaredBy": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe"
+              },
+              "method": "Re-enumerate actual direct and aliased bootCompositionRig consumers in source and owning configuration; current inventory is eleven files. Run that full exact population using testing:run/canonical test:file routes. Record actual terminal native results and test-run ledger IDs, source/test/migration pins and explicit checked/notChecked/notApplicable/residue partitions. Keep any new/removed consumer delta explicit and preserve recurrence controls. Trace this population to sourceplan composition-rig-canonical-schema-2026-10-06#D-003; its ten-consumer wording is a dated preflight undercount corrected by thread-post:1159429 and this amendment to eleven. Rate terminal EXECUTION receipts here: a failed, skipped or unexecuted required control fails R-3; R-2 separately rates assertion CONTENT.",
+              "driftMarkers": "A current direct/aliased consumer is omitted, a failed/skipped or unexecuted control is described as passing, the named happy path is not executed, or typecheck/selection/source reading alone is treated as behavioral verification.",
+              "replication": "REPLICATION DRILL: read current sourceplan D-003 and original WI-10005142 receipt; exercise the stated check against the current staged rig and record exact outcomes/source identity. A skipped or unmeasured branch remains unknown; clean up isolated test cells with the maintained factory.",
+              "check": {
+                "kind": "tests",
+                "files": [
+                  "packages/operator-core/lib/shared-pot-loop/coord-verb-lifecycle-two-cell.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/cross-swarm-supervision.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/split-brain-mug.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/revoked-swarm.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/outbox-stress.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/lease-steal.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/redundancy-two-swarm.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/fleet-monitors.integration.test.ts",
+                  "packages/operator-core/lib/shared-pot-loop/composition-rig-schema-drift.integration.test.ts"
+                ]
+              }
+            },
+            {
+              "key": "r-4",
+              "title": "Preserve source and final-verdict boundaries",
+              "intent": {
+                "request": "Close original source custody only on committed tested source and owned residue; preserve parent census and independent final D006 responsibility.",
+                "rationale": "Engineer-authored explicit contract for the original source repair governed by D-008; no prior agent/steward speech is recast as owner wording.",
+                "constraints": [
+                  "existing source seat; no new actor/fleet/runtime/paid-cap expansion",
+                  "no production claim/query/schema/routine change",
+                  "no LIVE_GATE_OPS or final D006/shipment authority"
+                ],
+                "sourceRefs": [
+                  "expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-008",
+                  "work-item:WI-10005142"
+                ]
+              },
+              "model": "Original source closure reconciles committed tested source, structured verification, owned residue, WI-10005120 and exact parent census receipts while preserving P004 independent final D006/native-reproof custody and making no feature-acceptance, shipment or LIVE_GATE_OPS claim.",
+              "bar": "Original source closure reconciles committed tested source, structured verification, owned residue, WI-10005120 and exact parent census receipts while preserving P004 independent final D006/native-reproof custody and making no feature-acceptance, shipment or LIVE_GATE_OPS claim.",
+              "barKey": "R-4",
+              "barHash": "27bf2663cf7c7095ee32734d2feca33256a7c9238c9b8972b9dd5b9f5d750bc5",
+              "role": "outcome",
+              "mandatory": true,
+              "requiredScope": [
+                "P004 independent final D006 boundary",
+                "WI-10005120 reconciliation",
+                "WI-10005142 source closure",
+                "WI-10006170 exact source census"
+              ],
+              "evidencePlane": "tree",
+              "passRatings": [
+                "healthy"
+              ],
+              "barProvenance": {
+                "lifecycle": "pre-implementation",
+                "declaredAt": "2026-10-06T05:17:38.673Z",
+                "declaredBy": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe"
+              },
+              "method": "Manual accountability check: use work_items:get on the three original IDs WI-10005120, WI-10005142 and WI-10006170, inspect structured closure/source pins and each residue's actual assignee; use plans:get for governing expandable-canonical-goal-reports-with-decision-ready-owner-2026-10-03#D-008 and composition-rig-canonical-schema-2026-10-06#D-003 and independent P004 limits. Open the parent census and reconcile only receipt-backed exact entries. Confirm no full D006/shipment/live-gate claim is inferred from focused tests.",
+              "driftMarkers": "Original source repair closes on uncommitted/untested source or unowned residue; focused proof is substituted for the final D006 verdict; parent unknowns are silently treated as green; source plan asserts feature acceptance/shipment or changes live-gate custody.",
+              "replication": "REPLICATION DRILL: read current sourceplan D-003 and original WI-10005142 receipt; exercise the stated check against the current staged rig and record exact outcomes/source identity. A skipped or unmeasured branch remains unknown; clean up isolated test cells with the maintained factory.",
+              "check": {
+                "kind": "instrument",
+                "instrumentKey": "none"
+              }
+            }
+          ],
+          "expectedRubricRevision": 2,
+          "expectedSubjectPlanRevision": 12,
+          "idempotencyKey": "a20d-c1-1159429-r2-full11",
+          "reason": "Settle blocking C1 in original exact critique thread-post:1159429 / conv-muwdr64k-0000-86e883c9b8aa4f7ca274ddaa043ea102: bind the existing eleventh schema-drift integration consumer in R-2/R-3 checks and R-3 scope, correct ten to eleven, preserve D-003 as a dated measurement with a correction note, and incorporate its method-only source traces, original WI IDs and assertion-content versus execution-receipt partition. All existing intents, outcomes, falsifiers, criteria and final D006/source/runtime boundaries are retained."
+        },
+        "immutablePreviewPosts": [
+          "thread-post:1159782",
+          "thread-post:1159814"
+        ],
+        "previewReceipts": [
+          "preview-407bd096-d5e1-427c-a7de-a39684f19426",
+          "preview-6e749ddf-79f2-45b2-b62b-87f760c254e6"
+        ],
+        "approvalRequired": true,
+        "approvalRef": "thread-post:1159835",
+        "firstReview": {
+          "conversation": "conv-muwm42oc-0000-8a119b6a5e17414ca5d3a7bafdf0a0f0",
+          "taskId": "0muwm4lvt1g09o20cj5",
+          "state": "ended_unobserved; kernel process gone and scope released",
+          "failure": "psu: route exceeded 30s; initial terminal command exited with status 1",
+          "log": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/bar-amendment-review-274eab951a97-1712569-1791287163295.log",
+          "ownedDefect": "EI-25231240145060739"
+        },
+        "nativeRetry": {
+          "conversation": "conv-muwmn8hf-0000-dde6747e51634340896a3b4fa93d132a",
+          "taskId": "0muwmp3bv1b0o8ygmvl",
+          "state": "Actual outside-lineage approve thread-post1159835 for preview1159814; no longer a pending approval.",
+          "log": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/bar-amendment-review-ac2e52c52e97-1712569-1791288119152.log",
+          "route": "Documented native re-post/review after the first reviewer ended without posting; same configured claude/fable and system-owned outside-lineage fallback.",
+          "classification": "TEMPORARY MITIGATION for the bootstrap route deadline; durable repair and recurrence guard remain owned by EI-25231240145060739."
+        },
+        "existingDrift": {
+          "fields": [
+            "R-1 model",
+            "R-2 model",
+            "R-4 model"
+          ],
+          "action": "After approved CAS apply, align all four structured Requirements to the canonical rubric, retain D-003's preflight as a dated measurement with an eleven-consumer correction, and correct the stale Now absence inference."
+        },
+        "changedProof": {
+          "invalidatedRefs": [
+            "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
+            "test-run 20835424 mutation-probe mutant fail packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts @6e5179874104"
+          ],
+          "invalidatedP002Clause": "AUTO-BAR-R-2-P-002@3",
+          "action": "New exact revised-rubric meta review and attestation precede proof re-binding and native changed-clause adequacy/audit settlement."
+        },
+        "remaining": "Actual approve/objection for preview1159814; approved exact2/12 CAS apply; canonical plan alignment; new exact revised-rubric vetting/attestation; R-2 re-bind/re-certify; P-002 native close with top-level specAdequacy; normal P-003 claim, full11 consumers and original WI10005120/WI10005142/WI10006170 reconciliation.",
+        "boundaries": "Original critique1159429 exists. No absence waiver, self-approval, manual reviewer recruitment, configuration/model/account/carry/runtime/fleet-allocation/LIVE_GATE_OPS change, source-test re-run, acceptance or shipment claim.",
+        "applied": {
+          "rubricRevision": 3,
+          "criteriaHash": "a3d6dc3a0519cc4843c18f858c88b980b6dba8c99a5ab85a917436fe70d49941",
+          "barSetHash": "a2b9bcc5ff7846e54aafdcd0aea6866f86db550426b5effb6a7cd62ea9575ce2",
+          "subjectRevision": 13,
+          "idempotencyKey": "a20d-c1-1159429-r2-full11",
+          "canonicalAlignedPlanRevision": 14
+        },
+        "revisedVetting": {
+          "conversation": "conv-muwn9vsv-0000-619ea032fb9d4063bc0410326aa2df58",
+          "post": "thread-post:1159862",
+          "author": "su-67ddc31f-a98b-461a-83cc-737d30e5b86e",
+          "revision": 3,
+          "criteriaHash": "a3d6dc3a0519cc4843c18f858c88b980b6dba8c99a5ab85a917436fe70d49941",
+          "verdict": "No construction blockers; all six current meta5 criteria pass. This is a critique, not a native attestation.",
+          "transportRecovery": "Initial request_timeout55000 keyeff70d4e-a225-434b-8250-f6bce4b51121 recovered through the existing persisted conversation; no duplicate revision3 consult."
+        },
+        "pinReconciliation": {
+          "state": "Preview only; not applied",
+          "guard": "acceptance_bar_contract_not_ready/bar_snapshot_rubric_revision_mismatch",
+          "ownedRecord": "EI-25233343388499171",
+          "idempotencyKey": "a20d-canonical-pin-reconcile-r3-p14",
+          "expectedRubricRevision": 3,
+          "expectedSubjectPlanRevision": 14,
+          "preview": {
+            "changedBars": [],
+            "criteriaChanges": [],
+            "requirementsInSync": true,
+            "invalidatedProofRefs": [],
+            "invalidatedAdequacyCardSubjects": [],
+            "nextRubricRevision": 4,
+            "subjectRevision": 14,
+            "clearedCode": "bar_snapshot_rubric_revision_mismatch"
+          },
+          "remaining": "Guarded atomic same-criteria apply, then genuinely vet the resulting exact immutable revision before meta emit."
+        },
+        "provenanceCorrection": {
+          "state": "Retraction delivered and correct audit preview in progress",
+          "sourceRef": "session_turn:codex:01a10f2c-b033-77d2-8cbe-bbb5a4bae4e9:17",
+          "actual": "Automated inbox wake, not owner-typed task speech.",
+          "withdrawn": "Audit3 called this genuine owner speech and P001 derived from that owner premise.",
+          "corrected": "All three source items are agent-added under existing D008/D009/D010/D012; reject M001 as an owner-backed mapping while retaining its history. Native default classification still called one item owner in the first correction preview, so no corrected audit was recorded yet."
+        },
+        "publicExport": {
+          "workItem": "WI-10006649",
+          "serializer": "scripts/lib/identity-leak-patterns.mjs#serializeIdentitySafeJson",
+          "meaning": "Machine paths in this public JSON are redacted placeholders. Exact original runtime paths and source/proof identity remain in native WI10006539 checkpoint, native test-run records and immutable review receipts.",
+          "verification": "Pending registered four-detector check after atomic export."
+        }
+      },
+      "preflightRepair": {
+        "workItem": "WI-10006539",
+        "rootCause": "The inherited fork source ends in synthetic provider Prompt is too long errors. The native preflight only recognized missing-tool poison, and the first-reply check counted a context rejection as a reply.",
+        "reuse": "Extended the existing Claude transcript analyzer, fork preflight, first-reply guard and launch-log detector; configured rank conversions remain in use.",
+        "sourceFiles": [
+          "packages/operator-core/lib/claude-resume-tool-references.mjs",
+          "packages/operator-core/lib/claude-resume-tool-references.d.mts",
+          "packages/operator-core/lib/claude-resume-tool-references.test.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.ts",
+          "packages/operator-core/lib/consult/consult-dispatch.test.ts"
+        ],
+        "localProof": {
+          "passed": 133,
+          "failed": 0,
+          "skipped": 0,
+          "worktreeDirty": true,
+          "isScratchConfig": false,
+          "testRuns": [
+            20835919,
+            20835920
+          ],
+          "log": "/tmp/wi10006539-context-preflight-02.log",
+          "typecheck": "clean; /tmp/wi10006539-typecheck-02.log",
+          "actualInheritedTranscript": "/home/builduser/.papercusp/session-claude/su-9ce1405b-5c29-4b86-9d27-4f27ab8bcefc/projects/-home-builduser-papercupai-workspace-papercusp/8846f615-0833-489b-b3fb-0930ff5da385.jsonl",
+          "actualObservation": "two trailing provider context rejections; Prompt is too long; zero missing-tool rejections"
+        },
+        "asCommittedProof": {
+          "sha": "dccbbe21054d5967ed0e5fb2b991e12d296fe27c",
+          "sourceIdentity": "all five committed blobs match the recorded verified source hashes",
+          "root": "/tmp/pcv/papercusp-lint-as-committed-dccbbe2105-MtlO3X",
+          "log": "/tmp/wi10006539-as-committed-01.log",
+          "testRuns": [
+            20836218,
+            20836219
+          ],
+          "passed": 133,
+          "failed": 0,
+          "skipped": 0,
+          "worktreeDirty": false,
+          "isScratchConfig": false
+        },
+        "remaining": "genuine original native review settlement; no native recovery or deployment inferred"
+      }
+    },
+    "nativeAdequacyCards": {
+      "mechanism": "plans:certify-spec-clauses; unchanged evaluator drafts through native scorecards:emit exact replay",
+      "r1": "EI-25225059692293834",
+      "r2": "EI-25225067656803169",
+      "canonicalAdoption": "EI-25225079061773398",
+      "readiness": "EI-25225083838148018",
+      "verdict": "four passing clauses, four filed cards, no refusals",
+      "independentAuditSettlement": "all four native grading-integrity receipts passed; no plan acceptance inferred",
+      "independentAudits": {
+        "r1": {
+          "issueId": "EI-25227607852769302",
+          "auditor": "system:judge/su-0a583c99-148d-45f7-b0f4-8f649ce46610",
+          "auditedAt": "2026-10-06T11:02:01.725Z",
+          "state": "passed"
+        },
+        "r2": {
+          "issueId": "EI-25227526905833857",
+          "auditor": "system:judge/su-52826f20-f831-47f8-a9bb-11d70f3e9cd8",
+          "auditedAt": "2026-10-06T11:00:44.544Z",
+          "state": "passed"
+        },
+        "canonicalAdoption": {
+          "issueId": "EI-25227395397167692",
+          "auditor": "system:judge/su-48f615ef-401d-40f9-ad68-278169d18864",
+          "auditedAt": "2026-10-06T10:58:39.739Z",
+          "state": "passed"
+        },
+        "readiness": {
+          "issueId": "EI-25227523498403831",
+          "auditor": "system:judge/su-b9701205-2e17-4e74-b430-f1aaeb24857f",
+          "auditedAt": "2026-10-06T11:00:41.281Z",
+          "state": "passed"
+        }
+      }
+    },
+    "remaining": "C1 approved/applied3 and revised critique1159862 has six metaPASS. Canonical alignment requires guarded same-criteria pin reconciliation and new immutable-revision vetting/attestation; corrected activation audit, changedR2 proof/adequacy, nativeP002 close and NORMALP003/full11/original reconciliation remain open. All fixed route/runtime/final boundaries preserved."
+  },
+  "boundaries": "No original-source final closure, independent final D006, feature acceptance, main promotion, shipment or LIVE_GATE_OPS claim."
+}

@@ -1,0 +1,18 @@
+{
+  "name": "outlook-graph-provider",
+  "version": "1.0.0",
+  "description": "Outlook mail and calendar provider for Papercusp, through Microsoft Graph.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "files": ["papercusp.json", "daemon.mjs", "plan-reply.md"],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@microsoft/microsoft-graph-types": "^2.43.1",
+    "@papercusp/plugin-sdk": "*",
+    "@types/node": "*",
+    "typescript": "*"
+  }
+}

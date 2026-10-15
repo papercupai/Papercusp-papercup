@@ -50,6 +50,16 @@ describe('findStaleInsightCitations', () => {
     expect(findStaleInsightCitations(body, repoRoot)).toEqual([]);
   });
 
+  // WI-6554700010008908: same permanent-red class as the EI- case above, for plan refs.
+  it('IGNORES a scoped plan item/decision citation — it names a plan record, not a path', () => {
+    const body = withFrontmatter(
+      "  - 'byoc-cloud-workspaces-gcp-aws-azure-2026-08-22#D-143'\n  - some-plan#P-004\n  - packages/operator-core/lib/moved-away.ts",
+    );
+    expect(findStaleInsightCitations(body, repoRoot)).toEqual([
+      { path: 'packages/operator-core/lib/moved-away.ts', kind: 'path' },
+    ]);
+  });
+
   it('IGNORES an ABSOLUTE path — the contract is repo-relative, so it is not ours to verify', () => {
     // join(repoRoot, '/etc/x') silently yields <repoRoot>/etc/x, so these were checked at
     // a path nobody ever meant to exist. Docs legitimately cite files outside the tree

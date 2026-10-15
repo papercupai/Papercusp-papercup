@@ -21,6 +21,7 @@ import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
 import { fleetSpecBeeKey, setClaimSpec } from '../../scheduler/claim-spec-store';
 import { buildLeaderBrief } from '../fleet/leader-brief';
 import plansGetTool from './get';
+import workItemsGetTool from '../work_items/get';
 import { buildPlanContextBundle } from './context-bundle';
 import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 
@@ -242,6 +243,66 @@ describe('bounded plan history production consumers', () => {
     expect(raw?.unresolved).toEqual([]);
     expect(raw?.records[0]?.text).toBe(note);
   });
+
+  it.each(['work_item', 'plan', 'goal'] as const)('recovers exact %s archives beyond the recent-post window through real stores', async (level) => {
+    const ref = level === 'work_item' ? CHILD : level === 'plan' ? PLAN : GOAL;
+    const note = `Original ${level} archive: ${'preserved λ '.repeat(400)}`.trimEnd();
+    const captured = await postLearnedAtLevel({
+      workItemId: CHILD, harness: HARNESS, level, text: note,
+      workspaceId: fx.workspaceId, authorId: 'su-exact-archive-integration',
+    });
+    expect(captured.post).toBeTruthy();
+    const post = captured.post!;
+    capturedThreadIds.add(post.thread_id);
+    const store = new PgThreadStore({ getSql: () => admin, ensureSchema: async () => {}, workspaceId: fx.workspaceId });
+    const ownIds = [post.id];
+    const otherThreadId = `issue-thread-${UNRELATED_ITEM}`;
+    const foreignWorkspace = `archive-foreign-${RUN}-${level}`;
+    const foreignStore = new PgThreadStore({ getSql: () => admin, ensureSchema: async () => {}, workspaceId: foreignWorkspace });
+    try {
+      for (let index = 0; index < 30; index++) {
+        const later = await store.addPost({ thread_id: post.thread_id, author_id: 'su-later-post-integration',
+          body: `Later ${level} post ${index}`, created_ts: new Date().toISOString() });
+        ownIds.push(later.id);
+      }
+      expect((await store.listRecentPosts(post.thread_id, 25)).posts.map((row) => row.id)).not.toContain(post.id);
+      await store.getOrCreateThread({ kind: 'issue', ref: UNRELATED_ITEM }, {
+        thread_id: otherThreadId, created_ts: new Date().toISOString(),
+      });
+      capturedThreadIds.add(otherThreadId);
+      const other = await store.addPost({ thread_id: otherThreadId, body: 'Unrelated archive', created_ts: new Date().toISOString() });
+      ownIds.push(other.id);
+      await foreignStore.getOrCreateThread({ kind: 'issue', ref: CHILD }, {
+        thread_id: post.thread_id, created_ts: new Date().toISOString(),
+      });
+      const foreign = await foreignStore.addPost({ thread_id: post.thread_id, body: 'Other workspace archive', created_ts: new Date().toISOString() });
+      expect(await foreignStore.getPostById(foreign.id)).toMatchObject({ body: foreign.body });
+      const prefix = `${level === 'work_item' ? ref : `${level}:${ref}`}#comment:`;
+      const rawRef = `${prefix}${post.id}`;
+      const excludedRefs = [`${prefix}${other.id}`, `${prefix}${foreign.id}`, `${prefix}999999999`];
+      const recovered = await resolvePriorAttemptRefs({
+        target: { kind: level, ref, harness: HARNESS }, harness: HARNESS,
+        rawRefs: [rawRef, ...excludedRefs], timeoutMs: 10_000,
+      });
+      expect(recovered?.records).toContainEqual(expect.objectContaining({ rawRef, text: note, actor: post.author_id }));
+      expect(recovered?.unresolved).toEqual(excludedRefs);
+      if (level === 'work_item') {
+        const read = dataOf<{ results: Array<{ priorAttemptRefResolution: { records: Array<{ rawRef: string; text: string }>; unresolved: string[] } }> }>(
+          await workItemsGetTool.handler({ id: CHILD, harness: HARNESS, priorAttemptRefs: [rawRef] } as never, CTX),
+        );
+        expect(read.results[0]?.priorAttemptRefResolution.records).toContainEqual(expect.objectContaining({ rawRef, text: note }));
+        expect(read.results[0]?.priorAttemptRefResolution.unresolved).toEqual([]);
+      }
+    } finally {
+      // Restore the shared fixture before the other history-consumer scenarios.
+      await admin`DELETE FROM harness_shared.coord_thread_posts WHERE workspace_id = ${fx.workspaceId} AND id = ANY(${ownIds})`;
+      await admin`UPDATE harness_shared.coord_threads t SET post_count = (
+        SELECT count(*) FROM harness_shared.coord_thread_posts p WHERE p.workspace_id = t.workspace_id AND p.thread_id = t.thread_id
+      ) WHERE t.workspace_id = ${fx.workspaceId} AND t.thread_id = ANY(${[post.thread_id, otherThreadId]})`;
+      await admin`DELETE FROM harness_shared.coord_thread_posts WHERE workspace_id = ${foreignWorkspace} AND thread_id = ${post.thread_id}`;
+      await admin`DELETE FROM harness_shared.coord_threads WHERE workspace_id = ${foreignWorkspace} AND thread_id = ${post.thread_id}`;
+    }
+  }, 60_000);
 
   it.each(['plan', 'goal'] as const)('captures %s lessons and distinguishes a failed stored read from missing history', async (level) => {
     const ref = level === 'plan' ? PLAN : GOAL;

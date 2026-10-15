@@ -50,9 +50,40 @@
  */
 import { createHash } from 'node:crypto';
 import type { AgentFact, FactDependency } from '../../agent-facts/store';
-import { FACT_MAX_DEPENDENCIES, FACT_DEPENDENCY_OBSERVED_CHARS } from '../../agent-facts/store';
+import { FACT_MAX_DEPENDENCIES, FACT_DEPENDENCY_OBSERVED_CHARS, isFactFileAnchor } from '../../agent-facts/store';
 import { readCell, type CellReadEnv } from '../../cell-read';
 import type { CellReader } from '../../cell-registry';
+import { resolveCurrentTokens } from '../../freshness/resolvers';
+
+/**
+ * P-012 (derived-status-not-hand-written-2026-10-12) — FILE ANCHORS.
+ *
+ * A `dependsOn` entry spelled `file:<repo-relative path>` is not a registered cell:
+ * it is observed through the SAME `file:` resolver `work_items:checkpoint`'s
+ * declared dependencies use (`freshness/resolvers.ts` — harness-root selection,
+ * containment, content hash). Its token (`sha256:<16 hex>` of the file's bytes) is
+ * stored as the dependency's `digest` at assert time, and re-resolved at read time,
+ * so the existing comparison reports the fact STALE when the file's content changes.
+ *
+ * Reusing that resolver rather than hashing here keeps ONE definition of "this
+ * file's blob" for both checkpoints and facts: two hashers that disagreed would
+ * report every anchored fact stale forever (this module's header, applied to files).
+ */
+export interface FileAnchorOptions {
+  /** Explicit checkout root for `file:` anchors — the resolver's caller-owned
+   *  override (`FreshnessResolverCtx.repoRoot`). Omit to resolve against the
+   *  fact's harness root, as checkpoints do. */
+  fileRepoRoot?: string;
+}
+
+/**
+ * Max DISTINCT file anchors one staleness pass will hash. Separate from
+ * {@link STALENESS_READ_BUDGET} because a file anchor costs a local read and hash,
+ * not a resolver dispatch (git/systemd probes), but still bounded: an orient fold
+ * can carry ~36 facts × {@link FACT_MAX_DEPENDENCIES} anchors. Past it an anchor
+ * reports `undeterminable` naming the budget — never `fresh`.
+ */
+export const FILE_ANCHOR_READ_BUDGET = 32;
 
 /** Digest width. 16 hex chars = 64 bits: collision-free at any plausible number
  *  of cell values, and short enough that a whole dependency set stays readable
@@ -260,9 +291,11 @@ export function evaluateDependencyStaleness(
     if (!now || !now.digest) {
       verdicts.push({
         ...base,
-        detail:
-          `the cell was readable when the fact was filed but yields no value now (${now?.unknown ?? 'absent'}) — ` +
-          'the fact may still be current, but this read cannot confirm it.',
+        detail: isFactFileAnchor(dep.cell)
+          ? `the anchored file resolved to a blob when the fact was filed but does not resolve now (${now?.unknown ?? 'absent'}: ` +
+            'deleted, moved, or its checkout is unreadable) — the fact is NOT confirmed current; re-verify it.'
+          : `the cell was readable when the fact was filed but yields no value now (${now?.unknown ?? 'absent'}) — ` +
+            'the fact may still be current, but this read cannot confirm it.',
       });
       undeterminable.push(dep.cell);
       continue;
@@ -411,10 +444,17 @@ export async function captureFactDependencies(
   reader: CellReader,
   env: CellReadEnv,
   subjects?: Readonly<Record<string, string>>,
+  fileOptions?: FileAnchorOptions,
 ): Promise<FactDependency[]> {
   const wanted = dedupeCells(cells);
   if (wanted.length === 0) return [];
   const observedAt = new Date().toISOString();
+  // P-012 — file anchors resolve in ONE batch through the checkpoint `file:`
+  // resolver (a subject never applies to a file); everything else is a cell read.
+  // The batch is STARTED here, not awaited: awaiting it first would delay every
+  // cell read behind it, re-introducing the serial cost the Promise.all below
+  // exists to remove. observeFileAnchors is total (never rejects).
+  const fileObservationsPending = observeFileAnchors(wanted.filter(isFactFileAnchor), env, fileOptions);
   // These are independent read-only resolver calls. Dispatch them together so
   // two slow cells cost roughly the slower read, not the sum of both reads —
   // the serial loop let a pair of otherwise healthy dependencies outlive the
@@ -423,6 +463,10 @@ export async function captureFactDependencies(
   // recorded as unknown without discarding the other observations.
   const observations = await Promise.all(
     wanted.map(async (cell) => {
+      if (isFactFileAnchor(cell)) {
+        const fileObservations = await fileObservationsPending;
+        return { cell, subject: undefined, obs: fileObservations.get(cell) ?? { unknown: 'resolver-failed' } };
+      }
       const subject = subjects?.[cell];
       let obs: CurrentCellObservation;
       try {
@@ -478,15 +522,27 @@ export async function markStaleDependencyFacts<T extends AgentFact>(
   facts: readonly T[],
   reader: CellReader,
   env: CellReadEnv,
+  fileOptions?: FileAnchorOptions,
 ): Promise<Array<T & { depsStale?: FactDependencyStaleness }>> {
   if (facts.length === 0) return [];
   // De-duplicate on (cell, subject), not on cell alone: two facts resting on the
   // same cell about DIFFERENT subjects need two reads, and one read reused for
   // both would answer the wrong question for one of them.
   const targets = new Map<string, { cell: string; subject?: string }>();
+  // P-012 — file anchors are hashed in one batch under their own budget.
+  const fileTargets = new Set<string>();
   const overBudget: string[] = [];
   for (const f of facts) {
     for (const d of f.dependsOn ?? []) {
+      if (isFactFileAnchor(d.cell)) {
+        if (fileTargets.has(d.cell)) continue;
+        if (fileTargets.size >= FILE_ANCHOR_READ_BUDGET) {
+          overBudget.push(d.cell);
+          continue;
+        }
+        fileTargets.add(d.cell);
+        continue;
+      }
       const key = observationKey(d.cell, d.subject);
       if (targets.has(key)) continue;
       if (targets.size >= STALENESS_READ_BUDGET) {
@@ -496,7 +552,7 @@ export async function markStaleDependencyFacts<T extends AgentFact>(
       targets.set(key, { cell: d.cell, ...(d.subject ? { subject: d.subject } : {}) });
     }
   }
-  if (targets.size === 0) return facts.map((f) => ({ ...f }));
+  if (targets.size === 0 && fileTargets.size === 0) return facts.map((f) => ({ ...f }));
 
   const current = new Map<string, CurrentCellObservation>();
   // Anything past the budget is reported UNDETERMINABLE, naming the budget as the
@@ -505,8 +561,14 @@ export async function markStaleDependencyFacts<T extends AgentFact>(
   // a stale fact would go looking for a broken resolver that is working fine.
   for (const key of overBudget) current.set(key, { unknown: 'read-budget-exceeded' });
   try {
+    // Started before the cell reads so the file batch overlaps them instead of
+    // adding its latency in front (observeFileAnchors is total — never rejects).
+    const fileObservationsPending = observeFileAnchors([...fileTargets], env, fileOptions);
     for (const [key, t] of targets) {
       current.set(key, await observeCell(t.cell, reader, env, t.subject));
+    }
+    for (const [cell, obs] of await fileObservationsPending) {
+      current.set(cell, obs);
     }
   } catch {
     // Fail-soft: return everything unmarked rather than half-marked. A partial
@@ -553,6 +615,39 @@ async function observeCell(
   }
   if (read.status === 'unknown') return { unknown: read.unknown.code };
   return { unknown: 'absent' };
+}
+
+/**
+ * P-012 — observe a batch of `file:` anchors through the checkpoint freshness
+ * resolver. The token (`sha256:<16 hex>` of the file's bytes) is BOTH the digest
+ * and the human rendering: it is the blob the fact rests on. An anchor that does
+ * not resolve (missing file, path escaping its checkout, unreadable root) records
+ * `absent`, which the comparison reports as undeterminable — never fresh. Never
+ * throws: a resolver failure records `resolver-failed` for every anchor.
+ */
+async function observeFileAnchors(
+  cells: readonly string[],
+  env: CellReadEnv,
+  options?: FileAnchorOptions,
+): Promise<Map<string, CurrentCellObservation>> {
+  const out = new Map<string, CurrentCellObservation>();
+  if (cells.length === 0) return out;
+  let tokens: Map<string, string | null>;
+  try {
+    tokens = await resolveCurrentTokens(cells, {
+      workspaceId: env.workspaceId,
+      harness: env.harnessSlug,
+      ...(options?.fileRepoRoot ? { repoRoot: options.fileRepoRoot } : {}),
+    });
+  } catch {
+    for (const cell of cells) out.set(cell, { unknown: 'resolver-failed' });
+    return out;
+  }
+  for (const cell of cells) {
+    const token = tokens.get(cell);
+    out.set(cell, token ? { digest: token, observed: token } : { unknown: 'absent' });
+  }
+  return out;
 }
 
 /**

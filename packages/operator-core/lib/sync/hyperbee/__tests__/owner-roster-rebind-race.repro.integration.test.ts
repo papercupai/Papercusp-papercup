@@ -403,8 +403,8 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
         swarmOverride: swarmOwner,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idJoiner.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
-          applyOwner ??= buildAuthorApply(authorDb.adminSql, HIVE_HOME, handleOwner!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyOwner ??= buildAuthorApply(authorDb.adminSql, HIVE_HOME, ctx.ownLogKeyHex);
           return applyOwner(op);
         },
         mergePollMs: 0,
@@ -847,8 +847,8 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
         swarmOverride: swarmOwner,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idJoiner.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
-          applyOwner ??= buildAuthorApply(authorDb.adminSql, HIVE_HOME, handleOwner!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyOwner ??= buildAuthorApply(authorDb.adminSql, HIVE_HOME, ctx.ownLogKeyHex);
           return applyOwner(op);
         },
         mergePollMs: 0,

@@ -83,6 +83,7 @@ describe('recordRecallStats', () => {
   const QUERY_SHA = 10;
   const QUERY_ORIGIN = 11;
   const SESSION_ID = 12;
+  const ADMISSION = 14;
 
   it('records the query SHAPE and the session (P-041)', async () => {
     const calls: unknown[][] = [];
@@ -160,6 +161,36 @@ describe('recordRecallStats', () => {
     expect(surface).toBe('injection');
     expect(hitCount).toBe(0);
     expect(topScore).toBeNull();
+  });
+
+  it('persists only safe timeout facts in the existing admission JSON', async () => {
+    const calls: unknown[][] = [];
+    const sql = ((_s: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    const timeout = { scope: 'request-budget' as const, phase: 'shared-budget' as const, elapsedMs: 5000 };
+    await recordRecallStats(sql, {
+      surface: 'injection',
+      entries: [],
+      query: 'raw private query',
+      sessionId: 'private-session-id',
+      admission: {
+        returned: 0,
+        admitted: 0,
+        truncated: false,
+        dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, jev: 0, nearDuplicate: 0, budget: 0 },
+        byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
+        timeout,
+      },
+    });
+
+    const admissionJson = calls[0]![ADMISSION] as string;
+    const persisted = JSON.parse(admissionJson) as { timeout: Record<string, unknown> };
+    expect(persisted.timeout).toEqual(timeout);
+    expect(Object.keys(persisted.timeout).sort()).toEqual(['elapsedMs', 'phase', 'scope']);
+    expect(admissionJson).not.toContain('raw private query');
+    expect(admissionJson).not.toContain('private-session-id');
   });
 
   it('NEVER throws — a failed insert is swallowed (telemetry is not load-bearing)', async () => {

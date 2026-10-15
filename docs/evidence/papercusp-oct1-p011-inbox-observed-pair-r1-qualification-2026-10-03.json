@@ -1,0 +1,278 @@
+{
+  "schemaVersion": "p011-inbox-observed-pair-qualification-v1",
+  "workItem": "WI-10005825",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "status": "verified-scoped-private-observation-parent-open",
+  "rawReceipt": {
+    "path": "docs/evidence/papercusp-oct1-p011-inbox-observed-pair-r1-2026-10-03.json",
+    "bytes": 174994,
+    "sha256": "a58a80a6b1aa8f54f3f1e81a4b15acd1868866e94f0156d4fc39f0b49ed729a2"
+  },
+  "runs": {
+    "guards": {
+      "path": "/tmp/su-7db4f-p011-inbox-observed-guards-r1.log",
+      "bytes": 36119,
+      "sha256": "81c873e37fdf30cedd0ab5611efb1959f880387e9be8c822c3315f890d060803",
+      "testRunId": 20635247,
+      "testsPassed": 13,
+      "testsFiltered": 86,
+      "terminalMarker": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=e9032cfd6e uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-03T05:01:03.119Z skippedTests=86",
+      "routerProvenance": "stamped",
+      "harnessSlug": "papercusp",
+      "isScratchConfig": false
+    },
+    "cohort": {
+      "path": "/tmp/su-7db4f-p011-inbox-observed-pair-r1.log",
+      "bytes": 44355,
+      "sha256": "33cfb1c14c8e394fc0b78f85525f1965f1ed93f6e7c73452c861abe6746c9f9f",
+      "testRunId": 20635269,
+      "testsPassed": 1,
+      "testsFiltered": 98,
+      "terminalMarker": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=c3c3e9faa5 uncommittedPaths=0/1 provenance=unknown startedAt=2026-10-03T05:02:27.469Z skippedTests=98",
+      "routerProvenance": "unknown",
+      "harnessSlug": "papercusp",
+      "isScratchConfig": false
+    },
+    "independentRawOracle": {
+      "path": "/tmp/su-7db4f-p011-inbox-observed-oracle-r1.log",
+      "bytes": 39142,
+      "sha256": "5f90fd712f8bbd962fc0f05d05cbad3717ea0a4726eda7760ac646a5266eba54",
+      "testRunId": 20635291,
+      "testsPassed": 1,
+      "testsFiltered": 98,
+      "terminalMarker": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=777fb3a27e uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-03T05:05:59.029Z skippedTests=98",
+      "routerProvenance": "stamped",
+      "harnessSlug": "papercusp",
+      "isScratchConfig": false
+    }
+  },
+  "workload": {
+    "population": 256,
+    "bodyCodeUnits": 32768,
+    "variants": 8,
+    "windows": 3,
+    "idleMs": 1000,
+    "concurrency": 8
+  },
+  "intervention": {
+    "offset": 53399937,
+    "before": "...boundedInbox ? {\n                  limit,\n                  ambient: includeAmbient,\n                  intents: !!args27.include_intents\n                } : {}",
+    "after": "limit,\n                  ambient: includeAmbient,\n                  intents: !!args27.include_intents"
+  },
+  "schema": {
+    "filename": "1347-personal-disclosures-reader-window-idx.sql",
+    "sha256": "c54cbfa25e061513bff7dcb1dcb0820af84a3b92dcf090d7c91e2a23c83f128e"
+  },
+  "cohorts": [
+    {
+      "arm": 0,
+      "mode": "baseline",
+      "pid": 1234502,
+      "startTicks": "5129298",
+      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "bundleSha256": "8db4b1e4081fe2eb12f097f3c60ef830eb9e4eac4a1f78aecbd3dd17c0c895ea",
+      "samples": 11,
+      "requests": 24,
+      "windows": 3,
+      "eightClientOverlapMs": [
+        610.1185799999985,
+        501.92996200000016,
+        279.01599799999894
+      ],
+      "rawCacheCopies": 8,
+      "content": {
+        "rows": 256,
+        "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+        "stringCodeUnits": 8388608
+      },
+      "reaped": true,
+      "forcedCleanup": false,
+      "unreaped": []
+    },
+    {
+      "arm": 1,
+      "mode": "shared",
+      "pid": 1252582,
+      "startTicks": "5131097",
+      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "bundleSha256": "40907a207e1b93c33aa49222284e0c5ffd37e6d4c8c80105d8b7ddf67e9aa047",
+      "samples": 11,
+      "requests": 24,
+      "windows": 3,
+      "eightClientOverlapMs": [
+        392.60822199999893,
+        362.917978999998,
+        211.29173699999956
+      ],
+      "rawCacheCopies": 1,
+      "content": {
+        "rows": 256,
+        "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+        "stringCodeUnits": 8388608
+      },
+      "reaped": true,
+      "forcedCleanup": false,
+      "unreaped": []
+    },
+    {
+      "arm": 2,
+      "mode": "shared",
+      "pid": 1266025,
+      "startTicks": "5132665",
+      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "bundleSha256": "40907a207e1b93c33aa49222284e0c5ffd37e6d4c8c80105d8b7ddf67e9aa047",
+      "samples": 11,
+      "requests": 24,
+      "windows": 3,
+      "eightClientOverlapMs": [
+        361.03576500000054,
+        289.6238529999973,
+        220.8873059999969
+      ],
+      "rawCacheCopies": 1,
+      "content": {
+        "rows": 256,
+        "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+        "stringCodeUnits": 8388608
+      },
+      "reaped": true,
+      "forcedCleanup": false,
+      "unreaped": []
+    },
+    {
+      "arm": 3,
+      "mode": "baseline",
+      "pid": 1272472,
+      "startTicks": "5134205",
+      "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+      "bundleSha256": "8db4b1e4081fe2eb12f097f3c60ef830eb9e4eac4a1f78aecbd3dd17c0c895ea",
+      "samples": 11,
+      "requests": 24,
+      "windows": 3,
+      "eightClientOverlapMs": [
+        510.8006710000045,
+        332.1785949999976,
+        206.81412799999816
+      ],
+      "rawCacheCopies": 8,
+      "content": {
+        "rows": 256,
+        "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+        "stringCodeUnits": 8388608
+      },
+      "reaped": true,
+      "forcedCleanup": false,
+      "unreaped": []
+    }
+  ],
+  "observedPairs": [
+    {
+      "baselineArm": 0,
+      "candidateArm": 1,
+      "pssGrowthDifferenceBytes": 188961792,
+      "cumulativeV8AllocationGrowthDifferenceBytes": 243861720
+    },
+    {
+      "baselineArm": 3,
+      "candidateArm": 2,
+      "pssGrowthDifferenceBytes": 46391296,
+      "cumulativeV8AllocationGrowthDifferenceBytes": 223179064
+    }
+  ],
+  "sourceQualification": {
+    "namedSources": [
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts",
+        "sha256": "9ce1c54b7dcf1422133f552aa0a2d2722d2b4ab3575b21af8f37e1f782545c81",
+        "beforeAfterStable": true,
+        "matchesAtQualification": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/messages.ts",
+        "sha256": "29f667ff871bb2ab5ace31b753c174633ae510a4a851dd8eae8824d900c9387e",
+        "beforeAfterStable": true,
+        "matchesAtQualification": true
+      },
+      {
+        "path": "packages/operator-core/lib/cache/cached-read.ts",
+        "sha256": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+        "beforeAfterStable": true,
+        "matchesAtQualification": true
+      },
+      {
+        "path": "packages/operator-core/lib/cache/instance.ts",
+        "sha256": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+        "beforeAfterStable": true,
+        "matchesAtQualification": true
+      },
+      {
+        "path": "libs/generic/cache/src/cache.ts",
+        "sha256": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+        "beforeAfterStable": true,
+        "matchesAtQualification": true
+      },
+      {
+        "path": "libs/generic/cache/src/l1.ts",
+        "sha256": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+        "beforeAfterStable": true,
+        "matchesAtQualification": true
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1",
+        "beforeAfterStable": true,
+        "matchesAtQualification": true
+      },
+      {
+        "path": "apps/operator/bin/bundle-host.sh",
+        "sha256": "fe6d3392ff22c2df0bc056e53390ef84d0ab62f19f2e92d50f4627227864b59d",
+        "beforeAfterStable": true,
+        "matchesAtQualification": true
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "sha256": "6b6bafdd7e944c78d841e1d984d0c30d57c055249024eb7af9c7634e911d5bfc",
+        "beforeAfterStable": true,
+        "matchesAtQualification": true
+      }
+    ],
+    "completeExecutedGraph": "unknown",
+    "cohortRouterProvenance": "unknown because HEAD moved; named source bytes were stable"
+  },
+  "oracle": {
+    "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "sha256": "6b6bafdd7e944c78d841e1d984d0c30d57c055249024eb7af9c7634e911d5bfc",
+    "method": "Regenerated exact fixture/response expectations, raw PID-bound PSS and cumulative V8 samples, per-request intervals, content and exit records. Emitted concurrency/resource/acceptance headlines are ignored.",
+    "guards": "One positive interval case and nine corruptions; existing counterfactual/cache/namespace preflight guards. Independent fresh raw test also rejects a corrupt interval and ignores a fabricated headline.",
+    "coverage": "Eight client requests in flight in every one of 12 windows. Server execution parallelism remains unmeasured."
+  },
+  "typecheck": {
+    "project": "packages/operator-core/tsconfig.json",
+    "scopeToFiles": true,
+    "files": [
+      "packages/operator-core/lib/service-memory-attribution.integration.test.ts"
+    ],
+    "errorCount": 0,
+    "semanticCheckIncomplete": false
+  },
+  "measurementDefinitions": {
+    "PSS": "Linux smaps_rollup Pss kernel kB times 1024, private main process only.",
+    "cumulativeV8Allocation": "getHeapStatistics.total_allocated_bytes endpoint growth; allocation is not retained memory.",
+    "pairDifference": "(baseline completion-idle minus before) minus (candidate completion-idle minus before). Positive means lower candidate growth.",
+    "overlap": "Minimum raw client completion minus maximum raw client start within each monotonic runner window. Positive proves eight requests in flight."
+  },
+  "limitations": [
+    "Four independent private request-only hosts, one order-reversed run and correlated windows; no production traffic or six-worker service claim.",
+    "Unforced PSS and V8 counters include transient state; GC events, unique retained bytes and native allocation owners were not measured.",
+    "No measured production variant frequency or production/historical memory recovery.",
+    "Nine named sources stable; full executed graph and the cohort router commit provenance are unknown.",
+    "No full P011/P010/R8R9 acceptance, independent plan scorecard or shipment claim.",
+    "Historical R4 and all existing census fields, eight source dispositions and old bindings are preserved."
+  ]
+}

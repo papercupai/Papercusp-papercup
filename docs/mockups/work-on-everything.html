@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-simulation="running">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Papercusp — Work on everything mockups</title>
+  <style>
+    /* Preview-only snapshots of the operator's frost and portal-light semantic
+       tokens. Inline so this file works offline, without a server or build. */
+    :root {
+      color-scheme: dark;
+      --bg: #07101d; --bg-1: #0b1220; --bg-2: rgba(255,255,255,.045);
+      --bg-3: rgba(255,255,255,.075); --bg-popover: #0d1829;
+      --fg: #e7f7ff; --fg-dim: #b9d4e8; --fg-mute: #7f9bb4;
+      --border: rgba(125,211,252,.15); --border-strong: rgba(125,211,252,.32);
+      --accent: #38bdf8; --accent-strong: #7dd3fc; --accent-ink: #051827;
+      --good: #34d399; --warn: #fbbf24; --bad: #fb7185;
+      --good-bg: rgba(52,211,153,.1); --warn-bg: rgba(251,191,36,.1);
+      --shadow: 0 24px 70px rgba(0,0,0,.32);
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    [data-theme="light"] {
+      color-scheme: light;
+      --bg: #f4f0e8; --bg-1: #fffefa; --bg-2: rgba(32,32,30,.035);
+      --bg-3: rgba(32,32,30,.065); --bg-popover: #fff;
+      --fg: #20201e; --fg-dim: #4d4a45; --fg-mute: #56534c;
+      --border: rgba(77,74,69,.2); --border-strong: rgba(77,74,69,.34);
+      --accent: #28655a; --accent-strong: #1f544b; --accent-ink: #fffefa;
+      --good: #34755f; --warn: #80560f; --bad: #9c3b36;
+      --good-bg: rgba(52,117,95,.1); --warn-bg: rgba(148,103,27,.1);
+      --shadow: 0 18px 52px rgba(43,39,31,.14);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+    [hidden] { display: none !important; }
+    h1, h2, h3, p { margin: 0; }
+    .icon { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+    .gallery { max-width: 1456px; margin: auto; padding: 28px 30px 18px; }
+    .gallery-top { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 21px; }
+    .eyebrow { color: var(--accent-strong); font-size: 10px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+    .gallery-top h1 { margin-top: 4px; font-size: 24px; line-height: 1.25; letter-spacing: -.035em; }
+    .gallery-tools { display: flex; align-items: center; gap: 10px; flex: none; }
+    .sample-label { padding: 5px 9px; color: var(--fg-mute); border: 1px solid var(--border); border-radius: 5px; font-size: 10px; letter-spacing: .02em; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 33px; padding: 6px 11px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--fg-dim); background: var(--bg-2); font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .btn:hover { background: var(--bg-3); color: var(--fg); }
+    .btn.primary { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+    .btn.primary:hover { background: var(--accent-strong); }
+    .btn .icon { width: 14px; height: 14px; }
+    .concept-tabs { display: flex; gap: 7px; padding-bottom: 17px; flex-wrap: wrap; }
+    .concept-tabs button { display: flex; align-items: center; gap: 9px; min-height: 39px; padding: 8px 14px; color: var(--fg-mute); border: 1px solid var(--border); border-radius: 7px; background: transparent; font-size: 12px; }
+    .concept-tabs button[aria-selected="true"] { color: var(--fg); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg)); }
+    .concept-number { width: 19px; height: 19px; display: grid; place-items: center; border-radius: 4px; background: var(--bg-3); font-size: 10px; }
+    .concept-tabs button[aria-selected="true"] .concept-number { color: var(--accent-ink); background: var(--accent); }
+    .preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 1px 0 18px; }
+    .preview-heading h2 { font-size: 17px; letter-spacing: -.02em; }
+    .preview-heading p { color: var(--fg-mute); font-size: 12px; margin-top: 4px; }
+    .recommendation { display: inline-flex; align-items: center; gap: 6px; color: var(--accent-strong); font-size: 10px; font-weight: 700; padding: 5px 9px; border: 1px solid var(--border-strong); border-radius: 4px; white-space: nowrap; }
+    .screen { overflow: hidden; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--bg-1); box-shadow: var(--shadow); }
+    .window-bar { height: 29px; display: flex; align-items: center; padding: 0 12px; gap: 5px; background: var(--bg-2); border-bottom: 1px solid var(--border); color: var(--fg-mute); font-size: 9px; }
+    .window-bar i { width: 6px; height: 6px; border: 1px solid var(--border-strong); border-radius: 50%; }
+    .window-bar span { margin: auto; }
+    .window-bar em { font-size: 8px; font-style: normal; letter-spacing: .09em; text-transform: uppercase; }
+    .app-layout { display: grid; grid-template-columns: 64px minmax(0,1fr); min-height: 690px; }
+    .app-rail { display: flex; flex-direction: column; align-items: center; gap: 21px; padding: 18px 0; border-right: 1px solid var(--border); background: var(--bg-2); color: var(--fg-mute); }
+    .app-mark { width: 31px; height: 31px; display: grid; place-items: center; border: 1px solid var(--border-strong); border-radius: 9px; color: var(--accent); font-size: 17px; font-weight: 700; margin-bottom: 13px; }
+    .rail-item { display: grid; justify-items: center; gap: 4px; font-size: 8px; }
+    .rail-item.selected { color: var(--accent-strong); }
+    .rail-bottom { margin-top: auto; }
+    .app-main { min-width: 0; background: var(--bg); }
+    .app-top { height: 53px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 22px; border-bottom: 1px solid var(--border); }
+    .workspace-name { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 600; }
+    .workspace-mark { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 5px; background: var(--bg-3); color: var(--accent); font-size: 10px; }
+    .top-context { display: flex; align-items: center; gap: 15px; color: var(--fg-mute); font-size: 10px; }
+    .avatar { width: 23px; height: 23px; display: grid; place-items: center; font-size: 9px; font-weight: 700; border: 1px solid var(--border); border-radius: 50%; color: var(--fg-dim); background: var(--bg-3); }
+    .app-title { display: flex; align-items: center; justify-content: space-between; padding: 21px 24px 16px; }
+    .app-title h3 { font-size: 21px; line-height: 1.3; letter-spacing: -.03em; }
+    .app-title p { margin-top: 3px; font-size: 11px; color: var(--fg-mute); }
+    .workspace-tabs { display: flex; align-items: flex-end; gap: 3px; padding: 0 24px; border-bottom: 1px solid var(--border); background: var(--bg-2); }
+    .workspace-tabs span { display: inline-flex; align-items: center; gap: 7px; padding: 9px 15px; font-size: 11px; color: var(--fg-mute); border: 1px solid transparent; border-bottom: none; }
+    .workspace-tabs .active { margin-bottom: -1px; background: var(--bg); color: var(--fg); border-color: var(--border); border-radius: 6px 6px 0 0; }
+    .workspace-tabs small { font-size: 9px; color: var(--fg-mute); }
+    .canvas { padding: 21px 24px 25px; }
+    .section-label { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--fg-mute); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+    .section-label .label-rule { height: 1px; flex: 1; background: var(--border); }
+    .ongoing { border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); border-left: 3px solid var(--accent); border-radius: 8px; background: linear-gradient(120deg, color-mix(in srgb, var(--accent) 7%, var(--bg-1)), var(--bg-1) 75%); }
+    .ongoing-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 19px 20px 15px; }
+    .identity { display: flex; align-items: flex-start; gap: 13px; min-width: 0; }
+    .infinity { width: 40px; height: 40px; display: grid; place-items: center; flex: none; background: color-mix(in srgb, var(--accent) 11%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent); color: var(--accent-strong); border-radius: 9px; }
+    .infinity .icon { width: 26px; height: 26px; }
+    .identity-line { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+    .identity h3 { font-size: 18px; letter-spacing: -.025em; }
+    .identity p { color: var(--fg-mute); margin-top: 4px; font-size: 11px; }
+    .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 4px; color: var(--fg-dim); font-size: 9px; font-weight: 500; white-space: nowrap; }
+    .pill.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 25%, transparent); background: var(--good-bg); }
+    .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 25%, transparent); background: var(--warn-bg); }
+    .pill .icon { width: 11px; height: 11px; }
+    .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+    .ongoing-foot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 10px 20px; border-top: 1px solid var(--border); font-size: 10px; color: var(--fg-mute); }
+    .ongoing-foot span { display: flex; align-items: center; gap: 6px; }
+    .ongoing-foot .icon { width: 13px; height: 13px; }
+    .signal-grid { display: grid; grid-template-columns: 1.15fr 1.15fr 1fr; gap: 14px; padding: 0 20px 18px; }
+    .signal { padding: 12px 13px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-2); }
+    .signal-kicker { display: flex; align-items: center; gap: 6px; font-size: 9px; color: var(--fg-mute); }
+    .signal-kicker .icon { width: 12px; height: 12px; }
+    .signal strong { display: block; font-size: 11px; font-weight: 600; margin: 6px 0 2px; }
+    .signal p { font-size: 10px; color: var(--fg-mute); }
+    .signal.attention { border-color: color-mix(in srgb, var(--warn) 30%, var(--border)); }
+    .signal.attention .signal-kicker { color: var(--warn); }
+    .ordinary-header { display: flex; align-items: center; justify-content: space-between; margin: 24px 0 13px; gap: 12px; }
+    .ordinary-header h3 { font-size: 13px; letter-spacing: -.01em; }
+    .ordinary-header p { font-size: 10px; color: var(--fg-mute); margin-top: 2px; }
+    .search { display: flex; align-items: center; gap: 7px; min-width: 165px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 5px; color: var(--fg-mute); font-size: 10px; }
+    .search .icon { width: 12px; height: 12px; }
+    .board-scroll { overflow-x: auto; padding-bottom: 9px; }
+    .kanban { display: grid; grid-template-columns: repeat(5,minmax(155px,1fr)); gap: 10px; min-width: 825px; }
+    .column { min-height: 190px; }
+    .column-heading { display: flex; justify-content: space-between; align-items: center; padding: 7px 3px 10px; font-size: 10px; color: var(--fg-dim); }
+    .column-heading span { display: flex; align-items: center; gap: 6px; }
+    .column-heading b { color: var(--fg-mute); font-size: 9px; font-weight: 400; }
+    .column-heading .dot { background: var(--fg-mute); width: 4px; height: 4px; }
+    .column-heading .dot.good { background: var(--good); }
+    .column-heading .dot.warn { background: var(--warn); }
+    .goal-card { margin-bottom: 9px; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-1); }
+    .goal-card small { color: var(--fg-mute); font-size: 8px; }
+    .goal-card h3 { margin: 5px 0 7px; font-size: 11px; font-weight: 600; line-height: 1.45; }
+    .goal-card p { min-height: 29px; color: var(--fg-mute); font-size: 9px; line-height: 1.5; }
+    .card-meta { display: flex; align-items: center; justify-content: space-between; margin-top: 13px; font-size: 8px; color: var(--fg-mute); }
+    .avatar-stack { display: flex; }
+    .avatar-stack .avatar { width: 17px; height: 17px; font-size: 7px; margin-left: -3px; background: var(--bg-popover); }
+    .goal-card.done { opacity: .72; }
+    .goal-card.done h3 { color: var(--fg-dim); }
+    .new-goal { display: block; width: 100%; border: 1px dashed var(--border-strong); border-radius: 6px; padding: 11px; font-size: 10px; color: var(--fg-mute); text-align: center; }
+    .status-strip { display: flex; align-items: center; justify-content: space-between; gap: 17px; padding: 12px 22px; border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); background: color-mix(in srgb, var(--accent) 6%, var(--bg-1)); }
+    .strip-identity { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .strip-identity > .icon { color: var(--accent-strong); width: 22px; height: 22px; }
+    .strip-identity strong { font-size: 12px; font-weight: 600; }
+    .strip-update { color: var(--fg-mute); font-size: 10px; }
+    .strip-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+    .compact-summary { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 7px 0 24px; padding: 18px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-1); }
+    .compact-summary h3 { font-size: 13px; margin-bottom: 5px; }
+    .compact-summary p { font-size: 11px; color: var(--fg-mute); }
+    .compact-summary .pill { font-size: 10px; }
+    .detail-shell { padding: 22px 24px; }
+    .breadcrumb { display: flex; align-items: center; gap: 6px; color: var(--fg-mute); font-size: 10px; margin-bottom: 18px; }
+    .breadcrumb .icon { width: 12px; height: 12px; }
+    .detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+    .detail-header .identity h3 { font-size: 21px; }
+    .detail-tabs { display: flex; gap: 23px; font-size: 10px; color: var(--fg-mute); padding-top: 15px; border-bottom: 1px solid var(--border); }
+    .detail-tabs span { padding-bottom: 12px; }
+    .detail-tabs .active { color: var(--accent-strong); border-bottom: 2px solid var(--accent); }
+    .detail-grid { display: grid; grid-template-columns: minmax(0,1fr) 260px; gap: 20px; padding-top: 20px; }
+    .detail-grid h3 { font-size: 12px; margin-bottom: 4px; }
+    .helper { font-size: 10px; color: var(--fg-mute); margin-bottom: 13px; }
+    .lane-list { border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+    .lane { display: grid; grid-template-columns: 23px minmax(0,1fr) auto; gap: 9px; align-items: start; padding: 15px 13px; background: var(--bg-1); }
+    .lane + .lane { border-top: 1px solid var(--border); }
+    .lane-num { width: 20px; height: 20px; display: grid; place-items: center; margin-top: 2px; color: var(--fg-mute); background: var(--bg-3); border-radius: 4px; font-size: 10px; }
+    .lane strong { font-size: 11px; font-weight: 600; }
+    .lane p { font-size: 10px; color: var(--fg-mute); margin-top: 3px; }
+    .lane-meta { display: flex; gap: 13px; margin-top: 8px; font-size: 9px; color: var(--fg-mute); }
+    .lane-meta span { display: flex; align-items: center; gap: 4px; }
+    .lane-meta .icon { width: 11px; height: 11px; }
+    .attention-box { display: flex; align-items: flex-start; gap: 10px; margin-top: 15px; padding: 13px; border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border)); border-radius: 6px; background: var(--warn-bg); }
+    .attention-box > .icon { color: var(--warn); width: 15px; height: 15px; margin-top: 2px; }
+    .attention-box strong { font-size: 11px; font-weight: 600; }
+    .attention-box p { color: var(--fg-dim); font-size: 10px; margin-top: 3px; }
+    .attention-box .btn { margin-top: 9px; background: transparent; }
+    .side-card { padding: 14px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-1); margin-bottom: 13px; }
+    .side-card h3 { margin-bottom: 11px; }
+    .resource-line { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; color: var(--fg-mute); font-size: 10px; }
+    .resource-line b { color: var(--fg-dim); font-weight: 500; text-align: right; }
+    .side-note { font-size: 9px; color: var(--fg-mute); border-top: 1px solid var(--border); margin-top: 9px; padding-top: 9px; }
+    .event { display: grid; grid-template-columns: 14px 1fr; gap: 7px; margin-top: 13px; }
+    .event .icon { width: 13px; height: 13px; margin-top: 3px; color: var(--good); }
+    .event p { color: var(--fg-dim); font-size: 10px; }
+    .event time { color: var(--fg-mute); font-size: 9px; display: block; margin-top: 2px; }
+    .paused-note { display: none; padding: 10px 14px; margin-top: 12px; border: 1px solid var(--border); border-radius: 5px; color: var(--fg-mute); font-size: 11px; }
+    [data-simulation="paused"] .paused-note { display: block; }
+    [data-simulation="paused"] [data-status] { color: var(--fg-mute); border-color: var(--border); background: var(--bg-2); }
+    .gallery-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding-top: 17px; font-size: 10px; color: var(--fg-mute); }
+    .gallery-footer strong { color: var(--fg-dim); font-weight: 500; }
+    .notice { padding: 10px 14px; margin-top: 15px; border: 1px solid var(--border-strong); background: var(--bg-1); border-radius: 6px; font-size: 11px; color: var(--fg-dim); }
+    @media (min-width: 1600px) { .gallery { padding-top: 38px; } }
+    @media (max-width: 1050px) {
+      .gallery { padding: 22px 18px 16px; }
+      .gallery-top h1 { font-size: 20px; }
+      .strip-update { display: none; }
+      .detail-grid { grid-template-columns: minmax(0,1fr) 225px; }
+      .signal-grid { gap: 9px; }
+      .ongoing-top { gap: 10px; }
+      .identity h3 { font-size: 16px; }
+    }
+    @media (max-width: 750px) {
+      .gallery-top { align-items: flex-start; flex-direction: column; gap: 13px; }
+      .gallery-tools { width: 100%; justify-content: space-between; }
+      .gallery-top h1 { font-size: 21px; }
+      .gallery { padding: 18px 12px; }
+      .concept-tabs { gap: 5px; }
+      .concept-tabs button { padding: 8px 9px; font-size: 10px; gap: 6px; }
+      .preview-heading { flex-direction: column; align-items: flex-start; gap: 9px; }
+      .app-layout { grid-template-columns: minmax(0,1fr); }
+      .app-rail { display: none; }
+      .app-top { padding: 0 14px; }
+      .top-context > span:first-child { display: none; }
+      .app-title { padding: 18px 14px; }
+      .workspace-tabs { padding: 0 9px; }
+      .workspace-tabs span { padding: 9px 11px; font-size: 10px; }
+      .canvas, .detail-shell { padding: 17px 14px; }
+      .ongoing-top { flex-direction: column; padding: 16px; gap: 14px; }
+      .signal-grid { grid-template-columns: 1fr; padding: 0 16px 16px; }
+      .signal { padding: 10px 12px; }
+      .signal strong { margin-top: 4px; }
+      .ongoing-foot { padding: 10px 16px; }
+      .search { min-width: 0; }
+      .search span { display: none; }
+      .status-strip { align-items: flex-start; flex-direction: column; gap: 10px; padding: 13px 14px; }
+      .compact-summary { flex-direction: column; align-items: flex-start; gap: 12px; }
+      .detail-header { flex-direction: column; gap: 14px; }
+      .detail-grid { grid-template-columns: 1fr; gap: 16px; }
+      .detail-aside { display: grid; grid-template-columns: 1fr; }
+      .detail-tabs { gap: 18px; }
+      .lane { grid-template-columns: 21px minmax(0,1fr); }
+      .lane > .pill { grid-column: 2; justify-self: start; }
+      .window-bar em { display: none; }
+      .gallery-footer { font-size: 9px; }
+    }
+    @media print {
+      .gallery-tools, .concept-tabs, .gallery-footer, .notice { display: none; }
+      .gallery { max-width: none; padding: 0; }
+      .screen { box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <symbol id="i-infinity" viewBox="0 0 24 24"><path d="M6 16a4 4 0 1 1 0-8c4 0 8 8 12 8a4 4 0 1 0 0-8c-4 0-8 8-12 8Z"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+    <symbol id="i-plan" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11a8 8 0 0 1-8 8H5l-3 3V11a9 9 0 0 1 19 0Z"/><path d="M7 10h9M7 14h6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v5M12 17h.01"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m7 4 14 8-14 8V4Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+  </svg>
+  <main class="gallery">
+    <header class="gallery-top">
+      <div><div class="eyebrow">Papercusp / GUI concepts</div><h1>A clearer place for “Work on everything”</h1></div>
+      <div class="gallery-tools"><span class="sample-label">MOCKUPS · ALL DATA IS ILLUSTRATIVE</span><button class="btn" id="theme-toggle" aria-label="Switch to light theme"><svg class="icon"><use href="#i-sun"/></svg><span>Light theme</span></button></div>
+    </header>
+    <nav class="concept-tabs" role="tablist" aria-label="Mockup concepts">
+      <button role="tab" id="tab-featured" data-view="featured" aria-controls="view-featured" aria-selected="true" tabindex="0"><span class="concept-number">1</span>Featured panel</button>
+      <button role="tab" id="tab-compact" data-view="compact" aria-controls="view-compact" aria-selected="false" tabindex="-1"><span class="concept-number">2</span>Compact strip</button>
+      <button role="tab" id="tab-detail" data-view="detail" aria-controls="view-detail" aria-selected="false" tabindex="-1"><span class="concept-number">3</span>Work lanes</button>
+    </nav>
+    <section id="view-featured" role="tabpanel" aria-labelledby="tab-featured" data-concept="featured">
+      <div class="preview-heading"><div><h2>Separate by purpose, not by system</h2><p>Give ongoing work its own place above goals with a finish line.</p></div><span class="recommendation">Recommended starting point</span></div>
+      <div data-screen="featured"></div>
+    </section>
+    <section id="view-compact" role="tabpanel" aria-labelledby="tab-compact" data-concept="compact" hidden>
+      <div class="preview-heading"><div><h2>Always visible, without taking over</h2><p>A small status strip can stay in view across Goals, Sessions, Plans, and Work items.</p></div><span class="recommendation">Best for dense workspaces</span></div>
+      <div data-screen="compact"></div>
+    </section>
+    <section id="view-detail" role="tabpanel" aria-labelledby="tab-detail" data-concept="detail" hidden>
+      <div class="preview-heading"><div><h2>Make the work—not the machinery—the centerpiece</h2><p>The same goal detail, arranged around current priorities, outcomes, and your decisions.</p></div><span class="recommendation">Pairs with either overview</span></div>
+      <div data-screen="detail"></div>
+    </section>
+    <div class="notice" role="status" id="preview-notice" hidden></div>
+    <footer class="gallery-footer"><span><strong>One goal engine.</strong> Different presentation for ongoing work.</span><span>Offline preview · Controls only change this mockup · No live GUI changes</span></footer>
+  </main>
+
+  <template id="shell">
+    <div class="screen">
+      <div class="window-bar"><i></i><i></i><i></i><span>Papercusp · Workspace / Goals</span><em>Concept preview</em></div>
+      <div class="app-layout">
+        <aside class="app-rail" aria-label="Illustrative app navigation"><div class="app-mark">p</div><span class="rail-item selected"><svg class="icon"><use href="#i-grid"/></svg>Work</span><span class="rail-item"><svg class="icon"><use href="#i-chat"/></svg>Chat</span><span class="rail-item"><svg class="icon"><use href="#i-plan"/></svg>Library</span><span class="rail-item rail-bottom"><svg class="icon"><use href="#i-user"/></svg>Account</span></aside>
+        <div class="app-main">
+          <header class="app-top"><div class="workspace-name"><span class="workspace-mark">P</span>Papercusp workspace<svg class="icon" style="width:12px;height:12px;transform:rotate(90deg)"><use href="#i-chevron"/></svg></div><div class="top-context"><span>Workspace view</span><span class="avatar">AV</span></div></header>
+          <div class="screen-content"></div>
+        </div>
+      </div>
+    </div>
+  </template>
+  <template id="workspace-heading">
+    <div class="app-title"><div><h3>Your workspace</h3><p>See what is moving, what is next, and what needs you.</p></div><span class="pill">Sample workspace</span></div>
+    <div class="workspace-tabs" aria-label="Illustrative workspace tabs"><span class="active">Goals <small>5</small></span><span>Sessions <small>6</small></span><span>Plans <small>8</small></span><span>Work items</span></div>
+  </template>
+  <template id="board">
+    <div class="ordinary-header"><div><h3>Your goals</h3><p>Specific outcomes with a finish line.</p></div><span class="search"><svg class="icon"><use href="#i-search"/></svg><span>Search goals</span></span></div>
+    <div class="board-scroll"><div class="kanban">
+      <div class="column"><div class="column-heading"><span><i class="dot warn"></i>Needs you</span><b>1</b></div><article class="goal-card"><small>PRODUCT</small><h3>Launch the new onboarding</h3><p>Choose the first-run experience before rollout.</p><div class="card-meta"><span class="pill warn">Decision</span><span>Today</span></div></article><span class="new-goal">+ Start a goal</span></div>
+      <div class="column"><div class="column-heading"><span><i class="dot good"></i>Working</span><b>1</b></div><article class="goal-card"><small>QUALITY</small><h3>Make search more useful</h3><p>Help people find the right work faster.</p><div class="card-meta"><span>2 plans</span><span class="avatar-stack"><span class="avatar">SL</span><span class="avatar">MK</span></span></div></article></div>
+      <div class="column"><div class="column-heading"><span><i class="dot warn"></i>Blocked</span><b>1</b></div><article class="goal-card"><small>MOBILE</small><h3>Ship the mobile update</h3><p>Waiting on the final accessibility review.</p><div class="card-meta"><span class="pill">Review</span><span>1 plan</span></div></article></div>
+      <div class="column"><div class="column-heading"><span><i class="dot"></i>Ready</span><b>1</b></div><article class="goal-card"><small>EXPERIENCE</small><h3>Simplify workspace setup</h3><p>Reduce the steps between sign-in and first use.</p><div class="card-meta"><span>Not started</span><span>3 plans</span></div></article></div>
+      <div class="column"><div class="column-heading"><span><i class="dot good"></i>Done</span><b>1</b></div><article class="goal-card done"><small>DOCUMENTATION</small><h3>Publish the getting-started guide</h3><p>The guide is available and verified.</p><div class="card-meta"><span class="pill good"><svg class="icon"><use href="#i-check"/></svg>Achieved</span><span>Yesterday</span></div></article></div>
+    </div></div>
+  </template>
+  <template id="featured">
+    <div data-heading></div>
+    <div class="canvas">
+      <div class="section-label"><svg class="icon" style="width:14px;height:14px"><use href="#i-infinity"/></svg>Ongoing work<span class="label-rule"></span></div>
+      <article class="ongoing">
+        <div class="ongoing-top"><div class="identity"><span class="infinity"><svg class="icon"><use href="#i-infinity"/></svg></span><div><div class="identity-line"><h3>Work on everything</h3><span class="pill good" data-status><i class="dot"></i>Running</span></div><p>Continuously advances your highest-priority work across the workspace.</p></div></div><div class="actions"><button class="btn primary" data-show="detail">View ongoing work<svg class="icon"><use href="#i-arrow"/></svg></button><button class="btn" data-pause><svg class="icon"><use href="#i-pause"/></svg><span>Pause</span></button></div></div>
+        <div class="signal-grid"><div class="signal"><div class="signal-kicker"><svg class="icon"><use href="#i-target"/></svg>Current focus</div><strong>Improve search relevance</strong><p>Moving 3 priority lanes forward</p></div><div class="signal"><div class="signal-kicker"><svg class="icon"><use href="#i-check"/></svg>Recent outcome</div><strong>Duplicate results fixed &amp; verified</strong><p>8 minutes ago · 12 outcomes this week</p></div><div class="signal attention"><div class="signal-kicker"><svg class="icon"><use href="#i-alert"/></svg>Needs your attention</div><strong>Choose the next release priority</strong><p>1 decision waiting for you</p></div></div>
+        <div class="ongoing-foot"><span><svg class="icon"><use href="#i-infinity"/></svg>Ongoing · Runs until paused or stopped</span><span>Spend: $42 in the last 7 days · Budget: $100 / 7 days</span></div>
+      </article>
+      <p class="paused-note">Preview paused. No new work would start until you resume; existing work remains visible.</p>
+      <div data-board></div>
+    </div>
+  </template>
+  <template id="compact">
+    <div class="status-strip"><div class="strip-identity"><svg class="icon"><use href="#i-infinity"/></svg><strong>Work on everything</strong><span class="pill good" data-status><i class="dot"></i>Running</span><span class="strip-update">Latest: search fix verified · 8m ago</span></div><div class="strip-actions"><span class="pill warn">1 needs you</span><button class="btn" data-show="detail">View work<svg class="icon"><use href="#i-arrow"/></svg></button><button class="btn" data-pause><svg class="icon"><use href="#i-pause"/></svg><span>Pause</span></button></div></div>
+    <div data-heading></div>
+    <div class="canvas"><div class="compact-summary"><div><div class="eyebrow" style="font-size:9px;margin-bottom:5px">Workspace overview</div><h3>Specific goals below. Ongoing work always in reach.</h3><p>Keep the standing goal visible without making it another kanban card.</p></div><span class="pill">Continuous stewardship</span></div><p class="paused-note">Preview paused. Resume from the strip when you want ongoing work to continue.</p><div data-board></div></div>
+  </template>
+  <template id="detail">
+    <div class="detail-shell">
+      <div class="breadcrumb"><button class="btn" data-show="featured" style="padding:3px 7px;min-height:26px;font-size:10px">Goals</button><svg class="icon"><use href="#i-chevron"/></svg><span>Ongoing work</span></div>
+      <header class="detail-header"><div class="identity"><span class="infinity"><svg class="icon"><use href="#i-infinity"/></svg></span><div><div class="identity-line"><h3>Work on everything</h3><span class="pill good" data-status><i class="dot"></i>Running</span></div><p>Continuously moves your workspace forward, in your priority order.</p></div></div><div class="actions"><button class="btn" data-notice="Priorities would open the existing goal worklist editor. This preview does not change your workspace.">Edit priorities</button><button class="btn" data-pause><svg class="icon"><use href="#i-pause"/></svg><span>Pause</span></button></div></header>
+      <div class="detail-tabs" aria-label="Illustrative goal detail sections"><span class="active">Overview</span><span>Activity</span><span>Resources</span><span>Settings</span></div>
+      <p class="paused-note">Preview paused. Priority order, recent outcomes, and resources remain visible.</p>
+      <div class="detail-grid">
+        <div><h3>Where work is moving</h3><p class="helper">Priorities are ordered. Each lane opens its existing plans and work items.</p>
+          <div class="lane-list"><article class="lane"><span class="lane-num">1</span><div><strong>Search &amp; discovery</strong><p>Improve relevance and remove duplicate results.</p><div class="lane-meta"><span><svg class="icon"><use href="#i-plan"/></svg>2 plans</span><span><svg class="icon"><use href="#i-user"/></svg>2 agents</span><span>Last outcome 8m ago</span></div></div><span class="pill good"><i class="dot"></i>Moving</span></article><article class="lane"><span class="lane-num">2</span><div><strong>Product quality</strong><p>Resolve the highest-impact usability issues.</p><div class="lane-meta"><span><svg class="icon"><use href="#i-plan"/></svg>3 plans</span><span><svg class="icon"><use href="#i-user"/></svg>3 agents</span><span>Last outcome 24m ago</span></div></div><span class="pill good"><i class="dot"></i>Moving</span></article><article class="lane"><span class="lane-num">3</span><div><strong>Release readiness</strong><p>Finish accessibility review before the next release.</p><div class="lane-meta"><span><svg class="icon"><use href="#i-plan"/></svg>1 plan</span><span><svg class="icon"><use href="#i-user"/></svg>1 agent</span><span>Waiting on review</span></div></div><span class="pill warn">Blocked</span></article></div>
+          <div class="attention-box"><svg class="icon"><use href="#i-alert"/></svg><div><strong>One decision needs you</strong><p>Should onboarding or mobile polish take the next priority slot?</p><button class="btn" data-notice="This decision would open the existing resolution inbox. Sample question only; no live decision is submitted.">Review decision<svg class="icon"><use href="#i-arrow"/></svg></button></div></div>
+        </div>
+        <aside class="detail-aside"><section class="side-card"><h3>Resources &amp; boundaries</h3><div class="resource-line"><span>Scope</span><b>This workspace</b></div><div class="resource-line"><span>Assigned agents</span><b>6</b></div><div class="resource-line"><span>Spend · last 7 days</span><b>$42</b></div><div class="resource-line"><span>Budget · rolling 7 days</span><b>$100</b></div><p class="side-note">Ongoing—not a goal to “complete.” Continues within its existing budget and stop rules.</p></section><section class="side-card"><h3>Recent outcomes</h3><div class="event"><svg class="icon"><use href="#i-check"/></svg><p>Duplicate search results fixed and verified.<time>8 minutes ago</time></p></div><div class="event"><svg class="icon"><use href="#i-check"/></svg><p>Keyboard navigation improved in workspace setup.<time>24 minutes ago</time></p></div><div class="event"><svg class="icon" style="color:var(--fg-mute)"><use href="#i-clock"/></svg><p>Accessibility review handed to its existing owner.<time>41 minutes ago</time></p></div></section></aside>
+      </div>
+    </div>
+  </template>
+  <script>
+    (function () {
+      var root = document.documentElement;
+      function clone(id) { return document.getElementById(id).content.cloneNode(true); }
+      document.querySelectorAll('[data-screen]').forEach(function (mount) {
+        var shell = clone('shell');
+        shell.querySelector('.screen-content').appendChild(clone(mount.dataset.screen));
+        shell.querySelectorAll('[data-heading]').forEach(function (node) { node.appendChild(clone('workspace-heading')); });
+        shell.querySelectorAll('[data-board]').forEach(function (node) { node.appendChild(clone('board')); });
+        mount.appendChild(shell);
+      });
+      var tabs = Array.from(document.querySelectorAll('[data-view]'));
+      function show(view, focus) {
+        if (!document.getElementById('view-' + view)) view = 'featured';
+        tabs.forEach(function (tab) { var on = tab.dataset.view === view; tab.setAttribute('aria-selected', String(on)); tab.tabIndex = on ? 0 : -1; });
+        document.querySelectorAll('[data-concept]').forEach(function (panel) { panel.hidden = panel.dataset.concept !== view; });
+        history.replaceState(null, '', '#' + view);
+        document.getElementById('preview-notice').hidden = true;
+        if (focus) document.getElementById('tab-' + view).focus();
+      }
+      tabs.forEach(function (tab, index) {
+        tab.addEventListener('click', function () { show(tab.dataset.view, false); });
+        tab.addEventListener('keydown', function (event) {
+          var next = index;
+          if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+          else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+          else if (event.key === 'Home') next = 0;
+          else if (event.key === 'End') next = tabs.length - 1;
+          else return;
+          event.preventDefault(); show(tabs[next].dataset.view, true);
+        });
+      });
+      document.querySelectorAll('[data-show]').forEach(function (button) { button.addEventListener('click', function () { show(button.dataset.show, true); }); });
+      document.querySelectorAll('[data-notice]').forEach(function (button) { button.addEventListener('click', function () { var notice = document.getElementById('preview-notice'); notice.textContent = button.dataset.notice; notice.hidden = false; }); });
+      document.querySelectorAll('[data-pause]').forEach(function (button) {
+        button.addEventListener('click', function () {
+          var paused = root.dataset.simulation !== 'paused'; root.dataset.simulation = paused ? 'paused' : 'running';
+          document.querySelectorAll('[data-status]').forEach(function (status) { status.innerHTML = '<i class="dot"></i>' + (paused ? 'Paused' : 'Running'); });
+          document.querySelectorAll('[data-pause]').forEach(function (control) { control.querySelector('span').textContent = paused ? 'Resume' : 'Pause'; control.querySelector('use').setAttribute('href', paused ? '#i-play' : '#i-pause'); });
+        });
+      });
+      document.getElementById('theme-toggle').addEventListener('click', function () {
+        var light = root.dataset.theme !== 'light'; root.dataset.theme = light ? 'light' : 'dark';
+        this.querySelector('span').textContent = light ? 'Dark theme' : 'Light theme'; this.setAttribute('aria-label', light ? 'Switch to dark theme' : 'Switch to light theme');
+      });
+      window.addEventListener('hashchange', function () { show(location.hash.slice(1), false); });
+      show(location.hash.slice(1) || 'featured', false);
+    }());
+  </script>
+</body>
+</html>

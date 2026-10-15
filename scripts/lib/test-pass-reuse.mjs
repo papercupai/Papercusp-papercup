@@ -11,14 +11,17 @@
 //   2. its inputs were captured and it is not opaque;
 //   3. drift(recordedSha, judgedSha) is computable and disjoint from: the file, every executed
 //      module, every runtime read (a trailing '/' = directory prefix), the package.json and
-//      tsconfig*.json of every package directory an executed module lives under, and the global
-//      runner inputs.
+//      tsconfig*.json of every package directory an executed module lives under (P-004: only a
+//      tsconfig the vitest toolchain reads), and the global runner inputs.
 //
 // Everything else runs. PURE: every input is a value or a seam, so the unit tests pin the rule.
 
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { GENERATED_SCHEMA_FILES } from "./schema-symbol-drift.mjs";
+
+const GENERATED_SCHEMA_FILE_SET = new Set(GENERATED_SCHEMA_FILES);
 
 /** Env kill switch: `0`/`false`/`off`/`no` disables reuse entirely (default: ON). */
 export const TEST_REUSE_ENV = "AFFECTED_TEST_REUSE";
@@ -36,26 +39,71 @@ export const TEST_REUSE_AUDIT_RATE_ENV = "AFFECTED_TEST_REUSE_AUDIT_RATE";
 export const TEST_REUSE_AUDIT_RATE_DEFAULT = 0.05;
 
 /**
- * Proof format (gate-test-reuse-yield-2026-10-01 P-001, D-002). A `proof-v2` proof carries, in its
+ * Proof format (EI-25597096188717078). A `proof-v3` proof includes a final worker import
+ * observation; collection-only proof-v2 rows cannot establish the executed dependency radius.
+ * Like proof-v2, it carries, in its
  * readPaths, the vitest config that ran the file plus that config's bundled (relative) imports, so a
  * NESTED vitest config is an ordinary per-proof input instead of a global one (isGlobalRunnerInput).
  * It is folded into the runner identity, which rule 1 already compares exactly: an older proof
  * (no config input recorded) then reads `otherRunner` and is never judged under the narrowed rule.
  * PINNED equal to libs/test-config/src/test-pass-reuse-skip.ts REUSE_PROOF_FORMAT (the recorder).
  */
-export const REUSE_PROOF_FORMAT = "proof-v2";
+export const REUSE_PROOF_FORMAT = "proof-v3";
+
+/**
+ * The cap on vitest's importDurations record, which is where a proof's executedModules come from.
+ * A proof that lists this many modules may have been cut short, so it cannot prove it did NOT load
+ * a worker-side test-config file (P-003): it is opaque whenever such a file is in the drift.
+ * PINNED equal to libs/test-config/src/vitest-config.ts EXECUTED_SOURCE_MAP_IMPORT_LIMIT.
+ */
+export const EXECUTED_SOURCE_MAP_IMPORT_LIMIT = 1_000_000;
 
 /**
  * The runner identity a selector compares proofs against: the proof format plus the
  * `process.version process.platform process.arch` of the node the task will spawn.
  *
  * @param {string | null | undefined} nodeIdentity
+ * @param {string} [proofFormat] the judged tree's recorder format; defaults to this selector's
  * @returns {string | null} null when the node probe produced nothing (reuse then switches off)
  */
-export function reuseRunnerIdentity(nodeIdentity) {
+export function reuseRunnerIdentity(nodeIdentity, proofFormat = REUSE_PROOF_FORMAT) {
   const node = typeof nodeIdentity === "string" ? nodeIdentity.trim() : "";
-  return node ? `${REUSE_PROOF_FORMAT} ${node}` : null;
+  return node ? `${proofFormat} ${node}` : null;
 }
+
+/** Where the judged tree's RECORDER declares the proof format it writes (and its skip-list consumer accepts). */
+export const RECORDER_PROOF_FORMAT_FILE = "libs/test-config/src/test-pass-reuse-skip.ts";
+
+/**
+ * WI-6554700010008589: the proof format the JUDGED tree records, read from its own recorder source.
+ *
+ * The selector runs from the gate's code (the staging tree), but the tests run in the judged checkout,
+ * whose recorder writes proofs and whose consumer validates the skip list under ITS format. On a frozen
+ * repair lineage older than a format bump, comparing against this module's REUSE_PROOF_FORMAT rejected
+ * every proof as `otherRunner` (run 762a13a6: 0 of 7,689 reused) — and a skip list labelled with the newer
+ * format would be refused by the judged consumer anyway. Null when the file is missing or unparseable, in
+ * which case callers keep REUSE_PROOF_FORMAT (the pre-fix behaviour).
+ *
+ * @param {string} root the judged checkout
+ * @param {(file: string) => string} [readFile]
+ * @returns {string | null}
+ */
+export function judgedTreeProofFormat(root, readFile = (f) => readFileSync(f, "utf8")) {
+  let body;
+  try {
+    body = readFile(path.join(root, RECORDER_PROOF_FORMAT_FILE));
+  } catch {
+    return null;
+  }
+  const m = /\bREUSE_PROOF_FORMAT\s*=\s*['"](proof-v\d+)['"]/.exec(String(body));
+  return m ? m[1] : null;
+}
+
+/**
+ * A test file: a leaf no other test imports. An older-format (legacy) proof may omit modules its test
+ * loaded dynamically (EI-25597096188717078), so it is only reusable when every drift path is one of these.
+ */
+export const LEGACY_PROOF_SAFE_DRIFT_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
 const OFF = new Set(["0", "false", "off", "no"]);
 
@@ -103,10 +151,31 @@ export function auditDraw(file, judgedSha) {
  * imports and does not record them; those resolve to node_modules (package-lock.json, global) or to
  * @papercusp/test-config (libs/test-config, global), and a tree guard in test-pass-reuse.test.ts
  * fails if a nested config ever imports anything else. Root `vitest.*` stays global.
+ *
+ * package-lock.json and patches/ stay global because a proof cannot see node_modules (P-005,
+ * verified 2026-10-01: the reporter drops external modules, and 0 of 7,340 recent proofs carry a
+ * node_modules path), so a per-package match has nothing to match against. The one narrowing is a
+ * lockfile edit that leaves the installed tree identical (packageLockChangeIsInert, asked through
+ * the inertGlobalChange seam). A patches/ edit always rewrites an installed package, so it has no
+ * inert case.
+ *
+ * P-003 (D-004): given `testConfigMainProcess` (libs/test-config/src/main-process-closure.ts, the
+ * derived set of test-config source files the vitest MAIN process can load), a test-config source
+ * file outside it is NOT global: it runs only in workers, where executedModules records it per
+ * proof. Its package.json and tsconfig stay global. Omitted or null = every source file is global.
+ *
+ * P-004 (D-007): given `toolchainTsconfigs` (libs/test-config/src/toolchain-tsconfigs.ts, the
+ * derived set of tsconfig/jsconfig files vite and vite-tsconfig-paths read), a root
+ * `tsconfig.*.json` outside it is NOT global (tsconfigUnreadByToolchain). Omitted or null = every
+ * root tsconfig is global.
+ *
+ * @param {string} rel
+ * @param {ReadonlySet<string> | null} [testConfigMainProcess]
+ * @param {ReadonlySet<string> | null} [toolchainTsconfigs]
  */
-export function isGlobalRunnerInput(rel) {
+export function isGlobalRunnerInput(rel, testConfigMainProcess = null, toolchainTsconfigs = null) {
   if (rel === "package-lock.json" || rel === "package.json" || rel === "tsconfig.json") return true;
-  if (/^tsconfig\.[^/]*\.json$/.test(rel)) return true;
+  if (/^tsconfig\.[^/]*\.json$/.test(rel)) return !tsconfigUnreadByToolchain(rel, toolchainTsconfigs);
   if (/^vitest\.[^/]*$/.test(rel)) return true;
   if (/^libs\/test-config\/(src\/|package\.json|tsconfig)/.test(rel)) {
     if (/\.test\.[cm]?[jt]sx?$/.test(rel)) return false;
@@ -116,14 +185,279 @@ export function isGlobalRunnerInput(rel) {
     // runner. Each used to discard every pass proof fleet-wide.
     if (/^libs\/test-config\/src\/(?:.*\/)?__fixtures__\//.test(rel)) return false;
     if (/^libs\/test-config\/src\//.test(rel) && !/\.(?:[cm]?[jt]sx?|json)$/.test(rel)) return false;
+    if (testConfigMainProcess && /^libs\/test-config\/src\//.test(rel)) return testConfigMainProcess.has(rel);
     return true;
   }
   if (/^patches\//.test(rel)) return true;
   return false;
 }
 
+/**
+ * The npm scripts that affected-tests runs AS a task (`test`, the lane scripts, `test:integration`,
+ * `lint:el-tools`, `test:el-suite`). Any `test:lane-*` name counts, so a future lane is covered
+ * before it is listed. A guard test pins the lane list against scripts/lib/targeted-task-reuse.mjs.
+ */
+const TASK_SCRIPT_NAMES = new Set([
+  "test",
+  "test:integration",
+  "test:el-suite",
+  "lint:el-tools",
+  "test:lane-pure",
+  "test:lane-stateful",
+]);
+
+/** npm lifecycle scripts that run at install time and can change what lands in node_modules. */
+const INSTALL_LIFECYCLE_SCRIPTS = new Set([
+  "preinstall",
+  "install",
+  "postinstall",
+  "preprepare",
+  "prepare",
+  "postprepare",
+  "prepublish",
+  "prepack",
+  "postpack",
+  "dependencies",
+]);
+
+/**
+ * Can a change to this npm script change how a recorded proof's file runs? True for a task script,
+ * for its `pre`/`post` hook (npm runs `pretest` and `posttest` around `npm run test`), and for an
+ * install lifecycle script.
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isRunnerAffectingScript(name) {
+  if (INSTALL_LIFECYCLE_SCRIPTS.has(name)) return true;
+  const isTask = (n) => TASK_SCRIPT_NAMES.has(n) || /^test:lane-/.test(n);
+  if (isTask(name)) return true;
+  if (name.startsWith("pre") && isTask(name.slice(3))) return true;
+  if (name.startsWith("post") && isTask(name.slice(4))) return true;
+  return false;
+}
+
+/** JSON text with object keys sorted at every level (array order kept), for order-blind equality. */
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * gate-test-reuse-yield-2026-10-01 P-002: is a change to the ROOT package.json inert for pass
+ * proofs? True only when both texts parse to JSON objects, they are equal once `scripts` is
+ * removed (key order ignored), and no runner-affecting script (isRunnerAffectingScript) was
+ * added, removed or changed. Anything else is false, including a parse failure or a non-object
+ * `scripts` (fail closed).
+ *
+ * Why the remaining `scripts` keys are safe (D-002: narrow only where the proof can see the
+ * input): a test that READS package.json records it in readPaths, and selectReusablePasses still
+ * invalidates that proof directly; a test that spawns npm is opaque ('child-process') and is never
+ * reused; and no workspace task script calls a root script. Every other field (workspaces,
+ * dependencies, overrides, type, imports, engines) changes module resolution, so it stays global.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @returns {boolean}
+ */
+export function rootPackageJsonChangeIsInert(beforeText, afterText) {
+  const names = scriptsOnlyChangedNames(beforeText, afterText);
+  return names !== null && !names.some(isRunnerAffectingScript);
+}
+
+/**
+ * The script names a package.json change added, removed or changed, when that is ALL it changed
+ * (key order ignored). Null when anything else changed, or when either side is not a JSON object
+ * with an object (or absent) `scripts` (fail closed). An empty array means a reorder only.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @returns {string[] | null}
+ */
+export function scriptsOnlyChangedNames(beforeText, afterText) {
+  let before;
+  let after;
+  try {
+    before = JSON.parse(beforeText);
+    after = JSON.parse(afterText);
+  } catch {
+    return null;
+  }
+  const isObject = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+  if (!isObject(before) || !isObject(after)) return null;
+  const beforeScripts = before.scripts ?? {};
+  const afterScripts = after.scripts ?? {};
+  if (!isObject(beforeScripts) || !isObject(afterScripts)) return null;
+  const { scripts: _beforeScripts, ...beforeRest } = before;
+  const { scripts: _afterScripts, ...afterRest } = after;
+  if (canonicalJson(beforeRest) !== canonicalJson(afterRest)) return null;
+  const changed = [];
+  for (const name of new Set([...Object.keys(beforeScripts), ...Object.keys(afterScripts)])) {
+    if (canonicalJson(beforeScripts[name]) !== canonicalJson(afterScripts[name])) changed.push(name);
+  }
+  return changed;
+}
+
+/**
+ * A command that runs npm scripts BY PATTERN (`run-s lint:*`, `npm-run-all --parallel "gen:*"`,
+ * `concurrently "npm:watch-*"`): it can invoke a script whose name it never spells out.
+ */
+const PATTERN_RUN_RE = /(?:\brun-[sp]\b|\bnpm-run-all2?\b|\bconcurrently\b|\bnpm:)[\s\S]*\*/;
+
+/**
+ * gate-test-reuse-yield-2026-10-01 D-009 rule 3: the "can any script invoke this name?" judge
+ * over every script command in a tree (`commands`: superproject and submodules, see
+ * treeScriptCommands in executed-source-map.mjs). The returned judge answers true when `name`
+ * occurs as a substring of any command other than its own definition (`definedIn` + `name`),
+ * and true for EVERY name when any command runs scripts by pattern. Substring matching
+ * over-approximates (`lint` matches `lint:tsc`), which only costs narrowings, never soundness.
+ *
+ * @param {ReadonlyArray<{ rel: string, name: string, command: string }>} commands
+ * @returns {(name: string, definedIn: string) => boolean}
+ */
+export function scriptInvocationJudge(commands) {
+  const patternRun = commands.some((c) => PATTERN_RUN_RE.test(c.command));
+  return (name, definedIn) => {
+    if (patternRun) return true;
+    for (const c of commands) {
+      if (c.rel === definedIn && c.name === name) continue;
+      if (c.command.includes(name)) return true;
+    }
+    return false;
+  };
+}
+
+/**
+ * gate-test-reuse-yield-2026-10-01 D-009: is a change to a WORKSPACE (non-root) package.json
+ * inert for the proofs beneath its directory? True only when it changed nothing but `scripts`
+ * (scriptsOnlyChangedNames), no changed name is runner-affecting (isRunnerAffectingScript), and
+ * no changed name can be invoked by another script: `invokable(name)` must answer exactly
+ * `false` for the name and, for a `pre<x>` / `post<x>` name, for `<x>` (npm runs the hook around
+ * every `npm run <x>`). Any other answer, or a throw, keeps the change a config change.
+ *
+ * Why invocation matters here and not at the root (P-002): a task script can call a sibling
+ * (papercusp-desktop `test` runs `test:config`), or reach another package's scripts
+ * (`npm run test --workspaces`). A test that READS the package.json still records it in
+ * readPaths and is invalidated directly; one that spawns npm is opaque and never reused.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @param {(name: string) => boolean} invokable
+ * @returns {boolean}
+ */
+export function workspacePackageJsonChangeIsInert(beforeText, afterText, invokable) {
+  const names = scriptsOnlyChangedNames(beforeText, afterText);
+  if (names === null) return false;
+  for (const name of names) {
+    if (isRunnerAffectingScript(name)) return false;
+    const targets = [name];
+    if (name.startsWith("pre") && name.length > 3) targets.push(name.slice(3));
+    if (name.startsWith("post") && name.length > 4) targets.push(name.slice(4));
+    for (const target of targets) {
+      let callable = true;
+      try {
+        callable = invokable(target) !== false;
+      } catch {
+        callable = true;
+      }
+      if (callable) return false;
+    }
+  }
+  return true;
+}
+
+/** A package-lock `packages` key describing something INSTALLED: a node_modules entry at any depth. */
+const INSTALLED_LOCK_KEY_RE = /(?:^|\/)node_modules\//;
+
+/**
+ * The part of a package-lock.json that decides what `npm ci` puts on disk, as one canonical
+ * string (gate-test-reuse-yield-2026-10-01 P-005), or null when the text is not a lockfile this
+ * can judge (fail closed). Kept: every top-level field except `packages`; every `packages` entry
+ * whose key is a node_modules path (version, resolved, integrity, link target, dependencies,
+ * install-script flag, at any nesting depth); and, for the non-installed entries (the root `""`
+ * and each workspace directory), the two fields that act at install time: `hasInstallScript` and
+ * `bin`. Dropped: the rest of a workspace entry (its declared dependencies, version, license,
+ * engines), which mirrors that workspace's own package.json and changes nothing installed.
+ *
+ * @param {string} text
+ * @returns {string | null}
+ */
+export function packageLockInstallView(text) {
+  let lock;
+  try {
+    lock = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const isObject = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+  if (!isObject(lock) || !isObject(lock.packages)) return null;
+  const { packages, ...top } = lock;
+  /** @type {Record<string, unknown>} */
+  const installed = {};
+  /** @type {Record<string, unknown>} */
+  const workspaceInstall = {};
+  for (const [key, entry] of Object.entries(packages)) {
+    if (INSTALLED_LOCK_KEY_RE.test(key)) {
+      installed[key] = entry;
+      continue;
+    }
+    if (!isObject(entry)) return null;
+    workspaceInstall[key] = { hasInstallScript: entry.hasInstallScript ?? null, bin: entry.bin ?? null };
+  }
+  return canonicalJson({ top, installed, workspaceInstall });
+}
+
+/**
+ * Can a package-lock.json change between two shas change how any recorded proof ran (P-005)?
+ * True only when both sides parse and their install views (packageLockInstallView) are equal:
+ * then `npm ci` lays down the same node_modules tree at both shas, so no module a proof loaded
+ * can differ. That is the common "a workspace declared a dependency that was already installed"
+ * or "a workspace changed its own version" edit (5 of 17 lockfile commits, 2026-09-24..10-01).
+ *
+ * Any change to an installed entry stays global, however small, because a proof cannot see
+ * node_modules: the executed-source-map reporter records only non-external modules
+ * (libs/test-config/src/executed-source-map-reporter.ts drops `external` and node_modules paths),
+ * and 0 of 7,340 proofs recorded 2026-09-28..10-01 carry a node_modules path. That includes a
+ * brand-new package, which can still change behaviour through an optional `require` probe.
+ *
+ * @param {string} beforeText
+ * @param {string} afterText
+ * @returns {boolean}
+ */
+export function packageLockChangeIsInert(beforeText, afterText) {
+  const before = packageLockInstallView(beforeText);
+  const after = packageLockInstallView(afterText);
+  return before !== null && after !== null && before === after;
+}
+
 /** The package.json / tsconfig*.json names that configure every file beneath their directory. */
-const CONFIG_BASENAME_RE = /^(package\.json|tsconfig[^/]*\.json|\.babelrc|babel\.config\.[cm]?js)$/;
+const CONFIG_BASENAME_RE = /^(package\.json|(?:ts|js)config[^/]*\.json|\.babelrc|babel\.config\.[cm]?js)$/;
+
+/** Any tsconfig / jsconfig file name. */
+const TSCONFIG_BASENAME_RE = /^(?:ts|js)config[^/]*\.json$/;
+/** The names vite-tsconfig-paths discovers as entries: always read, so never narrowed (a deletion must still invalidate). */
+const TOOLCHAIN_ENTRY_BASENAME_RE = /^(?:ts|js)config\.json$/;
+
+/**
+ * P-004 (D-007): is `rel` a tsconfig/jsconfig file that neither vite nor vite-tsconfig-paths reads,
+ * per the derived `toolchainTsconfigs` set? Such a file configures no test transform, so it is not
+ * a global input and does not configure the files beneath its directory. A test that reads it
+ * still records it in readPaths (or turns opaque when a child process reads it). Null set = false
+ * for every path (nothing is narrowed).
+ *
+ * @param {string} rel
+ * @param {ReadonlySet<string> | null | undefined} toolchainTsconfigs
+ */
+export function tsconfigUnreadByToolchain(rel, toolchainTsconfigs) {
+  if (!toolchainTsconfigs) return false;
+  const base = path.posix.basename(rel);
+  if (!TSCONFIG_BASENAME_RE.test(base) || TOOLCHAIN_ENTRY_BASENAME_RE.test(base)) return false;
+  return !toolchainTsconfigs.has(rel);
+}
 
 /**
  * Does a drift path invalidate a proof whose inputs are `modules` + `reads`? `dirs` is the set of
@@ -133,7 +467,25 @@ function invalidates(rel, o) {
   if (o.inputs.has(rel)) return true;
   for (const prefix of o.readDirs) if (rel === prefix.slice(0, -1) || rel.startsWith(prefix)) return true;
   const base = path.posix.basename(rel);
-  if (CONFIG_BASENAME_RE.test(base) && o.dirs.has(path.posix.dirname(rel))) return true;
+  // P-002: an inert global change (see rootPackageJsonChangeIsInert) still invalidates a proof
+  // that read the file itself (above), but it configures nothing beneath its directory. Without
+  // this, the root package.json would still reach EVERY proof through the rule below, because
+  // "." is an ancestor of every executed module. D-009: the same for an inert WORKSPACE
+  // package.json (workspacePackageJsonChangeIsInert), which reaches every proof beneath it.
+  if (o.inert.has(rel)) {
+    if (o.inertWorkspace.has(rel) && o.dirs.has(path.posix.dirname(rel))) o.inertWorkspaceHit = true;
+    return false;
+  }
+  if (CONFIG_BASENAME_RE.test(base) && o.dirs.has(path.posix.dirname(rel))) {
+    // P-004: a tsconfig the toolchain never reads configures nothing beneath its directory.
+    // Without this, an unread ROOT tsconfig would still reach every proof here ("." is an
+    // ancestor of every executed module), exactly as the inert case above.
+    if (tsconfigUnreadByToolchain(rel, o.toolchainTsconfigs)) {
+      o.unreadTsconfigHit = true;
+      return false;
+    }
+    return true;
+  }
   return false;
 }
 
@@ -161,6 +513,32 @@ function invalidates(rel, o) {
  * @param {number}                        o.maxAgeMs
  * @param {number}                        [o.auditRate] P-012: fraction of reusable files that
  *        run anyway (deterministic per file+sha, see auditDraw). Default 0 (pure rule).
+ * @param {((rel: string, fromSha: string, toSha: string) => boolean) | null} [o.inertGlobalChange]
+ *        gate-test-reuse-yield-2026-10-01 P-002: asked for each GLOBAL drift path; returning
+ *        exactly `true` says that change touches nothing a proof cannot see, so it is not global
+ *        and does not reach proofs through the ancestor-config rule (a proof that read the path
+ *        itself is still invalidated). Any other result, or a throw, keeps it global. D-009: also
+ *        asked for each WORKSPACE (non-root) package.json drift path; `true` there means it does
+ *        not configure the proofs beneath its directory (summary.inertWorkspaceConfig). Omitted =
+ *        nothing is narrowed. Implemented over git by gitInertGlobalChange
+ *        (scripts/lib/executed-source-map.mjs).
+ * @param {ReadonlySet<string> | null} [o.testConfigMainProcess] P-003: the test-config source
+ *        files the vitest main process can load (isGlobalRunnerInput). A drift path it narrows to
+ *        per-proof is matched against executedModules, so a proof whose executedModules reached
+ *        EXECUTED_SOURCE_MAP_IMPORT_LIMIT is opaque for that drift. Omitted = all stay global.
+ * @param {ReadonlySet<string> | null} [o.toolchainTsconfigs] P-004 (D-007): the tsconfig/jsconfig
+ *        files vite and vite-tsconfig-paths read (libs/test-config/src/toolchain-tsconfigs.ts).
+ *        A drift tsconfig outside it is neither global nor an ancestor config; it still
+ *        invalidates a proof whose readPaths name it. Omitted = no tsconfig is narrowed.
+ * @param {((proof: ReuseProof) => boolean) | null} [o.schemaDriftJudge] P-007 (D-010): asked when
+ *        a proof EXECUTED a drifted generated DB schema file (GENERATED_SCHEMA_FILES) without
+ *        reading it through fs; returning exactly `true` says no table that changed reaches this
+ *        proof, so that drift path does not invalidate it (summary.schemaNarrowed). Any other
+ *        result, or a throw, keeps the whole-file rule. Omitted = nothing is narrowed. Implemented
+ *        over git by gitSchemaDriftJudge (scripts/lib/schema-symbol-drift.mjs).
+ * @param {string} [o.proofFormat] WI-6554700010008589: the format the JUDGED tree records
+ *        (judgedTreeProofFormat). Older than REUSE_PROOF_FORMAT = legacy: a proof is then reused only
+ *        when every drift path is another test file (summary.legacyFormatDrift otherwise).
  * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
  *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
  *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
@@ -176,13 +554,25 @@ export function selectReusablePasses({
   nowMs,
   maxAgeMs,
   auditRate = 0,
+  inertGlobalChange = null,
+  testConfigMainProcess = null,
+  toolchainTsconfigs = null,
+  schemaDriftJudge = null,
+  proofFormat = REUSE_PROOF_FORMAT,
 }) {
+  // WI-6554700010008589: the judged tree records an OLDER format than this selector's (a frozen
+  // repair lineage cut before a format bump). Its proofs may omit dynamically loaded modules, so
+  // none of the narrowed rules below may trust their executedModules: reuse only when every drift
+  // path is another test file (LEGACY_PROOF_SAFE_DRIFT_RE), which nothing else loads.
+  const legacyFormat = proofFormat !== REUSE_PROOF_FORMAT;
   const summary = {
     candidates: 0,
     reused: 0,
     noProof: 0,
     otherContext: 0,
     otherRunner: 0,
+    // WI-6554700010008589: legacy-format proofs rejected because a non-test file drifted.
+    legacyFormatDrift: 0,
     expired: 0,
     notCaptured: 0,
     opaque: 0,
@@ -191,12 +581,35 @@ export function selectReusablePasses({
     inputChanged: 0,
     audited: 0,
     expiredClean: 0,
+    // P-002: proofs that got past the global check only because a global drift path was inert.
+    // Each would have been counted as globalInput before P-002, whatever its outcome is now.
+    inertGlobal: 0,
+    // P-003: proofs that got past the global check only because a test-config drift path is
+    // outside the main-process closure (it was then matched per proof).
+    testConfigNarrowed: 0,
+    // P-004: proofs REUSED (or audited / watched) that an unread drift tsconfig would have
+    // invalidated before P-004: as a global root tsconfig, or as an ancestor-directory config.
+    tsconfigNarrowed: 0,
+    // D-009: proofs REUSED (or audited / watched) that an inert workspace package.json drift
+    // path would have invalidated before D-009, as an ancestor-directory config.
+    inertWorkspaceConfig: 0,
+    // P-007 (D-010): proofs REUSED (or audited / watched) that a generated DB schema drift path
+    // would have invalidated before P-007, because they executed the regenerated file.
+    schemaNarrowed: 0,
   };
   const skip = [];
   /** @type {Map<string, "audit" | "expired-clean">} */
   const watch = new Map();
-  /** @type {Map<string, { drift: Set<string> | null, global: boolean }>} */
+  /** @type {Map<string, { drift: Set<string> | null, global: boolean, inert: Set<string>, inertWorkspace: Set<string>, narrowed: boolean, tsconfigNarrowed: boolean }>} */
   const driftCache = new Map();
+  const askInert = (rel, sha) => {
+    if (!inertGlobalChange) return false;
+    try {
+      return inertGlobalChange(rel, sha, judgedSha) === true;
+    } catch {
+      return false;
+    }
+  };
   const driftFor = (sha) => {
     if (!driftCache.has(sha)) {
       let drift = null;
@@ -209,8 +622,35 @@ export function selectReusablePasses({
           drift = null;
         }
       }
-      const global = drift !== null && [...drift].some(isGlobalRunnerInput);
-      driftCache.set(sha, { drift, global });
+      let global = false;
+      let narrowed = false;
+      let tsconfigNarrowed = false;
+      const inert = new Set();
+      const inertWorkspace = new Set();
+      if (drift !== null) {
+        for (const rel of drift) {
+          if (!isGlobalRunnerInput(rel, testConfigMainProcess, toolchainTsconfigs)) {
+            if (isGlobalRunnerInput(rel)) {
+              // Separate flags: only the test-config narrowing is matched against executedModules
+              // (and so needs the capped-record guard below); an unread tsconfig is matched
+              // against readPaths only.
+              if (tsconfigUnreadByToolchain(rel, toolchainTsconfigs)) tsconfigNarrowed = true;
+              else narrowed = true;
+            } else if (path.posix.basename(rel) === "package.json" && askInert(rel, sha)) {
+              // D-009: a scripts-only workspace manifest edit no script can reach.
+              inert.add(rel);
+              inertWorkspace.add(rel);
+            }
+            continue;
+          }
+          if (askInert(rel, sha)) inert.add(rel);
+          else {
+            global = true;
+            break;
+          }
+        }
+      }
+      driftCache.set(sha, { drift, global, inert, inertWorkspace, narrowed, tsconfigNarrowed });
     }
     return driftCache.get(sha);
   };
@@ -255,15 +695,26 @@ export function selectReusablePasses({
       reject("opaque");
       continue;
     }
-    const { drift, global } = driftFor(p.recordedSha);
+    const { drift, global, inert, inertWorkspace, narrowed, tsconfigNarrowed } = driftFor(p.recordedSha);
     if (drift === null) {
       reject("unknownDrift");
+      continue;
+    }
+    if (legacyFormat && [...drift].some((rel) => rel === file || !LEGACY_PROOF_SAFE_DRIFT_RE.test(rel))) {
+      reject("legacyFormatDrift");
       continue;
     }
     if (global) {
       reject("globalInput");
       continue;
     }
+    if (narrowed && p.executedModules.length >= EXECUTED_SOURCE_MAP_IMPORT_LIMIT) {
+      // D-004 guard: a capped record may be missing the worker-side file that changed.
+      reject("opaque");
+      continue;
+    }
+    if (inert.size > inertWorkspace.size && !expired) summary.inertGlobal += 1;
+    if (narrowed && !expired) summary.testConfigNarrowed += 1;
     const inputs = new Set([file, ...p.executedModules]);
     const readDirs = [];
     for (const r of p.readPaths ?? []) {
@@ -280,8 +731,42 @@ export function selectReusablePasses({
       }
     }
     let changed = false;
+    const check = {
+      inputs,
+      readDirs,
+      dirs,
+      inert,
+      inertWorkspace,
+      toolchainTsconfigs,
+      unreadTsconfigHit: false,
+      inertWorkspaceHit: false,
+    };
+    /** @type {boolean | null} */
+    let schemaVerdict = null;
+    let schemaHit = false;
+    // P-007 (D-010): only an EXECUTED generated schema file is narrowed. A proof that read it
+    // through fs (a file read or a read of a directory holding it), or whose record may be capped,
+    // keeps the whole-file rule.
+    const schemaNarrows = (rel) => {
+      if (!schemaDriftJudge || !GENERATED_SCHEMA_FILE_SET.has(rel)) return false;
+      if (!p.executedModules.includes(rel) || (p.readPaths ?? []).includes(rel)) return false;
+      if (readDirs.some((prefix) => rel.startsWith(prefix))) return false;
+      if (p.executedModules.length >= EXECUTED_SOURCE_MAP_IMPORT_LIMIT) return false;
+      if (schemaVerdict === null) {
+        try {
+          schemaVerdict = schemaDriftJudge(p) === true;
+        } catch {
+          schemaVerdict = false;
+        }
+      }
+      return schemaVerdict;
+    };
     for (const rel of drift) {
-      if (invalidates(rel, { inputs, readDirs, dirs })) {
+      if (schemaNarrows(rel)) {
+        schemaHit = true;
+        continue;
+      }
+      if (invalidates(rel, check)) {
         changed = true;
         break;
       }
@@ -290,6 +775,9 @@ export function selectReusablePasses({
       reject("inputChanged");
       continue;
     }
+    if ((tsconfigNarrowed || check.unreadTsconfigHit) && !expired) summary.tsconfigNarrowed += 1;
+    if (check.inertWorkspaceHit && !expired) summary.inertWorkspaceConfig += 1;
+    if (schemaHit && !expired) summary.schemaNarrowed += 1;
     if (expired) {
       summary.expiredClean += 1;
       watch.set(file, "expired-clean");
@@ -418,6 +906,81 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }) {
 }
 
 /**
+ * P-004: exclusive decision buckets for the durable gate-pass-reuse observation.
+ * Counters such as inertGlobal and expiredClean overlap outcomes and are not denominators.
+ * @param {string} task
+ * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
+ * @returns {Array<{ eligible: number, applied: number, reason: string, scope: string }>}
+ */
+export function gateReuseObservations(task, decision) {
+  const positiveCount = (n) => Number.isSafeInteger(n) && n > 0 ? n : 0;
+  if (decision.offReason) return [{
+    // An off-path decision without a measured candidate population is an
+    // opportunity with UNKNOWN cardinality.  Do not synthesize one eligible
+    // test file: fallback-observations aggregates eligible/applied as units,
+    // and a fabricated 1 contaminates the file-level hit rate.
+    eligible: positiveCount(decision.eligible),
+    applied: 0,
+    reason: decision.offReason.split('(')[0].trim() || 'unavailable',
+    scope: task,
+  }];
+  const summary = decision.summary ?? {};
+  const eligible = positiveCount(summary.candidates);
+  // Zero candidates is a measured empty population, not one failed file.
+  if (!eligible) return [{ eligible: 0, applied: 0, reason: 'no-candidates', scope: task }];
+  const rows = [];
+  let remaining = eligible;
+  const reused = Math.min(remaining, positiveCount(summary.reused));
+  if (reused) { rows.push({ eligible: reused, applied: reused, reason: 'applied', scope: task }); remaining -= reused; }
+  for (const reason of ['noProof', 'otherContext', 'otherRunner', 'legacyFormatDrift', 'expired', 'notCaptured', 'opaque', 'unknownDrift', 'globalInput', 'inputChanged', 'audited']) {
+    const count = Math.min(remaining, positiveCount(summary[reason]));
+    if (count) { rows.push({ eligible: count, applied: 0, reason, scope: task }); remaining -= count; }
+  }
+  if (remaining) rows.push({ eligible: remaining, applied: 0, reason: 'unclassified', scope: task });
+  return rows;
+}
+
+let fallbackWriter;
+/**
+ * Green-checkpoint decisions use the durable gate-health primitive. Clean-local runs
+ * are intentionally excluded because their shared working trees are often dirty.
+ * Gate rows use the `default` workspace partition and correlate with the verdict run
+ * group when it is a UUID. `runContext` is required so callers cannot silently
+ * publish local decisions as gate health.
+ * @param {string} task
+ * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
+ * @param {{ runContext: 'green-checkpoint'|'clean-local', runGroupId?: string, writer?: { observeFallback: Function, flushFallbackObservations: Function } }} context
+ */
+export async function recordGateReuseDecision(task, decision, context) {
+  if (context?.runContext === 'clean-local') return true;
+  if (context?.runContext !== 'green-checkpoint') return false;
+  let writer = context.writer;
+  const runGroupId = typeof context.runGroupId === 'string' ? context.runGroupId : '';
+  const correlationId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runGroupId) ? runGroupId : undefined;
+  try {
+    if (!writer) {
+      if (!fallbackWriter) {
+        const { tsImport } = await import('tsx/esm/api');
+        fallbackWriter = tsImport('@papercusp/operator-core/lib/degradation/fallback-observations', import.meta.url);
+      }
+      writer = await fallbackWriter;
+    }
+    for (const row of gateReuseObservations(task, decision)) {
+      writer.observeFallback('gate-pass-reuse', row, {
+        workspaceId: 'default',
+        processTag: 'gate-reuse:green-checkpoint',
+        ...(correlationId ? { correlationId } : {}),
+      });
+    }
+    const result = await writer.flushFallbackObservations();
+    return result.failed === 0;
+  } catch {
+    fallbackWriter = null;
+    return false;
+  }
+}
+
+/**
  * The lane a unit task script runs, or `null` for a task that runs its workspace's whole unit
  * suite (`test`). Lane membership is a property of each file's CONTENTS
  * (libs/test-config/src/lane-split.ts), so the script name only says WHICH lane to keep.
@@ -489,14 +1052,26 @@ export function laneScopedCandidates({ candidates, wsRel, lane, laneOf }) {
   return { candidates: kept, otherLane };
 }
 
-/** One greppable line per workspace: how many selected files were reused, and why others ran. */
-export function formatTestReuseLine(wsName, summary, extra = "") {
+/**
+ * One greppable line per workspace: selected files, counters and original selector identity.
+ * @param {string} wsName
+ * @param {Record<string, number>} summary
+ * @param {string} [extra]
+ * @param {{version: 1, judgedSha: string, runnerIdentity: string, runContext: string, runGroupId: string | null, dirty: boolean}} [runtime]
+ */
+export function formatTestReuseLine(wsName, summary, extra = "", runtime = undefined) {
   const s = summary;
   return (
     `TEST_PASS_REUSE ws=${wsName} candidates=${s.candidates} reused=${s.reused} noProof=${s.noProof} ` +
     `otherContext=${s.otherContext} otherRunner=${s.otherRunner} expired=${s.expired} ` +
     `notCaptured=${s.notCaptured} opaque=${s.opaque} unknownDrift=${s.unknownDrift} ` +
     `globalInput=${s.globalInput} inputChanged=${s.inputChanged} audited=${s.audited ?? 0} ` +
-    `expiredClean=${s.expiredClean ?? 0}${extra}`
+    `expiredClean=${s.expiredClean ?? 0} inertGlobal=${s.inertGlobal ?? 0} ` +
+    `testConfigNarrowed=${s.testConfigNarrowed ?? 0} tsconfigNarrowed=${s.tsconfigNarrowed ?? 0} ` +
+    `inertWorkspaceConfig=${s.inertWorkspaceConfig ?? 0} schemaNarrowed=${s.schemaNarrowed ?? 0}` +
+    // WI-6554700010008589: only on a legacy-format judged tree, so every other line is unchanged.
+    (s.legacyFormatDrift ? ` legacyFormatDrift=${s.legacyFormatDrift}` : "") +
+    `${extra}` +
+    (runtime === undefined ? "" : ` runtime=${encodeURIComponent(JSON.stringify(runtime))}`)
   );
 }

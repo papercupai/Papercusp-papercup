@@ -19,6 +19,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../acceptance-runtime-wait-guard', () => ({
   acceptancePlaneAdvisoryForWait: vi.fn(async () => null),
+  mainWaitAdvisoryForWait: vi.fn(async () => null),
   mainWaitPlanReviewForWait: vi.fn(async () => null),
 }));
 // EI-20268841604319803: the service-up EDGE advisory reads live health at arm
@@ -32,6 +33,9 @@ vi.mock('../../service-health', async (importOriginal) => ({
 }));
 vi.mock('../../events/await/handle', () => ({
   captureWakeHandleForOwner: vi.fn(async () => ({ handle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 }, note: 'resumable' })),
+}));
+vi.mock('../../events/await/predicate-watch', () => ({
+  getPredicateWatch: vi.fn(async () => null),
 }));
 vi.mock('../../events/await/store', () => ({
   registerAwait: vi.fn(async (i: Record<string, unknown>) => ({ id: 99, eventKey: i.eventKey, expiresTs: '2030-01-01', timeoutBehavior: i.timeoutBehavior })),
@@ -161,6 +165,7 @@ import { mockImplementationTyped } from '../../testing/typed-mock';
 import { assertMockCoversImports } from '../../testing/mock-import-coverage';
 import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
+import { getPredicateWatch } from '../../events/await/predicate-watch';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
 import { liveBlockedState, liveSettledProbe, liveAssigneeProbe, liveWorkItemClaimableEventPayload } from '../../work-items-events';
@@ -176,7 +181,7 @@ import {
 } from './producer-health';
 import { resolveAnnouncementOwnership } from './status';
 import { hasActiveMonitorForOwnerPredicate } from '../../harness/routines/monitor-policy';
-import { mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
+import { mainWaitAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -200,6 +205,30 @@ describe('events:await wrapper defaults', () => {
     expect(out).toMatchObject({ ok: false, error: 'plan_main_wait_review_required', readyItems: ['P-002'] });
     expect(cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
     expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('attaches the main-wait advisory when the presence-plan review had nothing to say (WI-6554700010014960)', async () => {
+    vi.mocked(mainWaitAdvisoryForWait).mockResolvedValueOnce('MAIN-WAIT ADVISORY: do every step that does not need green main first.');
+    const out = await call({ event: 'release:green:papercusp', note: 'carry WI-10007221' });
+    expect(out).toMatchObject({ ok: true, main_wait_advisory: expect.stringContaining('MAIN-WAIT ADVISORY') });
+    expect(mainWaitAdvisoryForWait).toHaveBeenCalledWith({
+      ownerId: 'su-awaiter',
+      event: 'release:green:papercusp',
+      note: 'carry WI-10007221',
+    });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not add the generic advisory on top of an allowed presence-plan review', async () => {
+    vi.mocked(mainWaitPlanReviewForWait).mockResolvedValueOnce({
+      plan: 'plan-a', allowWait: true, code: 'plan_main_wait_review_required',
+      readyItems: [], downstreamItems: [], waitRoots: ['P-001'], reasonAccepted: true,
+      message: 'Plan plan-a still has 1 open item(s).',
+    });
+    const out = await call({ event: 'release:green:papercusp' });
+    expect(out).toMatchObject({ ok: true, main_wait_plan_review: { plan: 'plan-a' } });
+    expect(out).not.toHaveProperty('main_wait_advisory');
+    expect(mainWaitAdvisoryForWait).not.toHaveBeenCalled();
   });
 
   it('refuses an exact await when the owner already has the same active monitor, before mutation', async () => {
@@ -734,6 +763,76 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     expect(registerAwait).toHaveBeenCalledTimes(1);
   });
 
+  it('recognizes an active predicate-watch row as the emitter for its synthetic key', async () => {
+    const event = 'predicate:watch-123';
+    vi.mocked(getPredicateWatch).mockResolvedValueOnce({ eventKey: event, active: true } as never);
+    vi.mocked(registerAwait).mockResolvedValueOnce({
+      id: 101,
+      eventKey: event,
+      policy: 'wake',
+      once: true,
+      firedAt: null,
+      cancelledAt: null,
+      expiresTs: '2099-01-01T00:00:00.000Z',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      wakeHandle: null,
+      timeoutBehavior: 'wake',
+    } as AwaitRow);
+
+    const out = await call({ event });
+
+    expect(getPredicateWatch).toHaveBeenCalledWith('watch-123');
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(out.uncatalogued_event_key).toBeUndefined();
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    expect(out.operational_brief.owner).toEqual({
+      status: 'known',
+      value: 'watch:create predicate poller',
+      source: 'predicate_watches',
+    });
+    expect(out.operational_brief.nextAction.value).toContain('check that watch:create predicate poller is progressing');
+  });
+
+  it('does not accept a retired predicate-watch row as a live emitter', async () => {
+    const event = 'predicate:watch-retired';
+    vi.mocked(getPredicateWatch).mockResolvedValueOnce({ eventKey: event, active: false } as never);
+
+    const out = await call({ event });
+
+    expect(out.unknown_event_key).toBe(true);
+    expect(probeKeyFireEvidence).toHaveBeenCalledWith(event);
+  });
+
+  it('keeps an unavailable predicate-watch registry inconclusive instead of warning orphaned', async () => {
+    const event = 'predicate:watch-unreadable';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getPredicateWatch).mockRejectedValueOnce(new Error('predicate registry unavailable'));
+    vi.mocked(registerAwait).mockResolvedValueOnce({
+      id: 102,
+      eventKey: event,
+      policy: 'wake',
+      once: true,
+      firedAt: null,
+      cancelledAt: null,
+      expiresTs: '2099-01-01T00:00:00.000Z',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      wakeHandle: null,
+      timeoutBehavior: 'wake',
+    } as AwaitRow);
+
+    const out = await call({ event });
+
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    expect(out.operational_brief.owner).toEqual({
+      status: 'unknown',
+      reason: 'predicate_watches probe error while this await was registered; emitter presence and owner are unknown',
+    });
+    expect(out.operational_brief.nextAction.value).toContain('do not treat this as proof that the key has no emitter');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:predicateWatchEmitter'));
+    warn.mockRestore();
+  });
+
   it('recognizes consult reply park keys as catalogued emitter-backed awaits', async () => {
     const out = await call({ event: 'consult:reply:consult-123' });
 
@@ -818,6 +917,52 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     expect(out.unknown_event_key).toBeUndefined();
     expect(out.unknown_event_key_advice).toBeUndefined();
     expect(out.await_id).toBe(99);
+  });
+
+  it('keeps a catalog probe failure distinct from confirmed absence in the pending wait brief', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(readInstalledUnitEvents).mockRejectedValueOnce(new Error('catalog read failed'));
+    vi.mocked(registerAwait).mockResolvedValueOnce({
+      id: 99,
+      workspaceId: 'ws-x',
+      subscriberId: 'su-awaiter',
+      eventKey: 'release:green:papercusp',
+      policy: 'wake',
+      note: null,
+      wakeHandle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 },
+      timeoutBehavior: 'wake',
+      expiresTs: '2030-01-01T00:00:00.000Z',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      firedAt: null,
+      firedReason: null,
+      cancelledAt: null,
+      cancelReason: null,
+      once: true,
+      minSleepSec: null,
+      urgency: false,
+      payloadFilter: null,
+      scopeKind: null,
+      scopeRef: null,
+    } as AwaitRow);
+
+    const out = await call({ event: 'release:green:papercusp' });
+
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(out.unknown_event_key_advice).toBeUndefined();
+    expect(out.operational_brief.owner).toEqual({
+      status: 'unknown',
+      reason: 'events:catalog probe error while this await was registered; emitter presence and owner are unknown',
+    });
+    expect(out.operational_brief.blockers.value).toContain('events:catalog probe error; emitter presence is unverified');
+    expect(out.operational_brief.nextAction.value).toContain(
+      'do not treat this as proof that the key has no emitter',
+    );
+    expect(out.operational_brief.nextAction.value).not.toMatch(/^Nothing is known to fire/);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:orphanKey'));
+    warn.mockRestore();
   });
 
   it('stays silent on a PATTERN await (a glob is not a key and has no single emitter)', async () => {
@@ -2004,6 +2149,86 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
     expect(out).toMatchObject({ ok: true, await_id: 99, event: egressKey });
     expect(out.already_fired).toBeUndefined();
     expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+  });
+});
+
+describe('EI-25418020058852136 — coordination receipt exact-key latch', () => {
+  const receiptKey = 'coord:receipt:coord-send-read-once';
+  const firedAt = '2026-10-08T13:13:40.328Z';
+  const noFire = {
+    prefix: 'coord:receipt', exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null,
+  };
+  const exactFire = {
+    prefix: 'coord:receipt', exact: true, distinctKeys: 1, fires: 1, lastFiredAt: firedAt,
+  };
+
+  beforeEach(() => {
+    vi.mocked(probeKeyFireEvidence).mockReset().mockResolvedValue(noFire);
+    vi.mocked(cancelAwait).mockReset().mockResolvedValue(false);
+  });
+
+  it('returns the prior receipt instead of waiting for a second receipt edge', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValue(exactFire);
+
+    const out = await call({ event: receiptKey });
+
+    expect(out).toMatchObject({ ok: true, already_fired: true, event: receiptKey, fired_at: firedAt });
+    expect(out.advice).toMatch(/receipt/i);
+    expect(out.advice).toMatch(/does not prove.*action/i);
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a receipt for a different message', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValue({ ...exactFire, exact: false });
+
+    const out = await call({ event: receiptKey });
+
+    expect(out.already_fired).toBeUndefined();
+    expect(out.await_id).toBe(99);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires the pending wait when the receipt fires during registration', async () => {
+    vi.mocked(probeKeyFireEvidence)
+      .mockResolvedValueOnce(noFire)
+      .mockResolvedValueOnce(exactFire);
+    vi.mocked(cancelAwait).mockResolvedValueOnce(true);
+
+    const out = await call({ event: receiptKey });
+
+    expect(out).toMatchObject({ ok: true, already_fired: true, event: receiptKey, fired_at: firedAt });
+    expect(out.advice).toMatch(/receipt.*during registration/i);
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the delivery when the emitter already claimed the registered wait', async () => {
+    vi.mocked(probeKeyFireEvidence)
+      .mockResolvedValueOnce(noFire)
+      .mockResolvedValueOnce(exactFire);
+
+    const out = await call({ event: receiptKey });
+
+    expect(out).toMatchObject({ ok: true, await_id: 99, event: receiptKey });
+    expect(out.already_fired).toBeUndefined();
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+  });
+
+  it('keeps bare and pattern receipt streams edge-triggered', async () => {
+    await call({ event: 'coord:receipt' });
+    await call({ event: 'coord:receipt:*' });
+
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+  });
+
+  it('does not use an unqualified fire to satisfy a payload-filtered receipt wait', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValue(exactFire);
+
+    const out = await call({ event: receiptKey, payload_filter: { read: true } });
+
+    expect(out.already_fired).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
   });
 });
 

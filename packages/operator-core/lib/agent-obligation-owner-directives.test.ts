@@ -187,6 +187,9 @@ function readerDeps(
     // live Postgres pool and rejects unhandled — every assertion below still
     // passed, so the suite read green while the run exited non-zero.
     waitingOn: async () => [],
+    
+    fleetStaffing: async () => [],
+    strandedGoalWork: async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false }),
   };
 }
 

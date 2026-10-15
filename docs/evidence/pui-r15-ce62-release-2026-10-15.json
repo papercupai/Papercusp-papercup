@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "workItem": "WI-6554700010014883",
+  "plan": "pui-first-party-public-release-2026-09-07",
+  "planItem": "P-032",
+  "exitCode": 0,
+  "candidate": {
+    "sourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+    "archiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+    "binarySha256": "3602b3154090498cd1b09647a2fc047b13ae21b408e070ebd7aea6935ae2afb2",
+    "target": "linux-x86_64",
+    "version": "0.1.0",
+    "advertisedEngines": ["Claude", "Codex", "OMP"],
+    "macOSAdvertised": false
+  },
+  "assertions": [
+    {
+      "id": "accepted-archive-rehashed",
+      "passed": true,
+      "observation": "The retained accepted archive hashes to the candidate archive digest."
+    },
+    {
+      "id": "cold-build-byte-identical",
+      "passed": true,
+      "observation": "A second package-release.sh build of the exact committed source, using an empty cargo target directory, produced the same 70114665 archive bytes and SHA-256."
+    },
+    {
+      "id": "complete-acceptance-verdict",
+      "passed": true,
+      "observation": "The immutable acceptance report is ok:true with an empty refusal list and all four child legs exiting zero."
+    },
+    {
+      "id": "packaging-and-journey-sources-match-candidate",
+      "passed": true,
+      "observation": "package-release.sh, release-acceptance.sh and public-package.integration.test.ts working bytes matched their ce62d173 committed blobs at the cold-build verification. The publisher is separately versioned below; its URL fix does not change the accepted archive."
+    }
+  ],
+  "artifactRoot": "/tmp",
+  "runtimeArtifacts": [
+    {
+      "path": "pui-acceptance-7534f/candidates/source-ce62d173d11f5920bf71bf04bc086f2a69d6d640/pui-0.1.0-linux-x86_64.tar.gz",
+      "sha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+      "bytes": 70114665
+    },
+    {
+      "path": "pui-acceptance-7534f/candidates/source-ce62d173d11f5920bf71bf04bc086f2a69d6d640/pui-ce62-full-approval-20261015-1550.acceptance.json",
+      "sha256": "ee574b9bf275ea4802ad1016fa3836f323e7a7dd72d8add41dad83977efef450",
+      "bytes": 63124
+    },
+    {
+      "path": "pui-repro-ce62-9086d.2hwxPh/dist/pui-0.1.0-linux-x86_64.tar.gz",
+      "sha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+      "bytes": 70114665
+    }
+  ],
+  "acceptance": {
+    "receiptRef": "docs/evidence/pui-attached-fixture-repair-2026-10-10.json#candidateCe62Acceptance.fullAcceptance.terminal",
+    "taskId": "0mv9pt7qbxd4nvpbfp2",
+    "terminalAt": "2026-10-15T16:43:34.793Z",
+    "scripted": { "passed": 87, "skipped": 11, "exitCode": 0 },
+    "claude": { "passed": 13, "skipped": 85, "exitCode": 0 },
+    "codex": { "passed": 12, "skipped": 86, "exitCode": 0 },
+    "omp": { "passed": 13, "skipped": 85, "exitCode": 0 },
+    "nativeApprovalEffectAndSameIdentityOSRestart": ["Claude", "Codex", "OMP"],
+    "skipInterpretation": "The scripted leg and separate engine legs select complementary cases; skips are not counted as executed per-engine coverage."
+  },
+  "reproducibility": {
+    "taskId": "0mv9sbn6c137gc6xo0b",
+    "exitCode": 0,
+    "terminalEventAt": "2026-10-15T17:04:16.658837Z",
+    "logPath": ".papercusp/scratch/bash-67e5fbb5-39a.log",
+    "logSha256": "a4901876dc0f5df3c09561bb5ad2d73ee564e607c9e4a70f09c32b5d9d227a72",
+    "coldTarget": "/tmp/pui-repro-ce62-9086d.2hwxPh/cargo-target",
+    "resultMarker": "PUI_REPRO_RESULT",
+    "originalSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+    "rebuiltSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41"
+  },
+  "sourceChecks": {
+    "apps/tui/scripts/package-release.sh": "c0f56232f3dbaf4ff36c834c3cedbd2c8811e1534116900b9a82f55bd5606f4d",
+    "apps/tui/scripts/publish-release.sh": "235b631de3e69cd9c8979800fb69b0563fc904537bfc40adbe9b9390ff80c291",
+    "apps/tui/scripts/release-acceptance.sh": "b4362cc84cbf1bf82ea49ff4a428b4a9a6a5e1d49fdb3406f70b38dee11cd413",
+    "packages/operator-core/lib/pui-e2e/public-package.integration.test.ts": "11364a9828fbbba4f128326e2bdb0837595a47af9e37e772d346da8d18376a78"
+  },
+  "publication": {
+    "status": "not-published",
+    "previewDirectory": ".papercusp/scratch/p032-ce62-9086d",
+    "previousManifestSha256": "9454f2274951cc200a2d94b3231140a7f2569e8c380d578485530b21e1060a6c",
+    "previousSourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+    "previousArchiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+    "previewWithPreviousManifestPassed": true,
+    "previewUsesDistinctArchivePath": true,
+    "previewLatestSha256": "cc2d39eeccc9a408ffb6bf6035b6bcf47fa017b733ad7058cf5af612f116ea6c",
+    "previewIndexSha256": "a40a24f4419a5c683e395d49d318bfef0e2750ea983c67616aaceabe6e5ef901",
+    "sanitizedAcceptanceSha256": "d0847f1c42a46f65616ddb8f40af4e9cd2a787d1cd1188f1bd67ce83bc00470c",
+    "approvalDecision": null,
+    "independentProductGrade": null,
+    "publicInstallEvidence": null
+  },
+  "publisher": {
+    "path": "apps/tui/scripts/publish-release.sh",
+    "sha256": "a7b7a06be60c1df116cb8804330a0bf4b31f8589b2b5fc85a8bd84625d70cd4c",
+    "testPath": "packages/operator-core/lib/pui-e2e/publish-release.test.ts",
+    "testSha256": "c07dc8dccbebffaf3695967031020aba5d713a1f1c2cd83c9e35378d7cbaf8d8",
+    "testRunId": 21259467,
+    "detachedRunId": "b8ab87ae-608c-402c-9660-a35ddf4cb920",
+    "taskId": "0mv9u3okj19385iebqe",
+    "status": "pass",
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "rootCause": "The existing 0.1.0 r14 object and the accepted 0.1.0 r15 candidate had one immutable URL but different bytes.",
+    "fix": "Versioned archive, acceptance and checksum paths include the archive SHA-256 generation. Retained platform entries accept exact legacy or matching-generation layouts.",
+    "negativeControl": {
+      "taskId": "0mv9ud9z21l7xr6lq6e",
+      "status": "refused-before-tests",
+      "exitCode": 2,
+      "reason": "The maintained mutation runner requires destructive-call isolation for the publisher's cleanup rm call. The refusal verified source integrity; it is not a caught mutant.",
+      "next": "Repeat the same existing copy-out mutation with the runner's documented --fake-destructive isolation. No native acceptance rerun."
+    }
+  }
+}

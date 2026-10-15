@@ -27,12 +27,16 @@ import {
   getDecisionClient,
   JEV_PINNED_MODEL,
   type DecisionClient,
-  type DecisionPricing,
 } from '@papercusp/decision-model';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { recordDecisionModelCall } from '../decision-model-ledger';
 import { maskIntegrationKey, readIntegrationKey, writeIntegrationCredentials } from '../integration-credentials';
 import { activeWorkspaceId } from '../workspace-registry';
+import { alertOwnerOnJevAccountRefusal } from './jev-account-alert';
+import { jevFetch } from './jev-transport';
+import { JEV_MEMORY_TIMEOUT_MS, JEV_PRICING } from './jev-memory-gate-core';
+
+export { JEV_MEMORY_TIMEOUT_MS, JEV_PRICING } from './jev-memory-gate-core';
 
 export const JEV_MODES = ['off', 'shadow', 'on'] as const;
 export type JevMode = (typeof JEV_MODES)[number];
@@ -52,20 +56,6 @@ export const JEV_API_KEY_NAME = 'TYPESAFE_API_KEY';
  * 800 ms clears every healthy-provider answer seen. Live Log-only traffic at 400 ms
  * timed out 10.6% of calls, 4 in 10 of them worker stalls (EI-24748208098755918).
  */
-export const JEV_MEMORY_TIMEOUT_MS = 800;
-
-/**
- * Token rates for the pinned Jev model, so every ledger row carries `cost_usd`.
- * Jev's API returns token counts but no price, so the host supplies the rates.
- * Source: the OpenRouter listing for typesafe/jev-1.13 (and its jev-latest alias),
- * checked 2026-09-30: $0.042 per million input tokens, output tokens free.
- * Re-check this when JEV_PINNED_MODEL changes.
- */
-export const JEV_PRICING: DecisionPricing = {
-  inputUsdPerMillionTokens: 0.042,
-  outputUsdPerMillionTokens: 0,
-};
-
 /** Keys shorter than this are rejected (they are typos, and would not mask). */
 export const JEV_API_KEY_MIN_LENGTH = 8;
 export const JEV_API_KEY_MAX_LENGTH = 4096;
@@ -223,10 +213,21 @@ export function ensureJevDecisionClient(): DecisionClient {
     provider: createJevProvider(),
     resolveKey: readJevApiKey,
     timeoutMs: JEV_MEMORY_TIMEOUT_MS,
+    // P-006 (jev-memory-timeouts-to-zero-2026-10-01): keep the Jev socket open between
+    // calls — the default global fetch reconnected on almost every call.
+    fetch: jevFetch,
     // P-003: every call — answered or inconclusive — lands in decision_model_calls.
     // Fire-and-forget; the client never awaits it and swallows its faults.
     // Pricing is passed so cost_usd is filled in; without it every row's cost is null.
-    onCall: (record) => recordDecisionModelCall(record, { pricing: JEV_PRICING }).then(() => undefined),
+    // WI-10005694: a provider refusal only the owner can fix (402 no credits,
+    // 401/403 bad key) notifies the owner once a day instead of failing silently.
+    onCall: (record) =>
+      Promise.all([
+        recordDecisionModelCall(record, { pricing: JEV_PRICING }),
+        alertOwnerOnJevAccountRefusal(record).catch((err) => {
+          console.warn(`[jev-account-alert] owner notification failed: ${err instanceof Error ? err.message : String(err)}`);
+        }),
+      ]).then(() => undefined),
   });
   configureDecisionModel(client);
   return client;

@@ -532,6 +532,52 @@ describe("buildInboxBulkReviewGroups", () => {
 });
 
 describe("<InboxBulkReport>", () => {
+  it('separates unresolved intake from applied retention without counting unrelated inbox rows', () => {
+    const intake = (itemId: string, over: Partial<BulkRunItem>) => runItem({
+      itemId, kind: 'improvement', ref: { kind: 'improvement', issueId: itemId }, ...over,
+    });
+    const items = [
+      intake('pending-intake', { outcome: 'pending', actionId: null }),
+      intake('failed-intake', { outcome: 'failed', actionId: null }),
+      intake('unapplied-intake', { outcome: 'recommended', actionId: 'apply-intake' }),
+      intake('retained-intake', { outcome: 'auto_resolved', intakeDecision: {
+        disposition: 'retain', reason: 'Preserve the observation', decidedBy: 'reviewer', owner: 'agent',
+        targetRef: null, missingInformation: null, decidedAt: '2026-10-01T12:00:00Z',
+        workKind: null, acceptance: null, reproduction: null, sourceRevision: 'src-v1:fixture',
+      } }),
+      intake('rejected-intake', { outcome: 'dismissed' }),
+      runItem({ itemId: 'unrelated-message', outcome: 'pending', actionId: null }),
+    ];
+    render(<InboxBulkReport presentation="settled" run={{ ...run, phase: 'complete', totalItems: items.length }} runItems={items} onClose={vi.fn()} />);
+    expect(screen.getByText(/3 intake still open · 2 intake handled · 1 retained-evidence decisions/)).toBeTruthy();
+    expect(screen.getByText(/not the retained observation ledger or delivered work/)).toBeTruthy();
+    expect(screen.getByTestId('inbox-bulk-report-footer').textContent).toContain('processing an observation does not establish');
+  });
+
+  it('keeps failed and unreached intake explicit in a settled report and preserves decision evidence', () => {
+    const items = [
+      runItem({ itemId: 'triage-failed', outcome: 'failed', actionId: null, error: 'Missing source evidence' }),
+      runItem({ itemId: 'triage-unreached', outcome: 'pending', actionId: null }),
+      runItem({ itemId: 'triage-decided', outcome: 'auto_resolved', actionId: 'apply-intake', intakeDecision: {
+        disposition: 'merge', reason: 'Same bounded-parser defect', decidedBy: 'reviewer', owner: 'agent',
+        targetRef: 'WI-canonical', missingInformation: null, decidedAt: '2026-10-01T12:00:00Z',
+        workKind: null, acceptance: null, reproduction: null, sourceRevision: 'src-v1:fixture',
+      } }),
+    ];
+    const groups = buildInboxBulkReviewGroups(items, new Map());
+    expect(groups.flatMap(group => group.rows)).toHaveLength(3);
+    const decision = groups.flatMap(group => group.rows).find(row => row.id === 'triage-decided');
+    expect(decision?.evidence).toEqual(expect.arrayContaining([
+      'intake decision · merge · Same bounded-parser defect', 'canonical target · WI-canonical',
+    ]));
+    const view = render(<InboxBulkReport run={{ ...run, phase: 'complete', totalItems: 3 }} runItems={items} onClose={vi.fn()} />);
+    expect(screen.getByText(/1 failed triage · 1 not reached/)).toBeTruthy();
+    expect(screen.getByText(/Writer: deriveRunCounts/)).toBeTruthy();
+    expect(screen.getByTestId('inbox-bulk-report-footer').textContent).toContain('Closing the report never completes unresolved work');
+    view.rerender(<InboxBulkReport presentation="settled" run={{ ...run, phase: 'complete', totalItems: 1 }} runItems={[items[2]!]} onClose={vi.fn()} />);
+    expect(screen.getByTestId('inbox-bulk-report-footer').textContent).toContain('processing an observation does not establish that accepted work was completed');
+  });
+
   it("keeps recommendation content and controls inside phone-width details", () => {
     const phoneStart = BULK_REPORT_CSS.indexOf("@container (max-width: 420px)");
     expect(phoneStart).toBeGreaterThan(-1);

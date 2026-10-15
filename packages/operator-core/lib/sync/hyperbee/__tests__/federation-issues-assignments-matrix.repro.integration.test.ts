@@ -433,8 +433,8 @@ async function bootFedPair(cfg: {
     swarmOverride: swarmAuthor,
     verifyBindingOverride: async (_pk, _login, userId) =>
       userId === idReceiver.userId ? 'verified' : 'fail',
-    applyOverride: (op) => {
-      applyAuthor ??= buildIssuesAssignmentsPeerApply(authorDb.adminSql, authorSlug, handleAuthor!.ownLog.keyHex);
+    applyOverride: (op, ctx) => {
+      applyAuthor ??= buildIssuesAssignmentsPeerApply(authorDb.adminSql, authorSlug, ctx.ownLogKeyHex);
       return applyAuthor(op);
     },
     mergePollMs: 0,
@@ -702,8 +702,8 @@ describe('federation ISSUES+ASSIGNMENTS matrix — engineer_issues + plan_item_a
         swarmBinding: { kind: 'hive' as const, hive_pubkey: hivePubkeyB64 },
         swarmOverride: swarmAuthor,
         verifyBindingOverride: async (_pk, _login, userId) => (userId === idReceiver.userId ? 'verified' : 'fail'),
-        applyOverride: (op) => {
-          applyAuthor ??= buildIssuesAssignmentsPeerApply(authorDb.adminSql, authorSlug, handleAuthor!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyAuthor ??= buildIssuesAssignmentsPeerApply(authorDb.adminSql, authorSlug, ctx.ownLogKeyHex);
           return applyAuthor(op);
         },
         mergePollMs: 0,

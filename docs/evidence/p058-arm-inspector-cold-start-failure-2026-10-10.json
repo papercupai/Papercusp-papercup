@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P-058 frozen ARM cold startup inspector diagnostic failure",
+  "command": [
+    "$HOME/.local/node25/bin/node",
+    "--input-type=module"
+  ],
+  "commandPathNormalization": "Host Node home prefix is $HOME; inline program retained by durable producer task0mv2jq2gmw07znqeaae and pinned by SHA256.",
+  "cwd": ".",
+  "startedAt": "2026-10-10T15:25:27.102Z",
+  "finishedAt": "2026-10-10T15:27:12.437Z",
+  "exitCode": 1,
+  "summary": "The frozen source ARM diagnostic failed: kernel identity verified but Profiler.setSamplingInterval timed out2000ms; no full-server profile was saved. Canonical child60000ms timeout reported ETIMEDOUT with75281ms observed helper elapsed, status0 and no required marker. Status0 does not establish boot success. Root cause remains unknown.",
+  "workItemId": "EI-25500068013952985",
+  "relatedWorkItemIds": [
+    "EI-25604028797058995"
+  ],
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "frozen-source-diagnostic",
+  "candidateAccepted": false,
+  "producerTaskId": "0mv2jq2gmw07znqeaae",
+  "assertions": [
+    {
+      "id": "canonical-boot-marker-and-deadline",
+      "passed": false,
+      "evidence": "Canonical timeout60000ms was unchanged; actual helper75281ms, errorETIMEDOUT, childstatus0/signalnull and receiptObservedfalse. No PAPERCUSP_BOOT_IMPORTS_OK marker."
+    },
+    {
+      "id": "actual-source-profile",
+      "passed": false,
+      "evidence": "Sampler1/profilePresentfalse; kernel identity and Profiler.enable preceded a Profiler.setSamplingInterval request timeout2000ms. No raw profile."
+    },
+    {
+      "id": "stable-frozen-inputs",
+      "passed": true,
+      "evidence": "Nineteen frozen source files, bundle and four collector files remained unchanged."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Exact recorded container8a9f7d180eeb5985063d9ef265dfb1b4bd9a5003d228332a50ece854357eb6d3 removed; cleanupPendingfalse."
+    }
+  ],
+  "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+  "platform": "linux/arm64",
+  "sourceCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+  "serveSha256": "2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365",
+  "sourceReceiptSha256": "dbd99540cee12ab4cd4ddfa4a718d131a25893439d7c3de8c239a452fd2dca6e",
+  "canonicalBootFunctionSha256": "ffbd2d83808dd2129e6e8f8bcf770e4f1bd9799717a7d634d047a09b611fa3d9",
+  "instrumentedBootFunctionSha256": "2315b3649356e979c6338e36e92732fa18e200cafd2c4c1f5e19d19ed51b1c4f",
+  "originalDeadlineMs": 60000,
+  "overlayInventorySha256": "978c0594cdaf5ae326406e2d562d3ab2e71befe0d10f9c70635fb50d3a10054c",
+  "sourceHashes": {
+    "scripts/cpu-sample.mjs": "a23339a5da4d2e33b9e12c396f8b42bac5507abfb9f69df9c8a8bc042782053c",
+    "scripts/cdp-inspector.mjs": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112",
+    "scripts/lib/cpu-profile.mjs": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3",
+    "scripts/proc-guard.mjs": "5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda"
+  },
+  "rawResultFile": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile2-Ou8ft4/result.json",
+  "rawResultSha256": "3411c849f7fa4493d65095c4b1bbac132e917d616e8ad3754c5e25d7fc7ddf53",
+  "logs": [
+    {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile2-Ou8ft4/bootStdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile2-Ou8ft4/bootStderr.log",
+      "sha256": "9611fc1be8be3254cff1b321116b2253e0c112423cda8149d3634718d303deae"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile2-Ou8ft4/samplerStdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile2-Ou8ft4/samplerStderr.log",
+      "sha256": "00d08dabdf49f7dbeb93dc5ec65bbd3cc2095d1605b60b3f6c868f98e23ea1f8"
+    }
+  ],
+  "capture": {
+    "bootStatus": 1,
+    "samplerStatus": 1,
+    "profilePresent": false
+  },
+  "cleanup": {
+    "containerId": "8a9f7d180eeb5985063d9ef265dfb1b4bd9a5003d228332a50ece854357eb6d3",
+    "removed": true,
+    "cleanupPending": false
+  },
+  "qualifiedReadyTargetPreflight": {
+    "evidenceFile": "docs/evidence/p058-arm-inspector-proc-identity-2026-10-10.json",
+    "testRunId": 20986895,
+    "scope": "Small ready synchronous busy ARM fixture only; does not establish cold server capture."
+  },
+  "limitations": [
+    "No original startup root cause established.",
+    "No full-server CPU profile available; do not infer frame attribution or resource pressure.",
+    "No installed-native, signing, registry publication or final instance-transfer acceptance."
+  ],
+  "hostStdinScriptSha256": "3b5ec250bf399dfe84566468eb809781bd5e411e8dcc8fd5fd571a3217ac4f8b"
+}

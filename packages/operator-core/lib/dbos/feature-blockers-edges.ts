@@ -32,9 +32,12 @@ import { detectDependencyCycle } from '../feature-deps';
  * blocked feature_id → its blocker feature_ids (within-harness, prefix-stripped). The
  * Pure read.
  */
-export async function getFeatureBlockers(harnessSlug: string): Promise<Map<string, string[]>> {
+export async function getFeatureBlockers(
+  harnessSlug: string,
+  opts: Pick<WorkItemDependencyWriterOptions, 'sql'> = {},
+): Promise<Map<string, string[]>> {
   return new Map(
-    [...(await getWorkItemDepBlockers(harnessSlug))].map(([blocked, blockers]) => [
+    [...(await getWorkItemDepBlockers(harnessSlug, opts))].map(([blocked, blockers]) => [
       blocked,
       blockers.map((blocker) => blocker.id),
     ]),

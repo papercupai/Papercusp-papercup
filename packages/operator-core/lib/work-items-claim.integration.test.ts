@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
@@ -141,7 +141,6 @@ beforeAll(async () => {
   // fixture so its claim assertions exercise the real schema instead of failing
   // before the floor can be evaluated.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
-  await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   // P-007: claim authority reads the active role receipt. Narrow work-item
   // fixtures carry only the two columns sets that reader needs.
@@ -178,6 +177,10 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
   // WI-3649: the by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).
   await ensureCoordCapabilityTables(db.sql);
+  // WI-10005130: the shared claim-path read deps (trust list, deps, adv_sessions, event
+  // tables, Scout ledger) go LAST — every statement is IF NOT EXISTS, so it only fills
+  // what the hand-built schema above (adv_sessions, event substrate) left out.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
 }, 90_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
@@ -410,6 +413,23 @@ describe('blueprint operation claim authority (real PostgreSQL)', () => {
     expect((await wi.observeWorkItem('WI-ordinary-preview', { harness: H, assignee: 'preview-worker' }))?.available)
       .toBe(false);
   });
+
+  // R-8 / R-16 (plan blueprint-backed-work-item-execution-2026-09-23): the receipt match covers the
+  // WHOLE accepted pin, not only its key fields. A pin that agrees with the applied receipt on kind,
+  // harness, operation and revision but carries a different accepted input is a different operation:
+  // the preview must name the mismatch, and the claim must refuse it (its UPDATE fences the pin too).
+  it('refuses a pin that matches the receipt key fields but differs in its accepted input', async () => {
+    const id = 'WI-operation-drifted-pin';
+    await seedFeature(id);
+    await db.sql`UPDATE harness_shared.work_items
+      SET payload = ${db.sql.json({ blueprintOperation: { ...pin(), input: { drifted: true } } })}
+      WHERE feature_id = ${id}`;
+    await activateWorker('drift-worker', id);
+
+    expect((await wi.observeWorkItem(id, { harness: H, assignee: 'drift-worker' }))?.operationClaimDenied)
+      .toContain('differs from the applied operation receipt');
+    expect(await wi.claimWorkItem(id, 'drift-worker', { harness: H })).toBeNull();
+  });
 });
 
 describe('EI-22536788145490710: upgrade the installed issue claim guard', () => {
@@ -534,21 +554,38 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
     await seedFeature('F-contention-retry', { admission: 'auto' });
 
     const originalSql = h.sql;
-    let injectedFailures = 0;
-    h.sql = new Proxy(originalSql, {
+    const injectedFailures = { issue: 0, feature: 0 };
+    const interceptSql = (client: typeof originalSql): typeof originalSql => new Proxy(client, {
       apply(target, thisArg, args) {
         const strings = args[0];
-        const statement = Array.isArray(strings) ? strings.join('') : '';
-        if (
-          injectedFailures < 2 &&
-          /UPDATE harness_shared\.(engineer_issues|harness_features_consolidated)/.test(statement)
-        ) {
-          injectedFailures += 1;
+        const statement = Array.isArray(strings) ? strings.join('').replace(/\s+/g, ' ') : '';
+        const family = statement.includes('UPDATE harness_shared.engineer_issues')
+          ? 'issue'
+          : statement.includes('UPDATE harness_shared.harness_features_consolidated')
+            ? 'feature'
+            : null;
+        if (family && injectedFailures[family] === 0) {
+          injectedFailures[family] += 1;
           throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
         }
         return Reflect.apply(target, thisArg, args);
       },
-    }) as typeof h.sql;
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== 'begin') return value;
+        // Claim writes run on the transaction client supplied by boundedOrgTxn.
+        // Intercept that client too, so both claim families actually encounter contention.
+        return (...args: unknown[]) => {
+          const callback = args.at(-1);
+          if (typeof callback === 'function') {
+            args[args.length - 1] = (transaction: postgres.TransactionSql) =>
+              callback(interceptSql(transaction as unknown as typeof originalSql));
+          }
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+    h.sql = interceptSql(originalSql);
 
     try {
       expect((await wi.claimWorkItem('EI-contention-retry', 'issue-agent', { harness: H }))?.assignee).toBe(
@@ -561,7 +598,7 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
       h.sql = originalSql;
     }
 
-    expect(injectedFailures).toBe(2);
+    expect(injectedFailures).toEqual({ issue: 1, feature: 1 });
   });
 
   it('two competing claims on one item ⇒ exactly one wins', async () => {
@@ -1048,7 +1085,7 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
     });
 
     it('expected-holder transfer releases only the prior holder touch-set', async () => {
-      const transferPath = 'packages/operator-core/lib/external-triggers/slack-socket-manager.ts';
+      const transferPath = 'packages/operator-core/lib/external-triggers/source-store.ts';
       await seedFeature('F-transfer-locks', { takenBy: 'former-holder' });
       await db.sql`
         UPDATE harness_shared.harness_features_consolidated
@@ -1111,8 +1148,13 @@ describe('work_items claim_next — associative `in` + work-stealing (D-004/D-00
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1', kind: 'feature' }))?.id).toBe('F-feat');
   });
 
-  it('never self-selects a historical chunk, even when it is the only open row', async () => {
-    await seedFeature('F-historical-chunk', { kind: 'chunk', createdTs: 100 });
+  // P-009 / D-022 point 2: there is no hardcoded chunk exclusion any more. chunk stays
+  // nature work / audience agent; work_items:create rejects chunk and every real chunk row is
+  // terminal (measured 2026-10-01: done 45, dropped 6, passed 12, none open), so the claim
+  // floors exclude it. An OPEN chunk row is a row no writer can mint, so the fixture seeds the
+  // historical chunk the way it actually exists: terminal.
+  it('never self-selects a historical (terminal) chunk, even when it is the only row', async () => {
+    await seedFeature('F-historical-chunk', { kind: 'chunk', status: 'done', createdTs: 100 });
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1', kind: 'chunk' })).toBeNull();
   });
@@ -1416,5 +1458,41 @@ describe('unified status vocab — one open token, both families claimable (P-00
     await seedIssue('WI-plain-done', { kind: 'bug', status: 'open' });
     await wi.setWorkItemState('WI-plain-done', 'done', { by: 'agA', completionRef: 'done' });
     expect(await reasonOf('WI-plain-done')).toEqual({ status: 'done', terminal_reason: null });
+  });
+});
+
+describe('P-009 / D-024: the by-id claim refuses rows that are not agent work by category (real PG)', () => {
+  // The fixture has no stamping trigger (production's D-018 trigger derives nature/audience
+  // from datatype_registry), so each row's category is set directly on the base table.
+  async function seedCategory(id: string, kind: string, nature: string, audience: string | null) {
+    await seedFeature(id, { kind });
+    await db.sql`
+      UPDATE harness_shared.work_items SET nature = ${nature}, audience = ${audience}
+       WHERE harness_slug = ${H} AND feature_id = ${id}`;
+  }
+
+  it('refuses a work/human row and a record row by id, and still claims agent work', async () => {
+    await seedCategory('F-cat-edp', 'email-draft-proposal', 'work', 'human');
+    await seedCategory('F-cat-record', 'bet', 'record', null);
+    await seedFeature('F-cat-agent');
+
+    expect(await wi.claimWorkItem('F-cat-edp', 'agA', { harness: H })).toBeNull();
+    expect(await wi.claimWorkItem('F-cat-record', 'agA', { harness: H })).toBeNull();
+    expect((await wi.claimWorkItem('F-cat-agent', 'agA', { harness: H }))?.assignee).toBe('agA');
+
+    const held = await db.sql<{ feature_id: string; taken_by: string | null }[]>`
+      SELECT feature_id, taken_by FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug = ${H} AND feature_id IN ('F-cat-edp', 'F-cat-record', 'F-cat-agent')
+       ORDER BY feature_id`;
+    expect(held.map((r) => [r.feature_id, r.taken_by])).toEqual([
+      ['F-cat-agent', 'agA'],
+      ['F-cat-edp', null],
+      ['F-cat-record', null],
+    ]);
+
+    // The diagnostic claim.ts uses to name the refusal agrees with the gate that refused it.
+    expect(await wi.readNonAgentWorkCategory('F-cat-edp', H)).toEqual({ nature: 'work', audience: 'human' });
+    expect(await wi.readNonAgentWorkCategory('F-cat-record', H)).toEqual({ nature: 'record', audience: null });
+    expect(await wi.readNonAgentWorkCategory('F-cat-agent', H)).toBeNull();
   });
 });

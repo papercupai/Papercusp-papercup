@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   EMBED_LATENCY_CAPACITY,
+  EMBED_LATENCY_RECENT_SAMPLE_LIMIT,
   embedLatencyObservedCount,
   readEmbedLatency,
 } from '@papercusp/search';
@@ -36,7 +37,7 @@ export default defineTool({
   name: 'dev:embed_latency',
   profile: 'engineer',
   description:
-    'Read the process-local query-embed latency ring: per-caller count, timeout/error totals, p50/p99/max, and the budget each caller actually used. The ring is bounded and in-memory; `truncatedByCapacity` means counts are floors. ⚠ On clustered operators this is one worker only — read `pid`/`clusterSize` and repeat to sample workers.',
+    'Read the process-local query-embed latency ring: per-caller aggregates plus up to 50 recent per-call samples with bounded admission/provider/local-inference stage durations. Samples never retain query text. The ring is bounded and in-memory; `truncatedByCapacity` means counts are floors. ⚠ On clustered operators this is one worker only — read `pid`/`clusterSize` and repeat to sample workers.',
   capability: 'intel:read',
   guidance: {
     when:
@@ -44,7 +45,7 @@ export default defineTool({
     notWhen:
       'Service up/down — dev:service_health. Durable recall outcomes — dev:pg_query over memory_recall_stats. This ring is process-local and is not an audit log.',
     returns:
-      '{ ok, pid, clusterSize, sampledWorkers, perWorkerCaveat, uptimeSec, observedCount, capacity, windowMs, embeds, callers, oldestSampleMs, newestSampleMs, truncatedByCapacity }. Each caller includes { caller, n, ok, timeout, error, budgetMs, p50Ms, p99Ms, maxMs }; a null budget means the samples were unbounded and are not budget-gradable.',
+      `{ ok, pid, clusterSize, sampledWorkers, perWorkerCaveat, uptimeSec, observedCount, capacity, windowMs, embeds, callers, recentSamples (up to ${EMBED_LATENCY_RECENT_SAMPLE_LIMIT}), oldestSampleMs, newestSampleMs, truncatedByCapacity }. Recent samples include { atMs, caller, budgetMs, durationMs, outcome, stageDurationsMs? }; no query text is retained.`,
     seeAlso: [
       'dev:service_health (is the embed sidecar endpoint up)',
       'dev:pg_query (durable memory_recall_stats outcomes)',
@@ -75,6 +76,7 @@ export default defineTool({
       windowMs: z.unknown().optional(),
       embeds: z.unknown().optional(),
       callers: z.unknown().optional(),
+      recentSamples: z.unknown().optional(),
       oldestSampleMs: z.unknown().optional(),
       newestSampleMs: z.unknown().optional(),
       truncatedByCapacity: z.unknown().optional(),
@@ -83,7 +85,10 @@ export default defineTool({
   async handler(args) {
     const pid = process.pid;
     SEEN_PIDS.add(pid);
-    const window = readEmbedLatency(args?.windowMs === undefined ? {} : { windowMs: args.windowMs });
+    const window = readEmbedLatency({
+      ...(args?.windowMs === undefined ? {} : { windowMs: args.windowMs }),
+      includeRecentSamples: true,
+    });
     const clusterSize = resolveClusterWorkers(process.env, getResourceProfile().httpWorkers);
     return {
       data: {

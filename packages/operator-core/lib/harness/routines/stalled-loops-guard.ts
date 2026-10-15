@@ -153,6 +153,7 @@
  * an owner decision rather than correct this module's own wrong verdict.
  */
 import type { Sql } from 'postgres';
+import { recoverExpectedLoopExecution } from './loop-execution-recovery';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -164,12 +165,23 @@ import {
   turnsStalledFloorMs,
   rearmFireStarvedLoop,
   reviveDisarmedLoop,
+  routeStalledLoopToHostRecovery,
+  retainStalledLoopRecoveryWall,
+  HOST_RECOVERY_ROUTE_MAX,
+  HOST_RECOVERY_ROUTE_WINDOW_MS,
   computeLifecycleBackoff,
   computeCadenceDrift,
   type LoopStatus,
 } from './loop';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
+import {
+  classifyStalledLoopHost,
+  type StalledLoopHostClass,
+  type StalledLoopHostReading,
+} from '../../events/await/host-recovery-eligibility';
+import { findLiveHostAsync, readHostEventTailAsync } from '../../events/await/psu-pty-discovery';
+import { corroborateHostAuth, type ReadProviderErrorAfter } from '../../events/await/host-auth-corroboration';
 import type { AttentionNotifyInput } from '../../attention-notify';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
 
@@ -487,7 +499,7 @@ export interface StalledLoopsSweepDeps {
     workspaceId: string;
     pausedAfterMs: number;
     maxRevivals: number;
-  }) => Promise<Array<{ routineId: string; ownerId: string; pausedAtMs: number; revivedCount: number }>>;
+  }) => Promise<Array<{ routineId: string; ownerId: string; pausedAtMs: number; pauseReason: string; revivedCount: number }>>;
   /** Injectable for tests; defaults to the real wake-reachability probe — the SAME oracle
    *  reconcileLoopRoutines uses to refuse terminating a live owner (EI-19406534159939583). */
   probeReachability?: typeof probeWakeReachability;
@@ -533,6 +545,76 @@ export interface StalledLoopsSweepDeps {
    * page on the rare disarm. The type-only import above is erased at runtime.
    */
   notify?: (input: AttentionNotifyInput) => Promise<void>;
+  /**
+   * parked-agent-census P-007 — injectable for tests; defaults to the owner's live psu-host
+   * discovery record plus its lifecycle event tail. Read only for an owner that has already
+   * reached the disarm, so it costs nothing on a healthy sweep. A read FAILURE is treated as
+   * "no host" (the pre-P-007 disarm), never as a recoverable host.
+   */
+  readStalledHost?: (ownerId: string) => Promise<StalledLoopHostReading>;
+  /** parked-agent-census P-007 — injectable for tests; defaults to the budgeted route write. */
+  routeToHostRecovery?: typeof routeStalledLoopToHostRecovery;
+  retainHostRecoveryWall?: typeof retainStalledLoopRecoveryWall;
+  queueHostRelaunch?: typeof queueStalledHostRelaunch;
+}
+
+/** Use the existing host's carry cut, which preserves its model/account/terminal
+ * and coordination identity. A queued acknowledgement is deliberately not proof
+ * that the successor took a turn; the next guard pass still judges the host. */
+export async function queueStalledHostRelaunch(
+  ownerId: string,
+  workspaceId: string,
+): Promise<{ queued: boolean; reason?: string }> {
+  const { hostIsAgentLaunched, hostSupports, injectIntoHostWithConfirmation } = await import('../../events/await/psu-pty-discovery');
+  const host = await findLiveHostAsync(ownerId);
+  if (!host || host.ownerId !== ownerId || host.bridgeTty !== false || !hostIsAgentLaunched(host)
+    || !hostSupports(host, 'carry-respawn')) return { queued: false, reason: 'identity-preserving-host-route-unavailable' };
+  if (host.execution?.ownerStopRequested || host.execution?.ownerInputPending) {
+    return { queued: false, reason: 'owner-attended-host' };
+  }
+  const { buildOwnerRespawnLaunchSpec } = await import('../../carry-respawn');
+  const spec = await buildOwnerRespawnLaunchSpec(ownerId, {
+    effectiveWindowTokens: 200_000,
+    buildOpts: { workspaceId, boundaryDeliberate: false, boundarySelfRequested: false },
+  });
+  if (!spec) return { queued: false, reason: 'carry-build-failed' };
+  const { addressContinuationToOwner } = await import('../../carry-respawn-addressing');
+  const { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } = await import('../../agent-tools/coordination/compaction-recovery');
+  const { tagTurnForInjection } = await import('../../turn-provenance/turn-provenance');
+  const data = (await tagTurnForInjection({ sid: ownerId, origin: 'watchdog',
+    text: addressContinuationToOwner(
+      spec.firstPrompt ?? `Recover the stalled host. ${MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION} Resume the carried obligations.`, ownerId),
+  })).taggedText;
+  const result = await injectIntoHostWithConfirmation(host.sock, {
+    mode: 'carry-respawn', data, systemPromptAddendum: spec.systemPromptAddendum,
+    ownerId, expectedHostStartedAt: host.startedAt,
+  }, 10_000);
+  if (!result.ok || result.confirmation !== 'acked') {
+    return { queued: false, reason: result.reason ?? `carry-${result.confirmation}` };
+  }
+  const { markRespawnExpected } = await import('../../carry-respawn-marker');
+  await markRespawnExpected(ownerId).catch(() => {});
+  return { queued: true };
+}
+
+/**
+ * The owner's live psu host as `classifyStalledLoopHost` reads it (P-007). silent-halt reads it
+ * too, so this is where the census learns a session is wedged rather than stranded. A record
+ * without `authBlocked` predates P-004; its auth condition is corroborated from the codex
+ * rollout instead of being read as healthy (WI-6554700010008461, host-auth-corroboration.ts).
+ */
+export async function readStalledLoopHost(
+  ownerId: string,
+  deps: {
+    findHost?: typeof findLiveHostAsync;
+    readTail?: typeof readHostEventTailAsync;
+    readProviderError?: ReadProviderErrorAfter;
+  } = {},
+): Promise<StalledLoopHostReading> {
+  const host = await (deps.findHost ?? findLiveHostAsync)(ownerId);
+  if (!host) return { host: null, events: [] };
+  const events = await (deps.readTail ?? readHostEventTailAsync)(ownerId).catch(() => []);
+  return { host: await corroborateHostAuth(host, deps.readProviderError), events };
 }
 
 export interface StalledLoopsSweepResult {
@@ -616,6 +698,14 @@ export interface StalledLoopsSweepResult {
    */
   vetoedByWithheldFire: string[];
   /**
+   * WI-10005352: owners whose most recent fire loop-fire's BLOCKING-AWAIT SUPPRESSION withheld
+   * (`lastWithheldReason === 'await-blocking'`, `lastWithheldAt >= lastFiredAt`) and whose
+   * suppression re-arm still has a resume pending (`nextFireAt` in the future). The owner is
+   * parked on an await it registered itself; the loop is deliberately silent until that await
+   * fires or its threshold passes. Left alone, exactly like `vetoedByProviderWall`.
+   */
+  vetoedByAwaitSuppression: string[];
+  /**
    * EI-19966210024116714: the subset of `stalledOwners` whose loop is armed against a harness
    * their OWN session scope cannot address. The routine sits on workspace X while the owner's
    * `session_briefs` row resolves to workspace Y, so every harness-scoped call that session makes
@@ -690,6 +780,21 @@ export interface StalledLoopsSweepResult {
   cadenceDrift: string[];
   /** P-007 workspace-wide population signal; explicit unknown on a failed census. */
   population: LoopPopulationSnapshot;
+  /**
+   * parked-agent-census P-007: turn-stalled loops kept ARMED and made due, because the owner's
+   * host reports a condition the next wake recovers (a dead provider login or a quota wall the
+   * executor recycles). Never disarmed. Measured 2026-10-10: 37 of 61 turns-stalled disarms
+   * were this population.
+   */
+  routedToHostRecovery: Array<{ ownerId: string; condition: string }>;
+  /**
+   * parked-agent-census P-007: disarmed owners whose host is unhealthy in a way a wake cannot
+   * clear (an unbindable successor, a dead shared login, an interactive host), or whose
+   * host-recovery route budget is spent. A subset of the disarmed owners; the remedy names
+   * what a human or P-012 has to do instead of "re-arm with loop:arm".
+   */
+  disarmedHostUnhealthy: Array<{ ownerId: string; condition: string; remedy: string }>;
+  retainedHostRecoveryWalls: Array<{ ownerId: string; condition: string; reason: string; remedy: string }>;
   dryRun: boolean;
 }
 
@@ -714,6 +819,10 @@ export async function sweepStalledLoops(
   const getStatuses = deps.getStatuses ?? getLoopStatuses;
   const autoPause = deps.autoPause ?? autoPauseLoopRoutine;
   const rearm = deps.rearm ?? rearmFireStarvedLoop;
+  const readStalledHost = deps.readStalledHost ?? readStalledLoopHost;
+  const routeToHostRecovery = deps.routeToHostRecovery ?? routeStalledLoopToHostRecovery;
+  const retainHostRecoveryWall = deps.retainHostRecoveryWall ?? retainStalledLoopRecoveryWall;
+  const queueHostRelaunch = deps.queueHostRelaunch ?? queueStalledHostRelaunch;
   const revive = deps.revive ?? reviveDisarmedLoop;
   const probeReachability = deps.probeReachability ?? probeWakeReachability;
   // WI-37546 — one indexed read for the whole sweep. `unnest` pairs each owner with its OWN
@@ -788,11 +897,18 @@ export async function sweepStalledLoops(
     deps.readRevivableLoops ??
     (async (o: { sql: Sql; workspaceId: string; pausedAfterMs: number; maxRevivals: number }) => {
       const rows = await o.sql<
-        Array<{ id: string; target_owner_id: string; paused_at_ms: string | number; revived_count: number }>
+        Array<{
+          id: string;
+          target_owner_id: string;
+          paused_at_ms: string | number;
+          pause_reason: string;
+          revived_count: number;
+        }>
       >`
         SELECT id,
                target_owner_id,
                (metadata->'pause'->>'pausedAtMs')::bigint            AS paused_at_ms,
+               metadata->>'loop_paused_reason'                       AS pause_reason,
                COALESCE((metadata->>'loop_revived_count')::int, 0)   AS revived_count
           FROM harness_shared.routines
          WHERE workspace_id = ${o.workspaceId}
@@ -806,11 +922,18 @@ export async function sweepStalledLoops(
                < to_timestamp(((metadata->'pause'->>'pausedAtMs')::bigint) / 1000.0)
       `;
       return rows
-        .filter((r) => typeof r?.target_owner_id === 'string' && r.target_owner_id.length > 0)
+        .filter(
+          (r) =>
+            typeof r?.target_owner_id === 'string' &&
+            r.target_owner_id.length > 0 &&
+            typeof r?.pause_reason === 'string' &&
+            r.pause_reason.length > 0,
+        )
         .map((r) => ({
           routineId: r.id,
           ownerId: r.target_owner_id,
           pausedAtMs: Number(r.paused_at_ms),
+          pauseReason: r.pause_reason,
           revivedCount: Number(r.revived_count) || 0,
         }))
         .filter((r) => Number.isFinite(r.pausedAtMs));
@@ -877,7 +1000,13 @@ export async function sweepStalledLoops(
       `[stalled-loops-guard] revival candidate read failed (${e instanceof Error ? e.message : e}) — ` +
         `reviving nobody this sweep; previously-disarmed loops stay down.`,
     );
-    return [] as Array<{ routineId: string; ownerId: string; pausedAtMs: number; revivedCount: number }>;
+    return [] as Array<{
+      routineId: string;
+      ownerId: string;
+      pausedAtMs: number;
+      pauseReason: string;
+      revivedCount: number;
+    }>;
   });
   if (reviveCandidates.length > 0) {
     const sinceDisarm = await readOwnerToolActivity(
@@ -894,26 +1023,27 @@ export async function sweepStalledLoops(
     for (const c of reviveCandidates) {
       const activity = sinceDisarm.get(c.ownerId);
       if (!isProgressingToolActivity(activity)) continue;
-      revivedAfterDisarm.push(c.ownerId);
       console.warn(
-        `[stalled-loops-guard] REVIVED ${c.ownerId}: disarmed as turn-stalled at ` +
+        `[stalled-loops-guard] REVIVAL CANDIDATE ${c.ownerId}: disarmed as turn-stalled at ` +
           `${new Date(c.pausedAtMs).toISOString()}, but has made ${activity?.calls} tool call(s) since ` +
           `(${activity?.distinctTools} distinct tool(s), ${activity?.okCalls} ok, last ` +
-          `${activity?.lastCallAt ?? 'unknown'}) — the owner is working, so the verdict was wrong. ` +
-          `Re-arming (revival ${c.revivedCount + 1}/${MAX_REVIVALS}); a disarm is a pause with a ` +
-          `condition, not a one-way door (WI-37546).`,
+          `${activity?.lastCallAt ?? 'unknown'}) — owner activity makes it eligible for a ` +
+          `snapshot-guarded revival attempt (WI-37546).`,
       );
       if (!dryRun) {
-        await revive(
+        const didRevive = await revive(
           sql,
           c.routineId,
+          { pausedAtMs: c.pausedAtMs, pauseReason: c.pauseReason },
           `stalled-loops-guard (WI-37546): revived — disarmed as turn-stalled at ` +
             `${new Date(c.pausedAtMs).toISOString()}, then made ${activity?.calls} tool call(s) ` +
             `(${activity?.distinctTools} distinct, ${activity?.okCalls} ok, last ` +
             `${activity?.lastCallAt ?? 'unknown'}). The owner was working; the turn-stalled verdict ` +
             `was wrong. Revival ${c.revivedCount + 1} of ${MAX_REVIVALS}.`,
         );
+        if (!didRevive) continue;
       }
+      revivedAfterDisarm.push(c.ownerId);
     }
   }
   /**
@@ -1042,8 +1172,15 @@ export async function sweepStalledLoops(
   const repairedWakeStarved: string[] = [];
   /** WI-36792: owners whose last fire the GATE withheld — never sent, so never answerable. */
   const vetoedByWithheldFire: string[] = [];
+  /** WI-10005352: owners parked on a blocking await whose suppression re-arm is still pending. */
+  const vetoedByAwaitSuppression: string[] = [];
   /** EI-19966210024116714: disarmed owners whose loop harness their own session cannot address. */
   const disarmedUnaddressableHarness: string[] = [];
+  /** parked-agent-census P-007: kept armed and made due for a host recovery the next wake carries. */
+  const routedToHostRecovery: Array<{ ownerId: string; condition: string }> = [];
+  /** parked-agent-census P-007: disarmed with a host condition a wake cannot clear. */
+  const disarmedHostUnhealthy: Array<{ ownerId: string; condition: string; remedy: string }> = [];
+  const retainedHostRecoveryWalls: StalledLoopsSweepResult['retainedHostRecoveryWalls'] = [];
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
@@ -1057,6 +1194,9 @@ export async function sweepStalledLoops(
     // and has not happened yet. Re-disarming here would undo the revival within milliseconds and
     // spend one of its bounded revival attempts doing it.
     if (revivedThisSweep.has(ownerId)) continue;
+    const executionRecovery = await recoverExpectedLoopExecution({ sql, routineId,
+      ownerId, nowMs: Date.now(), dryRun });
+    if (executionRecovery.handled) continue;
 
     // EI-19362678179163398 — SECOND-SOURCE VETO. Disarming a loop is an automated write
     // against a live agent, and the verdict above rests on ONE column (`last_turn_at`)
@@ -1075,6 +1215,28 @@ export async function sweepStalledLoops(
     // exempt exactly the comatose-host population WI-6639 targets.
     const realTurnMs = status.lastRealTurnAt ? Date.parse(status.lastRealTurnAt) : NaN;
     if (Number.isFinite(realTurnMs) && nowMs - realTurnMs < turnsStalledFloorMs(status.intervalSec)) {
+      // WI-6554700010012442 — this veto guards a DISARM. A fire-starved loop whose owner keeps
+      // producing real turns through OTHER wakes (inbox, fleet awaits) is the clearest re-arm
+      // case there is: the recent turn already proves the owner reachable, and the re-arm is
+      // the reversible remedy (one fire clears `fireStarved`, since `firesSinceArm` leaves 0).
+      // Vetoing it left a loop parked for ~66 min with zero fires and nothing acting on it.
+      if (status.fireStarved) {
+        reArmedFireStarved.push(ownerId);
+        console.warn(
+          `[stalled-loops-guard] FIRE-STARVED ${ownerId}: zero fires since the arm, yet a real turn ` +
+            `landed ${Math.round((nowMs - realTurnMs) / 1000)}s ago through another wake. Re-arming ` +
+            `(WI-6554700010012442).`,
+        );
+        if (!dryRun) {
+          await rearm(
+            sql,
+            routineId,
+            `stalled-loops-guard (WI-6554700010012442): fire-starved — zero fires since the arm while ` +
+              `real turns kept landing (lastRealTurnAt ${status.lastRealTurnAt})`,
+          );
+        }
+        continue;
+      }
       vetoedByRecentTurn.push(ownerId);
       console.warn(
         `[stalled-loops-guard] VETO ${ownerId}: turnsStalled:true but a real turn landed ` +
@@ -1133,6 +1295,46 @@ export async function sweepStalledLoops(
           `(~${Math.round(wall.resumesInMs / 1000)}s away) — refusing to disarm. It is waiting out a ` +
           `TRANSIENT capacity condition, not wedged; disarming would make a self-healing backoff ` +
           `permanent (EI-19441932615368003).`,
+      );
+      continue;
+    }
+
+    // WI-10005352 — AWAIT-SUPPRESSED, NOT STALLED. The provider-wall shape with a different cause.
+    //
+    // loop-fire's blocking-await suppression (EI-10901) withholds a due fire while the owner is
+    // parked on an await it registered itself, and re-arms `next_fire_at` to the await's resume
+    // threshold. The claim has already stamped `lastFiredAt`, no wake goes out, and presence goes
+    // stale because the owner is correctly asleep. After a floor's worth of that,
+    // computeTurnsStalled's frozen-gap branch reads it as dead. Measured 2026-10-02: su-ce50c06d
+    // answered its 01:14Z wake (turn 01:19:37Z); the 01:25:33Z fire was suppressed on
+    // conversation:answered with resume at 02:14:04Z; the 02:07:04Z sweep disarmed it as
+    // `turns-stalled`. The session was alive and took a turn at 02:08Z.
+    //
+    // Keyed on THREE facts, all from this sweep's status: the withhold was the await path
+    // (`lastWithheldReason`, so a fire-gate withhold keeps its own veto above), it is the MOST
+    // RECENT fire (`lastWithheldAt >= lastFiredAt`), and the re-arm's resume is still in the future.
+    //
+    // No reachability probe, unlike the withheld-fire veto: the suppression itself only happens
+    // while the owner holds a live blocking await, and SessionEnd cancels a dead session's awaits.
+    // A session that dies after the withhold is held off only until the resume fires: that wake
+    // then goes out, no turn follows, `lastFiredAt` passes `lastWithheldAt`, and the ordinary
+    // disarm applies on a later sweep. Bounded delay, same trade as `vetoedByProviderWall`.
+    const suppressedWithheldMs = status.lastWithheldAt ? Date.parse(status.lastWithheldAt) : NaN;
+    const suppressedFiredMs = status.lastFiredAt ? Date.parse(status.lastFiredAt) : NaN;
+    const suppressedResumeMs = status.nextFireAt ? Date.parse(status.nextFireAt) : NaN;
+    if (
+      status.lastWithheldReason === 'await-blocking' &&
+      Number.isFinite(suppressedWithheldMs) &&
+      Number.isFinite(suppressedFiredMs) &&
+      suppressedWithheldMs >= suppressedFiredMs &&
+      Number.isFinite(suppressedResumeMs) &&
+      suppressedResumeMs > nowMs
+    ) {
+      vetoedByAwaitSuppression.push(ownerId);
+      console.warn(
+        `[stalled-loops-guard] AWAIT-SUPPRESSED ${ownerId}: the last fire (${status.lastFiredAt}) was ` +
+          `withheld at ${status.lastWithheldAt} because the owner is parked on a blocking await, and the ` +
+          `loop resumes at ${status.nextFireAt} — refusing to disarm (WI-10005352).`,
       );
       continue;
     }
@@ -1329,60 +1531,32 @@ export async function sweepStalledLoops(
         }
       }
 
-      // WI-36792 — Case 2 of the wake-starved split: NOT repairable (a live session with a
-      // VALID standing await has nothing for `armWake` to fix), but the reason `lastWakeAt`
-      // is frozen is that the fire GATE withheld the most recent fire outright — it never
-      // went out, so nobody was ever asked for a turn. Only reachable when the branch above
-      // did not already `continue` (i.e. `!probed?.awaitRepairable`, or its repair write
-      // failed and fell through — see the `repairedWakeStarved.pop()` path just above).
-      //
-      // `lastWithheldAt >= lastFiredAt` is the discriminator loop.ts documents on the field
-      // itself: the claim stamps `lastFiredAt` and the gate is consulted immediately after,
-      // so a withheld-at at or after it means THIS fire, not a stale one from a prior cycle.
-      //
-      // VETOED, not repaired and not re-armed — the gate's backoff is a deliberate cadence
-      // (reconcileLoopRoutines' `gate-backoff` rebase honours `retryAfterSec`; re-arming here
-      // would fight it, the same "leave it alone" reasoning as `vetoedByProviderWall`).
-      //
-      // ⚠ THE REACHABILITY TERM IS LOAD-BEARING — the withhold stamp ALONE would blunt exactly
-      // the population WI-6639 exists to reap, permanently. A corpse is not merely compatible
-      // with a perpetual withhold, it CONVERGES on one: its wakes find no standing await, so
-      // every fire records `no-session-now`, `consecutive_errors` climbs without bound, and the
-      // circuit denies an ever-growing share of its claims — while `lastWakeAt` stays frozen
-      // (no delivery row is created either way), so `wakeStarved` is permanently true. Sample it
-      // at any sweep and `lastWithheldAt >= lastFiredAt` reads true, forever.
-      //
-      // Reachability separates the two, and — unlike the WI-36685 case above, where it could NOT
-      // be used — it is MEANINGFUL here, for a reason specific to this sub-case: a withheld fire
-      // never reached `wake()`, so it never touched the standing await. Gate 1 of
-      // `deriveWakeReachability` therefore PASSES and the verdict reflects real liveness, instead
-      // of the `false`-by-construction it returns for an owner whose await is missing. A corpse's
-      // await was cancelled at SessionEnd ⇒ Gate 1 fails ⇒ `reachable:false` ⇒ no veto ⇒ it takes
-      // the disarm exactly as it did before this branch existed.
-      //
-      // `!== false` and not `=== true`: `null` is the probe having THROWN, i.e. presence UNKNOWN,
-      // and by this module's own asymmetry (a wrong veto costs one sweep; a wrong disarm is
-      // permanent) an uncertain read must not license the irreversible write — the same direction
-      // as the fire-starved branch's `.catch(() => true)` earlier in this loop.
-      //
-      // SELF-LIMITING even when it does engage, so it cannot silently become a standing
-      // exemption: the veto holds only while the withhold is the most recent event. Once the
-      // backoff clears and a fire actually goes out, a delivery row is created, `lastWakeAt`
-      // advances past `lastFiredAt`, `wakeStarved` goes false, and an agent that still is not
-      // answering takes the ordinary disarm on the very next sweep.
-      if (!probed?.awaitRepairable && lastFireWasWithheld && probed?.reachable !== false) {
-        vetoedByWithheldFire.push(ownerId);
-        console.warn(
-          `[stalled-loops-guard] WITHHELD-FIRE VETO ${ownerId}: fires advanced to ${status.lastFiredAt} ` +
-            `while lastWakeAt stayed at ${status.lastWakeAt ?? 'never'} — but the fire gate WITHHELD that ` +
-            `claim (lastWithheldAt=${status.lastWithheldAt}), so it was never actually sent and no delivery ` +
-            `row exists. The session is ` +
-            `${probed == null ? 'of UNKNOWN reachability (the probe failed — declining an irreversible write on an uncertain read)' : `reachable via ${probed.channel}`} ` +
-            `with its standing await intact, so there is nothing to repair. Refusing to disarm — the agent ` +
-            `was never asked for a turn; the gate's own backoff owns the retry (WI-36792).`,
-        );
-        continue;
-      }
+    }
+
+    // WI-36792 / WI-10007162 — a withheld fire was never dispatched, regardless of the
+    // previous wake's age. Nesting this veto under wakeStarved disarmed live owners whose
+    // last delivery was inside the thirty-minute floor while their gate retry was pending.
+    // The missing-await repair above retains priority and reuses its probe here.
+    if (lastFireWasWithheld && !wakeStarved) {
+      probed = await probeReachability(ownerId).catch(() => null);
+    }
+
+    // Reachability is essential: a dead owner's repeated no-session failures also converge
+    // on gate backoff. A confirmed unreachable owner still disarms; an unavailable probe
+    // must not license that permanent write. Once a newer fire is dispatched, its stamp
+    // passes lastWithheldAt and this veto stops applying. Preserve the gate's retry cadence.
+    if (lastFireWasWithheld && !probed?.awaitRepairable && probed?.reachable !== false) {
+      vetoedByWithheldFire.push(ownerId);
+      console.warn(
+        `[stalled-loops-guard] WITHHELD-FIRE VETO ${ownerId}: fires advanced to ${status.lastFiredAt} ` +
+          `while lastWakeAt stayed at ${status.lastWakeAt ?? 'never'} — but the fire gate WITHHELD that ` +
+          `claim (lastWithheldAt=${status.lastWithheldAt}), so it was never actually sent and no delivery ` +
+          `row exists. The session is ` +
+          `${probed == null ? 'of UNKNOWN reachability (the probe failed — declining an irreversible write on an uncertain read)' : `reachable via ${probed.channel}`} ` +
+          `with its standing await intact, so there is nothing to repair. Refusing to disarm — the agent ` +
+          `was never asked for a turn; the gate's own backoff owns the retry (WI-36792).`,
+      );
+      continue;
     }
 
     // EI-20502003602774122 — COLD DELIVERED RESET, NOT WEDGED. A cold psu-socket-reset
@@ -1503,6 +1677,85 @@ export async function sweepStalledLoops(
           `activity has stopped counting as progress. Disarming; the disarm is revivable ` +
           `(WI-37546).`,
       );
+    }
+
+    // parked-agent-census-resumption-and-root-cause-2026-10-09 P-007: read the HOST before the
+    // disarm. A turn-stalled verdict says fires land and no turn follows; it does not say why.
+    // Measured 2026-10-10, 37 of 61 such disarms were sessions whose codex child held a dead
+    // provider login. The executor recycles exactly that child on the next wake (P-004), so
+    // disarming threw the recovery away and left the session dark. The classifier applies the
+    // executor's own eligibility gate, so a loop is kept armed only for a recycle that will run.
+    // A host read failure decides as "no host": the pre-P-007 disarm, never a held loop.
+    let hostClass: StalledLoopHostClass = { kind: 'no-host' };
+    try {
+      hostClass = classifyStalledLoopHost(await readStalledHost(ownerId), ownerId, nowMs);
+    } catch (e) {
+      console.warn(
+        `[stalled-loops-guard] host read failed for ${ownerId}: ` +
+          `${e instanceof Error ? e.message : String(e)}; deciding as no-host (P-007).`,
+      );
+    }
+    if (hostClass.kind === 'recoverable-on-wake') {
+      const routed = dryRun
+        ? { routed: true }
+        : await routeToHostRecovery(
+            sql,
+            routineId,
+            `stalled-loops-guard (P-007): host ${hostClass.condition} — kept armed and made due so the ` +
+              `next wake carries the ${hostClass.cause} recycle`,
+            hostClass.condition,
+          );
+      if (routed.routed) {
+        routedToHostRecovery.push({ ownerId, condition: hostClass.condition });
+        console.warn(
+          `[stalled-loops-guard] HOST-RECOVERY ${ownerId}: turnsStalled:true and the host reports ` +
+            `${hostClass.condition}, which the next wake recycles. Kept armed and made due, NOT ` +
+            `disarmed (parked-agent-census P-007).`,
+        );
+        continue;
+      }
+      hostClass = {
+        kind: 'needs-relaunch',
+        condition: hostClass.condition,
+        why:
+          `the host-recovery route budget is spent (${HOST_RECOVERY_ROUTE_MAX} routes in ` +
+          `${Math.round(HOST_RECOVERY_ROUTE_WINDOW_MS / 3_600_000)}h) and turns still did not resume`,
+        remedy: 'relaunch the session through the identity-preserving successor route (P-012)',
+      };
+    }
+    if (hostClass.kind === 'needs-relaunch') {
+      // Only binding/pending-pipeline faults warrant a carry cut. A shared auth
+      // or quota wall needs its stated prerequisite; recycling it again would
+      // bypass the executor's bound or change the original account route.
+      let reason = hostClass.why;
+      if (hostClass.condition === 'unbound-successor' || hostClass.condition === 'pending-turn-stuck') {
+        const reserved = dryRun ? { routed: true } : await routeToHostRecovery(sql, routineId,
+          'stalled-loops-guard (P-007): reserve identity-preserving carry recovery', hostClass.condition, { deferFire: true });
+        if (reserved.routed) {
+          const recovery = dryRun ? { queued: true } : await queueHostRelaunch(ownerId, ws)
+            .catch((e: unknown) => ({ queued: false, reason: `carry-failed:${String(e)}` }));
+          if (recovery.queued) {
+            routedToHostRecovery.push({ ownerId, condition: hostClass.condition });
+            console.warn(`[stalled-loops-guard] HOST-RECOVERY ${ownerId}: identity-preserving carry queued; pickup remains unverified.`);
+            continue;
+          }
+          reason += `; recovery refused: ${recovery.reason ?? 'unknown'}`;
+        } else reason += '; host-recovery route budget is spent or loop was stopped';
+      }
+      const wall = { ownerId, condition: hostClass.condition, reason, remedy: hostClass.remedy };
+      retainedHostRecoveryWalls.push(wall);
+      const retained = dryRun ? { retained: true, changed: false } : await retainHostRecoveryWall(sql, routineId, wall);
+      if (retained.retained && retained.changed && !dryRun) {
+        try {
+          await notify({ kind: 'intervention', title: 'Stalled host recovery needs a prerequisite',
+            body: `${ownerId} (${wall.condition}): ${wall.reason}. ${wall.remedy}. The loop remains active; stalled-loops-guard owns the bounded retry.`,
+            importance: 'urgent', workspaceId: ws,
+            data: { hostUnhealthy: ownerId, hostUnhealthyCount: 1, recoveryRetained: true } });
+        } catch (e) {
+          console.warn(`[stalled-loops-guard] recovery wall page failed for ${ownerId}: ${String(e)}`);
+        }
+      }
+      continue;
     }
 
     stalledOwners.push(ownerId);
@@ -1646,6 +1899,19 @@ export async function sweepStalledLoops(
             `workspace scope. Start at agent-tools/loop/arm.ts's harness_workspace_mismatch guard (it ` +
             `refuses to CREATE a new strand but cannot repair an existing one) and at whatever ` +
             `re-resolved those sessions' scope after they armed (EI-19966210024116714).`
+          : '') +
+        (disarmedHostUnhealthy.length > 0
+          ? `\n\nOF THE DISARMED ABOVE, ${disarmedHostUnhealthy.length} had a psu host reporting a ` +
+            `condition a wake cannot clear: ` +
+            disarmedHostUnhealthy.map((h) => `${h.ownerId} (${h.condition}: ${h.remedy})`).join('; ') +
+            `. For THESE the "re-arm with loop:arm" advice above does NOT apply — a re-armed loop ` +
+            `feeds the same unhealthy host and is disarmed again. Each disarm reason names the ` +
+            `condition (parked-agent-census P-007).`
+          : '') +
+        (routedToHostRecovery.length > 0
+          ? `\n\nALSO NOT disarmed: ${routedToHostRecovery.length} loop(s) were HOST-WALLED ` +
+            `(${routedToHostRecovery.map((h) => `${h.ownerId}: ${h.condition}`).join(', ')}) — the ` +
+            `next wake recycles their child, so they were kept armed and made due (P-007).`
           : ''),
       category: 'severe-event',
     });
@@ -1677,6 +1943,11 @@ export async function sweepStalledLoops(
   // noise that guard exists to prevent.
   const unaddressableSet = new Set(disarmedUnaddressableHarness);
   const strandedAndReachable = disarmedWhileReachable.filter((o) => unaddressableSet.has(o));
+  // P-007: same intersection, same reason. A reachable session whose host reports a condition a
+  // wake cannot clear (an unbound successor, a dead SHARED login, an interactive host) is not
+  // helped by "resume and re-arm"; the page must carry the host's own remedy instead.
+  const reachableSet = new Set(disarmedWhileReachable);
+  const unhealthyAndReachable = disarmedHostUnhealthy.filter((h) => reachableSet.has(h.ownerId));
 
   if (disarmedWhileReachable.length > 0 && !dryRun) {
     try {
@@ -1709,6 +1980,12 @@ export async function sweepStalledLoops(
               `scope unchanged and the next sweep disarms it again. RELAUNCH those sessions with the ` +
               `correct workspace scope, or re-arm them against a harness the session can actually ` +
               `reach (EI-19966210024116714).`
+            : '') +
+          (unhealthyAndReachable.length > 0
+            ? `\n\n⚠ ${unhealthyAndReachable.length} of these will NOT be fixed by re-arming either, ` +
+              `because their psu host reports a condition a wake cannot clear: ` +
+              unhealthyAndReachable.map((h) => `${h.ownerId} (${h.condition}) — ${h.remedy}`).join('; ') +
+              ` (parked-agent-census P-007).`
             : ''),
         importance: 'urgent',
         workspaceId: ws,
@@ -1717,6 +1994,8 @@ export async function sweepStalledLoops(
           count: disarmedWhileReachable.length,
           unaddressableHarness: strandedAndReachable.join(','),
           unaddressableHarnessCount: strandedAndReachable.length,
+          hostUnhealthy: unhealthyAndReachable.map((h) => h.ownerId).join(','),
+          hostUnhealthyCount: unhealthyAndReachable.length,
         },
       });
     } catch (e) {
@@ -1749,24 +2028,35 @@ export async function sweepStalledLoops(
   // not these agents" — and a sweep that produces revivals alongside starvation is emphatically
   // one event. When revivals are the ONLY finding, the summary says so plainly rather than
   // reporting them under a starvation headline.
-  const starved = [...reArmedFireStarved, ...repairedWakeStarved, ...reArmedToolLiveParked];
+  // P-007 adds a fourth repaired population: HOST-WALLED loops, kept armed for the next wake's
+  // recycle. Same notice for the same reason — "this system, not these agents".
+  const hostRouted = routedToHostRecovery.map((h) => h.ownerId);
+  const starved = [...reArmedFireStarved, ...repairedWakeStarved, ...reArmedToolLiveParked, ...hostRouted];
+  // A specific headline only when ONE population is present; a mixed sweep gets the generic one.
+  const starvedPopulations = [reArmedFireStarved, repairedWakeStarved, reArmedToolLiveParked, hostRouted];
+  const onlyPopulation = (pop: readonly string[]) =>
+    pop.length > 0 && starvedPopulations.every((p) => p === pop || p.length === 0);
   if ((starved.length > 0 || revivedAfterDisarm.length > 0) && stalledOwners.length === 0 && !dryRun) {
     await broadcast({
       summary:
         starved.length === 0
           ? `${revivedAfterDisarm.length} engine loop(s) on ${ws} were RE-ARMED after a wrong ` +
             `turn-stalled disarm — their owners were working all along (WI-37546).`
-          : repairedWakeStarved.length === 0 && reArmedToolLiveParked.length === 0
+          : onlyPopulation(reArmedFireStarved)
             ? `${reArmedFireStarved.length} armed engine loop(s) on ${ws} stopped RECEIVING fires while still ` +
               `answering them — re-armed, not disarmed (EI-19406534159939583).`
-            : reArmedFireStarved.length === 0 && reArmedToolLiveParked.length === 0
+            : onlyPopulation(repairedWakeStarved)
               ? `${repairedWakeStarved.length} armed engine loop(s) on ${ws} had every fire reach NOBODY — no ` +
                 `standing inbox-wake await, so nothing was ever delivered; repaired, not disarmed (WI-36685).`
-              : reArmedFireStarved.length === 0 && repairedWakeStarved.length === 0
+              : onlyPopulation(reArmedToolLiveParked)
                 ? `${reArmedToolLiveParked.length} armed engine loop(s) on ${ws} were TOOL-LIVE but stuck ` +
                   `parked at the in-flight sentinel — made due immediately, not disarmed (WI-41231).`
-                : `${starved.length} armed engine loop(s) on ${ws} were being STARVED of turns while still alive — ` +
-                  `repaired, not disarmed (EI-19406534159939583 / WI-36685 / WI-41231).`,
+                : onlyPopulation(hostRouted)
+                  ? `${hostRouted.length} armed engine loop(s) on ${ws} produced no turns because their psu ` +
+                    `host is walled (dead provider login or quota) — kept armed so the next wake recycles ` +
+                    `the child, not disarmed (P-007).`
+                  : `${starved.length} armed engine loop(s) on ${ws} were being STARVED of turns while still alive — ` +
+                    `repaired, not disarmed (EI-19406534159939583 / WI-36685 / WI-41231 / P-007).`,
       body:
         (reArmedFireStarved.length > 0
           ? `FIRE-STARVED (no fire emitted): ${reArmedFireStarved.join(', ')}. Each one's most recent turn ` +
@@ -1789,6 +2079,16 @@ export async function sweepStalledLoops(
             `last fire while the active routine remained parked at next_fire_at = infinity. A plain ` +
             `liveness veto would leave that schedule stuck, so the loops were made due immediately ` +
             `with the existing self-correcting re-arm write (WI-41231).\n\n`
+          : '') +
+        (routedToHostRecovery.length > 0
+          ? `HOST-WALLED (fires landed, the child could not answer): ` +
+            `${routedToHostRecovery.map((h) => `${h.ownerId} (${h.condition})`).join(', ')}. Each ` +
+            `session's psu host reports a wall the next wake clears by recycling the child — ` +
+            `auth-blocked is a dead in-memory provider login, quota-blocked a walled account on the ` +
+            `auto route. Disarming would have thrown that recovery away, so the loops were kept armed ` +
+            `and made due. Bounded to ${HOST_RECOVERY_ROUTE_MAX} routes per loop inside ` +
+            `${Math.round(HOST_RECOVERY_ROUTE_WINDOW_MS / 3600_000)}h; past that the loop is disarmed ` +
+            `with the host condition named in its reason (parked-agent-census P-007).\n\n`
           : '') +
         (revivedAfterDisarm.length > 0
           ? `REVIVED (wrongly disarmed earlier, owner demonstrably working): ` +
@@ -1893,12 +2193,16 @@ export async function sweepStalledLoops(
     disarmedWhileReachable,
     repairedWakeStarved,
     vetoedByWithheldFire,
+    vetoedByAwaitSuppression,
     disarmedUnaddressableHarness,
     vetoedByToolActivity,
     reArmedToolLiveParked,
     revivedAfterDisarm,
     cadenceDrift,
     population,
+    routedToHostRecovery,
+    disarmedHostUnhealthy,
+    retainedHostRecoveryWalls,
     dryRun,
   };
 }

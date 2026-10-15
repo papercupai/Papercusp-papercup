@@ -76,7 +76,7 @@ describe('snapshot receipt recovery', () => {
     );
   });
 
-  it('reconciles the exact tagged artifact and preserves a successful dump status', async () => {
+  it.each([undefined, 'stable-root-object'])('reconciles a tagged artifact using its stable root when present (%s)', async (rootObject) => {
     const queries: Array<{ text: string; values: unknown[] }> = [];
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
@@ -108,6 +108,7 @@ describe('snapshot receipt recovery', () => {
       startTime: '2026-08-26T22:43:39.886Z',
       endTime: '2026-08-26T22:43:49.378Z',
       source: { path: root },
+      ...(rootObject ? { rootEntry: { obj: rootObject } } : {}),
       stats: { addedSize: 17, totalSize: 6_948_207_239 },
     }]));
 
@@ -123,13 +124,13 @@ describe('snapshot receipt recovery', () => {
       stillRunning: false,
       status: 'ok',
       dbDumpOk: true,
-      kopiaSnapshotId: '0de65178167b65df11cf1ba40a0169b0',
+      kopiaSnapshotId: rootObject ?? '0de65178167b65df11cf1ba40a0169b0',
       bytesAdded: 17,
       bytesTotal: 6_948_207_239,
     });
     const update = queries.find((query) => /UPDATE harness_shared\.backup_snapshots/.test(query.text));
     expect(update?.values).toEqual(expect.arrayContaining([
-      '0de65178167b65df11cf1ba40a0169b0',
+      rootObject ?? '0de65178167b65df11cf1ba40a0169b0',
       'ok',
       6_948_207_239,
       true,

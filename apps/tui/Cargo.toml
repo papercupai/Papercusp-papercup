@@ -19,7 +19,15 @@ path = "src/bin/pui_audio.rs"
 
 [dependencies]
 ratatui = "0.29"
-crossterm = "0.28"
+# `use-dev-tty` swaps crossterm's Unix input source from mio (EDGE-triggered
+# epoll) to level-triggered poll(2). The mio source reads one 1024-byte chunk,
+# returns its first event and never drains the fd, so whatever input lay past
+# that chunk waits for the NEXT keypress to re-arm the edge: a >1 KiB burst
+# (a held Backspace, an unbracketed paste) left pui idle with keys unread
+# (WI-10006651; measured 504 bytes fine, 2204 bytes stalled indefinitely).
+# Cargo unifies features, so ratatui's crossterm gets the same source.
+# Guarded by pui-e2e/input-burst-pty.integration.test.ts.
+crossterm = { version = "0.28", features = ["use-dev-tty"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,4 +1,5 @@
 /** D-363: a lease crosses Unix identities over the pack's group-restricted socket. */
+import { existsSync } from 'node:fs';
 import { connect, type Socket } from 'node:net';
 import type { Readable, Writable } from 'node:stream';
 import { FrameDecoder, FrameType, encodeJsonFrame } from '@papercusp/ipc-framing';
@@ -8,8 +9,26 @@ import { DesktopXServerExitedError, describeXServerExit } from '../agent-tools/c
 import { kasmvncWebsocketPort } from './x-server-backend';
 
 export const WORKSPACE_DESKTOP_SOCKET = '/run/papercusp-desktop/session.sock';
+/**
+ * personal-cloud-desktop-2026-10-06 (D-001): the SECOND instance of the D-363 socket
+ * worker, running as the customer account instead of the isolated desktop user. A
+ * personal (`scope: 'user'`) lease dials only this socket and an agent/pot lease only
+ * `WORKSPACE_DESKTOP_SOCKET`, so neither class can land in the other's identity.
+ */
+export const PERSONAL_DESKTOP_SOCKET = '/run/papercusp-personal-desktop/session.sock';
+/** The Unix account a personal desktop must run as — the customer workspace account. */
+export const PERSONAL_DESKTOP_ACCOUNT = 'papercusp-workspace';
 export const WORKSPACE_DESKTOP_PROTOCOL = 'papercusp-desktop-session-v1';
 export const WORKSPACE_DESKTOP_MAX_BYTES = 128 * 1024;
+
+/** A personal desktop was asked for on a host whose pack has no personal worker. */
+export class PersonalDesktopUnavailableError extends Error {
+  readonly code = 'personal_desktop_unavailable';
+  constructor(message = 'this workspace machine has no personal desktop worker (desktop pack not installed or too old)') {
+    super(message);
+    this.name = 'PersonalDesktopUnavailableError';
+  }
+}
 
 // Wire callers cannot choose a Unix identity, executable, environment, password path or display.
 export const workspaceDesktopOptions = z.object({
@@ -37,9 +56,11 @@ const desktopReply = z.object({
   glProbeSandboxed: z.boolean(),
   endpoint: z.object({ host: z.literal('127.0.0.1'), port: z.number().int() }).strict(),
   credentials: z.object({ view: credential, control: credential }).strict(),
+  /** The Unix account the worker asserted it runs as — sent by the personal worker (D-001). */
+  account: z.string().min(1).max(64).optional(),
 }).strict();
 
-export function serializeWorkspaceDesktop(desktop: SandboxDesktop): unknown {
+export function serializeWorkspaceDesktop(desktop: SandboxDesktop, account?: string): unknown {
   if (desktop.xServer !== 'kasmvnc' || !desktop.credentials || !desktop.endpoint) {
     throw new Error('isolated desktop did not produce an authenticated KasmVNC endpoint');
   }
@@ -50,6 +71,7 @@ export function serializeWorkspaceDesktop(desktop: SandboxDesktop): unknown {
     gl: desktop.gl, glProbeSandboxed: desktop.glProbeSandboxed,
     endpoint: desktop.endpoint,
     credentials: { view: desktop.credentials.view, control: desktop.credentials.control },
+    ...(account ? { account } : {}),
   };
 }
 
@@ -70,6 +92,8 @@ export async function serveWorkspaceDesktop(
   output: Writable,
   provision: (options: z.infer<typeof workspaceDesktopOptions>) => Promise<SandboxDesktop>,
   log: (line: string) => void = (line) => console.warn(`[desktop-session] ${line}`),
+  /** The Unix account this worker asserted it runs as; the personal worker reports it (D-001). */
+  account?: string,
 ): Promise<void> {
   let desktop: SandboxDesktop | undefined;
   let ending = false;
@@ -87,7 +111,7 @@ export async function serveWorkspaceDesktop(
         if (desktop) throw new Error('desktop already provisioned');
         const served: SandboxDesktop = desktop = await provision(request.options);
         if (input.destroyed || output.destroyed) return;
-        output.write(encodeJsonFrame(FrameType.EVENT_JSON, serializeWorkspaceDesktop(served)));
+        output.write(encodeJsonFrame(FrameType.EVENT_JSON, serializeWorkspaceDesktop(served, account)));
         // A worker that outlives its X server holds the socket open, and the operator then
         // offers a `ready` desktop that nothing serves. End the session instead: the socket
         // closes, the lease reads dead, and the next start provisions a fresh desktop.
@@ -113,12 +137,28 @@ export async function serveWorkspaceDesktop(
 }
 
 /** The existing lease owns this socket; its closure is also the worker's stop signal. */
+export interface WorkspaceDesktopDialDeps {
+  /** Open the worker socket at `path` (tests inject a fake; default `net.connect`). */
+  connect?: (path: string) => Socket;
+  timeoutMs?: number;
+  /** Which worker socket to dial — the sandbox worker unless told otherwise. */
+  socketPath?: string;
+  /**
+   * The Unix account the worker MUST report it runs as. Set for the personal worker
+   * (D-001): a reply naming any other account — or none — is refused and the socket
+   * closed, so a sandbox worker answering on the personal path can never be mistaken
+   * for the person's own desktop.
+   */
+  expectAccount?: string;
+}
+
 export async function provisionWorkspaceDesktop(
   options: ProvisionOptions = {},
-  deps: { connect?: () => Socket; timeoutMs?: number } = {},
+  deps: WorkspaceDesktopDialDeps = {},
 ): Promise<SandboxDesktop> {
   const request = workspaceDesktopOptions.parse(options);
-  const socket = (deps.connect ?? (() => connect(WORKSPACE_DESKTOP_SOCKET)))();
+  const socketPath = deps.socketPath ?? WORKSPACE_DESKTOP_SOCKET;
+  const socket = (deps.connect ?? ((path: string) => connect(path)))(socketPath);
   const decoder = new FrameDecoder();
   const desktop = await new Promise<ReturnType<typeof parseWorkspaceDesktop>>((resolve, reject) => {
     let settled = false;
@@ -139,7 +179,13 @@ export async function provisionWorkspaceDesktop(
           if (frame.payload.length > WORKSPACE_DESKTOP_MAX_BYTES) throw new Error('desktop reply too large');
           if (frame.type === FrameType.ERROR) throw new Error('isolated desktop provisioning failed; inspect its service journal');
           if (frame.type !== FrameType.EVENT_JSON) throw new Error('unexpected desktop reply');
-          finish(undefined, parseWorkspaceDesktop(JSON.parse(frame.payload.toString('utf8'))));
+          const reply = parseWorkspaceDesktop(JSON.parse(frame.payload.toString('utf8')));
+          if (deps.expectAccount !== undefined && reply.account !== deps.expectAccount) {
+            throw new Error(
+              `desktop worker reported account ${reply.account ?? '(none)'}, expected ${deps.expectAccount}; refusing the desktop`,
+            );
+          }
+          finish(undefined, reply);
         }
       } catch (error) { finish(error as Error); }
     };
@@ -170,4 +216,25 @@ export async function provisionWorkspaceDesktop(
       });
     },
   };
+}
+
+/**
+ * A person's own desktop (personal-cloud-desktop-2026-10-06 R-9): dials ONLY the
+ * personal worker socket and accepts the desktop only when that worker reports it runs
+ * as the customer account. A host without the personal worker refuses with
+ * `personal_desktop_unavailable` rather than falling back to any other route — a
+ * fallback would put the person's desktop under a different Unix identity.
+ */
+export async function provisionPersonalDesktop(
+  options: ProvisionOptions = {},
+  deps: WorkspaceDesktopDialDeps & { exists?: (path: string) => boolean } = {},
+): Promise<SandboxDesktop> {
+  const socketPath = deps.socketPath ?? PERSONAL_DESKTOP_SOCKET;
+  const exists = deps.exists ?? existsSync;
+  if (!exists(socketPath)) throw new PersonalDesktopUnavailableError();
+  return provisionWorkspaceDesktop(options, {
+    ...deps,
+    socketPath,
+    expectAccount: deps.expectAccount ?? PERSONAL_DESKTOP_ACCOUNT,
+  });
 }

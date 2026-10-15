@@ -17,8 +17,7 @@
  *
  * WHERE THE STAMP LIVES, and why not the `## Now` block. The Now block is the
  * most-read field on a plan, but it is also REWRITABLE — `plans:set-now`
- * replaces it wholesale, and `stampTerminalNowBlock` rewrites it on every
- * terminal flip. A waiver parked there is one ordinary write away from being
+ * replaces it wholesale. A waiver parked there is one ordinary write away from being
  * erased, which fails the "permanent" half of the contract. So the waiver gets
  * its own append-only section that no existing writer touches.
  *

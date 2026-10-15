@@ -105,4 +105,20 @@ describe('sanitizeInheritedEnv (EI-8868/EI-8877)', () => {
     expect(clean.PAPERCUSP_HARNESS_SLUG).toBe('papercusp');
     expect(clean.HOME).toBe('/home/dev');
   });
+
+  it('strips inherited native-session selectors before an independent launch', () => {
+    const clean = sanitizeInheritedEnv({
+      CODEX_SESSION_ID: 'parent-codex-session',
+      PAPERCUSP_NATIVE_SESSION_ID: 'parent-bound-native-session',
+      PAPERCUSP_SID: 'su-parent',
+      PAPERCUSP_HARNESS_SLUG: 'papercusp',
+    });
+
+    expect(clean.CODEX_SESSION_ID).toBeUndefined();
+    expect(clean.PAPERCUSP_NATIVE_SESSION_ID).toBeUndefined();
+    // Papercusp owner and harness values remain available for the envelope to
+    // replace with this launch's values.
+    expect(clean.PAPERCUSP_SID).toBe('su-parent');
+    expect(clean.PAPERCUSP_HARNESS_SLUG).toBe('papercusp');
+  });
 });

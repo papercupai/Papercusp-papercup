@@ -24,12 +24,6 @@ import {
   googleWorkspaceOAuthField,
   googleWorkspaceSourceAccountId,
 } from '../../../external-triggers/google-workspace';
-import { googleGmailBackfillState } from '../../../external-triggers/google-gmail';
-import {
-  FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
-  FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
-  facebookPersonalVaultOAuthField,
-} from '../../../external-triggers/facebook';
 import {
   GOOGLE_CALENDAR_EVENTS_SCOPE,
   GOOGLE_CALENDAR_READONLY_SCOPE,
@@ -37,8 +31,6 @@ import {
   GOOGLE_GMAIL_COMPOSE_SCOPE,
   GOOGLE_GMAIL_READONLY_SCOPE,
   GOOGLE_WORKSPACE_SCOPES,
-  GOOGLE_YOUTUBE_FORCE_SSL_SCOPE,
-  GOOGLE_YOUTUBE_READONLY_SCOPE,
   getProvider,
   loadAndRegisterProvidersFromDisk,
 } from '../../../oauth/providers';
@@ -70,7 +62,18 @@ import {
 } from '../../../personal-vault/import-jobs';
 import type { PersonalPrincipalType } from '../../../personal-vault/types';
 
-const SUPPORTED_SOURCES = ['gmail', 'calendar', 'contacts', 'facebook', 'instagram', 'x'] as const;
+const SUPPORTED_SOURCES = ['mail', 'calendar', 'contacts', 'facebook', 'instagram', 'x'] as const;
+// Display the existing vault category; API mapping and connection provisioning
+// belong to the installed provider descriptor, not a first-party adapter.
+const FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN = 'provider:facebook';
+const FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS = ['facebook'] as const;
+function facebookPersonalVaultOAuthField(ref: string): string {
+  const prefix = `${FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN}:`;
+  if (!ref.startsWith(prefix) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(ref.slice(prefix.length))) {
+    throw new Error('facebook_personal_vault_credential_ref_invalid');
+  }
+  return ref.slice(prefix.length);
+}
 const PRINCIPAL_TYPES: readonly PersonalPrincipalType[] = ['plan-template', 'binding', 'agent-role'];
 
 interface SafeIntegrationSource {
@@ -95,11 +98,11 @@ interface SafeIntegrationStatus {
   accounts?: Array<SafeGoogleAccountStatus | SafeFacebookAccountStatus>;
 }
 
-type GoogleCapabilityId = 'gmail' | 'calendar' | 'contacts' | 'youtube';
+export type GoogleCapabilityId = 'gmail' | 'calendar' | 'contacts';
 
 interface SafeGoogleCapability {
   id: GoogleCapabilityId;
-  sourceKind: 'gmail' | 'gcal' | 'contacts' | 'youtube';
+  sourceKind: 'gmail' | 'gcal' | 'contacts';
   enabled: boolean;
   connected: boolean;
   status: 'needs-app-config' | 'available' | 'connected' | 'disabled' | 'needs-consent' | 'degraded' | 'error';
@@ -124,7 +127,7 @@ interface SafeFacebookAccountStatus {
   sources: SafeIntegrationSource[];
 }
 
-const GOOGLE_CAPABILITY_DEFS: ReadonlyArray<{
+export const GOOGLE_CAPABILITY_DEFS: ReadonlyArray<{
   id: GoogleCapabilityId;
   sourceKind: SafeGoogleCapability['sourceKind'];
   requiredScopes: readonly string[];
@@ -143,22 +146,6 @@ const GOOGLE_CAPABILITY_DEFS: ReadonlyArray<{
     id: 'contacts',
     sourceKind: 'contacts',
     requiredScopes: [GOOGLE_CONTACTS_READONLY_SCOPE],
-  },
-  {
-    // P-015. Rides the SAME Google Workspace OAuth source as Gmail and Calendar
-    // (the external-triggers D-010 one-credential-path pattern) — a scope
-    // addition with an incremental-consent upgrade, never a second credential
-    // path.
-    //
-    // ⚠ D-019: both scopes are in GOOGLE_WORKSPACE_ALLOWED_SCOPES (requestable)
-    // and listed here (required), and NEITHER is in GOOGLE_WORKSPACE_SCOPES.
-    // That list is presumed-granted for legacy connections, so putting them
-    // there would make this capability report connected:true with no
-    // missingScopes for an owner who never consented — surfacing as a 403 at
-    // call time instead of as an honest needs-consent here.
-    id: 'youtube',
-    sourceKind: 'youtube',
-    requiredScopes: [GOOGLE_YOUTUBE_READONLY_SCOPE, GOOGLE_YOUTUBE_FORCE_SSL_SCOPE],
   },
 ];
 
@@ -317,9 +304,24 @@ function googleCapabilities(
   });
 }
 
+/**
+ * Initial-backfill progress, read from a provider cursor's optional
+ * `backfill: { status, messages }` block (the Gmail provider writes one). It is
+ * display-only and provider-neutral: any provider that keeps that block gets the
+ * same progress line, and a cursor without one reports nothing.
+ */
+function cursorBackfillProgress(cursor: Record<string, unknown>): SafeIntegrationSource['backfill'] {
+  const raw = cursor.backfill;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const state = raw as Record<string, unknown>;
+  const status = state.status === 'complete' || state.status === 'throttled' ? state.status : 'pending';
+  const messages = typeof state.messages === 'number' && Number.isInteger(state.messages) && state.messages >= 0 ? state.messages : 0;
+  return { status, messages };
+}
+
 function safeSources(owned: OwnedExternalTriggerSourceRow[]): SafeIntegrationSource[] {
   return owned.map((source) => {
-    const backfill = source.kind === 'gmail' ? googleGmailBackfillState(source) : null;
+    const backfill = cursorBackfillProgress(source.cursor ?? {});
     return {
       kind: source.kind,
       providerAccountId: source.providerAccountId,
@@ -327,7 +329,7 @@ function safeSources(owned: OwnedExternalTriggerSourceRow[]): SafeIntegrationSou
       lastConnectedAt: source.lastConnectedAt,
       lastSyncAt: safeLastSyncAt(source),
       lastError: source.status === 'degraded' || source.status === 'error' ? source.lastError : null,
-      backfill: backfill ? { status: backfill.status, messages: backfill.messages } : null,
+      backfill,
     };
   });
 }
@@ -351,7 +353,8 @@ function facebookAccountStatus(
   tokenConfig: Readonly<Record<string, unknown>>,
 ): SafeFacebookAccountStatus {
   const source = owned.find((candidate) => candidate.credentialRef !== null);
-  const field = source?.credentialRef ? facebookPersonalVaultOAuthField(source.credentialRef) : null;
+  const field = source?.credentialRef?.startsWith(`${FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN}:`)
+    ? facebookPersonalVaultOAuthField(source.credentialRef) : null;
   const token = field ? tokenConfig[field] : null;
   const connected =
     source?.status !== 'disabled' &&
@@ -367,7 +370,7 @@ function facebookAccountStatus(
             ? 'available'
             : 'needs-app-config';
   const displayName = owned
-    .map((candidate) => candidate.config.displayName)
+    .map((candidate) => candidate.config.accountLabel ?? candidate.config.displayName)
     .find((candidate): candidate is string => typeof candidate === 'string' && Boolean(candidate.trim()));
   return {
     providerAccountId,
@@ -769,6 +772,9 @@ const disconnectFacebook = defineTool({
       providerAccountId,
     );
     for (const credentialRef of disconnected.credentialRefs) {
+      // An old app connection can be disconnected, but its obsolete token store
+      // is never treated as a working descriptor credential.
+      if (!credentialRef.startsWith(`${FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN}:`)) continue;
       const field = facebookPersonalVaultOAuthField(credentialRef);
       await fsTokenStorage.update(FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN, 'papercusp', {
         [field]: null,

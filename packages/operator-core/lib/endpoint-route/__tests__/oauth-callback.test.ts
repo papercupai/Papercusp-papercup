@@ -14,6 +14,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
+import { createRequire } from 'node:module';
+import { providerRegistry } from '../../integrations/provider-registry';
+const facebookAdapter = createRequire(import.meta.url)('../../../../../libs/papercusp/plugins/facebook/index.cjs').providerAdapter;
+vi.mock('../../integrations/provider-registry', async (original) => {
+  const actual = await original<typeof import('../../integrations/provider-registry')>();
+  return { ...actual, readyProviderRegistry: async () => actual.providerRegistry() };
+});
+
 
 const sourceMocks = vi.hoisted(() => ({
   provision: vi.fn(async () => [
@@ -29,16 +37,12 @@ const sourceMocks = vi.hoisted(() => ({
       cursor: {},
     },
   ]),
-  ensureGmailBinding: vi.fn(async () => ({
-    plan: { created: true, schemaAdded: true },
-    binding: { id: 'binding-1', armed: false },
-  })),
   provisionFacebook: vi.fn(async () => ({
     id: '33333333-3333-4333-8333-333333333333',
     workspaceId: 'workspace-1',
     kind: 'facebook',
     ownerUserId: '22222222-2222-4222-8222-222222222222',
-    credentialRef: 'facebook-personal-vault:owner',
+    credentialRef: 'provider:facebook:owner',
     status: 'connected',
     config: {},
     cursor: {},
@@ -75,16 +79,10 @@ vi.mock('../../external-triggers/google-workspace', async (importOriginal) => ({
 vi.mock('../../external-triggers/source-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../external-triggers/source-store')>()),
   listOwnedExternalTriggerSources: sourceMocks.listOwned,
+  upsertOwnedExternalTriggerSource: sourceMocks.provisionFacebook,
   renameOwnedExternalTriggerSourceAccount: sourceMocks.renameAccount,
 }));
-vi.mock('../../external-triggers/gmail-flagship', () => ({
-  ensureGmailRespondDraftBinding: sourceMocks.ensureGmailBinding,
-}));
-vi.mock('../../external-triggers/facebook', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../external-triggers/facebook')>()),
-  provisionOwnedFacebookPersonalVaultSource: sourceMocks.provisionFacebook,
-  resolveFacebookPersonalVaultProviderAccount: sourceMocks.resolveFacebookAccount,
-}));
+vi.mock('../../integrations/provider-identity', () => ({ fetchProviderIdentity: sourceMocks.resolveFacebookAccount }));
 vi.mock('../../oauth/state', () => ({
   verifyAndConsumeState: async (token: string) => {
     if (!token.includes('.') || token === 'garbage.sig') {
@@ -129,6 +127,26 @@ vi.mock('../../oauth/state', () => ({
         },
       };
     }
+    if (token === 'google.integrations' || token === 'google.offsite') {
+      // A start that named a return page (D-014.2); the offsite one could only come from a forged
+      // or stale state, and the callback must ignore it rather than redirect off-app.
+      return {
+        ok: true,
+        privateContext: {
+          codeVerifier: 'persisted-verifier',
+          ownerUserId: '22222222-2222-4222-8222-222222222222',
+          workspaceId: 'workspace-1',
+          returnPath: token === 'google.integrations' ? '/settings/integrations' : 'https://evil.example/steal',
+        },
+        claims: {
+          plugin: 'google-workspace',
+          harness: 'papercusp',
+          field: 'owner-22222222-2222-4222-8222-222222222222',
+          providerHost: 'accounts.google.com',
+          provider: 'google',
+        },
+      };
+    }
     if (token === 'facebook.valid' || token === 'facebook.missing' || token === 'facebook.mismatch') {
       return {
         ok: true,
@@ -143,14 +161,14 @@ vi.mock('../../oauth/state', () => ({
                   : {}),
               },
         claims: {
-          plugin: 'facebook-personal-vault',
+          plugin: 'provider:facebook',
           harness: 'papercusp',
           field:
             token === 'facebook.mismatch'
               ? 'existing-facebook-field'
               : 'owner-22222222-2222-4222-8222-222222222222',
           providerHost: 'www.facebook.com',
-          provider: 'facebook',
+          provider: 'provider:facebook',
         },
       };
     }
@@ -185,9 +203,10 @@ beforeEach(async () => {
   TMP_HOME = await fs.mkdtemp(join(tmpdir(), 'paperhome-callback-'));
   process.env.PAPERCUSP_HOME = TMP_HOME;
   providers.__resetRegistryForTest();
+  providerRegistry().unregister('facebook');
+  await providerRegistry().register({ descriptor: await facebookAdapter.describe(), adapter: facebookAdapter, pluginName: 'facebook' });
   sourceMocks.provision.mockClear();
   sourceMocks.provisionFacebook.mockClear();
-  sourceMocks.ensureGmailBinding.mockClear();
   sourceMocks.resolveGoogleAccount.mockReset();
   sourceMocks.resolveGoogleAccount.mockResolvedValue({
     providerAccountId: 'owner@example.com',
@@ -228,6 +247,13 @@ describe('GET /api/oauth/callback', () => {
     const response = await GET(new Request('http://x/api/oauth/callback?error=access_denied&state=google.valid'));
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_error=access_denied');
+  });
+
+  it('returns to the Settings page the start named, and ignores a return path outside Settings (D-014.2)', async () => {
+    const named = await GET(new Request('http://x/api/oauth/callback?error=access_denied&state=google.integrations'));
+    expect(named.headers.get('location')).toBe('http://x/settings/integrations?oauth_error=access_denied');
+    const offsite = await GET(new Request('http://x/api/oauth/callback?error=access_denied&state=google.offsite'));
+    expect(offsite.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_error=access_denied');
   });
 
   it('rejects state with bad signature', async () => {
@@ -342,12 +368,6 @@ describe('GET /api/oauth/callback', () => {
       field: 'owner-22222222-2222-4222-8222-222222222222',
       createdBy: 'owner:22222222-2222-4222-8222-222222222222',
     });
-    expect(sourceMocks.ensureGmailBinding).toHaveBeenCalledWith(
-      sourceMocks.sql,
-      'workspace-1',
-      expect.objectContaining({ kind: 'gmail', ownerUserId: '22222222-2222-4222-8222-222222222222' }),
-      'owner:22222222-2222-4222-8222-222222222222',
-    );
     const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
     expect(cfg['owner-22222222-2222-4222-8222-222222222222']).toBe('google-access');
     expect(cfg['owner-22222222-2222-4222-8222-222222222222_refresh']).toBe('google-refresh');
@@ -665,7 +685,7 @@ describe('GET /api/oauth/callback', () => {
 
   it('stores one Facebook account without replacing another account token or source', async () => {
     const cfgDir = join(TMP_HOME, 'harnesses/papercusp/plugin-configs');
-    const cfgPath = join(cfgDir, 'facebook-personal-vault.json');
+    const cfgPath = join(cfgDir, 'provider:facebook.json');
     await fs.mkdir(cfgDir, { recursive: true });
     await fs.writeFile(
       cfgPath,
@@ -681,14 +701,14 @@ describe('GET /api/oauth/callback', () => {
         kind: 'facebook',
         ownerUserId: '22222222-2222-4222-8222-222222222222',
         providerAccountId: 'facebook-user-2',
-        credentialRef: 'facebook-personal-vault:other-facebook-field',
+        credentialRef: 'provider:facebook:other-facebook-field',
         status: 'connected',
         config: { displayName: 'Owner Two' },
         cursor: { since: 'keep-other-cursor' },
       },
     ]);
     providers.registerProvider({
-      id: 'facebook',
+      id: 'provider:facebook',
       config: {
         clientId: 'facebook-app',
         clientSecret: 'facebook-secret',
@@ -710,14 +730,16 @@ describe('GET /api/oauth/callback', () => {
     const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=facebook.valid'));
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe(
-      'http://x/settings/personal-vault?oauth_connected=facebook-personal-vault',
+      'http://x/settings/personal-vault?oauth_connected=provider%3Afacebook',
     );
     expect(sourceMocks.provisionFacebook).toHaveBeenCalledWith(sourceMocks.sql, {
       workspaceId: 'workspace-1',
       ownerUserId: '22222222-2222-4222-8222-222222222222',
       providerAccountId: 'facebook-user-1',
-      displayName: 'Owner One',
-      field: 'owner-22222222-2222-4222-8222-222222222222',
+      kind: 'facebook',
+      credentialRef: 'provider:facebook:owner-22222222-2222-4222-8222-222222222222',
+      status: 'connected',
+      config: { accountLabel: 'Owner One' },
       createdBy: 'owner:22222222-2222-4222-8222-222222222222',
     });
     const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
@@ -743,14 +765,14 @@ describe('GET /api/oauth/callback', () => {
         ownerUserId: '22222222-2222-4222-8222-222222222222',
         // identical to what resolveFacebookAccount returns for this consent
         providerAccountId: 'facebook-user-1',
-        credentialRef: 'facebook-personal-vault:already-connected-field',
+        credentialRef: 'provider:facebook:already-connected-field',
         status: 'connected',
         config: { displayName: 'Owner One' },
         cursor: { since: 'existing-cursor' },
       },
     ]);
     providers.registerProvider({
-      id: 'facebook',
+      id: 'provider:facebook',
       config: {
         clientId: 'facebook-app',
         clientSecret: 'facebook-secret',
@@ -773,7 +795,7 @@ describe('GET /api/oauth/callback', () => {
 
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe(
-      'http://x/settings/personal-vault?oauth_error=facebook_personal_vault_account_already_connected',
+      'http://x/settings/personal-vault?oauth_error=provider_facebook_account_already_connected',
     );
     expect(sourceMocks.provisionFacebook).not.toHaveBeenCalled();
   });
@@ -784,7 +806,7 @@ describe('GET /api/oauth/callback', () => {
       displayName: 'Owner Two',
     });
     providers.registerProvider({
-      id: 'facebook',
+      id: 'provider:facebook',
       config: {
         clientId: 'facebook-app',
         clientSecret: 'facebook-secret',
@@ -802,19 +824,19 @@ describe('GET /api/oauth/callback', () => {
     );
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe(
-      'http://x/settings/personal-vault?oauth_error=facebook_personal_vault_account_mismatch',
+      'http://x/settings/personal-vault?oauth_error=provider_facebook_account_mismatch',
     );
     expect(sourceMocks.renameAccount).not.toHaveBeenCalled();
     expect(sourceMocks.provisionFacebook).not.toHaveBeenCalled();
     await expect(
-      fs.access(join(TMP_HOME, 'harnesses/papercusp/plugin-configs/facebook-personal-vault.json')),
+      fs.access(join(TMP_HOME, 'harnesses/papercusp/plugin-configs/provider:facebook.json')),
     ).rejects.toThrow();
   });
 
   it('fails closed when a Facebook callback lacks server-owned identity context', async () => {
     const exchangeCode = vi.fn(async () => ({ accessToken: 'must-not-store' }));
     providers.registerProvider({
-      id: 'facebook',
+      id: 'provider:facebook',
       config: {
         clientId: 'facebook-app',
         clientSecret: 'facebook-secret',

@@ -78,6 +78,32 @@ describe('scanStrandedCheckpoints claim-hold population floor (WI-2797)', () => 
     expect(result.candidates.map((candidate) => candidate.id)).toEqual(['EI-free']);
   });
 
+  /**
+   * WI-10006562: the own-node flag is computed in SQL with the SAME own-key predicate the
+   * claim gate uses (issueOwnAuthorWhereSql). A key is "own" when some local row carries it.
+   */
+  it('labels an own-node row stranded at origin=remote closable, and a peer row not', async () => {
+    const note = 'EI fixture DONE + VERIFIED + plan item FLIPPED to done. Nothing left here.';
+    const seedFed = async (id: string, origin: 'local' | 'remote', key: string) => {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts, origin, author_pubkey)
+        VALUES (${WS}, ${HARNESS}, ${id}, 'bug', ${`fed fixture ${id}`}, 'open', ${daysAgo(10)}, ${daysAgo(10)}, ${origin}, ${key})`;
+    };
+    await seedFed('EI-own-local', 'local', 'own-key');
+    await seedFed('EI-own-echo', 'remote', 'own-key');
+    await seedFed('EI-peer', 'remote', 'peer-key');
+    for (const id of ['EI-own-local', 'EI-own-echo', 'EI-peer']) await seedCheckpoint(id, note);
+
+    const result = await scanStrandedCheckpoints({ workspaceId: WS, harness: HARNESS, limit: 10 });
+
+    const byId = Object.fromEntries(result.candidates.map((c) => [c.id, c]));
+    expect(byId['EI-own-echo']).toMatchObject({ origin: 'remote', ownNodeAuthored: true, closableLocally: true });
+    expect(byId['EI-peer']).toMatchObject({ origin: 'remote', ownNodeAuthored: false, closableLocally: false });
+    expect(byId['EI-own-local']).toMatchObject({ origin: 'local', ownNodeAuthored: false, closableLocally: true });
+    expect(result.matchedNotClosableLocally).toBe(1);
+  });
+
   it('keeps the SQL floor fails-open for a null payload row', async () => {
     await seedIssue('EI-null-payload');
     await seedCheckpoint('EI-null-payload', 'EI fixture DONE + VERIFIED + plan item FLIPPED to done.');

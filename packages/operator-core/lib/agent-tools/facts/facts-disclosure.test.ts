@@ -8,7 +8,7 @@
  */
 import { beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import assertTool, { truncationField, dependsOnSuggestionField } from './assert';
+import assertTool, { truncationField, dependsOnSuggestionField, dependsOnSuggestionFieldResolvingCommits } from './assert';
 import { __resetCellRegistryForTests, registerCell } from '../../cell-registry';
 import factsListTool, {
   FACTS_LIST_EXCERPT_NOTE,
@@ -55,7 +55,7 @@ beforeAll(() => {
   });
 });
 
-const assertSchemaField = (name: string): AssertSchemaField => {
+const assertSchemaField = (name: string, schema: unknown = assertTool.args): AssertSchemaField => {
   // EI-22064465906366039: the root union is retired, so `.options` (its branch
   // list) is gone. Unlike the other schema-reading tests, THIS file needs the
   // REAL zod field rather than the published JSON Schema, because it calls
@@ -64,13 +64,16 @@ const assertSchemaField = (name: string): AssertSchemaField => {
   // guards read them straight off z.toJSONSchema — so it is safeParse alone
   // that makes this file the exception.) Unwrap the refinement chain to the
   // object shape.
-  let node = assertTool.args as unknown as {
+  let node = schema as {
     shape?: Record<string, unknown>;
-    def?: { schema?: unknown; innerType?: unknown };
-    _def?: { schema?: unknown; innerType?: unknown };
+    def?: { schema?: unknown; innerType?: unknown; out?: unknown };
+    _def?: { schema?: unknown; innerType?: unknown; out?: unknown };
   };
   for (let hop = 0; hop < 8 && !node.shape; hop += 1) {
-    const inner = node.def?.schema ?? node.def?.innerType ?? node._def?.schema ?? node._def?.innerType;
+    // Zod 4 preprocess is a pipe: `in` is the transform and `out` holds
+    // the validating object. Follow the object side without parsing fake input.
+    const inner = node.def?.schema ?? node.def?.innerType ?? node.def?.out
+      ?? node._def?.schema ?? node._def?.innerType ?? node._def?.out;
     if (!inner) break;
     node = inner as typeof node;
   }
@@ -78,6 +81,24 @@ const assertSchemaField = (name: string): AssertSchemaField => {
   if (!field) throw new Error(`facts:assert schema field missing: ${name}`);
   return field as AssertSchemaField;
 };
+
+describe('facts:assert real field schema inspection', () => {
+  it('retains the real field validator through nested preprocess wrappers', () => {
+    const body = z.string().max(3).describe('bounded body');
+    const schema = z.preprocess((value) => value,
+      z.preprocess((value) => value, z.object({ body }))).optional();
+    const field = assertSchemaField('body', schema);
+    expect(field).toBe(body);
+    expect(field.description).toBe('bounded body');
+    expect(field.safeParse('four').success).toBe(false);
+    expect(field.safeParse('ok').success).toBe(true);
+  });
+
+  it('refuses an absent field instead of substituting a permissive schema', () => {
+    const schema = z.preprocess((value) => value, z.object({ other: z.string() }));
+    expect(() => assertSchemaField('body', schema)).toThrow('schema field missing: body');
+  });
+});
 
 const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   scope: 'harness',
@@ -160,6 +181,55 @@ describe('dependsOnSuggestionField — facts:assert suggests the dependency the 
     expect(out).not.toBeNull();
     expect(out.suggested.map((s) => s.cell)).toContain('git.pipelinePosition');
     expect(TRANSCRIBING).toContain(out.suggested[0].value);
+  });
+
+  it('does not disclose a deployment dependency for a noncommit coordination reference', () => {
+    const body = 'Live intake: ask c308 a853236d for existing-builder acceptance.';
+    expect(dependsOnSuggestionField(body, [], undefined, { resolvesToCommit: () => false })).toBeNull();
+  });
+
+  it('resolves a live SHA candidate before suggesting dependencies', async () => {
+    const asked: string[] = [];
+    const body = 'Live intake: ask c308 a853236d for existing-builder acceptance.';
+    const out = await dependsOnSuggestionFieldResolvingCommits(body, [], undefined, async (token) => {
+      asked.push(token);
+      return false;
+    });
+    expect(asked).toEqual(['a853236d']);
+    expect(out).toBeNull();
+  });
+
+  it('keeps artifact fingerprints out of the production commit resolver', async () => {
+    const asked: string[] = [];
+    const body = 'The live receipt has artifact fingerprint a853236d.';
+    const out = await dependsOnSuggestionFieldResolvingCommits(body, [], undefined, async (token) => {
+      asked.push(token);
+      return false;
+    });
+    expect(asked).toEqual([]);
+    expect(out).toBeNull();
+  });
+
+  it('keeps a real serving commit beside the rejected coordination reference', async () => {
+    const body = 'Live intake: ask c308 a853236d for acceptance; :3070 is serving 9a4319b7.';
+    const out = await dependsOnSuggestionFieldResolvingCommits(body, [], undefined, async (token) => token === '9a4319b7');
+    expect(out?.suggested).toEqual([
+      expect.objectContaining({ cell: 'git.pipelinePosition', value: '9a4319b7' }),
+    ]);
+  });
+
+  it('preserves the advisory when Git cannot answer and never resolves branch counts', async () => {
+    const unknown = await dependsOnSuggestionFieldResolvingCommits(TRANSCRIBING, [], undefined, async () => {
+      throw new Error('git unavailable');
+    });
+    expect(unknown?.suggested).toHaveLength(1);
+    let resolvedCounts = 0;
+    const counts = await dependsOnSuggestionFieldResolvingCommits('main is 3 commits behind staging', [], undefined, async () => {
+      resolvedCounts += 1;
+      return false;
+    });
+    expect(resolvedCounts).toBe(0);
+    expect(counts?.suggested[0].value).toBe('3 commits');
   });
 
   it('does not emit a bare accept for a caller-relative suggestion — it marks the result incomplete', () => {
@@ -402,7 +472,7 @@ describe('projectFact — facts:list must stay inside the output budget (EI-1094
 describe('facts:list key lookup — distinguish projection omission from live absence (EI-19437221871431967)', () => {
   const nowMs = Date.parse('2026-08-12T00:00:00.000Z');
 
-  it('accepts a permanent or future-expiring current version', () => {
+  it('accepts a permanent, future-expiring, or unretracted wall version as current', () => {
     expect(
       isLiveFact(
         { expiresAt: 'infinity', retractedAt: null, supersededAt: null },
@@ -415,6 +485,27 @@ describe('facts:list key lookup — distinguish projection omission from live ab
         nowMs,
       ),
     ).toBe(true);
+    expect(
+      isLiveFact(
+        { key: 'wall:owner-action', expiresAt: '2026-08-11T23:59:59.000Z', retractedAt: null, supersededAt: null },
+        nowMs,
+      ),
+    ).toBe(true);
+    expect(
+      isLiveFact(
+        { key: 'wall:owner-action', expiresAt: '2026-08-11T23:59:59.000Z', retractedAt: null, supersededAt: '2026-08-11T00:00:00.000Z' },
+        nowMs,
+      ),
+    ).toBe(false);
+    expect(
+      isLiveFact(
+        { key: 'wall:owner-action', expiresAt: '2026-08-11T23:59:59.000Z', retractedAt: '2026-08-11T00:00:00.000Z', supersededAt: null },
+        nowMs,
+      ),
+    ).toBe(false);
+    expect(projectFact(fact('owner action remains required', {
+      key: 'wall:owner-action', expiresAt: '2026-08-11T23:59:59.000Z',
+    }), false)).toMatchObject({ wallActiveDespiteTtl: true });
   });
 
   it('rejects expired, retracted, and superseded versions', () => {

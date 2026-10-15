@@ -663,6 +663,23 @@ describe('state plane reach — release-fixer (P-003)', () => {
 });
 
 /**
+ * EI-25665485195356795. An acceptance-rubric bar may probe a live cell, and the rubric
+ * executability validator refuses a probe its grader cannot re-run — so with judge
+ * outside this allowlist, no live-plane bar could be independently graded. Judge stays
+ * out of SU_ROLES for the same cutover reason as release-fixer.
+ */
+describe('state plane reach — judge (EI-25665485195356795)', () => {
+  it('can reach BOTH state tools, so a grader can re-run a live-cell probe', () => {
+    expect(new Set(readTool.agentRoles ?? []).has('judge')).toBe(true);
+    expect(new Set(subscribeTool.agentRoles ?? []).has('judge')).toBe(true);
+  });
+
+  it('is granted at the USE SITE, never by widening SU_ROLES', () => {
+    expect((SU_ROLES as readonly string[]).includes('judge')).toBe(false);
+  });
+});
+
+/**
  * P-004 — `on` is optional and defaults to `changed`.
  *
  * Measured over all 300 state:subscribe calls in this workspace: 50 failed, and 23 of

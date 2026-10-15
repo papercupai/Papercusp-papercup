@@ -21,7 +21,7 @@
  * Errors name the REFERENCE, never the value.
  */
 import { readIntegrationKey } from '../../integration-credentials';
-import { resolveSecretRef } from '../../inference-gateway/egress-providers/secret-ref';
+import { assertPinnedGcpSecretReference, resolveSecretRef } from '../../inference-gateway/egress-providers/secret-ref';
 
 export const HOSTED_INTEGRATION_SECRET_REF_PREFIX = 'integration:';
 
@@ -35,6 +35,12 @@ export interface HostedSecretRefDependencies {
   readonly readIntegrationKey?: (name: string) => Promise<string | undefined>;
   /** Resolver for every non-`integration:` reference (default: env:/file:). */
   readonly resolveOther?: HostedSecretRefResolver;
+  readonly env?: Readonly<Record<string, string | undefined>>;
+}
+
+/** Production secrets are explicit, pinned managed versions; no local fallback is admitted. */
+export function assertHostedProductionSecretRef(reference: string): void {
+  assertPinnedGcpSecretReference(reference);
 }
 
 export function createHostedSecretRefResolver(
@@ -44,6 +50,9 @@ export function createHostedSecretRefResolver(
   const resolveOther = dependencies.resolveOther ?? resolveSecretRef;
   return async function resolveHostedSecretRef(reference: string): Promise<string> {
     const trimmed = reference.trim();
+    if ((dependencies.env ?? process.env).PAPERCUSP_DEPLOYMENT_ENVIRONMENT === 'production') {
+      assertHostedProductionSecretRef(trimmed);
+    }
     if (!trimmed.startsWith(HOSTED_INTEGRATION_SECRET_REF_PREFIX)) return resolveOther(trimmed);
     const name = trimmed.slice(HOSTED_INTEGRATION_SECRET_REF_PREFIX.length).trim();
     if (!INTEGRATION_NAME.test(name)) {

@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { goalPlanningPortfolioFingerprint } from './goal-planning-review';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import { buildGoalOwnerReportDraft } from './goal-owner-report';
 
 import {
+  AGENT_OBLIGATION_PORTFOLIO_PROJECTION,
+  defaultAgentObligationReaderDeps,
   PLAN_CONTEXT_MAX,
   projectAgentObligationBrief,
   projectAgentTurnStartObligationBrief,
@@ -13,6 +15,7 @@ import {
 } from './agent-obligation-reader';
 import type { GoalLaunchResolution, GoalPortfolioBrief } from './goal-launch-settings';
 import type { PlanAcceptanceGateVerdict } from './plan-acceptance-gate';
+import type { PlanClosureObservationRead } from './goals/plan-closure-observations';
 import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-watchdog';
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
@@ -51,6 +54,8 @@ function portfolio(assembledAt = NOW.toISOString()): GoalPortfolioBrief {
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
       spentCentsSource: null,
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
       budgetWindowSec: null,
     },
     tripwires: [],
@@ -85,6 +90,7 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     goalPlanning: vi.fn(async () => ({ review: {
       schemaVersion: 1 as const, goalId: 'goal-1', disposition: 'existing-plans-sufficient' as const,
       rationale: 'No uncovered outcome in this generic reader fixture.', evidenceRefs: ['goal:goal-1'], planRefs: [],
+      coverage: [],
       portfolioFingerprint: goalPlanningPortfolioFingerprint(portfolio()), reviewedAt: NOW.toISOString(),
     }, authorities: {} })),
     goalLaunch: vi.fn(async () => launch()),
@@ -128,6 +134,8 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     // empty so these cases keep measuring the goal/plan providers.
     ownerDirectives: vi.fn(async () => []),
     waitingOn: vi.fn(async () => []),
+    fleetStaffing: vi.fn(async () => []),
+    strandedGoalWork: vi.fn(async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false })),
     ...overrides,
   };
 }
@@ -300,6 +308,58 @@ describe('shared agent obligation reader', () => {
     expect(read.degradedSources.some((entry) => entry.includes('goal portfolio'))).toBe(true);
   });
 
+  it('P-005 / D-030: a failed fleet-staffing read is an explicit unknown row and a degraded source, never "staffed"', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: NOW,
+      deps: deps({
+        fleetStaffing: vi.fn(async () => {
+          throw new Error('fleet registry unavailable');
+        }),
+      }),
+    });
+    warn.mockRestore();
+    const staffing = read.agenda.evaluations.filter((entry) => entry.family === 'fleet-staffing');
+    expect(staffing).toHaveLength(1);
+    expect(staffing[0]).toMatchObject({
+      status: 'unknown',
+      measurementFailure: { code: 'canonical-fleet-staffing-read-failed' },
+    });
+    expect(read.degradedSources.some((entry) => entry.includes('fleet staffing'))).toBe(true);
+  });
+
+  it('P-005 / D-030: an unheld empty led fleet reaches the agenda as a due fleet-staffing row', async () => {
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: NOW,
+      deps: deps({
+        fleetStaffing: vi.fn(async () => [
+          {
+            fleetSlug: 'fleet-empty',
+            evaluation: {
+              alert: true,
+              current: 0,
+              target: 2,
+              shortfall: 2,
+              held: false,
+              notHeldBecause: 'supervise-not-granted' as const,
+              topUpRule: null,
+              repair: 'fleet:headcount-target { target, supervise:true }',
+              reason: '0 of 2 target worker(s) are productive (short 2).',
+            },
+          },
+        ]),
+      }),
+    });
+    const staffing = read.agenda.evaluations.filter((entry) => entry.family === 'fleet-staffing');
+    expect(staffing).toHaveLength(1);
+    expect(staffing[0]).toMatchObject({ status: 'due' });
+    expect(read.degradedSources.some((entry) => entry.includes('fleet staffing'))).toBe(false);
+  });
+
   it('keeps the generation stable when only observation clocks change', async () => {
     // The production portfolio embeds its observation clock in the generated
     // report text as well as assembledAt. Exercise both copies of that clock.
@@ -365,6 +425,37 @@ describe('shared agent obligation reader', () => {
       expect(read.degradedSources.length).toBeGreaterThan(0);
       expect(read.agenda.primary).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'unknown' })]));
       expect(projectAgentTurnStartObligationBrief(read.agenda).projection.text).toContain('UNKNOWN');
+      const placement = read.agenda.evaluations.find((row) => row.ruleId === 'goal-plan-placement');
+      expect(placement).toMatchObject({
+        status: 'unknown',
+        measurementFailure: { code: 'canonical-obligation-scope-read-failed' },
+      });
+      expect(placement?.changeSignal).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps the placement event for a known goal when the placement source is unreadable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const read = await readAgentObligationAgenda({
+        workspaceId: 'ws',
+        ownerId: 'su-goal',
+        now: NOW,
+        deps: deps({
+          goalPortfolio: vi.fn(async () => { throw new Error('portfolio unavailable'); }),
+        }),
+      });
+      const placement = read.agenda.evaluations.find((row) => row.ruleId === 'goal-plan-placement');
+      expect(placement).toMatchObject({
+        status: 'unknown',
+        measurementFailure: { code: 'canonical-plan-placement-read-failed' },
+        changeSignal: {
+          event: 'goal:plan-placement:goal-1',
+          cancellationRef: 'goal:goal-1',
+        },
+      });
     } finally {
       warn.mockRestore();
     }
@@ -629,6 +720,30 @@ describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated w
     expect(result.planSlugs).toEqual(['plan-a', 'open-plan']);
   });
 
+  it('does not request acceptance repair for a superseded worklist plan', async () => {
+    const abandoned = worklistPlan('superseded-plan', closure('open'));
+    abandoned.status = 'superseded';
+    const planAcceptance = vi.fn(async () => ({
+      satisfied: false,
+      code: 'acceptance_bar_contract_not_ready' as const,
+      message: 'bar_snapshot_rubric_unresolved',
+    }));
+    const result = await read(
+      withWorklist([abandoned, worklistPlan('active-plan', closure('open'), 2)]),
+      { planAcceptance },
+    );
+
+    expect(result.planSlugs).toEqual(['plan-a', 'active-plan']);
+    expect(planAcceptance).not.toHaveBeenCalledWith('ws', 'superseded-plan');
+    expect(result.agenda.evaluations.some(row => row.scope.planSlug === 'superseded-plan')).toBe(false);
+    expect(result.agenda.primary).toContainEqual(expect.objectContaining({
+      family: 'independent-verification',
+      scope: expect.objectContaining({ planSlug: 'active-plan' }),
+      status: 'due',
+      action: expect.objectContaining({ kind: 'repair' }),
+    }));
+  });
+
   it.each(['open', 'partial', 'unknown'] as const)(
     'keeps a worklist plan whose closure is %s in scope',
     async (state) => {
@@ -712,5 +827,146 @@ describe('P-026 / D-012 item 2: the acceptance obligation covers the delegated w
     releasePortfolio();
     const result = await pending;
     expect(result.planSlugs).toContain('delegated-plan');
+  });
+});
+
+describe('default goalPortfolio dep reads only what the agenda consumes (EI-25306440159635835)', () => {
+  afterEach(() => {
+    vi.doUnmock('./goal-launch-settings');
+  });
+
+  it('skips the claim-floor count and rubric stewardship, the two sections that each blew the 900ms budget', async () => {
+    const readGoalPortfolioBrief = vi.fn(async () => null);
+    vi.doMock('./goal-launch-settings', () => ({ readGoalPortfolioBrief }));
+
+    await defaultAgentObligationReaderDeps().goalPortfolio('ws', 'goal-a');
+
+    expect(readGoalPortfolioBrief).toHaveBeenCalledTimes(1);
+    expect(readGoalPortfolioBrief).toHaveBeenCalledWith({
+      workspaceId: 'ws', goalId: 'goal-a', claimability: 'skip', rubricStewardship: 'skip',
+    });
+    expect(AGENT_OBLIGATION_PORTFOLIO_PROJECTION).toEqual({ claimability: 'skip', rubricStewardship: 'skip' });
+  });
+});
+
+describe('default planAcceptance dep serves the persisted gate verdict (D-039, WI-10004673)', () => {
+  afterEach(() => {
+    vi.doUnmock('./goals/plan-closure-observations');
+    vi.doUnmock('./plan-acceptance-gate');
+  });
+
+  // The inline gate cost 1.0–1.8s of main-thread CPU per agenda read on bg-host. The
+  // gate spy is the regression guard: no outcome of this dep may run it.
+  function mockObservation(observation: PlanClosureObservationRead | undefined) {
+    const evaluatePlanAcceptanceGate = vi.fn();
+    const refreshPlanClosureObservations = vi.fn(() => []);
+    const readPlanClosureObservations = vi.fn(async () =>
+      new Map(observation ? [[observation.planSlug, observation]] : []));
+    vi.doMock('./plan-acceptance-gate', () => ({ evaluatePlanAcceptanceGate }));
+    vi.doMock('./goals/plan-closure-observations', () => ({ readPlanClosureObservations, refreshPlanClosureObservations }));
+    return { evaluatePlanAcceptanceGate, refreshPlanClosureObservations, readPlanClosureObservations };
+  }
+
+  it('returns a fresh observation, rubric and grader included, without running the gate', async () => {
+    const gate = { satisfied: true, code: undefined, rubricId: 'acceptance-plan-a', gradedBy: 'su-grader' };
+    const spies = mockObservation({ planSlug: 'plan-a', status: 'fresh', gate, observedAt: NOW.toISOString() });
+
+    await expect(defaultAgentObligationReaderDeps().planAcceptance('ws', 'plan-a')).resolves.toEqual(gate);
+    expect(spies.readPlanClosureObservations).toHaveBeenCalledWith({ workspaceId: 'ws', planSlugs: ['plan-a'] });
+    expect(spies.refreshPlanClosureObservations).not.toHaveBeenCalled();
+    expect(spies.evaluatePlanAcceptanceGate).not.toHaveBeenCalled();
+  });
+
+  it.each(['fresh', 'stale', 'absent'] as const)(
+    'keeps a declared superseded plan out of the actionable agenda with a %s gate observation',
+    async (status) => {
+      const spies = mockObservation(status === 'fresh'
+        ? { planSlug: 'plan-a', planStatus: 'superseded', status,
+            gate: { satisfied: false, code: 'acceptance_bar_contract_not_ready' }, observedAt: NOW.toISOString() }
+        : { planSlug: 'plan-a', planStatus: 'superseded', status, detail: 'old verdict is unavailable' });
+      const result = await readAgentObligationAgenda({
+        workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+        deps: deps({ planAcceptance: defaultAgentObligationReaderDeps().planAcceptance }),
+      });
+
+      const obligation = result.agenda.evaluations.find(row => row.family === 'independent-verification')!;
+      expect(obligation).toMatchObject({ status: 'not-applicable', applicableDemand: 0 });
+      expect(obligation.reason).toContain('superseded');
+      expect(obligation.action).toBeUndefined();
+      expect(result.agenda.primary.some(row => row.family === 'independent-verification')).toBe(false);
+      expect(result.degradedSources).toEqual([]);
+      expect(spies.refreshPlanClosureObservations).not.toHaveBeenCalled();
+      expect(spies.evaluatePlanAcceptanceGate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not suppress author repair for an active plan with the same contract refusal', async () => {
+    const spies = mockObservation({ planSlug: 'plan-a', planStatus: 'active', status: 'fresh',
+      gate: { satisfied: false, code: 'acceptance_bar_contract_not_ready' }, observedAt: NOW.toISOString() });
+    const result = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      deps: deps({ planAcceptance: defaultAgentObligationReaderDeps().planAcceptance }),
+    });
+    expect(result.agenda.primary).toContainEqual(expect.objectContaining({
+      family: 'independent-verification', status: 'due', action: expect.objectContaining({ kind: 'repair' }),
+    }));
+    expect(spies.refreshPlanClosureObservations).not.toHaveBeenCalled();
+  });
+
+  it.each(['stale', 'absent'] as const)('rejects a %s observation and refreshes it in the background', async (status) => {
+    const spies = mockObservation({ planSlug: 'plan-a', status, detail: `observation is ${status}` });
+
+    await expect(defaultAgentObligationReaderDeps().planAcceptance('ws', 'plan-a')).rejects.toThrow(`observation is ${status}`);
+    expect(spies.refreshPlanClosureObservations).toHaveBeenCalledWith(['plan-a']);
+    expect(spies.evaluatePlanAcceptanceGate).not.toHaveBeenCalled();
+  });
+
+  it('rejects an ambiguous slug without a refresh, which could not disambiguate it either', async () => {
+    const spies = mockObservation({ planSlug: 'plan-a', status: 'ambiguous', detail: 'resolves in 2 harnesses' });
+
+    await expect(defaultAgentObligationReaderDeps().planAcceptance('ws', 'plan-a')).rejects.toThrow('resolves in 2 harnesses');
+    expect(spies.refreshPlanClosureObservations).not.toHaveBeenCalled();
+    expect(spies.evaluatePlanAcceptanceGate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the provider episode and grader evidence when the verdict comes from an observation', async () => {
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      deps: deps({
+        planAcceptance: vi.fn(async () => ({ satisfied: true, rubricId: 'acceptance-plan-a', gradedBy: 'su-grader' })),
+      }),
+    });
+
+    const obligation = read.agenda.evaluations.find((row) => row.family === 'independent-verification')!;
+    expect(obligation.status).toBe('satisfied');
+    expect(obligation.episode).toBe(`accepted:acceptance-plan-a:${obligation.sourceGeneration}`);
+    expect(obligation.evidence[0]?.note).toBe('graded by su-grader');
+  });
+
+  it('reads a rejected observation as an explicit unknown, never as satisfied or absent', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      deps: deps({ planAcceptance: vi.fn(async () => { throw new Error("no acceptance-gate verdict has been recorded for 'plan-a' yet"); }) }),
+    });
+    warn.mockRestore();
+
+    const obligation = read.agenda.evaluations.find((row) => row.family === 'independent-verification')!;
+    expect(obligation.status).toBe('unknown');
+    expect(obligation.reason).toContain("no acceptance-gate verdict has been recorded for 'plan-a' yet");
+  });
+});
+
+describe('consultation reporting retirement', () => {
+  it('does not query consult follow-through or put reporting obligations on the agenda', async () => {
+    const readDeps = deps({});
+    const legacyRead = vi.fn(async () => [{ consultId: 'old-consult', phase: 'answered' }]);
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-me', now: NOW,
+      deps: Object.assign(readDeps, { consultReconciliations: legacyRead }),
+    });
+    expect(legacyRead).not.toHaveBeenCalled();
+    expect(read.agenda.evaluations.map(row => row.family)).not.toContain('consult-reconciliation');
+    expect(read.degradedSources.some(source => source.includes('consult reconciliation'))).toBe(false);
   });
 });

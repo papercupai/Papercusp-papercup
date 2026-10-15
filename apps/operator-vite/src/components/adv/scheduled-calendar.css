@@ -100,6 +100,24 @@
   background: color-mix(in oklab, var(--warn, #fbbf24), transparent 87%);
 }
 
+.pc-sched-cal__error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  color: var(--bad, #fb7185);
+}
+
+.pc-sched-cal__error button {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  background: var(--bg-2);
+  cursor: pointer;
+}
+
 .pc-sched-cal__body {
   display: flex;
   gap: 12px;

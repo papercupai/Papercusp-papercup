@@ -67,7 +67,12 @@ import {
   type DeadRoutineNameCoverage,
 } from './types';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { lastSystemHealth, readSharedSystemHealthSnapshot } from './compute';
+import {
+  lastSystemHealth,
+  readFreshGitSyncMissedIntervalsByInstall,
+  readSharedSystemHealthSnapshot,
+  type GitSyncMissedIntervalsCandidate,
+} from './compute';
 import {
   openEscalation,
   listEscalationsPaginated,
@@ -81,20 +86,27 @@ import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
 import { resolveSevereEventOwner } from '../severe-event-owner';
 import { currentLoopLag } from '../event-loop-lag-monitor';
+import { getBuildInfo } from '../build-info';
 import {
   readRoutineEngineLiveness as readSharedRoutineEngineLiveness,
   type RoutineEngineLiveness,
 } from '../release/routine-engine-liveness';
 import {
   d026QuiescenceIsActive,
-  readD026QuiescenceEvidence,
+  readD026QuiescenceEvidenceAsync,
   type D026QuiescenceEvidence,
 } from './single-primary-check';
 import {
   infraCritAmbientOnly,
+  infraStatus,
   POOL_PROJECTION_STALE_WARN_MS,
   projectionWriteStalled,
 } from './thresholds';
+import {
+  AGENT_STRANDED_ALARM_THRESHOLD,
+  AGENT_WEDGED_ALARM_THRESHOLD,
+  formatWedgedByClass,
+} from './agent-strand-census';
 
 export const INFRA_LIVENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:infra-liveness-alarm',
@@ -468,6 +480,168 @@ export function formatD026QuiescedSummary(wf: {
  */
 export const GIT_SYNC_MISSED_INTERVALS_ALARM = 3;
 
+/**
+ * WI-10006786: the git-sync starvation signature FAMILY. The alarm raises one signal — so one
+ * durable escalation row — PER install, keyed `git-sync-missed-intervals:<installSlug>`. It used to
+ * raise ONE install-less signal from the fleet-wide max: a long-dead install (every fire `skipped`
+ * since 2026-08-29) then held the max, kept that single row open for 11+ days, and every other
+ * install's starvation (papercusp missed 6 intervals on 2026-10-06) deduped onto it unnamed. The
+ * bare key survives only as the family marker for `unobservableLivenessSignatures` and as the
+ * fallback when a snapshot names no install.
+ */
+export const GIT_SYNC_MISSED_INTERVALS_SIGNATURE = 'git-sync-missed-intervals';
+
+export function gitSyncMissedIntervalsSignature(installSlug: string | null | undefined): string {
+  return installSlug ? `${GIT_SYNC_MISSED_INTERVALS_SIGNATURE}:${installSlug}` : GIT_SYNC_MISSED_INTERVALS_SIGNATURE;
+}
+
+export function isGitSyncMissedIntervalsSignature(sig: string): boolean {
+  return sig === GIT_SYNC_MISSED_INTERVALS_SIGNATURE || sig.startsWith(`${GIT_SYNC_MISSED_INTERVALS_SIGNATURE}:`);
+}
+
+function gitSyncMissedIntervalSummary(installSlug: string | null, missedIntervals: number): string {
+  return (
+    `git-sync${installSlug ? ` on ${installSlug}` : ''} has missed ${missedIntervals} consecutive scheduler intervals. ` +
+    `Missed intervals measure the scheduler leg and do not establish commit progress; an in-flight fire ` +
+    `may have created local commits before routine completion. Read routines:list { name:'git-sync'` +
+    `${installSlug ? `, installSlug:'${installSlug}'` : ''} } health.git_sync_freshness (the scheduler leg vs the ` +
+    `execution leg, and safe_to_restart) before concluding no commits were made or restarting anything.`
+  );
+}
+
+function gitSyncMissedIntervalSignal(installSlug: string | null, missedIntervals: number): AlarmSignal {
+  return {
+    key: gitSyncMissedIntervalsSignature(installSlug),
+    severity: 'blocker',
+    summary: gitSyncMissedIntervalSummary(installSlug, missedIntervals),
+  };
+}
+
+function gitSyncMissedIntervalsRevalidationEvidence(
+  sig: string,
+  candidates: GitSyncMissedIntervalsCandidate[],
+  observedAtMs: number,
+): string {
+  const observedAt = new Date(observedAtMs).toISOString();
+  const starvedCandidates = candidates.filter(
+    (candidate) => candidate.missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM,
+  );
+  const installSlug = sig.length > GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length
+    ? sig.slice(GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length + 1)
+    : null;
+  if (installSlug) {
+    const candidate = starvedCandidates.find((entry) => entry.installSlug === installSlug);
+    return candidate
+      ? `live routines recheck at ${observedAt} confirmed ${installSlug} remains a starvation candidate at ${candidate.missedIntervals} missed intervals (threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`
+      : `live routines recheck at ${observedAt} found no current starvation candidate for ${installSlug}; the filtered candidate list is not a raw-zero or commit-progress measure`;
+  }
+  const max = starvedCandidates.reduce<number | null>(
+    (value, candidate) => value === null ? candidate.missedIntervals : Math.max(value, candidate.missedIntervals),
+    null,
+  );
+  return max === null
+    ? `live routines recheck at ${observedAt} found no current starvation candidates; the filtered candidate list is not a raw-zero or commit-progress measure`
+    : `live routines recheck at ${observedAt} found a current starvation candidate at ${max} missed intervals (threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
+}
+
+/**
+ * WI-10006867: the vanished-checkout signature FAMILY, one signal per install keyed
+ * `git-sync-checkout-missing:<installSlug>`. An install whose checkout is gone skips every fire
+ * with `no_path` under a frozen last_synced_at; compute.ts now keeps it OUT of the missed-intervals
+ * list, and this family names the real cause instead. Advisory, because missing-checkout.ts retires
+ * the routine once its grace elapses, so the condition ends on its own. It is read by the SAME
+ * fail-soft git-sync read as missed-intervals, so that read failing makes this family unobservable too.
+ */
+export const GIT_SYNC_CHECKOUT_MISSING_SIGNATURE = 'git-sync-checkout-missing';
+
+export function gitSyncCheckoutMissingSignature(installSlug: string): string {
+  return `${GIT_SYNC_CHECKOUT_MISSING_SIGNATURE}:${installSlug}`;
+}
+
+export function isGitSyncCheckoutMissingSignature(sig: string): boolean {
+  return sig === GIT_SYNC_CHECKOUT_MISSING_SIGNATURE || sig.startsWith(`${GIT_SYNC_CHECKOUT_MISSING_SIGNATURE}:`);
+}
+
+/** Unobservable this tick? The bare missed-intervals family key marks the whole git-sync routine
+ *  read unobserved, which covers every per-install signature of BOTH families it feeds. */
+export function isUnobservableLivenessSignature(unobservable: ReadonlySet<string>, sig: string): boolean {
+  if (unobservable.has(sig)) return true;
+  return (
+    (isGitSyncMissedIntervalsSignature(sig) || isGitSyncCheckoutMissingSignature(sig)) &&
+    unobservable.has(GIT_SYNC_MISSED_INTERVALS_SIGNATURE)
+  );
+}
+
+/**
+ * WI-10006898: the signatures THIS BUILD's `evaluateLivenessAlarm` can emit. Auto-resolve reads
+ * "absent from this tick's signals" as "recovered", which is only sound for a signature this build
+ * evaluates at all. Two operator builds tick against the SAME durable escalation rows, and :3070
+ * can lag staging by a day while a frozen repair queue holds main. Measured 2026-10-06: :3170
+ * (carrying d57046a68d) raised per-install `git-sync-missed-intervals:<install>` rows and :3070
+ * (d740fc3802, bare family key only) resolved each one 6–32 s later as "condition recovered — no
+ * per-signature evidence recorded", because it never emits that key and so never sees it firing.
+ *
+ * A signature outside this registry is NOT OBSERVED by this build: its row stays open for a build
+ * that does evaluate it. Every `key:` that `evaluateLivenessAlarm` writes MUST be covered here —
+ * liveness-alarm.test.ts pins that by reading the evaluator's source, because a signal missing from
+ * the registry would never auto-resolve on its own build.
+ */
+export const EVALUATED_LIVENESS_SIGNATURES: ReadonlySet<string> = new Set([
+  'health-tick-stale',
+  GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
+  'dead-routines-quiesced',
+  'dead-routines',
+  'stale-paused-routines',
+  'queen-dark',
+  'overwatch-dark',
+  'overwatch-scorecard-skipped',
+  'rubric-emission-dark',
+  'accounts-starved',
+  'pg-restarted',
+  'dns-resolution-failing',
+  'hosted-control-plane-degraded',
+  'hosted-reverse-connector-lost',
+  'platform-lifecycle-budget-exceeded',
+  'agents-wedged',
+  'agents-stranded',
+]);
+
+/** Families keyed `<family>:<subject>` (one row per install or role). `panel:<key>` is handled
+ *  separately: only a panel key this build's types know is evaluated, since the catch-all can only
+ *  raise for a panel this build computes. */
+export const EVALUATED_LIVENESS_SIGNATURE_FAMILIES: readonly string[] = [
+  GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
+  GIT_SYNC_CHECKOUT_MISSING_SIGNATURE,
+  'autoloop-fire-stale',
+];
+
+/**
+ * WI-10006898: signature families this build no longer emits but whose open rows must still drain.
+ * Removing a signal from `evaluateLivenessAlarm` moves its key or family HERE, otherwise its open
+ * rows become unevaluated and stay open forever. Such a row resolves with an explicit "retired"
+ * reason, never as a recovery. Empty when introduced: over the 180 days before 2026-10-06 every
+ * stamped `livenessSignature` in coord_event_log belonged to a family above.
+ */
+export const RETIRED_LIVENESS_SIGNATURE_FAMILIES: readonly string[] = [];
+
+function inSignatureFamily(families: readonly string[], sig: string): boolean {
+  return families.some((family) => sig === family || sig.startsWith(`${family}:`));
+}
+
+export function isEvaluatedLivenessSignature(sig: string): boolean {
+  if (EVALUATED_LIVENESS_SIGNATURES.has(sig) || inSignatureFamily(EVALUATED_LIVENESS_SIGNATURE_FAMILIES, sig)) {
+    return true;
+  }
+  return sig.startsWith('panel:') && Object.prototype.hasOwnProperty.call(PANEL_LABELS, sig.slice('panel:'.length));
+}
+
+export function isRetiredLivenessSignature(
+  sig: string,
+  retired: readonly string[] = RETIRED_LIVENESS_SIGNATURE_FAMILIES,
+): boolean {
+  return inSignatureFamily(retired, sig);
+}
+
 export function evaluateLivenessAlarm(
   health: SystemHealth,
   snapshotAgeMs: number | null,
@@ -522,17 +696,42 @@ export function evaluateLivenessAlarm(
   //    reading is expected maintenance noise, not a restart-worthy outage. The
   //    advisory gets its own signature so old blocker rows can be reclassified
   //    explicitly rather than treated as recovered.
-  const gitSyncMissed = health.panels.deploy?.data?.gitSyncMaxMissedIntervals ?? null;
-  if (typeof gitSyncMissed === 'number' && gitSyncMissed > GIT_SYNC_MISSED_INTERVALS_ALARM) {
-    const slug = health.panels.deploy?.data?.gitSyncMissedIntervalsInstallSlug ?? null;
+  // WI-10006786: one signal PER starved install (see GIT_SYNC_MISSED_INTERVALS_SIGNATURE). A snapshot
+  // written before the per-install list existed falls back to the single max reading.
+  const deployData = health.panels.deploy?.data;
+  const gitSyncMissedMax = deployData?.gitSyncMaxMissedIntervals ?? null;
+  const starvedInstalls: Array<{ installSlug: string | null; missedIntervals: number }> = Array.isArray(
+    deployData?.gitSyncMissedIntervalsByInstall,
+  )
+    ? deployData.gitSyncMissedIntervalsByInstall.filter(
+        (e) => typeof e?.missedIntervals === 'number' && e.missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM,
+      )
+    : typeof gitSyncMissedMax === 'number' && gitSyncMissedMax > GIT_SYNC_MISSED_INTERVALS_ALARM
+      ? [{ installSlug: deployData?.gitSyncMissedIntervalsInstallSlug ?? null, missedIntervals: gitSyncMissedMax }]
+      : [];
+  for (const { installSlug: slug, missedIntervals: gitSyncMissed } of starvedInstalls) {
     signals.push({
-      key: 'git-sync-missed-intervals',
+      key: gitSyncMissedIntervalsSignature(slug),
       severity: 'blocker',
+      summary: gitSyncMissedIntervalSummary(slug, gitSyncMissed),
+    });
+  }
+  // WI-10006867: an install whose checkout VANISHED — reported under its real cause, never as
+  // starvation (compute.ts excludes these rows from the missed-intervals list above).
+  for (const missing of deployData?.gitSyncCheckoutMissingByInstall ?? []) {
+    if (!missing?.installSlug) continue;
+    const since = typeof missing.sinceMs === 'number' ? ` since ${new Date(missing.sinceMs).toISOString()}` : '';
+    const retire =
+      typeof missing.retireAtMs === 'number'
+        ? ` It is retired automatically (paused with a recorded reason) at ${new Date(missing.retireAtMs).toISOString()}.`
+        : ' It is retired automatically once it has been missing for the grace period.';
+    signals.push({
+      key: gitSyncCheckoutMissingSignature(missing.installSlug),
+      severity: 'advisory',
       summary:
-        `git-sync${slug ? ` on ${slug}` : ''} has missed ${gitSyncMissed} consecutive scheduler intervals: ` +
-        `nothing written there is being committed. Read routines:list { name:'git-sync'` +
-        `${slug ? `, installSlug:'${slug}'` : ''} } health.git_sync_freshness (the scheduler leg vs the ` +
-        `execution leg, and safe_to_restart) before restarting anything.`,
+        `git-sync on ${missing.installSlug} is skipping every fire because its checkout is missing` +
+        `${missing.path ? ` (${missing.path})` : ' (no harness registry entry)'}${since} — the scheduler is firing; ` +
+        `there is nothing on disk to commit.${retire} Restore the checkout, or delete the install.`,
     });
   }
   const wf = health.panels.workFeed?.data;
@@ -699,6 +898,49 @@ export function evaluateLivenessAlarm(
     });
   }
 
+  // DNS resolution failing box-wide (WI-6554700010008585). On 2026-10-11 systemd-resolved rejected
+  // every lookup for ~46 minutes (stale DNSSEC root trust anchor, "missing-key") and nothing paged.
+  // Fires only when EVERY canary failed — one upstream domain going dark is not a resolver outage.
+  // An absent/null probe is unobserved (see unobservableLivenessSignatures), never a recovery.
+  const dnsProbe = health.panels.infra?.data?.dns ?? null;
+  if (dnsProbe?.allFailed) {
+    const detail = dnsProbe.names.map((n) => `${n.name}: ${n.error ?? 'failed'}`).join(', ');
+    signals.push({
+      key: 'dns-resolution-failing',
+      severity: 'blocker',
+      summary:
+        `DNS resolution FAILING box-wide — all ${dnsProbe.names.length} canary names failed through the system ` +
+        `resolver (${detail}). Every outbound call (LLM providers, GitHub, container registries) fails while this ` +
+        `holds. Diagnose with \`resolvectl query <name>\` and \`journalctl -u systemd-resolved\`; a DNSSEC ` +
+        `"missing-key" error means the root trust anchor is stale (WI-6554700010008585).`,
+    });
+  }
+
+  const hosted = health.panels.infra?.data?.hostedControlPlane;
+  if (hosted && health.evaluatedAt - hosted.observedAt <= 120_000) {
+    if ((hosted.reverseConnectors?.lost ?? 0) > 0) signals.push({
+      key: 'hosted-reverse-connector-lost', severity: 'blocker',
+      summary: `Hosted reverse connector heartbeat LOST: ${hosted.reverseConnectors!.lost} of ` +
+        `${hosted.reverseConnectors!.active} active WebSocket bindings are stale. ` +
+        'Responder: Mug / workspace-host controller; inspect the existing connector generation and heartbeat, without guest content.',
+    });
+    if ((hosted.ownedCost?.breachedBudgets ?? 0) > 0) signals.push({
+      key: 'platform-lifecycle-budget-exceeded', severity: 'blocker',
+      summary: `Papercusp-funded lifecycle estimate exceeds ${hosted.ownedCost!.breachedBudgets} configured monthly budget(s). ` +
+        'Responder: Mug / billing operator. Estimates are recorded lifecycle charges; provider invoices and customer account spend are unknown.',
+    });
+  }
+  if (hosted && health.evaluatedAt - hosted.observedAt <= 120_000 &&
+      ((hosted.hosts?.unhealthy ?? 0) > 0 || (hosted.providerConnections?.degraded ?? 0) > 0)) {
+    signals.push({
+      key: 'hosted-control-plane-degraded', severity: 'blocker',
+      summary: `Hosted control plane DEGRADED: ${hosted?.hosts?.unhealthy ?? 'unknown'} freshly unhealthy hosts; ` +
+        `${hosted?.providerConnections?.degraded ?? 'unknown'} degraded provider connections. ` +
+        'Responder: workspace-host controller. Inspect Hosts operation timeline / standing-health; ' +
+        'reuse the existing lifecycle recovery. Customer guest diagnostics are not collected.',
+    });
+  }
+
   // 5c. EI-9794: autoloop FIRE-RECENCY staleness — independent of `last_status` /
   //     `consecutive_errors` (frozen the instant a loop stops firing) and of the
   //     `armed` wake-routine bit (a self-deactivating one-shot's normal resting
@@ -721,6 +963,37 @@ export function evaluateLivenessAlarm(
           `read 'ok' since that field only updates on a fire. The supervisor is likely dead; kettle:start to resume.`,
       });
     }
+  }
+
+  // 5d. P-011(b) (plan parked-agent-census-resumption-and-root-cause-2026-10-09): agents that
+  //     cannot take a turn, and autonomous claim holders that nothing will wake. Per-session
+  //     remedies exist for both (the pickup sweep; silent-halt's per-owner wake + page), so ONE
+  //     victim is not page-worthy here. A population over threshold means those remedies are not
+  //     keeping up, usually behind one shared cause, which is what nothing alarmed on while 61
+  //     loops stalled for days. An unreadable leg raises nothing and is kept open by
+  //     `unobservableLivenessSignatures`.
+  const strand = health.panels.coordination?.data?.agentStrand;
+  if (strand && !strand.wedgedUnreadable && strand.wedged >= AGENT_WEDGED_ALARM_THRESHOLD) {
+    signals.push({
+      key: 'agents-wedged',
+      severity: 'blocker',
+      summary:
+        `${strand.wedged} agent session(s) cannot take a turn (${formatWedgedByClass(strand.wedgedByClass)}; ` +
+        `threshold ${AGENT_WEDGED_ALARM_THRESHOLD}) — wakes to them land and nothing happens. coord:presence ` +
+        `reports each as suspect with its wedged class; a single class at this scale is one shared cause ` +
+        `(a quota-walled account, a dead credential, a launcher fault). e.g. ${strand.wedgedSample.slice(0, 3).join(', ')}`,
+    });
+  }
+  if (strand && !strand.strandedUnreadable && strand.stranded >= AGENT_STRANDED_ALARM_THRESHOLD) {
+    signals.push({
+      key: 'agents-stranded',
+      severity: 'blocker',
+      summary:
+        `${strand.stranded} autonomous agent(s) hold work with their loop off and nothing to wake them ` +
+        `(threshold ${AGENT_STRANDED_ALARM_THRESHOLD}) — their claims stay held and no turn will advance them. ` +
+        `reconcile-silent-halts wakes then pages each one; this many means that is not clearing them. ` +
+        `e.g. ${strand.strandedSample.slice(0, 3).join(', ')}`,
+    });
   }
 
   // 6. Catch-all: any OTHER panel self-reporting `crit` (so a new critical signal
@@ -763,6 +1036,12 @@ export function evaluateLivenessAlarm(
     // event-loop/PG-pool bug that this alarm correctly still pages for). A crit
     // for any OTHER reason — or a mix that ALSO carries an operator-defect leg —
     // still pages exactly as before.
+    // The hosted incident has its own stable identity/responder. Do not open a
+    // second catch-all alarm for that same fault; an independent Infra crit still pages.
+    if (panel.key === 'infra' && panel.data &&
+        signals.some(signal => signal.key === 'hosted-control-plane-degraded' ||
+          signal.key === 'hosted-reverse-connector-lost' || signal.key === 'platform-lifecycle-budget-exceeded') &&
+        infraStatus({ ...(panel.data as InfraHealth), hostedControlPlane: null }) !== 'crit') continue;
     if (panel.key === 'infra' && panel.data && infraCritAmbientOnly(panel.data as InfraHealth)) {
       signals.push({
         key: 'panel:infra',
@@ -868,6 +1147,22 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
     out.add('accounts-starved');
   }
 
+  // WI-6554700010008585 — DNS is observed only when this tick's infra panel ran the probe. An errored
+  // panel, or a null/absent `dns` (probe could not run, or a snapshot from a build without the probe),
+  // has NOT observed resolution recovering, so an open dns-resolution-failing row must stay open.
+  const infraPanel = health.panels.infra;
+  // Both legs must be witnessed to declare recovery; a partial/unreadable read retains the alarm.
+  const hosted = infraPanel?.data?.hostedControlPlane;
+  if (!hosted?.reverseConnectors || health.evaluatedAt - hosted.observedAt > 120_000)
+    out.add('hosted-reverse-connector-lost');
+  if (!hosted?.ownedCost || health.evaluatedAt - hosted.observedAt > 120_000)
+    out.add('platform-lifecycle-budget-exceeded');
+  if (!hosted?.hosts || hosted.hosts.unobserved > 0 || !hosted.providerConnections ||
+      health.evaluatedAt - hosted.observedAt > 120_000) out.add('hosted-control-plane-degraded');
+  if (!infraPanel || infraPanel.status === 'unknown' || infraPanel.error != null || infraPanel.data?.dns == null) {
+    out.add('dns-resolution-failing');
+  }
+
   // P-009 (ex-P-010): collectDeploy's git-sync read is fail-soft, so a failed read leaves
   // gitSyncMaxMissedIntervals null and the signal simply vanishes. A vanished reading is not
   // a recovery: keep an open starvation alarm open while the panel errored or the sub-read
@@ -877,8 +1172,21 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
     (deploy && (deploy.status === 'unknown' || deploy.error != null)) ||
     deploy?.data?.gitSyncMissedIntervalsUnreadable === true
   ) {
-    out.add('git-sync-missed-intervals');
+    // The bare family key marks EVERY per-install signature unobservable (isUnobservableLivenessSignature).
+    out.add(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
   }
+
+  // P-011(b): the agent-strand census is fail-soft per leg, and a panel computed by a build
+  // without it carries no census at all (the snapshot is shared across builds, WI-10006898).
+  // Neither is a recovery: keep an open alarm open. Same `data: null` convention as workFeed
+  // above: a null panel body is "nothing to report", only an errored panel or a computed body
+  // MISSING the census is unread.
+  const coordination = health.panels.coordination;
+  const coordinationErrored = coordination != null && (coordination.status === 'unknown' || coordination.error != null);
+  const strand = coordination?.data?.agentStrand;
+  const censusMissing = coordination?.data != null && strand == null;
+  if (coordinationErrored || censusMissing || strand?.wedgedUnreadable) out.add('agents-wedged');
+  if (coordinationErrored || censusMissing || strand?.strandedUnreadable) out.add('agents-stranded');
   return out;
 }
 
@@ -989,6 +1297,18 @@ export function resolveEvidenceFor(
   beesLiveness?: BeesLivenessContext,
   d026Quiescence?: D026QuiescenceEvidence,
 ): string {
+  if (sig === 'hosted-reverse-connector-lost' || sig === 'platform-lifecycle-budget-exceeded') {
+    const hosted = health.panels.infra?.data?.hostedControlPlane;
+    return `hosted observation at ${hosted?.observedAt ?? 'unknown'}: heartbeat lost ` +
+      `${hosted?.reverseConnectors?.lost ?? 'unknown'}, platform budget breaches ` +
+      `${hosted?.ownedCost?.breachedBudgets ?? 'unknown'}; responder Mug / workspace-host controller or billing operator`;
+  }
+  if (sig === 'hosted-control-plane-degraded') {
+    const hosted = health.panels.infra?.data?.hostedControlPlane;
+    return `hosted observation at ${hosted?.observedAt ?? 'unknown'}: freshly unhealthy hosts ` +
+      `${hosted?.hosts?.unhealthy ?? 'unknown'}, degraded provider connections ` +
+      `${hosted?.providerConnections?.degraded ?? 'unknown'}; responder workspace-host controller`;
+  }
   // `panel:<key>` — the catch-all family (evaluateLivenessAlarm §6) fires while a panel
   // self-reports `crit`, so that panel's OWN status at resolve time IS the observation.
   //
@@ -1020,10 +1340,39 @@ export function resolveEvidenceFor(
     // Absent ≠ clear — the panel we would have judged was not in the snapshot at all.
     return `observed panel ${key} status=panel-absent${gate}`;
   }
-  if (sig === 'git-sync-missed-intervals') {
+  if (isGitSyncCheckoutMissingSignature(sig)) {
+    const dp = health.panels.deploy;
+    const slug = sig.slice(GIT_SYNC_CHECKOUT_MISSING_SIGNATURE.length + 1);
+    const list = dp?.data?.gitSyncCheckoutMissingByInstall;
+    return `observed deploy status=${dp?.status ?? 'panel-absent'} ${slug} checkoutMissing=${
+      Array.isArray(list) ? list.some((e) => e.installSlug === slug) : 'unreadable'
+    } (the install's last fire was eligible, it was retired, or it is no longer active)`;
+  }
+  if (isGitSyncMissedIntervalsSignature(sig)) {
     const dp = health.panels.deploy;
     const missed = dp?.data?.gitSyncMaxMissedIntervals;
-    return `observed deploy status=${dp?.status ?? 'panel-absent'} gitSyncMaxMissedIntervals=${typeof missed === 'number' ? missed : 'unreadable'} (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
+    const slug = sig.length > GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length
+      ? sig.slice(GIT_SYNC_MISSED_INTERVALS_SIGNATURE.length + 1)
+      : null;
+    const perInstall = dp?.data?.gitSyncMissedIntervalsByInstall;
+    const installCandidate = slug && Array.isArray(perInstall)
+      ? perInstall.find((e) => e.installSlug === slug)
+      : undefined;
+    const installNote = slug && Array.isArray(perInstall)
+      ? installCandidate
+        ? ` ${slug} starvationCandidateMissedIntervals=${installCandidate.missedIntervals}`
+        : ` ${slug} absentFromCurrentStarvationCandidates (not a raw zero; a progressing in-flight fire can leave routines:list degraded until completion)`
+      : '';
+    return `observed deploy status=${dp?.status ?? 'panel-absent'} gitSyncMaxMissedIntervals=${typeof missed === 'number' ? missed : 'unreadable'}${installNote} (alarm threshold > ${GIT_SYNC_MISSED_INTERVALS_ALARM})`;
+  }
+  if (sig === 'agents-wedged' || sig === 'agents-stranded') {
+    const strand = health.panels.coordination?.data?.agentStrand;
+    if (!strand) return `observed coordination status=${health.panels.coordination?.status ?? 'panel-absent'} agentStrand=absent`;
+    return sig === 'agents-wedged'
+      ? `observed coordination agentStrand wedged=${strand.wedgedUnreadable ? 'unreadable' : strand.wedged}` +
+          ` (${formatWedgedByClass(strand.wedgedByClass) || 'no class'}; alarm threshold >= ${AGENT_WEDGED_ALARM_THRESHOLD})`
+      : `observed coordination agentStrand stranded=${strand.strandedUnreadable ? 'unreadable' : strand.stranded}` +
+          ` (alarm threshold >= ${AGENT_STRANDED_ALARM_THRESHOLD})`;
   }
   const wf = health.panels.workFeed;
   const d = wf?.data ?? null;
@@ -1234,7 +1583,11 @@ export function deriveSignatureFromSummary(summary: string): string | null {
     return 'overwatch-dark';
   if (/LLM pool account\(s\) (?:paused|unavailable by a fresh capacity projection)/.test(s)) return 'accounts-starved';
   if (s.startsWith('Postgres RESTARTED')) return 'pg-restarted';
-  if (/^git-sync\b.* has missed \d+ consecutive scheduler intervals/.test(s)) return 'git-sync-missed-intervals';
+  if (s.startsWith('DNS resolution FAILING')) return 'dns-resolution-failing';
+  if (/^\d+ agent session\(s\) cannot take a turn/.test(s)) return 'agents-wedged';
+  if (/^\d+ autonomous agent\(s\) hold work with their loop off/.test(s)) return 'agents-stranded';
+  const gitSyncMissedMatch = /^git-sync\b(?: on (\S+))?.* has missed \d+ consecutive scheduler intervals/.exec(s);
+  if (gitSyncMissedMatch) return gitSyncMissedIntervalsSignature(gitSyncMissedMatch[1] ?? null);
   // EI-9794 fire-staleness form: "<role>@<harness> has not fired in ...".
   const fireStaleMatch = /^([^@\s]+)@\S+ has not fired in/.exec(s);
   if (fireStaleMatch) return `autoloop-fire-stale:${fireStaleMatch[1]}`;
@@ -1254,7 +1607,16 @@ export function deriveSignatureFromSummary(summary: string): string | null {
  */
 export function livenessSignatureOf(rec: EscalationRecord): string | null {
   const explicit = (rec as Record<string, unknown>).livenessSignature;
-  if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+  if (typeof explicit === 'string' && explicit.length > 0) {
+    // WI-10006786: a row stamped before the per-install split carries the bare family key. Re-key it
+    // by the install its summary names, so it dedupes and resolves with THAT install's signal instead
+    // of either absorbing every install's breach or resolving on the split as a false recovery.
+    if (explicit === GIT_SYNC_MISSED_INTERVALS_SIGNATURE) {
+      const derived = deriveSignatureFromSummary(rec.summary ?? '');
+      if (derived && isGitSyncMissedIntervalsSignature(derived)) return derived;
+    }
+    return explicit;
+  }
   return deriveSignatureFromSummary(rec.summary ?? '');
 }
 
@@ -1472,6 +1834,8 @@ export interface AlarmDeps {
    *  resolution (including undefined from a test double) counts as a real
    *  open→resolved transition. */
   resolve?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
+  /** WI-10006898: override RETIRED_LIVENESS_SIGNATURE_FAMILIES (tests only; the registry is the source). */
+  retiredSignatureFamilies?: readonly string[];
   now?: () => number;
   snapshotStaleMs?: number;
   debounceMs?: number;
@@ -1535,6 +1899,13 @@ export interface AlarmDeps {
    *  `null` (unknown/failed) is FAIL-OPEN — it must never suppress a signal, only
    *  confirm one. */
   reverifyDeadRoutines?: (ws: string, now: number) => Promise<string[] | null>;
+  /** EI-25693557603206081: fresh git-sync starvation candidates at alarm time. Production
+   *  defaults to the routines reader only when `readLast` is not injected; tests can inject
+   *  this seam explicitly. Null/throw is unknown and must fail open. */
+  readFreshGitSyncMissedIntervalsByInstall?: (
+    ws: string,
+    nowMs: number,
+  ) => Promise<GitSyncMissedIntervalsCandidate[] | null>;
 }
 
 /**
@@ -1835,8 +2206,11 @@ export async function runLivenessAlarmTick(
   // D-026 evidence is intentionally read only for production/default ticks unless a
   // caller explicitly injects it. A hermetic `readLast` seam must never shell out to
   // systemd, while reader failures remain fail-closed (undefined => blocker path).
+  // Async (jev-memory-timeouts-to-zero-2026-10-01): the sync reader waited on
+  // three systemctl children per tick, freezing this worker 107-237 ms.
   const readD026Quiescence =
-    deps.d026Quiescence ?? (deps.readLast === undefined ? readD026QuiescenceEvidence : null);
+    deps.d026Quiescence ??
+    (deps.readLast === undefined ? () => readD026QuiescenceEvidenceAsync() : null);
   let d026Quiescence: D026QuiescenceEvidence | undefined;
   if (readD026Quiescence) {
     try {
@@ -1991,6 +2365,65 @@ export async function runLivenessAlarmTick(
     }
   }
 
+  // EI-25693557603206081: snapshot-derived scheduler misses can outlive a recovered
+  // git-sync fire. Re-read the same routine rows immediately before reconciliation/fire
+  // whenever this snapshot or an open escalation mentions the signal family. A live
+  // empty candidate set is a confirmed recovery; a failed read preserves snapshot alarms
+  // and marks the family unobservable so it cannot false-resolve an open row.
+  let gitSyncLiveRevalidation:
+    | { status: 'readable'; observedAtMs: number; candidates: GitSyncMissedIntervalsCandidate[] }
+    | { status: 'unavailable'; observedAtMs: number }
+    | undefined;
+  const reverifyGitSyncMissedIntervals =
+    deps.readFreshGitSyncMissedIntervalsByInstall ??
+    (deps.readLast === undefined ? readFreshGitSyncMissedIntervalsByInstall : null);
+  const shouldReverifyGitSyncMissedIntervals =
+    signals.some((signal) => isGitSyncMissedIntervalsSignature(signal.key)) ||
+    Array.from(openBySig.keys()).some((sig) => isGitSyncMissedIntervalsSignature(sig));
+  if (reverifyGitSyncMissedIntervals && shouldReverifyGitSyncMissedIntervals) {
+    const candidates = await reverifyGitSyncMissedIntervals(ws, now).catch(() => null);
+    if (candidates === null) {
+      gitSyncLiveRevalidation = { status: 'unavailable', observedAtMs: now };
+      const snapshotAt = Number.isFinite(healthForSignals.evaluatedAt)
+        ? new Date(healthForSignals.evaluatedAt).toISOString()
+        : 'unknown';
+      signals = signals.map((signal) => isGitSyncMissedIntervalsSignature(signal.key)
+        ? {
+            ...signal,
+            summary:
+              `${signal.summary} Fire-time git-sync recheck was unavailable; retaining snapshot evidence ` +
+              `evaluated at ${snapshotAt}, so the current candidate and count are unknown.`,
+          }
+        : signal);
+    } else {
+      gitSyncLiveRevalidation = { status: 'readable', observedAtMs: now, candidates };
+      const starvedNow = candidates.filter(
+        (candidate) => candidate.missedIntervals > GIT_SYNC_MISSED_INTERVALS_ALARM,
+      );
+      const keepLegacyFamilySignal = signals.some(
+        (signal) => signal.key === GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
+      );
+      const freshSignals = keepLegacyFamilySignal && starvedNow.length > 0
+        ? [gitSyncMissedIntervalSignal(
+            null,
+            starvedNow.reduce((max, candidate) => Math.max(max, candidate.missedIntervals), 0),
+          )]
+        : starvedNow.map((candidate) =>
+            gitSyncMissedIntervalSignal(candidate.installSlug, candidate.missedIntervals));
+      const firstGitSyncSignal = signals.findIndex((signal) => isGitSyncMissedIntervalsSignature(signal.key));
+      const otherSignals = signals.filter((signal) => !isGitSyncMissedIntervalsSignature(signal.key));
+      const insertionIndex = firstGitSyncSignal < 0
+        ? otherSignals.length
+        : signals.slice(0, firstGitSyncSignal).filter((signal) => !isGitSyncMissedIntervalsSignature(signal.key)).length;
+      signals = [
+        ...otherSignals.slice(0, insertionIndex),
+        ...freshSignals,
+        ...otherSignals.slice(insertionIndex),
+      ];
+    }
+    currentSigs = new Set(signals.map((signal) => signal.key));
+  }
+
   // 1. Auto-resolve-on-recovery: every open infra-liveness escalation whose
   //    signal is no longer firing. On the first post-deploy tick this drains the
   //    recovered backlog (gateway/accounts/no-bees-while-idle) so the pile clears.
@@ -2003,6 +2436,11 @@ export async function runLivenessAlarmTick(
   //    readable tick re-fires a fresh escalation: fire → false-resolve → fire, at the
   //    tick rate, forever. Skip those signatures and leave the open row standing.
   const unobservableSigs = unobservableLivenessSignatures(healthForSignals);
+  if (gitSyncLiveRevalidation?.status === 'readable') {
+    unobservableSigs.delete(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
+  } else if (gitSyncLiveRevalidation?.status === 'unavailable') {
+    unobservableSigs.add(GIT_SYNC_MISSED_INTERVALS_SIGNATURE);
+  }
   // EI-19462267124852221: the THIRD absence reason. A signal withheld by a policy gate
   // (`beesIdleByDesign`) is still TRUE — measured 2026-08-04, every `panel:bees`
   // auto-resolve announced "condition recovered" with the panel reading crit in the
@@ -2073,7 +2511,11 @@ export async function runLivenessAlarmTick(
   const transitionedBlockerSigs: string[] = [];
   for (const [sig, recs] of openBySig) {
     if (currentSigs.has(sig)) continue; // still firing — keep the single open row
-    if (unobservableSigs.has(sig)) continue; // NOT OBSERVED this tick ≠ recovered
+    if (isUnobservableLivenessSignature(unobservableSigs, sig)) continue; // NOT OBSERVED this tick ≠ recovered
+    // WI-10006898: a signature this build never emits (a newer build's family) is not observed by
+    // this build at all, so its absence says nothing. Retired families still drain, labelled as such.
+    const retiredSig = isRetiredLivenessSignature(sig, deps.retiredSignatureFamilies);
+    if (!retiredSig && !isEvaluatedLivenessSignature(sig)) continue;
     // NOTE: a POLICY-SUPPRESSED signature is deliberately NOT skipped here. Closing its
     // row is correct — an idle-by-design fleet needs no human attention, so the open
     // "no bees running" blocker is a false positive that must drain (the one-time
@@ -2104,15 +2546,25 @@ export async function runLivenessAlarmTick(
         // either side. A reader cannot tell a recovery from a reclassification if both
         // write the same sentence, and that is why six passes could not diagnose this.
         const d026Reclassified = sig === 'dead-routines' && d026QuiescenceIsActive(d026Quiescence);
-        const reason = d026Reclassified
+        const reason = retiredSig
+          ? 'retired signature family — this build no longer evaluates it (NOT an observed recovery)'
+          : d026Reclassified
           ? 'reclassified as expected D-026 quiescence — the condition is STILL TRUE (NOT recovered)'
           : policySuppressed
             ? 'withheld by a policy gate — the condition is STILL TRUE, reclassified as benign (NOT recovered)'
           : 'condition recovered';
+        const resolutionEvidence =
+          isGitSyncMissedIntervalsSignature(sig) && gitSyncLiveRevalidation?.status === 'readable'
+            ? gitSyncMissedIntervalsRevalidationEvidence(
+                sig,
+                gitSyncLiveRevalidation.candidates,
+                gitSyncLiveRevalidation.observedAtMs,
+              )
+            : resolveEvidenceFor(sig, healthForSignals, beesLivenessForSignals, d026Quiescence);
         const outcome = await resolve(
           rec.msg_id,
           'auto-resolved',
-          `infra-liveness signal '${sig}' cleared (${reason}) — ${resolveEvidenceFor(sig, healthForSignals, beesLivenessForSignals, d026Quiescence)}`,
+          `infra-liveness signal '${sig}' cleared (${reason}) — ${resolutionEvidence}`,
         );
         if (outcome === 'not_found' || outcome === 'already_resolved' || outcome === 'requires_spawn_approve') continue;
         resolved.push(rec.msg_id);
@@ -2146,6 +2598,20 @@ export async function runLivenessAlarmTick(
 
   const fired: AlarmSignal[] = [];
   const newBlockerSignals: AlarmSignal[] = [];
+  // Bind agent-strand alarms to the observation and the emitting artifact.
+  // This is evidence, not part of the stable cross-worker dedup identity.
+  const strandForSignals = healthForSignals.panels.coordination?.data?.agentStrand;
+  const agentStrandObservation = strandForSignals
+    ? {
+        observedAtMs: now,
+        snapshotAtMs: healthForSignals.evaluatedAt,
+        runtime: { ...getBuildInfo(), pid: process.pid },
+        wedged: strandForSignals.wedgedUnreadable ? null : strandForSignals.wedged,
+        wedgedByClass: strandForSignals.wedgedUnreadable ? null : { ...strandForSignals.wedgedByClass },
+        stranded: strandForSignals.strandedUnreadable ? null : strandForSignals.stranded,
+        thresholds: { wedged: AGENT_WEDGED_ALARM_THRESHOLD, stranded: AGENT_STRANDED_ALARM_THRESHOLD },
+      }
+    : null;
   const escalationInput = (s: AlarmSignal) => ({
     severity: s.severity,
     summary: `${SUMMARY_PREFIX}${s.summary}`,
@@ -2161,6 +2627,18 @@ export async function runLivenessAlarmTick(
       livenessSignature: s.key,
       dedupKind: 'infra-liveness',
       subjectSignature: s.key,
+      ...((s.key === 'agents-wedged' || s.key === 'agents-stranded') && agentStrandObservation
+        ? { agentStrandObservation }
+        : {}),
+      ...(['hosted-control-plane-degraded', 'hosted-reverse-connector-lost', 'platform-lifecycle-budget-exceeded'].includes(s.key) ? {
+        hostedControlPlaneObservation: {
+          observedAtMs: now,
+          snapshotAtMs: healthForSignals.evaluatedAt,
+          runtime: { ...getBuildInfo(), pid: process.pid },
+          reading: healthForSignals.panels.infra?.data?.hostedControlPlane ?? null,
+          responder: resolveSevereEventOwner(s.key),
+        },
+      } : {}),
       ...(s.diagnosis ? { healthTickStallDiagnosis: s.diagnosis } : {}),
       // EI-10060: no registered/derivable owner for this signal — nobody is
       // durably on the hook for it beyond the ambient `to:['*']` broadcast
@@ -2206,7 +2684,9 @@ export async function runLivenessAlarmTick(
         const shouldBump =
           repeatedAfterPendingRecoverySigs.has(s.key) && openForSig.some((record) => record.severity === s.severity);
         const shouldRefresh =
-          s.key === 'dead-routines' && openForSig.some((record) => record.summary !== renderedSummary);
+          (s.key === 'dead-routines' ||
+            (isGitSyncMissedIntervalsSignature(s.key) && gitSyncLiveRevalidation !== undefined)) &&
+          openForSig.some((record) => record.summary !== renderedSummary);
         if (shouldBump || shouldRefresh) {
           try {
             await escalate(escalationInput(s));
@@ -2331,7 +2811,7 @@ export function startInfraLivenessAlarm(opts: { intervalMs?: number } = {}): { s
       runLivenessAlarmTick(undefined, {
         page: defaultPage,
         pageResolved: defaultPageResolved,
-        d026Quiescence: readD026QuiescenceEvidence,
+        d026Quiescence: () => readD026QuiescenceEvidenceAsync(),
       }).then(
         () => undefined,
         () => undefined,

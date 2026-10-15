@@ -19,12 +19,16 @@ import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import { notifyAgents } from '../coordination/notify-agents';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from '../work_items/unresolved-refs';
+import { reportDedupCoverageDegraded } from '../work_items/semantic-dedup-probe-alarm';
 import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import {
   captureImprovement,
+  captureToolInvocationFriction,
   recordCaptureReviewFailure,
   setCaptureReviewState,
+  type CaptureDependencyTiming,
   type AgentReviewFailure,
+  type CaptureWatchdogIdentityConflictError,
 } from '../../harness/improvements/capture-core';
 import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { OBSERVATION_KINDS, ObservationEvidenceError } from '../../harness/improvements/observation-types';
@@ -48,13 +52,121 @@ import { resolveCaptureScope } from './capture-scope';
 import { coerceCaptureArgs } from './capture-coerce';
 import {
   normalizeSuspectedToolFailure,
+  toolFailureSubsystemForCode,
+  toolFailureSignatureKey,
   TOOL_FAILURE_DIRECT_EVIDENCE_KINDS,
   type SuspectedToolFailure,
 } from '../../harness/improvements/tool-error-classifier';
 import { getModes } from '../../modes/store';
 import { withDrainBugAdmission } from '../work_items/drain-flow';
+import { compactWorkItemRef } from '../work_items/write-echo-shape';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { detectAbsencePremises } from '../../premises-claim-port';
+import { BUG_REPRODUCTION_KINDS, stampFiledBugReproduction } from '../../attention/bug-reproduction';
+import { defaultReproductionLedgerDeps } from '../../attention/intake-promotion';
+
+const CAPTURE_TIMING_LOG_THRESHOLD_MS = 1_000;
+const CAPTURE_TIMING_MAX_STAGES = 48;
+const CAPTURE_TIMING_MAX_LOGGED_STAGES = 24;
+
+interface CaptureTimingStage {
+  name: string;
+  count: number;
+  totalMs: number;
+  maxMs: number;
+  failures: number;
+}
+
+function createCaptureTimingRecorder(ctx: {
+  log?: (message: string) => void;
+  requestOrigin?: { mcpRequestTraceId?: string };
+}) {
+  const startedAt = performance.now();
+  const enabled = typeof ctx.log === 'function';
+  const suppliedTraceId = ctx.requestOrigin?.mcpRequestTraceId;
+  const traceId =
+    typeof suppliedTraceId === 'string' && suppliedTraceId.trim() && suppliedTraceId.length <= 128
+      ? suppliedTraceId
+      : globalThis.crypto.randomUUID();
+  const stages = new Map<string, CaptureTimingStage>();
+  let omittedStageCount = 0;
+  let slowestStageMs = 0;
+  let hasFlushed = false;
+
+  const record = (
+    name: string,
+    elapsedMs: number,
+    outcome: CaptureDependencyTiming['outcome'],
+  ) => {
+    if (!enabled) return;
+    const boundedName = name.slice(0, 80);
+    const duration = Number.isFinite(elapsedMs) ? Math.max(0, Math.round(elapsedMs * 10) / 10) : 0;
+    slowestStageMs = Math.max(slowestStageMs, duration);
+    let stage = stages.get(boundedName);
+    if (!stage) {
+      if (stages.size >= CAPTURE_TIMING_MAX_STAGES) {
+        omittedStageCount += 1;
+        return;
+      }
+      stage = { name: boundedName, count: 0, totalMs: 0, maxMs: 0, failures: 0 };
+      stages.set(boundedName, stage);
+    }
+    stage.count += 1;
+    stage.totalMs = Math.round((stage.totalMs + duration) * 10) / 10;
+    stage.maxMs = Math.max(stage.maxMs, duration);
+    if (outcome === 'rejected') stage.failures += 1;
+  };
+
+  const measure = async <T>(name: string, operation: () => Promise<T> | T): Promise<T> => {
+    if (!enabled) return await operation();
+    const phaseStartedAt = performance.now();
+    let outcome: CaptureDependencyTiming['outcome'] = 'fulfilled';
+    try {
+      return await operation();
+    } catch (error) {
+      outcome = 'rejected';
+      throw error;
+    } finally {
+      record(name, performance.now() - phaseStartedAt, outcome);
+    }
+  };
+
+  const flush = () => {
+    if (!enabled) return;
+    hasFlushed = true;
+    const totalElapsedMs = Math.max(0, Math.round((performance.now() - startedAt) * 10) / 10);
+    if (totalElapsedMs < CAPTURE_TIMING_LOG_THRESHOLD_MS && slowestStageMs < CAPTURE_TIMING_LOG_THRESHOLD_MS) {
+      return;
+    }
+    const loggedStages = [...stages.values()]
+      .sort((a, b) => b.totalMs - a.totalMs || b.maxMs - a.maxMs)
+      .slice(0, CAPTURE_TIMING_MAX_LOGGED_STAGES);
+    try {
+      ctx.log?.('[improvements:capture] timing ' + JSON.stringify({
+        traceId,
+        totalElapsedMs,
+        stageCount: stages.size,
+        omittedStageCount: omittedStageCount + Math.max(0, stages.size - loggedStages.length),
+        stages: loggedStages,
+      }));
+    } catch {
+      // A diagnostic log failure must never change the capture result.
+    }
+  };
+
+  return {
+    enabled,
+    measure,
+    recordDependency: (sample: CaptureDependencyTiming) => {
+      record('core.' + sample.dependency, sample.elapsedMs, sample.outcome);
+      // The lexical leg can outlive capture-core's 1500 ms budget. Its late
+      // completion still belongs to this request and must be logged with the
+      // same trace id after the handler's first flush.
+      if (hasFlushed) flush();
+    },
+    flush,
+  };
+}
 
 const observationRatingsSchema = z.record(
   z.string().min(1),
@@ -94,7 +206,7 @@ const observationRatingsSchema = z.record(
         "the explicit alternative to `remediation` on a POOR rating: a reasoned, owned decision NOT to act (≥10 chars). Silence is rejected; 'n/a' is not a decision.",
       ),
   }),
-);
+).meta({ id: 'observation-ratings-v1' });
 
 const observedRuntimeSchema = z
   .object({
@@ -183,7 +295,7 @@ const NOT_EXERCISED_RUBRIC_GUIDANCE =
  * the validator so discovery can publish the same rule the refinement enforces.
  */
 const CAPTURE_TEXT_CALL_CONSTRAINT =
-  'at least one of title, body, or toolFailure is required; title is required when both body and toolFailure are omitted (body-only captures derive title from the first non-empty body line)';
+  'at least one of title, body, or toolFailure is required; title is required when both body and toolFailure are omitted (body-only captures derive title from the first non-empty body line); a non-empty observation.notExercised requires observation.rubricRef or the top-level rubricRef compatibility alias (omit notExercised for free-text observations)';
 
 /**
  * EI-19325151590626958 — the DEFAULT conditionKey for a rubric-graded scorecard observation.
@@ -234,7 +346,7 @@ export interface ShippedCodeSearchAdvisory {
 /**
  * EI-19390763763662489: an empty improvement-dedup result searches prior work-item
  * text, not the shipped tree. Absence-shaped proposals are the dangerous case: the
- * caller naturally reads `possibleDuplicates: []` as corroboration that the named
+ * caller naturally reads an empty `possibleDuplicates` result as corroboration that the named
  * capability does not exist, then builds a second implementation of code already in
  * production.
  *
@@ -246,9 +358,13 @@ export interface ShippedCodeSearchAdvisory {
  */
 export function describeShippedCodeSearchGap(
   args: { title: string; body?: string; lane?: string },
-  possibleDuplicates: readonly unknown[] | undefined,
+  possibleDuplicates: readonly unknown[] | null | undefined,
 ): ShippedCodeSearchAdvisory | undefined {
-  if (args.lane === 'observation' || !Array.isArray(possibleDuplicates) || possibleDuplicates.length > 0) {
+  if (
+    args.lane === 'observation' ||
+    possibleDuplicates === undefined ||
+    (Array.isArray(possibleDuplicates) && possibleDuplicates.length > 0)
+  ) {
     return undefined;
   }
 
@@ -260,11 +376,15 @@ export function describeShippedCodeSearchGap(
   );
   if (absencePremises.length === 0) return undefined;
 
+  const workItemDedupNote =
+    possibleDuplicates === null
+      ? '`possibleDuplicates: null` means no usable work-item-text dedup verdict was available; it is NOT evidence that no prior item exists.'
+      : '`possibleDuplicates: []` means the work-item-text dedup found no prior item; it is NOT evidence that this capability is absent from shipped code.';
+
   return {
     absencePremises,
     note:
-      'Report only — the capture still succeeded. `possibleDuplicates: []` means the work-item-text ' +
-      'dedup found no prior item; it is NOT evidence that this capability is absent from shipped code. ' +
+      'Report only — the capture still succeeded. ' + workItemDedupNote + ' ' +
       'Before building, run the premise recheck(s) above across the whole repository: use scoped `rg` ' +
       'for text/symbol spellings and `graph:query` for call topology. Reuse the existing surface if found.',
   };
@@ -511,11 +631,32 @@ const suspectedToolFailureSchema = z
   })
   .strict();
 
+function shapeCaptureWriteEcho(
+  data: unknown,
+  context: { tier: 'standard' | 'trimmed' },
+): unknown {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  const result = data as Record<string, unknown>;
+  if (!result.issue || typeof result.issue !== 'object' || Array.isArray(result.issue)) return data;
+  return {
+    ...result,
+    issue: compactWorkItemRef(result.issue, context.tier === 'trimmed' ? 90 : 140),
+  };
+}
+
 export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
   description:
     'Capture a papercusp bug, improvement, feature, or observation as a durable work-unit. kind=bug is auto-implement eligible; change/feature are agent-reviewed. Dedup matches are annotated on the created row; only checkDuplicatesOnly skips persistence. lane:"observation" stays outside the work queue.',
+  // The caller just filed this issue, so the standard write echo only needs a
+  // compact reference. Full stored details remain available through work_items:get
+  // or an explicit payloadTier:"full" call. This avoids spilling the issue body
+  // and payload through the result door on the capture's critical response path.
+  shape: {
+    standard: shapeCaptureWriteEcho,
+    trimmed: shapeCaptureWriteEcho,
+  },
   guidance: {
     when:
       'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in the top-level body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them. ' +
@@ -548,7 +689,8 @@ export default defineTool({
       description: 'body',
     },
     returns:
-      'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, hint, alreadyDecided? }. The check-only `hint` states whether this was title-only or bound to the exact supplied body; changing the body can change semantic matches, so rerun with the final body before treating [] as clean.\n\n' +
+      'CREATE: { ok, created, issue, topics, possibleDuplicates:array|null, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates:array|null, dedupCoverage, hint, alreadyDecided? }. `possibleDuplicates:null` means both lexical and semantic searches were unavailable and no known hit could be listed; it is not a clean result. The check-only `hint` states whether this was title-only or bound to the exact supplied body. A title-only match list can be incomplete even when it contains matches; rerun with the final body before relying on the results.\n\n' +
+      'For standard/trimmed tiers, `issue` is a compact reference (id, kind, harness, state, title, assignee); read stored details with `work_items:get { id }`, or request `payloadTier:"full"` when the complete echo is needed.\n\n' +
       'UNKEYED OBSERVATION CREATE (`lane:"observation"`, no `conditionKey`): returns only `{ ok:true }`. Fresh storage and a server-side fold intentionally have the same response; the filing is complete and needs no caller-side duplicate investigation. Keyed machine-emitter observations retain their detailed coalesce response.\n\n' +
       'KEYED COALESCE (reason:"coalesced" — an observation matching an open conditionKey): also `coalescedOnto { id, repeatCount, bodyPersisted, bodyDiscarded?, priorAuthor, crossAuthor }`. Read `bodyPersisted` BEFORE asserting the row says what you wrote: on false your title/body was DISCARDED and the row still shows the previous reading. `crossAuthor:true` means you wrote onto a PEER\'s row (expected for a shared conditionKey; occurrences are all retained).\n\n' +
       'A filing with `paths` may also return `staleCodeWarning` — a REPORT-ONLY check for commits touching those paths after the running build. It names the serving sha and newer commits; it NEVER blocks the filing. Verify the deployed generation before treating a live observation as a current defect.\n\n' +
@@ -558,16 +700,17 @@ export default defineTool({
       '  • semantic:hard  — embedding match. The created row carries the same verdict annotation.\n' +
       '  • semantic:soft  — weaker embedding match. ADVISORY ONLY, never declines.\n' +
       '  • lexical:"containment" — your (shorter) title is almost fully covered by a much longer stored one. ADVISORY ONLY, never declines. This is the net that makes a SHORT symptom query work: Jaccard divides by the union, so a short query that is a perfect subset of a long stored title scores |query|/|title| and cannot clear the threshold on its own.\n\n' +
-      'dedupCoverage { lexical, semantic, degraded } — WHAT COULD ACTUALLY BE CHECKED. Read it before treating an empty possibleDuplicates as "nothing similar exists". The embedding leg fails OPEN (semantic:"unavailable" when the embedder is down/over budget), so degraded:true means a differently-worded duplicate would NOT have been found and your empty result is "could not check", not "checked and clean".' +
-      '\n\nAn absence-shaped filing/check with `possibleDuplicates: []` also returns `shippedCodeSearch { absencePremises, note }`: work-item dedup cannot prove shipped code is absent, so run the named whole-repo `rg` / `graph:query` recheck before building. Report-only; it never blocks the capture.',
+      'dedupCoverage { lexical, semantic, degraded } — WHAT COULD ACTUALLY BE CHECKED. Read it before treating an empty possibleDuplicates list as "nothing similar exists". `possibleDuplicates:null` means both fuzzy legs were unavailable and no known hit could be listed. semantic:"partial" means the embedding query ran against a below-floor index; its hits can help, but an empty result may miss duplicates. semantic:"unavailable" means the embedder did not return a verdict or index coverage is unknown/unmeasured. Either state makes degraded:true: an empty result is "could not fully check", not "checked and clean".' +
+      '\n\nAn absence-shaped filing/check with `possibleDuplicates: []` or `null` may also return `shippedCodeSearch { absencePremises, note }`: work-item dedup cannot prove shipped code is absent, so run the named whole-repo `rg` / `graph:query` recheck before building. Report-only; it never blocks the capture.',
     seeAlso: [
-      'SYMPTOM-FIRST — improvements:capture { title, checkDuplicatesOnly:true } BEFORE you diagnose: "has anyone already hit this?" costs one call and a title, and creates nothing',
+      'possibleDuplicates may be null when both lexical and semantic search were unavailable; that is no verdict, not a clean search. Read dedupCoverage before interpreting empty or missing matches.',
+      'SYMPTOM-FIRST — improvements:capture { title, checkDuplicatesOnly:true } BEFORE you diagnose: "has anyone already hit this?" costs one call and a title, and creates nothing. Treat its title-only match list as incomplete; rerun with the final body before relying on it.',
       'improvements:digest (triage the backlog this lands in — but NEVER shows lane:"observation" rows; see below)',
       // Moved out of `notWhen` (P-011 prompt-weight: seeAlso is not counted against
       // the 1500-char budget, notWhen is). Unchanged in substance — these are the
       // two args that DO carry what callers reach for the rejected provenance
       // fields to express, so the rule and its remedy have to travel together.
-      'CLAIM + ATTRIBUTE: assign_to:"self" claims the filing, and observation.refs carries evidence attribution. ' +
+      'CLAIM + ATTRIBUTE: assign_to:"self" atomically claims non-observation filings. lane:"observation" records are non-claimable sensor readings and ignore assign_to; use a bug/change filing when you need to claim implementation work. observation.refs carries evidence attribution. ' +
         'Never pass createdBy / source / sourceRole / filedByRole — the server derives filer identity and role, and the strict schema rejects them.',
       'work_items:create (a problem in a MANAGED harness, not papercusp itself)',
       'plans:new (something needing real design — capture kind=feature linking it)',
@@ -684,7 +827,7 @@ export default defineTool({
           .boolean()
           .optional()
           .describe(
-            'SEARCH ONLY, creates nothing: "has anyone already hit this?" — run BEFORE you diagnose, with just a `title` (the symptom in your own words).',
+            'SEARCH ONLY, creates nothing: "has anyone already hit this?" — for improvement-lane captures. `lane:"observation"` skips duplicate search; its empty `possibleDuplicates` is not a verdict (read dedupCoverage/hint). Pass the symptom in title and the exact body before relying on results.',
           ),
         // WI-5950. Kept SHORT on purpose: the prompt-weight budget (≤1500 soft / ≤1600 hard
         // per tool) is shared across every field, and the first draft of this description
@@ -699,7 +842,7 @@ export default defineTool({
           .max(120)
           .optional()
           .describe(
-            'Atomically CLAIM the filed item in this same capture — an ownerId, or "self". Use when you are ALREADY working the thing you are filing: an unclaimed item goes to the claimable pool, where a peer may duplicate your in-progress fix. Omit ⇒ unclaimed. Ignored for observations.',
+            'Atomically CLAIM the filed item in this same capture — an ownerId, or "self". Use when you are ALREADY working the thing you are filing: an unclaimed item goes to the claimable pool, where a peer may duplicate your in-progress fix. Omit ⇒ unclaimed. Ignored for observations. Fresh change/feature filings that enter agent review release the filer claim before the response and remain unassigned until review completes.',
           ),
         origin: z
           .enum(['organic', 'drill', 'replay', 'shadow'])
@@ -732,6 +875,30 @@ export default defineTool({
           .describe(
             'Suspected tool-call failure. A one-off is captured immediately in non-claimable probation and correlated by tool/error/schema/field/runtime; a second independent reporter or the invocation watchdog promotes the SAME row. Put legacy direct-evidence flags inside this object — toolFailure.reproduced, toolFailure.clearServerMismatch, or toolFailure.hardInternal — and do not pass them at the top level. For a caller-class refusal, those booleans alone stay in probation: pass toolFailure.directEvidence { kind, expected, actual } only when you can state the inspectable contract mismatch that makes it a tool defect.',
           ),
+        reproduction: z
+          .object({
+            ref: z.string().min(1).max(2000),
+            buildSha: z.string().min(7).max(40),
+            kind: z.enum(BUG_REPRODUCTION_KINDS).optional(),
+          })
+          .strict()
+          .optional()
+          .describe(
+            'A bug you ENCOUNTERED (D-024): ref = test_runs:<id> / tool_invocations:<id> (checked) or the log line, buildSha = the build it failed on. Verified, it skips bulk-review reproduction.',
+          ),
+        // unified-bug-pipeline P-011 / D-046 pt 5: the error an agent saw. Redacted +
+        // bounded server-side (report-context.ts); recentErrors folds this report with
+        // any other reporter's report of the SAME error. Screen/log/screenshot fields
+        // are the in-app door's (end-user-intake.ts), kept off this floor tool's schema.
+        reportContext: z
+          .object({
+            appVersion: z.string().max(200).optional(),
+            recentErrors: z
+              .array(z.object({ message: z.string().min(1).max(2000), source: z.string().max(200).optional() }))
+              .max(10),
+          })
+          .strict()
+          .optional(),
         // EI-12176 compatibility aliases. Older generated guidance advertised these at
         // top level. Declaring + normalising them prevents tools:invoke's permissive
         // envelope from silently stripping a scorecard while keeping observation.* as
@@ -750,7 +917,12 @@ export default defineTool({
           .object({
             kind: z.enum(OBSERVATION_KINDS).optional(),
             scope: z.enum(['self', 'role', 'harness', 'papercusp']).optional(),
-            confidence: z.enum(['low', 'med', 'high']).optional(),
+            confidence: z
+              .enum(['low', 'med', 'high'])
+              .optional()
+              .describe(
+                "Evidence strength for this observation: low, med, or high. Do not use the fact-registry confidence labels verified/provisional/suspected; those belong to facts:assert.",
+              ),
             refs: z
               .array(z.string().max(200))
               .max(12)
@@ -875,7 +1047,7 @@ export default defineTool({
           .strict()
           .optional()
           .describe(
-            `structured fields for a lane:observation record. ${OBSERVATION_EVIDENCE_RULE} The IDENTIFYING "what" is the title (see its rule — an observation is found again only by its title) and the whole narrative "why" is the body, which is unbounded free prose and the right home for the story. Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.`,
+            `structured fields for a lane:observation record. ${OBSERVATION_EVIDENCE_RULE} The observation object accepts structured fields only; observation.body is not a valid field, and prose belongs in the top-level body. The IDENTIFYING "what" is the title (see its rule — an observation is found again only by its title) and the whole narrative "why" is the body, which is unbounded free prose and the right home for the story. Pass rubricRef+ratings (each {rating,evidence}) to file a RUBRIC-GRADED observation — check rubrics:list first to see if a rubric fits.`,
           ),
         // ── IDEATE-pass provenance (su-ideate-learning-substrate-2026-07-10 P-002 / D-004:
         // the ONE schema bump — the full shape is declared here so the tool contract never
@@ -957,7 +1129,7 @@ export default defineTool({
       created: z.boolean().optional(),
       issue: z.unknown().optional(),
       topics: z.array(z.unknown()).optional(),
-      possibleDuplicates: z.array(z.unknown()).optional(),
+      possibleDuplicates: z.array(z.unknown()).nullable().optional(),
       dedupCoverage: z.unknown().optional(),
       alreadyDecided: z.unknown().optional(),
       reason: z.string().optional(),
@@ -969,6 +1141,7 @@ export default defineTool({
       experimentGap: z.unknown().optional(),
       lensAttribution: z.unknown().optional(),
       groundingGap: z.unknown().optional(),
+      reproduction: z.unknown().optional(),
       agentReview: z.unknown().optional(),
       agentReviewFailure: z.unknown().optional(),
       notified: z.unknown().optional(),
@@ -982,6 +1155,8 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    const timing = createCaptureTimingRecorder(ctx);
+    try {
     const id = resolveAgentIdentity(ctx);
     // EI-21601117899178959: direct handler callers (including older in-process
     // dispatchers) may bypass the args preprocessor. Keep the same canonicalization
@@ -999,8 +1174,8 @@ export default defineTool({
     // bee/worker/…) that the server-side deriveAgentRole cannot see (the agent's
     // PAPERCUSP_AGENT_ROLE env is not in THIS process). Fall back to the coarse
     // source-derived role; best-effort — a presence-read miss never blocks a capture.
-    const filedByRole =
-      (await getPresence(id.ownerId).catch(() => null))?.agentRole ?? deriveAgentRole(id) ?? undefined;
+    const presence = await timing.measure('identity.presence', () => getPresence(id.ownerId)).catch(() => null);
+    const filedByRole = presence?.agentRole ?? deriveAgentRole(id) ?? undefined;
     // Auto-derive sourceHive (rubric-driven-observations D-003) from the caller's
     // hive/harness when omitted: signed-spawn bees carry ctx.harnessSlug; explicit
     // callers (Overwatch/Scout) set observation.sourceHive themselves. '*' (the
@@ -1080,7 +1255,9 @@ export default defineTool({
     // different generations. Best-effort by construction (both legs degrade to null) —
     // the stamp must never fail the capture it rides on.
     const gradedGeneration =
-      observationBase?.rubricRef && observationBase.ratings ? await readRunningGeneration().catch(() => null) : null;
+      observationBase?.rubricRef && observationBase.ratings
+        ? await timing.measure('metadata.runningGeneration', () => readRunningGeneration()).catch(() => null)
+        : null;
     const observation = observationBase
       ? { ...observationBase, ...(gradedGeneration ? { gradedGeneration } : {}) }
       : undefined;
@@ -1103,8 +1280,9 @@ export default defineTool({
     const foundDuring = clampText(args.foundDuring, LIMITS.LABEL);
     const foundDuringTruncated = typeof args.foundDuring === 'string' && args.foundDuring.length > LIMITS.LABEL;
     const captureText = deriveToolFailureCaptureText(args);
-    const normalizedToolFailure = args.toolFailure
-      ? normalizeSuspectedToolFailure(args.toolFailure as SuspectedToolFailure)
+    const reportedToolFailure = args.toolFailure;
+    const normalizedToolFailure = reportedToolFailure
+      ? normalizeSuspectedToolFailure(reportedToolFailure as SuspectedToolFailure)
       : undefined;
     // EI-22752568870730930: the process receiving this capture may not be the
     // runtime that produced the report (for example, a report exercised against
@@ -1118,15 +1296,20 @@ export default defineTool({
       const observed = args.observedRuntime;
       let provenance: RuntimeProvenance['observedTargetRuntime']['provenance'] = 'caller-supplied';
       let observedTarget = { ...observed };
-      if (observed.testRunIds !== undefined) {
-        const trusted = await readTrustedHarnessTestRunProvenance({
-          testRunIds: observed.testRunIds,
-          workspaceId: observed.workspaceId!,
-          harnessSlug: observed.harnessSlug!,
-          runGroupId: observed.runGroupId!,
-          root: observed.root!,
-          filePaths: observed.filePaths!,
-        }).catch(() => null);
+      const testRunIds = observed.testRunIds;
+      if (testRunIds !== undefined) {
+        const trusted = await timing.measure(
+          'metadata.trustedTestRunProvenance',
+          () =>
+            readTrustedHarnessTestRunProvenance({
+              testRunIds,
+              workspaceId: observed.workspaceId!,
+              harnessSlug: observed.harnessSlug!,
+              runGroupId: observed.runGroupId!,
+              root: observed.root!,
+              filePaths: observed.filePaths!,
+            }),
+        ).catch(() => null);
         if (trusted) {
           targetRuntimeSha = trusted.commitSha;
           provenance = 'trusted-test-run';
@@ -1159,7 +1342,9 @@ export default defineTool({
     // later. Resolve the failing verb to its defining file and say so at FILE time.
     // Null unless the file actually differs between the serving build and the tree,
     // so the common case adds nothing. Never throws; never blocks the filing.
-    const stalenessHint = args.toolFailure ? await toolFailureStalenessHint(args.toolFailure.toolName) : null;
+    const stalenessHint = args.toolFailure
+      ? await timing.measure('metadata.toolFailureStaleness', () => toolFailureStalenessHint(args.toolFailure!.toolName)).catch(() => null)
+      : null;
     // EI-19452091889263267: a report can be based on a live runtime observation
     // even when the failing call itself was not a schema/tool error.  Compare the
     // explicitly supplied subject paths against the serving build and carry a
@@ -1167,8 +1352,9 @@ export default defineTool({
     // runtime for current tree behavior.
     const pathStalenessHint = args.paths?.length
       ? targetRuntimeSha
-        ? await pathsStalenessHint(args.paths, { deployedSha: () => targetRuntimeSha! })
-        : await pathsStalenessHint(args.paths)
+        ? await timing.measure('metadata.pathStaleness', () =>
+            pathsStalenessHint(args.paths!, { deployedSha: () => targetRuntimeSha! })).catch(() => null)
+        : await timing.measure('metadata.pathStaleness', () => pathsStalenessHint(args.paths!)).catch(() => null)
       : null;
     // Reserve room for the hint rather than clamping the join: the body arrives
     // already clamped to LIMITS.CONTENT, so a naive append could overflow it, and
@@ -1211,7 +1397,8 @@ export default defineTool({
     // and non-bugs retain their existing availability-first behavior.
     const drainMode =
       effectiveKind === 'bug' && effectiveLane !== 'observation'
-        ? (await getModes(id.workspaceId ?? ctxWorkspace ?? 'default', id.ownerId)).find(
+        ? (await timing.measure('metadata.modeLookup', () =>
+            getModes(id.workspaceId ?? ctxWorkspace ?? 'default', id.ownerId))).find(
             (mode) => mode.mode === 'drain',
           )
         : undefined;
@@ -1221,17 +1408,28 @@ export default defineTool({
       !args.checkDuplicatesOnly &&
       effectiveLane !== 'observation' &&
       (effectiveKind === 'change' || effectiveKind === 'feature');
-    // A caller-supplied conditionKey is the stable correlation identity. Keep it
-    // ahead of the tool-failure message key: the latter intentionally includes a
-    // message fingerprint, so changing only the error wording must not fork one
-    // condition into multiple rows (EI-22722288208033107).
+    // A caller-supplied conditionKey is the stable correlation identity. A
+    // partial tool-failure report with a concrete field path also has a stable
+    // D-010 row identity; use it when errorCode is absent so a generic wrapper
+    // prefix cannot fold distinct causes together. The probation payload keeps
+    // the original watchdog message key for exact invocation correlation.
+    const hasConcreteFieldPath = typeof reportedToolFailure?.fieldPath === 'string' &&
+      reportedToolFailure.fieldPath.trim() !== '' &&
+      reportedToolFailure.fieldPath.trim().toLowerCase() !== 'field-unknown';
+    const hasExplicitErrorCode = typeof reportedToolFailure?.errorCode === 'string' &&
+      reportedToolFailure.errorCode.trim() !== '';
+    const toolFailureRowKey = normalizedToolFailure && reportedToolFailure
+      ? !hasExplicitErrorCode && hasConcreteFieldPath
+        ? toolFailureSignatureKey(
+            { ...reportedToolFailure, errorCode: reportedToolFailure.status },
+            normalizedToolFailure.class,
+          )
+        : normalizedToolFailure.watchdogKey
+      : undefined;
     const captureWatchdogKey =
       args.conditionKey ??
-      (normalizedToolFailure
-        ? normalizedToolFailure.watchdogKey
-        : effectiveLane === 'observation'
-          ? defaultScorecardConditionKey(observation)
-          : undefined);
+      toolFailureRowKey ??
+      (effectiveLane === 'observation' ? defaultScorecardConditionKey(observation) : undefined);
     // work-queue-admission-and-bulk-dedup P-008: a successful unkeyed
     // observation filing is DONE from the caller's perspective. Whether the
     // server minted a row, HARD-folded onto a survivor, or SOFT-linked a fresh
@@ -1280,9 +1478,56 @@ export default defineTool({
             : {}),
         }
       : undefined;
+    // P-013 / D-024: an ENCOUNTERED bug carries its encounter as the reproduction
+    // receipt. The verdict is computed here (ledger refs resolved), never trusted from
+    // the caller; a caller-classified tool failure without direct evidence keeps its
+    // probation path, so its receipt is stored as evidence but cannot skip review.
+    const reproductionStamp =
+      args.reproduction && !args.checkDuplicatesOnly
+        ? await timing.measure('metadata.reproductionStamp', () =>
+            stampFiledBugReproduction(
+              args.reproduction!,
+              {
+                filedBy: id.ownerId,
+                ineligibleReason:
+                  normalizedToolFailure && normalizedToolFailure.class === 'caller' && !normalizedToolFailure.direct
+                    ? 'caller-classified tool failure without direct evidence keeps its probation path (D-024 §4)'
+                    : null,
+              },
+              defaultReproductionLedgerDeps(),
+            ))
+        : null;
+    if (reproductionStamp && !reproductionStamp.ok) throw new ObservationEvidenceError(reproductionStamp.error);
+    const storedReproduction = reproductionStamp?.ok ? reproductionStamp.stored : undefined;
     try {
-      const persist = () =>
-        captureImprovement({
+      const persist = async () => {
+        const onlyStructuredCaptureFields =
+          !args.checkDuplicatesOnly && !args.conditionKey && !args.force &&
+          !args.observation && !args.ideation && !args.reportContext && !args.reproduction &&
+          !args.observedRuntime && !args.paths?.length && !args.subTopic && !args.foundDuring &&
+          args.assign_to === undefined && captureOrigin === undefined;
+        if (
+          normalizedToolFailure && reportedToolFailure &&
+          toolFailureSubsystemForCode(reportedToolFailure.errorCode) &&
+          !normalizedToolFailure.direct && onlyStructuredCaptureFields
+        ) {
+          const friction = await timing.measure('core.toolInvocationFriction', () => captureToolInvocationFriction({
+            workspaceId: resolveConcreteWorkspaceId(id.workspaceId ?? ctxWorkspace, ctxWorkspace),
+            harnessSlug: ctxHarness ?? (captureScope?.startsWith('harness:')
+              ? captureScope.slice('harness:'.length)
+              : '*'),
+            ownerId: id.ownerId,
+            invokedAt: new Date().toISOString(),
+            failure: reportedToolFailure,
+            title: captureText.title,
+            body: bodyWithStaleness,
+            scope: captureScope ?? undefined,
+            severity: args.severity as IssueSeverity | undefined,
+            onDependencyTiming: timing.enabled ? timing.recordDependency : undefined,
+          }));
+          if (friction) return friction;
+        }
+        return await timing.measure('core.captureImprovement', () => captureImprovement({
           title: captureText.title,
           kind: effectiveKind,
           // Agent-facing door: poor scorecard ratings must carry a disposition
@@ -1300,9 +1545,11 @@ export default defineTool({
           origin: captureOrigin,
           lane: effectiveLane,
           watchdogKey: captureWatchdogKey,
+          ...(args.reportContext ? { reportContext: args.reportContext } : {}),
           payloadExtra:
-            observation || hasIdeation || toolFailureProbation || runtimeProvenance || targetRuntimeSha
+            observation || hasIdeation || toolFailureProbation || runtimeProvenance || targetRuntimeSha || storedReproduction
               ? {
+                  ...(storedReproduction ? { reproduction: storedReproduction } : {}),
                   ...(observation ? { observation } : {}),
                   ...(hasIdeation ? { ideation } : {}),
                   ...(toolFailureProbation ? { toolFailureProbation } : {}),
@@ -1339,20 +1586,22 @@ export default defineTool({
                   const scopedHarness = captureScope?.startsWith('harness:')
                     ? captureScope.slice('harness:'.length)
                     : ctxHarness;
-                  await setWorkItemCheckpoint(
+                  await timing.measure('wrapper.successorCheckpoint', () => setWorkItemCheckpoint(
                     {
                       harness: scopedHarness ?? null,
                       workItemId,
                       workspaceId: resolveConcreteWorkspaceId(ctxWorkspace),
                     },
                     checkpoint,
-                  );
+                  ));
                 },
               }
             : {}),
           filedByRole,
           source,
-        });
+          onDependencyTiming: timing.enabled ? timing.recordDependency : undefined,
+        }));
+      };
       const drainHarness = captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : ctxHarness;
       if (drainMode && !args.checkDuplicatesOnly && !drainHarness) {
         return {
@@ -1375,7 +1624,7 @@ export default defineTool({
       // serialized through the exact flow gate before capture-core may mutate.
       const gated =
         drainMode && !args.checkDuplicatesOnly
-          ? await withDrainBugAdmission(
+          ? await timing.measure('wrapper.drainAdmission', () => withDrainBugAdmission(
               {
                 workspaceId: id.workspaceId ?? ctxWorkspace ?? 'default',
                 harness: drainHarness!,
@@ -1383,7 +1632,7 @@ export default defineTool({
                 drainStartedAt: drainMode.setAt,
               },
               () => persist(),
-            )
+            ))
           : null;
       if (gated && !gated.allowed) {
         return {
@@ -1401,10 +1650,39 @@ export default defineTool({
           ],
         };
       }
-      const result = gated ? gated.value : await persist();
+      const result = gated ? gated.value : await timing.measure('wrapper.persist', () => persist());
+      const resultCoverage = (result as {
+        ok?: boolean;
+        dedupCoverage?: { lexical?: string; semantic?: string; degraded?: boolean };
+      }).dedupCoverage;
+      if (
+        !args.checkDuplicatesOnly &&
+        effectiveLane !== 'observation' &&
+        (result as { ok?: boolean }).ok !== false &&
+        resultCoverage !== undefined
+      ) {
+        void reportDedupCoverageDegraded({
+          source: 'improvements:capture',
+          ...(drainHarness ? { harnessSlug: drainHarness } : {}),
+          coverage: resultCoverage,
+        }).catch(() => {});
+      }
       // Directed @-mention — only when we actually CREATED a claimable item (not a
       // checkDuplicatesOnly probe / coalesced row / observation-lane reflection).
-      const captured = result as { created?: boolean; issue?: { id: string; title?: string } };
+      const captured = result as {
+        created?: boolean;
+        issue?: {
+          id: string;
+          title?: string;
+          state?: string;
+          assignee?: string | null;
+          assignedBy?: string | null;
+        };
+      };
+      const capturedIssue = captured.issue;
+      const initialReviewState = (result as { reviewState?: 'blocked' | 'open' }).reviewState;
+      let responseIssue = capturedIssue;
+      let responseReviewState = initialReviewState;
       // su-loop-capability-parity P-005 (D-009): an SU session's IDEATE-pass FEATURE origination
       // earns a routed-ledger provenance row (origin='su-ideate') so it rides the SAME
       // grade/outcome/priming machinery Scout's ideas do — WITHOUT skewing Scout's per-lens
@@ -1417,13 +1695,13 @@ export default defineTool({
         args.kind === 'feature' &&
         args.lane !== 'observation' &&
         captured.created &&
-        captured.issue?.id
+        capturedIssue?.id
       ) {
-        const featureId = captured.issue.id;
+        const featureId = capturedIssue.id;
         const ledgerHarness =
           ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp');
         try {
-          await recordRoutedIdea({
+          await timing.measure('wrapper.routedIdeaProvenance', () => recordRoutedIdea({
             origin: 'su-ideate',
             createdBy: id.ownerId, // originator join key: grade→revise wakes + scope:'mine' reads (migration 558)
             ideaId: featureId,
@@ -1433,14 +1711,14 @@ export default defineTool({
             rail: 'improvement',
             routedRef: `wi:${featureId}`,
             harnessSlug: ledgerHarness,
-            title: captured.issue.title ?? captureText.title,
+            title: capturedIssue.title ?? captureText.title,
             // EI-10607: the pattern refs this idea grounds on — the ONE field that lets an
             // su idea appear as `grounded` in observationsImpact. Omitted when the caller
             // declared none, so the row shape is unchanged for an ungrounded filing.
             ...(args.ideation?.addressesPatternRefs?.length
               ? { addressesPatternRefs: [...args.ideation.addressesPatternRefs] }
               : {}),
-          });
+          }));
         } catch {
           // best-effort provenance — never affects the capture the user requested
         }
@@ -1465,9 +1743,9 @@ export default defineTool({
         reviewResult.reviewState === 'blocked' &&
         !reviewResult.agentReviewFailure &&
         captured.created &&
-        captured.issue?.id,
+        capturedIssue?.id,
       );
-      if (canEnrollReview && captured.issue?.id) {
+      if (canEnrollReview && capturedIssue?.id) {
         let enrollmentSucceeded = false;
         const recordReviewFailure = async (phase: AgentReviewFailure['phase'], error: unknown) => {
           const failure: AgentReviewFailure = {
@@ -1480,39 +1758,44 @@ export default defineTool({
           // mutated the payload before throwing, and a failed reopen leaves state
           // uncertain. Both cleanup legs are best-effort: the committed capture and
           // the failure metadata must still be returned to the caller.
-          await setCaptureReviewState(captured.issue!.id, 'blocked', {
+          await timing.measure('wrapper.agentReview.repark', () => setCaptureReviewState(capturedIssue.id, 'blocked', {
             harness: reviewHarness,
             by: id.ownerId,
             reason: `agent-review-${phase}-failed`,
-          }).catch(() => undefined);
-          await recordCaptureReviewFailure(captured.issue!.id, failure, {
+          })).catch(() => undefined);
+          await timing.measure('wrapper.agentReview.recordFailure', () => recordCaptureReviewFailure(capturedIssue.id, failure, {
             submittedBy: id.ownerId,
             harness: reviewHarness,
-          }).catch(() => undefined);
+          })).catch(() => undefined);
           agentReviewFailure = failure;
         };
 
         try {
-          const enrolled = await enterAgentReview({
-            id: captured.issue.id,
+          const enrolled = await timing.measure('wrapper.agentReview.enroll', () => enterAgentReview({
+            id: capturedIssue.id,
             submittedBy: id.ownerId,
             harnessSlug: reviewHarness,
             workspaceId: resolveConcreteWorkspaceId(id.workspaceId, ctxWorkspace),
-          });
+          }));
           if (!enrolled.entered) {
             throw new Error(`agent-review enrollment was not entered${enrolled.reason ? `: ${enrolled.reason}` : ''}`);
           }
           enrollmentSucceeded = true;
-          const reopened = await setCaptureReviewState(captured.issue.id, 'open', {
+          const reopened = await timing.measure('wrapper.agentReview.reopen', () => setCaptureReviewState(capturedIssue.id, 'open', {
             harness: reviewHarness,
             by: id.ownerId,
             reason: 'agent-review enrollment succeeded',
-          });
+          }));
           const appliedState = reopened?.appliedState ?? reopened?.workItem?.state;
           if (appliedState !== 'open') {
             throw new Error(`review reopen did not apply open state (appliedState=${appliedState ?? 'null'})`);
           }
           agentReview = enrolled;
+          // enterAgentReview releases the submitter claim so an independent reviewer
+          // can take the pending row. Return the post-review state, not capture-core's
+          // pre-review INSERT snapshot (which still carries the filer as assignee).
+          responseIssue = { ...capturedIssue, state: 'open', assignee: null };
+          responseReviewState = 'open';
         } catch (error) {
           const phase: AgentReviewFailure['phase'] = enrollmentSucceeded ? 'reopen' : 'enrollment';
           await recordReviewFailure(phase, error);
@@ -1525,19 +1808,25 @@ export default defineTool({
       // created (not a coalesced/check-only result). Best-effort per target: one bad targetId
       // never fails the capture, and a partial failure is reported (not silent).
       let linked: { targetId: string; ok: boolean; error?: string }[] | undefined;
-      if (observation?.linkTo?.length && captured.created && captured.issue?.id) {
-        const sourceId = captured.issue.id;
-        linked = await Promise.all(
-          observation.linkTo.map(async (l) => {
-            try {
-              const dst = await resolveWorkItemRef(l.targetId, l.targetHarness);
-              if (!dst) return { targetId: l.targetId, ok: false, error: `work_item '${l.targetId}' not found` };
-              await linkIssue(sourceId, dst, l.rel ?? 'relates', id.ownerId);
-              return { targetId: l.targetId, ok: true };
-            } catch (e) {
-              return { targetId: l.targetId, ok: false, error: e instanceof Error ? e.message : String(e) };
-            }
-          }),
+      const observationTargets = observation?.linkTo;
+      if (observationTargets?.length && captured.created && capturedIssue?.id) {
+        const sourceId = capturedIssue.id;
+        linked = await timing.measure(
+          'wrapper.observation.linkTargets',
+          () => Promise.all(
+            observationTargets.map(async (l) => {
+              try {
+                const dst = await timing.measure('wrapper.observation.resolveTarget', () =>
+                  resolveWorkItemRef(l.targetId, l.targetHarness));
+                if (!dst) return { targetId: l.targetId, ok: false, error: `work_item '${l.targetId}' not found` };
+                await timing.measure('wrapper.observation.linkIssue', () =>
+                  linkIssue(sourceId, dst, l.rel ?? 'relates', id.ownerId));
+                return { targetId: l.targetId, ok: true };
+              } catch (e) {
+                return { targetId: l.targetId, ok: false, error: e instanceof Error ? e.message : String(e) };
+              }
+            }),
+          ),
         );
       }
       // P-008 (su-ideate-learning-substrate): REPORT-ONLY novelty pre-check on the su
@@ -1549,7 +1838,7 @@ export default defineTool({
       // and a failed check just omits the field (absent = not checked; [] = checked, nothing similar).
       const priorArtRaw =
         source === 'su' && args.kind === 'feature' && args.lane !== 'observation'
-          ? await noveltyPriorArt(captureText.title).catch(() => undefined)
+          ? await timing.measure('wrapper.noveltyPriorArt', () => noveltyPriorArt(captureText.title)).catch(() => undefined)
           : undefined;
       // The su-ideate ledger bridge above inserts THIS filing's own row (wi:<id>)
       // BEFORE this read, so the corpus contains the filing itself — a similarity-1.0
@@ -1558,18 +1847,19 @@ export default defineTool({
       // preserved: checked-nothing-similar.
       const selfId = captured.issue?.id;
       const priorArt = selfId ? priorArtRaw?.filter((p) => p.ref !== `wi:${selfId}` && p.ref !== selfId) : priorArtRaw;
+      const agentAddressees = args.notifyAgents;
       const notified =
-        args.notifyAgents?.length && captured.created && captured.issue?.id && effectiveLane !== 'observation'
-          ? await notifyAgents(id, {
-              addressees: args.notifyAgents,
-              objectRef: issueRef(captured.issue.id),
-              summary: `🔖 ${id.ownerLabel} tagged you on ${captured.issue.id}: ${(captured.issue.title ?? captureText.title).slice(0, 80)}`,
+        agentAddressees?.length && captured.created && capturedIssue?.id && effectiveLane !== 'observation'
+          ? await timing.measure('wrapper.notifyAgents', () => notifyAgents(id, {
+              addressees: agentAddressees,
+              objectRef: issueRef(capturedIssue.id),
+              summary: `🔖 ${id.ownerLabel} tagged you on ${capturedIssue.id}: ${(capturedIssue.title ?? captureText.title).slice(0, 80)}`,
               body:
-                `${id.ownerLabel} tagged you on improvement ${captured.issue.id}: ${captured.issue.title ?? captureText.title}` +
+                `${id.ownerLabel} tagged you on improvement ${capturedIssue.id}: ${capturedIssue.title ?? captureText.title}` +
                 (captureText.body ? `\n\n${captureText.body.slice(0, 600)}` : '') +
-                `\n\n— it's on your radar: work_items:get ${captured.issue.id} (comment / claim there).`,
+                `\n\n— it's on your radar: work_items:get ${capturedIssue.id} (comment / claim there).`,
               harnessSlug: captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : undefined,
-            }).catch(() => null)
+            })).catch(() => null)
           : null;
       // P-007/D-010: report-only cheapExperiment gap (see describeExperimentGap above).
       // Computed from the CALLER's args, so a duplicate-annotated / checkDuplicatesOnly
@@ -1607,21 +1897,37 @@ export default defineTool({
       // the freshly-minted id so a self-citation is never reported as phantom.
       const capturedRefSubject = captured.created ? captured.issue?.id : undefined;
       const capturedUnresolvedRefs = capturedRefSubject
-        ? await unresolvedRefsInBody([captureText.title, bodyWithStaleness].filter(Boolean).join('\n'), {
+        ? await timing.measure('wrapper.unresolvedRefs', () =>
+            unresolvedRefsInBody([captureText.title, bodyWithStaleness].filter(Boolean).join('\n'), {
             known: [capturedRefSubject],
-          })
+            }))
         : undefined;
       const capturedUnresolvedRefsWarning =
         capturedRefSubject && capturedUnresolvedRefs
           ? unresolvedRefsWarning(capturedRefSubject, capturedUnresolvedRefs.missing)
           : undefined;
-      const publicResult = silenceUnkeyedObservationDisposition ? { ok: true as const } : result;
+      const responseResult = responseIssue !== capturedIssue || responseReviewState !== initialReviewState
+        ? {
+            ...(result as unknown as Record<string, unknown>),
+            ...(responseIssue ? { issue: responseIssue } : {}),
+            ...(responseReviewState ? { reviewState: responseReviewState } : {}),
+          }
+        : result;
+      const publicResult = silenceUnkeyedObservationDisposition ? { ok: true as const } : responseResult;
       return {
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify({
               ...publicResult,
+              ...(storedReproduction
+                ? {
+                    reproduction: {
+                      status: storedReproduction.verification.status,
+                      detail: storedReproduction.verification.detail,
+                    },
+                  }
+                : {}),
               ...(!silenceUnkeyedObservationDisposition && priorArt ? { priorArt } : {}),
               ...(!silenceUnkeyedObservationDisposition && experimentGap ? { experimentGap } : {}),
               ...(!silenceUnkeyedObservationDisposition && lensAttribution ? { lensAttribution } : {}),
@@ -1646,6 +1952,33 @@ export default defineTool({
         ],
       };
     } catch (err) {
+      const watchdogConflict = err as CaptureWatchdogIdentityConflictError;
+      if (
+        err instanceof Error &&
+        watchdogConflict.code === 'watchdog_identity_conflict' &&
+        typeof watchdogConflict.watchdogKey === 'string' &&
+        Array.isArray(watchdogConflict.relatedIds) &&
+        watchdogConflict.relatedIds.every((id) => typeof id === 'string') &&
+        (watchdogConflict.reason === 'no_compatible_winner' || watchdogConflict.reason === 'winner_lookup_failed') &&
+        typeof watchdogConflict.retryable === 'boolean'
+      ) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: watchdogConflict.code,
+                retryable: watchdogConflict.retryable,
+                reason: watchdogConflict.reason,
+                watchdogKey: watchdogConflict.watchdogKey,
+                relatedIds: watchdogConflict.relatedIds,
+                message: watchdogConflict.message,
+              }),
+            },
+          ],
+        };
+      }
       // A bounded admin-pool transaction that exhausts its contention budget is
       // retryable and should not degrade into a generic MCP handler_error.
       if (err instanceof OrgTxnTimeoutError) {
@@ -1672,6 +2005,9 @@ export default defineTool({
         return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: err.message }) }] };
       }
       throw err;
+    }
+    } finally {
+      timing.flush();
     }
   },
 });

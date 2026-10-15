@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /* ── Mocks (hoisted above the module body) ─────────────────────────────── */
 const h = vi.hoisted(() => ({
@@ -8,6 +11,8 @@ const h = vi.hoisted(() => ({
   vacuumCalls: [] as string[],
   guardAcquired: true,
   diskEntries: [] as Array<{ path: string; mtimeMs: number; sizeBytes: number }>,
+  sessionCandidates: [] as Array<{ path: string; keyKind: 'owner'; key: string; mtimeMs: number }>,
+  unarchivedPaths: new Set<string>(),
 }));
 
 function makeSql() {
@@ -39,14 +44,22 @@ vi.mock('./disk', () => ({
   dirSizeBytes: () => 0,
   gatherProtectedSessionIdentity: async () => ({ ok: true, identity: { ownerIds: new Set(), sessionKeys: new Set() } }),
 }));
-vi.mock('../session-dir-gc', () => ({
+vi.mock('../session-dir-gc', async (original) => ({
+  ...(await original<typeof import('../session-dir-gc')>()),
   defaultSessionDirRoots: () => [],
-  discoverSessionDirCandidates: () => [],
-  planSessionDirGc: () => ({ remove: [], keptProtected: [], keptFresh: [] }),
+  discoverSessionDirCandidates: () => h.sessionCandidates,
+  findUnarchivedSessionDirs: async () => h.unarchivedPaths,
+}));
+vi.mock('../workspace-registry', () => ({
+  readRegistry: () => ({ workspaces: [{ id: 'ws-test' }] }),
 }));
 
 import { pruneStorageCategory } from './prune';
 import { getStorageCategory, isTrimmable } from './categories';
+import { WORKSPACE_SCRATCH_MARKER } from '../scratch-gc';
+
+let previousScratchRoot: string | undefined;
+let scratchSandbox: string | undefined;
 
 const REQ = (over: Record<string, unknown> = {}) => ({
   categoryId: 'route-invocations',
@@ -57,13 +70,62 @@ const REQ = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
+  previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+  scratchSandbox = undefined;
   h.statsQueue = [];
   h.deleteQueue = [];
   h.countMatched = 0;
   h.vacuumCalls = [];
   h.guardAcquired = true;
   h.diskEntries = [];
+  h.sessionCandidates = [];
+  h.unarchivedPaths = new Set();
 });
+
+afterEach(() => {
+  if (scratchSandbox) rmSync(scratchSandbox, { recursive: true, force: true });
+  if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+  else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+});
+
+function makeScratchPruneFixture() {
+  const sandbox = mkdtempSync(join(tmpdir(), 'storage-prune-scratch-'));
+  scratchSandbox = sandbox;
+  const root = join(sandbox, 'scratch');
+  process.env.PAPERCUSP_SCRATCH_ROOT = root;
+  const workspaceRoot = join(root, 'ws-test');
+  const freshRun = join(workspaceRoot, 'tool:demo', '00000000-0000-4000-8000-000000000001');
+  const staleRun = join(workspaceRoot, 'tool:demo', '00000000-0000-4000-8000-000000000002');
+  mkdirSync(freshRun, { recursive: true });
+  mkdirSync(staleRun, { recursive: true });
+  writeFileSync(join(workspaceRoot, WORKSPACE_SCRATCH_MARKER), JSON.stringify({
+    kind: 'papercusp-workspace-scratch-root',
+    workspaceId: 'ws-test',
+  }) + '\n');
+  writeFileSync(join(freshRun, 'fresh.spill'), 'fresh deep spill');
+  writeFileSync(join(staleRun, 'stale.spill'), 'expired run');
+
+  const agentDir = join(root, 'portable-bench');
+  const agentFile = join(agentDir, 'pg-shared', 'global', 'pg_control');
+  mkdirSync(join(agentDir, 'pg-shared', 'global'), { recursive: true });
+  writeFileSync(agentFile, 'active agent data');
+
+  const now = Date.now();
+  const oldTimeMs = now - 10 * 86400000;
+  const freshRunTime = now - 2 * 60 * 60 * 1000;
+  const staleRunTime = now - 2 * 86400000;
+  const setMtime = (path: string, timeMs: number) => {
+    const time = timeMs / 1000;
+    utimesSync(path, time, time);
+  };
+  setMtime(freshRun, freshRunTime);
+  setMtime(staleRun, staleRunTime);
+  setMtime(agentDir, oldTimeMs);
+  // The workspace root's own mtime is old even though a deep run is fresh.
+  setMtime(workspaceRoot, oldTimeMs);
+
+  return { root, workspaceRoot, freshRun, staleRun, agentDir, agentFile, oldTimeMs };
+}
 
 describe('pruneStorageCategory — guards', () => {
   it('refuses federated categories', async () => {
@@ -242,6 +304,32 @@ describe('pruneStorageCategory — wall-time budget + continuation (EI-11379)', 
   });
 });
 
+describe('pruneStorageCategory — session archive guard', () => {
+  it.each([false, true])('preserves unarchived session bytes when dryRun=%s', async (dryRun) => {
+    scratchSandbox = mkdtempSync(join(tmpdir(), 'storage-session-unarchived-'));
+    const dir = join(scratchSandbox, 'su-ended');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'session.jsonl'), 'retained history\n');
+    h.sessionCandidates = [{ path: dir, keyKind: 'owner', key: 'su-ended', mtimeMs: Date.now() - 10 * 86400000 }];
+    h.unarchivedPaths.add(dir);
+    const result = await pruneStorageCategory(REQ({ categoryId: 'agent-sessions', olderThanDays: 7, dryRun }));
+    expect(result.ok).toBe(true);
+    expect(result.removed).toBe(0);
+    expect(existsSync(join(dir, 'session.jsonl'))).toBe(true);
+  });
+
+  it('still removes an expired session whose archive has been verified', async () => {
+    scratchSandbox = mkdtempSync(join(tmpdir(), 'storage-session-archived-'));
+    const dir = join(scratchSandbox, 'su-archived');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'session.jsonl'), 'archived history\n');
+    h.sessionCandidates = [{ path: dir, keyKind: 'owner', key: 'su-archived', mtimeMs: Date.now() - 10 * 86400000 }];
+    const result = await pruneStorageCategory(REQ({ categoryId: 'agent-sessions', olderThanDays: 7 }));
+    expect(result.removed).toBe(1);
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
 describe('pruneStorageCategory — disk (plain store)', () => {
   it('removes entries older than the cutoff, sums reclaim (dry-run)', async () => {
     const now = Date.now();
@@ -249,7 +337,7 @@ describe('pruneStorageCategory — disk (plain store)', () => {
       { path: '/s/old', mtimeMs: now - 40 * 86400000, sizeBytes: 500 },
       { path: '/s/fresh', mtimeMs: now - 10 * 86400000, sizeBytes: 300 },
     ];
-    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 30, dryRun: true }));
+    const r = await pruneStorageCategory(REQ({ categoryId: 'flight-recorder', olderThanDays: 30, dryRun: true }));
     expect(r.ok).toBe(true);
     expect(r.removed).toBe(1);
     expect(r.reclaimedBytes).toBe(500);
@@ -261,7 +349,7 @@ describe('pruneStorageCategory — disk (plain store)', () => {
   it('applies the in-flight guard to an EXPLICIT age request, not just to "all"', async () => {
     const now = Date.now();
     h.diskEntries = [{ path: '/s/just-written', mtimeMs: now - 30_000, sizeBytes: 100 }];
-    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 0, dryRun: true }));
+    const r = await pruneStorageCategory(REQ({ categoryId: 'flight-recorder', olderThanDays: 0, dryRun: true }));
     expect(r.removed).toBe(0);
     expect(r.note).toMatch(/in-flight/);
   });
@@ -269,8 +357,44 @@ describe('pruneStorageCategory — disk (plain store)', () => {
   it('still removes an entry past the in-flight guard on an explicit 0', async () => {
     const now = Date.now();
     h.diskEntries = [{ path: '/s/stale', mtimeMs: now - 10 * 60_000, sizeBytes: 100 }];
-    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 0, dryRun: true }));
+    const r = await pruneStorageCategory(REQ({ categoryId: 'flight-recorder', olderThanDays: 0, dryRun: true }));
     expect(r.removed).toBe(1);
+  });
+
+  it('prunes scratch at run-directory granularity and preserves an old root with fresh deep output (WI-10006960)', async () => {
+    const fixture = makeScratchPruneFixture();
+    // Calibration: the former plain-store path saw these stale top-level mtimes and recursively
+    // deleted both directories, regardless of the fresh spill nested under the workspace root.
+    h.diskEntries = [
+      { path: fixture.workspaceRoot, mtimeMs: fixture.oldTimeMs, sizeBytes: 100 },
+      { path: fixture.agentDir, mtimeMs: fixture.oldTimeMs, sizeBytes: 50 },
+    ];
+
+    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 1 }));
+
+    expect(r.ok).toBe(true);
+    expect(r.removed).toBe(1);
+    expect(existsSync(fixture.staleRun)).toBe(false);
+    expect(existsSync(fixture.freshRun)).toBe(true);
+    expect(existsSync(fixture.workspaceRoot)).toBe(true);
+    expect(existsSync(fixture.agentFile)).toBe(true);
+  });
+
+  it('scratch dry-run reports eligible run-dir cleanup without deleting it (WI-10006960)', async () => {
+    const fixture = makeScratchPruneFixture();
+    h.diskEntries = [
+      { path: fixture.workspaceRoot, mtimeMs: fixture.oldTimeMs, sizeBytes: 100 },
+      { path: fixture.agentDir, mtimeMs: fixture.oldTimeMs, sizeBytes: 50 },
+    ];
+
+    const r = await pruneStorageCategory(REQ({ categoryId: 'scratch', olderThanDays: 1, dryRun: true }));
+
+    expect(r.ok).toBe(true);
+    expect(r.removed).toBe(1);
+    expect(existsSync(fixture.staleRun)).toBe(true);
+    expect(existsSync(fixture.freshRun)).toBe(true);
+    expect(existsSync(fixture.workspaceRoot)).toBe(true);
+    expect(existsSync(fixture.agentFile)).toBe(true);
   });
 });
 

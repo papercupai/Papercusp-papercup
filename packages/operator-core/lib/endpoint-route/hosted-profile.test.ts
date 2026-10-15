@@ -118,6 +118,27 @@ describe('hosted control-plane route profile', () => {
       [{ method: 'GET', path: '/wildcard', access: 'authenticated' }],
     )).toThrow(/wildcard capability/);
   });
+
+  it('requires an explicit session tier with exact verified-user requirements', () => {
+    const session = route('GET', '/onboarding', { capabilities: [], kind: ['user'], trust: ['verified'] });
+    expect(selectHostedControlPlaneRoutes([session], [
+      { method: 'GET', path: '/onboarding', access: 'session' },
+    ])).toEqual([session]);
+    expect(() => selectHostedControlPlaneRoutes([session], [
+      { method: 'GET', path: '/onboarding', access: 'authenticated' },
+    ])).toThrow(/concrete capability/);
+    for (const auth of [
+      'public', {}, { capabilities: [] },
+      { capabilities: [], kind: ['user'], trust: ['verified', 'trusted'] },
+      { capabilities: [], kind: ['user', 'system'], trust: ['verified'] },
+      { capabilities: ['*'], kind: ['user'], trust: ['verified'] },
+      { capabilities: ['workspace:view'], kind: ['user'], trust: ['verified'] },
+    ] satisfies RouteDefinition['auth'][]) {
+      expect(() => selectHostedControlPlaneRoutes([route('GET', '/onboarding', auth)], [
+        { method: 'GET', path: '/onboarding', access: 'session' },
+      ])).toThrow(/authenticated principal|verified user/);
+    }
+  });
 });
 
 /* ─── The integration: hosted auth routes actually mounted ──────────────── */

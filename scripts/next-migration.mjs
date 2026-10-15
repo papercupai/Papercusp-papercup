@@ -55,7 +55,7 @@ import { randomBytes } from 'node:crypto';
 import { lstat, open, link, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
-import { resolveScriptPgUrl } from './lib/pg-url.mjs';
+import { OPERATOR_ENV_ROOT, resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { ALLOC_ADVISORY_KEY, scanMigrationDirs } from './lib/migration-allocation.mjs';
 import {
   annotateCandidatesWithDisk,
@@ -75,6 +75,55 @@ const CANONICAL_DIR = 'libs/papercusp/libs/db/sql';
 const SCAN_DIRS = [CANONICAL_DIR, 'papercusp-desktop/src-tauri/sidecar/db-sql'];
 const REPO_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), '..');
 const ARM_SQL_DIR = resolvePath(REPO_ROOT, CANONICAL_DIR);
+
+/** Refuse an implicit discovery/native fallback for an allocator write. */
+export function resolveReservationTarget(resolveUrl = resolveScriptPgUrl) {
+  const resolution = resolveUrl({ root: OPERATOR_ENV_ROOT });
+  const envFilePinsTarget = (resolution.envLocal?.applied ?? []).length > 0;
+  const envPinsTarget = resolution.source === 'env' && Boolean(resolution.via);
+  const isolatedTarget = resolution.source === 'isolated-pg-port';
+  if (!envFilePinsTarget && !envPinsTarget && !isolatedTarget) {
+    throw new Error(
+      'requires an explicitly configured operator database target; set HARNESS_ADMIN_DATABASE_URL ' +
+        'or DATABASE_URL, configure apps/operator/.env.local, or set PAPERCUSP_PG_PORT for an isolated PG. ' +
+        'Resolved ' + describeReservationTarget(resolution),
+    );
+  }
+  return resolution;
+}
+
+/** Redacted configured endpoint plus the connected server identity; never includes credentials. */
+export function describeReservationTarget(resolution, connected) {
+  let endpoint = '<unparseable URL>';
+  try {
+    const url = new URL(resolution.url);
+    endpoint = url.hostname + ':' + (url.port || '5432') + url.pathname;
+  } catch {
+    // Preserve a useful failure message without echoing the raw URL.
+  }
+  const source = resolution.via ? resolution.source + ':' + resolution.via : resolution.source;
+  const applied = resolution.envLocal?.applied ?? [];
+  const envFile = applied.length ? '; apps/operator/.env.local supplied ' + applied.join(', ') : '';
+  const actual = connected
+    ? '; connected db=' + (connected.db ?? '?') + ' port=' + (connected.port ?? 'socket')
+    : '';
+  return 'source=' + source + ' target=' + endpoint + envFile + actual;
+}
+
+/** Check that the connection landed in the database named by the selected URL. */
+export function verifyConnectedDatabaseName(url, connectedDatabase) {
+  const expectedDatabase = decodeURIComponent(new URL(url).pathname.replace(/^\/+/, ''));
+  if (!expectedDatabase) {
+    throw new Error('resolved Postgres URL has no database name; refusing to reserve a migration number');
+  }
+  if (connectedDatabase !== expectedDatabase) {
+    throw new Error(
+      'connected database mismatch: URL names ' + expectedDatabase + ' but server reports ' +
+        (connectedDatabase ?? '<unknown>'),
+    );
+  }
+  return true;
+}
 
 function parseArgs(argv) {
   const args = { dryRun: false, armRequested: false };
@@ -329,8 +378,17 @@ async function main() {
   }
   const reservedBy = args.by || process.env.USER || process.env.LOGNAME || 'cli';
 
+  let target;
+  try {
+    target = resolveReservationTarget();
+  } catch (e) {
+    console.error('db:next-migration REFUSED — ' + (e?.message ?? e));
+    process.exitCode = 2;
+    return;
+  }
+
   const postgres = (await import('postgres')).default;
-  const sql = postgres(resolveScriptPgUrl().url, {
+  const sql = postgres(target.url, {
     max: 1,
     connect_timeout: 5,
     idle_timeout: 1,
@@ -338,6 +396,10 @@ async function main() {
   });
 
   try {
+    const [connected] = await sql`SELECT current_database() AS db, inet_server_port() AS port`;
+    verifyConnectedDatabaseName(target.url, connected?.db);
+    console.error('[db:next-migration] ' + describeReservationTarget(target, connected));
+
     const allocated = await sql.begin(async (tx) => {
       await tx`SELECT pg_advisory_xact_lock(${ALLOC_ADVISORY_KEY})`;
       // EI-6852: scan the filesystem max INSIDE the advisory lock, immediately
@@ -411,7 +473,8 @@ async function main() {
     console.error(
       `db:next-migration FAILED — could not reach the reservation ledger: ${e?.message ?? e}\n` +
         'Refusing to hand out an unreserved number (that re-introduces the race). ' +
-        'Start the embedded PG / set DATABASE_URL and retry.',
+        'Set HARNESS_ADMIN_DATABASE_URL or DATABASE_URL, configure apps/operator/.env.local, ' +
+        'or set PAPERCUSP_PG_PORT for an isolated PG.\nResolved ' + describeReservationTarget(target),
     );
     process.exitCode = 1;
   } finally {

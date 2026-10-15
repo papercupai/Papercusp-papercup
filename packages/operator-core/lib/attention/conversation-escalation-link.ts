@@ -55,6 +55,12 @@ export const SUPERSEDED_QUESTION_RESOLVER = 'system:conversation-superseded';
 /** Choice recorded when the old owner ask is retired by a replacement ask. */
 export const SUPERSEDED_QUESTION_CHOICE = 'superseded-in-conversation';
 
+/** Resolver identity stamped when the asker withdraws an unanswered ask. */
+export const WITHDRAWN_QUESTION_RESOLVER = 'system:conversation-withdrawn';
+
+/** Choice recorded when the asker withdraws the ask without a replacement. */
+export const WITHDRAWN_QUESTION_CHOICE = 'withdrawn-by-asker';
+
 /** The stamp to merge into an escalation's `meta` at ask time. */
 export function conversationLinkMeta(
   conversationId: string,

@@ -156,7 +156,8 @@ function runRound(choices: readonly GovernanceVoteEvent['choice'][]): {
     events = appended.value;
   });
 
-  const finalized = finalizeGovernanceRound({ round: created.value, events, policy: POLICY, nowMs: NOW });
+  const finalized = finalizeGovernanceRound({ round: created.value, events,
+    members: created.value.eligibleMemberIds.map(memberId => ({ memberId })), policy: POLICY, nowMs: NOW });
   if (!finalized.ok) throw new Error(`finalize refused: ${finalized.code} ${finalized.detail}`);
   return { round: created.value, events, certificate: finalized.value };
 }

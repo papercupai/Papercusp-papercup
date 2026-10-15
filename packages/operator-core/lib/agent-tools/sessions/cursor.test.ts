@@ -109,4 +109,40 @@ describe('sessions cursor contract', () => {
       { since: initial.since, until: initial.until },
     )).toBe(false);
   });
+
+  it('replays when timeline filters use equivalent omitted defaults and kind sets', () => {
+    const authority = { workspaceId: 'workspace-a', selfOwnerId: 'su-a' };
+    const initial = {
+      owner: 'self',
+      kinds: ['tool', 'turn'],
+    };
+    const replay = {
+      owner: 'self',
+      kinds: ['turn', 'tool', 'tool'],
+      include_auto: false,
+      group_repeated: false,
+    };
+    const fingerprint = sessionCursorQueryFingerprint(initial, authority);
+    const cursor = encodeSessionCursor('sessions:timeline', 2, fingerprint, {
+      since: '2026-07-13T03:00:00.000Z',
+      until: '2026-07-14T03:00:00.000Z',
+    });
+
+    expect(decodeSessionCursor(
+      cursor,
+      'sessions:timeline',
+      sessionCursorQueryFingerprint(replay, authority),
+    )).toEqual({
+      ok: true,
+      offset: 2,
+      bounds: {
+        since: '2026-07-13T03:00:00.000Z',
+        until: '2026-07-14T03:00:00.000Z',
+      },
+    });
+    expect(sessionCursorQueryFingerprint({ ...replay, include_auto: true }, authority))
+      .not.toBe(fingerprint);
+    expect(sessionCursorQueryFingerprint({ ...replay, group_repeated: true }, authority))
+      .not.toBe(fingerprint);
+  });
 });

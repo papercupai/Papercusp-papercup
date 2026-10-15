@@ -1,0 +1,155 @@
+{
+  "schemaVersion": "p011-spawner-boot-pair-v1",
+  "incomplete": true,
+  "cohorts": [
+    {
+      "arm": 0,
+      "mode": "full",
+      "bundleSha256": "d09d3b370c3b584ded7af03d4ea381182f2bf2edc7195dfeab73a8c83ad43a96",
+      "samples": [],
+      "windows": [],
+      "descendants": [],
+      "reaped": true,
+      "forcedCleanup": false,
+      "socketRemoved": true,
+      "identity": {
+        "pid": 1811731,
+        "ppid": 1811405,
+        "startTicks": "2772174"
+      },
+      "readyMs": 6078.191329,
+      "bound": {
+        "pid": 1811731,
+        "entry": "/tmp/pcv/papercusp-spawner-pair-KIkyEq/full/hono-host.mjs",
+        "arena": "2"
+      },
+      "unreaped": [],
+      "startupTail": "Debugger listening on ws://127.0.0.1:46685/d50af38f-441b-481a-9319-d7f9b575cc57\nFor help, see: https://nodejs.org/en/docs/inspector\n[boot-integrity] tree-drift check skipped (package-lock.json not found in any ancestor directory) — falling back to the sentinel check alone\n[host-recycle] fatal-diagnostics armed (WI-3849) — a native SIGABRT now writes a diagnostic report (native+JS stack, loaded modules) to /tmp/pcv/papercusp-test-runtime-s4OwIg/home/.papercusp/crash-reports before the process dies\n[cluster] resolved 1 worker(s) (source: PAPERCUSP_CLUSTER_WORKERS=0)\n(node:1811731) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.\n(Use `node --trace-deprecation ...` to show where the warning was created)\n[spawner-sidecar] listening on /tmp/pcv/papercusp-test-runtime-s4OwIg/tmp/papercusp-spawner-1811405.sock\nPAPERCUSP_SPAWNER_READY socket=/tmp/pcv/papercusp-test-runtime-s4OwIg/tmp/papercusp-spawner-1811405.sock\n[sync] invalidation bus listening\nDebugger attached.\nDebugger ending on ws://127.0.0.1:46685/d50af38f-441b-481a-9319-d7f9b575cc57\nFor help, see: https://nodejs.org/en/docs/inspector\n[spawner-sidecar] SIGTERM received, shutting down gracefully\n"
+    }
+  ],
+  "scope": "Private emitted artifacts, same maintained spawner server, harmless process:exec only; no production routing or agent launch.",
+  "limitations": [
+    "Unforced PSS/heap includes transient state; no GC events or retained-owner proof.",
+    "V8 cumulative allocation is not a native allocation estimate. Full transitive source identity is unknown."
+  ],
+  "error": "Error: Execution fence missing\n    at [eval]:87:71\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)",
+  "runner": {
+    "status": 1,
+    "signal": null,
+    "stdoutBytes": 0,
+    "stderrBytes": 4000
+  },
+  "builds": [
+    {
+      "entry": "bin/hono-host.ts",
+      "output": "/tmp/pcv/papercusp-spawner-pair-KIkyEq/full/hono-host.mjs",
+      "path": "/tmp/pcv/papercusp-spawner-pair-KIkyEq/full-build.log",
+      "bytes": 1874,
+      "sha256": "ee87c0a8a69898b32b8cb90cf1f9aeecba4fcf2509a5a5a5ef8e89e563cf87bf",
+      "status": 0,
+      "tail": "NPM_INSTALL_SAFE guarding reader: /home/builduser/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh bin/hono-host.ts /tmp/pcv/papercusp-spawner-pair-KIkyEq/full/hono-host.mjs (root=/home/builduser/papercupai-workspace/papercusp, lock=npm-install-79e418157b6a)\n→ esbuild-bundling bin/hono-host.ts → /tmp/pcv/papercusp-spawner-pair-KIkyEq/full/hono-host.mjs (plain-node host entry, no tsx loader)\n→ waited 54s for a mutation-probe window to close\n\n  ...cv/papercusp-spawner-pair-KIkyEq/full/hono-host.mjs.tmp.1611391  66.7mb ⚠️\n\n⚡ Done in 2345ms\n✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.\n✓ bundled top-level-await check passed: no repo-owned bundled input uses top-level await.\n→ ascii-escape: 13,242 non-ASCII chars escaped (66.7 MB → 66.7 MB on disk; the win is in-memory: the source string stays one-byte in every host process)\n✓ bundled: 67M /tmp/pcv/papercusp-spawner-pair-KIkyEq/full/hono-host.mjs\n✓ bundled systemd scope environment runner beside the host entry\n✓ bundled pot-git ext bridge beside the host entry\n→ bundling @papercusp/harness blueprints → /tmp/pcv/papercusp-spawner-pair-KIkyEq/full/blueprints\n    ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml\n→ bundling @papercusp/locks DDL → /tmp/pcv/papercusp-spawner-pair-KIkyEq/full/sql\n    ✓ bundled @papercusp/locks DDL matches the tree (highest migration 931, 31 files)\n\n  ...r-pair-KIkyEq/full/event-loop-sentinel.worker.mjs.new.1611391.mjs  29.3kb\n\n⚡ Done in 14ms\n\n  ...spawner-pair-KIkyEq/full/snapshot-fold.worker.mjs.new.1611391.mjs  26.3kb\n\n⚡ Done in 22ms\n\n  ...ir-KIkyEq/full/mutation-probe-closure.worker.mjs.new.1611391.mjs  9.6mb ⚠️\n\n⚡ Done in 582ms\n\n  ...pawner-pair-KIkyEq/full/admission-jobs.worker.mjs.new.1611391.mjs  61.7kb\n\n⚡ Done in 18ms\n"
+    },
+    {
+      "entry": "bin/spawner-sidecar.ts",
+      "output": "/tmp/pcv/papercusp-spawner-pair-KIkyEq/standalone/spawner-sidecar.mjs",
+      "path": "/tmp/pcv/papercusp-spawner-pair-KIkyEq/standalone-build.log",
+      "bytes": 1883,
+      "sha256": "8b893b06faf108ed1b15f21ee70fbf8f483a91d2de6c934d19320650fa3ce8a9",
+      "status": 0,
+      "tail": "NPM_INSTALL_SAFE guarding reader: /home/builduser/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh bin/spawner-sidecar.ts /tmp/pcv/papercusp-spawner-pair-KIkyEq/standalone/spawner-sidecar.mjs (root=/home/builduser/papercupai-workspace/papercusp, lock=npm-install-79e418157b6a)\n→ esbuild-bundling bin/spawner-sidecar.ts → /tmp/pcv/papercusp-spawner-pair-KIkyEq/standalone/spawner-sidecar.mjs (plain-node host entry, no tsx loader)\n\n  ...-spawner-pair-KIkyEq/standalone/spawner-sidecar.mjs.tmp.1705632  64.3mb ⚠️\n\n⚡ Done in 2855ms\n✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.\n✓ bundled top-level-await check passed: no repo-owned bundled input uses top-level await.\n→ ascii-escape: 12,875 non-ASCII chars escaped (64.3 MB → 64.4 MB on disk; the win is in-memory: the source string stays one-byte in every host process)\n✓ bundled: 65M /tmp/pcv/papercusp-spawner-pair-KIkyEq/standalone/spawner-sidecar.mjs\n✓ bundled systemd scope environment runner beside the host entry\n✓ bundled pot-git ext bridge beside the host entry\n→ bundling @papercusp/harness blueprints → /tmp/pcv/papercusp-spawner-pair-KIkyEq/standalone/blueprints\n    ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml\n→ bundling @papercusp/locks DDL → /tmp/pcv/papercusp-spawner-pair-KIkyEq/standalone/sql\n    ✓ bundled @papercusp/locks DDL matches the tree (highest migration 931, 31 files)\n\n  ...-KIkyEq/standalone/event-loop-sentinel.worker.mjs.new.1705632.mjs  29.3kb\n\n⚡ Done in 17ms\n\n  ...r-pair-KIkyEq/standalone/snapshot-fold.worker.mjs.new.1705632.mjs  26.3kb\n\n⚡ Done in 26ms\n\n  ...yEq/standalone/mutation-probe-closure.worker.mjs.new.1705632.mjs  9.6mb ⚠️\n\n⚡ Done in 1503ms\n\n  ...-pair-KIkyEq/standalone/admission-jobs.worker.mjs.new.1705632.mjs  61.7kb\n\n⚡ Done in 27ms\n"
+    }
+  ],
+  "sources": {
+    "before": [
+      {
+        "path": "apps/operator/bin/hono-host.ts",
+        "sha256": "d0bd77254d9b0ec9216a4cd2d52d911f78fa8a7751ce90a2a734b3717d9b56bd"
+      },
+      {
+        "path": "apps/operator/bin/spawner-sidecar.ts",
+        "sha256": "ea0ca6f3618c97a7af8f1e8a2473626b0caebb73d05cd6c2915a0783a3779417"
+      },
+      {
+        "path": "apps/operator/bin/bundle-host.sh",
+        "sha256": "5dc57d5b9991c82bf1bc6436df149f65782d2a6995ed258dfe3a1c12a9018d71"
+      },
+      {
+        "path": "apps/operator/bin/bundle-host-common.sh",
+        "sha256": "1425551d86295b5a5661ae855cc019527b5466f750e428df78cbbc9e01e01c9e"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/spawner-sidecar-server.ts",
+        "sha256": "6d5597e764ddbaa94b576393c7f1ca78a2c5f3002ef1e9b78a941aea47a2bba4"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-exec-process.ts",
+        "sha256": "0ed9e108a181bc9066a42f53eef2980ba4e5a10d3306414b370d7faf7e3e66ff"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.ts",
+        "sha256": "c8919c7348d24ccc5d57f226a954b0347293a2e4cae420977c067bba5995340b"
+      },
+      {
+        "path": "packages/operator-core/lib/flag-override-store-boot-effect.ts",
+        "sha256": "b5257b644a6ede07802685b855a548fdebce197b63da4da07c79e2bf57322408"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      }
+    ],
+    "after": [
+      {
+        "path": "apps/operator/bin/hono-host.ts",
+        "sha256": "d0bd77254d9b0ec9216a4cd2d52d911f78fa8a7751ce90a2a734b3717d9b56bd"
+      },
+      {
+        "path": "apps/operator/bin/spawner-sidecar.ts",
+        "sha256": "ea0ca6f3618c97a7af8f1e8a2473626b0caebb73d05cd6c2915a0783a3779417"
+      },
+      {
+        "path": "apps/operator/bin/bundle-host.sh",
+        "sha256": "5dc57d5b9991c82bf1bc6436df149f65782d2a6995ed258dfe3a1c12a9018d71"
+      },
+      {
+        "path": "apps/operator/bin/bundle-host-common.sh",
+        "sha256": "1425551d86295b5a5661ae855cc019527b5466f750e428df78cbbc9e01e01c9e"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/spawner-sidecar-server.ts",
+        "sha256": "6d5597e764ddbaa94b576393c7f1ca78a2c5f3002ef1e9b78a941aea47a2bba4"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-exec-process.ts",
+        "sha256": "0ed9e108a181bc9066a42f53eef2980ba4e5a10d3306414b370d7faf7e3e66ff"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.ts",
+        "sha256": "c8919c7348d24ccc5d57f226a954b0347293a2e4cae420977c067bba5995340b"
+      },
+      {
+        "path": "packages/operator-core/lib/flag-override-store-boot-effect.ts",
+        "sha256": "b5257b644a6ede07802685b855a548fdebce197b63da4da07c79e2bf57322408"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      }
+    ],
+    "fullGraph": "unknown"
+  },
+  "runtimeLog": {
+    "path": "/tmp/pcv/papercusp-spawner-pair-KIkyEq/runtime.log",
+    "bytes": 622943,
+    "sha256": "2c941711d7b37a3546f804d4f04ec3b1a761fc29a263494d4437fdcdb2c8e20f"
+  },
+  "verificationError": "AssertionError: Error: Execution fence missing\n    at [eval]:87:71\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5): expected 1 to be +0 // Object.is equality"
+}

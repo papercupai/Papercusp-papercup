@@ -31,12 +31,17 @@ const sqlTag = Object.assign(
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlTag }) }));
 vi.mock('../../work-items', () => ({ setWorkItemClaimHold: vi.fn() }));
+vi.mock('../../external-condition-reachability', () => ({ readEventConditionReachability: vi.fn() }));
 vi.mock('../../work-item-dispatch-states', () => ({
   ANY_FAMILY_TERMINAL_STATES: ['done', 'dropped', 'resolved'],
 }));
 
-import { applyFleetPauseHolds, clearFleetPauseHolds, fleetPauseHoldMarker } from './pause-holds';
+import { applyFleetPauseHolds as applyPauseHolds, clearFleetPauseHolds, fleetPauseHoldMarker } from './pause-holds';
 import { setWorkItemClaimHold } from '../../work-items';
+import { readEventConditionReachability } from '../../external-condition-reachability';
+
+const resumeGate = 'fleet:my-fleet:announced:resume-generation-2';
+const applyFleetPauseHolds = (args: Parameters<typeof applyPauseHolds>[0]) => applyPauseHolds({ resumeGate, ...args });
 
 const holdM = vi.mocked(setWorkItemClaimHold);
 const ok = (id: string) => ({ id, harness: null, hold: true, applicable: true });
@@ -47,6 +52,11 @@ beforeEach(() => {
   sqlThrows = false;
   holdM.mockReset();
   holdM.mockImplementation(async (id: string) => ok(id));
+  vi.mocked(readEventConditionReachability).mockReset();
+  vi.mocked(readEventConditionReachability).mockResolvedValue({
+    verdict: 'reachable', basis: 'live-resolver', authoritative: true,
+    evidence: 'current resume announcement is active', checkedAt: '2026-10-08T00:00:00Z',
+  });
 });
 
 describe('applyFleetPauseHolds — the pause leg', () => {
@@ -73,11 +83,23 @@ describe('applyFleetPauseHolds — the pause leg', () => {
     // WI-4531 reaper lifts ~2h after the (by-definition parked) members die — silently
     // re-exposing exactly the work the pause protected. Only `parkedBy` outlives them.
     expect(opts).toMatchObject({ parkedBy: 'su-owner' });
+    expect(opts?.releaseContract).toEqual({
+      condition: 'fleet my-fleet resumes', owner: 'su-owner', trigger: resumeGate,
+      reachability: 'reachable', evidence: 'current resume announcement is active',
+    });
+    expect(readEventConditionReachability).toHaveBeenCalledWith(resumeGate, { requireSpecificCondition: true });
     expect(opts).not.toHaveProperty('by');
     expect(opts!.parkedReason).toBe(`${fleetPauseHoldMarker('my-fleet')} owner paused`);
     // The row's own harness is threaded through; a null one is omitted, not passed as null.
     expect(opts).toMatchObject({ harness: 'sidestage' });
     expect(holdM.mock.calls[1]![2]).not.toHaveProperty('harness');
+  });
+
+  it('reports every affected item when the resume gate is missing and writes no untracked park', async () => {
+    nextRows = [{ feature_id: 'WI-1', harness_slug: 'sidestage' }];
+    const result = await applyFleetPauseHolds({ fleetSlug: 'my-fleet', workspaceId: 'ws-1', byOwnerId: 'su-owner', resumeGate: null });
+    expect(result).toEqual({ items: [], failed: ['WI-1'], degraded: 'fleet pause has no declared resume gate' });
+    expect(holdM).not.toHaveBeenCalled();
   });
 
   it('uses latest durable membership, excludes a cross-fleet leader, and skips already-parked rows', async () => {

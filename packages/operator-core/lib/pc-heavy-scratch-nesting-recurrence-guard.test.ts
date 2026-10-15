@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { pcHeavyFixtureOptions } from './testing/pc-heavy-fixture';
+
 /**
  * WI-75008 / plan tmpdir-scratch-leak-nest-and-sweep-2026-08-27 P-004 (WI-519486)
  * — recurrence guard for the pc-heavy.sh scratch leak fixed by P-001
@@ -108,7 +110,7 @@ function runPcHeavy(command: string, label: string): RunResult {
       // stdio 'pipe' matches how every real caller (test:file, test:affected,
       // lint:tsc) actually invokes this script.
       stdio: ['ignore', 'pipe', 'pipe'],
-      env,
+      ...pcHeavyFixtureOptions(isoTmp, env),
     });
     return { stdout, stderr: '', status: 0 };
   } catch (e) {

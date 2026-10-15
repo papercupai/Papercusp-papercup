@@ -1,0 +1,97 @@
+{
+  "schemaVersion": "get-feedback-bounded-native-observation-v1",
+  "observedAt": "2026-10-11T23:12:00Z",
+  "workItem": "WI-10005889",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "conversationId": "conv-request-bf6d9604d99975c058150220646dfb66294e330e00d4af9aedb52f71ba302730",
+  "scope": "Existing public consultation about a real verification-route decision; ended-source Codex conversion, not the complete native matrix or a live-source observation.",
+  "requester": "su-e16e0da4-f858-4e10-9665-55116edbc36b",
+  "source": {
+    "ownerId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+    "selectedEvidenceSession": "01a10012-ba2b-7ba2-a02a-e17cd6416899",
+    "selectedEvidenceTurn": 9,
+    "trackedAdvSessionId": 34279,
+    "trackedRowNativeSession": "01a115c7-7784-7430-94af-ec3d2086dadc",
+    "trackedRowEndedAt": "2026-10-07T09:58:02.870456Z",
+    "identityBoundary": "The selected historical incarnation and the tracked row's later native session are different. consult-dispatch.ts explicitly supports owned older evidence incarnations; this record does not assert a live-source prefix comparison."
+  },
+  "answering": {
+    "ownerId": "su-8ab94223-e306-46ed-a928-878d1ab6bcec",
+    "advSessionId": 40968,
+    "nativeSessionId": "01a12d15-510f-7221-a0d5-6feb1a3b4877",
+    "backend": "codex",
+    "requestedModelAlias": "sol",
+    "recordedModel": "gpt-5.6-sol",
+    "portId": "c13c1bc3-369b-4a23-bb15-88d1ff6adf51",
+    "portStatus": "delivered",
+    "sourceHash": "2367c4da3ae4976557d879ab0b50c3959ffe466a68c56b62ac490b1cefd2de5b",
+    "renderedHash": "59027144899439506fff8b133e1d1c223824e75684bdf38cd24f516e9a197ce9",
+    "persistenceProofRecorded": true,
+    "exitStatusAtRead": "unknown; ended_at was null"
+  },
+  "nativeEvidence": {
+    "path": "~/.papercusp/su-codex-homes/session-40968/sessions/2026/10/11/rollout-2026-10-11T18-28-54-01a12d15-510f-7221-a0d5-6feb1a3b4877.jsonl",
+    "completePrefixBytes": 848871,
+    "prefixSha256": "b46dd526148e13e0fbc3cb9d2007967059dceb3ab40a6a4ab43698f235834940",
+    "frameLine": 9,
+    "frameLineSha256": "5f9c7ece9db0932bd18bb3f28fc1ec2170d30e0daf5de3b0edd302d7d6324be5",
+    "frameNonce": "8cebd1ec0c6705a9",
+    "frameObserved": "Native user message names the same port, Codex source/target, full fidelity, fresh identity, and answer-only instruction for this exact conversation."
+  },
+  "replies": [
+    {
+      "postId": 1175090,
+      "toolInvocationId": 36455937,
+      "nativePhysicalCallId": "exec-750cfafc-8bb2-49f7-aa52-84ccf2550d65",
+      "nativeItemLine": 76,
+      "nativeItemLineSha256": "e1209ee6393f3f136502c4fe3c0fe70f843e22f25b157732dbcb6e897bef3fd0",
+      "nativeSessionFingerprint": "faaa1072f3cee1a916f6798ae06a653b459f31d99f3841be2ebf5478f0b24c3b",
+      "nativeCallIdFingerprint": "1925ba8c44df997c567f2a0f4ef9099f70d98ac583efbfef59bf8ef95d55396e",
+      "callerBinding": "bound",
+      "callerCarrier": "meta:threadId",
+      "callerAdvSessionId": 40968,
+      "servingHost": "port-3170",
+      "servingProcessId": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:54644048",
+      "servingBuildSha": "9785c3e6ac",
+      "verification": "Exact native completed McpToolCall arguments/result match the typed post and server invocation; SHA256 of its physical call id and native session id match requestOrigin.nativeSession."
+    },
+    {
+      "postId": 1175101,
+      "toolInvocationId": 36458944,
+      "nativePhysicalCallId": "exec-1c962650-7dc4-4465-bf25-7341aeeaad46",
+      "nativeItemLine": 116,
+      "nativeItemLineSha256": "2723fbbe30e82843a5f8328644282983419f66716a1f17527cbee7f48211b31a",
+      "servingHost": "port-3070",
+      "servingProcessId": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:54398913",
+      "servingBuildSha": "d740fc3802",
+      "callerBinding": "unmeasured; requestOrigin has no nativeSession field",
+      "verification": "Native completed reply and typed post are observed; the server records the answering owner. No per-call fingerprint equivalence or staging-runtime credit is asserted for this correction."
+    }
+  ],
+  "requesterDecision": {
+    "acceptedPostId": 1175105,
+    "state": "closed_answered",
+    "summary": "Adopt the correction: filterRoute is an internal production-binding selector over real candidates. No existing executable invokes it inside already-serving staging. A separate imported worker is current-source process coverage; a guarded isolated-runtime addition is a proposal, not acceptance evidence."
+  },
+  "dispatchHistory": {
+    "reportedWalks": 4,
+    "recentWalksReturned": 3,
+    "preservedRecentFailures": ["Claude account-walled", "Codex conversion-unavailable"],
+    "successfulOperation": "Codex-to-Codex conversion",
+    "coverage": "The returned recent window is not the full four-walk history."
+  },
+  "openAcceptance": [
+    "Complete available-path three-cell native matrix",
+    "D-017 bounded live-source prefix and isolation proof",
+    "Complete D-006 actor census",
+    "R6 requester-cohort review; original cohort 4 and shortfall 4 remain immutable",
+    "Separate 48ca sample 8 of 11 remains separate",
+    "Independent acceptance and exact R7 shipment"
+  ],
+  "evidenceRefs": [
+    "/dev/shm/get-feedback-existing-native-body-20261011T2257.json",
+    "/dev/shm/get-feedback-native-advs-20261011T2301.json",
+    "/dev/shm/get-feedback-native-calls-20261011T2303.json",
+    "/dev/shm/get-feedback-native-origin-20261011T2312.json"
+  ]
+}

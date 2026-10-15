@@ -40,6 +40,9 @@
  * same regression arriving through a different door and is invisible to a name count.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+// Reuse the guidance-budget suite's real catalog registration during collection.
+// Cold graph transformation belongs here, outside the timed test setup hook.
+import './index';
 import { listAllProjectedTools, compactWireBytes, type ProjectedTool } from '@papercusp/tooldef';
 import { advertisedWireBytes } from './tool-guidance-budget';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -66,28 +69,22 @@ import { CLAUDE_TOOL_DELIVERY } from '../../../../apps/operator/scripts/tool-del
  *   PAPERCUSP_CLAUDE_FULL_SEED truthy -> [...ompCoreToolNames(env), ...CLAUDE_SEED_EXTRA_TOOL_NAMES]
  *   otherwise                         -> CLAUDE_MINIMAL_SEED_TOOL_NAMES
  * (apps/operator/scripts/psu-launcher.mjs, claudeSeedToolNames). So the guard budgeted ONE
- * of TWO shipping code paths, and the unbudgeted one is precisely the historical seed whose
- * cost (432,714 B on the wire, ~157K tokens/turn) is the regression this file exists to kill
- * — reachable by setting a single env var, with no assertion anywhere to notice.
+ * of TWO shipping code paths. The full-seed path still advertises the historical wide name
+ * set, but now applies the generated compact tier to every matching name. It needs its own
+ * budget because the wider set has a different wire cost from the default branch.
  *
- * MEASURED 2026-09-20 by this very assertion, in-repo projection: 378,873 B across 65 names.
- * That reading REPLACES the derivation this constant shipped with for one run (432,714 B wire
- * scaled by this file's documented ~20% projection gap => ~346,200 B), which came in ~9% LOW —
- * the bracket below is what surfaced the real number rather than letting the estimate stand.
- * Compare in-repo to in-repo: 378,873 B here corresponds to roughly 473 KB on the live wire,
- * i.e. this escape hatch costs about 3.3x the default branch, on every turn that sets it.
- *
- * RAISING IT IS A BUDGET DECISION, NOT A CHORE — same discipline as the default-branch
- * budget above. This branch is the escape hatch, not a free surface. The ~11 KB of headroom
- * covers ordinary schema drift; it is NOT spare budget to spend.
+ * The historical un-compacted set measured 414,641 B on the live wire. The current compact
+ * intersection measured 108,253 B in this in-repo projection and 129,764 B on staging :3170.
+ * D-001 caps the live tools/list definitions at 256,000 B; 210,000 B in-repo leaves margin
+ * below the paired projection's live ceiling. Raising this is a budget decision, not a chore.
  */
-export const CLAUDE_FULL_SEED_WIRE_BYTE_BUDGET = 390_000;
+export const CLAUDE_FULL_SEED_WIRE_BYTE_BUDGET = 210_000;
 
-/** Lower plausibility bracket on the full-seed measurement — same vacuous-green trap as
- *  MIN_PLAUSIBLE_SEED_WIRE_BYTES below. It also catches ompCoreToolNames() returning []
- *  under a synthetic env, which would otherwise make the full branch look cheap rather
- *  than unmeasured. */
-const MIN_PLAUSIBLE_FULL_SEED_WIRE_BYTES = 250_000;
+/** Lower plausibility bracket on the compact-tier full-seed measurement — the same
+ *  vacuous-green trap as MIN_PLAUSIBLE_SEED_WIRE_BYTES below. Structural assertions also
+ *  pin the wide name set and generated compact intersection; this floor catches a zeroed
+ *  or otherwise collapsed byte instrument. Current measured projection is 108,253 B. */
+const MIN_PLAUSIBLE_FULL_SEED_WIRE_BYTES = 80_000;
 
 /**
  * Ceiling on the advertised Claude seed's tools/list wire payload.
@@ -173,9 +170,7 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
   let byName: Map<string, ProjectedTool>;
   let catalogSize = 0;
 
-  beforeAll(async () => {
-    // Side-effect import: registers the catalog listAllProjectedTools() reads.
-    await import('./index');
+  beforeAll(() => {
     const all = listAllProjectedTools();
     catalogSize = all.length;
     byName = new Map();
@@ -370,14 +365,14 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
 
   it('the FULL-SEED branch (PAPERCUSP_CLAUDE_FULL_SEED=1) has a wire budget of its own', () => {
     const names = claudeSeedToolNames({ PAPERCUSP_CLAUDE_FULL_SEED: '1' }) as string[];
-    const rows = names
-      .map((n) => ({ name: n, bytes: byName.has(n) ? wireBytes(n, byName.get(n)!) : 0 }))
-      .sort((a, b) => b.bytes - a.bytes);
-    const total = rows.reduce((s, r) => s + r.bytes, 0);
-    const minimal = (CLAUDE_MINIMAL_SEED_TOOL_NAMES as string[]).reduce(
-      (s, n) => s + (byName.has(n) ? wireBytes(n, byName.get(n)!) : 0),
-      0,
-    );
+    const compact = new Set(claudeCompactToolNames({ PAPERCUSP_CLAUDE_FULL_SEED: '1' }) as string[]);
+    const { total, rows } = tieredBytes(names, compact, byName);
+    const artifactTiers = (CLAUDE_TOOL_DELIVERY as { tiers: Record<string, string> }).tiers;
+    const expectedCompact = names.filter((n) => artifactTiers[n] === 'compact');
+    const missing = names.filter((n) => !byName.has(n));
+
+    expect(missing, missing.length ? 'full-seed names missing from the projected catalog' : undefined).toEqual([]);
+    expect([...compact].sort()).toEqual([...expectedCompact].sort());
 
     // Structural floor first: this branch must actually BE the wide surface. If
     // ompCoreToolNames() returns [] under a synthetic env, the branch collapses toward the
@@ -391,10 +386,7 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
 
     expect(
       total,
-      `full-seed branch measured ${total.toLocaleString()} B in-repo for ${names.length} names ` +
-        `(derivation expects ~346,200 B). Below ${MIN_PLAUSIBLE_FULL_SEED_WIRE_BYTES.toLocaleString()} B means the ` +
-        `instrument or the assembler broke, NOT that the branch got cheap — record this number on ` +
-        `CLAUDE_FULL_SEED_WIRE_BYTE_BUDGET's comment, which is a derivation awaiting exactly this reading.`,
+      'full-seed tiered measurement fell below its plausibility floor; the seed or instrument may have collapsed',
     ).toBeGreaterThan(MIN_PLAUSIBLE_FULL_SEED_WIRE_BYTES);
 
     expect(
@@ -415,12 +407,9 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
         : undefined,
     ).toBeLessThanOrEqual(CLAUDE_FULL_SEED_WIRE_BYTE_BUDGET);
 
-    // The two branches must stay far apart: if they converge, one of them is not what it
-    // claims to be, and the cheap default is the one that matters.
-    expect(
-      total,
-      `the full-seed branch (${total.toLocaleString()} B) is not materially wider than the minimal ` +
-        `branch (${minimal.toLocaleString()} B) — the branches have converged.`,
-    ).toBeGreaterThan(minimal * 2);
+    // The exact historical name set remains guarded by psu-launcher.test.ts. Its cost is
+    // no longer required to exceed the compact default by 2x: both branches now use the
+    // generated per-name tier map.
+    expect(compact.size, 'full-seed branch did not apply its generated compact intersection').toBeGreaterThan(0);
   });
 });

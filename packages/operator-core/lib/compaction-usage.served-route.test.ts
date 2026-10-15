@@ -42,7 +42,10 @@ const route = (over: Partial<GatewayServedRoute> = {}): GatewayServedRoute => ({
   context1m: false,
   nativeSessionId: NATIVE,
   usage: { inputTotal: 248_703, observedInputFloor: 167_686, observations: 2, at: 1 },
-  at: 1,
+  // The da701a71 shape: the 248,703 reading came from an EARLIER request (served at 1M); the route
+  // itself was re-stamped later by the bare-model request that failed. WI-10006049 only lets usage
+  // raise the window when it was measured on the request the flag describes (usage.at >= at).
+  at: 2,
   ...over,
 });
 
@@ -57,6 +60,43 @@ describe('servedWindowForRoute', () => {
     expect(servedWindowForRoute(null)).toBeNull();
     expect(servedWindowForRoute(route({ context1m: null }))).toBeNull();
     expect(servedWindowForRoute(route({ model: null }))).toBeNull();
+  });
+});
+
+/**
+ * WI-10006049 — observed usage outranks the context1m flag (owner Avi approved option B,
+ * 2026-10-05 #1369/#1371). The reset storm: a session already holding >200k was re-seeded at a
+ * 158k limit (below its ~130-165k fixed prompt) because ONE request went out without the 1M beta.
+ */
+describe('servedWindowForRoute — usage measured on the same request raises the window', () => {
+  const sameRequest = (inputTotal: number, over: Partial<GatewayServedRoute> = {}) =>
+    route({
+      model: 'claude-opus-5-5',
+      context1m: false,
+      usage: { inputTotal, observedInputFloor: Math.min(inputTotal, 140_040), observations: 5, at: 10 },
+      at: 10,
+      ...over,
+    });
+  it('a request that actually carried >200k input was served by a >200k window ⇒ 1M', () => {
+    expect(servedWindowForRoute(sameRequest(212_000))).toBe(MODEL_WINDOW_1M);
+  });
+  it('usage stamped AFTER the route (message_start follows the headers) still counts', () => {
+    expect(servedWindowForRoute(sameRequest(212_000, { at: 9 }))).toBe(MODEL_WINDOW_1M);
+  });
+  it('a real 200k session under 200k stays 200k — usage can only raise the window', () => {
+    // su-56e2f83b live reading, 2026-10-06 00:34Z: bare menu pick, 150,952 tokens, no beta.
+    expect(servedWindowForRoute(sameRequest(150_952))).toBe(MODEL_WINDOW_DEFAULT);
+    expect(servedWindowForRoute(sameRequest(MODEL_WINDOW_DEFAULT))).toBe(MODEL_WINDOW_DEFAULT);
+  });
+  it('da701a71: a >200k reading carried from an EARLIER request does not hide a real fallback to 200k', () => {
+    expect(servedWindowForRoute(route({ context1m: false }))).toBe(MODEL_WINDOW_DEFAULT);
+  });
+  it('the flag still wins when it says 1M, whatever the usage', () => {
+    expect(servedWindowForRoute(sameRequest(50_000, { context1m: true }))).toBe(MODEL_WINDOW_1M);
+  });
+  it('no usage, or a route without a stamp, falls back to the flag', () => {
+    expect(servedWindowForRoute(sameRequest(212_000, { usage: null }))).toBe(MODEL_WINDOW_DEFAULT);
+    expect(servedWindowForRoute(sameRequest(212_000, { at: null }))).toBe(MODEL_WINDOW_DEFAULT);
   });
 });
 

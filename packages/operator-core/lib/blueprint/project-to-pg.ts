@@ -14,6 +14,7 @@
  * mirroring the gym control-plane, so the routes and the loader share one core.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { Sql, TransactionSql } from 'postgres';
@@ -224,6 +225,10 @@ export async function projectBlueprintToPg(
       source_commit = EXCLUDED.source_commit,
       projected_at  = now()
   `;
+  // Selected Workflows declarations share the existing catalog subscription.
+  // Publish only after the pointer and immutable snapshot have been persisted.
+  const { notifySyncInvalidate } = await import('../sync-sse');
+  await notifySyncInvalidate('automation.catalog');
   return { contentHash, ...(specification ? { specification } : {}) };
 }
 
@@ -244,6 +249,183 @@ export async function readBlueprintFromPg(
   `;
   if (rows.length === 0) return null;
   return BlueprintSchema.parse(rows[0].resolved);
+}
+
+interface BlueprintCacheMeta {
+  content_hash: string;
+  source_path: string | null;
+  projected_at: Date;
+}
+
+/** One file version: a re-projection is attempted at most once per version per process. */
+interface SourceVersion { path: string; mtimeMs: number; size: number }
+
+interface ReprojectionAttempt extends SourceVersion { ok: boolean; error: string | null; at: string }
+
+/**
+ * WI-10006722: the cache row used to be written once, on a miss, and never compared
+ * with its source again, so every edit to an app's `.papercusp/blueprint.yaml` after
+ * its first projection was invisible to `blueprint:submit` and the dispatcher until the
+ * row was deleted by hand. The cached paths below now stat the row's own
+ * `source_path` and re-project when the file is newer than `projected_at`.
+ *
+ * The memo records the last attempted file version per harness so that (a) an
+ * INVALID edit is parsed once, not on every call, and keeps the last valid row live
+ * (one bad operation must not take a harness's blueprint down), and (b) a file whose
+ * mtime is ahead of the database clock cannot re-project on every call.
+ */
+const reprojectionState = pinModuleState('@papercusp/operator-core.blueprint-source-reprojection', () => ({
+  attempts: new Map<string, ReprojectionAttempt>(),
+  inFlight: new Map<string, Promise<ReprojectedBlueprint | null>>(),
+}));
+
+interface ReprojectedBlueprint { blueprint: Blueprint; contentHash: string }
+
+function reprojectionKey(workspaceId: string, harnessSlug: string): string {
+  return `${workspaceId}\u0000${harnessSlug}`;
+}
+
+/** Test seam: forget remembered source versions and failures. */
+export function clearBlueprintReprojectionState(): void {
+  reprojectionState.attempts.clear();
+  reprojectionState.inFlight.clear();
+}
+
+/**
+ * The last re-projection attempt for a harness whose source file changed after it was
+ * projected, or null when none was made in this process. A failed attempt carries the
+ * loader's validation error; the cached (last valid) blueprint stays in effect.
+ */
+export function readBlueprintReprojectionAttempt(
+  workspaceId: string,
+  harnessSlug: string,
+): Readonly<ReprojectionAttempt> | null {
+  return reprojectionState.attempts.get(reprojectionKey(workspaceId, harnessSlug)) ?? null;
+}
+
+async function statSourceVersion(path: string): Promise<SourceVersion | null> {
+  try {
+    const st = await stat(path);
+    return st.isFile() ? { path, mtimeMs: st.mtimeMs, size: st.size } : null;
+  } catch {
+    return null; // a moved or deleted source keeps the last projected row
+  }
+}
+
+function sameVersion(a: SourceVersion, b: SourceVersion): boolean {
+  return a.path === b.path && a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+
+async function readBlueprintCacheMeta(
+  sql: Sql,
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<BlueprintCacheMeta | null> {
+  const rows = await sql<BlueprintCacheMeta[]>`
+    SELECT content_hash, source_path, projected_at FROM harness_shared.blueprints
+    WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+/** The cache row with its resolved blueprint — one query for `getEffectiveBlueprint`. */
+async function readBlueprintCacheRow(
+  sql: Sql,
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<(BlueprintCacheMeta & { resolved: unknown }) | null> {
+  const rows = await sql<(BlueprintCacheMeta & { resolved: unknown })[]>`
+    SELECT resolved, content_hash, source_path, projected_at FROM harness_shared.blueprints
+    WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+/** Load a source file through the validating loader and upsert it into the cache. */
+async function loadAndProjectSource(
+  sql: Sql,
+  workspaceId: string,
+  harnessSlug: string,
+  blueprintPath: string,
+): Promise<ReprojectedBlueprint> {
+  // P-002: pre-register the source file's harness-op proxies BEFORE the load —
+  // `resolveBlueprint` throws on `unknown-op`, so a program spine that references a
+  // harness op needs its proxy live for validation to resolve it.
+  preRegisterSourceFileOps(blueprintPath);
+  // P-001: validate ops/roles against the live registries at the PG-projection
+  // chokepoint — the point a blueprint is admitted to the durable pipeline — so an
+  // unregistered op is rejected here, not surfaced as a `requireCoordOp` throw mid
+  // `coordProgramWorkflow`.
+  const loaded = loadBlueprintFromFile(
+    blueprintPath,
+    resolveSourceBlueprintExtends(blueprintPath),
+    blueprintRegistrySets(),
+  );
+  // Defensive: also register from the resolved blueprint (covers ops merged in via
+  // `extends`, which the raw-file pre-register above wouldn't have seen).
+  registerHarnessOpProxies((loaded.blueprint.ops ?? []) as HarnessOpManifestEntry[]);
+  const { contentHash } = await projectBlueprintToPg(sql, {
+    workspaceId,
+    harnessSlug,
+    blueprint: loaded.blueprint,
+    loaded,
+    contentHash: loaded.contentHash,
+    sourcePath: loaded.sourcePath,
+  });
+  return { blueprint: loaded.blueprint, contentHash };
+}
+
+/**
+ * Re-project a cached harness blueprint when the file it was projected from has
+ * changed since. Returns the new projection, or null when the cache is current, the
+ * source is gone, this file version was already attempted, or the new file fails
+ * validation (the caller keeps serving the cached row). Only the root source file is
+ * compared; an edit to a project-local `extends` parent alone is not detected.
+ */
+async function reprojectIfSourceChanged(
+  sql: Sql,
+  workspaceId: string,
+  harnessSlug: string,
+  meta: BlueprintCacheMeta,
+  fallbackPath: string | null | undefined,
+): Promise<ReprojectedBlueprint | null> {
+  const path = meta.source_path ?? fallbackPath ?? null;
+  if (!path) return null;
+  const version = await statSourceVersion(path);
+  if (!version || version.mtimeMs <= new Date(meta.projected_at).getTime()) return null;
+  const key = reprojectionKey(workspaceId, harnessSlug);
+  const previous = reprojectionState.attempts.get(key);
+  if (previous && sameVersion(previous, version)) return null;
+  const running = reprojectionState.inFlight.get(key);
+  if (running) return running;
+  const attempt = (async (): Promise<ReprojectedBlueprint | null> => {
+    let current = version;
+    let projected: ReprojectedBlueprint | null = null;
+    // An edit landing between the loader's read and the row's projected_at stamp
+    // would otherwise look older than the projection forever; re-check once.
+    for (let pass = 0; pass < 2; pass += 1) {
+      try {
+        projected = await loadAndProjectSource(sql, workspaceId, harnessSlug, path);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        reprojectionState.attempts.set(key, { ...current, ok: false, error: message, at: new Date().toISOString() });
+        console.warn(
+          `[blueprint] ${harnessSlug}: ${path} changed after projection but failed to load; ` +
+            `keeping the last projected blueprint. ${message}`,
+        );
+        return projected; // a first-pass success is still the row now in the cache
+      }
+      reprojectionState.attempts.set(key, { ...current, ok: true, error: null, at: new Date().toISOString() });
+      const after = await statSourceVersion(path);
+      if (!after || sameVersion(after, current)) break;
+      current = after;
+    }
+    return projected;
+  })().finally(() => reprojectionState.inFlight.delete(key));
+  reprojectionState.inFlight.set(key, attempt);
+  return attempt;
 }
 
 /** Read just the cached content hash — a cheap drift check (no deserialize). */
@@ -272,8 +454,14 @@ export async function readOrProjectBlueprintHash(
   workspaceId: string,
   harnessSlug: string,
 ): Promise<string | null> {
-  const hash = await readBlueprintHashFromPg(sql, workspaceId, harnessSlug);
-  if (hash) return hash;
+  const meta = await readBlueprintCacheMeta(sql, workspaceId, harnessSlug);
+  if (meta) {
+    // WI-10006722: a source edit since the projection is re-projected here, so a
+    // newly declared operation is admissible on the next submit. Handles already
+    // issued keep their pinned revision (immutable blueprint_specifications rows).
+    const reprojected = await reprojectIfSourceChanged(sql, workspaceId, harnessSlug, meta, null);
+    return reprojected?.contentHash ?? meta.content_hash;
+  }
   // resolveProject is the harness-resolution chokepoint (registry + retired-slug alias).
   // Dynamic import: harness-core must not become a static dependency of this module.
   const { resolveProject } = await import('../harness-core');
@@ -294,15 +482,23 @@ export interface EffectiveBlueprintOpts {
 
 /**
  * Resolve the effective blueprint for a harness: PG cache first; on a miss, load
- * the git-canonical file, project it, and return. Returns null when neither a
- * cache row nor a source file exists (caller falls back to the built-in default).
+ * the git-canonical file, project it, and return. A cached row whose source file
+ * changed after it was projected is re-projected first (WI-10006722); an invalid
+ * edit keeps the cached row. Returns null when neither a cache row nor a source
+ * file exists (caller falls back to the built-in default).
  */
 export async function getEffectiveBlueprint(
   sql: Sql,
   opts: EffectiveBlueprintOpts,
 ): Promise<Blueprint | null> {
-  const cached = await readBlueprintFromPg(sql, opts.workspaceId, opts.harnessSlug);
-  if (cached) {
+  const row = await readBlueprintCacheRow(sql, opts.workspaceId, opts.harnessSlug);
+  if (row) {
+    const reprojected = await reprojectIfSourceChanged(
+      sql, opts.workspaceId, opts.harnessSlug, row, opts.blueprintPath,
+    );
+    if (reprojected) return reprojected.blueprint;
+    // D-021: validate on load — a corrupt cache row never reaches the interpreter.
+    const cached = BlueprintSchema.parse(row.resolved);
     // P-002: this is also the RUNTIME admission point (the cadence dispatcher
     // resolves the effective blueprint to RUN it). Register the cached blueprint's
     // harness-op proxies so they're live in THIS process before the program's
@@ -311,29 +507,6 @@ export async function getEffectiveBlueprint(
     return cached;
   }
   if (!opts.blueprintPath || !existsSync(opts.blueprintPath)) return null;
-  // P-002: pre-register the source file's harness-op proxies BEFORE the load —
-  // `resolveBlueprint` throws on `unknown-op`, so a program spine that references a
-  // harness op needs its proxy live for validation to resolve it.
-  preRegisterSourceFileOps(opts.blueprintPath);
-  // P-001: validate ops/roles against the live registries at the PG-projection
-  // chokepoint — the point a blueprint is admitted to the durable pipeline — so an
-  // unregistered op is rejected here, not surfaced as a `requireCoordOp` throw mid
-  // `coordProgramWorkflow`.
-  const loaded = loadBlueprintFromFile(
-    opts.blueprintPath,
-    resolveSourceBlueprintExtends(opts.blueprintPath),
-    blueprintRegistrySets(),
-  );
-  // Defensive: also register from the resolved blueprint (covers ops merged in via
-  // `extends`, which the raw-file pre-register above wouldn't have seen).
-  registerHarnessOpProxies((loaded.blueprint.ops ?? []) as HarnessOpManifestEntry[]);
-  await projectBlueprintToPg(sql, {
-    workspaceId: opts.workspaceId,
-    harnessSlug: opts.harnessSlug,
-    blueprint: loaded.blueprint,
-    loaded,
-    contentHash: loaded.contentHash,
-    sourcePath: loaded.sourcePath,
-  });
-  return loaded.blueprint;
+  const { blueprint } = await loadAndProjectSource(sql, opts.workspaceId, opts.harnessSlug, opts.blueprintPath);
+  return blueprint;
 }

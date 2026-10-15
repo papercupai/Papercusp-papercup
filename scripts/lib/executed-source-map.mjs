@@ -16,6 +16,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { isGateEnrolled } from "../check-vitest-config-enrollment.mjs";
+import {
+  packageLockInstallView,
+  rootPackageJsonChangeIsInert,
+  scriptInvocationJudge,
+  workspacePackageJsonChangeIsInert,
+} from "./test-pass-reuse.mjs";
 
 /** Set to `0`/`false`/`off` to leave the static selection un-pruned (default: pruning ON). */
 export const EXECUTED_MAP_ENV = "AFFECTED_EXECUTED_MAP";
@@ -57,15 +63,21 @@ export function executedMapRecordingEnabled(env = process.env) {
  * (libs/test-config/src/admin-test-runs-reporter.ts `tryGetPg`), so reader and writer can
  * never disagree about which database holds the rows. Pure over an env.
  *
+ * The dedicated ledger variable wins over the app's admin URL (WI-10006736). An isolated
+ * verifier (verify-tauri-headless.sh VERIFY_TAURI_ISOLATED_DB=1) exports
+ * HARNESS_ADMIN_DATABASE_URL pointing at its throwaway database, so a run that must keep
+ * its results sets PAPERCUSP_TEST_RUNS_DB_URL to the shared ledger. With the old order
+ * every isolated result was written into the throwaway database and destroyed at teardown.
+ *
  * @param {Record<string, string | undefined>} [env]
  * @returns {{ url: string, source: 'HARNESS_ADMIN_DATABASE_URL' | 'PAPERCUSP_TEST_RUNS_DB_URL' | 'default' }}
  */
 export function resolveExecutedMapPgUrl(env = process.env) {
-  if (env.HARNESS_ADMIN_DATABASE_URL) {
-    return { url: env.HARNESS_ADMIN_DATABASE_URL, source: "HARNESS_ADMIN_DATABASE_URL" };
-  }
   if (env.PAPERCUSP_TEST_RUNS_DB_URL) {
     return { url: env.PAPERCUSP_TEST_RUNS_DB_URL, source: "PAPERCUSP_TEST_RUNS_DB_URL" };
+  }
+  if (env.HARNESS_ADMIN_DATABASE_URL) {
+    return { url: env.HARNESS_ADMIN_DATABASE_URL, source: "HARNESS_ADMIN_DATABASE_URL" };
   }
   return {
     url: "postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp",
@@ -130,15 +142,21 @@ export function rowsToExecutedMap(rows, { repoRoot }) {
  *        a `pg` Client (scripts/lib/pg-url.mjs `connectScriptPg`)
  * @param {string} o.workspaceName npm workspace name
  * @param {string} o.repoRoot
+ * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @returns {Promise<{ map: import('./related-tests.mjs').ExecutedMap, rows: number }>}
  */
-export async function loadExecutedSourceMap({ client, workspaceName, repoRoot }) {
+export async function loadExecutedSourceMap({ client, workspaceName, repoRoot, files }) {
+  const selectedFiles = Array.isArray(files)
+    ? [...new Set(files.filter((file) => typeof file === "string" && file.length > 0))]
+    : null;
+  if (selectedFiles?.length === 0) return { map: new Map(), rows: 0 };
+  const fileFilter = selectedFiles ? "AND test_file = ANY($2::text[])" : "";
   const { rows } = await client.query(
     `SELECT DISTINCT ON (test_file) test_file, recorded_sha, executed_modules
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1
+      WHERE workspace_name = $1 ${fileFilter}
       ORDER BY test_file, recorded_at DESC`,
-    [workspaceName],
+    selectedFiles ? [workspaceName, selectedFiles] : [workspaceName],
   );
   return { map: rowsToExecutedMap(rows, { repoRoot }), rows: rows.length };
 }
@@ -186,18 +204,48 @@ export function rowsToReuseProofs(rows) {
  * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
  * @param {string} o.workspaceName
  * @param {string} o.runContext
+ * @param {string[]} [o.files] Optional repo-relative test-file scope; an empty list avoids a query.
  * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
  */
-export async function loadReuseProofs({ client, workspaceName, runContext }) {
+export async function loadReuseProofs({ client, workspaceName, runContext, files }) {
+  const selectedFiles = Array.isArray(files)
+    ? [...new Set(files.filter((file) => typeof file === "string" && file.length > 0))]
+    : null;
+  if (selectedFiles?.length === 0) return { proofs: new Map(), rows: 0 };
+  const fileFilter = selectedFiles ? "AND test_file = ANY($3::text[])" : "";
   const { rows } = await client.query(
     `SELECT DISTINCT ON (test_file) test_file, recorded_sha, recorded_at, executed_modules,
             read_paths, inputs_captured, opaque_reasons, run_context, runner_identity
        FROM harness_shared.test_executed_sources
-      WHERE workspace_name = $1 AND run_context = $2
+      WHERE workspace_name = $1 AND run_context = $2 ${fileFilter}
       ORDER BY test_file, recorded_at DESC`,
-    [workspaceName, runContext],
+    selectedFiles ? [workspaceName, runContext, selectedFiles] : [workspaceName, runContext],
   );
   return { proofs: rowsToReuseProofs(rows), rows: rows.length };
+}
+
+/**
+ * List only the test-file keys with pass proofs for one workspace and run context. Lane callers
+ * use this narrow result to classify membership before fetching the wide proof arrays.
+ *
+ * @param {object} o
+ * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
+ * @param {string} o.workspaceName
+ * @param {string} o.runContext
+ * @returns {Promise<{ files: string[], rows: number }>}
+ */
+export async function loadReuseProofFiles({ client, workspaceName, runContext }) {
+  const { rows } = await client.query(
+    `SELECT DISTINCT test_file
+       FROM harness_shared.test_executed_sources
+      WHERE workspace_name = $1 AND run_context = $2
+      ORDER BY test_file`,
+    [workspaceName, runContext],
+  );
+  return {
+    files: rows.map((row) => row?.test_file).filter((file) => typeof file === "string" && file.length > 0),
+    rows: rows.length,
+  };
 }
 
 /**
@@ -247,13 +295,15 @@ export async function loadPassDurations({ client, files }) {
 export function gitChangedBetween({ repoRoot, exec = defaultExec, relative = false }) {
   /** @type {Map<string, Set<string> | null>} */
   const cache = new Map();
+  /** @type {Map<string, string | null>} */
+  const emptyTrees = new Map();
   return (recordedSha, judgedSha) => {
     const key = `${recordedSha}..${judgedSha}`;
     if (cache.has(key)) return cache.get(key);
     let result = null;
     try {
       const out = new Set();
-      result = collectRecursiveDiff({ exec, repoDir: repoRoot, prefix: "", a: recordedSha, b: judgedSha, out })
+      result = collectRecursiveDiff({ exec, repoDir: repoRoot, prefix: "", a: recordedSha, b: judgedSha, out, emptyTrees })
         ? relative
           ? out
           : new Set([...out].map((rel) => path.resolve(repoRoot, rel)))
@@ -275,12 +325,13 @@ const ZERO_OID_RE = /^0+$/;
  * submodule change as the bare gitlink path, which no executed module ever equals, so a change
  * inside any of the ~38 submodules used to read as "no drift". A moved gitlink is diffed INSIDE
  * the submodule between the two pinned commits. Anything that cannot be diffed (a submodule
- * added, removed or type-changed; a pinned commit missing from the local clone) returns false,
- * and the caller reads that as "cannot tell" (stale), never as "nothing changed".
+ * type-changed; a pinned commit missing from the local clone) returns false, and the caller
+ * reads that as "cannot tell" (stale), never as "nothing changed". Added and removed gitlinks
+ * are diffed against the empty tree so their present-side source paths are known.
  *
  * @returns {boolean} true when the full recursive diff was computed
  */
-export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }) {
+export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out, emptyTrees = new Map() }) {
   const opts = {
     cwd: repoDir,
     encoding: "utf8",
@@ -299,17 +350,217 @@ export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }) {
     const [, modeA, modeB, oidA, oidB] = m;
     out.add(prefix + rel);
     if (modeA !== "160000" && modeB !== "160000") continue;
-    if (modeA !== modeB || ZERO_OID_RE.test(oidA) || ZERO_OID_RE.test(oidB)) return false;
+    const absentA = ZERO_OID_RE.test(oidA);
+    const absentB = ZERO_OID_RE.test(oidB);
+    const gitlinkA = modeA === "160000";
+    const gitlinkB = modeB === "160000";
+    const addedGitlink = !gitlinkA && gitlinkB && absentA;
+    const removedGitlink = gitlinkA && !gitlinkB && absentB;
+    const movedGitlink = gitlinkA && gitlinkB && !absentA && !absentB;
+    if (!addedGitlink && !removedGitlink && !movedGitlink) return false;
     const subDir = path.join(repoDir, rel);
-    if (!collectRecursiveDiff({ exec, repoDir: subDir, prefix: `${prefix}${rel}/`, a: oidA, b: oidB, out })) {
+    const subRepoDir = locateSubmoduleRepository({ exec, repoDir, rel, subDir, opts });
+    if (!subRepoDir) return false;
+    const subA = absentA ? emptyTreeFor({ exec, repoDir: subRepoDir, opts, emptyTrees }) : oidA;
+    const subB = absentB ? emptyTreeFor({ exec, repoDir: subRepoDir, opts, emptyTrees }) : oidB;
+    if (!subA || !subB) return false;
+    if (!collectRecursiveDiff({ exec, repoDir: subRepoDir, prefix: `${prefix}${rel}/`, a: subA, b: subB, out, emptyTrees })) {
       return false;
     }
   }
   return true;
 }
 
+/**
+ * Resolve an initialized submodule worktree, or its stored module gitdir when the worktree
+ * was removed. Checking --show-toplevel prevents a removed gitlink path that became an ordinary
+ * directory from accidentally running the parent repository's diff.
+ * @returns {string | null}
+ */
+function locateSubmoduleRepository({ exec, repoDir, rel, subDir, opts }) {
+  try {
+    const root = String(exec("git", ["rev-parse", "--show-toplevel"], { ...opts, cwd: subDir })).trim();
+    if (root && path.resolve(root) === path.resolve(subDir)) return subDir;
+  } catch {
+    // A removed path or an uninitialized worktree falls through to Git's module store.
+  }
+  try {
+    const gitDir = String(exec(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-path", `modules/${rel}`],
+      opts,
+    )).trim();
+    return gitDir ? path.resolve(repoDir, gitDir) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** @returns {string | null} */
+function emptyTreeFor({ exec, repoDir, opts, emptyTrees }) {
+  if (emptyTrees.has(repoDir)) return emptyTrees.get(repoDir) ?? null;
+  let oid = null;
+  try {
+    const result = String(exec("git", ["hash-object", "-t", "tree", "--stdin"], { ...opts, cwd: repoDir, input: "" })).trim();
+    if (/^[0-9a-f]{40,64}$/.test(result)) oid = result;
+  } catch {
+    oid = null;
+  }
+  emptyTrees.set(repoDir, oid);
+  return oid;
+}
+
 function defaultExec(file, args, opts) {
   return execFileSync(file, args, opts);
+}
+
+/**
+ * Every package.json in the tree at `sha` (gate-test-reuse-yield-2026-10-01 D-009), superproject
+ * and submodules: gitlinks are followed at the commit the tree pins, recursively, and node_modules
+ * paths are skipped. Returns each manifest's text by repo-relative path, and every script command
+ * in them. Throws on any failure (a sha or pinned submodule commit this clone lacks, a manifest
+ * that is not a JSON object, a non-object `scripts`), because a manifest it cannot read could
+ * invoke any script; the caller treats a throw as "cannot tell".
+ *
+ * @param {{ exec: (file: string, args: string[], opts: object) => string | Buffer, repoRoot: string, sha: string }} o
+ * @returns {{ texts: Map<string, string>, commands: Array<{ rel: string, name: string, command: string }> }}
+ */
+export function treeScriptCommands({ exec, repoRoot, sha }) {
+  /** @type {Map<string, string>} */
+  const texts = new Map();
+  /** @type {Array<{ rel: string, name: string, command: string }>} */
+  const commands = [];
+  const isObject = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+  const visit = (repoDir, treeSha, prefix) => {
+    const opts = { cwd: repoDir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 256 * 1024 * 1024 };
+    const raw = String(exec("git", ["ls-tree", "-r", "-z", "--full-tree", treeSha], opts));
+    /** @type {Array<{ oid: string, rel: string }>} */
+    const manifests = [];
+    for (const entry of raw.split("\0")) {
+      if (!entry) continue;
+      const m = /^(\d{6}) \w+ ([0-9a-f]+)\t([\s\S]+)$/.exec(entry);
+      if (!m) throw new Error(`unparseable ls-tree entry in ${repoDir}: ${entry.slice(0, 80)}`);
+      const [, mode, oid, p] = m;
+      if (mode === "160000") {
+        visit(path.join(repoDir, p), oid, `${prefix}${p}/`);
+      } else if (path.posix.basename(p) === "package.json" && !/(?:^|\/)node_modules\//.test(p)) {
+        manifests.push({ oid, rel: `${prefix}${p}` });
+      }
+    }
+    if (manifests.length === 0) return;
+    // One cat-file per repository: its --batch output is "<oid> blob <size>\n<content>\n" per input.
+    // No `encoding`: the output must stay a Buffer, because <size> counts bytes, not characters.
+    const out = Buffer.from(
+      exec("git", ["cat-file", "--batch"], {
+        cwd: repoDir,
+        stdio: ["pipe", "pipe", "ignore"],
+        maxBuffer: 256 * 1024 * 1024,
+        input: Buffer.from(manifests.map((x) => x.oid).join("\n") + "\n"),
+      }),
+    );
+    let at = 0;
+    for (const { oid, rel } of manifests) {
+      const nl = out.indexOf(10, at);
+      const header = nl < 0 ? "" : out.subarray(at, nl).toString("utf8");
+      const hm = /^([0-9a-f]+) blob (\d+)$/.exec(header);
+      if (!hm || hm[1] !== oid) throw new Error(`cat-file did not return blob ${oid} for ${rel}: ${header}`);
+      const size = Number(hm[2]);
+      const text = out.subarray(nl + 1, nl + 1 + size).toString("utf8");
+      at = nl + 1 + size + 1;
+      const json = JSON.parse(text);
+      if (!isObject(json)) throw new Error(`${rel} is not a JSON object`);
+      const scripts = json.scripts ?? {};
+      if (!isObject(scripts)) throw new Error(`${rel} has non-object scripts`);
+      texts.set(rel, text);
+      for (const [name, command] of Object.entries(scripts)) commands.push({ rel, name, command: String(command) });
+    }
+  };
+  visit(repoRoot, sha, "");
+  return { texts, commands };
+}
+
+/**
+ * Build selectReusablePasses' `inertGlobalChange` seam over a real git checkout
+ * (gate-test-reuse-yield-2026-10-01 P-002, P-005, D-009). Two root files can be inert, each read
+ * at both shas with `git show`: package.json, judged by rootPackageJsonChangeIsInert, and
+ * package-lock.json, judged by comparing packageLockInstallView (the lockfile's view is computed
+ * once per sha, because many proofs share the judged sha and the file is over 1 MB). D-009: so can
+ * any non-root package.json, judged by workspacePackageJsonChangeIsInert against the script
+ * commands of the whole tree at BOTH shas (treeScriptCommands, once per sha; it also supplies the
+ * manifest texts, so a manifest inside a submodule is read at its pinned commit). Every other
+ * path, and any read that fails (a sha missing from this clone, a file absent on one side),
+ * answers false, so the change stays global. Results are cached per (path, from, to).
+ *
+ * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string | Buffer }} o
+ * @returns {(rel: string, fromSha: string, toSha: string) => boolean}
+ */
+export function gitInertGlobalChange({ repoRoot, exec = defaultExec }) {
+  /** @type {Map<string, boolean>} */
+  const cache = new Map();
+  /** @type {Map<string, string | null>} */
+  const lockViews = new Map();
+  /** @type {Map<string, { texts: Map<string, string>, invokable: (name: string, definedIn: string) => boolean } | null>} */
+  const trees = new Map();
+  const opts = { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 };
+  const read = (sha, rel) => String(exec("git", ["show", `${sha}:${rel}`], opts));
+  const treeAt = (sha) => {
+    if (!trees.has(sha)) {
+      let tree = null;
+      try {
+        const { texts, commands } = treeScriptCommands({ exec, repoRoot, sha });
+        tree = { texts, invokable: scriptInvocationJudge(commands) };
+      } catch {
+        tree = null;
+      }
+      trees.set(sha, tree);
+    }
+    return trees.get(sha) ?? null;
+  };
+  const workspaceInert = (rel, fromSha, toSha) => {
+    const before = treeAt(fromSha);
+    const after = treeAt(toSha);
+    const beforeText = before?.texts.get(rel);
+    const afterText = after?.texts.get(rel);
+    if (!before || !after || beforeText === undefined || afterText === undefined) return false;
+    return workspacePackageJsonChangeIsInert(
+      beforeText,
+      afterText,
+      (name) => before.invokable(name, rel) || after.invokable(name, rel),
+    );
+  };
+  const lockView = (sha) => {
+    if (!lockViews.has(sha)) {
+      let view = null;
+      try {
+        view = packageLockInstallView(read(sha, "package-lock.json"));
+      } catch {
+        view = null;
+      }
+      lockViews.set(sha, view);
+    }
+    return lockViews.get(sha) ?? null;
+  };
+  return (rel, fromSha, toSha) => {
+    const workspaceManifest = rel !== "package.json" && path.posix.basename(rel) === "package.json";
+    if (rel !== "package.json" && rel !== "package-lock.json" && !workspaceManifest) return false;
+    const key = `${rel}\0${fromSha}\0${toSha}`;
+    if (cache.has(key)) return /** @type {boolean} */ (cache.get(key));
+    let inert = false;
+    try {
+      if (workspaceManifest) {
+        inert = workspaceInert(rel, fromSha, toSha);
+      } else if (rel === "package.json") {
+        inert = rootPackageJsonChangeIsInert(read(fromSha, rel), read(toSha, rel));
+      } else {
+        const before = lockView(fromSha);
+        inert = before !== null && before === lockView(toSha);
+      }
+    } catch {
+      inert = false;
+    }
+    cache.set(key, inert);
+    return inert;
+  };
 }
 
 /**
@@ -490,12 +741,36 @@ export function resolveTaskReportExpectation({
 }
 
 /**
- * @typedef {{ outcome: string, rows: number, retired: number, skipped: number, dirty: boolean, sha: string | null, error: string | null }} ExecutedMapResult
+ * @typedef {{ version: 1, runnerIdentity: string, runContext: string, runGroupId: string | null, files: Array<{ testFile: string, verdict: 'pass' | 'fail' | 'unknown' }> }} ExecutedMapFileResults
+ * @typedef {{ outcome: string, rows: number, retired: number, skipped: number, dirty: boolean, sha: string | null, error: string | null, workspaceName?: string | null, fileResults?: ExecutedMapFileResults | null }} ExecutedMapResult
  * @typedef {{ status: 'reported' | 'no-report', results: ExecutedMapResult[], malformed: number, expectsReport?: boolean | null }} ExecutedMapResultRead
  *   `expectsReport` is stamped by the runner from `resolveTaskReportExpectation` (absent/null = unknown).
  */
 
 const count = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
+
+/** A malformed or historical payload cannot prove a named first-attempt pass. */
+function parseFileResults(value) {
+  if (!value || value.version !== 1 || typeof value.runnerIdentity !== "string" ||
+      !value.runnerIdentity.trim() || typeof value.runContext !== "string" || !value.runContext.trim() ||
+      !(value.runGroupId === null || (typeof value.runGroupId === "string" && value.runGroupId.trim())) ||
+      !Array.isArray(value.files)) return null;
+  const seen = new Set();
+  for (const file of value.files) {
+    if (!file || typeof file.testFile !== "string" || !file.testFile.trim() ||
+        path.posix.isAbsolute(file.testFile) || file.testFile.includes("\\") ||
+        file.testFile.split("/").some((part) => !part || part === "." || part === "..") ||
+        !["pass", "fail", "unknown"].includes(file.verdict) || seen.has(file.testFile)) return null;
+    seen.add(file.testFile);
+  }
+  return {
+    version: 1,
+    runnerIdentity: value.runnerIdentity,
+    runContext: value.runContext,
+    runGroupId: value.runGroupId,
+    files: value.files.map(({ testFile, verdict }) => ({ testFile, verdict })),
+  };
+}
 
 /**
  * Read one task's result file. A missing or empty file is `no-report` (the reporter never flushed:
@@ -540,9 +815,44 @@ export function readExecutedMapResults(filePath, { readFile = (p) => readFileSyn
       dirty: o.dirty === true,
       sha: typeof o.sha === "string" && o.sha ? o.sha : null,
       error: typeof o.error === "string" && o.error ? o.error : null,
+      workspaceName: typeof o.workspaceName === "string" && o.workspaceName.trim() ? o.workspaceName : null,
+      fileResults: typeof o.dirty === "boolean" ? parseFileResults(o.fileResults) : null,
     });
   }
   return { status: results.length > 0 ? "reported" : "no-report", results, malformed };
+}
+
+/**
+ * Name every actual audit draw using the initial task's reporter snapshot. Console pass rows
+ * and separate retries are never a substitute. Missing/ambiguous reporter evidence stays unknown.
+ * @param {string} taskLabel
+ * @param {ExecutedMapResultRead | null | undefined} read
+ * @param {{ watch: Map<string, string> } | null | undefined} reuseWatch
+ * @returns {string[]}
+ */
+export function formatTestReuseAuditResultLines(taskLabel, read, reuseWatch) {
+  const lines = [];
+  for (const [file, reason] of reuseWatch?.watch ?? []) {
+    if (reason !== "audit") continue;
+    const matches = (read?.results ?? []).flatMap((result) =>
+      (result.fileResults?.files ?? []).filter((entry) => entry.testFile === file)
+        .map((entry) => ({ result, entry })),
+    );
+    const match = read?.malformed === 0 && matches.length === 1 ? matches[0] : null;
+    const source = match?.result;
+    const qualified = source && source.workspaceName === taskLabel.split("::")[0] &&
+      !source.dirty && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(source.sha ?? "");
+    lines.push("TEST_PASS_REUSE_AUDIT_RESULT " + JSON.stringify({
+      version: 1, ws: taskLabel, file,
+      verdict: qualified ? match.entry.verdict : "unknown",
+      judgedSha: source?.sha ?? null,
+      runnerIdentity: source?.fileResults?.runnerIdentity ?? null,
+      runContext: source?.fileResults?.runContext ?? null,
+      runGroupId: source?.fileResults?.runGroupId ?? null,
+      dirty: source?.dirty ?? null,
+    }));
+  }
+  return lines;
 }
 
 /** One-line, whitespace-collapsed error text, so an alarm line stays one line. */

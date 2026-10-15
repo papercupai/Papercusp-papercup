@@ -26,6 +26,7 @@
  * gotcha: DBOS dedup'd by workflow-id; in-process does not).
  */
 import { shouldShedHeavyTick } from './tick-load-shed';
+import { observeFallback } from '../degradation/fallback-observations';
 import { createConnectionPressureGovernor } from '../connection-pressure-governor';
 import nodeCluster from 'node:cluster';
 import { managedSetInterval, type ManagedHandle, type TimerClassification } from '@papercusp/scheduled-registry';
@@ -310,6 +311,23 @@ const kernelLeakCheck: PeriodicCheck = {
   },
 };
 
+// Every 60s: one host sample — meminfo plus PSI stall totals and per-cgroup CPU —
+// into the kernel-leak sample table, for contention history
+// (papercusp-performance-audit-2026-10-12 P-002, D-005). Same writer and table as
+// kernel-leak-watchdog; that check keeps the 10-minute evaluation and alarms, so this
+// adds rows only. Every process writes; ON CONFLICT (boot_id, bucket_at) keeps one.
+const hostContentionSamplerCheck: PeriodicCheck = {
+  name: 'host-contention-sampler',
+  intervalMs: 60_000,
+  fireOnArm: true,
+  // D-004 (P-011): PSI totals and cgroup cpu.stat counters have no change-event source.
+  classification: 'must-sample',
+  tick: async () => {
+    const { runHostSampleOnce } = await import('../system-health/kernel-leak-watchdog');
+    await runHostSampleOnce();
+  },
+};
+
 // Every 60s: probe the dev endpoints + broadcast on each up/down TRANSITION
 // (fleet-coordination-painpoints Phase 3b). External liveness has no event source,
 // so this is the one irreducible poll; transition-only, never a per-tick firehose.
@@ -570,6 +588,67 @@ const staleClaimSweepCheck: PeriodicCheck = {
           `${Object.entries(byAction).map(([a, n]) => `${a}:${n}`).join(', ')}): ` +
           r.released.map((c) => `${c.harness_slug}/${c.feature_id}<-${c.former_taken_by} [${c.former_status}->${c.new_status} ${c.reason}]`).join(', '),
       );
+      // EI-25188923369514003: retain per-release source identity in the existing
+      // append-only audit path. Keep notifications below as-is; the helper's
+      // notify:false mode adds diagnosis without changing their current semantics.
+      try {
+        const { recordInvoluntaryClaimReleases } = await import('../claim-release-notice');
+        const auditGroups = new Map<
+          string,
+          {
+            workspaceId: string;
+            harness: string;
+            reason: string;
+            released: { workItemId: string; takenBy: string; reason: string }[];
+          }
+        >();
+        for (const c of r.released) {
+          const key = JSON.stringify([c.workspace_id, c.harness_slug, c.reason]);
+          let group = auditGroups.get(key);
+          if (!group) {
+            group = {
+              workspaceId: c.workspace_id,
+              harness: c.harness_slug,
+              reason: c.reason,
+              released: [],
+            };
+            auditGroups.set(key, group);
+          }
+          group.released.push({
+            workItemId: c.feature_id,
+            takenBy: c.former_taken_by,
+            reason: c.reason,
+          });
+        }
+        for (const group of auditGroups.values()) {
+          const audit = await recordInvoluntaryClaimReleases(sql, {
+            workspaceId: group.workspaceId,
+            harness: group.harness,
+            // Match the marker the reclaim SQL stores in work_items.last_released_by.
+            actor: 'reaper:' + group.reason,
+            reason: group.reason,
+            released: group.released,
+            notify: false,
+          });
+          if (audit.audited !== group.released.length) {
+            console.warn(
+              '[stale-claims] audit_log provenance wrote ' +
+                audit.audited +
+                ' of ' +
+                group.released.length +
+                ' release row(s) for ' +
+                group.harness +
+                '; claim release and holder notifications continue',
+            );
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          '[stale-claims] claim-release provenance audit unavailable (non-fatal; claim release and holder notifications continue): ' +
+            message,
+        );
+      }
       // Broadcast ONLY dead-letters: poison items that exhausted the requeue cap and
       // parked in `blocked`, which DO need human/Queen attention (D-006).
       const deadLettered = r.released.filter((c) => c.action === 'dead-lettered');
@@ -949,12 +1028,35 @@ const releaseRequestSweepCheck: PeriodicCheck = {
   tick: async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
-    const { findDueReleaseRequests, hasWorkItemProgressAfterReleaseRequest, resolveWorkItemReleaseRequest } = await import('../work-items-release-request');
+    const { findDueReleaseRequests, hasWorkItemProgressAfterReleaseRequest, resolveWorkItemReleaseRequest, settleReleaseRequestCondition } = await import('../work-items-release-request');
     const { releaseWorkItem, setWorkItemClaimHold, commentWorkItem } = await import('../work-items');
     const { releaseReclaimedWorkItemLocks } = await import('../work-item-lock-release');
     const { assessForceRelease } = await import('../agent-tools/work_items/release-force-guard');
     const { sendMessage } = await import('../agent-tools/coordination/messages');
     const { notifyAttention } = await import('../attention-notify');
+    const { broadcastSevereEvent, broadcastSevereEventResolved } = await import('../severe-event-broadcast');
+    const { resolveAlarm } = await import('../alarm-attention');
+
+    const pending = await findDueReleaseRequests(sql, { nowMs: Date.now(), alarmPending: true });
+    for (const row of pending) {
+      const { request: req, conditionRequest: episode } = row;
+      if (!episode) continue;
+      const key = `alarm:release-request:${row.workspaceId}:${row.id}`;
+      const replaced = episode.by !== req.by || episode.holder !== req.holder || episode.deadlineAt !== req.deadlineAt;
+      const recovered = row.terminal || row.holderNow !== episode.holder || replaced
+        || hasWorkItemProgressAfterReleaseRequest(req, row.lastProgressAt);
+      if (recovered) {
+        if (await resolveAlarm(key, 'release-request-sweep', { resolve: broadcastSevereEventResolved })) {
+          await settleReleaseRequestCondition(sql, row, true);
+        }
+      } else {
+        await broadcastSevereEvent({ conditionKey: key, oneShot: true, category: 'service-health',
+          summary: `Release request still unanswered — ${row.id}`,
+          body: `${req.by} requested ${req.holder} release ${row.id}; the expired request still has no measured response.`,
+        }).catch(() => false);
+        await settleReleaseRequestCondition(sql, row, false);
+      }
+    }
 
     const due = await findDueReleaseRequests(sql, { nowMs: Date.now() });
     for (const row of due) {
@@ -1048,6 +1150,11 @@ const releaseRequestSweepCheck: PeriodicCheck = {
           paths: row.paths,
           goalRef: row.id,
         });
+        if (lockRelease.skipped === null) observeFallback('routine-capability-read', {
+          eligible: 1, applied: lockRelease.failures === 0 ? 1 : 0,
+          reason: lockRelease.failures === 0 ? 'applied' : 'lock-release-unavailable',
+          scope: 'release-request-locks',
+        });
         if (lockRelease.failures > 0) {
           console.warn(
             `[release-request-sweep] ${row.id}: targeted lock release had ${lockRelease.failures} failure(s); reclaim continues with lease fallback`,
@@ -1081,6 +1188,12 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         ).catch(() => {});
         if (!released) console.warn(`[release-request-sweep] ${row.id}: reclaim fired but release itself failed (already free / raced)`);
       } else if (req.onSilence === 'escalate') {
+        await broadcastSevereEvent({
+          conditionKey: `alarm:release-request:${row.workspaceId}:${row.id}`,
+          oneShot: true, category: 'service-health',
+          summary: `Release request timed out — ${row.id}`,
+          body: noteBody,
+        }).catch(() => false);
         await notifyAttention({
           kind: 'intervention',
           title: `release request timed out — ${row.id}`,
@@ -1344,6 +1457,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     connectionPressureCheck,
     pgTuningDriftCheck,
     kernelLeakCheck,
+    hostContentionSamplerCheck,
     serviceHealthCheck,
     completionRefVerifyCheck,
     spawnReclaimSweepCheck,

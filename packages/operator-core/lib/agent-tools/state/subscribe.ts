@@ -92,7 +92,9 @@ export default defineTool({
   // capability-cutover (see the fuller note on state:read). Audience filtering still
   // applies per this tool's own contract: a cell outside your audience is absent, not
   // subscribable.
-  agentRoles: [...SU_ROLES, 'release-fixer'],
+  // `judge` joins in lockstep with state:read (EI-25665485195356795): a grader that can
+  // read a live-bar cell must also be able to wait on it rather than re-poll.
+  agentRoles: [...SU_ROLES, 'release-fixer', 'judge'],
   args: z.object({
     cell: z.string().min(1).max(120).describe('Dotted cell id to watch, e.g. "git.pipelinePosition". state:read (no args) lists the ones you may read.'),
     on: z

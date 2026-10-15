@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "SPEC-P-001 live census: every dispatch-requested consult on staging records a launch outcome",
+  "framework": "operational",
+  "command": ["node", "scripts/mcp-call.mjs", "consult:routing-health", "{\"since\":\"2026-10-12T00:00:00Z\",\"projection\":{\"pick\":[\"asOf\",\"window\",\"bounded\",\"requestCohort.window\",\"requestCohort.policies[].policy\",\"requestCohort.policies[].requests\",\"requestCohort.policies[].dispatchRequested\",\"requestCohort.policies[].retrievalOnly\",\"requestCohort.policies[].legacyIntentUnknown\",\"requestCohort.policies[].outcomes\"]}}", "--client", "su-a2d144e1-4576-4511-8c32-3bf4de08bd29", "--port", "3170"],
+  "exitCode": 0,
+  "startedAt": "2026-10-13T00:49:00.377Z",
+  "finishedAt": "2026-10-13T00:49:01.343Z",
+  "summary": "consult:routing-health was run against the staging operator :3170 (/api/health sha 2998298920) for the request-time cohort 2026-10-12T00:00Z to 2026-10-13T00:49:00Z. It scanned 325 consults with truncatedByLimit false. 151 consults were requested: 31 dispatch-requested, 2 retrieval-only and 118 legacy rows with no delivery intent. All 31 dispatch-requested consults have a measured launch outcome (14 received, 15 unavailable, 2 failed, 0 pending, 0 unmeasured), which is the SPEC-P-001 property. The 2 retrieval-only consults never dispatch, by design. The 118 legacy rows carry no deliveryIntent stamp. The 00:34Z join in consult-backed-parking-p001-live-2026-10-13.md attributes every recent one to port-3070 at stale main d740fc3802, which predates the fix. This run covers staging and this workspace only. It does not establish production (:3070) coverage, which arrives only when main is promoted.",
+  "assertions": [
+    {"id": "census-complete", "passed": true, "evidence": "bounded.truncatedByLimit=false, consultsScanned=325, consultLimit=5000, dispatchLogCapped=0."},
+    {"id": "dispatch-requested-all-measured", "passed": true, "evidence": "Per policy, dispatchRequested equals the outcome sum and unmeasured is 0: acceptance-bar-amendment-review 13 = 2 received + 9 unavailable + 2 failed; bar-critique 5 = 4 + 1; consult-default 9 = 5 + 4; rubric-vetting 4 = 3 + 1; acceptance-grading 0; grading-integrity-audit 0. Totals: 31 dispatch-requested = 14 received + 15 unavailable + 2 failed + 0 pending; unmeasured 0."},
+    {"id": "retrieval-only-separated", "passed": true, "evidence": "consult-default reports retrievalOnly=2, counted apart from dispatchRequested. Retrieval-only consults never dispatch, by design (get-feedback-core.ts retrievalOnly)."},
+    {"id": "legacy-rows-isolated", "passed": true, "evidence": "legacyIntentUnknown=118 (26 acceptance-bar-amendment-review, 72 consult-default, 20 rubric-vetting) is reported as its own column and not counted as dispatch-requested. The companion markdown join attributes these rows to the stale-main build on :3070, which stamps no deliveryIntent."},
+    {"id": "serving-build", "passed": true, "evidence": ":3170 /api/health reported sha 2998298920 at 2026-10-13T00:49:01Z. :3070 reported d740fc3802 (stale main) at 00:47:41Z."}
+  ],
+  "provenance": {
+    "evidencePlane": "staging-operator",
+    "instrument": "packages/operator-core/lib/consult/consult-routing-health.ts",
+    "instrumentTest": "packages/operator-core/lib/consult/consult-routing-health.test.ts",
+    "companionReport": "docs/evidence/consult-backed-parking-p001-live-2026-10-13.md",
+    "workItem": "WI-6554700010009489",
+    "spec": "consult-backed-parking-2026-10-12#SPEC-P-001@1"
+  },
+  "disclosures": [
+    "Staging (:3170) only; production :3070 still serves stale main d740fc3802 and is not covered.",
+    "This workspace only."
+  ]
+}

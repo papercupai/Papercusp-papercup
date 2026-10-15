@@ -1,0 +1,192 @@
+{
+  "schemaVersion": "p011-staging-domain-publication-source-qualification-v1",
+  "workItem": "EI-25181611831349662",
+  "parent": "WI-10006124",
+  "status": "source-unit-and-isolated-runtime-verified-live-publication-open",
+  "reuse": "Extended existing locks:register_resource with existing HOST_GLOBAL_RESOURCES, stampResourceCoordinationDomainKind, cross-domain refusal and declaration cache; no new tool, argument, config or schema.",
+  "sourceChange": {
+    "declaration": "Known maintained host-global resource registrations publish their domain kind, including existing registry rows.",
+    "policy": "Existing description/rule/enforcement/capacity preserved.",
+    "siblingHolderPreflight": "An exclusive-mode cross-domain check includes any owner, including the caller; publication is refused while such a lease remains.",
+    "limits": "Preflight is not an atomic legacy migration fence. Historical old in-flight acquisitions and synchronous restart caches still require separate live cross-runtime validation."
+  },
+  "verification": {
+    "beforeUnit": {
+      "testRunId": 20787315,
+      "failed": 5,
+      "passed": 2
+    },
+    "afterUnit": {
+      "registrationTestRunId": 20789333,
+      "totalSuitePassed": 36,
+      "skipped": 0,
+      "files": [
+        "register_resource.test.ts",
+        "resource-domain-kinds.test.ts",
+        "cross-domain-conflict.test.ts"
+      ]
+    },
+    "isolatedRuntime": {
+      "command": "node scripts/with-test-pg.mjs --isolated-runtime -- npm run test:file -- packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+      "exitCode": 0,
+      "passed": 2,
+      "skipped": 0,
+      "finalRouterResult": "passed; stamped HEADf09f2c3e42; one untracked test path at execution time",
+      "canonicalLedgerLookup": "No canonical rows returned for exact new file/source local/since2026-10-05T23:49; no canonical testRunId is asserted. Private runtime was disposed.",
+      "assertions": [
+        "Before any write, verify actual PG data_directory belongs to disposable papercusp-test-pg and actual lock-pool port equals explicit private DB pin.",
+        "Publish both staging resource kinds through the real maintained handler; preserve existing policy.",
+        "Reset/refill the existing declaration reader and observe host-global for both keys independent of the hardcoded resource resolver."
+      ]
+    },
+    "typecheck": {
+      "namedFiles": 3,
+      "errorCount": 0,
+      "engine": "tsc-service",
+      "finalLog": "/tmp/su-7db4f-staging-domain-publication-types-r5.log",
+      "priorErrorsPreserved": true
+    },
+    "sourceCommitted": true,
+    "sourceCommits": {
+      "packages/operator-core/lib/agent-tools/locks/register_resource.ts": "cd747dda55a8f0aa124926f0e8374969d1440888",
+      "packages/operator-core/lib/agent-tools/locks/register_resource.test.ts": "75951fe01b0dedb0713afad5b3766a6a2673b6e9",
+      "packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts": "1e663ddad7e090b035622afa52c46c75b56a6713"
+    },
+    "fullExecutedSourceGraph": "unknown"
+  },
+  "preservedAttempts": [
+    {
+      "attempt": 1,
+      "result": "2 collected skips, no assertions executed",
+      "cause": "Test wrongly depended on workspace ID that hermetic setup intentionally deletes."
+    },
+    {
+      "attempt": 2,
+      "result": "beforeAll failure, 2 assertions skipped, no registry publication",
+      "cause": "Test wrongly assumed the maintained embedded PG URL uses127 rather than its localhost writer."
+    }
+  ],
+  "harnessAudit": {
+    "workspaceWriter": "libs/test-config/src/setup-hermetic-env.ts deletes PAPERCUSP_WORKSPACE_ID.",
+    "urlWriter": "libs/papercusp/packages/embedded-postgres-server/src/index.js builds localhost URL and uses opts.dataDir directly.",
+    "correctedPreflight": "Accept loopback hostname aliases but verify actual disposable data_directory and exact configured lock-pool port before writes.",
+    "typedResult": "Narrow content presence and text discriminator; preserve intermediate typecheck failures."
+  },
+  "cleanup": [
+    {
+      "attempt": 1,
+      "privatePgPort": 35899,
+      "privateDataDirectoryAbsent": true
+    },
+    {
+      "attempt": 2,
+      "privatePgPort": 43815,
+      "privateDataDirectoryAbsent": true
+    },
+    {
+      "attempt": 3,
+      "privatePgPort": 40703,
+      "privateDataDirectoryAbsent": true
+    }
+  ],
+  "limitations": [
+    "No production registry publication or server restart was performed in this unit.",
+    "Last measured staging4a36 and bg-hoste447 precede this publisher change; exact runtime containment must be freshly read before a live declaration call.",
+    "Old dev:restart uses a synchronous declaration cache; metadata publication alone does not prove all old control paths or in-flight calls aligned.",
+    "All broader P011/D021/native/physical/worker/fullgraph/ship gaps and existing native-origin decision remain open.",
+    "R5c18de46d still has20matching links; no producer or independent R5 reader was replayed.",
+    "LIVE_GATE_OPS remains peer-owned; no live gate operation was taken."
+  ],
+  "receiptLinks": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/register_resource.ts",
+      "bytes": 4030,
+      "sha256": "63d8005018c2e5e2525f3ab04dadaebcd4ba5cace12ff071e54ccfe4b275ff4d"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/register_resource.test.ts",
+      "bytes": 5287,
+      "sha256": "ceda347d78cd23b19cfcf2d31db7ea0ae242ec6a2724134111602aae954da3d2"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+      "bytes": 3757,
+      "sha256": "4b76ddc3241496a1b7319c370a171b25b1ee52ee6796056a96e6d3e17370d45f"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/resource-domain-kinds.ts",
+      "bytes": 7792,
+      "sha256": "9dea128f3476f9ee8c7006ec01358c3b12a41f4ae25e3278897d2443bdfbb3b5"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/cross-domain-conflict.ts",
+      "bytes": 8112,
+      "sha256": "d335617e5add5ba9e859dab1e9a5069f7588a614f86fcd99b401714ea2632175"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/coordination-domain.ts",
+      "bytes": 18909,
+      "sha256": "f75762f4045cf2d699361ae2cc1b8350569c1c2fca849acfced89c893880e732"
+    },
+    {
+      "path": "libs/papercusp/packages/locks/src/resource-lock-store.ts",
+      "bytes": 45792,
+      "sha256": "804e8d9b0c3ed40eee6982af51f6014561990d9709ca4dbcc08a87e4d6c50a78"
+    },
+    {
+      "path": "libs/test-config/src/setup-hermetic-env.ts",
+      "bytes": 17887,
+      "sha256": "79503fce9ba73b0fa323a1b7680b58a8b4f985e098c9c63a7ca41c834db96dc9"
+    },
+    {
+      "path": "libs/papercusp/packages/embedded-postgres-server/src/index.js",
+      "bytes": 53736,
+      "sha256": "ca66bc4224b3ef1213a8bccef69c790e3e62057e2e6614061fab6ff008672dee"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "bytes": 15664,
+      "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-domain-publication-before-r1.log",
+      "bytes": 16231,
+      "sha256": "9518b15ea2f7f46c5decb4cc980f2b80e60822f9f1b5b0a456cb5b9c50599b5b"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-domain-publication-after-r1.log",
+      "bytes": 6808,
+      "sha256": "a749816491dc042e901150cf274db7e67ee46fedda013424fcd35fa541f2525c"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-domain-publication-isolated-r1.log",
+      "bytes": 630645,
+      "sha256": "f788b9ba35a42bc5348ff67352c0faf6e46c0997ec4e8f6bcd82906f964c0920"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-domain-publication-isolated-r2.log",
+      "bytes": 632094,
+      "sha256": "e602253f0e313215a855236704c5ef0de1f8aade853c60cd6ffd458a293f2d8f"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-domain-publication-isolated-r3.log",
+      "bytes": 630155,
+      "sha256": "a393eac162d7fbb8e6ab0a4069d7c4a0aa8d70a2c711fa54a192b3ebc925090c"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-domain-publication-types-r2.log",
+      "bytes": 1811,
+      "sha256": "82f0ba2f60b7c903f923f1658969632be6e7e8cfc29855945a3530e7d0673f27"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-domain-publication-types-r3.log",
+      "bytes": 2013,
+      "sha256": "d5d23b2038a61696a28da87b063b6825ab8137b6d86d41a92183307c13c3ca66"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-domain-publication-types-r5.log",
+      "bytes": 1421,
+      "sha256": "d0c82a24b97db61c61481214fb3a8c06650675cd4862629caa4d8d152efa536e"
+    }
+  ]
+}

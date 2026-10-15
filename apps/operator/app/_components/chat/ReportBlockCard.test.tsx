@@ -8,12 +8,21 @@
  * Plan: report-cards-inbox-reconciliation-2026-06-05 (P-006; formerly
  * structured-report-protocol P-007's OperatorReportCard test).
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, fireEvent } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render as rtlRender, screen, fireEvent, waitFor } from '@testing-library/react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+import { createHash, webcrypto } from 'node:crypto';
+import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
+import { goalOwnerReportFixture } from '../../../../../packages/operator-core/test/fixtures/goal-owner-report';
+import type { ReactElement } from 'react';
 
-afterEach(() => cleanup());
+const fetchSyncQuery = vi.hoisted(() => vi.fn());
+const render = (ui: ReactElement) => rtlRender(<NuqsTestingAdapter searchParams="">{ui}</NuqsTestingAdapter>);
+
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 vi.mock('@papercusp/sync', () => ({
+  fetchSyncQuery,
   onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({
     data: [],
@@ -44,6 +53,53 @@ const report: ReportBlock = {
     { title: 'Header-only plan', status: 'blocked' },
   ],
 };
+
+describe('REPORT-PINNED-DETAIL-P003 operator expansion', () => {
+  const snapshot = goalOwnerReportFixture('workspace-card');
+  const bodyMd = serializeGoalOwnerReportSnapshot(snapshot);
+  const bodySha256 = createHash('sha256').update(bodyMd).digest('hex');
+  const reference = { schemaVersion: 1 as const, reportId: 'report-original', goalId: snapshot.goalId, bodySha256 };
+  const pinned: ReportBlock = { title: 'Goal progress', plans: [], goalReport: reference };
+  beforeEach(() => {
+    vi.stubGlobal('crypto', webcrypto);
+    fetchSyncQuery.mockReset().mockResolvedValue([{ report_id: reference.reportId, workspace_id: snapshot.workspaceId,
+      body_md: bodyMd, body_sha256: bodySha256, goal_owner_report: snapshot, subject: { kind: 'goal', ref: snapshot.goalId } }]);
+  });
+  it('expands the persisted pin through the named sync seam and the registry Button', async () => {
+    const { container } = render(<ReportBlockCard report={pinned} />);
+    const button = screen.getByRole('button', { name: 'Expand full report' });
+    expect(button.classList.contains('pc-btn')).toBe(true);
+    expect(fetchSyncQuery).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    await waitFor(() => expect(container.querySelector('.report-block-goal-body')?.textContent).toBe(bodyMd));
+    expect(fetchSyncQuery).toHaveBeenCalledExactlyOnceWith({ queryName: 'reports.get', args: { reportId: reference.reportId }, staleTime: Infinity });
+    for (const wall of snapshot.ownerWalls) expect(container.textContent).toContain(wall.exactAction);
+    expect(container.querySelector('.report-block-plan')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse full report' }));
+    expect(container.querySelector('.report-block-goal-body')).toBeNull();
+  });
+  it('restores the pinned expansion from URL state and clears only its own pin on collapse', async () => {
+    const onUrlUpdate = vi.fn();
+    rtlRender(<NuqsTestingAdapter searchParams="?goalReport=report-original" onUrlUpdate={onUrlUpdate}>
+      <ReportBlockCard report={pinned} />
+    </NuqsTestingAdapter>);
+    await screen.findByText(`Historical snapshot · observed at ${snapshot.observedAt}`);
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse full report' }));
+    await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
+    expect(onUrlUpdate.mock.lastCall?.[0].queryString).not.toContain('goalReport');
+  });
+  it.each([
+    { label: 'missing', rows: [] },
+    { label: 'substituted', rows: [{ report_id: 'report-successor' }] },
+  ])('shows a recoverable error for $label pins', async ({ rows }) => {
+    fetchSyncQuery.mockResolvedValue(rows);
+    const { container } = render(<ReportBlockCard report={pinned} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Expand full report' }));
+    await screen.findByRole('alert');
+    expect(container.querySelector('.report-block-goal-body')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Retry loading report' })).toBeTruthy();
+  });
+});
 
 describe('ReportBlockCard', () => {
   it('renders the title, plan titles, statuses, summary, and item rows', () => {

@@ -38,6 +38,11 @@ import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stam
 import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index';
 import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
 import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
+import {
+  FEDERATED_RECOMPOSE_REVISION_AUTHOR,
+  recordSystemPlanRevisionInTransaction,
+  type PlanRevisionSql,
+} from '../../../agent-tools/plans/revisions';
 
 /** The federated subset of a harness_plan_parts row (the wire shape). */
 export interface PlanPartWireRow {
@@ -224,6 +229,7 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
     const fedTs = provenance?.ts ?? null;
     const { frontmatter: fm, isLegacy } = parsePlan(content);
     const forcedPast = summarizeForcedPast(content);
+    const planIndex = deriveIndexFromContent(content);
     const forcedPastJson = forcedPast === null ? null : JSON.stringify(forcedPast);
     const admission = await withPlanDependencyAdmissionTransaction(
       {
@@ -250,6 +256,8 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
                  superseded_by = ${fm.supersededBy ?? null},
                  is_legacy     = ${isLegacy},
                  forced_past   = ${forcedPastJson}::text::jsonb,
+                 items         = ${JSON.stringify(planIndex.items)}::text::jsonb,
+                 decisions     = ${JSON.stringify(planIndex.decisions)}::text::jsonb,
                  origin        = 'remote',
                  fed_ts        = ${fedTs}
            WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug} AND plan_slug = ${planSlug}
@@ -257,16 +265,33 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
           RETURNING plan_slug
         `;
         // Per-part recomposition is a federation write path and therefore does
-        // not cross withPlanLock. Keep the normalized rows in the same
-        // dependency-admission transaction as the canonical plan update.
+        // not cross withPlanLock. Keep both legacy JSONB and normalized indexes
+        // in the same transaction as the canonical plan update.
         // A missing plan row is a no-op for the existing recompose path; avoid
         // inserting child rows that would violate plan_items' FK in that case.
         if (updated.length > 0) {
           await writePlanIndexRows(
             tx as unknown as Parameters<typeof writePlanIndexRows>[0],
             { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, planSlug },
-            deriveIndexFromContent(content),
+            planIndex,
           );
+          // WI-10006275: a recompose that changed the bytes is a plan write, so it
+          // records a revision on this node's spine in the same transaction (the
+          // bytes and the revision commit together). Without it a federated rollback
+          // (WI-10004610 / WI-10003946) left live bytes matching an old revision with
+          // no row, invisible to plans:revisions / plans:audit. plan_revisions is not
+          // federated, so this never duplicates the origin node's own revision.
+          await recordSystemPlanRevisionInTransaction(tx as unknown as PlanRevisionSql, {
+            workspaceId: opts.workspaceId,
+            harnessSlug: opts.harnessSlug,
+            planSlug,
+            content,
+            contentHash,
+            rationale:
+              `federated per-part recompose (origin=${provenance?.origin ?? 'unknown'}, ` +
+              `writer=${provenance?.authorPubkey || 'unknown'}, fed_ts=${fedTs ?? 'none'})`,
+            authorId: FEDERATED_RECOMPOSE_REVISION_AUTHOR,
+          });
         }
       },
     );

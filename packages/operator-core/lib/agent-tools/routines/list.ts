@@ -7,22 +7,35 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { statePlaneForDoor } from '../state-plane-door';
+import { trimToByteBudget } from '../_bound-output';
 import { formatIdleAge } from '../../format/relative-time';
 // Pure, import-free module (see its header) — safe to pull into a tool without dragging the
 // validator's pg/system-action-registry dependencies along.
 import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
 import { WATCHDOG_HEALTH_METADATA_KEY } from '../../release/watchdog-health';
+import { reviveGitnexusHealth } from '../../harness/routines/dependency-snapshot-health';
 import { parseInFlightCandidate } from '../../release/in-flight-candidate';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import { gateAbortVintage } from '../../release/gate-abort-status';
 import { computeNextFireAt } from '../../harness/routines/cron';
+import { readRoutineLastFires, type LastFireSql, type RoutineLastFireReading } from './routine-last-fire';
+import { MAX_RUN_PLANS, PLAN_CLEANUP_SWEEP_REQUESTER, SWEEP_EXCLUDED_PLAN_STATUSES } from '../../plan-cleanup/start-run';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { effectivePauseExpiryMs, readRoutinePause } from '../../harness/routines/release-pause-ttl';
+import { isPidDefinitivelyDead } from '../locks/resource-acquire-wait';
+import { getTxPool, readResourceQueue } from '../locks/su-lock-store';
+import { isRestrictedHoldIntent, isTurnHoldIntent, TURN_HOLD_MAX_AGE_MS } from '../../personal-vault/git-sync-hold';
 
 const GIT_SYNC_FRESHNESS_INTERVALS = 3;
+const ROUTINE_LAST_FIRE_ACQUIRE_TIMEOUT_MS = 5_000;
+const ROUTINE_LAST_FIRE_STATEMENT_TIMEOUT_MS = 5_000;
+const ROUTINE_RESOURCE_QUEUE_ACQUIRE_TIMEOUT_MS = 5_000;
+const ROUTINE_RESOURCE_QUEUE_STATEMENT_TIMEOUT_MS = 1_500;
+const ROUTINE_RESOURCE_QUEUE_LOCK_TIMEOUT_MS = 750;
 
 /**
  * The DELIBERATE-PAUSE record, read back out of `routines.metadata.pause`.
@@ -329,7 +342,14 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
   const emit = (k: string): void => {
     const value = metadata[k];
     if (value === undefined || value === null) return;
-    out[k] = k === 'gate_health' ? attestGateHealth(value) : value;
+    // WI-10006666 — the stored dependency-snapshot age is a reading as of its own check; a
+    // long analyze makes `concurrency: 'skip'` drop every later fire, so derive it on read.
+    out[k] =
+      k === 'gate_health'
+        ? attestGateHealth(value)
+        : k === 'gitnexus_health'
+          ? reviveGitnexusHealth(value, Date.now())
+          : value;
   };
   // The explicit keys first, in declaration order, so `gate_health` keeps its position at
   // the head of the projection and this change is a pure ADDITION for every existing row.
@@ -340,6 +360,282 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
     if (!(k in out) && isHealthRecordKey(k)) emit(k);
   }
   return Object.keys(out).length ? out : null;
+}
+
+const PLAN_CLEANUP_DAILY_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+const ROUTINE_PLAN_CLEANUP_FRESHNESS_ACQUIRE_TIMEOUT_MS = 5_000;
+const ROUTINE_PLAN_CLEANUP_FRESHNESS_STATEMENT_TIMEOUT_MS = 5_000;
+
+type PlanCleanupFreshnessRow = {
+  install_slug: string;
+  eligible_plan_count: number | string;
+  scanned_plan_count: number | string;
+  fresh_plan_count: number | string;
+  freshness_window_days: number | string;
+  freshness_max_plans: number | string;
+  oldest_last_scanned_at: Date | string | null;
+  newest_last_scanned_at: Date | string | null;
+  latest_run_id: string | null;
+  latest_run_phase: string | null;
+  latest_run_created_at: Date | string | null;
+  latest_run_updated_at: Date | string | null;
+  latest_run_seed_plan_count: number | string | null;
+  latest_run_requested_plan_count: number | string | null;
+  latest_run_accepted_plan_count: number | string | null;
+  latest_run_truncated_plan_count: number | string | null;
+};
+
+type PlanCleanupFreshnessReading = PlanCleanupFreshnessRow | { unavailable: string };
+type PlanCleanupFreshnessQueryRunner = (
+  query: (sql: LastFireSql) => Promise<PlanCleanupFreshnessRow[]>,
+) => Promise<PlanCleanupFreshnessRow[]>;
+
+function nonNegativeCount(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+}
+
+function planCleanupMaxPlansFromConfig(config: Record<string, unknown> | null): number {
+  const raw = Number(config?.max_plans);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), MAX_RUN_PLANS) : MAX_RUN_PLANS;
+}
+
+function timestampIso(value: unknown): string | null {
+  const ms = value instanceof Date ? value.getTime() : epochMs(value);
+  return ms === null || !Number.isFinite(ms) ? null : new Date(ms).toISOString();
+}
+
+function timestampAgeMs(value: unknown, nowMs: number): number | null {
+  const ms = value instanceof Date ? value.getTime() : epochMs(value);
+  return ms === null || !Number.isFinite(ms) ? null : Math.max(0, nowMs - ms);
+}
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringField(record: Record<string, unknown> | null, key: string): string | null {
+  const value = record?.[key];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+/**
+ * A run row proves cleanup-run creation; the DBOS result proves what the scheduled action
+ * returned; and successful run seed refs prove which currently-eligible plans were scanned.
+ * Keep those three measurements separate so a recent routine timestamp cannot stand in for
+ * either a created run or end-to-end plan coverage.
+ */
+async function readPlanCleanupFreshness(
+  sql: LastFireSql,
+  workspaceId: string,
+  installScopes: ReadonlyArray<{ installSlug: string; maxPlans: number }>,
+  nowMs: number,
+  runQuery: PlanCleanupFreshnessQueryRunner,
+): Promise<Map<string, PlanCleanupFreshnessReading>> {
+  const scopes = [...new Map(installScopes.filter((scope) => scope.installSlug)
+    .map((scope) => [scope.installSlug, scope])).values()];
+  const slugs = scopes.map((scope) => scope.installSlug);
+  const maxPlans = scopes.map((scope) => scope.maxPlans);
+  const out = new Map<string, PlanCleanupFreshnessReading>();
+  if (slugs.length === 0) return out;
+
+  const query = (querySql: LastFireSql) => querySql<PlanCleanupFreshnessRow[]>`
+    WITH target_harnesses AS (
+      SELECT scope.harness_slug, scope.max_plans
+        FROM unnest(${slugs}::text[], ${maxPlans}::int[]) AS scope(harness_slug, max_plans)
+    ), eligible AS MATERIALIZED (
+      SELECT p.harness_slug, p.plan_slug
+        FROM harness_shared.harness_plans p
+        JOIN target_harnesses h ON h.harness_slug = p.harness_slug
+       WHERE p.workspace_id = ${workspaceId}
+         AND p.archived = false
+         AND COALESCE(p.status, '') <> ALL(${[...SWEEP_EXCLUDED_PLAN_STATUSES]}::text[])
+    ), eligible_counts AS (
+      SELECT h.harness_slug, count(e.plan_slug)::int AS eligible_plan_count
+        FROM target_harnesses h
+        LEFT JOIN eligible e ON e.harness_slug = h.harness_slug
+       GROUP BY h.harness_slug
+    ), rotation_windows AS (
+      SELECT c.harness_slug, c.eligible_plan_count, h.max_plans AS freshness_max_plans,
+             CASE WHEN eligible_plan_count = 0 THEN 0
+                  ELSE GREATEST(1, CEIL(c.eligible_plan_count::numeric / h.max_plans)::int) + 1
+              END AS freshness_window_days
+        FROM eligible_counts c
+        JOIN target_harnesses h ON h.harness_slug = c.harness_slug
+    ), last_scans AS (
+      SELECT r.harness_slug, refs.plan_slug, max(r.created_at) AS last_scanned_at
+        FROM harness_shared.attention_bulk_runs r
+        JOIN target_harnesses h ON h.harness_slug = r.harness_slug
+        CROSS JOIN LATERAL jsonb_array_elements_text(
+          CASE WHEN jsonb_typeof(r.seed_refs) = 'array' THEN r.seed_refs ELSE '[]'::jsonb END
+        ) AS refs(plan_slug)
+        JOIN eligible e ON e.harness_slug = r.harness_slug AND e.plan_slug = refs.plan_slug
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.run_kind = 'plan-cleanup'
+         AND r.phase IN ('review', 'running', 'complete')
+       GROUP BY r.harness_slug, refs.plan_slug
+    ), coverage_rows AS (
+      SELECT w.harness_slug, w.eligible_plan_count, w.freshness_window_days,
+             w.freshness_max_plans,
+             e.plan_slug, s.last_scanned_at
+        FROM rotation_windows w
+        LEFT JOIN eligible e ON e.harness_slug = w.harness_slug
+        LEFT JOIN last_scans s ON s.harness_slug = e.harness_slug AND s.plan_slug = e.plan_slug
+    ), coverage AS (
+      SELECT c.harness_slug,
+             max(c.eligible_plan_count)::int AS eligible_plan_count,
+             max(c.freshness_window_days)::int AS freshness_window_days,
+             max(c.freshness_max_plans)::int AS freshness_max_plans,
+             count(c.plan_slug) FILTER (WHERE c.last_scanned_at IS NOT NULL)::int AS scanned_plan_count,
+             count(c.plan_slug) FILTER (
+               WHERE c.last_scanned_at >= to_timestamp(${nowMs}::double precision / 1000.0)
+                 - c.freshness_window_days * interval '1 day'
+                 AND c.last_scanned_at <= to_timestamp(${nowMs}::double precision / 1000.0)
+             )::int AS fresh_plan_count,
+             min(c.last_scanned_at) FILTER (WHERE c.last_scanned_at IS NOT NULL) AS oldest_last_scanned_at,
+             max(c.last_scanned_at) FILTER (WHERE c.last_scanned_at IS NOT NULL) AS newest_last_scanned_at
+        FROM coverage_rows c
+       GROUP BY c.harness_slug
+    ), latest_scheduled_run AS (
+      SELECT DISTINCT ON (r.harness_slug)
+             r.harness_slug, r.run_id, r.phase, r.created_at, r.updated_at,
+             CASE WHEN jsonb_typeof(r.seed_refs) = 'array' THEN jsonb_array_length(r.seed_refs) ELSE 0 END
+               AS seed_plan_count,
+             CASE WHEN jsonb_typeof(r.filter_snapshot->'requested') = 'number'
+                  THEN (r.filter_snapshot->>'requested')::int END AS requested_plan_count,
+             CASE WHEN jsonb_typeof(r.filter_snapshot->'accepted') = 'number'
+                  THEN (r.filter_snapshot->>'accepted')::int END AS accepted_plan_count,
+             CASE WHEN jsonb_typeof(r.filter_snapshot->'truncated') = 'number'
+                  THEN (r.filter_snapshot->>'truncated')::int END AS truncated_plan_count
+        FROM harness_shared.attention_bulk_runs r
+        JOIN target_harnesses h ON h.harness_slug = r.harness_slug
+       WHERE r.workspace_id = ${workspaceId}
+         AND r.run_kind = 'plan-cleanup'
+         AND r.requested_by = ${PLAN_CLEANUP_SWEEP_REQUESTER}
+       ORDER BY r.harness_slug, r.created_at DESC, r.run_id DESC
+    )
+    SELECT c.harness_slug AS install_slug, c.eligible_plan_count, c.scanned_plan_count,
+           c.fresh_plan_count, c.freshness_window_days, c.freshness_max_plans,
+           c.oldest_last_scanned_at,
+           c.newest_last_scanned_at, r.run_id AS latest_run_id, r.phase AS latest_run_phase,
+           r.created_at AS latest_run_created_at, r.updated_at AS latest_run_updated_at,
+           r.seed_plan_count AS latest_run_seed_plan_count,
+           r.requested_plan_count AS latest_run_requested_plan_count,
+           r.accepted_plan_count AS latest_run_accepted_plan_count,
+           r.truncated_plan_count AS latest_run_truncated_plan_count
+      FROM coverage c
+      LEFT JOIN latest_scheduled_run r ON r.harness_slug = c.harness_slug
+     ORDER BY c.harness_slug`;
+
+  try {
+    const rows = await runQuery(query);
+    const bySlug = new Map(rows.map((row) => [row.install_slug, row]));
+    for (const slug of slugs) {
+      out.set(slug, bySlug.get(slug) ?? { unavailable: 'plan-cleanup freshness query returned no aggregate row' });
+    }
+  } catch (error) {
+    const reason = `plan-cleanup freshness lookup failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+    for (const slug of slugs) out.set(slug, { unavailable: reason });
+  }
+  return out;
+}
+
+function projectPlanCleanupFreshness(input: {
+  reading: PlanCleanupFreshnessReading;
+  lastFiredAt: Date | null;
+  lastFire: RoutineLastFireReading;
+  nowMs: number;
+}): Record<string, unknown> {
+  const { reading, lastFiredAt, lastFire, nowMs } = input;
+  const action = lastFire === null
+    ? { read_status: 'no_completed_result_in_8_day_window' }
+    : 'unavailable' in lastFire
+      ? { read_status: 'unavailable', reason: lastFire.unavailable }
+      : (() => {
+          const diagnostics = recordOf(lastFire.diagnostics);
+          return {
+            read_status: lastFire.diagnosticsTruncated ? 'truncated' : 'available',
+            completed_at: lastFire.completedAt,
+            workflow_id: lastFire.workflowId,
+            outcome: stringField(diagnostics, 'outcome'),
+            reason: stringField(diagnostics, 'reason'),
+            run_id: stringField(diagnostics, 'runId'),
+            phase: stringField(diagnostics, 'phase'),
+            error: lastFire.error,
+            soft_error: lastFire.softError,
+          };
+        })();
+  const execution = {
+    scheduled_claim_at: timestampIso(lastFiredAt),
+    action_result: action,
+  };
+  if ('unavailable' in reading) {
+    return {
+      read_status: 'unavailable',
+      observed_at: new Date(nowMs).toISOString(),
+      unavailable_reason: reading.unavailable,
+      execution,
+    };
+  }
+
+  const eligible = nonNegativeCount(reading.eligible_plan_count);
+  const scanned = Math.min(eligible, nonNegativeCount(reading.scanned_plan_count));
+  const fresh = Math.min(scanned, nonNegativeCount(reading.fresh_plan_count));
+  const stale = Math.max(0, scanned - fresh);
+  const neverScanned = Math.max(0, eligible - scanned);
+  const windowDays = eligible === 0 ? 0 : nonNegativeCount(reading.freshness_window_days);
+  const coverageStatus = eligible === 0
+    ? 'not-needed'
+    : neverScanned > 0
+      ? 'uncovered'
+      : stale > 0
+        ? 'stale'
+        : 'fresh';
+  const latestRun = reading.latest_run_id
+    ? {
+        run_id: reading.latest_run_id,
+        phase: reading.latest_run_phase,
+        created_at: timestampIso(reading.latest_run_created_at),
+        updated_at: timestampIso(reading.latest_run_updated_at),
+        age_ms: timestampAgeMs(reading.latest_run_created_at, nowMs),
+        seed_plan_count: nonNegativeCount(reading.latest_run_seed_plan_count),
+        requested_plan_count: reading.latest_run_requested_plan_count === null
+          ? null
+          : nonNegativeCount(reading.latest_run_requested_plan_count),
+        accepted_plan_count: reading.latest_run_accepted_plan_count === null
+          ? null
+          : nonNegativeCount(reading.latest_run_accepted_plan_count),
+        truncated_plan_count: reading.latest_run_truncated_plan_count === null
+          ? null
+          : nonNegativeCount(reading.latest_run_truncated_plan_count),
+      }
+    : null;
+  const actionRunId = 'run_id' in action ? action.run_id : null;
+  return {
+    read_status: 'available',
+    observed_at: new Date(nowMs).toISOString(),
+    execution,
+    latest_scheduled_run: latestRun,
+    run_record_matches_action: actionRunId && latestRun
+      ? actionRunId === latestRun.run_id
+      : null,
+    coverage: {
+      source: 'current non-archived plans against successful plan-cleanup run seed_refs',
+      eligible_plan_count: eligible,
+      scanned_plan_count: scanned,
+      fresh_plan_count: fresh,
+      stale_plan_count: stale,
+      never_scanned_plan_count: neverScanned,
+      max_plans_per_run: nonNegativeCount(reading.freshness_max_plans),
+      freshness_basis: 'daily cadence; ceil(eligible plans / max plans per run) scan batches plus one missed-run grace day',
+      freshness_window_ms: windowDays * PLAN_CLEANUP_DAILY_INTERVAL_MS,
+      freshness_status: coverageStatus,
+      oldest_last_scanned_at: timestampIso(reading.oldest_last_scanned_at),
+      newest_last_scanned_at: timestampIso(reading.newest_last_scanned_at),
+    },
+  };
 }
 
 /**
@@ -357,11 +653,129 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
  * every new skip reason subject to the same detector and avoids a second writer
  * whose state can drift from the underlying proof.
  */
+type GitSyncActivityOwnerReconciliation = {
+  status: 'stale' | 'unverified';
+  owner_pid: number | null;
+  lock_state: 'held' | 'absent' | 'unknown' | 'not-checked';
+  matching_owner_lock: boolean | null;
+  reason: string;
+};
+
+/**
+ * The SU lock pool is separate from the operator-admin pool and has no default
+ * statement_timeout. Keep this read-only queue lookup bounded without taking the
+ * workspace advisory lock that mutating locks operations use.
+ */
+async function readResourceQueueBounded(
+  params: Parameters<typeof readResourceQueue>[1],
+) {
+  return withAcquisitionDeadline(
+    ({ disarm, expired }) =>
+      getTxPool().begin(async (tx) => {
+        // `sql.begin` can sit in postgres-js's pool queue before the callback runs.
+        // The acquisition deadline races that wait; this guard prevents a late
+        // connection from doing work after the caller already received a timeout.
+        if (expired()) throw new Error('routines:list resource-queue acquisition expired');
+        disarm();
+        await tx`SET TRANSACTION READ ONLY`;
+        await tx`SELECT set_config('application_name', ${'papercusp-su:routines-list:resource-queue'}, true),
+                        set_config('statement_timeout', ${`${ROUTINE_RESOURCE_QUEUE_STATEMENT_TIMEOUT_MS}ms`}, true),
+                        set_config('lock_timeout', ${`${ROUTINE_RESOURCE_QUEUE_LOCK_TIMEOUT_MS}ms`}, true)`;
+        return readResourceQueue(tx as unknown as Parameters<typeof readResourceQueue>[0], params);
+      }),
+    { ms: ROUTINE_RESOURCE_QUEUE_ACQUIRE_TIMEOUT_MS, label: 'routines:list:resource-queue-acquire' },
+  );
+}
+
+/**
+ * An active metadata bit is not proof that its writer still exists. A marker is
+ * stale only when its persisted per-fire PID is definitively gone AND the
+ * workspace lock plane shows no live exclusive lease for that git-sync resource.
+ * Every missing, mismatched, or unreadable piece of evidence remains fail-closed.
+ */
+async function reconcileGitSyncActivityOwner(
+  metadata: Record<string, unknown> | null,
+  coordinationDomain: string,
+  installSlug: string,
+  onQueueRead?: (phase: { durationMs: number; outcome: 'ok' | 'error' }) => void,
+): Promise<GitSyncActivityOwnerReconciliation | null> {
+  const markerRaw = metadata?.git_sync_activity;
+  const marker = markerRaw && typeof markerRaw === 'object' ? (markerRaw as Record<string, unknown>) : null;
+  if (marker?.active !== true) return null;
+
+  const owner = typeof marker.owner === 'string' ? marker.owner : null;
+  const ownerPid = typeof marker.owner_pid === 'number' ? marker.owner_pid : null;
+  if (
+    owner === null ||
+    ownerPid === null ||
+    !Number.isSafeInteger(ownerPid) ||
+    ownerPid <= 0 ||
+    !owner.startsWith(`system:git-sync:${ownerPid}:`)
+  ) {
+    return {
+      status: 'unverified',
+      owner_pid: ownerPid,
+      lock_state: 'unknown',
+      matching_owner_lock: null,
+      reason: 'The active marker is missing a valid, matching per-fire owner and PID; keep the restart verdict unsafe.',
+    };
+  }
+
+  if (!isPidDefinitivelyDead(ownerPid)) {
+    return {
+      status: 'unverified',
+      owner_pid: ownerPid,
+      lock_state: 'not-checked',
+      matching_owner_lock: null,
+      reason: `Owner PID ${ownerPid} is present or could not be proven dead; keep the active marker unsafe.`,
+    };
+  }
+
+  const queueReadStartedAtMs = Date.now();
+  try {
+    const queue = await readResourceQueueBounded({
+      coordinationDomain: coordinationDomain || '*',
+      resource: `git-sync:${installSlug}`,
+    });
+    onQueueRead?.({ durationMs: Date.now() - queueReadStartedAtMs, outcome: 'ok' });
+    const exclusiveHolders = queue.holders.filter((holder) => holder.mode === 'exclusive');
+    const matchingOwnerLock = exclusiveHolders.some((holder) => holder.owner === owner);
+    if (exclusiveHolders.length > 0) {
+      return {
+        status: 'unverified',
+        owner_pid: ownerPid,
+        lock_state: 'held',
+        matching_owner_lock: matchingOwnerLock,
+        reason: matchingOwnerLock
+          ? `Owner PID ${ownerPid} is gone, but its exclusive git-sync resource lease remains; keep the restart verdict unsafe.`
+          : `Owner PID ${ownerPid} is gone, but an exclusive git-sync resource lease remains; keep the restart verdict unsafe.`,
+      };
+    }
+    return {
+      status: 'stale',
+      owner_pid: ownerPid,
+      lock_state: 'absent',
+      matching_owner_lock: false,
+      reason: `Owner PID ${ownerPid} is definitively gone and no live exclusive git-sync resource lease remains.`,
+    };
+  } catch {
+    onQueueRead?.({ durationMs: Date.now() - queueReadStartedAtMs, outcome: 'error' });
+    return {
+      status: 'unverified',
+      owner_pid: ownerPid,
+      lock_state: 'unknown',
+      matching_owner_lock: null,
+      reason: `Owner PID ${ownerPid} is gone, but the git-sync resource lock could not be read; keep the restart verdict unsafe.`,
+    };
+  }
+}
+
 export function deriveGitSyncFreshness(
   metadata: Record<string, unknown> | null,
   cron: string | null,
   active: boolean,
   nowMs: number = Date.now(),
+  ownerReconciliation: GitSyncActivityOwnerReconciliation | null = null,
 ): Record<string, unknown> {
   const lastSyncedAtMs = epochMs(metadata?.last_synced_at);
   const first = cron ? computeNextFireAt(cron, new Date(nowMs)) : null;
@@ -385,7 +799,7 @@ export function deriveGitSyncFreshness(
   const activityRaw = metadata?.git_sync_activity;
   const activity =
     activityRaw && typeof activityRaw === 'object' ? (activityRaw as Record<string, unknown>) : null;
-  const inFlightActive = activity?.active === true;
+  const inFlightActive = activity?.active === true && ownerReconciliation?.status !== 'stale';
   const inFlightStartedAtMs = inFlightActive ? epochMs(activity?.started_at) : null;
   const inFlightAgeMs = inFlightStartedAtMs === null ? null : Math.max(0, nowMs - inFlightStartedAtMs);
   // The writer heartbeats `updated_at` from the liveness guard's onProgress callback.
@@ -473,12 +887,12 @@ export function deriveGitSyncFreshness(
 
   const safeToRestartReason =
     executionStatus === 'idle'
-      ? 'No git-sync fire is in flight (the activity marker reports active:false), so a restart cannot interrupt one.'
+      ? ownerReconciliation?.status === 'stale'
+        ? `The active git-sync marker is stale: ${ownerReconciliation.reason}`
+        : 'No git-sync fire is in flight (the activity marker reports active:false), so a restart cannot interrupt one.'
       : executionStatus === 'unknown'
         ? 'This row carries no git_sync_activity marker, so whether a fire is in flight is UNMEASURED — reported unsafe by default, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart.'
-        : executionStatus === 'stuck'
-          ? `A git-sync fire has been in flight for ${mins(inFlightAgeMs)} with no recorded progress for ${mins(inFlightProgressAgeMs)}. There is a LIVE process holding the exclusive git-sync lock — inspect it (processes:list) rather than restarting blind; a restart drops that lock mid-write.`
-          : `A git-sync fire has been in flight for ${mins(inFlightAgeMs)} and is still recording progress. Restarting would drop the exclusive git-sync lock mid-write and destroy its uncommitted work.`;
+        : `${ownerReconciliation?.reason ?? 'An active git-sync marker has not been proven stale.'} Treat it as in-flight and do not restart (safe_to_restart is false).`;
 
   return {
     status,
@@ -510,12 +924,14 @@ export function deriveGitSyncFreshness(
       progress_age_ms: inFlightProgressAgeMs,
       holds_exclusive_locks: holdsExclusiveLocks,
       locks_reported: locksRaw !== null,
+      owner_reconciliation: ownerReconciliation,
     },
     safe_to_restart: safeToRestart,
     safe_to_restart_reason: safeToRestartReason,
     in_flight: activity
       ? {
           active: inFlightActive,
+          stale_marker: ownerReconciliation?.status === 'stale',
           phase: inFlightPhase,
           started_at: isoAt(inFlightStartedAtMs),
           age_ms: inFlightAgeMs,
@@ -529,22 +945,17 @@ export function deriveGitSyncFreshness(
       status !== 'degraded'
         ? null
         : inFlightStuck
-        ? `A git-sync fire has been in flight for ${mins(inFlightAgeMs)}` +
+        ? `The git-sync activity marker has been active for ${mins(inFlightAgeMs)}` +
             `${inFlightPhase ? ` (phase '${inFlightPhase}')` : ''}; its last recorded progress was ` +
-            `${mins(inFlightProgressAgeMs)} ago. Scheduled ticks skip while it holds ` +
-            'the git-sync lock, so nothing is being committed and the raw last_status still describes ' +
-            'the tick before it. There IS a live process holding that lock: inspect it before any ' +
-            'restart (safe_to_restart is false).'
+            `${mins(inFlightProgressAgeMs)} ago. The owner/lock check is unresolved: ` +
+            `${ownerReconciliation?.reason ?? 'the owner PID and exclusive lease have not both been proven stale.'} ` +
+            'Treat the marker as in-flight and inspect it before restart (safe_to_restart is false).'
           : executionStatus === 'in-flight'
-            ? // WI-10002019: the stale completed-outcome clock is EXPLAINED by a live fire.
-              // The generic "nothing has completed" wording below reads as a dead scheduler
-              // and points a reader straight at the one action that destroys the live fire.
-              `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals, ` +
-              `but a fire IS in flight (${mins(inFlightAgeMs)}` +
-              `${inFlightPhase ? `, phase '${inFlightPhase}'` : ''}) and is still recording progress. ` +
-              'The stale clock is explained by that live fire, NOT by a stalled scheduler: do not restart ' +
-              'or kill git-sync (safe_to_restart is false — a restart drops the exclusive git-sync lock ' +
-              'mid-write and destroys its uncommitted work).'
+            ? `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals, ` +
+              `and an active marker remains (${mins(inFlightAgeMs)}` +
+              `${inFlightPhase ? `, phase '${inFlightPhase}'` : ''}). ` +
+              `${ownerReconciliation?.reason ?? 'Owner liveness and lock state have not both been proven stale.'} ` +
+              'Keep the restart verdict unsafe until the marker is reconciled.'
             : `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals; ` +
               'the raw last_status may describe an older successful tick.',
   };
@@ -555,6 +966,82 @@ const GIT_SYNC_EXCLUSION_SAMPLE = 10;
 
 function stringList(raw: unknown): string[] {
   return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : [];
+}
+
+/**
+ * WI-10006505: parse `last_skipped_paths`, which git-sync writes as GitSyncSkippedPath objects.
+ * A bare string (an older/hand-written row) is kept as-is with no reason. A lock entry reads as
+ * 'locked-path'; a guard entry carries its own `reason` (migration-reservation / -dependency-fence).
+ * A census hold that is not a releasable lock reads by its own kind: 'turn-hold' (the editor's
+ * turn has not ended — plan git-sync-turn-scoped-commit-hold-2026-10-11 P-003) or
+ * 'restricted-hold' (an unreleased personal disclosure), so the reader never tells its holder
+ * to release a lock it does not hold.
+ */
+interface GitSyncSkippedEntry {
+  key: string;
+  reason: string | null;
+  owner?: string;
+  heldSince?: string;
+}
+
+function gitSyncSkippedEntries(raw: unknown): GitSyncSkippedEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: GitSyncSkippedEntry[] = [];
+  for (const v of raw) {
+    if (typeof v === 'string') {
+      out.push({ key: v, reason: null });
+      continue;
+    }
+    if (!v || typeof v !== 'object') continue;
+    const r = v as Record<string, unknown>;
+    if (typeof r.path !== 'string') continue;
+    const key = typeof r.scope === 'string' && r.scope ? `${r.scope}:${r.path}` : r.path;
+    const owner = typeof r.owner === 'string' ? r.owner : undefined;
+    const intent = typeof r.intent === 'string' ? r.intent : null;
+    const reason =
+      typeof r.reason === 'string'
+        ? r.reason
+        : owner === undefined
+          ? null
+          : isTurnHoldIntent(intent)
+            ? 'turn-hold'
+            : isRestrictedHoldIntent(intent)
+              ? 'restricted-hold'
+              : 'locked-path';
+    out.push({
+      key,
+      reason,
+      ...(owner !== undefined ? { owner } : {}),
+      ...(typeof r.heldSince === 'string' ? { heldSince: r.heldSince } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * P-003: the turn-held paths of the last completed sweep, with the holding session and how
+ * long each has been held. Age is measured from the edit (`heldSince`) to `nowMs`; a hold
+ * never outlives TURN_HOLD_MAX_AGE_MS, so an age near that bound means the editor recorded
+ * no turn end (a client whose Stop hook is missing, or a crash).
+ */
+function gitSyncTurnHolds(entries: readonly GitSyncSkippedEntry[], nowMs: number): Record<string, unknown> {
+  const held = entries.filter((entry) => entry.reason === 'turn-hold');
+  const sample = held.slice(0, GIT_SYNC_EXCLUSION_SAMPLE).map((entry) => {
+    const sinceMs = entry.heldSince ? Date.parse(entry.heldSince) : Number.NaN;
+    return {
+      path: entry.key,
+      holder: entry.owner ?? null,
+      held_since: Number.isFinite(sinceMs) ? new Date(sinceMs).toISOString() : null,
+      age_sec: Number.isFinite(sinceMs) ? Math.max(0, Math.round((nowMs - sinceMs) / 1000)) : null,
+    };
+  });
+  return {
+    count: held.length,
+    holders: [...new Set(held.map((entry) => entry.owner).filter((o): o is string => typeof o === 'string'))],
+    sample,
+    sample_truncated: held.length > GIT_SYNC_EXCLUSION_SAMPLE,
+    max_age_sec: Math.round(TURN_HOLD_MAX_AGE_MS / 1000),
+  };
 }
 
 /**
@@ -590,11 +1077,30 @@ export function deriveGitSyncExclusions(
   freshness: Record<string, unknown> | null = null,
   nowMs: number = Date.now(),
 ): Record<string, unknown> {
-  const skipped = stringList(metadata?.last_skipped_paths);
-  const oversized = stringList(metadata?.last_oversized);
-  const bulkExcluded = stringList(metadata?.last_bulk_excluded);
+  // WI-10006505: the writer persists `last_skipped_paths` as GitSyncSkippedPath OBJECTS
+  // ({scope,path,owner,intent} for a lock, {scope,path,reason,detail} for a migration guard).
+  // Reading it through `stringList` kept only strings, so every real skip was dropped and the
+  // count was always 0. Accept both shapes; render objects as `scope:path` like last_oversized.
+  const skippedEntries = gitSyncSkippedEntries(metadata?.last_skipped_paths);
+  const skipped = skippedEntries.map((entry) => entry.key);
+  const skipReasons = [...new Set(skippedEntries.map((entry) => entry.reason).filter((r): r is string => r !== null))];
+  const recordedSkipReason = typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : null;
   const skippedAtMs = epochMs(metadata?.last_skipped_at);
   const exclusionAtMs = epochMs(metadata?.last_exclusions_at);
+  // WI-6554700010008512: a SKIP tick restamps last_skipped_at and last_skip_reason (shared
+  // fields the stall and staleness alarms read) but leaves last_skipped_paths alone
+  // (SKIP_TICK_KEEPS_SWEEP_EXCLUSIONS). The paths therefore belong to the last completed sweep,
+  // which stamped last_exclusions_at in the same write: report THAT time beside them, and trust
+  // the recorded reason only when that sweep wrote it. Legacy rows without the sweep stamp keep
+  // last_skipped_at.
+  const recordedBySweep = exclusionAtMs === null || skippedAtMs === exclusionAtMs;
+  const sweepSkippedAtMs = exclusionAtMs ?? skippedAtMs;
+  // The sweep stamps 'locked-path' for every path skip, including migration-guard deferrals;
+  // the entries themselves are the better witness whenever they carry a reason.
+  const skipReason =
+    skipReasons.length > 0 ? skipReasons.join(', ') : recordedBySweep ? recordedSkipReason : 'locked-path';
+  const oversized = stringList(metadata?.last_oversized);
+  const bulkExcluded = stringList(metadata?.last_bulk_excluded);
   const lastSyncedAtMs = epochMs(metadata?.last_synced_at);
   const hasByteExclusions = oversized.length > 0 || bulkExcluded.length > 0;
   const exclusionStampMatchesSweep =
@@ -605,9 +1111,24 @@ export function deriveGitSyncExclusions(
   const parts: string[] = [];
   const remedies: string[] = [];
   if (skipped.length > 0) {
-    const reason = typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : 'unknown';
-    parts.push(`${skipped.length} path(s) excluded from the last completed sweep (${reason})`);
-    remedies.push('release the corresponding file lock(s)');
+    parts.push(`${skipped.length} path(s) excluded from the last completed sweep (${skipReason ?? 'unknown'})`);
+    const migrationGuarded = skipReasons.some((r) => r.startsWith('migration-'));
+    if (skipReasons.length === 0 || skipReasons.includes('locked-path')) {
+      remedies.push('release the corresponding file lock(s)');
+    }
+    if (skipReasons.includes('turn-hold')) {
+      remedies.push(
+        `turn-held path(s) commit on the first sweep after their editor's turn ends, its session ends, or ${Math.round(TURN_HOLD_MAX_AGE_MS / 60_000)} min after the edit — locks:release does not lift them; use locks:acquire to hold a change across turns`,
+      );
+    }
+    if (skipReasons.includes('restricted-hold')) {
+      remedies.push('restricted-held path(s) commit once their editor releases its personal disclosure');
+    }
+    if (migrationGuarded) {
+      remedies.push(
+        'give the refused migration a valid reservation (node scripts/next-migration.mjs, then rename it); paths fenced with it commit on the next sweep after that — dev:pipeline_position { path } names the blocking migration and its author',
+      );
+    }
   }
   if (hasByteExclusions) {
     if (sweepStale) {
@@ -630,15 +1151,21 @@ export function deriveGitSyncExclusions(
     }
   }
   const warningParts = [...parts];
-  if (hasByteExclusions && !sweepStale) {
+  // WI-10006505: skip remedies used to render only when byte exclusions were also present, so a
+  // skip-only sweep never said what to do. Byte remedies are pushed only on the fresh branch
+  // above, so a stale byte record still contributes none.
+  if (remedies.length > 0) {
     warningParts.push(remedies.join('; '));
   }
   return {
-    skip_reason: typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : null,
-    skipped_at: isoAt(skippedAtMs),
+    skip_reason: skipped.length > 0 ? skipReason : recordedSkipReason,
+    skipped_at: isoAt(skipped.length > 0 ? sweepSkippedAtMs : skippedAtMs),
     skipped_count: skipped.length,
     skipped_sample: skipped.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
     skipped_sample_truncated: skipped.length > GIT_SYNC_EXCLUSION_SAMPLE,
+    // Ages are measured to `nowMs`, but the paths are those of the LAST COMPLETED sweep
+    // (`skipped_at`); a hold may have lifted since.
+    turn_holds: gitSyncTurnHolds(skippedEntries, nowMs),
     oversized_count: oversized.length,
     oversized_sample: oversized.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),
     oversized_sample_truncated: oversized.length > GIT_SYNC_EXCLUSION_SAMPLE,
@@ -745,11 +1272,143 @@ export function applyDerivedGitSyncHeadline(
   };
 }
 
+// Health blobs are free-form JSONB and can carry long error strings and nested
+// execution arrays. The default trimmed result must be bounded before the result
+// door attempts to spill it; the full tool tier still returns the original data.
+const TRIMMED_HEALTH_JSON_CHARS = 2_600;
+const TRIMMED_HEALTH_STRING_CHARS = 1_000;
+const TRIMMED_HEALTH_ARRAY_ITEMS = 20;
+const TRIMMED_HEALTH_OBJECT_ENTRIES = 40;
+const TRIMMED_HEALTH_MAX_DEPTH = 10;
+const TRIMMED_HEALTH_MARKER_RESERVE = 96;
+const TRIMMED_ROUTINE_ROWS_JSON_CHARS = 4_200;
+const HEALTH_TRUNCATION_KEY = '__papercusp_truncated__';
+
+function healthTruncationMarker(reason: string, omitted?: number): Record<string, unknown> {
+  return {
+    [HEALTH_TRUNCATION_KEY]: true,
+    reason,
+    ...(omitted === undefined ? {} : { omitted }),
+  };
+}
+
+function uniqueHealthTruncationKey(value: Record<string, unknown>): string {
+  let key = HEALTH_TRUNCATION_KEY;
+  let suffix = 2;
+  while (Object.prototype.hasOwnProperty.call(value, key)) {
+    key = `${HEALTH_TRUNCATION_KEY}_${suffix++}`;
+  }
+  return key;
+}
+
+function clipHealthString(value: string, maxJsonChars: number): string {
+  const marker = (kept: number) => `…[TRUNCATED +${value.length - kept} chars]`;
+  if (value.length <= TRIMMED_HEALTH_STRING_CHARS && JSON.stringify(value).length <= maxJsonChars) {
+    return value;
+  }
+
+  let kept = Math.max(0, Math.min(
+    TRIMMED_HEALTH_STRING_CHARS - marker(0).length,
+    maxJsonChars - marker(0).length - 2,
+  ));
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const clipped = `${value.slice(0, kept)}${marker(kept)}`;
+    const jsonLength = JSON.stringify(clipped).length;
+    if (clipped.length <= TRIMMED_HEALTH_STRING_CHARS && jsonLength <= maxJsonChars) return clipped;
+    if (kept === 0) break;
+    const excessChars = Math.max(0, clipped.length - TRIMMED_HEALTH_STRING_CHARS);
+    const excessJson = Math.max(0, jsonLength - maxJsonChars);
+    kept = Math.max(0, kept - Math.max(1, excessChars, excessJson));
+  }
+  return marker(0);
+}
+
+/** A private, agent-facing projection bound for nested routine health values. */
+function boundTrimmedHealth(value: unknown): unknown {
+  let remaining = TRIMMED_HEALTH_JSON_CHARS;
+
+  const visit = (current: unknown, depth: number): unknown => {
+    if (current === undefined) return null;
+
+    if (typeof current === 'string') {
+      const available = Math.max(0, remaining - TRIMMED_HEALTH_MARKER_RESERVE);
+      const clipped = clipHealthString(current, available);
+      remaining -= JSON.stringify(clipped).length;
+      return clipped;
+    }
+
+    if (current === null || typeof current !== 'object') {
+      const encoded = JSON.stringify(current);
+      const size = encoded?.length ?? 4;
+      if (size <= remaining - TRIMMED_HEALTH_MARKER_RESERVE) {
+        remaining -= size;
+        return current;
+      }
+      const clipped = '[TRUNCATED: health payload budget]';
+      remaining -= JSON.stringify(clipped).length;
+      return clipped;
+    }
+
+    if (depth >= TRIMMED_HEALTH_MAX_DEPTH) {
+      const marker = healthTruncationMarker('maximum-depth');
+      remaining -= JSON.stringify(marker).length;
+      return marker;
+    }
+
+    if (Array.isArray(current)) {
+      const out: unknown[] = [];
+      remaining -= 2; // brackets
+      const limit = Math.min(current.length, TRIMMED_HEALTH_ARRAY_ITEMS);
+      let index = 0;
+      for (; index < limit; index++) {
+        const separator = out.length > 0 ? 1 : 0;
+        if (remaining < separator + TRIMMED_HEALTH_MARKER_RESERVE + 40) break;
+        remaining -= separator;
+        out.push(visit(current[index], depth + 1));
+      }
+      const omitted = current.length - index;
+      if (omitted > 0) {
+        const marker = healthTruncationMarker('array-items', omitted);
+        remaining -= (out.length > 0 ? 1 : 0) + JSON.stringify(marker).length;
+        out.push(marker);
+      }
+      return out;
+    }
+
+    const entries = Object.entries(current as Record<string, unknown>);
+    const out: Record<string, unknown> = {};
+    remaining -= 2; // braces
+    let index = 0;
+    for (; index < Math.min(entries.length, TRIMMED_HEALTH_OBJECT_ENTRIES); index++) {
+      const [key, child] = entries[index]!;
+      const separator = Object.keys(out).length > 0 ? 1 : 0;
+      const keyCost = JSON.stringify(key).length + 1 + separator; // key, colon, comma
+      if (remaining < keyCost + TRIMMED_HEALTH_MARKER_RESERVE + 40) break;
+      remaining -= keyCost;
+      out[key] = visit(child, depth + 1);
+    }
+    const omitted = entries.length - index;
+    if (omitted > 0) {
+      const marker = healthTruncationMarker('object-fields', omitted);
+      const key = uniqueHealthTruncationKey(out);
+      const separator = Object.keys(out).length > 0 ? 1 : 0;
+      remaining -= JSON.stringify(key).length + 1 + separator + JSON.stringify(marker).length;
+      out[key] = marker;
+    }
+    return out;
+  };
+
+  const bounded = visit(value, 0);
+  const serialized = JSON.stringify(bounded);
+  if (serialized && serialized.length <= TRIMMED_HEALTH_JSON_CHARS) return bounded;
+  return healthTruncationMarker('health-json-budget', serialized?.length ?? 0);
+}
+
 export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
   description:
-    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, so it is distinguishable from a stall). The acceptance-grading-sweep row also carries `acceptanceBacklog` with the current non-rubric awaiting-acceptance depth and oldest plan timestamp, so a spend pause is distinguishable from an empty queue. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
+    'List scheduled routines. This workspace view includes name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, distinguishable from a stall). The acceptance-grading-sweep row carries `acceptanceBacklog` with the current non-rubric awaiting-acceptance depth and oldest plan timestamp so a spend pause is distinguishable from an empty queue. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, `limit` to cap rows (count keeps the true total), or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded; group first).',
   capability: 'operator:read',
   guidance: {
     // Arg guidance and the `paused` semantics are deliberately NOT restated here:
@@ -806,7 +1465,8 @@ export default defineTool({
     // those are prompt-weight budgeted and this tool is already near the cap
     // (the budget guard refused the first attempt to put it in `when`).
     returns: [
-      'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, acceptanceBacklog, health }.',
+      'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, acceptanceBacklog, health, lastFire }.',
+      '`lastFire` — WHAT the newest completed fire DID, for a `system:` routine when `name` pins the read (null otherwise, or when no fire completed in 8 days): { completedAt, workflowId, diagnostics, softError, error }, read from the DBOS step output bound to this routine id (EI-25264102161745452). `diagnostics` is the action\'s own per-fire evidence (e.g. operator-e2e-red-filer\'s owned/filed outcome per red spec); `health` stays null on a clean fire, so this is the read for "what did it do". `{ unavailable }` means the lookup failed — not "no fire".',
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
       '`acceptanceBacklog` — on `acceptance-grading-sweep`, { depth, oldestPlanUpdatedAt }; depth counts active non-rubric plans in `awaiting-acceptance`. A paused routine with depth > 0 is not an empty pause; do not re-arm it automatically because grading spends LLM budget.',
       '`health` — the operational half of the routine row, null when the row carries none of it. Carries EVERY `<subsystem>_health` record the row holds, derived from the key name rather than an allowlist, so a new writer is readable the day it ships (`gate_health` on green-checkpoint: the live in-flight-retriage marker, observed candidate and consecutive-red count; `gitnexus_health` on gitnexus-reindex: embeddings coverage, DB utilization, failure streak), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
@@ -816,6 +1476,7 @@ export default defineTool({
       '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, long_running_age_ms, last_progress_at, progress_age_ms, stuck }, null when the row carries no git_sync_activity. `age_ms`/`long_running_age_ms` measure total fire duration; `progress_age_ms` measures time since the writer heartbeat. `stuck:true` means progress has been absent for longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`. Legacy active markers without a progress timestamp fall back to started_at.',
       '⛔ `health.git_sync_freshness.safe_to_restart` IS THE RESTART/KILL DECISION — never `status` (WI-10002019). `status:\'degraded\'` COMPOSES two legs whose remedies are opposite, so it indicates the destructive action in exactly the case that must not take it: a long fire freezes `last_synced_at`, so `scheduler.status` reads `not-firing` BECAUSE `execution.status` is `in-flight`, and a restart then drops the exclusive git-sync lock mid-write and destroys the sweep\'s uncommitted work. The legs are independent — `scheduler` { status: firing|not-firing|inactive|unknown, last_completed_at, age_ms, cadence_ms, stale_after_ms, missed_intervals, stalled_behind_in_flight_fire } and `execution` { status: idle|in-flight|stuck|unknown, phase, started_at, age_ms, last_progress_at, progress_age_ms, holds_exclusive_locks, locks_reported }. `stalled_behind_in_flight_fire:true` is the giveaway that a stale scheduler leg is EXPLAINED by a live fire rather than by a stalled engine.',
       '`health.git_sync_freshness.safe_to_restart` is derived from the EXECUTION leg ALONE and is true only for a provably idle one; `execution.status:\'unknown\'` (the row carries no git_sync_activity marker) reports UNSAFE on purpose, because a wrong "safe" destroys in-flight work irrecoverably while a wrong "unsafe" only declines a restart. `safe_to_restart_reason` names which case you are in, and `holds_exclusive_locks` is writer-reported only — `locks_reported:false` means UNMEASURED, never "holds no locks".',
+      '`health.git_sync_freshness.execution.owner_reconciliation` reports a marker as stale only when its stored owner PID is definitively gone and the live exclusive `git-sync:<installSlug>` lease is absent; missing/mismatched identity or an unreadable lock plane remains unverified and keeps `safe_to_restart:false`.',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
       '`health.gate_health.failingTestsAttestation` — candidate-bound provenance for the raw `failingTests` array: the terminal-verdict candidate, the live in-flight candidate (when the run published one), `staleAgainstInFlight`, and a warning when the arrays belong to a prior candidate. A null stale marker means the comparison was unavailable; never read it as false.',
       'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',
@@ -888,12 +1549,15 @@ export default defineTool({
       group: z.string().nullable().optional(),
       paused: z.unknown().nullable().optional(),
       acceptanceBacklog: z.unknown().nullable().optional(),
-      health: z.unknown().nullable().optional(),
+      health: z.unknown().nullable().optional().describe(
+        'Operational routine metadata. The name-pinned plan-cleanup-sweep row also carries plan_cleanup_freshness, separating scheduled action evidence, its latest persisted run, and current eligible-plan scan coverage.',
+      ),
+      lastFire: z.unknown().nullable().optional(),
       plane: z.unknown().optional(),
     })
     .passthrough(),
-  // context-trimming-tiers P-023: rows are already lean scalars, so the CAP=60 row
-  // cap plus a loud notice row IS the size control (count keeps the true total);
+  // context-trimming-tiers P-023: rows have a per-health JSON bound plus a total
+  // serialized row budget and a loud notice row (count keeps the true total);
   // standard falls through to full.
   //
   // This comment used to say trimmed "drops the two rarely-read columns". It was
@@ -915,7 +1579,7 @@ export default defineTool({
       if (Array.isArray(d.rollup)) return data; // rollup output is already a small aggregate — no trimming needed
       if (!Array.isArray(d.routines)) return data;
       const CAP = 60;
-      const rows = d.routines.slice(0, CAP).map((row) => {
+      const shapedRows = d.routines.slice(0, CAP).map((row) => {
         const r = (row ?? {}) as Record<string, unknown>;
         return {
           installSlug: r.installSlug ?? null,
@@ -966,14 +1630,19 @@ export default defineTool({
           // unhealthy rows and the gate rows carry a body. The CAP=60 row cap is
           // untouched and remains the real size control.
           lastFiredAt: r.lastFiredAt ?? null,
-          health: r.health ?? null,
+          health: boundTrimmedHealth(r.health ?? null),
+          // EI-25264102161745452: null on every unpinned row, so it costs one null
+          // there; only a `name`-pinned read of a system routine carries a body.
+          lastFire: r.lastFire ?? null,
           ...(r.plane ? { plane: r.plane } : {}),
         };
       });
-      if (d.routines.length > CAP) {
+      const boundedRows = trimToByteBudget(shapedRows, TRIMMED_ROUTINE_ROWS_JSON_CHARS);
+      const rows = boundedRows.kept;
+      if (d.routines.length > CAP || boundedRows.truncated) {
         rows.push({
           installSlug: '(truncated)',
-          name: `showing ${CAP} of ${d.routines.length} — narrow with installSlug/name/group/limit, rollup:true, or payloadTier:"full"`,
+          name: `showing ${rows.length} of ${d.routines.length} — narrow with installSlug/name/group/limit, rollup:true, or payloadTier:"full"`,
           triggerKind: null,
           cron: null,
           targetRole: null,
@@ -987,6 +1656,7 @@ export default defineTool({
           // rather than "this is not a routine".
           lastFiredAt: null,
           health: null,
+          lastFire: null,
         });
       }
       return { count: d.count ?? d.routines.length, routines: rows };
@@ -1073,6 +1743,7 @@ export default defineTool({
     const qLike = q ? `%${q}%` : null;
     const rows = await sql<
       Array<{
+        id: string;
         install_slug: string;
         name: string;
         trigger_kind: string;
@@ -1085,7 +1756,7 @@ export default defineTool({
         metadata: Record<string, unknown> | null;
       }>
     >`
-      SELECT install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, last_fired_at, group_slug, metadata
+      SELECT id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, last_fired_at, group_slug, metadata
         FROM harness_shared.routines
        WHERE workspace_id = ${ws}
          AND (${slug}::text IS NULL OR install_slug = ${slug})
@@ -1094,6 +1765,15 @@ export default defineTool({
          AND (NOT ${groupFilterActive}::boolean OR (${groupIsNull}::boolean AND group_slug IS NULL) OR group_slug = ${groupVal})
        ORDER BY install_slug, name`;
     const home = operatorHomeHarnessSlug();
+    const routineListPhases = {
+      lastFireLookupMs: null as number | null,
+      lastFireUnavailableCount: 0,
+      planCleanupFreshnessLookupMs: null as number | null,
+      planCleanupFreshnessUnavailableCount: 0,
+      resourceQueueReadCount: 0,
+      resourceQueueReadFailures: 0,
+      resourceQueueReadMaxMs: 0,
+    };
     let acceptanceBacklog: { depth: number; oldestPlanUpdatedAt: string | null } | null = null;
     if (rows.some((r) => r.name === 'acceptance-grading-sweep')) {
       const backlog = await sql<Array<{ depth: string; oldest_plan_updated_at: Date | null }>>`
@@ -1108,11 +1788,79 @@ export default defineTool({
         oldestPlanUpdatedAt: iso(backlog[0]?.oldest_plan_updated_at ?? null),
       };
     }
-    const routines = rows.map((r) => {
+    // EI-25264102161745452: what the newest fire DID, only when `name` pins the read —
+    // the lookup joins DBOS tables, and an unpinned listing should not pay for it.
+    const lastFireLookupStartedAtMs = Date.now();
+    const lastFires = name
+      ? await readRoutineLastFires(
+          sql as unknown as LastFireSql,
+          rows.map((r) => ({ id: r.id, targetRole: r.target_role })),
+          Date.now(),
+          (query) =>
+            boundedOrgTxn((tx) => query(tx as unknown as LastFireSql), {
+              acquireTimeoutMs: ROUTINE_LAST_FIRE_ACQUIRE_TIMEOUT_MS,
+              statementTimeoutMs: ROUTINE_LAST_FIRE_STATEMENT_TIMEOUT_MS,
+              lockTimeoutMs: ROUTINE_RESOURCE_QUEUE_LOCK_TIMEOUT_MS,
+              readOnly: true,
+            }),
+        )
+      : null;
+    if (name) routineListPhases.lastFireLookupMs = Date.now() - lastFireLookupStartedAtMs;
+    if (lastFires) {
+      routineListPhases.lastFireUnavailableCount = [...lastFires.values()].filter(
+        (value) => value !== null && typeof value === 'object' && 'unavailable' in value,
+      ).length;
+    }
+    // The scheduled-action result is not the run row, and the run's seed refs are not
+    // proof that current plans were covered. Add this bounded read only on the exact
+    // name-pinned routine, mirroring the conditional DBOS last-fire lookup above.
+    const planCleanupRows = name === 'plan-cleanup-sweep'
+      ? rows.filter((r) => r.target_role === 'system:plan-cleanup-sweep')
+      : [];
+    const planCleanupNowMs = Date.now();
+    const planCleanupFreshnessStartedAtMs = Date.now();
+    const planCleanupFreshness = planCleanupRows.length > 0
+      ? await readPlanCleanupFreshness(
+          sql as unknown as LastFireSql,
+          ws,
+          planCleanupRows.map((r) => ({
+            installSlug: r.install_slug,
+            maxPlans: planCleanupMaxPlansFromConfig(r.trigger_config),
+          })),
+          planCleanupNowMs,
+          (query) =>
+            boundedOrgTxn((tx) => query(tx as unknown as LastFireSql), {
+              acquireTimeoutMs: ROUTINE_PLAN_CLEANUP_FRESHNESS_ACQUIRE_TIMEOUT_MS,
+              statementTimeoutMs: ROUTINE_PLAN_CLEANUP_FRESHNESS_STATEMENT_TIMEOUT_MS,
+              lockTimeoutMs: ROUTINE_RESOURCE_QUEUE_LOCK_TIMEOUT_MS,
+              readOnly: true,
+            }),
+        )
+      : null;
+    if (planCleanupRows.length > 0) {
+      routineListPhases.planCleanupFreshnessLookupMs = Date.now() - planCleanupFreshnessStartedAtMs;
+      routineListPhases.planCleanupFreshnessUnavailableCount = [...(planCleanupFreshness?.values() ?? [])]
+        .filter((value) => 'unavailable' in value).length;
+    }
+    const routines = await Promise.all(rows.map(async (r) => {
       const cron = (r.trigger_config as { cron?: string } | null)?.cron ?? null;
+      const lastFire = lastFires?.get(r.id) ?? null;
       let health: Record<string, unknown> | null;
       if (r.target_role === 'system:git-sync') {
-        const freshness = deriveGitSyncFreshness(r.metadata, cron, r.active);
+        const ownerReconciliation = await reconcileGitSyncActivityOwner(
+          r.metadata,
+          ws || '*',
+          r.install_slug,
+          (phase) => {
+            routineListPhases.resourceQueueReadCount += 1;
+            routineListPhases.resourceQueueReadMaxMs = Math.max(
+              routineListPhases.resourceQueueReadMaxMs,
+              phase.durationMs,
+            );
+            if (phase.outcome === 'error') routineListPhases.resourceQueueReadFailures += 1;
+          },
+        );
+        const freshness = deriveGitSyncFreshness(r.metadata, cron, r.active, Date.now(), ownerReconciliation);
         const originFreshness = deriveOriginFreshness(r.metadata);
         // The derived verdict replaces the headline it contradicts, rather than sitting
         // beside it hoping to be read (EI-21807573331912223). Raw value preserved at
@@ -1134,6 +1882,19 @@ export default defineTool({
           freshness,
           originFreshness,
         );
+      } else if (r.target_role === 'system:plan-cleanup-sweep' && planCleanupFreshness) {
+        const reading = planCleanupFreshness.get(r.install_slug) ?? {
+          unavailable: 'plan-cleanup freshness read did not include this install',
+        };
+        health = {
+          ...(healthOf(r.metadata) ?? {}),
+          plan_cleanup_freshness: projectPlanCleanupFreshness({
+            reading,
+            lastFiredAt: r.last_fired_at,
+            lastFire,
+            nowMs: planCleanupNowMs,
+          }),
+        };
       } else {
         health = healthOf(r.metadata);
       }
@@ -1152,17 +1913,40 @@ export default defineTool({
           ? { acceptanceBacklog }
           : {}),
         health,
+        lastFire,
       };
       // Only the operator-home row backs the operator pipeline cells. Other installs
       // may use the same routine name but have independent gates; stamping them with
       // Papercusp's cell would turn a correct value into a cross-harness misattribution.
       const plane = r.install_slug === home ? statePlaneForDoor(routine, 'routines:list', args, ctx) : null;
       return { ...routine, ...(plane ? { plane } : {}) };
-    });
+    }));
     // {data} envelope so the payload-tier shaper applies.
     // `limit` bounds the rows only; `count` stays the true total so a narrowed read
     // is never mistaken for a smaller fleet (same contract as locks:list registryCount).
     const limited = typeof args.limit === 'number' ? routines.slice(0, args.limit) : routines;
+    // One last-write-wins telemetry stamp keeps future settled invocations
+    // distinguishable by conditional phase. Both DB reads now fail soft under
+    // server-side deadlines, so this metadata survives their timeout fallback.
+    ctx.metadata?.({
+      routinesListPhases: {
+        schemaVersion: 'routines-list-phase-timings-v1',
+        unit: 'ms',
+        lastFireLookupMs: routineListPhases.lastFireLookupMs,
+        lastFireUnavailableCount: routineListPhases.lastFireUnavailableCount,
+        planCleanupFreshnessLookupMs: routineListPhases.planCleanupFreshnessLookupMs,
+        planCleanupFreshnessUnavailableCount: routineListPhases.planCleanupFreshnessUnavailableCount,
+        resourceQueueReadCount: routineListPhases.resourceQueueReadCount,
+        resourceQueueReadFailures: routineListPhases.resourceQueueReadFailures,
+        resourceQueueReadMaxMs: routineListPhases.resourceQueueReadMaxMs,
+        deadlinesMs: {
+          lastFireAcquire: ROUTINE_LAST_FIRE_ACQUIRE_TIMEOUT_MS,
+          lastFireStatement: ROUTINE_LAST_FIRE_STATEMENT_TIMEOUT_MS,
+          resourceQueueAcquire: ROUTINE_RESOURCE_QUEUE_ACQUIRE_TIMEOUT_MS,
+          resourceQueueStatement: ROUTINE_RESOURCE_QUEUE_STATEMENT_TIMEOUT_MS,
+        },
+      },
+    });
     return { data: { count: routines.length, routines: limited } };
   },
 });

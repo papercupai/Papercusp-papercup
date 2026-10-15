@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "subject": "SPEC-P-023-pilot (plan pot-review-integration-mode-2026-10-05, D-016/D-018): after the standing PR is merged, the next standing PR lists only the work done after that merge",
+  "workItem": "WI-10006104",
+  "measuredAt": "2026-10-06T08:39:13Z",
+  "measuredBy": "su-56e2f83b-010d-4f42-b750-19bc8fde6ea5",
+  "method": "gh api against GitHub (not the implementation's own report): repos/Papercusp/pot-review-pilot/pulls?state=all, pulls/{n}/commits, and the branches of the upstream repo and of the working-copy fork papercupai/pot-review-pilot",
+  "upstream": {
+    "repo": "Papercusp/pot-review-pilot",
+    "branches": { "main": "fd96063548dd19fe7f719e45681ec859d8b40f21" }
+  },
+  "fork": {
+    "repo": "papercupai/pot-review-pilot",
+    "branches": {
+      "main": "f65af003275678071ceb75fc5b6491a4a9c9059f",
+      "staging": "f65af003275678071ceb75fc5b6491a4a9c9059f",
+      "papercusp/working-copy": "f65af003275678071ceb75fc5b6491a4a9c9059f"
+    }
+  },
+  "pullRequests": [
+    {
+      "number": 1,
+      "state": "closed",
+      "mergedAt": "2026-10-06T06:45:33Z",
+      "head": "papercupai:papercusp/working-copy",
+      "headSha": "edfefc81aef586067ee81929bd13eacb6364a48d",
+      "base": "main",
+      "baseSha": "4651cb9e5ce59fc847bc5a4b45c2c6ca27add624",
+      "commits": [
+        "2eea76c192895074c7899379d0a8709bf8a3cfcb",
+        "81cf80e376cfffbf70de8d386ded82e770f7bc41",
+        "76f7db7793faf3bc93abf550c299b7bcdb7094e3",
+        "01b45d97eda2b41224a2815e660fc1a05185a9fb",
+        "edfefc81aef586067ee81929bd13eacb6364a48d"
+      ]
+    },
+    {
+      "number": 2,
+      "state": "open",
+      "mergedAt": null,
+      "head": "papercupai:papercusp/working-copy",
+      "headSha": "f65af003275678071ceb75fc5b6491a4a9c9059f",
+      "base": "main",
+      "baseSha": "fd96063548dd19fe7f719e45681ec859d8b40f21",
+      "commits": [
+        "f65af003275678071ceb75fc5b6491a4a9c9059f"
+      ]
+    }
+  ],
+  "findings": {
+    "prBaseIsMergedMain": "PR #2 base sha fd96063 equals upstream main after PR #1 merged",
+    "prListsOnlyNewWork": "PR #2 lists exactly 1 commit (f65af00, 'sync(src,test): math.js, math.test.js'), none of PR #1's 5 commits",
+    "headIsGreenPromotedSha": "PR #2 head f65af00 equals the fork's main (the copy's green-promoted branch), so the PR is built only from the copy's green main"
+  },
+  "companionTest": {
+    "path": "packages/operator-core/lib/harness/git-sync/working-copy-standing-pr.integration.test.ts",
+    "describe": "the PR after a merge lists only new work (SPEC-P-023-pilot, real git)",
+    "testRunId": 20834213,
+    "result": "pass"
+  },
+  "notMeasured": [
+    "the >=2-agents-inside-the-pilot-pot clause is not observed live here; per plan decision D-016 it is verified by the D-006 real-git test",
+    "the native Tauri check of the creation question, settings switch and PR viewer (WI-10006501 / scripts/verify-tauri-headless.sh) is not part of this file"
+  ]
+}

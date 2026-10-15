@@ -1,51 +1,84 @@
 'use client';
 
-/**
- * /settings/autonomy — a RETIREMENT NOTICE. The page has no controls.
- * (queen-autonomy-policy-2026-06-13 B-15 / P-030, retired by
- * retire-mug-kettle-su-only-2026-08-09 P-011 / D-021, terminal step P-068 / D-098.)
- *
- * WHAT USED TO BE HERE: a table of the 13 autonomy categories — per row a
- * risk-ceiling slider, the earned graduated level, the derived effective level and
- * a lock toggle — reading the live policy via `useSyncQuery('autonomy.policy')`,
- * writing through the loopback `autonomy-policy-set` route, plus the P-031
- * recent-auto-decisions feed. All of it steered the Mug/Queen auto-decide gate.
- *
- * WHY IT IS GONE RATHER THAN GATED: the tier those ceilings governed is retired,
- * so nothing consults them. P-011/D-021 first hid the page behind the tier flag;
- * P-068 deleted that flag, making the retirement permanent, at which point the
- * whole body became unreachable under every flag state. It is deleted rather than
- * left dead because unreachable code does not merely sit there: TypeScript stops
- * narrowing inside it, so it began emitting a type error (TS18047 at the old
- * line 324) for a branch no reader could ever hit.
- *
- * ⚠ THE ROUTE STAYS REACHABLE BY URL. The settings nav hides this entry
- * (`SETTINGS_PATH_FLAGS` in ../layout.tsx), but `linkAllowed` filters the nav and
- * nothing else — a typed URL, a bookmark, or an /admin/plans deep-link still lands
- * here. That is precisely why this notice exists instead of a redirect or a 404:
- * the harm P-011 names is a DEAD CONTROL that reads as live, so the page must
- * render something honest and nothing clickable.
- *
- * Agent autonomy is now per-session (AUTO mode), not central policy.
- * The sliders' components (./CeilingSlider, ./RecentAutoDecisions) have been DELETED
- * by WI-38240, the D-098 mechanical-cleanup follow-up this notice handed off to.
- * The shared feed RecentAutoDecisions wrapped — ../../_components/DecisionLog — is NOT
- * dead and must stay: /admin/plans (PlansClient) and the Queue view still render it.
- */
-import { useLexicon } from '@/lib/useLexicon';
+/** Workspace bulk cleanup controls backed by the standing Inbox/Plans policy. */
+import { useEffect, useState } from 'react';
+import { Select } from '@/app/harness/Select';
+import { Button } from '@/app/harness/Button';
+import { BULK_AUTOMATION_RISKS, bulkRiskAutonomy, type BulkRiskAutonomy,
+  type BulkConfidence, type StandingBulkAutomationPolicy } from '@papercusp/operator-core/lib/attention/bulk-dispositions';
+
+const RISK_COPY = {
+  low: ['Low risk', 'Acknowledgements, recovery notices and delegated cleanup.'],
+  medium: ['Medium risk', 'Owner decisions, plan dispositions and work-item owner gates.'],
+  high: ['High risk', 'Protected decisions, blocked work and standing approvals.'],
+} as const;
+
+async function policyRequest(body: Record<string, unknown>) {
+  const response = await fetch('/api/admin/inbox/automation-policy', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const result = await response.json();
+  if (!response.ok || result.error || result.ok === false) throw new Error(
+    typeof result.error === 'string' ? result.error : result.error?.message ?? 'Could not save autonomy settings',
+  );
+  return result;
+}
 
 export default function AutonomySettingsPage() {
-  const t = useLexicon();
+  const [policy, setPolicy] = useState<StandingBulkAutomationPolicy | null>(null);
+  const [risks, setRisks] = useState<BulkRiskAutonomy | null>(null);
+  const [confidence, setConfidence] = useState<BulkConfidence>('high');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    policyRequest({ op: 'get' }).then(({ policy: loaded }) => {
+      if (!cancelled) { setPolicy(loaded); setRisks(bulkRiskAutonomy(loaded)); setConfidence(loaded.minConfidence); }
+    }).catch((e) => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const save = async (nextRisks: BulkRiskAutonomy) => {
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const result = await policyRequest({ op: 'set', riskLevels: nextRisks,
+        ...(confidence !== policy?.minConfidence ? { minConfidence: confidence } : {}) });
+      if (!result.applied || result.verify?.ok !== true) throw new Error('Autonomy settings were not applied');
+      const saved = await policyRequest({ op: 'get' });
+      setPolicy(saved.policy); setRisks(bulkRiskAutonomy(saved.policy)); setConfidence(saved.policy.minConfidence);
+      setMessage('Saved. Eligible recommendations will apply automatically during queue cleanup.');
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
 
   return (
     <div>
       <h1>Autonomy</h1>
-      <p className="pc-settings-intro" role="status">
-        The {t('brain')} is retired, so there is no autonomy policy to steer. These
-        per-category ceilings governed her auto-decide gate; with the tier switched off
-        nothing consults them. Agent autonomy is now set per session (AUTO mode) rather
-        than centrally here.
-      </p>
+      <p className="pc-settings-intro">Choose which Inbox and Plans cleanup recommendations can be applied automatically in this workspace.</p>
+      {error && <p role="alert">{error}</p>}
+      {!risks && !error && <p role="status">Loading autonomy settings…</p>}
+      {risks && <section aria-label="Queue cleanup autonomy">
+        {BULK_AUTOMATION_RISKS.map((risk) => <div className="pc-settings-section" key={risk}>
+          <h2>{RISK_COPY[risk][0]}</h2><p>{RISK_COPY[risk][1]}</p>
+          <Select ariaLabel={`${RISK_COPY[risk][0]} autonomy`} value={risks[risk]} disabled={busy}
+            options={[{ value: 'review', label: 'Ask me to review' }, { value: 'automatic', label: 'Apply automatically' }]}
+            onChange={(value) => setRisks({ ...risks, [risk]: value as 'review' | 'automatic' })} />
+        </div>)}
+        <div className="pc-settings-section"><h2>Evidence confidence</h2>
+          <p>Risk and evidence are separate. Choose the minimum confidence for an automatic recommendation.</p>
+          <Select ariaLabel="Minimum confidence" value={confidence} disabled={busy}
+            options={[{ value: 'high', label: 'High' }, { value: 'medium', label: 'Medium or high' }, { value: 'low', label: 'Low or higher' }]}
+            onChange={(value) => setConfidence(value as BulkConfidence)} />
+        </div>
+        <p>Recommendations still need a current executable action. Changing these settings also makes eligible saved recommendations available for the next cleanup pass.</p>
+        <div className="pc-settings-row">
+          <Button disabled={busy} onClick={() => void save(risks)}>Save settings</Button>
+          <Button disabled={busy} onClick={() => void save({ low: 'automatic', medium: 'automatic', high: 'automatic' })}>Full autonomy for all risk levels</Button>
+        </div>
+      </section>}
+      {message && <p role="status">{message}</p>}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -66,7 +67,72 @@ function run(mode: "--apply" | "--check", files: ReturnType<typeof fixture>) {
   });
 }
 
+function liveCheck(files: ReturnType<typeof fixture>, options: {
+  configured?: boolean;
+  linkDns?: string;
+  active?: string;
+  connectionOverride?: string;
+} = {}) {
+  expect(run("--apply", files).status).toBe(0);
+  const bin = join(files.dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  const commands = {
+    nmcli: `if [[ "$2" == GENERAL.CONNECTION ]]; then
+  printf '%s\\n' "$TEST_ACTIVE_CONNECTION"
+elif [[ "$5" == "$TEST_ACTIVE_CONNECTION" && "$TEST_ACTIVE_CONFIGURED" != 1 ]]; then
+  printf 'no\\nno\\n-1\\n'
+else
+  printf 'yes\\nyes\\n2\\n'
+fi`,
+    resolvectl: `if [[ "$1" == dns ]]; then
+  printf 'Link 4 (wlp183s0):%s\\n' "$TEST_LINK_DNS"
+else
+  printf 'Protocols: +DNSOverTLS\\n'
+fi`,
+    systemctl: "printf 'masked\\n'",
+    getent: "printf '203.0.113.10 STREAM papercusp.com\\n'",
+  };
+  for (const [name, body] of Object.entries(commands)) {
+    writeFileSync(join(bin, name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+  }
+  return spawnSync("bash", [SCRIPT, "--check"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      PAPERCUSP_DNS_TEST_MODE: "0",
+      PAPERCUSP_DNS_CONNECTION: options.connectionOverride ?? "",
+      PAPERCUSP_DNS_HOSTS_FILE: files.hosts,
+      PAPERCUSP_DNS_RESOLVED_DROPIN: files.installedDropin,
+      PAPERCUSP_DNS_EXPECTED_DROPIN: DROPIN,
+      PAPERCUSP_CHROME_POLICY: files.installedPolicy,
+      PAPERCUSP_CHROME_POLICY_SOURCE: CHROME_POLICY,
+      TEST_ACTIVE_CONNECTION: options.active ?? "AbeandPearl",
+      TEST_ACTIVE_CONFIGURED: options.configured ? "1" : "0",
+      TEST_LINK_DNS: options.linkDns ?? "",
+    },
+  });
+}
+
 describe("papercusp direct-DNS reconciler", () => {
+  it("rejects DHCP DNS on the active network even when the old profile is configured", () => {
+    const files = fixture();
+    expect(liveCheck(files).status).not.toBe(0);
+    expect(liveCheck(files, { configured: true }).status).toBe(0);
+  });
+
+  it("rejects any residual per-link DNS server and a disconnected interface", () => {
+    const files = fixture();
+    expect(liveCheck(files, { configured: true, linkDns: " 192.168.1.1" }).status).not.toBe(0);
+    const disconnected = liveCheck(files, { configured: true, active: "--" });
+    expect(disconnected.status).not.toBe(0);
+    expect(disconnected.stderr).toContain("no active connection");
+  });
+
+  it("preserves an explicitly selected connection", () => {
+    expect(liveCheck(fixture(), { connectionOverride: "ExplicitProfile" }).status).toBe(0);
+  });
+
   it("removes the whole legacy bypass block and only the targeted mixed-line alias", () => {
     const files = fixture();
     const result = run("--apply", files);

@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-24835973180196450",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "savedAt": "2026-10-02T03:45:45.508233+00:00",
+  "rootCause": "Evidence references were hashed before their diagnostic home paths were shortened. Shortening changed bytes without changing the captured source graph. The actor responsible for rewriting is not established.",
+  "distinguishingObservation": "Re-expanding home paths reproduced all four exact close-time Git blob hashes before repair, and the base receipt original SHA256. An altered source graph or benchmark output would not reproduce these hashes.",
+  "settlementInspection": [
+    {
+      "workItem": "WI-10005185",
+      "path": "docs/evidence/papercusp-oct1-p011-compiler-cleanup-regression-2026-10-02.json",
+      "closeTimeBlob": "803f24210d0902f0818accb4891c830e8be4b1b9",
+      "normalizedSha256BeforeRepair": "fef9d4d6661ad801dedb8e5315f137fac52648139eeaef7feb3a9d041f9f93bb",
+      "currentSha256": "fef9d4d6661ad801dedb8e5315f137fac52648139eeaef7feb3a9d041f9f93bb",
+      "changedAfterInspection": false,
+      "inspectionResult": "Before repair, expanding shortened home paths exactly reproduced closeTimeBlob. Original blob was unavailable in the local object store. No child test or closure was replayed."
+    },
+    {
+      "workItem": "EI-24827847586322829",
+      "path": "docs/evidence/papercusp-oct1-p010-source-preflight-meta-fixed-2026-10-02.json",
+      "closeTimeBlob": "53ec5335f0380028142aae5dc782ca00f8890873",
+      "normalizedSha256BeforeRepair": "3e3d9e47b5d2e43ed867940e017def68d35da859ce8ecaddd6048eb2ff3f2301",
+      "currentSha256": "3e3d9e47b5d2e43ed867940e017def68d35da859ce8ecaddd6048eb2ff3f2301",
+      "changedAfterInspection": false,
+      "inspectionResult": "Before repair, expanding shortened home paths exactly reproduced closeTimeBlob. Original blob was unavailable in the local object store. No child test or closure was replayed."
+    },
+    {
+      "workItem": "EI-24827847586322829",
+      "path": "docs/evidence/papercusp-oct1-p010-source-qualification-2026-10-02.json",
+      "closeTimeBlob": "3ad212fc27e382ad3340bd5cad0edba09de0bf6d",
+      "normalizedSha256BeforeRepair": "fe98e6b0628674899921fe1fff54117559e5b4f7fa309f71b8966a39e458b67a",
+      "currentSha256": "36bdbbb0dde99ffd1a5affa1e1e34b367c56d2b8806fe8ca918ee58205f2039d",
+      "changedAfterInspection": true,
+      "inspectionResult": "Before repair, expanding shortened home paths exactly reproduced closeTimeBlob. Original blob was unavailable in the local object store. No child test or closure was replayed."
+    },
+    {
+      "workItem": "WI-10004874",
+      "path": "docs/audits/application-performance-reliability-audit-2026-10-01-evidence.json",
+      "closeTimeBlob": "a360b131a130c329be71553e24d61796c0713873",
+      "normalizedSha256BeforeRepair": "5bb5f9a973c31c3e7d3688e1c92cca00f36388239a9e75040178c660adcb3a63",
+      "currentSha256": "5bb5f9a973c31c3e7d3688e1c92cca00f36388239a9e75040178c660adcb3a63",
+      "changedAfterInspection": false,
+      "inspectionResult": "Before repair, expanding shortened home paths exactly reproduced closeTimeBlob. Original blob was unavailable in the local object store. No child test or closure was replayed."
+    }
+  ],
+  "baseReceiptVerification": {
+    "path": "docs/evidence/papercusp-oct1-p010-source-preflight-meta-fixed-2026-10-02.json",
+    "currentSha256": "3e3d9e47b5d2e43ed867940e017def68d35da859ce8ecaddd6048eb2ff3f2301",
+    "originalSha256Reproduced": "78ad35902299acf88d12cc0b3a671321266a4a7fdd11195134a5419b0894c858",
+    "retainedOutSha256": "eb6eeeed78b6766db9514bc96df74a96babc75c4e2a04330d10bea538c5a1bd5",
+    "capturedSourceEvidenceExactlyEqualToRetainedOut": true,
+    "reportedOriginalSources": 1085
+  },
+  "durableRepair": "Both deadline runs and the qualification sourceReceipt now identify the normalized persisted base bytes. Original digests and an explicit qualification are retained. A canonical repository test validates all three references and the original source population on future suite runs.",
+  "testFile": "packages/operator-core/lib/plan-item-coverage.evidence.test.ts",
+  "runs": [
+    {
+      "arm": "baseline",
+      "path": "/tmp/su-7db4f-p010-receipt-baseline.log",
+      "sha256": "585bef772337c3d7ae73302bcb0cd06c77621332848cc4f2533dff768ba39738",
+      "result": [
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=fd48c05294 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-02T03:41:03.551Z skippedTests=0"
+      ],
+      "summary": [
+        "Test Files  1 failed (1)",
+        "Tests  3 failed (3)"
+      ]
+    },
+    {
+      "arm": "fixed",
+      "path": "/tmp/su-7db4f-p010-receipt-fixed.log",
+      "sha256": "83419fe72ead3c72c3fc3f4f72429b5f08a811e756b2a3555abb244f4e9175b1",
+      "result": [
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=fd48c05294 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-02T03:42:42.745Z skippedTests=0"
+      ],
+      "summary": [
+        "Test Files  1 passed (1)",
+        "Tests  3 passed (3)"
+      ]
+    }
+  ],
+  "typecheck": {
+    "path": "/tmp/su-7db4f-p010-receipt-types.log",
+    "sha256": "92650749ac14b8df55e62960fe053e26efa328e0420f21ee2ab4b05d588390db",
+    "exitCode": 0
+  },
+  "r28Qualification": {
+    "historicalTerminalDrifts": [
+      {
+        "path": "libs/flags/src/types.ts",
+        "sha256": "cf9be0006fefdec0ba7417dff935bfcee6249090ddbb17f6f967ba1d82541e69",
+        "currentSha256": "81a05d3e370280b7004163d45b4415148c953a9943c51a7432d9229952fbaf02"
+      },
+      {
+        "path": "packages/operator-core/lib/events/await/inbox-wake-actionability.ts",
+        "sha256": "f4f87efd41406ccb7ad91ed92704a1d0c8ca1519dac9b151ef179c7d17afb656",
+        "currentSha256": "a65373ecbd108410db2064dd1fe4b90b614b1d8c4efb13da6203967e3b9989ab"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-launch-settings.ts",
+        "sha256": "7797f1d7b36466d7781b20edbf1496430d6ac36972770a2d594bdef68d95063c",
+        "currentSha256": "1b759e35260669fc1977eed4bc5a4106355048638d133bba0e7ca4e41493a440"
+      }
+    ],
+    "latestOriginalPopulationScan": {
+      "population": 1085,
+      "changed": [
+        {
+          "path": "libs/flags/src/types.ts",
+          "originalSha256": "cf9be0006fefdec0ba7417dff935bfcee6249090ddbb17f6f967ba1d82541e69",
+          "currentSha256": "81a05d3e370280b7004163d45b4415148c953a9943c51a7432d9229952fbaf02"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/schema/generated.ts",
+          "originalSha256": "83add78e5cd5a42e3dc2852c033491a3bd8f65b5d9eb25b5607bda5ce06f37af",
+          "currentSha256": "f257ee1c3f52dd4629831dda3a662ec3e6656d37de1c4bd4d4758859920d2f3b"
+        },
+        {
+          "path": "packages/operator-core/lib/connected-apps/scope-policy.ts",
+          "originalSha256": "174392633efab5efde1bf9087e4710349cf578e27e4a7638d872157d5346c9d8",
+          "currentSha256": "d8dcd4adb7638983dc3b13c942cadb7050105243c399bdcd8b68c35431cfa001"
+        },
+        {
+          "path": "packages/operator-core/lib/events/await/inbox-wake-actionability.ts",
+          "originalSha256": "f4f87efd41406ccb7ad91ed92704a1d0c8ca1519dac9b151ef179c7d17afb656",
+          "currentSha256": "a65373ecbd108410db2064dd1fe4b90b614b1d8c4efb13da6203967e3b9989ab"
+        },
+        {
+          "path": "packages/operator-core/lib/goal-launch-settings.ts",
+          "originalSha256": "7797f1d7b36466d7781b20edbf1496430d6ac36972770a2d594bdef68d95063c",
+          "currentSha256": "1b759e35260669fc1977eed4bc5a4106355048638d133bba0e7ca4e41493a440"
+        },
+        {
+          "path": "packages/operator-core/lib/modes/store.ts",
+          "originalSha256": "6c7c57eeec379232d4965592adc0dc0514223461dd31663c28487dd6e7991185",
+          "currentSha256": "9fd3fabf7e40e2b0ab3aa9d1e287a799ca57e1ac86c0e3ebedf81e980962c6e4"
+        }
+      ],
+      "scope": "Only the original 1085 reported repository paths were re-read; newly imported dependencies are not enumerated."
+    },
+    "readerAndBenchmarkHashesUnchanged": true,
+    "currentness": "stale",
+    "nativeRouterProvenance": "unknown",
+    "implications": [
+      "Flags diff adds a Slack connector constant and dark-flag registration.",
+      "Inbox-wake diff recognizes persisted boolean wake intent.",
+      "Goal settings diff changes budget-freshness admission and metadata reads.",
+      "These diffs are outside the two measured coverage-reader algorithms; this inspection does not establish whole-graph timing equivalence or current acceptance.",
+      "Later scan also found changes to connected-apps/scope-policy.ts and modes/store.ts; their timing implications were not evaluated."
+    ]
+  },
+  "limitations": [
+    "No child re-completion, old test replay or new matrix.",
+    "R25 unchanged UNKNOWN; R28 remains historical scoped-reader evidence with stale source currentness.",
+    "Receipt integrity is repaired; the original terminal items remain subject to their authoritative settlement status.",
+    "Current R5 macro, P011 exercised current-build attribution and R8/R9 final acceptance/shipment remain open."
+  ]
+}

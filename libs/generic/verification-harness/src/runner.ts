@@ -8,9 +8,26 @@
  * subdir per phase, `result.json` rewritten after every phase so a killed run still leaves
  * its partial result) and repoints `<evidenceRoot>/latest` at it when it ends.
  */
-import { mkdir, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
+import {
+  appendFile,
+  link,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  readlink,
+  realpath,
+  rename,
+  rm,
+  stat,
+  statfs,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
+export { defaultEvidenceRoot } from './evidence-root.js';
 import {
   type HarnessContract,
   type HarnessRunResult,
@@ -59,6 +76,8 @@ export interface RunHarnessArgs {
   contract: HarnessContract;
   /** Parent of every run dir; the run lands at `<evidenceRoot>/<runId>`. */
   evidenceRoot: string;
+  /** Small original receipt files, relative to the run dir, retained on completion before pruning. */
+  retainedArtifacts?: readonly string[];
   runPhase: (ctx: PhaseContext) => Promise<PhaseOutcome>;
   /** Fast checks that run before any phase; a failure blocks every phase. */
   preflight?: (ctx: PhaseContext) => Promise<PhaseOutcome>;
@@ -153,11 +172,78 @@ export async function loadRunResult(runDir: string): Promise<HarnessRunResult> {
   return parsed;
 }
 
-export async function writeRunResult(result: HarnessRunResult): Promise<void> {
+function validateRetainedArtifacts(files: readonly string[]): void {
+  if (files.length > 32 || files.some(file => !file || file.includes('\\') || path.isAbsolute(file)
+    || file.split('/').some(part => !part || part === '.' || part === '..') || file === 'result.json')) {
+    throw new Error('invalid retained harness artifact path');
+  }
+}
+
+export async function writeRunResult(result: HarnessRunResult, retainedArtifacts: readonly string[] = []): Promise<void> {
+  validateRetainedArtifacts(retainedArtifacts);
   await mkdir(result.evidenceDir, { recursive: true });
   const file = path.join(result.evidenceDir, 'result.json');
-  await writeFile(`${file}.tmp`, `${JSON.stringify(result, null, 2)}\n`);
+  const bytes = Buffer.from(`${JSON.stringify(result, null, 2)}\n`);
+  await writeFile(`${file}.tmp`, bytes);
   await rename(`${file}.tmp`, file);
+  // Late proof binding may happen after count retention removes the run. Both the
+  // shell CLI and TypeScript runner finalize here, before either invokes pruning.
+  // Preserve declared original phase receipts as well as the completion result.
+  // Binding may happen after pruning, so binding-time retention alone is too late.
+  if (!result.endedAt || (result.verdict !== 'pass' && retainedArtifacts.length === 0)) return;
+  const root = await realpath(path.dirname(result.evidenceDir));
+  if (path.basename(result.evidenceDir) !== result.runId) throw new Error('invalid retained harness run id');
+  const insideRoot = (target: string) => {
+    const relative = path.relative(root, target);
+    return !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative);
+  };
+  const runRoot = await realpath(result.evidenceDir);
+  // Passing runs require every declared original. Failed runs preserve the
+  // available originals; a blocked phase may never have produced its receipt.
+  const originals = await Promise.all([...new Set(retainedArtifacts)].map(async relativeFile => {
+    const source = path.join(runRoot, relativeFile);
+    const info = await lstat(source).catch(error => {
+      if (result.verdict !== 'pass' && (error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!info) return null;
+    const resolved = await realpath(source);
+    const relativeSource = path.relative(runRoot, resolved);
+    if (!info.isFile() || info.size > 16 * 1024 * 1024 || !insideRoot(resolved)
+      || relativeSource === '..' || relativeSource.startsWith(`..${path.sep}`) || path.isAbsolute(relativeSource)) {
+      throw new Error('invalid retained harness artifact');
+    }
+    const artifactBytes = await readFile(source);
+    if (artifactBytes.length > 16 * 1024 * 1024) throw new Error('invalid retained harness artifact');
+    return { relativeFile, bytes: artifactBytes };
+  }));
+  const artifacts = originals.filter((artifact): artifact is NonNullable<typeof artifact> => artifact !== null);
+  artifacts.push({ relativeFile: 'result.json', bytes });
+  const retainedRoot = path.join(root, 'retained');
+  await mkdir(retainedRoot, { recursive: true });
+  if (!insideRoot(await realpath(retainedRoot))) throw new Error('retained harness result outside evidence root');
+  const parent = path.join(retainedRoot, result.runId);
+  await mkdir(parent, { recursive: true });
+  if (!insideRoot(await realpath(parent))) throw new Error('retained harness result outside evidence root');
+  for (const artifact of artifacts) {
+    const destination = path.join(parent, artifact.relativeFile);
+    await mkdir(path.dirname(destination), { recursive: true });
+    if (!insideRoot(await realpath(path.dirname(destination)))) throw new Error('retained harness artifact outside evidence root');
+    const temporary = path.join(path.dirname(destination), `.receipt-${randomUUID()}.tmp`);
+    await writeFile(temporary, artifact.bytes, { flag: 'wx' });
+    try {
+      // Link fully written bytes without replacing an earlier original receipt.
+      try { await link(temporary, destination); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const existing = await lstat(destination);
+        if (!existing.isFile() || !(await readFile(destination)).equals(artifact.bytes)) {
+          throw new Error(artifact.relativeFile === 'result.json'
+            ? 'retained harness result changed' : 'retained harness artifact changed');
+        }
+      }
+    } finally { await rm(temporary, { force: true }); }
+  }
 }
 
 /** Point `<evidenceRoot>/latest` at the run dir (relative link, replaced atomically). */
@@ -168,23 +254,14 @@ export async function linkLatest(evidenceRoot: string, runDir: string): Promise<
   await rename(tmp, path.join(evidenceRoot, 'latest'));
 }
 
-/**
- * Where a harness keeps its runs when the caller names no root: `$VH_EVIDENCE_ROOT_BASE/<harness>`,
- * else the XDG state dir (`$XDG_STATE_HOME`, default `~/.local/state`) `/verification-harness/<harness>`.
- * vh.sh's `vh_default_root` resolves the same path.
- */
-export function defaultEvidenceRoot(harness: string, env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.VH_EVIDENCE_ROOT_BASE?.trim();
-  if (explicit) return path.join(explicit, harness);
-  const state = env.XDG_STATE_HOME?.trim() || path.join(env.HOME?.trim() || homedir(), '.local', 'state');
-  return path.join(state, 'verification-harness', harness);
-}
-
 /** Run dirs are named by newRunId (and vh.sh): `<yyyymmddThhmmssZ>-<pid>`, `.N` on a same-second collision. */
 const RUN_DIR_RE = /^\d{8}T\d{6}Z-\d+(\.\d+)?$/;
 export const DEFAULT_KEEP_RUNS = 30;
-/** A run dir with no result.json yet is in progress unless it is older than this. */
+/** Count retention keeps an incomplete run until its evidence dir is older than this. */
 const IN_PROGRESS_GRACE_MS = 24 * 60 * 60 * 1000;
+const GIB = 1024 ** 3;
+/** An entry with this file at its top level is kept regardless of age. */
+export const VH_KEEP_MARKER = '.vh-keep';
 
 export function keepRunsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.VH_KEEP_RUNS;
@@ -193,43 +270,667 @@ export function keepRunsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isInteger(n) && n >= 0 ? n : DEFAULT_KEEP_RUNS;
 }
 
+export interface DiskSpaceSnapshot {
+  totalBytes: number;
+  availableBytes: number;
+}
+
+export interface RunPruneOptions {
+  /** Judge only: never removes evidence or writes retention metadata. */
+  dryRun?: boolean;
+  env?: NodeJS.ProcessEnv;
+  /** Injectable for deterministic retention-policy tests. */
+  measureDisk?: (evidenceRoot: string) => Promise<DiskSpaceSnapshot | null>;
+  /** Injectable reserve calculator; production mirrors the shared disk alarm policy. */
+  reserveBytes?: (totalBytes: number, env: NodeJS.ProcessEnv) => number;
+  /** Allocated-byte ceiling for this evidence root; pins remain exempt. */
+  maxBytes?: number;
+}
+
+export interface RunPruneReport {
+  preview?: {
+    advisory: true;
+    rootStatus: 'readable' | 'unreadable';
+    candidates: Array<{ path: string; reason: 'count' | 'pressure' | 'size-cap'; allocatedBytes: number | null }>;
+    kept: Array<{ path: string; reason: string }>;
+    uncertainty: string;
+  };
+  removed: string[];
+  runDirsSeen: number;
+  cap?: { maxBytes: number; beforeBytes: number | null; afterBytes: number | null;
+    pinnedBytes: number | null; pinnedPaths: string[]; overByBytes: number | null;
+    pinnedOverageBytes: number | null; error?: string };
+  disk: {
+    status: 'healthy' | 'recovered' | 'unresolved' | 'unmeasured';
+    reserveBytes: number | null;
+    availableBeforeBytes: number | null;
+    availableAfterBytes: number | null;
+  };
+}
+
 /**
- * Retention: keep the newest `keep` run dirs under the evidence root and remove older ones. A
- * harness that runs many times a day (a headless UI verify) would otherwise grow the root without
- * bound. Never removes the run `latest` points at, nor a run still in progress (no result.json yet
- * and younger than a day). `VH_KEEP_RUNS` sets the default; 0 disables pruning. Returns the removed
- * run ids.
+ * The shared disk alarm keeps this policy in operator-core. The generic VH package cannot import
+ * that server module without creating a dependency cycle, so consume its existing environment
+ * knobs and pin the same bounded formula here.
  */
-export async function pruneRuns(evidenceRoot: string, keep = keepRunsFromEnv(), now = Date.now()): Promise<string[]> {
-  if (!(keep > 0)) return [];
-  let names: string[];
+export function vhDiskReserveBytes(totalBytes: number, env: NodeJS.ProcessEnv = process.env): number {
+  const envNum = (name: string, fallback: number) => {
+    const value = Number(env[name]);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  };
+  const absolute = envNum('PAPERCUSP_DISK_ALARM_CRITICAL_GB', 2) * GIB;
+  const pct = envNum('PAPERCUSP_DISK_ALARM_CRITICAL_PCT', 2) / 100;
+  const cap = envNum('PAPERCUSP_DISK_ALARM_CRITICAL_CAP_GB', 64) * GIB;
+  const proportional = Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes * pct : 0;
+  return Math.max(absolute, Math.min(proportional, cap));
+}
+
+async function measureDiskSpace(evidenceRoot: string): Promise<DiskSpaceSnapshot | null> {
+  try {
+    const sample = await statfs(evidenceRoot, { bigint: true });
+    const total = sample.blocks * sample.bsize;
+    const available = sample.bavail * sample.bsize;
+    const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+    if (total <= 0n || available < 0n || total > maxSafe || available > maxSafe) return null;
+    return { totalBytes: Number(total), availableBytes: Number(available) };
+  } catch {
+    return null;
+  }
+}
+
+async function latestRunId(evidenceRoot: string): Promise<string | null> {
+  try {
+    return path.basename(await readlink(path.join(evidenceRoot, 'latest')));
+  } catch {
+    return null;
+  }
+}
+
+async function hasKeepMarker(runDir: string): Promise<boolean> {
+  return lstat(path.join(runDir, VH_KEEP_MARKER)).then(() => true, () => false);
+}
+
+async function hasTerminalResult(evidenceRoot: string, runId: string): Promise<boolean> {
+  try {
+    const result = JSON.parse(await readFile(path.join(evidenceRoot, runId, 'result.json'), 'utf8')) as {
+      schemaVersion?: unknown;
+      runId?: unknown;
+      endedAt?: unknown;
+      verdict?: unknown;
+    };
+    return result?.schemaVersion === 1 &&
+      result.runId === runId &&
+      typeof result.endedAt === 'string' &&
+      Number.isFinite(Date.parse(result.endedAt)) &&
+      typeof result.verdict === 'string';
+  } catch {
+    return false;
+  }
+}
+
+async function runIneligibility(
+  evidenceRoot: string,
+  runId: string,
+  now: number,
+  requireTerminal: boolean,
+  isPinned: (path: string) => boolean,
+): Promise<string | null> {
+  if (isPinned(path.join(evidenceRoot, runId))) return 'retention-pin';
+  if (await latestRunId(evidenceRoot) === runId) return 'latest';
+  const runDir = path.join(evidenceRoot, runId);
+  const terminal = await hasTerminalResult(evidenceRoot, runId);
+  if (await hasKeepMarker(runDir)) return '.vh-keep';
+  if (requireTerminal && !terminal) return 'non-terminal';
+  // An incomplete checkpoint has no terminal receipt and receives the existing 24-hour
+  // grace before count retention can remove it.
+  if (!terminal) {
+    const born = await stat(runDir).then((s) => s.mtimeMs, () => now);
+    if (now - born < IN_PROGRESS_GRACE_MS) return 'incomplete-grace';
+  }
+  return null;
+}
+
+async function removeRunIfEligible(
+  evidenceRoot: string, runId: string, now: number, requireTerminal: boolean,
+  isPinned: (path: string) => boolean,
+): Promise<boolean> {
+  if (await runIneligibility(evidenceRoot, runId, now, requireTerminal, isPinned)) return false;
+  const runDir = path.join(evidenceRoot, runId);
+  try {
+    // Recheck both protections at the removal boundary; latest can move while another
+    // run finalizes, and a caller may pin a run while this sweep is judging it.
+    if (await latestRunId(evidenceRoot) === runId || await hasKeepMarker(runDir)) return false;
+    await rm(runDir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Bounded, no-follow allocated-byte census shared by preview and eviction.
+ * Count an inode once across the root, including retained and unknown entries;
+ * those entries consume space but never become deletion candidates. */
+async function retentionRootUsage(root: string): Promise<{ bytes: number; runs: Map<string, { bytes: number; newest: number }> }> {
+  let budget = 100000;
+  const seen = new Set<string>();
+  const walk = async (target: string): Promise<{ bytes: number; newest: number }> => {
+    if (--budget < 0) throw new Error('retention byte census budget exceeded');
+    const s = await lstat(target);
+    const key = `${s.dev}:${s.ino}`;
+    if (seen.has(key)) return { bytes: 0, newest: s.mtimeMs };
+    seen.add(key);
+    if (!Number.isSafeInteger(s.blocks) || s.blocks < 0) throw new Error('allocated blocks unavailable');
+    let bytes = s.blocks * 512;
+    let newest = s.mtimeMs;
+    if (s.isDirectory()) for (const name of await readdir(target)) {
+      const child = await walk(path.join(target, name));
+      bytes += child.bytes; newest = Math.max(newest, child.newest);
+    }
+    return { bytes, newest };
+  };
+  const base = await lstat(root);
+  if (!base.isDirectory() || base.isSymbolicLink()) throw new Error('unsafe retention root');
+  let bytes = base.blocks * 512;
+  seen.add(`${base.dev}:${base.ino}`);
+  const runs = new Map<string, { bytes: number; newest: number }>();
+  for (const name of (await readdir(root)).sort()) {
+    const usage = await walk(path.join(root, name));
+    bytes += usage.bytes;
+    runs.set(name, usage);
+  }
+  return { bytes, runs };
+}
+
+/**
+ * Retention keeps the newest `keep` run dirs by count, then removes the oldest completed runs
+ * only as needed to restore the shared critical write-headroom reserve. It always preserves
+ * `latest` and a `.vh-keep` marker. Disk-pressure cleanup removes only valid terminal results;
+ * count retention keeps incomplete runs through the existing 24-hour grace. If disk pressure
+ * remains but no completed run is eligible, the report says unresolved rather than deleting
+ * partial or unrecognized evidence. `VH_KEEP_RUNS=0` disables count pruning only; the emergency
+ * disk-pressure floor still applies.
+ */
+export async function pruneRunsWithReport(
+  evidenceRoot: string,
+  keep = keepRunsFromEnv(),
+  now = Date.now(),
+  options: RunPruneOptions = {},
+): Promise<RunPruneReport> {
+  return withRetentionPinProtection(isPinned => pruneRunsWithProtection(evidenceRoot, keep, now, options, isPinned),
+    { dir: options.env?.PAPERCUSP_RELEASE_RETENTION_ROOT, nowMs: now });
+}
+
+async function pruneRunsWithProtection(
+  evidenceRoot: string, keep: number, now: number, options: RunPruneOptions, isPinned: (path: string) => boolean,
+): Promise<RunPruneReport> {
+  const env = options.env ?? process.env;
+  const measure = options.measureDisk ?? measureDiskSpace;
+  const reserve = options.reserveBytes ?? vhDiskReserveBytes;
+  let names: string[] = [];
+  let rootReadable = false;
   try {
     names = (await readdir(evidenceRoot, { withFileTypes: true }))
       .filter((d) => d.isDirectory() && RUN_DIR_RE.test(d.name))
       .map((d) => d.name);
+    rootReadable = true;
+  } catch {
+    // A missing or unreadable evidence root has no safely judged candidates.
+  }
+  names.sort();
+  const maxBytes = options.maxBytes ?? 20 * GIB;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error('retention maxBytes must be a positive safe integer');
+  const report: RunPruneReport = {
+    removed: [],
+    runDirsSeen: names.length,
+    disk: { status: 'unmeasured', reserveBytes: null, availableBeforeBytes: null, availableAfterBytes: null },
+  };
+  const removed = new Set<string>();
+  let usage: Awaited<ReturnType<typeof retentionRootUsage>> | null = null;
+  try { usage = await retentionRootUsage(evidenceRoot); } catch (error) {
+    report.cap = { maxBytes, beforeBytes: null, afterBytes: null, pinnedBytes: null,
+      pinnedPaths: [], overByBytes: null, pinnedOverageBytes: null, error: String(error) };
+  }
+  const pinnedPaths = names.filter(name => isPinned(path.join(evidenceRoot, name)));
+  if (usage) {
+    const pinnedBytes = pinnedPaths.reduce((sum, name) => sum + (usage!.runs.get(name)?.bytes ?? 0), 0);
+    report.cap = { maxBytes, beforeBytes: usage.bytes, afterBytes: usage.bytes, pinnedBytes,
+      pinnedPaths: pinnedPaths.map(name => path.join(evidenceRoot, name)),
+      overByBytes: Math.max(0, usage.bytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) };
+  }
+  const capExceeded = () => usage !== null && usage.bytes > maxBytes;
+  const oldest = [...names].sort((a, b) => (usage?.runs.get(a)?.newest ?? 0) - (usage?.runs.get(b)?.newest ?? 0) || a.localeCompare(b));
+  if (options.dryRun) {
+    const preview: NonNullable<RunPruneReport['preview']> = {
+      advisory: true, rootStatus: rootReadable ? 'readable' : 'unreadable', candidates: [], kept: [],
+      uncertainty: 'Ordered pressure candidates are an upper bound, not an exact removal set. Allocated bytes are observational, not reclaimable bytes (hardlinks, reflinks, concurrent changes). No projected free-after or recovery claim. Foreign entries are outside this runs-only preview. Unknown measurements are null.',
+    };
+    report.preview = preview;
+    const sample = await measure(evidenceRoot).catch(() => null);
+    let pressure = false;
+    if (rootReadable && sample && Number.isFinite(sample.totalBytes) && sample.totalBytes > 0 &&
+        Number.isFinite(sample.availableBytes) && sample.availableBytes >= 0) {
+      report.disk.availableBeforeBytes = sample.availableBytes;
+      const floor = reserve(sample.totalBytes, env);
+      if (Number.isFinite(floor) && floor >= 0) {
+        report.disk.reserveBytes = floor;
+        pressure = sample.availableBytes < floor;
+        report.disk.status = pressure ? 'unresolved' : 'healthy';
+      }
+    }
+    const countNames = new Set(keep > 0 ? names.slice(0, Math.max(0, names.length - keep)) : []);
+    for (const name of capExceeded() ? oldest : names) {
+      let reason: 'count' | 'pressure' | 'size-cap' | null = null;
+      let kept = 'within-count';
+      if (countNames.has(name)) {
+        const why = await runIneligibility(evidenceRoot, name, now, false, isPinned);
+        if (!why) reason = 'count'; else kept = why;
+      }
+      if (!reason && pressure) {
+        const why = await runIneligibility(evidenceRoot, name, now, true, isPinned);
+        if (!why) reason = 'pressure'; else kept = why;
+      }
+      if (capExceeded()) {
+        const why = await runIneligibility(evidenceRoot, name, now, true, isPinned);
+        if (!why) reason = 'size-cap'; else if (!reason) kept = why;
+      }
+      const target = path.resolve(evidenceRoot, name);
+      if (reason) preview.candidates.push({ path: target, reason, allocatedBytes: usage?.runs.get(name)?.bytes ?? null });
+      else preview.kept.push({ path: target, reason: kept });
+    }
+    // Mutation completes its count pass before considering pressure candidates.
+    preview.candidates.sort((a, b) => Number(a.reason === 'pressure') - Number(b.reason === 'pressure'));
+    return report;
+  }
+  const countNames = new Set(keep > 0 ? names.slice(0, Math.max(0, names.length - keep)) : []);
+  for (const name of capExceeded() ? oldest : names) {
+    const countVictim = countNames.has(name);
+    if (countVictim || capExceeded()) {
+      if (await removeRunIfEligible(evidenceRoot, name, now, !countVictim, isPinned)) {
+        removed.add(name);
+        report.removed.push(name);
+        if (usage) {
+          try {
+            usage = await retentionRootUsage(evidenceRoot);
+            report.cap!.afterBytes = usage.bytes;
+            report.cap!.overByBytes = Math.max(0, usage.bytes - maxBytes);
+          } catch (error) {
+            usage = null; report.cap!.afterBytes = null; report.cap!.overByBytes = null;
+            report.cap!.error = String(error);
+          }
+        }
+      }
+    }
+  }
+
+  let sample = await measure(evidenceRoot);
+  if (!sample || !Number.isFinite(sample.totalBytes) || sample.totalBytes <= 0 ||
+      !Number.isFinite(sample.availableBytes) || sample.availableBytes < 0) {
+    return report;
+  }
+  report.disk.availableBeforeBytes = sample.availableBytes;
+  report.disk.availableAfterBytes = sample.availableBytes;
+  let reserveBytes = reserve(sample.totalBytes, env);
+  if (!Number.isFinite(reserveBytes) || reserveBytes < 0) return report;
+  report.disk.reserveBytes = reserveBytes;
+  if (sample.availableBytes >= reserveBytes) {
+    report.disk.status = 'healthy';
+    return report;
+  }
+
+  report.disk.status = 'unresolved';
+  for (const name of names) {
+    if (removed.has(name)) continue;
+    if (!(await removeRunIfEligible(evidenceRoot, name, now, true, isPinned))) continue;
+    removed.add(name);
+    report.removed.push(name);
+    sample = await measure(evidenceRoot);
+    if (!sample || !Number.isFinite(sample.totalBytes) || sample.totalBytes <= 0 ||
+        !Number.isFinite(sample.availableBytes) || sample.availableBytes < 0) {
+      report.disk.status = 'unmeasured';
+      report.disk.availableAfterBytes = null;
+      break;
+    }
+    report.disk.availableAfterBytes = sample.availableBytes;
+    reserveBytes = reserve(sample.totalBytes, env);
+    if (!Number.isFinite(reserveBytes) || reserveBytes < 0) {
+      report.disk.status = 'unmeasured';
+      report.disk.reserveBytes = null;
+      break;
+    }
+    report.disk.reserveBytes = reserveBytes;
+    if (sample.availableBytes >= reserveBytes) {
+      report.disk.status = 'recovered';
+      break;
+    }
+  }
+  return report;
+}
+
+export function formatRunRetentionLine(report: RunPruneReport): string | null {
+  const d = report.disk;
+  const needsReport = report.removed.length > 0 ||
+    (d.status === 'unresolved' || (d.status === 'unmeasured' && report.runDirsSeen > 0));
+  if (!needsReport) return null;
+  const fmt = (value: number | null) => value === null ? 'unknown' : String(value);
+  return 'VH_PRUNED_RUNS removed=' + (report.removed.join(',') || '-') +
+    ' disk=' + d.status +
+    ' free_before_bytes=' + fmt(d.availableBeforeBytes) +
+    ' reserve_bytes=' + fmt(d.reserveBytes) +
+    ' free_after_bytes=' + fmt(d.availableAfterBytes);
+}
+
+export async function pruneRuns(
+  evidenceRoot: string,
+  keep = keepRunsFromEnv(),
+  now = Date.now(),
+  options: RunPruneOptions = {},
+): Promise<string[]> {
+  return (await pruneRunsWithReport(evidenceRoot, keep, now, options)).removed;
+}
+
+/**
+ * Entries of an evidence root that no run owns and retention never touches: the `latest` link and
+ * `retained/`, where pinned per-run artifacts (proof receipts) outlive their run dirs.
+ */
+const RESERVED_ROOT_ENTRIES = new Set(['latest', 'retained']);
+export const DEFAULT_FOREIGN_MAX_AGE_HOURS = 72;
+/**
+ * Entries one prune call may visit across ALL foreign entries before it stops judging. Judging a
+ * stale entry walks it in full; measured hand-named dirs hold 450k-850k entries each, and 3M
+ * entries took 197s on a loaded host, so 1M bounds a finalize's added time to about a minute.
+ * Entries the budget does not reach are kept and reported as unjudged.
+ */
+export const FOREIGN_WALK_BUDGET = 1_000_000;
+const LSTAT_BATCH = 256;
+/**
+ * Per-root cache of freshness proofs: `{ [entry]: freshUntilMs }`. A walk that found a file
+ * modified at F proves the entry cannot be stale before F + maxAge, so it is not re-walked until
+ * then. Without it, an active entry whose fresh file sits deep (hardlinked shared inodes) is
+ * re-walked on every finalize and starves the budget for the entries after it. A dot-entry, so
+ * retention never judges it; a lost or corrupt cache only costs a re-walk.
+ */
+export const FOREIGN_FRESHNESS_CACHE = '.vh-foreign-freshness.json';
+
+export function foreignMaxAgeHoursFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.VH_FOREIGN_MAX_AGE_HOURS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_FOREIGN_MAX_AGE_HOURS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_FOREIGN_MAX_AGE_HOURS;
+}
+
+export interface ForeignPruneResult {
+  /** Foreign entries removed because nothing under them changed within the max age. */
+  removed: string[];
+  /** Foreign entries kept WITHOUT a verdict (walk error or budget): a skipped check, not a fresh entry. */
+  unjudged: Array<{ name: string; reason: 'walk-budget' | 'walk-error' }>;
+}
+
+type Staleness =
+  | { verdict: 'fresh'; mtimeMs: number }
+  | { verdict: 'stale' | 'walk-budget' | 'walk-error' };
+
+/**
+ * Whether anything at or under `top` was modified at or after `cutoffMs` (a fresh verdict carries
+ * the mtime that proved it). Never follows symlinks. Breadth-first, returning at the FIRST fresh
+ * mtime, so a live entry usually costs little; a stale one is walked in full, which costs no more
+ * than removing it. Spends from the shared `budget` (entries visited); exhausting it returns
+ * 'walk-budget'. A child vanishing mid-walk is ignored; any other error returns 'walk-error'.
+ * Either non-verdict keeps the entry.
+ */
+async function stalenessOf(top: string, cutoffMs: number, budget: { left: number }): Promise<Staleness> {
+  const dirs: string[] = [];
+  let st;
+  try {
+    st = await lstat(top);
+  } catch {
+    return { verdict: 'walk-error' };
+  }
+  if (st.mtimeMs >= cutoffMs) return { verdict: 'fresh', mtimeMs: st.mtimeMs };
+  if (st.isDirectory()) dirs.push(top);
+  for (let head = 0; head < dirs.length; head++) {
+    const dir = dirs[head] as string;
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      return { verdict: 'walk-error' };
+    }
+    budget.left -= names.length;
+    if (budget.left < 0) return { verdict: 'walk-budget' };
+    for (let i = 0; i < names.length; i += LSTAT_BATCH) {
+      const batch = names.slice(i, i + LSTAT_BATCH).map((n) => path.join(dir, n));
+      const stats = await Promise.all(
+        batch.map((p) =>
+          lstat(p).then(
+            (s) => ({ p, s, err: null as NodeJS.ErrnoException | null }),
+            (err: NodeJS.ErrnoException) => ({ p, s: null, err }),
+          ),
+        ),
+      );
+      for (const { p, s, err } of stats) {
+        if (!s) {
+          if (err?.code === 'ENOENT') continue;
+          return { verdict: 'walk-error' };
+        }
+        if (s.mtimeMs >= cutoffMs) return { verdict: 'fresh', mtimeMs: s.mtimeMs };
+        if (s.isDirectory()) dirs.push(p);
+      }
+    }
+  }
+  return { verdict: 'stale' };
+}
+
+async function readFreshnessCache(evidenceRoot: string): Promise<Record<string, number>> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path.join(evidenceRoot, FOREIGN_FRESHNESS_CACHE), 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter((kv): kv is [string, number] => typeof kv[1] === 'number'),
+    );
+  } catch {
+    return {};
+  }
+}
+
+async function writeFreshnessCache(evidenceRoot: string, cache: Record<string, number>): Promise<void> {
+  const tmp = path.join(evidenceRoot, `${FOREIGN_FRESHNESS_CACHE}.${process.pid}`);
+  try {
+    await writeFile(tmp, `${JSON.stringify(cache)}\n`);
+    await rename(tmp, path.join(evidenceRoot, FOREIGN_FRESHNESS_CACHE));
+  } catch {
+    await rm(tmp, { force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Durable record of every foreign-entry REMOVAL: one JSON line per removed entry, appended by
+ * {@link pruneStaleForeign}. A dot-entry, so retention never judges it. The VH_PRUNED_FOREIGN
+ * console line alone lands in whatever log the caller owns (a rotated journal, one run's stderr),
+ * so a removed release bank stopped being attributable a day later (WI-6554700010009674,
+ * WI-6554700010010390). Read it with {@link readForeignPruneLedger}.
+ */
+export const FOREIGN_PRUNE_LEDGER = '.vh-pruned.jsonl';
+/** Past this size the ledger is trimmed to its newest half; removals are rare, so this spans months. */
+export const FOREIGN_PRUNE_LEDGER_MAX_BYTES = 256 * 1024;
+
+export interface ForeignPruneTombstone {
+  /** When the entry was removed (ISO-8601). */
+  at: string;
+  name: string;
+  /** The entry's own mtime when it was judged stale (ISO-8601). */
+  entryMtime: string;
+  maxAgeHours: number;
+  pid: number;
+  /** Basename of the process entry script (hourly sweep host vs a run's finalize), or null. */
+  caller: string | null;
+}
+
+async function appendForeignPruneLedger(evidenceRoot: string, rows: ForeignPruneTombstone[]): Promise<void> {
+  if (rows.length === 0) return;
+  const file = path.join(evidenceRoot, FOREIGN_PRUNE_LEDGER);
+  try {
+    await appendFile(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+    const size = await stat(file).then((s) => s.size, () => 0);
+    if (size > FOREIGN_PRUNE_LEDGER_MAX_BYTES) {
+      const lines = (await readFile(file, 'utf8')).split('\n').filter(Boolean);
+      const tmp = `${file}.${process.pid}`;
+      await writeFile(tmp, lines.slice(Math.floor(lines.length / 2)).join('\n') + '\n');
+      await rename(tmp, file);
+    }
+  } catch {
+    // Best-effort: a ledger failure must never block retention; the console line still fires.
+  }
+}
+
+/** Every recorded foreign-entry removal in `evidenceRoot`, oldest first; unparseable lines are skipped. */
+export async function readForeignPruneLedger(evidenceRoot: string): Promise<ForeignPruneTombstone[]> {
+  let text: string;
+  try {
+    text = await readFile(path.join(evidenceRoot, FOREIGN_PRUNE_LEDGER), 'utf8');
   } catch {
     return [];
   }
-  names.sort(); // the timestamp prefix sorts chronologically
-  let latest: string | null = null;
-  try {
-    latest = path.basename(await readlink(path.join(evidenceRoot, 'latest')));
-  } catch {
-    /* no latest link yet */
-  }
-  const removed: string[] = [];
-  for (const name of names.slice(0, Math.max(0, names.length - keep))) {
-    if (name === latest) continue;
-    const dir = path.join(evidenceRoot, name);
-    const finished = await stat(path.join(dir, 'result.json')).then(() => true, () => false);
-    if (!finished) {
-      const born = await stat(dir).then((s) => s.mtimeMs, () => now);
-      if (now - born < IN_PROGRESS_GRACE_MS) continue;
+  const rows: ForeignPruneTombstone[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line) as ForeignPruneTombstone;
+      if (parsed && typeof parsed.name === 'string' && typeof parsed.at === 'string') rows.push(parsed);
+    } catch {
+      // A torn concurrent append costs one line, never the ledger.
     }
-    await rm(dir, { recursive: true, force: true });
-    removed.push(name);
   }
-  return removed;
+  return rows;
+}
+
+export interface ForeignPruneOptions {
+  maxAgeHours?: number;
+  now?: number;
+  walkBudget?: number;
+  /** Judge only: `removed` names what WOULD be removed, nothing is deleted, the cache is not written. */
+  dryRun?: boolean;
+}
+
+/**
+ * Retention for FOREIGN entries: anything in an evidence root that is not a run dir, which
+ * {@link pruneRuns} never governs. Hand-named scratch and investigation dirs placed beside the
+ * runs otherwise grow the root without bound (WI-10007424 measured ~230G of them in one root).
+ * Removes a foreign dir or regular file when nothing at or under it was modified within
+ * `maxAgeHours`. Never touches run dirs, `latest`, `retained/`, dot-entries, symlinks, or an entry
+ * holding a {@link VH_KEEP_MARKER} file. `VH_FOREIGN_MAX_AGE_HOURS` sets the default; 0 disables.
+ * Cost is bounded by {@link FOREIGN_WALK_BUDGET} per call and amortised by
+ * {@link FOREIGN_FRESHNESS_CACHE}.
+ */
+export async function pruneStaleForeign(evidenceRoot: string, opts: ForeignPruneOptions = {}): Promise<ForeignPruneResult> {
+  return withRetentionPinProtection(isPinned => pruneStaleForeignWithProtection(evidenceRoot, opts, isPinned),
+    { nowMs: opts.now });
+}
+
+async function pruneStaleForeignWithProtection(
+  evidenceRoot: string, opts: ForeignPruneOptions, isPinned: (path: string) => boolean,
+): Promise<ForeignPruneResult> {
+  const {
+    maxAgeHours = foreignMaxAgeHoursFromEnv(),
+    now = Date.now(),
+    walkBudget = FOREIGN_WALK_BUDGET,
+    dryRun = false,
+  } = opts;
+  const result: ForeignPruneResult = { removed: [], unjudged: [] };
+  if (!(maxAgeHours > 0)) return result;
+  const cutoffMs = now - maxAgeHours * 60 * 60 * 1000;
+  let entries;
+  try {
+    entries = await readdir(evidenceRoot, { withFileTypes: true });
+  } catch {
+    return result;
+  }
+  const candidates: Array<{ name: string; target: string; mtimeMs: number }> = [];
+  for (const entry of entries) {
+    const name = entry.name;
+    if (RUN_DIR_RE.test(name) || RESERVED_ROOT_ENTRIES.has(name) || name.startsWith('.')) continue;
+    if (!entry.isDirectory() && !entry.isFile()) continue; // symlinks, sockets, fifos: not ours to judge
+    const target = path.join(evidenceRoot, name);
+    if (entry.isDirectory()) {
+      const marked = await lstat(path.join(target, VH_KEEP_MARKER)).then(() => true, () => false);
+      if (marked) continue;
+    }
+    const mtimeMs = await lstat(target).then((s) => s.mtimeMs, () => now);
+    candidates.push({ name, target, mtimeMs });
+  }
+  const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
+  const cached = await readFreshnessCache(evidenceRoot);
+  const nextCache: Record<string, number> = {};
+  // Oldest first: the likeliest-stale entries get the walk budget before it runs out.
+  candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
+  const budget = { left: walkBudget };
+  const tombstones: ForeignPruneTombstone[] = [];
+  const caller = process.argv[1] ? path.basename(process.argv[1]) : null;
+  for (const { name, target } of candidates) {
+    if (isPinned(target)) continue;
+    const until = cached[name];
+    // If the proving file was since deleted, trusting the proof only DELAYS removal: the safe side.
+    if (until !== undefined && until > now) {
+      nextCache[name] = until;
+      continue;
+    }
+    if (budget.left <= 0) {
+      result.unjudged.push({ name, reason: 'walk-budget' });
+      continue;
+    }
+    const judged = await stalenessOf(target, cutoffMs, budget);
+    if (judged.verdict === 'fresh') {
+      nextCache[name] = judged.mtimeMs + maxAgeMs;
+      continue;
+    }
+    if (judged.verdict !== 'stale') {
+      result.unjudged.push({ name, reason: judged.verdict });
+      continue;
+    }
+    // A writer may have reached the entry while it was being walked: re-check its own mtime.
+    const again = await lstat(target).then((s) => s.mtimeMs, () => null);
+    if (again === null || again >= cutoffMs) continue;
+    if (!dryRun) {
+      await rm(target, { recursive: true, force: true });
+      tombstones.push({
+        at: new Date().toISOString(),
+        name,
+        entryMtime: new Date(again).toISOString(),
+        maxAgeHours,
+        pid: process.pid,
+        caller,
+      });
+    }
+    result.removed.push(name);
+  }
+  if (!dryRun) await appendForeignPruneLedger(evidenceRoot, tombstones);
+  if (!dryRun && JSON.stringify(nextCache) !== JSON.stringify(cached)) await writeFreshnessCache(evidenceRoot, nextCache);
+  return result;
+}
+
+export interface EvidenceRootPruneResult {
+  runs: string[];
+  runRetention: RunPruneReport;
+  foreign: ForeignPruneResult;
+}
+
+/** Full retention for an evidence root: {@link pruneRuns} by count, then {@link pruneStaleForeign} by age. */
+export async function pruneEvidenceRoot(
+  evidenceRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+  now = Date.now(),
+  options: RunPruneOptions = {},
+): Promise<EvidenceRootPruneResult> {
+  const runRetention = await pruneRunsWithReport(evidenceRoot, keepRunsFromEnv(env), now, { ...options, env });
+  const foreign = await pruneStaleForeign(evidenceRoot, { maxAgeHours: foreignMaxAgeHoursFromEnv(env), now });
+  return { runs: runRetention.removed, runRetention, foreign };
+}
+
+/** One stderr-ready line naming what retention removed or could not judge, or null when nothing happened. */
+export function formatForeignPruneLine(r: ForeignPruneResult): string | null {
+  if (r.removed.length === 0 && r.unjudged.length === 0) return null;
+  const unjudged = r.unjudged.map((u) => `${u.name}:${u.reason}`);
+  return `VH_PRUNED_FOREIGN removed=${r.removed.join(',') || '-'} unjudged=${unjudged.join(',') || '-'}`;
 }
 
 export function deriveVerdict(result: Pick<HarnessRunResult, 'preflight' | 'phases' | 'tierGate'>): {
@@ -400,6 +1101,7 @@ function notRun(id: string, runDir: string, status: 'blocked' | 'skipped' | 'reu
 }
 
 export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult> {
+  validateRetainedArtifacts(args.retainedArtifacts ?? []);
   const { contract } = args;
   validateContract(contract);
   const now = args.now ?? (() => new Date());
@@ -417,6 +1119,10 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   const gated = (id: string) => tier !== null && phaseTiers(contract, byId.get(id)!).length === TIERS.length;
   const codeRoot = args.codeRoot ?? args.guardRailCwd ?? process.cwd();
   const receiptsPath = args.tierReceipts ?? defaultTierReceiptsPath(args.evidenceRoot);
+  await mkdir(args.evidenceRoot, { recursive: true });
+  const preRunRetention = await pruneRunsWithReport(args.evidenceRoot);
+  const preRunRetentionLine = formatRunRetentionLine(preRunRetention);
+  if (preRunRetentionLine) process.stderr.write(preRunRetentionLine + '\n');
   const startedAt = now();
   const runId = await claimRunDir(args.evidenceRoot, args.runId, startedAt);
   const runDir = path.join(args.evidenceRoot, runId);
@@ -438,7 +1144,7 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   };
   const checkpoint = async () => {
     Object.assign(result, deriveVerdict(result));
-    await writeRunResult(result);
+    await writeRunResult(result, args.retainedArtifacts);
   };
 
   // The tier gate runs BEFORE preflight: an expensive run it refuses pays for nothing. It
@@ -573,6 +1279,10 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   result.endedAt = now().toISOString();
   await checkpoint();
   await linkLatest(args.evidenceRoot, runDir);
-  await pruneRuns(args.evidenceRoot);
+  const pruned = await pruneEvidenceRoot(args.evidenceRoot);
+  const runRetentionLine = formatRunRetentionLine(pruned.runRetention);
+  if (runRetentionLine) process.stderr.write(runRetentionLine + '\n');
+  const prunedLine = formatForeignPruneLine(pruned.foreign);
+  if (prunedLine) process.stderr.write(`${prunedLine}\n`);
   return result;
 }

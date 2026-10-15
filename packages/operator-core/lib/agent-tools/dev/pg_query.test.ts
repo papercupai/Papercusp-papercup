@@ -34,8 +34,8 @@ vi.mock('../../pg-read-query', async (importOriginal) => ({
   listRelations: listRelationsMock,
 }));
 
-import pgQueryTool, { PG_QUERY_MODE } from './pg_query';
-import { PgReadQueryTimeoutError } from '../../pg-read-query';
+import pgQueryTool, { PG_QUERY_MAX_RESPONSE_BYTES, PG_QUERY_MODE } from './pg_query';
+import { PG_READ_QUERY_CALL_OVERHEAD_MS, PgReadQueryTimeoutError } from '../../pg-read-query';
 // EI-21596258009994255: the refusal text a caller actually reads is RENDERED by
 // formatIssues, which resolves an `invalid_union` down to the closest branch's own
 // sub-issues. Asserting the schema merely *carries* a message would pass while the
@@ -48,6 +48,17 @@ function payloadOf(res: { content: Array<{ type: string; text: string }> }): Rec
   return JSON.parse(res.content[0].text) as Record<string, unknown>;
 }
 
+async function runUntilCallDeadline<T>(work: () => Promise<T>, timeoutMs: number): Promise<T> {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const pending = work();
+    await vi.advanceTimersByTimeAsync(timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS + 1);
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 beforeEach(() => {
   pgReadQueryMock.mockReset().mockResolvedValue(OK_RESULT);
   advisoryMock.mockReset().mockResolvedValue(null);
@@ -58,6 +69,40 @@ beforeEach(() => {
 });
 
 describe('dev:pg_query — P-005 guard wiring', () => {
+  it('bounds default advisory prose and restores it only for an explicit full request', async () => {
+    const advisory = '⚠ tenant scope: ' + '界'.repeat(4000);
+    advisoryMock.mockResolvedValue(advisory);
+    const args = { sql: 'SELECT 1', allowUnscoped: true } as never;
+    const compact = payloadOf(await pgQueryTool.handler(args, {} as never) as never);
+    expect(compact).toMatchObject(OK_RESULT);
+    expect(String(compact.advisory)).toContain('TRUNCATED');
+    expect(String(compact.advisory)).toContain("name:'dev:pg_query'");
+    expect(String(compact.advisory)).toContain("payloadTier:'full'");
+    expect(Buffer.byteLength(String(compact.advisory), 'utf8')).toBeLessThanOrEqual(4096);
+
+    const full = payloadOf(await pgQueryTool.handler(args, { payloadTierOverride: 'full' } as never) as never);
+    expect(full.advisory).toBe(advisory);
+    const projected = payloadOf(await pgQueryTool.handler(args, {
+      payloadTierOverride: 'full', sourceMaterialization: { promotedToFull: true },
+    } as never) as never);
+    expect(projected.advisory).toBe(compact.advisory);
+  });
+
+  it('bounds error advisories while retaining the database error and its recovery', async () => {
+    const advisory = '⚠ scan: ' + 'x'.repeat(5000);
+    jsonTextSearchAdvisoryMock.mockReturnValue(advisory);
+    pgReadQueryMock.mockRejectedValue(Object.assign(new Error('syntax error'), { code: '42601' }));
+    const args = { sql: 'SELECT 1', allowUnboundedJsonSearch: true } as never;
+    const compactResult = await pgQueryTool.handler(args, {} as never);
+    expect(compactResult).toHaveProperty('isError', true);
+    const compact = payloadOf(compactResult as never);
+    expect(compact).toMatchObject({ error: 'syntax error', code: '42601' });
+    expect(String(compact.advisory)).toContain('TRUNCATED');
+    expect(String(compact.advisory).length).toBeLessThanOrEqual(1024);
+    const full = payloadOf(await pgQueryTool.handler(args, { payloadTierOverride: 'full' } as never) as never);
+    expect(full.advisory).toBe(advisory);
+  });
+
   // EI-21924434989535557: an acceptance-rubric grader launches as role `judge` and
   // needs this READ-ONLY query surface (read-only txn, row cap, statement timeout —
   // no write path) to RE-MEASURE a criterion instead of quoting the implementer's
@@ -73,6 +118,10 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       pgQueryTool.args.safeParse({ sql: 'SELECT 1', positiveControlSql: 'SELECT 1 AS known' }).success,
     ).toBe(true);
     expect(pgQueryTool.args.safeParse({ describe: 'harness_shared.tool_invocations' }).success).toBe(true);
+    expect(pgQueryTool.args.safeParse({ sql: 'SELECT 1', allowUnboundedJsonSearch: true }).success).toBe(true);
+    expect(
+      pgQueryTool.args.safeParse({ describe: 'harness_shared.tool_invocations', allowUnboundedJsonSearch: false }).success,
+    ).toBe(false);
     expect(pgQueryTool.args.safeParse({ sql: 'SELECT 1', describe: 'harness_shared.tool_invocations' }).success).toBe(false);
     expect(
       pgQueryTool.args.safeParse({
@@ -85,15 +134,19 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     const json = z.toJSONSchema(pgQueryTool.args as never) as {
       anyOf?: Array<{
         required?: string[];
-        properties?: Record<string, { not?: unknown }>;
+        properties?: Record<string, { not?: unknown; type?: unknown }>;
       }>;
       oneOf?: Array<{
         required?: string[];
-        properties?: Record<string, { not?: unknown }>;
+        properties?: Record<string, { not?: unknown; type?: unknown }>;
       }>;
     };
     const branches = json.anyOf ?? json.oneOf ?? [];
     expect(branches).toHaveLength(2);
+    const sqlBranch = branches.find((branch) => branch.required?.includes('sql'));
+    const describeBranch = branches.find((branch) => branch.required?.includes('describe'));
+    expect(sqlBranch?.properties?.allowUnboundedJsonSearch).toMatchObject({ type: 'boolean' });
+    expect(describeBranch?.properties?.allowUnboundedJsonSearch).toMatchObject({ not: expect.anything() });
     expect(branches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -237,6 +290,39 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(pgReadQueryMock).toHaveBeenCalledOnce();
   });
 
+  it('refuses oversized SQL results before serializing the response', async () => {
+    pgReadQueryMock.mockResolvedValueOnce({
+      ...OK_RESULT,
+      rows: [{ payload: 'x'.repeat(PG_QUERY_MAX_RESPONSE_BYTES) }],
+    });
+
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT payload', allowUnscoped: true } as never,
+      {} as never,
+    );
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({
+      reason: 'result_too_large',
+      limitBytes: PG_QUERY_MAX_RESPONSE_BYTES,
+      estimatedBytesAtLeast: PG_QUERY_MAX_RESPONSE_BYTES + 1,
+    });
+    expect(String(payloadOf(res as never).error)).toContain('aggregate large JSON values');
+  });
+
+  it('preserves normal UTF-8 SQL results below the response byte cap', async () => {
+    const row = { value: 'café 😀\n"quoted"' };
+    pgReadQueryMock.mockResolvedValueOnce({ ...OK_RESULT, rows: [row] });
+
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT value', allowUnscoped: true } as never,
+      {} as never,
+    );
+
+    expect(payloadOf(res as never)).toMatchObject({ mode: PG_QUERY_MODE.query, rows: [row] });
+    expect((res as { isError?: boolean }).isError).not.toBe(true);
+  });
+
   // EI-20261038811991822. The builder itself is unit-tested in
   // pg-read-query.test.ts; what THIS pair proves is the wiring — that the
   // advisory actually reaches the caller's payload, which is the half a
@@ -297,10 +383,10 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(payloadOf(res as never).advisory).toContain(
       '⚠ unbounded JSON-text search: metadata_json::text',
     );
-    expect(pgReadQueryMock).toHaveBeenCalledWith(sql, {
+    expect(pgReadQueryMock).toHaveBeenCalledWith(sql, expect.objectContaining({
       maxRows: undefined,
-      timeoutMs: undefined,
-    });
+      timeoutMs: expect.any(Number),
+    }));
   });
 
   it('publishes the JSON-search bypass only on SQL calls', () => {
@@ -333,7 +419,39 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       fields: ['QUERY PLAN'],
       rows: [{ 'QUERY PLAN': expect.stringContaining('Result') }],
     });
-    expect(pgReadQueryMock).toHaveBeenCalledWith(sql, { maxRows: undefined, timeoutMs: undefined });
+    expect(pgReadQueryMock).toHaveBeenCalledWith(
+      sql,
+      expect.objectContaining({ maxRows: undefined, timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it('returns call_timeout when tenant preflight hangs before pgReadQuery starts', async () => {
+    advisoryMock.mockImplementation(() => new Promise(() => {}));
+
+    const res = await runUntilCallDeadline(
+      () => pgQueryTool.handler({ sql: 'SELECT 1', timeoutMs: 100 } as never, {} as never),
+      100,
+    );
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({ reason: 'call_timeout' });
+    expect(advisoryMock).toHaveBeenCalledOnce();
+    expect(pgReadQueryMock).not.toHaveBeenCalled();
+  });
+
+  it('returns call_timeout when optional error enrichment hangs after a PG error', async () => {
+    pgReadQueryMock.mockRejectedValue(Object.assign(new Error('column does not exist'), { code: '42703' }));
+    describeColumnsMock.mockImplementation(() => new Promise(() => {}));
+
+    const res = await runUntilCallDeadline(
+      () => pgQueryTool.handler({ sql: 'SELECT missing FROM t', timeoutMs: 1000 } as never, {} as never),
+      1000,
+    );
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({ reason: 'call_timeout' });
+    expect(pgReadQueryMock).toHaveBeenCalledOnce();
+    expect(describeColumnsMock).toHaveBeenCalledOnce();
   });
 
   it('omits the advisory field when the guard finds nothing (or throws)', async () => {
@@ -397,11 +515,11 @@ describe('dev:pg_query — P-005 guard wiring', () => {
         rows: [{ id: 'known-row' }],
       });
       expect(String(payload.advisory ?? '')).not.toContain('absence unverified');
-      expect(pgReadQueryMock).toHaveBeenCalledWith('SELECT id FROM t WHERE false', {
+      expect(pgReadQueryMock).toHaveBeenCalledWith('SELECT id FROM t WHERE false', expect.objectContaining({
         maxRows: undefined,
-        timeoutMs: undefined,
+        timeoutMs: expect.any(Number),
         positiveControlSql,
-      });
+      }));
     });
 
     it('keeps absence unverified when the supplied positive control is also empty', async () => {
@@ -515,6 +633,30 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       expect(pgReadQueryMock).not.toHaveBeenCalled();
     });
 
+    it('gives test_runs-specific guidance when positiveControlSql hits the CI-row tenant warning', async () => {
+      advisoryMock
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(
+          '⚠ harness_shared.test_runs: workspace_id/harness_slug are NULL-by-design for CI/dogfood-reporter rows.',
+        );
+      const positiveControlSql =
+        "SELECT id FROM harness_shared.test_runs WHERE workspace_id = 'ws-1' AND harness_slug = 'h-1'";
+
+      const res = await pgQueryTool.handler(
+        { sql: 'SELECT 1', positiveControlSql } as never,
+        { workspaceId: 'ws-1', harnessSlug: 'h-1' } as never,
+      );
+      const payload = payloadOf(res as never);
+
+      expect((res as { isError?: boolean }).isError).toBe(true);
+      expect(payload).toMatchObject({ reason: 'positive_control_tenant_scope_required' });
+      expect(payload.error).toContain('For a local reporter positive control');
+      expect(payload.error).toContain('CI/gate controls, filter by source or commit_sha');
+      expect(payload.error).toContain('workspace_id/harness_slug alone are insufficient');
+      expect(payload.error).not.toContain('Add tenant predicate(s) to positiveControlSql');
+      expect(pgReadQueryMock).not.toHaveBeenCalled();
+    });
+
     // EI-22633261796522656: local reporter rows can be recovered by a bounded
     // id group. The primary and positive-control reads must both pass the same
     // tenant guard so the handler can execute the evidence probe without the
@@ -533,11 +675,11 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       } as never);
 
       expect(payloadOf(res as never)).toMatchObject({ rowCount: 1 });
-      expect(pgReadQueryMock).toHaveBeenCalledWith(sql, {
+      expect(pgReadQueryMock).toHaveBeenCalledWith(sql, expect.objectContaining({
         maxRows: undefined,
-        timeoutMs: undefined,
+        timeoutMs: expect.any(Number),
         positiveControlSql,
-      });
+      }));
       expect(advisoryMock).toHaveBeenNthCalledWith(1, sql, {
         workspaceId: 'ws-1',
         harnessSlug: 'h-1',
@@ -993,6 +1135,32 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       hint: expect.stringContaining('`updated_at_epoch_ms` and `created_at_epoch_ms` are not columns'),
       knownColumns: { 'dbos.workflow_status': expect.any(Array) },
     });
+  });
+
+  it('returns DBOS interval-join scan guidance when a narrow-looking history join times out', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+    );
+    const sql = [
+      'WITH target(window_label, lo_ms, hi_ms) AS (',
+      "  VALUES ('09:45-09:46Z', 1000, 2000)",
+      ')',
+      'SELECT w.workflow_uuid, o.function_name',
+      'FROM target t',
+      'JOIN dbos.workflow_status w',
+      "  ON w.name IN ('routinesTick', 'routineFire')",
+      ' AND w.started_at_epoch_ms < t.hi_ms',
+      'JOIN dbos.operation_outputs o',
+      '  ON o.workflow_uuid = w.workflow_uuid',
+      ' AND o.started_at_epoch_ms < t.hi_ms',
+      ' AND (o.completed_at_epoch_ms IS NULL OR o.completed_at_epoch_ms >= t.lo_ms)',
+    ].join('\n');
+    const res = await pgQueryTool.handler({ sql } as never, {} as never);
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({ code: '57014' });
+    expect(payloadOf(res as never).advisory).toContain('DBOS historical interval join');
+    expect(payloadOf(res as never).advisory).toContain('join workflow_status by workflow_uuid');
   });
 
   it('adds a targeted hint for a UNION column-count mismatch', async () => {

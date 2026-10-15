@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10007985",
+  "taskId": "0mv1jzghwr4x7djgoll",
+  "sourceSha": "f2d92cbc8ad685b843e70c83718ac7a8d1a45371",
+  "binarySha256": "ab43d95fa07f7bab5b0cbfcc8e9ce940d91aa3ab3cda0b48723bc44e1485c5e9",
+  "archiveSha256": "f5a4c4b8150ced60e079163abe2743ec8ba9533c9862c400e139a710b8621e42",
+  "manifest": {
+    "binaryPath": "bin/pui",
+    "binarySha256": "ab43d95fa07f7bab5b0cbfcc8e9ce940d91aa3ab3cda0b48723bc44e1485c5e9",
+    "builtAtEpoch": 1791583771,
+    "companionPath": "pui-companion.wasm",
+    "companionSha256": "6c5a68c1f6fd68603941e0713f426432a3d0b2e48f18e6537856d3ac49734693",
+    "schemaVersion": 1,
+    "sourceDirty": false,
+    "sourceSha": "f2d92cbc8ad685b843e70c83718ac7a8d1a45371",
+    "target": "linux-x86_64",
+    "version": "0.1.0"
+  },
+  "test": "installed PUI with the real codex engine > greeting, real file tool, interrupt and continued reply stay in one first-party session",
+  "testState": "passed",
+  "identity": {
+    "agentChatId": "2c1220ea-c67f-471d-946e-9cef011c5a5d",
+    "advSessionId": 3,
+    "backend": "codex",
+    "nativeSessionId": "01a122e4-7a06-7cc0-84c5-c7069a81f191",
+    "ownerId": "su-d1b0d9a9-9228-4822-93e6-f90773523c82",
+    "workspaceId": "pui-agent-chat-e2e",
+    "harnessSlug": "papercusp"
+  },
+  "streamingEvidence": {
+    "turnId": "pui-turn-pui-1791586769824262746",
+    "observedAt": "2026-10-09T22:59:31.396Z",
+    "partialText": "1\n2\n3",
+    "visibleNumbers": [
+      1,
+      2,
+      3
+    ],
+    "lifecycle": "running",
+    "completed": false
+  },
+  "greetingReply": "PUI-HELLO-6A4AAB2F",
+  "fileResult": "PUI-FILE-3a024d03-d6c8-4280-bd8f-27fee59f99ac",
+  "followupReply": "PUI-CONTINUED-6A4AAB2F",
+  "resumedReply": "RESUMED-PUI-HELLO-6A4AAB2F",
+  "commandTypes": [
+    "owner_turn",
+    "owner_turn",
+    "owner_turn",
+    "interrupt",
+    "owner_turn",
+    "end",
+    "owner_turn",
+    "end"
+  ],
+  "sameNativeSessionAfterResume": true,
+  "model": "gpt-6.1-sol",
+  "accountRoute": "auto",
+  "accountServed": null,
+  "frameKeys": [
+    "greeting",
+    "file",
+    "running",
+    "interrupted",
+    "followup",
+    "history",
+    "resumed"
+  ],
+  "log": "/dev/shm/pcv/pui-wholef2d9-su-d2ae9/vitest-codex.log",
+  "logSha256": "988007644685696be3dd0e31525436fafc5a76f472ae33700304e82fa11c9210",
+  "wholeRunStatus": "refused: cold operator subprocess missing SSE CommonJS dist; this named journey passed",
+  "unitEvidence": {
+    "taskId": "0mv1jxmlb15ioxgv1qm",
+    "passed": 46,
+    "skipped": 0,
+    "sourceSha": "f2d92cbc8ad685b843e70c83718ac7a8d1a45371",
+    "testRunIds": [
+      20963483,
+      20963482
+    ]
+  }
+}

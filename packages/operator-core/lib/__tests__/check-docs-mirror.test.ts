@@ -7,9 +7,12 @@
  * exercise.
  */
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import { findMissingDocMirrors, isVisibleDocPath, sourceToMirrorPaths, judgeMirrorFreshness, readMirrorFreshnessFacts, formatStaleMirror } from '../../../../scripts/check-docs-mirror.mjs';
+import { findMissingDocMirrors, isVisibleDocPath, sourceToMirrorPaths, judgeMirrorFreshness, readMirrorFreshnessFacts, formatStaleMirror, fingerprintDocsSource } from '../../../../scripts/check-docs-mirror.mjs';
 
 /** 2026-08-30T23:17:36Z — the commit that fixed the vetting runbook's source. */
 const SOURCE_FIXED_TS = 1787793456;
@@ -17,6 +20,23 @@ const SOURCE_FIXED_TS = 1787793456;
 const MIRROR_BUILT_TS = 1786866731;
 
 describe('check-docs-mirror detector (EI-20041752458165941)', () => {
+  it('censuses source names and bytes while excluding hidden support and non-page files', () => {
+    const root = mkdtempSync(join(tmpdir(), 'docs-census-'));
+    try {
+      writeFileSync(join(root, 'page.mdx'), 'old');
+      const original = fingerprintDocsSource(root);
+      writeFileSync(join(root, '.support.mdx'), 'ignored');
+      writeFileSync(join(root, 'image.png'), 'ignored');
+      expect(fingerprintDocsSource(root)).toBe(original);
+      writeFileSync(join(root, 'page.mdx'), 'new');
+      expect(fingerprintDocsSource(root)).not.toBe(original);
+      writeFileSync(join(root, 'page.mdx'), 'old');
+      writeFileSync(join(root, 'added.md'), 'added');
+      expect(fingerprintDocsSource(root)).not.toBe(original);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('maps root and nested index pages to Astro file-format HTML paths', () => {
     expect(sourceToMirrorPaths('index.mdx')).toEqual({
       source: 'index.mdx',

@@ -19,7 +19,7 @@ import { gradeGdpvalTask, type JudgeFn } from './gdpval';
 const GRADER_FAMILY = 'gdpval';
 
 export interface GdpvalGraderConfig {
-  /** Pinned grader version for pre-registration (e.g. 'gdpval-autograder@2026-06-17 / judge=opus-4.8'). */
+  /** Pinned grader version for pre-registration (e.g. 'gdpval-autograder@2026-06-17 / judge=<registry-resolved model id>'). */
   version: string;
   /** The pairwise judge — the LLM autograder, or a wrapper over the hosted GDPval grading service. */
   judge: JudgeFn;

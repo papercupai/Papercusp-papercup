@@ -345,6 +345,24 @@ describe('codex bearer kernel adapter', () => {
     expect(a.invalidated).toBe(1);
   });
 
+  it('preserves undici fetch diagnostics and the original cause on transport failure', async () => {
+    const fetchFailure = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ECONNRESET', message: 'read ECONNRESET' },
+    });
+    const { options } = harness(makePool([account('codex-a')], []), async () => { throw fetchFailure; });
+    options.policy = { ...options.policy, maxAttempts: 1 };
+    const error = await executeGatewayRequestKernel(options).then(
+      () => { throw new Error('expected upstream failure'); },
+      (reason: unknown) => reason as { code: string; message: string; cause?: unknown },
+    );
+
+    expect(error).toMatchObject({
+      code: 'upstream-error',
+      message: 'inference-gateway: Codex upstream failed: fetch failed (ECONNRESET: read ECONNRESET)',
+    });
+    expect(error.cause).toBe(fetchFailure);
+  });
+
   it('rotates when the token read fails, before any upstream call is made', async () => {
     const a = account('codex-a', async () => {
       throw new Error('keyring unavailable');

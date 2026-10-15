@@ -37,16 +37,25 @@
  * avoids by routing through it rather than hand-rolling the LIKE match).
  */
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveOperatorAppRootFromModuleDir } from '../../operator-app-root';
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
 import { RESTART_TARGET_UNITS } from '../../agent-tools/dev/restart-target-units';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import { hostIdentity } from '../../serving-host-identity';
 import {
+  IMMINENT_FIRE_LOOKAHEAD_SEC,
+  probeGateCollision,
+  type GateCollisionProbe,
+} from '../../release/gate-collision-guard';
+import {
   processBootCommitSha,
   processBootTimeMs,
   resolveCommitsBehind,
   resolveCurrentHeadCommit,
+  resolveGateCodeDrift,
   resolveRoutineCodeDrift,
   type RoutineCodeDrift,
 } from '../../dbos/process-boot-identity';
@@ -103,6 +112,22 @@ async function routineDriftCached(
   cachedRoutineDrift.key = key;
   cachedRoutineDrift.value = value;
   cachedRoutineDrift.atMs = now;
+  return value;
+}
+
+// Same pair-keyed memo for the gate-code fast path (WI-10007644 step 2), which runs on a
+// YOUNG process and so would otherwise shell out to git on every 30s tick.
+const cachedGateDrift = { key: '', value: null as RoutineCodeDrift | null, atMs: 0 };
+
+async function gateDriftCached(bootCommit: string, currentCommit: string, now: number): Promise<RoutineCodeDrift | null> {
+  const key = `${bootCommit}..${currentCommit}`;
+  if (cachedGateDrift.key === key && now - cachedGateDrift.atMs < CURRENT_HEAD_REFRESH_MS) {
+    return cachedGateDrift.value;
+  }
+  const value = await resolveGateCodeDrift(bootCommit, currentCommit);
+  cachedGateDrift.key = key;
+  cachedGateDrift.value = value;
+  cachedGateDrift.atMs = now;
   return value;
 }
 
@@ -200,9 +225,10 @@ export const RESTART_SAFETY_NOTE =
   'git-sync sweeps 38 submodules plus several pots from inside this host\'s own cgroup, so its operations are in ' +
   'flight nearly continuously (measured 2026-08-31: 20 consecutive attempts over 40s, never fewer than 4 in ' +
   'flight). That refusal is EXPECTED, TRANSIENT, and side-effect-free — "NOTHING was done: no cooldown claimed, ' +
-  'no drain, no signal". The supported way through is `git_sync_drain_sec` (seconds, up to 45) on the same call: ' +
+  'no drain, no signal". The supported way through is `git_sync_drain_sec` (seconds, up to 120) on the same call: ' +
   'with a drain budget the cgroup check is only ADVISORY and the workspace-wide `git-sync` barrier arbitrates ' +
-  'instead — fires hold that barrier just ~5-10s, and it measured FREE in 20 of 40 sampled seconds. Pass the same ' +
+  'instead — a pass yields at its next submodule batch, but one already inside its commit phase finishes it ' +
+  '(measured 50-90s under load), so pass the full 120. Pass the same ' +
   'value to the dry run, so the preview answers for the call you are actually about to make. A `drain_timeout` is ' +
   'equally side-effect-free, so retry once rather than abandoning the remediation. ' +
   'Do NOT reach for `override_git_sync_collision` to force past it: that SIGKILLs a commit after lock acquisition ' +
@@ -216,15 +242,72 @@ export const RESTART_SAFETY_NOTE =
  * restart tool's max_drain_sec:0 still refuses to trample a consequential
  * exclusive-resource holder. Never add an override flag here — those flags
  * turn a busy host into a peer-work-destroying restart.
+ *
+ * WI-6554700010010584: 45s refused 17 of 17 attempts (2026-10-11..13) while other
+ * callers at 60s+ succeeded. Each refusal's last holder was one pass inside its
+ * superproject pointer-bump phase, which has no yield boundary and measured 70-90s
+ * under load (papercusp 2026-10-13 18:17-18:19Z, portal 07:49-07:51Z). Use the
+ * barrier's own ceiling; the watchdog test pins the two together.
  */
-export const STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC = 45;
+export const STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC = 120;
 export const STALE_EXECUTOR_RESTART_COOLDOWN_MS = 13 * 60_000;
 const STALE_EXECUTOR_PTOOL_TIMEOUT_MS = 30_000 + STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC * 1_000;
 const STALE_EXECUTOR_RESTART_PID_WAIT_MS = 30_000;
 const STALE_EXECUTOR_RESTART_PID_POLL_MS = 250;
 
+/**
+ * WI-10007644: how long a FAILED or REFUSED attempt waits before the next tick may
+ * try again. Before this, only a success/coalesce armed any wait, so a refusal
+ * (git_sync_barrier_drain_timeout, gate_collision) or a ptool that could not even
+ * start was retried on every ~30s routinesTick — each retry holding the tick for up
+ * to the 45s git-sync drain, and every one of them invisible.
+ */
+export const STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS = 3 * 60_000;
+
+/**
+ * WI-6554700010009238: ceiling for the doubling backoff after CONSECUTIVE
+ * `git_sync_barrier_drain_timeout` refusals. Each refused attempt still asks every
+ * in-flight git-sync pass to yield, so a fixed 3-min retry against a host that cannot
+ * drain kept papercusp from committing for 30 min (2026-10-12: four refused drains,
+ * four yields). Doubling 3 → 6 → 12 → 24 → 30 min makes that churn decay.
+ */
+export const STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS = 30 * 60_000;
+
+/** Retry wait after a refused/failed attempt, given the consecutive drain-refusal count. */
+export function staleExecutorRetryBackoffMs(consecutiveDrainRefusals: number): number {
+  if (consecutiveDrainRefusals <= 1) return STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS;
+  return Math.min(
+    STALE_EXECUTOR_RESTART_RETRY_BACKOFF_MS * 2 ** (consecutiveDrainRefusals - 1),
+    STALE_EXECUTOR_DRAIN_REFUSAL_BACKOFF_MAX_MS,
+  );
+}
+
 let staleExecutorRestartInFlight = false;
 let staleExecutorRestartCooldownUntilMs = 0;
+let staleExecutorConsecutiveDrainRefusals = 0;
+
+/** Test seam: the in-flight latch and cooldown are module state shared across cases. */
+export function resetStaleExecutorRestartStateForTests(): void {
+  staleExecutorRestartInFlight = false;
+  staleExecutorRestartCooldownUntilMs = 0;
+  staleExecutorConsecutiveDrainRefusals = 0;
+}
+
+/**
+ * Where `apps/operator/scripts/ptool.mjs` is, from the module that is RUNNING —
+ * source (`packages/operator-core/lib/harness/routines/`) or the esbuild host bundle
+ * bg-host actually executes (`apps/operator/dist-host/hono-host.mjs`).
+ *
+ * WI-10007644: this used to be `new URL('../../../../../apps/operator/scripts/ptool.mjs',
+ * import.meta.url)`. Five hops are right from the source file and wrong from the bundle,
+ * where they land on `$HOME/apps/operator/scripts/ptool.mjs` — so in production the
+ * actuator spawned a node that could not find its script, and never once restarted
+ * anything (0 of 1,398 dev:restart calls in the ledger carried its reason).
+ */
+export function defaultPtoolScriptPath(moduleUrl: string = import.meta.url): string {
+  const moduleDir = path.dirname(fileURLToPath(moduleUrl));
+  return path.join(resolveOperatorAppRootFromModuleDir(moduleDir), 'scripts', 'ptool.mjs');
+}
 
 type RestartCommandResult = { stdout: string; error?: string };
 type RestartCommand = (
@@ -337,6 +420,29 @@ export interface StaleExecutorRestartResult {
 export async function restartStaleBgHostExecutor(
   identity: string,
   verdict: ExecutorStalenessVerdict,
+  deps: Parameters<typeof attemptStaleBgHostExecutorRestart>[2] = {},
+): Promise<StaleExecutorRestartResult> {
+  const nowMs = (deps.now ?? Date.now)();
+  const result = await attemptStaleBgHostExecutorRestart(identity, verdict, deps);
+  // A real attempt that did not restart (refused, failed, unverified) backs off
+  // instead of re-running every tick; success/coalesce arm the longer cooldown inside.
+  // Consecutive drain refusals double the wait (WI-6554700010009238).
+  if (result.attempted && !result.restarted && !result.coalesced) {
+    staleExecutorConsecutiveDrainRefusals =
+      result.code === 'git_sync_barrier_drain_timeout' ? staleExecutorConsecutiveDrainRefusals + 1 : 0;
+    staleExecutorRestartCooldownUntilMs = Math.max(
+      staleExecutorRestartCooldownUntilMs,
+      nowMs + staleExecutorRetryBackoffMs(staleExecutorConsecutiveDrainRefusals),
+    );
+  } else if (result.restarted || result.coalesced) {
+    staleExecutorConsecutiveDrainRefusals = 0;
+  }
+  return result;
+}
+
+async function attemptStaleBgHostExecutorRestart(
+  identity: string,
+  verdict: ExecutorStalenessVerdict,
   deps: {
     now?: () => number;
     run?: RestartCommand;
@@ -361,10 +467,13 @@ export async function restartStaleBgHostExecutor(
   staleExecutorRestartInFlight = true;
   try {
     const run = deps.run ?? runRestartCommand;
-    const ptoolScript =
-      deps.ptoolScript ??
-      process.env.PAPERCUSP_PTOOL_SCRIPT?.trim() ??
-      fileURLToPath(new URL('../../../../../apps/operator/scripts/ptool.mjs', import.meta.url));
+    // `||`, not `??`: an exported-but-empty PAPERCUSP_PTOOL_SCRIPT is not a path.
+    const ptoolScript = deps.ptoolScript ?? (process.env.PAPERCUSP_PTOOL_SCRIPT?.trim() || defaultPtoolScriptPath());
+    // An injected script is a test seam; a resolved one must exist, or the spawn
+    // fails as an anonymous `ptool_failed` that names nothing (WI-10007644).
+    if (!deps.ptoolScript && !existsSync(ptoolScript)) {
+      return { ...skipped('ptool_script_missing'), attempted: true, error: `ptool script not found at ${ptoolScript}` };
+    }
     const beforePid = await readBgHostMainPid(run).catch(() => null);
     const args = {
       target: 'bg-host',
@@ -372,7 +481,10 @@ export async function restartStaleBgHostExecutor(
       authorize: true,
       max_drain_sec: 0,
       git_sync_drain_sec: STALE_EXECUTOR_GIT_SYNC_DRAIN_SEC,
-      reason: `auto-remediate stale routines-enabled bg-host executor; ${identity}`,
+      reason:
+        verdict.trigger === 'gate-code'
+          ? `auto-restart bg-host executor between gate measurements: in-process gate code changed since boot; ${identity}`
+          : `auto-remediate stale routines-enabled bg-host executor; ${identity}`,
     };
     const result = await run(process.execPath, [ptoolScript, 'dev:restart', '--json', '-'], {
       stdin: JSON.stringify(args),
@@ -451,6 +563,113 @@ export function executorAlarmContext(identity: string): ExecutorAlarmContext {
   };
 }
 
+// ── WI-10007644 step 2 (P-014): the gate-code fast path ──────────────────────
+//
+// The 2h uptime floor is right for routine code in general and wrong for the GATE: the
+// green-checkpoint's begin/reconcile/admission logic runs inside bg-host, so a fix to it
+// (WI-10007408 was one) does not judge anything until bg-host restarts — up to two hours
+// and several gate rounds later, each judged with the old instrument. Restarting at an
+// arbitrary moment is not the answer either: that swaps the instrument mid-measurement.
+// So the fast path restarts EARLY only when in-process gate code changed since boot AND
+// the gate is between measurements, just ahead of its next scheduled fire. That bounds it
+// to at most one early restart per gate fire, and the next run judges with current code.
+
+/** Minimum uptime before a gate-code change may restart bg-host ahead of the 2h floor —
+ *  a boot-loop guard on a tree whose gate code is being edited continuously. `<=0`
+ *  disables the fast path only; the 2h uptime path is unaffected. */
+export function gateCodeFastPathMinUptimeSec(): number {
+  const n = Number(process.env.PAPERCUSP_STALE_GATE_CODE_MIN_UPTIME_SEC ?? 600);
+  return Number.isFinite(n) ? n : 600;
+}
+
+/** How far ahead of the next scheduled gate fire an early restart may happen. Wider than
+ *  a bg-host rebuild + boot (ExecStartPre re-bundles), narrow enough that a gate-code
+ *  edit restarts bg-host at most once per gate fire rather than every cooldown window. */
+export const GATE_CODE_RESTART_LEAD_SEC = 15 * 60;
+
+export interface GateCodeRestartWindow {
+  open: boolean;
+  reason: string;
+}
+
+/**
+ * PURE: is the gate between measurements, close enough to its next fire that a restart
+ * now loads the code the next run will use? Every unknown is CLOSED: the cost of waiting
+ * is at most the old 2h floor, while a restart into a starting run is the defect itself.
+ * (The opposite polarity from `judgeGateCollision`, which fails OPEN because it guards a
+ * restart an agent may genuinely need. Nobody needs this one; it is an optimisation.)
+ */
+export function judgeGateCodeRestartWindow(
+  probe: GateCollisionProbe | null,
+  leadSec: number = GATE_CODE_RESTART_LEAD_SEC,
+): GateCodeRestartWindow {
+  if (!probe || probe.probeFailed) return { open: false, reason: 'gate state unreadable, so no early restart' };
+  if (probe.runLockHeld) {
+    const age = probe.runElapsedSec === null ? '' : ` (${Math.round(probe.runElapsedSec / 60)}m in)`;
+    return { open: false, reason: `a green-checkpoint run is in flight${age}` };
+  }
+  if (probe.refire) return { open: false, reason: 'a green-checkpoint auto-refire is in flight' };
+  const next = probe.nextFireInSec;
+  if (next === null) return { open: false, reason: 'next gate fire time unknown' };
+  if (next <= IMMINENT_FIRE_LOOKAHEAD_SEC) {
+    return {
+      open: false,
+      reason:
+        next < 0
+          ? `the gate fire is ${Math.round(-next)}s overdue and may be starting`
+          : `the gate fires in ${Math.round(next)}s, inside the ${IMMINENT_FIRE_LOOKAHEAD_SEC}s collision window`,
+    };
+  }
+  if (next > leadSec) {
+    return {
+      open: false,
+      reason: `the next gate fire is ${Math.round(next / 60)}m away, outside the ${Math.round(leadSec / 60)}m lead window`,
+    };
+  }
+  return { open: true, reason: `no gate run in flight and the next fire is ${Math.round(next / 60)}m away` };
+}
+
+export interface GateCodeFastPathInput {
+  identity: string;
+  bootCommit: string | null;
+  currentCommit: string | null;
+  bootTimeMs: number;
+  now: number;
+  minUptimeMs: number;
+  gateCodeDrift: RoutineCodeDrift | null;
+  window: GateCodeRestartWindow | null;
+}
+
+export interface GateCodeFastPathVerdict {
+  restart: boolean;
+  reason: string;
+  /** Gate sources changed since boot; empty when none were detected or not probed. */
+  files: string[];
+}
+
+/** PURE: should this young executor restart now because its gate code is stale? */
+export function evaluateGateCodeFastPath(input: GateCodeFastPathInput): GateCodeFastPathVerdict {
+  const no = (reason: string, files: string[] = []): GateCodeFastPathVerdict => ({ restart: false, reason, files });
+  // Only bg-host has an actuator; judging any other identity would page nothing and restart nothing.
+  if (input.identity !== 'port-3271') return no('not the bg-host executor');
+  if (input.minUptimeMs <= 0) return no('gate-code fast path disabled');
+  if (input.now - input.bootTimeMs < input.minUptimeMs) return no('uptime under the gate-code fast-path floor');
+  if (!input.bootCommit || !input.currentCommit) return no('boot or current commit unresolvable');
+  if (input.bootCommit === input.currentCommit) return no('nothing committed since boot');
+  if (!input.gateCodeDrift) return no('gate-code drift unresolvable');
+  const files = [...input.gateCodeDrift.addedSinceBoot, ...input.gateCodeDrift.changed];
+  if (files.length === 0) return no('no in-process gate source changed since boot');
+  const what = `in-process gate code changed since boot (${nameList(files)})`;
+  if (!input.window?.open) {
+    return no(`${what}; waiting to restart between gate measurements: ${input.window?.reason ?? 'gate state not probed'}`, files);
+  }
+  return {
+    restart: true,
+    reason: `${what}; restarting between gate measurements so the next run judges with current code (${input.window.reason})`,
+    files,
+  };
+}
+
 // ── pure decider (no DB, no git — everything injected) ────────────────────────
 
 export interface ExecutorStalenessInput {
@@ -482,6 +701,9 @@ export interface ExecutorStalenessVerdict {
   /** Echoed through so the escalation row carries the functional drift, not just
    *  the magnitude. null whenever it could not be resolved. */
   routineDrift?: RoutineCodeDrift | null;
+  /** Why the actuator is restarting: the 2h uptime path (default) or the gate-code
+   *  fast path. Recorded in the dev:restart reason so the ledger tells them apart. */
+  trigger?: 'uptime' | 'gate-code';
 }
 
 /** How many file names a page prints before collapsing the rest into a count.
@@ -836,12 +1058,14 @@ async function clearExecutorStalenessAlarm(opts: { installSlug: string; identity
 // ── the sweep ───────────────────────────────────────────────────────────────
 
 export interface StaleExecutorSweepResult {
-  outcome: 'alerted' | 'skipped' | 'healthy' | 'error';
+  outcome: 'alerted' | 'skipped' | 'healthy' | 'gate-code-restart' | 'error';
   verdict?: ExecutorStalenessVerdict;
   reason: string;
   paged?: boolean;
   recovered?: boolean;
   restart?: StaleExecutorRestartResult;
+  /** The gate-code fast path's judgment, when it was evaluated (WI-10007644 step 2). */
+  gateCode?: GateCodeFastPathVerdict;
 }
 
 export interface StaleExecutorSweepDependencies {
@@ -851,11 +1075,63 @@ export interface StaleExecutorSweepDependencies {
   bootTimeMs?: number;
   commitsBehind?: number | null;
   routineDrift?: RoutineCodeDrift | null;
+  gateCodeDrift?: RoutineCodeDrift | null;
+  gateProbe?: () => Promise<GateCollisionProbe | null>;
   restart?: (identity: string, verdict: ExecutorStalenessVerdict) => Promise<StaleExecutorRestartResult>;
   recentWatchdogFires?: typeof recentWatchdogFires;
   claimWatchdogFire?: typeof claimWatchdogFire;
   raiseExecutorStalenessAlarm?: typeof raiseExecutorStalenessAlarm;
   clearExecutorStalenessAlarm?: typeof clearExecutorStalenessAlarm;
+}
+
+// One deferral line per boot..HEAD pair: enough to show the fast path is evaluating
+// (a self-healing actuator nobody can see judging is indistinguishable from a dead one)
+// without logging the same wait on every 30s tick.
+let lastGateCodeDeferralLogKey = '';
+
+/**
+ * Gather the gate-code fast path's inputs, cheapest first, and judge them. Returns null
+ * when it is not worth asking at all (not bg-host, too young, nothing committed), so a
+ * young process on a quiet tree costs nothing beyond the uptime check it already made.
+ */
+async function resolveGateCodeFastPath(
+  probe: { identity: string; bootCommit: string | null; currentCommit: string | null; bootTimeMs: number; now: number },
+  deps: StaleExecutorSweepDependencies,
+): Promise<GateCodeFastPathVerdict | null> {
+  const minUptimeMs = gateCodeFastPathMinUptimeSec() * 1_000;
+  const worthAsking =
+    probe.identity === 'port-3271' &&
+    minUptimeMs > 0 &&
+    probe.now - probe.bootTimeMs >= minUptimeMs &&
+    !!probe.bootCommit &&
+    !!probe.currentCommit &&
+    probe.bootCommit !== probe.currentCommit;
+  if (!worthAsking) return null;
+  const gateCodeDrift =
+    deps.gateCodeDrift !== undefined
+      ? deps.gateCodeDrift
+      : await gateDriftCached(probe.bootCommit!, probe.currentCommit!, probe.now);
+  const drifted = !!gateCodeDrift && gateCodeDrift.changed.length + gateCodeDrift.addedSinceBoot.length > 0;
+  // The gate probe reads a lock file and one routines row; only pay for it once there
+  // is something to restart for.
+  const window = drifted
+    ? judgeGateCodeRestartWindow(await (deps.gateProbe ?? (() => probeGateCollision()))().catch(() => null))
+    : null;
+  const verdict = evaluateGateCodeFastPath({ ...probe, minUptimeMs, gateCodeDrift, window });
+  const key = `${probe.bootCommit}..${probe.currentCommit}`;
+  if (drifted && !verdict.restart && lastGateCodeDeferralLogKey !== key) {
+    lastGateCodeDeferralLogKey = key;
+    console.warn(`[stale-routine-executor] gate-code fast path (${probe.identity}): ${verdict.reason}`);
+  }
+  return verdict;
+}
+
+/** Test seam: the deferral-log key is module state shared across cases. */
+export function resetGateCodeFastPathStateForTests(): void {
+  lastGateCodeDeferralLogKey = '';
+  cachedGateDrift.key = '';
+  cachedGateDrift.value = null;
+  cachedGateDrift.atMs = 0;
 }
 
 /**
@@ -914,30 +1190,60 @@ export async function staleRoutineExecutorSweep(opts: {
       routineDrift,
     });
 
-    if (!verdict.stale) {
-      const clearAlarm = deps.clearExecutorStalenessAlarm ?? clearExecutorStalenessAlarm;
-      const recovered = await clearAlarm({ installSlug, identity, now });
-      return { outcome: 'healthy', verdict, reason: verdict.reason, recovered };
-    }
-
     // Remediation is intentionally independent of the alert's one-shot debounce:
     // an old alert row must not strand a still-frozen executor. The actuator has
     // its own identity, staleness, in-flight, and cooldown guards.
-    let restart: StaleExecutorRestartResult;
-    try {
-      const restartExecutor = deps.restart ?? restartStaleBgHostExecutor;
-      restart = await restartExecutor(identity, verdict);
-    } catch (error) {
-      restart = {
-        attempted: true,
-        restarted: false,
-        coalesced: false,
-        verified: false,
-        code: 'restart_hook_failed',
-        error: error instanceof Error ? error.message : String(error),
-      };
-      console.warn(`[stale-routine-executor] remediation failed (non-fatal): ${restart.error}`);
+    const runRestart = async (forVerdict: ExecutorStalenessVerdict): Promise<StaleExecutorRestartResult> => {
+      let result: StaleExecutorRestartResult;
+      try {
+        const restartExecutor = deps.restart ?? restartStaleBgHostExecutor;
+        result = await restartExecutor(identity, forVerdict);
+      } catch (error) {
+        result = {
+          attempted: true,
+          restarted: false,
+          coalesced: false,
+          verified: false,
+          code: 'restart_hook_failed',
+          error: error instanceof Error ? error.message : String(error),
+        };
+        console.warn(`[stale-routine-executor] remediation failed (non-fatal): ${result.error}`);
+      }
+      // WI-10007644: the caller logs only outcome+reason, so an attempt that did not
+      // restart used to vanish — the actuator failed on every tick for weeks with no
+      // trace. Every real attempt now leaves one line (at most one per backoff window).
+      if (result.attempted) {
+        console.warn(
+          `[stale-routine-executor] auto-restart (${identity}${forVerdict.trigger === 'gate-code' ? ', gate-code' : ''}): ` +
+            `${result.code}` +
+            (result.error ? ` — ${result.error}` : ''),
+        );
+      }
+      return result;
+    };
+
+    if (!verdict.stale) {
+      const clearAlarm = deps.clearExecutorStalenessAlarm ?? clearExecutorStalenessAlarm;
+      // A young or unmeasurable process is not a confirmed recovery. Keep an
+      // existing alarm until the actual loaded commit matches current source.
+      const recovered = bootCommit !== null && currentCommit !== null && bootCommit === currentCommit
+        ? await clearAlarm({ installSlug, identity, now })
+        : false;
+      const gateCode = await resolveGateCodeFastPath({ identity, bootCommit, currentCommit, bootTimeMs, now }, deps);
+      if (gateCode?.restart) {
+        const gateVerdict: ExecutorStalenessVerdict = {
+          stale: true,
+          reason: gateCode.reason,
+          ageMs: verdict.ageMs,
+          trigger: 'gate-code',
+        };
+        const restart = await runRestart(gateVerdict);
+        return { outcome: 'gate-code-restart', verdict: gateVerdict, reason: gateCode.reason, recovered, restart, gateCode };
+      }
+      return { outcome: 'healthy', verdict, reason: verdict.reason, recovered, ...(gateCode ? { gateCode } : {}) };
     }
+
+    const restart = await runRestart(verdict);
 
     const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
     const recentFires = deps.recentWatchdogFires ?? recentWatchdogFires;

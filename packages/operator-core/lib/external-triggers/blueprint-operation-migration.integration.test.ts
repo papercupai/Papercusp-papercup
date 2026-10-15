@@ -28,7 +28,7 @@ beforeAll(async () => {
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash)
     VALUES (${WS}, 'papercusp', 'legacy-plan', 'Legacy', 'ready', '# Legacy', 'legacy-v1')`;
   const sources = await sql<Array<{ id: string }>>`
-    INSERT INTO harness_shared.trigger_sources (workspace_id, kind, status)
+    INSERT INTO harness_shared.data_sources (workspace_id, kind, status)
     VALUES (${WS}, 'slack', 'connected') RETURNING id::text`;
   sourceId = sources[0]!.id;
 });

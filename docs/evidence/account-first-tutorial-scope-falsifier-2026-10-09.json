@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "kind": "mutation-test-evidence",
+  "name": "R15 account-scope boundary caught mutation",
+  "workItemId": "WI-10007744",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "specId": "AUTO-BAR-R-15-P-008",
+  "specRevision": 3,
+  "specFingerprint": "80ab955a15946b2ece15aa1da2da78f4de8479e66e05a53db89c633da82705b6",
+  "source": {
+    "portalCommit": "d88481ce05a95aa1497730862c3dcd2d16693715",
+    "root": "/dev/shm/pcv/papercusp-lint-as-committed-d88481ce05-bNxRsV",
+    "sourcePath": "apps/host/src/api.ts",
+    "sourceSha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701",
+    "testPath": "tests/tutorial-voice.test.ts",
+    "testSha256": "5d473deb11753d9aa397cbd25dfebbb157ecdd61994e43877841497b6e9fc3fb",
+    "worktreeDirty": false
+  },
+  "procedure": {
+    "runner": "scripts/mutation-probe.sh",
+    "runnerCommit": "f2d92cbc8ad685b843e70c83718ac7a8d1a45371",
+    "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+    "relocation": "overlay",
+    "mutation": "Disable the tutorial expectedScope tenantId/userId/sessionId mismatch guard in a temporary overlay.",
+    "testCommand": "node node_modules/vitest/vitest.mjs run tests/tutorial-voice.test.ts -t \"refuses (foreign account|foreign tenant|renewed session) before minting\"",
+    "expectedVerdict": "caught",
+    "actualVerdict": "caught",
+    "terminalExit": 0,
+    "treeIntegrity": "verified-byte-identical"
+  },
+  "cases": [
+    "tutorial voice mint account boundary > refuses foreign account before minting",
+    "tutorial voice mint account boundary > refuses foreign tenant before minting",
+    "tutorial voice mint account boundary > refuses renewed session before minting"
+  ],
+  "runs": [
+    {
+      "id": 20963321,
+      "phase": "baseline",
+      "source": "mutation-probe",
+      "status": "pass",
+      "passed": 3,
+      "failed": 0,
+      "unselected": 23,
+      "collectionFailed": false
+    },
+    {
+      "id": 20963322,
+      "phase": "unmutated-copy",
+      "source": "mutation-probe",
+      "status": "pass",
+      "passed": 3,
+      "failed": 0,
+      "unselected": 23,
+      "collectionFailed": false
+    },
+    {
+      "id": 20963324,
+      "phase": "mutant",
+      "source": "mutation-probe",
+      "status": "fail",
+      "passed": 0,
+      "failed": 3,
+      "unselected": 23,
+      "collectionFailed": false,
+      "expectedHttpStatus": 403,
+      "actualHttpStatus": 200
+    }
+  ],
+  "bindings": [
+    {
+      "id": 33651,
+      "kind": "test",
+      "testRunId": 20963321,
+      "currentness": "server-measured-current"
+    },
+    {
+      "id": 33652,
+      "kind": "mutation",
+      "testRunId": 20963324,
+      "currentness": "server-measured-current"
+    }
+  ],
+  "verification": {
+    "runtime": "current staging operator :3170 / build42ead3e6b0",
+    "freshness": "Both exact bindings were independently re-read with current spec/source/test/fixture; no stale or unknown reasons.",
+    "adequacy": "Current full R15 evidence population: falsifiability, fixture calibration, correct layer, oracle independence, execution integrity, freshness and plan-class risk floor pass. Overall verdict fail because the explicit output-only scope disclosure remains active.",
+    "proofFloorBoundary": "The evaluator accepts paired clause-bound mutation as proof at least as strong as its l3 floor. No independent meets_l3 coverage result or human intent-test result is asserted."
+  },
+  "log": {
+    "path": "/dev/shm/tutorial-r15-scope-falsifier-d884-20261009T2219.log",
+    "sha256": "9b96576f85390a14c8e085637f24762ab3330741eda41fd0c398100e19f4dea0"
+  },
+  "scope": "Exactly three account/tenant/session scope-refusal cases. The other 23 unit cases were unselected. No test was replayed to register this evidence.",
+  "remaining": [
+    "Keep output-only binding33641/33168 disclosure until complete R15 access and lifecycle coverage is discharged.",
+    "WI-10006884 retains shared tutorial-key, free-user, quota/budget, abuse, duration and kill-switch protection ownership.",
+    "Saved native manual bindings31720 and27916 are stale against current source; a current review remains required.",
+    "P-010/P-012/P-013/P-016 and owner directive1534 remain open; no final hosted promotion or production shipment is asserted."
+  ]
+}

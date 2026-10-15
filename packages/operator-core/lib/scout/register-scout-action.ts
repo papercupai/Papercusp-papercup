@@ -41,6 +41,7 @@
 
 import { registerScoutCycleAction, type ScoutCycleRunner } from './scout-cycle-action';
 import { admissionDenialFrom, isCapacityError, type CapacityFallbackEvent } from './capacity-errors';
+import { withTransportRetry, type TransportRetryEvent } from './inference-transport-retry';
 import { readScoutPoolSnapshot, scoutRoutableProviders } from './capacity-probe';
 import { runScoutCycle } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
@@ -313,9 +314,14 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     backendForModel: backendForLlmCall,
     events: capacityFallbacks,
   });
+  // P-006 (WI-10007504): a TRANSPORT death (dropped connection, idle upstream body, truncated
+  // SSE) gets bounded same-model retries. Outermost, so a retry re-enters the capacity fallback
+  // too; capacity denials themselves are never retried here (inference-transport-retry.ts).
+  const transportRetries: TransportRetryEvent[] = [];
+  const callWithRetry = withTransportRetry(callWithFallback, { events: transportRetries });
   const llmCall: typeof rawLlmCall = (o) => {
     const model = resolveScoutModel(o.model, providerCapacity, backendForLlmCall, SCOUT_IDEATOR_MODEL) ?? SCOUT_IDEATOR_MODEL;
-    return callWithFallback({ ...o, model });
+    return callWithRetry({ ...o, model });
   };
 
   // ── Mug↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20 — historical slug) ──
@@ -400,7 +406,11 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     } catch {
       /* best-effort — a ping-back failure never fails the revision tick */
     }
-    return { ...result, ...(capacityFallbacks.length > 0 ? { capacityFallbacks } : {}) };
+    return {
+      ...result,
+      ...(capacityFallbacks.length > 0 ? { capacityFallbacks } : {}),
+      ...(transportRetries.length > 0 ? { transportRetries } : {}),
+    };
   }
 
   onPhase?.('resolve-archive');
@@ -485,6 +495,7 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
       ...result,
       ...(deps.lastIdeation ? { ideators: deps.lastIdeation } : {}),
       ...(capacityFallbacks.length > 0 ? { capacityFallbacks } : {}),
+      ...(transportRetries.length > 0 ? { transportRetries } : {}),
       // P-007: ride the saturation verdict on the result so the scheduler persists
       // it in the ran-tick detail — the guard's activation is ledger-diagnosable.
       ...(dedupBurn.saturated ? { dedupBurn } : {}),
@@ -494,6 +505,10 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     // scheduler's error/gated tick detail still carries it (capacityFallbacksFrom).
     if (capacityFallbacks.length > 0 && err && typeof err === 'object') {
       (err as { capacityFallbacks?: CapacityFallbackEvent[] }).capacityFallbacks = capacityFallbacks;
+    }
+    // P-006: same for the transport-retry trail (transportRetriesFrom on the scheduler side).
+    if (transportRetries.length > 0 && err && typeof err === 'object') {
+      (err as { transportRetries?: TransportRetryEvent[] }).transportRetries = transportRetries;
     }
     throw err;
   } finally {

@@ -1,3 +1,4 @@
+import { signPaymentTestVoucher, paymentTestVerifier } from './_payment-voucher-fixture';
 /**
  * P2P commerce + BYOC shadow pilot (P-019).
  *
@@ -35,7 +36,7 @@ import {
   unsignedVoucher,
   type CumulativePaymentVoucher,
 } from './microcharge';
-import { createPaymentChannel, refundableEscrow, settleVoucherBatch } from './payment-channel';
+import { createPaymentChannel, refundableEscrow, settleVoucherBatch as rawSettleVoucherBatch } from './payment-channel';
 import { buildEvmBatchSettlementRequest, validateEvmSettlementConfig, type EvmSettlementConfig } from './evm-settlement';
 import { settleRevenue, type RevenueSplitManifest } from './revenue-settlement';
 import { authorizeTreasuryTransfer, type SafeTreasuryConfig } from './treasury-controls';
@@ -63,7 +64,7 @@ const WALLET_CREATOR = `0x${'d4'.repeat(20)}`;
 const WALLET_STRANGER = `0x${'e5'.repeat(20)}`;
 const TOKEN_UNLISTED = `0x${'f6'.repeat(20)}`;
 
-const voucher = (overrides: Partial<CumulativePaymentVoucher> = {}): CumulativePaymentVoucher => ({
+const voucher = (overrides: Partial<CumulativePaymentVoucher> = {}): CumulativePaymentVoucher => signPaymentTestVoucher({
   channelId: CHANNEL_ID,
   payer: 'buyer-1',
   seller: 'creator-1',
@@ -77,7 +78,7 @@ const voucher = (overrides: Partial<CumulativePaymentVoucher> = {}): CumulativeP
   cumulativeClaimMicros: 1_000n,
   signature: 'voucher-sig',
   ...overrides,
-});
+}, overrides.signature);
 
 const commerceEvent = (overrides: Partial<CommerceEvent> = {}): CommerceEvent => ({
   eventId: 'c-1',
@@ -148,6 +149,11 @@ const entitledStream = (extra: DistributionEvent[] = []) =>
   ]).states[0];
 
 // ------------------------------------------------------------------ pilot
+
+
+function settleVoucherBatch(input: Parameters<typeof rawSettleVoucherBatch>[0]): ReturnType<typeof rawSettleVoucherBatch> {
+  return rawSettleVoucherBatch({ verifySignature: paymentTestVerifier('chan-pilot-1', 'buyer-1'), ...input });
+}
 
 describe('P2P commerce + BYOC pilot — end-to-end happy path', () => {
   it('carries one purchase from voucher to usage receipt to channel claim to treasury payout with no value invented or lost', () => {
@@ -293,7 +299,7 @@ describe('P2P commerce + BYOC pilot — duplicate and double-spend prevention', 
 describe('P2P commerce + BYOC pilot — signed receipt verification', () => {
   it('rejects a voucher whose signature fails the verifier, and accepts the one that passes', () => {
     const rail = createPaymentChannel(CHANNEL_ID, 'evm-x402', 5_000n);
-    const verifySignature = (v: CumulativePaymentVoucher) => v.signature === 'voucher-sig';
+    const verifySignature = paymentTestVerifier(CHANNEL_ID, 'buyer-1');
     expect(settleVoucherBatch({ channel: rail, vouchers: [voucher({ signature: 'forged' })], nowMs: 2_000, verifySignature })).toMatchObject({ ok: false, code: 'invalid-signature' });
     expect(settleVoucherBatch({ channel: rail, vouchers: [voucher()], nowMs: 2_000, verifySignature })).toMatchObject({ ok: true });
   });

@@ -446,9 +446,10 @@ export async function evaluateActivationItemProvenance(input: {
     ...(!enforced
       ? {
           warning:
-            `${summary.unresolved.length} item(s) have no owner source, derivation or agent-added declaration ` +
-            `(${summary.unresolved.join(', ')}). This plan's earlier activation audits predate item provenance, so ` +
-            'the audit was recorded unenforced; declare them via itemProvenance to bring the plan under the rule.',
+            `${summary.unresolved.length} item(s) remain unresolved (${summary.unresolved.join(', ')}). ` +
+            itemProvenanceMissingProblems(summary).map((problem) => problem.detail).join('; ') +
+            `. This plan's earlier activation audits predate item provenance, so the audit was recorded unenforced. ` +
+            'Resolve the stated source or declaration gaps to bring the plan under the rule.',
         }
       : {}),
   };

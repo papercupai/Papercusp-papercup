@@ -18,6 +18,16 @@ const db = vi.hoisted(() => ({
 }));
 const creds = vi.hoisted(() => ({ store: {} as Record<string, string>, reads: 0, failReads: false }));
 
+// P-008 (jev-memory-timeouts-to-zero-2026-10-01): the real jevFetch makes the request
+// on a worker thread, where a stubbed global fetch cannot reach. These tests pin the
+// client wiring (zero calls when off, key per call, the ledger row), not the
+// transport, so jevFetch is routed through the stub. jev-transport.test.ts covers
+// the transport itself.
+vi.mock('./jev-transport', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./jev-transport')>()),
+  jevFetch: (url: string, init: RequestInit) => globalThis.fetch(url, init),
+}));
+
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({

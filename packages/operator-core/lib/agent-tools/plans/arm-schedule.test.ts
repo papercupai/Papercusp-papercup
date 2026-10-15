@@ -21,7 +21,12 @@ vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
   harnessScopedCtx: (_h: string, ctx: unknown) => ctx,
 }));
-vi.mock('./source', () => ({ getPlanRow: vi.fn() }));
+// getPlanRow is stubbed; planItemsForRow stays REAL so the nothing_to_run guard is
+// exercised through the one canonical "what items does this plan have" reader.
+vi.mock('./source', async (orig) => ({
+  ...(await orig<typeof import('./source')>()),
+  getPlanRow: vi.fn(),
+}));
 vi.mock('../../harness/routines/arm-plan-schedule', () => ({ armPlanSchedule: vi.fn() }));
 vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
@@ -46,12 +51,21 @@ type Out = { data?: any; content?: { text: string }[]; isError?: boolean };
 const call = (slug = 'p1') => tool.handler({ harness: 'web', slug } as never, {} as never) as Promise<Out>;
 const body = (o: Out) => o.data ?? JSON.parse(o.content![0]!.text);
 
-const scheduledPlan = { workspaceId: 'default', harnessSlug: 'web', schedule: { rrule: 'FREQ=DAILY' }, scheduledAt: null };
+const scheduledPlan = {
+  workspaceId: 'default', harnessSlug: 'web', schedule: { rrule: 'FREQ=DAILY' }, scheduledAt: null,
+  items: [], content: '',
+};
+const indexItem = (id: string, status: string) =>
+  ({ id, status, text: `item ${id}`, importance: 'normal', blockedBy: [], decisionRefs: [], phase: null });
+/** Per-test overrides merged onto `scheduledPlan` by the ONE stub installed in beforeEach,
+ *  so the nothing_to_run cases add no further mock casts. */
+let rowOverride: Record<string, unknown> = {};
 
 beforeEach(() => {
   vi.clearAllMocks();
   flagM.mockResolvedValue(true);
-  getRow.mockResolvedValue(scheduledPlan as never);
+  rowOverride = {};
+  getRow.mockImplementation(async () => ({ ...scheduledPlan, ...rowOverride }) as never);
   armM.mockResolvedValue({ ok: true, routineId: 'r1', nextFireAt: 't1' } as never);
 });
 
@@ -74,9 +88,41 @@ describe('plans:arm-schedule guard chain', () => {
   });
 
   it('not_scheduled when the plan has neither schedule nor scheduledAt', async () => {
-    getRow.mockResolvedValue({ workspaceId: 'default', harnessSlug: 'web', schedule: null, scheduledAt: null } as never);
+    rowOverride = { schedule: null, scheduledAt: null };
     expect(body(await call()).results[0].error).toBe('not_scheduled');
     expect(armM).not.toHaveBeenCalled();
+  });
+
+  // WI-10004721: a shipped plan (every item done/dropped) was re-armed as a daily
+  // schedule; each fire cloned the finished plan and minted nothing, 21 times.
+  it('nothing_to_run when every item is done/dropped — refused before arming', async () => {
+    rowOverride = { items: [indexItem('P-001', 'done'), indexItem('P-002', 'dropped')] };
+    const b = body(await call());
+    expect(b.ok).toBe(false);
+    expect(b.results[0]).toMatchObject({ ok: false, slug: 'p1', error: 'nothing_to_run' });
+    expect(b.results[0].detail).toContain('all 2 item(s) are done/dropped');
+    expect(armM).not.toHaveBeenCalled();
+  });
+
+  it('nothing_to_run reads items from content when the stored index is empty', async () => {
+    rowOverride = { content: '# Shipped\n\n## Phase 1\n\n- **P-001** `done` finished thing\n' };
+    expect(body(await call()).results[0].error).toBe('nothing_to_run');
+    expect(armM).not.toHaveBeenCalled();
+  });
+
+  it('arms a plan with at least one open item alongside terminal ones', async () => {
+    rowOverride = { items: [indexItem('P-001', 'done'), indexItem('P-002', 'todo')] };
+    expect(body(await call()).results[0]).toMatchObject({ ok: true, routineId: 'r1' });
+    expect(armM).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not apply nothing_to_run to an operation-backed schedule (it fires an operation, not a clone)', async () => {
+    rowOverride = {
+      schedule: { rrule: 'FREQ=DAILY', operation: { harnessSlug: 'web', operationId: 'op-1' } },
+      items: [indexItem('P-001', 'done')],
+    };
+    expect(body(await call()).results[0]).toMatchObject({ ok: true });
+    expect(armM).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces an armPlanSchedule failure reason', async () => {

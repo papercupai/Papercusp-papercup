@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
+  act,
   fireEvent,
   render,
   screen,
@@ -20,6 +21,7 @@ const M = vi.hoisted(() => {
     writeln = vi.fn();
     getSelection = vi.fn(() => "");
     onData = vi.fn();
+    attachCustomKeyEventHandler = vi.fn<(handler: (event: KeyboardEvent) => boolean) => void>();
 
     constructor() {
       M.terminals.push(this);
@@ -76,12 +78,34 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: M.FakeFitAddon }));
 vi.mock("@xterm/addon-web-links", () => ({
   WebLinksAddon: M.FakeWebLinksAddon,
 }));
+// The viewer (noVNC, its own socket) has its own tests; here only WHICH desktop the
+// connection opens, and in which mode, is under test.
+vi.mock("./HostedDesktopViewer", () => ({
+  HostedDesktopViewer: (props: { desktopSessionId: string; mode: string }) => (
+    <section aria-label={`Live ${props.desktopSessionId}`} data-mode={props.mode} />
+  ),
+}));
 
 import {
   DESKTOP_START_TIMEOUT_MS,
   HostedWorkspaceSession,
 } from "./HostedWorkspaceSession";
+import type { ReactElement } from "react";
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import { HostedDesktopConnection } from "./HostedDesktopConnection";
+
+/**
+ * The connection keeps the open desktop, pins and filter in the URL (P-006 grid
+ * state), so it needs a nuqs adapter. `hasMemory` lets a selection it sets take
+ * effect; a fresh adapter per render keeps one test's URL out of the next.
+ */
+function renderConnection(ui: ReactElement) {
+  return render(
+    <NuqsTestingAdapter searchParams="" hasMemory>
+      {ui}
+    </NuqsTestingAdapter>,
+  );
+}
 import { HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES } from "./hosted-workspace-session-protocol";
 import type { WorkspaceHostControlRow } from "./workspace-view-model";
 
@@ -144,6 +168,51 @@ async function connected() {
   await waitFor(() => expect(M.sockets.length).toBeGreaterThan(0));
   return M.sockets[M.sockets.length - 1];
 }
+
+describe("tutorial host binding receipts", () => {
+  it("lets observers navigate with Tab and keeps a controller's terminal completion with a backward exit", async () => {
+    render(<HostedWorkspaceSession hostId="host" routeLabel="route" workspaceName="Workspace" />);
+    const socket = await connected();
+    const handler = M.terminals[0].attachCustomKeyEventHandler.mock.calls[0][0];
+    const tab = (shiftKey = false) => new KeyboardEvent("keydown", { key: "Tab", shiftKey });
+    expect(handler(tab())).toBe(false);
+    act(() => socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "channel", role: "observer", binding: { generation: 1, hostedSessionId: "session" } }) }));
+    expect(handler(tab())).toBe(false);
+    expect(handler(tab(true))).toBe(false);
+    expect(handler(new KeyboardEvent("keydown", { key: "ArrowUp" }))).toBe(true);
+    act(() => socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "channel", role: "controller", binding: { generation: 1, hostedSessionId: "session" } }) }));
+    expect(handler(tab())).toBe(true);
+    expect(handler(tab(true))).toBe(false);
+  });
+
+  it("waits for an authorized ticket and validated session.bound; sign-in, PTY output and stale sockets cannot certify a host", async () => {
+    const onWorkspaceBound = vi.fn();
+    const onWorkspaceIdChange = vi.fn();
+    render(<HostedWorkspaceSession hostId="host" routeLabel="route" workspaceName="Workspace" onWorkspaceBound={onWorkspaceBound} onWorkspaceIdChange={onWorkspaceIdChange} />);
+    const socket = await connected();
+    expect(onWorkspaceIdChange).toHaveBeenCalledWith("ws-1");
+    expect(onWorkspaceBound.mock.calls.filter(([id]) => id !== null)).toEqual([]);
+    socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "wrong", channelId: "channel", role: "controller", binding: { generation: 1, hostedSessionId: "session" } }) });
+    expect(onWorkspaceBound.mock.calls.filter(([id]) => id !== null)).toEqual([]);
+    socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "channel", role: "controller", binding: { generation: 1, hostedSessionId: "session" } }) });
+    await waitFor(() => expect(onWorkspaceBound).toHaveBeenCalledWith("ws-1"));
+    socket.emit("close", { code: 1000, reason: "closed" });
+    expect(onWorkspaceBound).toHaveBeenLastCalledWith(null);
+    const positiveCount = onWorkspaceBound.mock.calls.filter(([id]) => id !== null).length;
+    socket.emit("message", { data: JSON.stringify({ type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "channel", role: "controller", binding: { generation: 1, hostedSessionId: "session" } }) });
+    expect(onWorkspaceBound.mock.calls.filter(([id]) => id !== null)).toHaveLength(positiveCount);
+  });
+  it("does not certify the selected host when its connector ticket is refused", async () => {
+    const original = M.fetch.getMockImplementation()!;
+    M.fetch.mockImplementation((input: RequestInfo | URL) => String(input).includes("session-ticket") ? Promise.resolve(Response.json({ error: "workspace_binding_mismatch" }, { status: 403 })) : original(input));
+    const onWorkspaceBound = vi.fn();
+    render(<HostedWorkspaceSession hostId="host" routeLabel="route" workspaceName="Workspace" onWorkspaceBound={onWorkspaceBound} />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await screen.findByText(/Could not mint a workspace session ticket/);
+    expect(M.sockets).toHaveLength(0);
+    expect(onWorkspaceBound.mock.calls.filter(([id]) => id !== null)).toEqual([]);
+  });
+});
 
 /**
  * Host handshake. Omitting `limits` is how an older, non-chunking host looks.
@@ -653,7 +722,7 @@ describe("HostedWorkspaceSession", () => {
     );
   });
 
-  it("automatically starts an empty desktop after the session gains controller role", async () => {
+  it.each([true, false])("automatically starts an empty desktop after the session gains controller role only when the desktop is visible=%s", async (showDesktop) => {
     const workspace: WorkspaceHostControlRow = {
       kind: "workspace",
       id: "host-1",
@@ -674,7 +743,7 @@ describe("HostedWorkspaceSession", () => {
         connector: { routeLabel: "workspace-relay", transport: "websocket" },
       },
     };
-    render(<HostedDesktopConnection workspace={workspace} />);
+    renderConnection(<HostedDesktopConnection workspace={workspace} showDesktop={showDesktop} />);
     const socket = await connected();
     const sentMessages = () =>
       socket.send.mock.calls.map(
@@ -687,30 +756,200 @@ describe("HostedWorkspaceSession", () => {
     await waitFor(() =>
       expect(sentMessages().some((message) => message.type === "desktop.roster")).toBe(true),
     );
-    const rosterRequest = sentMessages().find(
-      (message) => message.type === "desktop.roster",
-    );
-    expect(rosterRequest?.requestId).toBeTruthy();
-    socket.emit("message", {
-      data: JSON.stringify({
-        type: "desktop.roster.result",
-        requestId: rosterRequest?.requestId,
-        desktops: [],
-      }),
-    });
-    await waitFor(() =>
-      expect(screen.getByText("No desktops are available yet")).toBeTruthy(),
-    );
+    expect(
+      sentMessages().find((message) => message.type === "desktop.roster")?.requestId,
+    ).toBeTruthy();
+    // Answer EVERY roster read, as the relay does: the visible grid also refreshes
+    // the roster (P-006), and the auto-start rightly waits for a settled roster.
+    const answered = new Set<string>();
+    const answerRosters = async () => {
+      for (const message of sentMessages()) {
+        if (message.type !== "desktop.roster" || !message.requestId) continue;
+        if (answered.has(message.requestId)) continue;
+        answered.add(message.requestId);
+        await act(async () =>
+          socket.emit("message", {
+            data: JSON.stringify({
+              type: "desktop.roster.result",
+              requestId: message.requestId,
+              desktops: [],
+            }),
+          }),
+        );
+      }
+    };
+    await answerRosters();
+    if (showDesktop) {
+      await waitFor(async () => {
+        await answerRosters();
+        expect(screen.getByText("No desktops are available yet")).toBeTruthy();
+      });
+    }
+    // A settled roster is a bounded number of reads, never a read storm.
+    expect(
+      sentMessages().filter((message) => message.type === "desktop.roster").length,
+    ).toBeLessThanOrEqual(3);
     expect(sentMessages().some((message) => message.type === "desktop.start")).toBe(false);
 
-    socket.emit("message", {
+    await act(async () => socket.emit("message", {
       data: JSON.stringify({ type: "session.role", role: "controller" }),
-    });
+    }));
+    await answerRosters();
     await waitFor(() =>
       expect(
         sentMessages().filter((message) => message.type === "desktop.start"),
-      ).toHaveLength(1),
+      ).toHaveLength(showDesktop ? 1 : 0),
     );
+  });
+
+  describe("My desktop through the real connection (personal-cloud-desktop-2026-10-06 P-005)", () => {
+    const desktopWorkspace: WorkspaceHostControlRow = {
+      kind: "workspace",
+      id: "host-1",
+      name: "research-control",
+      connectionId: "connection-1",
+      target: "workspace-target",
+      scopeLabel: "research-control",
+      region: "us-central1",
+      size: "e2-standard-4",
+      image: "papercusp",
+      diskGiB: 30,
+      network: "default",
+      desiredState: "running",
+      observedState: "running",
+      recoverability: { kind: "none", label: "No backup" },
+      capabilities: {},
+      tunnel: {
+        connector: { routeLabel: "workspace-relay", transport: "websocket" },
+      },
+    };
+    type Sent = { type: string; requestId?: string; personal?: boolean };
+
+    /** Connect, answer the roster with `desktops`, and optionally take the controller role. */
+    async function openConnection(
+      desktops: Array<Record<string, unknown>>,
+      { controller }: { controller: boolean },
+    ) {
+      renderConnection(<HostedDesktopConnection workspace={desktopWorkspace} />);
+      const socket = await connected();
+      const sent = () =>
+        socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Sent);
+      socket.emit("message", {
+        data: JSON.stringify({ type: "pty.ready", role: "observer", resumed: false }),
+      });
+      await waitFor(() => expect(sent().some((message) => message.type === "desktop.roster")).toBe(true));
+      const rosterRequest = sent().find((message) => message.type === "desktop.roster");
+      await act(async () =>
+        socket.emit("message", {
+          data: JSON.stringify({
+            type: "desktop.roster.result",
+            requestId: rosterRequest?.requestId,
+            desktops,
+          }),
+        }),
+      );
+      if (controller) {
+        await act(async () =>
+          socket.emit("message", {
+            data: JSON.stringify({ type: "session.role", role: "controller" }),
+          }),
+        );
+      }
+      const button = screen.getByRole("button", { name: "Open my desktop" }) as HTMLButtonElement;
+      await waitFor(() => expect(button.disabled).toBe(false));
+      return { socket, sent, button };
+    }
+
+    /** The mode the open viewer shows `desktopSessionId` in, or null when it is not open. */
+    const openMode = (desktopSessionId: string) =>
+      screen
+        .queryByRole("region", { name: `Live ${desktopSessionId}` })
+        ?.getAttribute("data-mode") ?? null;
+
+    it("asks for the caller's own desktop and opens the result in Take control (R-5)", async () => {
+      const { socket, sent, button } = await openConnection(
+        [{ desktopSessionId: "desk-1", state: "running", scope: "agent", owner: "su-1" }],
+        { controller: true },
+      );
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(sent().filter((message) => message.type === "desktop.start")).toHaveLength(1),
+      );
+      const start = sent().find((message) => message.type === "desktop.start");
+      expect(start?.personal).toBe(true);
+      await waitFor(() => expect(button.textContent).toBe("Starting my desktop…"));
+      expect(openMode("mine")).toBeNull();
+
+      await act(async () =>
+        socket.emit("message", {
+          data: JSON.stringify({
+            type: "desktop.start.result",
+            requestId: start?.requestId,
+            desktop: { desktopSessionId: "mine", state: "ready", scope: "user" },
+          }),
+        }),
+      );
+      await waitFor(() => expect(openMode("mine")).toBe("takeover"));
+      expect(openMode("desk-1")).toBeNull();
+      expect(button.getAttribute("data-my-desktop")).toBe("running");
+    });
+
+    it("reopens an already-running personal desktop without starting another (R-16)", async () => {
+      const { sent, button } = await openConnection(
+        [
+          { desktopSessionId: "desk-1", state: "running", scope: "agent", owner: "su-1" },
+          { desktopSessionId: "mine", state: "running", scope: "user" },
+        ],
+        { controller: true },
+      );
+      expect(button.getAttribute("data-my-desktop")).toBe("running");
+      // Nothing is open before the click, so the socket below is the click's doing.
+      expect(openMode("mine")).toBeNull();
+      fireEvent.click(button);
+      await waitFor(() => expect(openMode("mine")).toBe("takeover"));
+      expect(sent().some((message) => message.type === "desktop.start")).toBe(false);
+    });
+
+    it("names the host's refusal instead of spinning (R-15)", async () => {
+      const { socket, sent, button } = await openConnection(
+        [{ desktopSessionId: "desk-1", state: "running", scope: "agent", owner: "su-1" }],
+        { controller: true },
+      );
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(sent().some((message) => message.type === "desktop.start")).toBe(true),
+      );
+      const start = sent().find((message) => message.type === "desktop.start");
+      await act(async () =>
+        socket.emit("message", {
+          data: JSON.stringify({
+            type: "operation.error",
+            requestId: start?.requestId,
+            operation: "desktop.start",
+            code: "personal_desktop_unavailable",
+          }),
+        }),
+      );
+      await waitFor(() =>
+        expect(
+          document.querySelector('[data-error-code="personal_desktop_unavailable"]')?.textContent,
+        ).toContain("My desktop could not be opened (personal_desktop_unavailable)."),
+      );
+      expect(button.textContent).toBe("My desktop");
+      expect(openMode("mine")).toBeNull();
+    });
+
+    it("says another tab holds the controller role instead of sending a start it would refuse", async () => {
+      const { sent, button } = await openConnection(
+        [{ desktopSessionId: "desk-1", state: "running", scope: "agent", owner: "su-1" }],
+        { controller: false },
+      );
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(document.querySelector('[data-error-code="controller_required"]')).toBeTruthy(),
+      );
+      expect(sent().some((message) => message.type === "desktop.start")).toBe(false);
+    });
   });
 
   it("reports a start the host never answers instead of waiting forever (runtime older than D-405)", async () => {

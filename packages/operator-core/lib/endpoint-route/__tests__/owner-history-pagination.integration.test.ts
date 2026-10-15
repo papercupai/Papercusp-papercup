@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 let sql: postgres.Sql;
 let admin: postgres.Sql;
@@ -12,12 +12,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql }),
 }));
 
-import { backfillFromOwnerSessionTurns, decodeOwnerHistoryCursor } from '../routes/harness/streams';
+import { backfillFromOwnerSessionTurns, decodeOwnerHistoryCursor } from '../../owner-sessions/transcript';
 
 beforeAll(async () => {
   const uri = await getTestPg();
   admin = postgres(uri, { max: 1, onnotice: () => {} });
   await admin.unsafe(`CREATE DATABASE "${database}"`);
+  await markManagedTestDatabase(admin, database);
   const target = new URL(uri);
   target.pathname = `/${database}`;
   sql = postgres(target.toString(), { max: 1, onnotice: () => {} });

@@ -1,3 +1,4 @@
+import { signPaymentTestVoucher, paymentTestVerifier } from '../_payment-voucher-fixture';
 /**
  * P-036 escrow authority — the Worker + chain adjudication of federated claims.
  *
@@ -12,7 +13,7 @@ import { reduceCommerceEvents, type CommerceEvent } from '../commerce-events';
 import { paymentVoucherDigest, unsignedVoucher, type CumulativePaymentVoucher } from '../microcharge';
 import { perUseRollup } from '../../cupboard/ledger-p2p-bridge';
 import {
-  adjudicateEscrowClaims,
+  adjudicateEscrowClaims as rawAdjudicateEscrowClaims,
   buildUsageReceiptEvent,
   canonicalClaimOrder,
   readUsageClaims,
@@ -25,7 +26,7 @@ const PAYER = 'gh:buyer';
 const RELEASE = 'release:widget@1.0.0';
 
 function voucher(overrides: Partial<CumulativePaymentVoucher> = {}): CumulativePaymentVoucher {
-  return {
+  return signPaymentTestVoucher({
     channelId: CHANNEL,
     payer: PAYER,
     seller: SELLER,
@@ -39,7 +40,7 @@ function voucher(overrides: Partial<CumulativePaymentVoucher> = {}): CumulativeP
     cumulativeClaimMicros: 10_000n,
     signature: 'sig',
     ...overrides,
-  };
+  }, overrides.signature);
 }
 
 function claim(
@@ -52,6 +53,11 @@ function claim(
 }
 
 const escrow = (micros: bigint) => createPaymentChannel(CHANNEL, 'evm-x402', micros);
+
+
+function adjudicateEscrowClaims(input: Parameters<typeof rawAdjudicateEscrowClaims>[0]): ReturnType<typeof rawAdjudicateEscrowClaims> {
+  return rawAdjudicateEscrowClaims({ verifySignature: paymentTestVerifier('chan-p036', 'gh:buyer'), ...input });
+}
 
 describe('escrow authority — duplicate receipts', () => {
   it('folds the same voucher twice as ONE admission and one duplicate', () => {

@@ -1076,9 +1076,30 @@ describe('AdvConversationsTab — unified communication views', () => {
         },
       },
     });
+    const rawError = 'codex exited 1: internal backend path and provider details';
+    syncResults[syncKey('conversations.agentChatDetail', { id: 'chat-1' })] = ready([{
+      id: 'chat-1',
+      harness_slug: 'papercup',
+      role: 'worker',
+      feature_id: 'F-042',
+      title: 'implement the auth refactor',
+      created_at: Date.now(),
+      archived_at: Date.now(),
+      total_input_tokens: 0,
+      total_output_tokens: 0,
+      total_cost_usd_cents: 0,
+      turns: 3,
+      transcript: [
+        { ts: new Date().toISOString(), role: 'user', content: 'start the refactor' },
+        { ts: new Date().toISOString(), role: 'assistant', content: 'on it — opening the module' },
+        { ts: new Date().toISOString(), role: 'assistant', content: rawError, error: true },
+      ],
+    }]);
     render(<AdvConversationsTab />);
     expect(await screen.findByText('start the refactor')).toBeTruthy();
     expect(screen.getByText('on it — opening the module')).toBeTruthy();
+    expect(screen.getByText('That turn did not complete. Try asking again.')).toBeTruthy();
+    expect(screen.queryByText(/internal backend path/i)).toBeNull();
     // archived → no interactive panel
     expect(screen.queryByTestId('advconv-live-chat')).toBeNull();
   });

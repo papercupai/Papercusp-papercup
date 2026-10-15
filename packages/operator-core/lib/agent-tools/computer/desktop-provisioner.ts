@@ -3,12 +3,20 @@ import { managedSpawn, markManagedSpawnTeardown } from '../../task-manager/manag
 import { killScopeUnit, killTask } from '../../task-manager/control';
 import { startA11yBus } from '../../desktop/a11y-bus';
 import { a11yBusSocketPath, desktopAppSandboxEnabled, desktopSandboxSession, desktopSandboxEnv } from './desktop-sandbox';
+import { listReservedLocalDesktopDisplays } from '../../desktop/desktop-session-registry';
 import * as core from './desktop-provisioner-core';
 export * from './desktop-provisioner-core';
 
 const releaseDeps = { killTask, killScopeUnit, markManagedTeardown: markManagedSpawnTeardown };
 const operatorRuntime: core.DesktopProvisionRuntime = {
   spawn: managedSpawn,
+  reservedDisplayNumbers: async () => {
+    const displays = await listReservedLocalDesktopDisplays();
+    return new Set(displays.flatMap((display) => {
+      const match = /^:(\d+)$/.exec(display);
+      return match ? [Number(match[1])] : [];
+    }));
+  },
   startBus: startA11yBus,
   sandbox: async (display, env, opts) => desktopSandboxSession(
     { display, a11yBusPath: a11yBusSocketPath(env.DBUS_SESSION_BUS_ADDRESS),

@@ -40,7 +40,6 @@ import {
   systemctlIsActive,
 } from './pairs/service';
 import { gitReadPassthrough, shellArgv } from './pairs/git-read';
-import { gitnexusDefinitionLookup, GITNEXUS_INDEX_FINDING } from './pairs/code-search';
 import type { CorpusFixture } from './corpus';
 import type { SampledCommand } from './types';
 
@@ -1246,117 +1245,5 @@ describe('policy tier authorization', () => {
   });
 });
 
-/**
- * Boundaries for the code-search family (WI-6445).
- *
- * Every exclusion below removes real corpus atoms, and each one is here because
- * claiming it would point an agent at an answer about the WRONG TREE or at a
- * question the code graph does not answer. The first draft of this pattern
- * scored 22/24 (`needs-widening`) and the fix was narrowing it, per D-008 —
- * these pin that narrowing so it cannot be quietly relaxed back.
- */
-describe('code-search pattern boundaries (WI-6445)', () => {
-  const claims = (atom: string) =>
-    matchingAtoms(gitnexusDefinitionLookup, [{ sid: 's', ts: 't', atom }]).length === 1;
-  const cover = (atom: string) => gitnexusDefinitionLookup.cover(atom);
-
-  it('claims a definition lookup anchored in this repo', () => {
-    expect(claims('grep -rn "export function findLiveHost" packages/operator-core/lib/')).toBe(true);
-    expect(claims('grep -rln "class PgLinkStore" packages/coordination/src/ 2>/dev/null')).toBe(true);
-    expect(claims('grep -rn "export interface PlanItem" libs/generic/plan-parser/src/*.ts')).toBe(true);
-  });
-
-  it('maps a covered command onto a real gitnexus.context call', () => {
-    const result = cover('grep -rn "export function findLiveHost" packages/operator-core/lib/');
-    expect(result.covered).toBe(true);
-    expect(result.expression).toBe('gitnexus.context { name: "findLiveHost", kind: "Function" }');
-  });
-
-  it('teaches safe exclusions before falling back to exhaustive grep', () => {
-    const guidance = gitnexusDefinitionLookup.routing.insteadOf;
-    expect(guidance).toContain('--exclude-dir={node_modules,.vitest-tmp,dist,coverage}');
-    expect(guidance).toContain('--exclude-dir=sidecar');
-    expect(guidance).toMatch(/generated bundles\/caches are not source evidence/i);
-    expect(guidance).toMatch(/exhaustive exact-text search remains grep's job/i);
-  });
-
-  /**
-   * `-A n` on a DEFINITION-anchored grep means "show me the body", which
-   * `include_content` returns in full. `-B`/`-C` ask for what PRECEDES the
-   * declaration (a JSDoc block, decorators) — not part of the symbol's source.
-   */
-  it('maps after-context onto include_content, but not before-context', () => {
-    expect(cover('grep -rn "class PgTaggableStore" -A 40 packages/coordination/src/x.ts').expression)
-      .toContain('include_content: true');
-    const before = cover('grep -rn "class PgTaggableStore" -B 5 packages/coordination/src/x.ts');
-    expect(before.covered).toBe(false);
-    expect(before.reason).toMatch(/-B/);
-  });
-
-  /**
-   * THE EXCLUSION THAT EARNED THIS FILE ITS VERDICT. This box carries a second
-   * checkout (oddsmith) whose packages sit at the same first path segment, so a
-   * bare `packages/` operand does not say which repo it means — and gitnexus
-   * indexes per-repo. Both atoms below are real corpus commands.
-   */
-  it('never claims a bare first-segment root, even beside a properly anchored one', () => {
-    expect(claims('grep -rn "export interface AccountRateState" -A 22 packages libs/papercusp/packages --include="*.ts"')).toBe(false);
-    expect(claims('grep -rn "interface ResolvedItem" libs/generic/ packages/ --include=*.ts')).toBe(false);
-    expect(claims('grep -rn "interface Foo" . --include=*.ts')).toBe(false);
-  });
-
-  it('never claims another checkout on this box', () => {
-    expect(claims('grep -rn "export async function recordFill" -A 45 packages/treasury/src/ledger.ts')).toBe(false);
-    expect(claims('grep -rn "class Oms" packages/oms/src/*.ts')).toBe(false);
-    expect(claims('grep -rln "class PgPresenceStore" /home/dev/papercupai-workspace/papercup --include="*.ts"')).toBe(false);
-  });
-
-  it('never claims a search with no path at all (the cwd died with the `cd`)', () => {
-    expect(claims('grep -rn "export async function getHiveSetting" --include=*.ts -A 20')).toBe(false);
-  });
-
-  it('never claims vendored code the graph does not index', () => {
-    expect(claims('grep -rn "function isBogon" node_modules/hyperdht/lib/*.js')).toBe(false);
-  });
-
-  it('never claims a shell expansion, whose searched tree is undecidable', () => {
-    expect(claims('grep -rn "export function listenHubEnabled" -A 30 $f')).toBe(false);
-    expect(claims('grep -rn -A 35 "interface PresenceRecord" $(grep -rln "interface PresenceRecord" packages/operator-core/lib/')).toBe(false);
-  });
-
-  it('never claims a redirect to a file, which the tool cannot produce', () => {
-    expect(claims('grep -rn "export function findLiveHost" packages/operator-core/lib/ > /tmp/out.txt')).toBe(false);
-  });
-
-  /**
-   * The tool indexes a CODE graph. A definition-shaped pattern aimed at data or
-   * config files is a text search the graph cannot serve.
-   */
-  it('never claims a non-source --include filter', () => {
-    const result = cover('grep -rn "interface Foo" packages/operator-core/lib/ --include=*.sql');
-    expect(result.covered).toBe(false);
-    expect(result.reason).toMatch(/CODE graph/);
-  });
-
-  /**
-   * `type` / `const` / `enum` are NOT claimed: gitnexus.context's schema names
-   * Function/Class/Method/Interface/Constructor as its symbol kinds, and a
-   * lookup for a declaration the graph may not model is exactly the dead nudge
-   * this pair exists to avoid. Deliberate coverage sacrifice, not an oversight.
-   */
-  it('never claims a declaration kind the code graph is not confirmed to model', () => {
-    expect(claims('grep -rn "export const FEATURE_TERMINAL_STATES" packages/operator-core/lib/')).toBe(false);
-    expect(claims('grep -rn "export type SessionState" --include=*.ts packages/operator-core/lib')).toBe(false);
-  });
-
-  /** WI-6457: a one-time index build was never enough to lift the hold. The
-   * durable routine has now produced real scheduled analyze successes plus
-   * healthy graph canaries, so the pair is eligible for ordinary promotion. */
-  it('is promotion-eligible after the verified scheduled refresh owner landed', () => {
-    expect(gitnexusDefinitionLookup.expectedVerdict).toBe('equivalent');
-    expect(gitnexusDefinitionLookup.holdAtObserve).toBeUndefined();
-    expect(assertPolicyTier(gitnexusDefinitionLookup)).toBe('observe');
-    expect(GITNEXUS_INDEX_FINDING.refreshOwner).toContain('system:gitnexus-reindex');
-    expect(GITNEXUS_INDEX_FINDING.note).toMatch(/scheduled analyze completions|graph canaries/i);
-  });
-});
+// The code-search family's boundaries live in `pairs/code-search.test.ts`
+// (P-002 / D-010 retarget to lsp:query), beside the project-root pin.

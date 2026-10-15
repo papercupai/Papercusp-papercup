@@ -87,6 +87,8 @@ export function s33PlacementInput(c: S33Case, effected = false): PlanPlacementPr
       unmeasuredPricedSpend: false,
       spentCentsAt: NOW,
       spentCentsSource: 'goal-lineage-rollup',
+      interactiveUsageFreshnessStatus: null,
+      interactiveUsageLastIngestedAtMs: null,
     },
     refusal: null, degraded: false, degradedReasons: [],
   };
@@ -133,7 +135,7 @@ export function s33Agenda(c: S33Case, effected = false) {
       read: { status: 'known', value: {
         gradeable: true, evidenceRef: `fixture:s33:${c}:gate`,
         gate: {
-          buildProvenance: { sha: null, version: 's33-fixture' }, satisfied: false,
+          satisfied: false,
           code: c === 'verify' || effected ? 'acceptance_ungraded' : 'plan_items_unfinished',
           message: c === 'verify' || effected ? 'Current proof awaits independent review.' : 'Continue the already-held test-verification task before independent review.',
         },
@@ -158,7 +160,7 @@ export function s33NoDemandInputs() {
       review: {
         schemaVersion: 1, goalId: GOAL, disposition: 'no-eligible-work',
         rationale: 'Current scoped review found no uncovered goal outcome or eligible plan for this interval.',
-        evidenceRefs: [`goal:${GOAL}`], planRefs: [],
+        evidenceRefs: [`goal:${GOAL}`], planRefs: [], coverage: [],
         portfolioFingerprint: goalPlanningPortfolioFingerprint(portfolio), reviewedAt: NOW,
       },
     } },

@@ -119,5 +119,21 @@ describe('cross-port session-epoch dedup (real PG — P-004a)', () => {
     });
     expect(reprimed).toBeTruthy();
     expect(reprimed).toContain('argShape Z');
+    // Observe every eligible port's telemetry before closing its SQL handle.
+    // The writer is asynchronous: ledger uniqueness alone says nothing about a
+    // missing recall row, and early teardown can manufacture CONNECTION_ENDED.
+    const expectedSurfaces = ['initialize', 'turn-start', 'compact'];
+    let observedSurfaces: string[] = [];
+    for (let i = 0; i < 200; i++) {
+      const rows = await db.adminSql<{ surface: string }[]>`
+        SELECT DISTINCT surface FROM harness_shared.memory_recall_stats
+        WHERE session_id = ${SID}
+      `;
+      observedSurfaces = rows.map((row) => row.surface);
+      if (expectedSurfaces.every((surface) => observedSurfaces.includes(surface))) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(observedSurfaces).toEqual(expect.arrayContaining(expectedSurfaces));
+    await waitForStamps(db.adminSql as never, 4);
   });
 });

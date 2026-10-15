@@ -50,6 +50,8 @@ import {
 } from './routes/hosted-provider-delegation';
 import { createHostedWorkspaceConnectorRoutes, HOSTED_WORKSPACE_CONNECTOR_ROUTES } from './routes/hosted-workspace-connector';
 import { createHostedCliRoutes, HOSTED_CLI_ROUTES, type HostedCliStore } from './routes/hosted-cli';
+import { createHostedDirectoryBindingRoutes, HOSTED_DIRECTORY_BINDING_ROUTES } from './routes/hosted-directory-bindings';
+import type { HostedDirectoryBindingManager } from '../auth/hosted/governance';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -87,6 +89,7 @@ export interface HostedControlPlaneConfig {
   readonly randomBytes?: (size: number) => Uint8Array;
   readonly connectorGateway?: HostedWorkspaceConnectorGateway;
   readonly providerDelegationManager?: HostedProviderDelegationManagerFactory;
+  readonly directoryBindingManager?: HostedDirectoryBindingManager;
   /**
    * psu CLI sign-in + terminal tickets (WI-10002874). Mounted only beside a connector gateway,
    * which is what the terminal route issues tickets through.
@@ -117,6 +120,7 @@ export interface AssembledHostedControlPlane extends HostedControlPlane {
     readonly identityDirectory: HostedIdentityDirectory;
     readonly connectorGateway?: HostedWorkspaceConnectorGateway;
     readonly providerDelegationManager?: HostedProviderDelegationManagerFactory;
+    readonly directoryBindingManager?: HostedDirectoryBindingManager;
   };
 }
 
@@ -178,19 +182,21 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
       ...(config.randomBytes ? { randomBytes: config.randomBytes } : {}),
     },
     resolvePrincipal,
-    ...(config.routes || config.connectorGateway || config.providerDelegationManager
+    ...(config.routes || config.connectorGateway || config.providerDelegationManager || config.directoryBindingManager
       ? { routes: [
           ...(config.routes ?? []),
           ...(config.connectorGateway ? createHostedWorkspaceConnectorRoutes(config.connectorGateway) : []),
           ...(config.providerDelegationManager ? createHostedProviderDelegationRoutes(config.providerDelegationManager) : []),
+          ...(config.directoryBindingManager ? createHostedDirectoryBindingRoutes(config.directoryBindingManager) : []),
           ...cliRoutes,
         ] }
       : {}),
-    ...(config.staticAllowlist || config.connectorGateway || config.providerDelegationManager
+    ...(config.staticAllowlist || config.connectorGateway || config.providerDelegationManager || config.directoryBindingManager
       ? { staticAllowlist: [
           ...(config.staticAllowlist ?? []),
           ...(config.connectorGateway ? HOSTED_WORKSPACE_CONNECTOR_ROUTES : []),
           ...(config.providerDelegationManager ? HOSTED_PROVIDER_DELEGATION_ROUTES : []),
+          ...(config.directoryBindingManager ? HOSTED_DIRECTORY_BINDING_ROUTES : []),
           ...(cliRoutes.length > 0 ? HOSTED_CLI_ROUTES : []),
         ] }
       : {}),
@@ -205,6 +211,7 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
       identityDirectory,
       ...(config.connectorGateway ? { connectorGateway: config.connectorGateway } : {}),
       ...(config.providerDelegationManager ? { providerDelegationManager: config.providerDelegationManager } : {}),
+      ...(config.directoryBindingManager ? { directoryBindingManager: config.directoryBindingManager } : {}),
     },
   };
 }

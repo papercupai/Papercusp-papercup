@@ -19,11 +19,14 @@
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer, type Server } from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 const WS = 'ws-provision-runner-test';
 
@@ -55,6 +58,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -114,6 +118,60 @@ async function writeScript(rel: string, contents: string): Promise<string> {
 }
 
 describe('runPhase (PG-backed)', () => {
+  it.runIf(process.platform === 'linux')('enforces the real provision command egress allowlist without losing filesystem isolation', async () => {
+    // Real endpoints and raw controls distinguish confinement from an absent
+    // service. No sandbox/SRT mocks and no network dependency outside this host.
+    const calls = [0, 0];
+    const servers = calls.map((_, i) => createServer((_req, res) => {
+      calls[i]++;
+      res.end(`fixture-${i}`);
+    }));
+    const listen = (server: Server) => new Promise<number>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port));
+    });
+    const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+    const project = join(TMP_PLUGIN, 'project');
+    const hidden = join(TMP_HOME, 'host-only.txt');
+    await fs.mkdir(project);
+    await fs.writeFile(hidden, 'host-only-sentinel');
+    try {
+      const [allowed, denied] = await Promise.all(servers.map(listen));
+      const url = (port: number) => `http://127.0.0.1:${port}`;
+      const curl = '/usr/bin/curl --silent --show-error --fail --max-time 3';
+      for (const port of [allowed, denied]) {
+        expect((await promisify(execFile)('/usr/bin/curl', ['--noproxy', '*', '--fail', '--max-time', '3', url(port)])).stdout)
+          .toBe(port === allowed ? 'fixture-0' : 'fixture-1');
+      }
+      await writeScript('setup.sh', `#!/bin/bash
+set -eu
+${curl} ${quote(url(allowed))} > "$PAPERCUSP_SCRATCH_DIR/allowed.txt"
+if ${curl} ${quote(url(denied))}; then echo DENIED_ENDPOINT_REACHED; exit 42; fi
+if ${curl} --noproxy '*' ${quote(url(allowed))}; then echo RAW_SOCKET_REACHED; exit 43; fi
+if printf bad > "$PAPERCUSP_PLUGIN_DIR/forbidden-write"; then exit 44; fi
+if /bin/cat ${quote(hidden)}; then exit 45; fi
+printf project-writable > "$PAPERCUSP_PROJECT_DIR/output.txt"
+`);
+      delete process.env.PAPERCUSP_DISABLE_SANDBOX;
+      delete process.env.PAPERCUSP_ALLOW_NO_SANDBOX;
+      const result = await runPhase('setup', {
+        harness: 'h', plugin: 'p', publisher: 'fixture', pluginVersion: '1.0.0',
+        pluginDir: TMP_PLUGIN, projectDir: project, config: {}, consentConfirmed: true,
+        provision: { setup: { path: 'setup.sh', timeoutSec: 20 }, allowedHosts: [`127.0.0.1:${allowed}`] },
+      });
+      const audit = await readAudit('h', 'p');
+      expect(result.ok, JSON.stringify({ result, audit })).toBe(true);
+      expect(calls).toEqual([2, 1]); // only controls + the allowed sandbox request
+      expect(await fs.readFile(join(project, 'output.txt'), 'utf8')).toBe('project-writable');
+      expect(audit.some(e => e.kind === 'sandbox-bypass')).toBe(false);
+    } finally {
+      process.env.PAPERCUSP_DISABLE_SANDBOX = '1';
+      await Promise.all(servers.map(server => server.listening
+        ? new Promise<void>((resolve, reject) => server.close(e => e ? reject(e) : resolve()))
+        : Promise.resolve()));
+    }
+  }, 45_000);
+
   it('reports missing script gracefully', async () => {
     const r = await runPhase('setup', {
       harness: 'h',

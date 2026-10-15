@@ -11,12 +11,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
 const H = vi.hoisted(() => ({
-  result: { data: [] as unknown[], loading: false },
+  result: { data: [], loading: false, error: null } as { data: unknown[]; loading: boolean; error?: Error | null },
+  invalidate: vi.fn(),
 }));
 
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: () => H.result,
+  useSyncQuery: () => ({ ...H.result, invalidate: H.invalidate }),
 }));
 
 import ScheduledRoutinesPane from './ScheduledRoutinesPane';
@@ -37,11 +38,33 @@ function occ(over: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  H.result = { data: [], loading: false };
+  H.result = { data: [], loading: false, error: null };
+  H.invalidate.mockReset();
 });
 afterEach(cleanup);
 
 describe('<ScheduledRoutinesPane>', () => {
+  it('shows a denied read instead of an empty routine list or stale active counts', () => {
+    H.result = { data: [occ()], loading: false, error: new Error('read denied') };
+    render(<ScheduledRoutinesPane />);
+    expect(screen.getByRole('alert').textContent).toContain('Scheduled routines are unavailable.');
+    expect(screen.queryByText(/No routines scheduled/)).toBeNull();
+    expect(screen.queryByText('1 active')).toBeNull();
+    expect(screen.queryByText('Plan A')).toBeNull();
+  });
+
+  it('retries a failed read and restores the routine list when it succeeds', () => {
+    H.result = { data: [], loading: false, error: new Error('read denied') };
+    const view = render(<ScheduledRoutinesPane />);
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(H.invalidate).toHaveBeenCalledTimes(1);
+    H.result = { data: [occ()], loading: false, error: null };
+    view.rerender(<ScheduledRoutinesPane />);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText('Plan A')).toBeTruthy();
+    expect(screen.getByText('1 active')).toBeTruthy();
+  });
+
   it('shows the loading state while fetching with no data', () => {
     H.result = { data: [], loading: true };
     render(<ScheduledRoutinesPane />);

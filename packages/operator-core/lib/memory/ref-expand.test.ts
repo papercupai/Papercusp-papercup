@@ -3,7 +3,14 @@
  * Pure + dep-injected (a stub RefResolver), so no store/PG needed.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { extractRefs, buildEmbedText, expandRefsForEmbed, MAX_REFS, type RefResolver } from './ref-expand';
+import {
+  extractRefs,
+  buildEmbedText,
+  expandRefsForEmbed,
+  MAX_REFS,
+  REF_RESOLVE_TIMEOUT_MS,
+  type RefResolver,
+} from './ref-expand';
 
 const titles: Record<string, string> = {
   'WI-4028': 'Resume age A/B benchmark',
@@ -98,6 +105,25 @@ describe('expandRefsForEmbed', () => {
       throw new Error('pg down');
     };
     await expect(expandRefsForEmbed('per WI-4028', boom)).resolves.toBeUndefined();
+  });
+
+  it('bounds a stalled lookup and keeps titles from refs that resolve', async () => {
+    vi.useFakeTimers();
+    try {
+      const resolver: RefResolver = async (id) => {
+        if (id === 'WI-9999') return await new Promise<null>(() => {});
+        return { id, title: titles[id] ?? '' };
+      };
+      const result = expandRefsForEmbed('WI-9999 and EI-10048', resolver);
+
+      await vi.advanceTimersByTimeAsync(REF_RESOLVE_TIMEOUT_MS);
+
+      await expect(result).resolves.toBe(
+        'WI-9999 and EI-10048\n\n[refs] EI-10048: Write-time ref-expansion for multi-hop recall',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('resolves refs in parallel (one call per distinct id)', async () => {

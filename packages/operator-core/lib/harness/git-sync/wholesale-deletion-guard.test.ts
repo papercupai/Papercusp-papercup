@@ -7,7 +7,11 @@
  * two CONTROLS at the bottom, which prove the guard is falsifiable: without them a
  * detector that returned `[]` unconditionally would pass every positive assertion.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   judgeDeletionSet,
   detectWholesaleDeletion,
@@ -18,6 +22,9 @@ import type { RunGit } from './run-git-sync';
 
 /** `git status --porcelain -z -uall` payload for a set of deleted paths. */
 const porcelainDeleted = (paths: string[]) => paths.map((p) => ` D ${p}`).join('\0') + (paths.length ? '\0' : '');
+
+/** `git ls-tree -r -z --name-only` payload: NUL-terminated raw names. */
+const nulList = (paths: string[]) => paths.map((p) => `${p}\0`).join('');
 
 /** A RunGit that answers the three commands the detector issues, and nothing else. */
 function fakeGit({
@@ -39,13 +46,18 @@ function fakeGit({
 }): RunGit {
   return async (args) => {
     if (args[0] === 'status') return { code: statusCode, stdout: porcelainDeleted(deleted), stderr: '' };
-    if (args[0] === 'ls-tree') return { code: treeCode, stdout: tracked.join('\n'), stderr: '' };
+    if (args[0] === 'ls-tree') return { code: treeCode, stdout: nulList(tracked), stderr: '' };
     if (args[0] === 'check-ignore') {
       if (checkIgnoreCode !== undefined) return { code: checkIgnoreCode, stdout: '', stderr: 'fatal' };
+      // Model real Git 2.43, which a lenient fake hid for months (WI-6554700010010783).
+      if (args.includes('-z') && !args.includes('--stdin')) {
+        return { code: 128, stdout: '', stderr: 'fatal: -z only makes sense with --stdin' };
+      }
       const queried = args.slice(args.indexOf('--') + 1);
       const hits = queried.filter(ignored);
-      // git exits 1 (not an error) when no queried path is ignored.
-      return { code: hits.length ? 0 : 1, stdout: hits.join('\0'), stderr: '' };
+      // git exits 1 (not an error) when no queried path is ignored; argv mode prints
+      // one matched path per line.
+      return { code: hits.length ? 0 : 1, stdout: hits.map((p) => `${p}\n`).join(''), stderr: '' };
     }
     throw new Error(`unexpected git ${args.join(' ')}`);
   };
@@ -264,7 +276,7 @@ describe('WI-39889 — deletions of ignored paths are an untracking repair, not 
     await detectWholesaleDeletion({
       runGit: async (args) => {
         if (args[0] === 'status') return { code: 0, stdout: porcelainDeleted(junk), stderr: '' };
-        if (args[0] === 'ls-tree') return { code: 0, stdout: [...junk, 'src/a.ts'].join('\n'), stderr: '' };
+        if (args[0] === 'ls-tree') return { code: 0, stdout: nulList([...junk, 'src/a.ts']), stderr: '' };
         seen.push(args);
         return { code: 1, stdout: '', stderr: '' };
       },
@@ -280,12 +292,120 @@ describe('WI-39889 — deletions of ignored paths are an untracking repair, not 
     await detectWholesaleDeletion({
       runGit: async (args) => {
         if (args[0] === 'status') return { code: 0, stdout: porcelainDeleted(junk), stderr: '' };
-        if (args[0] === 'ls-tree') return { code: 0, stdout: junk.join('\n'), stderr: '' };
+        if (args[0] === 'ls-tree') return { code: 0, stdout: nulList(junk), stderr: '' };
         maxArgv = Math.max(maxArgv, args.length);
         return { code: 1, stdout: '', stderr: '' };
       },
       repoPath: '/repo',
     });
     expect(maxArgv).toBeLessThan(600);
+  });
+});
+
+/**
+ * WI-6554700010010783 — the discount above was dead on real Git.
+ *
+ * `ignoredSubset` passed `-z` with argv paths. Git 2.43 rejects that without
+ * `--stdin`, so every call exited 128, the guard failed open, and the WI-39889
+ * discount never applied. The fake RunGit accepted `-z`, which is why every test
+ * above stayed green. These tests run the detector against REAL Git.
+ */
+describe('WI-6554700010010783 — the ignored-path discount works against real Git', () => {
+  let repo = '';
+  afterEach(() => {
+    if (repo) rmSync(repo, { recursive: true, force: true });
+    repo = '';
+  });
+
+  // Neutralize the host's global ignore file and signing config so only the repo's
+  // own .gitignore decides what is ignored.
+  const HERMETIC = ['-c', 'core.excludesFile=/dev/null', '-c', 'commit.gpgsign=false'];
+  const git = (...args: string[]) =>
+    execFileSync('git', [...HERMETIC, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], {
+      cwd: repo,
+      encoding: 'utf8',
+    });
+
+  /** A real RunGit that records every check-ignore exit code it saw. */
+  function recordingRealGit(): { runGit: RunGit; checkIgnoreCodes: number[]; calls: string[][] } {
+    const checkIgnoreCodes: number[] = [];
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args, cwd) => {
+      const r = spawnSync('git', [...HERMETIC, ...args], { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      const code = r.status ?? -1;
+      calls.push([...args]);
+      if (args[0] === 'check-ignore') checkIgnoreCodes.push(code);
+      return { code, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') };
+    };
+    return { runGit, checkIgnoreCodes, calls };
+  }
+
+  /** 21 force-tracked node_modules files (one non-ASCII), 4 source files, `node_modules/` ignored. */
+  function seedRepoWithTrackedNodeModules(): string[] {
+    repo = mkdtempSync(join(tmpdir(), 'wholesale-deletion-real-git-'));
+    git('init', '-q');
+    writeFileSync(join(repo, '.gitignore'), 'node_modules/\n');
+    writeFileSync(join(repo, 'package.json'), '{}\n');
+    mkdirSync(join(repo, 'src'));
+    for (const f of ['a.ts', 'b.ts']) writeFileSync(join(repo, 'src', f), 'x\n');
+    const junk: string[] = [];
+    for (let i = 0; i < 20; i++) junk.push(`node_modules/pkg${i}/index.js`);
+    junk.push('node_modules/ü/index.js'); // C-quoted by Git: exercises the one-path probe
+    for (const p of junk) {
+      mkdirSync(join(repo, p, '..'), { recursive: true });
+      writeFileSync(join(repo, p), 'x\n');
+    }
+    git('add', '.gitignore', 'package.json', 'src');
+    git('add', '-f', 'node_modules');
+    git('commit', '-qm', 'seed with node_modules tracked by mistake');
+    return junk;
+  }
+
+  it('discounts an untracking repair: deleting tracked-but-ignored node_modules is not a wipe', async () => {
+    const junk = seedRepoWithTrackedNodeModules();
+    rmSync(join(repo, 'node_modules'), { recursive: true, force: true });
+    const { runGit, checkIgnoreCodes, calls } = recordingRealGit();
+
+    const offenders = await detectWholesaleDeletion({ runGit, repoPath: repo });
+
+    // 21 of 25 tracked files deleted is 84%: before the fix every check-ignore exited
+    // 128, nothing was discounted, and all 21 deletions were quarantined.
+    expect(offenders).toEqual([]);
+    expect(checkIgnoreCodes.length).toBeGreaterThan(0);
+    expect(checkIgnoreCodes.every((code) => code === 0 || code === 1)).toBe(true);
+    // Every verbatim name rode ONE batched call; only the C-quoted name was probed alone.
+    const checkIgnoreCalls = calls.filter((args) => args[0] === 'check-ignore');
+    expect(checkIgnoreCalls).toHaveLength(2);
+    expect(checkIgnoreCalls[1]).toEqual(['check-ignore', '--no-index', '--', 'node_modules/ü/index.js']);
+    expect(junk.every((p) => checkIgnoreCalls.some((args) => args.includes(p)))).toBe(true);
+  });
+
+  it('CONTROL: still quarantines a real wipe on the same repo when .gitignore goes too', async () => {
+    seedRepoWithTrackedNodeModules();
+    for (const p of ['.gitignore', 'src', 'node_modules']) rmSync(join(repo, p), { recursive: true, force: true });
+    const { runGit, checkIgnoreCodes } = recordingRealGit();
+
+    const offenders = await detectWholesaleDeletion({ runGit, repoPath: repo });
+
+    // .gitignore gone, so nothing reads as ignored: 24 of 25 deleted (96%).
+    expect(offenders).toHaveLength(24);
+    expect(offenders.map((o) => o.file)).toContain('node_modules/ü/index.js');
+    expect(checkIgnoreCodes.every((code) => code === 0 || code === 1)).toBe(true);
+  });
+
+  it('FAILS OPEN on a failed batch without re-probing every path one by one', async () => {
+    const junk = Array.from({ length: 300 }, (_, i) => `node_modules/pkg${i}/index.js`);
+    const checkIgnoreCalls: string[][] = [];
+    const offenders = await detectWholesaleDeletion({
+      runGit: async (args) => {
+        if (args[0] === 'status') return { code: 0, stdout: porcelainDeleted(junk), stderr: '' };
+        if (args[0] === 'ls-tree') return { code: 0, stdout: nulList([...junk, 'src/a.ts']), stderr: '' };
+        checkIgnoreCalls.push(args);
+        return { code: 128, stdout: '', stderr: 'fatal: not a git repository' };
+      },
+      repoPath: '/repo',
+    });
+    expect(offenders).toHaveLength(300); // no ignore information: count everything
+    expect(checkIgnoreCalls.length).toBeLessThanOrEqual(2); // batches only, no 301 single probes
   });
 });

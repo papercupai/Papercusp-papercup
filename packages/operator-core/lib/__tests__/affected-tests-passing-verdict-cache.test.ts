@@ -69,6 +69,53 @@ const identity = (overrides: Record<string, unknown> = {}) =>
   });
 
 describe('passing affected-task verdict identity', () => {
+  it('reuses relocated immutable commands only while command selection and dependency bytes match', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'verdict-clone-identity-'));
+    try {
+      const roots = [join(parent, 'a'), join(parent, 'b')];
+      for (const root of roots) {
+        mkdirSync(root);
+        writeFileSync(join(root, 'subject.ts'), 'export const value = 1;\n');
+      }
+      const fromClone = (root: string, commandOverrides = {}) => {
+        const proof = hashDependencyFileSet({ root, files: ['subject.ts'] });
+        if (!proof.ok) throw new Error(proof.reason);
+        return identity({
+          commandRoot: root,
+          command: {
+            cmd: join(root, 'node_modules/.bin/vitest'),
+            argv: ['run', join(root, 'subject.ts')],
+            cwd: root,
+            scriptText: 'vitest run',
+            relatedFilterDigest: 'complete-selection',
+            ...commandOverrides,
+          },
+          dependencyHash: proof.hash,
+        });
+      };
+      const prior = fromClone(roots[0]);
+      const verdict = (next: ReturnType<typeof identity>) => decidePassingTaskVerdict({
+        enabled: true, cacheRead: { reason: 'cache-ready' },
+        entry: passingTaskVerdictEntry(prior), identity: next,
+      });
+      expect(verdict(fromClone(roots[1]))).toEqual({ hit: true, reason: 'identity-match' });
+      expect(verdict(fromClone(roots[1], { argv: ['run', 'different.test.ts'] })).reason).toBe('command-changed');
+      expect(verdict(fromClone(roots[1], { relatedFilterDigest: 'narrow-selection' })).reason).toBe('command-changed');
+      expect(verdict(fromClone(roots[1], { cmd: join(parent, 'external-tool') })).reason).toBe('command-changed');
+      expect(verdict(fromClone(roots[1], { cwd: `${roots[1]}-sibling` })).reason).toBe('command-changed');
+      writeFileSync(join(roots[1], 'subject.ts'), 'export const value = 2;\n');
+      expect(verdict(fromClone(roots[1]))).toEqual({ hit: false, reason: 'dependency-closure-changed' });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('retains absolute command identity when relocatable clone mode is absent', () => {
+    const command = { cmd: 'npm', argv: ['run', 'test'], cwd: '/clone-a' };
+    expect(identity({ command }).components.command)
+      .not.toBe(identity({ command: { ...command, cwd: '/clone-b' } }).components.command);
+  });
+
   it('is stable across object key order and hits only on a complete identity match', () => {
     const first = identity();
     const same = identity({
@@ -366,6 +413,12 @@ describe('dependency-closure hashing and persistence', () => {
 });
 
 describe('gate wiring safety contract', () => {
+  it('normalizes command paths only on the explicitly marked committed clone path', () => {
+    expect(AFFECTED_TESTS_SRC).toContain("commandRoot: process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === '1' ? ROOT : null");
+    const launcher = readFileSync(resolve(REPO_ROOT, 'scripts/lint-as-committed.mjs'), 'utf8');
+    expect(launcher).toContain('lintAsCommittedChildEnv(process.env, repoRoot)');
+  });
+
   it('enables reuse only for a green checkpoint or an explicit bounded resume series', () => {
     expect(AFFECTED_TESTS_SRC).toContain("process.env.GREEN_CHECKPOINT === '1'");
     expect(AFFECTED_TESTS_SRC).toContain("process.env.AFFECTED_TASK_VERDICT_RESUME === '1'");
@@ -412,14 +465,28 @@ describe('gate wiring safety contract', () => {
     expect(callback, 'the task settlement callback must be wired').not.toBeNull();
     const persisted: unknown[] = [];
     const coverage: unknown[] = [];
+    const initialExecutedMapReads = new Map<string, unknown>();
+    const executedMapSnapshot = { status: 'unknown', reason: 'report-not-written' };
     const onTaskSettled = runInNewContext(`(${callback![1]})`, {
+      observedCompletedTasks: 0,
       foldSettledTaskCoverage: (task: unknown) => coverage.push(task),
       persistCleanFirstPassTaskVerdict: (task: unknown) => persisted.push(task),
+      taskKey: (task: { key: string }) => task.key,
+      executedMapResultFiles: new Map([['test-task', '/results/test-task.json']]),
+      initialExecutedMapReads,
+      executedMapReportExpectations: new Map(),
+      readExecutedMapResults: (path: string) => {
+        expect(path).toBe('/results/test-task.json');
+        return executedMapSnapshot;
+      },
     });
-    const settledTask = { task: { key: 'test-task' }, value: { code: 0 } };
+    const settledTask = { task: { t: { key: 'test-task' } }, value: { status: 0 } };
     onTaskSettled(settledTask);
     expect(persisted).toEqual([settledTask]);
     expect(coverage).toEqual([settledTask]);
+    expect(initialExecutedMapReads.get('test-task')).toEqual({
+      ...executedMapSnapshot, expectsReport: null,
+    });
     expect(AFFECTED_TESTS_SRC).not.toContain('taskVerdictCacheUpdates');
   });
 
@@ -731,7 +798,7 @@ describe('D-007 root `npm test` local cross-run reuse', () => {
   it('keeps D-007 scope: related/all sweeps and direct file runs stay fresh', () => {
     // D-007 scopes reuse to the root affected-tests command ONLY. These have different selection
     // or execution semantics, so a proof taken under one is not a proof for another.
-    for (const name of ['test:related', 'test:all', 'test:all:integration', 'test:file']) {
+    for (const name of ['test:related', 'test:all', 'test:all:integration', 'test:integration-only', 'test:file']) {
       expect(PACKAGE_JSON.scripts?.[name]).not.toContain('AFFECTED_TASK_VERDICT_RESUME=1');
     }
   });
@@ -1474,7 +1541,7 @@ describe('ordinary-task shared inputs are derived, narrow, and fail closed', () 
         ['package-lock.json', '{"lockfileVersion":3}\n'],
         ['README.md', 'unrelated root doc\n'],
         ['scripts/affected-tests.mjs', "import './lib/runtime.mjs';\n"],
-        ['scripts/lib/runtime.mjs', 'export const runtime = 1;\n'],
+        ['scripts/lib/runtime.mjs', 'export const runtime = 1;\nconst child = "import schema from \'./child-only.ts\';";\n'],
         ['scripts/unrelated-maintenance.mjs', 'export const unrelated = 1;\n'],
         ['scripts/pc-heavy.sh', '#!/bin/sh\n'],
         ['libs/test-config/package.json', '{"exports":{}}\n'],

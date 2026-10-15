@@ -1,9 +1,28 @@
-# Validation assertion format (VAL-*)
+# Validation assertion format (VAL-*) (retired)
 URL: /internal/docs/spec/validation-assertion-format
 
-Inline format for embedding behavioral validation assertions directly inside plan items. Replaces the standalone validation-contract.md file.
+RETIRED. Historical record of the inline VAL-* assertion format for plan items. Superseded by the requirement contract (spec clauses plus bound evidence, judged by the spec test-adequacy gate). verification-system-improvements-2026-10-10 P-003.
 
 import { Aside } from '@astrojs/starlight/components';
+
+Inline VAL-\* assertions are **retired** (plan
+`verification-system-improvements-2026-10-10`, P-003). Do not author new VAL-\*
+sub-bullets. The successor is the **requirement contract**: a plan item's requirements
+become spec clauses (`plan_spec_clauses`), proven by evidence bound in
+`spec_evidence_bindings` and judged at completion by the spec test-adequacy gate
+(`specTestAdequacyCompletionGate`).
+
+What changed:
+
+* Nothing in source reads or writes the VAL-\* assertion store any more. Former writer
+  paths return the typed `ValRetirementRefusalCode` refusal from
+  `packages/operator-core/lib/agent-tools/plans/val-retirement.ts`, which points here.
+* `work_items:complete` no longer calls the legacy test-completion gate
+  (`harness-test-gate.ts` / `itemTestGate`).
+* The done-without-test watchdog collector and the harness Acceptance panel no longer
+  read VAL-\* rows.
+
+The rest of this page is kept only as a historical record of the old format.
 
 Validation assertions define the exact **pass/fail criteria** a validator
 agent checks when certifying a feature. In the new plan-central model,

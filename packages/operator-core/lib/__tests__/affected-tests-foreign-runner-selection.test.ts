@@ -128,7 +128,7 @@ describe('behaviour: the real apps/operator selection carries no Playwright spec
     const result = selectRelatedTests({
       rootDir: OPERATOR,
       changedPaths: [join(OPERATOR, 'app/_components/ChromeShell.tsx')],
-      aliases: {},
+      aliases: [],
     });
 
     if (result.mode !== 'related') {

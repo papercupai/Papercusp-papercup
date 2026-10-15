@@ -18,6 +18,7 @@
  *   lib/agent-tools/sessions/search-stale-index-caveat.test.ts
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { deferredSqlAnswer } from '../../../test/_fake-sql';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -46,16 +47,26 @@ interface ParsedResult {
   total_hits: number;
   zeroHitCaveat?: string;
   hint?: string;
-  indexRefresh?: { attempted: number; refreshed: number; degraded: boolean };
+  indexRefresh?: {
+    attempted: number;
+    refreshed: number;
+    degraded: boolean;
+    unconfirmed?: number;
+    skipped?: number;
+    failureReasons?: Record<string, number>;
+    failureSubtypes?: Record<string, number>;
+  };
 }
 
 function makeTx(results: unknown[][]) {
   let i = 0;
-  return vi.fn(async (..._args: unknown[]) => {
+  // deferredSqlAnswer: a result is handed out only when a query is AWAITED
+  // (never for an interpolated fragment); D-006 ledger reads take no slot.
+  return vi.fn((..._args: unknown[]) => deferredSqlAnswer(_args, () => {
     const r = results[i] ?? [];
     i += 1;
     return r;
-  });
+  }));
 }
 
 async function run(args: Record<string, unknown>, results: unknown[][]) {
@@ -126,7 +137,12 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
   it('discloses a FAILED live-transcript refresh behind a zero', async () => {
     // The reported failure shape: the refresh was attempted for this session and
     // did not land, so the index cannot contain the caller's most recent turns.
-    refreshLiveSessionsBeforeRead.mockResolvedValue({ attempted: 1, refreshed: 0 });
+    refreshLiveSessionsBeforeRead.mockResolvedValue({
+      attempted: 1,
+      refreshed: 0,
+      failureReasons: { ingest_error: 1 },
+      failureSubtypes: { filesystem_access: 1 },
+    });
 
     const parsed = await run(
       { session: 'self', mode: 'verbatim', query: 'lane fix' },
@@ -134,7 +150,13 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
     );
 
     expect(parsed.total_hits).toBe(0);
-    expect(parsed.indexRefresh).toEqual({ attempted: 1, refreshed: 0, degraded: true });
+    expect(parsed.indexRefresh).toEqual({
+      attempted: 1,
+      refreshed: 0,
+      degraded: true,
+      failureReasons: { ingest_error: 1 },
+      failureSubtypes: { filesystem_access: 1 },
+    });
     expect(parsed.zeroHitCaveat).toBeDefined();
     // The claim that matters: this zero is UNVERIFIABLE, not evidence of absence.
     expect(parsed.zeroHitCaveat).toMatch(/UNVERIFIABLE, NOT ABSENT/);
@@ -163,10 +185,59 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
   it('reports the ATTEMPTED/REFRESHED counts, not just a boolean', async () => {
     // A caller auditing "was this answer trustworthy" needs the magnitude: 4 of 5
     // failing is a different situation from 1 of 5.
-    refreshLiveSessionsBeforeRead.mockResolvedValue({ attempted: 5, refreshed: 1 });
+    refreshLiveSessionsBeforeRead.mockResolvedValue({
+      attempted: 5,
+      refreshed: 1,
+      failureReasons: { resolve_timeout: 2, ingest_timeout: 2 },
+    });
     const parsed = await run({ session: 'self', mode: 'verbatim', query: 'x' }, [[], []]);
-    expect(parsed.indexRefresh).toEqual({ attempted: 5, refreshed: 1, degraded: true });
+    expect(parsed.indexRefresh).toEqual({
+      attempted: 5,
+      refreshed: 1,
+      degraded: true,
+      failureReasons: { resolve_timeout: 2, ingest_timeout: 2 },
+    });
     expect(parsed.zeroHitCaveat).toMatch(/4 of 5/);
+  });
+
+  it('keeps a zero unverifiable when candidate liveness is unconfirmed', async () => {
+    refreshLiveSessionsBeforeRead.mockResolvedValue({
+      attempted: 0,
+      refreshed: 0,
+      unconfirmed: 2,
+    });
+
+    const parsed = await run({ session: 'self', mode: 'verbatim', query: 'lane fix' }, [[], []]);
+
+    expect(parsed.total_hits).toBe(0);
+    expect(parsed.indexRefresh).toEqual({
+      attempted: 0,
+      refreshed: 0,
+      degraded: true,
+      unconfirmed: 2,
+    });
+    expect(parsed.zeroHitCaveat).toMatch(/UNVERIFIABLE, NOT ABSENT/);
+    expect(parsed.zeroHitCaveat).toMatch(/Liveness was UNCONFIRMED for 2 candidate session\(s\)/);
+    expect(parsed.zeroHitCaveat).toMatch(/those were not refreshed/);
+  });
+
+  it('reports refreshable candidates skipped by the 20-session bound', async () => {
+    refreshLiveSessionsBeforeRead.mockResolvedValue({
+      attempted: 20,
+      refreshed: 20,
+      skipped: 3,
+    });
+
+    const parsed = await run({ session: 'self', mode: 'verbatim', query: 'lane fix' }, [[], []]);
+
+    expect(parsed.indexRefresh).toEqual({
+      attempted: 20,
+      refreshed: 20,
+      degraded: true,
+      skipped: 3,
+    });
+    expect(parsed.zeroHitCaveat).toMatch(/UNVERIFIABLE, NOT ABSENT/);
+    expect(parsed.zeroHitCaveat).toMatch(/20-session refresh bound left 3 confirmed-refreshable candidate session\(s\) unrefreshed/);
   });
 
   it('stays SILENT when the refresh fully succeeded — a genuine zero is not muddied', async () => {

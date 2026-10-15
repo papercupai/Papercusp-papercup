@@ -336,6 +336,26 @@ describe('BAR readiness re-evaluation on a scope write (P-031)', () => {
     expect(count(both)).toBe(1);
   });
 
+  it('preserves the activation-audit receipt from the follow-up restamp write', async () => {
+    const activationAudit = {
+      currentPlanRevision: { id: null, seq: null, contentHash: 'after-restamp', planVersion: 14, recorded: false },
+    } as any;
+    const result = await reevaluateBarReadinessOnScopeWrite(
+      { workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: CARRIER_PLAN, cause: 'decision-added' },
+      {
+        async readBarReadiness() {
+          return blocked(['bar_snapshot_mapping_dropped_only']);
+        },
+        async restampNow() {
+          return { stamped: true, activationAudit };
+        },
+      },
+    );
+
+    expect(result.nowStamped).toBe(true);
+    expect(result.activationAudit).toBe(activationAudit);
+  });
+
   it('never throws: a failed read is NOT measured and skips the stamp; a failed stamp keeps the codes', async () => {
     let stampCalls = 0;
     const failedRead = await reevaluateBarReadinessOnScopeWrite(

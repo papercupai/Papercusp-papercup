@@ -10,6 +10,13 @@ const state = vi.hoisted(() => ({
   /** The row the port acquired its transcript for (WI-10003198). */
   acquiredRow: null as unknown,
 }));
+// consult-backed-parking-2026-10-12#P-010: the live-source preflight's shared read.
+// Default = no bound session, so every pre-existing case here is unaffected.
+const bindingsMock = vi.hoisted(() => vi.fn());
+vi.mock('../routes/agent-mcp/pre-pinned-owner-conflicts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../routes/agent-mcp/pre-pinned-owner-conflicts')>()),
+  readPrePinnedOwnerBindings: (...args: unknown[]) => bindingsMock(...args),
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: state.sql }) as never,
@@ -29,8 +36,9 @@ vi.mock('../../model-context-budget.mjs', () => ({
   buildContextBudget: () => ({ level: 'ok', window: 200_000, availableInputTokens: 100_000 }),
 }));
 vi.mock('../../session-port/store', () => ({ assertSessionPortStorageReady: async () => {} }));
-vi.mock('../../session-port/service', () => ({
-  acquireTrackedClaudeSource: async (row: unknown) => {
+vi.mock('../../session-port/service', async (importOriginal) => ({
+  resolveSessionPortTargetOwner: (await importOriginal<typeof import('../../session-port/service')>()).resolveSessionPortTargetOwner,
+  acquireTrackedSessionSource: async (row: unknown) => {
     state.acquiredRow = row;
     return {
       bytes: Buffer.from('fixture'), sha256: 'a'.repeat(64), highWaterBytes: 7,
@@ -100,6 +108,7 @@ beforeEach(async () => {
   };
   state.inspectArgs = null;
   state.acquiredRow = null;
+  bindingsMock.mockReset().mockResolvedValue({ precursors: [], reclaimableConflicts: [], conflicts: [], sessionState: undefined });
   await sql`TRUNCATE harness_shared.session_turns CASCADE`;
   await sql`
     INSERT INTO harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
@@ -125,7 +134,78 @@ async function inspect(body: Record<string, unknown>): Promise<Response> {
   }));
 }
 
+describe('session-port live-source preflight (consult-backed-parking-2026-10-12#P-010)', () => {
+  const liveBinding = {
+    precursors: [], reclaimableConflicts: [], sessionState: 'live',
+    conflicts: [{ id: '39975', display: null, has_session: true, launched: false, liveness: 'live' }],
+  };
+
+  it('refuses a source-identity port while that identity is bound to a live session, before reading the transcript', async () => {
+    bindingsMock.mockResolvedValueOnce(liveBinding);
+    const response = await inspect({ consultEvidenceSpan: null });
+    expect(response.status).toBe(409);
+    const body = await response.json() as { code?: string; error?: string };
+    expect(body.code).toBe('source_session_still_live');
+    expect(body.error).toMatch(/source session 41 \(su-source\) is still running \(sessionState=live\)/);
+    expect(body.error).toMatch(/Exit the source session first/);
+    expect(bindingsMock).toHaveBeenCalledWith('su-source');
+    expect(state.acquiredRow).toBeNull();
+    expect(state.inspectArgs).toBeNull();
+  });
+
+  it('never consults the binding read for an isolated-owner (consult) port', async () => {
+    bindingsMock.mockResolvedValue(liveBinding);
+    const response = await inspect({ targetOwnerId: 'su-answer-owner' });
+    expect(response.status).toBe(200);
+    expect(bindingsMock).not.toHaveBeenCalled();
+  });
+
+  it('is fail-soft: a failed binding read leaves the launch guard as the authority', async () => {
+    bindingsMock.mockRejectedValueOnce(new Error('relation "harness_shared.adv_sessions" does not exist'));
+    const response = await inspect({ consultEvidenceSpan: null });
+    expect(response.status).toBe(200);
+    expect(bindingsMock).toHaveBeenCalledTimes(1);
+    expect(state.acquiredRow).toMatchObject({ id: 41, coordOwnerId: 'su-source' });
+  });
+});
+
 describe('session-port evidence-span route (P-007)', () => {
+  it.each(['claude', 'codex', 'omp'] as const)('binds an isolated answer owner on the %s target without changing the source row', async (backend) => {
+    const sourceBefore = structuredClone(state.sourceRow);
+    const response = await inspect({ targetBackend: backend, targetOwnerId: 'su-answer-owner' });
+    expect(response.status).toBe(200);
+    expect(state.inspectArgs).toMatchObject({ target: { backend, ownerId: 'su-answer-owner' } });
+    expect(state.sourceRow).toEqual(sourceBefore);
+  });
+
+  it.each(['su-source', null, '', 42])('refuses invalid isolated target owner %s before reading the transcript', async (targetOwnerId) => {
+    const response = await inspect({ targetOwnerId });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/isolated target owner/) });
+    expect(state.acquiredRow).toBeNull();
+  });
+
+  it.each(['codex', 'omp'] as const)('selects the exact %s source kind even when another backend has the same native id', async (backend) => {
+    state.sourceRow = { ...(state.sourceRow as Record<string, unknown>), agent: backend,
+      ...(backend === 'omp' ? { sessionId: null, ompThreadId: SESSION } : {}) };
+    await sql`
+      INSERT INTO harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
+      VALUES (${WS}, ${backend}, ${SESSION}, 2, '2026-09-23T08:01:00Z'::timestamptz, 'user', 'native source evidence')
+    `;
+    const response = await inspect({ consultEvidenceSpan: { sessionId: SESSION, turnIndices: [2], contextTurns: 0 } });
+    expect(response.status).toBe(200);
+    expect(state.acquiredRow).toMatchObject({ agent: backend, sessionId: SESSION });
+    expect(state.inspectArgs).toMatchObject({ evidenceSpan: { evidenceTurns: [{ text: 'native source evidence' }] } });
+  });
+
+  it.each(['codex', 'omp'] as const)('refuses %s evidence that exists only under a different source kind', async (backend) => {
+    state.sourceRow = { ...(state.sourceRow as Record<string, unknown>), agent: backend,
+      ...(backend === 'omp' ? { sessionId: null, ompThreadId: SESSION } : {}) };
+    const response = await inspect({ consultEvidenceSpan: { sessionId: SESSION, turnIndices: [2], contextTurns: 0 } });
+    expect(response.status).toBe(409);
+    expect(state.acquiredRow).toBeNull();
+  });
+
   it('resolves turns only from the exact source workspace/session and passes them to inspection', async () => {
     const response = await inspect({});
     expect(response.status).toBe(200);
@@ -159,6 +239,54 @@ describe('session-port evidence in an earlier carry-respawn incarnation (WI-1000
         (${WS}, 'claude', ${EARLIER}, 4, '2026-09-23T07:02:00.000Z'::timestamptz, 'assistant', 'earlier answer', ${owner})
     `;
   };
+
+  it('ports the exact selected incarnation without requiring consult evidence', async () => {
+    await seedEarlier('su-source');
+    const response = await inspect({ sourceNativeSessionId: EARLIER, consultEvidenceSpan: null });
+    expect(response.status).toBe(200);
+    expect(state.acquiredRow).toMatchObject({ id: 41, coordOwnerId: 'su-source', sessionId: EARLIER });
+    expect(state.inspectArgs).toMatchObject({ sourceRow: { sessionId: EARLIER } });
+    expect(state.sourceRow).toMatchObject({ sessionId: SESSION });
+  });
+
+  it('refuses a selected incarnation belonging to another owner before reading any transcript', async () => {
+    await seedEarlier('su-someone-else');
+    const response = await inspect({ sourceNativeSessionId: EARLIER, consultEvidenceSpan: null });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('sourceNativeSessionId') });
+    expect(state.acquiredRow).toBeNull();
+    expect(state.inspectArgs).toBeNull();
+  });
+
+  it('refuses a selected incarnation indexed only under another backend', async () => {
+    await sql`
+      INSERT INTO harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx, speaker, text, owner)
+      VALUES (${WS}, 'codex', ${EARLIER}, 2, 'user', 'foreign backend', 'su-source')
+    `;
+    const response = await inspect({ sourceNativeSessionId: EARLIER, consultEvidenceSpan: null });
+    expect(response.status).toBe(400);
+    expect(state.acquiredRow).toBeNull();
+  });
+
+  it.each([null, '', ' ', 42, {}])('refuses malformed exact source selection %j', async (sourceNativeSessionId) => {
+    const response = await inspect({ sourceNativeSessionId, consultEvidenceSpan: null });
+    expect(response.status).toBe(400);
+    expect(state.acquiredRow).toBeNull();
+  });
+
+  it('accepts the explicitly selected current session without requiring an owner index', async () => {
+    const response = await inspect({ sourceNativeSessionId: SESSION, consultEvidenceSpan: null });
+    expect(response.status).toBe(200);
+    expect(state.acquiredRow).toMatchObject({ sessionId: SESSION });
+  });
+
+  it('refuses consult evidence that would replace the explicitly selected session', async () => {
+    await seedEarlier('su-source');
+    const response = await inspect({ sourceNativeSessionId: EARLIER });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: 'consultEvidenceSpan must match sourceNativeSessionId' });
+    expect(state.acquiredRow).toBeNull();
+  });
 
   it('ports the earlier incarnation when session_turns names the row owner as its latest owner', async () => {
     await seedEarlier('su-source');

@@ -1,0 +1,155 @@
+{
+  "publicationManifest": "/mnt/backup/cloud-e2e-workspace-host-20261010r5/public-verification/manifest.json",
+  "projectId": "active-alcove-504205-q3",
+  "imageName": "papercusp-workspace-host-cloud-e2e-20261010r5",
+  "family": "papercusp-workspace-host",
+  "publishedAt": "2026-10-10T05:41:34.901Z",
+  "source": {
+    "repository": "https://github.com/Papercusp/papercusp.git",
+    "revision": "727f6f06323a74cf447f396af74597e1d799950f"
+  },
+  "baseImage": {
+    "reference": "projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20260826",
+    "architecture": "x86_64"
+  },
+  "builder": {
+    "templatePath": "infra/images/workspace-host.pkr.hcl"
+  },
+  "materials": [
+    {
+      "path": "infra/images/workspace-host.pkr.hcl"
+    },
+    {
+      "path": "apps/operator/runtime/vm-release-trust-toolchain.json",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/claude",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/codex",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/node",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/omp",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/papercusp-content-bootstrap",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/papercusp-deliver-material",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/papercusp-desktop-session.cjs",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/papercusp-health",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/papercusp-install",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/papercusp-migrate",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/papercusp-remote-initializer",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/papercusp-rollback",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/papercusp-server",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/psu",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "bin/pui",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "papercusp-desktop/bin/audit-release-bundle.py",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "papercusp-desktop/bin/build-desktop-sidecar.sh",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "papercusp-desktop/bin/install-workspace-host-entrypoints.sh",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/vm-release-trust-toolchain.sh",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "papercusp-desktop/bin/verify-sidecar-bundle.sh",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "pui-companion.wasm",
+      "from": "publication-manifest"
+    },
+    {
+      "path": "pui-install.json",
+      "from": "publication-manifest"
+    }
+  ],
+  "targets": [
+    {
+      "provider": "gcp",
+      "locations": [
+        "active-alcove-504205-q3"
+      ]
+    }
+  ],
+  "cleanRoom": {
+    "zone": "us-central1-a",
+    "serviceAccountEmail": "243118361453-compute@developer.gserviceaccount.com",
+    "subnetwork": "hetzner-restore-subnet"
+  },
+  "compatibilityRequest": {
+    "action": "install",
+    "provider": "gcp",
+    "architecture": "x86_64",
+    "ubuntuVersion": "24.04",
+    "observedAt": "2026-10-10T05:41:34.901Z"
+  },
+  "placement": {
+    "projectId": "active-alcove-504205-q3",
+    "zone": "us-central1-a",
+    "subnetwork": "hetzner-restore-subnet",
+    "architecture": "x86_64"
+  },
+  "spec": {
+    "action": "install",
+    "provider": "gcp",
+    "architecture": "x86_64",
+    "fixtureId": "cloud-e2e-20261010-r5-image-prebuild",
+    "hostId": "cloud-e2e-20261010-r5-image-prebuild",
+    "migrationId": "1434-benchmark-ungraded-archive-state",
+    "minimumNodeMajor": 24,
+    "observedAt": "2026-10-10T05:41:34.901Z",
+    "service": {
+      "name": "papercusp-workspace",
+      "port": 3070
+    }
+  }
+}

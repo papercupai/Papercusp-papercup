@@ -1,0 +1,61 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "framework": "node",
+ "command": [
+  "npx",
+  "tsx",
+  "packages/operator-core/lib/search/bench/bm25-bakeoff-cli.ts",
+  "--corpus",
+  "documents",
+  "--methods",
+  "tsv_and,pgts",
+  "--out",
+  "docs/evidence/bm25-bakeoff-documents-2026-10-11.json"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-10-11T04:27:00.596Z",
+ "finishedAt": "2026-10-11T04:27:00.596Z",
+ "provenance": {
+  "sourceReport": "docs/evidence/bm25-bakeoff-documents-2026-10-11.json",
+  "sourceReportSha256": "206e3a5fe579126e5b749bb7670a8b198e3b9bd0f0444d8a72d5e2f48b194a00",
+  "benchCommit": "add0d6f0553cd0e01ef6d3c16af682dec8ff370b",
+  "serverVersion": "18.6 (Debian 18.6-1.pgdg13+2)",
+  "corpus": {
+   "key": "documents",
+   "queryForm": "title (body = text)",
+   "rows": 81352,
+   "source": "csv"
+  },
+  "loadavg": {
+   "start": [
+    183.63,
+    186.34,
+    199.87
+   ],
+   "end": [
+    285.42,
+    239.03,
+    224.42
+   ],
+   "cores": 128
+  },
+  "evidencePlane": "live",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "commandRepresentation": "bm25-bakeoff-cli arguments for this corpus; --out names the committed copy of the run output"
+ },
+ "name": "BM25 organization-documents (memory corpus) known-item benchmark (R-12)",
+ "assertions": [
+  {
+   "id": "r-12-recall10-not-below-baseline-short",
+   "passed": true,
+   "evidence": "short: pgts recall@10 0.3970 vs tsv_and 0.2970, n 1000 each, same run"
+  },
+  {
+   "id": "r-12-recall10-not-below-baseline-title",
+   "passed": true,
+   "evidence": "title: pgts recall@10 0.4860 vs tsv_and 0.2820, n 1000 each, same run"
+  }
+ ],
+ "summary": "81352 rows, 1000 queries; pgts recall@10 >= tsv_and on both query forms"
+}

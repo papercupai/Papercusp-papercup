@@ -41,6 +41,7 @@
  * "origin" repos, no network.
  */
 
+import { createHash } from 'node:crypto';
 import {
   type RunGit,
   type RunGitStdin,
@@ -48,6 +49,8 @@ import {
   defaultRunGit,
   defaultRunGitStdin,
 } from './storage';
+import { classifyGitError } from '../../harness/clone-github';
+import { createTimeSlice } from '../../event-loop-lag-monitor';
 import { type SecretFinding, scanForSecrets } from './secrets-guard';
 import { loadSecretsGuardPathExemptions, partitionExemptFindings } from './secrets-guard-exemptions';
 import { requireHiveEffectAuthority, type HiveEffectAuthority } from './hive-effect-authority';
@@ -60,6 +63,41 @@ import type { SignedProtocolScope } from './signed-context';
  *  the walk pushes the prefix it verified and resumes next tick, so a big
  *  backlog DRAINS instead of deadlocking. Nothing unscanned is ever pushed. */
 export const DEFAULT_MAX_SCAN_FILES = 5_000;
+
+/** Bump when secret-scan rules or their interpretation changes. Stored scan
+ *  cursors are invalidated when this policy version or exemptions change. */
+const EGRESS_SCAN_POLICY_VERSION = 1;
+
+export interface EgressScanProgress {
+  version: 1;
+  policyFingerprint: string;
+  baseSha: string | null;
+  targetSha: string;
+  lastScannedCommitSha: string | null;
+}
+
+export function readEgressScanProgress(value: unknown): EgressScanProgress | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  const validSha = (sha: unknown): sha is string => typeof sha === 'string' && /^[0-9a-f]{40,64}$/i.test(sha);
+  if (
+    v.version !== 1 ||
+    typeof v.policyFingerprint !== 'string' ||
+    !/^[0-9a-f]{64}$/i.test(v.policyFingerprint) ||
+    (v.baseSha !== null && !validSha(v.baseSha)) ||
+    !validSha(v.targetSha) ||
+    (v.lastScannedCommitSha !== null && !validSha(v.lastScannedCommitSha))
+  ) return null;
+  return v as unknown as EgressScanProgress;
+}
+
+function egressScanPolicyFingerprint(exemptions: ReadonlySet<string>): string {
+  const material = JSON.stringify({
+    version: EGRESS_SCAN_POLICY_VERSION,
+    exemptions: [...exemptions].sort(),
+  });
+  return createHash('sha256').update(material).digest('hex');
+}
 
 /** Blobs larger than this are skipped by the secret scan (binary/asset noise;
  *  entropy scans on megabytes are slow) — counted, never silently dropped. */
@@ -134,6 +172,9 @@ export interface EgressInput {
   workspaceId?: string;
   /** Injectable for tests; defaults to the real DB-backed loader. */
   loadPathExemptions?: (workspaceId: string) => Promise<ReadonlySet<string>>;
+  /** Durable cursor for the bridge's one-ref staging egress. Untrusted JSON is
+   *  validated and matched to the current target and scan policy before use. */
+  scanProgress?: unknown;
 }
 
 export interface EgressPushed {
@@ -191,6 +232,8 @@ export interface EgressResult {
   /** Remote transport failures that must not be folded into a clear verdict. */
   remoteErrors: EgressRemoteError[];
   errors: string[];
+  /** Cursor for the next bounded bridge scan tick; null means no scan remains. */
+  scanProgress?: EgressScanProgress | null;
 }
 
 /** `git ls-remote <url> <ref>` → sha, or null when the ref doesn't exist there.
@@ -203,7 +246,11 @@ async function lsRemote(
   runGit: RunGit,
 ): Promise<{ sha: string | null } | { error: string; transient: boolean }> {
   const r = await runGit(['ls-remote', remoteUrl, ref], repoPath);
-  if (r.code !== 0) return { error: r.stderr.trim() || `ls-remote exited ${r.code}`, transient: r.code === -1 };
+  if (r.code !== 0)
+    return {
+      error: r.stderr.trim() || `ls-remote exited ${r.code}`,
+      transient: r.code === -1 || classifyGitError(r.stderr) === 'network_timeout',
+    };
   const line = r.stdout.split('\n').find((l) => l.trim());
   if (!line) return { sha: null };
   const sha = line.trim().split(/\s+/)[0];
@@ -339,6 +386,11 @@ export interface SafeEgressResolution {
   exempted: SecretFinding[];
   skippedLarge: number;
   scannedBlobs: number;
+  /** Last fully scanned commit, used to resume a fixed target across ticks. */
+  lastScannedCommitSha: string | null;
+  /** The stored resume marker no longer occurs in this range; restart from the
+   *  current remote base rather than retrying a stale cursor forever. */
+  resetCursor?: boolean;
   error?: string;
 }
 
@@ -375,9 +427,14 @@ export interface SafeEgressResolution {
  */
 export async function resolveSafeEgressSha(input: {
   repoPath: string;
+  /** Fixed scan range base; may be older than the current remote after a
+   *  previously verified prefix advanced origin during a prior tick. */
   base: string | null;
+  /** Current remote head. Partial safeSha values must be descendants of it. */
+  publishBase?: string | null;
   target: string;
   maxFiles: number;
+  resumeAfter?: string | null;
   runGit: RunGit;
   runGitStdin?: RunGitStdin;
   exemptions?: ReadonlySet<string>;
@@ -386,25 +443,45 @@ export async function resolveSafeEgressSha(input: {
   const runGitStdin = input.runGitStdin ?? defaultRunGitStdin;
   const exemptions = input.exemptions ?? new Set<string>();
   const res: SafeEgressResolution = {
-    safeSha: base,
+    safeSha: input.publishBase === undefined ? base : input.publishBase,
     blocked: null,
     budgetExhausted: false,
     exempted: [],
     skippedLarge: 0,
     scannedBlobs: 0,
+    lastScannedCommitSha: input.resumeAfter ?? null,
   };
-  // --reverse => oldest first, so `safeSha` only ever moves forward along a
-  // first-parent-consistent prefix of the range.
+  const publishBase = input.publishBase === undefined ? base : input.publishBase;
+  // Parents must be visited before children: a candidate is publishable only
+  // after the whole history prefix that leads to it has been scanned.
   const range = base ? [`${base}..${target}`] : [target];
-  const revs = await runGit(['rev-list', '--reverse', ...range], repoPath);
+  const revs = await runGit(['rev-list', '--topo-order', '--reverse', ...range], repoPath);
   if (revs.code !== 0) return { ...res, error: revs.stderr.trim() || `rev-list exited ${revs.code}` };
   const commits = revs.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
 
+  const resumeIndex = input.resumeAfter ? commits.indexOf(input.resumeAfter) : -1;
+  if (input.resumeAfter && resumeIndex < 0) return { ...res, resetCursor: true, lastScannedCommitSha: null };
+
+  let publishable = new Set<string>();
+  if (publishBase) {
+    const publishableRange = await runGit(
+      ['rev-list', '--topo-order', '--reverse', '--ancestry-path', `${publishBase}..${target}`],
+      repoPath,
+    );
+    if (publishableRange.code !== 0) {
+      return { ...res, error: publishableRange.stderr.trim() || `candidate rev-list exited ${publishableRange.code}` };
+    }
+    publishable = new Set(publishableRange.stdout.split('\n').map((l) => l.trim()).filter(Boolean));
+  }
+
   const seen = new Set<string>();
-  for (const commit of commits) {
-    if (res.scannedBlobs >= maxFiles && res.safeSha !== base) {
-      // Budget spent AND we have something to show for it — ship the verified
-      // prefix now and resume here next tick.
+  const slice = createTimeSlice();
+  for (let index = resumeIndex + 1; index < commits.length; index++) {
+    const commit = commits[index]!;
+    if (res.scannedBlobs >= maxFiles && res.lastScannedCommitSha !== null) {
+      // Advance the durable scan cursor even when the processed DAG segment
+      // contains no commit that can yet fast-forward the remote. The former
+      // in-memory-only prefix retried the same side branch every tick.
       res.budgetExhausted = true;
       return res;
     }
@@ -419,13 +496,26 @@ export async function resolveSafeEgressSha(input: {
     // `scanForSecrets` applies the fixture-path exemption (isFixtureFile).
     // Calling `scanTextForSecrets` directly here froze origin/staging for
     // hours (P-402 / EI-13924, 2026-07-19).
-    const { blocking, exempted } = partitionExemptFindings(scanForSecrets(files), exemptions);
+    // Per file with a time-sliced yield: one commit can carry thousands of text
+    // blobs, and scanning them in one turn stalled bg-host's main thread for
+    // seconds (WI-10005476). scanForSecrets is a per-file map-concat, so the
+    // findings and their order are unchanged.
+    const found: SecretFinding[] = [];
+    for (const f of files) {
+      await slice.maybeYield();
+      found.push(...scanForSecrets([f]));
+    }
+    const { blocking, exempted } = partitionExemptFindings(found, exemptions);
     res.exempted.push(...exempted);
     if (blocking.length > 0) {
       res.blocked = { commit, findings: blocking };
       return res; // safeSha stays at the last clean commit — its ancestors still ship
     }
-    res.safeSha = commit;
+    res.lastScannedCommitSha = commit;
+    // rev-list(base..target) includes side-branch history that the remote
+    // cannot accept as a ref update. Only commits on a path from the current
+    // remote head to target are legal partial-push boundaries.
+    if (!publishBase || publishable.has(commit)) res.safeSha = commit;
   }
   return res;
 }
@@ -444,6 +534,9 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     scan && input.workspaceId
       ? await (input.loadPathExemptions ?? loadSecretsGuardPathExemptions)(input.workspaceId)
       : new Set<string>();
+  const policyFingerprint = scan ? egressScanPolicyFingerprint(exemptions) : null;
+  const canResumeScan = scan && !input.requireExactTarget && input.refs.length === 1;
+  const savedScan = canResumeScan ? readEgressScanProgress(input.scanProgress) : null;
   const res: EgressResult = {
     ok: true,
     exemptedFindings: [],
@@ -455,6 +548,7 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     tagsRejected: [],
     remoteErrors: [],
     errors: [],
+    scanProgress: savedScan,
   };
 
   const authorize = async (effect: string[]): Promise<boolean> => {
@@ -483,6 +577,7 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     const remoteSha = remote.sha;
     if (remoteSha === spec.sha) {
       res.upToDate.push(spec.remoteRef);
+      res.scanProgress = null;
       continue;
     }
 
@@ -500,14 +595,19 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
           input.repoPath,
           { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
         );
-        if (f.code !== 0 || !(await haveObject(input.repoPath, remoteSha, runGit))) {
-          if (f.code !== 0) {
-            res.remoteErrors.push({
-              message: `fetch ${spec.remoteRef}: ${f.stderr.trim() || `exited ${f.code}`}`,
-              transient: f.code === -1,
-            });
-          }
-          // Can't establish ancestry → fail CLOSED as a non-FF (never push blind).
+        if (f.code !== 0) {
+          const message = `fetch ${spec.remoteRef}: ${f.stderr.trim() || `exited ${f.code}`}`;
+          res.ok = false;
+          res.remoteErrors.push({
+            message,
+            transient: f.code === -1 || classifyGitError(f.stderr) === 'network_timeout',
+          });
+          res.errors.push(message);
+          continue;
+        }
+        if (!(await haveObject(input.repoPath, remoteSha, runGit))) {
+          // A successful fetch without the requested object leaves ancestry
+          // unverifiable, so fail closed and report the non-FF residue.
           res.rejectedNonFF.push({
             remoteRef: spec.remoteRef,
             remoteSha,
@@ -546,7 +646,10 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       const message =
         `push preflight ${spec.remoteRef}: ` +
         (preflight.stderr.trim() || `exited ${preflight.code}`);
-      res.remoteErrors.push({ message, transient: preflight.code === -1 });
+      res.remoteErrors.push({
+        message,
+        transient: preflight.code === -1 || classifyGitError(preflight.stderr) === 'network_timeout',
+      });
       res.errors.push(message);
       continue;
     }
@@ -558,15 +661,68 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     //    all-or-nothing shape was self-perpetuating.
     let pushSha = spec.sha;
     if (scan) {
-      const verdict = await resolveSafeEgressSha({
+      let scanBase = remoteSha;
+      let scanTarget = spec.sha;
+      let resumeAfter: string | null = null;
+      if (savedScan && policyFingerprint === savedScan.policyFingerprint) {
+        const targetStillContainsSaved = savedScan.targetSha === spec.sha ||
+          await isAncestor(input.repoPath, savedScan.targetSha, spec.sha, runGit);
+        const baseStillOnRemoteHistory = savedScan.baseSha === null ||
+          (remoteSha !== null && await isAncestor(input.repoPath, savedScan.baseSha, remoteSha, runGit));
+        const remoteIsBeforeSavedTarget = remoteSha === null
+          ? savedScan.baseSha === null
+          : await isAncestor(input.repoPath, remoteSha, savedScan.targetSha, runGit);
+        const savedTargetAlreadyPublished = remoteSha !== null &&
+          await isAncestor(input.repoPath, savedScan.targetSha, remoteSha, runGit);
+        if (targetStillContainsSaved && baseStillOnRemoteHistory && remoteIsBeforeSavedTarget && !savedTargetAlreadyPublished) {
+          scanBase = savedScan.baseSha;
+          scanTarget = savedScan.targetSha;
+          resumeAfter = savedScan.lastScannedCommitSha;
+        }
+      }
+
+      let verdict = await resolveSafeEgressSha({
         repoPath: input.repoPath,
-        base: remoteSha,
-        target: spec.sha,
+        base: scanBase,
+        publishBase: remoteSha,
+        target: scanTarget,
         maxFiles: maxScanFiles,
+        resumeAfter,
         runGit,
         runGitStdin: input.runGitStdin,
         exemptions,
       });
+      if (verdict.resetCursor) {
+        // The saved range no longer matches the local object graph. Rebase the
+        // scan on the live remote and the current requested target.
+        scanBase = remoteSha;
+        scanTarget = spec.sha;
+        resumeAfter = null;
+        verdict = await resolveSafeEgressSha({
+          repoPath: input.repoPath,
+          base: scanBase,
+          publishBase: remoteSha,
+          target: scanTarget,
+          maxFiles: maxScanFiles,
+          runGit,
+          runGitStdin: input.runGitStdin,
+          exemptions,
+        });
+      }
+      if (canResumeScan) {
+        const incomplete = Boolean(verdict.error || verdict.blocked || verdict.budgetExhausted);
+        res.scanProgress = incomplete
+          ? {
+              version: 1,
+              policyFingerprint: policyFingerprint!,
+              baseSha: scanBase,
+              targetSha: scanTarget,
+              lastScannedCommitSha: verdict.lastScannedCommitSha,
+            }
+          : null;
+      } else {
+        res.scanProgress = null;
+      }
       if (verdict.error) {
         res.ok = false;
         res.errors.push(`secret-scan collect ${spec.remoteRef}: ${verdict.error}`);
@@ -583,12 +739,10 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
           advancedTo: verdict.safeSha !== remoteSha ? verdict.safeSha : null,
         });
       } else if (verdict.budgetExhausted) {
-        // Not a refusal — a partial drain. Recorded so a stalled-looking
-        // watermark is explainable without reading the code.
-        res.errors.push(
-          `egress ${spec.remoteRef}: scan budget (${maxScanFiles} blobs) reached before the target; ` +
-            `pushing the verified prefix ${verdict.safeSha?.slice(0, 12)} — the remainder drains on following ticks`,
-        );
+        const canPublishPrefix = Boolean(verdict.safeSha && verdict.safeSha !== remoteSha);
+        res.errors.push(canPublishPrefix
+          ? `egress ${spec.remoteRef}: scan budget (${maxScanFiles} blobs) reached; pushing verified fast-forward prefix ${verdict.safeSha!.slice(0, 12)} and resuming the persisted cursor on following ticks`
+          : `egress ${spec.remoteRef}: scan budget (${maxScanFiles} blobs) reached before a fast-forward boundary; persisted scan cursor will resume on following ticks`);
       }
       // All-or-nothing callers publish the requested sha or nothing at all —
       // never a partial prefix under a ref whose name means one exact commit.
@@ -596,6 +750,15 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       // Nothing verified beyond what the remote already has → nothing to push.
       if (!verdict.safeSha || verdict.safeSha === remoteSha) continue;
       pushSha = verdict.safeSha;
+    }
+
+    // Defense in depth: a secret-scan prefix is still a branch update and
+    // must be a fast-forward from the exact remote head observed above.
+    if (remoteSha !== null && !(await isAncestor(input.repoPath, remoteSha, pushSha, runGit))) {
+      res.errors.push(
+        `egress ${spec.remoteRef}: skipped scan boundary ${pushSha.slice(0, 12)} because it is not a fast-forward from remote ${remoteSha.slice(0, 12)}; retaining scan progress`,
+      );
+      continue;
     }
 
     // 4. The push — UN-FORCED, so the remote's own atomic old-sha check is the
@@ -641,7 +804,10 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     } else {
       res.ok = false;
       const message = `push ${spec.remoteRef}: ${push.stderr.trim() || `exited ${push.code}`}`;
-      res.remoteErrors.push({ message, transient: push.code === -1 });
+      res.remoteErrors.push({
+        message,
+        transient: push.code === -1 || classifyGitError(push.stderr) === 'network_timeout',
+      });
       res.errors.push(message);
     }
     }
@@ -677,7 +843,10 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     else {
       const message = `push ${tagRef}: ${push.stderr.trim() || `exited ${push.code}`}`;
       res.tagsRejected.push({ name: tag.name, reason: message.split('\n')[0] ?? message });
-      res.remoteErrors.push({ message, transient: push.code === -1 });
+      res.remoteErrors.push({
+        message,
+        transient: push.code === -1 || classifyGitError(push.stderr) === 'network_timeout',
+      });
     }
   }
 

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P015/P016 isolated Tauri consented screenshot and reporter journey",
+  "framework": "operational",
+  "command": ["node", "--import", "tsx", "scripts/tauri-surface-verify-reporter-status.mts"],
+  "exitCode": 0,
+  "startedAt": "2026-10-07T09:38:17.442Z",
+  "finishedAt": "2026-10-07T09:38:35.605Z",
+  "summary": "Saved native journey passed in an isolated Tauri WebView and real PostgreSQL, inside verifier run 20261007T092933Z-3982684. Screenshot capture preceded consent; consented PNG storage, report receipt, fixer question, redacted consented reply, awaiting-release status and exact-fix notification passed. Release publication uses a controlled content-identity fixture; this proves the native journey, not final production shipment.",
+  "repo": {"commit": "05503a13ffb25d9980cb7a87b4aab9084ad926df"},
+  "sourcePaths": ["apps/operator/app/_components/ReportProblemDialog.tsx", "packages/operator-core/lib/harness/improvements/reporter-status.ts", "apps/operator/lib/release/reporter-release.ts"],
+  "testPaths": ["scripts/tauri-surface-verify-reporter-status.mts"],
+  "assertions": [
+    {"id": "native-journey-passed", "passed": true, "evidence": "reporter-status-tauri/20261007T093817Z-170859/result.json: native passed, final step published-exact-fix-notification; verifier log P016_TAURI_SURFACE_VERIFY_OK and exit=0."},
+    {"id": "screenshot-consent", "passed": true, "evidence": "Runner asserts checkbox false and zero report rows before consent; after consent and Send, PNG signature and not-redactable attachment storage. Screenshot preview was visually checked in the predecessor turn."},
+    {"id": "question-and-redacted-reply", "passed": true, "evidence": "Runner asserts persisted fixer question, null answer before consent, matching questionId after reply, and secret absent from the reply. reply-preview.json and PNG are saved."},
+    {"id": "exact-publication-notification", "passed": true, "evidence": "Runner waits for Fix verified; awaiting release, asserts no Fixed in v0.9.5 before publication, publishes with matching controlled content identities, then observes status and native toast Fixed in v0.9.5. published-notification.json and PNG are saved."},
+    {"id": "isolated-runtime-and-pinned-source", "passed": true, "evidence": "Parent verifier result passed prepare, boot and assert; verifier-source-receipt.json sourceCommit=05503a13ffb25d9980cb7a87b4aab9084ad926df. Log verifies isolated PG, WebView profile, bridge provenance, frozen SPA containment and unchanged assertion input."}
+  ],
+  "evidenceDirectory": "$XDG_STATE_HOME/verification-harness/reporter-status-tauri/20261007T093817Z-170859",
+  "parentEvidenceDirectory": "$XDG_STATE_HOME/verification-harness/verify-tauri-headless/20261007T092933Z-3982684",
+  "rawLog": "/tmp/p015-p016-native-20261007T0930.log",
+  "disclosures": ["Controlled release/content identity fixture is used inside isolated PostgreSQL; final deployed-main shipment is a separate outstanding acceptance check."]
+}

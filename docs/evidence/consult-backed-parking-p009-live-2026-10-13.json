@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "SPEC-P-009 live check: a product-decision park opened on staging proceeds at its deadline via the consult-expiry sweep",
+  "framework": "operational",
+  "command": ["node", "scripts/mcp-call.mjs", "dev:pg_query", "{\"allowUnscoped\":true,\"sql\":\"SELECT state, routing->'cascade', park_state FROM harness_shared.consult_state WHERE conversation_id='conv-mv61mqlv-0000-cd5bbbd8e14d49fba5c1c61fc38e4870'; SELECT external_blockers_projection FROM harness_shared.work_items WHERE feature_id='WI-6554700010009562'; SELECT fired_at, fired_by, fired_payload FROM harness_shared.event_awaits WHERE event_key='consult:park-verdict:conv-mv61mqlv-0000-cd5bbbd8e14d49fba5c1c61fc38e4870'\"}", "--client", "su-d03468f4-d7d4-46d5-9bbd-914e001a489d"],
+  "exitCode": 0,
+  "startedAt": "2026-10-13T02:10:20.866Z",
+  "finishedAt": "2026-10-13T02:38:30.000Z",
+  "summary": "On staging :3170 (build 3e8525d881) work_items:set_blocker { capability: product-decision, decideBy 2026-10-13T02:25:58Z, defaultIfUnanswered 'proceeds with option A' } parked throwaway WI-6554700010009562 at 02:10:20Z. That opened decision-review consult conv-mv61mqlv-0000-cd5bbbd8e14d49fba5c1c61fc38e4870, set an active external blocker that references the consult, and registered the setter's await consult:park-verdict:<id>. Two reviewers replied with stance support, and no objection was standing at the deadline. The consult-expiry sweep on papercusp-bg-host (restarted at 02:11Z with dev:restart to load sweepDueParks) recorded verdict=proceed at 02:29:18.965Z. It cleared the blocker (clearedBy system:consult-park, 02:29:19.226Z) and fired the await (event_awaits 285371, fired_by system:consult-park, payload verdict=proceed recordedAs=peer-review). This is the R-9 silent-proceed flow, observed live.",
+  "assertions": [
+    {"id": "park-opened", "passed": true, "evidence": "consult_state.routing.cascade = {flavor: decision-review, setterId: su-d03468f4-d7d4-46d5-9bbd-914e001a489d, workItemId: WI-6554700010009562, deadlineAt: 2026-10-13T02:25:58.000Z, defaultAction: 'proceeds with option A (throwaway live test; nothing changes)', ownerAuthorityTopic: null}."},
+    {"id": "verdict-proceed-recorded", "passed": true, "evidence": "consult_state.park_state.outcomes = [{at: 2026-10-13T02:29:18.965Z, verdict: proceed, objectionId: null}]; delivery.deliveredAt 2026-10-13T02:34:19.538Z; ownerQuestionOpened false."},
+    {"id": "blocker-cleared", "passed": true, "evidence": "work_items WI-6554700010009562 external_blockers_projection[0]: ref consult:conv-mv61mqlv-0000-cd5bbbd8e14d49fba5c1c61fc38e4870, capability product-decision, status cleared, clearedBy system:consult-park, clearedAt 2026-10-13T02:29:19.226Z, evidence 'peer-review: no standing objection at the deadline; proceeding with the default'."},
+    {"id": "setter-await-fired", "passed": true, "evidence": "event_awaits 285371 event_key consult:park-verdict:conv-mv61mqlv-0000-cd5bbbd8e14d49fba5c1c61fc38e4870, subscriber su-d03468f4-d7d4-46d5-9bbd-914e001a489d, fired_at 2026-10-13T02:29:19.724861Z, fired_by system:consult-park, payload verdict=proceed recordedAs=peer-review. The setter session received the wake (delivery 725972)."}
+  ],
+  "provenance": {
+    "evidencePlane": "staging-operator",
+    "instrument": "packages/operator-core/lib/consult/park-adapters.ts",
+    "instrumentTest": "packages/operator-core/lib/consult/park.integration.test.ts",
+    "workItem": "WI-6554700010009498",
+    "spec": "consult-backed-parking-2026-10-12#SPEC-P-009@1"
+  },
+  "disclosures": [
+    "Staging (:3170 + papercusp-bg-host) only; production :3070 serves stale main d740fc3802 and is not covered.",
+    "Only the silent-proceed flow was exercised live. The adopt-alternative flow is covered by the real-Postgres integration test (test run 21169847), not by this live check.",
+    "consult_state.state stayed 'active' after the park resolved. Whether resolution should close the consult is tracked as WI-6554700010009634 and is outside R-9.",
+    "The throwaway work item was dropped after the check."
+  ]
+}

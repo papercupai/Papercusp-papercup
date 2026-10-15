@@ -10,6 +10,72 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
+import { completedResultPayload } from '../abort-completion-payload';
+
+function storagePruneAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  const removed = payload?.removed;
+  const categoryId = payload?.categoryId;
+  const dryRun = payload?.dryRun;
+  const vacuumed = payload?.vacuumed;
+  if (
+    payload?.ok !== true ||
+    typeof categoryId !== 'string' ||
+    typeof dryRun !== 'boolean' ||
+    typeof removed !== 'number' ||
+    !Number.isSafeInteger(removed) ||
+    removed < 0
+  ) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'storage:prune result did not establish whether any deletion completed',
+      failures: ['missing-prune-effect-summary'],
+    };
+  }
+
+  const diagnostics = {
+    categoryId,
+    dryRun,
+    removed,
+    ...(typeof payload.partial === 'boolean' ? { partial: payload.partial } : {}),
+    ...(typeof payload.totalRemaining === 'number' ? { totalRemaining: payload.totalRemaining } : {}),
+    ...(typeof payload.complete === 'boolean' ? { complete: payload.complete } : {}),
+    ...(typeof vacuumed === 'boolean' ? { vacuumed } : {}),
+  };
+  if (dryRun) {
+    return {
+      status: 'not-recorded',
+      reason: 'storage:prune completed as a dry run',
+      diagnostics,
+    };
+  }
+  if (removed === 0 && vacuumed !== true && payload.complete === true) {
+    return {
+      status: 'not-recorded',
+      reason: 'storage:prune completed without deleting entries',
+      diagnostics,
+    };
+  }
+  if (removed === 0 && vacuumed !== true) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'storage:prune did not report deleted entries; disk removal may have partially completed',
+      failures: ['missing-prune-effect-count'],
+      diagnostics,
+    };
+  }
+
+  return {
+    status: 'recorded',
+    effectRef: `storage-prune:${context.callId}:${categoryId}`,
+    diagnostics,
+  };
+}
 
 export default defineTool({
   name: 'storage:prune',
@@ -20,13 +86,18 @@ export default defineTool({
   guidance: {
     when: 'The owner (or the Storage settings page) deliberately trims a local-only category — telemetry tables, the drained federation outbox, or on-disk session/scratch/flight-recorder stores.',
     notWhen: 'To read sizes use storage:usage. Federated categories (plans/features/issues/coord) are refused — trimming would change what peers see.',
-    chaining: 'storage:usage → storage:prune { category, olderThanDays, dryRun: true } → review reclaim → storage:prune { category, olderThanDays }.',
+    chaining: 'storage:usage { category } → storage:prune { category, olderThanDays, dryRun: true } → review reclaim → storage:prune { category, olderThanDays }.',
     seeAlso: [
       'storage:usage (read sizes before trimming)',
     ],
   },
   requirePrincipal: false,
   agentRoles: ['operator'],
+  // The final VACUUM FULL and its coordinated drain can exceed the generic 60s
+  // dispatcher window. This user-started maintenance operation gets 90s, and
+  // the receipt identifies any completed deletion if that deadline is still hit.
+  timeoutSec: 90,
+  abortCompletionReceipt: storagePruneAbortCompletionReceipt,
   args: z.object({
     category: z.string().describe('Storage category id (storage:usage lists them).'),
     olderThanDays: z

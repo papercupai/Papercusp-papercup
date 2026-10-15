@@ -10,8 +10,87 @@
  * against the staging operator.
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { DEFAULT_VOICE_PREFS } from '../../../voice-prefs';
 import { decodeWavPcm16 } from '../../../voice-node/wav';
+
+// This opt-in detector reaches the serving process, whose provider/settings
+// modules are independent of this file's unit-test mocks. Never count a skipped
+// unavailable provider or the controlled tests below as live synthesis proof.
+const liveFetch = globalThis.fetch;
+const liveBaseUrl = process.env.PAPERCUSP_TTS_LIVE_BASE_URL;
+function assertRealSpeechAudio(audioBase64: string) {
+  const decoded = spawnSync('ffmpeg', ['-v', 'error', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '24000', 'pipe:1'], {
+    input: Buffer.from(audioBase64, 'base64'), timeout: 10_000, maxBuffer: 8 * 1024 * 1024,
+  });
+  expect(decoded.error, 'Audio decoder must be installed and complete').toBeUndefined();
+  expect(decoded.status, decoded.stderr.toString().slice(0, 600)).toBe(0);
+  expect(decoded.stdout.length).toBeGreaterThan(16_000);
+  let peak = 0;
+  for (let offset = 0; offset + 1 < decoded.stdout.length; offset += 2) peak = Math.max(peak, Math.abs(decoded.stdout.readInt16LE(offset)));
+  expect(peak).toBeGreaterThan(500);
+}
+it.runIf(!!liveBaseUrl)('LIVE selected available provider produces decodable non-silent original-reading audio', async ({ skip }) => {
+  const base = new URL(liveBaseUrl!);
+  expect(['127.0.0.1', 'localhost', '[::1]']).toContain(base.hostname);
+  const request = (path: string, init?: RequestInit) => liveFetch(new URL(`/api/agent-mcp/${path}`, base), {
+    ...init, signal: AbortSignal.timeout(45_000),
+  });
+  const prefsResponse = await request('operator-voice-prefs');
+  expect(prefsResponse.status).toBe(200);
+  const prefs = await prefsResponse.json();
+  const healthResponse = await request('operator-voice-engine-health');
+  expect(healthResponse.status).toBe(200);
+  const health = await healthResponse.json();
+  console.info('LIVE_SELECTED_SPEECH_AVAILABILITY', JSON.stringify({
+    base: base.origin, selected: prefs.ttsEngine,
+    providers: ['kokoro', 'elevenlabs', 'openai', 'cartesia'].map(engine => ({
+      engine, available: health[engine], error: health[`${engine}Error`] ?? null,
+    })),
+  }));
+  if (prefs.ttsEngine === 'browser') skip('Selected browser speech requires a real browser voice; server synthesis is not a substitute.');
+  expect(['kokoro', 'elevenlabs', 'openai', 'cartesia']).toContain(prefs.ttsEngine);
+  if (health[prefs.ttsEngine] === false) skip(`Selected ${prefs.ttsEngine} is unavailable: ${health[`${prefs.ttsEngine}Error`] ?? 'local engine not ready'}`);
+  expect(health[prefs.ttsEngine]).toBe(true);
+  const source = 'Public speech verification. The north count is twelve and the south count is thirty four. Exact final tail.';
+  const response = await request('operator-tts', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ operation: 'read', text: source, format: 'text', allowCloud: true }),
+  });
+  expect(response.status).toBe(200);
+  const records = (await response.text()).trim().split('\n').map(line => JSON.parse(line));
+  expect(records.filter(record => record.ok !== true)).toEqual([]);
+  expect(records.at(-1)).toMatchObject({ type: 'completed', ok: true });
+  const chunks = records.filter(record => record.type === 'chunk');
+  expect(chunks.length).toBeGreaterThan(0);
+  expect(chunks.map(chunk => chunk.text).join('')).toBe(source);
+  for (const chunk of chunks) {
+    expect(chunk.engine).toBe(prefs.ttsEngine);
+    // Decode both the providers' WAV and native MP3 containers, rather than
+    // treating a 200, a byte count, or a canned RIFF prefix as real audio.
+    assertRealSpeechAudio(chunk.audioBase64);
+  }
+}, 90_000);
+it.runIf(!!liveBaseUrl)('LIVE configured ElevenLabs route produces decodable non-silent complete-reply audio', async ({ skip }) => {
+  const base = new URL(liveBaseUrl!);
+  expect(['127.0.0.1', 'localhost', '[::1]']).toContain(base.hostname);
+  const request = (path: string, init?: RequestInit) => liveFetch(new URL(`/api/agent-mcp/${path}`, base), {
+    ...init, signal: AbortSignal.timeout(45_000),
+  });
+  const healthResponse = await request('operator-voice-engine-health');
+  expect(healthResponse.status).toBe(200);
+  const health = await healthResponse.json();
+  if (health.elevenlabs === false) skip(`ElevenLabs is unavailable: ${health.elevenlabsError ?? 'not configured'}`);
+  expect(health.elevenlabs).toBe(true);
+  const response = await request('operator-tts', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ engine: 'elevenlabs', text: 'Public configured provider verification. Exact complete final sentence.' }),
+  });
+  expect(response.status).toBe(200);
+  const result = await response.json();
+  expect(result).toMatchObject({ ok: true, engine: 'elevenlabs' });
+  assertRealSpeechAudio(result.audioBase64);
+}, 90_000);
 
 vi.mock('../../../voice-prefs', async (importOriginal) => {
   const orig = await importOriginal<typeof import('../../../voice-prefs')>();
@@ -123,6 +202,85 @@ describe('POST /agent-mcp/operator-stt', () => {
 
 // ─── operator-tts ────────────────────────────────────────────────────────────
 
+describe('POST /agent-mcp/operator-tts original reading', () => {
+  it('reads the complete long source using stored settings and emits honest progress/completion', async () => {
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const source = 'A paragraph with exact symbols {name}. '.repeat(230) + 'FINAL 🐉 TAIL';
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: source });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/x-ndjson');
+    const records = (await res.text()).trim().split('\n').map(line => JSON.parse(line));
+    const chunks = records.filter(record => record.type === 'chunk');
+    expect(chunks.map(chunk => chunk.text).join('')).toBe(source);
+    expect(chunks.at(-1).end).toBe(source.length);
+    expect(records.at(-1)).toEqual({ ok: true, type: 'completed', chunks: chunks.length });
+    expect(mock.mock.calls.map(call => JSON.parse(String(call[1]?.body)).input).join('')).toBe(source);
+    expect(loadVoicePrefs).toHaveBeenCalledTimes(1);
+  });
+
+  it('defaults to local-only and refuses selected cloud before synthesis', async () => {
+    (loadVoicePrefs as Mock).mockResolvedValue({ ...DEFAULT_VOICE_PREFS, ttsEngine: 'elevenlabs' });
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'private words' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('local speech');
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it('requires the browser player for explicit reading instead of substituting a server engine', async () => {
+    (loadVoicePrefs as Mock).mockResolvedValue({ ...DEFAULT_VOICE_PREFS, ttsEngine: 'browser' });
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    for (const allowCloud of [false, true]) {
+      const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'original words', allowCloud });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toContain('active browser player');
+    }
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it('does not emit completed when a later chunk fails', async () => {
+    let calls = 0;
+    stubFetch(() => ++calls === 1 ? new Response(FAKE_WAV) : new Response('unavailable', { status: 500 }));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'x'.repeat(9000) });
+    const records = (await res.text()).trim().split('\n').map(line => JSON.parse(line));
+    expect(records.map(record => record.type)).toEqual(['chunk', 'error']);
+    expect(records.at(-1)).toMatchObject({ ok: false, status: 502, chunks: 1 });
+    expect(calls).toBe(2);
+  });
+
+  it('bounds synthesis to one prepared chunk while the response consumer is stalled', async () => {
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'x'.repeat(9001) });
+    const reader = res.body!.getReader();
+    expect(mock).toHaveBeenCalledTimes(1);
+    const first = await reader.read();
+    expect(JSON.parse(new TextDecoder().decode(first.value))).toMatchObject({ type: 'chunk', index: 0 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(mock).toHaveBeenCalledTimes(1);
+    const second = await reader.read();
+    expect(JSON.parse(new TextDecoder().decode(second.value))).toMatchObject({ type: 'chunk', index: 1 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(mock).toHaveBeenCalledTimes(2);
+    await reader.cancel();
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops synthesis when the response consumer cancels', async () => {
+    const mock = stubFetch(() => new Response(FAKE_WAV));
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'x'.repeat(9000) });
+    const reader = res.body!.getReader();
+    await reader.read();
+    expect(mock).toHaveBeenCalledTimes(1);
+    await reader.cancel();
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects malformed option types instead of treating a string as cloud consent', async () => {
+    const res = await post(ttsRoute, 'operator-tts', { operation: 'read', text: 'words', allowCloud: 'true' });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /agent-mcp/operator-tts', () => {
   it('synthesizes via the prefs default engine (kokoro) and returns base64 wav', async () => {
     const audio = Buffer.from('RIFF-fake-wav-bytes');
@@ -173,16 +331,24 @@ describe('POST /agent-mcp/operator-tts', () => {
     expect((await res.json()).error).toMatch(/key not configured/);
   });
 
-  it('uses the prefs elevenlabs voice and caps text at 4000 chars', async () => {
+  it('uses the prefs elevenlabs voice and preserves text at the 4000-character request limit', async () => {
     (readElevenLabsKey as Mock).mockResolvedValue('k-123');
     const mock = stubFetch(() => new Response(Buffer.from('mp3'), { status: 200 }));
-    const long = 'a'.repeat(5000);
+    const long = ' ' + 'a'.repeat(3998) + ' ';
     const res = await post(ttsRoute, 'operator-tts', { text: long, engine: 'elevenlabs' });
     expect(res.status).toBe(200);
     expect((await res.json()).contentType).toBe('audio/mpeg');
     const [url, init] = mock.mock.calls[0] as [string, RequestInit];
     expect(url).toContain(DEFAULT_VOICE_PREFS.elevenlabsVoiceId);
-    expect(JSON.parse(String(init.body)).text.length).toBe(4000);
+    expect(JSON.parse(String(init.body)).text).toBe(long);
+  });
+
+  it('413s over-limit text instead of silently truncating it', async () => {
+    const mock = stubFetch(() => new Response(Buffer.from('should not synthesize'), { status: 200 }));
+    const res = await post(ttsRoute, 'operator-tts', { text: 'a'.repeat(4001) });
+    expect(res.status).toBe(413);
+    expect((await res.json()).error).toMatch(/4000 characters per request/);
+    expect(mock).not.toHaveBeenCalled();
   });
 
   it('502s when the engine is unreachable', async () => {

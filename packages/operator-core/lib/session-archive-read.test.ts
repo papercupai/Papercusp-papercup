@@ -11,6 +11,8 @@ import { join } from 'node:path';
 import { readArchivedSessionTurns } from './session-archive-read';
 import {
   archiveAndDeleteSession,
+  archiveSession,
+  SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES,
   type ArchiveFileRow,
   type ArchiveStampRow,
   type SessionArchiveStore,
@@ -24,6 +26,8 @@ const FAKE_SECRET = ['sk', 'fixture0123456789abcdef'].join('-');
 class MiniStore implements SessionArchiveStore {
   files: ArchiveFileRow[] = [];
   stamps = new Map<string, ArchiveStampRow>();
+  parsingOffset: number | null = null;
+  async readTurnParsingOffset(): Promise<number | null> { return this.parsingOffset; }
   async upsertArchive(files: ArchiveFileRow[], stamp: ArchiveStampRow): Promise<void> {
     this.files = files;
     this.stamps.set(`${stamp.source_kind}:${stamp.session_id}`, stamp);
@@ -44,6 +48,40 @@ afterEach(async () => {
 });
 
 describe('readArchivedSessionTurns', () => {
+  it.each(['legacy', 'new', 'mixed'] as const)('keeps canonical indexes in a %s short-decision archive', async (mode) => {
+    tmp = await mkdtemp(join(tmpdir(), 'sar-short-decisions-'));
+    const root = join(tmp, 'sessions', '2026', '10', '08');
+    await mkdir(root, { recursive: true });
+    const message = (text: string, role = 'user') => JSON.stringify({
+      type: 'response_item', timestamp: '2026-10-08T01:10:19.604Z',
+      payload: { type: 'message', role, content: [{ type: 'input_text', text }] },
+    });
+    const prefix = `${message('original request é')}\n${message('A')}\n`;
+    const raw = `${prefix}${message('B')}\n${message('after decision', 'assistant')}\n`;
+    await writeFile(join(root, `rollout-${SID}.jsonl`), raw);
+    const store = new MiniStore();
+    store.parsingOffset = mode === 'legacy' ? null : mode === 'new' ? 0 : Buffer.byteLength(prefix);
+    const expectedOffset = store.parsingOffset;
+    expect((await archiveSession({ sourceKind: 'codex', sessionId: SID, sessionRoot: tmp }, store)).ok).toBe(true);
+    // The bounded ingest-state ledger can be pruned before a repeat snapshot.
+    store.parsingOffset = null;
+    const result = await archiveAndDeleteSession({ sourceKind: 'codex', sessionId: SID, sessionRoot: tmp }, store);
+    expect(result.archive.ok).toBe(true);
+    expect(store.files).toHaveLength(1);
+    const manifest = store.stamps.get(`codex:${SID}`)!.manifest[0];
+    expect(manifest.short_user_turns_offset ?? null).toBe(expectedOffset);
+    const archived = await readArchivedSessionTurns(SID, 'codex', store);
+    const expected = mode === 'legacy' ? ['original request é', 'after decision']
+      : mode === 'new' ? ['original request é', 'A', 'B', 'after decision']
+        : ['original request é', 'B', 'after decision'];
+    expect(archived?.errors).toEqual([]);
+    expect(archived?.turns.map((turn) => turn.text)).toEqual(expected);
+    expect(archived?.turns.map((turn) => turn.turn_idx)).toEqual(expected.map((_, index) => index));
+    const selected = await readArchivedSessionTurns(SID, 'codex', store, { turnIndices: [1], fullSource: true });
+    expect(selected?.turns).toHaveLength(1);
+    expect(selected?.turns[0]).toMatchObject({ turn_idx: 1, text: expected[1] });
+  });
+
   it('reads turns from a deleted, archived claude session — capped + redacted like the index', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'sar-read-'));
     await mkdir(join(tmp, 'projects', '-repo'), { recursive: true });
@@ -89,6 +127,61 @@ describe('readArchivedSessionTurns', () => {
     expect(assistant).not.toContain(FAKE_SECRET);
     expect(assistant).toContain('[redacted]');
     expect(assistant).toContain('Root cause found');
+  });
+
+  it('recovers a full redacted turn beyond the index cap and can retain only requested indexes', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'sar-read-codex-full-'));
+    const root = join(tmp, 'sessions', '2026', '10', '01');
+    await mkdir(root, { recursive: true });
+    const secret = `token=${FAKE_SECRET} `;
+    const suffix = 'tail-sentinel';
+    const sourceText = `${secret}${'x'.repeat(9_572 - secret.length - suffix.length)}${suffix}`;
+    expect(sourceText).toHaveLength(9_572);
+    const line = JSON.stringify({
+      timestamp: '2026-10-01T21:00:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: sourceText }],
+      },
+    });
+    await writeFile(join(root, `rollout-2026-10-01T21-00-00-${SID}.jsonl`), `${line}\n`);
+
+    const store = new MiniStore();
+    await archiveAndDeleteSession({ sourceKind: 'codex', sessionId: SID, sessionRoot: tmp, owner: 'owner-a' }, store);
+
+    const indexed = await readArchivedSessionTurns(SID, 'codex', store);
+    expect(indexed?.turns[0]?.text.length).toBeLessThan(8_000);
+    expect(indexed?.turns[0]?.text).not.toContain(FAKE_SECRET);
+    const full = await readArchivedSessionTurns(SID, 'codex', store, { fullSource: true, turnIndices: [0] });
+    expect(full?.errors).toEqual([]);
+    expect(full?.turns).toHaveLength(1);
+    expect(full?.turns[0]).toMatchObject({ turn_idx: 0, speaker: 'assistant' });
+    expect(full?.turns[0]?.text).toContain('[redacted]');
+    expect(full?.turns[0]?.text).not.toContain(FAKE_SECRET);
+    expect(full?.turns[0]?.text).toContain(suffix);
+    expect(full?.turns[0]?.text.length).toBeGreaterThan(8_000);
+  });
+
+  it('rejects an archive whose declared raw bytes exceed the decompression budget', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'sar-read-codex-bound-'));
+    const root = join(tmp, 'sessions', '2026', '10', '01');
+    await mkdir(root, { recursive: true });
+    const line = JSON.stringify({
+      timestamp: '2026-10-01T21:00:00.000Z',
+      type: 'response_item',
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'bounded source turn' }] },
+    });
+    await writeFile(join(root, `rollout-2026-10-01T21-00-00-${SID}.jsonl`), `${line}\n`);
+    const store = new MiniStore();
+    await archiveAndDeleteSession({ sourceKind: 'codex', sessionId: SID, sessionRoot: tmp }, store);
+    const row = store.files[0]!;
+    row.bytes_raw = SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES + 1;
+
+    const result = await readArchivedSessionTurns(SID, 'codex', store);
+    expect(result?.turns).toEqual([]);
+    expect(result?.errors).toEqual([expect.objectContaining({ error: expect.stringContaining('raw-byte limit') })]);
   });
 
   it('returns null when nothing is archived under any kind', async () => {

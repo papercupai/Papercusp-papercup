@@ -69,6 +69,30 @@ describe('testing:run-status handler', () => {
     expect(String(out.data.message)).toContain('not evidence that the test passed');
   });
 
+  it('bounds repeated provenance output and recovers the stored output without rerunning tests', async () => {
+    const snapshot: RunSnapshot = {
+      runId: 'run-large', kind: 'vitest', label: 'large provenance',
+      command: ['node', 'scripts/test-files.mjs'], status: 'fail', exitCode: 1,
+      startedAt: 123, finishedAt: 456, truncated: true,
+      output: 'TEST_FILE_PROVENANCE ' + 'scope warning\n'.repeat(1000),
+    };
+    getRunMock.mockResolvedValue(snapshot);
+    const compact = await call(snapshot.runId);
+    const output = (compact.data.snapshot as RunSnapshot).output;
+    expect(output.length).toBeLessThanOrEqual(2048);
+    expect(output).toContain('TRUNCATED');
+    expect(output).toContain("name:'testing:run-status'");
+    expect(compact.data.snapshot).toMatchObject({ status: 'fail', exitCode: 1, truncated: true });
+
+    const full = await tool.handler({ runId: snapshot.runId } as never,
+      { payloadTierOverride: 'full' } as never) as Output;
+    expect(full.data.snapshot).toEqual(snapshot);
+    const projected = await tool.handler({ runId: snapshot.runId } as never,
+      { payloadTierOverride: 'full', sourceMaterialization: { promotedToFull: true } } as never) as Output;
+    expect((projected.data.snapshot as RunSnapshot).output).toBe(output);
+    expect(snapshot.output).not.toContain('TRUNCATED');
+  });
+
   it('returns retryable snapshot_unavailable when the durable store cannot be read', async () => {
     getRunMock.mockRejectedValue(new TestingRunSnapshotUnavailableError());
 
@@ -91,8 +115,8 @@ describe('testing:run-status handler', () => {
       finishedAt: 1_700_000_005_000,
       fileCount: 2,
       files: [
-        { filePath: 'lib/one.test.ts', status: 'pass', finishedAt: 1_700_000_004_000 },
-        { filePath: 'lib/two.test.ts', status: 'pass', finishedAt: 1_700_000_005_000 },
+        { filePath: 'lib/one.test.ts', status: 'pass', finishedAt: 1_700_000_004_000, executionDetails: null },
+        { filePath: 'lib/two.test.ts', status: 'pass', finishedAt: 1_700_000_005_000, executionDetails: null },
       ],
       message: 'Recovered pass from 2 latest per-file test_runs row(s); the detached lifecycle snapshot is missing or unreadable.',
     };
@@ -112,7 +136,7 @@ describe('testing:run-status handler', () => {
       exitCode: 1,
       finishedAt: 1_700_000_005_000,
       fileCount: 1,
-      files: [{ filePath: 'lib/failing.test.ts', status: 'fail', finishedAt: 1_700_000_005_000 }],
+      files: [{ filePath: 'lib/failing.test.ts', status: 'fail', finishedAt: 1_700_000_005_000, executionDetails: null }],
       message: 'Recovered fail from 1 latest per-file test_runs row(s); the detached lifecycle snapshot is missing or unreadable.',
     };
     getRunMock.mockResolvedValue(null);

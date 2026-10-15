@@ -44,18 +44,16 @@
  * value the caller can vary independently.
  */
 import type postgres from 'postgres';
-import {
-  assertSocialWriteAllowed,
-  type SocialPlatformId,
-} from '../external-triggers/social/platform-registry';
+import { providerSocialDeleteResultIssue } from '@papercusp/plugin-sdk';
+import type { SocialPlatformId } from '../external-triggers/social/platform-registry';
+import { invokeOutboundProvider, type OutboundDispatchDeps } from './provider-dispatch';
 import {
   formatSocialPostRef,
-  getSocialWriteAdapter,
   parseSocialPostRef,
   resolveSocialPost,
   resolveSocialReplyCoordinates,
-  resolveSocialOutboundContext,
-  type SocialDeleteOutcome,
+  resolveSocialWriteTarget,
+  type SocialDeleteRequest,
   type SocialPostRef,
 } from './social';
 import type { CanonicalDocument } from './resolve';
@@ -189,10 +187,12 @@ const PREVIEW_CHARS = 240;
  *  4. REGISTRY WRITE GATE for `delete` SPECIFICALLY. `write.verbs` is
  *     per-platform and several platforms declare reply/post without delete, so
  *     this is a real refusal rather than a formality — and it must precede the
- *     adapter lookup, because having written an adapter is not evidence that we
+ *     provider lookup, because having written a package is not evidence that we
  *     know how to call the API correctly.
- *  5. ADAPTER. A missing one is reported as an adapter gap, distinct from a
- *     platform that cannot delete at all.
+ *  5. PROVIDER (P-002). The owner's connected source of the platform's installed
+ *     provider package, which must declare `social.delete`; a platform with no
+ *     installed package, or one without the capability, is refused by name
+ *     before any network call. The delete goes through provider invoke.
  */
 export async function deleteCanonicalSocialPost(
   sql: postgres.Sql,
@@ -202,6 +202,7 @@ export async function deleteCanonicalSocialPost(
     postId: string | SocialPostRef;
     confirmToken: string | null | undefined;
   },
+  deps: OutboundDispatchDeps = {},
 ): Promise<SocialDeleteResult> {
   const ref = typeof params.postId === 'string' ? parseSocialPostRef(params.postId) : params.postId;
 
@@ -213,26 +214,17 @@ export async function deleteCanonicalSocialPost(
 
   assertDeleteConfirmed(resolved.doc, resolved.ref, params.confirmToken);
 
-  assertSocialWriteAllowed(resolved.ref.platform, 'delete');
-
-  const adapter = getSocialWriteAdapter(resolved.ref.platform);
-  if (!adapter?.delete) {
-    throw new Error(
-      `social_delete_adapter_missing:${resolved.ref.platform} — the platform declares delete but no adapter implements it yet`,
-    );
-  }
+  const { target, capability } = await resolveSocialWriteTarget(
+    sql,
+    { workspaceId: params.workspaceId, userId: params.userId, platform: resolved.ref.platform, verb: 'delete' },
+    deps,
+  );
 
   // Reuse the reply coordinate derivation: deleting needs the same
   // platform-native handle for the post that replying to it does, and a second
   // derivation would be a second copy of per-platform knowledge that could
   // drift into deleting the wrong object.
   const coordinates = resolveSocialReplyCoordinates(resolved.doc);
-  const { context } = await resolveSocialOutboundContext(sql, {
-    workspaceId: params.workspaceId,
-    userId: params.userId,
-    platform: resolved.ref.platform,
-    verb: 'delete',
-  });
 
   const idempotencyKey = socialDeleteIdempotencyKey(resolved.ref);
   const echo: SocialDeleteEcho = {
@@ -244,13 +236,20 @@ export async function deleteCanonicalSocialPost(
     idempotencyKey,
   };
 
-  const outcome: SocialDeleteOutcome = await adapter.delete(
-    { ref: resolved.ref, target: coordinates.target, idempotencyKey },
-    context,
+  const request: SocialDeleteRequest = { ref: resolved.ref, target: coordinates.target, idempotencyKey };
+  const result = await invokeOutboundProvider(
+    sql,
+    target,
+    capability,
+    { externalId: resolved.ref.externalId, target: request.target, idempotencyKey },
+    deps,
   );
+  const issue = providerSocialDeleteResultIssue(result);
+  if (issue) throw new Error(`provider_result_invalid:${target.provider.id}:${capability}:${issue}`);
 
   // `deleted:false` is carried through as-is rather than raised or smoothed
   // into success. "Nothing was there to delete" is a different fact from "I
-  // deleted it", and only the adapter can tell them apart.
-  return { echo, deleted: outcome.deleted, detail: outcome.detail };
+  // deleted it", and only the package can tell them apart.
+  const detail = typeof result.detail === 'string' ? result.detail : undefined;
+  return { echo, deleted: result.deleted === true, ...(detail !== undefined ? { detail } : {}) };
 }

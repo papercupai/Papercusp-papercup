@@ -8,6 +8,9 @@ import {
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
 } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
+type ClassResolver = typeof import('../plans/evaluate-spec-test-adequacy').resolveEvaluatorClassRef;
+const classResolver = vi.hoisted(() => vi.fn<ClassResolver>(async () => ({ ok: true, classRef: 'plan-class-feature-ship', source: 'active-acceptance-rubric' })));
+vi.mock('../plans/evaluate-spec-test-adequacy', () => ({ resolveEvaluatorClassRef: classResolver }));
 
 type GateDeps = NonNullable<Parameters<typeof specTestAdequacyCompletionGate>[1]>;
 type ListedEvidence = Awaited<ReturnType<NonNullable<GateDeps['listEvidence']>>>[number];
@@ -53,6 +56,36 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   };
 }
 
+function inventoryExemptionClause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
+  return clause({
+    specId: 'INVENTORY-P-003',
+    sourceValId: null,
+    planItemId: 'P-003',
+    behavior: 'Read-only caller, gate, test-suite and registered component inventory.',
+    behaviorClass: 'non-automated',
+    requiredEvidence: [],
+    requiredTestLayers: [],
+    mutationRequired: false,
+    lifecycleStatus: 'exempt',
+    exemption: {
+      provenance: 'reconnect-plan#D-006',
+      justification: 'This item changes no runtime behavior; implementation and shipment obligations remain on their owning items.',
+    },
+    falsifier: null,
+    acceptanceRef: 'reconnect-plan#D-006',
+    sourceBar: null,
+    ...over,
+  });
+}
+
+function passingExecution(): NonNullable<ListedEvidence['testRunExecution']> {
+  return {
+    status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+    filePath: RECONNECT_TEST_PATH,
+    testLayer: 'integration', passedCaseTitles: ['acknowledged events are not replayed'],
+  };
+}
+
 function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
   return {
     workItemId: 'WI-101',
@@ -71,8 +104,13 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     },
     coverageEvidenceRef: null,
     testRunId: 43,
+    testRunExecution: passingExecution(),
     details: {
       adequacy: {
+        // Current evaluator evidence must name the exact clause it is proving.
+        targeted: 'SPEC-003-01',
+        fixtureFree: true,
+        testCases: ['acknowledged events are not replayed'],
         falsifiable: true,
         testLayer: 'integration',
         pathReachable: true,
@@ -116,10 +154,19 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
     createdBy: 'su-test',
     createdAt: '2026-08-20T00:01:31.000Z',
     ...evidence(),
-    testRunProvenance: null,
+    testRunExecution: passingExecution(),
+    // Evaluator revision 4 (WI-10006856): a mutation/counterexample target only establishes
+    // falsifiability when its run's canonical test FILE also has a successful current test
+    // binding on the same clause revision, matched by testRunProvenance.filePath. A null
+    // provenance can never link, so the whole suite rated falsifiability `unknown`. Both the
+    // test binding and counterexampleEvidence() (which spreads this) share one file.
+    testRunProvenance: { filePath: RECONNECT_TEST_PATH, framework: 'vitest', source: 'local',
+      mutationPhase: null, commitSha: 'abc123', worktreeDirty: false },
     ...over,
   };
 }
+
+const RECONNECT_TEST_PATH = 'packages/reconnect/reconnect.test.ts';
 
 /**
  * The evaluator requires a successful ledger-backed negative control for falsifiability, TARGETED
@@ -132,11 +179,18 @@ function counterexampleEvidence(over: Partial<ListedEvidence> = {}): ListedEvide
     id: 2,
     evidenceKind: 'counterexample',
     evidenceRef: 'counterexample:reconnect',
+    testRunExecution: { ...passingExecution(), status: 'fail', passed: 0, failed: 1,
+      passedCaseTitles: [] },
+    testRunProvenance: { filePath: RECONNECT_TEST_PATH, framework: 'vitest',
+      source: 'mutation-probe', mutationPhase: 'mutant', commitSha: 'abc123', worktreeDirty: false,
+      mutationFailureLines: ['acknowledged events are not replayed: measured assertion failure'],
+      mutationFailedCaseTitles: ['acknowledged events are not replayed'] },
     details: {
       adequacy: {
         ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
         outcome: 'killed',
         targeted: 'spec-003-01',
+        scenarioIds: ['acknowledged-event-negative-control'],
       },
     },
     ...over,
@@ -223,6 +277,65 @@ function passingDeps() {
 }
 
 describe('specTestAdequacyCompletionGate', () => {
+  it('refuses a work-item close when the globally passing clause needs proof bound to a sibling work item', async () => {
+    const deps = passingDeps();
+    const combined = passingEvidence().map((row, index) => ({
+      ...row,
+      workItemId: index === 0 ? WORK_ITEM.id : 'WI-parent',
+      fingerprints: { ...row.fingerprints, fixtureFingerprint: 'sha256:calibrated-fixture' },
+      details: {
+        ...row.details,
+        adequacy: { ...(row.details.adequacy as Record<string, unknown>), fixtureFree: false, fixtureCalibrated: true },
+      },
+      currentness: { ...row.currentness, dimensions: { ...row.currentness.dimensions, fixture: 'current' as const } },
+    }));
+    expect(evaluateSpecTestAdequacy({ clause: clause(), evidence: combined, classRef: 'plan-class-feature-ship' }).verdict)
+      .toBe('pass');
+    deps.listEvidence.mockImplementation(async (options) =>
+      combined.filter((row) => !options.workItemIds || options.workItemIds.includes(row.workItemId)),
+    );
+    const result = await specTestAdequacyCompletionGate({
+      workItem: WORK_ITEM, attestation: { classRef: 'plan-class-feature-ship' },
+    }, deps);
+    expect(deps.listEvidence).toHaveBeenCalledWith(expect.objectContaining({ workItemIds: [WORK_ITEM.id] }));
+    expect(result).toMatchObject({ ok: false, applicable: true, checked: [] });
+    if (!result.ok) expect(result.reason).toContain('falsifiability');
+  });
+
+  it('derives an omitted completion class and preserves its proof requirements', async () => {
+    const deps = passingDeps();
+    const { classRef: _classRef, ...attestation } = ATTESTATION;
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'change' }, attestation }, deps);
+    expect(classResolver).toHaveBeenCalledWith('reconnect-plan', 'papercusp', { classRef: undefined, workItemIds: ['WI-101'] });
+    expect(result.checked).toContain('SPEC-003-01@1');
+  });
+
+  it('refuses a contradictory explicit completion class before reading proof', async () => {
+    const deps = passingDeps();
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'change' }, attestation: { classRef: 'plan-class-investigation' } }, deps);
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('plan_class_mismatch') });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('refuses an omitted completion class when the subject class is unavailable', async () => {
+    const deps = passingDeps();
+    const { classRef: _classRef, ...attestation } = ATTESTATION;
+    classResolver.mockResolvedValueOnce({ ok: false, code: 'plan_class_unresolved', message: 'plan_class_unresolved: no persisted class', wouldBlock: ['plan_class_unresolved'] });
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'change' }, attestation }, deps);
+    expect(result).toMatchObject({ ok: false, reason: 'plan_class_unresolved: no persisted class', checked: [] });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
+  it('retains the persisted bugfix proof floor when completion class is omitted', async () => {
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue([listedEvidence()]);
+    const { classRef: _classRef, ...attestation } = ATTESTATION;
+    classResolver.mockResolvedValueOnce({ ok: true, classRef: 'plan-class-bugfix', source: 'active-acceptance-rubric' });
+    const result = await specTestAdequacyCompletionGate({ workItem: { ...WORK_ITEM, kind: 'change' }, attestation }, deps);
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('risk-floor') });
+    expect(deps.listEvidence).toHaveBeenCalled();
+  });
   it('is non-applicable for a legacy work item with no plan provenance', async () => {
     const deps = passingDeps();
     const result = await specTestAdequacyCompletionGate(
@@ -672,7 +785,10 @@ describe('specTestAdequacyCompletionGate', () => {
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
     if (!result.ok) {
-      expect(result.reason).toContain('unknown [freshness]');
+      // Freshness must be a NAMED blocker. It is no longer the only one: under evaluator
+      // revision 4 a non-current test binding also cannot corroborate the counterexample's
+      // canonical test file, so falsifiability blocks beside it (WI-10006856).
+      expect(result.reason).toMatch(/unknown \[[^\]]*\bfreshness\b[^\]]*\]/);
       expect(result.reason).toContain('Current fingerprints are missing for: test:reconnect');
       expect(result.reason).toContain('testFingerprint omitted');
     }
@@ -746,7 +862,8 @@ describe('specTestAdequacyCompletionGate', () => {
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
     if (!result.ok) {
-      expect(result.reason).toContain('fail [freshness]');
+      // See the omitted-dimension case above: freshness must be named, falsifiability may join it.
+      expect(result.reason).toMatch(/fail \[[^\]]*\bfreshness\b[^\]]*\]/);
       expect(result.reason).toContain('testFingerprint mismatched');
       expect(result.reason).not.toContain('testFingerprint omitted');
     }
@@ -769,6 +886,156 @@ describe('specTestAdequacyCompletionGate', () => {
       checked: [],
       exempted: ['SPEC-003-01@1 — exempt (non-automated clause declaring no required test layer)'],
     });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('honors a current registered inventory exemption for a docs-only feature close without proof', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['docs/evidence/inventory.json'],
+    }, deps);
+
+    expect(result).toEqual({
+      ok: true,
+      applicable: false,
+      checked: [],
+      exempted: [
+        'SPEC-003-01@1 — exempt (registered non-code inventory scope INVENTORY-P-003@1; item completion only, final shipment BAR proof remains required)',
+      ],
+    });
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps runtime adequacy enforced when an inventory feature claims executable source changes', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['packages/operator-core/lib/example.ts'],
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'runtime configuration paths', changedPaths: ['packages/operator-core/package.json'] },
+    { label: 'paths outside the documentation tree', changedPaths: ['config/runtime.json'] },
+  ])('keeps runtime adequacy enforced for inventory changes in $label', async ({ changedPaths }) => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths,
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('does not infer a documentation inventory exemption without changed-path evidence', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps runtime adequacy enforced when the stamped feature covers a sibling plan item', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([
+      clause(),
+      inventoryExemptionClause(),
+      clause({ specId: 'SPEC-004-01', planItemId: 'P-004', contentHash: 'sha256:sibling-v1' }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: {
+        ...WORK_ITEM,
+        kind: 'feature',
+        sourcePlanItemIds: ['P-003', 'P-004'],
+      },
+      changedPaths: ['docs/evidence/inventory.json'],
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
+    expect(!result.ok && result.reason).toContain('SPEC-004-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps cross-plan runtime adequacy enforced alongside a registered inventory exemption', async () => {
+    const deps = passingDeps();
+    const crossPlanClause = clause({
+      planSlug: 'other-plan',
+      specId: 'SPEC-900-01',
+      planItemId: 'P-900',
+      contentHash: 'sha256:other-v1',
+    });
+    deps.listEdges.mockResolvedValue([{
+      workItemId: WORK_ITEM.id,
+      planSlug: 'other-plan',
+      specId: 'SPEC-900-01',
+      specRevision: 1,
+      specFingerprint: 'sha256:edge',
+    }]);
+    deps.listClauses.mockImplementation(async ({ planSlug }) =>
+      planSlug === 'other-plan' ? [crossPlanClause] : [clause(), inventoryExemptionClause()],
+    );
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['docs/evidence/inventory.json'],
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-900-01@1');
+    expect(deps.listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps runtime adequacy enforced when an inventory feature submits proof', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([clause(), inventoryExemptionClause()]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['docs/evidence/inventory.json'],
+      attestation: ATTESTATION,
+    }, deps);
+
+    expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+    expect(deps.listEvidence).toHaveBeenCalled();
+  });
+
+  it('does not infer inventory authority from an unregistered or mismatched exemption clause', async () => {
+    const deps = passingDeps();
+    deps.listClauses.mockResolvedValue([
+      clause(),
+      inventoryExemptionClause({
+        exemption: { provenance: 'unregistered', justification: 'looks like inventory' },
+        acceptanceRef: 'reconnect-plan#D-006',
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate({
+      workItem: { ...WORK_ITEM, kind: 'feature' },
+      changedPaths: ['docs/evidence/inventory.json'],
+    }, deps);
+
+    expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
+    expect(!result.ok && result.reason).toContain('SPEC-003-01@1');
     expect(deps.listEvidence).not.toHaveBeenCalled();
   });
 

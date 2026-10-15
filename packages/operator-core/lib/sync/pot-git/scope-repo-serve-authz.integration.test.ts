@@ -331,7 +331,7 @@ describe('scope-repo serve authorization gate (WI-3641: P-201 fail-closed deferr
     try {
       // Wait for the (unknown) device's hello to verify server-side first —
       // this proves the refusal is specifically "signed-but-non-member"
-      // (scope-repo-unknown-device), not merely "hello not verified yet".
+      // (unknown-device), not merely "hello not verified yet".
       await waitFor(() => resolvePotGitPeerSocket(TOPIC, UNKNOWN_DEVICE) !== undefined);
       const duplex = await (
         await import('./serve-wiring')
@@ -348,8 +348,16 @@ describe('scope-repo serve authorization gate (WI-3641: P-201 fail-closed deferr
   });
 
   it('a non-scope (pot-home) repo fetch is unaffected by the scope gate (regression guard)', async () => {
-    const { clientDuplex, teardown } = await connectPair(root, 'pot-home.sock', null, null);
+    // WI-10006832: the pot-wide admission gate applies to every repo, so this client proves an
+    // attested device with a real signed hello; the scope roster still plays no part here.
+    const { clientDuplex, teardown } = await connectPair(
+      root,
+      'pot-home.sock',
+      AUTHORIZED_MEMBER_DEVICE,
+      signAsAuthorizedMember,
+    );
     try {
+      await waitFor(() => resolvePotGitPeerSocket(TOPIC, AUTHORIZED_MEMBER_DEVICE) !== undefined);
       const potHomeRepo = await (await import('./storage')).ensurePotGitRepo(HIVE, 'repo-pot-home');
       const potHomeSha = await mintCommit(potHomeRepo, 'pot-home work');
       await defaultRunGit(['update-ref', 'refs/heads/work', potHomeSha], potHomeRepo);
@@ -362,6 +370,31 @@ describe('scope-repo serve authorization gate (WI-3641: P-201 fail-closed deferr
       expect(res.code, res.stderr).toBe(0);
       const rev = await defaultRunGit(['rev-parse', '--verify', '-q', 'refs/heads/via-pot-home'], clientRepo);
       expect(rev.stdout.trim()).toBe(potHomeSha);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it('WI-10006832: a pot-home repo fetch over a socket that never sent the signed hello is refused, fast and named', async () => {
+    // The hole WI-10006832 closes: a modified client that skips the hello stays unidentified.
+    // Before the pot-wide gate only scopes/ repos checked identity, so this fetch was served.
+    const { clientDuplex, teardown } = await connectPair(root, 'pot-home-no-hello.sock', null, null);
+    try {
+      const potHomeRepo = await (await import('./storage')).ensurePotGitRepo(HIVE, 'repo-pot-home-nohello');
+      const potHomeSha = await mintCommit(potHomeRepo, 'pot-home work, no hello');
+      await defaultRunGit(['update-ref', 'refs/heads/work', potHomeSha], potHomeRepo);
+      const duplex = await (
+        await import('./serve-wiring')
+      ).openHiveGitFetchDuplex(clientDuplex, TOPIC, { repoKey: 'repo-pot-home-nohello' });
+      const t0 = Date.now();
+      const res = await fetchOverDuplex(clientRepo, duplex, ['+refs/heads/work:refs/heads/via-pot-home-nohello'], {
+        timeoutMs: 30_000,
+      });
+      expect(res.code).not.toBe(0);
+      expect(res.stderr).toMatch(/serve refused: unverified-peer/);
+      expect(Date.now() - t0).toBeLessThan(10_000);
+      const rev = await defaultRunGit(['rev-parse', '--verify', '-q', 'refs/heads/via-pot-home-nohello'], clientRepo);
+      expect(rev.code).not.toBe(0);
     } finally {
       await teardown();
     }

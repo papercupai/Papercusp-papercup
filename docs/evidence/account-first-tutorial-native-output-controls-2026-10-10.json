@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "kind": "manual-accessibility-evidence",
+  "name": "Current full-product guide keyboard and speech controls",
+  "workItemId": "WI-10007744",
+  "implementationWorkItemId": "WI-10007170",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "specId": "AUTO-BAR-R-12-P-010",
+  "specRevision": 7,
+  "observedAt": "2026-10-10T06:17:42.002Z",
+  "procedure": "Maintained product-guide Playwright pause seam on committed Portal d01e and core abec. Private Xvfb/DBus/AT-SPI Chrome and Orca. After initial AT-SPI heading focus, native Tab reached all twelve lesson buttons, Help, Reviewed, Pause and Skip at browser zoom 200%. Keyboard Return selected billing and expanded Help; typed public question plus Tab/Return invoked scoped fixture Help. Pause/resume restored billing heading focus. Reopened Help, keyboard unmute, Speak, Stop, Replay and Mute changed the player status. Keyboard Skip exposed the destination and focused Resume. Source bytes and all five consumed imports verified before and after. Deliberate stop 143 after review.",
+  "result": "Scoped manual review passed. This stopped attended fixture is not an automated test PASS.",
+  "controls": {
+    "twelveLessonButtonsReachedByTab": true,
+    "helpAndExitControlsReachedByTab": true,
+    "nativeZoomPercent": 200,
+    "billingHeadingFocused": true,
+    "helpExpanded": true,
+    "askFocusedByTab": true,
+    "scopedFixtureAnswerVisible": true,
+    "pauseFocusOnResume": true,
+    "resumeBillingHeadingFocused": true,
+    "stopFocusedByTab": true,
+    "stopStatusReady": true,
+    "replayFocusedByTab": true,
+    "replayStatusPlaying": true,
+    "muteStatusMuted": true,
+    "skipExposesDestination": true
+  },
+  "evidence": {
+    "sourceManifest": {
+      "schemaVersion": 1,
+      "kind": "native-review-source-manifest",
+      "workItemId": "WI-10007744",
+      "planSlug": "cloud-app-live-tutorial-2026-10-01",
+      "profile": "product-guide",
+      "root": "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR",
+      "sourceRoot": "$HOME/papercupai-workspace/papercusp",
+      "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-d01eaf841e-HVsXHh",
+      "portalSourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+      "rootCommit": "abecdede05c105975fbeb57709f1f8e858c70729",
+      "portalCommit": "d01eaf841e035d562e14468e46f2201c6a81d7ce",
+      "files": [
+        {
+          "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+          "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4"
+        },
+        {
+          "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx",
+          "sha256": "36e1ce78028be522b87b913b15267108bd328d0bc447c1ca51003ccd75bf557c"
+        },
+        {
+          "path": "packages/operator-ui/src/browser-telemetry.tsx",
+          "sha256": "465b90f33d7bc3ca21c96da30b74f09234cd389967f51e2dfde12b8ce61923d5"
+        }
+      ],
+      "portalFiles": [
+        {
+          "path": "packages/ui/src/shell.tsx",
+          "sha256": "1e7b345e0272d7304d0225a22b3a118503d0c5281cbfba91684b9da450682aaf"
+        },
+        {
+          "path": "packages/ui/src/auth.tsx",
+          "sha256": "7aef72afb0a431396db5f004bb55f10a19f664e0f948434fc7a61c05cbeefaa4"
+        },
+        {
+          "path": "packages/ui/src/shell-model.ts",
+          "sha256": "92bb9a49f04ae9da8c27299e60afb316997a18efde6042910a41256d2fcc6a6f"
+        },
+        {
+          "path": "app/tokens.css",
+          "sha256": "956a7e727acee15f2bfcff0d58eb3288bf5f4ee7da3ec2692a4499a7c421b9b6"
+        },
+        {
+          "path": "app/globals.css",
+          "sha256": "5e11ab8e97f8eb535504677f1a40b78b83fec7c3171f2e6f3dde7dc112ac95de"
+        },
+        {
+          "path": "playwright.config.ts",
+          "sha256": "7f282f66b2706f5f2cbe4f13ec4bda1059f506bc351f0db6af5e63d205710887"
+        },
+        {
+          "path": "e2e/portal-product-tutorial.spec.ts",
+          "sha256": "2d921643314dac2da54276d6251bd7fa8d783a1715dedfdcd45c7738275d3ff6"
+        }
+      ],
+      "consumedImports": [
+        "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-ui/src/onboarding/product-tutorial.tsx",
+        "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+        "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+        "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-ui/src/browser-telemetry.tsx",
+        "/dev/shm/pcv/papercusp-lint-as-committed-abecdede05-2qnqDR/packages/operator-ui/src/browser-telemetry.tsx"
+      ],
+      "observedAt": "2026-10-10T06:17:42.002Z",
+      "limitations": [
+        "Readiness and source custody only; actual native review remains pending."
+      ]
+    },
+    "sourceCustodyBeforeAndAfter": "verified",
+    "nativeControlsTrace": [
+      {
+        "action": "unmute",
+        "text": [
+          "Ask about this lesson. Keep credentials and private workspace content out of your question.",
+          "billing",
+          "Read current organization subscription and receipts; checkout, management and cancellation require billing permission and explicit action.",
+          "Open ",
+          "billing",
+          "Speech is ready.",
+          "Lesson question"
+        ]
+      },
+      {
+        "action": "speak-then-two-Tabs",
+        "focus": [
+          {
+            "name": "Stop speech",
+            "role": "push button"
+          }
+        ]
+      },
+      {
+        "action": "stop",
+        "text": [
+          "Ask about this lesson. Keep credentials and private workspace content out of your question.",
+          "billing",
+          "Read current organization subscription and receipts; checkout, management and cancellation require billing permission and explicit action.",
+          "Open ",
+          "billing",
+          "Speech is ready.",
+          "Lesson question"
+        ]
+      },
+      {
+        "action": "Tab-to-replay",
+        "focus": [
+          {
+            "name": "Replay speech",
+            "role": "push button"
+          }
+        ]
+      },
+      {
+        "action": "replay",
+        "text": [
+          "Ask about this lesson. Keep credentials and private workspace content out of your question.",
+          "billing",
+          "Read current organization subscription and receipts; checkout, management and cancellation require billing permission and explicit action.",
+          "Open ",
+          "billing",
+          "Speaking the lesson.",
+          "Lesson question"
+        ]
+      },
+      {
+        "action": "mute",
+        "text": [
+          "Ask about this lesson. Keep credentials and private workspace content out of your question.",
+          "billing",
+          "Read current organization subscription and receipts; checkout, management and cancellation require billing permission and explicit action.",
+          "Open ",
+          "billing",
+          "Guide speech is muted.",
+          "Lesson question"
+        ]
+      },
+      {
+        "action": "collapse",
+        "expanded": false
+      },
+      {
+        "action": "skip",
+        "focus": [
+          {
+            "name": "Resume product guide",
+            "role": "push button"
+          }
+        ],
+        "destinationPresent": true
+      }
+    ],
+    "refs": [
+      {
+        "path": "/dev/shm/tutorial-product-native-review-d01e-abec-20261010T0612.json",
+        "sha256": "8820e4ac9ab3b9bf5ef836e4ad946b28980dcabcf7579ab277dbebe42990499a"
+      },
+      {
+        "path": "/dev/shm/tutorial-product-native-review-d01e-abec-20261010T0612-speech.log",
+        "sha256": "7a60a04a4d648b6adac96c29436906e0e4c25797659a66b2ac45a012acfe7869"
+      },
+      {
+        "path": "/dev/shm/tutorial-native-controls-phase-d01e-abec-20261010T0612.json",
+        "sha256": "bd67f859adec289cdfb4a922a14a5c5bf878da3c73d9963ec885b647df6a4339"
+      },
+      {
+        "path": "/dev/shm/tutorial-native-billing-zoom200-0612.png",
+        "sha256": "0535f5b108040236bb3c6c053fd5bda6b39d394c4c2a0be417b2b9a407a3589d"
+      },
+      {
+        "path": "/dev/shm/tutorial-native-help-controls-0612.png",
+        "sha256": "ef5ae32eefa493677665b7f06ee3022b8bc92ec9bdff7f2a2f89151eaee03bdc"
+      },
+      {
+        "path": "/dev/shm/tutorial-native-exit-0612.png",
+        "sha256": "5c1f20b31989ea7863a87cdb566e0a0d8c45a19418784f8d67a9b07d3cfc1dcc"
+      }
+    ],
+    "speechExcerpts": [
+      "02:13:47.007705 - SPEECH OUTPUT: 'notification Zoom: 200%' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "02:14:46.284203 - SPEECH OUTPUT: 'Help with this lesson toggle button expanded.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "02:16:41.958465 - SPEECH OUTPUT: 'Speak lesson push button.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "02:16:42.510304 - SPEECH OUTPUT: 'Stop speech push button.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "02:16:44.514268 - SPEECH OUTPUT: 'Replay speech push button.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "02:16:46.839269 - SPEECH OUTPUT: 'Unmute guide toggle button pressed.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}",
+      "02:13:54.381244 - SPEECH OUTPUT: 'Skip guide push button.' {'established': False, 'family': {'name': None, 'gender': None, 'lang': None, 'dialect': None, 'variant': None}}"
+    ]
+  },
+  "teardown": {
+    "execExitCode": 143,
+    "orcaProcessGone": true,
+    "windowManagerGone": true,
+    "nativeSessionDrained": true
+  },
+  "limitations": [
+    "Manual mounted-guide review; no automated native PASS",
+    "AT-SPI seeds focus before keyboard phases; not a whole-app pure-Tab claim",
+    "Native reload was not performed",
+    "Help and TTS response are maintained route fixtures; actual provider evidence is separate",
+    "No human-heard audio, novice-human review, protected native input or production acceptance claimed"
+  ]
+}

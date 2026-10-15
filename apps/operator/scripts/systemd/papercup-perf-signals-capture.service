@@ -16,4 +16,8 @@ IOSchedulingPriority=7
 # A read-only probe should finish in well under a second; fail open if a probe
 # (e.g. a wedged `ss`) hangs so the next tick is never blocked.
 TimeoutStartSec=60
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/perf/capture-perf-signals.sh
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+# capture-signals.py is not a snapshotted sidecar (.sh/.mjs only), so pin its directory.
+Environment=PAPERCUSP_PERF_SIGNALS_DIR=%h/papercupai-workspace/papercusp/apps/operator/scripts/perf
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/perf/capture-perf-signals.sh

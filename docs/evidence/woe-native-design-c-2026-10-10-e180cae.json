@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Preserved current-build native Work on Everything Design C journey",
+  "framework": "playwright",
+  "command": [
+    "bash",
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    "-c",
+    "cd \"$OPERATOR_SOURCE_ROOT\" || exit\nOPERATOR_E2E_SKIP_WARMUP=1 OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_BASE_URL=\"$VERIFY_TAURI_DEV_URL\" node_modules/.bin/playwright test --config apps/operator/playwright.config.ts apps/operator/e2e/ongoing-work-native-collection.spec.mts --grep \"Work on Everything Design C cockpit and priority editor stay readable in the native viewport\" --workers=1 --output \"$VH_PHASE_DIR/playwright\""
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-10T00:52:56.343Z",
+  "finishedAt": "2026-10-10T00:53:42.290Z",
+  "summary": "Original maintained isolated native execution passed one Design C case with zero skips. Preserves actual API, Browse all plans, trusted keyboard reorder, review and discard assertions. Screenshot inspection subsequently found a separate row-clipping defect, EI-25552105418540434, which remains owned and prevents claiming complete readability acceptance. This artifact records the original execution; it is not a rerun or deployed-release proof.",
+  "assertions": [
+    {
+      "id": "Work on Everything Design C cockpit and priority editor stay readable in the native viewport",
+      "passed": true,
+      "evidence": "~/.local/state/verification-harness/verify-tauri-headless/20261010T003933Z-3390775/result.json; original bash log .papercusp/scratch/bash-8fe9efff-f0a.log; native-journey/20261010T005256Z-4142303/phases/native/manifest.json. The case's existing assertions passed; later visual row-clipping finding is separately recorded."
+    }
+  ],
+  "sourceCommit": "e180cae84778e1c33d1622cc8f160e9c66519deb",
+  "sourceFingerprints": [
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.css",
+      "sha256": "d2e8549094b28510cd6a72d9dbc6e5b0d388c179486f663e3bd11192e22dbc72"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+      "sha256": "01863f25af6f9baf5283a786890af9a8bf9af9bf1312aa632c69148e805c374f"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+      "sha256": "4fac202bd156214e6cb45065d33ea05494bb9e552d8ff7983632fe6c9aeb5416"
+    },
+    {
+      "path": "apps/operator/bin/release/dependency-generation.sh",
+      "sha256": "9f70ad5ca83211e43e7b0c59e2d5d4bd7c3883ed65f232606d3c38be55b83a68"
+    },
+    {
+      "path": "apps/operator/e2e/_ongoing-work-native-fixture.ts",
+      "sha256": "1e66e308b82314f2d61be4536753789f308d1dd81e8d624e7daa26fc2084ac39"
+    },
+    {
+      "path": "apps/operator/e2e/ongoing-work-native-collection.spec.mts",
+      "sha256": "66d38a4fb457506efafbf465de2a10ea050e1596bd65527f1834e7dd4a79a08c"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "66a15e97d027b4cff0ca1a7d207dbd07c4497d566b584215ebb7f5385e406b6a"
+    },
+    {
+      "path": "package.json",
+      "sha256": "a75dcf6741dba354530d97bcfb25ff8b8582a859965b374da594572b8df13ac4"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-rubric-stewardship.test.ts",
+      "sha256": "02cf7f8851d99d65c06320903d841bf0670b0cbcef483f4f214a41a02114afa2"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+      "sha256": "7b4b013d6b43ecc954ff5c221778c8e6daf00bdfbc4c935aa2cce5f71bf3fef0"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/disk-preflight.sh",
+      "sha256": "c41631b93d755bba42afb88461611fbc4adeacf552117c07a3869694b8715ab2"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/federation-asserts.sh",
+      "sha256": "a45d8f36ef4ded807a5200da767fc5afb308d4a2094bcd83826e0acf8739780d"
+    },
+    {
+      "path": "papercusp-desktop/bin/lib/pinned-deps.sh",
+      "sha256": "feb123e7a2d6b6a98099cee259c9a9e164eface3fe6e6031f21aba7a5f2d075d"
+    },
+    {
+      "path": "papercusp-desktop/package-lock.json",
+      "sha256": "1234d89f2767f7c4d2b16e9d51532f5f0614dc52df349e861b8589648d4a2c8d"
+    },
+    {
+      "path": "papercusp-desktop/package.json",
+      "sha256": "a2ddf6cff8393af191817121895d19e0bb541b791e966b0c82e01d2562037d1b"
+    },
+    {
+      "path": "scripts/lib/budgeted-task-scheduler.mjs",
+      "sha256": "a0459b73241f77549dcab346a695b91a2fab391fca613ac856dc1b587f1392f8"
+    },
+    {
+      "path": "scripts/lib/committed-source-loader.mjs",
+      "sha256": "b4053d918b7602484d4fa5e1c3fe516fa3d54a09792c4d9ed804787147986413"
+    },
+    {
+      "path": "scripts/lib/spa-require-built.sh",
+      "sha256": "8ceb0e5747cf33228966eef597d69a4aac4063cfbd11764360f4133490e253fd"
+    },
+    {
+      "path": "scripts/npm-install-safe.mjs",
+      "sha256": "4547042c36f71042e157a343805532077ea7dcc31dee8a77acc092192f86dd95"
+    },
+    {
+      "path": "scripts/pc-heavy.sh",
+      "sha256": "78c76f24ac80d7f8e32a0bfe49a3970e0a224c2506521c068035b635093c7904"
+    },
+    {
+      "path": "scripts/restricted-hold-tree-gate.mjs",
+      "sha256": "9d0c8cfa4d9ea10f00c77ef36f74c5002dca6d0ab7542e46980f424f8870ba10"
+    },
+    {
+      "path": "scripts/source-preview.mjs",
+      "sha256": "58f12ba279b506f759bd7bd358f67332ca72ac8e9f8873afd98bd86727ec22e7"
+    },
+    {
+      "path": "scripts/verify-tauri-headless.sh",
+      "sha256": "c847eef3125da79a271e9c1fc2c9a77b59f8c10961c497715fcfbaed6056bb5f"
+    }
+  ],
+  "completedRuntime": {
+    "kind": "verification-harness",
+    "verifierRunId": "20261010T003933Z-3390775",
+    "journeyHarness": "native-journey",
+    "journeyRunId": "20261010T005256Z-4142303"
+  },
+  "originalTaskId": "0mv1o2otq10yaz0umi8",
+  "manifestSha256": "1d3a41690f969a98ebd24358a4e2c325c6e49997233af1d69ac1d6f1c7c47236",
+  "evidenceRoot": "~/.local/state/verification-harness/verify-tauri-headless/20261010T003933Z-3390775",
+  "pathResolution": "Resolve ~ against the current user's home directory. Only the home-prefix spelling changed; original timestamps, assertions, source fingerprints and screenshot hashes are preserved.",
+  "supersedesArtifactSha256": "9038a35d20c8d39415331ab671f286cbc406a54fcb67afbc69671600465d03ac",
+  "screenshots": [
+    {
+      "file": "phases/assert/playwright/ongoing-work-native-collec-326f3-able-in-the-native-viewport-chromium/goal-cockpit.png",
+      "sha256": "d67c5d870c70382dbe6789f7de18ea722b7b59d2019af1764dd4bb7064a232c1"
+    },
+    {
+      "file": "phases/assert/playwright/ongoing-work-native-collec-326f3-able-in-the-native-viewport-chromium/worklist-1280.png",
+      "sha256": "a6a85e56dc42a3c1408df88c1c3353e8fb2d124021ebbf1df5cdd725ea6cdb76"
+    },
+    {
+      "file": "phases/assert/playwright/ongoing-work-native-collec-326f3-able-in-the-native-viewport-chromium/review-1280.png",
+      "sha256": "c707ae7239baf61a6c2ac4dd7197e8eaf4a06e5165cc4bcad5244802bc922cbe"
+    }
+  ],
+  "limitations": [
+    "Current-build native evidence only; final green deployed artifact R7 remains unverified.",
+    "The original file reporter did not produce a shared test_runs row. EI-25552291427896567 owns routing repair using the maintained isolated e2e runner.",
+    "The row-clipping detector gap remains assigned to the P003 source owner as EI-25552105418540434."
+  ]
+}

@@ -27,15 +27,17 @@ import {
   type ResolvedHivePolicy,
   getHivePolicy,
   upsertHivePolicyRow,
+  HivePolicyVersionConflictError,
 } from './hive-policy-store';
 import { loadHivePubkey, signWithHiveKey } from './identity/hive-keypair';
 import { resolveHiveWorkspaceId } from './hive-store';
 
 export type AuthorHivePolicyResult =
   | { ok: true; policy: ResolvedHivePolicy }
-  | { ok: false; code: 'not_owner_swarm' | 'no_owner_pubkey' | 'write_failed'; detail?: string };
+  | { ok: false; code: 'not_owner_swarm' | 'no_owner_pubkey' | 'write_failed' | 'policy_version_conflict'; detail?: string };
 
 export interface AuthorHivePolicyInput {
+  expectedPolicyVersion?: number;
   workspaceId: string;
   /** The Hive's home_slug (its hive identity handle). */
   potHomeSlug: string;
@@ -60,6 +62,7 @@ export interface AuthorHivePolicySeams {
   loadOwnerPubkey?: (workspaceId: string, potHomeSlug: string) => Promise<string | null>;
   /** Persist the signed row. Default: upsertHivePolicyRow. */
   write?: (input: {
+    expectedPolicyVersion?: number;
     workspaceId: string;
     potHomeSlug: string;
     policyJson: string;
@@ -101,6 +104,7 @@ export async function authorHivePolicy(
 
   // 2. Monotone version bump.
   const current = await readCurrent(workspaceId, input.potHomeSlug);
+  if (input.expectedPolicyVersion !== undefined && input.expectedPolicyVersion !== (current?.policyVersion ?? 0)) return { ok: false, code: 'policy_version_conflict', detail: 'Policy changed since review. Reload before saving.' };
   const policyVersion = (current?.policyVersion ?? 0) + 1;
 
   // 3. Canonicalize + sign the binding {domain, ws, slug, version, canonicalJson}.
@@ -130,9 +134,11 @@ export async function authorHivePolicy(
       ownerPubkey,
       signature,
       policyVersion,
+      ...(input.expectedPolicyVersion !== undefined ? { expectedPolicyVersion: input.expectedPolicyVersion } : {}),
     });
     return { ok: true, policy };
   } catch (err: unknown) {
+    if (err instanceof HivePolicyVersionConflictError) return { ok: false, code: 'policy_version_conflict', detail: err.message };
     return { ok: false, code: 'write_failed', detail: err instanceof Error ? err.message : String(err) };
   }
 }

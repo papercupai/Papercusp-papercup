@@ -35,12 +35,14 @@
  *   PAPERCUSP_MCP_PROXY_QUEUE_WAIT_LOG_MS     per-waiter queue-telemetry cadence
  *                                             (default 5000; 0 disables) — EI-21504897841052086.
  */
-import {
-  readOperatorJsonTarget,
-  resolveDefaultMcpProxyTargets,
-  startMcpProxy,
-} from '../lib/mcp-proxy/proxy';
+import * as proxyModule from '../lib/mcp-proxy/proxy';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
+
+// Node/tsx can expose this .ts module as CommonJS while the .mjs budget
+// import makes this entry ESM. Match the service-entry normalization used by
+// host-spa so both formats retain the same typed proxy implementation.
+const { readOperatorJsonTarget, resolveDefaultMcpProxyTargets, startMcpProxy } =
+  'default' in proxyModule ? proxyModule.default as typeof proxyModule : proxyModule;
 
 const dynamicTarget = process.env.PAPERCUSP_MCP_PROXY_DYNAMIC_TARGET === '1';
 const targetHost = process.env.PAPERCUSP_MCP_PROXY_TARGET_HOST ?? '127.0.0.1';

@@ -5,6 +5,12 @@ import type { RouteContext } from '../../define-route';
 import { createWorkspaceHostProvisionRoute, type WorkspaceHostProvisionRouteDependencies } from './provision';
 import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
 import {
+  WORKSPACE_HOST_FENCE_REFUSED_CODE,
+  WorkspaceHostControllerFenceError,
+  WorkspaceHostIdSpentError,
+} from '../../../workspace-host/observability-store';
+import {
+  WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
 } from '../../../workspace-host/provisioning-runner';
@@ -59,14 +65,46 @@ function harness() {
       },
     },
   }));
+  const listLiveHostIds = vi.fn<NonNullable<WorkspaceHostProvisionRouteDependencies['listLiveHostIds']>>(
+    async () => [],
+  );
+  const readSpentHostId = vi.fn<NonNullable<WorkspaceHostProvisionRouteDependencies['readSpentHostId']>>(
+    async () => null,
+  );
   const dependencies: WorkspaceHostProvisionRouteDependencies = {
     activeWorkspaceId: () => 'ws-1',
     provisioningAvailable: () => true,
     readConnection,
+    listLiveHostIds,
+    readSpentHostId,
     startProvisioning,
   };
-  return { dependencies, readConnection, startProvisioning };
+  return { dependencies, readConnection, listLiveHostIds, readSpentHostId, startProvisioning };
 }
+
+/** A hosted (one-per-sign-up) AWS connection: its `delegation://` ref is what makes it capped. */
+function hostedAwsConnection() {
+  return {
+    id: 'connection-1',
+    target: 'aws',
+    status: 'connected' as const,
+    connection: {
+      target: 'aws',
+      cloudCredentialRef: { kind: 'cloud' as const, ref: 'delegation://customer-ws/connection-1' },
+      provider: { accountId: '413781344298', region: 'us-east-2' },
+    },
+  };
+}
+
+const awsDesired = {
+  ...desired,
+  target: 'aws',
+  scope: { kind: 'account', id: '413781344298' },
+  region: 'us-east-2',
+  zone: 'us-east-2a',
+  size: 't3.medium',
+  image: { id: 'ami-0123456789abcdef0' },
+} as WorkspaceHostDesiredSpec;
 
 async function post(dependencies: WorkspaceHostProvisionRouteDependencies, body: unknown): Promise<Response> {
   const route = createWorkspaceHostProvisionRoute(dependencies);
@@ -87,7 +125,16 @@ beforeEach(() => {
 describe('POST /workspace-hosts/provision', () => {
   it('requires pre-run economics and passes admitted evidence into the durable workflow', async () => {
     const { dependencies, startProvisioning } = harness();
-    const body = { connectionId: 'connection-1', name: 'Canary', desired, canary: { runId: 'run-1' } };
+    const body = {
+      connectionId: 'connection-1',
+      name: 'Canary',
+      desired,
+      canary: { runId: 'run-1' },
+      bootstrapReleaseOverride: {
+        manifestPath: '/caller-controlled/manifest.json',
+        migrationId: '9999',
+      },
+    };
     const refused = await post(dependencies, body);
     expect(refused.status).toBe(422);
     expect(startProvisioning).not.toHaveBeenCalled();
@@ -102,6 +149,7 @@ describe('POST /workspace-hosts/provision', () => {
     };
     expect((await post(dependencies, { ...body, canary })).status).toBe(201);
     expect(startProvisioning).toHaveBeenCalledWith(expect.objectContaining({ canary }));
+    expect(startProvisioning.mock.calls[0]?.[0]).not.toHaveProperty('bootstrapReleaseOverride');
   });
 
   it('rejects malformed request identity before reading durable state', async () => {
@@ -292,21 +340,23 @@ describe('POST /workspace-hosts/provision', () => {
   });
 
   it('maps unsupported targets and typed runner refusals without echoing internal failures', async () => {
+    // 'azure' has no registered provider factory; 'gcp' and 'aws' do (P-007 admits aws).
     const unsupported = harness();
     unsupported.readConnection.mockResolvedValueOnce({
       id: 'connection-1',
-      target: 'aws',
+      target: 'azure',
       status: 'connected',
-      connection: { target: 'aws', cloudCredentialRef: { kind: 'cloud', ref: 'resolver://aws' } },
+      connection: { target: 'azure', cloudCredentialRef: { kind: 'cloud', ref: 'resolver://azure' } },
     });
-    const awsDesired = { ...desired, target: 'aws' };
+    const azureDesired = { ...desired, target: 'azure' };
     expect(
       await post(unsupported.dependencies, {
         connectionId: 'connection-1',
         name: 'Host',
-        desired: awsDesired,
+        desired: azureDesired,
       }),
     ).toMatchObject({ status: 501 });
+    expect(unsupported.startProvisioning).not.toHaveBeenCalled();
 
     const rejected = harness();
     rejected.startProvisioning.mockRejectedValueOnce(
@@ -338,6 +388,70 @@ describe('POST /workspace-hosts/provision', () => {
     await expect(internalResponse.text()).resolves.not.toContain('secret-bearing internal detail');
   });
 
+  it('admits an AWS provision on an uncapped (operator-credential) connection into the durable workflow', async () => {
+    const h = harness();
+    h.readConnection.mockResolvedValueOnce({
+      id: 'connection-1',
+      target: 'aws',
+      status: 'connected',
+      connection: { target: 'aws', cloudCredentialRef: { kind: 'cloud', ref: 'aws-profile://papercusp-byoc' } },
+    });
+    h.listLiveHostIds.mockResolvedValueOnce(['host-0']);
+    const response = await post(h.dependencies, { connectionId: 'connection-1', name: 'Host', desired: awsDesired });
+    expect(response.status).toBe(201);
+    expect(h.startProvisioning).toHaveBeenCalledTimes(1);
+    expect(h.startProvisioning.mock.calls[0]![0].desired.target).toBe('aws');
+    // Uncapped: the live-host census is not even read.
+    expect(h.listLiveHostIds).not.toHaveBeenCalled();
+  });
+
+  it('refuses a hosted AWS provision beyond the per-connection instance cap with the named cap error', async () => {
+    const h = harness();
+    h.readConnection.mockResolvedValueOnce(hostedAwsConnection());
+    h.listLiveHostIds.mockResolvedValueOnce(['host-0']);
+    const response = await post(h.dependencies, { connectionId: 'connection-1', name: 'Second', desired: awsDesired });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace_host_instance_cap_exceeded',
+      cap: 1,
+      connectionId: 'connection-1',
+      liveHostIds: ['host-0'],
+    });
+    expect(h.listLiveHostIds).toHaveBeenCalledWith('ws-1', 'connection-1');
+    // Refused BEFORE the workflow: a capped request creates nothing at all.
+    expect(h.startProvisioning).not.toHaveBeenCalled();
+  });
+
+  it('admits the first hosted AWS host and a resume of the same live host under the cap', async () => {
+    const first = harness();
+    first.readConnection.mockResolvedValueOnce(hostedAwsConnection());
+    first.listLiveHostIds.mockResolvedValueOnce([]);
+    expect((await post(first.dependencies, { connectionId: 'connection-1', name: 'Host', desired: awsDesired })).status).toBe(201);
+    expect(first.startProvisioning).toHaveBeenCalledTimes(1);
+
+    const resume = harness();
+    resume.readConnection.mockResolvedValueOnce(hostedAwsConnection());
+    resume.listLiveHostIds.mockResolvedValueOnce(['host-1']);
+    expect((await post(resume.dependencies, { connectionId: 'connection-1', name: 'Host', desired: awsDesired })).status).toBe(201);
+    expect(resume.startProvisioning).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies the same cap to a hosted GCP connection (the cap is per connection, not per cloud)', async () => {
+    const h = harness();
+    h.readConnection.mockResolvedValueOnce({
+      id: 'connection-1',
+      target: 'gcp',
+      status: 'connected',
+      connection: { target: 'gcp', cloudCredentialRef: { kind: 'cloud', ref: 'delegation://customer-ws/connection-1' } },
+    });
+    h.listLiveHostIds.mockResolvedValueOnce(['host-0']);
+    const response = await post(h.dependencies, { connectionId: 'connection-1', name: 'Second', desired });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ error: 'workspace_host_instance_cap_exceeded' });
+    expect(h.startProvisioning).not.toHaveBeenCalled();
+  });
+
   it('maps a concurrent host-scoped DBOS admission refusal to 409', async () => {
     const conflict = harness();
     conflict.startProvisioning.mockRejectedValueOnce(new WorkspaceHostProvisioningConflictError('host-1'));
@@ -350,6 +464,67 @@ describe('POST /workspace-hosts/provision', () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
       error: 'workspace host already has a provisioning operation in progress',
+    });
+  });
+
+  // WI-10005474: the replayed refusal of a reused operationId is a conflict naming the refusal.
+  it('maps a controller-fence refusal to a typed 409 that names the refusal', async () => {
+    const fenced = harness();
+    fenced.startProvisioning.mockRejectedValueOnce(new WorkspaceHostControllerFenceError('host-1'));
+
+    const response = await post(fenced.dependencies, {
+      connectionId: 'connection-1',
+      name: 'Host',
+      desired,
+      operationId: 'op-fenced-1',
+    });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace-host provision refused: a newer operation or controller holds this host',
+      reason: WORKSPACE_HOST_FENCE_REFUSED_CODE,
+      hostId: 'host-1',
+    });
+  });
+
+  // WI-10006929: a spent host id was refused only inside the workflow, so the caller got 202 and
+  // the refusal surfaced minutes later as a failed operation. It is now a synchronous 422.
+  it('refuses a spent host id with a synchronous 422 before anything is enqueued', async () => {
+    const h = harness();
+    h.readSpentHostId.mockResolvedValueOnce(new WorkspaceHostIdSpentError('host-1', 2, 'op-destroy-1'));
+
+    const response = await post(h.dependencies, { connectionId: 'connection-1', name: 'Host', desired });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: 'workspace-host provisioning request rejected',
+      reason: 'host_id_spent',
+      problems: ["workspace host id 'host-1' is already used (revision 2, operation op-destroy-1); a new host needs a new id"],
+      hostId: 'host-1',
+    });
+    expect(h.startProvisioning).not.toHaveBeenCalled();
+    expect(h.listLiveHostIds).not.toHaveBeenCalled();
+  });
+
+  it('asks the spent-id check with the caller operationId and the runner default revision', async () => {
+    const h = harness();
+    const response = await post(h.dependencies, {
+      connectionId: 'connection-1',
+      name: 'Host',
+      desired,
+      operationId: 'op-replay-1',
+    });
+    expect(response.status).toBe(201);
+    expect(h.readSpentHostId).toHaveBeenCalledWith('ws-1', 'host-1', {
+      operationId: 'op-replay-1',
+      desiredRevision: WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
+    });
+    expect(h.startProvisioning).toHaveBeenCalledTimes(1);
+
+    const fresh = harness();
+    await post(fresh.dependencies, { connectionId: 'connection-1', name: 'Host', desired });
+    expect(fresh.readSpentHostId).toHaveBeenCalledWith('ws-1', 'host-1', {
+      desiredRevision: WORKSPACE_HOST_PROVISION_DEFAULT_REVISION,
     });
   });
 });

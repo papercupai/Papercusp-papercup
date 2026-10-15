@@ -286,6 +286,76 @@ describe('failure shaping — an empty answer is never silently confident', () =
     expect(a.error).toContain('file_path');
   });
 
+  it('forwards file_path and uid to context, and OMITS them when absent (WI-10005154)', async () => {
+    const seenArgs: Record<string, unknown>[] = [];
+    configureGitnexusDispatch(
+      withIndexHealth(async (tool, args) => {
+        if (tool === 'context') seenArgs.push(args);
+        return contextFoundEnvelope();
+      }),
+    );
+
+    await gitnexusFacade('symbol', { name: 'helper' });
+    await gitnexusFacade('callers', {
+      name: 'helper',
+      file_path: 'src/prod.ts',
+      uid: 'Function:src/prod.ts:helper',
+    });
+
+    // By-name call shape is byte-identical to before: no empty disambiguator keys.
+    expect(seenArgs[0]).toEqual({ name: 'helper', repo: 'papercusp' });
+    expect(seenArgs[0]).not.toHaveProperty('file_path');
+    expect(seenArgs[0]).not.toHaveProperty('uid');
+    expect(seenArgs[1]).toMatchObject({
+      name: 'helper',
+      file_path: 'src/prod.ts',
+      uid: 'Function:src/prod.ts:helper',
+    });
+  });
+
+  it('an ambiguous name resolves once file_path is supplied, and never guesses without it', async () => {
+    // A stub that behaves like the live index: three same-name definitions,
+    // ambiguous by name alone, found when the defining file is given.
+    configureGitnexusDispatch(
+      withIndexHealth(async (tool, args) => {
+        if (tool !== 'context') throw new Error(`unexpected tool ${tool}`);
+        if (args.file_path === 'src/prod.ts') {
+          return envelope({
+            status: 'found',
+            symbol: { uid: 'Function:src/prod.ts:helper', name: 'helper', kind: 'Function', filePath: 'src/prod.ts', startLine: 9 },
+          });
+        }
+        return envelope({
+          status: 'ambiguous',
+          candidates: [
+            { uid: 'Function:src/prod.ts:helper', name: 'helper', filePath: 'src/prod.ts' },
+            { uid: 'Function:src/prod.test.ts:helper', name: 'helper', filePath: 'src/prod.test.ts' },
+          ],
+        });
+      }),
+    );
+
+    const bare = await gitnexusFacade('symbol', { name: 'helper' });
+    expect(bare.sites).toEqual([]);
+    expect(bare.error).toContain('ambiguous');
+
+    const scoped = await gitnexusFacade('symbol', { name: 'helper', file_path: 'src/prod.ts' });
+    expect(scoped.error ?? '').not.toContain('ambiguous');
+    expect(scoped.sites).toHaveLength(1);
+    expect(scoped.sites[0]).toMatchObject({ path: 'src/prod.ts', line1: 10, kind: 'function' });
+  });
+
+  it('a file_path that matches no candidate stays a miss — it never falls back to another definition', async () => {
+    configureGitnexusDispatch(
+      withIndexHealth(async (_tool, args) =>
+        args.file_path ? envelope({ status: 'not_found' }) : contextFoundEnvelope(),
+      ),
+    );
+    const a = await gitnexusFacade('symbol', { name: 'helper', file_path: 'src/elsewhere.ts' });
+    expect(a.sites).toEqual([]);
+    expect(a.error).toMatch(/source existence is unverified/);
+  });
+
   it('keeps malformed or failed context distinct from a symbol miss', async () => {
     configureGitnexusDispatch(withIndexHealth(async () => envelope({ error: 'database unavailable' })));
     const a = await gitnexusFacade('symbol', { name: 'helper' });

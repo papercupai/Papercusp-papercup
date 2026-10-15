@@ -17,6 +17,12 @@ import {
 } from '../../cache';
 
 import tool from './cache_stats';
+import {
+  __resetResourceDomainKindsForTest,
+  ensureResourceDomainKindsFresh,
+  resourceDomainKindsHealth,
+  type ResourceCoordinationDomainKind,
+} from '../locks/resource-domain-kinds';
 
 const ctx = { workspaceId: 'ws-cache-stats' };
 
@@ -33,7 +39,7 @@ function makeToolCtx(): Record<string, unknown> {
 }
 
 /** The tool's payload, unwrapped from the { data } envelope. */
-async function read(args: { tool?: string } = {}) {
+async function read(args: { tool?: string; resource?: string } = {}) {
   const res = (await tool.handler(
     args as never,
     makeToolCtx() as never,
@@ -43,15 +49,88 @@ async function read(args: { tool?: string } = {}) {
 
 describe('dev:cache_stats', () => {
   beforeEach(() => {
+    __resetResourceDomainKindsForTest();
     resetOperatorCacheForTests();
     resetCachedReadStatsForTests();
     // cachedRead bypasses under vitest unless a cache test opts in.
     __setCachedReadEnabledForTests(true);
   });
   afterEach(() => {
+    __resetResourceDomainKindsForTest();
     __setCachedReadEnabledForTests(false);
     resetCachedReadStatsForTests();
     resetOperatorCacheForTests();
+  });
+
+  it('reports a cold resource declaration cache without triggering its loader', async () => {
+    const loader = vi.fn(async () => new Map<string, ResourceCoordinationDomainKind>());
+    __resetResourceDomainKindsForTest(loader);
+
+    const data = await read({ resource: 'staging-server' });
+
+    expect(data.pid).toBe(process.pid);
+    expect(data.resourceDomainKinds).toMatchObject({
+      source: 'current-process', loaded: false, declarationCount: 0,
+      loadedAtMs: null, lastError: null,
+      declaration: { resource: 'staging-server', kind: null },
+    });
+    expect(loader).not.toHaveBeenCalled();
+    expect(resourceDomainKindsHealth().loaded).toBe(false);
+  });
+
+  it('delivers real cached declarations and returns independent snapshots', async () => {
+    const loader = vi.fn(async () => new Map<string, ResourceCoordinationDomainKind>([
+      ['staging-server', 'host-global'], ['other-resource', 'workspace'],
+    ]));
+    __resetResourceDomainKindsForTest(loader);
+    await ensureResourceDomainKindsFresh();
+
+    const data = await read({ resource: 'staging-server' });
+    expect(data.resourceDomainKinds).toMatchObject({
+      ...resourceDomainKindsHealth(),
+      declaration: { resource: 'staging-server', kind: 'host-global' },
+    });
+    (data.resourceDomainKinds as { declaration: { kind: string } }).declaration.kind = 'tree';
+    expect((await read({ resource: 'staging-server' })).resourceDomainKinds).toMatchObject({
+      declaration: { resource: 'staging-server', kind: 'host-global' },
+    });
+    expect((await read()).resourceDomainKinds).toMatchObject({ declaration: null });
+    expect(loader).toHaveBeenCalledOnce();
+  });
+
+  it('delivers a failed resource declaration load without retrying or reporting it loaded', async () => {
+    const loader = vi.fn(async () => { throw new Error('registry unavailable'); });
+    __resetResourceDomainKindsForTest(loader);
+    await ensureResourceDomainKindsFresh();
+
+    expect((await read({ resource: 'staging-server' })).resourceDomainKinds).toMatchObject({
+      loaded: false, declarationCount: 0, loadedAtMs: null, lastError: 'registry unavailable',
+      declaration: { resource: 'staging-server', kind: null },
+    });
+    expect(loader).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the last loaded declaration and exposes a subsequent refresh failure', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    try {
+      const loader = vi.fn(async () => new Map<string, ResourceCoordinationDomainKind>([
+        ['staging-server', 'host-global'],
+      ]));
+      __resetResourceDomainKindsForTest(loader);
+      await ensureResourceDomainKindsFresh();
+      loader.mockRejectedValueOnce(new Error('refresh unavailable'));
+      vi.setSystemTime(41_000);
+      await ensureResourceDomainKindsFresh();
+
+      expect((await read({ resource: 'staging-server' })).resourceDomainKinds).toMatchObject({
+        loaded: true, declarationCount: 1, loadedAtMs: 10_000, lastError: 'refresh unavailable',
+        declaration: { resource: 'staging-server', kind: 'host-global' },
+      });
+      expect(loader).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports a real miss-then-hit as 1 miss + 1 hit at 50% served', async () => {

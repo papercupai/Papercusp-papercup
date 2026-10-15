@@ -1,0 +1,47 @@
+{
+  "kind": "plugin",
+  "name": "integrations-setup-chat",
+  "version": "0.1.0",
+  "papercusp": "^0.1.0",
+  "description": "Test-only provider for plan cupboard-distributable-integrations-2026-10-10 R-2: declares paste-a-secret credentials, an app registration, a channel list and a destination-project list, and never touches the network.",
+  "author": "Papercusp",
+  "license": "MIT",
+  "protocol": "^1",
+  "runtime": {
+    "kind": "daemon",
+    "daemonCommand": ["node", "daemon.mjs"]
+  },
+  "capabilities": [],
+  "tools": [],
+  "provider": {
+    "id": "integrations-setup-chat",
+    "contractVersion": 1,
+    "displayName": "Setup Fixture Chat",
+    "datatypes": ["chat-message"],
+    "capabilities": ["chat.channels", "ticket.containers"],
+    "egressHosts": ["integrations-setup.example"],
+    "setup": {
+      "credentials": [
+        {
+          "key": "bot_token",
+          "label": "Bot token",
+          "pattern": "fxb-[A-Za-z0-9]{8,}",
+          "help": "From the fixture app's install page.",
+          "placeholder": "fxb-...",
+          "hosts": ["integrations-setup.example"]
+        },
+        {
+          "key": "signing_secret",
+          "label": "Signing secret",
+          "pattern": "[a-f0-9]{16,}",
+          "help": "Hex string shown under Basic Information."
+        }
+      ],
+      "appRegistration": {
+        "createUrl": "https://integrations-setup.example/apps/new?definition={definition}",
+        "definition": { "name": "Papercusp setup fixture", "scopes": ["channels:read"] },
+        "docsUrl": "https://integrations-setup.example/docs/apps"
+      }
+    }
+  }
+}

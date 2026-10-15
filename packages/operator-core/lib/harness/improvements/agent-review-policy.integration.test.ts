@@ -8,7 +8,16 @@ import {
   createImplementationReadiness,
   deriveWorkItemIntakeStage,
   implementationReadinessNormalExclusionSql,
+  intakeStageAdmitsClaim,
+  intakeStageClaimFloorSql,
+  LEGACY_AGENT_REVIEW_SUBMITTER,
   sealImplementationAcceptance,
+  VERIFICATION_TASK_SCHEMA_VERSION,
+  verificationConflict,
+  verificationConflictSql,
+  verificationParties,
+  verificationTaskConflict,
+  verificationTaskConflictSql,
   workItemIntakeStageSql,
   type ImplementationAcceptanceAuthority,
   type ImplementationAcceptanceContract,
@@ -48,6 +57,8 @@ function sealedContract(
     reason: 'agent-review-approved (grade 5/5)',
     source,
     acceptedAt: '2026-09-05T00:00:00.000Z',
+    // P-006: a bug's acceptance carries its reproduction receipt (ignored for other kinds).
+    reproduction: { kind: 'failing-test', ref: 'fixture.test.ts', buildSha: 'abcdef1' },
   });
   if (!sealed.ok) throw new Error('fixture contract must seal');
   return sealed.contract;
@@ -57,7 +68,7 @@ const readinessWith = (acceptance: object | undefined, status: 'ready' | 'unknow
   createImplementationReadiness({
     status,
     source: 'agent-review',
-    reason: 'agent-review-approved',
+    reason: status === 'ready' ? 'agent-review-approved' : 'awaiting-agent-review',
     updatedAt: '2026-09-05T00:00:00.000Z',
     ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
   });
@@ -87,7 +98,7 @@ const fixtures: Array<{ id: string; input: WorkItemIntakeStageInput }> = [
       implementationReadiness: createImplementationReadiness({
         status: 'unknown',
         source: 'agent-review',
-        reason: 'awaiting-review',
+        reason: 'awaiting-agent-review',
         updatedAt: '2026-09-05T00:00:00.000Z',
       }),
     }),
@@ -234,6 +245,20 @@ const fixtures: Array<{ id: string; input: WorkItemIntakeStageInput }> = [
     id: 'malformed-timestamp',
     input: open({ implementationReadiness: { ...acceptedReadiness(), updatedAt: 'not-a-timestamp' } }),
   },
+  // P-008 / D-038: admission dedup is intake step one, ahead of every readiness leg.
+  {
+    id: 'admission-pending-accepted',
+    input: open({ implementationReadiness: acceptedReadiness() }, { admission: 'pending' }),
+  },
+  { id: 'admission-pending-unenrolled', input: open({}, { admission: 'pending' }) },
+  {
+    id: 'admission-admitted-accepted',
+    input: open({ implementationReadiness: acceptedReadiness() }, { admission: 'admitted' }),
+  },
+  {
+    id: 'admission-pending-terminal',
+    input: open({ implementationReadiness: acceptedReadiness() }, { status: 'done', admission: 'pending' }),
+  },
 ];
 
 beforeAll(async () => {
@@ -251,7 +276,7 @@ describe('workItemIntakeStageSql', () => {
     const rows: Array<{ id: string; decision: unknown }> = [];
     for (const { id, input } of fixtures) {
       const [row] = await sql<Array<{ decision: unknown }>>`
-        SELECT ${workItemIntakeStageSql(sql as unknown as OrgSql)} AS decision
+        SELECT ${workItemIntakeStageSql(sql as unknown as OrgSql, { admission: 'admission' })} AS decision
           FROM (VALUES (
             ${input.kind}::text,
             ${input.status}::text,
@@ -259,8 +284,9 @@ describe('workItemIntakeStageSql', () => {
             ${input.terminalCompletionRef ?? null}::text,
             ${input.payload == null ? null : sql.json(input.payload as postgres.JSONValue)}::jsonb,
             ${input.title ?? null}::text,
-            ${input.summary ?? null}::text
-          )) AS fixture(item_kind, status, terminal_owner, terminal_completion_ref, payload, title, summary)`;
+            ${input.summary ?? null}::text,
+            ${input.admission ?? null}::text
+          )) AS fixture(item_kind, status, terminal_owner, terminal_completion_ref, payload, title, summary, admission)`;
       rows.push({ id, decision: row.decision });
     }
     rows.sort((a, b) => a.id.localeCompare(b.id));
@@ -272,6 +298,20 @@ describe('workItemIntakeStageSql', () => {
     // Pin the load-bearing verdicts so a symmetric regression on both sides still fails.
     const byId = new Map(rows.map((row) => [row.id, row.decision]));
     expect(byId.get('observation-closed')).toMatchObject({ primaryStage: 'observation', countsAsBugWork: false });
+    // P-008 / D-038: a pending admission is a candidate awaiting dedup, even when its
+    // readiness would otherwise accept it, and it never counts as bug work yet.
+    expect(byId.get('admission-pending-accepted')).toMatchObject({
+      primaryStage: 'candidate',
+      reason: 'awaiting-admission-dedup',
+      countsAsBugWork: false,
+    });
+    expect(byId.get('admission-pending-unenrolled')).toMatchObject({
+      primaryStage: 'candidate',
+      reason: 'awaiting-admission-dedup',
+      readiness: 'legacy-missing',
+    });
+    expect(byId.get('admission-admitted-accepted')).toMatchObject({ primaryStage: 'accepted', countsAsBugWork: true });
+    expect(byId.get('admission-pending-terminal')).toMatchObject({ primaryStage: 'terminal' });
     expect(byId.get('accepted-bug')).toMatchObject({ primaryStage: 'accepted', acceptance: 'qualifying' });
     expect(byId.get('stale-title-edit')).toMatchObject({
       primaryStage: 'candidate',
@@ -279,6 +319,13 @@ describe('workItemIntakeStageSql', () => {
       reReviewRequested: true,
     });
     expect(byId.get('invalid-self-review')).toMatchObject({ acceptance: 'invalid-authority' });
+    // R-24 (P-007): duplicate admission and confidence are never acceptance authority —
+    // pinned directly so a symmetric SQL+TS widening of the policy allowlist still fails.
+    expect(byId.get('invalid-unknown-policy')).toMatchObject({ acceptance: 'invalid-authority', qualifyingAcceptance: false });
+    expect(byId.get('invalid-confidence-authority')).toMatchObject({
+      acceptance: 'invalid-authority',
+      qualifyingAcceptance: false,
+    });
     expect(byId.get('incomplete-missing-contract-version')).toMatchObject({ acceptance: 'incomplete' });
     expect(byId.get('incomplete-newline-only-scope')).toMatchObject({ acceptance: 'incomplete' });
     expect(byId.get('malformed-missing-schema-version')).toMatchObject({ primaryStage: 'unknown', readiness: 'malformed' });
@@ -326,7 +373,150 @@ describe('implementationReadinessNormalExclusionSql (claim floor)', () => {
     const [row] = await sql<Array<{ passes: boolean | null; held: boolean | null }>>`
       SELECT ${implementationReadinessNormalExclusionSql(sql as unknown as OrgSql, 'payload')} AS passes,
              NOT ${implementationReadinessNormalExclusionSql(sql as unknown as OrgSql, 'payload')} AS held
-        FROM (VALUES (${payload == null ? null : sql.json(payload as postgres.JSONValue)}::jsonb)) AS fixture(payload)`;
+        FROM (VALUES (
+          ${payload == null ? null : sql.json(payload as postgres.JSONValue)}::jsonb,
+          -- The floor also reads the row's acceptance source (kind/title/summary, matching
+          -- acceptedReadiness()'s BUG_SOURCE) and created_ts (0 = pre-cutover legacy arm).
+          ${BUG_SOURCE.kind}::text, ${TITLE}::text, ${SUMMARY}::text, 0::bigint
+        )) AS fixture(payload, item_kind, title, summary, created_ts)`;
     expect(row).toEqual({ passes, held: !passes });
+  });
+});
+
+describe('intakeStageClaimFloorSql: one stage predicate, TS twin agrees (P-008 / D-038)', () => {
+  const enrolled = createImplementationReadiness({
+    status: 'unknown',
+    source: 'creation-enrollment',
+    reason: 'no-acceptance-evidence-at-creation',
+    updatedAt: '2026-09-05T00:00:00.000Z',
+  });
+  const mirror = { ...enrolled, source: 'agent-review', reason: 'awaiting-agent-review' };
+  const revision = { ...enrolled, status: 'not-ready', source: 'agent-review', reason: 'agent-review-revision-requested' };
+  const review = (status: unknown, submittedBy: unknown = 'su-author') => ({
+    status,
+    submittedBy,
+    ledgerIdeaId: 'idea-1',
+    round: 1,
+  });
+  // `passes` is the PRE-P-008 floor's verdict for each row (agentReviewNormalExclusionSql
+  // composed over implementationReadinessNormalExclusionSql), so this table also pins that
+  // the rename to one stage predicate changed no claimability.
+  const cases: Array<{ id: string; payload: unknown; passes: boolean }> = [
+    { id: 'no-review legacy row', payload: {}, passes: true },
+    { id: 'null payload', payload: null, passes: true },
+    { id: 'review pending holds', payload: { agentReview: review('pending'), implementationReadiness: mirror }, passes: false },
+    { id: 'pending holds even with a divergent accepted readiness', payload: { agentReview: review('pending'), implementationReadiness: acceptedReadiness() }, passes: false },
+    { id: 'revision requested holds', payload: { agentReview: review('revision-requested'), implementationReadiness: revision }, passes: false },
+    // Pins the revision-requested leg on its own: with a not-ready readiness (the row above) the
+    // readiness floor would hold the row even if that leg were deleted.
+    {
+      id: 'revision requested holds even with a divergent accepted readiness',
+      payload: { agentReview: review('revision-requested'), implementationReadiness: acceptedReadiness() },
+      passes: false,
+    },
+    {
+      id: 'legacy-submitter revision bypasses the readiness floor',
+      payload: { agentReview: review('revision-requested', LEGACY_AGENT_REVIEW_SUBMITTER), implementationReadiness: revision },
+      passes: true,
+    },
+    { id: 'legacy-submitter pending still holds', payload: { agentReview: review('pending', LEGACY_AGENT_REVIEW_SUBMITTER) }, passes: false },
+    // bug-queue-legitimacy D-006/D-007: a reproduction-only revision is validation work for
+    // the drain lane — admitted with readiness still not-ready; a content revision holds.
+    {
+      id: 'reproduction-validation revision bypasses the readiness floor',
+      payload: { agentReview: { ...review('revision-requested'), revisionKind: 'reproduction' }, implementationReadiness: revision },
+      passes: true,
+    },
+    {
+      id: 'content revision still holds',
+      payload: { agentReview: { ...review('revision-requested'), revisionKind: 'content' }, implementationReadiness: revision },
+      passes: false,
+    },
+    {
+      id: 'reproduction kind on a pending review does not admit',
+      payload: { agentReview: { ...review('pending'), revisionKind: 'reproduction' }, implementationReadiness: mirror },
+      passes: false,
+    },
+    {
+      id: 'non-string revisionKind never matches',
+      payload: { agentReview: { ...review('revision-requested'), revisionKind: ['reproduction'] }, implementationReadiness: revision },
+      passes: false,
+    },
+    { id: 'approved + accepted readiness', payload: { agentReview: review('approved'), implementationReadiness: acceptedReadiness() }, passes: true },
+    {
+      id: 'approved review does not lift a capture-policy hold',
+      payload: { agentReview: review('approved'), implementationReadiness: { ...enrolled, source: 'capture-policy' } },
+      passes: false,
+    },
+    { id: 'non-string review status is no review', payload: { agentReview: review(1), implementationReadiness: enrolled }, passes: true },
+    { id: 'scalar agentReview is no review', payload: { agentReview: 'garbage' }, passes: true },
+    { id: 'malformed readiness holds', payload: { implementationReadiness: { status: 'ready' } }, passes: false },
+  ];
+
+  it.each(cases)('$id → passes=$passes in SQL and TS, never NULL', async ({ payload, passes }) => {
+    const floor = intakeStageClaimFloorSql(sql as unknown as OrgSql, 'payload');
+    const [row] = await sql<Array<{ passes: boolean | null; held: boolean | null }>>`
+      SELECT ${floor} AS passes, NOT ${floor} AS held
+        FROM (VALUES (
+          ${payload == null ? null : sql.json(payload as postgres.JSONValue)}::jsonb,
+          ${BUG_SOURCE.kind}::text, ${TITLE}::text, ${SUMMARY}::text, 0::bigint
+        )) AS fixture(payload, item_kind, title, summary, created_ts)`;
+    expect(row).toEqual({ passes, held: !passes });
+    expect(
+      intakeStageAdmitsClaim({ payload, kind: BUG_SOURCE.kind, title: TITLE, summary: SUMMARY, createdAtMs: 0 }),
+    ).toBe(passes);
+  });
+});
+
+describe('verifier-conflict SQL twins agree with the JS predicates (P-007 / D-021)', () => {
+  const task = (over: Record<string, unknown> = {}) => ({
+    verification: {
+      schemaVersion: VERIFICATION_TASK_SCHEMA_VERSION,
+      subject: 'EI-0',
+      check: 'reproduction',
+      reporters: ['su-reporter'],
+      implementers: ['su-implementer'],
+      ...over,
+    },
+  });
+  const cases: Array<{ id: string; payload: unknown; terminalOwner: string | null; claimant: string }> = [
+    { id: 'task reporter', payload: task(), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'task implementer', payload: task(), terminalOwner: null, claimant: 'su-implementer' },
+    { id: 'independent verifier', payload: task(), terminalOwner: null, claimant: 'su-verifier' },
+    { id: 'blank claimant', payload: task({ reporters: [''] }), terminalOwner: null, claimant: ' ' },
+    { id: 'missing check (NULL leg)', payload: task({ check: undefined }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'unknown check', payload: task({ check: 'vibes' }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'old schema', payload: task({ schemaVersion: 'verification-task-v0' }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'blank subject', payload: task({ subject: ' ' }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'scalar reporters', payload: task({ reporters: 'su-reporter' }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'padded reporter id', payload: task({ reporters: [' su-reporter '] }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'no block', payload: {}, terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'null payload', payload: null, terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'auto-filer', payload: { _ei: { created_by: 'improvement-triage' } }, terminalOwner: null, claimant: 'improvement-triage' },
+    // A complete review state: JS reads submittedBy only from one (readAgentReviewState),
+    // and the review selectors that use this twin already require a complete pending state.
+    {
+      id: 'submitter',
+      payload: { agentReview: { status: 'pending', submittedBy: 'su-sub', ledgerIdeaId: 'WI-7', round: 1 } },
+      terminalOwner: null,
+      claimant: 'su-sub',
+    },
+    { id: 'closer', payload: {}, terminalOwner: 'su-closer', claimant: 'su-closer' },
+  ];
+
+  it.each(cases)('$id: SQL twins match JS and are never NULL', async ({ payload, terminalOwner, claimant }) => {
+    const o = sql as unknown as OrgSql;
+    const [row] = await sql<Array<{ task_conflict: boolean | null; keeps: boolean | null; any_conflict: boolean | null }>>`
+      SELECT ${verificationTaskConflictSql(o, claimant, 'payload')} AS task_conflict,
+             NOT ${verificationTaskConflictSql(o, claimant, 'payload')} AS keeps,
+             ${verificationConflictSql(o, claimant, { payload: 'payload', terminalOwner: 'terminal_owner' })} AS any_conflict
+        FROM (VALUES (
+          ${payload == null ? null : sql.json(payload as postgres.JSONValue)}::jsonb,
+          ${terminalOwner}::text
+        )) AS fixture(payload, terminal_owner)`;
+    const jsTask = verificationTaskConflict(payload, claimant) !== null;
+    // createdBy is a column the SQL twin does not read (claimNextAgentReview re-checks it in JS).
+    const jsAny = verificationConflict(verificationParties({ terminalOwner, payload }), claimant) !== null;
+    expect(row).toEqual({ task_conflict: jsTask, keeps: !jsTask, any_conflict: jsAny });
   });
 });

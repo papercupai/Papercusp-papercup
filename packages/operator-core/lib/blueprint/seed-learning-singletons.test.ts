@@ -41,7 +41,20 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercup' }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 
-const { reconcileLearningSingletons, reconcileLearningSingletonsExitCode } = await import('./seed-learning-singletons');
+const { reconcileLearningSingletons, reconcileLearningSingletonsExitCode, seedExecuteTargetRefusal } = await import(
+  './seed-learning-singletons'
+);
+
+describe('seedExecuteTargetRefusal — a write run must name its database (EI-25457697211948138)', () => {
+  it('refuses --execute when DATABASE_URL is unset or blank', () => {
+    expect(seedExecuteTargetRefusal(true, undefined)).toMatch(/explicit DATABASE_URL/);
+    expect(seedExecuteTargetRefusal(true, '   ')).toMatch(/explicit DATABASE_URL/);
+  });
+  it('allows --execute with an explicit DATABASE_URL, and every dry run', () => {
+    expect(seedExecuteTargetRefusal(true, 'postgres://u@localhost:5432/papercusp')).toBeNull();
+    expect(seedExecuteTargetRefusal(false, undefined)).toBeNull();
+  });
+});
 
 /** A fake `sql` returning the given @singleton routine rows for the one SELECT it makes. */
 const sqlWithRows = (names: string[]): Sql =>

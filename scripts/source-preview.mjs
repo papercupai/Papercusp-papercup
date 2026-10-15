@@ -27,6 +27,7 @@
 //   node scripts/source-preview.mjs gate <dir>
 //   node scripts/source-preview.mjs check [--ref main] [--remote <url>]
 //   node scripts/source-preview.mjs push  [--ref main] [--remote <url>] [--confirm]
+//   node scripts/source-preview.mjs licenses [--json <file>]
 // npm: preview:export · preview:gate · preview:check · preview:push
 // Every command takes --target preview|public (default preview). The public target
 // (plan open-source-release-2026-09-29) publishes to Papercusp/papercusp-app under the
@@ -42,15 +43,20 @@
 // and the export refuses without it rather than publish a README with no download link.
 //
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
-import { spawnSync } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
+import { readTaskDeadlineEpochMs, formatTaskDeadlineRefusal } from './lib/budgeted-task-scheduler.mjs';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
+import { promises as fs, appendFileSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
-import { dirname, join, relative, sep } from 'node:path';
+import { constants, homedir, tmpdir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -191,6 +197,137 @@ function run(cmd, args, opts = {}) {
 
 const git = (repo, args, opts) => run('git', ['-C', repo, ...args], opts);
 
+/** Read GitHub JSON plus pagination headers without requiring a recent gh CLI. */
+function githubPage(endpoint) {
+  const raw = run('gh', ['api', '--include', endpoint]).replace(/\r\n/g, '\n');
+  const boundary = raw.indexOf('\n\n');
+  if (boundary < 0) throw new PreviewError('GitHub response has no HTTP header boundary', 2);
+  const headers = Object.fromEntries(raw.slice(0, boundary).split('\n').slice(1).map((line) => {
+    const colon = line.indexOf(':');
+    return [line.slice(0, colon).toLowerCase(), line.slice(colon + 1).trim()];
+  }));
+  return { headers, body: JSON.parse(raw.slice(boundary + 2)) };
+}
+
+/**
+ * R13: inspect the current public population and actual default-branch license bytes.
+ * Reuses the public export's canonical ELv2 and the maintained Apache library text.
+ * Unknown text, an API failure, incomplete pagination or a changed population refuses.
+ * GitHub's license metadata is supplementary; it is never the license oracle.
+ * @typedef {{ path: string, gitBlob: string, sha256: string, license: string | null, url: string }} PublicRepositoryLicense
+ * @typedef {{ repo: string, defaultBranch: string, metadataSpdx: string | null, head: string | null, licenses: PublicRepositoryLicense[], errors: string[] }} PublicRepositoryLicenseRow
+ */
+/**
+ * @param {{ api?: (endpoint: string) => Promise<{ headers: Record<string, string>, body: any }> | { headers: Record<string, string>, body: any }, licenseHashes?: Record<string, string>, libraryRepositories?: string[], log?: Log }} [options]
+ */
+export async function auditPublicRepositoryLicenses({ api = githubPage, licenseHashes, libraryRepositories, log = () => {} } = {}) {
+  const startedAt = new Date().toISOString();
+  const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const reviewed = licenseHashes ?? {
+    [digest(readFileSync(PUBLIC_LICENSE_PATH))]: 'ELv2',
+    [digest(readFileSync(join(ROOT, 'libs/generic/cache/LICENSE')))]: 'Apache-2.0',
+    // Existing SideStage-mobile MIT declaration, read and reviewed in the R13 census.
+    '84ea0f54f720885e4e0a6d2e45baca5a7d6e30aa26db12eabbeda4b3b48c3ea7': 'MIT',
+  };
+  if (!libraryRepositories) {
+    // Derive the library policy from the existing registry, never a remembered count.
+    const modules = new Map();
+    const config = run('git', ['config', '--file', join(ROOT, '.gitmodules'), '--get-regexp', '^submodule\\..*\\.(path|url)$']);
+    for (const line of config.trim().split('\n')) {
+      const space = line.indexOf(' ');
+      const key = line.slice(0, space);
+      const dot = key.lastIndexOf('.');
+      const name = key.slice(0, dot);
+      const module = modules.get(name) ?? {};
+      module[key.slice(dot + 1)] = line.slice(space + 1);
+      modules.set(name, module);
+    }
+    libraryRepositories = [...modules.values()].filter((module) => module.path?.startsWith('libs/generic/') || ['libs/agent-chat', 'libs/testing-shell', 'libs/test-config'].includes(module.path)).map((module) => module.url.replace(/^git@github\.com:/, '').replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, ''));
+  }
+  const libraries = new Set(libraryRepositories.map((repo) => repo.toLowerCase()));
+  async function population() {
+    const repositories = [];
+    const pages = [];
+    const seen = new Set();
+    let endpoint = 'orgs/Papercusp/repos?type=public&per_page=100&page=1';
+    while (endpoint) {
+      if (seen.has(endpoint)) throw new PreviewError('GitHub pagination repeated a page', 2);
+      seen.add(endpoint);
+      const { headers, body } = await api(endpoint);
+      if (!Array.isArray(body)) throw new PreviewError('GitHub population is not an array', 2);
+      for (const repo of body) {
+        if (!/^Papercusp\/[A-Za-z0-9._-]+$/i.test(repo.full_name ?? '') || repo.private !== false || !repo.default_branch) {
+          throw new PreviewError('GitHub population contains an invalid public repository', 2);
+        }
+        if (repositories.some((r) => r.full_name.toLowerCase() === repo.full_name.toLowerCase())) {
+          throw new PreviewError(`GitHub population repeats ${repo.full_name}`, 2);
+        }
+        repositories.push(repo);
+      }
+      const link = headers.link ?? '';
+      const next = link.split(',').find((part) => /rel="next"/.test(part));
+      const url = next?.match(/<([^>]+)>/)?.[1];
+      if (next && !url?.startsWith('https://api.github.com/orgs/Papercusp/repos?')) {
+        throw new PreviewError('GitHub next-page link is missing or outside the population endpoint', 2);
+      }
+      pages.push({ endpoint, size: body.length, next: url ?? null });
+      endpoint = url ? url.slice('https://api.github.com/'.length) : '';
+    }
+    if (!repositories.length) throw new PreviewError('GitHub public population is empty', 2);
+    return { repositories, pages };
+  }
+  const first = await population();
+  /** @type {PublicRepositoryLicenseRow[]} */
+  const rows = [];
+  /** @type {Record<string, string>} */
+  const licenseTexts = {};
+  for (const repo of first.repositories) {
+    log(`license census: ${repo.full_name} default=${repo.default_branch}`);
+    /** @type {PublicRepositoryLicenseRow} */
+    const row = { repo: repo.full_name, defaultBranch: repo.default_branch, metadataSpdx: repo.license?.spdx_id ?? null, head: null, licenses: [], errors: [] };
+    try {
+      const { body: commit } = await api(`repos/${row.repo}/commits/${encodeURIComponent(row.defaultBranch)}`);
+      if (!/^[a-f0-9]{40}$/.test(commit.sha ?? '')) throw new Error('default branch has no measured commit');
+      row.head = commit.sha;
+      const { body: root } = await api(`repos/${row.repo}/contents?ref=${row.head}`);
+      if (!Array.isArray(root)) throw new Error('default-branch root was not measured');
+      const candidates = root.filter((f) => f.type === 'file' && /^(?:licen[cs]e|copying)(?:\.(?:md|txt))?$/i.test(f.name));
+      if (!candidates.length) throw new Error('default branch has no root license file');
+      for (const file of candidates) {
+        const { body: content } = await api(`repos/${row.repo}/contents/${encodeURIComponent(file.path)}?ref=${row.head}`);
+        if (content.encoding !== 'base64' || typeof content.content !== 'string') throw new Error(`license bytes unavailable: ${file.path}`);
+        const bytes = Buffer.from(content.content, 'base64');
+        if (bytes.toString('base64') !== content.content.replace(/\s/g, '')) throw new Error(`invalid license base64: ${file.path}`);
+        const blob = createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+        if (blob !== content.sha || blob !== file.sha) throw new Error(`license blob mismatch: ${file.path}`);
+        const sha256 = digest(bytes);
+        const license = reviewed[sha256] ?? null;
+        licenseTexts[sha256] = bytes.toString('utf8');
+        row.licenses.push({ path: file.path, gitBlob: blob, sha256, license, url: `https://github.com/${row.repo}/blob/${row.head}/${file.path}` });
+        if (!license) row.errors.push(`unreviewed license text: ${file.path}`);
+        if (license && libraries.has(row.repo.toLowerCase()) && license !== 'Apache-2.0' && license !== 'MIT') {
+          row.errors.push(`D-003 requires a permissive library license: ${file.path}`);
+        }
+        if (license && (row.repo.toLowerCase() === PUBLIC_REPO.toLowerCase() || ['goals', 'cupboard-actions', 'blueprints', 'sidestage', 'scout-runtime', 'recipes', 'plans', 'scout-chat', 'drawer-stack', 'cart-drawer', 'data-fetch'].includes(row.repo.split('/')[1].toLowerCase())) && license !== 'ELv2') {
+          row.errors.push(`D-011/D-023 require ELv2: ${file.path}`);
+        }
+      }
+    } catch (error) {
+      row.errors.push(error instanceof Error ? error.message : String(error));
+    }
+    rows.push(row);
+  }
+  const last = await population();
+  const identity = (repos) => repos.map((r) => `${r.full_name}:${r.default_branch}`).sort().join('\n');
+  const stablePopulation = identity(first.repositories) === identity(last.repositories);
+  const assertions = [
+    { id: 'complete-stable-population', passed: stablePopulation, evidence: 'Both population reads followed every next-page link to a terminal page. Exact page receipts are in pagination; both repository/default-branch populations must agree.' },
+    { id: 'actual-default-branch-license-bytes', passed: rows.every((row) => !row.errors.length), evidence: 'Every repository is enumerated in rows with its measured default-branch commit, root license blob and SHA-256. Any missing/unreadable/unreviewed/mismatched license fails this assertion; full errors remain on the affected row.' },
+  ];
+  const exitCode = assertions.every((assertion) => assertion.passed) ? 0 : 1;
+  return { schemaVersion: 1, kind: 'operational-test-evidence', name: 'Public repository default-branch license census', framework: 'operational', command: ['node --import tsx scripts/source-preview.mjs licenses'], startedAt, finishedAt: new Date().toISOString(), exitCode, evidencePlane: 'live', summary: `${rows.length} public repositories; ${rows.filter((row) => row.errors.length).length} license failures; population ${stablePopulation ? 'stable' : 'changed'}`, assertions, pagination: { first: first.pages, last: last.pages }, rows, licenseTexts };
+}
+
 /** Resolve a ref to a full commit SHA in `repo`. */
 export function resolveCommit(repo, ref) {
   return git(repo, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]).trim();
@@ -221,6 +358,72 @@ function extractArchive(repo, sha, dest) {
   run('bash', ['-c', 'set -euo pipefail; git -C "$1" archive --format=tar "$2" | tar -xf - -C "$3"', '_', repo, sha, dest]);
 }
 
+function materializedSubmodule(repo, link, full) {
+  const subRepo = join(repo, link.path);
+  const known = existsSync(subRepo)
+    && spawnSync('git', ['-C', subRepo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim() === realpathSync(subRepo)
+    && spawnSync('git', ['-C', subRepo, 'cat-file', '-e', `${link.sha}^{commit}`]).status === 0;
+  if (!known) {
+    throw new PreviewError(`unresolvable gitlink ${full} @ ${link.sha} — its commit is not present in ${subRepo}; run \`git submodule update --init\` or fetch it, then retry`);
+  }
+  return subRepo;
+}
+
+// Resolve only the tested path's gitlinks, against their pinned commits. An
+// unrelated unresolved gitlink must not hide an initial dirty-input refusal.
+function committedInputBlob(repo, sha, path, trees) {
+  const key = `${repo}\0${sha}`;
+  if (!trees.has(key)) {
+    const entries = new Map();
+    const links = [];
+    for (const row of git(repo, ['ls-tree', '-r', '-z', sha]).split('\0')) {
+      if (!row) continue;
+      const tab = row.indexOf('\t');
+      const name = row.slice(tab + 1);
+      const fields = row.slice(0, tab).split(' ');
+      entries.set(name, fields);
+      if (fields[0] === '160000') links.push({ path: name, sha: fields[2] });
+    }
+    trees.set(key, { entries, links });
+  }
+  const { entries, links } = trees.get(key);
+  const link = links.find((entry) => path.startsWith(`${entry.path}/`));
+  if (link) return committedInputBlob(materializedSubmodule(repo, link, link.path),
+    link.sha, path.slice(link.path.length + 1), trees);
+  const [mode, type, blob] = entries.get(path) ?? [];
+  if (type !== 'blob' || !['100644', '100755'].includes(mode)) {
+    throw new PreviewError(`tested input is not a regular committed file: ${path}`, 2);
+  }
+  return blob;
+}
+
+/** Conservative allocated source bytes for the exact recursive verifier export.
+ * Count committed blobs, including desktop and private gitlinks, before creating
+ * any destination. Per-file block rounding covers small-file allocation; the
+ * existing disk reservation adds its separate dependency/metadata allowance.
+ * export-ignore can only make the actual archive smaller than this census.
+ */
+export function measureVerifierSourceBytes({ repo, ref }) {
+  const measure = (source, sha, prefix = '') => {
+    let bytes = 0;
+    for (const entry of git(source, ['ls-tree', '-r', '-z', '-l', sha]).split('\0')) {
+      if (!entry) continue;
+      const fields = entry.slice(0, entry.indexOf('\t')).trim().split(/\s+/);
+      if (fields[1] !== 'blob') continue;
+      const size = Number(fields[3]);
+      if (!Number.isSafeInteger(size) || size < 0) throw new PreviewError('cannot measure committed source bytes', 2);
+      bytes += Math.ceil(size / 4096) * 4096;
+    }
+    for (const link of listGitlinks(source, sha)) {
+      const full = prefix ? `${prefix}/${link.path}` : link.path;
+      bytes += measure(materializedSubmodule(source, link, full), link.sha, full);
+    }
+    if (!Number.isSafeInteger(bytes)) throw new PreviewError('committed source size exceeds safe integer range', 2);
+    return bytes;
+  };
+  return measure(repo, resolveCommit(repo, ref));
+}
+
 /**
  * Materialize `sha` of `repo` into `dest` from git objects only (no working-tree
  * files), recursing into every submodule whose top-level entry the allowlist ships.
@@ -234,16 +437,10 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
   for (const link of listGitlinks(repo, sha)) {
     const full = prefix ? `${prefix}/${link.path}` : link.path;
     if (!allow.has(full.split('/')[0])) continue;
-    const subRepo = join(repo, link.path);
     // The submodule must be its OWN checkout: an uninitialised submodule is an
     // empty dir inside the parent, where `git -C` would silently answer for the
     // parent repository instead.
-    const known = existsSync(subRepo)
-      && spawnSync('git', ['-C', subRepo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim() === realpathSync(subRepo)
-      && spawnSync('git', ['-C', subRepo, 'cat-file', '-e', `${link.sha}^{commit}`]).status === 0;
-    if (!known) {
-      throw new PreviewError(`unresolvable gitlink ${full} @ ${link.sha} — its commit is not present in ${subRepo}; run \`git submodule update --init\` or fetch it, then retry`);
-    }
+    const subRepo = materializedSubmodule(repo, link, full);
     const target = join(dest, full);
     // git archive leaves the gitlink as an empty directory; make sure it exists.
     run('mkdir', ['-p', target]);
@@ -251,6 +448,643 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
     subs.push(...materializeCommit({ repo: subRepo, sha: link.sha, dest, allow, prefix: full }));
   }
   return subs;
+}
+
+/** Internal verification export: no public selection, scrub, publish or working-tree overlay.
+ * The caller retains this receipt outside the export, then verifies it before execution.
+ * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean}} options
+ */
+// Shared by early e2e admission and the native snapshot. Explicit caller
+// acceptance paths remain required; this tooling profile cannot replace them.
+export const TAURI_VERIFIER_INPUTS = Object.freeze([
+  'package.json',
+  'package-lock.json',
+  'papercusp-desktop/package.json',
+  'papercusp-desktop/package-lock.json',
+  'scripts/npm-install-safe.mjs',
+  'scripts/verify-tauri-headless.sh',
+  'scripts/lib/run-in-isolated-netns.sh',
+  'packages/operator-core/lib/testing-playwright-reporter.ts',
+  'packages/operator-core/lib/testing-native-runtime.ts',
+  'packages/operator-core/lib/process-identity.ts',
+  'apps/operator/e2e/_fake-llm-fixture.ts',
+  'apps/operator/e2e/_fake-llm-fixture-child.ts',
+  'apps/operator/bin/bundle-host.sh',
+  'apps/operator/bin/bundle-host-common.sh',
+  'scripts/source-preview.mjs',
+  'scripts/lib/committed-source-loader.mjs',
+  'scripts/restricted-hold-tree-gate.mjs',
+  'scripts/lib/spa-require-built.sh',
+  'scripts/lib/budgeted-task-scheduler.mjs',
+  'scripts/pc-heavy.sh',
+  'apps/operator/bin/release/dependency-generation.sh',
+  'papercusp-desktop/bin/tauri-guarded',
+  'papercusp-desktop/bin/lib/claim-target-dir.sh',
+  'papercusp-desktop/bin/lib/cargo-target-root.sh',
+  'papercusp-desktop/bin/lib/release-artifacts.sh',
+  'papercusp-desktop/bin/lib/federation-asserts.sh',
+  'papercusp-desktop/bin/lib/disk-preflight.sh',
+  'papercusp-desktop/bin/lib/pinned-deps.sh',
+  'papercusp-desktop/src-tauri/src/main.rs',
+  'papercusp-desktop/src-tauri/src/native_console.rs',
+  'papercusp-desktop/src-tauri/src/wsl_sidecar_staging.rs',
+  'papercusp-desktop/test/native-console-gnome.test.mjs',
+  'papercusp-desktop/test/monorepo-host-preflight.mjs',
+  'scripts/lib/node-test-host-preflight.mjs',
+  'packages/operator-core/lib/gnome-terminal-policy.json',
+]);
+
+/** Validate the explicit tested source population against its pinned commit.
+ * @param {{ repo: string, ref: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean }} options
+ */
+export async function validateVerifierInputs({ repo, ref, inputs = [], inputsFile, tauriInputs = false }) {
+  if (inputsFile !== undefined) {
+    const listed = JSON.parse(await fs.readFile(inputsFile, 'utf8'));
+    if (!Array.isArray(listed) || !listed.length || listed.some((path) => typeof path !== 'string')) {
+      throw new PreviewError('verification inputs file must contain a non-empty JSON array of paths', 2);
+    }
+    inputs = [...inputs, ...listed];
+  }
+  if (!inputs.length) throw new PreviewError('verification export needs explicit tested inputs', 2);
+  if (tauriInputs) inputs = [...inputs, ...TAURI_VERIFIER_INPUTS];
+  const paths = [...new Set(inputs)].sort();
+  for (const path of paths) {
+    if (path === 'apps/operator/dist-verify' || path.startsWith('apps/operator/dist-verify/')) {
+      throw new PreviewError(`generated verifier runtime output cannot be a tested source input: ${path}`, 2);
+    }
+    if (typeof path !== 'string' || !path || isAbsolute(path) || path.includes('\0')
+      || path.split('/').some((p) => p === '..' || p === '.' || !p)) {
+      throw new PreviewError(`invalid tested input: ${path}`, 2);
+    }
+  }
+  const sha = resolveCommit(repo, ref);
+  // Refuse initial mismatches before creating a destination, cloning or
+  // archiving. Keep the post-copy comparison below as the race guard.
+  const inputTrees = new Map();
+  for (const path of paths) {
+    const live = join(repo, path);
+    if (!(await fs.lstat(live)).isFile()) {
+      throw new PreviewError(`tested input is not a regular file: ${path}`, 2);
+    }
+    const blob = committedInputBlob(repo, sha, path, inputTrees);
+    const bytes = await fs.readFile(live);
+    // Git's raw blob identity includes its object header; do not apply filters.
+    const digest = createHash(blob.length === 64 ? 'sha256' : 'sha1')
+      .update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+    if (digest !== blob) {
+      throw new PreviewError(`dirty tested-input mismatch: ${path}`, 2);
+    }
+  }
+  return { sha, paths };
+}
+
+/** Prepare a source snapshot only after all declared inputs match their pin.
+ * @param {{ repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string, gitCheckout?: boolean, tauriInputs?: boolean, operatorApi?: { root: string, sourceReceiptPath: string, sourceReceiptSha256: string, inputReceiptPath: string, inputReceiptSha256: string, outputPath: string } }} options
+ */
+export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile, gitCheckout = false, tauriInputs = false, operatorApi }) {
+  repo = realpathSync(repo);
+  if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
+  const { sha, paths } = await validateVerifierInputs({ repo, ref, inputs, inputsFile, tauriInputs });
+  // Observations come from a separately selected root, never this exporter.
+  const planned = operatorApi ? readOperatorApiHandoff(operatorApi, sha) : undefined;
+  if (operatorApi) {
+    if (realpathSync(operatorApi.root) === realpathSync(repo))
+      throw new PreviewError('operator-api inputs require an independent selected root', 2);
+    if (existsSync(operatorApi.outputPath)) throw new PreviewError('operator-api handoff destination already exists', 2);
+    assertOutsideArchive(dest, operatorApi.outputPath);
+    for (const path of paths) assert.ok(planned.source.testedInputs.some(input => input.path === path),
+      `Operator-api selected tested input missing: ${path}`);
+  }
+  if (gitCheckout) {
+    // Reuse the guarded local clone: detached exact ref, borrowed objects, local
+    // submodule pins, no origins, and cleanup only of its own new destination.
+    const { createScratchClone } = await import('@papercusp/operator-core/lib/scratch-git-clone');
+    // A retained materialized reader borrows its physical donor's ignored
+    // scratch directory. Clone that donor at the already validated exact pin;
+    // keep the reader as the input and receipt identity below.
+    await createScratchClone({ source: committedWorkRootDependencyDonor(repo), ref: sha,
+      destination: dest, includeSubmodules: true });
+  } else await fs.mkdir(dest, { recursive: !operatorApi });
+  let handoffIdentity;
+  try {
+    // Unlike the public export, verification includes desktop/helper gitlinks too.
+    const allow = new Set(git(repo, ['ls-tree', '--name-only', sha]).trim().split('\n'));
+    const submodules = gitCheckout
+      ? [...function* collect(source, commit, prefix = '') {
+        for (const link of listGitlinks(source, commit)) {
+          const path = prefix ? `${prefix}/${link.path}` : link.path;
+          yield { path, sha: link.sha };
+          yield* collect(join(source, link.path), link.sha, path);
+        }
+      }(repo, sha)]
+      : materializeCommit({ repo, sha, dest, allow });
+    // The verifier rebuilds this private runtime with the maintained bundler.
+    // Older commits may contain generated output despite today's gitignore.
+    // Never record those mutable artifacts as immutable source in an archive.
+    // A Git checkout must retain its tracked population, so refuse that route
+    // rather than removing tracked files or weakening its source attestation.
+    const runtimeOutput = join(dest, 'apps/operator/dist-verify');
+    if (gitCheckout && (await fs.readdir(runtimeOutput).catch(error => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    })).length) {
+      throw new PreviewError('committed verifier runtime output requires archive export, not Git checkout', 2);
+    }
+    if (!gitCheckout) await fs.rm(runtimeOutput, { recursive: true, force: true });
+    const testedInputs = [];
+    for (const path of paths) {
+      const archived = join(dest, path);
+      const live = join(repo, path);
+      if (!(await fs.lstat(archived)).isFile() || !(await fs.lstat(live)).isFile()) {
+        throw new PreviewError(`tested input is not a regular file: ${path}`, 2);
+      }
+      const digest = createHash('sha256').update(await fs.readFile(archived)).digest('hex');
+      if (digest !== createHash('sha256').update(await fs.readFile(live)).digest('hex')) {
+        throw new PreviewError(`dirty tested-input mismatch: ${path}`, 2);
+      }
+      testedInputs.push({ path, sha256: digest });
+    }
+    const checkout = gitCheckout ? verifierGitCheckoutSync(dest, sha, submodules) : undefined;
+    const gitMetadataPaths = checkout ? ['.git', ...submodules.map(row => `${row.path}/.git`)] : [];
+    const sourceManifest = { schemaVersion: 'verifier-source-v1', sourceCommit: sha, submodules,
+      ...(checkout ? { gitCheckout: checkout } : {}), testedInputs, files: verifierSourceFiles(dest, { gitMetadataPaths }) };
+    // Declared, not inferred: the operator-api branch below adds operatorApiInputs after
+    // construction, and JS inference would otherwise drop it from the returned receipt type.
+    /** @type {typeof sourceManifest & { operatorApiInputs?: { path: string, sha256: string } }} */
+    const manifest = sourceManifest;
+    if (planned) {
+      assert.deepEqual(manifest.files, planned.source.files, 'Operator-api selected source census differs');
+      assert.deepEqual(manifest.submodules, planned.source.submodules, 'Operator-api selected submodules differ');
+      assert.deepEqual(manifest.testedInputs, planned.source.testedInputs, 'Operator-api selected tested inputs differ');
+      // Copy already-materialized bytes. Never install, borrow ambient modules,
+      // dereference links or replace a dependency tree recorded as source.
+      assert.ok(!existsSync(join(dest, 'node_modules')), 'Operator-api archive already contains dependencies');
+      await fs.cp(join(operatorApi.root, 'node_modules'), join(dest, 'node_modules'),
+        { recursive: true, dereference: false, verbatimSymlinks: true, errorOnExist: true, force: false });
+      assert.deepEqual(verifierSourceFiles(join(dest, 'node_modules')), planned.inputs.dependencyFiles,
+        'Operator-api copied materialized dependency census differs');
+      readOperatorApiHandoff(operatorApi, sha); // Pins and donor bytes must survive the copy.
+      manifest.operatorApiInputs = { path: resolve(operatorApi.outputPath), sha256: operatorApi.inputReceiptSha256 };
+    }
+    await fs.writeFile(join(dest, '.verifier-source.json'), `${JSON.stringify(manifest)}\n`, { flag: 'wx' });
+    if (gitCheckout) {
+      // This exporter owns the independent Git directory. Ignore only its
+      // generated receipt, keeping arbitrary untracked source visible to the
+      // ordinary test reporters' before/after Git probes. Receipt integrity is
+      // still checked independently by verifyVerifierSource.
+      await fs.appendFile(join(dest, '.git/info/exclude'), '\n/.verifier-source.json\n');
+    }
+    if (planned) {
+      // Check the complete archive again after asynchronous copying, before
+      // publishing any handoff. The earlier census is not a copy-time guard.
+      verifyArchivedSourceSync(dest, manifest, { runtimeArtifacts: true });
+      assertOutsideArchive(dest, operatorApi.outputPath);
+      const output = await fs.open(operatorApi.outputPath, 'wx', 0o600);
+      try {
+        handoffIdentity = await output.stat();
+        await output.writeFile(planned.bytes);
+      } finally { await output.close(); }
+      verifyVerifierSourceSync(dest, manifest);
+      readOperatorApiHandoff(operatorApi, sha);
+    }
+    return manifest;
+  } catch (error) {
+    // A failed write or final attestation must not leave our partial handoff.
+    // Never unlink an existing file that lost the exclusive-create race, or a
+    // replacement with a different identity.
+    if (handoffIdentity) {
+      const current = await fs.lstat(operatorApi.outputPath).catch(error => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      });
+      if (current?.dev === handoffIdentity.dev && current?.ino === handoffIdentity.ino)
+        await fs.unlink(operatorApi.outputPath);
+    }
+    await fs.rm(dest, { recursive: true, force: true });
+    if (error instanceof VerifierSourceError) throw new PreviewError(error.message, 2);
+    throw error;
+  }
+}
+
+/** @typedef {<T>(phase: string, operation: () => T | Promise<T>) => Promise<T>} VerifierPhaseRunner */
+
+/** Append outside the owned tree synchronously: a blocked event loop or SIGKILL
+ * must leave the last started phase readable without claiming it completed.
+ * @param {string} path
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {VerifierPhaseRunner}
+ */
+function verifierPhaseRunner(path, env) {
+  writeFileSync(path, '', { flag: 'wx', mode: 0o600 });
+  const started = performance.now();
+  let sequence = 0;
+  const record = (phase, event, fields = {}) => appendFileSync(path, `${JSON.stringify({
+    schemaVersion: 'verifier-phase-v1', sequence: ++sequence,
+    taskId: env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID ?? null,
+    phase, event, elapsedMs: Math.round(performance.now() - started), ...fields,
+  })}\n`);
+  return async (phase, operation) => {
+    const before = performance.now();
+    record(phase, 'started');
+    try {
+      const result = await operation();
+      record(phase, 'completed', { durationMs: Math.round(performance.now() - before),
+        ...(phase === 'child.run' ? { exitCode: result } : {}) });
+      return result;
+    } catch (error) {
+      record(phase, 'failed', { durationMs: Math.round(performance.now() - before),
+        error: String(error?.message ?? error).slice(0, 2000) });
+      throw error;
+    }
+  };
+}
+
+/** Attach dependencies to the independently invoked tree before its first Node
+ * command. Reuse the release helper's donor install mutex and private snapshot.
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner }} options
+ */
+export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation() }) {
+  await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt));
+  const env = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' };
+  const run = (command, args) => {
+    const result = spawnSync(command, args, { cwd: dest, env, encoding: 'utf8',
+      timeout: 600_000, maxBuffer: 16 * 1024 * 1024 });
+    if (result.error || result.status !== 0)
+      throw new PreviewError(`verifier dependency preflight failed: ${result.error?.message || result.stderr || result.stdout || result.status}`, 2);
+    return result.stdout;
+  };
+  await runPhase('deps.snapshot', () => run('bash', [join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
+    'snapshot-locked', realpathSync(donor), realpathSync(dest), 'hardlink']));
+  await runPhase('deps.source.after-snapshot', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
+  const script = join(dest, 'scripts/source-preview.mjs');
+  await runPhase('deps.inputs', () => run(process.execPath, [script, 'verifier-inputs-check', '--repo', dest,
+    '--ref', receipt.sourceCommit, '--inputs', receipt.testedInputs.map(input => input.path).join(',')]));
+  await runPhase('deps.measure', () => {
+    const bytes = run(process.execPath, [script, 'verifier-measure', '--repo', dest,
+      '--ref', receipt.sourceCommit]).trim();
+    if (!/^\d+$/.test(bytes) || Number(bytes) <= 0)
+      throw new PreviewError('verifier dependency preflight returned no source size', 2);
+  });
+  await runPhase('deps.source.after-preflight', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
+  return runPhase('deps.census', () => captureVerifierDependencies({ dest, receipt }));
+}
+
+/** Measure installed bytes, not lockfile intent. Reuse the release helper's
+ * product-owned tree population and the source verifier's exact file census.
+ * Workspace link targets still need source verification; this receipt does
+ * not claim final transformed code or a complete runtime import closure.
+ * @param {{ dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>> }} options
+ */
+export function captureVerifierDependencies({ dest, receipt }) {
+  const root = realpathSync(dest);
+  const result = spawnSync('bash', [join(root, 'papercusp-desktop/bin/lib/pinned-deps.sh'), 'trees', root],
+    { cwd: root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
+      timeout: 60_000, maxBuffer: 1024 * 1024 });
+  if (result.error || result.status !== 0)
+    throw new PreviewError(`verifier dependency enumeration failed: ${result.error?.message || result.stderr || result.status}`, 2);
+  const paths = result.stdout.trim().split('\n').filter(Boolean).sort();
+  assert.ok(paths.length > 0 && paths.length <= 1000 && new Set(paths).size === paths.length,
+    'Verifier dependency tree population missing or duplicated');
+  const policyPath = 'apps/operator/bin/release/dependency-generation.sh';
+  const policy = { path: policyPath,
+    sha256: createHash('sha256').update(readFileSync(join(root, policyPath))).digest('hex') };
+  const trees = paths.map(path => {
+    assert.ok(!isAbsolute(path) && !path.includes('\\') &&
+      !path.split('/').some(part => !part || part === '.' || part === '..') &&
+      path.split('/').at(-1) === 'node_modules' &&
+      !paths.some(other => path.startsWith(`${other}/`)), 'Invalid verifier dependency tree');
+    const tree = join(root, path);
+    assert.ok(lstatSync(tree).isDirectory() && realpathSync(tree) === tree,
+      `Verifier dependency tree must be independent: ${path}`);
+    // Use the generation writer's population, including its exact ephemeral
+    // output policy. A second cache-name list would eventually disagree with
+    // the immutable install whose bytes this verifier is meant to measure.
+    const records = spawnSync('bash', ['-c',
+      'source "$1" || exit; records=$(mktemp) || exit; trap \'rm -f -- "$records" "$records.unsorted"\' EXIT; dependency_generation_source_records "$2" "$records" || exit; cat "$records"',
+      'verifier-dependency-records', join(root, policyPath), tree],
+    { cwd: root, env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' }, encoding: 'utf8',
+      timeout: 120_000, maxBuffer: 128 * 1024 * 1024 });
+    if (records.error || records.status !== 0)
+      throw new PreviewError(`verifier dependency census failed: ${records.error?.message || records.stderr || records.status}`, 2);
+    // The final link-target column is empty for regular files/directories.
+    // Trimming whitespace would erase that field from the final record.
+    const population = records.stdout.split('\n').filter(Boolean).map(line => line.split('\t'));
+    assert.ok(population.every(row => row.length === 10 && ['d', 'f', 'l'].includes(row[1])),
+      'Invalid verifier dependency generation records');
+    const files = verifierSourceFiles(tree, { symlinkRoot: root,
+      includedPaths: new Set(population.map(row => row[0])) });
+    assert.equal(files.length, population.filter(row => row[1] !== 'd').length,
+      'Verifier dependency population changed during census');
+    return { path, files };
+  });
+  return { schemaVersion: 'verifier-dependencies-v1', scope: 'materialized-dependency-files',
+    root, sourceCommit: receipt.sourceCommit, policy,
+    sourceReceiptSha256: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), trees };
+}
+
+/** Freeze source and dependencies before invoking a command that allocates fixtures.
+ * The receipt survives outside the owned tree; only this invocation's tree is removed.
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
+ * @returns {Promise<number>}
+ */
+export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0 }) {
+  if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
+    throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
+  if (!Number.isSafeInteger(childEstimateMs) || childEstimateMs < 0)
+    throw new PreviewError('verifier child estimate must be a nonnegative integer', 2);
+  const sourceRepo = realpathSync(repo);
+  const donor = committedWorkRootDependencyDonor(sourceRepo);
+  // A materialized source tree may live on another device. Dependency snapshots
+  // use hardlinks, so allocate beside the physical donor while keeping sourceRepo
+  // as the source identity passed to the freezer and task receipt.
+  const scratch = join(donor, '.papercusp', 'scratch');
+  await fs.mkdir(scratch, { recursive: true });
+  const owned = await fs.mkdtemp(join(scratch, 'verifier-command-'));
+  const root = join(owned, 'invoked-source');
+  /** @type {VerifierPhaseRunner} */
+  let runPhase = async (_phase, operation) => operation();
+  try {
+    writeVerifierTaskReceipt(owned, sourceRepo, env);
+    assertOutsideArchive(owned, resolve(receiptPath));
+    const tracedPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env);
+    const measurements = {};
+    runPhase = async (phase, operation) => {
+      const before = performance.now();
+      const result = await tracedPhase(phase, operation);
+      measurements[phase] = Math.ceil(performance.now() - before);
+      return result;
+    };
+    await runPhase('source.admission', () => {
+      const estimate = budgetFrom
+        ? estimateVerifierCommandBudget(readVerifierPhaseMeasurements(budgetFrom), childEstimateMs)
+        : null;
+      admitVerifierCommandBudget(estimate, { env, preparation: true });
+    });
+    const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref, dest: root,
+      inputs, inputsFile, tauriInputs, gitCheckout: true }));
+    await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
+    const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase });
+    await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
+      `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
+    await runPhase('child.admission', () => admitVerifierCommandBudget(
+      estimateVerifierCommandBudget(measurements, childEstimateMs), { env }));
+    const childEnv = await runPhase('child.preflight', () => verifierSourceChildEnv({ root, receiptPath,
+        env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
+          VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } }));
+    const exitCode = await runPhase('child.run', async () => {
+      const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv, stdio: 'inherit' });
+      const onInt = () => child.kill('SIGINT'), onTerm = () => child.kill('SIGTERM');
+      process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
+      try {
+        /** @type {Promise<number>} */
+        const closed = new Promise((done, reject) => {
+          child.once('error', reject);
+          child.once('close', (code, signal) => done(code ?? (128 + (constants.signals[signal] || 0))));
+        });
+        return await closed;
+      } finally {
+        process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
+      }
+    });
+    await runPhase('deps.postverify', async () => {
+      const after = captureVerifierDependencies({ dest: root, receipt });
+      // Keep the actual final census even on drift; never overwrite the
+      // original observation with a reconstructed matching receipt.
+      await fs.writeFile(`${receiptPath}.dependencies.after.json`, `${JSON.stringify(after)}\n`,
+        { flag: 'wx', mode: 0o600 });
+      assert.deepEqual(after, dependencies, 'Verifier materialized dependencies changed during command');
+    });
+    await runPhase('source.postverify', () => verifyVerifierSource(root, receipt, { runtimeArtifacts: true }));
+    return exitCode;
+  } finally {
+    let cleaned = false;
+    try {
+      await runPhase('cleanup', async () => {
+        await fs.rm(owned, { recursive: true, force: true });
+        cleaned = true;
+      });
+    } finally {
+      // A phase-receipt IO failure must never prevent owned-tree cleanup.
+      if (!cleaned) await fs.rm(owned, { recursive: true, force: true });
+    }
+  }
+}
+
+/** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
+ * @param {string} dest
+ * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ * @param {{ runtimeArtifacts?: boolean }} [options] Source-only runtime mode permits
+ * named untracked build outputs and materialized dependency directories, not source edits.
+ */
+export async function verifyVerifierSource(dest, expected, options = {}) {
+  return verifyVerifierSourceSync(dest, expected, options);
+}
+
+/** Synchronous boundary for hooks such as Playwright onBegin, whose return
+ * value is not awaited. Uses the same source population and receipt checks.
+ * @param {string} dest
+ * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ * @param {{ runtimeArtifacts?: boolean }} [options]
+ */
+export function verifyVerifierSourceSync(dest, expected, options = {}) {
+  try {
+    const result = verifyArchivedSourceSync(dest, expected,
+      expected?.operatorApiInputs ? { ...options, runtimeArtifacts: true } : options);
+    if (expected.operatorApiInputs) {
+      assertOutsideArchive(dest, expected.operatorApiInputs.path);
+      const bytes = pinnedReceiptBytes(expected.operatorApiInputs.path, expected.operatorApiInputs.sha256);
+      assertOperatorApiPlannedInputs(dest, expected, JSON.parse(String(bytes)));
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof VerifierSourceError) throw new PreviewError(error.message, 2);
+    throw error;
+  }
+}
+
+/** Validate the existing producer's planned contract without inventing an
+ * observed import, schema or environment pin from static source membership. */
+function assertOperatorApiPlannedInputs(root, source, inputs) {
+  assert.equal(inputs?.phase, 'planned', 'Operator-api independent planned inputs are required');
+  assert.equal(inputs.sourceCommit, source.sourceCommit, 'Operator-api selected source differs');
+  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports', 'copiedSources',
+    'dependencyFiles', 'copiedArtifacts', 'omitted', 'opaque'])
+    assert.ok(Array.isArray(inputs[key]), `Operator-api required dimension missing: ${key}`);
+  assert.deepEqual(inputs.omitted, [], 'Operator-api required dimensions omitted');
+  assert.deepEqual(inputs.opaque, [], 'Operator-api required dimensions opaque');
+  const files = new Map(source.files.map(file => [file.path, file]));
+  const sourcePath = path => {
+    assert.ok(typeof path === 'string' && path && !isAbsolute(path) && !path.includes('\\')
+      && !path.split('/').some(part => !part || part === '.' || part === '..'), 'Invalid operator-api source path');
+    assert.ok(files.has(path), `Operator-api source outside selected archive: ${path}`);
+    assert.ok(isInside(realpathSync(root), realpathSync(join(root, path))), `Operator-api source escapes archive: ${path}`);
+  };
+  for (const key of ['testPaths', 'helperPaths', 'configPaths', 'executedImports'])
+    assert.ok(inputs[key].length, `Operator-api required observation missing: ${key}`);
+  for (const path of [...inputs.testPaths, ...inputs.helperPaths, ...inputs.configPaths,
+    ...inputs.executedImports, ...inputs.copiedSources]) sourcePath(path);
+  for (const path of inputs.testPaths) assert.ok(source.testedInputs.some(input => input.path === path
+    && input.sha256 === files.get(path).sha256), `Operator-api test missing from selected tested inputs: ${path}`);
+  for (const key of ['schema', 'environment', 'externalResolutions'])
+    assert.ok(inputs[key] && typeof inputs[key] === 'object' && !Array.isArray(inputs[key]),
+      `Operator-api required dimension missing: ${key}`);
+  for (const key of ['schema', 'environment']) {
+    assert.ok(Object.keys(inputs[key]).length, `Operator-api required observation missing: ${key}`);
+    for (const value of Object.values(inputs[key])) assert.ok(typeof value === 'string' && value,
+      `Operator-api invalid observation: ${key}`);
+  }
+  for (const value of Object.values(inputs.environment)) assert.match(value, /^[a-f0-9]{64}$/,
+    'Operator-api environment digest missing');
+  assert.ok(inputs.dependencyFiles.length, 'Operator-api materialized dependencies missing');
+  const modules = join(root, 'node_modules');
+  assert.ok(lstatSync(modules).isDirectory(), 'Operator-api dependencies must be an independent directory');
+  assert.deepEqual(verifierSourceFiles(modules), inputs.dependencyFiles, 'Operator-api materialized dependency census differs');
+  for (const file of inputs.dependencyFiles) if (file.kind === 'symlink')
+    assert.ok(isInside(realpathSync(modules), realpathSync(join(modules, file.path))),
+      `Operator-api dependency symlink escapes materialized tree: ${file.path}`);
+  const dependencies = new Set(inputs.dependencyFiles.map(file => `node_modules/${file.path}`));
+  for (const path of Object.values(inputs.externalResolutions)) assert.ok(dependencies.has(path),
+    `Operator-api external resolution lacks dependency pin: ${path}`);
+  const copies = new Map();
+  for (const copy of inputs.copiedArtifacts) {
+    sourcePath(copy.sourcePath);
+    assert.ok(typeof copy.path === 'string' && copy.path && !isAbsolute(copy.path) && !copy.path.includes('\\')
+      && !copy.path.split('/').some(part => !part || part === '.' || part === '..'), 'Invalid operator-api artifact path');
+    assert.ok(!['operator-api-preflight.json', 'operator-api-inputs.json', 'verifier-source.json',
+      'hono-host.mjs', 'hono-host.mjs.meta.json', 'operator-api-build.log'].includes(copy.path)
+      && !copies.has(copy.path), 'Reserved or duplicate operator-api artifact path');
+    copies.set(copy.path, copy.sourcePath);
+  }
+  assert.deepEqual([...new Set(copies.values())].sort(), [...new Set(inputs.copiedSources)].sort(),
+    'Operator-api copied source census differs');
+}
+
+function prospectiveRealpath(path, links = new Set()) {
+  const absolute = resolve(path);
+  try { return realpathSync(absolute); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    let stat;
+    try { stat = lstatSync(absolute); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (stat?.isSymbolicLink()) {
+      assert.ok(!links.has(absolute), 'Operator-api receipt path has a symlink cycle');
+      links.add(absolute);
+      return prospectiveRealpath(resolve(dirname(absolute), readlinkSync(absolute)), links);
+    }
+    const parent = dirname(absolute);
+    if (parent === absolute) throw error;
+    return join(prospectiveRealpath(parent, links), basename(absolute));
+  }
+}
+
+function assertOutsideArchive(root, path) {
+  // Resolve missing ancestors and dangling links as well as existing parents;
+  // the export root may not have been allocated yet.
+  assert.ok(!isInside(prospectiveRealpath(root), prospectiveRealpath(path)),
+    'Operator-api receipt must be outside the archive');
+}
+
+function pinnedReceiptBytes(path, expected) {
+  assert.match(expected ?? '', /^[a-f0-9]{64}$/, 'Operator-api receipt digest is required');
+  const bytes = readFileSync(path);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), expected, 'Pinned operator-api receipt changed');
+  return bytes;
+}
+
+function readOperatorApiHandoff(options, selectedCommit) {
+  assertOutsideArchive(realpathSync(options.root), options.sourceReceiptPath);
+  assertOutsideArchive(realpathSync(options.root), options.inputReceiptPath);
+  const source = JSON.parse(String(pinnedReceiptBytes(options.sourceReceiptPath, options.sourceReceiptSha256)));
+  assert.equal(source.sourceCommit, selectedCommit, 'Operator-api independent selected commit differs');
+  verifyArchivedSourceSync(options.root, source, { runtimeArtifacts: true });
+  const bytes = pinnedReceiptBytes(options.inputReceiptPath, options.inputReceiptSha256);
+  const inputs = JSON.parse(String(bytes));
+  assertOperatorApiPlannedInputs(options.root, source, inputs);
+  return { source, inputs, bytes };
+}
+
+/** Transport the independently verified archive receipt into native reporters.
+ * A successful parent preflight alone does not give a child source provenance.
+ * @param {{ root: string, receiptPath: string, env?: NodeJS.ProcessEnv }} options
+ */
+export function verifierSourceChildEnv({ root, receiptPath, env = process.env }) {
+  const sourceRoot = realpathSync(root);
+  const receipt = realpathSync(receiptPath);
+  const receiptRel = relative(sourceRoot, receipt);
+  if (receiptRel !== '..' && !receiptRel.startsWith(`..${sep}`)) {
+    throw new PreviewError('verifier source receipt must be outside the archive', 2);
+  }
+  const expected = JSON.parse(readFileSync(receipt, 'utf8'));
+  verifyVerifierSourceSync(sourceRoot, expected, { runtimeArtifacts: true });
+  return { ...env, VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_SOURCE_REF: expected.sourceCommit };
+}
+
+const VERIFIER_PREPARATION_PHASES = ['source.freeze', 'receipt.write', 'deps.source.before',
+  'deps.snapshot', 'deps.source.after-snapshot', 'deps.inputs', 'deps.measure',
+  'deps.source.after-preflight', 'deps.census', 'deps.receipt.write'];
+
+/** Read observations only, never acceptance evidence. A killed phase is not a duration.
+ * @param {string} path @returns {Record<string, number>}
+ */
+export function readVerifierPhaseMeasurements(path) {
+  const rows = readFileSync(path, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const measurements = {};
+  const started = new Set();
+  let sequence = 0, elapsed = 0;
+  for (const row of rows) {
+    assert.ok(row.schemaVersion === 'verifier-phase-v1' && row.sequence === ++sequence &&
+      Number.isSafeInteger(row.elapsedMs) && row.elapsedMs >= elapsed && typeof row.phase === 'string',
+    'Invalid verifier phase budget receipt');
+    elapsed = row.elapsedMs;
+    if (row.event === 'started') {
+      assert.ok(!started.has(row.phase), 'Duplicate verifier phase start');
+      started.add(row.phase);
+    } else {
+      assert.ok(started.delete(row.phase) && ['completed', 'failed'].includes(row.event),
+        'Verifier phase terminal record lacks a start');
+      if (row.event === 'completed') {
+        assert.ok(Number.isSafeInteger(row.durationMs) && row.durationMs >= 0,
+          'Invalid verifier phase duration');
+        measurements[row.phase] = row.durationMs;
+      }
+    }
+  }
+  return measurements;
+}
+
+/** Reserve both complete final censuses and cleanup, using this run's observations or an
+ * explicitly selected earlier phase receipt. Estimates are prognoses, not guarantees;
+ * an omitted child estimate remains explicitly unknown. No source/dependency scope changes.
+ * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
+ */
+export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0) {
+  for (const phase of VERIFIER_PREPARATION_PHASES)
+    assert.ok(Number.isSafeInteger(measurements[phase]) && measurements[phase] >= 0,
+      `Verifier budget requires completed phase: ${phase}`);
+  assert.ok(Number.isSafeInteger(childEstimateMs) && childEstimateMs >= 0, 'Invalid verifier child estimate');
+  const preparationMs = VERIFIER_PREPARATION_PHASES.reduce((total, phase) => total + measurements[phase], 0);
+  const sourceCheckMs = Math.max(...['deps.source.before', 'deps.source.after-snapshot',
+    'deps.source.after-preflight', 'child.preflight', 'source.postverify'].map(phase => measurements[phase] ?? 0));
+  const dependencyCheckMs = Math.max(measurements['deps.census'], measurements['deps.postverify'] ?? 0);
+  // With no completed cleanup receipt, reserve at least the observed snapshot/freezing
+  // work: deletion must still walk the whole population. This is a conservative proxy.
+  const cleanupMs = Math.max(measurements.cleanup ?? 0, measurements['source.freeze'], measurements['deps.snapshot']);
+  const remainingMs = sourceCheckMs * 2 + dependencyCheckMs + cleanupMs + childEstimateMs;
+  return { preparationMs, sourceCheckMs, dependencyCheckMs, cleanupMs, childEstimateMs,
+    unknownChild: childEstimateMs === 0, remainingMs: Math.ceil(remainingMs * 1.25),
+    totalMs: Math.ceil((preparationMs + remainingMs) * 1.25) };
+}
+
+/** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */
+export function admitVerifierCommandBudget(estimate, { env = process.env, nowMs = Date.now(), preparation = false } = {}) {
+  const deadlineEpochMs = readTaskDeadlineEpochMs(env);
+  const knownEstimateMs = estimate ? (preparation ? estimate.totalMs : estimate.remainingMs) : 0;
+  const remainingMs = deadlineEpochMs === null ? null : deadlineEpochMs - nowMs;
+  if (remainingMs !== null && (remainingMs <= 0 || remainingMs <= knownEstimateMs))
+    throw new PreviewError(formatTaskDeadlineRefusal({ remainingMs, knownEstimateMs,
+      knownTasks: estimate ? VERIFIER_PREPARATION_PHASES.length : 0, unknownTasks: estimate?.unknownChild === false ? 0 : 1 }), 2);
+  return { deadlineEpochMs, remainingMs, knownEstimateMs, estimate };
 }
 
 async function listFiles(dir) {
@@ -371,8 +1205,8 @@ export async function readmeText(dir, manifest, releasesUrl) {
       '# Papercusp',
       '',
       'Papercusp is a desktop workspace where coding agents work alongside you, coordinated',
-      'through shared plans, work items, locks and memory. This repository is its source,',
-      'licensed under the Elastic License 2.0 (see LICENSE and NOTICE): you may read, run,',
+      'through shared plans, work items, locks and memory. Papercusp is source-available',
+      'under the Elastic License 2.0 (see LICENSE and NOTICE): you may read, run,',
       'modify and self-host it, but not offer it to others as a hosted or managed service.',
       '',
       `- Exported from \`${manifest.source.repo}\` at \`${manifest.source.commit}\`, with`,
@@ -787,6 +1621,129 @@ export async function runGate(dir, { env = process.env, auditScript = AUDIT_SCRI
   }
 }
 
+/** True when `p` is `root` itself or lies beneath it. @param {string} root @param {string} p */
+function isInside(root, p) {
+  const rel = relative(root, p);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+/**
+ * Mirror one node_modules directory of the INTERNAL tree into the same relative place in a
+ * copy of the cut, the way `npm ci` in public CI would leave it. A workspace link (its target
+ * lies outside the node_modules directory) is re-pointed to the same repository-relative path
+ * INSIDE the copy, so it resolves to the CUT's package — never to the internal tree's, which
+ * holds files the cut drops and peers' uncommitted edits. Every installed package is linked
+ * to the internal tree's copy. Scope directories (`@scope/`) are mirrored one level down.
+ * @param {{ modulesRoot: string, copy: string, src: string, nmRoot?: string }} a
+ */
+async function mirrorNodeModules({ modulesRoot, copy, src, nmRoot = src }) {
+  const dst = join(copy, relative(modulesRoot, src));
+  await fs.mkdir(dst, { recursive: true });
+  for (const ent of await fs.readdir(src, { withFileTypes: true })) {
+    const from = join(src, ent.name);
+    const to = join(dst, ent.name);
+    if (ent.name.startsWith('@') && ent.isDirectory()) {
+      await mirrorNodeModules({ modulesRoot, copy, src: from, nmRoot });
+      continue;
+    }
+    if (ent.isSymbolicLink()) {
+      const target = resolve(dirname(from), await fs.readlink(from));
+      if (!isInside(nmRoot, target)) {
+        // A workspace link. Inside the repository it maps into the copy (dangling when the
+        // cut drops that workspace, exactly as npm ci would have no such package).
+        await fs.symlink(isInside(modulesRoot, target) ? join(copy, relative(modulesRoot, target)) : target, to);
+        continue;
+      }
+    }
+    await fs.symlink(from, to);
+  }
+}
+
+/**
+ * Every node_modules directory of the internal tree whose parent directory exists in the
+ * copy, up to `maxDepth` levels below the root. Directories the cut does not contain are
+ * not descended into.
+ * @param {string} modulesRoot @param {string} copy @param {number} [maxDepth]
+ * @returns {Promise<string[]>}
+ */
+async function nodeModulesFor(modulesRoot, copy, maxDepth = 6) {
+  const found = [];
+  const walk = async (dir, depth) => {
+    let ents;
+    try { ents = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const ent of ents) {
+      if (!ent.isDirectory() || ent.name === '.git' || ent.name === '.papercusp') continue;
+      const p = join(dir, ent.name);
+      if (ent.name === 'node_modules') { found.push(p); continue; }
+      if (depth < maxDepth && existsSync(join(copy, relative(modulesRoot, p)))) await walk(p, depth + 1);
+    }
+  };
+  await walk(modulesRoot, 1);
+  return found;
+}
+
+/**
+ * The public cut's own typecheck — WI-10006584. Public CI on Papercusp/papercusp-app runs
+ * `npm ci` then `npm run lint:tsc` on every pushed commit, and the cut can fail it while the
+ * internal tree passes: the cut drops files (tests, closed-layer packages) whose ambient type
+ * augmentations other files relied on (5eb41d7e went red that way). Nothing before the push
+ * saw it, and an append-only push cannot be taken back. This leg runs the CUT's own lint
+ * script over a COPY of the export (the export itself is what gets committed, so nothing may
+ * be added to it), with the internal tree's installed dependencies standing in for `npm ci`.
+ * Fail-closed like the gate: a type regression is a finding (exit 1); a run that cannot
+ * complete or reports no verdict is cannot-check (exit 2).
+ * @param {string} dir
+ * @param {{ env?: NodeJS.ProcessEnv, modulesRoot?: string, script?: string, timeoutMs?: number }} [opts]
+ * @returns {Promise<GateResult>}
+ */
+export async function runCutTypecheck(dir, { env = process.env, modulesRoot = ROOT, script = 'lint:tsc', timeoutMs = 45 * 60 * 1000 } = {}) {
+  const name = `cut typecheck (npm run ${script})`;
+  const result = (status, detail) => ({ name, ok: status === 'clean', status, detail: detail.trim().slice(-3000) });
+  if (!existsSync(dir)) throw new PreviewError(`typecheck: ${dir} does not exist`, 2);
+  let scripts = {};
+  try { scripts = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).scripts ?? {}; } catch (e) {
+    return result('cannot-check', `the cut has no readable package.json: ${e.message}`);
+  }
+  if (!scripts[script]) return result('cannot-check', `the cut's package.json has no "${script}" script — public CI would have nothing to run either`);
+  const copy = await mkdtemp(join(tmpdir(), 'source-preview-typecheck-'));
+  try {
+    run('cp', ['-a', `${dir}/.`, copy], { env });
+    for (const nm of await nodeModulesFor(modulesRoot, copy)) await mirrorNodeModules({ modulesRoot, copy, src: nm });
+    const r = spawnSync('npm', ['run', '--silent', script], { cwd: copy, encoding: 'utf8', env: { ...env, CI: 'true' }, maxBuffer: 256 * 1024 * 1024, timeout: timeoutMs });
+    const out = `${r.stdout ?? ''}\n${r.stderr ?? ''}`;
+    if (r.error || r.signal) return result('cannot-check', `npm run ${script} did not complete (${r.error?.message ?? `signal ${r.signal}`})\n${out}`);
+    const marker = [...out.matchAll(/LINT_TSC_RESULT\b[^\n]*\bstatus=(\S+)/g)].at(-1);
+    if (!marker) return result('cannot-check', `npm run ${script} exited ${r.status} without a LINT_TSC_RESULT verdict line\n${out}`);
+    if (r.status === 0) return result('clean', marker[0]);
+    if (r.status === 1 && marker[1] === 'regressed') return result('finding', out);
+    return result('cannot-check', `npm run ${script} exited ${r.status} (status=${marker[1]})\n${out}`);
+  } finally {
+    await rm(copy, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The public target's gate: the detector gate, then the cut typecheck. The typecheck takes
+ * minutes, so it runs only when the detectors are clean (a refusal is a refusal either way).
+ * @param {string} dir
+ * @param {{ env?: NodeJS.ProcessEnv, gate?: Gate, typecheck?: (dir: string, opts: { env?: NodeJS.ProcessEnv }) => Promise<GateResult> }} [opts]
+ * @returns {Promise<GateVerdict>}
+ */
+export async function runPublicGate(dir, { env = process.env, gate = runGate, typecheck = runCutTypecheck } = {}) {
+  const verdict = await gate(dir, { env });
+  if (!verdict.ok) return verdict;
+  const tc = await typecheck(dir, { env });
+  const results = [...verdict.results, tc];
+  const ok = results.every((r) => r.ok);
+  const exitCode = ok ? 0 : results.some((r) => r.status === 'finding') ? 1 : 2;
+  return { ...verdict, ok, exitCode, results };
+}
+
+/** The gate a target's push uses unless the caller injects one. @param {Target} target @returns {Gate} */
+export function defaultGateFor(target) {
+  return target.key === 'public' ? runPublicGate : runGate;
+}
+
 function relPath(dir, file) {
   const rel = relative(dir, file);
   return (rel.startsWith('..') ? file : rel).split(sep).join('/');
@@ -940,11 +1897,13 @@ export function coAuthorTrailers(coAuthors = []) {
  */
 export async function pushSnapshot({
   repoRoot = ROOT, ref = DEFAULT_REF, remote, target = 'preview', licensePath, confirm = false,
-  env = process.env, selectScript, gate = runGate, log = () => {}, thirdPartyNotices, coAuthors = [],
+  env = process.env, selectScript, gate, log = () => {}, thirdPartyNotices, coAuthors = [],
 } = {}) {
   const t = resolveTarget(target);
   remote = remote ?? defaultRemote(t);
   assertRemoteMatchesTarget(t, remote);
+  // The public target also typechecks the cut the way its CI will (WI-10006584).
+  gate = gate ?? defaultGateFor(t);
   // Validate credit BEFORE any export work, so a malformed --co-author costs nothing.
   const trailers = coAuthorTrailers(coAuthors);
   const work = await mkdtemp(join(tmpdir(), 'source-preview-push-'));
@@ -1001,9 +1960,19 @@ function parseArgs(argv) {
   const opts = { _: [], coAuthors: [] };
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
-    if (a === '--confirm') opts.confirm = true;
+    if (a === '--' && cmd === 'verifier-run') { opts.command = rest.slice(i + 1); break; }
+    else if (a === '--confirm') opts.confirm = true;
+    else if (a === '--runtime-artifacts') opts.runtimeArtifacts = true;
+    else if (a === '--git-checkout') opts.gitCheckout = true;
+    else if (a === '--tauri-inputs') opts.tauriInputs = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
-    else if (a === '--ref' || a === '--out' || a === '--remote' || a === '--json' || a === '--target') opts[a.slice(2)] = rest[++i];
+    else if (['--inputs-file', '--budget-from', '--child-estimate-ms', '--operator-api-root', '--operator-api-source-receipt',
+      '--operator-api-source-sha', '--operator-api-inputs', '--operator-api-inputs-sha'].includes(a)) {
+      const path = rest[++i];
+      if (!path || path.startsWith('--')) throw new PreviewError(`missing value for ${a}`, 2);
+      opts[a.slice(2)] = path;
+    }
+    else if (['--ref', '--out', '--remote', '--json', '--target', '--repo', '--inputs', '--receipt'].includes(a)) opts[a.slice(2)] = rest[++i];
     else if (a.startsWith('--')) throw new PreviewError(`unknown flag ${a}`, 2);
     else opts._.push(a);
   }
@@ -1020,6 +1989,53 @@ function printGate(verdict) {
 async function main(argv) {
   const { cmd, opts } = parseArgs(argv);
   const log = (m) => console.error(`==> ${m}`);
+  if (cmd === 'verifier-run') {
+    if (!opts.repo || !opts.ref || !opts.receipt || !(opts.inputs || opts['inputs-file']) || !opts.command?.length)
+      throw new PreviewError('verifier-run requires --repo, --ref, --receipt, --inputs or --inputs-file and -- <command>', 2);
+    return runVerifierCommand({ repo: opts.repo, ref: opts.ref, receiptPath: opts.receipt,
+      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'],
+      tauriInputs: opts.tauriInputs === true, command: opts.command,
+      budgetFrom: opts['budget-from'], childEstimateMs: opts['child-estimate-ms'] === undefined ? 0 : Number(opts['child-estimate-ms']) });
+  }
+  if (cmd === 'verifier-inputs-check') {
+    if (!opts.repo || !opts.ref || !(opts.inputs || opts['inputs-file'])) {
+      throw new PreviewError('verifier input check requires --repo, --ref and --inputs or --inputs-file', 2);
+    }
+    console.log(JSON.stringify(await validateVerifierInputs({ repo: opts.repo, ref: opts.ref,
+      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], tauriInputs: opts.tauriInputs === true })));
+    return 0;
+  }
+  if (cmd === 'verifier-measure') {
+    if (!opts.repo || !opts.ref) throw new PreviewError('verifier measurement requires explicit --repo and --ref', 2);
+    console.log(measureVerifierSourceBytes({ repo: opts.repo, ref: opts.ref }));
+    return 0;
+  }
+  if (cmd === 'verifier-prepare' || cmd === 'verifier-verify') {
+    if (!opts.out || !opts.receipt) throw new PreviewError('verifier source requires --out and --receipt', 2);
+    if (cmd === 'verifier-prepare') {
+      if (!opts.repo || !opts.ref || !(opts.inputs || opts['inputs-file'])) {
+        throw new PreviewError('verifier preparation requires explicit --repo, --ref and --inputs or --inputs-file', 2);
+      }
+      const receipt = await prepareVerifierSource({ repo: opts.repo, ref: opts.ref, dest: opts.out,
+        inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], gitCheckout: opts.gitCheckout === true,
+        tauriInputs: opts.tauriInputs === true,
+        ...(Object.keys(opts).some(key => key.startsWith('operator-api-')) ? { operatorApi: {
+          root: opts['operator-api-root'], sourceReceiptPath: opts['operator-api-source-receipt'],
+          sourceReceiptSha256: opts['operator-api-source-sha'], inputReceiptPath: opts['operator-api-inputs'],
+          inputReceiptSha256: opts['operator-api-inputs-sha'], outputPath: join(dirname(opts.receipt), 'operator-api-preflight.json'),
+        } } : {}) });
+      await fs.writeFile(opts.receipt, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
+    }
+    await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')),
+      { runtimeArtifacts: opts.runtimeArtifacts === true });
+    return 0;
+  }
+  if (cmd === 'licenses') {
+    const census = await auditPublicRepositoryLicenses({ log });
+    if (opts.json) await fs.writeFile(opts.json, `${JSON.stringify(census, null, 2)}\n`);
+    console.log(census.summary);
+    return census.exitCode;
+  }
   loadReleaseHost();
   const target = resolveTarget(opts.target ?? 'preview');
   const remote = opts.remote ?? defaultRemote(target);
@@ -1033,7 +2049,7 @@ async function main(argv) {
   if (cmd === 'gate') {
     const dir = opts._[0];
     if (!dir) throw new PreviewError('usage: gate <dir>', 2);
-    const verdict = await runGate(dir);
+    const verdict = await defaultGateFor(target)(dir, {});
     printGate(verdict);
     // --json writes every finding (rule, path, line, sha256 — never the secret) for
     // reviewing new false positives into scripts/source-preview-allowlist.json.
@@ -1057,14 +2073,15 @@ async function main(argv) {
     console.log(`pushed ${r.pushedCommit}${r.parent ? ` (parent ${r.parent})` : ''} (tree ${r.tree}) = ${SOURCE_REPO}@${r.commit} → ${REPO}`);
     return 0;
   }
-  console.error('usage: source-preview.mjs export|gate|check|push [--target preview|public] [--ref <ref>] [--out <dir>] [--remote <url>] [--confirm] [--co-author "Name <email>"]...');
+  console.error('usage: source-preview.mjs export|gate|check|push|licenses [--target preview|public] [--ref <ref>] [--out <dir>] [--remote <url>] [--json <file>] [--confirm] [--co-author "Name <email>"]...');
   return 2;
 }
 
 if (isCliEntry(import.meta.url)) {
-  main(process.argv.slice(2)).then((code) => process.exit(code), (err) => {
+  // Let pending stdout/stderr writes drain, including large piped receipts.
+  main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (err) => {
     console.error(`ERROR: ${err.message}`);
-    process.exit(err instanceof PreviewError ? err.exitCode : 2);
+    process.exitCode = err instanceof PreviewError ? err.exitCode : 2;
   });
 }
 

@@ -118,6 +118,26 @@ const OPTS = { workspaceId: 'ws' };
 
 // ── the happy path: create → feed → drive → cost → teardown ──────────────────
 describe('liveBenchHarnessDriver — orchestration over fake ops', () => {
+  it('preserves a cost-read failure as unknown usage rather than verified free generation', async () => {
+    const { ops } = fakeOps({ throwOn: 'collectCost' });
+    const run = await liveBenchHarnessDriver(ops, OPTS).spinRunAndCost(req());
+    expect(run.telemetry.stopReason).toBe('done');
+    expect(run.telemetry.armMeta).toMatchObject({ costUsdMeasurementMissing: true });
+  });
+
+  it('keeps known subtotal and missing usage across a transient retry', async () => {
+    const { ops } = fakeOps();
+    let attempts = 0, reads = 0;
+    ops.driveToDone = async () => ({ disposition: attempts++ === 0 ? 'transient' : 'done' });
+    ops.collectCost = async () => {
+      if (reads++ === 0) throw new Error('first request usage unavailable');
+      return { tokensIn: 20, tokensOut: 10, costUsd: 0.25, turns: 1 };
+    };
+    const run = await liveBenchHarnessDriver(ops, { ...OPTS, transientRetryBackoffMs: 0 }).spinRunAndCost(req());
+    expect(run.telemetry.costUsd).toBe(0.25);
+    expect(run.telemetry.armMeta).toMatchObject({ costUsdMeasurementMissing: true });
+  });
+
   it('runs create→feed→drive→cost→teardown IN ORDER and returns the summed telemetry on DONE', async () => {
     const { ops, calls, order } = fakeOps();
     const driver = liveBenchHarnessDriver(ops, OPTS);
@@ -257,6 +277,17 @@ describe('auto-retry-on-transient (Priority 3)', () => {
     return { ops, drives };
   }
   const COST: BenchRunCost = { tokensIn: 100, tokensOut: 50, costUsd: 1.5, turns: 2 };
+
+  it('retains every retry cache count and billing/source observation', async () => {
+    const { ops } = retryingOps(['transient', 'done'], { ...COST, tokensCacheRead: 30, tokensCacheWrite: 5,
+      armMeta: { nativeCostAccounting: { billedCostUsd: null, normalizedCostUsd: 1.5 } }, costUsdMeasurementMissing: true });
+    const result = await liveBenchHarnessDriver(ops, { ...OPTS, maxTransientRetries: 1, transientRetryBackoffMs: 0 }).spinRunAndCost(req());
+    expect(result.telemetry).toMatchObject({ tokensCacheRead: 60, tokensCacheWrite: 10, costUsd: 3,
+      armMeta: { costUsdMeasurementMissing: true, costAttempts: [
+        { nativeCostAccounting: { billedCostUsd: null, normalizedCostUsd: 1.5 } },
+        { nativeCostAccounting: { billedCostUsd: null, normalizedCostUsd: 1.5 } },
+      ] } });
+  });
 
   it('rides out a transient throttle: retries up to N then records the eventual DONE, summing every attempt cost', async () => {
     // transient, transient, done — 1 initial + 2 retries (N=2) → 3 attempts.

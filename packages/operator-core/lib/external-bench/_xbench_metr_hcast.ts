@@ -1,7 +1,8 @@
 /**
  * METR HCAST two-arm CLI (plan benchmark-suite-metr-hcast-2026-06-17 P-005). The runnable driver that ties
  * the corpus → the live docker+gateway runner (both arms) → the horizon report. Host-gated: needs Docker +
- * the pre-built task images (anon Docker Hub pull) + a reachable inference gateway routing opus-4.8.
+ * the pre-built task images (anon Docker Hub pull) + a reachable inference gateway routing the evaluated model
+ * (`--model`, default: the registry-resolved benchmark default, see model-registry-snapshot.ts).
  *
  *   npx tsx packages/operator-core/lib/external-bench/_xbench_metr_hcast.ts \
  *     --task-set metr-hcast-horizon --arms baseline-a-ablation,papercusp --samples 3 \
@@ -23,6 +24,7 @@ import { buildMetrHcastReport, formatMetrHcastReport } from './metr-hcast-report
 import { appendAccumResult, loadAccumulatedResults, accumCoverage } from './metr-hcast-accum';
 import { dirname as pathDirname } from 'node:path';
 import type { HorizonWeighting } from '@papercusp/bench-metrics';
+import { benchDefaultModelId } from './model-registry-snapshot';
 
 function arg(name: string, def?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -36,14 +38,14 @@ async function main(): Promise<void> {
   const arms = (arg('arms', 'baseline-a-ablation,papercusp')!).split(',').map((s) => s.trim()).filter(Boolean);
   const samples = Number(arg('samples', '1'));
   const maxTasks = arg('max-tasks') ? Number(arg('max-tasks')) : undefined;
-  const model = arg('model', 'claude-opus-4-8')!;
+  const model = arg('model') ?? benchDefaultModelId();
   const budgetTokens = arg('budget-tokens') ? Number(arg('budget-tokens')) : undefined;
   const concurrency = Number(arg('concurrency', '1'));
   const weighting = (arg('weighting', 'invsqrt') as HorizonWeighting);
   const bootstrap = Number(arg('bootstrap', '1000'));
   const out = arg('out');
   const account = arg('account');
-  const effort = arg('effort', 'default')!; // 'xhigh' → extended thinking (the plan's opus-4.8 @ xhigh)
+  const effort = arg('effort', 'default')!; // 'xhigh' → extended thinking (the plan's xhigh elicitation)
   const thinkingBudget = effort === 'xhigh' ? Number(arg('thinking-budget', '16000')) : 0;
   const dryRun = hasFlag('dry-run');
   const accumulate = hasFlag('accumulate');

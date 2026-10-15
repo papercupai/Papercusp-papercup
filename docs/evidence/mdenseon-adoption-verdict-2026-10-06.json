@@ -1,0 +1,175 @@
+{
+  "formatVersion": 1,
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "recordedAt": "2026-10-07T07:56:37.112Z",
+  "recommendation": {
+    "decision": "adopt-scoped",
+    "rationale": "Recommend scoped evaluation/adoption on the measured memory pull route only, not an automatic production model/index switch. Memory relevance improves over Harrier and downstream useful rates are mdenseon 0.935, Harrier 0.905, Gemma 0.936, with all 40 absent-answer queries rejected by every arm. Prose downstream useful-rate differences remain unresolved (Harrier minus mdenseon +0.003 [-0.014,+0.020], Gemma +0.014 [-0.003,+0.039]); however Gemma has a resolved lower unsupported-answer rate (-0.0089 [-0.0213,-0.0036]), so prose is not an unqualified adoption scope. Prose absent-answer rejection is mdenseon 0.965 versus Harrier 0.982 and Gemma 0.979. Exclude the production push route pending model-specific floor calibration: under shipped floors prose retrieval MRR is 0.095 below Gemma. Preserve the recorded CUDA mixed-length capacity incompatibility and the single fixed answerer/same-model judging limitations. A benchmark recommendation authorizes neither a model/index switch nor evicting GPU co-tenants.",
+    "scopes": [
+      "Measured memory production-pull retrieval/answer-context route only; retain frozen top-k/context bounds and independently evaluate any production switch. Prose and production push routes are excluded from this adoption recommendation."
+    ]
+  },
+  "bars": [
+    {
+      "bar": "relevance",
+      "items": [
+        "P-003"
+      ],
+      "status": "measured",
+      "finding": "V21 blind independent labels (0 candidate-ranking exposure; memory 220 queries identical to V19; prose 1472/8460 queries accepted at judge agreement 0.547), paired source-target MRR deltas with 95% bootstrap CIs at the 0.03 margin. The D-008 stop rule is satisfied because the census is exhausted for both corpora (memory 312 and prose 1601 test sources, all eligible sources authored; 40 and 275 accepted test sources), not because every margin resolved. The residual uncertainty is therefore the final result. MEMORY vs harrier: ALL_ANSWERABLE +0.093 [0.046, 0.148] and lexical-gap +0.163 [0.072, 0.267] are improvements above the margin; exact-identifier and session-start-intent are unresolved. MEMORY vs gemma: ALL +0.030 [-0.012, 0.074], unresolved in every class. PROSE vs gemma: a small measured REGRESSION, reported and not tuned away: ALL -0.017 [-0.032, -0.002] and exact-identifier -0.015 [-0.030, -0.002] (both CIs exclude 0 but not the margin); lexical-gap and intent are unresolved. PROSE vs harrier: ALL +0.020 [0.003, 0.038] and lexical-gap +0.049 [0.011, 0.085], unresolved vs the margin; exact-identifier is inside the margin. Judge cost disclosed per D-008: 12,355 claude-sonnet-4-6 calls, $649.38, quadratic by design.",
+      "evidence": [
+        {
+          "path": "docs/evidence/mdenseon-independent-relevance-2026-10-01.json",
+          "sha256": "b653d5c01b556db4d40afe796683b875a520f755b6df862e1062681d6985708f",
+          "bytes": 174197
+        }
+      ]
+    },
+    {
+      "bar": "reference",
+      "items": [
+        "P-001",
+        "P-002"
+      ],
+      "status": "measured",
+      "finding": "Three pinned incumbent recipes passed 16 controlled token/vector comparisons each and all eight query rankings agree with the independent Python ONNX/tokenizer/pooling reference; corrected isolated Gemma has zero observed token/vector/rank effect. A killed counterexample shows the CLI refuses a reference recipe identity collision. Production profiles unchanged.",
+      "evidence": [
+        {
+          "path": "docs/evidence/mdenseon-measurement-protocol-2026-10-01.json",
+          "sha256": "579c3cfdf75b5e502a23d9906a650597236f2ada8aba4e527b549b1154d20c1a",
+          "bytes": 16234
+        },
+        {
+          "path": "docs/evidence/mdenseon-incumbent-reference-2026-10-01.json",
+          "sha256": "f9005668ed6baf88ee5cf09819f87cd3486056bc23a5cf1ca8af960ba8cce303",
+          "bytes": 57196
+        },
+        {
+          "path": "docs/evidence/mdenseon-reference-collision-2026-10-01.json",
+          "sha256": "6d11c68d179d5265067a8dfa5c734fa1b17bec1e1129022e0d70b257ef737536",
+          "bytes": 2724
+        }
+      ]
+    },
+    {
+      "bar": "hybrid",
+      "items": [
+        "P-004"
+      ],
+      "status": "measured",
+      "finding": "Complete production hybrid retrieval (canonical/memory/lexical/hybrid/filter/entity/decay) ran in three model-owned benchmark schemas over one frozen snapshot: memory 160 q on the V19 gold (its memory census is proven identical to V21), prose 1140 q on the V21 gold. 27/27 pin, comparability and isolation assertions pass; leakedHits 0 and positive controls 5/5 per arm. PULL route: mdenseon vs gemma MRR d=+0.015 [-0.036,+0.064] memory and -0.020 [-0.039,+0.000] prose; vs harrier +0.033 [-0.012,+0.080] memory and +0.019 [-0.006,+0.044] prose. All four are unresolved against the 0.03 margin (no decision-relevant loss detected at this power, which is not equivalence), and hard-negative admission is identical (1.0) in every pull pair. PUSH route (the shipped push floors minScore 0.58 / minLexScore 0.4, cosine-gated, shared across arms and not recalibrated per model): vs gemma on prose, MRR d=-0.095 [-0.119,-0.073] is a LOSS beyond the margin; recall@10 d=-0.083 [-0.107,-0.061]; 20/855 positives come back empty (gemma 0); precision d=+0.075 [+0.057,+0.093] where both arms return results; hard-negative admission drops 1.0 to 0.965 (d=-0.035 [-0.060,-0.014]). On memory push vs gemma, MRR d=-0.017 is unresolved, recall@10 d=-0.058 [-0.100,-0.025], and admission drops 0.975 to 0.75. vs harrier push, MRR is unresolved on both corpora (memory +0.032, prose -0.011). Reading: no pull-route loss was detected against either incumbent; under the shipped push floors mdenseon loses prose push quality to gemma, so any push-route adoption needs those floors recalibrated for mdenseon and re-measured first.",
+      "evidence": [
+        {
+          "path": "docs/evidence/mdenseon-complete-hybrid-operational-2026-10-06.json",
+          "sha256": "cd14978e17692c8bc29bd964cf323e3ce5b4b8d9119cfccf4e0e5e134e4cd6c3",
+          "bytes": 104423
+        }
+      ]
+    },
+    {
+      "bar": "performance",
+      "items": [
+        "P-005"
+      ],
+      "status": "measured",
+      "finding": "Controlled five-fresh-process-block CPU performance over the local-http-client-worker route: 15 cells / 5 blocks, every reported latency distribution backed by its ordered raw request samples and exact route identity (verifyCompletedPerformanceRun, no inference).",
+      "evidence": [
+        {
+          "path": "docs/evidence/mdenseon-performance-startup-isolation-2026-10-01.json",
+          "sha256": "120c1f447d9a2e9e6cb3db6c856615503075ff567f35dd15ab3571fe7bdc10d6",
+          "bytes": 47196
+        },
+        {
+          "path": "docs/evidence/mdenseon-performance-v7-operational-2026-10-06.json",
+          "sha256": "4c57816ebae4495bf7f24a1b5708bda4774a149d1979ab7c4283a6968d65b3dc",
+          "bytes": 14369
+        }
+      ]
+    },
+    {
+      "bar": "boundaries",
+      "items": [
+        "P-006"
+      ],
+      "status": "measured",
+      "finding": "CPU boundaries and corrected CUDA reproduce stored parity at the fixed vector gates; 9/10 CUDA cells pass including single 8192 and over-limit truncation to 8192 and a padded 5-input batch. Mixed-length [2,8192] is an explicit device-capacity allocation failure under production GPU co-tenancy (D-007), kept as an explicit device identity, not a model loss.",
+      "evidence": [
+        {
+          "path": "docs/evidence/mdenseon-boundary-tf32-2026-10-01.json",
+          "sha256": "09d26293b196a7372309cd807a0dc9ff46d5e44d842e0bc06fbaf562792bbc66",
+          "bytes": 189851
+        },
+        {
+          "path": "docs/evidence/mdenseon-boundary-cuda-v6-2026-10-06.json",
+          "sha256": "ef8b4720dc85dc210e000eafee14d2b401a5b4fe5047b8b4e2ea5e85ca79a431",
+          "bytes": 16514
+        }
+      ],
+      "defects": [
+        {
+          "owner": "su-9844199a-9ccd-4c7b-a47c-03bea510ee31",
+          "item": "WI-10005599",
+          "rootCause": "OPEN: under Compute Sanitizer, native Node teardown after a CUDA allocation failure aborts with a corrupted double-linked list; bounded native/instrumented CUDA ownership observations are complete but the historical heap cause is unresolved.",
+          "guard": "The [2,8192] cell is recorded as an explicit device-capacity allocation failure (D-007) rather than a parity result; the defect stays open and owned."
+        }
+      ]
+    },
+    {
+      "bar": "reliability",
+      "items": [
+        "P-007"
+      ],
+      "status": "measured",
+      "finding": "All three real-weight runs (mdenseon, gemma, harrier v3) passed every phase gate: crash/restart recovered with identity intact and no inline rescue, the old worker retired within the bound, bounded soak completed. Two defects found and fixed on the way (SIGABRT on in-flight terminate; inline main-thread rescue on teardown); every v3 run is post-fix.",
+      "evidence": [
+        {
+          "path": "docs/evidence/mdenseon-robustness-v1-operational-2026-10-06.json",
+          "sha256": "406861dcf78d47d90d43d277bb058ee222648b8616942494f9cc6cd21b30f21d",
+          "bytes": 25871
+        }
+      ],
+      "defects": [
+        {
+          "owner": "su-328f51e6-ea4f-4547-b63e-9b9083dd297f",
+          "item": "WI-10006567",
+          "rootCause": "Terminating the embed worker during in-flight ONNX inference raised Napi::Error and aborted the host (SIGABRT 134).",
+          "guard": "Fixed and done; sidecar-robustness crash phase gate (v3 runs post-fix)."
+        },
+        {
+          "owner": "su-328f51e6-ea4f-4547-b63e-9b9083dd297f",
+          "item": "WI-10006602",
+          "rootCause": "Worker teardown rescued shutdown-rejected gemma/harrier requests by inline main-thread inference, blocking the sidecar event loop ~10s.",
+          "guard": "Fixed and done; robustness gate requires no inline rescue."
+        }
+      ]
+    },
+    {
+      "bar": "answers",
+      "items": [
+        "P-008"
+      ],
+      "status": "measured",
+      "finding": "Memory: useful rates mdenseon/Harrier/Gemma 0.935/0.905/0.936, all 40 absent-answer queries rejected by all arms. Prose: 1140 queries (855 answerable, 285 absent-answer); useful 0.85175/0.84835/0.86523. Paired useful differences versus mdenseon: Harrier +0.00272 [-0.01361,+0.01996], Gemma +0.01377 [-0.00275,+0.03949], unresolved. Unsupported rates 0.02387/0.01940/0.01411; Gemma-minus-mdenseon -0.00888 [-0.02131,-0.00355] is a resolved loss for mdenseon. Absent-answer rejection 0.96491/0.98246/0.97895. Judge correctness/grounding kappa 0.885/0.781 over 3304 pairs; inconclusive judgments remain explicit. Exact-fingerprint receipt replay accounted separately from new calls; reported completed-receipt costs exclude failed-call billing.",
+      "evidence": [
+        {
+          "path": "docs/evidence/mdenseon-answer-usefulness-memory-v2-operational-2026-10-07.json",
+          "sha256": "8ffe107715e4594cfb1575990200e81b892882b6bc07299302b12261eafb513d",
+          "bytes": 15368
+        },
+        {
+          "path": "docs/evidence/mdenseon-answer-usefulness-prose-v2-operational-2026-10-07.json",
+          "sha256": "267d74b35af6e32cde209c6e5b5c17b5edfdb7dbb661bd0cba10265b1d17cc2d",
+          "bytes": 16309
+        }
+      ],
+      "defects": [
+        {
+          "owner": "su-328f51e6-ea4f-4547-b63e-9b9083dd297f",
+          "item": "EI-25296417482817603",
+          "rootCause": "Local gateway restart produced masked connection failures that the retry classifier did not recognize. Cause diagnostics and loopback-only classification corrected with conventional tests; earlier upstream timeout origin remains unproven.",
+          "guard": "libs/papercusp-shared/src/agent/chat-stream-transport.test.ts covers sanitized nested causes, preserved exceptions, loopback-only retry classification and remote/unknown/auth/DNS rejection; existing chat-stream.test.ts keeps the retry deadline bounded."
+        }
+      ]
+    }
+  ]
+}

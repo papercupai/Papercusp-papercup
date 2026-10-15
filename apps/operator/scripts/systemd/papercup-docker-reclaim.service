@@ -25,4 +25,6 @@ IOSchedulingPriority=7
 # against a slow or partially-wedged daemon without cutting a legitimate sweep
 # short.
 TimeoutStartSec=600
-ExecStart=%h/papercupai-workspace/papercusp/bin/reclaim-docker-disk.sh
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/bin/reclaim-docker-disk.sh

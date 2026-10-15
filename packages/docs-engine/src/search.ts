@@ -29,6 +29,7 @@
 
 import type { DocSource, EngineCtx, SearchArgs, SearchHit, SearchResult } from './types.js';
 import { evaluateOkfTrust, okfTrustIsNotable } from './okf.js';
+import { raceWithAbort } from './render-mdx.js';
 
 // EI-10097: hyphen is a WORD separator for tokenization purposes (doc slugs
 // and runbook titles are kebab-case — 'su-persona-render-and-edit-path' must
@@ -169,7 +170,7 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
     return { query: args.query, tokenCount: 0, hitCount: 0, hits: [] };
   }
 
-  const allPages = await source.listPages();
+  const allPages = await raceWithAbort(source.listPages(), ctx.signal);
   // EI-10937 guard 1: generated navigation aggregators opt out via
   // `searchable: false` frontmatter. They stay fully reachable through
   // docs:get and the outline — they are simply not ANSWERS to a query.
@@ -178,14 +179,14 @@ export async function searchDocs(source: DocSource, args: SearchArgs, ctx: Engin
   if (ctx.signal?.aborted) throw new Error('cancelled');
   ctx.progress?.(10, `searching ${pages.length} pages`);
 
-  // Per-page render, with abort checks at each step. Promise.all keeps
-  // the parallelism but every renderer throws on abort so the whole
-  // batch unwinds.
+  // Pass cancellation through the content adapter. Adapters race the caller's
+  // wait against its signal; the Starlight adapter also cancels queued renders
+  // only after the last shared reader leaves, preserving live concurrent calls.
   let scanned = 0;
   const rendered = await Promise.all(
     pages.map(async (p) => {
       if (ctx.signal?.aborted) throw new Error('cancelled');
-      const body = await source.getContent(p);
+      const body = await raceWithAbort(source.getContent(p, { signal: ctx.signal }), ctx.signal);
       scanned += 1;
       if (scanned % 25 === 0) {
         const pct = 10 + Math.floor((scanned / pages.length) * 70);

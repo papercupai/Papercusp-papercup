@@ -622,12 +622,17 @@ collided with a PRE-EXISTING row. Upstream fixed exactly this in 1.6.11 (DELETE 
 embedding id before CREATE). That fix is BACKPORTED as a vendor patch, and the
 patch is part of the install (§2):
 
-* `patches/gitnexus-vendor+1.6.9-embedding-upsert.patch` — the three-line
+* `vendor-patches/gitnexus-vendor+1.6.9-embedding-upsert.patch` — the three-line
   DELETE-by-id-before-CREATE, marker `papercusp-patch:gitnexus-1.6.9-embedding-upsert`
   (reversible: `patch -p1 -R --dry-run` was verified before it was applied).
 * `scripts/vendor-gitnexus-patch.mjs` — idempotent apply; `--check` is read-only.
 * `packages/operator-core/lib/doc-claims/gitnexus-vendor-embedding-upsert.test.ts`
   — pins the marker on this box (skips where there is no vendor install).
+* The patch lives in `vendor-patches/`, never `patches/`: root `postinstall` runs
+  `patch-package`, which refuses a patch whose package is not in `node_modules` and
+  exits non-zero under `CI=true`, so a vendor patch in `patches/` breaks every CI
+  `npm ci` while local installs only warn (WI-10006890).
+  `scripts/check-installed-patch-postimages.mjs` now rejects one there.
 
 Verified on the restore + re-embed path with the patched vendor (run #4,
 `/tmp/wi39394/run4-embed-run.log`): rc=0 after 2,343s; 216,843 embeddings over 247,540 nodes (217k restored from cache, the changed nodes re-embedded in a \~2-minute GPU phase); zero `duplicated primary key` lines in the log.

@@ -386,7 +386,12 @@ describe('work-item admission daily digest', () => {
    * corrected asymmetry: arrivals are EXCLUDED and DISCLOSED above a floor, and the
    * invariants that actually protect the digest still hard-block.
    */
-  function coverageHarness(opts: { corpusIds: string[]; memberIds: string[]; duplicateId?: string }) {
+  function coverageHarness(opts: {
+    corpusIds: string[];
+    memberIds: string[];
+    duplicateId?: string;
+    dailyDigestUmbrellaIds?: string[];
+  }) {
     const bound: Array<{ statement: string; values: unknown[] }> = [];
     const prompts: string[] = [];
     const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -395,7 +400,11 @@ describe('work-item admission daily digest', () => {
       if (statement.includes("run_kind = 'bulk-stage'")) return [{ id: 'bulk-1', detail: YIELDING_STAGE_DETAIL }];
       if (statement.includes("run_kind = 'census'")) return [{ id: 'census-1', census_after: 3 }];
       if (statement.includes('FROM harness_shared.work_items')) {
-        return opts.corpusIds.map((id) => ({
+        const excludesPriorDigestUmbrellas = statement.includes("wi.payload -> 'dailyDigest' IS NULL");
+        const corpusIds = opts.corpusIds.filter((id) =>
+          !excludesPriorDigestUmbrellas || !opts.dailyDigestUmbrellaIds?.includes(id),
+        );
+        return corpusIds.map((id) => ({
           id, title: `title ${id}`, summary: `summary ${id}`, state: 'open', kind: 'bug', admission: 'admitted',
         }));
       }
@@ -474,6 +483,23 @@ describe('work-item admission daily digest', () => {
 
     expect(result).toMatchObject({ status: 'blocked', blockedReason: 'census-coverage-mismatch', modelCalled: false });
     expect(harness.prompts).toHaveLength(0);
+  });
+
+  it('does not feed prior daily-digest umbrellas back into the next source corpus', async () => {
+    const harness = coverageHarness({
+      corpusIds: ids(4),
+      memberIds: ids(4),
+      dailyDigestUmbrellaIds: ['WI-4'],
+    });
+    const result = await runCoverage(harness, 'daily-exclude-prior-umbrella');
+
+    expect(result).toMatchObject({
+      status: 'complete',
+      corpusSize: 3,
+      coverage: { live: 3, covered: 3, uncovered: 0, ratio: 1 },
+    });
+    expect(harness.prompts[0]).toContain('WI-3');
+    expect(harness.prompts[0]).not.toContain('WI-4');
   });
 
   /**

@@ -1,0 +1,225 @@
+{
+  "schemaVersion": "p011-shared-worker-window-source-qualification-v1",
+  "workItem": "WI-10006124",
+  "parent": "WI-10004890",
+  "stagingIncident": "EI-25181611831349662",
+  "reservationIncident": "EI-25183299786158932",
+  "status": "bounded-current-build-cohort-and-independent-reader-pass",
+  "reuse": "Existing response-pair sampler, frozen raw reader, guardResource lifecycle and host-global lock routing. No new tool, service, config, profiling or producer replay.",
+  "runtime": {
+    "buildSha": "4a36c9692a",
+    "pid": 613219,
+    "startTicks": "3059513",
+    "role": "request-only primary",
+    "measuredFrom": "2026-10-05T23:21:38.427Z",
+    "measuredUntil": "2026-10-05T23:21:51.690Z",
+    "cleanup": {
+      "inspectors": [
+        {
+          "pid": 613219,
+          "openedByProbe": true,
+          "result": {
+            "closed": true
+          }
+        }
+      ],
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true,
+      "counterIdentityPreserved": true
+    },
+    "runtimeCompleteness": "Only the selected staging process was measured. Legacy bg-host e4478d8f5c still lacks host-global staging routing. No current-run release-gate operations."
+  },
+  "verification": {
+    "producer": {
+      "testRunId": 20778877,
+      "status": "pass",
+      "passed": 1,
+      "filteredSkipped": 61
+    },
+    "independentReader": {
+      "testRunId": 20778882,
+      "status": "pass",
+      "passed": 1,
+      "filteredSkipped": 286,
+      "rawSha256": "0d7c3e3b1cc3efe55f8de36f4c913a09fe93db6645d6440e6e49d599761d4915"
+    },
+    "requests": 24,
+    "windows": 3,
+    "selectedProcesses": 1,
+    "joinedRequests": 24,
+    "unresolvedRequests": 0,
+    "distinctObservedQueryTuples": 48,
+    "namedSourceFences": 9,
+    "namedSourcesUnchanged": true,
+    "fullExecutedGraph": "unknown"
+  },
+  "lease": {
+    "granted": {
+      "ok": true,
+      "lock_id": "c9d07427-9cf7-4108-a285-49cab53c9955",
+      "mode": "shared",
+      "status": "held",
+      "owner": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+      "expires_ts": "2026-10-05T23:24:57.491Z"
+    },
+    "namespace": "papercusp-host-global",
+    "release": {
+      "ok": true,
+      "results": [
+        {
+          "ok": true,
+          "lock_id": "c9d07427-9cf7-4108-a285-49cab53c9955",
+          "released": 1,
+          "released_modes": [
+            "shared"
+          ],
+          "exclusive_resources": [],
+          "expired": false
+        }
+      ],
+      "counts": {
+        "ok": 1,
+        "failed": 0
+      }
+    },
+    "negativeLiveRestartContender": "not exercised; cross-checkout exclusion is source/real-PG regression evidence, not a production restart drill"
+  },
+  "reservationFix": {
+    "rootCause": "guardResource returned acquired:false before its release finally for no-wait draining or drain_timeout. Its lower-level helper intentionally preserves a reservation; the higher-order guard ends the body opportunity and must release it.",
+    "detectorFailure": "The prior shared-probe regression checked only that the body did not run; it never inspected the denied owner row and cleaned only the shared owner.",
+    "before": {
+      "testRunId": 20778853,
+      "failed": 4,
+      "passed": 2,
+      "sameClass": "no-wait and bounded drain-timeout both retain an exclusive after the guard declines"
+    },
+    "after": {
+      "testRunIds": [
+        20778878,
+        20778879
+      ],
+      "passed": 14,
+      "skipped": 0
+    },
+    "typecheck": {
+      "namedFiles": 2,
+      "errorCount": 0,
+      "engine": "tsc-service",
+      "scope": "focused files and direct importers; unrelated restart diagnostics already recorded"
+    },
+    "sourceCommitState": "Named guard and integration files clean against HEAD at qualification time; router HEAD is not a complete imported-source fingerprint.",
+    "recurrenceGuard": "Immediately assert no denied exclusive holder remains for both staging resource names at zero and20ms drain budgets; failure cleanup releases test-owned reservations."
+  },
+  "limitations": [
+    "Original R3 fourteen missing request relations remain unknown; R5 does not retroactively identify eviction, cache behavior or worker routing.",
+    "R4 FAIL20772927 has zero workload; historical R1/R2 failures and NOTMEASURED remain immutable.",
+    "Serial PSS and cumulative V8 observations include inspector/ambient work; they do not prove physical or native allocation savings.",
+    "Real worker clones, all eight sources, complete process census, full executed graph, full independent P011/D021 acceptance, P010 R8/R9 and final shipment remain open.",
+    "Existing native-origin owner decision and activation/source audit remain pending; no duplicate ask or activation rewrite.",
+    "Staging namespace incident stays open: legacy bg-host acquisition routing and a live cross-runtime exclusion proof are outstanding."
+  ],
+  "receiptLinks": [
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r5-2026-10-05.json",
+      "bytes": 808488,
+      "sha256": "0d7c3e3b1cc3efe55f8de36f4c913a09fe93db6645d6440e6e49d599761d4915"
+    },
+    {
+      "path": "docs/evidence/papercusp-oct5-p011-shared-worker-window-r5-oracle-2026-10-05.json",
+      "bytes": 106324,
+      "sha256": "4d697f5ae4544f8f92eb2549cc8c0c9f42a35aaccb323669327881f6d3f0fc19"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "bytes": 111988,
+      "sha256": "d877581f779734ca802319304e8e2c4124dd086793af3b9b522ae2dfce333fdb"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 137465,
+      "sha256": "4935bd6c3d39802f91e8d548a6aac6cfe1633d8a646e894bc7e15e35d0b7bc9e"
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "bytes": 29673,
+      "sha256": "2566bd434b4ac2b720e5ea24727136ddd82e55fa063a4442fd06b5f4380e51c7"
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 66663,
+      "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+    },
+    {
+      "path": "scripts/lib/identity-leak-patterns.mjs",
+      "bytes": 44163,
+      "sha256": "9ccce5c5ad56db19caa554f3ac03f00dcc831ea959566e013acec184926cd21d"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/coordination-domain.ts",
+      "bytes": 18909,
+      "sha256": "f75762f4045cf2d699361ae2cc1b8350569c1c2fca849acfced89c893880e732"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/resource-lock-guard.ts",
+      "bytes": 10278,
+      "sha256": "127eb9debbc0598ce08887ccc6228065679b565ac2e72b155db15be366324e6e"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/resource-acquire-wait.ts",
+      "bytes": 24796,
+      "sha256": "37f7f04751b2c896df634edd87e7b1cc6521fce17a2d1efb2859899eba718a55"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/__tests__/resource-lock-guard.integration.test.ts",
+      "bytes": 6390,
+      "sha256": "32ecf7dc0e6ced76dfa40d9b965c19a6beff1406d30dd81518bbb6a2c7bd9d9c"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-shared-worker-window-r5.log",
+      "bytes": 28186,
+      "sha256": "3e9347697d02833ca76cfbeec62138ca1a45ce57a8f70d51e9ce1ff05d55461a"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-shared-worker-window-r5-oracle.log",
+      "bytes": 99307,
+      "sha256": "557338bd6e69e6cb916576fda6269f0ff59cdb6d793faf72d8763ea42cd8dec8"
+    },
+    {
+      "path": "/tmp/su-7db4f-guard-reservation-before-r1.log",
+      "bytes": 11336,
+      "sha256": "29f2ca620ba808ddf226248d23ddffe007551273d2a82664243df46c2adabfd2"
+    },
+    {
+      "path": "/tmp/su-7db4f-guard-reservation-after-r1.log",
+      "bytes": 7525,
+      "sha256": "7cab52d426de867103851952e67ee914ce1b766423fd11892f9c9174f6f5b930"
+    },
+    {
+      "path": "/tmp/su-7db4f-guard-reservation-types-r1.log",
+      "bytes": 2676,
+      "sha256": "6673a6d6f1b709f0657e2b99812b5d7e157942c7bf3cbc8a6975fd340281e812"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-r5-staging-lease.json",
+      "bytes": 766,
+      "sha256": "a923844c0914fe17751d4c12dea9cb168ec79f5e5535a5afc64a1dab7ece226f"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-r5-staging-lease-granted.json",
+      "bytes": 208,
+      "sha256": "9f0ebe9e22c046515ffa801739c008c929606a18c7274b0f5e6c43cdaf389b0f"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-r5-staging-namespace.json",
+      "bytes": 299,
+      "sha256": "749b7114f33d44a19381b8ab41d82a714075c6a5b123150fb88cfa45a6c8d193"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-r5-staging-lease-release.json",
+      "bytes": 301,
+      "sha256": "c3ba6a666f15343309ff59cc3010d91008e8a3eef42f6b8f1ef8dffd7530e705"
+    }
+  ]
+}

@@ -19,6 +19,7 @@ import {
   beginStoredQualification,
   checkpointPidIdentity,
   classifyScheduledQualificationJoin,
+  configureRunnerLivenessProber,
   projectCheckpointQualificationState,
   probeRunnerLiveness,
   readStoredQualification,
@@ -28,6 +29,7 @@ import {
   reserveQualificationRunner,
   reserveStoredQualificationRunner,
   settleQualificationTransaction,
+  type RunnerLiveness,
 } from './checkpoint-qualification-transaction';
 import {
   createFrozenCandidateQueue,
@@ -157,7 +159,7 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       agesMs: { scheduled: 500, started: 2_300, progress: 1_500, terminal: null },
     });
     expect(classifyScheduledQualificationJoin(running.transaction,
-      probeRunnerLiveness(running.transaction.currentPhysicalRunner))).toBe('join');
+      await probeRunnerLiveness(running.transaction.currentPhysicalRunner))).toBe('join');
 
     expect((await recordStoredQualificationVerdict(target, {
       attemptId: 'attempt-1', runId: 'run-other', candidate: 'candidate-1',
@@ -180,6 +182,64 @@ describe('checkpoint qualification lifecycle (real row lock and JSONB)', () => {
       phase: 'terminal', lastScheduledAtMs: 4_000, lastProgressAtMs: 3_000,
       lastTerminalVerdictAtMs: 5_100, outcome: { kind: 'red' },
     } });
+  });
+
+  it('awaits async runner probes under the same qualification row lock', async () => {
+    await seed();
+    expect((await beginStoredQualification(target, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: 100,
+    })).status).toBe('updated');
+    expect((await reserveStoredQualificationRunner(target, {
+      attemptId: 'attempt-1', runnerId: 'fire-1', unit: 'probe.service',
+      leaseDurationMs: 1_000_000, started: false, nowMs: 200,
+    })).status).toBe('updated');
+
+    let resolveFirst: ((value: RunnerLiveness) => void) | undefined;
+    let resolveSecond: ((value: RunnerLiveness) => void) | undefined;
+    let markFirstStarted!: () => void;
+    let markSecondStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
+    let probeCount = 0;
+    configureRunnerLivenessProber(() => {
+      probeCount += 1;
+      return new Promise<RunnerLiveness>((resolve) => {
+        if (probeCount === 1) {
+          resolveFirst = resolve;
+          markFirstStarted();
+        } else {
+          resolveSecond = resolve;
+          markSecondStarted();
+        }
+      });
+    });
+
+    let beginSettled = false;
+    try {
+      const begin = beginStoredQualification(target, {
+        attemptId: 'attempt-2', candidate: 'candidate-2', nowMs: 300,
+      }).then((result) => { beginSettled = true; return result; });
+      await firstStarted;
+      const reserve = reserveStoredQualificationRunner(target, {
+        attemptId: 'attempt-1', runnerId: 'fire-2',
+        leaseDurationMs: 1_000_000, started: false, nowMs: 400,
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(beginSettled).toBe(false);
+      expect(probeCount).toBe(1);
+      resolveFirst?.('live');
+      await expect(begin).resolves.toMatchObject({ status: 'conflict' });
+
+      await secondStarted;
+      expect(probeCount).toBe(2);
+      resolveSecond?.('live');
+      await expect(reserve).resolves.toMatchObject({ status: 'conflict' });
+    } finally {
+      resolveFirst?.('unknown');
+      resolveSecond?.('unknown');
+      configureRunnerLivenessProber(null);
+    }
   });
 
   it('commits predecessor reconciliation and successor qualification in the same row update', async () => {

@@ -49,6 +49,8 @@ const EXEMPT_ON_REQUEST_HOSTS: Record<string, string> = {
     'not observed on a request-host loop profile; the bg-host broad switch covers its routine path',
   PAPERCUSP_HARNESS_DOCS_SPAWN_SIDECAR:
     'not observed on a request-host loop profile; the bg-host broad switch covers its projection path',
+  PAPERCUSP_WORKTREE_COVERAGE_SPAWN_SIDECAR:
+    'a DBOS-bootstrap watchdog, not a request path; not observed on a request-host loop profile',
 };
 
 const CALL = /gitSidecarEnabled\(\s*'(PAPERCUSP_[A-Z0-9_]+)'/g;

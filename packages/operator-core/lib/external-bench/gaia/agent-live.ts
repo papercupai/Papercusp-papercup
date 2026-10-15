@@ -1,8 +1,9 @@
 /**
  * Live LLM binding for the GAIA agent (plan `benchmark-suite-gaia-2026-06-17`, P-003) — maps the
  * provider-agnostic {@link LlmFn} onto the Anthropic Messages API, routed through OUR inference gateway
- * (claude-opus-4-8, the same fair-routing path the bees + competitor arms use; the gateway paces + injects
- * the bound account's auth, so the request goes out UNAUTHENTICATED and the key need only be SET).
+ * (the registry-resolved benchmark default model, on the same fair-routing path the bees + competitor arms use;
+ * the gateway paces + injects the bound account's auth, so the request goes out UNAUTHENTICATED and the key
+ * need only be SET).
  *
  * The request/response MAPPING is pure + unit-tested ({@link toAnthropicMessages} / {@link toAnthropicTools}
  * / {@link fromAnthropicResponse}); only {@link makeLiveGaiaLlm} touches the SDK. xhigh effort is realized as
@@ -11,12 +12,12 @@
  * with their signatures so a thinking→tool_use turn replays correctly.
  */
 import Anthropic from '@anthropic-ai/sdk';
-import { gatewayBaseUrl } from '../competitor-live';
+import { DEFAULT_COMPETITOR_MODEL, gatewayBaseUrl } from '../competitor-live';
 import { ACCOUNT_HEADER, PRIORITY_HEADER } from '../../inference-gateway/gateway';
 import type { AssistantBlock, GaiaToolSpec, LlmFn, LlmMessage, LlmTurnRequest, LlmTurnResponse } from './agent';
 
-/** Fairness default: every arm runs claude-opus-4-8 via the gateway (matches DEFAULT_COMPETITOR_MODEL). */
-export const DEFAULT_GAIA_MODEL = 'claude-opus-4-8';
+/** Fairness default: every arm runs the same registry-resolved model via the gateway (= DEFAULT_COMPETITOR_MODEL). */
+export const DEFAULT_GAIA_MODEL: string = DEFAULT_COMPETITOR_MODEL;
 /** xhigh-effort realization = extended thinking at this budget (matches competitor-live). */
 export const DEFAULT_THINKING_BUDGET_TOKENS = 16000;
 /**

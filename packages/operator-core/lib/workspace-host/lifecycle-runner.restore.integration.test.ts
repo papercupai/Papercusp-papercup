@@ -299,7 +299,18 @@ describe('workspace-host snapshot restore (real PG + real RLS)', () => {
         controllerAuthority: authority,
       }),
     ).rejects.toBeInstanceOf(WorkspaceHostControllerFenceError);
-    await expect(operationRow(workspaceId, 'op-restore-second')).resolves.toBeUndefined();
+    // WI-10005312 records fenced requests as terminal failures for the timeline.
+    // The receipt must not turn the rejected request into an admitted restore.
+    await expect(operationRow(workspaceId, 'op-restore-second')).resolves.toEqual({
+      host_id: REPLACEMENT,
+      action: 'restore',
+      status: 'failed',
+      desired_revision: 2,
+    });
+    await expect(hostRow(workspaceId, REPLACEMENT)).resolves.toMatchObject({
+      host_generation: 2,
+      desired_revision: 2,
+    });
   });
 
   it('registers a snapshot as a recovery point the host (and its destroy census) can see (D-389, WI-10002470)', async () => {

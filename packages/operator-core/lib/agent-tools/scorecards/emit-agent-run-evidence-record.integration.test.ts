@@ -84,7 +84,11 @@ const criterion = (key: string) => ({
   ratingScale: SCALE,
 });
 const rated = () =>
-  Object.fromEntries(KEYS.map((k) => [k, { rating: 'unknown', evidence: `no observed opportunity for ${k} in the window` }]));
+  // unknownReason is required on the goal-behavior rubric (AUTO-BAR-R-3, scorecards.ts
+  // validateGoalBehaviorUnknownDisclosure); prose in `evidence` alone is refused at emit.
+  Object.fromEntries(
+    KEYS.map((k) => [k, { rating: 'unknown', unknownReason: 'not-exercised', evidence: `no observed opportunity for ${k} in the window` }]),
+  );
 
 async function upsertGoalRubric(db: OrgTestDb): Promise<void> {
   await db.adminSql`DELETE FROM harness_shared.harness_plans WHERE plan_slug = ${RUBRIC}`;

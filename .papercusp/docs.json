@@ -1,3 +1,6 @@
 {
-  "root": "apps/operator-docs/src/content/docs"
+  "root": "apps/operator-docs/src/content/docs",
+  "sources": {
+    "public-manual": "apps/papercusp-docs/src/content/docs"
+  }
 }

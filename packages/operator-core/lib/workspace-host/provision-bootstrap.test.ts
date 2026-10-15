@@ -10,7 +10,10 @@ import { createHash } from 'node:crypto';
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION,
+  WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+  WORKSPACE_HOST_BOOTC_BUILDER_KIND,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
@@ -30,6 +33,8 @@ import {
   renderWorkspaceHostProvisionBootstrap,
   resolveWorkspaceHostControllerAuthorizedKeys,
   resolveWorkspaceHostProvisionBootstrapProfile,
+  workspaceHostAgentRuntimeInstalls,
+  type WorkspaceHostProvisionBootstrapReleaseOverride,
 } from './provision-bootstrap';
 
 const MANIFEST_PATH = '/etc/papercusp/workspace-host/manifest.json';
@@ -104,6 +109,46 @@ function artifact(version = '2026.8.22-1'): WorkspaceHostImageArtifact {
   };
 }
 
+const BOOTC_IMAGE_DIGEST = `sha256:${'9'.repeat(64)}` as const;
+
+/** The same valid artifact as a bootc-image release, shaped the way the bootc release gate builds one. */
+function bootcArtifact(): Extract<WorkspaceHostImageArtifact, { hostModel: 'bootc-image' }> {
+  const current = artifact();
+  const { schemaVersion: _schemaVersion, manifestIdentity: _identity, ...manifestInput } = current.buildManifest;
+  return {
+    ...current,
+    hostModel: 'bootc-image',
+    bootc: {
+      image: 'registry.example.com/papercusp/workspace-host:2026.8.22-1',
+      imageDigest: BOOTC_IMAGE_DIGEST,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+    },
+    buildManifest: buildWorkspaceHostBuildManifest({
+      ...manifestInput,
+      builder: {
+        strategy: 'shared',
+        kind: WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+        version: 'latest',
+        templatePath: 'infra/images/bootc/workspace-host.Containerfile',
+        templateSha256: 'd'.repeat(64),
+      },
+    }),
+    compatibility: [
+      {
+        provider: 'gcp',
+        architecture: 'x86_64',
+        hostModel: 'bootc-image',
+        bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+        bootstrapContractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+        actions: ['install', 'upgrade', 'rollback'],
+        maximumArtifactAgeDays: 30,
+        agentHomeBundleContractVersions: [WORKSPACE_HOST_AGENT_HOME_BUNDLE_VERSION],
+      },
+    ],
+  };
+}
+
 function env(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   return {
     [WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile]: MANIFEST_PATH,
@@ -152,6 +197,59 @@ describe('workspace-host provision bootstrap profile', () => {
       port: DEFAULT_WORKSPACE_HOST_SERVICE_PORT,
     });
     expect(profile.minimumNodeMajor).toBe(DEFAULT_WORKSPACE_HOST_MINIMUM_NODE_MAJOR);
+  });
+
+  it('keeps concurrent operation release pins independent of the controller-wide environment', async () => {
+    const awsManifestPath = '/etc/papercusp/workspace-host/aws-canary.json';
+    const gcpManifestPath = '/etc/papercusp/workspace-host/gcp-live.json';
+    const controllerEnv = env({
+      [WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile]: '/etc/papercusp/workspace-host/controller.json',
+      [WORKSPACE_HOST_PROVISION_ENV.migrationId]: '1000',
+    });
+    const readTextFile = reader({
+      ...FILES,
+      [awsManifestPath]: JSON.stringify({ artifact: artifact('2026.10.10-1') }),
+      [gcpManifestPath]: JSON.stringify({ artifact: artifact('2026.10.10-2') }),
+    });
+
+    const [aws, gcp] = await Promise.all([
+      resolveWorkspaceHostProvisionBootstrapProfile({
+        env: controllerEnv,
+        readTextFile,
+        controllerProfile: CONTROLLER,
+        bootstrapReleaseOverride: { manifestPath: awsManifestPath, migrationId: '1101' },
+      }),
+      resolveWorkspaceHostProvisionBootstrapProfile({
+        env: controllerEnv,
+        readTextFile,
+        controllerProfile: CONTROLLER,
+        bootstrapReleaseOverride: { manifestPath: gcpManifestPath, migrationId: '1102' },
+      }),
+    ]);
+
+    expect(aws.release.version).toBe('2026.10.10-1');
+    expect(aws.migrationId).toBe('1101');
+    expect(gcp.release.version).toBe('2026.10.10-2');
+    expect(gcp.migrationId).toBe('1102');
+    expect(controllerEnv[WORKSPACE_HOST_PROVISION_ENV.releaseManifestFile]).toBe(
+      '/etc/papercusp/workspace-host/controller.json',
+    );
+    expect(controllerEnv[WORKSPACE_HOST_PROVISION_ENV.migrationId]).toBe('1000');
+  });
+
+  it('refuses a partial operation release override instead of mixing it with the controller defaults', async () => {
+    const partialOverride = {
+      manifestPath: MANIFEST_PATH,
+    } as unknown as WorkspaceHostProvisionBootstrapReleaseOverride;
+
+    await expect(
+      resolveWorkspaceHostProvisionBootstrapProfile({
+        env: env(),
+        readTextFile: reader(FILES),
+        controllerProfile: CONTROLLER,
+        bootstrapReleaseOverride: partialOverride,
+      }),
+    ).rejects.toThrow(/operation bootstrapReleaseOverride\.migrationId is not set/);
   });
 
   it('refuses when the release manifest is unset, relative, missing, or not a valid artifact', async () => {
@@ -364,6 +462,15 @@ describe('workspace-host provision bootstrap profile', () => {
     expect(renderWorkspaceHostProvisionBootstrap('host-p046-1', profile)).toBe(script);
   });
 
+  it('exports the exact desktop Linux runtime install defaults used by provisioned hosts', () => {
+    const installs = workspaceHostAgentRuntimeInstalls();
+    expect(installs.map(({ agent }) => agent)).toEqual(['claude', 'codex', 'omp']);
+    for (const install of installs) {
+      expect(install.command).toBeTruthy();
+      expect(install.args.length).toBeGreaterThan(0);
+    }
+  });
+
   it('installs the desktop connector enrollment conduit only when the controller names a control plane (D-403)', async () => {
     const without = await resolveWorkspaceHostProvisionBootstrapProfile({
       env: env(),
@@ -384,5 +491,40 @@ describe('workspace-host provision bootstrap profile', () => {
     const script = renderWorkspaceHostProvisionBootstrap('host-p046-1', configured);
     expect(script).toContain(WORKSPACE_HOST_CONNECTOR_ENROLLMENT_CONDUIT);
     expect(script).toContain("ORIGIN='https://app.papercusp.com'");
+  });
+
+  // WI-10006865: the profile used to keep only `artifact.release`, so every bootc release rendered
+  // the Ubuntu bootstrap and failed `validate-host` on the first real provision, while the clean
+  // room (which passes the artifact whole) certified the same image.
+  it('renders a bootc release as a bootc bootstrap, carrying the artifact host model and image pin', async () => {
+    const ubuntu = await resolveWorkspaceHostProvisionBootstrapProfile({
+      env: env(),
+      readTextFile: reader(FILES),
+      controllerProfile: CONTROLLER,
+    });
+    expect(ubuntu.hostModel).toBe('ubuntu-release-bundle');
+    expect(ubuntu.bootc).toBeUndefined();
+    const ubuntuScript = renderWorkspaceHostProvisionBootstrap('host-wi10006865', ubuntu);
+    expect(ubuntuScript).toContain(`Ubuntu ${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION} is required`);
+    expect(ubuntuScript).not.toContain(BOOTC_IMAGE_DIGEST);
+
+    const bootc = await resolveWorkspaceHostProvisionBootstrapProfile({
+      env: env(),
+      readTextFile: reader({ ...FILES, [MANIFEST_PATH]: JSON.stringify({ artifact: bootcArtifact() }) }),
+      controllerProfile: CONTROLLER,
+    });
+    expect(bootc.hostModel).toBe('bootc-image');
+    expect(bootc.bootc).toEqual({
+      image: 'registry.example.com/papercusp/workspace-host:2026.8.22-1',
+      imageDigest: BOOTC_IMAGE_DIGEST,
+      baseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
+      signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
+    });
+    const bootcScript = renderWorkspaceHostProvisionBootstrap('host-wi10006865', bootc);
+    expect(bootcScript).not.toContain(`Ubuntu ${WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION} is required`);
+    // The booted deployment is checked against the artifact's pinned digest, not a default.
+    expect(bootcScript).toContain(BOOTC_IMAGE_DIGEST);
+    expect(bootcScript).toContain('EXPECTED_IMAGE_DIGEST');
+    expect(bootcScript).toContain(WORKSPACE_HOST_BOOTC_BASE_IMAGE);
   });
 });

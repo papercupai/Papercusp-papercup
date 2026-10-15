@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -27,7 +28,12 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 vi.mock('../../fleet/git-via-sidecar', () => ({ gitSidecarEnabled: () => false }));
 
-import { runGitBounded } from './run-git-sync';
+import {
+  createGitProgressWatchdog,
+  runGitBounded,
+  type GitProgressTimerHandle,
+  type GitProgressTimerScheduler,
+} from './run-git-sync';
 
 beforeEach(() => { fixture.onOutput = () => {}; fixture.child = null; fixture.output = ''; });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
@@ -40,6 +46,13 @@ function alive(pid: number): boolean {
 }
 
 describe('local Git cancellation lifetime', () => {
+  it.skipIf(process.platform === 'win32')('preserves a silent external termination signal in the Git result', async () => {
+    fixture.script = "process.kill(process.pid, 'SIGTERM');";
+    const result = await runGitBounded(['diff'], tmpdir(), 5000);
+    expect(result).toMatchObject({ code: -1, stdout: '' });
+    expect(result.stderr).toContain('git terminated by signal SIGTERM');
+  });
+
   it('does not spawn when cancellation precedes the command', async () => {
     fixture.script = "process.stderr.write('should not run');";
     const controller = new AbortController();
@@ -106,41 +119,112 @@ describe('local Git cancellation lifetime', () => {
   });
 });
 
-describe('local Git output-idle guard', () => {
-  it('reads queued child progress before expiring an idle timer after a parent-loop stall', async () => {
-    fixture.script = [
-      "const send = phase => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n');",
-      // Emit for a wall-clock span, not a fixed count: under gate load the parent can
-      // read 'ready' hundreds of ms late, and a 10-write burst (~400ms) then finished
-      // before the stall began, so zero writes landed inside it (b8eb76cc red).
-      "const end = Date.now() + 1500; send('ready'); const timer = setInterval(() => { send('progress'); if (Date.now() >= end) clearInterval(timer); }, 40);",
-    ].join(' ');
-    let queued = false;
-    let blockedFrom = 0;
-    let blockedUntil = 0;
-    fixture.onOutput = () => {
-      if (queued) return;
-      queued = true;
-      setImmediate(() => {
-        blockedFrom = Date.now();
-        while (Date.now() - blockedFrom < 450) { /* deliberately stall the CHECK phase */ }
-        blockedUntil = Date.now();
-      });
+class ManualTimerScheduler implements GitProgressTimerScheduler {
+  private sequence = 0;
+  private readonly tasks: Array<{
+    id: number;
+    at: number;
+    kind: 'timeout' | 'immediate';
+    callback: () => void;
+    cancelled: boolean;
+    fired: boolean;
+  }> = [];
+  now = 0;
+
+  setTimeout(callback: () => void, delayMs: number): GitProgressTimerHandle {
+    return this.schedule('timeout', callback, this.now + delayMs);
+  }
+
+  setImmediate(callback: () => void): GitProgressTimerHandle {
+    return this.schedule('immediate', callback, this.now);
+  }
+
+  advanceBy(delayMs: number): void {
+    const target = this.now + delayMs;
+    while (true) {
+      const next = this.tasks
+        .filter((task) => !task.cancelled && !task.fired && task.kind === 'timeout' && task.at <= target)
+        .sort((a, b) => a.at - b.at || a.id - b.id)[0];
+      if (!next) break;
+      next.fired = true;
+      this.now = next.at;
+      next.callback();
+    }
+    this.now = target;
+  }
+
+  runImmediates(): void {
+    while (true) {
+      const next = this.tasks
+        .filter((task) => !task.cancelled && !task.fired && task.kind === 'immediate')
+        .sort((a, b) => a.id - b.id)[0];
+      if (!next) return;
+      next.fired = true;
+      next.callback();
+    }
+  }
+
+  private schedule(
+    kind: 'timeout' | 'immediate',
+    callback: () => void,
+    at: number,
+  ): GitProgressTimerHandle {
+    const task = { id: this.sequence++, at, kind, callback, cancelled: false, fired: false };
+    this.tasks.push(task);
+    return {
+      cancel: () => { task.cancelled = true; },
+      unref: () => {},
     };
-    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '3000');
-    const result = await runGitBounded(['fetch'], tmpdir(), 150);
-    const writes = result.stderr.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
-    expect(writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length).toBeGreaterThanOrEqual(3);
-    expect(result.stderr).not.toContain('no output progress');
-    expect(result.code, result.stderr).toBe(0);
+  }
+}
+
+describe('local Git output-idle guard', () => {
+  it('lets progress already queued in the poll phase cancel the pending idle verdict', () => {
+    const clock = new ManualTimerScheduler();
+    const expirations: string[] = [];
+    const watchdog = createGitProgressWatchdog(1_000, 20_000, (reason) => expirations.push(reason), clock);
+
+    watchdog.start();
+    clock.advanceBy(1_000); // Idle timeout fires and queues its setImmediate verdict.
+    watchdog.onOutput(); // The poll phase delivers bytes that were already queued.
+    clock.runImmediates();
+    expect(expirations).toEqual([]);
+
+    clock.advanceBy(1_000);
+    clock.runImmediates();
+    expect(expirations).toEqual(['made no output progress for 1000ms']);
   });
 
-  it('still enforces the hard deadline despite continuous output', async () => {
-    fixture.script = "process.stderr.write('ready\\n'); setInterval(() => process.stderr.write('progress\\n'), 20);";
-    vi.stubEnv('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', '800');
-    const result = await runGitBounded(['fetch'], tmpdir(), 500);
-    expect(result.stderr).toContain('progress');
-    expect(result.stderr).toContain('exceeded the 800ms hard ceiling despite output progress');
-    expect(result.code).toBe(-1);
+  it('expires after a finite progress burst stays silent for the idle interval', () => {
+    const clock = new ManualTimerScheduler();
+    const expirations: string[] = [];
+    const watchdog = createGitProgressWatchdog(1_000, 20_000, (reason) => expirations.push(reason), clock);
+
+    watchdog.start();
+    for (let index = 0; index < 3; index += 1) {
+      clock.advanceBy(40);
+      watchdog.onOutput();
+    }
+    clock.advanceBy(999);
+    expect(expirations).toEqual([]);
+    clock.advanceBy(1);
+    clock.runImmediates();
+    expect(expirations).toEqual(['made no output progress for 1000ms']);
+  });
+
+  it('keeps the hard deadline absolute while progress continuously resets idle time', () => {
+    const clock = new ManualTimerScheduler();
+    const expirations: string[] = [];
+    const watchdog = createGitProgressWatchdog(2_000, 3_000, (reason) => expirations.push(reason), clock);
+
+    watchdog.start();
+    clock.advanceBy(1_000);
+    watchdog.onOutput();
+    clock.advanceBy(1_000);
+    watchdog.onOutput();
+    clock.advanceBy(999);
+    expect(expirations).toEqual([]);
+    clock.advanceBy(1);
+    expect(expirations).toEqual(['exceeded the 3000ms hard ceiling despite output progress']);
   });
 });

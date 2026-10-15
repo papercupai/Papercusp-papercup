@@ -101,6 +101,13 @@ const ALWAYS_ON = { mode: 'always-on', status: 'listening', supported: true, las
 
 const deregs: Array<() => void> = [];
 
+it('disconnecting the bridge does not abort shared reply playback', () => {
+  const bridge = render(<VoiceAppBridge />);
+  h.cancelAllSpeech.mockClear();
+  bridge.unmount();
+  expect(h.cancelAllSpeech).not.toHaveBeenCalled();
+});
+
 function mount() {
   render(<VoiceAppBridge />);
 }

@@ -26,18 +26,51 @@ import {
 } from '@papercusp/agent-mcp';
 import '../../../agent-tools/index';
 import { DEVICE_AUTH, devicePrincipal } from './_shared';
-import { listPlanRows, readPlanBySlug, type PlanRow } from '../../../agent-tools/plans/source';
-import { listHarnessesFor } from '../../../device-harnesses';
-import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
+import {
+  listPlanIndexRows,
+  listPlanIndexRowsForWorkspace,
+  readPlanBySlug,
+  type PlanIndexRow,
+} from '../../../agent-tools/plans/source';
+import { harnessExistsInWorkspace } from '../../../device-harnesses';
+import {
+  resolveEffectiveStatusForItems,
+  type PlanItem,
+} from '../../../agent-tools/plans/effective-status';
+import {
+  applyPlanItemBlocks,
+  getAllBlockedPlanItems,
+  overlayIssueBlocksForPlan,
+  planItemRef,
+} from '../../../issue-blocks-merge';
 
-/** Compact per-status item tally for a plan card. */
-function itemCounts(row: PlanRow): Record<string, number> {
+/**
+ * Compact per-status item tally for a plan card, over EFFECTIVE status: the
+ * dependency resolver plus the open issue-block overlay, as plans:list counts
+ * it. The structured index carries only the authored status, so counting it
+ * showed a dependency-blocked item as `todo` on the phone.
+ */
+function itemCounts(row: PlanIndexRow, blocked: Map<string, string[]>): Record<string, number> {
+  const planItems: PlanItem[] = row.items.map((i) => ({
+    id: i.id,
+    text: i.text,
+    storedStatus: i.status as PlanItem['storedStatus'],
+    importance: i.importance as PlanItem['importance'],
+    blockedBy: i.blockedBy ?? [],
+    decisionRefs: i.decisionRefs ?? [],
+    phase: i.phase ?? null,
+    lineNumber: 0,
+    rawLine: '',
+  }));
+  const { items } = applyPlanItemBlocks(resolveEffectiveStatusForItems(planItems).items, (id) =>
+    blocked.get(planItemRef(row.planSlug, id)),
+  );
   const counts: Record<string, number> = {};
-  for (const it of row.items) counts[it.status] = (counts[it.status] ?? 0) + 1;
+  for (const it of items) counts[it.effectiveStatus] = (counts[it.effectiveStatus] ?? 0) + 1;
   return counts;
 }
 
-function planSummary(row: PlanRow) {
+function planSummary(row: PlanIndexRow, blocked: Map<string, string[]>) {
   return {
     slug: row.planSlug,
     harness: row.harnessSlug,
@@ -46,7 +79,7 @@ function planSummary(row: PlanRow) {
     updated: row.updated ?? row.updatedAt,
     owner: row.owner,
     archived: row.archived,
-    itemCounts: itemCounts(row),
+    itemCounts: itemCounts(row, blocked),
     nowState: row.nowState,
     nowNext: row.nowNext,
   };
@@ -54,8 +87,9 @@ function planSummary(row: PlanRow) {
 
 /**
  * GET /device/plans?harness=<slug>&includeArchived= — plan summaries.
- * Omitted harness (or `all`) fans out across every harness (pot) in the
- * workspace for the "All Pots" view; a concrete slug narrows to one pot.
+ * Omitted harness (or `all`) reads the workspace's canonical plan index
+ * once. Member pots share Hive plans, so per-pot full-content reads repeat
+ * the same plans and can exceed the mobile request deadline.
  */
 const plansList = defineTool({
   method: 'GET',
@@ -68,35 +102,36 @@ const plansList = defineTool({
     const harness = url.searchParams.get('harness');
     const includeArchived = url.searchParams.get('includeArchived') === 'true';
 
-    let slugs: string[];
+    // Preserve the existing list's instance plans and Now text, without
+    // loading the full Markdown blobs the summary does not consume.
+    const options = { includeArchived, includeInstances: true, heavyFields: true };
+    let all: PlanIndexRow[];
     if (harness && harness !== 'all' && harness !== '*') {
-      slugs = [harness];
-    } else {
-      // Fan out across the workspace's pots ("All Pots"). Always include the
-      // operator-home primary (papercusp post-migration) — its plans live under
-      // the home workspace (resolvePlanScope), which the device's paired
-      // workspace may not be. Baking 'papercup' here returned nothing once the
-      // papercup→papercusp migration moved the home's plans, so resolve the
-      // home pointer instead of a dead literal.
-      const harnesses = await listHarnessesFor(principal.workspaceId).catch(() => []);
-      slugs = [...new Set([operatorHomeHarnessSlug(), ...harnesses.map((h) => h.slug)])];
-    }
-
-    const all: PlanRow[] = [];
-    for (const slug of slugs) {
-      try {
-        // No workspaceId override — let resolvePlanScope resolve each pot to
-        // the workspace its plans actually live in (the home → its workspace),
-        // the SAME resolution the operator's plans:list uses.
-        const rows = await listPlanRows({ harnessSlug: slug, includeArchived });
-        all.push(...rows);
-      } catch {
-        /* best-effort per pot — a missing/empty harness shouldn't fail the list */
+      if (!(await harnessExistsInWorkspace(principal.workspaceId, harness))) {
+        return Response.json({ error: 'harness_not_in_workspace' }, { status: 404 });
       }
+      all = await listPlanIndexRows({
+        ...options,
+        workspaceId: principal.workspaceId,
+        harnessSlug: harness,
+      });
+    } else {
+      all = await listPlanIndexRowsForWorkspace({
+        ...options,
+        workspaceId: principal.workspaceId,
+      });
     }
     // Most-recently-updated first.
     all.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
-    return Response.json({ plans: all.map(planSummary) });
+    // The open issue-block overlay is workspace-wide: read it once for every card.
+    // Non-fatal, as in plans:list: on error the counts fall back to resolver-only.
+    let blocked = new Map<string, string[]>();
+    try {
+      blocked = await getAllBlockedPlanItems();
+    } catch {
+      /* resolver-only counts */
+    }
+    return Response.json({ plans: all.map((row) => planSummary(row, blocked)) });
   },
 });
 
@@ -110,13 +145,29 @@ const planGet = defineTool({
   auth: DEVICE_AUTH,
   cors: true,
   async handler(req, ctx) {
-    const harness = new URL(req.url).searchParams.get('harness') ?? undefined;
-    // No workspaceId override — resolvePlanScope resolves the harness to the
-    // workspace its plans live in (papercup → default), matching plans:get.
-    // (Auth is the DEVICE_AUTH gate; no principal field is needed here.)
-    const found = await readPlanBySlug(ctx.params.slug, { harnessSlug: harness });
+    const principal = devicePrincipal(ctx);
+    const requestedHarness = new URL(req.url).searchParams.get('harness');
+    const harness = requestedHarness && requestedHarness !== 'all' && requestedHarness !== '*'
+      ? requestedHarness : undefined;
+    if (harness && !(await harnessExistsInWorkspace(principal.workspaceId, harness))) {
+      return Response.json({ error: 'harness_not_in_workspace' }, { status: 404 });
+    }
+    // Authentication identifies the phone, but source scope must also be pinned:
+    // an unpinned harness resolves across the registry, outside this pairing.
+    const found = await readPlanBySlug(ctx.params.slug, {
+      workspaceId: principal.workspaceId,
+      harnessSlug: harness,
+    });
     if (!found) return Response.json({ error: 'plan_not_found' }, { status: 404 });
     const { parsed, archived, row } = found;
+    // Items carry the EFFECTIVE status plans:get returns (dependency resolver, then
+    // open issue blocks). parsePlan alone yields only the authored `storedStatus`,
+    // and the iOS client reads `effectiveStatus ?? status`, so without this it
+    // rendered every item as `todo`. overlayIssueBlocksForPlan is non-fatal.
+    const { items, blockingIssues } = await overlayIssueBlocksForPlan(
+      row.planSlug,
+      resolveEffectiveStatusForItems(parsed.items).items,
+    );
     return Response.json({
       slug: row.planSlug,
       harness: row.harnessSlug,
@@ -126,7 +177,9 @@ const planGet = defineTool({
       owner: row.owner,
       frontmatter: parsed.frontmatter,
       now: parsed.now,
-      items: parsed.items,
+      items: items.map((it) =>
+        blockingIssues[it.id] ? { ...it, blockedByIssues: blockingIssues[it.id] } : it,
+      ),
       decisions: parsed.decisions,
     });
   },

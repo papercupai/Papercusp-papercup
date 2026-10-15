@@ -1,0 +1,934 @@
+{
+  "schemaVersion": "get-feedback-live-evidence-v1",
+  "status": "partial-evidence; not acceptance or shipment",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "rubric": {
+    "ref": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+    "revision": 3,
+    "criteriaHash": "2bca61164488dfd7760eebe7c327f52f8e1885650ea9e5e6e8af5192d868248a"
+  },
+  "requesterId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+  "window": {
+    "start": "2026-10-03T05:21:32.561Z",
+    "end": "2026-10-05T20:27:24.000Z",
+    "cutFixedBeforeQualityReview": true
+  },
+  "runtime": {
+    "measurementEndpoint": "http://localhost:3170",
+    "servingRuntimes": [
+      {
+        "runtime": "release-operator",
+        "role": "owner",
+        "buildSha": "d740fc3802",
+        "buildShaSource": "health",
+        "containsChange": false,
+        "method": "blob",
+        "instances": null,
+        "unknownReason": null
+      },
+      {
+        "runtime": "staging-operator",
+        "role": "owner",
+        "buildSha": "159fa07eba",
+        "buildShaSource": "health",
+        "containsChange": true,
+        "method": "blob",
+        "instances": null,
+        "unknownReason": null
+      },
+      {
+        "runtime": "bg-host",
+        "role": "shared",
+        "buildSha": "fda877f189",
+        "buildShaSource": "health",
+        "containsChange": true,
+        "method": "blob",
+        "instances": null,
+        "unknownReason": null
+      },
+      {
+        "runtime": "gateway",
+        "role": "shared",
+        "buildSha": "2041f3e9c7",
+        "buildShaSource": "runtime-vintage",
+        "containsChange": false,
+        "method": "start-after-mtime",
+        "instances": null,
+        "unknownReason": null
+      }
+    ],
+    "currentBuildTestRoute": {
+      "id": "operator-api",
+      "source": "origin/staging mirror, not the uncommitted edit tree",
+      "runtime": "staging-operator",
+      "route": "http://127.0.0.1:3170 after dev:pipeline_position containment check",
+      "routeFile": "apps/operator/scripts/systemd/papercup-staging-api.service.d/50-staging-checkout.conf",
+      "isolation": "Separate port, process and checkout; database and workspace are not isolated.",
+      "prerequisites": [
+        "Containing staging commit loaded",
+        "private test identity/data for writes"
+      ],
+      "verification": "Measured :3170 build identity plus request/response on that build.",
+      "readiness": "ready"
+    },
+    "scope": "Current runtime containment for consult-dispatch.ts only. Historical trial receipts are retained separately; no final-release or current-build full-matrix success inferred."
+  },
+  "matrix": {
+    "population": [
+      "claude-source-isolated-fork",
+      "claude-source-isolated-codex-conversion",
+      "supported-non-claude-source-dispatch"
+    ],
+    "partitions": {
+      "checked": [
+        "supported-non-claude-source-dispatch"
+      ],
+      "unavailable": [],
+      "residual": [
+        "claude-source-isolated-fork",
+        "claude-source-isolated-codex-conversion"
+      ]
+    },
+    "rows": [
+      {
+        "id": "claude-source-isolated-fork",
+        "sourceBackend": "claude",
+        "targetBackend": "claude",
+        "partition": "residual",
+        "classification": "current-build-receipt-and-source-claim-continuity-unmeasured",
+        "historicalCandidate": {
+          "conversationId": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+          "answerPostIds": [
+            1157488,
+            1157540
+          ],
+          "sourceOwnerId": "su-b188e54a-d2b4-4e5e-9d6c-c0fdbd68ddcd",
+          "answeringOwnerId": "su-c960cc81-0b1a-41dd-b4d5-bea3d6fbb4f5",
+          "operation": "fork",
+          "recordedDispatchVerified": true
+        },
+        "nativeKickoffReceipt": null,
+        "sourceClaimsBefore": null,
+        "sourceClaimsAfter": null,
+        "unavailableReason": null,
+        "nextEvidenceAction": "Recover exact native fork kickoff, source-session identity and trial runtime; perform a fresh bounded trial with before/after source claims if the original evidence cannot establish current behavior."
+      },
+      {
+        "id": "claude-source-isolated-codex-conversion",
+        "sourceBackend": "claude",
+        "targetBackend": "codex",
+        "partition": "residual",
+        "classification": "no-complete-current-build-isolated-conversion-trial",
+        "historicalCandidate": {
+          "conversationId": "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+          "answerPostIds": [
+            1156967
+          ],
+          "sourceOwnerId": "su-5f010c19-0916-48a8-8fc2-d63380bdfdf8",
+          "answeringOwnerId": "su-5f010c19-0916-48a8-8fc2-d63380bdfdf8",
+          "operation": "convert",
+          "scope": "Historical revision-1 advice; same source/answering owner. Does not establish the current isolated-conversion case."
+        },
+        "nativeKickoffReceipt": null,
+        "sourceClaimsBefore": null,
+        "sourceClaimsAfter": null,
+        "unavailableReason": null,
+        "nextEvidenceAction": "Run the required isolated Claude-source to Codex conversion with exact source/native receipts and source-claim snapshots."
+      },
+      {
+        "id": "supported-non-claude-source-dispatch",
+        "sourceBackend": "codex",
+        "targetBackend": "claude",
+        "targetModel": "fable[1m]",
+        "partition": "checked",
+        "classification": "historical-native-answer-received-current-build-and-claim-continuity-unmeasured",
+        "conversationId": "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574",
+        "threadId": null,
+        "answerPostIds": [
+          1157673
+        ],
+        "sourceOwnerId": "su-678f0ae8-c42e-443e-a96e-117103fad70e",
+        "answeringOwnerId": "su-befe0695-b613-4ad0-9abf-af2365aabadb",
+        "nativeKickoffReceipt": {
+          "portId": "10fa1659-8574-43f0-8f95-3cb8569d95e6",
+          "sourceAdvSessionId": 34050,
+          "targetAdvSessionId": 34372,
+          "sourceBackend": "codex",
+          "targetBackend": "claude",
+          "targetModel": "fable[1m]",
+          "status": "delivered",
+          "preparedAt": "2026-10-05 18:23:33.808042+00",
+          "deliveredAt": "2026-10-05 18:23:40.496301+00",
+          "sourceOwnerId": "su-678f0ae8-c42e-443e-a96e-117103fad70e",
+          "targetOwnerId": "su-befe0695-b613-4ad0-9abf-af2365aabadb",
+          "sourceNativeSessionId": "01a10215-de68-7071-93ea-3931b2a7ec1f",
+          "targetNativeSessionId": "5b610d62-4311-4682-8294-84bb854bf0bf",
+          "fidelity": "full",
+          "authorityCarried": false,
+          "hashes": {
+            "source": "13e415f95af01e57d970a84b436e7359db4b7a4a3e4220ba7bc0cf0594925be9",
+            "rendered": "55a1170455f6a5bcf575799694b0756362c8e9f3015b87bbc45f5d6e34f0d90b",
+            "normalized": "4d92b992ecc89b801900b01e58d53ffc8a2a6c8810e64ca82381fb84fddaf49d"
+          },
+          "persistenceProof": {
+            "nativeRef": "/home/builduser/.papercusp/session-claude/su-befe0695-b613-4ad0-9abf-af2365aabadb/projects/-home-builduser-papercupai-workspace-papercusp/5b610d62-4311-4682-8294-84bb854bf0bf.jsonl",
+            "persisted": true,
+            "renderedHash": "55a1170455f6a5bcf575799694b0756362c8e9f3015b87bbc45f5d6e34f0d90b"
+          },
+          "bootstrapReceiptCommitted": true,
+          "bootstrapReceiptTargetAdvSessionId": 34372
+        },
+        "nativeFrameRecheck": {
+          "nativeRef": "/home/builduser/.papercusp/session-claude/su-befe0695-b613-4ad0-9abf-af2365aabadb/projects/-home-builduser-papercupai-workspace-papercusp/5b610d62-4311-4682-8294-84bb854bf0bf.jsonl",
+          "line": 4,
+          "portIdPresent": true,
+          "sourceNativeSessionIdPresent": true,
+          "fullFidelityPresent": true,
+          "sourceBackendPresent": true
+        },
+        "recordedTrialBuild": {
+          "shaPrefix": "d7ca5989ad",
+          "provenance": "thread-post:1157673 and previously verified WI-10005889 checkpoint",
+          "kind": "historical-trial; not a fresh trial on the snapshot runtime"
+        },
+        "sourceClaimsBefore": null,
+        "sourceClaimsAfter": null,
+        "sourceClaimsStatus": "unmeasured; metadata disclosure.sourceUntouched is not a claim census",
+        "unavailableReason": null,
+        "currentBuildResult": "unknown",
+        "nextEvidenceAction": "Measure source claims before and after a fresh current-build dispatch, preserving the exact source/answerer/native/evidence-span lineage."
+      }
+    ],
+    "rating": "unknown",
+    "reason": "Two matrix rows are residual. The checked historical non-Claude receipt lacks a measured before/after source-claim census and a fresh complete trial on the snapshot runtime. No measured capacity wall is claimed.",
+    "currentBuildAccepted": false
+  },
+  "qualityReview": {
+    "populationDefinition": "This requester; created in [window.start,window.end); origin stamped to P-001..P-007 or its work-item; substantive non-requester typed answer/new_fact before the cut. Missing reconciliation does not exclude a thread.",
+    "originWorkItems": {
+      "P-001": "WI-10005836",
+      "P-002": "WI-10005889",
+      "P-003": "WI-10005848",
+      "P-004": "WI-10005886",
+      "P-005": "WI-10005890",
+      "P-006": "WI-10005891",
+      "P-007": "WI-10005892"
+    },
+    "originStampVerification": "plans:items coverage.links recovered all seven plan_item_stamp ids. The requester query has no consultation attributed to WI-10005892 in this fixed window.",
+    "queryReturned": 10,
+    "queryTruncated": false,
+    "fullEligiblePopulation": [
+      {
+        "conversationId": "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+        "createdAt": "2026-10-03 07:07:41.955276+00",
+        "originTaskRef": "WI-10005848",
+        "policy": "rubric-vetting",
+        "stratum": "cross-backend-dispatch",
+        "sourceBackend": "claude",
+        "sourceOwnerId": "su-5f010c19-0916-48a8-8fc2-d63380bdfdf8",
+        "targetBackend": "codex",
+        "targetModel": "sol",
+        "answeringOwnerId": "su-5f010c19-0916-48a8-8fc2-d63380bdfdf8",
+        "question": "Vet acceptance rubric acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03 revision 1 against meta-acceptance-rubric. Read current Requirements R-1..R-7 and rubrics:get for the exact criteria. Is the seven-BAR proof contract specific, falsifiable and honest about bounded reliability/usefulness versus historical fleet rates? Identify any minimal amendment needed before proof cards and final independent acceptance; do not grade unfinished implementation as passed. In particular critique R-6's bounded current-build matrix and eight-thread quality review, measured unavailable paths, requester decisions, and R-7 exact deployed-artifact requirement.",
+        "answerPosts": [
+          {
+            "id": 1156967,
+            "authorId": "su-5f010c19-0916-48a8-8fc2-d63380bdfdf8",
+            "createdAt": "2026-10-03T07:11:33.958Z",
+            "ref": "thread-post:1156967",
+            "bodySha256": "c9a4f3f27850b8c7fc51789d087ea0c1dc38ad464f90b98ba6ead9a2696388a2"
+          }
+        ],
+        "quality": {
+          "rating": "useful",
+          "reason": "Gives specific non-vacuous matrix, deterministic population, requester evidence, exact shipment and follow-through detector amendments. The requester recorded adoption in D-003; the immutable rubric methods now implement those changes. This is advice about rubric methods, not an implementation pass.",
+          "decisionRefs": [
+            "get-feedback-reliability-usefulness-adoption-2026-10-03#D-003",
+            "get-feedback-reliability-usefulness-adoption-2026-10-03#D-004",
+            "get-feedback-reliability-usefulness-adoption-2026-10-03#D-005"
+          ]
+        },
+        "requesterDecision": {
+          "rating": "unknown",
+          "reconciliation": null,
+          "reason": "No structured requester reconciliation in the cut snapshot. A Decision, close prose, review or later code is not substituted for reconciliation.",
+          "planDecisionRefs": [
+            "get-feedback-reliability-usefulness-adoption-2026-10-03#D-003",
+            "get-feedback-reliability-usefulness-adoption-2026-10-03#D-004",
+            "get-feedback-reliability-usefulness-adoption-2026-10-03#D-005"
+          ]
+        }
+      },
+      {
+        "conversationId": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+        "createdAt": "2026-10-03 11:25:15.132413+00",
+        "originTaskRef": "WI-10005889",
+        "policy": "rubric-vetting",
+        "stratum": "same-backend-dispatch",
+        "sourceBackend": "claude",
+        "sourceOwnerId": "su-b188e54a-d2b4-4e5e-9d6c-c0fdbd68ddcd",
+        "targetBackend": "claude",
+        "targetModel": "fable",
+        "answeringOwnerId": "su-c960cc81-0b1a-41dd-b4d5-bea3d6fbb4f5",
+        "question": "Independently vet acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03 at current revision3, criteriaHash2bca61164488dfd7760eebe7c327f52f8e1885650ea9e5e6e8af5192d868248a, against meta-acceptance-rubric and plan get-feedback-reliability-usefulness-adoption-2026-10-03 revision12. Read the current rubric and Goal/D-001/D-003/D-005. Check non-vacuous live source/backend success matrix, requester-authored utility/follow-through across eight distinct trials, and the exact normal acceptance-to-shipped-artifact chain with staging-operator for R6 and release-operator for R7. Give a current-revision critique or actionable independent attestation; archived historical source-quality approval is insufficient. Fallback review work-item WI-10005956 remains open and unheld.",
+        "answerPosts": [
+          {
+            "id": 1157488,
+            "authorId": "su-c960cc81-0b1a-41dd-b4d5-bea3d6fbb4f5",
+            "createdAt": "2026-10-05T15:01:37.562Z",
+            "ref": "thread-post:1157488",
+            "bodySha256": "f6e1599cdb6d382b3d1cab04ec53a34c0dcda0ffd9f5ccfbf53a4be127ea26a1"
+          },
+          {
+            "id": 1157540,
+            "authorId": "su-c960cc81-0b1a-41dd-b4d5-bea3d6fbb4f5",
+            "createdAt": "2026-10-05T15:39:15.929Z",
+            "ref": "thread-post:1157540",
+            "bodySha256": "b5db8d734af8e3ae9124356b54c740eed41c1f1f55f132dc5c55b0d2b3b08dac"
+          }
+        ],
+        "quality": {
+          "rating": "useful",
+          "reason": "Directly vets current revision 3 against the stated unresolved method questions and explains the author-bound attestation flow in a follow-up. Its advice supports retaining the rubric and emitting an author card. Reviewer test totals are not adopted as implementation evidence.",
+          "decisionRefs": []
+        },
+        "requesterDecision": {
+          "rating": "unknown",
+          "reconciliation": null,
+          "reason": "No structured requester reconciliation in the cut snapshot. A Decision, close prose, review or later code is not substituted for reconciliation.",
+          "planDecisionRefs": []
+        }
+      },
+      {
+        "conversationId": "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898",
+        "createdAt": "2026-10-05 17:21:32.503861+00",
+        "originTaskRef": "WI-10005889",
+        "policy": "consult-default",
+        "stratum": "same-backend-dispatch",
+        "sourceBackend": "codex",
+        "sourceOwnerId": "su-678f0ae8-c42e-443e-a96e-117103fad70e",
+        "targetBackend": "codex",
+        "targetModel": "sol",
+        "answeringOwnerId": "su-ee05d5f4-6dde-4639-bc4d-430964088d0b",
+        "question": "For the maintained session-port v1 original D-009 source-continuation scope in WI-10002749, what source identity or exact evidence gap still remains after the Codex/OMP source adapters and isolated consult target.ownerId seam? Inspect packages/operator-core/lib/session-port/service.ts, source.ts, native-source.ts and packages/operator-core/lib/consult/consult-dispatch.ts. Recommend whether the original adapter item can close independently of live isolated-consult acceptance, with a concrete remaining test if it cannot. Answer from relevant source/session expertise; preserve live source identity and claims, and do not implement changes.",
+        "answerPosts": [
+          {
+            "id": 1157626,
+            "authorId": "su-ee05d5f4-6dde-4639-bc4d-430964088d0b",
+            "createdAt": "2026-10-05T17:24:04.787Z",
+            "ref": "thread-post:1157626",
+            "bodySha256": "88bf4771af3f9f9a5a3ef3dedbec5399a5ae8c23f0d1cd0cb4e0a94279b03bf1"
+          }
+        ],
+        "quality": {
+          "rating": "useful",
+          "reason": "Answers the adapter-versus-isolated-acceptance scope question from named source boundaries and gives five concrete live assertions. Its conditional scope split was retained; it does not supply source-claim measurements.",
+          "decisionRefs": []
+        },
+        "requesterDecision": {
+          "rating": "recorded",
+          "reconciliation": {
+            "at": "2026-10-05T17:27:51.854Z",
+            "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+            "note": "Requester reviewed answer post1157626 from isolated ee05d. It confirms the existing scope split: WI10002749 adapter/identity correctness may close independently only if its stored acceptance supports that boundary; P002/R6 still require actual isolated source/native/claim continuity. I am keeping live matrix acceptance open and adopting the concrete five-assertion test: prep owner, child owner, exact carried native/evidence span, unchanged source claims, typed child reply. Current trial provides substantive advice and one native Codex-target reply, not full adapter matrix or shipment. Claude auto/default bootstrap refusals separately filed and self-owned as EI25161224402098219; no quota or provider-wall inference.",
+            "disposition": "confirmed",
+            "consult_state": "active"
+          },
+          "reason": "Persisted requester-authored confirmation precedes the fixed cut.",
+          "planDecisionRefs": []
+        }
+      },
+      {
+        "conversationId": "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574",
+        "createdAt": "2026-10-05 18:23:30.545068+00",
+        "originTaskRef": "WI-10005889",
+        "policy": "consult-default",
+        "stratum": "cross-backend-dispatch",
+        "sourceBackend": "codex",
+        "sourceOwnerId": "su-678f0ae8-c42e-443e-a96e-117103fad70e",
+        "targetBackend": "claude",
+        "targetModel": "fable",
+        "answeringOwnerId": "su-befe0695-b613-4ad0-9abf-af2365aabadb",
+        "question": "For the maintained session-port v1 original D-009 source-continuation scope in WI-10002749, what source identity or exact evidence gap still remains after the Codex/OMP source adapters and isolated consult target.ownerId seam? Inspect packages/operator-core/lib/session-port/service.ts, source.ts, native-source.ts and packages/operator-core/lib/consult/consult-dispatch.ts. Recommend whether the original adapter item can close independently of live isolated-consult acceptance, with a concrete remaining test if it cannot. Answer from relevant source/session expertise; preserve live source identity and claims, and do not implement changes.",
+        "answerPosts": [
+          {
+            "id": 1157673,
+            "authorId": "su-befe0695-b613-4ad0-9abf-af2365aabadb",
+            "createdAt": "2026-10-05T18:30:04.154Z",
+            "ref": "thread-post:1157673",
+            "bodySha256": "3d5034335678058a5f84fe7915cbc82911797b3991a3e69a9e0782c8960f3d1a"
+          }
+        ],
+        "quality": {
+          "rating": "useful",
+          "reason": "Discloses weak inherited span relevance, reads the actual source, supplies exact port/owner/native receipts, and names header and continuation/bootstrap detector gaps. Those scoped gaps were subsequently repaired under WI-10002749, without promoting this answer to full live acceptance.",
+          "decisionRefs": []
+        },
+        "requesterDecision": {
+          "rating": "recorded",
+          "reconciliation": {
+            "at": "2026-10-05T18:31:23.018Z",
+            "by": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+            "note": "The changed-build Codex→Claude port delivered a full native frame10fa1659 to isolated answering owner su-befe0695, native5b610d62, and exact typed post1157673. The answer confirms the adapter/live-acceptance scope split and identifies the per-source five-assertion trial. Source span17 is weak historical expertise by responder admission; usefulness rests on fresh source reads and this trial's live port evidence. I will retain the original source-adapter scope separately and keep source-claim immutability, OMP/Claude source rows, deterministic eight-thread review and final shipment open; this positive is not the fullmatrix.",
+            "disposition": "confirmed",
+            "consult_state": "active"
+          },
+          "reason": "Persisted requester-authored confirmation precedes the fixed cut.",
+          "planDecisionRefs": []
+        }
+      }
+    ],
+    "excludedRequests": [
+      {
+        "conversationId": "conv-mus0jgod-0000-254700acb61c4da8b8afe25cec3bed6b",
+        "originTaskRef": "WI-10005889",
+        "reason": "No typed substantive responder answer in the snapshot."
+      },
+      {
+        "conversationId": "conv-mus35pkf-0000-0ea29b8e8d314ae4b443ae3fd7cb7c21",
+        "originTaskRef": "acceptance-get-feedback-reliability-usefulness-adoption-2026-10-03",
+        "reason": "Not attributed to a stamped plan work-item."
+      },
+      {
+        "conversationId": "conv-mus4bvpj-0000-fb25007148da42e080c51a25bdd2044e",
+        "originTaskRef": "WI-10005848",
+        "reason": "No typed substantive responder answer in the snapshot."
+      },
+      {
+        "conversationId": "conv-musg7c6u-0000-c5b728a7d3094716b518713f82f5e006",
+        "originTaskRef": "WI-10005889",
+        "reason": "No typed substantive responder answer in the snapshot."
+      },
+      {
+        "conversationId": "conv-muvfir5y-0000-ac78b45af83b47c9b0f0dde6ccaf500d",
+        "originTaskRef": "WI-10005889",
+        "reason": "No typed substantive responder answer in the snapshot."
+      },
+      {
+        "conversationId": "conv-muvh21gu-0000-7f5235a6123e481b98d360db2be0f35b",
+        "originTaskRef": "WI-10005889",
+        "reason": "No typed substantive responder answer in the snapshot."
+      }
+    ],
+    "strata": [
+      "same-backend-dispatch",
+      "cross-backend-dispatch",
+      "archive-retrieval-only"
+    ],
+    "stratumCounts": {
+      "same-backend-dispatch": 2,
+      "cross-backend-dispatch": 2,
+      "archive-retrieval-only": 0
+    },
+    "selectionRule": "In listed stratum order choose earliest eligible thread by created_at then conversation_id from each nonempty stratum; fill from remaining earliest threads globally to eight distinct ids.",
+    "chosenIds": [
+      "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8",
+      "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f",
+      "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898",
+      "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574"
+    ],
+    "target": 8,
+    "eligible": 4,
+    "shortfall": 4,
+    "decisionCounts": {
+      "recorded": 2,
+      "unknown": 2
+    },
+    "rating": "unknown",
+    "reason": "Four eligible threads, shortfall four; two lack structured requester reconciliation. These observations do not estimate historical fleet rates or satisfy a call quota.",
+    "independentAcceptance": false
+  },
+  "historicalPortProofs": [
+    {
+      "portId": "0b6d804e-d72c-47cb-99bf-42fc9ebb0117",
+      "sourceAdvSessionId": 34050,
+      "targetAdvSessionId": 34352,
+      "sourceBackend": "codex",
+      "targetBackend": "codex",
+      "targetModel": "gpt-5.6-sol",
+      "status": "delivered",
+      "preparedAt": "2026-10-05 17:21:38.503245+00",
+      "deliveredAt": "2026-10-05 17:21:45.763214+00",
+      "sourceOwnerId": "su-678f0ae8-c42e-443e-a96e-117103fad70e",
+      "targetOwnerId": "su-ee05d5f4-6dde-4639-bc4d-430964088d0b",
+      "sourceNativeSessionId": "01a10215-de68-7071-93ea-3931b2a7ec1f",
+      "targetNativeSessionId": null,
+      "fidelity": "full",
+      "authorityCarried": false,
+      "hashes": {
+        "source": "9db442e01e726e842a29a9408d944a7b65b7a0dca94c2b9c147ccc576a453499",
+        "rendered": "1a063046ce1ddcabe1506a0cf805a95822c06e942e9255de2934f36238fb0044",
+        "normalized": "0ef1a1a0d9d9f2e6331ebb41273d6839d5a4721bad74e20bee09c5e5f96ab52e"
+      },
+      "persistenceProof": {
+        "nativeRef": "/home/builduser/.papercusp/su-codex-homes/session-34352/sessions/2026/10/05/rollout-2026-10-05T13-21-39-01a10d15-e040-7750-bf84-732f7aa82a86.jsonl",
+        "persisted": true,
+        "renderedHash": "1a063046ce1ddcabe1506a0cf805a95822c06e942e9255de2934f36238fb0044"
+      },
+      "bootstrapReceiptCommitted": true,
+      "bootstrapReceiptTargetAdvSessionId": 34352
+    },
+    {
+      "portId": "10fa1659-8574-43f0-8f95-3cb8569d95e6",
+      "sourceAdvSessionId": 34050,
+      "targetAdvSessionId": 34372,
+      "sourceBackend": "codex",
+      "targetBackend": "claude",
+      "targetModel": "fable[1m]",
+      "status": "delivered",
+      "preparedAt": "2026-10-05 18:23:33.808042+00",
+      "deliveredAt": "2026-10-05 18:23:40.496301+00",
+      "sourceOwnerId": "su-678f0ae8-c42e-443e-a96e-117103fad70e",
+      "targetOwnerId": "su-befe0695-b613-4ad0-9abf-af2365aabadb",
+      "sourceNativeSessionId": "01a10215-de68-7071-93ea-3931b2a7ec1f",
+      "targetNativeSessionId": "5b610d62-4311-4682-8294-84bb854bf0bf",
+      "fidelity": "full",
+      "authorityCarried": false,
+      "hashes": {
+        "source": "13e415f95af01e57d970a84b436e7359db4b7a4a3e4220ba7bc0cf0594925be9",
+        "rendered": "55a1170455f6a5bcf575799694b0756362c8e9f3015b87bbc45f5d6e34f0d90b",
+        "normalized": "4d92b992ecc89b801900b01e58d53ffc8a2a6c8810e64ca82381fb84fddaf49d"
+      },
+      "persistenceProof": {
+        "nativeRef": "/home/builduser/.papercusp/session-claude/su-befe0695-b613-4ad0-9abf-af2365aabadb/projects/-home-builduser-papercupai-workspace-papercusp/5b610d62-4311-4682-8294-84bb854bf0bf.jsonl",
+        "persisted": true,
+        "renderedHash": "55a1170455f6a5bcf575799694b0756362c8e9f3015b87bbc45f5d6e34f0d90b"
+      },
+      "bootstrapReceiptCommitted": true,
+      "bootstrapReceiptTargetAdvSessionId": 34372
+    },
+    {
+      "portId": "488e5ba7-5e96-4732-bf0b-1e0388e9c4c5",
+      "sourceAdvSessionId": 34352,
+      "targetAdvSessionId": 34387,
+      "sourceBackend": "codex",
+      "targetBackend": "claude",
+      "targetModel": "sonnet[1m]:high",
+      "status": "delivered",
+      "preparedAt": "2026-10-05 19:20:08.756433+00",
+      "deliveredAt": "2026-10-05 19:20:15.834801+00",
+      "sourceOwnerId": "su-ee05d5f4-6dde-4639-bc4d-430964088d0b",
+      "targetOwnerId": "su-ee05d5f4-6dde-4639-bc4d-430964088d0b",
+      "sourceNativeSessionId": "01a10d15-e040-7750-bf84-732f7aa82a86",
+      "targetNativeSessionId": "89a22eb9-7805-4ec2-ba63-8d10d017e529",
+      "fidelity": "full",
+      "authorityCarried": true,
+      "hashes": {
+        "source": "d4357ede225ecf86babb976476586ca470e01384a8583d6ec8e7ea1a090f4b78",
+        "rendered": "65600c7fb7fcb10491dc04c4dc471ab6dc4074c2bd9dcf7f2ab54f9020f8b59b",
+        "normalized": "ebe2afcb01fc567a084bfc6e7c752a529b9205ad86cbe7e427b001121b8d4c47"
+      },
+      "persistenceProof": {
+        "nativeRef": "/home/builduser/.papercusp/session-claude/su-ee05d5f4-6dde-4639-bc4d-430964088d0b/projects/-home-builduser-papercupai-workspace-papercusp/89a22eb9-7805-4ec2-ba63-8d10d017e529.jsonl",
+        "persisted": true,
+        "renderedHash": "65600c7fb7fcb10491dc04c4dc471ab6dc4074c2bd9dcf7f2ab54f9020f8b59b"
+      },
+      "bootstrapReceiptCommitted": true,
+      "bootstrapReceiptTargetAdvSessionId": 34387
+    }
+  ],
+  "originalAdapterScope": {
+    "workItem": "WI-10002749",
+    "verifierIssue": "EI-25168448455104828",
+    "state": "Previously verified done/committed; not worked again",
+    "portId": "488e5ba7-5e96-4732-bf0b-1e0388e9c4c5",
+    "note": "Same-owner source continuation is a separate original acceptance claim and does not replace an isolated consultation row or source-claim census."
+  },
+  "routingHealth": {
+    "args": {
+      "since": "2026-10-03T05:21:32.561Z",
+      "until": "2026-10-05T20:27:24.000Z"
+    },
+    "response": {
+      "ok": true,
+      "window": {
+        "since": "2026-10-03T05:21:32.561Z",
+        "until": "2026-10-05T20:27:24.000Z",
+        "cohort": "launch-time"
+      },
+      "asOf": "2026-10-05T20:27:55.976Z",
+      "policies": [
+        {
+          "policy": "acceptance-bar-amendment-review",
+          "consults": 66,
+          "consultsWithoutDispatchRecords": 39,
+          "launched": 6,
+          "answered": 5,
+          "declined": 1,
+          "failed": 6,
+          "failedReasons": {
+            "launch-failed": 4,
+            "kickoff-not-persisted": 2
+          },
+          "hung": 0,
+          "pending": 0,
+          "skipped": 4,
+          "skippedReasons": {
+            "convert-needs-live-source-identity": 4
+          }
+        },
+        {
+          "policy": "acceptance-grading",
+          "consults": 4,
+          "consultsWithoutDispatchRecords": 0,
+          "launched": 3,
+          "answered": 2,
+          "declined": 0,
+          "failed": 14,
+          "failedReasons": {
+            "kickoff-not-persisted": 2,
+            "launch-failed": 10,
+            "answer-pickup-stalled": 1,
+            "answer-window-converted": 1
+          },
+          "hung": 0,
+          "pending": 0,
+          "skipped": 4,
+          "skippedReasons": {
+            "convert-needs-live-source-identity": 4
+          }
+        },
+        {
+          "policy": "consult-default",
+          "consults": 115,
+          "consultsWithoutDispatchRecords": 52,
+          "launched": 20,
+          "answered": 14,
+          "declined": 6,
+          "failed": 67,
+          "failedReasons": {
+            "kickoff-not-persisted": 19,
+            "launch-failed": 45,
+            "answer-window-expired": 3
+          },
+          "hung": 0,
+          "pending": 0,
+          "skipped": 406,
+          "skippedReasons": {
+            "conversion-unavailable": 114,
+            "fork-unsupported": 114,
+            "source-session-untracked": 134,
+            "convert-needs-live-source-identity": 42,
+            "source-context-critical": 2
+          }
+        },
+        {
+          "policy": "grading-integrity-audit",
+          "consults": 0,
+          "consultsWithoutDispatchRecords": 0,
+          "launched": 0,
+          "answered": 0,
+          "declined": 0,
+          "failed": 0,
+          "failedReasons": {},
+          "hung": 0,
+          "pending": 0,
+          "skipped": 0,
+          "skippedReasons": {}
+        },
+        {
+          "policy": "rubric-vetting",
+          "consults": 48,
+          "consultsWithoutDispatchRecords": 1,
+          "launched": 27,
+          "answered": 25,
+          "declined": 0,
+          "failed": 54,
+          "failedReasons": {
+            "launch-failed": 36,
+            "answer-window-converted": 3,
+            "answer-window-expired": 1,
+            "kickoff-not-persisted": 14
+          },
+          "hung": 0,
+          "pending": 1,
+          "skipped": 24,
+          "skippedReasons": {
+            "source-transcript-poisoned": 4,
+            "source-context-critical": 14,
+            "evidence-span-unavailable": 4,
+            "convert-needs-live-source-identity": 2
+          }
+        }
+      ],
+      "totals": {
+        "consults": 233,
+        "consultsWithoutDispatchRecords": 92,
+        "launched": 56,
+        "answered": 46,
+        "declined": 7,
+        "failed": 141,
+        "failedReasons": {
+          "launch-failed": 95,
+          "kickoff-not-persisted": 37,
+          "answer-pickup-stalled": 1,
+          "answer-window-converted": 4,
+          "answer-window-expired": 4
+        },
+        "hung": 0,
+        "pending": 1,
+        "skipped": 438,
+        "skippedReasons": {
+          "convert-needs-live-source-identity": 52,
+          "conversion-unavailable": 114,
+          "fork-unsupported": 114,
+          "source-session-untracked": 134,
+          "source-context-critical": 16,
+          "source-transcript-poisoned": 4,
+          "evidence-span-unavailable": 4
+        }
+      },
+      "bounded": {
+        "truncatedByLimit": false,
+        "consultsScanned": 233,
+        "consultLimit": 5000,
+        "dispatchLogCapped": 0
+      },
+      "requestCohort": {
+        "window": {
+          "since": "2026-10-03T05:21:32.561Z",
+          "until": "2026-10-05T20:27:24.000Z",
+          "cohort": "request-time"
+        },
+        "policies": [
+          {
+            "policy": "acceptance-bar-amendment-review",
+            "requests": 31,
+            "dispatchRequested": 11,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 20,
+            "outcomes": {
+              "received": 2,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 9,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 0,
+              "notApplicable": 31,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 0,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "acceptance-grading",
+            "requests": 3,
+            "dispatchRequested": 0,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 3,
+            "outcomes": {
+              "received": 0,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 3,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 3,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "consult-default",
+            "requests": 47,
+            "dispatchRequested": 28,
+            "retrievalOnly": 3,
+            "legacyIntentUnknown": 16,
+            "outcomes": {
+              "received": 8,
+              "declined": 1,
+              "pending": 0,
+              "unavailable": 19,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 47,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 7,
+                "rescoped": 14,
+                "reversed": 0,
+                "moot": 9
+              },
+              "unknown": 17,
+              "invalid": 0,
+              "recordedWithFeedback": 8,
+              "recordedWithoutFeedback": 22
+            }
+          },
+          {
+            "policy": "grading-integrity-audit",
+            "requests": 0,
+            "dispatchRequested": 0,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 0,
+            "outcomes": {
+              "received": 0,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 0,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 0,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "rubric-vetting",
+            "requests": 24,
+            "dispatchRequested": 10,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 14,
+            "outcomes": {
+              "received": 8,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "failed": 2,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 23,
+              "notApplicable": 1,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 1,
+                "rescoped": 3,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 19,
+              "invalid": 0,
+              "recordedWithFeedback": 4,
+              "recordedWithoutFeedback": 0
+            }
+          }
+        ],
+        "totals": {
+          "requests": 105,
+          "dispatchRequested": 49,
+          "retrievalOnly": 3,
+          "legacyIntentUnknown": 53,
+          "outcomes": {
+            "received": 18,
+            "declined": 1,
+            "pending": 0,
+            "unavailable": 28,
+            "failed": 2,
+            "unmeasured": 0
+          },
+          "followThrough": {
+            "applicable": 73,
+            "notApplicable": 32,
+            "applicabilityUnknown": 0,
+            "recorded": {
+              "confirmed": 8,
+              "rescoped": 17,
+              "reversed": 0,
+              "moot": 9
+            },
+            "unknown": 39,
+            "invalid": 0,
+            "recordedWithFeedback": 12,
+            "recordedWithoutFeedback": 22
+          }
+        }
+      }
+    },
+    "scope": "Workspace-wide report from the containing staging operator. Its request/launch cohorts are not this requester quality population; outcomes are judged at response.asOf, which is later than the creation cutoff.",
+    "writers": [
+      "packages/operator-core/lib/agent-tools/consult/routing-health.ts",
+      "packages/operator-core/lib/consult/consult-routing-health.ts"
+    ],
+    "writerSemantics": "Request intent partitions creation-time requests; outcomes partition explicit dispatch requests and typed feedback outranks lifecycle expiry. Follow-through validates requester id, disposition, nonempty note and timestamp. Launch counters count dispatch walks, not unique requests."
+  },
+  "reproduction": {
+    "endpoint": "http://localhost:3170",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "cohortQuery": "SELECT cs.conversation_id,cs.created_at,cs.origin_task_ref,cs.question,cs.requester_id,cs.responder_id,cs.state,cs.latency_contract,cs.routing,cs.outcome,cs.dispatch_attempts,cs.cascade_digest,cs.expires_at,cs.closed_at, COALESCE((SELECT jsonb_agg(jsonb_build_object('post_id',pm.post_id,'author_id',pm.author_id,'kind',pm.kind,'created_at',pm.created_at,'evidence',pm.evidence) ORDER BY pm.created_at,pm.post_id) FROM harness_shared.consult_post_meta pm WHERE pm.workspace_id=cs.workspace_id AND pm.conversation_id=cs.conversation_id AND pm.created_at<'2026-10-05T20:27:24.000Z'),'[]'::jsonb) AS posts FROM harness_shared.consult_state cs WHERE cs.workspace_id='papercusp-workspace' AND cs.requester_id='su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4' AND cs.created_at>='2026-10-03T05:21:32.561Z' AND cs.created_at<'2026-10-05T20:27:24.000Z' ORDER BY cs.created_at,cs.conversation_id LIMIT 100",
+    "conversationsGetArgs": [
+      {
+        "id": "conv-mus1v26j-0000-68ff1c643c2b4f10be212508682b280f"
+      },
+      {
+        "id": "conv-musb29y1-0000-cf39e1f18138446ebc68b0a6af8436d8"
+      },
+      {
+        "id": "conv-muvio65y-0000-f1aa8000e03d45e78c48082936ad9898"
+      },
+      {
+        "id": "conv-muvkvv0y-0000-598ee0fa316049bb86d9ad6b07871574"
+      }
+    ],
+    "nativeFrameRefs": [
+      {
+        "kind": "sessions:read",
+        "args": {
+          "ref": "session_turn:codex:01a10d15-e040-7750-bf84-732f7aa82a86:1"
+        },
+        "scope": "Archived Codex target header is still readable; the historical persistenceProof.nativeRef is no longer local. Only the read header's port/backend/full-fidelity claims were refreshed this turn."
+      },
+      {
+        "kind": "native-jsonl",
+        "path": "/home/builduser/.papercusp/session-claude/su-befe0695-b613-4ad0-9abf-af2365aabadb/projects/-home-builduser-papercupai-workspace-papercusp/5b610d62-4311-4682-8294-84bb854bf0bf.jsonl",
+        "line": 4
+      }
+    ],
+    "planDecisionRead": {
+      "slug": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+      "heading": "Decisions",
+      "harness": "papercusp"
+    },
+    "decisionSectionSha256": "cc7b7d751ca9e708e562fc5b3d347397746cea015ebb91ab55ae621ac13a4545"
+  },
+  "provenance": {
+    "artifactPath": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "captureFiles": [
+      "/tmp/get-feedback-fire84-cohort.json",
+      "/tmp/get-feedback-fire84-health.json",
+      "/tmp/get-feedback-fire84-runtime.json",
+      "/tmp/get-feedback-fire84-ports.json"
+    ],
+    "identityBinding": "The exact containing commit and file SHA-256 are recorded separately on WI-10005891 and WI-10005848; this artifact does not self-embed its commit or hash.",
+    "serialization": "serializeIdentitySafeJson from scripts/lib/identity-leak-patterns.mjs; only machine identity strings in public evidence are redacted. Original port, source, rendered and answer-body hashes remain unchanged. Re-resolve a private native path via its exact port id instead of opening a redacted path."
+  }
+}

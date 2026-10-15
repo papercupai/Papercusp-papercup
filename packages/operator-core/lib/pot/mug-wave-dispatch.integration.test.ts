@@ -33,6 +33,7 @@ import { createOrgTestDb } from '../../test/_org-test-db';
 const mocks = vi.hoisted(() => ({
   wakeRecipients: vi.fn(async (..._args: unknown[]) => ({ woken: 1 })),
   openEscalation: vi.fn(async () => ({ msg_id: 'esc-test', ts: new Date(0).toISOString() })),
+  mugKettleSystemEnabled: vi.fn(async () => false),
   sql: undefined as unknown as Sql,
 }));
 vi.mock('../agent-tools/coordination/inbox-wake', async (orig) => ({
@@ -50,6 +51,10 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../workspace-registry', async (orig) => ({
   ...(await (orig as () => Promise<Record<string, unknown>>)()),
   activeWorkspaceId: () => 'default',
+}));
+vi.mock('./started', async (orig) => ({
+  ...(await (orig as () => Promise<Record<string, unknown>>)()),
+  mugKettleSystemEnabled: mocks.mugKettleSystemEnabled,
 }));
 
 import { gatherFrontier } from '../fleet/placement-gather';
@@ -154,7 +159,12 @@ describe('mug wave dispatch — wave ordering through cup placement (real PG, P-
   beforeEach(async () => {
     mocks.wakeRecipients.mockClear();
     mocks.openEscalation.mockClear();
-    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked, harness_shared.coord_links, harness_shared.adv_sessions `;
+    // Match production's hard-false default, then locally reopen the retired gate
+    // to keep this test focused on the underlying wave-dispatch delivery contract.
+    mocks.mugKettleSystemEnabled.mockResolvedValue(true);
+    // work_item_spec_revision_edges (and spec_evidence_bindings) carry an FK to work_items,
+    // so they must be truncated with it — same list as placement-watchdog's fixture.
+    await sql`TRUNCATE harness_shared.pot_placements, harness_shared.spawned_agents, harness_shared.spec_evidence_bindings, harness_shared.work_item_spec_revision_edges, harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked, harness_shared.coord_links, harness_shared.adv_sessions `;
     await seedMugSession();
   });
 

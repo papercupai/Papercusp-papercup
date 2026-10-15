@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderCarryNote } from '../../carry-note';
 import { shapeWorkItemsGet } from './get-shape';
 import { buildWorkItemResume, readWorkItemResume, RESUME_PACKET_BUDGET } from './resume';
+import type { TaskBrief } from '../../code-intelligence/task-brief';
 
 const item = { id: 'WI-resume', harness: 'h1', assignee: 'su-current', state: 'open',
   payload: { plan_item: { plan_slug: 'resume-plan', item_id: 'P-001' } } };
@@ -45,6 +46,23 @@ describe('bounded work-item resume', () => {
     expect(packet.nextAction.text).toBe('The wiring is complete. Review the saved acceptance evidence.');
   });
 
+  it('keeps the checkpoint next action when the latest update only records an insight', () => {
+    const previousNext = 'Resume the review after the independent reproduction receipt arrives.';
+    const previous = renderCarryNote({ next: previousNext });
+    const latest = renderCarryNote({ insight: 'Recorded an evidence attestation for the prior review.' });
+    const text = `${previous}\n\n---\n${latest}`;
+    const packet = build({ checkpoint: { checkpoint: text, updatedAtMs: 1,
+      latestUpdate: { status: 'available', text: latest } } as any });
+    expect(packet.nextAction).toEqual({ status: 'available', text: previousNext, source: 'checkpoint' });
+  });
+
+  it('does not promote latest-update prose to an action when neither update has a next field', () => {
+    const latest = renderCarryNote({ insight: 'The evidence is still inconclusive.' });
+    const packet = build({ checkpoint: { checkpoint: latest, updatedAtMs: 1,
+      latestUpdate: { status: 'available', text: latest } } as any });
+    expect(packet.nextAction).toEqual({ status: 'missing', text: null });
+  });
+
   it('does not guess which unmarked historical segment is current', () => {
     const packet = build({ checkpoint: { checkpoint: `${renderCarryNote({ next: 'Old action' })}\n\n---\nNew progress`, updatedAtMs: 1 } });
     expect(packet.nextAction).toMatchObject({ status: 'unknown', text: null });
@@ -55,6 +73,25 @@ describe('bounded work-item resume', () => {
     const packet = build({ checkpoint: { checkpoint: renderCarryNote({ next: instruction }), updatedAtMs: 1 } });
     expect(packet.nextAction).toMatchObject({ status: 'available', text: instruction.trim() });
     expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+  });
+
+  it('fits source evidence around a complete next action without losing attribution or mutating the claim brief', () => {
+    const instruction = 'Review each saved assertion carefully. '.repeat(65).trim();
+    const brief: TaskBrief = { status: 'current', scope: { harness: 'h1', paths: ['target.ts'] },
+      repository: { workspaceId: 'w1', rootPath: '/registered/repo' }, sourceFingerprint: 'measured-current-source',
+      commit: 'accepted', files: [{ path: 'target.ts', sha256: 'current-hash', kind: 'implementation' }],
+      excerpts: Array.from({ length: 5 }, () => ({ path: 'target.ts', text: 'literal source '.repeat(24) })),
+      graph: { status: 'measured', consumers: ['consumer.ts:2'], relationships: ['target → consumer'] },
+      exclusions: [], recover: { tool: 'code:pack', args: { op: 'pack', include: ['target.ts'], rootPath: '/registered/repo' } } };
+    const original = structuredClone(brief);
+    const packet = build({ checkpoint: { checkpoint: renderCarryNote({ next: instruction }), updatedAtMs: 1 }, taskBrief: brief });
+    expect(packet.nextAction.text).toBe(instruction);
+    expect(packet.taskBrief).toMatchObject({ status: 'current', repository: brief.repository,
+      scope: brief.scope, sourceFingerprint: brief.sourceFingerprint, files: brief.files, recover: brief.recover });
+    expect((packet.taskBrief as TaskBrief).excerpts.length).toBeLessThan(brief.excerpts.length);
+    expect((packet.taskBrief as TaskBrief).exclusions).toContain('Additional inline evidence omitted; use the scoped recovery readers.');
+    expect(JSON.stringify(packet).length).toBeLessThanOrEqual(RESUME_PACKET_BUDGET);
+    expect(brief).toEqual(original);
   });
 
   it('budgets whole proof and check rows while preserving outcome, currentness and omitted counts', () => {

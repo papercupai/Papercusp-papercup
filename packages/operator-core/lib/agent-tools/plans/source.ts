@@ -22,26 +22,35 @@ import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanItem } from './parser';
 import type { PlanIndexItem, PlanIndexDecision } from './derive-index';
 import { hashPlanContent } from './content-hash';
+import { VALID_PLAN_SLUG } from './run-instance-slug';
 import { summarizeForcedPast, type ForcedPastSummary } from './forced-past-stamp';
 import type { ParsePromoteResult } from './promote-policy';
 import type { Sql } from 'postgres';
+import { InvalidInputError } from '@papercusp/tooldef';
 import { withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
 import {
   resolveProject,
-  resolveWorkspaceForHarnessSlug,
   RegistryReadUnavailableError,
 } from '../../harness-core';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
+import { fill_workspace_id_from_projects, isOperatorHomeScope,
+  type ProjectsWorkspaceLookup, type RegistryWorkspaceResolver } from '../../harness/workspace-for-harness';
+export { fill_workspace_id_from_projects,
+  type ProjectsWorkspaceLookup, type RegistryWorkspaceResolver } from '../../harness/workspace-for-harness';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { isTerminalItemStatus } from '../../fleet-drained-events';
 import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
-import type { BlueprintOperationRoutineTarget } from '../../harness/routines/materialize-plan-schedule';
+import type {
+  BlueprintOperationRoutineTarget,
+  PlanScheduleSystemAction,
+} from '../../harness/routines/materialize-plan-schedule';
 import { BLENDER_PLAN_SQL_PATTERN } from './plan-provenance';
 import { activeAcceptanceRubricsQuery } from './plan-lifecycle-derivation';
+import { applyNowNoteToParsed, parseNowNote, type PlanNowNote } from './now-note-store';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -185,6 +194,11 @@ export interface PlanSchedule {
   execution?: AgenticPlanExecutionTarget;
   /** Optional registered operation fired by this cadence instead of legacy system:plan-run. */
   operation?: BlueprintOperationRoutineTarget;
+  /**
+   * Optional plan-schedulable system action fired directly by this cadence (deterministic,
+   * no agent turn) — test-rubric-unification-2026-10-12 D-008. Exclusive with `operation`.
+   */
+  action?: PlanScheduleSystemAction;
 }
 
 export interface PlanRow {
@@ -253,6 +267,10 @@ export interface PlanRow {
   decisions: PlanIndexDecision[];
   nowState: string | null;
   nowNext: string | null;
+  /** P-004 (migration 1480): the structured Now note; null when none was written
+   *  through plans:set-now (readers fall back to the content `## Now`) or when the
+   *  read path did not select it. */
+  nowNote: PlanNowNote | null;
   /** v2 P-001: the parsed `## Promote` policy ({ policy, warnings }); NULL when the row hasn't been
    *  repopulated since mig 331 (consumers fall back to parsing content until the next write). */
   promotePolicy: ParsePromoteResult | null;
@@ -275,6 +293,12 @@ export interface PlanRow {
   /** Run ordinal for an instance plan (D-003). */
   runSeq: number | null;
 }
+
+/** The small canonical projection needed by plans:get-item. Indexed plans leave
+ * `content` empty so the targeted read does not detoast a potentially large
+ * markdown body just to return one stored item. Empty/unindexed rows retain the
+ * content fallback used by planItemsForRow. */
+export type PlanItemSourceRow = Pick<PlanRow, 'planSlug' | 'archived' | 'isLegacy' | 'items' | 'content'>;
 
 interface PlanDbRow {
   active_acceptance_rubric_ref?: string | null;
@@ -315,6 +339,8 @@ interface PlanDbRow {
   decisions: unknown;
   now_state: string | null;
   now_next: string | null;
+  /** mig 1480 (P-004). OPTIONAL like output_schema: only the paths that select it map a note. */
+  now_note?: unknown;
   promote_policy: unknown;
   forced_past?: unknown;
   schedule: unknown;
@@ -364,6 +390,7 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     decisions: Array.isArray(r.decisions) ? (r.decisions as PlanIndexDecision[]) : [],
     nowState: r.now_state,
     nowNext: r.now_next,
+    nowNote: parseNowNote(r.now_note ?? null),
     // v2 P-001: surface the structured promote-policy; null when the column hasn't been repopulated
     // (the row predates mig 331's lazy-populate) → consumers fall back to parsing content.
     promotePolicy: (r.promote_policy as ParsePromoteResult | null) ?? null,
@@ -381,112 +408,6 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     templateSlug: r.template_slug,
     runSeq: r.run_seq,
   };
-}
-
-/**
- * True for the harness slugs that resolve to the operator-home harness:
- * the empty / unset case, the SU wildcards `'*'` / `'all'`, and the literal
- * operator-home slug. Shared by `fill_workspace_id_from_projects` and
- * `resolvePlanScope` so the "this is the operator home" predicate is defined once.
- */
-function isOperatorHomeScope(raw: string | undefined): boolean {
-  const canonical = raw ? canonicalHarnessSlug(raw) : raw;
-  return !canonical || canonical === '*' || canonical === 'all' || canonical === operatorHomeHarnessSlug();
-}
-
-/** Injectable seam for the projects-table lookup — overridden in unit tests
- *  so the slug→workspace resolution is exercised without a live PG. Returns
- *  the DISTINCT set of workspace_ids that carry the slug. */
-export type ProjectsWorkspaceLookup = (slug: string) => Promise<string[]>;
-
-/** Injectable seam for the AUTHORITATIVE-registry fallback (resolveWorkspaceForHarnessSlug):
- *  slug → its workspace_id (or null), used when the projects projection has no row.
- *  Overridden in unit tests so the fallback branch is exercised without a live PG. */
-export type RegistryWorkspaceResolver = (slug: string) => Promise<string | null>;
-
-/**
- * Which workspace_id(s) carry `harness_slug` in `harness_shared.projects`.
- *
- * NB (2026-06-18): `harness_shared.projects` is NOT the universal harness
- * registry — it is the org/department blueprint's PROJECTION (business columns
- * owning_dept/vertical/budget_cents; the sole non-test writer is the
- * `execute-action.ts` project-create action), so it is sparse and a hive/generic
- * harness never appears in it. The de-facto AUTHORITATIVE slug→workspace registry
- * is `harness_shared.harness_registry` (resolveProject / resolveWorkspaceForHarnessSlug),
- * which pot:create/harness:create write and the work-items path reads. The older
- * "projects is authoritative" framing (migration 221 leg 1) is STALE — kept here
- * only as the FIRST consult; `fill_workspace_id_from_projects` falls back to the
- * registry when this returns 0 (peers su-a7f66 / su-632e0166, sibling EI-1511).
- * UNIQUE (workspace_id, slug) still holds, so a slug appears at most once per
- * workspace but MAY appear in several (a same-name collision). The cross-workspace
- * read uses the admin-bypass connection (harness_admin, RLS off) because the
- * calling context's workspace GUC is not necessarily the one that owns the slug.
- */
-async function lookupProjectWorkspaceIds(slug: string): Promise<string[]> {
-  return withWorkspace(
-    '',
-    async (tx) => {
-      const rows = await tx<{ workspace_id: string }[]>`
-        SELECT DISTINCT workspace_id
-          FROM harness_shared.projects
-         WHERE slug = ${slug}
-           AND COALESCE(workspace_id, '') <> ''
-      `;
-      return rows.map((r) => r.workspace_id);
-    },
-    { bypassRlsForAdmin: true },
-  );
-}
-
-/**
- * Resolve a harness slug → its workspace_id from the projects/registry source
- * of truth (WI-148 / P-013 workspace-identity reconciliation, the SAFE forward
- * half).
- *
- * Rules (fail-loud, no silent cross-workspace default):
- *   - operator-home / empty / '*' / 'all' / operatorHomeHarnessSlug() → PAPERCUSP_WORKSPACE_ID.
- *     WI-148 PART-B CUTOVER (owner GO 2026-06-16): flipped from DEFAULT_WORKSPACE_ID
- *     to PAPERCUSP_WORKSPACE_ID *in LOCKSTEP* with migration 295, which moves
- *     papercup's plan/feature/issue rows 'default' → 'papercusp-workspace' in the
- *     SAME release. The flip and the data move MUST ship together (either alone
- *     404s every papercup read) — they apply atomically on the :3070 deploy
- *     (migrations-before-serve + papercup-read path-verify → rollback). See WI-148.
- *   - a concrete other slug: look it up in harness_shared.projects.
- *       0 matches  → null (caller decides how to fail).
- *       1 match    → that workspace_id.
- *       2+ matches → THROW (same-name collision across workspaces — fail loud
- *                    rather than silently pick the wrong workspace).
- */
-export async function fill_workspace_id_from_projects(
-  harnessSlug: string | undefined,
-  opts: { lookup?: ProjectsWorkspaceLookup; registryFallback?: RegistryWorkspaceResolver } = {},
-): Promise<string | null> {
-  const raw = harnessSlug?.trim();
-  // WI-148 part-B cutover (owner GO 2026-06-16): papercup → PAPERCUSP_WORKSPACE_ID,
-  // in lockstep with migration 295's data move (see the doc-comment above).
-  if (isOperatorHomeScope(raw)) return PAPERCUSP_WORKSPACE_ID;
-
-  const lookup = opts.lookup ?? lookupProjectWorkspaceIds;
-  const matches = await lookup(raw!);
-  const distinct = [...new Set(matches.filter((w) => w && w.trim()))];
-  if (distinct.length > 1) {
-    throw new Error(
-      `fill_workspace_id_from_projects: harness slug '${raw}' resolves to ` +
-        `${distinct.length} workspaces (${distinct.join(', ')}). Ambiguous same-name ` +
-        `collision across workspaces — pass an explicit workspaceId to disambiguate.`,
-    );
-  }
-  if (distinct.length === 1) return distinct[0]!;
-  // 0 rows in harness_shared.projects — expected for a hive/generic harness, which
-  // lives only in the AUTHORITATIVE harness registry (the projects table is just
-  // the org/department projection — see lookupProjectWorkspaceIds). Fall back to
-  // that registry, which is what the work-items path already resolves through, so
-  // a hive's plans resolve the same way its work-items do. Active-workspace-first +
-  // collision-aware (su-a7f66 / su-632e0166, EI-1511 / P-017). Additive: only turns
-  // a former null (→ caller throw) into a resolution; never regresses papercup
-  // (isOperatorHomeScope) or explicit-workspaceId callers (both short-circuit earlier).
-  const registryFallback = opts.registryFallback ?? resolveWorkspaceForHarnessSlug;
-  return await registryFallback(raw!);
 }
 
 /**
@@ -531,7 +452,7 @@ export async function resolvePlanScope(
       ...(opts.registryFallback ? { registryFallback: opts.registryFallback } : {}),
     }));
   if (workspaceId === null) {
-    throw new Error(
+    throw new InvalidInputError(
       `resolvePlanScope: harness '${raw}' is not registered in the harness registry ` +
         `(harness_shared.harness_registry) or harness_shared.projects in any workspace, so ` +
         `its plan workspace cannot be resolved. Register the harness, or pass an explicit ` +
@@ -540,7 +461,7 @@ export async function resolvePlanScope(
   }
   const hiveHome = await potHomeSlugForHarness(workspaceId, raw!);
   if (!hiveHome) {
-    throw new Error(
+    throw new InvalidInputError(
       `resolvePlanScope: plans are Hive-scoped, but '${raw}' is not a Hive home and ` +
         `does not belong to one in workspace '${workspaceId}'. Add it to a Hive or pass ` +
         `the Hive home slug explicitly; refusing to create/read a non-Hive-scoped plan.`,
@@ -730,7 +651,7 @@ export async function resolveHarnessPlansDir(
  * `<template>@run-<decimal token>` and must be addressable by the same
  * read/write surfaces as authored plans.
  */
-export const VALID_PLAN_SLUG = /^(?:[A-Za-z0-9._-]+|[A-Za-z0-9._-]+@run-\d+)$/;
+export { VALID_PLAN_SLUG };
 
 export interface ListEntry {
   slug: string;
@@ -787,7 +708,7 @@ export async function getPlanRow(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next, promote_policy,
+               archived, is_legacy, updated_at, items, now_state, now_next, now_note, promote_policy,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data, input_schema, output_schema, forced_past
                ${opts.prefetchAcceptance ? tx`, (
@@ -861,6 +782,54 @@ export async function getPlanRow(
 }
 
 /**
+ * Fetch only the fields required to resolve one plan's stored item index.
+ * `getPlanRow` intentionally returns the full plan (including its markdown
+ * content) for consumers that need it; plans:get-item only needs the indexed
+ * items and otherwise transfers large, irrelevant content blobs for every
+ * distinct plan in a cross-plan batch.
+ *
+ * The CASE expression keeps the legacy fallback: only a non-legacy plan with
+ * an empty or absent item index returns its content for parsing. For a populated
+ * index the database returns an empty string without detoasting the content
+ * value.
+ */
+export async function getPlanItemRow(
+  slug: string,
+  opts: PlanSourceOpts = {},
+): Promise<PlanItemSourceRow | null> {
+  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
+  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
+  const rows = await withWorkspace(workspaceId, async (tx) => {
+    return tx<Array<{
+      plan_slug: string;
+      archived: boolean;
+      is_legacy: boolean;
+      items: unknown;
+      content: string | null;
+    }>>`
+      SELECT plan_slug, archived, is_legacy, items,
+             CASE WHEN is_legacy THEN ''
+                  WHEN jsonb_typeof(items) = 'array' THEN
+                    CASE WHEN jsonb_array_length(items) > 0 THEN '' ELSE content END
+                  ELSE content
+             END AS content
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+         AND plan_slug = ${slug}
+    `;
+  });
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    planSlug: row.plan_slug,
+    archived: row.archived,
+    isLegacy: row.is_legacy,
+    items: Array.isArray(row.items) ? (row.items as PlanIndexItem[]) : [],
+    content: row.content ?? '',
+  };
+}
+
+/**
  * Does this plan slug exist ANYWHERE in the workspace's plans store, in ANY
  * harness? Unlike getPlanRow (which requires a resolved single harness),
  * this is a slug-only existence check — for callers that have a declared
@@ -899,8 +868,8 @@ export async function planSlugExistsInWorkspace(
  * lane) can never be discharged against either shape, so nagging an agent
  * that declared one forever is pure noise. Slug-only lookup mirroring
  * `planSlugExistsInWorkspace` (a presence row carries no reliable harnessSlug);
- * resolves the owning harness the same deterministic way
- * (`resolvePlanHarnessSlug` — most-recently-updated row on ambiguity) then
+ * resolves the owning harness through `resolvePlanHarnessSlug` (null on an
+ * ambiguous slug, so this answers "unknown" rather than another plan's) then
  * reuses `getPlanRow` + `planItemsForRow` rather than re-deriving item-status
  * parsing here. Null when the slug isn't store-backed in this workspace —
  * callers should treat that as "unknown" (fail open), not "terminal".
@@ -919,28 +888,47 @@ export async function planTerminalityInWorkspace(
   return { status: row.status, hasOpenItems };
 }
 
+/** Outcome of a slug-only plan → harness lookup in one workspace. */
+export type PlanHarnessResolution =
+  | { status: 'resolved'; harnessSlug: string }
+  | { status: 'missing' }
+  /** Store-backed in more than one harness: different plans sharing a slug.
+   *  `candidates` is most recently updated first. */
+  | { status: 'ambiguous'; candidates: string[] };
+
 /**
- * The harness (pot) slug that owns a plan slug in this workspace — a
- * slug-only lookup for callers that have a plan slug but no reliable harness
- * to scope it to (mirrors planSlugExistsInWorkspace; P-004, resolving "the
- * pot" for a cross-machine spawn-request's plan). Null when the slug isn't
- * store-backed in this workspace, or is ambiguous across harnesses (picks
- * the most recently updated row deterministically rather than guessing).
+ * The harness (pot) that owns a plan slug in this workspace, for callers that
+ * hold a plan slug but no reliable harness to scope it to.
+ *
+ * A slug present in more than one harness is `ambiguous`; this never picks one
+ * (plan scope-unique-identifiers-2026-07-26 P-006). It used to return the most
+ * recently updated row, which silently answered about whichever same-slug plan
+ * was touched last. A caller that can refuse with the candidates should use
+ * this; {@link resolvePlanHarnessSlug} collapses ambiguity to null.
+ */
+export async function resolvePlanHarness(
+  workspaceId: string,
+  slug: string,
+): Promise<PlanHarnessResolution> {
+  const list = (await planHarnessesForSlugs(workspaceId, [slug])).get(slug) ?? [];
+  if (list.length === 0) return { status: 'missing' };
+  if (list.length > 1) return { status: 'ambiguous', candidates: list };
+  return { status: 'resolved', harnessSlug: list[0] };
+}
+
+/**
+ * {@link resolvePlanHarness} for callers whose only safe fallback is "no
+ * harness" (mirrors planSlugExistsInWorkspace; P-004, resolving "the pot" for a
+ * cross-machine spawn-request's plan). Null when the slug isn't store-backed in
+ * this workspace OR is ambiguous across harnesses: a guessed pot would route
+ * seats, checks or waits to an unrelated plan's harness.
  */
 export async function resolvePlanHarnessSlug(
   workspaceId: string,
   slug: string,
 ): Promise<string | null> {
-  if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    return tx<{ harness_slug: string }[]>`
-      SELECT harness_slug FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND plan_slug = ${slug}
-       ORDER BY updated_at DESC
-       LIMIT 1
-    `;
-  });
-  return rows[0]?.harness_slug ?? null;
+  const resolution = await resolvePlanHarness(workspaceId, slug);
+  return resolution.status === 'resolved' ? resolution.harnessSlug : null;
 }
 
 
@@ -950,10 +938,10 @@ export async function resolvePlanHarnessSlug(
  * plan slugs but NO harness to scope them to asks which harnesses own them
  * (the plans:get / plans:items omit-harness recovery path). Returns, per
  * requested slug, every harness in this workspace holding a store-backed row,
- * most-recently-updated first — index 0 is the same deterministic pick
- * {@link resolvePlanHarnessSlug} makes. Requested slugs absent from the map
- * are not store-backed anywhere in this workspace. One query; never throws;
- * invalid slugs simply come back absent.
+ * most-recently-updated first. More than one entry means the slug is
+ * ambiguous; callers refuse rather than take index 0 (P-006). Requested slugs
+ * absent from the map are not store-backed anywhere in this workspace. One
+ * query; invalid slugs simply come back absent (a DB error still throws).
  */
 export async function planHarnessesForSlugs(
   workspaceId: string,
@@ -1016,7 +1004,7 @@ export async function listPlanRows(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next,
+               archived, is_legacy, updated_at, items, now_state, now_next, now_note,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data, input_schema, forced_past
           FROM harness_shared.harness_plans
@@ -1198,8 +1186,8 @@ export async function listPlanIndexRows(
       // rowFromDb — is identical whether or not the caller opted in.
       const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
-        ? tx`now_state, template_data, input_schema,`
-        : tx`NULL::text AS now_state, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
+        ? tx`now_state, now_note, template_data, input_schema,`
+        : tx`NULL::text AS now_state, NULL::jsonb AS now_note, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
@@ -1338,8 +1326,8 @@ export async function listPlanIndexRowsForWorkspace(
       // P-006 payload projection — identical to listPlanIndexRows above; see its docstring.
       const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
-        ? tx`now_state, template_data, input_schema,`
-        : tx`NULL::text AS now_state, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
+        ? tx`now_state, now_note, template_data, input_schema,`
+        : tx`NULL::text AS now_state, NULL::jsonb AS now_note, NULL::jsonb AS template_data, NULL::jsonb AS input_schema,`;
       return tx<Array<Omit<PlanDbRow, 'content'>>>`
         SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
@@ -1546,7 +1534,7 @@ export async function listPlanRowsMatchingAnyToken(
         SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                title, status, created, updated, owner, initiative, supersedes, superseded_by,
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
-               archived, is_legacy, updated_at, items, now_state, now_next,
+               archived, is_legacy, updated_at, items, now_state, now_next, now_note,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, template_data, input_schema, forced_past
           FROM harness_shared.harness_plans
@@ -1627,7 +1615,11 @@ export async function readPlanBySlug(
   const row = await getPlanRow(slug, opts, timings);
   if (!row) return null;
   const started = timings ? performance.now() : 0;
-  const parsed = parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) });
+  // P-004: the structured note wins over the content `## Now` (D-007 §5).
+  const parsed = applyNowNoteToParsed(
+    parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) }),
+    row.nowNote,
+  );
   if (timings) timings['source.parse'] = Math.max(0, performance.now() - started);
   return {
     parsed,
@@ -1642,7 +1634,10 @@ export async function readAllPlans(
 ): Promise<Array<{ parsed: ParsedPlan; archived: boolean; row: PlanRow }>> {
   const rows = await listPlanRows(opts);
   return rows.map((row) => ({
-    parsed: parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) }),
+    parsed: applyNowNoteToParsed(
+      parsePlan(row.content, { filePath: syntheticPlanPath(row.harnessSlug, row.planSlug) }),
+      row.nowNote,
+    ),
     archived: row.archived,
     row,
   }));
@@ -1677,7 +1672,7 @@ export {
  * does this plan have" — plans:items, set-status's flip, and declare-intent's
  * lane validation must all agree (EI-356).
  */
-export function planItemsForRow(row: PlanRow): PlanItem[] {
+export function planItemsForRow(row: Pick<PlanRow, 'items' | 'content'>): PlanItem[] {
   if (row.items.length > 0) {
     return row.items.map((i) => ({
       id: i.id,

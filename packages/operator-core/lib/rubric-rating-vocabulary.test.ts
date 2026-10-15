@@ -37,6 +37,36 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     });
   });
 
+  it.each([
+    'Enumerate change/delete/revoke streams, rate limits, private routes, and credential rotation.',
+    'Exercise connector rate limits. Grade broken if recovery fails.',
+    'Inspect the provider rate limit; Grade healthy when the recorded bound holds.',
+  ])('treats rate-limit noun phrases as connector behavior: %s', (method) => {
+    const result = validateRubricRatingVocabulary(
+      [criterion({ key: 'connector-population', method })],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.violations).toEqual([]);
+    expect(result.instructions.every((instruction) => ['healthy', 'broken'].includes(instruction.rating))).toBe(true);
+  });
+
+  it.each([
+    'Rate as limits when evidence is incomplete.',
+    'Rate `limits` if the probe fails.',
+    'Rating is limits when the check fails.',
+    'Grade limits if the probe fails.',
+  ])('still rejects explicit off-scale limits directives: %s', (method) => {
+    const result = validateRubricRatingVocabulary(
+      [criterion({ key: 'explicit-directive', method })],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.violations.map((violation) => violation.rating)).toEqual(['limits']);
+  });
+
   it('finds quoted and unquoted explicit directives while ignoring ambiguous prose', () => {
     const result = validateRubricRatingVocabulary(
       [
@@ -100,6 +130,27 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
         scale,
       ).violations.map((violation) => violation.rating),
     ).toEqual(['lineage']);
+  });
+
+  it('treats qualified grade maps and grade receipts as artifact nouns', () => {
+    const result = validateRubricRatingVocabulary(
+      [
+        criterion({ key: 'r-10', method: 'Reject the malformed grade map.' }),
+        criterion({ key: 'r-18', method: 'Preserve canonical grade receipts.' }),
+      ],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result).toMatchObject({ ok: true, instructions: [], violations: [] });
+  });
+
+  it('still rejects an explicit off-scale directive using an artifact word as its label', () => {
+    const result = validateRubricRatingVocabulary(
+      [criterion({ key: 'explicit-artifact-label', method: 'Grade map if the mapping is complete.' })],
+      ['healthy', 'degraded', 'broken', 'unknown'],
+    );
+
+    expect(result.violations.map((violation) => violation.rating)).toEqual(['map']);
   });
 
   it('ignores numbered GRADE headings and rate-of noun phrases without hiding a real directive', () => {

@@ -94,6 +94,7 @@ export default defineTool({
     id: z.string().min(1).describe('Stable account id (A-Za-z0-9 . _ - only; becomes part of the rate-bucket key)'),
     provider: z.enum(['claude', 'codex']).optional().describe("Provider for this account. Defaults to 'claude'."),
     credentialRef: z.string().min(1).describe('Credential reference. Claude: token:<path> | file:<path> | absolute/~ .credentials.json | apikey:env:NAME | apikey:file:<path> | apikey:credentials (Console API key). Codex: token:<path> or env:NAME bearer credential.'),
+    anthropicWorkspaceId: z.string().regex(/^wrkspc_[A-Za-z0-9_-]+$/).nullable().optional().describe('Anthropic workspace for a user-scoped API key; null clears the binding.'),
     label: z.string().min(1).optional().describe('Optional human label'),
     egress: z
       .object({
@@ -130,7 +131,7 @@ export default defineTool({
       // writer registered in between, which is exactly how owner-registered accounts
       // silently vanished from the Deploy Accounts page.
       const next = await updateAccountPool(
-        (pool) => registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress, egressPool: args.egressPool, meteredPolicy: args.meteredPolicy }, Date.now()),
+        (pool) => registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress, egressPool: args.egressPool, meteredPolicy: args.meteredPolicy, anthropicWorkspaceId: args.anthropicWorkspaceId }, Date.now()),
         ws,
       );
       return ok({ account: getAccount(next, args.id) });
@@ -217,6 +218,23 @@ export const accountsRemoveTool = defineTool({
   },
 });
 
+/** What accounts:status's default summary view leaves out, and how to get it back. */
+export const ACCOUNT_STATUS_SUMMARY_OMITS = {
+  fields: ['rate.history7d', 'credentialRef'],
+  recover: "accounts:status { account: '<id>' } or { detail: 'full' }; credentialRef is also on accounts:list",
+} as const;
+
+/** PURE — the summary row: every field except the raw utilization history and the credential ref. */
+export function toAccountStatusSummaryRow<T extends object>(row: T): Omit<T, 'credentialRef'> {
+  // `T extends object`, not a weak `{ rate?; credentialRef? }` constraint: a row carrying
+  // neither field is still a row, and a weak-type constraint rejects it at the call site.
+  const { credentialRef: _credentialRef, ...rest } = row as T & { credentialRef?: unknown };
+  const rate = (rest as { rate?: unknown }).rate;
+  if (!rate || typeof rate !== 'object' || !('history7d' in rate)) return rest as Omit<T, 'credentialRef'>;
+  const { history7d: _history7d, ...rateRest } = rate as Record<string, unknown>;
+  return { ...rest, rate: rateRest } as Omit<T, 'credentialRef'>;
+}
+
 export const accountsStatusTool = defineTool({
   name: 'accounts:status',
   description:
@@ -238,7 +256,14 @@ export const accountsStatusTool = defineTool({
   capability: 'harness:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({ workspace: wsArg }),
+  args: z.object({
+    workspace: wsArg,
+    account: z.string().min(1).optional().describe('Return only this account id (implies detail:"full").'),
+    detail: z
+      .enum(['summary', 'full'])
+      .optional()
+      .describe('summary (default without `account`) omits rate.history7d and credentialRef; full keeps them.'),
+  }),
   result: z
     .object({
       ok: z.boolean().optional(),
@@ -261,15 +286,30 @@ export const accountsStatusTool = defineTool({
     const { accounts, billing } = joinGatewayBilling(rows, stats);
     // P-002: the rows are INTERLEAVED across providers, so a reader diagnosing one provider
     // otherwise counts another's walls as evidence about theirs. Roll up per provider, from
-    // these same rows, so that inference cannot be made.
-    return ok({ accounts, poolVerdict: poolVerdictByProvider(rows, now), billing });
+    // these same rows, so that inference cannot be made. The rollup always covers the WHOLE
+    // pool, even when `account` narrows the row list.
+    const poolVerdict = poolVerdictByProvider(rows, now);
+    const selected = args.account ? accounts.filter((row) => row.id === args.account) : accounts;
+    const detail = args.detail ?? (args.account ? 'full' : 'summary');
+    if (detail === 'full') return ok({ accounts: selected, poolVerdict, billing });
+    // oversized-tool-results-reduction-2026-10-12 P-005: the pui TUI polls this every ~5s and
+    // reads none of rate.history7d (~23 KB of a 47 KB pool read, measured 2026-10-12) — the
+    // burn verdict already summarises it server-side. Omit it (and credentialRef, which
+    // accounts:list carries) unless a caller asks for one account or detail:'full'.
+    return ok({
+      accounts: selected.map(toAccountStatusSummaryRow),
+      poolVerdict,
+      billing,
+      detail: 'summary',
+      omitted: ACCOUNT_STATUS_SUMMARY_OMITS,
+    });
   },
 });
 
 export const accountsResetRateTool = defineTool({
   name: 'accounts:reset-rate',
   description:
-    "Clear an account's rate-limit penalty state — its pause (pausedUntil), penalty count, and the rolling penalty window — back to fresh (accounts-pool-tab P-004; wraps the recordAccountReset projection reset). The owner's manual override for when an account's PROJECTED pause is stale (e.g. the 5h window actually reset, or a false-exhaustion). Does NOT touch live governor buckets (those self-expire) or the credential. `resetWindows:true` (WI-3553) is the DELIBERATE further override that ALSO zeroes the observed-budget projection (`utilization`/`windowResetAt`/`utilization7d`/`windowResetAt7d`) for when that probe-derived reading itself is wrong or can't be re-probed — default `false` is byte-identical to today (the budget reading survives the reset). Returns {ok, account}.",
+    "Clear an account's rate-limit penalty state — its pause (pausedUntil), penalty count, and the rolling penalty window — back to fresh (accounts-pool-tab P-004; wraps the recordAccountReset projection reset). The owner's manual override for when an account's PROJECTED pause is stale (e.g. the 5h window actually reset, or a false-exhaustion). Also readmits that account in the live gateway's per-model governor buckets so the persisted reset and running process converge; it never touches the credential. `resetWindows:true` (WI-3553) is the DELIBERATE further override that ALSO zeroes the observed-budget projection (`utilization`/`windowResetAt`/`utilization7d`/`windowResetAt7d`) for when that probe-derived reading itself is wrong or can't be re-probed — default `false` is byte-identical to today (the budget reading survives the reset). Returns {ok, account}.",
   guidance: {
     when: "Clearing a pool account's projected pause/penalty after a confirmed reset — the Accounts tab's per-account Reset button, or unsticking an account the drain selector is avoiding on a stale projection.",
     notWhen:

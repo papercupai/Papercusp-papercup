@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-portal-docs-and-papercup-faq-2026-10-06",
+  "workItem": "WI-10006921",
+  "specId": "DOCS-DRIFT-REVIEW",
+  "specRevision": 1,
+  "scope": "Clean committed unit classifier guard for seven canonical FAQ anchors plus quickstart; exact-clause adequacy passes, full R7 acceptance and shipment remain open",
+  "provisionalHistory": {
+    "successfulTestRunId": 20938355,
+    "mutationTestRunId": 20938368,
+    "baselineTestRunId": 20938358,
+    "unmutatedOverlayTestRunId": 20938361,
+    "commitSha": "1f3d704126dabb13d47a50b9e49a6c8ce1cc5ea3",
+    "worktreeDirty": true,
+    "withdrawnBindings": [27803, 31797, 31802],
+    "reason": "Earlier dirty runs remain historical observations. Stale or incomplete evidence bindings were explicitly retracted after clean replacements were verified; no earlier run was relabeled clean."
+  },
+  "successfulControl": {
+    "testRunId": 20938582,
+    "commitSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+    "worktreeDirty": false,
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0
+  },
+  "mutation": {
+    "testRunId": 20939074,
+    "commitSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+    "worktreeDirty": false,
+    "passed": 1,
+    "failed": 8,
+    "skipped": 0,
+    "change": "Manual changed-content classification review becomes fresh",
+    "failedCases": "All seven canonical FAQ anchor changes and the real quickstart signup anchor change",
+    "passedCase": "The unchanged same-anchor positive control remains fresh"
+  },
+  "probeControls": {
+    "currentBaselineTestRunId": 20938589,
+    "unmutatedOverlayTestRunId": 20939072,
+    "passedEach": 9,
+    "sharedSourceIntegrity": "Verified byte-identical by the sanctioned overlay runner",
+    "parserValidation": "Unchecked; eight assertion failures and one passing unchanged control distinguish the mutant from a collection or relocation failure"
+  },
+  "sourceAndTestSha256": {
+    "packages/operator-core/lib/harness/docs/public-manual-drift.test.ts": "07f1de7130daeb43492c501609e9f5b821b53a701f3e4ac4e7327fc27adcdb5a",
+    "packages/operator-core/lib/harness/docs/subject-ref.ts": "e2cd2f51173b552f653b430ea16b055c0bb47d9cae4e07c4a193acd715fba2fc",
+    "packages/operator-core/lib/harness/docs/drift.ts": "db8c223d4f927e18987a287c6e434842c409803178bf098589377944670cac2a",
+    "packages/operator-core/lib/harness/docs/freshness-sweep.ts": "0dcc3415c12d4ed630a7795055ef74044bdc1057bd6e55a841f8a41c75d6e79c",
+    "apps/papercusp-docs/src/content/docs/faq.mdx": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+    "apps/papercusp-docs/src/content/docs/quickstart.mdx": "a0d5ebcd5aef3414660f142d9b9d4578c9a64c88abce936797686d6d2234d5bc"
+  },
+  "bindings": {
+    "successfulTest": 31893,
+    "actualMutation": 31895,
+    "fixtureCalibration": 31897
+  },
+  "currentEvaluator": {
+    "certified": false,
+    "endpoint": "http://127.0.0.1:3170",
+    "observedAt": "2026-10-08T22:00:57Z",
+    "verdict": "pass",
+    "requiredProofFloor": "l3",
+    "wouldBlock": [],
+    "observedCurrentness": "Server-measured test31893, exact-target mutation31895 and fixture31897 are current. Fixture calibration and freshness pass after explicit withdrawal of invalid historical bindings.",
+    "proofFloorInterpretation": "The evaluator accepts the targeted paired mutation for its L3 proof floor. This does not establish an independent coverage census or an end-to-end background sweep.",
+    "independentCoverageCensus": "not-measured",
+    "nextProof": "Continue full R7 background review, accountable owner approval and cache/retrieval freshness acceptance. Do not infer final plan acceptance from this unit clause."
+  },
+  "rawEvidencePaths": [
+    "/tmp/su73-r7-immutable-baseline-2147.log",
+    "/tmp/su73-r7-immutable-mutation-2150.log",
+    "/tmp/su73-r7-seven-anchor-2114.log",
+    "/tmp/su73-r7-seven-anchor-mutation-2116.log"
+  ],
+  "limitations": [
+    "Controlled GitRunner inputs establish unit review classification only.",
+    "No real background sweep dispatch, semantic approval, full R7 cache/retriever proof, novice study, independent final acceptance or shipment is established.",
+    "Original drift-mutation.json and historical certification are retained; no certification call or shipment follows from this adequacy pass."
+  ]
+}

@@ -16,16 +16,14 @@
  * backups) follow this exact shape per the P-008 / D-016 classification.
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
-import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import type { PgssBaseline } from '../system-health/hot-seq-scan-detector';
 import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc, SCRATCH_GC_CRONTAB } from '../scratch-gc';
+import { runLocksCacheGc } from '../locks-cache-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
+import { formatBm25MaintenanceReport, runOrgBm25Maintenance } from '../search/lexical/bm25-maintenance';
 import { runEmbedSpaceSelfCheckTick } from '../search/embed-space-self-check';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
@@ -40,11 +38,16 @@ import { expireStaleAdvisoryEscalations } from '../agent-tools/coordination/esca
 import { gcOldPlanRevisions } from '../agent-tools/plans/revisions-gc';
 import { gcOldDecisionLedgerRows } from '../agent-tools/coordination/decision-ledger-gc';
 import { gcOldOperatorTurns } from '../operator-turns-gc';
-import { runFleetLogsGc, runLaunchContextGc, runPapercuspWorkdirGc } from '../fleet-logs-gc';
+import {
+  runFleetLogsGc,
+  runLaunchContextGc,
+  runLintWorkRootGc,
+  runPapercuspWorkdirGc,
+  runWindowsBuildScratchGc,
+} from '../fleet-logs-gc';
 import { listLiveSessionRenders } from '../stale-prompt-render-sweep';
 import { gcLedgerDir } from '../turn-provenance/turn-provenance';
 import { readRegistry } from '../workspace-registry';
-import { loadHarnessRegistry, resolveHarnessContentPath } from '../harness-registry';
 import { sweepOrphanSnapshots, sweepRecoveryDebrisTick, sweepRestoredClonesTick } from '@papercusp/backup';
 import { gcScheduledPlanRuns } from '../harness/routines/gc-plan-runs';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
@@ -69,9 +72,16 @@ import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
+import { DISK_RECLAIM_CRONTAB, DISK_RECLAIM_STEP, drainScheduledDiskReclaim, type DiskReclaimReceipt } from '../storage/disk-reclaim';
+import {
+  defaultEvidenceRoot,
+  formatForeignPruneLine,
+  formatRunRetentionLine,
+  pruneEvidenceRoot,
+} from '@papercusp/verification-harness';
 import { emitCoverageToast, runEmbedCoverageAlarmOnce } from '../search/embed-coverage';
 import { assessInjectionReach, formatInjectionReachToast } from '../memory/injection-coverage';
-import { runWalCheckpointSweep } from '../storage/localstorage-wal-guard';
+import { runWalCheckpointGuard } from '../storage/localstorage-wal-guard';
 import { runMemoryAnchorAuditOnce } from '../memory/audit-memory-anchors';
 import { runDesktopPerfScheduledRun } from '../system-health/desktop-perf-scheduled-run';
 import { runGuiE2eSurfaceScheduledRun } from '../system-health/gui-e2e-surface-scheduled-run';
@@ -127,9 +137,33 @@ async function scratchGcTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
       const workspaceRegistry = readRegistry().workspaces.map((w) => w.id);
-      runScratchGc({ workspaceRegistry });
+      const s = await runScratchGc({ workspaceRegistry });
+      // WI-10006512: what the sweep deleted, what it deliberately kept, and how much unowned
+      // top-level scratch exists, so a surprising deletion (or growth) is visible in the log.
+      console.log(
+        `[scratch-gc] deadWorkspaces=${s.deadWorkspaces} (${s.deadWorkspaceBytes}B) ` +
+          `deferred=${s.deadWorkspacesDeferred.map((d) => `${d.workspaceId}:${d.reason}`).join(',') || 'none'} ` +
+          `unprovenEntries=${s.unprovenEntries} markersWritten=${s.markersWritten} ` +
+          `retentionEvictions=${s.retentionEvictions} quotaEvictions=${s.quotaEvictions}`,
+      );
     },
     { name: 'scratch-gc' },
+  );
+  // WI-10005187: the hooks' per-owner state in ~/.papercusp/locks-cache is the same
+  // class of agent-local ephemeral storage and had no GC at all (32k entries).
+  // Fail-soft: a sweep error is logged, never thrown into a workflow retry.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const r = await runLocksCacheGc();
+        console.log(
+          `[locks-cache-gc] ${r.dir}: scanned=${r.scanned} removed=${r.removed} kept=${r.kept} skipped=${r.skipped}${r.error ? ` error=${r.error}` : ''}`,
+        );
+      } catch (err) {
+        console.warn(`[locks-cache-gc] sweep failed (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'locks-cache-gc' },
   );
 }
 const scratchGcWorkflow = idempotentRegisterWorkflow('scratchGc', () =>
@@ -174,6 +208,41 @@ const embedBackfillWorkflow = idempotentRegisterWorkflow('embedBackfill', () =>
   }),
 );
 DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: '0 */5 * * * *' });
+
+// Every 15min (offset 30s from the 5-min ticks): BM25 index maintenance (plan
+// bm25-lexical-search-evoke-adoption-2026-10-10 P-006). Ensures the corpus indexes,
+// builds at most one deferred large-table index CONCURRENTLY, and runs bounded
+// compaction passes. Indexes are created with compaction='manual', so this workflow is
+// their only compactor. runBm25Maintenance never throws; the catch below is the same
+// belt-and-braces as embedBackfill (a throw would exhaust maxRecoveryAttempts and stop
+// the schedule).
+async function bm25MaintenanceTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      try {
+        const startedAt = Date.now();
+        const report = await runOrgBm25Maintenance();
+        const finishedAt = Date.now();
+        const line = formatBm25MaintenanceReport(report, {
+          startedAtMs: startedAt,
+          finishedAtMs: finishedAt,
+          durationMs: Math.max(0, finishedAt - startedAt),
+        });
+        if (line) console.log(line);
+      } catch (err) {
+        console.warn(`[bm25-maintenance] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'bm25-maintenance' },
+  );
+}
+const bm25MaintenanceWorkflow = idempotentRegisterWorkflow('bm25Maintenance', () =>
+  DBOS.registerWorkflow(bm25MaintenanceTick, {
+    name: 'bm25Maintenance',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(bm25MaintenanceWorkflow, { name: 'bm25Maintenance', crontab: '30 */15 * * * *' });
 
 // Every 15min: embedding-space self-check (EI-8913 detector half, WI-3644).
 // Cheap (one read + at most one embed call) relative to the backfill sweep,
@@ -388,6 +457,7 @@ async function sessionArchiveReconcileTick(): Promise<void> {
           s.dbFailed ||
           s.diskFailed ||
           s.diskSkippedFresh ||
+          s.diskSkippedForeign ||
           s.skippedDisk ||
           // EI-22126624550252124: dbSkippedLive was PRINTED in the line below but
           // was not one of the conditions that decided whether to print it, so a
@@ -399,7 +469,7 @@ async function sessionArchiveReconcileTick(): Promise<void> {
           s.dbSkippedLive
         ) {
           console.log(
-            `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbSkippedLive} live-skipped / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
+            `[session-archive-reconciler] db: ${s.dbArchived} archived / ${s.dbStampedEmpty} stamped-empty / ${s.dbSkippedLive} live-skipped / ${s.dbFailed} failed (${s.endedUnarchivedRemaining} remaining); disk: ${s.diskSessionsArchived} archived + ${s.diskLeftoversDeleted} leftovers${s.diskLeftoversRetained ? ` (+${s.diskLeftoversRetained} shared-state RETAINED)` : ''} across ${s.diskDirsScanned} dirs (${s.diskSkippedFresh} fresh-skipped${s.diskSkippedForeign ? `; ${s.diskSkippedForeign} FOREIGN dir(s) left untouched — another install shares this $HOME (WI-6554700010010238)` : ''}${s.skippedDisk ? `; SWEEP SKIPPED: ${s.skippedDisk}` : ''}); omp: ${s.ompFilesArchived}`,
           );
         }
         // INVARIANT (EI-22126624550252124) — always emitted, see the helper.
@@ -468,7 +538,31 @@ async function sessionDirGcTick(): Promise<void> {
     },
     { name: 'session-dir-gc' },
   );
+  await chatBrainSessionGcTick();
   await dependencyGenerationRetentionTick();
+}
+
+// Same hourly janitor cadence: operator:converse brain-session dirs
+// (~/.papercusp/chat-brains) are dropped only when the SAME conversation takes
+// another turn, so an abandoned conversation's verbatim history stayed on disk
+// indefinitely (WI-10006551). The sweep removes only dirs past the session's
+// own 24h reuse window (plus a grace margin), which no later turn could resume.
+async function chatBrainSessionGcTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    try {
+      const { sweepExpiredChatBrainSessions } = await import('../agent-tools/operator/converse-session');
+      const r = sweepExpiredChatBrainSessions();
+      if (r.removed.length || r.errors.length) {
+        console.log(
+          `[chat-brain-session-gc] scanned ${r.scanned} dir(s) → removed ${r.removed.length}, kept ${r.kept}` +
+            (r.errors.length ? `, ${r.errors.length} error(s)` : ''),
+        );
+      }
+      for (const e of r.errors) console.warn(`[chat-brain-session-gc]   ! ${e.dir}: ${e.error}`);
+    } catch (error) {
+      console.warn(`[chat-brain-session-gc] tick failed: ${(error as Error).message}`);
+    }
+  }, { name: 'chat-brain-session-gc' });
 }
 const sessionDirGcWorkflow = idempotentRegisterWorkflow('sessionDirGc', () =>
   DBOS.registerWorkflow(sessionDirGcTick, {
@@ -484,33 +578,8 @@ DBOS.registerScheduled(sessionDirGcWorkflow, { name: 'sessionDirGc', crontab: '0
 // The script's --prune-only path shares the publisher lock and never builds.
 async function dependencyGenerationRetentionTick(): Promise<void> {
   await DBOS.runStep(async () => {
-    try {
-      const { resolveIntegrationRoot } = await import('../harness/routines/release-actions');
-      const script = join(resolveIntegrationRoot(), 'apps/operator/bin/release/dependency-generation.sh');
-      if (!existsSync(script)) return;
-      const roots = new Set<string>();
-      for (const workspace of readRegistry().workspaces) {
-        try {
-          const registry = await loadHarnessRegistry(workspace.id);
-          for (const project of registry.projects) {
-            const root = resolveHarnessContentPath(registry, project.slug);
-            if (root && existsSync(join(root, '.papercusp/dependency-generations'))) roots.add(root);
-          }
-        } catch (error) {
-          console.warn(`[dependency-generation-retention] workspace ${workspace.id}: ${(error as Error).message}`);
-        }
-      }
-      const run = promisify(execFile);
-      for (const root of roots) {
-        try {
-          await run('bash', [script, '--integration', root, '--prune-only'], { timeout: 120_000 });
-        } catch (error) {
-          console.warn(`[dependency-generation-retention] ${root}: ${(error as Error).message}`);
-        }
-      }
-    } catch (error) {
-      console.warn(`[dependency-generation-retention] tick failed: ${(error as Error).message}`);
-    }
+    const { runDependencyGenerationRetention } = await import('../release/dependency-generation-retention');
+    return await runDependencyGenerationRetention();
   }, { name: 'dependency-generation-retention' });
 }
 
@@ -548,6 +617,42 @@ const decisionLedgerGcWorkflow = idempotentRegisterWorkflow('decisionLedgerGc', 
 );
 DBOS.registerScheduled(decisionLedgerGcWorkflow, { name: 'decisionLedgerGc', crontab: '0 50 4 * * *' });
 
+// Every 15 min: payload retention for harness_shared.trigger_deliveries (WI-10004921,
+// migration 1306). Strips the payload — never the row, which is each sink's dedupe
+// identity — from delivered non-event-bus rows (no reader at all) and from any finished
+// row past the 30-day replay horizon. Batch-limited, so the ~330k-row legacy backlog
+// (7.4 GB, each event stored once per sink) drains over a few hours instead of in one
+// long UPDATE on a table ingestion writes constantly. Detail in delivery-retention.ts.
+async function triggerDeliveryRetentionTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      const { pruneTriggerDeliveryPayloads } = await import('../external-triggers/delivery-retention');
+      return pruneTriggerDeliveryPayloads();
+    },
+    { name: 'trigger-delivery-payload-retention' },
+  );
+  // D-014 (WI-10006699): operation private input lives only while its operation
+  // work item is in flight. Reads already refuse a terminal item; this bounds the
+  // row's physical lifetime (terminal, missing, or past expires_at).
+  await DBOS.runStep(
+    async () => {
+      const { pruneOperationPrivateInputs } = await import('../blueprint/operation-private-input');
+      return pruneOperationPrivateInputs();
+    },
+    { name: 'operation-private-input-retention' },
+  );
+}
+const triggerDeliveryRetentionWorkflow = idempotentRegisterWorkflow('triggerDeliveryRetention', () =>
+  DBOS.registerWorkflow(triggerDeliveryRetentionTick, {
+    name: 'triggerDeliveryRetention',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(triggerDeliveryRetentionWorkflow, {
+  name: 'triggerDeliveryRetention',
+  crontab: '0 */15 * * * *',
+});
+
 // Hourly @:05: retention GC for the `fleet-logs/` directories headless-spawn
 // launch paths write to (WI-224710 cause #2 — "fleet-logs grows without
 // bound"). Measured live 2026-08-30: 25G / 2,946 files in ONE such directory
@@ -563,16 +668,22 @@ DBOS.registerScheduled(decisionLedgerGcWorkflow, { name: 'decisionLedgerGc', cro
 async function fleetLogsGcTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
-      const result = runFleetLogsGc();
+      const result = await runFleetLogsGc();
       const totalScanned = result.dirs.reduce((s, d) => s + d.scanned, 0);
       const totalRemovedAge = result.dirs.reduce((s, d) => s + d.removedByAge, 0);
       const totalRemovedCeiling = result.dirs.reduce((s, d) => s + d.removedByCeiling, 0);
-      const totalBytesFreed = result.dirs.reduce((s, d) => s + d.bytesFreed, 0);
+      const totalBytesUnlinked = result.dirs.reduce((s, d) => s + d.bytesUnlinked, 0);
+      const totalAllocatedBytesUnlinked = result.dirs.reduce((s, d) => s + d.allocatedBytesUnlinked, 0);
+      const totalSkippedOpen = result.dirs.reduce((s, d) => s + d.skippedOpen, 0);
+      const totalSkippedRaced = result.dirs.reduce((s, d) => s + d.skippedRaced, 0);
       const totalErrors = result.dirs.reduce((s, d) => s + d.errors.length, 0);
       console.log(
         `[fleet-logs-gc] scanned ${totalScanned} file(s) across ${result.dirs.length} dir(s) → ` +
-          `removed ${totalRemovedAge} by age + ${totalRemovedCeiling} by ceiling, freed ` +
-          `${Math.round(totalBytesFreed / (1024 * 1024))}MB` +
+          `removed ${totalRemovedAge} by age + ${totalRemovedCeiling} by ceiling, unlinked ` +
+          `${Math.round(totalBytesUnlinked / (1024 * 1024))}MB logical ` +
+          `(${Math.round(totalAllocatedBytesUnlinked / (1024 * 1024))}MB allocation estimate), ` +
+          `kept ${totalSkippedOpen} open + ${totalSkippedRaced} changed` +
+          (!result.scanComplete ? `, deferred: incomplete holder census${result.scanError ? ` (${result.scanError})` : ''}` : '') +
           (totalErrors ? `, ${totalErrors} error(s)` : ''),
       );
 
@@ -587,7 +698,7 @@ async function fleetLogsGcTick(): Promise<void> {
       // are eligible and the age bound is the RECURSIVE newest mtime, never the
       // directory's own (see fleet-logs-gc.ts for why that distinction is
       // load-bearing rather than pedantic).
-      const workdirs = runPapercuspWorkdirGc();
+      const workdirs = await runPapercuspWorkdirGc({ dryRun: false });
       const skipped = workdirs.candidates.filter((c) => !c.removed);
       console.log(
         `[papercusp-workdir-gc] considered ${workdirs.scanned} mktemp dir(s) → ` +
@@ -596,6 +707,15 @@ async function fleetLogsGcTick(): Promise<void> {
           (skipped.length
             ? `, kept ${skipped.length} (${skipped.map((c) => c.skipped ?? 'unknown').join(',')})`
             : ''),
+      );
+
+      // Lint snapshots live under tmpdir, outside the ~/.papercusp sweep. Their
+      // six-hour retention must run even if no new lint invocation arrives.
+      const lintRoots = await runLintWorkRootGc({ dryRun: false });
+      console.log(
+        `[lint-work-root-gc] removed ${lintRoots.removed.length} snapshot(s), kept ${lintRoots.kept.length}` +
+          (!lintRoots.scanComplete ? ', deferred: process census incomplete' : '') +
+          (lintRoots.scanError ? ` (${lintRoots.scanError})` : ''),
       );
 
       // Third and last of the ~/.papercusp accumulations (WI-10002015). The two
@@ -617,13 +737,46 @@ async function fleetLogsGcTick(): Promise<void> {
       const liveRenderPaths = new Set(
         listLiveSessionRenders('/proc', Number.MAX_SAFE_INTEGER).map((r) => r.promptFile),
       );
-      const renders = runLaunchContextGc({ liveRenderPaths });
+      const renders = await runLaunchContextGc({ liveRenderPaths });
       console.log(
         renders.refused
           ? `[launch-context-gc] refused (${renders.refused}) — nothing removed`
           : `[launch-context-gc] scanned ${renders.scanned} render(s) → removed ` +
               `${renders.removed}, freed ${Math.round(renders.bytesFreed / (1024 * 1024))}MB, ` +
               `held ${renders.liveHeld} in use by live session(s)`,
+      );
+
+      // Reclaim interrupted Windows cross-build containers after 48 hours.
+      // The helper checks recursive mtimes, live writers, and the linked
+      // worktree's Git lock before removing its exact registration.
+      const windowsBuildScratch = await runWindowsBuildScratchGc({ dryRun: false });
+      const buildScratchSkipped = windowsBuildScratch.candidates.filter((candidate) => !candidate.removed);
+      console.log(
+        `[windows-build-scratch-gc] considered ${windowsBuildScratch.scanned} producer dir(s) → ` +
+          `removed ${windowsBuildScratch.removed}, freed ` +
+          `${Math.round(windowsBuildScratch.bytesFreed / (1024 * 1024))}MB` +
+          (buildScratchSkipped.length
+            ? `, kept ${buildScratchSkipped.length} (${buildScratchSkipped.map((candidate) => candidate.skipped ?? 'unknown').join(',')})`
+            : ''),
+      );
+      // Keep release-local verification evidence bounded even when no new release
+      // cut starts. The runner also does this before each run so a cut does not
+      // wait for this hourly sweep when root write headroom is already low.
+      await DBOS.runStep(
+        async () => {
+          const evidenceRoot =
+            process.env.PAPERCUSP_RELEASE_EVIDENCE_ROOT?.trim() || defaultEvidenceRoot('release-local');
+          const retention = await pruneEvidenceRoot(evidenceRoot);
+          const runLine = formatRunRetentionLine(retention.runRetention);
+          const foreignLine = formatForeignPruneLine(retention.foreign);
+          console.log(
+            '[verification-harness-retention] ' +
+              (runLine ?? 'runs unchanged') +
+              '; ' +
+              (foreignLine ?? 'foreign entries unchanged'),
+          );
+        },
+        { name: 'verification-harness-release-local-retention' },
       );
     },
     { name: 'fleet-logs-gc' },
@@ -662,7 +815,7 @@ DBOS.registerScheduled(fleetLogsGcWorkflow, { name: 'fleetLogsGc', crontab: '0 5
 async function turnProvenanceGcTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
-      const { filesRemoved, rowsDropped } = gcLedgerDir();
+      const { filesRemoved, rowsDropped } = await gcLedgerDir();
       console.log(
         `[turn-provenance-gc] removed ${filesRemoved} dead ledger file(s), dropped ${rowsDropped} expired row(s)`,
       );
@@ -1142,6 +1295,104 @@ const storageGrowthAlarmWorkflow = idempotentRegisterWorkflow('storageGrowthAlar
 );
 DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm', crontab: '0 50 */6 * * *' });
 
+// Every 6h (:35, off the :50 growth alarm): disk consumer census
+// (disk-headroom-standing-reclaim-2026-10-12 P-001, R-1). Writes what is filling each
+// watched device (du as root via sudo -n at best-effort I/O level 7, falling back to an
+// unprivileged walk + Postgres/Docker sized through their APIs) to
+// harness_shared.disk_census_* so storage:census can show each consumer's size and
+// 24h growth; prunes rows older than 30 days. Four runs a day keep a run inside the
+// read's 18–30h baseline window. Per-device failures are recorded, never thrown.
+//
+// Restart-safe (WI-6554700010009855). A census takes ~75 min and bg-host restarts about
+// every 33 min, and one step used to wrap every device's du as a bg-host child, so each
+// restart re-walked everything from zero (the 2026-10-13 04:35Z run never wrote a row).
+// Now: one step records the pass (devices, API-sized stores, sudo); ONE STEP PER DEVICE,
+// so recovery skips every device whose row is written; each du walk runs detached in its
+// own transient scope with its output in files, and a recovered step adopts the walk
+// still running instead of starting over (storage/disk-census-detached-walk.ts). Every
+// step is idempotent, so the recovery budget is sized for many restarts per run.
+async function diskConsumerCensusTick(): Promise<void> {
+  const runKey = DBOS.workflowID ?? 'disk-consumer-census-adhoc';
+  const pass = await DBOS.runStep(
+    async () => {
+      if (shouldShedHeavyTick('disk-consumer-census')) return null;
+      const { prepareCensusPass } = await import('../storage/disk-consumer-census');
+      const prepared = await prepareCensusPass();
+      if ('skipped' in prepared) {
+        console.log(`[disk-consumer-census] skipped: ${prepared.skipped}`);
+        return null;
+      }
+      return prepared;
+    },
+    { name: 'disk-consumer-census-prepare' },
+  );
+  if (!pass) return;
+  for (const device of pass.devices) {
+    await DBOS.runStep(
+      async () => {
+        const { censusOneDevice } = await import('../storage/disk-consumer-census');
+        const { detachedCensusWalker } = await import('../storage/disk-census-detached-walk');
+        const outcome = await censusOneDevice(pass, device, { runDu: detachedCensusWalker(runKey) });
+        if (!outcome.run) {
+          console.warn(`[disk-consumer-census] ${outcome.failure.device} failed: ${outcome.failure.error}`);
+          return;
+        }
+        const run = outcome.run;
+        console.log(
+          `[disk-consumer-census] ${run.device}: ${run.consumers} consumer(s), unattributed ${(run.unattributedBytes / 1024 ** 3).toFixed(1)}GiB, ${run.complete ? 'complete' : 'INCOMPLETE'} in ${Math.round(run.durationMs / 1000)}s`,
+        );
+      },
+      { name: 'disk-consumer-census-device' },
+    );
+  }
+  await DBOS.runStep(
+    async () => {
+      const { pruneCensusPass } = await import('../storage/disk-consumer-census');
+      const { pruneCensusWalks } = await import('../storage/disk-census-detached-walk');
+      await pruneCensusPass();
+      await pruneCensusWalks({ runKey });
+    },
+    { name: 'disk-consumer-census-prune' },
+  );
+}
+const diskConsumerCensusWorkflow = idempotentRegisterWorkflow('diskConsumerCensus', () =>
+  DBOS.registerWorkflow(diskConsumerCensusTick, {
+    name: 'diskConsumerCensus',
+    // One recovery per bg-host restart; a ~75 min run can see several (WI-6554700010009855).
+    maxRecoveryAttempts: 24,
+  }),
+);
+DBOS.registerScheduled(diskConsumerCensusWorkflow, { name: 'diskConsumerCensus', crontab: '0 35 */6 * * *' });
+
+// Hourly retention, independent of free space (disk-headroom P-004 / D-005).
+// Each bounded pass has its own Postgres checkpoint and fresh safety evidence.
+// A SUCCESS workflow alone is never the oracle; read the individual receipts.
+async function diskRetentionReclaimTick(): Promise<void> {
+  const result = await drainScheduledDiskReclaim(async (_batch, notAfterMs) => DBOS.runStep(async () => {
+    // Check inside the step, including after recovery of earlier checkpoints.
+    // Never cancel an in-flight safety check or removal to enforce this bound.
+    if (notAfterMs !== undefined && Date.now() >= notAfterMs) return null;
+    const startedAt = new Date().toISOString();
+    const { runScheduledDiskReclaim } = await import('../storage/disk-reclaim');
+    try {
+      const receipt = await runScheduledDiskReclaim();
+      if (!receipt.complete) console.warn(`[disk-retention] partial run: ${receipt.errors.join('; ')}`);
+      return receipt;
+    } catch (err) {
+      const error = (err as Error).message;
+      console.warn(`[disk-retention] refused: ${error}`);
+      return { schemaVersion: 1, id: crypto.randomUUID(), startedAt, dryRun: false,
+        complete: false, policyExhausted: null, devices: [], entries: [], delegates: [],
+        errors: [error], finishedAt: new Date().toISOString() } satisfies DiskReclaimReceipt;
+    }
+  }, { name: DISK_RECLAIM_STEP }));
+  console.log(`[disk-retention] ${result.batches} batch(es), stop=${result.stop}, receipt=${result.lastReceiptId ?? 'none'}`);
+}
+const diskRetentionReclaimWorkflow = idempotentRegisterWorkflow('diskRetentionReclaim', () =>
+  DBOS.registerWorkflow(diskRetentionReclaimTick, { name: 'diskRetentionReclaim', maxRecoveryAttempts: 5 }),
+);
+DBOS.registerScheduled(diskRetentionReclaimWorkflow, { name: 'diskRetentionReclaim', crontab: DISK_RECLAIM_CRONTAB });
+
 // Hourly (:40, off the :00/:50 stampede): replication-slot WAL-retention alarm
 // (infra-perf-reliability-audit-round4 P-009 / D-004). READ-ONLY pg_replication_slots
 // check; emits a notifications:recent toast when a slot pins WAL past its ceiling —
@@ -1318,11 +1569,12 @@ async function localstorageWalGuardTick(): Promise<void> {
     async () => {
       if (process.env.PAPERCUSP_WAL_GUARD === '0') return;
       if (shouldShedHeavyTick('localstorage-wal-guard')) return;
-      const r = runWalCheckpointSweep();
+      const r = await runWalCheckpointGuard();
       if (r.overThreshold > 0) {
         console.log(
-          `[localstorage-wal-guard] ${r.checkpointed}/${r.overThreshold} over-threshold WAL(s) checkpointed, ` +
+          `[localstorage-wal-guard] ${r.checkpointed}/${r.overThreshold} checkpoint attempt(s) completed, ` +
             `~${(r.bytesReclaimed / 1024 ** 2).toFixed(0)}MB reclaimed` +
+            `, ${r.retained.length} WAL(s) still above threshold${r.escalated ? ', escalated' : ''}` +
             (r.errors.length ? `, ${r.errors.length} error(s): ${r.errors.map((e) => e.dbPath).join(', ')}` : ''),
         );
       }
@@ -1703,17 +1955,35 @@ DBOS.registerScheduled(turnProvenanceBackfillWorkflow, {
 
 // Daily 05:20 (after the 03:00–05:00 GC cluster): session_turns retention prune —
 // the index stays bounded (~45d window); the JSONL files remain the archive.
+//
+// The step RETURNS its report, so every run's outcome is durable in
+// dbos.operation_outputs (function_name 'session-turns-prune'). It used to return
+// nothing and log only when it deleted something: a run that hit its cap, or that
+// failed and was swallowed here, left the same SUCCESS row and no output, and the
+// next day's journal could not show which (WI-6554700010009718). An error stays
+// non-fatal, but is now recorded in the output instead of vanishing.
 async function sessionTurnsPruneTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
         const { pruneSessionTurnsOnce } = await import('../search/session-ingest');
         const r = await pruneSessionTurnsOnce();
-        if (r.deleted > 0 || r.partsDeleted > 0) {
-          console.log(`[session-turns-prune] pruned ${r.deleted} indexed turn(s), ${r.partsDeleted} faithful part(s)`);
+        const line =
+          `[session-turns-prune] pruned ${r.deleted} indexed turn(s) in ${r.turns.batches} batch(es), ` +
+          `${r.partsDeleted} faithful part(s) in ${r.parts.batches} batch(es)`;
+        if (r.turns.exhausted || r.parts.exhausted) {
+          console.warn(
+            `${line} — BUDGET EXHAUSTED with rows still past the window ` +
+              `(turns=${r.turns.exhausted}, parts=${r.parts.exhausted}); the next run continues`,
+          );
+        } else {
+          console.log(line);
         }
+        return { ok: true as const, ...r };
       } catch (err) {
-        console.warn(`[session-turns-prune] run skipped (non-fatal): ${(err as Error).message}`);
+        const error = (err as Error).message;
+        console.warn(`[session-turns-prune] run skipped (non-fatal): ${error}`);
+        return { ok: false as const, error };
       }
     },
     { name: 'session-turns-prune' },
@@ -1783,8 +2053,20 @@ async function dbIndexBloatReindexTick(): Promise<void> {
         const { runIndexBloatReindexOnce } = await import('../db-index-bloat-reindex');
         const { sql } = getOrgPg();
         const r = await runIndexBloatReindexOnce(sql);
+        // Orphan cleanup runs before the skip guards, so report it on EVERY run: a leftover
+        // that cannot be dropped keeps taking writes, and a silent failure is how eight of
+        // them accumulated (WI-6554700010008628).
+        if (r.orphanDropFailures.length > 0) {
+          console.warn(
+            `[db-index-bloat-reindex] could not drop ${r.orphanDropFailures.length} orphan index(es): ` +
+              r.orphanDropFailures.map((f) => `${f.index} (${f.error})`).join('; '),
+          );
+        }
         if (r.skipped) {
-          console.log(`[db-index-bloat-reindex] skipped: ${r.skipped}`);
+          console.log(
+            `[db-index-bloat-reindex] skipped: ${r.skipped}` +
+              `${r.orphansDropped.length > 0 ? ` (dropped ${r.orphansDropped.length} orphan(s) first)` : ''}`,
+          );
           return;
         }
         const okCount = r.reindexed.filter((x) => !x.error).length;
@@ -1829,7 +2111,10 @@ async function sessionSearchIndexBuildTick(): Promise<void> {
     async () => {
       if (shouldShedHeavyTick('session-search-index-build')) return;
       try {
-        const { runSessionSearchIndexBuildOnce } = await import('../session-search-index-build');
+        const {
+          runSessionSearchIndexBuildOnce,
+          sessionSearchIndexBuildFailureDetails,
+        } = await import('../session-search-index-build');
         const { sql } = getOrgPg();
         const r = await runSessionSearchIndexBuildOnce(sql);
         if (r.skipped) {
@@ -1839,7 +2124,8 @@ async function sessionSearchIndexBuildTick(): Promise<void> {
         const built = r.indexes.filter((x) => x.action === 'built').length;
         const failed =
           r.indexes.filter((x) => x.action === 'failed').length +
-          r.vocab.filter((x) => x.action === 'failed').length;
+          r.vocab.filter((x) => x.action === 'failed').length +
+          r.invalidDropFailures.length;
         const vocabBuilt = r.vocab.filter((x) => x.action === 'full' || x.action === 'incremental');
         if (built > 0 || vocabBuilt.length > 0 || r.invalidDropped.length > 0 || failed > 0) {
           console.log(
@@ -1848,6 +2134,9 @@ async function sessionSearchIndexBuildTick(): Promise<void> {
               `${failed > 0 ? `, ${failed} failed` : ''}` +
               `${r.truncated ? ' (truncated by budget)' : ''}`,
           );
+        }
+        for (const detail of sessionSearchIndexBuildFailureDetails(r)) {
+          console.warn(`[session-search-index-build] ${detail}`);
         }
       } catch (err) {
         console.warn(`[session-search-index-build] run skipped (non-fatal): ${(err as Error).message}`);

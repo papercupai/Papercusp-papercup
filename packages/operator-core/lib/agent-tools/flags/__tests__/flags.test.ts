@@ -1,7 +1,7 @@
 /**
  * P-028 (production-readiness-test-coverage) — `agent-tools/flags` (get / list /
  * set). Operator-side MCP tools tested by importing each tool's `handler`
- * directly and asserting the projected `content[0].text` payload + that the
+ * directly and asserting the canonical `data` payload + that the
  * mocked flag-server helpers are called correctly. The dispatcher (role gates,
  * quota, telemetry) is covered in @papercusp/agent-mcp's own tests; this only
  * validates handler behavior given mocked lib helpers.
@@ -35,8 +35,8 @@ const MAKE_CTX = (over: Record<string, unknown> = {}) =>
     ...over,
   } as never);
 
-function parseTextPayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
+function parseDataPayload(result: { data: unknown }): Record<string, unknown> {
+  return result.data as Record<string, unknown>;
 }
 
 /** Read the bulk keyed-array envelope (flags:get / flags:set are bulk, P-006 —
@@ -136,7 +136,7 @@ describe('flags:list', () => {
     getAllFlags.mockResolvedValue({ [KEY]: true });
     const { default: tool } = await import('../list');
     const result = await tool.handler({}, MAKE_CTX());
-    const payload = parseTextPayload(result as never);
+    const payload = parseDataPayload(result as never);
     expect(payload.keys).toEqual([...ALL_FLAG_KEYS]);
     expect(payload[KEY]).toBe(true);
     expect(getAllFlags).toHaveBeenCalledWith('did-test');

@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   getNextForBee: vi.fn(),
   resolveAgentIdentity: vi.fn(),
   resolveClaimSpecWorkspace: vi.fn(),
-  fetchContextPressure: vi.fn(),
+  fetchContextPressureReadings: vi.fn(),
   autoBenchContextCriticalCaller: vi.fn(),
 }));
 
@@ -52,7 +52,7 @@ vi.mock('../../fleet/context-critical-bench', () => ({
 }));
 
 vi.mock('../coordination/context-pressure', () => ({
-  fetchContextPressure: mocks.fetchContextPressure,
+  fetchContextPressureReadings: mocks.fetchContextPressureReadings,
   resolveContextPressureRecoveryPath: vi.fn(async () => null),
   // EI-23744538757758407: the critical-pressure path reads headroom alongside the recovery
   // path, so this FULL-REPLACEMENT factory omitting the export throws "No
@@ -73,7 +73,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   readFleetPauseState: vi.fn(async () => ({ windingDown: false, reason: null })),
   diagnoseFleetScopeCooldownMiss: vi.fn(async () => null),
   diagnoseFleetScopeIssueFloorMiss: vi.fn(async () => null),
-  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
+  diagnoseFleetScopeFeatureFamilyExclusions: vi.fn(async () => null),
   diagnoseFleetScopeTerminalExhaustion: vi.fn(async () => null),
   diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
   diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),
@@ -122,8 +122,8 @@ type ToolDef = {
   ) => Promise<{ content?: Array<{ text: string }>; data?: Record<string, unknown> }>;
 };
 
-const callGetNext = (args: Record<string, unknown> = {}) =>
-  (getNextTool as unknown as ToolDef).handler({ harness: 'papercusp', ...args }, {});
+const callGetNext = (args: Record<string, unknown> = {}, ctx: Record<string, unknown> = {}) =>
+  (getNextTool as unknown as ToolDef).handler({ harness: 'papercusp', ...args }, ctx);
 
 function refusalPayload(out: { content?: Array<{ text: string }> }): Record<string, unknown> {
   expect(out.content?.[0]?.text).toBeDefined();
@@ -137,7 +137,11 @@ describe('scheduler:get_next — P-009 auto-bench on the context-critical refusa
     mocks.resolveAgentIdentity.mockReturnValue({ ownerId: OWNER, workspaceId: 'ws-test' });
     mocks.resolveClaimSpecWorkspace.mockReturnValue('ws-test');
     mocks.getNextForBee.mockResolvedValue(null);
-    mocks.fetchContextPressure.mockResolvedValue(new Map([[OWNER, 'critical']]));
+    mocks.fetchContextPressureReadings.mockResolvedValue(new Map([[OWNER, {
+      bucket: 'critical',
+      estimatedAt: '2026-10-11T16:55:00.000Z',
+      ageSec: 45,
+    }]]));
     mocks.autoBenchContextCriticalCaller.mockResolvedValue({
       benched: true,
       benchId: 42,
@@ -151,12 +155,24 @@ describe('scheduler:get_next — P-009 auto-bench on the context-critical refusa
     const payload = refusalPayload(out);
 
     expect(payload).toMatchObject({ ok: false, code: CONTEXT_CRITICAL_REFUSAL_CODE });
+    expect(payload.diagnosis).toMatchObject({
+      contextEstimate: { estimatedAt: '2026-10-11T16:55:00.000Z', ageSec: 45 },
+    });
     expect(mocks.autoBenchContextCriticalCaller).toHaveBeenCalledTimes(1);
 
     // The bench must be about the caller that was actually refused, with the bucket that refused
     // it — not a fleet-wide or default park.
     const [subject] = mocks.autoBenchContextCriticalCaller.mock.calls[0];
     expect(subject).toMatchObject({ ownerId: OWNER, bucket: 'critical' });
+  });
+
+  it('records the compact-first refusal without inventing an unresolved claim-spec revision', async () => {
+    const metadata = vi.fn();
+    const payload = refusalPayload(await callGetNext({}, { metadata }));
+    expect(mocks.getNextForBee).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: { kind: 'no-claim', reason: String(payload.error).slice(0, 500) },
+    });
   });
 
   it('carries the bench outcome back on the refusal, so the park is visible rather than implied', async () => {
@@ -179,7 +195,11 @@ describe('scheduler:get_next — P-009 auto-bench on the context-critical refusa
   it('CONTROL: a caller whose bucket is not critical is served and benched NOT AT ALL', async () => {
     // Without this the assertions above would pass equally against a version that benched every
     // caller on every pull — which is the false drain the context gate exists to prevent.
-    mocks.fetchContextPressure.mockResolvedValue(new Map([[OWNER, 'high']]));
+    mocks.fetchContextPressureReadings.mockResolvedValue(new Map([[OWNER, {
+      bucket: 'high',
+      estimatedAt: '2026-10-11T16:55:00.000Z',
+      ageSec: 45,
+    }]]));
 
     await callGetNext();
 
@@ -187,7 +207,7 @@ describe('scheduler:get_next — P-009 auto-bench on the context-critical refusa
   });
 
   it('CONTROL: an UNKNOWN bucket serves and benches nothing — a stale reading must not park a member', async () => {
-    mocks.fetchContextPressure.mockResolvedValue(new Map());
+    mocks.fetchContextPressureReadings.mockResolvedValue(new Map());
 
     await callGetNext();
 

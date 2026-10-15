@@ -15,6 +15,8 @@ export interface HostedConnectorBinding {
   generation: number;
   transport: HostedConnectorTransport;
   state: 'pending' | 'active' | 'revoked';
+  /** Server-derived at socket admission; never accepted from a connector or browser. */
+  hosting?: 'byoc' | 'papercusp';
 }
 
 export interface HostedConnectorTicketBinding extends HostedConnectorBinding {

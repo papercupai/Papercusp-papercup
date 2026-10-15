@@ -144,6 +144,10 @@ export type BootHistoryKind =
   // replication (blocks/ingest not flowing). Emitted edge-triggered by
   // replication-liveness.ts; the durable escalation is the EI it also files.
   | 'replication_frozen'
+  // Sparse, keyed detector transitions. An ending can mean recovery, detachment
+  // or removal; its original detail distinguishes those outcomes.
+  | 'replication_episode_started'
+  | 'replication_condition_ended'
   | 'announce_admitted'
   | 'announce_pending'
   | 'announce_rejected'
@@ -365,6 +369,11 @@ let epochCap = DEFAULT_EPOCH_CAP;
  * process's own stdout.
  */
 const STDOUT_MIRROR_KINDS: ReadonlySet<BootHistoryKind> = new Set([
+  // WI-10007965: retain episode boundaries beyond the process-local registry.
+  // These fire on edges, never on periodic samples. The JSON message carries
+  // the complete log key and detector kind, unlike the legacy display events.
+  'replication_episode_started',
+  'replication_condition_ended',
   // Admission decisions — the WI-5781 blind spot. A 'miss'-buffered peer log
   // is otherwise INVISIBLE: it never enters `admitted`, so the merge pass never
   // iterates it and the replication-liveness detector never samples it.

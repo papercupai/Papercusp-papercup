@@ -14,8 +14,11 @@ import {
   evaluateBgHostTicker,
   evaluateBgHostCodeDrift,
   evaluateMcpProxyCodeDrift,
+  evaluateMcpProxyBgHostCodeDrift,
   MCP_PROXY_HOT_PATHS,
+  MCP_PROXY_BG_HOST_HOT_PATHS,
   probeBgHostCodeDrift,
+  probeMcpProxyBgHostCodeDrift,
   BG_HOST_HOT_PATHS,
   BG_HOST_ARTIFACT_PATHS,
   BG_HOST_STALE_MS,
@@ -25,6 +28,7 @@ import {
   applyDownConfirmDebounce,
   DOWN_CONFIRM_TICKS,
   PORTLESS_PROBE_NAME_SET,
+  OPERATOR_DOWN_CONFIRM_TICKS,
   STAGING_API_DOWN_CONFIRM_TICKS,
   DESKTOP_DOWN_CONFIRM_TICKS,
   EMBED_SIDECAR_DOWN_CONFIRM_TICKS,
@@ -297,12 +301,25 @@ describe('applyDownConfirmDebounce (EI-18144960689849695 — flap damping)', () 
     expect(second.results[0].note).toBe(embedDown.note);
   });
 
-  it('an UNDAMPED endpoint keeps single-tick alerting (damping is opt-in)', () => {
-    const operatorDown: ProbeResult = { name: 'operator', up: false, status: null, latencyMs: 1 };
-    const { results, nextStreaks } = applyDownConfirmDebounce([operatorDown], {});
+  it('an endpoint absent from the opt-in map keeps single-tick alerting', () => {
+    const unlistedDown: ProbeResult = { name: 'unlisted-probe', up: false, status: null, latencyMs: 1 };
+    const { results, nextStreaks } = applyDownConfirmDebounce([unlistedDown], {});
     expect(results[0].up).toBe(false); // reported DOWN immediately, no suppression
-    expect(results[0]).toEqual(operatorDown); // untouched
-    expect(nextStreaks.operator).toBeUndefined(); // no streak carried for undamped names
+    expect(results[0]).toEqual(unlistedDown); // untouched
+    expect(nextStreaks['unlisted-probe']).toBeUndefined(); // no streak carried for undamped names
+  });
+
+  it('damps a single operator preflight failure but confirms a sustained outage', () => {
+    const operatorDown: ProbeResult = { name: 'operator', up: false, status: null, latencyMs: 1 };
+    const first = applyDownConfirmDebounce([operatorDown], {});
+    expect(OPERATOR_DOWN_CONFIRM_TICKS).toBe(2);
+    expect(first.nextStreaks.operator).toBe(1);
+    expect(first.results[0].up).toBe(true); // a one-tick restart/startup blip is suppressed
+    expect(first.results[0].note).toMatch(/unconfirmed down \(streak 1\/2\)/);
+
+    const second = applyDownConfirmDebounce([operatorDown], first.nextStreaks);
+    expect(second.nextStreaks.operator).toBe(OPERATOR_DOWN_CONFIRM_TICKS);
+    expect(second.results[0]).toEqual(operatorDown); // persistent DOWN still alerts
   });
 
   it('tracks streaks per name independently', () => {
@@ -473,6 +490,9 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
         // `.timer` is registered; the Type=oneshot `.service` is deliberately out
         // (see the registry comment + service-health-unit-coverage.test.ts).
         'perf-signals-capture-timer',
+        // EI-24811958626062774 — the job that moves :3170 forward. It ran FATAL for 5+ hours
+        // on 2026-10-01 with nothing watching it; episodic, report-only, 30-min delayed alarm.
+        'staging-sync',
       ].sort(),
     );
   });
@@ -509,12 +529,14 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
     // WI-6149: oddsmith-sidecar joins the report-only set for the SAME reason
     // bg-host is in it — the unit is already Restart=always under systemd, so a
     // registry restart lever would be a second restarter racing systemd's own.
-    expect(reportOnly).toEqual(['bg-host', 'live-federation-gate', 'oddsmith-sidecar'].sort());
+    // EI-24811958626062774: staging-sync is report-only because re-running a failed sync only
+    // repeats the same FATAL; the fault is in the tree or the layout.
+    expect(reportOnly).toEqual(['bg-host', 'live-federation-gate', 'oddsmith-sidecar', 'staging-sync'].sort());
   });
 
   it('combines both filters', () => {
     expect(supervisedProcesses({ layer: 'systemd-user', autoRestart: false }).map((e) => e.name).sort()).toEqual(
-      ['bg-host', 'live-federation-gate', 'oddsmith-sidecar'].sort(),
+      ['bg-host', 'live-federation-gate', 'oddsmith-sidecar', 'staging-sync'].sort(),
     );
   });
 
@@ -1026,6 +1048,44 @@ describe('probeBgHostCodeDrift — platform guard (P-005, cross-platform hardeni
     const res = await probeBgHostCodeDrift();
     expect(res.present).toBe(false);
     expect(res.note).toMatch(/not applicable on this platform/);
+  });
+});
+
+describe('evaluateMcpProxyBgHostCodeDrift (stale :9271 proxy detection)', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('covers the source and launch unit used by the :9271 proxy', () => {
+    expect(MCP_PROXY_BG_HOST_HOT_PATHS).toContain('apps/operator/lib/mcp-proxy');
+    expect(MCP_PROXY_BG_HOST_HOT_PATHS).toContain('apps/operator/bin/mcp-proxy.ts');
+    expect(MCP_PROXY_BG_HOST_HOT_PATHS).toContain('apps/operator/scripts/systemd/papercup-mcp-proxy-bg-host.service');
+  });
+
+  it('names the :9271 runtime and its sanctioned restart target when source changed after boot', () => {
+    const res = evaluateMcpProxyBgHostCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'proxy.ts');
+    expect(res.name).toBe('mcp-proxy-bg-host-code');
+    expect(res.up).toBe(true);
+    expect(res.note).toMatch(/:9271 proxy code changed/);
+    expect(res.note).toMatch(/dev:restart.*mcp-proxy-bg-host/);
+  });
+
+  it('returns present:false when boot or hot-change time is unknown', () => {
+    expect(evaluateMcpProxyBgHostCodeDrift(null, NOW).present).toBe(false);
+    expect(evaluateMcpProxyBgHostCodeDrift(NOW, null).present).toBe(false);
+  });
+});
+
+describe('probeMcpProxyBgHostCodeDrift — platform guard', () => {
+  const realPlatform = process.platform;
+  const setPlatform = (p: NodeJS.Platform) =>
+    Object.defineProperty(process, 'platform', { value: p, configurable: true });
+  afterEach(() => setPlatform(realPlatform));
+
+  it('is honestly not applicable off Linux rather than reporting a missing unit as a failure', async () => {
+    setPlatform('darwin');
+    const res = await probeMcpProxyBgHostCodeDrift();
+    expect(res.name).toBe('mcp-proxy-bg-host-code');
+    expect(res.present).toBe(false);
+    expect(res.note).toMatch(/Linux\/systemd-only/);
   });
 });
 

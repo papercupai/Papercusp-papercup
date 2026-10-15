@@ -4,6 +4,11 @@ kind: pot
 version: 0.1.1
 description: "Papercusp's own engineering pot: senior su collaborators work the shared staging tree,
   coordinate through work items and plans, and ship through the green-checkpoint release gate."
+knobs:
+  releaseGate:
+    # Clones of this pot can have a GitHub default branch of `main`; keep the
+    # release gate pointed at the staging integration branch so it can promote.
+    integrationBranch: staging
 workItem:
   kind: feature
   idPrefix: WI
@@ -30,4 +35,16 @@ fleet:
     - id: operator
       capabilities:
         - operator:write
+    - id: researcher
+      capabilities:
+        - "capability:fetch"
+        - "capability:read"
+        - "work_items:get"
+        - "work_items:claim"
+        - "work_items:complete"
+        - "plans:get"
+        - "reports:publish"
+        - "reports:get"
+        - "reports:list"
+        - "coord:send"
   watcher: papercup

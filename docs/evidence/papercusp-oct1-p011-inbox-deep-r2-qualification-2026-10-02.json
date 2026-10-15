@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005478",
+  "parent": "WI-10004890",
+  "plane": "live-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-inbox-deep-r2-2026-10-02.json",
+    "bytes": 250261,
+    "sha256": "a5bcaad88468a9416ae1f230324a6e61429a76b8af866b62378090c5536fcb32"
+  },
+  "runtime": {
+    "pid": 911700,
+    "buildSha": "3f9f41aa22",
+    "startedAt": "2026-10-02T13:36:41.033Z",
+    "endedAt": "2026-10-02T13:36:49.762Z",
+    "cleanup": {
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true
+    }
+  },
+  "test": {
+    "testRunId": 20533466,
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "nativeLog": "/tmp/su-7db4f-p011-inbox-deep-r2.log",
+    "localDirty": true
+  },
+  "guard": {
+    "testRunId": 20533458,
+    "passed": 4,
+    "failed": 0,
+    "skipped": 1,
+    "skippedMeaning": "Opt-in live test excluded from separate unit guard; exercised in actual R2."
+  },
+  "discovery": {
+    "pageCount": 1,
+    "populations": [
+      139
+    ],
+    "checked": [
+      139
+    ],
+    "selected": [
+      "3a17940c6169666ccd277457bab8c14c4c660798228f92df9df5f556ac6517d2",
+      "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+    ],
+    "definition": "At most two bounded insertion-order pages on the same PID; membership can change between pages. Ranking uses visited logical strings, not physical bytes."
+  },
+  "selection": {
+    "checked": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "selectedMissing": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "firstValues": [
+      {
+        "keyDigest": "3a17940c6169666ccd277457bab8c14c4c660798228f92df9df5f556ac6517d2",
+        "toolNamespace": "coord:inbox",
+        "entries": 15968,
+        "objects": 3799,
+        "stringCodeUnits": 843794,
+        "traversalLimited": false,
+        "depthLimited": 0,
+        "fieldsLimited": 0,
+        "softExpiry": "expired",
+        "hardExpiry": "pending"
+      },
+      {
+        "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+        "toolNamespace": "coord:inbox",
+        "entries": 16666,
+        "objects": 4932,
+        "stringCodeUnits": 1056887,
+        "traversalLimited": true,
+        "depthLimited": 0,
+        "fieldsLimited": 0,
+        "softExpiry": "expired",
+        "hardExpiry": "pending"
+      }
+    ],
+    "samePayloadCountersAcrossSamples": true
+  },
+  "ordinaryReads": 24,
+  "namedSourcesBefore": {
+    "scripts/cdp-inspector.mjs": "d3114909e8418ebf5fb2a6c9d2b706e15325cc3dca92b7440b3c84df1e043075",
+    "scripts/cdp-inspector.d.mts": "64af8c4f15656eaf1b78575e7af8070cbe5d8c9640ec331d105da7e23cca6293",
+    "packages/operator-core/lib/cdp-inspector.test.ts": "ec4a95c238f636c39416e6cb48330f741e23d6b803de8baab498df2df4529a12",
+    "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "4f6656b6e9c61011065183efdfc7f1df658ce8fb09fb38a05b72e3136240de31",
+    "packages/operator-core/lib/memory/jev-memory-gate.ts": "dfc94c7756003290a18b0212777636f59cdf2490e512f4c272eb0fb0aeb6c729",
+    "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+    "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+    "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992"
+  },
+  "namedSourcesAfter": {
+    "scripts/cdp-inspector.mjs": "d3114909e8418ebf5fb2a6c9d2b706e15325cc3dca92b7440b3c84df1e043075",
+    "scripts/cdp-inspector.d.mts": "64af8c4f15656eaf1b78575e7af8070cbe5d8c9640ec331d105da7e23cca6293",
+    "packages/operator-core/lib/cdp-inspector.test.ts": "ec4a95c238f636c39416e6cb48330f741e23d6b803de8baab498df2df4529a12",
+    "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "4f6656b6e9c61011065183efdfc7f1df658ce8fb09fb38a05b72e3136240de31",
+    "packages/operator-core/lib/memory/jev-memory-gate.ts": "dfc94c7756003290a18b0212777636f59cdf2490e512f4c272eb0fb0aeb6c729",
+    "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+    "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+    "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992"
+  },
+  "sourceComparison": "Eight exact local source hashes measured before/after and matched. Later explicit-digest guard broadening changes the sampler hash; this cohort is retained at its measured source version. Full import graph and loaded source graph UNKNOWN.",
+  "limitations": [
+    "One selected value has complete traversal counters; the other reaches its divided global entry quota.",
+    "Observed string edge counts are logical payload units, not retained/physical bytes.",
+    "Discovery ranking uses bounded visited strings; it is not a global memory ranking or an atomic cache census.",
+    "Ambient main PID only; no allocation, retainer, native residual, intervention savings or full functionality parity proof.",
+    "The 24 HTTP responses check status/row shape only; parent useful-context/concurrency/R8R9/acceptance/shipment remains open."
+  ]
+}

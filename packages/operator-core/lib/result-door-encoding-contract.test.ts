@@ -22,6 +22,9 @@
  * field, or the prose losing the disambiguation.
  */
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,7 +38,7 @@ vi.mock('./context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMo
 import type { DoorableResult } from './result-door';
 import { applyResultDoor, RESULT_DOOR_TOKENS } from './result-door';
 import readTool from './agent-tools/capability/read';
-import { parseScratchReference } from './scratch-reference';
+import { parseScratchReference, storeVolatileScratchReference } from './scratch-reference';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '77777777-8888-4999-8aaa-bbbbbbbbbbbb';
@@ -186,6 +189,101 @@ function spillRawBytes(): Buffer {
 }
 
 describe('EI-20685195115158619: spill cursor encoding contract', () => {
+  it('recovers authorized spilled media in a fresh process and reports lost volatile references honestly', () => {
+    const owner = 'su-media-recovery';
+    const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII=', 'base64');
+    // A valid mono PCM WAV, with a payload large enough to require paging.
+    const audio = Buffer.alloc(32_044);
+    audio.write('RIFF'); audio.writeUInt32LE(audio.length - 8, 4); audio.write('WAVEfmt ', 8);
+    audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20); audio.writeUInt16LE(1, 22);
+    audio.writeUInt32LE(8_000, 24); audio.writeUInt32LE(16_000, 28);
+    audio.writeUInt16LE(2, 32); audio.writeUInt16LE(16, 34); audio.write('data', 36);
+    audio.writeUInt32LE(audio.length - 44, 40);
+    const original = {
+      content: [
+        { type: 'text', text: 'media caption '.repeat(BUDGET_CHARS) },
+        { type: 'image', mimeType: 'image/png', data: image.toString('base64') },
+        { type: 'audio', mimeType: 'audio/wav', data: audio.toString('base64') },
+      ],
+    };
+    const doored = applyResultDoor(original, { toolName: 'code:run', workspaceId: WS, ownerId: owner, runId: RUN_ID });
+    const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+    const reference = envelope.content[0];
+    expect(reference).toMatchObject({ kind: 'reference', audience: 'owner' });
+    expect(envelope.incomplete).toMatchObject({ recoverable: true, spilledItems: 3 });
+    const volatile = storeVolatileScratchReference({
+      payload: 'process-local media', workspaceId: WS, ownerId: owner,
+      audience: 'owner', mediaType: 'text/plain', content: [],
+    });
+    expect(volatile).not.toBeNull();
+
+    // A separate Node process loads the real reader: no writer Map, mocks,
+    // prior tool response, or client-memory payload is available to it.
+    const probe = String.raw`
+      import { createHash } from 'node:crypto';
+      import { pathToFileURL } from 'node:url';
+      const [readerPath, uri, workspaceId, ownerId, volatileUri] = process.argv.slice(1);
+      const { default: reader } = await import(pathToFileURL(readerPath).href);
+      const context = (owner, workspace = workspaceId) => ({
+        uiClientId: owner, isSuperuser: true, workspaceId: workspace,
+        harnessSlug: 'papercusp', projectDir: process.cwd(),
+        principal: { slug: 'system:superuser', workspaceId: workspace },
+      });
+      const read = async (args, ctx = context(ownerId)) => {
+        const result = await reader.handler(args, ctx);
+        return JSON.parse(result.content.find(item => item.type === 'text').text);
+      };
+      const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+      const rejectedOwner = await read({ file_path: uri, content_indexes: [1, 2] }, context('su-foreign'));
+      const rejectedWorkspace = await read({ file_path: uri, content_indexes: [1] }, context(ownerId, 'foreign-workspace'));
+      const selected = await read({ file_path: uri, content_indexes: [1, 2] });
+      if (!selected.ok) throw new Error(JSON.stringify(selected));
+      const pages = [];
+      let args = { file_path: uri, byte_offset: 0, byte_limit: 1_024 };
+      while (args) {
+        const page = await read(args);
+        if (!page.ok || page.encoding !== 'base64') throw new Error(JSON.stringify(page));
+        const bytes = Buffer.from(page.data, 'base64');
+        if (bytes.length !== page.byte_length || bytes.toString('base64') !== page.data || page.byte_offset !== Buffer.concat(pages).length) {
+          throw new Error('noncanonical or noncontiguous byte page');
+        }
+        if (page.eof !== (page.next_cursor === null)) throw new Error('cursor/EOF disagreement');
+        pages.push(bytes);
+        args = page.next_cursor?.args ?? null;
+      }
+      const restored = JSON.parse(Buffer.concat(pages).toString('utf8'));
+      const media = items => items.map(item => ({ type: item.type, mimeType: item.mimeType,
+        hash: hash(Buffer.from(item.data, 'base64')), bytes: Buffer.from(item.data, 'base64').length }));
+      const lost = await read({ file_path: volatileUri, byte_offset: 0, byte_limit: 1_024 });
+      console.log('MEDIA_RECOVERY_RESULT ' + JSON.stringify({
+        selected: media(selected.content), paged: media(restored.content.slice(1)),
+        pageCount: pages.length, ownerRefusal: rejectedOwner.reason,
+        workspaceRefusal: rejectedWorkspace.reason, volatileLost: lost.reason,
+        returnedWriterPid: process.ppid, readerPid: process.pid,
+      }));
+    `;
+    const output = execFileSync(process.execPath, [
+      '--import', 'tsx', '--input-type=module', '-e', probe,
+      fileURLToPath(new URL('./agent-tools/capability/read.ts', import.meta.url)),
+      reference.uri, WS, owner, volatile!.uri,
+    ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 30_000 });
+    const line = output.split('\n').find(row => row.startsWith('MEDIA_RECOVERY_RESULT '));
+    expect(line, output).toBeDefined();
+    const recovered = JSON.parse(line!.slice('MEDIA_RECOVERY_RESULT '.length));
+    const expected = [image, audio].map((bytes, index) => ({
+      type: index === 0 ? 'image' : 'audio', mimeType: index === 0 ? 'image/png' : 'audio/wav',
+      bytes: bytes.length, hash: createHash('sha256').update(bytes).digest('hex'),
+    }));
+    expect(recovered.selected).toEqual(expected);
+    expect(recovered.paged).toEqual(expected);
+    expect(recovered.pageCount).toBeGreaterThan(1);
+    expect(recovered.ownerRefusal).toBe('forbidden_reference');
+    expect(recovered.workspaceRefusal).toBe('workspace_mismatch');
+    expect(recovered.volatileLost).toBe('expired_reference');
+    expect(recovered.readerPid).not.toBe(process.pid);
+    expect(recovered.returnedWriterPid).toBe(process.pid);
+  }, 20_000);
+
   it('binds the encoding key to the field it describes, not to the file', () => {
     const { cursor, next } = doorOversizedResult();
 
@@ -196,8 +294,10 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // EI-21349944846228401: the path is a self-describing scratch reference,
     // not the raw JSON payload. Say that at the recovery decision point so a
     // caller does not feed the manifest-bearing file to jq/JSON.parse directly.
-    expect(next).toContain('file_path is an encoded scratch-reference, not JSON.');
-    expect(next).toContain('Use capability:read with _projection.cursor.args');
+    expect(next).toContain('Use capability:read cursor.args');
+    expect(next).toContain('byte_offset+byte_limit');
+    expect(next).toContain('file_path-only truncates long lines');
+    expect(next).toContain('Scratch ref, not JSON');
   });
 
   it('still LOCATES a tool-internally clipped body, and marks it incomplete (P-005; supersedes the EI-21185758364267344 withholding)', () => {
@@ -223,7 +323,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(next).toContain('bodyComplete:false');
     expect(next).toContain('body_truncated');
     expect(next).toContain('paging cannot recover omitted fields');
-    expect(next).toContain('Re-call work_items:get');
+    expect(next).toContain("Re-read using that field's documented recovery handle or narrower arguments");
     expect(next).not.toContain('recover the exact spill bytes');
 
     // The locator must actually WORK on the partial path, not merely be present.
@@ -259,8 +359,16 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     );
   });
 
-  it('names the field to decode by its OWNER, not as a bare `data`', () => {
-    const { next } = doorOversizedResult();
+  it('distinguishes byte-page and plaintext-line recovery modes without atob', () => {
+    const { cursor, next } = doorOversizedResult();
+
+    expect(cursor.args).toHaveProperty('byte_offset');
+    expect(cursor.args).toHaveProperty('byte_limit');
+    expect(cursor.args).not.toHaveProperty('raw');
+    expect(next).toContain('byte_offset+byte_limit; no raw');
+    expect(next).toContain('Plaintext: raw:true+offset/limit lines');
+    expect(next).not.toContain('raw:true plaintext');
+    expect(next).toContain('runtime codec');
 
     // A bare "base64-decode data" is what left the reporter decoding the file.
     expect(next).toContain('response.data');
@@ -279,7 +387,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(next).toContain('canonical');
     expect(next).toContain('base64');
     expect(next).toContain('decoded.length===byte_length');
-    expect(next).toContain('parse JSON only at eof:true + next_cursor:null');
+    expect(next).toContain('parse only at eof:true+next_cursor:null');
   });
 
   it("surfaces capability:read's schema byte-page ceiling in the cursor", () => {
@@ -335,7 +443,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // precisely the defect, so asserting only one would not catch it.
     expect(cursor.bodyOffsetInPayload).toEqual(expect.any(Number));
     expect(cursor.bodyOffsetInFile).toEqual(expect.any(Number));
-    expect(next).toContain('JSON starts after cursor.bodyOffsetInPayload in response.data.');
+    expect(next).toContain('JSON at response.data[cursor.bodyOffsetInPayload].');
 
     // A complete body must NOT carry the incompleteness marker.
     expect(cursor.bodyComplete).toBeUndefined();

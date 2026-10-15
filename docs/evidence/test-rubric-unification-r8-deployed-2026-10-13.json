@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "plan": "test-rubric-unification-2026-10-12",
+  "clause": "AUTO-BAR-R-8-P-008@5",
+  "evidencePlane": "deployed",
+  "measuredAt": "2026-10-13T13:48:25Z",
+  "measuredBy": "su-332a6647-4b0c-422e-a6f3-c9ad440dc078",
+  "claim": "On the running background-worker host, the re-score routine plan-schedule-rubric-rescore-papercusp-app-performance-2026-10-13 is armed and firing, and its meets-to-below crossing fires rubric:criterion-regressed:papercusp-app-performance.",
+  "host": {
+    "role": "background-workers",
+    "port": 3271,
+    "healthSha": "094d57643b",
+    "healthReadAt": "2026-10-13T13:48:25.850Z"
+  },
+  "routine": {
+    "name": "plan-schedule-rubric-rescore-papercusp-app-performance-2026-10-13",
+    "installSlug": "papercusp",
+    "lastFiredAt": "2026-10-13T13:29:10.321Z",
+    "nextFireAt": "2026-10-13T14:29:10.000Z",
+    "source": "routines:list { name, installSlug: 'papercusp' }"
+  },
+  "fireLedgerRows": {
+    "table": "harness_shared.test_runs",
+    "filePathPrefix": "rubric-check/papercusp-app-performance/",
+    "window": ["2026-10-13T13:29:12.035Z", "2026-10-13T13:31:09.380Z"],
+    "idRange": [21207928, 21207950],
+    "rowCount": 23,
+    "valuedRows": 22,
+    "valuelessRows": [{ "id": 21207949, "check": "scout-accumulator-db-cost:0", "note": "null by design when the accumulator does not run in-window (EI-25846520420095595)" }],
+    "executionRoot": "<canonical papercusp checkout>/apps/operator"
+  },
+  "alertEvent": {
+    "table": "harness_shared.event_key_fires",
+    "eventKey": "rubric:criterion-regressed:papercusp-app-performance",
+    "fireCount": 4,
+    "firstFiredAt": "2026-10-13T08:27:38.673Z",
+    "lastFiredAt": "2026-10-13T13:31:15.856Z",
+    "lastFiredBy": "system:rubric-rescore",
+    "lastPayload": { "after": "fail", "before": "pass", "rubricRef": "papercusp-app-performance", "testRunId": 21207946, "criterionKey": "pg-wal-rate" },
+    "crossingKind": "natural (pg-wal-rate measured 2.57 MB/s at 13:30:39Z, previously meets)"
+  },
+  "recheck": [
+    "routines:list { name: 'plan-schedule-rubric-rescore-papercusp-app-performance-2026-10-13', installSlug: 'papercusp' } -> lastFiredAt advances hourly",
+    "SELECT fire_count, last_fired_at, last_payload FROM harness_shared.event_key_fires WHERE event_key = 'rubric:criterion-regressed:papercusp-app-performance'",
+    "curl -s 127.0.0.1:3271/api/health"
+  ],
+  "unitTest": "packages/operator-core/lib/rubric-rescore-schedule.test.ts (crossing fires; steady meets does not; schedule is a plan schedule)"
+}

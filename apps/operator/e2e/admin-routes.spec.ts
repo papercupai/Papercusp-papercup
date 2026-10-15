@@ -27,10 +27,21 @@ const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
   `http://127.0.0.1:${Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055}`;
 
-/** Per-install superuser bearer — the documented auth for /api/admin/*. */
+/**
+ * Per-install superuser bearer — the documented auth for /api/admin/*.
+ *
+ * Resolved exactly like the operator's canonical reader
+ * (packages/operator-core/lib/superuser-token.ts): `$PAPERCUSP_HOME/superuser-token`,
+ * defaulting to `~/.papercusp`. A hard-coded `~/.papercusp` sends the WRONG token
+ * to an isolated operator (`VERIFY_TAURI_ISOLATED_DB=1` exports a per-run
+ * PAPERCUSP_HOME), and the failure is silent on most routes: `tables` and
+ * `commands` also admit `unverified-loopback`, so only the verified-only
+ * `/api/admin/run` exposes it, as a 403 (WI-10006736).
+ */
 const SU_TOKEN = (() => {
   try {
-    return readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
+    const home = process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp');
+    return readFileSync(join(home, 'superuser-token'), 'utf8').trim();
   } catch {
     return '';
   }

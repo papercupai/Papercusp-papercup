@@ -59,6 +59,7 @@ function fleet(slug: string, over: Partial<AgentFleetRecord> = {}): AgentFleetRe
     description: null,
     owner: null,
     leaderOwnerId: null,
+    leaderMissingSinceMs: null,
     colorScheme: 'forest',
     controlState: 'active',
     fleetType: 'single',

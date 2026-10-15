@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
+import { PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const WS = 'cache-efficiency-parser-state';
@@ -454,12 +455,17 @@ describe('persistent transcript accounting', () => {
     const adapters = [{ name: backend, root, parse: backend === 'claude' ? parseTranscriptChunk : parseOmpChunk }];
     await fs.writeFile(file, message(20));
     expect((await ingestInteractiveUsage({ adapters })).errors).toEqual([]);
+    const [initial] = await sql`SELECT price_table_version FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(initial.price_table_version).toBe(PRICE_TABLE_VERSION);
+    // An enrichment must refresh the writer stamp as well as the token counters.
+    await sql`UPDATE harness_shared.agent_usage_samples SET price_table_version='prior-price-rules' WHERE workspace_id=${WS}`;
     await fs.appendFile(file, message(20) + message(30));
     const second = await ingestInteractiveUsage({ adapters });
     expect(second.errors).toEqual([]);
     expect(second.totals).toMatchObject({ turns: 0, inputTokens: 0, outputTokens: 10, cacheReadTokens: 0, cacheCreationTokens: 0 });
     const [row] = await sql`SELECT turn_count, input_tokens, output_tokens, event_ts, ingested_at, ts,
-      usage_provenance, account_id, turn_trigger, cost_usd FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+      usage_provenance, account_id, turn_trigger, cost_usd, price_table_version FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(row.price_table_version).toBe(PRICE_TABLE_VERSION);
     expect(row.turn_count).toBe(1);
     expect(Number(row.input_tokens)).toBe(10);
     expect(Number(row.output_tokens)).toBe(30);
@@ -679,13 +685,15 @@ describe('persistent transcript accounting', () => {
     const adapters = [{ name: 'claude', root, parse: parseTranscriptChunk }];
     await fs.writeFile(file, message());
     expect((await ingestInteractiveUsage({ adapters })).errors).toEqual([]);
-    const [unknown] = await sql`SELECT cache_creation_tokens,cost_usd,usage_provenance FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    const [unknown] = await sql`SELECT cache_creation_tokens,cost_usd,usage_provenance,price_table_version FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(unknown.price_table_version).toBe(PRICE_TABLE_VERSION);
     expect(unknown.cache_creation_tokens).toBeNull();
     expect(unknown.cost_usd).toBeNull();
     expect(unknown.usage_provenance.cacheWriteSource).toBe('unreported');
     await fs.appendFile(file, message(0));
     expect((await ingestInteractiveUsage({ adapters })).totals.turns).toBe(0);
-    const [known] = await sql`SELECT turn_count,cache_creation_tokens,cost_usd,usage_provenance FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    const [known] = await sql`SELECT turn_count,cache_creation_tokens,cost_usd,usage_provenance,price_table_version FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(known.price_table_version).toBe(PRICE_TABLE_VERSION);
     expect(known.turn_count).toBe(1);
     expect(Number(known.cache_creation_tokens)).toBe(0);
     expect(known.cost_usd).toBeGreaterThan(0);

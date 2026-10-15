@@ -102,9 +102,12 @@ describe('EI-18738872670541790 — verify-tauri-headless reclaims an abandoned (
     expect(fn).toContain('rm -f "/tmp/.X11-unix/X$n"');
   });
 
-  it('find_pid_by_display_env matches an EXACT DISPLAY value, not a substring (so :93 never matches :930)', () => {
-    const fn = src.match(/find_pid_by_display_env\(\)\s*\{[\s\S]*?\n\}/)?.[0];
-    expect(fn).toBeTruthy();
-    expect(fn).toContain('grep -qxF "DISPLAY=$want_display"');
+  it('the shared environment matcher requires exact entries and the display adapter preserves that contract', () => {
+    const matcher = src.match(/find_pid_by_env\(\)\s*\{[\s\S]*?\n\}/)?.[0];
+    const displayAdapter = src.match(/find_pid_by_display_env\(\)\s*\{[\s\S]*?\n\}/)?.[0];
+    expect(matcher).toBeTruthy();
+    expect(matcher).toContain('grep -qxF "$expected" <<<"$env_p"');
+    expect(displayAdapter).toContain('find_pid_by_env "$pattern" "DISPLAY=$want_display"');
+    expect(matcher).not.toMatch(/\|\s*head\b/);
   });
 });

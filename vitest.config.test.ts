@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ADMIN_TEST_RUNS_REPORTER_PATH,
   DEFAULT_UNIT_TEST_TIMEOUT_MS,
+  gateParticipationConfig,
   sharedHostWorkerCap,
 } from '@papercusp/test-config/vitest-config';
 import rootConfig, { ROOT_VITEST_TSCONFIG_PROJECTS } from './vitest.config.ts';
@@ -43,5 +45,12 @@ describe('repository-root Vitest discovery', () => {
       maxWorkers: expectedCap.maxWorkers,
       minWorkers: expectedCap.minWorkers,
     });
+  });
+
+  it('records direct root runs through the shared test evidence reporters', () => {
+    const reporters = (rootConfig.test as { reporters?: string[] } | undefined)?.reporters ?? [];
+
+    expect(reporters).toContain(ADMIN_TEST_RUNS_REPORTER_PATH);
+    expect(reporters).toEqual(expect.arrayContaining(gateParticipationConfig().reporters));
   });
 });

@@ -1,0 +1,330 @@
+---
+rel_path: "evidence/originals/08549b5ca89fd68e06487dd62c75dc9cef2f0a4a5d2c9900beeb28071e57b942.json"
+updated_at: 1791229536331
+_body: "content"
+---
+
+{
+  "schemaVersion": "p011-request-retainers-r2-qualified-v1",
+  "measuredAt": "2026-10-03T13:58:03.692918+00:00",
+  "nativeSession": "01a101f3-6f28-7e90-ac3c-c853a091c947",
+  "workItem": "WI-10005966",
+  "responseLinkBug": "WI-10006007",
+  "plane": "isolated-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-request-retainers-r2-2026-10-03.json",
+    "bytes": 997501,
+    "sha256": "76c8e92b253001a1be3aef697e99d9c76a09c0a1c07e0a3719f97c5cb3666a0b"
+  },
+  "producerLedger": [
+    {
+      "id": 20700732,
+      "workspaceId": "papercusp-workspace",
+      "harnessSlug": null,
+      "root": "/home/marsh-office/papercupai-workspace/papercusp",
+      "filePath": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "status": "fail",
+      "framework": "vitest",
+      "startedAt": "2026-10-03T13:35:37.670Z",
+      "finishedAt": "2026-10-03T13:41:05.267Z",
+      "durationMs": 327597,
+      "commitSha": "50810dd9ff209a622be6164af9042f15764ea271",
+      "runGroupId": null,
+      "source": "local",
+      "branch": "staging",
+      "outputTail": "P-011 private request-host memory cohort > binds retainers PSS/heap/native samples and bounded query bytes to the serving PID, then reaps it: expected false to be true // Object.is equality\nactual: false\nexpected: true",
+      "loopLagP95Ms": 20.5,
+      "rssMb": 155.9,
+      "saturationSuspect": false,
+      "worktreeDirty": true,
+      "isScratchConfig": false
+    }
+  ],
+  "producerResult": "FAIL: final assertion rejects unobserved response WeakRefs; runtime itself completed with status0",
+  "producerLog": {
+    "path": "/tmp/su-7db4f-p011-request-retainers-r2.log",
+    "bytes": 75210,
+    "sha256": "f838d75b68aa74e122c58acb01059c9dcdef30d12c84fdad075a8c261c91312d"
+  },
+  "counts": {
+    "samples": 14,
+    "windows": 3,
+    "httpRequests": 24,
+    "selectedQueryTuples": 16,
+    "unobservedRequestIds": [],
+    "objectStatuses": {
+      "decodedResult:collected": 16,
+      "resolvedRows:unobserved": 16,
+      "responseValue:unobserved": 16
+    },
+    "exactSingletonGraphNodes": 9
+  },
+  "snapshotTiming": {
+    "writeMs": 16453,
+    "summaryMs": 117239,
+    "combinedMs": 134557
+  },
+  "rawCleanup": {
+    "hostReaped": true,
+    "snapshotRemoved": true,
+    "hostAbsent": true,
+    "homeAbsent": true
+  },
+  "prePostFifo": {
+    "before": [
+      {
+        "pool": "org-admin",
+        "totalRecorded": 188,
+        "retained": 32
+      },
+      {
+        "pool": "org-app",
+        "totalRecorded": 75,
+        "retained": 32
+      }
+    ],
+    "after": [
+      {
+        "pool": "org-admin",
+        "totalRecorded": 198,
+        "retained": 32
+      },
+      {
+        "pool": "org-app",
+        "totalRecorded": 75,
+        "retained": 32
+      }
+    ],
+    "beforeMatched": 16,
+    "afterMatched": 16
+  },
+  "sourceFence": [
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "beforeSha256": "bba36ba90ea41a6a6edc813f00098e09aa55cbe5db8ee5e6107b371ebf65b186",
+      "currentSha256": "bba36ba90ea41a6a6edc813f00098e09aa55cbe5db8ee5e6107b371ebf65b186"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query.ts",
+      "beforeSha256": "5f5bad1c9ad0904bd0a48b111533974dff2dafaf3b282ae7c3d3b315e6c99002",
+      "currentSha256": "5f5bad1c9ad0904bd0a48b111533974dff2dafaf3b282ae7c3d3b315e6c99002"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+      "beforeSha256": "64da0b2e68cf63797127d31cc787fa14584a6603da496c21eb3cc8577ce9982d",
+      "currentSha256": "64da0b2e68cf63797127d31cc787fa14584a6603da496c21eb3cc8577ce9982d"
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "beforeSha256": "3918249ea811b95ec308ab3be078ea6e64d23dd5646bc8314d4023feb24dd972",
+      "currentSha256": "d72752978db0773b83d5347bcb39f5bbae33a997754ac8abf9354fe11222f6ea"
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "beforeSha256": "dffda48f8b314346d5707cde6355c92ab348ded27412d9e4a53eb687b5d09e59",
+      "currentSha256": "dffda48f8b314346d5707cde6355c92ab348ded27412d9e4a53eb687b5d09e59"
+    },
+    {
+      "path": "scripts/cdp-inspector.d.mts",
+      "beforeSha256": "9e00b62cbec6af9ef2cb1fd83e5d2b04b37cfd4ca411dc4595d6760819623c82",
+      "currentSha256": "9e00b62cbec6af9ef2cb1fd83e5d2b04b37cfd4ca411dc4595d6760819623c82"
+    },
+    {
+      "path": "scripts/analyze-heap-snapshots.mjs",
+      "beforeSha256": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29",
+      "currentSha256": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29"
+    },
+    {
+      "path": "scripts/analyze-heap-snapshots.d.mts",
+      "beforeSha256": "6f71bdf2d28612fbb98f2c4e6e0153a75b6bbef49c9f44cbab5c2c869a67ad4d",
+      "currentSha256": "6f71bdf2d28612fbb98f2c4e6e0153a75b6bbef49c9f44cbab5c2c869a67ad4d"
+    },
+    {
+      "path": "scripts/heap-retainers-native/Cargo.toml",
+      "beforeSha256": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb",
+      "currentSha256": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb"
+    },
+    {
+      "path": "scripts/heap-retainers-native/Cargo.lock",
+      "beforeSha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded",
+      "currentSha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded"
+    },
+    {
+      "path": "scripts/heap-retainers-native/src/main.rs",
+      "beforeSha256": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9",
+      "currentSha256": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9"
+    },
+    {
+      "path": ".heap-retainers-cargo-target/release/papercusp-heap-retainers",
+      "beforeSha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "currentSha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02"
+    },
+    {
+      "path": "/tmp/su-7db4f-v8-heap-native/bin/v8-heap",
+      "beforeSha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24",
+      "currentSha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24"
+    }
+  ],
+  "sourceFenceAtTerminal": "A read before the response-link fix found all13 named hashes equal to launch fence. Registry changed intentionally afterwards; full imported/executed graph UNKNOWN.",
+  "independentOracle": {
+    "path": "docs/evidence/papercusp-oct1-p011-request-heap-oracle-r2-2026-10-03.json",
+    "bytes": 30967,
+    "sha256": "cbce76c264d7ba1f201878603940ce45ff9ce387cb870cc2b7ed6e01161d15a3"
+  },
+  "independentTests": {
+    "runs": [
+      {
+        "id": 20701488,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "root": "/home/marsh-office/papercupai-workspace/papercusp",
+        "filePath": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+        "status": "pass",
+        "framework": "vitest",
+        "startedAt": "2026-10-03T13:53:15.985Z",
+        "finishedAt": "2026-10-03T13:53:16.689Z",
+        "durationMs": 704,
+        "commitSha": "ada36a0b2830b437686b5d684adbedd1adbf6a84",
+        "runGroupId": null,
+        "source": "local",
+        "branch": "staging",
+        "outputTail": null,
+        "loopLagP95Ms": 21,
+        "rssMb": 172.4,
+        "saturationSuspect": false,
+        "worktreeDirty": true,
+        "isScratchConfig": false
+      }
+    ],
+    "log": {
+      "path": "/tmp/su-7db4f-p011-request-heap-oracle-r3.log",
+      "bytes": 13585,
+      "sha256": "1bb8de8cdedb909e3a5c48fc81c573cdc6d58ff998d053168e496326ea2a7ed7"
+    },
+    "passed": 96,
+    "filteredSkipped": 23,
+    "scope": "30 new request-heap checks;29 existing named-query and37 exact-owner checks after shared oracle changed; no runtime producer replay"
+  },
+  "responseRegression": {
+    "beforeRuns": [
+      {
+        "id": 20701281,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "root": "/home/marsh-office/papercupai-workspace/papercusp",
+        "filePath": "libs/papercusp/libs/db/src/postgres-result-diagnostics.test.ts",
+        "status": "fail",
+        "framework": "vitest",
+        "startedAt": "2026-10-03T13:50:26.352Z",
+        "finishedAt": "2026-10-03T13:50:26.616Z",
+        "durationMs": 264,
+        "commitSha": "fccd468db033f8899ce841fefc932170d539b919",
+        "runGroupId": null,
+        "source": "local",
+        "branch": "staging",
+        "outputTail": "P011 exact decoded-object weak diagnostic guards > uses the captured request build when the pool source build was unmeasured: expected '{\"pool\":\"org-app\",\"capacity\":32,\"tota\u2026' not to contain 'private'\nactual: {\"pool\":\"org-app\",\"capacity\":32,\"totalRecorded\":1,\"dropped\":0,\"results\":[{\"pool\":\"org-app\",\"source\":{\"processInstanceId\":\"ff83eec6-2ccd-438e-9207-5152ae112764\",\"buildSha\":null,\"poolInstanceId\":\"84d96e62-a884-46dd-99c8-84cc7444e0a0\"},\"connectionId\":1,\"queryId\":1,\"backendPid\":null,\"queryFamily\":\"select:private_table\",\"command\":null,\"rowCount\":1,\"wireBytes\":10,\"elapsedMs\":75,\"preBuildMs\":null,\"status\":\"ok\",\"errorCode\":\"42p01\",\"recordedAt\":1791035426362,\"correlationState\":\"linked\",\"correlation\":{\"processInstanceId\":\"ff83eec6-2ccd-438e-9207-5152ae112764\",\"buildSha\":\"aaaaaaaaaaaaaaaaaaaaaaa",
+        "loopLagP95Ms": 21.9,
+        "rssMb": 123.8,
+        "saturationSuspect": false,
+        "worktreeDirty": true,
+        "isScratchConfig": false
+      },
+      {
+        "id": 20700820,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "root": "/home/marsh-office/papercupai-workspace/papercusp",
+        "filePath": "libs/papercusp/libs/db/src/postgres-result-diagnostics.test.ts",
+        "status": "fail",
+        "framework": "vitest",
+        "startedAt": "2026-10-03T13:47:52.224Z",
+        "finishedAt": "2026-10-03T13:47:52.253Z",
+        "durationMs": 29,
+        "commitSha": "42c29b71b198664d2a0778f6a09563301b0cc11a",
+        "runGroupId": null,
+        "source": "local",
+        "branch": "staging",
+        "outputTail": "P011 exact decoded-object weak diagnostic guards > uses the captured request build when the pool source build was unmeasured: expected undefined to be [ { id: 'mapped-private' } ] // Object.is equality\nactual: undefined\nexpected: [\n  {\n    \"id\": \"mapped-private\",\n  },\n]",
+        "loopLagP95Ms": null,
+        "rssMb": 112.2,
+        "saturationSuspect": null,
+        "worktreeDirty": true,
+        "isScratchConfig": false
+      }
+    ],
+    "beforeLog": {
+      "path": "/tmp/su-7db4f-p011-response-build-before-r1.log",
+      "bytes": 26128,
+      "sha256": "a74281913c75fbb1b7461d421acf2a658f23d2a9374bf644868f5c846e5cd83c"
+    },
+    "afterRuns": [
+      {
+        "id": 20701487,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "root": "/home/marsh-office/papercupai-workspace/papercusp",
+        "filePath": "libs/papercusp/libs/db/src/postgres-result-diagnostics.test.ts",
+        "status": "pass",
+        "framework": "vitest",
+        "startedAt": "2026-10-03T13:53:06.913Z",
+        "finishedAt": "2026-10-03T13:53:07.129Z",
+        "durationMs": 216,
+        "commitSha": "ada36a0b2830b437686b5d684adbedd1adbf6a84",
+        "runGroupId": null,
+        "source": "local",
+        "branch": "staging",
+        "outputTail": null,
+        "loopLagP95Ms": 20.8,
+        "rssMb": 113.8,
+        "saturationSuspect": false,
+        "worktreeDirty": true,
+        "isScratchConfig": false
+      }
+    ],
+    "afterLog": {
+      "path": "/tmp/su-7db4f-p011-response-build-after-r2.log",
+      "bytes": 17462,
+      "sha256": "9c01d2bf71d39952225e6ad9093361afb6f0959d1541af6e28811ba770c79e37"
+    },
+    "passed": 12,
+    "filteredSkipped": 34,
+    "distinguishingTest": "Canonical direct API call holds decoded, mapped and response objects strongly, with captured known request build and unmeasured pool source build. The mapped WeakRef is absent before fix and resolves to the exact mapped object after fix without a snapshot or GC.",
+    "rootCause": "recordPgDiagnosticResponse compared request build to a pool identity created before its build stamp was available; valid request records were skipped.",
+    "alternativeHypothesis": "Snapshot GC or diagnostic FIFO eviction caused missing mapped/response links.",
+    "actualObservation": "The guard failed before snapshot or GC with objects alive. New captured-build join passes and five identity-conflict controls reject.",
+    "detectorRepair": "Canonical fixture now varies captured and pool build provenance rather than assuming both stamps match."
+  },
+  "changedSources": [
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "bytes": 29262,
+      "sha256": "d72752978db0773b83d5347bcb39f5bbae33a997754ac8abf9354fe11222f6ea"
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/postgres-result-diagnostics.test.ts",
+      "bytes": 36448,
+      "sha256": "ecff887e9b9aa8b98cfddf0d1f1b99ccf78b75548ca799563574205de4016e40"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 53048,
+      "sha256": "a6686c15f7307dfcd77915534e0554ea09d398ff15384cd58b63ae42777f55f2"
+    }
+  ],
+  "types": {
+    "state": "Terminal exit0; registry source route clean, requested test files not fully checked",
+    "log": "/tmp/su-7db4f-p011-request-heap-types-r2.log",
+    "bytes": 7110,
+    "sha256": "f3dbd18f3a4341a6e617017aa188135b412cc89612382af3d1861451d5a03430",
+    "scope": "db source service checked10 files; postgres-result-diagnostics.test.ts explicitly outside project program; operator-core route checked0 files. No test-file or full-project clean-types claim."
+  },
+  "nextPrecondition": "Before another costly cohort, validate weak phase presence before snapshot without dereferencing targets. Preserve missing links as gaps; do not whitelist them as feature acceptance.",
+  "acceptanceLimits": [
+    "Producer ledger harnessSlug is null: unscoped proof; corrected scoped audit does not repair it.",
+    "R2 canonical producer still FAIL; originalR1 cause still UNCONFIRMED.",
+    "No current runtime validation of the response-link fix yet.",
+    "Full executed source graph, worker-clone identity, native physical allocation ownership, eight-source dispositions and fullP011@2/D021 acceptance remain open.",
+    "No LIVE_GATE_OPS, independent full acceptance or verified shipment claimed."
+  ]
+}
+

@@ -1,0 +1,73 @@
+function own(value, key) {
+  return value !== null && typeof value === 'object' && Object.hasOwn(value, key);
+}
+
+function summarizeCell(result) {
+  if (!result || typeof result !== 'object' || !own(result, 'status')) {
+    return { status: 'unavailable' };
+  }
+
+  const summary = { status: result.status };
+  if (own(result, 'cell')) summary.cell = result.cell;
+
+  if (result.status === 'value') {
+    if (own(result, 'value')) {
+      const value = result.value;
+      summary.value = typeof value === 'object' ? JSON.stringify(value).slice(0, 300) : value;
+    }
+    if (own(result, 'source') && result.source && own(result.source, 'authoritative')) {
+      summary.src = result.source.authoritative;
+    }
+  } else if (result.status === 'unknown' && own(result, 'unknown')) {
+    summary.unknown = JSON.stringify(result.unknown).slice(0, 300);
+  } else if (result.status !== 'absent' && own(result, 'error')) {
+    summary.error = String(result.error).slice(0, 110);
+  }
+
+  return summary;
+}
+
+function routineRows(result) {
+  if (!result || typeof result !== 'object') return [];
+  if (own(result, 'routines') && Array.isArray(result.routines)) return result.routines;
+  if (own(result, 'results') && Array.isArray(result.results)) return result.results;
+  if (own(result, 'data') && result.data && own(result.data, 'routines') && Array.isArray(result.data.routines)) {
+    return result.data.routines;
+  }
+  return [];
+}
+
+const out = {};
+for (const c of ['gate.greenCheckpoint.verdict','gate.greenCheckpoint.candidate','gate.greenCheckpoint.ownership','git.mainBehindStaging','deploy.3070.sha']) {
+  try {
+    const r = await tools.state.read(c === 'gate.greenCheckpoint.candidate'
+      ? { cell: c, as: 'packages/operator-core/lib/live-federation-gate-admission-pressure.test.ts' }
+      : { cell: c });
+    out[c] = summarizeCell(r);
+  } catch (e) {
+    out[c] = { err: String(e).slice(0, 110) };
+  }
+}
+
+try {
+  const rt = await tools.routines.list({ name: 'green-checkpoint', installSlug: 'papercusp' });
+  const rows = routineRows(rt);
+  const row = rows[0];
+  if (!row || typeof row !== 'object') {
+    out.routine = { status: 'not-found' };
+  } else {
+    const summary = {};
+    for (const key of ['active', 'lastFiredAt', 'nextFireAt']) {
+      if (own(row, key)) summary[key] = row[key];
+    }
+    if (own(row, 'health')) {
+      const health = row.health;
+      summary.health = health && typeof health === 'object' ? JSON.stringify(health).slice(0, 260) : health;
+    }
+    out.routine = Object.keys(summary).length > 0 ? summary : { status: 'unavailable' };
+  }
+} catch (e) {
+  out.routine = { err: String(e).slice(0, 110) };
+}
+
+return out;

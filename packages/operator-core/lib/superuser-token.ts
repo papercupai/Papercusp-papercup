@@ -43,10 +43,24 @@ function loadToken(): string | null {
 }
 
 /**
+ * The live token path (`$PAPERCUSP_HOME/superuser-token`, else
+ * `~/.papercusp/superuser-token`), resolved on every call so a scoped home
+ * set after import is still honoured. Use this for messages that name the
+ * path; READ the token through `readSuperuserToken()`.
+ */
+export function superuserTokenPath(): string {
+  return tokenPath();
+}
+
+/**
  * Read the on-disk superuser bearer token, or null if not yet installed.
- * The single shared reader — `console-launcher` and `buildLaunchSpec`'s
- * `su` branch both use this so the "where's the token" logic (path and
- * short-token sanity) lives in exactly one place.
+ * The single shared reader: every in-process reader of the operator's own
+ * bearer (`console-launcher`, `buildLaunchSpec`'s `su` branch, the
+ * agent_chats / converse / oracle / docs-qa MCP configs, …) goes through it,
+ * so the "where's the token" logic (PAPERCUSP_HOME resolution and
+ * short-token sanity) lives in exactly one place and the bearer presented
+ * always matches the one `isValidSuperuserBearer` validates.
+ * `superuser-token-readers.test.ts` refuses a new hard-coded reader (WI-10006617).
  */
 export function readSuperuserToken(): string | null {
   return loadToken();

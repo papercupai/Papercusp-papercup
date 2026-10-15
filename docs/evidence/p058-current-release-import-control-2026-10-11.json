@@ -1,0 +1,297 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 current release ARM syntax and external evaluation control",
+  "cwd": ".",
+  "command": [
+    "node",
+    ".papercusp/scratch/p058-current-release-import-control-20261011/run.mjs"
+  ],
+  "startedAt": "2026-10-11T17:05:51.338Z",
+  "finishedAt": "2026-10-11T17:07:15.218Z",
+  "exitCode": 0,
+  "summary": "Exact current-source ARM syntax-only check completed in18126ms, and all26 external imports completed in24479ms in a separate control. Stable bytes and exact owned cleanup passed. Neither measured phase alone used60000ms. This does not identify the remaining full boot cause or change the original failed qualification.",
+  "workItemId": "EI-25500068013952985",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "producerTaskId": "0mv42px0d1wa2xdg15f",
+  "sourceCommit": "4f991247708f12d9edc56af763f1f8fd94219773",
+  "sourceServeSha256": "1333a5d98d754731b9cd6eef319b2668a089fbb025c354769c5fe00adb117d88",
+  "candidateAccepted": false,
+  "evidencePlane": "separate-uninstrumented-syntax-and-external-evaluation-in-private-podman-arm64-uid1001",
+  "originalCanonicalQualification": {
+    "evidenceFile": "docs/evidence/p058-changed-release-arm-qualification-2026-10-11.json",
+    "sha256": "bfc1ee6f47fa06c7fbc7b51e7b0e7ee76267d9e24d410d048c6863dfa5bc0ea5",
+    "outcome": "fail",
+    "deadlineMs": 60000,
+    "rawEvidence": {
+      "path": "/mnt/backup/portable-server-p058/changed-input-release-20261011/qualification-evidence-original-fb12.json",
+      "sha256": "fb12d4304cb4892c10d3212609d26a9ba9043f4e9a20822a848941ffa6b05e87"
+    }
+  },
+  "observation": {
+    "runtime": {
+      "arch": "arm64",
+      "node": "v24.18.1",
+      "uid": 1001
+    },
+    "syntax": {
+      "status": 0,
+      "signal": null,
+      "errorCode": null,
+      "elapsedMs": 18126.223979,
+      "stderr": ""
+    },
+    "externalEvaluation": {
+      "elapsedMs": 24478.576011,
+      "rows": [
+        {
+          "spec": "@aws-sdk/client-ec2",
+          "status": "passed",
+          "elapsedMs": 4258.464313
+        },
+        {
+          "spec": "@aws-sdk/client-ssm",
+          "status": "passed",
+          "elapsedMs": 397.74451399999816
+        },
+        {
+          "spec": "@dbos-inc/dbos-sdk",
+          "status": "passed",
+          "elapsedMs": 1440.7077960000024
+        },
+        {
+          "spec": "@lydell/node-pty",
+          "status": "passed",
+          "elapsedMs": 106.25283399999898
+        },
+        {
+          "spec": "@mcp-ui/server",
+          "status": "passed",
+          "elapsedMs": 1175.528198
+        },
+        {
+          "spec": "@papercusp/embedded-postgres-server/src/migration-runner.js",
+          "status": "passed",
+          "elapsedMs": 42.658487000000605
+        },
+        {
+          "spec": "@smithy/core",
+          "status": "passed",
+          "elapsedMs": 15.073441999997158
+        },
+        {
+          "spec": "@smithy/core/cbor",
+          "status": "passed",
+          "elapsedMs": 20.3750140000011
+        },
+        {
+          "spec": "@smithy/core/checksum",
+          "status": "passed",
+          "elapsedMs": 16.37996700000076
+        },
+        {
+          "spec": "@smithy/core/client",
+          "status": "passed",
+          "elapsedMs": 17.742965000001277
+        },
+        {
+          "spec": "@smithy/core/config",
+          "status": "passed",
+          "elapsedMs": 11.087694000001648
+        },
+        {
+          "spec": "@smithy/core/endpoints",
+          "status": "passed",
+          "elapsedMs": 13.47765800000343
+        },
+        {
+          "spec": "@smithy/core/protocols",
+          "status": "passed",
+          "elapsedMs": 15.254935000000842
+        },
+        {
+          "spec": "@smithy/core/retry",
+          "status": "passed",
+          "elapsedMs": 10.84908600000199
+        },
+        {
+          "spec": "@smithy/core/schema",
+          "status": "passed",
+          "elapsedMs": 6.5558620000010706
+        },
+        {
+          "spec": "@smithy/core/serde",
+          "status": "passed",
+          "elapsedMs": 10.500298000002658
+        },
+        {
+          "spec": "acorn",
+          "status": "passed",
+          "elapsedMs": 99.82097200000135
+        },
+        {
+          "spec": "fast-check",
+          "status": "passed",
+          "elapsedMs": 208.5839010000018
+        },
+        {
+          "spec": "mingo",
+          "status": "passed",
+          "elapsedMs": 2472.368656999999
+        },
+        {
+          "spec": "mingo/operators/query",
+          "status": "passed",
+          "elapsedMs": 22.641132000000653
+        },
+        {
+          "spec": "mingo/util",
+          "status": "passed",
+          "elapsedMs": 12.960669000000053
+        },
+        {
+          "spec": "typescript",
+          "status": "passed",
+          "elapsedMs": 3123.553689999997
+        },
+        {
+          "spec": "undici",
+          "status": "passed",
+          "elapsedMs": 1067.1546950000047
+        },
+        {
+          "spec": "viem",
+          "status": "passed",
+          "elapsedMs": 5017.292003999995
+        },
+        {
+          "spec": "viem/accounts",
+          "status": "passed",
+          "elapsedMs": 246.21421199999895
+        },
+        {
+          "spec": "viem/chains",
+          "status": "passed",
+          "elapsedMs": 4585.313467
+        }
+      ]
+    },
+    "sourceStable": true
+  },
+  "distinguishingQuestion": "Does syntax-only main compilation or isolated external evaluation consume the original60000ms deadline, versus remaining bundled initialization?",
+  "predictions": {
+    "mainCompilationAlone": "Syntax-only child cannot finish within60000ms.",
+    "externalGraph": "Syntax-only finishes, but isolated external evaluation consumes a substantial additional measured interval.",
+    "remainingInitialization": "Both controls complete well within60000ms; full boot still fails, leaving bundled evaluation/ordering unmeasured."
+  },
+  "conclusion": "The controls do not reproduce a60s stall in syntax-only or standalone externals. Full bundled evaluation, actual import ordering and later startup remain unmeasured; no specific package or code path is established as the canonical timeout cause.",
+  "inputBindings": {
+    "/mnt/backup/portable-server-p058/changed-input-release-20261011/arm-original-deadline.podman-config.json": "a9cedf9bb1e430bca5f374f77361a760b6f3aaa79cc908d1685a9b2cba86677e",
+    "/mnt/backup/portable-server-p058/changed-input-release-20261011/release-output/serve.mjs": "1333a5d98d754731b9cd6eef319b2668a089fbb025c354769c5fe00adb117d88",
+    ".papercusp/scratch/p058-arm-release-source-4f991247-20261011/papercusp-desktop/bin/lib/server-container.mjs": "478ec0548be8792d553d3f722cc904b230bcbc8fcd2cc39c7b611fe89d2e9137",
+    ".papercusp/scratch/p058-current-release-import-control-20261011/run.mjs": "c8ac7dbe95ed51696edb210f509ff515993a6130932869954b9dc58258c8dc5e",
+    ".papercusp/scratch/p058-current-release-import-control-20261011/guest.mjs": "54dfdbb5445780ed11a99397db33bd5ac7c9bcfc79dcd528975cd4016388576d"
+  },
+  "overlayBefore": {
+    "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+    "bytes": 136031718,
+    "entries": 27985,
+    "elfFiles": []
+  },
+  "overlayAfter": {
+    "sha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+    "bytes": 136031718,
+    "entries": 27985,
+    "elfFiles": []
+  },
+  "ownership": {
+    "schemaVersion": 1,
+    "engine": "podman",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "leaseTimeoutMs": 15000,
+    "leaseRoot": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-current-release-import-control-20261011/output/.native-producer-owner-wIJhlQ",
+    "clockRoot": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-current-release-import-control-20261011/output/.native-producer-owner-wIJhlQ/clock",
+    "status": "completed",
+    "containerName": "papercusp-native-054f7e5f-a4f5-47e8-a3d6-20ec61b7e0c9",
+    "ownerToken": "500ef66f-74d9-4c69-b129-bf3c9e57a213",
+    "cleanupPending": false,
+    "containerId": "31009c03a8024e214aca1a9111b49be817b2ac4eb8756ea3290d72d2cc0617f1",
+    "exitCode": 0,
+    "removed": true
+  },
+  "artifactRefs": [
+    {
+      "path": ".papercusp/scratch/p058-current-release-import-control-20261011/run.mjs",
+      "sha256": "c8ac7dbe95ed51696edb210f509ff515993a6130932869954b9dc58258c8dc5e"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-import-control-20261011/guest.mjs",
+      "sha256": "54dfdbb5445780ed11a99397db33bd5ac7c9bcfc79dcd528975cd4016388576d"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-import-control-20261011/harness-audit.json",
+      "sha256": "09d55177c8938655e05e8133fcb74354af07e2a78b3eff78716cadf805047d57"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-import-control-20261011/result.json",
+      "sha256": "b36ddd701b3c76d5803ad25704db01c52cd4e32ef17d71a658b0d046650fa75e"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-import-control-20261011/output/guest-result.json",
+      "sha256": "69c87dafc02a140a3ebf4dc7cf644c2e99b3c484a20dd154cf77a5a19b83eaba"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-import-control-20261011/output/syntax.json",
+      "sha256": "386948feb232299ea506aa1fbfba435f637f8fb22b9fcfc20209b2d3517aab65"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-import-control-20261011/output/imports.json",
+      "sha256": "70bb756016cfb1ba57afcb3afc6db87209f5157a3743aac5c01fc0a0274026fd"
+    },
+    {
+      "path": ".papercusp/scratch/p058-current-release-import-control-20261011/output/phases.jsonl",
+      "sha256": "79b5822c5f9f18dd77ae30f07cd11890ecdd55deacfcbdb0863274d9530d7b9a"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "main-syntax-only",
+      "passed": true,
+      "evidence": "Exact serve1333/ARMNodev24.18.1 syntax childstatus0,18126.223979ms."
+    },
+    {
+      "id": "exact-external-population-evaluates",
+      "passed": true,
+      "evidence": "26of26 exact static external specifiers evaluated;24478.576011ms in this control;viem5017ms/viemchains4585ms/AWSec24258ms/typescript3124ms."
+    },
+    {
+      "id": "input-and-complete-overlay-stable",
+      "passed": true,
+      "evidence": "Pinned source/helper/config/script hashes and fullcedde981 overlay27985entries/136031718bytes/0ELF unchanged beforeafter."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Exact31009c03 containerremovedtrue/cleanupPendingfalse; owned runtime exited0."
+    }
+  ],
+  "counts": {
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "limitations": [
+    "Separate processes and sequential imports differ from full ESM boot ordering.",
+    "Costs are diagnostic observations, not an additive reconstruction of canonical boot time.",
+    "No canonical verifier or original failed candidate was replayed.",
+    "This is ARM emulation on this host; no physical ARM or installed-native acceptance.",
+    "The original60000ms canonical qualification remains failed and was not executed by this control."
+  ],
+  "evidenceSerialization": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs::serializeIdentitySafeJson"
+  }
+}

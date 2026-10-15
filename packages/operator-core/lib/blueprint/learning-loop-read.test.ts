@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   scoutTickRows: [] as unknown[],
   precisionRows: [] as unknown[] | Error,
   precisionFlagOn: true,
+  routineQueryText: '',
 }));
 
 vi.mock('./seed-learning-singletons', () => ({
@@ -57,6 +58,7 @@ beforeEach(() => {
       last_fired_at: new Date('2026-08-03T00:30:02.510Z'),
       next_fire_at: new Date('2026-08-03T01:00:00.000Z'),
       pause_review_by: null,
+      last_pause_resumed_at_ms: null,
     },
   ];
   h.scoutTickRows = [{ last_tick_at: new Date('2026-08-03T00:12:10.846Z') }];
@@ -75,6 +77,7 @@ function fakeSql() {
       if (text.includes('memory_precision_bench')) {
         return h.precisionRows instanceof Error ? Promise.reject(h.precisionRows) : Promise.resolve(h.precisionRows);
       }
+      if (text.includes('FROM harness_shared.routines')) h.routineQueryText = text;
       return Promise.resolve(text.includes('scout_ticks') ? h.scoutTickRows : h.routineRows);
     }
     return { __frag: first };
@@ -95,6 +98,17 @@ describe('readLearningLoopHealth wiring', () => {
     expect(opts.activityLagGraceMs).toBeGreaterThan(27 * 60_000);
   });
 
+  it('forwards a sweep-supplied process start time while leaving pull-only reads unmasked', async () => {
+    const processStartedAtMs = Date.parse('2026-08-03T00:00:00.000Z');
+    await readLearningLoopHealth(fakeSql(), 'ws-1', { processStartedAtMs });
+    expect((computeM.mock.calls[0]![2] as { processStartedAtMs?: number }).processStartedAtMs).toBe(
+      processStartedAtMs,
+    );
+
+    await readLearningLoopHealth(fakeSql(), 'ws-1', {});
+    expect((computeM.mock.calls[1]![2] as { processStartedAtMs?: number }).processStartedAtMs).toBeUndefined();
+  });
+
   it('passes the live-observed lag shape (27min) as within the widened grace, not past it', async () => {
     await readLearningLoopHealth(fakeSql(), 'ws-1', { nowMs: Date.parse('2026-08-03T00:35:33.291Z') });
     const opts = computeM.mock.calls[0]![2] as { activityLagGraceMs?: number };
@@ -112,6 +126,22 @@ describe('readLearningLoopHealth wiring', () => {
       lastActivityAt: '2026-08-03T00:12:10.846Z',
       source: 'scout_ticks',
     });
+  });
+
+  it('reads the durable resume timestamp and passes it to the classifier', async () => {
+    const resumedAtMs = Date.parse('2026-08-03T00:20:00.000Z');
+    h.routineRows = [
+      {
+        ...(h.routineRows[0] as Record<string, unknown>),
+        last_pause_resumed_at_ms: String(resumedAtMs),
+      },
+    ];
+
+    await readLearningLoopHealth(fakeSql(), 'ws-1', {});
+
+    const routines = computeM.mock.calls[0]![1];
+    expect(routines.find((row) => row.name === 'bp-singleton-scout-0')?.lastPauseResumedAtMs).toBe(resumedAtMs);
+    expect(h.routineQueryText).toContain("metadata->'lastPause'->>'resumedAtMs'");
   });
 
   // WI-10004117: the weekly precision monitor fired with no bench row recorded and

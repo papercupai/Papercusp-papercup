@@ -155,6 +155,19 @@ configureBackup({
   // every host seam on this object stays lazy so no partial mock of a source
   // module can throw while this side-effect import is being evaluated.
   getHarnessAdminUrl: () => getHarnessAdminUrlWithSource(),
+  withRetentionLease: async (fn) => {
+    // Lazy import preserves the existing partial-mock-safe host initialization.
+    const { withHostBackupRetentionLease } = await import('../data-governance/organization-backup-sealing');
+    const client = postgres(getHarnessAdminUrlWithSource().url, {
+      max: 1, prepare: false,
+      connection: { application_name: 'papercusp-backup-retention' },
+    });
+    try {
+      return await withHostBackupRetentionLease(client, fn);
+    } finally {
+      await client.end({ timeout: 5 });
+    }
+  },
   // Keep the extracted backup package host-agnostic while making its
   // lifecycle heartbeat visible in the operator's named timer inventory.
   scheduleInterval: (name, intervalMs, callback) =>

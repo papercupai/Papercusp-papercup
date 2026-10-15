@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "phone-p009-shutdown-receipts-v1",
+  "workItem": "EI-24851771213024780",
+  "parentWorkItem": "WI-10004987",
+  "plan": "phone-public-telephone-service-2026-10-01",
+  "sourceRootRef": "managed-app:phone-app",
+  "measurement": {
+    "measuredAt": "2026-10-02T07:39:18.144746+00:00",
+    "rootRef": "managed-app:phone-app",
+    "branch": "staging",
+    "head": "cfdcdc102c841a3887836099b619410e43ab877b",
+    "sourceFiles": [
+      {
+        "path": "packages/embedded-postgres-server/src/index.ts",
+        "sha256": "518e989ab2a03b5d03d41a79983a61a8929f21911cf0cb3cae78f86b2ad37bd6",
+        "workingBlob": "4749527338a84367e43f649a1855f37c2abd3106",
+        "headBlob": "4749527338a84367e43f649a1855f37c2abd3106"
+      },
+      {
+        "path": "apps/sidecar/src/server.ts",
+        "sha256": "1990c37b2e18e4e05a35fc44b5412c599c9ad41a68a864930d55406fe19fddf6",
+        "workingBlob": "7bf8fca121aa07e8b70b70dce6708fc2e85464e0",
+        "headBlob": "7bf8fca121aa07e8b70b70dce6708fc2e85464e0"
+      },
+      {
+        "path": "apps/sidecar/src/index.ts",
+        "sha256": "c38ece2aee7d170b4c5a45d6bc604f42c7776102176cf23f3e71c566e907ea05",
+        "workingBlob": "8c11c7ae5588d85e9765fce4a5b351e7c44eb4e1",
+        "headBlob": "8c11c7ae5588d85e9765fce4a5b351e7c44eb4e1"
+      },
+      {
+        "path": "apps/sidecar/src/postgres-lifecycle.test.ts",
+        "sha256": "d1f8c827a2706b4d6c6f691f1b86e926cc48174c789780feae0637717e75325f",
+        "workingBlob": "43a4d37f2e24614f7e103d0dadfab6d0ec8a5e89",
+        "headBlob": "43a4d37f2e24614f7e103d0dadfab6d0ec8a5e89"
+      },
+      {
+        "path": "apps/sidecar/src/voicemail-persistence.e2e.test.ts",
+        "sha256": "ce49405a1d5832325ee3e4f3f363fc9f8cc47f969f5c5260f251b6cbf86f730f",
+        "workingBlob": "9f7d4422ad800f25ae54646aa73f2e05df173588",
+        "headBlob": "9f7d4422ad800f25ae54646aa73f2e05df173588"
+      },
+      {
+        "path": "package.json",
+        "sha256": "b7e07ce1385c13d4458228f14bbea73bf641455ca4ce7bb29f8e6a4a4fd55771",
+        "workingBlob": "f9170274cedee2b8646a94efc1b356fd9412c930",
+        "headBlob": "f9170274cedee2b8646a94efc1b356fd9412c930"
+      }
+    ]
+  },
+  "rootCause": "Phone database stop consumed failed/deadline outcomes and resolved success; sidecar suppressed close errors and its boolean stopped flag let later callers receive false success.",
+  "change": "Reject failed/deadline shutdown with a named error and original cause, remove stale discovery, retain one shutdown promise for concurrent/repeated database and HTTP handle callers, attempt both owned database closes and propagate their errors, and exit the child with failure when shutdown rejects.",
+  "reuse": "Extended existing Phone embedded database and sidecar stop handles and their existing 5000ms deadline. Added regression to the existing sidecar Vitest suite discovered by default npm test; no new stop service, store, scheduler or policy values.",
+  "reproduction": {
+    "runner": "npm run test --workspace @phone/sidecar -- src/postgres-lifecycle.test.ts",
+    "beforeFix": {
+      "passed": 1,
+      "failed": 2,
+      "observed": "Both reject assertions failed because stop() resolved undefined."
+    },
+    "positiveControl": "Successful shutdown resolves and removes discovery.",
+    "negativeControls": [
+      "Underlying owned-server stop rejection",
+      "Stop promise never settles before existing deadline",
+      "Backend connection close rejection and repeated HTTP stop"
+    ]
+  },
+  "finalFocusedRun": {
+    "ok": true,
+    "runId": "e669c57b-f869-4b6c-bb7f-976ea126a267",
+    "rootRef": "managed-app:phone-app",
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "files": 2,
+    "failures": [],
+    "failuresTruncated": false,
+    "durationMs": 5744,
+    "byFile": {
+      "apps/sidecar/src/postgres-lifecycle.test.ts": {
+        "passed": 5,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20496570
+      },
+      "apps/sidecar/src/voicemail-persistence.e2e.test.ts": {
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20496571
+      }
+    },
+    "testRunIds": [
+      20496570,
+      20496571
+    ],
+    "rootSource": "sourceRootRef"
+  },
+  "defaultSuite": {
+    "command": "npm test",
+    "exitCode": 0,
+    "passed": 232,
+    "groups": {
+      "template": 15,
+      "data": 76,
+      "sidecar": 114,
+      "workerClient": 27
+    },
+    "scope": "Measured current build in this turn; concurrent peer source movement is not an overall plan acceptance claim."
+  },
+  "checks": {
+    "sidecarTypecheckExitCode": 0,
+    "diffCheckExitCode": 0,
+    "committedSource": true
+  },
+  "limits": [
+    "Historical failed restart ledger20483755 root cause remains unknown under EI-24845567110086010; successful repeats and this independently reproduced defect do not establish it.",
+    "Shared dependency may swallow low-level pg.stop rejection before Phone can see it; owned follow-up WI-10005364.",
+    "No consent policy, retention duration, notification send, carrier/media provisioning, P009 fulfillment or public PSTN shipment claim."
+  ],
+  "pendingInputs": "Existing carrier/media/privacy supply-or-rescope questions remain unanswered; no repeated ask.",
+  "immutableLineage": "Original/derivative author snapshot, review, card and independent audit artifacts were not changed."
+}

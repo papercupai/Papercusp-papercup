@@ -146,6 +146,7 @@ export { resolveBearer, lookupSystemPrincipalCapabilitiesByRole } from './auth';
 export {
   sanitizeToolSchema,
   sanitizeToolSchemaCached,
+  negotiatedMcpOutputSchema,
   resetToolSchemaSanitizeCache,
   TOOL_SCHEMA_SANITIZE_CACHE_MAX_ENTRIES,
 } from './tool-schema-sanitize';

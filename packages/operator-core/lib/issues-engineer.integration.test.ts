@@ -18,7 +18,8 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyClaimPathReadDeps } from '../test/_work-items-schema';
 import {
   ensureCoordCapabilityTables,
   PgEntitySubscriptionStore,
@@ -32,6 +33,7 @@ import { noteGoalClaimed, readAgentStateStamp, resetAgentStateStamps } from './a
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
+const M1512 = resolve(SQL_DIR, '1512-work-items-substring-trigram-indexes.sql');
 // Strip psql metacommands (\set) + GRANTs (the framework roles are absent in the
 // throwaway test DB; the test connects as owner so no grants are needed).
 const readMigration = (f: string) =>
@@ -88,6 +90,26 @@ vi.mock('./promote-issue', async () => {
 // so coordScopeWorkspace() would return activeWorkspaceId() (=PINNED_WS), collapsing the
 // split and breaking the cross-boundary resolution the test asserts. Restore it to
 // 'default'; the pure scope helpers stay real.
+// WI-6554700010008366: claimIssue re-verifies an accepted bug's reproduction before its
+// CAS (b63ef6942f), resolving the TARGET build from the harness registry. This fixture's
+// harness (`operator:<ws>`) has no registered checkout, so the real resolver yields null and
+// every accepted bug reads `unresolved` and is refused. Pin only the build resolution at the
+// explicit AcceptedBugReproductionDeps seam (the intake-acceptance-journey precedent); the
+// build-match and ledger checks stay real, so a receipt on another build is still refused.
+vi.mock('./attention/intake-promotion', async (orig) => {
+  const actual = await orig<typeof import('./attention/intake-promotion')>();
+  // Inside the (hoisted) factory: a module-scope const would be in its TDZ here.
+  const currentTargetBuild = async () => `abcdef1${'0'.repeat(33)}`;
+  return {
+    ...actual,
+    currentIntakeTargetBuild: currentTargetBuild,
+    verifyAcceptedWorkItemBugReproduction: (item: Parameters<typeof actual.verifyAcceptedWorkItemBugReproduction>[0]) =>
+      actual.verifyAcceptedWorkItemBugReproduction(item, {
+        currentTargetBuild,
+        ledger: actual.defaultReproductionLedgerDeps(),
+      }),
+  };
+});
 vi.mock('./agent-tools/coordination/log', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, coordScopeWorkspace: () => 'default' };
@@ -95,6 +117,7 @@ vi.mock('./agent-tools/coordination/log', async (importOriginal) => {
 
 // Imported AFTER the mock is registered (vi.mock is hoisted).
 const issues = await import('./issues-engineer');
+const acceptancePolicy = await import('./harness/improvements/agent-review-policy');
 const feed = await import('./topics-feed');
 const blocks = await import('./issue-blocks-merge');
 
@@ -167,6 +190,18 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.work_item_occurrences (
+      occurrence_id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      canonical_harness_slug text NOT NULL,
+      canonical_work_item_id text NOT NULL,
+      reported_title text NOT NULL,
+      evidence jsonb NOT NULL DEFAULT '{}'::jsonb
+    )
+  `).simple();
+  // After the hand-built adv_sessions above: every statement is IF NOT EXISTS.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   // unify-work-items (142): adds the `kind` discriminator engineer_issues now carries.
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — ISSUE_COLS now
@@ -182,6 +217,7 @@ beforeAll(async () => {
       harness_slug text NOT NULL, feature_id text NOT NULL, title text,
       status text NOT NULL DEFAULT 'todo', workspace_id text NOT NULL DEFAULT 'default',
       PRIMARY KEY (harness_slug, feature_id))`);
+  await applyMigrationForTest(db.sql, M1512);
   const opts = { getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: 'default' };
   subs = new PgEntitySubscriptionStore(opts);
   topicStore = new PgTopicStore(opts);
@@ -195,7 +231,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   resetAgentStateStamps();
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_entity_subscriptions, harness_shared.coord_threads, harness_shared.coord_thread_posts, harness_shared.coord_links, harness_shared.coord_topics, harness_shared.coord_event_log  RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_occurrences, harness_shared.coord_entity_subscriptions, harness_shared.coord_threads, harness_shared.coord_thread_posts, harness_shared.coord_links, harness_shared.coord_topics, harness_shared.coord_event_log  RESTART IDENTITY`;
 });
 
 describe('engineer issues surface (real PG)', () => {
@@ -306,11 +342,48 @@ describe('engineer issues surface (real PG)', () => {
       createdBy: 'agA',
       payload: { reporterNote: 'preserved' },
     });
-    // (The creation-enrollment readiness stamp is asserted on its own below.)
+    // (The creation-enrollment readiness stamp and the reporter stamp are
+    // asserted on their own below.)
     expect(task.payload).toEqual({
       reporterNote: 'preserved',
       implementationReadiness: expect.objectContaining({ source: 'creation-enrollment' }),
+      reporter: expect.objectContaining({ kind: 'agent' }),
+      reporterKinds: ['agent'],
     });
+  });
+
+  it('stamps reporter provenance on every issue-family row, deriving it for writers that bypass capture (unified-bug-pipeline P-010)', async () => {
+    const stamp = Date.now();
+    const agent = await issues.createIssue({ title: `reporter agent ${stamp}`, kind: 'bug', createdBy: 'agA' });
+    expect(agent.payload).toMatchObject({
+      reporter: { kind: 'agent', id: 'agA', basis: 'agent-session', at: expect.any(String) },
+      reporterKinds: ['agent'],
+    });
+
+    // The falsifier class measured on 2026-10-06: machine conditions written
+    // straight to createIssue with no session (LEARNING LOOP, LOOP WEDGED, green-stall).
+    const noSession = await issues.createIssue({ title: `reporter no-session ${stamp}`, kind: 'bug' });
+    expect(noSession.payload).toMatchObject({
+      reporter: { kind: 'watchdog', id: null, basis: 'no-session' },
+      reporterKinds: ['watchdog'],
+    });
+
+    const system = await issues.createIssue({
+      title: `reporter system ${stamp}`,
+      kind: 'bug',
+      createdBy: 'system:green-checkpoint',
+    });
+    expect(system.payload).toMatchObject({ reporter: { kind: 'watchdog', basis: 'system-identity' } });
+
+    // A door that already stamped the row (capture, the end-user reporter) is never overwritten.
+    const preset = { kind: 'end-user', id: 'install-7', basis: 'explicit', at: '2026-10-06T00:00:00.000Z' };
+    const endUser = await issues.createIssue({
+      title: `reporter end-user ${stamp}`,
+      kind: 'bug',
+      createdBy: 'system:relay',
+      payload: { reporter: preset, reporterKinds: ['end-user'] },
+    });
+    expect(endUser.payload).toMatchObject({ reporter: preset, reporterKinds: ['end-user'] });
   });
 
   it('enrolls verdict-less issue-family rows as unknown at creation, never ready (P-005 D-009a / D-011)', async () => {
@@ -383,6 +456,33 @@ describe('engineer issues surface (real PG)', () => {
     expectFresh((await issues.mergeIssuePayload(id, { note: 'x' }))?.updatedAt);
   });
 
+  // P-001 / D-029: setIssueState is a bottom writer (resolve-core reached needs-human through it
+  // without the canonical guard), so it applies the same answerable-ask precondition itself.
+  it('setIssueState refuses needs-human without an answerable owner ask, and accepts one that has it', async () => {
+    const { id } = await issues.createIssue({ title: `needs-human-guard-${Date.now()}`, createdBy: 'agA' });
+    const ask = {
+      status: 'active',
+      kind: 'human',
+      capability: 'credential',
+      ref: 'credential:needs-human-guard',
+      summary: 'Provide the deploy credential.',
+      createdBy: 'agA',
+      createdAt: new Date().toISOString(),
+      nextVerb: 'setup:save_key',
+    };
+
+    await expect(issues.setIssueState(id, 'needs-human', 'agA')).rejects.toThrow(/no answerable owner ask/);
+    // A structured ask that omits defaultIfUnanswered is still unanswerable.
+    await issues.mergeIssuePayload(id, { externalBlockers: [ask] });
+    await expect(issues.setIssueState(id, 'needs-human', 'agA')).rejects.toThrow(/no answerable owner ask/);
+    expect((await issues.getIssue(id))?.state).toBe('open');
+
+    await issues.mergeIssuePayload(id, {
+      externalBlockers: [{ ...ask, defaultIfUnanswered: 'stay parked until the credential is supplied' }],
+    });
+    expect((await issues.setIssueState(id, 'needs-human', 'agA'))?.state).toBe('needs-human');
+  });
+
   it("an explicit null nested in outputPayload round-trips into payload->'out' (EI-24552921468661465)", async () => {
     // mergeWorkItemOutputPayload's issue-family leg is exactly this call. The key must
     // EXIST as a JSON null — a value test (=== null) would also pass on an absent key
@@ -411,6 +511,16 @@ describe('engineer issues surface (real PG)', () => {
       kind: 'null',
       keys: 'decidedAt,decision,keepCount,reason,recheckAt,taskId',
     });
+  });
+
+  it('persists dispatch provenance atomically and preserves it on self-reclaim (EI-25163151398656476)', async () => {
+    const issue = await issues.createIssue({ title: `dispatch-provenance-${Date.now()}`, createdBy: 'agA' });
+    const claimed = await issues.claimIssue(issue.id, 'agB', { assignedBy: 'su-leader' });
+    expect(claimed).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
+    expect(await issues.getIssue(issue.id)).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
+    expect(await issues.claimIssue(issue.id, 'agB')).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
+    expect(await issues.claimIssue(issue.id, 'agC', { assignedBy: 'su-other' })).toBeNull();
+    expect(await issues.getIssue(issue.id)).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
   });
 
   it('bounds a contended issue release and leaves the claim intact until retry (EI-23215738429986679)', async () => {
@@ -866,6 +976,59 @@ describe('engineer issues surface (real PG)', () => {
     expect(await issues.countIssues(globalFilter)).toBe(globalRows.length);
   });
 
+  it('q uses the trigram candidate indexes and keeps occurrence title/body matches lossless', async () => {
+    const title = await issues.createIssue({ title: 'needle in canonical title', createdBy: 'agA' });
+    const body = await issues.createIssue({ title: 'canonical body survivor', body: 'needle in canonical body', createdBy: 'agA' });
+    const occurrenceTitle = await issues.createIssue({ title: 'occurrence title survivor', createdBy: 'agA' });
+    const occurrenceBody = await issues.createIssue({ title: 'occurrence body survivor', createdBy: 'agA' });
+    const unrelated = await issues.createIssue({ title: 'unrelated canonical item', body: 'ordinary text', createdBy: 'agA' });
+
+    const identities = await db.sql<Array<{ workspace_id: string; harness_slug: string; feature_id: string }>>`
+      SELECT workspace_id, harness_slug, feature_id FROM harness_shared.work_items
+       WHERE feature_id = ANY(${[occurrenceTitle.id, occurrenceBody.id]}::text[])`;
+    for (const row of identities) {
+      await db.sql`
+        INSERT INTO harness_shared.work_item_occurrences
+          (workspace_id, canonical_harness_slug, canonical_work_item_id, reported_title, evidence)
+        VALUES (
+          ${row.workspace_id}, ${row.harness_slug}, ${row.feature_id},
+          ${row.feature_id === occurrenceTitle.id ? 'needle in reported title' : 'ordinary report'},
+          ${db.sql.json({ body: row.feature_id === occurrenceBody.id ? 'needle in reported body' : 'ordinary evidence' })}
+        )`;
+    }
+
+    await db.sql.unsafe('ANALYZE harness_shared.work_items');
+    await db.sql.unsafe('ANALYZE harness_shared.work_item_occurrences');
+    const plan = await db.sql.begin(async (tx) => {
+      await tx.unsafe('SET LOCAL enable_seqscan = off');
+      const where = issues.issueMatchWhereSql(
+        tx as Parameters<typeof issues.issueMatchWhereSql>[0],
+        false,
+        { q: 'needle' },
+      );
+      const rows = await tx`
+        EXPLAIN SELECT issue_id
+          FROM harness_shared.engineer_issues
+         WHERE ${where}
+      `;
+      return rows.map((row) => String(row['QUERY PLAN'])).join('\\\\n');
+    });
+    for (const name of [
+      'work_items_title_substring_trgm_idx',
+      'work_items_summary_substring_trgm_idx',
+      'work_item_occurrences_reported_title_trgm_idx',
+      'work_item_occurrences_evidence_body_trgm_idx',
+    ]) {
+      expect(plan).toContain(name);
+    }
+
+    const matches = await issues.listIssues({ q: 'needle' });
+    expect(new Set(matches.map((issue) => issue.id))).toEqual(
+      new Set([title.id, body.id, occurrenceTitle.id, occurrenceBody.id]),
+    );
+    expect(matches.map((issue) => issue.id)).not.toContain(unrelated.id);
+  });
+
   // EI-18713447977097831: `searchIssuesForDedup` used to pass the new capture's
   // full title straight to `websearch_to_tsquery`, which ANDs every bare term —
   // so it required a candidate to contain literally every word of the new
@@ -881,12 +1044,23 @@ describe('engineer issues surface (real PG)', () => {
         'live-federation-gate revocation_kcut: post-ban content LEAK — F-RV-POST reached banned member B after the ban (cut-off failed)',
       createdBy: 'agA',
     });
+    const timingSamples: Array<{ dependency: string; elapsedMs: number; outcome: 'fulfilled' | 'rejected' }> = [];
     const hits = await issues.searchIssuesForDedup(
       'Revocation cut-off FAILS: a banned member still receives content after the ban — live-federation-gate revocation_kcut LEAK',
+      50,
+      (sample) => timingSamples.push(sample),
     );
     expect(hits.map((i) => i.title)).toEqual([
       'live-federation-gate revocation_kcut: post-ban content LEAK — F-RV-POST reached banned member B after the ban (cut-off failed)',
     ]);
+    expect(timingSamples.map((sample) => sample.dependency)).toContain('searchIssuesForDedup.pg-transaction');
+    expect(
+      timingSamples.some((sample) =>
+        ['searchIssuesForDedup.bm25-candidate-query', 'searchIssuesForDedup.legacy-candidate-query'].includes(
+          sample.dependency,
+        ),
+      ),
+    ).toBe(true);
     // The general search tool is untouched — an unrelated short query still
     // behaves like a normal AND'd search-engine query, not an OR-token blast.
     await issues.createIssue({ title: 'alpha bug', createdBy: 'agA' });
@@ -1241,6 +1415,52 @@ describe('engineer issues surface (real PG)', () => {
     expect(await issues.mergeIssuePayload('EI-404', { x: 1 })).toBeNull();
   });
 
+  it('WI-10007310: payload enrichment repairs own-node origin while preserving history and lifecycle', async () => {
+    const own = await issues.createIssue({ kind: 'bug', title: 'own-key witness', createdBy: 'agA' });
+    const item = await issues.createIssue({ kind: 'bug', title: 'own-key remote hold', createdBy: 'agA' });
+    const history = [{ ref: 'owner:existing', status: 'active', legacyField: 'preserve' }];
+    await issues.mergeIssuePayload(item.id, { externalBlockers: history, sibling: 'preserve' });
+    await db.sql`UPDATE harness_shared.work_items SET author_pubkey = 'own-key-payload-test'
+                  WHERE workspace_id = ${PINNED_WS} AND feature_id = ${own.id}`;
+    await db.sql`UPDATE harness_shared.work_items
+                    SET origin = 'remote', author_pubkey = 'own-key-payload-test'
+                  WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+    const [before] = await db.sql`SELECT status, taken_by FROM harness_shared.work_items
+                                 WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+
+    const updated = await issues.mergeIssuePayload(item.id, { externalBlockers: history, note: 'enriched' }, {
+      expectedExternalBlockers: history, requireNonTerminal: true,
+    });
+
+    expect(updated?.payload).toMatchObject({ externalBlockers: history, sibling: 'preserve', note: 'enriched' });
+    const [after] = await db.sql`SELECT origin, status, taken_by FROM harness_shared.work_items
+                                WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+    expect(after).toEqual({ ...before, origin: 'local' });
+    expect(await issues.mergeIssuePayload(item.id, { externalBlockers: [] }, {
+      expectedExternalBlockers: [{ ref: 'stale' }],
+    })).toBeNull();
+    expect((await issues.getIssue(item.id))?.payload).toMatchObject({ externalBlockers: history });
+  });
+
+  it('WI-10007310: payload enrichment keeps a genuinely foreign publisher immutable', async () => {
+    const own = await issues.createIssue({ kind: 'bug', title: 'own-key witness', createdBy: 'agA' });
+    const item = await issues.createIssue({ kind: 'bug', title: 'foreign-key hold', createdBy: 'agA' });
+    await issues.mergeIssuePayload(item.id, { sibling: 'preserve' });
+    await db.sql`UPDATE harness_shared.work_items SET author_pubkey = 'own-key-payload-test'
+                  WHERE workspace_id = ${PINNED_WS} AND feature_id = ${own.id}`;
+    await db.sql`UPDATE harness_shared.work_items
+                    SET origin = 'remote', author_pubkey = 'foreign-key-payload-test'
+                  WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+    const [before] = await db.sql`SELECT origin, status, taken_by, payload FROM harness_shared.work_items
+                                 WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+
+    expect(await issues.mergeIssuePayload(item.id, { note: 'must not write' })).toBeNull();
+
+    const [after] = await db.sql`SELECT origin, status, taken_by, payload FROM harness_shared.work_items
+                                WHERE workspace_id = ${PINNED_WS} AND feature_id = ${item.id}`;
+    expect(after).toEqual(before);
+  });
+
   it('updateIssue corrects a mislabeled kind (bug↔change — the auto-lane selector, close-loop D-002)', async () => {
     const a = await issues.createIssue({
       title: 'design follow-on mislabeled by the column default',
@@ -1277,14 +1497,14 @@ describe('engineer issues surface (real PG)', () => {
     expect(await issues.getIssue(feature.id)).toMatchObject({ kind: 'change', title: 'legacy feature row' });
   });
 
-  // WI-4514: the EI-7808 legacy/federated write path can leave TWO base `work_items`
-  // rows sharing (workspace_id, feature_id) but with different `harness_slug` values
-  // (e.g. '' beside 'operator:<ws>'). Before this fix, getIssueInWorkspace's plain
-  // get-path (no baseHarnessSlug pin) had NO ORDER BY, so PG could hand back either
-  // twin depending on heap/index scan order — a read that could non-deterministically
-  // surface an hours-stale twin instead of the fresh one. Assert the freshest twin
-  // (by updated_at) always wins, repeated to catch any residual nondeterminism.
-  it('getIssueInWorkspace resolves duplicate base rows deterministically to the freshest twin (WI-4514)', async () => {
+  // WI-4514 → scope-unique-identifiers-2026-07-26 P-013 (R-5): the EI-7808 legacy/federated
+  // write path could leave TWO base `work_items` rows sharing (workspace_id, feature_id) under
+  // different `harness_slug` values ('' beside 'operator:<ws>'). WI-4514 made the harness-less
+  // read deterministic by returning the freshest twin; P-013 replaces that recency pick with a
+  // refusal naming both, because an id names one item and recency silently chose the wrong one.
+  // Repeated to show the refusal is deterministic too. A named harness or a pinned physical slug
+  // still reads exactly the row it names.
+  it('getIssue / getIssueInWorkspace refuse duplicate base rows without a harness and read a named twin exactly (WI-4514, P-013)', async () => {
     const staleTs = Date.now() - 3 * 60 * 60_000; // 3h ago
     const freshTs = Date.now();
     await db.sql`
@@ -1294,10 +1514,18 @@ describe('engineer issues surface (real PG)', () => {
         (${PINNED_WS}, 'EI-DUP', '', 'bug', 'stale twin', 'open', ${staleTs}, ${staleTs}),
         (${PINNED_WS}, 'EI-DUP', ${'operator:' + PINNED_WS}, 'bug', 'fresh twin', 'open', ${freshTs}, ${freshTs})`;
 
-    for (let i = 0; i < 5; i++) {
-      const got = await issues.getIssue('EI-DUP');
-      expect(got?.title).toBe('fresh twin');
+    for (let i = 0; i < 3; i++) {
+      await expect(issues.getIssue('EI-DUP')).rejects.toMatchObject({
+        code: 'work_item_id_ambiguous',
+        workspaceId: PINNED_WS,
+        candidates: ['', 'operator:' + PINNED_WS],
+      });
     }
+    await expect(issues.getIssueInWorkspace(PINNED_WS, 'EI-DUP')).rejects.toMatchObject({
+      code: 'work_item_id_ambiguous',
+    });
+    // Naming the harness picks that twin, stale or fresh alike (recency never decides).
+    expect((await issues.getIssue('EI-DUP', {}, undefined, 'operator:' + PINNED_WS))?.title).toBe('fresh twin');
 
     // The EI-6480 claim re-read path (baseHarnessSlug pinned) is untouched — it still
     // reads the EXACT physical twin it names, stale or not.
@@ -1305,6 +1533,37 @@ describe('engineer issues surface (real PG)', () => {
     expect(stale?.title).toBe('stale twin');
     const fresh = await issues.getIssueInWorkspace(PINNED_WS, 'EI-DUP', { baseHarnessSlug: 'operator:' + PINNED_WS });
     expect(fresh?.title).toBe('fresh twin');
+  });
+
+  // WI-6554700010008365 (P-013 residue): the ambient workspace lacks the id and TWO other
+  // workspaces hold it. getIssue / resolveIssueWorkspace used to return the freshest stranger's
+  // row; both now refuse, naming the workspaces. A single foreign workspace is still the
+  // deliberate EI-15486 fallback (calibration), and an ambient row still wins outright.
+  it('refuses an id the ambient workspace lacks when several other workspaces hold it, and still falls back to one (WI-6554700010008365)', async () => {
+    const now = Date.now();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, feature_id, harness_slug, item_kind, title, status, created_ts, updated_ts)
+      VALUES
+        ('xws-foreign-a', 'EI-XWS', 'operator:xws-foreign-a', 'bug', 'older stranger', 'open', ${now - 60_000}, ${now - 60_000}),
+        ('xws-foreign-b', 'EI-XWS', 'operator:xws-foreign-b', 'bug', 'fresher stranger', 'open', ${now}, ${now}),
+        ('xws-foreign-a', 'EI-XONE', 'operator:xws-foreign-a', 'bug', 'only holder', 'open', ${now}, ${now})`;
+
+    const refusal = { code: 'work_item_id_ambiguous', scope: 'workspace', candidates: ['xws-foreign-a', 'xws-foreign-b'] };
+    await expect(issues.getIssue('EI-XWS')).rejects.toMatchObject(refusal);
+    await expect(issues.resolveIssueWorkspace('EI-XWS')).rejects.toMatchObject(refusal);
+
+    // Calibration: one foreign workspace is returned, not refused.
+    expect((await issues.getIssue('EI-XONE'))?.title).toBe('only holder');
+    expect(await issues.resolveIssueWorkspace('EI-XONE')).toBe('xws-foreign-a');
+
+    // An ambient row wins without a refusal, even when it is the oldest.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, feature_id, harness_slug, item_kind, title, status, created_ts, updated_ts)
+      VALUES (${PINNED_WS}, 'EI-XWS', ${'operator:' + PINNED_WS}, 'bug', 'ambient row', 'open', ${now - 120_000}, ${now - 120_000})`;
+    expect((await issues.getIssue('EI-XWS'))?.title).toBe('ambient row');
+    expect(await issues.resolveIssueWorkspace('EI-XWS')).toBe(PINNED_WS);
   });
 });
 
@@ -1532,5 +1791,240 @@ describe('mergeIssuePayload opts.unset REMOVES the key (EI-21215793636294109)', 
     await issues.mergeIssuePayload(a.id, { keep: 'yes' });
     await issues.mergeIssuePayload(a.id, {}, { unset: ['never_present'] });
     expect(await rawPayload(a.id)).toMatchObject({ keep: 'yes' });
+  });
+});
+
+describe('claimIssue by id applies the acceptance floor to a NEW holder (P-007 / D-016, cutover deferred by D-018)', () => {
+  // D-018 parks the cutover at a far sentinel, so "post-cutover" is reached here by seeding
+  // created_ts explicitly past it; a fresh row's real-time created_ts stays pre-cutover.
+  const POST = acceptancePolicy.IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS + 60_000;
+  const TITLE = 'Bounded parser drops the trailing token';
+  const SUMMARY = 'The bounded parser drops the last token of every line.';
+  const UPDATED_AT = '2026-10-01T00:00:00.000Z';
+  const PROPOSAL = {
+    problem: 'The bounded parser drops the trailing token of a line.',
+    evidence: ['parser.test.ts trailing-token fixture fails on HEAD'],
+    outcome: 'Every token of a line survives parsing.',
+    scope: 'Fix the bounded parser defect only.',
+    completionCheck: 'The trailing-token regression fixture passes.',
+  };
+  const sealedFor = (title: string) => {
+    const sealed = acceptancePolicy.sealImplementationAcceptance({
+      proposal: PROPOSAL,
+      authority: { kind: 'agent-review', reviewer: 'su-reviewer', submittedBy: 'su-author', round: 1 },
+      reason: 'agent-review-approved (grade 5/5)',
+      source: { kind: 'bug', title, summary: SUMMARY },
+      acceptedAt: UPDATED_AT,
+      // P-006: a bug's acceptance carries its reproduction receipt.
+      reproduction: { kind: 'failing-test', ref: 'fixture.test.ts', buildSha: 'abcdef1' },
+    });
+    if (!sealed.ok) throw new Error('fixture contract must seal');
+    return sealed.contract;
+  };
+  const ready = (acceptance?: object) =>
+    acceptancePolicy.createImplementationReadiness({
+      status: 'ready',
+      source: 'agent-review',
+      reason: 'agent-review-approved',
+      updatedAt: UPDATED_AT,
+      ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
+    });
+
+  /** createIssue stamps the creation-enrollment `unknown` verdict; override it and/or the age. */
+  async function seedIssue(opts: { createdTs?: number; readiness?: unknown; status?: string } = {}) {
+    const created = await issues.createIssue({ title: TITLE, body: SUMMARY, kind: 'bug', createdBy: 'agA' });
+    if (opts.readiness !== undefined) {
+      await db.sql`UPDATE harness_shared.work_items
+                      SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{implementationReadiness}',
+                                              ${db.sql.json(opts.readiness as never)})
+                    WHERE feature_id = ${created.id}`;
+    }
+    if (opts.createdTs !== undefined) {
+      await db.sql`UPDATE harness_shared.work_items SET created_ts = ${opts.createdTs} WHERE feature_id = ${created.id}`;
+    }
+    if (opts.status !== undefined) {
+      await db.sql`UPDATE harness_shared.work_items SET status = ${opts.status} WHERE feature_id = ${created.id}`;
+    }
+    return created.id;
+  }
+
+  it('refuses a post-cutover row whose acceptance is missing (enrolled unknown, or a bare ready verdict)', async () => {
+    const enrolled = await seedIssue({ createdTs: POST });
+    const bareReady = await seedIssue({ createdTs: POST, readiness: ready() });
+    expect(await issues.claimIssue(enrolled, 'agB')).toBeNull();
+    expect(await issues.claimIssue(bareReady, 'agB')).toBeNull();
+    // Refused means untouched: the row has no holder.
+    const [row] = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${enrolled}`;
+    expect(row?.taken_by ?? null).toBeNull();
+  });
+
+  it('admits a post-cutover row that carries a qualifying sealed acceptance', async () => {
+    const id = await seedIssue({ createdTs: POST, readiness: ready(sealedFor(TITLE)) });
+    await expect(issues.claimIssue(id, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+  });
+
+  it('refuses a STALE acceptance at any age, including a pre-cutover row (D-018 keeps this arm live)', async () => {
+    const stale = await seedIssue({ readiness: ready(sealedFor('An earlier title of the same defect')) });
+    expect(await issues.claimIssue(stale, 'agB')).toBeNull();
+    // Control: the same pre-cutover age with the legacy enrolled verdict is admitted.
+    const legacy = await seedIssue();
+    await expect(issues.claimIssue(legacy, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+  });
+
+  it('exempts a same-holder re-claim and a terminal row (WI-5826 reopen escape hatch)', async () => {
+    const held = await seedIssue();
+    await expect(issues.claimIssue(held, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+    await db.sql`UPDATE harness_shared.work_items SET created_ts = ${POST} WHERE feature_id = ${held}`;
+    await expect(issues.claimIssue(held, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+    // …while a different holder is still refused on that same row.
+    expect(await issues.claimIssue(held, 'agC', { fromHolder: 'agB' })).toBeNull();
+
+    const finished = await seedIssue({ createdTs: POST, status: 'done' });
+    await expect(issues.claimIssue(finished, 'agB')).resolves.toMatchObject({ assignee: 'agB' });
+  });
+});
+
+/**
+ * WI-10005102: the auto-close census must be the set of rows a closing route can act on,
+ * not the newest N watchdog rows. Measured 2026-10-01: 11,598 open watchdog-keyed rows,
+ * 9,615 of them repeated-tool-error with no repair evidence, so the sweep's capped read
+ * again covered only ~12 h. Closable rows are seeded OLDEST and noise NEWEST, so a capped
+ * read without the route filter returns noise only; the first assertion pins that control.
+ */
+describe('listIssues watchdogCloseRoutes selects closing routes in SQL, not a recency window (WI-10005102)', () => {
+  const routes = { closableSources: ['routine-failure', 'red-test'] };
+  const create = (watchdogKey: string, extra: Record<string, unknown> = {}) =>
+    issues.createIssue({ title: `wd ${watchdogKey}`, createdBy: 'agA', payload: { watchdogKey, ...extra } });
+
+  it('returns every closable row and no noise even when noise outnumbers the limit', async () => {
+    const absence = await create('routine-failure:alpha');
+    const redTest = await create('red-test:packages/x/y.test.ts');
+    const repaired = await create('repeated-tool-error:fixed', {
+      toolFailureProbation: { repairEvidence: { kind: 'contract-change' } },
+    });
+    // WI-10005125 retired watchdog-key duplicate closing. Sharing a key alone
+    // supplies no closing evidence, even when both rows are still open.
+    const dupA = await create('tool-failure-signature:dup');
+    const dupB = await create('tool-failure-signature:dup');
+    // A terminal same-key partner supplies no closing evidence either.
+    const lonely = await create('tool-failure-signature:closed-pair');
+    const closedPartner = await create('tool-failure-signature:closed-pair');
+    await issues.setIssueState(closedPartner.id, 'resolved', 'agA', 'test');
+    for (let n = 0; n < 12; n++) await create(`repeated-tool-error:noise-${n}`);
+
+    const limit = 8;
+    // Control: the bare watchdog-keyed read at this limit is a window of newest noise only.
+    const windowed = await issues.listIssues({ state: 'open', watchdogKeyed: true, limit });
+    expect(windowed).toHaveLength(limit);
+    expect(windowed.map((i) => i.id)).not.toContain(absence.id);
+
+    const census = await issues.listIssues({ state: 'open', watchdogKeyed: true, watchdogCloseRoutes: routes, limit });
+    expect(new Set(census.map((i) => i.id))).toEqual(
+      new Set([absence.id, redTest.id, repaired.id]),
+    );
+    expect(census.map((i) => i.id)).not.toContain(dupA.id);
+    expect(census.map((i) => i.id)).not.toContain(dupB.id);
+    expect(census.map((i) => i.id)).not.toContain(lonely.id);
+
+    // Every reader honours the fragment (issues-engineer-filter-parity), so the count agrees.
+    await expect(
+      issues.countIssues({ state: 'open', watchdogKeyed: true, watchdogCloseRoutes: routes }),
+    ).resolves.toBe(3);
+  });
+
+  it('is inert without watchdogKeyed (the route filter refines that predicate, it does not replace it)', async () => {
+    await issues.createIssue({ title: 'plain issue', createdBy: 'agA' });
+    await create('repeated-tool-error:noise');
+    const rows = await issues.listIssues({ state: 'open', watchdogCloseRoutes: routes, limit: 10 });
+    expect(rows).toHaveLength(2);
+  });
+});
+
+// WI-10006010: physical identity is (workspace_id, harness_slug, feature_id). The same id
+// legitimately exists under two slugs (a re-homed row and the stale copy a federation peer
+// re-sent). Keyed on feature_id alone, closing one rewrote both: measured 2026-10-03, three
+// sibling rows other agents had closed done/committed flipped to dropped.
+describe('setIssueState pins exactly one physical row among slug twins (WI-10006010)', () => {
+  const TWIN_SLUG = 'operator:wi10006010-twin';
+
+  async function seedTwin(): Promise<{ id: string; ws: string; slug: string }> {
+    const created = await issues.createIssue({ title: `twin-${Date.now()}`, createdBy: 'agA' });
+    const [row] = await db.sql<Array<{ workspace_id: string; harness_slug: string }>>`
+      SELECT workspace_id, harness_slug FROM harness_shared.work_items WHERE feature_id = ${created.id}`;
+    const cols = await db.sql<Array<{ column_name: string }>>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'harness_shared' AND table_name = 'work_items'
+         AND is_generated = 'NEVER' AND column_name <> 'harness_slug'
+       ORDER BY ordinal_position`;
+    const list = cols.map((c) => `"${c.column_name}"`).join(', ');
+    await db.sql.unsafe(
+      `INSERT INTO harness_shared.work_items (harness_slug, ${list})
+       SELECT $1, ${list} FROM harness_shared.work_items
+        WHERE workspace_id = $2 AND harness_slug = $3 AND feature_id = $4`,
+      [TWIN_SLUG, row!.workspace_id, row!.harness_slug, created.id],
+    );
+    return { id: created.id, ws: row!.workspace_id, slug: row!.harness_slug };
+  }
+
+  async function snapshot(ws: string, slug: string, id: string): Promise<unknown> {
+    const [r] = await db.sql<Array<{ row: unknown }>>`
+      SELECT to_jsonb(w) - '_search' AS row FROM harness_shared.work_items w
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${id}`;
+    return r?.row;
+  }
+
+  async function statusOf(ws: string, slug: string, id: string): Promise<string | undefined> {
+    const [r] = await db.sql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.work_items
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${id}`;
+    return r?.status;
+  }
+
+  it('a close pinned to one slug leaves the twin byte-identical', async () => {
+    const { id, ws, slug } = await seedTwin();
+    const before = await snapshot(ws, slug, id);
+    expect(before).toBeDefined();
+
+    const closed = await issues.setIssueState(id, 'resolved', 'agA', 'wi10006010', { harnessSlug: TWIN_SLUG });
+
+    expect(closed).not.toBeNull();
+    expect(await statusOf(ws, TWIN_SLUG, id)).not.toBe(await statusOf(ws, slug, id));
+    expect(await snapshot(ws, slug, id)).toEqual(before);
+  });
+
+  // P-013 (R-5): an unpinned write among twins used to land on the most recently updated row.
+  // It is refused instead, naming both harnesses, and neither row changes.
+  it('an unpinned close among twins is refused and writes neither row (P-013)', async () => {
+    const { id, ws, slug } = await seedTwin();
+    await db.sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 60000
+                  WHERE workspace_id = ${ws} AND harness_slug = ${TWIN_SLUG} AND feature_id = ${id}`;
+    const before = await snapshot(ws, slug, id);
+    const twinBefore = await snapshot(ws, TWIN_SLUG, id);
+
+    await expect(issues.setIssueState(id, 'resolved', 'agA', 'wi10006010')).rejects.toMatchObject({
+      code: 'work_item_id_ambiguous',
+      workspaceId: ws,
+      candidates: [slug, TWIN_SLUG].sort(),
+    });
+
+    expect(await snapshot(ws, slug, id)).toEqual(before);
+    expect(await snapshot(ws, TWIN_SLUG, id)).toEqual(twinBefore);
+  });
+
+  it('getIssue reads the named slug and refuses to guess between twins without one (P-013)', async () => {
+    const { id, ws, slug } = await seedTwin();
+    await db.sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 60000
+                  WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${id}`;
+    await db.sql`UPDATE harness_shared.work_items SET title = 'twin copy'
+                  WHERE workspace_id = ${ws} AND harness_slug = ${TWIN_SLUG} AND feature_id = ${id}`;
+
+    expect((await issues.getIssue(id, {}, undefined, TWIN_SLUG))?.title).toBe('twin copy');
+    expect((await issues.getIssue(id, {}, undefined, slug))?.title).not.toBe('twin copy');
+    await expect(issues.getIssue(id)).rejects.toMatchObject({
+      code: 'work_item_id_ambiguous',
+      workspaceId: ws,
+      candidates: [slug, TWIN_SLUG].sort(),
+    });
   });
 });

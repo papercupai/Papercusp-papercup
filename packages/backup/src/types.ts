@@ -74,13 +74,13 @@ export interface SnapshotInfo {
 }
 
 /**
- * A currently-active PostgreSQL session belonging to EITHER backup producer
- * (`packages/backup/src/application-names.ts`) — the per-workspace kopia
- * hook or the independent host-level cron `pg_dump` — regardless of whether
- * it has any receipt row in `harness_shared.backup_snapshots`.
+ * A PostgreSQL session holding a granted relation `AccessShareLock` and
+ * belonging to EITHER backup producer (`packages/backup/src/application-names.ts`)
+ * — the per-workspace kopia hook or the independent host-level cron `pg_dump`
+ * — regardless of whether it has any receipt row in `harness_shared.backup_snapshots`.
  *
  * This is deliberately session-shaped, not snapshot-shaped: it exists to
- * answer "is a backup holding relation locks on this database RIGHT NOW",
+ * answer "is a backup holding a granted relation lock on this database RIGHT NOW",
  * which `SnapshotInfo`'s receipt rows cannot answer for the host producer at
  * all (EI-22064935119941678 — `backup:snapshot_list` reported an all-clear
  * while host-cron `pcbackup` sessions still held `AccessShareLock`).

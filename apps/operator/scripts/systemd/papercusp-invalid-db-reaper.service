@@ -13,4 +13,6 @@ IOSchedulingClass=idle
 # a full sweep of a backlog can take many minutes. No statement_timeout is used
 # on purpose (a cancelled DROP is what creates these rows).
 TimeoutStartSec=45min
-ExecStart=%h/papercupai-workspace/papercusp/bin/reap-invalid-test-databases.sh
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/bin/reap-invalid-test-databases.sh

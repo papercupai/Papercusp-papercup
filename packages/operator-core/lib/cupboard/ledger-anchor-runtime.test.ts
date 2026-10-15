@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { appendLinks, entryDigest } from '@papercusp/hash-chain';
+import { verifyConsistency } from '@papercusp/merkle-log';
 import { HOUR_SECONDS, memoryLedgerAnchorStore, type AnchorBackend, type AnchorLinkFeed } from './ledger-anchor';
 import { missedHourWatchdogKey, runLedgerAnchorPass } from './ledger-anchor-runtime';
 
@@ -141,5 +142,37 @@ describe('ledger anchor pass with the Cupboard Worker feed (D-027)', () => {
     });
     expect(r.workspaces.map((w) => w.workspaceId)).toEqual(['ws-1']);
     expect(r.cupboardFeedUnavailable).toBeNull();
+  });
+
+  it('joins delayed Worker links after an outage without rewriting or duplicating the primary prefix', async () => {
+    const store = memoryLedgerAnchorStore();
+    const backend = okBackend();
+    let unavailable = true;
+    const recovering: AnchorLinkFeed = {
+      links: async () => {
+        if (unavailable) throw new Error('cupboard worker 503');
+        return workerLinks;
+      },
+    };
+    const pass = (nowSeconds: number) => runLedgerAnchorPass({
+      nowSeconds, backend, store, feed: pgOnlyWs1, workspaces: ['ws-1'], alertDeps: alerts().deps,
+      cupboard: { feed: recovering, treasuryWorkspace: 'ws-1' },
+    });
+    const down = await pass(T0 + 300);
+    expect(down.workspaces[0]).toMatchObject({ tick: { status: 'anchored', newLeaves: 2 }, feedErrors: ['cupboard: cupboard worker 503'] });
+    const prefix = await store.leaves('ws-1');
+    unavailable = false;
+    const recovered = await pass(T0 + HOUR_SECONDS + 300);
+    expect(recovered.workspaces[0]).toMatchObject({ tick: { status: 'anchored', newLeaves: 3 }, feedErrors: [] });
+    const joined = await store.leaves('ws-1');
+    expect(joined.slice(0, prefix.length)).toEqual(prefix);
+    expect(joined.slice(prefix.length).map(({ streamId, seq, entryHash }) => ({ streamId, seq, entryHash }))).toEqual(workerLinks);
+    const anchors = await store.anchors('ws-1');
+    expect(anchors.map(a => a.treeSize)).toEqual([2, 5]);
+    expect(verifyConsistency({
+      oldSize: 2, newSize: 5, oldRoot: anchors[0]!.logRoot, newRoot: anchors[1]!.logRoot, proof: anchors[1]!.consistencyProof,
+    })).toBe(true);
+    expect((await pass(T0 + 2 * HOUR_SECONDS + 300)).workspaces[0]).toMatchObject({ tick: { status: 'anchored', newLeaves: 0 }, feedErrors: [] });
+    expect(await store.leaves('ws-1')).toEqual(joined);
   });
 });

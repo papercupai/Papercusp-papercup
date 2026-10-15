@@ -110,6 +110,12 @@ export interface ClaudeAccount {
    * REFERENCE the host resolves, never the secret — safe to persist/federate.
    */
   credentialRef: string;
+  /** Anthropic workspace selected for a multi-workspace Console API key. */
+  anthropicWorkspaceId?: string;
+  /** Native provider rejected this credential. Re-registration clears it after repair. */
+  credentialFailure?: { observedAt: number; ownerId: string } | null;
+  /** Fences delayed host events from a credential registered/repaired later. */
+  credentialUpdatedAt?: number;
   /** Optional human label. */
   label?: string;
   /** Per-account upstream egress (per-account IP routing). Absent ⇒ default shared egress.
@@ -193,6 +199,16 @@ export function appendUtilization7dSample(
 }
 
 /** The rolled-up rate-limit state for one account (the Queen's projection). */
+/** Verified provider wallet reading. Units must never be combined or converted implicitly. */
+export interface AccountCreditBalance {
+  amount: number | null;
+  unit: 'credits' | 'USD';
+  source: 'codex' | 'claude-console';
+  unlimited?: boolean;
+  walletId?: string;
+  observedAt?: number;
+}
+
 export interface AccountRateState {
   /** Epoch ms the account is paused until; `0` = not paused. Mirrors the governor pause. */
   pausedUntil: number;
@@ -213,6 +229,11 @@ export interface AccountRateState {
   windowResetAt?: number;
   /** Epoch ms `utilization`/`windowResetAt` were last observed — lets the selector ignore stale budget. */
   utilizationAt?: number;
+  /** Codex upstream credit eligibility; included-meter exhaustion alone is not an account wall. */
+  usageCreditsAvailable?: boolean;
+  /** When credit eligibility was observed; a credit-only update is not a new usage-window reading. */
+  usageCreditsObservedAt?: number;
+  creditBalance?: AccountCreditBalance;
   /**
    * Unified-7d (weekly) rolling utilization (a fraction; 1.0 = 100%) from
    * `anthropic-ratelimit-unified-7d-utilization` — the LONGER Claude Max limit alongside the 5h.
@@ -376,6 +397,7 @@ export function registerAccount(
     egressPool?: AccountEgress[];
     provider?: AccountProvider;
     meteredPolicy?: 'overflow' | 'never';
+    anthropicWorkspaceId?: string | null;
   },
   now: number,
 ): AccountPool {
@@ -387,6 +409,10 @@ export function registerAccount(
   if (!credentialRef) throw new AccountPoolError('credentialRef is required');
 
   const provider = normalizeAccountProvider(input.provider);
+  const anthropicWorkspaceId = input.anthropicWorkspaceId?.trim();
+  if (anthropicWorkspaceId && (provider !== 'claude' || !/^wrkspc_[A-Za-z0-9_-]+$/.test(anthropicWorkspaceId))) {
+    throw new AccountPoolError('anthropicWorkspaceId must be a wrkspc_… id on a Claude account');
+  }
 
   if (getAccount(pool, id)) {
     return {
@@ -396,9 +422,12 @@ export function registerAccount(
               ...a,
               provider,
               credentialRef,
+              credentialFailure: null,
+              credentialUpdatedAt: now,
               label: input.label ?? a.label,
               egress: input.egress ?? a.egress,
               egressPool: input.egressPool ?? a.egressPool,
+              anthropicWorkspaceId: input.anthropicWorkspaceId === null ? undefined : anthropicWorkspaceId ?? a.anthropicWorkspaceId,
               ...((input.meteredPolicy ?? a.meteredPolicy) ? { meteredPolicy: input.meteredPolicy ?? a.meteredPolicy } : {}),
             }
           : a,
@@ -412,8 +441,10 @@ export function registerAccount(
     label: input.label,
     egress: input.egress,
     egressPool: input.egressPool,
+    ...(anthropicWorkspaceId ? { anthropicWorkspaceId } : {}),
     ...(input.meteredPolicy ? { meteredPolicy: input.meteredPolicy } : {}),
     addedAt: now,
+    credentialUpdatedAt: now,
     boundTo: [],
     rate: freshRate(),
   };
@@ -556,7 +587,7 @@ export function recordAccountReset(pool: AccountPool, id: string, opts: { resetW
 export function recordAccountWindow(
   pool: AccountPool,
   id: string,
-  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number },
+  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance },
   now: number,
 ): AccountPool {
   return {
@@ -568,7 +599,18 @@ export function recordAccountWindow(
         windowResetAt: w.windowResetAt ?? a.rate.windowResetAt,
         utilization7d: w.utilization7d ?? a.rate.utilization7d,
         windowResetAt7d: w.windowResetAt7d ?? a.rate.windowResetAt7d,
-        utilizationAt: now,
+        utilizationAt:
+          w.utilization !== undefined || w.windowResetAt !== undefined ||
+          w.utilization7d !== undefined || w.windowResetAt7d !== undefined
+            ? now : a.rate.utilizationAt,
+        ...(accountProvider(a) === 'codex' && w.usageCreditsAvailable !== undefined
+          ? { usageCreditsAvailable: w.usageCreditsAvailable, usageCreditsObservedAt: now } : {}),
+        ...(w.creditBalance &&
+          ((w.creditBalance.unit === 'credits' && accountProvider(a) === 'codex') ||
+           (w.creditBalance.unit === 'USD' && accountProvider(a) === 'claude' && a.credentialRef.startsWith('apikey:'))) &&
+          (w.creditBalance.unlimited === true ||
+           (typeof w.creditBalance.amount === 'number' && Number.isFinite(w.creditBalance.amount) && w.creditBalance.amount >= 0))
+          ? { creditBalance: { ...a.rate.creditBalance, ...w.creditBalance, observedAt: now } } : {}),
         // WI-41147: retain a spaced history of 7d readings so the burn governor can derive
         // d(utilization7d)/dt. Only a real 7d observation appends — a 5h-only update leaves
         // the history untouched (appending the STALE carried-forward 7d value would flatten
@@ -674,11 +716,21 @@ export function accountReadingStatus(
 
 /** Is the account usable right now (not currently paused)? */
 export function isAvailable(account: ClaudeAccount, now: number): boolean {
+  if (account.credentialFailure) return false;
   // Tolerate a partially-hydrated row (e.g. a hand-written pool JSON with `rate: {}`): a MISSING
   // pausedUntil means "never paused", NOT "paused forever" — `undefined <= now` is false, which
   // made the codex CLI-bridge account read permanently unavailable (WI-3068). loadAccountPool
   // normalizes rows on read; this is the last-line guard for rows built outside that path.
   return (account.rate?.pausedUntil ?? 0) <= now;
+}
+
+/** Failures survive rate resets. Old/replayed events cannot re-block a repaired credential. */
+export function recordAccountCredentialFailure(pool: AccountPool, id: string, observedAt: number, ownerId: string): AccountPool {
+  if (!Number.isFinite(observedAt)) return pool;
+  const account = getAccount(pool, id);
+  if (!account || observedAt <= (account.credentialUpdatedAt ?? account.addedAt) ||
+      observedAt <= (account.credentialFailure?.observedAt ?? 0)) return pool;
+  return { accounts: pool.accounts.map((a) => a.id === id ? { ...a, credentialFailure: { observedAt, ownerId } } : a) };
 }
 
 /**
@@ -736,7 +788,7 @@ export interface SelectOpts {
  */
 export function selectAccountByHeadroom(pool: AccountPool, now: number, opts: SelectOpts = {}): ClaudeAccount | undefined {
   const { exclude = [], availableOnly = true, preferUnbound = false } = opts;
-  let candidates = pool.accounts.filter((a) => !exclude.includes(a.id));
+  let candidates = pool.accounts.filter((a) => !a.credentialFailure && !exclude.includes(a.id));
   if (availableOnly) candidates = candidates.filter((a) => isAvailable(a, now));
   if (candidates.length === 0) return undefined;
 
@@ -800,7 +852,7 @@ export const SOFT_PIN_AFFINITY_WEIGHT = Number(process.env.PAPERCUSP_SPAWN_SOFT_
  */
 export function accountBurnVerdict(rate: AccountRateState, now: number): BurnVerdict {
   const at = rate.utilizationAt;
-  if (at === undefined || now - at > DRAIN_UTIL_STALE_MS) {
+  if (rate.usageCreditsAvailable === true || at === undefined || now - at > DRAIN_UTIL_STALE_MS) {
     return {
       burnRatePerHr: null,
       headroomFraction: rate.utilization7d !== undefined && Number.isFinite(rate.utilization7d)
@@ -816,7 +868,9 @@ export function accountBurnVerdict(rate: AccountRateState, now: number): BurnVer
       // the deciding branch rather than re-derived from `utilization7d` by a reader (P-001).
       disposition: 'no-verdict',
       reason:
-        at === undefined
+        rate.usageCreditsAvailable === true
+          ? 'Codex usage credits available — included allowance does not bound account capacity'
+          : at === undefined
           ? 'usage window never observed — burn governor stands down'
           : 'usage reading stale — burn governor stands down (the wall machinery owns stale readings)',
     };
@@ -874,7 +928,10 @@ export function drainUtil7d(a: ClaudeAccount, now: number): number {
  * in favor of an account with real headroom in both windows (7d-aware-account-selection-2026-06-17).
  */
 export function effectiveDrainUtil(a: ClaudeAccount, now: number): number {
-  return Math.max(drainUtil(a, now), drainUtil7d(a, now));
+  const included = Math.max(drainUtil(a, now), drainUtil7d(a, now));
+  return accountProvider(a) === 'codex' && a.rate.usageCreditsAvailable === true && included >= DRAIN_FULL_UTIL
+    ? 0
+    : included;
 }
 
 /**
@@ -909,6 +966,7 @@ export function accountFull(a: ClaudeAccount, now: number): boolean {
  * (provider-supplied) window reset itself.
  */
 export function usageWalledUntil(a: ClaudeAccount, now: number): number {
+  if (accountProvider(a) === 'codex' && a.rate.usageCreditsAvailable === true) return 0;
   let until = 0;
   const r = a.rate;
   if (drainUtil(a, now) >= DRAIN_FULL_UTIL && r.windowResetAt !== undefined && r.windowResetAt > now) {
@@ -950,6 +1008,7 @@ export function usageWalledUntil(a: ClaudeAccount, now: number): number {
  * penalty streak.
  */
 export function isSpawnEligible(a: ClaudeAccount, now: number, policy: ScalePolicy = DEFAULT_SCALE_POLICY): boolean {
+  if (a.credentialFailure) return false;
   if (effectiveDrainUtil(a, now) >= DRAIN_FULL_UTIL) return false;
   return !isSustainedlyLimited(a, now, policy);
 }
@@ -985,7 +1044,7 @@ export function anyAccountAvailable(pool: AccountPool, now: number): boolean {
  */
 export function selectAccountByDrain(pool: AccountPool, now: number, opts: SelectOpts = {}): ClaudeAccount | undefined {
   const { exclude = [], availableOnly = true, eligible = (a: ClaudeAccount, t: number) => !accountFull(a, t) } = opts;
-  let candidates = pool.accounts.filter((a) => !exclude.includes(a.id));
+  let candidates = pool.accounts.filter((a) => !a.credentialFailure && !exclude.includes(a.id));
   if (availableOnly) candidates = candidates.filter((a) => eligible(a, now));
   if (candidates.length === 0) return undefined;
 
@@ -1107,6 +1166,7 @@ export function selectAccountForSpawn(pool: AccountPool, now: number, opts: Spaw
     return v;
   };
   const healthKeyOf = (a: ClaudeAccount, t: number): number => {
+    if (a.credentialFailure) return Infinity;
     let key = healthKeyCache.get(a.id);
     if (key !== undefined) return key;
     key = accountLoadKey({

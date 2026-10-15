@@ -16,7 +16,13 @@ import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } 
 import { describeGateRedOwnership } from '../../release/gate-red-ownership';
 import { buildCandidateSnapshot } from '../../release/candidate-snapshot';
 import { resolveIntegrationRoot, integrationRootEvidence, CHECKPOINT_SCOPE_RUNTIME_MAX_SEC } from './release-actions';
+import { GREEN_CHECKPOINT_RESULT_MARKER } from '../../release/checkpoint-log-tags';
 import { pipelineName } from '../../release/pipeline-name';
+import { evaluateGateReuseAuditWindow } from '../../release/gate-fire-ledger';
+import { buildTestPassReuseHealth } from '../../release/test-pass-reuse-report';
+import { captureGateSuiteVerdictReplay } from '../../release/gate-hygiene-split';
+import { readLastGateSuiteVerdictReplay } from './release-actions';
+import { auditDraw, formatTestReuseLine, formatTestReuseTotalLine } from '../../../../../scripts/lib/test-pass-reuse.mjs';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -145,7 +151,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 // EI-13723: dispatchReleaseFixer's actual fire step (dynamic-imported, so it's invisible to a
 // plain function-level mock) — stubbed so the EI-13723 dispatch-convergence tests below can
 // assert the fire was ATTEMPTED without touching the real blueprint-launch machinery.
-const fireLaunchBlueprintForEvent = vi.fn(async (..._a: unknown[]) => null);
+const fireLaunchBlueprintForEvent = vi.fn(async (..._a: unknown[]): Promise<unknown> => null);
 vi.mock('../../blueprint/launch-blueprint', () => ({
   fireLaunchBlueprintForEvent: (...a: unknown[]) => fireLaunchBlueprintForEvent(...a),
 }));
@@ -264,11 +270,14 @@ import {
   trackGateStall,
   TRANSIENT_ABORT_REQUEUE_MINS,
   buildCheckpointDetail,
+  verdictQualificationAttemptId,
   buildReleaseFixerKickoff,
+  dispatchReleaseFixer,
   buildScheduledCheckpointShell,
   checkpointRunLogPaths,
   checkpointTerminalHasOomKill,
   parseScheduledCheckpointTerminal,
+  resolveCheckpointResultFromLogs,
   reconcileScheduledCheckpointTerminals,
   readFrozenCandidateRepairQueue,
   readFrozenCandidateRepairQueueState,
@@ -449,6 +458,17 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('migrations-pending', false)).toBe('noop');
     // …and a moved pin still wins, exactly as for every other status.
     expect(classifyGateStallStatus('migrations-pending', true)).toBe('reset');
+  });
+
+  it('WI-10004108: a missing configured integration branch is recorded as not-applicable without counting a stall', () => {
+    expect(classifyGateStallStatus('not-applicable', false)).toBe('noop');
+    expect(classifyGateStallStatus('not-applicable', true)).toBe('reset');
+    expect(
+      gateStallNoopLogMessage(
+        'not-applicable',
+        'Configured integration branch "staging" is absent',
+      ),
+    ).toContain('not-applicable');
   });
 
   it('EI-20767792192323374: infra-inconclusive is a NON-VERDICT, not a red', () => {
@@ -1816,6 +1836,16 @@ describe('decideReleaseFixerDispatch — liveness-aware dedup (P-014 / D-009)', 
     expect(d).toEqual({ dispatch: false, notify: false, reason: 'covered' });
   });
 
+  it('RETRY: a failed fire with unknown liveness is not treated as a durable fixer', () => {
+    const d = decideReleaseFixerDispatch({
+      lf: rec({ spawnId: null, dispatchStatus: 'failed' }),
+      signature: SIG,
+      now,
+      fixerAlive: null,
+    });
+    expect(d).toEqual({ dispatch: true, notify: true, reason: 'dispatch-retry' });
+  });
+
   it('SELF-HEAL: same signature, fixer DEAD → re-dispatch (the incident fix — was a 2h gap)', () => {
     const d = decideReleaseFixerDispatch({
       lf: rec({ notifiedAt: now - 30 * 60_000 }),
@@ -2645,6 +2675,11 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     expect(args.at(-1)).toContain('attempt-transported');
     expect(args.at(-1)).toContain('ws-42');
     expect(args.at(-1)).toContain('my-harness');
+    // WI-10007497: the routine's non-atomic fallback verdict names the attempt it bound the run to.
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'green_checkpoint', status: 'up-to-date',
+      detail: expect.objectContaining({ attemptId: 'attempt-transported' }),
+    }));
   });
 
   it('joins one live qualification runner without spawning another gate suite', async () => {
@@ -2653,12 +2688,17 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       runId: 'run-live', outcome: { kind: 'pending' }, currentPhysicalRunner: { id: 'runner-live', unit: 'unit-live' },
     };
     readStoredQualification.mockResolvedValueOnce({ status: 'present', transaction });
+    beginStoredQualification.mockResolvedValueOnce({ status: 'idempotent', transaction });
     recordStoredQualificationScheduledFire.mockResolvedValueOnce({ status: 'updated', transaction });
     probeRunnerLiveness.mockReturnValueOnce('live');
 
     await getSystemAction('green-checkpoint')!(ctx);
 
-    expect(beginStoredQualification).not.toHaveBeenCalled();
+    expect(beginStoredQualification).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }),
+      expect.objectContaining({ attemptId: 'attempt-live', evidenceRefs: expect.arrayContaining([expect.stringMatching(/^gate-fire:/)]) }),
+      { reconcileTerminalRepairQueueForSuccessor: true },
+    );
     expect(reserveStoredQualificationRunner).not.toHaveBeenCalled();
     expect(recordStoredQualificationScheduledFire).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws-42', installSlug: 'my-harness' }), 'attempt-live',
@@ -2668,6 +2708,81 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       kind: 'green_checkpoint', status: 'skipped-joined-attempt',
       detail: expect.objectContaining({ attemptId: 'attempt-live', runnerId: 'runner-live' }),
     }));
+  });
+
+  it('pins only the exact repairHead for a null-origin unassigned awaiting-fixer successor', async () => {
+    const repairHead = 'c'.repeat(40);
+    const queueFor = (qualificationAttemptId: string | null): FrozenCandidateRepairQueue => ({
+      schemaVersion: 1,
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(40),
+      qualificationAttemptId,
+      base: 'b'.repeat(40),
+      repairHead,
+      attempts: 0,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      fixerSpawnId: null,
+      failingTests: ['packages/operator-core/lib/example.test.ts'],
+      signature: [],
+    });
+    const runScheduledSuccessor = async (qualificationAttemptId: string | null) => {
+      fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ repair_queue: queueFor(qualificationAttemptId) }]));
+      readStoredQualification.mockResolvedValueOnce({
+        status: 'present',
+        transaction: { phase: 'terminal', attemptId: 'terminal-predecessor', requiredAncestorSha: null },
+      });
+      spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+      await getSystemAction('green-checkpoint')!(ctx);
+      return beginStoredQualification.mock.calls.at(-1)![1] as Record<string, unknown>;
+    };
+
+    const eligible = await runScheduledSuccessor(null);
+    expect(eligible).toMatchObject({ requiredAncestorSha: repairHead });
+
+    const knownOrigin = await runScheduledSuccessor('another-attempt');
+    expect(knownOrigin).not.toHaveProperty('requiredAncestorSha');
+  });
+
+  it('records exact begin-conflict identities and a safe next action without spawning a suite', async () => {
+    beginStoredQualification.mockResolvedValueOnce({
+      status: 'conflict', transaction: {
+        attemptId: 'incumbent-attempt', phase: 'running', candidate: 'incumbent-candidate',
+        repairHead: 'incumbent-repair', runId: 'incumbent-run',
+        currentPhysicalRunner: { id: 'incumbent-runner', leaseExpiresAtMs: 1234, heartbeatAtMs: 1200 },
+      },
+      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted' },
+    });
+    await getSystemAction('green-checkpoint')!(ctx);
+    const event = appendPipelineEvent.mock.calls.map((c) => c[0] as { status: string; detail: unknown })
+      .find((e) => e.status === 'skipped-qualification-conflict');
+    expect(event?.detail).toMatchObject({
+      reason: 'conflict', stage: 'begin',
+      repairQueueReconciliation: { status: 'blocked', reason: 'queue-not-safe-unstarted' },
+      requestedAttemptId: beginStoredQualification.mock.calls[0][1].attemptId,
+      observedAttemptId: 'incumbent-attempt', observedRunnerId: 'incumbent-runner',
+      candidate: 'incumbent-candidate', repairHead: 'incumbent-repair', runId: 'incumbent-run',
+      runnerLiveness: 'unknown', safeNextAction: { code: 'read-release-control' },
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('records the requested runner separately from the incumbent when reservation conflicts', async () => {
+    reserveStoredQualificationRunner.mockResolvedValueOnce({
+      status: 'conflict', transaction: {
+        attemptId: 'scheduled-attempt', phase: 'running', candidate: 'candidate',
+        currentPhysicalRunner: { id: 'other-runner', leaseExpiresAtMs: 1234 },
+      },
+    });
+    await getSystemAction('green-checkpoint')!(ctx);
+    const event = appendPipelineEvent.mock.calls.map((c) => c[0] as { status: string; detail: unknown })
+      .find((e) => e.status === 'skipped-qualification-conflict');
+    expect(event?.detail).toMatchObject({
+      stage: 'reserve-runner', requestedAttemptId: 'scheduled-attempt',
+      requestedRunnerId: reserveStoredQualificationRunner.mock.calls[0][1].runnerId,
+      observedRunnerId: 'other-runner', runnerLiveness: 'unknown',
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it('WI-4310: checkpoint child receives a bounded dedicated DB pool override', async () => {
@@ -2874,6 +2989,21 @@ describe('green-checkpoint routing skip — EI-17065 escalation auto-clear', () 
     routingPatch = null;
   });
 
+  it('WI-10006317: records a misconfigured gate as skipped-misconfigured, not skipped-disabled, and runs no suite', async () => {
+    routingPatch = {
+      skip: { reason: "integration-equals-release: integration branch 'main' is the release ref itself", misconfigured: true },
+    };
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    const statuses = appendPipelineEvent.mock.calls
+      .map(([event]) => event as Record<string, unknown>)
+      .filter((event) => event.kind === 'green_checkpoint')
+      .map((event) => event.status);
+    expect(statuses).toEqual(['skipped-misconfigured']);
+  });
+
   it('clears BOTH green-checkpoint escalation phases when the gate is not routable (gate_disabled)', async () => {
     routingPatch = { skip: { reason: 'gate_disabled' } };
 
@@ -2957,6 +3087,51 @@ describe('green-checkpoint routing skip — EI-17065 escalation auto-clear', () 
  * cause ten days earlier — "only ROUTINE-invoked runs write pipeline events / gate_health" — and
  * both prior attempts reconciled the wrong value instead of removing the wrongness.
  */
+describe('P-014 durable replay history', () => {
+  const target = { workspaceId: 'replay-workspace', installSlug: 'replay-harness' };
+  const snapshot = () => captureGateSuiteVerdictReplay({ candidate: 'a'.repeat(40), runId: 'prior', measuredAtMs: 1 }, {
+    green: false, infraFault: false, failures: Array.from({ length: 25 }, (_, i) => `product-${i}.test.ts`),
+    rootScripts: {}, failingCasesByFile: null,
+  });
+
+  it('stores full replay inputs separately from the bounded display signature', () => {
+    const replay = snapshot();
+    const detail = buildCheckpointDetail({ reason: 'not-green', green: false,
+      failingTests: replay.input.failures, suiteVerdictReplay: replay });
+    expect((detail.failingTests as string[])).toHaveLength(20);
+    expect(detail.suiteVerdictReplay).toEqual(replay);
+  });
+
+  it('loads scoped terminal history and retains the exact measured candidate', async () => {
+    fakeSql.unsafe.mockResolvedValueOnce(Object.assign([{ replay: snapshot() }], { count: 1 }));
+    expect(await readLastGateSuiteVerdictReplay(target)).toEqual(snapshot());
+    const [query, values] = fakeSql.unsafe.mock.calls.at(-1)!;
+    expect(values).toEqual(['replay-workspace', 'replay-harness']);
+    expect(String(query)).toContain("status <> 'decision-pending'");
+    expect(String(query)).toContain("candidateSource");
+    expect(String(query)).toContain('LIMIT 1');
+  });
+
+  it('bootstraps only when no captured row exists', async () => {
+    fakeSql.unsafe.mockResolvedValueOnce(Object.assign([], { count: 0 }));
+    expect(await readLastGateSuiteVerdictReplay(target)).toBeNull();
+  });
+
+  it('refuses corrupt or unsupported latest history instead of falling back to an older success', async () => {
+    fakeSql.unsafe.mockResolvedValueOnce(Object.assign([{ replay: { version: 2 } }], { count: 1 }));
+    await expect(readLastGateSuiteVerdictReplay(target)).rejects.toThrow(/malformed|unsupported/);
+  });
+
+  it('reports failed history reads rather than inventing a missing baseline', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fakeSql.unsafe.mockRejectedValueOnce(new Error('read failed'));
+    try {
+      await expect(readLastGateSuiteVerdictReplay(target)).rejects.toThrow(/unavailable/);
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('gate-suite-replay-history failed: read failed'));
+    } finally { warning.mockRestore(); }
+  });
+});
+
 describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
   beforeEach(() => {
     appendPipelineEvent.mockClear();
@@ -3025,6 +3200,50 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     } finally {
       delete process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV];
     }
+  });
+
+  // WI-10007497: a verdict event that does not name its logical attempt cannot be joined to the
+  // attempt's begin/join rows, so attempt-to-verdict latency is unmeasurable by construction.
+  it('WI-10007497: the non-atomic append names the attempt the settlement bound (scheduled path, no env)', async () => {
+    const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+    recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'updated', transaction: { attemptId: 'attempt-global' } });
+    expect(await recordCheckpointVerdict(target, { reason: 'not-green', green: false, candidate: 'abc123def456789' })).toBe(true);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'green_checkpoint', status: 'not-green',
+      detail: expect.objectContaining({ attemptId: 'attempt-global' }),
+    }));
+  });
+
+  it('WI-10007497: a conflicting settlement is another attempt\'s row, so its id is never cited', async () => {
+    const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+    recordStoredQualificationVerdict.mockResolvedValueOnce({ status: 'conflict', transaction: { attemptId: 'attempt-other' } });
+    expect(await recordCheckpointVerdict(target, { reason: 'not-green', green: false, candidate: 'abc123def456789' })).toBe(true);
+    const detail = (appendPipelineEvent.mock.calls[0]?.[0] as { detail: Record<string, unknown> }).detail;
+    expect(detail).not.toHaveProperty('attemptId');
+  });
+
+  it('WI-10007497: decision-pending carries the transported attempt id', async () => {
+    process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV] = 'attempt-pending';
+    try {
+      expect(await recordPendingCheckpointVerdict(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        { reason: 'not-green', green: false, candidate: 'abc123def456789', promotionPending: true, runId: 'run-p' },
+      )).toBe(true);
+      expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'decision-pending', detail: expect.objectContaining({ attemptId: 'attempt-pending' }),
+      }));
+    } finally {
+      delete process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV];
+    }
+  });
+
+  it('WI-10007497: verdictQualificationAttemptId — env wins; only a binding settlement names an attempt', () => {
+    expect(verdictQualificationAttemptId('attempt-env', { status: 'conflict', transaction: { attemptId: 'x' } })).toBe('attempt-env');
+    expect(verdictQualificationAttemptId(undefined, { status: 'updated', transaction: { attemptId: 'a' } })).toBe('a');
+    expect(verdictQualificationAttemptId(undefined, { status: 'idempotent', transaction: { attemptId: 'b' } })).toBe('b');
+    expect(verdictQualificationAttemptId(undefined, { status: 'terminal', transaction: { attemptId: 'c' } })).toBeUndefined();
+    expect(verdictQualificationAttemptId(undefined, { status: 'missing' })).toBeUndefined();
+    expect(verdictQualificationAttemptId(undefined, null)).toBeUndefined();
   });
 
   it('⭐ a RED from ANY runner lands in gate_health + the pipeline history', async () => {
@@ -3201,6 +3420,35 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect((d.failingTests as string[]).length).toBe(20);
   });
 
+  it('green-main-cycle-time P-012: buildCheckpointDetail records the freeze cut and the R1 red legs per candidate', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      candidate: 'a'.repeat(40),
+      freezeCut: {
+        source: 'known-good',
+        reason: 'known-good-selected',
+        candidate: 'a'.repeat(40),
+        tip: 'b'.repeat(40),
+        knownGood: 'a'.repeat(40),
+      },
+      redLegsAtR1: { candidate: 'a'.repeat(40), source: 'known-good', legs: ['suite', 'lint-tsc'] },
+    });
+    expect(d.freezeCut).toEqual({
+      source: 'known-good',
+      reason: 'known-good-selected',
+      candidate: 'a'.repeat(12),
+      tip: 'b'.repeat(12),
+      knownGood: 'a'.repeat(12),
+    });
+    expect(d.redLegsAtR1).toEqual({ candidate: 'a'.repeat(12), source: 'known-good', legs: ['suite', 'lint-tsc'] });
+
+    // A run with no fresh cut (frozen lineage, explicit candidate) carries neither field.
+    const plain = buildCheckpointDetail({ reason: 'advanced', green: true, candidate: 'c'.repeat(40) });
+    expect(plain).not.toHaveProperty('freezeCut');
+    expect(plain).not.toHaveProperty('redLegsAtR1');
+  });
+
   it('P-013: buildCheckpointDetail keeps a compact per-round reuse record, and drops a malformed one', () => {
     const testPassReuse = {
       judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4',
@@ -3230,6 +3478,39 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       testPassReuse: { ...testPassReuse, reused: -1 },
     });
     expect('testPassReuse' in bad).toBe(false);
+    const audit = { auditRate: 0.05, audited: 2, eligible: 33, pureReused: 20, alarmCount: 23 };
+    const measured = buildCheckpointDetail({
+      reason: 'advanced', green: true, testPassReuse: { ...testPassReuse, audit },
+    });
+    expect(measured.testPassReuse).toMatchObject({
+      audit: { ...audit, judgedSha: testPassReuse.judgedSha, recordedAtMs: testPassReuse.recordedAtMs },
+    });
+    // The archive keeps the whole identity and alarm count even after the display list is capped.
+    expect((measured.testPassReuse as { audit: { judgedSha: string } }).audit.judgedSha).toHaveLength(40);
+    const auditedFiles = Array.from({ length: 23 }, (_, i) => ({
+      invocation: 0, ws: 'core::test', file: `lib/${i}.test.ts`, verdict: 'pass' as const,
+      evidenceRef: `suite-output:line:${i}`, judgedSha: testPassReuse.judgedSha,
+      runnerIdentity: 'vitest:core', runContext: 'green-checkpoint', runGroupId: null, dirty: false,
+    }));
+    const named = buildCheckpointDetail({ reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, audit, auditedFiles } });
+    expect((named.testPassReuse as { auditedFiles: unknown[] }).auditedFiles).toEqual(auditedFiles);
+    const suite = { command: 'npm run test:affected', runGroupId: 'run-1',
+      startedAtMs: testPassReuse.recordedAtMs - 20, completedAtMs: testPassReuse.recordedAtMs - 10 };
+    const scoped = buildCheckpointDetail({ reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, audit, auditedFiles, suite } });
+    expect(scoped.testPassReuse).toMatchObject({ suite });
+    const badScope = buildCheckpointDetail({ reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, suite: { ...suite, completedAtMs: suite.startedAtMs - 1 } } });
+    expect(badScope.testPassReuse).toMatchObject({ suite: null });
+    const badNamed = buildCheckpointDetail({ reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, auditedFiles: [{ ...auditedFiles[0], evidenceRef: '' }] } });
+    expect((badNamed.testPassReuse as { auditedFiles: unknown }).auditedFiles).toBeNull();
+    const malformed = buildCheckpointDetail({
+      reason: 'advanced', green: true,
+      testPassReuse: { ...testPassReuse, audit: { ...audit, audited: -1 } },
+    });
+    expect(malformed.testPassReuse).not.toHaveProperty('audit');
   });
 
   it('P-013: buildCheckpointDetail carries the round phase breakdown whole, and drops a malformed one', () => {
@@ -3244,6 +3525,40 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(buildCheckpointDetail({ reason: 'advanced', green: true, roundPhases }).roundPhases).toEqual(roundPhases);
     const bad = buildCheckpointDetail({ reason: 'advanced', green: true, roundPhases: { ...roundPhases, totalMs: 0 } });
     expect('roundPhases' in bad).toBe(false);
+  });
+
+  it('round-trips a judged repair head through the real archive writer and reuse audit reader', () => {
+    const sha = 'c58655490ce1a3be734de61df08aa7f8159122d4';
+    const ws = 'core::test:unit:pure';
+    const file = Array.from({ length: 500 }, (_, i) => `lib/audit-${i}.test.ts`)
+      .find((name) => auditDraw(name, sha) < 0.05)!;
+    const output = [formatTestReuseLine(ws, { candidates: 20, reused: 19, audited: 1, expiredClean: 0 },
+      ' auditRate=0.05 lane=pure'),
+      formatTestReuseTotalLine({ tasks: 1, summaries: [{ candidates: 20, reused: 19, audited: 1, expiredClean: 0 }],
+        savedMs: 100, unmeasured: 0 }),
+      'TEST_PASS_REUSE_AUDIT_RESULT ' + JSON.stringify({ version: 1, ws, file, verdict: 'pass',
+        judgedSha: sha, runnerIdentity: 'proof-v2 node25 linux x64', runContext: 'green-checkpoint',
+        runGroupId: 'repair-run', dirty: false })].join('\n');
+    const testPassReuse = buildTestPassReuseHealth(output, sha, 120)!;
+    const detail = buildCheckpointDetail({ reason: 'not-green', green: false, candidate: sha,
+      gateFireId: 'repair-fire', runId: 'repair-run', testPassReuse, repairQueue: {
+        schemaVersion: 1, phase: 'ready-to-verify', candidate: 'b'.repeat(40), base: 'd'.repeat(40),
+        repairHead: sha, attempts: 1, openedAtMs: 1, updatedAtMs: 2, fixerSpawnId: null,
+        failingTests: ['lib/red.test.ts'], signature: [],
+        convergenceRounds: [{ round: 1, head: sha, failingCount: 1, atMs: 120 }],
+      } as unknown as FrozenCandidateRepairQueue });
+    expect(detail.candidate).toBe('b'.repeat(12));
+    expect(detail.testPassReuse).toMatchObject({ audit: { judgedSha: sha } });
+    const read = { status: 'complete' as const, windowStartMs: 100, windowEndMs: 200,
+      total: 2, reason: null, rows: [
+        { id: 'repair-anchor', kind: 'green_checkpoint_fire' as const, status: 'fired', createdAtMs: 110,
+          detail: { gateFireId: 'repair-fire' } },
+        { id: 'repair-outcome', kind: 'green_checkpoint' as const, status: 'not-green', createdAtMs: 130, detail },
+      ] };
+    expect(evaluateGateReuseAuditWindow(read)).toMatchObject({ verdict: 'pass', audited: 1,
+      runIds: ['repair-run'] });
+    (detail.verdictProvenance as Record<string, unknown>).repairHeadVerdict = 'not-judged';
+    expect(evaluateGateReuseAuditWindow(read).verdict).toBe('unknown');
   });
 
   it('P-001: buildCheckpointDetail preserves the producer gate-fire identity or a valid fallback', () => {
@@ -3737,6 +4052,15 @@ describe('P-303: signed gate-verdict producer', () => {
     }
   });
 
+  it('WI-6554700010009547: a zero budget never starts the publisher (the self-watchdog record path)', async () => {
+    const logs: string[] = [];
+    const publish = vi.fn(async () => ({ published: 1, skipped: 0 }));
+    expect(await publishSignedGateVerdictsWithDeadline(publish, (line) => logs.push(line), 0))
+      .toEqual({ published: 0, skipped: 0, reason: 'skipped-no-budget' });
+    expect(publish).not.toHaveBeenCalled();
+    expect(logs).toEqual(['signed gate shard publication skipped (no time budget)']);
+  });
+
   function deps(overrides: Partial<import('./release-actions').SignedGateVerdictPublishDeps> = {}) {
     const inserted: Array<{ target: typeof target; hiveHomeSlug: string | null; signed: import('../../sync/pot-git/gate/verdicts').GateVerdict; verdictId: string }> = [];
     const base: import('./release-actions').SignedGateVerdictPublishDeps = {
@@ -4191,7 +4515,8 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       expect.stringMatching(
         /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+metadata->'repair_queue'->>'fixerSpawnId'[\s\S]+RETURNING true AS retired/,
       ),
-      ['ws-42', 'my-harness', retirableQueue.candidate, retirableQueue.repairHead, retirableQueue.updatedAtMs, retirableQueue.fixerSpawnId],
+      // P-010: the 7th param is the pending carry; a queue that admitted nothing carries nothing.
+      ['ws-42', 'my-harness', retirableQueue.candidate, retirableQueue.repairHead, retirableQueue.updatedAtMs, retirableQueue.fixerSpawnId, null],
     );
 
     const replacement = { ...retirableQueue, updatedAtMs: 3, repairHead: 'd'.repeat(40) };
@@ -4224,7 +4549,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       expect.stringMatching(
         /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+metadata->'repair_queue'->>'fixerSpawnId'[\s\S]+RETURNING true AS retired/,
       ),
-      ['ws-42', 'my-harness', newerQueue.candidate, newerQueue.repairHead, newerQueue.updatedAtMs, newerQueue.fixerSpawnId],
+      ['ws-42', 'my-harness', newerQueue.candidate, newerQueue.repairHead, newerQueue.updatedAtMs, newerQueue.fixerSpawnId, null],
     );
   });
 
@@ -4540,6 +4865,93 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     fireLaunchBlueprintForEvent.mockResolvedValue(null);
   });
 
+  it('does not announce or suppress retries when the launch target returns no spawn', async () => {
+    const candidate = 'a'.repeat(40);
+    const failingTest = 'lint:identity-leak';
+    const snapshot = buildCandidateSnapshot({ candidate, failingTests: [failingTest] }, Date.now());
+    expect(snapshot).not.toBeNull();
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: snapshot }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]));
+    fireLaunchBlueprintForEvent.mockResolvedValueOnce({ spawn: null });
+    const timeline: string[] = [];
+    const broadcast = vi.fn(async () => { timeline.push('broadcast'); return true; });
+    const notify = vi.fn(async () => { timeline.push('notify'); });
+
+    const result = await dispatchReleaseFixer(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      candidate,
+      [failingTest],
+      undefined,
+      undefined,
+      {
+        checkCandidate: async () => ({ candidateExists: true, candidatePromoted: false }),
+        alarm: { broadcast, notify },
+      },
+    );
+
+    expect(result).toBeNull();
+    expect(timeline).toEqual([]);
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    const failedWrite = fakeSql.unsafe.mock.calls.find(([query, params]) =>
+      String(query).includes("metadata->'last_fixer'") &&
+      String((params as unknown[])[3]).includes('"dispatchStatus":"failed"'),
+    );
+    expect(failedWrite).toBeDefined();
+    expect(JSON.parse(String((failedWrite?.[1] as unknown[])[3])).last_fixer).toMatchObject({
+      signature: failingTest,
+      dispatchStatus: 'failed',
+      spawnId: null,
+      runId: null,
+    });
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'release_fixer',
+      status: 'failed',
+      detail: expect.objectContaining({ dispatchStatus: 'failed', recordPatched: true }),
+    }));
+  });
+
+  it('announces and notifies only after the launch returns a spawn record', async () => {
+    const candidate = 'b'.repeat(40);
+    const failingTest = 'lint:identity-leak';
+    const snapshot = buildCandidateSnapshot({ candidate, failingTests: [failingTest] }, Date.now());
+    expect(snapshot).not.toBeNull();
+    fakeSql.unsafe
+      .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: snapshot }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      .mockResolvedValueOnce(sqlRows([{ written: true }]));
+    const timeline: string[] = [];
+    fireLaunchBlueprintForEvent.mockImplementationOnce(async () => {
+      timeline.push('fire');
+      return { spawn: { spawnId: 'spawn-1', runId: 'run-1', durable: false } };
+    });
+    const broadcast = vi.fn(async () => { timeline.push('broadcast'); return true; });
+    const notify = vi.fn(async () => { timeline.push('notify'); });
+
+    const result = await dispatchReleaseFixer(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      candidate,
+      [failingTest],
+      undefined,
+      undefined,
+      {
+        checkCandidate: async () => ({ candidateExists: true, candidatePromoted: false }),
+        alarm: { broadcast, notify },
+      },
+    );
+
+    expect(result).toEqual({ spawnId: 'spawn-1', runId: 'run-1' });
+    expect(timeline).toEqual(['fire', 'broadcast', 'notify']);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'release_fixer',
+      status: 'ok',
+      detail: expect.objectContaining({ dispatchStatus: 'dispatched', recordPatched: true }),
+    }));
+  });
+
   it('builds a frozen-fixer brief that distinguishes the delegated child from the parent gate owner', () => {
     const repairQueue: FrozenCandidateRepairQueue = {
       schemaVersion: 1,
@@ -4561,6 +4973,11 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       failingTests: repairQueue.failingTests,
       repairQueue,
       flakeAnnotation: 'historical flake: none',
+      checkpointEvidence: {
+        logPath: '/var/lib/papercusp/checkpoint-logs/exact-run.log',
+        runId: 'exact-run-42',
+        integrationRoot: '/srv/papercusp',
+      },
     });
 
     expect(brief).toContain('AUTHORIZED delegated repair child, not a second LIVE_GATE_OPS owner');
@@ -4576,6 +4993,10 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     expect(brief).toContain('there is NO repair worktree');
     expect(brief).not.toMatch(/\/\.papercusp\/worktrees\//);
     expect(brief).toContain('historical flake: none');
+    expect(brief).toContain(
+      'Authoritative checkpoint run evidence: {"logPath":"/var/lib/papercusp/checkpoint-logs/exact-run.log","runId":"exact-run-42","integrationRoot":"/srv/papercusp"}',
+    );
+    expect(brief).toContain('Read this exact checkpoint artifact and use its failure tail');
   });
 
   it('keeps the legacy moving-tip brief free of frozen-child authorization instructions', () => {
@@ -4583,6 +5004,96 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     expect(brief).toContain('failed the gate suite');
     expect(brief).not.toContain('authorized-delegate');
     expect(brief).not.toContain('repairQueue.fixerSpawnId');
+  });
+
+  // WI-10007494: a frozen queue mixing a same-head contradiction with a real red. Before the
+  // fix the fixer was handed both, i.e. told to fix a leg its own repairHead had passed.
+  describe('WI-10007494: same-head contradiction beside a real red', () => {
+    const LANE = '@papercusp/operator-core :: test:lane-stateful';
+    const RED = 'lint:design-primitives';
+    const queue = (): FrozenCandidateRepairQueue => ({
+      schemaVersion: 1,
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(40),
+      base: 'b'.repeat(40),
+      repairHead: 'c'.repeat(40),
+      affectedTestProofGroup: 'proof-1',
+      attempts: 1,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      fixerSpawnId: null,
+      failingTests: [LANE, RED],
+      signature: [],
+    });
+    const tickAt = (head: string) => ({
+      head: head.slice(0, 12),
+      atMs: 1,
+      ok: false,
+      failingSignatures: [RED],
+      legs: [
+        { id: LANE, status: 'pass', durationMs: 1_159_339 },
+        { id: RED, status: 'fail', durationMs: 4_000 },
+      ],
+    });
+    type Fire = {
+      kickoff: string;
+      bodyExtra: { account: string; releaseFixerContext: { failingTests: string[]; sameHeadContradicted?: string[] } };
+    };
+    const dispatchWithTick = async (repairQueue: FrozenCandidateRepairQueue, tickHead: string) => {
+      spawnMock.mockImplementation((_cmd: unknown, args: string[]) => {
+        if (args.includes('cat-file')) return fakeSpawn('', 0);
+        if (args.some((a) => typeof a === 'string' && a.startsWith('origin/main..'))) return fakeSpawn('3', 0);
+        return fakeSpawn('', 0);
+      });
+      const snapshot = buildCandidateSnapshot(
+        { candidate: repairQueue.candidate, failingTests: repairQueue.failingTests, repairQueue },
+        Date.now(),
+      );
+      expect(snapshot).not.toBeNull();
+      fakeSql.unsafe
+        .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: snapshot, legs: tickAt(tickHead) }]))
+        .mockResolvedValueOnce(sqlRows([{ written: true }]))
+        // A missing spawn is now persisted as a failed attempt so the next tick retries.
+        .mockResolvedValueOnce(sqlRows([{ written: true }]));
+      await dispatchReleaseFixer(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        repairQueue.repairHead,
+        repairQueue.failingTests,
+        repairQueue,
+      );
+      expect(fireLaunchBlueprintForEvent).toHaveBeenCalledTimes(1);
+      const fire = fireLaunchBlueprintForEvent.mock.calls[0]![1] as Fire;
+      const reservation = fakeSql.unsafe.mock.calls.find(([query]) => {
+        const text = String(query);
+        return text.includes("metadata->'gate_health'->'candidateSnapshot'->>'identity'") && text.includes("metadata->'last_fixer'");
+      });
+      expect(reservation).toBeDefined();
+      const record = JSON.parse(String((reservation![1] as unknown[])[3])).last_fixer as { signature: string };
+      return { fire, record };
+    };
+
+    it('hands the fixer only the real red, while the dedup signature and the queue keep both', async () => {
+      const repairQueue = queue();
+      const { fire, record } = await dispatchWithTick(repairQueue, repairQueue.repairHead);
+      expect(fire.bodyExtra.account).toBe('auto');
+      expect(fire.bodyExtra.releaseFixerContext.failingTests).toEqual([RED]);
+      expect(fire.bodyExtra.releaseFixerContext.sameHeadContradicted).toEqual([LANE]);
+      expect(fire.kickoff).toContain(`Fix ONLY: ${RED}. Do NOT fix: ${LANE}.`);
+      // The obligation to re-measure LANE survives: the queue is untouched and the dedup
+      // signature is still the full set.
+      expect(record.signature).toBe([LANE, RED].sort().join(','));
+      expect(repairQueue.failingTests).toEqual([LANE, RED]);
+      const select = fakeSql.unsafe.mock.calls.find(([query]) => String(query).includes("AS legs"));
+      expect(String(select?.[0])).toContain("metadata->'gate_health'->'repairTickLegs' AS legs");
+    });
+
+    it('control: a tick from an earlier head contradicts nothing, so the fixer gets the full set', async () => {
+      const repairQueue = queue();
+      const { fire } = await dispatchWithTick(repairQueue, 'f'.repeat(40));
+      expect(fire.bodyExtra.releaseFixerContext.failingTests).toEqual([LANE, RED]);
+      expect(fire.bodyExtra.releaseFixerContext.sameHeadContradicted).toBeUndefined();
+      expect(fire.kickoff).not.toContain('Do NOT fix:');
+    });
   });
 
   it('⭐ a manual run (release:checkpoint-run) — which self-records via recordCheckpointVerdict and never touches the routine handler — still fires the release-fixer for a fresh red', async () => {
@@ -4618,11 +5129,23 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       // dispatchReleaseFixer reads the snapshot written by the producer.
       .mockResolvedValueOnce(sqlRows([{ lf: null, ftm: 'true', cs: persistedSnapshot }]))
       // The exact snapshot/last_fixer CAS must report its row as written before firing.
+      .mockResolvedValueOnce(sqlRows([{ written: true }]))
+      // The mocked launch returns no spawn, so dispatchReleaseFixer records that failed fire.
       .mockResolvedValueOnce(sqlRows([{ written: true }]));
 
     const recorded = await recordCheckpointVerdict(
       { workspaceId: 'ws-42', installSlug: 'my-harness' },
-      { reason: 'not-green', green: false, candidate: 'deadbeefcafe0123', failingTests: ['lib/y.test.ts'] },
+      {
+        reason: 'not-green',
+        green: false,
+        candidate: 'deadbeefcafe0123',
+        failingTests: ['lib/y.test.ts'],
+        checkpointEvidence: {
+          logPath: '/var/lib/papercusp/checkpoint-logs/manual-red.log',
+          runId: 'manual-red-run',
+          integrationRoot: '/srv/papercusp',
+        },
+      },
     );
 
     expect(recorded).toBe(true);
@@ -4640,6 +5163,16 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       expect.objectContaining({
         installSlug: 'my-harness',
         workspaceId: 'ws-42',
+        bodyExtra: expect.objectContaining({
+          account: 'auto',
+          releaseFixerContext: expect.objectContaining({
+            checkpointEvidence: {
+              logPath: '/var/lib/papercusp/checkpoint-logs/manual-red.log',
+              runId: 'manual-red-run',
+              integrationRoot: '/srv/papercusp',
+            },
+          }),
+        }),
         // EI-20978485106613438: the fixer must receive the full invoke budget; the old
         // 900_000ms value killed it at exactly 15 minutes before it could repair the gate.
         timeoutMs: 2_700_000,
@@ -4865,5 +5398,162 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
         'console.log(`${orchestratorStdoutTag()} ${integrationRootEvidence()}`);\nawait resolveCheckpointRouting(ctx, x);',
       ),
     ).toBe(true);
+  });
+});
+
+describe('WI-10004928 part 1: emitGateToolingCrashEvent', () => {
+  it('emits the global and pipeline-scoped inconclusive wake with reason gate-tooling-crash', async () => {
+    const { emitGateToolingCrashEvent } = await import('./release-actions');
+    const emit = vi.fn(async (..._a: unknown[]) => ({}));
+    await emitGateToolingCrashEvent(
+      '/x/papercusp',
+      { exitCode: 1, runId: 'r1', logPath: '/tmp/l.log', tail: 'Top-level await is currently not supported' },
+      emit as never,
+    );
+    const calls = emit.mock.calls.map(([a]) => a as { key: string; payload: Record<string, unknown>; summary: string });
+    expect(calls.map((c) => c.key)).toEqual(['green-checkpoint:inconclusive', 'green-checkpoint:inconclusive:papercusp']);
+    for (const c of calls) {
+      expect(c.payload).toMatchObject({ reason: 'gate-tooling-crash', exitCode: 1, pipeline: 'papercusp', sha: null });
+      expect(c.summary).toContain('GATE TOOLING CRASHED (exit 1)');
+    }
+  });
+
+  it('a failing emit on one key never throws and still tries the other', async () => {
+    const { emitGateToolingCrashEvent } = await import('./release-actions');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emit = vi.fn(async () => {
+      throw new Error('db down');
+    });
+    await expect(
+      emitGateToolingCrashEvent('/x/papercusp', { exitCode: null, runId: null, logPath: null, tail: null }, emit as never),
+    ).resolves.toBeUndefined();
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+});
+
+describe('WI-10004928 part 1 manual leg: sweepManualCheckpointToolingCrash', () => {
+  const crashTuple = '\n__GREEN_CHECKPOINT_SYSTEMD_TERMINAL__ service_result=exit-code exit_code=exited exit_status=1\n';
+  const loadCrashLog = `SyntaxError: Top-level await is currently not supported with the "cjs" output format${crashTuple}`;
+  const sweep = async (log: string | null, claimed = true) => {
+    const { sweepManualCheckpointToolingCrash } = await import('./release-actions');
+    const emit = vi.fn(async (..._a: unknown[]) => ({}));
+    const claimSentinel = vi.fn(async () => claimed);
+    const result = await sweepManualCheckpointToolingCrash('/x/papercusp', {
+      resolveLog: async () => '/tmp/run-1.log',
+      readLog: async () => log,
+      claimSentinel,
+      emit: emit as never,
+    });
+    return { result, emit, claimSentinel };
+  };
+
+  it('alarms a load-time crash: abnormal systemd tuple, no result marker, no candidate', async () => {
+    const { result, emit, claimSentinel } = await sweep(loadCrashLog);
+    expect(result).toEqual({ status: 'alarmed', logPath: '/tmp/run-1.log' });
+    expect(claimSentinel).toHaveBeenCalledWith('/tmp/run-1.log.tooling-crash-alarmed');
+    const payloads = emit.mock.calls.map(([a]) => (a as { payload: Record<string, unknown> }).payload);
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toMatchObject({ reason: 'gate-tooling-crash', exitCode: 1, logPath: '/tmp/run-1.log' });
+  });
+
+  it('is idempotent per run: an existing sentinel suppresses a second alarm', async () => {
+    const { result, emit } = await sweep(loadCrashLog, false);
+    expect(result.status).toBe('already-alarmed');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does not call a killed/timed-out suite a tooling crash (it resolved a candidate first)', async () => {
+    const { result, emit } = await sweep(`checkpointing candidate abc123def456${crashTuple}`);
+    expect(result.status).toBe('not-a-tooling-crash');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('ignores a clean exit and a still-running unit (no ExecStopPost tuple yet)', async () => {
+    const clean = await sweep(
+      '\n__GREEN_CHECKPOINT_SYSTEMD_TERMINAL__ service_result=success exit_code=exited exit_status=0\n',
+    );
+    expect(clean.result.status).toBe('not-a-tooling-crash');
+    const running = await sweep('booting...\n');
+    expect(running.result.status).toBe('no-terminal-evidence');
+    const missing = await sweep(null);
+    expect(missing.result.status).toBe('no-log');
+    expect(clean.emit).not.toHaveBeenCalled();
+  });
+
+  it('WI-10005994: a torn marker (begins mid-line, JSON cut) is result-marker-torn, never an alarmed crash', async () => {
+    const torn = `{\n  "reason": "not-green",\n  "paths": [  __GREEN_CHECKPOINT_RESULT__ {"reason":"not-green","green":false,"repairQueue":{"adm\n  "x": 1\n}${crashTuple}`;
+    const { result, emit, claimSentinel } = await sweep(torn);
+    expect(result).toEqual({ status: 'result-marker-torn', logPath: '/tmp/run-1.log' });
+    expect(emit).not.toHaveBeenCalled();
+    expect(claimSentinel).not.toHaveBeenCalled();
+  });
+
+  it('WI-10005994: an intact marker that begins mid-line is still a rendered verdict, not a crash', async () => {
+    const { result, emit } = await sweep(`tail of the stderr dump __GREEN_CHECKPOINT_RESULT__ {"reason":"not-green","green":false}${crashTuple}`);
+    expect(result.status).toBe('not-a-tooling-crash');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('WI-10005994: checkpointResultMarkerState separates absent / parsed / torn and skips fixture lines', async () => {
+    const { checkpointResultMarkerState } = await import('./release-actions');
+    const { ORCHESTRATOR_STDOUT_TAG_UNDER_TEST } = await import('../../release/checkpoint-log-tags');
+    expect(checkpointResultMarkerState('no verdict here\n')).toBe('absent');
+    expect(checkpointResultMarkerState('__GREEN_CHECKPOINT_RESULT__ {"reason":"advanced","green":true}\n')).toBe('parsed');
+    expect(checkpointResultMarkerState('x __GREEN_CHECKPOINT_RESULT__ {"reason":"adv\nanced"}\n')).toBe('torn');
+    expect(
+      checkpointResultMarkerState('__GREEN_CHECKPOINT_RESULT__ {"rea\n__GREEN_CHECKPOINT_RESULT__ {"reason":"advanced","green":true}\n'),
+    ).toBe('parsed');
+    expect(checkpointResultMarkerState(`${ORCHESTRATOR_STDOUT_TAG_UNDER_TEST} __GREEN_CHECKPOINT_RESULT__ {"rea\n`)).toBe('absent');
+  });
+
+  it('WI-10006005: restores 500 failure and flake paths from the matching terminal log result', () => {
+    const runId = 'large-path-run';
+    const failingTests = Array.from(
+      { length: 500 },
+      (_, i) => 'packages/operator-core/lib/test-fixtures/failures/failure-' + i + '.test.ts',
+    );
+    const flakeSuspects = Array.from(
+      { length: 500 },
+      (_, i) => 'packages/operator-core/lib/test-fixtures/flakes/flake-' + i + '.test.ts',
+    );
+    const fullResult = {
+      reason: 'not-green',
+      green: false,
+      candidate: '0123456789abcdef',
+      runId,
+      failingTests,
+      flakeSuspects,
+    };
+    const marker: Record<string, unknown> = {
+      ...fullResult,
+      markerCompacted: { omitted: ['failingTests', 'flakeSuspects'] },
+    };
+    delete marker.failingTests;
+    delete marker.flakeSuspects;
+    const markerLine = GREEN_CHECKPOINT_RESULT_MARKER + ' ' + JSON.stringify(marker);
+    const terminalLog = JSON.stringify(fullResult, null, 2) + '\n' + markerLine + '\n';
+
+    const resolved = resolveCheckpointResultFromLogs(markerLine + '\n', terminalLog, runId);
+    expect(resolved?.failingTests).toEqual(failingTests);
+    expect(resolved?.flakeSuspects).toEqual(flakeSuspects);
+    expect(resolveCheckpointResultFromLogs(markerLine + '\n', terminalLog, 'another-run')?.failingTests)
+      .toBeUndefined();
+  });
+
+  it('WI-10005994: the torn cause wakes inconclusive awaiters with an honest reason, not "no suite ran"', async () => {
+    const { emitGateToolingCrashEvent } = await import('./release-actions');
+    const emit = vi.fn(async (..._a: unknown[]) => ({}));
+    await emitGateToolingCrashEvent(
+      '/x/papercusp',
+      { exitCode: 1, runId: 'r1', logPath: '/tmp/run-1.log', tail: null, cause: 'result-marker-torn' },
+      emit as never,
+    );
+    const calls = emit.mock.calls.map(([a]) => a as { key: string; summary: string; payload: Record<string, unknown> });
+    expect(calls).toHaveLength(2);
+    expect(calls[0].payload).toMatchObject({ reason: 'result-marker-torn', logPath: '/tmp/run-1.log' });
+    expect(calls[0].summary).toContain('RESULT MARKER TORN');
+    expect(calls[0].summary).not.toContain('no suite ran');
   });
 });

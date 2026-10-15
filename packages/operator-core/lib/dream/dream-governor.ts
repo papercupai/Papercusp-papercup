@@ -5,6 +5,7 @@
  * `learning_spend_events` through `recordLearningSpend`.
  */
 import type { Sql, TransactionSql } from 'postgres';
+import { costFromTokens, priceFor } from '@papercusp/model-pricing';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import type { GovernorRefusal, GovernorVerdict } from '../learning-governor/core';
@@ -17,6 +18,7 @@ import {
 import { resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
 import { beginDreamRunCall, getDreamRun } from './dream-run-store';
 import { dreamCapabilityRun, type DreamRunCall } from './dream-run-provenance';
+import { isCodexModel } from '../llm-testing/codex-model-pricing';
 
 export const DREAM_LOOP_ID_PREFIX = 'dream:';
 export const DREAM_ROLLING_WINDOW_MS = 24 * 60 * 60_000;
@@ -92,14 +94,39 @@ export type DreamGovernorPreflight =
       rollingLoopCount: number;
     };
 
-/** Windowed sum across every dream registrant in the workspace. */
+/** The old Codex client erased tiered request prices as settled zero. Cache
+ * counts were not retained, so charge the greater all-cached/uncached estimate
+ * as an uncertainty bound; the original receipt is never rewritten. */
+function legacyTieredZeroCostBound(outcome: Record<string, unknown> | null): number {
+  let total = 0;
+  for (const call of dreamCapabilityRun({ outcome })?.calls ?? []) {
+    const usage = call.usage;
+    if (call.status !== 'settled' || !usage || usage.costUsd !== 0
+      || !isCodexModel(call.model) || !priceFor(call.model)?.longContext) continue;
+    const input = usage.inputTokens, output = usage.outputTokens;
+    const uncached = costFromTokens(call.model, {
+      requestInputTokens: input, inputTokens: input, outputTokens: output,
+    });
+    const cached = costFromTokens(call.model, {
+      requestInputTokens: input, inputTokens: 0, cacheReadTokens: input, outputTokens: output,
+    });
+    if (!uncached.priced || !cached.priced || !Number.isFinite(uncached.usd) || !Number.isFinite(cached.usd))
+      throw new Error('Cannot bound legacy Dream usage; retain the budget hold');
+    total += Math.max(uncached.usd, cached.usd);
+  }
+  return total;
+}
+
+/** Windowed accounted spend, including unresolved legacy estimates, across
+ * every dream registrant in the workspace. It is not an invoice total. */
 export async function sumDreamSpendSince(
   sql: Sql,
   input: { workspaceId: string; sinceMs: number },
 ): Promise<{ totalUsd: number; loopCount: number }> {
-  const rows = await sql<Array<{ total: number; loops: number }>>`
+  const rows = await sql<Array<{ total: number; loops: number; loop_ids: string[] | null }>>`
     SELECT COALESCE(SUM(cost_usd), 0)::float8 AS total,
-           COUNT(DISTINCT loop_id)::int AS loops FROM (
+           COUNT(DISTINCT loop_id)::int AS loops,
+           ARRAY_AGG(DISTINCT loop_id) AS loop_ids FROM (
       SELECT cost_usd, loop_id FROM harness_shared.learning_spend_events
        WHERE workspace_id = ${input.workspaceId}
          AND loop_id LIKE ${DREAM_LOOP_ID_PREFIX + '%'}
@@ -110,7 +137,21 @@ export async function sumDreamSpendSince(
        WHERE workspace_id = ${input.workspaceId} AND spend_recorded_at IS NULL
          AND (status = 'running' OR completed_at >= ${new Date(input.sinceMs)})
     ) committed`;
-  return { totalUsd: Number(rows[0]?.total ?? 0), loopCount: Number(rows[0]?.loops ?? 0) };
+  const legacy = await sql<Array<{ pot_slug: string; outcome: Record<string, unknown> | null }>>`
+    SELECT pot_slug, outcome FROM harness_shared.dream_runs
+     WHERE workspace_id = ${input.workspaceId} AND outcome IS NOT NULL
+       AND (status = 'running' OR completed_at >= ${new Date(input.sinceMs)})`;
+  let bound = 0;
+  const loops = new Set(rows[0]?.loop_ids ?? []);
+  for (const row of legacy) {
+    const extra = legacyTieredZeroCostBound(row.outcome);
+    bound += extra;
+    if (extra > 0) loops.add(dreamLoopId(row.pot_slug));
+  }
+  return {
+    totalUsd: Number(rows[0]?.total ?? 0) + bound,
+    loopCount: rows[0]?.loop_ids === undefined ? Number(rows[0]?.loops ?? 0) : loops.size,
+  };
 }
 
 /** Register/refresh the bounded default, then apply governor + rolling-window gates. */

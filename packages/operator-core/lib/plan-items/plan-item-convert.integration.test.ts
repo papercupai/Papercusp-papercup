@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL } from '../../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -155,7 +155,7 @@ beforeAll(async () => {
   // (WI-10004700).
   await applyEventSubstrateMigrationsForTest(db.sql, { label: 'plan-item-convert.integration.test.ts' });
   await db.sql.unsafe(HFC_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // convert→claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
   await db.sql.unsafe(readMigration('140-plan-item-assignments.sql')).simple();
   await db.sql.unsafe(readMigration('141-plan-item-claims.sql')).simple();
@@ -355,6 +355,7 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
       harness: HARNESS,
       parkedBy: 'sess-A',
       parkedReason: 'DO NOT RESUME — waiting for an explicit owner decision',
+      releaseContract: { condition: 'owner decision arrives', owner: 'sess-A', trigger: 'work-item:unblocked:WI-held', reachability: 'blocked', evidence: 'fixture decision pending' },
     });
     expect(parked).toMatchObject({ id: first.workItem.id, hold: true, applicable: true });
 
@@ -384,6 +385,7 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
       harness: HARNESS,
       parkedBy: 'sess-A',
       parkedReason: 'waiting for an explicit owner decision',
+      releaseContract: { condition: 'owner decision arrives', owner: 'sess-A', trigger: 'work-item:unblocked:WI-held', reachability: 'blocked', evidence: 'fixture decision pending' },
     });
     expect(parked).toMatchObject({ id: first.workItem.id, hold: true, applicable: true });
 

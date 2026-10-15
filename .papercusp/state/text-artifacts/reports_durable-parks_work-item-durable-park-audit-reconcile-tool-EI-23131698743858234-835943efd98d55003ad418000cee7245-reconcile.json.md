@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-23131698743858234-835943efd98d55003ad418000cee7245-reconcile.json"
+updated_at: 1791670958785
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-23131698743858234:835943efd98d55003ad418000cee7245",
+  "inputSha256": "835943efd98d55003ad418000cee7245ae05ca69979248d772e09d101d8611e6",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:22:38.785Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-23131698743858234",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "dd6cd91bf19bb404f15c4ce3e23c7c25d4e26beb1afc26cb1a488c31f82cfe02",
+      "observedParkFingerprint": "dd6cd91bf19bb404f15c4ce3e23c7c25d4e26beb1afc26cb1a488c31f82cfe02",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:WI-10000288 (condition: 'Default operator deployment has advanced past e66be3c4ff and testing:run accepts harness plus recheckReason.'). Re-read 2026-10-10T22:22Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): WI-10000288 status=done, taken_by none; EI-23131698743858234 status=open, taken_by null. Condition clause beyond the trigger, verified: the deployed :3070 /api/health sha is d740fc3802; git merge-base --is-ancestor e66be3c4ff d740fc3802 returns true (the default deployment has advanced past e66be3c4ff). git show d740fc3802:packages/operator-core/lib/agent-tools/testing/run.ts declares both `harness: harnessArg` (line 3373) and `recheckReason: z` (line 3307), so the deployed testing:run accepts harness plus recheckReason. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-23131698743858234-835943efd98d55003ad418000cee7245-reconcile.json"
+}

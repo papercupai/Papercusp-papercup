@@ -1,0 +1,832 @@
+{
+  "kind": "bm25-hybrid-recall-diagnostic-replay",
+  "plan": "bm25-lexical-search-evoke-adoption-2026-10-10",
+  "startedAt": "2026-10-11T21:40:19.504Z",
+  "generatedAt": "2026-10-11T21:40:25.561Z",
+  "replayFrom": "docs/evidence/bm25-hybrid-recall-2026-10-11-r18-d032-b.json",
+  "replayIndices": [
+    47,
+    24,
+    54,
+    31
+  ],
+  "replayReps": 3,
+  "sampleFingerprint": "087fe0e1a03d2b49dc1e37977db56233a5f577f08850ba01d6600e83c7504433",
+  "embeddingsPrecomputed": true,
+  "judged": false,
+  "rows": [
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 55.8,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 37,
+          "semantic:embeddings": 10
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 85.9,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 67,
+          "semantic:embeddings": 12
+        },
+        "attrib": {
+          "pgExecMs": 29.3,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 2,
+          "clientCpuMs": 13.4,
+          "loopDelayMaxMs": 11.1,
+          "psiIoAvg10": 6.24,
+          "schedBeforeSkewMs": 0.4,
+          "schedAfterSkewMs": 1.6,
+          "diagnosticSetupMs": 0.7,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 3,
+          "pgCpuMs": 25.6,
+          "pgRunqMs": 0.1,
+          "clientRunqMs": 3.8,
+          "pgBackendsUnseen": 2,
+          "pgBackendsLateBaselined": 2,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 2,
+            "byEvent": {
+              "Client:ClientRead": 1,
+              "CPU": 1
+            },
+            "maxPollGapMs": 49.8
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 32.47950100000162,
+          "waitEndGapMs": 0.5550050000019837
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 48.8,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 19,
+          "semantic:embeddings": 25
+        },
+        "attrib": {
+          "pgExecMs": 7.8,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 3,
+          "clientCpuMs": 13.2,
+          "loopDelayMaxMs": 10.5,
+          "psiIoAvg10": 6.24,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.3,
+          "diagnosticSetupMs": 0.1,
+          "diagnosticCleanupMs": 1.9,
+          "pgPidsMeasured": 1,
+          "pgCpuMs": 3.4,
+          "pgRunqMs": 18.2,
+          "clientRunqMs": 0.8,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 1,
+            "activeSamples": 1,
+            "byEvent": {
+              "Client:ClientRead": 1
+            },
+            "maxPollGapMs": null
+          },
+          "waitPollsExcluded": 2,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 23.123209000001225,
+          "waitEndGapMs": 21.987568000000465
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 31.3,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 18,
+          "semantic:embeddings": 8
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 131.4,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 119,
+          "semantic:embeddings": 6
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 124.9,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 110,
+          "semantic:embeddings": 7
+        },
+        "attrib": {
+          "pgExecMs": 100.1,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 3,
+          "clientCpuMs": 23.1,
+          "loopDelayMaxMs": 10.6,
+          "psiIoAvg10": 6.24,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "diagnosticSetupMs": 0,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 85.5,
+          "pgRunqMs": 1.6,
+          "clientRunqMs": 3.3,
+          "pgBackendsUnseen": 2,
+          "pgBackendsLateBaselined": 2,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 5,
+            "activeSamples": 5,
+            "byEvent": {
+              "CPU": 5
+            },
+            "maxPollGapMs": 27.4
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 23.536710000000312,
+          "waitEndGapMs": 0.3733929999980319
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 61.6,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 37,
+          "semantic:embeddings": 8
+        },
+        "attrib": {
+          "pgExecMs": 21.6,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 3,
+          "clientCpuMs": 11.2,
+          "loopDelayMaxMs": 11.1,
+          "psiIoAvg10": 6.24,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.3,
+          "diagnosticSetupMs": 0.1,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 3,
+          "pgCpuMs": 18.7,
+          "pgRunqMs": 3.7,
+          "clientRunqMs": 3.9,
+          "pgBackendsUnseen": 2,
+          "pgBackendsLateBaselined": 2,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 2,
+            "byEvent": {
+              "CPU": 2
+            },
+            "maxPollGapMs": 24.9
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 23.22150899999906,
+          "waitEndGapMs": 4.8975959999988845
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 0,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 48.2,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 35,
+          "semantic:embeddings": 6
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 43.8,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 30,
+          "semantic:embeddings": 6
+        },
+        "attrib": {
+          "pgExecMs": 23.6,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 2,
+          "clientCpuMs": 8.3,
+          "loopDelayMaxMs": 10.4,
+          "psiIoAvg10": 6.74,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "diagnosticSetupMs": 0,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 1,
+          "pgCpuMs": 0,
+          "pgRunqMs": 0,
+          "clientRunqMs": 0.4,
+          "pgBackendsUnseen": 0,
+          "pgBackendsLateBaselined": 0,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 1,
+            "activeSamples": 0,
+            "byEvent": {},
+            "maxPollGapMs": null
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 22.581920000000537,
+          "waitEndGapMs": 18.830853999999817
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 45.8,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 31,
+          "semantic:embeddings": 7
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 26.1,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 16,
+          "semantic:embeddings": 7
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 25.7,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 15,
+          "semantic:embeddings": 8
+        },
+        "attrib": {
+          "pgExecMs": 6.9,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 3,
+          "clientCpuMs": 15,
+          "loopDelayMaxMs": 10.8,
+          "psiIoAvg10": 6.74,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.1,
+          "diagnosticSetupMs": 0.1,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 0,
+          "clientRunqMs": 0,
+          "pgBackendsUnseen": 0,
+          "pgBackendsLateBaselined": 0,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 1,
+            "activeSamples": 1,
+            "byEvent": {
+              "CPU": 1
+            },
+            "maxPollGapMs": null
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 21.326307000003,
+          "waitEndGapMs": 0.7929160000021511
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 204.5,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 189,
+          "semantic:embeddings": 9
+        },
+        "attrib": {
+          "pgExecMs": 148.6,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 6,
+          "clientCpuMs": 19.2,
+          "loopDelayMaxMs": 15.8,
+          "psiIoAvg10": 6.74,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "diagnosticSetupMs": 0.1,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 2,
+          "pgCpuMs": 122.5,
+          "pgRunqMs": 17.6,
+          "clientRunqMs": 22.2,
+          "pgBackendsUnseen": 2,
+          "pgBackendsLateBaselined": 2,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 7,
+            "activeSamples": 7,
+            "byEvent": {
+              "CPU": 7
+            },
+            "maxPollGapMs": 35.8
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 27.065514000001713,
+          "waitEndGapMs": 3.9582769999979064
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 174.1,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 145,
+          "semantic:embeddings": 16
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 97.4,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 65,
+          "semantic:embeddings": 23
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 1,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 75.6,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 53,
+          "semantic:embeddings": 10
+        },
+        "attrib": {
+          "pgExecMs": 29.7,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 3,
+          "clientCpuMs": 14,
+          "loopDelayMaxMs": 10.7,
+          "psiIoAvg10": 6.74,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.4,
+          "diagnosticSetupMs": 0,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 1,
+          "pgCpuMs": 16.3,
+          "pgRunqMs": 0,
+          "clientRunqMs": 6,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 1,
+            "byEvent": {
+              "CPU": 1
+            },
+            "maxPollGapMs": 23.1
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 28.052214999999705,
+          "waitEndGapMs": 19.408072999998694
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 57.4,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 38,
+          "semantic:embeddings": 10
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 47,
+      "targetId": "WI-10006023",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 55.4,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 38,
+          "semantic:embeddings": 8
+        },
+        "attrib": {
+          "pgExecMs": 27.7,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 2,
+          "clientCpuMs": 16.1,
+          "loopDelayMaxMs": 10.6,
+          "psiIoAvg10": 6.74,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 2.6,
+          "diagnosticSetupMs": 0.1,
+          "diagnosticCleanupMs": 0.1,
+          "pgPidsMeasured": 1,
+          "pgCpuMs": 19.9,
+          "pgRunqMs": 1.7,
+          "clientRunqMs": 4.8,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 1,
+            "activeSamples": 1,
+            "byEvent": {
+              "CPU": 1
+            },
+            "maxPollGapMs": null
+          },
+          "waitPollsExcluded": 2,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 24.069140999999945,
+          "waitEndGapMs": 25.53663300000335
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": true,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 31.1,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 21,
+          "semantic:embeddings": 6
+        },
+        "attrib": {
+          "pgExecMs": 569.6,
+          "pgReadMs": 306.8,
+          "pgBlksRead": 560,
+          "pgCalls": 4,
+          "clientCpuMs": 11,
+          "loopDelayMaxMs": 10.1,
+          "psiIoAvg10": 6.74,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "diagnosticSetupMs": 0,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 1,
+          "pgCpuMs": 2.1,
+          "pgRunqMs": 0,
+          "clientRunqMs": 1.8,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 1,
+            "activeSamples": 1,
+            "byEvent": {
+              "Client:ClientRead": 1
+            },
+            "maxPollGapMs": null
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 25.405649000000267,
+          "waitEndGapMs": 2.0615129999969213
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 24,
+      "targetId": "EI-21096375006041139",
+      "attributed": false,
+      "observation": {
+        "rank": 1,
+        "latencyMs": 27.3,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 19,
+          "semantic:embeddings": 6
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 163.7,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 145,
+          "semantic:embeddings": 10
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 54,
+      "targetId": "EI-23561679802180871",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 186.7,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 169,
+          "semantic:embeddings": 8
+        },
+        "attrib": {
+          "pgExecMs": 139.5,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 4,
+          "clientCpuMs": 14.4,
+          "loopDelayMaxMs": 11,
+          "psiIoAvg10": 6.61,
+          "schedBeforeSkewMs": 0.1,
+          "schedAfterSkewMs": 0.2,
+          "diagnosticSetupMs": 0,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 3,
+          "pgCpuMs": 141.4,
+          "pgRunqMs": 9.8,
+          "clientRunqMs": 15,
+          "pgBackendsUnseen": 2,
+          "pgBackendsLateBaselined": 2,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 7,
+            "activeSamples": 7,
+            "byEvent": {
+              "CPU": 7
+            },
+            "maxPollGapMs": 25.3
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 30.28479999999763,
+          "waitEndGapMs": 6.80600300000151
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": true,
+      "observation": {
+        "rank": null,
+        "latencyMs": 54.6,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 42,
+          "semantic:embeddings": 8
+        },
+        "attrib": {
+          "pgExecMs": 26.9,
+          "pgReadMs": 0,
+          "pgBlksRead": 0,
+          "pgCalls": 3,
+          "clientCpuMs": 13.1,
+          "loopDelayMaxMs": 10.6,
+          "psiIoAvg10": 6.61,
+          "schedBeforeSkewMs": 0.2,
+          "schedAfterSkewMs": 0.2,
+          "diagnosticSetupMs": 0.1,
+          "diagnosticCleanupMs": 0,
+          "pgPidsMeasured": 3,
+          "pgCpuMs": 27.7,
+          "pgRunqMs": 1.7,
+          "clientRunqMs": 1.2,
+          "pgBackendsUnseen": 1,
+          "pgBackendsLateBaselined": 1,
+          "pgPidsImplausible": 0,
+          "waits": {
+            "polls": 2,
+            "activeSamples": 1,
+            "byEvent": {
+              "CPU": 1
+            },
+            "maxPollGapMs": 22.9
+          },
+          "waitPollsExcluded": 1,
+          "waitSamplerFailed": false,
+          "waitStartGapMs": 23.586535999998887,
+          "waitEndGapMs": 3.858884000001126
+        },
+        "dumpActive": false
+      }
+    },
+    {
+      "rep": 2,
+      "source": "work_item",
+      "index": 31,
+      "targetId": "EI-22475723091349445",
+      "attributed": false,
+      "observation": {
+        "rank": null,
+        "latencyMs": 53.4,
+        "engine": "bm25",
+        "hits": 10,
+        "legMs": {
+          "lexical:lexical": 39,
+          "semantic:embeddings": 8
+        },
+        "dumpActive": false
+      }
+    }
+  ]
+}

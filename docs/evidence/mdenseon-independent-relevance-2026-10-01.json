@@ -1,0 +1,4260 @@
+{
+  "memoryExpansionAdmissionPreparation": {
+    "status": "model-free source, donor ancestry and unchanged-prose prompt audit completed; provider admission remains a separate live prerequisite",
+    "workItem": "WI-10004537",
+    "assessment": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/memory-expansion-admission-v2.json",
+      "sha256": "498ccf1bfef91e6e42a3cf1af6a00ae4675a7d7a5133f9332725c0e46c00d88e",
+      "bytes": 30610
+    },
+    "executionBinding": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/memory-expansion-admission-binding-v1.json",
+      "sha256": "5fdaffe854e6ddddd0cf06019f53eec2c7e01de93b446e7f26ef9701c33c7965",
+      "bytes": 2476
+    },
+    "preparationTask": "0murvotdt1kfebbbmus",
+    "preparationExitCode": 0,
+    "preparationFinishedAt": "2026-10-03T04:14:57.038Z",
+    "retainedReferenceChecks": 1818,
+    "oldMemoryAuthorsExact": 283,
+    "oldProseAuthorsExact": 143,
+    "unchangedProseJudgeCallsExact": 162,
+    "missingMemoryAuthors": 123,
+    "requiredFreshMemoryJudgeCalls": 520,
+    "expandedMemoryQuestionSchedule": 1624,
+    "oldMemoryJudgesReusable": false,
+    "gatewayFlagEnabled": true,
+    "actualTransportLoopback": true,
+    "actualRouteAccountUnpinned": true,
+    "collectorStarted": false,
+    "newIndependentLabelsPresent": false,
+    "modelRequests": 0,
+    "embeddingRequests": 0,
+    "historical429CauseProven": false,
+    "failedPredecessor": {
+      "task": "0murvldbgxw8hamf6uo",
+      "exitCode": 1,
+      "finishedAt": "2026-10-03T04:12:14.832Z",
+      "cause": "Preparation classified absolute historical source paths but missed relative source paths. It refused old judged.ts bytes against the current approved source before generation. The new preparation resolves paths before classifying them; historical pins remain immutable and current source is verified separately."
+    },
+    "poolSnapshot": {
+      "observedAt": "2026-10-03T04:06:54.763Z",
+      "source": "accounts:status and dev:rate_governor_status",
+      "claudeServiceable": 0,
+      "claudeRegistered": 9,
+      "scope": "This is a bounded fresh-reading snapshot, not a permanent capacity conclusion. Seven accounts reported exhausted weekly windows; two reported exhausted short windows despite weekly headroom. No account policy or frozen judge model was changed. Re-read actual provider admission before launching."
+    },
+    "p003Complete": false,
+    "adoptionAuthorized": false,
+    "scope": "This preparation reuses the maintained collector's target selection and parser, verifies completed raw ancestry and every unchanged prose prompt, and derives the missing memory-only schedule. No old collector, label writer, embedding matrix or source-preparation task was replayed. The execution binding distinguishes the pinned base script digest from the deterministically transformed executed program."
+  },
+  "expandedVectorPreparation": {
+    "status": "canonical additive-vector guards and frozen-runtime document alignment verified; expanded labels and inference still absent",
+    "workItem": "WI-10004537",
+    "seedDomainDefect": "EI-24928001483229549",
+    "reuse": "Extended the existing retained relevance receipt and shared merge validation. Explicit reuseSnapshotExpansion preserves old source bytes, metadata, relative order, partition and census time; population seeds compare with population seeds, while measurement seeds compare separately. Only missing documents or exact new query identities are embedded. Default whole-snapshot refusal remains unchanged.",
+    "canonicalGuardTests": {
+      "runs": [
+        20622430,
+        20622431
+      ],
+      "passed": 179,
+      "failed": 0,
+      "skipped": 0
+    },
+    "seedCounterexample": {
+      "testRunId": 20622429,
+      "failedBeforeFix": 1,
+      "distinction": "The real frozen population seed and measurement-order seed differ while each remains unchanged. The old cross-domain equality refuses; separate same-domain comparisons pass."
+    },
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "4895cedd75665c6c1f1d27af15a1686f47b2ae42c63f4f40817abf46ec60e5c3",
+        "bytes": 68914
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "sha256": "2324dd54a88554a00e6baeab5601524b080dfaa9c3b1e7d7784aed9a80097ec4",
+        "bytes": 59644
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+        "sha256": "f80e39208facc1a757656bc866679f9651c9fbfadaa130f839cf452b55298028",
+        "bytes": 51668
+      }
+    ],
+    "scopedCompiler": {
+      "task": "0muruntz01yg5rk3zay",
+      "exitCode": 0,
+      "namedFiles": 3,
+      "checkedFilesIncludingDirectTypeReferences": 15,
+      "errors": 0,
+      "scope": "Shared compiler's named-file/importer check, not a project-wide typecheck."
+    },
+    "canonicalCliStartup": {
+      "task": "0muru50agktgetsm3dg",
+      "exitCode": 0,
+      "scope": "Actual three-file framework run passed 151 then-current manifest tests, 27 candidate tests and one CLI startup integration test with zero skips. The router marked Git-HEAD provenance unknown as background sync advanced during the run; this is not full frozen-source acceptance. Later 152-test manifest run 20622430 qualifies the corrected seed-domain source separately."
+    },
+    "sourceOverlay": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v5/source-overlay-receipt.json",
+      "sha256": "6e959e075668221f2bf23d91b40d56f5260cf4ca5175541d887fcb8d6cfb4bb2",
+      "bytes": 1514973
+    },
+    "runtimeQualification": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v5/runtime-module-qualification.json",
+      "sha256": "20063921dad8d22d5c8048fb9112dc985b1b6d8c11c9499a5a97c0c29fee4f42",
+      "bytes": 9120
+    },
+    "qualificationTask": "0murumwndhqfyf11nro",
+    "qualificationExitCode": 0,
+    "qualificationFinishedAt": "2026-10-03T03:45:30.178Z",
+    "actualRuntime": "Same retained Node, CPU fp32 four intra-op/one inter-op threads, unchanged three measured arms and old worker 754f42bb. Two source leaves over 3,136 links; no full runtime copy or original-tree write.",
+    "sharedManifestIdentities": 1,
+    "distinctVectorInputs": 6,
+    "exactV8DocumentVectorsChecked": 3081,
+    "exactV8QueryVectorsChecked": 684,
+    "missingExpandedMemoryDocumentsAcrossThreeArms": 369,
+    "wrongCellVectorBindingRefused": true,
+    "alteredSourceAlignmentRefused": true,
+    "modelCalls": 0,
+    "workerStarted": false,
+    "sourceAndDocumentAlignmentQualification": true,
+    "fullExpandedCellInputQualification": false,
+    "newIndependentLabelsPresent": false,
+    "expandedSnapshotInferencePerformed": false,
+    "fullTimingsReusable": false,
+    "fullAccessibleCensusExhausted": false,
+    "p003Complete": false,
+    "adoptionAuthorized": false,
+    "preservedAttempts": "Failed v3 qualifier rejected the incorrect cross-seed comparison before inference. The v4 source tree has no source receipt after a data-URL filesystem-identity failure, so it is unqualified. Both remain immutable; v5 binds a filesystem source identity before materialization and applies the corrected seed guard. No paid or embedding work was repeated.",
+    "scope": "The actual old-runtime full guard loads the six already accepted V8 populations; the same maintained document-map guard aligns the larger source-selected snapshot while preserving every old vector. This pre-label qualification does NOT rebind old proof to a larger snapshot or invent new labels. Genuine memory-expansion collection, complete ancestry/consensus audit and independent labels remain prerequisites for expanded full-cell scoring."
+  },
+  "snapshotExpansionPreparation": {
+    "status": "guarded additive recovery and source selection verified; collection and expanded vector qualification not performed",
+    "workItem": "WI-10004537",
+    "reuse": "Extended the existing collector and CLI, not a parallel collection system. Explicit --reuse-snapshot-expansion requires exact-call recovery and the same owner, complete contract and target budget. Old source bytes, metadata, order, partitions, seed and frozen census time must survive unchanged. Author prompts must match exactly; judge reuse additionally requires an unchanged corpus and chosen target schedule.",
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "dcfe1691b349040cc7e792cdb9df873794831938be062d8b2e56e67316872922",
+        "bytes": 52825
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+        "sha256": "95cab5a33d14d71540d29284bd4b77641ef7bc15e57ac689cbc4ab35eb8fd0e3",
+        "bytes": 60212
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+        "sha256": "d79392ef141785ec92c6647fdda39b44ecb82fd7d572c220b0674b9b82b132c0",
+        "bytes": 3663
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts",
+        "sha256": "48d7cc3960785b8af7c92c4e2e0a17a053f378f357184362c7cf18c0f4568548",
+        "bytes": 4004
+      }
+    ],
+    "verification": {
+      "before": {
+        "testRunId": 20611990,
+        "failed": 1,
+        "reason": "The previous collector refused the expanded snapshot before a new call."
+      },
+      "finalSourceGuardRuns": [
+        20615570,
+        20615571
+      ],
+      "finalSourceGuardPassed": 85,
+      "finalSourceGuardFailed": 0,
+      "finalSourceGuardSkipped": 0,
+      "adjacentCandidateAndManifestRuns": [
+        20614797,
+        20614796
+      ],
+      "adjacentCandidateAndManifestPassed": 164,
+      "scopedCompilerTask": "0murt6bmtgpsqul1xgf",
+      "scopedCompilerExitCode": 0,
+      "scopedCompilerFiles": 4,
+      "scopedCompilerErrors": 0,
+      "scope": "Canonical fake-transport tests cover unchanged-corpus reuse, two expansion steps and reference ancestry, changed author prompts, source/metadata/removal/order/seed/date/owner/contract/budget refusals, donor fingerprints and CLI forwarding. No real model calls are used by these tests. Compiler evidence is four-file scoped, not a universal project claim."
+    },
+    "preparation": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/memory-source-expansion-preparation-v1.json",
+      "sha256": "1ac45afb00cccd410fe39f52cb1b2abf61301dc5ab0553b39999b79e65a06ddc",
+      "bytes": 3473
+    },
+    "snapshot": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/snapshot-v3-memory-source-complete.json",
+      "sha256": "39c0118291f881b07c3be9bcae80d4daf28802d9ef9cb6ac3fad1a799a630d11",
+      "bytes": 1704254
+    },
+    "preparationTask": "0murt4ukq16tihgf1sr",
+    "preparationExitCode": 0,
+    "preparationFinishedAt": "2026-10-03T03:03:56.168Z",
+    "memoryDocuments": 635,
+    "memorySources": 406,
+    "addedMemorySources": 123,
+    "addedCalibrationSources": 29,
+    "addedHeldoutSources": 94,
+    "oldMemoryAuthorSourcePromptsPreserved": 283,
+    "proseDocumentsUnchanged": 515,
+    "proseAuthorSourcePromptsPreserved": 143,
+    "allEligibleMemorySourceRepresentativesSelected": true,
+    "allEligibleMemoryRowsSelected": false,
+    "memorySourceAuthorshipCompleted": false,
+    "newIndependentLabelsFrozen": false,
+    "changedMemoryJudgesReusable": false,
+    "unchangedProseCallsRequireExactPromptAndPinnedAncestry": true,
+    "modelRequests": 0,
+    "embeddingRequests": 0,
+    "liveDatabaseReads": 0,
+    "expandedVectorReuseQualified": false,
+    "fullTimingsReusable": false,
+    "fullAccessibleCensusExhausted": false,
+    "p003Complete": false,
+    "adoptionAuthorized": false,
+    "scope": "The retained census supplies one deterministic row for each formerly absent memory source. Every old memory row and source-author prompt is preserved and prose is unchanged. Selecting all 406 eligible memory source representatives is NOT authorship, independent label acceptance, full-row coverage, power resolution or full census exhaustion. The 1,972 prose sources outside the old snapshot remain outside this preparation."
+  },
+  "formatVersion": 1,
+  "workItem": "WI-10004537",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "status": "v21-census-exhausted-stop-rule-satisfied",
+  "p003Complete": true,
+  "serializedMeasurementLaunch": {
+    "runId": "independent-relevance-v5",
+    "status": "completed exit 0 after verified controlled V7; six raw/vector receipts and paired analysis verified",
+    "manifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+    "launchRecipe": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/launch-relevance-v5-after-v7.sh",
+    "prerequisite": "verifyCompletedPerformanceRun for complete controlled performance-cpu-v7, with all fifteen raw receipt fingerprints and rederived summary",
+    "decision": "mdenseon-adoption-measurements-2026-10-01#D-004",
+    "originalLabelsModelsAndRuntimeUnchanged": true,
+    "partialV4Preserved": true,
+    "acceptanceComplete": false
+  },
+  "serializedMeasurementOutcome": {
+    "status": "completed; six raw/vector cells and rederived paired analysis verified",
+    "taskId": "0muqglgxk1aw5s6h0dv",
+    "completedAt": "2026-10-02T04:48:49.507Z",
+    "manifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+    "driver": {
+      "sha256": "210f9921805fd4307ac2a446231fb047ff54dd4d6e5c8fecd48861e0f4c5347e",
+      "bytes": 4717
+    },
+    "completion": {
+      "sha256": "ce398ac43834a7196a941b259660fb5ac8abdf10e95df1bbad13df435ab65345",
+      "bytes": 4674
+    },
+    "analysis": {
+      "sha256": "f5b36fbd3e57a8f39d5168451322d3dfa3360631b1c741bbb4d3283dd811fb1c",
+      "bytes": 55467
+    },
+    "primaryUnit": "source-target-component",
+    "decisionMargin": 0.03,
+    "calibrationExcluded": true,
+    "cells": [
+      {
+        "cellId": "relevance-memory-mdenseon",
+        "raw": {
+          "sha256": "a425bab4a56f67157e4f34caf478fb65c207d1e55d31fb506f63dd9593a4a784",
+          "bytes": 81111
+        },
+        "vectors": {
+          "sha256": "91ac410ddfde4e1bae1e44911b89aa54fa164c7bbe8abb2830aeac77072c7e01",
+          "bytes": 9440034
+        },
+        "heldoutQueries": 32,
+        "answerableMetrics": {
+          "n": 24,
+          "recall_at_1": 0.875,
+          "recall_at_3": 0.875,
+          "recall_at_5": 0.9167,
+          "mrr_at_10": 0.8833
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.5335,
+          "hardNegTop1Mean": 0.4963,
+          "margin": 0.0372
+        }
+      },
+      {
+        "cellId": "relevance-memory-gemma",
+        "raw": {
+          "sha256": "1a9350b2a9ecf243ff30e08eae369c763a147878c5cebfa5456f2a2d0c580a2f",
+          "bytes": 80843
+        },
+        "vectors": {
+          "sha256": "fd5f0162cdb2bd1653352e607d3b93fe7e743010813c7779b12558361ec0eb4a",
+          "bytes": 9517258
+        },
+        "heldoutQueries": 32,
+        "answerableMetrics": {
+          "n": 24,
+          "recall_at_1": 0.875,
+          "recall_at_3": 0.9167,
+          "recall_at_5": 1,
+          "mrr_at_10": 0.9125
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.731,
+          "hardNegTop1Mean": 0.682,
+          "margin": 0.049
+        }
+      },
+      {
+        "cellId": "relevance-memory-harrier",
+        "raw": {
+          "sha256": "2f2314fc2b69c2f8fa17800d36a9b4571dc99b93f94247a54540fb97feb9a7cd",
+          "bytes": 80851
+        },
+        "vectors": {
+          "sha256": "dca673700dcfd5cbd44a85155abea98096cab19cb617b473db40b68fbe6309a3",
+          "bytes": 12619789
+        },
+        "heldoutQueries": 32,
+        "answerableMetrics": {
+          "n": 24,
+          "recall_at_1": 0.8333,
+          "recall_at_3": 0.875,
+          "recall_at_5": 0.875,
+          "mrr_at_10": 0.8542
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.6542,
+          "hardNegTop1Mean": 0.6374,
+          "margin": 0.0168
+        }
+      },
+      {
+        "cellId": "relevance-prose-mdenseon",
+        "raw": {
+          "sha256": "d89a4409aaa07b0bfa5b0f04967f2d37a42aee8b9b91338f7e6c7f42778b4bfe",
+          "bytes": 100509
+        },
+        "vectors": {
+          "sha256": "00848854bc9284fc727f3478af091f2befe483e49cab50dff88c4beea137929f",
+          "bytes": 9058889
+        },
+        "heldoutQueries": 8,
+        "answerableMetrics": {
+          "n": 6,
+          "recall_at_1": 1,
+          "recall_at_3": 1,
+          "recall_at_5": 1,
+          "mrr_at_10": 1
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.5185,
+          "hardNegTop1Mean": 0.4884,
+          "margin": 0.0301
+        }
+      },
+      {
+        "cellId": "relevance-prose-gemma",
+        "raw": {
+          "sha256": "2845e9bd6d04aa805969246a5d026eb8939163e9946e5596e50e2b8f43dda88d",
+          "bytes": 100235
+        },
+        "vectors": {
+          "sha256": "e3aa38663a36698a5ce9a2c7a2395ed730209d41f32287479719acdded8cee95",
+          "bytes": 9123350
+        },
+        "heldoutQueries": 8,
+        "answerableMetrics": {
+          "n": 6,
+          "recall_at_1": 1,
+          "recall_at_3": 1,
+          "recall_at_5": 1,
+          "mrr_at_10": 1
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.7228,
+          "hardNegTop1Mean": 0.6898,
+          "margin": 0.033
+        }
+      },
+      {
+        "cellId": "relevance-prose-harrier",
+        "raw": {
+          "sha256": "b197aeab9804a97e0b245b351890aeeeeb3ec4a59faf6dbebf8c9e05203ab1b1",
+          "bytes": 100248
+        },
+        "vectors": {
+          "sha256": "c49861adb2b32b196ceea1c491c4b7d7a8e34f8f2903e030ff83a3ff21530e9d",
+          "bytes": 12101014
+        },
+        "heldoutQueries": 8,
+        "answerableMetrics": {
+          "n": 6,
+          "recall_at_1": 1,
+          "recall_at_3": 1,
+          "recall_at_5": 1,
+          "mrr_at_10": 1
+        },
+        "rejection": {
+          "answerableTop1Mean": 0.65,
+          "hardNegTop1Mean": 0.6053,
+          "margin": 0.0447
+        }
+      }
+    ],
+    "comparisons": [
+      {
+        "corpus": "memory",
+        "baseline": "gemma",
+        "byClass": {
+          "lexical-gap": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "exact-identifier": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": -0.1875,
+              "lower": -0.4375,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "session-start-intent": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0.09999999999999998,
+              "lower": 0,
+              "upper": 0.30000000000000004,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sourceTargets": 8,
+            "queryCount": 24,
+            "delta": {
+              "point": -0.029166666666666563,
+              "lower": -0.14583333333333337,
+              "upper": 0.07916666666666664,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      },
+      {
+        "corpus": "memory",
+        "baseline": "harrier",
+        "byClass": {
+          "lexical-gap": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0.08750000000000002,
+              "lower": 0,
+              "upper": 0.2125,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "exact-identifier": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "session-start-intent": {
+            "sourceTargets": 8,
+            "queryCount": 8,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "ALL_ANSWERABLE": {
+            "sourceTargets": 8,
+            "queryCount": 24,
+            "delta": {
+              "point": 0.029166666666666674,
+              "lower": 0,
+              "upper": 0.07083333333333333,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "gemma",
+        "byClass": {
+          "lexical-gap": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "exact-identifier": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "session-start-intent": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "ALL_ANSWERABLE": {
+            "sourceTargets": 2,
+            "queryCount": 6,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "harrier",
+        "byClass": {
+          "lexical-gap": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "exact-identifier": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "session-start-intent": {
+            "sourceTargets": 2,
+            "queryCount": 2,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "ALL_ANSWERABLE": {
+            "sourceTargets": 2,
+            "queryCount": 6,
+            "delta": {
+              "point": 0,
+              "lower": 0,
+              "upper": 0,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          }
+        }
+      }
+    ],
+    "allSourceClassMarginsResolved": false,
+    "fullAccessibleSourceCensusExhausted": false,
+    "p003Complete": false,
+    "modelAdoptionAuthorized": false,
+    "verificationInferencePerformed": false
+  },
+  "artifactPathConvention": "Paths beginning ~/ resolve against the executing account home; immutable hashes identify private artifacts.",
+  "measuredAt": "2026-10-01T12:31:07.990Z",
+  "sourceCommit": "f3e4afe03b4e4fcac1368b7e32bb4620045f5a5c",
+  "labelAuthority": "independent-blind-before-inference",
+  "scoringPartition": "test",
+  "calibrationExcludedFromComparisons": true,
+  "decision": {
+    "mrrMargin": 0.03,
+    "primaryUnit": "source-target-component",
+    "bootstrapSeed": 10004537,
+    "bootstrapIterations": 20000,
+    "marginResolvedAcrossPromisedPositiveClasses": false,
+    "fullAccessibleSourceCensusExhausted": true,
+    "adoptionSuperiorityEstablished": false
+  },
+  "manifest": {
+    "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v1.json",
+    "sha256": "14a7e80fbc44d257070001fd94df4a98510d387a5a175c8b77ebfa051531fd1d",
+    "bytes": 101591
+  },
+  "pairAnalysis": {
+    "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/all-three-arm-paired-v1.json",
+    "sha256": "337a5caf6238589e9d0cbf886f2924932b3474dc726b44b5fe64092657e99923",
+    "bytes": 86243
+  },
+  "sourceFiles": [
+    {
+      "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+      "sha256": "33f67014ff2695799c447066085274b1559df1ed086c510f6e95d05476f9a550",
+      "bytes": 46288
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+      "sha256": "bccaeb52cecf997605a6fc26164cf82292b6b9c0a87b0b1f3942ac7db6a240e8",
+      "bytes": 27735
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/paired-leg-report.ts",
+      "sha256": "8a7252c607bb5d042964a0c98dbaf54413ff6c99be122af66814663b527c94ac",
+      "bytes": 13389
+    }
+  ],
+  "sourceIdentity": "All three loaded evaluator/helper source hashes also match the historical sourceCommit; auto-commit movement is not substituted for loaded content.",
+  "corpora": {
+    "memory": {
+      "documents": 512,
+      "labelQueries": 36,
+      "heldoutPositiveQueries": 15,
+      "heldoutNegativeQueries": 5,
+      "calibrationQueries": 16,
+      "modelScores": {
+        "mdenseon": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 5,
+              "recall_at_1": 0.8,
+              "recall_at_3": 0.8,
+              "recall_at_5": 0.8,
+              "mrr_at_10": 0.8
+            },
+            "ALL_ANSWERABLE": {
+              "n": 15,
+              "recall_at_1": 0.9333,
+              "recall_at_3": 0.9333,
+              "recall_at_5": 0.9333,
+              "mrr_at_10": 0.9333
+            },
+            "lexical-gap": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.5327,
+            "hardNegTop1Mean": 0.4899,
+            "margin": 0.0428
+          }
+        },
+        "gemma": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "ALL_ANSWERABLE": {
+              "n": 15,
+              "recall_at_1": 0.9333,
+              "recall_at_3": 0.9333,
+              "recall_at_5": 1,
+              "mrr_at_10": 0.9467
+            },
+            "lexical-gap": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 5,
+              "recall_at_1": 0.8,
+              "recall_at_3": 0.8,
+              "recall_at_5": 1,
+              "mrr_at_10": 0.84
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.7296,
+            "hardNegTop1Mean": 0.6593,
+            "margin": 0.0703
+          }
+        },
+        "harrier": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 5,
+              "recall_at_1": 0.8,
+              "recall_at_3": 0.8,
+              "recall_at_5": 0.8,
+              "mrr_at_10": 0.8
+            },
+            "ALL_ANSWERABLE": {
+              "n": 15,
+              "recall_at_1": 0.8667,
+              "recall_at_3": 0.9333,
+              "recall_at_5": 0.9333,
+              "mrr_at_10": 0.9
+            },
+            "lexical-gap": {
+              "n": 5,
+              "recall_at_1": 0.8,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 0.9
+            },
+            "session-start-intent": {
+              "n": 5,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.6527,
+            "hardNegTop1Mean": 0.6191,
+            "margin": 0.0336
+          }
+        }
+      },
+      "comparisons": {
+        "harrier-to-mdenseon": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9,
+                "meanB": 1,
+                "delta": {
+                  "point": 0.09999999999999998,
+                  "lower": 0,
+                  "upper": 0.3,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.15,
+                "mde80": 0.25080001645031824,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "exact-identifier": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.8,
+                "meanB": 0.8,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 1,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "session-start-intent": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 5,
+              "queryCount": 15,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9,
+                "meanB": 0.9333333333333333,
+                "delta": {
+                  "point": 0.033333333333333326,
+                  "lower": 0,
+                  "upper": 0.09999999999999998,
+                  "ci": 0.95
+                },
+                "rho": 0.875,
+                "halfWidth": 0.04999999999999999,
+                "mde80": 0.0836000054834224,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "harrier",
+            "candidate": "mdenseon",
+            "byClass": {
+              "exact-identifier": {
+                "n": 5,
+                "baselineMrr": 0.8,
+                "candidateMrr": 0.8,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.8,
+                  "meanB": 0.8,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 1,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 0.8,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 5,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 15,
+                "baselineMrr": 0.9,
+                "candidateMrr": 0.9333,
+                "deltaMrr": {
+                  "n": 15,
+                  "meanA": 0.9,
+                  "meanB": 0.9333333333333333,
+                  "delta": {
+                    "point": 0.033333333333333326,
+                    "lower": 0,
+                    "upper": 0.1,
+                    "ci": 0.95
+                  },
+                  "rho": 0.8882347881956884,
+                  "halfWidth": 0.05,
+                  "mde80": 0.09035474056839199,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8667,
+                "candidateRecallAt1": 0.9333,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 14,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "ALL_ANSWERABLE: UNDERPOWERED — delta 0.0333 MRR, 95% CI [0, 0.1]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "lexical-gap": {
+                "n": 5,
+                "baselineMrr": 0.9,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.9,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0.09999999999999998,
+                    "lower": 0,
+                    "upper": 0.3,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.15,
+                  "mde80": 0.2528014056134307,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "lexical-gap: UNDERPOWERED — delta 0.1 MRR, 95% CI [0, 0.3]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "session-start-intent": {
+                "n": 5,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 5,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "session-start-intent: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              }
+            }
+          }
+        },
+        "gemma-to-mdenseon": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "exact-identifier": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 1,
+                "meanB": 0.8,
+                "delta": {
+                  "point": -0.19999999999999996,
+                  "lower": -0.6,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.3,
+                "mde80": 0.4992921296103148,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "session-start-intent": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.8400000000000001,
+                "meanB": 1,
+                "delta": {
+                  "point": 0.15999999999999992,
+                  "lower": 0,
+                  "upper": 0.4800000000000001,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.24000000000000005,
+                "mde80": 0.3997965629785437,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 5,
+              "queryCount": 15,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9466666666666667,
+                "meanB": 0.9333333333333333,
+                "delta": {
+                  "point": -0.013333333333333308,
+                  "lower": -0.2,
+                  "upper": 0.15999999999999998,
+                  "ci": 0.95
+                },
+                "rho": -0.25,
+                "halfWidth": 0.18,
+                "mde80": 0.238107097604228,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "gemma",
+            "candidate": "mdenseon",
+            "byClass": {
+              "exact-identifier": {
+                "n": 5,
+                "baselineMrr": 1,
+                "candidateMrr": 0.8,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 1,
+                  "meanB": 0.8,
+                  "delta": {
+                    "point": -0.19999999999999996,
+                    "lower": -0.6,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.3,
+                  "mde80": 0.5086366790580488,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 0.8,
+                "hitAt1": {
+                  "onlyA": 1,
+                  "onlyB": 0,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "exact-identifier: UNDERPOWERED — delta -0.2 MRR, 95% CI [-0.6, 0]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 15,
+                "baselineMrr": 0.9467,
+                "candidateMrr": 0.9333,
+                "deltaMrr": {
+                  "n": 15,
+                  "meanA": 0.9466666666666667,
+                  "meanB": 0.9333333333333333,
+                  "delta": {
+                    "point": -0.013333333333333308,
+                    "lower": -0.2,
+                    "upper": 0.16000000000000003,
+                    "ci": 0.95
+                  },
+                  "rho": -0.07142857142857142,
+                  "halfWidth": 0.18000000000000002,
+                  "mde80": 0.23631603709994142,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.9333,
+                "candidateRecallAt1": 0.9333,
+                "hitAt1": {
+                  "onlyA": 1,
+                  "onlyB": 1,
+                  "concordant": 13,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "ALL_ANSWERABLE: UNDERPOWERED — delta -0.0133 MRR, 95% CI [-0.2, 0.16]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "lexical-gap": {
+                "n": 5,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 5,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "session-start-intent": {
+                "n": 5,
+                "baselineMrr": 0.84,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.8400000000000001,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0.15999999999999992,
+                    "lower": 0,
+                    "upper": 0.4800000000000001,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.24000000000000005,
+                  "mde80": 0.4007453395321342,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "session-start-intent: UNDERPOWERED — delta 0.16 MRR, 95% CI [0, 0.48]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              }
+            }
+          }
+        },
+        "harrier-to-gemma": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9,
+                "meanB": 1,
+                "delta": {
+                  "point": 0.09999999999999998,
+                  "lower": 0,
+                  "upper": 0.3,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.15,
+                "mde80": 0.25080001645031824,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "exact-identifier": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.8,
+                "meanB": 1,
+                "delta": {
+                  "point": 0.19999999999999996,
+                  "lower": 0,
+                  "upper": 0.6,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.3,
+                "mde80": 0.4992921296102638,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "session-start-intent": {
+              "sourceTargets": 5,
+              "queryCount": 5,
+              "comparison": {
+                "n": 5,
+                "meanA": 1,
+                "meanB": 0.8400000000000001,
+                "delta": {
+                  "point": -0.15999999999999992,
+                  "lower": -0.4800000000000001,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0.24000000000000005,
+                "mde80": 0.399796562978527,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 5,
+              "queryCount": 15,
+              "comparison": {
+                "n": 5,
+                "meanA": 0.9,
+                "meanB": 0.9466666666666667,
+                "delta": {
+                  "point": 0.046666666666666634,
+                  "lower": -0.12666666666666665,
+                  "upper": 0.21333333333333337,
+                  "ci": 0.95
+                },
+                "rho": -0.375,
+                "halfWidth": 0.17,
+                "mde80": 0.2494032051071987,
+                "significant": false
+              },
+              "marginDecision": "unresolved",
+              "marginResolved": false
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "harrier",
+            "candidate": "gemma",
+            "byClass": {
+              "exact-identifier": {
+                "n": 5,
+                "baselineMrr": 0.8,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.8,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0.19999999999999996,
+                    "lower": 0,
+                    "upper": 0.6,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.3,
+                  "mde80": 0.5086366790580737,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "exact-identifier: UNDERPOWERED — delta 0.2 MRR, 95% CI [0, 0.6]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 15,
+                "baselineMrr": 0.9,
+                "candidateMrr": 0.9467,
+                "deltaMrr": {
+                  "n": 15,
+                  "meanA": 0.9,
+                  "meanB": 0.9466666666666667,
+                  "delta": {
+                    "point": 0.046666666666666634,
+                    "lower": -0.12666666666666668,
+                    "upper": 0.23333333333333334,
+                    "ci": 0.95
+                  },
+                  "rho": -0.09869275424396533,
+                  "halfWidth": 0.18,
+                  "mde80": 0.25112200658903816,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8667,
+                "candidateRecallAt1": 0.9333,
+                "hitAt1": {
+                  "onlyA": 1,
+                  "onlyB": 2,
+                  "concordant": 12,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "ALL_ANSWERABLE: UNDERPOWERED — delta 0.0467 MRR, 95% CI [-0.1267, 0.2333]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "lexical-gap": {
+                "n": 5,
+                "baselineMrr": 0.9,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 0.9,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0.09999999999999998,
+                    "lower": 0,
+                    "upper": 0.3,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.15,
+                  "mde80": 0.2528014056134307,
+                  "significant": false
+                },
+                "baselineRecallAt1": 0.8,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "lexical-gap: UNDERPOWERED — delta 0.1 MRR, 95% CI [0, 0.3]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              },
+              "session-start-intent": {
+                "n": 5,
+                "baselineMrr": 1,
+                "candidateMrr": 0.84,
+                "deltaMrr": {
+                  "n": 5,
+                  "meanA": 1,
+                  "meanB": 0.8400000000000001,
+                  "delta": {
+                    "point": -0.15999999999999992,
+                    "lower": -0.4800000000000001,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0.24000000000000005,
+                  "mde80": 0.40074533953211944,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 0.8,
+                "hitAt1": {
+                  "onlyA": 1,
+                  "onlyB": 0,
+                  "concordant": 4,
+                  "p": 1
+                },
+                "verdict": "underpowered",
+                "statement": "session-start-intent: UNDERPOWERED — delta -0.16 MRR, 95% CI [-0.48, 0]. The interval is wider than the decision-relevant threshold 0.03, so this class supports no verdict in either direction; more queries are needed before it can rule."
+              }
+            }
+          }
+        }
+      }
+    },
+    "prose": {
+      "documents": 515,
+      "labelQueries": 32,
+      "heldoutPositiveQueries": 6,
+      "heldoutNegativeQueries": 2,
+      "calibrationQueries": 24,
+      "modelScores": {
+        "mdenseon": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "ALL_ANSWERABLE": {
+              "n": 6,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "lexical-gap": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.514,
+            "hardNegTop1Mean": 0.4289,
+            "margin": 0.0851
+          }
+        },
+        "gemma": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "ALL_ANSWERABLE": {
+              "n": 6,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "lexical-gap": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.7149,
+            "hardNegTop1Mean": 0.6232,
+            "margin": 0.0917
+          }
+        },
+        "harrier": {
+          "byClass": {
+            "exact-identifier": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "ALL_ANSWERABLE": {
+              "n": 6,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "lexical-gap": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            },
+            "session-start-intent": {
+              "n": 2,
+              "recall_at_1": 1,
+              "recall_at_3": 1,
+              "recall_at_5": 1,
+              "mrr_at_10": 1
+            }
+          },
+          "rejectionMargin": {
+            "answerableTop1Mean": 0.6533,
+            "hardNegTop1Mean": 0.5595,
+            "margin": 0.0938
+          }
+        }
+      },
+      "comparisons": {
+        "harrier-to-mdenseon": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "exact-identifier": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "session-start-intent": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 2,
+              "queryCount": 6,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "harrier",
+            "candidate": "mdenseon",
+            "byClass": {
+              "exact-identifier": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 6,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 6,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 6,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "ALL_ANSWERABLE: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "lexical-gap": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "session-start-intent": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "session-start-intent: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              }
+            }
+          }
+        },
+        "gemma-to-mdenseon": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "exact-identifier": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "session-start-intent": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 2,
+              "queryCount": 6,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "gemma",
+            "candidate": "mdenseon",
+            "byClass": {
+              "exact-identifier": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 6,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 6,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 6,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "ALL_ANSWERABLE: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "lexical-gap": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "session-start-intent": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "session-start-intent: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              }
+            }
+          }
+        },
+        "harrier-to-gemma": {
+          "sourceGrouped": {
+            "lexical-gap": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "exact-identifier": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "session-start-intent": {
+              "sourceTargets": 2,
+              "queryCount": 2,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            },
+            "ALL_ANSWERABLE": {
+              "sourceTargets": 2,
+              "queryCount": 6,
+              "comparison": {
+                "n": 2,
+                "meanA": 1,
+                "meanB": 1,
+                "delta": {
+                  "point": 0,
+                  "lower": 0,
+                  "upper": 0,
+                  "ci": 0.95
+                },
+                "rho": 0,
+                "halfWidth": 0,
+                "mde80": 0,
+                "significant": false
+              },
+              "marginDecision": "inside-margin",
+              "marginResolved": true
+            }
+          },
+          "secondaryQuery": {
+            "baseline": "harrier",
+            "candidate": "gemma",
+            "byClass": {
+              "exact-identifier": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "exact-identifier: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "ALL_ANSWERABLE": {
+                "n": 6,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 6,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 6,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "ALL_ANSWERABLE: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "lexical-gap": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "lexical-gap: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              },
+              "session-start-intent": {
+                "n": 2,
+                "baselineMrr": 1,
+                "candidateMrr": 1,
+                "deltaMrr": {
+                  "n": 2,
+                  "meanA": 1,
+                  "meanB": 1,
+                  "delta": {
+                    "point": 0,
+                    "lower": 0,
+                    "upper": 0,
+                    "ci": 0.95
+                  },
+                  "rho": 0,
+                  "halfWidth": 0,
+                  "mde80": 0,
+                  "significant": false
+                },
+                "baselineRecallAt1": 1,
+                "candidateRecallAt1": 1,
+                "hitAt1": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 2,
+                  "p": 1
+                },
+                "verdict": "no-detected-difference",
+                "statement": "session-start-intent: no decision-relevant difference detected at this power — delta 0 MRR, 95% CI [0, 0], which rules out effects larger than ±0 (80%-power MDE 0; decision-relevant threshold 0.03). This is NOT a finding of equivalence."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "validation": {
+    "unitTests": {
+      "runId": "64a73ce8-b53c-4cad-ace9-d099e5496a0d",
+      "testRunIds": [
+        20383726,
+        20383727,
+        20383728
+      ],
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "files": 3
+    },
+    "typecheck": {
+      "passed": true,
+      "namedFiles": 5,
+      "typeReferencingFiles": 58,
+      "directImporters": 3,
+      "errors": 0,
+      "log": "b77e04ba-f4f",
+      "at": "2026-10-01T11:51:48.999Z"
+    },
+    "modelCells": {
+      "requested": 6,
+      "completed": 6,
+      "exitCode": 0,
+      "driver": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/driver.json",
+        "sha256": "8d6d66cc74e149d5286df3441f76b3d2125f0188b1695af8d0dabfc0abfa0770",
+        "bytes": 667
+      },
+      "artifacts": [
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-mdenseon.json",
+          "sha256": "08c1e5984e1aa284b2689d0cc3823ad07d0630e77a22d1c67f6951995b92065f",
+          "bytes": 70294
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-mdenseon.vectors.json",
+          "sha256": "5d4d9a4ce33ad346754a3bb3ebbb1935cbc3825889d122f4afde0586318f94d5",
+          "bytes": 8919725
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-gemma.json",
+          "sha256": "c2ff666cac49c0215cbf17396be569af252298f85825e8028991f2c33ef31bae",
+          "bytes": 69989
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-gemma.vectors.json",
+          "sha256": "9694cc90af595a688267c53c4287a965b31c304c3ec19daa1bacab35fe8acf44",
+          "bytes": 8994272
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-harrier.json",
+          "sha256": "8913737ffb9c07d729b3c89cd0b69575fedbca1bd213eb5de424b680027f556e",
+          "bytes": 70014
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-memory-harrier.vectors.json",
+          "sha256": "efe9d3d631be1ad2cc5b340a00dab411c258cce68f4685c9b20b395f2cf0e64c",
+          "bytes": 11923626
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-mdenseon.json",
+          "sha256": "425b053b09c37f1869f893a227c43c3e37cf1f148b5be4b651b79a5921d594b3",
+          "bytes": 98324
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-mdenseon.vectors.json",
+          "sha256": "2b8de8db7a2aac65294ed5386692c8de8dcf141fa9145127ae3c4f9264de1f67",
+          "bytes": 8928717
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-gemma.json",
+          "sha256": "010426e8c479b4e52e19f41714005c41a42fcd3c5048bacab329b0c22070a0bd",
+          "bytes": 98039
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-gemma.vectors.json",
+          "sha256": "2e9e232f8782531ae695eb1c4bde399dc97e7641ff8729e0f2c822a71112571b",
+          "bytes": 8992708
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-harrier.json",
+          "sha256": "660b003795619a37c6f447250c18274a25740dcf6051ffde4eab3f5a32829682",
+          "bytes": 98057
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v1/relevance-prose-harrier.vectors.json",
+          "sha256": "0a975ba0af243efd5e92c58f202f20061ac5b244eab77be21bda4f8ad4ac4231",
+          "bytes": 11927147
+        }
+      ]
+    },
+    "independentJudgmentAudit": "docs/evidence/mdenseon-blind-numeric-repair-2026-10-01.json"
+  },
+  "expansion": {
+    "targetsPerPartition": 32,
+    "status": "failed-provider-rate-limit",
+    "exitCode": 1,
+    "recoveredAuthorReferences": 16,
+    "newJudgmentsProduced": false,
+    "root": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-targets32",
+    "log": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-targets32.log",
+      "sha256": "d01dfff8ed8e4bd15110e017aac0c0206c7e1c02aaf6a56f3b958a5cdeb7cc16",
+      "bytes": 7490
+    },
+    "ownedFollowup": "EI-24778746019586062",
+    "providerError": "429 rate_limit_error; first new author invocation failed after existing bounded retry policy; original labels unchanged"
+  },
+  "expansionV3": {
+    "root": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v3-targets32",
+    "durableTaskId": "0muq44v391ng4sestvw",
+    "status": "failed exit 1 at 2026-10-01T22:48:02Z; no labels or complete judgments",
+    "retainedAuthors": {
+      "total": 128,
+      "reused": 64,
+      "new": 64
+    },
+    "retainedJudgeChunks": {
+      "memory": 16,
+      "prose": 1
+    },
+    "failure": {
+      "raw": "prose-judge-1-0.json",
+      "rawSha256": "1db5e645b7c810bceaa47c5ee78af5da2baa6f99c851a5ddf64fafb149ceb6aa",
+      "invocationId": "9c3d77ca-a7e7-4e7f-8eb5-071ee04b9f35",
+      "questionIndices": [
+        0,
+        255
+      ],
+      "documentIndices": [
+        0,
+        63
+      ],
+      "returnedVote": {
+        "q": 184,
+        "d": [
+          184
+        ],
+        "a": true
+      },
+      "stopReason": "end_turn",
+      "inputTokens": 26064,
+      "outputTokens": 3465,
+      "costUsd": 0.130167,
+      "ownedFollowup": "EI-24819382685756294"
+    },
+    "outputLockReleased": true,
+    "historicalReceiptsChanged": false
+  },
+  "abstentionRepair": {
+    "workItem": "EI-24819382685756294",
+    "behavior": "An explicitly ambiguous vote with invalid document references becomes an excluded abstention with retained diagnostics. It cannot contribute relevance, scored queries or agreement. Invalid definitive references and question indices still fail. The entire four-class source target is excluded.",
+    "generationContractChanged": false,
+    "verification": {
+      "runId": "4e18c008-f738-4bd5-a406-a3bf425b8b35",
+      "testRunIds": [
+        20454363,
+        20454364
+      ],
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0,
+      "scopedTypecheck": "four named files and their measured type/import closure clean, zero errors",
+      "actualSavedResponse": "256 votes parsed; vote184 retained as an abstention; the same reference with a:false rejected; raw receipt unchanged",
+      "provenance": "Current staging worktree verification. Edited source and tests were not yet byte-equal to HEAD when measured; this is not final-release evidence."
+    },
+    "sourcePins": {
+      "judged": "6fc4e883577ba934c8e5ad4388a536370e77081c805670eca26e1d9183e8b803",
+      "judgedTest": "11e6210dcfa894a9a2d0b2c2c44d05b138cfeb7b7470092c5310e745631e435f",
+      "manifest": "ff1c26aa623e78b381175e5b61a1ac787d9c16650d9b3b59ad7f27caf8f0b9ba",
+      "manifestTest": "079fad5ff23d9f2936147861204d9be4650af2a456ca8cc4d71e5ed500fcf8fd"
+    }
+  },
+  "expansionV4": {
+    "root": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32",
+    "durableTaskId": "0muq5fy1x1d5o9gp1mz",
+    "status": "independent labels completed and frozen at 2026-10-01T23:27:30Z; serialized V5 six-cell measurements and paired source analysis subsequently completed and verified; power/census acceptance remains open",
+    "frozenAt": "2026-10-01T23:27:30.191Z",
+    "identityHash": "74e512104a2f259c2f2a061511223e5ee82fc42843fceb8c3779f53c1917c72f",
+    "measurementManifest": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v4.json",
+      "sha256": "a1efd4689c5d244545382dcfeee83542fa074a3d6bfd80d4c7eae0d9226609ed",
+      "bytes": 118479
+    },
+    "freezeAudit": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/relevance-v4-freeze-audit.json",
+      "sha256": "871aa1cf9fa0ace558dff5457b37300e6dfa60cb6b8e0d0864d1693bfa291868",
+      "bytes": 3012,
+      "status": "historical freeze-time snapshot: manifest qualified before inference; current measurement outcome is serializedMeasurementOutcome",
+      "verification": "Validated both independent cohorts, exact labels and judgments, four aggregate raw judge files, declared source/toolchain/native fingerprints, and unchanged model/profile/tokenizer/prompt/execution contracts. Six fresh relevance cells are declared; the original V1 manifest and measurements remain intact."
+    },
+    "measurementRun": {
+      "durableTaskId": "0muqap72k1up64si148",
+      "logPath": ".papercusp/scratch/bash-3a8aaefa-f8b.log",
+      "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v4",
+      "deadline": "2026-10-02T13:39:32.525Z",
+      "lastObservation": "Corrected V4 task admitted at 2026-10-02T01:47:15.828Z and reported document progress at 250/512 before SIGTERM at 2026-10-02T01:49:04.884Z. No cell completed and no raw scoring receipt exists. Its driver, claim and log remain preserved. The service scope was verified empty after cancellation; the earlier before-inference cancellation description was incorrect.",
+      "nextLaunch": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/launch-relevance-v5-after-v6.sh",
+        "sha256": "4558be4d7544cc316699940d3063a7dcb054aaac7ebc5a5e68062dbf90900079",
+        "bytes": 8231,
+        "prerequisite": "V6 driver completed, fifteen cells present, and its final summary bound to the expected manifest.",
+        "completionGuard": "Require the relevance evaluator's nonempty completion receipt after pc-heavy returns.",
+        "verification": "bash syntax passed; executing the recipe while V6 was incomplete refused before scheduling a child and left the V5 output root absent. The existing partial V4 files were retained.",
+        "qualification": "The prerequisite prevents overlap with V6. P-005 must separately assess the observed partial-V4 workload during its Gemma cell before treating V6 timings as controlled acceptance evidence."
+      },
+      "verificationContract": "Six fresh processes must emit manifest-bound CPU receipts and complete retained document/query vectors. Compare each incumbent with mDenseOn on identical held-out queries using the existing source-target component bootstrap; retain query-level comparisons as secondary diagnostics. Calibration is separate, the fixed MRR margin remains 0.03, and a completed run does not by itself prove population exhaustion."
+    },
+    "launcherRepair": {
+      "issue": "EI-24829343157624859",
+      "originalTaskId": "0muqa4jgobsn54u1kpd",
+      "originalLogPath": ".papercusp/scratch/bash-f4e81e69-64e.log",
+      "originalOutcome": "Wrapper exit 0 with queue/admission output only; evaluator run directory and driver were absent. No relevance inference occurred.",
+      "rootCause": "The existing pc-heavy asynchronous setsid command did not explicitly inherit fd 0, so non-interactive Bash replaced the supplied stdin program with /dev/null. Node evaluated EOF and exited 0.",
+      "fix": "Preserve caller stdin with explicit fd 0 redirection at the existing asynchronous launch seam. The corrected measurement command also requires a nonempty evaluator completion receipt after the wrapper returns.",
+      "regressionTest": "packages/operator-core/lib/pc-heavy-stdin.test.ts",
+      "distinguishingEvidence": {
+        "beforeRunId": "96d2c3d5-340e-4e46-8291-ce847285b0b0",
+        "beforeTestRunId": 20462059,
+        "before": "Direct Node stdin program executes; the exact asynchronous supervisor loses both a stdin program and unrelated data payload. Both regression cases fail.",
+        "afterRunId": "ba249bbb-f8c3-44c9-8ffe-4038866b1800",
+        "afterTestRunIds": [
+          20462065,
+          20462066,
+          20462067
+        ],
+        "after": "Both stdin guards and neighboring preemption-probe/retry-output suites pass: 19 passed, 0 failed, 0 skipped."
+      },
+      "ordinaryRouteVerification": {
+        "runId": "2f6b435b-1a06-4f3b-9026-de246848948e",
+        "testRunId": 20462635,
+        "result": "3 passed, 0 failed, 0 skipped, including a program supplied on stdin through the ordinary admission and preemption route in a private slot fixture."
+      }
+    },
+    "measurementManifestV5": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v5.json",
+      "sha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+      "bytes": 118479,
+      "status": "serialized V5 run completed and verified; only runId and frozenAt differ from V4; see serializedMeasurementOutcome for current raw/vector/analysis bindings"
+    },
+    "freezeAuditV5": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/relevance-v5-freeze-audit.json",
+      "sha256": "6b7402f63725c0f112c1526da4cca58f194d6ff77a5ddd0b35da0e84be8988d4",
+      "bytes": 1406
+    },
+    "cancellationRace": {
+      "issue": "EI-24830817000496473",
+      "rootCause": "An earlier queued observation was treated as current execution state when cancelling the task; the evaluator had already been admitted.",
+      "prevention": "Enforce the prior matrix's completed driver and fifteen bound summary artifacts before scheduling the next model matrix; use a new immutable attempt ID after an incomplete cell.",
+      "performanceOverlap": {
+        "start": "2026-10-02T01:47:15.828Z",
+        "end": "2026-10-02T01:49:04.884Z",
+        "cell": "performance-b2-gemma",
+        "overlappingSampleCount": 225,
+        "sequenceRange": [
+          158,
+          382
+        ],
+        "procedure": "Join each retained performance sample's startedAt and latencyMs interval against the actual relevance driver start and durable task termination marker.",
+        "limitation": "This establishes concurrent model work; it does not measure its latency effect. Controlled performance qualification remains open."
+      }
+    },
+    "targetsPerPartition": 32,
+    "authorRecovery": "All 128 saved v3 authors were reused; no new author calls. All original prompt, invocation, identity and fingerprint references were followed to the original priced author receipts.",
+    "labels": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32/labels.json",
+      "sha256": "0adca29735f180166016d3965e54f3639f16f5f09b541220294c7228f155d023",
+      "bytes": 49862
+    },
+    "judgments": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32/judgments.json",
+      "sha256": "1acf4353a543f89ab035c3fab84701b0ef98fbabd570c34f87e954055026a81f",
+      "bytes": 39973
+    },
+    "corpora": {
+      "memory": {
+        "documents": 512,
+        "authoredSourceTargets": 64,
+        "authoredQueries": 256,
+        "acceptedQueries": 68,
+        "excludedQueries": 188,
+        "ambiguousQueries": 81,
+        "acceptedCalibrationTargets": 9,
+        "acceptedTestTargets": 8,
+        "agreement": 0.7890625,
+        "formatAbstentions": 0
+      },
+      "prose": {
+        "documents": 515,
+        "authoredSourceTargets": 64,
+        "authoredQueries": 256,
+        "acceptedQueries": 40,
+        "excludedQueries": 216,
+        "ambiguousQueries": 107,
+        "acceptedCalibrationTargets": 8,
+        "acceptedTestTargets": 2,
+        "agreement": 0.65234375,
+        "formatAbstentions": 0
+      }
+    },
+    "verification": {
+      "authorReceipts": 128,
+      "authorReferenceLinksChecked": 224,
+      "newJudgeChunks": 34,
+      "uniqueJudgeInvocations": 34,
+      "judgeInputTokens": 909540,
+      "judgeOutputTokens": 116694,
+      "judgeCostUsd": 4.47903,
+      "judgeStopReasons": "Every retained new judge response ended with end_turn and finite non-negative usage and cost.",
+      "procedure": "Verified snapshot/source/contract identity, each author reference chain and original prompt, each judge prompt and raw fingerprint. Reconstructed all questions and both chunk-vote passes using the existing parser, recomputed consensus, and required exact equality with saved votes, labels, exclusion lists and agreement. Both corpus proofs passed validateIndependentCohort.",
+      "outputLockReleased": true,
+      "agreementDefinition": "Exact equality of both aggregated relevance-key sets and ambiguity flags across all 256 authored questions; malformed abstentions cannot earn agreement. Agreement does not imply a source target was retained.",
+      "balancedClasses": "Every retained source target supplies all four query classes; calibration and test are separate. Exclusions remove the entire four-class target."
+    },
+    "acceptanceComplete": false
+  },
+  "sourcePopulationAccounting": {
+    "status": "retained-census-and-source-power-accounted; independent source expansion still required",
+    "assessment": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/source-accounting-v1/assessment.json",
+      "sha256": "ff88a5c0c20d52051933c075560cdff739c8c2861f14532081d267bcd8060985",
+      "bytes": 709255
+    },
+    "reproduction": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/source-accounting-v1/reproduce.mjs",
+      "sha256": "33e7d591e173584191ac44314dfd594f16c5f0ae63627b8389ccb86f4f92f82b",
+      "bytes": 7719
+    },
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts",
+        "sha256": "86288f53331a6bfec3d0d9ad41b4cc93ffe23d519348f4d66df9e382a3b5f3b4",
+        "bytes": 27552
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/paired-leg-report.ts",
+        "sha256": "9f7d0c616cd85eecb02274d3d5ce6c07b888cf9a66e52769dcd36514a2b43fda",
+        "bytes": 15631
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "cd15b05b58dbd4cc271b799b740aab8c5c335cead6bccfaf6d5415d8adb03b83",
+        "bytes": 56298
+      }
+    ],
+    "inputs": {
+      "census": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/census-v2.json",
+        "sha256": "b15da1426e9825621da89b0d774e3f88ac993ec2c799947ff9650a705e4641a5",
+        "bytes": 21848119
+      },
+      "snapshot": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/snapshot-v2.json",
+        "sha256": "b8449e9c7760283644ae8668fec897194c057e723f99a2d650aab62e57be150f",
+        "bytes": 1513218
+      },
+      "labels": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32/labels.json",
+        "sha256": "0adca29735f180166016d3965e54f3639f16f5f09b541220294c7228f155d023",
+        "bytes": 49862
+      },
+      "judgments": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32/judgments.json",
+        "sha256": "1acf4353a543f89ab035c3fab84701b0ef98fbabd570c34f87e954055026a81f",
+        "bytes": 39973
+      }
+    },
+    "sourcePopulations": {
+      "memory": {
+        "populationRows": 2025,
+        "eligibleRows": 959,
+        "provenanceExcludedRows": 1066,
+        "snapshotRows": 512,
+        "partitions": {
+          "calibration": {
+            "accessibleSources": 94,
+            "snapshotSources": 65,
+            "authoredSources": 32,
+            "acceptedSources": 9,
+            "outsideSnapshot": 29,
+            "unattemptedInSnapshot": 33,
+            "authoredWithoutAcceptedLabels": 23
+          },
+          "test": {
+            "accessibleSources": 312,
+            "snapshotSources": 218,
+            "authoredSources": 32,
+            "acceptedSources": 8,
+            "outsideSnapshot": 94,
+            "unattemptedInSnapshot": 186,
+            "authoredWithoutAcceptedLabels": 24
+          }
+        },
+        "allEligibleRowsInSnapshot": false,
+        "allEligibleSourcesAuthored": false
+      },
+      "prose": {
+        "populationRows": 13996,
+        "eligibleRows": 13996,
+        "provenanceExcludedRows": 0,
+        "snapshotRows": 515,
+        "partitions": {
+          "calibration": {
+            "accessibleSources": 514,
+            "snapshotSources": 34,
+            "authoredSources": 32,
+            "acceptedSources": 8,
+            "outsideSnapshot": 480,
+            "unattemptedInSnapshot": 2,
+            "authoredWithoutAcceptedLabels": 24
+          },
+          "test": {
+            "accessibleSources": 1601,
+            "snapshotSources": 109,
+            "authoredSources": 32,
+            "acceptedSources": 2,
+            "outsideSnapshot": 1492,
+            "unattemptedInSnapshot": 77,
+            "authoredWithoutAcceptedLabels": 30
+          }
+        },
+        "allEligibleRowsInSnapshot": false,
+        "allEligibleSourcesAuthored": false
+      }
+    },
+    "powerPlanning": [
+      {
+        "corpus": "memory",
+        "baseline": "gemma",
+        "power": {
+          "lexical-gap": {
+            "sourceComponents": 8,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "exact-identifier": {
+            "sourceComponents": 8,
+            "observedMde80": 0.34114067229234,
+            "observedDelta": -0.1875,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.1575,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 1035,
+            "projectedComponentsForObservedMarginDistance": 38,
+            "projectedMde80AtSourceUpperBound": 0.05462622604199865,
+            "acceptanceEstablishedByProjection": false
+          },
+          "session-start-intent": {
+            "sourceComponents": 8,
+            "observedMde80": 0.2624735332314141,
+            "observedDelta": 0.09999999999999998,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.06999999999999998,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 613,
+            "projectedComponentsForObservedMarginDistance": 113,
+            "projectedMde80AtSourceUpperBound": 0.042029402299044526,
+            "acceptanceEstablishedByProjection": false
+          },
+          "ALL_ANSWERABLE": {
+            "sourceComponents": 8,
+            "observedMde80": 0.15727318700604712,
+            "observedDelta": -0.029166666666666563,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.0008333333333334358,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 220,
+            "projectedComponentsForObservedMarginDistance": 284946,
+            "projectedMde80AtSourceUpperBound": 0.025183865078320544,
+            "acceptanceEstablishedByProjection": false
+          }
+        }
+      },
+      {
+        "corpus": "memory",
+        "baseline": "harrier",
+        "power": {
+          "lexical-gap": {
+            "sourceComponents": 8,
+            "observedMde80": 0.166317895749671,
+            "observedDelta": 0.08750000000000002,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.05750000000000002,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 246,
+            "projectedComponentsForObservedMarginDistance": 67,
+            "projectedMde80AtSourceUpperBound": 0.026632177591141767,
+            "acceptanceEstablishedByProjection": false
+          },
+          "exact-identifier": {
+            "sourceComponents": 8,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "session-start-intent": {
+            "sourceComponents": 8,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "ALL_ANSWERABLE": {
+            "sourceComponents": 8,
+            "observedMde80": 0.055439298583226077,
+            "observedDelta": 0.029166666666666674,
+            "observedMarginDecision": "unresolved",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.0008333333333333248,
+            "accessibleTestSourcesUpperBound": 312,
+            "status": "conditional-variance-projection",
+            "projectedComponentsForEffect03VsZero": 28,
+            "projectedComponentsForObservedMarginDistance": 35407,
+            "projectedMde80AtSourceUpperBound": 0.008877392530380975,
+            "acceptanceEstablishedByProjection": false
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "gemma",
+        "power": {
+          "lexical-gap": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "exact-identifier": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "session-start-intent": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "ALL_ANSWERABLE": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "harrier",
+        "power": {
+          "lexical-gap": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "exact-identifier": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "session-start-intent": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          },
+          "ALL_ANSWERABLE": {
+            "sourceComponents": 2,
+            "observedMde80": 0,
+            "observedDelta": 0,
+            "observedMarginDecision": "inside-margin",
+            "decisionMargin": 0.03,
+            "marginBoundaryDistance": 0.03,
+            "accessibleTestSourcesUpperBound": 1601,
+            "status": "zero-observed-variance-no-extrapolation",
+            "projectedComponentsForEffect03VsZero": null,
+            "projectedComponentsForObservedMarginDistance": null,
+            "projectedMde80AtSourceUpperBound": null,
+            "acceptanceEstablishedByProjection": false
+          }
+        }
+      }
+    ],
+    "projectionAssumptions": [
+      "Stable paired source variance; independent future components",
+      "Accessible test sources are an upper bound, reduced by connected relevance and conservative label exclusions",
+      "Zero observed variance supplies no extrapolated power",
+      "Effect-vs-zero and distance-to-margin projections are distinct; neither is an observed result"
+    ],
+    "verification": {
+      "runId": "c44fc311-27fe-49b9-8db4-f42a2e27bd62",
+      "testRunIds": [
+        20562227,
+        20562228
+      ],
+      "passed": 45,
+      "failed": 0,
+      "skipped": 0,
+      "scopedTypecheck": {
+        "namedFiles": 4,
+        "checkedFiles": 181,
+        "errors": 0,
+        "at": "2026-10-02T20:36:57.789Z",
+        "head": "58d19872a8"
+      }
+    },
+    "authorRecovery": {
+      "authorsReconstructed": 128,
+      "uniquePrivateArtifactPinsVerified": 371,
+      "retainedSourcePairedComparisonsRecomputedExactly": 4,
+      "newInferenceCalls": 0
+    },
+    "nextExpansion": {
+      "existingSnapshotAvailableTargets": {
+        "memory": {
+          "calibration": 65,
+          "test": 218
+        },
+        "prose": {
+          "calibration": 34,
+          "test": 109
+        }
+      },
+      "uniformTargetBudgetCeiling": 34,
+      "reason": "At accounting time the collector required one equal target count in both partitions and both corpora. A uniform request of 64 exceeds the 34 frozen prose calibration sources. The qualified extension recorded in sourceCollectionExpansion now supports unequal budgets and bounded question batches; its all-source run covers the current snapshot only. Full accessible-census exhaustion still requires expansion from the retained census, without changing the held-out partition seed or recycling excluded labels.",
+      "sourceOrder": "Use the existing hashJson([snapshot.seed, sourceGroup]) order and preserve all prior raw author/label/measurement artifacts."
+    },
+    "acceptance": {
+      "p003Complete": false,
+      "fullAccessibleSourceCensusExhausted": false,
+      "modelAdoptionAuthorized": false,
+      "verificationInferencePerformed": false
+    }
+  },
+  "sourceCollectionExpansion": {
+    "status": "snapshot-source-complete independent collection resumed; labels and judgments pending",
+    "qualification": {
+      "runId": "f714f523-c9b2-4959-a985-b4b745d36f58",
+      "testRunIds": [
+        20568280,
+        20568281,
+        20568282,
+        20568283,
+        20568284,
+        20568285
+      ],
+      "passed": 137,
+      "failed": 0,
+      "skipped": 0,
+      "files": 6,
+      "sourceFiles": [
+        {
+          "path": "packages/operator-core/lib/memory/bench/judged.ts",
+          "sha256": "5fb944932629f1c33683e9b4aaead1b33a89b005ed06cfe7a56b29856273f819",
+          "bytes": 42854
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+          "sha256": "d25f3408badd683c902de5b7652797899b028b751c644d51bece2d83f41899c4",
+          "bytes": 3462
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+          "sha256": "5295d1adab475f12904573fba0bce36eb79daf11dcf89892d1d4f47dc0415948",
+          "bytes": 36704
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts",
+          "sha256": "3fa2cdf42762819bba8ea3f16305a0ad2ee4bb984bac21b7058fa5d65889df12",
+          "bytes": 3485
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts",
+          "sha256": "86288f53331a6bfec3d0d9ad41b4cc93ffe23d519348f4d66df9e382a3b5f3b4",
+          "bytes": 27552
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.test.ts",
+          "sha256": "dbbec0e73e0e25a3b9d63b409d0144ef8c69bcb5d00df2d4110fe16d988b3085",
+          "bytes": 20561
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/paired-leg-report.ts",
+          "sha256": "9f7d0c616cd85eecb02274d3d5ce6c07b888cf9a66e52769dcd36514a2b43fda",
+          "bytes": 15631
+        },
+        {
+          "path": "packages/operator-core/lib/memory/bench/paired-leg-report.test.ts",
+          "sha256": "4a1ef6fe6d08cdb083d97bb626ed5e1995b55255b27135c5d7380772d1f18d5e",
+          "bytes": 12914
+        }
+      ],
+      "latestTypecheck": {
+        "at": "2026-10-02T21:13:03.552Z",
+        "head": "5bbc3e8c94",
+        "namedFiles": 2,
+        "checkedFiles": 2,
+        "errors": 0
+      },
+      "broaderTypecheck": {
+        "at": "2026-10-02T21:07:10.582Z",
+        "head": "3e2c34be44",
+        "namedFiles": 6,
+        "checkedFiles": 183,
+        "errors": 0
+      }
+    },
+    "selection": {
+      "targetsPerPartition": "all",
+      "resolvedSnapshotSources": {
+        "memory": {
+          "calibration": 65,
+          "test": 218
+        },
+        "prose": {
+          "calibration": 34,
+          "test": 109
+        }
+      },
+      "sourcePartitionSeedChanged": false,
+      "snapshotChanged": false,
+      "priorAuthorsDonor": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v4-targets32",
+      "documentChunk": 64,
+      "questionChunk": 64,
+      "scope": "all selected snapshot sources; full eligible census remains larger"
+    },
+    "firstAttempt": {
+      "taskId": "0murg3q49rirkwnntfa",
+      "bashId": "4d5e4ae2-5db",
+      "launch": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/launch-blind-labels-v5-all-snapshot.sh",
+        "sha256": "223d9dcb258a0b221e16318b1f9483550c0744815e98cd877b9073a957903cff",
+        "bytes": 2952
+      },
+      "terminal": "failed1 at2026-10-02T21:01:44.452Z",
+      "log": {
+        "path": ".papercusp/scratch/bash-4d5e4ae2-5db.log",
+        "sha256": "601fef8e55495b512b3522e611872e6b8c900069c5477a3605c71fb1858fd633",
+        "bytes": 12742
+      },
+      "retainedReusedAuthorFiles": 32,
+      "newAuthorReceipts": 0,
+      "labelsCompleted": false,
+      "judgmentsCompleted": false,
+      "failure": "provider429 at first new author because standalone CLI did not initialize enabled gateway endpoints"
+    },
+    "gatewayRepair": {
+      "workItem": "WI-10005666",
+      "rootCause": "judged-cli omitted flag-aware gateway bootstrap; unset SDK endpoints made the existing transport default to direct api.anthropic.com. Runtime override-store installation was also required before flag resolution.",
+      "reuse": "existing installFlagOverrideStore, FLAGS.INFERENCE_GATEWAY/getFlag and applyGatewayLlmEnv; no new account policy/credentials/backend/model",
+      "before": {
+        "runId": "539c3ad7-3ab8-4f10-81dd-6cecbde68971",
+        "testRunIds": [
+          20568187
+        ],
+        "passed": 0,
+        "failed": 3,
+        "skipped": 0
+      },
+      "runtimeFlag": "papercusp-inference-gateway: true with configured override store; operator/staging/bg-host/gateway attestation consistent at1790975461605",
+      "afterFirstFormerlyFailingAuthor": {
+        "raw": {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v5-all-snapshot/memory-author-b511820b0a11d71ac5b9.json",
+          "sha256": "acb7aa9f4f4e7c32c0e307156c7db7e23d6dfc245cb74f48632856ed0e22605b",
+          "bytes": 4154
+        },
+        "identityHash": "810d465b3faf7f74a959495e6ea2ddf49e752a9a0c3164f2b5bccde770294389",
+        "invocationId": "acdf9e43-a90b-4e09-b40f-5bd0af96fb73",
+        "promptSha256": "8a13891689954ec2eca86d2a8765596c153005335d9f0d3bfe452ef7e82c4c2f",
+        "model": "claude-sonnet-4-6",
+        "finishedAt": "2026-10-02T21:13:14.982Z",
+        "servedAccount": "aviynw7",
+        "stopReason": "end_turn",
+        "inputTokens": 430,
+        "outputTokens": 226,
+        "costUsd": 0.00468
+      }
+    },
+    "resume": {
+      "taskId": "0murgmfgh1apzqap8su",
+      "bashId": "fef8b2f4-98b",
+      "launch": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/resume-blind-labels-v5-all-snapshot-gateway-v1.sh",
+        "sha256": "59f3532ae883ffebf9a5973d418a07643ad708efc96097b0f683d27ced98ffda",
+        "bytes": 3360
+      },
+      "log": ".papercusp/scratch/bash-fef8b2f4-98b.log",
+      "deadline": "2026-10-02T23:13:07.304Z",
+      "identityHash": "810d465b3faf7f74a959495e6ea2ddf49e752a9a0c3164f2b5bccde770294389",
+      "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v5-all-snapshot",
+      "observation": "actual new authors are completing; no final label/judgment receipt yet",
+      "latestNewAuthorReceiptCount": 33
+    },
+    "acceptance": {
+      "p003Complete": false,
+      "fullAccessibleSourceCensusExhausted": false,
+      "modelAdoptionAuthorized": false,
+      "newEmbeddingMatrixStarted": false
+    }
+  },
+  "retainedVectorReusePreparation": {
+    "status": "qualified existing evaluator extension; new-label inference has not started",
+    "reuse": "Existing frozen manifest cells, completed raw/vector receipts and canonical evaluator; no parallel vector cache or production model/index change.",
+    "contract": {
+      "optIn": "relevance cell parameters.reuseCellId plus declared reuseManifest, reuseCompletion and reuseVectors inputs",
+      "binding": "completed receipt links vector file to exact raw cell, manifest, owner, arm, snapshot, document order and old accepted query order",
+      "armMustMatch": "artifacts, prompts, tokenizer, runtime, native dimensions, execution device/dtype/threads/transport",
+      "queryReuse": "exact id/text/class/source/partition identity; new relevance labels and query order may differ",
+      "incrementalExecution": "only missing new queries are embedded; original document and query arrays are retained, and new vectors join back to the complete accepted order",
+      "timing": "new-query inference only; not comparable to a full cold/document inference pass",
+      "allReused": "CLI refuses before starting a worker; offline scoring is the appropriate route"
+    },
+    "qualification": {
+      "frameworkRunId": "ed8a3d42-f23f-48fa-94fd-717c5ca48c53",
+      "testRunIds": [
+        20569066,
+        20569067,
+        20569068,
+        20569069,
+        20569071
+      ],
+      "passed": 202,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "five focused conventional files; identity-negative and incremental callback controls, not a new model measurement",
+      "typecheck": {
+        "at": "2026-10-02T21:54:30.200Z",
+        "head": "7c93480f1c",
+        "namedFiles": 6,
+        "checkedFiles": 17,
+        "errors": 0
+      }
+    },
+    "offlineAssessment": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-vector-qualification-v1/assessment.json",
+      "sha256": "71353b971293fa8cd9e36226d92a527f3952c4312c8c1a192eef59a1cfdafa16",
+      "bytes": 34581,
+      "completedCells": 6,
+      "exactDocumentArraysAcrossCells": 3081,
+      "exactQueryArraysAcrossCells": 324,
+      "modelCalls": 0,
+      "reproduction": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-vector-qualification-v1/reproduce.mjs",
+        "sha256": "7a448dadbfa1f6bc5cb5b880cad96a8ab063d9c9cca0e35041cd68de8be4f127",
+        "bytes": 4914
+      }
+    },
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "b23d471736c4e739971a353563054503587c3b85024719ef771cc262750bfa8e",
+        "bytes": 64216
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "sha256": "5523ba56b8e616385e018f18c53146a73926dd73aa95261a14f9c429e6376565",
+        "bytes": 47338
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+        "sha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890",
+        "bytes": 50956
+      }
+    ],
+    "acceptanceEstablished": false
+  },
+  "fencedCallRecovery": {
+    "workItem": "WI-10005689",
+    "status": "parser and exact-call recovery qualified; independent cohort continuation launched",
+    "previousCollection": {
+      "taskId": "0murgmfgh1apzqap8su",
+      "terminal": "failed1 at2026-10-02T21:35:57.223Z",
+      "raw": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v5-all-snapshot/memory-judge-1-64-q896.json",
+        "sha256": "10cdda7bc8fbb6a7a8d8d1ffe73bae919eee1b3626e6a6dae11055601af9e3e6",
+        "bytes": 97709
+      },
+      "finding": "result.json null; full-text JSON.parse failed on prose. One exact fenced object contains64 valid votes. Earlier prose braces defeat first-to-last-brace extraction.",
+      "stopReason": "end_turn",
+      "outputTokens": 3561,
+      "costUsd": 0.123744,
+      "providerFailure": false
+    },
+    "repair": {
+      "reuse": "Maintained Scout parseLlmJson, followed by unchanged strict author/numeric-vote schema, local-index/coverage and truncation guards.",
+      "exactCallRecovery": "Extend existing immutable reference chain with reuseCallsFrom/--reuse-calls-from; require same full contract, budget, snapshot and owner plus exact prompt/invocation lineage.",
+      "authorContinuity": "Hash-pinned author ancestry preserves original prose questions even if the partial donor stopped in memory judging.",
+      "rawRewritten": false,
+      "syntheticJudgments": false
+    },
+    "beforeRegression": {
+      "runId": "87c175c0-7f7f-422d-9879-ac0434d19857",
+      "testRunIds": [
+        20568545
+      ],
+      "passed": 0,
+      "failed": 1,
+      "skipped": 55,
+      "skipReason": "explicit single-name regression filter"
+    },
+    "qualification": {
+      "runId": "ed8a3d42-f23f-48fa-94fd-717c5ca48c53",
+      "passed": 202,
+      "failed": 0,
+      "skipped": 0,
+      "assessment": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/fenced-call-recovery-v1.json",
+        "sha256": "60906b8907ee4b1aeb13e3058cbb2e2c943db233afbee4d470322be00f041b28",
+        "bytes": 189946
+      },
+      "originalRawPinsVerified": 316,
+      "immutableReferencesRecovered": 316,
+      "actualFailedResponseStrictVotes": 64,
+      "modelCalls": 0,
+      "stop": "intercepted first missing priced call before transport",
+      "identityHash": "b96c76750cd57ba514fd079f5ae5bd3f0bc11d1f083103e8a2eeb67751a92647"
+    },
+    "continuation": {
+      "taskId": "0muri7xef1lno8oqb57",
+      "bashId": "28ee2a34-7cd",
+      "log": ".papercusp/scratch/bash-28ee2a34-7cd.log",
+      "deadline": "2026-10-02T23:57:49.955Z",
+      "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v6-fenced-recovery",
+      "launchSource": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/resume-blind-labels-v6-fenced-recovery.sh",
+      "preRetryHarnessAudit": [
+        "WI-10005689 comment1156276",
+        "WI-10004537 comment1156278"
+      ],
+      "gatewayFailureGuard": "WI-10005666 is done; CLI installs override store before flag and applies existing gateway routing",
+      "noParallelCollector": "previous task confirmed terminal before this launch"
+    },
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "63ae6638b2a78ba20c77dc025549800adee657105fca86d19b818d99529bbc46",
+        "bytes": 45741
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+        "sha256": "34bc3fe38ff1ede3885d8a7d1980bfb57ac60c6bdfc0dabef02d5c774c6d6d5f",
+        "bytes": 44879
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+        "sha256": "6258774bf0e0b033456a6af5df39b6a47f2aad7d69c9bc121448bb566df9b534",
+        "bytes": 3561
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts",
+        "sha256": "3fa2cdf42762819bba8ea3f16305a0ad2ee4bb984bac21b7058fa5d65889df12",
+        "bytes": 3485
+      },
+      {
+        "path": "packages/operator-core/lib/scout/llm-json.ts",
+        "sha256": "b82f95fc67c7567abc0063680b23e01f87eb73ff76e6c8aa6f4e309f2c8fdb54",
+        "bytes": 1006
+      }
+    ],
+    "acceptance": {
+      "p003Complete": false,
+      "fullAccessibleCensusExhausted": false,
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
+  "schemaCallRecovery": {
+    "workItem": "WI-10005707",
+    "status": "bounded strict schema recovery qualified; source-complete snapshot collection continuing",
+    "supersedesLiveContinuation": "fencedCallRecovery.continuation describes a historical launch, now terminal failed1 at2026-10-02T22:03:19.962Z",
+    "previousTask": "0muri7xef1lno8oqb57",
+    "failedRaw": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v6-fenced-recovery/memory-judge-1-192-q64.json",
+      "sha256": "61d496a25c66ca4ba57015acc00a21c1736e5795f47d772b5a114f328b947dd6",
+      "bytes": 100702
+    },
+    "finding": {
+      "votes": 64,
+      "missingRequiredAmbiguity": 62,
+      "explicitAmbiguous": 2,
+      "stopReason": "end_turn",
+      "strictRejectionRequired": true,
+      "correctedEarlierAll64Claim": true
+    },
+    "repair": {
+      "reuse": "Existing immutable call/recovery seam and strict Scout parseLlmJson/numeric schema",
+      "boundedAttempts": 3,
+      "failedDonorCountsAsAttempt": true,
+      "sameAndSuccessorOutputLimitsGuarded": true,
+      "selectedCall": "Hash-pinned valid attempt; retain invalid raw and donor rejection evidence",
+      "modelPromptThresholdUnchanged": true,
+      "syntheticJudgments": false,
+      "rawOverwrites": false
+    },
+    "qualification": {
+      "assessment": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/schema-call-recovery-v1.json",
+        "sha256": "231f5f0816a2fb0c2dd0cd46499bd27392e4fd3e81a5c366ff2f49c5a6302e7d",
+        "bytes": 205210
+      },
+      "originalPinsVerified": 341,
+      "newReferencePinsVerified": 342,
+      "paidCalls": 0,
+      "firstMissingCall": {
+        "model": "claude-sonnet-4-6",
+        "promptSha256": "68e3e4e14f47133d2ded9bc4985464a9fb26d33c0d1b8902fe26a350c1d85378",
+        "questionCount": 64,
+        "sourceCount": 64
+      },
+      "identityHash": "a620f1bd7c5451d322186bb46e7f537382f01a1acbf593fa5afb1a740f05c2b7",
+      "tests": {
+        "judgedRunId": "94a0e690-0ec9-43fa-ac8f-2c2ca4a5dd94",
+        "judgedLedger": 20576049,
+        "judgedPassed": 67,
+        "otherUnchangedLedger": [
+          20576040,
+          20576041,
+          20576042
+        ],
+        "totalPassed": 205,
+        "failed": 0,
+        "skipped": 0
+      },
+      "typecheck": "2026-10-02T22:29:59.874Z head9c87959356;2named3checked0errors"
+    },
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "bc45f0cb7bbe2314af28489044b7b8ea8c714902a20797cc240b443bcc12cb1b",
+        "bytes": 49903
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+        "sha256": "cab84e17b6b87d16fc5fb98ea3826a54a35a7fbac76a30fa714ab72d4f5816ab",
+        "bytes": 51475
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+        "sha256": "6258774bf0e0b033456a6af5df39b6a47f2aad7d69c9bc121448bb566df9b534",
+        "bytes": 3561
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged-cli.test.ts",
+        "sha256": "3fa2cdf42762819bba8ea3f16305a0ad2ee4bb984bac21b7058fa5d65889df12",
+        "bytes": 3485
+      }
+    ],
+    "continuation": {
+      "taskId": "0murjh59a1uv4ej919f",
+      "bashId": "0b68ce95-7b8",
+      "log": ".papercusp/scratch/bash-0b68ce95-7b8.log",
+      "deadline": "2026-10-03T00:32:59.655Z",
+      "outputRoot": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v7-schema-recovery",
+      "launchSource": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/resume-blind-labels-v7-schema-recovery.sh",
+      "preRetryHarnessAudit": "WI-10004537 comment1156322; WI-10005707 comment1156321"
+    },
+    "preservation": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/public-before-schema-recovery-v1.json",
+      "sha256": "4c0f7dcd73cdcd528d3ea3fecdbf5940d807a8dfb6508f2365ed118838c9f558",
+      "bytes": 115879,
+      "originalSectionsUnchanged": true
+    },
+    "acceptance": {
+      "p003Complete": false,
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "fullAccessibleCensusExhausted": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
+  "incrementalExecutionPreparation": {
+    "status": "source-first-preparation-only",
+    "workItem": "WI-10004537",
+    "retainedQualification": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-vector-qualification-v1/assessment.json",
+      "sha256": "71353b971293fa8cd9e36226d92a527f3952c4312c8c1a192eef59a1cfdafa16",
+      "bytes": 34581,
+      "readOnlyReproduction": "PASS: six exact completed cells, 3081 retained document vectors and 324 retained query vectors, zero model execution"
+    },
+    "sourcePins": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "b23d471736c4e739971a353563054503587c3b85024719ef771cc262750bfa8e",
+        "bytes": 64216
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts",
+        "sha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890",
+        "bytes": 50956
+      },
+      {
+        "path": "libs/generic/memory/src/local-embedder-worker.script.mjs",
+        "sha256": "dca0a08083be22913cbbc46dcd0fb115f84d3cc16279f2e1465ec8ecafbb2e39",
+        "bytes": 31426
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.ts",
+        "sha256": "86288f53331a6bfec3d0d9ad41b4cc93ffe23d519348f4d66df9e382a3b5f3b4",
+        "bytes": 27552
+      },
+      {
+        "path": "libs/generic/memory/src/mem0-backend.ts",
+        "sha256": "c5b28f74334a2f66a868d094886a279d5ed62de4978c1c1f5161f85238ed4387",
+        "bytes": 34716
+      }
+    ],
+    "executionIdentityBoundary": {
+      "donorManifestSha256": "490e9cfe92a8b9ef065792985609151406027e19cc82d2c77f3798c3abdcf873",
+      "donorWorkerSha256": "754f42bb37e7bc41ff4692b3239d5a454f6fc0b324afc050d1ac5a79b86bd95b",
+      "currentWorkerSha256": "dca0a08083be22913cbbc46dcd0fb115f84d3cc16279f2e1465ec8ecafbb2e39",
+      "currentWorkerEqualsDonor": false,
+      "writer": "measurement-manifest.ts: assertCandidateArm and loadRetainedRelevanceVectors",
+      "observation": "The current worker, worker host and mDenseOn builder differ from the measured V5 source. The original immutable evaluator and loader predate incremental reuse. An unchanged donor arm cannot truthfully be executed through today's worker merely by retaining its old manifest metadata.",
+      "nextPreparation": "Qualify a new immutable evaluator/loader overlay on the retained executable runtime without changing its measured worker/builders/dependencies; pin the actual loaded source and keep the original runtime untouched. Do not weaken arm identity or repeat the completed document matrix to reconstruct history.",
+      "overlayQualified": false,
+      "newQueryExecutionAuthorizedByThisEvidence": false,
+      "fullInferenceTimingReusable": false
+    },
+    "productionRoutePreparation": {
+      "workItem": "WI-10004538",
+      "readOnly": true,
+      "existingMechanisms": [
+        "candidate-hybrid-bench.ts: runCandidateHybrid, canonicalCandidateBackend",
+        "mem0-backend.ts: Mem0BackendDeps and Mem0Backend.search",
+        "canonical-store.ts: CanonicalVectorStore",
+        "hybrid-backend.ts: HybridBackend"
+      ],
+      "observations": [
+        "runCandidateHybrid explicitly admits canonical-lexical-hybrid, not the entity/decay complete route.",
+        "canonicalCandidateBackend supplies isolated user_id retrieval and score floors but not the production mem0 entity/decay path.",
+        "Mem0Backend.search uses precomputed vector or multiple scopes to enter canonical vectorSearch; this deliberately bypasses client.search entity boost even for one scope.",
+        "The single-scope client.search branch preserves mem0 entity processing; Mem0Backend subsequently floors, applies decay ranking and optional diversity. A fake client or precomputed-vector branch is not proof of the complete entity route."
+      ],
+      "nextPreparation": "Extend the existing owned benchmark and maintained client/store injection seams with a real isolated model-profile-separated mem0 client; prove actual branch, filter, entity and decay behavior in conventional tests before collecting P-004 results.",
+      "completeRouteMeasured": false,
+      "p004ClaimedOrEdited": false
+    },
+    "acceptance": {
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "p003Complete": false,
+      "p004Complete": false,
+      "fullAccessibleCensusExhausted": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
+  "retainedSourceOverlay": {
+    "status": "frozen-module-and-actual-cli-preflight-qualified-no-inference",
+    "workItem": "WI-10004537",
+    "supersedes": "incrementalExecutionPreparation.executionIdentityBoundary: the source overlay now exists and has passed scoped admission; new-label measurement is still unperformed",
+    "sourceReceipt": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v1/source-overlay-receipt.json",
+      "sha256": "6ab06c02d9876b1a67f61ff76101aef36d26d00b2bc84b10a9a1340cdaeeb282",
+      "bytes": 1486380
+    },
+    "moduleQualification": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v1/runtime-module-qualification.json",
+      "sha256": "58c1f2e6cc693c1571b4c11eb039a9eea22f3a85ed2a7c172444a0edbcb6ce7d",
+      "bytes": 37578
+    },
+    "cliPreflight": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v1/cli-preflight-assessment.json",
+      "sha256": "8f031af78e774989622c2ccaf6ba3d89a14fd2676cf47c95c7b2afdf5ad5d918",
+      "bytes": 1955,
+      "manifestSha256": "40a7d247037ea68dfccccf89e032b9f506fc8accc5e66f3bbfe04a3f0bb1e3ea",
+      "actualCLIExit": 1,
+      "expectedRefusal": "retained relevance has no new queries; use offline scoring rather than starting a worker",
+      "rawResultPresent": false,
+      "vectorsPresent": false,
+      "runningClaimPresent": false,
+      "embeddingBranchEntered": false,
+      "postprocessorCorrection": "The first assessment wrapper mistook the typed error object for a string. Read failMeasurementCell's writer and retained failure.error.message; finalized the assessment from the unchanged actual log/receipt without rerunning the CLI. EI-24912102883488587 records this caller-side observation."
+    },
+    "derivation": {
+      "regularSourceFilesWritten": 2,
+      "sourceLinksVerified": 3136,
+      "wholeRuntimeCopied": false,
+      "originalTreeWritten": false,
+      "evaluatorSha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890",
+      "loaderSha256": "0635f37e7ad8f04187560f9f67ee70cd957ccf9ddb63b9bb6431fcbb6320f3c9",
+      "maintainedReuseBlockSha256": "9859490c06731d6e547a7b2271b4a37c27bcb7b3b480ebe7c743ae445618a488",
+      "maintainedReuseBlockBytes": 7917,
+      "evaluatorWithoutIncrementalDeltaEqualsDonor": true,
+      "loaderWithoutReuseBlockEqualsDonor": true,
+      "unrelatedNativeInstrumentationTransplanted": false,
+      "actualWorkerSha256": "754f42bb37e7bc41ff4692b3239d5a454f6fc0b324afc050d1ac5a79b86bd95b",
+      "actualWorkerResolvesToOriginalRuntime": true,
+      "armMetadataChanged": false
+    },
+    "observedAdmission": {
+      "measuredFrozenNodeUsed": true,
+      "retainedDependencyAliasesUsed": true,
+      "actualPackageVersions": {
+        "@huggingface/transformers": "4.2.0",
+        "@huggingface/tokenizers": "0.1.3",
+        "tokenizers": "0.23.2"
+      },
+      "unchangedArmsChecked": 3,
+      "retainedCellViewsChecked": 6,
+      "exactRetainedDocumentVectors": 3081,
+      "exactRetainedQueryVectors": 324,
+      "workerStarted": false,
+      "modelCalls": 0,
+      "collectorBoundSourcesPreserved": 4,
+      "originalCollectorPinsPreserved": 341,
+      "recoveryReferencesPreserved": 342,
+      "scope": "Actual module admission checks each donor cell view with its own vector reference. Actual CLI admission checks one all-reused mDenseOn/memory cell. Neither is a new-label measurement or a multi-cell shared-manifest execution."
+    },
+    "multiCellManifestPreparation": {
+      "observation": "The maintained loader currently hardcodes a single global reuseVectors input. The six V5 completed cells have six distinct vector fingerprints. Per-cell vector-input selection is required before freezing their joint incremental matrix under one manifest identity.",
+      "existingSeamToExtend": "measurement-manifest.ts: loadRetainedRelevanceVectors; retain default reuseVectors behavior and all arm/completion/fingerprint guards",
+      "sharedManifestReuseQualified": false
+    },
+    "reproduction": {
+      "deriver": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/prepare-retained-source-overlay-v1.mjs",
+      "deriverSha256": "d9ca2b962241b017d532ee05ab3a461c79ba4269f29bf7575f270f694d46e241",
+      "qualifier": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/qualify-retained-source-overlay-v1.mjs",
+      "qualifierSha256": "0771d850509fecd7f90b0167062f200197da8bdd2a6bae9b4b1b3dd13b5cc018",
+      "policy": "Immutable outputs: do not rerun either writer into its existing output. Re-resolve and verify saved receipts for recovery; a revised helper requires a new overlay identity/root. No full-runtime copy or old matrix replay."
+    },
+    "acceptance": {
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "p003Complete": false,
+      "p004Complete": false,
+      "fullAccessibleCensusExhausted": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
+  "cellBoundVectorInputExtension": {
+    "workItem": "WI-10005735",
+    "status": "maintained-helper-and-conventional-tests-verified",
+    "reusedMechanism": "loadRetainedRelevanceVectors now accepts cell.parameters.reuseVectorsInput selecting one declared immutable vector input; omission retains the existing reuseVectors default. No new vector store, runtime, tool or parallel manifest system.",
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+        "sha256": "92eb671dea3eb5193ac7516ad80ae2c64920ae8395627c2ac9c5f6005bb543e0",
+        "bytes": 64721
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/measurement-manifest.test.ts",
+        "sha256": "5b68d49c442743cd0ad71adc4c46157c05305917b1486e39d55625282c0b51d3",
+        "bytes": 51124
+      }
+    ],
+    "verification": {
+      "before": {
+        "runId": "dd096bd7-5dcd-4783-aeeb-3e2adfe1538e",
+        "testRunId": 20584093,
+        "passed": 0,
+        "failed": 1,
+        "explicitNameSkipped": 136,
+        "failure": "Second cell of one shared manifest used the global vector input and failed completed receipt identity."
+      },
+      "final": {
+        "runId": "0e84e52c-ef89-47fe-bbfd-4ab78fc1a174",
+        "testRunId": 20584097,
+        "passed": 137,
+        "failed": 0,
+        "skipped": 0
+      },
+      "compiler": {
+        "at": "2026-10-02T23:41:23.757Z",
+        "head": "10a4c0cbf3",
+        "namedFiles": 2,
+        "checkedFiles": 15,
+        "errors": 0
+      },
+      "guardCoverage": [
+        "Two distinct vector inputs in one frozen manifest bind to their own completed cells.",
+        "A selected vector input must be a nonempty string and declared on that cell, with a stored input fingerprint.",
+        "A declared input pointing at another completed cell is still refused.",
+        "Existing default, owner/arm/corpus, snapshot, raw, query identity, ordering, dimensions and normalization controls remain in the conventional suite."
+      ]
+    },
+    "scope": "The maintained selector is verified. Frozen source overlay v1 predates this extension and remains unchanged; a new overlay v2 must transplant and admit this exact tested block before joint incremental execution.",
+    "runtimeOverlayV2Qualified": false,
+    "newEmbeddingMatrixStarted": false,
+    "p003Complete": false
+  },
+  "sourceCollectionTerminalV7": {
+    "workItem": "WI-10004537",
+    "ownedIncident": "WI-10005738",
+    "taskId": "0murjh59a1uv4ej919f",
+    "log": ".papercusp/scratch/bash-0b68ce95-7b8.log",
+    "status": "failed",
+    "actualExit": 1,
+    "actualTerminalAt": "2026-10-02T23:37:27.399Z",
+    "observedTerminalAt": "2026-10-02T23:37:27.443Z",
+    "supersedes": "Earlier same-task running snapshots, including 23:29 prose-pass-2 progress. Do not run the successful-EOF whole-cohort audit or reuse a running assertion.",
+    "failedInvocation": "ba64fadd-5ed5-4a20-930d-5491788d1e72",
+    "failedStage": "prose-judge-2-256-q192",
+    "observedError": "LlmCallError: anthropic-direct error: 429 rate_limit_error; retry ladder stopped at attempt 2/8 because caller retry deadline was reached",
+    "providerRequestId": "req_011CfeHnEKpDkfkThmmdtxG7",
+    "preservedPasses": {
+      "memoryJudge1": {
+        "calls": 144,
+        "votes": 1132
+      },
+      "memoryJudge2": {
+        "calls": 144,
+        "votes": 1132
+      },
+      "proseJudge1": {
+        "calls": 81,
+        "votes": 572
+      }
+    },
+    "missingFinalFiles": [
+      "prose-judge-2-pass.json",
+      "labels.json",
+      "judgments.json"
+    ],
+    "causeStatus": "unconfirmed: determine actual request endpoint, gateway/account outcomes and retry deadline; the error prefix alone does not prove direct bypass or pool exhaustion",
+    "retryPolicy": "No paid retry or model/prompt/account-policy change until the owned incident diagnoses the actual route and preconditions. Preserve and audit the valid prefix and rejected attempts; never repay the completed calls.",
+    "finalNewLabelsVerified": false,
+    "newEmbeddingMatrixStarted": false,
+    "fullAccessibleCensusExhausted": false,
+    "p003Complete": false
+  },
+  "retainedSourceOverlayV2": {
+    "workItem": "WI-10004537",
+    "status": "shared-frozen-runtime-and-actual-cli-admission-qualified-no-inference",
+    "supersedes": "cellBoundVectorInputExtension.runtimeOverlayV2Qualified: the new immutable overlay is now qualified. V1 receipts remain historical and unchanged.",
+    "completion": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v2/qualification-completion.json",
+      "sha256": "4ad0bbc4a923914c4c9de21a8f79f16cba0c76feb3ebdef9cca030a4f7dfc790",
+      "bytes": 10034
+    },
+    "sourceReceipt": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v2/source-overlay-receipt.json",
+      "sha256": "a2344f04beae74481c7cbbef577f811e7863a29a54484026f0aac3dd5d8763a0",
+      "bytes": 1486380
+    },
+    "moduleQualification": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v2/runtime-module-qualification.json",
+      "sha256": "501071a25f8c8b02cfed06fde7ced40ab4e50ec18a2c4440e12ac410f21ced97",
+      "bytes": 39808
+    },
+    "sharedAdmissionManifest": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/retained-source-overlay-v2/shared-admission-manifest.json",
+      "sha256": "daf12cd18de817a5b6e731b4e07901e6bcc9dc271b83a161e8b63a99a26bdff8",
+      "bytes": 122081
+    },
+    "derivation": {
+      "regularSourceFilesWritten": 2,
+      "sourceLinksVerified": 3136,
+      "wholeRuntimeCopied": false,
+      "originalTreeWritten": false,
+      "evaluatorSha256": "a40a17b48622851ede5f991bb66219db331dea0377082ca4070b672350ba4890",
+      "loaderSha256": "7718fe68578ff1bef4043afb0bfbf0d598c40e9444d036c9e5a7632b6985c3c4",
+      "maintainedReuseBlockSha256": "4578a08764a5dc7219b5f01195c0b15e14f11a1235a763c78956c04444d93d32",
+      "maintainedReuseBlockBytes": 8422,
+      "evaluatorWithoutIncrementalDeltaEqualsDonor": true,
+      "loaderWithoutReuseBlockEqualsDonor": true,
+      "actualWorkerSha256": "754f42bb37e7bc41ff4692b3239d5a454f6fc0b324afc050d1ac5a79b86bd95b",
+      "unchangedMeasuredArms": 3,
+      "unrelatedNativeInstrumentationTransplanted": false
+    },
+    "observedAdmission": {
+      "manifestIdentities": 1,
+      "distinctDeclaredVectorInputs": 6,
+      "retainedCellsChecked": 6,
+      "exactDocumentVectors": 3081,
+      "exactQueryVectors": 324,
+      "wrongCellVectorBindingRefused": true,
+      "globalVectorFallbackPresent": false,
+      "measuredFrozenNodeUsed": true,
+      "retainedDependencyAliasesUsed": true,
+      "requestedDevice": "cpu",
+      "intraOpThreads": 4,
+      "interOpThreads": 1,
+      "workerStarted": false,
+      "modelCalls": 0
+    },
+    "actualCLIAdmission": {
+      "taskId": "0murncv5chmazhs1key",
+      "actualExit": 1,
+      "expectedRefusal": "retained relevance has no new queries; use offline scoring rather than starting a worker",
+      "observedAt": "2026-10-03T00:21:45.493Z",
+      "rawResultPresent": false,
+      "runningClaimPresent": false,
+      "embeddingBranchEntered": false,
+      "scope": "One all-reused mDenseOn/memory cell. Module qualification, separately, covers six exact retained cell bindings under one manifest.",
+      "preservedEarlierAttempts": [
+        {
+          "taskId": "0murn5z2oyckl4p16wy",
+          "actualExit": 1,
+          "refusal": "manifest evaluator requires one matching arm and complete declared inputs",
+          "cause": "Caller supplied ignored --model instead of the maintained --legs selector."
+        },
+        {
+          "taskId": "0murn8rcz8mw6gwvfnc",
+          "actualExit": 1,
+          "refusal": "runner output differs from declared cell",
+          "cause": "Caller omitted --out, selecting the default path rather than the frozen raw output."
+        }
+      ],
+      "recurrencePreflights": [
+        "Absolute filesystem dynamic imports are converted to explicit file URLs before evaluating the pinned generated qualifier.",
+        "Actual requested device and thread options must match unchanged donor arms before qualification or output writes.",
+        "Full CLI argv is derived from the selected frozen cell and includes one matching --legs and exact --out; partial, timing and sidecar flags are refused.",
+        "Executable, loader, evaluator, manifest, module qualification and source receipt fingerprints are checked before launch."
+      ],
+      "otherPreparationFailures": "Before the successful module admission, data-URL import resolution and an omitted CPU launch pin failed with zero model calls. The context-only distinguishing probe measured default CUDA versus donor CPU, with threads matching 4/1. Both classes were audited and guarded before retry; no donor metadata or original runtime was changed."
+    },
+    "conventionalTests": {
+      "workItem": "WI-10005735",
+      "testRunId": 20584097,
+      "passed": 137,
+      "failed": 0,
+      "skipped": 0,
+      "interpretation": "Previously verified canonical selector suite; not rerun solely to reconstruct history."
+    },
+    "reproduction": {
+      "sourceDeriver": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/prepare-retained-source-overlay-v2.mjs",
+      "moduleQualifier": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/qualify-retained-source-overlay-v2.mjs",
+      "CLIAdmissionGenerator": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/prepare-retained-overlay-v2-cli-preflight.mjs",
+      "assessmentReader": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/assess-retained-source-overlay-v2.mjs",
+      "policy": "Source and output artifacts are immutable. Read and verify saved pins; do not rerun writers in existing roots. This qualifies source admission, not a new independent cohort, a new-query embedding matrix, or reusable full-inference timing."
+    },
+    "acceptance": {
+      "runtimeOverlayV2Qualified": true,
+      "finalNewLabelsVerified": false,
+      "newEmbeddingMatrixStarted": false,
+      "fullAccessibleCensusExhausted": false,
+      "p003Complete": false,
+      "p004Complete": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
+  "failedV7PrefixAudit": {
+    "workItem": "WI-10004537",
+    "transportWorkItem": "WI-10005738",
+    "status": "preserved-prefix-reconstruction-qualified-no-provider-requests",
+    "assessment": {
+      "sourcePath": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/failed-v7-prefix-audit-v1.json",
+      "sha256": "bc2679d209cdee916dbfd111fc010fe38f3cbc1b040143d130a06729a8c92ad9",
+      "bytes": 621679
+    },
+    "mechanism": "The maintained collectIndependentCohort exact-call recovery/parser seams reconstruct into a new immutable private audit root. Its injected LLM callback throws at the first missing call before any provider request.",
+    "preservedAggregates": [
+      {
+        "name": "memory-authors.json",
+        "calls": 283,
+        "callOrderAndPromptsEqual": true
+      },
+      {
+        "name": "prose-authors.json",
+        "calls": 143,
+        "callOrderAndPromptsEqual": true
+      },
+      {
+        "name": "memory-judge-1-pass.json",
+        "calls": 144,
+        "votes": 1132,
+        "votesEqual": true
+      },
+      {
+        "name": "memory-judge-2-pass.json",
+        "calls": 144,
+        "votes": 1132,
+        "votesEqual": true
+      },
+      {
+        "name": "prose-judge-1-pass.json",
+        "calls": 81,
+        "votes": 572,
+        "votesEqual": true
+      }
+    ],
+    "partialProseSecondPassCalls": 39,
+    "uniquePreservedJudgeInvocations": 408,
+    "stoppedAt": {
+      "name": "prose-judge-2-256-q192",
+      "model": "claude-sonnet-4-6",
+      "questions": 64,
+      "documents": 64,
+      "refusedTransportCallbacks": 1,
+      "providerRequests": 0,
+      "scope": "Matches the historical missing-call position, not a completed cohort or successful paid continuation.",
+      "auditStartUUIDRetained": false,
+      "missingPromptFingerprintRetained": false
+    },
+    "strictRejectionHistory": {
+      "rejectedDonors": 1,
+      "missingRequiredAmbiguityFields": 62,
+      "inferredDefaults": 0,
+      "failedRawSha256": "61d496a25c66ca4ba57015acc00a21c1736e5795f47d772b5a114f328b947dd6",
+      "interpretation": "The maintained strict parser still rejects the malformed historical donor. An accepted replacement is followed through its hash-pinned selected-call ancestry; no vote is synthesized."
+    },
+    "executionEvidence": {
+      "originalAuditTask": "0murobix6r9v6zf1jnf",
+      "originalAuditExit": 1,
+      "originalAuditFailure": "The private postprocessor incorrectly expected error.issues. The maintained parser deliberately wraps its JSON issue array in Error.message. This occurred after the exact-stop, refusal-count, aggregate and partial-call assertions passed.",
+      "finalizerTask": "0muroioq51r3ez5iag9",
+      "finalizerActualExit": 0,
+      "finalizerMechanism": "Read the pinned failed-audit source, actual failure receipt, unchanged reconstruction and maintained strict Error writer; parse the exact prefixed JSON issue array. Recheck preserved aggregates, partial calls and donor/history/source pins without invoking the collector again.",
+      "collectorInvocationsByFinalizer": 0,
+      "failedAuditSourceSha256": "13d7df32ea769ceb9dc95aa75dea68851a4ce447a6e58f5b7f43155187795451",
+      "interpretation": "The successful finalizer does not relabel the earlier actual task as successful; both receipts and the wrapper correction remain evidence."
+    },
+    "reproduction": {
+      "auditor": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/audit-failed-v7-prefix-v1.mjs",
+      "readonlyFinalizer": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/assess-failed-v7-prefix-v1.mjs",
+      "policy": "Recover by reading and verifying immutable receipts and reconstruction. Do not rerun writers in the existing audit root, invoke the completed-cohort audit against this failed job, replay paid valid calls, or treat this prefix as final labels."
+    },
+    "acceptance": {
+      "finalLabelsPresent": false,
+      "finalJudgmentsPresent": false,
+      "fullCohortAudited": false,
+      "historicalFailedEndpointProven": false,
+      "fullAccessibleCensusExhausted": false,
+      "newEmbeddingMatrixStarted": false,
+      "p003Complete": false,
+      "modelAdoptionAuthorized": false
+    }
+  },
+  "transportAttemptDiagnosticPreparation": {
+    "status": "transport-detector-repair-verified-historical-cause-open",
+    "assessment": {
+      "path": "docs/evidence/mdenseon-collector-transport-diagnostics-2026-10-03.json",
+      "sha256": "0a01040455e0479ecd8936197159a538cb4db4eff3b1f8f00009d022b920b921",
+      "bytes": 7011
+    },
+    "scope": "Actual SDK HTTP sends and sanitized response metadata are retained through the existing LLM call seam, including failed calls and SDK internal retries. Five conventional suites and scoped typechecking pass. Local current-build preparation; historical 429 cause and final cohort remain open.",
+    "modelRequests": 0,
+    "newCollectorStarted": false,
+    "historicalFailedEndpointProven": false,
+    "historical429Fixed": false,
+    "p003Complete": false
+  },
+  "sourceCollectionTerminalV8": {
+    "status": "completed-cohort-and-new-call-transport-binding-qualified",
+    "collectorTask": "0murpyb62s0szwzaz0m",
+    "collectorExitCode": 0,
+    "collectorFinishedAt": "2026-10-03T01:41:23.195Z",
+    "auditTask": "0murq8y391npdm6ogh9",
+    "auditExitCode": 0,
+    "auditFinishedAt": "2026-10-03T01:43:06.544Z",
+    "audit": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/completed-transport-cohort-audit-v1.json",
+      "sha256": "ddd3295b9305f7932072125a840cba615d90a282c30399577a181a9d3892a6f0",
+      "bytes": 556153
+    },
+    "newCallTransportBinding": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/completed-transport-binding-v2.json",
+      "sha256": "e4af0adce74a071c74a17aed3f4f44bca54afe719df3cbdfeb0506a2dc54d2b9",
+      "bytes": 29369
+    },
+    "labels": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/blind-labels-v8-transport-diagnostics/labels.json",
+      "sha256": "d35e99921e916e38be18ceb8997b71844c20920c972dbd1b1368de19e2290651",
+      "bytes": 104844
+    },
+    "judgments": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/blind-labels-v8-transport-diagnostics/judgments.json",
+      "sha256": "24d4d234973c6e76ed00a2d79c3598c1217967b55cb1d79d5c98e76944e3cf6e",
+      "bytes": 140478
+    },
+    "reusedValidPrefix": true,
+    "newPaidMissingCalls": 42,
+    "newCallsObservedViaLoopback": true,
+    "newCallsObservedUnpinned": true,
+    "newCallsHttp200WithProviderRequestAndServingAccount": 42,
+    "newCallsPromptFingerprintRecomputed": true,
+    "auditModelRequests": 0,
+    "auditReferenceChecks": 1822,
+    "auditReferenceFailures": [],
+    "labelsByteEqual": true,
+    "votesAndConsensusEqual": true,
+    "independentJudgeInvocations": 450,
+    "memory": {
+      "sourcesAuthored": 283,
+      "acceptedQueries": 164,
+      "calibrationQueries": 48,
+      "testQueries": 116,
+      "excludedQueries": 968,
+      "ambiguousQueries": 591,
+      "judgePasses": 2,
+      "callsPerPass": 144,
+      "votesPerPass": 1132
+    },
+    "prose": {
+      "sourcesAuthored": 143,
+      "acceptedQueries": 64,
+      "calibrationQueries": 12,
+      "testQueries": 52,
+      "excludedQueries": 508,
+      "ambiguousQueries": 312,
+      "judgePasses": 2,
+      "callsPerPass": 81,
+      "votesPerPass": 572
+    },
+    "scope": "The maintained collector reconstructed the completed snapshot cohort from immutable raw author/judge/selected-call ancestry with every model request forbidden. The saved labels, prompts, passes, votes and consensus match exactly. Current transport binding applies only to the 42 newly collected missing calls, not the historical V7 failure. Calibration remains separate; full accessible census and retrieval quality still require measurement.",
+    "historicalFailedEndpointProven": false,
+    "historical429Fixed": false,
+    "fullAccessibleCensusExhausted": false,
+    "newQueryEmbeddingMatrixStarted": false,
+    "p003Complete": false,
+    "modelAdoptionAuthorized": false
+  },
+  "incrementalV8Relevance": {
+    "status": "six-incremental-cells-completed-source-margins-unresolved",
+    "task": "0murrcmbmkikee5244f",
+    "exitCode": 0,
+    "finishedAt": "2026-10-03T02:15:47.895Z",
+    "preparation": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/incremental-v8-relevance-preparation-v2.json",
+      "sha256": "71e3f860268c7c82a366fe515bcd8417e8a9b7b3716961f523ebb9939a0ad433",
+      "bytes": 65426
+    },
+    "manifest": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v6-incremental-v8-v2.json",
+      "sha256": "23ae9ad338c48a36d8f67d104c0285670cfd26689c75c6f54d99bd0b74130bbd",
+      "bytes": 131335
+    },
+    "completion": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v6-incremental-v8-labels-v2/completion.json",
+      "sha256": "9ac15ae9664e4780742284120128f7446074f74b0a9e1652f0da9cdd88fac019",
+      "bytes": 7744
+    },
+    "sourceAnalysis": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v6-incremental-v8-labels-v2/source-pair-analysis-v8-v2.json",
+      "sha256": "3a46a4d82d0758a56fa2737bf6e08dfc7e3cdfe6636ac2a16fd9a011b411f0cb",
+      "bytes": 1319801
+    },
+    "analysisTask": "0murrqem0co87971ipw",
+    "analysisExitCode": 0,
+    "runtime": "Qualified frozen overlay v2, unchanged three native CPU fp32 arms, four intra-op threads and one inter-op thread.",
+    "completedCells": 6,
+    "documentVectorsReusedAcrossCells": 3081,
+    "queryVectorsReusedAcrossCells": 156,
+    "newQueryEmbeddingsAcrossCells": 528,
+    "memoryCellQueries": {
+      "reused": 40,
+      "new": 124,
+      "heldout": 116,
+      "calibration": 48
+    },
+    "proseCellQueries": {
+      "reused": 12,
+      "new": 52,
+      "heldout": 52,
+      "calibration": 12
+    },
+    "oldDocumentAndReusedQueryArraysExact": true,
+    "heldoutRawReciprocalRanksAndTopScoresRecomputed": 504,
+    "analysisReferencePinsVerified": 1870,
+    "analysisModelCalls": 0,
+    "timingComparableToFullInference": false,
+    "decisionMargin": 0.03,
+    "primaryComparisonUnit": "source-target-component",
+    "observedMemorySourceComponents": 29,
+    "observedProseSourceComponents": 13,
+    "unresolvedMemoryClasses": [
+      "lexical-gap",
+      "exact-identifier",
+      "session-start-intent"
+    ],
+    "unresolvedProseClasses": [
+      "lexical-gap",
+      "session-start-intent"
+    ],
+    "unresolvedPooledComparisons": 4,
+    "scope": "Four baseline/corpus comparisons use source-component bootstrap intervals. Every memory class remains unresolved at the fixed 0.03 margin; prose exact-identifier is inside the observed margin with zero observed variance, which supplies no extrapolated power or population-equivalence claim. Other prose classes and all pooled comparisons remain unresolved. Class point estimates differ in direction; pooled averages do not determine adoption. Calibration stays separate and incremental timings cannot replace full performance evidence.",
+    "censusRemainingOutsideSnapshot": {
+      "memory": {
+        "calibrationSources": 29,
+        "testSources": 94
+      },
+      "prose": {
+        "calibrationSources": 480,
+        "testSources": 1492
+      }
+    },
+    "fullAccessibleCensusExhausted": false,
+    "p003Complete": false,
+    "modelAdoptionAuthorized": false
+  },
+  "proseExpansionV21Relevance": {
+    "status": "stop-rule-satisfied-census-exhausted",
+    "workItem": "WI-10004537",
+    "decision": "mdenseon-adoption-measurements-2026-10-01#D-008",
+    "chainTask": "0mux12gb91vtolfc1ph",
+    "analyzedAt": "2026-10-06T20:04:20.863Z",
+    "labels": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/blind-labels-v21-resume-v20-concurrency-succession/labels.json",
+      "sha256": "483b7c46469da4aa39d87c5d1b6b0a3b173beb4211855191178a5d7e72374641",
+      "bytes": 779620
+    },
+    "cohortAudit": {
+      "assessment": {
+        "path": "cache:validation/mdenseon-independent-WI10004537-20261001/completed-prose-expansion-v21-audit-v1.json",
+        "sha256": "b2a73e24bca9a9eba35b157d59d3631100bca40e90766c926d4dfceb264403dc",
+        "bytes": 5406
+      },
+      "labelsByteEqual": true,
+      "judgmentsEquivalent": true,
+      "modelRequests": 0,
+      "accepted": {
+        "memory": 220,
+        "prose": 1472
+      },
+      "agreement": {
+        "memory": {
+          "accepted": 220,
+          "judged": 1624,
+          "agreement": 0.5381773399014779
+        },
+        "prose": {
+          "accepted": 1472,
+          "judged": 8460,
+          "agreement": 0.5468085106382978
+        }
+      }
+    },
+    "manifest": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v21-prose-expansion-v1.json",
+      "sha256": "1ea230de3a8bcf91c35aa67adf583d5649f73a3ee5bc2a158879d146e07f6d7a",
+      "bytes": 410040
+    },
+    "completion": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v21-prose-expansion-v1/completion.json",
+      "sha256": "fe892d57dddfb2a7e02fcefaa50fd922a71a528510cfbf3b28908904d44a7ad1",
+      "bytes": 4769
+    },
+    "v19MemoryManifest": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/frozen-relevance-v19-memory-expansion-v1.json",
+      "sha256": "c4e4c343d2bdc332bc84c66cd08479236515a232559f7c29c1ebc5b250ee9949",
+      "bytes": 142445
+    },
+    "memoryLabelsIdenticalToV19": true,
+    "sourceAnalysis": {
+      "path": "cache:validation/mdenseon-independent-WI10004537-20261001/independent-relevance-v21-prose-expansion-v1/source-pair-analysis-v21-v1.json",
+      "sha256": "325e7f4816fc567cfb89f6d07d3adf3b1c07986a95a979843d76db41cd46c70c",
+      "bytes": 4814462
+    },
+    "analysisModelCalls": 0,
+    "analysisPinsVerified": 10539,
+    "documentsEmbedded": 5916,
+    "timingComparableToFullInference": false,
+    "decisionMargin": 0.03,
+    "primaryComparisonUnit": "source-target-component",
+    "census": {
+      "memory": {
+        "test": 312,
+        "allEligibleSourcesAuthored": true
+      },
+      "prose": {
+        "test": 1601,
+        "allEligibleSourcesAuthored": true
+      }
+    },
+    "stopRule": {
+      "contract": "margin-resolved-or-censused-population-exhausted",
+      "mrrMargin": 0.03,
+      "allMarginsResolved": false,
+      "censusExhausted": {
+        "memory": true,
+        "prose": true
+      },
+      "satisfied": true
+    },
+    "unresolvedComparisons": 13,
+    "comparisons": [
+      {
+        "corpus": "memory",
+        "baseline": "gemma",
+        "classesDisagree": false,
+        "byClass": {
+          "lexical-gap": {
+            "sources": 40,
+            "delta": {
+              "point": 0.03125,
+              "lower": -0.03333335,
+              "upper": 0.097916675,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "exact-identifier": {
+            "sources": 40,
+            "delta": {
+              "point": 0.01354167500000003,
+              "lower": -0.070833325,
+              "upper": 0.09375002499999999,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "session-start-intent": {
+            "sources": 40,
+            "delta": {
+              "point": 0.045833324999999925,
+              "lower": 0,
+              "upper": 0.11666665000000001,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sources": 40,
+            "delta": {
+              "point": 0.030208333333333615,
+              "lower": -0.011805558333333336,
+              "upper": 0.07361110833333333,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      },
+      {
+        "corpus": "memory",
+        "baseline": "harrier",
+        "classesDisagree": false,
+        "byClass": {
+          "lexical-gap": {
+            "sources": 40,
+            "delta": {
+              "point": 0.16319444999999988,
+              "lower": 0.072222225,
+              "upper": 0.266666675,
+              "ci": 0.95
+            },
+            "marginDecision": "improvement-above-margin"
+          },
+          "exact-identifier": {
+            "sources": 40,
+            "delta": {
+              "point": 0.04916667499999994,
+              "lower": -0.008333324999999999,
+              "upper": 0.124166675,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "session-start-intent": {
+            "sources": 40,
+            "delta": {
+              "point": 0.065972225,
+              "lower": 0.0125,
+              "upper": 0.13541667500000001,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sources": 40,
+            "delta": {
+              "point": 0.09277778333333353,
+              "lower": 0.04601852479166666,
+              "upper": 0.14764238020833298,
+              "ci": 0.95
+            },
+            "marginDecision": "improvement-above-margin"
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "gemma",
+        "classesDisagree": false,
+        "byClass": {
+          "lexical-gap": {
+            "sources": 275,
+            "delta": {
+              "point": -0.0157979800000001,
+              "lower": -0.0478337673181818,
+              "upper": 0.01625278663636362,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "exact-identifier": {
+            "sources": 275,
+            "delta": {
+              "point": -0.015393941818181878,
+              "lower": -0.030121214545454546,
+              "upper": -0.002121214545454545,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "session-start-intent": {
+            "sources": 275,
+            "delta": {
+              "point": -0.019818183636363562,
+              "lower": -0.04672726913636364,
+              "upper": 0.006363629181818184,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sources": 275,
+            "delta": {
+              "point": -0.01700336848484829,
+              "lower": -0.03223054321212121,
+              "upper": -0.0020706368787878843,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      },
+      {
+        "corpus": "prose",
+        "baseline": "harrier",
+        "classesDisagree": false,
+        "byClass": {
+          "lexical-gap": {
+            "sources": 275,
+            "delta": {
+              "point": 0.04855555454545446,
+              "lower": 0.011377941090909083,
+              "upper": 0.085269842,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "exact-identifier": {
+            "sources": 275,
+            "delta": {
+              "point": 0.0007186145454546322,
+              "lower": -0.014528138181818182,
+              "upper": 0.0164158018181818,
+              "ci": 0.95
+            },
+            "marginDecision": "inside-margin"
+          },
+          "session-start-intent": {
+            "sources": 275,
+            "delta": {
+              "point": 0.01129870363636376,
+              "lower": -0.017489830999999983,
+              "upper": 0.03993096518181817,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          },
+          "ALL_ANSWERABLE": {
+            "sources": 275,
+            "delta": {
+              "point": 0.020190957575757285,
+              "lower": 0.002646196121212129,
+              "upper": 0.03760476699999995,
+              "ci": 0.95
+            },
+            "marginDecision": "unresolved"
+          }
+        }
+      }
+    ],
+    "judgeCost": {
+      "item": "EI-25217660453528358",
+      "model": "claude-sonnet-4-6",
+      "calls": 12355,
+      "inputTokens": 165712922,
+      "outputTokens": 10149115,
+      "usd": 649.38,
+      "receiptsMissingCost": 0,
+      "scope": "Exact V20+V21 blind-judge spend summed from every per-call attempt receipt. Quadratic by design (2 passes x query chunks x document chunks); disclosed per D-008, not a defect."
+    },
+    "scope": "Prose: V21 audited census-complete labels over snapshot-v4, missing-only native CPU vectors on pinned V8 donors. Memory: labels identical to V19, V19 cells reused. Source-target components primary at the fixed 0.03 MRR margin. This is a relevance measurement; the adoption verdict belongs to the P-009 dossier."
+  },
+  "limitations": [
+    "The historical V1 cohort had five accepted heldout memory source targets and two prose targets. The completed V5 comparison uses eight memory and two prose source targets. Empirical narrow or degenerate bootstrap intervals are not proof of population equivalence.",
+    "Identifier, paraphrase and intent classes are retained separately. Any pooled result is secondary to the per-class source estimates.",
+    "The larger full accessible source census remains unexhausted. V2 stopped on provider rate limiting and V3 stopped on a malformed ambiguous judgment. V4 labels retain eight memory and two prose heldout targets after conservative exclusions; V5 subsequently completed all six expanded model comparisons and paired source-group analysis. Memory class/source margins remain unresolved.",
+    "Cosine-only rejection margins do not establish calibrated production hybrid/entity/filter/decay negative rejection; P-004 remains pending.",
+    "This measures worker CPU native-vector relevance, not HTTP performance, GPU/boundary/reliability/answer quality or final plan acceptance.",
+    "V21 blind cohort acceptance: memory 220/1624 (agreement 0.5381773399014779), prose 1472/8460 (agreement 0.5468085106382978). Unresolved margins after census exhaustion are reported as measured intervals, not as equivalence or superiority."
+  ],
+  "next": "P-003 is complete under the D-008 stop rule (censused population exhausted; residual uncertainty is the final result). The V21 result is under proseExpansionV21Relevance. Do not replay completed matrices; the adoption verdict is the P-009 dossier.",
+  "reproduction": {
+    "modelRunner": "packages/operator-core/lib/memory/bench/embedder-eval-cli.ts --manifest <frozen manifest> --manifest-sha256 <recorded SHA256> --cell <declared cell> --legs <declared model> --corpus <declared corpus> --mdenseon-model <qualified export> --out <declared private output>",
+    "analysisModule": "packages/operator-core/lib/memory/bench/paired-leg-report.ts: compareSourceGroupedLegs(primary) and compareLegs(secondary), fed exact receipt perQuery rows and independent heldout labels",
+    "rerunPolicy": "New runId/output root for another inference attempt; do not overwrite immutable cell outputs."
+  }
+}

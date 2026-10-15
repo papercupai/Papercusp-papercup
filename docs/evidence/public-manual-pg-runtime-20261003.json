@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Saved isolated current-build public manual Postgres lifecycle",
+  "framework": "shell",
+  "command": ["node", "scripts/with-test-pg.mjs", "--isolated-runtime", "--", "node_modules/.bin/vitest", "run", "--config", "packages/operator-core/vitest.integration.config.ts", "packages/operator-core/lib/harness/docs/harness-docs-e2e.integration.test.ts"],
+  "exitCode": 0,
+  "startedAt": "2026-10-03T05:31:24.000Z",
+  "finishedAt": "2026-10-03T05:31:41.830Z",
+  "summary": "The saved with-test-pg isolated-runtime command reached actual private Postgres, then its maintained harness-docs integration child passed13 tests. These timestamps are the child run's printed start and duration. This registers the saved orchestration; it launches no new test or browser process.",
+  "assertions": [
+    {"id":"private-postgres-ready","passed":true,"evidence":"/tmp/public-manual-pg-tests.log contains [with-test-pg] ready on private localhost43661 and the current canonical checkout Vitest banner."},
+    {"id":"real-docs-lifecycle","passed":true,"evidence":"harness-docs-e2e.integration.test.ts passed13 tests; the public source scenario reads real file prose with empty metadata sentinel, refuses canonical copied bodies, commits a changed source, observes review/steward sourceFile and verifies a fresh baseline."}
+  ],
+  "sourceTest": "packages/operator-core/lib/harness/docs/harness-docs-e2e.integration.test.ts",
+  "rawLog": "/tmp/public-manual-pg-tests.log",
+  "invocationProvenance": "Predecessor transcript call_XJcaPrtmp9XY5tHVEJRNtjVM at2026-10-03T05:31:15.686Z, recovered verbatim from the predecessor Codex session file.",
+  "scope": "Actual isolated runtime orchestration and saved child assertions; not a production autonomous agent repair claim.",
+  "plan": "public-manual-expansion-and-freshness-2026-10-03",
+  "workItem": "WI-10005840"
+}

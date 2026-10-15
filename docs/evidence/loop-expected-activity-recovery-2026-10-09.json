@@ -1,0 +1,858 @@
+{
+  "schemaVersion": 1,
+  "kind": "retained-vitest-evidence",
+  "committedReplay": {
+    "kind": "clean-committed-replay",
+    "commitSha": "81c209358cf57efbdb7616169275e86a0792cde1",
+    "root": "/tmp/papercusp-lint-as-committed-81c209358c-teBkVc",
+    "materializerLog": "/tmp/loop-recovery-clean-materialize-20261010-0124.log",
+    "baselineReceipt": "/tmp/loop-recovery-clean-ledger-layered-20261010.json",
+    "supersededMetadataEdition": {
+      "runGroupId": "3d30b443-7155-5418-a1e7-afc115a8abf8",
+      "testRunIds": [
+        20966224,
+        20966225,
+        20966226,
+        20966227,
+        20966228,
+        20966229
+      ],
+      "reason": "Original retained report edition omitted test layers; new metadata edition uses actual recorded ROUTE and pinned config declarations, without re-executing or altering earlier rows."
+    },
+    "runGroupId": "df387919-b687-5729-ae63-53c7fadfaac6",
+    "testRunIds": [
+      20966327,
+      20966328,
+      20966329,
+      20966330,
+      20966331,
+      20966332
+    ],
+    "reports": [
+      {
+        "path": "/tmp/loop-recovery-clean-core-20261010-r2.json",
+        "sha256": "a57cbff2eed6f01dc9376f0d5de923e3cbd39219155ca9486a11acc0f06ac6d8"
+      },
+      {
+        "path": "/tmp/loop-recovery-clean-core-20261010-r2.1.json",
+        "sha256": "ed13e3030d8d6b8c744a329dbaef7ba6329bedc0586e83c47ce0f6ae4dea1529"
+      },
+      {
+        "path": "/tmp/loop-recovery-clean-native-20261010.json",
+        "sha256": "c050615793f2b576cc267cc13eab3f188ed776bdb563c355ac66bd5c99c8f834"
+      },
+      {
+        "path": "/tmp/loop-recovery-clean-native-20261010.1.json",
+        "sha256": "9cc5b070e6e08e38e099246a2ef051331b481c4b67961ab39a179222eae54177"
+      }
+    ],
+    "routeEvidence": [
+      {
+        "report": "/tmp/loop-recovery-clean-core-20261010-r2.json",
+        "log": "/tmp/loop-recovery-clean-core-20261010-r2.log",
+        "route": "ROUTE cwd=packages/operator-core config=vitest.config.ts",
+        "config": "packages/operator-core/vitest.config.ts",
+        "configSha256": "beddbc752d598b841a1ab6ed18bda21ce5f3dec6ddf18c2dd208dd0890fc1ecb",
+        "testLayer": "unit"
+      },
+      {
+        "report": "/tmp/loop-recovery-clean-core-20261010-r2.1.json",
+        "log": "/tmp/loop-recovery-clean-core-20261010-r2.log",
+        "route": "ROUTE cwd=packages/operator-core config=vitest.integration.config.ts",
+        "config": "packages/operator-core/vitest.integration.config.ts",
+        "configSha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337",
+        "testLayer": "integration"
+      },
+      {
+        "report": "/tmp/loop-recovery-clean-native-20261010.json",
+        "log": "/tmp/loop-recovery-clean-native-20261010.log",
+        "route": "ROUTE cwd=apps/operator config=vitest.config.ts",
+        "config": "apps/operator/vitest.config.ts",
+        "configSha256": "0890eaac64451615f986f265280c824c285400f0d527d10c4e3a09201d6d27a2",
+        "testLayer": "unit"
+      },
+      {
+        "report": "/tmp/loop-recovery-clean-native-20261010.1.json",
+        "log": "/tmp/loop-recovery-clean-native-20261010.log",
+        "route": "ROUTE cwd=apps/operator config=vitest.integration.config.ts",
+        "config": "apps/operator/vitest.integration.config.ts",
+        "configSha256": "238b3844717384e15c8cc362daa7aa0e7a365205fc591bf1a080bda2e6f94038",
+        "testLayer": "integration"
+      }
+    ],
+    "baselineFiles": [
+      {
+        "path": "packages/operator-core/lib/events/await/psu-pty-discovery.test.ts",
+        "passed": 105,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "unit"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+        "passed": 21,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "unit"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/routines/loop-execution-recovery.integration.test.ts",
+        "passed": 10,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "integration"
+      },
+      {
+        "path": "apps/operator/lib/psu-pty-host-execution-state.test.ts",
+        "passed": 19,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "unit"
+      },
+      {
+        "path": "apps/operator/lib/psu-pty-host-kickoff-activity.test.ts",
+        "passed": 9,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "unit"
+      },
+      {
+        "path": "apps/operator/lib/psu-pty-host-execution-recovery.integration.test.ts",
+        "passed": 10,
+        "failed": 0,
+        "skipped": 0,
+        "testLayer": "integration"
+      }
+    ],
+    "mutations": [
+      {
+        "name": "stop",
+        "log": "/tmp/loop-recovery-clean-mutation-stop-20261010.log",
+        "sha256": "b9bb398964ed0a7ab510d671ef298576d494c9d13bec310abc1f883d23a41133",
+        "replay": {
+          "cwd": ".",
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1",
+          "result": {
+            "relocation": "overlay",
+            "target": "copy-out",
+            "mutantParse": "unchecked",
+            "mutantLedger": "test_runs:20966212",
+            "baselineExit": 0,
+            "assertionEvidence": "test-file-assertion-failure",
+            "guardExit": 1,
+            "verdict": "caught",
+            "expected": "caught"
+          },
+          "runnerPath": "scripts/mutation-probe.sh",
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+            "--mutate",
+            "s/if \\(!i\\.active\\)/if (false)/",
+            "--relocation",
+            "overlay",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "schemaVersion": 1,
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e"
+        },
+        "measuredFailedCases": [
+          "expected loop execution recovery protects deliberate-stop"
+        ]
+      },
+      {
+        "name": "recover",
+        "log": "/tmp/loop-recovery-clean-mutation-recover-20261010.log",
+        "sha256": "2cd7b55a936d787c870905b228b7a611d5e06e114b6f517a4d7e566cc8bc8614",
+        "replay": {
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "result": {
+            "assertionEvidence": "test-file-assertion-failure",
+            "target": "copy-out",
+            "verdict": "caught",
+            "mutantLedger": "test_runs:20966230",
+            "baselineExit": 0,
+            "relocation": "overlay",
+            "mutantParse": "unchecked",
+            "guardExit": 1,
+            "expected": "caught"
+          },
+          "cwd": ".",
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+            "--mutate",
+            "s/action: 'recover', state:/action: 'observe', state:/",
+            "--relocation",
+            "overlay",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "schemaVersion": 1,
+          "runnerPath": "scripts/mutation-probe.sh",
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1"
+        },
+        "measuredFailedCases": [
+          "expected loop execution recovery retains a paced recovery deadline without relying on provider error wording",
+          "expected loop execution recovery bounds unknown-state probing and retains an explicit recoverable block",
+          "expected loop execution recovery does not retry forever after repeated starts fail"
+        ]
+      },
+      {
+        "name": "deadline",
+        "log": "/tmp/loop-recovery-clean-mutation-deadline-20261010.log",
+        "sha256": "a211e058d64a2f15208fc3d61c382756f059e376afe7fd0c542e65cdc18d46c8",
+        "replay": {
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1",
+          "result": {
+            "assertionEvidence": "test-file-assertion-failure",
+            "guardExit": 1,
+            "expected": "caught",
+            "target": "copy-out",
+            "mutantLedger": "test_runs:20966304",
+            "relocation": "overlay",
+            "mutantParse": "unchecked",
+            "verdict": "caught",
+            "baselineExit": 0
+          },
+          "schemaVersion": 1,
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+            "--mutate",
+            "s/nextProbeAt: i\\.nowMs \\+ Math\\.min\\(300_000, PROBE_INTERVAL_MS \\* 2 \\*\\* state\\.attempts\\)/nextProbeAt: i.nowMs/",
+            "--relocation",
+            "overlay",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "runnerPath": "scripts/mutation-probe.sh",
+          "cwd": "."
+        },
+        "measuredFailedCases": [
+          "expected loop execution recovery retains a paced recovery deadline without relying on provider error wording"
+        ]
+      },
+      {
+        "name": "observation",
+        "log": "/tmp/loop-recovery-clean-mutation-observation-20261010.log",
+        "sha256": "911236b5a6866caa7e9aa648cec125e0576d194ae294654840b18a6a6c61267b",
+        "replay": {
+          "argv": [
+            "--file",
+            "apps/operator/scripts/psu-pty-host.mjs",
+            "--mutate",
+            "s/let phase = 'unknown'/let phase = 'running'/; s/phase = failed \\? 'failed' : 'settled'/phase = 'settled'/",
+            "--relocation",
+            "overlay",
+            "--fake-destructive",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs apps/operator/lib/psu-pty-host-execution-state.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "schemaVersion": 1,
+          "runnerPath": "scripts/mutation-probe.sh",
+          "result": {
+            "verdict": "caught",
+            "baselineExit": 0,
+            "assertionEvidence": "test-file-assertion-failure",
+            "expected": "caught",
+            "relocation": "overlay",
+            "mutantLedger": "test_runs:20966307",
+            "guardExit": 1,
+            "target": "copy-out",
+            "mutantParse": "ok"
+          },
+          "cwd": ".",
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1"
+        },
+        "measuredFailedCases": [
+          "native execution observations reports missing evidence as unknown for codex",
+          "native execution observations reports missing evidence as unknown for claude",
+          "native execution observations reports missing evidence as unknown for omp",
+          "native execution observations distinguishes an aborted Codex turn from a running turn without reading error text",
+          "native execution observations does not treat OMP tool-use as terminal and recognizes arbitrary failed outcomes",
+          "native execution observations does not certify older, future, or shared-home evidence",
+          "native execution observations keeps Claude tool results inside the same turn and uses typed API failure evidence"
+        ]
+      },
+      {
+        "name": "unknown",
+        "log": "/tmp/loop-recovery-clean-mutation-unknown-20261010.log",
+        "sha256": "51c50ce1e5116eec061e5b6fbe88a43f6581f1aff5c1e440f31642ad3b8dc150",
+        "replay": {
+          "cwd": ".",
+          "runnerPath": "scripts/mutation-probe.sh",
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+            "--mutate",
+            "s/status: 'unknown', reason: 'native-observation-unavailable'/status: 'running', reason: 'native-observation-unavailable'/",
+            "--relocation",
+            "overlay",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+            "--expect",
+            "caught"
+          ],
+          "result": {
+            "baselineExit": 0,
+            "target": "copy-out",
+            "mutantParse": "unchecked",
+            "verdict": "caught",
+            "mutantLedger": "test_runs:20966313",
+            "guardExit": 1,
+            "expected": "caught",
+            "assertionEvidence": "test-file-assertion-failure",
+            "relocation": "overlay"
+          },
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1",
+          "schemaVersion": 1
+        },
+        "measuredFailedCases": [
+          "expected loop execution recovery keeps absent, stale and mismatched proof unknown"
+        ]
+      },
+      {
+        "name": "generation",
+        "log": "/tmp/loop-recovery-clean-mutation-generation-20261010.log",
+        "sha256": "59931dc12662b096f8c9d20b16f0faffe5c5b2f9f78c9a200cc6660047244df7",
+        "replay": {
+          "result": {
+            "mutantParse": "unchecked",
+            "relocation": "overlay",
+            "verdict": "caught",
+            "target": "copy-out",
+            "assertionEvidence": "test-file-assertion-failure",
+            "guardExit": 1,
+            "expected": "caught",
+            "baselineExit": 0,
+            "mutantLedger": "test_runs:20966323"
+          },
+          "runnerCommit": "81c209358cf57efbdb7616169275e86a0792cde1",
+          "runnerPath": "scripts/mutation-probe.sh",
+          "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+          "cwd": ".",
+          "schemaVersion": 1,
+          "argv": [
+            "--file",
+            "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+            "--mutate",
+            "s/envelope.expectedChildGeneration = msg.expectedChildGeneration/envelope.expectedChildGeneration = undefined/",
+            "--relocation",
+            "overlay",
+            "--fake-destructive",
+            "--test",
+            "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/events/await/psu-pty-discovery.test.ts -t \"preserves optional native proof and generation fences\"",
+            "--expect",
+            "caught"
+          ]
+        },
+        "measuredFailedCases": [
+          "injectIntoHostWithConfirmation — WHY a true happened (WI-6862) preserves optional native proof and generation fences on the real socket: {\"expectedStartedAt\":100,\"requireNativeTurnStart\":true,\"expectedChildGeneration\":2,\"expectedHostStartedAt\":200,\"provenanceIssuedAtMs\":300}",
+          "injectIntoHostWithConfirmation — WHY a true happened (WI-6862) preserves optional native proof and generation fences on the real socket: {\"expectedStartedAt\":0,\"requireNativeTurnStart\":false,\"expectedChildGeneration\":0,\"expectedHostStartedAt\":0,\"provenanceIssuedAtMs\":0}"
+        ]
+      }
+    ],
+    "scope": [
+      "Real PTY, Unix socket, private PostgreSQL and actual recovery clocks.",
+      "Sanitized native events are fixtures; no provider model invocation is asserted.",
+      "Full maintained committed superproject and pinned submodules were materialized before tests; named accepted bytes retain D-005 identity.",
+      "Legacy originalRun and mutations are preserved as separately dirty historical executions.",
+      "Vetting passed under EI-25554964655258878; this replay does not assert implementation acceptance or deployed shipment."
+    ]
+  },
+  "plan": "loop-expected-activity-recovery-2026-10-09",
+  "workItemId": "WI-10007937",
+  "summary": "Original private-runtime Vitest assertions retained and faithfully re-ingested using existing test parser/store; targeted canonical mutation guards were then run and caught. This artifact does not claim final acceptance or shipment.",
+  "originalRun": {
+    "report": {
+      "path": "/tmp/loop-recovery-native-commitclock-20261009.json",
+      "sha256": "7bc6a49d3a2bbe9fe3fc317e0976784647f4e30d8f09a429670282ddf609957f"
+    },
+    "log": {
+      "path": "/tmp/loop-recovery-native-commitclock-20261009.log",
+      "sha256": "e23e3663c9dd914a11c0875d7cc9e8756a61eeed5377419363fbc5443416dcdb"
+    },
+    "sourceMap": {
+      "path": "/tmp/loop-recovery-native-commitclock-sources-20261009.json",
+      "sha256": "8f1deacb99cc1826c8bbc182dd09117fb0b96018eae69c3c95211c1e43e035c6"
+    },
+    "recordedSha": "0bb7dbe81130672b136e276a034a303062df1e87",
+    "worktreeDirty": true,
+    "workspaceName": "@papercusp/web",
+    "testLayer": "integration",
+    "startTime": 1791576979578,
+    "testResults": [
+      {
+        "assertionResults": [
+          {
+            "ancestorTitles": [
+              "cross-client native recovery handshake"
+            ],
+            "fullName": "cross-client native recovery handshake requires a native codex turn and deduplicates repeated delivery",
+            "status": "passed",
+            "title": "requires a native codex turn and deduplicates repeated delivery",
+            "duration": 401.5615060000018,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "cross-client native recovery handshake"
+            ],
+            "fullName": "cross-client native recovery handshake requires a native claude turn and deduplicates repeated delivery",
+            "status": "passed",
+            "title": "requires a native claude turn and deduplicates repeated delivery",
+            "duration": 146.11061500000142,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "cross-client native recovery handshake"
+            ],
+            "fullName": "cross-client native recovery handshake requires a native omp turn and deduplicates repeated delivery",
+            "status": "passed",
+            "title": "requires a native omp turn and deduplicates repeated delivery",
+            "duration": 411.90237999999954,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "cross-client native recovery handshake"
+            ],
+            "fullName": "cross-client native recovery handshake keeps a codex prompt without model activity pending across retries",
+            "status": "passed",
+            "title": "keeps a codex prompt without model activity pending across retries",
+            "duration": 483.11771099999896,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "cross-client native recovery handshake"
+            ],
+            "fullName": "cross-client native recovery handshake keeps a claude prompt without model activity pending across retries",
+            "status": "passed",
+            "title": "keeps a claude prompt without model activity pending across retries",
+            "duration": 475.97722000000067,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "cross-client native recovery handshake"
+            ],
+            "fullName": "cross-client native recovery handshake keeps a omp prompt without model activity pending across retries",
+            "status": "passed",
+            "title": "keeps a omp prompt without model activity pending across retries",
+            "duration": 493.96704599999794,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "cross-client native recovery handshake"
+            ],
+            "fullName": "cross-client native recovery handshake refuses an older child generation without writing a prompt",
+            "status": "passed",
+            "title": "refuses an older child generation without writing a prompt",
+            "duration": 383.54667999999947,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "failed native turn \u2192 durable routine retry \u2192 native wake"
+            ],
+            "fullName": "failed native turn \u2192 durable routine retry \u2192 native wake recovers one codex turn through the real claim and wake paths",
+            "status": "passed",
+            "title": "recovers one codex turn through the real claim and wake paths",
+            "duration": 60657.847459,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "failed native turn \u2192 durable routine retry \u2192 native wake"
+            ],
+            "fullName": "failed native turn \u2192 durable routine retry \u2192 native wake recovers one claude turn through the real claim and wake paths",
+            "status": "passed",
+            "title": "recovers one claude turn through the real claim and wake paths",
+            "duration": 60237.664309000014,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          },
+          {
+            "ancestorTitles": [
+              "failed native turn \u2192 durable routine retry \u2192 native wake"
+            ],
+            "fullName": "failed native turn \u2192 durable routine retry \u2192 native wake recovers one omp turn through the real claim and wake paths",
+            "status": "passed",
+            "title": "recovers one omp turn through the real claim and wake paths",
+            "duration": 60494.24112400002,
+            "failureMessages": [],
+            "meta": {},
+            "tags": []
+          }
+        ],
+        "startTime": 1791577008490,
+        "endTime": 1791577193383.2412,
+        "status": "passed",
+        "message": "",
+        "name": "$PAPERCUSP_ROOT/apps/operator/lib/psu-pty-host-execution-recovery.integration.test.ts"
+      }
+    ],
+    "cleanup": {
+      "runtimeRemoved": true,
+      "pgDataRemoved": true,
+      "evidence": "original log cleanup stage complete"
+    },
+    "disclosures": [
+      "Sanitized native events are fixtures; no provider model call is asserted.",
+      "Real PTY, Unix socket, private PG and actual grace/retry clocks were exercised.",
+      "Socket inputs are opaque in collected source map.",
+      "Only the named subject source byte checks are rechecked here; no all-input certainty is asserted."
+    ],
+    "subjectSources": [
+      {
+        "path": "apps/operator/lib/psu-pty-host-execution-recovery.integration.test.ts",
+        "sha256": "93d869157bfd9d85eb62c86facf34cb155dee138b1160d45f6664802a483dd19",
+        "currentSha256": "93d869157bfd9d85eb62c86facf34cb155dee138b1160d45f6664802a483dd19"
+      },
+      {
+        "path": "apps/operator/scripts/psu-pty-host.mjs",
+        "sha256": "772a859a542b1990798cbb9e3f4bd2d069531156226fe4b0a5c51733e0f6a11c",
+        "currentSha256": "772a859a542b1990798cbb9e3f4bd2d069531156226fe4b0a5c51733e0f6a11c"
+      },
+      {
+        "path": "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+        "sha256": "0c082a2553e2bc538bf8d57ec6839830b64859cfc398be24c79d3ba5ac4f370f",
+        "currentSha256": "0c082a2553e2bc538bf8d57ec6839830b64859cfc398be24c79d3ba5ac4f370f"
+      },
+      {
+        "path": "packages/operator-core/lib/events/await/wake-executor.ts",
+        "sha256": "07a9406851226954237603a2da63722c36b595e4e184f3b6df2620cc9eeb3764",
+        "currentSha256": "07a9406851226954237603a2da63722c36b595e4e184f3b6df2620cc9eeb3764"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/routines/claim.ts",
+        "sha256": "53b22d90a836656d239b8f9779596c548fdc9b1501b067d3b4d472bc54840f7a",
+        "currentSha256": "53b22d90a836656d239b8f9779596c548fdc9b1501b067d3b4d472bc54840f7a"
+      },
+      {
+        "path": "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+        "sha256": "b6878393d60efd5c505dfcee80d897f682cf121e2a11fa78a9a651c53d0d66cc",
+        "currentSha256": "b6878393d60efd5c505dfcee80d897f682cf121e2a11fa78a9a651c53d0d66cc"
+      }
+    ]
+  },
+  "ledgerRecovery": {
+    "mechanism": [
+      "parseVitestJsonForHarnessRows",
+      "persistHarnessTestRunsWithIds",
+      "readHarnessTestRunEvidence"
+    ],
+    "receipt": {
+      "runGroupId": "retained-vitest-7bc6a49d3a2bbe9fe3fc317e09767846",
+      "reportSha256": "7bc6a49d3a2bbe9fe3fc317e0976784647f4e30d8f09a429670282ddf609957f",
+      "sourceMapSha256": "8f1deacb99cc1826c8bbc182dd09117fb0b96018eae69c3c95211c1e43e035c6",
+      "recordedSha": "0bb7dbe81130672b136e276a034a303062df1e87",
+      "worktreeDirty": true,
+      "sourceByteChecks": [
+        "apps/operator/lib/psu-pty-host-execution-recovery.integration.test.ts",
+        "apps/operator/scripts/psu-pty-host.mjs",
+        "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+        "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+        "packages/operator-core/lib/harness/routines/claim.ts",
+        "packages/operator-core/lib/events/await/wake-executor.ts"
+      ],
+      "persisted": {
+        "written": 1,
+        "ids": [
+          20962654
+        ]
+      },
+      "readback": [
+        {
+          "id": 20962654,
+          "workspace_id": "papercusp-workspace",
+          "harness_slug": "papercusp",
+          "run_group_id": "retained-vitest-7bc6a49d3a2bbe9fe3fc317e09767846",
+          "file_path": "apps/operator/lib/psu-pty-host-execution-recovery.integration.test.ts",
+          "status": "pass",
+          "finished_at": "2026-10-09 16:19:53.383-04",
+          "commit_sha": "0bb7dbe81130672b136e276a034a303062df1e87",
+          "worktree_dirty": true,
+          "execution_details": {
+            "root": "$PAPERCUSP_ROOT",
+            "failed": 0,
+            "passed": 10,
+            "skipped": 0,
+            "filePath": "apps/operator/lib/psu-pty-host-execution-recovery.integration.test.ts",
+            "commitSha": "0bb7dbe81130672b136e276a034a303062df1e87",
+            "testLayer": "integration",
+            "runGroupId": "retained-vitest-7bc6a49d3a2bbe9fe3fc317e09767846",
+            "harnessSlug": "papercusp",
+            "workspaceId": "papercusp-workspace",
+            "runStartedAt": "2026-10-09T20:16:19.578Z",
+            "mutationPhase": null,
+            "schemaVersion": 1,
+            "worktreeDirty": true,
+            "testNamePattern": null,
+            "collectionFailed": false,
+            "passedCaseTitles": [
+              "cross-client native recovery handshake requires a native codex turn and deduplicates repeated delivery",
+              "cross-client native recovery handshake requires a native claude turn and deduplicates repeated delivery",
+              "cross-client native recovery handshake requires a native omp turn and deduplicates repeated delivery",
+              "cross-client native recovery handshake keeps a codex prompt without model activity pending across retries",
+              "cross-client native recovery handshake keeps a claude prompt without model activity pending across retries",
+              "cross-client native recovery handshake keeps a omp prompt without model activity pending across retries",
+              "cross-client native recovery handshake refuses an older child generation without writing a prompt",
+              "failed native turn \u2192 durable routine retry \u2192 native wake recovers one codex turn through the real claim and wake paths",
+              "failed native turn \u2192 durable routine retry \u2192 native wake recovers one claude turn through the real claim and wake paths",
+              "failed native turn \u2192 durable routine retry \u2192 native wake recovers one omp turn through the real claim and wake paths"
+            ],
+            "worktreeDirtyReason": "Recovered preserved standalone Vitest JSON after private runtime teardown; source byte identities checked against retained original worker source map. Original run was dirty; no live runtime witness is manufactured."
+          }
+        }
+      ]
+    }
+  },
+  "mutations": [
+    {
+      "name": "stop",
+      "log": "/tmp/loop-recovery-mutation-stop-20261009.log",
+      "sha256": "4df5830a05ef5dec81d7b161da7b8a5f420e7f85d7efef8193e2316d3264bcf2",
+      "replay": {
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+          "--mutate",
+          "s/if \\(!i\\.active\\)/if (false)/",
+          "--relocation",
+          "overlay",
+          "--test",
+          "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+          "--expect",
+          "caught"
+        ],
+        "runnerCommit": "49a1fb126a1e6f46725cd99d9391eeca0372bfc6",
+        "runnerPath": "scripts/mutation-probe.sh",
+        "cwd": ".",
+        "schemaVersion": 1,
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+        "result": {
+          "expected": "caught",
+          "target": "copy-out",
+          "assertionEvidence": "test-file-assertion-failure",
+          "relocation": "overlay",
+          "mutantLedger": "test_runs:20962677",
+          "guardExit": 1,
+          "baselineExit": 0,
+          "mutantParse": "unchecked",
+          "verdict": "caught"
+        }
+      }
+    },
+    {
+      "name": "recover",
+      "log": "/tmp/loop-recovery-mutation-recover-20261009.log",
+      "sha256": "e68f0e4bd1ee9076e16aca607ac1a9e1c5bfd3662b6963c81bad9e7aee98e62e",
+      "replay": {
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+        "runnerPath": "scripts/mutation-probe.sh",
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+          "--mutate",
+          "s/action: 'recover', state:/action: 'observe', state:/",
+          "--relocation",
+          "overlay",
+          "--test",
+          "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+          "--expect",
+          "caught"
+        ],
+        "cwd": ".",
+        "schemaVersion": 1,
+        "result": {
+          "expected": "caught",
+          "guardExit": 1,
+          "baselineExit": 0,
+          "mutantLedger": "test_runs:20962705",
+          "relocation": "overlay",
+          "verdict": "caught",
+          "assertionEvidence": "test-file-assertion-failure",
+          "mutantParse": "unchecked",
+          "target": "copy-out"
+        },
+        "runnerCommit": "49a1fb126a1e6f46725cd99d9391eeca0372bfc6"
+      }
+    },
+    {
+      "name": "deadline",
+      "log": "/tmp/loop-recovery-mutation-deadline-20261009.log",
+      "sha256": "38a25b34784218c36cbd623a1447633b43ff369e6c292c4e99d7fd9b6310b6b2",
+      "replay": {
+        "runnerPath": "scripts/mutation-probe.sh",
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+          "--mutate",
+          "s/nextProbeAt: i\\.nowMs \\+ Math\\.min\\(300_000, PROBE_INTERVAL_MS \\* 2 \\*\\* state\\.attempts\\)/nextProbeAt: i.nowMs/",
+          "--relocation",
+          "overlay",
+          "--test",
+          "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+          "--expect",
+          "caught"
+        ],
+        "result": {
+          "assertionEvidence": "test-file-assertion-failure",
+          "relocation": "overlay",
+          "expected": "caught",
+          "target": "copy-out",
+          "mutantParse": "unchecked",
+          "baselineExit": 0,
+          "verdict": "caught",
+          "mutantLedger": "test_runs:20962698",
+          "guardExit": 1
+        },
+        "runnerCommit": "49a1fb126a1e6f46725cd99d9391eeca0372bfc6",
+        "cwd": ".",
+        "schemaVersion": 1,
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e"
+      }
+    },
+    {
+      "name": "observation",
+      "log": "/tmp/loop-recovery-mutation-observation-20261009.log",
+      "sha256": "933abab9b623490807b7b6a0ff7a214b5ae64a3fcb6079a977791ceddf19d71f",
+      "replay": {
+        "runnerCommit": "49a1fb126a1e6f46725cd99d9391eeca0372bfc6",
+        "argv": [
+          "--file",
+          "apps/operator/scripts/psu-pty-host.mjs",
+          "--mutate",
+          "s/let phase = 'unknown'/let phase = 'running'/; s/phase = failed \\? 'failed' : 'settled'/phase = 'settled'/",
+          "--relocation",
+          "overlay",
+          "--fake-destructive",
+          "--test",
+          "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs apps/operator/lib/psu-pty-host-execution-state.test.ts",
+          "--expect",
+          "caught"
+        ],
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+        "cwd": ".",
+        "result": {
+          "guardExit": 1,
+          "baselineExit": 0,
+          "mutantParse": "ok",
+          "target": "copy-out",
+          "verdict": "caught",
+          "relocation": "overlay",
+          "mutantLedger": "test_runs:20962702",
+          "assertionEvidence": "test-file-assertion-failure",
+          "expected": "caught"
+        },
+        "schemaVersion": 1,
+        "runnerPath": "scripts/mutation-probe.sh"
+      }
+    },
+    {
+      "name": "unknown",
+      "log": "/tmp/loop-recovery-mutation-unknown-20261009.log",
+      "sha256": "90bd57cff70ffb886fbfcddba9849cd5a9b66a253af61b084e415e4fa6418d6a",
+      "replay": {
+        "result": {
+          "assertionEvidence": "test-file-assertion-failure",
+          "mutantParse": "unchecked",
+          "baselineExit": 0,
+          "expected": "caught",
+          "verdict": "caught",
+          "guardExit": 1,
+          "relocation": "overlay",
+          "target": "copy-out",
+          "mutantLedger": "test_runs:20962739"
+        },
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/harness/routines/loop-execution-recovery.ts",
+          "--mutate",
+          "s/status: 'unknown', reason: 'native-observation-unavailable'/status: 'running', reason: 'native-observation-unavailable'/",
+          "--relocation",
+          "overlay",
+          "--test",
+          "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/routines/loop-execution-recovery.test.ts",
+          "--expect",
+          "caught"
+        ],
+        "schemaVersion": 1,
+        "runnerCommit": "cc28152984853d53fc14e678ccd950387d9ded7a",
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+        "cwd": ".",
+        "runnerPath": "scripts/mutation-probe.sh"
+      }
+    },
+    {
+      "name": "generation",
+      "log": "/tmp/loop-recovery-mutation-generation-unit-20261009.log",
+      "sha256": "15c15a8f64d99597b650d94805912558affd923518299eca73bd133684a980b4",
+      "replay": {
+        "argv": [
+          "--file",
+          "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+          "--mutate",
+          "s/envelope.expectedChildGeneration = msg.expectedChildGeneration/envelope.expectedChildGeneration = undefined/",
+          "--relocation",
+          "overlay",
+          "--fake-destructive",
+          "--test",
+          "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/events/await/psu-pty-discovery.test.ts -t \"preserves optional native proof and generation fences\"",
+          "--expect",
+          "caught"
+        ],
+        "cwd": ".",
+        "schemaVersion": 1,
+        "runnerPath": "scripts/mutation-probe.sh",
+        "runnerSha256": "c2205d677d8e6a9cf2463ce7990ea901ea3cc30cdd24127013a12582d92ac09e",
+        "result": {
+          "mutantLedger": "test_runs:20962829",
+          "mutantParse": "unchecked",
+          "baselineExit": 0,
+          "expected": "caught",
+          "relocation": "overlay",
+          "verdict": "caught",
+          "target": "copy-out",
+          "guardExit": 1,
+          "assertionEvidence": "test-file-assertion-failure"
+        },
+        "runnerCommit": "cc28152984853d53fc14e678ccd950387d9ded7a"
+      }
+    }
+  ]
+}

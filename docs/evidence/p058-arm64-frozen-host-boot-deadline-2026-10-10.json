@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-058 frozen source retained ARM original 60-second boot deadline",
+  "command": [
+    "node",
+    "--input-type=module"
+  ],
+  "hostCommand": "export PATH=/home/builduser/.local/node25/bin:$PATH\nnode --input-type=module <<'NODE'\nimport {readFile,writeFile,mkdtemp,readdir} from 'node:fs/promises';\nimport {createHash} from 'node:crypto';\nconst root='/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706',source=root+'/source',overlay=root+'/host-external-overlay2-PSI5tW';\nconst sha=b=>createHash('sha256').update(b).digest('hex');\nconst sourceReceipt=JSON.parse(await readFile(root+'/source-receipt.json','utf8'));\nconst fixture=JSON.parse(await readFile('/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-fixture1/fixture.json','utf8'));\nconst overlayReceipt=JSON.parse(await readFile(overlay+'/result.json','utf8'));\nif(overlayReceipt.status!=='passed'||overlayReceipt.nativeFiles.length||sha(await readFile(overlay+'/inventory.json'))!==overlayReceipt.inventorySha256)throw Error('Unqualified overlay');\nconst prep=JSON.parse(await readFile(root+'/external-imports-preparation.json','utf8'));\nconst checkInputs=async()=>{for(const x of sourceReceipt.testedInputs)if(sha(await readFile(source+'/'+x.path))!==x.sha256)throw Error('Changed source input '+x.path);if(sha(await readFile(root+'/private-output/serve.mjs'))!==prep.serveSha256)throw Error('Changed frozen bundle');};await checkInputs();\nconst verifier=await readFile(source+'/papercusp-desktop/bin/verify-sidecar-bundle.sh','utf8');const start=verifier.indexOf('check_boot_import_closure() {'),end=verifier.indexOf('\\nif [[ \"$CROSS\"',start);if(start<0||end<0)throw Error('Missing frozen canonical helper');const helper=verifier.slice(start,end);if(!helper.includes('timeout: 60000')||!helper.includes('PAPERCUSP_BOOT_IMPORTS_OK'))throw Error('Canonical deadline/marker missing');\nconst binds=[];for(const entry of await readdir(overlay+'/node_modules')){const packages=entry.startsWith('@')?(await readdir(overlay+'/node_modules/'+entry)).map(n=>entry+'/'+n):[entry];for(const p of packages)binds.push('--mount','type=bind,source='+overlay+'/node_modules/'+p+',target=/opt/papercusp/sidecar/node_modules/'+p+',readonly');}\nconst out=await mkdtemp(root+'/boot1-');\nconst result={schemaVersion:'p058-frozen-source-retained-arm-boot/v1',ownerId:'su-0d2affd0-2198-4734-b54f-186234343375',workItemId:'EI-25500068013952985',sourceCommit:sourceReceipt.sourceCommit,sourceReceiptSha256:sha(await readFile(root+'/source-receipt.json')),serveSha256:prep.serveSha256,verifierSha256:sha(verifier),helperSha256:sha(await readFile(source+'/papercusp-desktop/bin/lib/server-container.mjs')),bootFunctionSha256:sha(helper),originalDeadlineMs:60000,imageId:fixture.imageId,platform:fixture.platform,overlay,overlayInventorySha256:overlayReceipt.inventorySha256,scope:'frozen HOST bundle + JS closure in retained ARM runtime; not final native artifact acceptance',candidateAccepted:false,out,startedAt:new Date().toISOString()};\nconst {runOwnedContainer,runCommand}=await import(source+'/papercusp-desktop/bin/lib/server-container.mjs');\nconst captureRun=(command,args,options)=>runCommand(command,args,{...options,stream:false});\ntry{const owned=await runOwnedContainer({out,engine:'docker',imageId:fixture.imageId,platform:fixture.platform,timeoutMs:180000,args:['--read-only','--network','none','--user','1001:1001','--memory','2g','--pids-limit','256','--tmpfs','/tmp:rw,exec','--mount','type=bind,source='+root+'/private-output/serve.mjs,target=/opt/papercusp/sidecar/serve.mjs,readonly',...binds],command:['bash','-lc','set -euo pipefail\\n'+helper+'\\ncheck_boot_import_closure /opt/papercusp/sidecar\\nprintf \"P058_ORIGINAL_BOOT_HELPER_PASS\\\\n\"\\n']},captureRun);if(!owned.output.includes('P058_ORIGINAL_BOOT_HELPER_PASS'))throw Error('Missing canonical wrapper success');result.status='passed';result.owned=owned;}\ncatch(error){result.status='failed';result.error=error.message;process.exitCode=1;}\nawait checkInputs();result.testedInputsStable=true;result.finishedAt=new Date().toISOString();await writeFile(out+'/result.json',JSON.stringify(result,null,2)+'\\n');console.log('P058_ORIGINAL_BOOT_RESULT='+out+'/result.json');\nNODE",
+  "cwd": ".",
+  "startedAt": "2026-10-10T14:12:32.524Z",
+  "finishedAt": "2026-10-10T14:14:30.851Z",
+  "exitCode": 1,
+  "summary": "Frozen HOST bundle and qualified JS overlay resolved all 81 static imports in preserved ARM64 Node24.18.1 UID/GID1001. The unchanged canonical verifier then failed its original 60000ms boot deadline after60209ms, with ETIMEDOUT/SIGTERM and no required marker. All19 source hashes and serve bytes stayed unchanged; exact owned container was removed. This is a failed operational verdict, not final native or release acceptance.",
+  "workItemId": "EI-25500068013952985",
+  "relatedWorkItemIds": [
+    "EI-25601015488168612"
+  ],
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "sourceCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+  "evidencePlane": "frozen-host-source-retained-arm-runtime",
+  "candidateAccepted": false,
+  "freshSourceBootMeasured": true,
+  "assertions": [
+    {
+      "id": "frozen-inputs-stable",
+      "passed": true,
+      "evidence": "Before/after all19 recorded source inputs and serve2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365 matched. Source receipt dbd99540cee12ab4cd4ddfa4a718d131a25893439d7c3de8c239a452fd2dca6e binds dd07170622dbe1000a0e97a38c940af1a9da7403."
+    },
+    {
+      "id": "qualified-js-overlay",
+      "passed": true,
+      "evidence": "Maintained assembled dependency guard passed168packages. Separate derivative overlay2 retains original rejected overlay; five complete manifest-incompatible OPTIONAL x64 package directories omitted. Content inventory25728entries/136031718bytes, zero ELF or addon files, SHA978c0594cdaf5ae326406e2d562d3ab2e71befe0d10f9c70635fb50d3a10054c."
+    },
+    {
+      "id": "retained-arm-static-imports",
+      "passed": true,
+      "evidence": "Actual precheck0mv2h22x71vaoywp1nk completed0, arm64/v24.18.1/uid1001/gid1001, all81 static imports resolved with zero failures. Source inputs stable, exact precheck owner removedtrue. Original missing-package precheck and foreign-native overlay were preserved as rejected controls."
+    },
+    {
+      "id": "original-60000ms-boot",
+      "passed": false,
+      "evidence": "docker failed (1): boot import closure FAILED: spawnSync /opt/papercusp/sidecar/bin/node ETIMEDOUT\n{\"executable\":\"/opt/papercusp/sidecar/bin/node\",\"cwd\":\"/opt/papercusp/sidecar\",\"elapsedMs\":60209,\"pid\":30,\"status\":null,\"signal\":\"SIGTERM\",\"errorCode\":\"ETIMEDOUT\",\"allocatorCap\":\"2\",\"home\":\"/tmp/papercusp-boot-imports-danshO\",\"receiptObserved\":false}\n[child stdout tail]\n\n[child stderr tail]"
+    },
+    {
+      "id": "owned-boot-cleanup",
+      "passed": true,
+      "evidence": "Boot0mv2h49i0n97z9jyf7o terminal1 at14:14:30.874Z. Ownership41417a2a8dd515762ec4c1fcaa6eed14f592fb7b2b848f456192ad3f07af0f03 proves exact container6ac4b711e6ec3d6b16fb328a7885c44942742cdac73d17d6712f2062fdb07a03 removedtrue, cleanupPendingfalse, no cleanupError."
+    }
+  ],
+  "rawLogFile": ".papercusp/scratch/bash-24e4493e-392.log",
+  "rawLogSha256": "19baa6752a9fe0fab50b85b8714eff0712f6cb9662b2821c7562de7d23e3be48",
+  "sourceHashes": {
+    "apps/operator/bin/bundle-host-common.sh": "d4658ca02aa7fc5fea7d60dc7291c0a26dbcc1ed71d877a78259e464649ac012",
+    "apps/operator/bin/bundle-host.sh": "cc7b305b467974e2390bf88d612bf410285bb18610dfebb2d09da9d48a891f8e",
+    "apps/operator/bin/release/dependency-generation.sh": "72767186bcff8b06877cef05e550c7412d540684596bbb7fa13d4fec7a2bdfed",
+    "apps/operator/bin/serve.ts": "0465a68fb7098b742082c294bf1283cdfd6d2ca1ba4534d3ca26e1eea8b85841",
+    "apps/operator/package.json": "50fee8c09a1927ea03906b5339db61f7aed6d6f1960be5dda9ce10f9419f50b5",
+    "apps/operator/scripts/systemd/papercusp-script-snapshot.sh": "910a9671ce556a94fd5829826bed901f0dab2100dc1e6b939ecd8e30dcd6952e",
+    "package-lock.json": "85207fe19aa92cc3d67d8d2ca33da8fef4965ce74e9d3925cebaa063031d9327",
+    "package.json": "a75dcf6741dba354530d97bcfb25ff8b8582a859965b374da594572b8df13ac4",
+    "packages/operator-core/lib/agent-tools/pre-prompt-registry-config.ts": "92506ae3254eaccc37594a87ed2453f49096031d14ac2eaf1eaa165e27ac54ce",
+    "packages/operator-core/lib/agent-tools/routines/fire.ts": "12a174170b1be506fe5a2b21952a865a3beb20c5edba27a611c7612e7cb0b6ad",
+    "packages/operator-core/lib/verifier-source.ts": "5e4695155314f1e1d97a0f0334a2575cc74ea0444a89a6cc4195f56b9a5bcaae",
+    "packages/operator-core/lib/work-item-id.ts": "3bce9fd8a302efc4a33679d6b462efac1e2e8fb3ec60d0b26d0dd0beba4c0ac3",
+    "papercusp-desktop/bin/lib/pinned-deps.sh": "feb123e7a2d6b6a98099cee259c9a9e164eface3fe6e6031f21aba7a5f2d075d",
+    "papercusp-desktop/bin/lib/server-container.mjs": "ce13dae9ad5c25e185a955338d325488f0fbe0791d5b9d75cb9fd20e89334026",
+    "papercusp-desktop/bin/verify-sidecar-bundle.sh": "78efda72efe92e24199d9049038691d3dc764a250d39fe25b369ef48178de2fa",
+    "scripts/lib/committed-source-loader.mjs": "b4053d918b7602484d4fa5e1c3fe516fa3d54a09792c4d9ed804787147986413",
+    "scripts/npm-install-safe.mjs": "4547042c36f71042e157a343805532077ea7dcc31dee8a77acc092192f86dd95",
+    "scripts/restricted-hold-tree-gate.mjs": "9d0c8cfa4d9ea10f00c77ef36f74c5002dca6d0ab7542e46980f424f8870ba10",
+    "scripts/source-preview.mjs": "58f12ba279b506f759bd7bd358f67332ca72ac8e9f8873afd98bd86727ec22e7"
+  },
+  "sourceHashesStable": true,
+  "bindings": {
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "verifierSha256": "78efda72efe92e24199d9049038691d3dc764a250d39fe25b369ef48178de2fa",
+    "helperSha256": "ce13dae9ad5c25e185a955338d325488f0fbe0791d5b9d75cb9fd20e89334026",
+    "bootFunctionSha256": "ffbd2d83808dd2129e6e8f8bcf770e4f1bd9799717a7d634d047a09b611fa3d9",
+    "serveSha256": "2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365",
+    "overlayInventorySha256": "978c0594cdaf5ae326406e2d562d3ab2e71befe0d10f9c70635fb50d3a10054c",
+    "originalDeadlineMs": 60000
+  },
+  "receiptRefs": {
+    "source-receipt.json": {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/source-receipt.json",
+      "sha256": "dbd99540cee12ab4cd4ddfa4a718d131a25893439d7c3de8c239a452fd2dca6e"
+    },
+    "external-resolution1-I2gv9g/result.json": {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/external-resolution1-I2gv9g/result.json",
+      "sha256": "7a259e8bd7801195b4e6432315d07be2b3a226ffc73a9b09a846578d3683ee3d"
+    },
+    "host-external-overlay1-2z7aLZ/result.json": {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/host-external-overlay1-2z7aLZ/result.json",
+      "sha256": "6300cce7c08001d4f0bc43f20d49e85e146e1603947f9d6b5d2a13d2aa3189fb"
+    },
+    "host-external-overlay2-PSI5tW/result.json": {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/host-external-overlay2-PSI5tW/result.json",
+      "sha256": "80d69dff291bfda7a5b99875f3420f47241ccc4b78791b61b828755f19d914d9"
+    },
+    "host-external-overlay2-PSI5tW/inventory.json": {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/host-external-overlay2-PSI5tW/inventory.json",
+      "sha256": "978c0594cdaf5ae326406e2d562d3ab2e71befe0d10f9c70635fb50d3a10054c"
+    },
+    "external-resolution2-YpIOVM/result.json": {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/external-resolution2-YpIOVM/result.json",
+      "sha256": "7883fbeccdee696b9fa43bfe2594453bd38b308ab0e568e97a4049456cf7fb87"
+    },
+    "boot1-N1Wvt5/result.json": {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/boot1-N1Wvt5/result.json",
+      "sha256": "f2605df54bcbbbbbf2985d38de181d8459019ebcf154c5f91580d69016bb1a4c"
+    },
+    "boot1-N1Wvt5/.native-producer-owner-nVIG0Y/ownership.json": {
+      "path": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/boot1-N1Wvt5/.native-producer-owner-nVIG0Y/ownership.json",
+      "sha256": "41417a2a8dd515762ec4c1fcaa6eed14f592fb7b2b848f456192ad3f07af0f03"
+    }
+  },
+  "targetOptionalDrops": [
+    {
+      "name": "@oven/bun-linux-x64",
+      "parent": "@modelcontextprotocol/ext-apps",
+      "parentOptional": "^1.2.21",
+      "packageSha256": "51a6d19994b3ac68b266f0c1ee22b6e2df233222e4239bbe1dc94055e3ca3c54",
+      "cpu": [
+        "x64"
+      ],
+      "os": [
+        "linux"
+      ],
+      "reason": "optional package cannot be selected by linux/arm64 runtime"
+    },
+    {
+      "name": "@oven/bun-linux-x64-baseline",
+      "parent": "@modelcontextprotocol/ext-apps",
+      "parentOptional": "^1.2.21",
+      "packageSha256": "6babd016573d025f0632c9425f23e31c4b74313a1745c4b615d2bc959a7eca75",
+      "cpu": [
+        "x64"
+      ],
+      "os": [
+        "linux"
+      ],
+      "reason": "optional package cannot be selected by linux/arm64 runtime"
+    },
+    {
+      "name": "@oven/bun-linux-x64-musl",
+      "parent": "@modelcontextprotocol/ext-apps",
+      "parentOptional": "^1.2.21",
+      "packageSha256": "1e9c32e38904ef5c06df5f63a59e9a7f281b217a3f59158a8d9a991b3c7c0e95",
+      "cpu": [
+        "x64"
+      ],
+      "os": [
+        "linux"
+      ],
+      "reason": "optional package cannot be selected by linux/arm64 runtime"
+    },
+    {
+      "name": "@oven/bun-linux-x64-musl-baseline",
+      "parent": "@modelcontextprotocol/ext-apps",
+      "parentOptional": "^1.2.21",
+      "packageSha256": "17b69002b5cbd1ca2dba78b48a96b3c88903751c8c49ce363023a71cbd82b369",
+      "cpu": [
+        "x64"
+      ],
+      "os": [
+        "linux"
+      ],
+      "reason": "optional package cannot be selected by linux/arm64 runtime"
+    },
+    {
+      "name": "@rollup/rollup-linux-x64-gnu",
+      "parent": "@modelcontextprotocol/ext-apps",
+      "parentOptional": "^4.53.3",
+      "packageSha256": "c8bc7e3930d9f0f590aab83c6af63be85d3bd28e34d1e1af2332f54533112dd4",
+      "cpu": [
+        "x64"
+      ],
+      "os": [
+        "linux"
+      ],
+      "reason": "optional package cannot be selected by linux/arm64 runtime"
+    }
+  ],
+  "limitations": [
+    "HOST recipe fixture is distinct from final native artifact.",
+    "Canonical original60s acceptance FAILED; cause unknown.",
+    "Signed paired publication, installed-native, independent detector and instance-transfer acceptance remain open."
+  ],
+  "identitySerialization": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs#serializeIdentitySafeJson",
+    "rawSha256": "a516d3d6d9905829a217e2c40dc696e1ac9c013acfcb37819e034f5deeea735f",
+    "rawEvidenceRef": "EI-25500068013952985: private preserved raw edition",
+    "hostCommandRedacted": true
+  }
+}

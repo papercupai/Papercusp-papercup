@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   capacity: vi.fn(),
   emitEvent: vi.fn(),
   setHeadcountTarget: vi.fn(),
+  listExpiredRules: vi.fn(),
+  lapseRule: vi.fn(),
   orgSql: vi.fn(),
   events: [] as string[],
   headcountEvents: [] as Record<string, unknown>[],
@@ -58,6 +60,8 @@ vi.mock('../../agent-fleets-store', async (importOriginal) => ({
   claimFleetHeadcountAttempt: (...args: unknown[]) => mocks.claimAttempt(...args),
   claimFleetLaunchSlot: (...args: unknown[]) => mocks.claimSlot(...args),
   getFleet: (...args: unknown[]) => mocks.getFleet(...args),
+  lapseFleetTopUpRule: (...args: unknown[]) => mocks.lapseRule(...args),
+  listExpiredFleetTopUpRules: (...args: unknown[]) => mocks.listExpiredRules(...args),
   listFleetHeadcountTargets: (...args: unknown[]) => mocks.listTargets(...args),
   recordFleetHeadcountAttempt: (...args: unknown[]) => mocks.recordAttempt(...args),
   releaseFleetLaunchSlot: (...args: unknown[]) => mocks.releaseSlot(...args),
@@ -182,6 +186,8 @@ beforeEach(() => {
   mocks.headcountEvents.length = 0;
   mocks.getFlag.mockResolvedValue(true);
   mocks.listTargets.mockResolvedValue([grantedTarget()]);
+  mocks.listExpiredRules.mockResolvedValue([]);
+  mocks.lapseRule.mockResolvedValue(true);
   mocks.claimAttempt.mockResolvedValue({
     workspaceId: 'ws',
     fleetSlug: 'fleet-a',
@@ -315,6 +321,92 @@ describe('headcount governor disarms a fleet whose plan is finished (WI-1457060)
     expect(mocks.orgSql).not.toHaveBeenCalled();
     expect(mocks.setHeadcountTarget).not.toHaveBeenCalled();
     expect(mocks.claimAttempt).toHaveBeenCalled();
+  });
+});
+
+// P-005 / D-030: a no-top-up rule SUSPENDS holding until its `until`. The governor
+// ends expired rules before it lists granting targets, so a fleet whose rule
+// lapsed (and whose target/supervise grant was restored) is held on the SAME tick.
+describe('headcount governor lapses expired no-top-up rules first (P-005 / D-030)', () => {
+  const expiredRule = {
+    kind: 'target-disabled' as const,
+    ratifiedBy: 'su-old-leader',
+    ratifiedAt: 1_000,
+    reason: 'D-001: no waves or top-ups',
+    until: 2_000,
+    suspendedTarget: 3,
+    suspendedSupervise: true,
+  };
+  const expired = [{ workspaceId: 'ws', fleetSlug: 'fleet-a', rule: expiredRule, config: baseConfig }];
+  const run = () => runFleetHeadcountGovernor({
+    installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+  });
+
+  it('restores an expired rule on an active plan before listing granting targets', async () => {
+    mocks.listExpiredRules.mockImplementation(async () => {
+      mocks.events.push('list-expired');
+      return expired;
+    });
+    mocks.lapseRule.mockImplementation(async () => {
+      mocks.events.push('lapse');
+      return true;
+    });
+    mocks.listTargets.mockImplementation(async () => {
+      mocks.events.push('list-targets');
+      return [];
+    });
+    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await run();
+
+    expect(mocks.lapseRule).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws', fleetSlug: 'fleet-a', expectedUntil: 2_000, restore: true }),
+    );
+    expect(mocks.events.slice(0, 3)).toEqual(['list-expired', 'lapse', 'list-targets']);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('no-top-up rule on fleet-a expired (ratified by su-old-leader'),
+    );
+    warn.mockRestore();
+  });
+
+  it.each(['shipped', 'superseded'])('clears without restoring when the plan is %s', async (status) => {
+    mocks.listExpiredRules.mockResolvedValue(expired);
+    mocks.listTargets.mockResolvedValue([]);
+    mocks.orgSql.mockResolvedValue([{ status }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await run();
+
+    expect(mocks.lapseRule).toHaveBeenCalledWith(expect.objectContaining({ fleetSlug: 'fleet-a', restore: false }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`plan is ${status}; rule cleared without restoring`));
+    warn.mockRestore();
+  });
+
+  it('reports nothing for a rule a concurrent re-ratification already moved', async () => {
+    mocks.listExpiredRules.mockResolvedValue(expired);
+    mocks.lapseRule.mockResolvedValue(false);
+    mocks.listTargets.mockResolvedValue([]);
+    mocks.orgSql.mockResolvedValue([{ status: 'active' }]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await run();
+
+    expect(mocks.lapseRule).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('no-top-up rule on fleet-a expired'));
+    warn.mockRestore();
+  });
+
+  it('keeps governing when the lapse sweep itself fails', async () => {
+    mocks.listExpiredRules.mockRejectedValue(new Error('pg down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await run();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('top-up rule lapse sweep failed: pg down'));
+    expect(mocks.listTargets).toHaveBeenCalled();
+    expect(mocks.lapseRule).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 

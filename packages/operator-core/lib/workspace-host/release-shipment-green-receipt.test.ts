@@ -407,6 +407,39 @@ describe('release.shipment.green', () => {
     );
   });
 
+  it.each([
+    {
+      label: 'source that is not promoted to main',
+      position: pipelinePosition({
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: true },
+      }),
+      failure: 'shipment-failed:source-not-in-main',
+    },
+    {
+      label: 'source that is not the deployed artifact',
+      position: pipelinePosition({
+        positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
+        deployedSha: null,
+      }),
+      failure: 'shipment-failed:source-not-deployed',
+    },
+    {
+      label: 'serving health identity that disagrees with the deployed artifact',
+      position: pipelinePosition({
+        serving: { ...pipelinePosition().serving, reportedSha: 'e'.repeat(40) },
+      }),
+      failure: 'shipment-failed:serving-health-sha-not-bound-to-deploy',
+    },
+  ])('refuses $label', async ({ position, failure }) => {
+    const test = fixture();
+    test.readPipelinePosition.mockResolvedValueOnce(position);
+
+    const result = await recordWorkspaceHostReleaseShipment(test.input);
+
+    expect(result.outcome).toBe('refused');
+    expect(result.evidenceRefs).toContain(failure);
+  });
+
   it('refuses when the rollback bundle image does not match the current manifest target', async () => {
     const test = fixture({ priorImageId: 'different-workspace-host-image' });
 

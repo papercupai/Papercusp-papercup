@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-058 retained ARM file-drained profiler and original boot deadline failure",
+  "framework": "operational",
+  "cwd": ".",
+  "parentWorkItemId": "WI-10007352",
+  "workItemId": "EI-25604028797058995",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "original-owned-arm-profile5-diagnostic",
+  "candidateAccepted": false,
+  "command": [
+    "docker",
+    "start",
+    "--attach",
+    "00325c4beccc61e2f3cdd175b2b5ff981ffd85cb4985210faf3e7344aae432d9"
+  ],
+  "commandEvidence": "Exact owned-container identity is from the saved receipt; engine-phases.jsonl records this actual start/attach phase. Guest producer and canonical probe bytes are separately hashed below. No producer execution was replayed.",
+  "producerTaskId": "0mv2wzx9zpkxsqu1r7e",
+  "startedAt": "2026-10-10T21:36:59.797Z",
+  "finishedAt": "2026-10-10T21:38:47.087Z",
+  "exitCode": 1,
+  "summary": "Original profile5 wrapper remains FAIL: canonical boot reached ETIMEDOUT after 61260 ms without its receipt, and engine cleanup initially failed. The scoped collector succeeded first: a 50-second CPU profile was saved, and 66450976 bytes of child stderr drained without ENOBUFS. Later typed absence reconciliation settled the exact container; it does not rewrite the original failure.",
+  "diagnostic": {
+    "executable": "/opt/papercusp/sidecar/bin/node",
+    "cwd": "/opt/papercusp/sidecar",
+    "elapsedMs": 61260,
+    "pid": 37,
+    "status": null,
+    "signal": "SIGTERM",
+    "errorCode": "ETIMEDOUT",
+    "allocatorCap": "2",
+    "home": "/tmp/papercusp-boot-imports-OFioxl",
+    "receiptObserved": false
+  },
+  "canonicalChildDeadlineMs": 60000,
+  "canonicalPipeMaxBufferBytes": 1048576,
+  "childStderrBytes": 66450976,
+  "capture": {
+    "status": "passed",
+    "target": {
+      "pid": 37,
+      "entry": "/opt/papercusp/sidecar/serve.mjs",
+      "argv": [
+        "--verify-boot-imports"
+      ],
+      "execArgv": [
+        "/opt/papercusp/sidecar/bin/node",
+        "/opt/papercusp/sidecar/bin/node",
+        "--inspect-wait=127.0.0.1:9231"
+      ],
+      "startTicks": "45720401",
+      "listenerInode": "781244688",
+      "identity": "proc"
+    },
+    "startupResumed": true,
+    "captureMs": 50000,
+    "samples": 42896,
+    "nodes": 8634,
+    "persistence": {
+      "created": true,
+      "bytes": 2112278
+    }
+  },
+  "boot": {
+    "exitCode": 1,
+    "signal": null,
+    "markerObserved": false
+  },
+  "inputsStable": true,
+  "bindings": {
+    "sourceCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+    "serveSha256": "2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "canonicalBootFunctionSha256": "9ef26a476fa5d03fb4c30b0fb9c07d508b7ad5de398e45cc720a352436af10d8",
+    "instrumentedBootFunctionSha256": "2aac277777e5b405ed114f0834217b9e9c40c628f583ebc0a944fdb0fc03aac5",
+    "collectorInputs": [
+      {
+        "path": "scripts/cpu-sample.mjs",
+        "target": "/opt/papercusp/sidecar/p058-cpu-sample.mjs",
+        "sha256": "6d65749c494da6c41f037c8c35df41a7e6e5989d348531a7f78440de1c41c1ef"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "target": "/opt/papercusp/sidecar/cdp-inspector.mjs",
+        "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+      },
+      {
+        "path": "scripts/lib/cpu-profile.mjs",
+        "target": "/opt/papercusp/sidecar/lib/cpu-profile.mjs",
+        "sha256": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3"
+      },
+      {
+        "path": "scripts/proc-guard.mjs",
+        "target": "/opt/papercusp/sidecar/proc-guard.mjs",
+        "sha256": "5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda"
+      }
+    ]
+  },
+  "privateResultRoot": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile5-file-drain-BOw6nF",
+  "rawFiles": [
+    {
+      "name": "result.json",
+      "sha256": "0404bbde8f32e3b3eea24fa074c534423738fa079b451cdaa5533c0ec668478b",
+      "bytes": 7407
+    },
+    {
+      "name": "guest-result.json",
+      "sha256": "9f581e532176b5687b718ad18fe13ed9fbbea412f6f6727e1409ed027d27c066",
+      "bytes": 5409
+    },
+    {
+      "name": "capture.json",
+      "sha256": "c315e176e86521efcad97d8072e81d936e8dfbbc5a69c31fdc1c2093f0f98b14",
+      "bytes": 542
+    },
+    {
+      "name": "profile.cpuprofile",
+      "sha256": "cc0de3ae7a0a4753535765a734c05f0837082d011cdbcda3573c5709c3562174",
+      "bytes": 2112278
+    },
+    {
+      "name": "boot-probe.sh",
+      "sha256": "f2acb58c2cf994566ed5dc9056e75c0fc00500ae1bd76be1ecec621d428a99d1",
+      "bytes": 3464
+    },
+    {
+      "name": "guest-probe.mjs",
+      "sha256": "7ebb03232564f36e93e045d6956bffc0da38cb6d5542d169ff418cbeb8cb0fe2",
+      "bytes": 2041
+    },
+    {
+      "name": "child-stderr.log",
+      "sha256": "6db74bce6fec620f7302694600908c5681da123f9d9b308dd7990e04d731ca1f",
+      "bytes": 66450976
+    },
+    {
+      "name": "child-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "name": "bootStderr.log",
+      "sha256": "21ddc3e9d472da7bb282e84483a71d39ce1a5997fd99f64feadecee3e124fb90",
+      "bytes": 4469
+    },
+    {
+      "name": "engine-phases.jsonl",
+      "sha256": "73e5fe7cddaa5fbea822da6e58211ad17faa97801cd1323082d53c9b086f191f",
+      "bytes": 582
+    },
+    {
+      "name": "guest-phases.jsonl",
+      "sha256": "64c10f45831393516265ddeccb569f115b899e2f638d79b0589ca128fce4127f",
+      "bytes": 374
+    },
+    {
+      "name": ".native-producer-owner-UX2yAc/ownership.json",
+      "sha256": "728f8c748f548d8e3e9efda5da4b29716c54575051ac33640db787e672bbb7b7",
+      "bytes": 765
+    }
+  ],
+  "cleanup": {
+    "containerId": "00325c4beccc61e2f3cdd175b2b5ff981ffd85cb4985210faf3e7344aae432d9",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "removed": true,
+    "cleanupPending": false,
+    "ownershipSha256": "728f8c748f548d8e3e9efda5da4b29716c54575051ac33640db787e672bbb7b7",
+    "settlement": "Later typed-container absence reconciliation; original result.json remains failed and unchanged."
+  },
+  "assertions": [
+    {
+      "id": "diagnostic-boot-complete",
+      "passed": false,
+      "evidence": "Canonical 60000 ms boot deadline reached ETIMEDOUT; receiptObserved:false and markerObserved:false."
+    },
+    {
+      "id": "scoped-profiler-capture",
+      "passed": true,
+      "evidence": "capture.json passed; profile.cpuprofile matches cc0de3ae7a0a4753535765a734c05f0837082d011cdbcda3573c5709c3562174 before the parent returned."
+    },
+    {
+      "id": "file-drain-without-enobufs",
+      "passed": true,
+      "evidence": "Child stderr retained 66450976 bytes; saved diagnostic is ETIMEDOUT rather than ENOBUFS."
+    }
+  ],
+  "limitations": [
+    "NODE_DEBUG=esm and inspector instrumentation add observer overhead; this profile cannot explain the timing of the original uninstrumented 60000 ms failure.",
+    "Original ARM startup and Docker create/start root causes remain unresolved.",
+    "Capture success is scoped and does not qualify installed-native, signed publication, transfer, or final release acceptance."
+  ]
+}

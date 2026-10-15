@@ -168,19 +168,21 @@ describe('runDreamReview', () => {
     expect(calls[0]?.system).toContain('independent DREAM REVIEWER');
   });
 
-  it('rejects a same-model reviewer before the call', async () => {
+  it('allows a same-model reviewer as a separately prompted review phase', async () => {
     const { llmCall, calls } = fakeLlm({ json: acceptedPayload() });
 
-    await expect(
-      runDreamReview({
-        insight: INSIGHT,
-        fragments: FRAGMENTS,
-        corpus: CORPUS,
-        dreamerModel: REVIEW_MODEL,
-        llmCall,
-      }),
-    ).resolves.toMatchObject({ verdict: 'reject', reason: 'reviewer-not-independent' });
-    expect(calls).toHaveLength(0);
+    const result = await runDreamReview({
+      insight: INSIGHT,
+      fragments: FRAGMENTS,
+      corpus: CORPUS,
+      dreamerModel: REVIEW_MODEL,
+      llmCall,
+    });
+
+    expect(result).toMatchObject({ verdict: 'accept', usage: { model: REVIEW_MODEL } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.model).toBe(REVIEW_MODEL);
+    expect(calls[0]?.system).toContain('independent DREAM REVIEWER');
   });
 
   it('rejects missing dreamer-model provenance before the call', async () => {

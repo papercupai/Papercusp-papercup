@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   LIVE_HEALTH_FRAGMENT_SCHEMA_VERSION,
+  LIVE_HEALTH_SCHEMA_VERSION,
   LIVE_HEALTH_SIGNAL_KEYS,
   LIVE_HEALTH_SIGNAL_SPECS,
   emptyLiveHealthObservations,
@@ -36,6 +37,10 @@ describe('resource-governor live-health contract', () => {
       expect.arrayContaining([
         'progress.heartbeatLagMs',
         'cpu.psiSomePct',
+        'io.psiSomePct',
+        'io.psiFullPct',
+        'io.processReadBytesPerSec',
+        'io.processWriteBytesPerSec',
         'latency.eventLoopP95Ms',
         'memory.workingSetGrowthBytesPerSec',
         'memory.gcPauseP95Ms',
@@ -52,6 +57,19 @@ describe('resource-governor live-health contract', () => {
         'governor.admissionLatencyP95Ms',
       ]),
     );
+    expect(LIVE_HEALTH_SCHEMA_VERSION).toBe('resource-governor-live-health-v2');
+    expect(LIVE_HEALTH_SIGNAL_SPECS['io.psiFullPct']).toMatchObject({
+      unit: 'percent',
+      writerKind: 'monitor',
+      windowKind: 'rolling',
+      platforms: ['linux'],
+    });
+    expect(LIVE_HEALTH_SIGNAL_SPECS['io.processReadBytesPerSec']).toMatchObject({
+      unit: 'bytes-per-second',
+      writerKind: 'operator',
+      windowKind: 'delta',
+      platforms: ['linux'],
+    });
     expect(JSON.stringify(LIVE_HEALTH_SIGNAL_SPECS)).not.toMatch(/maxSimultaneous|pgPoolMax|capacityCeiling/i);
   });
 

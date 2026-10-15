@@ -112,6 +112,22 @@ function deps(over: Partial<WhyChainDeps> & { snap?: GitPipelineSnapshot; accoun
 }
 
 describe('computeWhyChain (EI-7349)', () => {
+  it('loads and computes with injected readers while unrelated runtime imports are unavailable', async () => {
+    vi.resetModules();
+    vi.doMock('./git-pipeline-position', () => { throw new Error('pipeline position resolver must stay unloaded'); });
+    vi.doMock('./deployment/account-pool-store', () => { throw new Error('account runtime must stay unloaded'); });
+    try {
+      const isolated = await import('./why-chain');
+      const result = await isolated.computeWhyChain(deps());
+      expect(result.stages.map(stage => stage.status)).toEqual(['ok', 'ok', 'ok', 'ok']);
+      expect(result.rootCause).toBeNull();
+    } finally {
+      vi.doUnmock('./git-pipeline-position');
+      vi.doUnmock('./deployment/account-pool-store');
+      vi.resetModules();
+    }
+  });
+
   it('all-green: every stage ok, no root cause', async () => {
     const res = await computeWhyChain(deps());
     expect(res.stages.map((s) => s.status)).toEqual(['ok', 'ok', 'ok', 'ok']);

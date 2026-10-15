@@ -1,10 +1,45 @@
 import { beforeEach, describe, it, expect } from "vitest";
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   resetToolSchemaSanitizeCache,
   sanitizeToolSchema,
   sanitizeToolSchemaCached,
   TOOL_SCHEMA_SANITIZE_CACHE_MAX_ENTRIES,
+  negotiatedMcpOutputSchema,
 } from "./tool-schema-sanitize";
+
+describe('MCP output schema negotiation with the standard SDK', () => {
+  it.each([false, true])('accepts the negotiated reply and preserves validation (structured=%s)', async structured => {
+    const schema = { type: 'object' as const, properties: { ok: { type: 'boolean' } }, required: ['ok'] };
+    const published = negotiatedMcpOutputSchema(schema, structured);
+    const server = new Server({ name: 'output-contract', version: '1' }, { capabilities: { tools: {} } });
+    const client = new Client({ name: 'output-contract', version: '1' });
+    let invalid = false;
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{
+      name: 'read', inputSchema: { type: 'object' }, ...(published ? { outputSchema: published } : {}),
+    }] }));
+    server.setRequestHandler(CallToolRequestSchema, async () => ({
+      content: [{ type: 'text', text: 'exact raw text' }],
+      ...(structured ? { structuredContent: { ok: invalid ? 'invalid' : true } } : {}),
+    }));
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport); await client.connect(clientTransport);
+    try {
+      const listing = await client.listTools();
+      expect(listing.tools[0].outputSchema).toEqual(structured ? schema : undefined);
+      const result = await client.callTool({ name: 'read' });
+      expect(result.content).toEqual([{ type: 'text', text: 'exact raw text' }]);
+      expect(result.structuredContent).toEqual(structured ? { ok: true } : undefined);
+      if (structured) {
+        invalid = true;
+        await expect(client.callTool({ name: 'read' })).rejects.toThrow(/Structured content does not match/);
+      }
+    } finally { await client.close(); await server.close(); }
+  });
+});
 
 describe("sanitizeToolSchema", () => {
   it("objectifies a boolean property value (z.unknown() → true)", () => {

@@ -50,7 +50,7 @@ The Swarm direction is engineered swarm intelligence: honey-amber signal color o
 | Comb motif              | `apps/operator/public/brand/the-hive/comb-motif.svg`                                                      |
 | Lexicon icons           | `apps/operator/public/brand/the-hive/icons/*.svg`                                                         |
 | Desktop icon pack       | `papercusp-desktop/src-tauri/icons/the-hive/` and `libs/papercusp/apps/desktop/src-tauri/icons/the-hive/` |
-| React mark components   | `apps/operator/app/_components/HiveVisualIdentity.tsx`                                                    |
+| React mark components   | `apps/operator/app/_components/PotVisualIdentity.tsx`                                                     |
 
 ## Runtime Behavior
 
@@ -117,7 +117,7 @@ the flag-on lexicon term is `Sentinel`.
 There are three distinct The Swarm color sources — do not conflate them:
 
 * **Shipped Honeycomb theme tokens** — the values the selectable `honeycomb` theme actually emits at runtime, from `design-tokens/honeycomb.semantic.tokens.json` (muted honey, accent `#C68E24`). Documented in the table below.
-* **SVG mark palette** — `HIVE_BRAND_COLORS` in `apps/operator/app/_components/HiveVisualIdentity.tsx` (honey `#F6B72F`, deep honey `#B97812`, cream `#FFF2C2`). These are the colors the brand SVGs (`primary-mark.svg`, `queen-mark.svg`, `favicon.svg`) actually render with.
+* **SVG mark palette** — `HIVE_BRAND_COLORS` in `apps/operator/app/_components/PotVisualIdentity.tsx` (honey `#F6B72F`, deep honey `#B97812`, cream `#FFF2C2`). These are the colors the brand SVGs (`primary-mark.svg`, `queen-mark.svg`, `favicon.svg`) actually render with.
 * **Prototype demo palette** — the brighter `#EAB308`/`#FDE68A` honey used only in the `/dev/swarm-logos` exploration page (`swarm-logos.module.css`). Not a runtime theme.
 
 The shipped Honeycomb token pack is dark-first and WCAG-oriented (values are the runtime CSS variables emitted under `[data-theme="honeycomb"]`):

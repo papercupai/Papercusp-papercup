@@ -1,0 +1,561 @@
+[
+  {
+    "key": "volume-1",
+    "reportId": "rpt_f3d4cc13-0bb3-477d-8e10-0703c7a8a76d",
+    "path": "/reports/rpt_f3d4cc13-0bb3-477d-8e10-0703c7a8a76d",
+    "title": "Papercusp plan audit — evidence 1: records 1–48",
+    "bodyBytes": 447075,
+    "bodySha256": "5f56457faa7c43b01e63be2bbd472c0ea52b89cd5506139e3ceafa1526861ef4",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_f3d4cc13-0bb3-477d-8e10-0703c7a8a76d",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 1: records 1–48",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 1–48 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "3e1ce8de-6fb0-4d92-9504-abe08f13de2c"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_f3d4cc13-0bb3-477d-8e10-0703c7a8a76d",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:47.147Z",
+      "updated_at": "2026-10-06T02:47:47.147Z",
+      "retired_at": null,
+      "path": "/reports/rpt_f3d4cc13-0bb3-477d-8e10-0703c7a8a76d",
+      "body_bytes": 447075,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-2",
+    "reportId": "rpt_d8edc7e4-de1f-4acf-a80e-6f2dd745a4c9",
+    "path": "/reports/rpt_d8edc7e4-de1f-4acf-a80e-6f2dd745a4c9",
+    "title": "Papercusp plan audit — evidence 2: records 49–105",
+    "bodyBytes": 444709,
+    "bodySha256": "a8537be0b401fcc9b5e0c54a46dda4f5b7b1755b30a338b889723d71279f9e04",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_d8edc7e4-de1f-4acf-a80e-6f2dd745a4c9",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 2: records 49–105",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 49–105 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "1dc83cd5-c8a3-462e-ab9d-ab1fb6e2a39d"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_d8edc7e4-de1f-4acf-a80e-6f2dd745a4c9",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:48.899Z",
+      "updated_at": "2026-10-06T02:47:48.899Z",
+      "retired_at": null,
+      "path": "/reports/rpt_d8edc7e4-de1f-4acf-a80e-6f2dd745a4c9",
+      "body_bytes": 444709,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-3",
+    "reportId": "rpt_eb0b9d57-2784-46e5-bed5-449d47afd1c2",
+    "path": "/reports/rpt_eb0b9d57-2784-46e5-bed5-449d47afd1c2",
+    "title": "Papercusp plan audit — evidence 3: records 106–199",
+    "bodyBytes": 446701,
+    "bodySha256": "cba835c927d904bf69cea97937e30abe51258bf31df7963a90b8037e7addaeaf",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_eb0b9d57-2784-46e5-bed5-449d47afd1c2",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 3: records 106–199",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 106–199 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "b465516d-968d-41e5-b3f1-0a7eafb3d4b3"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_eb0b9d57-2784-46e5-bed5-449d47afd1c2",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:50.028Z",
+      "updated_at": "2026-10-06T02:47:50.028Z",
+      "retired_at": null,
+      "path": "/reports/rpt_eb0b9d57-2784-46e5-bed5-449d47afd1c2",
+      "body_bytes": 446701,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-4",
+    "reportId": "rpt_e639c00d-c32d-450e-be27-3c1eabb0fa69",
+    "path": "/reports/rpt_e639c00d-c32d-450e-be27-3c1eabb0fa69",
+    "title": "Papercusp plan audit — evidence 4: records 200–297",
+    "bodyBytes": 446497,
+    "bodySha256": "5840f6feb30ea28c7ccb41e0f51218aefbe5c746501601b9ea0d8eeb50f5f581",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_e639c00d-c32d-450e-be27-3c1eabb0fa69",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 4: records 200–297",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 200–297 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "0be6125d-cc8c-491c-b34b-3f8b0a4a5d17"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_e639c00d-c32d-450e-be27-3c1eabb0fa69",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:51.773Z",
+      "updated_at": "2026-10-06T02:47:51.773Z",
+      "retired_at": null,
+      "path": "/reports/rpt_e639c00d-c32d-450e-be27-3c1eabb0fa69",
+      "body_bytes": 446497,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-5",
+    "reportId": "rpt_0eacf69c-20cc-4dab-991d-e6e94fc89aa6",
+    "path": "/reports/rpt_0eacf69c-20cc-4dab-991d-e6e94fc89aa6",
+    "title": "Papercusp plan audit — evidence 5: records 298–349",
+    "bodyBytes": 442861,
+    "bodySha256": "0e8da4cbbb6f301968adf7d551306fd9c5191374cdb282969b5e1349575c4d37",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_0eacf69c-20cc-4dab-991d-e6e94fc89aa6",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 5: records 298–349",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 298–349 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "82aa4378-938a-4d7b-8e7b-3b94b888860d"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_0eacf69c-20cc-4dab-991d-e6e94fc89aa6",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:52.955Z",
+      "updated_at": "2026-10-06T02:47:52.955Z",
+      "retired_at": null,
+      "path": "/reports/rpt_0eacf69c-20cc-4dab-991d-e6e94fc89aa6",
+      "body_bytes": 442861,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-6",
+    "reportId": "rpt_6345b3d1-6c0d-48cc-917d-b4ce3ac87ffb",
+    "path": "/reports/rpt_6345b3d1-6c0d-48cc-917d-b4ce3ac87ffb",
+    "title": "Papercusp plan audit — evidence 6: records 350–417",
+    "bodyBytes": 445005,
+    "bodySha256": "da5817b816c0a4a12c802cd34148f285c00db74d9e6537a77e4951ea360b2648",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_6345b3d1-6c0d-48cc-917d-b4ce3ac87ffb",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 6: records 350–417",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 350–417 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "95702590-2cb6-4790-abca-08572491d6f2"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_6345b3d1-6c0d-48cc-917d-b4ce3ac87ffb",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:53.937Z",
+      "updated_at": "2026-10-06T02:47:53.937Z",
+      "retired_at": null,
+      "path": "/reports/rpt_6345b3d1-6c0d-48cc-917d-b4ce3ac87ffb",
+      "body_bytes": 445005,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-7",
+    "reportId": "rpt_4f346057-ccce-4c53-b373-4177fd69f89a",
+    "path": "/reports/rpt_4f346057-ccce-4c53-b373-4177fd69f89a",
+    "title": "Papercusp plan audit — evidence 7: records 418–516",
+    "bodyBytes": 447201,
+    "bodySha256": "d98c88e557125567ff51e0f88ced33b3b0e33622c4cd334bb438bfa25ddf6fcc",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_4f346057-ccce-4c53-b373-4177fd69f89a",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 7: records 418–516",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 418–516 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "f0768a14-e14f-4f53-bbb6-bb049acb70e4"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_4f346057-ccce-4c53-b373-4177fd69f89a",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:55.113Z",
+      "updated_at": "2026-10-06T02:47:55.113Z",
+      "retired_at": null,
+      "path": "/reports/rpt_4f346057-ccce-4c53-b373-4177fd69f89a",
+      "body_bytes": 447201,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-8",
+    "reportId": "rpt_726dc57a-093b-450c-911f-be2760d42742",
+    "path": "/reports/rpt_726dc57a-093b-450c-911f-be2760d42742",
+    "title": "Papercusp plan audit — evidence 8: records 517–712",
+    "bodyBytes": 449290,
+    "bodySha256": "67097f7ab84da461c795fdd4583c27832b1c679aa75c763971f213900b8503d4",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_726dc57a-093b-450c-911f-be2760d42742",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 8: records 517–712",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 517–712 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "49232047-8a7a-488d-82ed-f0c25a0b7ab0"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_726dc57a-093b-450c-911f-be2760d42742",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:56.461Z",
+      "updated_at": "2026-10-06T02:47:56.461Z",
+      "retired_at": null,
+      "path": "/reports/rpt_726dc57a-093b-450c-911f-be2760d42742",
+      "body_bytes": 449290,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-9",
+    "reportId": "rpt_138942a8-9912-49a3-9325-f8964584d347",
+    "path": "/reports/rpt_138942a8-9912-49a3-9325-f8964584d347",
+    "title": "Papercusp plan audit — evidence 9: records 713–942",
+    "bodyBytes": 448787,
+    "bodySha256": "fb7e8de11ba24513fb25ae82eff9bd8eb4a4aec276820df195f4bf5ea2a9d46a",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_138942a8-9912-49a3-9325-f8964584d347",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 9: records 713–942",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 713–942 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "9310d016-1722-4950-aecc-5138d6939a1e"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_138942a8-9912-49a3-9325-f8964584d347",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:57.795Z",
+      "updated_at": "2026-10-06T02:47:57.795Z",
+      "retired_at": null,
+      "path": "/reports/rpt_138942a8-9912-49a3-9325-f8964584d347",
+      "body_bytes": 448787,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-10",
+    "reportId": "rpt_3e1a65b1-b044-41dc-abc6-10d49abb5ee5",
+    "path": "/reports/rpt_3e1a65b1-b044-41dc-abc6-10d49abb5ee5",
+    "title": "Papercusp plan audit — evidence 10: records 943–1135",
+    "bodyBytes": 448673,
+    "bodySha256": "c3fc6cccfb7a63325b6a7cd4479f4a560732cff701936d91b3a4c61b5945a93b",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_3e1a65b1-b044-41dc-abc6-10d49abb5ee5",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 10: records 943–1135",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 943–1135 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "f2d4bc3a-fb27-4e32-a51e-e3153309faab"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_3e1a65b1-b044-41dc-abc6-10d49abb5ee5",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:47:59.695Z",
+      "updated_at": "2026-10-06T02:47:59.695Z",
+      "retired_at": null,
+      "path": "/reports/rpt_3e1a65b1-b044-41dc-abc6-10d49abb5ee5",
+      "body_bytes": 448673,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-11",
+    "reportId": "rpt_7eb9eb24-6a18-477c-bf8a-8b51747f2848",
+    "path": "/reports/rpt_7eb9eb24-6a18-477c-bf8a-8b51747f2848",
+    "title": "Papercusp plan audit — evidence 11: records 1136–1283",
+    "bodyBytes": 449088,
+    "bodySha256": "37f291b2736858ea09a472b2bf4a2a153584623c2edc7ba397fd5af5adcee24d",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_7eb9eb24-6a18-477c-bf8a-8b51747f2848",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 11: records 1136–1283",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 1136–1283 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "0d7659de-7a0e-4f7b-a5dc-0fde89fcfd7f"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_7eb9eb24-6a18-477c-bf8a-8b51747f2848",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:48:00.846Z",
+      "updated_at": "2026-10-06T02:48:00.846Z",
+      "retired_at": null,
+      "path": "/reports/rpt_7eb9eb24-6a18-477c-bf8a-8b51747f2848",
+      "body_bytes": 449088,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "volume-12",
+    "reportId": "rpt_1c6f5f17-9425-4fc4-9cd4-a86e3627cf55",
+    "path": "/reports/rpt_1c6f5f17-9425-4fc4-9cd4-a86e3627cf55",
+    "title": "Papercusp plan audit — evidence 12: records 1284–1351",
+    "bodyBytes": 135727,
+    "bodySha256": "fdafa49c3d1b2ca2e0d960dc549fb49d69e9fdd7d763b6a479d7a4b97a38565b",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_1c6f5f17-9425-4fc4-9cd4-a86e3627cf55",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp plan audit — evidence 12: records 1284–1351",
+      "summary": "Detailed summary, implementation status, recommendation, remaining items, liveness, acceptance refusal and source/test evidence for records 1284–1351 in Avi’s full non-shipped plan audit.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "7db66585-d811-459f-90a5-3a9c2b5f6452"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_1c6f5f17-9425-4fc4-9cd4-a86e3627cf55",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:48:02.259Z",
+      "updated_at": "2026-10-06T02:48:02.259Z",
+      "retired_at": null,
+      "path": "/reports/rpt_1c6f5f17-9425-4fc4-9cd4-a86e3627cf55",
+      "body_bytes": 135727,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/volumes.json"
+  },
+  {
+    "key": "main",
+    "reportId": "rpt_54b395b3-7c54-4d8d-93a9-2b100455f737",
+    "path": "/reports/rpt_54b395b3-7c54-4d8d-93a9-2b100455f737",
+    "title": "Papercusp — full audit of 1,351 non-shipped plan records",
+    "bodyBytes": 473121,
+    "bodySha256": "a83a12ab057ddcbe2b0cfafcbcd688a11b0b5d59ec40f6cece72a449b7fda6e9",
+    "receipt": {
+      "ok": true,
+      "report_id": "rpt_54b395b3-7c54-4d8d-93a9-2b100455f737",
+      "workspace_id": "papercusp-workspace",
+      "title": "Papercusp — full audit of 1,351 non-shipped plan records",
+      "summary": "All 1,351 non-shipped Papercusp plans, including archived, superseded and rubric records: a brief summary, recorded implementation status and recommended next action for each, with detailed implementation evidence and an explicit point-in-time scope.",
+      "kind": "audit",
+      "subject": {
+        "kind": "work_item",
+        "ref": "WI-10006272",
+        "label": "Full Papercusp non-shipped plan audit"
+      },
+      "origin": {
+        "harness_slug": null,
+        "author_owner_id": "su-371afed7-3a96-49b7-83a6-7ca117fedbb2",
+        "author_session_ref": "1647a082-520e-4f3f-ba80-3da5708dbec5"
+      },
+      "visibility": "owner",
+      "supersedes_report_id": null,
+      "lineage_id": "rpt_54b395b3-7c54-4d8d-93a9-2b100455f737",
+      "source": "agent",
+      "tags": [
+        "papercusp",
+        "plan-portfolio",
+        "non-shipped",
+        "2026-10-06"
+      ],
+      "published_at": "2026-10-06T02:48:03.636Z",
+      "updated_at": "2026-10-06T02:48:03.636Z",
+      "retired_at": null,
+      "path": "/reports/rpt_54b395b3-7c54-4d8d-93a9-2b100455f737",
+      "body_bytes": 473121,
+      "event_emitted": true
+    },
+    "source": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/reports/plan-portfolio-audit-2026-10-06/report.md"
+  }
+]

@@ -36,11 +36,13 @@
  */
 import {
   scanTextForSecrets,
+  scanTextForSecretsSliced,
   isFixtureFile,
   describeSecretFindings,
   type SecretFinding,
 } from '../sync/pot-git/secrets-guard';
 import { isPathExempt } from '../sync/pot-git/secrets-guard-exemptions';
+import { createTimeSlice } from '../event-loop-lag-monitor';
 
 /** How long a loaded exemption set is reused before it is re-read. Short enough
  *  that an agent registering an exemption to unblock its own commit sees it take
@@ -64,9 +66,31 @@ export function findCommitBlockingSecrets(
   text: string,
   exemptions: ReadonlySet<string>,
 ): SecretFinding[] {
-  if (isFixtureFile(file)) return [];
-  if (isPathExempt(exemptions, file)) return [];
+  if (isCommitScanExempt(file, exemptions)) return [];
   return scanTextForSecrets(file, text);
+}
+
+/**
+ * {@link findCommitBlockingSecrets} for the production commit guard: same exemptions,
+ * same findings, but the scan hands the main thread back every few milliseconds
+ * (WI-6554700010008327). git-sync runs this over every dirty file on the host's main
+ * thread, and the tree carries ~10 MB generated JSON files whose synchronous scans
+ * stalled bg-host's event loop for seconds. `maybeYield` defaults to a fresh
+ * 10 ms time slice per file; tests inject a counter.
+ */
+export async function findCommitBlockingSecretsSliced(
+  file: string,
+  text: string,
+  exemptions: ReadonlySet<string>,
+  maybeYield: () => Promise<void> = createTimeSlice().maybeYield,
+): Promise<SecretFinding[]> {
+  if (isCommitScanExempt(file, exemptions)) return [];
+  return scanTextForSecretsSliced(file, text, maybeYield);
+}
+
+/** The static fixture set plus the runtime exemption rows: one rule for both scanners. */
+function isCommitScanExempt(file: string, exemptions: ReadonlySet<string>): boolean {
+  return isFixtureFile(file) || isPathExempt(exemptions, file);
 }
 
 /**

@@ -29,6 +29,7 @@
  * with the per-issue `linkedFeatureId` guard, no double-mint.
  */
 import { harnessQuery } from '@papercusp/db-org';
+import { newFeatureId } from './collision-resistant-id';
 import { auditFeatureChange } from './feature-audit';
 import { loadIssuesOrSeed, saveIssues } from './harness-issues';
 import { activeWorkspaceId } from './workspace-registry';
@@ -102,10 +103,11 @@ export function __resetSweepLocksForTest(): void {
 }
 
 /**
- * Mint one `F-FIX-NNN` feature row in `harness_<slug>.harness_features` from an
+ * Mint one `F-FIX-<tail>` feature row in `harness_<slug>.harness_features` from an
  * issue. Does NOT touch the issue or `issues.json` — the caller links + saves.
- * Reads/writes via the per-harness legacy (postgres) client. Sequential calls
- * see each other's commits, so a batch mints F-FIX-001, F-FIX-002, … correctly.
+ * Reads/writes via the per-harness legacy (postgres) client. The id tail is
+ * time + random (collision-resistant-id.ts), so it is unique across harnesses,
+ * workspaces and federated nodes without scanning existing rows.
  */
 export async function mintFixFeatureRow(
   project: ProjectEntry,
@@ -115,7 +117,7 @@ export async function mintFixFeatureRow(
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const actor = opts.actor ?? 'issue-promote';
 
-  // All three statements below (the two lookups + the INSERT) share ONE
+  // Both statements below (the parent lookup + the INSERT) share ONE
   // harnessQuery() call so they run against the same connection / per-tx
   // search_path under PgBouncer (see harnessQuery's docstring) — matching the
   // original single-`dbc`-client behavior.
@@ -137,17 +139,14 @@ export async function mintFixFeatureRow(
       }
     }
 
-    const fixRows = (await sql`
-      SELECT feature_id FROM harness_features
-       WHERE harness_slug = ${project.slug} AND feature_id LIKE 'F-FIX-%'
-    `) as unknown as Array<{ feature_id: string }>;
-    const existingFixIds = fixRows
-      .map((r) => Number(r.feature_id.slice(6)))
-      .filter((n) => Number.isFinite(n));
-    const nextFixId = (existingFixIds.length ? Math.max(...existingFixIds) : 0) + 1;
-    const featureId = `F-FIX-${String(nextFixId).padStart(3, '0')}`;
+    // scope-unique-identifiers-2026-07-26 P-005: the id used to be MAX(F-FIX-n) + 1
+    // over THIS harness's rows, so two harnesses of one workspace (and every other
+    // workspace) both minted F-FIX-001 — measured twins F-FIX-001
+    // (hiveloop-hive/papercusp) and F-FIX-008 (papercup/papercusp). A time + random
+    // tail needs no scan and is unique across harnesses, workspaces and nodes.
+    const featureId = newFeatureId('FIX');
 
-    const claims = issue.codePointer ? [`VAL-FIX-${nextFixId} @ ${issue.codePointer}`] : [];
+    const claims = issue.codePointer ? [`VAL-${featureId.slice(2)} @ ${issue.codePointer}`] : [];
     const featureNotes = [
       issue.evidence ?? '',
       issue.suggestedFix ? `Suggested fix: ${issue.suggestedFix}` : '',

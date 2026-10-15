@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { chatModelFailureFields, classifyChatModelFailure } from './chat-model-failure';
+import {
+  chatModelFailureFields,
+  classifyChatModelFailure,
+  projectChatFailureTranscriptTurn,
+  safeChatFailureTranscriptFields,
+} from './chat-model-failure';
 
 // The exact frame text measured on hosted workspace avi-test (r56, 2026-09-27T16:01Z,
 // .papercusp/scratch/r56-chat-probe-2.log) — the failure the viewer could not see (WI-10003494).
@@ -62,5 +67,42 @@ describe('classifyChatModelFailure — a failed chat turn gets an actionable cod
   it('chatModelFailureFields spreads cleanly onto an error frame, and to nothing when not actionable', () => {
     expect({ message: 'x', ...chatModelFailureFields('codex exited 1: panic', NOW) }).toEqual({ message: 'x' });
     expect(chatModelFailureFields(AVI_CODEX_CAP, NOW).code).toBe('model_usage_limited');
+  });
+
+  it('persists a safe failure sentence plus actionable fields instead of backend prose', () => {
+    const turn = safeChatFailureTranscriptFields(AVI_CODEX_CAP, NOW);
+    expect(turn).toMatchObject({
+      content: 'That turn did not complete. Try asking again.',
+      error: true,
+      code: 'model_usage_limited',
+    });
+    expect(turn.content).not.toContain('codex exited');
+    expect(turn.content).not.toContain('You’ve hit your usage limit');
+    expect(turn.resetAt).toBeTypeOf('number');
+  });
+
+  it('redacts legacy persisted backend prose on read while retaining safe classification', () => {
+    const turn = projectChatFailureTranscriptTurn({
+      role: 'assistant',
+      content: AVI_CODEX_CAP,
+      ts: '2026-09-27T16:01:00.000Z',
+      error: true,
+    }, NOW);
+
+    expect(turn).toMatchObject({
+      role: 'assistant',
+      content: 'That turn did not complete. Try asking again.',
+      error: true,
+      code: 'model_usage_limited',
+    });
+    expect(turn.content).not.toContain('codex exited');
+    expect(turn.content).not.toContain('usage limit');
+    // A legacy wall-clock reset has no reliable timezone at read time.
+    expect(turn).not.toHaveProperty('resetAt');
+  });
+
+  it('leaves ordinary assistant turns untouched', () => {
+    const turn = { role: 'assistant', content: 'normal reply', error: false };
+    expect(projectChatFailureTranscriptTurn(turn, NOW)).toBe(turn);
   });
 });

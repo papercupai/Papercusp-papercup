@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "GitNexus P-005 engine comparison: aggregate re-derived from the four persisted live arm reports AFTER the final clean installed-arm rerun (re-run against the current engine-comparison-cli.ts, engine-comparison.ts and engine-comparison-report.ts blobs)",
+  "framework": "shell",
+  "command": [
+    "npx",
+    "tsx",
+    "packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts",
+    "--aggregate",
+    "--out",
+    "docs/evidence/gitnexus-engine-comparison-2026-10-01"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T18:21:26Z",
+  "finishedAt": "2026-10-02T18:21:28Z",
+  "summary": "Re-ran the engine-comparison CLI aggregate step against the persisted per-arm reports (baseline-lsp-rg, gitnexus-installed, gitnexus-candidate, codebase-memory) under docs/evidence/gitnexus-engine-comparison-2026-10-01, after the final pristine installed-arm rerun landed (WI-10005374) and after the deriveRunMeta byte-stability change (EI-24858052475884275). It supersedes the 09:07Z aggregate evidence because the CLI and report sources changed and the installed arm was re-measured from a clean tree. The aggregate exited 0 in about 2 seconds and the committed verdict.json (sha256 2c9c3280fd3fa397f8945de9207ecf07e6de8f05cdd5620a7c072a91dcea4e03) was byte-identical before and after. Per verdict.json the decision is keep with an empty residue list and sourceParity.same=true (all four arms fingerprint 08104b5503ccf9a3b0cf486a81bbc06fc94329f5): Codebase-Memory does not replace the installed GitNexus (correct 1/5 < installed 2/5, recall 0.20 < 0.50, warm median 3.31x installed), and the 1.6.12 candidate does not upgrade it (correct 1/5 < installed 2/5, recall 0.43 < 0.50, cold index 2.71x and index bytes 1.41x installed). Disclosed limits: the aggregate step reads files and does not re-query any engine; GitNexus cold-index wall and RSS are single real runs taken under shared-host load and are upper bounds, so latency ratios are load-confounded while the parity and quality verdict is not. Disclosed non-determinism: deriveRunMeta derives createdAt and runId from the NEWEST REPORT FILE MTIME, so re-running the aggregate over a copy of the reports whose mtimes differ from the committed run rewrites createdAt in engine-comparison.md and task-runs.json (here 2026-10-02T16:37:34.722Z -> 2026-10-02T18:18:18.741Z, the copy time) without any measured number changing; verdict.json and fairness-audit.json were byte-identical, and the two rewritten tracked files were restored with git restore so the committed evidence is unchanged.",
+  "assertions": [
+    {
+      "id": "aggregate-exit-0",
+      "passed": true,
+      "evidence": "engine-comparison-cli.ts --aggregate --out docs/evidence/gitnexus-engine-comparison-2026-10-01 exited 0 in about 2 seconds (18:21:26Z to 18:21:28Z) with the current cli blob (sha256 4c8b67b4c8a0fd937a57a0b1bbc8087fdf9c499d99bee06c83486179f459771), engine-comparison.ts blob (sha256 f530d789868124faf678f486e3b56b1666594e90b9ddd9f3d1da5a6182900457) and engine-comparison-report.ts blob (sha256 9818ae2d587cfec1e8c830d467e477ef7d87a5b55b4a6a7140cfe5e1d05a46c8)."
+    },
+    {
+      "id": "verdict-keep-reproduced",
+      "passed": true,
+      "evidence": "verdict.json decision is keep with an empty residue list and sourceParity.same=true; its sha256 is 2c9c3280fd3fa397f8945de9207ecf07e6de8f05cdd5620a7c072a91dcea4e03 both before and after the re-run (byte-identical) and fairness-audit.json is also byte-identical. Only engine-comparison.md and task-runs.json differed, and only by the mtime-derived createdAt value; all 21 changed line pairs (21 insertions and 21 deletions) were createdAt lines. They were restored to the committed bytes."
+    },
+    {
+      "id": "no-replace-no-upgrade-reasons-measured",
+      "passed": true,
+      "evidence": "Both verdict.json reasons cite measured per-arm numbers (correct counts, recall, warm median ratio 3.31x, cold index ratio 2.71x, index bytes ratio 1.41x) taken from the report-*.json files rather than asserted; those report files were not modified by the re-run."
+    },
+    {
+      "id": "limits-disclosed",
+      "passed": true,
+      "evidence": "engine-comparison.md notes disclose the clean-rerun resolution of the installed-arm tree-parity defect, the 512 KB analyze size-cap skips in both GitNexus arms, the candidate line-base correction, that the baseline arm is a scripted rg pass, and that the tool-level comparison spends zero LLM tokens. This file additionally discloses the load-confounded latency ratios and that deriveRunMeta is mtime-dependent, so it is byte-stable only for unchanged report mtimes."
+    }
+  ],
+  "workItemId": "WI-10001409",
+  "specId": "AUTO-BAR-R-8-P-005",
+  "testFile": "docs/evidence/gitnexus-engine-comparison-2026-10-01/verdict.json",
+  "sourceFile": "packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts"
+}

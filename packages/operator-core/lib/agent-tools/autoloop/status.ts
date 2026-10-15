@@ -26,7 +26,9 @@ export default defineTool({
   description: 'Read autoloop_state rows (last_fired_at, last_status, consecutive_errors) for a harness slug.',
   capability: 'autoloop:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // The evidence-only judge can reproduce a named release-readiness probe,
+  // but its harness scope must come from the dispatched principal.
+  agentRoles: [...SU_ROLES, 'judge'],
   args: z.object({
     harnessSlug: z.string().optional(),
   }),
@@ -51,7 +53,26 @@ export default defineTool({
     // the operator/superuser `'*'` auto-default is truthy and slips past it —
     // route through the fail-loud resolver so `'*'`/all is rejected instead of
     // querying a nonexistent `'*'` install_slug bucket (P-004).
-    const slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx);
+    let slug: string | null;
+    if (ctx.role === 'judge') {
+      slug = resolveConcreteHarnessSlug(undefined, ctx);
+      if (!slug) return harnessRequiredResult('autoloop:status');
+      const requestedSlug = args.harnessSlug?.trim();
+      if (requestedSlug && requestedSlug !== slug) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'judge_harness_scope_mismatch',
+              detail: 'The evidence-only judge may read autoloop status only for its dispatched harness.',
+            }),
+          }],
+        };
+      }
+    } else {
+      slug = resolveConcreteHarnessSlug(args.harnessSlug, ctx);
+    }
     if (!slug) {
       return harnessRequiredResult('autoloop:status');
     }

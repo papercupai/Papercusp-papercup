@@ -19,6 +19,7 @@ import { assertSingleWriteStatement } from './pg-mutate-query';
 import {
   assertSingleReadStatement,
   assertReadOnlyExplainStatement,
+  SET_LOCAL_UNTRACKED_STATEMENTS,
   extractPgErrorInfo,
   extractReferencedTables,
   personalVaultRefusal,
@@ -26,11 +27,14 @@ import {
   buildTenantScopeAdvisory,
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
+  buildJsonNullArrowAdvisory,
   buildUnusedCteAdvisory,
   buildPopulationNarrowingAdvisory,
   buildNonSummingPartitionAdvisory,
   buildExecutedPartitionAdvisory,
   executePredicatePartition,
+  predicatePartitionSampleSql,
+  predicatePartitionSql,
   predicatePartitionTotalSql,
   planPredicatePartition,
   PREDICATE_PARTITION_CELL_LIMIT,
@@ -45,6 +49,7 @@ import {
   buildEventFireWindowAdvisory,
   buildEpochUnitAdvisory,
   buildDbosWorkflowStatusSchemaHint,
+  buildDbosHistoricalIntervalJoinAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
   buildToolRoutingAdvisory,
@@ -58,6 +63,7 @@ import {
   refutedTenantAdvisory,
   pgReadQuery,
   boundedPgReadTxn,
+  type PgReadTxnTimeoutContext,
   PgReadQueryError,
   PgReadQueryTimeoutError,
   PG_READ_QUERY_CALL_OVERHEAD_MS,
@@ -72,6 +78,25 @@ describe('assertSingleReadStatement', () => {
   it('accepts a WITH…SELECT (CTE)', () => {
     const q = 'WITH t AS (SELECT 1 AS n) SELECT * FROM t';
     expect(assertSingleReadStatement(q)).toBe(q);
+  });
+
+  it('accepts parenthesized SELECT operands in a UNION query expression', () => {
+    const q =
+      '(SELECT owner_id, occurred_at FROM harness_shared.coord_event_log WHERE owner_id = \'su-a\') ' +
+      'UNION ALL ' +
+      '(SELECT owner_id, updated_at FROM harness_shared.workspace_host_resources WHERE owner_id = \'su-b\')';
+    expect(assertSingleReadStatement(q)).toBe(q);
+  });
+
+  it('accepts nested parentheses around a read query expression', () => {
+    const q = '((SELECT 1 AS n) UNION ALL (SELECT 2 AS n))';
+    expect(assertSingleReadStatement(q)).toBe(q);
+  });
+
+  it('continues to reject parenthesized non-read statements', () => {
+    for (const q of ['(DELETE FROM foo)', '((UPDATE foo SET x = 1))', '(DROP TABLE foo)']) {
+      expect(() => assertSingleReadStatement(q), q).toThrow(/read-only/i);
+    }
   });
 
   it('is case-insensitive on the leading keyword', () => {
@@ -440,6 +465,69 @@ describe('boundedPgReadTxn — bounded internal loop reads', () => {
       vi.useRealTimers();
     }
   });
+
+  it.each(['acquire', 'setup', 'callback', 'commit'] as const)(
+    'attaches bounded phase and safe acquire snapshots when %s times out',
+    async (phase) => {
+      vi.useFakeTimers();
+      const { resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+      resetAcquireRegistryForTest();
+      try {
+        const never = () => new Promise<never>(() => {});
+        const tx = Object.assign(async () => [], {
+          unsafe: async (query: string) =>
+            phase === 'setup' && query === 'SET TRANSACTION READ ONLY' ? never() : [],
+        });
+        const client = phase === 'acquire'
+          ? { begin: never }
+          : phase === 'commit'
+            ? { begin: async (fn: (transaction: unknown) => Promise<unknown>) => { await fn(tx); return never(); } }
+            : { begin: async (fn: (transaction: unknown) => Promise<unknown>) => fn(tx) };
+        let callbackCalled = false;
+        const pending = boundedPgReadTxn(
+          async () => {
+            callbackCalled = true;
+            return phase === 'callback' ? never() : 'ok';
+          },
+          {
+            client: client as never,
+            acquirePool: 'org-admin',
+            timeoutMs: 100,
+            acquireTimeoutMs: 100,
+          },
+        );
+        const settled = pending.then(
+          () => { throw new Error('expected a bounded transaction deadline'); },
+          (error: Error & { boundedPgReadTxn?: PgReadTxnTimeoutContext }) => error,
+        );
+
+        const deadlineMs = phase === 'acquire' || phase === 'setup'
+          ? 101
+          : 100 + 100 + PG_READ_QUERY_CALL_OVERHEAD_MS + 1;
+        await vi.advanceTimersByTimeAsync(deadlineMs);
+        const error = await settled;
+        const context = (error as Error & { boundedPgReadTxn?: PgReadTxnTimeoutContext }).boundedPgReadTxn;
+
+        expect(context).toMatchObject({
+          phase,
+          acquirePool: 'org-admin',
+          acquireSnapshot: { pool: 'org-admin' },
+          acquireTicketSnapshot: { pool: 'org-admin', active: 1 },
+        });
+        expect(error.message).toContain(`phase=${phase}`);
+        expect(JSON.stringify(context?.acquireTicketSnapshot)).not.toMatch(/ownerId|sessionId|sql|connectionString/i);
+        expect(callbackCalled).toBe(phase === 'callback' || phase === 'commit');
+        if (phase === 'callback' || phase === 'commit') {
+          expect(context?.acquireTicketSnapshot?.tickets[0]?.state).toBe('held');
+        } else {
+          expect(context?.acquireTicketSnapshot?.tickets[0]?.state).toBe('waiting');
+        }
+      } finally {
+        resetAcquireRegistryForTest();
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 describe('pgReadQuery — same-transaction positive control (WI-41165)', () => {
@@ -466,6 +554,7 @@ describe('pgReadQuery — same-transaction positive control (WI-41165)', () => {
 
     expect(calls).toEqual([
       'SET TRANSACTION READ ONLY',
+      SET_LOCAL_UNTRACKED_STATEMENTS,
       'SET LOCAL statement_timeout = 5000',
       "SET LOCAL TIME ZONE 'UTC'",
       "SELECT * FROM (SELECT id FROM t WHERE id = 'known-1') AS _pgq_positive_control LIMIT 2",
@@ -515,6 +604,7 @@ describe('pgReadQuery — read-only EXPLAIN', () => {
 
     expect(calls).toEqual([
       'SET TRANSACTION READ ONLY',
+      SET_LOCAL_UNTRACKED_STATEMENTS,
       'SET LOCAL statement_timeout = 5000',
       "SET LOCAL TIME ZONE 'UTC'",
       'EXPLAIN (FORMAT TEXT) SELECT 1',
@@ -559,6 +649,20 @@ describe('extractReferencedTables (P-005)', () => {
     expect(extractReferencedTables(sql)).toEqual(['a', 'b', 'c', 'd']);
   });
 
+  it('does not treat a table-valued function in a scalar subquery as a physical relation', () => {
+    const sql =
+      'SELECT tr.id, (SELECT array_agg(k) FROM jsonb_object_keys(tr.execution_details) k) AS keys ' +
+      'FROM harness_shared.test_runs tr WHERE tr.id = 20852828';
+    expect(extractReferencedTables(sql)).toEqual(['harness_shared.test_runs']);
+  });
+
+  it('does not treat a LATERAL table-valued function as a physical relation', () => {
+    const sql =
+      'SELECT tr.id FROM harness_shared.test_runs tr ' +
+      'JOIN LATERAL jsonb_object_keys(tr.execution_details) k ON true WHERE tr.id = 20852828';
+    expect(extractReferencedTables(sql)).toEqual(['harness_shared.test_runs']);
+  });
+
   it('returns [] when nothing matches', () => {
     expect(extractReferencedTables('SELECT 1')).toEqual([]);
   });
@@ -578,13 +682,21 @@ describe('extractReferencedTables (P-005)', () => {
   });
 });
 
-/** A tagged-template `sql` stub returning canned information_schema rows. */
+/** A tagged-template postgres client stub returning canned information_schema rows. */
 function stubClient(rows: Array<{ table_schema: string; table_name: string; column_name: string; data_type?: string }>) {
   const calls: unknown[][] = [];
-  const sql = async (_strings: TemplateStringsArray, ...values: unknown[]) => {
-    calls.push(values);
+  const query = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    // boundedPgReadTxn tags set_config once during setup; keep `calls` focused
+    // on the schema lookup the fixture is meant to observe.
+    if (!strings.join('').includes("set_config('statement_timeout'")) calls.push(values);
     return rows;
   };
+  const tx = Object.assign(query, {
+    unsafe: async (_text: string) => [] as typeof rows,
+  });
+  const sql = Object.assign(query, {
+    begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
+  });
   return { sql: sql as never, calls };
 }
 
@@ -605,6 +717,41 @@ describe('describeReferencedTableColumns (P-005a — the 42703 column hint)', ()
         columns: ['issue_id: text', 'title: text', 'state: character varying'],
       },
     ]);
+  });
+
+  it('bounds a hung schema lookup used to enrich a 42703 error', async () => {
+    vi.useFakeTimers();
+    try {
+      let schemaLookupStarted = false;
+      const never = new Promise<unknown[]>(() => {});
+      const query = async (strings: TemplateStringsArray) => {
+        const text = strings.join('');
+        if (text.includes("set_config('statement_timeout'")) return [];
+        if (text.includes('information_schema.columns')) {
+          schemaLookupStarted = true;
+          return never;
+        }
+        return [];
+      };
+      const tx = Object.assign(query, { unsafe: async () => [] });
+      // Keep the client callable too: without boundedAdvisoryRead, the old code
+      // issued this tagged query directly and stayed pending forever.
+      const client = Object.assign(query, {
+        begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
+        unsafe: async () => [],
+      });
+
+      const pending = describeReferencedTableColumns(
+        'SELECT missing_column FROM harness_shared.work_items',
+        { client: client as never },
+      );
+      const assertion = expect(pending).rejects.toBeInstanceOf(PgReadQueryTimeoutError);
+      await vi.advanceTimersByTimeAsync(5_001);
+      await assertion;
+      expect(schemaLookupStarted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('resolves a bare name matched in many schemas to the preferred one (harness_shared first)', async () => {
@@ -709,8 +856,15 @@ describe('buildTenantScopeAdvisory (P-005b — the wrong-tenant footgun)', () =>
   });
 
   it('propagates nothing on a schema-read failure (caller catches — advisory just absent)', async () => {
-    const throwing = (async () => {
+    const query = async (strings: TemplateStringsArray) => {
+      if (strings.join('').includes("set_config('statement_timeout'")) return [];
       throw new Error('pg down');
+    };
+    const tx = Object.assign(query, {
+      unsafe: async (_text: string) => [],
+    });
+    const throwing = Object.assign(query, {
+      begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
     }) as never;
     await expect(
       buildTenantScopeAdvisory("SELECT * FROM harness_shared.harness_plans WHERE x = 1", {
@@ -1221,6 +1375,66 @@ describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-1932463348
     );
     expect(advisory).toBeNull();
     expect(calls).toHaveLength(0);
+  });
+
+  it('allows an exact primary-key equality without tenant predicates, including NULL-tenant rows', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT id, file_path, status FROM harness_shared.test_runs WHERE id = 20852828',
+      { client: sql },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('allows a finite literal primary-key IN-list without tenant predicates', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT id, file_path, status FROM harness_shared.test_runs ' + 'WHERE id IN (20852828, 20852471)',
+      { client: sql },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('allows an exact primary-key read with a set-returning function subquery in the projection', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT id, (SELECT array_agg(k) FROM jsonb_object_keys(execution_details) k) AS keys ' +
+        'FROM harness_shared.test_runs WHERE id = 20852828',
+      { client: sql },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('keeps the CI-null warning when an exact id read also references another physical relation', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT tr.id, (SELECT max(w.id) FROM harness_shared.work_items w) AS item_id ' +
+        'FROM harness_shared.test_runs tr WHERE tr.id = 20852828',
+      { client: sql },
+    );
+    expect(advisory).toContain('NULL-by-design');
+  });
+
+  it('keeps the CI-null warning when an exact id is only one branch of a broader OR', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.test_runs WHERE id IN (20852828, 20852471) OR status = 'fail'",
+      { client: sql },
+    );
+    expect(advisory).toContain('NULL-by-design');
+  });
+
+  it('does not borrow an id predicate from a nested query block', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'WITH ids AS (SELECT 20852828 AS id) ' +
+        'SELECT * FROM harness_shared.test_runs WHERE EXISTS (SELECT 1 FROM ids WHERE id = 20852828)',
+      { client: sql },
+    );
+    expect(advisory).toContain('NULL-by-design');
   });
 
   // EI-22773920937987602: local acceptance evidence is also recovered by an
@@ -1891,6 +2105,68 @@ describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', (
   });
 });
 
+describe('buildJsonNullArrowAdvisory (json null is not SQL NULL — WI-10005716)', () => {
+  it('fires on a single-arrow accessor compared with IS NULL', () => {
+    expect(
+      buildJsonNullArrowAdvisory(
+        "SELECT 1 FROM harness_shared.work_items WHERE payload->'goalId' IS NULL",
+      ),
+    ).toContain('json null is not SQL NULL');
+  });
+
+  it('fires on IS NOT NULL — the populated-field reading that actually bit', () => {
+    const advisory =
+      buildJsonNullArrowAdvisory(
+        "SELECT count(*) FROM harness_shared.session_briefs WHERE control_state->'activation' IS NOT NULL",
+      ) ?? '';
+    expect(advisory).toContain('counts them as populated');
+    expect(advisory).toContain('EI-23761509275982493');
+  });
+
+  it('fires through a parenthesised operand, a chained path and the #> form', () => {
+    expect(
+      buildJsonNullArrowAdvisory("SELECT (payload->'_ei'->'severity') IS NULL FROM t"),
+    ).toContain('json null is not SQL NULL');
+    expect(buildJsonNullArrowAdvisory("SELECT payload #> '{a,b}' IS NULL FROM t")).toContain(
+      'json null is not SQL NULL',
+    );
+  });
+
+  // The remedy forms must stay SILENT. An advisory that fires on the very shape
+  // it recommends gets discounted as noise, which retires it faster than being
+  // wrong does — so these are the load-bearing cases, not the firing ones.
+  it('stays silent on the text-returning forms it recommends', () => {
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE payload->>'goalId' IS NULL"),
+    ).toBeNull();
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE payload->'_ei'->>'severity' IS NULL"),
+    ).toBeNull();
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE payload #>> '{a,b}' IS NULL"),
+    ).toBeNull();
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE jsonb_typeof(payload->'k') = 'null'"),
+    ).toBeNull();
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 1 FROM t WHERE payload->'k' = 'null'::jsonb"),
+    ).toBeNull();
+  });
+
+  it('stays silent when the arrow is not the operand of the IS NULL test', () => {
+    expect(
+      buildJsonNullArrowAdvisory("SELECT payload->'k' AS k FROM t WHERE id IS NULL"),
+    ).toBeNull();
+  });
+
+  it('ignores the pattern inside literals and comments', () => {
+    expect(
+      buildJsonNullArrowAdvisory("SELECT 'payload->''k'' IS NULL' AS prose FROM t"),
+    ).toBeNull();
+    expect(buildJsonNullArrowAdvisory("SELECT 1 -- payload->'k' IS NULL")).toBeNull();
+  });
+});
+
 describe('buildJsonbTypeofNegationAdvisory (nullable JSONB predicates)', () => {
   const TRAP =
     "SELECT count(*) FILTER (WHERE NOT (jsonb_typeof(e.body->'sections') = 'array')) " +
@@ -2378,12 +2654,17 @@ describe('buildJsonbPathRedirect (P-015)', () => {
   /** A client that answers information_schema by tagged template AND the probe by `.unsafe`. */
   function stubJsonbClient(schemaRows: SchemaRow[], probeRows: ProbeRow[] | (() => never)) {
     const probes: Array<{ query: string; params: unknown[] }> = [];
-    const sql = async (_s: TemplateStringsArray, ..._v: unknown[]) => schemaRows;
-    (sql as unknown as { unsafe: unknown }).unsafe = async (query: string, params: unknown[]) => {
+    const query = async (_s: TemplateStringsArray, ..._v: unknown[]) => schemaRows;
+    const unsafe = async (query: string, params: unknown[] = []) => {
+      if (/^\s*SET\b/i.test(query) || /\bset_config\s*\(/i.test(query)) return [];
       probes.push({ query, params });
       if (typeof probeRows === 'function') return probeRows();
       return probeRows;
     };
+    const tx = Object.assign(query, { unsafe });
+    const sql = Object.assign(query, {
+      begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
+    });
     return { sql: sql as never, probes };
   }
 
@@ -2618,6 +2899,75 @@ describe('buildCorpusNamespaceAdvisory — a tenant predicate on a corpus table 
     expect(
       buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} WHERE workspace_id <> 'papercusp-workspace'`),
     ).toBeNull();
+  });
+
+  it('EI-25306698395799848: does not attribute a routine workspace filter to joined wake deliveries', () => {
+    const query = `SELECT r.id, w.id AS delivery_id
+      FROM harness_shared.routines AS r
+      LEFT JOIN harness_shared.event_wake_deliveries AS w
+        ON w.subscriber_id = r.action_config->>'ownerId'
+        AND w.source = 'routine'
+        AND w.created_at >= r.created_at
+      WHERE r.workspace_id = 'papercusp-workspace' AND r.name LIKE 'loop:%'`;
+    expect(buildCorpusNamespaceAdvisory(query)).toBeNull();
+    expect(buildCorpusNamespaceAdvisory(query + " AND w.workspace_id = 'papercusp-workspace'"))
+      .toContain('event_wake_deliveries');
+  });
+
+  it.each([
+    "SELECT * FROM harness_shared.routines r JOIN harness_shared.event_wake_deliveries w ON true WHERE r.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.event_wake_deliveries w JOIN harness_shared.routines r ON true WHERE r.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines JOIN harness_shared.event_wake_deliveries ON true WHERE routines.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines JOIN harness_shared.event_wake_deliveries ON true WHERE harness_shared.routines.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines r JOIN harness_shared.event_wake_deliveries w ON true WHERE workspace_id = 'papercusp-workspace'",
+  ])('does not invent corpus ownership for an unrelated or ambiguous joined predicate: %s', (query) => {
+    expect(buildCorpusNamespaceAdvisory(query)).toBeNull();
+  });
+
+  it('keeps corpus predicates independent across joined tables', () => {
+    const query = `SELECT * FROM ${PARTS} p JOIN harness_shared.event_wake_deliveries w ON true
+      WHERE p.workspace_id = 'default' AND w.workspace_id = 'papercusp-workspace'`;
+    expect(buildCorpusNamespaceAdvisory(query)).toContain('event_wake_deliveries');
+    expect(buildCorpusNamespaceAdvisory(query)).not.toContain('harness_shared.session_turn_parts');
+  });
+
+  it.each([
+    `SELECT * FROM ${PARTS} WHERE owner = 'workspace_id = ''papercusp-workspace'''`,
+    `SELECT * FROM ${PARTS} /* workspace_id = 'papercusp-workspace' */ WHERE owner = 'agent'`,
+    `SELECT * FROM ${PARTS} WHERE owner = $$workspace_id = 'papercusp-workspace'$$`,
+    `SELECT * FROM ${PARTS} WHERE owner = $example$workspace_id = 'papercusp-workspace'$example$`,
+    `SELECT workspace_id = 'papercusp-workspace' AS belongs_to_workspace FROM ${PARTS}`,
+  ])('ignores predicate-shaped text in literals and block comments: %s', (query) => {
+    expect(buildCorpusNamespaceAdvisory(query)).toBeNull();
+  });
+
+  it.each([
+    "SELECT * FROM harness_shared.routines JOIN harness_shared.event_wake_deliveries ON true WHERE event_wake_deliveries.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines JOIN harness_shared.event_wake_deliveries ON true WHERE harness_shared.event_wake_deliveries.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines r LEFT JOIN harness_shared.event_wake_deliveries w ON w.workspace_id = 'papercusp-workspace' WHERE r.name = 'loop'",
+  ])('warns about the corpus relation with its own explicit predicate: %s', (query) => {
+    expect(buildCorpusNamespaceAdvisory(query)).toContain('event_wake_deliveries');
+  });
+
+  it.each([
+    "SELECT * FROM harness_shared.event_wake_deliveries JOIN harness_shared.routines ON true WHERE workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.event_wake_deliveries, harness_shared.routines WHERE workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.event_wake_deliveries w WHERE EXISTS (SELECT 1 FROM harness_shared.routines w WHERE w.workspace_id = 'papercusp-workspace')",
+  ])('stays silent when relation ownership is ambiguous: %s', (query) => {
+    expect(buildCorpusNamespaceAdvisory(query)).toBeNull();
+  });
+
+  it('does not use a self-joined alias default predicate to silence another alias warning', () => {
+    expect(buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} p JOIN ${PARTS} q ON true
+      WHERE p.workspace_id = 'default' AND q.workspace_id = 'papercusp-workspace'`))
+      .toContain('matches ZERO rows');
+  });
+
+  it('preserves the mixed session_turns warning independently of joined corpus defaults', () => {
+    const advisory = buildCorpusNamespaceAdvisory(`SELECT * FROM ${TURNS} t JOIN ${PARTS} p ON true
+      WHERE t.workspace_id = 'papercusp-workspace' AND p.workspace_id = 'default'`);
+    expect(advisory).toContain('NOT a corpus constant');
+    expect(advisory).not.toContain('matches ZERO rows');
   });
 });
 
@@ -3030,6 +3380,56 @@ describe('buildDbosWorkflowStatusSchemaHint (EI-23095186684817118)', () => {
       buildDbosWorkflowStatusSchemaHint(
         `SELECT priority FROM ${WORKFLOW_STATUS}`,
         { code: '42703', message: 'column "priority" does not exist' },
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('buildDbosHistoricalIntervalJoinAdvisory (EI-25237971414928998)', () => {
+  const historyWideJoin = [
+    'WITH target(window_label, lo_ms, hi_ms) AS (',
+    "  VALUES ('09:45-09:46Z', 1000, 2000)",
+    ')',
+    'SELECT w.workflow_uuid, o.function_name',
+    'FROM target t',
+    'JOIN dbos.workflow_status w',
+    "  ON w.name IN ('routinesTick', 'routineFire')",
+    ' AND w.started_at_epoch_ms < t.hi_ms',
+    'JOIN dbos.operation_outputs o',
+    '  ON o.workflow_uuid = w.workflow_uuid',
+    ' AND o.started_at_epoch_ms < t.hi_ms',
+    ' AND (o.completed_at_epoch_ms IS NULL OR o.completed_at_epoch_ms >= t.lo_ms)',
+  ].join('\n');
+
+  it('warns when a narrow operation window is joined after an upper-only workflow history scan', () => {
+    const advisory = buildDbosHistoricalIntervalJoinAdvisory(historyWideJoin);
+    expect(advisory).toContain('DBOS historical interval join');
+    expect(advisory).toContain('every earlier workflow remains a candidate');
+    expect(advisory).toContain('join workflow_status by workflow_uuid');
+    expect(advisory).toContain('maxRows limits returned rows, not scan work');
+  });
+
+  it('stays silent when workflow start time is bounded on both sides or has no upper-only predicate', () => {
+    expect(
+      buildDbosHistoricalIntervalJoinAdvisory(
+        historyWideJoin.replace('w.started_at_epoch_ms < t.hi_ms', 'w.workflow_uuid = t.workflow_uuid'),
+      ),
+    ).toBeNull();
+    expect(
+      buildDbosHistoricalIntervalJoinAdvisory(
+        historyWideJoin.replace(
+          'w.started_at_epoch_ms < t.hi_ms',
+          'w.started_at_epoch_ms >= t.lo_ms AND w.started_at_epoch_ms < t.hi_ms',
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it('ignores unrelated and comment/literal-only DBOS mentions', () => {
+    expect(buildDbosHistoricalIntervalJoinAdvisory('SELECT 1')).toBeNull();
+    expect(
+      buildDbosHistoricalIntervalJoinAdvisory(
+        "SELECT 'dbos.workflow_status w JOIN dbos.operation_outputs o' AS note -- w.started_at_epoch_ms < 1",
       ),
     ).toBeNull();
   });
@@ -3630,13 +4030,16 @@ describe('EI-21338326327553651 — tenant population cache is scope-keyed, not t
   /** A client whose POPULATION probe answers differently per resolved workspace. */
   function popStub(hitFor: string) {
     const probedWorkspaces: string[] = [];
-    const sql = (async () => ROWS) as unknown as ((...a: unknown[]) => Promise<unknown>) & {
-      unsafe: (text: string, params?: string[]) => Promise<unknown>;
-    };
-    sql.unsafe = async (_text: string, params: string[] = []) => {
+    const query = async (_strings: TemplateStringsArray, ..._values: unknown[]) => ROWS;
+    const unsafe = async (text: string, params: string[] = []) => {
+      if (/^\s*SET\b/i.test(text) || /\bset_config\s*\(/i.test(text)) return [];
       probedWorkspaces.push(params[0]!);
       return [{ has_rows: true, ws_hit: params[0] === hitFor, ws_vals: [hitFor] }];
     };
+    const tx = Object.assign(query, { unsafe });
+    const sql = Object.assign(query, {
+      begin: async (fn: (transaction: typeof tx) => Promise<unknown>) => fn(tx),
+    });
     return { sql: sql as never, probedWorkspaces };
   }
 
@@ -3684,9 +4087,14 @@ describe('EI-21338326327553651 — tenant population cache is scope-keyed, not t
 
 describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () => {
   it.each([
-    ['message bodies', "SELECT subject, body_text FROM harness_shared.personal_documents WHERE source='gmail'"],
-    ['an aggregate count', 'SELECT count(*) FROM harness_shared.personal_documents'],
-    ['the bare, unqualified name', 'SELECT * FROM personal_documents'],
+    ['message bodies', "SELECT subject, body_text FROM harness_shared.documents WHERE source='gmail'"],
+    ['an aggregate count', 'SELECT count(*) FROM harness_shared.documents'],
+    ['the bare, unqualified name', 'SELECT * FROM documents'],
+    // Migration 1327 (WI-10005071) leaves a compat VIEW under the old name that
+    // reads the same rows. Until the contract migration drops it, it is a second
+    // way into the mailbox and must stay fenced.
+    ['the compat view under the old name', "SELECT subject FROM harness_shared.personal_documents WHERE source='gmail'"],
+    ['the old name, unqualified', 'SELECT * FROM personal_documents'],
     ['consent rows', 'SELECT * FROM harness_shared.personal_grants'],
     ['identities', 'SELECT * FROM harness_shared.personal_identities'],
     ['identity aliases', 'SELECT * FROM harness_shared.personal_identity_aliases'],
@@ -3709,18 +4117,18 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
         JOIN harness_shared.harness_plans b ON true
         JOIN harness_shared.test_runs c ON true
         JOIN harness_shared.tool_invocations e ON true
-        JOIN harness_shared.personal_documents d ON true`;
+        JOIN harness_shared.documents d ON true`;
     expect(
       extractReferencedTables(sql),
       'precondition: the bounded extractor must NOT see the vault table here',
-    ).not.toContain('harness_shared.personal_documents');
+    ).not.toContain('harness_shared.documents');
     expect(() => assertSingleReadStatement(sql)).toThrow(/Personal Vault/);
   });
 
   it('refuses a vault table in a set-operation arm and in a scalar subquery', () => {
     expect(() =>
       assertSingleReadStatement(
-        'SELECT id FROM harness_shared.work_items UNION ALL SELECT id FROM harness_shared.personal_documents',
+        'SELECT id FROM harness_shared.work_items UNION ALL SELECT id FROM harness_shared.documents',
       ),
     ).toThrow(/Personal Vault/);
     expect(() =>
@@ -3728,10 +4136,18 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
     ).toThrow(/Personal Vault/);
   });
 
+  it('names the relation it actually matched in the refusal, so the quoting hint is usable', () => {
+    expect(personalVaultRefusal('SELECT count(*) FROM harness_shared.documents')).toContain(
+      "harness_shared.documents holds Personal Vault data",
+    );
+    expect(personalVaultRefusal('SELECT count(*) FROM harness_shared.documents')).toContain("('documents')");
+    expect(personalVaultRefusal('SELECT * FROM personal_grants')).toContain("('personal_grants')");
+  });
+
   it('refuses a vault WRITE — forging a consent row is worse than reading one', () => {
     expect(() =>
       assertSingleWriteStatement(
-        "INSERT INTO harness_shared.personal_grants (principal_id, scopes) VALUES ('operator', '{personal:gmail}')",
+        "INSERT INTO harness_shared.personal_grants (principal_id, scopes) VALUES ('operator', '{personal:mail}')",
       ),
     ).toThrow(/Personal Vault/);
   });
@@ -3742,7 +4158,7 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
   it('allows schema/audit reads, where the vault name is a literal not a table', () => {
     expect(
       personalVaultRefusal(
-        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'personal_documents'",
+        "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'documents'",
       ),
       'auditing whether vault RLS actually bites is how this bug was found — fencing that would be self-defeating',
     ).toBeNull();
@@ -3757,6 +4173,49 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
       personalVaultRefusal('SELECT personal_documents_id FROM harness_shared.some_table'),
       'the trailing word boundary must not fire on personal_documents_id',
     ).toBeNull();
+    expect(
+      personalVaultRefusal('SELECT documents_id FROM harness_shared.some_table'),
+      'the trailing word boundary must not fire on documents_id',
+    ).toBeNull();
+    expect(
+      personalVaultRefusal('SELECT * FROM harness_shared.plan_documents'),
+      'the leading word boundary must not fire on a table that merely ends in documents',
+    ).toBeNull();
+  });
+});
+
+describe('personalVaultRefusal — organization-corpus access-control tables (P-014)', () => {
+  it.each([
+    ['permission lists', 'SELECT * FROM harness_shared.document_permission_lists'],
+    ['permission members', 'SELECT provider_user_id FROM harness_shared.document_permission_members'],
+    ['provider identity mappings', 'SELECT user_id FROM provider_identity_mappings'],
+  ])('refuses a read of %s and names the authorized path', (_label, sql) => {
+    expect(personalVaultRefusal(sql)).toMatch(/organization documents corpus/);
+    expect(() => assertSingleReadStatement(sql)).toThrow(/searchOrganizationDocuments/);
+  });
+
+  it('refuses a WRITE that would forge access — mapping a provider identity to yourself', () => {
+    expect(() =>
+      assertSingleWriteStatement(
+        "INSERT INTO harness_shared.provider_identity_mappings (workspace_id, provider, provider_user_id, user_id, mapped_by) VALUES ('w', 'slack', 'U1', gen_random_uuid(), 'me')",
+      ),
+    ).toThrow(/organization documents corpus/);
+  });
+
+  it('keeps the vault message when a statement touches both a vault and an org relation', () => {
+    expect(
+      personalVaultRefusal(
+        'SELECT d.id FROM harness_shared.personal_documents d JOIN harness_shared.document_permission_members m ON m.list_id = d.permission_list_id',
+      ),
+    ).toMatch(/Personal Vault/);
+  });
+
+  // CALIBRATION — schema audits and look-alike identifiers stay allowed.
+  it('allows schema reads that quote the name, and identifiers that only share a prefix', () => {
+    expect(
+      personalVaultRefusal("SELECT * FROM information_schema.columns WHERE table_name = 'provider_identity_mappings'"),
+    ).toBeNull();
+    expect(personalVaultRefusal('SELECT document_permission_lists_count FROM harness_shared.some_table')).toBeNull();
   });
 });
 
@@ -3811,6 +4270,35 @@ describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buc
     );
   });
 
+  it('stays silent on a row-returning query with a correlated EXISTS projection', () => {
+    const existsProjection = [
+      'EXISTS (',
+      '  SELECT 1 FROM harness_shared.documents d',
+      '   WHERE d.workspace_id = s.workspace_id',
+      "     AND d.source_kind <> 'calendar'",
+      "     AND d.storage_state <> 'missing'",
+      ') AS has_local_documents',
+    ].join('\n       ');
+    const sql = [
+      'SELECT s.kind, s.provider,',
+      `       ${existsProjection}`,
+      '  FROM harness_shared.data_sources s',
+    ].join('\n');
+    const singleColumnRowRead = [
+      'SELECT',
+      `       ${existsProjection}`,
+      '  FROM harness_shared.data_sources s',
+    ].join('\n');
+
+    // EXISTS in a projection does not make the outer query scalar. The old
+    // query-wide token check treated the correlated subquery's WHERE as the
+    // population and generated partition SQL over documents with an unbound s.
+    for (const rowRead of [sql, singleColumnRowRead]) {
+      expect(planPredicatePartition(rowRead)).toBeNull();
+      expect(buildNonSummingPartitionAdvisory(rowRead)).toBeNull();
+    }
+  });
+
   it('fires on two independent non-jsonb dimensions', () => {
     expect(
       buildNonSummingPartitionAdvisory(
@@ -3835,6 +4323,42 @@ describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buc
     )!;
     expect(advisory).toContain('AS d3');
     expect(advisory).not.toContain('AS d4');
+  });
+
+  it('stays silent on a row-returning window COUNT over a LATERAL table function', () => {
+    const rowReturning = [
+      'SELECT t AS title, count(*) OVER () AS n_titles',
+      "  FROM harness_shared.test_runs r, jsonb_array_elements_text(r.execution_details->'passedCaseTitles') t",
+      " WHERE r.id = 20924107 AND r.workspace_id = 'papercusp-workspace' AND (t ILIKE '%stable source key%' OR t ILIKE '%does not file when the author published%')",
+    ].join('\n');
+
+    expect(planPredicatePartition(rowReturning)).toBeNull();
+    expect(buildNonSummingPartitionAdvisory(rowReturning)).toBeNull();
+  });
+
+  it('preserves source aliases and LATERAL rows in every generated partition query', () => {
+    const sql = [
+      "SELECT count(*) FILTER (WHERE t ILIKE '%stable source key%') AS matching,",
+      '       count(*) FILTER (WHERE t IS NULL) AS missing',
+      '  FROM harness_shared.test_runs r,',
+      "       LATERAL jsonb_array_elements_text(r.execution_details->'passedCaseTitles') t",
+      " WHERE r.workspace_id = 'papercusp-workspace'",
+    ].join('\n');
+    const plan = planPredicatePartition(sql)!;
+    const source =
+      "FROM harness_shared.test_runs r,\n       LATERAL jsonb_array_elements_text(r.execution_details->'passedCaseTitles') t";
+    const generated = [
+      predicatePartitionSql(plan),
+      predicatePartitionTotalSql(plan),
+      predicatePartitionSampleSql(plan),
+      buildNonSummingPartitionAdvisory(sql)!,
+    ];
+
+    expect(plan.relation).toBe('harness_shared.test_runs');
+    for (const statement of generated) {
+      expect(statement).toContain(source);
+      expect(statement).toContain('r.execution_details->');
+    }
   });
 
   // ---- controls: the shapes that MUST stay silent. A detector that fires on a

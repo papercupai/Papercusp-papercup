@@ -6,12 +6,16 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { MemoryBackend, MemoryEntry, RememberOptions, UpdatePatch } from '@papercusp/memory';
+import type { GovernedSpendAttemptOutcome, SpendAttemptReport } from '../learning-governor/registrants';
+import type { SpendAttemptKind } from '../learning-governor/spend';
 import { MEMORY_TIER_KEY } from '../memory/two-tier';
 import type { ReplayTranscript } from '../replay/types';
 import { DEFAULT_TRANSFER_TICK, type TransferTickOptions } from './gate';
 import { lessonSignature } from './distill';
 import type { AdmitLessonInput, AdmitLessonResult } from './store';
 import { runTransferTick, type TransferStorePort, type TransferTickDeps } from './tick';
+import { transferReplayPort } from './replay-adapter';
+import { runReplayBattery } from '../replay/battery';
 import type { TransferLesson, TransferTestOutcome } from './types';
 
 /* ── fakes ──────────────────────────────────────────────────────────────── */
@@ -71,7 +75,7 @@ class FakeStore implements TransferStorePort {
     transition: { tier: TransferLesson['tier']; status: TransferLesson['status']; passCount: number; failCount: number };
     batteryId: string;
     delta: number;
-  }): Promise<void> {
+  }): Promise<TransferLesson> {
     const row = this.rows.get(q.id)!;
     Object.assign(row, {
       tier: q.transition.tier,
@@ -83,6 +87,7 @@ class FakeStore implements TransferStorePort {
       lastDelta: q.delta,
     });
     this.outcomes.push({ id: q.id, tier: q.transition.tier, status: q.transition.status, delta: q.delta, batteryId: q.batteryId });
+    return { ...row };
   }
 
   async markError(q: { id: string }): Promise<void> {
@@ -161,7 +166,13 @@ interface Harness {
 function fakeSpendAttempt(
   spends: Array<{ costUsd: number; note: string; disposition: string }>,
 ): TransferTickDeps['spendAttempt'] {
-  return async (q) => {
+  return async <T>(q: {
+    attemptKind: SpendAttemptKind;
+    requestedUsd: number;
+    note: string;
+    runRef?: string;
+    run: (grant: { reservedUsd: number; clamped: boolean }) => Promise<SpendAttemptReport<T>>;
+  }): Promise<GovernedSpendAttemptOutcome<T>> => {
     try {
       const report = await q.run({ reservedUsd: q.requestedUsd, clamped: false });
       const disposition = report.cancelled ? 'cancelled' : 'used';
@@ -173,6 +184,7 @@ function fakeSpendAttempt(
         reservationId: 'res-fake',
         clamped: false,
         cancelled: report.cancelled === true,
+        settlement: null,
       };
     } catch (e) {
       const burned = (e as { costUsd?: unknown }).costUsd;
@@ -184,6 +196,7 @@ function fakeSpendAttempt(
         error: e instanceof Error ? e.message : String(e),
         costUsd,
         reservationId: 'res-fake',
+        settlement: null,
       };
     }
   };
@@ -295,6 +308,35 @@ function seededHarness(outcome: TransferTestOutcome | Error, seedFails = 0): Har
 }
 
 describe('runTransferTick — testing leg (the student-transfer gate, D-006)', () => {
+  it('hands actual replay provenance to the store before mirroring the memory tier', async () => {
+    const h = seededHarness({ withComposite: 8, baselineComposite: 6, batteryId: 'unused', costUsd: 0 });
+    const order: string[] = [];
+    const port = transferReplayPort({ workspaceId: 'ws',
+      runner: async () => ({ outputText: 'verified', costUsd: 0.01, inputTokens: 1, outputTokens: 1, replayed: true }),
+      llmCall: async ({ messages }) => {
+        const score = messages[0].content.includes('variant: with lesson') ? 8 : 6;
+        return { text: JSON.stringify({ d1: score, d2: score, d3: score, rationale: 'fixture' }), costUsd: 0.01 } as never;
+      },
+      runGoverned: async ({ config }, deps) => ({ verdict: { allow: true, remainingUsd: 1 }, result: await runReplayBattery(config, deps) }),
+    });
+    h.deps.replay = port;
+    const record = h.store.recordOutcome.bind(h.store);
+    h.deps.store = { ...h.deps.store, admit: h.store.admit.bind(h.store), listForTesting: h.store.listForTesting.bind(h.store),
+      markError: h.store.markError.bind(h.store), setMemoryId: h.store.setMemoryId.bind(h.store),
+      recordOutcome: async (q) => {
+        order.push('persist');
+        expect(q.evaluation?.outcomes).toHaveLength(2);
+        expect(q.evaluation?.experiment.batteryId).toBe(q.batteryId);
+        expect(q.evaluation?.experiment.codeHash).toBeNull();
+        return record(q);
+      },
+    };
+    const update = h.memory.update.bind(h.memory);
+    h.memory.update = async (id, patch) => { order.push('mirror'); await update(id, patch); };
+    await runTransferTick('ws', h.deps, OPTS);
+    expect(order).toEqual(['persist', 'mirror']);
+  });
+
   it('a PASSING lesson promotes to validated and the memory tier is patched', async () => {
     const h = seededHarness({ withComposite: 8, baselineComposite: 6, batteryId: 'B1', costUsd: 0.05 });
     const result = await runTransferTick('ws', h.deps, OPTS);
@@ -304,6 +346,23 @@ describe('runTransferTick — testing leg (the student-transfer gate, D-006)', (
     // Battery cost reported but NOT ledgered here (the governed replay path owns it).
     expect(result.costUsd).toBeCloseTo(0.05);
     expect(h.spends).toEqual([]);
+  });
+
+  it.each(['inconclusive', 'missing'] as const)('never mirrors a native pass when the persisted result is %s', async (kind) => {
+    const h = seededHarness({ withComposite: 8, baselineComposite: 6, batteryId: 'B1', costUsd: 0.05 });
+    h.deps.store.recordOutcome = async () => kind === 'missing' ? null : { ...h.store.rows.get('L1')!, status: 'error' };
+    const result = await runTransferTick('ws', h.deps, OPTS);
+    expect(result).toMatchObject({ tested: 1, passed: 0, errors: 1 });
+    expect(h.memory.entries.get('M1')!.metadata![MEMORY_TIER_KEY]).toBe('probationary');
+    expect(h.memory.forgotten).toEqual([]);
+  });
+
+  it('mirrors the persisted demotion even when the native proposed verdict passed', async () => {
+    const h = seededHarness({ withComposite: 8, baselineComposite: 6, batteryId: 'B1', costUsd: 0.05 });
+    h.deps.store.recordOutcome = async () => ({ ...h.store.rows.get('L1')!, status: 'failed', tier: 'probationary' });
+    const result = await runTransferTick('ws', h.deps, OPTS);
+    expect(result).toMatchObject({ passed: 0, failed: 1 });
+    expect(h.memory.entries.get('M1')!.metadata![MEMORY_TIER_KEY]).toBe('probationary');
   });
 
   it('a FAILING lesson stays probationary (demotion target), memory untouched', async () => {

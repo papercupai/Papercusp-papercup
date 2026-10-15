@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-023 live pilot re-measure on the current standing-PR code (after the WI-10006271 fork-match change)",
+  "framework": "operational",
+  "command": [
+    "npx tsx .papercusp/scratch/p023-live-remeasure.mts",
+    "The probe (sha256 4c41acfd05a6bc29bed39ed9c804e4ad30e07ecfbc75361467c9dc08e0665868) builds the current tree's GitHubPrHost over a gh-auth Octokit, lists Papercusp/pot-review-pilot PRs (open and all), runs the current findStandingPr with forkRepo=githubRepoOf('https://github.com/papercupai/pot-review-pilot.git') and baseBranch 'main', repeats it with forkRepo 'someone-else/pot-review-pilot' as a negative control, reads getPrDetails for the adopted and the merged PRs, and reads the main branch of both repos with gh api. Read-only: nothing is opened, pushed or edited."
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T12:21:43Z",
+  "finishedAt": "2026-10-06T12:21:52Z",
+  "summary": "Live GitHub, current code: the standing-PR selector adopts the existing open PR #2 (head papercupai/pot-review-pilot:papercusp/working-copy) instead of opening a duplicate; the same listing with a foreign fork adopts nothing. PR #2 lists exactly one commit (f65af00), none of merged PR #1's five commits; its base is upstream main fd96063 (the merged main) and its head equals the fork's green-promoted main f65af00. Replaces binding 25874, whose measured sources moved with the fork-match change.",
+  "assertions": [
+    { "id": "adopts-existing-standing-pr", "passed": true, "evidence": "findStandingPr(open PRs, { baseBranch:'main', forkRepo:'papercupai/pot-review-pilot' }) returned PR #2; the adapter reported head_repo 'papercupai/pot-review-pilot'" },
+    { "id": "foreign-fork-adopts-nothing", "passed": true, "evidence": "findStandingPr(same PRs, { forkRepo:'someone-else/pot-review-pilot' }) returned null" },
+    { "id": "pr-lists-only-new-work", "passed": true, "evidence": "PR #2 commits = [f65af003275678071ceb75fc5b6491a4a9c9059f]; overlap with merged PR #1's 5 commits = []" },
+    { "id": "pr-base-is-merged-main", "passed": true, "evidence": "PR #2 targetSha fd96063548dd19fe7f719e45681ec859d8b40f21 = Papercusp/pot-review-pilot main" },
+    { "id": "head-is-green-promoted-sha", "passed": true, "evidence": "PR #2 head f65af003275678071ceb75fc5b6491a4a9c9059f = papercupai/pot-review-pilot main" }
+  ],
+  "evidencePlane": "live",
+  "plan": "pot-review-integration-mode-2026-10-05",
+  "specId": "SPEC-P-023-pilot",
+  "workItemId": "WI-10006104",
+  "subjectCommit": "3c555c8db13d68209816cedd1a5ab8942bb7f1a6",
+  "observations": {
+    "runtime": "GitHub repos Papercusp/pot-review-pilot (upstream) and papercupai/pot-review-pilot (working-copy fork)",
+    "openPrs": [
+      { "number": 2, "head_ref": "papercusp/working-copy", "head_repo": "papercupai/pot-review-pilot", "head_sha": "f65af003275678071ceb75fc5b6491a4a9c9059f", "base_ref": "main" }
+    ],
+    "mergedPrs": [
+      { "number": 1, "headSha": "edfefc81aef586067ee81929bd13eacb6364a48d", "headRepo": "papercupai/pot-review-pilot", "commits": ["2eea76c192895074c7899379d0a8709bf8a3cfcb", "81cf80e376cfffbf70de8d386ded82e770f7bc41", "76f7db7793faf3bc93abf550c299b7bcdb7094e3", "01b45d97eda2b41224a2815e660fc1a05185a9fb", "edfefc81aef586067ee81929bd13eacb6364a48d"] }
+    ],
+    "upstreamMain": "fd96063548dd19fe7f719e45681ec859d8b40f21",
+    "forkMain": "f65af003275678071ceb75fc5b6491a4a9c9059f",
+    "source": [
+      { "path": "packages/operator-core/lib/pr-host/github.ts", "sha256": "9496aaa43ef332fbb1d84070edacea267516ddb7eba37ef9ec4782a46606e91a", "gitStatusAtStart": "clean" },
+      { "path": "packages/operator-core/lib/harness/git-sync/standing-pr.ts", "sha256": "75eb82badfcfd11f67cfc4688bbeb6d65e7731e98e50eb30afc13180926814d8", "gitStatusAtStart": "clean" },
+      { "path": "packages/operator-core/lib/harness/git-sync/decide-standing-pr.ts", "sha256": "54f691ab7d47d8289c2d15a2c682ff115e0c12203f27d4ca70730a317d0d0ffd", "gitStatusAtStart": "clean" }
+    ],
+    "companionTest": { "path": "packages/operator-core/lib/harness/git-sync/working-copy-standing-pr.integration.test.ts", "testRunId": 20837994, "result": "pass", "note": "real-git integration run after the head_repo fixture update" }
+  },
+  "notMeasured": [
+    "No new promotion was pushed to the pilot during this re-measure; it observes the existing PR #2 and the current selector's choice over the live listing.",
+    "The >=2-agents-inside-the-pilot-pot clause is not observed live; per plan decision D-016 the D-006 real-git test covers it."
+  ]
+}

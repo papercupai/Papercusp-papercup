@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { getRubric, readRubricPlanRevision } from '../../rubrics';
+import { readRubricWithoutSeeding } from '../../rubrics';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -11,6 +11,7 @@ import {
   validateScorecardRatingValues,
   validateScorecardPoorRatingDisposition,
   ObservationEvidenceError,
+  OBSERVATION_UNKNOWN_REASONS,
   type ObservationRatings,
 } from '../../harness/improvements/observation-types';
 import {
@@ -19,7 +20,7 @@ import {
   resolveScorecardReleaseGateBinding,
   scorecardRatingsClaimPass,
   scorecardEvidenceFingerprint,
-  validateWorkOnEverythingEvidenceEnvelope,
+  validateRubricRatingContracts,
   computeWorkOnEverythingRollup,
   resolveScorecardInstrumentSnapshots,
   type ScorecardInstrumentSnapshot,
@@ -28,27 +29,36 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { resolveAcceptanceGraderEligibility } from './grader-eligibility';
 import { readAndEvaluateAcceptanceBarLifecycle } from '../../acceptance-bar-lifecycle-evaluator';
+import { evidenceCurrentInputSchema } from '../plans/spec-evidence-store';
 
 export const scorecardRatingEntrySchema = z
   .object({
     rating: z.string().min(1),
     evidence: z.string().min(1),
-    evidenceRef: z.string().min(1).max(500).optional(),
-    evidenceKind: z.string().min(1).max(80).optional(),
+    evidenceRef: z
+      .string()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        'Stable reference for the artifact or probe named by `evidence`. For a grading-integrity replay challenge, pair it with `evidenceKind` and cite a reference outside the graded card\'s replay selection; the guard checks selection membership, not the referenced content.',
+      ),
+    evidenceKind: z
+      .string()
+      .min(1)
+      .max(80)
+      .optional()
+      .describe(
+        'Kind or namespace for `evidenceRef` (for example `test-run`). For a grading-integrity replay challenge, both fields are required to establish that evidence is outside the graded card\'s replay selection.',
+      ),
     positiveControlRef: z.string().min(1).max(500).optional(),
     absenceClaim: z.boolean().optional(),
+    // One vocabulary (observation-types): a second hand-copied literal list here is
+    // how `not-assessed` could exist on the read path but be refused on emit.
     unknownReason: z
-      .enum([
-        'idle',
-        'not-exercised',
-        'instrument-unavailable',
-        'retention-gap',
-        'generation-mismatch',
-        'external-capacity',
-        'scope-mismatch',
-        'other',
-      ])
-      .optional(),
+      .enum(OBSERVATION_UNKNOWN_REASONS)
+      .optional()
+      .describe("not-assessed = you have not graded it yet; instrument-unavailable = a measurement failed"),
     attribution: z.enum(['subject', 'system', 'instrument', 'environment', 'ambiguous']).optional(),
     nextEvidenceAction: z.string().min(1).max(1000).optional(),
     suggestion: z.string().min(1).max(2000).optional(),
@@ -108,6 +118,13 @@ export const scorecardEvaluateArgs = z
     }).strict().optional().describe('Exact subject/window for registered platform-computed instruments.'),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     testedSha: scorecardTestedShaSchema.optional(),
+    current: z
+      .array(evidenceCurrentInputSchema)
+      .max(2000)
+      .optional()
+      .describe(
+        'Fresh evidence fingerprints for acceptance BAR preflight, identical to scorecards:emit current. Omitted comparisons remain unknown.',
+      ),
   })
   .strict();
 
@@ -223,22 +240,20 @@ export async function evaluateScorecard(
   args: z.infer<typeof scorecardEvaluateArgs>,
   caller?: ScorecardEvaluateCaller,
 ) {
-  const rubric = await getRubric(args.rubricRef);
-  if (!rubric) {
-    // `getRubric` is intentionally fail-soft for read callers. Pair its null
-    // with the revision-spine read so a transient DB/data-plane failure cannot
-    // become a false authoritative "not found" during grading preflight.
-    const revisionRead = await readRubricPlanRevision(args.rubricRef);
-    if (!revisionRead.ok) {
-      return {
-        ok: false as const,
-        error:
-          `rubric '${args.rubricRef}' could not be resolved because the backing plan read failed; ` +
-          'retry or verify independently before treating it as absent',
-      };
-    }
+  const rubricRead = await readRubricWithoutSeeding(args.rubricRef);
+  if (rubricRead.kind === 'ambiguous') throw rubricRead.error;
+  if (rubricRead.kind === 'read-failed') {
+    return {
+      ok: false as const,
+      error:
+        `rubric '${args.rubricRef}' could not be resolved because the backing plan read failed; ` +
+        'retry or verify independently before treating it as absent',
+    };
+  }
+  if (rubricRead.kind === 'missing') {
     return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   }
+  const rubric = rubricRead.rubric;
 
   // Keep the documented read-only preflight aligned with scorecards:emit. An
   // adopted acceptance rubric can be individually resolvable while its BAR
@@ -246,8 +261,12 @@ export async function evaluateScorecard(
   // skeleton in that state makes a grader spend the full pass only to have the
   // terminal emit refuse the same payload.
   if (rubric.kind === 'acceptance' && rubric.barContract?.adoptionEpoch != null && rubric.subjectPlan) {
+    // Same harness scope as scorecards:emit: a plan slug is unique per harness, not per
+    // workspace (WI-10005160).
     const lifecycle = await readAndEvaluateAcceptanceBarLifecycle(rubric.subjectPlan, 'pre-grading', {
       expectedApplicable: true,
+      harnessSlug: rubric.subjectHarnessSlug,
+      ...(args.current ? { current: args.current } : {}),
     });
     if (!lifecycle.satisfied) {
       return {
@@ -309,7 +328,7 @@ export async function evaluateScorecard(
     // grader BEFORE the terminal emit that a poor rating must route somewhere.
     validateScorecardPoorRatingDisposition(observation, rubric);
     try {
-      validateWorkOnEverythingEvidenceEnvelope(args.rubricRef, ratings);
+      validateRubricRatingContracts(args.rubricRef, ratings);
     } catch (error) {
       return {
         ok: false as const,
@@ -334,6 +353,20 @@ export async function evaluateScorecard(
       ratings,
       instrumentSnapshots,
     });
+    if (instrumentContract.positiveClaimsWithoutSnapshots.length) {
+      return {
+        ok: false as const,
+        error:
+          `positive rating requires an instrument snapshot for: ${instrumentContract.positiveClaimsWithoutSnapshots.join(', ')}. ` +
+          'Supply a resolvable snapshot or rate only what the available evidence supports.',
+        skeleton,
+        canonicalRatings: ratings,
+        evidenceFingerprint: unboundEvidenceFingerprint,
+        instrumentContract,
+        instrumentSnapshots,
+        latest: latest ?? null,
+      };
+    }
     if (args.rubricRef === 'work-on-everything-stewardship-health' && instrumentContract.verdictMismatches.length) {
       return {
         ok: false as const,
@@ -466,7 +499,7 @@ export default defineTool({
     chaining:
       'scorecards:evaluate { rubricRef } → fill the returned skeleton → scorecards:evaluate { rubricRef, subject, ratings, instrumentSnapshots, testedSha } → scorecards:emit with the same subject/window and canonical ratings. Registered instruments execute on both calls; caller snapshots cannot assert platform provenance. `testedSha` is required when a releaseGating rubric has a pass-like rating.',
     returns:
-      'Top level: { ok, code, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, releaseGateBinding, changed, delta, error }. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance and then includes the acceptance-author `implementer` plus `principalImplementers` from its subject plan; a positive releaseGating evaluation returns a bound `releaseGateBinding` or refuses with code `stale_pass_blocked` and the current gate reason/failing tests. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
+      'Top level: { ok, code, skeleton, rubric, graderEligibility, latest, canonicalRatings, evidenceFingerprint, instrumentContract, releaseGateBinding, changed, delta, error }. `skeleton` is an ARRAY of criterion rows — NOT an object keyed by criterion, so index it positionally or by `.key`; each row carries key, title, instrumentKey, check and allowedRatings beside the null rating/evidence you fill in. `rubric` summarises the rubric incl. criteriaCount; `graderEligibility` is null unless the rubric is kind acceptance and then includes the acceptance-author `implementer` plus `principalImplementers` from its subject plan; a positive releaseGating evaluation returns a bound `releaseGateBinding` or refuses with code `stale_pass_blocked` and the current gate reason/failing tests. `latest` is the newest ScorecardRow or null, and its `ratings`, `gradedGeneration` and `generationFreshness` are nested OBJECTS rather than scalars — `generationFreshness` only when the row carries a `gradedGeneration` — so a flat/CSV projection over a row fails on them. Generation freshness can be `fresh`, `stale`, `unknown`, or `not-applicable`; the last means a complete matched replay recipe proves its selected evidence has no runtime-environment fingerprints. Missing/incomplete recipes and runtime-bound evidence remain tied to the live bg-host generation. `canonicalRatings`, `evidenceFingerprint`, `instrumentContract`, `changed` and `delta.changedCriteria` appear only when you pass `ratings`.',
     seeAlso: ['scorecards:emit', 'scorecards:list', 'rubrics:get'],
   },
   // EI-21228209276284649: this is a correctness payload, not a browseable list.

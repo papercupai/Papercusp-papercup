@@ -1,0 +1,71 @@
+
+> @papercupai/papercusp-monorepo@0.0.1 lint:tsc
+> node scripts/lint-tsc.mjs --files=packages/operator-core/lib/goal-holder-behavior-metrics.ts,packages/operator-core/lib/goals/unplanned-clusters.ts,packages/operator-core/lib/goal-holder-behavior-metrics.test.ts,packages/operator-core/lib/scorecards-holder-behavior-instruments.test.ts,packages/operator-core/lib/harness/improvements/tool-error-classifier.ts,packages/operator-core/lib/goals/unplanned-clusters.test.ts,packages/operator-core/lib/scorecards.ts,packages/operator-core/lib/system-health/goal-liveness-watchdog.ts
+
+LINT_TSC_RUN_STAMP label=operator-core at=2026-10-03T08:41:25.706Z head=b64ed7dc71 scope=files files=8
+  checked files : packages/operator-core/lib/goal-holder-behavior-metrics.ts
+                 packages/operator-core/lib/goals/unplanned-clusters.ts
+                 packages/operator-core/lib/goal-holder-behavior-metrics.test.ts
+                 packages/operator-core/lib/scorecards-holder-behavior-instruments.test.ts
+                 packages/operator-core/lib/harness/improvements/tool-error-classifier.ts
+                 packages/operator-core/lib/goals/unplanned-clusters.test.ts
+                 packages/operator-core/lib/scorecards.ts
+                 packages/operator-core/lib/system-health/goal-liveness-watchdog.ts
+gen:declarations: no enrolled modules explicitly selected; no declarations published
+TSC_SERVICE used=1 checked=126 named=8 typeReferencing=76 importers=42 errors=6 queuedMs=1121 checkMs=6447 snapshotAgeMs=6447
+   (shared typecheck service: judged your files, files referencing their exported types, and their direct importers — not the whole project. A transitive importer is judged by the bare run; PAPERCUSP_TSC_SERVICE=0 forces the full compile.)
+TSC operator-core: 6 type errors across 4 file(s) (baseline total 2) [--files]
+❌ 1 file(s) YOU NAMED added type errors above their baseline:
+   packages/operator-core/lib/goals/unplanned-clusters.test.ts: 0 → 3  (+3)
+      packages/operator-core/lib/goals/unplanned-clusters.test.ts(39,46): error TS2322: Type 'string | null' is not assignable to type 'string | undefined'.
+      packages/operator-core/lib/goals/unplanned-clusters.test.ts(39,57): error TS2322: Type 'string | null' is not assignable to type 'string | undefined'.
+      packages/operator-core/lib/goals/unplanned-clusters.test.ts(175,105): error TS2322: Type 'null' is not assignable to type 'string | undefined'.
+      (this file's baseline is 0 — every error above is new.)
+   (also 1 NEW file(s) with errors — see below)
+   packages/operator-core/lib/agent-tools/scorecards/emit.checks.test.ts: 0 → 1  (+1)
+LINT_TSC_RESULT label=operator-core scope=files exit=1 status=regressed at=2026-10-03T08:41:25.706Z head=b64ed7dc71
+TSC_RC=1645090?
+⚠ BEHAVIOURAL STRAND RISK — a shared seam gained call sites.
+
+  packages/operator-core/lib/goals/unplanned-clusters.ts
+    seam parseToolFailureSignatureKey(): 0 call site(s) -> 1
+
+A downstream test in ANOTHER workspace that mocks this seam and asserts on its call count,
+exact invocation sequence, or invocation eligibility may now be stale. `test:affected` cannot select
+those files (it maps changed paths to workspaces) and `tsc` cannot see this runtime contract.
+
+Reachable test files in other workspaces asserting on call count/order or changed output values: 117; of those, 0 also name a relevant anchor (parseToolFailureSignatureKey).
+No test names a seam member, so the WIDER band is named below — a narrow set is a ranking, never a reason to report less.
+
+  _retired/mug-kettle-deciders/packages/operator-core/lib/agent-tools/cup/spawn.test.ts
+  _retired/mug-kettle-deciders/packages/operator-core/lib/agent-tools/overwatch/declare_wake.test.ts
+  _retired/mug-kettle-deciders/packages/operator-core/lib/agent-tools/overwatch/start-pause.test.ts
+  _retired/mug-kettle-deciders/packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts
+  _retired/mug-kettle-deciders/packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts
+  _retired/snapshot-system/operator-core/endpoint-route-routes-snapshots/fork-from-cupboard.test.ts
+  apps/operator-vite/src/components/adv/AdvConversationsTab.test.tsx
+  apps/operator-vite/src/components/adv/AdvPotBar.test.tsx
+  apps/operator-vite/src/components/adv/AdvShell.test.tsx
+  apps/operator-vite/src/components/adv/AdvStatsTab.test.tsx
+  apps/operator-vite/src/components/adv/AdvWorkflowsTab.test.tsx
+  apps/operator-vite/src/components/adv/AgentsRunningPill.test.tsx
+  apps/operator-vite/src/components/adv/AnalyzePanel.perf-settle.test.tsx
+  apps/operator-vite/src/components/adv/DreamControl.test.tsx
+  apps/operator-vite/src/components/adv/DreamPanel.test.tsx
+  apps/operator-vite/src/components/adv/HealthTab.test.tsx
+  apps/operator-vite/src/components/adv/LearningLoopControl.test.tsx
+  apps/operator-vite/src/components/adv/LearningPotDrawer.test.tsx
+  apps/operator-vite/src/components/adv/LearningTab.test.tsx
+  apps/operator-vite/src/components/adv/WorkflowDetailView.test.tsx
+  apps/operator-vite/src/components/conversations/AskComposer.test.tsx
+  apps/operator-vite/src/components/left-sidebar/AutomationPane.test.tsx
+  apps/operator-vite/src/components/left-sidebar/LeftSidebar.test.tsx
+  apps/operator-vite/src/components/left-sidebar/WorkspacePulseTab.test.tsx
+  apps/operator/app/_components/AgentLauncherButton.test.tsx
+  … and 92 more (--all to list them, --json for the full set)
+
+RUN THEM — running them IS the detector for this class; there is no tsc for it:
+  node scripts/check-behavioural-strands.mjs --run --wide
+or, from an agent, the same set through the router:
+  testing:run { files: ["_retired/mug-kettle-deciders/packages/operator-core/lib/agent-tools/cup/spawn.test.ts", "_retired/mug-kettle-deciders/packages/operator-core/lib/agent-tools/overwatch/declare_wake.test.ts", "_retired/mug-kettle-deciders/packages/operator-core/lib/agent-tools/overwatch/start-pause.test.ts", …] }
+STRANDS_RC=1645090?

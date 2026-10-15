@@ -109,6 +109,9 @@ const silent = {
   runUnderDeployLock: alwaysAcquires,
   recordParity: async () => {},
   censusStranded: async () => [],
+  // WI-10005763: the restricted-write fence defaults to the REAL census (PG + git). `null` =
+  // nothing held, so every existing test exercises the flow exactly as before.
+  restrictedHoldFence: async () => null,
 };
 
 describe('deploy-cli main() — the gate chokepoint', () => {
@@ -596,5 +599,109 @@ describe('deploy-cli main() — the stranded-submodule gate (EI-2045917530223883
 
     expect(code).toBe(0);
     expect(censusStranded).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * WI-10005763 (D-012): a direct `npx tsx deploy-cli.ts --execute` executes live-tree code with
+ * network, outside the fenced launcher. The fence refuses at entry — before the lock, the plan, or
+ * any effect — and neither --force nor --deploy-commit bypasses it.
+ */
+describe('deploy-cli main() — restricted-write fence (WI-10005763)', () => {
+  type FenceFn = (roots: readonly string[]) => Promise<{ error: 'restricted_write_held' | 'restricted_hold_state_unknown'; hint: string } | null>;
+  const held = { error: 'restricted_write_held' as const, hint: '1 held restricted write(s) in /tmp/int (a.ts)' };
+
+  it('refuses an --execute run while a write is held: exit 2, no lock, no plan, no deploy', async () => {
+    const restrictedHoldFence = vi.fn<FenceFn>(async () => held);
+    const runUnderDeployLock = vi.fn(alwaysAcquires);
+    const gatherPlan = vi.fn<GatherFn>(async () => makePlan({ green: true }));
+    const executeDeploy = vi.fn<ExecuteFn>();
+    const out = vi.fn<(s: string) => void>();
+    const code = await main({
+      ...silent,
+      out,
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan,
+      makeDeps: () => makeStubDeps(),
+      executeDeploy,
+      runUnderDeployLock: runUnderDeployLock as typeof alwaysAcquires,
+      restrictedHoldFence,
+    });
+
+    expect(code).toBe(2);
+    expect(restrictedHoldFence).toHaveBeenCalledWith(expect.arrayContaining([cfg.integrationRoot]));
+    expect(runUnderDeployLock).not.toHaveBeenCalled();
+    expect(gatherPlan).not.toHaveBeenCalled();
+    expect(executeDeploy).not.toHaveBeenCalled();
+    const marker = out.mock.calls.map(([s]) => s).find((s) => s.startsWith('__DEPLOY_PLAN__ '));
+    expect(JSON.parse(marker!.slice('__DEPLOY_PLAN__ '.length))).toMatchObject({ mode: 'execute', refused: 'restricted_write_held', restrictedHold: held });
+  });
+
+  it('--force and --deploy-commit do not bypass the fence', async () => {
+    for (const flags of [['--force'], ['--deploy-commit', 'd'.repeat(40)]]) {
+      const executeDeploy = vi.fn<ExecuteFn>();
+      const code = await main({
+        ...silent,
+        argv: ['node', 'deploy-cli.ts', ...flags, '--execute'],
+        cfg,
+        gatherPlan: async () => makePlan({ green: false, forced: true }),
+        makeDeps: () => makeStubDeps(),
+        executeDeploy,
+        restrictedHoldFence: async () => held,
+      });
+      expect(code).toBe(2);
+      expect(executeDeploy).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a fence that throws refuses (fail-closed) instead of deploying', async () => {
+    const executeDeploy = vi.fn<ExecuteFn>();
+    const errLines: string[] = [];
+    const code = await main({
+      ...silent,
+      err: (s) => errLines.push(s),
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: async () => makePlan({ green: true }),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy,
+      restrictedHoldFence: async () => {
+        throw new Error('census down');
+      },
+    });
+    expect(code).toBe(2);
+    expect(executeDeploy).not.toHaveBeenCalled();
+    expect(errLines.join('\n')).toMatch(/restricted_hold_state_unknown.*census down/);
+  });
+
+  it('nothing held → the deploy proceeds (control)', async () => {
+    const executeDeploy = vi.fn<ExecuteFn>(async (_c, plan) => okResult(plan));
+    const code = await main({
+      ...silent,
+      argv: ['node', 'deploy-cli.ts', '--execute'],
+      cfg,
+      gatherPlan: async () => makePlan({ green: true }),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy,
+      restrictedHoldFence: async () => null,
+    });
+    expect(code).toBe(0);
+    expect(executeDeploy).toHaveBeenCalledTimes(1);
+  });
+
+  it('PLAN ONLY never consults the fence', async () => {
+    const restrictedHoldFence = vi.fn<FenceFn>(async () => held);
+    const code = await main({
+      ...silent,
+      argv: ['node', 'deploy-cli.ts'],
+      cfg,
+      gatherPlan: async () => makePlan({ green: true }),
+      makeDeps: () => makeStubDeps(),
+      executeDeploy: vi.fn<ExecuteFn>(),
+      restrictedHoldFence,
+    });
+    expect(code).toBe(0);
+    expect(restrictedHoldFence).not.toHaveBeenCalled();
   });
 });

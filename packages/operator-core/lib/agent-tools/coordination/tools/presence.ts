@@ -13,8 +13,13 @@
  */
 
 import { z } from 'zod';
-import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
-import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snapshot';
+import { defineTool, readJsonResult, UnauthorizedToolError, type SeeAlsoEntry } from '@papercusp/agent-mcp';
+import { pgResultDiagnosticSnapshot, type PgResultDiagnostic } from '@papercusp/db-org';
+import {
+  resolvePresenceScope,
+  assemblePresenceSnapshot,
+  type PresenceSnapshotDiagnostic,
+} from '../presence-snapshot';
 import { readIdentity } from '../../locks/identity';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { shapeCoordPresence } from './presence-shape';
@@ -29,9 +34,17 @@ import { overlayPresenceCursors } from '../presence-cursor-overlay';
 import { listCouplingsFor, resolveCoupledPeers } from '../../../coord/couplings';
 import { buildCoupledExpansion } from '../../../coord/coupled-expansion';
 import { deriveCouplings } from '../../../coord/coupling-derivation';
+import { readPeerRelations } from '../coupling-divergence-stamp';
+import type { PeerRelationsReadStageTiming } from '../coupling-divergence-stamp';
 import { censusObserverFor } from '../../../coord/derived-signal-census';
 import { couplingSourcesFor, presenceNeedsCoordinationDomain } from '../coupling-sources';
 import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle';
+import {
+  createStageAttempt,
+  traceStageAwait,
+  withStageAttempt,
+  type StageAttemptContext,
+} from '../../../sync/hyperbee/stage-stall-log';
 
 export default defineTool({
   name: 'coord:presence',
@@ -182,6 +195,12 @@ export default defineTool({
       .describe(
         'BOUNDED TARGETED lookup: return the union of rows matching these agent ids/labels, including ended rows. Use for an explicit dependency/holder set so response-budget truncation cannot omit a requested owner. Mutually exclusive with owner.',
       ),
+    probe_coupling_reader: z
+      .boolean()
+      .optional()
+      .describe(
+        'Diagnostic-only, SUPERUSER-only probe: runs the relation reader without the normal roster/expansion path and stores per-stage timings in private invocation metadata. Returns no peer data.',
+      ),
     ownerIds: z
       .array(z.string().min(1))
       .min(1)
@@ -315,11 +334,126 @@ export default defineTool({
     trimmed: (data) => shapeCoordPresence(data, 'trimmed'),
   },
   async handler(args, ctx) {
+    const startedAt = performance.now();
+    const metadata = (ctx as { metadata?: (value: Record<string, unknown>) => void } | undefined)?.metadata;
+    const stages: Array<{
+      name: string;
+      elapsedMs: number;
+      status: 'ok' | 'error';
+      queryDiagnostics: StageAttemptContext & {
+        stage: 'scope-query';
+        coverage: 'queries-created-during-phase';
+        timing: 'query-build-to-terminal-not-acquisition';
+      };
+      completedQueries: {
+        available: boolean;
+        coverage: 'retained-completed-results-for-exact-attempt';
+        selection: 'newest-retained-first';
+        matchingRetained: number;
+        omittedMatching: number;
+        results: PgResultDiagnostic[];
+        limitations: string;
+      };
+      snapshotDiagnostics?: PresenceSnapshotDiagnostic[];
+    }> = [];
+    const snapshotDiagnostics: PresenceSnapshotDiagnostic[] = [];
+    // Reuse the invocation ledger and PG diagnostic ring. These durations are
+    // dependency wall time; the snapshot contains parallel work internally.
+    // A query attempt joins records by identity, never by timestamp proximity.
+    const measure = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
+      if (!metadata) return action();
+      const start = performance.now();
+      const attempt = createStageAttempt({ rowId: '', onEvent: () => {} });
+      let status: 'ok' | 'error' = 'error';
+      try {
+        const value = await withStageAttempt(attempt, () => traceStageAwait('scope-query', action));
+        status = 'ok';
+        return value;
+      } finally {
+        attempt.finish(status === 'ok' ? 'fulfilled' : 'rejected');
+        // Retain the evidence at the phase boundary: a later pg_health read can
+        // no longer recover it after unrelated requests evict the process ring.
+        // Reuse its sanitized records (no SQL/parameters), joining by BOTH
+        // attempt and process identity, never by timestamp proximity.
+        let matching: PgResultDiagnostic[] = [];
+        let available = true;
+        try {
+          matching = ['org-app', 'org-admin', 'org-admin-lossless-bigint']
+            .flatMap((pool) => pgResultDiagnosticSnapshot(pool, 32).results)
+            .filter((result) => result.correlationState === 'linked'
+              && result.correlation?.attemptId === attempt.context.attemptId
+              && result.correlation.processInstanceId === attempt.context.processInstanceId)
+            .sort((a, b) => b.recordedAt - a.recordedAt);
+        } catch {
+          available = false;
+        }
+        stages.push({ name, elapsedMs: Math.max(0, performance.now() - start), status,
+          queryDiagnostics: { ...attempt.context, stage: 'scope-query',
+            coverage: 'queries-created-during-phase', timing: 'query-build-to-terminal-not-acquisition' },
+          ...(name === 'snapshot' && snapshotDiagnostics.length > 0
+            ? { snapshotDiagnostics: [...snapshotDiagnostics] }
+            : {}),
+          completedQueries: {
+            available, coverage: 'retained-completed-results-for-exact-attempt',
+            selection: 'newest-retained-first', matchingRetained: matching.length,
+            omittedMatching: Math.max(0, matching.length - 8), results: matching.slice(0, 8),
+            limitations: 'Retained completed queries only; evicted/in-flight records are unavailable. '
+              + 'preBuildMs includes queue/connect/preparation, not pure acquisition or CPU; '
+              + 'elapsedMs is build-to-terminal time. Neither identifies a root cause.',
+          },
+        });
+        try {
+          metadata({ presenceRead: { schemaVersion: 'presence-read-v1', unit: 'ms',
+            timing: 'wall-time-sequential-phases', coverage: 'instrumented-dependency-boundaries',
+            elapsedMs: Math.max(0, performance.now() - startedAt), stages: [...stages] } });
+        } catch {
+          /* Diagnostic delivery must not replace the roster or its dependency error. */
+        }
+      }
+    };
     // P-004 hive-scoped read (D-002): resolve the effective scope from ctx + args
     // (hive default → caller's home Hive; SU/unmapped → workspace fallback), then
     // assemble the byte-stable snapshot (P-009). Both steps are the SAME functions
     // the coord:inbox re-bootstrap uses, so the roster never diverges.
-    const c = (ctx ?? {}) as { workspaceId?: string | null; harnessSlug?: string | null; isSuperuser?: boolean };
+    const c = (ctx ?? {}) as {
+      workspaceId?: string | null;
+      harnessSlug?: string | null;
+      isSuperuser?: boolean;
+      metadata?: (value: Record<string, unknown>) => void;
+    };
+    if (args.probe_coupling_reader) {
+      if (!c.isSuperuser) {
+        throw new UnauthorizedToolError('probe_coupling_reader requires a superuser session.');
+      }
+      const probeStartedAt = performance.now();
+      const stageTimings: PeerRelationsReadStageTiming[] = [];
+      let status: 'ok' | 'error' = 'error';
+      try {
+        const identity = readIdentity(ctx);
+        await readPeerRelations(identity.ownerId, {
+          workspaceId: c.workspaceId,
+          harnessSlug: c.harnessSlug,
+          onStageTiming: (timing) => stageTimings.push(timing),
+        });
+        status = 'ok';
+        return { data: { couplingReadProbe: { complete: true } } };
+      } finally {
+        try {
+          c.metadata?.({
+            presenceCouplingProbe: {
+              schemaVersion: 'presence-coupling-probe-v1',
+              unit: 'ms',
+              timing: 'wall-time-sequential-reader-stages',
+              status,
+              elapsedMs: Math.max(0, performance.now() - probeStartedAt),
+              stages: [...stageTimings],
+            },
+          });
+        } catch {
+          /* Private diagnostics must not change the probe's result. */
+        }
+      }
+    }
     // Keep the public compatibility alias at the boundary: all downstream snapshot
     // and scope code consumes the canonical `owner`/`owners` selectors only.
     const owner = args.owner ?? args.ownerId;
@@ -328,7 +462,7 @@ export default defineTool({
     // admin/Mug view — gate it behind superuser. A non-SU caller asking for 'all' is
     // downgraded to 'workspace' (its own), so a bee can't snoop other workspaces' agents.
     const effScope = args.scope === 'all' && !c.isSuperuser ? 'workspace' : args.scope;
-    const resolved = await resolvePresenceScope(c, {
+    const resolved = await measure('scope', () => resolvePresenceScope(c, {
       scope: effScope,
       hive: args.pot,
       workspace: args.workspace,
@@ -336,7 +470,7 @@ export default defineTool({
       // (not hive-narrowed) so a live peer outside the caller's own Hive is
       // still found instead of reading as "no such agent".
       targetedOwner: !!owner || !!owners?.length,
-    });
+    }));
     // The lock store is keyed by coordinationDomain (the repo root, not
     // workspaceId) — resolved defensively so an anonymous caller never breaks the
     // lean read.
@@ -364,11 +498,12 @@ export default defineTool({
     // read must not widen the base rows (D-053: the base roster is byte-identical
     // whether coupling is on or off).
     const detail = args.include_detail && coordinationDomain ? { coordinationDomain } : undefined;
-    const snapshot = await assemblePresenceSnapshot(resolved, {
+    const snapshot = await measure('snapshot', () => assemblePresenceSnapshot(resolved, {
       ...(owner ? { owner } : {}),
       ...(owners?.length ? { owners } : {}),
       ...(detail ? { detail } : {}),
-    });
+      onDiagnostic: (diagnostic) => snapshotDiagnostics.push(diagnostic),
+    }));
     // Self-identification overlay (caller-dependent, so applied HERE, after the
     // shared/byte-stable snapshot — never inside it; see self-marker.ts): a
     // top-level `self` names the caller's own ownerId, and `isSelf:true` is
@@ -420,7 +555,7 @@ export default defineTool({
     let coupling: Record<string, unknown> = {};
     if (args.include_coupling !== false && self) {
       try {
-        const edges = await listCouplingsFor(self.ownerId, c.workspaceId ?? undefined);
+        const edges = await measure('coupling', () => listCouplingsFor(self.ownerId, c.workspaceId ?? undefined));
         // P-013 (scoping ruling D-078): the derived half, plugged in exactly where
         // this module always said it would go. The roster signals (same fleet,
         // shared awaited event) are computed from the SAME pre-overlay snapshot
@@ -511,7 +646,7 @@ export default defineTool({
     try {
       const ids = active.map((r) => String((r as { ownerId?: unknown }).ownerId ?? '')).filter(Boolean);
       if (ids.length) {
-        const modeMap = await getModesForOwners(c.workspaceId ?? 'default', ids);
+        const modeMap = await measure('modes', () => getModesForOwners(c.workspaceId ?? 'default', ids));
         if (modeMap.size) {
           active = active.map((r) => {
             const m = modeMap.get(String((r as { ownerId?: unknown }).ownerId ?? ''));
@@ -540,7 +675,7 @@ export default defineTool({
     try {
       const ids2 = active.map((r) => String((r as { ownerId?: unknown }).ownerId ?? '')).filter(Boolean);
       if (ids2.length) {
-        const rows = await listParkedAwaitsForSubscribers(ids2);
+        const rows = await measure('parkedOn', () => listParkedAwaitsForSubscribers(ids2));
         if (rows.length) {
           const byId = buildParkedOnMap(rows);
           active = active.map((r) => {
@@ -565,7 +700,7 @@ export default defineTool({
       const liveRows = active.filter((r) => (r as { sessionState?: string | null }).sessionState === 'live');
       const liveIds = liveRows.map((r) => String((r as { ownerId?: unknown }).ownerId ?? '')).filter(Boolean);
       if (liveIds.length) {
-        const reads = await lastInboxReadAtBatch(liveIds);
+        const reads = await measure('inboxRead', () => lastInboxReadAtBatch(liveIds));
         const budget = coordDeafBudgetMs();
         const nowMs = Date.now();
         active = active.map((r) => {
@@ -602,7 +737,7 @@ export default defineTool({
     // path adds no import/query and stays byte-identical.
     const cursorFlag = process.env.PAPERCUSP_AMBIENT_CURSOR;
     const cursorEnabled = args.include_cursor === true && (cursorFlag === '1' || cursorFlag === 'true');
-    active = await overlayPresenceCursors(active, { enabled: cursorEnabled });
+    active = await measure('cursor', () => overlayPresenceCursors(active, { enabled: cursorEnabled }));
 
     // ── P-012: a ready coord:dispatch CALL, not a mention ────────────────────
     // (coordination-spec-adoption-2026-08-03, D-100 kept the verb / D-101 fixed

@@ -1,0 +1,232 @@
+{
+  "formatVersion": 1,
+  "artifactPathConvention": "Private paths beginning ~/ resolve against the executing account home; immutable hashes identify the recorded artifacts.",
+  "workItem": "EI-24768607590333698",
+  "parent": "WI-10004537",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "status": "numeric collector repair verified; paired relevance power and remaining adoption measurements still open",
+  "identityHash": "3b2ca03260de507beb045fa907aeabda9cb7dca18186c0076b721ac6245cbdfe",
+  "snapshot": {
+    "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/snapshot-v2.json",
+    "sha256": "b8449e9c7760283644ae8668fec897194c057e723f99a2d650aab62e57be150f",
+    "bytes": 1513218
+  },
+  "labels": {
+    "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-numeric/labels.json",
+    "sha256": "1398d6622c9fb21bb65871cd040d2688c2c7d539531dc9a24a553719b94c53ab",
+    "bytes": 31806
+  },
+  "judgments": {
+    "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-numeric/judgments.json",
+    "sha256": "0054224eb156cfb0debff28894d7acd3c6e68f38f3c488f1c7560c684f922b0e",
+    "bytes": 21471
+  },
+  "sourceFiles": [
+    {
+      "path": "packages/operator-core/lib/memory/bench/judged.ts",
+      "sha256": "2ab676b698c248d0c8a24ff798e26d9d36e55fe5ea57c0937856628dfaea348f",
+      "bytes": 37591
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/judged-cli.ts",
+      "sha256": "8c77febc489778d9a04bdd403f7739251ae462bf9a022297f6ab2515dd4c068e",
+      "bytes": 2534
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+      "sha256": "cf23f9fa284e5c272746b1c111751a73b8062ea8e567d6dd39a9197e8a702a41",
+      "bytes": 23729
+    }
+  ],
+  "verification": {
+    "typecheckCommand": "npm run lint:tsc -- --files=packages/operator-core/lib/memory/bench/judged.ts,packages/operator-core/lib/memory/bench/judged-cli.ts,packages/operator-core/lib/memory/bench/judged.test.ts",
+    "typecheckResult": "exit0; 3 named TypeScript files checked; 0 errors; 2026-10-01T10:21:24.990Z; HEADd494690199",
+    "unitCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/memory/bench/judged.test.ts packages/operator-core/lib/memory/bench/candidate-hybrid-bench.test.ts",
+    "unitResult": "53 passed (37 judged, 16 candidate); exit0; local dirty test stamp HEAD68a2f5bcca; 2026-10-01T10:00:50Z",
+    "actualCollection": "native61202 finished exit0 at2026-10-01T10:13:08.202Z",
+    "rawAudit": "Read-only full raw audit native93830 emitted successful proof at2026-10-01T10:15:15.824Z; final process exit0. Verified immutable hashes, original author references, owner/model/system/exact messages, selected source groups, complete numeric chunks, reconstructed aggregate votes and final consensus labels.",
+    "recordedInvocationsVerified": 98,
+    "invocationCountMeaning": "Distinct collector-generated invocation IDs across 64 author and 34 judge chunk receipts; this is not a count of provider HTTP attempts or retries.",
+    "auditPopulation": {
+      "authorReceipts": 64,
+      "judgeChunkReceipts": 34,
+      "corpora": 2,
+      "judgePasses": 4
+    },
+    "guards": [
+      "integer/nonnegative/range/complete/duplicate question and document indices",
+      "preserve invalid raw response before rejecting labels",
+      "exact owner/snapshot/model/author prompt recovery",
+      "legacy judge contract reuse limited to authors",
+      "original raw fingerprint revalidation on resume",
+      "old judge receipts excluded from new attempt"
+    ]
+  },
+  "comparison": {
+    "sameQuestionTexts": true,
+    "sameSourceTexts": true,
+    "sameModel": true,
+    "oldUnsubmittedReferences": [
+      {
+        "vote": 17,
+        "key": "memory:130ae451-aadd-4898-9085-e985939480ba"
+      },
+      {
+        "vote": 18,
+        "key": "memory:130ae451-aadd-4898-9085-e985939480ba"
+      }
+    ],
+    "oldOutputTokens": 8953,
+    "numericOutputTokens": 1707,
+    "oldRaw": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2/memory-judge-1-128.json",
+      "sha256": "b1b29b6e2152fe9ff9349ca8ccd0f6f73f89738098f9aa0e8d198400d31963d6",
+      "bytes": 177388
+    },
+    "numericRaw": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-numeric/memory-judge-1-128.json",
+      "sha256": "c862f015adbcc5576125612d92ccbfab27c489e87cbcaf85138071ce7a04cb08",
+      "bytes": 112023
+    }
+  },
+  "audit": {
+    "memory": {
+      "authorCalls": 32,
+      "reusedAuthorCalls": 32,
+      "judgeChunksPerPass": [
+        8,
+        8
+      ],
+      "questionsAuthored": 128,
+      "questionsAccepted": 36,
+      "questionsExcluded": 92,
+      "flaggedForConsensusExclusion": 49,
+      "agreement": 0.7421875,
+      "classCounts": {
+        "calibration/exact-identifier": 4,
+        "calibration/lexical-gap": 4,
+        "calibration/session-start-intent": 4,
+        "calibration/hard-negative": 4,
+        "test/exact-identifier": 5,
+        "test/lexical-gap": 5,
+        "test/session-start-intent": 5,
+        "test/hard-negative": 5
+      },
+      "authors": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-numeric/memory-authors.json",
+        "sha256": "0e078d8402a4e4a94233235808230f695c3dc0e3691f0db3d30f1184cd63251c",
+        "bytes": 15337
+      },
+      "judgePasses": [
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-numeric/memory-judge-1-pass.json",
+          "sha256": "bccb4e1365d8e6189c1857caaaf43f45599c00beb0834f5faf16f6983c67c824",
+          "bytes": 31945
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-numeric/memory-judge-2-pass.json",
+          "sha256": "75df710e70c86922334a0321e9aaee3576a3191857da156adeea895a4b9916e7",
+          "bytes": 31652
+        }
+      ]
+    },
+    "prose": {
+      "authorCalls": 32,
+      "reusedAuthorCalls": 0,
+      "judgeChunksPerPass": [
+        9,
+        9
+      ],
+      "questionsAuthored": 128,
+      "questionsAccepted": 32,
+      "questionsExcluded": 96,
+      "flaggedForConsensusExclusion": 42,
+      "agreement": 0.7578125,
+      "classCounts": {
+        "calibration/exact-identifier": 6,
+        "calibration/lexical-gap": 6,
+        "calibration/session-start-intent": 6,
+        "calibration/hard-negative": 6,
+        "test/exact-identifier": 2,
+        "test/lexical-gap": 2,
+        "test/session-start-intent": 2,
+        "test/hard-negative": 2
+      },
+      "authors": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-numeric/prose-authors.json",
+        "sha256": "c46bccb58722bdb4f1d4d0416cb9626ba2d580d03512135f5d095d437ff98631",
+        "bytes": 15339
+      },
+      "judgePasses": [
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-numeric/prose-judge-1-pass.json",
+          "sha256": "2ec3a5cb821880ea526e4b14ac2c4fc49043c5809970e2dfee4f3f40fa716172",
+          "bytes": 41618
+        },
+        {
+          "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v2-numeric/prose-judge-2-pass.json",
+          "sha256": "659d770c31285bb281058ef361aed0177f874203f4d78307e0a3fff166ad3462",
+          "bytes": 42297
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "Agreement measures equal relevance sets/ambiguity flags; it is not a relevance accuracy estimate.",
+    "Consensus excludes whole four-class source bundles; quarantined labels are not inferred from author targets.",
+    "This initial independent cohort does not settle the fixed0.03 paired MRR margin or exhaust the source census.",
+    "Source transport raws remain private; this tracked artifact records metadata and fingerprints."
+  ],
+  "numericCollectionSourceCommit": "f6b0d1c6921e7fef62dc72acffad26960cc1e4a0",
+  "sourceFingerprintConvention": "sourceFiles describes the historical numeric collection; every recorded source hash matches numericCollectionSourceCommit. authorReferenceRecovery.sourceFiles describes the later recovery extension.",
+  "authorReferenceRecovery": {
+    "workItem": "EI-24772826988865960",
+    "status": "verified",
+    "sourceFiles": [
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "68d8195ad02c676f41b24daeb5350deaa57f0fd4b3e08b5a9dfb6cd568b78af7",
+        "bytes": 39439
+      },
+      {
+        "path": "packages/operator-core/lib/memory/bench/judged.test.ts",
+        "sha256": "799234572a1c57152ba8615332a92f4ee7e03a440478182fba9d78204d87bcb0",
+        "bytes": 27407
+      }
+    ],
+    "unitCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/memory/bench/judged.test.ts",
+    "unitResult": "44 passed; exit0; 2026-10-01T10:45:04.851Z HEADf2ee2fce94 local dirty test stamp",
+    "typecheckCommand": "npm run lint:tsc -- --files=packages/operator-core/lib/memory/bench/judged.ts,packages/operator-core/lib/memory/bench/judged.test.ts",
+    "typecheckResult": "exit0; 2 named files and 1 direct importer checked; 0 errors; 2026-10-01T10:47:21.206Z HEADf2ee2fce94",
+    "negativeProbe": {
+      "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/reuse-chain-negative-qYUq5v",
+      "result": "invalid recovered blind transport receipt before any model call"
+    },
+    "positiveProbe": {
+      "out": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/reuse-chain-positive-QTQa4Y",
+      "authorAttempts": 0,
+      "judgeAttempts": 1,
+      "modelTransports": 0,
+      "recoveredMemoryAuthors": 32,
+      "originalIdsPreserved": true,
+      "authors": {
+        "path": "~/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/reuse-chain-positive-QTQa4Y/memory-authors.json",
+        "sha256": "78ab8230ba4443561ffec140acf69aa6c4ed68ced3088002887b2d7d50cf481b",
+        "bytes": 15465
+      },
+      "source": {
+        "path": "packages/operator-core/lib/memory/bench/judged.ts",
+        "sha256": "68d8195ad02c676f41b24daeb5350deaa57f0fd4b3e08b5a9dfb6cd568b78af7",
+        "bytes": 39439
+      }
+    },
+    "guards": [
+      "all donor identity/raw fingerprints and original prompt/owner/model/snapshot at each hop",
+      "anchor author filename/directory at each hop; reject symlink escapes",
+      "reject repeated paths and chains exceeding64hops",
+      "preserve deepest original invocation/prompt IDs",
+      "valid reference-bearing completed donors across3attempts",
+      "reject tampered inner raw/identity/prompt/path/invocation/cycle before transport"
+    ]
+  }
+}

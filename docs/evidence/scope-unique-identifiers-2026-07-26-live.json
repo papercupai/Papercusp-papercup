@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "scope-unique-identifiers-2026-07-26 live database evidence for R-1, R-3 and the R-11 fail-open population",
+  "framework": "operational",
+  "command": [
+    "dev:pg_query",
+    "SELECT indexname, indexdef, now() FROM pg_indexes WHERE schemaname='harness_shared' AND indexname='work_items_workspace_feature_id_uq'",
+    "SELECT filename, applied_at, sha256 FROM harness_shared.schema_migrations WHERE filename LIKE '1444%'",
+    "SELECT (SELECT count(*) FROM (SELECT 1 FROM harness_shared.work_items GROUP BY workspace_id, feature_id HAVING count(*)>1) t) AS twin_sets, (SELECT count(*) FROM harness_shared.work_items) AS total_rows, (SELECT count(*) FROM harness_shared.work_items WHERE created_ts IS NULL) AS null_created_ts, now()",
+    "WITH r AS (SELECT workspace_id, feature_id AS new_id, payload->'_physicalTwinRekey'->>'oldId' AS old_id FROM harness_shared.work_items WHERE payload ? '_physicalTwinRekey') SELECT r.new_id, r.old_id, (count of rows with feature_id=new_id in that workspace) AS n_new, (count of rows with feature_id=old_id in that workspace) AS n_old, now() FROM r ORDER BY r.new_id"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-11T06:52:25.841Z",
+  "finishedAt": "2026-10-11T06:52:27.034Z",
+  "author": "su-659d721e-e0d4-402b-bf11-d996e272e0c5",
+  "summary": "Read-only measurement of the live operator database (:5432, every workspace, unscoped). The unique index on (workspace_id, feature_id) exists and migration 1444 is applied, so a second row for an existing (workspace_id, feature_id) is refused (R-1). No (workspace_id, feature_id) pair has more than one row across 335387 work_items rows (R-3). Every one of the 15 rows that migrations 826 and 1443 renumbered is found exactly once under its new id, records its old id, and that old id resolves to exactly one row in the same workspace (R-3). No work_items row has a NULL created_ts, so the R-11 distinct-entity check has no fail-open row today. The insert-refusal behaviour itself is proven by packages/operator-core/lib/work-item-twin-merge.integration.test.ts, which this record does not replace. A grader without dev:pg_query rates R-1 and R-3 from this record.",
+  "assertions": [
+    {
+      "id": "r-1-unique-index-present",
+      "passed": true,
+      "evidence": "pg_indexes at 2026-10-11T06:52:25.878Z: work_items_workspace_feature_id_uq = CREATE UNIQUE INDEX work_items_workspace_feature_id_uq ON harness_shared.work_items USING btree (workspace_id, feature_id)."
+    },
+    {
+      "id": "r-1-migration-1444-applied",
+      "passed": true,
+      "evidence": "harness_shared.schema_migrations: 1444-work-items-unique-workspace-feature-id.sql applied 2026-10-11T04:53:44.749Z, sha256 bbc39adf9a5ab8957a50e333bfbfa38939ac5240c302d8d90ceecd053d335319."
+    },
+    {
+      "id": "r-3-zero-twin-sets",
+      "passed": true,
+      "evidence": "At 2026-10-11T06:52:26.046Z the GROUP BY workspace_id, feature_id HAVING count(*) > 1 census returned 0 twin sets over 335387 work_items rows."
+    },
+    {
+      "id": "r-3-rekey-ledger",
+      "passed": true,
+      "evidence": "At 2026-10-11T06:52:27.033Z, 15 rows carry payload._physicalTwinRekey. For every one, n_new = 1 and n_old = 1: it is found exactly once under its new id, names its old id, and its old id resolves to exactly one row in the same workspace. new_id <- old_id (migration): EI-82600000000000001 <- EI-11513, EI-82600000000000002 <- EI-13306, EI-82600000000000003 <- EI-14603, EI-82600000000000004 <- EI-16821, EI-82600000000000005 <- EI-16843, EI-82600000000000006 <- EI-16844, EI-82600000000000007 <- EI-16855, EI-82600000000000008 <- EI-17122, EI-82600000000000009 <- EI-17123, EI-82600000000000010 <- EI-4644, EI-82600000000000011 <- EI-8869 (all 826); F-FIX-1443687431014 <- F-FIX-001, WI-9007101713047597 <- WI-10000680, WI-9007101752376304 <- WI-2143331, WI-9007102322075346 <- WI-10000294 (all 1443)."
+    },
+    {
+      "id": "r-11-no-fail-open-rows",
+      "passed": true,
+      "evidence": "At 2026-10-11T06:52:26.046Z, 0 of 335387 work_items rows have a NULL created_ts, so no local row falls into the distinct-entity check's fail-open branch."
+    }
+  ],
+  "residue": [
+    "An old id names the surviving item after a divergent collision; resolving an old id to the renamed item is outside the bars.",
+    "This is a point-in-time reading of live state; R-1's unique index is what keeps R-3 true afterwards."
+  ]
+}

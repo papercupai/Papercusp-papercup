@@ -29,8 +29,9 @@ import { resolveDb, type DbScope } from './reproducibility/db';
 import {
   defaultBenchResultsDir,
   listPreservedRuns,
-  readPreservedRun,
+  inspectPreservedRun,
   summarizePreservedRun,
+  preservedExecutionTimes,
   type PreservedArmRun,
   type PreservedRunSummary,
   type ResolvedPerTask,
@@ -39,7 +40,7 @@ import type { FleetTaskResult } from './hive-backlog';
 
 const jb = (v: unknown): string | null => (v == null ? null : JSON.stringify(v));
 
-export type BenchRunStatus = 'pending' | 'running' | 'grading' | 'done' | 'error' | 'cancelled';
+export type BenchRunStatus = 'pending' | 'running' | 'grading' | 'ungraded' | 'done' | 'error' | 'cancelled';
 export type BenchTaskStatus = 'todo' | 'in_progress' | 'collected' | 'graded' | 'error';
 export type BenchRunSource = 'ui' | 'cli' | 'import';
 
@@ -91,6 +92,11 @@ export interface BenchRunListEntry {
   infraExcluded: number | null;
   /** resolvedCount / gradedCount (0–1) where gradedCount = SCORED tasks (infra excluded); null when none scored. */
   resolvedPct: number | null;
+  conditionalResolvedPct?: number | null;
+  attemptedCount?: number;
+  absentCount?: number;
+  missingGradeCount?: number;
+  measurementComplete?: boolean;
   nonEmptyDiffs: number | null;
   costUsd: number | null;
   wallMs: number | null;
@@ -206,8 +212,8 @@ export function taskRowFromFleetResult(tr: FleetTaskResult): BenchTaskRow {
   };
 }
 
-/** Append coordination events to a run's trace (live streaming). Seq continues
- *  after the current max — use this OR setBenchRunEvents, not both for the same events. */
+/** Append coordination events to a run's trace (live streaming). Allocation and
+ * insertion share the run-row lock used by whole-trace replacement. */
 export async function appendBenchRunEvents(
   runId: string,
   events: readonly CoordEvent[],
@@ -215,15 +221,22 @@ export async function appendBenchRunEvents(
 ): Promise<{ inserted: number }> {
   if (events.length === 0) return { inserted: 0 };
   const { sql, ws } = resolveDb(opts);
-  const max = await sql<{ next: number }[]>`
-    SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM harness_shared.bench_run_events
-     WHERE run_id = ${runId} AND workspace_id = ${ws}
-  `;
-  const start = Number(max[0]?.next ?? 0);
-  await sql`INSERT INTO harness_shared.bench_run_events ${sql(
-    events.map((e, i) => eventRow(runId, ws, start + i, e)),
-    'run_id', 'workspace_id', 'seq', 'ts', 'kind', 'agent', 'task_id', 'payload',
-  )}`;
+  await sql.begin(async (tx) => {
+    const run = await tx`
+      SELECT id FROM harness_shared.bench_runs
+       WHERE id = ${runId} AND workspace_id = ${ws} FOR UPDATE
+    `;
+    if (!run.length) throw new Error('Benchmark event run is absent from the requested workspace.');
+    const max = await tx<{ next: number }[]>`
+      SELECT COALESCE(MAX(seq), -1) + 1 AS next FROM harness_shared.bench_run_events
+       WHERE run_id = ${runId} AND workspace_id = ${ws}
+    `;
+    const start = Number(max[0]?.next ?? 0);
+    await tx`INSERT INTO harness_shared.bench_run_events ${tx(
+      events.map((e, i) => eventRow(runId, ws, start + i, e)),
+      'run_id', 'workspace_id', 'seq', 'ts', 'kind', 'agent', 'task_id', 'payload',
+    )}`;
+  });
   await invalidate(runId);
   return { inserted: events.length };
 }
@@ -232,6 +245,11 @@ export async function appendBenchRunEvents(
 export async function setBenchRunEvents(runId: string, events: readonly CoordEvent[], opts: DbScope = {}): Promise<void> {
   const { sql, ws } = resolveDb(opts);
   await sql.begin(async (tx) => {
+    const run = await tx`
+      SELECT id FROM harness_shared.bench_runs
+       WHERE id = ${runId} AND workspace_id = ${ws} FOR UPDATE
+    `;
+    if (!run.length) throw new Error('Benchmark event run is absent from the requested workspace.');
     await tx`DELETE FROM harness_shared.bench_run_events WHERE run_id = ${runId} AND workspace_id = ${ws}`;
     if (events.length > 0) {
       await tx`INSERT INTO harness_shared.bench_run_events ${tx(
@@ -291,7 +309,7 @@ export async function rollupBenchRunMetrics(runId: string, opts: DbScope = {}): 
   const { sql, ws } = resolveDb(opts);
   await sql`
     UPDATE harness_shared.bench_runs r SET
-      task_count = agg.task_count,
+      task_count = GREATEST(COALESCE(r.task_count, 0), agg.task_count),
       graded_count = agg.graded_count,
       resolved_count = agg.resolved_count,
       infra_excluded = agg.infra_excluded,
@@ -307,16 +325,16 @@ export async function rollupBenchRunMetrics(runId: string, opts: DbScope = {}): 
         -- locked non-scored reasons OR it carries a generation_error. These never count as a fail.
         count(*) FILTER (
           WHERE (stop_reason IS NULL OR stop_reason NOT IN ('error', 'timeout', 'infra-failed'))
-            AND generation_error IS NULL
+            AND NULLIF(generation_error, '') IS NULL
             AND resolved IS NOT NULL
         )::int AS graded_count,
         count(*) FILTER (
           WHERE (stop_reason IS NULL OR stop_reason NOT IN ('error', 'timeout', 'infra-failed'))
-            AND generation_error IS NULL
+            AND NULLIF(generation_error, '') IS NULL
             AND resolved IS TRUE
         )::int AS resolved_count,
         count(*) FILTER (
-          WHERE stop_reason IN ('error', 'timeout', 'infra-failed') OR generation_error IS NOT NULL
+          WHERE stop_reason IN ('error', 'timeout', 'infra-failed') OR NULLIF(generation_error, '') IS NOT NULL
         )::int AS infra_excluded,
         count(*) FILTER (WHERE diff_bytes > 0)::int AS non_empty_diffs,
         COALESCE(sum(cost_usd), 0) AS cost_usd,
@@ -401,9 +419,18 @@ export async function recordRunCompletion(
 export async function listBenchRuns(opts: DbScope = {}): Promise<BenchRunListEntry[]> {
   const { sql, ws } = resolveDb(opts);
   const rows = await sql<RunRow[]>`
-    SELECT * FROM harness_shared.bench_runs
-     WHERE workspace_id = ${ws}
-     ORDER BY created_at DESC
+    SELECT r.*, c.* FROM harness_shared.bench_runs r
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS observed_count,
+        count(*) FILTER (WHERE task_status NOT IN ('todo', 'in_progress'))::int AS attempted_count,
+        count(*) FILTER (WHERE task_status NOT IN ('todo', 'in_progress')
+          AND (stop_reason IS NULL OR stop_reason NOT IN ('error', 'timeout', 'infra-failed'))
+          AND NULLIF(generation_error, '') IS NULL AND resolved IS NULL)::int AS missing_grade_count
+      FROM harness_shared.bench_run_tasks t
+      WHERE t.run_id = r.id AND t.workspace_id = r.workspace_id
+    ) c ON TRUE
+     WHERE r.workspace_id = ${ws}
+     ORDER BY r.created_at DESC
      LIMIT 500
   `;
   return rows.map(toListEntry);
@@ -430,6 +457,7 @@ export async function getBenchRunDetail(id: string, opts: DbScope = {}): Promise
 
   const perTask: ResolvedPerTask[] = taskRows.map((t) => ({
     instanceId: t.instance_id,
+    taskStatus: t.task_status,
     cupId: t.bee_id ?? undefined,
     disposition: t.disposition ?? undefined,
     stopReason: t.stop_reason ?? undefined,
@@ -454,12 +482,17 @@ export async function getBenchRunDetail(id: string, opts: DbScope = {}): Promise
   const totalCost = perTask.reduce((s, t) => s + (t.costUsd || 0), 0);
   const run: PreservedArmRun = {
     arm: row.arm,
+    model: row.model,
+    suite: row.suite,
+    taskSetId: row.task_set_id,
+    config: parseJsonb<Record<string, unknown>>(row.config) ?? undefined,
     runId: row.id,
     runError: row.run_error,
     startedAt: row.started_at ?? undefined,
+    finishedAt: row.finished_at ?? undefined,
     wallMs: numOrUndef(row.wall_ms) ?? 0,
     peakConcurrentBees: row.peak_concurrent_bees ?? 0,
-    taskCount: perTask.length,
+    taskCount: row.task_count ?? perTask.length,
     nonEmptyDiffs: perTask.filter((t) => (t.diffBytes ?? 0) > 0).length,
     totals: {
       costUsd: numOrUndef(row.cost_usd) ?? totalCost,
@@ -475,6 +508,13 @@ export async function getBenchRunDetail(id: string, opts: DbScope = {}): Promise
   const list = toListEntry(row);
   return {
     ...list,
+    taskCount: summary.taskCount,
+    resolvedPct: summary.resolvedPct,
+    conditionalResolvedPct: summary.conditionalResolvedPct,
+    attemptedCount: summary.attemptedCount,
+    absentCount: summary.absentCount,
+    missingGradeCount: summary.missingGradeCount,
+    measurementComplete: summary.measurementComplete,
     config: parseJsonb<Record<string, unknown>>(row.config),
     summary,
     run,
@@ -505,9 +545,26 @@ export async function importPreservedRunToStore(
   opts: DbScope & { baseDir?: string } = {},
 ): Promise<{ runId: string; imported: boolean }> {
   const baseDir = opts.baseDir ?? defaultBenchResultsDir();
-  const detail = readPreservedRun(id, baseDir);
-  if (!detail) return { runId: id, imported: false };
-  const { run, perTask, summary } = detail;
+  const inspection = inspectPreservedRun(id, baseDir);
+  if (inspection.kind === 'unavailable') return { runId: id, imported: false };
+  if (inspection.kind === 'invalid') {
+    // Repair rows minted by the former permissive reader without deleting
+    // history or altering a UI/CLI run with the same identifier.
+    const { sql, ws } = resolveDb(opts);
+    const rows = await sql<{ id: string }[]>`
+      UPDATE harness_shared.bench_runs SET
+        status = 'error', run_error = ${`archive_not_a_run:${inspection.reason}`}, finished_at = NULL,
+        updated_at = now()
+       WHERE id = ${id} AND workspace_id = ${ws} AND source = 'import'
+       RETURNING id
+    `;
+    if (rows.length > 0) await invalidate(id);
+    return { runId: id, imported: false };
+  }
+  const { run, perTask, summary } = inspection.detail;
+  const completeGrades = perTask.every((task) => task.resolved != null);
+  const archiveText = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim() ? value.trim() : null;
 
   await upsertBenchRun(
     {
@@ -516,13 +573,14 @@ export async function importPreservedRunToStore(
       // omitted it would pass `undefined` to postgres-js (UNDEFINED_VALUE) and
       // throw. Fall back to a placeholder so a near-complete run still imports.
       arm: run.arm ?? 'unknown',
-      taskSetId: inferTaskSetId(perTask.length),
-      model: 'opus',
+      taskSetId: archiveText(run.taskSetId) ?? inferTaskSetId(perTask.length),
+      model: archiveText(run.model) ?? 'unknown',
+      suite: archiveText(run.suite) ?? 'unknown',
       source: 'import',
-      status: 'done',
+      status: completeGrades ? 'done' : 'ungraded',
       recovered: Boolean(run.recovered),
-      taskCount: perTask.length,
-      config: { imported: true, runId: run.runId ?? null },
+      taskCount: summary.taskCount,
+      config: { ...run.config, imported: true, importedAt: new Date().toISOString(), runId: run.runId ?? null },
     },
     opts,
   );
@@ -557,7 +615,7 @@ export async function importPreservedRunToStore(
   await setBenchRunEvents(id, run.coordEvents ?? [], opts);
 
   // Stamp the rolled-up headline straight from the preserved summary, then finalize.
-  await finalizeImportedRun(id, run, summary, opts);
+  await finalizeImportedRun(id, run, summary, completeGrades, opts);
   return { runId: id, imported: true };
 }
 
@@ -565,12 +623,14 @@ async function finalizeImportedRun(
   id: string,
   run: PreservedArmRun,
   summary: PreservedRunSummary,
+  completeGrades: boolean,
   opts: DbScope = {},
 ): Promise<void> {
   const { sql, ws } = resolveDb(opts);
+  const times = preservedExecutionTimes(run);
   await sql`
     UPDATE harness_shared.bench_runs SET
-      status = 'done',
+      status = ${completeGrades ? 'done' : 'ungraded'},
       task_count = ${summary.taskCount},
       graded_count = ${summary.gradedCount},
       resolved_count = ${summary.resolvedCount},
@@ -582,8 +642,8 @@ async function finalizeImportedRun(
       wall_ms = ${summary.wallMs},
       peak_concurrent_bees = ${summary.peakConcurrentBees},
       summary = ${jb(summary)}::text::jsonb,
-      started_at = COALESCE(${run.startedAt ?? null}, started_at),
-      finished_at = now(),
+      started_at = ${times.startedAt},
+      finished_at = ${times.finishedAt},
       updated_at = now()
      WHERE id = ${id} AND workspace_id = ${ws}
   `;
@@ -649,8 +709,11 @@ function parseJsonb<T>(v: unknown): T | null {
 function toListEntry(r: RunRow): BenchRunListEntry {
   const resolvedCount = r.resolved_count == null ? null : Number(r.resolved_count);
   const gradedCount = r.graded_count == null ? null : Number(r.graded_count);
-  // resolved% = resolved / SCORED-tasks (gradedCount already excludes infra/transient rows — fairness fix).
-  const resolvedPct = resolvedCount != null && gradedCount != null && gradedCount > 0 ? resolvedCount / gradedCount : null;
+  const taskCount = Math.max(r.task_count ?? 0, r.observed_count ?? 0);
+  const missingGradeCount = r.missing_grade_count ?? 0;
+  const attemptedCount = r.attempted_count ?? 0;
+  const resolvedPct = resolvedCount != null && taskCount > 0 && missingGradeCount === 0
+    ? resolvedCount / taskCount : null;
   return {
     id: r.id,
     arm: r.arm,
@@ -659,11 +722,17 @@ function toListEntry(r: RunRow): BenchRunListEntry {
     model: r.model,
     status: r.status as BenchRunStatus,
     source: r.source,
-    taskCount: r.task_count == null ? null : Number(r.task_count),
+    taskCount,
     gradedCount,
     resolvedCount,
     infraExcluded: r.infra_excluded == null ? null : Number(r.infra_excluded),
     resolvedPct,
+    conditionalResolvedPct: resolvedCount != null && gradedCount != null && gradedCount > 0
+      ? resolvedCount / gradedCount : null,
+    attemptedCount,
+    absentCount: taskCount - attemptedCount,
+    missingGradeCount,
+    measurementComplete: missingGradeCount === 0,
     nonEmptyDiffs: r.non_empty_diffs == null ? null : Number(r.non_empty_diffs),
     costUsd: r.cost_usd == null ? null : Number(r.cost_usd),
     wallMs: r.wall_ms == null ? null : Number(r.wall_ms),
@@ -690,6 +759,9 @@ interface RunRow {
   source: string;
   summary: unknown;
   task_count: number | null;
+  observed_count?: number;
+  attempted_count?: number;
+  missing_grade_count?: number;
   graded_count: number | null;
   resolved_count: number | null;
   infra_excluded: number | null;

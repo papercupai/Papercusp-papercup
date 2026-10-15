@@ -164,6 +164,73 @@ describe('createTextCollector', () => {
     expect(c.text()).toBe('ok ⚠'); // and a terminal read still agrees
   });
 
+  it('notifies incrementally with boundary-safe decoded text and flushes an incomplete tail', async () => {
+    const stream = new PassThrough();
+    const decoded: string[] = [];
+    const c = createTextCollector(stream, { onDecodedText: (text) => decoded.push(text) });
+    const full = Buffer.from('ready ⚠ done', 'utf8');
+    const split = full.indexOf(Buffer.from('⚠', 'utf8')) + 1;
+
+    stream.write(full.subarray(0, split));
+    expect(decoded.join('')).toBe('ready ');
+    stream.write(full.subarray(split));
+    expect(decoded.join('')).toBe('ready ⚠ done');
+    stream.write(Buffer.from([0xe2, 0x82]));
+    expect(decoded.join('')).toBe('ready ⚠ done');
+
+    const ended = new Promise<void>((resolve) => stream.once('end', () => resolve()));
+    stream.end();
+    await ended;
+    expect(decoded.join('')).toBe('ready ⚠ done�');
+    expect(c.text()).toBe('ready ⚠ done�');
+  });
+
+  it('streams boundary-safe decoded text without retaining the stream output', async () => {
+    const stream = new PassThrough();
+    const decoded: string[] = [];
+    const c = createTextCollector(stream, {
+      retainText: false,
+      onDecodedText: (text) => decoded.push(text),
+    });
+    const full = Buffer.from('ready ⚠ done', 'utf8');
+    const split = full.indexOf(Buffer.from('⚠', 'utf8')) + 1;
+    stream.write(full.subarray(0, split));
+    expect(decoded.join('')).toBe('ready ');
+    stream.write(full.subarray(split));
+    expect(decoded.join('')).toBe('ready ⚠ done');
+
+    const ended = new Promise<void>((resolve) => stream.once('end', () => resolve()));
+    stream.end();
+    await ended;
+    expect(c.peek()).toBe('');
+    expect(c.text()).toBe('');
+  });
+
+  it('keeps decoder state separate when two streams are attached', async () => {
+    const first = new PassThrough();
+    const second = new PassThrough();
+    const decoded: string[] = [];
+    const c = createTextCollector(first, {
+      retainText: false,
+      onDecodedText: (text) => decoded.push(text),
+    });
+    c.attach(second);
+    const full = Buffer.from('é', 'utf8');
+
+    first.write(full.subarray(0, 1));
+    second.write(Buffer.from('B', 'utf8'));
+    const secondEnded = new Promise<void>((resolve) => second.once('end', () => resolve()));
+    second.end();
+    await secondEnded;
+    first.write(full.subarray(1));
+    const firstEnded = new Promise<void>((resolve) => first.once('end', () => resolve()));
+    first.end();
+    await firstEnded;
+
+    expect(decoded.join('')).toBe('Bé');
+    expect(c.text()).toBe('');
+  });
+
   it('append() adds literal text without decoding it', () => {
     const stream = new PassThrough();
     const c = createTextCollector(stream);

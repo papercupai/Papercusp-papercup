@@ -14,8 +14,12 @@
  * `unreviewed` and measures the promoter's successful-run watermark.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
+import { isLlmCallError } from '@papercusp/testing-shell/llm';
 import { z } from 'zod';
+import { boundedOrgTxn } from './pg-bounded-txn';
+import { isTransientNetworkError } from './loopback-fetch';
 import { activeExternalBlockers } from './external-blockers';
 import { isCompletionRef } from './harness/completion-ref-types';
 import { admissionIdentity } from './harness/improvements/digest';
@@ -24,7 +28,13 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
   hasStrictOwnerAction,
   readAgentReviewState,
-  implementationReadinessFloorSql,
+  agentReviewIsReproductionValidation,
+  implementationReadinessProjectedFloorSql,
+  intakeStageClaimFloorFromFragmentsSql,
+  implementationReadinessValidFromJsonSql,
+  implementationAcceptanceStateFromReadinessSql,
+  acceptanceSourceRevisionFromFragmentsSql,
+  workItemPresentationStageFromSignalsSql,
   implementationReadinessIsLegacyEquivalent,
   readImplementationReadiness,
 } from './harness/improvements/agent-review-policy';
@@ -32,7 +42,7 @@ import { selectCanonicalIssue, recordIssueOccurrence, type IssueOccurrenceCounts
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import { isSufficientEvidence } from './work-item-completion-authority';
-import { DEFAULT_PROMOTER_TICK_MINUTES } from './work-items-admission';
+import { DEFAULT_PROMOTER_TICK_MINUTES, ownNodeAuthoredRemoteIds } from './work-items-admission';
 import {
   activeWorkItemDependencyRefsSql,
   readWorkItemDependenciesForRefs,
@@ -40,9 +50,17 @@ import {
   withWorkItemDependencyAdmissionTransaction,
   type StoredWorkItemDependencyRow,
 } from './dbos/work-item-deps-store';
-import { isHarnessInScope, primeWorkScopePolicy, recordWorkScopeDecision, workScopeSqlTerms } from './work-scope-policy';
+import {
+  evaluateWorkScope,
+  isPlatformNonPotHarness,
+  primeWorkScopePolicy,
+  recordWorkScopeDecision,
+  workScopeSqlTerms,
+} from './work-scope-policy';
 import type { OrgSql } from './work-items';
 import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
+import { readProcessIdentity } from './process-identity';
+import { listRuntimeVintage, measureRuntimeVintageEnvironment } from './runtime-vintage';
 
 /** Announce the pending→admitted edge only after its write commits. The lifecycle
  * emitter applies the same state, claim-hold, observation and plan-lane floors as
@@ -76,6 +94,8 @@ export const WORK_ITEM_ADMISSION_FAIL_OPEN = 'work-item-admission-fail-open';
 export const PROMOTER_ACTOR = `system:${WORK_ITEM_ADMISSION_PROMOTER}`;
 export const FAIL_OPEN_ACTOR = `system:${WORK_ITEM_ADMISSION_FAIL_OPEN}`;
 export const DEFAULT_PROMOTER_BATCH_SIZE = 20;
+/** Bound the deterministic quick-action update so one tick cannot monopolize its protected lane. */
+export const DEFAULT_FAIL_OPEN_BATCH_SIZE = 100;
 /** Process-local throttle for the work-scope `held` ledger line (one per harness). */
 const scopeHeldHarnessesNoted = new Set<string>();
 /**
@@ -163,6 +183,13 @@ export interface AdmissionMergeSnapshot {
   createdAtMs: number;
   updatedAtMs: number;
   origin: string | null;
+  /**
+   * WI-10006515: present (true) only for an origin='remote' row authored by one of THIS
+   * workspace's own keys. `origin` records how a row ARRIVED, not who wrote it (WI-10003565),
+   * so such a row is ours and must not be refused as remote-owned. Absent otherwise, so the
+   * fingerprint of every other snapshot is unchanged.
+   */
+  ownNode?: true;
   assignee: string | null;
   payload: unknown;
   completionRef: unknown;
@@ -363,6 +390,16 @@ export interface PromoterLiveness {
   thresholdMs: number;
 }
 
+/**
+ * `detail.mode` of a `promoter-tick` admission_runs row.
+ *
+ * `promoter-no-model` is the deterministic pass the fail-open tick runs while the model
+ * promoter is stale or paused (WI-10004725). It is a distinct mode ON PURPOSE: promoter
+ * liveness reads only `mode='promoter'` successes, so a no-model pass can never make a paused
+ * model promoter look healthy and silence its liveness alarm.
+ */
+export type AdmissionTickMode = 'promoter' | 'promoter-no-model' | 'fail-open';
+
 export interface PromoterRunResult {
   runId: string;
   batchSize: number;
@@ -385,6 +422,16 @@ export interface PromoterRunResult {
    * `judgedPairsMissingAdjudication`.
    */
   writerCoverageGap: string[];
+  /**
+   * Scheduled ticks only: what the batch selection skipped before any model call, and why
+   * (WI-10004724). Absent on a targeted run, which keeps the exact historical read.
+   */
+  prescreen?: PromoterPrescreen;
+  /**
+   * No-model pass only (WI-10004725): batch rows with a duplicate candidate that were left
+   * untouched for the model promoter. Also counted in `held`.
+   */
+  deferredToModel?: number;
 }
 
 /**
@@ -429,6 +476,8 @@ export interface FailOpenRunResult {
   scope: AdmissionFailOpenScope;
   liveness: PromoterLiveness;
   reviewDebt?: AdmissionReviewDebt;
+  /** Reviews closed this tick because the item was already terminal (WI-10004725). */
+  reviewMoot?: MootAdmissionReviewsResult;
 }
 
 export type AdmissionReviewState = 'pending' | 'reviewed' | 'terminal';
@@ -790,6 +839,12 @@ export interface WorkItemAdmissionQueueHealth {
     p50Ms: number | null;
     p95Ms: number | null;
   };
+  /** Current producer capacity, separate from the cumulative admission ledger above. */
+  producerPressure?: {
+    pending: number;
+    latencyWindowMs: number;
+    promotedToFirstClaim: WorkItemAdmissionQueueHealth['promotedToFirstClaim'];
+  };
   /** P-006 durable review-debt rollup; optional for older callers/mocks. */
   reviewDebt?: AdmissionReviewDebt;
 }
@@ -809,6 +864,17 @@ export type WorkItemReadinessHeadline = (typeof WORK_ITEM_READINESS_HEADLINE_PRE
 export interface WorkItemReadinessProjection {
   schemaVersion: 'work-item-readiness-projection-v1';
   measuredAt: string;
+  /** Same root issue-family population as headline; legacy claimability is a separate axis. */
+  presentation?: {
+    population: number;
+    counts: Record<import('./work-item-presentation-contract').WorkItemPresentationStage, number>;
+    remainingBugs: number;
+    verifiedCompletions: number;
+    unit: 'work-item rows';
+    writer: 'readWorkItemReadinessProjection';
+    classifier: 'deriveWorkItemPresentationStage';
+    mutuallyExclusive: true;
+  };
   scope: {
     workspaceId: string;
     harnessSlug: string | null;
@@ -825,6 +891,22 @@ export interface WorkItemReadinessProjection {
     admissionUnreviewed: number;
     pendingAgentReview: number;
     revisionRequestedAgentReview: number;
+    /**
+     * bug-queue-legitimacy D-007: the revision-requested rows whose ONLY refusal was a
+     * missing/unaccepted current-build reproduction receipt (`revisionKind='reproduction'`,
+     * non-legacy submitter). The intake claim floor admits them as validation work, so they
+     * are P-010 category (b) "claimable to validate" unless another floor holds them.
+     */
+    revisionReproductionValidation: number;
+    /**
+     * bug-queue-legitimacy D-008: the remaining non-legacy revision-requested rows (content
+     * revisions) — the adopt-next DISCOVERY pool, not an eligibility verdict. Adoption also
+     * needs the per-row submitter-liveness oracle, which SQL cannot measure (D-008 forbids an
+     * age proxy), so a live submitter's own revision is counted here too.
+     * Partition: revisionReproductionValidation + revisionContentAdoptionCandidates +
+     * legacyRevisionException === revisionRequestedAgentReview.
+     */
+    revisionContentAdoptionCandidates: number;
     legacyRevisionException: number;
     readinessAbsentLegacy: number;
     readinessReady: number;
@@ -1011,11 +1093,15 @@ export interface WorkItemAdmissionProducerPressure {
 export function decideWorkItemAdmissionProducerPressure(
   health: WorkItemAdmissionQueueHealth,
 ): WorkItemAdmissionProducerPressure {
-  const pending = Number.isFinite(health.pending) ? Math.max(0, Math.floor(health.pending)) : 0;
-  const latencySampleSize = Number.isFinite(health.promotedToFirstClaim.sampleSize)
-    ? Math.max(0, Math.floor(health.promotedToFirstClaim.sampleSize))
+  // EI-25814378379068278: terminal pending rows and old completed claims are
+  // historical ledger entries, not current capacity. Older callers retain their
+  // existing contract; the production health writer supplies the live cohort.
+  const pressureHealth = health.producerPressure ?? health;
+  const pending = Number.isFinite(pressureHealth.pending) ? Math.max(0, Math.floor(pressureHealth.pending)) : 0;
+  const latencySampleSize = Number.isFinite(pressureHealth.promotedToFirstClaim.sampleSize)
+    ? Math.max(0, Math.floor(pressureHealth.promotedToFirstClaim.sampleSize))
     : 0;
-  const rawP95 = health.promotedToFirstClaim.p95Ms;
+  const rawP95 = pressureHealth.promotedToFirstClaim.p95Ms;
   const p95Ms = latencySampleSize > 0 && rawP95 != null && Number.isFinite(rawP95) ? Math.max(0, rawP95) : null;
 
   const deep = pending > ADMISSION_PRESSURE_DEEP_PENDING || (p95Ms ?? 0) > ADMISSION_PRESSURE_DEEP_LATENCY_MS;
@@ -1070,7 +1156,44 @@ export type PromoterLlmCall = (input: {
   maxTokens: number;
   /** Stable owner identity for gateway attribution of this durable run. */
   ownerId?: string;
+  /** WI-10006427: aborts the in-flight call (a caller-owned per-attempt deadline);
+   * production wrappers spread it into llmCall's `signal`. */
+  signal?: AbortSignal;
 }) => Promise<PromoterLlmResult>;
+
+const PROMOTER_LLM_TRANSIENT_RETRY_BACKOFFS_MS = [1_000, 9_000] as const;
+
+function isRetryablePromoterModelError(error: unknown): boolean {
+  if (isLlmCallError(error)) {
+    const retryable = error.turn.retryable;
+    if (typeof retryable === 'boolean') return retryable;
+  }
+  return isTransientNetworkError(error);
+}
+
+/**
+ * The Codex LLM transport disables its own retry ladder so scheduled batch
+ * callers can own a bounded policy. The promoter is one such caller: retry
+ * classified transient model failures and raw connection-level failures, with
+ * a 10s total wait that covers the observed gateway stop/start window without
+ * multiplying permanent API/model errors.
+ */
+export async function callPromoterLlmWithTransientRetry<T>(
+  call: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<T> {
+  let retry = 0;
+  for (;;) {
+    try {
+      return await call();
+    } catch (error) {
+      const backoffMs = PROMOTER_LLM_TRANSIENT_RETRY_BACKOFFS_MS[retry];
+      if (backoffMs === undefined || !isRetryablePromoterModelError(error)) throw error;
+      await sleep(backoffMs);
+      retry += 1;
+    }
+  }
+}
 
 interface WorkItemRow {
   feature_id: string;
@@ -1295,6 +1418,14 @@ export async function readAdmissionMergeSnapshots(
     incomingByTarget.set(row.target_id, entries);
   }
 
+  // WI-10006515: classify origin='remote' rows authored by this node (exceptional path only; a
+  // read, never a heal — this reader also serves read-only previews). Fail-closed: empty set.
+  const remoteIds = rows.filter((row) => row.origin === 'remote').map((row) => row.feature_id);
+  const ownNodeIds =
+    remoteIds.length > 0
+      ? await ownNodeAuthoredRemoteIds(input.workspaceId, remoteIds, { harnessSlug: input.harnessSlug })
+      : new Set<string>();
+
   const result = new Map<string, AdmissionMergeSnapshot>();
   for (const row of rows) {
     const endpointKeys = new Set(snapshotRefKeys(row));
@@ -1328,6 +1459,7 @@ export async function readAdmissionMergeSnapshots(
       createdAtMs: finiteMs(row.created_ts),
       updatedAtMs: finiteMs(row.updated_ts),
       origin: row.origin ?? null,
+      ...(ownNodeIds.has(row.feature_id) ? { ownNode: true as const } : {}),
       assignee: row.taken_by?.trim() || null,
       payload: row.payload ?? null,
       completionRef: row.completion_ref ?? null,
@@ -1973,8 +2105,45 @@ export async function readPendingBatch(
   harnessSlug: string,
   batchSize: number,
   targetItemIds?: readonly string[],
+  opts: { demoteGuardBlocked?: boolean; preferModelFree?: boolean } = {},
 ): Promise<PromoterItem[]> {
   const targets = normalizeAdmissionTargetIds(targetItemIds);
+  // demoteGuardBlocked (scheduled window only, WI-10004724): rows the promote guard will
+  // almost surely refuse on their own state sort LAST, so an ever-growing set of review-gated /
+  // remote / claimed / terminal rows cannot occupy the oldest-first head of every window. This
+  // is an ORDERING key only — it never excludes a row; endpointProtection stays authoritative.
+  const demote = opts.demoteGuardBlocked === true;
+  // preferModelFree (no-model pass only, WI-10004725): a pass that cannot call the model can
+  // only resolve rows WITHOUT duplicate candidates, so those lead the window. Still-pending rows
+  // lead the already-unreviewed ones because they are about to fail open and become new debt.
+  // Ordering only, like `demote`; the pair read stays the authority on what has a candidate.
+  const modelFree = opts.preferModelFree === true;
+  // WI-10007333: ambiguous holds advance lastRetryAt, but FIFO/candidate priority
+  // alone selected those same rows on every model tick. Rotate scheduled model
+  // reviews by that existing watermark so never-reviewed debt gets a turn.
+  // Targeted reads and the model-free pass retain their existing priorities.
+  //
+  // WI-6554700010008443: a claim alone no longer demotes an overdue fail-open re-review row
+  // (endpointProtection judges it; see isOverdueClaimedReReview). Such a row whose watermark is
+  // older than CLAIMED_REREVIEW_TURN_BOUND_MINUTES also LEADS the model window: as one of ~60
+  // claimed rows behind ~1,800 unclaimed ones it otherwise never reached the head. Every judged
+  // outcome advances lastRetryAt, so the lead lasts one turn per bound. Each fragment is built
+  // fresh per use because a postgres.js fragment is bound to one query position.
+  const otherGuardBlocked = () => sql`COALESCE(
+          origin = 'remote'
+          OR COALESCE(claim_hold, FALSE)
+          OR COALESCE(payload ->> '_claimHold', '') = 'true'
+          OR status IN ('blocked', 'needs-human')
+          OR payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
+          OR harness_shared.work_item_status_is_terminal(status),
+          FALSE)`;
+  const claimed = () => sql`(NULLIF(btrim(COALESCE(taken_by, '')), '') IS NOT NULL)`;
+  const overdueReReview = () => sql`COALESCE(
+          COALESCE(payload #>> '{admissionReview,state}', CASE WHEN admission = 'unreviewed' THEN 'pending' END) = 'pending'
+          AND pg_input_is_valid(payload #>> '{admissionReview,reviewDueAt}', 'timestamp with time zone')
+          AND (payload #>> '{admissionReview,reviewDueAt}')::timestamptz < now(),
+          FALSE)`;
+  const turnBoundMinutes = CLAIMED_REREVIEW_TURN_BOUND_MINUTES;
   const rows = await sql<WorkItemRow[]>`
     SELECT feature_id, title, summary, status, item_kind, admission, condition_key, created_ts
       FROM harness_shared.work_items
@@ -1984,6 +2153,23 @@ export async function readPendingBatch(
        AND lane IS DISTINCT FROM 'observation'
        AND (${targets === undefined} OR feature_id = ANY(${targets ?? []}::text[]))
      ORDER BY
+       (${demote} AND NOT ${modelFree}
+          AND ${claimed()} AND ${overdueReReview()} AND NOT ${otherGuardBlocked()}
+          AND COALESCE(
+            NOT pg_input_is_valid(payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
+            OR (payload #>> '{admissionReview,lastRetryAt}') IS NULL
+            OR (payload #>> '{admissionReview,lastRetryAt}')::timestamptz
+                 < now() - make_interval(mins => ${turnBoundMinutes}::int),
+            TRUE)) DESC,
+       (${demote} AND (
+          ${otherGuardBlocked()}
+          OR (${claimed()} AND NOT ${overdueReReview()}))) ASC,
+       (${modelFree} AND admission <> 'pending') ASC,
+       (${modelFree} AND (payload -> 'dedupCandidates') IS NOT NULL) ASC,
+       CASE WHEN ${demote} AND NOT ${modelFree}
+              AND pg_input_is_valid(payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
+            THEN (payload #>> '{admissionReview,lastRetryAt}')::timestamptz
+            ELSE NULL END ASC NULLS FIRST,
        (payload -> 'dedupCandidates') IS NOT NULL DESC,
        COALESCE((payload -> 'dedupCoverage' ->> 'degraded')::boolean, false) DESC,
        created_ts ASC NULLS FIRST, feature_id ASC
@@ -1999,14 +2185,17 @@ async function readPromoterPairs(
   recentTerminalDays: number,
   nowMs: number,
   includeOutsidePending = false,
+  /** Already-selected pending rows that are valid CANDIDATES but need no lateral scan of their own. */
+  extraCandidateIds: readonly string[] = [],
 ): Promise<PromoterPair[]> {
   if (pending.length === 0) return [];
   const ids = pending.map((item) => item.id);
+  const candidateIds = [...new Set([...ids, ...extraCandidateIds])];
   const recentCutoffMs = nowMs - recentTerminalDays * 86_400_000;
   const rows = await sql<PromoterPairRow[]>`
     WITH pending AS (
       SELECT feature_id, title, summary, status, item_kind, admission, condition_key,
-             created_ts, embedding, embedding_mode, embedding_profile
+             created_ts, embedding, embedding_mode, embedding_profile, parent_id, payload
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${harnessSlug}
@@ -2045,8 +2234,20 @@ async function readPromoterPairs(
          WHERE wi.workspace_id = ${workspaceId}
            AND wi.harness_slug = ${harnessSlug}
            AND wi.feature_id <> p.feature_id
+           -- A report's persisted source and deliberately parented reproduction work
+           -- are its provenance, not independently filed duplicate fixes.
+           AND wi.parent_id IS DISTINCT FROM p.feature_id
+           AND p.parent_id IS DISTINCT FROM wi.feature_id
+           AND NOT (
+             COALESCE(p.payload #>> '{admission,sourceKind}', '') = 'record'
+             AND COALESCE(p.payload #>> '{admission,sourceKey}', '') = wi.feature_id
+           )
+           AND NOT (
+             COALESCE(wi.payload #>> '{admission,sourceKind}', '') = 'record'
+             AND COALESCE(wi.payload #>> '{admission,sourceKey}', '') = p.feature_id
+           )
            AND COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
-           AND (${includeOutsidePending} OR wi.admission IS DISTINCT FROM 'pending' OR wi.feature_id = ANY(${ids}::text[]))
+           AND (${includeOutsidePending} OR wi.admission IS DISTINCT FROM 'pending' OR wi.feature_id = ANY(${candidateIds}::text[]))
            AND (
              NOT harness_shared.work_item_status_is_terminal(wi.status)
              OR wi.updated_ts >= ${recentCutoffMs}
@@ -2079,6 +2280,221 @@ async function readPromoterPairs(
       ) c ON TRUE
      ORDER BY p.feature_id, c.feature_id`;
   return buildPromoterPairs(rows, new Set(ids));
+}
+
+/**
+ * Read-only selection of one promoter tick: the pending batch, its flagged pairs, and the
+ * captured snapshots both the prompt and the writer bind to. A TARGETED (request-driven)
+ * run keeps the exact historical read — narrowing the batch must not hide a pending twin
+ * from screening. A SCHEDULED run over-reads the oldest-first window and prescreens it
+ * (prescreenPromoterWindow) so rows the guard is certain to refuse cost no slot and no
+ * model time. Exported so the selection can be previewed against live data without writes.
+ */
+export async function readPromoterWindow(
+  sql: OrgSql,
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    batchSize: number;
+    targetItemIds?: readonly string[];
+    recentTerminalDays: number;
+    nowMs: number;
+    /** No-model pass (WI-10004725): order the window so model-free rows lead it. */
+    noModel?: boolean;
+  },
+): Promise<{
+  pendingRows: PromoterItem[];
+  pairRows: PromoterPair[];
+  snapshotsById: Map<string, AdmissionMergeSnapshot>;
+  forcedHolds: Map<string, string>;
+  prescreen: PromoterPrescreen | null;
+}> {
+  const readSnapshots = (ids: readonly string[]) =>
+    readAdmissionMergeSnapshots(sql, { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, ids: [...ids] });
+  if (input.targetItemIds !== undefined) {
+    const pendingRows = await readPendingBatch(
+      sql,
+      input.workspaceId,
+      input.harnessSlug,
+      input.batchSize,
+      input.targetItemIds,
+    );
+    const pairRows = await readPromoterPairs(
+      sql,
+      input.workspaceId,
+      input.harnessSlug,
+      pendingRows,
+      input.recentTerminalDays,
+      input.nowMs,
+      true,
+    );
+    const snapshotsById = await readSnapshots([
+      ...new Set([...pendingRows.map((item) => item.id), ...pairRows.flatMap((pair) => [pair.a.id, pair.b.id])]),
+    ]);
+    return { pendingRows, pairRows, snapshotsById, forcedHolds: new Map(), prescreen: null };
+  }
+  const window = await readPendingBatch(
+    sql,
+    input.workspaceId,
+    input.harnessSlug,
+    input.batchSize * PROMOTER_PRESCREEN_WINDOW_FACTOR,
+    undefined,
+    { demoteGuardBlocked: true, preferModelFree: input.noModel === true },
+  );
+  const snapshotsById = await readSnapshots(window.map((item) => item.id));
+  // Self-blocked rows are excluded from the pair read itself: their pairs can never persist.
+  const selfBlockedIds = new Set(
+    window
+      .filter((item) => {
+        const snapshot = snapshotsById.get(item.id);
+        return (
+          snapshot !== undefined &&
+          endpointProtection(snapshot, 'promote', { claimedReReviewAtMs: input.nowMs }) !== null
+        );
+      })
+      .map((item) => item.id),
+  );
+  const eligible = window.filter((item) => !selfBlockedIds.has(item.id));
+  // The pair read is the expensive step (~1.7 s per row measured live, 2026-10-01), so read it
+  // in chunks of exactly what the batch still needs: normally ONE chunk of batchSize, the same
+  // cost as the historical single read. Rows already selected ride along as candidates so a
+  // twin split across two chunks is still paired.
+  const pairsByKey = new Map<string, PromoterPair>();
+  const processed = new Set<string>(selfBlockedIds);
+  let cursor = 0;
+  let selected = prescreenPromoterWindow({ window: [], pairs: [], snapshots: snapshotsById, batchSize: input.batchSize, nowMs: input.nowMs });
+  while (selected.batch.length < input.batchSize && cursor < eligible.length) {
+    const chunk = eligible.slice(cursor, cursor + (input.batchSize - selected.batch.length));
+    cursor += chunk.length;
+    const chunkPairs = await readPromoterPairs(
+      sql,
+      input.workspaceId,
+      input.harnessSlug,
+      chunk,
+      input.recentTerminalDays,
+      input.nowMs,
+      false,
+      selected.batch.map((item) => item.id),
+    );
+    for (const pair of chunkPairs) {
+      const prior = pairsByKey.get(pair.pairKey);
+      pairsByKey.set(
+        pair.pairKey,
+        prior
+          ? {
+              ...prior,
+              signals: [...new Set([...prior.signals, ...pair.signals])],
+              cosine: (pair.cosine ?? -1) > (prior.cosine ?? -1) ? pair.cosine : prior.cosine,
+            }
+          : pair,
+      );
+    }
+    for (const item of chunk) processed.add(item.id);
+    const missing = [...new Set(chunkPairs.flatMap((pair) => [pair.a.id, pair.b.id]))].filter(
+      (id) => !snapshotsById.has(id),
+    );
+    for (const [id, snapshot] of await readSnapshots(missing)) snapshotsById.set(id, snapshot);
+    selected = prescreenPromoterWindow({
+      window: window.filter((item) => processed.has(item.id)),
+      pairs: [...pairsByKey.values()],
+      snapshots: snapshotsById,
+      batchSize: input.batchSize,
+      nowMs: input.nowMs,
+    });
+  }
+  if (selected.prescreen.window === 0 && selfBlockedIds.size > 0) {
+    // Every window row is self-blocked: still report them (no pair read needed).
+    selected = prescreenPromoterWindow({ window, pairs: [], snapshots: snapshotsById, batchSize: input.batchSize, nowMs: input.nowMs });
+  }
+  return {
+    pendingRows: selected.batch,
+    pairRows: selected.pairs,
+    snapshotsById,
+    forcedHolds: selected.forcedHolds,
+    prescreen: selected.prescreen,
+  };
+}
+
+/**
+ * An overdue claimed re-review row is JUDGED but never MERGED while claimed
+ * (WI-6554700010008443; bug-queue-legitimacy-and-actionable-validation-2026-10-10#D-018/#D-019).
+ * The guard keeps refusing such a row as a 'loser' or 'canonical', so rewrite the plan before
+ * persistence instead of letting the guard refuse it unwritten:
+ *  - a claimed row in any merge verdict is HELD with a reason naming its twin. Its retry watermark
+ *    advances, and because no merge is approved the merge adjudication is not persisted, so the
+ *    pair is judged again once the claim ends;
+ *  - a pending row planned to merge INTO a claimed canonical is held; an outside candidate planned
+ *    to do so loses that disposition (nothing about it was under review).
+ * A distinct verdict leaves the claimed row's promote in place.
+ */
+export function applyClaimedReReviewHolds(
+  plan: PromoterPlan,
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>,
+  pendingIds: ReadonlySet<string>,
+  nowMs: number,
+): PromoterPlan {
+  const claimed = new Set(
+    [...snapshots.values()].filter((snapshot) => isOverdueClaimedReReview(snapshot, nowMs)).map((s) => s.id),
+  );
+  if (claimed.size === 0) return plan;
+  const holder = (id: string) => snapshots.get(id)?.assignee ?? 'an agent';
+  const holds = new Map<string, string>();
+  for (const adjudication of plan.adjudications) {
+    if (adjudication.verdict !== 'r-finding-merge') continue;
+    for (const [id, twin] of [
+      [adjudication.a, adjudication.b],
+      [adjudication.b, adjudication.a],
+    ] as const) {
+      if (claimed.has(id) && !holds.has(id)) {
+        holds.set(id, `claimed re-review: judged a duplicate of ${twin}; held, not merged, while claimed by ${holder(id)}`);
+      }
+    }
+  }
+  const dropped = new Set<string>();
+  for (const disposition of plan.dispositions) {
+    if (disposition.action !== 'merge' || claimed.has(disposition.itemId)) continue;
+    if (!claimed.has(disposition.canonicalId)) continue;
+    if (pendingIds.has(disposition.itemId)) {
+      holds.set(
+        disposition.itemId,
+        `claimed re-review: canonical ${disposition.canonicalId} is claimed by ${holder(disposition.canonicalId)}; ` +
+          'held, not merged into a claimed row',
+      );
+    } else {
+      dropped.add(disposition.itemId);
+    }
+  }
+  if (holds.size === 0 && dropped.size === 0) return plan;
+  const dispositions: PromoterDisposition[] = plan.dispositions
+    .filter((disposition) => !dropped.has(disposition.itemId))
+    .map((disposition) => {
+      const reason = holds.get(disposition.itemId);
+      return reason && disposition.action !== 'hold' ? { itemId: disposition.itemId, action: 'hold', reason } : disposition;
+    });
+  const present = new Set(dispositions.map((disposition) => disposition.itemId));
+  for (const [itemId, reason] of holds) {
+    // A claimed canonical outside the batch carries no disposition of its own; it was still
+    // judged, so record the hold (and advance its watermark) rather than leave it silent.
+    if (!present.has(itemId) && claimed.has(itemId)) dispositions.push({ itemId, action: 'hold', reason });
+  }
+  return { ...plan, dispositions: dispositions.sort((a, b) => a.itemId.localeCompare(b.itemId)) };
+}
+
+/**
+ * A batch row with an unjudged, transiently protected twin must not be PROMOTED past it.
+ * A merge into a movable canonical (or a model hold) already resolves the row and stands.
+ */
+export function applyPrescreenHolds(plan: PromoterPlan, forcedHolds: ReadonlyMap<string, string>): PromoterPlan {
+  if (forcedHolds.size === 0) return plan;
+  return {
+    ...plan,
+    dispositions: plan.dispositions.map((disposition) => {
+      const reason = forcedHolds.get(disposition.itemId);
+      return reason && disposition.action === 'promote'
+        ? { itemId: disposition.itemId, action: 'hold', reason }
+        : disposition;
+    }),
+  };
 }
 
 async function unadjudicatedCensus(sql: OrgSql, workspaceId: string, harnessSlug: string): Promise<number> {
@@ -2133,13 +2549,66 @@ export async function judgedPairsMissingAdjudication(
   return judgedPairs.filter((pair) => !present.has(pair.pairKey)).map((pair) => pair.pairKey);
 }
 
+/** Capture the boot witness for the process starting an admission run. */
+export async function captureAdmissionProducingRuntime(
+  sql: OrgSql,
+  workspaceId: string,
+): Promise<Record<string, unknown>> {
+  const host = hostname();
+  const identity = readProcessIdentity(process.pid);
+  const producingRuntime: Record<string, unknown> = {
+    schemaVersion: 1,
+    observedAt: new Date().toISOString(),
+    host,
+    pid: process.pid,
+    processIdentity: identity,
+    unit: null,
+    buildSha: null,
+    version: null,
+    buildTime: null,
+    bootReportedAt: null,
+    environmentFingerprint: null,
+    buildIdentityStatus: 'unknown',
+    buildIdentityReason: 'process-identity-unavailable',
+    buildIdentitySource: 'runtime-vintage-kernel-pin',
+  };
+  if (identity) {
+    try {
+      const rows = (await listRuntimeVintage(workspaceId, sql))
+        .filter(row => row.host === host && row.pid === process.pid);
+      producingRuntime.buildIdentityReason = rows.length === 0 ? 'boot-record-absent' : 'boot-record-ambiguous';
+      if (rows.length === 1) {
+        const row = rows[0]!;
+        const fingerprint = measureRuntimeVintageEnvironment(rows, [row.unit]);
+        producingRuntime.buildIdentityReason = row.extra.kernelProcessIdentity !== identity
+          ? 'boot-process-identity-mismatch' : 'boot-record-unverifiable';
+        if (fingerprint) {
+          Object.assign(producingRuntime, {
+            unit: row.unit, buildSha: row.treeSha, version: row.bundleVersion,
+            buildTime: row.buildTime, bootReportedAt: row.reportedAt,
+            environmentFingerprint: fingerprint, buildIdentityStatus: 'matched-boot-record',
+            buildIdentityReason: null,
+          });
+        }
+      }
+    } catch {
+      producingRuntime.buildIdentityReason = 'boot-record-unavailable';
+    }
+  }
+  return producingRuntime;
+}
+
 async function beginRun(
   sql: OrgSql,
-  input: { runId: string; workspaceId: string; harnessSlug: string; mode: 'promoter' | 'fail-open' },
+  input: { runId: string; workspaceId: string; harnessSlug: string; mode: AdmissionTickMode },
 ): Promise<void> {
+  const producingRuntime = await captureAdmissionProducingRuntime(sql, input.workspaceId);
   const detail = JSON.stringify({
     status: 'running',
     mode: input.mode,
+    // Persist the process-matched boot witness now; never resolve a historical
+    // producer from a later runtime row or the checkout's current HEAD.
+    producingRuntime,
     outcome: {
       unit: 'items',
       attempted: null,
@@ -2205,7 +2674,10 @@ async function finishRun(
            tokens_in = ${input.tokensIn},
            tokens_out = ${input.tokensOut},
            latency_ms = ${input.latencyMs},
-           detail = ${detail}::text::jsonb
+           detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'producingRuntime'
+               THEN jsonb_build_object('producingRuntime', detail->'producingRuntime')
+               ELSE '{}'::jsonb END
      WHERE id = ${input.runId}`;
 }
 
@@ -2241,7 +2713,10 @@ async function failRun(
            tokens_in = ${usage?.tokensIn ?? 0},
            tokens_out = ${usage?.tokensOut ?? 0},
            latency_ms = ${latencyMs},
-           detail = ${detail}::text::jsonb
+           detail = (${detail}::text::jsonb - 'producingRuntime') ||
+             CASE WHEN detail ? 'producingRuntime'
+               THEN jsonb_build_object('producingRuntime', detail->'producingRuntime')
+               ELSE '{}'::jsonb END
      WHERE id = ${runId}`.catch(() => null);
 }
 
@@ -2263,6 +2738,10 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
     latency_sample_size: number | string;
     p50_ms: number | string | null;
     p95_ms: number | string | null;
+    producer_pending: number | string;
+    producer_latency_sample_size: number | string;
+    producer_p50_ms: number | string | null;
+    producer_p95_ms: number | string | null;
     review_pending: number | string;
     review_overdue: number | string;
     review_re_reviewed: number | string;
@@ -2292,6 +2771,33 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
                AND wi.first_claimed_at IS NOT NULL
                AND wi.first_claimed_at >= wi.admitted_at
            ) AS p95_ms
+           ,(count(*) FILTER (
+             WHERE wi.admission = 'pending'
+               AND NOT COALESCE(harness_shared.work_item_status_is_terminal(wi.status), FALSE)
+               AND wi.lane IS DISTINCT FROM 'observation'
+           ))::int AS producer_pending
+           ,(count(*) FILTER (
+             WHERE wi.admitted_at IS NOT NULL
+               AND wi.first_claimed_at >= wi.admitted_at
+               AND wi.first_claimed_at >= now() - (${ADMISSION_PRESSURE_ELEVATED_LATENCY_MS}::bigint * interval '1 millisecond')
+               AND wi.lane IS DISTINCT FROM 'observation'
+           ))::int AS producer_latency_sample_size
+           ,percentile_cont(0.50) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (wi.first_claimed_at - wi.admitted_at)) * 1000
+           ) FILTER (
+             WHERE wi.admitted_at IS NOT NULL
+               AND wi.first_claimed_at >= wi.admitted_at
+               AND wi.first_claimed_at >= now() - (${ADMISSION_PRESSURE_ELEVATED_LATENCY_MS}::bigint * interval '1 millisecond')
+               AND wi.lane IS DISTINCT FROM 'observation'
+           ) AS producer_p50_ms
+           ,percentile_cont(0.95) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (wi.first_claimed_at - wi.admitted_at)) * 1000
+           ) FILTER (
+             WHERE wi.admitted_at IS NOT NULL
+               AND wi.first_claimed_at >= wi.admitted_at
+               AND wi.first_claimed_at >= now() - (${ADMISSION_PRESSURE_ELEVATED_LATENCY_MS}::bigint * interval '1 millisecond')
+               AND wi.lane IS DISTINCT FROM 'observation'
+           ) AS producer_p95_ms
            ,(count(*) FILTER (
              WHERE COALESCE(wi.payload #>> '{admissionReview,state}', CASE WHEN wi.admission = 'unreviewed' THEN 'pending' END) = 'pending'
            ))::int AS review_pending
@@ -2341,6 +2847,15 @@ export async function readWorkItemAdmissionQueueHealth(opts: {
       sampleSize: Number(row?.latency_sample_size ?? 0),
       p50Ms: numberOrNull(row?.p50_ms),
       p95Ms: numberOrNull(row?.p95_ms),
+    },
+    producerPressure: {
+      pending: Number(row?.producer_pending ?? 0),
+      latencyWindowMs: ADMISSION_PRESSURE_ELEVATED_LATENCY_MS,
+      promotedToFirstClaim: {
+        sampleSize: Number(row?.producer_latency_sample_size ?? 0),
+        p50Ms: numberOrNull(row?.producer_p50_ms),
+        p95Ms: numberOrNull(row?.producer_p95_ms),
+      },
     },
     reviewDebt: {
       pending: Number(row?.review_pending ?? 0),
@@ -2429,7 +2944,9 @@ export async function readWorkItemReadinessProjection(opts: {
   const terminalStates = [...ALL_TERMINAL_STATUSES];
   const successfulStates = [...ALL_SUCCESSFUL_STATUSES];
 
-  type ProjectionRow = Record<string, number | string | null>;
+  type ProjectionRow = Record<string, number | string | null> & {
+    presentation_counts?: NonNullable<WorkItemReadinessProjection['presentation']>['counts'];
+  };
   const rows = await sql<ProjectionRow[]>`
       WITH occurrence_counts AS MATERIALIZED (
         -- GROUP BY hashes the clusters; count(DISTINCT (slug, id)) sorted ~180k row
@@ -2453,12 +2970,14 @@ export async function readWorkItemReadinessProjection(opts: {
         terminalStates,
       })}),
       scoped_payload AS MATERIALIZED (
-        -- Detoast the large polymorphic payload once per row and retain only the
-        -- four small subdocuments this projection owns. Re-reading nested paths
-        -- from the full payload throughout classification was the dominant live
-        -- workspace cost (millions of shared-buffer hits). The two hot booleans
-        -- already have generated columns maintained by migration 1110.
+        -- Migration 1294 materializes these four payload subdocuments and the
+        -- implementation-readiness key-presence bit as STORED columns. Payload
+        -- remains canonical for writers, while this full-population census reads
+        -- only the narrow projections instead of detoasting it for every row.
         SELECT wi.feature_id,
+               wi.item_kind,
+               wi.title,
+               wi.summary,
                wi.status,
                wi.admission,
                wi.first_claimed_at,
@@ -2467,11 +2986,11 @@ export async function readWorkItemReadinessProjection(opts: {
                wi.authority,
                wi.expected_cost_cents,
                wi.origin,
-               payload_parts."agentReview" AS agent_review,
-               payload_parts."implementationReadiness" AS implementation_readiness,
-               (wi.payload ? 'implementationReadiness') AS readiness_enrolled,
-               payload_parts."reopenHistory" AS reopen_history,
-               payload_parts."externalBlockers" AS external_blockers,
+               wi.agent_review_projection AS agent_review,
+               wi.implementation_readiness_projection AS implementation_readiness,
+               wi.implementation_readiness_enrolled AS readiness_enrolled,
+               wi.reopen_history_projection AS reopen_history,
+               wi.external_blockers_projection AS external_blockers,
                (
                  wi.status = ANY(${terminalStates}::text[])
                  OR (wi.terminal_owner IS NOT NULL AND wi.terminal_completion_ref IS NOT NULL)
@@ -2484,12 +3003,6 @@ export async function readWorkItemReadinessProjection(opts: {
                COALESCE(wi.claim_hold, FALSE) AS claim_hold,
                COALESCE(wi.needs_owner_action, FALSE) AS owner_action
           FROM harness_shared.work_items wi
-          LEFT JOIN LATERAL jsonb_to_record(COALESCE(wi.payload, '{}'::jsonb)) AS payload_parts(
-            "agentReview" jsonb,
-            "implementationReadiness" jsonb,
-            "reopenHistory" jsonb,
-            "externalBlockers" jsonb
-          ) ON TRUE
          WHERE wi.workspace_id = ${opts.workspaceId}
            AND (${harnessSlug}::text IS NULL OR wi.harness_slug = ${harnessSlug})
            AND wi.item_kind IN ('bug', 'change', 'task')
@@ -2497,6 +3010,12 @@ export async function readWorkItemReadinessProjection(opts: {
            AND wi.lane IS DISTINCT FROM 'observation'
       ), scoped AS MATERIALIZED (
         SELECT p.*,
+               ${implementationReadinessValidFromJsonSql(sql, sql`p.implementation_readiness`)} AS presentation_readiness_valid,
+               CASE WHEN p.implementation_readiness -> 'evidence' -> 'acceptance' IS NOT NULL THEN
+                 ${implementationAcceptanceStateFromReadinessSql(sql, sql`p.implementation_readiness`,
+                   acceptanceSourceRevisionFromFragmentsSql(sql, sql`p.item_kind`, sql`p.title`, sql`p.summary`),
+                   sql`p.item_kind`)}
+                 ELSE 'absent' END AS acceptance_state,
                (p.agent_review ->> 'status' = 'pending') AS review_pending,
                (
                  p.agent_review ->> 'status' = 'revision-requested'
@@ -2512,23 +3031,20 @@ export async function readWorkItemReadinessProjection(opts: {
                    = ANY(ARRAY['ready','unknown','not-ready']::text[])
                ) AS readiness_known,
                (p.admission IS DISTINCT FROM 'pending') AS admission_ready,
-               (
-                 (
-                   COALESCE(p.agent_review ->> 'status' = 'revision-requested', FALSE)
-                   AND COALESCE(
-                     p.agent_review ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER},
-                     FALSE
-                   )
-                 )
-                 OR (
-                   p.agent_review ->> 'status' IS DISTINCT FROM 'pending'
-                   AND p.agent_review ->> 'status' IS DISTINCT FROM 'revision-requested'
-                   AND ${implementationReadinessFloorSql(sql, {
-                     readiness: sql`p.implementation_readiness`,
-                     enrolled: sql`p.readiness_enrolled`,
-                   })}
-                 )
-               ) AS review_ready,
+               -- P-008 (D-038): the same intake-stage claim predicate every claim door applies.
+               ${intakeStageClaimFloorFromFragmentsSql(sql, {
+                 reviewStatus: sql`(p.agent_review ->> 'status')`,
+                 reviewSubmittedBy: sql`(p.agent_review ->> 'submittedBy')`,
+                 reviewRevisionKind: sql`(p.agent_review ->> 'revisionKind')`,
+                 readinessFloor: implementationReadinessProjectedFloorSql(sql, {
+                   readiness: sql`p.implementation_readiness`,
+                   enrolled: sql`p.readiness_enrolled`,
+                   itemKind: sql`p.item_kind`,
+                   title: sql`p.title`,
+                   summary: sql`p.summary`,
+                   createdTs: sql`p.created_ts`,
+                 }),
+               })} AS review_ready,
                EXISTS (
                  SELECT 1
                    FROM jsonb_path_query(
@@ -2571,6 +3087,14 @@ export async function readWorkItemReadinessProjection(opts: {
             ON dependency.blocked_ref = s.feature_id
       ), classified AS (
         SELECT signals.*,
+               ${workItemPresentationStageFromSignalsSql(sql, {
+                 observation: sql`FALSE`, terminal: sql`is_terminal`,
+                 readinessValid: sql`presentation_readiness_valid`, readinessEnrolled: sql`readiness_enrolled`,
+                 readiness: sql`implementation_readiness`, acceptanceState: sql`acceptance_state`,
+                 status: sql`status`, assigned: sql`has_active_claim`,
+                 blocked: sql`(claim_hold OR owner_action OR external_blocker OR active_dependency)`,
+                 authority: sql`authority`,
+               })} AS presentation_stage,
                CASE
                  WHEN is_terminal THEN 'terminal'
                  WHEN has_active_claim THEN 'active'
@@ -2594,6 +3118,17 @@ export async function readWorkItemReadinessProjection(opts: {
           ) event
       )
       SELECT count(*)::int AS population,
+             jsonb_build_object(
+               'observation', 0,
+               'candidate', count(*) FILTER (WHERE presentation_stage = 'candidate'),
+               'unknown', count(*) FILTER (WHERE presentation_stage = 'unknown'),
+               'accepted-ready', count(*) FILTER (WHERE presentation_stage = 'accepted-ready'),
+               'accepted-active', count(*) FILTER (WHERE presentation_stage = 'accepted-active'),
+               'accepted-blocked', count(*) FILTER (WHERE presentation_stage = 'accepted-blocked'),
+               'verified-completion', count(*) FILTER (WHERE presentation_stage = 'verified-completion'),
+               'terminal-other', count(*) FILTER (WHERE presentation_stage = 'terminal-other')
+             ) AS presentation_counts,
+             (count(*) FILTER (WHERE item_kind = 'bug' AND presentation_stage LIKE 'accepted-%'))::int AS remaining_bugs,
              (count(*) FILTER (WHERE NOT is_terminal))::int AS non_terminal,
              (count(*) FILTER (WHERE headline = 'terminal'))::int AS terminal,
              (count(*) FILTER (WHERE headline = 'active'))::int AS active,
@@ -2608,6 +3143,16 @@ export async function readWorkItemReadinessProjection(opts: {
              (count(*) FILTER (
                WHERE agent_review ->> 'status' = 'revision-requested'
              ))::int AS reason_review_revision,
+             -- D-007/D-008: an exact partition of reason_review_revision with
+             -- legacy_revision_exception. review_revision already excludes the legacy submitter.
+             (count(*) FILTER (
+               WHERE review_revision
+                 AND agent_review ->> 'revisionKind' = 'reproduction'
+             ))::int AS reason_review_revision_reproduction,
+             (count(*) FILTER (
+               WHERE review_revision
+                 AND agent_review ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
+             ))::int AS reason_review_revision_content,
              (count(*) FILTER (WHERE legacy_revision))::int AS legacy_revision_exception,
              (count(*) FILTER (WHERE NOT readiness_enrolled))::int AS readiness_absent,
              (count(*) FILTER (
@@ -2651,7 +3196,7 @@ export async function readWorkItemReadinessProjection(opts: {
                WHERE is_terminal AND closed_ts >= ${nowMs - windowDays * 24 * 60 * 60_000}
              ))::int AS terminal_in_window,
              (count(*) FILTER (
-               WHERE is_terminal AND authority = 'committed'
+               WHERE presentation_stage = 'verified-completion'
                  AND closed_ts >= ${nowMs - windowDays * 24 * 60 * 60_000}
              ))::int AS verified_in_window,
              (SELECT count(*)::int FROM reopen_events WHERE reopened_at >= ${since}) AS reopen_events_in_window,
@@ -2702,6 +3247,19 @@ export async function readWorkItemReadinessProjection(opts: {
   return {
     schemaVersion: 'work-item-readiness-projection-v1',
     measuredAt,
+    presentation: {
+      population: n('population'),
+      counts: row.presentation_counts ?? {
+        observation: 0, candidate: 0, unknown: 0, 'accepted-ready': 0, 'accepted-active': 0,
+        'accepted-blocked': 0, 'verified-completion': 0, 'terminal-other': 0,
+      },
+      remainingBugs: n('remaining_bugs'),
+      verifiedCompletions: Number((row.presentation_counts as Record<string, number> | undefined)?.['verified-completion'] ?? 0),
+      unit: 'work-item rows',
+      writer: 'readWorkItemReadinessProjection',
+      classifier: 'deriveWorkItemPresentationStage',
+      mutuallyExclusive: true,
+    },
     scope: {
       workspaceId: opts.workspaceId,
       harnessSlug,
@@ -2714,6 +3272,8 @@ export async function readWorkItemReadinessProjection(opts: {
       admissionUnreviewed: n('admission_unreviewed'),
       pendingAgentReview: n('reason_review_pending'),
       revisionRequestedAgentReview: n('reason_review_revision'),
+      revisionReproductionValidation: n('reason_review_revision_reproduction'),
+      revisionContentAdoptionCandidates: n('reason_review_revision_content'),
       legacyRevisionException: n('legacy_revision_exception'),
       readinessAbsentLegacy: n('readiness_absent'),
       readinessReady: n('readiness_ready'),
@@ -3033,6 +3593,39 @@ async function persistAdmissionLinks(
 
 type MergeEndpointRole = 'loser' | 'canonical' | 'reference' | 'promote' | 'hold';
 
+/**
+ * Roles for which an overdue claimed re-review row is NOT protected by its claim
+ * (WI-6554700010008443; bug-queue-legitimacy-and-actionable-validation-2026-10-10#D-018/#D-019).
+ * Each writes only admission-review state or a see-also link: promoting admission, recording a
+ * hold, or persisting a non-merge verdict never moves the held work. 'loser' and 'canonical' stay
+ * protected, so a claimed row is never merged, in either direction.
+ */
+const CLAIMED_REREVIEW_EXEMPT_ROLES: ReadonlySet<MergeEndpointRole> = new Set(['promote', 'hold', 'reference']);
+
+/**
+ * How long a judged claimed re-review row waits before it gets another head-of-window turn in the
+ * scheduled read. The turn is keyed on `admissionReview.lastRetryAt`, which every judged outcome
+ * (promote or hold) advances, so each such row is re-reviewed at most once per bound.
+ */
+export const CLAIMED_REREVIEW_TURN_BOUND_MINUTES = 24 * 60;
+
+/**
+ * A fail-open row whose admission re-review is overdue while an agent holds it
+ * (WI-6554700010008443). Before this, endpointProtection refused every claimed row in every role,
+ * so the scheduled window self-blocked it and its retry watermark never advanced: measured
+ * 2026-10-11, EI-25220422162112859 sat at retryAttempts 0 for five days while continuously claimed.
+ * Pure: the same snapshot and clock always give the same answer.
+ */
+export function isOverdueClaimedReReview(snapshot: AdmissionMergeSnapshot | undefined, nowMs: number): boolean {
+  if (!snapshot?.assignee) return false;
+  if (snapshot.admission !== 'pending' && snapshot.admission !== 'unreviewed') return false;
+  const review = recordValue(recordValue(snapshot.payload).admissionReview);
+  const state = typeof review.state === 'string' ? review.state : snapshot.admission === 'unreviewed' ? 'pending' : null;
+  if (state !== 'pending') return false;
+  const dueMs = typeof review.reviewDueAt === 'string' ? Date.parse(review.reviewDueAt) : Number.NaN;
+  return Number.isFinite(dueMs) && dueMs < nowMs;
+}
+
 function applicableTerminalCompletion(snapshot: AdmissionMergeSnapshot): boolean {
   if (snapshot.completionAuthority === 'committed' || snapshot.completionAuthority === 'validated') return true;
   if (snapshot.terminalCompletionRef) return true;
@@ -3041,13 +3634,25 @@ function applicableTerminalCompletion(snapshot: AdmissionMergeSnapshot): boolean
   return isSufficientEvidence(completionEvidence as Parameters<typeof isSufficientEvidence>[0]);
 }
 
+interface EndpointProtectionOptions {
+  requireImplementationReadiness?: boolean;
+  reviewedEvidenceReady?: boolean;
+  /**
+   * The clock for the claimed re-review exemption. When set, an overdue claimed re-review row
+   * (isOverdueClaimedReReview) is not refused as 'claimed' in CLAIMED_REREVIEW_EXEMPT_ROLES.
+   * Every other protection still applies. Absent: every claimed row is refused, as before.
+   */
+  claimedReReviewAtMs?: number;
+}
+
 function endpointProtection(
   snapshot: AdmissionMergeSnapshot,
   role: MergeEndpointRole,
-  options: { requireImplementationReadiness?: boolean; reviewedEvidenceReady?: boolean } = {},
+  options: EndpointProtectionOptions = {},
 ): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
   const payload = recordValue(snapshot.payload);
-  if (snapshot.origin === 'remote') {
+  // WI-10006515: an own-node row stranded at origin='remote' is ours to write (see ownNode).
+  if (snapshot.origin === 'remote' && snapshot.ownNode !== true) {
     return { reason: 'remote-owned', detail: `${role} ${snapshot.id} is remote-owned` };
   }
   if (role === 'promote' && snapshot.admission !== 'pending' && snapshot.admission !== 'unreviewed') {
@@ -3056,7 +3661,14 @@ function endpointProtection(
       detail: `promote ${snapshot.id} has admission ${snapshot.admission ?? 'legacy'}; expected pending or unreviewed`,
     };
   }
-  if (snapshot.assignee) {
+  if (
+    snapshot.assignee &&
+    !(
+      options.claimedReReviewAtMs !== undefined &&
+      CLAIMED_REREVIEW_EXEMPT_ROLES.has(role) &&
+      isOverdueClaimedReReview(snapshot, options.claimedReReviewAtMs)
+    )
+  ) {
     return { reason: 'claimed', detail: `${role} ${snapshot.id} is claimed by ${snapshot.assignee}` };
   }
   if (String(payload._claimHold) === 'true') {
@@ -3066,7 +3678,13 @@ function endpointProtection(
     return { reason: 'blocked-state', detail: `${role} ${snapshot.id} is ${snapshot.state}` };
   }
   const review = readAgentReviewState(snapshot.payload);
-  if (review?.status === 'pending' || review?.status === 'revision-requested') {
+  // Duplicate admission precedes the ordinary reproduction-validation claim. Reuse
+  // that lane's predicate for screening/promotion only: changing or merging either
+  // endpoint still requires its independent agent review to have cleared.
+  const reproductionValidationAdmission = snapshot.kind === 'bug' &&
+    (role === 'promote' || role === 'reference') &&
+    agentReviewIsReproductionValidation(snapshot.payload);
+  if ((review?.status === 'pending' || review?.status === 'revision-requested') && !reproductionValidationAdmission) {
     return { reason: 'review-gated', detail: `${role} ${snapshot.id} is agent-review ${review.status}` };
   }
   if (options.requireImplementationReadiness && (role === 'loser' || role === 'canonical')) {
@@ -3189,7 +3807,7 @@ function snapshotIdentityProblem(
   captured: AdmissionMergeSnapshot | undefined,
   live: AdmissionMergeSnapshot | undefined,
   role: MergeEndpointRole,
-  options: { requireImplementationReadiness?: boolean; reviewedEvidenceReady?: boolean } = {},
+  options: EndpointProtectionOptions = {},
 ): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
   if (!captured) return { reason: 'snapshot-missing', detail: `${role} was not captured before judging` };
   if (!live) {
@@ -3207,6 +3825,215 @@ function snapshotIdentityProblem(
     };
   }
   return endpointProtection(live, role, options);
+}
+
+/**
+ * Over-read factor for the scheduled (non-targeted) promoter window. The window is read
+ * oldest-first; items the guard would refuse on their own state are skipped, and the batch
+ * is refilled from the rest of the window (WI-10004724).
+ */
+export const PROMOTER_PRESCREEN_WINDOW_FACTOR = 3;
+const PROMOTER_PRESCREEN_SAMPLE_CAP = 25;
+
+/**
+ * Endpoint protections that no later tick of THIS promoter can lift: a remote-owned row is
+ * written only by its owning node, and a terminal row without completion evidence stays
+ * terminal. A pair touching one can never persist any adjudication, so it is not a
+ * dedup-resolution option at all — the pending endpoint is judged on its other pairs.
+ */
+const PERMANENT_ENDPOINT_PROTECTIONS: ReadonlySet<AdmissionMergeGuardRefusal['reason']> = new Set([
+  'remote-owned',
+  'terminal-canonical-without-completion',
+]);
+
+export type PromoterPrescreenClass = 'self-blocked' | 'deferred' | 'unresolvable-pair' | 'protected-pair';
+
+export interface PromoterPrescreenSample {
+  itemId: string;
+  class: PromoterPrescreenClass;
+  reason: AdmissionMergeGuardRefusal['reason'];
+  /** The protected counterpart for a pair class; null when the item itself is protected. */
+  blockedBy: string | null;
+}
+
+export interface PromoterPrescreen {
+  /**
+   * Pending/unreviewed rows EXAMINED, oldest-first with guard-blocked rows sorted last — the
+   * prefix the batch was chosen from (plus every self-blocked row seen), not the full over-read.
+   */
+  window: number;
+  /** Rows selected into this tick's batch. */
+  selected: number;
+  /** Rows skipped because the promote guard refuses them on their OWN state. */
+  selfBlocked: number;
+  /** Rows skipped because every remaining twin is transiently protected. */
+  deferred: number;
+  /** Pairs removed before the model call: a counterpart is permanently unresolvable. */
+  unresolvablePairs: number;
+  /** Pairs removed before the model call: a counterpart is transiently protected. */
+  protectedPairs: number;
+  /** Batch rows held without a promote because a transiently protected twin is unjudged. */
+  forcedHolds: number;
+  samples: PromoterPrescreenSample[];
+}
+
+/**
+ * The guard verdict for ONE endpoint in every role the promoter could give it. The
+ * `reference` role is the weakest check that still refuses every role: a row it refuses
+ * cannot be a canonical, a reference, or (being terminal or protected) a loser. Pure —
+ * the same captured snapshot always yields the same answer, so nothing is memoized.
+ */
+export function admissionEndpointBlock(
+  snapshot: AdmissionMergeSnapshot | undefined,
+  /** Clock for the claimed re-review exemption (see EndpointProtectionOptions). */
+  claimedReReviewAtMs?: number,
+): (Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> & { permanent: boolean }) | null {
+  if (!snapshot) return null;
+  const problem = endpointProtection(snapshot, 'reference', { claimedReReviewAtMs });
+  if (!problem) return null;
+  return { ...problem, permanent: PERMANENT_ENDPOINT_PROTECTIONS.has(problem.reason) };
+}
+
+/**
+ * Select this tick's batch from an over-read window WITHOUT spending model time on work the
+ * persistence guard is certain to refuse (WI-10004724). Before this, the oldest re-review rows —
+ * agent-review revision-requested, remote-owned, terminal — were re-selected every tick, their
+ * ~140 pairs re-judged for ~10 minutes, every write refused, and nothing behind them promoted.
+ *
+ * Classification is recomputed from the captured snapshots on every tick rather than memoized:
+ * the guard is a pure function of the snapshot, so the moment a protection lifts (a review is
+ * resolved, a claim ends) the row re-enters with no stale memo to invalidate.
+ *
+ *  - self-blocked: the promote guard refuses the row itself → skipped (no slot, no model).
+ *  - a pair whose counterpart is permanently unresolvable → dropped; the row is judged on the rest.
+ *  - a pair whose counterpart is transiently protected → dropped. A row left with only such
+ *    pairs is deferred (skipped); a row that still has movable pairs is judged on those and
+ *    then HELD, so it is never promoted past an unjudged protected twin.
+ *
+ * The persistence guard still re-checks every write under row locks; this only decides what to ask.
+ */
+export function prescreenPromoterWindow(input: {
+  window: readonly PromoterItem[];
+  pairs: readonly PromoterPair[];
+  snapshots: ReadonlyMap<string, AdmissionMergeSnapshot>;
+  batchSize: number;
+  /**
+   * Tick clock. When set, an overdue claimed re-review row is judged rather than self-blocked
+   * (WI-6554700010008443); omitted, every claimed row is self-blocked as before.
+   */
+  nowMs?: number;
+}): { batch: PromoterItem[]; pairs: PromoterPair[]; forcedHolds: Map<string, string>; prescreen: PromoterPrescreen } {
+  const samples: PromoterPrescreenSample[] = [];
+  const sample = (entry: PromoterPrescreenSample) => {
+    if (samples.length < PROMOTER_PRESCREEN_SAMPLE_CAP) samples.push(entry);
+  };
+  const block = (snapshot: AdmissionMergeSnapshot | undefined) => admissionEndpointBlock(snapshot, input.nowMs);
+  const windowIds = new Set(input.window.map((item) => item.id));
+  const selfBlocked = new Set<string>();
+  for (const item of input.window) {
+    const snapshot = input.snapshots.get(item.id);
+    const problem = snapshot ? endpointProtection(snapshot, 'promote', { claimedReReviewAtMs: input.nowMs }) : null;
+    if (!problem) continue;
+    selfBlocked.add(item.id);
+    sample({ itemId: item.id, class: 'self-blocked', reason: problem.reason, blockedBy: null });
+  }
+
+  // A pair's pending endpoints are derived from THIS window, never from the builder's view:
+  // the pairs may have been read in chunks, each of which knew only its own rows.
+  const windowEndpoints = (pair: PromoterPair) => [pair.a.id, pair.b.id].filter((id) => windowIds.has(id));
+  const pairsByItem = new Map<string, PromoterPair[]>();
+  for (const pair of input.pairs) {
+    for (const id of windowEndpoints(pair)) {
+      if (selfBlocked.has(id)) continue;
+      const list = pairsByItem.get(id) ?? [];
+      list.push(pair);
+      pairsByItem.set(id, list);
+    }
+  }
+
+  const blockedPairKeys = new Set<string>();
+  let unresolvablePairs = 0;
+  let protectedPairs = 0;
+  for (const pair of input.pairs) {
+    const blocks = [pair.a.id, pair.b.id]
+      .map((id) => ({ id, block: block(input.snapshots.get(id)) }))
+      .filter((entry) => entry.block !== null);
+    if (blocks.length === 0) continue;
+    blockedPairKeys.add(pair.pairKey);
+    if (blocks.every((entry) => entry.block!.permanent)) unresolvablePairs += 1;
+    else protectedPairs += 1;
+  }
+
+  const batch: PromoterItem[] = [];
+  const forcedHolds = new Map<string, string>();
+  let deferred = 0;
+  for (const item of input.window) {
+    if (selfBlocked.has(item.id)) continue;
+    const itemPairs = pairsByItem.get(item.id) ?? [];
+    let movable = 0;
+    let protectedTwin: { id: string; reason: AdmissionMergeGuardRefusal['reason'] } | null = null;
+    for (const pair of itemPairs) {
+      if (!blockedPairKeys.has(pair.pairKey)) {
+        movable += 1;
+        continue;
+      }
+      const counterpart = pair.a.id === item.id ? pair.b : pair.a;
+      const twinBlock = block(input.snapshots.get(counterpart.id));
+      if (twinBlock && !twinBlock.permanent && !protectedTwin) {
+        protectedTwin = { id: counterpart.id, reason: twinBlock.reason };
+      }
+      if (twinBlock?.permanent) {
+        sample({ itemId: item.id, class: 'unresolvable-pair', reason: twinBlock.reason, blockedBy: counterpart.id });
+      }
+    }
+    if (protectedTwin && movable === 0) {
+      deferred += 1;
+      sample({ itemId: item.id, class: 'deferred', reason: protectedTwin.reason, blockedBy: protectedTwin.id });
+      continue;
+    }
+    if (batch.length >= input.batchSize) continue;
+    batch.push(item);
+    if (protectedTwin) {
+      forcedHolds.set(
+        item.id,
+        `deferred: twin ${protectedTwin.id} is ${protectedTwin.reason}; held until it can be judged`,
+      );
+      sample({ itemId: item.id, class: 'protected-pair', reason: protectedTwin.reason, blockedBy: protectedTwin.id });
+    }
+  }
+
+  // Keep exactly the pairs today's single-batch read would have produced for these rows: at
+  // least one endpoint is in the batch, no endpoint is protected, and a still-`pending` window
+  // row outside the batch is not a candidate (readPromoterPairs excludes pending non-batch rows).
+  const batchIds = new Set(batch.map((item) => item.id));
+  const pendingOutside = new Set(
+    input.window.filter((item) => !batchIds.has(item.id) && item.admission === 'pending').map((item) => item.id),
+  );
+  const pairs = input.pairs
+    .filter(
+      (pair) =>
+        !blockedPairKeys.has(pair.pairKey) &&
+        windowEndpoints(pair).some((id) => batchIds.has(id)) &&
+        !pendingOutside.has(pair.a.id) &&
+        !pendingOutside.has(pair.b.id),
+    )
+    .map((pair) => ({ ...pair, pendingIds: windowEndpoints(pair).filter((id) => batchIds.has(id)).sort() }));
+
+  return {
+    batch,
+    pairs,
+    forcedHolds,
+    prescreen: {
+      window: input.window.length,
+      selected: batch.length,
+      selfBlocked: selfBlocked.size,
+      deferred,
+      unresolvablePairs,
+      protectedPairs,
+      forcedHolds: forcedHolds.size,
+      samples,
+    },
+  };
 }
 
 function retainedAdmissionObligations(snapshot: AdmissionMergeSnapshot): ReviewedAdmissionRetainedObligations {
@@ -3430,6 +4257,7 @@ export async function previewReviewedAdmissionCleanup(
 interface AdmissionMergeMutableRow {
   feature_id: string;
   status: string | null;
+  taken_by: string | null;
   admission: string | null;
   admitted_at: Date | string | null;
   admitted_by: string | null;
@@ -3499,7 +4327,7 @@ async function persistApprovedAdmissionMerge(
   },
 ): Promise<void> {
   const [loserPrior] = await sql<AdmissionMergeMutableRow[]>`
-    SELECT feature_id, status, admission, admitted_at, admitted_by, condition_key, payload,
+    SELECT feature_id, status, taken_by, admission, admitted_at, admitted_by, condition_key, payload,
            source_plan_slug, source_plan_item_ids, see_also, closed_ts, terminal_reason, terminal_owner
       FROM harness_shared.work_items
      WHERE workspace_id = ${input.workspaceId}
@@ -3529,6 +4357,10 @@ async function persistApprovedAdmissionMerge(
            admitted_by = COALESCE(admitted_by, ${input.actor}),
            condition_key = NULL,
            terminal_reason = ${`duplicate of ${input.canonicalId} (${input.actor} ${input.runId})`},
+           -- WI-6554700010008454: terminal_completion_ref is the canonical disposition column
+           -- for a drop (work_items:complete writes it; WorkItem exposes it). terminal_reason
+           -- keeps the 'duplicate of <id>' convention that ideation-backlog-adjudication reads.
+           terminal_completion_ref = ${`duplicate of ${input.canonicalId} (${input.actor} ${input.runId})`},
            terminal_owner = ${input.actor},
            closed_ts = ${input.nowMs},
            payload = (
@@ -3567,7 +4399,7 @@ async function persistApprovedAdmissionMerge(
   }
 
   const [canonicalPrior] = await sql<AdmissionMergeMutableRow[]>`
-    SELECT feature_id, status, admission, admitted_at, admitted_by, condition_key, payload,
+    SELECT feature_id, status, taken_by, admission, admitted_at, admitted_by, condition_key, payload,
            source_plan_slug, source_plan_item_ids, see_also, closed_ts, terminal_reason, terminal_owner
       FROM harness_shared.work_items
      WHERE workspace_id = ${input.workspaceId}
@@ -3798,6 +4630,10 @@ async function persistApprovedAdmissionMerge(
     },
     prior: {
       status: loserPrior.status,
+      // Both rows remain locked by persistAdmissionPlan. Together with
+      // mergedAtMs, this preserves the claim identity at the merge commit;
+      // absence on older receipts must remain unknown rather than unclaimed.
+      takenBy: loserPrior.taken_by,
       admission: loserPrior.admission,
       admittedAt: nullableIso(loserPrior.admitted_at),
       admittedBy: loserPrior.admitted_by,
@@ -3815,6 +4651,7 @@ async function persistApprovedAdmissionMerge(
     },
     canonical: {
       prior: {
+        takenBy: canonicalPrior.taken_by,
         conditionKey: canonicalPrior.condition_key,
         watchdogIdentity: payloadIdentityState(canonicalPrior.payload),
         sourcePlanSlug: canonicalPrior.source_plan_slug,
@@ -3973,9 +4810,14 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
       // A hold is still a re-review attempt for a fail-open row. Keep the row
       // claimable/pending, but advance the durable retry watermark so an owner
       // can distinguish "never revisited" from repeated ambiguous reviews.
+      //
+      // WI-6554700010008443 part 2: every held row also records WHY, so a refusal that says
+      // "repair its named admission hold" can name it. Before this a hold on a still-`pending`
+      // row wrote nothing at all. A pending row is rewritten only when the reason changes, so a
+      // row held for the same reason on every tick does not churn updated_ts.
       await sql`
         UPDATE harness_shared.work_items
-           SET payload = CASE WHEN admission = 'unreviewed' THEN
+           SET payload = (CASE WHEN admission = 'unreviewed' THEN
              COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
                'admissionReview',
                COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
@@ -3989,12 +4831,23 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
                  'lastRetryAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0))
                )
              )
-           ELSE payload END,
+           ELSE COALESCE(payload, '{}'::jsonb) END) || jsonb_build_object(
+             'admissionHold', jsonb_build_object(
+               'reason', ${disposition.reason}::text,
+               'runId', ${input.runId}::text,
+               'actor', ${actor}::text,
+               'heldAt', to_jsonb(to_timestamp(${input.nowMs} / 1000.0))
+             )
+           ),
                updated_ts = ${input.nowMs}
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
            AND feature_id = ${disposition.itemId}
-           AND admission = 'unreviewed'`;
+           AND (
+             admission = 'unreviewed'
+             OR (admission = 'pending'
+                 AND (payload #>> '{admissionHold,reason}') IS DISTINCT FROM ${disposition.reason}::text)
+           )`;
       continue;
     }
     if (disposition.action === 'promote') {
@@ -4002,7 +4855,7 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
       await sql`
         UPDATE harness_shared.work_items
            SET admission = 'admitted', admitted_at = now(), admitted_by = ${actor},
-               payload = CASE WHEN admission = 'unreviewed' THEN
+               payload = (CASE WHEN admission = 'unreviewed' THEN
                  COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
                    'admissionReview',
                    COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
@@ -4025,7 +4878,7 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
                      )
                    )
                  )
-               ELSE payload END,
+               ELSE payload END) - 'admissionHold',
                updated_ts = ${input.nowMs}
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
@@ -4064,9 +4917,10 @@ async function persistAdmissionPlanInTransaction(
   const actor = input.actor ?? PROMOTER_ACTOR;
   const capturedById = new Map(input.snapshots.map((snapshot) => [snapshot.id, snapshot]));
   const reviewedReadyIds = new Set(input.reviewedReadyIds ?? []);
-  const protectionOptions = (itemId: string) => ({
+  const protectionOptions = (itemId: string): EndpointProtectionOptions => ({
     requireImplementationReadiness: input.requireImplementationReadiness,
     reviewedEvidenceReady: reviewedReadyIds.has(itemId),
+    claimedReReviewAtMs: input.nowMs,
   });
   const relevantIds = [
     ...new Set(
@@ -4618,9 +5472,19 @@ export async function runWorkItemAdmissionPromoter(opts: {
   beforePersist?: () => Promise<void>;
   /** Test seam; production emits the canonical claimable event after commit. */
   onNewlyAdmitted?: (rows: readonly { id: string; harness: string }[]) => Promise<void>;
+  /**
+   * Deterministic pass that never calls the model (WI-10004725, plan
+   * work-queue-bulk-cleanup-remediation-2026-10-01 P-007). Rows with no duplicate candidate are
+   * promoted exactly as a model tick would promote them; rows with a candidate pair are left
+   * untouched for the model promoter (no hold is written, so the re-review retry watermark only
+   * ever counts real reviews). Recorded as `mode='promoter-no-model'`.
+   */
+  noModel?: boolean;
 }): Promise<PromoterRunResult> {
   // Validate before opening a ledger run or touching policy/DB state.
   const targetItemIds = normalizeAdmissionTargetIds(opts.targetItemIds);
+  const noModel = opts.noModel === true;
+  const mode: AdmissionTickMode = noModel ? 'promoter-no-model' : 'promoter';
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
   const startedAt = now();
@@ -4639,7 +5503,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
   // cache reads as "not enforced", so the first tick after a boot would PROMOTE rows in a
   // harness the stored policy holds. Memoised — one awaited read per process.
   await primeWorkScopePolicy();
-  if (!isHarnessInScope(opts.harnessSlug)) {
+  if (!evaluateWorkScope({ harness: opts.harnessSlug }).allowed) {
     if (!scopeHeldHarnessesNoted.has(opts.harnessSlug)) {
       scopeHeldHarnessesNoted.add(opts.harnessSlug);
       await recordWorkScopeDecision({
@@ -4666,7 +5530,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       writerCoverageGap: [],
     };
   }
-  await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode: 'promoter' });
+  await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode });
   let runModelId: string | null = null;
   let tokensIn = 0;
   let tokensOut = 0;
@@ -4675,28 +5539,17 @@ export async function runWorkItemAdmissionPromoter(opts: {
   let modelCostUsd: number | null = 0;
   try {
     const censusBefore = await unadjudicatedCensus(sql, opts.workspaceId, opts.harnessSlug);
-    const pendingRows = await readPendingBatch(sql, opts.workspaceId, opts.harnessSlug, batchSize, targetItemIds);
-    const pairRows = await readPromoterPairs(
-      sql,
-      opts.workspaceId,
-      opts.harnessSlug,
-      pendingRows,
-      recentTerminalDays,
-      startedAt,
-      // Narrowing the batch must not hide a pending twin from screening.
-      // Only the transactional mutation boundary narrows what may be written.
-      targetItemIds !== undefined,
-    );
     // Capture ONE authoritative endpoint/reference identity immediately before
     // the model call. Both the prompt and the writer are bound to these exact
     // values; persistence re-reads them under row locks.
-    const snapshotIds = [
-      ...new Set([...pendingRows.map((item) => item.id), ...pairRows.flatMap((pair) => [pair.a.id, pair.b.id])]),
-    ];
-    const snapshotsById = await readAdmissionMergeSnapshots(sql, {
+    const { pendingRows, pairRows, snapshotsById, forcedHolds, prescreen } = await readPromoterWindow(sql, {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
-      ids: snapshotIds,
+      batchSize,
+      targetItemIds,
+      recentTerminalDays,
+      nowMs: startedAt,
+      noModel,
     });
     const pending = pendingRows.map((item) => bindAdmissionMergeSnapshot(item, snapshotsById.get(item.id)));
     const pairs = pairRows.map((pair) => ({
@@ -4705,17 +5558,17 @@ export async function runWorkItemAdmissionPromoter(opts: {
       b: bindAdmissionMergeSnapshot(pair.b, snapshotsById.get(pair.b.id)),
     }));
     let judgements: PromoterJudgement[] = [];
-    if (pairs.length > 0) {
+    if (pairs.length > 0 && !noModel) {
       runModelId = model;
       modelCostUsd = null;
       const prompt = buildPromoterPrompt(pairs);
-      const response = await opts.llmCall({
+      const response = await callPromoterLlmWithTransientRetry(() => opts.llmCall({
         model,
         system: prompt.system,
         messages: [{ role: 'user', content: prompt.user }],
         responseFormat: 'json',
         maxTokens: Math.min(8_000, 500 + pairs.length * 180),
-      });
+      }));
       // Capture usage before parsing. A schema-invalid response still consumed
       // tokens/cost and the failed run must retain that actual evidence.
       tokensIn = response.inputTokens;
@@ -4735,11 +5588,27 @@ export async function runWorkItemAdmissionPromoter(opts: {
       recurrenceItems.set(pair.a.id, pair.a);
       recurrenceItems.set(pair.b.id, pair.b);
     }
-    const plan = selectAdmissionRecurrenceCanonicals(
-      planPromoterDispositions(pending, pairs, judgements),
-      recurrenceItems,
-      { onConflict: 'hold' },
+    const fullPlan = applyClaimedReReviewHolds(
+      applyPrescreenHolds(
+        selectAdmissionRecurrenceCanonicals(planPromoterDispositions(pending, pairs, judgements), recurrenceItems, {
+          onConflict: 'hold',
+        }),
+        forcedHolds,
+      ),
+      snapshotsById,
+      new Set(pending.map((item) => item.id)),
+      startedAt,
     );
+    // A no-model pass has no judgement for any pair, so every paired row plans as a hold. That
+    // hold means "awaits the model", not "reviewed and ambiguous", so it is deferred, not
+    // written: persisting it would advance the fail-open re-review retry watermark for a review
+    // that never happened.
+    const deferredToModel = noModel
+      ? fullPlan.dispositions.filter((disposition) => disposition.action === 'hold').length
+      : 0;
+    const plan: PromoterPlan = noModel
+      ? { ...fullPlan, dispositions: fullPlan.dispositions.filter((disposition) => disposition.action !== 'hold') }
+      : fullPlan;
     await opts.beforePersist?.();
     const persisted = await persistAdmissionPlan(sql, {
       workspaceId: opts.workspaceId,
@@ -4758,7 +5627,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
     );
     const promoted = persisted.promotedIds.length;
     const merged = persisted.mergedIds.length;
-    const held = persisted.held.length;
+    const held = persisted.held.length + deferredToModel;
     // Targeted writer-integrity check, scoped to exactly the pairs THIS tick rendered a final
     // (non-hold) judgement for — immune to concurrent corpus growth and to legitimate holds.
     // See judgedPairsMissingAdjudication for why the raw global census delta cannot be trusted.
@@ -4790,7 +5659,9 @@ export async function runWorkItemAdmissionPromoter(opts: {
       latencyMs,
       detail: {
         status: 'complete',
-        mode: 'promoter',
+        mode,
+        // No-model pass only: paired rows left for the model promoter, not written as holds.
+        ...(noModel ? { deferredToModel } : {}),
         ...(targetItemIds === undefined ? {} : { targetItemIds }),
         // D-003: the distribution rides beside the census counts on every tick.
         promotedToFirstClaim,
@@ -4805,6 +5676,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
         heldReasons: persisted.held,
         // Only ever non-empty on a genuine writer defect; see writerCoverageGap on the result.
         writerCoverageGap,
+        ...(prescreen ? { prescreen } : {}),
       },
     });
     return {
@@ -4814,16 +5686,18 @@ export async function runWorkItemAdmissionPromoter(opts: {
       promoted,
       merged,
       held,
-      modelCalled: pairs.length > 0,
+      modelCalled: pairs.length > 0 && !noModel,
       tokensIn,
       tokensOut,
       censusBefore,
       censusAfter,
       guardRefusals: persisted.guardRefusals,
       writerCoverageGap,
+      ...(prescreen ? { prescreen } : {}),
+      ...(noModel ? { deferredToModel } : {}),
     };
   } catch (error) {
-    await failRun(sql, runId, 'promoter', error, Math.max(0, now() - startedAt), {
+    await failRun(sql, runId, mode, error, Math.max(0, now() - startedAt), {
       modelId: runModelId,
       tokensIn,
       tokensOut,
@@ -4831,6 +5705,85 @@ export async function runWorkItemAdmissionPromoter(opts: {
     });
     throw error;
   }
+}
+
+/** `admissionReview.terminalOutcome` for a fail-open review closed because its item is terminal. */
+export const ADMISSION_REVIEW_MOOT_OUTCOME = 'review-moot';
+/** Per-call bound on the moot sweep; the backlog drains across ticks, never in one statement. */
+export const DEFAULT_REVIEW_MOOT_BATCH = 2_000;
+
+export interface MootAdmissionReviewsResult {
+  closed: number;
+  byHarness: Record<string, number>;
+  /** The bound was reached, so more terminal rows may remain for the next tick. */
+  truncatedByLimit: boolean;
+}
+
+/**
+ * Close the re-review owed by fail-open rows whose item is already terminal (WI-10004725, plan
+ * work-queue-bulk-cleanup-remediation-2026-10-01 P-007).
+ *
+ * A fail-open row is admitted `unreviewed` and owes a duplication review. Once the item is
+ * done, dropped or otherwise terminal, that review cannot change anything: a terminal row is
+ * never claimed again, and open rows still pair against recent terminal rows as candidates, so
+ * nothing is lost by not reviewing it. Left open, these rows inflated the review-debt census
+ * (1,084 of 2,176 papercusp rows on 2026-10-01) and sat in the promoter's queue.
+ *
+ * Each row records WHY it was closed (`terminalOutcome='review-moot'` plus `mootReason` naming
+ * the status it had). `admitted_at`/`admitted_by` are kept, so the fail-open provenance stays
+ * readable. No model, no pause dependency: it runs on the fail-open tick.
+ */
+export async function closeMootAdmissionReviews(
+  sql: OrgSql,
+  opts: { workspaceId: string; harnessSlug?: string | null; nowMs: number; limit?: number; actor?: string },
+): Promise<MootAdmissionReviewsResult> {
+  const limit = Math.max(1, Math.floor(opts.limit ?? DEFAULT_REVIEW_MOOT_BATCH));
+  const harnessSlug = opts.harnessSlug ?? null;
+  const actor = opts.actor ?? FAIL_OPEN_ACTOR;
+  const rows = await sql<Array<{ harness_slug: string }>>`
+    WITH moot AS (
+      SELECT workspace_id, harness_slug, feature_id
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${opts.workspaceId}
+         AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
+         AND admission = 'unreviewed'
+         AND harness_shared.work_item_status_is_terminal(status)
+         -- Same "still owes a review" reading as the review-debt census: an absent state on an
+         -- unreviewed row is pending.
+         AND COALESCE(payload #>> '{admissionReview,state}', 'pending') = 'pending'
+       ORDER BY created_ts ASC NULLS FIRST, feature_id ASC
+       LIMIT ${limit}
+       FOR UPDATE SKIP LOCKED
+    )
+    UPDATE harness_shared.work_items wi
+       SET admission = 'admitted',
+           payload = COALESCE(wi.payload, '{}'::jsonb) || jsonb_build_object(
+             'admissionReview',
+             COALESCE(wi.payload -> 'admissionReview', '{}'::jsonb) || jsonb_build_object(
+               'state', 'terminal',
+               'reviewedAt', to_jsonb(to_timestamp(${opts.nowMs} / 1000.0)),
+               'reviewedBy', ${actor}::text,
+               'terminalAt', to_jsonb(to_timestamp(${opts.nowMs} / 1000.0)),
+               'terminalOutcome', ${ADMISSION_REVIEW_MOOT_OUTCOME}::text,
+               'mootReason', 'item was already ' || COALESCE(wi.status, 'terminal') ||
+                 ' when its fail-open duplication review came due; a terminal item is never claimed again, so the review cannot change anything',
+               'alert', jsonb_build_object(
+                 'key', ${ADMISSION_REVIEW_ALERT_KEY}::text,
+                 'state', 'cleared',
+                 'emittedAt', to_jsonb(to_timestamp(${opts.nowMs} / 1000.0)),
+                 'reason', 'review moot: item already terminal'
+               )
+             )
+           ),
+           updated_ts = ${opts.nowMs}
+      FROM moot
+     WHERE wi.workspace_id = moot.workspace_id
+       AND wi.harness_slug = moot.harness_slug
+       AND wi.feature_id = moot.feature_id
+     RETURNING wi.harness_slug`;
+  const byHarness: Record<string, number> = {};
+  for (const row of rows) byHarness[row.harness_slug] = (byHarness[row.harness_slug] ?? 0) + 1;
+  return { closed: rows.length, byHarness, truncatedByLimit: rows.length >= limit };
 }
 
 export function evaluatePromoterLiveness(input: {
@@ -4891,7 +5844,7 @@ export function evaluatePromoterLiveness(input: {
   };
 }
 
-async function readPromoterLiveness(
+export async function readPromoterLiveness(
   sql: OrgSql,
   workspaceId: string,
   harnessSlug: string,
@@ -4964,20 +5917,52 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // independently-editable copies of the same truth, which is exactly how an admitted row
     // and a reported-held row could drift into double-counting — or, worse, into a row that
     // is neither admitted nor reported and so disappears again.
+    const exceptionTerms = scopeTerms?.exceptions;
     const scopeMatch = scopeTerms
-      ? sql`(harness_slug = ANY(${scopeTerms.exact}::text[]) OR harness_slug LIKE ANY(${scopeTerms.likePrefixes.map((p) => `${p}%`)}::text[]))`
+      ? sql`COALESCE((
+          harness_slug = ANY(${scopeTerms.exact}::text[])
+          OR harness_slug LIKE ANY(${scopeTerms.likePrefixes.map((p) => `${p}%`)}::text[])
+          OR harness_slug = ANY(${exceptionTerms?.exactHarnesses ?? []}::text[])
+          OR harness_slug LIKE ANY(${(exceptionTerms?.harnessLikePrefixes ?? []).map((p) => `${p}%`)}::text[])
+          OR source_plan_slug = ANY(${exceptionTerms?.plans ?? []}::text[])
+          OR goal_id = ANY(${exceptionTerms?.goals ?? []}::text[])
+          OR feature_id = ANY(${exceptionTerms?.workItems ?? []}::text[])
+        ), FALSE)`
       : null;
     const scopePredicate = scopeMatch ? sql`AND ${scopeMatch}` : sql``;
+    // Admission and the held census share one eligibility floor. Terminal rows can
+    // retain admission='pending' after cleanup, but must not be reopened or reported
+    // as live work needing re-homing. Preserve legacy NULL statuses as nonterminal.
+    const pendingEligibility = sql`admission = 'pending'
+      AND (status IS NULL OR NOT harness_shared.work_item_status_is_terminal(status))
+      AND created_ts < ${cutoffMs}`;
+    // Keep the pending predicate, workspace key, and (for harness scope) harness key on the
+    // candidate read so it can use wi_admission_pending_idx. Oldest-first plus a hard cap keeps
+    // this must-never-starve action quick when a workspace has a large pending backlog.
     // The workspace_id predicate is NEVER dropped: a workspace sweep widens across harnesses
-    // inside one tenant, never across tenants.
-    const rows = await sql<Array<{ feature_id: string; harness_slug: string }>>`
-      UPDATE harness_shared.work_items
+    // inside one tenant, never across tenants. The selected batch and update share one bounded
+    // transaction; SKIP LOCKED lets a concurrent clearer make progress without waiting here.
+    const rows = await boundedOrgTxn(
+      (tx) => tx<Array<{ feature_id: string; harness_slug: string }>>`
+      WITH pending_batch AS (
+        SELECT feature_id, harness_slug
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${opts.workspaceId}
+           ${scope === 'workspace' ? sql`` : sql`AND harness_slug = ${opts.harnessSlug}`}
+           ${scopePredicate}
+           AND ${pendingEligibility}
+         ORDER BY created_ts ASC, feature_id ASC
+         LIMIT ${DEFAULT_FAIL_OPEN_BATCH_SIZE}
+         FOR UPDATE SKIP LOCKED
+      )
+      UPDATE harness_shared.work_items AS wi
          SET admission = 'unreviewed', admitted_at = now(), admitted_by = ${FAIL_OPEN_ACTOR},
              payload = COALESCE(payload, '{}'::jsonb) ||
                jsonb_build_object(
                  'admissionFailOpen',
                  jsonb_build_object(
                    'actor', ${FAIL_OPEN_ACTOR}::text,
+                   'runId', ${runId}::text,
                    'reason', 'pending-age-exceeded-two-promoter-ticks',
                    'scope', ${scope}::text,
                    'at', to_jsonb(to_timestamp(${startedAt} / 1000.0))
@@ -5002,12 +5987,13 @@ export async function runWorkItemAdmissionFailOpen(opts: {
                  )
                ),
              updated_ts = ${startedAt}
-       WHERE workspace_id = ${opts.workspaceId}
-         ${scope === 'workspace' ? sql`` : sql`AND harness_slug = ${opts.harnessSlug}`}
-         ${scopePredicate}
-         AND admission = 'pending'
-         AND created_ts < ${cutoffMs}
-       RETURNING feature_id, harness_slug`;
+        FROM pending_batch
+       WHERE wi.workspace_id = ${opts.workspaceId}
+         AND wi.harness_slug = pending_batch.harness_slug
+         AND wi.feature_id = pending_batch.feature_id
+       RETURNING wi.feature_id, wi.harness_slug`,
+      opts.sql ? { client: opts.sql } : undefined,
+    );
     await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
       rows.map((row) => ({ id: row.feature_id, harness: row.harness_slug })),
     );
@@ -5022,6 +6008,7 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // using the SAME WHERE with the scope term NEGATED, so the two are exhaustive by
     // construction and a row can never fall into neither bucket. No policy ⇒ no extra query.
     const heldByScope: Record<string, number> = {};
+    const misHomedByScope: Record<string, number> = {};
     if (scopeMatch) {
       const heldRows = await sql<Array<{ harness_slug: string; held: number }>>`
         SELECT harness_slug, count(*)::int AS held
@@ -5029,11 +6016,16 @@ export async function runWorkItemAdmissionFailOpen(opts: {
          WHERE workspace_id = ${opts.workspaceId}
            ${scope === 'workspace' ? sql`` : sql`AND harness_slug = ${opts.harnessSlug}`}
            AND NOT ${scopeMatch}
-           AND admission = 'pending'
-           AND created_ts < ${cutoffMs}
+           AND ${pendingEligibility}
          GROUP BY 1
          ORDER BY 1`;
       for (const row of heldRows) heldByScope[row.harness_slug] = Number(row.held) || 0;
+      // WI-10004723 (P-003): a held row in the platform's own non-pot harness (`operator:<ws>`) is
+      // NOT another pot's work deliberately held — it was mis-homed, and holding it hides it
+      // forever. Report it separately so the ledger and the scope ring say so.
+      for (const [harness, count] of Object.entries(heldByScope)) {
+        if (isPlatformNonPotHarness(harness)) misHomedByScope[harness] = count;
+      }
       // Once per harness per process, mirroring the promoter path, so a many-harness tick
       // cannot flood the ledger ring while still making the first occurrence announce itself.
       for (const [harness, count] of Object.entries(heldByScope)) {
@@ -5046,12 +6038,24 @@ export async function runWorkItemAdmissionFailOpen(opts: {
           harness,
           actor: FAIL_OPEN_ACTOR,
           note:
-            `${count} over-age pending work-item(s) NOT admitted — harness outside the workspace ` +
-            `work-scope policy. They stay pending (never deleted) until the policy widens; this ` +
-            `is a deliberate hold, not a missing backstop.`,
+            harness in misHomedByScope
+              ? `MIS-HOMED: ${count} over-age pending work-item(s) in the platform's non-pot harness ` +
+                `${harness}. This is not another pot's work; re-home each to the platform harness ` +
+                `with work_items:rehome { op:'move', harness:'papercusp' }.`
+              : `${count} over-age pending work-item(s) NOT admitted — harness outside the workspace ` +
+                `work-scope policy. They stay pending (never deleted) until the policy widens; this ` +
+                `is a deliberate hold, not a missing backstop.`,
         });
       }
     }
+    // WI-10004725 (P-007): close the reviews made moot by a terminal item BEFORE the debt census,
+    // so the ledger's reviewDebt is the real remaining debt and reviewMoot sits beside it as the
+    // per-tick trend. Same scope as the sweep above: workspace-wide on the production routine.
+    const reviewMoot = await closeMootAdmissionReviews(sql, {
+      workspaceId: opts.workspaceId,
+      harnessSlug: scope === 'workspace' ? null : opts.harnessSlug,
+      nowMs: startedAt,
+    });
     const liveness = await readPromoterLiveness(sql, opts.workspaceId, opts.harnessSlug, now(), staleMinutes);
     const reviewHealth = await readWorkItemAdmissionQueueHealth({ workspaceId: opts.workspaceId, sql });
     const reviewDebt = reviewHealth.reviewDebt ?? {
@@ -5090,10 +6094,13 @@ export async function runWorkItemAdmissionFailOpen(opts: {
         // are exactly what no surface recorded before, so the ledger could not answer "was
         // this harness held, or was nothing ever watching it?" after the fact.
         heldByScope,
+        // Subset of heldByScope that sits in a platform non-pot harness: mis-homed, not held.
+        misHomedByScope,
         reviewDebt,
+        reviewMoot,
       },
     });
-    return { runId, autoPromoted, autoPromotedByHarness, heldByScope, scope, liveness, reviewDebt };
+    return { runId, autoPromoted, autoPromotedByHarness, heldByScope, scope, liveness, reviewDebt, reviewMoot };
   } catch (error) {
     await failRun(sql, runId, 'fail-open', error, Math.max(0, now() - startedAt));
     throw error;

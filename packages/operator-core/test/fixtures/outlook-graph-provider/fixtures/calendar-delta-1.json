@@ -1,0 +1,52 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(event)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=calendar-round-2",
+  "value": [
+    {
+      "id": "AAMkAGI2-evt-series",
+      "type": "seriesMaster",
+      "subject": "Weekly planning",
+      "organizer": { "emailAddress": { "name": "Ada Lovelace", "address": "ada@contoso.example" } },
+      "attendees": [
+        {
+          "type": "required",
+          "emailAddress": { "name": "Owner", "address": "owner@contoso.example" },
+          "status": { "response": "accepted", "time": "2026-10-01T08:00:00Z" }
+        }
+      ],
+      "start": { "dateTime": "2026-10-06T09:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-10-06T09:30:00.0000000", "timeZone": "UTC" },
+      "recurrence": {
+        "pattern": { "type": "weekly", "interval": 1, "daysOfWeek": ["tuesday"] },
+        "range": { "type": "endDate", "startDate": "2026-10-06", "endDate": "2026-12-15" }
+      },
+      "isCancelled": false,
+      "createdDateTime": "2026-10-01T08:00:00Z",
+      "lastModifiedDateTime": "2026-10-01T08:00:00Z"
+    },
+    {
+      "id": "AAMkAGI2-evt-occ-1",
+      "type": "occurrence",
+      "seriesMasterId": "AAMkAGI2-evt-series",
+      "subject": "Weekly planning",
+      "start": { "dateTime": "2026-10-06T09:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-10-06T09:30:00.0000000", "timeZone": "UTC" },
+      "originalStart": "2026-10-06T09:00:00Z",
+      "isCancelled": false,
+      "createdDateTime": "2026-10-01T08:00:00Z",
+      "lastModifiedDateTime": "2026-10-01T08:00:00Z"
+    },
+    {
+      "id": "AAMkAGI2-evt-occ-2",
+      "type": "exception",
+      "seriesMasterId": "AAMkAGI2-evt-series",
+      "subject": "Weekly planning (moved)",
+      "start": { "dateTime": "2026-10-13T10:00:00.0000000", "timeZone": "UTC" },
+      "end": { "dateTime": "2026-10-13T10:30:00.0000000", "timeZone": "UTC" },
+      "originalStart": "2026-10-13T09:00:00Z",
+      "isCancelled": false,
+      "createdDateTime": "2026-10-01T08:00:00Z",
+      "lastModifiedDateTime": "2026-10-04T16:20:00Z"
+    }
+  ]
+}

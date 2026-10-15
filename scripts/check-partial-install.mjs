@@ -50,42 +50,22 @@
  * synthetic because a test that mutated a real node_modules to prove the guard works
  * would be the very corruption this guard exists to detect.
  */
-import { readFileSync, readdirSync, existsSync, statSync, lstatSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { readFileSync, readdirSync, readlinkSync, existsSync, statSync, lstatSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { expandWorkspaces } from './assert-workspace-links.mjs';
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * Expand the root package.json `workspaces` globs to concrete workspace directories.
- * Only the `dir/*` shape occurs in this repo; anything else is treated as a literal
- * path. A pattern entry that resolves to no package.json is skipped rather than
- * guessed at — this guard reports corruption, so it must not invent members.
+ * Share the link guard's npm-compatible glob and exclusion semantics. A pattern
+ * entry that resolves to no package.json is skipped rather than guessed at.
  */
 export function expandWorkspaceDirs(patterns, root) {
-  const dirs = [];
-  for (const pattern of patterns ?? []) {
-    if (pattern.endsWith('/*')) {
-      const base = pattern.slice(0, -2);
-      if (!existsSync(join(root, base))) continue;
-      let entries;
-      try {
-        entries = readdirSync(join(root, base));
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        if (entry.startsWith('.')) continue;
-        const dir = join(base, entry);
-        if (existsSync(join(root, dir, 'package.json'))) dirs.push(dir);
-      }
-    } else if (existsSync(join(root, pattern, 'package.json'))) {
-      dirs.push(pattern);
-    }
-  }
-  return dirs.sort();
+  return expandWorkspaces(patterns, root).sort();
 }
 
 /**
@@ -178,10 +158,76 @@ function scanNodeModules(nodeModulesDir, workspace, findings) {
 }
 
 /**
+ * Present .bin links are install outputs too. A hoisted package can resolve while
+ * an orphaned workspace shim still points at its removed local copy. npm's normal
+ * hoisted reify does not inventory orphan shims, so an up-to-date install can leave
+ * them untouched. Share this detector with install:safe's verified repair boundary.
+ *
+ * @param {string} root
+ * @param {{ workspaceDirs?: string[] }} [options]
+ * @returns {Array<{workspace: string, pkg: string, kind: 'dangling-bin-symlink', package?: string}>}
+ */
+export function findBrokenBinLinks(root, { workspaceDirs } = {}) {
+  if (!workspaceDirs) {
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    } catch {
+      return [];
+    }
+    const patterns = Array.isArray(manifest.workspaces)
+      ? manifest.workspaces : manifest.workspaces?.packages;
+    workspaceDirs = expandWorkspaceDirs(patterns, root);
+  }
+  const findings = [];
+  for (const workspace of new Set(['', ...workspaceDirs])) {
+    const nodeModulesDir = join(root, workspace, 'node_modules');
+    const binDir = join(nodeModulesDir, '.bin');
+    let entries;
+    try {
+      entries = readdirSync(binDir);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const entry of entries) {
+      const path = join(binDir, entry);
+      try {
+        if (!lstatSync(path).isSymbolicLink()) continue;
+        try {
+          statSync(path);
+          continue;
+        } catch (error) {
+          if (error.code !== 'ENOENT' && error.code !== 'ELOOP') throw error;
+        }
+        const finding = {
+          workspace: workspace || '<root>',
+          pkg: `.bin/${entry}`,
+          kind: /** @type {const} */ ('dangling-bin-symlink'),
+        };
+        const target = relative(nodeModulesDir, resolve(binDir, readlinkSync(path)));
+        const parts = target.split(sep);
+        // Only a local package owner may be removed by the bounded repair. Never
+        // infer an owner from an external target or a path into dot/tooling state.
+        if (!isAbsolute(target) && parts[0] && !parts[0].startsWith('.')) {
+          const name = parts[0].startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+          if (parts.length > (name.startsWith('@') ? 2 : 1)
+            && existsSync(join(nodeModulesDir, name))) finding.package = name;
+        }
+        findings.push(finding);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+  }
+  return findings.sort((a, b) => a.workspace.localeCompare(b.workspace) || a.pkg.localeCompare(b.pkg));
+}
+
+/**
  * THE DETECTOR. Walks the root node_modules and every workspace's package-local
  * node_modules, and returns each present-but-unusable package entry.
  *
- * @returns {{ findings: Array<{workspace: string, pkg: string, kind: 'hollow'|'dangling-symlink'}>,
+ * @returns {{ findings: Array<{workspace: string, pkg: string, kind: 'hollow'|'dangling-symlink'|'dangling-bin-symlink', package?: string}>,
  *             workspacesScanned: number, nodeModulesScanned: number, packagesScanned: number }}
  */
 export function findHollowPackages(root) {
@@ -210,6 +256,7 @@ export function findHollowPackages(root) {
     nodeModulesScanned++;
     packagesScanned += scanNodeModules(nodeModulesDir, dir || '<root>', findings);
   }
+  findings.push(...findBrokenBinLinks(root, { workspaceDirs: workspaceDirs.slice(1) }));
 
   findings.sort(
     (a, b) => a.workspace.localeCompare(b.workspace) || a.pkg.localeCompare(b.pkg),
@@ -241,7 +288,7 @@ function main() {
 
   if (findings.length === 0) {
     console.log(
-      `✓ partial-install: every installed package has a readable manifest (${packagesScanned} package dir(s) across ${nodeModulesScanned} node_modules).`,
+      `✓ partial-install: installed package manifests and present .bin links are usable (${packagesScanned} package dir(s) across ${nodeModulesScanned} node_modules).`,
     );
     process.exit(0);
   }

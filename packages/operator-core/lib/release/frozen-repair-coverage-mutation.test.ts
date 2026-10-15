@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { buildSync } from 'esbuild';
 import { selectFrozenRepairAdmissionPaths, type FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
@@ -16,7 +17,11 @@ function load(contents: string): typeof import('./frozen-candidate-repair-queue'
     bundle: true, platform: 'node', format: 'cjs', write: false, logLevel: 'silent',
   });
   const module = { exports: {} };
-  runInNewContext(result.outputFiles[0]!.text, { module, exports: module.exports }, { timeout: 1000 });
+  // esbuild leaves Node builtins external in CJS bundles. Give the copied
+  // module the same require resolution as its source, including node:crypto.
+  runInNewContext(result.outputFiles[0]!.text, {
+    module, exports: module.exports, require: createRequire(file),
+  }, { timeout: 1000 });
   return module.exports as typeof import('./frozen-candidate-repair-queue');
 }
 function mutate(before: string, after: string) {

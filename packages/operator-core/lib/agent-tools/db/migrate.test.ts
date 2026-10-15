@@ -18,6 +18,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { EventEmitter } from 'node:events';
 
 // WI-5217: explicit result/param types so `.mock.calls[...]` destructures and
 // `.mockResolvedValue({...extra fields})` overrides typecheck against the real
@@ -31,7 +32,11 @@ type EscalationInputLike = {
   body: string;
   meta?: { subjectSignature?: string };
 };
-type ExecFileCallback = (error: (Error & { code?: number | string }) | null, stdout: string, stderr: string) => void;
+type ExecFileCallback = (
+  error: (Error & { code?: number | string; signal?: string | null }) | null,
+  stdout: string,
+  stderr: string,
+) => void;
 
 const h = vi.hoisted(() => ({
   execFile: vi.fn(),
@@ -62,8 +67,12 @@ const h = vi.hoisted(() => ({
       result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
     }),
   ),
+  postgres: vi.fn(),
+  backupRendezvousBusy: false,
+  backupLockedRelations: [] as string[],
 }));
 
+vi.mock('postgres', () => ({ default: h.postgres }));
 vi.mock('node:child_process', () => ({ execFile: h.execFile, spawnSync: h.spawnSync }));
 vi.mock('../../resource-governor/execution', () => ({
   runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
@@ -102,6 +111,7 @@ vi.mock('../locks/resource-lock-guard', () => ({
 }));
 
 import migrateTool, {
+  dbMigrateAbortCompletionReceipt,
   isLockTimeoutFailure,
   isDeadlockFailure,
   isSerializationFailure,
@@ -133,14 +143,44 @@ const ORIGINAL_ENV = process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
 // set — delete it per-test so every existing test exercises the deterministic
 // legacy fallback, and the canonical-resolution describe sets it explicitly.
 const ORIGINAL_INTEGRATION_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
+const ORIGINAL_CANONICAL_TREE = process.env.PAPERCUSP_CANONICAL_TREE;
 
 beforeEach(() => {
+  h.backupRendezvousBusy = false;
+  h.backupLockedRelations = [];
+  h.postgres.mockReset().mockImplementation(() => {
+    const respond = (query: string) => {
+      if (query.includes('pg_try_advisory_lock')) return Promise.resolve([{ acquired: !h.backupRendezvousBusy }]);
+      if (query.includes('pg_advisory_unlock')) return Promise.resolve([{ released: true }]);
+      if (query.includes('WITH RECURSIVE locked AS')) {
+        return Promise.resolve(h.backupLockedRelations.map((name) => ({ name })));
+      }
+      throw new Error('unexpected SQL in fake postgres client');
+    };
+    return Object.assign(
+      (strings: TemplateStringsArray) => respond(strings.join('')),
+      {
+        array: (values: unknown[]) => values,
+        unsafe: (query: string) => respond(query),
+        end: vi.fn(async () => undefined),
+      },
+    );
+  });
   h.spawnSync.mockReset().mockReturnValue({ status: 0, stdout: '', stderr: '' });
   h.execFile
     .mockReset()
-    .mockImplementation((cmd: string, args: string[], opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+    .mockImplementation((cmd: string, args: string[], opts: { encoding: 'utf8' }, callback: ExecFileCallback) => {
+      const stdout = new EventEmitter();
+      let buffered = '';
+      return { stdout, kill: vi.fn(),
       stdin: {
+        write: (input: string) => {
+          buffered += input;
+          const marker = /\\echo (PAPERCUSP_MIGRATION_FENCE_\w+)\n$/.exec(input)?.[1];
+          if (marker) queueMicrotask(() => stdout.emit('data', marker + '\n'));
+        },
         end: (input?: string) => {
+          input = buffered + (input ?? '');
           const result = h.spawnSync(cmd, args, {
             ...opts,
             ...(input === undefined ? {} : { input }),
@@ -157,7 +197,7 @@ beforeEach(() => {
           });
         },
       },
-    }));
+    }; });
   h.readFileSync.mockReset().mockReturnValue('CREATE TABLE foo (id int);\n');
   h.checkResourceAction.mockReset().mockResolvedValue({ applied: false });
   h.recordResourceAction.mockReset().mockResolvedValue(undefined);
@@ -168,6 +208,7 @@ beforeEach(() => {
   }));
   delete process.env.PAPERCUSP_ALLOW_DB_MIGRATE;
   delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+  delete process.env.PAPERCUSP_CANONICAL_TREE;
 });
 
 /** A postgres-js-shaped transient connection error (see node_modules/postgres/src/errors.js's
@@ -179,6 +220,8 @@ afterAll(() => {
   else process.env.PAPERCUSP_ALLOW_DB_MIGRATE = ORIGINAL_ENV;
   if (ORIGINAL_INTEGRATION_ROOT === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
   else process.env.PAPERCUSP_INTEGRATION_ROOT = ORIGINAL_INTEGRATION_ROOT;
+  if (ORIGINAL_CANONICAL_TREE === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+  else process.env.PAPERCUSP_CANONICAL_TREE = ORIGINAL_CANONICAL_TREE;
 });
 
 describe('db:migrate — dry run', () => {
@@ -456,6 +499,43 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(h.spawnSync).not.toHaveBeenCalled();
   });
 
+  it('WI-25783818561428811: checks the authoritative applied-file ledger before any DDL in the same psql session', async () => {
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+    expect(out).toMatchObject({ ok: true, applied: true, schema_migrations_recorded: true });
+
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    const ledgerPresence = script.indexOf("to_regclass('harness_shared.schema_migrations')");
+    const appliedCheck = script.indexOf('SELECT EXISTS (SELECT 1 FROM harness_shared.schema_migrations');
+    const conditional = script.indexOf('\\if :papercusp_migration_already_applied');
+    const marker = script.indexOf('PAPERCUSP_MIGRATION_ALREADY_APPLIED');
+    const ddl = script.indexOf(`\\i ${FILE}`);
+    expect(ledgerPresence).toBeGreaterThanOrEqual(0);
+    expect(appliedCheck).toBeGreaterThan(ledgerPresence);
+    expect(conditional).toBeGreaterThan(appliedCheck);
+    expect(marker).toBeGreaterThan(conditional);
+    expect(ddl).toBeGreaterThan(marker);
+    expect(script).toContain('\\else');
+    expect(script).toContain('\\endif');
+  });
+
+  it('WI-25783818561428811: a boot-applied filename returns a safe no-op without recording a second tool action', async () => {
+    h.spawnSync.mockReturnValue({ status: 0, stdout: 'PAPERCUSP_MIGRATION_ALREADY_APPLIED\n', stderr: '' });
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+    expect(out).toMatchObject({
+      ok: true,
+      applied: false,
+      already_applied: true,
+      schema_migrations_recorded: true,
+      action_key: 'migrate:999-fake.sql',
+    });
+    expect(out.note).toContain('same psql session');
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+
   it('EI-6962: wraps the file in the SAME BEGIN/COMMIT as a schema_migrations INSERT, fed to psql via stdin (not -f)', async () => {
     const out = parse(
       await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
@@ -480,8 +560,8 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(script).toContain('999-fake.sql');
     expect(script).toContain('COMMIT;');
     // The INSERT must be INSIDE the same transaction as the \i, not appended after COMMIT.
-    expect(script.indexOf('BEGIN;')).toBeLessThan(script.indexOf('\\i'));
-    expect(script.indexOf('\\i')).toBeLessThan(script.indexOf('INSERT INTO'));
+    expect(script.indexOf('BEGIN;')).toBeLessThan(script.indexOf('\\i ' + FILE));
+    expect(script.indexOf('\\i ' + FILE)).toBeLessThan(script.indexOf('INSERT INTO'));
     expect(script.indexOf('INSERT INTO')).toBeLessThan(script.lastIndexOf('COMMIT;'));
 
     // The su_meta coordination-domain idempotency ledger is STILL recorded —
@@ -520,6 +600,19 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(second).toBeGreaterThan(firstCommit);
     expect(ledger).toBeGreaterThan(second);
     expect(secondCommit).toBeGreaterThan(ledger);
+  });
+
+  it('WI-10007383: mirrors bounded historical projection chunks in guarded psql', async () => {
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const sql = fs.readFileSync(new URL('../../../../../libs/papercusp/libs/db/sql/1422-adv-sessions-launch-harness-projection.sql', import.meta.url), 'utf8');
+    h.readFileSync.mockReturnValue(sql);
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out).toMatchObject({ ok: true, applied: true });
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script.match(/LIMIT 64/g)).toHaveLength(1024);
+    expect(script.match(/^COMMIT;$/gm)).toHaveLength(1026);
+    expect(script.match(/INSERT INTO harness_shared\.schema_migrations/g)).toHaveLength(1);
+    expect(script.indexOf('projection_backfill_done')).toBeLessThan(script.indexOf('INSERT INTO harness_shared.schema_migrations'));
   });
 
   it('EI-217072: places the completed pre-destructive snapshot admission guard before guarded DDL', async () => {
@@ -567,6 +660,60 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(h.recordResourceAction).not.toHaveBeenCalled();
   });
 
+  it('preserves the child error and terminating signal when psql is killed with empty stderr', async () => {
+    const error = Object.assign(new Error('psql process failed'), { signal: 'SIGTERM' });
+    h.execFile.mockImplementationOnce(
+      (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+        stdin: { write: () => queueMicrotask(() => callback(error, '', '')), end: vi.fn() },
+      }),
+    );
+
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+
+    expect(out).toMatchObject({
+      ok: false,
+      applied: false,
+      exit_code: 1,
+      stderr: 'psql process failed (killed by SIGTERM)',
+      signal: 'SIGTERM',
+    });
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+
+  it('preserves the spawn error when psql cannot be started and stderr is empty', async () => {
+    const error = Object.assign(new Error('spawn psql ENOENT'), { code: 'ENOENT' });
+    h.execFile.mockImplementationOnce(
+      (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+        stdin: { write: () => queueMicrotask(() => callback(error, '', '')), end: vi.fn() },
+      }),
+    );
+
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+
+    expect(out).toMatchObject({ ok: false, applied: false, exit_code: 1, stderr: 'spawn psql ENOENT', signal: null });
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+
+  it('keeps psql stderr when the child error also has a message', async () => {
+    const error = Object.assign(new Error('generic execFile failure'), { code: 1 });
+    h.execFile.mockImplementationOnce(
+      (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+        stdin: { write: () => queueMicrotask(() => callback(error, '', 'ERROR: syntax error')), end: vi.fn() },
+      }),
+    );
+
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+
+    expect(out).toMatchObject({ ok: false, applied: false, exit_code: 1, stderr: 'ERROR: syntax error', signal: null });
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+  });
+
   it('an already-applied file (su_meta idempotency ledger) short-circuits without touching psql', async () => {
     h.checkResourceAction.mockResolvedValue({ applied: true, fence_seq: 3 });
     const out = parse(
@@ -574,6 +721,68 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     );
     expect(out.already_applied).toBe(true);
     expect(h.spawnSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('db:migrate — lease loss after SQL guards (WI-10008141)', () => {
+  beforeEach(() => { process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1'; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each(['expired_or_released', 'superseded'] as const)(
+    'withholds the DDL and action receipt when the post-wait fence is %s', async (reason) => {
+      const assertCurrent = vi.fn()
+        .mockResolvedValueOnce({ current: true, live_fence_seq: 7 })
+        .mockResolvedValue({ current: false, reason, live_fence_seq: 8 });
+      h.guardResource.mockImplementation(async (_spec, run) => ({
+        acquired: true, result: await run({ seq: 7, assertCurrent }),
+      }));
+      const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+      expect(out).toMatchObject({ ok: false, applied: false, reason: `stale_fence_${reason}`, attempts: 1 });
+      expect(assertCurrent).toHaveBeenCalledTimes(2);
+      const sent = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+      expect(sent).toContain('pg_advisory_xact_lock');
+      expect(sent).not.toContain(`\\i ${FILE}`);
+      expect(sent).not.toContain('INSERT INTO harness_shared.schema_migrations');
+      expect(h.recordResourceAction).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fails closed when post-wait lease validation is unavailable', async () => {
+    const assertCurrent = vi.fn()
+      .mockResolvedValueOnce({ current: true, live_fence_seq: 7 })
+      .mockRejectedValue(new Error('lock database unavailable'));
+    h.guardResource.mockImplementation(async (_spec, run) => ({
+      acquired: true, result: await run({ seq: 7, assertCurrent }),
+    }));
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    expect(out.reason).toBe('stale_fence_check_failed');
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
+    expect((h.spawnSync.mock.calls[0][2] as { input: string }).input).not.toContain(`\\i ${FILE}`);
+  });
+
+  it('cancels its own blocked child on expiry and never retries that fence, even with lock-timeout stderr', async () => {
+    vi.useFakeTimers();
+    const assertCurrent = vi.fn()
+      .mockResolvedValueOnce({ current: true, live_fence_seq: 7 })
+      .mockResolvedValue({ current: false, reason: 'expired_or_released' });
+    h.guardResource.mockImplementation(async (_spec, run) => ({
+      acquired: true, result: await run({ seq: 7, assertCurrent }),
+    }));
+    const write = vi.fn();
+    const kill = vi.fn();
+    h.execFile.mockImplementationOnce((_cmd, _args, _opts, callback: ExecFileCallback) => ({
+      stdout: new EventEmitter(), kill,
+      stdin: { write, end: () => queueMicrotask(() => callback(
+        Object.assign(new Error('cancelled'), { code: 3 }), '', 'ERROR: canceling statement due to lock timeout',
+      )) },
+    }));
+    const pending = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(parse(await pending)).toMatchObject({ reason: 'stale_fence_expired_or_released', attempts: 1 });
+    expect(kill).toHaveBeenCalledWith('SIGINT');
+    expect(h.execFile).toHaveBeenCalledTimes(1);
+    expect(write.mock.calls[0][0]).not.toContain(`\\i ${FILE}`);
+    expect(h.recordResourceAction).not.toHaveBeenCalled();
   });
 });
 
@@ -633,7 +842,7 @@ describe('db:migrate — drain/apply progress + timeout safety note (EI-18769559
       h.execFile.mockImplementationOnce(
         (_cmd: string, _args: string[], _opts: { encoding: 'utf8' }, callback: ExecFileCallback) => {
           finish = callback;
-          return { stdin: { end: vi.fn() } };
+          return { stdin: { write: vi.fn(), end: vi.fn() }, stdout: new EventEmitter(), kill: vi.fn() };
         },
       );
       const { ctx, progress } = progressCtx();
@@ -716,9 +925,9 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
     }
     expect(script).toContain("ERRCODE = '55P03'");
     expect(script).toContain('backup pg_dump holds AccessShareLock');
-    expect(script.indexOf('backup pg_dump holds AccessShareLock')).toBeLessThan(script.indexOf('\\i'));
-    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i'));
-    expect(script.indexOf('pg_advisory_xact_lock')).toBeLessThan(script.indexOf('\\i'));
+    expect(script.indexOf('backup pg_dump holds AccessShareLock')).toBeLessThan(script.indexOf('\\i ' + FILE));
+    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i ' + FILE));
+    expect(script.indexOf('pg_advisory_xact_lock')).toBeLessThan(script.indexOf('\\i ' + FILE));
   });
 
   it('exports the transaction-scoped backup rendezvous using the canonical key', () => {
@@ -751,6 +960,47 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
     );
     expect(guard).toContain("USING ERRCODE = '55P03'");
     expect(guard).toContain('canceling statement due to lock timeout');
+  });
+
+  it('bypasses a busy rendezvous for an enabled migration proven unrelated to the live backup locks', async () => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+    h.backupRendezvousBusy = true;
+    h.backupLockedRelations = ['session_archive_files'];
+    h.readFileSync.mockReturnValue('ALTER TABLE harness_shared.trigger_bindings ADD COLUMN note text;');
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+    expect(out.applied).toBe(true);
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script).not.toContain('pg_advisory_xact_lock');
+    expect(script).not.toContain('backup pg_dump holds AccessShareLock');
+  });
+
+  it.each([
+    [
+      'overlapping relation',
+      'ALTER TABLE harness_shared.trigger_bindings ADD COLUMN note text;',
+      ['trigger_bindings'],
+    ],
+    [
+      'unprovable dynamic SQL',
+      "DO $$ BEGIN EXECUTE format('ALTER TABLE %I ADD c int', t); END $$;",
+      [],
+    ],
+  ])('keeps the blocking preamble for a busy rendezvous with %s', async (_label, sqlText, lockedRelations) => {
+    process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
+    h.backupRendezvousBusy = true;
+    h.backupLockedRelations = lockedRelations;
+    h.readFileSync.mockReturnValue(sqlText);
+    await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX);
+    const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
+    expect(script).toContain(
+      'SELECT pg_advisory_xact_lock(hashtext(' +
+        "'" +
+        BACKUP_MIGRATION_ADVISORY_LOCK_KEY +
+        "'));",
+    );
+    expect(script).toContain('backup pg_dump holds AccessShareLock');
   });
 
   it('retries a lock-timeout cancel with backoff and succeeds once contention clears', async () => {
@@ -882,7 +1132,7 @@ describe('db:migrate — caller-widened lock_timeout_sec (WI-6381)', () => {
     expect(out.attempts).toBe(1);
     const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
     expect(script).toContain("SET LOCAL lock_timeout = '180s';");
-    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i'));
+    expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i ' + FILE));
   });
 
   it('a caller-supplied lock_timeout_sec drops the retry ceiling to 2 attempts instead of the default 5', async () => {
@@ -1186,5 +1436,59 @@ describe('isTransientConnectionFailure / connectionRetryBackoffMs — pure helpe
     expect(connectionRetryBackoffMs(3)).toBe(4000);
     expect(connectionRetryBackoffMs(4)).toBe(8000); // would be 8000 anyway, but locks in the cap
     expect(connectionRetryBackoffMs(5)).toBe(8000); // would be 16000 uncapped
+  });
+});
+
+describe('db:migrate abort completion receipt (WI-10005670)', () => {
+  const result = (payload: Record<string, unknown>) =>
+    ({ content: [{ type: 'text', text: JSON.stringify(payload) }] }) as never;
+
+  it('reports a late successful apply as recorded only with the schema ledger receipt', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: true, applied: true, schema_migrations_recorded: true }),
+    )).toEqual({ status: 'recorded', effectRef: 'migrate:999-fake.sql' });
+  });
+
+  it('reports an already-applied migration as recorded using the resource idempotency key', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: true, already_applied: true, action_key: 'migrate:999-fake.sql' }),
+    )).toEqual({
+      status: 'recorded',
+      effectRef: 'migrate:999-fake.sql',
+      reason: 'migration was already recorded as applied',
+    });
+  });
+
+  it('reports dry runs and withheld applies as not recorded', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: true, dry_run: true }),
+    )).toMatchObject({ status: 'not-recorded' });
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: true, applied: false, note: 'apply withheld' }),
+    )).toEqual({ status: 'not-recorded', reason: 'apply withheld' });
+  });
+
+  it('fails closed when a successful result lacks a durable migration outcome', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      {},
+      result({ ok: true, applied: true }),
+    )).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-migration-outcome'],
+    });
+  });
+
+  it('does not claim a failed breakpoint migration had no partial effects', () => {
+    expect(dbMigrateAbortCompletionReceipt(
+      { file: FILE },
+      result({ ok: false, applied: false, stderr: 'chunk 2 failed' }),
+    )).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['migration-not-confirmed'],
+    });
   });
 });

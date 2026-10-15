@@ -21,6 +21,7 @@
  */
 import { routeToAuthority, type LockAuthorityDeps, type AuthorityOp } from '../authority';
 import { setClaimAuthority, type ClaimAuthority } from './claim-authority';
+import { observeFallback } from '../degradation/fallback-observations';
 
 export class SwarmClaimAuthority implements ClaimAuthority {
   constructor(private readonly deps: LockAuthorityDeps = {}) {}
@@ -33,10 +34,14 @@ export class SwarmClaimAuthority implements ClaimAuthority {
 
   async route<T>(harnessSlug: string, op: AuthorityOp<T>): Promise<T> {
     const res = await routeToAuthority<T>(harnessSlug, op, this.deps);
+    observeFallback('swarm-authority-route', {
+      eligible: 1, applied: res.via === 'fail-open' || res.warning ? 0 : 1,
+      reason: res.via === 'fail-open' || res.warning ? 'authority-unreachable' : 'applied',
+      scope: `plan-item-claim:${harnessSlug}`,
+    });
     if (res.warning) {
       // Fail-open (cross-machine, no transport): the lease was taken locally and git
       // is the backstop. Surface the warning (D-004). On a single box this never fires.
-       
       console.warn(`[plan-item-claim] authority fail-open for ${harnessSlug}: ${res.warning}`);
     }
     return res.value;

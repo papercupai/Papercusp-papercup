@@ -18,6 +18,7 @@ import {
   type SuLaunchSpecRecord,
 } from './su-persona-render';
 import { launchContextDir, launchContextPathFor } from './su-launch-context';
+import { PSU_CACHE_BOUNDARY } from './inference-gateway/cache-policy';
 import { compileLaunchSpecificationArtifact } from './role-launch-spec';
 
 const runtime = buildSuInstructionRuntime({
@@ -130,6 +131,72 @@ describe('applySuPromptOverlays — the one canonical overlay order', () => {
     const b = await applySuPromptOverlays({ ...args });
     expect(a.promptText).toBe(b.promptText);
     expect(runtime.observedAt).toBeTruthy(); // the stamp this relies on
+  });
+
+  // token-efficiency-prompts-cache-and-behavior-2026-10-11 P-006 / R-2 / R-4.
+  it('puts exactly one PSU_CACHE_BOUNDARY before every per-session section', async () => {
+    const { promptText } = await applySuPromptOverlays({
+      basePromptText: '# BASE PLAYBOOK\n',
+      agent: 'claude',
+      launchedBy: 'su-launcher-1',
+      modeSection: '---\n## AUTO mode\n\nACT DO NOT ASK\n',
+      instructionRuntime: runtime,
+    });
+    const iBoundary = promptText.indexOf(PSU_CACHE_BOUNDARY);
+    expect(iBoundary).toBeGreaterThan(promptText.indexOf('# BASE PLAYBOOK'));
+    expect(promptText.split(PSU_CACHE_BOUNDARY)).toHaveLength(2);
+    for (const marker of ['## Provenance', '## AUTO mode', '## Effective instruction precedence']) {
+      expect(promptText.indexOf(marker)).toBeGreaterThan(iBoundary);
+    }
+  });
+
+  it('keeps an existing boundary (launch-context seam) and does not add a second', async () => {
+    const base = `# BASE\n\n${PSU_CACHE_BOUNDARY}\n\n## Launch context\nplan x\n`;
+    const { promptText } = await applySuPromptOverlays({
+      basePromptText: base,
+      agent: 'claude',
+      launchedBy: 'su-l',
+      modeSection: '',
+      instructionRuntime: runtime,
+    });
+    expect(promptText.startsWith(base.replace(/\n+$/, ''))).toBe(true);
+    expect(promptText.split(PSU_CACHE_BOUNDARY)).toHaveLength(2);
+  });
+
+  it('gives two owners a byte-identical stable prefix (cache-shareable)', async () => {
+    const other = buildSuInstructionRuntime({
+      ownerId: 'su-other-owner',
+      autoMode: true,
+      drainMode: false,
+      fleet: null,
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      planSlug: 'p',
+    });
+    const render = (rt: typeof runtime, by: string) =>
+      applySuPromptOverlays({ basePromptText: '# SAME PLAYBOOK\n', agent: 'claude', launchedBy: by, modeSection: '', instructionRuntime: rt });
+    const [a, b] = await Promise.all([render(runtime, 'su-a'), render(other, 'su-b')]);
+    const stable = (t: string) => t.slice(0, t.indexOf(PSU_CACHE_BOUNDARY));
+    expect(stable(a.promptText)).toBe(stable(b.promptText));
+    expect(a.promptText).not.toBe(b.promptText);
+  });
+
+  it('emits no boundary when PAPERCUSP_CACHE_SPLIT_BOUNDARY=0 (reversible cutover)', async () => {
+    const prev = process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY;
+    process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY = '0';
+    try {
+      const { promptText } = await applySuPromptOverlays({
+        basePromptText: '# BASE\n',
+        agent: 'claude',
+        launchedBy: null,
+        modeSection: '',
+        instructionRuntime: runtime,
+      });
+      expect(promptText).not.toContain(PSU_CACHE_BOUNDARY);
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY;
+      else process.env.PAPERCUSP_CACHE_SPLIT_BOUNDARY = prev;
+    }
   });
 
   it('lints the FINAL text, not the base playbook', async () => {

@@ -145,6 +145,36 @@ describe('runSessionArchiveReconcileOnce', () => {
     expect(stats.oldestEndedUnarchivedAgeMs).toBe(3 * 3600_000);
   });
 
+  it.each(['port-proof', 'legacy-ingest'] as const)('keeps a missing native transcript pending past the empty-session grace (%s)', async (evidence) => {
+    const nowMs = Date.now();
+    const db = fakeDb([{ id: 31, endedAtMs: nowMs - 3 * 3600_000 }]);
+    const store = new MiniStore();
+    const root = await tmp('sar-missing-persisted-');
+    const { runArchiveForAdvSession } = await import('./session-archive-hook');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const stats = await runSessionArchiveReconcileOnce({
+        db, store, dirRoots: [], ompRoot: root,
+        protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() }, nowMs,
+        runAdvArchive: (id) => runArchiveForAdvSession(id, {
+          loadRow: async () => ({ id, agent: 'claude', mode: 'console', cwd: '/repo', coord_owner_id: 'su-missing', session_id: SID_DEAD,
+            ended_at: new Date(nowMs - 3 * 3600_000),
+            ...(evidence === 'port-proof'
+              ? { port_metadata: { persistenceProof: { persisted: true, nativeRef: join(root, 'su-missing', 'projects', '-repo', `${SID_DEAD}.jsonl`) } } }
+              : { port_metadata: null, ingestedTranscripts: [{ nativeRef: join(root, 'su-missing', 'projects', '-repo', `${SID_DEAD}.jsonl`), byteOffset: 100 }] }),
+          }),
+          roots: { claudeSessionRoot: root, codexHomeFor: () => root, ompRoot: root }, store,
+          protectedIdentity: { ownerIds: new Set(), sessionKeys: new Set() }, nowMs,
+        }),
+      });
+      expect(stats.dbFailed).toBe(1);
+      expect(stats.dbStampedEmpty).toBe(0);
+      expect(stats.endedUnarchivedRemaining).toBe(1);
+      expect(db.stamped).toEqual([]);
+      expect(store.advStamps).toEqual([]);
+    } finally { warn.mockRestore(); }
+  });
+
   it('db-side LIVENESS invariant (EI-22126624550252124 fix direction 4): the oldest ended-unarchived age is measured, and is null only when nothing is pending', async () => {
     const nowMs = Date.now();
     const common = {
@@ -259,6 +289,39 @@ describe('runSessionArchiveReconcileOnce', () => {
     // that did it.
     expect(store.stamps.get(`codex:${SID_CODEX}`)!.manifest.map((m) => m.relpath)).not.toContain('config.toml');
     expect(existsSync(join(codexHome, 'config.toml'))).toBe(true); // survives the sweep
+  });
+
+  it('OWNERSHIP (WI-6554700010010238): a dir another install on this $HOME materialized is never archived or deleted', async () => {
+    // Measured incident: a packaged Papercusp Server sharing $HOME with the dev
+    // fleet read every dev dir as "not protected in MY db" ⇒ dead, archived it
+    // into its OWN database and deleted the files. Neither dir here is live;
+    // only su-mine was launched by THIS database.
+    const claudeRoot = await tmp('sar-claude-');
+    const foreignAbs = await claudeOwnerDir(claudeRoot, 'su-foreign', SID_DEAD);
+    const mineAbs = await claudeOwnerDir(claudeRoot, 'su-mine', SID_LIVE);
+    await ageFile(foreignAbs);
+    await ageFile(mineAbs);
+
+    const store = new MiniStore();
+    const stats = await runSessionArchiveReconcileOnce({
+      db: fakeDb([]),
+      store,
+      dirRoots: [{ root: claudeRoot, keyKind: 'owner', label: 'session-claude' }],
+      ompRoot: await tmp('sar-noomp-'),
+      protectedIdentity: {
+        ownerIds: new Set(),
+        sessionKeys: new Set(),
+        owned: { ownerIds: new Set(['su-mine']), sessionKeys: new Set() },
+      },
+      nowMs: Date.now(),
+    });
+
+    expect(stats.diskSkippedForeign).toBe(1);
+    expect(existsSync(foreignAbs)).toBe(true); // foreign — untouched
+    expect(store.stamps.has(`claude:${SID_DEAD}`)).toBe(false);
+    expect(stats.diskSessionsArchived).toBe(1); // ours is still archived
+    expect(existsSync(mineAbs)).toBe(false);
+    expect(store.stamps.has(`claude:${SID_LIVE}`)).toBe(true);
   });
 
   it('disk-side: already-archived leftovers get the sha-checked delete', async () => {

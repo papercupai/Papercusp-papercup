@@ -2,9 +2,11 @@
  * plan-item-provenance — which PLAN ITEMS was this work-item promoted from?
  *
  * The reverse direction of `plan-item-coverage.ts` (plan item → covering work-items),
- * kept as its own dependency-light module on purpose: the completion gate
- * (`harness-test-gate.ts`) asks this question on the write path and must not drag in
+ * kept as its own dependency-light module on purpose: its readers (`plans:get`,
+ * `plan-context-for-feature.ts`) ask this question per work-item and must not drag in
  * the coverage map's whole-workspace `coord_links` + fleet-assignment reads to do it.
+ * (The legacy VAL completion gate `harness-test-gate.ts` was the original write-path
+ * reader; it was retired by verification-system-improvements-2026-10-10 P-003.)
  *
  * WHY THIS EXISTS (EI-19435123521651527, 2026-08-03). Three readers resolved this by
  * selecting `harness_features_consolidated.source_plan_item_ids` — a column the mint

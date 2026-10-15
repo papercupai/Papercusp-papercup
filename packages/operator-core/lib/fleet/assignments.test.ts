@@ -23,6 +23,7 @@ import {
   ACTIVE_TOOL_CALL_WINDOW_MS,
   deriveClaimHealth,
   deriveActivity,
+  isBroadClaimableParkMaskingStalledClaim,
   downgradeEndedHolders,
   groupByAgent,
   HOUSEKEEPING_TOOL_NAMES,
@@ -400,6 +401,42 @@ describe('summarizeOrphan — WI-5975', () => {
         expect.objectContaining({ writer: 'memory_session_epochs', signal: 'context_generation', value: 3 }),
       ]),
     );
+  });
+
+  it('a lane-drained work-item:claimable watch does not mask a stalled held claim', () => {
+    const now = Date.parse('2026-07-26T06:30:00.000Z');
+    const health = deriveClaimHealth(
+      heldByLive,
+      {
+        sessionState: 'parked',
+        parkedOn: ['work-item:claimable'],
+        monitorState: 'parked-awaiting-capability',
+      },
+      now,
+    );
+
+    expect(health.status).toBe('suspect');
+    expect(health.reasons).toContain('heartbeat/liveness exists but no fresh authored or productive progress');
+    expect(shouldRecoverClaimFromHealth(health)).toBe(true);
+    expect(health.evidence).toContainEqual(
+      expect.objectContaining({ writer: 'events_await', signal: 'active_event_waits', value: ['work-item:claimable'] }),
+    );
+    expect(health.evidence).not.toContainEqual(
+      expect.objectContaining({ writer: 'events_await', signal: 'exact_dependency_waits' }),
+    );
+  });
+
+  it('the handler suppression guard only matches a stalled claim with a broad parked watch', () => {
+    expect(
+      isBroadClaimableParkMaskingStalledClaim('parked-awaiting-capability', ['work-item:claimable'], true),
+    ).toBe(true);
+    expect(
+      isBroadClaimableParkMaskingStalledClaim('parked-awaiting-capability', ['work-item:claimable'], false),
+    ).toBe(false);
+    expect(
+      isBroadClaimableParkMaskingStalledClaim('parked-awaiting-capability', ['fleet:bar:gate'], true),
+    ).toBe(false);
+    expect(isBroadClaimableParkMaskingStalledClaim('waiting', ['work-item:claimable'], true)).toBe(false);
   });
 
   it('the oracle OUTRANKS the row heartbeat in both directions', () => {

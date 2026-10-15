@@ -4,9 +4,11 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "The harness testing:run ad-hoc runner can stamp a test_runs row with a commit sha it never actually ran at"
-description: "POST /harness/:slug/testing/run executes vitest against the shared, concurrently-edited working tree and sampled commit sha AFTER the run — a torn read that can misattribute a red to an innocent commit. Fixed with a worktree_dirty flag (EI-18795303393201472, migration 709)."
+title: "Harness test runs can be attributed to a commit they did not execute"
+description: "Shared-worktree snapshots prevent torn commit attribution; verifier source archives need their own provenance boundary because they are nested non-Git trees."
 type: Insight
+discovered: 2026-10-10
+status: active
 generated:
   by: agent
   at: 2026-08-01
@@ -14,13 +16,13 @@ generated:
 
 **If you're diagnosing a `harness_shared.test_runs` row whose named failing
 test(s) don't exist in the commit it's stamped with (`git show <sha>:<file> |
-grep <test name>` comes back empty at that sha AND its neighbors), suspect a
-torn read from the harness-scoped ad-hoc runner before you suspect the ledger
-itself is corrupt** — this is a known, fixed-at-the-source class of
-misattribution, distinct from
-[gate-red-on-quarantined-file-phantom-attribution](/internal/docs/agent-insights/gate-red-on-quarantined-file-phantom-attribution)
-(that one is a log-parsing bug in the isolated green-checkpoint run; this one
-is a genuine torn read against the live shared tree).
+grep <test name>` comes back empty at that sha AND its neighbors), first check
+`worktree_dirty` and the runner's source root. A row marked dirty is not
+first-hand evidence for a specific commit. If a clean row carries the wrong sha,
+suspect a torn read or a mismatch between the source tree Vitest loaded and the
+Git root the reporter sampled. This is distinct from
+[gate-red-on-quarantined-file-phantom-attribution](/internal/docs/agent-insights/gate-red-on-quarantined-file-phantom-attribution),
+which is a log-parsing bug in the isolated green-checkpoint run.
 
 ## The signature (incident 2026-07-27, EI-18795303393201472)
 
@@ -32,40 +34,62 @@ to the tree, the ad-hoc run executed a few seconds later (before the matching
 implementation was written), and the implementation landed after that. The run
 observed a state that was never a commit and never will be.
 
-## Root cause
+## Root cause and fix: harness-scoped `testing:run`
 
 `POST /harness/:slug/testing/run` (`endpoint-route/routes/harness/testing.ts`,
 backing the `testing:run` MCP tool) runs `npx vitest run <files>`
-**synchronously, `cwd: root`, against the shared, concurrently-edited working
-tree** — not an isolated checkout (unlike the actual green-checkpoint gate,
-which per its own header comment always judges a dedicated isolated worktree).
-It then called `git rev-parse HEAD` to stamp `commit_sha` **after the run
-finished**. Between the run starting and that sample, a peer's edit or a
-git-sync commit can change what's on disk, so the stamped sha can name a
-commit whose real content never matches what vitest actually executed.
+synchronously against the shared, concurrently-edited working tree — not an
+isolated checkout. The original writer sampled `git rev-parse HEAD` after the
+run, so another edit or git-sync commit could change the stamped sha while
+Vitest was running.
 
-This matters beyond a single false-attribution report:
-`ledgerFilesForCandidate` / `verifyGateVerdict` (`why-chain.ts`,
-WI-4533/EI-17603) treat `test_runs` rows matched by `commit_sha` as
-**first-hand evidence** to cross-check the release gate's own named failures
-for the EXACT candidate under verdict. A torn-read row can poison that very
-cross-check for an unrelated commit that happens to share the stamp.
+The migration 709 fix snapshots `{ commit, git status --porcelain }` before
+and after the Vitest run. A moved HEAD, dirty tree at either snapshot, or
+unreadable Git probe sets `worktree_dirty = true`. The fail-safe treats a
+missing snapshot as dirty. The gate cross-check
+(`ledgerFilesForCandidate` / `verifyGateVerdict` in `why-chain.ts`) only
+uses rows with `source='ci'` and `worktree_dirty = false`; the
+time-windowed `recentFailingFiles` query deliberately keeps dirty rows because
+it answers only whether a file failed recently.
 
-## The fix (migration 709)
+## Current Vitest admin reporter
 
-The runner now snapshots `{ commit, git status --porcelain -- <files> }`
-**both before and after** the vitest run (`computeWorktreeDirty` in
-`testing-run-store.ts`). Any mismatch — HEAD moved, or the tested files carry
-uncommitted changes at either snapshot, or either git read failed
-(fail-safe: unreadable ⇒ treated as dirty) — marks the row
-`worktree_dirty = true`. `ledgerFilesForCandidate` excludes dirty rows from
-its commit-scoped first-hand-evidence query (`AND worktree_dirty = false`);
-the time-windowed proxy `recentFailingFiles` deliberately keeps them, since
-"something failed recently, somewhere" doesn't depend on sha precision.
+The custom `AdminTestRunsReporter` in
+`libs/test-config/src/admin-test-runs-reporter.ts` now captures the resolved
+Vitest run root during `onInit`, takes a Git snapshot before test modules run,
+then takes another at flush. It records the after-snapshot sha and marks the
+row dirty when HEAD changed, either snapshot found worktree changes, or a Git
+probe failed. Older guidance saying that this reporter only samples Git after
+the run is stale.
 
-Not yet covered by the same fix (filed as follow-up, same failure class):
-`testing-run-store.ts`'s `persistFallbackRow` (the node/shell admin-suite
-fallback path) and the in-process vitest reporter used by admin-ui spawns
-both sample git context after their run finishes too — lower blast radius
-(their commit_sha isn't the primary input to `ledgerFilesForCandidate`'s
-gate cross-check today) but the same hazard shape.
+A resolved run root is converted to the containing Git checkout. This is correct
+for normal checkouts and linked worktrees. A materialized verifier source
+archive can be different: `verify-tauri-headless.sh` writes a committed source
+receipt and materializes source under `operator-source/` without a `.git`
+directory. If Vitest loads a module from that archive while the resolved
+checkout root is its enclosing repository, the reporter's Git probe measures
+the enclosing checkout, not the archive's source commit.
+
+## Verifier archive provenance (2026-10-10, WI-10008060)
+
+Native Reports run `reports-reader-native-20261010-25093` passed as
+`test_runs.id=20967662`. The row's file path is under
+`.papercusp/tmp/verify-tauri-headless.09mKUL/operator-source/`, while its
+recorded root is the outer Papercusp checkout. The row carries outer
+`commit_sha=238f94b91691cf87169884c35a2adec9c397de78` and
+`worktree_dirty=true`; its pre-run dirt reason reports 258 porcelain lines.
+The independent verifier receipt pins the materialized source to
+`80f7bedf1df105c39e64a1deb8e906c9ecac6f1e`, and the native test asserts the
+receipt's source commit and runs its driver with `cwd: OPERATOR_SOURCE_ROOT`.
+
+That row is already excluded from commit-scoped gate evidence by
+`worktree_dirty=true`. The receipt and passing verifier manifest establish
+which source the native run used; the row's outer `commit_sha` does not. A
+row from a verifier archive must not be treated as clean evidence for the
+enclosing checkout merely because the outer tree happened to be clean.
+
+WI-10008060 adds a regression guard: when the maintained verifier provides an
+`OPERATOR_SOURCE_ROOT` and source receipt, and the test module is inside a
+materialized source root without Git metadata, the Vitest reporter records the
+row as dirty and leaves `commit_sha` null. It still retains the local test
+result, but it cannot claim commit-scoped attribution.

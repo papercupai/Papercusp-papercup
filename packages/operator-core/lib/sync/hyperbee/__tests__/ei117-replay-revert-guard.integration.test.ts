@@ -26,7 +26,8 @@
  *      nothing.
  *
  * Owns its schema (archive 102 outbox/capture-fn + a column-faithful
- * harness_plans stub + 125 plans capture triggers + 214 stamp triggers);
+ * harness_plans stub + 125 plans capture triggers + 214 stamp triggers,
+ * the current revision store and receiver BAR migrations);
  * does not touch the dev DB.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -35,6 +36,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { buildHarnessPlansProjection, type HarnessPlanRow } from '../projections/harness-plans';
+import { seedAcceptanceBarsOnFederatedApply } from '../../../acceptance-bar-receiver-seed';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -136,6 +138,7 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
         -- missing any of them 42703s EVERY per-part write — broke the 2026-07-05 gate).
         template            TEXT,
         template_data       JSONB,
+        template_slug       TEXT,
         promote_policy      JSONB,
         owner_author_pubkey TEXT,
         -- mig 714 (input_schema) + mig 908 (output_schema) + mig 923 (property_schema,
@@ -161,6 +164,36 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
       '675-normalize-plan-items-decisions.sql',
       '1071-restore-plan-items-owner-gate-marker-after-1059-collision.sql',
       '1142-plan-decision-affects-authority.sql',
+      '851-first-class-plan-spec-clauses.sql',
+      '1111-acceptance-bar-contract-seed.sql',
+    ]) {
+      await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, mig), 'utf8')));
+    }
+
+    // The whole-blob writer now records remote content in the local revision
+    // spine, just like the sibling plan-part cutover fixture. Keep the baseline
+    // table shape, then apply the real workspace/hash migrations.
+    await db.sql.unsafe(`
+      CREATE EXTENSION IF NOT EXISTS pgcrypto;
+      CREATE TABLE harness_shared.plan_revisions (
+        id BIGSERIAL PRIMARY KEY,
+        harness_slug TEXT NOT NULL DEFAULT 'papercup',
+        plan_slug TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        content_snapshot TEXT NOT NULL,
+        rationale TEXT,
+        author_kind TEXT NOT NULL,
+        author_id TEXT NOT NULL,
+        session_id TEXT,
+        session_kind TEXT,
+        created_at BIGINT NOT NULL,
+        UNIQUE (harness_slug, plan_slug, seq)
+      );
+    `);
+    for (const mig of [
+      '218-plan-revisions-workspace-scope.sql',
+      '1107-plan-revisions-content-snapshot-hash.sql',
     ]) {
       await db.sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, mig), 'utf8')));
     }
@@ -200,6 +233,7 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
   });
 
   beforeEach(async () => {
+    await db.sql`DELETE FROM harness_shared.plan_revisions`;
     await db.sql`DELETE FROM harness_shared.harness_plans`;
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
   });
@@ -313,5 +347,55 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
     expect(after!.fed_ts).toBe(before!.fed_ts);
     expect(after!.version).toBe(before!.version + 1);
     expect(await outboxCount()).toBe(0);
+  });
+
+  it('7. a missing revision store rolls back remote content; restoring it records the actual applied bytes', async () => {
+    await localInsert('revision-control-local');
+    const before = await row();
+    const count = await outboxCount();
+    const opTs = Number(before!.fed_ts) + 10_000;
+    await db.sql.unsafe('ALTER TABLE harness_shared.plan_revisions RENAME TO plan_revisions_unavailable');
+    try {
+      await expect(writeRemote(planRow('revision-control-remote'), opTs)).rejects.toThrow(
+        /plan revision unavailable.*relation "harness_shared.plan_revisions" does not exist/,
+      );
+      expect(await row()).toEqual(before);
+      expect(await outboxCount()).toBe(count);
+    } finally {
+      await db.sql.unsafe('ALTER TABLE harness_shared.plan_revisions_unavailable RENAME TO plan_revisions');
+    }
+    await writeRemote(planRow('revision-control-remote'), opTs);
+    expect((await row())!.content).toBe('revision-control-remote');
+    expect(await outboxCount()).toBe(count);
+    const revisions = await db.sql<Array<{ content_snapshot: string; author_kind: string }>>`
+      SELECT content_snapshot, author_kind FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+       ORDER BY seq DESC LIMIT 1`;
+    expect(revisions).toEqual([{ content_snapshot: 'revision-control-remote', author_kind: 'system' }]);
+  });
+
+  it('8. receiver reseeding distinguishes missing epoch and template columns from an ordinary plan without a rubric', async () => {
+    await localInsert('receiver-control-local');
+    const before = await row();
+    const count = await outboxCount();
+    const subject = { workspaceId: WS, harnessSlug: HARNESS, planSlug: SLUG };
+    for (const column of ['acceptance_bar_epoch', 'template_slug']) {
+      await db.sql.unsafe(`ALTER TABLE harness_shared.harness_plans RENAME COLUMN ${column} TO receiver_column_unavailable`);
+      try {
+        const missing = await seedAcceptanceBarsOnFederatedApply(db.sql, subject);
+        expect(missing.status).toBe('failed');
+        if (missing.status !== 'failed') throw new Error(`Expected a missing ${column} failure`);
+        expect(missing.error).toContain(`column "${column}" does not exist`);
+        expect(await row()).toEqual(before);
+        expect(await outboxCount()).toBe(count);
+      } finally {
+        await db.sql.unsafe(`ALTER TABLE harness_shared.harness_plans RENAME COLUMN receiver_column_unavailable TO ${column}`);
+      }
+      await expect(seedAcceptanceBarsOnFederatedApply(db.sql, subject)).resolves.toEqual({
+        status: 'skipped', reason: 'no-rubric',
+      });
+    }
+    expect(await row()).toEqual(before);
+    expect(await outboxCount()).toBe(count);
   });
 });

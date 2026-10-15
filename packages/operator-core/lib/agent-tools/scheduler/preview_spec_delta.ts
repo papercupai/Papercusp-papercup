@@ -40,7 +40,10 @@ import {
 import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 import { claimSpecSchema, validateClaimSpec } from '../../scheduler/claim-spec';
 import { readClaimSpecDelta, type ClaimSpecDeltaReading } from '../../scheduler/get-next';
+import { previewSpecFilterPartition } from '../../scheduler/spec-predicate-partition';
+import { evaluateGoalFenceGuardForIncumbent } from '../../scheduler/spec-pool-preview';
 import { specIsIssueFamilyOnly } from './get_next';
+import { previewClaimSpecAdmission } from './set_claim_spec';
 
 /**
  * Resolve the concrete harness used by the delta read. Operator-context `'*'`
@@ -192,7 +195,7 @@ export default defineTool({
   name: 'scheduler:preview_spec_delta',
   profile: 'engineer',
   description:
-    'Preview a claim-spec re-steer BEFORE writing it: which ITEMS the proposed revision would newly EXCLUDE from the lane and newly ADMIT, not just how many. READ-ONLY — nothing is stored. Returns exact counts (currentClaimable / proposedClaimable / retained) plus both row lists, each ordered the way its own spec would hand work out, and a per-row `cause`: "filter" (the view.filter disagrees) or "states" (the claimable-status floor changed). Both sides are read in ONE snapshot, so a peer claiming an item mid-read can never be misreported as a loss your change caused. ⚠ ISSUE-FAMILY ONLY — never sees feature-family rows, unlike scheduler:get_next. `familyScopeIncomplete:true` + a leading warning mean a count here can be a FALSE ZERO for feature-family work — verify with scheduler:get_next before trusting a low/zero reading.',
+    'Preview a claim-spec re-steer BEFORE writing it: which ITEMS the proposed revision would newly EXCLUDE from the lane and newly ADMIT, not just how many. READ-ONLY — nothing is stored. Returns exact counts (currentClaimable / proposedClaimable / retained) plus both row lists, each ordered the way its own spec would hand work out, and a per-row `cause`: "filter" (the view.filter disagrees) or "states" (the claimable-status floor changed). Both sides are read in ONE snapshot. Separately, authoringAdmission reuses the write door\'s normal fixed-cohort floors, including target-fleet holders and their remaining cooldown/admission floors; scope authoring is not new acquisition. Unknown/unchecked evaluations never authorize. ⚠ Pool counts are ISSUE-FAMILY ONLY, unlike scheduler:get_next; heed familyScopeIncomplete before trusting a low/zero pool reading.',
   guidance: {
     when:
       'Before scheduler:set_claim_spec on a live cup/fleet — especially a NARROWING revision, a `not:`/glob exclusion, or any `states` change. Also to explain a starved lane: preview the CURRENT spec against a wider candidate to see what it is holding back.',
@@ -292,6 +295,36 @@ export default defineTool({
       { limit: args.limit ?? 25 },
     );
 
+    // WI-6554700010008817: an already-held cohort is absent from the acquisition
+    // pool, so a 0/0 delta cannot answer whether its remaining floors permit scope
+    // authoring. Reuse the write door's evaluator without storing another revision.
+    // Keep its separate snapshot and scope-only meaning explicit. A failed read is
+    // unknown, never an empty/accepted cohort, and never suppresses the pool reading.
+    let authoringAdmission;
+    try {
+      const admission = await previewClaimSpecAdmission({
+        spec: proposedSpec,
+        harness,
+        assignee: ident.ownerId,
+        cupId: args.cupId,
+        fleet: args.fleet,
+      });
+      authoringAdmission = {
+        status: admission.preview.checked ? 'measured' : 'not-measured',
+        wouldRefuse: admission.preview.checked ? admission.errors.length > 0 : null,
+        ...admission,
+        evaluatedAt: new Date().toISOString(),
+        note: 'Normal scope-authoring floors, evaluated separately from the pool snapshot; this does not acquire a claim or authorize unchecked feature-family work.',
+      };
+    } catch (error) {
+      authoringAdmission = {
+        status: 'unknown',
+        wouldRefuse: null,
+        error: error instanceof Error ? error.message : String(error),
+        evaluatedAt: new Date().toISOString(),
+      };
+    }
+
     const net = reading.proposedClaimable - reading.currentClaimable;
     const warnings = deriveSpecDeltaWarnings(reading);
     // EI-21177555351818650: `readClaimSpecDelta` is issue-family-only and structurally
@@ -300,6 +333,41 @@ export default defineTool({
     // false-zero) counts above.
     const familyScopeIncomplete = deltaFamilyScopeIncomplete(record.spec, proposedSpec);
     if (familyScopeIncomplete) warnings.unshift(FAMILY_SCOPE_BLIND_SPOT_WARNING);
+
+    // WI-10005785: the write door refuses (or discloses) a revision by the goal-fence guard, and a
+    // preview that never ran it showed clean counts for a revision set_claim_spec then REFUSED.
+    // Run the SAME shared helper, with confirm:false — a preview reports what the write would do
+    // before the caller acknowledges anything, so a refusal here reads exactly as it will there.
+    const goalFence = evaluateGoalFenceGuardForIncumbent({
+      incumbent: record,
+      candidateFilter: proposedSpec.view.filter,
+      confirm: false,
+    });
+    if (goalFence.refuse) {
+      warnings.unshift(`GOAL FENCE: set_claim_spec would REFUSE this revision. ${goalFence.errors.join(' ')}`);
+    } else if (goalFence.warning) {
+      warnings.push(`GOAL FENCE: ${goalFence.warning}`);
+    }
+
+    // EI-23760081161304754 (plan dry-run-for-claims…, P-005): the counts above are COUNTS, and a
+    // count cannot show the rows a nullable field leaves UNKNOWN under the proposed filter — they
+    // fall out of every predicate AND out of `proposedClaimable` while the number stays
+    // well-formed (EI-13306: 2341 → 4). The shared predicate-partition primitive can, so run it
+    // over the PROPOSED spec. Advisory + fail-open: it never changes a count, and a probe or build
+    // failure is named, not swallowed into a reading that looks like "nothing fell through".
+    let predicatePartition: string | null = null;
+    let predicatePartitionError: string | undefined;
+    if (!workspaceId) {
+      // The floors are scoped by workspace; an unresolved one would render `workspace_id = NULL`,
+      // which matches nothing and reads as a clean "no row fell through". Name the skip instead.
+      predicatePartitionError = 'no workspace resolved — the predicate partition was not run';
+    } else {
+      try {
+        predicatePartition = await previewSpecFilterPartition(proposedSpec, { workspaceId, harness });
+      } catch (error) {
+        predicatePartitionError = error instanceof Error ? error.message : String(error);
+      }
+    }
 
     return {
       data: {
@@ -327,9 +395,14 @@ export default defineTool({
         newlyExcluded: reading.newlyExcluded,
         newlyAdmitted: reading.newlyAdmitted,
         truncated: reading.truncated,
+        authoringAdmission,
         // EI-21177555351818650: programmatic sibling of the warning above — true whenever
         // this reading's counts cover only a SUBSET of what scheduler:get_next can claim.
         familyScopeIncomplete,
+        /** WI-10005785: true when set_claim_spec would refuse this revision's goal-fence change. */
+        goalFenceWouldRefuse: goalFence.refuse,
+        ...(predicatePartition ? { predicatePartition } : {}),
+        ...(predicatePartitionError ? { predicatePartitionError } : {}),
         ...(warnings.length > 0 ? { warnings } : {}),
         note: deriveSpecDeltaNote(reading),
       },

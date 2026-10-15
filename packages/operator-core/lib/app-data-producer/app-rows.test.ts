@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { personalDocumentFromExternalEvent } from '../personal-vault/live-sink';
 import {
-  appForSource,
+  appForDatatype,
   appRowFromSourceRecord,
+  appRowId,
+  DATATYPE_FOR_APP,
+  APP_SYNC_SOURCE_REF,
   buildAppSyncBatch,
-  sourceRefForApp,
   type ProducerSourceRecord,
 } from './app-rows';
 import { APP_DELIVERY_TIMEOUT_MS, deliverAppSyncBatch } from './live-sink';
@@ -13,6 +15,7 @@ const SECRET = 'delivery-test-secret';
 
 const gmailEvent = {
   key: 'ext:gmail:message.received',
+  datatypeId: 'email-message',
   externalId: 'm-1',
   occurredAt: '2026-08-30T01:02:03.000Z',
   payload: {
@@ -29,6 +32,7 @@ const gmailEvent = {
 
 const gcalEvent = {
   key: 'ext:gcal:event.upcoming',
+  datatypeId: 'calendar-event',
   externalId: 'e-1',
   occurredAt: '2026-08-30T09:00:00.000Z',
   payload: {
@@ -44,12 +48,28 @@ const gcalEvent = {
 };
 
 describe('app row mapping (P-011)', () => {
-  it('routes each platform source to its app', () => {
-    expect(appForSource('gmail')).toBe('email');
-    expect(appForSource('calendar')).toBe('calendar');
-    expect(appForSource('facebook')).toBeNull();
-    expect(sourceRefForApp('email')).toBe('gmail');
-    expect(sourceRefForApp('calendar')).toBe('google-calendar');
+  it('routes each canonical datatype to its app (D-010), never a provider name', () => {
+    expect(appForDatatype('email-message')).toBe('email');
+    expect(appForDatatype('calendar-event')).toBe('calendar');
+    expect(appForDatatype('social-post')).toBeNull();
+    // Provider-named categories are not routing keys any more.
+    expect(appForDatatype('gmail')).toBeNull();
+    expect(appForDatatype('calendar')).toBeNull();
+    expect(DATATYPE_FOR_APP).toEqual({ email: 'email-message', calendar: 'calendar-event' });
+    expect(appRowId('m-1', '11111111-1111-4111-8111-111111111111')).toBe('11111111-1111-4111-8111-111111111111:m-1');
+    expect(appRowId('m-1', null)).toBe('m-1');
+  });
+
+  // D-023 §2: the batch sourceRef names the producer's sync STREAM. A
+  // provider-named ref ('gmail', 'google-calendar') would mislabel every other
+  // provider's rows riding in the same batch.
+  it('names the sync stream with one provider-neutral ref for both apps', () => {
+    expect(APP_SYNC_SOURCE_REF).toBe('papercusp-vault');
+    for (const app of ['email', 'calendar'] as const) {
+      const body = buildAppSyncBatch(app, [{ id: 'x' }]).body;
+      expect(body.sourceRef).toBe(APP_SYNC_SOURCE_REF);
+      expect(String(body.sourceRef)).not.toMatch(/gmail|google|gcal|outlook/i);
+    }
   });
 
   it('maps a gmail event to an email message row, passing the payload through', () => {
@@ -68,12 +88,14 @@ describe('app row mapping (P-011)', () => {
 
   it('carries server-owned Gmail source and provider account provenance into the mailbox contract', () => {
     const mapped = appRowFromSourceRecord({
-      source: 'gmail', kind: 'message', externalId: 'm-account',
+      source: 'gmail', datatypeId: 'email-message', kind: 'message', externalId: 'm-account',
       sourceId: '11111111-1111-4111-8111-111111111111',
       providerAccountId: 'work@example.com',
       metadata: { id: 'm-account', threadId: 'shared-thread' },
     });
     expect(mapped?.row).toMatchObject({
+      id: '11111111-1111-4111-8111-111111111111:m-account',
+      nativeId: 'm-account',
       mailbox: {
         key: 'source:11111111-1111-4111-8111-111111111111',
         sourceId: '11111111-1111-4111-8111-111111111111',
@@ -102,6 +124,7 @@ describe('app row mapping (P-011)', () => {
   it('returns null for a source no app owns', () => {
     const facebook = personalDocumentFromExternalEvent({
       key: 'ext:facebook:post.created',
+      datatypeId: 'social-post',
       externalId: 'p-1',
       payload: { entityType: 'post', text: 'hi', author: 'Someone' },
     });
@@ -109,13 +132,13 @@ describe('app row mapping (P-011)', () => {
   });
 
   it('refuses a record with no external id — the apps upsert by id', () => {
-    const record: ProducerSourceRecord = { source: 'gmail', kind: 'message', externalId: null, metadata: {} };
-    expect(() => appRowFromSourceRecord(record)).toThrow('app_row_external_id_required:gmail:message');
+    const record: ProducerSourceRecord = { source: 'gmail', datatypeId: 'email-message', kind: 'message', externalId: null, metadata: {} };
+    expect(() => appRowFromSourceRecord(record)).toThrow('app_row_external_id_required:email-message:message');
   });
 
   it('fills subject/text from the canonical columns only when the payload lacks them', () => {
     const sparse: ProducerSourceRecord = {
-      source: 'gmail', kind: 'message', externalId: 'm-9',
+      source: 'gmail', datatypeId: 'email-message', kind: 'message', externalId: 'm-9',
       title: 'Column subject', text: 'Column body', metadata: { id: 'm-9' },
     };
     expect(appRowFromSourceRecord(sparse)?.row).toMatchObject({ subject: 'Column subject', text: 'Column body' });
@@ -129,7 +152,7 @@ describe('app row mapping (P-011)', () => {
   /**
    * THE PROPERTY P-011 TURNS ON: "a separate push-only payload shape is how the
    * two silently diverge." Push maps a freshly normalized event; reconcile maps
-   * the row read back out of personal_documents. This asserts the two produce
+   * the row read back out of documents. This asserts the two produce
    * the IDENTICAL app row, rather than leaving it to be true by inspection.
    */
   it('push and reconcile produce byte-identical app rows', () => {
@@ -137,12 +160,13 @@ describe('app row mapping (P-011)', () => {
       // Push: straight from the normalized trigger event.
       const pushed = appRowFromSourceRecord(personalDocumentFromExternalEvent(event));
 
-      // Reconcile: what a stored personal_documents row looks like when read
+      // Reconcile: what a stored documents row looks like when read
       // back — same fields, metadata round-tripped through JSON as Postgres
       // jsonb would, occurredAt rehydrated as a Date by the driver.
       const stored = personalDocumentFromExternalEvent(event);
       const reconciled = appRowFromSourceRecord({
         source: stored.source,
+        datatypeId: stored.datatypeId,
         kind: stored.kind,
         externalId: stored.externalId,
         occurredAt: stored.occurredAt ? new Date(stored.occurredAt as string) : null,
@@ -157,11 +181,15 @@ describe('app row mapping (P-011)', () => {
 
   it('builds the strict batch body each app accepts', () => {
     const email = buildAppSyncBatch('email', [{ id: 'm-1' }], { cursor: 'cur-1' });
-    expect(email.body).toEqual({ messages: [{ id: 'm-1' }], contacts: [], sourceRef: 'gmail', cursor: 'cur-1' });
+    expect(email.body).toEqual({ messages: [{ id: 'm-1' }], sourceRef: 'papercusp-vault', cursor: 'cur-1' });
     expect(email.rowCount).toBe(1);
 
     const calendar = buildAppSyncBatch('calendar', [{ id: 'e-1' }]);
-    expect(calendar.body).toEqual({ events: [{ id: 'e-1' }], calendars: [], contacts: [], sourceRef: 'google-calendar' });
+    expect(calendar.body).toEqual({ events: [{ id: 'e-1' }], calendars: [], sourceRef: 'papercusp-vault' });
+    // crm P-003 (D-017 point 4): people come from the platform graph, so no app batch carries
+    // a `contacts` key. The apps can only drop it from their strict schemas once this holds.
+    expect('contacts' in email.body).toBe(false);
+    expect('contacts' in calendar.body).toBe(false);
     // No cursor key at all when none is supplied — the schemas are .strict(),
     // so an explicit undefined would be a different (rejected) body.
     expect('cursor' in calendar.body).toBe(false);

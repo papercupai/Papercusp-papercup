@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-002 raw-source cohort analysis and frozen replay",
+  "plan": "token-efficiency-follow-ups-beyond-native-cutover-2026-10-12",
+  "workItem": "WI-6554700010014380",
+  "planItem": "P-002",
+  "specClauses": ["TE-DIAGNOSE-COHORTS@1", "TE-DIAGNOSE-PATTERN@1"],
+  "command": [
+    "npm run test:file -- scripts/measure-tool-output.test.ts",
+    "node scripts/measure-tool-output.mjs --snapshot docs/evidence/token-efficiency-tool-output-baseline-2026-10-15.json --metadata <existing adv_sessions + session_identity_activation_events sidecar>",
+    "reports:get rpt_4d2d5c06-5fa6-4ba1-bbe7-f37329160c87"
+  ],
+  "startedAt": "2026-10-15T11:47:51.375Z",
+  "finishedAt": "2026-10-15T12:00:35.739Z",
+  "exitCode": 0,
+  "summary": "The maintained cohort instrument passed 12 tests from a clean committed source. A replay of the saved 24-hour raw-source window reused each candidate's original byte snapshot and retained per-file request/result counts exactly for every readable retained file. The owner-visible analysis report records role, wake, duration, wait and repeated-read cohorts, source gaps, and three owned follow-ups. It makes no causal or call-reduction claim.",
+  "assertions": [
+    {
+      "id": "clean-maintained-tests",
+      "passed": true,
+      "evidence": "TEST_FILE_RESULT status=passed, head=d2cb48fa85, uncommittedPaths=0/1, childSubstituted=0, skippedTests=0; Test Files 1 passed and Tests 12 passed."
+    },
+    {
+      "id": "frozen-replay-reconciliation",
+      "passed": true,
+      "evidence": "Corrected replay retained 2,872 Codex files / 131,984 model calls and 169 Claude files / 3,804 model calls; countMismatches=[] for every retained candidate."
+    },
+    {
+      "id": "coverage-and-unknowns",
+      "passed": true,
+      "evidence": "The report records 158 unreadable candidates, 1,935 unknown Codex roles and 36 unknown Claude roles, and keeps missing activity unknown rather than treating it as zero."
+    },
+    {
+      "id": "accountable-pattern-followups",
+      "passed": true,
+      "evidence": "WI-6554700010014675, WI-6554700010014676 and WI-6554700010014677 were created and assigned to the investigating session."
+    }
+  ],
+  "sourceCommitAtExecution": "d2cb48fa85",
+  "sourceDirtyAtExecution": false,
+  "report": "/reports?sel=rpt_4d2d5c06-5fa6-4ba1-bbe7-f37329160c87"
+}

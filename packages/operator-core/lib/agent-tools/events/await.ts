@@ -26,6 +26,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { getMessageById } from '../coordination/messages';
 import { readGateRefs } from '../coordination/ref-hydrate';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
+import { getPredicateWatch } from '../../events/await/predicate-watch';
 import {
   familyAdmitsKey,
   keyMatchesCatalog,
@@ -102,7 +103,11 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC as MAX_TIMEOUT_SEC } from '../../events/await/types';
 import type { AwaitRow } from '../../events/await/types';
 import { projectAwaitWaitOperationalBrief } from '../../operational-brief/wait-brief';
-import { acceptancePlaneAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
+import {
+  acceptancePlaneAdvisoryForWait,
+  mainWaitAdvisoryForWait,
+  mainWaitPlanReviewForWait,
+} from '../../acceptance-runtime-wait-guard';
 
 type GenerationPinDetails = {
   eventKey: string;
@@ -565,9 +570,11 @@ export default defineTool({
 
     // ── Monotonic exact-key LATCHES. The fire ledger is normally diagnostic: a
     // recurring key having fired before does not satisfy a wait for its NEXT edge.
-    // One concrete SHA's proven egress and one durable task's first terminal
-    // transition cannot become untrue or recur, so a late exact-key registrant must
-    // consume the latch. Patterns and bare streams remain ordinary edge waits.
+    // One concrete SHA's proven egress, one durable task's first terminal
+    // transition, and one message's receipt cannot become untrue, so a late
+    // exact-key registrant must consume the latch. A receipt fire does not prove
+    // any payload filter (e.g. read:true versus delivery only); filtered receipt
+    // waits, patterns and bare streams remain ordinary edge waits.
     // EI-24719187042784648: git-sync emits only full-sha suffixed keys, so a short sha or a
     // non-sha suffix (`git-sync:committed:papercusp`) names a key that can never fire. Refuse
     // before any latch probe or registration rather than parking the caller until timeout.
@@ -575,7 +582,10 @@ export default defineTool({
     if (gitSyncShaProblem) return gitSyncShaSuffixRefusal(eventKey, gitSyncShaProblem, 'events:await');
     const gitSyncEgressTarget = !patternAwait ? /^git-sync:egressed:([^:]+)$/.exec(eventKey) : null;
     const taskTerminalTarget = !patternAwait ? /^task:terminal:([^:]+)$/.exec(eventKey) : null;
-    const monotonicLatchTarget = gitSyncEgressTarget ?? taskTerminalTarget;
+    const coordReceiptTarget = !patternAwait && args.payload_filter == null
+      ? /^coord:receipt:(.+)$/.exec(eventKey)
+      : null;
+    const monotonicLatchTarget = gitSyncEgressTarget ?? taskTerminalTarget ?? coordReceiptTarget;
     if (monotonicLatchTarget) {
       const probe = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
         fallback: null,
@@ -594,6 +604,8 @@ export default defineTool({
                 fired_at: probe.value.lastFiredAt,
                 advice: taskTerminalTarget
                   ? `The managed-task terminal key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`
+                  : coordReceiptTarget
+                    ? `The coordination receipt key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — inspect the receipt payload and continue now. A receipt does not prove the requested action was completed.`
                   : `The git-sync egress key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — origin/staging has already contained this commit. Do not wait; proceed with the work this egress unblocks now.`,
               }),
             },
@@ -648,6 +660,7 @@ export default defineTool({
     let unknownEventKey = false;
     // P-010: the catalogued emitter that owns this key, for the await-wait brief's owner.
     let catalogEmitter: string | null = null;
+    let catalogProbeFailure: 'timeout' | 'aborted' | 'error' | null = null;
     if (!patternAwait && !announcedGate) {
       const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
       const probe = await withBoundedTimeout(
@@ -659,10 +672,44 @@ export default defineTool({
         })(),
         { fallback: null, timeoutMs: 1_500, label: 'events-await:orphanKey' },
       );
-      // A null probe (timeout / discovery failure) ⇒ we cannot be sure ⇒ say nothing.
-      if (probe.value) {
+      // A degraded probe is not evidence that the key has no catalogued emitter.
+      // Keep the failure class for the wait brief instead of turning uncertainty
+      // into a confident orphan verdict.
+      if (probe.degraded || probe.value === null) {
+        catalogProbeFailure = probe.reason ?? 'error';
+      } else {
         unknownEventKey = !keyMatchesCatalog(eventKey, probe.value);
         catalogEmitter = probe.value.find((entry) => familyAdmitsKey(entry, eventKey))?.emitter ?? null;
+      }
+    }
+
+    // Predicate-watch keys are minted at runtime and have no static catalog family.
+    // The durable predicate_watches row is their emitter contract: if the exact row is
+    // still active, the poller can fire this key even before its first edge has fired.
+    // Check that registry before announcement/fire history, which cannot know a fresh
+    // predicate key yet.
+    let activePredicateWatchEmitter = false;
+    let predicateWatchProbeFailure: 'timeout' | 'aborted' | 'error' | null = null;
+    if (unknownEventKey && eventKey.startsWith('predicate:')) {
+      const predicateId = eventKey.slice('predicate:'.length);
+      if (predicateId) {
+        const predicateProbe = await withBoundedTimeout(getPredicateWatch(predicateId), {
+          fallback: null,
+          timeoutMs: 1_000,
+          label: 'events-await:predicateWatchEmitter',
+        });
+        const predicateWatch = predicateProbe.value;
+        if (predicateProbe.degraded || predicateProbe.value === null) {
+          if (predicateProbe.degraded) {
+            predicateWatchProbeFailure = predicateProbe.reason ?? 'error';
+            // The dynamic emitter registry could not answer. Preserve that gap instead
+            // of turning missing data into an orphan warning.
+            unknownEventKey = false;
+          }
+        } else if (predicateWatch?.active && predicateWatch.eventKey === eventKey) {
+          unknownEventKey = false;
+          activePredicateWatchEmitter = true;
+        }
       }
     }
 
@@ -1390,6 +1437,8 @@ export default defineTool({
                   fired_at: postRegisterProbe.value.lastFiredAt,
                   advice: taskTerminalTarget
                     ? `The managed-task terminal key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired because this task has already entered its first authoritative terminal ledger state. Do not wait; inspect the terminal result and continue now.`
+                    : coordReceiptTarget
+                      ? `The coordination receipt key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired. Inspect the receipt payload; a receipt does not prove the requested action was completed.`
                     : `The git-sync egress key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired and the commit is already on origin/staging. Proceed with the work this egress unblocks now.`,
                 }),
               },
@@ -1529,6 +1578,12 @@ export default defineTool({
       ownerId: identity.ownerId,
       event: eventKey,
     });
+    // WI-6554700010014960: the plan review above reads only the presence plan, so an agent
+    // carrying owner-directive work across several plans parked on main with no message at
+    // all. When that review had nothing to say, every main wait still gets the reminder.
+    const mainWaitAdvisory = mainWaitPlanReview
+      ? null
+      : await mainWaitAdvisoryForWait({ ownerId: identity.ownerId, event: eventKey, note: args.note });
 
     // P-010 (OP-BRIEF-P010-WAIT): a pending one-shot wake registration is the await outcome
     // that blocks the caller across turns; every early return above (already_fired,
@@ -1543,13 +1598,17 @@ export default defineTool({
           }
         : null,
       catalogEmitter,
+      catalogProbeFailure,
+      predicateWatchProbeFailure,
       emitterHint: patternAwait
         ? 'pattern'
-        : declaredAnnouncement
-          ? 'declared-out-of-scope'
-          : emitterEvidence
-            ? 'fired-uncatalogued'
-            : null,
+        : activePredicateWatchEmitter
+          ? 'active-predicate-watch'
+          : declaredAnnouncement
+            ? 'declared-out-of-scope'
+            : emitterEvidence
+              ? 'fired-uncatalogued'
+              : null,
       noKnownEmitter: unknownEventKey || noKnownEmitterForAnnouncedGate !== null,
       wakeHandleNote: handleNote,
     });
@@ -1741,6 +1800,7 @@ export default defineTool({
             ...(operationalBrief ? { operational_brief: operationalBrief } : {}),
             ...(acceptancePlaneAdvisory ? { acceptance_plane_advisory: acceptancePlaneAdvisory } : {}),
             ...(mainWaitPlanReview ? { main_wait_plan_review: mainWaitPlanReview } : {}),
+            ...(mainWaitAdvisory ? { main_wait_advisory: mainWaitAdvisory } : {}),
             advice: patternAwait
               ? `Registered a PATTERN await on "${row.eventKey}". End your turn now — you will be re-invoked when the FIRST matching key fires (or at the deadline). It is one-shot: re-register if you need to wake on the next match too. Do not poll.`
               : 'Registered. End your turn now — you will be re-invoked when the event fires (or at the deadline). Do not poll.',

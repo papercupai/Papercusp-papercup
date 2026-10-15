@@ -61,7 +61,7 @@ vi.mock('../../scheduler/fleet-scope-admission', async (importOriginal) => ({
   diagnoseFleetScopeTerminalExhaustion: vi.fn(async () => null),
   diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
   diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),
-  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
+  diagnoseFleetScopeFeatureFamilyExclusions: vi.fn(async () => null),
   fleetScopedMiss: fleetScopedMissM,
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {

@@ -249,25 +249,76 @@ describe('withInjectedJsonReport — a private report, without stealing stdout f
     });
   });
 
-  it('leaves a caller that chose its own reporter completely alone', () => {
-    // testing:run always passes --reporter=json and its whole contract is that stdout IS the
-    // report. Injecting there would rewrite output somebody is parsing.
+  it.each(['default', 'verbose', 'dot'])('retains %s human output with private assertion and ledger reports', (reporter) => {
+    withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot, reporterPath) => {
+      for (const selected of [[`--reporter=${reporter}`], ['--reporter', reporter]]) {
+        const input = ['--silent', ...selected];
+        const { args, injectedReportPath } = withInjectedJsonReport(input, '/tmp/r.json', {
+          repoRoot,
+          env: { PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'operator-core' },
+        });
+        expect(args).toEqual([
+          ...input,
+          '--reporter=json',
+          `--reporter=${reporterPath('admin-test-runs')}`,
+          `--reporter=${reporterPath('executed-source-map')}`,
+          '--outputFile=/tmp/r.json',
+        ]);
+        expect(injectedReportPath).toBe('/tmp/r.json');
+        expect(input).toEqual(['--silent', ...selected]);
+      }
+    });
+  });
+
+  it('retains evidence with explicit reporters while preserving output formats and paths', () => {
     const chosenSets = [
       ['--reporter=json'],
       ['--reporter', 'json'],
-      ['--outputFile=/x.json'],
-      ['--outputFile', '/x.json'],
+      ['--reporter=junit'],
+      ['--reporter=./custom-reporter.mjs'],
+      ['--reporter=verbose', '--reporter=json'],
+      ['--reporter=verbose', '--outputFile=/x.json'],
     ];
-    withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot) => {
+    withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot, reporterPath) => {
       for (const chosen of chosenSets) {
         expect(callerChoseReporting(chosen)).toBe(true);
         const { args, injectedReportPath } = withInjectedJsonReport(chosen, '/tmp/r.json', {
           repoRoot,
           env: { PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'operator-core' },
         });
-        expect(args).toEqual(chosen);
+        expect(args).toEqual([
+          ...chosen,
+          `--reporter=${reporterPath('admin-test-runs')}`,
+          `--reporter=${reporterPath('executed-source-map')}`,
+        ]);
         expect(injectedReportPath).toBeNull();
       }
+    });
+  });
+
+  it.each([['--reporter'], ['--outputFile=/x.json'], ['--outputFile', '/x.json']])(
+    'preserves a malformed reporter or outputFile-only config selection (%j)', (...chosen) => {
+      withReporterFiles(['admin-test-runs'], (repoRoot) => {
+        const result = withInjectedJsonReport(chosen, '/tmp/r.json', { repoRoot, env: {} });
+        expect(result).toEqual({ args: chosen, injectedReportPath: null });
+      });
+    },
+  );
+
+  it('keeps one ledger reporter when the caller already selected its workspace wrapper', () => {
+    withReporterFiles(['admin-test-runs'], (repoRoot) => {
+      const chosen = ['--reporter=json', '--reporter=/workspace/test/reporters/admin-test-runs-reporter.ts'];
+      expect(withInjectedJsonReport(chosen, '/tmp/r.json', { repoRoot, env: {} }))
+        .toEqual({ args: chosen, injectedReportPath: null });
+    });
+  });
+
+  it('honors evidence opt-out for a caller-owned JSON report', () => {
+    withReporterFiles(['admin-test-runs', 'executed-source-map'], (repoRoot) => {
+      const chosen = ['--reporter=json', '--outputFile=/x.json'];
+      expect(withInjectedJsonReport(chosen, '/tmp/r.json', {
+        repoRoot, env: { PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '1' },
+      })).toEqual({ args: chosen, injectedReportPath: null });
     });
   });
 

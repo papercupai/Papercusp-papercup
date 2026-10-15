@@ -43,18 +43,23 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { observeFallback } from '../degradation/fallback-observations';
 
 import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
+import { isReadOnlyGitBatchExec } from '../git-batch';
 import { SPAWNER_SOCKET_ENV, resolveSpawnerSocketPath } from './spawner-socket-path';
 import type { SpawnerCallOpts } from './spawner-ipc-client';
 import { reapDeadSidecar, sidecarContainmentCurrent, type SidecarContainment } from './sidecar-exec-lifetime';
 import { recordSidecarExecLatency } from './sidecar-read-only-git';
+import { markSidecarPostDispatchFault } from './sidecar-dispatch-fault';
+import type { ProcessExecCallerLabel } from './sidecar-exec-process';
 
 /** The shape every `RunGit` seam in the repo returns. */
 export interface GitRunResult {
   code: number;
   stdout: string;
   stderr: string;
+  error?: { code: string | null; signal: string | null; killed: boolean };
 }
 
 /**
@@ -71,6 +76,7 @@ export interface GitStdinRunResult {
   code: number;
   stdout: Buffer;
   stderr: string;
+  error?: GitRunResult['error'];
 }
 
 /**
@@ -163,7 +169,9 @@ export function resetSpawnOffloadHostForTest(): void {
  *   2. `explicitVar` set → as set. The caller's own opt-in/opt-out override,
  *      letting one subsystem be switched independently while a change is being
  *      rolled out or bisected (and the kill-switch for this default).
- *   3. `PAPERCUSP_SPAWNER_SIDECAR=1` → ON (the bg-host).
+ *   3. `PAPERCUSP_SPAWNER_SIDECAR=1` → ON only in a process marked as an
+ *      offload host. The shared var is inherited by child shells, so by itself
+ *      it is not proof that this process owns the host's sidecar.
  *   4. Otherwise ON iff this process is a {@link markSpawnOffloadHost marked}
  *      spawn-offload host AND a spawner socket is already established for it
  *      (`PAPERCUSP_SPAWNER_IPC_SOCKET`, pinned at boot for a clustered host or set
@@ -180,7 +188,10 @@ export function gitSidecarEnabled(
   if (explicitVar && env[explicitVar] != null) {
     return isSidecarEnabledFromEnv({ enableVar: 'PAPERCUSP_SPAWNER_SIDECAR', modeVar, explicitVar }, env);
   }
-  if (isSidecarEnabledFromEnv({ enableVar: 'PAPERCUSP_SPAWNER_SIDECAR', modeVar }, env)) return true;
+  if (
+    isSpawnOffloadHost() &&
+    isSidecarEnabledFromEnv({ enableVar: 'PAPERCUSP_SPAWNER_SIDECAR', modeVar }, env)
+  ) return true;
   return isSpawnOffloadHost() && Boolean(env[SPAWNER_SOCKET_ENV]?.trim());
 }
 
@@ -206,6 +217,8 @@ export function gitSidecarEnabled(
  */
 export interface SidecarFallbackSubsystemStats {
   readonly count: number;
+  /** Counted failures that rejected the request instead of executing locally. */
+  readonly rejected?: number;
   readonly firstAtMs: number;
   readonly lastAtMs: number;
   readonly lastReason: string;
@@ -218,6 +231,7 @@ export interface SidecarFallbackStats {
 
 interface MutableFallbackEntry {
   count: number;
+  rejected?: number;
   firstAtMs: number;
   lastAtMs: number;
   lastReason: string;
@@ -298,7 +312,7 @@ export class SidecarCircuitOpenError extends Error {
   constructor(readonly retryAfterMs: number) {
     super(
       `spawner sidecar circuit OPEN — skipping the sidecar for ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s ` +
-        `(${SIDECAR_BREAKER_TRIP_AFTER} consecutive real fallbacks; local spawn is being used instead)`,
+        `(${SIDECAR_BREAKER_TRIP_AFTER} consecutive real failures; caller fallback policy applies)`,
     );
     this.name = 'SidecarCircuitOpenError';
   }
@@ -395,15 +409,45 @@ function noteSidecarSuccess(): void {
 }
 
 /**
- * Record that `subsystem` fell back to a local spawn because the sidecar was
- * unavailable. Safe to call on every fallback — it is two Map operations and,
+ * Record that `subsystem` could not use the sidecar. The optional disposition
+ * distinguishes an explicit rejection from a local fallback without losing
+ * failure/breaker accounting. Safe on every failure — it is two Map operations and,
  * at most once a minute per subsystem, one `console.warn`. A REAL failure
  * (anything but the breaker's own {@link SidecarCircuitOpenError}) also feeds
  * the circuit breaker above.
  */
-export function noteSidecarFallback(subsystem: string, e: unknown, nowMs: number = Date.now()): void {
+export function noteSidecarFallback(
+  subsystem: string,
+  e: unknown,
+  nowMs: number = Date.now(),
+  disposition: 'local' | 'rejected' = 'local',
+): void {
+  recordSidecarFallback(subsystem, e, nowMs, true, disposition);
+}
+
+/** Count a read-only batch deadline fallback without treating it as sidecar failure. */
+export function noteSidecarDeadlineFallback(subsystem: string, e: unknown, nowMs: number = Date.now()): void {
+  recordSidecarFallback(subsystem, e, nowMs, false);
+}
+
+function recordSidecarFallback(
+  subsystem: string,
+  e: unknown,
+  nowMs: number,
+  tripBreaker: boolean,
+  disposition: 'local' | 'rejected' = 'local',
+): void {
   const reason = e instanceof Error ? e.message : String(e);
-  if (!(e instanceof SidecarCircuitOpenError)) {
+  // Record every eligible rejection before warning throttling. Use bounded reasons;
+  // arbitrary exception text would create a new condition key for every command.
+  observeFallback('spawner-sidecar-exec', {
+    eligible: 1,
+    applied: 0,
+    reason: !tripBreaker ? 'deadline-exceeded'
+      : e instanceof SidecarCircuitOpenError ? 'circuit-open'
+      : disposition === 'rejected' ? 'local-execution-rejected' : 'sidecar-unavailable',
+  }, { observedAt: new Date(nowMs) });
+  if (tripBreaker && !(e instanceof SidecarCircuitOpenError)) {
     const b = __sidecarBreaker;
     b.consecutiveFailures += 1;
     b.probeStartedAtMs = null;
@@ -429,24 +473,27 @@ export function noteSidecarFallback(subsystem: string, e: unknown, nowMs: number
     });
   }
 
+  const entry = __sidecarFallbacks.bySubsystem.get(subsystem)!;
+  if (disposition === 'rejected') entry.rejected = (entry.rejected ?? 0) + 1;
+
   const lastWarnAtMs = __sidecarFallbacks.lastWarnAtMs.get(subsystem);
   if (lastWarnAtMs !== undefined && nowMs - lastWarnAtMs < FALLBACK_WARN_INTERVAL_MS) return;
   __sidecarFallbacks.lastWarnAtMs.set(subsystem, nowMs);
 
-  const entry = __sidecarFallbacks.bySubsystem.get(subsystem)!;
   const since =
-    entry.count > 1 ? ` (${entry.count} fallbacks since ${new Date(entry.firstAtMs).toISOString()})` : '';
+    entry.count > 1 ? ` (${entry.count} ${entry.rejected ? 'sidecar failures' : 'fallbacks'} since ${new Date(entry.firstAtMs).toISOString()})` : '';
   const breaker = getSidecarBreakerState(nowMs);
   const breakerNote =
     breaker.state === 'closed'
       ? ''
       : ` [circuit ${breaker.state}: ${breaker.shortCircuited} call(s) skipped the sidecar, trips=${breaker.trips}]`;
-  console.warn(`[${subsystem}] spawner-sidecar git unavailable, using local spawn${since}${breakerNote}: ${reason}`);
+  const outcome = disposition === 'rejected' ? 'rejected; local execution avoided' : 'fallback to local execution';
+  console.warn(`[${subsystem}] spawner-sidecar ${outcome}${since}${breakerNote}: ${reason}`);
 }
 
 /**
- * Every sidecar fallback recorded in this process. A non-zero, still-CLIMBING
- * count means git calls are currently paying the full fork cost.
+ * Every sidecar failure recorded in this process. `count - (rejected ?? 0)`
+ * identifies local fallbacks; rejected requests did not pay the local fork cost.
  */
 export function getSidecarFallbackStats(): SidecarFallbackStats {
   const bySubsystem: Record<string, SidecarFallbackSubsystemStats> = {};
@@ -513,6 +560,7 @@ export async function runCommandViaSpawnerSidecar(
   opts: {
     cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv; idleTimeoutMs?: number;
     signal?: AbortSignal; onProgress?: () => void;
+    rpcTimeoutMs?: number;
   },
 ): Promise<GitRunResult> {
   const aborted = (): GitRunResult => ({ code: -1, stdout: '', stderr: `${command} aborted before sidecar process start` });
@@ -529,7 +577,11 @@ export async function runCommandViaSpawnerSidecar(
   let fence: { serverGeneration: string; connectionId: string } | undefined;
   let containment: SidecarContainment | undefined;
   let requestId: number | undefined;
+  let clientConnectionId: string | undefined;
   let cancelSent = false;
+  let execStartedAt = 0;
+  let childPid: number | null = null;
+  const rpcTimeoutMs = opts.rpcTimeoutMs ?? (opts.timeoutMs + 35_000);
   const onAbort = (): void => {
     if (requestId === undefined || cancelSent) return;
     cancelSent = true;
@@ -551,12 +603,13 @@ export async function runCommandViaSpawnerSidecar(
       }
       if (opts.signal?.aborted) return aborted();
     }
-    const execStartedAt = performance.now();
+    execStartedAt = performance.now();
     const res = await client.call<GitRunResult>(
       'process:exec',
       {
         command,
         args,
+        callerLabel: 'git-via-sidecar.runCommandViaSpawnerSidecar' satisfies ProcessExecCallerLabel,
         cwd: opts.cwd,
         env: opts.env,
         timeoutMs: opts.timeoutMs,
@@ -564,24 +617,63 @@ export async function runCommandViaSpawnerSidecar(
         ...(fence ? { fence } : {}),
       },
       {
-        timeoutMs: opts.timeoutMs + 35_000,
+        timeoutMs: rpcTimeoutMs,
+        onPid: (pid) => { childPid = pid; },
         onOutputActivity: opts.onProgress,
-        onRequestId: (id) => {
+        onRequestId: (id, connectionId) => {
           requestId = id;
+          clientConnectionId = connectionId;
           if (opts.signal?.aborted) onAbort();
         },
       },
     );
     noteSidecarSuccess();
+    // A child's non-zero exit still proves primary execution. An infrastructure
+    // rejection does not; its caller records the failed decision at the fallback seam.
+    if (!isSidecarInfrastructureFault(res)) {
+      observeFallback('spawner-sidecar-exec', { eligible: 1, applied: 1, reason: 'applied' });
+    }
     // WI-10004674: per-read wall latency, kept for read-only git only. Measured HERE
     // (the client sees every exec) — NOT from the receipt ledger, which after the
     // lazy-receipt fix holds only the slow reads and so cannot give a per-read p50.
-    recordSidecarExecLatency({ command, args }, performance.now() - execStartedAt);
+    // One verified dev-deploy batch is one sidecar read-latency sample. Treat it
+    // as a `git log` read so the shared reader still observes bounded batch calls.
+    const latencyParams = isReadOnlyGitBatchExec({ command, args })
+      ? { command: 'git', args: ['log'] }
+      : { command, args };
+    recordSidecarExecLatency(latencyParams, performance.now() - execStartedAt);
     return res;
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorCode = (error as NodeJS.ErrnoException | null)?.code;
+    const timedOut = /^RPC request timeout: /.test(errorMessage);
+    const isTransportFault = Boolean(errorCode) || timedOut || /^(Socket error:|Sidecar socket |Sidecar connection |Connection timeout dialing)/.test(errorMessage);
+    if (requestId !== undefined && isTransportFault) {
+      console.warn('[spawner-process-exec-fault]', {
+        event: timedOut ? 'rpc-timeout' : 'transport-error',
+        clientConnectionId: clientConnectionId ?? null,
+        serverGeneration: fence?.serverGeneration ?? null,
+        connectionId: fence?.connectionId ?? null,
+        requestId,
+        method: 'process:exec',
+        errorCode: errorCode ?? null,
+        errorName: error instanceof Error ? error.name : null,
+        childPid,
+        elapsedMs: Math.max(0, Math.round(performance.now() - execStartedAt)),
+        childTimeoutMs: opts.timeoutMs,
+        childIdleTimeoutMs: opts.idleTimeoutMs ?? null,
+        rpcTimeoutMs,
+      });
+    }
     // Before dispatch a rejection is safe for local fallback. Afterwards keep
     // the caller's repository lease until this exact execution cannot run.
-    if (!isolated || !fence || !containment || requestId === undefined) throw error;
+    if (!isolated || !fence || !containment || requestId === undefined) {
+      // WI-10006716: an unsignalled call keeps the legacy rethrow contract, but a
+      // transport loss AFTER dispatch has an unknown outcome — the child may have
+      // run. Mark it so a caller never replays a mutation locally on its account.
+      if (requestId !== undefined && isTransportFault) throw markSidecarPostDispatchFault(error, requestId);
+      throw error;
+    }
     isolated.close();
     const unknownResult = (): GitRunResult => ({
       code: -1, stdout: '',
@@ -617,6 +709,146 @@ export async function runCommandViaSpawnerSidecar(
 /** True when a sidecar `process:exec` result is the sidecar's own fault, not the child's exit. */
 export function isSidecarInfrastructureFault(res: { code: number; stderr: string }): boolean {
   return res.code === -1 && res.stderr.startsWith('spawner sidecar ');
+}
+
+/** The shape `util.promisify(execFile)` rejects with, which callers already inspect. */
+export interface ExecFileLikeError extends Error {
+  code: number | string | undefined;
+  stdout: string;
+  stderr: string;
+  killed?: boolean;
+  signal?: string | null;
+}
+
+export interface ExecFileViaSidecarOptions {
+  /** Kill timeout in ms — the same meaning as execFile's `timeout`. */
+  timeoutMs: number;
+  /** Optional cap for the sidecar RPC itself; defaults to child timeout + 35s. */
+  rpcTimeoutMs?: number;
+  /**
+   * {@link noteSidecarFallback} label. One per call site, so the fallback census names
+   * WHICH caller is paying the local fork cost rather than an anonymous total.
+   */
+  subsystem: string;
+  /** Per-site override for {@link gitSidecarEnabled} (`0` forces local). */
+  sidecarVar?: string;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  /** Local-path only: execFile's `maxBuffer`. The sidecar applies its own output bound. */
+  maxBuffer?: number;
+}
+
+export interface ExecFileViaSidecarDeps {
+  sidecarEnabled?: () => boolean;
+  viaSidecar?: typeof runCommandViaSpawnerSidecar;
+  /** Test seam for the governed local execution path. */
+  executeProcess?: typeof import('./sidecar-exec-process').execProcess;
+  local?: (
+    command: string,
+    args: string[],
+    options: { timeout: number; cwd?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number },
+  ) => Promise<{ stdout: string; stderr?: string }>;
+}
+
+const DEFAULT_EXEC_FILE_MAX_BUFFER = 1024 * 1024;
+
+async function defaultLocalExecFile(
+  command: string,
+  args: string[],
+  options: { timeout: number; cwd?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number },
+  executeProcess?: typeof import('./sidecar-exec-process').execProcess,
+): Promise<{ stdout: string; stderr: string }> {
+  // Lazy: keeps the routing module import-safe where child_process is stubbed.
+  const { execProcess } = await import('./sidecar-exec-process');
+  const env = options.env === undefined
+    ? undefined
+    : Object.fromEntries(Object.entries(options.env).filter(([, value]) => value !== undefined)) as Record<string, string>;
+  const result = await (executeProcess ?? execProcess)({
+    command,
+    args,
+    timeoutMs: options.timeout,
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(env !== undefined ? { env } : {}),
+    // execFile replaces the child env when env is supplied; otherwise it inherits.
+    inheritEnv: options.env === undefined,
+    maxBuffer: options.maxBuffer ?? DEFAULT_EXEC_FILE_MAX_BUFFER,
+  });
+  if (result.code === 0) return { stdout: result.stdout, stderr: result.stderr };
+
+  const message = result.maxBufferExceeded
+    ? result.maxBufferExceeded + ' maxBuffer length exceeded'
+    : 'Command failed: ' + command + ' ' + args.join(' ') + (result.stderr ? '\n' + result.stderr : '');
+  const error = new Error(message) as ExecFileLikeError;
+  error.code = result.maxBufferExceeded ? 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' : result.code;
+  error.stdout = result.stdout;
+  error.stderr = result.stderr;
+  if (result.maxBufferExceeded || result.code === -1) {
+    error.killed = true;
+    error.signal = result.stderr.match(/terminated by signal (SIG[A-Z0-9]+)/)?.[1] ?? 'SIGTERM';
+  }
+  throw error;
+}
+
+/**
+ * Run one short subprocess with `util.promisify(execFile)` semantics — resolve
+ * `{ stdout, stderr }` on exit 0, REJECT with an error carrying `.code` / `.stdout` /
+ * `.stderr` otherwise — forked by the spawner sidecar wherever this host has one.
+ *
+ * Why (WI-10004975): fork cost scales with the PARENT's RSS (measured on this box:
+ * 2 ms at 0 GB, ~100 ms at 1 GB, ~270 ms at 4 GB of the synchronous spawn), and a
+ * 13 GB bg-host spent 33–73% of its main-thread samples in native spawn for short
+ * diagnostic commands (secret-tool, systemctl, journalctl, gitnexus cypher). The
+ * sidecar is small, so its fork is cheap and the caller pays a socket round-trip.
+ *
+ * This is the one shared seam (lifted from systemd-service-probe's execProbeCommand,
+ * WI-10002709). A transport failure or a sidecar-infrastructure fault falls back to the
+ * local spawn and is COUNTED under `subsystem` (feeding the circuit breaker too), so a
+ * sick sidecar degrades latency, never the command's answer.
+ */
+export async function execFileViaSidecar(
+  command: string,
+  args: string[],
+  opts: ExecFileViaSidecarOptions,
+  deps: ExecFileViaSidecarDeps = {},
+): Promise<{ stdout: string; stderr: string }> {
+  const sidecarEnabled = deps.sidecarEnabled ?? (() => gitSidecarEnabled(opts.sidecarVar));
+  if (sidecarEnabled()) {
+    let res: GitRunResult | null = null;
+    try {
+      res = await (deps.viaSidecar ?? runCommandViaSpawnerSidecar)(command, args, {
+        timeoutMs: opts.timeoutMs,
+        ...(opts.rpcTimeoutMs !== undefined ? { rpcTimeoutMs: opts.rpcTimeoutMs } : {}),
+        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+        ...(opts.env !== undefined ? { env: opts.env } : {}),
+      });
+    } catch (e) {
+      noteSidecarFallback(opts.subsystem, e);
+    }
+    if (res && isSidecarInfrastructureFault(res)) {
+      noteSidecarFallback(opts.subsystem, new Error(res.stderr));
+      res = null;
+    }
+    if (res) {
+      if (res.code !== 0) {
+        const err = new Error(
+          `Command failed: ${command} ${args.join(' ')} exited ${res.code} (via spawner sidecar)\n${res.stderr}`,
+        ) as ExecFileLikeError;
+        err.code = res.code;
+        err.stdout = res.stdout;
+        err.stderr = res.stderr;
+        throw err;
+      }
+      return { stdout: res.stdout, stderr: res.stderr };
+    }
+  }
+  const local = deps.local ?? ((cmd, argv, options) => defaultLocalExecFile(cmd, argv, options, deps.executeProcess));
+  const { stdout, stderr } = await local(command, args, {
+    timeout: opts.timeoutMs,
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    ...(opts.env !== undefined ? { env: opts.env } : {}),
+    ...(opts.maxBuffer !== undefined ? { maxBuffer: opts.maxBuffer } : {}),
+  });
+  return { stdout, stderr: stderr ?? '' };
 }
 
 /**
@@ -681,8 +913,8 @@ let handoffSeq = 0;
  * output up with an ASYNC `fs.readFile` on the libuv threadpool. Byte fidelity
  * is then structural rather than promised.
  *
- * Rejects on any sidecar problem — callers fall back to a local spawn, so a
- * fault here degrades performance, never correctness.
+ * Rejects on any sidecar problem. Callers must preserve that failure or choose
+ * an explicitly safe local route; bulk operator readers cannot fork locally.
  */
 export async function runGitStdinViaSpawnerSidecar(
   args: string[],
@@ -708,22 +940,37 @@ export async function runGitStdinViaSpawnerSidecar(
       code: number;
       stderr?: string;
       stdoutBytes?: number;
+      error?: GitStdinRunResult['error'];
     }>(
       'process:exec',
-      { command: 'git', args, cwd, env, timeoutMs, stdinPath, stdoutPath },
+      {
+        command: 'git',
+        args,
+        callerLabel: 'git-via-sidecar.runGitStdinViaSpawnerSidecar' satisfies ProcessExecCallerLabel,
+        cwd,
+        env,
+        timeoutMs,
+        stdinPath,
+        stdoutPath,
+      },
       { timeoutMs: timeoutMs + 35_000 },
     );
     const stdout = await fsp.readFile(stdoutPath);
     // A short read here would silently truncate a `--batch` stream and desync
     // the frame walk — which is exactly the corruption this design exists to
-    // rule out, so it must fail loudly onto the local fallback, not quietly.
+    // rule out, so it must reject explicitly rather than return corrupt bytes.
     if (typeof res.stdoutBytes === 'number' && res.stdoutBytes !== stdout.length) {
       throw new Error(
         `spawner sidecar handoff size mismatch: git wrote ${res.stdoutBytes} bytes, read back ${stdout.length}`,
       );
     }
     noteSidecarSuccess();
-    return { code: res.code, stdout, stderr: res.stderr ?? '' };
+    if (!isSidecarInfrastructureFault({ code: res.code, stderr: res.stderr ?? '' })) {
+      observeFallback('spawner-sidecar-exec', { eligible: 1, applied: 1, reason: 'applied' });
+    }
+    return { code: res.code, stdout, stderr: res.stderr ?? '',
+      ...(res.error ? { error: res.error } : {}),
+    };
   } finally {
     // Never leave blob contents lying around, on success or failure.
     await fsp.rm(stdinPath, { force: true }).catch(() => {});

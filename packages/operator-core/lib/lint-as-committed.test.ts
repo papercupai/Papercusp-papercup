@@ -28,19 +28,179 @@
  * works and say nothing about whether the tree it feeds actually gets materialised.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
+import { computeWorkspaceRootFrom } from '@papercusp/test-config/admin-test-runs-reporter';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const scriptPath = resolve(here, '../../../scripts/lint-as-committed.mjs');
 const repoRoot = resolve(here, '../../..');
 
+type PublicDocsViteConfig = {
+  resolve?: { preserveSymlinks?: boolean };
+  plugins?: Array<{
+    name: string;
+    enforce?: string;
+    resolveId: (this: unknown, id: string, importer?: string) => string | null | { id: string } | Promise<string | null | { id: string }>;
+  }>;
+};
+
+async function readPublicDocsModule(): Promise<{
+  default: { vite?: PublicDocsViteConfig };
+  normalizeExternalAstroModuleIds: (projectRoot?: string) => NonNullable<PublicDocsViteConfig['plugins']>[number];
+}> {
+  const configPath = resolve(repoRoot, 'apps/papercusp-docs/astro.config.mjs');
+  // Use the producer's maintained Vite fallback, retaining named exports so
+  // shallow/persistent path assertions exercise the same resolver factory.
+  // Direct Vitest imports transform the whole Starlight graph and bypass
+  // Astro's fallback for .jsonc themes (EI-25875124368917949).
+  const [{ createMinimalViteDevServer }, { default: loadFallbackPlugin }] = await Promise.all([
+    import(resolve(repoRoot, 'node_modules/astro/dist/core/createMinimalViteDevServer.js')),
+    import(resolve(repoRoot, 'node_modules/astro/dist/vite-plugin-load-fallback/index.js')),
+  ]);
+  const server = await createMinimalViteDevServer(
+    loadFallbackPlugin({ root: pathToFileURL(dirname(configPath)) }),
+  );
+  try {
+    return await server.environments.ssr.runner.import(configPath);
+  } finally {
+    await server.close();
+  }
+}
+
 const mod = await import(scriptPath);
-const { parseArgs, detectorPathsFromCommand, parseGitmodules, summarize, isDirectCliInvocation } = mod as {
+describe('committed reporter database route', () => {
+  it('carries the original operator route when the frozen tree omits ignored configuration', () => {
+    const original = mkdtempSync(join(tmpdir(), 'committed-ledger-route-'));
+    try {
+      mkdirSync(join(original, 'apps/operator'), { recursive: true });
+      writeFileSync(join(original, 'apps/operator/.env.local'),
+        'DATABASE_URL=postgres://fixture:fixture@127.0.0.1:15432/canonical\nUNRELATED_SECRET=must-not-carry\n');
+      const child = mod.lintAsCommittedChildEnv({}, original);
+      expect(child.DATABASE_URL).toBe('postgres://fixture:fixture@127.0.0.1:15432/canonical');
+      expect(child).not.toHaveProperty('UNRELATED_SECRET');
+      expect(mod.lintAsCommittedChildEnv({ DATABASE_URL: 'postgres://explicit' }, original).DATABASE_URL)
+        .toBe('postgres://explicit');
+      for (const isolation of [{ PAPERCUSP_PG_PORT: '25432' }, { PAPERCUSP_SKIP_PG_DISCOVERY: '1' }]) {
+        expect(mod.lintAsCommittedChildEnv(isolation, original)).not.toHaveProperty('DATABASE_URL');
+      }
+    } finally { rmSync(original, { recursive: true, force: true }); }
+  });
+
+  // WI-6554700010012470: a kept clone reused WITHOUT lintAsCommittedChildEnv (mutation-probe's
+  // overlay, a direct test:file in the root) must still route to the operator database. The
+  // failing consumer was connection.ts (getOrgPg) via the box-wide discovery file, so the
+  // round-trip below is through connection.ts's own resolver, not pg-url's parser.
+  it('materializes only the operator DB pins into the clone, in a form connection.ts resolves', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'committed-db-route-'));
+    try {
+      const original = join(parent, 'original');
+      const clone = join(parent, 'clone');
+      mkdirSync(join(original, 'apps/operator'), { recursive: true });
+      mkdirSync(clone, { recursive: true });
+      writeFileSync(join(original, 'apps/operator/.env.local'),
+        'DATABASE_URL="postgres://fixture:fixture@127.0.0.1:15432/canonical"\nUNRELATED_SECRET=must-not-carry\n');
+      const target = join(clone, 'apps/operator/.env.local');
+      expect(mod.materializeOperatorDbRoute(original, clone)).toEqual({ path: target, names: ['DATABASE_URL'] });
+      const written = readFileSync(target, 'utf8');
+      expect(written).toContain('DATABASE_URL=postgres://fixture:fixture@127.0.0.1:15432/canonical');
+      expect(written).not.toContain('UNRELATED_SECRET');
+      expect(lstatSync(target).mode & 0o777).toBe(0o600);
+
+      const env: NodeJS.ProcessEnv = { ...process.env, ROUTE_FILE: target };
+      for (const name of ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL',
+        'PAPERCUSP_PG_PORT', 'PAPERCUSP_SKIP_PG_DISCOVERY']) delete env[name];
+      const probe = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
+        "import { _resolveUrlsForTests } from '@papercusp/db-org/connection';" +
+        ' const u = new URL(_resolveUrlsForTests(process.env.ROUTE_FILE).admin);' +
+        ' console.log(JSON.stringify({ host: u.hostname, port: u.port, database: u.pathname }));'],
+        { cwd: repoRoot, env, encoding: 'utf8', timeout: 30_000 });
+      expect(probe.status, probe.stderr).toBe(0);
+      expect(JSON.parse(probe.stdout.trim().split('\n').at(-1) ?? 'null'))
+        .toEqual({ host: '127.0.0.1', port: '15432', database: '/canonical' });
+
+      const bare = join(parent, 'bare');
+      mkdirSync(join(bare, 'apps/operator'), { recursive: true });
+      writeFileSync(join(bare, 'apps/operator/.env.local'), 'UNRELATED_SECRET=x\n');
+      expect(mod.materializeOperatorDbRoute(bare, join(parent, 'clone2'))).toBeNull();
+      expect(existsSync(join(parent, 'clone2/apps/operator/.env.local'))).toBe(false);
+      expect(mod.materializeOperatorDbRoute(join(parent, 'missing'), join(parent, 'clone3'))).toBeNull();
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+});
+describe('committed workspace selection', () => {
+  const manifestPath = (workspace?: string) => mod.workspaceManifestPath(workspace);
+  it('selects a workspace manifest without changing root defaults', () => {
+    expect(manifestPath()).toBe('package.json');
+    expect(manifestPath('apps/sidecar')).toBe('apps/sidecar/package.json');
+    expect(mod.parseArgs(['test', '--any', '--workspace=apps/sidecar'])).toMatchObject({
+      scripts: ['test'], any: true, workspace: 'apps/sidecar', unknown: [],
+    });
+    expect(mod.parseArgs(['lint:probe'])).not.toHaveProperty('workspace');
+  });
+  it.each(['', '../sidecar', '/tmp/sidecar', 'apps/../sidecar', 'apps//sidecar', 'C:/sidecar'])
+    ('refuses a selector outside the pinned directory contract: %s', (workspace) => {
+      expect(() => manifestPath(workspace)).toThrow('repository-relative directory');
+    });
+});
+const {
+  parseArgs,
+  detectorPathsFromCommand,
+  parseGitmodules,
+  planLinkExcludes,
+  writeLinkExcludes,
+  cloneWorkspaceTarget,
+  linkNodeModulesShadow,
+  lintAsCommittedChildEnv,
+  materializeMobileSourceContract,
+  owningSubmodule,
+  showAtRef,
+  summarize,
+  isDirectCliInvocation,
+  diagnoseNpmSwallow,
+} = mod as {
+  diagnoseNpmSwallow: (
+    parsed: unknown,
+    env?: Record<string, string | undefined>,
+  ) => {
+    viaNpm: boolean;
+    swallowedFlags: string[];
+    pathOperands: string[];
+    anyInferred: boolean;
+    correctedCommand: string;
+  } | null;
+  cloneWorkspaceTarget: (realTarget: unknown, repoRoot: unknown, workRoot: unknown) => string | null;
+  linkNodeModulesShadow: (
+    sharedNm: string,
+    cloneNm: string,
+    repoRoot: string,
+    workRoot: string,
+  ) => { entries: number; remapped: number; fallback: number };
+  lintAsCommittedChildEnv: (environment?: Record<string, string | undefined>, repoRoot?: string | null) => Record<string, string | undefined>;
+  materializeMobileSourceContract: (
+    repoRoot: string,
+    workRoot: string,
+    environment?: Record<string, string | undefined>,
+  ) => { root: string; sourceRepoRoot: string; sourceCommit: string; paths: string[] } | null;
+  owningSubmodule: (path: string, submodulePaths: unknown) => string | null;
+  showAtRef: (repoRoot: string, ref: string, path: string) => string | null;
   parseArgs: (argv: string[]) => {
     help: boolean;
     scripts: string[];
@@ -55,13 +215,251 @@ const { parseArgs, detectorPathsFromCommand, parseGitmodules, summarize, isDirec
   };
   detectorPathsFromCommand: (command: unknown) => string[];
   parseGitmodules: (text: unknown) => { name: string; path: string; url: string | null }[];
-  summarize: (results: { script: string; status: string; note?: string }[]) => {
+  planLinkExcludes: (linkedPaths: unknown, submodulePaths: unknown) => Record<string, string[]>;
+  writeLinkExcludes: (workRoot: string, excludePlan: Record<string, string[]>) => void;
+  summarize:(results: { script: string; status: string; note?: string }[]) => {
     exitCode: number;
     failedCount: number;
     lines: string[];
   };
   isDirectCliInvocation: (entryPath?: string) => boolean;
 };
+
+describe('committed mobile producer source contract (WI-10006121)', () => {
+  const sourcePath = 'tools/build-scripts/build-android.sh';
+
+  function withFixture(run: (fixture: { parent: string; source: string; repo: string; clone: string; sha: string }) => void) {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-mobile-source-'));
+    const source = join(parent, 'papercup-rust-mobile');
+    const repo = join(parent, 'papercusp');
+    const clone = join(parent, 'isolated', 'candidate');
+    mkdirSync(source);
+    mkdirSync(repo);
+    mkdirSync(clone, { recursive: true });
+    const git = (args: string[], input?: string) => execFileSync('git', args, { cwd: source, input, encoding: 'utf8' }).trim();
+    try {
+      git(['init', '--quiet', '--initial-branch=staging']);
+      const blob = git(['hash-object', '-w', '--stdin'], 'committed Android producer\n');
+      git(['update-index', '--add', '--cacheinfo', '100644', blob, sourcePath]);
+      const tree = git(['write-tree']);
+      const sha = git(['-c', 'user.name=Runner fixture', '-c', 'user.email=fixture@example.invalid', 'commit-tree', tree, '-m', 'mobile contract fixture']);
+      git(['update-ref', 'refs/heads/staging', sha]);
+      mkdirSync(dirname(join(source, sourcePath)), { recursive: true });
+      writeFileSync(join(source, sourcePath), 'dirty Android producer\n');
+      run({ parent, source, repo, clone, sha });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  }
+
+  it('copies the committed sibling blob and records its independent source commit', () => {
+    withFixture(({ source, repo, clone, sha }) => {
+      const snapshot = materializeMobileSourceContract(repo, clone, {});
+      expect(snapshot).not.toBeNull();
+      expect(readFileSync(join(snapshot!.root, sourcePath), 'utf8')).toBe('committed Android producer\n');
+      expect(snapshot!.sourceRepoRoot).toBe(realpathSync(source));
+      expect(snapshot!.sourceCommit).toBe(sha);
+      expect(JSON.parse(readFileSync(join(snapshot!.root, 'source-provenance.json'), 'utf8'))).toEqual({
+        schemaVersion: 1, sourceRepoRoot: realpathSync(source), sourceCommit: sha, paths: [sourcePath],
+      });
+      expect(readFileSync(join(source, sourcePath), 'utf8')).toBe('dirty Android producer\n');
+    });
+  });
+
+  it('honors the existing explicit mobile root outside the candidate parent', () => {
+    withFixture(({ source, clone, sha }) => {
+      const snapshot = materializeMobileSourceContract(join(clone, 'unrelated'), clone, { PAPERCUSP_MOBILE_ROOT: source });
+      expect(snapshot!.sourceCommit).toBe(sha);
+      expect(readFileSync(join(snapshot!.root, sourcePath), 'utf8')).toBe('committed Android producer\n');
+    });
+  });
+
+  it('keeps a nested snapshot on its recorded commit after the original HEAD moves', () => {
+    withFixture(({ source, repo, clone, parent, sha }) => {
+      const first = materializeMobileSourceContract(repo, clone, {})!;
+      // Neither a loose snapshot edit nor a newer original commit is the input
+      // identified by the inherited source-provenance record.
+      writeFileSync(join(first.root, sourcePath), 'tampered snapshot\n');
+      const git = (args: string[], input?: string) => execFileSync('git', args, { cwd: source, input, encoding: 'utf8' }).trim();
+      const blob = git(['hash-object', '-w', '--stdin'], 'newer committed producer\n');
+      git(['update-index', '--cacheinfo', '100644', blob, sourcePath]);
+      const tree = git(['write-tree']);
+      const newer = git(['-c', 'user.name=Runner fixture', '-c', 'user.email=fixture@example.invalid', 'commit-tree', tree, '-p', sha, '-m', 'newer producer']);
+      git(['update-ref', 'refs/heads/staging', newer]);
+      const nested = materializeMobileSourceContract(repo, join(parent, 'nested'), { PAPERCUSP_MOBILE_ROOT: first.root })!;
+      expect(newer).not.toBe(sha);
+      expect(nested.sourceCommit).toBe(sha);
+      expect(readFileSync(join(nested.root, sourcePath), 'utf8')).toBe('committed Android producer\n');
+    });
+  });
+
+  it('refuses an explicit missing source instead of silently using a sibling', () => {
+    withFixture(({ repo, clone, parent }) => {
+      expect(() => materializeMobileSourceContract(repo, clone, { PAPERCUSP_MOBILE_ROOT: join(parent, 'absent') })).toThrow('explicit mobile source root is missing');
+    });
+  });
+
+  it('refuses a source contract absent at HEAD rather than copying a dirty file', () => {
+    withFixture(({ repo, clone, source }) => {
+      execFileSync('git', ['update-index', '--force-remove', sourcePath], { cwd: source });
+      const tree = execFileSync('git', ['write-tree'], { cwd: source, encoding: 'utf8' }).trim();
+      const sha = execFileSync('git', ['-c', 'user.name=Runner fixture', '-c', 'user.email=fixture@example.invalid', 'commit-tree', tree, '-m', 'missing source'], { cwd: source, encoding: 'utf8' }).trim();
+      execFileSync('git', ['update-ref', 'refs/heads/staging', sha], { cwd: source });
+      expect(() => materializeMobileSourceContract(repo, clone, {})).toThrow('is absent at');
+      expect(existsSync(join(source, sourcePath))).toBe(true);
+    });
+  });
+
+  it('leaves repositories without a mobile sibling available for ordinary checks', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-without-mobile-'));
+    try {
+      expect(materializeMobileSourceContract(join(parent, 'repo'), join(parent, 'clone'), {})).toBeNull();
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('isolated clone module identity (EI-24824919200711849)', () => {
+  it('shares committed verdict storage across source clones without sharing another repository cache', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-verdict-origin-'));
+    try {
+      const first = join(parent, 'first');
+      const second = join(parent, 'second');
+      const alias = join(parent, 'alias');
+      mkdirSync(first);
+      mkdirSync(second);
+      symlinkSync(first, alias, 'dir');
+      const sourceEnv = { EXAMPLE: 'kept' };
+      const a = lintAsCommittedChildEnv(sourceEnv, first);
+      const b = lintAsCommittedChildEnv(sourceEnv, alias);
+      const c = lintAsCommittedChildEnv(sourceEnv, second);
+      expect(a.AFFECTED_TASK_VERDICT_CACHE_PATH).toBe(b.AFFECTED_TASK_VERDICT_CACHE_PATH);
+      expect(a.AFFECTED_TASK_VERDICT_CACHE_PATH).not.toBe(c.AFFECTED_TASK_VERDICT_CACHE_PATH);
+      expect(a.AFFECTED_TASK_VERDICT_CACHE_PATH).toMatch(/passing-verdicts-v2-committed-[a-f0-9]{16}\.json$/);
+      expect(sourceEnv).toEqual({ EXAMPLE: 'kept' });
+      expect(lintAsCommittedChildEnv({ AFFECTED_TASK_VERDICT_CACHE_PATH: '/explicit/proof.json' }, first)
+        .AFFECTED_TASK_VERDICT_CACHE_PATH).toBe('/explicit/proof.json');
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('marks only the child environment for clone-specific Vite resolution', () => {
+    const parent = { NODE_OPTIONS: '--trace-warnings', npm_config_workspaces: 'true', EXAMPLE: 'kept' };
+    expect(lintAsCommittedChildEnv(parent)).toEqual({
+      NODE_OPTIONS: '--trace-warnings',
+      npm_config_workspaces: undefined,
+      EXAMPLE: 'kept',
+      PAPERCUSP_LINT_AS_COMMITTED_CLONE: '1',
+    });
+    expect(parent).toEqual({ NODE_OPTIONS: '--trace-warnings', npm_config_workspaces: 'true', EXAMPLE: 'kept' });
+  });
+
+  it.each([
+    ['shallow', resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs')],
+    ['persistent', resolve(homedir(), '.papercusp/artifacts/tutorial/replacement/sources/operator/apps/papercusp-docs')],
+  ])('resolves injected Astro page imports against the clone root (%s)', async (_geometry, projectRoot) => {
+    const { normalizeExternalAstroModuleIds } = await readPublicDocsModule();
+    const { pluginPage } = await import(resolve(repoRoot, 'node_modules/astro/dist/vite-plugin-pages/page.js'));
+    const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
+    const component = relative(projectRoot, sharedRoute).split(sep).join('/');
+    const virtualId = `\0virtual:astro:page:${component.replace(/\./g, '@_@')}`;
+    // Exercise Astro's actual route writer: it prefixes the project-relative
+    // component with '/', even when the component traverses outside the clone.
+    const page = pluginPage({ routesList: { routes: [{ component, type: 'page' }] } });
+    const { code } = page.load.handler(virtualId);
+    const match = /import \* as _page from ("(?:[^"\\]|\\.)*");/.exec(code);
+    expect(match).not.toBeNull();
+    const request = JSON.parse(match![1]);
+    expect(request).toContain('/../');
+    const normalizer = normalizeExternalAstroModuleIds(projectRoot);
+    expect(normalizer.resolveId(request, virtualId)).toBe(sharedRoute);
+    expect(normalizer.resolveId(`${request}?astro&type=style&index=0`, virtualId)).toBe(`/@fs${sharedRoute}?astro&type=style&index=0`);
+    const localComponent = 'src/pages/index.astro';
+    const localVirtualId = `\0virtual:astro:page:${localComponent.replace(/\./g, '@_@')}`;
+    const localPage = pluginPage({ routesList: { routes: [{ component: localComponent, type: 'page' }] } });
+    const localRequest = JSON.parse(/import \* as _page from ("(?:[^"\\]|\\.)*");/.exec(localPage.load.handler(localVirtualId).code)![1]);
+    expect(normalizer.resolveId(localRequest, localVirtualId)).toBe(resolve(projectRoot, localComponent));
+    expect(normalizer.resolveId(sharedRoute)).toBe(sharedRoute);
+    expect(normalizer.resolveId(`${sharedRoute}?astro&type=style&index=0`)).toBe(`/@fs${sharedRoute}?astro&type=style&index=0`);
+  });
+
+  it('normalizes external Astro IDs in clone mode so virtual requests share the compile key', async () => {
+    const envKey = 'PAPERCUSP_LINT_AS_COMMITTED_CLONE';
+    const before = process.env[envKey];
+    try {
+      delete process.env[envKey];
+      const normalVite = (await readPublicDocsModule()).default.vite;
+      expect(normalVite?.resolve?.preserveSymlinks).toBeUndefined();
+      expect(normalVite?.plugins?.some(({ name }) => name === 'papercusp-clone-astro-id-normalizer')).toBeFalsy();
+
+      process.env[envKey] = '1';
+      const cloneVite = (await readPublicDocsModule()).default.vite;
+      expect(cloneVite?.resolve?.preserveSymlinks).toBe(false);
+
+      const normalizer = cloneVite?.plugins?.find(({ name }) => name === 'papercusp-clone-astro-id-normalizer');
+      expect(normalizer?.enforce).toBe('pre');
+      const sharedComponent = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/components/Page.astro'));
+      const virtualStyleId = `${sharedComponent}?astro&type=style&index=0&lang.css`;
+      const mainComponentId = normalizer?.resolveId?.(sharedComponent);
+      expect(mainComponentId).toBe(sharedComponent);
+      const astroUtilsPath = resolve(repoRoot, 'node_modules/astro/dist/vite-plugin-utils/index.js');
+      const { normalizeFilename } = await import(astroUtilsPath);
+      const cloneAppRoot = resolve(tmpdir(), 'papercusp-lint-as-committed-probe/apps/papercusp-docs');
+      const cloneRootUrl = pathToFileURL(`${cloneAppRoot}/`);
+      const normalizedVirtualStyleId = await normalizer?.resolveId?.(virtualStyleId);
+      expect(normalizedVirtualStyleId).toBe(`/@fs${virtualStyleId}`);
+      if (typeof normalizedVirtualStyleId !== 'string') throw new Error('style resolution must return an id string');
+      expect(normalizer?.resolveId?.(`/@fs${virtualStyleId}`)).toBe(`/@fs${virtualStyleId}`);
+      expect(normalizeFilename(normalizedVirtualStyleId?.split('?', 1)[0] ?? '', cloneRootUrl)).toBe(mainComponentId);
+
+      const sharedScript = realpathSync(resolve(dirname(sharedComponent), '../components-internals/SidebarPersistState.ts'));
+      const delegatedResolutions: Array<{ id: string; importer: string; options: { skipSelf: boolean } }> = [];
+      const resolvedScript = await normalizer?.resolveId?.call(
+        {
+          resolve: async (id: string, importer: string, options: { skipSelf: boolean }) => {
+            delegatedResolutions.push({ id, importer, options });
+            return { id: sharedScript };
+          },
+        },
+        '../components-internals/SidebarPersistState',
+        `${sharedComponent}?astro&type=script&index=0&lang.ts`,
+      );
+      expect(resolvedScript).toEqual({ id: sharedScript });
+      expect(delegatedResolutions).toEqual([{
+        id: '../components-internals/SidebarPersistState',
+        importer: sharedComponent,
+        options: { skipSelf: true },
+      }]);
+
+      const sharedRoute = realpathSync(resolve(repoRoot, 'node_modules/@astrojs/starlight/routes/static/404.astro'));
+      const sharedCommon = realpathSync(resolve(dirname(sharedRoute), '../common.astro'));
+      expect(normalizer?.resolveId?.('../common.astro', `${sharedRoute}?astro&type=page`)).toBe(`/@fs${sharedCommon}?astro&type=page`);
+      const relativeSharedRoute = relative(resolve(repoRoot, 'apps/papercusp-docs'), sharedRoute);
+      expect(relativeSharedRoute).toContain('../');
+      expect(normalizer?.resolveId?.('../common.astro', `${relativeSharedRoute}?astro&type=page`)).toBe(`/@fs${sharedCommon}?astro&type=page`);
+      const virtualRouteQuery = '?astro&type=page';
+      const noncanonicalFilesystemRoute = `/@fs/${relative(cloneAppRoot, sharedRoute)}${virtualRouteQuery}`;
+      expect(noncanonicalFilesystemRoute).toContain('/../');
+      expect(normalizer?.resolveId?.(noncanonicalFilesystemRoute)).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
+
+      const relativeTraversalRoute = `${relative(resolve(repoRoot, 'apps/papercusp-docs'), sharedRoute)}${virtualRouteQuery}`;
+      expect(relativeTraversalRoute).toContain('../');
+      const normalizedTraversalRoute = await normalizer?.resolveId?.(relativeTraversalRoute);
+      expect(normalizedTraversalRoute).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
+      if (typeof normalizedTraversalRoute !== 'string') throw new Error('route resolution must return an id string');
+      expect(normalizer?.resolveId?.(normalizedTraversalRoute ?? '')).toBe(`/@fs${sharedRoute}${virtualRouteQuery}`);
+
+      const localComponent = resolve(repoRoot, 'apps/papercusp-docs/src/components/Local.astro');
+      expect(normalizer?.resolveId?.(localComponent)).toBeNull();
+      expect(normalizer?.resolveId?.(`${localComponent}?raw`)).toBeNull();
+    } finally {
+      if (before === undefined) delete process.env[envKey];
+      else process.env[envKey] = before;
+    }
+  });
+});
 
 describe('parseArgs', () => {
   it('collects positional script names and defaults the ref to HEAD', () => {
@@ -153,6 +551,73 @@ describe('parseArgs', () => {
     // The early return is a separate code path from the main loop; an undefined
     // `forward` there would throw on `.length` at the ambiguity guard.
     expect(parseArgs(['--help']).forward).toEqual([]);
+  });
+});
+
+describe('diagnoseNpmSwallow (EI-25262907465098145 — npm ate --any and the separator)', () => {
+  const npmEnv = (extra: Record<string, string> = {}) => ({ npm_lifecycle_event: 'lint:as-committed', ...extra });
+
+  it('a correct invocation is not flagged', () => {
+    const parsed = parseArgs(['test:file', '--any', '--', 'packages/x/lib/a.test.ts']);
+    expect(diagnoseNpmSwallow(parsed, npmEnv())).toBeNull();
+    expect(diagnoseNpmSwallow(parseArgs(['lint:mdx', '--keep']), npmEnv({ npm_config_keep: 'true' }))).toBeNull();
+    expect(diagnoseNpmSwallow(parseArgs(['--help']), npmEnv({ npm_config_keep: 'true' }))).toBeNull();
+  });
+
+  it('a file operand with no separator means npm consumed the --, even though --any left no trace', () => {
+    // What `npm run lint:as-committed test:file --any -- a.test.ts` delivers on npm 11:
+    // the flag is gone with no env trace, and the operand arrives as a positional.
+    const d = diagnoseNpmSwallow(parseArgs(['test:file', 'packages/x/lib/a.test.ts']), npmEnv());
+    expect(d).not.toBeNull();
+    expect(d!.pathOperands).toEqual(['packages/x/lib/a.test.ts']);
+    expect(d!.anyInferred).toBe(true);
+    expect(d!.correctedCommand).toBe('npm run lint:as-committed -- test:file --any -- packages/x/lib/a.test.ts');
+  });
+
+  it('recovers --keep and --ref= from npm_config_* when npm launched this script', () => {
+    const d = diagnoseNpmSwallow(
+      parseArgs(['test:file', 'a.test.ts']),
+      npmEnv({ npm_config_keep: 'true', npm_config_ref: 'origin/staging' }),
+    );
+    expect(d!.swallowedFlags).toEqual(['--keep', '--ref=origin/staging']);
+    expect(d!.correctedCommand).toBe(
+      'npm run lint:as-committed -- test:file --keep --ref=origin/staging --any -- a.test.ts',
+    );
+    // A lint script needs no --any, and a lost --keep alone is still a refusal: running
+    // without it silently deletes the tree the caller asked to keep.
+    const lint = diagnoseNpmSwallow(parseArgs(['lint:mdx']), npmEnv({ npm_config_keep: 'true' }));
+    expect(lint!.swallowedFlags).toEqual(['--keep']);
+    expect(lint!.anyInferred).toBe(false);
+    expect(lint!.correctedCommand).toBe('npm run lint:as-committed -- lint:mdx --keep');
+  });
+
+  it('ignores INHERITED npm_config_* when npm did not launch this script', () => {
+    // A direct `node scripts/lint-as-committed.mjs` under an outer `npm run test:file --keep`
+    // inherits npm_config_keep. That flag was for the outer command, not this one.
+    const inherited = { npm_lifecycle_event: 'test:file', npm_config_keep: 'true', npm_config_ref: 'x' };
+    expect(diagnoseNpmSwallow(parseArgs(['lint:mdx']), inherited)).toBeNull();
+    expect(diagnoseNpmSwallow(parseArgs(['lint:mdx']), {})).toBeNull();
+    // The structural signal still applies: a path is never a script name.
+    const d = diagnoseNpmSwallow(parseArgs(['test:file', 'a.test.ts']), inherited);
+    expect(d!.viaNpm).toBe(false);
+    expect(d!.swallowedFlags).toEqual([]);
+  });
+
+  it('end-to-end: the real npm swallow is refused with a runnable corrected command', () => {
+    // Runs real npm, because the env/argv shape npm produces is the thing under test.
+    // It exits 2 before any git work, so it is cheap.
+    const env = { ...process.env };
+    for (const k of Object.keys(env)) if (k.startsWith('npm_config_') || k === 'npm_lifecycle_event') delete env[k];
+    const run = spawnSync(
+      'npm',
+      ['run', '--silent', 'lint:as-committed', 'test:file', '--any', '--keep', '--', 'packages/x/lib/a.test.ts'],
+      { cwd: repoRoot, encoding: 'utf8', env, timeout: 60_000, killSignal: 'SIGKILL' },
+    );
+    expect(run.error).toBeUndefined();
+    expect(run.status, run.stderr).toBe(2);
+    expect(run.stderr).toContain('npm consumed part of this command');
+    expect(run.stderr).toContain('npm run lint:as-committed -- test:file --keep --any -- packages/x/lib/a.test.ts');
+    expect(run.stderr).not.toContain('Pass --any if you really mean it');
   });
 });
 
@@ -254,6 +719,267 @@ describe('parseGitmodules (EI-21033860565861795 — the submodule-blindness bug)
     const parsed = parseGitmodules(text);
     expect(parsed.length).toBeGreaterThan(0);
     expect(parsed.find((s) => s.path === 'libs/papercusp')).toBeTruthy();
+  });
+});
+
+describe('planLinkExcludes (WI-10004898 — linked node_modules made every extracted tree dirty)', () => {
+  it('routes a top-level link to the superproject exclude, anchored', () => {
+    expect(planLinkExcludes(['node_modules', 'packages/operator-core/node_modules'], [])).toEqual({
+      '': ['/node_modules', '/packages/operator-core/node_modules'],
+    });
+  });
+
+  it('routes a link inside a submodule to THAT submodule, relative to its root', () => {
+    expect(planLinkExcludes(['libs/papercusp/node_modules', 'node_modules'], ['libs/papercusp'])).toEqual({
+      'libs/papercusp': ['/node_modules'],
+      '': ['/node_modules'],
+    });
+  });
+
+  it('picks the DEEPEST containing submodule, and never matches a sibling that merely shares a prefix', () => {
+    const plan = planLinkExcludes(
+      ['libs/papercusp/libs/db/node_modules', 'libs/papercusp-extra/node_modules'],
+      ['libs/papercusp', 'libs/papercusp/libs/db'],
+    );
+    expect(plan).toEqual({
+      'libs/papercusp/libs/db': ['/node_modules'],
+      '': ['/libs/papercusp-extra/node_modules'],
+    });
+  });
+
+  it('is total on junk input', () => {
+    expect(planLinkExcludes(undefined, undefined)).toEqual({});
+    expect(planLinkExcludes(['', 42, 'node_modules'], [null, ''])).toEqual({ '': ['/node_modules'] });
+  });
+});
+
+describe('writeLinkExcludes (EI-25175171560777563 — absorbed Git metadata)', () => {
+  it.each(['directory', 'pointer'] as const)('keeps infrastructure links ignored with a .git %s', (layout) => {
+    const root = mkdtempSync(join(tmpdir(), 'lint-link-excludes-'));
+    try {
+      const repository = join(root, 'libs', 'sub');
+      const metadata = join(root, 'metadata');
+      mkdirSync(repository, { recursive: true });
+      execFileSync('git', ['init', '-q', ...(layout === 'pointer' ? [`--separate-git-dir=${metadata}`] : []), repository]);
+      if (layout === 'pointer') {
+        // Absorbed submodules use a relative gitdir pointer rather than a directory.
+        writeFileSync(join(repository, '.git'), 'gitdir: ../../metadata\n');
+        expect(lstatSync(join(repository, '.git')).isFile()).toBe(true);
+      }
+      const excludePath = resolve(repository, execFileSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+        cwd: repository, encoding: 'utf8',
+      }).trim());
+      writeFileSync(excludePath, '# existing exclusion\n/existing-link\n');
+      const dependencyRoot = join(root, 'dependencies');
+      mkdirSync(dependencyRoot);
+      symlinkSync(dependencyRoot, join(repository, 'node_modules'), 'dir');
+      writeFileSync(join(repository, 'visible.txt'), 'must remain visible\n');
+
+      writeLinkExcludes(root, planLinkExcludes(['libs/sub/node_modules'], ['libs/sub']));
+
+      expect(readFileSync(excludePath, 'utf8')).toContain('/existing-link\n');
+      expect(execFileSync('git', ['check-ignore', 'node_modules'], { cwd: repository, encoding: 'utf8' }).trim())
+        .toBe('node_modules');
+      expect(execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+        cwd: repository, encoding: 'utf8',
+      }).trim()).toBe('?? visible.txt');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('cloneWorkspaceTarget (EI-24790229053787032 — workspace links must resolve into the extracted tree)', () => {
+  it('maps a workspace package inside the shared checkout to the same path in the extracted tree', () => {
+    expect(cloneWorkspaceTarget('/r/shared/libs/generic/search', '/r/shared', '/tmp/clone')).toBe(
+      '/tmp/clone/libs/generic/search',
+    );
+  });
+
+  it('leaves anything that is not a workspace package alone', () => {
+    // a real dependency living in a node_modules
+    expect(cloneWorkspaceTarget('/r/shared/node_modules/.pnpm/x', '/r/shared', '/tmp/clone')).toBeNull();
+    // outside the checkout, including a sibling that merely shares the prefix
+    expect(cloneWorkspaceTarget('/r/elsewhere/pkg', '/r/shared', '/tmp/clone')).toBeNull();
+    expect(cloneWorkspaceTarget('/r/shared-other/pkg', '/r/shared', '/tmp/clone')).toBeNull();
+    // the checkout root itself
+    expect(cloneWorkspaceTarget('/r/shared', '/r/shared', '/tmp/clone')).toBeNull();
+  });
+
+  it('is total on junk input', () => {
+    expect(cloneWorkspaceTarget(undefined, '/r', '/c')).toBeNull();
+    expect(cloneWorkspaceTarget('/r/a', '', '/c')).toBeNull();
+    expect(cloneWorkspaceTarget('/r/a', '/r', 42)).toBeNull();
+  });
+});
+
+describe('linkNodeModulesShadow (EI-24790229053787032 — a whole-directory link ran the SHARED tree)', () => {
+  function writePkg(dir: string, marker: string): void {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'p', main: 'index.js' }));
+    writeFileSync(join(dir, 'index.js'), `module.exports = ${JSON.stringify(marker)};\n`);
+  }
+
+  function fixture(): { root: string; shared: string; clone: string } {
+    const root = mkdtempSync(join(tmpdir(), 'lac-shadow-'));
+    const shared = join(root, 'shared');
+    const clone = join(root, 'clone');
+    // shared checkout: two workspace packages, one real dependency
+    writePkg(join(shared, 'libs', 'foo'), 'shared-foo');
+    writePkg(join(shared, 'libs', 'gone'), 'shared-gone');
+    writePkg(join(shared, 'node_modules', 'leftpad'), 'leftpad');
+    mkdirSync(join(shared, 'node_modules', '@papercusp'), { recursive: true });
+    symlinkSync('../../libs/foo', join(shared, 'node_modules', '@papercusp', 'foo'));
+    symlinkSync('../../libs/gone', join(shared, 'node_modules', '@papercusp', 'gone'));
+    // extracted tree: has its own (committed) foo, lacks gone (an uninitialised submodule)
+    writePkg(join(clone, 'libs', 'foo'), 'clone-foo');
+    mkdirSync(join(clone, 'app'), { recursive: true });
+    return { root, shared, clone };
+  }
+
+  it('resolves a workspace package to the extracted tree copy, everything else to the shared install', () => {
+    const { root, shared, clone } = fixture();
+    try {
+      const stats = linkNodeModulesShadow(join(shared, 'node_modules'), join(clone, 'node_modules'), shared, clone);
+      expect(stats).toEqual({ entries: 3, remapped: 1, fallback: 1 });
+      expect(lstatSync(join(clone, 'node_modules')).isSymbolicLink()).toBe(false);
+
+      // The failure this guards is a RUNTIME resolution, so assert what require() actually loads.
+      const req = createRequire(join(clone, 'app', 'x.js'));
+      expect(req('@papercusp/foo')).toBe('clone-foo');
+      expect(realpathSync(req.resolve('@papercusp/foo'))).toBe(realpathSync(join(clone, 'libs', 'foo', 'index.js')));
+      // absent in the extracted tree: falls back to the shared package (counted above, not silent)
+      expect(req('@papercusp/gone')).toBe('shared-gone');
+      // npm traverses a real package shell; runtime contents remain linked to the install.
+      expect(lstatSync(join(clone, 'node_modules', 'leftpad')).isSymbolicLink()).toBe(false);
+      expect(lstatSync(join(clone, 'node_modules', 'leftpad', 'index.js')).isSymbolicLink()).toBe(true);
+      expect(req('leftpad')).toBe('leftpad');
+      expect(req.resolve('leftpad')).toBe(realpathSync(join(shared, 'node_modules', 'leftpad', 'index.js')));
+      expect(req.resolve('@papercusp/foo')).toBe(realpathSync(join(clone, 'libs', 'foo', 'index.js')));
+
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('control: the previous whole-directory link loads the SHARED copy (the bug)', () => {
+    const { root, shared, clone } = fixture();
+    try {
+      symlinkSync(join(shared, 'node_modules'), join(clone, 'node_modules'), 'dir');
+      expect(createRequire(join(clone, 'app', 'x.js'))('@papercusp/foo')).toBe('shared-foo');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves npm hoisted and nested graph edges while linking installed runtime bytes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-npm-graph-'));
+    const shared = join(root, 'shared');
+    const clone = join(root, 'clone');
+    const broken = join(root, 'broken');
+    const put = (dir: string, manifest: Record<string, unknown>) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest));
+    };
+    const measure = (cwd: string) => {
+      const run = spawnSync('npm', ['ls', '--omit=dev', '--all', '--json'], {
+        cwd, encoding: 'utf8', timeout: 15_000,
+      });
+      expect(run.error).toBeUndefined();
+      return { status: run.status, tree: JSON.parse(run.stdout) };
+    };
+    try {
+      for (const dir of [shared, clone, broken]) {
+        put(dir, { name: 'graph-root', version: '1.0.0', dependencies: { parent: '1.0.0' } });
+      }
+      put(join(shared, 'node_modules/parent'), {
+        name: 'parent', version: '1.0.0', dependencies: { leaf: '1.0.0', nested: '1.0.0' },
+      });
+      put(join(shared, 'node_modules/leaf'), { name: 'leaf', version: '1.0.0' });
+      put(join(shared, 'node_modules/parent/node_modules/nested'), {
+        name: 'nested', version: '1.0.0', dependencies: { leaf: '1.0.0' },
+      });
+      writeFileSync(join(shared, 'node_modules/leaf/index.js'), "module.exports = 'installed-leaf';\n");
+      writeFileSync(join(shared, 'node_modules/.package-lock.json'), JSON.stringify({
+        name: 'graph-root', version: '1.0.0', lockfileVersion: 3, requires: true,
+        packages: {
+          'node_modules/parent': { version: '1.0.0', dependencies: { leaf: '1.0.0', nested: '1.0.0' } },
+          'node_modules/leaf': { version: '1.0.0' },
+          'node_modules/parent/node_modules/nested': { version: '1.0.0', dependencies: { leaf: '1.0.0' } },
+        },
+      }));
+      mkdirSync(join(broken, 'node_modules'));
+      for (const name of ['parent', 'leaf']) {
+        symlinkSync(join(shared, 'node_modules', name), join(broken, 'node_modules', name));
+      }
+      const control = measure(broken);
+      expect(control.status).toBe(1);
+      expect(control.tree.problems).toEqual(expect.arrayContaining([
+        expect.stringContaining('missing: leaf@1.0.0'),
+        expect.stringContaining('extraneous: leaf@1.0.0'),
+      ]));
+      const physical = measure(shared);
+      expect(physical.tree.problems ?? []).toEqual([]);
+      expect(physical.status).toBe(0);
+
+      linkNodeModulesShadow(join(shared, 'node_modules'), join(clone, 'node_modules'), shared, clone);
+      const result = measure(clone);
+      expect(result.status).toBe(0);
+      expect(result.tree.problems ?? []).toEqual([]);
+      const parent = result.tree.dependencies.parent;
+      expect(parent.dependencies.leaf.version).toBe('1.0.0');
+      expect(parent.dependencies.nested.dependencies.leaf.version).toBe('1.0.0');
+      expect(existsSync(join(clone, 'node_modules/.package-lock.json'))).toBe(false);
+      expect(createRequire(join(clone, 'entry.js'))('leaf')).toBe('installed-leaf');
+      expect(realpathSync(join(clone, 'node_modules/leaf/index.js')))
+        .toBe(join(shared, 'node_modules/leaf/index.js'));
+
+      // A real unsatisfied edge must remain an error; shells fix topology, not integrity.
+      put(join(shared, 'node_modules/parent'), {
+        name: 'parent', version: '1.0.0', dependencies: { leaf: '2.0.0', nested: '1.0.0' },
+      });
+      const invalid = measure(clone);
+      expect(invalid.status).toBe(1);
+      expect(invalid.tree.problems).toEqual(expect.arrayContaining([
+        expect.stringContaining('invalid: leaf@1.0.0'),
+      ]));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+describe('showAtRef (WI-10004908 — submodule test operands were refused as absent at the ref)', () => {
+  const gitOut = (cwd: string, args: string[]) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+
+  it('owningSubmodule picks the deepest containing submodule and ignores prefix-sharing siblings', () => {
+    const subs = ['libs/papercusp', 'libs/papercusp/libs/db'];
+    expect(owningSubmodule('libs/papercusp/libs/db/sql/1.sql', subs)).toBe('libs/papercusp/libs/db');
+    expect(owningSubmodule('libs/papercusp/README.md', subs)).toBe('libs/papercusp');
+    expect(owningSubmodule('libs/papercusp-extra/x.ts', subs)).toBeNull();
+    expect(owningSubmodule('package.json', undefined)).toBeNull();
+  });
+
+  it('reads a superproject path exactly as git show does', () => {
+    expect(showAtRef(repoRoot, 'HEAD', 'package.json')).toBe(gitOut(repoRoot, ['show', 'HEAD:package.json']));
+  });
+
+  it('reads a path INSIDE a submodule from the submodule at the pinned commit, not null', () => {
+    const subRoot = 'libs/papercusp';
+    const subRelFile = 'libs/db/src/connection.ts';
+    // Calibration: the instrument this fix replaces really is blind here, so a pass below
+    // cannot be the old code path answering by accident.
+    expect(() => gitOut(repoRoot, ['show', `HEAD:${subRoot}/${subRelFile}`])).toThrow();
+    const pin = gitOut(repoRoot, ['rev-parse', `HEAD:${subRoot}`]).trim();
+    const committed = gitOut(join(repoRoot, subRoot), ['show', `${pin}:${subRelFile}`]);
+    expect(committed.length).toBeGreaterThan(0);
+    expect(showAtRef(repoRoot, 'HEAD', `${subRoot}/${subRelFile}`)).toBe(committed);
+  });
+
+  it('still answers null for a path absent at the ref, inside or outside a submodule', () => {
+    expect(showAtRef(repoRoot, 'HEAD', 'no-such-dir/definitely-absent-WI-10004908.ts')).toBeNull();
+    expect(showAtRef(repoRoot, 'HEAD', 'libs/papercusp/no-such-dir/definitely-absent-WI-10004908.ts')).toBeNull();
   });
 });
 
@@ -394,7 +1120,8 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       timeout: 150_000,
       killSignal: 'SIGKILL',
     });
-    expect(run.status).not.toBe(2);
+    expect(run.error, `runner stdout:\n${run.stdout}\nrunner stderr:\n${run.stderr}`).toBeUndefined();
+    expect(run.status, `runner stdout:\n${run.stdout}\nrunner stderr:\n${run.stderr}`).not.toBe(2);
     // Proof the new step actually engaged, not just that nothing crashed — a future
     // edit that silently skips submodule init would still reach this lint fine (it
     // never touches libs/papercusp), so this line is load-bearing, not decorative.
@@ -411,8 +1138,697 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       // exact bytes the release gate itself would see. That equality is the whole
       // point of this tool.
       expect(extracted).toBe(committed);
+      // WI-10006131: real reporters must see the superproject, rather than treating
+      // a materialised submodule's standalone .git directory as the run root.
+      expect(lstatSync(join(workRoot, subRoot, '.git')).isFile()).toBe(true);
+      expect(computeWorkspaceRootFrom(dirname(join(workRoot, subFile)))).toBe(workRoot);
+      expect(computeWorkspaceRootFrom(join(workRoot, 'libs/test-config/src'))).toBe(workRoot);
+      // Populating a standalone clone is not enough: the parent repository must mark
+      // the submodule active or recursive Git scanners silently omit its real files.
+      const tracked = execFileSync('git', ['ls-files', '-z', '--recurse-submodules', '--', subFile], {
+        cwd: workRoot,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      }).split('\0').filter((p) => existsSync(join(workRoot, p)));
+      expect(tracked).toContain(subFile);
+      // WI-10004898: the extracted tree must be CLEAN to the same `git status` the test-run
+      // reporter samples for worktree_dirty, or no run inside it can ever be current proof.
+      // The linked node_modules are what dirtied it, so first prove the links exist (a tree
+      // with nothing linked would be trivially clean and this assertion vacuous).
+      expect(run.stdout, `runner stderr:\n${run.stderr}`).toMatch(/linked [1-9]\d* node_modules dir\(s\)/);
+      const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+        cwd: workRoot,
+        encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
+      expect(status).toBe('');
+      // WI-10005625: metadata and ignored runtime exports are prerequisites too.
+      const snapshottedMain = run.stdout.match(/main snapshot: ([0-9a-f]{40})/);
+      expect(snapshottedMain).not.toBeNull();
+      expect(execFileSync('git', ['rev-parse', 'main^{commit}'], { cwd: workRoot, encoding: 'utf8' }).trim()).toBe(snapshottedMain![1]);
+      expect(run.stdout).toContain('building pinned runtime exports: @papercusp/sse');
+      const requireClone = createRequire(join(workRoot, 'package.json'));
+      expect(requireClone('@papercusp/sse').sseResponse).toBeTypeOf('function');
+      expect(realpathSync(requireClone.resolve('@papercusp/sse'))).toBe(realpathSync(join(workRoot, 'libs/generic/sse/dist/index.js')));
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
     }
   }, 180_000);
+});
+
+describe('end-to-end — independent main and pinned runtime prerequisites (WI-10005625)', () => {
+  const gitFixture = (cwd: string, args: string[], input?: string) => execFileSync('git', args, {
+    cwd, input, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL', stdio: ['pipe', 'pipe', 'pipe'],
+  }).trim();
+
+  // Real git history with plumbing: no mocks, install, network, or shared-tree writes.
+  function snapshot(root: string, files: Record<string, string>, parent?: string): string {
+    for (const [name, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, name)), { recursive: true });
+      writeFileSync(join(root, name), content);
+      const blob = gitFixture(root, ['hash-object', '-w', '--stdin'], content);
+      gitFixture(root, ['update-index', '--add', '--cacheinfo', '100644', blob, name]);
+    }
+    const tree = gitFixture(root, ['write-tree']);
+    const sha = gitFixture(root, ['-c', 'user.name=Runner fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit-tree', tree, ...(parent ? ['-p', parent] : []), '-m', 'runner fixture']);
+    gitFixture(root, ['update-ref', 'refs/heads/staging', sha]);
+    return sha;
+  }
+
+  function fixture(build?: string, withMain = true) {
+    const root = mkdtempSync(join(tmpdir(), 'lac-prerequisites-'));
+    gitFixture(root, ['init', '--quiet', '--initial-branch=staging']);
+    const files = {
+      '.gitignore': 'node_modules/\nlibs/runtime/dist/\n',
+      'package.json': JSON.stringify({ private: true, scripts: { 'lint:probe': 'node probe.cjs' } }),
+      'probe.cjs': 'console.log("initial fixture");\n',
+      'libs/runtime/package.json': JSON.stringify({ name: '@fixture/runtime', type: 'module',
+        exports: { '.': { types: './source.d.ts', import: './source.mjs', require: './dist/index.cjs', default: './dist/index.cjs' } },
+        scripts: build === undefined ? {} : { build } }),
+      'libs/runtime/source.cjs': 'module.exports = "pinned-source";\n',
+      'libs/runtime/build.cjs': "const fs = require('node:fs'); fs.mkdirSync('dist', { recursive: true }); fs.writeFileSync('dist/index.cjs', 'module.exports = ' + JSON.stringify(require('./source.cjs')) + ';\\n');\n",
+    };
+    const main = snapshot(root, files);
+    if (withMain) gitFixture(root, ['update-ref', 'refs/heads/main', main]);
+    files['probe.cjs'] = `
+const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const { realpathSync, readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+${withMain ? `assert.equal(execFileSync('git', ['rev-parse', 'main^{commit}'], { encoding: 'utf8' }).trim(), ${JSON.stringify(main)});` : "assert.throws(() => execFileSync('git', ['rev-parse', '--verify', 'main^{commit}'], { stdio: 'pipe' }));"}
+assert.equal(require('@fixture/runtime'), 'pinned-source');
+assert.equal(realpathSync(require.resolve('@fixture/runtime')), realpathSync(resolve('libs/runtime/dist/index.cjs')));
+assert.equal(readFileSync('libs/runtime/source.cjs', 'utf8'), 'module.exports = "pinned-source";\\n');
+assert.equal(execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8' }), '');
+console.log('CLONE_PREREQUISITES_OK');
+`;
+    const head = snapshot(root, files, main);
+    mkdirSync(join(root, 'node_modules/@fixture'), { recursive: true });
+    symlinkSync('../../libs/runtime', join(root, 'node_modules/@fixture/runtime'));
+    mkdirSync(join(root, 'libs/runtime/dist'), { recursive: true });
+    writeFileSync(join(root, 'libs/runtime/dist/index.cjs'), 'module.exports = "shared-stale-dist";\n');
+    writeFileSync(join(root, 'libs/runtime/source.cjs'), 'module.exports = "shared-dirty-source";\n');
+    return { root, main, head };
+  }
+
+  function run(root: string, arbitrary = false) {
+    return spawnSync(process.execPath, [scriptPath, 'lint:probe', ...(arbitrary ? ['--any'] : [])], {
+      cwd: root, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+    });
+  }
+
+  it('refuses insufficient temporary headroom before cloning or running the committed command', () => {
+    const f = fixture('node build.cjs');
+    try {
+      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
+        cwd: f.root, encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, PAPERCUSP_DISK_ALARM_CRITICAL_GB: '1000000000000000' },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(2);
+      expect(result.stderr).toContain('no temporary directory has critical disk headroom');
+      expect(result.stdout).not.toContain('extracted ');
+      expect(result.stdout).not.toContain('CLONE_PREREQUISITES_OK');
+      expect(result.stderr).not.toContain('No space left on device');
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it('relocates an unsafe TMPDIR before materialising a committed command', () => {
+    const f = fixture('node build.cjs');
+    try {
+      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
+        cwd: f.root, encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, TMPDIR: f.root },
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
+      expect(result.stdout).not.toContain(`extracted ${f.root}/`);
+      expect(gitFixture(f.root, ['status', '--porcelain'])).not.toContain('papercusp-lint-as-committed-');
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])('honors a dependent artifact registered during the running command (removed=%s)', (removed) => {
+    const f = fixture('node build.cjs');
+    let extracted: string | undefined;
+    try {
+      const artifact = join(f.root, 'dependent-proof.log');
+      snapshot(f.root, { 'probe.cjs': `
+const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
+(async () => {
+  const { retainCommittedWorkRoot } = await import(${JSON.stringify(pathToFileURL(scriptPath).href)});
+  const sha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(${JSON.stringify(artifact)}, 'dependent proof');
+  retainCommittedWorkRoot(process.cwd(), sha, ${JSON.stringify(artifact)});
+  ${removed ? `fs.rmSync(${JSON.stringify(artifact)});` : ''}
+  console.log('DEPENDENT_SOURCE=' + process.cwd());
+})().catch(error => { console.error(error); process.exitCode = 1; });
+` }, f.head);
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      extracted = result.stdout.match(/DEPENDENT_SOURCE=(\S+)/)?.[1];
+      expect(extracted).toBeDefined();
+      expect(existsSync(extracted!)).toBe(!removed);
+      if (!removed) {
+        const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: extracted, encoding: 'utf8' }).trim();
+        expect(mod.verifyCommittedWorkRoot(extracted, sha, ['probe.cjs']).sha).toBe(sha);
+      }
+    } finally {
+      if (extracted) rmSync(extracted, { recursive: true, force: true });
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it('pins main separately from HEAD and builds require exports from committed source despite dirty shared source/dist', () => {
+    const f = fixture('node build.cjs');
+    try {
+      expect(f.main).not.toBe(f.head);
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain(`main snapshot: ${f.main}`);
+      expect(result.stdout).toContain('building pinned runtime exports: @fixture/runtime');
+      expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
+      expect(readFileSync(join(f.root, 'libs/runtime/source.cjs'), 'utf8')).toContain('shared-dirty-source');
+      expect(readFileSync(join(f.root, 'libs/runtime/dist/index.cjs'), 'utf8')).toContain('shared-stale-dist');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it('reports the child signal when the real committed runner is interrupted', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-signal-detail-'));
+    const fakeBin = join(root, 'bin');
+    gitFixture(root, ['init', '--quiet', '--initial-branch=staging']);
+    try {
+      snapshot(root, {
+        '.gitignore': 'node_modules/',
+        'package.json': JSON.stringify({ private: true, scripts: { 'lint:probe': 'node probe.cjs' } }),
+        'probe.cjs': 'console.log("the npm shim should interrupt before this runs");',
+      });
+      mkdirSync(fakeBin);
+      const npmShim = join(fakeBin, 'npm');
+      writeFileSync(npmShim, ['#!/bin/sh', 'kill -TERM $$', ''].join(String.fromCharCode(10)));
+      chmodSync(npmShim, 0o755);
+
+      const childEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        PATH: `${fakeBin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
+      };
+      const committedLoader = `--import=${resolve(repoRoot, 'scripts/lib/committed-source-loader.mjs')}`;
+      childEnv.NODE_OPTIONS = (childEnv.NODE_OPTIONS ?? '')
+        .split(/\s+/)
+        .filter((option) => option !== committedLoader)
+        .join(' ');
+      if (!childEnv.NODE_OPTIONS) delete childEnv.NODE_OPTIONS;
+
+      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe'], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 30_000,
+        env: childEnv,
+      });
+
+      expect(result.signal, result.stdout + result.stderr).toBeNull();
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stdout + result.stderr).toContain('terminated by signal SIGTERM (no exit status)');
+      expect(result.stdout + result.stderr).toContain('1 of 1 check(s) did NOT pass as committed');
+      expect(result.stdout + result.stderr).not.toContain('All 1 check(s) pass AS COMMITTED');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it('runs the pinned workspace script and refuses an absent workspace-relative operand', () => {
+    const f = fixture('node build.cjs');
+    try {
+      snapshot(f.root, {
+        'package.json': JSON.stringify({ private: true, workspaces: ['apps/*'], scripts: {} }),
+        'apps/sidecar/package.json': JSON.stringify({ name: '@fixture/sidecar', private: true,
+          scripts: { 'lint:probe': 'node probe.cjs' } }),
+        'apps/sidecar/probe.cjs': 'console.log("PINNED_WORKSPACE_OK");\n',
+      }, gitFixture(f.root, ['rev-parse', 'HEAD']));
+      writeFileSync(join(f.root, 'apps/sidecar/probe.cjs'), 'throw new Error("dirty workspace must not run");\n');
+      const invoke = (operand: string) => spawnSync(process.execPath,
+        [scriptPath, 'lint:probe', '--workspace=apps/sidecar', '--', operand],
+        { cwd: f.root, encoding: 'utf8', timeout: 30_000 });
+      const pass = invoke('probe.cjs');
+      expect(pass.status, pass.stdout + pass.stderr).toBe(0);
+      expect(pass.stdout).toContain('PINNED_WORKSPACE_OK');
+      const missing = invoke('absent.cjs');
+      expect(missing.status).not.toBe(0);
+      expect(missing.stdout).toContain('apps/sidecar/absent.cjs');
+      expect(missing.stdout).not.toContain('PINNED_WORKSPACE_OK');
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fabricate main when the source repository has no main branch', () => {
+    const f = fixture('node build.cjs', false);
+    try {
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('main snapshot:');
+      expect(result.stdout).toContain('CLONE_PREREQUISITES_OK');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it('preserves deep package-local dependency versions in the committed clone', () => {
+    const f = fixture('node build.cjs');
+    const packagePath = 'libs/generic/deep/local/package';
+    try {
+      snapshot(f.root, {
+        'package.json': JSON.stringify({ private: true, scripts: { 'lint:probe': 'node probe.cjs' },
+          dependencies: { '@fixture/runtime': 'file:libs/runtime', '@fixture/deep': `file:${packagePath}`, 'graph-leaf': '2.0.0' } }),
+        [`${packagePath}/package.json`]: JSON.stringify({ name: '@fixture/deep', version: '1.0.0',
+          main: 'index.cjs', dependencies: { 'graph-leaf': '1.0.0' } }),
+        [`${packagePath}/index.cjs`]: 'module.exports = require("graph-leaf/package.json").version;\n',
+        'probe.cjs': `const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
+assert.equal(require('@fixture/deep'), '1.0.0');
+assert.equal(require('graph-leaf/package.json').version, '2.0.0');
+const result = spawnSync('npm', ['ls', 'graph-leaf', '--omit=dev', '--all', '--json'], { encoding: 'utf8', timeout: 15000 });
+assert.ifError(result.error);
+assert.equal(result.status, 0, result.stdout + result.stderr);
+assert.deepEqual(JSON.parse(result.stdout).problems ?? [], []);
+console.log('DEEP_LOCAL_GRAPH_OK');\n`,
+      }, f.head);
+      symlinkSync(`../../${packagePath}`, join(f.root, 'node_modules/@fixture/deep'));
+      for (const [dir, version] of [
+        ['node_modules/graph-leaf', '2.0.0'],
+        [`${packagePath}/node_modules/graph-leaf`, '1.0.0'],
+      ]) {
+        mkdirSync(join(f.root, dir), { recursive: true });
+        writeFileSync(join(f.root, dir, 'package.json'), JSON.stringify({ name: 'graph-leaf', version }));
+      }
+      expect(createRequire(join(f.root, 'package.json'))('@fixture/deep')).toBe('1.0.0');
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain('DEEP_LOCAL_GRAPH_OK');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it.each(['string', 'map'])('builds a bin-only package and its companion native assets from the pinned tree (%s)', (shape) => {
+    const f = fixture('node build.cjs');
+    try {
+      snapshot(f.root, {
+        'libs/runtime/package.json': JSON.stringify({ name: '@fixture/runtime',
+          bin: shape === 'string' ? './dist/cli.cjs' : { fixture: './dist/cli.cjs' },
+          scripts: { build: 'node build-native.cjs' } }),
+        'libs/runtime/build-native.cjs': `const fs = require('node:fs');
+fs.mkdirSync('dist', { recursive: true });
+for (const name of ['cli.cjs', 'native-client.cjs', 'native-extension.mjs']) fs.writeFileSync('dist/' + name, 'pinned-native');
+`,
+        'probe.cjs': `const assert = require('node:assert/strict');
+const fs = require('node:fs');
+for (const name of ['cli.cjs', 'native-client.cjs', 'native-extension.mjs']) assert.equal(fs.readFileSync('libs/runtime/dist/' + name, 'utf8'), 'pinned-native');
+console.log('PINNED_NATIVE_OK');
+`,
+      }, f.head);
+      writeFileSync(join(f.root, 'libs/runtime/build-native.cjs'), 'throw new Error("shared dirty builder");\n');
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(result.stdout).toContain('PINNED_NATIVE_OK');
+      expect(existsSync(join(f.root, 'libs/runtime/dist/native-client.cjs'))).toBe(false);
+      expect(readFileSync(join(f.root, 'libs/runtime/build-native.cjs'), 'utf8')).toContain('shared dirty builder');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it.each(['valid-cache', 'corrupt-cache', 'corrupt-installed'])('reuses only bytes accepted by the committed runtime model pin (%s)', (variant) => {
+    const f = fixture('node build.cjs');
+    const valid = variant === 'valid-cache';
+    const model = 'independent pinned model fixture\n';
+    const digest = createHash('sha256').update(model).digest('hex');
+    try {
+      const manifest = JSON.parse(readFileSync(join(f.root, 'libs/runtime/package.json'), 'utf8'));
+      manifest.scripts.postinstall = 'bash scripts/setup-porcupine-runtime.sh';
+      // Use known fixture bytes with the real setup algorithm, and a closed
+      // loopback endpoint so a corrupt seed cannot be rescued by the network.
+      const setup = readFileSync(resolve(repoRoot, 'apps/operator/scripts/setup-porcupine-runtime.sh'), 'utf8')
+        .replace(/PORCUPINE_SHA256="[a-f0-9]{64}"/, `PORCUPINE_SHA256="${digest}"`)
+        .replace(/^URL=.*$/m, 'URL="http://127.0.0.1:9/unavailable-model"');
+      snapshot(f.root, {
+        '.gitignore': 'node_modules/\nlibs/runtime/dist/\nlibs/runtime/public/\n',
+        'libs/runtime/package.json': JSON.stringify(manifest),
+        'libs/runtime/scripts/setup-porcupine-runtime.sh': setup,
+        ...(variant === 'corrupt-installed' ? {
+          'libs/runtime/build.cjs': readFileSync(join(f.root, 'libs/runtime/build.cjs'), 'utf8') +
+            "fs.mkdirSync('public/porcupine', { recursive: true }); fs.writeFileSync('public/porcupine/porcupine_params.pv', 'corrupt installed model');\n",
+        } : {}),
+        'probe.cjs': readFileSync(join(f.root, 'probe.cjs'), 'utf8') + `\nassert.equal(readFileSync('libs/runtime/public/porcupine/porcupine_params.pv', 'utf8'), ${JSON.stringify(model)});\nconsole.log('PINNED_MODEL_OK');\n`,
+      }, f.head);
+      mkdirSync(join(f.root, 'libs/runtime/public/porcupine'), { recursive: true });
+      const source = join(f.root, 'libs/runtime/public/porcupine/porcupine_params.pv');
+      if (variant !== 'corrupt-installed') writeFileSync(source, valid ? model : 'corrupt model');
+      const result = run(f.root, true);
+      expect(result.status, result.stdout + result.stderr).toBe(valid ? 0 : 2);
+      if (valid) {
+        expect(result.stdout).toContain('reused cached model (sha256 verified)');
+        expect(result.stdout).toContain('PINNED_MODEL_OK');
+      } else {
+        expect(result.stdout).not.toContain('PINNED_MODEL_OK');
+        expect(result.stderr).toContain(variant === 'corrupt-installed' ? 'committed postinstall failed' : 'committed runtime seed failed');
+      }
+      if (variant === 'corrupt-installed') expect(existsSync(source)).toBe(false);
+      else expect(readFileSync(source, 'utf8')).toBe(valid ? model : 'corrupt model');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it.each([0, 7])('prepares declared runtime assets before arbitrary commands and refuses a failing lifecycle (exit %s)', (exitCode) => {
+    const f = fixture('node build.cjs');
+    try {
+      const manifest = JSON.parse(readFileSync(join(f.root, 'libs/runtime/package.json'), 'utf8'));
+      manifest.scripts.postinstall = 'node setup-vditor-runtime.cjs';
+      snapshot(f.root, {
+        '.gitignore': 'node_modules/\nlibs/runtime/dist/\nlibs/runtime/public/\n',
+        'libs/runtime/package.json': JSON.stringify(manifest),
+        'libs/runtime/setup-vditor-runtime.cjs': `const fs = require('node:fs');
+fs.mkdirSync('public', { recursive: true });
+fs.writeFileSync('public/mirror.js', require('./source.cjs'));
+process.exitCode = ${exitCode};
+`,
+        'probe.cjs': readFileSync(join(f.root, 'probe.cjs'), 'utf8') + `
+assert.equal(readFileSync('libs/runtime/public/mirror.js', 'utf8'), 'pinned-source');
+console.log('PINNED_ASSETS_OK');
+`,
+      }, f.head);
+      mkdirSync(join(f.root, 'libs/runtime/public'), { recursive: true });
+      writeFileSync(join(f.root, 'libs/runtime/public/mirror.js'), 'shared stale assets');
+      writeFileSync(join(f.root, 'libs/runtime/setup-vditor-runtime.cjs'), 'throw new Error("shared dirty setup");\n');
+      const result = run(f.root, true);
+      expect(result.status, result.stdout + result.stderr).toBe(exitCode === 0 ? 0 : 2);
+      expect(result.stdout).toContain('preparing pinned runtime assets: @fixture/runtime');
+      if (exitCode === 0) expect(result.stdout).toContain('PINNED_ASSETS_OK');
+      else {
+        expect(result.stderr).toContain('committed postinstall failed');
+        expect(result.stdout).not.toContain('─── lint:probe');
+        expect(result.stdout).not.toContain('CLONE_PREREQUISITES_OK');
+      }
+      expect(readFileSync(join(f.root, 'libs/runtime/public/mirror.js'), 'utf8')).toBe('shared stale assets');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it.each([
+    { name: 'absent build', build: undefined, reason: 'no committed build script' },
+    { name: 'failed build', build: 'node -e "process.exitCode = 7"', reason: 'committed build failed' },
+    { name: 'successful build with no output', build: 'node -e "console.log(\'NO_OUTPUT\')"', reason: 'did not emit runtime export' },
+    { name: 'build mutating pinned source', build: 'node build.cjs && node -e "require(\'node:fs\').writeFileSync(\'source.cjs\', \'changed\')"', reason: 'committed build changed source' },
+  ])('refuses $name before executing the requested detector', ({ build, reason }) => {
+    const f = fixture(build);
+    try {
+      const result = run(f.root);
+      expect(result.status, result.stdout + result.stderr).toBe(2);
+      expect(result.stderr).toContain(reason);
+      expect(result.stdout).not.toContain('─── lint:probe');
+      expect(result.stdout).not.toContain('CLONE_PREREQUISITES_OK');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+});
+
+// WI-10005705: extracted ~1.4 GB trees outlived their runs (--keep, process.exit inside the
+// try, signal kills) and refilled the root disk. These pin the lifecycle that removes them.
+describe('extracted-tree lifecycle (WI-10005705)', () => {
+  type Verdict = { remove: boolean; reason: string };
+  type Marker = { pid?: number; keep?: boolean; createdAtMs?: number } | null;
+  const { classifyWorkRoot, sweepStaleWorkRoots, WORK_ROOT_PREFIX, OWNER_MARKER, KEEP_TTL_MS, MAX_AGE_MS } = mod as {
+    classifyWorkRoot: (a: { inUse: boolean; marker: Marker; ownerAlive: boolean; ageMs: number }) => Verdict;
+    sweepStaleWorkRoots: (o: {
+      root: string;
+      nowMs: number;
+      cwds: string[] | null;
+      isAlive: (pid: number) => boolean;
+    }) => { removed: { name: string; reason: string }[]; kept: { name: string; reason: string }[] };
+    WORK_ROOT_PREFIX: string;
+    OWNER_MARKER: string;
+    KEEP_TTL_MS: number;
+    MAX_AGE_MS: number;
+  };
+  const H = 3600_000;
+
+  it('retains dependent source past the age and idle cap, then releases it when the artifact disappears', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-dependent-'));
+    try {
+      const source = join(root, `${WORK_ROOT_PREFIX}source`);
+      const artifact = join(root, 'portal-release');
+      mkdirSync(join(source, '.git'), { recursive: true });
+      mkdirSync(artifact);
+      const sha = 'a'.repeat(40);
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({
+        pid: 101, keep: true, sha, createdAtMs: 0, retainedFor: [{ path: artifact, sha }],
+      }));
+      const options = { root, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 };
+      expect(mod.sweepStaleWorkRoots(options).kept).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'dependent-artifact' });
+      expect(existsSync(source)).toBe(true);
+      rmSync(artifact, { recursive: true });
+      expect(mod.sweepStaleWorkRoots(options).removed).toContainEqual({ name: `${WORK_ROOT_PREFIX}source`, reason: 'max-age' });
+      expect(existsSync(source)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights commit identity and imports before registering a dependent artifact', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-preflight-'));
+    try {
+      const source = join(root, 'source');
+      const artifact = join(root, 'portal-release');
+      mkdirSync(source);
+      mkdirSync(artifact);
+      execFileSync('git', ['init', '--quiet', source]);
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'fixture'], { cwd: source });
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({ pid: 101, keep: true, sha, createdAtMs: 0 }));
+      mkdirSync(join(source, 'packages', 'core'), { recursive: true });
+      symlinkSync(artifact, join(source, 'escape'), 'dir');
+      expect(() => mod.verifyCommittedWorkRoot(join(root, 'missing'), sha)).toThrow('source root is missing');
+      expect(() => mod.verifyCommittedWorkRoot(source, 'b'.repeat(40))).toThrow('commit does not match');
+      expect(() => mod.verifyCommittedWorkRoot(source, sha, ['missing'])).toThrow('dependency is missing');
+      expect(() => mod.verifyCommittedWorkRoot(source, sha, ['escape'])).toThrow('escapes');
+      expect(() => mod.verifyCommittedWorkRoot(source, sha, ['../portal-release'])).toThrow('inside');
+      expect(mod.verifyCommittedWorkRoot(source, sha, ['packages/core']).sha).toBe(sha);
+      expect(() => mod.retainCommittedWorkRoot(source, sha, source)).toThrow('outside');
+      expect(() => mod.retainCommittedWorkRoot(source, sha, join(root, 'missing'))).toThrow();
+      mod.retainCommittedWorkRoot(source, sha, artifact);
+      mod.retainCommittedWorkRoot(source, sha, artifact);
+      expect(JSON.parse(readFileSync(join(source, OWNER_MARKER), 'utf8')).retainedFor).toEqual([{ path: realpathSync(artifact), sha }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('materializes without replaying a command and explicitly retains its dependent artifact', () => {
+    expect(mod.parseArgs(['--materialize-only', '--ref=recorded', '--retain-for=/tmp/release'])).toMatchObject({
+      materializeOnly: true, keep: true, ref: 'recorded', retainFor: '/tmp/release', scripts: [],
+    });
+    const run = spawnSync('node', [scriptPath, '--materialize-only', 'test:file'], { encoding: 'utf8' });
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('cannot run or forward a command');
+  });
+
+  it('requires both exact source holds before resuming a two-source artifact', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'lac-paired-custody-'));
+    try {
+      const sources = join(parent, 'sources');
+      const artifact = join(parent, 'artifacts', 'candidate');
+      const unrelated = join(parent, 'artifacts', 'other');
+      mkdirSync(artifact, { recursive: true });
+      mkdirSync(unrelated);
+      const roots = ['portal', 'operator'].map((name) => {
+        const root = join(sources, `${WORK_ROOT_PREFIX}${name}`);
+        mkdirSync(root, { recursive: true });
+        execFileSync('git', ['init', '--quiet', root]);
+        execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', name], { cwd: root });
+        const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+        writeFileSync(join(root, OWNER_MARKER), JSON.stringify({ pid: 101, keep: true, sha, createdAtMs: 0 }));
+        return { root, sha };
+      });
+      for (const { root, sha } of roots) {
+        expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow('no retention hold');
+        mod.retainCommittedWorkRoot(root, sha, unrelated);
+        expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow('no retention hold');
+        mod.retainCommittedWorkRoot(root, sha, artifact);
+        expect(mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toEqual({ root: realpathSync(root), sha });
+      }
+      const swept = mod.sweepStaleWorkRoots({ root: sources, nowMs: MAX_AGE_MS + H, cwds: [], isAlive: () => false, maxIdleKept: 0 });
+      expect(swept.removed).toEqual([]);
+      expect(swept.kept).toHaveLength(2);
+      rmSync(artifact, { recursive: true });
+      for (const { root, sha } of roots) expect(() => mod.verifyCommittedWorkRoot(root, sha, [], artifact)).toThrow();
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs dangling workspace imports only after validating every replacement against the exact source', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-remap-'));
+    try {
+      const source = join(root, 'source');
+      const prior = join(root, 'removed-source');
+      const modules = join(root, 'portal', 'node_modules');
+      mkdirSync(source);
+      mkdirSync(join(modules, '@fixture'), { recursive: true });
+      execFileSync('git', ['init', '--quiet', source]);
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'fixture'], { cwd: source });
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({ sha, keep: true }));
+      mkdirSync(join(source, 'packages', 'core'), { recursive: true });
+      writeFileSync(join(source, 'packages', 'core', 'package.json'), '{}');
+      const core = join(modules, '@fixture', 'core');
+      const missing = join(modules, '@fixture', 'missing');
+      symlinkSync(join(prior, 'packages', 'core'), core, 'dir');
+      symlinkSync(join(prior, 'packages', 'missing'), missing, 'dir');
+      expect(() => mod.remapRetainedWorkspaceLinks(modules, prior, source, sha)).toThrow('dependency is missing');
+      expect(existsSync(core)).toBe(false); // Refusal did not partially remap a valid sibling.
+      rmSync(missing);
+      expect(mod.remapRetainedWorkspaceLinks(modules, prior, source, sha).remapped).toBe(1);
+      expect(realpathSync(core)).toBe(join(source, 'packages', 'core'));
+      expect(mod.remapRetainedWorkspaceLinks(modules, prior, source, sha).remapped).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs real mirrored package shells through shared-module indirection without changing the install', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-shell-remap-'));
+    try {
+      const source = join(root, 'frozen'), prior = join(root, 'live'), shared = join(root, 'install');
+      const modules = join(root, 'portal/node_modules');
+      for (const [base, value] of [[source, 'frozen'], [prior, 'live']]) {
+        const pkg = join(base, 'packages/core');
+        mkdirSync(pkg, { recursive: true });
+        writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@fixture/core', main: './index.cjs' }));
+        writeFileSync(join(pkg, 'index.cjs'), `module.exports = '${value}';`);
+      }
+      execFileSync('git', ['init', '--quiet', source]);
+      // The child below inherits committed-source-loader from `test:file`, so
+      // the frozen fixture must contain real committed bytes like a production
+      // retained work root.
+      execFileSync('git', ['add', '--', 'packages/core/package.json', 'packages/core/index.cjs'], { cwd: source });
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture source'], { cwd: source });
+      const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim();
+      writeFileSync(join(source, OWNER_MARKER), JSON.stringify({ sha, keep: true }));
+      const installed = join(shared, 'node_modules/@fixture/core');
+      execFileSync('git', ['init', '--quiet', prior]);
+      writeFileSync(join(prior, '.gitignore'), '.cache/\n');
+      mkdirSync(join(prior, 'packages/core/.cache'));
+      writeFileSync(join(prior, 'packages/core/.cache/generated'), 'ignored cache');
+      mkdirSync(join(prior, 'packages/core/empty-cache'));
+      writeFileSync(join(prior, 'packages/core/missing.cjs'), 'committed source missing from frozen root');
+      execFileSync('git', ['add', '--', '.gitignore', 'packages/core/package.json', 'packages/core/index.cjs', 'packages/core/missing.cjs'], { cwd: prior });
+      execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture source'], { cwd: prior });
+      mkdirSync(installed, { recursive: true });
+      for (const child of ['package.json', 'index.cjs']) symlinkSync(join(prior, 'packages/core', child), join(installed, child));
+      symlinkSync(join(prior, 'packages/core/.cache'), join(installed, '.cache'));
+      symlinkSync(join(prior, 'packages/core/empty-cache'), join(installed, 'empty-cache'));
+      linkNodeModulesShadow(join(shared, 'node_modules'), modules, shared, join(root, 'portal'));
+      const shell = join(modules, '@fixture/core');
+      const req = createRequire(join(root, 'portal/app.js'));
+      expect(lstatSync(shell).isDirectory()).toBe(true);
+      expect(req('@fixture/core')).toBe('live');
+      // Whole-plan prevalidation must catch a missing source child before changing its manifest.
+      symlinkSync(join(prior, 'packages/core/missing.cjs'), join(shell, 'missing.cjs'));
+      expect(() => mod.remapRetainedWorkspaceLinks(modules, prior, source, sha)).toThrow('dependency is missing');
+      expect(realpathSync(join(shell, 'package.json'))).toBe(join(prior, 'packages/core/package.json'));
+      rmSync(join(shell, 'missing.cjs'));
+      expect(mod.remapRetainedWorkspaceLinks(modules, prior, source, sha).remapped).toBe(2);
+      // Recovery runs before a fresh consumer starts, as in the native launcher.
+      const consumed = JSON.parse(execFileSync(process.execPath, ['-e',
+        "console.log(JSON.stringify({value:require('@fixture/core'),path:require.resolve('@fixture/core')}))"],
+      { cwd: join(root, 'portal'), encoding: 'utf8' }));
+      expect(consumed.value).toBe('frozen');
+      expect(realpathSync(consumed.path)).toBe(join(source, 'packages/core/index.cjs'));
+      expect(lstatSync(shell).isDirectory()).toBe(true);
+      expect(realpathSync(join(installed, 'index.cjs'))).toBe(join(prior, 'packages/core/index.cjs'));
+      expect(realpathSync(join(shell, '.cache'))).toBe(join(prior, 'packages/core/.cache'));
+      expect(realpathSync(join(shell, 'empty-cache'))).toBe(join(prior, 'packages/core/empty-cache'));
+      expect(mod.remapRetainedWorkspaceLinks(modules, prior, source, sha).remapped).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('classifies each tree by liveness, keep flag and age', () => {
+    const c = (inUse: boolean, marker: Marker, ownerAlive: boolean, ageMs: number) => classifyWorkRoot({ inUse, marker, ownerAlive, ageMs });
+    expect(c(true, null, false, MAX_AGE_MS * 10)).toEqual({ remove: false, reason: 'in-use' });
+    expect(c(false, { pid: 1, keep: false }, false, 60_000)).toEqual({ remove: true, reason: 'owner-dead' });
+    expect(c(false, { pid: 1, keep: false }, true, 60_000)).toEqual({ remove: false, reason: 'owner-alive' });
+    expect(c(false, { pid: 1, keep: false }, true, MAX_AGE_MS + 1)).toEqual({ remove: true, reason: 'max-age' });
+    expect(c(false, { pid: 1, keep: true }, false, KEEP_TTL_MS - 1)).toEqual({ remove: false, reason: 'keep-young' });
+    expect(c(false, { pid: 1, keep: true }, false, KEEP_TTL_MS + 1)).toEqual({ remove: true, reason: 'keep-expired' });
+    expect(c(false, null, false, KEEP_TTL_MS - 1)).toEqual({ remove: false, reason: 'unmarked-young' });
+    expect(c(false, null, false, KEEP_TTL_MS + 1)).toEqual({ remove: true, reason: 'unmarked-expired' });
+    expect(c(false, null, false, Number.NaN)).toEqual({ remove: false, reason: 'age-unknown' });
+  });
+
+  it('sweeps only stale trees under the root, never one a live process is inside', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lac-sweep-'));
+    try {
+      const now = Date.now();
+      const tree = (name: string, marker: Marker) => {
+        const p = join(root, `${WORK_ROOT_PREFIX}${name}`);
+        mkdirSync(join(p, '.git'), { recursive: true });
+        if (marker) writeFileSync(join(p, OWNER_MARKER), JSON.stringify(marker));
+        return p;
+      };
+      tree('dead-owner', { pid: 101, keep: false, createdAtMs: now - 60_000 });
+      tree('live-owner', { pid: 202, keep: false, createdAtMs: now - 60_000 });
+      tree('keep-old', { pid: 101, keep: true, createdAtMs: now - KEEP_TTL_MS - H });
+      tree('keep-fresh', { pid: 101, keep: true, createdAtMs: now - H });
+      const busy = tree('keep-old-busy', { pid: 101, keep: true, createdAtMs: now - MAX_AGE_MS - H });
+      mkdirSync(join(root, 'unrelated-dir'));
+      const isAlive = (pid: number) => pid === 202;
+
+      const res = sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'packages', 'x')], isAlive });
+      const names = (rows: { name: string }[]) => rows.map((r) => r.name.slice(WORK_ROOT_PREFIX.length)).sort();
+      expect(names(res.removed)).toEqual(['dead-owner', 'keep-old']);
+      expect(names(res.kept)).toEqual(['keep-fresh', 'keep-old-busy', 'live-owner']);
+      expect(existsSync(join(root, `${WORK_ROOT_PREFIX}dead-owner`))).toBe(false);
+      expect(existsSync(busy)).toBe(true);
+      expect(existsSync(join(root, 'unrelated-dir'))).toBe(true);
+
+      // Without /proc a tree's idleness is unprovable: only a dead non-keep owner goes.
+      tree('dead-owner-2', { pid: 101, keep: false, createdAtMs: now - 60_000 });
+      const blind = sweepStaleWorkRoots({ root, nowMs: now + MAX_AGE_MS * 2, cwds: null, isAlive });
+      expect(names(blind.removed)).toEqual(['dead-owner-2']);
+      expect(existsSync(busy)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-10005934: keeps only the newest MAX_IDLE_KEPT_TREES idle kept trees, never counting a busy one', () => {
+    const { MAX_IDLE_KEPT_TREES } = mod as { MAX_IDLE_KEPT_TREES: number };
+    expect(MAX_IDLE_KEPT_TREES).toBe(4);
+    const root = mkdtempSync(join(tmpdir(), 'lac-cap-'));
+    try {
+      const now = Date.now();
+      const tree = (name: string, ageMs: number) => {
+        const p = join(root, `${WORK_ROOT_PREFIX}${name}`);
+        mkdirSync(join(p, '.git'), { recursive: true });
+        writeFileSync(join(p, OWNER_MARKER), JSON.stringify({ pid: 101, keep: true, createdAtMs: now - ageMs }));
+        return p;
+      };
+      // Six idle young kept trees (all under the TTL) plus the OLDEST one, which is busy.
+      for (let i = 1; i <= 6; i++) tree(`idle-${i}h`, i * 0.5 * H);
+      const busy = tree('busy-oldest', KEEP_TTL_MS - 60_000);
+      const names = (rows: { name: string }[]) => rows.map((r) => r.name.slice(WORK_ROOT_PREFIX.length)).sort();
+      const isAlive = () => false;
+
+      // Without /proc nothing is provably idle, so the cap removes nothing.
+      const blind = sweepStaleWorkRoots({ root, nowMs: now, cwds: null, isAlive });
+      expect(blind.removed).toEqual([]);
+
+      const res = sweepStaleWorkRoots({ root, nowMs: now, cwds: [join(busy, 'apps')], isAlive });
+      expect(names(res.removed)).toEqual(['idle-5h', 'idle-6h']);
+      expect(res.removed.every((r) => r.reason === 'keep-over-cap')).toBe(true);
+      expect(names(res.kept)).toEqual(['busy-oldest', 'idle-1h', 'idle-2h', 'idle-3h', 'idle-4h']);
+      expect(res.kept.find((r) => r.name.endsWith('busy-oldest'))?.reason).toBe('in-use');
+      expect(existsSync(busy)).toBe(true);
+      expect(existsSync(join(root, `${WORK_ROOT_PREFIX}idle-6h`))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -323,7 +323,9 @@ export async function getSpawnHeadroom(
     try {
       const { readLatestPerfSignals, evaluatePerfSignals } = await import('../system-health/perf-budgets');
       const signals = await readLatestPerfSignals();
-      const verdict = evaluatePerfSignals(signals, Date.now());
+      const { hostname } = await import('node:os');
+      const verdict = await evaluatePerfSignals(signals, Date.now(), undefined, false,
+        { workspaceId, hostId: hostname() });
       shedResult = applyHostSaturationShed(countHeadroom, verdict);
     } catch {
       /* fail-soft — perf module unreadable leaves headroom count-based only */
@@ -654,6 +656,8 @@ export interface OperatorSpawnInput {
    * Scoped per workspace; unique-indexed (migration 219).
    */
   idempotencyKey?: string | null;
+  /** Internal supervision replacement credit; admission validates the referenced row. */
+  replacesSpawnId?: string | null;
 }
 
 export interface OperatorSpawnResult {
@@ -675,21 +679,32 @@ function newSpawnId(): string {
   return `s-${Date.now()}-${randomUUID().slice(0, 8)}`;
 }
 
-async function countRunning(workspaceId: string, db?: Db): Promise<number> {
+async function countRunning(
+  workspaceId: string,
+  db?: Db,
+  excludedSpawnId?: string | null,
+): Promise<number> {
   const sql = db ?? getOrgPg().sql;
   const rows = await sql<{ n: string }[]>`
     SELECT count(*)::text AS n FROM harness_shared.spawned_agents
-     WHERE workspace_id = ${workspaceId} AND status IN ('running', 'restarting')`;
+     WHERE workspace_id = ${workspaceId} AND status IN ('running', 'restarting')
+       AND (${excludedSpawnId ?? null}::text IS NULL OR spawn_id <> ${excludedSpawnId ?? null})`;
   return Number(rows[0]?.n ?? 0);
 }
 
-async function countRunningByRole(workspaceId: string, role: string, db?: Db): Promise<number> {
+async function countRunningByRole(
+  workspaceId: string,
+  role: string,
+  db?: Db,
+  excludedSpawnId?: string | null,
+): Promise<number> {
   const sql = db ?? getOrgPg().sql;
   const rows = await sql<{ n: string }[]>`
     SELECT count(*)::text AS n FROM harness_shared.spawned_agents
      WHERE workspace_id = ${workspaceId}
        AND child_role = ${role}
-       AND status IN ('running', 'restarting')`;
+       AND status IN ('running', 'restarting')
+       AND (${excludedSpawnId ?? null}::text IS NULL OR spawn_id <> ${excludedSpawnId ?? null})`;
   return Number(rows[0]?.n ?? 0);
 }
 
@@ -720,6 +735,8 @@ export async function admitSpawn(
     /** The spawn id `record` inserts — the idempotency key is stamped on it. */
     spawnId: string;
     idempotencyKey: string | null;
+    /** A restarting row this spawn replaces; only that row can grant a capacity credit. */
+    replacesSpawnId?: string | null;
     cap: number;
     roleCap?: { role: string; cap: number } | null;
     record: (tx: Db) => Promise<void>;
@@ -744,11 +761,26 @@ export async function admitSpawn(
       if (dup.length > 0) return { kind: 'duplicate', spawnId: dup[0].spawn_id };
     }
 
-    const running = await countRunning(opts.workspaceId, tx);
+    // A supervised replacement is one-for-one with its old row. Validate and lock that
+    // exact row before excluding it, so ordinary spawns cannot spend a slot held by a
+    // live child and concurrent status changes cannot invalidate the credit mid-admission.
+    let replacementSpawnId: string | null = null;
+    const replacesSpawnId = opts.replacesSpawnId?.trim();
+    if (replacesSpawnId) {
+      const replacing = await tx<{ spawn_id: string }[]>`
+        SELECT spawn_id FROM harness_shared.spawned_agents
+         WHERE workspace_id = ${opts.workspaceId}
+           AND spawn_id = ${replacesSpawnId}
+           AND status = 'restarting'
+         FOR UPDATE`;
+      if (replacing.length > 0) replacementSpawnId = replacesSpawnId;
+    }
+
+    const running = await countRunning(opts.workspaceId, tx, replacementSpawnId);
     if (running >= opts.cap) return { kind: 'over_cap', running, cap: opts.cap };
 
     if (opts.roleCap) {
-      const roleRunning = await countRunningByRole(opts.workspaceId, opts.roleCap.role, tx);
+      const roleRunning = await countRunningByRole(opts.workspaceId, opts.roleCap.role, tx, replacementSpawnId);
       if (roleRunning >= opts.roleCap.cap) {
         return { kind: 'over_cap', running: roleRunning, cap: opts.roleCap.cap, role: opts.roleCap.role };
       }
@@ -1177,6 +1209,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       workspaceId: input.workspaceId,
       spawnId,
       idempotencyKey: idemKey,
+      replacesSpawnId: input.replacesSpawnId ?? null,
       // Always enforce the global safety cap against every spawned role. WI-38240: the
       // second, bee-only owner max-bees cap that used to be passed here is GONE — it was
       // `role === 'cup'` only, and cup is refused by the retirement gate above, so it
@@ -1597,6 +1630,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     errorMessage?: string | null;
     outputTail?: string | null;
     releaseClaim?: boolean;
+    superviseBeforeChildStart?: boolean;
   }): Promise<void> => {
     if (terminalRecorded) return;
     terminalRecorded = true;
@@ -1605,6 +1639,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       childStartTimer = null;
     }
     finalStatus = args.status;
+    let finishedDurably = false;
     try {
       await finishSpawn(sql, {
         spawnId,
@@ -1614,6 +1649,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
         errorMessage: args.errorMessage ?? null,
         outputTail: args.outputTail ?? null,
       });
+      finishedDurably = true;
       // Normal completion won the durable status race; the recovery artifact is
       // no longer needed. If finishSpawn throws, keep it for the reclaim sweep.
       //
@@ -1661,9 +1697,35 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       localSpawnOutput.delete(spawnId);
       localSpawnPids.delete(spawnId);
     }
-    // The terminal flip above freed a ceiling slot — wake any over-ceiling
-    // waiter sleeping on the slot key (D-004). Best-effort, off the hot path.
-    void announceSpawnSlotFreed(input.workspaceId, `spawn ${spawnId} finished — ceiling slot freed`);
+    let restartPending = false;
+    if (finishedDurably && args.status === 'failed' && (childStarted || args.superviseBeforeChildStart)) {
+      try {
+        const { superviseCrash } = await import('./supervision');
+        const result = await superviseCrash(sql, {
+          workspaceId: input.workspaceId,
+          spawnId,
+          actor: {
+            ownerId: 'system:operator-spawn-supervision',
+            ownerLabel: 'operator spawn supervision',
+            source: 'static-client',
+            workspaceId: input.workspaceId,
+            userId: null,
+          },
+          reason: args.errorMessage ?? `child exited with code ${args.exitCode ?? 'unknown'}`,
+        });
+        restartPending = result.action === 'restart' && result.toRestart.length > 0;
+      } catch (err) {
+        console.warn(
+          `[operator-spawn] ${spawnId} automatic supervision failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    // A supervised replacement still owns the failed child's ceiling slot. Wake
+    // over-ceiling spawns only when supervision did not keep that slot occupied.
+    if (!restartPending) {
+      void announceSpawnSlotFreed(input.workspaceId, `spawn ${spawnId} finished — ceiling slot freed`);
+    }
     // EI-108: Wake parent on child death (if the spawn has a parent)
     void wakeParentOnChildDeath(sql, spawnId, input.workspaceId, args.status).catch(() => {
       /* best-effort — logged inside wakeParentOnChildDeath */
@@ -1678,6 +1740,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       status: 'failed',
       errorMessage: `spawn launch timed out before child process start after ${timeoutMs}ms`,
       releaseClaim: true,
+      superviseBeforeChildStart: true,
     }).catch(() => {
       /* PG down — nothing left to record to */
     });

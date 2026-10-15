@@ -1,0 +1,10 @@
+[Unit]
+Description=Phone operations read-only readiness, cost and backup alert delivery
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PHONE_CONFIG_DIR=${PHONE_CONFIG_DIR}
+EnvironmentFile=-${PHONE_CONFIG_DIR}/ops-alert.env
+ExecStart=${PHONE_NODE_BIN} ${PHONE_ALERT_SCRIPT}
+TimeoutStartSec=65s

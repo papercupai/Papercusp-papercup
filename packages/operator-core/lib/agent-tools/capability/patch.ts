@@ -24,13 +24,14 @@
  * "atomic" without naming which of these happened.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { fileLockedResult, guardFileLock } from '../locks/file-lock-guard';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { occurrences, spliceLiteral, squashWhitespace } from './text-splice';
+import { replaceFileContents } from './replace-file';
 
 /** Bound the blast radius of one call; a larger refactor should be staged deliberately. */
 const MAX_HUNKS = 100;
@@ -109,7 +110,9 @@ export default defineTool({
       const written: string[] = [];
       for (const p of changed) {
         try {
-          writeFileSync(p, next.get(p)!, 'utf8');
+          // Rename into place, never rewrite the inode: a running bash script reads the
+          // file by byte offset (WI-10006772).
+          replaceFileContents(p, next.get(p)!);
           written.push(p);
         } catch (e: unknown) {
           // A partial write is the one state this door must never leave behind silently.
@@ -155,7 +158,7 @@ function restore(written: readonly string[], original: ReadonlyMap<string, strin
   const failed: string[] = [];
   for (const p of written) {
     try {
-      writeFileSync(p, original.get(p)!, 'utf8');
+      replaceFileContents(p, original.get(p)!);
       restored.push(p);
     } catch {
       failed.push(p);

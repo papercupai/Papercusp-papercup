@@ -28,6 +28,7 @@ import {
 function fakeSql(existing: Array<{ slug: string; page_sha: string }> = []) {
   const calls: Array<{ q: string; params: unknown[] }> = [];
   const sql = {
+    begin: async (body: (tx: unknown) => Promise<unknown>) => body(sql),
     unsafe: async (q: string, params: unknown[] = []) => {
       calls.push({ q, params });
       if (q.includes('SELECT DISTINCT')) return existing;
@@ -60,6 +61,13 @@ function fakeSource(pages: Array<{ page: DocPage; body: string }>, name = 'test-
 // convention) is tested in @papercusp/search's chunk.test.ts and pinned to the
 // pre-move output by chunk.golden.test.ts. These cover the doc-specific layer.
 describe('splitDocSections', () => {
+  it('retains a late procedure beyond the former heading and row caps', () => {
+    const body = Array.from({ length: 300 }, (_, i) => `## Procedure ${i}\n${'complete instructions '.repeat(110)}\n`).join('') + '\n## Final procedure\nTAIL-PROCEDURE';
+    const sections = splitDocSections('Runbook', body);
+    expect(sections.length).toBeGreaterThan(240);
+    expect(sections.at(-1)).toMatchObject({ title: 'Runbook › Final procedure', content: 'TAIL-PROCEDURE' });
+  });
+
   it('splits on headings with a preamble section and Page › Heading titles', () => {
     const body = [
       'Intro paragraph long enough to keep around.',
@@ -105,7 +113,7 @@ describe('syncDocSourceSections', () => {
     const inserts = calls.filter((c) => c.q.includes('INSERT INTO harness_shared.doc_sections'));
     expect(inserts).toHaveLength(2);
     const sha = pageSha('One', '## A\nalpha body long enough to keep.');
-    expect(inserts[0].params).toEqual(['test-src', 'guide/one', 'a', 'One › A', '/docs/guide/one', 'alpha body long enough to keep.', sha]);
+    expect(inserts[0].params).toEqual(['test-src', 'guide/one', 'a', 'One › A', '/docs/guide/one', 'alpha body long enough to keep.', sha,0]);
   });
 
   it('skips pages whose sha is unchanged (no DELETE, no INSERT)', async () => {
@@ -201,6 +209,7 @@ describe('syncHarnessDocSections (harness docs sweep)', () => {
   function sweepSql(pruned = 0) {
     const calls: Array<{ q: string; params: unknown[] }> = [];
     const sql = {
+      begin: async (body: (tx: unknown) => Promise<unknown>) => body(sql),
       unsafe: async (q: string, params: unknown[] = []) => {
         calls.push({ q, params });
         if (q.includes(PRUNE)) return [{ n: pruned }];

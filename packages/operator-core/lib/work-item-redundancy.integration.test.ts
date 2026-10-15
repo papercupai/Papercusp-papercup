@@ -16,7 +16,7 @@
  *   - claim_next's excludeRedundant filter skips high-stakes items.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL, ENGINEER_ISSUES_MIN_DDL } from '../test/_work-items-schema';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, ENGINEER_ISSUES_MIN_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
@@ -130,7 +130,7 @@ beforeAll(async () => {
   );
   await db.sql.unsafe(REPLICAS_DDL);
   // claim path's P-005 readiness clause reads work_item_deps + engineer_issues (this test creates neither otherwise).
-  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(ENGINEER_ISSUES_MIN_DDL);
 });
 

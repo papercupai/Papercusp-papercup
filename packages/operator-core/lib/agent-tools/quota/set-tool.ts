@@ -24,7 +24,7 @@ import {
 } from '../../quota-overrides';
 
 function json(obj: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
+  return { data: obj };
 }
 
 const quotaField = z.number().int().min(0).max(1_000_000);

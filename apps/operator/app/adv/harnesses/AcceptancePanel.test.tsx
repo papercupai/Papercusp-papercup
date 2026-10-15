@@ -1,123 +1,53 @@
 // @vitest-environment jsdom
 /**
- * AcceptancePanel.test.tsx — the harness Tests-tab "Acceptance" view. Loads VAL
- * assertions, renders them in a grid, and toggles per-VAL requires_test with an
- * optimistic flip that reverts on a failed POST. Covers loading / error / empty
- * / populated, the toggle POST body, and the revert-on-failure path.
+ * AcceptancePanel.test.tsx — the harness Tests-tab "Acceptance" view.
  *
- * Seams: @papercusp/grid-core RichGrid stubbed to render each column's cell (so
- * the real Checkbox + toggle wiring runs), Checkbox stubbed to a native input,
- * fetch stubbed per method/url.
+ * verification-system-improvements-2026-10-10 P-003 (SPEC-P-003-VAL-READERS):
+ * inline VAL-* assertions are retired, so the panel no longer loads
+ * `harness_plan_assertions` (the `testing.assertionsByHarness` sync query was
+ * removed) nor POSTs per-VAL `requires_test` toggles (the route answers a typed
+ * 410). It renders a static notice naming the successor — the plan requirement
+ * contract — and must not touch the network or the sync layer.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 
-vi.mock('@papercusp/grid-core', () => ({
-  RichGrid: ({ rows, columns, getRowId }: {
-    rows: Record<string, unknown>[];
-    columns: { key: string; render?: (a: { row: Record<string, unknown> }) => unknown }[];
-    getRowId: (r: Record<string, unknown>) => string;
-  }) => (
-    <table data-testid="grid"><tbody>
-      {rows.map((r) => (
-        <tr key={getRowId(r)} data-testid={`row-${getRowId(r)}`}>
-          {columns.map((c) => <td key={c.key}>{c.render ? c.render({ row: r }) : null}</td>)}
-        </tr>
-      ))}
-    </tbody></table>
-  ),
-}));
-vi.mock('@/app/harness/Checkbox', () => ({
-  Checkbox: ({ checked, disabled, onChange }: { checked: boolean; disabled?: boolean; onChange: () => void }) => (
-    <input type="checkbox" checked={checked} disabled={disabled} onChange={() => onChange()} />
-  ),
-}));
-vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'ws-test' }));
-const { syncState, invalidateSpy } = vi.hoisted(() => ({
-  syncState: { data: [] as Assertion[], loading: false, error: null as Error | null },
-  invalidateSpy: vi.fn(),
-}));
+const useSyncQuery = vi.fn();
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: () => ({ ...syncState, fetching: false, invalidate: invalidateSpy }),
+  useSyncQuery: (...args: unknown[]) => useSyncQuery(...args),
 }));
 
 import AcceptancePanel from './AcceptancePanel';
+import { VAL_RETIREMENT_DOC } from '@papercusp/operator-core/lib/agent-tools/plans/val-retirement';
 
-interface Assertion { val_id: string; plan_slug: string; item_id: string; verify_text: string; status: string; requires_test: boolean }
-function A(over: Partial<Assertion> & { val_id: string }): Assertion {
-  return { plan_slug: 'p', item_id: 'P-1', verify_text: 'must work', status: 'todo', requires_test: true, ...over };
-}
-
-let toggleOk = true;
-let fetchCalls: Array<{ url: string; method: string; body?: unknown }>;
-function stubFetch() {
-  fetchCalls = [];
-  vi.stubGlobal('fetch', vi.fn((url: string, init?: { method?: string; body?: string }) => {
-    const method = init?.method ?? 'GET';
-    fetchCalls.push({ url, method, body: init?.body ? JSON.parse(init.body) : undefined });
-    if (method === 'POST') return Promise.resolve({ ok: toggleOk, status: toggleOk ? 200 : 500 } as Response);
-    return Promise.resolve({ ok: true, status: 200 } as Response);
-  }));
-}
-
-beforeEach(() => {
-  toggleOk = true;
-  Object.assign(syncState, { data: [], loading: false, error: null });
-  invalidateSpy.mockClear();
-  stubFetch();
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  useSyncQuery.mockReset();
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-describe('AcceptancePanel', () => {
-  it('shows the loading state before assertions resolve', () => {
-    syncState.loading = true;
-    render(<AcceptancePanel slug="alpha" />);
-    expect(screen.getByText(/Loading acceptance criteria/i)).toBeTruthy();
+describe('<AcceptancePanel> (VAL-* retired, P-003)', () => {
+  it('renders the retirement notice naming the requirement contract as successor', () => {
+    render(<AcceptancePanel slug="demo" />);
+    const panel = screen.getByTestId('acceptance-retired');
+    expect(panel.getAttribute('data-harness')).toBe('demo');
+    expect(panel.textContent).toMatch(/assertions are retired/);
+    expect(panel.textContent).toMatch(/requirement/);
+    expect(panel.textContent).toContain('plans:get');
+    expect(panel.textContent).toContain(VAL_RETIREMENT_DOC);
   });
 
-  it('shows an error when the assertions fetch fails', async () => {
-    syncState.error = new Error('HTTP 500');
-    render(<AcceptancePanel slug="alpha" />);
-    expect(await screen.findByText(/Could not load acceptance criteria: HTTP 500/i)).toBeTruthy();
+  it('does not query the retired assertion store or call the retired routes', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+    render(<AcceptancePanel slug="demo" />);
+    expect(useSyncQuery).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('shows the empty state when there are no VALs', async () => {
-    syncState.data = [];
-    render(<AcceptancePanel slug="alpha" />);
-    expect(await screen.findByText(/No VAL assertions yet/i)).toBeTruthy();
-  });
-
-  it('renders a row per VAL with its verify text + status', async () => {
-    syncState.data = [A({ val_id: 'VAL-1', verify_text: 'login works', status: 'passed' })];
-    render(<AcceptancePanel slug="alpha" />);
-    const row = await screen.findByTestId('row-VAL-1');
-    expect(within(row).getByText('login works')).toBeTruthy();
-    expect(within(row).getByText('passed')).toBeTruthy();
-  });
-
-  it('optimistically flips requires_test and POSTs the new value', async () => {
-    syncState.data = [A({ val_id: 'VAL-1', requires_test: true })];
-    render(<AcceptancePanel slug="alpha" />);
-    const row = await screen.findByTestId('row-VAL-1');
-    const box = within(row).getByRole('checkbox') as HTMLInputElement;
-    expect(box.checked).toBe(true);
-    fireEvent.click(box);
-    await waitFor(() => expect(fetchCalls.some((c) => c.method === 'POST')).toBe(true));
-    const post = fetchCalls.find((c) => c.method === 'POST')!;
-    expect(post.url).toContain('/assertions/VAL-1');
-    expect(post.body).toEqual({ requires_test: false });
-    expect(invalidateSpy).toHaveBeenCalledOnce();
-    expect((within(row).getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
-  });
-
-  it('reverts the optimistic flip when the POST fails', async () => {
-    toggleOk = false;
-    syncState.data = [A({ val_id: 'VAL-1', requires_test: true })];
-    render(<AcceptancePanel slug="alpha" />);
-    const row = await screen.findByTestId('row-VAL-1');
-    fireEvent.click(within(row).getByRole('checkbox'));
-    // ends back at checked after the failed POST reverts
-    await waitFor(() => expect((within(row).getByRole('checkbox') as HTMLInputElement).checked).toBe(true));
+  it('offers no requires_test toggle (the per-VAL write path is retired)', () => {
+    render(<AcceptancePanel slug="demo" />);
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
   });
 });

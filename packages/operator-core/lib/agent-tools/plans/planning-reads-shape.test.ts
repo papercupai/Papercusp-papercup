@@ -51,7 +51,7 @@ describe("shapePlansList (P-021)", () => {
       },
     };
     const out = shapePlansList(
-      { plans: [listRow(1, { lifecycle })] },
+      { plans: [listRow(1, { derivedLifecycle: lifecycle })] },
       "trimmed",
     ) as {
       plans: Record<string, unknown>[];
@@ -68,7 +68,7 @@ describe("shapePlansList (P-021)", () => {
     expect(r.lifecycleContradiction).toBe("one item is still live");
     // standard keeps the wider field set + done count
     const std = shapePlansList(
-      { plans: [listRow(1, { lifecycle })] },
+      { plans: [listRow(1, { derivedLifecycle: lifecycle })] },
       "standard",
     ) as {
       plans: Record<string, unknown>[];

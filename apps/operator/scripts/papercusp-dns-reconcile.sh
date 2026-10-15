@@ -16,11 +16,21 @@ resolved_dropin=${PAPERCUSP_DNS_RESOLVED_DROPIN:-/etc/systemd/resolved.conf.d/99
 expected_dropin=${PAPERCUSP_DNS_EXPECTED_DROPIN:-$script_dir/systemd/papercusp-dns-over-tls.conf}
 chrome_policy=${PAPERCUSP_CHROME_POLICY:-/etc/opt/chrome/policies/managed/papercusp-direct-dns.json}
 chrome_policy_source=${PAPERCUSP_CHROME_POLICY_SOURCE:-$script_dir/systemd/papercusp-chrome-dns-policy.json}
-connection=${PAPERCUSP_DNS_CONNECTION:-GateWayFiber58}
+connection=${PAPERCUSP_DNS_CONNECTION:-}
 bypass_unit=${PAPERCUSP_DNS_BYPASS_UNIT:-papercusp-sni-bypass.service}
 bypass_unit_file=${PAPERCUSP_DNS_BYPASS_UNIT_FILE:-/etc/systemd/system/$bypass_unit}
 test_mode=${PAPERCUSP_DNS_TEST_MODE:-0}
 changed=0
+
+# DHCP DNS changes when this desktop joins another Wi-Fi network. Reconcile the
+# connection actually serving this interface, rather than a previously used SSID.
+if [[ "$test_mode" != 1 && -z "$connection" ]]; then
+  connection=$(nmcli -g GENERAL.CONNECTION device show wlp183s0)
+  if [[ -z "$connection" || "$connection" == -- ]]; then
+    echo 'papercusp-dns-reconcile: wlp183s0 has no active connection' >&2
+    exit 1
+  fi
+fi
 
 target_host_re='^(sidestage\.papercusp\.com|papercusp\.com|www\.papercusp\.com|papercuspai\.com|flags\.papercuspai\.com|api\.papercuspai\.com|media\.sidestage\.papercusp\.com|turn\.sidestage\.papercusp\.com)$'
 
@@ -138,10 +148,13 @@ activate_resolver() {
 }
 
 check_live_contract() {
-  local resolved_status connection_status addresses
+  local resolved_status connection_status addresses link_dns
   resolved_status=$(resolvectl status)
   grep -q 'Protocols:.*+DNSOverTLS' <<<"$resolved_status"
-  ! grep -q 'DNS Servers: 192\.168\.40\.1' <<<"$resolved_status"
+  # Eligible per-link servers override the authenticated global DNS policy.
+  # Check the whole link rather than blacklisting one remembered router address.
+  link_dns=$(resolvectl dns wlp183s0)
+  grep -Eq '^Link [0-9]+ \(wlp183s0\):[[:space:]]*$' <<<"$link_dns"
 
   connection_status=$(nmcli -g ipv4.ignore-auto-dns,ipv6.ignore-auto-dns,connection.dns-over-tls connection show "$connection")
   [[ "$connection_status" == $'yes\nyes\n2' ]]

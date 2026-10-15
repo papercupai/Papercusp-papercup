@@ -30,10 +30,12 @@ import {
   computeDeclaredPlanSpecDivergenceAlert,
   computeIdleWithClaimableAlert,
   computeFloorStarvedFleetAlert,
+  buildFleetUnderStaffedBriefAlert,
   renderFalsifierCall,
   FALSIFIER_FORBIDDEN_TOOLS,
   type AlertFalsifier,
 } from './leader-brief';
+import type { FleetHeadcountState } from '../../agent-fleets-store';
 import { buildFullToolNameCatalog } from '../../static-tool-catalog';
 
 const __dirname_ = dirname(new URL(import.meta.url).pathname);
@@ -133,6 +135,37 @@ const FIRING: { name: string; fired: { reason: string; falsifier: AlertFalsifier
       idleMemberIds: ['su-abc123', 'su-def456'],
       poolCapacity: { poolExhausted: false, degraded: true, factor: 0, queueDepth: 28, usableAccounts: 1, availableAccounts: 2 },
     }),
+  },
+  {
+    // P-005 / D-030: the UNDER-staff alert. Its detector lives in lib/fleet, outside
+    // the SOURCE census below, so this row is what holds it to the falsifier contract.
+    // A fired alert missing its reason or falsifier maps to undefined and reds "FIRES".
+    name: 'fleetUnderStaffed',
+    fired: (() => {
+      const r = buildFleetUnderStaffedBriefAlert({
+        fleet: 'my-fleet',
+        controlState: 'active',
+        headcount: {
+          enabled: true,
+          target: 3,
+          current: 0,
+          shortfall: 3,
+          underStrength: true,
+          verdict: 'under-strength',
+          held: false,
+          notHeldBecause: 'supervise-not-granted',
+          topUpRule: { status: 'none', kind: null, inherited: null, ratifiedBy: null, reason: null, until: null },
+          basis: {
+            kind: 'agent-origin-execution-attested',
+            liveRosterMembers: 0,
+            executingMembers: 0,
+            transactionWorkerReadyMembers: null,
+          },
+          countEvidence: { productive: null, liveRoster: null, transactionWorkerReady: null, note: '' },
+        } satisfies FleetHeadcountState,
+      });
+      return r?.alert && r.reason && r.falsifier ? { reason: r.reason, falsifier: r.falsifier } : undefined;
+    })(),
   },
 ];
 

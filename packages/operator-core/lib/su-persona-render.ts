@@ -34,6 +34,7 @@ import {
   type InstructionRuntimeContext,
 } from './instruction-lint';
 import { launchContextDir } from './su-launch-context';
+import { PSU_CACHE_BOUNDARY, cacheSplitBoundaryEnabled } from './inference-gateway/cache-policy';
 import {
   replayAgentSpecification,
   specificationPrompt,
@@ -64,12 +65,16 @@ export interface SuPlanContext {
  * self-disclose right here or it silently misleads the whole session.
  */
 export async function resolveSuPlanContext(opts: {
+  ownerId?: string | null;
   planSlug: string | null;
   harnessSlug: string | null;
   workspaceId: string;
 }): Promise<SuPlanContext> {
   const { planSlug, harnessSlug, workspaceId } = opts;
   if (!planSlug || !harnessSlug) return { planTitle: null, planNow: null };
+  const { sessionAllowsAmbientContext } = await import('./capability-envelope/session-confinement-port');
+  if (!await sessionAllowsAmbientContext({ ownerId: opts.ownerId, workspaceId }))
+    return { planTitle: null, planNow: null };
   try {
     const { resolveHarnessPlansDir, readPlanBySlug } = await import('./agent-tools/plans/source');
     const resolved = await resolveHarnessPlansDir(harnessSlug, { workspaceId });
@@ -190,6 +195,17 @@ export async function applySuPromptOverlays(opts: {
   instructionRuntime: InstructionRuntimeContext;
 }): Promise<{ promptText: string; instructionLint: InstructionLintReport }> {
   let promptText = opts.basePromptText;
+
+  // token-efficiency-prompts-cache-and-behavior-2026-10-11 P-006: everything appended below is
+  // PER-SESSION (codex launch context, launcher provenance, mode section, and the precedence
+  // trace that carries this owner's id + observedAt). The gateway can only cache the stable
+  // playbook across sessions if PSU_CACHE_BOUNDARY sits in front of that tail. role-launch-spec
+  // emits it only when a launch context exists, so most launches had none and every start
+  // rewrote the whole playbook block (measured 2026-10-12: 413 distinct last-system-block hashes
+  // across 450 starts). Emit it here unless the base already carries one.
+  if (cacheSplitBoundaryEnabled() && !promptText.includes(PSU_CACHE_BOUNDARY)) {
+    promptText = `${promptText.replace(/\n+$/, '')}\n\n${PSU_CACHE_BOUNDARY}\n`;
+  }
 
   if (opts.agent === 'codex' && opts.launchContextText) {
     const budgetModule = await import('./model-context-budget.mjs');
@@ -559,6 +575,7 @@ export async function rebuildSuLaunchArtifact(
     : input.stack !== undefined && JSON.stringify(nextStack) !== JSON.stringify(record.stack ?? [])
       ? null : record.selectedIdentity ?? null;
   const plan = await resolveSuPlanContext({
+    ownerId,
     planSlug: record.planSlug,
     harnessSlug: record.harnessSlug,
     workspaceId: record.workspaceId,
@@ -573,6 +590,7 @@ export async function rebuildSuLaunchArtifact(
     planSlug: record.planSlug,
   });
   const spec = await buildLaunchSpec({
+    ownerId,
     kind: 'su',
     agent: record.agent,
     workspaceId: record.workspaceId,
@@ -631,6 +649,8 @@ export async function rebuildSuLaunchArtifact(
     harnessSlug: record.harnessSlug,
     role: 'su',
     stack: spec.stack,
+    // WI-10004747: the rebuilt persona composes the su static layers; record them.
+    impliedStack: 'su-static',
     compositionRootId: selectedResolution?.compositionRootId ?? null,
     stateRevision: precedence.watermark,
     state: {

@@ -22,6 +22,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb } from '@papercusp/test-config';
+import { FALLBACK_OBSERVATIONS_MIN_DDL } from './_work-items-schema';
 
 import { stripSqlComments as sharedStripSqlComments } from '../../../scripts/lib/strip-comments-and-strings.mjs';
 
@@ -105,6 +106,22 @@ export async function applyMigrationForTest(sql: postgres.Sql, filePath: string)
     .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l.trim()))
     .join('\n');
   await sql.unsafe(sqlText);
+}
+
+/**
+ * WI-10005570 (plan personal-data-reader-set-labels-2026-10-01, D-006): every
+ * agent-facing `session_turns` read consults the disclosure ledger
+ * (personal-vault/transcript-exclusion.ts `restrictedTurnSql`) and fails CLOSED,
+ * so a fixture that hand-rolls `session_turns` and drives one of those readers
+ * must stand the ledger up too. This applies the REAL migration 1302, never
+ * hand-written DDL. Its foreign keys need `harness_shared.users`; a fixture that
+ * has none gets an id-only stub (created only when absent).
+ */
+export async function applyDisclosureLedgerForTest(sql: postgres.Sql): Promise<void> {
+  await sql.unsafe(`
+    CREATE SCHEMA IF NOT EXISTS harness_shared;
+    CREATE TABLE IF NOT EXISTS harness_shared.users (id uuid PRIMARY KEY DEFAULT gen_random_uuid());`);
+  await applyMigrationForTest(sql, resolve(SQL_DIR, '1302-personal-disclosure-labels.sql'));
 }
 
 /**
@@ -527,6 +544,9 @@ export const EVENT_SUBSTRATE_MIGRATIONS = [
   '572-event-await-nodes-threshold-tree.sql',
   '599-event-announcement-generation.sql',
   '632-event-key-fire-latch.sql',
+  // WI-10005224: condition-object.ts LEFT JOINs the event_awaits_effective view (710);
+  // a fixture without it degrades findConditionObjects to "no object" through a catch.
+  '710-event-awaits-effective-deadline-view.sql',
   '825-verified-wait-producer-health.sql',
   '869-predicate-watch-changed-op.sql',
   '871-lifecycle-bound-watches.sql',
@@ -534,6 +554,8 @@ export const EVENT_SUBSTRATE_MIGRATIONS = [
   '953-event-announcement-logical-gate.sql',
   '1216-event-await-fired-delivery-intent-marker.sql',
   '1250-predicate-watch-evaluator-baselines.sql',
+  // WI-10008157 (P-006 / D-004): additive turn_proof / pickup columns on event_wake_deliveries.
+  '1441-wake-delivery-turn-proof.sql',
 ] as const;
 
 /** PURE — merge migration lists into apply order (number, then file name), deduplicated. */
@@ -678,7 +700,8 @@ export const FED_ORDER_KEY_DDL = `
 
 /**
  * ⚠ THIS DOES NOT RUN REAL MIGRATIONS. It provisions a genuinely EMPTY database
- * (`CREATE SCHEMA harness_shared` + the fed-order-key fns only) — every table your
+ * (`CREATE SCHEMA harness_shared` + the fed-order-key fns + the ambient
+ * `fallback_observations` sink only) — every other table your
  * test needs, YOU hand-roll as inline DDL in the calling `*.integration.test.ts`
  * file. There is no schema replay to fall back on.
  *
@@ -696,13 +719,19 @@ export const FED_ORDER_KEY_DDL = `
  * `provisionRestartTestDb` (@papercusp/test-config) — those DO apply the actual
  * migration files.
  */
-export async function createFreshPgDb(prefix = 'eng'): Promise<FreshPgDb> {
+export async function createFreshPgDb(
+  prefix = 'eng',
+  options: { onQuery?: (query: string) => void } = {},
+): Promise<FreshPgDb> {
   const db = await createFreshTestDb({ prefix });
 
   const sql = postgres(db.url, {
     max: 4,
     onnotice: () => {},
     prepare: false,
+    // Postgres calls debug for execution, while a tagged SQL fragment is only
+    // constructed. Tests measuring round trips must observe this boundary.
+    debug: options.onQuery ? (_connection, query) => options.onQuery?.(query) : undefined,
     types: {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       bigint: { to: 20, from: [20], serialize: (x: any) => String(x), parse: (x: string) => Number(x) } as any,
@@ -710,6 +739,15 @@ export async function createFreshPgDb(prefix = 'eng'): Promise<FreshPgDb> {
   });
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await sql.unsafe(FED_ORDER_KEY_DDL);
+  // The fallback-observations sink is ambient infrastructure, not a table a test opts into:
+  // any production path under test may call observeFallback(), whose debounced flush (2s,
+  // unref'd timer) writes here through the mocked getOrgPg handle. Without the table that
+  // flush console.warns 'relation harness_shared.fallback_observations does not exist', and
+  // vitest-fail-on-console fails WHICHEVER test happens to be running when the timer fires —
+  // a timing-dependent red in an unrelated case (WI-6554700010013241; same class as
+  // WI-10005130 and WI-6554700010008895, which each patched one fixture). IF NOT EXISTS, so a
+  // test that provisions the table itself is unaffected.
+  await sql.unsafe(FALLBACK_OBSERVATIONS_MIN_DDL).simple();
 
   const cleanup = async () => {
     await sql.end({ timeout: 5 });

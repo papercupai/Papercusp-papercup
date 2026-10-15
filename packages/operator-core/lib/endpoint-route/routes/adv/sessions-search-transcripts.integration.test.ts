@@ -26,7 +26,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { runSessionSearchIndexBuildOnce } from '../../../session-search-index-build';
 
 const h = vi.hoisted(() => ({
@@ -107,6 +107,10 @@ interface SearchBody {
   plan?: string;
   totalHits?: number;
   hiddenMachineHits?: { count: number; truncatedByLimit: boolean };
+  _tiers?: {
+    exact: { status: string; error?: string };
+    fuzzy: { status: string; error?: string };
+  };
   sessions: WireSession[];
 }
 
@@ -148,6 +152,7 @@ beforeAll(async () => {
   await applyMigrationForTest(sql, M501);
   await applyMigrationForTest(sql, M794);
   await applyMigrationForTest(sql, M1273);
+  await applyDisclosureLedgerForTest(sql);
 
   // The target: the literal sits INSIDE a URL lexeme — unreachable by the tokenized hybrid leg.
   await seed({
@@ -190,6 +195,53 @@ afterAll(async () => {
 
 /** Rows excluded by a filter must never appear, whichever consumer is asking. */
 const NEVER_VISIBLE = ['sess-other-ws', 'sess-machine'];
+
+describe('route search-transcripts — disclosure ledger fixture controls', () => {
+  it('fails closed with explicit tier errors when the ledger is absent, then retrieves after it is restored', async () => {
+    h.active = [];
+    h.planSessions = [];
+    await sql.unsafe('ALTER TABLE harness_shared.personal_disclosures RENAME TO personal_disclosures_fixture_unavailable');
+    try {
+      const missing = await search('q=furnishedfinder&limit=30');
+      expect(missing.sessions).toEqual([]);
+      for (const tier of [missing._tiers?.exact, missing._tiers?.fuzzy]) {
+        expect(tier).toMatchObject({ status: 'error' });
+        expect(tier?.error).toContain('personal_disclosures');
+      }
+    } finally {
+      await sql.unsafe('ALTER TABLE harness_shared.personal_disclosures_fixture_unavailable RENAME TO personal_disclosures');
+    }
+    const restored = await search('q=furnishedfinder&limit=30');
+    expect(restored._tiers?.exact.status).toBe('ran');
+    expect(restored._tiers?.fuzzy.status).toBe('ran');
+    expect(ids(restored)).toContain('sess-target');
+  }, 60_000);
+
+  it('withholds a turn inside an active disclosure window and retrieves it again after fixture cleanup', async () => {
+    h.active = [];
+    h.planSessions = [];
+    const [user] = await sql<Array<{ id: string }>>`INSERT INTO harness_shared.users DEFAULT VALUES RETURNING id`;
+    try {
+      await seed({ sid: 'sess-disclosed', owner: 'su-disclosed', ts: '2026-09-25T10:00:00Z', text: 'furnishedfinder inside a disclosure window' });
+      expect(ids(await search('q=furnishedfinder&limit=30'))).toContain('sess-disclosed');
+      await sql`
+        INSERT INTO harness_shared.personal_disclosures
+          (workspace_id, user_id, agent_owner_id, document_id, source, level, reader_set, delivered_via, delivered_at)
+        VALUES (${WS}, ${user!.id}, 'su-disclosed', gen_random_uuid(), 'fixture', 'sender-only',
+                ARRAY['sender@example.test'], 'fixture', '2026-09-25T09:00:00Z'::timestamptz)`;
+      for (const query of ['q=furnishedfinder', 'q=furnisedfinder']) {
+        const restricted = await search(`${query}&limit=30&includeMachineTurns=1`);
+        expect(ids(restricted)).not.toContain('sess-disclosed');
+        expect(ids(restricted)).toContain('sess-active');
+      }
+      await sql`DELETE FROM harness_shared.personal_disclosures WHERE user_id = ${user!.id}`;
+      expect(ids(await search('q=furnishedfinder&limit=30'))).toContain('sess-disclosed');
+    } finally {
+      await sql`DELETE FROM harness_shared.session_turns WHERE session_id = 'sess-disclosed'`;
+      await sql`DELETE FROM harness_shared.users WHERE id = ${user!.id}`;
+    }
+  }, 60_000);
+});
 
 describe('route search-transcripts — every owner-facing consumer shows the target', () => {
   it('Agents-running endpoint regression: the pill query shape surfaces furnishedfinder sessions, active first, exact tier', async () => {

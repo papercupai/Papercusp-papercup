@@ -1,0 +1,193 @@
+{
+  "schemaVersion": "p011-inbox-cache-sharing-v1",
+  "workItem": "WI-10005480",
+  "parentWorkItem": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "plane": "local-real-cache-handler-with-mocked-IO",
+  "change": "Full-read cache keys retain owner, workspace, delivery floor and kinds; only bounded reads include limit, ambient and intents. Caller filters and side effects remain outside the cache.",
+  "sourceFiles": {
+    "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts": {
+      "sha256": "8d599eb35324cc9af05c236324dd7a7baca12e33c674d4f842e359841cbf8c92",
+      "bytes": 92904
+    },
+    "packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts": {
+      "sha256": "0816a092dff9d20641298d004bfb87add9bd9556d3c152413f420321f9dfa639",
+      "bytes": 12836
+    }
+  },
+  "baseline": {
+    "ok": false,
+    "runId": "e370c2a9-d3b6-4178-85b5-b80ceb159c7c",
+    "root": "<repo-root>",
+    "passed": 7,
+    "failed": 3,
+    "skipped": 0,
+    "files": 1,
+    "failures": [
+      {
+        "file": "packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts",
+        "test": "coord:inbox \u2014 share only equivalent full derives (P-011) shares a nonempty full derive across sender, directed and unanswered filters without losing content",
+        "message": "AssertionError: expected [ 'reply', 'ask' ] to deeply equal [ 'ask', 'reply' ]\n    at <repo-root>/packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts:201:49\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://<repo-root>/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+      },
+      {
+        "file": "packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts",
+        "test": "coord:inbox \u2014 share only equivalent full derives (P-011) keeps owner, workspace, delivery floor and kinds isolated for full reads",
+        "message": "AssertionError: expected \"vi.fn()\" to be called 5 times, but got 6 times\n    at <repo-root>/packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts:226:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://<repo-root>/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+      },
+      {
+        "file": "packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts",
+        "test": "coord:inbox \u2014 share only equivalent full derives (P-011) single-flights concurrent full reads while each caller keeps its own content and side effects",
+        "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 8 times\n    at <repo-root>/packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts:254:25\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://<repo-root>/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20"
+      }
+    ],
+    "failuresTruncated": false,
+    "durationMs": 82,
+    "byFile": {
+      "packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts": {
+        "passed": 7,
+        "failed": 3,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20534924
+      }
+    },
+    "testRunIds": [
+      20534924
+    ],
+    "rootSource": "requested"
+  },
+  "verified": {
+    "ok": true,
+    "runId": "f1306fee-37c5-47f1-961c-6a4ccda96ed4",
+    "root": "<repo-root>",
+    "passed": 44,
+    "failed": 0,
+    "skipped": 0,
+    "files": 4,
+    "failures": [],
+    "failuresTruncated": false,
+    "durationMs": 249,
+    "byFile": {
+      "packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts": {
+        "passed": 10,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20534933
+      },
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox-read-receipt.test.ts": {
+        "passed": 16,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20534932
+      },
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox-sender-filter.test.ts": {
+        "passed": 12,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20534934
+      },
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox-unanswered-filter.test.ts": {
+        "passed": 6,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20534935
+      }
+    },
+    "testRunIds": [
+      20534932,
+      20534933,
+      20534934,
+      20534935
+    ],
+    "rootSource": "requested"
+  },
+  "typecheck": {
+    "ok": true,
+    "project": "packages/operator-core/tsconfig.json",
+    "engine": "tsc-service",
+    "errorCount": 0,
+    "scopedToFiles": [
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts",
+      "packages/operator-core/lib/agent-tools/coordination/tools/coord-inbox-cache.test.ts"
+    ],
+    "scopedVerdict": "requested-files-clean",
+    "scopedVerdictIncomplete": false,
+    "errorsInRequestedFiles": 0,
+    "totalErrorCount": 0,
+    "otherErrorCount": 0,
+    "otherErrors": [],
+    "otherErrorsTruncated": false,
+    "otherByFile": [],
+    "otherByFileTruncated": false,
+    "otherFilesWithErrors": 0,
+    "unattributedErrorCount": 0,
+    "compilerExitCode": 0,
+    "serviceScope": {
+      "checkedFiles": 22,
+      "named": 2,
+      "typeReferencing": 0,
+      "importers": 20,
+      "snapshotAgeMs": 1401,
+      "queuedMs": 815,
+      "checkMs": 1401
+    },
+    "scopeCaveat": "SCOPED RUN (shared typecheck service) \u2014 ok/errorCount/errors/exitCode describe the requested files, checked inside the FULL project program. otherErrorCount/otherErrors cover files that reference their exported types or import them directly, and do not fail that requested-file verdict; missing requested paths make scopedVerdict incomplete instead. A TRANSITIVE importer whose error names none of those types is NOT covered, nor are project-global diagnostics. This is not the gate verdict.",
+    "errors": [],
+    "errorsTruncated": false,
+    "byFile": [],
+    "byFileTruncated": false,
+    "filesWithErrors": 0,
+    "syntaxBroken": [],
+    "semanticCheckIncomplete": false,
+    "durationMs": 2221,
+    "exitCode": 0
+  },
+  "distinguishingObservations": {
+    "baselineConcurrentFactories": 8,
+    "verifiedConcurrentFactories": 1,
+    "baselineIsolationVariantFactories": 6,
+    "verifiedIsolationVariantFactories": 5,
+    "sameUsefulBodyCodeUnits": 122880
+  },
+  "baselineQualification": "First content assertion had an ascending-order oracle error; corrected to production newest-first. Independent baseline concurrency and isolation assertions already distinguished duplicate derives. Baseline file predates that oracle repair.",
+  "coverage": [
+    "full sender/directed/unanswered request sharing",
+    "nonempty authored body preserved without bounding",
+    "per-caller heartbeat/mailbox/watermark and unanswered lookup",
+    "owner/workspace/floor/kinds isolation",
+    "bounded-window limit/ambient/intents isolation",
+    "coord_event_log invalidation",
+    "concurrent single-flight",
+    "existing cache bypass and read-receipt/sender/unanswered suites"
+  ],
+  "limits": [
+    "Factory graphs are controlled fixture data, not a production census.",
+    "Counts and logical string units do not measure physical retained bytes, heap or PSS.",
+    "No before/after production resource savings or historical esbuild recovery asserted.",
+    "Source hashes identify two named files, not the full import graph.",
+    "No P011 fulfillment, R8/R9, independent acceptance or shipment claim."
+  ],
+  "portableProvenance": {
+    "kind": "path-normalized-derivative",
+    "transformation": "Replace only the exact repository-root string with <repo-root> in receipt roots and stack paths; preserve every numeric/boolean/null field and test outcome.",
+    "originalReceipts": {
+      "/tmp/su-7db4f-inbox-cache-share-baseline.json": {
+        "sha256": "a1c6da759a8df64f35bb085cb664accee2e4b21608dd7d3bb39552707f7f65fd",
+        "bytes": 2570
+      },
+      "/tmp/su-7db4f-inbox-cache-share-verified.json": {
+        "sha256": "182b6bf2838c614f8992cc466ffcc26e3bd6d33719b1332af21644b6d9d3c332",
+        "bytes": 975
+      },
+      "/tmp/su-7db4f-inbox-cache-share-types.json": {
+        "sha256": "821b4c380ac1a76c4c4401c1962487a1ab22b5ff241e7de8ae2687e3030eb883",
+        "bytes": 1390
+      }
+    },
+    "durableReferences": "Baseline run e370c2a9-d3b6-4178-85b5-b80ceb159c7c / ledger20534924; verified run f1306fee-37c5-47f1-961c-6a4ccda96ed4 / ledgers20534932-20534935."
+  }
+}

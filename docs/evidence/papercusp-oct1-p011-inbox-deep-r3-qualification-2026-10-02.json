@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005478",
+  "parent": "WI-10004890",
+  "plane": "live-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-inbox-deep-r3-2026-10-02.json",
+    "bytes": 69734,
+    "sha256": "5e0b0ca88b59d95c619b4885c022a34682d340f994e80edf3a68dc842091a338"
+  },
+  "runtime": {
+    "pid": 911700,
+    "buildSha": "3f9f41aa22",
+    "startedAt": "2026-10-02T13:40:34.829Z",
+    "endedAt": "2026-10-02T13:40:44.121Z",
+    "cleanup": {
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true
+    }
+  },
+  "test": {
+    "testRunId": 20533492,
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "nativeLog": "/tmp/su-7db4f-p011-inbox-deep-r3.log",
+    "localDirty": true
+  },
+  "selection": {
+    "originRaw": {
+      "path": "docs/evidence/papercusp-oct1-p011-inbox-deep-r2-2026-10-02.json",
+      "bytes": 250261,
+      "sha256": "a5bcaad88468a9416ae1f230324a6e61429a76b8af866b62378090c5536fcb32"
+    },
+    "requested": [
+      "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+    ],
+    "checked": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "selectedMissing": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "firstValue": {
+      "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+      "toolNamespace": "coord:inbox",
+      "entries": 32659,
+      "objects": 9314,
+      "stringCodeUnits": 1491322,
+      "arrayEntries": 29469,
+      "traversalLimited": true,
+      "depthLimited": 0,
+      "fieldsLimited": 0,
+      "softExpiry": "expired",
+      "hardExpiry": "pending"
+    },
+    "samePayloadCountersAcrossSamples": true
+  },
+  "ordinaryReads": 24,
+  "limits": {
+    "maxObjects": 16384,
+    "maxEntries": 32768,
+    "maxFields": 64,
+    "maxDepth": 8,
+    "budgetMs": 200,
+    "maxCacheEntries": 1,
+    "maxEntryEntries": 32768,
+    "maxEntryObjects": 16384,
+    "cacheKeyDigests": [
+      "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+    ]
+  },
+  "namedSourcesBefore": {
+    "scripts/cdp-inspector.mjs": "d3114909e8418ebf5fb2a6c9d2b706e15325cc3dca92b7440b3c84df1e043075",
+    "scripts/cdp-inspector.d.mts": "64af8c4f15656eaf1b78575e7af8070cbe5d8c9640ec331d105da7e23cca6293",
+    "packages/operator-core/lib/cdp-inspector.test.ts": "ec4a95c238f636c39416e6cb48330f741e23d6b803de8baab498df2df4529a12",
+    "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "5fbf65a1604154731be61b2c5cba1c60e930410e0891530d6b6f8629acf852bb",
+    "packages/operator-core/lib/memory/jev-memory-gate.ts": "dfc94c7756003290a18b0212777636f59cdf2490e512f4c272eb0fb0aeb6c729",
+    "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+    "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+    "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992"
+  },
+  "namedSourcesAfter": {
+    "scripts/cdp-inspector.mjs": "d3114909e8418ebf5fb2a6c9d2b706e15325cc3dca92b7440b3c84df1e043075",
+    "scripts/cdp-inspector.d.mts": "64af8c4f15656eaf1b78575e7af8070cbe5d8c9640ec331d105da7e23cca6293",
+    "packages/operator-core/lib/cdp-inspector.test.ts": "ec4a95c238f636c39416e6cb48330f741e23d6b803de8baab498df2df4529a12",
+    "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "5fbf65a1604154731be61b2c5cba1c60e930410e0891530d6b6f8629acf852bb",
+    "packages/operator-core/lib/memory/jev-memory-gate.ts": "dfc94c7756003290a18b0212777636f59cdf2490e512f4c272eb0fb0aeb6c729",
+    "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+    "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+    "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992"
+  },
+  "namedSourcesStable": true,
+  "sourceScope": "Eight local named hashes compared at measured endpoints. Full transitive/current-serving source graph UNKNOWN.",
+  "outcome": "Protected current inbox value matched exactly in every sample but remains globally entry-limited even with its own quota. No complete payload, retained-byte or physical-savings claim.",
+  "limitations": [
+    "R2 and R3 share main process identity but are different logical traversal quotas; their string counts are not growth/savings measurements.",
+    "Inspection excludes closures, symbols, nonenumerable fields, proxies and unpinned/native retainers.",
+    "Main PID ambient observations plus HTTP status/row-shape checks do not establish useful-context, concurrency parity or a causal intervention.",
+    "Pending parent physical resources/native/historicalcompiler/R8R9/independent acceptance/shipment remains open."
+  ]
+}

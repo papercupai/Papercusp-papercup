@@ -1,0 +1,1468 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Reports S38 original execution and canonical custody",
+  "framework": "node",
+  "command": [
+    "npm",
+    "run",
+    "llm-test",
+    "--",
+    "run",
+    "su-S38-reports-capture"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-12T23:02:55.377Z",
+  "finishedAt": "2026-10-12T23:03:14.436Z",
+  "summary": "One original same-Claude/240s S38 execution passed at clean ee1677. This archive preserves its captured results and canonical custody transfer; it does not register a replacement operational test, certify acceptance, or claim current production runtime.",
+  "assertions": [
+    {
+      "id": "original-model-pass",
+      "passed": true,
+      "evidence": "Original UUID36de7580 passed with zero deterministic violations and judge findings; copied as the exact same UUID and all28 columns to canonical PG."
+    },
+    {
+      "id": "original-runtime-witnesses",
+      "passed": true,
+      "evidence": "Original ledger90 records captured before/after fingerprint0ae8fdcc3ef0c83c4fa31e6b310663f45d4fba85b29c40167e3e0fb85f618334; original execution_details preserved unchanged in canonical21168590."
+    },
+    {
+      "id": "original-source-qualified",
+      "passed": true,
+      "evidence": "All36 declared files match the retained clean executed ee1677 clone;35 current working bytes match. The unrelated hook-copy-list delta is disclosed, not treated as a blanket current proof."
+    }
+  ],
+  "workItemId": "WI-10007208",
+  "scope": {
+    "newExecution": false,
+    "retrospectiveRuntimeCapture": false,
+    "runtimeVintageImport": true,
+    "adequacyBindingsCreated": false,
+    "wholeAcceptance": false,
+    "shipment": false,
+    "originalHarnessAttribution": null,
+    "sourceCustodyOnly": true
+  },
+  "publicExport": {
+    "serializer": "scripts/lib/identity-leak-patterns.mjs#serializeIdentitySafeJson",
+    "disclosure": "Portable string values are redacted by the maintained identity serializer. Compressed raw bytes are represented by original length/hash; a decoded portable transcript is included. Exact original binary transcript and every model column are retained under original UUID in canonical PG. Original export-file hashes below attest private original bytes, not the sanitized export."
+  },
+  "originalModel": {
+    "rows": [
+      {
+        "id": "36de7580-7f25-4185-b322-654cc08eaeed",
+        "scenario_id": "su-S38-reports-capture",
+        "scenario_version": 4,
+        "scenario_target": "su",
+        "scenario_hash": "44e5fb6009e8bc0d87a668d4630c44d9e11f13be6b354b4e32b68e363d0640a9",
+        "identity_hash": "5a7e884db34f6a7b64f633df96ff875bc004c477337f42f27fb0cd6f0dc650a6",
+        "matrix_group_id": null,
+        "matrix_index": null,
+        "rubric_version": "su.8a986ee2703d",
+        "sut_model": "claude-sonnet-4-6",
+        "judge_model": "claude-sonnet-4-6",
+        "persona_id": "brief-admin",
+        "persona_traits_json": {
+          "domain": "admin",
+          "modality": "text",
+          "verbosity": "terse",
+          "interrupts": false,
+          "politeness": "neutral",
+          "goalClarity": "precise",
+          "clarification": "never_clarifies"
+        },
+        "workspace_mode": "isolated",
+        "transport_mode": "in-process",
+        "status": "passed",
+        "started_at": "2026-10-12T23:02:55.377Z",
+        "finished_at": "2026-10-12T23:03:14.436Z",
+        "cost_usd": "0.031747",
+        "cap_breaches": [],
+        "scores_json": {
+          "helpfulness": 5,
+          "groundedness": 5,
+          "toolSelection": 5,
+          "scopeDiscipline": 5,
+          "conventionAdherence": 5
+        },
+        "findings_count": {
+          "info": 0,
+          "warn": 0,
+          "error": 0
+        },
+        "transcript_raw_zstd": {
+          "omittedFromPortableExport": true,
+          "rawBytes": 1035,
+          "sha256": "8d805d03c6a6761454ca4a74cdf3abda003fa8217c60611a7072d0271ad8a672"
+        },
+        "transcript_norm_json": [
+          {
+            "idx": 0,
+            "cards": [],
+            "costUsd": 0.023717999999999996,
+            "simKind": "text",
+            "userText": "The approved architecture review is complete. Finish delivery to me so I can find it later. Preserve this final Markdown unchanged, including its diagram. Author and verify the reusable procedure in maintained engineering docs at agent-insights/shared-visibility-boundary-procedure without private incident details. All code implementation and verification are finished. Procedure body:\n\n# Preserve the shared visibility boundary\n\nBefore reading queue rows, apply the shared visibility predicate in the database query before ranking or result limits.\n\nVerify with an allowed-reader positive control and an unrelated-reader negative control.\n\nFinal report:\n\n# Architecture review\n\n## Findings\nThe queue reader uses the shared visibility predicate.\n\n## Verdict\nThe reviewed boundary is verified.\n\nMaintained procedure: [Shared visibility boundary](/internal/docs/agent-insights/shared-visibility-boundary-procedure).\n\n```mermaid\ngraph TD; A[Publish] --> B[Library]\n```",
+            "latencyMs": 16489.81519,
+            "toolCalls": [
+              {
+                "name": "reports:publish",
+                "input": {
+                  "kind": "review",
+                  "title": "Architecture review",
+                  "body_md": "# Architecture review\n\n## Findings\nThe queue reader uses the shared visibility predicate.\n\n## Verdict\nThe reviewed boundary is verified.\n\nMaintained procedure: [Shared visibility boundary](/internal/docs/agent-insights/shared-visibility-boundary-procedure).\n\n```mermaid\ngraph TD; A[Publish] --> B[Library]\n```",
+                  "summary": "Architecture review: shared visibility boundary verified. Queue reader applies shared visibility predicate. Verdict: reviewed boundary is verified.",
+                  "visibility": "owner",
+                  "request_key": "arch-review-shared-visibility-boundary-final"
+                },
+                "responseIndex": 0
+              },
+              {
+                "name": "docs:author",
+                "input": {
+                  "body": "# Preserve the shared visibility boundary\n\nBefore reading queue rows, apply the shared visibility predicate in the database query before ranking or result limits.\n\nVerify with an allowed-reader positive control and an unrelated-reader negative control.",
+                  "slug": "agent-insights/shared-visibility-boundary-procedure",
+                  "tags": [
+                    "visibility",
+                    "queue",
+                    "predicate",
+                    "procedure",
+                    "boundary"
+                  ],
+                  "title": "Preserve the shared visibility boundary",
+                  "status": "active",
+                  "verify": true,
+                  "section": "agent-insights",
+                  "overwrite": true,
+                  "description": "Procedure for preserving the shared visibility boundary when reading queue rows: apply the shared visibility predicate in the DB query before ranking or limits, then verify with positive and negative reader controls."
+                },
+                "responseIndex": 0
+              },
+              {
+                "name": "reports:get",
+                "input": {
+                  "id": "rpt_fixture"
+                },
+                "responseIndex": 1
+              },
+              {
+                "name": "docs:get",
+                "input": {
+                  "slugs": [
+                    "agent-insights/shared-visibility-boundary-procedure"
+                  ],
+                  "harness": "engineering"
+                },
+                "responseIndex": 1
+              }
+            ],
+            "simThought": "(scripted trigger — declared by the scenario)",
+            "controlTags": [],
+            "toolResults": [
+              {
+                "name": "reports:publish",
+                "output": "{\"ok\":true,\"report_id\":\"rpt_fixture\",\"path\":\"/reports?sel=rpt_fixture\",\"body_md\":\"# Architecture review\\n\\n## Findings\\nThe queue reader uses the shared visibility predicate.\\n\\n## Verdict\\nThe reviewed boundary is verified.\\n\\nMaintained procedure: [Shared visibility boundary](/internal/docs/agent-insights/shared-visibility-boundary-procedure).\\n\\n```mermaid\\ngraph TD; A[Publish] --> B[Library]\\n```\",\"visibility\":\"owner\"}",
+                "isError": false,
+                "truncated": false,
+                "sourceChars": 426
+              },
+              {
+                "name": "docs:author",
+                "output": "{\"ok\":true,\"slug\":\"shared-visibility-boundary-procedure\",\"surface\":\"engineering\",\"path\":\"/internal/docs/agent-insights/shared-visibility-boundary-procedure\",\"read\":{\"slugs\":[\"agent-insights/shared-visibility-boundary-procedure\"],\"harness\":\"engineering\"}}",
+                "isError": false,
+                "truncated": false,
+                "sourceChars": 254
+              },
+              {
+                "name": "reports:get",
+                "output": "{\"ok\":true,\"results\":[{\"id\":\"rpt_fixture\",\"ok\":true,\"report\":{\"report_id\":\"rpt_fixture\",\"path\":\"/reports?sel=rpt_fixture\",\"body_md\":\"# Architecture review\\n\\n## Findings\\nThe queue reader uses the shared visibility predicate.\\n\\n## Verdict\\nThe reviewed boundary is verified.\\n\\nMaintained procedure: [Shared visibility boundary](/internal/docs/agent-insights/shared-visibility-boundary-procedure).\\n\\n```mermaid\\ngraph TD; A[Publish] --> B[Library]\\n```\",\"visibility\":\"owner\"}}],\"counts\":{\"ok\":1,\"failed\":0}}",
+                "isError": false,
+                "truncated": false,
+                "sourceChars": 509
+              },
+              {
+                "name": "docs:get",
+                "output": "{\"results\":[{\"slug\":\"agent-insights/shared-visibility-boundary-procedure\",\"found\":true,\"content\":\"# Preserve the shared visibility boundary\\n\\nBefore reading queue rows, apply the shared visibility predicate in the database query before ranking or result limits.\\n\\nVerify with an allowed-reader positive control and an unrelated-reader negative control.\"}],\"surface\":\"engineering\"}",
+                "isError": false,
+                "truncated": false,
+                "sourceChars": 382
+              }
+            ],
+            "finishReason": "done",
+            "assistantText": "I'll handle both deliverables in parallel — publish the final report and author the procedure doc simultaneously.Both published. Now verifying both deliverables.Both verified against their sources. Here's your delivery summary:\n\n---\n\n**Architecture review report** — [/reports?sel=rpt_fixture](/reports?sel=rpt_fixture)\nVisibility: owner. Final Markdown preserved exactly, including the Mermaid diagram.\n\n**Reusable procedure doc** — [/internal/docs/agent-insights/shared-visibility-boundary-procedure](/internal/docs/agent-insights/shared-visibility-boundary-procedure)\nAuthored in maintained engineering docs, active status, no incident details — just the general procedure: apply the shared visibility predicate in the DB query before ranking or limits, verify with allowed-reader positive control and unrelated-reader negative control."
+          }
+        ],
+        "telemetry_json": {
+          "toolInvocations": [],
+          "continueChainRows": []
+        },
+        "asserts_json": {
+          "asserts": "see-scenario",
+          "violations": []
+        },
+        "judge_json": {
+          "notes": "The engineer efficiently completed both deliverables in a single turn: published the final architecture review report with the Markdown and Mermaid diagram preserved exactly, and authored the reusable procedure doc at the correct slug in maintained engineering docs. Both were verified via read-back tool calls. No scope drift, no fabricated tools, no convention violations.",
+          "scores": {
+            "helpfulness": 5,
+            "groundedness": 5,
+            "toolSelection": 5,
+            "scopeDiscipline": 5,
+            "conventionAdherence": 5
+          },
+          "costUsd": 0.006387,
+          "findings": [],
+          "judgeOverruledAssert": false
+        },
+        "metadata_json": {
+          "llmCallDiagnostics": {
+            "total": 14,
+            "events": [
+              {
+                "label": "gateway-pool",
+                "phase": "request",
+                "callId": "0c9eeaac-f76d-487c-9583-73bae56b9a25",
+                "status": null,
+                "attempt": 1,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:02:56.077Z",
+                "governorMode": "unobserved",
+                "servedAccount": null,
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": null
+              },
+              {
+                "label": "gateway-pool",
+                "phase": "response",
+                "callId": "0c9eeaac-f76d-487c-9583-73bae56b9a25",
+                "status": 200,
+                "attempt": 1,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:03:04.503Z",
+                "governorMode": "unobserved",
+                "servedAccount": "aviynw8",
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": "req_011CfyBEkMaUjQPedVMEFP62"
+              },
+              {
+                "label": "gateway-pool",
+                "phase": "request",
+                "callId": "0c9eeaac-f76d-487c-9583-73bae56b9a25",
+                "status": null,
+                "attempt": 2,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:03:04.517Z",
+                "governorMode": "unobserved",
+                "servedAccount": null,
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": null
+              },
+              {
+                "label": "gateway-pool",
+                "phase": "response",
+                "callId": "0c9eeaac-f76d-487c-9583-73bae56b9a25",
+                "status": 200,
+                "attempt": 2,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:03:07.462Z",
+                "governorMode": "unobserved",
+                "servedAccount": "aviynw8",
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": "req_011CfyBFNWTjn9vSaT4PAjdH"
+              },
+              {
+                "label": "gateway-pool",
+                "phase": "request",
+                "callId": "0c9eeaac-f76d-487c-9583-73bae56b9a25",
+                "status": null,
+                "attempt": 3,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:03:07.468Z",
+                "governorMode": "unobserved",
+                "servedAccount": null,
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": null
+              },
+              {
+                "label": "gateway-pool",
+                "phase": "response",
+                "callId": "0c9eeaac-f76d-487c-9583-73bae56b9a25",
+                "status": 200,
+                "attempt": 3,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:03:11.866Z",
+                "governorMode": "unobserved",
+                "servedAccount": "aviynw8",
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": "req_011CfyBFabiraU51ARvVAJgS"
+              },
+              {
+                "label": "anthropic-direct",
+                "phase": "request",
+                "callId": "0e60c3f4-f104-445c-a630-b58c17111865",
+                "status": null,
+                "attempt": 1,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:03:11.959Z",
+                "governorMode": "disabled",
+                "servedAccount": null,
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": null
+              },
+              {
+                "label": "anthropic-direct",
+                "phase": "response",
+                "callId": "0e60c3f4-f104-445c-a630-b58c17111865",
+                "status": 200,
+                "attempt": 1,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:03:12.615Z",
+                "governorMode": "disabled",
+                "servedAccount": "aviynw8",
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": "req_011CfyBFuaESzQTMe7Qn3HQj"
+              },
+              {
+                "label": "anthropic-direct",
+                "phase": "stream-progress",
+                "callId": "0e60c3f4-f104-445c-a630-b58c17111865",
+                "status": 200,
+                "attempt": 1,
+                "loopback": true,
+                "textChars": 0,
+                "observedAt": "2026-10-12T23:03:12.617Z",
+                "governorMode": "disabled",
+                "callerAborted": null,
+                "servedAccount": "aviynw8",
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "streamEventCount": 1,
+                "callerAbortReason": null,
+                "lastStreamEventAt": "2026-10-12T23:03:12.617Z",
+                "providerRequestId": "req_011CfyBFuaESzQTMe7Qn3HQj",
+                "firstStreamEventAt": "2026-10-12T23:03:12.617Z"
+              },
+              {
+                "label": "anthropic-direct",
+                "phase": "stream-complete",
+                "callId": "0e60c3f4-f104-445c-a630-b58c17111865",
+                "status": 200,
+                "attempt": 1,
+                "loopback": true,
+                "textChars": 996,
+                "observedAt": "2026-10-12T23:03:14.435Z",
+                "governorMode": "disabled",
+                "callerAborted": null,
+                "servedAccount": "aviynw8",
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "streamEventCount": 80,
+                "callerAbortReason": null,
+                "lastStreamEventAt": "2026-10-12T23:03:14.435Z",
+                "providerRequestId": "req_011CfyBFuaESzQTMe7Qn3HQj",
+                "firstStreamEventAt": "2026-10-12T23:03:12.617Z"
+              },
+              {
+                "label": "anthropic-direct",
+                "phase": "request",
+                "callId": "a9d4a34e-a476-4488-8325-b7dac665c4ca",
+                "status": null,
+                "attempt": 1,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:03:14.684Z",
+                "governorMode": "disabled",
+                "servedAccount": null,
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": null
+              },
+              {
+                "label": "anthropic-direct",
+                "phase": "response",
+                "callId": "a9d4a34e-a476-4488-8325-b7dac665c4ca",
+                "status": 200,
+                "attempt": 1,
+                "loopback": true,
+                "observedAt": "2026-10-12T23:03:15.653Z",
+                "governorMode": "disabled",
+                "servedAccount": "aviynw8",
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "providerRequestId": "req_011CfyBG7g1rMEsjGBQCZqoj"
+              },
+              {
+                "label": "anthropic-direct",
+                "phase": "stream-progress",
+                "callId": "a9d4a34e-a476-4488-8325-b7dac665c4ca",
+                "status": 200,
+                "attempt": 1,
+                "loopback": true,
+                "textChars": 0,
+                "observedAt": "2026-10-12T23:03:15.654Z",
+                "governorMode": "disabled",
+                "callerAborted": null,
+                "servedAccount": "aviynw8",
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "streamEventCount": 1,
+                "callerAbortReason": null,
+                "lastStreamEventAt": "2026-10-12T23:03:15.654Z",
+                "providerRequestId": "req_011CfyBG7g1rMEsjGBQCZqoj",
+                "firstStreamEventAt": "2026-10-12T23:03:15.654Z"
+              },
+              {
+                "label": "anthropic-direct",
+                "phase": "stream-complete",
+                "callId": "a9d4a34e-a476-4488-8325-b7dac665c4ca",
+                "status": 200,
+                "attempt": 1,
+                "loopback": true,
+                "textChars": 645,
+                "observedAt": "2026-10-12T23:03:18.203Z",
+                "governorMode": "disabled",
+                "callerAborted": null,
+                "servedAccount": "aviynw8",
+                "endpointOrigin": "http://127.0.0.1:8788",
+                "requestedAccount": null,
+                "streamEventCount": 61,
+                "callerAbortReason": null,
+                "lastStreamEventAt": "2026-10-12T23:03:18.202Z",
+                "providerRequestId": "req_011CfyBG7g1rMEsjGBQCZqoj",
+                "firstStreamEventAt": "2026-10-12T23:03:15.654Z"
+              }
+            ],
+            "omitted": 0
+          }
+        }
+      }
+    ],
+    "decodedOriginalRawTranscript": [
+      {
+        "name": "delta",
+        "data": {
+          "text": "I'll handle both deliverables in parallel — publish the final report and author the procedure doc simultaneously."
+        },
+        "tMs": 0
+      },
+      {
+        "name": "tool_call",
+        "data": {
+          "name": "reports:publish",
+          "input": {
+            "title": "Architecture review",
+            "kind": "review",
+            "request_key": "arch-review-shared-visibility-boundary-final",
+            "body_md": "# Architecture review\n\n## Findings\nThe queue reader uses the shared visibility predicate.\n\n## Verdict\nThe reviewed boundary is verified.\n\nMaintained procedure: [Shared visibility boundary](/internal/docs/agent-insights/shared-visibility-boundary-procedure).\n\n```mermaid\ngraph TD; A[Publish] --> B[Library]\n```",
+            "summary": "Architecture review: shared visibility boundary verified. Queue reader applies shared visibility predicate. Verdict: reviewed boundary is verified.",
+            "visibility": "owner"
+          }
+        },
+        "tMs": 0
+      },
+      {
+        "name": "tool_call",
+        "data": {
+          "name": "docs:author",
+          "input": {
+            "slug": "agent-insights/shared-visibility-boundary-procedure",
+            "title": "Preserve the shared visibility boundary",
+            "section": "agent-insights",
+            "body": "# Preserve the shared visibility boundary\n\nBefore reading queue rows, apply the shared visibility predicate in the database query before ranking or result limits.\n\nVerify with an allowed-reader positive control and an unrelated-reader negative control.",
+            "description": "Procedure for preserving the shared visibility boundary when reading queue rows: apply the shared visibility predicate in the DB query before ranking or limits, then verify with positive and negative reader controls.",
+            "status": "active",
+            "tags": [
+              "visibility",
+              "queue",
+              "predicate",
+              "procedure",
+              "boundary"
+            ],
+            "verify": true,
+            "overwrite": true
+          }
+        },
+        "tMs": 0
+      },
+      {
+        "name": "delta",
+        "data": {
+          "text": "Both published. Now verifying both deliverables."
+        },
+        "tMs": 0
+      },
+      {
+        "name": "tool_call",
+        "data": {
+          "name": "reports:get",
+          "input": {
+            "id": "rpt_fixture"
+          }
+        },
+        "tMs": 0
+      },
+      {
+        "name": "tool_call",
+        "data": {
+          "name": "docs:get",
+          "input": {
+            "slugs": [
+              "agent-insights/shared-visibility-boundary-procedure"
+            ],
+            "harness": "engineering"
+          }
+        },
+        "tMs": 0
+      },
+      {
+        "name": "delta",
+        "data": {
+          "text": "Both verified against their sources. Here's your delivery summary:\n\n---\n\n**Architecture review report** — [/reports?sel=rpt_fixture](/reports?sel=rpt_fixture)\nVisibility: owner. Final Markdown preserved exactly, including the Mermaid diagram.\n\n**Reusable procedure doc** — [/internal/docs/agent-insights/shared-visibility-boundary-procedure](/internal/docs/agent-insights/shared-visibility-boundary-procedure)\nAuthored in maintained engineering docs, active status, no incident details — just the general procedure: apply the shared visibility predicate in the DB query before ranking or limits, verify with allowed-reader positive control and unrelated-reader negative control."
+        },
+        "tMs": 0
+      },
+      {
+        "name": "done",
+        "data": {
+          "costUsd": 0.023717999999999996
+        },
+        "tMs": 0
+      }
+    ]
+  },
+  "originalLedger": {
+    "sink": {
+      "host": "localhost",
+      "port": "24680",
+      "database": "/papercusp"
+    },
+    "rows": [
+      {
+        "id": "90",
+        "file_path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts",
+        "framework": "llm-test",
+        "status": "pass",
+        "duration_ms": "19059",
+        "started_at": "2026-10-12T23:02:55.377Z",
+        "finished_at": "2026-10-12T23:03:14.436Z",
+        "output_tail": null,
+        "suite_id": null,
+        "run_group_id": "reports-cont-6693-s38-20261012",
+        "source": "local",
+        "branch": "staging",
+        "commit_sha": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+        "created_at": "2026-10-12T23:03:19.081Z",
+        "harness_slug": null,
+        "workspace_id": "papercusp-workspace",
+        "loop_lag_p95_ms": null,
+        "rss_mb": null,
+        "is_scratch_config": false,
+        "worktree_dirty": false,
+        "execution_details": {
+          "root": "/tmp/pcv/papercusp-lint-as-committed-ee1677c869-bujsTA",
+          "failed": 0,
+          "passed": 1,
+          "skipped": 0,
+          "filePath": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts",
+          "commitSha": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+          "testLayer": "llm",
+          "runGroupId": "reports-cont-6693-s38-20261012",
+          "scenarioId": "su-S38-reports-capture",
+          "harnessSlug": null,
+          "workspaceId": "papercusp-workspace",
+          "mutationPhase": null,
+          "schemaVersion": 1,
+          "worktreeDirty": false,
+          "testNamePattern": null,
+          "collectionFailed": false,
+          "runtimeEnvironmentAfter": {
+            "units": [
+              "llm-test-in-process-2877017"
+            ],
+            "observedAt": "2026-10-12T23:03:18.375Z",
+            "fingerprint": "0ae8fdcc3ef0c83c4fa31e6b310663f45d4fba85b29c40167e3e0fb85f618334",
+            "schemaVersion": 1
+          },
+          "runtimeEnvironmentBefore": {
+            "units": [
+              "llm-test-in-process-2877017"
+            ],
+            "observedAt": "2026-10-12T23:02:55.229Z",
+            "fingerprint": "0ae8fdcc3ef0c83c4fa31e6b310663f45d4fba85b29c40167e3e0fb85f618334",
+            "schemaVersion": 1
+          },
+          "runtimeEnvironmentAfterCaptureStatus": "captured",
+          "runtimeEnvironmentBeforeCaptureStatus": "captured"
+        }
+      }
+    ]
+  },
+  "inputsBefore": {
+    "workItemId": "WI-10007208",
+    "sourceRoot": "/tmp/pcv/papercusp-lint-as-committed-ee1677c869-bujsTA",
+    "sourceCommit": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+    "files": [
+      {
+        "path": "packages/operator-core/lib/llm-testing/targets/su.ts",
+        "sha256": "72cdb404fa96310717691c1fa41916287bc8223ea7a2fc89d28e0ae14f47483e",
+        "workingSha256": "72cdb404fa96310717691c1fa41916287bc8223ea7a2fc89d28e0ae14f47483e",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/__tests__/su-target-retry.test.ts",
+        "sha256": "5b906283b025e10865b7cd97b72103e73576ce42e5c0b46147af2e0090c3167d",
+        "workingSha256": "5b906283b025e10865b7cd97b72103e73576ce42e5c0b46147af2e0090c3167d",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/__tests__/su-target-diagnostics.test.ts",
+        "sha256": "f18ee82d81e63a271dfe272f978500b8f1774154edcb24f0dd6ab4f346003ebc",
+        "workingSha256": "f18ee82d81e63a271dfe272f978500b8f1774154edcb24f0dd6ab4f346003ebc",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/testing-shell/src/llm/types.ts",
+        "sha256": "bc8a8bfb329e98dc985530b923624dfc13b44c7a3e279aeba96e867b0ad16e90",
+        "workingSha256": "bc8a8bfb329e98dc985530b923624dfc13b44c7a3e279aeba96e867b0ad16e90",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/testing-shell/src/llm/runner.ts",
+        "sha256": "5bef3db13366e37d8522675cf0ee8930edcebad310f5e4119295e431e3ed3b3c",
+        "workingSha256": "5bef3db13366e37d8522675cf0ee8930edcebad310f5e4119295e431e3ed3b3c",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/testing-shell/src/llm/__tests__/runner-timeout.test.ts",
+        "sha256": "8792146a27a884813c7a5e8d2374ad754ff39f3a47e1c025062b5f56ae580e22",
+        "workingSha256": "8792146a27a884813c7a5e8d2374ad754ff39f3a47e1c025062b5f56ae580e22",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+        "sha256": "b6b1ad7aba827552348db3b7bfbae228b6d6a7fd4d8e4fd0db627d0dcc6f7897",
+        "workingSha256": "b6b1ad7aba827552348db3b7bfbae228b6d6a7fd4d8e4fd0db627d0dcc6f7897",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.practice.md",
+        "sha256": "c122ab332f5408385849ef105c52145b1b51b8e0175e39f03fd5218be5ed82ce",
+        "workingSha256": "c122ab332f5408385849ef105c52145b1b51b8e0175e39f03fd5218be5ed82ce",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/su-stack.ts",
+        "sha256": "da5604424288ec2875a97557304e34ccc394f1bb280c398cccd911483e3762ff",
+        "workingSha256": "da5604424288ec2875a97557304e34ccc394f1bb280c398cccd911483e3762ff",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/su-decomposition.ts",
+        "sha256": "8025cf4a03afca5a2b978854c04b714c6c22f31f29f722e89aea09f421627b65",
+        "workingSha256": "8025cf4a03afca5a2b978854c04b714c6c22f31f29f722e89aea09f421627b65",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/render-stack.ts",
+        "sha256": "931b78f688c220c1e73df9031cd545a105c516993a485e8ee127f6cecbe85504",
+        "workingSha256": "931b78f688c220c1e73df9031cd545a105c516993a485e8ee127f6cecbe85504",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/mode-identities.ts",
+        "sha256": "4fc09f75a7d8ea34782e392be6b8ce19bdb06dc8d662851da124f16f0ab7853d",
+        "workingSha256": "4fc09f75a7d8ea34782e392be6b8ce19bdb06dc8d662851da124f16f0ab7853d",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/desktop-install/papercusp-files.ts",
+        "sha256": "fed81d5453c55ba281cec098403a11715e7b2e4ca29f00a3f836a9020dbecaf6",
+        "workingSha256": "7c3dee805c53527f6992a34af8c6ec874709658193e3dcb6e87ab3f8846d4717",
+        "workingMatchesClone": false
+      },
+      {
+        "path": "packages/operator-core/lib/desktop-install/splice-tooling-overlay.ts",
+        "sha256": "74f176ee8946ed782dea19d5b46273edb568ff28ebacc45c9bed968b9b0f0bc7",
+        "workingSha256": "74f176ee8946ed782dea19d5b46273edb568ff28ebacc45c9bed968b9b0f0bc7",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/targets/su-catalog.ts",
+        "sha256": "a3a8bc7c44a794bc22e7386cf79f660b25e875f5205146c176bdf7b065e0efd8",
+        "workingSha256": "a3a8bc7c44a794bc22e7386cf79f660b25e875f5205146c176bdf7b065e0efd8",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "apps/operator/prompts/papercusp-su.codex.md",
+        "sha256": "294ba8c601e5989a169d1961f3ea33be3b089cc781586cd7581cba34d898c34d",
+        "workingSha256": "294ba8c601e5989a169d1961f3ea33be3b089cc781586cd7581cba34d898c34d",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/operating-modes-policy.ts",
+        "sha256": "9db983079e3dd291211243f4c4700efa69cc569c4519246506ea328d23917ce7",
+        "workingSha256": "9db983079e3dd291211243f4c4700efa69cc569c4519246506ea328d23917ce7",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/__tests__/su-system-framing.test.ts",
+        "sha256": "3cd93945e7cd24be9a8419d8bb99ed82f8df016731cca94c332b7a3d6bc9d528",
+        "workingSha256": "3cd93945e7cd24be9a8419d8bb99ed82f8df016731cca94c332b7a3d6bc9d528",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/stack-mutation.ts",
+        "sha256": "2c7dcf4ddd491a5cd682ffd44e966e2c2d4e406b85b36201144de0f09c7a6453",
+        "workingSha256": "2c7dcf4ddd491a5cd682ffd44e966e2c2d4e406b85b36201144de0f09c7a6453",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/papercusp/packages/harness/blueprints/base/prompts/agent-base-preamble.md",
+        "sha256": "77b8176b50fe31053b6e6c7015efa22f1d51dfffa74f3a56f849486718fd5316",
+        "workingSha256": "77b8176b50fe31053b6e6c7015efa22f1d51dfffa74f3a56f849486718fd5316",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/docs/author.ts",
+        "sha256": "aaeeb94b4808aa79d43e5813c83333e5d88a485b0bd1da7e7b40d52746d85a61",
+        "workingSha256": "aaeeb94b4808aa79d43e5813c83333e5d88a485b0bd1da7e7b40d52746d85a61",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/docs/get.ts",
+        "sha256": "ee9c741995b9969ce799dd9148ade1b903e25549c163426246bb11d3c0eb92aa",
+        "workingSha256": "ee9c741995b9969ce799dd9148ade1b903e25549c163426246bb11d3c0eb92aa",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/reports/_shared.ts",
+        "sha256": "1582f9e34046a39f1ecdaae3b18b90daf4dd14dde91b1e89d047445daaf96f6a",
+        "workingSha256": "1582f9e34046a39f1ecdaae3b18b90daf4dd14dde91b1e89d047445daaf96f6a",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/reports/get.ts",
+        "sha256": "46c0da1d9b06c91ae353d412a43475a87df1a0a42b93d20035d7386af3777a98",
+        "workingSha256": "46c0da1d9b06c91ae353d412a43475a87df1a0a42b93d20035d7386af3777a98",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/reports/publish.ts",
+        "sha256": "234f2916fbaa2f13f6cbefeafe74b6bbe301918e5e5f92393658b6940a6b762d",
+        "workingSha256": "234f2916fbaa2f13f6cbefeafe74b6bbe301918e5e5f92393658b6940a6b762d",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts",
+        "sha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
+        "workingSha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts",
+        "sha256": "44e5fb6009e8bc0d87a668d4630c44d9e11f13be6b354b4e32b68e363d0640a9",
+        "workingSha256": "44e5fb6009e8bc0d87a668d4630c44d9e11f13be6b354b4e32b68e363d0640a9",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/scenarios/su/_asserts.ts",
+        "sha256": "8b08b2336b5046b985edee0914b9bff88319b32aaffd1cf62bca8e75c7e11427",
+        "workingSha256": "8b08b2336b5046b985edee0914b9bff88319b32aaffd1cf62bca8e75c7e11427",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/report-library.ts",
+        "sha256": "14aa08ac59ff3e4eca1f8b81fe3621c5bf6160ca1c784a35943961722233f5e0",
+        "workingSha256": "14aa08ac59ff3e4eca1f8b81fe3621c5bf6160ca1c784a35943961722233f5e0",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "apps/operator/bin/llm-test.ts",
+        "sha256": "3a140be45f965ec66c30bf290bb460fbf41c9583505e6c1099c0ec417750c8f4",
+        "workingSha256": "3a140be45f965ec66c30bf290bb460fbf41c9583505e6c1099c0ec417750c8f4",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/test-run-ledger.ts",
+        "sha256": "d27883df87f7ca0711da55c29f3e8eed9a67fa0ba72151b0cfa219f33a72a504",
+        "workingSha256": "d27883df87f7ca0711da55c29f3e8eed9a67fa0ba72151b0cfa219f33a72a504",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/deps.ts",
+        "sha256": "51d2cc7b0c2aa0afacd011d339ddade80fc23f65c6d126178b58773c1d87d5b9",
+        "workingSha256": "51d2cc7b0c2aa0afacd011d339ddade80fc23f65c6d126178b58773c1d87d5b9",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/runtime-vintage.ts",
+        "sha256": "938863440440a5e2112d61511eb4efec3f93141b5f9960f3101f883858d30de0",
+        "workingSha256": "938863440440a5e2112d61511eb4efec3f93141b5f9960f3101f883858d30de0",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/battery-harness.ts",
+        "sha256": "d7f806435265984b4250d2787f22a734047ddce9633a092f246efc814727dfa5",
+        "workingSha256": "d7f806435265984b4250d2787f22a734047ddce9633a092f246efc814727dfa5",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/llm-client.ts",
+        "sha256": "af290904574e163c5f847ac1fb37def2d35b0c7bc458d6c326bea1fccace6df4",
+        "workingSha256": "af290904574e163c5f847ac1fb37def2d35b0c7bc458d6c326bea1fccace6df4",
+        "workingMatchesClone": true
+      },
+      {
+        "path": "libs/testing-shell/src/llm/llm-client.ts",
+        "sha256": "0f4be6a83a5688bc1d4fa877fa8dd4030d3da0463aed8f5998ffa3bf673f68c1",
+        "workingSha256": "0f4be6a83a5688bc1d4fa877fa8dd4030d3da0463aed8f5998ffa3bf673f68c1",
+        "workingMatchesClone": true
+      }
+    ],
+    "measuredAt": "2026-10-12T23:00:34.704497+00:00",
+    "cloneDirty": false
+  },
+  "inputsAfter": {
+    "sourceRoot": "/tmp/pcv/papercusp-lint-as-committed-ee1677c869-bujsTA",
+    "sourceCommit": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+    "changedInputs": [],
+    "cloneDirty": false,
+    "modelArchiveSHA256": "bf316437d503ea9d7d3991adb0aac3ddb1a749ff33370913eb5885a8482b7e15",
+    "ledgerArchiveSHA256": "9d3f807a15ab0b43593973b0e88114e57ed4b159cebb31b1f2ba539dd178d392",
+    "measuredAt": "2026-10-12T23:28:47.659723+00:00"
+  },
+  "qualification": {
+    "modelFields": [
+      {
+        "field": "id",
+        "equal": true
+      },
+      {
+        "field": "scenario_id",
+        "equal": true
+      },
+      {
+        "field": "scenario_version",
+        "equal": true
+      },
+      {
+        "field": "scenario_target",
+        "equal": true
+      },
+      {
+        "field": "scenario_hash",
+        "equal": true
+      },
+      {
+        "field": "identity_hash",
+        "equal": true
+      },
+      {
+        "field": "matrix_group_id",
+        "equal": true
+      },
+      {
+        "field": "matrix_index",
+        "equal": true
+      },
+      {
+        "field": "rubric_version",
+        "equal": true
+      },
+      {
+        "field": "sut_model",
+        "equal": true
+      },
+      {
+        "field": "judge_model",
+        "equal": true
+      },
+      {
+        "field": "persona_id",
+        "equal": true
+      },
+      {
+        "field": "persona_traits_json",
+        "equal": true
+      },
+      {
+        "field": "workspace_mode",
+        "equal": true
+      },
+      {
+        "field": "transport_mode",
+        "equal": true
+      },
+      {
+        "field": "status",
+        "equal": true
+      },
+      {
+        "field": "started_at",
+        "equal": true
+      },
+      {
+        "field": "finished_at",
+        "equal": true
+      },
+      {
+        "field": "cost_usd",
+        "equal": true
+      },
+      {
+        "field": "cap_breaches",
+        "equal": true
+      },
+      {
+        "field": "scores_json",
+        "equal": true
+      },
+      {
+        "field": "findings_count",
+        "equal": true
+      },
+      {
+        "field": "transcript_raw_zstd",
+        "equal": true
+      },
+      {
+        "field": "transcript_norm_json",
+        "equal": true
+      },
+      {
+        "field": "telemetry_json",
+        "equal": true
+      },
+      {
+        "field": "asserts_json",
+        "equal": true
+      },
+      {
+        "field": "judge_json",
+        "equal": true
+      },
+      {
+        "field": "metadata_json",
+        "equal": true
+      }
+    ],
+    "modelAllEqual": true,
+    "rawBytesEqual": true,
+    "rawSha256": "8d805d03c6a6761454ca4a74cdf3abda003fa8217c60611a7072d0271ad8a672",
+    "originalCommit": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+    "cloneCommit": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+    "cloneDirty": "",
+    "cloneAll36Equal": true,
+    "currentEqualCount": 35,
+    "currentDifferences": [
+      {
+        "path": "packages/operator-core/lib/desktop-install/papercusp-files.ts",
+        "expected": "fed81d5453c55ba281cec098403a11715e7b2e4ca29f00a3f836a9020dbecaf6",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "7c3dee805c53527f6992a34af8c6ec874709658193e3dcb6e87ab3f8846d4717",
+        "currentEqual": false
+      }
+    ],
+    "files": [
+      {
+        "path": "packages/operator-core/lib/llm-testing/targets/su.ts",
+        "expected": "72cdb404fa96310717691c1fa41916287bc8223ea7a2fc89d28e0ae14f47483e",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "72cdb404fa96310717691c1fa41916287bc8223ea7a2fc89d28e0ae14f47483e",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/__tests__/su-target-retry.test.ts",
+        "expected": "5b906283b025e10865b7cd97b72103e73576ce42e5c0b46147af2e0090c3167d",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "5b906283b025e10865b7cd97b72103e73576ce42e5c0b46147af2e0090c3167d",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/__tests__/su-target-diagnostics.test.ts",
+        "expected": "f18ee82d81e63a271dfe272f978500b8f1774154edcb24f0dd6ab4f346003ebc",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "f18ee82d81e63a271dfe272f978500b8f1774154edcb24f0dd6ab4f346003ebc",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/testing-shell/src/llm/types.ts",
+        "expected": "bc8a8bfb329e98dc985530b923624dfc13b44c7a3e279aeba96e867b0ad16e90",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "bc8a8bfb329e98dc985530b923624dfc13b44c7a3e279aeba96e867b0ad16e90",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/testing-shell/src/llm/runner.ts",
+        "expected": "5bef3db13366e37d8522675cf0ee8930edcebad310f5e4119295e431e3ed3b3c",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "5bef3db13366e37d8522675cf0ee8930edcebad310f5e4119295e431e3ed3b3c",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/testing-shell/src/llm/__tests__/runner-timeout.test.ts",
+        "expected": "8792146a27a884813c7a5e8d2374ad754ff39f3a47e1c025062b5f56ae580e22",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "8792146a27a884813c7a5e8d2374ad754ff39f3a47e1c025062b5f56ae580e22",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
+        "expected": "b6b1ad7aba827552348db3b7bfbae228b6d6a7fd4d8e4fd0db627d0dcc6f7897",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "b6b1ad7aba827552348db3b7bfbae228b6d6a7fd4d8e4fd0db627d0dcc6f7897",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/papercusp/packages/harness/blueprints/base/prompts/su.practice.md",
+        "expected": "c122ab332f5408385849ef105c52145b1b51b8e0175e39f03fd5218be5ed82ce",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "c122ab332f5408385849ef105c52145b1b51b8e0175e39f03fd5218be5ed82ce",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/su-stack.ts",
+        "expected": "da5604424288ec2875a97557304e34ccc394f1bb280c398cccd911483e3762ff",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "da5604424288ec2875a97557304e34ccc394f1bb280c398cccd911483e3762ff",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/su-decomposition.ts",
+        "expected": "8025cf4a03afca5a2b978854c04b714c6c22f31f29f722e89aea09f421627b65",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "8025cf4a03afca5a2b978854c04b714c6c22f31f29f722e89aea09f421627b65",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/render-stack.ts",
+        "expected": "931b78f688c220c1e73df9031cd545a105c516993a485e8ee127f6cecbe85504",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "931b78f688c220c1e73df9031cd545a105c516993a485e8ee127f6cecbe85504",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/mode-identities.ts",
+        "expected": "4fc09f75a7d8ea34782e392be6b8ce19bdb06dc8d662851da124f16f0ab7853d",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "4fc09f75a7d8ea34782e392be6b8ce19bdb06dc8d662851da124f16f0ab7853d",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/desktop-install/papercusp-files.ts",
+        "expected": "fed81d5453c55ba281cec098403a11715e7b2e4ca29f00a3f836a9020dbecaf6",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "7c3dee805c53527f6992a34af8c6ec874709658193e3dcb6e87ab3f8846d4717",
+        "currentEqual": false
+      },
+      {
+        "path": "packages/operator-core/lib/desktop-install/splice-tooling-overlay.ts",
+        "expected": "74f176ee8946ed782dea19d5b46273edb568ff28ebacc45c9bed968b9b0f0bc7",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "74f176ee8946ed782dea19d5b46273edb568ff28ebacc45c9bed968b9b0f0bc7",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/targets/su-catalog.ts",
+        "expected": "a3a8bc7c44a794bc22e7386cf79f660b25e875f5205146c176bdf7b065e0efd8",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "a3a8bc7c44a794bc22e7386cf79f660b25e875f5205146c176bdf7b065e0efd8",
+        "currentEqual": true
+      },
+      {
+        "path": "apps/operator/prompts/papercusp-su.codex.md",
+        "expected": "294ba8c601e5989a169d1961f3ea33be3b089cc781586cd7581cba34d898c34d",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "294ba8c601e5989a169d1961f3ea33be3b089cc781586cd7581cba34d898c34d",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/operating-modes-policy.ts",
+        "expected": "9db983079e3dd291211243f4c4700efa69cc569c4519246506ea328d23917ce7",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "9db983079e3dd291211243f4c4700efa69cc569c4519246506ea328d23917ce7",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/__tests__/su-system-framing.test.ts",
+        "expected": "3cd93945e7cd24be9a8419d8bb99ed82f8df016731cca94c332b7a3d6bc9d528",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "3cd93945e7cd24be9a8419d8bb99ed82f8df016731cca94c332b7a3d6bc9d528",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/blueprint/stack-mutation.ts",
+        "expected": "2c7dcf4ddd491a5cd682ffd44e966e2c2d4e406b85b36201144de0f09c7a6453",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "2c7dcf4ddd491a5cd682ffd44e966e2c2d4e406b85b36201144de0f09c7a6453",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/papercusp/packages/harness/blueprints/base/prompts/agent-base-preamble.md",
+        "expected": "77b8176b50fe31053b6e6c7015efa22f1d51dfffa74f3a56f849486718fd5316",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "77b8176b50fe31053b6e6c7015efa22f1d51dfffa74f3a56f849486718fd5316",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/docs/author.ts",
+        "expected": "aaeeb94b4808aa79d43e5813c83333e5d88a485b0bd1da7e7b40d52746d85a61",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "aaeeb94b4808aa79d43e5813c83333e5d88a485b0bd1da7e7b40d52746d85a61",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/docs/get.ts",
+        "expected": "ee9c741995b9969ce799dd9148ade1b903e25549c163426246bb11d3c0eb92aa",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "ee9c741995b9969ce799dd9148ade1b903e25549c163426246bb11d3c0eb92aa",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/reports/_shared.ts",
+        "expected": "1582f9e34046a39f1ecdaae3b18b90daf4dd14dde91b1e89d047445daaf96f6a",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "1582f9e34046a39f1ecdaae3b18b90daf4dd14dde91b1e89d047445daaf96f6a",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/reports/get.ts",
+        "expected": "46c0da1d9b06c91ae353d412a43475a87df1a0a42b93d20035d7386af3777a98",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "46c0da1d9b06c91ae353d412a43475a87df1a0a42b93d20035d7386af3777a98",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/reports/publish.ts",
+        "expected": "234f2916fbaa2f13f6cbefeafe74b6bbe301918e5e5f92393658b6940a6b762d",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "234f2916fbaa2f13f6cbefeafe74b6bbe301918e5e5f92393658b6940a6b762d",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.test.ts",
+        "expected": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "fdfd150e83272f4ed2eac0b946358cfdeb83b542fcf9a3fb4319306657b85e1e",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts",
+        "expected": "44e5fb6009e8bc0d87a668d4630c44d9e11f13be6b354b4e32b68e363d0640a9",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "44e5fb6009e8bc0d87a668d4630c44d9e11f13be6b354b4e32b68e363d0640a9",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/scenarios/su/_asserts.ts",
+        "expected": "8b08b2336b5046b985edee0914b9bff88319b32aaffd1cf62bca8e75c7e11427",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "8b08b2336b5046b985edee0914b9bff88319b32aaffd1cf62bca8e75c7e11427",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/report-library.ts",
+        "expected": "14aa08ac59ff3e4eca1f8b81fe3621c5bf6160ca1c784a35943961722233f5e0",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "14aa08ac59ff3e4eca1f8b81fe3621c5bf6160ca1c784a35943961722233f5e0",
+        "currentEqual": true
+      },
+      {
+        "path": "apps/operator/bin/llm-test.ts",
+        "expected": "3a140be45f965ec66c30bf290bb460fbf41c9583505e6c1099c0ec417750c8f4",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "3a140be45f965ec66c30bf290bb460fbf41c9583505e6c1099c0ec417750c8f4",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/test-run-ledger.ts",
+        "expected": "d27883df87f7ca0711da55c29f3e8eed9a67fa0ba72151b0cfa219f33a72a504",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "d27883df87f7ca0711da55c29f3e8eed9a67fa0ba72151b0cfa219f33a72a504",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/deps.ts",
+        "expected": "51d2cc7b0c2aa0afacd011d339ddade80fc23f65c6d126178b58773c1d87d5b9",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "51d2cc7b0c2aa0afacd011d339ddade80fc23f65c6d126178b58773c1d87d5b9",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/runtime-vintage.ts",
+        "expected": "938863440440a5e2112d61511eb4efec3f93141b5f9960f3101f883858d30de0",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "938863440440a5e2112d61511eb4efec3f93141b5f9960f3101f883858d30de0",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/battery-harness.ts",
+        "expected": "d7f806435265984b4250d2787f22a734047ddce9633a092f246efc814727dfa5",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "d7f806435265984b4250d2787f22a734047ddce9633a092f246efc814727dfa5",
+        "currentEqual": true
+      },
+      {
+        "path": "packages/operator-core/lib/llm-testing/llm-client.ts",
+        "expected": "af290904574e163c5f847ac1fb37def2d35b0c7bc458d6c326bea1fccace6df4",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "af290904574e163c5f847ac1fb37def2d35b0c7bc458d6c326bea1fccace6df4",
+        "currentEqual": true
+      },
+      {
+        "path": "libs/testing-shell/src/llm/llm-client.ts",
+        "expected": "0f4be6a83a5688bc1d4fa877fa8dd4030d3da0463aed8f5998ffa3bf673f68c1",
+        "cloneExists": true,
+        "cloneEqual": true,
+        "currentSha256": "0f4be6a83a5688bc1d4fa877fa8dd4030d3da0463aed8f5998ffa3bf673f68c1",
+        "currentEqual": true
+      }
+    ],
+    "recordedAfter": {
+      "sourceRoot": "/tmp/pcv/papercusp-lint-as-committed-ee1677c869-bujsTA",
+      "sourceCommit": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+      "changedInputs": [],
+      "cloneDirty": false,
+      "modelArchiveSHA256": "bf316437d503ea9d7d3991adb0aac3ddb1a749ff33370913eb5885a8482b7e15",
+      "ledgerArchiveSHA256": "9d3f807a15ab0b43593973b0e88114e57ed4b159cebb31b1f2ba539dd178d392",
+      "measuredAt": "2026-10-12T23:28:47.659723+00:00"
+    }
+  },
+  "custodyTransfer": {
+    "schemaVersion": 1,
+    "kind": "original-llm-custody-transfer",
+    "ownerId": "su-f146f0a3-5ec9-4b19-bac2-b1903f1f6cb1",
+    "importedAt": "2026-10-13T00:08:46.936Z",
+    "source": "pg url source=discovery-file → localhost:24680/papercusp (no .env.local at the repo root; env checked: HARNESS_ADMIN_DATABASE_URL > DATABASE_URL > PAPERCUSP_PG_URL)",
+    "target": "pg url source=env:DATABASE_URL → localhost:5432/papercusp (.env.local supplied DATABASE_URL; env checked: HARNESS_ADMIN_DATABASE_URL > DATABASE_URL > PAPERCUSP_PG_URL)",
+    "originalSourceTestRunId": "90",
+    "originalModelExportSha256": "bf316437d503ea9d7d3991adb0aac3ddb1a749ff33370913eb5885a8482b7e15",
+    "originalLedgerExportSha256": "9d3f807a15ab0b43593973b0e88114e57ed4b159cebb31b1f2ba539dd178d392",
+    "originalCommit": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+    "originalExecutionDetailsUnchanged": true,
+    "originalModelUnchanged": true,
+    "sourceRowsUnmodified": true,
+    "newTestExecution": false,
+    "retrospectiveRuntimeCapture": false,
+    "runtimeVintageImport": false,
+    "bindingsCreated": false,
+    "wholeAcceptanceClaimed": false,
+    "modelInserted": true,
+    "ledgerInserted": true,
+    "modelId": "36de7580-7f25-4185-b322-654cc08eaeed",
+    "testRunId": "21168590",
+    "modelEveryColumnEqual": true,
+    "ledgerPreservedFields": [
+      "file_path",
+      "framework",
+      "status",
+      "duration_ms",
+      "started_at",
+      "finished_at",
+      "suite_id",
+      "run_group_id",
+      "source",
+      "branch",
+      "commit_sha",
+      "created_at",
+      "harness_slug",
+      "workspace_id",
+      "loop_lag_p95_ms",
+      "rss_mb",
+      "is_scratch_config",
+      "worktree_dirty",
+      "execution_details"
+    ],
+    "ledgerPreservedEveryFieldEqual": true,
+    "canonicalLedger": {
+      "id": "21168590",
+      "file_path": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts",
+      "framework": "llm-test",
+      "status": "pass",
+      "duration_ms": "19059",
+      "started_at": "2026-10-12T23:02:55.377Z",
+      "finished_at": "2026-10-12T23:03:14.436Z",
+      "output_tail": "RECOVERED ORIGINAL LLM EXECUTION: source localhost24680/papercusp test_runs90; model 36de7580-7f25-4185-b322-654cc08eaeed; imported by su-f146f0a3-5ec9-4b19-bac2-b1903f1f6cb1; no new test execution or runtime capture. Original output_tail: null",
+      "suite_id": null,
+      "run_group_id": "reports-cont-6693-s38-20261012",
+      "source": "local",
+      "branch": "staging",
+      "commit_sha": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+      "created_at": "2026-10-12T23:03:19.081Z",
+      "harness_slug": null,
+      "workspace_id": "papercusp-workspace",
+      "loop_lag_p95_ms": null,
+      "rss_mb": null,
+      "is_scratch_config": false,
+      "worktree_dirty": false,
+      "execution_details": {
+        "root": "/tmp/pcv/papercusp-lint-as-committed-ee1677c869-bujsTA",
+        "failed": 0,
+        "passed": 1,
+        "skipped": 0,
+        "filePath": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts",
+        "commitSha": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+        "testLayer": "llm",
+        "runGroupId": "reports-cont-6693-s38-20261012",
+        "scenarioId": "su-S38-reports-capture",
+        "harnessSlug": null,
+        "workspaceId": "papercusp-workspace",
+        "mutationPhase": null,
+        "schemaVersion": 1,
+        "worktreeDirty": false,
+        "testNamePattern": null,
+        "collectionFailed": false,
+        "runtimeEnvironmentAfter": {
+          "units": [
+            "llm-test-in-process-2877017"
+          ],
+          "observedAt": "2026-10-12T23:03:18.375Z",
+          "fingerprint": "0ae8fdcc3ef0c83c4fa31e6b310663f45d4fba85b29c40167e3e0fb85f618334",
+          "schemaVersion": 1
+        },
+        "runtimeEnvironmentBefore": {
+          "units": [
+            "llm-test-in-process-2877017"
+          ],
+          "observedAt": "2026-10-12T23:02:55.229Z",
+          "fingerprint": "0ae8fdcc3ef0c83c4fa31e6b310663f45d4fba85b29c40167e3e0fb85f618334",
+          "schemaVersion": 1
+        },
+        "runtimeEnvironmentAfterCaptureStatus": "captured",
+        "runtimeEnvironmentBeforeCaptureStatus": "captured"
+      },
+      "configuration_snapshot": null
+    },
+    "modelColumnHashes": {
+      "id": "ad7428cb735924d058a2f22a81b445dc656ef11123994600cff3be770641e7f0",
+      "scenario_id": "3f1b12ea0b3bf8e0ff5cb0af8f509baffe100bef9ddcabae72435306173159d9",
+      "scenario_version": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+      "scenario_target": "fff3ceb0ecba6dc3b4142eba57b68dd12b06a28b34762c2a9f9f3a9b8e063a1d",
+      "scenario_hash": "0134db1a9cc85bad27b4f49969c90f397abed5dccf83cbbb07b80a9338e7f691",
+      "identity_hash": "65419de16b689f4c24f78a8cf05e7c5c5a4734ab95d34d78a5ed35e2effe79e7",
+      "matrix_group_id": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "matrix_index": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "rubric_version": "f167752df1b615892bce44e946727eb8d72b150676ad3fe99965fe50cd203e81",
+      "sut_model": "f2b5627cf2b5805997a70de51995e4234477d0bd83fe688acb923db81e790b07",
+      "judge_model": "f2b5627cf2b5805997a70de51995e4234477d0bd83fe688acb923db81e790b07",
+      "persona_id": "56bb2cdb1b46e622606759aa3454b2336ac89805fbeef8d952b5bfb9aa38af5b",
+      "persona_traits_json": "39f484bf1045960a4a6a00518065d6fa1a1244ca33994a3d22ac93ac9d94ed6e",
+      "workspace_mode": "fe8c29cc50ff8a82d9675b6ddad142f6cdafd03244463dbc91f3346ad808fe4a",
+      "transport_mode": "d88ee09228625cfc01adc70a6c20a00355ed3b2bbbe4dee6b3bf55ba615b3251",
+      "status": "559532ad927252eed5d9b6687d55203a96b956d822055f4570f196a93a42bece",
+      "started_at": "e2b8b0a482f7997846ca8c95c2f44523563e02cf7529035fc9409d03f47c0dbb",
+      "finished_at": "7d0f2c5776d3d328dd27f68c06d6b107eba499376389d8a9803b9eec1eb07ad1",
+      "cost_usd": "2f8bcf5b7b460134817488745a74932a312232b9d236a8567537692bbe55c12e",
+      "cap_breaches": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "scores_json": "a288f7e655c749354b4bcecfa1e0ad471db881563b3f63d52380c83e40480360",
+      "findings_count": "5ab47ee1f5ffe558d40c2dcb3382fe52bf90250265e1c6950d87ba9371bf43c3",
+      "transcript_raw_zstd": "b0e228b26eb606846be769ef92b03ff67f0dee07a611b9eb9086089c2b89c7d2",
+      "transcript_norm_json": "5d284fb622728dd53a2acadc02f0fdbd1704ceed4da73012b5c94a443a2b2091",
+      "telemetry_json": "36c3628e5d5e7720bb8fd39b89a3b639349802e2262af7845214a2f9a4b30859",
+      "asserts_json": "a8974f067490d4d33e9a85d76389640cde9de515b70cf80882660d92e3dc3b25",
+      "judge_json": "57c13a5fb4f2bddd8a75bcef334b817e2e7221c5d61733266a44b44527a2b432",
+      "metadata_json": "ae48c556dccefe45bc1b3fe779303a2ba67358067030b54b6f67f2a8929ed4aa"
+    },
+    "rawTranscriptSha256": "8d805d03c6a6761454ca4a74cdf3abda003fa8217c60611a7072d0271ad8a672"
+  },
+  "originalRuntimeBootRecovery": {
+    "schemaVersion": 1,
+    "kind": "original-runtime-boot-custody-transfer",
+    "importedAt": "2026-10-13T00:18:00.643Z",
+    "originalBeforeAfterFingerprint": "0ae8fdcc3ef0c83c4fa31e6b310663f45d4fba85b29c40167e3e0fb85f618334",
+    "originalReportedAtPreserved": true,
+    "noRuntimeReportApiCalled": true,
+    "noRetrospectiveObservation": true,
+    "noLivePidClaim": true,
+    "sourceUnmodified": true,
+    "inserted": true,
+    "canonicalRow": {
+      "workspace_id": "papercusp-workspace",
+      "unit": "llm-test-in-process-2877017",
+      "host": "buildhost",
+      "tree_sha": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+      "build_time": "2026-10-12T23:02:17.196Z",
+      "bundle_version": null,
+      "pid": 2877017,
+      "extra": {
+        "kernelProcessIdentity": "linux:b8c61f1d-f67c-43a8-ac9d-2286713e224f:63511067"
+      },
+      "reported_at": "2026-10-12T23:02:54.635Z"
+    },
+    "allFieldsEqual": true,
+    "originalRowSha256": "078c6df9165b579557a590450dc9c0a148b71247f3ba1c7f9c57f2849b4d54f0"
+  },
+  "canonicalPublicReadback": {
+    "count": 1,
+    "total": 1,
+    "truncatedByLimit": false,
+    "latestPerFile": false,
+    "effectiveSourceFilter": "none (exact testRunIds receipt lookup)",
+    "omittedBySourceFilter": 0,
+    "runs": [
+      {
+        "id": 21168590,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "root": null,
+        "filePath": "packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts",
+        "status": "pass",
+        "framework": "llm-test",
+        "startedAt": "2026-10-12T23:02:55.377Z",
+        "finishedAt": "2026-10-12T23:03:14.436Z",
+        "durationMs": 19059,
+        "commitSha": "ee1677c86978be3942cf7a1ebfa87c9fca03bf46",
+        "runGroupId": "reports-cont-6693-s38-20261012",
+        "source": "local",
+        "branch": "staging",
+        "outputTail": null,
+        "loopLagP95Ms": null,
+        "rssMb": null,
+        "saturationSuspect": null,
+        "worktreeDirty": false,
+        "isScratchConfig": false
+      }
+    ]
+  }
+}

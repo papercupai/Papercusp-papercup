@@ -399,6 +399,57 @@ export async function getSelectedModeCatalog() {
   return selected;
 }
 
+type SelectedModeEntry = ModeCatalogSnapshot['entries'][number];
+
+/** Why an identity lookup refused, as one short token for an error message. */
+export function identityRefusal(identity: Awaited<ReturnType<typeof getIdentitySource>>): string {
+  if (identity.ok) return 'no-source-path';
+  const record = identity as { error?: unknown; errors?: Array<{ code?: unknown }> };
+  if (typeof record.error === 'string') return record.error;
+  const codes = (record.errors ?? []).map((entry) => String(entry.code ?? 'invalid'));
+  return codes.length > 0 ? [...new Set(codes)].join('|') : 'invalid';
+}
+
+/** WI-10004896: read a selected mode's definition document from the SOURCE THE
+ * CATALOG SELECTED, never by re-resolving its id through the installed-first
+ * operator resolver. On a vm-release workspace host every first-party blueprint,
+ * su.mode-* included, is a plain installed-tier copy (P-309 content roots). The
+ * catalog deliberately treats an exact copy of a built-in as that built-in, but an
+ * id re-resolution lands on the copy and fails the installed-tier attestation
+ * gate, so every launch WITH a mode died at boot ("selected mode identity
+ * su.mode-auto is no longer available"). A built-in entry is served from this
+ * build's compiled text (the revision pins identical bytes) or its built-in file;
+ * only a moderated installed replacement is read through getIdentitySource. */
+export async function readSelectedModeDocument(
+  entry: SelectedModeEntry,
+): Promise<{ text: string; sourcePath: string }> {
+  const compiled = BUILTIN_MODE_COMPONENTS.find((candidate) =>
+    candidate.sourceId === entry.sourceId && candidate.revision === entry.revision);
+  let text: string;
+  let sourcePath: string;
+  if (compiled) {
+    text = compiled.definitionText;
+    sourcePath = compiled.documentPath;
+  } else {
+    const builtinText = await readBuiltinModeSource(entry.sourceId);
+    if (builtinText !== null && layerContentHash(parseBlueprintSource(builtinText)) === entry.sourceHash) {
+      sourcePath = join(dirname(builtinBlueprintPath(entry.sourceId)), 'prompts', `${entry.slot}.md`);
+    } else {
+      const identity = await getIdentitySource(entry.sourceId);
+      if (!identity.ok || !identity.sourcePath || identity.contentHash !== entry.sourceHash) {
+        const reason = identity.ok && identity.sourcePath ? 'source-revision-changed' : identityRefusal(identity);
+        throw new Error(`selected mode ${entry.id} source revision is unavailable or stale (${reason})`);
+      }
+      sourcePath = join(dirname(identity.sourcePath), 'prompts', `${entry.slot}.md`);
+    }
+    text = await readFile(sourcePath, 'utf8');
+  }
+  if (createHash('sha256').update(text).digest('hex') !== entry.definitionHash) {
+    throw new Error(`selected mode ${entry.id} definition changed after catalog resolution`);
+  }
+  return { text, sourcePath };
+}
+
 export interface SelectedModeDefinition {
   modeId: string;
   contract: string;
@@ -421,23 +472,8 @@ export async function getSelectedModeDefinitions(modeIds: readonly string[]): Pr
     if (!entry || entry.definition.source !== 'fixed' || entry.definition.inputKind !== 'prompt-file') {
       throw new Error('mode ' + modeId + ' has no selected fixed definition');
     }
-    const compiled = BUILTIN_MODE_COMPONENTS.find((candidate) => candidate.sourceId === entry.sourceId &&
-      candidate.revision === entry.revision);
-    let definition: string;
-    if (compiled && await readBuiltinModeSource(entry.sourceId) === null) {
-      definition = compiled.definitionText;
-    } else {
-      const identity = await getIdentitySource(entry.sourceId);
-      if (!identity.ok || !identity.sourcePath || identity.contentHash !== entry.sourceHash) {
-        throw new Error('selected mode ' + modeId + ' source revision is unavailable or stale');
-      }
-      const path = join(dirname(identity.sourcePath), 'prompts', entry.slot + '.md');
-      definition = await readFile(path, 'utf8');
-    }
-    const hash = createHash('sha256').update(definition).digest('hex');
-    if (hash !== entry.definitionHash) {
-      throw new Error('selected mode ' + modeId + ' definition changed after catalog resolution');
-    }
+    // WI-10004896: the same selected-source read the launch and live stack channel use.
+    const definition = (await readSelectedModeDocument(entry)).text;
     let contract = definition;
     if (modeId === 'cold-auto') {
       const heading = '## COLD AUTO — the same autonomy component across fresh-context wakes';

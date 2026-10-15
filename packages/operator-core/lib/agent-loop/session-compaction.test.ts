@@ -7,6 +7,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ModelMessage, ModelPort, ModelStreamEvent } from './model-port';
+import { MODEL_PROVIDER_REQUEST_CAPTURE } from './model-port';
+import type { LoopProviderRequestInfo } from './loop';
 import {
   findCompactionCut,
   maybeCompactSession,
@@ -168,5 +170,131 @@ describe('renderForSummary', () => {
 
   it('serializedChars counts the JSON form', () => {
     expect(serializedChars([user('x')])).toBe(JSON.stringify([user('x')]).length);
+  });
+});
+
+describe('compaction provider obligations', () => {
+  const messages = [user('elder'), assistant('answer'), user('recent'), assistant('answer')];
+  const base = { messages, priorSummary: null, priorCompactedCount: 0, model: 'openrouter:vendor/model',
+    thresholdChars: 10, keepRecent: 2 };
+  const observation: ModelStreamEvent = { type: 'provider_request',
+    request: { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-summary' } },
+    servedAccount: 'local-account' };
+
+  it('propagates a private server capture failure rather than accepting a degraded summary', async () => {
+    const failure = new Error('private binding failed'); let pulled = false;
+    const port: ModelPort = { async *stream() {
+      yield { type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model' },
+        [MODEL_PROVIDER_REQUEST_CAPTURE]: async () => { throw failure; } };
+      pulled = true; yield { type: 'text_delta', text: 'must not summarize' };
+    } };
+    await expect(maybeCompactSession({ ...base, port })).rejects.toBe(failure);
+    expect(pulled).toBe(false);
+  });
+
+  it('awaits capture before the next provider pull and retains an independent snapshot on failure', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let pulled = false;
+    let entered!: () => void;
+    const captureEntered = new Promise<void>(resolve => { entered = resolve; });
+    const captured: LoopProviderRequestInfo[] = [];
+    const port: ModelPort = { async *stream() {
+      yield structuredClone(observation);
+      pulled = true;
+      yield { type: 'error', message: 'summary failed' };
+    } };
+    const pending = maybeCompactSession({ ...base, port, stepIndex: 3, onProviderRequest: async info => {
+      captured.push(structuredClone(info));
+      info.request.response!.id = 'mutated';
+      entered();
+      await gate;
+    } });
+    await captureEntered;
+    expect(pulled).toBe(false);
+    release();
+    const out = await pending;
+    expect(out.providerRequests).toEqual(captured);
+    expect(out.providerRequests?.[0]).toMatchObject({ stepIndex: 3, purpose: 'compaction',
+      request: { response: { id: 'gen-summary' } }, servedAccount: 'local-account' });
+    expect(out.summary).toContain('summary failed');
+    expect(out.summarizeUsage).toBeUndefined();
+  }, 5_000);
+
+  it('keeps dispatch intent without a generation id as unresolved observation', async () => {
+    const { port } = scriptedPort([{ type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model' } },
+      { type: 'error', message: 'no response' }]);
+    const out = await maybeCompactSession({ ...base, port });
+    expect(out.providerRequests).toEqual([{ stepIndex: 0, purpose: 'compaction',
+      request: { provider: 'openrouter', modelId: 'vendor/model' } }]);
+    expect(out.summarizeUsage).toBeUndefined();
+  });
+
+  it('does not dispatch a summarizer when the enclosing call was already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { port, requests } = scriptedPort([]);
+    const out = await maybeCompactSession({ ...base, port, signal: controller.signal });
+    expect(requests).toHaveLength(0);
+    expect(out.summary).toContain('summarizer aborted');
+    expect(out.providerRequests).toBeUndefined();
+    expect(out.summarizeUsage).toBeUndefined();
+  });
+
+  it('keeps conflicting identity observations and strips non-whitelisted provider fields', async () => {
+    const request = Object.assign({ provider: 'openrouter', modelId: 'vendor/model',
+      response: { id: 'gen-one', modelId: 'vendor/served' } }, { secret: 'private-key', reportedCostUsd: 77 });
+    const { port } = scriptedPort([{ type: 'provider_request', request },
+      { type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model',
+        response: { id: 'gen-two', modelId: 'vendor/other' }, identityUncertain: true } },
+      { type: 'error', message: 'identity conflict' }]);
+    const out = await maybeCompactSession({ ...base, port });
+    expect(out.providerRequests).toHaveLength(2);
+    expect(out.providerRequests?.map(info => info.request.response?.id)).toEqual(['gen-one', 'gen-two']);
+    expect(out.providerRequests?.[1].request.identityUncertain).toBe(true);
+    expect(JSON.stringify(out.providerRequests)).not.toContain('private-key');
+    expect(JSON.stringify(out.providerRequests)).not.toContain('reportedCostUsd');
+    expect(out.summarizeProviderResponse).toBeUndefined();
+  });
+
+  it.each(['error', 'abort'])('propagates capture failure instead of hiding it in a %s fallback', async mode => {
+    const controller = new AbortController();
+    let closed = false;
+    let pulled = false;
+    const failure = new Error('durable capture unavailable');
+    const port: ModelPort = { async *stream() { try {
+      yield observation;
+      pulled = true;
+      yield { type: 'text_delta', text: 'must not be pulled' };
+    } finally { closed = true; } } };
+    await expect(maybeCompactSession({ ...base, port, signal: controller.signal,
+      onProviderRequest: async () => { if (mode === 'abort') controller.abort(); throw failure; } })).rejects.toBe(failure);
+    expect(pulled).toBe(false);
+    expect(closed).toBe(true);
+  });
+
+  it.each(['eof', 'aborted', 'other', 'tool_use'] as const)('does not certify %s summary text or usage as complete', async reason => {
+    const script: ModelStreamEvent[] = [observation, { type: 'text_delta', text: 'PARTIAL SUMMARY' }];
+    if (reason !== 'eof') script.push({ type: 'stop', reason, usage: { inputTokens: 8, outputTokens: 2 } });
+    const { port } = scriptedPort(script);
+    const out = await maybeCompactSession({ ...base, port });
+    expect(out.summary).toContain('dropped without a fresh summary');
+    expect(out.summary).not.toBe('PARTIAL SUMMARY');
+    expect(out.providerRequests).toHaveLength(1);
+    expect(out.summarizeUsage).toBeUndefined();
+    expect(out.summarizeProviderResponse).toBeUndefined();
+  });
+
+  it('retains a completed provider report separately and forwards the stable caller identity', async () => {
+    const response = { provider: 'openrouter', id: 'gen-summary', modelId: 'vendor/model', reportedCostUsd: 0.005 };
+    const { port, requests } = scriptedPort([observation, { type: 'text_delta', text: 'summary' },
+      { type: 'stop', reason: 'end_turn', usage: { inputTokens: 9, outputTokens: 1 }, providerResponse: response }]);
+    const out = await maybeCompactSession({ ...base, port, ownerId: 'owned-chat' });
+    expect(requests[0].ownerId).toBe('owned-chat');
+    expect(out.summary).toBe('summary');
+    expect(out.summarizeUsage).toEqual({ inputTokens: 9, outputTokens: 1 });
+    expect(out.summarizeProviderResponse).toEqual(response);
+    expect(out.summarizeProviderResponse).not.toBe(response);
+    expect(out.providerRequests).toHaveLength(1);
   });
 });

@@ -351,18 +351,56 @@ export async function upsertAccumulatorRows(
   watermarkAt: Date,
   counts: readonly LaneCount[],
 ): Promise<void> {
-  for (const c of counts) {
-    await sql`
-      INSERT INTO harness_shared.scout_signal_accumulator
-        (workspace_id, install_slug, lane, new_count, high_water_at, watermark_at, updated_at)
-      VALUES (${workspaceId}, ${installSlug}, ${c.lane}, ${c.newCount},
-              ${c.highWaterAt ? c.highWaterAt.toISOString() : null}, ${watermarkAt.toISOString()}, now())
-      ON CONFLICT (workspace_id, install_slug, lane) DO UPDATE
-        SET new_count     = EXCLUDED.new_count,
-            high_water_at = EXCLUDED.high_water_at,
-            watermark_at  = EXCLUDED.watermark_at,
-            updated_at    = now()`;
+  await upsertAccumulatorRowsForScopes(sql, workspaceId, [installSlug], watermarkAt, counts);
+}
+
+/**
+ * Upsert ONE workspace recount into every install scope of that workspace, in a
+ * single statement (scopes × lanes rows). The counts are workspace-wide (see
+ * readLaneCounts), so every scope row carries the same numbers; writing them in
+ * one round trip replaces scopes × lanes single-row INSERTs.
+ */
+export async function upsertAccumulatorRowsForScopes(
+  sql: Sql,
+  workspaceId: string,
+  installSlugs: readonly string[],
+  watermarkAt: Date,
+  counts: readonly LaneCount[],
+): Promise<void> {
+  if (installSlugs.length === 0 || counts.length === 0) return;
+  const lanes = counts.map((c) => c.lane);
+  const newCounts = counts.map((c) => c.newCount);
+  const highWaters = counts.map((c) => (c.highWaterAt ? c.highWaterAt.toISOString() : null));
+  await sql`
+    INSERT INTO harness_shared.scout_signal_accumulator
+      (workspace_id, install_slug, lane, new_count, high_water_at, watermark_at, updated_at)
+    SELECT ${workspaceId}, s.install_slug, l.lane, l.new_count, l.high_water_at, ${watermarkAt.toISOString()}::timestamptz, now()
+      FROM unnest(${[...installSlugs]}::text[]) AS s(install_slug)
+     CROSS JOIN unnest(${lanes}::text[], ${newCounts}::int[], ${highWaters}::timestamptz[])
+           AS l(lane, new_count, high_water_at)
+    ON CONFLICT (workspace_id, install_slug, lane) DO UPDATE
+      SET new_count     = EXCLUDED.new_count,
+          high_water_at = EXCLUDED.high_water_at,
+          watermark_at  = EXCLUDED.watermark_at,
+          updated_at    = now()`;
+}
+
+/**
+ * PURE: group install scopes by workspace, preserving first-seen order. The
+ * recount is workspace-wide, so the sweep runs it once per GROUP, not once per
+ * scope (papercusp-performance-audit-2026-10-12 P-006: 42 scopes in one
+ * workspace made every sweep run the identical recount 42 times).
+ */
+export function groupScopesByWorkspace(
+  scopes: readonly { workspaceId: string; installSlug: string }[],
+): Array<{ workspaceId: string; installSlugs: string[] }> {
+  const groups = new Map<string, string[]>();
+  for (const { workspaceId, installSlug } of scopes) {
+    const slugs = groups.get(workspaceId);
+    if (!slugs) groups.set(workspaceId, [installSlug]);
+    else if (!slugs.includes(installSlug)) slugs.push(installSlug);
   }
+  return [...groups].map(([workspaceId, installSlugs]) => ({ workspaceId, installSlugs }));
 }
 
 /** The cadence-gate read (WI-4318): the workspace's cached lane counts.
@@ -474,9 +512,13 @@ export async function scoutSignalAccumulatorSweep(
       return results;
     }
     const { sql } = getOrgPg();
-    const evaluatedWorkspaceCount = new Set(scopes.map(({ workspaceId }) => workspaceId)).size;
+    const groups = groupScopesByWorkspace(scopes);
+    const evaluatedWorkspaceCount = groups.length;
     const evaluatedScopeCount = scopes.length;
-    for (const { workspaceId, installSlug } of scopes) {
+    // ONE recount per WORKSPACE, not per scope: every lane count and the watermark
+    // are workspace-wide, so a per-scope loop re-ran the identical seven queries
+    // once per install (42× per sweep on the live workspace, measured 2026-10-12).
+    for (const { workspaceId, installSlugs } of groups) {
       try {
         // WORKSPACE-WIDE last-ran (installSlugs: [] = no slug filter): the tick
         // WRITE key has already drifted across slugs (papercusp-workspace →
@@ -486,30 +528,36 @@ export async function scoutSignalAccumulatorSweep(
         const lastRanAtMs = await readLastRanTickAtMs({ installSlugs: [], workspaceId }).catch(() => null);
         const watermark = new Date(effectiveWatermarkMs(lastRanAtMs, now, lookbackSec));
         const counts = await readLaneCounts(sql, workspaceId, watermark);
-        await upsertAccumulatorRows(sql, workspaceId, installSlug, watermark, counts);
+        await upsertAccumulatorRowsForScopes(sql, workspaceId, installSlugs, watermark, counts);
         const score = weightedSignalScore(Object.fromEntries(counts.map((c) => [c.lane, c.newCount])));
         const eligibleBacklogCount = counts.reduce((total, count) => total + count.newCount, 0);
-        results.push({
-          workspaceId,
-          installSlug,
-          outcome: 'swept',
-          evaluatedWorkspaceCount,
-          evaluatedScopeCount,
-          eligibleBacklogCount,
-          score,
-          reason: counts.map((c) => `${c.lane}=${c.newCount}`).join(' '),
-        });
+        const reason = counts.map((c) => `${c.lane}=${c.newCount}`).join(' ');
+        for (const installSlug of installSlugs) {
+          results.push({
+            workspaceId,
+            installSlug,
+            outcome: 'swept',
+            evaluatedWorkspaceCount,
+            evaluatedScopeCount,
+            eligibleBacklogCount,
+            score,
+            reason,
+          });
+        }
       } catch (e) {
-        results.push({
-          workspaceId,
-          installSlug,
-          outcome: 'error',
-          evaluatedWorkspaceCount,
-          evaluatedScopeCount,
-          eligibleBacklogCount: 0,
-          score: 0,
-          reason: e instanceof Error ? e.message : String(e),
-        });
+        const reason = e instanceof Error ? e.message : String(e);
+        for (const installSlug of installSlugs) {
+          results.push({
+            workspaceId,
+            installSlug,
+            outcome: 'error',
+            evaluatedWorkspaceCount,
+            evaluatedScopeCount,
+            eligibleBacklogCount: 0,
+            score: 0,
+            reason,
+          });
+        }
       }
     }
   } catch (e) {

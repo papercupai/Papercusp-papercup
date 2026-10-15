@@ -243,6 +243,22 @@ export interface TokenTimeBucket {
 
 /** Cache-inclusive token + cost rollup for one harness over a window. */
 export interface TokensDashboardSnapshot {
+  /** Local ledger observation; an unavailable read must not render as zero usage. */
+  observation?: 'observed' | 'unavailable';
+  periodStartMs?: number;
+  periodEndMs?: number;
+  /** Bounded local per-call details. Never provider-account usage or invoices. */
+  recentCalls?: Array<{
+    id: string;
+    atMs: number;
+    model: string;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cacheReadTokens: number | null;
+    cacheCreationTokens: number | null;
+    costUsd: number | null;
+    costSource: 'provider' | 'estimated' | 'unknown';
+  }>;
   /** The window these numbers cover, ms (default 7d). */
   windowMs: number;
   /** Headline totals — the cache breakdown is surfaced so the ~5× is visible. */
@@ -251,6 +267,10 @@ export interface TokensDashboardSnapshot {
     costUsd: number;
     /** Portion priced from tokens × list price (codex etc.). */
     estimatedUsd: number;
+    reportedUsd?: number;
+    unpricedCalls?: number;
+    /** Rows with incomplete token counters cannot support an exact aggregate export. */
+    unknownTokenCalls?: number;
     runs: number;
     inputTokens: number;
     outputTokens: number;

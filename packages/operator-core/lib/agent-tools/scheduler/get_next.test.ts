@@ -79,6 +79,7 @@ const diagnoseFleetScopePlanTerminalityM = vi.hoisted(() =>
   ),
 );
 const diagnoseFleetScopeLeaderLivenessM = vi.hoisted(() => vi.fn(async () => null as boolean | null));
+const reconcileFleetScopeLeaderSuccessionM = vi.hoisted(() => vi.fn(async () => null as 'live' | 'unavailable' | null));
 const workItemClaimLeaseEnabledM = vi.hoisted(() => vi.fn(() => false));
 const leaseClaimedWorkItemM = vi.hoisted(() => vi.fn(async () => true));
 const releaseWorkItemM = vi.hoisted(() => vi.fn(async () => undefined));
@@ -132,6 +133,7 @@ const planTerminalityInWorkspaceM = vi.hoisted(() =>
   vi.fn(async () => null as { status: string | null; hasOpenItems: boolean } | null),
 );
 const planHarnessesForSlugsM = vi.hoisted(() => vi.fn(async () => new Map<string, string[]>()));
+const gateWorkScopeM = vi.hoisted(() => vi.fn(async () => ({ allowed: true, reason: 'no-policy' })));
 // PARTIAL mock, deliberately: this module also exports PRESENCE_STALE_MS, which
 // presence-wakeability.ts -> fleet-roster.ts imports transitively. A whole-module factory
 // drops it and the mock fails at import time rather than in a test.
@@ -147,17 +149,34 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 vi.mock('../coordination/context-pressure', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   fetchContextPressure: fetchContextPressureM,
+  fetchContextPressureReadings: fetchContextPressureM,
 }));
 vi.mock('../../goals/holder-authority', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   readGoalHolderAuthority: readGoalHolderAuthorityM,
+}));
+// The mocked authority reader ignores its SQL argument. Supplying that argument
+// must not acquire a real pool before the mock is reached.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: () => { throw new Error('Unexpected SQL in scheduler handler unit tests'); } }),
+}));
+// WI-6554700010011595: real claim-time enrichment modules fail soft against the throwing
+// getOrgPg above and record fallback observations. Their buffer flushes on a real 2 s timer
+// through that same throwing SQL, and the flush's console.warn fails whichever test is
+// running (vitest-fail-on-console) — measured: a cold run of one success-path test took
+// 10.97 s and went red on the warn; a 2,182 ms full-file run went red on an unrelated test.
+// No test here asserts fallback telemetry, so record nothing.
+vi.mock('../../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  observeFallback: vi.fn(() => true),
 }));
 // The work-scope gate is a pure allow/deny decision for this scheduler suite. Mocking the
 // dynamically imported module keeps its pot-control-policy sync listener (and its real PG
 // connection) out of fake-timer tests, so a missing local database cannot become an unrelated
 // console error after the timeout watchdog settles.
 vi.mock('../../work-scope-policy', () => ({
-  gateWorkScope: vi.fn(async () => ({ allowed: true, reason: 'no-policy' })),
+  gateWorkScope: gateWorkScopeM,
   workScopeRefusal: vi.fn(),
 }));
 vi.mock('../../memory/claim-port', () => ({
@@ -189,11 +208,12 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   diagnoseFleetScopeIssueFloorMiss: diagnoseFleetScopeIssueFloorMissM,
   // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 (the issueFloorMiss
   // mock above always returns null, so this path is unreachable here) — defensive stub only.
-  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
+  diagnoseFleetScopeFeatureFamilyExclusions: vi.fn(async () => null),
   // EI-20260781488788952: the zero-match enrichment reads these diagnostics alongside the
   // existing family/exhaustion seams; keep this mock's module shape aligned with production.
   diagnoseFleetScopePlanTerminality: diagnoseFleetScopePlanTerminalityM,
   diagnoseFleetScopeLeaderLiveness: diagnoseFleetScopeLeaderLivenessM,
+  reconcileFleetScopeLeaderSuccession: reconcileFleetScopeLeaderSuccessionM,
   fleetLeaderUnavailableRefusal: (scope: any) => ({
     ok: false,
     error: 'fleet_leader_unavailable',
@@ -249,10 +269,20 @@ import getNextTool, {
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import {
+  acceptanceReadinessHold,
+  findOrFileAcceptanceRepairTask,
+  incompleteAcceptanceBarsForItems,
+  type AcceptanceReadinessHoldDeps,
+  type AcceptanceRepairTaskInput,
+  type RepairTaskStore,
+  type RepairTaskTx,
+} from '../../scheduler/acceptance-readiness-hold';
 
-function handlerPayload(out: { data?: unknown; content?: Array<{ text?: string }> }): Record<string, unknown> {
-  if (out.data !== undefined) return out.data as Record<string, unknown>;
-  return JSON.parse(out.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+function handlerPayload(out: unknown): Record<string, unknown> {
+  const response = out as { data?: unknown; content?: Array<{ text?: string }> };
+  if (response.data !== undefined) return response.data as Record<string, unknown>;
+  return JSON.parse(response.content?.[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
 beforeEach(() => {
@@ -262,6 +292,8 @@ beforeEach(() => {
   scopeState.fleetAssignmentRows = undefined;
   diagnoseFleetScopeLeaderLivenessM.mockReset();
   diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
+  reconcileFleetScopeLeaderSuccessionM.mockReset();
+  reconcileFleetScopeLeaderSuccessionM.mockResolvedValue(null);
   reconcileFleetScopeClaimsM.mockImplementation(async () => ({
     scope: scopeState.scope,
     quarantinedIds: scopeState.quarantinedIds,
@@ -292,6 +324,8 @@ beforeEach(() => {
   leaseClaimedWorkItemM.mockResolvedValue(true);
   releaseWorkItemM.mockResolvedValue(undefined);
   clearClaimSpecM.mockResolvedValue({ ok: true, errors: [], cleared: true });
+  readClaimConcurrencyM.mockReset();
+  readClaimConcurrencyM.mockResolvedValue({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] });
 });
 
 describe('plansStartExactPlanBinding — automatic cleanup stays narrower than arbitrary plan filters', () => {
@@ -344,6 +378,99 @@ const TOOLS: Array<{ name: string; args: ZodTypeAny }> = [
   { name: 'scheduler:get_next', args: (getNextTool as { args: ZodTypeAny }).args },
   { name: 'work_items:claim_next', args: (claimNextTool as { args: ZodTypeAny }).args },
 ];
+
+describe('scheduler:get_next records early refusal dispositions (EI-25880074393060687)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+    getSessionBriefM.mockResolvedValue(null);
+    getActiveClaimForOwnerM.mockResolvedValue(null);
+    getNextM.mockResolvedValue(null);
+    readClaimConcurrencyM.mockResolvedValue({ blocked: false, activeClaims: 0, maxConcurrentClaims: 1, heldIds: [] });
+  });
+
+  it('records an unresolved harness refusal without inventing a spec or claim', async () => {
+    const metadata = vi.fn();
+    const out = await getNextTool.handler({}, { metadata } as never);
+    expect(handlerPayload(out)).toMatchObject({ error: 'harness_required' });
+    expect(getNextM).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: { kind: 'no-claim', reason: 'missing' },
+    });
+  });
+
+  it.each(['paused', 'leader-unavailable', 'plan-complete'] as const)(
+    'records the %s preflight refusal against its resolved fleet revision',
+    async (branch) => {
+      scopeState.scope = {
+        ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member',
+        record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 }, revision: 4 },
+      };
+      if (branch === 'paused') {
+        scopeState.windingDown = true;
+        scopeState.pauseReason = 'owner paused';
+      } else if (branch === 'leader-unavailable') {
+        reconcileFleetScopeLeaderSuccessionM.mockResolvedValue('unavailable');
+      } else {
+        diagnoseFleetScopePlanTerminalityM.mockResolvedValue({
+          planSlugs: ['finished'], terminalPlanSlugs: ['finished'], allTerminal: true,
+        });
+      }
+      const metadata = vi.fn();
+      const out = await getNextTool.handler({ harness: 'papercusp' }, { metadata } as never);
+      const payload = handlerPayload(out);
+      expect(payload.ok).toBe(false);
+      expect(getNextM).not.toHaveBeenCalled();
+      expect(metadata).toHaveBeenLastCalledWith({
+        schedulerDisposition: {
+          kind: 'no-claim', reason: payload.reason ?? payload.error,
+          specId: 'bugs-rev4', revision: 4,
+        },
+      });
+    },
+  );
+
+  it('records a declared-plan refusal before selection', async () => {
+    getPresenceM.mockResolvedValue({ currentPlanSlug: 'active-control-plan' });
+    planTerminalityInWorkspaceM.mockResolvedValue({ status: 'active', hasOpenItems: true });
+    const metadata = vi.fn();
+    const out = await getNextTool.handler({ harness: 'papercusp' }, { metadata } as never);
+    expect(handlerPayload(out)).toMatchObject({ error: 'plan_scope_missing' });
+    expect(getNextM).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: { kind: 'no-claim', reason: 'declared_plan_without_claim_spec' },
+    });
+  });
+
+  it('records a concurrency refusal without counting an existing hold as a new claim', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member', fleetSlug: 'bugs', fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 }, revision: 4 },
+    };
+    readClaimConcurrencyM.mockResolvedValue({
+      blocked: true, activeClaims: 1, maxConcurrentClaims: 1, heldIds: ['WI-already-held'],
+    });
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'cup', spec: { specId: 'bugs-rev4', revision: 4 }, revision: 4,
+      updatedBy: null, updatedAt: null,
+    });
+    const metadata = vi.fn();
+    const out = await getNextTool.handler({ harness: 'papercusp' }, { metadata } as never);
+    const payload = handlerPayload(out);
+    expect(payload).toMatchObject({ diagnosis: { concurrencyBlocked: true } });
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: {
+        kind: 'no-claim', reason: String(payload.reason ?? payload.error).slice(0, 500),
+        specId: 'bugs-rev4', revision: 4,
+      },
+    });
+  });
+});
 
 describe('scheduler:get_next claim-spec identity is inherited (EI-20225786201327575)', () => {
   it('teaches the accepted call shape and keeps spec identity read-only', () => {
@@ -555,7 +682,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     // EI-15777: the paused-miss branch must cancel the caller's OWN standing
     // work-item:claimable await(s) (self-scoped by ownerId) so a compliant peer
     // stand-down doesn't keep re-waking this member on a pull it's forbidden to make.
-    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-member');
+    expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-member', { includeStanding: true });
   });
 
   it('EI-21079515303301272: blocks an active member before claim when its registered leader is not live', async () => {
@@ -565,7 +692,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       fleetRole: 'member',
       record: { source: 'fleet', spec: { specId: 'leaderless-rev4', revision: 4 } },
     };
-    diagnoseFleetScopeLeaderLivenessM.mockResolvedValueOnce(false);
+    reconcileFleetScopeLeaderSuccessionM.mockResolvedValueOnce('unavailable');
     getNextM.mockResolvedValue({ workItem: { id: 'WI-must-not-claim' } });
 
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
@@ -583,7 +710,10 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       recovery: { tool: 'fleet:take-leadership', args: { fleet: 'leaderless-fleet' } },
     });
     expect(body.advice).toMatch(/retry scheduler:get_next/);
-    expect(diagnoseFleetScopeLeaderLivenessM).toHaveBeenCalledWith({ scope: scopeState.scope });
+    expect(reconcileFleetScopeLeaderSuccessionM).toHaveBeenCalledWith({
+      scope: scopeState.scope,
+      identity: expect.objectContaining({ ownerId: 'su-member' }),
+    });
     expect(getNextM).not.toHaveBeenCalled();
   });
 
@@ -594,7 +724,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       fleetRole: 'member',
       record: { source: 'fleet', spec: { specId: 'lane-rev4', revision: 4 } },
     };
-    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
+    reconcileFleetScopeLeaderSuccessionM.mockResolvedValue(null);
     getNextM.mockResolvedValue(null);
 
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
@@ -602,7 +732,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     expect(getNextM).toHaveBeenCalledOnce();
   });
 
-  it('reuses the reconciliation roster snapshot for leader-liveness preflight', async () => {
+  it('allows the scoped pull through after succession reconciles a live leader', async () => {
     scopeState.scope = {
       ownerId: 'su-member',
       fleetSlug: 'snapshot-fleet',
@@ -610,16 +740,27 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
       record: { source: 'fleet', spec: { specId: 'lane-rev4', revision: 4 } },
     };
     scopeState.fleetAssignmentRows = [{ agentId: 'su-leader' }];
-    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
-    getNextM.mockResolvedValue(null);
+    reconcileFleetScopeLeaderSuccessionM.mockResolvedValueOnce('live');
+    getNextM.mockResolvedValue({
+      workItem: { id: 'WI-after-succession', title: 'Successor leader resumed the fleet pull' },
+      claimedUnder: { specId: 'lane-rev4', revision: 4 },
+    });
 
-    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    const out = await getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as {
+      data?: unknown;
+      content?: Array<{ text?: string }>;
+    };
 
-    expect(diagnoseFleetScopeLeaderLivenessM).toHaveBeenCalledWith({
+    expect(reconcileFleetScopeLeaderSuccessionM).toHaveBeenCalledWith({
       scope: scopeState.scope,
-      fleetAssignmentRows: scopeState.fleetAssignmentRows,
+      identity: expect.objectContaining({ ownerId: 'su-member' }),
     });
     expect(getNextM).toHaveBeenCalledOnce();
+    expect(handlerPayload(out)).toMatchObject({
+      ok: true,
+      workItem: { id: 'WI-after-succession' },
+      claimedUnder: { specId: 'lane-rev4', revision: 4 },
+    });
   });
 
   it('winds down a terminal plan before routing a dead leader into a takeover', async () => {
@@ -661,6 +802,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     });
     expect(diagnoseFleetScopePlanTerminalityM).toHaveBeenCalledWith({ scope: scopeState.scope });
     expect(diagnoseFleetScopeLeaderLivenessM).not.toHaveBeenCalled();
+    expect(reconcileFleetScopeLeaderSuccessionM).not.toHaveBeenCalled();
     expect(getNextM).not.toHaveBeenCalled();
   });
 });
@@ -1020,10 +1162,18 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
   it('distinguishes a candidate stall from setup and freezes the phase before late progress', async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    let reportStep: ((step: string) => void) | undefined;
-    getNextM.mockImplementation((args: { onClaimStep?: (step: string) => void }) => {
+    let reportStep: ((
+      step: string,
+      event?: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+    ) => void) | undefined;
+    getNextM.mockImplementation((args: {
+      onClaimStep?: (
+        step: string,
+        event?: { phase: 'start'; startedAtMs: number } | { phase: 'end'; elapsedMs: number },
+      ) => void;
+    }) => {
       reportStep = args.onClaimStep;
-      reportStep?.('candidate-resolution');
+      reportStep?.('candidate-priority-issue-preclaim', { phase: 'start', startedAtMs: performance.now() });
       return new Promise(() => {});
     });
     readClaimConcurrencyM.mockImplementation(async () => {
@@ -1036,13 +1186,17 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     const out = (await pending) as { content: Array<{ text: string }> };
     expect(JSON.parse(out.content[0]!.text)).toMatchObject({
       error: 'timeout',
-      lastClaimStep: 'candidate-resolution',
+      lastClaimStep: 'candidate-priority-issue-preclaim',
       possiblyClaimed: true,
     });
+    const timeoutResult = JSON.parse(out.content[0]!.text);
+    expect(timeoutResult.lastClaimStepElapsedMs).toEqual(expect.any(Number));
+    expect(timeoutResult.lastClaimStepElapsedMs).toBeGreaterThanOrEqual(GET_NEXT_BUDGET_MS);
     expect(metadata).toHaveBeenCalledWith({
       schedulerTimeout: {
         phase: 'claim',
-        lastClaimStep: 'candidate-resolution',
+        lastClaimStep: 'candidate-priority-issue-preclaim',
+        lastClaimStepElapsedMs: timeoutResult.lastClaimStepElapsedMs,
       },
     });
     warnSpy.mockRestore();
@@ -1083,7 +1237,8 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     getNextM.mockImplementation(() => new Promise(() => {}));
     readClaimConcurrencyM.mockRejectedValue(new Error('pool still unavailable'));
 
-    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+    const metadata = vi.fn();
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, { metadata } as never) as Promise<{
       content: Array<{ text: string }>;
     }>;
     await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
@@ -1099,6 +1254,8 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     });
     expect(body.message).toContain('inconclusive');
     expect(body.message).not.toContain('no claims for this caller');
+    expect(metadata).toHaveBeenCalled();
+    for (const [record] of metadata.mock.calls) expect(record).not.toHaveProperty('schedulerDisposition');
     warnSpy.mockRestore();
   });
 
@@ -1204,8 +1361,9 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const contention = new OrgTxnTimeoutError('55P03', new Error('lock timeout'));
     getNextM.mockRejectedValue(contention);
+    const metadata = vi.fn();
 
-    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, { metadata } as never)) as {
       content: Array<{ text: string }>;
     };
     const b = JSON.parse(out.content[0]!.text);
@@ -1218,6 +1376,15 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     expect(b.message).toContain('operator write timed out waiting for a row/advisory lock');
     expect(b.message).toContain('Retry now');
     expect(b.windDown).toBeUndefined();
+    expect(metadata).toHaveBeenCalledWith({
+      schedulerTimeout: {
+        phase: 'claim',
+        lastClaimStep: 'claim-start',
+        lastClaimStepElapsedMs: expect.any(Number),
+        pgCode: '55P03',
+        timeoutSource: 'pg',
+      },
+    });
     warnSpy.mockRestore();
   });
 });
@@ -1243,7 +1410,8 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
 
   async function expectPreflightTimeout(lastPreflightStep: string) {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+    const metadata = vi.fn();
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, { metadata } as never) as Promise<{
       content: Array<{ text: string }>;
     }>;
     await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
@@ -1256,9 +1424,32 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
       phase: 'preflight',
       budgetMs: GET_NEXT_BUDGET_MS,
       lastPreflightStep,
+      preflightTiming: {
+        totalElapsedMs: expect.any(Number),
+        completedSteps: expect.any(Array),
+        activeStep: {
+          step: lastPreflightStep,
+          elapsedMs: expect.any(Number),
+        },
+      },
     });
+    expect(body.preflightTiming.totalElapsedMs).toBeGreaterThanOrEqual(GET_NEXT_BUDGET_MS);
+    expect(body.preflightTiming.activeStep.elapsedMs).toBeGreaterThan(0);
+    if (lastPreflightStep === 'work-scope-policy') {
+      expect(body.preflightTiming.completedSteps).toEqual([]);
+    } else {
+      expect(body.preflightTiming.completedSteps).toEqual(
+        expect.arrayContaining([expect.objectContaining({ step: 'work-scope-policy' })]),
+      );
+    }
+    expect(body.preflightTiming.completedSteps.every((step: { elapsedMs: unknown }) =>
+      typeof step.elapsedMs === 'number' && Number.isFinite(step.elapsedMs) && step.elapsedMs >= 0,
+    )).toBe(true);
     expect(body.message).toContain('No claim was attempted');
     expect(getNextM).not.toHaveBeenCalled();
+    expect(metadata).toHaveBeenLastCalledWith({
+      schedulerDisposition: { kind: 'no-claim', reason: 'timeout' },
+    });
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:preflight exceeded'));
     warnSpy.mockRestore();
   }
@@ -1280,6 +1471,18 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     await expectPreflightTimeout('fleet-pause-state');
   });
 
+  it('bounds the fleet-leader liveness roster read before any claim attempt', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev1', revision: 1 } },
+    };
+    reconcileFleetScopeClaimsM.mockResolvedValue({ scope: scopeState.scope, quarantinedIds: [] });
+    reconcileFleetScopeLeaderSuccessionM.mockImplementation(() => new Promise(() => {}));
+    await expectPreflightTimeout('fleet-leader-liveness');
+  });
+
   it('identifies the context-pressure flag when its preflight read stalls', async () => {
     reconcileFleetScopeClaimsM.mockResolvedValue({ scope: null, quarantinedIds: [] });
     getFlagM.mockImplementation(() => new Promise(() => {}));
@@ -1291,6 +1494,13 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     getFlagM.mockResolvedValue(true);
     liveLockedPathsM.mockImplementation(() => new Promise(() => {}));
     await expectPreflightTimeout('live-lock-paths');
+  });
+
+  it('bounds the first-use work-scope policy gate before any claim attempt', async () => {
+    gateWorkScopeM.mockImplementationOnce(
+      () => new Promise<{ allowed: boolean; reason: string }>(() => {}),
+    );
+    await expectPreflightTimeout('work-scope-policy');
   });
 });
 
@@ -1429,6 +1639,49 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
         contendedPaths: ['packages/operator-core/lib/hot.ts'],
       }),
     );
+  });
+
+  // WI-6554700010011595 (plan papercusp-performance-audit-2026-10-12 R-1): every await after
+  // get_next:arbitrate used to run outside a named phase, so ~35% of get_next wall time on
+  // :3170 (11-13 s on slow calls) was unattributable. A slow post-claim leg must now land in
+  // a NAMED phase. Old code: the 300 ms leg is unattributed, so coverage is ~0.1.
+  it('attributes a slow post-claim enrichment leg to a named phase', async () => {
+    const { createPhaseTracker } = await import('@papercusp/tooldef');
+    const tracker = createPhaseTracker();
+    buildClaimRecallBlockM.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return null;
+    });
+    await getNextTool.handler({ harness: 'papercusp' } as never, { phases: tracker } as never);
+    const meta = tracker.toMetadata();
+    expect(meta).not.toBeNull();
+    const names = meta!.phases.map((p) => p.phase);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'get_next:claim',
+        'get_next:arbitrate',
+        'get_next:enrich:memory',
+        'get_next:enrich:checkpoint',
+        'get_next:enrich:cancelAwaits',
+        'get_next:enrich:declareIntent',
+        'get_next:hint:planDecisions',
+      ]),
+    );
+    const memoryPhase = meta!.phases.find((p) => p.phase === 'get_next:enrich:memory');
+    expect(memoryPhase!.durationMs).toBeGreaterThanOrEqual(250);
+    expect(meta!.attributedMs / meta!.elapsedMs).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('records named phases on the miss path too', async () => {
+    const { createPhaseTracker } = await import('@papercusp/tooldef');
+    const tracker = createPhaseTracker();
+    getNextM.mockResolvedValue(null);
+    await getNextTool.handler({ harness: 'papercusp' } as never, { phases: tracker } as never);
+    const names = tracker.toMetadata()!.phases.map((p) => p.phase);
+    expect(names).toEqual(
+      expect.arrayContaining(['get_next:capacityCheck', 'get_next:missHarnessRegistry', 'get_next:missDiagnosis']),
+    );
+    expect(names.some((n) => n.startsWith('get_next:enrich:'))).toBe(false);
   });
 
   it('routes a legacy/pre-envelope bug through the cheap validation lane at claim time', async () => {
@@ -1576,5 +1829,275 @@ describe('scheduler:get_next claim lease arbitration (WI-39730)', () => {
       ok: true,
       claimReceipt: { committed: true, workItemId: 'WI-lease-lost' },
     });
+  });
+});
+
+/*
+ * Acceptance-readiness hold detectors (plan feature-drain-delivery-readiness-and-outcome-
+ * accounting-2026-10-01, P-002(b), D-008 §5 / D-011). The describe names ARE the BAR keys
+ * this file is the check for. scheduler:get_next pulls through getNextForBee, whose second
+ * post-claim verdict is acceptanceReadinessHold; the getNextForBee wiring (release before
+ * route, audit reason) is pinned in scheduler/get-next-for-bee-plan-lane-guard.test.ts.
+ * These cases drive the hold module itself with injected I/O, so no PG is needed.
+ */
+type HoldBar = {
+  barKey: string;
+  mappings: Array<{ planItemId: string; lifecycleStatus?: string }>;
+  readiness: { codes: string[] };
+};
+const HOLD_PLAN = 'hold-plan-2026-10-01';
+const holdBar = (barKey: string, items: Array<[string, string?]>, codes: string[]): HoldBar => ({
+  barKey,
+  mappings: items.map(([planItemId, lifecycleStatus]) => ({
+    planItemId,
+    ...(lifecycleStatus ? { lifecycleStatus } : {}),
+  })),
+  readiness: { codes },
+});
+const holdSnapshot = (...bars: HoldBar[]) =>
+  ({ bars }) as unknown as Parameters<typeof incompleteAcceptanceBarsForItems>[0];
+const holdItem = (id: string, itemIds: string[] | null) => ({
+  id,
+  harness: 'papercusp',
+  payload: {},
+  family: 'feature' as const,
+  sourcePlanSlug: itemIds ? HOLD_PLAN : null,
+  sourcePlanItemIds: itemIds,
+});
+const holdCtx = { by: 'su-test', workspaceId: 'ws-test' };
+
+function holdDeps(snap: ReturnType<typeof holdSnapshot>) {
+  const filed: AcceptanceRepairTaskInput[] = [];
+  const edges: string[] = [];
+  const deps: Partial<AcceptanceReadinessHoldDeps> = {
+    resolveStamp: async (wi) =>
+      wi.sourcePlanSlug && wi.sourcePlanItemIds
+        ? { plan_slug: wi.sourcePlanSlug, item_ids: wi.sourcePlanItemIds }
+        : null,
+    readSnapshot: async () => snap,
+    findOrFileRepairTask: vi.fn(async (input: AcceptanceRepairTaskInput) => {
+      filed.push(input);
+      return { id: `EI-REPAIR-${filed.length}`, filed: true };
+    }),
+    linkHold: vi.fn(async (input: { repairId: string; heldId: string }) => {
+      edges.push(`${input.repairId}->${input.heldId}`);
+      return null;
+    }),
+  };
+  return { deps, filed, edges };
+}
+
+/**
+ * A repair-task store with Postgres's relevant semantics: `pg_advisory_xact_lock` serializes
+ * transactions on the same key until the holder's transaction settles, and createWorkItem
+ * commits on its own connection (as production's createWorkItem does). Timer yields between
+ * the read and the insert open the race window a missing lock would lose. `honorLock:false`
+ * is the negative control: it shows the fixture can observe a duplicate at all.
+ */
+function advisoryLockRepairStore(opts: { honorLock?: boolean } = {}) {
+  const honorLock = opts.honorLock ?? true;
+  const rows: Array<{ feature_id: string; status: string; plan: string }> = [];
+  const lockTails = new Map<string, Promise<void>>();
+  const yieldTimer = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+  const lockKeys: string[] = [];
+  const store: RepairTaskStore = {
+    workspaceId: 'ws-test',
+    isTerminal: (status) => status === 'done' || status === 'dropped',
+    createWorkItem: async (wi) => {
+      await yieldTimer();
+      const id = `EI-REPAIR-${rows.length + 1}`;
+      rows.push({ feature_id: id, status: 'open', plan: String(wi.payload.acceptanceContractRepairFor) });
+      return { id };
+    },
+    begin: async <T>(fn: (tx: RepairTaskTx) => Promise<T>): Promise<T> => {
+      const releases: Array<() => void> = [];
+      const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const text = strings.join('?');
+        if (text.includes('pg_advisory_xact_lock')) {
+          const key = String(values[0]);
+          lockKeys.push(key);
+          if (!honorLock) return [];
+          const prior = lockTails.get(key) ?? Promise.resolve();
+          let release!: () => void;
+          const mine = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          lockTails.set(
+            key,
+            prior.then(() => mine),
+          );
+          releases.push(release);
+          await prior;
+          return [];
+        }
+        if (text.includes('FROM harness_shared.work_items')) {
+          const plan = String(values[values.length - 1]);
+          await yieldTimer();
+          return rows.filter((row) => row.plan === plan).map(({ feature_id, status }) => ({ feature_id, status }));
+        }
+        throw new Error(`unexpected SQL in repair-task fixture: ${text}`);
+      }) as RepairTaskTx;
+      try {
+        return await fn(tx);
+      } finally {
+        for (const release of releases) release();
+      }
+    },
+  };
+  return { store, rows, lockKeys };
+}
+
+const repairInput = (planSlug = HOLD_PLAN): AcceptanceRepairTaskInput => ({
+  planSlug,
+  harness: 'papercusp',
+  workspaceId: 'ws-test',
+  heldBars: [{ barKey: 'R-1', itemIds: ['P-001'], codes: ['bar_snapshot_clause_not_accepted'] }],
+  by: 'su-test',
+});
+
+describe('AUTO-BAR-R-3-P-002 — an item bound to an incomplete acceptance contract is held and routed', () => {
+  // One case per disjunct of the R-3 falsifier ("a draft, unaccepted or method-less
+  // acceptance requirement"), plus the missing-check code the hold also covers.
+  async function expectHeldAndRouted(lifecycle: string | undefined, code: string) {
+    const { deps, filed, edges } = holdDeps(holdSnapshot(holdBar('R-1', [['P-001', lifecycle]], [code])));
+    const hold = await acceptanceReadinessHold(holdItem('WI-held', ['P-001']), holdCtx, deps);
+
+    expect(hold).toMatchObject({
+      planSlug: HOLD_PLAN,
+      itemId: 'P-001',
+      effectiveStatus: 'acceptance-incomplete',
+      staleBlockedHint: null,
+    });
+    expect(hold!.reason).toContain(code);
+    // The verdict is side-effect free; routing runs only after the caller released the claim.
+    expect(filed).toHaveLength(0);
+    expect(await hold!.routeAfterRelease()).toBe('held behind repair task EI-REPAIR-1 (filed now)');
+    expect(filed[0]).toMatchObject({ planSlug: HOLD_PLAN, heldBars: [{ barKey: 'R-1', codes: [code] }] });
+    expect(edges).toEqual(['EI-REPAIR-1->WI-held']);
+  }
+
+  it('draft: holds a work-item bound to a draft clause', async () => {
+    await expectHeldAndRouted('draft', 'bar_snapshot_clause_not_accepted');
+  });
+
+  // The hold trusts the snapshot's acceptance verdict, not the lifecycle label: a mapping
+  // with no recorded lifecycle (an older snapshot) still binds, and is held when unaccepted.
+  it('unaccepted: holds a work-item whose clause the snapshot reports not accepted, with no lifecycle label', async () => {
+    await expectHeldAndRouted(undefined, 'bar_snapshot_clause_not_accepted');
+  });
+
+  it('method-less: holds a work-item bound to an accepted clause with no METHOD', async () => {
+    await expectHeldAndRouted('active', 'bar_snapshot_method_missing');
+  });
+
+  it('check-less: holds a work-item bound to an accepted clause with no runnable check', async () => {
+    await expectHeldAndRouted('active', 'bar_snapshot_check_missing');
+  });
+
+  it('only the three contract codes hold; proof and grading gaps do not', () => {
+    const snap = holdSnapshot(
+      holdBar('R-1', [['P-001']], ['bar_snapshot_proof_missing', 'bar_snapshot_grading_missing']),
+      holdBar('R-2', [['P-001']], ['bar_snapshot_method_missing', 'bar_snapshot_proof_inadequate']),
+    );
+    expect(incompleteAcceptanceBarsForItems(snap, ['P-001'])).toEqual([
+      { barKey: 'R-2', itemIds: ['P-001'], codes: ['bar_snapshot_method_missing'] },
+    ]);
+  });
+});
+
+describe('AUTO-BAR-R-16-P-002 — concurrent pulls file exactly one repair task per plan', () => {
+  it('two concurrent find-or-file calls on one plan file ONE task and both receive its id', async () => {
+    const { store, rows, lockKeys } = advisoryLockRepairStore();
+    const [a, b] = await Promise.all([
+      findOrFileAcceptanceRepairTask(repairInput(), store),
+      findOrFileAcceptanceRepairTask(repairInput(), store),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect([a, b].filter((r) => r.filed)).toHaveLength(1);
+    expect(a.id).toBe(b.id);
+    expect(new Set(lockKeys)).toEqual(new Set([`acceptance-contract-repair:ws-test:${HOLD_PLAN}`]));
+  });
+
+  // Negative control: the same race WITHOUT the lock files twice, so the case above can fail.
+  it('negative control: with the advisory lock ignored, the same race files a duplicate', async () => {
+    const { store, rows } = advisoryLockRepairStore({ honorLock: false });
+    await Promise.all([
+      findOrFileAcceptanceRepairTask(repairInput(), store),
+      findOrFileAcceptanceRepairTask(repairInput(), store),
+    ]);
+    expect(rows).toHaveLength(2);
+  });
+
+  it('the lock is per plan: concurrent pulls on two plans each file their own task', async () => {
+    const { store, rows } = advisoryLockRepairStore();
+    const [a, b] = await Promise.all([
+      findOrFileAcceptanceRepairTask(repairInput('plan-a'), store),
+      findOrFileAcceptanceRepairTask(repairInput('plan-b'), store),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(a.filed && b.filed).toBe(true);
+  });
+
+  it('a closed repair task is never reused: the next pull files a fresh one', async () => {
+    const { store, rows } = advisoryLockRepairStore();
+    const first = await findOrFileAcceptanceRepairTask(repairInput(), store);
+    rows[0]!.status = 'done';
+    const second = await findOrFileAcceptanceRepairTask(repairInput(), store);
+    expect(second).toEqual({ id: 'EI-REPAIR-2', filed: true });
+    expect(second.id).not.toBe(first.id);
+  });
+});
+
+describe('AUTO-BAR-R-18-P-002 — the hold does not over-block', () => {
+  const snap = holdSnapshot(
+    holdBar('R-1', [['P-001', 'draft']], ['bar_snapshot_clause_not_accepted']),
+    holdBar('R-2', [['P-002', 'active']], ['bar_snapshot_proof_missing', 'bar_snapshot_grading_missing']),
+    holdBar('R-3', [['P-004', 'retired']], ['bar_snapshot_method_missing']),
+  );
+
+  it.each([
+    ['a complete-contract item (only proof/grading still owed)', ['P-002']],
+    ['an independent item no BAR maps, while a sibling is held', ['P-003']],
+    ['an item mapped only by a retired clause', ['P-004']],
+    ['unplanned work', null],
+  ])('leaves %s claimable, with no repair task and no edge', async (_label, itemIds) => {
+    const { deps, filed, edges } = holdDeps(snap);
+    expect(await acceptanceReadinessHold(holdItem('WI-free', itemIds as string[] | null), holdCtx, deps)).toBeNull();
+    expect(filed).toHaveLength(0);
+    expect(edges).toHaveLength(0);
+  });
+
+  // The R-18 behaviour in one scenario: the held sibling and both claimable items share
+  // one snapshot, so a hold that leaked plan-wide would fail here.
+  it('positive: while sibling P-001 is held, the complete-contract sibling and the independent item both stay claimable', async () => {
+    const { deps, filed, edges } = holdDeps(snap);
+    expect(await acceptanceReadinessHold(holdItem('WI-held', ['P-001']), holdCtx, deps)).not.toBeNull();
+    expect(await acceptanceReadinessHold(holdItem('WI-complete', ['P-002']), holdCtx, deps)).toBeNull();
+    expect(await acceptanceReadinessHold(holdItem('WI-independent', ['P-003']), holdCtx, deps)).toBeNull();
+    expect(filed).toHaveLength(0);
+    expect(edges).toHaveLength(0);
+  });
+
+  it('a plan with no acceptance rubric yet holds nothing (rubrics are authored after implementation)', async () => {
+    const { deps, filed } = holdDeps(holdSnapshot());
+    expect(await acceptanceReadinessHold(holdItem('WI-free', ['P-001']), holdCtx, deps)).toBeNull();
+    expect(filed).toHaveLength(0);
+  });
+
+  it('fails open on a snapshot read failure', async () => {
+    const { deps, filed } = holdDeps(holdSnapshot());
+    deps.readSnapshot = async () => {
+      throw new Error('pg blip');
+    };
+    expect(await acceptanceReadinessHold(holdItem('WI-free', ['P-001']), holdCtx, deps)).toBeNull();
+    expect(filed).toHaveLength(0);
+  });
+
+  // Discrimination: the same snapshot DOES hold the sibling bound to the draft clause, so the
+  // nulls above are the verdict and not a hold that never fires.
+  it('control: the sibling bound to the draft clause in the same snapshot is held', async () => {
+    const { deps } = holdDeps(snap);
+    expect(await acceptanceReadinessHold(holdItem('WI-held', ['P-001']), holdCtx, deps)).not.toBeNull();
   });
 });

@@ -64,6 +64,7 @@ const M = vi.hoisted(() => {
     resolveEffectiveHarnessSlug: vi.fn(() => 'papercup'),
     getAcceptanceRubricForPlan: vi.fn(async () => null),
     getLatestPlanAudit: vi.fn(async () => null),
+    getLatestActivationAudit: vi.fn(async () => null),
     // The REAL refusal shape this feature exists to surface — the same code that
     // actually blocked dead-target-routine-reaper-2026-08-30.
     resolvePlanAcceptanceGateVerdict: vi.fn(async ({ planSlug }: { planSlug: string }) => [
@@ -134,6 +135,7 @@ vi.mock('../../rubrics', () => ({
 }));
 vi.mock('../../plan-audits', () => ({
   getLatestPlanAudit: M.getLatestPlanAudit,
+  getLatestActivationAudit: M.getLatestActivationAudit,
 }));
 vi.mock('../../sync-resolver/plan-acceptance-gate-verdict', () => ({
   resolvePlanAcceptanceGateVerdict: M.resolvePlanAcceptanceGateVerdict,
@@ -167,6 +169,7 @@ beforeEach(async () => {
   __setCachedReadEnabledForTests(true);
   M.readPlanBySlug.mockClear();
   M.resolvePlanAcceptanceGateVerdict.mockClear();
+  M.getLatestActivationAudit.mockClear();
   M.planHarnessesForSlugs.mockReset();
   M.planHarnessesForSlugs.mockResolvedValue(new Map());
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
@@ -182,6 +185,16 @@ afterEach(async () => {
 });
 
 describe('plans:get — shipReadiness', () => {
+  it('rejects the nested dispatcher default in a broken control (EI-21665387998856992)', () => {
+    const hasDedicatedNestedBudget = (timeoutSec: number | undefined) =>
+      typeof timeoutSec === 'number' && timeoutSec > 55;
+    // Counterexample control: the old flat nested-call deadline is insufficient.
+    const brokenRegistration = { timeoutSec: 55 };
+    expect(hasDedicatedNestedBudget(brokenRegistration.timeoutSec)).toBe(false);
+    // Calibration: the imported production registration must satisfy the same guard.
+    expect(hasDedicatedNestedBudget(tool.timeoutSec)).toBe(true);
+  });
+
   it('attributes cold source latency and never replays build timings on a cache hit', async () => {
     const fixture = await M.readPlanBySlug('timing');
     let clock = 0;
@@ -211,6 +224,51 @@ describe('plans:get — shipReadiness', () => {
       expect(warmTiming).toMatchObject({ reads: [{ buildState: 'not-started', waitMs: 0, stagesMs: {}, detailMs: {} }] });
       expect(warm).toEqual(cold);
       expect(JSON.stringify(warm)).not.toContain('plansGetRead');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('records judge-only activation-audit wall time outside the cached plan read', async () => {
+    let clock = 0;
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    M.getLatestActivationAudit.mockImplementationOnce(async () => {
+      clock += 42;
+      return null;
+    });
+    const metadata = vi.fn();
+    const judgeContext = {
+      workspaceId: 'ws-timing',
+      harnessSlug: 'papercup',
+      role: 'judge',
+      principal: { slug: 'system:judge' },
+      metadata,
+      log: vi.fn(),
+      progress: vi.fn(),
+    };
+    try {
+      const judgeResponse = await tool.handler(
+        { slug: 'judge-timing', harness: 'papercup', includeHistory: false } as never,
+        judgeContext as never,
+      ) as { data: { results: Array<Record<string, unknown>> } };
+      const auditTiming = metadata.mock.calls
+        .find(([entry]) => entry.plansGetActivationAudit)?.[0].plansGetActivationAudit;
+
+      expect(judgeResponse.data.results[0]).toHaveProperty('latestActivationAudit', null);
+      expect(M.getLatestActivationAudit).toHaveBeenCalledOnce();
+      expect(auditTiming).toMatchObject({
+        unit: 'ms',
+        timing: 'wall-time-per-plan',
+        reads: [{ slug: 'judge-timing', elapsedMs: 42 }],
+      });
+
+      const ordinaryMetadata = vi.fn();
+      await tool.handler(
+        { slug: 'ordinary-timing', harness: 'papercup', includeHistory: false } as never,
+        { ...judgeContext, role: 'worker', principal: { slug: 'system:worker' }, metadata: ordinaryMetadata } as never,
+      );
+      expect(M.getLatestActivationAudit).toHaveBeenCalledOnce();
+      expect(ordinaryMetadata.mock.calls.some(([entry]) => entry.plansGetActivationAudit)).toBe(false);
     } finally {
       now.mockRestore();
     }

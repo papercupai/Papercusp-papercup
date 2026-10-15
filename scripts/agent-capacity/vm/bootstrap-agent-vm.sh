@@ -45,7 +45,11 @@ set -euo pipefail
 TASKS=${1:?usage: bootstrap-agent-vm.sh <tasks.json>}
 : "${CLAUDE_VERSION:?set CLAUDE_VERSION to the recorded claude version}"
 : "${CODEX_VERSION:?set CODEX_VERSION to the recorded codex version}"
-NODE_VERSION=${NODE_VERSION:-24.18.1}
+# The recording host's node (the tower runs 25.9.0). A different major ships a different
+# toolset: Node 24 bundles corepack and 25 does not, so a recorded `command -v corepack` that
+# failed on the tower succeeded on a 24.x VM and the replay's tool outcomes diverged
+# (WI-10004683). load-driver refuses a replay whose node major differs from a session's env.node.
+NODE_VERSION=${NODE_VERSION:-25.9.0}
 CACHE=${AGENT_CAPACITY_CACHE:-$HOME/.cache/agent-capacity}
 CACHE_XFS_GB=${CACHE_XFS_GB:-}
 CACHE_XFS_IMAGE=${CACHE_XFS_IMAGE:-$CACHE.xfs.img}
@@ -131,6 +135,10 @@ if [ "$mount_cache" = 1 ]; then
   run mkfs.xfs -q -m reflink=1 "$CACHE_XFS_IMAGE"
   run sudo mount -o loop "$CACHE_XFS_IMAGE" "$CACHE"
   run sudo chown "$(id -u):$(id -g)" "$CACHE"
+  # Persist the mount, or the first restart (a spot reclaim, P-007) hides the corpus, the prepared
+  # repos and every run's output under an empty boot-disk dir: measured on cap-p007, 2026-10-02.
+  # nofail: a missing image must not stop the VM from booting. Idempotent on a re-run.
+  run sudo sh -c "grep -qsF '$CACHE_XFS_IMAGE $CACHE ' /etc/fstab || echo '$CACHE_XFS_IMAGE $CACHE xfs loop,nofail 0 0' >> /etc/fstab"
 fi
 if [ -n "$CACHE_XFS_GB" ] && [ "${DRY_RUN:-0}" != 1 ]; then
   # Prove the property the ramps depend on, not just the filesystem type.
@@ -140,7 +148,15 @@ if [ -n "$CACHE_XFS_GB" ] && [ "${DRY_RUN:-0}" != 1 ]; then
   rm -f "$CACHE/.reflink-probe" "$CACHE/.reflink-probe.clone"
 fi
 
-run curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+# The Node tarball must match the machine: Arm shapes (c4a/t2a, P-008) need linux-arm64.
+# MACHINE_ARCH overrides `uname -m` for the dry-run tests only.
+MACHINE_ARCH=${MACHINE_ARCH:-$(uname -m)}
+case "$MACHINE_ARCH" in
+  x86_64) NODE_ARCH=x64 ;;
+  aarch64 | arm64) NODE_ARCH=arm64 ;;
+  *) echo "BOOTSTRAP_FAILED no Node build for machine arch $MACHINE_ARCH" >&2; exit 7 ;;
+esac
+run curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz
 run sudo tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
 run sudo npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_VERSION}" "@openai/codex@${CODEX_VERSION}"
 if [ "$CODEX_SKILL_ROOTS" = create ]; then

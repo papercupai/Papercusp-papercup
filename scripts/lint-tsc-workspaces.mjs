@@ -648,9 +648,16 @@ export function main({
     }
   }
 
+  // Existing per-file baseline delegates understand --files; a plain tsc
+  // package owns only a workspace verdict and must not receive this custom CLI.
+  const scopedPackages = files.length > 0 ? ordered.map(pkg => {
+    if (!/^node\s+\S*lint-tsc(?:-[\w-]+)?\.mjs(?:\s|$)/.test(pkg.typecheckScript ?? '')) return pkg;
+    const ownedFiles = files.filter(file => selectPackagesForFiles(discoveredPackages, [file]).packages[0]?.rel === pkg.rel);
+    return { ...pkg, command: ['npm', 'run', 'typecheck', '--', `--files=${ownedFiles.join(',')}`] };
+  }) : ordered;
   const executablePackages = resolveTscBin
-    ? pinDirectTscCommands(ordered, repoRoot, resolveTscBin)
-    : ordered;
+    ? pinDirectTscCommands(scopedPackages, repoRoot, resolveTscBin)
+    : scopedPackages;
   const { failed } = runPackages({
     packages: executablePackages,
     label: 'workspaces',

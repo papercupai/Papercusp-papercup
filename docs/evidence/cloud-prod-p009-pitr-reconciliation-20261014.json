@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-009 saved live PITR and current cleanup reconciliation",
+  "command": [
+    "npx",
+    "tsx",
+    "scripts/cloud-prod/backup-restore-drill.ts",
+    "verify-receipt"
+  ],
+  "startedAt": "2026-10-14T19:44:05.658Z",
+  "finishedAt": "2026-10-14T19:44:08.533Z",
+  "exitCode": 0,
+  "summary": "Reconciles saved live Cloud SQL PITR row/deadline proof with fresh read-only source, scratch and clone-operation checks. Preserves the original cleanup failure. Does not verify nightly exports or alarm delivery.",
+  "assertions": [
+    {
+      "id": "saved-pitr-row-and-deadline-proof",
+      "passed": true,
+      "evidence": "Saved drill: beforeRows=1, afterRows=0, rtoMs=976325, rpoMs=17123; this command does not repeat PITR."
+    },
+    {
+      "id": "saved-canary-removal-proof",
+      "passed": true,
+      "evidence": "Original receipt records source canary removal; SQL is not reopened for reconciliation."
+    },
+    {
+      "id": "source-identity-and-protection",
+      "passed": true,
+      "evidence": "Fresh source describe must match the production project/instance, RUNNABLE state and enabled deletion protection."
+    },
+    {
+      "id": "source-data-api-closed",
+      "passed": true,
+      "evidence": "Fresh source describe must explicitly report DISALLOW_DATA_API."
+    },
+    {
+      "id": "scratch-absent",
+      "passed": true,
+      "evidence": "Exact nonce-owned scratch describe: exitCode=1, notFound=true; permission and transport errors do not prove absence."
+    },
+    {
+      "id": "clone-operation-identity-and-success",
+      "passed": true,
+      "evidence": "Fresh clone operation must match the saved operation, scratch and project, and be DONE without an error."
+    }
+  ],
+  "rawReceipt": {
+    "timestamp": "2026-10-14T18:48:56.044Z",
+    "operationId": "ca618181-30c6-40ae-84ea-c66800000032",
+    "receipt": {
+      "source": "pc-cloud-prod-pg",
+      "scratch": "pc-pitr-drill-92b9c5bdf759",
+      "schema": "_p009_restore_92b9c5bdf759",
+      "restorePoint": "2026-10-14T18:32:34.842Z",
+      "latestRecoveryTime": "2026-10-14T18:34:53.762805784Z",
+      "rpoMs": 17123,
+      "rtoMs": 976325,
+      "beforeRows": 1,
+      "afterRows": 0,
+      "passed": true,
+      "cleanup": {
+        "sourceCanaryRemoved": true,
+        "sourceDataApiClosed": true,
+        "scratchDeleted": false
+      },
+      "cleanupErrors": [
+        "scratch_cleanup_failed"
+      ]
+    }
+  },
+  "cleanupReconciliation": {
+    "project": "papercusp-cloud-prod",
+    "source": "pc-cloud-prod-pg",
+    "scratch": "pc-pitr-drill-92b9c5bdf759",
+    "sourceDescribeExitCode": 0,
+    "scratchDescribeExitCode": 1,
+    "operationDescribeExitCode": 0,
+    "scratchNotFound": true
+  }
+}

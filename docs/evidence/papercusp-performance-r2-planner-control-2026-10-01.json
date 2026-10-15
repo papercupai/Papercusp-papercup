@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R2 controlled exact-ranking planner experiment",
+  "framework": "shell",
+  "command": ["sudo","-n","-u","postgres","psql","-X","-A","-t","-q","-v","ON_ERROR_STOP=1","-d","papercusp"],
+  "commandRepeated": 10,
+  "exitCode": 0,
+  "startedAt": "2026-10-01T19:53:09.712Z",
+  "finishedAt": "2026-10-01T19:53:27.342Z",
+  "summary": "For two slow exact-ranking queries, setup-only transaction-local tuning selected a two-worker Gather Merge and reduced execution from about1.0–1.1s to0.4s. Tuple-cost-only tuning stayed serial. Returning to baseline restored the slower serial plan. All20 rank values were identical across all five profiles for each query. No global configuration or data was changed.",
+  "assertions": [
+    {"id":"setup-profile-selects-two-workers","passed":true,"evidence":"cold loop wake setup-only404ms and session search setup-only400ms; both plans show Workers Planned2 and Workers Launched2. Baselines and tuple-only controls have no Gather."},
+    {"id":"baseline-after-restores-serial-cost","passed":true,"evidence":"cold loop wake baseline1144ms/setup-only404ms/baseline-after1009ms; session search1011ms/400ms/1068ms. The later warm baselines remain slower, distinguishing the planner effect from simple cache warmup."},
+    {"id":"all-top-twenty-rank-values-preserved","passed":true,"evidence":"For each query, the complete20-element rank vector is identical in baseline, tuple-only, setup-only, both, and baseline-after profiles. The SQL match predicate, rank function, and limit stay unchanged."}
+  ],
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10004474",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 5,
+  "evidencePlane": "operational-diagnostic",
+  "executionIntervalBasis": "Authoritative enclosing capability:bash invocation30842711: invoked_at19:53:09.712Z plus duration_ms17630. This includes orchestration rather than asserting a separate timestamp for every psql child.",
+  "queryTemplate": "SELECT source_kind,session_id,turn_idx,ts_rank_cd(text_tsv,plainto_tsquery('english',query)) AS rank FROM harness_shared.session_turns WHERE workspace_id IN ('papercusp-workspace','default') AND text_tsv @@ plainto_tsquery('english',query) ORDER BY rank DESC LIMIT 20",
+  "transaction": "BEGIN READ ONLY; SET LOCAL application_name='papercusp-su:su-25bc0450:R2-controlled-plan'; SET LOCAL statement_timeout='10s'; profileSettings; EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) queryTemplate; SELECT rank FROM (queryTemplate) r; ROLLBACK;",
+  "profiles": {
+    "baseline": "unchanged session defaults",
+    "tuple_only": "SET LOCAL max_parallel_workers_per_gather=2; SET LOCAL parallel_tuple_cost=0.01;",
+    "setup_only": "SET LOCAL max_parallel_workers_per_gather=2; SET LOCAL parallel_setup_cost=100;",
+    "both": "SET LOCAL max_parallel_workers_per_gather=2; SET LOCAL parallel_tuple_cost=0.01; SET LOCAL parallel_setup_cost=100;",
+    "baseline_after": "unchanged session defaults, after the tuned profiles"
+  },
+  "measurement": [
+    {"query":"cold loop wake","milliseconds":[1144,1013,404,382,1009],"workersPlanned":[0,0,2,2,0],"workersLaunched":[0,0,2,2,0],"rankVector":[0.5517982,0.5144222,0.44087943,0.4284928,0.40553075,0.4050745,0.35628194,0.339335,0.33630875,0.32982793,0.32887924,0.32778817,0.3236593,0.32354915,0.31750968,0.3130801,0.3125779,0.31064513,0.3053775,0.30367294]},
+    {"query":"session search","milliseconds":[1011,951,400,419,1068],"workersPlanned":[0,0,2,2,0],"workersLaunched":[0,0,2,2,0],"rankVector":[1.0982692,0.7672691,0.75859106,0.720751,0.7004,0.69304186,0.64011806,0.6399718,0.6399718,0.6399718,0.6399718,0.6399718,0.6399718,0.6279388,0.62793857,0.6099799,0.6099799,0.6099799,0.6099799,0.6099799]}
+  ],
+  "rootCauseVerification": {
+    "hypothesis":"The serial plan selected for the common-term ranking workload causes the observed retrieval delay.",
+    "alternativeHypothesis":"HTTP/driver overhead or simple initial cache warmup accounts for the delay.",
+    "distinguishingTest":"Execute identical exact-ranking SQL in private read-only baseline, tuple-only, setup-only, combined, and baseline-after transactions; retain all execution plans and complete rank vectors.",
+    "predictedObservations":{"hypothesis":"Setup-only selects two workers and lowers query execution cost while later baseline returns to serial and remains slow, with the same ranks.","alternativeHypothesis":"Changing planner setup cost does not selectively lower direct SQL execution time, or the later warm baseline is equally fast."},
+    "actualObservation":"Both queries select Gather Merge2 only in setup-only/combined profiles, execute near400ms, and revert to roughly1s in baseline-after. Rank vectors are unchanged.",
+    "evidenceRefs":["tool_invocations:30842711","tool_invocations:30830825","tool_invocations:30830842"]
+  },
+  "residualUnknowns":["This is a controlled database diagnostic, not a serving-API latency pass or proof of installed source adoption.","It compares rank values, not the identity order of rows tied at the cutoff.","The source correction and its conventional integration guard require separate verification; full R2 remains open."]
+}

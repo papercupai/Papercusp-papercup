@@ -22,12 +22,15 @@
  */
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import type { ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { execFile, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { getOrgPg } from '@papercusp/db-org';
+import { basename, dirname, join } from 'node:path';
+import { getOrgPg, _resetForTests } from '@papercusp/db-org';
+import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
+import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
 import { REPO_ROOT } from '../../docs/_repo-paths';
 import runTool, {
   buildDetachedMixedTestRunRequest,
@@ -55,13 +58,19 @@ import runTool, {
   runTestFilesCore,
   settleConfinedTestOnHostShutdown,
   runWithTestProcessDeadline,
+  waitForTestProcessClose,
   resolveAdminTestRunsReporterPath,
+  resolveRegisteredTestFileRoot,
   selectTestFileRoot,
   shouldResolveHarnessTestRunIds,
   shouldIngestVitestLedgerInProcess,
+  type TestingRunPhaseTimings,
   TEST_RUN_ID_READBACK_TIMEOUT_MS,
 } from '../run';
 import { cancelRun, getRun, type HarnessTestRunEvidence } from '../../../testing-run-store';
+import { listDirtyFilesRecursive, readRestrictedWindowHoldings, type HoldRunGit } from '../../../personal-vault/git-sync-hold';
+import { restrictedHoldRefusal } from '../restricted-hold-fence';
+import { __resetShutdownStateForTest, markShuttingDown } from '../../../shutdown-state';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -121,6 +130,7 @@ interface RunResult {
   durationMs?: number | null;
   testRunIds?: number[];
   byFile?: Record<string, unknown>;
+  phaseTimingsMs?: TestingRunPhaseTimings;
 }
 
 async function body(p: ReturnType<typeof call>): Promise<RunResult> {
@@ -176,26 +186,126 @@ const selectorRoots: string[] = [];
 const selectorPhantom = join(tmpdir(), 'papercusp-testing-run-selector-phantom-does-not-exist');
 let selectorCanonical = '';
 let selectorRequested = '';
+let org: OrgTestDb | undefined;
+const databaseEnvKeys = [
+  'HARNESS_DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL',
+  'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY',
+] as const;
+const savedDatabaseEnv = new Map(databaseEnvKeys.map((key) => [key, process.env[key]]));
+
+const scratchGit: HoldRunGit = (args, cwd) => new Promise((resolve) => {
+  execFile('git', args, { cwd, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const failure = error ? JSON.stringify({
+      message: error.message,
+      code: error.code,
+      signal: error.signal,
+      killed: error.killed,
+    }) : '';
+    resolve({ code: error ? 1 : 0, stdout: String(stdout), stderr: [String(stderr), failure].filter(Boolean).join('\n') });
+  });
+});
+
+/** Commit only generated files in this suite's disposable repositories, never the shared tree. */
+async function sealScratchTestCheckout(root: string): Promise<void> {
+  for (const args of [
+    ['init', '-q'],
+    ['add', '--all'],
+    ['-c', 'user.name=Test Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=/dev/null',
+      'commit', '-q', '--allow-empty', '-m', 'Generated testing:run fixture'],
+  ]) {
+    const result = await scratchGit(args, root);
+    if (result.code !== 0) throw new Error(`scratch checkout git ${args.join(' ')} failed: ${result.stderr}`);
+  }
+}
 
 async function makeScratchTestCheckout(prefix: string, file = 'packages/x/real.test.ts'): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   selectorRoots.push(root);
-  await mkdir(join(root, '.git'));
   await mkdir(dirname(join(root, file)), { recursive: true });
   await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
   await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
   await writeFile(join(root, file), 'export {};\n');
+  await sealScratchTestCheckout(root);
   return root;
 }
 
+async function cancelFixtureRecovery(runId: string): Promise<void> {
+  const taskId = getRun(runId)?.taskId;
+  expect(taskId, 'recovery cleanup needs its real managed task identity').toBeDefined();
+  expect(cancelRun(runId)).toBe(true);
+  // cancelRun marks the snapshot cancelled before signalling the process.
+  // The task ledger is updated by its actual close handler, so wait for that
+  // transition before another fixture starts or afterAll drops the database.
+  await vi.waitFor(async () => {
+    const [row] = await getOrgPg().sql<{ state: string }[]>`
+      SELECT state FROM harness_shared.task_ledger WHERE task_id = ${taskId!}
+    `;
+    expect(row?.state).toMatch(/^(killed|exited)$/);
+  }, { timeout: 5_000 });
+}
+
 beforeAll(async () => {
+  // Run the real custody census and every nested router against this suite's
+  // disposable migrated database, using the maintained org fixture.
+  org = await createOrgTestDb();
+  process.env.HARNESS_DATABASE_URL = org.appDsn;
+  process.env.HARNESS_ADMIN_DATABASE_URL = org.adminDsn;
+  process.env.DATABASE_URL = org.adminDsn;
+  process.env.PAPERCUSP_PGBOUNCER = '0';
+  process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+  _resetHarnessAdminUrlCacheForTests();
+  await _resetForTests();
   selectorCanonical = await makeScratchTestCheckout('papercusp-testing-run-selector-canonical-');
   selectorRequested = await makeScratchTestCheckout('papercusp-testing-run-selector-requested-');
   await rm(selectorPhantom, { recursive: true, force: true });
-});
+}, 120_000);
 
 afterAll(async () => {
-  await Promise.all(selectorRoots.map((root) => rm(root, { recursive: true, force: true })));
+  try {
+    await Promise.all(selectorRoots.map((root) => rm(root, { recursive: true, force: true })));
+    await _resetForTests();
+    await org?.cleanup();
+  } finally {
+    for (const key of databaseEnvKeys) {
+      const saved = savedDatabaseEnv.get(key);
+      if (saved === undefined) delete process.env[key];
+      else process.env[key] = saved;
+    }
+    _resetHarnessAdminUrlCacheForTests();
+  }
+});
+
+describe('scratch checkout custody census (WI-10007684)', () => {
+  // This fixture implements only the tagged query used by the hold census,
+  // rather than the connection methods carried by the full Db interface.
+  const activeWindowSql = (async () => [{ since: new Date(0), restricted: ['fixture-restricted'] }]) as unknown as
+    NonNullable<Parameters<typeof readRestrictedWindowHoldings>[0]['sql']>;
+  const holdings = (root: string) => readRestrictedWindowHoldings({
+    sql: activeWindowSql,
+    listDirtyFiles: () => listDirtyFilesRecursive(scratchGit, root),
+  });
+
+  it('binds the production census client to this suite\'s isolated database', async () => {
+    const [row] = await getOrgPg().sql<{ database: string }[]>`SELECT current_database() AS database`;
+    expect(row?.database).toBe(org?.dbName);
+    expect(await restrictedHoldRefusal(selectorCanonical, ['packages/x/real.test.ts'])).toBeNull();
+  });
+
+  it('admits a real clean fixture during an active disclosure window', async () => {
+    expect(await listDirtyFilesRecursive(scratchGit, selectorCanonical)).toEqual([]);
+    expect(await restrictedHoldRefusal(selectorCanonical, ['packages/x/real.test.ts'], { holdings })).toBeNull();
+  });
+
+  it('keeps an empty Git marker fail-closed with the actual census failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-malformed-git-'));
+    selectorRoots.push(root);
+    await mkdir(join(root, '.git'));
+    const refusal = await restrictedHoldRefusal(root, ['packages/x/real.test.ts'], { holdings });
+    expect(refusal).toMatchObject({ error: 'restricted_hold_state_unknown' });
+    expect(refusal?.hint).toContain('git submodule status failed');
+    expect(refusal?.hint).toContain('not a git repository');
+  });
 });
 
 describe('bounded router-output diagnostics (EI-23084691057182393)', () => {
@@ -220,6 +330,14 @@ describe('bounded router-output diagnostics (EI-23084691057182393)', () => {
     const output = capture.finish();
     expect(output.match(/TEST_FILE_ROUTE_ERROR/g)).toHaveLength(1);
     expect(output).not.toContain('TESTING_RUN_PRIORITY_DIAGNOSTICS');
+  });
+
+  it.each(['ADMISSION_ERROR', 'FINALIZATION_ERROR'])('keeps the %s failure cause after later progress evicts it', (kind) => {
+    const capture = createBoundedRouterOutputCapture();
+    const diagnostic = `TEST_FILE_${kind} detail=original-failure origin=original-stack`;
+    capture.append('stderr', `${diagnostic}\n`);
+    capture.append('stdout', 'TEST_FILE_PROGRESS state=running\n'.repeat(500));
+    expect(capture.finish().slice(-2_000)).toContain(diagnostic);
   });
 });
 
@@ -267,6 +385,90 @@ describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
       }),
     ).toEqual({ root: selectorPhantom, source: 'requested' });
   });
+
+  it('uses only the caller-named registered checkout for an explicit rootHarnessSlug', async () => {
+    const registered = await makeScratchTestCheckout('papercusp-testing-run-selector-registered-');
+    let loadedWorkspace: string | undefined;
+    const result = await resolveRegisteredTestFileRoot('subject-tree', 'workspace-17', async (workspaceId) => {
+      loadedWorkspace = workspaceId;
+      return { projects: [{ slug: 'subject-tree', path: registered }] } as never;
+    });
+
+    expect(loadedWorkspace).toBe('workspace-17');
+    expect(result).toEqual({
+      ok: true,
+      selection: { root: registered, source: 'registered-harness' },
+    });
+  });
+
+  it('refuses an unregistered rootHarnessSlug without considering discovered or canonical roots', async () => {
+    const result = await resolveRegisteredTestFileRoot('missing-tree', 'workspace-17', async () => ({
+      projects: [{ slug: 'other-tree', path: selectorRequested }],
+    }) as never);
+
+    expect(result).toMatchObject({ ok: false, error: 'root_harness_not_registered' });
+  });
+
+  it('requires a concrete caller workspace before resolving rootHarnessSlug', async () => {
+    const loadRegistry = vi.fn(async () => ({ projects: [{ slug: 'subject-tree', path: selectorRequested }] }) as never);
+    const result = await resolveRegisteredTestFileRoot('subject-tree', '*', loadRegistry);
+
+    expect(result).toMatchObject({ ok: false, error: 'root_harness_requires_concrete_workspace' });
+    expect(loadRegistry).not.toHaveBeenCalled();
+  });
+
+  it('keeps relative paths inside an explicit registered root instead of expanding a sibling checkout', async () => {
+    const registered = await makeScratchTestCheckout('papercusp-testing-run-selector-explicit-root-');
+    const sibling = await makeScratchTestCheckout('papercusp-testing-run-selector-explicit-sibling-');
+    const siblingRelativePath = `${basename(sibling)}/packages/x/real.test.ts`;
+
+    expect(normalizeTestFilePaths([siblingRelativePath], registered)).toEqual({
+      ok: true,
+      files: [join(sibling, 'packages/x/real.test.ts')],
+    });
+    expect(normalizeTestFilePaths([siblingRelativePath], registered, undefined, {
+      allowSiblingCheckoutFallback: false,
+    })).toEqual({ ok: true, files: [siblingRelativePath] });
+  });
+
+  it('rejects rootHarnessSlug when the request does not select exact files', async () => {
+    const out = await body(call({ rootHarnessSlug: 'subject-tree', changedPaths: ['packages/x/source.ts'] }));
+
+    expect(out).toMatchObject({ ok: false, error: 'root_harness_requires_files' });
+  });
+});
+
+describe('completed child with failed router finalization (WI-10004947)', () => {
+  it.each(['vitest-json', 'node-summary'])('preserves measured counts and the cause without an overall green: %s', async (reportKind) => {
+    const file = 'packages/x/completed.test.ts';
+    const root = await makeScratchTestCheckout('papercusp-testing-finalization-', file);
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const report = {
+      numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0,
+      numTotalTestSuites: 1, numPassedTestSuites: 1, numFailedTestSuites: 0,
+      startTime: Date.now(), success: true,
+      testResults: [{
+        name: join(root, file), status: 'passed',
+        assertionResults: [{ fullName: 'completed before finalization', status: 'passed' }],
+      }],
+    };
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      reportKind === 'vitest-json'
+        ? `writeFileSync(process.argv.find(a => a.startsWith('--outputFile=')).slice('--outputFile='.length), ${JSON.stringify(JSON.stringify(report))});`
+        : "console.log('# tests 1\\n# pass 1\\n# fail 0\\n# skipped 0');",
+      "console.error('TEST_FILE_FINALIZATION_ERROR detail=receipt-finish-failed');",
+      "console.log('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed finalizationError=true');",
+      'process.exitCode = 3;',
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const out = await runTestFilesCore({ root, files: [file], timeoutMs: 10_000 });
+    expect(out.error, JSON.stringify(out)).toBeUndefined();
+    if (out.error !== undefined) return;
+    expect(out).toMatchObject({ ok: false, passed: 1, failed: 0, skipped: 0, files: 1 });
+    expect(out.routerOutput).toContain('TEST_FILE_FINALIZATION_ERROR detail=receipt-finish-failed');
+    expect(out.routerOutput).not.toContain('no test file ran');
+  });
 });
 
 describe('mixed-checkout test batches (EI-22733560502709681)', () => {
@@ -304,22 +506,40 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
         join(root, `${label}.test.ts`),
         `import { expect, it } from 'vitest'; it('${label}', () => expect(1).toBe(1));\n`,
       );
+      await sealScratchTestCheckout(root);
     }
     const siblingFile = join(sibling, 'sibling.test.ts');
 
+    const phaseTimings: TestingRunPhaseTimings = {
+      preflightMs: null,
+      provenanceMs: null,
+      preparationMs: null,
+      admissionWaitMs: null,
+      routerExecutionMs: null,
+      ledgerIdReadbackMs: null,
+      finalizationMs: null,
+      totalHandlerMs: null,
+    };
     const out = await runTestFilesCore({
       root: ambient,
       files: ['ambient.test.ts', siblingFile],
       timeoutMs: 60_000,
+      phaseTimings,
     });
 
-    expect(out.error, JSON.stringify(out)).toBeUndefined();
-    if (out.error !== undefined) return;
-    expect(out.ok, JSON.stringify(out)).toBe(true);
-    expect(out.files).toBe(2);
-    expect(out.roots).toEqual([ambient, sibling]);
-    expect(out.byFile['ambient.test.ts']).toMatchObject({ passed: 1, failed: 0 });
-    expect(out.byFile[siblingFile]).toMatchObject({ passed: 1, failed: 0 });
+    try {
+      expect(out.error, JSON.stringify({ out, phaseTimings })).toBeUndefined();
+      if (out.error !== undefined) return;
+      expect(out.ok, JSON.stringify({ out, phaseTimings })).toBe(true);
+      expect(out.files).toBe(2);
+      expect(out.roots).toEqual([ambient, sibling]);
+      expect(out.byFile['ambient.test.ts']).toMatchObject({ passed: 1, failed: 0 });
+      expect(out.byFile[siblingFile]).toMatchObject({ passed: 1, failed: 0 });
+    } finally {
+      // A failed success-path assertion can still have started timeout recovery.
+      // Settle that owned process before the next fixture starts creating files.
+      if ('detachedRunId' in out && out.detachedRunId) await cancelFixtureRecovery(out.detachedRunId);
+    }
   }, 120_000);
 
   it('starts one detached recovery containing every checkout after a mixed-root timeout', async () => {
@@ -335,6 +555,7 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
       await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
       await writeFile(join(root, 'scripts', 'test-files.mjs'), sleepingRouter);
       await writeFile(file, 'export {};\n');
+      await sealScratchTestCheckout(root);
     }
 
     const out = await runTestFilesCore({
@@ -350,17 +571,17 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
     expect(typeof detachedRunId).toBe('string');
     if (typeof detachedRunId !== 'string') return;
 
-    const detached = getRun(detachedRunId);
-    expect(detached).not.toBeNull();
-    expect(detached?.command.join(' ')).toContain(roots[0]!);
-    expect(detached?.command.join(' ')).toContain(roots[1]!);
-    expect(detached?.command.join(' ')).toContain(files[0]!);
-    expect(detached?.command.join(' ')).toContain(files[1]!);
-
-    // This test proves request construction, but must not leave the fresh
-    // all-groups recovery running while the rest of this suite runs.
-    expect(cancelRun(detachedRunId)).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    try {
+      const detached = getRun(detachedRunId);
+      expect(detached).not.toBeNull();
+      expect(detached?.command.join(' ')).toContain(roots[0]!);
+      expect(detached?.command.join(' ')).toContain(roots[1]!);
+      expect(detached?.command.join(' ')).toContain(files[0]!);
+      expect(detached?.command.join(' ')).toContain(files[1]!);
+    } finally {
+      // Assertion failures also have to settle the owned recovery.
+      await cancelFixtureRecovery(detachedRunId);
+    }
   }, 30_000);
 
   it('keeps a bounded, checkout-attributed result when a later mixed-root group times out', async () => {
@@ -384,35 +605,34 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
       await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
       await writeFile(join(root, 'scripts', 'test-files.mjs'), index === 0 ? redRouter : sleepingRouter);
       await writeFile(files[index]!, 'export {};\n');
+      await sealScratchTestCheckout(root);
     }
 
-    const out = await runTestFilesCore({ root: roots[0]!, files, timeoutMs: 1_000 });
+    const out = await runTestFilesCore({ root: roots[0]!, files, timeoutMs: 5_000 });
 
-    expect(out.error, JSON.stringify(out)).toBe('timeout');
-    if (out.error !== 'timeout') return;
-    expect(out.completedGroups).toHaveLength(1);
-    expect(out.completedGroups?.[0]).toMatchObject({
-      root: roots[0],
-      files: [files[0]],
-      ok: false,
-      result: {
-        passed: 1,
-        failed: 1,
-        files: 1,
-        failures: [expect.objectContaining({ test: 'schema width' })],
-      },
-    });
-    expect(out.completedGroups?.[0]?.result.byFile).toMatchObject({
-      'operator-core.test.ts': { passed: 1, failed: 1 },
-    });
-    expect(out.completedGroups?.[0]?.result.failures.length).toBeLessThanOrEqual(5);
-    expect(out.completedGroups?.[0]?.result.failuresTruncated).toBe(false);
-
-    const detachedRunId = out.detachedRunId;
-    expect(typeof detachedRunId).toBe('string');
-    if (typeof detachedRunId === 'string') {
-      expect(cancelRun(detachedRunId)).toBe(true);
-      await new Promise((resolve) => setTimeout(resolve, 250));
+    try {
+      expect(out.error, JSON.stringify(out)).toBe('timeout');
+      if (out.error !== 'timeout') return;
+      expect(out.completedGroups, JSON.stringify(out)).toHaveLength(1);
+      expect(out.completedGroups?.[0]).toMatchObject({
+        root: roots[0],
+        files: [files[0]],
+        ok: false,
+        result: {
+          passed: 1,
+          failed: 1,
+          files: 1,
+          failures: [expect.objectContaining({ test: 'schema width' })],
+        },
+      });
+      expect(out.completedGroups?.[0]?.result.byFile).toMatchObject({
+        'operator-core.test.ts': { passed: 1, failed: 1 },
+      });
+      expect(out.completedGroups?.[0]?.result.failures.length).toBeLessThanOrEqual(5);
+      expect(out.completedGroups?.[0]?.result.failuresTruncated).toBe(false);
+      expect(typeof out.detachedRunId).toBe('string');
+    } finally {
+      if ('detachedRunId' in out && out.detachedRunId) await cancelFixtureRecovery(out.detachedRunId);
     }
   }, 30_000);
 });
@@ -443,6 +663,7 @@ describe('nested router deadline (WI-10003090)', () => {
       "  assertionResults: [{ status: 'passed', fullName: 'criterion ran' }],",
       "})) }));",
     ].join('\n'));
+    await sealScratchTestCheckout(root);
 
     const previous = process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
     process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS = '600000';
@@ -565,6 +786,84 @@ describe('governed test-process admission (P-003)', () => {
   });
 });
 
+describe('bounded foreground process termination', () => {
+  it('waits no longer than the foreground termination grace and accepts a late close', async () => {
+    let close!: () => void;
+    const childClosed = new Promise<void>((resolve) => {
+      close = resolve;
+    });
+    // Exercise the real scheduler with the existing bounded deadline seam.
+    // Freezing timers here also freezes this integration suite's real drivers.
+    await expect(waitForTestProcessClose(childClosed, 10)).resolves.toBe(false);
+    close();
+    await expect(childClosed).resolves.toBeUndefined();
+  });
+
+  it('confirms a child that closes before its termination deadline', async () => {
+    await expect(waitForTestProcessClose(Promise.resolve(), 1_000)).resolves.toBe(true);
+  });
+
+  it('does not start a mixed-root recovery while a timed-out foreground process may still be writing', async () => {
+    const roots = [
+      await makeScratchTestCheckout('papercusp-testing-run-unconfirmed-a-'),
+      await makeScratchTestCheckout('papercusp-testing-run-unconfirmed-b-'),
+    ];
+    for (const root of roots) {
+      await mkdir(join(root, 'scripts'), { recursive: true });
+      await writeFile(join(root, 'scripts', 'test-files.mjs'), 'process.exit(0);\n');
+      await sealScratchTestCheckout(root);
+    }
+    let close!: () => void;
+    const childClosed = new Promise<void>((resolve) => {
+      close = resolve;
+    });
+    let reportDir = '';
+    const runRouterFn = vi.fn(async (args: string[]) => {
+      const report = args.find((arg) => arg.startsWith('--outputFile='));
+      expect(report).toBeDefined();
+      reportDir = dirname(report!.slice('--outputFile='.length));
+      return {
+        code: null,
+        signal: null,
+        timedOut: true,
+        aborted: false,
+        output: '',
+        taskId: 'test-task-late-close',
+        terminationUnconfirmed: true,
+        childClosed,
+      };
+    });
+
+    try {
+      const out = await runTestFilesCore(
+        {
+          root: roots[0]!,
+          files: ['packages/x/real.test.ts', join(roots[1]!, 'packages/x/real.test.ts')],
+          timeoutMs: 10_000,
+        },
+        { runRouterFn },
+      );
+
+      expect(out, JSON.stringify(out)).toMatchObject({
+        ok: false,
+        error: 'timeout',
+        roots,
+        taskId: 'test-task-late-close',
+        terminationUnconfirmed: true,
+      });
+      expect(out).not.toHaveProperty('detachedRunId');
+      expect(runRouterFn).toHaveBeenCalledTimes(1);
+      expect(existsSync(reportDir)).toBe(true);
+
+      close();
+      await vi.waitFor(() => expect(existsSync(reportDir)).toBe(false));
+    } finally {
+      close();
+      if (reportDir) await rm(reportDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('groupDirectVitestRoutes (EI-21414388102126733)', () => {
   it('runs an external-Hive file from its owning workspace instead of the project root', async () => {
     const root = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-direct-workspace-'));
@@ -596,6 +895,30 @@ describe('groupDirectVitestRoutes (EI-21414388102126733)', () => {
         cwd: join(root, 'packages/db'),
         config: 'vitest.integration.config.ts',
         files: ['src/db.integration.test.ts'],
+      },
+    ]);
+  });
+
+  it('finds the owning workspace for a real path reached through a symlinked checkout root', async () => {
+    const realRoot = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-direct-symlink-real-'));
+    const aliasParent = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-direct-symlink-alias-'));
+    selectorRoots.push(realRoot, aliasParent);
+    const aliasRoot = join(aliasParent, 'checkout');
+    await symlink(realRoot, aliasRoot, 'dir');
+    await mkdir(join(realRoot, '.git'));
+    await mkdir(join(realRoot, 'apps/sidecar/src'), { recursive: true });
+    await writeFile(join(realRoot, 'package.json'), JSON.stringify({ private: true, workspaces: ['apps/*'] }));
+    await writeFile(join(realRoot, 'apps/sidecar/package.json'), JSON.stringify({ name: '@example/sidecar' }));
+    await writeFile(join(realRoot, 'apps/sidecar/vitest.config.ts'), 'export default {};\n');
+    await writeFile(join(realRoot, 'apps/sidecar/src/durable-call.integration.test.ts'), 'export {};\n');
+
+    expect(groupDirectVitestRoutes(
+      [join(realRoot, 'apps/sidecar/src/durable-call.integration.test.ts')],
+      aliasRoot,
+    )).toEqual([
+      {
+        cwd: join(realRoot, 'apps/sidecar'),
+        files: ['src/durable-call.integration.test.ts'],
       },
     ]);
   });
@@ -1003,7 +1326,114 @@ describe('testing:run (integration)', () => {
       runElapsedMs: 14825,
     });
     expect(parseRouterTerminalCompletion(output.replace('exitStatus=0', 'exitStatus=1'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('status=passed', 'status=passed finalizationError=true'))).toBeNull();
     expect(parseRouterTerminalCompletion('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed')).toBeNull();
+  });
+
+  it('returns the reportless Node zero-match diagnosis without replaying the router', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-node-zero-match-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const pattern = '^no-such-case$';
+    const output = ['ROUTE cwd=packages/x runner=node:test', '  requested real.test.ts',
+      'ℹ tests 0', 'ℹ pass 0', 'ℹ fail 0', 'ℹ skipped 0',
+      `TEST_FILE_NAME_FILTER_NO_MATCH requested=1 matched=1 executedFiles=1 testsExecuted=0 status=failed reason=name-filter-matched-no-tests pattern=${JSON.stringify(pattern)}; refusing to report a verdict`,
+    ].join('\n');
+    const runRouterFn = vi.fn(async () => ({
+      code: 2, signal: null, timedOut: false, aborted: false, output,
+    }));
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], testNamePattern: pattern },
+      { runRouterFn });
+    expect(out).toMatchObject({ ok: false, error: 'name_filter_no_match', skipped: 0, files: 1 });
+    expect(out).not.toHaveProperty('detachedRunId');
+    expect(runRouterFn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, 1])('preserves original diagnostics when exit %s has no measured report', async (code) => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-missing-report-log-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const logPath = join(root, 'original-router.log');
+    const cause = 'integration bootstrap failed before reporting';
+    await writeFile(logPath, `${cause}\n${'startup progress\n'.repeat(1000)}`);
+    const runRouterFn = vi.fn(async () => ({
+      code, signal: null, timedOut: false, aborted: false,
+      output: 'startup progress\n'.repeat(200), outputLogPaths: [logPath],
+    }));
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'] }, { runRouterFn });
+    expect(out).toMatchObject({ ok: false, error: 'no_report', diagnostics: { routerLogPaths: [logPath] } });
+    expect(await readFile(logPath, 'utf8')).toContain(cause);
+    expect(runRouterFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes the original router log only after a measured successful verdict', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-success-log-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const logPath = join(root, 'original-router.log');
+    await writeFile(logPath, 'original output\n');
+    const runRouterFn = vi.fn(async () => ({
+      code: 0, signal: null, timedOut: false, aborted: false, outputLogPaths: [logPath],
+      output: '# tests 1\n# pass 1\n# fail 0\n# skipped 0\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed',
+    }));
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'] }, { runRouterFn });
+    expect(out).toMatchObject({ ok: true, passed: 1, failed: 0 });
+    expect(existsSync(logPath)).toBe(false);
+    expect(runRouterFn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, 1])('keeps the real router child log after exit %s without a report', async (code) => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-real-missing-report-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const cause = 'fixture bootstrap cause before verbose startup';
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      `process.stderr.write(${JSON.stringify(`${cause}\n`)});`,
+      "process.stdout.write('startup progress\\n'.repeat(1000));",
+      `process.exitCode = ${code};`,
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 30_000 });
+    if (out.error !== 'no_report') throw new Error(JSON.stringify(out));
+    const logs = out.diagnostics?.routerLogPaths ?? [];
+    try {
+      expect(logs).toHaveLength(1);
+      expect(out.routerOutput).not.toContain(cause);
+      expect(await readFile(logs[0]!, 'utf8')).toContain(cause);
+    } finally {
+      await Promise.all(logs.map((path) => rm(path, { force: true })));
+    }
+  });
+
+  it('recovers a completed Node-only run at the foreground deadline without replaying it', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-node-complete-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const output = [
+      'ROUTE cwd=packages/x runner=node:test',
+      '  requested real.test.ts',
+      '# tests 2', '# pass 1', '# fail 0', '# skipped 1',
+      'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed skippedTests=1',
+    ].join('\n');
+    expect(parseRouterTerminalCompletion(output)).toMatchObject({ requested: 1, executed: 1, status: 'passed' });
+    const runRouterFn = vi.fn(async () => ({
+      code: null, signal: null, timedOut: true, aborted: false, output,
+    }));
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 1_000 },
+      { runRouterFn });
+    expect(out).toMatchObject({ ok: true, passed: 1, failed: 0, skipped: 1, files: 1, budgetExceeded: true });
+    expect(out).not.toHaveProperty('detachedRunId');
+    expect(runRouterFn).toHaveBeenCalledTimes(1);
+
+    expect(parseRouterTerminalCompletion(output.replace('status=passed', 'status=passed finalizationError=true'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('# pass 1', '# pass 0'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('# pass 1', '# pass 2'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('executed=1', 'executed=2'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.replace('runner=node:test', 'runner=vitest'))).toBeNull();
+    expect(parseRouterTerminalCompletion(output.split('\n').slice(0, -1).join('\n'))).toBeNull();
   });
 
   it('parses a strict typed NOT-MEASURED router marker without turning ordinary route errors into one', () => {
@@ -1062,15 +1492,23 @@ describe('testing:run (integration)', () => {
   it('runs a repo-resolving file from a phantom handler root through the canonical repo and surfaces the source', async () => {
     const phantom = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-handler-phantom-'));
     await rm(phantom, { recursive: true, force: true });
-    const out = await body(call({ files: [GREEN_TARGET] }, { projectDir: phantom }));
+    const priorIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = REPO_ROOT;
+    try {
+      const out = await body(call({ files: [GREEN_TARGET] }, { projectDir: phantom }));
 
-    expect(out.ok, JSON.stringify(out)).toBe(true);
-    expect(out.rootSource).toBe('canonical-repo');
-    expect(out.root).not.toBe(phantom);
-    expect(existsSync(join(out.root as string, GREEN_TARGET))).toBe(true);
+      expect(out.ok, JSON.stringify(out)).toBe(true);
+      expect(out.rootSource).toBe('canonical-repo');
+      expect(out.root).toBe(REPO_ROOT);
+      expect(existsSync(join(out.root as string, GREEN_TARGET))).toBe(true);
+    } finally {
+      if (priorIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorIntegrationRoot;
+    }
   }, 180_000);
 
   it('keeps the admin test-run ledger reporter alongside machine-readable JSON output', async () => {
+    const metadata = vi.fn<(data: Record<string, unknown>) => void>();
     const out = await body(
       call(
         { files: [GREEN_TARGET], harness: 'papercusp' },
@@ -1078,11 +1516,33 @@ describe('testing:run (integration)', () => {
           projectDir: REPO_ROOT,
           harnessSlug: '*',
           workspaceId: 'papercusp-workspace',
+          metadata,
         },
       ),
     );
 
     expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(out.phaseTimingsMs).toEqual({
+      preflightMs: expect.any(Number),
+      provenanceMs: expect.any(Number),
+      preparationMs: expect.any(Number),
+      admissionWaitMs: expect.any(Number),
+      routerExecutionMs: expect.any(Number),
+      ledgerIdReadbackMs: expect.any(Number),
+      finalizationMs: expect.any(Number),
+      totalHandlerMs: expect.any(Number),
+    });
+    const phaseTimings = out.phaseTimingsMs!;
+    expect(Object.values(phaseTimings).every((duration) => typeof duration === 'number' && duration >= 0)).toBe(true);
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata.mock.calls[0]?.[0]).toMatchObject({
+      testingRun: {
+        schemaVersion: 'testing-run-phase-telemetry-v1',
+        runId: out.runId,
+        outcome: 'passed',
+        phaseTimingsMs: out.phaseTimingsMs,
+      },
+    });
     if (typeof out.runId !== 'string') {
       throw new Error(`testing:run omitted runId: ${JSON.stringify(out)}`);
     }
@@ -1388,7 +1848,7 @@ describe('testing:run (integration)', () => {
     })).toEqual(readback.idsByFile);
   });
 
-  it('builds a fresh store-backed router request with the admin ledger reporter but without the foreground report path', () => {
+  it('builds a fresh store-backed router request with both the admin ledger reporter and retained JSON', () => {
     const request = buildDetachedTestRunRequest({
       root: REPO_ROOT,
       files: ['packages/example.test.ts'],
@@ -1397,23 +1857,26 @@ describe('testing:run (integration)', () => {
       harnessSlug: 'papercusp',
       timeoutMs: 900_000,
     });
-
     expect(request).toMatchObject({
       kind: 'vitest',
       command: process.execPath,
       cwd: REPO_ROOT,
       filePath: 'packages/example.test.ts',
-      runtimeMaxSec: 900,
+      requestedFiles: ['packages/example.test.ts'],
+      runtimeMaxSec: 930,
     });
     expect(request.args).toEqual([
       join(REPO_ROOT, 'scripts', 'test-files.mjs'),
       'packages/example.test.ts',
       '--',
+      '--reporter=json',
       `--reporter=${join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts')}`,
+      `--outputFile=${request.detachedReportArtifacts?.[0]?.reportPath}`,
       '--testNamePattern=suite > --focused test',
     ]);
-    expect(request.args.some((arg) => arg.includes('papercusp-testing-run-'))).toBe(false);
+    expect(request.detachedReportArtifacts?.[0]?.reportPath).toContain('papercusp-testing-run-detached-');
     expect(request.env).toEqual({
+      PAPERCUSP_TEST_FILE_TIMEOUT_MS: '900000',
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
     });
@@ -1434,6 +1897,8 @@ describe('testing:run (integration)', () => {
       workItemId: 'WI-10003898',
     });
     expect(mixed.workItemId).toBe('WI-10003898');
+    expect(single.requestedFiles).toEqual(['packages/example.test.ts']);
+    expect(mixed.requestedFiles).toEqual(['packages/example.test.ts']);
   });
 
   it('uses parent-side JSON ledger ingestion for a single detached integration file', () => {
@@ -1447,11 +1912,14 @@ describe('testing:run (integration)', () => {
     });
 
     const artifact = request.detachedReportArtifacts?.[0];
+    expect(request.requestedFiles).toEqual(['packages/operator-core/lib/sync-resolver/goals.integration.test.ts']);
     expect(artifact).toMatchObject({
       root: REPO_ROOT,
       testNamePattern: 'selected proof',
       scope: { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
     });
+    expect(request.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe('900000');
+    expect(request.runtimeMaxSec).toBe(930);
     expect(artifact?.reportPath).toContain('papercusp-testing-run-detached-');
     expect(request.args).toEqual([
       join(REPO_ROOT, 'scripts', 'test-files.mjs'),
@@ -1464,7 +1932,7 @@ describe('testing:run (integration)', () => {
     expect(request.args.some((arg) => arg.includes('admin-test-runs-reporter'))).toBe(false);
   });
 
-  it('gives detached recovery an independent runtime floor beyond the foreground timeout', () => {
+  it('persists the detached router budget and leaves time for its terminal report', () => {
     const foregroundTimeoutMs = 45_000;
     const request = buildDetachedTestRunRequest({
       root: REPO_ROOT,
@@ -1477,14 +1945,33 @@ describe('testing:run (integration)', () => {
     });
 
     // The foreground transport ceiling is about 45s. Detached recovery must
-    // not inherit that wall or it reproduces the SIGTERM/143 failure as soon
-    // as the recovery starts. Measured integration work took 227s before the
-    // adjacent unit group and startup; use the existing 15-minute maximum for
-    // both single-root and mixed-root continuations.
-    expect(request.runtimeMaxSec).toBe(900);
-    expect(mixedRequest.runtimeMaxSec).toBe(900);
+    // not inherit that wall or the router will fall back to its 10-minute default.
+    // The 15-minute per-file budget is persisted on both routes; the outer scope
+    // gets 30 seconds to report its terminal result before it is reaped.
+    expect(request.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe('900000');
+    expect(mixedRequest.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe('900000');
+    expect(request.runtimeMaxSec).toBe(930);
+    expect(mixedRequest.runtimeMaxSec).toBe(930);
     expect(request.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
     expect(mixedRequest.runtimeMaxSec).toBeGreaterThan(Math.ceil(foregroundTimeoutMs / 1000));
+  });
+
+  it('carries the full requested router budget into detached recovery', () => {
+    const timeoutMs = 1_200_000;
+    const request = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files: ['packages/example.test.ts'],
+      timeoutMs,
+    });
+    const mixedRequest = buildDetachedMixedTestRunRequest({
+      groups: [{ root: REPO_ROOT, files: ['packages/example.test.ts'] }],
+      timeoutMs,
+    });
+
+    expect(request.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe(String(timeoutMs));
+    expect(mixedRequest.env?.PAPERCUSP_TEST_FILE_TIMEOUT_MS).toBe(String(timeoutMs));
+    expect(request.runtimeMaxSec).toBe(1230);
+    expect(mixedRequest.runtimeMaxSec).toBe(1230);
   });
 
   it('gives every direct Vitest route its own JSON report artifact', async () => {
@@ -1501,13 +1988,17 @@ describe('testing:run (integration)', () => {
     );
     await writeFile(join(root, 'packages', 'integration', 'vitest.integration.config.ts'), 'export default {}.\n');
     const files = ['packages/unit/src/unit.test.ts', 'packages/integration/src/integration.integration.test.ts'];
-    const request = buildDetachedMixedTestRunRequest({ groups: [{ root, files }] });
+    const request = buildDetachedMixedTestRunRequest({ groups: [
+      { root: REPO_ROOT, files: ['packages/managed.test.ts'] },
+      { root, files },
+    ] });
     const artifacts = request.detachedReportArtifacts ?? [];
-    expect(artifacts).toHaveLength(2);
+    expect(artifacts).toHaveLength(3);
+    expect(artifacts[0]).toMatchObject({ root: REPO_ROOT, routerReports: true });
 
     const reportPaths = artifacts.map((artifact) => artifact.reportPath);
     expect(new Set(reportPaths).size).toBe(reportPaths.length);
-    expect(artifacts.every((artifact) => artifact.root === root)).toBe(true);
+    expect(artifacts.slice(1).every((artifact) => artifact.root === root && !artifact.routerReports)).toBe(true);
 
     const script = request.args[1]!;
     const marker = 'const commands = ';
@@ -1521,7 +2012,7 @@ describe('testing:run (integration)', () => {
       expect(reportArg).toBeDefined();
       return reportArg!.slice('--outputFile='.length);
     });
-    expect(commandReportPaths).toHaveLength(2);
+    expect(commandReportPaths).toHaveLength(3);
     expect(new Set(commandReportPaths).size).toBe(commandReportPaths.length);
     expect(commandReportPaths).toEqual(expect.arrayContaining(reportPaths));
   });
@@ -1589,5 +2080,73 @@ describe('testing:run (integration)', () => {
 
     const survivors = await pidsTaggedWithRun(out.runId as string);
     expect(survivors).toEqual([]);
+  }, 30_000);
+
+  it('releases the request promptly and preserves its confined child on host shutdown', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'testing-run-host-shutdown-'));
+    selectorRoots.push(root);
+    const file = 'packages/x/real.test.ts';
+    const startedPath = join(root, 'router-started');
+    await mkdir(join(root, '.git'), { recursive: true });
+    await mkdir(dirname(join(root, file)), { recursive: true });
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+    await writeFile(join(root, 'vitest.config.ts'), 'export default {};\n');
+    await writeFile(join(root, file), 'export {};\n');
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(startedPath)}, String(process.pid));`,
+      'setTimeout(() => process.exit(0), 8_000);',
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+
+    __resetShutdownStateForTest();
+    const runId = randomUUID();
+    const caller = new AbortController();
+    const runPromise = runTestFilesCore({
+      root,
+      files: [file],
+      runId,
+      timeoutMs: 20_000,
+      signal: caller.signal,
+    });
+    let guardTimer: NodeJS.Timeout | undefined;
+
+    try {
+      await vi.waitFor(() => expect(existsSync(startedPath)).toBe(true), { timeout: 10_000 });
+
+      const shutdownAt = performance.now();
+      markShuttingDown();
+      const raced = await Promise.race([
+        runPromise.then((result) => ({ result })),
+        new Promise<{ timedOut: true }>((resolve) => {
+          guardTimer = setTimeout(() => resolve({ timedOut: true }), 5_000);
+        }),
+      ]);
+      if (guardTimer) clearTimeout(guardTimer);
+      if ('timedOut' in raced) caller.abort(new Error('host-shutdown handoff guard expired'));
+      const out = 'result' in raced ? raced.result : await runPromise;
+      const elapsedMs = performance.now() - shutdownAt;
+      const survivingPids = await pidsTaggedWithRun(runId);
+
+      // The confined child owns its lifetime after the request is handed off;
+      // let the fixture finish naturally before removing its scratch checkout.
+      await vi.waitFor(async () => expect(await pidsTaggedWithRun(runId)).toEqual([]), {
+        timeout: 10_000,
+        interval: 100,
+      });
+
+      expect('timedOut' in raced, 'host shutdown should release the request before the guard').toBe(false);
+      expect(elapsedMs).toBeLessThan(4_000);
+      expect(out.error).toBe('aborted');
+      if (out.error !== 'aborted') return;
+      expect(out.hint).toContain('confined router continues under systemd ownership');
+      expect(survivingPids.length).toBeGreaterThan(0);
+    } finally {
+      if (guardTimer) clearTimeout(guardTimer);
+      __resetShutdownStateForTest();
+      caller.abort(new Error('host-shutdown integration test cleanup'));
+      await runPromise;
+    }
   }, 30_000);
 });

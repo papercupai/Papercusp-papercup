@@ -35,7 +35,7 @@ vi.mock('../locks/contention-retry', () => ({
   acquireWithContentionRetry: (...args: unknown[]) => contentionMocks.acquireWithContentionRetry(...args),
 }));
 
-import { synchronizeFinishWork } from './complete';
+import { finishFailureRecoveryAdvice, synchronizeFinishWork } from './complete';
 
 const STAMP = { plan_slug: 'some-plan-2026-08-13', item_id: 'P-004', harness_slug: 'papercusp' };
 
@@ -254,6 +254,20 @@ describe('synchronizeFinishWork retries a body-level busy plan-lock refusal', ()
     expect(receipt.errors?.join(' ')).toMatch(/is 'todo', not 'done'/);
     expect(receipt.errors?.join(' ')).toMatch(/reflection did not commit.*busy/);
   }, 10_000);
+
+  it('coordinates a plan-item claim_conflict before telling the caller to retry completion', async () => {
+    const claimConflictBody = {
+      ok: true,
+      results: [{ ok: false, error: 'claim_conflict', holder: { owner: 'su-peer' }, hint: 'coordinate with holder' }],
+    };
+    const { receipt, setStatusCalls } = await runWithFireResults([claimConflictBody], ['wip']);
+
+    expect(setStatusCalls).toBe(1);
+    expect(receipt).toMatchObject({ complete: false, planItem: 'failed', planItemClaimConflict: true });
+    expect(finishFailureRecoveryAdvice(receipt)).toMatch(/Do not retry immediately/);
+    expect(finishFailureRecoveryAdvice(receipt)).toMatch(/plan-item claim holder via coord:send/);
+    expect(finishFailureRecoveryAdvice(receipt)).toMatch(/only after the conflict clears/);
+  });
 
   it('keeps a legitimate coverage-guard skip silent and does not retry it', async () => {
     const { receipt, setStatusCalls } = await runWithFireResults(

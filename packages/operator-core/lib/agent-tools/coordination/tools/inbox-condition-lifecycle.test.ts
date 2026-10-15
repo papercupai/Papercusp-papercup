@@ -21,9 +21,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const M = vi.hoisted(() => ({
   readInbox: vi.fn(async () => [] as unknown[]),
+  getPresence: vi.fn(async (): Promise<unknown> => null),
+  claims: vi.fn(async (): Promise<Array<{ workItemId: string }>> => []),
+  fleets: vi.fn(async () => new Map<string, { fleetSlug: string }>()),
 }));
 
-vi.mock("../identity", () => ({
+vi.mock("../identity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../identity")>()),
   resolveAgentIdentity: (ctx: { ownerId?: string }) => ({
     ownerId: ctx?.ownerId ?? "owner-a",
   }),
@@ -40,8 +44,10 @@ vi.mock("../messages", () => ({
 }));
 vi.mock("../presence", () => ({
   heartbeatPresence: vi.fn(async () => {}),
-  getPresence: vi.fn(async () => null),
+  getPresence: M.getPresence,
 }));
+vi.mock('../../../work-item-claims', () => ({ listActiveClaimFreshnessForOwner: M.claims }));
+vi.mock('../presence-fleet', () => ({ fetchPresenceFleet: M.fleets }));
 vi.mock("../watermarks", () => ({
   readWatermark: vi.fn(async () => ({ messages_shown_ts: "" })),
   writeWatermark: vi.fn(async () => {}),
@@ -56,7 +62,9 @@ vi.mock("../presence-snapshot", () => ({
   renderPresenceRebootstrapBlock: () => "",
   consumePresenceRebootstrap: async () => null,
 }));
-vi.mock("../../../coord-schema", () => ({ renderInjection: () => "" }));
+vi.mock("../../../coord-schema", () => ({
+  renderInjection: (rows: Array<Record<string, unknown>>) => rows.map(row => row.summary).join('\n'),
+}));
 vi.mock("../../../cache", () => ({
   cachedRead: async (
     _ctx: unknown,
@@ -73,6 +81,8 @@ const ctx = (ownerId = "owner-a"): never =>
 type InboxOut = {
   entries: Array<Record<string, unknown>>;
   summary: Record<string, unknown>;
+  injection: string;
+  system_notices_irrelevant?: number;
 };
 const callInbox = async (args: Record<string, unknown> = {}): Promise<InboxOut> => {
   const res = (await tool.handler(args as never, ctx())) as {
@@ -107,6 +117,58 @@ const resolution = (ts: string, key: string) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   M.readInbox.mockImplementation(async () => []);
+  M.getPresence.mockImplementation(async () => null);
+  M.claims.mockImplementation(async () => []);
+  M.fleets.mockImplementation(async () => new Map());
+});
+
+describe('native notice scope preserves the public inbox view', () => {
+  it('filters unrelated injections using live claims while retaining VIEW entries', async () => {
+    const rows = [alarm('2026-10-13T00:00:00Z', 'compaction:other', { auto: true }),
+      alarm('2026-10-13T00:01:00Z', 'work-item:WI-123', { auto: true }),
+      alarm('2026-10-13T00:02:00Z', 'compaction:other-directed', { auto: true, to: ['owner-a'] })];
+    M.readInbox.mockResolvedValue(rows);
+    M.getPresence.mockResolvedValue({ currentPlanSlug: 'my-plan', currentFiles: [], contextTokens: null });
+    M.claims.mockResolvedValue([{ workItemId: 'WI-123' }]);
+    const native = await callInbox({ __systemNoticeState: {} });
+    expect(native.injection.split('\n')).not.toContain('alarm compaction:other');
+    expect(native.injection).toContain('alarm work-item:WI-123');
+    expect(native.injection).toContain('alarm compaction:other-directed');
+    expect(native.system_notices_irrelevant).toBe(1);
+    expect(native.entries).toHaveLength(3);
+    expect(M.getPresence).toHaveBeenCalledTimes(1);
+    const view = await callInbox();
+    expect(view.injection.split('\n')).toContain('alarm compaction:other');
+    expect(view.system_notices_irrelevant).toBeUndefined();
+    expect(view.entries).toHaveLength(3);
+  });
+
+  it('keeps native notices when the held-claim scope read fails', async () => {
+    M.readInbox.mockResolvedValue([alarm('2026-10-13T00:00:00Z', 'other', { auto: true })]);
+    M.getPresence.mockResolvedValue({ currentPlanSlug: 'my-plan', currentFiles: [] });
+    M.claims.mockRejectedValue(new Error('claim read unavailable'));
+    expect((await callInbox({ __systemNoticeState: {} })).injection).toContain('alarm other');
+  });
+
+  it('finds an older relevant notice beyond an unrelated priority window', async () => {
+    M.readInbox.mockResolvedValue([
+      alarm('2026-10-13T00:00:00Z', 'work-item:WI-123', { auto: true }),
+      alarm('2026-10-13T00:01:00Z', 'other-newer', { auto: true }),
+    ]);
+    M.getPresence.mockResolvedValue({ currentPlanSlug: 'my-plan', currentFiles: [] });
+    M.claims.mockResolvedValue([{ workItemId: 'WI-123' }]);
+    const native = await callInbox({ __systemNoticeState: {}, limit: 1 });
+    expect(native.injection.split('\n')).toContain('alarm work-item:WI-123');
+    expect(native.injection).not.toContain('alarm other-newer');
+  });
+
+  it('uses the authoritative fleet membership reader once for relevance and control cues', async () => {
+    M.readInbox.mockResolvedValue([alarm('2026-10-13T00:00:00Z', 'fleet:my-fleet', { auto: true })]);
+    M.getPresence.mockResolvedValue({ currentPlanSlug: null, currentFiles: [] });
+    M.fleets.mockResolvedValue(new Map([['owner-a', { fleetSlug: 'my-fleet' }]]));
+    expect((await callInbox({ __systemNoticeState: {} })).injection).toContain('alarm fleet:my-fleet');
+    expect(M.fleets).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("annotateResolvedConditions (pure)", () => {

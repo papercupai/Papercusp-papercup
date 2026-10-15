@@ -20,6 +20,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/cross-domain-conflict.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('./coordination-domain', () => ({
   candidateResourceLockDomains: vi.fn(() => ['caller-tree', 'papercusp-host-global', 'papercusp-workspace']),
@@ -35,6 +37,7 @@ import { listLiveResourceDomains, readResourceQueue, type ResourceHolder } from 
 import {
   selectCrossDomainConflicts,
   findCrossDomainResourceConflicts,
+  parseHostGlobalResourceExclusionError,
   type DomainHolders,
   type CrossDomainHolder,
   type ResourceAcquireMode,
@@ -43,6 +46,7 @@ import {
 const domainsM = vi.mocked(candidateResourceLockDomains);
 const queueM = vi.mocked(readResourceQueue);
 const liveDomainsM = vi.mocked(listLiveResourceDomains);
+const foreignCoordinationDomain = join(tmpdir(), 'papercusp-release');
 
 const ACQ = new Date('2026-08-28T20:00:00Z');
 const EXP = new Date('2026-08-28T21:00:00Z');
@@ -286,6 +290,58 @@ describe('findCrossDomainResourceConflicts', () => {
         owner: 'su-1',
       }),
     ).rejects.toThrow('connection terminated');
+  });
+});
+
+describe('parseHostGlobalResourceExclusionError', () => {
+  const expected = { resource: 'dev-server', targetDomain: 'papercusp-host-global' };
+  const detail = {
+    resource: 'dev-server',
+    requested_domain: 'papercusp-host-global',
+    coordination_domain: foreignCoordinationDomain,
+    owner: 'su-peer',
+    mode: 'exclusive',
+    status: 'held',
+  };
+
+  it('parses the atomic trigger refusal and preserves the actual conflicting domain', () => {
+    const error = Object.assign(new Error('trigger refusal'), {
+      code: '23P01',
+      constraint_name: 'resource_host_global_exclusion',
+      detail: JSON.stringify(detail),
+    });
+
+    expect(parseHostGlobalResourceExclusionError(error, expected)).toEqual(detail);
+  });
+
+  it('accepts the constraint field alias and rejects unrelated or mismatched errors', () => {
+    const aliased = Object.assign(new Error('trigger refusal'), {
+      code: '23P01',
+      constraint: 'resource_host_global_exclusion',
+      detail,
+    });
+    expect(parseHostGlobalResourceExclusionError(aliased, expected)).toEqual(detail);
+
+    expect(
+      parseHostGlobalResourceExclusionError(
+        Object.assign(new Error('different constraint'), {
+          code: '23P01',
+          constraint_name: 'some_other_constraint',
+          detail: JSON.stringify(detail),
+        }),
+        expected,
+      ),
+    ).toBeNull();
+    expect(
+      parseHostGlobalResourceExclusionError(
+        Object.assign(new Error('wrong resource'), {
+          code: '23P01',
+          constraint_name: 'resource_host_global_exclusion',
+          detail: JSON.stringify({ ...detail, resource: 'release-deploy' }),
+        }),
+        expected,
+      ),
+    ).toBeNull();
   });
 });
 

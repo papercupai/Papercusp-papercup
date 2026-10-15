@@ -17,7 +17,8 @@ const mocks = vi.hoisted(() => ({
   cancelStoredQualification: vi.fn(),
 }));
 
-vi.mock('../coordination/identity', () => ({
+vi.mock('../coordination/identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coordination/identity')>()),
   resolveAgentIdentity: mocks.resolveAgentIdentity,
 }));
 vi.mock('../../workspace-registry', async (importOriginal) => ({

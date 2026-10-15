@@ -25,12 +25,17 @@ export class OwnTunnelInputError extends Error {
 
 export interface CloudflaredIngressRule {
   readonly hostname?: string;
+  readonly path?: string;
   readonly service: string;
+  readonly originRequest?: Readonly<Record<string, unknown>>;
+  readonly [option: string]: unknown;
 }
 
 /** The `config` body of `PUT /accounts/{a}/cfd_tunnel/{t}/configurations`. */
 export interface CloudflaredIngressConfig {
   readonly ingress: readonly CloudflaredIngressRule[];
+  readonly originRequest?: Readonly<Record<string, unknown>>;
+  readonly [option: string]: unknown;
 }
 
 /** The catch-all rule cloudflared requires last: anything but our hostname gets a plain 404. */
@@ -111,6 +116,39 @@ export function buildCloudflaredIngress(input: { hostname: string; ingressPort: 
       { service: CLOUDFLARED_CATCH_ALL_SERVICE },
     ],
   };
+}
+
+/**
+ * Prepare one path-scoped correction in an existing multi-host tunnel without replacing its
+ * other routes or options. This does no I/O and does not prove the destination is protected:
+ * the caller must first verify the maintained external-ingress listener, then re-read the
+ * applied configuration before publishing. A different port alone is not that verification.
+ */
+export function retargetCloudflaredIngress(
+  config: CloudflaredIngressConfig,
+  input: { hostname: string; path: string; expectedService: string; ingressPort: number; operatorPorts: readonly number[] },
+): CloudflaredIngressConfig {
+  const hostname = normalizeHostname(input.hostname);
+  const service = ingressServiceUrl(input.ingressPort);
+  if (input.operatorPorts.length === 0 || input.operatorPorts.some(port => assertPort(port, 'operator port') === input.ingressPort)) {
+    throw new OwnTunnelInputError('ingress_is_operator_port', 'the target must be separate from every ordinary operator listener');
+  }
+  if (!input.path?.trim() || !input.expectedService?.trim()) {
+    throw new OwnTunnelInputError('invalid_ingress_selection', 'an exact path and expected current service are required');
+  }
+  const matches = config.ingress.filter(rule => rule.hostname === hostname && rule.path === input.path);
+  if (matches.length !== 1) {
+    throw new OwnTunnelInputError('ambiguous_ingress_selection', 'exactly one existing hostname/path rule must match');
+  }
+  const selected = matches[0]!;
+  if (selected.service !== input.expectedService) {
+    throw new OwnTunnelInputError('ingress_service_changed', 'the selected route no longer has the expected current service');
+  }
+  if ((config.originRequest && 'httpHostHeader' in config.originRequest) ||
+      (selected.originRequest && 'httpHostHeader' in selected.originRequest)) {
+    throw new OwnTunnelInputError('ingress_host_override', 'the protected listener must receive the public Host unchanged');
+  }
+  return { ...config, ingress: config.ingress.map(rule => rule === selected ? { ...rule, service } : rule) };
 }
 
 /** The CNAME target Cloudflare routes to a tunnel. */

@@ -1,11 +1,14 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import type { DreamRun } from './dream-run-store';
-import { buildCalibrationBundle } from '../../../../scratchpad/dream-study-2026-09-09/calibration.mts';
-import { freezeImmutableArtifacts } from '../../../../scratchpad/dream-study-2026-09-09/freeze-artifacts.mts';
+import { buildCalibrationBundle, calibrationStudyScope, calibrationKeyPublication } from './study/calibration.mts';
+import { createHash } from 'node:crypto';
+import { findBoxIdentityPaths } from '../../../../scripts/lib/identity-leak-patterns.mjs';
+import { freezeImmutableArtifacts } from './study/freeze-artifacts.mts';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -33,6 +36,54 @@ async function runs() {
 }
 
 describe('frozen study calibration evidence preparation', () => {
+  it('requires exact private custody before freezing a separate publication view', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'calibration-publication-'));
+    roots.push(root);
+    const machinePath = ['', 'home', 'private-study-account', 'source', 'worker.ts'].join('/');
+    const key = { blindHash: 'b'.repeat(64), selected: [{ runId: 'frozen-run', graphTreatment: 'control',
+      diagnostic: JSON.stringify({ path: machinePath }) }] };
+    const original = JSON.stringify(key, null, 2) + '\n';
+    const reportId = 'rpt_12345678-1234-4234-8234-123456789abc';
+    const report = { report_id: reportId, path: '/reports?sel=' + reportId, visibility: 'owner',
+      body_md: 'Original evidence.\n\n```json\n' + original + '```\n' };
+    const bytes = calibrationKeyPublication(original, report);
+    const published = JSON.parse(bytes);
+    expect(findBoxIdentityPaths(bytes)).toEqual([]);
+    expect(published.selected[0]).toMatchObject({ runId: 'frozen-run', graphTreatment: 'control' });
+    expect(published.publication).toMatchObject({ originalBytes: Buffer.byteLength(original),
+      originalSha256: createHash('sha256').update(original).digest('hex'), custody: { reportId, visibility: 'owner' } });
+    expect(JSON.parse(published.selected[0].diagnostic).path).not.toBe(machinePath);
+    expect(JSON.stringify(key, null, 2) + '\n').toBe(original);
+    for (const invalid of [{ ...report, visibility: 'workspace' },
+      { ...report, body_md: report.body_md.replace('frozen-run', 'other-run') },
+      { ...report, path: '/reports?sel=rpt_other' }])
+      expect(() => calibrationKeyPublication(original, invalid)).toThrow('exact owner-only custody');
+    const originalPath = join(root, 'key.json');
+    const publicPath = join(root, 'key-public.json');
+    await freezeImmutableArtifacts([{ path: originalPath, bytes: original }]);
+    await freezeImmutableArtifacts([{ path: publicPath, bytes }]);
+    expect(await readFile(originalPath, 'utf8')).toBe(original);
+    await expect(freezeImmutableArtifacts([{ path: publicPath, bytes: bytes + ' ' }])).rejects.toThrow('changed');
+    expect(await readFile(publicPath, 'utf8')).toBe(bytes);
+  });
+  it('isolates the exact native comparison without overwriting legacy calibration editions', () => {
+    const load = (file: string) => JSON.parse(readFileSync(new URL('./study/' + file, import.meta.url), 'utf8'));
+    const blocks = [load('protocol.json'), load('protocol-luna.json')];
+    const comparison = load('native-graph-protocol.json');
+    expect(calibrationStudyScope(blocks)).toEqual({ pins: blocks.map(block => block.pin), prefix: '' });
+    expect(calibrationStudyScope(blocks, comparison)).toEqual({ pins: [comparison.pin], prefix: 'native-graph-' });
+    expect(() => calibrationStudyScope(blocks, { ...comparison, pin: 'a'.repeat(64) })).toThrow();
+    expect(() => calibrationStudyScope(blocks, blocks[0])).toThrow('registered graph/control');
+  });
+  it('keeps graph treatment identity only in the unblinded key', async () => {
+    const rows = await runs();
+    const provenance = rows[0]!.outcome!.capabilityRun as Record<string, any>;
+    provenance.evaluation.graphTreatment = 'control';
+    const { blind, key } = buildCalibrationBundle([rows[0]!]);
+    expect(key.selected[0]).toMatchObject({ graphTreatment: 'control' });
+    expect(JSON.stringify(blind)).not.toContain('graphTreatment');
+    expect(JSON.stringify(blind)).not.toContain(rows[0]!.runId);
+  });
   it('does not leak metadata through production-shaped truncated narrative priors or their locators', async () => {
     const rows = await runs();
     rows[0]!.review!.priorMatches = [
@@ -129,6 +180,22 @@ describe('frozen study calibration evidence preparation', () => {
       if (prior.capture.parseStatus === 'truncated')
         expect(prior.capture.fullTextRef).toMatchObject({ resolver: 'capability-review-sources.readCurrent' });
     }
+  });
+  it('retains bounded JSON code priors as incomplete even though their source hash identifies raw file bytes', async () => {
+    const rows = await runs();
+    const prefix = JSON.stringify({ path: 'large.test.ts', source: 'source'.repeat(4000) }).slice(0, 12000);
+    rows[0]!.review!.priorMatches = [{ ref: 'code-source:large.test.ts', kind: 'test', text: prefix,
+      contentHash: 'captured-envelope-hash', sourceHash: 'raw-file-hash',
+      locator: { kind: 'code', id: 'source:large.test.ts', path: 'large.test.ts' } }];
+    const bundle = buildCalibrationBundle([rows[0]!]);
+    const capture = (bundle.key.selected[0]!.originalReview!.priorMatches as any[])[0].capture;
+    expect(capture).toMatchObject({ parseStatus: 'truncated', truncated: true, storedChars: 12000,
+      fullTextRef: { resolver: 'capability-review-sources.readCurrent', ref: 'code-source:large.test.ts',
+        locator: { kind: 'code', id: 'source:large.test.ts' } } });
+    expect((bundle.key.selected[0]!.originalReview!.priorMatches as any[])[0].text).toBe(prefix);
+    rows[0]!.review!.priorMatches = [{ ref: 'code-source:large.test.ts', kind: 'test', text: prefix,
+      contentHash: 'captured-envelope-hash', sourceHash: 'raw-file-hash' }];
+    expect(() => buildCalibrationBundle([rows[0]!])).toThrow('no resolvable full-text reference');
   });
   it('refuses an unparseable JSON prior without proven truncation and a resolver', async () => {
     const rows = await runs();

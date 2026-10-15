@@ -30,6 +30,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { observeFallback as recordBackfillFallback } from '../degradation/fallback-observations';
 // The engine (selection, batching, guarded writes, round-robin sweep) lives in
 // @papercusp/search per shared-vector-search-libraries-2026-09-29 D-004; this
 // module keeps papercusp's targets and hooks.
@@ -68,7 +69,11 @@ import {
 } from '../memory/configure';
 import type { EmbedFn, EmbedderProfileSpec, ResolvedEmbedder } from '@papercusp/memory';
 import { SIDECAR_MAX_TEXT_CHARS, sidecarEmbedBatch, sidecarBatchTimeoutMs } from '@papercusp/memory';
-import { buildSidecarAwareEmbedder, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
+import {
+  buildDeferredSidecarAwareEmbedder,
+  processSidecarConfigured,
+  resolveProcessSidecarUrl,
+} from '../memory/embed-sidecar-wiring';
 import { EMBED_SIDECAR_CAP_EMBED } from '../memory/embed-sidecar-server';
 // The prose column width contract — ONE source, not a restated `384`
 // (D-005 §5). `fitsProseColumns` is the dims guard; `modeTargetDims` is what a
@@ -197,30 +202,33 @@ async function resolveBatchEmbed(mode: ResolvedMode): Promise<EmbedManyFn | null
   // batched call would take ONE slot for N texts, silently defeating the cost
   // governor the cost-audit added.
   if (mode !== 'gemma' && mode !== 'local' && mode !== 'harrier') return null;
-  try {
+  // D-050: decide batch capability WITHOUT ensuring the sidecar. This runs on every
+  // 5-min sweep, including the drained ones that embed nothing, and resolving the
+  // URL here ENSURED the sidecar (spawned it when down), so its idle exit never
+  // held (P-532c). The URL is now resolved per batch, i.e. only once there are rows
+  // to embed. A batch that finds no sidecar throws, and the drain falls back to the
+  // per-row path, the same outcome the old null return produced.
+  if (!processSidecarConfigured()) return null;
+  return async (texts: string[]) => {
     const url = await resolveProcessSidecarUrl(undefined, [EMBED_SIDECAR_CAP_EMBED]);
-    if (!url) return null;
-    return async (texts: string[]) => {
-      // Prose backfill is STORAGE — the same 'document' side the per-row embedders
-      // above resolve to. Asymmetric models embed a document differently from a
-      // query, so this MUST match or the batch path would write vectors from a
-      // different space than the per-row fallback (WI-3616's whole failure mode).
-      // EXPLICIT, batch-scaled budget. Omitting it inherited the SINGLE-embed
-      // default (15s) for the whole batch, which aborted every sweep on a
-      // server-tier box (BATCH_SIZE 128 × ~0.22s/text ≈ 28s) — see
-      // EI-19464574865993243. Derived from the shared helper so the outer
-      // withEmbedTimeout race below cannot pick a different number.
-      const res = await sidecarEmbedBatch(url, {
-        model: mode,
-        kind: 'document',
-        texts,
-        timeoutMs: sidecarBatchTimeoutMs(texts.length),
-      });
-      return res.vectors;
-    };
-  } catch {
-    return null;
-  }
+    if (!url) throw new Error('no embed sidecar for this process; the drain uses the per-row path');
+    // Prose backfill is STORAGE — the same 'document' side the per-row embedders
+    // above resolve to. Asymmetric models embed a document differently from a
+    // query, so this MUST match or the batch path would write vectors from a
+    // different space than the per-row fallback (WI-3616's whole failure mode).
+    // EXPLICIT, batch-scaled budget. Omitting it inherited the SINGLE-embed
+    // default (15s) for the whole batch, which aborted every sweep on a
+    // server-tier box (BATCH_SIZE 128 × ~0.22s/text ≈ 28s) — see
+    // EI-19464574865993243. Derived from the shared helper so the outer
+    // withEmbedTimeout race below cannot pick a different number.
+    const res = await sidecarEmbedBatch(url, {
+      model: mode,
+      kind: 'document',
+      texts,
+      timeoutMs: sidecarBatchTimeoutMs(texts.length),
+    });
+    return res.vectors;
+  };
 }
 
 function buildAdmissionGovernedOpenAiEmbedder(key: string): EmbedFn {
@@ -289,9 +297,11 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     buildOpenAi: buildAdmissionGovernedOpenAiEmbedder,
     // Sidecar-first local legs (P-004): shared warm model when the host runs
     // the embed sidecar, bit-identical in-process fallback otherwise.
-    buildLocal: () => buildSidecarAwareEmbedder('local', 'document'),
+    // D-050: DEFERRED builders. This resolver runs on every 5-min sweep, and an
+    // eager build ensures (spawns) the sidecar even when there is nothing to embed.
+    buildLocal: async () => buildDeferredSidecarAwareEmbedder('local', 'document'),
     // Prose backfill is STORAGE, so EmbeddingGemma gets the document prompt.
-    buildGemma: () => buildSidecarAwareEmbedder('gemma', 'document'),
+    buildGemma: async () => buildDeferredSidecarAwareEmbedder('gemma', 'document'),
     // Required by the cascade seam since P-014 made harrier selectable; the
     // sweep itself never STORES harrier vectors (native 1024 ≠ PROSE_VECTOR_DIMS
     // — the dims guard in runBackfillSweep skips the whole sweep), but an
@@ -301,7 +311,7 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     // as "harrier is excluded because it is not 384" — true of the old width and
     // wrong about the reason. Harrier is excluded because 1024 ≠ the prose width,
     // whatever that width currently is.
-    buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'document'),
+    buildHarrier: async () => buildDeferredSidecarAwareEmbedder('harrier', 'document'),
   });
 }
 
@@ -524,6 +534,11 @@ export const TARGETS: SweepTarget[] = [
     // `ingested_at` rather than `ts`: `ts` is indexed only as (owner, ts), which a
     // global ordering cannot use.
     orderBySql: 'ingested_at DESC',
+    // Turns arrive faster than one pass embeds them (measured 2026-10-13: ~1.9k
+    // eligible/h ingested, ~1.0k/h embedded, 95k stale, oldest 5 days). Freshest-
+    // first alone never reached the old ones, so a session's later turns stayed
+    // unroutable for consult (WI-6554700010009707). The same index scanned forward.
+    backlogOrderBySql: 'ingested_at ASC',
     recencyCol: 'ingested_at',
     recencyColKind: 'timestamptz',
     readers: [
@@ -778,7 +793,7 @@ export const TARGETS: SweepTarget[] = [
     recencyColKind: 'timestamptz',
     readers: [{
       file: 'packages/operator-core/lib/datatype-registry-store.ts',
-      evidence: ['FROM harness_shared.datatype_registry', '+ 0.6 * (1 - (embedding <=> ${embeddingLiteral}::vector)) END'],
+      evidence: ['FROM harness_shared.datatype_registry', 'sql`1 - (embedding <=> ${embeddingLiteral}::vector)`'],
     }],
   },
   // WI-39840 — the two columns migration 847 widened to the 768 prose contract.
@@ -814,7 +829,7 @@ export const TARGETS: SweepTarget[] = [
       },
       {
         file: 'packages/operator-core/lib/consult/peers-know.ts',
-        evidence: ['JOIN harness_shared.consult_state c', 'WITH best AS (${chunkAwareVectorLegSql(handle, {'],
+        evidence: ['JOIN harness_shared.consult_state c', 'WITH best AS (${chunkAwareVectorLegSql(sql as unknown as PgHandle, {'],
       },
     ],
   },
@@ -856,6 +871,8 @@ export type ProseBackfillProfile = Pick<EmbedderProfileSpec, 'profileId' | 'targ
  * text limit and the batch and row deadlines. One object, so a direct backfillTable
  * call and the sweep cannot drift apart.
  */
+const observeBackfillBatch: NonNullable<BackfillTableOptions['observeFallback']> = (decision) =>
+  recordBackfillFallback('backfill-batch', decision);
 const PROSE_ENGINE_OPTIONS = {
   batchSize: BATCH_SIZE,
   acceptsWidth: fitsProseColumns,
@@ -897,7 +914,9 @@ export function backfillTable(
   target: BackfillTarget,
   options: ProseBackfillTableOptions,
 ): Promise<BackfillStats> {
-  return backfillTableCore<ProseBackfillProfile>(sql, target, { ...PROSE_ENGINE_OPTIONS, ...options });
+  return backfillTableCore<ProseBackfillProfile>(sql, target, {
+    ...PROSE_ENGINE_OPTIONS, observeFallback: observeBackfillBatch, ...options,
+  });
 }
 
 /**
@@ -960,6 +979,7 @@ export function proseBackfillSweeperConfig(
 ): BackfillSweeperConfig<ProseBackfillProfile> {
   return {
     ...PROSE_ENGINE_OPTIONS,
+    observeFallback: observeBackfillBatch,
     getTargets: () => TARGETS,
     getSql: () => getOrgPg().sql,
     resolveEmbedder: () => resolveBackfillEmbedder(),
@@ -1077,20 +1097,27 @@ async function _runSweepLogged(label: string): Promise<void> {
       const total = r.reduce((acc, s) => acc + s.embedded, 0);
       const scanned = r.reduce((acc, s) => acc + s.scanned, 0);
       const errors = r.reduce((acc, s) => acc + s.errors, 0);
+      const writeSkipped = r.reduce((acc, s) => acc + s.writeSkipped, 0);
+      // WI-10006735: rows whose write was skipped because another writer held them.
+      // Printed only when non-zero, so it names lock contention without changing
+      // the line otherwise.
+      const skipNote = (n: number) => (n > 0 ? `(locked${n})` : '');
       if (total > 0) {
         console.log(
           `[embed-backfill] ${label} sweep complete: ` +
-            r.map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}`).join(' '),
+            r.map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}${skipNote(s.writeSkipped)}`).join(' '),
         );
       } else if (scanned > 0 || errors > 0) {
         // WI-7327: a sweep that looked at rows and embedded NONE is a fault, not a
         // quiet success — it is what a code/schema width skew looks like (every
         // UPDATE rejected into the per-row catch). This used to print nothing, so
-        // "healthy" and "totally broken" were byte-identical: silence.
+        // "healthy" and "totally broken" were byte-identical: silence. A sweep whose
+        // every write met a held row says so with `locked=N`.
         console.warn(
-          `[embed-backfill] ${label} sweep embedded NOTHING (scanned=${scanned} errors=${errors}) — ` +
+          `[embed-backfill] ${label} sweep embedded NOTHING (scanned=${scanned} errors=${errors}` +
+            `${writeSkipped > 0 ? ` locked=${writeSkipped}` : ''}) — ` +
             r.filter((s) => s.scanned > 0 || s.errors > 0)
-              .map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}(err${s.errors})`)
+              .map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}(err${s.errors})${skipNote(s.writeSkipped)}`)
               .join(' '),
         );
       }

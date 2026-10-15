@@ -22,6 +22,7 @@
  */
 import type { ArmId, BenchSuite, TaskRunResult } from './schema';
 import { isScored } from './cost';
+import { admitCapabilityLift } from './capability-exercise';
 
 export type FairnessStatus = 'PASS' | 'FAIL' | 'WARN' | 'NEEDS-EVIDENCE' | 'N/A';
 
@@ -72,6 +73,28 @@ export interface FairnessAudit {
 export interface FairnessAuditOpts {
   /** The external reference arm (e.g. 'baseline-b-native' / mini-swe) — gates C9. Omit ⇒ C9 is N/A. */
   referenceArm?: ArmId;
+  /**
+   * Declared capability claims (arm → claimed capability ids) over a control arm. When present, C4 is
+   * DERIVED from observed delivery/use evidence ({@link admitCapabilityLift}) instead of left manual.
+   */
+  capabilityExercise?: { control: ArmId; arms: Readonly<Partial<Record<ArmId, string | readonly string[]>>> };
+}
+
+/** C4 from evidence: FAIL on a never-exercised treatment or a leaking control; NEEDS-EVIDENCE on unknowns. */
+function capabilityExerciseCriterion(
+  rows: readonly TaskRunResult[],
+  claims: NonNullable<FairnessAuditOpts['capabilityExercise']>,
+): { status: FairnessStatus; evidence: string } {
+  const admissions = Object.entries(claims.arms).flatMap(([arm, claimed]) =>
+    (claimed === undefined ? [] : typeof claimed === 'string' ? [claimed] : [...claimed]).map((capability) =>
+      admitCapabilityLift(rows, { capability, treatmentArm: arm, controlArm: claims.control })));
+  if (admissions.length === 0) return { status: 'NEEDS-EVIDENCE', evidence: 'no capability claims declared.' };
+  const line = admissions.map((a) => `${a.treatmentArm}/${a.capability}: exercised ${a.treatment.exercised}/${a.treatment.rows}` +
+    (a.treatment.unknown > 0 ? `, unknown ${a.treatment.unknown}` : '') +
+    `; control ${a.controlArm} leaked ${a.control.leaked}, unknown ${a.control.unknown}` +
+    (a.admitted ? ' — admitted' : ` — refused (${a.refusals.join(', ')})`)).join('; ');
+  const hard = admissions.some((a) => a.refusals.includes('treatment-never-exercised') || a.refusals.includes('control-leak') || a.refusals.includes('no-treatment-rows'));
+  return { status: admissions.every((a) => a.admitted) ? 'PASS' : hard ? 'FAIL' : 'NEEDS-EVIDENCE', evidence: line };
 }
 
 /** Build the per-arm fairness summary over the run-wide task union. */
@@ -154,8 +177,13 @@ export function buildFairnessAudit(rows: readonly TaskRunResult[], opts: Fairnes
       : `NOT iso-budget (caps: ${allBudgets.join(', ')}) — best-effort, no capability claim without compute-matching. Per-arm: ${costLine}.`,
   );
 
-  // C4 — capability actually exercised (manual).
-  push('C4', 'Capability-under-claim actually exercised', 'NEEDS-EVIDENCE', 'verify the config exercises the claimed capability (e.g. coordination requires multiple agents communicating on the SAME task, not parallel different tasks).');
+  // C4 — capability actually exercised: derived from delivery/use evidence when claims are declared, else manual.
+  if (opts.capabilityExercise) {
+    const c4 = capabilityExerciseCriterion(rows, opts.capabilityExercise);
+    push('C4', 'Capability-under-claim actually exercised', c4.status, c4.evidence);
+  } else {
+    push('C4', 'Capability-under-claim actually exercised', 'NEEDS-EVIDENCE', 'verify the config exercises the claimed capability (e.g. coordination requires multiple agents communicating on the SAME task, not parallel different tasks).');
+  }
 
   // C5 — same grader/env/exclusion (config partial).
   const allGraders = [...new Set(perArm.flatMap((a) => a.graderVersions))];

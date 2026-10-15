@@ -39,7 +39,7 @@ describe('conversations:resolve handler (bulk keyed-array)', () => {
   });
 
   it('maps a store error to a per-item { ok:false, error }', async () => {
-    resolveM.mockResolvedValue({ error: 'not_found' } as never);
+    resolveM.mockResolvedValue({ error: 'not_found' });
     const b = await body({ id: 'c1', accepted_post_id: 7 });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_found' });
   });
@@ -63,6 +63,49 @@ describe('conversations:resolve handler (bulk keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'c1', state: 'resolved', captured: 'mem0', notified_subscribers: 4 });
     expect(resolveM.mock.calls[0]![1]).toMatchObject({ conversation_id: 'c1', accepted_answer: 'do it this way' });
+  });
+
+  it('projects only known capture fields and sanitized diagnostics into the response', async () => {
+    resolveM.mockResolvedValue({
+      conversation: { id: 'c1', state: 'resolved' },
+      capture: {
+        target: 'mem0_error',
+        ok: false,
+        detail: 'LLM extraction failed',
+        diagnostics: {
+          status: 404,
+          requestId: 'req.123',
+          type: 'anthropic',
+          classification: 'permanent',
+          transport: 'anthropic-direct',
+          transportFailureCode: 'UND_ERR_HEADERS_TIMEOUT',
+          url: 'https://provider.invalid/private-path',
+          headers: { authorization: 'Bearer secret-token' },
+          body: 'private provider response',
+          account: 'private-account',
+        },
+        rawProviderPayload: 'private provider response',
+      },
+      delivered: 2,
+    } as never);
+
+    const b = await body({ id: 'c1', accepted_answer: 'do it this way' });
+
+    expect(b.results[0].captured).toEqual({
+      target: 'mem0_error',
+      ok: false,
+      detail: 'LLM extraction failed',
+      diagnostics: {
+        status: 404,
+        requestId: 'req.123',
+        type: 'anthropic',
+        classification: 'permanent',
+        transport: 'anthropic-direct',
+        transportFailureCode: 'UND_ERR_HEADERS_TIMEOUT',
+      },
+    });
+    expect(JSON.stringify(b.results[0])).not.toContain('secret-token');
+    expect(JSON.stringify(b.results[0])).not.toContain('private provider response');
   });
 
   it('items:[…] resolves many — each carries its own accepted answer; one bad item never fails the rest', async () => {

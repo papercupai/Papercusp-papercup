@@ -31,6 +31,8 @@ import scorecardsEmit from './scorecards/emit';
 import scorecardsEvaluate from './scorecards/evaluate';
 import consultGetFeedback from './consult/get-feedback';
 import workItemsComplete from './work_items/complete';
+import rubricsGet from './rubrics/get';
+import { isFullDetail } from './_review-read-detail';
 
 /** What the caller receives for `request`, or null when it is accepted. */
 function refusalFor(schema: unknown, request: unknown): string | null {
@@ -56,7 +58,9 @@ const CASES: Case[] = [
   },
   { tool: plansSetSpecs, request: { slug: 42 }, defects: ['slug', 'exactly one of `spec` or `items`'] },
   { tool: plansBindSpecEvidence, request: { slug: 42 }, defects: ['slug', 'exactly one of binding, items or retract'] },
-  { tool: plansAudit, request: { slug: 42, phase: 'activation' }, defects: ['slug', 'classRef'] },
+  // classRef may be omitted at activation since P-003 (it is derived), so the second defect
+  // is an invalid class rather than a missing one.
+  { tool: plansAudit, request: { slug: 42, phase: 'activation', classRef: 'not-a-class' }, defects: ['slug', 'classRef'] },
   {
     tool: plansEvaluateSpecTestAdequacy,
     request: { slug: 42, classRef: 'plan-class-feature-ship', specRevision: 3 },
@@ -87,6 +91,18 @@ const CASES: Case[] = [
 ];
 
 describe('RSR-P-008-A: one refusal names every invalid field', () => {
+  it.each([rubricsGet, plansGetSpecEvidence, plansEvaluateSpecTestAdequacy].map((tool) => [tool.name, tool] as const))('%s accepts both detail conventions without accepting malformed detail', (_name, tool) => {
+    const base = tool.name === 'rubrics:get' ? { rubricRef: 'r' } : { slug: 'plan-a' };
+    for (const [alias, canonical] of [[true, 'full'], [false, 'summary']] as const) {
+      const aliased = validateSync(tool.args as never, { ...base, detail: alias });
+      const named = validateSync(tool.args as never, { ...base, detail: canonical });
+      expect(aliased.ok).toBe(true);
+      expect(named.ok).toBe(true);
+      expect(isFullDetail(tool.args.parse({ ...base, detail: alias }).detail)).toBe(isFullDetail(tool.args.parse({ ...base, detail: canonical }).detail));
+    }
+    expect(refusalFor(tool.args, { ...base, detail: 3 })).toContain('detail');
+  });
+
   it.each(CASES.map((c) => [c.tool.name, c] as const))('%s names both defects of a two-defect request', (_, c) => {
     expect(missingFromRefusal(c.tool.args, c.request, c.defects)).toEqual([]);
   });

@@ -17,6 +17,7 @@ import {
   formatReleaseConsistencyVerdict,
   judgeConvergence,
   judgeReleaseConsistency,
+  selectConvergenceCandidates,
   type ConvergenceState,
 } from './convergence-probe';
 
@@ -699,5 +700,83 @@ describe('formatConvergenceVerdict', () => {
       nowMs: NOW,
     });
     expect(formatConvergenceVerdict(v)).toMatch(/local ABSENT < announced v7/);
+  });
+});
+
+describe('selectConvergenceCandidates — GUARD 1 input: a REVOKED device is never judged (WI-10006394)', () => {
+  const NONE = new Set<string>();
+
+  it('drops self, keeps every other member device, de-duplicates in first-seen order', () => {
+    expect(
+      selectConvergenceCandidates({
+        memberDevicePubkeys: [PEER, SELF, PEER2, PEER, ''],
+        selfDevicePubkey: SELF,
+        revokedDevicePubkeys: NONE,
+      }),
+    ).toEqual([PEER, PEER2]);
+  });
+
+  it('keeps every member device when self is unknown', () => {
+    expect(
+      selectConvergenceCandidates({ memberDevicePubkeys: [PEER, PEER2], selfDevicePubkey: undefined, revokedDevicePubkeys: NONE }),
+    ).toEqual([PEER, PEER2]);
+  });
+
+  it('drops a revoked device of a CURRENT member, and only that device', () => {
+    expect(
+      selectConvergenceCandidates({
+        memberDevicePubkeys: [SELF, PEER, PEER2],
+        selfDevicePubkey: SELF,
+        revokedDevicePubkeys: new Set([PEER2]),
+      }),
+    ).toEqual([PEER]);
+  });
+
+  // The measured case: a capacity-test VM borrowed the tower's GitHub identity, announced v1,
+  // and was deleted before its snapshot was fetched. Its attestation stays on the member row,
+  // so without revocation it is judged forever (63 h on hello-world-3-pot) and never clears.
+  it('a departed device whose snapshot was never fetched stays NOT CONVERGED until it is revoked, then is not judged at all', () => {
+    const departed = PEER2;
+    const announced = [
+      { devicePubkeyBase64: PEER, version: 7, sequence: 10 },
+      { devicePubkeyBase64: departed, version: 1, sequence: 11 },
+    ];
+    const local = [
+      { devicePubkeyBase64: PEER, version: 7 },
+      { devicePubkeyBase64: departed, version: null },
+    ];
+    const priorState: ConvergenceState = {
+      [departed]: { announced: 1, local: null, since: NOW - 3816 * 60_000 },
+    };
+
+    const unrevoked = judgeConvergence({
+      candidateDevicePubkeys: selectConvergenceCandidates({
+        memberDevicePubkeys: [SELF, PEER, departed],
+        selfDevicePubkey: SELF,
+        revokedDevicePubkeys: NONE,
+      }),
+      announced,
+      local,
+      priorState,
+      nowMs: NOW,
+    });
+    expect(unrevoked.converged).toBe(false);
+    expect(unrevoked.notConverged.map((d) => d.devicePubkeyBase64)).toEqual([departed]);
+
+    const revoked = judgeConvergence({
+      candidateDevicePubkeys: selectConvergenceCandidates({
+        memberDevicePubkeys: [SELF, PEER, departed],
+        selfDevicePubkey: SELF,
+        revokedDevicePubkeys: new Set([departed]),
+      }),
+      announced,
+      local,
+      priorState,
+      nowMs: NOW,
+    });
+    expect(revoked.converged).toBe(true);
+    expect(revoked.judged).toBe(1);
+    expect(revoked.state[departed]).toBeUndefined();
+    expect(formatConvergenceVerdict(revoked)).toBe('converged with 1 announced peer snapshot(s)');
   });
 });

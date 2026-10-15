@@ -55,15 +55,15 @@ ${overrides.requirements ?? '**R-1 — Canonical outcome.** The writer persists 
 
 const SEEDED_PIN = 2;
 
-function seed() {
+function seed(seedContent: string = subjectPlan(), seedPin: number = SEEDED_PIN) {
   const seeded = buildAcceptanceBarSeed({
     planSlug: 'subject-plan',
-    planContent: subjectPlan(),
+    planContent: seedContent,
     actorId: 'seed-author',
     declaredAt: '2026-09-06T00:00:00.000Z',
     cohort: 'post-epoch',
     adoptionEpoch: 1,
-    subjectPlanRevision: SEEDED_PIN,
+    subjectPlanRevision: seedPin,
     planStatus: 'active',
     rubricSlug: 'acceptance-subject-plan',
     rubricRevision: 4,
@@ -80,16 +80,28 @@ function fakeTx(opts: {
   witnessHashOverride?: string;
   pin: number;
   rubricSlug?: string | null;
+  /** The plan_revisions row at seq = pin; absent (the default) = history lacks it. */
+  pinnedSnapshot?: string | null;
+  pinnedHashOverride?: string;
+  /** The body the rubric's BAR set was seeded/amended from (default: subjectPlan()). */
+  seedContent?: string;
 }) {
-  const seeded = seed();
+  const seeded = seed(opts.seedContent ?? subjectPlan(), opts.pin);
   const sql = vi.fn(async (strings: TemplateStringsArray) => {
     const s = strings.join(' ');
+    if (s.includes('LEFT JOIN harness_shared.plan_revisions')) {
+      const snap = opts.pinnedSnapshot ?? null;
+      return [{
+        subject_version: String(opts.pin),
+        content_snapshot: snap,
+        content_hash: snap == null ? null : (opts.pinnedHashOverride ?? hashPlanContent(snap)),
+      }];
+    }
     if (s.includes('FROM harness_shared.plan_audits')) {
       if (opts.witnessSnapshot == null) return [];
       return [{
         content_snapshot: opts.witnessSnapshot,
         content_hash: opts.witnessHashOverride ?? hashPlanContent(opts.witnessSnapshot),
-        subject_version: String(opts.pin),
       }];
     }
     if (s.includes('SELECT version, content, acceptance_bar_rubric_slug')) {
@@ -131,9 +143,65 @@ describe('reconcileStaleAcceptanceBarSubjectPin', () => {
       witnessSnapshot: subjectPlan(), pin: SEEDED_PIN,
     });
     await expect(reconcileStaleAcceptanceBarSubjectPin(ARGS)).resolves.toEqual({
-      reconciled: true, fromRevision: SEEDED_PIN, toRevision: 5,
+      reconciled: true, fromRevision: SEEDED_PIN, toRevision: 5, witness: 'activation_audit',
     });
     expect(pinWrites()).toBeGreaterThan(0);
+  });
+
+  // WI-6554700010010492: Requirements were amended AFTER activation (rubrics:amend re-pins
+  // to the amended revision), then a decision-only write landed on a build that left the pin
+  // behind. The activation snapshot carries the PRE-amendment Requirements, so it can never
+  // be source-equal to the current body; only the revision the pin names can witness it.
+  describe('after a Requirements amendment', () => {
+    const AMENDED = '**R-1 — Canonical outcome.** The writer persists one canonical BAR and its audit row.';
+    const AMENDED_PIN = 4;
+    const amendedAtPin = subjectPlan({ requirements: AMENDED });
+    const decisionOnlyLater = subjectPlan({ requirements: AMENDED, now: 'D-013 recorded' });
+
+    it('catches up from the pinned revision snapshot', async () => {
+      const { pinWrites } = fakeTx({
+        version: 6, content: decisionOnlyLater, pin: AMENDED_PIN, seedContent: amendedAtPin,
+        witnessSnapshot: subjectPlan(), pinnedSnapshot: amendedAtPin,
+      });
+      await expect(reconcileStaleAcceptanceBarSubjectPin(ARGS)).resolves.toEqual({
+        reconciled: true, fromRevision: AMENDED_PIN, toRevision: 6, witness: 'pinned_revision',
+      });
+      expect(pinWrites()).toBeGreaterThan(0);
+    });
+
+    it('stays stranded when only the activation snapshot is available (the pre-fix behaviour)', async () => {
+      const { pinWrites } = fakeTx({
+        version: 6, content: decisionOnlyLater, pin: AMENDED_PIN, seedContent: amendedAtPin,
+        witnessSnapshot: subjectPlan(), pinnedSnapshot: null,
+      });
+      await expect(reconcileStaleAcceptanceBarSubjectPin(ARGS)).resolves.toEqual({
+        reconciled: false, reason: 'not_neutral',
+      });
+      expect(pinWrites()).toBe(0);
+    });
+
+    it('still refuses a Requirements change made after the pin, even with the pinned witness', async () => {
+      const { pinWrites } = fakeTx({
+        version: 6,
+        content: subjectPlan({ requirements: '**R-1 — Canonical outcome.** Changed again without an amend.' }),
+        pin: AMENDED_PIN, seedContent: amendedAtPin, witnessSnapshot: subjectPlan(), pinnedSnapshot: amendedAtPin,
+      });
+      await expect(reconcileStaleAcceptanceBarSubjectPin(ARGS)).resolves.toEqual({
+        reconciled: false, reason: 'not_neutral',
+      });
+      expect(pinWrites()).toBe(0);
+    });
+
+    it('does not trust a pinned row whose bytes no longer match its hash', async () => {
+      const { pinWrites } = fakeTx({
+        version: 6, content: decisionOnlyLater, pin: AMENDED_PIN, seedContent: amendedAtPin,
+        witnessSnapshot: null, pinnedSnapshot: amendedAtPin, pinnedHashOverride: 'e'.repeat(64),
+      });
+      await expect(reconcileStaleAcceptanceBarSubjectPin(ARGS)).resolves.toEqual({
+        reconciled: false, reason: 'no_witness',
+      });
+      expect(pinWrites()).toBe(0);
+    });
   });
 
   it('refuses to repair when the Requirements changed — that needs rubrics:amend', async () => {
@@ -148,12 +216,12 @@ describe('reconcileStaleAcceptanceBarSubjectPin', () => {
     expect(pinWrites()).toBe(0);
   });
 
-  it('does nothing without an activation-audit witness', async () => {
+  it('does nothing without any witness (no pinned row, no activation audit)', async () => {
     const { pinWrites } = fakeTx({
       version: 5, content: subjectPlan({ now: 'edited' }), witnessSnapshot: null, pin: SEEDED_PIN,
     });
     await expect(reconcileStaleAcceptanceBarSubjectPin(ARGS)).resolves.toEqual({
-      reconciled: false, reason: 'no_activation_witness',
+      reconciled: false, reason: 'no_witness',
     });
     expect(pinWrites()).toBe(0);
   });
@@ -164,7 +232,7 @@ describe('reconcileStaleAcceptanceBarSubjectPin', () => {
       witnessSnapshot: subjectPlan(), witnessHashOverride: 'f'.repeat(64), pin: SEEDED_PIN,
     });
     await expect(reconcileStaleAcceptanceBarSubjectPin(ARGS)).resolves.toEqual({
-      reconciled: false, reason: 'no_activation_witness',
+      reconciled: false, reason: 'no_witness',
     });
     expect(pinWrites()).toBe(0);
   });

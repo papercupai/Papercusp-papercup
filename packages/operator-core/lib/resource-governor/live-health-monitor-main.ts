@@ -12,12 +12,13 @@ export async function runLiveHealthMonitorMain(
   options: LiveHealthMonitorOptions = {},
 ): Promise<LiveHealthMonitorMainHandle> {
   const monitor = new LiveHealthMonitor(options);
-  let stopping = false;
-  const stop = async () => {
-    if (stopping) return;
-    stopping = true;
-    monitor.stop();
-    process.stdin.pause();
+  let stopping: Promise<void> | null = null;
+  const stop = () => {
+    stopping ??= (async () => {
+      await monitor.stop();
+      process.stdin.pause();
+    })();
+    return stopping;
   };
   const shutdown = () => {
     void stop().finally(() => process.exit(0));

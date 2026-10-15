@@ -40,7 +40,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   SUBSTRATE_OUTBOX_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import { FLAGS } from '@papercusp/flags';
@@ -71,6 +71,7 @@ vi.mock('../workspace-registry', async () => {
 
 const wi = await import('../work-items');
 const { getNextForBee } = await import('./claim-spec-store');
+const { reconcileClearedDependencyBlockedState } = await import('../work-item-blocking');
 
 const H = 'papercup';
 const WS = 'default'; // == DEFAULT_COORD_WORKSPACE; work_item_deps + the sidecar live here
@@ -82,13 +83,15 @@ interface SeedOpts {
   authority?: string | null;
   takenBy?: string | null;
   tags?: string[];
+  payload?: Record<string, unknown>;
 }
 async function seedFeature(id: string, opts: SeedOpts = {}) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, item_kind, status, authority, taken_by, workspace_id, created_ts, updated_ts, tags)
+      (harness_slug, feature_id, item_kind, status, authority, taken_by, workspace_id, created_ts, updated_ts, tags, payload)
     VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, ${opts.authority ?? null}, ${opts.takenBy ?? null}, ${WS},
-       ${opts.createdTs ?? 0}, 0, ${opts.tags ? db.sql.json(opts.tags) : null})`;
+       ${opts.createdTs ?? 0}, 0, ${opts.tags ? db.sql.json(opts.tags) : null},
+       ${opts.payload ? db.sql.json(opts.payload as Parameters<typeof db.sql.json>[0]) : null})`;
 }
 
 /** A feature→feature blocks edge (harness-qualified refs, the featureRef convention). */
@@ -102,17 +105,17 @@ async function blockByFeature(blockedId: string, blockerId: string) {
 /** The MAINTAINED sidecar (migration 379) view of readiness: true ⇒ a row exists ⇒ NOT ready.
  *  This is exactly the membership the SCHEDULER_MAINTAINED_READY flag's anti-join probes. */
 async function sidecarSaysBlocked(id: string): Promise<boolean> {
-  const rows = (await db.sql`
+  const rows = await db.sql`
     SELECT 1 FROM harness_shared.work_item_blocked
-     WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id} LIMIT 1`) as unknown[];
+     WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id} LIMIT 1`;
   return rows.length > 0;
 }
 
 /** The inline-predicate ORACLE (migration 379's work_item_is_blocked == the live claim's
  *  NOT EXISTS). The maintained sidecar must AGREE with it at every step. */
 async function oracleSaysBlocked(id: string): Promise<boolean> {
-  const rows = (await db.sql`
-    SELECT harness_shared.work_item_is_blocked(${H}, ${id}, 'default') AS blocked`) as Array<{ blocked: boolean }>;
+  const rows = await db.sql<{ blocked: boolean }[]>`
+    SELECT harness_shared.work_item_is_blocked(${H}, ${id}, 'default') AS blocked`;
   return rows[0]!.blocked === true;
 }
 
@@ -138,7 +141,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('claim-respects-blocking');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql)
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // claim path LEFT-JOINs the trust list (autoPickableWhereSql)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the dep table the readiness clause reads
   // The cup_claim_specs store getNextForBee → getClaimSpec reads (absent bee ⇒ DEFAULT_CLAIM_SPEC).
   // 372 (base table) + 389 (id_only tripwire column) + 438 (harness_slug federation column) —
@@ -191,6 +194,12 @@ beforeAll(async () => {
   // 996: lifecycle-terminal proposed completions remain blocked, and an
   // authority-only proposed→committed promotion refreshes the sidecar.
   await db.sql.unsafe(readMigration('996-work-item-completion-settlement-readiness.sql')).simple();
+  // The P-003 status reconciliation executes its audit writer as well as its
+  // state CAS. Match the existing work-items lifecycle integration fixture.
+  await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.audit_log (
+    id text PRIMARY KEY, ts bigint NOT NULL, actor text NOT NULL,
+    action text NOT NULL, subject text, details jsonb, workspace_id text NOT NULL
+  )`;
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -299,6 +308,64 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
     const { legacy, spec } = await claimViaBothPaths('w5');
     expect(legacy).toBe('F-ready');
     expect(spec).toBe('F-ready');
+  });
+});
+
+describe.each([false, true])('P-003 independent preparation and status controls (maintained=%s)', (maintained) => {
+  beforeEach(() => setFlagOverridesForTest({ [FLAGS.SCHEDULER_MAINTAINED_READY]: maintained }));
+  afterEach(() => setFlagOverridesForTest({}));
+
+  it.each(['credential', 'owner-pause', 'destructive-action'])('admits independent preparation without authorizing %s execution', async (prerequisite) => {
+    const condition = { kind: 'human', capability: prerequisite === 'credential' ? 'credential' : 'product-decision', status: 'active', ref: prerequisite,
+      summary: `The ${prerequisite} prerequisite is unresolved.`, nextVerb: 'Verify the recorded authorization.',
+      defaultIfUnanswered: 'Keep dependent execution blocked.' };
+    await seedFeature('F-prerequisite', { status: 'needs-human', payload: { needsOwnerAction: true, externalBlockers: [condition] } });
+    await seedFeature('F-execution', { createdTs: 1 });
+    await blockByFeature('F-execution', 'F-prerequisite');
+    // Preparation is registered separately for this execution task. It has no
+    // dependency on performing the prohibited operation and grants no release.
+    await seedFeature('F-preparation', { createdTs: 2 });
+    await db.sql`UPDATE harness_shared.work_items SET parent_id = 'F-execution'
+      WHERE harness_slug = ${H} AND feature_id = 'F-preparation'`;
+    const before = await db.sql`SELECT status, payload, taken_by FROM harness_shared.work_items
+      WHERE harness_slug = ${H} AND feature_id = 'F-prerequisite'`;
+
+    expect(await claimViaBothPaths('prepare')).toEqual({ legacy: 'F-preparation', spec: 'F-preparation' });
+    const [preparation] = await db.sql<{ parent_id: string }[]>`SELECT parent_id FROM harness_shared.work_items
+      WHERE harness_slug = ${H} AND feature_id = 'F-preparation'`;
+    expect(preparation?.parent_id).toBe('F-execution');
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET status = 'passed'
+      WHERE harness_slug = ${H} AND feature_id = 'F-preparation'`;
+    expect(await claimViaBothPaths('execute')).toEqual({ legacy: null, spec: null });
+    expect(await oracleSaysBlocked('F-execution')).toBe(true);
+    expect(await sidecarSaysBlocked('F-execution')).toBe(true);
+    expect(await db.sql`SELECT status, payload, taken_by FROM harness_shared.work_items
+      WHERE harness_slug = ${H} AND feature_id = 'F-prerequisite'`).toEqual(before);
+  });
+
+  it.each([false, true])('reconciles stale blocked status while preserving independent park=%s', async (parked) => {
+    const park = parked ? { claim_hold_by: 'owner-pause', claim_hold_reason: 'explicit owner pause',
+      claim_hold_release: { condition: 'Avi explicitly resumes this operation.', owner: 'Avi',
+        trigger: 'owner:resume:exact-operation', reachability: 'blocked', evidence: 'No resume is recorded.' } } : {};
+    const payload = { _claimHold: true, held_open_by: 'blocked-lease', held_open_reason: 'blocked',
+      sibling: 'keep', ...park };
+    await seedFeature('F-stale', { status: 'blocked', payload });
+    const snapshot = { id: 'F-stale', harness: H, family: 'feature', state: 'blocked', origin: 'local',
+      assignee: null, payload, updatedAt: new Date(0).toISOString() } as import('../work-items').WorkItem;
+
+    expect(await reconcileClearedDependencyBlockedState(snapshot, 'WI-current-control-proof', {
+      sql: db.sql, workspaceId: WS,
+    })).toBe('cleared');
+    const [row] = await db.sql<{ status: string; payload: Record<string, unknown> }[]>`
+      SELECT status, payload FROM harness_shared.work_items WHERE harness_slug = ${H} AND feature_id = 'F-stale'`;
+    expect(row?.status).toBe('open');
+    expect(row?.payload.sibling).toBe('keep');
+    expect(row?.payload).not.toHaveProperty('held_open_by');
+    if (parked) expect(row?.payload).toMatchObject({ _claimHold: true, ...park });
+    else expect(row?.payload).not.toHaveProperty('_claimHold');
+    expect(await claimViaBothPaths('ordinary')).toEqual(parked
+      ? { legacy: null, spec: null }
+      : { legacy: 'F-stale', spec: 'F-stale' });
   });
 });
 

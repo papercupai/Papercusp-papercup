@@ -1,0 +1,138 @@
+[report-cargo-tests] running: cargo test --manifest-path papercusp-desktop/src-tauri/Cargo.toml --no-fail-fast
+
+running 9 tests
+test discovery_tests::wsl_cold_boot_budget_covers_database_recovery ... ok
+test tests::recovery_crash_hint_names_where_the_error_is ... ok
+test tests::recovery_page_cold_start_does_not_claim_the_operator_was_lost ... ok
+test tests::recovery_page_embeds_uri_safely ... ok
+test tests::recovery_page_shows_crash_hint_only_after_three_minutes ... ok
+test discovery_tests::windows_discovery_recovery_is_not_home_only ... ok
+test tests::recovery_page_shows_elapsed_time_from_the_tracker ... ok
+test tests::recovery_tracker_measures_the_unanswered_stretch ... ok
+test tests::recovery_tracker_tells_cold_start_from_loss ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 461 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+warning: patch `tauri-runtime-wry v2.11.0 (~/papercupai-workspace/papercusp/papercusp-desktop/src-tauri/vendor/tauri-runtime-wry)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+warning: use of deprecated associated function `gtk::glib::main_context_channel::<impl gtk::glib::MainContext>::channel`: Use an async channel, from async-channel for example, on the main context using spawn_future_local() instead
+   --> vendor/tao/src/platform_impl/linux/event_loop.rs:244:71
+    |
+244 |     let (window_requests_tx, window_requests_rx) = glib::MainContext::channel(Priority::default());
+    |                                                                       ^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated associated function `gtk::glib::main_context_channel::<impl gtk::glib::MainContext>::channel`: Use an async channel, from async-channel for example, on the main context using spawn_future_local() instead
+   --> vendor/tao/src/platform_impl/linux/event_loop.rs:259:55
+    |
+259 |       let (device_tx, device_rx) = glib::MainContext::channel(glib::Priority::default());
+    |                                                       ^^^^^^^
+
+warning: use of deprecated associated function `gtk::glib::main_context_channel::<impl gtk::glib::MainContext>::channel`: Use an async channel, from async-channel for example, on the main context using spawn_future_local() instead
+  --> vendor/tao/src/platform_impl/linux/portal.rs:37:31
+   |
+37 |   let (tx, rx) = MainContext::channel(Priority::DEFAULT);
+   |                               ^^^^^^^
+
+warning: `tao` (lib) generated 3 warnings
+warning: use of deprecated method `webkit2gtk::WebViewExt::run_javascript`: Since 2.40
+  --> vendor/wry/src/webkitgtk/synthetic_mouse_events.rs:22:17
+   |
+22 |         webview.run_javascript(
+   |                 ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated method `webkit2gtk::WebViewExt::run_javascript`: Since 2.40
+  --> vendor/wry/src/webkitgtk/synthetic_mouse_events.rs:32:17
+   |
+32 |         webview.run_javascript(
+   |                 ^^^^^^^^^^^^^^
+
+warning: use of deprecated method `webkit2gtk::WebViewExt::run_javascript`: Since 2.40
+  --> vendor/wry/src/webkitgtk/synthetic_mouse_events.rs:56:17
+   |
+56 |         webview.run_javascript(
+   |                 ^^^^^^^^^^^^^^
+
+warning: use of deprecated method `webkit2gtk::WebViewExt::run_javascript`: Since 2.40
+  --> vendor/wry/src/webkitgtk/synthetic_mouse_events.rs:66:17
+   |
+66 |         webview.run_javascript(
+   |                 ^^^^^^^^^^^^^^
+
+warning: use of deprecated method `webkit2gtk::WebViewExt::run_javascript`: Since 2.40
+   --> vendor/wry/src/webkitgtk/mod.rs:405:21
+    |
+405 |             webview.run_javascript(&script, cancellable, |_| ());
+    |                     ^^^^^^^^^^^^^^
+
+warning: use of deprecated method `webkit2gtk::WebViewExt::run_javascript`: Since 2.40
+   --> vendor/wry/src/webkitgtk/mod.rs:761:20
+    |
+761 |       self.webview.run_javascript(js, cancellable, |result| {
+    |                    ^^^^^^^^^^^^^^
+
+warning: `wry` (lib) generated 6 warnings
+   Compiling papercusp-desktop v0.0.26 (~/papercupai-workspace/papercusp/papercusp-desktop/src-tauri)
+warning: papercusp-desktop@0.0.26: src-tauri/sidecar/ is incomplete — placeholder resources created so the build can proceed. Dev is fine (the sidecar is never spawned); DO NOT package this tree without running bin/build-desktop-sidecar.sh first.
+warning: method `extent` is never used
+   --> src/native_terminal.rs:826:12
+    |
+820 | impl TerminalLayout {
+    | ------------------- method in this implementation
+...
+826 |     pub fn extent(&self, axis: i32, min_px: i32, max_px: i32) -> i32 {
+    |            ^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `normalize_wsl_runtime_env` is never used
+    --> src/main.rs:7228:4
+     |
+7228 | fn normalize_wsl_runtime_env(cmd: &mut Command) {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `spawn_sidecar_monitored` is never used
+   --> src/dev_bridge.rs:499:8
+    |
+499 | pub fn spawn_sidecar_monitored(
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `run_wsl_bounded` is never used
+  --> src/wsl_sidecar_staging.rs:41:8
+   |
+41 | pub fn run_wsl_bounded(
+   |        ^^^^^^^^^^^^^^^
+
+warning: function `detect_ready_cached` is never used
+  --> src/wsl_setup.rs:60:8
+   |
+60 | pub fn detect_ready_cached() -> bool {
+   |        ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `ROOTFS_RECIPE_FILENAME` is never used
+  --> src/wsl_setup.rs:74:7
+   |
+74 | const ROOTFS_RECIPE_FILENAME: &str = "papercup-rootfs-recipe";
+   |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `papercusp-desktop` (bin "papercusp-desktop" test) generated 5 warnings
+warning: `papercusp-desktop` (bin "papercusp-desktop") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.30s
+     Running unittests src/main.rs (/mnt/data/cargo-target/debug/deps/papercusp_desktop-46e4fdad0f7c400e)
+     Running tests/global_shortcut_x11.rs (/mnt/data/cargo-target/debug/deps/global_shortcut_x11-31b93b7ee9105d2f)
+CARGO_RESULT status=passed
+[report-cargo-tests] parsed 9 test results; inserted 10/10 rows (framework=cargo) into harness_shared.test_runs.
+cargo rc=0

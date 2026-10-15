@@ -10,10 +10,8 @@
  * assembly.
  */
 
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { readFileSync } from 'node:fs';
 import { readOperatorState, writeOperatorState } from '../../operator-state-pg';
+import { readSuperuserToken } from '../../superuser-token';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { readSystemPrincipal } from '../../system-principal';
 import {
@@ -21,6 +19,7 @@ import {
   loadRoleToolsMd,
   renderToolsCatalog,
 } from '../../prompt-assembly';
+import { readServingGeneration } from '../../serving-generation';
 import { listAgentsAcrossWorkspace } from '../../agents-list';
 import { buildMemoryContextBlock } from '../../memory/injection';
 import { loadHarnessRegistry } from '../../harness-registry';
@@ -29,7 +28,6 @@ import { operatorApiBase } from '../../operator-api-base';
 const ORACLE_PROMPT_TABLE = 'harness_shared.operator_oracle_prompt';
 const ORACLE_MEMORY_TABLE = 'harness_shared.operator_oracle_memory';
 
-const DEFAULT_PROMPT = loadRolePersona('oracle');
 const DEFAULT_MEMORY = `# Oracle memory
 
 Add notes here you want the Oracle to keep in mind across conversations.
@@ -107,13 +105,16 @@ const TUTORIAL_STEPS: TutorialStep[] = [
 ];
 
 async function ensureDefaults() {
-  for (const [table, content] of [
-    ['operator_oracle_prompt', DEFAULT_PROMPT],
-    ['operator_oracle_memory', DEFAULT_MEMORY],
+  // Runtime-only images intentionally omit cupboard prompt assets. Importing the
+  // tool registry must not read them; only an unconfigured Oracle needs its
+  // default persona. Existing persisted configuration remains usable without it.
+  for (const [table, defaultContent] of [
+    ['operator_oracle_prompt', () => loadRolePersona('oracle')],
+    ['operator_oracle_memory', () => DEFAULT_MEMORY],
   ] as const) {
     const existing = await readOperatorState<{ content?: string }>(table);
     if (existing && typeof existing.content === 'string') continue;
-    await writeOperatorState(table, { content });
+    await writeOperatorState(table, { content: defaultContent() });
   }
 }
 
@@ -229,7 +230,8 @@ export async function composeOraclePrompt(
   const last = messages[messages.length - 1];
   const userContent = typeof last?.content === 'string' ? last.content : '';
 
-  const toolBlock = renderToolsCatalog('oracle', ORACLE_TOOL_NAMES);
+  const servingGeneration = await readServingGeneration();
+  const toolBlock = renderToolsCatalog('oracle', ORACLE_TOOL_NAMES, 'text', undefined, servingGeneration);
   const playbook = loadRoleToolsMd('oracle') ?? '';
   const inventoryBlock = await buildOracleInventoryBlock().catch(() => '');
 
@@ -285,12 +287,8 @@ export async function buildOracleMcpConfig(opts: { uiClientId: string | null }):
 } | null> {
   const oracleP = await readSystemPrincipal('oracle');
   if (!oracleP?.bearer) return null;
-  let superuserToken: string | null = null;
-  try {
-    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
-    superuserToken = readFileSync(tokenPath, 'utf8').trim();
-    if (!superuserToken || superuserToken.length < 16) superuserToken = null;
-  } catch { /* */ }
+  // Shared reader: honours PAPERCUSP_HOME and the 16-char floor (WI-10006617).
+  const superuserToken = readSuperuserToken();
   if (!superuserToken) return null;
 
   const oracleBase = operatorApiBase();

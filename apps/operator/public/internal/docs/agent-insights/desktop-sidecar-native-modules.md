@@ -120,11 +120,22 @@ Two rules for editing it:
 
 1. **`REQUIRED_NATIVE_MODULES` is a static list on purpose.** Do not turn it into a
    scan (see Trap 3). When you add a dependency that dlopens a `*.node`, add it here.
-2. **`onnxruntime-node` is advisory, never fatal.** Upstream ships
-   `bin/napi-v6/darwin/`**`arm64` only** — there is *no* darwin-x64 binding, so on the
-   Intel mac VM it can never load; it is also deliberately kept off the boot path
-   (`voice-node/kokoro-local.ts`: "Dynamic import keeps onnxruntime-node's native load
-   OFF the operator boot path"). Requiring it would red every mac cut forever.
+2. **The pinned local-model ONNX backend is required.** Lazy import protects
+   boot; it does not prove that bundled embedding models can run. For
+   Transformers 4.2.0, the exact ONNX Runtime Node pin is 1.24.3. Its verified
+   registry package contains Darwin arm64 but omits Darwin x64. Per
+   `p2p-public-release-endgame-2026-09-01#D-180`, build the missing Intel CPU
+   binding from upstream tag v1.24.3 (commit
+   `3a728b75062256951b6e19ce718907cf1a1d4cf0`) using upstream build tooling.
+   `transformers-models.sh` validates the exact runtime and target before SPA
+   work. The existing sidecar binary cache can supply a source-built closure
+   only with matching source/toolchain/lock provenance, hashes, portable
+   linkage, build-host binding-load proof, and license notices. The runtime
+   copier stages that closure without modifying the dependency donor; the
+   final bundle verifier still requires ONNX. Cache preparation does not
+   establish runtime acceptance: load with bundled Node and run the real
+   local models on Intel macOS before replacement readiness or GO. Preserve
+   ARM qualification independently. Do not downgrade or substitute a backend.
 
 **Falsify it in both directions after any change** — delete the bundle's `@img/` and
 confirm it *fails*, then confirm the real bundle *passes*. A gate you have never

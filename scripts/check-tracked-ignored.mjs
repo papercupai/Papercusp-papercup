@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * check-tracked-ignored.mjs — fail-loud guard against ANY tracked path that a REPO-sourced
- * .gitignore rule also matches, in the superproject or ANY submodule (WI-10002095).
+ * check-tracked-ignored.mjs — fail-loud guard against tracked paths matched by a REPO-sourced
+ * .gitignore rule, plus reserved scratch roots that may have no matching rule yet (WI-10002095,
+ * EI-24493767544777917).
  *
  * This is the GENERAL form of lint:no-tracked-node-modules (WI-39630) and
  * lint:no-tracked-src-entry-dist (WI-10002064), which each cover one class. WI-10002095
@@ -28,7 +29,8 @@
  * FIX (index-only; the worktree is untouched):
  *     node scripts/check-tracked-ignored.mjs --print0 [--repo <submodule>] \
  *       | git [-C <submodule>] rm -q --cached --ignore-unmatch --pathspec-from-file=- --pathspec-file-nul
- * then let git-sync commit the removal.
+ * `--print0` also includes tracked reserved scratch paths even when no ignore rule matches;
+ * then let git-sync commit the index-only removals.
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -85,6 +87,58 @@ export function listTrackedIgnored(cwd) {
   };
 }
 
+const RESERVED_TOP_LEVEL_SCRATCH_ROOTS = new Set([
+  '.agent-tmp',
+  '.tsx-tmp',
+  'scratch',
+  'scratchpad',
+]);
+
+/**
+ * Paths whose root names identify machine-local scratch in the superproject.
+ * Keep ordinary nested `scratch/` and `.tmp-*` source paths out of this set;
+ * `.papercusp` children are handled only for the measured generated families.
+ */
+export function isTrackedScratchPath(path) {
+  const parts = path.split('/');
+  const root = parts[0] ?? '';
+  if (
+    RESERVED_TOP_LEVEL_SCRATCH_ROOTS.has(root) ||
+    root === '.tmp' ||
+    root.startsWith('.tmp-') ||
+    root.startsWith('scratch-')
+  ) {
+    return true;
+  }
+
+  for (let index = 0; index + 1 < parts.length; index += 1) {
+    if (parts[index] !== '.papercusp') continue;
+    const child = parts[index + 1];
+    if (
+      child === 'node-compile-cache' ||
+      child.startsWith('tsx-') ||
+      child.startsWith('tmp-')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function findTrackedScratchPaths(paths) {
+  return [...new Set(paths.filter(isTrackedScratchPath))].sort();
+}
+
+function listTrackedPaths(cwd) {
+  const ls = git(['ls-files', '-z'], cwd);
+  if (ls.status !== 0) throw new Error(`git ls-files failed in ${cwd}: ${ls.stderr.trim()}`);
+  return ls.stdout.split('\0').filter(Boolean);
+}
+
+export function listTrackedScratchPaths(cwd) {
+  return findTrackedScratchPaths(listTrackedPaths(cwd));
+}
+
 export function findOffenders({ repos, listOffenders, allowlist = ALLOWLIST }) {
   const out = [];
   for (const repo of repos) {
@@ -107,25 +161,41 @@ function main() {
   const repos = repoArg ? [repoArg] : discoverRepos();
 
   if (argv.includes('--print0')) {
-    for (const repo of repos) {
-      for (const r of listTrackedIgnored(cwdOf(repo)).offenders) process.stdout.write(`${r.path}\0`);
+    const paths = new Set();
+    try {
+      for (const repo of repos) {
+        const cwd = cwdOf(repo);
+        for (const r of listTrackedIgnored(cwd).offenders) paths.add(r.path);
+        if (repo === '.') {
+          for (const path of listTrackedScratchPaths(cwd)) paths.add(path);
+        }
+      }
+    } catch (err) {
+      console.error(`✖ check-tracked-ignored: ${err instanceof Error ? err.message : err}`);
+      process.exit(2);
     }
+    for (const path of [...paths].sort()) process.stdout.write(`${path}\0`);
     return;
   }
 
   const unscanned = declaredSubmodules(ROOT).filter((repo) => !discoverRepos().includes(repo));
   const coverageNote = describeUnscanned(unscanned, ROOT);
 
-  // Positive control: a probe that can only ever say "clean" is not a guard.
-  const tracked = git(['ls-files', '-z'], ROOT).stdout.split('\0').filter(Boolean).length;
-  if (tracked === 0) {
-    console.error('✖ check-tracked-ignored: `git ls-files` reported ZERO tracked files in the superproject — the probe is broken; refusing to certify.');
-    process.exit(2);
-  }
-
   let machineLocalTotal = 0;
   const byRepo = new Map();
+  const scratchByRepo = new Map();
   try {
+    // Positive control: a probe that can only ever say "clean" is not a guard.
+    const trackedPaths = listTrackedPaths(ROOT);
+    if (trackedPaths.length === 0) {
+      console.error('✖ check-tracked-ignored: `git ls-files` reported ZERO tracked files in the superproject — the probe is broken; refusing to certify.');
+      process.exit(2);
+    }
+    if (repos.includes('.')) {
+      const scratchPaths = findTrackedScratchPaths(trackedPaths);
+      if (scratchPaths.length > 0) scratchByRepo.set('.', scratchPaths);
+    }
+
     for (const repo of repos) {
       const res = listTrackedIgnored(cwdOf(repo));
       machineLocalTotal += res.machineLocal.length;
@@ -137,29 +207,38 @@ function main() {
     process.exit(2);
   }
 
-  if (byRepo.size === 0) {
-    console.log(`✓ check-tracked-ignored: ${repos.length} repo(s) scanned, no tracked path is matched by a repo .gitignore rule (${machineLocalTotal} machine-local match(es) not counted).${coverageNote}`);
+  if (byRepo.size === 0 && scratchByRepo.size === 0) {
+    console.log(`✓ check-tracked-ignored: ${repos.length} repo(s) scanned, no tracked path is matched by a repo .gitignore rule and no reserved scratch path is tracked (${machineLocalTotal} machine-local match(es) not counted).${coverageNote}`);
     return;
   }
 
-  const total = [...byRepo.values()].reduce((n, rows) => n + rows.length, 0);
-  console.error(`✖ check-tracked-ignored: ${total} tracked path(s) are ALSO matched by a repo .gitignore rule, in ${byRepo.size} repo(s).\n`);
-  for (const [repo, rows] of byRepo) {
-    const byRule = new Map();
-    for (const r of rows) {
-      const k = `${r.source}:${r.line}  ${r.pattern}`;
-      byRule.set(k, [...(byRule.get(k) ?? []), r.path]);
+  const ignoredTotal = [...byRepo.values()].reduce((n, rows) => n + rows.length, 0);
+  const scratchTotal = [...scratchByRepo.values()].reduce((n, paths) => n + paths.length, 0);
+  if (ignoredTotal > 0) {
+    console.error(`✖ check-tracked-ignored: ${ignoredTotal} tracked path(s) are ALSO matched by a repo .gitignore rule, in ${byRepo.size} repo(s).\n`);
+    for (const [repo, rows] of byRepo) {
+      const byRule = new Map();
+      for (const r of rows) {
+        const k = `${r.source}:${r.line}  ${r.pattern}`;
+        byRule.set(k, [...(byRule.get(k) ?? []), r.path]);
+      }
+      console.error(`  ${repo}  (${rows.length} tracked)`);
+      for (const [rule, paths] of [...byRule].sort((a, b) => b[1].length - a[1].length)) {
+        console.error(`    ${String(paths.length).padStart(5)}  ${rule}`);
+        for (const p of showList ? paths : paths.slice(0, 2)) console.error(`            ${p}`);
+      }
     }
-    console.error(`  ${repo}  (${rows.length} tracked)`);
-    for (const [rule, paths] of [...byRule].sort((a, b) => b[1].length - a[1].length)) {
-      console.error(`    ${String(paths.length).padStart(5)}  ${rule}`);
-      for (const p of showList ? paths : paths.slice(0, 2)) console.error(`            ${p}`);
+  }
+  if (scratchTotal > 0) {
+    console.error(`✖ check-tracked-ignored: ${scratchTotal} tracked path(s) live under reserved superproject scratch roots, including paths with no matching .gitignore rule.`);
+    for (const [repo, paths] of scratchByRepo) {
+      console.error(`  ${repo}  (${paths.length} tracked scratch path(s))`);
+      for (const path of showList ? paths : paths.slice(0, 2)) console.error(`            ${path}`);
     }
   }
   console.error(
-    '\nWHY THIS MATTERS: a tracked path is never ignored, so the rule is inert. Once churn deletes\n' +
-      "the files, git-sync hands git an explicit pathspec for an ignored path, git refuses ('use -f'),\n" +
-      "and that repo's ENTIRE sync leg fails every tick.\n" +
+    '\nWHY THIS MATTERS: a tracked path remains versioned even if .gitignore matches it, while a\n' +
+      'tracked scratch path with no matching rule is swept by git-sync as repository content.\n' +
       '\nFIX (index-only, worktree untouched):\n' +
       [...byRepo.keys()]
         .map((repo) => `  node scripts/check-tracked-ignored.mjs --print0 --repo ${repo} | git -C ${repo} rm -q --cached --ignore-unmatch --pathspec-from-file=- --pathspec-file-nul`)

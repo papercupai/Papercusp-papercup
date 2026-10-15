@@ -1,0 +1,347 @@
+import { expect, it, vi } from 'vitest';
+import { fork, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { pruneRuns, runHarness } from '@papercusp/verification-harness';
+import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
+import { privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost } from '../test/private-http-workspace-preflight';
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
+it('measures Claude native model, effort, owner, pin and private MCP without retaining credentials', () => {
+  const argv = ['/native/claude', '--model=claude-sonnet-5', '--effort', 'high',
+    '--mcp-config', '/private/mcp.json', '--strict-mcp-config'];
+  const env = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1234', ANTHROPIC_AUTH_TOKEN: NEVER_EMIT_MARKER,
+    ANTHROPIC_CUSTOM_HEADERS: 'x-papercusp-owner: s-private\nx-papercusp-account: ', PAPERCUSP_ACCOUNT_ID: '' };
+  const read = () => JSON.stringify({ mcpServers: { papercusp: {
+    url: 'http://127.0.0.1:1235/api/mcp?client=s-private&workspace=test-runtime-proof&token=' + NEVER_EMIT_MARKER,
+  } } });
+  const result = privateClaudeModelConfig(argv, env, read);
+  expect(result).toEqual({ model: 'claude-sonnet-5', effort: 'high', baseUrl: env.ANTHROPIC_BASE_URL,
+    ownerId: 's-private', accountPinPresent: false, mcpOrigin: 'http://127.0.0.1:1235',
+    mcpOwnerId: 's-private', mcpWorkspace: 'test-runtime-proof' });
+  expect(JSON.stringify(result)).not.toContain(NEVER_EMIT_MARKER);
+  expect(privateClaudeModelConfig(argv, { ...env, PAPERCUSP_ACCOUNT_ID: 'stale-pin' }, read).accountPinPresent).toBe(true);
+  expect(privateClaudeModelConfig(argv, { ...env, ANTHROPIC_CUSTOM_HEADERS: env.ANTHROPIC_CUSTOM_HEADERS + 'pinned' }, read)
+    .accountPinPresent).toBe(true);
+  expect(() => privateClaudeModelConfig(argv.filter(arg => arg !== '--strict-mcp-config'), env, read)).toThrow(/ambient MCP/);
+  expect(() => privateClaudeModelConfig(['/native/claude'], env, read)).toThrow(/explicit signed MCP/);
+});
+
+it('retains the actual Claude output effort on a successful bounded response', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-claude-response-'));
+  try {
+    const result = await retainPrivateProviderResponse(directory, new Response('private output', { status: 200 }), {
+      body: JSON.stringify({ model: 'claude-sonnet-5', output_config: { effort: 'high' }, stream: true }),
+    });
+    expect(result.requestShape).toMatchObject({ model: 'claude-sonnet-5', effort: 'high', stream: true });
+    expect(readFileSync(join(directory, 'provider-response.json'), 'utf8')).not.toContain('private output');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+it('measures native Codex effort overrides over absent and conflicting TOML', () => {
+  for (const config of [{ model: 'gpt-6.1-sol' }, { model: 'gpt-6.1-sol', model_reasoning_effort: 'low' }]) {
+    expect(privateCodexModelConfig(['/native/codex', 'exec', '-c', 'model_reasoning_effort="xhigh"'], config))
+      .toEqual({ model: 'gpt-6.1-sol', effort: 'xhigh' });
+  }
+});
+
+it('measures dedicated Codex model flags and the last config override without role inference', () => {
+  for (const modelArgs of [['--model', 'gpt-6.1-sol'], ['--model=gpt-6.1-sol'], ['-m', 'gpt-6.1-sol']]) {
+    expect(privateCodexModelConfig(['/native/codex', ...modelArgs, '-c', 'model="toml-override"',
+      '-c', 'model_reasoning_effort="low"', '--config=model_reasoning_effort=high',
+      '--config', "model_reasoning_effort='xhigh'"], { model: 'toml-model', model_reasoning_effort: 'minimal' }))
+      .toEqual({ model: 'gpt-6.1-sol', effort: 'xhigh' });
+  }
+  expect(privateCodexModelConfig(['/native/codex', 'exec', '-c', 'unrelated="high"'],
+    { model: 'toml-model', model_reasoning_effort: 'low' })).toEqual({ model: 'toml-model', effort: 'low' });
+  expect(privateCodexModelConfig(['/native/codex', 'exec'], {})).toEqual({ model: undefined, effort: undefined });
+});
+
+it('retains a classified provider model refusal without credentials or request content', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-provider-refusal-'));
+  const secret = NEVER_EMIT_MARKER;
+  const prompt = 'Private inert request content never belongs in evidence';
+  const detail = `The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account. ${secret} ${prompt}`;
+  const body = JSON.stringify({ detail });
+  const response = new Response(body, { status: 400 });
+  try {
+    const observation = await retainPrivateProviderResponse(directory, response, {
+      headers: { authorization: `Bearer ${secret}` }, diagnosticAccountId: 'configured-account',
+      body: JSON.stringify({ model: 'gpt-5.4', reasoning: { effort: 'high' }, stream: true,
+        instructions: prompt, input: [{ role: 'user', content: prompt }], tools: [{ type: 'function', name: 'inert' }] }),
+    });
+    expect(observation).toMatchObject({ status: 400, accountId: 'configured-account',
+      error: { class: 'permanent', retryable: false, modelRefusal: true },
+      requestShape: { model: 'gpt-5.4', effort: 'high', instructionsBytes: Buffer.byteLength(prompt), toolsCount: 1 } });
+    const artifact = readFileSync(join(directory, 'provider-response.json'), 'utf8');
+    expect(JSON.parse(artifact)).toEqual(observation);
+    expect(artifact).toContain("model is not supported");
+    expect(artifact).not.toContain(secret);
+    expect(artifact).not.toContain(prompt);
+    expect(await response.text()).toBe(body);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+it('bounds retained provider refusal diagnostics across streamed secret boundaries', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-provider-bounds-'));
+  const secret = NEVER_EMIT_MARKER;
+  const prefix = 'x'.repeat(16 * 1024 - 10);
+  const chunks = [prefix + secret.slice(0, 10), secret.slice(10) + 'z'.repeat(40_000)];
+  const response = new Response(new ReadableStream({ start(controller) {
+    for (const chunk of chunks) controller.enqueue(Buffer.from(chunk)); controller.close();
+  } }), { status: 400 });
+  try {
+    const observation = await retainPrivateProviderResponse(directory, response,
+      { headers: { authorization: `Bearer ${secret}` }, body: '{}' });
+    expect(observation.response).toMatchObject({ truncated: true, bytes: Buffer.byteLength(chunks.join('')) });
+    expect(observation.response.sampledBytes).toBe(16 * 1024 + Buffer.byteLength(secret));
+    expect(observation.error!.detail.length).toBeLessThanOrEqual(300);
+    expect(readFileSync(join(directory, 'provider-response.json'), 'utf8')).not.toContain(secret);
+    expect(await response.text()).toBe(chunks.join(''));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+it('drains successful provider evidence without retaining model output', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-provider-success-'));
+  const output = 'private model completion never belongs in evidence';
+  const response = new Response(output, { status: 200 });
+  try {
+    const observation = await retainPrivateProviderResponse(directory, response, { headers: {}, body: '{}' });
+    expect(observation).toMatchObject({ status: 200, error: null,
+      response: { bytes: Buffer.byteLength(output), sampledBytes: 0, truncated: false } });
+    expect(readFileSync(join(directory, 'provider-response.json'), 'utf8')).not.toContain(output);
+    expect(await response.text()).toBe(output);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+it('reaps a native descendant after host exit before waiting for inherited pipes', async () => {
+  const host = spawn(process.execPath, ['-e', `
+    const { spawn } = require('node:child_process');
+    const native = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 1, 2] });
+    console.log(native.pid);
+    process.on('SIGTERM', () => process.exit(0));
+    setInterval(() => {}, 1000);
+  `], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let nativePid: number | undefined;
+  try {
+    const [chunk] = await once(host.stdout!, 'data');
+    nativePid = Number(String(chunk).trim());
+    expect(Number.isSafeInteger(nativePid)).toBe(true);
+    let hostExitedBeforeReap = false;
+    await stopPrivateOperatorHost(host, async () => {
+      hostExitedBeforeReap = host.exitCode !== null;
+      process.kill(nativePid!, 0);
+      process.kill(nativePid!, 'SIGKILL');
+    }, 1_000);
+    expect(hostExitedBeforeReap).toBe(true);
+    expect(host.stdout!.destroyed).toBe(true);
+    expect(host.stderr!.destroyed).toBe(true);
+  } finally {
+    host.kill('SIGKILL');
+    if (nativePid) try { process.kill(nativePid, 'SIGKILL'); } catch { /* already reaped */ }
+  }
+}, 5_000);
+
+it('fails bounded host cleanup when a descendant still owns the output pipes', async () => {
+  const host = spawn(process.execPath, ['-e', `
+    const { spawn } = require('node:child_process');
+    const native = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 1, 2] });
+    console.log(native.pid);
+    process.on('SIGTERM', () => process.exit(0));
+    setInterval(() => {}, 1000);
+  `], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let nativePid: number | undefined;
+  try {
+    const [chunk] = await once(host.stdout!, 'data');
+    nativePid = Number(String(chunk).trim());
+    expect(Number.isSafeInteger(nativePid)).toBe(true);
+    await expect(stopPrivateOperatorHost(host, undefined, 100)).rejects.toThrow('stdio drainage did not settle');
+    expect(host.exitCode).not.toBeNull();
+    expect(() => process.kill(nativePid!, 0)).not.toThrow();
+  } finally {
+    host.kill('SIGKILL');
+    if (nativePid) try { process.kill(nativePid, 'SIGKILL'); } catch { /* already reaped */ }
+    host.stdout?.destroy(); host.stderr?.destroy();
+  }
+}, 5_000);
+
+it('retains native output when a later source snapshot is empty or shorter', () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-native-shrink-'));
+  const source = join(evidenceDir, 'source.log');
+  const task = { taskId: 'private-native', state: 'running' };
+  try {
+    writeFileSync(source, 'native output before source truncation\n');
+    retainIsolatedNativeTaskDiagnostics(evidenceDir, task, { stdout: source });
+    for (const next of ['', 'partial\n']) {
+      writeFileSync(source, next);
+      retainIsolatedNativeTaskDiagnostics(evidenceDir, task, { stdout: source });
+      expect(readFileSync(join(evidenceDir, 'native-task-stdout.log'), 'utf8'))
+        .toBe('native output before source truncation\n');
+      expect(JSON.parse(readFileSync(join(evidenceDir, 'native-task-diagnostics.json'), 'utf8')))
+        .toMatchObject({ files: { stdout: { source, captured: false, reason: 'source-shrank',
+          bytes: Buffer.byteLength(next), retainedBytes: Buffer.byteLength('native output before source truncation\n') } } });
+    }
+    writeFileSync(source, 'native output before source truncation\nnew output\n');
+    retainIsolatedNativeTaskDiagnostics(evidenceDir, task, { stdout: source });
+    expect(readFileSync(join(evidenceDir, 'native-task-stdout.log'), 'utf8')).toContain('new output');
+  } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+});
+
+it('preserves failure progress and verifies a real reaped signal without certifying success', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-progress-'));
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  try {
+    await once(child, 'spawn');
+    expect(() => assertIsolatedWorkerReaped(child, { runtimeRemoved: true, pgDataRemoved: true })).toThrow(/reaped/);
+    retainIsolatedWorkerProgress(evidenceDir, 'launch-returned', { agentStarted: null });
+    retainIsolatedWorkerProgress(evidenceDir, 'task-observed', { state: 'pending' });
+    const closed = once(child, 'close'); child.kill('SIGTERM'); await closed;
+    expect(child.exitCode).toBeNull(); expect(child.signalCode).toBe('SIGTERM');
+    expect(() => assertIsolatedWorkerReaped(child, { runtimeRemoved: false, pgDataRemoved: true })).toThrow(/cleanup/);
+    expect(() => assertIsolatedWorkerReaped(child, { runtimeRemoved: true, pgDataRemoved: true })).not.toThrow();
+    const rows = readFileSync(join(evidenceDir, 'worker-progress.ndjson'), 'utf8').trim().split('\n').map(row => JSON.parse(row));
+    expect(rows).toEqual([
+      { stage: 'launch-returned', observedAt: expect.any(String), agentStarted: null },
+      { stage: 'task-observed', observedAt: expect.any(String), state: 'pending' },
+    ]);
+    expect(rows.every(row => Number.isFinite(Date.parse(row.observedAt)))).toBe(true);
+  } finally { child.kill('SIGKILL'); rmSync(evidenceDir, { recursive: true, force: true }); }
+});
+
+// Only the parent's telemetry database is substituted. The proof writer,
+// worker IPC, kernel process identities, receipt retention and pruning are real.
+vi.mock('../test/_org-test-db', () => ({ createOrgTestDb: async () => ({
+  dbName: 'isolated-proof-telemetry', adminDsn: 'unused', adminSql: {}, cleanup: async () => {},
+}) }));
+vi.mock('./_baseline-coord-fixture', () => ({ setupBaselineCoordFixture: async () => ({ dispose: async () => {} }) }));
+vi.mock('./degradation/fallback-observations', () => ({ flushFallbackObservations: async () => ({ failed: 0 }) }));
+
+it.each([
+  { fails: false, ended: true, valid: true },
+  { fails: true, ended: true, valid: true },
+  { fails: false, ended: false, valid: true },
+  { fails: false, ended: true, valid: false },
+])('retains original proof diagnostics through pruning (fails=$fails ended=$ended valid=$valid)', async ({ fails, ended, valid }) => {
+  const fixture = mkdtempSync(join(tmpdir(), 'isolated-proof-failure-'));
+  const root = resolve(import.meta.dirname, '../../..');
+  const evidenceRoot = join(fixture, 'isolated-integration');
+  const runtimeRoot = join(fixture, 'runtime');
+  const dataDir = join(fixture, 'pg');
+  const supervisorPath = join(fixture, 'supervisor.cjs');
+  const workspace = 'test-runtime-proof-failure';
+  let child: ReturnType<typeof fork> | undefined;
+  vi.stubEnv('VH_EVIDENCE_ROOT_BASE', fixture);
+  // Retention operates only on this disposable evidence. Keep its pin store
+  // and mutex private too, so host cleanup cannot stall these lifecycle tests.
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(fixture, 'retention'));
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(fixture, 'locks'));
+  try {
+    mkdirSync(runtimeRoot); mkdirSync(dataDir);
+    writeFileSync(supervisorPath, `
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
+const { writeFileSync, rmSync } = require('node:fs');
+const { join } = require('node:path');
+const root = process.cwd(), runtimeRoot = process.env.PROOF_RUNTIME, dataDir = process.env.PROOF_DATA;
+const worker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+  cwd: root, stdio: 'ignore', env: { ...process.env, HOME: join(runtimeRoot, 'home'),
+    PAPERCUSP_WORKSPACE_ID: '${workspace}', PAPERCUSP_PG_PORT: '34567', PAPERCUSP_SKIP_PG_DISCOVERY: '1' }
+});
+const database = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+Promise.all([once(worker, 'spawn'), once(database, 'spawn')]).then(() => {
+  writeFileSync(join(dataDir, 'postmaster.pid'), database.pid + '\\nunused\\nunused\\n34567\\n');
+  process.send({ kind: 'isolated-runtime-start', supervisorPid: process.pid, childPid: worker.pid,
+    root: ${valid ? 'root' : "root + '/foreign'"}, runtimeRoot, dataDir, workspace: '${workspace}', pgPort: 34567, token: 'original' });
+});
+process.once('message', async message => {
+  const stopped = Promise.all([once(worker, 'exit'), once(database, 'exit')]);
+  worker.kill(); database.kill(); await stopped;
+  rmSync(runtimeRoot, { recursive: true }); rmSync(dataDir, { recursive: true });
+  if (${ended}) process.send({ kind: 'isolated-runtime-end', childPid: worker.pid, code: 0, signal: null,
+    runtimeRemoved: true, pgDataRemoved: true }, () => process.disconnect());
+  else process.disconnect();
+  if (!message.accepted) process.exitCode = 1;
+});
+`);
+    let runId: string | undefined;
+    const run = recordIsolatedIntegrationProof({
+      root, filePath: 'packages/operator-core/lib/isolated-integration-proof.test.ts', sourcePaths: [],
+      retainedArtifacts: ['phases/execute/provider-response.json'],
+      prepare: evidenceDir => {
+        writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ status: 0, pid: 123 }));
+        writeFileSync(join(evidenceDir, 'operator-api-build.log'), 'original preparation compiler diagnostic\n');
+        writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'), '{"step":"prepare-compile","event":"end","status":0}\n');
+      },
+      execute: async (observe, evidenceDir) => {
+        runId = JSON.parse(readFileSync(join(evidenceDir, '../prepare/source.json'), 'utf8')).runId;
+        writeFileSync(join(evidenceDir, 'operator-api-build.log'), 'original nested bundle rejection\n');
+        writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'), '{"step":"host-compile","event":"end","status":17}\n');
+        writeFileSync(join(evidenceDir, 'build.log'), 'original legacy builder diagnostic\n');
+        await retainPrivateProviderResponse(evidenceDir, new Response(JSON.stringify({
+          detail: "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+        }), { status: 400 }), { headers: {}, body: '{}' });
+        const nativeLog = join(runtimeRoot, 'native.log');
+        writeFileSync(nativeLog, 'native bootstrap stopped before first turn\n');
+        retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: 'private-native', state: 'running',
+          sessionId: null }, { stdout: nativeLog, boot: join(runtimeRoot, 'missing-boot.log') });
+        rmSync(nativeLog);
+        retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: 'private-native', state: 'running',
+          sessionId: null }, { stdout: nativeLog });
+        child = fork(supervisorPath, [], { cwd: root, execArgv: [],
+          env: { ...process.env, PROOF_RUNTIME: runtimeRoot, PROOF_DATA: dataDir },
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 5_000 });
+        expect(result.code).toBe(valid ? 0 : 1);
+        if (fails) throw new Error('original journey assertion');
+      },
+    });
+    const rejected = fails || !ended || !valid;
+    if (rejected) await expect(run).rejects.toThrow();
+    else expect(await run).toBe(runId);
+    const result = JSON.parse(readFileSync(join(evidenceRoot, runId!, 'result.json'), 'utf8'));
+    expect(result.verdict).toBe(rejected ? 'fail' : 'pass');
+    if (fails) expect(result.phases.find((p: { phase: string }) => p.phase === 'execute').detail)
+      .toContain('original journey assertion');
+    const artifacts = new Map<string, string>();
+    for (const path of ['phases/prepare/operator-api-build-result.json',
+      'phases/prepare/operator-api-build.log', 'phases/prepare/hono-host.mjs.build-steps.jsonl',
+      'phases/execute/operator-api-build.log', 'phases/execute/hono-host.mjs.build-steps.jsonl',
+      'phases/execute/build.log',
+      'phases/execute/provider-response.json',
+      'phases/execute/worker-result.json', 'phases/execute/lifecycle-observation.json',
+      'phases/execute/native-task-stdout.log', 'phases/execute/native-task-diagnostics.json'])
+      artifacts.set(path, readFileSync(join(evidenceRoot, runId!, path), 'utf8'));
+    expect(artifacts.get('phases/execute/native-task-stdout.log')).toBe('native bootstrap stopped before first turn\n');
+    expect(JSON.parse(artifacts.get('phases/execute/native-task-diagnostics.json')!)).toMatchObject({
+      task: { sessionId: null, state: 'running' }, files: { stdout: { captured: false, reason: 'missing' } },
+    });
+    const lifecyclePath = 'phases/execute/lifecycle.json';
+    if (valid) {
+      const bytes = readFileSync(join(evidenceRoot, runId!, lifecyclePath), 'utf8');
+      artifacts.set(lifecyclePath, bytes);
+      expect(JSON.parse(bytes)).toMatchObject({ runId, workspace, runtimeRoot, dataDir,
+        ended: ended ? { code: 0, signal: null, runtimeRemoved: true, pgDataRemoved: true } : null });
+    } else {
+      expect(existsSync(join(evidenceRoot, runId!, lifecyclePath))).toBe(false);
+      expect(JSON.parse(artifacts.get('phases/execute/lifecycle-observation.json')!).observationError).toBeTruthy();
+    }
+    expect(existsSync(runtimeRoot) || existsSync(dataDir)).toBe(false);
+    await runHarness({ contract: { name: 'isolated-integration', phases: [{ id: 'execute' }] },
+      evidenceRoot, runId: '20991014T000000Z-1', guardRails: [], runPhase: async () => ({ ok: true }) });
+    expect(await pruneRuns(evidenceRoot, 1, Date.now(), {
+      measureDisk: async () => ({ totalBytes: 1_000, availableBytes: 500 }), reserveBytes: () => 400,
+    })).toContain(runId);
+    for (const [path, bytes] of artifacts)
+      expect(readFileSync(join(evidenceRoot, 'retained', runId!, path), 'utf8')).toBe(bytes);
+    expect(JSON.parse(readFileSync(join(evidenceRoot, 'retained', runId!, 'result.json'), 'utf8')).verdict)
+      .toBe(rejected ? 'fail' : 'pass');
+  } finally {
+    child?.kill('SIGKILL');
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    rmSync(fixture, { recursive: true, force: true });
+  }
+}, 15_000);

@@ -24,9 +24,14 @@ const noopStore: ReplayStore = {
 /** Flag ON + governor ALLOW + no real PG/spend ledger — so the substrate actually runs. */
 const passGlue: ReplayGlueDeps = {
   enabled: async () => true,
-  preflight: async () => ({ allow: true, remainingUsd: null }),
+  preflight: async () => ({ allow: true, remainingUsd: 1 }),
   getSql: async () => ({}) as never,
-  recordSpend: (async () => ({})) as unknown as ReplayGlueDeps['recordSpend'],
+  reserve: async (_sql, q) => ({ ok: true, clamped: false, headroomUsd: 1,
+    reservation: { id: 'res-experiment', workspaceId: q.workspaceId, loopId: q.loopId,
+      potSlug: null, attemptKind: 'evaluation', requestedUsd: q.requestedUsd,
+      reservedUsd: q.requestedUsd, usedUsd: 0, status: 'open', signalOrigin: 'replay',
+      runRef: q.runRef ?? null, note: null, createdAt: 0, settledAt: null } }),
+  settle: (async () => ({ ok: false, reason: 'not-found', reservation: null })) as ReplayGlueDeps['settle'],
   log: () => {},
 };
 

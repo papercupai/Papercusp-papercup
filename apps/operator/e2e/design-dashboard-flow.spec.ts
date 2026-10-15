@@ -45,7 +45,7 @@ const baseURL =
   `http://127.0.0.1:${process.env.OPERATOR_E2E_PORT ?? 3055}`;
 
 /** Pane ids — keep in sync with PANES in DesignDashboard.tsx. */
-const PANES = ['features', 'memos', 'registry', 'tokens', 'sketch', 'regressions'] as const;
+const PANES = ['features', 'memos', 'registry', 'tokens', 'sketch', 'regressions', 'evidence'] as const;
 /** Bucket ids — keep in sync with BUCKETS in DesignDashboard.tsx. */
 const BUCKETS = ['all', 'pending', 'accepted', 'ignored'] as const;
 

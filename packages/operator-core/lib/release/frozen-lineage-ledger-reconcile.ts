@@ -28,6 +28,7 @@
  */
 import type { FrozenCandidateRepairQueue, FrozenRepairAdmission } from './frozen-candidate-repair-queue';
 import { markFrozenRepairAdmitted } from './frozen-candidate-repair-queue';
+import { isAdmissionSyntheticCommitDate } from './admission-commit-date';
 import { frozenLineageRef, realAdmissionGit, type AdmissionGitRunner } from './repair-head-admission';
 
 const SHA_RE = /^[0-9a-f]{40,64}$/;
@@ -122,6 +123,13 @@ export interface ReconcileLineageLedgerInput {
   /** Repository root holding the lineage ref (the shared integration checkout). */
   root: string;
   git?: AdmissionGitRunner;
+  /**
+   * Wall clock for a rebuilt entry's `atMs` when the commit carries no real time. Admit-door
+   * commits are stamped with the synthetic ADMISSION_GIT_DATE (2000-01-01) so their shas are
+   * deterministic, so their committer time says nothing about when they were admitted
+   * (WI-10006866). Defaults to Date.now().
+   */
+  nowMs?: number;
 }
 
 /**
@@ -253,8 +261,10 @@ export function reconcileFrozenRepairQueueWithLineageRef(
       const path = entry.slice(tab + 1);
       if (objectSha && changedSet.has(path)) blobs[path] = objectSha;
     }
+    const committedAtMs = committedAtSec * 1000;
     const entry: FrozenRepairAdmission = {
-      atMs: committedAtSec * 1000,
+      // A synthetic admission date is not an admission time; record when the row learned of it.
+      atMs: isAdmissionSyntheticCommitDate(committedAtMs) ? (input.nowMs ?? Date.now()) : committedAtMs,
       actor: parsed.actor,
       source: parsed.source,
       fromRepairHead: expectedParent,

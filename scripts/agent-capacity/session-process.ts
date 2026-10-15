@@ -65,8 +65,13 @@ export const removeTree = (p: string): Promise<void> => runAsync('rm', ['-rf', '
  *
  * `overlay` needs `sudo -n mount` (the capacity VMs' default user has passwordless sudo) and
  * paths free of `,` and `:`, which overlayfs's option string cannot carry.
+ *
+ * `shared` gives every session the prepared checkout itself, with no private view, the way hosted
+ * workspace sessions share one tree (hosted-psu-session.ts runs every session at workspaceRoot).
+ * It is what a per-checkout shared service (the tsc-service template units) needs in order to be
+ * shared at all. Sessions' edits land in that tree and persist for the rest of the run.
  */
-export type WorkdirMode = 'copy' | 'overlay';
+export type WorkdirMode = 'copy' | 'overlay' | 'shared';
 
 /** The overlay's upper and work dirs for a session checkout at `dst`, beside it, never inside. */
 export function overlayLayout(src: string, dst: string): { upper: string; work: string; mountArgs: string[] } {
@@ -86,6 +91,11 @@ export interface Workdir {
  * cleared first, mounted or not, so a relaunch under the same run id starts clean.
  */
 export async function prepareWorkdir(mode: WorkdirMode, src: string, dst: string, run: typeof runAsync = runAsync): Promise<Workdir> {
+  if (mode === 'shared') {
+    // Nothing to create or remove: the caller runs the session in `src` itself.
+    if (path.resolve(src) !== path.resolve(dst)) throw new Error(`shared workdir must be the prepared checkout: ${dst} != ${src}`);
+    return { teardown: async () => undefined };
+  }
   mkdirSync(path.dirname(dst), { recursive: true });
   if (mode === 'copy') {
     await copyTree(src, dst);

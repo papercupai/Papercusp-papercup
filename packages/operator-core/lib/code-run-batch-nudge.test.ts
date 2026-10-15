@@ -25,6 +25,7 @@ import {
   CODE_RUN_RECENT_MS,
   MAX_PREEMPT_PER_SESSION,
   TURN_GAP_MS,
+  FORCED_REISSUE_WINDOW_MS,
   clusterTurns,
   advisorySessionKey,
 } from './code-run-batch-nudge';
@@ -230,6 +231,23 @@ describe('clusterTurns — the turn-clustering primitive', () => {
     expect(clusterTurns(events)).toEqual([1, 0]);
   });
 
+  it('groups calls with the same explicit request turn ID even when the timing gap is large', () => {
+    const events = [
+      { at: 0, durationMs: 500, turnId: 'functions-exec-1' },
+      { at: 2_547, durationMs: 500, turnId: 'functions-exec-1' },
+      { at: 5_094, durationMs: 500, turnId: 'functions-exec-1' },
+    ];
+    expect(clusterTurns(events)).toEqual([0, 0, 0]);
+  });
+
+  it('keeps distinct explicit request turn IDs separate even when timestamps are close', () => {
+    const events = [
+      { at: 0, turnId: 'owner-turn-1' },
+      { at: 10, turnId: 'owner-turn-2' },
+    ];
+    expect(clusterTurns(events)).toEqual([0, 1]);
+  });
+
   // ── EI-23762928303536326: the IN-FLIGHT guard ────────────────────────────────────────────────
   // A call dispatched while an earlier call in the cluster is STILL RUNNING cannot open a new
   // inference turn — the model had not yet received that result to reason about. `at` is dispatch
@@ -356,6 +374,39 @@ describe('maybeBatchNudge — turn-aware same-tool trigger (P-012)', () => {
     expect(hit?.text).toContain('2 separate round-trips');
   });
 
+  it('does NOT count sequential calls in one explicit functions.exec request group as separate turns', () => {
+    const fires: ReturnType<typeof maybeBatchNudge>[] = [];
+    for (let i = 0; i < BATCH_NUDGE_THRESHOLD + 1; i++) {
+      const r = maybeBatchNudge({
+        ...cap,
+        sessionKey: 'same-explicit-request-group',
+        turnId: 'functions-exec-group-1',
+        now: i * 2_547,
+        durationMs: 500,
+      });
+      if (r) fires.push(r);
+    }
+    expect(fires).toEqual([]);
+  });
+
+  it('still counts distinct explicit request groups as separate turns inside the timing gap', () => {
+    const first = maybeBatchNudge({
+      ...cap,
+      sessionKey: 'distinct-explicit-request-groups',
+      turnId: 'owner-turn-1',
+      now: 0,
+    });
+    expect(first).toBeNull();
+    const second = maybeBatchNudge({
+      ...cap,
+      sessionKey: 'distinct-explicit-request-groups',
+      turnId: 'owner-turn-2',
+      now: 10,
+    });
+    expect(second?.kind).toBe('same-tool');
+    expect(second?.text).toContain('2 separate round-trips');
+  });
+
   // EI-23762928303536326 — the reported symptom, end to end. A single parallel block whose
   // dispatches the SERVER observed 647ms apart (queueing spread under fleet load) while the first
   // call was still running: one round-trip, nothing to fold, so the nudge must stay silent. Before
@@ -433,6 +484,9 @@ describe('maybeBatchNudge — turn-aware fan-out trigger (P-012)', () => {
       'utf8',
     );
     expect(source).toMatch(/maybeBatchNudge\(\{[\s\S]*?now:\s*callStartedAt,[\s\S]*?durationMs:/);
+    expect(source).toMatch(
+      /maybeBatchNudge\(\{[\s\S]*?turnId:\s*req\.params\._meta\?\.outputGroupId\s*\?\?\s*req\.params\._meta\?\.turnId/,
+    );
   });
 
   it('DOES fire when the same distinct-tool spread lands across ≥ FANOUT_DISTINCT_THRESHOLD SEPARATE turns', () => {
@@ -505,6 +559,35 @@ describe('maybeBatchNudge — escalation (the text gets firmer as nudges repeat)
     expect(texts[0]).not.toMatch(/reminder this session/); // 1st = the original neutral message
     expect(texts[1]).toContain('2nd reminder this session'); // 2nd = firmer
     expect(texts[2]).toContain('3rd reminder this session'); // 3rd = stronger / directive
+  });
+
+  // WI-6554700010008923 (oversized-tool-results-reduction-2026-10-12#P-008): the explanation is
+  // taught once. Every repeat used to re-send the full ~1.2 KB hint, explanation included.
+  it('a repeat fire keeps the prefilled skeleton but drops the explanation the first fire taught', () => {
+    const fires: Array<{ text: string; suggestedScript?: string }> = [];
+    let t = 0;
+    for (let i = 0; i < 20; i++) {
+      t += 1000;
+      const r = maybeBatchNudge({ ...cap, sessionKey: 'repeat-compact', args: { id: `WI-${i}` }, now: t });
+      if (r) fires.push(r);
+    }
+    expect(fires.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = fires;
+    // First fire: the full teaching text.
+    expect(first.text).toMatch(/read its result and DECIDE/);
+    expect(first.text).toMatch(/args must come from one of these results/);
+    // Repeat: still actionable — the skeleton, prefilled from THIS burst, is carried verbatim.
+    expect(second.suggestedScript).toBeTruthy();
+    expect(second.text).toContain(second.suggestedScript as string);
+    expect(second.text).toContain('extend this list');
+    expect(second.text).toMatch(/separate round-trips/);
+    // ...but the prose already read this session is gone.
+    expect(second.text).not.toMatch(/read its result and DECIDE/);
+    expect(second.text).not.toMatch(/args must come from one of these results/);
+    expect(second.text).not.toMatch(/re-reading your whole context/);
+    const proseOf = (f: { text: string; suggestedScript?: string }) =>
+      f.text.length - (f.suggestedScript?.length ?? 0);
+    expect(proseOf(second)).toBeLessThan(proseOf(first) / 2);
   });
 });
 
@@ -1416,5 +1499,74 @@ describe('maybeBatchNudge — the fold must FIT the script budget (EI-2125496518
       t += durationMs; // …this call returns before the next is dispatched
     }
     expect(hit).toBeNull();
+  });
+});
+
+// EI-23761431768707969 — the batch-hint and the result door's per-turn fan-out budget gave OPPOSED
+// advice: widening a turn is what CAUSES a sibling to spill, and the door then tells the agent to
+// re-issue that one call — a round-trip the hint counted as an unforced separate turn and nagged
+// ("default to code:run now"). `aggregateSpill` lets the host tell the nudge which call the door
+// spilled, so the single re-issue it asked for is not charged against the agent.
+describe('maybeBatchNudge — a door-forced re-issue after an aggregate spill is not a chosen round-trip', () => {
+  const K = 'wi-spill';
+  const call = (o: { now: number; aggregateSpill?: boolean; durationMs?: number }) =>
+    maybeBatchNudge({ sessionKey: K, toolName: 'work_items:get', canCodeRun: true, ...o });
+
+  it('CONTROL: two same-tool calls in separate turns DO nudge when nothing spilled (the trigger is live)', () => {
+    expect(call({ now: 0 })).toBeNull();
+    expect(call({ now: 5_000 })?.kind).toBe('same-tool');
+  });
+
+  it('the identical sequence stays silent once the first call carries aggregateSpill (paired with the control)', () => {
+    expect(call({ now: 0, aggregateSpill: true })).toBeNull();
+    expect(call({ now: 5_000 })).toBeNull(); // the re-issue the door asked for — forced, not chosen
+  });
+
+  it('an explicit aggregateSpill:false forgives nothing', () => {
+    expect(call({ now: 0, aggregateSpill: false })).toBeNull();
+    expect(call({ now: 5_000 })?.kind).toBe('same-tool');
+  });
+
+  it('one spill forgives exactly ONE re-issue — the next chosen call nudges again', () => {
+    call({ now: 0, aggregateSpill: true });
+    expect(call({ now: 5_000 })).toBeNull(); // forced
+    expect(call({ now: 10_000 })?.kind).toBe('same-tool'); // chosen: the spilled turn + this one
+  });
+
+  it('a same-turn sibling that merely COMPLETES after the spill is not mistaken for the re-issue', () => {
+    // The spilled call is still in flight (2s) when its sibling is dispatched, so nothing about the
+    // sibling was forced by the spill. If it consumed the forgiveness, the REAL re-issue below would
+    // count as a separate chosen turn and fire — which is what flips this assertion red.
+    call({ now: 0, aggregateSpill: true, durationMs: 2_000 });
+    call({ now: 100, durationMs: 50 });
+    expect(call({ now: 10_000 })).toBeNull();
+  });
+
+  it('a DIFFERENT tool is not forgiven — only the re-issue of the spilled tool is', () => {
+    const t = (toolName: string, now: number, args?: unknown, aggregateSpill?: boolean) =>
+      maybeBatchNudge({ sessionKey: K, toolName, args, canCodeRun: true, now, aggregateSpill });
+    t('work_items:list', 0, undefined, true);
+    t('plans:get', 5_000, { slug: 'alpha-plan' });
+    // three distinct tools in three separate turns is a real fan-out: spilling the first must not hide it
+    expect(t('docs:search', 10_000, { q: 'beta-topic' })).not.toBeNull();
+  });
+
+  it('forgiveness lapses after FORCED_REISSUE_WINDOW_MS, so a late same-tool call counts as chosen', () => {
+    call({ now: 0, aggregateSpill: true });
+    expect(call({ now: FORCED_REISSUE_WINDOW_MS + 1 })?.kind).toBe('same-tool');
+  });
+
+  it('the forgiveness window never outlives the nudge window (nothing left to forgive AGAINST)', () => {
+    expect(FORCED_REISSUE_WINDOW_MS).toBeLessThanOrEqual(NUDGE_WINDOW_MS);
+  });
+
+  it('WIRING PIN: the MCP host feeds the door verdict into maybeBatchNudge (else the whole mechanism is inert)', () => {
+    // The nudge cannot see the result door; the host is the only seam that has both. Dropping this
+    // one line leaves every unit test above green while production never forgives anything.
+    const host = readFileSync(
+      new URL('./endpoint-route/routes/transport/_mcp-host.ts', import.meta.url),
+      'utf8',
+    );
+    expect(host).toContain("aggregateSpill: doorMeta?.reason === 'aggregate-output-budget-exceeded'");
   });
 });

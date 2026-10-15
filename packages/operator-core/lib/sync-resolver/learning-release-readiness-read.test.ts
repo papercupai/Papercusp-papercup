@@ -369,6 +369,24 @@ describe('readReleaseReadiness', () => {
       expect(snap.rubric?.scoreEvidence?.latestGenerationFreshness).toBe('stale');
     });
 
+    it('preserves an explicit not-applicable generation verdict for tree-only evidence', async () => {
+      listScorecardPage.mockResolvedValue({
+        rows: [
+          {
+            ...settled('2026-07-14T00:00:00.000Z', 10),
+            generationFreshness: {
+              status: 'not-applicable',
+              reason: 'complete matched replay recipe has no runtime-environment fingerprints',
+            },
+          },
+        ],
+        hasMore: false,
+      });
+
+      const snap = await readReleaseReadiness();
+      expect(snap.rubric?.scoreEvidence?.latestGenerationFreshness).toBe('not-applicable');
+    });
+
     it('an unstamped card reports null freshness — absence is not-recorded, never "fresh"', async () => {
       const snap = await readReleaseReadiness();
       expect(snap.rubric?.scoreEvidence?.latestGenerationFreshness).toBeNull();

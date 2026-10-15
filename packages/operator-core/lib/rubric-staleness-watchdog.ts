@@ -22,11 +22,13 @@
  * into the shared routinesTick as one durable step, fail-soft throughout, an
  * env `<=0` kill switch, and the shared fires-ledger debounce.
  */
-import { listRubrics, type Rubric, type RubricCriterion } from './rubrics';
+import { listRubrics, listRubricsPage, type Rubric, type RubricCriterion } from './rubrics';
 import { checkScorecardFreshness, type ScorecardFreshness } from './scorecard-freshness';
 import { recentWatchdogFires, recordFire } from './pot/watchdog';
 import { openEscalation } from './agent-tools/coordination/escalations';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { broadcastSevereEvent, broadcastSevereEventResolved } from './severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from './alarm-attention';
 
 // ── tunables (env-overridable, like the sibling watchdog floors) ───────────────
 
@@ -108,9 +110,9 @@ export interface RubricStalenessVerdict {
 /**
  * PURE: is a release-gating rubric's grading stale? `freshness` is the
  * checkScorecardFreshness read over the threshold window, so `complete === true`
- * means a COMPLETE scorecard landed in-window (the mandate). A partial-only window
- * is called out distinctly — grading that silently truncates is a different failure
- * from grading that stopped, and the responder should know which they are chasing.
+ * means a COMPLETE scorecard landed in-window (the mandate). Partial and empty
+ * windows are reported as measured; this read cannot establish why scoring is
+ * absent/incomplete or whether a historical scorecard exists.
  *
  * A THIRD failure the first two cannot express (WI-2145252): the rubric is not
  * gradeable AT ALL because a criterion measures a subsystem that no longer runs. That
@@ -146,8 +148,9 @@ export function evaluateRubricStaleness(
       stale: true,
       reason:
         `release-gating rubric '${rubric.rubricId}' has ${freshness.count} scorecard(s) in the last ${hours}h ` +
-        `but NONE complete (silent truncation — the grader is filing partial cards). ` +
-        `Newest emission ${freshness.lastEmittedAt ?? 'unknown'}; last COMPLETE grade predates the window.` +
+        `but NONE complete. ` +
+        `Newest in-window emission: ${freshness.lastEmittedAt ?? 'unknown'}. ` +
+        `Cause of incompleteness is unknown from this freshness read.` +
         ungradeable,
     };
   }
@@ -155,8 +158,7 @@ export function evaluateRubricStaleness(
     stale: true,
     reason:
       `release-gating rubric '${rubric.rubricId}' has NO scorecard in the last ${hours}h ` +
-      `(grading stopped — a dead grader loop, not a healthy quiet period). ` +
-      `The newest verdict on record predates the window; a release call reading it is reading stale evidence.` +
+      `(cause unknown from this in-window freshness read; it cannot establish whether an older verdict exists).` +
       ungradeable,
   };
 }
@@ -225,11 +227,42 @@ const RUBRIC_STALENESS_IDENTITY: AgentIdentity = {
 /** Injectable seams so the sweep's orchestration is testable without PG. */
 export interface RubricStalenessSweepDeps {
   listRubrics?: typeof listRubrics;
+  listRubricsPage?: typeof listRubricsPage;
   checkScorecardFreshness?: typeof checkScorecardFreshness;
   recentWatchdogFires?: typeof recentWatchdogFires;
   recordFire?: typeof recordFire;
   openEscalation?: typeof openEscalation;
+  alarm?: AlarmAttentionDeps;
   now?: number;
+}
+
+/** Exhaust the existing paged reader, including settled proposals needed for recovery. */
+async function readRubricsForSweep(deps: Pick<RubricStalenessSweepDeps, 'listRubrics' | 'listRubricsPage'>): Promise<Rubric[]> {
+  if (deps.listRubrics) return deps.listRubrics({});
+  const rubrics: Rubric[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await (deps.listRubricsPage ?? listRubricsPage)({ limit: 100, offset });
+    rubrics.push(...page.rubrics);
+    if (!page.hasMore) return rubrics;
+    if (page.nextOffset == null || page.nextOffset <= offset) throw new Error('rubric page did not advance');
+    offset = page.nextOffset;
+  }
+}
+
+/** One durable condition-fold read per sweep; do not emit all-clears for quiet rubrics. */
+function rubricAlarmDeps(alarm: AlarmAttentionDeps = {}): AlarmAttentionDeps {
+  if (alarm.resolve) return alarm;
+  let openKeys: Promise<Set<string>> | undefined;
+  return { ...alarm, resolve: async (input) => {
+    openKeys ??= import('./agent-tools/coordination/tools/conditions').then(async ({ computeConditionStates, readConditionEnvelopes }) =>
+      new Set(computeConditionStates(await readConditionEnvelopes()).filter((condition) => condition.open).map((condition) => condition.condition_key)));
+    const keys = await openKeys;
+    if (!keys.has(input.conditionKey)) return false;
+    const resolved = await broadcastSevereEventResolved(input);
+    if (resolved) keys.delete(input.conditionKey);
+    return resolved;
+  } };
 }
 
 /**
@@ -250,26 +283,40 @@ export async function rubricStalenessSweep(
   const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
   const installSlug = opts.installSlug ?? 'papercusp';
   const results: RubricStalenessSweepResult[] = [];
+  const alarm = rubricAlarmDeps(deps.alarm);
   try {
     // P-011: releaseGating OR stalenessWatched. The two answer different questions —
     // "does a stale verdict block a ship?" and "is anyone still grading this?" — and
     // while one flag served both, an ongoing HEALTH rubric could only get watched by
     // masquerading as a release bar. So none did, and a dead health loop looked exactly
     // like a healthy one (EI-16072: only 2 of 23 active rubrics were watched at all).
-    const rubrics = (await (deps.listRubrics ?? listRubrics)({ status: 'active' })).filter(
-      (r) => r.releaseGating === true || r.stalenessWatched === true,
-    );
+    const rubrics = await readRubricsForSweep(deps);
     for (const rubric of rubrics) {
       try {
+        const conditionKey = `alarm:rubric-staleness:${workspaceId}:${installSlug}:${rubric.rubricId}`;
+        if (rubric.status !== 'active' || (rubric.releaseGating !== true && rubric.stalenessWatched !== true)) {
+          await resolveAlarm(conditionKey, 'rubric-staleness', alarm);
+          continue;
+        }
         const freshness = await (deps.checkScorecardFreshness ?? checkScorecardFreshness)({
           rubricRef: rubric.rubricId,
           since: new Date(now - thresholdMs).toISOString(),
         });
         const verdict = evaluateRubricStaleness(rubric, freshness, thresholdMs);
         if (!verdict.stale) {
+          // A missing rubric is an unknown read, not measured grading recovery.
+          if (freshness.complete && freshness.status !== 'unknown-rubric') {
+            await resolveAlarm(conditionKey, 'rubric-staleness', alarm);
+          }
           results.push({ rubricRef: rubric.rubricId, outcome: 'healthy', reason: verdict.reason });
           continue;
         }
+        // Keep the owning condition visible independently of the legacy notification debounce.
+        const event = { conditionKey, oneShot: true, summary: `Rubric '${rubric.rubricId}' grading is stale`, body: verdict.reason };
+        try {
+          if (deps.alarm?.broadcast) await deps.alarm.broadcast(event);
+          else await broadcastSevereEvent(event);
+        } catch (err) { console.warn(`[rubric-staleness] condition broadcast failed: ${String(err)}`); }
         // Debounce: one alert per RUBRIC per threshold window (EI-16071). scopeKey
         // narrows the fires-ledger check to fires whose reason names THIS rubric
         // (evaluateRubricStaleness always quotes rubric.rubricId in its reason) —
@@ -325,9 +372,11 @@ export async function rubricStalenessSweep(
 
 export interface RubricProposalDwellSweepDeps {
   listRubrics?: typeof listRubrics;
+  listRubricsPage?: typeof listRubricsPage;
   recentWatchdogFires?: typeof recentWatchdogFires;
   recordFire?: typeof recordFire;
   openEscalation?: typeof openEscalation;
+  alarm?: AlarmAttentionDeps;
   now?: number;
 }
 
@@ -348,15 +397,24 @@ export async function rubricProposalDwellSweep(
   const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
   const installSlug = opts.installSlug ?? 'papercusp';
   const results: RubricStalenessSweepResult[] = [];
+  const alarm = rubricAlarmDeps(deps.alarm);
   try {
-    const rubrics = await (deps.listRubrics ?? listRubrics)({ status: 'proposed' });
+    const rubrics = await readRubricsForSweep(deps);
     for (const rubric of rubrics) {
       try {
+        const conditionKey = `alarm:rubric-proposal-dwell:${workspaceId}:${installSlug}:${rubric.rubricId}`;
         const verdict = evaluateRubricProposalDwell(rubric, thresholdMs, now);
         if (!verdict.stale) {
+          await resolveAlarm(conditionKey, 'rubric-proposal-dwell', alarm);
+          if (rubric.status !== 'proposed') continue;
           results.push({ rubricRef: rubric.rubricId, outcome: 'healthy', reason: verdict.reason });
           continue;
         }
+        const event = { conditionKey, oneShot: true, summary: `Rubric '${rubric.rubricId}' independent review is overdue`, body: verdict.reason };
+        try {
+          if (deps.alarm?.broadcast) await deps.alarm.broadcast(event);
+          else await broadcastSevereEvent(event);
+        } catch (err) { console.warn(`[rubric-proposal-dwell] condition broadcast failed: ${String(err)}`); }
         const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
         const firedRecently =
           (await (deps.recentWatchdogFires ?? recentWatchdogFires)(

@@ -1434,7 +1434,9 @@
             "scripts/*.test.mjs",
             "scripts/lib/**/*.test.ts",
             "scripts/lib/**/*.test.mjs",
-            "scripts/agent-capacity/**/*.test.ts"
+            "scripts/agent-capacity/**/*.test.ts",
+            "scripts/relay/**/*.test.ts",
+            "scripts/bench-host/**/*.test.ts"
           ]
         },
         {
@@ -1449,7 +1451,8 @@
           "id": "e2e",
           "label": "E2E (all specs)",
           "globs": [
-            "apps/operator/e2e/*.spec.ts"
+            "apps/operator/e2e/*.spec.ts",
+            "apps/operator/e2e/*.spec.mts"
           ]
         },
         {
@@ -1665,14 +1668,6 @@
       "tier": "project",
       "sections": [
         {
-          "id": "feature-change-reconciliation",
-          "label": "Feature-change reconciliation",
-          "description": "Durable aggregate validation for feature-change candidate settlement, terminal-shard coverage, and honest zero-state readiness.",
-          "globs": [
-            "scratchpad/feature-change-reconciliation-and-zero-state-clarity-2026-09-05-p004-validation-aggregate.test.mjs"
-          ]
-        },
-        {
           "id": "wake-liveness",
           "label": "C4 liveness matrix + EI-152",
           "description": "The wake-executor liveness×handle/socket matrix over the REAL socket seam; EI-152 (no-handle + live socket → socket-inject, not park) verified red-on-pre-fix.",
@@ -1701,16 +1696,17 @@
         {
           "id": "resume-live",
           "label": "C5 real resume spawn (live)",
-          "description": "LIVE-SMOKE (needs claude/codex creds → not CI): a REAL claude/codex resume — built by the SAME wake-executor resumeCommandFor, run in the EI-155 isolated CLAUDE_CONFIG_DIR/CODEX_HOME — continues the EXACT session (transcript/rollout GROWS). Complements the injected-spawnDetached CI rung in wake-resume-isolation.test.",
+          "description": "LIVE-SMOKE (needs client credentials → not CI): real Claude/Codex/OMP resume through the maintained wake command builder, with private profiles and exact transcript continuity. Every client must pass; absent or unauthenticated clients fail this acceptance rung. Complements wake-resume-isolation.test.",
           "runners": [
             {
               "kind": "node",
               "cmd": "npx",
               "args": [
                 "tsx",
-                "apps/operator/scripts/resume-spawn-live.ts"
+                "apps/operator/scripts/resume-spawn-live.ts",
+                "--require-all"
               ],
-              "label": "real claude/codex resume (live · needs creds)"
+              "label": "real Claude/Codex/OMP resume (live · needs creds)"
             }
           ]
         },
@@ -1818,6 +1814,13 @@
           "globs": [
             "packages/operator-core/lib/harness/docs/**/*.test.ts"
           ]
+        },
+        {
+          "id": "public-manual",
+          "label": "Public manual build",
+          "globs": [
+            "apps/papercusp-docs/lib/**/*.test.ts"
+          ]
         }
       ]
     },
@@ -1856,7 +1859,8 @@
             "libs/test-config/src/**/*.test.ts",
             "libs/testing-shell/src/**/*.test.ts",
             "libs/testing-shell/src/**/*.test.tsx",
-            "apps/papercusp-publish/src/**/*.test.ts"
+            "apps/papercusp-publish/src/**/*.test.ts",
+            "apps/slack-asana-bug-drill/**/*.test.ts"
           ],
           "runners": [
             {
@@ -2082,6 +2086,14 @@
                 "papercusp-desktop/bin/lib/vm-run-env.selftest.sh"
               ],
               "label": "vm_run guest-env delivery (WI-6176)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh"
+              ],
+              "label": "VM boot data disk and read-only share argv (WI-10006429)"
             },
             {
               "kind": "shell",

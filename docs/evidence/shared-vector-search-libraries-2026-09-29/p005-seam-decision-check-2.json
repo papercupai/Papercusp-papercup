@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "SPEC-P-005-SEAM-DECISION re-check (post-extraction): the D-004 seam still assigns every P-005 backfill responsibility to exactly one side, and the as-built code matches it",
+  "framework": "operational",
+  "command": [
+    "plans:items { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', item: 'P-005' } (served by :3170 build f655898692)",
+    "plans:get { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', decisionId: 'D-004' } (served by :3170 build f655898692)",
+    "grep -c -F <symbol> packages/operator-core/lib/search/embed-backfill.ts and libs/generic/search/src/backfill/*.ts, for each symbol listed in assertions"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T00:19:40.000Z",
+  "finishedAt": "2026-10-02T00:20:18.000Z",
+  "summary": "Re-check of SPEC-P-005 after binding 16969 went stale (its measured source, packages/operator-core/lib/search/embed-backfill.ts, changed at 2026-09-30T22:32:59Z). P-005's text is unchanged (status done) and D-004 still reads 'the backfill-engine seam. The generic sweep owns selection, embedding, the input cap, writes and the round-robin; papercusp supplies targets, embedder, admission, resource profile and storage width'. Against the current tree (HEAD c40acc2f3c), every generic-sweep responsibility has its implementation in libs/generic/search/src/backfill and every papercusp hook exists only in the host module, so no responsibility is unassigned or split.",
+  "assertions": [
+    {
+      "id": "decision-recorded",
+      "passed": true,
+      "evidence": "plans:get decisionId D-004 returns the seam text quoted in the summary. plans:items P-005 returns the same P-005 text as the 2026-09-30 check (generic sweep: select missing/wrong-space rows, batch-embed with per-row fallback, cap oversized input, write vector plus label, round-robin within a time budget; papercusp hooks: TARGETS list, embed admission, sidecar embedder, resource profile), storedStatus done."
+    },
+    {
+      "id": "select-missing-or-wrong-space",
+      "passed": true,
+      "evidence": "Generic side. stalePredicateSql, eligiblePredicateSql, activeRecipeVersion and BASELINE_RECIPE_VERSION are defined in libs/generic/search/src/backfill/predicates.ts and used by backfill-table.ts (lib counts 11/6/4/3). The host module's references (3/3/3/2) are its import block (lines 37-49), a re-export block (lines 85-93) and a doc comment (line 365); the host has no SELECT of its own."
+    },
+    {
+      "id": "batch-embed-per-row-fallback",
+      "passed": true,
+      "evidence": "Generic side. The 'batch embed FAILED ... using the per-row path' fallback is in libs/generic/search/src/backfill/backfill-table.ts (lib 2 incl. test, host 0)."
+    },
+    {
+      "id": "cap-oversized-input",
+      "passed": true,
+      "evidence": "Generic side. maxInputChars appears in backfill-table.ts, sweeper.ts and types.ts (lib 13 incl. tests); the host has 1 occurrence, the config value it passes."
+    },
+    {
+      "id": "write-vector-plus-label",
+      "passed": true,
+      "evidence": "Generic side. The keyed UPDATE uses keyCols in backfill-table.ts and types.ts (lib 12 incl. tests). The host's 14 keyCols occurrences are a doc comment (line 311) and the per-target key declarations in its TARGETS list (lines 389-829), which is the host hook."
+    },
+    {
+      "id": "round-robin-within-budget",
+      "passed": true,
+      "evidence": "Generic side. sweepCounter lives in libs/generic/search/src/backfill/sweeper.ts (5). The host's single occurrence (line 940) initializes the shared __sweepState counter that it hands to the library sweeper; the pre-extraction module at 53da45e4751c had 6, including the rotation itself. maxInputChars in the host is the config value SIDECAR_MAX_TEXT_CHARS passed at line 865."
+    },
+    {
+      "id": "targets-list",
+      "passed": true,
+      "evidence": "Papercusp hook. TARGETS (host 6) and chunkStoreBackfillTarget (host 2, lib 0) live only in the host; the library mentions TARGETS only in its integration test fixture."
+    },
+    {
+      "id": "embed-admission",
+      "passed": true,
+      "evidence": "Papercusp hook. embedAdmission (host 2, lib 0) and adm.acquire (host 1, lib 0)."
+    },
+    {
+      "id": "sidecar-embedder",
+      "passed": true,
+      "evidence": "Papercusp hook. sidecarEmbedBatch (host 3), sidecarBatchTimeoutMs (host 4) and resolveBackfillEmbedder (host 2); none in the library."
+    },
+    {
+      "id": "resource-profile",
+      "passed": true,
+      "evidence": "Papercusp hook. getResourceProfile (host 2) and embedBatchSize (host 1); none in the library."
+    },
+    {
+      "id": "no-responsibility-unassigned",
+      "passed": true,
+      "evidence": "9 of 9 P-005 responsibilities are on exactly one side in both the decision and the code: 5 generic-sweep responsibilities implemented in libs/generic/search/src/backfill, 4 papercusp hooks implemented only in packages/operator-core/lib/search/embed-backfill.ts."
+    }
+  ],
+  "evidencePlane": "tree",
+  "plan": "shared-vector-search-libraries-2026-09-29",
+  "specId": "SPEC-P-005-SEAM-DECISION",
+  "subjectCommit": "c40acc2f3c9c",
+  "workItemId": "WI-10004274",
+  "supersedes": "p005-seam-decision-check.json (binding 16969, subject 53da45e4751c)",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "note": "[self-imposed under AUTO; owner directive #970] Re-measured because binding 16969 read currentness=stale after embed-backfill.ts changed on 2026-09-30T22:32:59Z."
+}

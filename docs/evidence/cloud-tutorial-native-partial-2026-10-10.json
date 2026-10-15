@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "kind": "manual-accessibility-evidence",
+  "name": "Cloud current-source partial attended native review",
+  "workItemId": "WI-10007744",
+  "implementationWorkItemId": "WI-10007170",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "specId": "AUTO-BAR-R-12-P-010",
+  "specRevision": 7,
+  "observedAt": "2026-10-10T07:48:20.782Z",
+  "result": "PARTIAL; no native acceptance PASS or automated test PASS",
+  "procedure": "Maintained Cloud beginner Playwright pause seam, private Xvfb/DBus/Orca. Initial and global warm-up debug stops were resumed to the intended beginner pause. AT-SPI seeded control focus, explicit browser window activation, native Return and Tab, browser zoom200%. Faster xdotool typing was lossy; slower native typing produced exact AT-SPI text readback before teardown.",
+  "observed": {
+    "zoomPercent": 200,
+    "preparedWorkspaceEntered": true,
+    "configurationReviewAndConnectInvoked": true,
+    "launchAndActionPlanInvoked": true,
+    "planText": "Mira will ask the library about a room by Friday. Leon will collect book ideas. Date and budget are unknown.",
+    "revisionText": "Open decisions: date and budget. Confirmed: Mira asks about a room by Friday; Leon collects book ideas.",
+    "practiceFixtureAnswer": "Pack lunch, water, a notebook, a pen and workshop materials. Ask which materials are needed.",
+    "slowTypedReadback": "goal: make a workshop packing checklist. context: indoor library session. output: five bullets and open questions.",
+    "slowTypedReadbackExact": true,
+    "slowTypedFinalTaskSubmitted": false,
+    "closeGuideViaReturn": true,
+    "sourceCustodyPreflightBeforeAndAfter": true
+  },
+  "notVerified": [
+    "7 of 7 completion count",
+    "Pause/resume behavior",
+    "Guide mute/speech output controls",
+    "Final exact typed task submission and answer",
+    "Whole-application pure-Tab navigation",
+    "Human-heard speech",
+    "Human novice pilot",
+    "Real-provider or native input voice",
+    "Production acceptance"
+  ],
+  "sourceManifest": "docs/evidence/cloud-tutorial-native-manifest-2026-10-10.json",
+  "launcherRepair": {
+    "id": "EI-25577038816918218",
+    "rootCause": "Relative --manifest resolved a second time after desktop child changed cwd to retained checkout.",
+    "fix": "ResolveReviewArgs makes caller-relative path arguments absolute before child re-entry.",
+    "tests": "node --test scripts/review-cloud-tutorial-native.test.mjs:9PASS0skip",
+    "sourceSha256": "0653dffd6620e28ae1149d6f7fdab42c8589cf7a1ee747faee0b6d3688e197fb",
+    "testSha256": "187978845c22133f8f7d55efb65cb2368a0dd0a0a4abd78fd509d5c6616dd711"
+  },
+  "refs": [
+    {
+      "path": "/dev/shm/tutorial-cloud-native-current-e6e-20261010T0737.json",
+      "sha256": "ffb98d3ffc887ed7f2ec05dcdde6f4b05514a2b5f04e3290171e54fe65777363"
+    },
+    {
+      "path": "/dev/shm/tutorial-cloud-native-current-e6e-20261010T0737-speech.log",
+      "sha256": "09dfebe30a1d09a97494aa8622eeb5170945c8086fa3bb46437b175d9b611a43"
+    },
+    {
+      "path": "/dev/shm/tutorial-cloud-native-e6e-0737-complete.png",
+      "sha256": "f87f4a88d0c5b4503175d8cc80439f20ae192ef7f3ba0a63efaf127e668af8df",
+      "note": "Filename is historical; image captures closed guide, not completion proof."
+    }
+  ],
+  "teardown": {
+    "taskId": "0mv2309ye1b8dcbc18k",
+    "scope": "pc-0mv2309ye1b8dcbc18k.service",
+    "verifiedEmpty": true,
+    "exitCode": 143,
+    "terminalAt": "2026-10-10T07:48:20.782Z"
+  }
+}

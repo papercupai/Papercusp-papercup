@@ -110,6 +110,7 @@ export interface DurableSpawnFireInput {
     parentSpawnId?: string | null;
     /** e.g. the improvement-lane `EI-NNN` the worker is fixing — shows in fleet:tree. */
     itemId?: string | null;
+    accountRoute?: import('../fleet/spawn-tree').SpawnAccountRoute;
   };
 }
 
@@ -539,8 +540,9 @@ async function recordDurableSpawnAdmission(
   rec: SpawnRecordInput,
   spawnId: string,
   initialSpawnModel: string | null,
+  currentBody: Record<string, unknown>,
 ): Promise<QueenSingletonAdmission> {
-  const [{ recordSpawn }, { getOrgPg }] = await Promise.all([
+  const [{ recordSpawn, recordSpawnAccountRoute, spawnAccountRouteFromLaunch }, { getOrgPg }] = await Promise.all([
     import('../fleet/spawn-tree'),
     import('@papercusp/db-org'),
   ]);
@@ -558,6 +560,8 @@ async function recordDurableSpawnAdmission(
       modelSpec: initialSpawnModel,
       status: 'running',
     });
+    const accountRoute = spawnAccountRouteFromLaunch(currentBody, spawnId);
+    if (accountRoute) await recordSpawnAccountRoute(db, spawnId, accountRoute);
     // The /invoke route owns the actual invoke-once child and may run in a
     // different operator/cluster process from this DBOS worker. Its child PID
     // and launcher boot are stamped after admission by the route handoff below;
@@ -673,7 +677,7 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
     const admission = await DBOS.runStep(
       async (): Promise<QueenSingletonAdmission> => {
         try {
-          return await recordDurableSpawnAdmission(input, rec, spawnId, initialSpawnModel);
+          return await recordDurableSpawnAdmission(input, rec, spawnId, initialSpawnModel, initialFireBody);
         } catch (e) {
           if (rec.childRole === 'mug') throw e;
           console.warn(

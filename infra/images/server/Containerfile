@@ -1,0 +1,15 @@
+# P-058: the same runtime archive imported by WSL, with the native Server payload.
+# Inputs are verified and frozen by build-server-container.mjs before this runs.
+FROM scratch
+ADD papercup-runtime.tar.gz /
+COPY sidecar/ /opt/papercusp/sidecar/
+ARG PAPERCUSP_BUILD_SHA
+ENV HOME=/home/papercup \
+    PAPERCUSP_BUILD_SHA=${PAPERCUSP_BUILD_SHA} \
+    PAPERCUSP_SIDECAR_DIR=/opt/papercusp/sidecar \
+    PAPERCUSP_PG_SQL_DIR=/opt/papercusp/sidecar/db-sql \
+    PAPERCUSP_USE_EMBEDDED_PG=1 \
+    PAPERCUSP_ENABLE_ENV_OPERATOR_PROVISIONING=0
+WORKDIR /opt/papercusp/sidecar
+USER papercup
+CMD ["/usr/local/bin/node", "/opt/papercusp/sidecar/serve.mjs", "--ensure"]

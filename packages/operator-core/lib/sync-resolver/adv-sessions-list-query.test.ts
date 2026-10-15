@@ -8,6 +8,7 @@ import {
   decodeAdvSessionsCursor,
   encodeAdvSessionsCursor,
   normalizeAdvSessionsListArgs,
+  readAdvSessionsSummaryFromStore,
 } from './adv-sessions-list-query';
 
 describe('adv sessions list predicate', () => {
@@ -54,5 +55,34 @@ describe('adv sessions list predicate', () => {
     expect([...selection.get('plan')!]).toEqual(['plan-a']);
     expect(buildAdvSessionsPredicate(args).fingerprint).toBe(JSON.stringify(args));
     expect(advSessionsSummarySelection(normalizeAdvSessionsListArgs({}))).toBeUndefined();
+  });
+});
+
+describe('advSessions summary payload-growth guard', () => {
+  it('materializes only facet scalars and reads launch JSON only while projection is pending', async () => {
+    type Fragment = { strings: readonly string[]; values: unknown[]; then: (resolve: (rows: never[]) => unknown) => unknown };
+    let query: Fragment | undefined;
+    const sql = (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const fragment: Fragment = { strings, values, then: (resolve) => resolve([]) };
+      query = fragment;
+      return fragment;
+    };
+    const render = (fragment: Fragment): string => fragment.strings.reduce((text, part, index) => {
+      const value = fragment.values[index];
+      return text + part + (index < fragment.values.length
+        ? value && typeof value === 'object' && 'strings' in value
+          ? render(value as Fragment)
+          : '?'
+        : '');
+    }, '');
+    await readAdvSessionsSummaryFromStore(sql as never,
+      buildAdvSessionsPredicate(normalizeAdvSessionsListArgs({ workspaceId: 'ws-1' })));
+    const text = render(query!);
+    expect(text).toContain('CASE WHEN a.launch_harness_projection IS NULL');
+    expect(text).toContain("ELSE a.launch_harness_projection #>> '{}'");
+    expect(text).toContain('session_corpus AS MATERIALIZED');
+    for (const unused of ['to_jsonb(a)', 'a.port_metadata', 'a.cwd', 'a.label']) {
+      expect(text).not.toContain(unused);
+    }
   });
 });

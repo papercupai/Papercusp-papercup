@@ -16,8 +16,6 @@
  * and WORKSPACE ISOLATION (a datatype in ws-A is invisible from ws-B).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
   upsertDatatype,
@@ -33,12 +31,6 @@ import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from './search/prose-vector-dims';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
-const profileMigrationArmed = fileURLToPath(
-  new URL('../../../libs/papercusp/libs/db/sql/1154-prose-embedding-profile-identity.sql', import.meta.url),
-);
-const profileMigration = existsSync(profileMigrationArmed)
-  ? profileMigrationArmed
-  : `${profileMigrationArmed}.DRAFT`;
 
 /**
  * A throwaway embedding (only presence/cosine is exercised, not a real vector).
@@ -65,7 +57,8 @@ describe('datatype_registry store (real PG)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    await db.adminSql.unsafe(readFileSync(profileMigration, 'utf8')).simple();
+    // Profile columns also come from the migrated fixture. Replaying 1154 here
+    // would ALTER personal_documents after 1327 has made it a compatibility view.
     // createOrgTestDb applies the FULL migration set (incl. 421/425 and the D-007
     // pot-rename 506/523), so datatype_registry already exists in its post-rename
     // (pot_slug) shape — a broken 421 would fail the fixture setup itself, so the
@@ -86,7 +79,7 @@ describe('datatype_registry store (real PG)', () => {
       potSlug: 'oddsmith-ops',
       title: 'Bet',
       description: 'a thesis: market + p_model + edge + rationale',
-      tier: 'generic-kind',
+      tier: 'generic-kind', nature: 'record', // D-007: a bet is a record
       workItemKind: 'bet',
       payloadSchema: { type: 'object', properties: { market: { type: 'string' }, edge: { type: 'number' } } },
       display: { widget: 'record', params: { fields: [{ name: 'market', datatype: 'string', required: true }] }, summary: '{{market}}' },
@@ -126,12 +119,12 @@ describe('datatype_registry store (real PG)', () => {
   it('re-declaring the same id UPDATES in place (and COALESCE-preserves the embedding)', async () => {
     const ws = 'ws-dt-update';
     await upsertDatatype(db.adminSql, {
-      id: 'wager', workspaceId: ws, title: 'Wager', description: 'first', tier: 'generic-kind',
+      id: 'wager', workspaceId: ws, title: 'Wager', description: 'first', tier: 'generic-kind', nature: 'record',
       ...profiledEmbedding(fakeEmbedding(0.2)), createdBy: 'a',
     });
     const updated = await upsertDatatype(db.adminSql, {
       id: 'wager', workspaceId: ws, title: 'Wager', description: 'an intent: proposed stake/price/size',
-      tier: 'generic-kind', embedding: null, createdBy: 'b', // null embedding must NOT wipe the stored one
+      tier: 'generic-kind', nature: 'record', embedding: null, createdBy: 'b', // null embedding must NOT wipe the stored one
     });
     expect(updated.description).toBe('an intent: proposed stake/price/size');
     expect(updated.hasEmbedding).toBe(true); // preserved via COALESCE
@@ -142,12 +135,12 @@ describe('datatype_registry store (real PG)', () => {
     const ws = 'ws-dt-kind';
     await upsertDatatype(db.adminSql, {
       id: 'forecast', workspaceId: ws, title: 'Forecast', description: 'a probability forecast',
-      tier: 'generic-kind', workItemKind: 'forecast', createdBy: 'a',
+      tier: 'generic-kind', nature: 'record', workItemKind: 'forecast', createdBy: 'a',
     });
     // a projection-tier datatype registers NO work_item_kind → not a generic-kind gate hit
     await upsertDatatype(db.adminSql, {
       id: 'position', workspaceId: ws, title: 'Position', description: 'money-truth position',
-      tier: 'projection', authoritativeWriter: 'engine:oddsmith', createdBy: 'a',
+      tier: 'projection', nature: 'record', authoritativeWriter: 'engine:oddsmith', createdBy: 'a',
     });
     expect(await hasGenericKind(db.adminSql, ws, 'forecast')).toBe(true);
     expect(await hasGenericKind(db.adminSql, ws, 'position')).toBe(false); // projection, no kind
@@ -160,7 +153,7 @@ describe('datatype_registry store (real PG)', () => {
     const ws = 'ws-dt-dedup';
     await upsertDatatype(db.adminSql, {
       id: 'calibration-record', workspaceId: ws, title: 'Calibration record',
-      description: 'a record of forecast calibration accuracy over time', tier: 'generic-kind', createdBy: 'a',
+      description: 'a record of forecast calibration accuracy over time', tier: 'generic-kind', nature: 'record', createdBy: 'a',
     });
     const hits = await findSimilarDatatypes(db.adminSql, ws, {
       title: 'calibration accuracy log',
@@ -180,7 +173,7 @@ describe('datatype_registry store (real PG)', () => {
       workspaceId: ws,
       title: 'Profile anchor',
       description: 'vector-only candidate',
-      tier: 'generic-kind',
+      tier: 'generic-kind', nature: 'work', audience: 'agent',
       ...profiledEmbedding(fakeEmbedding(0.25)),
     });
     await db.adminSql`
@@ -205,7 +198,7 @@ describe('datatype_registry store (real PG)', () => {
 
   it('is WORKSPACE-ISOLATED — a datatype declared in ws-A is invisible from ws-B', async () => {
     await upsertDatatype(db.adminSql, {
-      id: 'order', workspaceId: 'ws-A', title: 'Order', description: 'an order', tier: 'projection', createdBy: 'a',
+      id: 'order', workspaceId: 'ws-A', title: 'Order', description: 'an order', tier: 'projection', nature: 'record', createdBy: 'a',
     });
     expect(await getDatatype(db.adminSql, 'ws-A', 'order')).not.toBeNull();
     expect(await getDatatype(db.adminSql, 'ws-B', 'order')).toBeNull();
@@ -219,7 +212,7 @@ describe('datatype_registry store (real PG)', () => {
   it('feature-family read filter admits a REGISTERED generic-kind but not an unregistered one', async () => {
     const ws = 'ws-vis';
     await upsertDatatype(db.adminSql, {
-      id: 'bet', workspaceId: ws, title: 'Bet', description: 'a thesis', tier: 'generic-kind', workItemKind: 'bet', createdBy: 'a',
+      id: 'bet', workspaceId: ws, title: 'Bet', description: 'a thesis', tier: 'generic-kind', nature: 'record', workItemKind: 'bet', createdBy: 'a',
     });
     // a registered generic-kind item + an UNregistered-kind item, both in the workspace
     await db.adminSql`

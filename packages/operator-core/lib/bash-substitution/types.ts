@@ -194,6 +194,19 @@ interface SubstitutionPairCommon {
    * exactly as D-039 carries the opposite authorization.
    */
   holdAtObserve?: string;
+  /**
+   * OPT-OUT of the CLAUDE.md routing projection: an `equivalent` pair carrying this
+   * is NOT rendered as a routing row until the stated condition is met. The value IS
+   * the reason, and it is required for the same reason as {@link holdAtObserve}'s.
+   *
+   * Separate from `holdAtObserve` on purpose. That field pins the gate's TIER, and a
+   * held pair is still routed (git-read is held and has its row). This one covers a
+   * case no verdict can see: the call the row teaches is proven against the SOURCE
+   * tree but is not yet served by the deployed operator every agent calls
+   * (WI-10006543: graph:query callers `paths`). Putting it in every agent's prompt
+   * would send agents to a call the running tool rejects.
+   */
+  routingWithheld?: string;
   /** Model of what the tool can express. See the warning above. */
   cover(atom: string): CoverageResult;
   /**

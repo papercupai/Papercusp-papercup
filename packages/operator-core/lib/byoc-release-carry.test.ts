@@ -5,10 +5,13 @@ import {
   BYOC_RELEASE_MILESTONES,
   projectByocReleaseCarry,
   projectByocReleaseMilestones,
+  readByocReleaseAcceptance,
   readLinkedByocReleaseCarries,
   renderByocReleaseCarry,
 } from './byoc-release-carry';
 import { buildCarryBrief, renderCarryBriefColdExtras, type CarryBrief } from './carry-brief';
+import { resolveWorkspaceHostSoakPolicy, WORKSPACE_HOST_SOAK_CHECKS } from './workspace-host/soak';
+import type { WorkspaceHostSoakRecord } from './workspace-host/soak-store';
 
 function journal(overrides: Partial<TaskReleaseJournal> = {}): TaskReleaseJournal {
   return {
@@ -41,6 +44,139 @@ function journal(overrides: Partial<TaskReleaseJournal> = {}): TaskReleaseJourna
     ...overrides,
   };
 }
+
+const DAY = 24 * 60 * 60_000;
+
+function completedSoak(durationMs = DAY) {
+  const policy = resolveWorkspaceHostSoakPolicy({ durationMs });
+  const first = Date.parse('2026-10-12T00:00:00.000Z');
+  const record: WorkspaceHostSoakRecord = {
+    soakId: 'soak-1', malformedRows: 0,
+    envelope: { policy, releaseTaskId: 'release-task' },
+    samples: Array.from({ length: durationMs / policy.intervalMs + 1 }, (_, sequence) => ({
+      schemaVersion: 1, soakId: 'soak-1', sequence,
+      observedAt: new Date(first + sequence * policy.intervalMs).toISOString(),
+      pinned: { instanceId: 'instance-1', image: 'image-1' },
+      checks: WORKSPACE_HOST_SOAK_CHECKS.map((name) => ({ name, ok: true })),
+    })),
+  };
+  const receipts: TaskReleaseReceipt[] = BYOC_RELEASE_MILESTONES.map((milestone, sequence) => ({
+    sequence, operationId: 'release-op-current', requestIdentity: `request-${sequence}`,
+    stage: milestone.stages[0], state: 'committed',
+    inputHash: String(sequence).repeat(64), recordedAt: record.samples.at(-1)!.observedAt,
+    evidenceRefs: [`receipt:${milestone.key}`],
+  }));
+  const soak = receipts.find(({ stage }) => stage === 'acceptance.soak')!;
+  soak.inputIdentity = { stageIdentity: { policy, bundleSha256: 'd'.repeat(64) } };
+  soak.evidenceRefs = [
+    'soak:soak-1', 'soak-host:workspace-1/host-1', 'soak-incarnation:instance-1',
+    'soak-image:image-1', 'soak-verdict:pass',
+    `soak-window:${record.samples[0]!.observedAt}/${record.samples.at(-1)!.observedAt}`,
+  ];
+  const source = journal({
+    receipts, cursor: receipts.length, currentStage: receipts.at(-1)!.stage, currentState: 'committed',
+    artifactIdentity: { bundleSha256: 'd'.repeat(64) },
+  });
+  return { source, soak, record };
+}
+
+describe('BYOC strict soak acceptance', () => {
+  it('keeps the ordinary one-hour view but rejects it for a literal 24-hour bar', () => {
+    const { source } = completedSoak(60 * 60_000);
+    expect(projectByocReleaseMilestones(source).shipped).toBe(true);
+    const strict = projectByocReleaseMilestones(source, { minimumSoakDurationMs: DAY });
+    expect(strict.shipped).toBe(false);
+    expect(strict.milestones.find(({ key }) => key === 'soak')?.status).toBe('failed');
+    expect(strict.milestones.find(({ key }) => key === 'shipment')?.status).toBe('blocked');
+  });
+
+  it('accepts a complete 24-hour receipt prefix for phase projection', () => {
+    expect(projectByocReleaseMilestones(completedSoak().source, { minimumSoakDurationMs: DAY }).shipped).toBe(true);
+  });
+
+  it.each([0, -1, NaN, Infinity, 1.5])('refuses an invalid duration bar %s', (minimumSoakDurationMs) => {
+    expect(projectByocReleaseMilestones(completedSoak().source, { minimumSoakDurationMs }).shipped).toBe(false);
+  });
+
+  it.each([
+    ['missing policy', (soak: TaskReleaseReceipt) => { soak.inputIdentity = null; }],
+    ['invalid policy', (soak: TaskReleaseReceipt) => { soak.inputIdentity = { stageIdentity: { policy: { durationMs: DAY, intervalMs: 0 } } }; }],
+    ['missing verdict', (soak: TaskReleaseReceipt) => { soak.evidenceRefs = soak.evidenceRefs.filter((ref) => !ref.startsWith('soak-verdict:')); }],
+    ['contradictory verdict', (soak: TaskReleaseReceipt) => { soak.evidenceRefs.push('soak-verdict:fail'); }],
+    ['missing window', (soak: TaskReleaseReceipt) => { soak.evidenceRefs = soak.evidenceRefs.filter((ref) => !ref.startsWith('soak-window:')); }],
+    ['duplicate window', (soak: TaskReleaseReceipt) => { soak.evidenceRefs.push(soak.evidenceRefs.find((ref) => ref.startsWith('soak-window:'))!); }],
+    ['invalid window', (soak: TaskReleaseReceipt) => { soak.evidenceRefs = soak.evidenceRefs.map((ref) => ref.startsWith('soak-window:') ? 'soak-window:none/none' : ref); }],
+    ['short window', (soak: TaskReleaseReceipt) => { soak.evidenceRefs = soak.evidenceRefs.map((ref) => ref.startsWith('soak-window:') ? 'soak-window:2026-10-12T00:00:00.000Z/2026-10-12T01:00:00.000Z' : ref); }],
+    ['reversed window', (soak: TaskReleaseReceipt) => { soak.evidenceRefs = soak.evidenceRefs.map((ref) => ref.startsWith('soak-window:') ? 'soak-window:2026-10-13T00:00:00.000Z/2026-10-12T00:00:00.000Z' : ref); }],
+  ] as const)('blocks shipment for %s', (_name, mutate) => {
+    const { source, soak } = completedSoak();
+    mutate(soak);
+    const result = projectByocReleaseMilestones(source, { minimumSoakDurationMs: DAY });
+    expect(result.shipped).toBe(false);
+    expect(result.milestones.find(({ key }) => key === 'shipment')?.status).toBe('blocked');
+  });
+
+  it.each(BYOC_RELEASE_MILESTONES.map(({ key }) => key))('requires the %s milestone', (key) => {
+    const { source } = completedSoak();
+    source.receipts = source.receipts.filter((receipt) =>
+      receipt.stage !== BYOC_RELEASE_MILESTONES.find((milestone) => milestone.key === key)!.stages[0]);
+    expect(projectByocReleaseMilestones(source, { minimumSoakDurationMs: DAY }).shipped).toBe(false);
+  });
+
+  it('re-reads the selected task and computes the passing outcome from canonical samples', async () => {
+    const { source, record } = completedSoak();
+    const sql = vi.fn(async () => [{ detail: { release: source } }]) as unknown as Sql;
+    const read = vi.fn(async () => record);
+    expect(await readByocReleaseAcceptance({
+      taskId: 'release-task', workspaceId: 'workspace-1', minimumSoakDurationMs: DAY,
+    }, sql, read)).toMatchObject({ shipped: true, contradictions: [] });
+    expect(sql).toHaveBeenCalledWith(expect.any(Array), 'workspace-1', 'release-task');
+    expect(read).toHaveBeenCalledExactlyOnceWith('workspace-1', 'host-1', 'soak-1');
+  });
+
+  it.each([
+    ['other task', ({ record }: ReturnType<typeof completedSoak>) => { record.envelope!.releaseTaskId = 'other-task'; }],
+    ['other policy', ({ record }: ReturnType<typeof completedSoak>) => { record.envelope!.policy = { ...record.envelope!.policy, durationMs: DAY / 2 }; }],
+    ['malformed rows', ({ record }: ReturnType<typeof completedSoak>) => { record.malformedRows = 1; }],
+    ['other incarnation', ({ record }: ReturnType<typeof completedSoak>) => { record.samples[1]!.pinned.instanceId = 'other-instance'; }],
+    ['other image', ({ record }: ReturnType<typeof completedSoak>) => { record.samples[1]!.pinned.image = 'other-image'; }],
+    ['other soak', ({ record }: ReturnType<typeof completedSoak>) => { record.samples[1]!.soakId = 'other-soak'; }],
+    ['failed sample', ({ record }: ReturnType<typeof completedSoak>) => { record.samples[1]!.checks[0]!.ok = false; }],
+    ['missing samples', ({ record }: ReturnType<typeof completedSoak>) => { record.samples.splice(1, 100); }],
+    ['changed window', ({ record }: ReturnType<typeof completedSoak>) => { record.samples.push({ ...record.samples.at(-1)!, sequence: record.samples.length, observedAt: '2026-10-13T00:01:00.000Z' }); }],
+    ['other bundle', ({ soak }: ReturnType<typeof completedSoak>) => { (soak.inputIdentity as { stageIdentity: { bundleSha256: string } }).stageIdentity.bundleSha256 = 'e'.repeat(64); }],
+    ['ambiguous bundle', ({ source }: ReturnType<typeof completedSoak>) => { source.receipts[0]!.evidenceRefs.push('bundle:sha256:' + 'e'.repeat(64)); }],
+    ['other workspace', ({ soak }: ReturnType<typeof completedSoak>) => { soak.evidenceRefs = soak.evidenceRefs.map((ref) => ref.startsWith('soak-host:') ? 'soak-host:workspace-2/host-1' : ref); }],
+    ['duplicate subject', ({ soak }: ReturnType<typeof completedSoak>) => { soak.evidenceRefs.push('soak:soak-2'); }],
+  ] as const)('rejects a claimed passing receipt with %s', async (_name, mutate) => {
+    const fixture = completedSoak();
+    mutate(fixture);
+    const sql = vi.fn(async () => [{ detail: { release: fixture.source } }]) as unknown as Sql;
+    const result = await readByocReleaseAcceptance({
+      taskId: 'release-task', workspaceId: 'workspace-1', minimumSoakDurationMs: DAY,
+    }, sql, async () => fixture.record);
+    expect(result?.shipped).toBe(false);
+    expect(result?.milestones.find(({ key }) => key === 'soak')?.status).toBe('failed');
+    expect(result?.milestones.find(({ key }) => key === 'shipment')?.status).toBe('blocked');
+  });
+
+  it('returns no acceptance claim for a missing authoritative task journal', async () => {
+    const sql = vi.fn(async () => []) as unknown as Sql;
+    const read = vi.fn();
+    expect(await readByocReleaseAcceptance({
+      taskId: 'absent', workspaceId: 'workspace-1', minimumSoakDurationMs: DAY,
+    }, sql, read)).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('propagates an unavailable persisted reader instead of claiming a pass', async () => {
+    const { source } = completedSoak();
+    const sql = vi.fn(async () => [{ detail: { release: source } }]) as unknown as Sql;
+    await expect(readByocReleaseAcceptance({
+      taskId: 'release-task', workspaceId: 'workspace-1', minimumSoakDurationMs: DAY,
+    }, sql, async () => { throw new Error('database unavailable'); })).rejects.toThrow('database unavailable');
+  });
+});
 
 describe('BYOC release carry adapter', () => {
   it('derives only a contiguous evidence-backed milestone prefix', () => {

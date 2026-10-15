@@ -406,6 +406,20 @@ export default function RemoteAccessSettingsPage() {
                       {e.scopes.harnesses?.length ? ` · projects: ${e.scopes.harnesses.join(', ')}` : ''}
                     </div>
                   )}
+                  {e.kind === 'mobile' && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 13 }}>
+                      <Checkbox
+                        checked={e.scopes.capabilities?.includes('agent-sessions') ?? false}
+                        ariaLabel={`Agent sessions for ${e.label ?? e.id}`}
+                        disabled={busy !== null}
+                        onChange={(enabled) => void run('Updating Agent sessions', async () => {
+                          await postJson(`/api/device/desktop/devices/${encodeURIComponent(e.id)}/agent-sessions`, { workspaceId: ws, enabled });
+                          toast.success(`Agent sessions ${enabled ? 'enabled' : 'disabled'} for ${e.label ?? 'phone'}`);
+                        })}
+                      />
+                      Agent sessions
+                    </label>
+                  )}
                   {entryTags(e, now).length > 0 && (
                     <div style={{ marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                       {entryTags(e, now).map((t) => (

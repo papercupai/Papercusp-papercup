@@ -57,7 +57,6 @@ vi.mock('./plan-renderers', () => ({
   attachPlanRefClickHandler: vi.fn(() => () => {}),
   decoratePromotedBlock: vi.fn(),
   decoratePlanItemBadges: vi.fn(),
-  decoratePlanItemTestBadges: vi.fn(),
   attachFeatureBadgeClickHandler: vi.fn(() => () => {}),
 }));
 vi.mock('./plan-renderers-ir', () => ({

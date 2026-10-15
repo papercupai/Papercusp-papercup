@@ -137,7 +137,7 @@ export async function readRetainExtras(
       SELECT count(*)::int AS n
         FROM harness_shared.harness_plans hp
        WHERE hp.workspace_id = ${workspaceId}
-         AND hp.created > now() - interval '7 days'
+         AND hp.created_at > now() - interval '7 days'
          AND ${opts.memberSlugs ? sql`hp.harness_slug = ANY(${opts.memberSlugs as string[]}::text[])` : sql`TRUE`}
     `) as Array<{ n: number }>;
     plansDrafted7d = Number(rows[0]?.n ?? 0);
@@ -202,6 +202,7 @@ function toIsoMs(v: unknown): string | null {
 export interface RetainMemorySource {
   id: string;
   text: string;
+  scope?: string;
   kind?: string;
   metadata?: Record<string, unknown>;
 }
@@ -499,6 +500,8 @@ export async function listCanonicalRetainMemoriesPage(
     window: RetainLegWindow | null;
     limit: number;
     predicate?: RetainFeedCompiledPredicate;
+    /** Keyed detail over the same visible corpus; never a recency-page search. */
+    id?: string;
   },
 ): Promise<RetainMemorySource[]> {
   if (scopes.length === 0) return [];
@@ -514,6 +517,7 @@ export async function listCanonicalRetainMemoriesPage(
                  COALESCE(m.updated_at, m.created_at, to_timestamp(0))) AS ts
           FROM harness_shared.memory_canonical m
          WHERE ${canonicalRetainMemoryCorpusSql(sql, scopes)}
+           AND ${opts.id !== undefined ? sql`m.id::text = ${opts.id}` : sql`TRUE`}
       ) x
      WHERE ${opts.predicate ? retainFeedPredicateSql(sql, opts.predicate.args) : sql`TRUE`}
        AND ${legWindowSql(sql, opts.window)}
@@ -544,6 +548,7 @@ export async function listCanonicalRetainMemoriesPage(
     return {
       id: row.id,
       text: typeof payload.data === 'string' ? payload.data : String(payload.data ?? ''),
+      scope: typeof payload.user_id === 'string' ? payload.user_id : '',
       ...(kind !== undefined ? { kind } : {}),
       // Canonical table activity is the keyset order. Stamp it into the
       // neutral metadata spelling retainMemoryTsOf already consumes.
@@ -1454,8 +1459,8 @@ export function stripFrontmatter(text: string): string {
 /**
  * One ledger row's expanded detail (WI-39534): body/provenance beyond the
  * row's title+status, per kind, in ONE neutral shape. Best-effort like every
- * retain read — a store failure or unknown id resolves to null (the client
- * renders "detail unavailable"), never a 500.
+ * retain read. An unknown id resolves to null; a failed store read propagates
+ * through sync's error path so the client can show the cause and recover.
  */
 export async function readRetainDetail(
   sql: Sql,
@@ -1627,7 +1632,7 @@ export async function readRetainDetail(
     }
   } catch (err) {
     console.warn(`[learning.retainDetail] ${kind} read failed:`, err instanceof Error ? err.message : err);
-    return null;
+    throw err;
   }
 }
 

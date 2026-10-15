@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createGymRunnerPorts, type GymRunnerPortsConfig } from '../runner-ports';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createGymRunnerPorts, parseVitestOracleResults, type GymRunnerPortsConfig } from '../runner-ports';
 import type { Sql } from 'postgres';
 
 /** A no-op tagged-template + `.unsafe()`/`.json()` sql fake (teardown + principal-seed paths). */
@@ -47,10 +50,19 @@ function cfg(over: Partial<GymRunnerPortsConfig> = {}): { config: GymRunnerPorts
 }
 
 describe('createGymRunnerPorts', () => {
+  it('retains skipped assertion identities so they cannot disappear from coverage', () => {
+    expect(parseVitestOracleResults(JSON.stringify({ testResults: [{ assertionResults: [
+      { fullName: 'executed', status: 'passed' }, { fullName: 'skipped', status: 'pending' },
+    ] }] }))).toEqual([
+      { name: 'executed', passed: true },
+      { name: 'skipped', passed: false, executed: false },
+    ]);
+  });
+
   it('exposes the full GymRunnerPorts surface', () => {
     const p = createGymRunnerPorts(cfg().config);
-    for (const k of ['cloneSubstrate', 'registerThrowawayHarness', 'applyPromptOverride', 'fileFeature', 'startPipeline', 'pollStatus', 'runOracle', 'teardownHarness', 'now', 'sleep']) {
-      expect(typeof (p as Record<string, unknown>)[k]).toBe('function');
+    for (const k of ['cloneSubstrate', 'registerThrowawayHarness', 'applyPromptOverride', 'fileFeature', 'startPipeline', 'pollStatus', 'runOracle', 'teardownHarness', 'now', 'sleep'] as const) {
+      expect(typeof p[k]).toBe('function');
     }
   });
 
@@ -78,11 +90,367 @@ describe('createGymRunnerPorts', () => {
       expect(results).toEqual([
         { name: 'oracle > passes', passed: true },
         { name: 'oracle > fails', passed: false },
+        { name: 'oracle > skipped', passed: false, executed: false },
       ]);
       expect(execs).toEqual([]);
     } finally {
       rmSync(clonePath, { recursive: true, force: true });
     }
+  });
+
+  it.each([false, true])('captures the actual pinned oracle and bytes around execution (mutated=%s)', async (mutated) => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-pin-'));
+    const original = 'export const oracle = true;\n';
+    const changed = 'export const oracle = false;\n';
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+    try {
+      writeFileSync(join(clonePath, 'oracle.test.js'), original);
+      const commands: string[][] = [];
+      const { config } = cfg({ execCapture: async (cmd, args) => {
+        commands.push([cmd, ...args]);
+        if (cmd === 'git') return { stdout: original, stderr: '' };
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='))!;
+        writeFileSync(outputArg.slice('--outputFile='.length), JSON.stringify({ testResults: [
+          { name: join(clonePath, 'oracle.test.js'), assertionResults: [{ fullName: 't', status: 'passed' }] },
+        ] }));
+        if (mutated) writeFileSync(join(clonePath, 'oracle.test.js'), changed);
+        return { stdout: '', stderr: '' };
+      } });
+      const pinCommit = 'a'.repeat(40);
+      expect(await createGymRunnerPorts(config).runOracle!({ clonePath, testPath: 'oracle.test.js', pinCommit })).toMatchObject({
+        results: [{ name: 't', file: 'oracle.test.js', passed: true }], testPath: 'oracle.test.js', pinCommit,
+        sourceHashes: { pinned: digest(original), before: digest(original), after: digest(mutated ? changed : original) },
+      });
+      expect(commands[0]).toEqual(['git', 'show', `${pinCommit}:oracle.test.js`]);
+      expect(commands[1]).toEqual(['git', 'show', `${pinCommit}:package.json`]);
+      expect(commands[2].slice(0, 5)).toEqual(['npm', 'run', 'test:file', '--', 'oracle.test.js']);
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
+
+  it('retains explicit unknown source identity when the immutable pin cannot be read', async () => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-missing-pin-'));
+    try {
+      writeFileSync(join(clonePath, 'oracle.test.js'), 'oracle');
+      const { config } = cfg({ execCapture: async (cmd, args) => {
+        if (cmd === 'git') throw new Error('missing commit');
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='))!;
+        writeFileSync(outputArg.slice('--outputFile='.length), JSON.stringify({ testResults: [{
+          name: 'oracle.test.js', assertionResults: [{ fullName: 't', status: 'passed' }],
+        }] }));
+        return { stdout: '', stderr: '' };
+      } });
+      const receipt = await createGymRunnerPorts(config).runOracle!({ clonePath, testPath: 'oracle.test.js', pinCommit: 'a'.repeat(40) });
+      expect(receipt).toMatchObject({ results: [{ name: 't', file: 'oracle.test.js', passed: true }],
+        sourceHashes: { pinned: null } });
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])('retains the exact evaluated implementation and raw test report (mutated=%s)', async (mutated) => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-artifact-'));
+    const before = 'export const answer = 42;\n';
+    const after = 'export const answer = 0;\n';
+    const report = JSON.stringify({ testResults: [{ name: join(clonePath, 'oracle.test.js'),
+      assertionResults: [{ fullName: 'task', status: 'passed' }] }] });
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+    try {
+      writeFileSync(join(clonePath, 'impl.js'), before);
+      writeFileSync(join(clonePath, 'oracle.test.js'), 'oracle');
+      const { config } = cfg({ execCapture: async (cmd, args) => {
+        if (cmd === 'git') return { stdout: 'oracle', stderr: '' };
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='))!;
+        writeFileSync(outputArg.slice('--outputFile='.length), report);
+        if (mutated) writeFileSync(join(clonePath, 'impl.js'), after);
+        return { stdout: '', stderr: '' };
+      } });
+      const input = { clonePath, testPath: 'oracle.test.js', implPath: 'impl.js', pinCommit: 'a'.repeat(40) };
+      const receipt = await createGymRunnerPorts(config).runOracle!(input);
+      expect(receipt).toMatchObject({
+        implementation: { path: 'impl.js', before: hash(before), after: hash(mutated ? after : before) },
+        execution: { cwd: clonePath, report,
+          command: ['npm', 'run', 'test:file', '--', 'oracle.test.js', '--', '--reporter=json', expect.stringMatching(/^--outputFile=/)],
+          unresolved: ['oracle-dependencies-outside-worker-vite-scope', 'test-command-runtime', 'pipeline-runtime',
+            'oracle-main-process-load-unmeasured',
+            'oracle-config-original-load-unmeasured', 'oracle-config-snapshot-evidence-unavailable',
+            'oracle-npm-manifest-evidence-unavailable', 'oracle-worker-source-evidence-unavailable'], workerSources: { report: null, modules: [] } },
+      });
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
+
+  it('measures real Git and Vitest oracle artifacts across an implementation change', async () => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-real-'));
+    const vitestDir = dirname(fileURLToPath(import.meta.resolve('vitest/package.json')));
+    const reporterPath = join(dirname(fileURLToPath(import.meta.resolve('@papercusp/test-config/vitest-config'))), 'executed-source-map-reporter.ts');
+    const implementation = 'export const answer = 42;\n';
+    const changedImplementation = 'export const answer = 41;\n';
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+    try {
+      // Reuse the installed framework; this fixture owns no agent or live DB.
+      mkdirSync(join(clonePath, 'node_modules'));
+      symlinkSync(vitestDir, join(clonePath, 'node_modules', 'vitest'), 'dir');
+      mkdirSync(join(clonePath, 'libs'));
+      symlinkSync(dirname(dirname(reporterPath)), join(clonePath, 'libs', 'test-config'), 'dir');
+      const mainDir = join(clonePath, 'libs', 'runner-support');
+      mkdirSync(mainDir);
+      writeFileSync(join(mainDir, 'package.json'), JSON.stringify({ name: 'runner-support', type: 'module', exports: './index.mjs' }));
+      const mainSource = 'export const allow = true;\n';
+      writeFileSync(join(mainDir, 'index.mjs'), mainSource);
+      symlinkSync(mainDir, join(clonePath, 'node_modules', 'runner-support'), 'dir');
+      const commandSource = `import { spawnSync } from 'node:child_process';
+        const child = spawnSync(process.execPath, [${JSON.stringify(join(vitestDir, 'vitest.mjs'))},
+          'run', '--config', 'vitest.config.mjs', ...process.argv.slice(2)], { stdio: 'inherit', env: process.env });
+        process.exit(child.status ?? 1);\n`;
+      writeFileSync(join(clonePath, 'command.mjs'), commandSource);
+      writeFileSync(join(clonePath, 'package.json'), JSON.stringify({ name: 'gym-oracle-fixture', type: 'module', scripts: {
+        'test:file': 'node command.mjs',
+      } }));
+      const configHelper = 'export const workers = 1;\n';
+      writeFileSync(join(clonePath, 'config-helper.mjs'), configHelper);
+      writeFileSync(join(clonePath, 'vitest.config.mjs'), `import { workers } from './config-helper.mjs';
+        import { allow } from 'runner-support';
+        export default { test: {
+        include: ['oracle.test.mjs'], pool: 'forks', maxWorkers: workers, fileParallelism: !allow,
+        experimental: { importDurations: { limit: 1000000 } },
+        reporters: ['json', ${JSON.stringify(reporterPath)}], outputFile: process.argv.find(a => a.startsWith('--outputFile='))?.slice(13),
+      } };\n`);
+      writeFileSync(join(clonePath, 'impl.mjs'), implementation);
+      writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 42;\n');
+      writeFileSync(join(clonePath, 'oracle.test.mjs'), `import { test, expect } from 'vitest';
+        import { answer } from './impl.mjs';
+        import { expected } from './helper.mjs';
+        import { writeFileSync } from 'node:fs';
+        test('actual task', () => {
+          if (expected === 43) {
+            writeFileSync(new URL('./helper.mjs', import.meta.url), 'export const expected = 44;');
+            writeFileSync(new URL('./config-helper.mjs', import.meta.url), 'export const workers = 2;');
+          }
+          expect(answer).toBe(expected);
+        });\n`);
+      const git = (args: string[]) => execFileSync('git', args, { cwd: clonePath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      git(['init', '--quiet']);
+      git(['add', 'package.json', 'command.mjs', 'vitest.config.mjs', 'config-helper.mjs', 'impl.mjs', 'helper.mjs', 'oracle.test.mjs', 'libs/runner-support']);
+      git(['-c', 'user.name=Gym fixture', '-c', 'user.email=gym-fixture@example.invalid', 'commit', '--quiet', '-m', 'Pinned oracle fixture']);
+      const pinCommit = git(['rev-parse', 'HEAD']).trim();
+      const port = createGymRunnerPorts(cfg().config).runOracle!;
+      const input = { clonePath, testPath: 'oracle.test.mjs', implPath: 'impl.mjs', pinCommit };
+      const pre = await port(input);
+      writeFileSync(join(clonePath, 'impl.mjs'), changedImplementation);
+      const post = await port(input);
+      if (!pre || Array.isArray(pre) || !post || Array.isArray(post)) throw new Error('Missing real oracle receipt');
+      expect(pre.results).toEqual([{ name: 'actual task', file: 'oracle.test.mjs', passed: true }]);
+      expect(post.results).toEqual([{ name: 'actual task', file: 'oracle.test.mjs', passed: false }]);
+      expect(pre.implementation).toEqual({ path: 'impl.mjs', before: digest(implementation), after: digest(implementation) });
+      expect(post.implementation).toEqual({ path: 'impl.mjs', before: digest(changedImplementation), after: digest(changedImplementation) });
+      expect(pre.sourceHashes).toEqual(post.sourceHashes);
+      expect(pre.execution).toMatchObject({ exitCode: 0, signal: null });
+      expect(post.execution).toMatchObject({ exitCode: 1, signal: null });
+      const originalManifest = git(['show', `${pinCommit}:package.json`]);
+      for (const receipt of [pre, post]) {
+        expect(receipt.execution).toMatchObject({ npmManifest: { path: 'package.json', sourceHashes: {
+          pinned: digest(originalManifest), before: digest(originalManifest), after: digest(originalManifest),
+        } } });
+      }
+      expect(JSON.parse(pre.execution!.report).testResults[0].assertionResults[0].status).toBe('passed');
+      for (const receipt of [pre, post]) {
+        expect(receipt.execution).toMatchObject({ commandProcessSources: {
+          report: expect.any(String),
+          processes: expect.arrayContaining([expect.objectContaining({ entrypoint: 'command.mjs',
+            schemaVersion: 'node-loaded-process-sources-v1', status: 'stable',
+            sources: expect.arrayContaining([{ path: 'command.mjs', sha256: digest(commandSource), currentSha256: digest(commandSource) }]),
+          })]),
+          reference: { pinCommit, sources: expect.arrayContaining([{ path: 'command.mjs', sha256: digest(commandSource) }]) },
+          unresolved: expect.arrayContaining(['node-process-descendant-population-unmeasured', 'node-preload-self-unmeasured']),
+        } });
+      }
+      for (const receipt of [pre, post]) {
+        expect(receipt.execution).toMatchObject({ mainProcessSources: {
+          evidence: { scope: 'repository-node-main-process-sources', sources: expect.arrayContaining([
+            { path: 'libs/runner-support/index.mjs', sha256: digest(mainSource), currentSha256: digest(mainSource) },
+          ]) },
+          reference: { pinCommit, sources: expect.arrayContaining([
+            { path: 'libs/runner-support/index.mjs', sha256: digest(mainSource) },
+          ]) },
+        } });
+        expect(receipt.execution!.configSources!.loaded!.sources.map(source => source.path))
+          .not.toContain('libs/runner-support/index.mjs');
+      }
+      for (const receipt of [pre, post]) {
+        expect(receipt.execution).toMatchObject({ configSources: {
+          loaded: { basis: 'node-load-hook', status: 'stable', reasons: [],
+            sources: expect.arrayContaining([
+              { path: 'config-helper.mjs', sha256: digest(configHelper), currentSha256: digest(configHelper) },
+            ]) },
+          reference: { pinCommit, sources: expect.arrayContaining([
+            { path: 'config-helper.mjs', sha256: digest(configHelper) },
+          ]) },
+          evidence: { basis: 'reporter-init-disk', status: 'unchanged', reasons: [],
+            sources: expect.arrayContaining([
+              { path: 'config-helper.mjs', sha256: digest(configHelper), currentSha256: digest(configHelper) },
+            ]) },
+        } });
+        expect(receipt.execution!.unresolved).not.toContain('oracle-config-original-load-unmeasured');
+      }
+      expect(JSON.parse(post.execution!.report).testResults[0].assertionResults[0].status).toBe('failed');
+      for (const receipt of [pre, post]) {
+        expect(receipt.execution!.workerSources).toMatchObject({
+          reference: { pinCommit, sources: expect.arrayContaining([
+            { path: 'helper.mjs', sha256: digest('export const expected = 42;\n') },
+          ]) },
+          modules: [{ testFile: 'oracle.test.mjs', sourceEvidence: {
+            status: 'stable', sources: expect.arrayContaining([
+              expect.objectContaining({ path: 'helper.mjs', sha256: digest('export const expected = 42;\n') }),
+            ]),
+          } }],
+        });
+        expect(receipt.execution!.workerSources!.report).toBeTruthy();
+      }
+      expect(post.execution!.workerSources!.modules[0]!.state).toBe('failed');
+      // Config evaluation can restore a helper before the reporter starts.
+      // Both disk snapshots then match the pin although Vite loaded other bytes.
+      const originalConfig = readFileSync(join(clonePath, 'vitest.config.mjs'), 'utf8');
+      const rewrittenConfigHelper = 'export const workers = 2;\n';
+      writeFileSync(join(clonePath, 'config-helper.mjs'), rewrittenConfigHelper);
+      writeFileSync(join(clonePath, 'vitest.config.mjs'), originalConfig +
+        `import { writeFileSync } from 'node:fs';\nwriteFileSync(new URL('./config-helper.mjs', import.meta.url), ${JSON.stringify(configHelper)});\n`);
+      const selfRewritingConfig = await port(input);
+      if (!selfRewritingConfig || Array.isArray(selfRewritingConfig)) throw new Error('Missing config load receipt');
+      expect(selfRewritingConfig.execution!.configSources).toMatchObject({
+        evidence: { status: 'unchanged', sources: expect.arrayContaining([
+          { path: 'config-helper.mjs', sha256: digest(configHelper), currentSha256: digest(configHelper) },
+        ]) },
+        loaded: { status: 'changed', reasons: expect.arrayContaining(['config-loaded-source-changed:config-helper.mjs']),
+          sources: expect.arrayContaining([
+            { path: 'config-helper.mjs', sha256: digest(rewrittenConfigHelper), currentSha256: digest(configHelper) },
+          ]) },
+      });
+      writeFileSync(join(clonePath, 'vitest.config.mjs'), originalConfig);
+      // A bare repository import is externalized by Vite and absent from its
+      // config dependency list. It can restore itself before reporter init.
+      const rewrittenMain = `import { writeFileSync } from 'node:fs';
+        writeFileSync(new URL('./index.mjs', import.meta.url), ${JSON.stringify(mainSource)});
+        export const allow = false;\n`;
+      writeFileSync(join(mainDir, 'index.mjs'), rewrittenMain);
+      const selfRestoringMain = await port(input);
+      if (!selfRestoringMain || Array.isArray(selfRestoringMain)) throw new Error('Missing main-process receipt');
+      expect(selfRestoringMain.execution).toMatchObject({ mainProcessSources: {
+        evidence: { status: 'changed', sources: expect.arrayContaining([
+          { path: 'libs/runner-support/index.mjs', sha256: digest(rewrittenMain), currentSha256: digest(mainSource) },
+        ]) },
+        reference: { sources: expect.arrayContaining([
+          { path: 'libs/runner-support/index.mjs', sha256: digest(mainSource) },
+        ]) },
+      } });
+      // A stable dirty helper must retain its immutable reference separately.
+      // Comparing pre/post alone would silently accept the rewritten oracle.
+      writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 41;\n');
+      const dirtyHelper = await port(input);
+      if (!dirtyHelper || Array.isArray(dirtyHelper)) throw new Error('Missing dirty helper receipt');
+      expect(dirtyHelper.results[0]!.passed).toBe(true);
+      expect(dirtyHelper.execution!.workerSources).toMatchObject({
+        reference: { pinCommit, sources: expect.arrayContaining([
+          { path: 'helper.mjs', sha256: digest('export const expected = 42;\n') },
+        ]) },
+        modules: [{ sourceEvidence: { status: 'stable', sources: expect.arrayContaining([
+          expect.objectContaining({ path: 'helper.mjs', sha256: digest('export const expected = 41;\n') }),
+        ]) } }],
+      });
+      writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 43;\n');
+      const drifting = await port(input);
+      if (!drifting || Array.isArray(drifting)) throw new Error('Missing drift receipt');
+      expect(drifting.execution!.workerSources).toMatchObject({ modules: [{ sourceEvidence: {
+        status: 'changed', sources: expect.arrayContaining([expect.objectContaining({
+          path: 'helper.mjs', sha256: digest('export const expected = 43;\n'),
+          currentSha256: digest('export const expected = 44;'),
+        })]),
+      } }] });
+      expect(drifting.execution).toMatchObject({ configSources: { evidence: {
+        status: 'changed', sources: expect.arrayContaining([
+          { path: 'config-helper.mjs', sha256: digest(configHelper), currentSha256: digest('export const workers = 2;') },
+        ]),
+      } } });
+      // The actual npm command can change independently of the worker graph.
+      // A stable rewritten lifecycle hook remains distinct from the pinned manifest.
+      writeFileSync(join(clonePath, 'helper.mjs'), 'export const expected = 41;\n');
+      const rewrittenManifest = JSON.stringify({ ...JSON.parse(originalManifest), scripts: {
+        ...JSON.parse(originalManifest).scripts, 'pretest:file': 'node -e "process.exit(0)"',
+      } });
+      writeFileSync(join(clonePath, 'package.json'), rewrittenManifest);
+      const dirtyCommand = await port(input);
+      if (!dirtyCommand || Array.isArray(dirtyCommand)) throw new Error('Missing dirty command receipt');
+      expect(dirtyCommand.results[0]!.passed).toBe(true);
+      expect(dirtyCommand.execution).toMatchObject({ npmManifest: { path: 'package.json', sourceHashes: {
+        pinned: digest(originalManifest), before: digest(rewrittenManifest), after: digest(rewrittenManifest),
+      } } });
+      expect(dirtyCommand.execution).toMatchObject({ configSources: {
+        reference: { sources: expect.arrayContaining([{ path: 'config-helper.mjs', sha256: digest(configHelper) }]) },
+        evidence: { status: 'unchanged', sources: expect.arrayContaining([
+          { path: 'config-helper.mjs', sha256: digest('export const workers = 2;'), currentSha256: digest('export const workers = 2;') },
+        ]) },
+      } });
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  }, 30_000);
+
+  it.each([false, true])('retains intermediate loader audit verbatim and cleans its file (command failure=%s)', async failure => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-loader-audit-'));
+    // Propagation only: actual native byte/transform semantics are verified by
+    // committed-source-loader.test.ts, not inferred from this controlled record.
+    const raw = JSON.stringify({ boundary: 'node-esm-load-return', returnedSha256: 'controlled',
+      unresolved: ['later-loader-transforms-unmeasured'] }) + '\n';
+    let loaderPath = '';
+    try {
+      writeFileSync(join(clonePath, 'oracle.test.js'), 'oracle');
+      const { config } = cfg({ execCapture: async (cmd, args, opts) => {
+        if (cmd === 'git') return { stdout: 'oracle', stderr: '' };
+        loaderPath = opts?.env?.PAPERCUSP_COMMITTED_SOURCE_AUDIT ?? '';
+        expect(loaderPath).not.toBe('');
+        writeFileSync(loaderPath, raw);
+        writeFileSync(args.find(arg => arg.startsWith('--outputFile='))!.slice('--outputFile='.length),
+          JSON.stringify({ testResults: [{ assertionResults: [{ fullName: 't', status: 'passed' }] }] }));
+        if (failure) throw Object.assign(new Error('controlled command failure'), { code: 7 });
+        return { stdout: '', stderr: '' };
+      } });
+      const receipt = await createGymRunnerPorts(config).runOracle!({ clonePath, testPath: 'oracle.test.js', pinCommit: 'a'.repeat(40) });
+      expect(receipt).toMatchObject({ execution: { exitCode: failure ? 7 : 0,
+        commandProcessSources: { loaderReport: raw,
+          unresolved: expect.arrayContaining(['committed-source-loader-chain-not-closed']) } } });
+      expect(existsSync(loaderPath)).toBe(false);
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
+
+  it.each(['exit', 'signal', 'spawn'] as const)('retains a report without hiding the test command %s failure', async (failure) => {
+    const clonePath = mkdtempSync(join(tmpdir(), 'gym-oracle-command-'));
+    try {
+      writeFileSync(join(clonePath, 'oracle.test.js'), 'oracle');
+      writeFileSync(join(clonePath, 'impl.js'), 'implementation');
+      const { config } = cfg({ execCapture: async (cmd, args) => {
+        if (cmd === 'git') return { stdout: 'oracle', stderr: '' };
+        const outputArg = args.find((arg) => arg.startsWith('--outputFile='))!;
+        writeFileSync(outputArg.slice('--outputFile='.length), JSON.stringify({ testResults: [
+          { assertionResults: [{ fullName: 't', status: 'passed' }] },
+        ] }));
+        throw Object.assign(new Error('oracle command failed'), {
+          code: failure === 'exit' ? 7 : failure === 'spawn' ? 'ENOENT' : null,
+          signal: failure === 'signal' ? 'SIGTERM' : null,
+        });
+      } });
+      const input = { clonePath, testPath: 'oracle.test.js', implPath: 'impl.js', pinCommit: 'a'.repeat(40) };
+      expect(await createGymRunnerPorts(config).runOracle!(input)).toMatchObject({
+        results: [{ name: 't', passed: true }],
+        execution: { exitCode: failure === 'exit' ? 7 : null, signal: failure === 'signal' ? 'SIGTERM' : null },
+      });
+    } finally { rmSync(clonePath, { recursive: true, force: true }); }
+  });
+
+  it('retains file collection failures and handles malformed reports as unmeasured', () => {
+    expect(parseVitestOracleResults(JSON.stringify({ testResults: [{ name: 'broken.test.ts', assertionResults: [] }] })))
+      .toEqual([{ name: '', file: 'broken.test.ts', passed: false, executed: false }]);
+    expect(parseVitestOracleResults('null')).toEqual([]);
+    expect(parseVitestOracleResults('not json')).toEqual([]);
+    expect(parseVitestOracleResults(JSON.stringify({ testResults: [{ name: 'hook.test.ts', status: 'failed',
+      assertionResults: [{ fullName: 'passed before hook error', status: 'passed' }],
+    }] }))).toEqual([
+      { name: 'passed before hook error', file: 'hook.test.ts', passed: true },
+      { name: '', file: 'hook.test.ts', passed: false, executed: false },
+    ]);
   });
 
   it('cloneSubstrate runs git clone then checkout --detach at the pinned commit', async () => {

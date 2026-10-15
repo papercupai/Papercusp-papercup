@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import {
   dispatchProjectedTool,
   lookupByMcpName,
@@ -6,6 +10,24 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 
+const harnessRoot = vi.hoisted(() => ({ path: '' }));
+const acceptanceRubricMocks = vi.hoisted(() => ({
+  active: vi.fn(),
+  retired: vi.fn(),
+}));
+const adhocContractMocks = vi.hoisted(() => ({ workItem: vi.fn(), contract: vi.fn() }));
+const scorecardMocks = vi.hoisted(() => ({ readEvidence: vi.fn() }));
+
+vi.mock('../../work-items', () => ({ getWorkItem: adhocContractMocks.workItem }));
+vi.mock('./behavior-contract-resolver', () => ({ resolveWorkItemBehaviorContract: adhocContractMocks.contract }));
+
+vi.mock('../../harness-registry', () => ({
+  loadHarnessRegistry: async () => ({
+    projects: [{ slug: 'papercusp', path: harnessRoot.path }],
+  }),
+  resolveHarnessContentPath: (registry: { projects: Array<{ slug: string; path: string }> }, slug: string) =>
+    registry.projects.find((project) => project.slug === slug)?.path,
+}));
 vi.mock('../_harness-scope', async (original) => ({
   ...(await original<typeof import('../_harness-scope')>()),
   harnessScopedCtx: vi.fn((_harness: unknown, ctx: unknown) => ctx),
@@ -22,21 +44,42 @@ vi.mock('./spec-evidence-store', async (original) => ({
   ...(await original<typeof import('./spec-evidence-store')>()),
   listSpecEvidence: vi.fn(),
 }));
+vi.mock('../../rubrics', async (original) => ({
+  ...(await original<typeof import('../../rubrics')>()),
+  getAcceptanceRubricsForPlan: acceptanceRubricMocks.active,
+  getRetiredAcceptanceRubricsForPlan: acceptanceRubricMocks.retired,
+}));
 vi.mock('../../build-info', () => ({
   getBuildInfo: vi.fn(() => ({ sha: 'live-evaluator-sha', version: '1.2.3' })),
 }));
+vi.mock('../../scorecards', async (original) => ({
+  ...(await original<typeof import('../../scorecards')>()),
+  readScorecardEvidence: scorecardMocks.readEvidence,
+}));
 
 import tool from './evaluate-spec-test-adequacy';
+import { replaySpecTestAdequacyForHistoricalAudit } from './evaluate-spec-test-adequacy';
+import { evaluateSpecTestAdequacy } from './spec-test-adequacy';
+import { readScorecardEvidence } from '../../scorecards';
+import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 import { listSpecClauses } from './spec-clauses-store';
 import { listSpecEvidence } from './spec-evidence-store';
+import { getAcceptanceRubricsForPlan, getRetiredAcceptanceRubricsForPlan } from '../../rubrics';
 
 const listClauses = vi.mocked(listSpecClauses);
 const listEvidence = vi.mocked(listSpecEvidence);
+/** One `listSpecEvidence` row. The selection-cohort tests build PARTIAL rows (only the
+ *  fields the handler filters on) and assert the mock's result to the real row type —
+ *  a checked assertion, never an `as never` escape. */
+type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
+const listAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
+const listRetiredAcceptanceRubrics = vi.mocked(getRetiredAcceptanceRubricsForPlan);
+const readScorecard = vi.mocked(readScorecardEvidence);
 
 type ToolOutput = { data: Record<string, any> };
 
-const call = async (args: Record<string, unknown>) =>
-  ((await tool.handler(args as never, {} as never)) as ToolOutput).data;
+const call = async (args: Record<string, unknown>, context: Record<string, unknown> = {}) =>
+  ((await tool.handler(args as never, { workspaceId: 'workspace-test', ...context } as never)) as ToolOutput).data;
 
 const makeDispatchContext = (): UnifiedToolContext => ({
   log: vi.fn(),
@@ -85,9 +128,814 @@ beforeEach(() => {
   vi.clearAllMocks();
   listEvidence.mockResolvedValue([{ specId: 'SPEC-001' } as never]);
   listClauses.mockResolvedValue([clause()]);
+  listAcceptanceRubrics.mockResolvedValue([
+    { rubricId: 'plan-a-acceptance', classRef: 'plan-class-feature-ship' } as never,
+  ]);
+  listRetiredAcceptanceRubrics.mockResolvedValue([]);
+  adhocContractMocks.workItem.mockResolvedValue({ id: 'EI-12345', harness: 'papercusp', kind: 'bug' });
+  adhocContractMocks.contract.mockResolvedValue({
+    groups: [{ planSlug: 'adhoc-work-item-specs', clauses: [{ specId: 'adhoc.EI-12345.deadline' }] }],
+  });
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it('records timings for class, evidence, clause, disclosure, and evaluation stages', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const metadata = vi.fn();
+    const result = await call(
+      tool.args.parse({ harness: 'papercusp', slug: 'plan-a', specIds: ['SPEC-001'], detail: 'summary' }),
+      { metadata },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      plansEvaluateSpecTestAdequacyStageTimings: expect.objectContaining({
+        schemaVersion: 'plans-evaluate-spec-test-adequacy-stage-timings-v1',
+        detail: 'summary',
+        phaseMs: expect.objectContaining({
+          classResolution: expect.any(Number),
+          selectedEvidenceRead: expect.any(Number),
+          clausesRead: expect.any(Number),
+          artifactDisclosureRead: expect.any(Number),
+          evaluation: expect.any(Number),
+          totalBeforeResponse: expect.any(Number),
+        }),
+        counts: expect.objectContaining({
+          selectedEvidence: expect.any(Number),
+          disclosedGapEvidence: expect.any(Number),
+          clauses: 1,
+          eligibleClauses: 1,
+          artifactDisclosures: expect.any(Number),
+        }),
+      }),
+    }));
+  });
+
+  it.each([[true, 'full'], [false, 'summary']] as const)('detail %s and %s preserve the exact clause verdict and tier', async (booleanDetail, stringDetail) => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const base = { harness: 'papercusp', slug: 'plan-a', specIds: ['SPEC-001'] };
+    const aliased = await call(tool.args.parse({ ...base, detail: booleanDetail }));
+    const canonical = await call(tool.args.parse({ ...base, detail: stringDetail }));
+    expect(aliased).toEqual(canonical);
+    expect(aliased).toMatchObject({ ok: true, detail: stringDetail, count: 1, rows: [expect.objectContaining({ specId: 'SPEC-001' })] });
+    expect(Boolean(aliased.rows[0].scorecardDraft)).toBe(booleanDetail);
+  });
+
+  it.each([true, false])('boolean current=%s requests server measurement and cannot attest missing proof', async (current) => {
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockResolvedValue([]);
+    const parsed = tool.args.parse({ harness: 'papercusp', slug: 'plan-a', current });
+    expect(parsed.current).toBe(current);
+    const result = await call(parsed);
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ current: undefined }));
+    expect(result.rows[0].ratings.freshness.rating).not.toBe('pass');
+    expect(result.rows[0].wouldBlock).toContain('freshness');
+  });
+
+  it('marks a replay with unavailable server measurements as degraded in summary and full results', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockResolvedValue([{
+      id: 91,
+      workItemId: 'WI-123',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      sourceValId: null,
+      specRevision: 1,
+      currentRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'packages/operator-core/lib/reconnect.test.ts#reconnect',
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
+      testRunId: 42,
+      testRunProvenance: null,
+      details: { adequacy: { testLayer: 'integration', outcome: 'pass', executed: true } },
+      observedAt: '2026-09-07T00:00:00.000Z',
+      bindingFingerprint: 'sha256:binding-91',
+      createdBy: 'su-test',
+      createdAt: '2026-09-07T00:00:00.000Z',
+      currentness: {
+        overall: 'unknown',
+        provenance: 'replayed-snapshot',
+        comparisonSupplied: true,
+        dimensions: { spec: 'current', source: 'unknown', test: 'unknown' },
+        staleReasons: [],
+        unknownReasons: ['server-measurement-unavailable:repo_measurement_timeout'],
+      },
+      serverMeasurement: { status: 'unavailable', reason: 'repo_measurement_timeout' },
+    } as never]);
+
+    const base = {
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      replaySnapshot: true,
+      current: [],
+    };
+    const summary = await call({ ...base, detail: 'summary' });
+    const full = await call({ ...base, detail: 'full' });
+
+    const expectedMeasurementEvidence = {
+      status: 'degraded',
+      selectedBindings: 1,
+      measuredBindings: 0,
+      bindings: [{
+        bindingId: 91,
+        evidenceKind: 'test',
+        evidenceRef: 'packages/operator-core/lib/reconnect.test.ts#reconnect',
+        status: 'unavailable',
+      }],
+      unavailableBindings: [{
+        id: 91,
+        evidenceKind: 'test',
+        evidenceRef: 'packages/operator-core/lib/reconnect.test.ts#reconnect',
+        reason: 'repo_measurement_timeout',
+      }],
+      withoutMeasurementBasis: [],
+    };
+    expect(summary.rows[0].measurementEvidence).toEqual(expectedMeasurementEvidence);
+    expect(full.rows[0].measurementEvidence).toEqual(expectedMeasurementEvidence);
+    expect(summary.rows[0].ratings.freshness.rating).toBe('unknown');
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      replaySnapshot: true,
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+    }));
+  });
+
+  it('derives omitted classRef from the persisted subject class without waiving proof', async () => {
+    listAcceptanceRubrics.mockResolvedValue([{ rubricId: 'plan-a-acceptance', classRef: 'plan-class-bugfix' } as never]);
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockResolvedValue([]);
+    const args = { harness: 'papercusp', slug: 'plan-a', detail: 'full' };
+    expect(tool.args.safeParse(args).success).toBe(true);
+    const result = await call(args);
+    expect(result).toMatchObject({ ok: true, classRef: 'plan-class-bugfix', classRefSource: 'active-acceptance-rubric' });
+    expect(result.rows[0].requiredProofFloor).toBe('l4');
+    expect(result.rows[0].wouldBlock.length).toBeGreaterThan(0);
+  });
+  it('evaluates an exact ad-hoc work-item clause without a plan acceptance rubric', async () => {
+    listAcceptanceRubrics.mockResolvedValue([]);
+    listRetiredAcceptanceRubrics.mockResolvedValue([]);
+    listClauses.mockResolvedValue([{
+      ...clause('active'),
+      planSlug: 'adhoc-work-item-specs',
+      specId: 'adhoc.EI-12345.deadline',
+      planItemId: 'P-12345',
+    }]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'adhoc-work-item-specs',
+      classRef: 'plan-class-bugfix',
+      workItemIds: ['EI-12345'],
+      specIds: ['adhoc.EI-12345.deadline'],
+      detail: 'full',
+    });
+
+    expect(result).toMatchObject({ ok: true, count: 1, classRef: 'plan-class-bugfix', classRefSource: 'work-item-completion-attestation' });
+    expect(adhocContractMocks.workItem).toHaveBeenCalledWith('EI-12345', 'papercusp');
+    expect(adhocContractMocks.contract).toHaveBeenCalledWith({ id: 'EI-12345', harness: 'papercusp', kind: 'bug' });
+    expect(listAcceptanceRubrics).not.toHaveBeenCalled();
+    expect(listRetiredAcceptanceRubrics).not.toHaveBeenCalled();
+    // Resolving a class allows honest grading; absent proof must still block certification.
+    expect(result.rows[0].wouldBlock.length).toBeGreaterThan(0);
+    expect(result.rows[0].requiredProofFloor).toBe('l4');
+    expect(result.rows[0].scorecardDraft.rerunRecipe.args).toMatchObject({
+      slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix',
+      workItemIds: ['EI-12345'], specIds: ['adhoc.EI-12345.deadline'],
+    });
+  });
+
+  it.each([undefined, ['EI-12345', 'EI-67890']])('refuses a namespace-wide or mixed-work-item ad-hoc attestation (%j)', async (workItemIds) => {
+    const result = await call({ slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds });
+    expect(result).toMatchObject({ ok: false, error: 'adhoc_work_item_required', count: 0 });
+    expect(adhocContractMocks.workItem).not.toHaveBeenCalled();
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { id: 'EI-12345', harness: 'elsewhere' }])('refuses an absent or cross-harness work item (%j)', async (workItem) => {
+    adhocContractMocks.workItem.mockResolvedValue(workItem);
+    const result = await call({ slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds: ['EI-12345'] });
+    expect(result).toMatchObject({ ok: false, error: 'adhoc_work_item_unresolved', count: 0 });
+    expect(adhocContractMocks.contract).not.toHaveBeenCalled();
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('refuses a clause outside the exact work-item contract', async () => {
+    const result = await call({ slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds: ['EI-12345'], specIds: ['adhoc.EI-67890.deadline'] });
+    expect(result).toMatchObject({ ok: false, error: 'adhoc_spec_outside_work_item', count: 0 });
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on unresolved or unreadable ad-hoc contracts', async () => {
+    const args = { slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds: ['EI-12345'] };
+    adhocContractMocks.contract.mockResolvedValue({ groups: [] });
+    expect(await call(args)).toMatchObject({ ok: false, error: 'adhoc_contract_unresolved', count: 0 });
+    adhocContractMocks.contract.mockRejectedValue(new Error('contract unavailable'));
+    expect(await call(args)).toMatchObject({ ok: false, error: 'adhoc_contract_read_unavailable', count: 0 });
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('keeps a binding-only ad-hoc selection inside the resolved contract', async () => {
+    listEvidence.mockResolvedValue([{ specId: 'SPEC-OTHER' } as never]);
+    listClauses.mockResolvedValue([clause('active')]);
+    const result = await call({ slug: 'adhoc-work-item-specs', classRef: 'plan-class-bugfix', workItemIds: ['EI-12345'], bindingIds: [42] });
+    expect(result).toMatchObject({ ok: false, error: 'selection_empty', count: 0 });
+    expect(result.rows).toBeUndefined();
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ workItemIds: ['EI-12345'], bindingIds: [42] }));
+  });
+
+  it('refuses a caller class that disagrees with the active acceptance rubric before grading', async () => {
+    listAcceptanceRubrics.mockResolvedValue([
+      { rubricId: 'plan-a-acceptance', classRef: 'plan-class-bugfix' } as never,
+    ]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-investigation',
+      specIds: ['SPEC-001'],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'plan_class_mismatch',
+      classRef: 'plan-class-bugfix',
+      declaredClassRef: 'plan-class-bugfix',
+      callerClassRef: 'plan-class-investigation',
+      classRefSource: 'active-acceptance-rubric',
+      count: 0,
+      wouldBlock: [{ code: 'plan_class_mismatch' }],
+    });
+    expect(listEvidence).not.toHaveBeenCalled();
+    expect(listClauses).not.toHaveBeenCalled();
+  });
+
+  it('uses the latest retired acceptance class for a shipped plan', async () => {
+    listAcceptanceRubrics.mockResolvedValue([]);
+    listRetiredAcceptanceRubrics.mockResolvedValue([
+      { rubricId: 'latest-acceptance', classRef: 'plan-class-bugfix' } as never,
+      { rubricId: 'older-acceptance', classRef: 'plan-class-feature-ship' } as never,
+    ]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'selection_empty',
+      classRef: 'plan-class-bugfix',
+      declaredClassRef: 'plan-class-bugfix',
+      classRefSource: 'retired-acceptance-rubric',
+    });
+    expect(listRetiredAcceptanceRubrics).toHaveBeenCalledWith('plan-a', { harnessSlug: 'papercusp' });
+  });
+
+  it('fails closed when no active or retired acceptance class can be resolved', async () => {
+    listAcceptanceRubrics.mockResolvedValue([]);
+    listRetiredAcceptanceRubrics.mockResolvedValue([]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'plan_class_unresolved',
+      callerClassRef: 'plan-class-feature-ship',
+      count: 0,
+      wouldBlock: [{ code: 'plan-class-unresolved' }],
+    });
+    expect(listEvidence).not.toHaveBeenCalled();
+    expect(listClauses).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the active acceptance class read is unavailable', async () => {
+    listAcceptanceRubrics.mockRejectedValue(new Error('rubric store unavailable'));
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'plan_class_read_unavailable',
+      callerClassRef: 'plan-class-feature-ship',
+      count: 0,
+      wouldBlock: [{ code: 'plan-class-read-unavailable' }],
+    });
+    expect(listRetiredAcceptanceRubrics).not.toHaveBeenCalled();
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('replays only the legacy supersession cohort as of card creation and leaves unavailable freshness unknown', async () => {
+    const auditAsOf = new Date('2026-10-02T00:14:36.135Z');
+    const historicalBinding: Awaited<ReturnType<typeof listSpecEvidence>>[number] = {
+      id: 19999,
+      workItemId: 'WI-10005377',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      sourceValId: null,
+      coverageEvidenceRef: null,
+      testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
+      bindingFingerprint: 'sha256:binding-19999',
+      createdBy: 'su-test',
+      specRevision: 1,
+      currentRevision: 2,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'test-run 20455199',
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      details: {},
+      testRunId: 20455199,
+      observedAt: '2026-10-01T23:00:00.000Z',
+      createdAt: '2026-10-01T23:00:00.000Z',
+      withdrawal: {
+        at: '2026-10-02T01:00:00.000Z',
+        by: 'su-reviewer',
+        reason: 'superseded by binding 21019',
+      },
+      currentness: {
+        overall: 'current',
+        provenance: 'server-measured',
+        comparisonSupplied: true,
+        dimensions: {
+          spec: 'current',
+          source: 'current',
+          test: 'current',
+          fixture: 'current',
+          rubric: 'current',
+          environment: 'current',
+          coverageEvidence: 'current',
+          testRun: 'current',
+        },
+        staleReasons: [],
+        unknownReasons: [],
+      },
+    };
+    const laterReplacement = {
+      ...historicalBinding,
+      id: 21019,
+      evidenceRef: 'test-run 20455231 replacement',
+      createdAt: '2026-10-02T01:02:00.000Z',
+      withdrawal: null,
+    };
+    mockResolvedTyped(listEvidence, [historicalBinding]);
+    listClauses.mockResolvedValue([clause('active')]);
+
+    const result = await replaySpecTestAdequacyForHistoricalAudit({
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        replaySnapshot: true,
+        evidenceRefs: ['test-run 20455199'],
+        includeDraft: true,
+        limit: 25,
+      },
+      selection: {
+        planSlug: 'plan-a',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run 20455199' }],
+      },
+      workspaceId: 'workspace-test',
+      auditAsOf,
+    });
+
+    expect(listEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'workspace-test',
+        planSlugs: ['plan-a'],
+        specIds: ['SPEC-001'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidenceRefs: ['test-run 20455199'],
+        includeRetracted: true,
+        auditAsOf,
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      historicalAuditOnly: {
+        provenance: 'historical-audit-only',
+        asOf: auditAsOf.toISOString(),
+        freshness: 'unknown-at-emission',
+        bindings: [
+          {
+            id: 19999,
+            withdrawal: { reason: 'superseded by binding 21019' },
+          },
+        ],
+      },
+    });
+    expect((result as { rows: Array<{ ratings: Record<string, { rating: string }> }> }).rows[0].ratings.freshness.rating).toBe('unknown');
+    expect(laterReplacement.createdAt > auditAsOf.toISOString()).toBe(true);
+  });
+
+  it('replays exact emission-time bindings and freshness after the live source drifts', async () => {
+    const auditAsOf = new Date('2026-10-02T00:14:36.135Z');
+    const current = [{
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test-run 20455199',
+      sourceFingerprint: 'sha256:source-at-grade',
+      testFingerprint: 'sha256:test-at-grade',
+    }];
+    const historicalBinding: Awaited<ReturnType<typeof listSpecEvidence>>[number] = {
+      id: 19999,
+      workItemId: 'WI-10005377',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      sourceValId: null,
+      coverageEvidenceRef: null,
+      testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
+      bindingFingerprint: 'sha256:binding-19999',
+      createdBy: 'su-test',
+      specRevision: 1,
+      currentRevision: 2,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'test-run 20455199',
+      fingerprints: {
+        sourceFingerprint: 'sha256:source-at-grade',
+        testFingerprint: 'sha256:test-at-grade',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      details: {},
+      testRunId: null,
+      observedAt: '2026-10-01T23:00:00.000Z',
+      createdAt: '2026-10-01T23:00:00.000Z',
+      withdrawal: {
+        at: '2026-10-02T01:00:00.000Z',
+        by: 'su-reviewer',
+        reason: 'superseded by binding 21019',
+      },
+      currentness: {
+        overall: 'current',
+        provenance: 'historical-snapshot',
+        comparisonSupplied: true,
+        dimensions: {
+          spec: 'current',
+          source: 'current',
+          test: 'current',
+          fixture: 'not-applicable',
+          rubric: 'not-applicable',
+          environment: 'not-applicable',
+          coverageEvidence: 'not-applicable',
+          testRun: 'not-applicable',
+        },
+        staleReasons: [],
+        unknownReasons: [],
+      },
+    };
+    mockResolvedTyped(listEvidence, [historicalBinding]);
+    listClauses.mockResolvedValue([clause('active')]);
+
+    const result = await replaySpecTestAdequacyForHistoricalAudit({
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        replaySnapshot: true,
+        evidenceRefs: ['test-run 20455199'],
+        bindingIds: [19999],
+        current,
+        includeDraft: true,
+        limit: 25,
+      },
+      selection: {
+        planSlug: 'plan-a',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run 20455199' }],
+        bindingIds: [19999],
+      },
+      workspaceId: 'workspace-test',
+      auditAsOf,
+    });
+
+    expect('sha256:source-after-drift').not.toBe(current[0]!.sourceFingerprint);
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      bindingIds: [19999],
+      currentProvenance: 'historical-snapshot',
+      current,
+      includeRetracted: true,
+      auditAsOf,
+    }));
+    expect(result).toMatchObject({
+      ok: true,
+      historicalAuditOnly: {
+        provenance: 'historical-audit-only',
+        asOf: auditAsOf.toISOString(),
+        freshness: 'historical-snapshot',
+        bindings: [{ id: 19999, withdrawal: { reason: 'superseded by binding 21019' } }],
+      },
+    });
+    expect((result as { rows: Array<{ ratings: Record<string, { rating: string }> }> }).rows[0]!.ratings.freshness!.rating)
+      .toBe('pass');
+  });
+
+  it('routes a scorecardId through its stored recipe and replays retracted bindings as of card creation', async () => {
+    const createdAt = '2026-10-12T07:19:17.178Z';
+    const recipe: SpecTestAdequacyRerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'plan-class-feature-ship',
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        evidenceRefs: ['test-run 20455199'],
+        bindingIds: [19999],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        replaySnapshot: true,
+        includeDraft: true,
+      },
+      selection: {
+        planSlug: 'plan-a',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        bindingIds: [19999],
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run 20455199' }],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
+    readScorecard.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        issueId: 'EI-12345',
+        createdAt,
+        rubricRef: 'spec-test-adequacy',
+        sourceHive: 'papercusp',
+        rerunRecipe: recipe,
+      } as never,
+    });
+    listEvidence.mockResolvedValue([]);
+
+    const result = await call({ harness: 'papercusp', slug: 'plan-a', scorecardId: 'EI-12345' });
+
+    expect(readScorecard).toHaveBeenCalledWith('EI-12345');
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'historical_selection_empty',
+      count: 0,
+      scorecardId: 'EI-12345',
+    });
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'workspace-test',
+      bindingIds: [19999],
+      includeRetracted: true,
+      auditAsOf: new Date(createdAt),
+    }));
+    expect(listAcceptanceRubrics).not.toHaveBeenCalled();
+  });
+
+  it('requires one criterion for full historical scorecard detail before reading the scorecard', async () => {
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      scorecardId: 'EI-12345',
+      detail: 'full',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'historical_detail_requires_single_criterion',
+      count: 0,
+      scorecardId: 'EI-12345',
+    });
+    expect(readScorecard).not.toHaveBeenCalled();
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
+  it('projects byte-exact evidence for one criterion from a 24-binding historical scorecard replay', async () => {
+    const createdAt = '2026-10-12T07:19:17.178Z';
+    const bindingIds = Array.from({ length: 24 }, (_, index) => 19999 + index);
+    const evidenceRefs = Array.from({ length: 24 }, (_, index) => 'test-run ' + (20455199 + index));
+    const historicalBindings: EvidenceRow[] = bindingIds.map((id, index) => ({
+      id,
+      workItemId: 'WI-' + (10005377 + index),
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      sourceValId: null,
+      coverageEvidenceRef: null,
+      testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
+      bindingFingerprint: 'sha256:binding-' + id,
+      createdBy: 'su-test',
+      specRevision: 1,
+      currentRevision: 2,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: evidenceRefs[index]!,
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: 'sha256:test-' + id,
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      details: {},
+      testRunId: 20455199 + index,
+      observedAt: '2026-10-01T23:00:00.000Z',
+      createdAt: '2026-10-01T23:00:00.000Z',
+      withdrawal: null,
+      currentness: {
+        overall: 'current',
+        provenance: 'server-measured',
+        comparisonSupplied: true,
+        dimensions: {
+          spec: 'current',
+          source: 'current',
+          test: 'current',
+          fixture: 'current',
+          rubric: 'current',
+          environment: 'current',
+          coverageEvidence: 'current',
+          testRun: 'current',
+        },
+        staleReasons: [],
+        unknownReasons: [],
+      },
+    }));
+    const selectionEvidence: SpecTestAdequacyRerunRecipe['selection']['evidence'] =
+      historicalBindings.map(({ evidenceKind, evidenceRef }) => ({ evidenceKind, evidenceRef }));
+    const recipe: SpecTestAdequacyRerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'plan-class-feature-ship',
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        evidenceRefs,
+        bindingIds,
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        replaySnapshot: true,
+        includeDraft: true,
+      },
+      selection: {
+        planSlug: 'plan-a',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        bindingIds,
+        evidence: selectionEvidence,
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
+    readScorecard.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        issueId: 'EI-12345',
+        createdAt,
+        rubricRef: 'spec-test-adequacy',
+        sourceHive: 'papercusp',
+        rerunRecipe: recipe,
+      } as never,
+    });
+    listEvidence.mockResolvedValue(historicalBindings);
+    listClauses.mockResolvedValue([clause('active')]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      scorecardId: 'EI-12345',
+      detail: 'full',
+      criteria: ['traceability'],
+    });
+    const replayedEvidence = historicalBindings.map((row) => ({
+      ...row,
+      currentness: {
+        ...row.currentness,
+        overall: 'unknown' as const,
+        provenance: 'replayed-snapshot' as const,
+        staleReasons: [],
+        unknownReasons: [...new Set([...row.currentness.unknownReasons, 'historical-audit-only'])],
+      },
+    }));
+    const expected = evaluateSpecTestAdequacy({
+      clause: clause('active'),
+      evidence: replayedEvidence,
+      classRef: 'plan-class-feature-ship',
+      harness: 'papercusp',
+      rerunSelection: { evidenceRefs, bindingIds },
+      now: new Date(createdAt),
+    });
+
+    expect(result).toMatchObject({ ok: true, scorecardId: 'EI-12345' });
+    expect(result.historicalAuditOnly.bindings).toHaveLength(24);
+    expect(result.historicalAuditOnly.bindings[23].evidenceRef).toBe(evidenceRefs[23]);
+    expect(Object.keys(result.rows[0].ratings)).toEqual(['traceability']);
+    expect(result.rows[0].ratings.traceability.evidence).toBe(expected.ratings.traceability.evidence);
+    expect(result.rows[0].ratings.traceability.evidence).toContain(evidenceRefs[0]);
+    expect(result.rows[0].scorecardDraftOmitted).toContain('criteria filter');
+    expect(result.rows[0]).not.toHaveProperty('scorecardDraft');
+  });
+
+  it('rejects a scorecard replay when the caller supplies a different plan slug', async () => {
+    const recipe: SpecTestAdequacyRerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'plan-class-feature-ship',
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        evidenceRefs: ['test-run 20455199'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        replaySnapshot: true,
+        includeDraft: true,
+      },
+      selection: {
+        planSlug: 'plan-a',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run 20455199' }],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
+    readScorecard.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        issueId: 'EI-12345',
+        createdAt: '2026-10-12T07:19:17.178Z',
+        rubricRef: 'spec-test-adequacy',
+        sourceHive: 'papercusp',
+        rerunRecipe: recipe,
+      } as never,
+    });
+
+    const result = await call({ harness: 'papercusp', slug: 'plan-b', scorecardId: 'EI-12345' });
+
+    expect(result).toMatchObject({ ok: false, error: 'scorecard_selector_mismatch', count: 0 });
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
   it('preserves every criterion rating through a trimmed MCP dispatch', async () => {
     listClauses.mockResolvedValue([clause('active')]);
     const args = {
@@ -239,6 +1087,86 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result).not.toHaveProperty('evaluatorBuildDrift');
   });
 
+  it('fails disclosed-gap when a current measured operational artifact has structured disclosures', async () => {
+    harnessRoot.path = await mkdtemp(path.join(tmpdir(), 'spec-adequacy-artifact-'));
+    const evidenceRef = 'docs/evidence/current-operational.json';
+    const evidencePath = path.join(harnessRoot.path, evidenceRef);
+    await mkdir(path.dirname(evidencePath), { recursive: true });
+    await writeFile(evidencePath, JSON.stringify({
+      kind: 'operational-test-evidence',
+      disclosures: ['The live push was not executed in-process.'],
+      couldNotDetermine: ['A live in-place restore was not executed.'],
+    }));
+    const currentness = {
+      overall: 'current',
+      provenance: 'server-measured',
+      comparisonSupplied: true,
+      dimensions: { spec: 'current', source: 'current', test: 'not-applicable' },
+      staleReasons: [],
+      unknownReasons: [],
+    };
+    listEvidence.mockResolvedValue([{
+      id: 27065,
+      workItemId: 'WI-10006070',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'operational',
+      evidenceRef,
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: null,
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
+      testRunId: 20846684,
+      testRunProvenance: null,
+      details: {
+        currentMeasurement: {
+          schemaVersion: 1,
+          kind: 'repo-files',
+          sourcePaths: [evidenceRef],
+        },
+        adequacy: {
+          outcome: 'passed',
+          skipped: false,
+          executed: true,
+          targeted: 'spec-001',
+          collected: true,
+          testLayer: 'operational',
+          pathReachable: true,
+          oracleIndependent: true,
+        },
+      },
+      serverMeasurement: { status: 'measured', current: {} },
+      currentness,
+    } as never]);
+    try {
+      const result = await call({
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        includeDraft: true,
+        detail: 'full',
+      });
+
+      expect(result.rows[0].ratings['disclosed-gap']).toMatchObject({
+        rating: 'fail',
+        evidence: expect.stringContaining('The live push was not executed in-process.'),
+      });
+      expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain('A live in-place restore was not executed.');
+      expect(result.rows[0].wouldBlock).toContain('disclosed-gap');
+      expect(result.rows[0].verdict).toBe('fail');
+    } finally {
+      await rm(harnessRoot.path, { recursive: true, force: true });
+      harnessRoot.path = '';
+    }
+  });
+
   // review-system-rework-reduction-2026-09-23 P-007, clause RSR-P-007-A: a verdict table
   // plus a ref by default; the full body only on request. Falsifier: the default response
   // carries the full body, or omits the ref to it.
@@ -259,15 +1187,56 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     const [compact] = summary.rows;
     expect(compact).not.toHaveProperty('scorecardDraft');
     expect(compact).not.toHaveProperty('evidenceRefs');
-    for (const entry of Object.values(compact.ratings) as Array<Record<string, unknown>>) {
-      expect(entry).not.toHaveProperty('evidence');
+    for (const [criterion, entry] of Object.entries(compact.ratings) as Array<[string, Record<string, unknown>]>) {
+      if (entry.rating === 'pass' || entry.rating === 'not-applicable') {
+        expect(entry).not.toHaveProperty('evidence');
+      } else {
+        const compactEvidence = entry.evidence as string;
+        const fullEvidence = full.rows[0].ratings[criterion].evidence as string;
+        expect(fullEvidence).toEqual(expect.any(String));
+        if (entry.evidenceTruncated === true) {
+          expect(compactEvidence.length).toBeLessThanOrEqual(1200);
+          const bindingMarker = ' Bound evidence: ';
+          const bindingAt = compactEvidence.indexOf(bindingMarker);
+          const statement = bindingAt < 0 ? compactEvidence : compactEvidence.slice(0, bindingAt);
+          const omissionMarker = ' …[middle omitted]… ';
+          const omittedAt = statement.indexOf(omissionMarker);
+          if (omittedAt >= 0) {
+            expect(fullEvidence.startsWith(statement.slice(0, omittedAt))).toBe(true);
+            expect(fullEvidence).toContain(statement.slice(omittedAt + omissionMarker.length));
+          } else {
+            expect(fullEvidence.startsWith(statement)).toBe(true);
+          }
+          if (bindingAt >= 0) {
+            const bindingExcerpt = compactEvidence.slice(bindingAt + bindingMarker.length).replace(/…$/, '');
+            expect(fullEvidence).toContain(bindingMarker + bindingExcerpt);
+          }
+        } else {
+          expect(fullEvidence.startsWith(compactEvidence)).toBe(true);
+        }
+      }
     }
 
-    // Full: the drafts and evidence text, and no ref (there is nothing left to fetch).
+    // Full: the draft and any exact evidence pointers; transformed diagnostic text stays inline.
     expect(full).toMatchObject({ ok: true, detail: 'full' });
     expect(full).not.toHaveProperty('fullBody');
     expect(full.rows[0].scorecardDraft).toBeTruthy();
-    expect(Object.values(full.rows[0].ratings).every((r: any) => typeof r.evidence === 'string')).toBe(true);
+    // P-006 (WI-6554700010009314): point at the emit-ready draft only when it contains the
+    // exact row text. The draft compacts shared binding descriptions and the replay probe, so
+    // full evaluator evidence stays inline whenever replacing it would lose diagnostic detail.
+    for (const [criterion, entry] of Object.entries(full.rows[0].ratings) as Array<[string, Record<string, unknown>]>) {
+      const draftEvidence = full.rows[0].scorecardDraft.ratings[criterion].evidence as string;
+      expect(draftEvidence).toEqual(expect.any(String));
+      expect(draftEvidence.length).toBeGreaterThan(0);
+      if (typeof entry.evidence === 'string') {
+        expect(entry).not.toHaveProperty('evidenceAt');
+        expect(entry.evidence).toContain('Replay the shared scorecard rerunRecipe');
+        expect(draftEvidence).toContain('Replay result:');
+      } else {
+        expect(entry).not.toHaveProperty('evidence');
+        expect(entry.evidenceAt).toBe(`scorecardDraft.ratings['${criterion}'].evidence`);
+      }
+    }
 
     // Same verdicts either way — the summary drops prose, never a rating the replay gates read.
     expect(compact).toMatchObject({
@@ -281,8 +1250,132 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       expect(compact.ratings[criterion].rating).toBe(entry.rating);
     }
 
-    // And it is materially smaller.
-    expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length / 2);
+    // And it is smaller. P-006 (WI-6554700010009314): the full body carries each criterion's
+    // evidence text exactly once, in the draft. Before the dedupe every string appeared twice
+    // (rows[].ratings and scorecardDraft.ratings) and summary < full/2 held only because of
+    // that copy. Falsifier: any evidence string occurs more often than the draft carries it.
+    expect(JSON.stringify(summary).length).toBeLessThan(JSON.stringify(full).length);
+    const fullJson = JSON.stringify(full);
+    const drafted = (Object.values(full.rows[0].scorecardDraft.ratings) as Array<{ evidence: string }>).map((r) => r.evidence);
+    for (const evidence of new Set(drafted)) {
+      const needle = JSON.stringify(evidence);
+      expect(fullJson.split(needle).length - 1).toBe(drafted.filter((e) => e === evidence).length);
+    }
+  });
+
+  // oversized-tool-results-reduction-2026-10-12 P-006: following the summary to learn WHY a
+  // clause fails must not re-fetch every passing criterion and the draft. Falsifier: the
+  // summary offers no narrowed re-call, the narrowed read still carries passing criteria or
+  // the draft, or narrowing changes a verdict, wouldBlock or the counts.
+  it('offers nonPassingDetail from the summary; criteria narrows returned ratings without changing any verdict', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const base = { harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship', specIds: ['SPEC-001'] };
+
+    const summary = await call(base);
+    const full = await call({ ...base, detail: 'full' });
+    const nonPassing = (Object.entries(full.rows[0].ratings) as Array<[string, { rating: string }]>)
+      .filter(([, entry]) => entry.rating !== 'pass' && entry.rating !== 'not-applicable')
+      .map(([criterion]) => criterion);
+    expect(nonPassing.length).toBeGreaterThan(0);
+
+    expect(summary.nonPassingDetail).toMatchObject({
+      tool: 'plans:evaluate-spec-test-adequacy',
+      args: { ...base, criteria: nonPassing, detail: 'full' },
+    });
+    expect(full).not.toHaveProperty('nonPassingDetail');
+
+    const narrowed = await call(tool.args.parse(summary.nonPassingDetail.args));
+    expect(Object.keys(narrowed.rows[0].ratings).sort()).toEqual([...nonPassing].sort());
+    for (const criterion of nonPassing) {
+      const fullEntry = full.rows[0].ratings[criterion];
+      expect(fullEntry.evidence).toEqual(expect.any(String));
+      expect(narrowed.rows[0].ratings[criterion]).toEqual(fullEntry);
+    }
+    expect(narrowed.rows[0]).not.toHaveProperty('scorecardDraft');
+    expect(narrowed.rows[0].scorecardDraftOmitted).toEqual(expect.any(String));
+    // Narrowing is output-only: every verdict is still computed over all criteria.
+    expect(narrowed.rows[0]).toMatchObject({ verdict: full.rows[0].verdict, wouldBlock: full.rows[0].wouldBlock });
+    expect(narrowed.verdicts).toEqual(full.verdicts);
+    expect(narrowed.wouldBlock).toEqual(full.wouldBlock);
+    expect(JSON.stringify(narrowed).length).toBeLessThan(JSON.stringify(full).length);
+
+    // A summary narrowed to one criterion keeps only that rating, same verdict.
+    const one = await call({ ...base, criteria: [nonPassing[0]] });
+    expect(Object.keys(one.rows[0].ratings)).toEqual([nonPassing[0]]);
+    expect(one.rows[0].verdict).toBe(full.rows[0].verdict);
+
+    expect(tool.args.safeParse({ ...base, criteria: ['not-a-criterion'] }).success).toBe(false);
+    expect(tool.args.safeParse({ ...base, criteria: [] }).success).toBe(false);
+  });
+
+
+  it('bounds blocked-criterion explanations and marks incomplete evidence in compact replay', async () => {
+    const staleLiveBinding = {
+      id: 37231,
+      workItemId: 'WI-123',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      sourceValId: null,
+      specRevision: 1,
+      currentRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'manual' as const,
+      evidenceRef: 'manual:live-observation',
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: null,
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: 'sha256:old-environment',
+      },
+      coverageEvidenceRef: null,
+      testRunId: null,
+      testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
+      details: { evidencePlane: 'live' },
+      observedAt: '2026-10-01T12:00:00Z',
+      bindingFingerprint: 'sha256:binding',
+      createdBy: 'su-test',
+      createdAt: '2026-10-01T12:00:00Z',
+      currentness: {
+        comparisonSupplied: true,
+        provenance: 'server-measured' as const,
+        overall: 'stale' as const,
+        dimensions: {
+          spec: 'current' as const,
+          source: 'current' as const,
+          test: 'not-applicable' as const,
+          fixture: 'not-applicable' as const,
+          rubric: 'not-applicable' as const,
+          environment: 'stale' as const,
+          coverageEvidence: 'not-applicable' as const,
+          testRun: 'not-applicable' as const,
+        },
+        staleReasons: ['environment-stale'],
+        unknownReasons: [],
+      },
+    };
+    listClauses.mockResolvedValue([{
+      ...clause('active'),
+      requiredEvidence: ['live'],
+      requiredTestLayers: ['unmeasured-layer-'.repeat(200)],
+    }]);
+    listEvidence.mockResolvedValue([staleLiveBinding]);
+    const base = { harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship', specIds: ['SPEC-001'] };
+    const summary = await call(base);
+    const full = await call({ ...base, detail: 'full' });
+    const explanation = summary.rows[0].ratings['correct-layer'];
+
+    expect(explanation.rating).toBe('fail');
+    expect(explanation.evidence).toContain('Required layer');
+    expect(explanation.evidence.length).toBeLessThanOrEqual(1200);
+    expect(explanation.evidenceTruncated).toBe(true);
+    expect(explanation.evidence).toContain('Required evidence plane(s) are absent from current bindings');
+    expect(explanation.evidence).toContain('evidencePlane="live"');
+    expect(explanation.evidence).toContain('id=37231');
+    expect(summary.rows[0].draggingBindingIds['correct-layer']).toContain(37231);
+    expect(full.rows[0].ratings['correct-layer'].evidence.length).toBeGreaterThan(1200);
+    expect(summary.rows[0].wouldBlock).toEqual(full.rows[0].wouldBlock);
   });
 
   it('preserves exact work-item, evidence-ref, and plan-item selectors in the emitted rerun recipe', async () => {
@@ -308,6 +1401,321 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       expect.objectContaining({ workItemIds: ['WI-123'], evidenceRefs }),
     );
     expect(listClauses).toHaveBeenCalledWith(expect.objectContaining({ planItemIds: ['P-001'] }));
+  });
+
+  it('grades selected plan-item clauses despite more unrelated evidence than the read limit', async () => {
+    const selected = [clause('active'), { ...clause('active'), specId: 'SPEC-UNCOVERED' }];
+    const unrelated = { ...clause('active'), specId: 'SPEC-OTHER', planItemId: 'P-002' };
+    listClauses.mockImplementation(async (options) => [...selected, unrelated].filter((row) =>
+      (!options.planItemIds || options.planItemIds.includes(row.planItemId)) &&
+      (!options.specIds || options.specIds.includes(row.specId)),
+    ));
+    const pool = [
+      ...Array.from({ length: 25 }, (_, index) => ({ id: index + 1, specId: unrelated.specId })),
+      { id: 26, specId: selected[0].specId },
+    ];
+    listEvidence.mockImplementation(async (options) => pool
+      .filter((row) => !options.specIds || options.specIds.includes(row.specId))
+      .slice(0, options.limit) as EvidenceRow[]);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], limit: 20,
+    });
+
+    expect(result).toMatchObject({ ok: true, governing: true, count: 2 });
+    expect(result.rows.map((row: { specId: string }) => row.specId)).toEqual(['SPEC-001', 'SPEC-UNCOVERED']);
+    // A clause with no bound proof must still be graded and fail, rather than disappear.
+    expect(result.rows[1].wouldBlock.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { workItemIds: ['WI-selected'] },
+    { evidenceRefs: ['test:selected'] },
+    { bindingIds: [26] },
+  ])('intersects plan items with an exact binding cohort %j', async (selector) => {
+    const selected = clause('active');
+    const unrelated = { ...selected, specId: 'SPEC-OTHER', planItemId: 'P-002' };
+    listClauses.mockImplementation(async (options) => [selected, unrelated].filter((row) =>
+      (!options.planItemIds || options.planItemIds.includes(row.planItemId)) &&
+      (!options.specIds || options.specIds.includes(row.specId)),
+    ));
+    const pool = [
+      ...Array.from({ length: 25 }, (_, index) => ({
+        id: index + 1, specId: unrelated.specId, workItemId: 'WI-selected', evidenceRef: 'test:selected',
+      })),
+      { id: 26, specId: selected.specId, workItemId: 'WI-selected', evidenceRef: 'test:selected' },
+      { id: 27, specId: selected.specId, workItemId: 'WI-other', evidenceRef: 'test:other' },
+    ];
+    listEvidence.mockImplementation(async (options) => pool.filter((row) =>
+      (!options.specIds || options.specIds.includes(row.specId)) &&
+      (!options.workItemIds || options.workItemIds.includes(row.workItemId)) &&
+      (!options.evidenceRefs || options.evidenceRefs.includes(row.evidenceRef)) &&
+      (!options.bindingIds || options.bindingIds.includes(row.id)),
+    ).slice(0, options.limit) as EvidenceRow[]);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], limit: 20, ...selector,
+    });
+
+    expect(result).toMatchObject({ ok: true, governing: false, count: 1 });
+    expect(result.rows[0].specId).toBe(selected.specId);
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ specIds: [selected.specId], ...selector }));
+  });
+
+  it.each([1, 29])('replays a %s-binding diagnostic cohort with a larger clause-wide disclosure population', async (selectedCount) => {
+    const pool = Array.from({ length: 31 }, (_, index): EvidenceRow => ({
+      id: 39000 + index,
+      workItemId: index < selectedCount ? 'WI-selected' : 'WI-other',
+      planSlug: 'plan-a', specId: 'SPEC-001', sourceValId: null, specRevision: 1, currentRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test', evidenceRef: `test-run:${39000 + index}`,
+      fingerprints: {
+        sourceFingerprint: 'sha256:source', testFingerprint: 'sha256:test',
+        fixtureFingerprint: null, rubricFingerprint: null, environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null, testRunId: 39000 + index, testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
+      observedAt: '2026-09-07T00:00:00.000Z',
+      bindingFingerprint: `sha256:binding-${39000 + index}`,
+      createdBy: 'su-test', createdAt: '2026-09-07T00:00:00.000Z',
+      testRunExecution: {
+        status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        filePath: 'packages/operator-core/lib/reconnect.test.ts',
+        testLayer: 'integration', passedCaseTitles: ['SPEC-001 selected test'],
+      },
+      details: { adequacy: {
+        testLayer: 'integration', outcome: 'passed', executed: true, collected: true,
+        fixtureCalibrated: true, falsifiable: true, pathReachable: true, oracleIndependent: true,
+      } },
+      currentness: {
+        overall: 'current', provenance: 'server-measured', comparisonSupplied: true,
+        dimensions: { spec: 'current', source: 'current', test: 'current',
+          fixture: 'current', rubric: 'current', environment: 'current', coverageEvidence: 'current', testRun: 'current' },
+        staleReasons: [], unknownReasons: [],
+      },
+    }));
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockImplementation(async (options) => pool.filter((row) =>
+      (!options.workItemIds || options.workItemIds.includes(row.workItemId!)) &&
+      (!options.evidenceRefs || options.evidenceRefs.includes(row.evidenceRef)) &&
+      (!options.bindingIds || options.bindingIds.includes(row.id!)),
+    ).slice(0, options.limit));
+
+    const initial = await call({
+      harness: 'papercusp', slug: 'plan-a', classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'], workItemIds: ['WI-selected'], detail: 'full',
+    });
+    expect(initial.ok).toBe(true);
+    const recipe = initial.rows[0].scorecardDraft.rerunRecipe.args;
+    expect(recipe.bindingIds).toEqual(pool.slice(0, selectedCount).map((row) => row.id));
+
+    // Both bounded store reads must fit the persisted recipe. Raising the ceiling
+    // must preserve the selected cohort and the universal disclosure check.
+    const replay = await call(tool.args.parse(recipe));
+    expect(replay.ok).toBe(true);
+    expect(listEvidence.mock.calls.at(-2)?.[0]).toMatchObject({
+      workItemIds: ['WI-selected'], bindingIds: recipe.bindingIds,
+    });
+    expect(replay.rows[0].verdict).toBe(initial.rows[0].verdict);
+    expect(replay.rows[0].ratings['disclosed-gap'].rating).toBe(initial.rows[0].ratings['disclosed-gap'].rating);
+    expect(listEvidence.mock.calls.at(-1)?.[0]).not.toHaveProperty('bindingIds');
+  });
+
+  it('checks every active clause binding for disclosed gaps during a pinned diagnostic read', async () => {
+    const binding = (id: number, disclosedGap?: string) => ({
+      id,
+      workItemId: `WI-${id}`,
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: `test-run:${id}`,
+      fingerprints: {
+        sourceFingerprint: 'sha256:source',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
+      testRunId: id,
+      testRunExecution: {
+        status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        testLayer: 'integration', passedCaseTitles: ['SPEC-001 selected test'],
+      },
+      details: {
+        adequacy: {
+          testLayer: 'integration', outcome: 'passed', executed: true, collected: true,
+          fixtureCalibrated: true, falsifiable: true, pathReachable: true, oracleIndependent: true,
+          ...(disclosedGap ? { disclosedGap: [disclosedGap] } : {}),
+        },
+      },
+      currentness: {
+        overall: 'current', provenance: 'server-measured', comparisonSupplied: true,
+        dimensions: { spec: 'current', source: 'current', test: 'current' }, staleReasons: [], unknownReasons: [],
+      },
+    }) as never;
+    const selected = binding(38382);
+    const excluded = binding(38344, 'The unit-only row leaves cancellation coverage unproven.');
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockImplementation(async (options) =>
+      options.bindingIds ? [selected] as never : [selected, excluded] as never,
+    );
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      bindingIds: [38382],
+      detail: 'full',
+    });
+
+    expect(result).toMatchObject({ ok: true, governing: false });
+    expect(listEvidence).toHaveBeenCalledTimes(2);
+    expect(listEvidence.mock.calls[1]?.[0]).toMatchObject({ specIds: ['SPEC-001'] });
+    expect(listEvidence.mock.calls[1]?.[0]).not.toHaveProperty('bindingIds');
+    expect(result.rows[0].ratings['disclosed-gap']).toMatchObject({ rating: 'fail' });
+    expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain('id=38344');
+    expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain(
+      'The unit-only row leaves cancellation coverage unproven.',
+    );
+    expect(result.rows[0].draggingBindingIds['disclosed-gap']).toEqual([38344]);
+    expect(result.rows[0].scorecardDraft.ratings['disclosed-gap'].evidence).toContain('id=38344');
+  });
+
+  it('refuses disjoint plan-item and spec selectors without widening an empty evidence filter', async () => {
+    listClauses.mockResolvedValue([]);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], specIds: ['SPEC-OTHER'],
+    });
+
+    expect(result).toMatchObject({ ok: false, error: 'selection_empty', count: 0, selectedEvidenceCount: 0 });
+    expect(listEvidence).not.toHaveBeenCalled();
+    expect(listClauses).toHaveBeenCalledWith(expect.objectContaining({
+      planItemIds: ['P-001'], specIds: ['SPEC-OTHER'],
+    }));
+  });
+
+  it.each([
+    { workItemIds: ['WI-selected'] },
+    { evidenceRefs: ['test:selected'] },
+    { bindingIds: [1] },
+  ])('refuses a binding cohort outside the selected plan items with an honest remedy %j', async (selector) => {
+    const selected = clause('active');
+    const unrelated = { ...selected, specId: 'SPEC-OTHER', planItemId: 'P-002' };
+    listClauses.mockImplementation(async (options) => [selected, unrelated].filter((row) =>
+      (!options.planItemIds || options.planItemIds.includes(row.planItemId)) &&
+      (!options.specIds || options.specIds.includes(row.specId)),
+    ));
+    // The requested cohort has a real binding, but only on P-002. P-001 also has
+    // evidence, from a different cohort. Neither side alone is the requested proof.
+    const pool = [
+      { id: 1, specId: unrelated.specId, workItemId: 'WI-selected', evidenceRef: 'test:selected' },
+      { id: 2, specId: selected.specId, workItemId: 'WI-other', evidenceRef: 'test:other' },
+    ];
+    listEvidence.mockImplementation(async (options) => pool.filter((row) =>
+      (!options.specIds || options.specIds.includes(row.specId)) &&
+      (!options.workItemIds || options.workItemIds.includes(row.workItemId)) &&
+      (!options.evidenceRefs || options.evidenceRefs.includes(row.evidenceRef)) &&
+      (!options.bindingIds || options.bindingIds.includes(row.id)),
+    ) as EvidenceRow[]);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], ...selector,
+    });
+
+    expect(result).toMatchObject({
+      ok: false, error: 'selection_empty', count: 0, selectedEvidenceCount: 0,
+      selection: { planItemIds: ['P-001'], ...selector },
+    });
+    expect(result.rows).toBeUndefined();
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ specIds: [selected.specId], ...selector }));
+    expect(result.remedy).toContain('outside the selected planItemIds');
+    expect(result.remedy).toContain('Nothing was graded');
+  });
+
+  it('retains the hit-limit refusal when the selected plan item itself has too much evidence', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockImplementation(async (options) => Array.from({ length: options.limit ?? 1000 },
+      (_, index) => ({ id: index + 1, specId: 'SPEC-001' })) as EvidenceRow[]);
+
+    const result = await call({
+      slug: 'plan-a', classRef: 'plan-class-feature-ship', planItemIds: ['P-001'], limit: 20,
+    });
+
+    expect(result).toMatchObject({ ok: false, error: 'evidence_selection_hit_limit', count: 20, limit: 20 });
+    expect(result.rows).toBeUndefined();
+  });
+
+  it('records exact binding ids in the replay recipe, including repeated evidence refs', async () => {
+    const evidenceRef = 'packages/operator-core/lib/reconnect.test.ts#reconnect';
+    // A repeated reference can name separate active bindings when their evidence kinds differ.
+    const evidence: Awaited<ReturnType<typeof listSpecEvidence>> = [
+      { id: 18924, evidenceKind: 'test' as const, evidenceRef },
+      { id: 18874, evidenceKind: 'fixture' as const, evidenceRef },
+      { id: 18875, evidenceKind: 'coverage-census' as const, evidenceRef },
+    ].map((row): Awaited<ReturnType<typeof listSpecEvidence>>[number] => ({
+      ...row,
+      workItemId: 'WI-123',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      sourceValId: null,
+      specRevision: 1,
+      currentRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      fingerprints: {
+        sourceFingerprint: 'git:abc',
+        testFingerprint: 'sha256:test',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
+      testRunId: null,
+      testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
+      details: {},
+      observedAt: '2026-10-01T12:00:00Z',
+      bindingFingerprint: 'sha256:binding',
+      createdBy: 'su-test',
+      createdAt: '2026-10-01T12:00:00Z',
+      currentness: {
+        comparisonSupplied: true,
+        provenance: 'server-measured',
+        overall: 'current',
+        dimensions: {
+          spec: 'current',
+          source: 'current',
+          test: 'current',
+          fixture: 'current',
+          rubric: 'current',
+          environment: 'current',
+          coverageEvidence: 'current',
+          testRun: 'current',
+        },
+        staleReasons: [],
+        unknownReasons: [],
+      },
+    }));
+    listClauses.mockResolvedValue([clause('active')]);
+    mockResolvedTyped(listEvidence, evidence);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      detail: 'full',
+    });
+
+    expect(result).toMatchObject({ ok: true, count: 1 });
+    expect(result.rows[0].scorecardDraft.rerunRecipe).toMatchObject({
+      args: { bindingIds: [18874, 18875, 18924] },
+      selection: { bindingIds: [18874, 18875, 18924] },
+    });
   });
 
   // acceptance-machinery-seam-fixes-2026-09-16 P-001 (R-1): the number that misled a careful
@@ -378,14 +1786,14 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     }
   });
 
-  it('refuses an evidence-ref selector that matches no immutable binding', async () => {
+  it('explains that evidenceRefs must be persisted binding refs, not test-run table IDs', async () => {
     listEvidence.mockResolvedValue([]);
 
     const result = await call({
       harness: 'papercusp',
       slug: 'plan-a',
       classRef: 'plan-class-feature-ship',
-      evidenceRefs: ['testing:run:superseded'],
+      evidenceRefs: ['test_runs:20455199'],
       includeDraft: true,
     });
 
@@ -393,9 +1801,12 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       ok: false,
       error: 'selection_empty',
       selectedEvidenceCount: 0,
-      selection: { evidenceRefs: ['testing:run:superseded'] },
+      selection: { evidenceRefs: ['test_runs:20455199'] },
       remedy: expect.stringContaining('No current evidence binding matches'),
     });
+    expect(result.remedy).toContain('exactly match persisted evidence_ref values returned by plans:get-spec-evidence');
+    expect(result.remedy).toContain('test-run table IDs such as test_runs:<id> are not necessarily binding refs');
+    expect(result.remedy).toContain('use workItemIds + specIds');
     expect(result.remedy).toContain('absent, retracted, or superseded');
     expect(result.remedy).toContain('pass specIds without a binding selector');
     expect(listClauses).not.toHaveBeenCalled();

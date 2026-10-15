@@ -9,6 +9,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { AgentFleetRecord } from '../../agent-fleets-store';
 
 const setFleetLeader = vi.fn();
+const promoteFleetLeaderIfMissing = vi.fn();
+const emitAwaitedEvent = vi.fn();
 const heartbeatPresence = vi.fn();
 const setPresenceFleet = vi.fn();
 const fetchPresenceFleet = vi.fn();
@@ -27,6 +29,10 @@ vi.mock('../../modes/store', () => ({
 vi.mock('../../agent-fleets-store', () => ({
   FLEET_TYPES: ['single', 'paired'] as const,
   setFleetLeader: (...a: unknown[]) => setFleetLeader(...a),
+  promoteFleetLeaderIfMissing: (...a: unknown[]) => promoteFleetLeaderIfMissing(...a),
+}));
+vi.mock('../../events/await/engine', () => ({
+  emitAwaitedEvent: (...a: unknown[]) => emitAwaitedEvent(...a),
 }));
 vi.mock('../coordination/presence', () => ({
   heartbeatPresence: (...a: unknown[]) => heartbeatPresence(...a),
@@ -78,6 +84,8 @@ beforeEach(() => {
   fetchPresenceFleet.mockResolvedValue(new Map()); // default: prior leader carries no fleet label
   sendMessage.mockResolvedValue({ msg_id: 'm1' });
   setFleetLeader.mockResolvedValue(fleet({ leaderOwnerId: 'su-bob' }));
+  promoteFleetLeaderIfMissing.mockResolvedValue(fleet({ leaderOwnerId: 'su-bob' }));
+  emitAwaitedEvent.mockResolvedValue({ ok: true, waiters: 1 });
   ensureFleetLeaderControl.mockResolvedValue({
     healthy: true,
     mode: { healthy: true, changed: true },
@@ -159,6 +167,45 @@ describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', 
       autoArmSuppressions: { requested: false, eventKeys: [], cleared: 0 },
       control: { healthy: true },
     });
+  });
+
+  it('uses the vacancy registry CAS and emits the shared leader-change event for scheduler succession', async () => {
+    const succession = {
+      expectedLeaderOwnerId: 'su-alice',
+      expectedLeaderMissingSinceMs: 1_000,
+      expectedUpdatedAtMs: 2_000,
+      nowMs: 602_000,
+      graceMs: 600_000,
+    };
+    const out = await takeFleetLeadership(
+      WS,
+      fleet({ leaderOwnerId: 'su-alice', leaderMissingSinceMs: 1_000, updatedAt: 2_000 }),
+      identity,
+      'su-successor',
+      { succession },
+    );
+
+    expect(promoteFleetLeaderIfMissing).toHaveBeenCalledWith({
+      workspaceId: WS,
+      fleetSlug: SLUG,
+      expectedLeaderOwnerId: 'su-alice',
+      expectedLeaderMissingSinceMs: 1_000,
+      expectedUpdatedAtMs: 2_000,
+      replacementLeaderOwnerId: 'su-successor',
+      nowMs: 602_000,
+      graceMs: 600_000,
+    });
+    expect(setFleetLeader).not.toHaveBeenCalled();
+    expect(heartbeatPresence).not.toHaveBeenCalled();
+    expect(setPresenceFleet).toHaveBeenCalledWith(WS, 'su-successor', SLUG, 'leader');
+    expect(emitAwaitedEvent).toHaveBeenCalledWith({
+      key: 'fleet:leader-changed:rocket',
+      summary: "Fleet 'rocket' leadership changed to su-successor.",
+      payload: { fleet: 'rocket', previousLeader: 'su-alice', leader: 'su-successor' },
+      source: 'su-bob',
+      workspaceId: WS,
+    });
+    expect(out.leader).toBe('su-successor');
   });
 
   it('clears exact operator-cancel markers only when leadership explicitly requests a re-arm', async () => {

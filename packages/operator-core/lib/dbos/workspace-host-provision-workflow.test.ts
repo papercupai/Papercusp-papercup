@@ -141,6 +141,7 @@ import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
 } from '../workspace-host/provisioning-runner';
+import { WorkspaceHostControllerFenceError } from '../workspace-host/observability-store';
 
 const desired: WorkspaceHostDesiredSpec = {
   hostId: 'host-1',
@@ -576,9 +577,15 @@ describe('workspace-host provisioning DBOS admission', () => {
       checkpoints: [],
     });
 
-    await startWorkspaceHostProvisioningWorkflow(input);
+    const bootstrapReleaseOverride = {
+      manifestPath: '/var/lib/papercusp/releases/aws-canary.json',
+      migrationId: '1101',
+    } as const;
+    await startWorkspaceHostProvisioningWorkflow({ ...input, bootstrapReleaseOverride });
 
-    expect(control.runProvisioning).toHaveBeenCalledWith(expect.objectContaining({ provider: control.provider }));
+    expect(control.runProvisioning).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: control.provider, bootstrapReleaseOverride }),
+    );
   });
 
   it('routes discard destroy through the same host-scoped DBOS admission and composes the provider inside', async () => {
@@ -887,6 +894,64 @@ describe('workspace-host provisioning DBOS admission', () => {
     expect((connectionError as WorkspaceHostProvisioningConnectionError).problems).toEqual(connectionProblems);
   });
 
+  // WI-10005474: a request that reuses the operationId of a workflow that already ENDED in a fence
+  // refusal (WI-10005312) is the SAME DBOS workflow, so `getResult` rethrows its stored, serialized
+  // error at once, inside the admission window. Unrehydrated it is a plain Error, which every
+  // route answers as a generic 500 instead of the conflict it is.
+  it('rehydrates a serialized controller-fence refusal on every result-waiting start (WI-10005474)', async () => {
+    const serializedFence = () =>
+      Object.assign(new Error("workspace-host controller authority or host generation is stale for 'host-1'"), {
+        name: 'WorkspaceHostControllerFenceError',
+        hostId: 'host-1',
+      });
+    const starts: Array<[string, () => Promise<unknown>]> = [
+      ['provision', () => startWorkspaceHostProvisioningWorkflow(input)],
+      [
+        'destroy',
+        () =>
+          startWorkspaceHostDestroyWorkflow({
+            workspaceId: 'ws-1',
+            hostId: 'host-1',
+            connectionId: 'connection-1',
+            connection,
+            disposition: 'discard',
+            confirmation: {
+              expectedHostId: 'host-1',
+              confirmedBy: 'operator:test',
+              confirmedAt: '2026-08-25T00:00:00Z',
+            },
+            operationId: 'destroy-refused-1',
+          }),
+      ],
+      [
+        'lifecycle',
+        () =>
+          startWorkspaceHostLifecycleWorkflow({
+            workspaceId: 'ws-1',
+            hostId: 'host-1',
+            action: 'upgrade',
+            connection,
+            image: { id: 'projects/images/global/images/papercusp-v2' },
+            operationId: 'upgrade-refused-1',
+          }),
+      ],
+    ];
+    for (const [label, start] of starts) {
+      control.resultError = serializedFence();
+      const received = await start().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(received, label).toBeInstanceOf(WorkspaceHostControllerFenceError);
+      expect((received as WorkspaceHostControllerFenceError).hostId, label).toBe('host-1');
+    }
+
+    // Only the validated shape is rehydrated: a fence-named error with no host id stays as it was.
+    const malformed = Object.assign(new Error('stale'), { name: 'WorkspaceHostControllerFenceError' });
+    control.resultError = malformed;
+    await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBe(malformed);
+  });
+
   it('does not reclassify malformed or unrelated DBOS errors', async () => {
     const malformed = Object.assign(new Error('transient provider timeout'), {
       name: 'WorkspaceHostProvisioningRequestError',
@@ -969,5 +1034,75 @@ describe('workspace-host provisioning DBOS admission', () => {
     const refused = new WorkspaceHostProvisioningRequestError(['upgrade image is required']);
     control.resultError = refused;
     await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBe(refused);
+  });
+
+  it('rejects an upgrade with no image before enqueue so the same operation ID can be retried', async () => {
+    control.admissionPending = true;
+    const incomplete = {
+      workspaceId: 'ws-1',
+      hostId: 'host-1',
+      action: 'upgrade' as const,
+      connection,
+      operationId: 'upgrade-preflight-1',
+    };
+
+    await expect(startWorkspaceHostLifecycleWorkflow(incomplete)).rejects.toMatchObject({
+      name: 'WorkspaceHostProvisioningRequestError',
+      problems: ['upgrade image is required'],
+    });
+    expect(control.startOptions).toBeNull();
+    expect(control.getResult).not.toHaveBeenCalled();
+
+    await expect(
+      startWorkspaceHostLifecycleWorkflow({
+        ...incomplete,
+        image: { id: 'projects/images/global/images/papercusp-v2' },
+      }),
+    ).resolves.toMatchObject({
+      status: 'accepted',
+      operationId: 'upgrade-preflight-1',
+      hostId: 'host-1',
+    });
+    expect(control.startOptions).toMatchObject({
+      workflowID: 'workspace-host:ws-1:host-1:operation:upgrade-preflight-1',
+    });
+  });
+
+  it('rejects every incomplete restore request before enqueue', async () => {
+    control.admissionPending = true;
+    const snapshot = { target: 'gcp' as const, providerId: 'snapshot-1', hostId: 'host-1' };
+    const restored = { ...desired, hostId: 'host-restored-1' };
+    const base = {
+      workspaceId: 'ws-1',
+      hostId: 'host-1',
+      action: 'restore' as const,
+      connection,
+    };
+    const invalidRequests: Array<{
+      request: Parameters<typeof startWorkspaceHostLifecycleWorkflow>[0];
+      problem: string;
+    }> = [
+      {
+        request: { ...base, operationId: 'restore-preflight-snapshot-1', desired: restored },
+        problem: 'restore snapshot is required',
+      },
+      {
+        request: { ...base, operationId: 'restore-preflight-desired-1', snapshot },
+        problem: 'restore desired host spec is required',
+      },
+      {
+        request: { ...base, operationId: 'restore-preflight-host-1', snapshot, desired },
+        problem: 'restore must target a distinct desired.hostId',
+      },
+    ];
+
+    for (const { request, problem } of invalidRequests) {
+      await expect(startWorkspaceHostLifecycleWorkflow(request)).rejects.toMatchObject({
+        name: 'WorkspaceHostProvisioningRequestError',
+        problems: [problem],
+      });
+      expect(control.startOptions).toBeNull();
+      expect(control.getResult).not.toHaveBeenCalled();
+    }
   });
 });

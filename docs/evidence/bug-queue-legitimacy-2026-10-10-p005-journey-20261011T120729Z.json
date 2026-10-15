@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "bug-queue-legitimacy-2026-10-10 P-005 current-build journeys (SPEC-BQL-P-005-JOURNEY@1)",
+  "plan": "bug-queue-legitimacy-and-actionable-validation-2026-10-10",
+  "planItem": "P-005",
+  "workItem": "WI-10008045",
+  "spec": "SPEC-BQL-P-005-JOURNEY@1",
+  "command": [
+    "node",
+    ".papercusp/scratch/6baa8-p005-census/journey-oracle.mjs",
+    "3170"
+  ],
+  "startedAt": "2026-10-11T12:06:57.986Z",
+  "finishedAt": "2026-10-11T12:07:29.794Z",
+  "exitCode": 0,
+  "runtime": {
+    "port": "3170",
+    "role": ":3170 staging operator",
+    "healthPre": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "be37bee805",
+      "version": "0.0.0",
+      "ts": "2026-10-11T12:06:57.986Z"
+    },
+    "healthPost": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "be37bee805",
+      "version": "0.0.0",
+      "ts": "2026-10-11T12:07:29.792Z"
+    }
+  },
+  "oracleSource": {
+    "path": ".papercusp/scratch/6baa8-p005-census/journey-oracle.mjs",
+    "sha256": "441a6991755dc15f881d343200625cfb894b2395fb0ee240b968966e19730091",
+    "note": "gitignored scratch; identity pinned by sha256"
+  },
+  "summary": "15 pass / 0 fail on :3170 be37bee805. Each step compares the operator's answer with an independent oracle (direct SQL, or a SQL fingerprint for no-write dry runs).",
+  "assertions": [
+    {
+      "id": "queue-population-partition",
+      "spec": "R-1",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"oracle.preAt\":\"2026-10-11T12:06:58.067Z\",\"oracle.postAt\":\"2026-10-11T12:07:04.029Z\",\"oracle.queueNonTerminal\":3037,\"oracle.churnIds\":0,\"oracle.missingFromQueue\":0,\"oracle.extraInQueue\":0,\"oracle.queueTerminal\":53177,\"oracle.termOk\":true,\"counts\":{\"total\":56214,\"terminal\":53177,\"inFlight\":265,\"parked\":1893,\"unclaimed\":879}}"
+    },
+    {
+      "id": "queue-population-partition-with-children",
+      "spec": "R-1",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"oracle.preAt\":\"2026-10-11T12:07:04.352Z\",\"oracle.postAt\":\"2026-10-11T12:07:09.389Z\",\"oracle.queueNonTerminal\":3079,\"oracle.churnIds\":0,\"oracle.missingFromQueue\":0,\"oracle.extraInQueue\":0,\"oracle.queueTerminal\":53795,\"oracle.termOk\":true,\"counts\":{\"total\":56874,\"terminal\":53795,\"inFlight\":282,\"parked\":1905,\"unclaimed\":892}}"
+    },
+    {
+      "id": "claimable-breakdown",
+      "spec": "R-1/R-3",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": null,
+      "oracleAgrees": null,
+      "evidence": "{}"
+    },
+    {
+      "id": "reproduction-route-claim-spec",
+      "spec": "R-2/P-009",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": null,
+      "oracleAgrees": null,
+      "evidence": "{}"
+    },
+    {
+      "id": "authority-unknown-adoption-refused",
+      "spec": "R-2/D-010",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true}"
+    },
+    {
+      "id": "dependency-blocked-excluded-from-self-select",
+      "spec": "R-3",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true}"
+    },
+    {
+      "id": "dependency-blocked-by-id-names-blockers",
+      "spec": "R-3/WI-6554700010008465",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true}"
+    },
+    {
+      "id": "plan-lane-blocked-unavailable",
+      "spec": "R-3",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"oracle.scope\":\"claim and terminal state only; the plan-item blocked status is read from the plan store by the operator and is not SQL-checked here\"}"
+    },
+    {
+      "id": "park-liveness-projected",
+      "spec": "R-4",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": null,
+      "oracleAgrees": null,
+      "evidence": "{\"parks\":476}"
+    },
+    {
+      "id": "park-reconcile-dryrun:unverified/blocked",
+      "spec": "R-4",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"outcome\":\"cleared\",\"disclosure\":\"D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition\"}"
+    },
+    {
+      "id": "park-reconcile-dryrun:tracked/reachable",
+      "spec": "R-4",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"outcome\":\"cleared\",\"disclosure\":\"D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition\"}"
+    },
+    {
+      "id": "park-reconcile-dryrun:unverified/none",
+      "spec": "R-4",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"outcome\":\"cleared\",\"disclosure\":\"D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition\"}"
+    },
+    {
+      "id": "park-reconcile-dryrun:unreachable/unreachable",
+      "spec": "R-4",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"outcome\":\"cleared\",\"disclosure\":\"D-022 #4: agent-attested preview of the caller attestation; not machine verification of the condition\"}"
+    },
+    {
+      "id": "park-certification-postdates-park",
+      "spec": "R-4",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": "sql",
+      "oracleAgrees": true,
+      "evidence": "{\"oracle.kind\":\"sql\",\"oracle.agree\":true,\"oracle.violations\":0,\"oracle.controlCaught\":9,\"parks\":476,\"liveSatisfied\":0,\"storedSatisfied\":66,\"storedPrePark\":66,\"ownStatusTriggers\":63,\"violations\":0}"
+    },
+    {
+      "id": "reservation-facts-distinct",
+      "spec": "R-1/R-4",
+      "passed": true,
+      "operatorVerdict": true,
+      "oracleKind": null,
+      "oracleAgrees": null,
+      "evidence": "{}"
+    }
+  ],
+  "calibration": {
+    "step": "park-certification-postdates-park",
+    "control": ".papercusp/scratch/6baa8-p005-census/journey-oracle-out-prefix-1134Z.json",
+    "controlSha256": "cdca7bb26fb689900dc15eb5b39f04900b21fc39081e0075111ce0085cb214f5",
+    "note": "Pre-fix run on :3170 90842e99a9 (11:34Z): this step failed with 9 violations and its control caught 9/9, so a pass here is a real negative and not a blind oracle.",
+    "thisRun": {
+      "verdict": true,
+      "violations": 0,
+      "controlCaught": 9
+    }
+  },
+  "disclosures": [
+    "park-reconcile-dryrun:* steps pass when there is no write (SQL fingerprint unchanged), no applied-write claim, and the outcome is in the reconciler enum. A 'cleared' preview is agent-attested under D-009 (fingerprint CAS + audit receipt + ownerOverride for policy parks), not proof that the condition was met (plan D-022 #4).",
+    "Unit, integration and real-PG suite receipts are listed under suites; this file records the live current-build journeys.",
+    "Step count differs from the pre-fix control (16 -> 15): the dry-run steps are one per live park class, and on this build the class satisfied-still-parked/satisfied is empty (control had 9). Classes control={\"tracked/reachable\":175,\"unverified/blocked\":100,\"unverified/none\":188,\"satisfied-still-parked/satisfied\":9,\"unreachable/unreachable\":2} vs this run={\"unverified/blocked\":110,\"tracked/reachable\":176,\"unverified/none\":188,\"unreachable/unreachable\":2}. This is the EI-25664119449929994 fix taking effect, not a dropped check."
+  ],
+  "suites": [
+    {
+      "testRunId": 21057661,
+      "file": "packages/operator-core/lib/work-items-claim-hold.integration.test.ts",
+      "layer": "real-PG integration",
+      "status": "pass",
+      "covers": "R-4 park release: pre-park and post-park trigger fires (EI-25664119449929994 fix)",
+      "finishedAt": "2026-10-11T11:25:04Z"
+    },
+    {
+      "testRunId": 21052904,
+      "file": "packages/operator-core/lib/hold-census.integration.test.ts",
+      "layer": "real-PG integration",
+      "status": "pass",
+      "covers": "hold census partition",
+      "finishedAt": "2026-10-11T10:27:27Z"
+    },
+    {
+      "testRunId": 21052906,
+      "file": "packages/operator-core/lib/hold-registry.test.ts",
+      "layer": "unit",
+      "status": "pass",
+      "covers": "hold registry",
+      "finishedAt": "2026-10-11T10:27:49Z"
+    },
+    {
+      "testRunId": 21049425,
+      "file": "packages/operator-core/lib/work-items-issue-release-cooldown.integration.test.ts",
+      "layer": "real-PG integration",
+      "status": "pass",
+      "covers": "release damping (WI-6554700010008444)",
+      "finishedAt": "2026-10-11T09:35:15Z"
+    },
+    {
+      "testRunId": 21045308,
+      "file": "packages/operator-core/lib/work-items-admission-promoter.integration.test.ts",
+      "layer": "real-PG integration",
+      "status": "pass",
+      "covers": "claimed fail-open re-review (WI-6554700010008443)",
+      "finishedAt": "2026-10-11T08:25:55Z"
+    },
+    {
+      "testRunId": 21055450,
+      "file": "packages/operator-core/lib/work-items-claim-hold-attribution.test.ts",
+      "layer": "unit (ci)",
+      "status": "pass",
+      "covers": "claim-hold attribution",
+      "finishedAt": "2026-10-11T10:23:13Z"
+    }
+  ],
+  "parkConditionClasses": {
+    "unverified/blocked": 110,
+    "tracked/reachable": 176,
+    "unverified/none": 188,
+    "unreachable/unreachable": 2
+  },
+  "rerun": "node .papercusp/scratch/6baa8-p005-census/journey-oracle.mjs 3170 (writes journey-oracle-out.json); then node .papercusp/scratch/6baa8-p005-census/build-journey-evidence.mjs <out> <log> <suites.json>",
+  "oracleRunLogSha256": "9f87d4980c5830e2906d2365e02dd987046794b0543bd1aed0e733aaf6e61127"
+}

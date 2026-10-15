@@ -1,5 +1,20 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true),
+  broadcastSevereEventResolved: vi.fn(async () => true) }));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({ readConditionEnvelopes: async () => [],
+  computeConditionStates: () => [], readLatestConditionEnvelope: vi.fn(async () => null) }));
+vi.mock('../attention-notify', () => ({ notifyAttention: vi.fn(async () => {}), notifyAttentionOnce: vi.fn(async () => {}) }));
 import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import type { AttentionNotifyInput } from '../attention-notify';
+import { readLatestConditionEnvelope } from '../agent-tools/coordination/tools/conditions';
+import { RETENTION_POLICY, type RetentionClass } from './retention-policy';
+import { listDiskRootChildrenAsync } from './disk';
+vi.mock('./disk', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./disk')>(),
+  listDiskRootChildrenAsync: vi.fn(async () => ({ entries: [], truncated: false })),
+}));
 import {
   detectLowSpace,
   detectCriticalWriteHeadroom,
@@ -9,15 +24,25 @@ import {
   diskEscalationTier,
   formatDiskEscalation,
   formatDiskAlarmToast,
-  runDiskSpaceAlarmOnce,
+  runDiskSpaceAlarmOnce as runDiskSpaceAlarmWithDefaults,
   diskPolicyFromEnv,
   watchedPaths,
+  alarmWatchedPaths,
+  mountPointOf,
+  sampleDiskSnapshots,
   DEFAULT_DISK_POLICY,
+  DISK_SPACE_ALARM_CONDITION_KEY,
   type DiskSnapshot,
   type DiskAlarmPolicy,
+  type DiskAlarmContext,
 } from './disk-space-alarm';
 
 const GIB = 1024 ** 3;
+
+// Unit fixtures never touch the live census/cooldown database.
+function runDiskSpaceAlarmOnce(deps: Parameters<typeof runDiskSpaceAlarmWithDefaults>[0] = {}, policy?: DiskAlarmPolicy) {
+  return runDiskSpaceAlarmWithDefaults({ readContext: async () => ({ devices: [], receipt: null }), recentlyEscalated: async () => false, ...deps }, policy);
+}
 
 function snap(p: Partial<DiskSnapshot> = {}): DiskSnapshot {
   // A healthy default: 500 GB total, 250 GB free (50%), inodes 50% free.
@@ -209,7 +234,7 @@ describe('write-headroom reserve is bounded on a large volume (EI-23337577023503
 });
 
 describe('formatDiskAlarmToast', () => {
-  it('names the path with free GB + %, and mentions inodes only when low-inodes', () => {
+  it('names the path with free GiB + %, and mentions inodes only when low-inodes', () => {
     const t = formatDiskAlarmToast([
       {
         path: '/ws',
@@ -226,7 +251,7 @@ describe('formatDiskAlarmToast', () => {
     expect(t.level).toBe('warning');
     expect(t.message).toContain('1 filesystem');
     expect(t.description).toContain('/ws');
-    expect(t.description).toContain('2.0 GB free');
+    expect(t.description).toContain('2.0 GiB free');
     expect(t.description).toContain('inodes free');
     expect(t.description).toContain('PAPERCUSP_DISK_SPACE_ALARM=0');
   });
@@ -250,6 +275,101 @@ describe('formatDiskAlarmToast', () => {
 });
 
 describe('runDiskSpaceAlarmOnce', () => {
+  it('delivers the warning-floor alarm with both persisted device consumers and an exact receipt link', async () => {
+    const context: DiskAlarmContext = {
+      devices: [
+        { device: '/', complete: true, sampledAt: '2026-10-13T12:00:00Z', consumers: [{ consumer: '/home/builduser', kind: 'dir', depth: 2, bytes: 120 * GIB, baselineBytes: null, growth24hBytes: null }] },
+        { device: '/mnt/data', complete: true, sampledAt: '2026-10-13T12:00:00Z', consumers: [{ consumer: '/mnt/data/offload', kind: 'dir', depth: 3, bytes: 300 * GIB, baselineBytes: null, growth24hBytes: null }] },
+      ],
+      receipt: { schemaVersion: 1, id: 'receipt-123', startedAt: '', finishedAt: '2026-10-13T13:00:00Z', dryRun: false, complete: false, policyExhausted: null, devices: [], entries: [], delegates: [], errors: ['protected artifacts remain'] },
+    };
+    const escalate = vi.fn(async (_t: AttentionNotifyInput) => {});
+    const emitToast = vi.fn(async (_t: { description: string }) => {});
+    const readContext = vi.fn(async () => context);
+    const deps = { emitToast, escalate, readContext, recentlyEscalated: async () => false, attributeUsage: async () => ({ entries: [], truncated: false }) };
+    const result = await runDiskSpaceAlarmOnce({ ...deps, sample: async () => [snap({ path: '/', freeBytes: 99 * GIB, freePct: 0.198 }), snap({ path: '/mnt/data' })] });
+    expect(result.escalated).toBe(true);
+    expect(escalate.mock.calls[0]![0].importance).toBe('urgent');
+    expect(escalate.mock.calls[0]![0].data).toEqual({
+      conditionKey: DISK_SPACE_ALARM_CONDITION_KEY, host: expect.any(String),
+      consumers: { '/': ['/home/builduser'], '/mnt/data': ['/mnt/data/offload'] }, reclaimReceiptId: 'receipt-123',
+    });
+    for (const text of ['/home/builduser', '/mnt/data/offload', '/settings/storage?reclaim=receipt-123', 'partial']) {
+      expect(escalate.mock.calls[0]![0].body).toContain(text);
+      expect(emitToast.mock.calls[0]![0].description).toContain(text);
+    }
+    escalate.mockClear(); readContext.mockClear();
+    await runDiskSpaceAlarmOnce({ ...deps, sample: async () => [snap({ path: '/', freeBytes: 100 * GIB, freePct: 0.2 })] });
+    expect(escalate).not.toHaveBeenCalled(); expect(readContext).not.toHaveBeenCalled();
+  });
+  it('inspects breached temporary and extra paths before known roots and reports their consumers', async () => {
+    const retained = join(tmpdir(), 'retained-source-evidence');
+    const scan = vi.mocked(listDiskRootChildrenAsync);
+    scan.mockClear();
+    scan.mockImplementationOnce(async (options) => ({
+      entries: options?.roots?.[0] === tmpdir()
+        ? [{ path: retained, mtimeMs: 0, sizeBytes: 3 * GIB }]
+        : [],
+      truncated: true,
+    }));
+    const emitToast = vi.fn(async (_t: { description: string }) => {});
+    const escalate = vi.fn(async (_t: { body: string }) => {});
+    await runDiskSpaceAlarmOnce({
+      sample: async () => [
+        // The sampler deduplicates the /tmp bind mount against /mnt/data.
+        // Attribution must still reach that narrower alias before a broad scan.
+        snap({ path: '/mnt/data', aliases: [tmpdir()], freeBytes: 0, freePct: 0 }),
+        snap({ path: '/extra-volume', freeBytes: 0, freePct: 0 }),
+        snap(),
+      ],
+      emitToast, escalate, recentlyEscalated: async () => false,
+    });
+    expect(scan).toHaveBeenCalledOnce();
+    expect(scan.mock.calls[0]?.[0]?.roots?.slice(0, 3)).toEqual([tmpdir(), '/mnt/data', '/extra-volume']);
+    expect(scan.mock.calls[0]?.[0]?.followSymlinks).toBe(false);
+    expect(emitToast.mock.calls[0]?.[0].description).toContain(retained);
+    expect(emitToast.mock.calls[0]?.[0].description).toContain('partial scan');
+    expect(escalate.mock.calls[0]?.[0].body).toContain(retained);
+  });
+
+  it('does not scan a healthy disk; labels partial and unavailable attribution', async () => {
+    const attributeUsage = vi.fn(async () => ({ entries: [{ path: '/large-store', mtimeMs: 0, sizeBytes: GIB }], truncated: true }));
+    const emitToast = vi.fn(async (_t: { description: string }) => {});
+    await runDiskSpaceAlarmOnce({ sample: async () => [snap()], emitToast, attributeUsage });
+    expect(attributeUsage).not.toHaveBeenCalled();
+    await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ freeBytes: 6 * GIB, freePct: 0.03 })], emitToast, attributeUsage,
+    });
+    expect(emitToast.mock.calls[0]?.[0].description).toContain('partial scan');
+    await runDiskSpaceAlarmOnce({
+      sample: async () => [snap({ freeBytes: 6 * GIB, freePct: 0.03 })], emitToast,
+      attributeUsage: async () => { throw new Error('unreadable'); },
+    });
+    expect(emitToast.mock.calls[1]?.[0].description).toContain('attribution unavailable');
+  });
+
+  it('WI-10005720: names a large sibling that fleet-logs retention cannot see', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-alarm-attribution-'));
+    try {
+      mkdirSync(join(root, 'fleet-logs'));
+      const large = join(root, 'pot-git');
+      mkdirSync(large);
+      writeFileSync(join(large, 'payload'), Buffer.alloc(4096));
+      const emitToast = vi.fn(async (_t: { description: string }) => {});
+      const escalate = vi.fn(async (_t: { body: string }) => {});
+      const disk = await vi.importActual<typeof import('./disk')>('./disk');
+      await runDiskSpaceAlarmOnce({
+        sample: async () => [snap({ freeBytes: 0, freePct: 0 })],
+        emitToast, escalate, recentlyEscalated: async () => false,
+        attributeUsage: () => disk.listDiskRootChildrenAsync({ roots: [root], followSymlinks: false }),
+      });
+      expect(emitToast.mock.calls[0]?.[0].description).toContain(large);
+      expect(escalate.mock.calls[0]?.[0].body).toContain(large);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // Every case below injects BOTH escalation deps. A critical-tier breach otherwise
   // falls through to the real notifyAttention (defaultRecentlyEscalated fails OPEN on
   // a missing DB, by design) — i.e. a unit test firing a live push.
@@ -284,7 +404,7 @@ describe('runDiskSpaceAlarmOnce', () => {
     expect(escalate.mock.calls[0][0].body).toContain('/ws');
   });
 
-  it('does NOT escalate a warning-tier breach (toast only — the pre-existing behaviour)', async () => {
+  it('delivers a warning-tier breach through the existing human attention rail', async () => {
     const escalate = vi.fn(async (_t: { title: string; body: string }) => {});
     const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
     const res = await runDiskSpaceAlarmOnce({
@@ -294,8 +414,9 @@ describe('runDiskSpaceAlarmOnce', () => {
       recentlyEscalated: async () => false,
     });
     expect(emitToast).toHaveBeenCalledTimes(1); // still toasts
-    expect(escalate).not.toHaveBeenCalled();
-    expect(res.escalated).toBe(false);
+    expect(escalate).toHaveBeenCalledOnce();
+    expect(escalate.mock.calls[0][0].title).toBe('Disk below headroom target');
+    expect(res.escalated).toBe(true);
   });
 
   it('suppresses a repeat escalation inside the cooldown window', async () => {
@@ -340,7 +461,11 @@ describe('escalation ladder — a worsening critical disk re-escalates inside th
   });
 
   it('keeps ONE cooldown identity while the disk merely stays on the same rung (no spam)', () => {
-    expect(formatDiskEscalation([breach(17)]).title).toBe(formatDiskEscalation([breach(15)]).title);
+    const escalation = formatDiskEscalation([breach(17)]);
+    expect(escalation.title).toBe(formatDiskEscalation([breach(15)]).title);
+    expect(escalation.title).toContain('18.8 GiB');
+    expect(escalation.body).toContain('17.0 GiB free');
+    expect(escalation.body).toContain('1875.0 GiB');
     expect(formatDiskEscalation([breach(30)]).title).toBe('Disk critically low');
   });
 
@@ -379,9 +504,12 @@ describe('escalation ladder — a worsening critical disk re-escalates inside th
 
   it('emits NO toast when every filesystem is healthy', async () => {
     const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
+    vi.mocked(readLatestConditionEnvelope).mockClear();
     const res = await runDiskSpaceAlarmOnce({ sample: async () => [snap(), snap({ path: '/tmp' })], emitToast });
     expect(res.breaches).toEqual([]);
     expect(emitToast).not.toHaveBeenCalled();
+    expect(readLatestConditionEnvelope).toHaveBeenCalledOnce();
+    expect(readLatestConditionEnvelope).toHaveBeenCalledWith(DISK_SPACE_ALARM_CONDITION_KEY);
   });
 
   it('never throws when sampling fails — returns an empty result', async () => {
@@ -401,23 +529,96 @@ describe('escalation ladder — a worsening critical disk re-escalates inside th
 });
 
 describe('diskPolicyFromEnv', () => {
+  const policyEnvKeys = [
+    'PAPERCUSP_DISK_ALARM_FREE_PCT',
+    'PAPERCUSP_DISK_ALARM_FREE_GB',
+    'PAPERCUSP_DISK_ALARM_FREE_INODES_PCT',
+    'PAPERCUSP_DISK_ALARM_CRITICAL_PCT',
+    'PAPERCUSP_DISK_ALARM_CRITICAL_GB',
+    'PAPERCUSP_DISK_ALARM_CRITICAL_CAP_GB',
+  ];
+
+  beforeEach(() => {
+    for (const key of policyEnvKeys) vi.stubEnv(key, undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
   it('falls back to defaults when env is unset', () => {
     expect(diskPolicyFromEnv()).toEqual(DEFAULT_DISK_POLICY);
+  });
+  it('keeps the approved 100 GiB alarm floor when a legacy environment sets a lower value', () => {
+    vi.stubEnv('PAPERCUSP_DISK_ALARM_FREE_GB', '5');
+    expect(diskPolicyFromEnv().freeBytesMin).toBe(100 * GIB);
+    vi.stubEnv('PAPERCUSP_DISK_ALARM_FREE_GB', '150');
+    expect(diskPolicyFromEnv().freeBytesMin).toBe(150 * GIB);
   });
 });
 
 describe('watchedPaths', () => {
-  it('watches the process temp filesystem by default and deduplicates an explicit repeat', () => {
+  it('prefers /mnt/data to the process temp path and deduplicates identical extras', () => {
     const previous = process.env.PAPERCUSP_DISK_ALARM_PATHS;
     process.env.PAPERCUSP_DISK_ALARM_PATHS = `${tmpdir()},${tmpdir()}`;
     try {
       const paths = watchedPaths();
       expect(paths).toContain(tmpdir());
+      expect(paths.indexOf('/mnt/data')).toBeLessThan(paths.indexOf(tmpdir()));
       expect(paths.filter((path) => path === tmpdir())).toHaveLength(1);
     } finally {
       if (previous == null) delete process.env.PAPERCUSP_DISK_ALARM_PATHS;
       else process.env.PAPERCUSP_DISK_ALARM_PATHS = previous;
     }
+  });
+
+  it('samples only one path for filesystem aliases with the same stat.dev', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'disk-alarm-device-alias-'));
+    const nested = join(root, 'nested');
+    mkdirSync(nested);
+    try {
+      const snapshots = await sampleDiskSnapshots([root, nested]);
+      expect(snapshots.map((snapshot) => snapshot.path)).toEqual([root]);
+      expect(snapshots[0]?.aliases).toEqual([nested]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('alarmWatchedPaths — every retention volume is watched (WI-6554700010011387)', () => {
+  // A fake host: /mnt/backup and /mnt/data are their own devices; everything else is '/'.
+  const fakeStat = (p: string) => {
+    if (p === '/mnt/missing' || p.startsWith('/mnt/missing/')) throw new Error('ENOENT');
+    if (p === '/mnt/backup' || p.startsWith('/mnt/backup/')) return { dev: 2 };
+    if (p === '/mnt/data' || p.startsWith('/mnt/data/')) return { dev: 3 };
+    return { dev: 1 };
+  };
+  const cls = (id: string, roots: string[]): RetentionClass => ({
+    id, title: id, origin: 'system', roots, keep: { kind: 'keep', reason: 'fixture' }, enforcers: [{ kind: 'none' }],
+  });
+
+  it('mountPointOf walks up to the device boundary and is null for a missing path', () => {
+    expect(mountPointOf('/mnt/backup/offload/macos-vm/OSX-KVM', fakeStat)).toBe('/mnt/backup');
+    expect(mountPointOf('/usr/lib', fakeStat)).toBe('/');
+    expect(mountPointOf('/mnt/missing/x', fakeStat)).toBeNull();
+  });
+
+  it('adds the mount of every absolute class root, including glob roots, and skips ~ roots', () => {
+    const paths = alarmWatchedPaths([
+      cls('vm', ['/mnt/backup/offload/macos-vm']),
+      cls('trees', ['/mnt/backup/cloud-e2e-*']),
+      cls('home', ['~/.cache']),
+      cls('gone', ['/mnt/missing/x']),
+    ], fakeStat);
+    expect(paths).toContain('/mnt/backup');
+    expect(paths.filter((p) => p === '/mnt/backup')).toHaveLength(1);
+    expect(paths).not.toContain('/mnt/missing');
+    for (const p of watchedPaths()) expect(paths).toContain(p);
+  });
+
+  it('the shipped policy puts /mnt/backup in the ALARM set but not the gate write-admission set', () => {
+    // The gate reuses watchedPaths() for write admission (green-checkpoint sampleCheckpointDisk);
+    // a volume the suite never writes to must not hold it.
+    expect(alarmWatchedPaths(RETENTION_POLICY, fakeStat)).toContain('/mnt/backup');
+    expect(watchedPaths()).not.toContain('/mnt/backup');
   });
 });
 

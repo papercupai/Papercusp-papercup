@@ -182,6 +182,18 @@ describe("validateChecksConfig", () => {
     expect(errors).toContain("seam.invalidOutput: required object fixture");
   });
 
+  it("accepts an optional seam.rootBlueprint and rejects an empty one", () => {
+    expect(
+      validateChecksConfig({
+        ...valid,
+        seam: { ...valid.seam, rootBlueprint: ".papercusp/blueprint.yaml" },
+      }),
+    ).toEqual([]);
+    expect(
+      validateChecksConfig({ ...valid, seam: { ...valid.seam, rootBlueprint: "" } }),
+    ).toContain("seam.rootBlueprint: must be a non-empty string when present");
+  });
+
   it("rejects an unpinned seam operation declaration", () => {
     const errors = validateChecksConfig({
       ...valid,

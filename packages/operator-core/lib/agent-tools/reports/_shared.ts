@@ -11,16 +11,21 @@
  * Server-only.
  */
 import { z } from 'zod';
+import { parseGoalOwnerReportSnapshot, type GoalOwnerReportSnapshotV1 } from '@papercusp/chat-protocol';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { trackDetached } from '../../detached-imports';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import {
   REPORT_KINDS,
   REPORT_SUBJECT_KINDS,
   REPORT_VISIBILITIES,
   ReportBodyTooLargeError,
+  ReportRequestConflictError,
+  reportBodySha256,
   type ReportOrigin,
   type ReportRecord,
   type ReportViewer,
@@ -28,6 +33,17 @@ import {
 
 /** The sync query the Reports tab reads; invalidated after every write. */
 export const REPORTS_SYNC_QUERY = 'reports.library';
+
+/** One runtime kill-switch for all report-tool entry points; checked before I/O. */
+export async function reportsLibraryDisabled() {
+  if (await getFlag(FLAGS.REPORTS_LIBRARY, 'system')) return null;
+  return {
+    ok: false as const,
+    error: 'flag_disabled' as const,
+    flag: FLAGS.REPORTS_LIBRARY,
+    message: 'Reports library is disabled. Existing reports are preserved.',
+  };
+}
 
 /**
  * Enum vocabularies DERIVED from the store's own exported constants, never
@@ -39,6 +55,29 @@ export const REPORTS_SYNC_QUERY = 'reports.library';
 export const zReportKind = z.enum(REPORT_KINDS);
 export const zReportVisibility = z.enum(REPORT_VISIBILITIES);
 export const zReportSubjectKind = z.enum(REPORT_SUBJECT_KINDS);
+const zSnapshotText = z.string().min(1);
+const zSnapshotRefs = z.array(zSnapshotText);
+const zSnapshotUtc = z.string().datetime();
+/** Discoverable wire fields, checked by the shared deps-free exact-shape guard. */
+export const zGoalOwnerReportSnapshot: z.ZodType<GoalOwnerReportSnapshotV1> = z.object({
+  schemaVersion: z.literal(1), workspaceId: zSnapshotText, goalId: zSnapshotText, observedAt: zSnapshotUtc,
+  sources: z.array(z.object({ ref: zSnapshotText, revision: zSnapshotText, observedAt: zSnapshotUtc,
+    measuredAt: zSnapshotUtc.nullable(), availability: z.enum(['value', 'unknown']), unknownReason: zSnapshotText.optional() }).strict()),
+  moved: z.array(z.object({ ref: zSnapshotText, state: zSnapshotText, stateObservedAt: zSnapshotUtc,
+    successfulMutations: z.array(z.object({ receiptRef: zSnapshotText, operation: zSnapshotText, persistedAt: zSnapshotUtc }).strict()),
+    completionEvidenceRefs: zSnapshotRefs, verification: z.enum(['verified', 'unverified']) }).strict()),
+  cost: z.object({ spentCents: z.number().nonnegative().nullable(), budgetCents: z.number().nonnegative().nullable(),
+    budgetWindowSec: z.number().nonnegative().nullable(), sourceRef: zSnapshotText, sourceRevision: zSnapshotText,
+    measuredAt: zSnapshotUtc.nullable(), readAt: zSnapshotUtc, coverage: zSnapshotText, unknownReason: zSnapshotText.optional() }).strict(),
+  ownerWalls: z.array(z.object({ itemRef: zSnapshotText, exactAction: zSnapshotText, decisionRefs: zSnapshotRefs,
+    artifactRefs: zSnapshotRefs, sourceRevision: zSnapshotText }).strict()),
+  coverage: z.object({ checkedRefs: zSnapshotRefs, uncheckedRefs: zSnapshotRefs, notApplicableRefs: zSnapshotRefs,
+    unknowns: z.array(z.object({ ref: zSnapshotText, reason: zSnapshotText }).strict()), residueRefs: zSnapshotRefs }).strict(),
+  killed: z.array(z.object({ ref: zSnapshotText, disposition: zSnapshotText, evidenceRefs: zSnapshotRefs, at: zSnapshotUtc }).strict()),
+  nextWake: z.object({ kind: z.enum(['loop', 'event', 'owner', 'unknown']), ref: zSnapshotText.nullable(),
+    expectedAt: zSnapshotUtc.nullable(), evidenceRef: zSnapshotText.nullable(), unknownReason: zSnapshotText.optional() }).strict(),
+}).strict().refine((value) => parseGoalOwnerReportSnapshot(value) !== null,
+  'Expected a complete GoalOwnerReportSnapshotV1 with explicit UTC timestamps and unknown reasons');
 
 export const zReportSubject = z
   .object({
@@ -145,7 +184,7 @@ export function resolveViewer(ctx: ReportsCtx): ReportViewer {
 
 /** The owner-facing deep link for a report. Single definition, reused by the UI item. */
 export function reportUiPath(reportId: string): string {
-  return `/reports/${encodeURIComponent(reportId)}`;
+  return `/reports?sel=${encodeURIComponent(reportId)}`;
 }
 
 /**
@@ -177,6 +216,7 @@ export function reportUiPath(reportId: string): string {
  */
 export const zReportWire = z.object({
   report_id: z.string(),
+  request_key: z.string().nullable(),
   workspace_id: z.string(),
   title: z.string(),
   summary: z.string(),
@@ -201,11 +241,14 @@ export const zReportWire = z.object({
   retired_at: z.string().nullable(),
   path: z.string(),
   body_bytes: z.number().int().nonnegative(),
+  body_sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  goal_owner_report: zGoalOwnerReportSnapshot.nullable(),
 });
 
 export function toReportWire(report: ReportRecord): z.infer<typeof zReportWire> {
   return {
     report_id: report.reportId,
+    request_key: report.requestKey ?? null,
     workspace_id: report.workspaceId,
     title: report.title,
     summary: report.summary,
@@ -226,6 +269,8 @@ export function toReportWire(report: ReportRecord): z.infer<typeof zReportWire> 
     retired_at: report.retiredAt,
     path: reportUiPath(report.reportId),
     body_bytes: Buffer.byteLength(report.bodyMd, 'utf8'),
+    body_sha256: reportBodySha256(report.bodyMd),
+    goal_owner_report: report.goalOwnerReport ?? null,
   };
 }
 
@@ -257,6 +302,7 @@ export interface ReportRefusal {
  * knows how much to cut, instead of being silently truncated.
  */
 export function toRefusal(err: unknown): ReportRefusal {
+  if (err instanceof ReportRequestConflictError) return { ok: false, error: 'request_key_conflict', message: err.message };
   if (err instanceof ReportBodyTooLargeError) {
     return {
       ok: false,
@@ -276,7 +322,7 @@ export function toRefusal(err: unknown): ReportRefusal {
 }
 
 /**
- * Fire-and-forget the Reports-tab invalidation after a write.
+ * Fire-and-forget the Reports-tab and pinned-report invalidations after a write.
  *
  * Detached on purpose: a report IS published once the row commits, so a slow or
  * unavailable SSE bus must not fail the call or make the caller retry a write that
@@ -285,6 +331,13 @@ export function toRefusal(err: unknown): ReportRefusal {
  */
 export function invalidateReportsSync(log?: (m: string) => void): void {
   void trackDetached(import('../../sync-sse'))
-    .then(({ notifySyncInvalidate }) => notifySyncInvalidate(REPORTS_SYNC_QUERY, {}))
+    .then(({ notifySyncInvalidate }) => Promise.all([
+      notifySyncInvalidate(REPORTS_SYNC_QUERY, {}),
+      notifySyncInvalidate('reports.list', {}),
+      notifySyncInvalidate('reports.lineage', {}),
+      // The report store emits through this producer helper, rather than a PG
+      // table trigger. Retirement changes metadata read by an exact report pin.
+      notifySyncInvalidate('reports.get', {}),
+    ]))
     .catch((e) => log?.(`reports sync invalidate failed: ${e instanceof Error ? e.message : e}`));
 }

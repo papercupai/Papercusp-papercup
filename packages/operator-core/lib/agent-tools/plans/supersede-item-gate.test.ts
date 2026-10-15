@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getPlanItemStatuses, type PlanItemStatus } from '../../plan-audits';
+import {
+  getPlanItemStatuses,
+  resolvePlanItemHomeHarness,
+  type PlanItemStatus,
+} from '../../plan-audits';
 import {
   SUPERSEDE_ITEMS_UNFINISHED,
   evaluateSupersedeItemGate,
@@ -13,9 +17,13 @@ import {
 vi.mock('../../plan-audits', async (orig) => ({
   ...(await orig<typeof import('../../plan-audits')>()),
   getPlanItemStatuses: vi.fn(),
+  // The real helper reads harness_plans through getOrgPg; stub it so the gate's
+  // home-harness resolution is observable and never touches a database.
+  resolvePlanItemHomeHarness: vi.fn(),
 }));
 
 const mockItems = vi.mocked(getPlanItemStatuses);
+const mockResolveHome = vi.mocked(resolvePlanItemHomeHarness);
 const PLAN = 'dead-idea-2026-08-03';
 
 const item = (itemId: string, status: string): PlanItemStatus => ({
@@ -26,6 +34,7 @@ const item = (itemId: string, status: string): PlanItemStatus => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockResolveHome.mockResolvedValue(null);
 });
 
 describe('shouldEvaluateSupersedeItemGate', () => {
@@ -147,5 +156,27 @@ describe('evaluateSupersedeItemGate', () => {
     // stampForcedPastWaiver drops an empty-checks record, but not producing one at
     // all keeps the plan body clean for a deprecate that never needed forcing.
     expect(gate.forcedPast).toBeUndefined();
+  });
+
+  // WI-10005174: plan_items is keyed by the plan's own harness, so an unscoped read
+  // merges two harnesses' same-slug plans. The gate resolves the home from the
+  // CANDIDATE harness and scopes the item read to that resolved home.
+  it('scopes the item read to the home harness resolved from the candidate', async () => {
+    mockResolveHome.mockResolvedValue('email');
+    mockItems.mockResolvedValue([item('P-001', 'done')]);
+
+    await evaluateSupersedeItemGate(PLAN, { harnessSlug: 'papercusp' });
+
+    expect(mockResolveHome).toHaveBeenCalledWith(PLAN, 'papercusp');
+    expect(mockItems).toHaveBeenCalledWith(PLAN, { harnessSlug: 'email' });
+  });
+
+  it('keeps the unscoped read when no home harness resolves', async () => {
+    mockItems.mockResolvedValue([item('P-001', 'done')]);
+
+    await evaluateSupersedeItemGate(PLAN);
+
+    expect(mockResolveHome).toHaveBeenCalledWith(PLAN, undefined);
+    expect(mockItems).toHaveBeenCalledWith(PLAN, { harnessSlug: null });
   });
 });

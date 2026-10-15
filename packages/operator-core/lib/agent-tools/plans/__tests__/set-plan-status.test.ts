@@ -9,7 +9,6 @@
  */
 import { describe, expect, it } from 'vitest';
 import { applyPlanStatusBody, flipPlanFrontmatterStatus } from '../set-plan-status';
-import { TERMINAL_NOW_STAMP_MARK } from '../terminal-now-stamp';
 
 const plan = (status: string, body = '\n# Plan\n\n## Now\n\n**State:** x\n\n**Next:** y\n') =>
   `---\ntitle: P\nslug: p-2026-05-30\ncreated: 2026-05-30\nupdated: 2026-05-30\nstatus: ${status}\n---${body}`;
@@ -68,18 +67,21 @@ describe('flipPlanFrontmatterStatus', () => {
   });
 });
 
-describe('applyPlanStatusBody — terminal Now invariant (WI-38303)', () => {
-  it('repairs an already-shipped plan through the existing idempotent status path', () => {
-    const r = applyPlanStatusBody(plan('shipped'), 'shipped', undefined, new Date('2026-08-13T00:00:00Z'));
-    expect(r.changed).toBe(false);
-    expect(r.nowStamped).toBe(true);
-    expect(r.newBody).toContain(TERMINAL_NOW_STAMP_MARK);
-    expect(r.newBody).toContain('**Next:** none — the plan is shipped.');
+describe('applyPlanStatusBody — frontmatter flip only (derived-status P-006)', () => {
+  // P-006 retired the WI-38303 terminal stamp: the status lives in the
+  // frontmatter and readers derive "closed" from it, so a terminal flip
+  // writes nothing into the Now.
+  it('flips to shipped without writing into the Now', () => {
+    const r = applyPlanStatusBody(plan('active'), 'shipped');
+    expect(r.changed).toBe(true);
+    expect(r.newBody).toContain('status: shipped');
+    expect(r.newBody).toContain('**Next:** y');
+    expect(r.newBody).not.toContain('PLAN CLOSED');
+    expect(r).not.toHaveProperty('nowStamped');
   });
 
-  it('is a true no-op once an already-terminal plan is stamped', () => {
-    const first = applyPlanStatusBody(plan('superseded'), 'superseded', undefined, new Date('2026-08-13T00:00:00Z'));
-    const second = applyPlanStatusBody(first.newBody!, 'superseded', undefined, new Date('2026-08-14T00:00:00Z'));
-    expect(second).toMatchObject({ code: 'noop', changed: false, nowStamped: false, newBody: null });
+  it('is a true no-op on an already-terminal plan (no stamp repair)', () => {
+    const r = applyPlanStatusBody(plan('superseded'), 'superseded');
+    expect(r).toMatchObject({ code: 'noop', changed: false, newBody: null });
   });
 });

@@ -21,8 +21,10 @@ vi.mock('../locks/su-lock-store', () => ({
   readQueue: vi.fn(async () => ({ active_locks: [], waiting: [], completed: [] })),
 }));
 
+import { gitReadMemoStats } from '../../sync-exec-replay';
 import {
   buildMeasurementPin,
+  defaultGitRunner,
   diffMeasuredFiles,
   explainMovedPaths,
   gitBlobId,
@@ -34,6 +36,8 @@ import {
   measureAndPinRepoFilesEvidenceAtRoot,
   measureRepoFilesEvidenceAtRoot,
   measureRepoFilesEvidenceDetailedAtRoot,
+  measureRepoFilesEvidenceDetailedAtCommit,
+  repoFilesEvidenceMeasurementSchema,
   specEvidenceBindingFingerprint,
 } from './spec-evidence-store';
 
@@ -70,7 +74,120 @@ const recipe = {
   sourcePaths: ['src/a.ts', 'libs/sub/sql/001.sql'],
 };
 
+describe('defaultGitRunner (EI-24852529885337741)', () => {
+  it('returns stdout on success and throws a Command failed error naming the argv otherwise', async () => {
+    const head = git(root, 'rev-parse', 'HEAD');
+    expect((await defaultGitRunner(root, ['rev-parse', 'HEAD'])).trim()).toBe(head);
+    await expect(defaultGitRunner(root, ['rev-parse', '--verify', '--quiet', `${'0'.repeat(40)}:missing.ts`])).rejects.toThrow(
+      /^Command failed \(exit 1\): git -C .* rev-parse --verify --quiet 0{40}:missing\.ts/,
+    );
+  });
+
+  it('keeps missing-executable evidence in the first line recorded by measurement callers', async () => {
+    vi.stubEnv('PATH', join(root, 'no-executables'));
+    try {
+      await expect(defaultGitRunner(root, ['ls-tree', '0'.repeat(40), '--', 'missing.ts'])).rejects.toThrow(
+        /^Command failed \([^\n]*code=ENOENT[^\n]*signal=none[^\n]*killed=false[^\n]*\): git /,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('shares one child between concurrent identical content-addressed reads', async () => {
+    const head = git(root, 'rev-parse', 'HEAD');
+    const args = ['rev-parse', '--verify', '--quiet', `${head}:src/a.ts`];
+    const before = gitReadMemoStats();
+    const [a, b] = await Promise.all([defaultGitRunner(root, args), defaultGitRunner(root, args)]);
+    const after = gitReadMemoStats();
+    expect(a).toBe(b);
+    expect(a.trim()).toBe(git(root, 'rev-parse', `${head}:src/a.ts`));
+    expect(after.misses - before.misses).toBe(1);
+    expect(after.hits - before.hits).toBe(1);
+  });
+
+  it('never shares a HEAD-relative read, so a commit made in between is seen at once', async () => {
+    const before = gitReadMemoStats();
+    const first = (await defaultGitRunner(root, ['rev-parse', 'HEAD'])).trim();
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-q', '-am', 'move HEAD');
+    const second = (await defaultGitRunner(root, ['rev-parse', 'HEAD'])).trim();
+    expect(second).not.toBe(first);
+    expect(second).toBe(git(root, 'rev-parse', 'HEAD'));
+    const after = gitReadMemoStats();
+    expect(after.misses - before.misses).toBe(0);
+    expect(after.hits - before.hits).toBe(0);
+  });
+});
+
 describe('evidence measurement pin (P-018)', () => {
+  it('rejects a fixture root selector without calibration paths', () => {
+    expect(repoFilesEvidenceMeasurementSchema.safeParse({
+      schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/a.ts'],
+      fixtureRootHarnessSlug: 'server',
+    }).success).toBe(false);
+  });
+
+  it('pins same-path files from distinct roots and detects only a changed calibration source', async () => {
+    const fixtureRoot = join(root, 'calibration');
+    mkdirSync(join(fixtureRoot, 'src'), { recursive: true });
+    git(fixtureRoot, 'init', '-q', '-b', 'main');
+    writeFileSync(join(fixtureRoot, 'src/a.ts'), 'export const status = null;\n');
+    git(fixtureRoot, 'add', '.');
+    git(fixtureRoot, 'commit', '-q', '-m', 'calibration');
+    const measurement = {
+      schemaVersion: 1 as const, kind: 'repo-files' as const,
+      sourcePaths: ['src/a.ts'], testPaths: ['src/a.ts'],
+      fixturePaths: ['src/a.ts'], fixtureRootHarnessSlug: 'server',
+    };
+    await expect(measureRepoFilesEvidenceDetailedAtRoot(root, measurement))
+      .rejects.toThrow('repo_measurement_fixture_root_required:server');
+    const before = await measureAndPinRepoFilesEvidenceAtRoot(root, measurement, { fixtureRoot });
+    expect(before.sourceFingerprint).not.toBe(before.fixtureFingerprint);
+    expect(before.pin.files).toHaveLength(3);
+    expect(before.pin.files.find((file) => file.dimension === 'fixture'))
+      .toMatchObject({ path: 'src/a.ts', rootHarnessSlug: 'server', clean: true });
+    expect(before.pin.repos).toContainEqual({
+      repo: '.', rootHarnessSlug: 'server', head: git(fixtureRoot, 'rev-parse', 'HEAD'), gitlink: null,
+    });
+    writeFileSync(join(fixtureRoot, 'src/a.ts'), 'export const status = "ready";\n');
+    const after = await measureRepoFilesEvidenceDetailedAtRoot(root, measurement, { fixtureRoot });
+    expect(after.sourceFingerprint).toBe(before.sourceFingerprint);
+    expect(after.testFingerprint).toBe(before.testFingerprint);
+    expect(after.fixtureFingerprint).not.toBe(before.fixtureFingerprint);
+    expect(diffMeasuredFiles(before.pin, after.files)).toEqual({
+      pinned: true,
+      moved: [{ path: 'src/a.ts', dimension: 'fixture', rootHarnessSlug: 'server', change: 'changed' }],
+    });
+  });
+
+  it('reads the product and calibration from independently pinned commits', async () => {
+    const fixtureRoot = join(root, 'calibration');
+    mkdirSync(join(fixtureRoot, 'src'), { recursive: true });
+    git(fixtureRoot, 'init', '-q', '-b', 'main');
+    writeFileSync(join(fixtureRoot, 'src/a.ts'), 'export const status = null;\n');
+    git(fixtureRoot, 'add', '.');
+    git(fixtureRoot, 'commit', '-q', '-m', 'calibration');
+    const measurement = {
+      schemaVersion: 1 as const, kind: 'repo-files' as const,
+      sourcePaths: ['src/a.ts'], fixturePaths: ['src/a.ts'], fixtureRootHarnessSlug: 'server',
+    };
+    const productCommit = git(root, 'rev-parse', 'HEAD');
+    const fixtureCommit = git(fixtureRoot, 'rev-parse', 'HEAD');
+    const options = { fixtureRoot, fixtureCommit };
+    const before = await measureRepoFilesEvidenceDetailedAtCommit(root, measurement, productCommit, options);
+    writeFileSync(join(root, 'src/a.ts'), 'uncommitted product\n');
+    writeFileSync(join(fixtureRoot, 'src/a.ts'), 'export const status = "ready";\n');
+    git(fixtureRoot, 'commit', '-q', '-am', 'change calibration');
+    const pinned = await measureRepoFilesEvidenceDetailedAtCommit(root, measurement, productCommit, options);
+    expect(pinned).toEqual(before);
+    const advanced = await measureRepoFilesEvidenceDetailedAtCommit(root, measurement, productCommit, {
+      fixtureRoot, fixtureCommit: git(fixtureRoot, 'rev-parse', 'HEAD'),
+    });
+    expect(advanced.sourceFingerprint).toBe(before.sourceFingerprint);
+    expect(advanced.fixtureFingerprint).not.toBe(before.fixtureFingerprint);
+  });
+
   it('computes the same blob id as git hash-object', () => {
     const content = readFileSync(join(root, 'src/a.ts'));
     expect(gitBlobId(content)).toBe(git(root, 'hash-object', 'src/a.ts'));

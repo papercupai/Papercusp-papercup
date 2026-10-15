@@ -12,6 +12,7 @@ import { Checkbox } from './Checkbox';
 import { Select } from './Select';
 import SavedPromptsSection from './SavedPromptsSection';
 import HarnessPluginsSection from './HarnessPluginsSection';
+import IntegrationModeSection from './IntegrationModeSection';
 import { VirtualGrid, type ColumnDef } from '@papercusp/grid-core';
 
 /**
@@ -133,14 +134,21 @@ interface DiscordSettings {
   error: string | null;
 }
 
-export default function HarnessSettingsPanel({
+export default function HarnessSettingsPanel(props: { slug: string; phase: string }) {
+  const workspaceId = useWorkspaceId();
+  return <HarnessSettingsPanelForScope key={JSON.stringify([workspaceId, props.slug, props.phase])}
+    {...props} workspaceId={workspaceId} />;
+}
+
+function HarnessSettingsPanelForScope({
   slug,
   phase,
+  workspaceId,
 }: {
   slug: string;
   phase: string;
+  workspaceId: string;
 }) {
-  const workspaceId = useWorkspaceId(); // EI-1763: tenant-scope sync reads
   // V1 hides the deprecated orchestrator-lane controls (worker-count
   // mode, fixed N, features cap, synthesizer, tiers, telemetry). They
   // remain wired (state/load/save) so a harness with these configs set
@@ -470,7 +478,7 @@ export default function HarnessSettingsPanel({
     }
   }, [parallel, branchIso, debuggerThreshold, aiBackend, originalConfig, slug, phase, validation.ok]);
 
-  if (!loaded) {
+  if (!loaded || settingsLoading) {
     return <div style={{ padding: 24, color: 'var(--fg-mute)' }}>Loading…</div>;
   }
 
@@ -1060,6 +1068,11 @@ export default function HarnessSettingsPanel({
           )}
         </section>
       )}
+
+      {/* P-017 (pot-review-integration-mode-2026-10-05, D-007): "Where should the
+          agents' work go?" with guided switching. Saves independently of the
+          config.json Save bar; hidden for projects that are not pots. */}
+      <IntegrationModeSection slug={slug} />
 
       <SavedPromptsSection scope={{ kind: 'harness', slug }} />
 

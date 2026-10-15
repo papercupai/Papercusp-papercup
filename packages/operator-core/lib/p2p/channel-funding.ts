@@ -6,6 +6,32 @@
  * exercise the complete flow with a deterministic fake rail.
  */
 import type { PaymentChannelState } from './payment-channel';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { verifyEd25519 } from '../identity/ed25519';
+
+/** Proof of possession pinned by the authenticated opening door, not a voucher. */
+export interface PaymentChannelPayerBinding {
+  readonly channelId: string;
+  readonly payer: string;
+  readonly payerPubkeyBase64: string;
+  readonly chainId: number;
+  readonly stablecoinAddress: string;
+  readonly settlementContractAddress: string;
+  readonly escrowMicros: string;
+  readonly fundingSource: PaymentChannelFundingSource;
+}
+
+export function paymentChannelPayerSigningBytes(binding: PaymentChannelPayerBinding): Buffer {
+  return Buffer.from(canonicalJson({ domain: 'papercusp/payment-channel/payer-key/v1', rail: 'evm-x402', ...binding }), 'utf8');
+}
+
+export function verifyPaymentChannelPayerBinding(binding: PaymentChannelPayerBinding, proof: string): boolean {
+  if (!/^[A-Za-z0-9+/]{43}=$/.test(binding.payerPubkeyBase64) || !/^[A-Za-z0-9+/]{86}==$/.test(proof)) return false;
+  const key = Buffer.from(binding.payerPubkeyBase64, 'base64');
+  const signature = Buffer.from(proof, 'base64');
+  return key.toString('base64') === binding.payerPubkeyBase64 && signature.toString('base64') === proof &&
+    verifyEd25519(paymentChannelPayerSigningBytes(binding), binding.payerPubkeyBase64, signature);
+}
 
 export type PaymentChannelFundingSource =
   | {

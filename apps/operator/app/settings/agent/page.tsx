@@ -768,10 +768,11 @@ export default function AgentSettingsPage() {
           label="Model tiers (weakest → strongest)"
           description={`The effort-level menu per-task model picks resolve against: the ${t("brain", { lower: true })} passes a tier name on cup:spawn and the spawn runs at that tier's model, clamped between the role's default (floor — a tier can escalate a role, never downgrade it) and the role's ceiling below. Row order is the strength ranking. Claude aliases: haiku · sonnet · opus · fable, with optional :low|:medium|:high|:xhigh|:max. 'When to use' is YOUR instruction to the ${t("brain", { lower: true })} — the live menu (names, specs, and these lines) is injected into her prompt at launch, so write the situation each tier is for. 'Compact @' is the soft compaction limit (tokens) sessions on the tier are seeded with — blank uses the model-derived default, (window − 10k) ÷ 1.2, so an agent overshooting its soft limit by ~20% still fits the hard window. Leave as-is to track the built-in menu.`}
         >
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div role="region" aria-label="Reasoning tiers" tabIndex={0} style={{ display: "flex", flexDirection: "column", gap: 6, overflowX: "auto" }}>
             <div
               style={{
                 display: "flex",
+                minWidth: 820,
                 gap: 8,
                 alignItems: "center",
                 fontSize: 11,
@@ -790,7 +791,7 @@ export default function AgentSettingsPage() {
             {tierRows.map((row, i) => (
               <div
                 key={i}
-                style={{ display: "flex", gap: 8, alignItems: "flex-start" }}
+                style={{ display: "flex", gap: 8, alignItems: "flex-start", minWidth: 820 }}
               >
                 <span
                   style={{
@@ -994,7 +995,7 @@ export default function AgentSettingsPage() {
           label="Role backend, model, and tier ceiling"
           description={`One row per operational AI role. Backend chooses the CLI for that role, model pins its default model, and tier ceiling caps the strongest tier the ${t("brain")} may choose for that role. Empty model and no ceiling inherit the built-in default.`}
         >
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div role="region" aria-label="Role routing" tabIndex={0} style={{ display: "flex", flexDirection: "column", gap: 8, overflowX: "auto" }}>
             <div
               style={{
                 display: "grid",

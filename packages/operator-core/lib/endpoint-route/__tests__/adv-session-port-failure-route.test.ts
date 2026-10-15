@@ -211,3 +211,76 @@ describe('POST /adv/sessions/port/delivery — post-prepare failure finalization
     );
   });
 });
+
+/**
+ * WI-6554700010011137 — a launcher newer than its operator offered "Port to
+ * claude" for a Codex session; the operator (main d740fc3802, same protocol
+ * 2/transform 4) refused it with a raw 400 after the pick. The operator now
+ * advertises its pairs, and the launcher reads them before building the picker.
+ * For operators older than that route, the launcher reads the pair set back out
+ * of the targetBackend refusal — so that refusal's wording is a contract too
+ * (pinned from the launcher side in apps/operator/lib/psu-session-port-capabilities.test.ts).
+ */
+describe('session-port capability advertisement (WI-6554700010011137)', () => {
+  async function route(method: string, path: string): Promise<Route> {
+    const routes = (await import('../routes/adv/sessions')).default as Route[];
+    const found = routes.find((candidate) => candidate.method === method && candidate.path === path);
+    if (!found) throw new Error(`${method} ${path} not registered`);
+    return found;
+  }
+
+  it('GET /adv/sessions/port/capabilities advertises every ordered cross-backend pair and the wire versions', async () => {
+    const { SESSION_PORT_SUPPORTED_PAIRS } = await import('../../session-port/types');
+    const capabilities = await route('GET', '/adv/sessions/port/capabilities');
+    const response = await capabilities.handler(
+      new Request('http://localhost:3170/api/adv/sessions/port/capabilities'),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      ok: boolean;
+      protocolVersion: number;
+      transformVersion: number;
+      backends: string[];
+      pairs: Array<{ source: string; target: string }>;
+    };
+    expect(body).toMatchObject({
+      ok: true,
+      protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+      transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+    });
+    expect([...body.backends].sort()).toEqual(['claude', 'codex', 'omp']);
+    expect(body.pairs).toEqual(SESSION_PORT_SUPPORTED_PAIRS);
+    // Six ordered pairs, none same-backend (that is a native resume, not a port),
+    // and the pair the owner hit — codex → claude — among them.
+    expect(body.pairs).toHaveLength(6);
+    expect(body.pairs.every((pair) => pair.source !== pair.target)).toBe(true);
+    expect(body.pairs).toContainEqual({ source: 'codex', target: 'claude' });
+    expect(recordSessionPortTelemetryMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unknown targetBackend before reading any session, in the wording launchers parse', async () => {
+    const inspect = await route('POST', '/adv/sessions/port/inspect');
+    const response = await inspect.handler(
+      new Request('http://localhost:3170/api/adv/sessions/port/inspect', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
+          transformVersion: SESSION_PORT_TRANSFORM_VERSION,
+          sourceAdvSessionId: 1,
+          targetBackend: '__psu_capability_probe__',
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'targetBackend must be claude|codex|omp',
+    });
+    // The launcher's legacy probe relies on this refusal having no side effects.
+    expect(recordSessionPortTelemetryMock).not.toHaveBeenCalled();
+    expect(getSessionPortMock).not.toHaveBeenCalled();
+  });
+});

@@ -6,7 +6,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 
 vi.mock('./_shared', async (importOriginal) => ({
   ...(await importOriginal<object>()),
@@ -76,6 +76,7 @@ beforeAll(async () => {
       PRIMARY KEY (source_kind, file_path)
     );
   `);
+  await applyDisclosureLedgerForTest(sql); // D-006 reader rule (WI-10005570)
   await sql`
     INSERT INTO harness_shared.session_turns
       (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, cwd, speaker, text)

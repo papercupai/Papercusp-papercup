@@ -25,6 +25,9 @@
  * not invent. Optional fields degrade gracefully in the viewer (a missing section just hides).
  */
 
+import type { ArmContamination } from '../contamination';
+import type { AttemptOutcomeCounts } from '@papercusp/bench-metrics';
+
 /** A monotonic schema version so an old viewer can refuse / a new viewer can branch. */
 export const BENCH_REPORT_SCHEMA_VERSION = 1;
 
@@ -40,10 +43,16 @@ export interface BenchReportRollout {
   score?: number | null;
   graderStatus: string;
   stopReason: string;
-  /** Infra/transient generation failure detail (excluded from accuracy). */
+  /** Generation failure detail; the failed assignment remains in primary outcome. */
   generationError?: string | null;
   // ── cost / timing (coordination overhead INCLUDED — fairness #2) ──
-  costUsd: number;
+  /** Null when accounting is incomplete; the retained subtotal is separate. */
+  costUsd: number | null;
+  costKnownSubtotalUsd?: number | null;
+  costUsdMeasurementMissing?: boolean;
+  costBasis?: string;
+  /** Persisted execution/accounting evidence, including native lifetime timing. */
+  armMeta?: Record<string, unknown> | null;
   tokensIn: number;
   tokensOut: number;
   tokensTotal: number;
@@ -122,18 +131,65 @@ export interface BenchReportCall {
 /** Per-arm rollup (the headline comparison row). */
 export interface BenchReportArmSummary {
   arm: string;
-  /** Resolved (fully-passed) count + the scored denominator (infra-excluded rows dropped). */
+  /** Resolved and measured submission counts; these describe secondary quality. */
   resolved?: number;
   scored?: number;
-  /** Mean partial-credit score over scored rows (the headline for rubric/checkpoint suites). */
+  /** Secondary partial-credit score among officially measured submissions. */
   meanScore?: number | null;
-  /** Infra-excluded (non-scored) attempts — surfaced, not counted as fails. */
+  assignedTasks?: number;
+  assignedAttempts?: number;
+  attempts?: number;
+  absentAttempts?: number;
+  missingMeasurements?: number;
+  /** Four-way outcome disclosure over observed attempts (plan benchmark-coverage-frontierswe-v2-2026-10-10
+   *  D-008): invalid + graderError are the missing measurements, broken out so tampering is never hidden
+   *  inside a generic grader-fault count. */
+  outcomes?: AttemptOutcomeCounts;
+  measurementComplete?: boolean;
+  /** Task-weighted mean over assigned seeds, including failures and absent attempts. */
+  primaryResolvedPct?: number | null;
+  primaryMeanScore?: number | null;
+  conditionalResolvedPct?: number | null;
+  /** Observed rosters cannot establish that assignments were never attempted. */
+  assignmentSource?: 'frozen' | 'observed';
+  /** Attempts without a usable official measurement, including generation failure. */
   infraExcluded?: number;
-  costUsd: number;
+  costUsd: number | null;
+  costKnownSubtotalUsd?: number | null;
+  costUsdMeasurementMissing?: boolean;
+  costBasis?: string;
   tokensTotal: number;
+  /** Complete spend divided by the frozen assigned task count, including all seeds. */
+  costPerAssignedTaskUsd?: number | null;
   concurrency?: { avg: number; peak: number };
+  /**
+   * Freshness / contamination verdict for this arm's headline (P-009): its model's training-data cutoff vs
+   * each assigned task's creation date, the label, and the post-cutoff / exposed / unknown subsets with
+   * their own primary outcome. A headline claim should prefer `contamination.postCutoff`.
+   */
+  contamination?: ArmContamination;
   /** Suite-specific headline (e.g. METR: { horizon50Min, horizon50Ci }). */
   extra?: Record<string, unknown>;
+}
+
+/** Descriptive comparisons from the existing frozen outcome and cost projections. */
+export interface BenchReportCostComparison {
+  metric: 'assigned-mean-score' | 'assigned-resolved-rate';
+  points: Array<{
+    arm: string;
+    value: number | null;
+    costPerTaskUsd: number | null;
+    /** Null when the accounting, grade or frozen assignment is unavailable. */
+    onFrontier: boolean | null;
+    excludedReasons: string[];
+  }>;
+  taskWinners: Array<{
+    taskId: string;
+    value: number | null;
+    /** Missing grades make winner selection inconclusive across the entire matched task. */
+    incompleteArms: string[];
+    winners: Array<{ arm: string; costUsd: number | null; costBasis: string; tokensTotal: number }>;
+  }>;
 }
 
 /** The full bundle — one per run. SHARED core + per-suite `suiteData`. */
@@ -147,16 +203,19 @@ export interface BenchReportBundle {
     label?: string;
     createdAt: string;
     arms: string[];
-    /** arm/role → exact model id (e.g. 'claude-opus-4-8[1m]'). */
+    /** arm/role → exact model id, as resolved from the run's pinned model-registry snapshot. */
     models: Record<string, string>;
     prereg?: { hash: string; config?: Record<string, unknown>; gitCommitSha?: string | null };
     harnessGitSha?: string | null;
     envFingerprint?: Record<string, unknown> | null;
-    totals: { tasks: number; costUsd: number; tokensIn: number; tokensOut: number; wallMs: number };
+    totals: { tasks: number; costUsd: number | null; costKnownSubtotalUsd?: number | null;
+      costUsdMeasurementMissing?: boolean; costBasis?: string; tokensIn: number; tokensOut: number; wallMs: number };
   };
   // ── shared sections (each optional → the viewer hides an absent one) ──
   arms: BenchReportArmSummary[];
   rollouts: BenchReportRollout[];
+  /** Absent in historical exports; no historical frontier is inferred by the viewer. */
+  costComparison?: BenchReportCostComparison;
   coordTrace?: BenchReportCoordEvent[];
   spawnTree?: BenchReportSpawnNode[];
   callLog?: BenchReportCall[];

@@ -368,8 +368,8 @@ describe('joinHiveAsView (WI-971 follow-up) — REAL rekeyHarness/bootSingleHarn
         swarmOverride: swarmOwner,
         verifyBindingOverride: async (_pk, _login, userId) =>
           userId === idJoiner.userId ? 'verified' : 'fail',
-        applyOverride: (op) => {
-          applyOwner ??= buildOwnerApply(dbOwner.sql, handleOwner!.ownLog.keyHex);
+        applyOverride: (op, ctx) => {
+          applyOwner ??= buildOwnerApply(dbOwner.sql, ctx.ownLogKeyHex);
           return applyOwner(op);
         },
         mergePollMs: 0,

@@ -12,7 +12,7 @@
  * the moment an agent types `scope_ref` again. This closes that class.
  */
 import { describe, expect, it } from 'vitest';
-import { resolveScopeRefAlias } from './scope-ctx';
+import { resolveScopeRefAlias, resolveScopeRefFromCtx } from './scope-ctx';
 
 describe('resolveScopeRefAlias (EI-7371)', () => {
   it('passes an explicit canonical scopeRef through untouched', () => {
@@ -54,5 +54,37 @@ describe('resolveScopeRefAlias (EI-7371)', () => {
   it('no alias present: returns the (possibly undefined/null) scopeRef unchanged', () => {
     expect(resolveScopeRefAlias('harness', {})).toBeUndefined();
     expect(resolveScopeRefAlias('harness', { scopeRef: null })).toBeNull();
+  });
+});
+
+describe('resolveScopeRefFromCtx verified owner alias', () => {
+  const sessionId = 'su-f2770245-ddd7-4871-b62c-dd357a505aea';
+  const trustedSpawnCtx = {
+    principal: {
+      kind: 'judge',
+      slug: 'system:judge',
+      workspaceId: 'papercusp-workspace',
+      authMethod: 'spawn-url',
+      trust: 'trusted',
+    },
+    uiClientId: sessionId,
+    harnessSlug: 'papercusp',
+  };
+
+  it('maps a verified signed system spawn to its bare owner fact scope', async () => {
+    await expect(resolveScopeRefFromCtx('owner', undefined, trustedSpawnCtx)).resolves.toBe(sessionId);
+  });
+
+  it('keeps an untrusted principal client namespaced', async () => {
+    const untrustedCtx = {
+      ...trustedSpawnCtx,
+      principal: { ...trustedSpawnCtx.principal, authMethod: 'bearer', trust: 'untrusted' },
+    };
+    await expect(resolveScopeRefFromCtx('owner', undefined, untrustedCtx)).resolves.toBe(`system:judge/${sessionId}`);
+  });
+
+  it('preserves explicit owner refs and leaves other scopes unchanged', async () => {
+    await expect(resolveScopeRefFromCtx('owner', 'explicit-owner', trustedSpawnCtx)).resolves.toBe('explicit-owner');
+    await expect(resolveScopeRefFromCtx('harness', undefined, trustedSpawnCtx)).resolves.toBe('papercusp');
   });
 });

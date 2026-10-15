@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "Fresh WOE real-holder readback with maintained severe rollup controls",
+  "plan": "work-on-everything-stewardship-remediation-2026-08-30",
+  "workItem": "WI-10006980",
+  "acceptanceRef": "acceptance-work-on-everything-stewardship-remediation-2026-08-30@12:R-5",
+  "startedAt": "2026-10-07T11:18:59.505Z",
+  "finishedAt": "2026-10-07T11:20:30Z",
+  "exitCode": 0,
+  "command": [
+    "npm run test:file -- packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts packages/operator-core/lib/agent-tools/testing/record-run.test.ts packages/operator-core/lib/scorecards-work-on-everything-contract.test.ts",
+    "rubrics:get work-on-everything-stewardship-health",
+    "scorecards:get EI-24713330305263301 selected criteria plan-fleet-materialization, steering-through-claim-rails, frontier-scope-sovereignty",
+    "work_items:get WI-10004612"
+  ],
+  "summary": "Fresh canonical readbacks retain the independent real-holder FAIL and its named remediation owner. Maintained unit controls exercise both severe rollup branches against a passing baseline. The adapter and contract suites pass in a clean committed snapshot, and containing staging runtime exposes the operational adapter layer. Parent acceptance still fails on active historical bindings; this artifact is not an acceptance verdict.",
+  "subject": {
+    "cardId": "EI-24713330305263301",
+    "holder": "su-af7cfbba-1a21-4530-84c4-5c064614d4bc",
+    "grader": "su-4f968faa-adbb-4de7-97e7-b3314e842678",
+    "cardRubricRevision": 34,
+    "activeRubricRevision": 45,
+    "activeRubricCriteriaHash": "dbd925032df6359d1cc0f5f8af7dcadfb4398cebeda5a4c88925452f26e9631a",
+    "rubricCurrentness": "stale",
+    "verdict": "fail",
+    "criticalFailures": ["plan-fleet-materialization"],
+    "residue": {"id": "WI-10004612", "state": "wip", "assignee": "su-32d1b8df-01dd-442a-8711-7ff4e8d9cc92"}
+  },
+  "verification": {
+    "canonicalRuntimeReadback": {
+      "runtime": "staging-operator",
+      "servedSha": "9c79420c05",
+      "containsAdapterBlob": true,
+      "p005": {"bindingId": 28937, "testRunId": 20893353, "testLayer": "operational", "passed": 10, "failed": 0, "skipped": 0},
+      "p006": {"bindingId": 28957, "testRunId": 20893354, "testLayer": "operational", "passed": 8, "failed": 0, "skipped": 0},
+      "parentEvaluatorVerdict": "fail",
+      "parentEvaluatorBlockers": ["falsifiability", "correct-layer", "freshness", "plan-class-risk-floor", "disclosed-gap"]
+    },
+    "committedProof": {
+      "sha": "ef934009deecb47896924f1eccc4beb4afaafe6c",
+      "root": "/tmp/papercusp-lint-as-committed-ef934009de-VxBqPf",
+      "startedAt": "2026-10-07T11:33:29.843Z",
+      "finishedAt": "2026-10-07T11:33:52.238Z",
+      "testsPassed": 94,
+      "skippedTests": 0,
+      "worktreeDirty": false,
+      "storeRunId": 20893463,
+      "contractRunId": 20893464,
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run lint:as-committed -- test:file --any --ref=ef934009deecb47896924f1eccc4beb4afaafe6c -- packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts packages/operator-core/lib/scorecards-work-on-everything-contract.test.ts"
+    },
+    "head": "5363ccca831a67b0aea485f35f70410c2639ff18",
+    "testsPassed": 144,
+    "skippedTests": 0,
+    "provenance": "local working tree; two named test files dirty",
+    "severeControlFile": "packages/operator-core/lib/scorecards-work-on-everything-contract.test.ts",
+    "severeControlTitle": "retains a severe %s violation despite passing stewardship criteria",
+    "severeControlKeys": ["steering-through-claim-rails", "frontier-scope-sovereignty"],
+    "historicalBoundary": "The historical holder did not exercise a severe hand-dispatch or cross-goal violation. Those historical disclosures remain intact. The newly executed severe controls measure the server rollup function in the maintained unit suite, not a historical holder violation or desktop end-to-end journey.",
+    "historicalArtifactsRetained": [
+      "docs/evidence/woe-p005-live-scorecard-2026-10-06.json",
+      "docs/evidence/woe-p006-real-card-causal-pairs-2026-10-03.json"
+    ]
+  },
+  "assertions": [
+    {"id": "real-card-fail-retained", "passed": true, "evidence": "Canonical selected-criterion reads retain verdict fail and critical failure plan-fleet-materialization; no new grading card or fixture goal was created."},
+    {"id": "materialization-readback-complete", "passed": true, "evidence": "plan-fleet-materialization remains fail, attribution system, 0 of 1 eligible worklist plans materialized; evidenceRead.complete=true."},
+    {"id": "current-rubric-pin", "passed": true, "evidence": "Active rubric revision45/hash dbd925032df6359d1cc0f5f8af7dcadfb4398cebeda5a4c88925452f26e9631a. Historical card revision34 is explicitly stale, not regraded."},
+    {"id": "current-residue-owner", "passed": true, "evidence": "WI-10004612 current state wip, assignee su-32d1b8df-01dd-442a-8711-7ff4e8d9cc92."},
+    {"id": "hand-dispatch-passing-baseline", "passed": true, "evidence": "Clean committed test 'retains a severe steering-through-claim-rails violation despite passing stewardship criteria' first asserts verdict pass for eight passing criteria; ledger20893464."},
+    {"id": "hand-dispatch-severe-control", "passed": true, "evidence": "The same maintained test changes only steering-through-claim-rails to severe and asserts verdict severe, rejecting a pass verdict. Clean committed contract suite44/44PASS ledger20893464. This supplements the historical holder window without rewriting it."},
+    {"id": "sovereignty-passing-baseline", "passed": true, "evidence": "Clean committed test 'retains a severe frontier-scope-sovereignty violation despite passing stewardship criteria' first asserts verdict pass for eight passing criteria; ledger20893464."},
+    {"id": "sovereignty-severe-control", "passed": true, "evidence": "The same maintained test changes only frontier-scope-sovereignty to severe and asserts verdict severe, rejecting a pass verdict. Clean committed contract suite44/44PASS ledger20893464. This supplements the historical holder window without rewriting it."}
+  ]
+}

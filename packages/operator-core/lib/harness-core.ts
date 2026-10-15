@@ -610,8 +610,10 @@ export function tailFile(path: string, maxBytes = 64 * 1024): string {
  * Phase resolution — ?phase= routes pick a sibling worktree.
  * ───────────────────────────────────────────────────────────────────── */
 
-export async function resolvePhasedProject(slug: string, phase: Phase | undefined): Promise<ProjectEntry | null> {
-  const base = await resolveProject(slug);
+export async function resolvePhasedProject(
+  slug: string, phase: Phase | undefined, workspaceId?: string,
+): Promise<ProjectEntry | null> {
+  const base = await resolveProject(slug, workspaceId);
   if (!base) return null;
   if (!phase || phase === 'staging') return base;
   // When the harness-phases flag is OFF, treat every phase as the base

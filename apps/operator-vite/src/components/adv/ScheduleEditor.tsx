@@ -279,16 +279,18 @@ export async function runScheduleTool(name: string, args: Record<string, unknown
   };
   if (!res.ok || body.ok === false) return { ok: false, message: body.message ?? body.error ?? `HTTP ${res.status}` };
   const text = body.result?.content?.[0]?.text;
+  let successfulPayload: RunScheduleToolResult | undefined;
   if (text) {
     try {
       const parsed = parseRunScheduleToolPayload(JSON.parse(text) as unknown);
       if (!parsed.ok) return parsed;
+      successfulPayload = parsed;
     } catch {
       /* non-JSON tool text — treat as success */
     }
   }
   if (body.result?.isError) return { ok: false, message: body.message ?? text ?? `${name} failed` };
-  return { ok: true };
+  return successfulPayload ?? { ok: true };
 }
 
 function defaultStart(seedDate?: string): string {

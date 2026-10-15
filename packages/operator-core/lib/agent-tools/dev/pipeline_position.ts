@@ -336,6 +336,7 @@ function compactPipelineResult(
     'targetSubject',
     'dirtyUncommitted',
     'positions',
+    'acceptedSource',
     'assessments',
     'positionsUnknown',
     'positionsMarker',
@@ -479,6 +480,8 @@ function minimalPipelineResult(
     'targetShortSha',
     'dirtyUncommitted',
     'positions',
+    'acceptedSource',
+    'positionsMarker',
     'assessments',
     'deployedSha',
     'verdictUnknown',
@@ -543,7 +546,7 @@ function minimalPipelineResult(
 export function shapePipelinePosition(
   result: PipelinePosition,
   extras: JsonRecord = {},
-  rereadArgs: { path?: string; sha?: string; marker?: string; testClass?: string } = {},
+  rereadArgs: { path?: string; sha?: string; marker?: string; testClass?: string; expectedSourceSha256?: string } = {},
   opts: { unbounded?: boolean } = {},
 ): JsonRecord | PipelinePosition {
   const original = { ...(result as unknown as JsonRecord), ...extras };
@@ -649,7 +652,7 @@ export default defineTool({
   name: 'dev:pipeline_position',
   profile: 'engineer',
   description:
-    '"Is my edit live YET — and what actually makes it live?" Read-only. Pass a repo-relative `path` (preferred) or a `sha`: returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary — AND, from the path, WHICH PROCESS RUNS THAT CODE. That second half matters: the gateway (:8788), bg-host (routines/DBOS) and embed-sidecar all run tsx STRAIGHT FROM THE STAGING TREE, so a deploy NEVER carries their code — the edit is already on their disk and a `dev:restart { target }` is what loads it. For those paths this returns an `activation` block (the exact restart call) and deliberately does NOT tell you to wait on the deploy. A few paths have 2 consumers on different routes — those return `activations` (plural) instead.',
+    '"Is my edit live YET — and what actually makes it live?" Read-only. Pass a repo-relative `path` (preferred) or a `sha`: returns committed/on-staging/in-main/deployed + the green-gate stall context + a one-line summary — AND, from the path, WHICH PROCESS RUNS THAT CODE. That second half matters: the gateway (:8788), bg-host (routines/DBOS) and embed-sidecar all run tsx STRAIGHT FROM THE STAGING TREE. A deploy NEVER carries their code. The edit is already on their disk and a `dev:restart { target }` is what loads it. For those paths this returns an `activation` block (the exact restart call) and deliberately does NOT tell you to wait on the deploy. A few paths have 2 consumers on different routes — those return `activations` (plural) instead.',
   // @cell-lens git.pipelinePosition
   // This tool is the RESOLVER behind all five registered cells (git.pipelinePosition,
   // gate.greenCheckpoint.verdict/.candidate, deploy.3070.sha, git.mainBehindStaging) —
@@ -822,13 +825,17 @@ export default defineTool({
   // EVERY execution/judgment role — the shared DEPLOY_PIPELINE_NOTE tells all of them to reach
   // for it instead of polling :3070, so the allowlist must cover them all (deploy-pipeline-legibility-2026-06-18 P-005).
   agentRoles: [
-    'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer',
+    'operator', 'mug', 'architect', 'worker', 'scoper', 'validator', 'reviewer', 'judge',
     'debugger', 'documenter', 'curator', 'cup', 'papercup', 'papercup-deep', 'kettle',
     'release-fixer', 'merge-resolver', 'content-fixer', 'release-manager',
   ],
   args: z.object({
     path: z.string().min(1).max(400).optional(),
+    sourceRuntimeOnly: z.boolean().optional()
+      .describe('Return exact repository, accepted-source and runtime measurements for a bounded graph-source join.'),
     sha: z.string().min(4).max(64).optional(),
+    expectedSourceSha256: z.string().regex(/^[0-9a-f]{64}$/).optional()
+      .describe('Frozen SHA256 of the accepted file bytes. Requires path. Returns acceptedSource.matches, deployedContains, and runtimeContainment keyed by applicable runtime id; unknown remains null. Does not require equal runtime or latest-path commit SHAs.'),
     testClass: z.string().min(1).max(100).optional()
       .describe('Select a maintained pre-release test class route. Unknown values fail closed with the supported class ids; `gap` is not executable and final-release remains release-only.'),
     /**
@@ -858,6 +865,8 @@ export default defineTool({
           'AND the `positions.inMain` / `positions.deployed` legs, correcting them in either direction. ' +
           'Use it whenever you see missingReason:"newer-commit" or a leg named in `positionsNewerCommit`.',
       ),
+  }).refine((args) => !args.expectedSourceSha256 || !!args.path, {
+    message: 'expectedSourceSha256 requires a concrete path', path: ['path'],
   }),
   async handler(args, ctx) {
     const testRoute = args.testClass ? currentBuildTestRoute(args.testClass) : null;
@@ -889,7 +898,13 @@ export default defineTool({
      * that the per-path legs are unanswerable; they simply also get the facts that do
      * not depend on a path.
      */
-    const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker });
+    const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker, expectedSourceSha256: args.expectedSourceSha256 });
+    if (args.sourceRuntimeOnly) {
+      // Native graph joins need exact source/runtime identity; the ordinary bounded
+      // pipeline digest can omit the root or clip nested containment fields.
+      return { data: { repoRoot: result.repoRoot, submodule: result.submodule,
+        acceptedSource: result.acceptedSource, servingRuntimes: result.servingRuntimes ?? [] } };
+    }
     const subjectStamp = pipelineSubjectStamp(ctx as { harnessSlug?: string | null }, result.repoRoot);
 
     // P-010. Computed ONCE and spread into every return below — this handler has three
@@ -904,7 +919,7 @@ export default defineTool({
       { path: args.path, sha: args.sha },
       ctx,
     );
-    const rereadArgs = { path: args.path, sha: args.sha, marker: args.marker, testClass: args.testClass };
+    const rereadArgs = { path: args.path, sha: args.sha, marker: args.marker, testClass: args.testClass, expectedSourceSha256: args.expectedSourceSha256 };
 
     /**
      * WI-38266 — `readCell` is a machine consumer walking declared paths, not an agent

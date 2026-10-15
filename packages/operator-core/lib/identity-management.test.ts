@@ -251,7 +251,7 @@ describe('identity management service', () => {
         state: { stack: [`autonomy:${id}`] } as never, stackBefore: [],
       }, { warn: (message) => warned.push(message) });
       expect(transition).toMatchObject({ text: '', rendered: false });
-      expect(warned[0]).toContain('selected mode identity');
+      expect(warned[0]).toContain('no current moderated release approval');
     } finally {
       if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
       else process.env.PAPERCUSP_HOME = priorHome;

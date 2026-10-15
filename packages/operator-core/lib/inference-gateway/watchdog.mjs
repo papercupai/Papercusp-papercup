@@ -65,6 +65,8 @@ const restartTimes = []; // epoch ms of recent restarts (rolling 1h window for t
 const deadProxyLastAlert = new Map(); // accountId -> epoch ms last DEAD-PROXY alert (per-account anti-spam debounce)
 let egressPoolDownLastAlert = 0; // epoch ms of the last EGRESS-POOL-DOWN alert (same debounce window)
 let egressPoolWasDown = false; // edge-trigger latch, so a standing outage logs once rather than every poll
+let directEgressCollapseLastAlert = 0;
+let directEgressWasCollapsed = false;
 
 let logDirEnsured = false;
 const log = (m) => {
@@ -162,6 +164,26 @@ export function egressPoolDownAlert(stats) {
   return { totalProxyEntries: Number(h.totalProxyEntries) || 0, reachableProxyEntries: Number(h.reachableProxyEntries) || 0 };
 }
 
+/** Confirmed shared direct-egress alert. Requires a complete fresh sample of every direct route and every
+ *  account in the pool; missing/deploy-skewed/partial telemetry must remain unknown, never "all shared". */
+export function sharedDirectEgressAlert(stats) {
+  const h = stats && stats.egressExitIpHealth;
+  const accountCount = Number(h?.accountCount);
+  const directAccountCount = Number(h?.directAccountCount);
+  const directRouteCount = Number(h?.directRouteCount);
+  const sampledDirectRouteCount = Number(h?.sampledDirectRouteCount);
+  const distinctDirectExitIpCount = Number(h?.distinctDirectExitIpCount);
+  if (
+    h?.sameDirectExitIp !== true ||
+    !Number.isFinite(accountCount) || accountCount < 2 ||
+    directAccountCount !== accountCount ||
+    !Number.isFinite(directRouteCount) || directRouteCount < 1 ||
+    sampledDirectRouteCount !== directRouteCount ||
+    distinctDirectExitIpCount !== 1
+  ) return null;
+  return { accountCount, directRouteCount, sampledDirectRouteCount, distinctDirectExitIpCount };
+}
+
 async function poll() {
   let s;
   try {
@@ -250,6 +272,36 @@ async function poll() {
     }
   } catch (e) {
     log(`egress-pool-down check error (non-fatal): ${e.message}`);
+  }
+
+  // The pool-down signal only judges configured proxies. This separate alert uses fresh /stats identity
+  // measurements for pools whose accounts all route directly, and stays latched across unknown samples.
+  try {
+    const collapsed = sharedDirectEgressAlert(s);
+    const h = s?.egressExitIpHealth;
+    const accountCount = Number(h?.accountCount);
+    const directAccountCount = Number(h?.directAccountCount);
+    const directRouteCount = Number(h?.directRouteCount);
+    const sampledDirectRouteCount = Number(h?.sampledDirectRouteCount);
+    const distinctDirectExitIpCount = Number(h?.distinctDirectExitIpCount);
+    const knownRecovered = !!h && (
+      accountCount < 2 ||
+      directAccountCount < accountCount ||
+      (directRouteCount > 0 && sampledDirectRouteCount === directRouteCount && distinctDirectExitIpCount > 1)
+    );
+    if (collapsed && now - directEgressCollapseLastAlert >= DEADPROXY_REALERT_MS) {
+      directEgressCollapseLastAlert = now;
+      directEgressWasCollapsed = true;
+      log(
+        `EGRESS-DIRECT-COLLAPSED: all ${collapsed.accountCount} pooled accounts use one measured direct exit IP across ${collapsed.directRouteCount} route(s) — distinct account credentials do not have distinct network egress. Restore distinct egress routes.`,
+      );
+    } else if (knownRecovered && directEgressWasCollapsed) {
+      directEgressWasCollapsed = false;
+      directEgressCollapseLastAlert = 0;
+      log('EGRESS-DIRECT-COLLAPSE-RECOVERED: the pool no longer has one shared direct exit IP.');
+    }
+  } catch (e) {
+    log(`direct-egress identity check error (non-fatal): ${e.message}`);
   }
 }
 

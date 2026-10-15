@@ -176,35 +176,12 @@ export async function rematerializeTranscript(
   }
 
   // ── 1) stream key → archive key ────────────────────────────────────────────
-  let sourceKind: 'claude' | 'codex' | 'omp';
-  let sessionId: string;
-  switch (key.kind) {
-    case 'claude':
-      sourceKind = 'claude';
-      sessionId = key.sessionId;
-      break;
-    case 'omp':
-      sourceKind = 'omp';
-      sessionId = key.threadId;
-      break;
-    case 'codex-rollout':
-      sourceKind = 'codex';
-      sessionId = key.rolloutId;
-      break;
-    case 'codex-session-key': {
-      // The adv-session row id is NOT an archive key. The rollout uuid that is
-      // one normally lives only in the on-disk filename this lifecycle deleted,
-      // so recover it from the archive's own adv_session_id index.
-      const advId = Number(key.sessionKey);
-      if (!Number.isInteger(advId) || advId <= 0) return { path: null, reason: 'no_archive_key' };
-      const rolloutId = await deps.findArchivedSessionIdForAdv(advId).catch(() => null);
-      if (!rolloutId) return { path: null, reason: 'no_archive_key' };
-      sourceKind = 'codex';
-      sessionId = rolloutId;
-      break;
-    }
-  }
-  if (!sessionId) return { path: null, reason: 'no_archive_key' };
+  const archiveKey = await resolveArchiveKey(
+    key,
+    (advId) => deps.findArchivedSessionIdForAdv(advId).catch(() => null),
+  );
+  if (!archiveKey) return { path: null, reason: 'no_archive_key' };
+  const { sourceKind, sessionId } = archiveKey;
 
   // ── 2) restore ─────────────────────────────────────────────────────────────
   let restored: { ok: boolean; reason?: string; root?: string };
@@ -246,4 +223,84 @@ export async function rematerializeTranscript(
   return path
     ? { path, reason: 'restored', root }
     : { path: null, reason: 'restored_but_unresolved', root };
+}
+
+/**
+ * Stream key → archive key, the per-backend keying described in the header.
+ * Shared by the restoring path above and the read-only probe below, so the two
+ * can never disagree about WHICH archive row a session would restore from.
+ * `null` means the key cannot name an archive row at all.
+ */
+async function resolveArchiveKey(
+  key: TranscriptStreamKey,
+  findArchivedSessionIdForAdv: (advSessionId: number) => Promise<string | null>,
+): Promise<{ sourceKind: 'claude' | 'codex' | 'omp'; sessionId: string } | null> {
+  switch (key.kind) {
+    case 'claude':
+      return key.sessionId ? { sourceKind: 'claude', sessionId: key.sessionId } : null;
+    case 'omp':
+      return key.threadId ? { sourceKind: 'omp', sessionId: key.threadId } : null;
+    case 'codex-rollout':
+      return key.rolloutId ? { sourceKind: 'codex', sessionId: key.rolloutId } : null;
+    case 'codex-session-key': {
+      // The adv-session row id is NOT an archive key. The rollout uuid that is
+      // one normally lives only in the on-disk filename this lifecycle deleted,
+      // so recover it from the archive's own adv_session_id index.
+      const advId = Number(key.sessionKey);
+      if (!Number.isInteger(advId) || advId <= 0) return null;
+      // Deliberately uncaught: the restore treats a failed lookup as "no key",
+      // but the read-only probe must report it as UNKNOWN, not as absent.
+      const rolloutId = await findArchivedSessionIdForAdv(advId);
+      return rolloutId ? { sourceKind: 'codex', sessionId: rolloutId } : null;
+    }
+  }
+}
+
+/** Seams for {@link probeTranscriptArchive}; production reads the PG archive store. */
+export interface TranscriptArchiveProbeDeps {
+  findArchivedSessionIdForAdv: (advSessionId: number) => Promise<string | null>;
+  /** True when a complete archive stamp exists for the key. */
+  hasArchiveStamp: (sourceKind: 'claude' | 'codex' | 'omp', sessionId: string) => Promise<boolean>;
+}
+
+/**
+ * READ-ONLY sibling of {@link rematerializeTranscript}: would a restore of
+ * `key` have an archive to restore from? It writes nothing, which is what lets
+ * a selector ask it about every candidate in a ranked pool (WI-6554700010009982)
+ * — the restoring path writes files and is only right once a source is chosen.
+ *
+ * `archived: null` is UNKNOWN (the archive module or PG was unavailable), never
+ * "absent": a caller deciding to drop a candidate must treat it as keep.
+ */
+export async function probeTranscriptArchive(
+  key: TranscriptStreamKey,
+  depsIn?: Partial<TranscriptArchiveProbeDeps>,
+): Promise<{ archived: boolean | null; reason: 'archived' | 'not_archived' | 'no_archive_key' | 'unavailable' }> {
+  let deps: TranscriptArchiveProbeDeps;
+  if (depsIn?.findArchivedSessionIdForAdv && depsIn.hasArchiveStamp) {
+    deps = depsIn as TranscriptArchiveProbeDeps;
+  } else {
+    try {
+      const { pgSessionArchiveStore, findArchivedSessionIdForAdv } = await import('./session-archive');
+      const store = pgSessionArchiveStore();
+      deps = {
+        findArchivedSessionIdForAdv,
+        hasArchiveStamp: async (sourceKind, sessionId) => (await store.readStamp(sourceKind, sessionId)) !== null,
+        ...depsIn,
+      };
+    } catch {
+      return { archived: null, reason: 'unavailable' };
+    }
+  }
+  try {
+    // A codex-session-key whose adv id has no archive row is genuinely
+    // unarchived; the index lookup IS the archive read for that key shape.
+    const archiveKey = await resolveArchiveKey(key, deps.findArchivedSessionIdForAdv);
+    if (!archiveKey) return { archived: false, reason: 'no_archive_key' };
+    return (await deps.hasArchiveStamp(archiveKey.sourceKind, archiveKey.sessionId))
+      ? { archived: true, reason: 'archived' }
+      : { archived: false, reason: 'not_archived' };
+  } catch {
+    return { archived: null, reason: 'unavailable' };
+  }
 }

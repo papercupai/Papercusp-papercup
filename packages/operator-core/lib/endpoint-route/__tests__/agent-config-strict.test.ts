@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_MODEL_TIERS, MODEL_EFFORT_LEVELS } from '../../agent-config-constants';
 import { launchableModes } from '../../modes/registry';
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
 // writeAgentConfig hits PG + process.env — mock the write, keep the real
 // parsers (they ARE the subject under test via the route's drop detection).
@@ -133,6 +134,41 @@ const VALID_BODY = {
   },
 };
 
+describe('R-3 role routing configuration persistence', () => {
+  const roleAccounts = { 'release-fixer': 'auto', worker: null };
+  const roleBackups = { 'release-fixer': [{ backend: 'claude-code', model: 'sonnet', effort: 'high', account: 'pin:fixture-account' }] };
+
+  it('saves valid role routes/backups unchanged and exposes them on GET', async () => {
+    const result = await callPost({ ...VALID_BODY, roleAccounts, roleBackups });
+    expect(result.status).toBe(200);
+    expect(writeMock).toHaveBeenCalledWith(expect.objectContaining({ roleAccounts, roleBackups }));
+    readMock.mockResolvedValue({ ...VALID_BODY, roleAccounts, roleBackups });
+    expect(await (await callGet()).json()).toMatchObject({ config: { roleAccounts, roleBackups } });
+  });
+
+  it('preserves saved routing when older clients omit the new fields', async () => {
+    readMock.mockResolvedValue({ ...VALID_BODY, roleAccounts, roleBackups });
+    expect((await callPost(VALID_BODY)).status).toBe(200);
+    expect(writeMock).toHaveBeenCalledWith(expect.objectContaining({ roleAccounts, roleBackups }));
+  });
+
+  it.each([
+    { roleAccounts: { worker: 'has spaces' } },
+    { roleAccounts: [] },
+    { roleAccounts: null },
+    { roleBackups: null },
+    { roleAccounts: { worker: 'auto', ' worker ': 'default' } },
+    { roleBackups: { worker: [], ' worker ': [] } },
+    { roleBackups: { worker: [{ backend: 'unknown', model: 'sonnet' }] } },
+    { roleBackups: { worker: [{ backend: 'claude-code', model: 'sol' }] } },
+    { roleBackups: { worker: [{ backend: 'claude-code', model: 'sonnet', effort: 'impossible' }] } },
+    { roleBackups: { worker: [{ backend: 'claude-code', model: 'sonnet' }, { backend: 'claude-code', model: 'sonnet' }] } },
+  ])('refuses invalid role routing before persistence: %j', async (routing) => {
+    expect((await callPost({ ...VALID_BODY, ...routing })).status).toBe(422);
+    expect(writeMock).not.toHaveBeenCalled();
+  });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   readMock.mockResolvedValue({
@@ -173,7 +209,7 @@ describe('GET /agent-config diagnostics', () => {
       tiers: [
         {
           name: 'workspace-only',
-          spec: 'openrouter/stealth/ox-alpha:max',
+          spec: 'unsupported-provider/stealth/ox-alpha:max',
           backend: 'omp',
           when: 'special OMP work',
         },
@@ -186,7 +222,7 @@ describe('GET /agent-config diagnostics', () => {
     expect(json.effectiveTiers).toEqual([
       expect.objectContaining({
         name: 'workspace-only',
-        spec: 'openrouter/stealth/ox-alpha:max',
+        spec: 'unsupported-provider/stealth/ox-alpha:max',
         loopCapability: expect.objectContaining({
           executable: false,
           reason: expect.stringContaining('unsupported loop provider'),

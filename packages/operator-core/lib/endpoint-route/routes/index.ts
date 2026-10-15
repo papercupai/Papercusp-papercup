@@ -18,6 +18,7 @@ import desktopVersion from './desktop/version';
 import deployFrameView from './deploy/frame-view';
 import deployFrames from './deploy/frames';
 import deployLocalDesktops from './deploy/local-desktops';
+import deployLocalDesktopThumbnail from './deploy/local-desktop-thumbnail';
 import discoveryPots from './discovery/pots';
 import discoveryFederationStatus from './discovery/federation-status';
 import discoveryPotMeta from './discovery/pot-meta';
@@ -32,6 +33,10 @@ import flagsBootstrap from './flags/bootstrap';
 import flagsStream from './flags/stream';
 import flagsSet from './flags/set';
 import workScopeRoutes from './work-scope/set';
+import governancePolicyRoutes from './governance-policy/policy';
+import governanceSiemExportRoutes from './governance-policy/siem-export';
+import governanceLegalHoldRoutes from './governance-policy/legal-holds';
+import customerDataSupportRoutes from './admin/customer-data';
 import flagsTestingFeatures from './flags/testing-features';
 import flagsPreset from './flags/preset';
 import flagsDashboardUrl from './flags/dashboard-url';
@@ -71,6 +76,8 @@ import harnessJoinLink from './harness/join-link';
 import harnessBindingClaim from './harness/binding-claim';
 import harnessClaimStatus from './harness/claim-status';
 import potPolicy from './pot/policy-set';
+import potHiring from './pot/hiring';
+import potContracts from './pot/contracts';
 import potRateState from './pot/rate-state';
 import harnessContributors from './harness/contributors';
 import harnessContributorUsage from './harness/contributor-usage';
@@ -106,6 +113,7 @@ import harnessBlueprintParams from './harness/blueprint-params';
 import harnessWorkItems from './harness/work-items';
 import promptStudio from './prompt-studio';
 import harnessDiscord from './harness/discord';
+import harnessIntegrationMode from './harness/integration-mode';
 import harnessAssertion from './harness/assertion';
 import harnessTextViews from './harness/text-views';
 import harnessRuns from './harness/runs';
@@ -214,6 +222,7 @@ import agentMcp_bootstrapRole from './agent-mcp/bootstrap-role';
 import agentMcp_sessionRecoveryBrief from './agent-mcp/session-recovery-brief';
 import agentMcp_contextEpochBump from './agent-mcp/context-epoch-bump';
 import agentMcp_turnEndDirectiveCheck from './agent-mcp/turn-end-directive-check';
+import agentMcp_restrictedEgressCheck from './agent-mcp/restricted-egress-check';
 import agentMcp_turnStartMemory from './agent-mcp/turn-start-memory';
 import agentMcp_midTurnContext from './agent-mcp/mid-turn-context';
 import agentMcp_identityHookSinks from './agent-mcp/identity-hook-sinks';
@@ -262,6 +271,7 @@ import agentMcp_operatorTts from './agent-mcp/operator-tts';
 import agentMcp_operatorTtsPreview from './agent-mcp/operator-tts-preview';
 import agentMcp_operatorTtsSpend from './agent-mcp/operator-tts-spend';
 import agentMcp_operatorVoicePrefs from './agent-mcp/operator-voice-prefs';
+import agentMcp_operatorVoiceSession from './agent-mcp/operator-voice-session';
 import agentMcp_provision from './agent-mcp/provision';
 import agentMcp_runCommandResult from './agent-mcp/run-command-result';
 import agentMcp_runCommandSse from './agent-mcp/run-command-sse';
@@ -340,9 +350,11 @@ import desktopDocsAgentAsk from './desktop/docs-agent-ask';
 import desktopSetupPtyCommands from './desktop/setup-pty-commands';
 import desktopSetupStatus from './desktop/setup-status';
 import desktopSetupWizardState from './desktop/setup-wizard-state';
+import desktopDaoLaunch from './desktop/dao-launch';
 import desktopTelemetryConfig from './desktop/telemetry-config';
 import desktopTelemetryFlush from './desktop/telemetry-flush';
 import desktopTelemetryReport from './desktop/telemetry-report';
+import desktopReportProblem from './desktop/report-problem';
 import desktopVoiceConfig from './desktop/voice-config';
 import desktopWorkspaceValidate from './desktop/workspace-validate';
 import desktopInstallPapercuspFiles from './desktop/install-papercusp-files';
@@ -356,6 +368,8 @@ import adminDeployAccountsRegister from './admin/deploy-accounts-register';
 import adminInferenceGatewayStats from './admin/inference-gateway-stats';
 // owner-presence-human-turn-signal-2026-07-11 P-002 — human-turn presence signal (all backends).
 import adminOwnerPresenceTouch from './admin/owner-presence-touch';
+// WI-6554700010011967: psu pty host reports quota starvation -> fleet:member-quota-starved.
+import adminPsuPtyQuotaStarvation from './admin/psu-pty-quota-starvation';
 import adminDeployAccountsRemove from './admin/deploy-accounts-remove';
 import adminDeployAccountsReset from './admin/deploy-accounts-reset';
 // accounts-pool-tab-2026-06-15 P-002 — the experimental one-click OAuth account link.
@@ -379,6 +393,7 @@ import adminConfig from './admin/config';
 import adminCoordInboxReply from './admin/coord-inbox-reply';
 import adminAttentionBulkResolve from './admin/attention-bulk-resolve';
 import adminPlanCleanup from './admin/plan-cleanup';
+import adminPlanAudit from './admin/plan-audit';
 import adminCoordination from './admin/coordination';
 import adminComms from './admin/comms';
 import adminInbox from './admin/inbox';
@@ -433,10 +448,12 @@ import workspaces from './workspaces/index';
 import workspaceById from './workspaces/by-id';
 import workspaceSwitch from './workspaces/switch';
 import workspaceHostAudit from './workspace-hosts/audit';
+import workspaceHostAwsSetupTemplate from './workspace-hosts/aws-setup-template';
 import workspaceHostAction from './workspace-hosts/action';
 import workspaceHostAgentCredentials from './workspace-hosts/agent-credentials';
 import workspaceHostCanary from './workspace-hosts/canary';
 import workspaceHostConnection from './workspace-hosts/connection';
+import workspaceHostByocClientKey from './workspace-hosts/byoc-client-key';
 import workspaceHostCredentialLifecycle from './workspace-hosts/credential-lifecycle';
 import workspaceHostInitialize from './workspace-hosts/initialize';
 import workspaceHostDesktopPack from './workspace-hosts/desktop-pack';
@@ -463,6 +480,11 @@ import devicePush from './device/push';
 import deviceOperatorConverse from './device/operator-converse';
 import deviceVoiceTurn from './device/voice-turn';
 import devicePlans from './device/plans';
+import deviceSessions from './device/sessions';
+import deviceSessionTranscript from './device/session-transcript';
+import deviceSessionMessages from './device/session-messages';
+import deviceSessionEnd from './device/session-end';
+import deviceSessionCapability from './device/session-capability';
 import deviceAttention from './device/attention';
 import deviceMonitoring from './device/monitoring';
 import coordRoutes from './coord/index';
@@ -495,6 +517,10 @@ import userEmbedDevice from './user/embed-device';
 import userMemoryRelinkEntities from './user/memory-relink-entities';
 import userMemoryAudit from './user/memory-audit';
 import userPersonalVault from './user/personal-vault';
+import userTicketIntegrations from './user/ticket-integrations';
+import userProviderCredentials from './user/provider-credentials';
+import userProviderOAuthClient from './user/provider-oauth-client';
+import userProviderOptions from './user/provider-options';
 import devSql from './dev/sql';
 import devProcessesKill from './dev/processes-kill';
 import devTables from './dev/tables';
@@ -530,6 +556,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deployFrameView as AnyRoute),
   ...flatten(deployFrames as AnyRoute),
   ...flatten(deployLocalDesktops as AnyRoute),
+  ...flatten(deployLocalDesktopThumbnail as AnyRoute),
   ...flatten(discoveryPots as AnyRoute),
   ...flatten(discoveryFederationStatus as AnyRoute),
   ...flatten(discoveryPotMeta as AnyRoute),
@@ -551,6 +578,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_sessionRecoveryBrief as AnyRoute[]),
   ...flatten(agentMcp_contextEpochBump as AnyRoute[]),
   ...flatten(agentMcp_turnEndDirectiveCheck as AnyRoute[]),
+  ...flatten(agentMcp_restrictedEgressCheck as AnyRoute[]),
   ...flatten(agentMcp_turnStartMemory as AnyRoute[]),
   ...flatten(agentMcp_midTurnContext as AnyRoute[]),
   ...flatten(agentMcp_identityHookSinks as AnyRoute[]),
@@ -598,6 +626,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_operatorTtsPreview as AnyRoute),
   ...flatten(agentMcp_operatorTtsSpend as AnyRoute[]),
   ...flatten(agentMcp_operatorVoicePrefs as AnyRoute[]),
+  ...flatten(agentMcp_operatorVoiceSession as AnyRoute[]),
   ...flatten(agentMcp_provision as AnyRoute),
   ...flatten(agentMcp_runCommandResult as AnyRoute),
   ...flatten(agentMcp_runCommandSse as AnyRoute),
@@ -624,6 +653,10 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(flagsStream as AnyRoute),
   ...flatten(flagsSet as AnyRoute),
   ...flatten(workScopeRoutes as AnyRoute[]),
+  ...flatten(governancePolicyRoutes as AnyRoute[]),
+  ...flatten(governanceSiemExportRoutes as AnyRoute[]),
+  ...flatten(governanceLegalHoldRoutes as AnyRoute[]),
+  ...flatten(customerDataSupportRoutes as AnyRoute[]),
   ...flatten(flagsTestingFeatures as AnyRoute[]),
   ...flatten(flagsPreset as AnyRoute),
   ...flatten(flagsDashboardUrl as AnyRoute),
@@ -661,6 +694,8 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessBindingClaim as AnyRoute[]),
   ...flatten(harnessClaimStatus as AnyRoute[]),
   ...flatten(potPolicy as AnyRoute[]),
+  ...flatten(potHiring as AnyRoute[]),
+  ...flatten(potContracts as AnyRoute[]),
   ...flatten(potRateState as AnyRoute[]),
   ...flatten(harnessContributors as AnyRoute[]),
   ...flatten(harnessContributorUsage as AnyRoute[]),
@@ -696,6 +731,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessWorkItems as AnyRoute[]),
   ...flatten(promptStudio as AnyRoute[]),
   ...flatten(harnessDiscord as AnyRoute[]),
+  ...flatten(harnessIntegrationMode as AnyRoute[]),
   harnessAssertion as AnyRoute,
   ...flatten(harnessTextViews as AnyRoute[]),
   ...flatten(harnessRuns as AnyRoute[]),
@@ -854,9 +890,11 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopSetupPtyCommands as AnyRoute),
   ...flatten(desktopSetupStatus as AnyRoute),
   ...flatten(desktopSetupWizardState as AnyRoute[]),
+  ...flatten(desktopDaoLaunch as AnyRoute[]),
   ...flatten(desktopTelemetryConfig as AnyRoute),
   ...flatten(desktopTelemetryFlush as AnyRoute),
   ...flatten(desktopTelemetryReport as AnyRoute[]),
+  ...flatten(desktopReportProblem as AnyRoute),
   ...flatten(desktopVoiceConfig as AnyRoute[]),
   ...flatten(desktopWorkspaceValidate as AnyRoute),
   ...flatten(desktopInstallPapercuspFiles as AnyRoute[]),
@@ -869,6 +907,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminDeployAccountsRegister as AnyRoute),
   ...flatten(adminInferenceGatewayStats as AnyRoute),
   ...flatten(adminOwnerPresenceTouch as AnyRoute),
+  ...flatten(adminPsuPtyQuotaStarvation as AnyRoute),
   ...flatten(adminDeployAccountsRemove as AnyRoute),
   ...flatten(adminDeployAccountsReset as AnyRoute),
   ...flatten(adminDeployAccountsLinkStart as AnyRoute),
@@ -890,6 +929,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminCoordInboxReply as AnyRoute[]),
   ...flatten(adminAttentionBulkResolve as AnyRoute[]),
   ...flatten(adminPlanCleanup as AnyRoute[]),
+  ...flatten(adminPlanAudit as AnyRoute[]),
   ...flatten(adminCoordination as AnyRoute[]),
   ...flatten(adminComms as AnyRoute[]),
   ...flatten(adminInbox as AnyRoute[]),
@@ -938,10 +978,12 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(workspaceById as AnyRoute[]),
   ...flatten(workspaceSwitch as AnyRoute),
   ...flatten(workspaceHostAudit as AnyRoute),
+  ...flatten(workspaceHostAwsSetupTemplate as AnyRoute),
   ...flatten(workspaceHostAction as AnyRoute),
   ...flatten(workspaceHostAgentCredentials as AnyRoute),
   ...flatten(workspaceHostCanary as AnyRoute),
   ...flatten(workspaceHostConnection as AnyRoute),
+  ...flatten(workspaceHostByocClientKey as AnyRoute[]),
   ...flatten(workspaceHostCredentialLifecycle as AnyRoute),
   ...flatten(workspaceHostInitialize as AnyRoute),
   ...flatten(workspaceHostDesktopPack as AnyRoute),
@@ -968,6 +1010,11 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(deviceOperatorConverse as AnyRoute[]),
   ...flatten(deviceVoiceTurn as AnyRoute[]),
   ...flatten(devicePlans as AnyRoute[]),
+  ...flatten(deviceSessions as AnyRoute[]),
+  ...flatten(deviceSessionTranscript as AnyRoute[]),
+  ...flatten(deviceSessionMessages as AnyRoute[]),
+  ...flatten(deviceSessionEnd as AnyRoute[]),
+  ...flatten(deviceSessionCapability as AnyRoute[]),
   ...flatten(deviceAttention as AnyRoute[]),
   ...flatten(deviceMonitoring as AnyRoute[]),
   ...flatten(coordRoutes as AnyRoute[]),
@@ -1000,6 +1047,10 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(userMemoryRelinkEntities as AnyRoute),
   ...flatten(userMemoryAudit as AnyRoute),
   ...flatten(userPersonalVault as AnyRoute[]),
+  ...flatten(userTicketIntegrations as AnyRoute[]),
+  ...flatten(userProviderCredentials as AnyRoute[]),
+  ...flatten(userProviderOAuthClient as AnyRoute[]),
+  ...flatten(userProviderOptions as AnyRoute[]),
   ...flatten(devSql as AnyRoute),
   ...flatten(devProcessesKill as AnyRoute),
   ...flatten(devTables as AnyRoute),

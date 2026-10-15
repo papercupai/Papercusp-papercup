@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   applyCodexGatewayRoute, applyOmpResumeAccountRoute, buildResumeEnv,
   codexThreadWriterHolder, ensureCodexHomeViaOperator, ensureInteractiveConfigViaOperator,
-  ensureResumeTranscriptPresent, isClaudeConfigDirLaunchReady, isCodexHomeLaunchReady,
+  ensureResumeTranscriptPresent, isClaudeConfigDirLaunchReady, codexHomeLaunchReadiness,
   normalizeArgvProbeResumeLocalLivenessEvidence, normalizeCodexResumeLocalLivenessEvidence,
   normalizeModelSpecForAgent,
   ompTrackedResumeEnv, rehealResumeCodexAuth, rehealResumeCredentials, sessionProcessHolder, tryRematerializeFromArchive,
@@ -19,10 +19,10 @@ import {
   readSuLaunchSpecByOwner, releaseAdvSessionResume, setAdvSessionPid,
 } from './adv-sessions';
 import { buildConsoleEnvelope } from './console-launcher';
-import { findLiveHost } from './events/await/psu-pty-discovery';
+import { findLiveHostAsync } from './events/await/psu-pty-discovery';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
-import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
+import { resolveChildSessionOperatorBaseUrl, resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
 import type { NativeSessionHandle } from './native-session-handles';
 import { findOmpSessionPath } from './session-transcript-resolvers';
 import { launchContextPathFor } from './su-launch-context';
@@ -30,7 +30,10 @@ import { parseSuLaunchSpecRecord } from './su-persona-render';
 import { checkInteractiveSafetyFloor } from './interactive-safety-floor';
 import type { DurableSuSessionRecord } from './su-session-persistence';
 
-export async function prepareStructuredSuResume(record: DurableSuSessionRecord) {
+export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
+  { identity = 'su', stage }: {
+    identity?: 'su' | 'coding-assistant'; stage?: (name: string) => void;
+  } = {}) {
   const saved = record.descriptor;
   if (!saved?.identity.nativeSessionId || !record.ownerId || !record.backend) {
     throw new Error('Reconnect requires a saved native session and SU identity');
@@ -38,6 +41,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
   // Legacy descriptors can say default although a copied model used the
   // gateway. Do not turn that into a different, unauthenticated provider.
   if (record.backend === 'omp' && saved.model) resolveOmpSessionModel(saved.model, saved.accountRoute);
+  stage?.('resume-read-session');
   const row = await getAdvSession(record.advSessionId);
   if (!row || row.coordOwnerId !== record.ownerId || row.workspaceId !== record.workspaceId
     || row.agent !== record.backend || saved.identity.advSessionId !== row.id
@@ -47,6 +51,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
     || saved.identity.agentChatId !== record.agentChatId || saved.identity.harnessSlug !== record.harnessSlug) {
     throw new Error('Saved session identity does not match the resume target');
   }
+  stage?.('resume-read-launch-spec');
   const spec = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(record.ownerId));
   if (!spec || spec.agent !== record.backend || spec.workspaceId !== record.workspaceId
     || spec.harnessSlug !== record.harnessSlug || !row.cwd) {
@@ -65,8 +70,10 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
         agentHome: extension.agentHome, exactResumeSupported: true, missingReason: null };
   const session = { ...row, sessionId: nativeId, ompThreadId: nativeId,
     configDir: native.backend === 'claude' ? native.configDir : undefined,
-    codexHome: native.backend === 'codex' ? native.codexHome : undefined };
-  let liveHost = findLiveHost(record.ownerId);
+    codexHome: native.backend === 'codex' ? native.codexHome : undefined,
+    agentHome: native.backend === 'omp' ? native.agentHome : undefined };
+  stage?.('resume-local-liveness');
+  let liveHost = await findLiveHostAsync(record.ownerId);
   if (liveHost) throw new Error('This session still has a live host; reconnect to that process');
   if (row.pid) {
     try { process.kill(row.pid, 0); throw new Error('The saved native process is still alive'); }
@@ -83,7 +90,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
       await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
       processHolder = sessionProcessHolder(nativeId);
     }
-    liveHost = findLiveHost(record.ownerId);
+    liveHost = await findLiveHostAsync(record.ownerId);
     if (liveHost) throw new Error('This session gained a live host while waiting for its native process to exit');
   }
   const writerHolder = native.backend === 'codex' ? codexThreadWriterHolder(native.codexHome, nativeId) : null;
@@ -109,15 +116,18 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
       + `(backend=${native.backend}, probe=${reason}${errno}, held=${holder?.held === true}, pid=${pid}, `
       + `force=${process.env.PSU_FORCE_RESUME === '1'})`);
   }
+  stage?.('resume-safety-floor');
   const floor = await checkInteractiveSafetyFloor();
   if (!floor.ok) throw new Error(floor.reason);
   const key = `pui-resume:${randomUUID()}`;
+  stage?.('resume-acquire-lease');
   const lease = await acquireAdvSessionResume(row.id, key, 300, undefined, evidence);
   if (!lease.acquired) throw new Error(`The saved session cannot be resumed (${lease.status})`);
   let finalized = false;
   const release = async () => { if (!finalized) await releaseAdvSessionResume(row.id, key); };
   try {
     const operatorUrl = resolveSpawnHostOperatorBaseUrl();
+    stage?.('resume-transcript');
     const restored = await ensureResumeTranscriptPresent(session, {
       rematerialize: (id, backend) => tryRematerializeFromArchive(id, backend, { operatorUrl }),
     });
@@ -130,9 +140,14 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
     if (!exact && (restored !== false || record.backend !== 'claude')) {
       throw new Error('The native transcript is unavailable or still being restored');
     }
+    stage?.('resume-account-route');
     const { resolveAccountPin } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su');
     const account = saved.accountRoute ?? 'default';
-    let model = spec.model ?? saved.model;
+    // Launch specs describe the original selection. P-026 model changes are
+    // applied on owner turns and persisted on the descriptor; resume must keep
+    // the latest explicit choice even when the native engine reports a
+    // resolved id or the launch spec still names the original model.
+    let model = saved.ownerSelectedModel ?? spec.model ?? saved.model;
     // The native init frame reports only the resolved model id, never the
     // Claude Code `[1m]` window marker. A PUI conversation launched on the
     // implicit/default model can therefore have only `saved.model` available
@@ -146,15 +161,19 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
     const accountRoute = { mode: accountPin.gatewayAuto || account === 'auto' || account === 'gateway' ? 'auto'
       : accountPin.accountId ? 'pin' : 'default', id: accountPin.accountId,
       provider: accountPin.provider, env: accountPin.env };
+    stage?.('resume-console-envelope');
     const envelope = await buildConsoleEnvelope({ workspaceId: record.workspaceId,
       slug: record.harnessSlug, operatorBaseUrl: operatorUrl });
     const env = Object.fromEntries(Object.entries({ ...envelope.env, ...buildResumeEnv(session, { accountEnv: accountRoute }),
-      PAPERCUSP_PROFILE: spec.profile, PAPERCUSP_OPERATOR_URL: operatorUrl,
+      // WI-6554700010008332: this process keeps `operatorUrl` for its own calls; the resumed
+      // child's MCP and turn-end hooks follow agent routing (live proxy from the bg-host).
+      PAPERCUSP_PROFILE: spec.profile, PAPERCUSP_OPERATOR_URL: resolveChildSessionOperatorBaseUrl(),
       ...(spec.specificationRevision ? { PAPERCUSP_SPECIFICATION_REVISION: spec.specificationRevision } : {}),
       ...(spec.stateRevision ? { PAPERCUSP_STATE_REVISION: spec.stateRevision } : {}),
     }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
     if (spec.fleet?.slug) env.PAPERCUSP_FLEET_SLUG = spec.fleet.slug;
     if (spec.fleet?.role) env.PAPERCUSP_FLEET_ROLE = spec.fleet.role;
+    stage?.('resume-native-config');
     let promptFile = launchContextPathFor(row.id);
     if (native.backend === 'claude') {
       if (!native.configDir) throw new Error('The saved Claude configuration directory is unavailable');
@@ -164,12 +183,20 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
       env.CLAUDE_CONFIG_DIR = native.configDir;
     } else if (native.backend === 'codex') {
       if (!native.codexHome) throw new Error('The saved Codex home is unavailable');
-      await ensureCodexHomeViaOperator(record.ownerId, native.codexHome, row.id, {
+      if (identity === 'su') await ensureCodexHomeViaOperator(record.ownerId, native.codexHome, row.id, {
         operatorUrl,
         requireGatewayProvider: accountRoute.mode !== 'default',
         headless: spec.headless ?? row.launchArgv?.includes('--headless') === true,
       });
-      if (!isCodexHomeLaunchReady(native.codexHome, record.ownerId)) throw new Error('The saved Codex SU configuration is not ready');
+      // Name the failing check: a bare "not ready" was undiagnosable once the
+      // home was gone (WI-10006770).
+      // Outside-project chats deliberately have no SU playbook/MCP/hooks.
+      // Their engine validates native thread identity and connection readiness;
+      // requiring the SU configuration here prevents that engine from starting.
+      const codexNotReady = identity === 'su'
+        ? codexHomeLaunchReadiness(native.codexHome, record.ownerId)
+        : existsSync(join(native.codexHome, 'config.toml')) ? null : 'config.toml is missing';
+      if (codexNotReady) throw new Error(`The saved Codex SU configuration is not ready: ${codexNotReady}`);
       if (accountRoute.mode === 'default') rehealResumeCodexAuth(native.codexHome);
       applyCodexGatewayRoute(native.codexHome, { ...accountRoute, ownerId: record.ownerId,
         priority: 'su', keepProviderTableWhenUnrouted: true });
@@ -190,7 +217,10 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
       model = applyOmpResumeAccountRoute({ session, env, accountRoute, model });
       env.PAPERCUSP_OMP_MODEL_SELECTOR = model ?? '';
     }
-    if (!existsSync(promptFile)) throw new Error('The saved full SU instruction artifact is unavailable');
+    if (identity === 'su' && !existsSync(promptFile)) {
+      throw new Error('The saved full SU instruction artifact is unavailable');
+    }
+    stage?.('resume-prepared');
     const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
     const boot: BootstrapSuResult = { status: 'ok', sessionId: row.id, nativeSessionId: nativeId,
       agent: record.backend, workspaceId: record.workspaceId, harnessSlug: record.harnessSlug,

@@ -105,6 +105,43 @@ const PLAN_ITEM_REF_RE = /\bP-\d{3,}\b/g;
  */
 export const DERIVED_NEXT_MARK = '⟳ derived';
 
+export interface NowStateReconciliation {
+  state: string;
+  storedState: string;
+  contradictions: NowItemContradiction[];
+  warning: string | null;
+}
+
+/**
+ * State is another authored snapshot of the item graph. A valid write can
+ * become false after an item completes, even when Next names no plan item.
+ * Reuse the write-time classifier at read time, retaining the entire snapshot
+ * and leading with the authoritative terminal statuses only when it conflicts.
+ * This certifies neither source proof nor completion of any remaining item.
+ */
+export function reconcileNowState(
+  storedState: string | null | undefined,
+  items: readonly PlanItem[],
+  slug = '',
+): NowStateReconciliation {
+  const stored = storedState ?? '';
+  const contradictions = detectNowItemContradictions({
+    now: { state: stored, next: '', raw: stored, lineNumber: 0 },
+    items: [...items],
+    slug,
+  });
+  const warning = contradictions.length > 0
+    ? `⟳ current item status — ${contradictions.map(({ id, status }) => `${id} [${status}]`).join(', ')}. ` +
+      'Stored State below contradicts these terminal items; those mentions are superseded, not current work.'
+    : null;
+  return {
+    state: warning ? `${warning}\n\n${stored}` : stored,
+    storedState: stored,
+    contradictions,
+    warning,
+  };
+}
+
 /**
  * Reconcile the stored next-pointer with the item graph.
  *

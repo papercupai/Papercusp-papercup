@@ -43,11 +43,13 @@ describe('oddsmith domain datatypes (real PG) — Phase 2 framework proof', () =
     // their old hive_slug index against the post-523 schema, 42703-ing "column
     // hive_slug does not exist". See datatype-registry.integration.test.ts.
     db = await createOrgTestDb();
-    // Reasoning datatypes — generic-kind, the lead one opted into placement.
+    // Reasoning datatypes — generic-kind records (D-007). 'bet' still carries the retired
+    // hive-placement tag, which since P-009 / D-022 must decide nothing.
     for (const [id, schema] of Object.entries(REASONING)) {
       await upsertDatatype(db.adminSql, {
         id, workspaceId: WS, title: id, description: `oddsmith ${id} reasoning datatype`,
-        tier: 'generic-kind', workItemKind: id, payloadSchema: schema, selfImprovement: SI,
+        tier: 'generic-kind', nature: 'record', // D-007: bet/wager/forecast/calibration-record are records
+        workItemKind: id, payloadSchema: schema, selfImprovement: SI,
         tags: id === 'bet' ? ['oddsmith', HIVE_PLACEMENT_TAG] : ['oddsmith'],
       });
     }
@@ -55,7 +57,8 @@ describe('oddsmith domain datatypes (real PG) — Phase 2 framework proof', () =
     for (const id of MONEY_TRUTH) {
       await upsertDatatype(db.adminSql, {
         id, workspaceId: WS, title: id, description: `oddsmith ${id} money-truth projection`,
-        tier: 'projection', authoritativeWriter: 'engine:oddsmith', workItemKind: id,
+        tier: 'projection', nature: id === 'fill' ? 'event' : 'record', // D-013 §4: a fill happened; the rest are state
+        authoritativeWriter: 'engine:oddsmith', workItemKind: id,
       });
     }
   }, 120_000);
@@ -89,17 +92,25 @@ describe('oddsmith domain datatypes (real PG) — Phase 2 framework proof', () =
     }
   });
 
-  it('the whole oddsmith set is registered; only the opted-in reasoning kind is frontier-placeable', async () => {
+  it('the whole oddsmith set is registered; no oddsmith kind is frontier-placeable (records are not work)', async () => {
     const all = (await listDatatypes(db.adminSql, WS)).map((d) => d.id).sort();
     expect(all).toEqual([...MONEY_TRUTH, ...Object.keys(REASONING)].sort());
 
+    // Stamp each candidate the way migration 1322's mint trigger does (registry row wins;
+    // no row = work/agent), then run the frontier clause over rows shaped like
+    // harness_features_consolidated.
     const placeable = (
       await db.adminSql<{ item_kind: string }[]>`
-        SELECT item_kind FROM unnest(${['bet', 'wager', 'position', 'feature']}::text[]) AS t(item_kind)
-         WHERE ${frontierPlacementKindClause(db.adminSql, WS)} ORDER BY item_kind`
+        SELECT t.item_kind
+          FROM unnest(${['bet', 'wager', 'position', 'feature']}::text[]) AS t(item_kind),
+               LATERAL harness_shared.work_item_kind_nature(${WS}, t.item_kind) AS k,
+               LATERAL (SELECT '{}'::jsonb AS payload) AS c
+         WHERE ${frontierPlacementKindClause(db.adminSql)} ORDER BY t.item_kind`
     ).map((r) => r.item_kind);
-    // built-in 'feature' + the placement-tagged 'bet'; 'wager' (untagged) + 'position' (projection) are not placed.
-    expect(placeable).toEqual(['bet', 'feature']);
+    // P-009 / D-022: placement follows nature/audience. Only the built-in 'feature' (no
+    // registry row = work/agent) is placed. 'bet' is a record even though it still carries
+    // the retired hive-placement tag; 'wager' is a record; 'position' is a projection record.
+    expect(placeable).toEqual(['feature']);
   });
 
   it('P-011 observability: datatypesSummary breaks the workspace down by tier + review-status', async () => {

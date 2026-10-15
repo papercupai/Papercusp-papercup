@@ -1,0 +1,270 @@
+{
+  "schemaVersion": "p011-inbox-cache-retainers-qualification-v1",
+  "measuredAt": "2026-10-05T17:00:27.264983+00:00",
+  "ownerId": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+  "nativeSession": "01a10cdd-c35f-77c2-9007-504e8e02271f",
+  "workItem": "WI-10004890",
+  "ownedDefect": "WI-10006064",
+  "plan": {
+    "slug": "papercusp-log-performance-remediation-2026-09-23",
+    "version": 101,
+    "item": "P-011",
+    "spec": "PERF-OCT1-P011-MEMORY@2",
+    "decision": "D-021"
+  },
+  "scope": {
+    "plane": "isolated-current-build-operator-api",
+    "matchedComparisonComplete": false,
+    "fullExecutedSourceGraph": "unknown",
+    "retainedCacheAcceptance": false,
+    "nativePhysicalOwnership": "unknown",
+    "physicalSavings": "unmeasured",
+    "fullP011Acceptance": false,
+    "shipmentVerified": false
+  },
+  "reuse": "Extended the maintained order-reversed inbox producer and its independent raw evidence suite. Reused digest/WeakRef selection, native snapshot analyzer, exact-node validator and log archive; no parallel cache, registry, profiler or graph algorithm.",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct5-p011-inbox-cache-retainers-r1-2026-10-05.json",
+    "bytes": 513058,
+    "sha256": "0b1f180bb4239f3dab4826c12f3675211cb3c1a2f7b0ff246841b38d97484ab6"
+  },
+  "runtimeLog": {
+    "path": ".papercusp/logs/cohort-c33f04be4854dd49e30499c1040f496dc79c7f8a00884190b1e2306732eb78fd.log",
+    "bytes": 633182,
+    "sha256": "c33f04be4854dd49e30499c1040f496dc79c7f8a00884190b1e2306732eb78fd"
+  },
+  "producer": {
+    "testRunId": 20704769,
+    "result": "FAIL",
+    "executed": 1,
+    "filteredSkipped": 137,
+    "exitCode": 1,
+    "durationMs": 458614,
+    "routerProvenance": "unknown; HEAD moved during run",
+    "sourceFence": "All eight frozen source/executable files unchanged at run settlement; independent oracle test bytes changed later by the new failure guard.",
+    "arms": [
+      {
+        "arm": 0,
+        "mode": "baseline",
+        "pid": 949788,
+        "resourceSamples": 11,
+        "windows": 3,
+        "cacheEntries": 8,
+        "distinctPayloadIds": 8,
+        "requestedGraphNodes": 17,
+        "postSnapshotRowsPreserved": true,
+        "writeMs": 14073,
+        "summaryMs": 106945
+      },
+      {
+        "arm": 1,
+        "mode": "shared",
+        "pid": 1080490,
+        "resourceSamples": 11,
+        "windows": 3,
+        "cacheEntries": 1,
+        "distinctPayloadIds": 1,
+        "requestedGraphNodes": 3,
+        "postSnapshotRowsPreserved": true,
+        "writeMs": 15078,
+        "summaryMs": 113513
+      },
+      {
+        "arm": 2,
+        "mode": "shared",
+        "pid": 1218107,
+        "resourceSamples": 11,
+        "windows": 3,
+        "cacheEntries": 1,
+        "rootStatus": "not-in-snapshot",
+        "entryValueStatuses": [
+          "not-in-snapshot",
+          "not-in-snapshot"
+        ],
+        "membershipStatus": "selected",
+        "writeMs": 18129,
+        "nativeGraph": "not-reached"
+      },
+      {
+        "arm": 3,
+        "mode": "baseline",
+        "status": "not-launched"
+      }
+    ]
+  },
+  "originalSourceFence": {
+    "packages/operator-core/lib/service-memory-attribution.integration.test.ts": {
+      "bytes": 209393,
+      "sha256": "f5bc0e4918a537d78d3a09eaf7854d6cdf73800bc40498891dda8e61c9e0325c"
+    },
+    "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts": {
+      "bytes": 78587,
+      "sha256": "f08aa7c85d419eced8d8868556117247ac15167da2e8c515962b3b2614555f79"
+    },
+    "scripts/cdp-inspector.mjs": {
+      "bytes": 60831,
+      "sha256": "465318098afcd445483150edc4fc5d0b40ed458ce96d4e0a7573f0293f1b7a19"
+    },
+    "scripts/analyze-heap-snapshots.mjs": {
+      "bytes": 25556,
+      "sha256": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29"
+    },
+    "scripts/heap-retainers-native/src/main.rs": {
+      "bytes": 14751,
+      "sha256": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9"
+    },
+    "scripts/heap-retainers-native/Cargo.lock": {
+      "bytes": 6212,
+      "sha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded"
+    },
+    ".heap-retainers-cargo-target/release/papercusp-heap-retainers": {
+      "bytes": 920176,
+      "sha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02"
+    },
+    ".heap-retainers-cargo-target/decoder-control/bin/v8-heap": {
+      "bytes": 1618440,
+      "sha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24"
+    }
+  },
+  "currentSources": [
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "bytes": 209393,
+      "sha256": "f5bc0e4918a537d78d3a09eaf7854d6cdf73800bc40498891dda8e61c9e0325c"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "bytes": 79432,
+      "sha256": "3561f7439050cefa5eaf0efa5444e212d472484ad933b55910534dc6fb3fa3f3"
+    },
+    {
+      "path": "packages/operator-core/lib/cdp-inspector.test.ts",
+      "bytes": 76030,
+      "sha256": "a278bb06c2b7c390815d64adea3861328b3a20426651f5d2c9ce66966861290e"
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 60831,
+      "sha256": "465318098afcd445483150edc4fc5d0b40ed458ce96d4e0a7573f0293f1b7a19"
+    }
+  ],
+  "tests": [
+    {
+      "testRunId": 20704037,
+      "result": "PASS",
+      "passed": 164,
+      "disabledSkipped": 3,
+      "scope": "Full independent evidence suite before additive saved-failure guard; exact test source f08aa7c85d419eced8d8868556117247ac15167da2e8c515962b3b2614555f79."
+    },
+    {
+      "testRunId": 20708919,
+      "result": "PASS",
+      "passed": 2,
+      "filteredSkipped": 63,
+      "scope": "Real private Node inspector/file snapshot lifetime discriminator; neighbor Session disconnect clears IDs while membership remains selected."
+    },
+    {
+      "testRunId": 20709944,
+      "result": "PASS",
+      "passed": 1,
+      "filteredSkipped": 167,
+      "scope": "Final oracle test bytes reject the exact preserved incomplete raw cohort; no new resource producer."
+    }
+  ],
+  "types": {
+    "producerAndOracle": {
+      "namedFiles": 2,
+      "errors": 0
+    },
+    "newInspectorDiscriminator": {
+      "namedFiles": 1,
+      "errors": 0
+    },
+    "finalOracleFailureGuard": {
+      "namedFiles": 1,
+      "errors": 0
+    },
+    "scope": "Actual named-file type service coverage; no project-wide clean claim."
+  },
+  "logs": [
+    {
+      "path": ".papercusp/logs/cohort-7766f39f3700079d98ba0ffeb43a41b219f60f6a9f0a4dcdfeff0539fa761365.log",
+      "bytes": 76833,
+      "sha256": "7766f39f3700079d98ba0ffeb43a41b219f60f6a9f0a4dcdfeff0539fa761365"
+    },
+    {
+      "path": ".papercusp/logs/cohort-d9c3724aad8621b80fbf3d4fdb27e1d0420fe80c7b24bd8c34f48bdec5fd132b.log",
+      "bytes": 6176,
+      "sha256": "d9c3724aad8621b80fbf3d4fdb27e1d0420fe80c7b24bd8c34f48bdec5fd132b"
+    },
+    {
+      "path": ".papercusp/logs/cohort-6b89414c5f6b19d33b7433422e892cd370100771920dfb0870e3c4e85f943027.log",
+      "bytes": 1252,
+      "sha256": "6b89414c5f6b19d33b7433422e892cd370100771920dfb0870e3c4e85f943027"
+    },
+    {
+      "path": ".papercusp/logs/cohort-db4001ca53fc6a1e741a42eb3e90d18097a7d3e2f9280d2cce4230f88bac6f68.log",
+      "bytes": 24557,
+      "sha256": "db4001ca53fc6a1e741a42eb3e90d18097a7d3e2f9280d2cce4230f88bac6f68"
+    },
+    {
+      "path": ".papercusp/logs/cohort-9a50fec451c2d4b4def451a79f6c75f5f1a7249e7c615b74bbc1d86768b378b5.log",
+      "bytes": 1024,
+      "sha256": "9a50fec451c2d4b4def451a79f6c75f5f1a7249e7c615b74bbc1d86768b378b5"
+    },
+    {
+      "path": ".papercusp/logs/cohort-1949f537bd426b5cc31cec78246df65911c69d1c706dfcafaeeed84280575765.log",
+      "bytes": 59331,
+      "sha256": "1949f537bd426b5cc31cec78246df65911c69d1c706dfcafaeeed84280575765"
+    },
+    {
+      "path": ".papercusp/logs/cohort-e76089bd4dbf2c7c87eb6ff76796cc62fc50318f9c817783c38211b3f44957b0.log",
+      "bytes": 1086,
+      "sha256": "e76089bd4dbf2c7c87eb6ff76796cc62fc50318f9c817783c38211b3f44957b0"
+    }
+  ],
+  "cleanup": [
+    {
+      "pid": 949788,
+      "reaped": true,
+      "processAbsent": true,
+      "snapshotRemoved": true,
+      "forcedCleanup": false
+    },
+    {
+      "pid": 1080490,
+      "reaped": true,
+      "processAbsent": true,
+      "snapshotRemoved": true,
+      "forcedCleanup": false
+    },
+    {
+      "pid": 1218107,
+      "reaped": true,
+      "processAbsent": true,
+      "snapshotRemoved": true,
+      "forcedCleanup": false
+    }
+  ],
+  "snapshotIdentityFinding": {
+    "controlledMechanism": "A neighboring trusted inspector.Session disconnect invokes V8's HeapProfiler disable, which clears the isolate's heap object-ID map. Both selected cache objects remain present.",
+    "distinguishingTest": "Canonical cdp-inspector.test.ts: file-only writeHeapSnapshot followed by exact WeakRef lookup returns found IDs that occur in that saved snapshot; the otherwise equivalent neighbor-session-disconnect arm returns not-in-snapshot for root/entry/value with membership still selected.",
+    "originalThirdArmCause": "UNCONFIRMED: no causal local-session lifetime trace was recorded in the failed third host.",
+    "alternative": "File snapshotting alone necessarily invalidates object IDs.",
+    "actualObservation": "Control found root/entry/value IDs; neighbor disconnect erased all three IDs without evicting objects.",
+    "sourceRefs": [
+      "https://github.com/nodejs/node/blob/v25.9.0/deps/v8/src/inspector/v8-inspector-session-impl.cc#L146",
+      "https://github.com/nodejs/node/blob/v25.9.0/deps/v8/src/inspector/v8-heap-profiler-agent-impl.cc#L302"
+    ]
+  },
+  "scopeCorrection": "Initial runner missing-harness advisory did not establish stored scope. Exact initial guards20704029 and namespace20704030 are both recorded under papercusp-workspace/papercusp. Final full suite20704037 also scoped; preserve the advisory and use the actual ledger.",
+  "limits": [
+    "The four-arm matched resource/retainer comparison FAILED; two successful graph captures are partial evidence only.",
+    "Per-node dominator V8 sizes may overlap; never sum payload or parent sizes as native physical savings.",
+    "No saved complete-pair oracle acceptance was issued; the new saved-failure test verifies rejection.",
+    "Old request R3 raw0b67e72b/qualificationc535b17b/oraclee60ad4a0 preserved; request targets collected remains an explicit gap.",
+    "Whole P011@2/D021, eight-source dispositions, worker clones, native physical ownership, current shared/deployed runtime, P010/R8R9, authenticated owner origin, independent acceptance and shipment remain open.",
+    "LIVE_GATE_OPS remains stopped after peer hold; no release-gate read or intervention."
+  ],
+  "next": "Instrument the exact private host's inspector session lifetime with an existing trace seam; distinguish an actual disconnect/reset from an uncaptured object-ID map before another expensive paired run. Fix the responsible lifecycle durably and keep the file-snapshot/neighbor-disconnect regression. Preserve failed R1 raw/logs and do not pin payloads, disable detectors, retry around a reset, or rerun historical cohorts for recovery."
+}

@@ -6,10 +6,31 @@ import {
   dreamLoopId,
   dreamRegistrationInput,
   preflightDreamCycle,
+  sumDreamSpendSince,
   type DreamGovernorDeps,
 } from './dream-governor';
 
 const sql = (() => Promise.resolve([])) as unknown as Sql;
+
+describe('legacy tiered usage budget bounds', () => {
+  it('accounts for a lost zero-price receipt without changing it or double-counting its loop', async () => {
+    const outcome = { capabilityRun: {
+      schemaVersion: 'dream-capability-run-v1', manifestHash: 'a'.repeat(64), manifestRevision: 'fixture',
+      dreamerModel: 'gpt-6.1-sol', reviewerModel: 'gpt-6.1-sol',
+      dreamPromptVersion: 'fixture', reviewPromptVersion: 'fixture', sampling: null, artifactId: null,
+      calls: [{ callId: 'generation', phase: 'generation', model: 'gpt-6.1-sol', status: 'settled',
+        reservedUsd: 0.1, error: null, usage: { model: 'gpt-6.1-sol', costUsd: 0, inputTokens: 6670, outputTokens: 446 } }],
+    } };
+    const query = vi.fn()
+      .mockResolvedValueOnce([{ total: 2, loops: 1, loop_ids: ['dream:papercusp'] }])
+      .mockResolvedValueOnce([{ pot_slug: 'papercusp', outcome }]);
+    const result = await sumDreamSpendSince(query as unknown as Sql, { workspaceId: 'ws', sinceMs: 0 });
+    expect(result.totalUsd).toBeGreaterThan(2);
+    expect(result.totalUsd).toBeLessThanOrEqual(2.1);
+    expect(result.loopCount).toBe(1);
+    expect(outcome.capabilityRun.calls[0]!.usage.costUsd).toBe(0);
+  });
+});
 
 function deps(overrides: Partial<DreamGovernorDeps> = {}): DreamGovernorDeps {
   return {

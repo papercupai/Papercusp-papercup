@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-10-09T05:12:09.695Z",
+  "workItem": "WI-10006917",
+  "followUp": "WI-10007627",
+  "followUpAssignee": "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f",
+  "verdict": "passed-selected-workspace-case",
+  "scope": "Real admission, session and served resource listing with inert provisioning transport; excludes actual provider readiness",
+  "case": "authorized workspace lists admitted resources without claiming a connected host",
+  "runner": {
+    "root": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/sources/papercusp-lint-as-committed-61a8b7e5f5-lYog27",
+    "commit": "61a8b7e5f5ee828d8e21fce3470fa192e023d59b",
+    "collection": "one selected test in one file; retained --list exit 0"
+  },
+  "fixture": {
+    "root": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/sources/papercusp-lint-as-committed-2e52955ace-80zJzB",
+    "commit": "2e52955ace93bf83fbabf282ce5eb7347ce0a24b",
+    "admissionSourceFilesMatchingOperator": 7
+  },
+  "portal": {
+    "schemaVersion": 2,
+    "buildId": "a3vvr3As2z-SKFdzH_pQr",
+    "release": "a3vvr3As2z-SKFdzH_pQr-20261009044738086-2200891-93068dc4",
+    "sourceRoot": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/sources/papercusp-lint-as-committed-7ab8d41d63-R8qvsX",
+    "publishedAt": "2026-10-09T04:47:38.086Z",
+    "sourceRootDigest": "896fe9c9c5e330a42fa112456a7ebd39e241ea1ca246dc20bf27a30533714d9d"
+  },
+  "operator": {
+    "root": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/sources/papercusp-lint-as-committed-abc9a41cb7-Drj6EK",
+    "commit": "abc9a41cb7421a53e2d112925d981c4e9a183208",
+    "healthSha": "abc9a41cb7",
+    "controlRouteMounted": true,
+    "privatePort": 35933,
+    "privateHome": "/tmp/papercusp-test-runtime-p27TCA/home",
+    "privateDatabaseDistinctFromAdmin": true
+  },
+  "results": {
+    "cases": [
+      {
+        "title": "authorized workspace lists admitted resources without claiming a connected host",
+        "status": "passed",
+        "durationMs": 18735,
+        "errors": []
+      }
+    ],
+    "reportStats": {
+      "startTime": "2026-10-09T05:12:09.695Z",
+      "duration": 35539.133,
+      "expected": 1,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "controlPreflight": {
+      "status": 200,
+      "error": null,
+      "rowsPresent": true,
+      "scope": "Authenticated hosted workspace control query; excludes connector and provider readiness"
+    },
+    "runtime": {
+      "release": {
+        "schemaVersion": 2,
+        "buildId": "a3vvr3As2z-SKFdzH_pQr",
+        "release": "a3vvr3As2z-SKFdzH_pQr-20261009044738086-2200891-93068dc4",
+        "sourceRoot": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/sources/papercusp-lint-as-committed-7ab8d41d63-R8qvsX",
+        "publishedAt": "2026-10-09T04:47:38.086Z",
+        "sourceRootDigest": "896fe9c9c5e330a42fa112456a7ebd39e241ea1ca246dc20bf27a30533714d9d"
+      },
+      "sessionHasAuthorizedWorkspace": true,
+      "providerVisible": true,
+      "healthUnverifiedExplanation": true,
+      "scope": "Real admission, session and served resource listing with inert provisioning transport; excludes actual provider readiness"
+    },
+    "servedWrapperExitCode": 0,
+    "operatorWrapperExitCode": 0
+  },
+  "cleanup": {
+    "guardedOwnOperatorLeaf": 3326308,
+    "privateHomeRemoved": true,
+    "privateRuntimeRootRemoved": true,
+    "operatorLeafAbsent": true,
+    "ownConfigRemoved": true,
+    "portsVerifiedFree": [
+      35933,
+      4391,
+      4392
+    ],
+    "freshExecEnvelopesDrained": true
+  },
+  "evidence": {
+    "report": {
+      "path": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/evidence/su73-d031-workspace-20261009T0512/su73-r2-d031-report.json",
+      "originalPath": "/tmp/su73-r2-d031-report.json",
+      "sha256": "376841165911142200f5062990fa2d25068297d15d357314619fd16cd45660c6"
+    },
+    "operatorLog": {
+      "path": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/evidence/su73-d031-workspace-20261009T0512/su73-r2-d031-operator.log",
+      "originalPath": "/tmp/su73-r2-d031-operator.log",
+      "sha256": "bfec5142a22d00fa3a6118237718df9b00f30f60e94a0e4ff9384499c60d5585"
+    },
+    "portalLog": {
+      "path": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/evidence/su73-d031-workspace-20261009T0512/su73-r2-d031-browser.log",
+      "originalPath": "/tmp/su73-r2-d031-browser.log",
+      "sha256": "bd19d7130b2d1914d71c5a337fb97f36ad8f8af070a4944f485f45867081a32a"
+    },
+    "listLog": {
+      "path": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/evidence/su73-d031-workspace-20261009T0512/su73-r2-d031-list.log",
+      "originalPath": "/tmp/su73-r2-d031-list.log",
+      "sha256": "665d61c925d344a15bec0ffe5b18b881ec1c55714eaf10d855f7189729563b69"
+    },
+    "manual-workspace-control-preflight": {
+      "path": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/evidence/su73-d031-workspace-20261009T0512/manual-workspace-control-preflight.json",
+      "sha256": "79077ef4f3d849a3c383140e3705155060239ee00ea86ac4e1036434c4e92f21"
+    },
+    "manual-workspace-runtime": {
+      "path": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/evidence/su73-d031-workspace-20261009T0512/manual-workspace-runtime.json",
+      "sha256": "6e7d7e0633a44d0f66967b230fdd1c75b6bc5762965ba2ac7e1c516e0dfbf211"
+    }
+  },
+  "historicalEvidence": "portal-workspace-browser-20261008.json retains the original 2235 failure and 2340 collection failure. This is a distinct replacement artifact, not a replay of historical 6Avr.",
+  "notVerified": [
+    "Actual provider or connector readiness",
+    "Provisioning or payment behavior",
+    "Root cause or durable repair of historical WI-10007627",
+    "Full R-1/R-2 acceptance",
+    "Real 3-participant by 4-task novice study",
+    "Independent acceptance",
+    "Exact production shipment"
+  ],
+  "runtimeLaunch": {
+    "path": "$HOME/.papercusp/artifacts/cloud-app-live-tutorial-2026-10-01/replacement-20261009T0250/evidence/su73-d031-workspace-20261009T0512/runtime-launch-d031.json",
+    "scope": "Executed launch commands; private env configuration was removed after shutdown."
+  }
+}

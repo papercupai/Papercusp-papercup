@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "kind": "internal-acceptance-amendment-reference",
+  "artifact": {
+    "slug": "papercusp",
+    "rel_path": "acceptance/open-source-release-2026-09-29/rev4-amend-1156957.json",
+    "loadTool": "artifacts:load"
+  },
+  "payloadSha256": "1e93ba49e30d82007e131c6fc8d39d70885ad01d9dd5e864c9583c8427800b21",
+  "payloadBytes": 34018,
+  "expectedRubricRevision": 3,
+  "expectedSubjectPlanRevision": 86,
+  "approvalPreviewPost": "thread-post:1156957",
+  "reason": "Exact internal rubric provenance stays in the canonical artifact store. Load and verify the complete payload before normal amendment preview/apply; this reference is not the rubrics:amend argument object."
+}

@@ -14,14 +14,14 @@
  * Server-only.
  */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { publishReport } from '../../report-library';
-import { emitAwaitedEvent } from '../../events/await/engine';
+import { publishReportWithEffects } from '../../report-publication';
+import { readActiveOperationWorkerClaimBinding, matchOperationWorkerClaim } from '../../blueprint/operation-worker-binding';
+import { getWorkItem } from '../../work-items';
 import {
-  invalidateReportsSync,
-  reportUiPath,
-  resolveOwnerId,
+  reportsLibraryDisabled,
   resolveWorkspaceId,
   stampOrigin,
   toRefusal,
@@ -30,31 +30,20 @@ import {
   zReportWire,
   zReportSubject,
   zReportVisibility,
+  zGoalOwnerReportSnapshot,
 } from './_shared';
 
 export default defineTool({
   name: 'reports:publish',
   description:
-    'Publish a report (audit, review, analysis, postmortem, status digest, proposal) into the ' +
-    "owner-facing Reports library and get back a stable `report_id` and its UI path. The body is " +
-    'markdown (mermaid fences allowed), bounded at 512KB — an over-cap body is REFUSED with its exact ' +
-    'overage, never silently truncated. Origin (who wrote it, in which pot, in which session) is ' +
-    'stamped by the server from your session and cannot be passed in. Pass `supersedes` to republish a ' +
-    'corrected version: it inherits the original lineage, and the old body stays resolvable by id.',
+    'Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` and verify the complete body and visibility. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.',
   guidance: {
-    when:
-      'When you have finished a piece of written work the OWNER should be able to find later — an audit, ' +
-      'a review, a postmortem, an analysis. Publishing puts it in the browsable library instead of ' +
-      'leaving it in a transcript nobody can search.',
+    when: 'For completed audits, reviews, analyses, postmortems, status digests, or proposals.',
     notWhen:
-      'For in-flight state a successor needs (work_items:checkpoint), a standing conclusion peers should ' +
-      'inherit (facts:assert), a decision other lanes must follow (plans:add-decision), or a message to ' +
-      'a specific agent (coord:send). Do NOT republish to fix a typo in a report you just published ' +
-      'unless it is worth a new lineage entry.',
+      'Use `work_items:checkpoint` for in-flight state, `facts:assert` for standing conclusions, `plans:add-decision` for cross-lane rulings, `coord:send` for agent messages, and `docs:author` for reusable procedures.',
     chaining:
-      'reports:publish → the returned `path` is the owner deep link; cite `report_id` anywhere. ' +
-      'Correcting one: reports:get { id } → reports:publish { supersedes: id } → reports:list shows only ' +
-      'the new one, with the history behind it.',
+      // The link rules live once, in `description`; this carries the sequence (prompt-weight cap).
+      'reports:publish → reports:get { id: report_id } → verify. Claim saved or delivered only after readback succeeds. Corrections: read the original, publish with `supersedes`, then new report_id → verify the correction → cite it. The Papercusp/Tauri Reports reader route is `/reports?sel=<report_id>`; never cite a bare id. Link procedures via `docs:author`/`docs:get`, not private incident details.',
     returns:
       '{ ok:true, report_id, workspace_id, title, summary, kind, subject, origin, visibility, ' +
       'supersedes_report_id, lineage_id, source, tags, published_at, updated_at, retired_at, path, ' +
@@ -80,9 +69,11 @@ export default defineTool({
   // Any agent session may publish — the library is the fleet's shared output surface.
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    request_key: z.string().trim().min(1).max(200).optional().describe('Retry key within your workspace and author identity, or your host-verified accepted operation across worker retries. Identical retries return the original report; changed content is request_key_conflict.'),
     title: z.string().min(1).max(500).describe('one line; this is what the library list shows'),
     summary: z.string().max(4000).optional().describe('a short abstract shown under the title'),
     body_md: z.string().optional().describe('the report itself, markdown; mermaid fences allowed; ≤512KB'),
+    goal_owner_report: zGoalOwnerReportSnapshot.optional().describe('Pinned GOAL snapshot. Workspace must match this session; derives the exact five-section body and GOAL subject.'),
     kind: zReportKind.optional().describe('what kind of report this is (default `audit`)'),
     subject: zReportSubject.optional().describe('what it is ABOUT — use `external` for subjects outside this workspace'),
     visibility: zReportVisibility
@@ -96,18 +87,43 @@ export default defineTool({
     tags: z.array(z.string().min(1).max(60)).max(20).optional(),
   }),
   async handler(args, ctx) {
+    const disabled = await reportsLibraryDisabled();
+    if (disabled) return { data: disabled };
     const sql = getOrgPg().sql;
     const workspaceId = resolveWorkspaceId(ctx);
 
-    let report;
+    let publication;
     try {
-      report = await publishReport(
+      const origin = stampOrigin(ctx);
+      if (args.request_key !== undefined && origin.authorOwnerId) {
+        const active = await readActiveOperationWorkerClaimBinding(workspaceId, origin.authorOwnerId);
+        if (active.status === 'unavailable') {
+          return { data: { ok: false, error: 'operation_binding_unavailable', message: active.reason } };
+        }
+        if (active.status === 'bound') {
+          const item = await getWorkItem(active.binding.workItemId, active.binding.storageHarnessSlug);
+          const match = item ? matchOperationWorkerClaim(active, item) : null;
+          if (!match?.allowed || item?.assignee !== origin.authorOwnerId) {
+            return { data: { ok: false, error: 'operation_binding_mismatch',
+              message: match && !match.allowed ? match.reason : 'operation worker must hold its accepted work item' } };
+          }
+          // The canonical work-item plus immutable accepted pin survives worker
+          // retries. The returned report retains the FIRST author's provenance.
+          origin.requestScope = `operation:${createHash('sha256').update(JSON.stringify([
+            active.binding.harnessSlug, active.binding.workItemId, active.binding.operationId,
+            active.binding.specificationRevision, active.binding.pin,
+          ])).digest('hex')}`;
+        }
+      }
+      publication = await publishReportWithEffects(
         sql,
         {
           workspaceId,
+          requestKey: args.request_key,
           title: args.title,
           summary: args.summary,
           bodyMd: args.body_md,
+          goalOwnerReport: args.goal_owner_report,
           kind: args.kind,
           subject: args.subject,
           visibility: args.visibility,
@@ -115,7 +131,8 @@ export default defineTool({
           tags: args.tags,
         },
         // Axis 1, server-side. Never from `args` — see stampOrigin.
-        stampOrigin(ctx),
+        origin,
+        message => ctx.log(message),
       );
     } catch (err) {
       // A refusal rides the same `{ data }` envelope as a success: the handler
@@ -124,34 +141,7 @@ export default defineTool({
       return { data: toRefusal(err) };
     }
 
-    // The row is committed from here on. Both side effects are therefore
-    // best-effort and REPORTED rather than thrown: failing the call now would tell
-    // the caller the publish failed when it did not, and a retry would duplicate it.
-    let eventEmitted = true;
-    try {
-      await emitAwaitedEvent({
-        key: `report:published:${report.reportId}`,
-        payload: {
-          report_id: report.reportId,
-          lineage_id: report.lineageId,
-          supersedes_report_id: report.supersedesReportId,
-          kind: report.kind,
-          visibility: report.visibility,
-          subject: report.subject,
-          origin: report.origin,
-          path: reportUiPath(report.reportId),
-        },
-        summary: `report published: ${report.title}`,
-        source: resolveOwnerId(ctx) ?? 'reports:publish',
-        workspaceId,
-      });
-    } catch (e) {
-      eventEmitted = false;
-      ctx.log(`report:published emit failed for ${report.reportId}: ${e instanceof Error ? e.message : e}`);
-    }
-    invalidateReportsSync((m) => ctx.log(m));
-
     // One shared wire projection, so publish and list name every field identically.
-    return { data: { ok: true as const, ...toReportWire(report), event_emitted: eventEmitted } };
+    return { data: { ok: true as const, ...toReportWire(publication.report), event_emitted: publication.eventEmitted } };
   },
 });

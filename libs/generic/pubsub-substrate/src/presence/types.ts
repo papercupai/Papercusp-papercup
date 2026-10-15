@@ -34,7 +34,9 @@ export interface PresenceInput {
   currentFiles?: string[];
   /** Omit to preserve the durable ambient-retrieval fence; [] clears it. */
   ambientExcludedRefs?: string[];
+  /** Omission preserves the supervisor binding; an explicit empty string clears. */
   host?: string;
+  /** Omission preserves the supervisor binding; an explicit null clears. */
   pid?: number | null;
   /** The terminal device path this session's launcher OWNS (e.g. `/dev/pts/21`),
    *  self-reported by the psu supervisor beat — the same process that resolves
@@ -45,7 +47,7 @@ export interface PresenceInput {
    *  what makes "which terminal does session X own" a single presence read
    *  instead of a /proc ancestry walk, and sidesteps the Wayland wmctrl/xdotool
    *  blindness entirely (an OSC write to the device path needs no window-manager
-   *  query at all). */
+   *  query at all). Omission preserves the existing binding; explicit null clears. */
   tty?: string | null;
   /** Durable role (human/su/bee/principal/…), resolved host-side. Preserved on
    *  a later write that omits it (so it's a populate-once-then-keep field). */

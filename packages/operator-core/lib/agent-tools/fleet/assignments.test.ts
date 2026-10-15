@@ -21,6 +21,7 @@ import {
   decorateCoordDeafness,
   filterActiveCoverage,
   agentPlansFromLiveCoverage,
+  projectSchedulerClaimState,
   COVERAGE_ORDER,
   COVERAGE_ACTIVE_WINDOW_MS,
   VERDICT_SPEAKING_FRESH_MS,
@@ -82,6 +83,9 @@ const fakeFetch =
   async (ids: string[]): Promise<Map<string, WakeabilitySignals>> =>
     new Map(ids.filter((id) => id in signals).map((id) => [id, signals[id]]));
 
+const noSelfWake = async () => new Map();
+const noRecordedEnded = async () => new Set<string>();
+
 it('fleet:assignments opts out of the dispatcher ambient workspace transaction', () => {
   expect((fleetAssignmentsTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
 });
@@ -90,6 +94,24 @@ it('fleet:assignments keeps oversized include_stale JSON intact for structured c
   expect((fleetAssignmentsTool as { skipResultDoor?: string }).skipResultDoor).toBe(
     'oversize-by-design',
   );
+});
+
+describe('fleet:assignments judge scope', () => {
+  const handler = fleetAssignmentsTool.handler as unknown as (
+    args: Record<string, unknown>,
+    ctx: Record<string, unknown>,
+  ) => Promise<{ data?: Record<string, unknown> }>;
+
+  it.each([
+    ['omitted agent filter', {}],
+    ['a named agent filter', { agent: 'su-other' }],
+  ])('refuses judge access with %s', async (_label, args) => {
+    const result = await handler(args, { role: 'judge' });
+    expect(result.data).toMatchObject({
+      ok: false,
+      error: 'judge_assignment_scope_only',
+    });
+  });
 });
 
 describe('abandoned intent work-item detection (EI-21560781905286213)', () => {
@@ -161,11 +183,46 @@ describe('abandoned intent work-item detection (EI-21560781905286213)', () => {
   });
 });
 
+describe('scheduler claim state projection (EI-25482945548879685)', () => {
+  it('surfaces parked held claims without inflating actionable work load', () => {
+    const agent = baseAgent({ agentId: 'su-parked', claims: [], queued: [], load: 0 });
+    const [projected] = projectSchedulerClaimState(
+      [agent],
+      new Map([
+        [
+          'su-parked',
+          {
+            blocked: true,
+            activeClaims: 2,
+            maxConcurrentClaims: 2,
+            heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+            blockerParkedIds: ['EI-parked-on-blocker'],
+          },
+        ],
+      ]),
+    );
+
+    expect(projected.claims).toEqual([]);
+    expect(projected.load).toBe(0);
+    // P-010: a hold parked on a typed external blocker is held but not counted — named here.
+    expect(projected.schedulerClaimState).toEqual({
+      activeClaims: 2,
+      heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+      blockerParkedIds: ['EI-parked-on-blocker'],
+    });
+  });
+
+  it('keeps the scheduler state unknown when its read is unavailable', () => {
+    const [projected] = projectSchedulerClaimState([baseAgent()], null);
+    expect(projected.schedulerClaimState).toBeNull();
+  });
+});
+
 describe('reconcileWakeability (EI-6077)', () => {
   it('the exact EI-6077 evidence: heartbeat-alive but no live inbox-wake await → sessionState ended, alive downgraded', async () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: false, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('ended');
     expect(out.alive).toBe(false);
   });
@@ -175,7 +232,7 @@ describe('reconcileWakeability (EI-6077)', () => {
     // successor is already doing work even though its inbox wake is not armed.
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: false, liveTurn: true } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(['su-agent-1']));
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(['su-agent-1']), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('live');
     expect(out.alive).toBe(true);
   });
@@ -195,7 +252,9 @@ describe('reconcileWakeability (EI-6077)', () => {
     expect(out.alive).toBe(false);
   });
 
-  it('WI-40871: a current recorded-live successor outranks stale ended evidence', async () => {
+  it('positive newest-session death evidence wins a contradictory recorded-live set', async () => {
+    // Both store readers select the newest session. Overlapping results can
+    // occur across reads, but an explicit death must not resurrect that owner.
     const agent = baseAgent({ alive: false });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: false, liveTurn: false } });
     const [out] = await reconcileWakeability(
@@ -205,14 +264,14 @@ describe('reconcileWakeability (EI-6077)', () => {
       async () => new Map(),
       async () => new Set(['su-agent-1']),
     );
-    expect(out.sessionState).toBe('recorded');
-    expect(out.alive).toBe(true);
+    expect(out.sessionState).toBe('ended');
+    expect(out.alive).toBe(false);
   });
 
   it('heartbeat-alive AND wakeable with a running turn → sessionState live, alive stays true', async () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: true } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('live');
     expect(out.alive).toBe(true);
   });
@@ -220,7 +279,7 @@ describe('reconcileWakeability (EI-6077)', () => {
   it('heartbeat-alive, wakeable, but idle (no running turn) → sessionState parked, alive stays true', async () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('parked');
     expect(out.alive).toBe(true);
   });
@@ -229,7 +288,7 @@ describe('reconcileWakeability (EI-6077)', () => {
     const owner = 'su-pty-activity-dead';
     const agent = baseAgent({
       agentId: owner,
-      alive: true,
+      alive: false,
       heartbeatAt: new Date().toISOString(),
     });
     const fetchFn = fakeFetch({
@@ -270,12 +329,56 @@ describe('reconcileWakeability (EI-6077)', () => {
 
     expect(out.sessionState).toBe('parked');
     expect(out.alive).toBe(true);
+    expect(
+      deriveMemberVerdict({ ...out, lastToolCallAtMs: Date.now() - VERDICT_SPEAKING_FRESH_MS - 1 }),
+    ).not.toBe('dead');
+  });
+
+  // P-011(a) / D-011: fleet:assignments trusts a live psu host as proof of life, so
+  // it runs the same host-condition leg as resolveSessionStates and coord:presence.
+  const reconcileWithHost = async (owner: string, host: Record<string, unknown>) => {
+    const tailReads: string[] = [];
+    const readHostTailFn = async (id: string) => {
+      tailReads.push(id);
+      return [];
+    };
+    const [row] = await reconcileWakeability(
+      [baseAgent({ agentId: owner, alive: true })],
+      fakeFetch({ [owner]: { wakeable: true, liveTurn: false } }),
+      async () => new Set(),
+      async () => new Map(),
+      async () => new Set(),
+      {
+        hydratePresence: true,
+        psuHostPositiveAuthority: true,
+        fetchPresenceFn: async () =>
+          new Map([[owner, { heartbeatAt: new Date().toISOString(), stale: false, host: 'h', pid: null, source: 'psu', agentRole: 'su' }]]),
+        findHostFn: (id) => (id === owner ? { ownerId: id, ...host } : null),
+        readHostTailFn,
+      },
+    );
+    const out = row as typeof row & { wedged?: string | null };
+    return { out, tailReads };
+  };
+
+  it('P-011: a healthy live psu host keeps a wakeable member parked (positive control)', async () => {
+    const { out, tailReads } = await reconcileWithHost('su-host-healthy', { authBlocked: false });
+    expect(out.sessionState).toBe('parked');
+    expect(out.wedged ?? null).toBeNull();
+    expect(tailReads).toEqual(['su-host-healthy']);
+  });
+
+  it('P-011: a live psu host with dead provider auth reads suspect + wedged auth-blocked, not parked', async () => {
+    const { out } = await reconcileWithHost('su-host-dead-auth', { authBlocked: true });
+    expect(out.sessionState).toBe('suspect');
+    expect(out.wedged).toBe('auth-blocked');
+    expect(out.alive).toBe(false);
   });
 
   it('WI-4400: stale wakeable holder gets confirmLiveness before takeover', async () => {
     const agent = baseAgent({ alive: false });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('draining');
     expect(out.confirmLiveness).toBe(true);
     expect(out.alive).toBe(false);
@@ -288,7 +391,7 @@ describe('reconcileWakeability (EI-6077)', () => {
       heartbeatAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
     });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('suspect');
     expect(out.wakeable).toBe(true);
     expect(out.alive).toBe(false);
@@ -300,7 +403,7 @@ describe('reconcileWakeability (EI-6077)', () => {
     // cold for an hour → the DEAD-ceiling backstop forces `ended`, not `parked`.
     const agent = baseAgent({ alive: false, heartbeatAt: new Date(Date.now() - 72 * 60_000).toISOString() });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('ended');
     expect(out.alive).toBe(false);
   });
@@ -308,7 +411,7 @@ describe('reconcileWakeability (EI-6077)', () => {
   it('no wakeability signal for the agent (e.g. a federated peer) — leaves alive/sessionState untouched', async () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({});
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(['su-agent-1']));
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(['su-agent-1']), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBeUndefined();
     expect(out.alive).toBe(true);
   });
@@ -316,7 +419,7 @@ describe('reconcileWakeability (EI-6077)', () => {
   it('never REVIVES an already-dead (heartbeat-stale) agent', async () => {
     const agent = baseAgent({ alive: false });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: true } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     // stale:true (since !alive) with wakeable+liveTurn still resolves 'parked' per
     // deriveSessionState (liveTurn && !stale is required for 'live') — the point
     // pinned here is it does NOT flip a heartbeat-dead agent back to alive:true.
@@ -1013,6 +1116,68 @@ describe('shapeFleetAssignments carries parkedOn at every tier (P-001 fleet-memb
       agents: Array<Record<string, unknown>>;
     };
     expect(shaped.agents[0].parkedOn).toEqual(['p2p-git:phase3-open']);
+  });
+});
+
+describe('shapeFleetAssignments carries scheduler claim state at every tier (EI-25482945548879685)', () => {
+  const data = {
+    ok: true,
+    summary: {
+      scheduler_claim_state_status: 'measured',
+      scheduler_active_work_item_claims: 2,
+    },
+    orphaned: [],
+    stalled: [],
+    agents: [
+      {
+        agentId: 'su-parked',
+        claims: [],
+        load: 0,
+        schedulerClaimState: {
+          activeClaims: 2,
+          heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+          blockerParkedIds: ['EI-parked-on-blocker'],
+        },
+      },
+      { agentId: 'su-unknown', claims: [], load: 0, schedulerClaimState: null },
+      {
+        agentId: 'su-many-parked',
+        claims: [],
+        load: 0,
+        schedulerClaimState: {
+          activeClaims: 0,
+          heldIds: [],
+          blockerParkedIds: Array.from({ length: 10 }, (_, i) => `EI-parked-${i}`),
+        },
+      },
+    ],
+  };
+
+  it.each(['trimmed', 'standard'] as const)('%s preserves measured and unknown states', (tier) => {
+    const shaped = shapeFleetAssignments(data, tier) as {
+      summary: Record<string, unknown>;
+      agents: Array<Record<string, unknown>>;
+    };
+    expect(shaped.summary.scheduler_active_work_item_claims).toBe(2);
+    expect(shaped.agents[0].schedulerClaimState).toEqual({
+      activeClaims: 2,
+      heldIds: ['EI-blocked-1', 'EI-blocked-2'],
+      heldIdsOmitted: 0,
+      blockerParkedIds: ['EI-parked-on-blocker'],
+      blockerParkedIdsOmitted: 0,
+    });
+    expect(shaped.agents[1].schedulerClaimState).toBeNull();
+  });
+
+  // P-010 (plan D-010): the shaper is the default fleet:assignments view; it must never drop the
+  // blocker-parked holds (they are held but uncounted), only cap them with an explicit omitted count.
+  it.each(['trimmed', 'standard'] as const)('%s caps blocker-parked holds without hiding them', (tier) => {
+    const shaped = shapeFleetAssignments(data, tier) as { agents: Array<Record<string, unknown>> };
+    const state = shaped.agents.find((a) => a.agentId === 'su-many-parked')?.schedulerClaimState as
+      | { blockerParkedIds: string[]; blockerParkedIdsOmitted: number }
+      | undefined;
+    expect(state?.blockerParkedIds).toHaveLength(8);
+    expect(state?.blockerParkedIdsOmitted).toBe(2);
   });
 });
 

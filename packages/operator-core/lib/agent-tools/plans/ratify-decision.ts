@@ -172,6 +172,9 @@ export default defineTool({
       },
     );
 
+    if (result.kind === 'refused') {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result.value) }], isError: true };
+    }
     if (result.kind === 'busy') {
       return text(
         {

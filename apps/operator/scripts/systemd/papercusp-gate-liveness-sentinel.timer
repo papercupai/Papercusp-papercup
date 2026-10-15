@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the out-of-operator red-gate liveness alarm every 10 minutes (P-023)
+
+[Timer]
+# Relative to the user manager, which lingers, so the alarm resumes after a reboot even
+# when nobody logs in and the operator never comes back up.
+OnStartupSec=5min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Persistent=false
+Unit=papercusp-gate-liveness-sentinel.service
+
+[Install]
+WantedBy=timers.target

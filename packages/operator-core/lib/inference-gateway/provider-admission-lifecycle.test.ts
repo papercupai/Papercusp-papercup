@@ -42,7 +42,13 @@ class RecordingQueue implements ProviderLaneQueue {
 
 const LANES: readonly ProviderLaneId[] = ['claude', 'codex'];
 
-function makeLifecycle(options: { tiered?: boolean; now?: () => number } = {}) {
+function makeLifecycle(
+  options: {
+    tiered?: boolean;
+    now?: () => number;
+    healthyAccountsFor?: (lane: ProviderLaneId) => number | null | undefined;
+  } = {},
+) {
   const queues = new Map<ProviderLaneId, RecordingQueue>();
   for (const id of LANES) queues.set(id, new RecordingQueue());
   const lifecycle = new ProviderAdmissionLifecycle({
@@ -52,6 +58,7 @@ function makeLifecycle(options: { tiered?: boolean; now?: () => number } = {}) {
       ...(options.tiered ? { baseTierCaps: { 1: 4, 2: 3, 3: 2, 4: 2 } } : {}),
     })),
     now: options.now ?? (() => 1_000),
+    ...(options.healthyAccountsFor ? { healthyAccountsFor: options.healthyAccountsFor } : {}),
   });
   return { lifecycle, queues };
 }
@@ -62,8 +69,11 @@ function succeed(lifecycle: ProviderAdmissionLifecycle, lane: ProviderLaneId, co
 }
 
 /** Drive `count` throttles through one lane. */
+/** `count` congested 429s that nothing routed around, each from its own (unkeyed) request. */
 function throttle(lifecycle: ProviderAdmissionLifecycle, lane: ProviderLaneId, count: number): void {
-  for (let i = 0; i < count; i += 1) lifecycle.recordThrottle(lane);
+  for (let i = 0; i < count; i += 1) {
+    lifecycle.recordOutcome(lane, { kind: 'rate-limited', scope: 'transient', routedAround: false });
+  }
 }
 
 describe.each(LANES)('provider admission lifecycle conformance — %s lane', (lane) => {
@@ -116,23 +126,100 @@ describe.each(LANES)('provider admission lifecycle conformance — %s lane', (la
     expect(lifecycle.snapshotFor(lane).contractions).toBeGreaterThan(0);
   });
 
+  // WI-6554700010012367 (plan gateway-admission-congestion-only-2026-10-13 P-002, "a floor
+  // sized to healthy accounts"): the 2026-10-13 incident pinned the Codex lane at a static
+  // floor of 4 while more accounts than that were healthy and upstream answered in seconds.
+  it('never contracts a lane below its count of healthy accounts', () => {
+    const healthy = 12;
+    const { lifecycle } = makeLifecycle({ healthyAccountsFor: (id) => (id === lane ? healthy : null) });
+    succeed(lifecycle, lane, 400);
+    expect(lifecycle.windowFor(lane)).toBeGreaterThan(healthy);
+
+    throttle(lifecycle, lane, 600);
+    expect(lifecycle.windowFor(lane)).toBe(healthy);
+    expect(lifecycle.snapshotFor(lane).minimumWindow).toBe(healthy);
+    // CALIBRATION: contractions really ran and stopped AT the healthy count.
+    expect(lifecycle.snapshotFor(lane).contractions).toBeGreaterThan(0);
+
+    // CONTROL: the identical storm with no healthy-account reader falls to the static
+    // floor, below the healthy count, so the assertion above is not vacuous.
+    const control = makeLifecycle();
+    succeed(control.lifecycle, lane, 400);
+    throttle(control.lifecycle, lane, 600);
+    expect(control.lifecycle.windowFor(lane)).toBeLessThan(healthy);
+  });
+
+  it('treats an unknown, zero or throwing healthy-account reader as the configured floor', () => {
+    const control = makeLifecycle();
+    succeed(control.lifecycle, lane, 400);
+    throttle(control.lifecycle, lane, 600);
+    const staticFloor = control.lifecycle.windowFor(lane);
+
+    const readers: Array<() => number | null | undefined> = [
+      () => null,
+      () => undefined,
+      () => 0,
+      () => Number.NaN,
+      () => {
+        throw new Error('pool unavailable');
+      },
+    ];
+    for (const reader of readers) {
+      const { lifecycle } = makeLifecycle({ healthyAccountsFor: reader });
+      succeed(lifecycle, lane, 400);
+      throttle(lifecycle, lane, 600);
+      expect(lifecycle.windowFor(lane)).toBe(staticFloor);
+      expect(lifecycle.snapshotFor(lane).contractions).toBeGreaterThan(0);
+    }
+  });
+
   it('absorbs an isolated throttle without contracting', () => {
     const { lifecycle } = makeLifecycle();
     const before = lifecycle.windowFor(lane);
-    lifecycle.recordThrottle(lane);
+    throttle(lifecycle, lane, 1);
     expect(lifecycle.windowFor(lane)).toBe(before);
     expect(lifecycle.snapshotFor(lane).contractions).toBe(0);
     // CALIBRATION: the throttle was genuinely recorded, it just did not trip.
     expect(lifecycle.snapshotFor(lane).pressure).toBe(1);
   });
 
-  it('contracts immediately when an admitted request dies hard', () => {
+  // WI-6554700010011426 (plan gateway-admission-congestion-only-2026-10-13 P-002):
+  // the old contract was "contracts immediately when an admitted request dies hard",
+  // and it pinned the Codex window at its floor while upstream answered in seconds.
+  it('needs SUSTAINED transport failures across distinct requests before contracting', () => {
     const { lifecycle } = makeLifecycle();
     succeed(lifecycle, lane, 400);
     const grown = lifecycle.windowFor(lane);
-    lifecycle.recordHardFailure(lane);
+    for (let request = 1; request <= 5; request += 1) {
+      lifecycle.recordOutcome(lane, { kind: 'transport-failure' }, `req-${request}`);
+    }
+    expect(lifecycle.windowFor(lane)).toBe(grown);
+    lifecycle.recordOutcome(lane, { kind: 'transport-failure' }, 'req-6');
     expect(lifecycle.windowFor(lane)).toBeLessThan(grown);
-    expect(lifecycle.snapshotFor(lane).hardFailures).toBe(1);
+    expect(lifecycle.snapshotFor(lane).hardFailures).toBe(6);
+  });
+
+  it('removes at most a quarter of the window per contraction', () => {
+    const { lifecycle } = makeLifecycle();
+    succeed(lifecycle, lane, 400);
+    const grown = lifecycle.windowFor(lane);
+    throttle(lifecycle, lane, 6);
+    const contracted = lifecycle.windowFor(lane);
+    expect(contracted).toBeLessThan(grown);
+    expect(contracted).toBeGreaterThanOrEqual(Math.ceil(grown * 0.75));
+  });
+
+  it('clamps a configured contraction fraction so it can never remove more than 25%', () => {
+    const queue = new RecordingQueue();
+    const lifecycle = new ProviderAdmissionLifecycle({
+      lanes: [{ id: lane, queue }],
+      initialWindow: 40,
+      contractionFraction: 0.5,
+      contractionThreshold: 1,
+      now: () => 1_000,
+    });
+    throttle(lifecycle, lane, 1);
+    expect(lifecycle.windowFor(lane)).toBe(30);
   });
 
   it('sheds tier caps against its own high-water mark, not a configured cap', () => {
@@ -156,6 +243,114 @@ describe.each(LANES)('provider admission lifecycle conformance — %s lane', (la
     expect(snapshot.schemaVersion).toBe(PROVIDER_ADMISSION_LIFECYCLE_SCHEMA_VERSION);
     expect(snapshot.lanes.map((l) => l.lane)).toEqual([...LANES]);
     expect(snapshot.lanes.find((l) => l.lane === lane)!.window).toBe(lifecycle.windowFor(lane));
+  });
+});
+
+/**
+ * WI-6554700010011426 — plan gateway-admission-congestion-only-2026-10-13 P-001/P-002
+ * (the P-006 regression set for those items). Owner rule: only congestion shrinks
+ * the window; an out-of-usage error blocks the ACCOUNT and leaves the window alone;
+ * when it does shrink, be less aggressive; Claude and Codex follow the same rule.
+ */
+describe.each(LANES)('congestion-only admission policy — %s lane', (lane) => {
+  it('one request with N failover attempts adds congestion pressure ONCE', () => {
+    const { lifecycle } = makeLifecycle();
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      lifecycle.recordOutcome(lane, { kind: 'transport-failure' }, 'one-huge-prompt');
+    }
+    const snap = lifecycle.snapshotFor(lane);
+    expect(snap.pressure).toBe(1);
+    expect(snap.hardFailures).toBe(1);
+    expect(snap.dedupedCongestion).toBe(11);
+    expect(snap.contractions).toBe(0);
+  });
+
+  it('an out-of-usage / weekly-wall 429 leaves the window unchanged, however many arrive', () => {
+    const { lifecycle } = makeLifecycle();
+    succeed(lifecycle, lane, 100);
+    const before = lifecycle.windowFor(lane);
+    for (let request = 0; request < 50; request += 1) {
+      const verdict = lifecycle.recordOutcome(
+        lane,
+        { kind: 'rate-limited', scope: 'account', routedAround: false },
+        `walled-${request}`,
+      );
+      expect(verdict).toBe('account-scoped');
+    }
+    expect(lifecycle.windowFor(lane)).toBe(before);
+    expect(lifecycle.snapshotFor(lane).pressure).toBe(0);
+    expect(lifecycle.snapshotFor(lane).accountScopedOutcomes).toBe(50);
+  });
+
+  it('a 429 that was failed over to another account is neutral', () => {
+    const { lifecycle } = makeLifecycle();
+    for (let request = 0; request < 20; request += 1) {
+      lifecycle.recordOutcome(lane, { kind: 'rate-limited', scope: 'transient', routedAround: true }, `r-${request}`);
+    }
+    expect(lifecycle.snapshotFor(lane).pressure).toBe(0);
+    expect(lifecycle.snapshotFor(lane).neutralOutcomes).toBe(20);
+    expect(lifecycle.snapshotFor(lane).contractions).toBe(0);
+  });
+
+  it('a few large-prompt timeouts, each failing over many times, leave the window open', () => {
+    // The 2026-10-13 incident: a handful of huge prompts hit the TTFB deadline on
+    // every account they failed over to, while ordinary traffic kept succeeding.
+    const { lifecycle } = makeLifecycle();
+    succeed(lifecycle, lane, 100);
+    const before = lifecycle.windowFor(lane);
+    for (const prompt of ['big-1', 'big-2', 'big-3', 'big-4']) {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        lifecycle.recordOutcome(lane, { kind: 'transport-failure' }, prompt);
+        lifecycle.recordSuccess(lane);
+      }
+    }
+    expect(lifecycle.windowFor(lane)).toBeGreaterThanOrEqual(before);
+    expect(lifecycle.snapshotFor(lane).contractions).toBe(0);
+  });
+
+  it('a many-request herd (the 2026-10-12 mass resume) still contracts', () => {
+    const { lifecycle } = makeLifecycle();
+    succeed(lifecycle, lane, 400);
+    const grown = lifecycle.windowFor(lane);
+    for (let request = 0; request < 200; request += 1) {
+      lifecycle.recordOutcome(lane, { kind: 'transport-failure' }, `herd-${request}`);
+    }
+    const snap = lifecycle.snapshotFor(lane);
+    expect(snap.window).toBeLessThan(grown);
+    expect(snap.contractions).toBeGreaterThan(1);
+  });
+
+  it('recovers on every clean success while demand is queued and pressure is zero', () => {
+    const queue = new RecordingQueue() as RecordingQueue & { size: number };
+    queue.size = 120;
+    const lifecycle = new ProviderAdmissionLifecycle({ lanes: [{ id: lane, queue }], now: () => 1_000 });
+    const start = lifecycle.windowFor(lane);
+    succeed(lifecycle, lane, 10);
+    expect(lifecycle.windowFor(lane)).toBe(start + 10);
+    // CALIBRATION: with nothing waiting, growth is back to one step per clean run.
+    queue.size = 0;
+    succeed(lifecycle, lane, 10);
+    expect(lifecycle.windowFor(lane)).toBe(start + 10 + 2);
+  });
+
+  it('does not take the fast path while congestion pressure is outstanding', () => {
+    const queue = new RecordingQueue() as RecordingQueue & { size: number };
+    queue.size = 120;
+    const lifecycle = new ProviderAdmissionLifecycle({ lanes: [{ id: lane, queue }], now: () => 1_000 });
+    const start = lifecycle.windowFor(lane);
+    throttle(lifecycle, lane, 3);
+    succeed(lifecycle, lane, 2);
+    expect(lifecycle.windowFor(lane)).toBe(start);
+  });
+
+  it('forgets a request mark after its TTL, so the map stays bounded', () => {
+    let now = 1_000;
+    const { lifecycle } = makeLifecycle({ now: () => now });
+    lifecycle.recordOutcome(lane, { kind: 'transport-failure' }, 'stale');
+    succeed(lifecycle, lane, 1);
+    now += 31 * 60_000;
+    lifecycle.recordOutcome(lane, { kind: 'transport-failure' }, 'stale');
+    expect(lifecycle.snapshotFor(lane).hardFailures).toBe(2);
   });
 });
 

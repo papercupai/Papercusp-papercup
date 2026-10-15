@@ -18,7 +18,9 @@
  * Wire-silent by design: compaction is server-side housekeeping; the D-011
  * v0 event vocabulary is not extended (the session row records the state).
  */
-import type { ModelMessage, ModelPort, ModelUsage } from './model-port';
+import { captureModelProviderRequest, type ModelMessage, type ModelPort, type ModelProviderResponse,
+  type ModelStreamEvent, type ModelUsage } from './model-port';
+import { copyProviderRequest, type LoopProviderRequestInfo } from './loop';
 
 /** Compact when the serialized working set exceeds this many JSON chars
  *  (~60K tokens at 4 chars/token — well inside every supported context). */
@@ -45,6 +47,11 @@ export interface CompactSessionArgs {
   signal?: AbortSignal;
   priority?: string;
   account?: string;
+  ownerId?: string;
+  /** Position after the enclosing turn's completed steps; not a new step. */
+  stepIndex?: number;
+  /** Trusted host capture, awaited before another provider pull. */
+  onProviderRequest?(info: LoopProviderRequestInfo): Promise<void>;
 }
 
 export interface CompactSessionResult {
@@ -54,6 +61,9 @@ export interface CompactSessionResult {
   compacted: boolean;
   /** Usage of the summarize call, when one ran — fold into turn accounting. */
   summarizeUsage?: ModelUsage;
+  summarizeProviderResponse?: ModelProviderResponse;
+  /** Includes incomplete dispatches; never a completion or zero-cost claim. */
+  providerRequests?: LoopProviderRequestInfo[];
 }
 
 export function serializedChars(messages: ModelMessage[]): number {
@@ -139,7 +149,9 @@ async function summarize(args: {
   signal?: AbortSignal;
   priority?: string;
   account?: string;
-}): Promise<{ text: string; usage?: ModelUsage }> {
+  ownerId?: string;
+  onProviderRequest(info: Extract<ModelStreamEvent, { type: 'provider_request' }>): Promise<void>;
+}): Promise<{ text: string; usage?: ModelUsage; providerResponse?: ModelProviderResponse }> {
   const sections: string[] = [];
   if (args.priorSummary) {
     sections.push(`## Existing summary of even earlier turns (fold this in)\n\n${args.priorSummary}`);
@@ -149,7 +161,10 @@ async function summarize(args: {
 
   let text = '';
   let usage: ModelUsage | undefined;
+  let providerResponse: ModelProviderResponse | undefined;
+  let completed = false;
   let error: string | null = null;
+  if (args.signal?.aborted) throw new Error('summarizer aborted');
   const stream = args.port.stream({
     model: args.model,
     system: SUMMARIZE_SYSTEM,
@@ -158,25 +173,43 @@ async function summarize(args: {
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
     ...(args.priority !== undefined ? { priority: args.priority } : {}),
     ...(args.account !== undefined ? { account: args.account } : {}),
+    ...(args.ownerId !== undefined ? { ownerId: args.ownerId } : {}),
   });
   for await (const ev of stream) {
-    if (ev.type === 'text_delta') text += ev.text;
-    else if (ev.type === 'stop') usage = ev.usage;
+    if (ev.type === 'provider_request') await args.onProviderRequest(ev);
+    else if (ev.type === 'text_delta') text += ev.text;
+    else if (ev.type === 'stop') {
+      if (args.signal?.aborted || !['end_turn', 'stop_sequence', 'max_tokens'].includes(ev.reason)) {
+        error = `summarizer stopped without completion (${ev.reason})`;
+      } else {
+        completed = true;
+        usage = ev.usage ? { ...ev.usage } : undefined;
+        const report = ev.providerResponse;
+        if (report) providerResponse = { provider: report.provider,
+          ...(report.id !== undefined ? { id: report.id } : {}),
+          ...(report.modelId !== undefined ? { modelId: report.modelId } : {}),
+          ...(report.reportedCostUsd !== undefined ? { reportedCostUsd: report.reportedCostUsd } : {}) };
+      }
+      break;
+    }
     else if (ev.type === 'error') {
       error = ev.message;
       break;
     }
   }
-  if (error || !text.trim()) {
-    throw new Error(error ?? 'summarizer returned no text');
+  if (error || args.signal?.aborted || !completed || !text.trim()) {
+    throw new Error(error ?? (args.signal?.aborted ? 'summarizer aborted'
+      : !completed ? 'summarizer stream ended without completion' : 'summarizer returned no text'));
   }
-  return { text: text.trim(), ...(usage !== undefined ? { usage } : {}) };
+  return { text: text.trim(), ...(usage !== undefined ? { usage } : {}),
+    ...(providerResponse !== undefined ? { providerResponse } : {}) };
 }
 
 /**
- * Compact when over threshold. Never throws: the failure path still trims
+ * Compact when over threshold. Provider failures still trim
  * (bounded growth is the invariant) and records the coverage gap in the
- * summary text instead.
+ * summary text instead. A trusted capture failure propagates: losing a
+ * liability write cannot masquerade as ordinary degraded summarization.
  */
 export async function maybeCompactSession(args: CompactSessionArgs): Promise<CompactSessionResult> {
   const threshold = args.thresholdChars ?? COMPACT_THRESHOLD_CHARS;
@@ -193,8 +226,13 @@ export async function maybeCompactSession(args: CompactSessionArgs): Promise<Com
   const prefix = args.messages.slice(0, cut);
   const kept = args.messages.slice(cut);
   const compactedCount = args.priorCompactedCount + prefix.length;
+  const providerRequests: LoopProviderRequestInfo[] = [];
+  let captureFailed = false;
+  let captureError: unknown;
+  const observations = () => providerRequests.length
+    ? { providerRequests: providerRequests.map(copyProviderRequest) } : {};
   try {
-    const { text, usage } = await summarize({
+    const { text, usage, providerResponse } = await summarize({
       port: args.port,
       model: args.model,
       priorSummary: args.priorSummary,
@@ -202,6 +240,19 @@ export async function maybeCompactSession(args: CompactSessionArgs): Promise<Com
       ...(args.signal !== undefined ? { signal: args.signal } : {}),
       ...(args.priority !== undefined ? { priority: args.priority } : {}),
       ...(args.account !== undefined ? { account: args.account } : {}),
+      ...(args.ownerId !== undefined ? { ownerId: args.ownerId } : {}),
+      onProviderRequest: async observation => {
+        const info = copyProviderRequest({ ...observation, stepIndex: args.stepIndex ?? 0, purpose: 'compaction' });
+        providerRequests.push(info);
+        try {
+          await captureModelProviderRequest(observation);
+          await args.onProviderRequest?.(copyProviderRequest(info));
+        } catch (error) {
+          captureFailed = true;
+          captureError = error;
+          throw error;
+        }
+      },
     });
     return {
       messages: kept,
@@ -209,8 +260,11 @@ export async function maybeCompactSession(args: CompactSessionArgs): Promise<Com
       compactedCount,
       compacted: true,
       ...(usage !== undefined ? { summarizeUsage: usage } : {}),
+      ...(providerResponse !== undefined ? { summarizeProviderResponse: providerResponse } : {}),
+      ...observations(),
     };
   } catch (e) {
+    if (captureFailed) throw captureError;
     const reason = e instanceof Error ? e.message : String(e);
     const gapNote = `[compaction note: ${prefix.length} earlier message(s) dropped without a fresh summary — summarizer unavailable: ${reason}]`;
     return {
@@ -218,6 +272,7 @@ export async function maybeCompactSession(args: CompactSessionArgs): Promise<Com
       summary: args.priorSummary ? `${args.priorSummary}\n\n${gapNote}` : gapNote,
       compactedCount,
       compacted: true,
+      ...observations(),
     };
   }
 }

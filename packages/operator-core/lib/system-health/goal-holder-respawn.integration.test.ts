@@ -48,6 +48,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { getOrgPg } from '@papercusp/db-org';
+import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 
 import {
   GOAL_HOLDER_RESPAWN_RATE_LIMIT,
@@ -71,6 +73,7 @@ import {
 } from '../goals/holder';
 import { GOAL_MODE } from '../modes/goal-session';
 import { setMode } from '../modes/store';
+import { retireSupersededGoalHolderModes } from '../goals/holder-handoff';
 import { readGoalHolderPortfolioAct } from '../goals/holder-attestation';
 
 const WS = 'ws-woe-p010';
@@ -80,6 +83,7 @@ const INITIAL_HOLDER = 'su-initial-holder';
 
 let db: OrgTestDb;
 let rootSql: postgres.Sql;
+let coordination: BaselineCoordFixture | undefined;
 
 /* ── the presence-signal fixture: what each session's substrate looks like ── */
 
@@ -245,6 +249,9 @@ function drillDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): {
     }),
     escalateCapacityDeferral: async () => {},
     capacityDeferrals: new Map(),
+    // WI-10005559: the drill measures recovery on the first lost tick.
+    lossConfirmMs: 0,
+    lossObservations: new Map(),
     states: new Map(),
     ...overrides,
   };
@@ -280,6 +287,9 @@ beforeAll(async () => {
   // does instead of in the opposite direction (EI-18698602043482898).
   db = await createOrgTestDb();
   rootSql = db.adminSql;
+  // setMode's notification and control-anchor paths resolve their own pool.
+  // Route those real paths to the SAME isolated DB as the injected writer.
+  coordination = await setupBaselineCoordFixture({ dsn: db.adminDsn });
 }, 300_000);
 
 // Explicit timeout: dropping a throwaway database has to terminate other backends
@@ -287,7 +297,11 @@ beforeAll(async () => {
 // timeout and failed suites whose assertions all passed (EI-23128538923529753,
 // EI-22778982473804010).
 afterAll(async () => {
-  await db?.cleanup();
+  try {
+    await coordination?.dispose();
+  } finally {
+    await db?.cleanup();
+  }
 }, 120_000);
 
 beforeEach(async () => {
@@ -300,6 +314,13 @@ beforeEach(async () => {
 });
 
 describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () => {
+  it('routes default notification and control pools to the holder writer database', async () => {
+    const [writer] = await rootSql<{ name: string }[]>`SELECT current_database() AS name`;
+    const [defaultPool] = await getOrgPg().sql<{ name: string }[]>`SELECT current_database() AS name`;
+    expect(writer.name).toBe(db.dbName);
+    expect(defaultPool.name).toBe(writer.name);
+  });
+
   it('persists a pruned trailing-hour launch ledger and closes the seventh reservation', async () => {
     const goalId = 'goal-durable-respawn-cap';
     const nowMs = Date.now();
@@ -777,10 +798,40 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     expect(fold.liveness).toBe('unknown');
     expect(fold.elected?.live).toBeNull();
     expect(fold.live).toEqual([]);
-    const { deps, launches } = drillDeps();
+    // A selected permanent wrong-seam control deliberately turns the oracle's
+    // measured UNKNOWN into ended only at the respawner input. The assertions
+    // above still prove the real oracle and fold saw unknown. The launch
+    // assertion below must fail under this control, proving it rejects the
+    // original unknown-as-loss failure instead of merely seeing no holder row.
+    const wrongUnknownAsLoss = process.env.PAPERCUSP_GOAL_UNKNOWN_CONTROL === 'treat-unknown-as-lost';
+    const { deps, launches } = drillDeps(wrongUnknownAsLoss ? {
+      resolveLiveness: async (ownerIds) => {
+        const measured = await resolveLiveness(ownerIds);
+        const actual = measured.get('su-vanished-holder');
+        if (!actual) throw new Error('unknown-holder control lost its oracle calibration');
+        return new Map([...measured, ['su-vanished-holder', {
+          ...actual, sessionState: 'ended' as const, signalMissing: undefined,
+        }]]);
+      },
+    } : {});
     const tick = await runGoalHolderRespawnOnce(rootSql, deps);
     expect(tick).toMatchObject({ scanned: 1, eligible: 1, attempted: 0, respawned: 0 });
     expect(launches).toEqual([]);
+    // A passing outer harness must detect the permanent unknown-as-loss control,
+    // rather than cite an intentionally failing suite as successful execution.
+    const control = drillDeps({
+      resolveLiveness: async (ownerIds) => {
+        const measured = await resolveLiveness(ownerIds);
+        const actual = measured.get('su-vanished-holder');
+        if (!actual) throw new Error('unknown-holder control lost its oracle calibration');
+        return new Map([...measured, ['su-vanished-holder', {
+          ...actual, sessionState: 'ended' as const, signalMissing: undefined,
+        }]]);
+      },
+    });
+    const controlTick = await runGoalHolderRespawnOnce(rootSql, control.deps);
+    expect(controlTick.attempted).toBe(1);
+    expect(control.launches).toHaveLength(1);
   }, 60_000);
 });
 
@@ -1058,5 +1109,292 @@ describe('a stranded needs-human latch converges instead of latching forever (EI
         nowMs,
       ),
     ).resolves.toEqual({ kind: 'noop' });
+  }, 60_000);
+});
+
+describe('superseded holder GOAL rows are retired after the handoff window (WI-10005573)', () => {
+  async function impliedRows(ownerId: string, goalId: string) {
+    return await rootSql<{ mode: string }[]>`
+      SELECT mode FROM harness_shared.agent_modes
+       WHERE workspace_id = ${WS} AND owner_id = ${ownerId}
+         AND implied_by ->> 'mode' = ${GOAL_MODE} AND implied_by ->> 'subject' = ${goalId}`;
+  }
+
+  async function expireHandoff(goalId: string): Promise<void> {
+    await rootSql`
+      UPDATE harness_shared.agent_modes
+         SET goal_handoff_expires_at = now() - interval '1 second'
+       WHERE workspace_id = ${WS} AND mode = ${GOAL_MODE} AND subject = ${goalId}
+         AND goal_handoff_expires_at IS NOT NULL`;
+  }
+
+  it('keeps superseded rows inside the handoff window, then retires them and their implied posture', async () => {
+    const goalId = 'goal-superseded-retire';
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-first', goalId);
+    await attachHolder('su-second', goalId, 'su-first');
+    await attachHolder('su-third', goalId, 'su-second');
+    expect((await impliedRows('su-first', goalId)).length).toBeGreaterThan(0);
+
+    // Inside the elected holder's bounded handoff window nothing is retired:
+    // the predecessor may still be finishing its atomic handoff.
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+      awaitsCancelled: 0,
+      claimsReleased: [],
+    });
+    expect((await goalModeRows(goalId)).map((row) => row.owner_id).sort()).toEqual([
+      'su-first',
+      'su-second',
+      'su-third',
+    ]);
+
+    await expireHandoff(goalId);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: ['su-first', 'su-second'],
+      leftArmed: [],
+      awaitsCancelled: 0,
+      claimsReleased: [],
+    });
+    const rows = await goalModeRows(goalId);
+    expect(rows.map((row) => row.owner_id)).toEqual(['su-third']);
+    expect(await impliedRows('su-first', goalId)).toEqual([]);
+    expect(await impliedRows('su-second', goalId)).toEqual([]);
+    expect((await impliedRows('su-third', goalId)).length).toBeGreaterThan(0);
+
+    // Idempotent: a second sweep finds nothing left to retire.
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+      awaitsCancelled: 0,
+      claimsReleased: [],
+    });
+  }, 60_000);
+
+  it('cancels exactly the retired holders\' goal-scoped awaits, and nothing else', async () => {
+    // Measured 2026-10-02 18:03Z: one goal:plan-placement fire resumed six superseded
+    // 60d3a8 holders headless, and each re-armed within a minute. Retiring the GOAL
+    // row alone leaves that wake source live, so the reaper must cancel it too.
+    const goalId = 'goal-superseded-awaits';
+    const planSlug = 'goal-superseded-awaits-plan';
+    const otherPlan = 'unrelated-plan-awaits';
+    const placementKey = `goal:plan-placement:${goalId}`;
+    const acceptanceKey = `plan:acceptance:${planSlug}`;
+    await rootSql`DELETE FROM harness_shared.event_awaits WHERE event_key LIKE ${'%' + goalId + '%'} OR event_key LIKE ${'%' + otherPlan + '%'}`;
+    await rootSql`DELETE FROM harness_shared.harness_plans WHERE plan_slug IN (${planSlug}, ${otherPlan})`;
+    await rootSql`
+      INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, goal_id)
+      VALUES (${WS}, 'papercusp', ${planSlug}, ${goalId}), (${WS}, 'papercusp', ${otherPlan}, NULL)`;
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-first', goalId);
+    await attachHolder('su-second', goalId, 'su-first');
+    await attachHolder('su-third', goalId, 'su-second');
+
+    async function arm(subscriber: string, key: string, fired = false): Promise<number> {
+      const [row] = await rootSql<{ id: number }[]>`
+        INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, policy, once, fired_at)
+        VALUES ('default', ${subscriber}, ${key}, 'wake', true, ${fired ? new Date() : null})
+        RETURNING id`;
+      return Number(row!.id);
+    }
+    const cancelled = [
+      await arm('su-first', placementKey),
+      await arm('su-first', acceptanceKey),
+      await arm('su-second', placementKey),
+    ];
+    const kept = [
+      // The elected holder keeps its wake source.
+      await arm('su-third', placementKey),
+      // A retired holder's await on a key this goal does not own is not goal residue.
+      await arm('su-first', `plan:acceptance:${otherPlan}`),
+      await arm('su-first', 'work-item:done:WI-unrelated'),
+      // A non-holder awaiting the goal's plan acceptance (a grader) is untouched.
+      await arm('su-grader', acceptanceKey),
+    ];
+    // An already-fired registration is history, not a pending wake.
+    const fired = await arm('su-second', placementKey, true);
+
+    // Inside the handoff window: nothing retired, so nothing cancelled.
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+      awaitsCancelled: 0,
+      claimsReleased: [],
+    });
+    await expireHandoff(goalId);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: ['su-first', 'su-second'],
+      leftArmed: [],
+      awaitsCancelled: 3,
+      claimsReleased: [],
+    });
+
+    const state = await rootSql<{ id: number; cancelled_at: Date | null }[]>`
+      SELECT id, cancelled_at FROM harness_shared.event_awaits
+       WHERE id = ANY(${rootSql.array([...cancelled, ...kept, fired])}::bigint[])`;
+    const byId = new Map(state.map((row) => [Number(row.id), row.cancelled_at]));
+    for (const id of cancelled) expect(byId.get(id), `await ${id} should be cancelled`).not.toBeNull();
+    for (const id of [...kept, fired]) expect(byId.get(id), `await ${id} should survive`).toBeNull();
+
+    // The live 2026-10-02 shape: rows retired in an EARLIER pass, and a retired holder
+    // that re-arms out of habit. Nothing is left to retire, yet the wake source must go.
+    const rearmed = await arm('su-first', placementKey);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+      awaitsCancelled: 1,
+      claimsReleased: [],
+    });
+    const [after] = await rootSql<{ cancelled_at: Date | null }[]>`
+      SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${rearmed}`;
+    expect(after?.cancelled_at).not.toBeNull();
+    const [elected] = await rootSql<{ cancelled_at: Date | null }[]>`
+      SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${kept[0]!}`;
+    expect(elected?.cancelled_at, 'the elected holder keeps its wake source').toBeNull();
+  }, 60_000);
+
+  it('finds a former holder whose GOAL entry predates the subject column, via its retire row', async () => {
+    // Measured 2026-10-02 on 60d3a8: su-2e6fb313 entered GOAL before migration 1331,
+    // so its only enable row has a NULL subject, and the 18:12Z retire row was ALSO
+    // written without one. Its pending plan:acceptance await was unattributable.
+    const goalId = 'goal-pre-subject-holder';
+    const placementKey = `goal:plan-placement:${goalId}`;
+    await rootSql`DELETE FROM harness_shared.event_awaits WHERE event_key = ${placementKey}`;
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-legacy', goalId);
+    await attachHolder('su-current', goalId, 'su-legacy');
+    await rootSql`
+      UPDATE harness_shared.agent_mode_changes SET subject = NULL
+       WHERE workspace_id = ${WS} AND owner_id = 'su-legacy' AND new_mode = ${GOAL_MODE}`;
+    const [legacyAwait] = await rootSql<{ id: number }[]>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, policy, once)
+      VALUES ('default', 'su-legacy', ${placementKey}, 'wake', true) RETURNING id`;
+
+    await expireHandoff(goalId);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
+      retired: ['su-legacy'],
+      leftArmed: [],
+      awaitsCancelled: 1,
+      claimsReleased: [],
+    });
+    // The retire row names the goal it cleared (setMode's disable audit carries the subject).
+    const retireRows = await rootSql<{ subject: string | null }[]>`
+      SELECT subject FROM harness_shared.agent_mode_changes
+       WHERE workspace_id = ${WS} AND owner_id = 'su-legacy'
+         AND old_mode = ${GOAL_MODE} AND new_mode IS NULL`;
+    expect(retireRows.map((row) => row.subject)).toEqual([goalId]);
+    const [after] = await rootSql<{ cancelled_at: Date | null }[]>`
+      SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${Number(legacyAwait!.id)}`;
+    expect(after?.cancelled_at).not.toBeNull();
+  }, 60_000);
+
+  it('releases only the tenure claims a former holder left untouched (WI-10006948)', async () => {
+    // Measured 2026-10-06: the epoch-25 holder of 60d3a8 self-claimed WI-10006823 at
+    // 17:48Z, lost the lease at 19:13Z, and its carry-respawn successor never took a
+    // turn (WI-10006814). Its session was parked, not ended, so no death sweep fired
+    // and the item stayed wip on it for 2h+. The retirement sweep must free that claim
+    // and nothing that is anyone's live work.
+    const goalId = 'goal-former-holder-claims';
+    await rootSql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id LIKE 'WI-fh-%'`;
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-old', goalId);
+    await attachHolder('su-new', goalId, 'su-old');
+
+    async function seedItem(id: string, opts: {
+      takenBy: string; goal?: string | null; status?: string;
+      takenAt: string; progressAt?: string;
+    }): Promise<void> {
+      await rootSql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, item_kind, status, goal_id, taken_by, taken_at, last_progress_at)
+        VALUES (${WS}, 'papercusp', ${id}, 'task', ${opts.status ?? 'wip'},
+                ${opts.goal === undefined ? goalId : opts.goal}, ${opts.takenBy},
+                now() + ${opts.takenAt}::interval,
+                ${opts.progressAt === undefined ? null : rootSql`now() + ${opts.progressAt}::interval`})`;
+    }
+    // Abandoned tenure custody: claimed while holding the goal, never touched again.
+    await seedItem('WI-fh-pinned', { takenBy: 'su-old', takenAt: '-1 hour', progressAt: '-50 minutes' });
+    // Same shape, but the claim moved by the time the release ran: not reported.
+    await seedItem('WI-fh-moved', { takenBy: 'su-old', takenAt: '-1 hour' });
+    // Kept: claimed AFTER the agent left GOAL (a later, deliberate act).
+    await seedItem('WI-fh-after-exit', { takenBy: 'su-old', takenAt: '+1 hour' });
+    // Kept: progressed after the exit (a holder that stood down but kept working).
+    await seedItem('WI-fh-progressed', { takenBy: 'su-old', takenAt: '-1 hour', progressAt: '+1 hour' });
+    // Kept: terminal.
+    await seedItem('WI-fh-done', { takenBy: 'su-old', takenAt: '-1 hour', status: 'done' });
+    // Kept: another goal's item, and an un-stamped item, held by the same former holder.
+    await seedItem('WI-fh-other-goal', { takenBy: 'su-old', takenAt: '-1 hour', goal: 'some-other-goal' });
+    await seedItem('WI-fh-unstamped', { takenBy: 'su-old', takenAt: '-1 hour', goal: null });
+    // Kept: the elected holder's claim, and a worker who never held the goal.
+    await seedItem('WI-fh-elected', { takenBy: 'su-new', takenAt: '-1 hour' });
+    await seedItem('WI-fh-worker', { takenBy: 'su-worker', takenAt: '-1 hour' });
+
+    const calls: Array<{ id: string; ownerId: string; harness: string; exitedAt: Date }> = [];
+    // Models the compare-and-release on the test DB. The production default writes
+    // through getOrgPg(), which here would reach the LIVE database (WI-10006585).
+    const release = async (claim: { id: string; ownerId: string; harness: string; exitedAt: Date }) => {
+      calls.push({ id: claim.id, ownerId: claim.ownerId, harness: claim.harness, exitedAt: claim.exitedAt });
+      if (claim.id === 'WI-fh-moved') return false;
+      const rows = await rootSql`
+        UPDATE harness_shared.work_items SET taken_by = NULL, taken_at = NULL, status = 'open'
+         WHERE workspace_id = ${WS} AND feature_id = ${claim.id} AND taken_by = ${claim.ownerId}
+        RETURNING feature_id`;
+      return rows.length === 1;
+    };
+
+    // Inside the handoff window su-old still holds its GOAL row, so it is not a
+    // FORMER holder yet and nothing is touched.
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId, undefined, release)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+      awaitsCancelled: 0,
+      claimsReleased: [],
+    });
+    expect(calls).toEqual([]);
+
+    await expireHandoff(goalId);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId, undefined, release)).resolves.toEqual({
+      retired: ['su-old'],
+      leftArmed: [],
+      awaitsCancelled: 0,
+      claimsReleased: [{ id: 'WI-fh-pinned', ownerId: 'su-old' }],
+    });
+    expect(calls.map((c) => c.id).sort()).toEqual(['WI-fh-moved', 'WI-fh-pinned']);
+    for (const call of calls) {
+      expect(call).toMatchObject({ ownerId: 'su-old', harness: 'papercusp' });
+      expect(call.exitedAt).toBeInstanceOf(Date);
+    }
+
+    const held = await rootSql<{ feature_id: string; taken_by: string | null }[]>`
+      SELECT feature_id, taken_by FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id LIKE 'WI-fh-%' ORDER BY feature_id`;
+    expect(Object.fromEntries(held.map((r) => [r.feature_id, r.taken_by]))).toEqual({
+      'WI-fh-after-exit': 'su-old',
+      'WI-fh-done': 'su-old',
+      'WI-fh-elected': 'su-new',
+      'WI-fh-moved': 'su-old',
+      'WI-fh-other-goal': 'su-old',
+      'WI-fh-pinned': null,
+      'WI-fh-progressed': 'su-old',
+      'WI-fh-unstamped': 'su-old',
+      'WI-fh-worker': 'su-worker',
+    });
+  }, 60_000);
+
+  it('the respawner sweep retires superseded rows on a healthy goal without launching', async () => {
+    const goalId = 'goal-superseded-sweep';
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-old-holder', goalId);
+    await attachHolder('su-live-holder', goalId, 'su-old-holder');
+    sessions.set('su-old-holder', liveSignals());
+    sessions.set('su-live-holder', liveSignals());
+    await expireHandoff(goalId);
+
+    const { deps, launches } = drillDeps();
+    await runGoalHolderRespawnOnce(rootSql, deps);
+    expect(launches).toEqual([]);
+    expect((await goalModeRows(goalId)).map((row) => row.owner_id)).toEqual(['su-live-holder']);
+    expect(await impliedRows('su-old-holder', goalId)).toEqual([]);
   }, 60_000);
 });

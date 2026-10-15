@@ -35,6 +35,7 @@ const {
   aggregateIssueClaimExclusions,
   listIssueClaimableRows,
   readIssueClaimability,
+  sampleIssueClaimExclusions,
   readClaimSpecDelta,
   issueClaimCandidateSubquery,
   compileFilter,
@@ -143,16 +144,17 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
 
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
 
-    // matchedByFilter = every row in the claimable-status scope for this harness/workspace,
-    // REGARDLESS of floor — WI-9410 (resolved) is the only one excluded from this count.
-    // 9401..9409 plus 9411 = 10 rows (9408 is itself its own row too, though it's the BLOCKER not the
-    // blocked one under test — it is untaken/unfloored so it is simultaneously admissible).
-    expect(out.matchedByFilter).toBe(10);
+    // The canonical agent-work predicate scopes the population before claim floors:
+    // WI-9406 (observation) and WI-9411 (owner action) are outside it, as is the
+    // resolved WI-9410. The other eight rows remain, including the compatibility
+    // WI-9405 and the unfloored blocker WI-9408.
+    expect(out.matchedByFilter).toBe(8);
+    expect(out.claimable).toBe(3); // WI-9401, WI-9405, WI-9408
     expect(out.excluded).toMatchObject({
       taken: 1, // WI-9403
       claimHold: 1, // WI-9402
-      needsOwnerAction: 1, // WI-9411
-      observationLane: 1, // WI-9406
+      needsOwnerAction: 0, // WI-9411 is outside the agent-work population
+      observationLane: 0, // WI-9406 is outside the agent-work population
       externalBlocker: 1, // WI-9407
       planLaneReserved: 1, // WI-9404
       blockedDep: 1, // WI-9409 (blocked by open WI-9408)
@@ -212,9 +214,17 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
   });
 
   it('an item taken by someone else counts ONLY under `taken`, never double-counted under another floor', async () => {
-    // Taken AND would otherwise also read claim-held / owner-action — but `taken` short-
-    // circuits every other bucket (each later floor is scoped to the UNTAKEN subset).
-    await seedIssue('WI-9701', { _claimHold: true, needsOwnerAction: true }, { takenBy: 'su-outside' });
+    // Eligible agent work that is taken AND would otherwise be claim-held /
+    // externally blocked. Owner-action rows cannot exercise this short-circuit:
+    // the canonical work predicate excludes them before any bucket is counted.
+    await seedIssue(
+      'WI-9701',
+      {
+        _claimHold: true,
+        externalBlockers: [{ kind: 'event', ref: 'deploy:green', status: 'active', createdAt: '', updatedAt: '' }],
+      },
+      { takenBy: 'su-outside' },
+    );
 
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
     expect(out.matchedByFilter).toBe(1);
@@ -222,6 +232,7 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
       taken: 1,
       claimHold: 0,
       needsOwnerAction: 0,
+      externalBlocker: 0,
     });
   });
 });
@@ -411,6 +422,105 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     const out = await readIssueClaimability(undefined, { harness: H }, { limit: 20, sampleLimit: 5 });
     expect(out.breakdown.excluded).not.toHaveProperty('legacyNeedsHuman');
     expect(out.sample).not.toHaveProperty('legacyNeedsHuman');
+  });
+
+  // bug-queue-legitimacy D-007/D-008: queueControl splits revision-requested spec rows into an
+  // exact partition, so a census can count "claimable to validate" from revisionKind rather than
+  // from status alone (D-007's correction: status alone overstated the validation reach ~11x).
+  it('partitions revision-requested rows into reproduction, content and legacy', async () => {
+    const review = (submittedBy: string, revisionKind?: string) => ({
+      agentReview: {
+        status: 'revision-requested',
+        submittedBy,
+        ledgerIdeaId: `idea-${submittedBy}`,
+        round: 1,
+        ...(revisionKind ? { revisionKind } : {}),
+      },
+    });
+    await seedIssue('WI-QC-REV-REPRO', review('su-author', 'reproduction'));
+    await seedIssue('WI-QC-REV-CONTENT', review('su-author', 'content'));
+    // Pre-D-006 revisions carry no revisionKind and are content revisions.
+    await seedIssue('WI-QC-REV-PRE-D006', review('su-author'));
+    await seedIssue('WI-QC-REV-LEGACY', review('system:legacy-agent-review'));
+
+    const out = await readIssueClaimability(undefined, { harness: H }, {
+      limit: 20,
+      sampleLimit: 5,
+      breakdownOnly: true,
+    });
+
+    const qc = out.breakdown.queueControl;
+    expect(qc).toMatchObject({
+      revisionRequestedAgentReview: 4,
+      revisionReproductionValidation: 1,
+      revisionContentAdoptionCandidates: 2,
+      revisionLegacyException: 1,
+    });
+    expect(qc.revisionReproductionValidation + qc.revisionContentAdoptionCandidates + qc.revisionLegacyException)
+      .toBe(qc.revisionRequestedAgentReview);
+  });
+
+  it('routes only pending peer reviews from the queue-control sample (EI-25275046747164289)', async () => {
+    await seedIssue('WI-QC-REVIEW-PENDING', {
+      agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'idea-pending', round: 1 },
+    });
+    await seedIssue('WI-QC-REVIEW-REVISION', {
+      agentReview: {
+        status: 'revision-requested',
+        submittedBy: 'su-author',
+        ledgerIdeaId: 'idea-revision',
+        round: 1,
+      },
+    });
+
+    const out = await readIssueClaimability(undefined, { harness: H }, {
+      limit: 20,
+      sampleLimit: 5,
+      breakdownOnly: true,
+    });
+
+    expect(out.breakdown.queueControl).toMatchObject({
+      pendingAgentReview: 1,
+      revisionRequestedAgentReview: 1,
+    });
+    expect(out.sample?.queueControl.agentReview).toEqual([
+      {
+        id: 'WI-QC-REVIEW-PENDING',
+        status: 'pending',
+        submittedBy: 'su-author',
+        ledgerIdeaId: 'idea-pending',
+        round: 1,
+      },
+    ]);
+  });
+
+  it('excludes pending reviews another agent holds from the count and the sample (EI-25949663083795915)', async () => {
+    const review = (idea: string) => ({
+      agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: idea, round: 1 },
+    });
+    // improvements:agent-review refuses this one with claim-conflict (holder !== reviewer).
+    await seedIssue('WI-QC-REVIEW-HELD-OTHER', review('idea-held-other'), { takenBy: 'su-other' });
+    await seedIssue('WI-QC-REVIEW-UNHELD', review('idea-unheld'));
+    // The caller's own hold is claimable by the caller, so it still counts.
+    await seedIssue('WI-QC-REVIEW-HELD-SELF', review('idea-held-self'), { takenBy: 'su-asking' });
+
+    const out = await readIssueClaimability(undefined, { harness: H, assignee: 'su-asking' }, {
+      limit: 20,
+      sampleLimit: 5,
+      breakdownOnly: true,
+    });
+    expect(out.breakdown.queueControl.pendingAgentReview).toBe(2);
+    expect((out.sample?.queueControl.agentReview ?? []).map((r) => r.id).sort()).toEqual([
+      'WI-QC-REVIEW-HELD-SELF',
+      'WI-QC-REVIEW-UNHELD',
+    ]);
+
+    // The direct (unmaterialized) aggregate applies the same predicate.
+    const direct = await aggregateIssueClaimExclusions(undefined, { harness: H, assignee: 'su-asking' });
+    expect(direct.queueControl.pendingAgentReview).toBe(2);
+    // With no caller, every held row is someone else's: only the unheld one is reviewable.
+    const anonymous = await aggregateIssueClaimExclusions(undefined, { harness: H });
+    expect(anonymous.queueControl.pendingAgentReview).toBe(1);
   });
 });
 

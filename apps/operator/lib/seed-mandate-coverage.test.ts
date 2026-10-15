@@ -50,9 +50,9 @@ describe('seed ↔ prompt-mandate coverage (P-004)', () => {
         ? `\n\nUNREACHABLE MANDATE(S) — the prompts route agents to these, the seed does not advertise them:\n` +
           gaps.map((g) => `  • ${g.tool}\n      ${g.hint}`).join('\n') +
           `\n\nFIX ONE OF TWO WAYS:\n` +
-          `  (a) SEED it — add to CLAUDE_SEED_EXTRA_TOOL_NAMES (Claude-only) or, if it is\n` +
-          `      cross-role, to OMP_CORE_MCP_TOOL_NAMES *and* the orchestrator's\n` +
-          `      CORE_MCP_TOOL_NAMES in the same order (the lockstep guard compares them).\n` +
+          `  (a) REGENERATE the maintained delivery map with npm run gen:tool-delivery.\n` +
+          `      Routing-table mandates are derived floors for the default seed;\n` +
+          `      the historical full-seed literals do not control that seed.\n` +
           `  (b) EXEMPT it — add to MANDATE_SEED_EXEMPT with the MEASUREMENT that justifies\n` +
           `      it (reaches/callers over 14d + wire bytes). Seeding is not free: plan D-001\n` +
           `      budgets the tools/list WIRE payload, which argSchema dominates.\n`

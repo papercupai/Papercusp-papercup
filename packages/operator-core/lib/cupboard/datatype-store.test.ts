@@ -149,3 +149,44 @@ describe('the declare-time gates survive the distribution boundary', () => {
     expect(readDatatypeDir(handWritten(goodManifest({ schemaVersion: 2 })), 'bet')).toBeNull();
   });
 });
+
+describe('the datatype nature travels with the package (enterprise-data-sources P-008)', () => {
+  it('round-trips a declared nature and audience through write + read', () => {
+    const written = writeDatatypePackageDir(
+      { ...BET, nature: 'record', audience: null },
+      { source: 'https://github.com/papercup/datatypes', targetDir: scratch() },
+    );
+    const read = readDatatypeDir(written.dir, written.ref);
+    expect(read).not.toBeNull();
+    expect(read!.nature).toBe('record');
+    expect(read!.audience).toBeNull();
+
+    const work = readDatatypeDir(handWritten(goodManifest({ nature: 'work', audience: 'human' })), 'bet');
+    expect(work).not.toBeNull();
+    expect(work!.nature).toBe('work');
+    expect(work!.audience).toBe('human');
+  });
+
+  it('reads a pre-nature package as nature null, so the installer applies the legacy rule', () => {
+    const read = readDatatypeDir(handWritten(goodManifest()), 'bet');
+    expect(read).not.toBeNull();
+    expect(read!.nature).toBeNull();
+    expect(read!.audience).toBeNull();
+  });
+
+  it('refuses an invalid nature, work with no audience, data with an audience, and an audience with no nature', () => {
+    expect(readDatatypeDir(handWritten(goodManifest({ nature: 'data' })), 'bet')).toBeNull();
+    expect(readDatatypeDir(handWritten(goodManifest({ nature: 'work' })), 'bet')).toBeNull();
+    expect(readDatatypeDir(handWritten(goodManifest({ nature: 'record', audience: 'agent' })), 'bet')).toBeNull();
+    expect(readDatatypeDir(handWritten(goodManifest({ audience: 'agent' })), 'bet')).toBeNull();
+  });
+
+  it('the writer refuses an invalid nature rather than shipping a package no installer can read', () => {
+    expect(() =>
+      writeDatatypePackageDir(
+        { ...BET, nature: 'work', audience: null },
+        { source: 'https://github.com/papercup/datatypes', targetDir: scratch() },
+      ),
+    ).toThrow(/invalid datatype nature/);
+  });
+});

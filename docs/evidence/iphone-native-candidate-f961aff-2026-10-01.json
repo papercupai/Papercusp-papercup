@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exact iPhone native candidate CI and screenshot inspection (partial release coverage)",
+  "framework": "operational",
+  "command": ["gh", "run", "view", "36862989187", "-R", "Papercusp/papercup-rust-mobile", "--log"],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T12:58:28Z",
+  "finishedAt": "2026-10-01T13:07:51Z",
+  "summary": "The exact candidate passed all four CI jobs, 39 Swift unit tests, one clean-install UI case with zero failures/skips, current-SDK verification and an unsigned arm64 archive. A retained XCTest screenshot was visually inspected. Actual paired UI, physical iPhone, durable reviewer access, signed Apple delivery and public shipment remain unverified.",
+  "assertions": [
+    {"id": "exact-source", "passed": true, "evidence": "Run headSha and retained source-sha.txt both equal f961aff81938c4402fa813f97843175b843d106a."},
+    {"id": "ci-jobs-completed", "passed": true, "evidence": "Actions run 36862989187 is completed/success. Design tokens, Rust workspace, UniFFI bindings and the native release-gate jobs passed."},
+    {"id": "current-sdk", "passed": true, "evidence": "Retained Xcode 26.6 build 17F113 and iPhoneOS SDK 26.5 agree with archive DTSDKName iphoneos26.5 and DTXcodeBuild 17F113."},
+    {"id": "swift-unit-tests", "passed": true, "evidence": "The Test iOS app job step reported 39 executed tests with zero failures and TEST EXECUTE SUCCEEDED."},
+    {"id": "clean-install-ui", "passed": true, "evidence": "ci-pair-smoke-summary.json reports one passed, zero failed and zero skipped tests on iPhone 17 Pro / iOS Simulator 26.2."},
+    {"id": "retained-real-screenshot", "passed": true, "evidence": "The exported XCTest attachment is a 1206 x 2622 PNG. Visual inspection shows the current Settings → Remote access → Pair a phone guidance, Scan QR, Paste manually, Privacy and Support."},
+    {"id": "unsigned-arm64-archive", "passed": true, "evidence": "Archive ApplicationProperties names arm64, com.papercuspai.operator.mobile, version 1.0.0 and build 1; SigningIdentity and Team are empty."},
+    {"id": "artifact-integrity", "passed": true, "evidence": "Downloaded ZIP SHA-256 matches GitHub artifact digest ffca0d08bb57b85e3483b6547d57de45d1336a9396a94ea31fa7d4f8233a06bc."},
+    {"id": "bundled-privacy-manifests", "passed": true, "evidence": "Inspected the app, ElevenLabs, LiveKit, LiveKitWebRTC and RustLiveKitUniFFI privacy manifests in the exact archive. This is manifest inventory, not the signed export privacy report or live consent acceptance."}
+  ],
+  "candidate": {
+    "sourceRepository": "Papercusp/papercup-rust-mobile",
+    "sourceSha": "f961aff81938c4402fa813f97843175b843d106a",
+    "workflowRunId": 36862989187,
+    "workflowUrl": "https://github.com/Papercusp/papercup-rust-mobile/actions/runs/36862989187",
+    "workflowStartedAt": "2026-10-01T12:37:23Z",
+    "workflowUpdatedAt": "2026-10-01T12:46:04Z",
+    "artifactId": 11162783303,
+    "artifactDigest": "sha256:ffca0d08bb57b85e3483b6547d57de45d1336a9396a94ea31fa7d4f8233a06bc",
+    "artifactExpiresAt": "2026-10-15T12:45:46Z",
+    "artifactLocalPath": "~/.papercusp/artifacts/iphone-public-release/f961aff81938c4402fa813f97843175b843d106a.zip",
+    "xcode": "Xcode 26.6 build 17F113",
+    "iosSdk": "26.5",
+    "unitTests": 39,
+    "cleanInstallUi": {"passed": 1, "failed": 0, "skipped": 0},
+    "screenshot": {
+      "attachmentPath": "ci-release/ui-attachments/164429FB-0921-4B93-ABC0-C083A6350AEE.png",
+      "localPath": "~/.papercusp/artifacts/iphone-public-release/f961aff81938c4402fa813f97843175b843d106a-clean-install-pairing.png",
+      "sha256": "d4c9a225bfbf767e3351b7e6c89f1e1154396bd56c901ed5261fac5b58bddfce",
+      "width": 1206,
+      "height": 2622
+    },
+    "archiveVersion": "1.0.0",
+    "archiveBuild": "1",
+    "applicationBinarySha256": "d282e9ff68a840e7a3ad5400a28fa33b4011d47318e2e092054be19656cf86d6",
+    "signed": false
+  },
+  "coverage": {
+    "checked": ["source provenance", "current SDK build", "Swift unit tests", "clean-install UI smoke", "pairing screenshot", "unsigned archive", "bundled privacy manifest inventory"],
+    "notChecked": ["actual paired XCUITest", "LAN/cellular native journey", "physical iPhone and production APNs", "paired candidate screenshots and durable reviewer access", "signed export privacy report and live consent", "distribution rights clearance", "signed IPA export/Apple processing/TestFlight", "Apple approval and public App Store install"]
+  }
+}

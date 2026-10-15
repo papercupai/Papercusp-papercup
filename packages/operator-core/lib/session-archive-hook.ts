@@ -32,7 +32,7 @@
  * of three independent signals — see {@link runArchiveForAdvSession}.
  */
 
-import { join } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 import { existsSync } from 'node:fs';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
@@ -44,7 +44,12 @@ import { ingestFileNow } from './search/session-ingest';
 import {
   archiveAndDeleteSession,
   collectSessionFiles,
+  decompressArchiveBlobBounded,
+  isUnsafeArchiveRelpath,
   isSessionKeyedRelpath,
+  pgSessionArchiveStore,
+  SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES,
+  sha256Hex,
   type ArchiveSessionResult,
   type DeleteArchivedResult,
   type SessionArchiveRef,
@@ -79,6 +84,11 @@ export interface AdvRowForArchive {
    *  the row since the end was reported (→ `row_reopened`). `undefined` = the
    *  caller did not load it (legacy/test rows) — no verdict from this signal. */
   ended_at?: Date | string | null;
+  /** Delivery acknowledges persistence only after finding the port marker in
+   *  the native transcript. Missing that transcript is not an empty session. */
+  port_metadata?: { persistenceProof?: { persisted?: unknown; nativeRef?: unknown } } | null;
+  /** Existing ingest cursors also prove native custody for pre-port sessions. */
+  ingestedTranscripts?: Array<{ nativeRef: string; byteOffset: number }>;
 }
 
 /** Reasons that mean "the session looked LIVE — nothing was touched; retry
@@ -152,22 +162,66 @@ export interface ArchiveHookDeps {
   nowMs?: number;
 }
 
-async function loadAdvRow(advSessionId: number): Promise<AdvRowForArchive | null> {
+async function loadAdvRow(advSessionId: number, roots: ArchiveRoots): Promise<AdvRowForArchive | null> {
   const { sql } = getOrgPg();
   const rows = await sql<AdvRowForArchive[]>`
-    SELECT id, agent, mode, cwd, coord_owner_id, session_id, omp_thread_id, ended_at
+    SELECT id, agent, mode, cwd, coord_owner_id, session_id, omp_thread_id, ended_at, port_metadata
       FROM harness_shared.adv_sessions
      WHERE id = ${advSessionId}`;
-  return rows[0] ?? null;
+  const row = rows[0];
+  if (!row) return null;
+  const ref = resolveArchiveRefForAdvRow(row, roots);
+  if (ref) {
+    // Bound this read with the existing (source_kind, file_path) primary key;
+    // a session-id-only lookup scans the entire ingest corpus every pass.
+    const prefix = ref.sessionRoot.endsWith('/') ? ref.sessionRoot : `${ref.sessionRoot}/`;
+    const indexed = await sql<Array<{ file_path: string; byte_offset: string | number }>>`
+      SELECT file_path, byte_offset FROM harness_shared.session_ingest_state
+       WHERE source_kind = ${ref.sourceKind}
+         AND file_path >= ${prefix} AND file_path < ${`${prefix}\uffff`}
+         AND byte_offset > 0
+         AND (session_id = ${ref.sessionId} OR session_id IS NULL)`;
+    row.ingestedTranscripts = indexed
+      .filter((entry) => isAbsolute(entry.file_path) && entry.file_path.endsWith('.jsonl')
+        && isSessionKeyedRelpath(ref.sessionId, relative(ref.sessionRoot, entry.file_path)))
+      .map((entry) => {
+        const byteOffset = Number(entry.byte_offset);
+        if (!Number.isSafeInteger(byteOffset) || byteOffset <= 0) throw new Error('invalid native ingest cursor');
+        return { nativeRef: entry.file_path, byteOffset };
+      });
+  }
+  return row;
 }
 
 export interface ArchiveHookResult {
   ok: boolean;
-  reason?: 'row_not_found' | 'unresolvable' | LiveSkipReason | ArchiveSessionResult['reason'];
+  reason?: 'row_not_found' | 'unresolvable' | 'missing_persisted_transcript' | 'already_archived' | LiveSkipReason | ArchiveSessionResult['reason'];
   archive?: ArchiveSessionResult;
   delete?: DeleteArchivedResult;
   /** Set on a live-skip: the evidence behind the refusal (log/checkpoint-ready). */
   liveEvidence?: string;
+}
+
+/** A stamp alone cannot distinguish an intact transcript archive from a
+ *  metadata-only or damaged archive. Reuse its canonical key and bounded
+ *  decompressor; inspect only the transcript named by the persistence proof. */
+async function hasArchivedPersistedTranscript(
+  ref: SessionArchiveRef,
+  nativeRef: unknown,
+  store: SessionArchiveStore,
+  minBytes = 0,
+): Promise<boolean> {
+  if (typeof nativeRef !== 'string' || !isAbsolute(nativeRef)) return false;
+  const stamp = await store.readStamp(ref.sourceKind, ref.sessionId);
+  if (!stamp) return false;
+  const rel = relative(stamp.session_root, nativeRef);
+  if (isUnsafeArchiveRelpath(rel) || !rel.endsWith('.jsonl') || !isSessionKeyedRelpath(ref.sessionId, rel)) return false;
+  const entry = stamp.manifest.find((m) => m.relpath === rel);
+  if (!entry || !Number.isSafeInteger(entry.bytes_raw) || entry.bytes_raw <= 0 || entry.bytes_raw < minBytes || entry.bytes_raw > SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES) return false;
+  const file = (await store.readFiles(ref.sourceKind, ref.sessionId)).find((f) => f.relpath === rel);
+  if (!file || file.sha256 !== entry.sha256 || file.bytes_raw !== entry.bytes_raw) return false;
+  const raw = await decompressArchiveBlobBounded(file, SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES);
+  return raw.length === entry.bytes_raw && sha256Hex(raw) === entry.sha256;
 }
 
 /**
@@ -232,14 +286,16 @@ export async function runArchiveForAdvSession(
   advSessionId: number,
   deps: ArchiveHookDeps = {},
 ): Promise<ArchiveHookResult> {
-  const row = await (deps.loadRow ?? loadAdvRow)(advSessionId);
+  const roots = deps.roots ?? defaultArchiveRoots();
+  const row = await (deps.loadRow ?? ((id) => loadAdvRow(id, roots)))(advSessionId);
   if (!row) return { ok: false, reason: 'row_not_found' };
-  const ref = resolveArchiveRefForAdvRow(row, deps.roots ?? defaultArchiveRoots());
+  const proof = row.port_metadata?.persistenceProof;
+  const ref = resolveArchiveRefForAdvRow(row, roots);
   if (!ref) {
     console.warn(
       `[session-archive] adv ${advSessionId} not resolvable (agent=${row.agent}, owner=${row.coord_owner_id}, native=${row.session_id}, omp=${row.omp_thread_id ?? null}) — left for the disk-side reconciler`,
     );
-    return { ok: false, reason: 'unresolvable' };
+    return { ok: false, reason: proof?.persisted === true ? 'missing_persisted_transcript' : 'unresolvable' };
   }
   // LIVENESS GUARD — before the ingest, before the archive, before the unlink.
   // Cheap (one stat per file + the protected-set read the disk sweep already
@@ -258,6 +314,28 @@ export async function runArchiveForAdvSession(
       `[session-archive] adv ${advSessionId} (${ref.sourceKind}/${ref.sessionId}) looks LIVE — nothing touched (${live.reason}: ${live.evidence}); retried once quiet`,
     );
     return { ok: false, reason: live.reason, liveEvidence: live.evidence };
+  }
+  const requiredTranscripts: Array<{ nativeRef: unknown; minBytes: number }> =
+    (row.ingestedTranscripts ?? []).map((entry) => ({ nativeRef: entry.nativeRef, minBytes: entry.byteOffset }));
+  if (proof?.persisted === true) requiredTranscripts.push({ nativeRef: proof.nativeRef, minBytes: 0 });
+  if (requiredTranscripts.some((entry) => !collected.some((f) =>
+    f.abs === entry.nativeRef && f.rel.endsWith('.jsonl') && f.bytes >= entry.minBytes))) {
+    const store = deps.store ?? pgSessionArchiveStore();
+    let archived = true;
+    for (const entry of requiredTranscripts) {
+      if (!await hasArchivedPersistedTranscript(ref, entry.nativeRef, store, entry.minBytes)) {
+        archived = false;
+        break;
+      }
+    }
+    if (archived) {
+      // Do not re-archive leftover side files: that would prune the preserved
+      // transcript from the existing atomic archive.
+      await store.stampAdvSessionArchived(advSessionId);
+      return { ok: true, reason: 'already_archived' };
+    }
+    console.warn(`[session-archive] adv ${advSessionId} persisted or indexed native transcript is missing or shortened without a verified canonical archive — archive responsibility retained`);
+    return { ok: false, reason: 'missing_persisted_transcript' };
   }
   // Final ingest: the recall index gets the transcript tail BEFORE the file
   // is deleted. Best-effort per file — an ingest failure never blocks archival

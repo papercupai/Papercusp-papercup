@@ -25,15 +25,16 @@
  * resort is the native-PG fallback — so the "No database URL" error those scripts raised
  * was not reachable through the correct path in the first place.
  *
- * ## Resolution order — steps 4-6 are DELEGATED, never re-implemented here
+ * ## Resolution order — discovery and fallback reuse the configured helper
  *
  *   1. `HARNESS_ADMIN_DATABASE_URL` — an explicit admin DSN always wins.
  *   2. `PAPERCUSP_PG_PORT` — THIS PROCESS OWNS A DEDICATED PG (see the isolation note
  *      below). Resolves to that port and stops; the ambient dev DSN is exactly what must
  *      NOT be used here.
- *   3. repo-root `.env.local`, for any of {@link PG_URL_ENV_VARS} not already set in the
- *      real environment (real env always wins; skipped entirely under 2).
- *   4. those same env vars, first non-empty wins                       ─┐
+ *   3. the OPERATOR's `.env.local` (`apps/operator/.env.local`, {@link OPERATOR_ENV_ROOT}),
+ *      for any of {@link PG_URL_ENV_VARS} not already set in the real environment (real env
+ *      always wins; skipped entirely under 2).
+ *   4. those same env vars in the supplied environment, first non-empty wins
  *   5. the discovery file (`$PAPERCUSP_HOME/embedded-pg.json`), pid- +  │ getHarnessAdmin
  *      listening-port-gated                                             │ UrlWithSource()
  *   6. the native-PG fallback                                          ─┘
@@ -41,11 +42,21 @@
  * ## Why `.env.local` (step 3)
  *
  * The operator service is launched as `set -a; [ -f .env.local ] && . ./.env.local; set +a`
- * (`~/.config/systemd/user/papercup-dev-api.service`), so `.env.local` IS the operator's
- * DATABASE_URL. A script that ignores it can silently read or write a DIFFERENT database
- * than the operator whose state it exists to maintain. Only the DB-url names are applied —
- * a script's environment is not the operator's environment, and the two only need to agree
+ * with `WorkingDirectory=…/apps/operator` (papercup-dev-api, papercusp-staging-api and
+ * papercusp-bg-host alike), so `apps/operator/.env.local` IS the operator's DATABASE_URL.
+ * A script that ignores it can silently read or write a DIFFERENT database than the
+ * operator whose state it exists to maintain. Only the DB-url names are applied — a
+ * script's environment is not the operator's environment, and the two only need to agree
  * about WHICH DATABASE.
+ *
+ * ⚠ The default used to be the REPO-ROOT `.env.local` — a file no operator unit sources
+ * (on the dev box it is empty). Every caller that did not pass `{ root }` therefore fell
+ * through to step 5 whenever the shell carried no DB url (capability:bash strips it), and
+ * read a desktop sidecar PG instead of the operator DB: lint:migrations reported 21
+ * reserved migrations as unreserved, and check-plane-producers reported 0/522 producers
+ * (EI-25622462074429450, EI-25621586767076562). Only next-migration passed the operator
+ * root explicitly (EI-25408245982858894). The default is now the operator's root, so a
+ * caller cannot get this wrong by omission.
  *
  * ## Why `PAPERCUSP_PG_PORT` outranks it (step 2) — the isolation rail
  *
@@ -83,6 +94,12 @@ export const PG_URL_ENV_VARS = ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'P
 export const PG_ISOLATION_ENV_VARS = ['PAPERCUSP_PG_PORT', 'PAPERCUSP_SKIP_PG_DISCOVERY'];
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/**
+ * The directory whose `.env.local` every operator unit sources (its `WorkingDirectory`).
+ * The default `root` for {@link applyEnvLocal} and {@link resolveScriptPgUrl}.
+ */
+export const OPERATOR_ENV_ROOT = join(REPO_ROOT, 'apps', 'operator');
 
 /** Byte-identical to connection.ts's adminUrl() native fallback, port included. */
 const isolatedAdminUrl = (port) =>
@@ -128,7 +145,7 @@ export function parseEnvFile(text) {
  * @param {{ root?: string, env?: Record<string, string | undefined> }} [opts]
  * @returns {{ file: string, exists: boolean, present: string[], applied: string[], skipped: string | null }}
  */
-export function applyEnvLocal({ root = REPO_ROOT, env = process.env } = {}) {
+export function applyEnvLocal({ root = OPERATOR_ENV_ROOT, env = process.env } = {}) {
   const file = join(root, '.env.local');
   const isolatedBy = PG_ISOLATION_ENV_VARS.find((n) => env[n]);
   if (isolatedBy) return { file, exists: existsSync(file), present: [], applied: [], skipped: isolatedBy };
@@ -158,28 +175,32 @@ export function applyEnvLocal({ root = REPO_ROOT, env = process.env } = {}) {
  * connection error naming a real host — not as an "unset variable" error naming a
  * variable this repo does not set.
  *
- * ⚠ `env` governs steps 1-3 only. The delegated legs (4-6) read `process.env` directly,
- * because that is what `getHarnessAdminUrlWithSource()` reads — so passing a synthetic
- * `env` object exercises the isolation/`.env.local` decisions, not the whole chain. Unit
- * tests should drive {@link applyEnvLocal} (pure) rather than faking the delegation.
+ * `env` governs explicit pins, isolation and operator-file pins (steps 1-4). If it
+ * contains no URL pin, the configured discovery/fallback helper reads ambient
+ * `process.env`; a copied environment with a pin never reaches that delegation.
  *
  * @param {{ root?: string, env?: Record<string, string | undefined> }} [opts]
- * @returns {{ url: string, source: string, envLocal: ReturnType<typeof applyEnvLocal> }}
+ * @returns {{ url: string, source: string, via?: string, envLocal: ReturnType<typeof applyEnvLocal> }}
  */
-export function resolveScriptPgUrl({ root = REPO_ROOT, env = process.env } = {}) {
+export function resolveScriptPgUrl({ root = OPERATOR_ENV_ROOT, env = process.env } = {}) {
   const envLocal = applyEnvLocal({ root, env });
   // Step 1/2: an explicit admin DSN wins; failing that, a dedicated PG's port is the whole
   // answer — resolving past it is what would reach the ambient dev database instead.
   if (!env.HARNESS_ADMIN_DATABASE_URL && env.PAPERCUSP_PG_PORT) {
     return { url: isolatedAdminUrl(env.PAPERCUSP_PG_PORT), source: 'isolated-pg-port', envLocal };
   }
+  // The configured discovery helper reads process.env. A caller preparing a
+  // child environment may supply a different object; its explicit/operator
+  // pins must be resolved from that SAME object without mutating ambient env.
+  const via = PG_URL_ENV_VARS.find((name) => env[name]);
+  if (via) return { url: env[via], source: 'env', via, envLocal };
   const { url, source } = getHarnessAdminUrlWithSource();
   // WHICH variable won, not just "an env var did". `source: 'env'` alone reads as
   // ambiguous exactly when it matters: an explicit HARNESS_ADMIN_DATABASE_URL and a
   // DATABASE_URL this module lifted out of .env.local are the same `source`, and only the
   // name distinguishes "you set this" from "the file set this".
-  const via = source === 'env' ? PG_URL_ENV_VARS.find((n) => process.env[n]) : undefined;
-  return { url, source, via, envLocal };
+  const ambientVia = source === 'env' ? PG_URL_ENV_VARS.find((n) => process.env[n]) : undefined;
+  return { url, source, via: ambientVia, envLocal };
 }
 
 /**

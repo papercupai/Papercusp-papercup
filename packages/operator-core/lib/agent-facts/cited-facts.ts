@@ -70,6 +70,7 @@ import {
   FACT_PROVENANCE_QUOTE_CHARS,
   FACTS_PER_SCOPE_CAP,
   factCitationRef,
+  WALL_KEY_PREFIX,
   type FactScope,
 } from './store';
 import type { AssumptionCondition } from './assumptions';
@@ -185,14 +186,17 @@ function excerptOf(body: string): string {
 
 function conditionOf(r: CitedRow): AssumptionCondition {
   if (r.retracted) return 'retracted';
-  if (r.expired) return 'lapsed';
   if (r.superseded) return 'superseded';
+  // A wall TTL marks a review deadline; the unretracted blocker remains active.
+  if (r.expired && !r.key.startsWith(WALL_KEY_PREFIX)) return 'lapsed';
   return 'live';
 }
 
 /** A live row is what the reader actually wants; rank it first, then newest. PURE. */
 function pickRow(rows: readonly CitedRow[]): CitedRow | undefined {
-  const live = rows.filter((r) => !r.retracted && !r.expired && !r.superseded);
+  const live = rows.filter(
+    (r) => !r.retracted && !r.superseded && (!r.expired || r.key.startsWith(WALL_KEY_PREFIX)),
+  );
   const pool = live.length > 0 ? live : rows;
   return pool.reduce<CitedRow | undefined>(
     (best, r) => (best === undefined || Number(r.id) > Number(best.id) ? r : best),

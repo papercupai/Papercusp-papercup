@@ -7,6 +7,7 @@ import {
   readInfraLivenessHealthFromSharedSnapshot,
   hasFreshSuccessfulGitSyncCompletion,
   verifiedGitSyncHealth,
+  gitSyncMissedIntervalsAlarmActive,
   toBridgeConditionStates,
   _resetConditionStalenessDebounce,
 } from './condition-staleness-alarm';
@@ -226,6 +227,28 @@ describe('verifiedGitSyncHealth', () => {
     expect(verifiedGitSyncHealth({ stalled: false }, { stale: false, unknown: false }, true)).toBe(true);
     expect(verifiedGitSyncHealth({ stalled: true }, { stale: false, unknown: false }, true)).toBe(false);
     expect(verifiedGitSyncHealth({ stalled: false }, { stale: false, unknown: false }, false)).toBeUndefined();
+  });
+});
+
+describe('gitSyncMissedIntervalsAlarmActive', () => {
+  it('matches the source alarm threshold and exclusions from writer-backed routine data', () => {
+    const routineFreshness = {
+      missed_intervals: 4,
+      scheduler: { stalled_behind_in_flight_fire: false },
+      execution: { status: 'idle' },
+    };
+    expect(gitSyncMissedIntervalsAlarmActive(routineFreshness, 'nothing', null)).toBe(true);
+    expect(gitSyncMissedIntervalsAlarmActive({ ...routineFreshness, missed_intervals: 3 }, 'nothing', null)).toBe(false);
+    expect(gitSyncMissedIntervalsAlarmActive(routineFreshness, 'error', null)).toBe(false);
+    expect(gitSyncMissedIntervalsAlarmActive(routineFreshness, 'skipped', 'no_path')).toBe(false);
+    expect(
+      gitSyncMissedIntervalsAlarmActive({
+        ...routineFreshness,
+        scheduler: { stalled_behind_in_flight_fire: true },
+        execution: { status: 'in-flight' },
+      }, 'nothing', null),
+    ).toBe(false);
+    expect(gitSyncMissedIntervalsAlarmActive({ missed_intervals: null }, 'nothing', null)).toBeUndefined();
   });
 });
 
@@ -670,6 +693,62 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
     expect(seenKeys).toEqual([[]]);
   });
 
+  it('does not false-clear a starved git-sync missed-interval condition from a healthy shared snapshot', async () => {
+    const now = Date.parse('2026-10-08T09:00:00.000Z');
+    const key = 'infra-liveness:git-sync-missed-intervals:papercusp';
+    const recentlyObserved = new Date(now - 30_000).toISOString();
+    const condition = mkState({
+      condition_key: key,
+      first_seen: recentlyObserved,
+      open_since: recentlyObserved,
+      last_seen: recentlyObserved,
+    });
+    const snapshotKeys: string[][] = [];
+    const routineReads: Array<{ keys: string[]; at: number }> = [];
+    const broadcasts: string[][] = [];
+    const deps = {
+      readStates: async () => [condition],
+      readHealthByKey: async (keys: readonly string[]) => {
+        snapshotKeys.push([...keys]);
+        return new Map(keys.map((requestedKey) => [requestedKey, true]));
+      },
+      readGitSyncHealthByKey: async (keys: readonly string[], at: number) => {
+        routineReads.push({ keys: [...keys], at });
+        const alarmActive = gitSyncMissedIntervalsAlarmActive(
+          {
+            missed_intervals: 4,
+            scheduler: { stalled_behind_in_flight_fire: false },
+            execution: { status: 'idle' },
+          },
+          'nothing',
+          null,
+        );
+        return keys.includes(key) && alarmActive !== undefined
+          ? new Map([[key, !alarmActive]])
+          : new Map<string, boolean>();
+      },
+      listOpen: async () => [] as EscalationRecord[],
+      resolve: async () => {},
+      escalate: async () => {
+        throw new Error('the fresh open condition is not stale');
+      },
+      now: () => now,
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+      broadcastResolvedMany: async (input: { conditionKeys: string[] }) => {
+        broadcasts.push(input.conditionKeys);
+        return true;
+      },
+    };
+
+    const result = await runConditionStalenessTick(deps);
+    expect(snapshotKeys).toEqual([[]]);
+    expect(routineReads).toEqual([{ keys: [key], at: now }]);
+    expect(result.reconciled).toEqual([]);
+    expect(broadcasts).toEqual([]);
+    expect(result.fired).toEqual([]);
+  });
+
   it('EI-211981: a recovered git-sync routine resolves its stale condition before the watchdog broadcast', async () => {
     const now = Date.parse('2026-08-22T23:30:00.000Z');
     const recovered = mkState({
@@ -1087,6 +1166,41 @@ describe('runConditionStalenessTick — bridge wiring', () => {
       },
     });
     expect(seen).toEqual([{ key: 'green-stall:papercusp', open: false }]);
+  });
+
+  it('WI-6554700010009404: keeps a stale one-shot provider condition open through the final bridge input', async () => {
+    const key = 'alarm:codex-rollout-provider:%5B%22papercusp-workspace%22%2C%2240302%22%2C%22su-d88420f0-c0b4-4dc7-92c7-f60ab3ddab44%22%5D';
+    const condition = mkState({
+      condition_key: key,
+      first_seen: '2026-10-12T20:55:48.319Z',
+      open_since: '2026-10-12T20:55:48.319Z',
+      last_seen: '2026-10-13T06:35:46.575Z',
+      alarm_count: 87,
+      one_shot: true,
+    });
+    const resolutionBroadcasts: string[][] = [];
+    const bridgeInputs: Array<{ key: string; open: boolean }> = [];
+
+    const result = await runConditionStalenessTick({
+      readStates: async () => [condition],
+      listOpen: async () => [],
+      escalate: async () => undefined,
+      now: () => Date.parse('2026-10-13T10:00:00.000Z'),
+      absenceMs: 2 * 60 * 60_000,
+      homeHarness: () => 'papercusp',
+      broadcastResolvedMany: async ({ conditionKeys }) => {
+        resolutionBroadcasts.push(conditionKeys);
+        return true;
+      },
+      bridgeConditions: async (states) => {
+        bridgeInputs.push(...states.map((state) => ({ key: state.conditionKey, open: state.open })));
+        return { acquired: [], released: [], skipped: 0 };
+      },
+    });
+
+    expect(result.reconciled).toEqual([]);
+    expect(resolutionBroadcasts).toEqual([]);
+    expect(bridgeInputs).toEqual([{ key, open: true }]);
   });
 
   it('a bridge failure never crashes the tick', async () => {

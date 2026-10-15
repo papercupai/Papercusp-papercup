@@ -44,8 +44,8 @@
  * packages/operator-core/lib/reachable-advisories-guard.test.ts.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, existsSync, realpathSync } from 'node:fs';
+import { join, dirname, basename, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -320,6 +320,60 @@ const SEVERITY_RANK = { unknown: 0, info: 1, low: 2, moderate: 3, high: 4, criti
 const worseSeverity = (a, b) => ((SEVERITY_RANK[b] ?? 0) > (SEVERITY_RANK[a] ?? 0) ? b : a);
 
 /**
+ * Advisories the PROD lens dropped although the prod tree still holds a vulnerable copy.
+ *
+ * The two inputs disagree about what "prod" means, and the disagreement fails OPEN.
+ * `npm audit --omit=dev` decides reachability from the lockfile's `dev` flags, while
+ * `npm ls --omit=dev` (the attribution source) follows peer edges. npm flags a package that
+ * reaches a workspace only as that workspace's PEER dependency `dev: true`, so the prod
+ * lens never reports it and the gate never saw it.
+ *
+ * Measured 2026-10-06 (WI-10006989): @papercusp/token-kit declares style-dictionary
+ * '^4 || ^5' as a peerDependency, `npm ls --omit=dev` shows
+ * token-kit > style-dictionary@4.4.0, and package-lock.json flags
+ * node_modules/style-dictionary `dev: true`. The prod lens dropped GHSA-vj5c-m527-mpff,
+ * and the gate reported the accepted entry STALE ("resolved") while 4.4.0 was installed.
+ * The same mechanism hid patch-package, @bundled-es-modules/glob, find-yarn-workspace-root,
+ * and (on the 10-06 frozen candidate) a CRITICAL vitest advisory.
+ *
+ * A full-lens advisory is folded in when the prod ls tree holds a copy INSIDE its vulnerable
+ * range. Fail closed: without semver or a parseable range, any copy counts. A package with
+ * no copy in the prod ls tree is genuinely dev-only and stays out.
+ *
+ * Keep this ABOVE analyze()'s doc block: placed between that block and analyze(), it
+ * captures the block, and the generated .d.mts narrows analyze's 4th parameter to `null`.
+ *
+ * @param {Record<string, any>} prodVulns  `vulnerabilities` of `npm audit --omit=dev --json`
+ * @param {Record<string, any> | null} fullVulns  `vulnerabilities` of `npm audit --json`
+ * @param {any} lsTree  parsed `npm ls --omit=dev --all --json`
+ * @returns {string[]} sorted package names
+ */
+export function findPeerMaskedAdvisories(prodVulns, fullVulns, lsTree) {
+  if (!fullVulns) return [];
+  const candidates = Object.keys(fullVulns).filter((n) => !Object.hasOwn(prodVulns || {}, n));
+  if (!candidates.length) return [];
+  const copiesByName = collectInstalledVersions(lsTree || {}, candidates);
+  const masked = [];
+  for (const name of candidates) {
+    const copies = copiesByName.get(name) || [];
+    if (!copies.length) continue;
+    const range = typeof fullVulns[name]?.range === 'string' ? fullVulns[name].range.trim() : '';
+    const measurable = semver && range && semver.validRange(range, { loose: true });
+    const inRange = measurable
+      ? copies.filter((v) => {
+          try {
+            return semver.satisfies(v, range, { includePrerelease: true, loose: true });
+          } catch {
+            return true; // an unparseable installed version cannot prove it escapes
+          }
+        })
+      : copies;
+    if (inRange.length) masked.push(name);
+  }
+  return masked.sort();
+}
+
+/**
  * Core analysis. Pure: takes parsed audit + ls JSON, returns the classified population.
  *
  * `fullAuditJson` is the OPTIONAL second lens — `npm audit --json` over the tree as it is
@@ -352,14 +406,16 @@ const worseSeverity = (a, b) => ((SEVERITY_RANK[b] ?? 0) > (SEVERITY_RANK[a] ?? 
  */
 export function analyze(auditJson, lsJson, baseline, fullAuditJson = null) {
   const vulns = auditJson?.vulnerabilities || {};
-  const names = Object.keys(vulns);
+  const fullVulns = fullAuditJson?.vulnerabilities || null;
+  const peerMasked = new Set(findPeerMaskedAdvisories(vulns, fullVulns, lsJson));
+  const names = [...Object.keys(vulns), ...peerMasked];
   const reach = attributeAdvisories(lsJson || {}, names);
   const installed = collectInstalledVersions(lsJson || {}, names);
-  const fullVulns = fullAuditJson?.vulnerabilities || null;
 
   const findings = [];
   for (const name of names) {
-    const v = vulns[name] || {};
+    // A peer-masked finding has no prod-lens record; the full-lens record is its only source.
+    const v = vulns[name] || (peerMasked.has(name) ? fullVulns?.[name] : null) || {};
     const owners = [...(reach.get(name) || [])].sort();
     const attributed = owners.length > 0;
     // Fail closed: an unattributed advisory counts as shipping.
@@ -432,6 +488,7 @@ export function analyze(auditJson, lsJson, baseline, fullAuditJson = null) {
             ? 'patch-eligible'
             : 'deferred-semver-major',
       ...(fixDisagreement ? { fixDisagreement } : {}),
+      ...(peerMasked.has(name) ? { peerMasked: true } : {}),
     });
   }
 
@@ -481,6 +538,7 @@ export function analyze(auditJson, lsJson, baseline, fullAuditJson = null) {
     dispositionDrift,
     unattributed: findings.filter((f) => !f.attributed).map((f) => f.name),
     nonShippingOnly: findings.filter((f) => f.attributed && !f.shipping).length,
+    peerMasked: [...peerMasked],
   };
 }
 
@@ -532,8 +590,9 @@ export function measureJson(label, attempt, opts = {}) {
     try {
       out = attempt();
     } catch (err) {
-      // npm exits non-zero when advisories/extraneous deps exist; that is expected, so we
-      // read stdout regardless and judge only on whether the payload parses.
+      // npm exits non-zero for advisory findings and dependency-tree problems. Keep valid
+      // JSON stdout so the caller can inspect it; npm ls validates its problems before any
+      // audit or advisory analysis runs.
       out = err && err.stdout;
     }
     if (!out || !String(out).trim()) {
@@ -557,6 +616,208 @@ export function measureJson(label, attempt, opts = {}) {
 function runJson(args, label) {
   return measureJson(label, () =>
     execFileSync('npm', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }),
+  );
+}
+
+/**
+ * Split `npm ls` dependency-tree problems into those that can hide part of the shipping
+ * graph (BLOCKING) and those that provably cannot (TOLERATED).
+ *
+ * WHY THE SPLIT: EI-24817591294929415 made this gate fail closed on ANY npm ls problem,
+ * because a lockfile drifted from our manifests let `npm audit --omit=dev` drop a real
+ * shipping advisory. But this monorepo permanently carries third-party peer-range
+ * mismatches (React 19 against libraries whose peer range stops at ^18, mem0ai's pg peers,
+ * claude-agent-sdk's @anthropic-ai/sdk peer, …), which npm reports as `invalid`/`missing`.
+ * The blanket refusal therefore red-pinned the strict leg on EVERY tree from 2026-10-02
+ * (measured 2026-10-06 under WI-10006055: 6 problems on the shared tree, 16 in the gate's
+ * checkout, all third-party peer edges or extraneous installs; npm 10.9.2, 11.6.2 and
+ * 11.19.0 all report them).
+ *
+ * A problem is TOLERATED only when it is provably one of:
+ *   - extraneous: installed but reached by no dependency edge, so it is outside this
+ *     gate's workspace-attributed population whatever the integrity verdict;
+ *   - invalid, where EVERY violated edge is a peer/peerOptional edge declared by an
+ *     installed third-party package (its location is under node_modules/);
+ *   - missing, where the dependent is an installed third-party package that declares the
+ *     name only as a peer/peerOptional dependency.
+ * Everything else BLOCKS: any edge declared by our own root or workspace manifests (the
+ * manifest/lockfile drift EI-24817591294929415 caught), any regular, optional or dev edge,
+ * an unreadable or unlocatable dependent, and any problem the tree does not explain.
+ *
+ * @param {any} lsTree parsed `npm ls --omit=dev --all --json`
+ * @param {string} root the directory npm ls ran in; tree locations are relative to it
+ * @returns {{ blocking: Array<{ problem: string, reason: string }>, tolerated: Array<{ problem: string, reason: string }> }}
+ */
+export function classifyNpmTreeProblems(lsTree, root) {
+  const problems = Array.isArray(lsTree?.problems) ? lsTree.problems.map(String) : [];
+  let realRoot = root;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    // An unreadable root leaves every manifest unreadable, so every peer claim blocks.
+  }
+
+  /** @type {Map<string, { kind: 'blocking' | 'tolerated', reason: string }>} */
+  const verdicts = new Map();
+  const record = (problem, kind, reason) => {
+    const prior = verdicts.get(problem);
+    if (prior && prior.kind === 'blocking') return; // one blocking occurrence decides it
+    if (prior && kind === 'tolerated') return;
+    verdicts.set(problem, { kind, reason });
+  };
+  const blocking = (reason) => ({ kind: /** @type {const} */ ('blocking'), reason });
+  const tolerated = (reason) => ({ kind: /** @type {const} */ ('tolerated'), reason });
+
+  /** @type {Map<string, any>} */
+  const manifests = new Map();
+  const readManifest = (location) => {
+    if (!manifests.has(location)) {
+      let manifest = null;
+      try {
+        manifest = JSON.parse(readFileSync(join(realRoot, location, 'package.json'), 'utf8'));
+      } catch {
+        manifest = null;
+      }
+      manifests.set(location, manifest);
+    }
+    return manifests.get(location);
+  };
+  const edgeKind = (manifest, name) => {
+    if (!manifest || typeof manifest !== 'object') return 'unreadable';
+    if (manifest.dependencies?.[name] != null) return 'prod';
+    if (manifest.optionalDependencies?.[name] != null) return 'optional';
+    if (manifest.peerDependencies?.[name] != null) {
+      return manifest.peerDependenciesMeta?.[name]?.optional ? 'peerOptional' : 'peer';
+    }
+    if (manifest.devDependencies?.[name] != null) return 'dev';
+    return 'undeclared';
+  };
+  const isPeerKind = (kind) => kind === 'peer' || kind === 'peerOptional';
+  const isThirdParty = (location) => location.split(/[\\/]/).includes('node_modules');
+
+  /** Node module resolution from the dependent's directory, as npm installed it. */
+  const locations = new Map();
+  const resolveChild = (parentLocation, name) => {
+    const key = parentLocation + '\0' + name;
+    if (locations.has(key)) return locations.get(key);
+    let found = null;
+    let dir = join(realRoot, parentLocation);
+    for (;;) {
+      if (basename(dir) !== 'node_modules') {
+        const candidate = join(dir, 'node_modules', name);
+        if (existsSync(join(candidate, 'package.json'))) {
+          try {
+            found = relative(realRoot, realpathSync(candidate)).split(sep).join('/');
+          } catch {
+            found = null;
+          }
+          break;
+        }
+      }
+      const fromRoot = relative(realRoot, dir);
+      if (fromRoot === '' || fromRoot.startsWith('..')) break;
+      dir = dirname(dir);
+    }
+    locations.set(key, found);
+    return found;
+  };
+
+  const classifyInvalid = (name, invalid) => {
+    if (typeof invalid !== 'string') return blocking('npm ls did not name the violated edges');
+    const edges = [...invalid.matchAll(/"((?:[^"\\]|\\.)*)" from (.+?)(?=, "|$)/g)];
+    if (edges.length === 0) return blocking('the violated edges could not be parsed');
+    for (const [, spec, from] of edges) {
+      if (from === 'the root project') return blocking(`the root manifest requires ${spec}`);
+      if (!isThirdParty(from)) return blocking(`our manifest ${from} requires ${spec}`);
+      const kind = edgeKind(readManifest(from), name);
+      if (!isPeerKind(kind)) return blocking(`${from} declares it as ${kind} ${spec}`);
+    }
+    return tolerated(`third-party peer range only (${edges.map((edge) => edge[2]).join(', ')})`);
+  };
+  const classifyMissing = (name, parentLocation) => {
+    if (parentLocation === null) return blocking('the dependent could not be located on disk');
+    if (!isThirdParty(parentLocation)) {
+      return blocking(`our manifest ${parentLocation || 'the root project'} requires it`);
+    }
+    const kind = edgeKind(readManifest(parentLocation), name);
+    if (isPeerKind(kind)) return tolerated(`missing third-party peer of ${parentLocation}`);
+    return blocking(`${parentLocation} declares it as ${kind}`);
+  };
+
+  const visit = (node, location) => {
+    for (const [name, child] of Object.entries(node?.dependencies ?? {})) {
+      if (!child || typeof child !== 'object') continue;
+      for (const problem of Array.isArray(child.problems) ? child.problems.map(String) : []) {
+        let verdict;
+        if (problem.startsWith('extraneous:')) verdict = tolerated('extraneous: no dependency edge reaches it');
+        else if (problem.startsWith('invalid:')) verdict = classifyInvalid(name, child.invalid);
+        else if (problem.startsWith('missing:')) verdict = classifyMissing(name, location);
+        else verdict = blocking('unrecognized problem kind');
+        record(problem, verdict.kind, verdict.reason);
+      }
+      if (child.dependencies && Object.keys(child.dependencies).length > 0) {
+        visit(child, location === null ? null : resolveChild(location, name));
+      }
+    }
+  };
+  visit(lsTree, '');
+
+  const result = { blocking: [], tolerated: [] };
+  for (const problem of new Set(problems)) {
+    const verdict = verdicts.get(problem);
+    if (!verdict) {
+      result.blocking.push({ problem, reason: 'npm ls attached this problem to no node in the tree' });
+    } else {
+      result[verdict.kind].push({ problem, reason: verdict.reason });
+    }
+  }
+  return result;
+}
+
+/**
+ * Refuse a dependency tree whose npm ls problems can hide part of the shipping graph.
+ *
+ * @param {any} lsTree parsed `npm ls --omit=dev --all --json`
+ * @param {string} [root] the directory npm ls ran in
+ * @returns {{ blocking: Array<{ problem: string, reason: string }>, tolerated: Array<{ problem: string, reason: string }> }}
+ */
+export function assertNpmTreeIntegrity(lsTree, root = ROOT) {
+  if (!lsTree || typeof lsTree !== 'object' || Array.isArray(lsTree)) {
+    throw new Error(
+      'ADVISORY_GATE_UNDETERMINED: npm ls did not return a dependency-tree object. ' +
+        'This is a measurement failure; no STALE or disposition-drift conclusion is trustworthy.',
+    );
+  }
+
+  const problems = lsTree.problems;
+  if (problems === undefined) return { blocking: [], tolerated: [] };
+  if (!Array.isArray(problems)) {
+    throw new Error(
+      'ADVISORY_GATE_UNDETERMINED: npm ls returned malformed dependency-tree problems metadata. ' +
+        'This is a measurement failure; no STALE or disposition-drift conclusion is trustworthy.',
+    );
+  }
+  if (problems.length === 0) return { blocking: [], tolerated: [] };
+
+  const verdict = classifyNpmTreeProblems(lsTree, root);
+  if (verdict.blocking.length === 0) return verdict;
+
+  const shown = verdict.blocking
+    .slice(0, 5)
+    .map(({ problem, reason }) => `${problem} [${reason}]`)
+    .join('; ');
+  const omitted = verdict.blocking.length > 5 ? '; and ' + (verdict.blocking.length - 5) + ' more' : '';
+  const toleratedNote = verdict.tolerated.length
+    ? ` (${verdict.tolerated.length} other problem(s) were tolerated as third-party peer-range mismatches or extraneous installs)`
+    : '';
+  throw new Error(
+    'ADVISORY_GATE_UNDETERMINED: npm ls reported ' +
+      verdict.blocking.length +
+      ' dependency-tree problem(s) that can hide part of the shipping graph: ' +
+      shown +
+      omitted +
+      toleratedNote +
+      '. The graph may be incomplete; reconcile manifests, lockfile, and install state before trusting STALE or disposition-drift results.',
   );
 }
 
@@ -666,12 +927,29 @@ function main() {
   const auditPath = valueOf('--audit-json');
   const lsPath = valueOf('--ls-json');
   const fullAuditPath = valueOf('--full-audit-json');
-  const audit = auditPath
-    ? JSON.parse(readFileSync(auditPath, 'utf8'))
-    : runJson(['audit', '--omit=dev', '--json'], 'npm audit');
   const ls = lsPath
     ? JSON.parse(readFileSync(lsPath, 'utf8'))
     : runJson(['ls', '--omit=dev', '--all', '--json'], 'npm ls');
+  // A parseable npm ls response can still be incomplete: npm emits JSON with exit status 1
+  // and a problems[] list for invalid/missing/extraneous dependency edges. Refuse that graph
+  // before running either audit lens or allowing it to produce STALE/drift conclusions.
+  // Third-party peer-range mismatches and extraneous installs cannot hide a shipping
+  // dependency, so they are reported here instead of refusing (classifyNpmTreeProblems).
+  const integrity = assertNpmTreeIntegrity(ls);
+  if (integrity.tolerated.length > 0) {
+    const sample = integrity.tolerated
+      .slice(0, 5)
+      .map(({ problem, reason }) => `${problem} [${reason}]`)
+      .join('; ');
+    const more = integrity.tolerated.length > 5 ? `; and ${integrity.tolerated.length - 5} more` : '';
+    console.error(
+      `check-reachable-advisories: tolerated ${integrity.tolerated.length} npm ls problem(s) that cannot hide a shipping dependency: ${sample}${more}`,
+    );
+  }
+
+  const audit = auditPath
+    ? JSON.parse(readFileSync(auditPath, 'utf8'))
+    : runJson(['audit', '--omit=dev', '--json'], 'npm audit');
   // Second lens: the tree as actually installed. Fix feasibility is judged here (see
   // analyze()). Never fatal — if it cannot be read we fall back to the single-lens
   // reading, which is optimistic about fixes but still gates on the same population.
@@ -710,10 +988,12 @@ function main() {
     console.log(`  non-shipping only (reported, not gated): ${r.nonShippingOnly}`);
     console.log(`  unattributed (failed closed as shipping): ${r.unattributed.length}`);
     console.log(`  baselined: ${(baseline.accepted || []).length}   NEW offenders: ${r.offenders.length}`);
+    console.log(`  peer-masked (absent from npm audit --omit=dev, vulnerable copy in the prod tree): ${r.peerMasked.length}`);
     if (r.offenders.length) {
       console.log('\nNEW un-baselined shipping high/critical advisories:');
       for (const o of r.offenders) {
-        console.log(`  ${o.severity.toUpperCase()} ${o.name} fix=${o.fix} owners=${o.owners.join(',') || 'UNATTRIBUTED'}`);
+        const tag = o.peerMasked ? ' [PEER-MASKED]' : '';
+        console.log(`  ${o.severity.toUpperCase()} ${o.name}${tag} fix=${o.fix} owners=${o.owners.join(',') || 'UNATTRIBUTED'}`);
       }
     }
     if (r.stale.length) {

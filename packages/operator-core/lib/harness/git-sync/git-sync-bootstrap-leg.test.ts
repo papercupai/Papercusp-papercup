@@ -277,6 +277,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 
 // Import AFTER the mocks so the module resolves the mocked deps.
 import { runBootstrapLeg } from './git-sync-action';
+import { GitSyncLeaseLostError } from './git-sync-lease-fence';
 import { __resetNoSuchRepoBackoffForTest } from './no-such-repo-backoff';
 
 const SLUG = 'shop-hive';
@@ -414,7 +415,7 @@ describe('runBootstrapLeg', () => {
     const peerHex = Buffer.from(PEER_DEVICE, 'base64').toString('hex');
     listNamespacesMock.mockResolvedValue([peerHex]);
     await runBootstrapLeg(SLUG, WS);
-    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG, expect.any(Function));
     expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
   });
 
@@ -522,7 +523,7 @@ describe('runBootstrapLeg', () => {
 
   it('G-8 cold start (WI-3496): ensures the bare store exists BEFORE reading namespaces', async () => {
     await runBootstrapLeg(SLUG, WS);
-    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG, expect.any(Function));
     const ensureOrder = ensurePotGitRepoMock.mock.invocationCallOrder[0];
     const listOrder = listNamespacesMock.mock.invocationCallOrder[0];
     expect(ensureOrder).toBeLessThan(listOrder);
@@ -552,6 +553,67 @@ describe('runBootstrapLeg', () => {
     expect(repoPath).toBe(`/repos/${SLUG}/${SLUG}`);
     expect(duplex).toBeTruthy();
     expect((opts as Record<string, unknown>).selfDevicePubkey).toBe('c2VsZi1kZXZpY2UtcHVia2V5LWJhc2U2NC0zMmJ5dGVzISEhISE=');
+  });
+
+  /* WI-10006972: the leg runs under the per-install lease, and every write it
+   * starts against the bare store must check that lease first. */
+  describe('WI-10006972: per-install lease guard', () => {
+    const lost = new GitSyncLeaseLostError(SLUG, 'refused', `git-sync:${SLUG}: held by another fire`);
+
+    it('forwards the guard to the ladder and fences its own store writes', async () => {
+      let tripped = false;
+      let guardCalls = 0;
+      const beforeGitCommand = (): void => {
+        guardCalls++;
+        if (tripped) throw lost;
+      };
+      await runBootstrapLeg(SLUG, WS, { beforeGitCommand });
+
+      expect(bootstrapFromPeerMock).toHaveBeenCalledTimes(1);
+      // Forwarded as-is, so bootstrapFromPeer fences its fetches and ref writes.
+      expect((bootstrapFromPeerMock.mock.lastCall?.[2] as Record<string, unknown>).beforeGitCommand).toBe(
+        beforeGitCommand,
+      );
+      expect(guardCalls).toBeGreaterThan(0); // the pack-temp sweep checked it
+
+      // The runGit handed to the leg's own store writer checks the guard BEFORE
+      // spawning git: once tripped, it refuses without running anything.
+      const runGit = (ensurePotGitRepoMock.mock.lastCall as unknown[] | undefined)?.[2] as (
+        args: string[],
+        cwd: string,
+      ) => Promise<unknown>;
+      expect(runGit).toBeTypeOf('function');
+      tripped = true;
+      await expect(runGit(['init', '--bare'], '/nonexistent-store')).rejects.toBe(lost);
+    });
+
+    it('rethrows a lease loss to the lease owner instead of logging it as a leg failure', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        bootstrapFromPeerMock.mockRejectedValueOnce(lost);
+        await expect(runBootstrapLeg(SLUG, WS, { beforeGitCommand: () => {} })).rejects.toBe(lost);
+        expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('bootstrap-tick failed'));
+
+        // CONTROL: any other error is still swallowed and logged, as before.
+        bootstrapFromPeerMock.mockRejectedValueOnce(new Error('dial exploded'));
+        await expect(runBootstrapLeg(SLUG, WS, { beforeGitCommand: () => {} })).resolves.toBeUndefined();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('bootstrap-tick failed: dial exploded'));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('a guard already tripped at the first write stops the leg before it touches the store', async () => {
+      await expect(
+        runBootstrapLeg(SLUG, WS, {
+          beforeGitCommand: () => {
+            throw lost;
+          },
+        }),
+      ).rejects.toBe(lost);
+      expect(listNamespacesMock).not.toHaveBeenCalled();
+      expect(bootstrapFromPeerMock).not.toHaveBeenCalled();
+    });
   });
 
   /* WI-6284 recurrence guards. The bootstrap leg logged every FAILURE and every
@@ -782,7 +844,7 @@ describe('runBootstrapLeg', () => {
       projects: [{ slug: SLUG, self_repo: true }],
     });
     await runBootstrapLeg(SLUG, WS);
-    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG, expect.any(Function));
   });
 
   it('no-ops (no throw) when the registry has no matching entry for slug', async () => {
@@ -877,7 +939,7 @@ describe('runBootstrapLeg', () => {
       projects: [{ slug: 'hello-world-3', hive_slug: 'hello-world-3', self_repo: true, github_repository_id: 1296269 }],
     });
     await runBootstrapLeg('hello-world-3', WS);
-    expect(ensurePotGitRepoMock).toHaveBeenCalledWith('hello-world-3', 'gh-1296269');
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith('hello-world-3', 'gh-1296269', expect.any(Function));
     expect(openHiveGitDuplexToDeviceMock).toHaveBeenCalledTimes(1);
     const [, , req] = openHiveGitDuplexToDeviceMock.mock.calls[0];
     expect((req as { repoKey: string }).repoKey).toBe('gh-1296269');
@@ -915,12 +977,12 @@ describe('runBootstrapLeg', () => {
       }],
     });
     await runBootstrapLeg(SLUG, WS);
-    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, 'gh-octocat--hello-world');
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, 'gh-octocat--hello-world', expect.any(Function));
   });
 
   it('WI-5168: falls back to the local slug when neither github_repository_id nor github_remote is known (pre-existing, non-regressed limitation)', async () => {
     await runBootstrapLeg(SLUG, WS); // default fixture: no github coords at all
-    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG);
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(SLUG, SLUG, expect.any(Function));
   });
 
   it('falls back to the pre-WI-3583 destroyed stub (never dials) when no live swarm topic exists', async () => {
@@ -957,7 +1019,7 @@ describe('runBootstrapLeg', () => {
 
     await runBootstrapLeg(SLUG, WS);
 
-    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(potHomeSlug, 'gh-1296269');
+    expect(ensurePotGitRepoMock).toHaveBeenCalledWith(potHomeSlug, 'gh-1296269', expect.any(Function));
     expect(getBootedHarnessMock).toHaveBeenCalledWith(WS, SLUG);
     expect(getBootedHarnessMock).not.toHaveBeenCalledWith(WS, potHomeSlug);
     expect(bootSingleHarnessMock).not.toHaveBeenCalled();

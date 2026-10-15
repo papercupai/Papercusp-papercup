@@ -1,0 +1,598 @@
+{
+  "irVersion": "0.1",
+  "surface": "account-first-full-product-and-cloud-tutorial",
+  "ecosystem": "react-tailwind",
+  "a11y": {
+    "landmark": "region",
+    "headingLevel": 2
+  },
+  "layout": {
+    "kind": "grid",
+    "ref": "cloud-with-guide",
+    "interactions": [
+      "tab-and-shift-tab-between-guide-and-real-app-controls-without-a-focus-trap",
+      "activate-native-buttons-with-enter-or-space",
+      "retain-keyboard-focus-during-loading-waiting-and-background-state-updates"
+    ],
+    "children": [
+      {
+        "kind": "card",
+        "ref": "account-first-guide",
+        "a11y": {
+          "role": "region",
+          "ariaLabel": {
+            "default": "Papercusp product guide",
+            "key": "productTutorial.title"
+          }
+        },
+        "children": [
+          {
+            "kind": "heading",
+            "copy": {
+              "default": "Welcome to Papercusp",
+              "key": "productTutorial.welcome"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "accountLesson",
+              "shape": "account-org-progress-v3|no-workspace|active|paused|skipped|closed|unavailable"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "productCatalogue",
+              "shape": "all-registered-rail-and-shell-lessons|permission-aware-read-only-targets|unavailable-help"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "billingExplanation",
+              "shape": "current-authenticated-plan-and-receipts|provider-responsibility|unconfigured-and-unavailable"
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "pause"
+          },
+          {
+            "kind": "component",
+            "ref": "skip"
+          },
+          {
+            "kind": "component",
+            "ref": "resume"
+          },
+          {
+            "kind": "component",
+            "ref": "contextual-help"
+          }
+        ],
+        "interactions": [
+          "account-guide-precedes-home-cloud-and-workspace-first-run",
+          "no-domain-actions-on-load-or-navigation",
+          "persist-reviewed-explanations-separately-from-task-completion",
+          "focus-heading-after-explicit-lesson-navigation",
+          "leave-and-resume-without-payment-credentials-or-microphone",
+          "spoken-questions-only-after-explicit-consent"
+        ]
+      },
+      {
+        "kind": "card",
+        "ref": "prepared-workspace-entry",
+        "a11y": {
+          "role": "region",
+          "ariaLabel": {
+            "default": "Beginner workspace entry",
+            "key": "cloudTutorial.copy.30"
+          }
+        },
+        "children": [
+          {
+            "kind": "heading",
+            "copy": {
+              "default": "Do useful work with your first agent",
+              "key": "cloudTutorial.copy.31"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "preparedWorkspaces",
+              "shape": "authorized-healthy-running-rows|loading|public-access-recovery|no-prepared-workspace"
+            }
+          },
+          {
+            "kind": "text",
+            "binding": {
+              "slot": "recommendedDefaultsAndCosts",
+              "shape": "existing-model-and-account-defaults|interactive-mode|provider-and-model-charges"
+            }
+          },
+          {
+            "kind": "component",
+            "ref": "select-prepared-workspace",
+            "interactions": ["select-authorized-existing-workspace-without-provisioning"]
+          },
+          {
+            "kind": "component",
+            "ref": "choose-advanced-path",
+            "interactions": ["explicitly-select-version-1-byoc-path"]
+          }
+        ]
+      },
+      {
+        "kind": "raw",
+        "ref": "existing-cloud-surface",
+        "ecosystem": "react-tailwind",
+        "spec": {
+          "why-raw": "The maintained Cloud and session controls remain the real application; the guide observes them without duplicating their product forms."
+        }
+      },
+      {
+        "kind": "card",
+        "ref": "guide-panel",
+        "a11y": {
+          "role": "region",
+          "ariaLabel": {
+            "default": "First agent guide",
+            "key": "cloudTutorial.copy.1"
+          }
+        },
+        "children": [
+          {
+            "kind": "heading",
+            "copy": {
+              "default": "Get your first agent running",
+              "key": "cloudTutorial.copy.2"
+            },
+            "binding": {
+              "slot": "versionedLessonHeading",
+              "shape": "version-1-first-agent|version-2-useful-work"
+            }
+          },
+          {
+            "kind": "text",
+            "ref": "step-progress",
+            "binding": {
+              "slot": "stepPosition",
+              "shape": "confirmed-domain-state"
+            }
+          },
+          {
+            "kind": "text",
+            "ref": "step-explanation",
+            "binding": {
+              "slot": "lessonContent",
+              "shape": "versioned-public-instruction"
+            }
+          },
+          {
+            "kind": "text",
+            "ref": "step-status",
+            "a11y": {
+              "role": "status",
+              "ariaLive": "polite"
+            },
+            "binding": {
+              "slot": "state",
+              "shape": "loading|waiting|error|ready|completed"
+            }
+          },
+          {
+            "kind": "stack",
+            "direction": "horizontal",
+            "ref": "guide-actions",
+            "children": [
+              {
+                "kind": "component",
+                "ref": "show-target",
+                "copy": {
+                  "default": "Show me",
+                  "key": "cloudTutorial.copy.3"
+                },
+                "a11y": {
+                  "ariaLabel": {
+                    "default": "Show me",
+                    "key": "cloudTutorial.copy.4"
+                  }
+                },
+                "interactions": [
+                  "focus-current-target",
+                  "focus-current-target-only-after-explicit-show-me",
+                  "respect-reduced-motion-when-scrolling-to-target"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "retry",
+                "interactions": [
+                  "retry",
+                  "read-current-domain-state-and-retry-progress-save-without-provisioning-launching-or-resending-tasks"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "pause",
+                "copy": {
+                  "default": "Pause",
+                  "key": "cloudTutorial.copy.5"
+                },
+                "a11y": {
+                  "ariaLabel": {
+                    "default": "Pause",
+                    "key": "cloudTutorial.copy.6"
+                  }
+                },
+                "interactions": [
+                  "pause-guide",
+                  "remove-highlight-and-stop-speech-without-cancelling-product-work",
+                  "focus-resume-guide-after-pause-control-is-removed"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "skip",
+                "copy": {
+                  "default": "Skip lesson",
+                  "key": "cloudTutorial.copy.7"
+                },
+                "a11y": {
+                  "ariaLabel": {
+                    "default": "Skip lesson",
+                    "key": "cloudTutorial.copy.8"
+                  }
+                },
+                "interactions": [
+                  "skip-guide",
+                  "remove-highlight-and-stop-speech-without-cancelling-product-work",
+                  "focus-restart-lesson-after-skip"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "close",
+                "copy": {
+                  "default": "Close guide",
+                  "key": "cloudTutorial.copy.9"
+                },
+                "a11y": {
+                  "ariaLabel": {
+                    "default": "Close guide",
+                    "key": "cloudTutorial.copy.10"
+                  }
+                },
+                "interactions": [
+                  "exit-and-restore-focus",
+                  "restore-connected-entry-or-fall-back-to-keyboard-operable-help-trigger"
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "component",
+            "ref": "contextual-help",
+            "binding": {
+              "slot": "help",
+              "shape": "existing-agent-chat-with-step-status-version-and-optional-public-recovery-category"
+            }
+          },
+          {
+            "kind": "raw",
+            "ref": "existing-versioned-session-controls",
+            "ecosystem": "react-tailwind",
+            "spec": {
+              "why-raw": "Reuse the existing owner-bound launcher, transcript and task controls. Version 1 keeps its sample task; version 2 adds notes-to-action-plan, explicit review, revision and an independently written different task."
+            },
+            "binding": {
+              "slot": "versionedTaskPractice",
+              "shape": "scope-session-request-result-correlated|review-before-revision|review-before-independent-task|pending|public-failure"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "states": {
+    "loading": {
+      "kind": "text",
+      "copy": {
+        "default": "Preparing your lesson…",
+        "key": "cloudTutorial.copy.11"
+      },
+      "a11y": {
+        "role": "status",
+        "ariaLive": "polite"
+      }
+    },
+    "waiting": {
+      "kind": "text",
+      "ref": "waiting",
+      "interactions": [
+        "retain-current-keyboard-focus-and-keep-real-app-controls-operable",
+        "use-check-again-to-read-existing-operation-state-before-an-explicit-product-retry"
+      ],
+      "copy": {
+        "default": "Waiting for the action to finish. You can keep using the app.",
+        "key": "cloudTutorial.copy.12"
+      },
+      "a11y": {
+        "role": "status",
+        "ariaLive": "polite"
+      }
+    },
+    "error": {
+      "kind": "stack",
+      "direction": "vertical",
+      "interactions": [
+        "announce-public-failure-without-moving-focus",
+        "keep-guide-and-product-controls-keyboard-operable",
+        "inspect-product-recovery-before-explicit-retry-without-automatic-side-effects"
+      ],
+      "children": [
+        {
+          "kind": "text",
+          "copy": {
+            "default": "This step needs attention. Follow the recovery shown by the app.",
+            "key": "cloudTutorial.copy.13"
+          },
+          "a11y": {
+            "role": "alert"
+          }
+        },
+        {
+          "kind": "component",
+          "ref": "retry",
+          "copy": {
+            "default": "Check again",
+            "key": "cloudTutorial.copy.14"
+          },
+          "a11y": {
+            "ariaLabel": {
+              "default": "Check again",
+              "key": "cloudTutorial.copy.15"
+            }
+          },
+          "interactions": [
+            "retry",
+            "read-current-domain-state-and-retry-progress-save-without-provisioning-launching-or-resending-tasks"
+          ]
+        }
+      ]
+    },
+    "paused": {
+      "kind": "stack",
+      "direction": "vertical",
+      "interactions": [
+        "keep-real-app-controls-operable-without-highlight-or-speech",
+        "focus-resume-guide-after-pause-control-is-removed"
+      ],
+      "children": [
+        {
+          "kind": "text",
+          "copy": {
+            "default": "Your lesson is paused.",
+            "key": "cloudTutorial.copy.16"
+          }
+        },
+        {
+          "kind": "component",
+          "ref": "resume",
+          "copy": {
+            "default": "Resume guide",
+            "key": "cloudTutorial.copy.17"
+          },
+          "a11y": {
+            "ariaLabel": {
+              "default": "Resume guide",
+              "key": "cloudTutorial.copy.18"
+            }
+          },
+          "interactions": [
+            "resume-guide",
+            "focus-show-me-after-resume-control-is-removed-without-advancing-domain-progress"
+          ]
+        }
+      ]
+    },
+    "skipped": {
+      "kind": "stack",
+      "direction": "vertical",
+      "interactions": [
+        "keep-real-app-controls-operable-without-highlight-or-speech",
+        "focus-restart-lesson-after-skip"
+      ],
+      "children": [
+        {
+          "kind": "text",
+          "copy": {
+            "default": "You can start this lesson again from Help.",
+            "key": "cloudTutorial.copy.19"
+          }
+        },
+        {
+          "kind": "component",
+          "ref": "restart",
+          "copy": {
+            "default": "Restart lesson",
+            "key": "cloudTutorial.copy.23"
+          },
+          "a11y": {
+            "ariaLabel": {
+              "default": "Restart lesson",
+              "key": "cloudTutorial.copy.24"
+            }
+          },
+          "interactions": [
+            "restart-guide-without-replaying-product-actions"
+          ]
+        }
+      ]
+    },
+    "complete": {
+      "kind": "stack",
+      "direction": "vertical",
+      "children": [
+        {
+          "kind": "text",
+          "copy": {
+            "default": "Your first agent lesson is complete.",
+            "key": "cloudTutorial.copy.22"
+          },
+          "a11y": {
+            "role": "status",
+            "ariaLive": "polite"
+          }
+        },
+        {
+          "kind": "component",
+          "ref": "replay",
+          "copy": {
+            "default": "Replay lesson",
+            "key": "cloudTutorial.copy.20"
+          },
+          "a11y": {
+            "ariaLabel": {
+              "default": "Replay lesson",
+              "key": "cloudTutorial.copy.21"
+            }
+          },
+          "interactions": [
+            "replay-explanations-without-resetting-resources-or-creating-domain-success"
+          ]
+        }
+      ]
+    },
+    "missing-target": {
+      "kind": "stack",
+      "direction": "vertical",
+      "children": [
+        {
+          "kind": "text",
+          "copy": {
+            "default": "This control is not available yet. Open the suggested app view or continue using the app.",
+            "key": "cloudTutorial.copy.25"
+          }
+        },
+        {
+          "kind": "component",
+          "ref": "locate",
+          "copy": {
+            "default": "Show me",
+            "key": "cloudTutorial.copy.26"
+          },
+          "a11y": {
+            "ariaLabel": {
+              "default": "Show me",
+              "key": "cloudTutorial.copy.27"
+            }
+          },
+          "interactions": [
+            "navigate-without-product-action",
+            "focus-target-after-user-request-once-it-mounts-or-retain-usable-guide-recovery"
+          ]
+        }
+      ]
+    },
+    "help-unavailable": {
+      "kind": "text",
+      "copy": {
+        "default": "AI help is unavailable. You can continue with the lesson instructions.",
+        "key": "cloudTutorial.copy.28"
+      },
+      "a11y": {
+        "role": "status",
+        "ariaLive": "polite"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "select-prepared-workspace",
+      "registry": "action.primary",
+      "props": {
+        "label": "Use this prepared workspace"
+      }
+    },
+    {
+      "id": "choose-advanced-path",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Advanced: connect my own cloud"
+      }
+    },
+    {
+      "id": "show-target",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Show me"
+      }
+    },
+    {
+      "id": "pause",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Pause"
+      }
+    },
+    {
+      "id": "skip",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Skip lesson"
+      }
+    },
+    {
+      "id": "close",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Close guide"
+      }
+    },
+    {
+      "id": "retry",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Check again"
+      }
+    },
+    {
+      "id": "resume",
+      "registry": "action.primary",
+      "props": {
+        "label": "Resume guide"
+      }
+    },
+    {
+      "id": "replay",
+      "registry": "action.primary",
+      "props": {
+        "label": "Replay lesson"
+      }
+    },
+    {
+      "id": "restart",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Restart lesson"
+      }
+    },
+    {
+      "id": "locate",
+      "registry": "action.secondary",
+      "props": {
+        "label": "Show me"
+      }
+    },
+    {
+      "id": "contextual-help",
+      "registry": "host:existing-agent-chat",
+      "props": {
+        "note": "Reuse the existing chat runtime; deterministic lesson actions remain independent of AI."
+      }
+    }
+  ]
+}

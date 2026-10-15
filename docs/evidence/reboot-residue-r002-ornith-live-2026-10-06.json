@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "reboot-residue R-002 live: disk-cold Ornith served through the :8788 gateway on demand, 200 after 353s, no OOM/drift",
+  "framework": "operational",
+  "command": ["bash", "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-live-probe.sh"],
+  "commandCwd": ".",
+  "exitCode": 0,
+  "startedAt": "2026-10-06T07:40:29Z",
+  "finishedAt": "2026-10-06T07:46:23Z",
+  "summary": "Live probe of AUTO-BAR-R-002-P-002@5 on the dev box, from a verified disk-cold state: llama-ornith.service inactive and the model blob evicted from the page cache. A normal-operation POST http://127.0.0.1:8788/v1/chat/completions naming maxwell1500/ornith-35b:IQ3_M made the gateway start llama-ornith on demand. The gateway's unit audit was clean against catalog 'ornith-35b-iq3m-llama-server', and the request returned HTTP 200 with a choices array after 353s. Immediately afterwards :11435 /v1/models answered 200 listing the Ornith alias, and /admin/local-backends reported ornith-llamaserver enabled:true. ollama and kokoro stayed active with ollama NRestarts unchanged (14211 -> 14211). The gateway journal had zero OOM/load-fail/drift lines, and the llama-server log had zero cudaMalloc/OOM/load-error lines plus 2 loaded/listening lines.",
+  "scope": "Live host plane. The probe sends one completion and reads state; it does not edit units or catalogs. To reach the cold state, llama-ornith was stopped by hand at 07:38:08Z and the blob's page cache dropped with posix_fadvise(DONTNEED). The stop reproduced the idle-backend-reaper's normal end state; the reaper was overdue since 07:30:07Z (tracked separately, WI-10006506). The 900s cold-start budget is the WI-10006503 fix. The gateway serving this probe runs from the canonical tree (npx tsx packages/operator-core/lib/inference-gateway/bin.ts) and its unit entered active at 07:30:15Z, after launch.ts changed at 07:17:48Z, so it ran the fixed budget. The pre-fix budget (300s) is below the measured 353s, so the same request would have returned 502.",
+  "repository": "papercusp",
+  "headAtExecution": "47a899a680fee3cce3b1a023ff52db9b43a24edb",
+  "workItems": ["WI-10005992", "WI-10006503", "WI-10006401"],
+  "spec": {"planSlug": "reboot-residue-service-repairs-2026-10-03", "specId": "AUTO-BAR-R-002-P-002", "specRevision": 5, "evidencePlane": "live"},
+  "oracle": "Independent of the repair: systemd unit state and NRestarts, nvidia-smi, posix_fadvise eviction confirmed by the host Cached drop and a disk-speed 1 GiB read, HTTP status codes and response bodies from :8788 and :11435, and journal/log line counts. The only gateway-reported value read is the /admin/local-backends row, which the clause names. No papercusp test result or work-item claim is consulted.",
+  "redaction": "Home directory rendered as $HOME, user and host names replaced. The /v1/models body line is omitted because it only echoes the alias.",
+  "sourceFiles": [
+    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-live-probe.sh", "sha256": "77b391ee63299276d695497d2565520d99ee75ef6a8801daa75059ea102a45b0"},
+    {"path": "packages/operator-core/lib/inference-gateway/launch.ts", "role": "LOCAL_BACKEND_COLD_START_TIMEOUT_MS = 900_000 (WI-10006503)"}
+  ],
+  "rawEvidence": [
+    {"path": "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-live-probe.txt", "sha256": "1904b0d83e0265eb86aca3d91ffc12fb58d1ff262674a9d3e503bb80e968f9cd"}
+  ],
+  "hostObservations": {
+    "coldState": {
+      "ornithUnitBefore": "inactive",
+      "stoppedAt": "2026-10-06T07:38:08Z",
+      "evictionMethod": "posix_fadvise(DONTNEED) on the model blob",
+      "cachedKbBefore": 23371756,
+      "cachedKbAfter": 15568852,
+      "first1GiBReadMs": 9655,
+      "mincoreNote": "A mincore residency check was not used: it reported 100% even on a freshly evicted control file."
+    },
+    "gatewayUnit": "papercup-inference-gateway.service (user)",
+    "gatewayActiveEnter": "2026-10-06T07:30:15Z",
+    "launchTsMtime": "2026-10-06T07:17:48Z",
+    "coldStartBudgetMs": 900000,
+    "completionUrl": "http://127.0.0.1:8788/v1/chat/completions",
+    "completionModel": "maxwell1500/ornith-35b:IQ3_M",
+    "completionHttp": 200,
+    "completionSeconds": 353,
+    "models11435Http": 200,
+    "models11435HasOrnith": true,
+    "localBackendsOrnithEnabled": true,
+    "ollamaNRestartsBefore": 14211,
+    "ollamaNRestartsAfter": 14211,
+    "gpuUsedMiBBefore": 9286,
+    "gpuUsedMiBAfter": 22955,
+    "llamaServerGpuMiB": 13678,
+    "gatewayBadLines": 0,
+    "llamaLogBadLines": 0,
+    "llamaLogLoadedLines": 2
+  },
+  "assertions": [
+    {"id": "cold-start-verified", "passed": true, "evidence": "PRE ornith=inactive. Host Cached fell 23371756 -> 15568852 kB after the fadvise, and the first 1 GiB of the blob read in 9655 ms, which is disk speed rather than page-cache speed."},
+    {"id": "on-demand-start-via-gateway", "passed": true, "evidence": "Gateway journal 07:40:29Z: 'local backend ornith-llamaserver (llama-ornith.service) is not answering — starting it on demand'. 07:45:03Z: 'started on demand and is answering — routing resumed'. The llama-ornith journal shows systemd starting the unit at 07:40:29Z."},
+    {"id": "unit-audit-clean", "passed": true, "evidence": "Gateway journal 07:40:29Z: 'unit audit clean for ornith-llamaserver — unit matches catalog ornith-35b-iq3m-llama-server (params, required env, engine binary)'."},
+    {"id": "completion-200", "passed": true, "evidence": "COMPLETION_HTTP=200 after 353s, response model maxwell1500/ornith-35b:IQ3_M, choices present (COMPLETION_HAS_CHOICES=1)."},
+    {"id": "served-model-listed", "passed": true, "evidence": "GET :11435/v1/models -> 200 and the body names maxwell1500/ornith-35b:IQ3_M (MODELS_11435_HAS_ORNITH=1)."},
+    {"id": "local-backend-enabled", "passed": true, "evidence": "GET :8788/admin/local-backends row id=ornith-llamaserver reports enabled:true."},
+    {"id": "no-collateral-restart", "passed": true, "evidence": "POST ornith=active, ollama=active with NRestarts 14211 -> 14211, kokoro=active. The pre-existing GPU apps (node 1818 MiB, kokoro 1020 MiB, node 5982 MiB) are still present and unchanged after the load; llama-server added 13678 MiB."},
+    {"id": "no-oom-or-drift", "passed": true, "evidence": "GATEWAY_BAD_LINES=0 (oom|out of memory|load fail|failed to load|drift). LLAMA_LOG_BAD_LINES=0 (cudaMalloc failed|out of memory|failed to load model|error loading model). LLAMA_LOG_LOADED=2."},
+    {"id": "disclosed-unrelated-upstream-error", "passed": true, "evidence": "Disclosure, not a failure: a 07:43:05Z gateway line 'claude upstream failed: fetch failed (ETIMEDOUT)' matched the probe's broad 'fail' display filter. It is a Claude-account upstream request, not the Ornith path, and it does not match the GATEWAY_BAD_LINES pattern."}
+  ]
+}

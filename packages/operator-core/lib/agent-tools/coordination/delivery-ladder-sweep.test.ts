@@ -20,6 +20,7 @@ import {
 } from './delivery-ladder-sweep';
 import type { sendMessage } from './messages';
 import type { wakeRecipients } from './inbox-wake';
+import type { UnansweredDirectedSummary } from './unanswered-directed';
 
 const NOW = Date.parse('2026-07-11T12:00:00Z');
 const MIN = 60_000;
@@ -489,6 +490,8 @@ describe('runDeliveryLadderSweepOnce (DI end-to-end, no PG)', () => {
       fetchReads: vi.fn(async () => new Map<string, string>()),
       fetchSignals: vi.fn(async () => new Map([['su-deaf', LIVE]])),
       fetchCapped: vi.fn(async () => new Set<string>()),
+      hasPgFastPath: vi.fn(() => false),
+      fetchUnanswered: vi.fn(async () => new Map<string, UnansweredDirectedSummary>()),
       ...over,
     };
   }
@@ -509,6 +512,65 @@ describe('runDeliveryLadderSweepOnce (DI end-to-end, no PG)', () => {
       source: DELIVERY_LADDER_OWNER,
       workspaceId: 'ws-1',
     }));
+  });
+
+  it('suppresses only workspaces with an authoritative zero unanswered count', async () => {
+    const actionable: UnansweredDirectedSummary = {
+      count: 1,
+      oldestAgeMs: 0,
+      newest: [],
+      staleCount: 0,
+      staleOldestAgeMs: 0,
+      senders: [],
+    };
+    const fetchUnanswered = vi.fn(async (_owners: string[], workspaceId: string) =>
+      workspaceId === 'ws-answered'
+        ? new Map<string, UnansweredDirectedSummary>()
+        : new Map([['su-deaf', actionable]]),
+    );
+    const io = makeIo({
+      fetchCandidates: vi.fn(async () => [
+        row('su-deaf', { workspace_id: 'ws-answered' }),
+        row('su-deaf', { workspace_id: 'ws-actionable' }),
+      ]),
+      hasPgFastPath: vi.fn(() => true),
+      fetchUnanswered,
+    });
+
+    const res = await runDeliveryLadderSweepOnce({ nowMs: NOW, io });
+
+    expect(fetchUnanswered).toHaveBeenNthCalledWith(1, ['su-deaf'], 'ws-answered');
+    expect(fetchUnanswered).toHaveBeenNthCalledWith(2, ['su-deaf'], 'ws-actionable');
+    expect(res).toEqual({ candidates: 2, escalations: 1, woken: 1, truncated: false });
+    expect(io.wakeMock).toHaveBeenCalledWith(['su-deaf'], expect.objectContaining({
+      workspaceId: 'ws-actionable',
+    }));
+  });
+
+  it('fails open without the PG fast path and does not mistake unavailable for zero', async () => {
+    const fetchUnanswered = vi.fn(async () => new Map<string, UnansweredDirectedSummary>());
+    const io = makeIo({ hasPgFastPath: vi.fn(() => false), fetchUnanswered });
+
+    const res = await runDeliveryLadderSweepOnce({ nowMs: NOW, io });
+
+    expect(res.escalations).toBe(1);
+    expect(fetchUnanswered).not.toHaveBeenCalled();
+    expect(io.sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails open when the unanswered lookup throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchUnanswered = vi.fn(async () => {
+      throw new Error('coordination DB unavailable');
+    });
+    const io = makeIo({ hasPgFastPath: vi.fn(() => true), fetchUnanswered });
+
+    const res = await runDeliveryLadderSweepOnce({ nowMs: NOW, io });
+
+    expect(res.escalations).toBe(1);
+    expect(io.sendMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('preserving candidates'));
+    warn.mockRestore();
   });
 
   it('zero candidates short-circuits — no read/signal/cap fetches, no sends', async () => {

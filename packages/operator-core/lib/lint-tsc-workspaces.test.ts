@@ -54,6 +54,7 @@ afterEach(() => {
 
 type Spec = {
   typecheck?: boolean;
+  typecheckScript?: string;
   tsconfig?: boolean;
   corrupt?: boolean;
   /** Explicit package name — needed for dependency fixtures, which must be `@papercusp/*`. */
@@ -78,7 +79,7 @@ function makeTree(pkgs: Record<string, Spec>): string {
       join(dir, 'package.json'),
       JSON.stringify({
         name: spec.name ?? rel.replace(/\//g, '-'),
-        scripts: spec.typecheck ? { typecheck: 'tsc --noEmit' } : {},
+        scripts: spec.typecheck ? { typecheck: spec.typecheckScript ?? 'tsc --noEmit' } : {},
         ...(spec.deps?.length
           ? { dependencies: Object.fromEntries(spec.deps.map((d) => [d, '*'])) }
           : {}),
@@ -135,6 +136,31 @@ describe('discovery — a new gated package must not have to be remembered', () 
 });
 
 describe('focused --files routing (EI-21491386096171610)', () => {
+  it('preserves each baseline delegate file scope without passing custom flags to raw tsc', () => {
+    const root = makeTree({
+      'packages/focused': { typecheck: true, typecheckScript: 'node ../../scripts/lint-tsc-agent-mcp.mjs' },
+      'packages/second': { typecheck: true, typecheckScript: 'node ../../scripts/lint-tsc-operator-public.mjs' },
+      'packages/plain': { typecheck: true },
+    });
+    const sink = makeSink();
+    const commands: Record<string, string[]> = {};
+    const code = main({
+      repoRoot: root, roots: ['packages'], exempt: NO_EXEMPT,
+      files: ['packages/focused/src/a.ts', 'packages/focused/src/a.test.ts', 'packages/second/src/b.ts', 'packages/plain/src/c.ts'],
+      spawn: (pkg: { rel: string; command?: string[] }) => {
+        commands[pkg.rel] = commandFor(pkg);
+        return PASS;
+      },
+      ...sink.io,
+    });
+    expect(code).toBe(0);
+    expect(commands).toEqual({
+      'packages/focused': ['npm', 'run', 'typecheck', '--', '--files=packages/focused/src/a.ts,packages/focused/src/a.test.ts'],
+      'packages/second': ['npm', 'run', 'typecheck', '--', '--files=packages/second/src/b.ts'],
+      'packages/plain': ['npm', 'run', 'typecheck'],
+    });
+  });
+
   it('parses equals, separated, repeated, comma-separated, and Windows-style file args', () => {
     expect(
       parseFilesArgs([
@@ -605,19 +631,30 @@ describe('dependency-ordered traversal (workstream G adoption, WI-36257)', () =>
     expect(blockersOf({ rel: 'libs/generic/solo' })).toEqual([]);
   });
 
-  it('the REAL gated set is orderable, and every dependency precedes its dependent', () => {
+  it('the REAL gated set keeps cycle batches contiguous and orders every external dependency first', () => {
     // A live guard, not a fixture: if a future edit breaks the edge source (or someone drops
     // `key`), edges collapse toward 0 and this ordering silently stops meaning anything.
     const { packages } = selectGatedPackages();
-    const { ordered, blockersOf, edges } = orderPackages(packages);
+    const { ordered, blockersOf, edges, cycles } = orderPackages(packages);
     expect(ordered.length).toBe(packages.length);
     expect(edges).toBeGreaterThan(0);
 
     const position = new Map<string, number>(
       (ordered as { rel: string }[]).map((p, i) => [p.rel, i] as [string, number]),
     );
+    const cycleOf = new Map<string, number>();
+    cycles.forEach((cycle: { rel: string }[], index: number) => {
+      const positions = cycle.map(pkg => {
+        cycleOf.set(pkg.rel, index);
+        return position.get(pkg.rel) as number;
+      }).sort((a, b) => a - b);
+      expect(positions.at(-1)! - positions[0]!).toBe(positions.length - 1);
+    });
     for (const pkg of ordered as { rel: string }[]) {
       for (const dep of blockersOf(pkg) as string[]) {
+        // Ordering both directions of a cycle is impossible. The maintained
+        // dependency-order contract emits that strongly connected set as a batch.
+        if (cycleOf.has(pkg.rel) && cycleOf.get(pkg.rel) === cycleOf.get(dep)) continue;
         expect(
           position.get(dep),
           `${dep} must be compiled before its dependent ${pkg.rel}`,

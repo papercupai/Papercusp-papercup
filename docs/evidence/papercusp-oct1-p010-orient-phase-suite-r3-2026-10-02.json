@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "incomplete": false,
+  "sourceStart": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts",
+      "sha256": "3f6cd367c57da2f8b697a8cbb710ce890d12587eb5250d1ee224fad27a801ed1"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/tools/orient-obligations.integration.test.ts",
+      "sha256": "783253d467aa2ff4229f57cf17828e64f0e79910ed4514bce42961ce9459eb33"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligation-reader.ts",
+      "sha256": "7056929b1efd36ed22d887c68ceb9463424fcf2b997621f1ea1cb7dc658f3f2a"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligation-providers.ts",
+      "sha256": "ed51f40c7af0d5f8a9c715b2576ffc0b8485dabca7aac4b5616d7f839d13d196"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligations.ts",
+      "sha256": "2251e85797fbf4a3024b23e257fdeaffb1fdc80b6f3a78aa769ba469ab42e225"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-facts/store.ts",
+      "sha256": "94e24a97bb7b3f2cdb24d69fbf444179a265cb991db539ba53d0ccbb165728d7"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-launch-settings.ts",
+      "sha256": "ac05c4fb0a5d11b4e0ae26f7de56b8ea58da7d63a2e15ac25e279c97ef3d9dde"
+    }
+  ],
+  "snapshots": [
+    {
+      "phase": "seeded-guard",
+      "ms": 315.20261799999935,
+      "facts": [
+        {
+          "scope": "harness",
+          "ref": "papercusp",
+          "body": "R-5 harness fact r5-orient-1790917187001-z0mngp"
+        },
+        {
+          "scope": "owner",
+          "ref": "su-orient-obligations-1790917187001-z0mngp",
+          "body": "R-5 ordinary owner fact r5-orient-1790917187001-z0mngp"
+        },
+        {
+          "scope": "owner",
+          "ref": "su-orient-obligations-1790917187001-z0mngp",
+          "body": "R-5 owner guard rail r5-orient-1790917187001-z0mngp"
+        }
+      ],
+      "states": [
+        {
+          "ruleId": "goal-owner-report",
+          "status": "due"
+        },
+        {
+          "ruleId": "goal-plan-placement",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "goal-planning-needed",
+          "status": "due"
+        },
+        {
+          "ruleId": "owner-directive-disposition",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "waiting-on-progress",
+          "status": "not-applicable"
+        }
+      ],
+      "primary": [
+        "goal-owner-report",
+        "goal-planning-needed"
+      ]
+    },
+    {
+      "phase": "fact-write-guard",
+      "ms": 321.18910600000163,
+      "facts": [
+        {
+          "scope": "harness",
+          "ref": "papercusp",
+          "body": "R-5 harness fact r5-orient-1790917187001-z0mngp"
+        },
+        {
+          "scope": "owner",
+          "ref": "su-orient-obligations-1790917187001-z0mngp",
+          "body": "R-5 ordinary owner fact r5-orient-1790917187001-z0mngp updated"
+        },
+        {
+          "scope": "owner",
+          "ref": "su-orient-obligations-1790917187001-z0mngp",
+          "body": "R-5 owner guard rail r5-orient-1790917187001-z0mngp"
+        }
+      ],
+      "states": [
+        {
+          "ruleId": "goal-owner-report",
+          "status": "due"
+        },
+        {
+          "ruleId": "goal-plan-placement",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "goal-planning-needed",
+          "status": "due"
+        },
+        {
+          "ruleId": "owner-directive-disposition",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "waiting-on-progress",
+          "status": "not-applicable"
+        }
+      ],
+      "primary": [
+        "goal-owner-report",
+        "goal-planning-needed"
+      ]
+    },
+    {
+      "phase": "goal-stop-guard",
+      "ms": 303.90603399999964,
+      "facts": [
+        {
+          "scope": "harness",
+          "ref": "papercusp",
+          "body": "R-5 harness fact r5-orient-1790917187001-z0mngp"
+        },
+        {
+          "scope": "owner",
+          "ref": "su-orient-obligations-1790917187001-z0mngp",
+          "body": "R-5 ordinary owner fact r5-orient-1790917187001-z0mngp updated"
+        },
+        {
+          "scope": "owner",
+          "ref": "su-orient-obligations-1790917187001-z0mngp",
+          "body": "R-5 owner guard rail r5-orient-1790917187001-z0mngp"
+        }
+      ],
+      "states": [
+        {
+          "ruleId": "goal-owner-report",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "goal-plan-placement",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "goal-planning-needed",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "owner-directive-disposition",
+          "status": "not-applicable"
+        },
+        {
+          "ruleId": "waiting-on-progress",
+          "status": "not-applicable"
+        }
+      ],
+      "primary": []
+    }
+  ],
+  "scope": "Production orient handler, real GOAL providers and fact store; phase guard only, no full R-5 or shipment claim.",
+  "sourceEnd": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts",
+      "sha256": "3f6cd367c57da2f8b697a8cbb710ce890d12587eb5250d1ee224fad27a801ed1"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/tools/orient-obligations.integration.test.ts",
+      "sha256": "783253d467aa2ff4229f57cf17828e64f0e79910ed4514bce42961ce9459eb33"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligation-reader.ts",
+      "sha256": "7056929b1efd36ed22d887c68ceb9463424fcf2b997621f1ea1cb7dc658f3f2a"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligation-providers.ts",
+      "sha256": "ed51f40c7af0d5f8a9c715b2576ffc0b8485dabca7aac4b5616d7f839d13d196"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligations.ts",
+      "sha256": "2251e85797fbf4a3024b23e257fdeaffb1fdc80b6f3a78aa769ba469ab42e225"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-facts/store.ts",
+      "sha256": "94e24a97bb7b3f2cdb24d69fbf444179a265cb991db539ba53d0ccbb165728d7"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-launch-settings.ts",
+      "sha256": "ac05c4fb0a5d11b4e0ae26f7de56b8ea58da7d63a2e15ac25e279c97ef3d9dde"
+    }
+  ]
+}

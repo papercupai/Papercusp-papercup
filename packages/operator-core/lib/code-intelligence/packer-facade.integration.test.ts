@@ -30,6 +30,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
   CODE2PROMPT_PINNED_VERSION,
+  nativeChangeReport,
   packerFacade,
   packerIdentity,
   REPOMIX_PINNED_VERSION,
@@ -64,6 +65,31 @@ beforeAll(() => {
 
 afterAll(() => {
   if (dir) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('native P010 diff report through the actual compiler worker', () => {
+  it('finds the reference consumer of the edited symbol and refreshes after its source changes', async () => {
+    writeFileSync(join(dir, 'alpha.ts'), 'export function changedTarget() { return 3; }\n');
+    writeFileSync(join(dir, 'consumer.ts'), 'import { changedTarget } from "./alpha";\nexport const answer = changedTarget();\n');
+    try {
+      const args = { rootPath: dir, include: ['*.ts'], baseRef: 'HEAD' };
+      const subject = { symbol: 'changedTarget', file: 'alpha.ts', paths: ['.'] };
+      const first = await nativeChangeReport(args, subject);
+      expect(first.answer.error).toBeNull();
+      expect(first.report.consumers.map(site => `${site.path}:${site.line1}`)).toEqual(['consumer.ts:2']);
+      expect(first.report.changed.map(file => file.path)).toContain('alpha.ts');
+      expect(first.report.freshness).toBe('first-read');
+      expect(first.report.provenance.dirty).toBe(true);
+      writeFileSync(join(dir, 'consumer.ts'), 'export const answer = 3;\n');
+      const next = await nativeChangeReport(args, { ...subject, previousFingerprint: first.report.sourceFingerprint });
+      expect(next.report.consumers).toEqual([]);
+      expect(next.report.freshness).toBe('changed');
+      expect(next.report.limitations.some(line => line.includes('runtime execution'))).toBe(true);
+    } finally {
+      writeFileSync(join(dir, 'alpha.ts'), 'export const alpha = 1;\n');
+      rmSync(join(dir, 'consumer.ts'), { force: true });
+    }
+  }, 120_000);
 });
 
 describe('the pins are REAL — the constants are compared to the binaries', () => {

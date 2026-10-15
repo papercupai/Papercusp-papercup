@@ -9,11 +9,13 @@
  * noise (over-gates) or into a rubber stamp (under-gates), and both look green from outside.
  *
  * The analyzer is a pure function over parsed `npm audit` / `npm ls` JSON, so every case
- * below runs on inline fixtures — no npm invocation, no shared-tree mutation (the
- * copy-out/fixture tier from CLAUDE.md's falsifiability table).
+ * uses inline fixtures. The workspace integrity controls also exercise the real npm
+ * CLI on isolated temporary packages; no shared-tree mutation is involved.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // Enrolled in tsconfig.declarations.json, so this import is TYPED (generated sibling
 // scripts/check-reachable-advisories.d.mts). That is deliberate: it pins `analyze()`'s
@@ -22,9 +24,12 @@ import { join } from 'node:path';
 // to compile instead of passing.
 import {
   analyze,
+  assertNpmTreeIntegrity,
   attributeAdvisories,
+  classifyNpmTreeProblems,
   collectInstalledVersions,
   deriveFixFeasibility,
+  findPeerMaskedAdvisories,
   isNonShipping,
   measureJson,
 } from '../../../scripts/check-reachable-advisories.mjs';
@@ -122,6 +127,243 @@ describe('reachable-advisory gate: fails closed on a measurement gap', () => {
     const r = analyze(AUDIT_FIXTURE, {}, { accepted: [] });
     expect(r.offenders.length).toBeGreaterThan(0);
     expect(r.unattributed.length).toBe(Object.keys(AUDIT_FIXTURE.vulnerabilities).length);
+  });
+
+  it('rejects parseable npm ls problem JSON before reading or running either audit lens', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reachable-advisories-guard-'));
+    try {
+      const lsPath = join(dir, 'ls.json');
+      const missingAuditPath = join(dir, 'audit.json');
+      const missingFullAuditPath = join(dir, 'full-audit.json');
+      writeFileSync(
+        lsPath,
+        JSON.stringify({
+          dependencies: LS_FIXTURE.dependencies,
+          problems: ['invalid: style-dictionary@4.4.0'],
+        }),
+      );
+
+      // Missing audit files prove tree validation runs first. If the CLI reads either audit
+      // input before checking npm ls problems, it reports ENOENT instead of the integrity gap.
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(REPO_ROOT, 'scripts', 'check-reachable-advisories.mjs'),
+          '--ls-json',
+          lsPath,
+          '--audit-json',
+          missingAuditPath,
+          '--full-audit-json',
+          missingFullAuditPath,
+        ],
+        { cwd: REPO_ROOT, encoding: 'utf8', timeout: 5000 },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('ADVISORY_GATE_UNDETERMINED: npm ls reported 1 dependency-tree problem');
+      expect(result.stderr).not.toContain('ENOENT');
+      expect(result.stdout).not.toContain('STALE baseline entries');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('reachable-advisory gate: real npm workspace override integrity', () => {
+  // npm 11.12.1 leaves overrides on workspace Link nodes without forwarding them
+  // to their targets. A healthy security override then looks invalid to npm ls.
+  // Exercise the CLI that the gate actually uses, including genuinely invalid controls.
+  function measureWorkspaceTree({
+    leafVersion = '2.0.0',
+    transitive = false,
+    mismatchedPeer = false,
+  } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'advisory-workspace-override-'));
+    const put = (directory: string, manifest: Record<string, unknown>) => {
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, 'package.json'), JSON.stringify(manifest));
+    };
+    try {
+      put(root, {
+        name: 'override-root', version: '1.0.0', private: true,
+        workspaces: ['packages/*'],
+        dependencies: { 'workspace-consumer': '*' },
+        overrides: { 'override-leaf': '^2.0.0' },
+      });
+      put(join(root, 'packages/consumer'), {
+        name: 'workspace-consumer', version: '1.0.0',
+        dependencies: transitive ? { 'override-parent': '1.0.0' } : { 'override-leaf': '1.0.0' },
+        ...(mismatchedPeer ? { peerDependencies: { 'unrelated-peer': '^1.0.0' } } : {}),
+      });
+      put(join(root, 'node_modules/override-leaf'), { name: 'override-leaf', version: leafVersion });
+      symlinkSync('../packages/consumer', join(root, 'node_modules/workspace-consumer'), 'dir');
+      if (transitive) {
+        put(join(root, 'node_modules/override-parent'), {
+          name: 'override-parent', version: '1.0.0', dependencies: { 'override-leaf': '1.0.0' },
+        });
+      }
+      if (mismatchedPeer) {
+        put(join(root, 'node_modules/unrelated-peer'), { name: 'unrelated-peer', version: '2.0.0' });
+      }
+      const result = spawnSync('npm', ['ls', '--omit=dev', '--all', '--json'], {
+        cwd: root, encoding: 'utf8', timeout: 15_000,
+        env: { ...process.env, npm_config_workspaces: 'true' },
+      });
+      expect(result.error).toBeUndefined();
+      return {
+        status: result.status,
+        tree: JSON.parse(result.stdout) as {
+          problems?: string[];
+          dependencies: Record<string, { dependencies: Record<string, { version: string; overridden?: boolean }> }>;
+        },
+      };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('accepts a correctly installed root override on a workspace dependency', () => {
+    const { status, tree } = measureWorkspaceTree();
+    expect(tree.problems ?? []).toEqual([]);
+    expect(status).toBe(0);
+    expect(tree.dependencies['workspace-consumer'].dependencies['override-leaf'].version).toBe('2.0.0');
+  });
+
+  it('forwards root overrides through a workspace to a transitive dependency', () => {
+    const { status, tree } = measureWorkspaceTree({ transitive: true });
+    expect(tree.problems ?? []).toEqual([]);
+    expect(status).toBe(0);
+  });
+
+  it('rejects an installed version that violates the effective root override', () => {
+    // 1.0.0 satisfies the raw workspace range but violates the effective ^2.0.0.
+    const { status, tree } = measureWorkspaceTree({ leafVersion: '1.0.0' });
+    expect(status).toBe(1);
+    expect(tree.problems).toEqual(expect.arrayContaining([expect.stringContaining('invalid: override-leaf@1.0.0')]));
+  });
+
+  it('preserves a genuine unrelated peer mismatch alongside a healthy override', () => {
+    const { status, tree } = measureWorkspaceTree({ mismatchedPeer: true });
+    expect(status).toBe(1);
+    expect(tree.problems).toEqual(expect.arrayContaining([expect.stringContaining('invalid: unrelated-peer@2.0.0')]));
+    expect(tree.problems?.some((problem) => problem.includes('invalid: override-leaf'))).toBe(false);
+  });
+});
+
+describe('reachable-advisory gate: npm ls problem classification (real npm output)', () => {
+  // Measured 2026-10-06 (WI-10006055): the blanket fail-closed on npm ls problems red-pinned
+  // the strict leg on every tree, because this repo always carries third-party peer-range
+  // mismatches (React 19 vs ^18 peers, mem0ai's pg peers, ...). Only those, and extraneous
+  // installs, may be tolerated. Our own manifests and regular edges must still refuse, or
+  // the lockfile drift EI-24817591294929415 caught would pass again. Each case runs REAL
+  // npm ls so the parser stays bound to npm's actual `invalid` / `missing` output format.
+  type Layout = {
+    libSharedEdge?: 'peerDependencies' | 'dependencies';
+    workspacePeer?: boolean;
+    libGhostEdge?: 'peerDependencies' | 'dependencies';
+    stray?: boolean;
+  };
+  function classifyRealTree(layout: Layout) {
+    const root = mkdtempSync(join(tmpdir(), 'advisory-problem-classes-'));
+    const put = (directory: string, manifest: Record<string, unknown>) => {
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, 'package.json'), JSON.stringify(manifest));
+    };
+    try {
+      put(root, {
+        name: 'classes-root', version: '1.0.0', private: true,
+        workspaces: ['packages/*'],
+        dependencies: { 'ws-app': '*' },
+      });
+      put(join(root, 'packages/app'), {
+        name: 'ws-app', version: '1.0.0',
+        dependencies: { 'lib-a': '1.0.0' },
+        ...(layout.workspacePeer ? { peerDependencies: { shared: '^1.0.0' } } : {}),
+      });
+      mkdirSync(join(root, 'node_modules'), { recursive: true });
+      symlinkSync('../packages/app', join(root, 'node_modules/ws-app'), 'dir');
+      const libEdges: Record<string, Record<string, string>> = {};
+      if (layout.libSharedEdge) libEdges[layout.libSharedEdge] = { shared: '^1.0.0' };
+      if (layout.libGhostEdge) libEdges[layout.libGhostEdge] = { ...libEdges[layout.libGhostEdge], ghost: '^1.0.0' };
+      put(join(root, 'node_modules/lib-a'), { name: 'lib-a', version: '1.0.0', ...libEdges });
+      if (layout.libSharedEdge || layout.workspacePeer) {
+        put(join(root, 'node_modules/shared'), { name: 'shared', version: '2.0.0' });
+      }
+      if (layout.stray) put(join(root, 'node_modules/stray'), { name: 'stray', version: '1.0.0' });
+      const result = spawnSync('npm', ['ls', '--omit=dev', '--all', '--json'], {
+        cwd: root, encoding: 'utf8', timeout: 15_000,
+        env: { ...process.env, npm_config_workspaces: 'true' },
+      });
+      expect(result.error).toBeUndefined();
+      const tree = JSON.parse(result.stdout) as { problems?: string[] };
+      return { tree, verdict: classifyNpmTreeProblems(tree, root) };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  const problemsOf = (rows: Array<{ problem: string }>) => rows.map((row) => row.problem).join(' | ');
+
+  it('CALIBRATION: tolerates third-party peer mismatches, missing third-party peers and extraneous installs', () => {
+    const { tree, verdict } = classifyRealTree({
+      libSharedEdge: 'peerDependencies',
+      libGhostEdge: 'peerDependencies',
+      stray: true,
+    });
+    // The control is only meaningful if npm really reported all three kinds.
+    expect(tree.problems ?? []).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('invalid: shared@2.0.0'),
+        expect.stringContaining('missing: ghost@^1.0.0'),
+        expect.stringContaining('extraneous: stray@1.0.0'),
+      ]),
+    );
+    expect(verdict.blocking).toEqual([]);
+    expect(verdict.tolerated).toHaveLength((tree.problems ?? []).length);
+  });
+
+  it('BLOCKS an invalid edge a third-party package declares as a regular dependency', () => {
+    const { tree, verdict } = classifyRealTree({ libSharedEdge: 'dependencies' });
+    expect(tree.problems ?? []).toEqual(expect.arrayContaining([expect.stringContaining('invalid: shared@2.0.0')]));
+    expect(problemsOf(verdict.blocking)).toContain('invalid: shared@2.0.0');
+    expect(verdict.blocking[0].reason).toContain('declares it as prod');
+  });
+
+  it('BLOCKS a peer mismatch declared by OUR workspace manifest (manifest drift is the original hazard)', () => {
+    const { tree, verdict } = classifyRealTree({ workspacePeer: true });
+    expect(tree.problems ?? []).toEqual(expect.arrayContaining([expect.stringContaining('invalid: shared@2.0.0')]));
+    expect(problemsOf(verdict.blocking)).toContain('invalid: shared@2.0.0');
+    expect(verdict.blocking[0].reason).toContain('our manifest packages/app');
+  });
+
+  it('BLOCKS a missing regular dependency of a third-party package', () => {
+    const { tree, verdict } = classifyRealTree({ libGhostEdge: 'dependencies' });
+    expect(tree.problems ?? []).toEqual(expect.arrayContaining([expect.stringContaining('missing: ghost@^1.0.0')]));
+    expect(problemsOf(verdict.blocking)).toContain('missing: ghost@^1.0.0');
+  });
+
+  it('BLOCKS a dependency missing from the root manifest', () => {
+    // npm in workspaces mode does not list root-level edges, so this shape is constructed:
+    // a missing child of the root has the root project ('') as its dependent.
+    const problem = 'missing: absent-root-dep@^1.0.0, required by classes-root@1.0.0';
+    const tree = {
+      dependencies: { 'absent-root-dep': { required: '^1.0.0', missing: true, problems: [problem] } },
+      problems: [problem],
+    };
+    const verdict = classifyNpmTreeProblems(tree, tmpdir());
+    expect(verdict.tolerated).toEqual([]);
+    expect(verdict.blocking).toEqual([{ problem, reason: 'our manifest the root project requires it' }]);
+  });
+
+  it('BLOCKS a problem the tree does not explain, and the assert names only the blocking ones', () => {
+    const tree = {
+      dependencies: {},
+      problems: ['invalid: phantom@1.0.0 /nowhere/node_modules/phantom'],
+    };
+    const verdict = classifyNpmTreeProblems(tree, tmpdir());
+    expect(verdict.blocking.map((row) => row.reason)).toEqual(['npm ls attached this problem to no node in the tree']);
+    expect(() => assertNpmTreeIntegrity(tree, tmpdir())).toThrow(
+      /ADVISORY_GATE_UNDETERMINED: npm ls reported 1 dependency-tree problem\(s\) that can hide part of the shipping graph/,
+    );
   });
 });
 
@@ -301,6 +543,89 @@ describe('reachable-advisory gate: two-lens fix feasibility', () => {
  * The three ground-truth rows below were verified against the published registry the same
  * day, so they are measurements, not illustrations.
  */
+/**
+ * WI-10006989: the prod audit lens and the prod ls tree disagree about what "prod" means,
+ * and the disagreement failed OPEN.
+ *
+ * Measured 2026-10-06 on the real tree: @papercusp/token-kit declares style-dictionary
+ * '^4 || ^5' as a peerDependency; `npm ls --omit=dev` shows token-kit > style-dictionary@4.4.0;
+ * package-lock.json flags node_modules/style-dictionary `dev: true`. `npm audit --omit=dev`
+ * therefore dropped GHSA-vj5c-m527-mpff (range 4.3.0 - 5.4.3), and the gate called the
+ * accepted entry STALE ("resolved") while 4.4.0 was still installed. The same mechanism hid
+ * several other shipping advisories that were never gated at all.
+ */
+describe('reachable-advisory gate: peer-masked advisories (prod lens dropped, prod tree holds a copy)', () => {
+  const PEER_LS = {
+    dependencies: {
+      '@papercusp/token-kit': {
+        resolved: 'file:libs/generic/token-kit',
+        dependencies: { 'style-dictionary': { version: '4.4.0' } },
+      },
+    },
+  };
+  // The prod lens never saw style-dictionary; the full lens did.
+  const PROD_AUDIT = { vulnerabilities: {} };
+  const fullAuditWith = (range: string) => ({
+    vulnerabilities: {
+      'style-dictionary': {
+        severity: 'high',
+        range,
+        fixAvailable: { name: 'style-dictionary', version: '5.5.2', isSemVerMajor: true },
+      },
+    },
+  });
+  const IN_RANGE = '4.3.0 - 5.4.3';
+
+  it('folds a full-lens advisory into the gate when the prod tree holds an in-range copy', () => {
+    const r = analyze(PROD_AUDIT, PEER_LS, { accepted: [] }, fullAuditWith(IN_RANGE));
+    const f = findingFor(r, 'style-dictionary');
+    expect(f.peerMasked).toBe(true);
+    expect(f.gating).toBe(true);
+    expect(f.severity).toBe('high');
+    expect(r.offenders.map((o: { name: string }) => o.name)).toEqual(['style-dictionary']);
+    expect(r.peerMasked).toEqual(['style-dictionary']);
+  });
+
+  it('CALIBRATION: without the full lens the same tree reports nothing (the fail-open being closed)', () => {
+    const r = analyze(PROD_AUDIT, PEER_LS, { accepted: [] });
+    expect(r.findings).toHaveLength(0);
+    expect(r.peerMasked).toEqual([]);
+  });
+
+  it('is not vacuous: a copy OUTSIDE the vulnerable range is not folded', () => {
+    expect(findPeerMaskedAdvisories({}, fullAuditWith('>=5.0.0 <5.4.4').vulnerabilities, PEER_LS)).toEqual([]);
+    expect(findPeerMaskedAdvisories({}, fullAuditWith(IN_RANGE).vulnerabilities, PEER_LS)).toEqual(['style-dictionary']);
+  });
+
+  it('does not fold a package with no copy in the prod tree (genuinely dev-only)', () => {
+    const devOnly = { vulnerabilities: { 'dev-tool': { severity: 'critical', range: '<=9.0.0', fixAvailable: true } } };
+    expect(findPeerMaskedAdvisories({}, devOnly.vulnerabilities, PEER_LS)).toEqual([]);
+  });
+
+  it('fails CLOSED when the range is unparseable: any prod copy counts', () => {
+    expect(findPeerMaskedAdvisories({}, fullAuditWith('not a range ***').vulnerabilities, PEER_LS)).toEqual([
+      'style-dictionary',
+    ]);
+  });
+
+  it('never re-adds a package the prod lens already reports', () => {
+    const prod = { vulnerabilities: { 'style-dictionary': { severity: 'high', range: IN_RANGE, fixAvailable: true } } };
+    expect(findPeerMaskedAdvisories(prod.vulnerabilities, fullAuditWith(IN_RANGE).vulnerabilities, PEER_LS)).toEqual([]);
+    const r = analyze(prod, PEER_LS, { accepted: [] }, fullAuditWith(IN_RANGE));
+    expect(r.findings.filter((f: { name: string }) => f.name === 'style-dictionary')).toHaveLength(1);
+    expect(findingFor(r, 'style-dictionary').peerMasked).toBeUndefined();
+  });
+
+  it('a baselined peer-masked advisory is NOT reported STALE (the false "resolved" reading)', () => {
+    const accepted = { accepted: ['style-dictionary'] };
+    const withFull = analyze(PROD_AUDIT, PEER_LS, accepted, fullAuditWith(IN_RANGE));
+    expect(withFull.stale).toEqual([]);
+    expect(withFull.offenders).toHaveLength(0);
+    // Calibration: the single prod lens is exactly what produced the false STALE.
+    expect(analyze(PROD_AUDIT, PEER_LS, accepted).stale).toEqual(['style-dictionary']);
+  });
+});
+
 describe('reachable-advisory gate: derived fix feasibility', () => {
   it('the derivation is actually running — semver is resolvable from the gate script', () => {
     // Calibration. `deriveFixFeasibility` degrades to UNDETERMINED when `semver` cannot be

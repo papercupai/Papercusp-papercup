@@ -134,6 +134,13 @@ describe('operator:voice_debug', () => {
 });
 
 describe('operator:voice_prefs', () => {
+  it('classifies get as a read and keeps set as a write for code:run', async () => {
+    const { default: tool } = await import('../voice_prefs');
+    expect(tool.effect).toBe('write');
+    expect(tool.effectForCall?.({ op: 'get' })).toBe('read');
+    expect(tool.effectForCall?.({ op: 'set', patch: { sttEngine: 'deepgram' } })).toBe('write');
+  });
+
   it('get returns loadVoicePrefs result', async () => {
     vi.doMock('../../../voice-prefs', () => ({
       loadVoicePrefs: vi.fn(async () => ({ sttEngine: 'voicemode' })),

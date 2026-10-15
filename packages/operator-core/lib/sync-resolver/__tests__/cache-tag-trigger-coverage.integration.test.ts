@@ -26,7 +26,8 @@
  * loops, and dynamic `EXECUTE format(...)` across many files — grepping the SQL is
  * brittle. Mirroring the sibling stamp-coverage guard, this migrates an empty DB
  * 000-baseline → head through the REAL boot-path runner and introspects
- * `pg_trigger` joined on `proname='emit_change_notify'`, so a new mapped table that
+ * active `pg_trigger` producers (the generic notifier or the tested dependency
+ * notifier for work_item_deps), so a new mapped table that
  * forgets the trigger trips it automatically — no test edit needed.
  *
  * WHAT IT ASSERTS
@@ -35,7 +36,7 @@
  * can't drift from the source of truth:
  *
  *   Every `harness_shared.<table>` key in TABLE_TO_QUERY_NAMES MUST have the
- *   emit_change_notify trigger — UNLESS the table is in `COVERAGE_EXEMPT` with a
+ *   active recognized notification producer — UNLESS the table is in `COVERAGE_EXEMPT` with a
  *   documented reason.
  *
  * The core check is an EXACT set-equality (not a subset), which has teeth in three
@@ -45,6 +46,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolve, dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
@@ -166,8 +168,8 @@ afterAll(async () => {
 });
 
 describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the change-notify trigger', () => {
-  /** harness_shared tables with an emit_change_notify trigger attached (match on
-   *  FUNCTION, not trigger NAME — robust to per-table trigger names). */
+  /** Active generic producers, plus work_item_deps' semantic producer. Its real
+   *  notification contract is covered by work-item-deps.integration.test.ts. */
   async function notifyTriggerTables(): Promise<Set<string>> {
     const rows = await sql<Array<{ table_name: string }>>`
       SELECT DISTINCT c.relname AS table_name
@@ -175,9 +177,13 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
         JOIN pg_class c ON c.oid = t.tgrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
         JOIN pg_proc p ON p.oid = t.tgfoid
+        JOIN pg_namespace pn ON pn.oid = p.pronamespace
        WHERE n.nspname = 'harness_shared'
-         AND p.proname = ${NOTIFY_FUNCTION}
+         AND pn.nspname = 'harness_shared'
+         AND (p.proname = ${NOTIFY_FUNCTION}
+           OR (c.relname = 'work_item_deps' AND p.proname = 'emit_work_item_dep_change_notify'))
          AND NOT t.tgisinternal
+         AND t.tgenabled <> 'D'
     `;
     return new Set(rows.map((r) => r.table_name));
   }
@@ -193,7 +199,19 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
     ).toBe(true);
   });
 
-  it('every TABLE_TO_QUERY_NAMES table has emit_change_notify, except the documented COVERAGE_EXEMPT set', async () => {
+  it('credits one active semantic dependency producer without a redundant generic notifier', async () => {
+    const rows = await sql<{ producer: string }[]>`
+      SELECT p.proname AS producer FROM pg_trigger t
+      JOIN pg_proc p ON p.oid = t.tgfoid
+      JOIN pg_namespace pn ON pn.oid = p.pronamespace
+      WHERE t.tgrelid = 'harness_shared.work_item_deps'::regclass
+        AND pn.nspname = 'harness_shared' AND NOT t.tgisinternal AND t.tgenabled <> 'D'
+        AND p.proname IN ('emit_change_notify', 'emit_work_item_dep_change_notify')`;
+    expect(rows).toEqual([{ producer: 'emit_work_item_dep_change_notify' }]);
+    expect((await notifyTriggerTables()).has('work_item_deps')).toBe(true);
+  });
+
+  it('every TABLE_TO_QUERY_NAMES table has an active producer, except the documented COVERAGE_EXEMPT set', async () => {
     const withTrigger = await notifyTriggerTables();
 
     const missing = requiredTables.filter((t) => !withTrigger.has(t)).sort();
@@ -211,6 +229,72 @@ describe('cache-tag-backing tables — every TABLE_TO_QUERY_NAMES table has the 
         `  mapped-but-no-trigger: [${missing.join(', ')}]\n` +
         `  documented COVERAGE_EXEMPT: [${exempt.join(', ')}]`,
     ).toEqual(exempt);
+  });
+
+  it('reapplying the armed notification migrations preserves their single producers', async () => {
+    for (const name of [
+      '1365-unify-work-item-dep-change-notify',
+      '1366-mapped-report-occurrence-change-notify',
+      '1406-pr-review-reports-change-notify',
+    ]) {
+      const migration = readFileSync(resolve(SQL_DIR, `${name}.sql`), 'utf8');
+      await sql.unsafe(migration);
+      await sql.unsafe(migration);
+    }
+    const rows = await sql<{ table_name: string; producers: number }[]>`
+      SELECT c.relname AS table_name, count(*)::int AS producers FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_proc p ON p.oid = t.tgfoid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'harness_shared'
+        AND c.relname IN ('work_item_deps', 'report_library', 'work_item_occurrences', 'pr_review_reports')
+        AND p.proname IN ('emit_change_notify', 'emit_work_item_dep_change_notify')
+        AND NOT t.tgisinternal AND t.tgenabled <> 'D'
+      GROUP BY c.relname ORDER BY c.relname`;
+    expect(rows).toEqual(['pr_review_reports', 'report_library', 'work_item_deps', 'work_item_occurrences']
+      .map((table_name) => ({ table_name, producers: 1 })));
+  });
+
+  it('raw report and occurrence writes emit scoped INSERT, UPDATE and DELETE notifications', async () => {
+    const received: Array<{ name: string; args: { op: string; workspace_id: string } }> = [];
+    const listener = postgres(db.url, { max: 1, onnotice: () => {} });
+    const marker = `cachetrg_barrier_${Date.now()}`;
+    let flushed!: () => void;
+    const delivered = new Promise<void>((resolve) => { flushed = resolve; });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await listener.listen('sync_invalidate', (payload) => received.push(JSON.parse(payload)));
+      await listener.listen(marker, () => flushed());
+      await sql.begin(async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', 'cachetrg-ws', true)`;
+        await tx`INSERT INTO harness_shared.report_library (workspace_id, report_id, title, lineage_id)
+          VALUES ('cachetrg-ws', 'notify-report', 'notification proof', 'notify-report')`;
+        await tx`UPDATE harness_shared.report_library SET summary = 'updated'
+          WHERE workspace_id = 'cachetrg-ws' AND report_id = 'notify-report'`;
+        await tx`DELETE FROM harness_shared.report_library
+          WHERE workspace_id = 'cachetrg-ws' AND report_id = 'notify-report'`;
+        await tx`INSERT INTO harness_shared.work_item_occurrences
+          (workspace_id, canonical_harness_slug, canonical_work_item_id, source_tool, report_kind, reported_title)
+          VALUES ('cachetrg-ws', 'papercusp', 'WI-NOTIFY', 'test', 'canonical-created', 'notification proof')`;
+        await tx`UPDATE harness_shared.work_item_occurrences SET evidence = '{"verified":true}'::jsonb
+          WHERE workspace_id = 'cachetrg-ws' AND canonical_work_item_id = 'WI-NOTIFY'`;
+        await tx`DELETE FROM harness_shared.work_item_occurrences
+          WHERE workspace_id = 'cachetrg-ws' AND canonical_work_item_id = 'WI-NOTIFY'`;
+        await tx`SELECT pg_notify(${marker}, 'complete')`;
+      });
+      await Promise.race([delivered, new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('raw-write notification barrier was not delivered')), 5_000);
+      })]);
+      for (const table of ['report_library', 'work_item_occurrences']) {
+        expect(received.filter((event) => event.name === `harness_shared.${table}.changed`)
+          .map((event) => ({ op: event.args.op, workspace_id: event.args.workspace_id }))).toEqual(
+          ['INSERT', 'UPDATE', 'DELETE'].map((op) => ({ op, workspace_id: 'cachetrg-ws' })),
+        );
+      }
+    } finally {
+      clearTimeout(timeout);
+      await listener.end({ timeout: 5 });
+    }
   });
 
   it('no COVERAGE_EXEMPT entry is stale (each is a real mapped table that still lacks the trigger)', async () => {

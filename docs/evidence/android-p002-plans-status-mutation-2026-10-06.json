@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android P-002 plan-item status precedence: mutation probe of PlansScreen.kt against PlanItemsContractTest",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh",
+    "--file",
+    "../papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt",
+    "--relocation",
+    "overlay",
+    "--mutate",
+    "s/listOf\\(\"effectiveStatus\", \"storedStatus\", \"status\"\\)/listOf(\"status\")/",
+    "--test",
+    "test -f \"{}\" && ../papercup-rust-mobile/android/gradlew -p ../papercup-rust-mobile/android :app:testDebugUnitTest --tests \"com.papercuspai.operator.mobile.PlanItemsContractTest\" --rerun --no-daemon",
+    "--expect",
+    "caught"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T19:44:28.873626Z",
+  "finishedAt": "2026-10-06T19:47:48.957153Z",
+  "summary": "Mutation probe run from the papercusp root (cwd '.') against the sibling checkout papercup-rust-mobile at 87df4157006f2e56ec67cce66cdc6c3dca4ad9e8. That commit's android/app/src, crates and Cargo.lock content equals c37edfc7625337e433abb9f5451f433635cdc54a, the commit of the companion tree proof docs/evidence/android-p002-contract-current-2026-10-06.json. The mutation collapses the Kotlin plan-item status precedence (effectiveStatus, then storedStatus, then status) to the legacy 'status' key only. Baseline guard exited 0; mutant guard exited 1, with PlanItemsContractTest readsStoredStatusFromCurrentServerShape and effectiveStatusWinsOverStoredStatusWhenServerSendsIt failing. Verdict: caught, as expected. Overlay relocation means the tracked file was never modified. Disclosed: at run time a peer had an uncommitted edit in crates/papercup-bindings/src/lib.rs. The JVM host unit test exercised here does not compile or load that Rust file.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "87df4157006f2e56ec67cce66cdc6c3dca4ad9e8",
+  "logs": [
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-current-20261006/probe-root.log", "sha256": "3ff5bad1d4725a1a02c45c0a0f9411eb4a3c2f6f41de4e420cdecfd467e1481e" }
+  ],
+  "sourceFiles": [
+    { "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt", "sha256": "26b206496863829ba59e44f13119fda9ba3d2d48986c23cdd110c36b1acd7481" },
+    { "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/PlanItemsContractTest.kt", "sha256": "a60cb2bf96373668097d2682e573cac3e56f2262db798c16d1d2144c89903643" }
+  ],
+  "mutationProbes": [
+    {
+      "schemaVersion": 1,
+      "runnerPath": "scripts/mutation-probe.sh",
+      "runnerSha256": "9609e573dfe3a7154b9ffb41d10b2f4f8b9635bd68885dc37b4901b4ac72d23b",
+      "runnerCommit": "0cf1fb1153f255f237265b5fa48f23b41f834a35",
+      "cwd": ".",
+      "argv": [
+        "--file",
+        "../papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt",
+        "--relocation",
+        "overlay",
+        "--mutate",
+        "s/listOf\\(\"effectiveStatus\", \"storedStatus\", \"status\"\\)/listOf(\"status\")/",
+        "--test",
+        "test -f \"{}\" && ../papercup-rust-mobile/android/gradlew -p ../papercup-rust-mobile/android :app:testDebugUnitTest --tests \"com.papercuspai.operator.mobile.PlanItemsContractTest\" --rerun --no-daemon",
+        "--expect",
+        "caught"
+      ],
+      "result": {
+        "verdict": "caught",
+        "expected": "caught",
+        "target": "copy-out",
+        "baselineExit": 0,
+        "guardExit": 1,
+        "mutantParse": "unchecked",
+        "assertionEvidence": "exit-code-only",
+        "relocation": "overlay"
+      }
+    }
+  ],
+  "assertions": [
+    { "id": "baseline-green", "passed": true, "evidence": "The unmutated guard (PlanItemsContractTest, testDebugUnitTest --rerun) exited 0 under the probe's baseline phase." },
+    { "id": "mutant-caught", "passed": true, "evidence": "With the status-precedence mutation bound over PlansScreen.kt via bwrap overlay, the guard exited 1: readsStoredStatusFromCurrentServerShape FAILED and effectiveStatusWinsOverStoredStatusWhenServerSendsIt FAILED. The mutation probe reported verdict caught (expected caught)." },
+    { "id": "subject-unchanged", "passed": true, "evidence": "PlansScreen.kt sha256 26b20649… and PlanItemsContractTest.kt sha256 a60cb2bf… are identical to the hashes recorded in the companion tree proof at c37edfc." }
+  ]
+}

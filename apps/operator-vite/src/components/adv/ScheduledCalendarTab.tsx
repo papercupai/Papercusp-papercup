@@ -88,12 +88,12 @@ export default function ScheduledCalendarTab() {
   // Visible window — set from FullCalendar's datesSet so the sync query tracks the view.
   const [range, setRange] = useState<{ startMs: number; endMs: number } | null>(null);
 
-  const { data, loading, invalidate } = useSyncQuery<ScheduledOccurrenceRow>({
+  const { data, loading, error, invalidate } = useSyncQuery<ScheduledOccurrenceRow>({
     queryName: 'plans.scheduledOccurrences',
     args: { rangeStartMs: range?.startMs ?? 0, rangeEndMs: range?.endMs ?? 0 },
     enabled: !!range,
   });
-  const occurrences = useMemo(() => data ?? [], [data]);
+  const occurrences = useMemo(() => error ? [] : data ?? [], [data, error]);
 
   // ── Schedule editor + drag-drop (P-020) ──
   // The editor authors a plan's schedule (recurring RRULE or one-shot) via
@@ -272,7 +272,7 @@ export default function ScheduledCalendarTab() {
             <p className="pc-sched-cal__eyebrow">Scheduled plans</p>
             <h2>Calendar</h2>
           </div>
-          <div className="pc-sched-cal__stats" aria-label="Calendar occurrence summary">
+          {!error && <div className="pc-sched-cal__stats" aria-label="Calendar occurrence summary">
             <span><strong>{stats.total}</strong> in view</span>
             <span><strong>{stats.armed}</strong> armed</span>
             {stats.failed > 0 ? <span className="is-danger"><strong>{stats.failed}</strong> failed</span> : null}
@@ -280,7 +280,7 @@ export default function ScheduledCalendarTab() {
             {stats.paused > 0 ? <span><strong>{stats.paused}</strong> paused</span> : null}
             {stats.oneShot > 0 ? <span><strong>{stats.oneShot}</strong> one-shot</span> : null}
             {loading ? <span>Loading</span> : null}
-          </div>
+          </div>}
           <Tooltip label="Author a schedule for a plan" side="bottom" align="end">
             <button type="button" className="pc-sched-cal__add" onClick={() => setPickerOpen(true)}>
               <CalendarPlus size={14} aria-hidden />
@@ -288,6 +288,12 @@ export default function ScheduledCalendarTab() {
             </button>
           </Tooltip>
         </header>
+        {error && (
+          <div className="pc-sched-cal__error" role="alert">
+            <span>Calendar is unavailable.</span>
+            <button type="button" onClick={() => invalidate()} disabled={loading}>Try again</button>
+          </div>
+        )}
         <div className="pc-sched-cal__legend" aria-label="Calendar status legend">
           <span><i className="pc-sched-cal__swatch pc-sched-cal__swatch--success" /> last run ok</span>
           <span><i className="pc-sched-cal__swatch pc-sched-cal__swatch--failed" /> last run failed</span>
@@ -310,8 +316,8 @@ export default function ScheduledCalendarTab() {
               eventClick={onEventClick}
               dateClick={onDateClick}
               eventDrop={onEventDrop}
-              editable
-              eventStartEditable
+              editable={!error}
+              eventStartEditable={!error}
               eventDurationEditable={false}
               height="100%"
               nowIndicator

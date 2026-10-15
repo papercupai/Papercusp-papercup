@@ -11,6 +11,7 @@ import {
   ACCEPTANCE_VERDICT_REQUIRED_AFTER,
   evaluatePlanAcceptanceGate,
   findDurableDeliverableCompanions,
+  messageWithAdditionalBlockers,
   planAcceptanceRepairAction,
   receiverHeldAcceptanceRefusal,
   unfinishedItemsAreAuditedNonCode,
@@ -86,6 +87,30 @@ vi.mock('./goals/plan-closure-observations', async (orig) => ({
 }));
 vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
+}));
+// P-008's independent-verification door issues its own SQL against the real schema;
+// this suite's getOrgPg mock answers the gate's queries only. The door has its own
+// integration suite (plan-acceptance-gate-independent-evidence.integration.test.ts).
+vi.mock('./independent-verification-gate', () => ({
+  evaluateIndependentVerificationGate: vi.fn(async () => ({
+    satisfied: true,
+    applicable: false,
+    inScope: 0,
+    gaps: [],
+  })),
+}));
+// P-006's blind gap review door is the same shape: its own SQL against the real schema,
+// covered by blind-review-gate.test.ts and plan-acceptance-gate-blind-review.integration.test.ts.
+// Unstubbed, every fixture here that names a harness_slug read this suite's catch-all
+// getOrgPg rows as "no review" and refused blind_review_missing before the check under test.
+vi.mock('./blind-review-gate', () => ({
+  evaluateBlindReviewGate: vi.fn(async () => ({
+    satisfied: true,
+    applicable: false,
+    acceptedReviewIds: [],
+    rejectedReviews: [],
+    undispositionedGaps: [],
+  })),
 }));
 // P-004: only the DURABLE READ is stubbed. The ranking kernel it feeds
 // (pickAuthoritativeGrading/gradingViaOf) stays real, so these cases exercise
@@ -636,6 +661,79 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(result).toMatchObject({
         satisfied: false, code: 'acceptance_bar_contract_not_ready', blockingPhase: 'pre-grading',
       });
+      expect(mockScorecards).not.toHaveBeenCalled();
+    });
+
+    it.each(['bar_snapshot_grading_missing', 'bar_snapshot_grading_stale'] as const)(
+      'uses the supplied current proof when %s defers to pre-grading (WI-10007726)',
+      async (gradingCode) => {
+        const current = [{
+          planSlug: 'some-plan-2026-08-11',
+          specId: 'AUTO-BAR-R-1-P-001',
+          evidenceKind: 'test' as const,
+          evidenceRef: 'test:measured-proof',
+          sourceFingerprint: 'measured-current-source',
+          environmentFingerprint: 'measured-current-runtime',
+        }];
+        mockRubric.mockResolvedValue(acceptanceRubric());
+        mockScorecards.mockResolvedValue([]);
+        mockBarLifecycle.mockImplementation(async (_slug, phase, options) =>
+          verdict(phase, phase === 'ship'
+            ? [gradingCode]
+            : options?.current === current ? [] : ['bar_snapshot_proof_uncertain']));
+
+        const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { current });
+
+        expect(result).toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
+        expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', {
+          expectedApplicable: true, current,
+        });
+      },
+    );
+
+    // plan-verification-friction-reduction-2026-10-11 P-002 / R-2 (D-001): a ship call that
+    // omits `current` must hand the lifecycle NO caller tuple. listSpecEvidence then
+    // re-measures every binding from its recorded recipe, so unchanged proof rates current
+    // on the server's own measurement (pinned in spec-evidence-store.test.ts). An empty or
+    // placeholder `current` here would replace that measurement with caller blame.
+    it('passes no caller fingerprints when the ship call omits current, so proof is server-measured (P-002)', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase, options) =>
+        verdict(phase, phase === 'ship'
+          ? ['bar_snapshot_grading_missing']
+          : options && 'current' in options ? ['bar_snapshot_proof_uncertain'] : []));
+
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+      expect(result).toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
+      expect(mockBarLifecycle.mock.calls.length).toBeGreaterThanOrEqual(2);
+      for (const [, , options] of mockBarLifecycle.mock.calls) {
+        expect(options).not.toHaveProperty('current');
+      }
+    });
+
+    it('keeps caller-measured stale proof blocking at pre-grading (WI-10007726)', async () => {
+      const current = [{
+        planSlug: 'some-plan-2026-08-11',
+        specId: 'AUTO-BAR-R-1-P-001',
+        evidenceKind: 'test' as const,
+        evidenceRef: 'test:measured-proof',
+        sourceFingerprint: 'measured-changed-source',
+      }];
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase, options) =>
+        verdict(phase, phase === 'ship'
+          ? ['bar_snapshot_grading_missing', 'bar_snapshot_proof_stale']
+          : options?.current === current ? ['bar_snapshot_proof_stale'] : []));
+
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { current });
+
+      expect(result).toMatchObject({
+        satisfied: false, code: 'acceptance_bar_contract_not_ready', blockingPhase: 'pre-grading',
+      });
+      expect(result.blockingPhaseLifecycle?.codes).toEqual(['bar_snapshot_proof_stale']);
       expect(mockScorecards).not.toHaveBeenCalled();
     });
 
@@ -1715,6 +1813,17 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
         metaRubricRef: 'grading-integrity',
         stampedAt: '2026-09-24T03:54:29.339Z',
       },
+      // Only a pending audit on a CURRENT rubric subject is dispatchable; a stale or
+      // unknown subject is told to re-attest instead (acceptance-rubric-vetting.ts,
+      // matching grading-integrity's dispatch filter), so suppression never applies.
+      subjectRubricCurrentness: {
+        state: 'current',
+        reason: 'current',
+        recordedRevision: 7,
+        currentRevision: 7,
+        recordedCriteriaHash: 'criteria-hash-current',
+        currentCriteriaHash: 'criteria-hash-current',
+      },
     })]);
     const readSuppression = vi.fn(async (ownerId?: string | null) =>
       ownerId === 'su-implementer' ? suppression : null,
@@ -1794,6 +1903,27 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: true, rubricId: 'ar-some-plan', gradedBy: 'su-grader' });
   });
+
+  it.each(['pending', 'failed'] as const)(
+    'rejects a linked meta-vetting card whose grade-the-grader audit is %s',
+    async (state) => {
+      stockScorecards([
+        metaVettingCard({
+          gradingAudit: {
+            state,
+            metaRubricRef: 'grading-integrity',
+            stampedAt: '2026-09-24T03:54:29.339Z',
+          },
+        }),
+      ]);
+
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+      expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted' });
+      expect(v.message).toContain('EI-vet');
+      expect(v.message).toContain('grading-audit-unsettled');
+    },
+  );
 
   it('CONTROL (falsifiability, in-test — no tree mutation): the vetting stamp ALONE flips the verdict', async () => {
     // Identical state twice; the only delta is the stamp. If the check were vacuous
@@ -1892,10 +2022,25 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
       stockScorecards([metaVettingCard({ createdAt: '2026-09-01T05:00:00Z' })], acceptedCards);
       const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
       expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_vetted_after_grading' });
+      expect(v.gradingRef).toBe('EI-1');
+      expect(v.staleGradingScorecardId).toBe('EI-1');
+      expect(v.staleGradingScorecardIds).toEqual(['EI-1']);
       // Both timestamps belong in the message: the complaint is about ORDER, and a
       // reader who cannot see both cannot tell that the attestation itself is fine.
       expect(v.message).toContain('2026-09-01T05:00:00Z');
       expect(v.message).toContain(gradedAt);
+    });
+
+    it('excludes every pre-vetting independent card from recruitment settlement', async () => {
+      stockScorecards([metaVettingCard({ createdAt: '2026-09-01T05:00:00Z' })], [
+        scorecard({ issueId: 'EI-newer', createdAt: gradedAt, createdBy: 'su-grader' }),
+        scorecard({ issueId: 'EI-older', createdAt: '2026-09-01T01:00:00Z', createdBy: 'su-other-grader' }),
+        acceptedCards[1]!,
+      ]);
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+      expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_vetted_after_grading',
+        staleGradingScorecardId: 'EI-newer' });
+      expect(v.staleGradingScorecardIds?.sort()).toEqual(['EI-newer', 'EI-older']);
     });
 
     it('CONTROL: the same state with the attestation moved BEFORE the grading satisfies', async () => {
@@ -2139,5 +2284,158 @@ describe('evaluatePlanAcceptanceGate — federated receiver node (WI-10004178, D
 
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_authored_on_other_node' });
     expect(v.forcedPast).toBeUndefined();
+  });
+});
+
+describe('all-blockers ship preflight (plan-verification-friction-reduction-2026-10-11 P-001)', () => {
+  // Measured before this change: a plan with N independent defects needed N ship
+  // attempts, because the gate returned at the FIRST failing check. Collect mode keeps
+  // evaluating every independent pre-grading check and reports them all at once.
+  const barNotReady = (): AcceptanceBarLifecycleVerdict => ({
+    phase: 'ship', applicable: true, satisfied: false,
+    codes: ['bar_snapshot_evidence_plane_unmet'], blockingBars: [],
+    contractCodes: ['bar_snapshot_evidence_plane_unmet'],
+    codeAttribution: [{ code: 'bar_snapshot_evidence_plane_unmet', barKeys: [] }],
+    nextRepair: null, staleGradingScorecardId: null, message: 'BAR proof or grading is incomplete',
+  });
+  const specStale = () => coverageVerdict({
+    satisfied: false,
+    code: 'spec_proof_stale',
+    wouldBlock: ['1-clause(s)-proven-only-at-a-superseded-revision'],
+    message: 'A clause is proven only at a superseded revision.',
+  });
+
+  /** Four independent defects: an ephemeral deliverable, a BAR proof gap, a stale
+   * spec proof, and no acceptance rubric at all. */
+  const fourDefects = () => {
+    mockFlag.mockImplementation(async (flag) =>
+      flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE || flag === FLAGS.PLAN_SPEC_COVERAGE_GATE,
+    );
+    mockPg.mockReturnValue(sqlReturning([{
+      plan_slug: 'some-plan-2026-08-11', harness_slug: 'papercusp', template: null, template_slug: null,
+      acceptance_bar_epoch: 1,
+      content: '## Requirements\n\n**R-1 — Result.** The required result.\n\nReport: https://claude.ai/artifacts/abc123\n',
+    }]));
+    mockBarLifecycle.mockResolvedValue(barNotReady());
+    mockSpecCoverage.mockResolvedValue(specStale());
+    mockRubric.mockResolvedValue(undefined as unknown as Rubric);
+  };
+  const FOUR = [
+    'ephemeral_deliverable_unbacked',
+    'acceptance_bar_contract_not_ready',
+    'spec_proof_stale',
+    'acceptance_rubric_missing',
+  ];
+
+  it('collect mode reports every independent blocker, each with its own repairAction', async () => {
+    fourDefects();
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { collectAllBlockers: true });
+
+    expect(v.satisfied).toBe(false);
+    const codes = (v.blockers ?? []).map((b) => b.code);
+    expect(codes).toEqual(expect.arrayContaining(FOUR));
+    // The primary verdict is the FIRST blocker, so routing that keys on `code` is unchanged.
+    expect(v.code).toBe(codes[0]);
+    for (const blocker of v.blockers ?? []) {
+      expect(blocker.repairAction, blocker.code).toBeDefined();
+      expect(blocker.message, blocker.code).toBeTruthy();
+    }
+    // Grading is the LAST step: collect mode stops before reading any grading.
+    expect(mockScorecards).not.toHaveBeenCalled();
+  });
+
+  it('default mode still stops at the first failure, with the same primary and one blocker', async () => {
+    fourDefects();
+    const collected = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { collectAllBlockers: true });
+    fourDefects();
+    const first = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+    expect(first.satisfied).toBe(false);
+    expect(first.code).toBe(collected.code);
+    expect(first.message).toBe(collected.message);
+    expect(first.blockers).toHaveLength(1);
+    expect(first.blockers?.[0]).toMatchObject({ code: first.code });
+    // The rubric family was never reached in first-failure mode.
+    expect(collected.blockers?.length).toBeGreaterThan(1);
+  });
+
+  it('collect mode records an unvetted rubric and assessable grading beside an earlier blocker', async () => {
+    mockFlag.mockImplementation(async (flag) =>
+      flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE
+      || flag === FLAGS.ACCEPTANCE_RUBRIC_VETTING_GATE
+      || flag === FLAGS.PLAN_SPEC_COVERAGE_GATE,
+    );
+    mockSpecCoverage.mockResolvedValue(specStale());
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockGetRubric.mockResolvedValue(
+      acceptanceRubric({ rubricId: 'meta-acceptance-rubric', kind: 'standard', subjectPlan: null, status: 'proposed' }),
+    );
+    mockRevision.mockResolvedValue(7);
+    mockScorecards.mockResolvedValue([]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { collectAllBlockers: true });
+    expect(v).toMatchObject({ satisfied: false, code: 'spec_proof_stale' });
+    expect((v.blockers ?? []).map((b) => b.code)).toEqual(['spec_proof_stale', 'acceptance_rubric_unvetted', 'acceptance_ungraded']);
+    expect(mockScorecards.mock.calls.some(([q]) => q?.rubricRef === 'ar-some-plan')).toBe(true);
+  });
+
+  it('collects unmet grading bars and a missing author verdict beside earlier proof failure', async () => {
+    mockFlag.mockImplementation(async flag => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE || flag === FLAGS.PLAN_SPEC_COVERAGE_GATE);
+    mockSpecCoverage.mockResolvedValue(specStale());
+    const rubric = acceptanceRubric();
+    rubric.criteria = rubric.criteria.map(c => ({ ...c, role: 'outcome', mandatory: true, passRatings: ['healthy'] }));
+    mockRubric.mockResolvedValue(rubric);
+    mockScorecards.mockResolvedValue([scorecard({ createdAt: '2026-10-11T00:00:00Z', ratings: Object.fromEntries(rubric.criteria.map(c => [c.key, { rating: 'broken', evidence: 'measured failed outcome' }])) })]);
+    const first = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    const collected = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { collectAllBlockers: true });
+    expect(first.code).toBe('spec_proof_stale');
+    expect(collected.code).toBe(first.code);
+    expect(collected.blockers?.map(b => b.code)).toEqual(['spec_proof_stale', 'acceptance_bar_not_met', 'acceptance_not_recorded']);
+    expect(collected.blockers?.every(b => b.repairAction)).toBe(true);
+  });
+
+  it('collect mode records an unreadable rubric revision and skips the vetting evaluation', async () => {
+    mockFlag.mockImplementation(async (flag) =>
+      flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE
+      || flag === FLAGS.ACCEPTANCE_RUBRIC_VETTING_GATE
+      || flag === FLAGS.PLAN_SPEC_COVERAGE_GATE,
+    );
+    mockSpecCoverage.mockResolvedValue(specStale());
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockGetRubric.mockResolvedValue(
+      acceptanceRubric({ rubricId: 'meta-acceptance-rubric', kind: 'standard', subjectPlan: null, status: 'proposed' }),
+    );
+    mockRevisionRead.mockResolvedValue({ ok: false, revision: null });
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { collectAllBlockers: true });
+    expect((v.blockers ?? []).map((b) => b.code))
+      .toEqual(['spec_proof_stale', 'acceptance_rubric_revision_unreadable']);
+    // The vetting evaluation needs the revision, so it never ran (no meta-card read).
+    expect(mockScorecards).not.toHaveBeenCalled();
+  });
+
+  it('a satisfied verdict carries no blockers in either mode', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([scorecard()]);
+    for (const opts of [{}, { collectAllBlockers: true }]) {
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', opts);
+      expect(v.satisfied).toBe(true);
+      expect(v.blockers).toBeUndefined();
+    }
+  });
+
+  it('messageWithAdditionalBlockers names every OTHER failing check after the primary message', () => {
+    const blockers = [
+      { code: 'spec_proof_stale' as const, repairAction: undefined as never },
+      { code: 'acceptance_rubric_missing' as const, repairAction: undefined as never },
+      { code: 'ephemeral_deliverable_unbacked' as const, repairAction: undefined as never },
+    ];
+    const msg = messageWithAdditionalBlockers('primary message', blockers);
+    expect(msg).toMatch(/^primary message\n\nALSO FAILING: 2 more independent check\(s\)/);
+    expect(msg).toContain('acceptance_rubric_missing, ephemeral_deliverable_unbacked');
+    expect(msg).not.toContain('— spec_proof_stale');
+    // One blocker (or none): the message is returned unchanged.
+    expect(messageWithAdditionalBlockers('primary message', blockers.slice(0, 1))).toBe('primary message');
+    expect(messageWithAdditionalBlockers('primary message', undefined)).toBe('primary message');
   });
 });

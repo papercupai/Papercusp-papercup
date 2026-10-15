@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const initBackendSelection = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('./backend-selection', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./backend-selection')>()),
+  initMemoryBackendSelection: initBackendSelection,
+}));
+
 // EI-7279: mem0-client.ts caches the built client for a 1-HOUR TTL, so the
 // `resolveEmbedderWith` cascade (which correctly prefers local during an
 // OpenAI cooldown, per the EI-3381 tests below) is only ever RE-EVALUATED
@@ -35,6 +41,26 @@ import { EmbedBudgetExhaustedError } from './embed-admission';
 // The per-mode declared widths — the emitting side of the dims contract. The
 // mock above spreads `...actual`, so this is the real spec table.
 import { EMBEDDER_DIM_SPECS, memoryHost } from '@papercusp/memory';
+
+// Capture module evaluation before any test selects a backend. Registry-only
+// imports must configure the host without starting the org-PG settings read.
+const backendHydrationsDuringImport = initBackendSelection.mock.calls.length;
+
+describe('memory backend hydration', () => {
+  it('registers and configures the memory host without reading persisted settings', () => {
+    expect(backendHydrationsDuringImport).toBe(0);
+    expect(typeof memoryHost().backend).toBe('function');
+  });
+
+  it('starts hydration when the configured backend is actually selected', () => {
+    const before = initBackendSelection.mock.calls.length;
+    const select = memoryHost().backend;
+    expect(typeof select).toBe('function');
+    if (typeof select !== 'function') throw new Error('missing backend selector');
+    expect(select()).toBeTypeOf('string');
+    expect(initBackendSelection).toHaveBeenCalledTimes(before + 1);
+  });
+});
 
 describe('mem0 history store — WI-10003284', () => {
   it('the operator keeps mem0 history IN MEMORY, never in a SQLite file its processes share', () => {

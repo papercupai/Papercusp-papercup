@@ -1,0 +1,1065 @@
+{
+  "schemaVersion": 1,
+  "kind": "original-command-execution",
+  "workItemId": "WI-6554700010010682",
+  "cwd": "papercusp-desktop",
+  "command": [
+    "bash",
+    "bin/lib/run-selftests.sh"
+  ],
+  "startedAt": "2026-10-14T18:01:01.476742+00:00",
+  "finishedAt": "2026-10-14T18:10:44.972121+00:00",
+  "childWallMs": 583495.5723689636,
+  "exitCode": 0,
+  "before": {
+    "schemaVersion": 1,
+    "kind": "command-check-inputs",
+    "check": "desktop-selftest-aggregate",
+    "files": [
+      "papercusp-desktop/bin/lib/federation-asserts.selftest.sh",
+      "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+      "papercusp-desktop/bin/lib/release-content-identity.selftest.sh",
+      "papercusp-desktop/bin/lib/release-tag-pin.selftest.sh",
+      "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh",
+      "papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh",
+      "papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh",
+      "papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh",
+      "papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh",
+      "papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh",
+      "papercusp-desktop/bin/lib/vm-run-env.selftest.sh",
+      "papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh",
+      "papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh",
+      "papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh",
+      "papercusp-desktop/bin/lib/b5-restart.selftest.sh",
+      "papercusp-desktop/bin/lib/b6-concurrent.selftest.sh",
+      "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh",
+      "papercusp-desktop/bin/lib/matrix-verdict-states.selftest.sh",
+      "papercusp-desktop/bin/lib/matrix-pass-transcript.selftest.sh",
+      "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+      "papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh",
+      "papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh",
+      "papercusp-desktop/bin/lib/roster-scope.selftest.sh",
+      "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh",
+      "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+      "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+      "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh",
+      "papercusp-desktop/bin/lib/disk-preflight.selftest.sh",
+      "papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh",
+      "papercusp-desktop/bin/lib/streak-escalation.selftest.sh",
+      "papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+      "papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh",
+      "papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh",
+      "papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh"
+    ],
+    "inputs": [
+      {
+        "path": "papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh",
+        "sha256": "d616b9bad545a18b28f91f0fb393ce3d0d1c516070a3cc0816ade8d02f1daabd"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/b5-restart.selftest.sh",
+        "sha256": "569edb7c51db5038c328e55cef36663f8ae27eabbcf0c519a1a2051bde989ef2"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/b6-concurrent.selftest.sh",
+        "sha256": "51f1c444b36e17ca3a50b9dc63aa687c4311ca422f316701253870552b82fb32"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh",
+        "sha256": "c5ae36f5771ce5d3077f05cb9eb20888cfe82e98d73020c7f1b890a1d2d19fdc"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh",
+        "sha256": "9d70f92b867af0f6f0db302613c0efce15625fff5743e0d768f8380581b597d8"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/disk-preflight.selftest.sh",
+        "sha256": "3c2a5cb2eff2f0fd9c5ea7672b013d45124930a1ea93dc5d8a91b49d6c0168c4"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/federation-asserts.selftest.sh",
+        "sha256": "e3a1bf018da88a59e90d14142bfda2bc457cdbeed96094cf27cb340e28b10264"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh",
+        "sha256": "2f85f6d342cd9448464a459edebab64b8ccc99671258726fa968e3c2d69e5993"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+        "sha256": "61b2f5120a1ac12570ded20b757a21202e0c5cf0626ab97b3871f276e9527285"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+        "sha256": "cb43b84004c5cdc1453d5f727a9de9de9ee7f2855331b6e685e2154bd6ff0bfe"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh",
+        "sha256": "97045237020bb10cd6d4961100688edd221d5e8918f0f833e893fac71000a6d7"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh",
+        "sha256": "b1fd0e9b4a34e5540ef3585703d71a2f4bc94861dce9d1243f2e070800ae09fc"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh",
+        "sha256": "df08d6e1d8eab890bcb4bb041ce9707cc3933d4c8094d91fce83aff6aa64b78e"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh",
+        "sha256": "38ee04130e3a201c2b2c89c8dcfaa1005e4d229afb1a9e6137b4e63a868139c7"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/matrix-pass-transcript.selftest.sh",
+        "sha256": "f2886eecedc97a5a9771e00fba7e9941c077bf95640b1fd1442c5dcb664022f9"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh",
+        "sha256": "164da3d16cbe9804b8d5aab9fbc8fe63746ab7bc3695c8ad453488bd27d84d1c"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/matrix-verdict-states.selftest.sh",
+        "sha256": "11ebcf61c18fdc2e088163c8230d0027fd5aecc0b116febc9ff051d2c2bf2053"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh",
+        "sha256": "701bff63b7ed758f291839cc85006ceb304ce1697922a4f436f83a9114ae70ee"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/pipefail-predicate.baseline.txt",
+        "sha256": "276f9a2329728c94e08f61c2f0a395ae1b891fd043dedc9cdf38a38eff4b4544"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+        "sha256": "8c5312411d0b30c06589dd5e981901a0100f4dd97e22b6b34a77f1bf7fd60503"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-content-identity.selftest.sh",
+        "sha256": "a26344f90bf45b1f3f53600ccacfbf38ec6182f81b13f2638bcab2e606e5ac7a"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh",
+        "sha256": "21377523a45ac7a4d6805c7afe965643186963f0b2d42361923f1ce6a2d35b78"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-tag-pin.selftest.sh",
+        "sha256": "e2222ec0f0d0738572245c0e22af6a552c43cb23bf388e69c477a2d505686865"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+        "sha256": "310ff84da85e429e531fccc8fe0048d5dfb2659a66dd6d9af7b938badefdf751"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+        "sha256": "a92a812a8e104a0a12e9887d093b2f44b73fa3c12faa762de39314ba3a8cf03c"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh",
+        "sha256": "f9a60653bef0a21430df4cc17fbd9cba2199c8568451583b110eb491160141e3"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh",
+        "sha256": "10d422894bb2f0eeb6d6f1ea7dce58406fa9e9a11eae5cd00e6b9605087d1cfc"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh",
+        "sha256": "a18dc019ddcb15b0a8ae07757cb2a90f1d1fcb99bc2ca74d61af5a33c37fc27c"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/roster-scope.selftest.sh",
+        "sha256": "ecf85b6e4d1257993b40f0c5db57f0f66ec0f1d35b18803c27df03fbadc6adfe"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/run-selftests.sh",
+        "sha256": "66cc2631486ed5d0e7fa368a54bb751f1a27b58bfeeb85e5870b337986b2e586"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh",
+        "sha256": "7775eb9b7fc33f6b57e1c3140f64257aa9cc52481a7c024682870ea36a13cab6"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh",
+        "sha256": "ec3277fd9ace47350564c62f1dc42ad707fd4aa0bdb408a3920d9c9203918bf4"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/streak-escalation.selftest.sh",
+        "sha256": "39e5d9cd48a5dc88ca624a692e25ea7d8cd287c2ec5def00ef28e5493044f44c"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh",
+        "sha256": "05cbd36df5f7b402c7b210cbaaff18f72fcebe946386bf591a7bf13230aed6e3"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh",
+        "sha256": "da754cc5cf24c42addb6e12e7107f13d726ef802289430661eea139b9adccfdf"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/vm-run-env.selftest.sh",
+        "sha256": "2feba0e1c0ca2200e9413180baf17e6e526afa31cfce99934a06aff1d45e4a41"
+      }
+    ],
+    "listed": [
+      "federation-asserts.selftest.sh",
+      "release-artifacts.selftest.sh",
+      "release-content-identity.selftest.sh",
+      "release-tag-pin.selftest.sh",
+      "gen-latest-manifest.selftest.sh",
+      "live-federation-gate-reaper.selftest.sh",
+      "release-local-leg-reaper.selftest.sh",
+      "local-matrix-starvation.selftest.sh",
+      "rig-bank-logs.selftest.sh",
+      "local-matrix-bank.selftest.sh",
+      "vm-run-env.selftest.sh",
+      "seat-offer-diag.selftest.sh",
+      "b9-attestation-precondition.selftest.sh",
+      "b3-revocation-kcut.selftest.sh",
+      "b5-restart.selftest.sh",
+      "b6-concurrent.selftest.sh",
+      "matrix-scenario-adapters.selftest.sh",
+      "matrix-verdict-states.selftest.sh",
+      "matrix-pass-transcript.selftest.sh",
+      "replication-soak-diagnostics.selftest.sh",
+      "restart-settle-barrier.selftest.sh",
+      "rig-wait-converged.selftest.sh",
+      "roster-scope.selftest.sh",
+      "deployed-state-guards.selftest.sh",
+      "inno-legacy-reaper.selftest.sh",
+      "inno-uninstall-cleanup.selftest.sh",
+      "rust-path-remap.selftest.sh",
+      "disk-preflight.selftest.sh",
+      "mac-vm-fresh-state.selftest.sh",
+      "streak-escalation.selftest.sh",
+      "remote-object-state.selftest.sh",
+      "offline-installer-evidence-redaction.selftest.sh",
+      "vm-port-alloc.selftest.sh",
+      "vm-boot-extra-drives.selftest.sh"
+    ],
+    "disk": [
+      "b3-revocation-kcut.selftest.sh",
+      "b5-restart.selftest.sh",
+      "b6-concurrent.selftest.sh",
+      "b9-attestation-precondition.selftest.sh",
+      "deployed-state-guards.selftest.sh",
+      "disk-preflight.selftest.sh",
+      "federation-asserts.selftest.sh",
+      "gen-latest-manifest.selftest.sh",
+      "inno-legacy-reaper.selftest.sh",
+      "inno-uninstall-cleanup.selftest.sh",
+      "live-federation-gate-reaper.selftest.sh",
+      "local-matrix-bank.selftest.sh",
+      "local-matrix-starvation.selftest.sh",
+      "mac-vm-fresh-state.selftest.sh",
+      "matrix-pass-transcript.selftest.sh",
+      "matrix-scenario-adapters.selftest.sh",
+      "matrix-verdict-states.selftest.sh",
+      "offline-installer-evidence-redaction.selftest.sh",
+      "release-artifacts.selftest.sh",
+      "release-content-identity.selftest.sh",
+      "release-local-leg-reaper.selftest.sh",
+      "release-tag-pin.selftest.sh",
+      "remote-object-state.selftest.sh",
+      "replication-soak-diagnostics.selftest.sh",
+      "restart-settle-barrier.selftest.sh",
+      "rig-bank-logs.selftest.sh",
+      "rig-wait-converged.selftest.sh",
+      "roster-scope.selftest.sh",
+      "rust-path-remap.selftest.sh",
+      "seat-offer-diag.selftest.sh",
+      "streak-escalation.selftest.sh",
+      "vm-boot-extra-drives.selftest.sh",
+      "vm-port-alloc.selftest.sh",
+      "vm-run-env.selftest.sh"
+    ],
+    "guards": [
+      "array-disk-completeness",
+      "pipefail-predicate-baseline"
+    ],
+    "executed": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false
+  },
+  "after": {
+    "schemaVersion": 1,
+    "kind": "command-check-inputs",
+    "check": "desktop-selftest-aggregate",
+    "files": [
+      "papercusp-desktop/bin/lib/federation-asserts.selftest.sh",
+      "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+      "papercusp-desktop/bin/lib/release-content-identity.selftest.sh",
+      "papercusp-desktop/bin/lib/release-tag-pin.selftest.sh",
+      "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh",
+      "papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh",
+      "papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh",
+      "papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh",
+      "papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh",
+      "papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh",
+      "papercusp-desktop/bin/lib/vm-run-env.selftest.sh",
+      "papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh",
+      "papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh",
+      "papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh",
+      "papercusp-desktop/bin/lib/b5-restart.selftest.sh",
+      "papercusp-desktop/bin/lib/b6-concurrent.selftest.sh",
+      "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh",
+      "papercusp-desktop/bin/lib/matrix-verdict-states.selftest.sh",
+      "papercusp-desktop/bin/lib/matrix-pass-transcript.selftest.sh",
+      "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+      "papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh",
+      "papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh",
+      "papercusp-desktop/bin/lib/roster-scope.selftest.sh",
+      "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh",
+      "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+      "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+      "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh",
+      "papercusp-desktop/bin/lib/disk-preflight.selftest.sh",
+      "papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh",
+      "papercusp-desktop/bin/lib/streak-escalation.selftest.sh",
+      "papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+      "papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh",
+      "papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh",
+      "papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh"
+    ],
+    "inputs": [
+      {
+        "path": "papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh",
+        "sha256": "d616b9bad545a18b28f91f0fb393ce3d0d1c516070a3cc0816ade8d02f1daabd"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/b5-restart.selftest.sh",
+        "sha256": "569edb7c51db5038c328e55cef36663f8ae27eabbcf0c519a1a2051bde989ef2"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/b6-concurrent.selftest.sh",
+        "sha256": "51f1c444b36e17ca3a50b9dc63aa687c4311ca422f316701253870552b82fb32"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh",
+        "sha256": "c5ae36f5771ce5d3077f05cb9eb20888cfe82e98d73020c7f1b890a1d2d19fdc"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh",
+        "sha256": "9d70f92b867af0f6f0db302613c0efce15625fff5743e0d768f8380581b597d8"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/disk-preflight.selftest.sh",
+        "sha256": "3c2a5cb2eff2f0fd9c5ea7672b013d45124930a1ea93dc5d8a91b49d6c0168c4"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/federation-asserts.selftest.sh",
+        "sha256": "e3a1bf018da88a59e90d14142bfda2bc457cdbeed96094cf27cb340e28b10264"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/gen-latest-manifest.selftest.sh",
+        "sha256": "2f85f6d342cd9448464a459edebab64b8ccc99671258726fa968e3c2d69e5993"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh",
+        "sha256": "61b2f5120a1ac12570ded20b757a21202e0c5cf0626ab97b3871f276e9527285"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh",
+        "sha256": "cb43b84004c5cdc1453d5f727a9de9de9ee7f2855331b6e685e2154bd6ff0bfe"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/live-federation-gate-reaper.selftest.sh",
+        "sha256": "97045237020bb10cd6d4961100688edd221d5e8918f0f833e893fac71000a6d7"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh",
+        "sha256": "b1fd0e9b4a34e5540ef3585703d71a2f4bc94861dce9d1243f2e070800ae09fc"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh",
+        "sha256": "df08d6e1d8eab890bcb4bb041ce9707cc3933d4c8094d91fce83aff6aa64b78e"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh",
+        "sha256": "38ee04130e3a201c2b2c89c8dcfaa1005e4d229afb1a9e6137b4e63a868139c7"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/matrix-pass-transcript.selftest.sh",
+        "sha256": "f2886eecedc97a5a9771e00fba7e9941c077bf95640b1fd1442c5dcb664022f9"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh",
+        "sha256": "164da3d16cbe9804b8d5aab9fbc8fe63746ab7bc3695c8ad453488bd27d84d1c"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/matrix-verdict-states.selftest.sh",
+        "sha256": "11ebcf61c18fdc2e088163c8230d0027fd5aecc0b116febc9ff051d2c2bf2053"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/offline-installer-evidence-redaction.selftest.sh",
+        "sha256": "701bff63b7ed758f291839cc85006ceb304ce1697922a4f436f83a9114ae70ee"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/pipefail-predicate.baseline.txt",
+        "sha256": "276f9a2329728c94e08f61c2f0a395ae1b891fd043dedc9cdf38a38eff4b4544"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-artifacts.selftest.sh",
+        "sha256": "8c5312411d0b30c06589dd5e981901a0100f4dd97e22b6b34a77f1bf7fd60503"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-content-identity.selftest.sh",
+        "sha256": "a26344f90bf45b1f3f53600ccacfbf38ec6182f81b13f2638bcab2e606e5ac7a"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh",
+        "sha256": "21377523a45ac7a4d6805c7afe965643186963f0b2d42361923f1ce6a2d35b78"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/release-tag-pin.selftest.sh",
+        "sha256": "e2222ec0f0d0738572245c0e22af6a552c43cb23bf388e69c477a2d505686865"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/remote-object-state.selftest.sh",
+        "sha256": "310ff84da85e429e531fccc8fe0048d5dfb2659a66dd6d9af7b938badefdf751"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh",
+        "sha256": "a92a812a8e104a0a12e9887d093b2f44b73fa3c12faa762de39314ba3a8cf03c"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh",
+        "sha256": "f9a60653bef0a21430df4cc17fbd9cba2199c8568451583b110eb491160141e3"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh",
+        "sha256": "10d422894bb2f0eeb6d6f1ea7dce58406fa9e9a11eae5cd00e6b9605087d1cfc"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh",
+        "sha256": "a18dc019ddcb15b0a8ae07757cb2a90f1d1fcb99bc2ca74d61af5a33c37fc27c"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/roster-scope.selftest.sh",
+        "sha256": "ecf85b6e4d1257993b40f0c5db57f0f66ec0f1d35b18803c27df03fbadc6adfe"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/run-selftests.sh",
+        "sha256": "66cc2631486ed5d0e7fa368a54bb751f1a27b58bfeeb85e5870b337986b2e586"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/rust-path-remap.selftest.sh",
+        "sha256": "7775eb9b7fc33f6b57e1c3140f64257aa9cc52481a7c024682870ea36a13cab6"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh",
+        "sha256": "ec3277fd9ace47350564c62f1dc42ad707fd4aa0bdb408a3920d9c9203918bf4"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/streak-escalation.selftest.sh",
+        "sha256": "39e5d9cd48a5dc88ca624a692e25ea7d8cd287c2ec5def00ef28e5493044f44c"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh",
+        "sha256": "05cbd36df5f7b402c7b210cbaaff18f72fcebe946386bf591a7bf13230aed6e3"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/vm-port-alloc.selftest.sh",
+        "sha256": "da754cc5cf24c42addb6e12e7107f13d726ef802289430661eea139b9adccfdf"
+      },
+      {
+        "path": "papercusp-desktop/bin/lib/vm-run-env.selftest.sh",
+        "sha256": "2feba0e1c0ca2200e9413180baf17e6e526afa31cfce99934a06aff1d45e4a41"
+      }
+    ],
+    "listed": [
+      "federation-asserts.selftest.sh",
+      "release-artifacts.selftest.sh",
+      "release-content-identity.selftest.sh",
+      "release-tag-pin.selftest.sh",
+      "gen-latest-manifest.selftest.sh",
+      "live-federation-gate-reaper.selftest.sh",
+      "release-local-leg-reaper.selftest.sh",
+      "local-matrix-starvation.selftest.sh",
+      "rig-bank-logs.selftest.sh",
+      "local-matrix-bank.selftest.sh",
+      "vm-run-env.selftest.sh",
+      "seat-offer-diag.selftest.sh",
+      "b9-attestation-precondition.selftest.sh",
+      "b3-revocation-kcut.selftest.sh",
+      "b5-restart.selftest.sh",
+      "b6-concurrent.selftest.sh",
+      "matrix-scenario-adapters.selftest.sh",
+      "matrix-verdict-states.selftest.sh",
+      "matrix-pass-transcript.selftest.sh",
+      "replication-soak-diagnostics.selftest.sh",
+      "restart-settle-barrier.selftest.sh",
+      "rig-wait-converged.selftest.sh",
+      "roster-scope.selftest.sh",
+      "deployed-state-guards.selftest.sh",
+      "inno-legacy-reaper.selftest.sh",
+      "inno-uninstall-cleanup.selftest.sh",
+      "rust-path-remap.selftest.sh",
+      "disk-preflight.selftest.sh",
+      "mac-vm-fresh-state.selftest.sh",
+      "streak-escalation.selftest.sh",
+      "remote-object-state.selftest.sh",
+      "offline-installer-evidence-redaction.selftest.sh",
+      "vm-port-alloc.selftest.sh",
+      "vm-boot-extra-drives.selftest.sh"
+    ],
+    "disk": [
+      "b3-revocation-kcut.selftest.sh",
+      "b5-restart.selftest.sh",
+      "b6-concurrent.selftest.sh",
+      "b9-attestation-precondition.selftest.sh",
+      "deployed-state-guards.selftest.sh",
+      "disk-preflight.selftest.sh",
+      "federation-asserts.selftest.sh",
+      "gen-latest-manifest.selftest.sh",
+      "inno-legacy-reaper.selftest.sh",
+      "inno-uninstall-cleanup.selftest.sh",
+      "live-federation-gate-reaper.selftest.sh",
+      "local-matrix-bank.selftest.sh",
+      "local-matrix-starvation.selftest.sh",
+      "mac-vm-fresh-state.selftest.sh",
+      "matrix-pass-transcript.selftest.sh",
+      "matrix-scenario-adapters.selftest.sh",
+      "matrix-verdict-states.selftest.sh",
+      "offline-installer-evidence-redaction.selftest.sh",
+      "release-artifacts.selftest.sh",
+      "release-content-identity.selftest.sh",
+      "release-local-leg-reaper.selftest.sh",
+      "release-tag-pin.selftest.sh",
+      "remote-object-state.selftest.sh",
+      "replication-soak-diagnostics.selftest.sh",
+      "restart-settle-barrier.selftest.sh",
+      "rig-bank-logs.selftest.sh",
+      "rig-wait-converged.selftest.sh",
+      "roster-scope.selftest.sh",
+      "rust-path-remap.selftest.sh",
+      "seat-offer-diag.selftest.sh",
+      "streak-escalation.selftest.sh",
+      "vm-boot-extra-drives.selftest.sh",
+      "vm-port-alloc.selftest.sh",
+      "vm-run-env.selftest.sh"
+    ],
+    "guards": [
+      "array-disk-completeness",
+      "pipefail-predicate-baseline"
+    ],
+    "executed": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false
+  },
+  "beforeAfterInputsIdentical": true,
+  "inputHashesMatchCurrent": true,
+  "logs": [
+    {
+      "path": "~/.papercusp/scratch/c0523-desktop-aggregate-postfix-v1.out",
+      "sha256": "b8ddf5c063427d90c983113f9b7fedb1d3ef1b3dfe068cfbcf5d8184090a1ca7"
+    },
+    {
+      "path": "~/.papercusp/scratch/c0523-desktop-aggregate-postfix-v1.err",
+      "sha256": "cacdc11b5360a24c66ee5ce6e0976229677c5d3c837917e23f7f0002d69fbcbe"
+    },
+    {
+      "path": "~/.papercusp/scratch/c0523-desktop-aggregate-postfix-v1.before.out",
+      "sha256": "4818062d8e071ca5be65f2473b26bf6e180e47b930762b6d85dbcda21581e89b"
+    },
+    {
+      "path": "~/.papercusp/scratch/c0523-desktop-aggregate-postfix-v1.before.err",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "~/.papercusp/scratch/c0523-desktop-aggregate-postfix-v1.after.out",
+      "sha256": "4818062d8e071ca5be65f2473b26bf6e180e47b930762b6d85dbcda21581e89b"
+    },
+    {
+      "path": "~/.papercusp/scratch/c0523-desktop-aggregate-postfix-v1.after.err",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "runtimeClosure": "unmeasured",
+  "operationalAcceptance": false,
+  "rawSourceReceipt": {
+    "path": "~/.papercusp/scratch/c0523-desktop-aggregate-postfix-v1.json",
+    "sha256": "38c4d983bc46285fb927a883886d500b0edc4f3ebab0ae5333a11ac1b35c1d82"
+  },
+  "linesContainingSkip": [
+    "  \u2713 live-federation-gate repacks the .deb whenever a consumer leg is due, not on SKIP_MATRIX alone (EI-20580419609576585)",
+    "  \u2713 fed_plan_part_merge_assert SKIPs when harness_plan_parts is absent on dst (EI-505)",
+    "  \u2713 fed_plan_part_merge_assert SKIPs when harness_plan_parts is absent on src (EI-505)",
+    "  \u2713 deb-hetzner-federation.sh's OVERALL condition treats a SKIPped plan-part leg as N/A, not FAIL",
+    "  \u2713 deb-hetzner-federation.sh reports plan-part legs as PASS/SKIP/FAIL, not a binary PASS/FAIL",
+    "  \u2713 gate wires both predicates + the SKIPPED-STARVATION downgrade result",
+    "  \u2713 a pre-run SKIP still renders and is still disclaimed"
+  ],
+  "skipInterpretation": "These are names of passing assertions about SKIP handling. No aggregate script has a SKIP verdict.",
+  "scriptVerdicts": [
+    {
+      "script": "federation-asserts.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "release-artifacts.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "release-content-identity.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "release-tag-pin.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "gen-latest-manifest.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "live-federation-gate-reaper.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "release-local-leg-reaper.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "local-matrix-starvation.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "rig-bank-logs.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "local-matrix-bank.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "vm-run-env.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "seat-offer-diag.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "b9-attestation-precondition.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "b3-revocation-kcut.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "b5-restart.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "b6-concurrent.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "matrix-scenario-adapters.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "matrix-verdict-states.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "matrix-pass-transcript.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "replication-soak-diagnostics.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "restart-settle-barrier.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "rig-wait-converged.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "roster-scope.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "deployed-state-guards.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "inno-legacy-reaper.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "inno-uninstall-cleanup.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "rust-path-remap.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "disk-preflight.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "mac-vm-fresh-state.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "streak-escalation.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "remote-object-state.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "offline-installer-evidence-redaction.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "vm-port-alloc.selftest.sh",
+      "verdict": "PASS"
+    },
+    {
+      "script": "vm-boot-extra-drives.selftest.sh",
+      "verdict": "PASS"
+    }
+  ],
+  "limits": "Original command-local execution and declared inputs only. Imported scripts, installed dependencies and final transformed runtime closure remain unmeasured. No ABBA or operational acceptance; full plan unshipped.",
+  "qualifiedAt": "2026-10-14T18:21:37.690037+00:00",
+  "headAtQualification": "fe8513e46a8391054895bca57a8fd336102b7c82",
+  "currentOriginalParent20261015": {
+    "workItemId": "EI-26017756441275528",
+    "status": "original-parent-exit0-declared-population-stable-conditional-skips",
+    "command": [
+      "npm",
+      "run",
+      "test"
+    ],
+    "originalScript": "npm run test:config && npm run test:shell && npm run test:installed-model-inference && npm run test:candidate-install-upgrade && npm run test:mac-minimum-os && npm run test:mac-signing && npm run test:linux-finalize-deb && npm run test:selftests",
+    "startedAt": "2026-10-15T04:37:08.186418+00:00",
+    "finishedAt": "2026-10-15T04:53:26.413089+00:00",
+    "childWallMs": 973933,
+    "exitCode": 0,
+    "normalEnvironment": "NODE_OPTIONS removed before child spawn; no diagnostic preload or optional packet injection",
+    "headAtStart": "7adab27b62a58260dc8d72881f694a46e25351d5",
+    "headAtEnd": "a9a08d8758ba00cde995b65219e711925349e7ef",
+    "desktopHeadAtStart": "3a127698941e026d4b5f12a9eca9f0ec4ee2abba",
+    "desktopHeadAtEnd": "ca415ae8d0998c3a47e07ff50e340a69f16fd01a",
+    "rawReceipt": {
+      "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v3.json",
+      "sha256": "3897ab3fd9eda3929c0f78fbc458d48c7664788df2744dd5e5a398232b895ce0"
+    },
+    "logs": {
+      "stdout": {
+        "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v3.log",
+        "sha256": "3f766cff46a0a8ad1233eeb7b4aa08a12f75c138b1609d5ee3f5b56078f129fc"
+      },
+      "stderr": {
+        "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v3.err",
+        "sha256": "6b172b591bfbf9cdab43747d3ae0a76b38a72da122378befb3a4bb9dd40b3ef8"
+      }
+    },
+    "declaredInputs": {
+      "before": 3733,
+      "after": 3733,
+      "independentlyEnumerated": true,
+      "delta": {
+        "added": [],
+        "removed": [],
+        "changed": []
+      },
+      "unchanged": true,
+      "recipe": "desktop git ls-files --cached --others --exclude-standard, independently enumerated at this boundary; plus four named external bootstrap inputs; not transitive/runtime closure",
+      "limits": "Declared desktop repository paths plus four named external bootstrap paths only; not the transitive dependency or runtime population."
+    },
+    "repairedInputPins": [
+      {
+        "path": "papercusp-desktop/test/build-artifact-atomicity.test.js",
+        "sha256": "f7636b3602e158fb740f6835fe3fc6a221c43dc289f9062233f86e9c752c856f"
+      },
+      {
+        "path": "papercusp-desktop/test/innoextract-compat-preflight.test.js",
+        "sha256": "50cbc980ffa045502d08089b6aa812a809dc8ad10699f2162f6dfd0eb4e19905"
+      },
+      {
+        "path": "papercusp-desktop/test/release-baked-host-bytes.test.js",
+        "sha256": "7f03e0729ab904a46eacb4b3c09e211630ef20af2b8cebf15e839c0e7bd0c246"
+      },
+      {
+        "path": "papercusp-desktop/test/wsl-sidecar-launch-paths.test.js",
+        "sha256": "abd676bc67a7ebc9980deb97c6894e5f8229e5531559b3ad31261e501f827e3e"
+      },
+      {
+        "path": "papercusp-desktop/test/build-desktop-sidecar-lock.test.js",
+        "sha256": "ed7e584d2b8f42f492ed9b55c2dc793912e413490afdf1e7a6105706374be8c5"
+      }
+    ],
+    "focusedVerification": {
+      "command": "node --test --test-global-setup=test/monorepo-host-preflight.mjs test/build-artifact-atomicity.test.js test/innoextract-compat-preflight.test.js test/release-baked-host-bytes.test.js test/wsl-sidecar-launch-paths.test.js test/build-desktop-sidecar-lock.test.js",
+      "preloadAbsent": true,
+      "passed": 62,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "stdout": {
+        "path": "~/.papercusp/scratch/c0523-desktop-fivefiles-green-v1.log",
+        "sha256": "0bfeda4b84f67bdc2903568e8e3f1b79e12caf9206f67a0cc1617918844a09ab"
+      },
+      "causalLockControl": {
+        "path": "~/.papercusp/scratch/c0523-lock-marker-control-red.log",
+        "sha256": "9e48d83d6feb63e8fb5ecff37efac063a3e5b104d082932a7fa915409d30716c"
+      },
+      "causalResult": "A delayed marker after unlock reproduces the original immediate assertion failure even though the writer acquires successfully. Existing bounded waitForFile acknowledgement passes. Other maintained controls reject mismatched prepared Git HEAD, absent/unknown/candidate SPA, and poisoned Rust signature mentions; executable Windows guard is copied from the maintained producer."
+    },
+    "slowHarnessAudit": "v1 inherited diagnostic preload invalidated original-command qualification. v2 clean failures exposed stale fixtures, unanchored source extraction and asynchronous completion assertion. Before v3, pass exact five maintained suites, remove NODE_OPTIONS before original spawn, assert optional packet injection absent, and independently enumerate/hash the declared population at both boundaries. Failed v1/v2 receipts are retained unchanged.",
+    "steps": [
+      {
+        "script": "test:config",
+        "nodeStdoutSummary": {
+          "tests": 114,
+          "pass": 111,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 3
+        }
+      },
+      {
+        "script": "test:shell",
+        "nodeStdoutSummary": {
+          "tests": 1576,
+          "pass": 1575,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 1
+        }
+      },
+      {
+        "script": "test:installed-model-inference",
+        "nodeStdoutSummary": {
+          "tests": 4,
+          "pass": 2,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 2
+        }
+      },
+      {
+        "script": "test:candidate-install-upgrade",
+        "nodeStdoutSummary": {
+          "tests": 6,
+          "pass": 6,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "script": "test:mac-minimum-os",
+        "nodeStdoutSummary": {
+          "tests": 7,
+          "pass": 7,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "script": "test:mac-signing",
+        "nodeStdoutSummary": {
+          "tests": 36,
+          "pass": 36,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "script": "test:linux-finalize-deb",
+        "nodeStdoutSummary": {
+          "tests": 10,
+          "pass": 10,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "script": "test:selftests",
+        "nodeStdoutSummary": {}
+      }
+    ],
+    "selftestVerdicts": [
+      {
+        "script": "federation-asserts.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "release-artifacts.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "release-content-identity.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "release-tag-pin.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "gen-latest-manifest.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "live-federation-gate-reaper.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "release-local-leg-reaper.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "local-matrix-starvation.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "rig-bank-logs.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "local-matrix-bank.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "vm-run-env.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "seat-offer-diag.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "b9-attestation-precondition.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "b3-revocation-kcut.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "b5-restart.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "b6-concurrent.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "matrix-scenario-adapters.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "matrix-verdict-states.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "matrix-pass-transcript.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "replication-soak-diagnostics.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "restart-settle-barrier.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "rig-wait-converged.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "roster-scope.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "deployed-state-guards.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "inno-legacy-reaper.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "inno-uninstall-cleanup.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "rust-path-remap.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "disk-preflight.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "mac-vm-fresh-state.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "streak-escalation.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "remote-object-state.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "offline-installer-evidence-redaction.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "vm-port-alloc.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "vm-boot-extra-drives.selftest.sh",
+        "verdict": "PASS"
+      }
+    ],
+    "conditionalSkips": [
+      "﹣ real Inno packages the mandatory stamp and refuses a missing input (0.199853ms) # native producer leg: set PAPERCUSP_TEST_REAL_INNO=1 and PAPERCUSP_INNOEXTRACT",
+      "﹣ real Inno upgrade replaces owned payload, preserves data, and rolls back a failed copy (0.215624ms) # native producer leg: set PAPERCUSP_TEST_REAL_INNO=1",
+      "﹣ native webview zoom responds to keyboard shortcuts and survives reload (0.424163ms) # SKIP",
+      "﹣ live current-build Mac worker executes from transported hash-bound bytes (2.632786ms) # SKIP",
+      "﹣ actual bound embeddinggemma-300m-ONNX worker inference (1.57077ms) # requires exact payload/installed binding",
+      "﹣ actual bound harrier-oss-v1-0.6b-ONNX worker inference (0.191598ms) # requires exact payload/installed binding"
+    ],
+    "failedPreparations": [
+      {
+        "kind": "preload-contaminated; original-behavior claim RETRACTED",
+        "receipt": {
+          "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v1.json",
+          "sha256": "a2d98c6b9bc6338b3f645237040dd4174151961372b510a355b39e0d25e2a244"
+        }
+      },
+      {
+        "kind": "clean-parent-exit1-nine-shell-failures; reused-path-list population limitation",
+        "receipt": {
+          "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v2.json",
+          "sha256": "cfcff519e2751a8a3da2ef7828dcfcc108ed39e8a3f97e02c3097e51d9ea80df"
+        }
+      }
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped",
+    "limits": [
+      "Native npm parent exit and its declared source population are measured; node summaries are stdout observations, not qualified per-step/report bindings.",
+      "Six conditional tests were skipped; no zero-skip qualification or applicability ruling is inferred.",
+      "Complete bootstrap, engine source bytes, descendants, external/native dependencies, final transforms and containment closure remain unmeasured.",
+      "No ABBA comparison, R-12 throughput acceptance, live gate verdict, or shipment is established. Engine archive change EI-26014170316247986 remains mandatory-review-pending."
+    ]
+  }
+}

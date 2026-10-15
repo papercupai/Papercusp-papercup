@@ -1,0 +1,137 @@
+{
+  "schemaVersion": "p011-multi-target-window-qualification-v1",
+  "workItem": "WI-10006124",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "status": "supporting-collector-integration-guards-only",
+  "implementation": {
+    "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+    "bytes": 87360,
+    "sha256": "5f943c6ff9a3f7517f6201bfe46d372e2566c7de1719a8e7376428b71d7406ad",
+    "behavior": "Bracket one workload across at most eight selected PID-bound targets with exact ancestry, executable, OS lifetime, loaded process/build and role fences. Keep serial PSS and cumulative V8 allocation separate, preserve unsigned allocation and signed PSS changes, and join only exact terminal HTTP/query tuples.",
+    "reused": [
+      "Existing OS descendant census and role classification",
+      "Existing unforced readProcessMemory and metadata-only requestWorkerSnapshot",
+      "Existing exact request-worker auditor and canonical integration runner"
+    ],
+    "newDurableSurfaces": []
+  },
+  "verification": {
+    "command": "env -u PAPERCUSP_P011_LIVE_PID PAPERCUSP_HARNESS_SLUG=papercusp npm run test:file -- packages/operator-core/lib/service-memory-live-baseline.integration.test.ts -- --testNamePattern='multi-target request-resource window'",
+    "testRunId": 20743814,
+    "ledgerStatus": "pass",
+    "harness": "papercusp",
+    "workspace": "papercusp-workspace",
+    "commitSha": "fae20424407bb15ba04bd7518bb8996a76660d59",
+    "worktreeDirty": true,
+    "passed": 15,
+    "failed": 0,
+    "filteredOrOptInSkipped": 33,
+    "actualBoundary": "New disposable same-entry process tree: one unsampled parent and two request-only primary descendants. Both workers returned server-generated HTTP UUIDs through the actual bounded PG diagnostic writer, read by PID-bound inspector clients. Actual unforced PSS and cumulative V8 allocation counter observations bracketed this one exact window; the test asserted positive PSS and allocations, exact per-worker routing, bounded coverage, and fixture-process cleanup. These are private fixture targets, not production cluster workers.",
+    "rawResourceValuesPublished": false,
+    "counterexamples": [
+      "Duplicate targets",
+      "Unrelated ancestry",
+      "Selected PID reuse",
+      "Changed selected parent pin",
+      "Changed selected entry pin",
+      "Loaded build change",
+      "Serving-role change",
+      "Regressed cumulative allocation",
+      "Inspector counter PID mismatch",
+      "Process-instance change",
+      "Ancestor PID reuse",
+      "Read failure before workload",
+      "Evicted request records with partial coverage",
+      "Capped descendant census with explicit residue"
+    ],
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "namedFiles": 1,
+      "actualErrors": 0
+    },
+    "bindingIds": [
+      {
+        "workItemId": "WI-10006124",
+        "id": 23916
+      },
+      {
+        "workItemId": "WI-10004890",
+        "id": 23917
+      }
+    ],
+    "logs": [
+      {
+        "path": "/tmp/su-7db4f-p011-multi-target-window-r1.log",
+        "bytes": 16872,
+        "sha256": "c145318f671ce058f5456b5d7bc51aa8a01f45eee89694cca24e255f9f0df518"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-multi-target-window-r2.log",
+        "bytes": 23163,
+        "sha256": "376844cfbb8818910210fcd7e3dcfefc477dff1f002e87ce7d3e5a18c12de428"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-multi-target-window-r3.log",
+        "bytes": 18102,
+        "sha256": "260db67e14c51015b5f95a3795abd683b5def1213aed7b6d550da124ad7a3c41"
+      },
+      {
+        "path": "/tmp/su-7db4f-p011-multi-target-window-types-r3.log",
+        "bytes": 1065,
+        "sha256": "e0ca565e1a34e07a0aed0f2e9f92a847412142fb18141ac4e6c1ec0e57119d2f"
+      }
+    ]
+  },
+  "sourceFingerprints": {
+    "scope": "Five named post-run file identities; not the complete executed-source graph",
+    "files": [
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "bytes": 66663,
+        "sha256": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+        "bytes": 29262,
+        "sha256": "d72752978db0773b83d5347bcb39f5bbae33a997754ac8abf9354fe11222f6ea"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/build-stamp.ts",
+        "bytes": 5163,
+        "sha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e"
+      },
+      {
+        "path": "packages/operator-core/lib/background-workers.ts",
+        "bytes": 10151,
+        "sha256": "2c4c31597075252183391b9a4b68ffb7bb2bde033448bc337c5ee5d59d2e1008"
+      }
+    ]
+  },
+  "preservedFailures": [
+    {
+      "testRunId": 20743167,
+      "status": "fail",
+      "scope": "Earlier isolated-tree test failed at its finally exit assertion, masking the original startup exception. Historical startup cause remains unconfirmed.",
+      "repairs": [
+        "Replaced escape-sensitive generated regular-expression literal with a RegExp string",
+        "Node parser preflight before spawning any fixture process",
+        "Original exception and bounded child output survive cleanup"
+      ]
+    }
+  ],
+  "limits": [
+    "No new shared staging or deployed request-worker measurement",
+    "Collector is prepared and tested through its maintained callback seam; shared multi-inspector selection/lifecycle wiring remains to be implemented",
+    "No production clone census, configured-six-worker change, native ownership or physical saving",
+    "No all-eight-source disposition or complete executed graph",
+    "P011@2/D-021, independent full acceptance and shipment remain open",
+    "Original native owner-origin affirmation remains pending; no duplicate approval ask",
+    "All historical cache/request/expiry producers and suites remain unreplayed"
+  ]
+}

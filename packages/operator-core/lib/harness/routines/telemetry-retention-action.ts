@@ -19,8 +19,8 @@
  *
  * Config (routine `trigger_config`, all optional):
  *   - `targets` — `Array<{ category: string; retention_days: number }>`; default
- *     `route-invocations`@7d + `tool-invocations`@14d + `harness-run-output`@14d
- *     + `agent-activity`@7d + `memory-recall-query-text`@3d.
+ *     the canonical P-010 table-retention policy (30d local telemetry,
+ *     3d agent-authored recall query text).
  *   - `dry_run` — plan + log but delete nothing (preview a first run).
  *   - `package_cache_enabled` — set `false` to disable npm/bun/pnpm cache
  *     retention (enabled by default).
@@ -49,6 +49,12 @@ import { pruneStorageCategory } from '../../storage/prune';
 import { DEFAULT_PACKAGE_CACHE_MAX_BYTES, runPackageCacheRetention } from '../../storage/package-cache-retention';
 import { cleanupExpiredSessionPorts } from '../../session-port/cleanup';
 import { DEFAULT_RETENTION_TARGETS, type RetentionTarget } from './telemetry-retention-targets';
+import {
+  migrateArchiveToColdTier,
+  pgSessionArchiveStore,
+  SESSION_ARCHIVE_COLD_ROOT,
+  type SessionArchiveStore,
+} from '../../session-archive';
 
 export { DEFAULT_RETENTION_TARGETS } from './telemetry-retention-targets';
 
@@ -174,6 +180,44 @@ export async function reindexBloatedIndexes(
  *  above any real daily delta and the next tick continues anyway. */
 const MAX_CALLS_PER_TARGET = 50;
 
+export interface ColdArchiveCandidate {
+  source_kind: string;
+  session_id: string;
+}
+
+export interface ColdArchiveMigrationSummary {
+  scanned: number;
+  migrated: number;
+  failed: number;
+}
+
+/** Migrate a bounded batch through the existing archive store. The candidate
+ * list is injected in tests and read from PG by the scheduled action. */
+export async function migrateColdArchives(opts: {
+  candidates: readonly ColdArchiveCandidate[];
+  maxArchives?: number;
+  root?: string;
+  store?: SessionArchiveStore;
+}): Promise<ColdArchiveMigrationSummary> {
+  const maxArchives = Number.isFinite(opts.maxArchives) && (opts.maxArchives ?? 0) > 0
+    ? Math.floor(opts.maxArchives as number)
+    : 12;
+  const store = opts.store ?? pgSessionArchiveStore();
+  const summary = { scanned: 0, migrated: 0, failed: 0 };
+  for (const candidate of opts.candidates.slice(0, maxArchives)) {
+    summary.scanned += 1;
+    const result = await migrateArchiveToColdTier(
+      candidate.source_kind,
+      candidate.session_id,
+      opts.root ?? SESSION_ARCHIVE_COLD_ROOT,
+      store,
+    );
+    if (result.ok) summary.migrated += 1;
+    else if (result.reason !== 'not_archived') summary.failed += 1;
+  }
+  return summary;
+}
+
 export function resolveTargets(cfg: Record<string, unknown>): RetentionTarget[] {
   const raw = cfg.targets;
   if (Array.isArray(raw) && raw.length > 0) {
@@ -186,6 +230,27 @@ registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const dryRun = cfg.dry_run === true;
   const targets = resolveTargets(cfg);
+
+  if (cfg.cold_archive_enabled !== false) {
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const candidates = await getOrgPg().sql<ColdArchiveCandidate[]>`
+        SELECT source_kind, session_id
+          FROM harness_shared.session_archives
+         ORDER BY archived_at ASC
+         LIMIT ${Number.isFinite(Number(cfg.cold_archive_max_archives))
+           ? Math.max(1, Math.floor(Number(cfg.cold_archive_max_archives)))
+           : 12}`;
+      const cold = await migrateColdArchives({
+        candidates,
+        maxArchives: Number(cfg.cold_archive_max_archives),
+        root: typeof cfg.cold_archive_root === 'string' ? cfg.cold_archive_root : undefined,
+      });
+      console.log(`[telemetry-retention] cold archive migration: scanned ${cold.scanned}, migrated ${cold.migrated}, failed ${cold.failed}`);
+    } catch (error) {
+      console.warn(`[telemetry-retention] cold archive migration failed — ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 
   for (const t of targets) {
     const days = Number(t.retention_days);

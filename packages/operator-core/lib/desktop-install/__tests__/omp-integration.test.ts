@@ -226,6 +226,38 @@ describe('installOmpIntegration', () => {
     }
   });
 
+  it('does not run OMP config through a PATH entry that delegates to psu --agent=omp', async () => {
+    await seedPhase1(tmpHome);
+    const originalPath = process.env.PATH;
+    const fakeBinDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fake-psu-omp-bin-'));
+    const fakeOmp = path.join(fakeBinDir, 'omp');
+    const invocationLog = path.join(tmpHome, 'psu-shim-invoked.log');
+    const psuLauncher = path.join(tmpHome, 'scripts', 'psu.mjs');
+
+    await fs.writeFile(
+      fakeOmp,
+      [
+        '#!/bin/sh',
+        `# hosted wrapper: node ${psuLauncher} --agent=omp "$@"`,
+        `printf '%s\\n' "$*" >> "${invocationLog}"`,
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    process.env.PATH = [fakeBinDir, originalPath].filter(Boolean).join(path.delimiter);
+
+    try {
+      const result = await installOmpIntegration({ home: tmpHome });
+
+      expect(result.ompBinaryPath).toBeNull();
+      expect(result.actions.some((action) => action.startsWith('configured OMP Hindsight'))).toBe(false);
+      await expect(fs.access(invocationLog)).rejects.toThrow();
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      await fs.rm(fakeBinDir, { recursive: true, force: true });
+    }
+  });
+
   it('reports changed=true when it corrects stale OMP Hindsight config', async () => {
     await seedPhase1(tmpHome);
     const fakeOmp = await makeFakeOmp();

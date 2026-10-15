@@ -107,4 +107,49 @@ describe('money-journal producers on Postgres (P-042, R-30, D-023)', () => {
     const verified = await verifyLedger(WS, moneyJournalLedgerSource(WS, deps), deps.ledgerChain!);
     expect(verified).toMatchObject({ ok: true, unchainedCount: 0 });
   });
+
+  it('shifted overlapping Stripe windows persist payment_refund and tax_fee exactly once with balanced cents, references and an intact journal chain', async () => {
+    const workspaceId = `${WS}-overlap`;
+    const history: StripeBalanceTransaction[] = [
+      { id: 'txn_overlaprefund', type: 'payment_refund', amount: -500, fee: 0, currency: 'usd', created: 1_790_000_400, source: { id: 're_overlap', object: 'refund' } },
+      { id: 'txn_overlaptaxfee', type: 'tax_fee', amount: -199, fee: 0, currency: 'usd', created: 1_790_000_300, source: null },
+      ACCOUNT[1]!,
+      ACCOUNT[0]!,
+    ];
+    const postForWorkspace: JournalPoster = async (entry) => {
+      const r = await postMoneyJournalEntry({ workspaceId, entry }, deps);
+      return r.ok ? { ok: true, duplicate: r.duplicate } : { ok: false, code: r.code, detail: r.detail };
+    };
+    const importWindow = (createdGte: number) => importStripeBalanceTransactions({
+      list: async ({ limit, startingAfter }) => {
+        const window = history.filter((t) => t.created >= createdGte);
+        const start = startingAfter ? window.findIndex((t) => t.id === startingAfter) + 1 : 0;
+        const data = window.slice(start, start + limit);
+        return { data, has_more: start + data.length < window.length };
+      },
+      post: postForWorkspace, policy: POLICY, createdGte, pageSize: 1,
+    });
+    expect(await importWindow(1_790_000_300)).toEqual({ scanned: 2, posted: 2, duplicates: 0, skipped: [], unmapped: [], refused: [], truncated: false });
+    const prefix = await readMoneyJournalEntries(workspaceId, deps);
+    expect(prefix).toMatchObject([
+      { entryId: 'stripe-bt:txn_overlaprefund', movement: 'refund', lines: [
+        { account: 'refund-chargeback-reserve', side: 'debit', cents: 500 },
+        { account: 'operating', side: 'credit', cents: 500 },
+      ] },
+      { entryId: 'stripe-bt:txn_overlaptaxfee', movement: 'provider-payment', lines: [
+        { account: 'provider-cost', side: 'debit', cents: 199 },
+        { account: 'operating', side: 'credit', cents: 199 },
+      ] },
+    ]);
+    expect(await importWindow(1_790_000_100)).toEqual({ scanned: 4, posted: 2, duplicates: 2, skipped: [], unmapped: [], refused: [], truncated: false });
+    const stored = await readMoneyJournalEntries(workspaceId, deps);
+    expect(stored.slice(0, 2)).toEqual(prefix);
+    expect(stored.map((e) => e.entryId)).toEqual(history.map((t) => `stripe-bt:${t.id}`));
+    expect(stored.map((e) => e.externalRef)).toEqual(history.map((t) => ({ kind: 'stripe-balance-transaction', id: t.id })));
+    expect(stored.map((e) => e.movement)).toEqual(['refund', 'provider-payment', 'credit-purchase', 'customer-payment']);
+    expect(trialBalance(stored).balanced).toBe(true);
+    expect(await importWindow(1_790_000_200)).toMatchObject({ scanned: 3, posted: 0, duplicates: 3, truncated: false });
+    expect(await readMoneyJournalEntries(workspaceId, deps)).toEqual(stored);
+    expect(await verifyLedger(workspaceId, moneyJournalLedgerSource(workspaceId, deps), deps.ledgerChain!)).toMatchObject({ ok: true, unchainedCount: 0 });
+  });
 });

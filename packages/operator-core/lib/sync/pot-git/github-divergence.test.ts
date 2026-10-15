@@ -156,19 +156,21 @@ describe('collectDivergenceSignals — folds the mechanism residues', () => {
     expect(verdict.signals.map((s) => s.kind)).toEqual(['bridge-egress-agent-actionable', 'bridge-egress-unreachable']);
   });
 
-  it('an egress spawn failure escalates without an owner lever', () => {
+  it('an egress DNS failure escalates without an owner lever', () => {
     const verdict = classifyDivergence(
       collectDivergenceSignals({
         egress: {
           rejectedNonFF: [],
           blockedSecrets: [],
-          remoteErrors: [{ message: 'push refs/heads/staging: spawn git ENOENT', transient: true }],
+          remoteErrors: [
+            { message: 'push refs/heads/staging: Could not resolve host: github.com', transient: true },
+          ],
         },
       }),
     );
     expect(verdict.action).toBe('escalate');
     expect(verdict.needsOwner).toBe(false);
-    expect(verdict.detail).toMatch(/could not be SPAWNED/i);
+    expect(verdict.detail).toMatch(/transient network or transport failure/i);
   });
 
   it('admitted heads (baseline/clean) are non-events; empty/absent inputs yield no signals', () => {
@@ -361,11 +363,19 @@ describe('WI-38327 — the needs-owner alarm latch (pure policy, no database)', 
     expect(needsOwnerCause(both)).toBe('admission-blocked+ingress-non-ff');
   });
 
-  it('a TRANSIENT unreachable signal never pages an owner (it self-heals next tick)', () => {
+  it('a TRANSIENT DNS failure never pages an owner and does not suggest repairing URL or credentials', () => {
     const transient = collectDivergenceSignals({
-      remoteUnreachable: { remoteUrl: 'u', branches: ['main'], errors: ['spawn git ENOENT'], transient: true },
+      remoteUnreachable: {
+        remoteUrl: 'u',
+        branches: ['main'],
+        errors: ['Could not resolve host: github.com'],
+        transient: true,
+      },
     });
     expect(needsOwnerCause(transient)).toBeNull();
+    const verdict = classifyDivergence(transient);
+    expect(verdict.detail).toMatch(/DNS or connection failure/i);
+    expect(verdict.detail).not.toMatch(/fix the remote URL or wire the credential/i);
     const persistent = collectDivergenceSignals({
       remoteUnreachable: { remoteUrl: 'u', branches: ['main'], errors: ['Repository not found'], transient: false },
     });

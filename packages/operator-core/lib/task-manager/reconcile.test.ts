@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { reconcile, summarizeReconcile, scopeUnitOf, type ScannedProcess } from './reconcile';
 import { classifyScope } from './scope-class';
-import type { TaskRow, TaskState } from './types';
+import { serviceUnitForTask, type TaskRow, type TaskState } from './types';
 
 const NOW = Date.parse('2026-07-27T12:00:00.000Z');
 const OLD = new Date(NOW - 10 * 60_000).toISOString();
@@ -72,6 +72,21 @@ describe('reconcile — alive matching', () => {
     );
     expect(r.alive).toHaveLength(1);
     expect(r.alive[0]).toMatchObject({ taskId: 'aaa111', pid: 100, pidsSeen: 3, matchedBy: 'scope' });
+    expect(r.stranded).toHaveLength(0);
+    expect(r.unaccounted).toHaveLength(0);
+  });
+
+  it('keeps release-cut work alive under its task service while build processes are nested', () => {
+    const unit = serviceUnitForTask('aaa111');
+    const servicePath = `${OUR_SLICE}/papercusp-deploy.slice/${unit}`;
+    const nestedBuildPath = `${servicePath}/papercusp-cut-build.scope`;
+    const r = reconcile(
+      [row({ taskId: 'aaa111', class: 'deploy', scopeUnit: unit })],
+      [proc({ pid: 100, cgroupPath: servicePath }), proc({ pid: 231, cgroupPath: nestedBuildPath })],
+      { now: NOW },
+    );
+    expect(r.alive).toHaveLength(1);
+    expect(r.alive[0]).toMatchObject({ taskId: 'aaa111', pid: 100, pidsSeen: 2, matchedBy: 'scope' });
     expect(r.stranded).toHaveLength(0);
     expect(r.unaccounted).toHaveLength(0);
   });
@@ -152,11 +167,72 @@ describe('reconcile — PID recycling safety', () => {
   });
 });
 
+// WI-10005782: a wake executor's unconfined `claude -p --resume <id>` turn runs in
+// the operator's service cgroup and its argv names no repo path, so the scan's
+// foreign display filter never lists it. Before the fix every such row stranded
+// one grace period after spawn while the process kept running.
+describe('reconcile — unconfined task the scan read but did not list (WI-10005782)', () => {
+  const headless = () =>
+    row({
+      taskId: 'eee555',
+      class: 'agent-session',
+      confined: false,
+      scopeUnit: null,
+      pid: 5151,
+      processIdentity: 'linux:boot:7777',
+    });
+
+  it('keeps the row alive when the scan saw its pid with the SAME identity', () => {
+    const r = reconcile([headless()], [], {
+      now: NOW,
+      unlistedIdentityByPid: new Map([[5151, 'linux:boot:7777']]),
+    });
+    expect(r.stranded).toHaveLength(0);
+    expect(r.alive).toHaveLength(1);
+    expect(r.alive[0]).toMatchObject({
+      taskId: 'eee555',
+      pid: 5151,
+      processIdentity: 'linux:boot:7777',
+      matchedBy: 'identity',
+    });
+  });
+
+  it('strands the row when nothing carries the identity (the pre-fix reading, still correct for a dead turn)', () => {
+    const r = reconcile([headless()], [], { now: NOW });
+    expect(r.alive).toHaveLength(0);
+    expect(r.stranded).toHaveLength(1);
+    expect(r.stranded[0]!.reason).toMatch(/identity linux:boot:7777 is gone/);
+  });
+
+  it('REFUSES a recycled pid: same pid, different start time', () => {
+    const r = reconcile([headless()], [], {
+      now: NOW,
+      unlistedIdentityByPid: new Map([[5151, 'linux:boot:8888']]),
+    });
+    expect(r.alive).toHaveLength(0);
+    expect(r.stranded).toHaveLength(1);
+  });
+
+  it('REFUSES the identity under a different pid: a match needs pid AND start time', () => {
+    const r = reconcile([headless()], [], {
+      now: NOW,
+      unlistedIdentityByPid: new Map([[6262, 'linux:boot:7777']]),
+    });
+    expect(r.alive).toHaveLength(0);
+    expect(r.stranded).toHaveLength(1);
+  });
+});
+
 describe('reconcile — stranding', () => {
-  it('strands a row whose scope holds no processes', () => {
+  it('keeps a scoped row unresolved when systemd has not confirmed release', () => {
     const r = reconcile([row({ taskId: 'eee555', scopeUnit: 'pc-eee555.scope' })], [], { now: NOW });
-    expect(r.stranded).toEqual([
-      { taskId: 'eee555', reason: 'scope pc-eee555.scope holds no processes' },
+    expect(r.stranded).toHaveLength(0);
+    expect(r.endedUnobserved).toHaveLength(0);
+    expect(r.unresolved).toEqual([
+      {
+        taskId: 'eee555',
+        reason: 'scope pc-eee555.scope holds no processes — systemd has not confirmed scope pc-eee555.scope was released',
+      },
     ]);
   });
 
@@ -395,20 +471,25 @@ describe('reconcile — endedUnobserved (D-018)', () => {
     expect(r.endedUnobserved[0]!.reason).toMatch(/systemd confirms scope pc-nnn444\.scope was released/);
   });
 
-  it('still strands when the scope is absent and NOT in releasedScopes (regression)', () => {
+  it('keeps a scoped row unresolved when systemd has not confirmed release', () => {
     const r = reconcile(
       [row({ taskId: 'ooo555', scopeUnit: 'pc-ooo555.scope' })],
       [],
       { now: NOW, releasedScopes: new Set(['pc-someone-else.scope']) },
     );
     expect(r.endedUnobserved).toHaveLength(0);
-    expect(r.stranded).toEqual([{ taskId: 'ooo555', reason: 'scope pc-ooo555.scope holds no processes' }]);
+    expect(r.stranded).toHaveLength(0);
+    expect(r.unresolved).toEqual([{
+      taskId: 'ooo555',
+      reason: 'scope pc-ooo555.scope holds no processes — systemd has not confirmed scope pc-ooo555.scope was released',
+    }]);
   });
 
-  it('strands as before when releasedScopes is omitted entirely (additive, never a new way to lose an escape)', () => {
+  it('keeps a scoped row unresolved when the release probe is unavailable', () => {
     const r = reconcile([row({ taskId: 'ppp666', scopeUnit: 'pc-ppp666.scope' })], [], { now: NOW });
     expect(r.endedUnobserved).toHaveLength(0);
-    expect(r.stranded).toHaveLength(1);
+    expect(r.stranded).toHaveLength(0);
+    expect(r.unresolved).toHaveLength(1);
   });
 
   it('a row with no scopeUnit at all always strands — releasedScopes cannot apply to it', () => {
@@ -424,7 +505,7 @@ describe('reconcile — endedUnobserved (D-018)', () => {
     expect(r.stranded[0]!.taskId).toBe('qqq777');
   });
 
-  it('summarizeReconcile counts endedUnobserved separately from stranded', () => {
+  it('summarizeReconcile counts unconfirmed scoped rows separately from terminal verdicts', () => {
     const r = reconcile(
       [
         row({ taskId: 'rrr888', scopeUnit: 'pc-rrr888.scope' }),
@@ -433,7 +514,7 @@ describe('reconcile — endedUnobserved (D-018)', () => {
       [],
       { now: NOW, releasedScopes: new Set(['pc-rrr888.scope']) },
     );
-    expect(summarizeReconcile(r)).toMatchObject({ stranded: 1, endedUnobserved: 1 });
+    expect(summarizeReconcile(r)).toMatchObject({ stranded: 0, unresolved: 1, endedUnobserved: 1 });
   });
 });
 
@@ -480,7 +561,8 @@ describe('summarizeReconcile', () => {
     );
     expect(summarizeReconcile(r)).toMatchObject({
       alive: 0,
-      stranded: 1,
+      stranded: 0,
+      unresolved: 1,
       unaccounted: 1,
       unaccountedPids: 2,
       foreign: 0,
@@ -501,6 +583,8 @@ describe('summarizeReconcile', () => {
  */
 describe('reconcile — console windows are accounted by the window, not the ledger', () => {
   const CONSOLE = `${OUR_SLICE}/papercusp-agent.slice/papercusp-agent-session.slice/papercup-console-gnome-terminal-665488-1786388175428.scope`;
+  const OWNED_VTE =
+    OUR_SLICE + '/papercusp-agent.slice/papercusp-agent-session.slice/vte-spawn-0e0e-4a4a.scope';
 
   it('files a papercup-console scope as consoleWindow, never as unaccounted', () => {
     const r = reconcile([], [proc({ pid: 1, cgroupPath: CONSOLE }), proc({ pid: 2, cgroupPath: CONSOLE })], {
@@ -526,6 +610,42 @@ describe('reconcile — console windows are accounted by the window, not the led
     expect(r.consoleWindow).toHaveLength(0);
     expect(r.unaccounted).toHaveLength(1);
     expect(summarizeReconcile(r)).toMatchObject({ unaccounted: 1, unaccountedPids: 1, consoleWindow: 0 });
+  });
+
+  it('files a live owned VTE window as consoleWindow', () => {
+    const r = reconcile(
+      [],
+      [proc({ pid: 6, cgroupPath: OWNED_VTE, terminalWindowAlive: true })],
+      { now: NOW },
+    );
+
+    expect(r.unaccounted).toHaveLength(0);
+    expect(r.consoleWindow).toHaveLength(1);
+    expect(r.consoleWindow[0]).toMatchObject({ cgroupPath: OWNED_VTE, pids: [6] });
+  });
+
+  it('files a closed owned VTE window as abandonedWindow', () => {
+    const r = reconcile(
+      [],
+      [proc({ pid: 7, cgroupPath: OWNED_VTE, terminalWindowAlive: false })],
+      { now: NOW },
+    );
+
+    expect(r.unaccounted).toHaveLength(0);
+    expect(r.abandonedWindow).toHaveLength(1);
+    expect(r.abandonedWindow[0]).toMatchObject({ cgroupPath: OWNED_VTE, pids: [7] });
+  });
+
+  it('keeps an owned VTE window unaccounted when terminal liveness is unknown', () => {
+    const r = reconcile(
+      [],
+      [proc({ pid: 8, cgroupPath: OWNED_VTE, terminalWindowAlive: null })],
+      { now: NOW },
+    );
+
+    expect(r.unaccounted).toHaveLength(1);
+    expect(r.consoleWindow).toHaveLength(0);
+    expect(r.abandonedWindow).toHaveLength(0);
   });
 
   it('leaves a genuine in-slice escape in unaccounted', () => {

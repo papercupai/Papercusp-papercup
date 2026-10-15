@@ -84,13 +84,25 @@
  * site-level and reason-carrying on purpose — a file-level baseline would also grandfather
  * a regression of the sites this class exists to protect.
  *
+ * The fourth class is a gate-path FILE that is a long pole (green-main-cycle-time-2026-10-08
+ * P-004). Vitest runs the tests inside one file serially, so the gate never finishes before its
+ * slowest file. With `--files=` (the affected-tests runner forwards the changed paths) each named
+ * test file's CI history is read from harness_shared.test_runs; it FAILS when the median of its
+ * newest 3 CI runs exceeds FILE_DURATION_BUDGET_MS, or exceeds FILE_GROWTH_RATIO x its prior-7-day
+ * median (only at or above FILE_GROWTH_FLOOR_MS). It blocks only files the change touches, so the
+ * red lands on the change, never on an unrelated candidate. A file with no CI history passes
+ * (nothing to judge); an unreachable ledger exits 2 (NOT CHECKED), never 0. FILE_DURATION_BASELINE
+ * is SHRINK-ONLY, path -> reason. `--list` measures the population.
+ *
  * KNOWN BOUND, stated rather than implied: an elapsed budget reached through a helper, a struct
  * field (`expect(res.latencyMs).toBeLessThan(400)`), or a cross-file constant is NOT
  * detected. For child-process inversions, calls routed through a helper, aliased direct-call
  * names, or budgets held in
  * identifiers are also not resolved. For idle windows, a window passed through a helper, a
  * spread, a computed key, arithmetic, or a cross-file / non-`const` binding is not resolved.
- * This guard reports what it can see and its --list
+ * Idle-window keys are classified only when they are direct properties of an inline object
+ * passed at a known child-process options position; report data elsewhere in a child-spawning
+ * test file is not a child watchdog. This guard reports what it can see and its --list
  * output is the honest population — it is not a proof that no other tight budget exists.
  * Overstating a guard's reach is how the next reader mistakes silence for safety.
  *
@@ -110,6 +122,9 @@ import ts from 'typescript';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { DEFAULT_UNIT_TEST_TIMEOUT_MS } from '@papercusp/test-config/vitest-config';
 import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
+import { connectExecutedMapPg } from './lib/executed-source-map.mjs';
+import { EXIT_NOT_CHECKED } from './lib/not-checked.mjs';
+import { parseExplicitFiles } from './lib/tsc-baseline-gate.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -157,6 +172,135 @@ export const SPAWN_SYNC_EXPLICIT_BASELINE = new Set([
   'packages/operator-core/lib/release/identity-gate-archive-expansion.test.ts::spawnSync::FAILS on an identity literal hidden inside a compressed .deb payload::120000::120000',
   'packages/operator-core/lib/release/identity-gate-symlink-targets.test.ts::spawnSync::FAILS CLOSED on a .tar.zst whose zstd stream cannot be read::60000::60000',
 ]);
+
+// ── FILE-DURATION class (green-main-cycle-time-2026-10-08 P-004) ─────────────────────
+//
+// The gate's wall-clock is bounded below by its slowest FILE: Vitest parallelises across
+// files, never across the tests inside one. One suite grew 13.5 -> 43.4 min in a week of CI
+// runs and pinned every gate run to it while nothing measured file cost at all.
+//
+// Numbers derived from the ledger, not chosen for roundness (measured 2026-10-08 over
+// harness_shared.test_runs, source='ci', clean worktree, median of each file's newest 3
+// runs): 8,770 gate-path files; p99 14s; 17 over 60s; 3 over 180s; exactly ONE over 300s
+// (the 45.7-min long pole). So a 5-min budget catches the pole and nothing ordinary.
+
+/** A gate-path test file whose recent CI median exceeds this is a long pole. */
+export const FILE_DURATION_BUDGET_MS = 300_000;
+/** Recent median above this multiple of the prior-7-day median is growth. */
+export const FILE_GROWTH_RATIO = 1.5;
+/** Growth below this recent median is noise (a 2s -> 4s file is not a gate problem). */
+export const FILE_GROWTH_FLOOR_MS = 60_000;
+/** "Recent" = the median of a file's newest N CI runs (one slow run is load, not cost). */
+export const FILE_RECENT_SAMPLES = 3;
+/** "Prior" = runs in this many days before the recent window. */
+export const FILE_PRIOR_WINDOW_DAYS = 7;
+/** Growth is not judged on fewer prior runs than this. */
+export const FILE_PRIOR_MIN_SAMPLES = 3;
+
+/**
+ * Files already over budget or grown when this class landed. SHRINK-ONLY, path -> reason;
+ * re-seed only from a measuring `--list` run. A baselined file is REPORTED, never blocking.
+ * The ledger is keyed by path, so a file that was just split keeps its pre-split history
+ * until new CI runs land; that is what the first entry records.
+ */
+export const FILE_DURATION_BASELINE = new Map([
+  [
+    'packages/operator-core/lib/__tests__/affected-tests-repo-wide-invariant-guards.test.ts',
+    'split into 5 shards by P-004 on 2026-10-08; history is the pre-split 45.7-min monolith. Drop once this path\'s own CI runs measure under budget.',
+  ],
+  [
+    'packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts',
+    'grew 142s -> 222s (1.56x) before this class existed (measured 2026-10-08).',
+  ],
+  [
+    'apps/operator/lib/release/record-release-cli.test.ts',
+    'grew 24s -> 78s (3.26x) before this class existed (measured 2026-10-08).',
+  ],
+]);
+
+const median = (values) => {
+  if (values.length === 0) return null;
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+};
+
+/**
+ * Pure verdict for ONE file from its CI samples (any order). `samples` are
+ * `{ durationMs, finishedAt }` where finishedAt is a Date or ISO string.
+ *
+ * @returns {{ recentMs: number|null, recentN: number, priorMs: number|null, priorN: number,
+ *   overBudget: boolean, grew: boolean, growthJudged: boolean }}
+ */
+export function classifyFileDuration(samples, {
+  budgetMs = FILE_DURATION_BUDGET_MS,
+  growthRatio = FILE_GROWTH_RATIO,
+  growthFloorMs = FILE_GROWTH_FLOOR_MS,
+  recentSamples = FILE_RECENT_SAMPLES,
+  priorWindowDays = FILE_PRIOR_WINDOW_DAYS,
+  priorMinSamples = FILE_PRIOR_MIN_SAMPLES,
+} = {}) {
+  const sorted = samples
+    .map((s) => ({ durationMs: Number(s.durationMs), at: new Date(s.finishedAt).getTime() }))
+    .filter((s) => Number.isFinite(s.durationMs) && s.durationMs >= 0 && Number.isFinite(s.at))
+    .sort((a, b) => b.at - a.at);
+  const recent = sorted.slice(0, recentSamples);
+  const recentMs = median(recent.map((s) => s.durationMs));
+  const windowEnd = recent.length ? recent[recent.length - 1].at : Number.NaN;
+  const windowStart = windowEnd - priorWindowDays * 86_400_000;
+  const prior = sorted.slice(recent.length).filter((s) => s.at >= windowStart && s.at <= windowEnd);
+  const priorMs = median(prior.map((s) => s.durationMs));
+  const growthJudged = recentMs !== null && priorMs !== null && prior.length >= priorMinSamples && recentMs >= growthFloorMs;
+  return {
+    recentMs,
+    recentN: recent.length,
+    priorMs,
+    priorN: prior.length,
+    overBudget: recentMs !== null && recentMs > budgetMs,
+    grew: growthJudged && recentMs > growthRatio * priorMs,
+    growthJudged,
+  };
+}
+
+/** Test-file paths this class judges (the runner forwards every changed path it routed here). */
+export function durationSubjects(paths) {
+  return [...new Set(paths)].filter((p) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(p) && !p.includes('node_modules/'));
+}
+
+/**
+ * Newest-first CI samples per file over `days`, from the same ledger population the
+ * reuse estimate reads (source='ci', clean worktree). Bounded by the caller's client.
+ */
+export async function loadFileDurationHistory(client, files, days = FILE_PRIOR_WINDOW_DAYS * 2) {
+  const out = new Map();
+  if (files.length === 0) return out;
+  const { rows } = await client.query(
+    `SELECT file_path, duration_ms, finished_at
+       FROM harness_shared.test_runs
+      WHERE source = 'ci' AND worktree_dirty = false AND status IN ('pass', 'fail')
+        AND duration_ms IS NOT NULL AND finished_at > now() - make_interval(days => $2::int)
+        AND file_path = ANY($1::text[])
+      ORDER BY file_path, finished_at DESC`,
+    [files, days],
+  );
+  for (const r of rows) {
+    const list = out.get(r.file_path) ?? [];
+    list.push({ durationMs: Number(r.duration_ms), finishedAt: r.finished_at });
+    out.set(r.file_path, list);
+  }
+  return out;
+}
+
+/** Population candidates for `--list`: any file with a CI run at or above the growth floor. */
+async function loadDurationCandidates(client, days = FILE_PRIOR_WINDOW_DAYS * 2) {
+  const { rows } = await client.query(
+    `SELECT DISTINCT file_path FROM harness_shared.test_runs
+      WHERE source = 'ci' AND worktree_dirty = false AND duration_ms >= $1
+        AND finished_at > now() - make_interval(days => $2::int)`,
+    [FILE_GROWTH_FLOOR_MS, days],
+  );
+  return rows.map((r) => r.file_path);
+}
 
 const DIRECT_RE =
   /expect\(\s*(?:Date|performance)\.now\(\)\s*-\s*[A-Za-z_$][\w$]*\s*\)\s*\.toBeLessThan(?:OrEqual)?\(\s*([A-Za-z0-9_$.]+)\s*\)/g;
@@ -364,9 +508,38 @@ export const IDLE_WINDOW_EXEMPTION_RE = /idle-window-ok:\s*\S/;
 export const IDLE_WINDOW_BASELINE = new Set([]);
 
 /**
- * Literal and same-file-`const` idle windows in object literals. Non-positive values are
- * invalid-policy fixtures, not windows, and are skipped. A binding declared more than once
- * with different values (or also as `let`/`var`) is ambiguous and is not resolved.
+ * Return the inline options object for a supported child-process call. Restricting the
+ * classifier to these argument positions prevents arbitrary report/config data elsewhere
+ * in a spawning test file from being mistaken for a child watchdog.
+ */
+function childProcessOptionsObject(call) {
+  const name = ts.isIdentifier(call.expression)
+    ? call.expression.text
+    : ts.isPropertyAccessExpression(call.expression)
+      ? call.expression.name.text
+      : null;
+  const args = call.arguments;
+  if (name === 'execProcess') return args[0];
+  if (name === 'managedSpawn') return args[3];
+  if (name === 'exec' || name === 'execSync') return args[1];
+  if (
+    name === 'spawn' ||
+    name === 'spawnSync' ||
+    name === 'execFile' ||
+    name === 'execFileSync' ||
+    name === 'fork' ||
+    name === 'execa'
+  ) {
+    return args[1] && ts.isObjectLiteralExpression(args[1]) ? args[1] : args[2];
+  }
+  return undefined;
+}
+
+/**
+ * Literal and same-file-`const` idle windows in inline child-process option objects.
+ * Non-positive values are invalid-policy fixtures, not windows, and are skipped. A binding
+ * declared more than once with different values (or also as `let`/`var`) is ambiguous and
+ * is not resolved.
  */
 export function findChildIdleWindowBudgets(text, fileName = 'fixture.test.ts') {
   const kind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
@@ -388,41 +561,47 @@ export function findChildIdleWindowBudgets(text, fileName = 'fixture.test.ts') {
   };
   collect(source);
 
+  const optionObjects = new Set();
+  const collectOptionObjects = (node) => {
+    if (ts.isCallExpression(node)) {
+      const options = childProcessOptionsObject(node);
+      if (options && ts.isObjectLiteralExpression(options)) optionObjects.add(options);
+    }
+    ts.forEachChild(node, collectOptionObjects);
+  };
+  collectOptionObjects(source);
+
   const lines = text.split('\n');
   const found = [];
-  const visit = (node) => {
-    if (ts.isObjectLiteralExpression(node)) {
-      for (const property of node.properties) {
-        let key = null;
-        let valueNode = null;
-        if (ts.isPropertyAssignment(property)) {
-          key = propertyNameText(property.name);
-          valueNode = property.initializer;
-        } else if (ts.isShorthandPropertyAssignment(property)) {
-          key = property.name.text;
-          valueNode = property.name;
-        }
-        if (!key || !IDLE_WINDOW_KEY_RE.test(key)) continue;
-        let budgetMs = numericLiteralMs(valueNode);
-        let via = 'literal';
-        if (budgetMs === null && valueNode && ts.isIdentifier(valueNode)) {
-          const resolved = bindings.get(valueNode.text);
-          if (typeof resolved === 'number') {
-            budgetMs = resolved;
-            via = `const ${valueNode.text}`;
-          }
-        }
-        if (budgetMs === null || budgetMs <= 0) continue;
-        const line = source.getLineAndCharacterOfPosition(property.getStart(source)).line + 1;
-        const exempt =
-          IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 1] ?? '') ||
-          IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 2] ?? '');
-        found.push({ line, key, budgetMs, via, exempt });
+  for (const options of optionObjects) {
+    for (const property of options.properties) {
+      let key = null;
+      let valueNode = null;
+      if (ts.isPropertyAssignment(property)) {
+        key = propertyNameText(property.name);
+        valueNode = property.initializer;
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        key = property.name.text;
+        valueNode = property.name;
       }
+      if (!key || !IDLE_WINDOW_KEY_RE.test(key)) continue;
+      let budgetMs = numericLiteralMs(valueNode);
+      let via = 'literal';
+      if (budgetMs === null && valueNode && ts.isIdentifier(valueNode)) {
+        const resolved = bindings.get(valueNode.text);
+        if (typeof resolved === 'number') {
+          budgetMs = resolved;
+          via = `const ${valueNode.text}`;
+        }
+      }
+      if (budgetMs === null || budgetMs <= 0) continue;
+      const line = source.getLineAndCharacterOfPosition(property.getStart(source)).line + 1;
+      const exempt =
+        IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 1] ?? '') ||
+        IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 2] ?? '');
+      found.push({ line, key, budgetMs, via, exempt });
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
+  }
   return found;
 }
 
@@ -452,8 +631,8 @@ function nestedInversionKey(rel, inversion) {
   ].join('::');
 }
 
-function main() {
-  const listMode = process.argv.includes('--list');
+/** The three TEXTUAL classes (tight literal, child/parent inversion, idle window). Returns the exit code. */
+function runTextualClasses(listMode) {
   const files = [];
   for (const root of SCAN_ROOTS) {
     try {
@@ -530,7 +709,7 @@ function main() {
         `(${idleMeasured.filter((w) => w.budgetMs < IDLE_WINDOW_FLOOR_MS && w.exempt).length} exempted on-site).`,
     );
     console.log('Re-seed BASELINE from the TIGHT/BASELINE paths above — never from a hand-run grep.');
-    return;
+    return 0;
   }
 
   if (idleOffenders.length > 0) {
@@ -546,7 +725,7 @@ function main() {
         'const plus an in-test ordering assertion). If the test WANTS the window to fire, say so on\n' +
         'the site: `// idle-window-ok: <reason>` on the same or the preceding line.\n',
     );
-    if (offenders.length === 0 && nestedInversions.length === 0) process.exit(1);
+    if (offenders.length === 0 && nestedInversions.length === 0) return 1;
   }
 
   if (offenders.length > 0 || nestedInversions.length > 0) {
@@ -565,7 +744,7 @@ function main() {
           'manufacturing a timeout red while the guarded subprocess is still validly running.\n',
       );
     }
-    if (offenders.length === 0) process.exit(1);
+    if (offenders.length === 0) return 1;
     console.error(
       `\n✖ ${offenders.length} NEW tight wall-clock timing budget(s) — below the ` +
         `${TIGHT_BUDGET_FLOOR_MS}ms floor and not in the BASELINE:\n`,
@@ -584,7 +763,7 @@ function main() {
         'Grandfathering a genuinely-justified site means adding it to BASELINE with a reason —\n' +
         'the set is SHRINK-ONLY, so prefer fixing it.\n',
     );
-    process.exit(1);
+    return 1;
   }
 
   console.log(
@@ -593,6 +772,94 @@ function main() {
       `or sub-${IDLE_WINDOW_FLOOR_MS}ms child idle windows. ` +
       '--list to measure the population.',
   );
+  return 0;
 }
 
-if (isCliEntry(import.meta.url)) main();
+const fmtS = (ms) => (ms === null ? '-' : `${Math.round(ms / 1000)}s`);
+
+/**
+ * FILE-DURATION class. Blocks ONLY on the test files the caller names (the affected-tests
+ * runner forwards the changed paths it routed here), so a slow file's red lands on the change
+ * that touches it — never on whichever candidate the gate happens to be judging. Without
+ * `--files` it does not run (the textual classes keep their tree-wide gate); `--list`
+ * measures the whole population.
+ *
+ * @returns {Promise<0|1|2>} 2 = NOT CHECKED (the ledger was unreachable for named files).
+ */
+async function runFileDurationClass({ listMode, argv }) {
+  const named = parseExplicitFiles(argv);
+  const subjects = named ? durationSubjects([...named]) : [];
+  if (!listMode && subjects.length === 0) {
+    console.log(`TEST_FILE_DURATION status=skipped reason=${named ? 'no-test-files-named' : 'no---files'}`);
+    return 0;
+  }
+  let client;
+  try {
+    client = await connectExecutedMapPg({ timeoutMs: 5_000 });
+    const files = listMode ? await loadDurationCandidates(client) : subjects;
+    const history = await loadFileDurationHistory(client, files);
+    const blocking = [];
+    const rows = [];
+    for (const file of files) {
+      const v = classifyFileDuration(history.get(file) ?? []);
+      const baselined = FILE_DURATION_BASELINE.has(file);
+      const finding = v.overBudget || v.grew;
+      rows.push({ file, ...v, baselined, finding });
+      if (finding && !baselined) blocking.push({ file, ...v });
+    }
+    if (listMode) {
+      rows.sort((a, b) => (b.recentMs ?? 0) - (a.recentMs ?? 0));
+      for (const r of rows) {
+        const mark = !r.finding ? 'ok      ' : r.baselined ? 'BASELINE' : r.overBudget ? 'OVER    ' : 'GREW    ';
+        console.log(`FILE-DUR ${mark} recent=${fmtS(r.recentMs)} (n=${r.recentN}) prior=${fmtS(r.priorMs)} (n=${r.priorN})  ${r.file}`);
+      }
+      console.log(
+        `${rows.length} gate-path file(s) with a CI run >= ${fmtS(FILE_GROWTH_FLOOR_MS)}; ` +
+          `${rows.filter((r) => r.overBudget).length} over the ${fmtS(FILE_DURATION_BUDGET_MS)} budget, ` +
+          `${rows.filter((r) => r.grew).length} grown > ${FILE_GROWTH_RATIO}x their prior-${FILE_PRIOR_WINDOW_DAYS}-day median.`,
+      );
+      return 0;
+    }
+    for (const r of rows) {
+      console.log(
+        `TEST_FILE_DURATION file=${r.file} recent=${fmtS(r.recentMs)} n=${r.recentN} prior=${fmtS(r.priorMs)} n=${r.priorN} ` +
+          `verdict=${!r.finding ? (r.recentN ? 'ok' : 'no-history') : r.baselined ? 'baselined' : r.overBudget ? 'over-budget' : 'grew'}`,
+      );
+    }
+    if (blocking.length === 0) return 0;
+    console.error(`\n✖ ${blocking.length} changed gate-path test file(s) are a growing or over-budget long pole:\n`);
+    for (const b of blocking) {
+      const why = b.overBudget
+        ? `recent CI median ${fmtS(b.recentMs)} > budget ${fmtS(FILE_DURATION_BUDGET_MS)}`
+        : `recent CI median ${fmtS(b.recentMs)} > ${FILE_GROWTH_RATIO}x prior-${FILE_PRIOR_WINDOW_DAYS}-day median ${fmtS(b.priorMs)}`;
+      console.error(`   ${b.file}  ${why}`);
+    }
+    console.error(
+      '\nVitest runs the tests INSIDE one file serially, so the gate can never finish before its\n' +
+        'slowest file. Split the file along its describe blocks (shared helpers in a sibling\n' +
+        'module), or cut its per-test cost, before adding to it. A split file keeps its old\n' +
+        'history under the old path until new CI runs land: baseline it in\n' +
+        'FILE_DURATION_BASELINE with that reason (SHRINK-ONLY — drop the entry once measured).\n',
+    );
+    return 1;
+  } catch (error) {
+    if (listMode) throw error;
+    console.error(
+      `TEST_FILE_DURATION status=not-checked files=${subjects.length} reason=${JSON.stringify(error instanceof Error ? error.message : String(error))} ` +
+        '(the CI duration ledger was unreachable — this is NOT a pass for the named files)',
+    );
+    return EXIT_NOT_CHECKED;
+  } finally {
+    await client?.end().catch(() => {});
+  }
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const listMode = argv.includes('--list');
+  const textual = runTextualClasses(listMode);
+  const duration = await runFileDurationClass({ listMode, argv });
+  process.exit(textual === 1 || duration === 1 ? 1 : duration === EXIT_NOT_CHECKED ? EXIT_NOT_CHECKED : 0);
+}
+
+if (isCliEntry(import.meta.url)) await main();

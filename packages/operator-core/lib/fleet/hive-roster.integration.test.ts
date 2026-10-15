@@ -6,17 +6,19 @@
  * mig-277 hive_slug, the per-agent merge of presence + the fleet_assignment
  * work-detail + Tier-1, against seeded rows.
  *
- * Uses the baseline-schema DB (full migration set incl. 277) via the coord
+ * Uses a caller-owned migrated DB (full migration set incl. 277) via the coord
  * fixture, so listHiveRoster's own getOrgPg()/listPresence/listFleetAssignments/
  * fetchPresenceTier1 handles resolve to it.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { listHiveRoster, listHiveRosterSnapshot } from './hive-roster';
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
+let isolatedDb: OrgTestDb;
 
 const WS = 'default';
 const HIVE = 'papercup';
@@ -77,23 +79,41 @@ async function seedPlanClaim(owner: string, item: string, plan = 'plan-x'): Prom
   `;
 }
 
-async function seedWorkItem(feature: string, owner: string): Promise<void> {
+async function seedWorkItem(feature: string, owner: string, harness = 'demo'): Promise<void> {
   await admin`
     INSERT INTO harness_shared.harness_features_consolidated
       (workspace_id, harness_slug, feature_id, title, status, taken_by, taken_at, source_plan_slug)
-    VALUES (${WS}, 'demo', ${feature}, ${`work ${feature}`}, 'todo', ${owner}, now(), 'plan-x')
+    VALUES (${WS}, ${harness}, ${feature}, ${`work ${feature}`}, 'todo', ${owner}, now(), 'plan-x')
   `;
 }
 
 beforeAll(async () => {
-  fx = await setupBaselineCoordFixture();
+  // The roster intentionally includes default/global rows. Isolate the real
+  // reader rather than changing its scope or truncating another suite's rows.
+  isolatedDb = await createOrgTestDb();
+  fx = await setupBaselineCoordFixture({ dsn: isolatedDb.adminDsn });
   admin = fx.admin;
+  // Exercise membership enforcement with real Pots, including the platform
+  // Pot that activates the guard in this workspace.
+  for (const slug of ['papercusp', 'demo']) {
+    await admin`
+      INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+      VALUES (${WS}, ${slug}, ${Buffer.from(`pk:roster:${slug}`)}, ${`kc-roster-${slug}`}, 0)
+      ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING`;
+  }
   await truncateAll();
 }, 120_000);
 
 afterAll(async () => {
-  await truncateAll().catch(() => {});
-  await fx.dispose();
+  try {
+    await truncateAll().catch(() => {});
+  } finally {
+    try {
+      await fx?.dispose();
+    } finally {
+      await isolatedDb?.cleanup();
+    }
+  }
 });
 
 beforeEach(async () => {
@@ -101,6 +121,11 @@ beforeEach(async () => {
 });
 
 describe('listHiveRoster (presence-v2 P-006 fold, real PG)', () => {
+  it('keeps the real membership guard active for an unregistered Pot', async () => {
+    await expect(seedWorkItem('HR-TEST-INVALID', 'su-invalid', 'not-a-real-pot'))
+      .rejects.toThrow('pot-membership violation');
+  });
+
   it('hive-scopes: keeps the hive + NULL-hive standalone, drops other hives', async () => {
     await seedPresence('su-in', { potSlug: HIVE });
     await seedPresence('su-null', { potSlug: null }); // SU / standalone

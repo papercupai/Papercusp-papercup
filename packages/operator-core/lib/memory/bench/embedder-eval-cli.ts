@@ -11,6 +11,12 @@
  *     [--vectors <candidate-vectors.json>]
  *     [--mdenseon-model <validated-local-directory>] [--isolated-sidecar]
  *     [--vectors-out <path.json>] [--warm-trials <N>]
+ *     [--robustness <input.json> --robustness-sha256 <sha> --arm-manifest <frozen.json> --arm-manifest-sha256 <sha>]
+ *     (P-007: one isolated real-weight arm; see sidecar-robustness.ts)
+ *     Performance manifest cells use frozen requests and five randomized
+ *     fresh-process blocks; retain cold/warm/batch/cache/resource raw samples.
+ *     --transport-trace adds private socket/client lifecycle evidence to a
+ *     diagnostic cell only; it changes no request/pool/timeout policy.
  *
  * `--limit N` is a SMOKE pass over the first N docs — use it to prove a newly
  * added leg loads/pools/sizes correctly before paying for a full corpus. Its
@@ -100,17 +106,21 @@ import {
   shutdownLocalEmbedder,
   getWorkerState,
 } from '@papercusp/memory';
-import { buildOpenAiEmbedder, resolveOpenAiKey } from '../configure';
 import { createEmbedSidecarServer, embedResponseMeasuredModel, EMBED_SIDECAR_RUNTIME, type EmbedSidecarHandle } from '../embed-sidecar-server';
 import { CORPUS_FIXTURE_VERSION, loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
 import { loadProseGoldSetFixture, PROSE_GOLD_SET_VERSION } from './prose-gold-set';
-import { compareLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
-import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentReferences, summarizeIncumbentReferenceFiles, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
+import { compareLegs, compareSourceGroupedLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
+import { buildPplxBenchmarkEmbedder, loadCandidateVectors, qualifyIncumbentReferences, qualifyMdenseOnBoundaries, summarizeIncumbentReferenceFiles, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
 import { prepareMeasurementCell, assertMeasuredEmbedResponse, assertMeasuredExecution, writeMeasurementCell,
-  assertCandidateArm, failMeasurementCell, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
-import { ORT_SESSION_OPTIONS } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+  assertCandidateArm, failMeasurementCell, loadIndependentMeasurementInputs, loadRetainedRelevanceVectors,
+  embedIncrementalRelevanceQueries, embedIncrementalRelevanceDocuments, type MeasurementArm, type PreparedMeasurement } from './measurement-manifest';
+import { ORT_SESSION_OPTIONS, getOnnxBindingPin } from '../../../../../libs/generic/memory/src/local-embedder-worker';
+import { loadPerformanceInput, collectSidecarPerformance, runPerformanceBlocks, isolatedEvaluationBuilders, observeSidecarTransport } from './sidecar-performance';
+import { collectSidecarRobustness, loadRobustnessRun, summarizeRobustnessReport, type RobustnessModel } from './sidecar-robustness';
+
+const processStartedAtMs = Date.now() - process.uptime() * 1000;
 
 type EmbedFn = (text: string) => Promise<number[]>;
 interface Leg {
@@ -329,6 +339,9 @@ async function buildLegs(
         const fn = await buildLocalEmbedder();
         out.push({ name, doc: fn, query: fn });
       } else if (name === 'openai') {
+        // The operator configuration hydrates its backend from Postgres on
+        // import. Local/reference/performance runs must stay database-free.
+        const { buildOpenAiEmbedder, resolveOpenAiKey } = await import('../configure');
         const key = await resolveOpenAiKey();
         if (!key) out.push({ name, error: 'no_key' });
         else {
@@ -530,6 +543,19 @@ function scoreLeg(
 }
 
 async function main(): Promise<void> {
+  if (argValue('--qualify-boundaries')) {
+    const output = argValue('--out'), reference = argValue('--boundary-reference');
+    if (!output || !reference) throw new Error('--qualify-boundaries requires --boundary-reference and --out');
+    await qualifyMdenseOnBoundaries(argValue('--qualify-boundaries')!, argValue('--boundary-sha256') ?? '', reference,
+      argValue('--boundary-reference-sha256') ?? '', output, argValue('--boundary-cell'));
+    return;
+  }
+  if (argValue('--run-performance')) {
+    const model = argValue('--mdenseon-model'), driver = argValue('--driver-out');
+    if (!model || !driver) throw new Error('--run-performance requires --mdenseon-model and --driver-out');
+    console.log('performance summary', await runPerformanceBlocks(argValue('--run-performance')!, argValue('--manifest-sha256') ?? '', model, driver));
+    process.exit(0);
+  }
   if (argValue('--summarize-reference')) {
     const output = argValue('--out'), python = argValue('--python-reference');
     if (!output || !python) throw new Error('--summarize-reference requires --python-reference and --out');
@@ -553,13 +579,42 @@ async function main(): Promise<void> {
   const mdenseonModel = argValue('--mdenseon-model');
   if (argValue('--manifest')) {
     preparedMeasurement = await prepareMeasurementCell(argValue('--manifest')!, argValue('--manifest-sha256') ?? '', argValue('--cell') ?? '');
-    if (preparedMeasurement.cell.bar !== 'performance' || legNames.length !== 1 || !process.argv.includes('--isolated-sidecar')
-      || legNames[0] !== `sidecar:${preparedMeasurement.arm.model}` || argValue('--vectors') || argValue('--limit')) {
-      throw new Error('manifest performance requires one fresh isolated matching HTTP arm and complete declared inputs');
+    const { cell, arm } = preparedMeasurement;
+    if (!['performance', 'relevance'].includes(cell.bar) || legNames.length !== 1 || argValue('--vectors') || argValue('--limit')) {
+      throw new Error('manifest evaluator requires one matching arm and complete declared inputs');
     }
-    await assertCandidateArm(preparedMeasurement.arm, preparedMeasurement.arm.model as 'mdenseon' | 'gemma' | 'harrier', 'local-http-client-worker', EMBED_SIDECAR_RUNTIME);
+    const http = legNames[0] === `sidecar:${arm.model}`;
+    if (http ? !process.argv.includes('--isolated-sidecar') : (cell.bar !== 'relevance' || legNames[0] !== arm.model
+      || process.argv.includes('--isolated-sidecar') || sidecarUrl)) throw new Error('manifest evaluator arm/transport mismatch');
+    if (cell.bar === 'relevance' && (process.argv.includes('--timing-only') || Number(argValue('--warm-trials') ?? 0) !== 0)) {
+      throw new Error('relevance cannot be a timing-only sample');
+    }
+    await assertCandidateArm(arm, arm.model as 'mdenseon' | 'gemma' | 'harrier', http ? 'local-http-client-worker' : 'worker', EMBED_SIDECAR_RUNTIME);
+  }
+  // P-007 robustness: one real-weight arm through the isolated sidecar, bound to
+  // a frozen input and a frozen measurement arm (identity + weight bytes).
+  let robustness: Awaited<ReturnType<typeof loadRobustnessRun>> | undefined;
+  if (argValue('--robustness')) {
+    const leg = legNames[0] ?? '', model = leg.startsWith('sidecar:') ? leg.slice('sidecar:'.length) : '';
+    if (argValue('--manifest') || legNames.length !== 1 || !['mdenseon', 'gemma', 'harrier'].includes(model)
+      || !process.argv.includes('--isolated-sidecar') || argValue('--warm-trials') || process.argv.includes('--timing-only')
+      || argValue('--vectors') || argValue('--vectors-out') || argValue('--limit') || !argValue('--out')) {
+      throw new Error('--robustness requires --out and exactly one --legs sidecar:<mdenseon|gemma|harrier> on --isolated-sidecar, with no other measurement mode');
+    }
+    const out = path.resolve(argValue('--out')!);
+    if (fs.existsSync(out) || fs.existsSync(`${out}.samples.jsonl`)) throw new Error('robustness output already exists');
+    robustness = await loadRobustnessRun({ inputPath: path.resolve(argValue('--robustness')!), inputSha256: argValue('--robustness-sha256') ?? '',
+      armManifestPath: path.resolve(argValue('--arm-manifest') ?? ''), armManifestSha256: argValue('--arm-manifest-sha256') ?? '',
+      model: model as RobustnessModel, mdenseonModelDir: mdenseonModel, runtime: EMBED_SIDECAR_RUNTIME,
+      repoRoot: path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..', '..') });
+    if (getWorkerState().alive) throw new Error('robustness requires a fresh process with a cold worker');
   }
   const retainedVectors: Record<string, { docVectors: number[][]; queryVectors: number[][] }> = {};
+  const performanceInput = preparedMeasurement?.cell.bar === 'performance' ? loadPerformanceInput(preparedMeasurement) : undefined;
+  if (performanceInput && (argValue('--warm-trials') || process.argv.includes('--timing-only') || argValue('--vectors-out'))) {
+    throw new Error('performance samples must come from the frozen request contract');
+  }
+  if (performanceInput && getWorkerState().alive) throw new Error('performance cell requires a fresh process with a cold worker');
   const warmTrials = Number(argValue('--warm-trials') ?? 0);
   const timingOnly = process.argv.includes('--timing-only');
   if (timingOnly && warmTrials === 0) throw new Error('--timing-only requires --warm-trials');
@@ -568,8 +623,9 @@ async function main(): Promise<void> {
     if (sidecarUrl) throw new Error('--isolated-sidecar cannot target an existing sidecar');
     if (!mdenseonModel) throw new Error('--isolated-sidecar requires --mdenseon-model');
     readMdenseOnExport(mdenseonModel);
-    isolatedSidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false, concurrency: 1,
-      builders: { mdenseon: async (kind) => buildMdenseOnEmbedder({ kind, model: mdenseonModel }) },
+    isolatedSidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false,
+      concurrency: performanceInput?.serverConcurrency ?? robustness?.input.serverConcurrency ?? 1,
+      builders: isolatedEvaluationBuilders(async (kind) => buildMdenseOnEmbedder({ kind, model: mdenseonModel })),
       modelRevisions: { mdenseon: MDENSEON_REVISION },
       log: (line) => console.log(`[isolated-sidecar] ${line}`),
     });
@@ -586,6 +642,43 @@ async function main(): Promise<void> {
     );
   if (preparedMeasurement && path.resolve(outPath) !== preparedMeasurement.rawOutput) throw new Error('runner output differs from declared cell');
 
+  if (performanceInput && preparedMeasurement && sidecarUrl) {
+    const { arm, cell } = preparedMeasurement;
+    const traceFd = process.argv.includes('--transport-trace') ? fs.openSync(`${outPath}.transport.jsonl`, 'wx', 0o600) : undefined;
+    const stopTrace = traceFd !== undefined && isolatedSidecar
+      ? observeSidecarTransport(isolatedSidecar.server, sidecarUrl, (event) => fs.writeSync(traceFd, `${JSON.stringify(event)}\n`)) : undefined;
+    let report: Awaited<ReturnType<typeof collectSidecarPerformance>>;
+    try {
+      report = await collectSidecarPerformance(sidecarUrl, arm, performanceInput, { processStartedAtMs,
+        onPhase: (phase) => console.log(`[performance] ${cell.id} ${phase}`),
+        onSample: (sample) => fs.promises.appendFile(`${outPath}.samples.jsonl`, `${JSON.stringify(sample)}\n`, { mode: 0o600 }),
+      });
+    } finally { stopTrace?.(); if (traceFd !== undefined) fs.closeSync(traceFd); }
+    assertMeasuredExecution(arm, embedExecutionTarget(), ORT_SESSION_OPTIONS, getWorkerState());
+    writeMeasurementCell(preparedMeasurement, { ...report, block: cell.parameters.block, order: cell.parameters.order,
+      execution: embedExecutionTarget(), threads: ORT_SESSION_OPTIONS, workerState: getWorkerState() });
+    await isolatedSidecar?.close(); await shutdownLocalEmbedder();
+    console.log('wrote', outPath); process.exit(0);
+  }
+
+  if (robustness && sidecarUrl && isolatedSidecar) {
+    const { input, expected } = robustness, handle = isolatedSidecar;
+    const report = await collectSidecarRobustness(sidecarUrl, expected, input, {
+      crashWorker: shutdownLocalEmbedder, workerState: getWorkerState, activity: () => handle.activity(),
+      onPhase: (phase, edge) => console.log(`[robustness] ${expected.model} ${phase} ${edge} ${new Date().toISOString()}`),
+      onSample: (sample) => fs.promises.appendFile(`${outPath}.samples.jsonl`, `${JSON.stringify(sample)}\n`, { mode: 0o600 }),
+    });
+    // The verdict is re-derived from the raw samples here AND by any later reader.
+    const summary = summarizeRobustnessReport(input, expected, report);
+    fs.writeFileSync(outPath, JSON.stringify({ ...report, inputPin: robustness.inputPin, armPin: robustness.armPin,
+      execution: embedExecutionTarget(), threads: ORT_SESSION_OPTIONS, onnxBindingPin: getOnnxBindingPin(), summary }, null, 2),
+    { flag: 'wx', mode: 0o600 });
+    await handle.close(); await shutdownLocalEmbedder();
+    console.log('wrote', outPath, `verdict=${summary.verdict}`, [...summary.invalidReasons, ...summary.failures].join(' | '));
+    // 2 = invalid (a suspended window voids the timing evidence; re-run), 1 = fail (D-010).
+    process.exit(summary.verdict === 'pass' ? 0 : summary.verdict === 'invalid' ? 2 : 1);
+  }
+
   // Which corpus/gold-set pair to score against. 'memory' (default) keeps the
   // original memory-bench behaviour; 'prose' scores the prose surfaces, whose
   // distribution is different enough that the memory gold set does not
@@ -594,9 +687,11 @@ async function main(): Promise<void> {
   if (corpusChoice !== 'memory' && corpusChoice !== 'prose') {
     throw new Error(`unknown --corpus '${corpusChoice}' (expected 'memory' or 'prose')`);
   }
-  const fullCorpus = corpusChoice === 'prose' ? loadProseCorpusFixture() : loadCorpusFixture();
-  const gold = corpusChoice === 'prose' ? loadProseGoldSetFixture() : loadGoldSetFixture();
-  const baseCorpusVersion = corpusChoice === 'prose' ? PROSE_CORPUS_FIXTURE_VERSION : CORPUS_FIXTURE_VERSION;
+  const independent = preparedMeasurement?.cell.bar === 'relevance' ? loadIndependentMeasurementInputs(preparedMeasurement, corpusChoice) : undefined;
+  const fullCorpus = independent?.entries ?? (corpusChoice === 'prose' ? loadProseCorpusFixture() : loadCorpusFixture());
+  const gold = independent ? { version: independent.goldVersion, queries: independent.queries }
+    : (corpusChoice === 'prose' ? loadProseGoldSetFixture() : loadGoldSetFixture());
+  const baseCorpusVersion = independent?.corpusVersion ?? (corpusChoice === 'prose' ? PROSE_CORPUS_FIXTURE_VERSION : CORPUS_FIXTURE_VERSION);
 
   // `--limit N` — a SMOKE pass over the first N docs, for checking that a
   // newly added leg loads, pools and emits the width it claims BEFORE paying
@@ -631,7 +726,12 @@ async function main(): Promise<void> {
   const corpusKeys = corpus.map((e) => e.key);
   const corpusTexts = corpus.map((e) => e.text);
   const queryTexts = gold.queries.map((q) => q.query);
-  if (preparedMeasurement) {
+  const reusedRelevance = preparedMeasurement && independent
+    ? await loadRetainedRelevanceVectors(preparedMeasurement, corpusChoice as 'memory' | 'prose') : undefined;
+  if (reusedRelevance && !reusedRelevance.missingIndexes.length && !reusedRelevance.missingDocumentIndexes.length) {
+    throw new Error('retained relevance has no new queries; use offline scoring rather than starting a worker');
+  }
+  if (preparedMeasurement && !independent) {
     // Fixture files/order are input identities too; versions alone do not pin bytes.
     const declared = preparedMeasurement.cell.inputIds.map((id) => preparedMeasurement!.manifest.inputs[id]);
     const fixtureRoot = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures');
@@ -691,9 +791,19 @@ async function main(): Promise<void> {
   const results: Record<string, unknown> = {};
 
   const record = (name: string, docVecs: number[][], queryVecs: number[][], meta: Record<string, unknown>): void => {
-    const scored = scoreLeg(corpusKeys, docVecs, gold.queries, queryVecs);
+    if (preparedMeasurement && (docVecs.length !== corpus.length || queryVecs.length !== gold.queries.length
+      || [...docVecs, ...queryVecs].some((v) => v.length !== preparedMeasurement!.arm.profile.nativeDims
+        || v.some((x) => !Number.isFinite(x)) || Math.abs(Math.sqrt(v.reduce((s, x) => s + x * x, 0)) - 1) > 0.001))) {
+      throw new Error('measured relevance vector population/dimensions/normalization mismatch');
+    }
+    const testIndexes = independent?.queries.flatMap((q, i) => q.partition === 'test' ? [i] : []);
+    const scored = scoreLeg(corpusKeys, docVecs, testIndexes ? testIndexes.map((i) => gold.queries[i]) : gold.queries,
+      testIndexes ? testIndexes.map((i) => queryVecs[i]) : queryVecs);
     retainedVectors[name] = { docVectors: docVecs, queryVectors: queryVecs };
-    results[name] = { dims: docVecs[0]?.length ?? 0, ...meta, ...scored };
+    const calibrationIndexes = independent?.queries.flatMap((q, i) => q.partition === 'calibration' ? [i] : []);
+    results[name] = { dims: docVecs[0]?.length ?? 0, ...meta, ...scored,
+      ...(calibrationIndexes ? { calibration: scoreLeg(corpusKeys, docVecs, calibrationIndexes.map((i) => gold.queries[i]),
+        calibrationIndexes.map((i) => queryVecs[i])) } : {}) };
     const a = scored.byClass.ALL_ANSWERABLE;
     console.log(
       `   ${name}: R@1=${a.recall_at_1} R@3=${a.recall_at_3} R@5=${a.recall_at_5} MRR=${a.mrr_at_10} ` +
@@ -794,8 +904,22 @@ async function main(): Promise<void> {
     console.log(`\n== ${leg.name}: embedding ==`);
     const rssBeforeMB = rssMB();
     try {
-      const doc = await embedAll(leg.doc, corpusTexts, `${leg.name}/doc`);
-      const query = await embedAll(leg.query, queryTexts, `${leg.name}/query`);
+      let newDocumentPass: Awaited<ReturnType<typeof embedAll>> | undefined;
+      const doc = reusedRelevance ? {
+        vecs: await embedIncrementalRelevanceDocuments(reusedRelevance, corpusTexts, async (texts) => {
+          newDocumentPass = await embedAll(leg.doc, texts, `${leg.name}/new-doc`);
+          return newDocumentPass.vecs;
+        }),
+        seconds: newDocumentPass?.seconds ?? 0, peakRssMB: newDocumentPass?.peakRssMB ?? rssBeforeMB,
+      } : await embedAll(leg.doc, corpusTexts, `${leg.name}/doc`);
+      let newQueryPass: Awaited<ReturnType<typeof embedAll>> | undefined;
+      const query = reusedRelevance ? {
+        vecs: await embedIncrementalRelevanceQueries(reusedRelevance, queryTexts, async (texts) => {
+          newQueryPass = await embedAll(leg.query, texts, `${leg.name}/new-query`);
+          return newQueryPass.vecs;
+        }),
+        seconds: newQueryPass?.seconds ?? 0, peakRssMB: newQueryPass?.peakRssMB ?? rssBeforeMB,
+      } : await embedAll(leg.query, queryTexts, `${leg.name}/query`);
       const workerState = getWorkerState();
       if ((leg.name === 'mdenseon' || (leg.name === 'sidecar:mdenseon' && isolatedSidecar)) && (!workerState.alive || workerState.disabled)) {
         throw new Error('mDenseOn validation requires a live worker; inline inference cannot qualify');
@@ -804,10 +928,15 @@ async function main(): Promise<void> {
       record(leg.name, doc.vecs, query.vecs, {
         workerState, repeatedWarm,
         ...leg.metadata,
+        ...(reusedRelevance ? { retainedRelevance: reusedRelevance.evidence,
+          measuredDocumentCount: reusedRelevance.missingDocumentIndexes.length,
+          measuredQueryCount: reusedRelevance.missingIndexes.length,
+          timingScope: reusedRelevance.missingDocumentIndexes.length
+            ? 'new documents and queries only; retained vectors reused' : 'new queries only; documents reused' } : {}),
         docSeconds: +doc.seconds.toFixed(1),
         querySeconds: +query.seconds.toFixed(1),
-        msPerDoc: +((doc.seconds * 1000) / Math.max(corpusTexts.length, 1)).toFixed(1),
-        msPerQuery: +((query.seconds * 1000) / Math.max(queryTexts.length, 1)).toFixed(1),
+        msPerDoc: +((doc.seconds * 1000) / Math.max(reusedRelevance?.missingDocumentIndexes.length ?? corpusTexts.length, 1)).toFixed(1),
+        msPerQuery: +((query.seconds * 1000) / Math.max(reusedRelevance?.missingIndexes.length ?? queryTexts.length, 1)).toFixed(1),
         rssBeforeMB,
         peakRssMB: Math.max(doc.peakRssMB, query.peakRssMB),
         rssDeltaMB: +(Math.max(doc.peakRssMB, query.peakRssMB) - rssBeforeMB).toFixed(1),
@@ -854,7 +983,9 @@ async function main(): Promise<void> {
     for (const [name, leg] of scoredLegs) {
       if (name === baselineName) continue;
       const cmp = compareLegs(baselineName!, baseline[1].perQuery, name, leg.perQuery);
-      comparisons[name] = { ...cmp, classesDisagree: classesDisagree(cmp) };
+      comparisons[name] = { ...cmp, classesDisagree: classesDisagree(cmp), ...(independent ? {
+        sourceGrouped: compareSourceGroupedLegs(baselineName!, baseline[1].perQuery, name, leg.perQuery,
+          independent.entries, independent.queries.filter((q) => q.partition === 'test')) } : {}) };
       console.log(`\n  ${baselineName} -> ${name}`);
       for (const cls of [ALL_ANSWERABLE, 'lexical-gap', 'exact-identifier', 'session-start-intent']) {
         const row = cmp.byClass[cls];
@@ -871,7 +1002,10 @@ async function main(): Promise<void> {
   }
 
   const report = { generatedAt: new Date().toISOString(), corpus: corpusChoice, corpusVersion,
-    goldVersion: gold.version, goldSetVersion: corpusChoice === 'prose' ? PROSE_GOLD_SET_VERSION : gold.version,
+    goldVersion: gold.version, goldSetVersion: independent ? independent.goldVersion : (corpusChoice === 'prose' ? PROSE_GOLD_SET_VERSION : gold.version),
+    ...(independent ? { labelAuthority: 'independent-blind-before-inference', scoringPartition: 'test',
+      calibrationReportedSeparately: true, heldoutQueries: independent.queries.filter((q) => q.partition === 'test').map((q) => ({ id: q.id, class: q.class, group: q.group, expected: q.expected })),
+      sourceClusters: Object.fromEntries(independent.entries.map((e) => [e.key, String(e.metadata?.cluster)])) } : {}),
     baseline: baselineName, results, comparisons };
   if (preparedMeasurement) {
     assertMeasuredExecution(preparedMeasurement.arm, embedExecutionTarget(), ORT_SESSION_OPTIONS, getWorkerState());
@@ -896,7 +1030,7 @@ async function main(): Promise<void> {
 
 void main().catch(async (e) => {
   if (preparedMeasurement) failMeasurementCell(preparedMeasurement, e);
-  console.error('embedder-eval failed:', e instanceof Error ? e.message : e);
+  console.error('embedder-eval failed:', e);
   await isolatedSidecar?.close();
   await shutdownLocalEmbedder();
   process.exit(1);

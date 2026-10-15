@@ -2,8 +2,8 @@
  * git-sync-events — the git-sync commit/egress signals through the await-event primitive
  * (event-await-discoverability-and-coverage-2026-07-03 P-102).
  *
- * When git-sync actually commits the shared tree (`status: 'synced'`), two LOCAL
- * commit keys fire:
+ * When git-sync actually commits the shared tree (`localCommitSha`), two LOCAL
+ * commit keys fire even if a sibling makes the aggregate verdict error/conflict:
  *
  *   `git-sync:committed` — the GLOBAL "a commit just landed" signal: any agent that
  *   left an edit in the tree and wants to know "is my edit a local git commit yet"
@@ -25,9 +25,9 @@
  *   scope so a waiter in one harness cannot wake on another harness's tick.
  *
  * Called fire-and-forget from the git-sync action's per-tick funnel; an emit failure
- * can never break a sync. A duplicate emit (a resumed DBOS fire replaying past the
- * record checkpoint) is benign: await keys are one-shot WAKE subscriptions, so a
- * second fire with no live waiter is a no-op and a re-fire just re-wakes.
+ * can never break a sync. A resumed DBOS fire retains the original producer time:
+ * replay cannot make an old commit satisfy a newer global wait's freshness filter.
+ * The precise per-SHA signal still identifies that commit without a time boundary.
  */
 
 import { emitAwaitedEvent } from '../../events/await/engine';
@@ -220,21 +220,23 @@ function emitGitSyncEventPair(
 /**
  * Fire the git-sync commit events for a landed head `sha`. Emits BOTH the global
  * `git-sync:committed` (payload-filtered) and the precise `git-sync:committed:<sha>`.
+ * Pass the original commit phase's producer time, including on replay. A legacy
+ * phase without that proof omits freshness metadata; per-SHA signaling survives.
  * Fire-and-forget; never throws.
  */
-export function emitGitSyncCommittedEvent(sha: string, deps: GitSyncEventsDeps): void {
+export function emitGitSyncCommittedEvent(sha: string, deps: GitSyncEventsDeps, committedAtMs?: number): void {
   const shortSha = sha.slice(0, 12);
-  // Capture this synchronously at the producer boundary. Capturing inside the
-  // Promise below would timestamp the eventual dispatch instead, allowing a
-  // delayed event from a prior sync cycle to look newer than a wait registered
-  // after that cycle.
-  const committedAtMs = Date.now();
+  // Never synthesize producer time at emission: a durable replay can occur after
+  // another waiter registered. Missing/invalid legacy proof must fail closed.
+  const producerTime = typeof committedAtMs === 'number' && Number.isFinite(committedAtMs) && committedAtMs > 0
+    ? { committedAtMs }
+    : undefined;
   emitGitSyncEventPair(
     'committed',
     sha,
     `git-sync committed ${shortSha} in the local harness checkout`,
     deps,
-    { committedAtMs },
+    producerTime,
   );
 }
 

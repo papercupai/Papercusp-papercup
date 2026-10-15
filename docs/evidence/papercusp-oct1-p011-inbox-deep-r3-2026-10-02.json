@@ -1,0 +1,2063 @@
+{
+  "schemaVersion": 1,
+  "plane": "live-current-build-operator-api",
+  "incomplete": false,
+  "pid": 911700,
+  "buildSha": "3f9f41aa22",
+  "startedAt": "2026-10-02T13:40:34.829Z",
+  "samples": [
+    {
+      "label": "idle-0-start",
+      "at": 1790948435604,
+      "pid": 911700,
+      "uptime": 756.813700162,
+      "memory": {
+        "rss": 1543999488,
+        "heapTotal": 1026822144,
+        "heapUsed": 835708472,
+        "external": 86871049,
+        "arrayBuffers": 2232276
+      },
+      "heap": {
+        "total_heap_size": 1026822144,
+        "total_heap_size_executable": 29966336,
+        "total_physical_size": 1026822144,
+        "total_available_size": 136870115400,
+        "used_heap_size": 835708712,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118664496,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1601608,
+        "used_global_handles_size": 1388544,
+        "external_memory": 86871049,
+        "total_allocated_bytes": 21753403552
+      },
+      "os": {
+        "pid": 911700,
+        "startTicks": "23735785",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1503078400,
+        "rssBytes": 1591922688,
+        "anonymousBytes": 1500356608
+      },
+      "pinnedState": {
+        "pid": 911700,
+        "registryPresent": true,
+        "population": 140,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 139,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 139,
+        "objects": 9314,
+        "entries": 32768,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.86561099998653
+            },
+            "entries": 32768,
+            "objects": 9314,
+            "maps": 1,
+            "mapEntries": 184,
+            "arrays": 4708,
+            "arrayEntries": 29469,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 1491322,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 184,
+              "checked": 1,
+              "notChecked": 183,
+              "scanned": 109,
+              "undigestibleKeys": 0,
+              "values": [
+                {
+                  "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+                  "keyDigestUnavailable": null,
+                  "keyCodeUnits": 171,
+                  "keyFormat": "workspace-nul-tool-pipe",
+                  "toolNamespace": "coord:inbox",
+                  "cacheOwner": "coord:inbox",
+                  "quota": {
+                    "entries": 32659,
+                    "objects": 16384,
+                    "budgetMs": 198.66707099997438
+                  },
+                  "softExpiry": "expired",
+                  "hardExpiry": "pending",
+                  "valueStatus": "data",
+                  "entries": 32659,
+                  "objects": 9314,
+                  "maps": 0,
+                  "mapEntries": 0,
+                  "arrays": 4708,
+                  "arrayEntries": 29469,
+                  "sets": 0,
+                  "setEntries": 0,
+                  "stringCodeUnits": 1491322,
+                  "byteViewExtents": 0,
+                  "arrayBufferExtents": 0,
+                  "sharedEdges": 0,
+                  "accessorsSkipped": 0,
+                  "proxiesSkipped": 0,
+                  "fieldsLimited": 0,
+                  "depthLimited": 0,
+                  "traversalLimited": true
+                }
+              ],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [],
+                "unresolvedAreMissing": false,
+                "selectedNotChecked": 0,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": false
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 1,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 25.293315000017174,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 1050110,
+          "startTicks": "23745600",
+          "parentPid": 911700,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 5139456,
+          "rssBytes": 45363200,
+          "anonymousBytes": 4943872
+        },
+        {
+          "pid": 1050217,
+          "startTicks": "23745611",
+          "parentPid": 1050110,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 642153472,
+          "rssBytes": 718565376,
+          "anonymousBytes": 639893504
+        },
+        {
+          "pid": 1591110,
+          "startTicks": "23798869",
+          "parentPid": 911700,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1210368,
+          "rssBytes": 7725056,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 105.32031399999983
+    },
+    {
+      "label": "idle-0-end",
+      "at": 1790948437730,
+      "pid": 911700,
+      "uptime": 758.939289849,
+      "memory": {
+        "rss": 1545048064,
+        "heapTotal": 1026400256,
+        "heapUsed": 836905264,
+        "external": 89217954,
+        "arrayBuffers": 4579181
+      },
+      "heap": {
+        "total_heap_size": 1026400256,
+        "total_heap_size_executable": 29966336,
+        "total_physical_size": 1026400256,
+        "total_available_size": 136869761240,
+        "used_heap_size": 836905504,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118664496,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1601608,
+        "used_global_handles_size": 1390496,
+        "external_memory": 89217954,
+        "total_allocated_bytes": 21793513936
+      },
+      "os": {
+        "pid": 911700,
+        "startTicks": "23735785",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1502657536,
+        "rssBytes": 1591500800,
+        "anonymousBytes": 1499934720
+      },
+      "pinnedState": {
+        "pid": 911700,
+        "registryPresent": true,
+        "population": 140,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 139,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 139,
+        "objects": 9314,
+        "entries": 32768,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.93634799995925
+            },
+            "entries": 32768,
+            "objects": 9314,
+            "maps": 1,
+            "mapEntries": 184,
+            "arrays": 4708,
+            "arrayEntries": 29469,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 1491322,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 184,
+              "checked": 1,
+              "notChecked": 183,
+              "scanned": 109,
+              "undigestibleKeys": 0,
+              "values": [
+                {
+                  "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+                  "keyDigestUnavailable": null,
+                  "keyCodeUnits": 171,
+                  "keyFormat": "workspace-nul-tool-pipe",
+                  "toolNamespace": "coord:inbox",
+                  "cacheOwner": "coord:inbox",
+                  "quota": {
+                    "entries": 32659,
+                    "objects": 16384,
+                    "budgetMs": 199.08825299993623
+                  },
+                  "softExpiry": "expired",
+                  "hardExpiry": "pending",
+                  "valueStatus": "data",
+                  "entries": 32659,
+                  "objects": 9314,
+                  "maps": 0,
+                  "mapEntries": 0,
+                  "arrays": 4708,
+                  "arrayEntries": 29469,
+                  "sets": 0,
+                  "setEntries": 0,
+                  "stringCodeUnits": 1491322,
+                  "byteViewExtents": 0,
+                  "arrayBufferExtents": 0,
+                  "sharedEdges": 0,
+                  "accessorsSkipped": 0,
+                  "proxiesSkipped": 0,
+                  "fieldsLimited": 0,
+                  "depthLimited": 0,
+                  "traversalLimited": true
+                }
+              ],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [],
+                "unresolvedAreMissing": false,
+                "selectedNotChecked": 0,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": false
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 1,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 20.927007999969646,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 1050110,
+          "startTicks": "23745600",
+          "parentPid": 911700,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 5140480,
+          "rssBytes": 45363200,
+          "anonymousBytes": 4943872
+        },
+        {
+          "pid": 1050217,
+          "startTicks": "23745611",
+          "parentPid": 1050110,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 642155520,
+          "rssBytes": 718565376,
+          "anonymousBytes": 639893504
+        },
+        {
+          "pid": 1591110,
+          "startTicks": "23798869",
+          "parentPid": 911700,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1211392,
+          "rssBytes": 7725056,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 97.20572300000003
+    },
+    {
+      "label": "ordinary-0-end",
+      "at": 1790948438048,
+      "pid": 911700,
+      "uptime": 759.257648934,
+      "memory": {
+        "rss": 1571262464,
+        "heapTotal": 1052905472,
+        "heapUsed": 892941280,
+        "external": 95074777,
+        "arrayBuffers": 10436004
+      },
+      "heap": {
+        "total_heap_size": 1052905472,
+        "total_heap_size_executable": 29966336,
+        "total_physical_size": 1052905472,
+        "total_available_size": 136787219288,
+        "used_heap_size": 892941520,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118664496,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1601608,
+        "used_global_handles_size": 1404160,
+        "external_memory": 95074777,
+        "total_allocated_bytes": 21850280648
+      },
+      "os": {
+        "pid": 911700,
+        "startTicks": "23735785",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1524655104,
+        "rssBytes": 1613496320,
+        "anonymousBytes": 1521930240
+      },
+      "pinnedState": {
+        "pid": 911700,
+        "registryPresent": true,
+        "population": 140,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 139,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 139,
+        "objects": 9314,
+        "entries": 32768,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.94537500001024
+            },
+            "entries": 32768,
+            "objects": 9314,
+            "maps": 1,
+            "mapEntries": 184,
+            "arrays": 4708,
+            "arrayEntries": 29469,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 1491322,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 184,
+              "checked": 1,
+              "notChecked": 183,
+              "scanned": 109,
+              "undigestibleKeys": 0,
+              "values": [
+                {
+                  "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+                  "keyDigestUnavailable": null,
+                  "keyCodeUnits": 171,
+                  "keyFormat": "workspace-nul-tool-pipe",
+                  "toolNamespace": "coord:inbox",
+                  "cacheOwner": "coord:inbox",
+                  "quota": {
+                    "entries": 32659,
+                    "objects": 16384,
+                    "budgetMs": 199.047304000007
+                  },
+                  "softExpiry": "expired",
+                  "hardExpiry": "pending",
+                  "valueStatus": "data",
+                  "entries": 32659,
+                  "objects": 9314,
+                  "maps": 0,
+                  "mapEntries": 0,
+                  "arrays": 4708,
+                  "arrayEntries": 29469,
+                  "sets": 0,
+                  "setEntries": 0,
+                  "stringCodeUnits": 1491322,
+                  "byteViewExtents": 0,
+                  "arrayBufferExtents": 0,
+                  "sharedEdges": 0,
+                  "accessorsSkipped": 0,
+                  "proxiesSkipped": 0,
+                  "fieldsLimited": 0,
+                  "depthLimited": 0,
+                  "traversalLimited": true
+                }
+              ],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [],
+                "unresolvedAreMissing": false,
+                "selectedNotChecked": 0,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": false
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 1,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 20.055559000000358,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 1050110,
+          "startTicks": "23745600",
+          "parentPid": 911700,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 5142528,
+          "rssBytes": 45363200,
+          "anonymousBytes": 4943872
+        },
+        {
+          "pid": 1050217,
+          "startTicks": "23745611",
+          "parentPid": 1050110,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 642157568,
+          "rssBytes": 718565376,
+          "anonymousBytes": 639893504
+        },
+        {
+          "pid": 1591110,
+          "startTicks": "23798869",
+          "parentPid": 911700,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1211392,
+          "rssBytes": 7725056,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 99.68497100000059
+    },
+    {
+      "label": "idle-1-start",
+      "at": 1790948438210,
+      "pid": 911700,
+      "uptime": 759.41891037,
+      "memory": {
+        "rss": 1547767808,
+        "heapTotal": 1027760128,
+        "heapUsed": 834060600,
+        "external": 85312469,
+        "arrayBuffers": 673696
+      },
+      "heap": {
+        "total_heap_size": 1027760128,
+        "total_heap_size_executable": 29966336,
+        "total_physical_size": 1027760128,
+        "total_available_size": 136872552424,
+        "used_heap_size": 834060840,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118664496,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1601608,
+        "used_global_handles_size": 1390080,
+        "external_memory": 85312469,
+        "total_allocated_bytes": 21861019360
+      },
+      "os": {
+        "pid": 911700,
+        "startTicks": "23735785",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1503773696,
+        "rssBytes": 1592614912,
+        "anonymousBytes": 1501048832
+      },
+      "pinnedState": {
+        "pid": 911700,
+        "registryPresent": true,
+        "population": 140,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 139,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 139,
+        "objects": 9314,
+        "entries": 32768,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.92543599999044
+            },
+            "entries": 32768,
+            "objects": 9314,
+            "maps": 1,
+            "mapEntries": 185,
+            "arrays": 4708,
+            "arrayEntries": 29469,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 1491322,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 185,
+              "checked": 1,
+              "notChecked": 184,
+              "scanned": 109,
+              "undigestibleKeys": 0,
+              "values": [
+                {
+                  "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+                  "keyDigestUnavailable": null,
+                  "keyCodeUnits": 171,
+                  "keyFormat": "workspace-nul-tool-pipe",
+                  "toolNamespace": "coord:inbox",
+                  "cacheOwner": "coord:inbox",
+                  "quota": {
+                    "entries": 32659,
+                    "objects": 16384,
+                    "budgetMs": 198.8073410000652
+                  },
+                  "softExpiry": "expired",
+                  "hardExpiry": "pending",
+                  "valueStatus": "data",
+                  "entries": 32659,
+                  "objects": 9314,
+                  "maps": 0,
+                  "mapEntries": 0,
+                  "arrays": 4708,
+                  "arrayEntries": 29469,
+                  "sets": 0,
+                  "setEntries": 0,
+                  "stringCodeUnits": 1491322,
+                  "byteViewExtents": 0,
+                  "arrayBufferExtents": 0,
+                  "sharedEdges": 0,
+                  "accessorsSkipped": 0,
+                  "proxiesSkipped": 0,
+                  "fieldsLimited": 0,
+                  "depthLimited": 0,
+                  "traversalLimited": true
+                }
+              ],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [],
+                "unresolvedAreMissing": false,
+                "selectedNotChecked": 0,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": false
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 1,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 23.680695999995805,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 1050110,
+          "startTicks": "23745600",
+          "parentPid": 911700,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 5142528,
+          "rssBytes": 45363200,
+          "anonymousBytes": 4943872
+        },
+        {
+          "pid": 1050217,
+          "startTicks": "23745611",
+          "parentPid": 1050110,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 642157568,
+          "rssBytes": 718565376,
+          "anonymousBytes": 639893504
+        },
+        {
+          "pid": 1591110,
+          "startTicks": "23798869",
+          "parentPid": 911700,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1211392,
+          "rssBytes": 7725056,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 111.98023199999989
+    },
+    {
+      "label": "idle-1-end",
+      "at": 1790948440327,
+      "pid": 911700,
+      "uptime": 761.536411792,
+      "memory": {
+        "rss": 1549864960,
+        "heapTotal": 1030893568,
+        "heapUsed": 866269552,
+        "external": 100097616,
+        "arrayBuffers": 6458795
+      },
+      "heap": {
+        "total_heap_size": 1030893568,
+        "total_heap_size_executable": 29966336,
+        "total_physical_size": 1030893568,
+        "total_available_size": 136837935736,
+        "used_heap_size": 866269792,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118664496,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1601608,
+        "used_global_handles_size": 1396032,
+        "external_memory": 100097616,
+        "total_allocated_bytes": 21951687112
+      },
+      "os": {
+        "pid": 911700,
+        "startTicks": "23735785",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1506403328,
+        "rssBytes": 1595244544,
+        "anonymousBytes": 1503678464
+      },
+      "pinnedState": {
+        "pid": 911700,
+        "registryPresent": true,
+        "population": 140,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 139,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 139,
+        "objects": 9314,
+        "entries": 32768,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.89130999997724
+            },
+            "entries": 32768,
+            "objects": 9314,
+            "maps": 1,
+            "mapEntries": 185,
+            "arrays": 4708,
+            "arrayEntries": 29469,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 1491322,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 185,
+              "checked": 1,
+              "notChecked": 184,
+              "scanned": 109,
+              "undigestibleKeys": 0,
+              "values": [
+                {
+                  "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+                  "keyDigestUnavailable": null,
+                  "keyCodeUnits": 171,
+                  "keyFormat": "workspace-nul-tool-pipe",
+                  "toolNamespace": "coord:inbox",
+                  "cacheOwner": "coord:inbox",
+                  "quota": {
+                    "entries": 32659,
+                    "objects": 16384,
+                    "budgetMs": 198.86000200000126
+                  },
+                  "softExpiry": "expired",
+                  "hardExpiry": "pending",
+                  "valueStatus": "data",
+                  "entries": 32659,
+                  "objects": 9314,
+                  "maps": 0,
+                  "mapEntries": 0,
+                  "arrays": 4708,
+                  "arrayEntries": 29469,
+                  "sets": 0,
+                  "setEntries": 0,
+                  "stringCodeUnits": 1491322,
+                  "byteViewExtents": 0,
+                  "arrayBufferExtents": 0,
+                  "sharedEdges": 0,
+                  "accessorsSkipped": 0,
+                  "proxiesSkipped": 0,
+                  "fieldsLimited": 0,
+                  "depthLimited": 0,
+                  "traversalLimited": true
+                }
+              ],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [],
+                "unresolvedAreMissing": false,
+                "selectedNotChecked": 0,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": false
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 1,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 22.906685000052676,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 1050110,
+          "startTicks": "23745600",
+          "parentPid": 911700,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 5141504,
+          "rssBytes": 45363200,
+          "anonymousBytes": 4943872
+        },
+        {
+          "pid": 1050217,
+          "startTicks": "23745611",
+          "parentPid": 1050110,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 642157568,
+          "rssBytes": 718565376,
+          "anonymousBytes": 639893504
+        },
+        {
+          "pid": 1591110,
+          "startTicks": "23798869",
+          "parentPid": 911700,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1209344,
+          "rssBytes": 7725056,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 107.93197899999996
+    },
+    {
+      "label": "ordinary-1-end",
+      "at": 1790948440600,
+      "pid": 911700,
+      "uptime": 761.809664902,
+      "memory": {
+        "rss": 1549864960,
+        "heapTotal": 1031294976,
+        "heapUsed": 887349056,
+        "external": 103123137,
+        "arrayBuffers": 9484316
+      },
+      "heap": {
+        "total_heap_size": 1031294976,
+        "total_heap_size_executable": 29966336,
+        "total_physical_size": 1031294976,
+        "total_available_size": 136816454448,
+        "used_heap_size": 887349296,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118664496,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1601608,
+        "used_global_handles_size": 1402144,
+        "external_memory": 103123137,
+        "total_allocated_bytes": 21973828456
+      },
+      "os": {
+        "pid": 911700,
+        "startTicks": "23735785",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1504357376,
+        "rssBytes": 1593196544,
+        "anonymousBytes": 1501630464
+      },
+      "pinnedState": {
+        "pid": 911700,
+        "registryPresent": true,
+        "population": 140,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 139,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 139,
+        "objects": 9314,
+        "entries": 32768,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.9463270000415
+            },
+            "entries": 32768,
+            "objects": 9314,
+            "maps": 1,
+            "mapEntries": 185,
+            "arrays": 4708,
+            "arrayEntries": 29469,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 1491322,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 185,
+              "checked": 1,
+              "notChecked": 184,
+              "scanned": 109,
+              "undigestibleKeys": 0,
+              "values": [
+                {
+                  "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+                  "keyDigestUnavailable": null,
+                  "keyCodeUnits": 171,
+                  "keyFormat": "workspace-nul-tool-pipe",
+                  "toolNamespace": "coord:inbox",
+                  "cacheOwner": "coord:inbox",
+                  "quota": {
+                    "entries": 32659,
+                    "objects": 16384,
+                    "budgetMs": 198.95071800006554
+                  },
+                  "softExpiry": "expired",
+                  "hardExpiry": "pending",
+                  "valueStatus": "data",
+                  "entries": 32659,
+                  "objects": 9314,
+                  "maps": 0,
+                  "mapEntries": 0,
+                  "arrays": 4708,
+                  "arrayEntries": 29469,
+                  "sets": 0,
+                  "setEntries": 0,
+                  "stringCodeUnits": 1491322,
+                  "byteViewExtents": 0,
+                  "arrayBufferExtents": 0,
+                  "sharedEdges": 0,
+                  "accessorsSkipped": 0,
+                  "proxiesSkipped": 0,
+                  "fieldsLimited": 0,
+                  "depthLimited": 0,
+                  "traversalLimited": true
+                }
+              ],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [],
+                "unresolvedAreMissing": false,
+                "selectedNotChecked": 0,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": false
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 1,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 20.73884599993471,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 1050110,
+          "startTicks": "23745600",
+          "parentPid": 911700,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 5142528,
+          "rssBytes": 45363200,
+          "anonymousBytes": 4943872
+        },
+        {
+          "pid": 1050217,
+          "startTicks": "23745611",
+          "parentPid": 1050110,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 642159616,
+          "rssBytes": 718565376,
+          "anonymousBytes": 639893504
+        },
+        {
+          "pid": 1591110,
+          "startTicks": "23798869",
+          "parentPid": 911700,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1208320,
+          "rssBytes": 7725056,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 118.72448199999963
+    },
+    {
+      "label": "idle-2-start",
+      "at": 1790948441178,
+      "pid": 911700,
+      "uptime": 762.387102625,
+      "memory": {
+        "rss": 1547665408,
+        "heapTotal": 1008611328,
+        "heapUsed": 793241528,
+        "external": 83148829,
+        "arrayBuffers": 600084
+      },
+      "heap": {
+        "total_heap_size": 1008611328,
+        "total_heap_size_executable": 29966336,
+        "total_physical_size": 1008611328,
+        "total_available_size": 136836054360,
+        "used_heap_size": 793241768,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118664496,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1601608,
+        "used_global_handles_size": 1381920,
+        "external_memory": 83148829,
+        "total_allocated_bytes": 22012570408
+      },
+      "os": {
+        "pid": 911700,
+        "startTicks": "23735785",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1502220288,
+        "rssBytes": 1591062528,
+        "anonymousBytes": 1499496448
+      },
+      "pinnedState": {
+        "pid": 911700,
+        "registryPresent": true,
+        "population": 140,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 139,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 139,
+        "objects": 9314,
+        "entries": 32768,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.92112800001632
+            },
+            "entries": 32768,
+            "objects": 9314,
+            "maps": 1,
+            "mapEntries": 185,
+            "arrays": 4708,
+            "arrayEntries": 29469,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 1491322,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 185,
+              "checked": 1,
+              "notChecked": 184,
+              "scanned": 109,
+              "undigestibleKeys": 0,
+              "values": [
+                {
+                  "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+                  "keyDigestUnavailable": null,
+                  "keyCodeUnits": 171,
+                  "keyFormat": "workspace-nul-tool-pipe",
+                  "toolNamespace": "coord:inbox",
+                  "cacheOwner": "coord:inbox",
+                  "quota": {
+                    "entries": 32659,
+                    "objects": 16384,
+                    "budgetMs": 198.56575500010513
+                  },
+                  "softExpiry": "expired",
+                  "hardExpiry": "pending",
+                  "valueStatus": "data",
+                  "entries": 32659,
+                  "objects": 9314,
+                  "maps": 0,
+                  "mapEntries": 0,
+                  "arrays": 4708,
+                  "arrayEntries": 29469,
+                  "sets": 0,
+                  "setEntries": 0,
+                  "stringCodeUnits": 1491322,
+                  "byteViewExtents": 0,
+                  "arrayBufferExtents": 0,
+                  "sharedEdges": 0,
+                  "accessorsSkipped": 0,
+                  "proxiesSkipped": 0,
+                  "fieldsLimited": 0,
+                  "depthLimited": 0,
+                  "traversalLimited": true
+                }
+              ],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [],
+                "unresolvedAreMissing": false,
+                "selectedNotChecked": 0,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": false
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 1,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 29.333913999958895,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 1050110,
+          "startTicks": "23745600",
+          "parentPid": 911700,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 5141504,
+          "rssBytes": 45363200,
+          "anonymousBytes": 4943872
+        },
+        {
+          "pid": 1050217,
+          "startTicks": "23745611",
+          "parentPid": 1050110,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 642158592,
+          "rssBytes": 718565376,
+          "anonymousBytes": 639893504
+        },
+        {
+          "pid": 1591110,
+          "startTicks": "23798869",
+          "parentPid": 911700,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1192960,
+          "rssBytes": 7725056,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 106.81852199999958
+    },
+    {
+      "label": "idle-2-end",
+      "at": 1790948443292,
+      "pid": 911700,
+      "uptime": 764.501255669,
+      "memory": {
+        "rss": 1547665408,
+        "heapTotal": 1009012736,
+        "heapUsed": 807213080,
+        "external": 83682267,
+        "arrayBuffers": 1133522
+      },
+      "heap": {
+        "total_heap_size": 1009012736,
+        "total_heap_size_executable": 29966336,
+        "total_physical_size": 1009012736,
+        "total_available_size": 136829611680,
+        "used_heap_size": 807213320,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118664496,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1601608,
+        "used_global_handles_size": 1387872,
+        "external_memory": 83682267,
+        "total_allocated_bytes": 22027578096
+      },
+      "os": {
+        "pid": 911700,
+        "startTicks": "23735785",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1502628864,
+        "rssBytes": 1591468032,
+        "anonymousBytes": 1499901952
+      },
+      "pinnedState": {
+        "pid": 911700,
+        "registryPresent": true,
+        "population": 140,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 139,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 139,
+        "objects": 9314,
+        "entries": 32768,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.95372099999804
+            },
+            "entries": 32768,
+            "objects": 9314,
+            "maps": 1,
+            "mapEntries": 185,
+            "arrays": 4708,
+            "arrayEntries": 29469,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 1491322,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 185,
+              "checked": 1,
+              "notChecked": 184,
+              "scanned": 109,
+              "undigestibleKeys": 0,
+              "values": [
+                {
+                  "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+                  "keyDigestUnavailable": null,
+                  "keyCodeUnits": 171,
+                  "keyFormat": "workspace-nul-tool-pipe",
+                  "toolNamespace": "coord:inbox",
+                  "cacheOwner": "coord:inbox",
+                  "quota": {
+                    "entries": 32659,
+                    "objects": 16384,
+                    "budgetMs": 198.899638999952
+                  },
+                  "softExpiry": "expired",
+                  "hardExpiry": "pending",
+                  "valueStatus": "data",
+                  "entries": 32659,
+                  "objects": 9314,
+                  "maps": 0,
+                  "mapEntries": 0,
+                  "arrays": 4708,
+                  "arrayEntries": 29469,
+                  "sets": 0,
+                  "setEntries": 0,
+                  "stringCodeUnits": 1491322,
+                  "byteViewExtents": 0,
+                  "arrayBufferExtents": 0,
+                  "sharedEdges": 0,
+                  "accessorsSkipped": 0,
+                  "proxiesSkipped": 0,
+                  "fieldsLimited": 0,
+                  "depthLimited": 0,
+                  "traversalLimited": true
+                }
+              ],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [],
+                "unresolvedAreMissing": false,
+                "selectedNotChecked": 0,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": false
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 1,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 32.28802800003905,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 1050110,
+          "startTicks": "23745600",
+          "parentPid": 911700,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 5141504,
+          "rssBytes": 45363200,
+          "anonymousBytes": 4943872
+        },
+        {
+          "pid": 1050217,
+          "startTicks": "23745611",
+          "parentPid": 1050110,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 642171904,
+          "rssBytes": 718577664,
+          "anonymousBytes": 639905792
+        },
+        {
+          "pid": 1591110,
+          "startTicks": "23798869",
+          "parentPid": 911700,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1192960,
+          "rssBytes": 7725056,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 120.13807699999961
+    },
+    {
+      "label": "ordinary-2-end",
+      "at": 1790948443684,
+      "pid": 911700,
+      "uptime": 764.893496941,
+      "memory": {
+        "rss": 1548713984,
+        "heapTotal": 1009414144,
+        "heapUsed": 820446848,
+        "external": 84878186,
+        "arrayBuffers": 2329441
+      },
+      "heap": {
+        "total_heap_size": 1009414144,
+        "total_heap_size_executable": 29966336,
+        "total_physical_size": 1009414144,
+        "total_available_size": 136815976488,
+        "used_heap_size": 820447088,
+        "heap_size_limit": 137640280064,
+        "malloced_memory": 4227152,
+        "peak_malloced_memory": 118664496,
+        "does_zap_garbage": 0,
+        "number_of_native_contexts": 2,
+        "number_of_detached_contexts": 0,
+        "total_global_handles_size": 1601608,
+        "used_global_handles_size": 1392896,
+        "external_memory": 84878186,
+        "total_allocated_bytes": 22040966728
+      },
+      "os": {
+        "pid": 911700,
+        "startTicks": "23735785",
+        "parentPid": 4082,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 1503030272,
+        "rssBytes": 1591869440,
+        "anonymousBytes": 1500303360
+      },
+      "pinnedState": {
+        "pid": 911700,
+        "registryPresent": true,
+        "population": 140,
+        "checked": 1,
+        "selection": {
+          "requestedOwners": [
+            "@papercusp/operator-core.operatorCache"
+          ],
+          "selectedPopulation": 1,
+          "missingOwners": [],
+          "excludedBySelection": 139,
+          "selectedNotChecked": 0
+        },
+        "notChecked": 139,
+        "objects": 9314,
+        "entries": 32768,
+        "roots": [
+          {
+            "owner": "@papercusp/operator-core.operatorCache",
+            "ownerTruncated": false,
+            "quota": {
+              "entries": 32768,
+              "objects": 16384,
+              "budgetMs": 199.9242539999541
+            },
+            "entries": 32768,
+            "objects": 9314,
+            "maps": 1,
+            "mapEntries": 185,
+            "arrays": 4708,
+            "arrayEntries": 29469,
+            "sets": 0,
+            "setEntries": 0,
+            "stringCodeUnits": 1491322,
+            "byteViewExtents": 0,
+            "arrayBufferExtents": 0,
+            "sharedEdges": 0,
+            "accessorsSkipped": 0,
+            "proxiesSkipped": 0,
+            "fieldsLimited": 0,
+            "depthLimited": 0,
+            "traversalLimited": true,
+            "cacheEntries": {
+              "path": "cache.l1.map",
+              "status": "map",
+              "population": 185,
+              "checked": 1,
+              "notChecked": 184,
+              "scanned": 109,
+              "undigestibleKeys": 0,
+              "values": [
+                {
+                  "keyDigest": "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e",
+                  "keyDigestUnavailable": null,
+                  "keyCodeUnits": 171,
+                  "keyFormat": "workspace-nul-tool-pipe",
+                  "toolNamespace": "coord:inbox",
+                  "cacheOwner": "coord:inbox",
+                  "quota": {
+                    "entries": 32659,
+                    "objects": 16384,
+                    "budgetMs": 199.16280599997845
+                  },
+                  "softExpiry": "expired",
+                  "hardExpiry": "pending",
+                  "valueStatus": "data",
+                  "entries": 32659,
+                  "objects": 9314,
+                  "maps": 0,
+                  "mapEntries": 0,
+                  "arrays": 4708,
+                  "arrayEntries": 29469,
+                  "sets": 0,
+                  "setEntries": 0,
+                  "stringCodeUnits": 1491322,
+                  "byteViewExtents": 0,
+                  "arrayBufferExtents": 0,
+                  "sharedEdges": 0,
+                  "accessorsSkipped": 0,
+                  "proxiesSkipped": 0,
+                  "fieldsLimited": 0,
+                  "depthLimited": 0,
+                  "traversalLimited": true
+                }
+              ],
+              "selection": {
+                "mode": "digests",
+                "offset": 0,
+                "requestedKeyDigests": [
+                  "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+                ],
+                "nextOffset": null,
+                "unresolvedKeyDigests": [],
+                "unresolvedAreMissing": false,
+                "selectedNotChecked": 0,
+                "definition": "Current insertion order; membership may change between reads. Unresolved digests are not missing unless the full scan is digestible.",
+                "scanComplete": false
+              },
+              "definition": "Bounded L1 value payloads; excludes cache metadata/other roots and is not retained bytes."
+            }
+          }
+        ],
+        "limits": {
+          "maxSlots": 256,
+          "maxObjects": 16384,
+          "maxEntries": 32768,
+          "maxFields": 64,
+          "maxDepth": 8,
+          "budgetMs": 200,
+          "maxCacheEntries": 1,
+          "maxEntryEntries": 32768,
+          "maxEntryObjects": 16384,
+          "maxKeyCodeUnits": 16384
+        },
+        "limited": true,
+        "observerMs": 21.802236000075936,
+        "definition": "Bounded reachable logical payloads under named roots; not total retained heap/native bytes."
+      },
+      "descendants": [
+        {
+          "pid": 1050110,
+          "startTicks": "23745600",
+          "parentPid": 911700,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 5142528,
+          "rssBytes": 45363200,
+          "anonymousBytes": 4943872
+        },
+        {
+          "pid": 1050217,
+          "startTicks": "23745611",
+          "parentPid": 1050110,
+          "executable": "/home/builduser/.local/node25/bin/node",
+          "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+          "pssBytes": 642171904,
+          "rssBytes": 718577664,
+          "anonymousBytes": 639905792
+        },
+        {
+          "pid": 1591110,
+          "startTicks": "23798869",
+          "parentPid": 911700,
+          "executable": "/usr/bin/systemd-run",
+          "executableSha256": "dbc8b988a849d5c9d7ef2de7068a6f107021bc6c11e0d7864c73f373eef726a7",
+          "pssBytes": 1192960,
+          "rssBytes": 7725056,
+          "anonymousBytes": 966656
+        }
+      ],
+      "observerMs": 100.85142099999939
+    }
+  ],
+  "windows": [
+    {
+      "window": 0,
+      "startedAt": "2026-10-02T13:40:37.951Z",
+      "endedAt": "2026-10-02T13:40:38.152Z"
+    },
+    {
+      "window": 1,
+      "startedAt": "2026-10-02T13:40:40.505Z",
+      "endedAt": "2026-10-02T13:40:41.119Z"
+    },
+    {
+      "window": 2,
+      "startedAt": "2026-10-02T13:40:43.603Z",
+      "endedAt": "2026-10-02T13:40:43.791Z"
+    }
+  ],
+  "requests": [
+    {
+      "window": 0,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20489,
+      "responseSha256": "09fd8eb189036c78a9bdbd6e73592ad799f75590e1a1119115f74ca0e9206bdb",
+      "elapsedMs": 34.96879600000011
+    },
+    {
+      "window": 0,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20489,
+      "responseSha256": "f3e63715a7814302e92af724c92998f83abd0778b05294213c0a67de2eefe708",
+      "elapsedMs": 37.63701900000024
+    },
+    {
+      "window": 0,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20489,
+      "responseSha256": "eedad6723873e321c7ebee217ecbf08335632f79f427dfb8dac87ee2b722821c",
+      "elapsedMs": 16.099452999999812
+    },
+    {
+      "window": 0,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20489,
+      "responseSha256": "1580ef5c4ed97fb1a13469629bd3dcf21cafbfa26b4265a6cf4482146844af8b",
+      "elapsedMs": 17.329995000000054
+    },
+    {
+      "window": 0,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20489,
+      "responseSha256": "a2c23650d33163d6918e1fbcf866771b2ba2987a000b13e01bc26dbb63b9c584",
+      "elapsedMs": 15.623765999999705
+    },
+    {
+      "window": 0,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20489,
+      "responseSha256": "f4cc693b99d69698702017e8a725edbbdc29652aae1ddd124274e65a0b17586c",
+      "elapsedMs": 18.240139999999883
+    },
+    {
+      "window": 0,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20489,
+      "responseSha256": "8847f4977bc8233dd4ffa5cf840ae3326feb9707dcf47f129757e361fa82db7a",
+      "elapsedMs": 21.769843000000037
+    },
+    {
+      "window": 0,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20489,
+      "responseSha256": "e9f428f163e25bdf6f05691a7854e3c0760e437a6fa36037f6834044f02faabe",
+      "elapsedMs": 21.98486799999955
+    },
+    {
+      "window": 1,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "3f38a3dc3f57b2a547c5b4afde05f144de3e3c150cfe62df847d1d9e5be9aef7",
+      "elapsedMs": 17.709076000000096
+    },
+    {
+      "window": 1,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "ffc75eb7e2abf83fc40a1e3de14203f026eb3f891d5bd5528e24d7e9de8f19b1",
+      "elapsedMs": 19.4132010000003
+    },
+    {
+      "window": 1,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "fc0141fc776700f64ccb21f4c4daa29b2a9bdbd0fab8469044dfe02b4660ddc1",
+      "elapsedMs": 16.606540000000678
+    },
+    {
+      "window": 1,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "c8e16f07197dbc663e9a003e25d4943588114ce0e82c9a7cd0ae9fe03e0e0f19",
+      "elapsedMs": 18.90738500000043
+    },
+    {
+      "window": 1,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "f2f5f1b5e3adb8321b6b77b09e7d276c65065911b98e461e516e7fcadbffea23",
+      "elapsedMs": 17.414096999999856
+    },
+    {
+      "window": 1,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "b207026a834c20f9a02c547519ee73a537defbd2d6d9d3dd82d01387b7efab5e",
+      "elapsedMs": 17.851760999999897
+    },
+    {
+      "window": 1,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "8d52eb389891028a5db7e810c9137d15369860a634bc855b0689118be7bff0b1",
+      "elapsedMs": 37.23607599999923
+    },
+    {
+      "window": 1,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "3d48a857e6118de13550d3ee98540a8fe581a9114c97893f853df218428612db",
+      "elapsedMs": 37.73440699999992
+    },
+    {
+      "window": 2,
+      "pair": 0,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "c7dfb0f0c259723a485607c0583411cb09b6e4e8d1056dbb32f752188b4bee70",
+      "elapsedMs": 17.999625999998898
+    },
+    {
+      "window": 2,
+      "pair": 0,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "946d68d0260479a25b84368ef2d6f56748fe215a05325c9bd06f6c667790487d",
+      "elapsedMs": 19.099206000000777
+    },
+    {
+      "window": 2,
+      "pair": 1,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "279793f0f46ac5dc130372d175f30e883a285c4ea8cad6e0701de3e31c4dabd4",
+      "elapsedMs": 17.99123000000145
+    },
+    {
+      "window": 2,
+      "pair": 1,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "5b133f5dbc98015730e269c449f45ca50e8ab4558f8e7ba519223510915fead7",
+      "elapsedMs": 20.199837000000116
+    },
+    {
+      "window": 2,
+      "pair": 2,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "4607febc674b62e92e976b57f2e57028a3c48e1f61561080d95a7314d4e1cb4b",
+      "elapsedMs": 17.518267999999807
+    },
+    {
+      "window": 2,
+      "pair": 2,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "e00c2c220a691e18cfa548898aca7fac9a393c6a3ea27b20ca26fd6a32e8803f",
+      "elapsedMs": 20.374453999998877
+    },
+    {
+      "window": 2,
+      "pair": 3,
+      "index": 1,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "8cc3006b18c40fd9f3c85c3bd9cf41529a9ea45fe507cd2f74f909aebff969ac",
+      "elapsedMs": 19.688571999999112
+    },
+    {
+      "window": 2,
+      "pair": 3,
+      "index": 0,
+      "status": 200,
+      "rows": 32,
+      "responseBytes": 20504,
+      "responseSha256": "61da14e71c879cdbb1241b5da805414c030c160b11730bc228a349a496246466",
+      "elapsedMs": 21.184696000000258
+    }
+  ],
+  "operations": [],
+  "cleanup": {
+    "inspector": {
+      "closed": true
+    },
+    "processIdentityPreserved": true
+  },
+  "metricDefinitions": {
+    "pssBytes": "smaps_rollup Pss kernel kB times 1024",
+    "heapAndNative": "V8/Node counters, overlapping with PSS; no additive native-residual estimate",
+    "pinnedState": "Reachable logical payloads under named roots; not total retained heap/native bytes",
+    "observerMs": "wall time for inspector counter read and proc descendant census"
+  },
+  "limits": {
+    "windows": 3,
+    "idleMs": 2000,
+    "requestsPerWindow": 8,
+    "concurrency": 2,
+    "descendantsPerSample": 64
+  },
+  "pinnedOwners": [
+    "@papercusp/operator-core.operatorCache"
+  ],
+  "pinnedLimits": {
+    "maxObjects": 16384,
+    "maxEntries": 32768,
+    "maxFields": 64,
+    "maxDepth": 8,
+    "budgetMs": 200,
+    "maxCacheEntries": 1,
+    "maxEntryEntries": 32768,
+    "maxEntryObjects": 16384,
+    "cacheKeyDigests": [
+      "07593a6e075155de684c9d68a9cf27d52164e895454a26eb6a58f844547df66e"
+    ]
+  },
+  "operatorCacheEntries": true,
+  "limitations": [
+    "Main service PID only; HTTP requests may be served by sibling workers.",
+    "Ambient workload is uncontrolled; idle means no probe HTTP requests.",
+    "No paired intervention, allocation profiler, retainer graph or physical-savings claim.",
+    "Current disk bundle hash is recorded separately from the health-reported loaded build."
+  ],
+  "healthBefore": {
+    "sha": "3f9f41aa22",
+    "version": "0.0.0",
+    "at": "2026-10-02T13:40:34.951Z"
+  },
+  "bundle": {
+    "path": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-3f9f41aa228b.1XXHeH/checkout/apps/operator/dist-host/hono-host.mjs",
+    "argvEntry": "dist-host/hono-host.mjs",
+    "diskSha256": "a6bd84c7f491a23cf13ff01e72ed47f6bfa6d57d43e4e16831c2bf4025ad8c3b",
+    "diskSha256After": "a6bd84c7f491a23cf13ff01e72ed47f6bfa6d57d43e4e16831c2bf4025ad8c3b"
+  },
+  "inspectorWasOpen": false,
+  "inspector": {
+    "pid": 911700,
+    "port": 9229,
+    "openedByProbe": true
+  },
+  "healthAfter": {
+    "sha": "3f9f41aa22",
+    "version": "0.0.0",
+    "at": "2026-10-02T13:40:43.955Z"
+  },
+  "endedAt": "2026-10-02T13:40:44.121Z"
+}

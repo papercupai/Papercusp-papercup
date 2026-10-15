@@ -19,17 +19,32 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
+import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
+import { getOrgPg } from '@papercusp/db-org';
 
 describe('_baseline-coord-fixture mutex (EI-18683737202696167)', () => {
   let fx1: BaselineCoordFixture | undefined;
   let fx2: BaselineCoordFixture | undefined;
+  let isolatedDb: OrgTestDb | undefined;
 
   afterEach(async () => {
     await fx1?.dispose().catch(() => {});
     await fx2?.dispose().catch(() => {});
+    await isolatedDb?.cleanup();
     fx1 = undefined;
     fx2 = undefined;
+    isolatedDb = undefined;
   });
+
+  it('routes both fixture and coordination module connections to an explicit isolated DB', async () => {
+    isolatedDb = await createOrgTestDb();
+    fx1 = await setupBaselineCoordFixture({ dsn: isolatedDb.adminDsn });
+
+    const [fixtureDb] = await fx1.admin`SELECT current_database() AS name`;
+    const [moduleDb] = await getOrgPg().sql`SELECT current_database() AS name`;
+    expect(fixtureDb.name).toBe(isolatedDb.dbName);
+    expect(moduleDb.name).toBe(isolatedDb.dbName);
+  }, 120_000);
 
   it('blocks a second setup() until the first fixture disposes', async () => {
     const events: string[] = [];

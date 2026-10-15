@@ -45,6 +45,7 @@ import {
   resolveLiveBoundRefs,
   recipeAuthorityContextFromRefs,
   recipeAuthorityMatchesLiveRefs,
+  recipeRevisionDiagnostics,
   validateRecipeAuthorityProof,
   type RecipeAuthorityMetadata,
   type RecipeAuthorityRefs,
@@ -368,7 +369,22 @@ export default defineTool({
           // hit this via a nested `tools.recipes.run(...)` composition doesn't
           // mistake it for "nesting is broken" when the target recipe itself
           // simply can't be authority-verified.
-          return { ok: false, id: it.id, error: authority.error, reason: authority.reason };
+          const authorityDiagnostics =
+            authority.error === 'authority_stale_revision' && it.authority
+              ? recipeRevisionDiagnostics({
+                  script: recipe.script,
+                  updatedAt: recipe.updatedAt,
+                  contract: recipe,
+                  suppliedRevision: it.authority.revision,
+                })
+              : undefined;
+          return {
+            ok: false,
+            id: it.id,
+            error: authority.error,
+            reason: authority.reason,
+            ...(authorityDiagnostics ? { authorityDiagnostics } : {}),
+          };
         }
         const needsLiveRefs =
           authority.descriptor.refs.plans.length > 0 ||

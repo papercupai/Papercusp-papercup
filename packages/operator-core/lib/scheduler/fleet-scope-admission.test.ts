@@ -24,6 +24,9 @@ const ZERO_QUEUE_CONTROL = {
   unattributedClaimHolds: 0,
   pendingAgentReview: 0,
   revisionRequestedAgentReview: 0,
+  revisionReproductionValidation: 0,
+  revisionContentAdoptionCandidates: 0,
+  revisionLegacyException: 0,
 };
 
 const admissionMocks = vi.hoisted(() => ({
@@ -41,7 +44,9 @@ const admissionMocks = vi.hoisted(() => ({
   // right count/expiry out) instead of replicating postgres.js's nested tagged-
   // template fragment composition in a fake sql tag.
   claimFloorsWhereSql: vi.fn(),
+  featureClaimFloorPredicatesSql: vi.fn(),
   reservedPlanLaneExclusionSql: vi.fn(),
+  stopTheLineExclusionSql: vi.fn(),
   releaseCooldownSec: vi.fn(),
   compileFilter: vi.fn(),
   // WI-5561: diagnoseFleetScopeIssueFloorMiss's own seam-level dependency — the
@@ -70,12 +75,17 @@ vi.mock('../work-items', () => ({
   releaseWorkItem: admissionMocks.releaseWorkItem,
   readHeldDependencyEscapeContext: admissionMocks.readHeldDependencyEscapeContext,
   claimFloorsWhereSql: admissionMocks.claimFloorsWhereSql,
+  featureClaimFloorPredicatesSql: admissionMocks.featureClaimFloorPredicatesSql,
   reservedPlanLaneExclusionSql: admissionMocks.reservedPlanLaneExclusionSql,
   releaseCooldownSec: admissionMocks.releaseCooldownSec,
   // EI-19393442073558754: specIsIssueFamilyOnly (fleet-scope-admission.ts) imports the REAL
   // kind-set constant from '../work-items' — mirror it here rather than re-declaring it, so
   // this mock can never silently drift from the real ISSUE_FAMILY_KINDS.
   ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
+}));
+vi.mock('../work-items-admission', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../work-items-admission')>()),
+  stopTheLineExclusionSql: admissionMocks.stopTheLineExclusionSql,
 }));
 // EI-22180177490969530: the two SQL-composing seams stay mocked (see above), but the PURE
 // registry projection is passed through from the real module so this file's fixtures can be
@@ -119,9 +129,11 @@ import {
   FLEET_SCOPE_ISSUE_DIAG_DEFAULT_TOTAL_BUDGET_MS,
   diagnoseFleetScopeRetiredPlans,
   fleetLeaderUnavailableRefusal,
+  fleetScopeRefusalContract,
   fleetScopeLeaderRemedy,
   fleetScopedMiss,
   hasLiveFleetRouteTarget,
+  fencePreservingWidenFilter,
   itemMatchesRawClaimSpec,
   notifyFleetScopeRefusal,
   readFleetPauseState,
@@ -129,6 +141,7 @@ import {
   type FleetScopeAdmission,
   type FleetScopeContext,
 } from './fleet-scope-admission';
+import { evaluateGoalFenceGuard } from './spec-pool-preview';
 /** A VALUE import, deliberately: the vi.mock factory above passes the real
  *  `mapIssueClaimExclusionCounts` through, so every `excluded` fixture below derives its
  *  per-floor zero baseline from ISSUE_CLAIM_FLOORS. Same reasoning as ZERO_QUEUE_CONTROL,
@@ -208,6 +221,8 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
 
   beforeEach(() => {
     for (const mock of Object.values(admissionMocks)) mock.mockReset();
+    admissionMocks.stopTheLineExclusionSql.mockReturnValue('STOP_THE_LINE_FLOOR');
+    admissionMocks.featureClaimFloorPredicatesSql.mockReturnValue({ reservedPlanLane: 'RESERVATION_FLOOR', stopTheLine: 'STOP_THE_LINE_FLOOR' });
   });
 
   it('explicit null omits the reading leader from the feature-family cooldown floor', async () => {
@@ -230,11 +245,22 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
     );
   });
 
+  it('names additional excluding floors from the same feature claim predicate registry', async () => {
+    admissionMocks.claimFloorsWhereSql.mockReturnValue('SHARED_FLOORS');
+    admissionMocks.featureClaimFloorPredicatesSql.mockReturnValue({ scope: 'SCOPE', rig: 'RIG_FLOOR', claimHold: 'HOLD_FLOOR' });
+    admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
+    admissionMocks.sql.mockResolvedValue([{ matched: 3, claimable: 0, reserved_plan_lane: 0, stop_the_line: 0, rig: 2, claimHold: 1 }]);
+    const result = await diagnoseFleetScopeFeatureFamilyExclusions({ scope: populationScope, harness: 'papercusp', workspaceId: 'papercusp-workspace', cooldownAssignee: null });
+    expect(result).toMatchObject({ matchedByFilter: 3, claimable: 0, excluded: { claimFloors: 3, rig: 2, claimHold: 1 } });
+    expect(admissionMocks.featureClaimFloorPredicatesSql).toHaveBeenCalledWith(admissionMocks.sql, expect.objectContaining({ cooldownAssignee: undefined, claimantFleetSlug: 'fleet-x' }));
+    expect(result?.excluded).not.toHaveProperty('scope');
+  });
+
   it('returns matched, claimable, and overlapping reservation-floor counts', async () => {
     admissionMocks.claimFloorsWhereSql.mockReturnValue('FLOORS_WITHOUT_CALLER');
     admissionMocks.reservedPlanLaneExclusionSql.mockReturnValue('RESERVATION_FLOOR');
     admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
-    admissionMocks.sql.mockResolvedValue([{ matched: 4, claimable: 1, reserved_plan_lane: 2 }]);
+    admissionMocks.sql.mockResolvedValue([{ matched: 4, claimable: 1, reserved_plan_lane: 2, stop_the_line: 0 }]);
 
     await expect(diagnoseFleetScopeFeatureFamilyExclusions({
       scope: populationScope,
@@ -244,8 +270,13 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
     })).resolves.toEqual({
       matchedByFilter: 4,
       claimable: 1,
-      excluded: { claimFloors: 3, reservedPlanLane: 2 },
+      excluded: { claimFloors: 3, reservedPlanLane: 2, stopTheLine: 0 },
     });
+
+    expect(admissionMocks.stopTheLineExclusionSql).toHaveBeenCalledWith(
+      admissionMocks.sql,
+      'feature-consolidated',
+    );
   });
 
   it('passes the scope fleet and structural fleet authorization to the shared floor', async () => {
@@ -363,6 +394,7 @@ const base: ClaimSpecSubject = {
   planItem: ['P-016'],
   fleet: null,
   triageGate: null,
+  itemClass: 'work',
   age: 1_000,
   riskTier: 'moderate',
   redundancy: 1,
@@ -1144,7 +1176,12 @@ describe('fleet scope assignment admission (P-016)', () => {
           args: { harness: 'papercusp', spec: issueScope.fleetSlug, breakdownOnly: true },
           idsAt: 'excludedSample.queueControl.agentReview[].id',
         },
-        claim: { tool: 'improvements:agent-review', args: { mode: 'claim', harness: 'papercusp' } },
+        claim: {
+          tool: 'improvements:agent-review',
+          mode: 'claim',
+          idFrom: 'excludedSample.queueControl.agentReview[].id',
+          harness: 'papercusp',
+        },
         grade: { tool: 'blender:grade-idea' },
       });
       expect(miss.error).toMatch(/^REVIEWABLE, NOT IDLE \(WI-10004358\): 24 spec-matched row\(s\)/);
@@ -1322,11 +1359,8 @@ describe('fleet scope assignment admission (P-016)', () => {
   // could actually observe (windDown:true, a bare message) is the SAME shape a genuine drain
   // produces. These tests assert the zero-match case gets its own loud, escalate-worthy shape.
   describe('EI-18663622382734446: a spec matching ZERO rows is named loudly, never folded into a bare drain', () => {
-    // EI-19393442073558754: deliberately an ID-ALLOWLIST filter, NOT a plan-scoped one —
-    // a plan/plan-item predicate now gets the softer `nonIssueSpecEmpty` framing (see
-    // that describe block below), since a plan-scoped spec can correctly, structurally
-    // admit ONLY feature-family rows for long stretches (D-009). A stale id allowlist has
-    // no such family correlation, so it stays a genuine, loudly-named spec-authoring bug.
+    // The explicit issue-kind restriction makes the issue breakdown complete for this
+    // fixture. An id allowlist by itself can also admit feature-family work.
     const issueScope = {
       ownerId: 'su-member',
       fleetSlug: 'p2p-release',
@@ -1338,7 +1372,10 @@ describe('fleet scope assignment admission (P-016)', () => {
           specVersion: '1.0',
           specId: 'p2p-release-lane',
           revision: 8,
-          view: { filter: { field: 'id', op: 'in' as const, value: ['WI-9001', 'WI-9002'] } },
+          view: { filter: { all: [
+            { field: 'kind', op: 'in' as const, value: ['bug', 'change', 'task'] },
+            { field: 'id', op: 'in' as const, value: ['WI-9001', 'WI-9002'] },
+          ] } },
           rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
           states: ['open'],
         },
@@ -1367,7 +1404,7 @@ describe('fleet scope assignment admission (P-016)', () => {
           spec: { ref: 'p2p-release-lane (spec rev 8)', revision: 8, planScoped: false },
           matchedByFilter: 0,
         },
-        interpretation: { state: 'spec-empty', exactness: { status: 'partial' } },
+        interpretation: { state: 'spec-empty', exactness: { status: 'exact' } },
       });
       // EI-18741523426513509: a genuinely empty spec (matchedByFilter === 0) must never also
       // carry the floor-gated token — the two are mutually exclusive by construction (floorGated
@@ -1389,7 +1426,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     it('EI-20186990913643457: reports successful exhaustion when every status-floor-free match is terminal', () => {
       const miss = fleetScopedMiss(issueScope, [], {
         issueBreakdown: zeroMatchBreakdown,
-        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2 },
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 },
       });
 
       expect(miss.reason).toBe('spec_exhausted');
@@ -1414,7 +1451,24 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect((miss as { terminalExhaustion?: unknown }).terminalExhaustion).toEqual({
         matchedByFilter: 2,
         terminalMatchedByFilter: 2,
+        inFlightMatchedByFilter: 0,
+        parkedMatchedByFilter: 0,
       });
+    });
+
+    it('P-008: "release remaining lane resources" keeps a held blocked item held and defers its wake to loop:end', () => {
+      const miss = fleetScopedMiss(issueScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 },
+      });
+
+      // The release instruction must not read as "drop the blocked item you still hold".
+      expect(miss.advice).toMatch(/release remaining lane resources \(a blocked item you still hold stays held/);
+      expect(miss.advice).toMatch(/work_items:set_blocker/);
+      expect(miss.advice).toMatch(/recovery\.steps/);
+      // The wake is NOT restated as an events:await: this advice also prescribes a work-item:claimable
+      // watch:create, and naming events:await beside it is the EI-15185 conflation.
+      expect(miss.advice).not.toMatch(/events:await/);
     });
 
     it('EI-20260781488788952: reports a completed bound plan as a successful plan wind-down', () => {
@@ -1547,15 +1601,100 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
 
     it('keeps the spec-authoring verdict when the status-floor-free matches are mixed terminal and active', () => {
+      // The non-terminal row is neither held nor parked, so no never-pullable bucket explains it.
       const miss = fleetScopedMiss(issueScope, [], {
         issueBreakdown: zeroMatchBreakdown,
-        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 1 },
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 },
       });
 
       expect(miss.reason).toBe('spec_matches_nothing');
       expect(miss.error).toMatch(/SPEC MATCHES NOTHING/);
       expect(miss.error).toMatch(/ESCALATE to your fleet leader NOW/);
       expect(miss.advice).toMatch(/spec_matches_nothing/);
+    });
+
+    describe('WI-6554700010010002: a remainder held by agents or parked is not an empty spec', () => {
+      // Observed live (gate-lint-green, claim spec rev 8): an id allowlist of 17 rows, 16 done and
+      // 1 wip held by a peer. The claimable-state breakdown read 0, so every idle member was told
+      // "SPEC MATCHES NOTHING ... ESCALATE to your fleet leader NOW" about a spec that was correct.
+      const heldRemainder = { matchedByFilter: 17, terminalMatchedByFilter: 16, inFlightMatchedByFilter: 1, parkedMatchedByFilter: 0 };
+
+      it('reports spec_in_flight with drain advice when the only non-terminal match is held by an agent', () => {
+        const miss = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: heldRemainder,
+        });
+
+        expect(miss.reason).toBe('spec_in_flight');
+        expect(miss.windDown).toBe(true);
+        expect(miss.error).toMatch(/NOTHING CLAIMABLE, REMAINDER IN FLIGHT/);
+        expect(miss.error).toMatch(/16 terminal, 1 held by an agent \(in flight\), 0 parked/);
+        expect(miss.error).toMatch(/NOT a spec-authoring problem/);
+        expect(miss.error).not.toMatch(/SPEC MATCHES NOTHING/);
+        expect(miss.error).not.toMatch(/ESCALATE to your fleet leader NOW/);
+        expect(miss.advice).toMatch(/NOTHING TO CLAIM, NOT A SPEC BUG/);
+        expect(miss.advice).toMatch(/spec_in_flight/);
+        expect(miss.advice).toMatch(/Do NOT escalate, widen, or re-author/);
+        expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
+        expect(miss.advice).toMatch(/release remaining lane resources \(a blocked item you still hold stays held/);
+        expect(miss.advice).toMatch(/park the standing watch `watch:create/);
+        expect(miss.advice).toMatch(/work-item:claimable/);
+        expect(miss.advice).toMatch(/payload_filter/);
+        expect(miss.advice).not.toMatch(/ESCALATE to your fleet leader NOW/);
+        expect(miss.advice).not.toMatch(/events:await/);
+        expect(miss.excludedBreakdownSummary).toMatch(/16 terminal, 1 held by an agent, 0 parked/);
+        expect(miss.excludedBreakdownSummary).toMatch(/the spec is not empty/);
+        expect(miss.excludedBreakdownSummary).not.toMatch(/SPEC ITSELF is the problem/);
+        expect(miss.claimability.interpretation).toMatchObject({
+          state: 'drained',
+          exactness: { status: 'exact', reason: expect.stringMatching(/held by an agent, or parked/) },
+        });
+        expect((miss as { terminalExhaustion?: unknown }).terminalExhaustion).toEqual(heldRemainder);
+      });
+
+      it('reports spec_in_flight when the non-terminal remainder is parked (blocked/needs-human) or wholly held', () => {
+        const parked = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 1 },
+        });
+        expect(parked.reason).toBe('spec_in_flight');
+        expect(parked.error).toMatch(/1 terminal, 0 held by an agent \(in flight\), 1 parked \(blocked\/needs-human\)/);
+
+        // No terminal row at all: every match is still in flight with a holder.
+        const allHeld = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: { matchedByFilter: 3, terminalMatchedByFilter: 0, inFlightMatchedByFilter: 3, parkedMatchedByFilter: 0 },
+        });
+        expect(allHeld.reason).toBe('spec_in_flight');
+      });
+
+      it('does not certify the remainder without a measured zero breakdown, or while paused', () => {
+        // A degraded (null) issue-floor breakdown cannot prove that no row is claimable.
+        const degraded = fleetScopedMiss(issueScope, [], { terminalExhaustion: heldRemainder });
+        expect(degraded.reason).not.toBe('spec_in_flight');
+
+        // A claimable-state breakdown that matched rows means the spec is reaching open work.
+        const reachable = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: { ...zeroMatchBreakdown, matchedByFilter: 1 },
+          terminalExhaustion: heldRemainder,
+        });
+        expect(reachable.reason).not.toBe('spec_in_flight');
+
+        const paused = fleetScopedMiss(issueScope, [], {
+          pausedReason: 'owner pause',
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: heldRemainder,
+        });
+        expect(paused.reason).not.toBe('spec_in_flight');
+      });
+
+      it('keeps spec_exhausted for an all-terminal tranche', () => {
+        const miss = fleetScopedMiss(issueScope, [], {
+          issueBreakdown: zeroMatchBreakdown,
+          terminalExhaustion: { matchedByFilter: 17, terminalMatchedByFilter: 17, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 },
+        });
+        expect(miss.reason).toBe('spec_exhausted');
+      });
     });
 
     it('is mutually exclusive with the divergent (claim-path bug) case by construction', () => {
@@ -1624,6 +1763,84 @@ describe('fleet scope assignment admission (P-016)', () => {
       },
     };
 
+    describe('EI-24905216534076710: pre-floor feature matches survive miss diagnosis', () => {
+      const featureScope = {
+        ...planScope,
+        record: {
+          ...planScope.record,
+          spec: {
+            ...planScope.record.spec,
+            view: { filter: { all: [
+              { field: 'kind', op: '=' as const, value: 'feature' },
+              { field: 'id', op: 'in' as const, value: ['WI-held-feature'] },
+            ] } },
+          },
+        },
+      };
+      const heldFeature = {
+        matchedByFilter: 1,
+        claimable: 0,
+        excluded: { claimFloors: 1, reservedPlanLane: 0 },
+      };
+
+      it('reports a held feature as floor-gated without widening its non-plan spec', () => {
+        const opts = { issueBreakdown: zeroIssueFamilyBreakdown, featureBreakdown: heldFeature };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+
+        expect(miss.reason).toBe('all_matches_gated');
+        expect(miss.error).toContain('POOL BLOCKED, NOT SPEC-BROKEN');
+        expect(miss.error).not.toMatch(/SPEC MATCHES NOTHING|ORDINARY DRAIN/);
+        expect(miss.advice).toContain('Do NOT re-author');
+        expect(miss.claimability).toMatchObject({
+          value: 0,
+          population: { basis: 'issue+feature-family', matchedByFilter: 1 },
+          interpretation: { state: 'floor-gated' },
+        });
+        expect(miss.claimability.population.families.feature).toEqual(heldFeature);
+      });
+
+      it('combines disjoint families while preserving overlapping exclusion buckets', () => {
+        const opts = {
+          issueBreakdown: { ...zeroIssueFamilyBreakdown, matchedByFilter: 2 },
+          featureBreakdown: { ...heldFeature, matchedByFilter: 3, excluded: { claimFloors: 3, reservedPlanLane: 1 } },
+        };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+        expect(miss.reason).toBe('all_matches_gated');
+        expect(miss.claimability.population.matchedByFilter).toBe(5);
+        expect(miss.claimability.population.families.feature).toEqual(opts.featureBreakdown);
+      });
+
+      it('keeps a claimable feature as a blind spot, with no stand-down', () => {
+        const opts = {
+          issueBreakdown: zeroIssueFamilyBreakdown,
+          featureBreakdown: { matchedByFilter: 2, claimable: 2, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
+        };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+        expect(miss.reason).toBe('issue_family_diagnosis_blind_spot');
+        expect(miss.windDown).toBe(false);
+        expect(miss.claimability.value).toBe(2);
+      });
+
+      it('retains a genuine zero-match authoring verdict when both measured families are empty', () => {
+        const opts = {
+          issueBreakdown: zeroIssueFamilyBreakdown,
+          featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
+        };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+        expect(miss.reason).toBe('spec_matches_nothing');
+        expect(miss.claimability.population.matchedByFilter).toBe(0);
+      });
+
+      it('keeps the pause verdict ahead of measured feature floors', () => {
+        const opts = { pausedReason: 'stand down', issueBreakdown: zeroIssueFamilyBreakdown, featureBreakdown: heldFeature };
+        const miss = fleetScopedMiss(featureScope, [], opts);
+        expect(miss.paused).toBe(true);
+        expect(miss.error).toContain('winding-down');
+        expect(miss.reason).not.toBe('all_matches_gated');
+        expect(miss.reason).not.toBe('spec_matches_nothing');
+      });
+    });
+
     it('suppresses specEmpty/spec_matches_nothing when a tier-1 (feature-family) match exists', () => {
       const miss = fleetScopedMiss(planScope, [], {
         issueBreakdown: zeroIssueFamilyBreakdown,
@@ -1644,19 +1861,18 @@ describe('fleet scope assignment admission (P-016)', () => {
     // EI-19393442073558754: this used to fall back to `spec_matches_nothing` (asserted as
     // "no behavior change") — that was itself the false-alarm class this ticket fixes.
     // `planScope`'s filter references `plan` and carries no kind restriction, so a
-    // non-positive featureFamilyMatched must NOT be reported as a spec-authoring bug —
-    // it is an ordinary drain (still windDown:true — correct to stop pulling — just not
-    // framed as "your spec is broken, escalate now").
-    it('reports `ordinary_drain` (never spec_matches_nothing) when featureFamilyMatched confirms the tier-1 pool is ALSO empty (0)', () => {
+    // A complete zero-match feature reading permits a drain; a survivor count alone
+    // cannot establish whether the filter matched floor-gated feature rows.
+    it('reports ordinary_drain when both measured families are empty', () => {
       const miss = fleetScopedMiss(planScope, [], {
         issueBreakdown: zeroIssueFamilyBreakdown,
-        featureFamilyMatched: 0,
+        featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
       });
       expect(miss.reason).toBe('ordinary_drain');
       expect(miss.claimability).toMatchObject({
         value: 0,
         population: { spec: { planScoped: true }, matchedByFilter: 0 },
-        interpretation: { state: 'drained', exactness: { status: 'partial' } },
+        interpretation: { state: 'drained', exactness: { status: 'exact' } },
       });
       expect(miss.reason).not.toBe('spec_matches_nothing');
       expect(miss.windDown).toBe(true);
@@ -1668,22 +1884,22 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
     });
 
-    it('reports `ordinary_drain` (never spec_matches_nothing) when featureFamilyMatched is unavailable (null/undefined)', () => {
-      for (const fam of [null, undefined] as const) {
+    it('keeps plan-scoped family evidence unknown when only a missing or zero survivor count is available', () => {
+      for (const fam of [null, undefined, 0] as const) {
         const miss = fleetScopedMiss(planScope, [], {
           issueBreakdown: zeroIssueFamilyBreakdown,
           featureFamilyMatched: fam,
         });
-        expect(miss.reason).toBe('ordinary_drain');
+        expect(miss.reason).toBeUndefined();
+        expect(miss.claimability.value).toBeNull();
         expect(miss.claimability.interpretation).toMatchObject({
-          state: 'drained',
-          exactness: { status: 'partial' },
+          state: 'unknown',
         });
-        expect(miss.windDown).toBe(true);
-        expect(miss.error).toMatch(/ORDINARY DRAIN/);
-        expect(miss.error).toMatch(/could not be confirmed/);
-        expect((miss as { featureFamilyMatched?: number | null }).featureFamilyMatched).toBeNull();
-        expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
+        expect(miss.windDown).toBe(false);
+        expect(miss.error).toMatch(/FEATURE-FAMILY DIAGNOSIS UNAVAILABLE/);
+        expect(miss.error).not.toMatch(/ORDINARY DRAIN|SPEC MATCHES NOTHING/);
+        expect(miss.advice).toMatch(/Do NOT re-author/);
+        expect(miss.advice).toMatch(/repeat identical pulls/);
       }
     });
 
@@ -1770,7 +1986,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       });
       const miss = fleetScopedMiss(nestedScope, [], {
         issueBreakdown: zeroIssueFamilyBreakdown,
-        featureFamilyMatched: 0,
+        featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
       });
       expect(miss.reason).toBe('ordinary_drain');
     });
@@ -1779,7 +1995,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       const planItemScope = scopeWithFilter({ field: 'plan_item', op: '=' as const, value: 'P-001' });
       const miss = fleetScopedMiss(planItemScope, [], {
         issueBreakdown: zeroIssueFamilyBreakdown,
-        featureFamilyMatched: 0,
+        featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
       });
       expect(miss.reason).toBe('ordinary_drain');
     });
@@ -1803,11 +2019,29 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.windDown).toBe(true);
     });
 
-    it('a filter with NO plan/plan_item predicate anywhere (id-only) keeps the loud spec_matches_nothing verdict', () => {
+    it('an id-only filter cannot certify an empty spec when feature diagnosis is unavailable', () => {
       const idOnlyScope = scopeWithFilter({ field: 'id', op: 'in' as const, value: ['WI-1', 'WI-2'] });
       const miss = fleetScopedMiss(idOnlyScope, [], { issueBreakdown: zeroIssueFamilyBreakdown });
-      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.reason).not.toBe('spec_matches_nothing');
       expect(miss.reason).not.toBe('ordinary_drain');
+      expect(miss.windDown).toBe(false);
+      expect(miss.error).toMatch(/FEATURE-FAMILY DIAGNOSIS UNAVAILABLE/);
+      expect(miss.claimability).toMatchObject({
+        value: null,
+        population: { basis: 'partial-family', matchedByFilter: null },
+        interpretation: { state: 'unknown' },
+      });
+      expect(miss.advice).toMatch(/Do NOT re-author/);
+    });
+
+    it('an id-only filter retains a genuine empty-spec verdict when both families were measured empty', () => {
+      const idOnlyScope = scopeWithFilter({ field: 'id', op: 'in' as const, value: ['WI-1', 'WI-2'] });
+      const miss = fleetScopedMiss(idOnlyScope, [], {
+        issueBreakdown: zeroIssueFamilyBreakdown,
+        featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
+      });
+      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.windDown).toBe(true);
     });
   });
 
@@ -2037,6 +2271,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       scoped: true,
       code: 'fleet_scope_violation',
       reason: 'work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet \'p2p-release-verify\'',
+      refusal: fleetScopeRefusalContract('fleet_scope_violation', scope),
       scope,
     };
 
@@ -2081,6 +2316,27 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(remedy).not.toMatch(/fleet:resume/);
     });
 
+    it('states that completing a stamped work-item can reflect its plan item to done', () => {
+      const planViolation: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation,
+        scope: {
+          ...scope,
+          record: {
+            ...scope.record,
+            spec: {
+              ...scope.record.spec,
+              view: { filter: { field: 'plan', op: '=' as const, value: 'stamped-plan' } },
+            },
+          },
+        },
+      };
+
+      const remedy = fleetScopeLeaderRemedy(planViolation);
+
+      expect(remedy).toMatch(/completing the stamped work-item may reflect its plan item to `done`/);
+      expect(remedy).toMatch(/closing that plan item later may also auto-resolve this work-item as residue/i);
+    });
+
     it('fleetScopeLeaderRemedy routes a fleet_winding_down refusal at fleet:resume, NOT a spec widen', () => {
       const paused: Extract<FleetScopeAdmission, { allowed: false }> = {
         ...violation,
@@ -2099,11 +2355,36 @@ describe('fleet scope assignment admission (P-016)', () => {
         scoped: true,
         code: 'fleet_scope_missing',
         reason: 'fleet member su-member belongs to \'p2p-release-verify\' but has no explicit spec',
+        refusal: fleetScopeRefusalContract('fleet_scope_missing', scope),
         scope: { ...scope, record: { ...scope.record, source: 'default' as const } },
       };
       const remedy = fleetScopeLeaderRemedy(missing);
       expect(remedy).toMatch(/scheduler:set_claim_spec/);
       expect(remedy).toMatch(/fleet: "p2p-release-verify"/);
+    });
+
+    it('a fleet_scope_missing receipt includes the append-ids call for the refused id', () => {
+      const missing: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation, code: 'fleet_scope_missing',
+        scope: { ...scope, record: { ...scope.record, source: 'default' } },
+      };
+      const remedy = fleetScopeLeaderRemedy(missing, true, null, null, 'WI-refused', 'papercusp');
+      expect(remedy).toContain('scheduler:set_claim_spec {"fleet":"p2p-release-verify","appendIds":["WI-refused"],"harness":"papercusp"}');
+      expect(remedy).not.toContain('spec:');
+    });
+
+    it('the fleet leader auto-message includes the append-ids call for the refused id', async () => {
+      const missing: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation, code: 'fleet_scope_missing',
+        scope: { ...scope, record: { ...scope.record, source: 'default' } },
+      };
+      await notifyFleetScopeRefusal({ ownerId: 'su-member' } as never, missing, 'work_items:claim WI-refused', {
+        harness: 'papercusp', subject: { itemId: 'WI-refused', member: 'su-member' },
+      });
+      const payload = admissionMocks.sendMessage.mock.calls.at(-1)?.[1];
+      expect(payload.to).toEqual(['@fleet-leader:p2p-release-verify']);
+      expect(payload.body).toContain('scheduler:set_claim_spec {"fleet":"p2p-release-verify","appendIds":["WI-refused"],"harness":"papercusp"}');
+      expect(payload.extra['fleetAdmissionBlock']).toMatchObject({ itemId: 'WI-refused', code: 'fleet_scope_missing' });
     });
 
     it('notifyFleetScopeRefusal sends the leader a body carrying the factual reason AND the concrete widen action', async () => {
@@ -2191,6 +2472,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       scoped: true,
       code: 'fleet_scope_violation',
       reason: 'work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet \'p2p-release-verify\'',
+      refusal: fleetScopeRefusalContract('fleet_scope_violation', scope),
       scope,
     };
 
@@ -3003,5 +3285,51 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
     // table is satisfiable at all, so the two failures above mean discrimination rather
     // than a table nothing could satisfy.
     expect(cases.every((c) => selfFiledFalloutAdmission(aWorkItem(c.item), scope) === c.admit)).toBe(true);
+  });
+});
+
+/**
+ * WI-10005683 — the CROSS-MODULE contract, which is the part that actually drifted.
+ *
+ * Each side was individually defensible: the admission notice recommends a widen that
+ * keeps the incumbent fence, and the write door refuses any `any` node with an unfenced
+ * arm. Composed, the platform recommended a repair its own write door rejected, and
+ * nothing failed — no type changed and each module's own unit tests stayed green. Only a
+ * test that COMPOSES them can catch it, so this asserts the composition, not either half.
+ */
+describe("WI-10005683: fleet-scope admission's own widen recommendation passes its own write door", () => {
+  const goalFence: FilterNode = { field: 'goal', op: '=', value: 'goal-60d3a8' };
+
+  it('fencePreservingWidenFilter output is NOT refused for a goal-fenced incumbent lane', () => {
+    const candidateFilter = fencePreservingWidenFilter(goalFence, 'WI-10005683');
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: goalFence,
+      candidateFilter,
+      previousSource: 'authored',
+      confirm: false,
+    });
+    // A refusal here means a leader following the fleet_scope_violation notice verbatim
+    // is told to send a revision that set_claim_spec will reject.
+    expect(verdict.refuse).toBe(false);
+    expect(verdict.errors).toEqual([]);
+  });
+
+  it('CALIBRATION: the composition is discriminating — a hand-rolled class widen is still refused', () => {
+    // Proves the test above is not passing because the guard accepts everything.
+    const verdict = evaluateGoalFenceGuard({
+      previousFilter: goalFence,
+      candidateFilter: { any: [goalFence, { field: 'kind', op: '=', value: 'bug' }] },
+      previousSource: 'authored',
+      confirm: false,
+    });
+    expect(verdict.refuse).toBe(true);
+  });
+
+  it('the no-incumbent-filter branch still yields a bare id leaf, which needs no fence carve-out', () => {
+    expect(fencePreservingWidenFilter(undefined, 'WI-10005683')).toEqual({
+      field: 'id',
+      op: '=',
+      value: 'WI-10005683',
+    });
   });
 });

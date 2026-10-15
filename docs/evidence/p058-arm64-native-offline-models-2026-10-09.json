@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-058 exact ARM native offline local-model qualification",
+  "framework": "node",
+  "command": [
+    "env",
+    "PAPERCUSP_MODEL_INFERENCE_BINDING=$HOME/p058-armbuild8/output/arm64-model-qualification1/binding.json",
+    "node",
+    "--test",
+    "$HOME/p058-armbuild8/tooling-epoch2/producer/papercusp-desktop/test/installed-local-model-inference.test.js"
+  ],
+  "cwd": "$HOME",
+  "startedAt": "2026-10-09T17:58:09Z",
+  "finishedAt": "2026-10-09T17:58:26Z",
+  "exitCode": 0,
+  "summary": "Four canonical Node tests passed on a native GCP ARM64 target against the fresh native8 candidate that passed identity and boot checks. The bound packaged Node and unmodified worker ran offline; pinned model assets and compatibility were checked before and after without adding vm-release metadata to the payload. Subsequent OCI inventory rejected a foreign odiff executable, so this evidence establishes model inference only.",
+  "assertions": [
+    {
+      "id": "dogfood-qualified-pinned-assets",
+      "passed": true,
+      "evidence": "Dogfood verifies exact model files through the maintained producer verifier; wrong profile, contract/verifier binding, changed bytes and vm-release snapshot mismatch refuse; qualification leaves the payload snapshot absent."
+    },
+    {
+      "id": "native-output-falsifiers",
+      "passed": true,
+      "evidence": "Wrong dimensions, non-finite values and zero vectors refuse."
+    },
+    {
+      "id": "actual-gemma-worker",
+      "passed": true,
+      "evidence": "Gemma returned three finite nonzero 768-dimensional vectors using the bound packaged worker/Node; relevant cosine 0.8006673812849749 exceeds unrelated 0.38190353911260405; pinned assets match before and after."
+    },
+    {
+      "id": "actual-harrier-worker",
+      "passed": true,
+      "evidence": "Harrier returned three finite nonzero 1024-dimensional vectors using the bound packaged worker/Node; relevant cosine 0.6546441842906568 exceeds unrelated 0.3104810936180123; pinned assets match before and after."
+    }
+  ],
+  "workItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "taskId": "0mv19qlpz1he1wcl1wc",
+  "sourceCommit": "58d5a1c744632d7bf72772a0f97e4c338ef0d04b",
+  "evidencePlane": "extracted-payload",
+  "distributionProfile": "dogfood",
+  "testPath": "papercusp-desktop/test/installed-local-model-inference.test.js",
+  "testSha256": "0b8a2d475254f0dd71e8e0d8ac13e0485d2ed9b342ee27b67bd5b5ed27318c52",
+  "nodeSha256": "e98373424346e5dc6191351cdd147155e3e13667fbafc284d1df58299527f0ec",
+  "workerSha256": "55db52efb109a460e8b1ea01d58d322a3d786fdef2640d7b49e675aefb3735d4",
+  "productContractSha256": "8b81dbca5a2b1e4f6d1a160a28cad7183556581bbd89233d56a9e90c9c284e43",
+  "modelVerifierSha256": "46a42a06bb8b6d7640f5a37cdeaaadbe3b53a98c77001740b23a1e88be57919b",
+  "bindingSha256": "edd12916ed7239c30495314aa9c6e1b9340f155dfc1fbafb5e0960b3ee8282e7",
+  "rawLogSha256": "dacd34ce47d9cc9f71cc74daffd611caa88b7accadccff6431877a46a801751f",
+  "artifactRoot": "/mnt/backup/portable-server-p058/arm-native-build8-execution-20261009",
+  "bindingFile": "arm-models1-binding.json",
+  "rawLogFile": "arm-models1.log",
+  "measurements": [
+    {
+      "evidencePlane": "extracted-payload",
+      "model": "embeddinggemma-300m-ONNX",
+      "dimensions": 768,
+      "relevantCosine": 0.8006673812849749,
+      "unrelatedCosine": 0.38190353911260405,
+      "remoteFetch": "disabled",
+      "distributionProfile": "dogfood",
+      "workerSha256": "55db52efb109a460e8b1ea01d58d322a3d786fdef2640d7b49e675aefb3735d4",
+      "modelAssetsSha256": "390c44e5eaefed07cade0790a2fe1027fa0fac3620a0fda42dac03a2110a020f"
+    },
+    {
+      "evidencePlane": "extracted-payload",
+      "model": "harrier-oss-v1-0.6b-ONNX",
+      "dimensions": 1024,
+      "relevantCosine": 0.6546441842906568,
+      "unrelatedCosine": 0.3104810936180123,
+      "remoteFetch": "disabled",
+      "distributionProfile": "dogfood",
+      "workerSha256": "55db52efb109a460e8b1ea01d58d322a3d786fdef2640d7b49e675aefb3735d4",
+      "modelAssetsSha256": "390c44e5eaefed07cade0790a2fe1027fa0fac3620a0fda42dac03a2110a020f"
+    }
+  ],
+  "counts": {
+    "passed": 4,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0
+  },
+  "testDurationMs": 17528.102263,
+  "disclosures": [
+    "This is exact extracted ARM native8 payload inference evidence; runtime ARM64 Node24.18.1 uid1001.",
+    "Native8 was produced fresh by task0mv1942vc9f8qqe1c64; native7 remains rejected.",
+    "Native8 is rejected for full ARM payload acceptance: OCI precheck0mv19zxu113dcnm68zm found an x86-64 odiff executable. This scoped model result remains valid; the packaging defect is owned as EI-25526231122479676.",
+    "OCI publication/signatures, whole-release acceptance and Mac/Windows install/upgrade journeys are separate obligations."
+  ],
+  "nativeCandidate": {
+    "stampSha256": "9a61704bb8c3520c50f7ea2ccf84d12b91d113feb1dcc69db3a7e9bc842e1886",
+    "provenanceSha256": "fc265c2fbcd626fcb0f8aacce6776acf8fc31e0461b78da48782b48ad5401904",
+    "ownershipSha256": "05ff3b803ed4e06b6dc41a9059e3be079aa91f945c740dbcc17406694be8523c",
+    "producerTaskId": "0mv1942vc9f8qqe1c64",
+    "vmId": "902033192060758577",
+    "machineType": "t2a-standard-4",
+    "platform": "linux/arm64"
+  }
+}

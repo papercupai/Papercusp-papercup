@@ -27,12 +27,21 @@
  *     this a separate leg rather than a fourth mem0 pool — see D-037.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
-import { runHybridSearch, type SearchHit, type SearchLegs } from '@papercusp/search';
+import { getOrgPg, pgResultDiagnosticSnapshot } from '@papercusp/db-org';
+import { runHybridSearch, type SearchHit, type SearchLegs, type SourceCallInstrumentation } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
-import { buildQueryEmbedder } from '../agent-tools/search/embedder';
+import { createDocSearchSource, createPlanSearchSource } from '../agent-tools/search/knowledge-sources';
+import { createReportSearchSource } from '../agent-tools/search/report-source';
+import type { ReportViewer } from '../report-library';
+import {
+  buildQueryEmbedder,
+  embedderModeOf,
+  embedderProfileIdOf,
+} from '../agent-tools/search/embedder';
+import { stampEmbedderMode } from '../search/embedder-mode-registry';
 import { rerankRows } from '../agent-tools/search/rerank';
-import { createMemoryWorkDeadline, MemoryTimeoutError } from './op-deadline';
+import { createMemoryWorkDeadline, MemoryTimeoutError, type MemoryWorkDeadline } from './op-deadline';
+import { createStageAttempt, withStageAttempt } from '../sync/hyperbee/stage-stall-log';
 import {
   CORPUS_BUDGET_CHARS,
   CORPUS_MAX_ITEMS,
@@ -57,7 +66,36 @@ import {
 // (`injection-coverage.test.ts`) instead of drifting from it. Exported for the
 // assertion only — the alarm deliberately does not import it at runtime, which would
 // drag the whole live retrieval stack into the DBOS alarm process.
-export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
+export const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item', 'plan', 'doc', 'report'] as const;
+
+/** Attribute terminal PG query timings to one exact corpus source/ranker call. */
+function createCorpusSourceCallInstrumentation(): SourceCallInstrumentation {
+  const attempt = createStageAttempt({ rowId: '', onEvent: () => {} });
+  return {
+    run: action => withStageAttempt(attempt, action),
+    finish: outcome => {
+      attempt.finish(outcome);
+      try {
+        const snapshot = pgResultDiagnosticSnapshot('org-admin', 32);
+        const queries = snapshot.results
+          .filter(query => query.correlation?.attemptId === attempt.context.attemptId)
+          .map(({ connectionId, queryId, backendPid, elapsedMs, preBuildMs, status }) => ({
+            connectionId, queryId, backendPid, elapsedMs, preBuildMs, status,
+          }));
+        return {
+          attemptId: attempt.context.attemptId,
+          timing: 'query-build-to-terminal-not-acquisition',
+          coverage: 'completed-query-results-only',
+          snapshotCapacity: snapshot.capacity,
+          snapshotDropped: snapshot.dropped,
+          queries,
+        };
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
 
 /**
  * P-009 — the corpus leg's recency decay half-life.
@@ -170,8 +208,14 @@ export function corpusRerankTimeoutMs(): number {
 }
 
 export interface CorpusRecallInput {
+  /** Public hosts may only use their existing permitted memory path. */
+  knowledgeSourcesAllowed?: boolean;
+  /** Server-resolved reader. Omitted on agent ports: use their author identity and bound pot. */
+  reportViewer?: ReportViewer;
   /** Parent prompt lifetime, shared with memory retrieval and preparation. */
   signal?: AbortSignal;
+  /** Caller lifetime also bounds search sub-budgets, before parent cancellation. */
+  deadline?: MemoryWorkDeadline;
   /** The retrieval query — the same effective text the mem0 leg searched with. */
   queryText: string;
   workspaceId: string;
@@ -326,6 +370,8 @@ export interface CorpusRecallResult {
    * selectively, whatever its coverage percentage says.
    */
   retrievalDepth: number;
+  /** Every executed cascade stage; the final leg alone can hide a stage-1 failure. */
+  stages?: SearchLegs[];
 }
 
 const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
@@ -445,6 +491,7 @@ function toCorpusHits(fused: { results: readonly SearchHit[] }): CorpusHit[] {
     // and the observation lane (56.7% of that relation). Absent ⇒ null ⇒ read as a
     // work-item downstream. See WORK_ITEM_LANE_NOTE in agent-tools/search/sources.ts.
     lane: r.meta?.lane ?? null,
+    meta: r.meta,
   }));
 }
 
@@ -529,9 +576,16 @@ async function rerankStage1(
  * returns an empty result and the caller's prompt is unaffected. Never throws.
  */
 export async function recallCorpusContext(input: CorpusRecallInput): Promise<CorpusRecallResult> {
-  const deadline = createMemoryWorkDeadline(corpusRecallTimeoutMs(), input.signal);
+  // An abort signal alone only tells the engine AFTER the caller's wall is
+  // exhausted. Size its source/embedding stages from that caller's remaining
+  // lifetime too, so stalled sources settle before they erase healthy siblings.
+  const timeoutMs = Math.min(corpusRecallTimeoutMs(), input.deadline?.remainingMs() ?? Infinity);
+  const signal = input.signal && input.deadline
+    ? AbortSignal.any([input.signal, input.deadline.signal])
+    : input.signal ?? input.deadline?.signal;
+  const deadline = createMemoryWorkDeadline(timeoutMs, signal);
   try {
-    return await deadline.run(() => recallCorpusContextInner({ ...input, signal: deadline.signal }), 'corpus recall');
+    return await deadline.run(() => recallCorpusContextInner({ ...input, signal: deadline.signal }, () => deadline.remainingMs()), 'corpus recall');
   } catch (error) {
     if (deadline.signal.aborted || error instanceof MemoryTimeoutError) return empty('timed-out');
     throw error;
@@ -540,6 +594,7 @@ export async function recallCorpusContext(input: CorpusRecallInput): Promise<Cor
 
 async function recallCorpusContextInner(
   input: CorpusRecallInput,
+  remainingMs: () => number,
 ): Promise<CorpusRecallResult> {
   const rawText = input.queryText?.trim() ?? '';
   if (!rawText) return empty('no-query');
@@ -558,9 +613,15 @@ async function recallCorpusContextInner(
 
   const maxItems = input.maxItems ?? CORPUS_MAX_ITEMS;
   const gradedMaxTerms = input.gradedMaxTerms ?? CORPUS_GRADED_QUERY_MAX_TERMS;
+  const audience = { harnessSlugs: input.harnessSlugs, automatic: true, excludedRefs: input.ambientExcludedRefs };
   const sources = SEARCH_SOURCES.filter((s) =>
-    (CORPUS_SOURCE_NAMES as readonly string[]).includes(s.name),
-  );
+    (CORPUS_SOURCE_NAMES as readonly string[]).includes(s.name)
+      && (input.knowledgeSourcesAllowed !== false || !['plan','doc','report'].includes(s.name)),
+  ).map(s => s.name === 'plan' ? createPlanSearchSource(audience)
+    : s.name === 'doc' ? createDocSearchSource(audience)
+    : s.name === 'report' ? createReportSearchSource(input.reportViewer ?? {
+      ownerId: input.excludeOwnerId, potSlug: input.harnessSlugs?.length === 1 ? input.harnessSlugs[0] : null,
+    }, audience) : s);
   // Nothing registered to read — the leg is off by configuration, not empty.
   if (sources.length === 0) return empty('disabled');
 
@@ -580,6 +641,7 @@ async function recallCorpusContextInner(
   // deep inside `run`. Defaults to the honest "we never got there": every early
   // return below leaves the leg short of stage 1.
   let rerankOutcome: CorpusRerankOutcome = 'nothing-to-reorder';
+  const stages: SearchLegs[] = [];
 
   try {
     const { sql } = getOrgPg();
@@ -623,6 +685,22 @@ async function recallCorpusContextInner(
       const embedder = built
         ? (t: string, signal?: AbortSignal) => (embedP ??= built(t, signal))
         : built;
+      if (built && embedder) {
+        const mode = embedderModeOf(built);
+        const profileId = embedderProfileIdOf(built);
+        if (mode) stampEmbedderMode(embedder, mode, profileId);
+        // Search's storage-space filter and score policy key off the exact
+        // embedder function object. Memoizing it above creates a new function,
+        // so preserve that identity before handing the wrapper to the engine.
+        // Otherwise the semantic SQL fails closed with zero candidates while
+        // the call still reports that both semantic sources ran.
+        if (
+          embedderModeOf(embedder) !== mode ||
+          embedderProfileIdOf(embedder) !== profileId
+        ) {
+          throw new Error('corpus recall memo wrapper lost embedder profile provenance');
+        }
+      }
 
       // Stage 2's query is derived SEPARATELY from stage 1's — see
       // CORPUS_GRADED_QUERY_MAX_TERMS. Stage 1 ANDs, so two terms is a
@@ -631,9 +709,12 @@ async function recallCorpusContextInner(
       // stage-1 text if the wider derivation yields nothing.
       const gradedQuery = corpusQueryText(rawText, gradedMaxTerms) || effectiveQuery;
 
-      const search = (lexicalMode: 'and' | 'coverage-graded', queryFor: string) => {
+      const search = async (lexicalMode: 'and' | 'coverage-graded', queryFor: string) => {
         input.signal?.throwIfAborted();
-        return runHybridSearch(sources, {
+        // Reserve time for embedding, source queries, selection and the optional cascade.
+        // Each query uses the remaining request lifetime, never a fresh whole-leg budget.
+        const stageBudget = Math.max(1, remainingMs() / 4);
+        const result = await runHybridSearch(sources, {
           signal: input.signal,
           caller: 'midturn:related-context',
           sql,
@@ -648,7 +729,9 @@ async function recallCorpusContextInner(
           limit: retrievalDepth,
           mode: 'hybrid',
           embedder,
-          embedTimeoutMs: embedBudget,
+          sourceCallInstrumentation: () => createCorpusSourceCallInstrumentation(),
+          embedTimeoutMs: Math.min(embedBudget, stageBudget),
+          sourceTimeoutMs: stageBudget,
           // Highlights ARE used — the teaser and the relevance guard both read the
           // match fragment rather than the body lead. Deferring means the engine
           // hydrates them for the final top-N only, instead of paying ts_headline
@@ -691,7 +774,9 @@ async function recallCorpusContextInner(
           // over a time window, which both widens the query cost on a path with
           // a hard latency budget and labels its hits `lexical-fresh` — one
           // ranker counted twice by any agreement measure. Revisit separately.
-          recency: { halfLifeMs: CORPUS_RECENCY_HALF_LIFE_MS, weight: CORPUS_RECENCY_WEIGHT },
+          recency: { halfLifeMs: CORPUS_RECENCY_HALF_LIFE_MS, weight: CORPUS_RECENCY_WEIGHT,
+            // Maintained procedures and active plans remain useful until their canonical state changes.
+            getTime: hit => hit.source === 'plan' || hit.source === 'doc' ? renderNow : hit.ts },
           lexicalMode,
           // Only when the caller set it — 0 is meaningful (argmin-only), so the
           // test is against undefined, not truthiness.
@@ -699,6 +784,18 @@ async function recallCorpusContextInner(
             ? {}
             : { lexicalAnchorDfBudget: input.anchorDfBudget }),
         });
+        if (result.legs) {
+          for (const name of CORPUS_SOURCE_NAMES) {
+            if (sources.some(source => source.name === name)) continue;
+            for (const [leg,ranker] of [[result.legs.lexical,'lexical'],[result.legs.semantic,'embeddings']] as const) {
+              (leg.sourceCalls ??= []).push({ source: name,ranker,status: 'not-run',rows: null,
+                durationMs: 0,reason: input.knowledgeSourcesAllowed === false
+                  ? 'knowledge source not granted by host' : 'source not registered' });
+            }
+          }
+          stages.push(result.legs);
+        }
+        return result;
       };
 
       // Which of these hits' sessions belong to the CALLER (EI-19460887729945170)?
@@ -849,6 +946,7 @@ async function recallCorpusContextInner(
       // is stage 2 (when it runs) that produced the final admitted set, so its
       // leg accounting is the one that describes this result.
       legs: out.fused.legs,
+      stages,
       retrievalDepth,
     };
   } catch (err) {

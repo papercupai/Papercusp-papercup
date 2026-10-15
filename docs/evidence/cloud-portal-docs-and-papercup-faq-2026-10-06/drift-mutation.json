@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-portal-docs-and-papercup-faq-2026-10-06",
+  "workItem": "WI-10006921",
+  "specId": "DOCS-DRIFT-REVIEW",
+  "specRevision": 1,
+  "successfulControl": {
+    "testRunId": 20865948,
+    "commitSha": "785369cf1069dae2bfda79ff1607e862832e1d9b",
+    "passed": 6,
+    "failed": 0
+  },
+  "mutation": {
+    "testRunId": 20866057,
+    "commitSha": "93cafaab219db95fd997a15e0b782e1f6c0bd8c5",
+    "passed": 1,
+    "failed": 5
+  },
+  "probeControls": {
+    "currentPassed": 6,
+    "unmutatedOverlayPassed": 6,
+    "overlayBaselineHeadMoved": {
+      "from": "28f045a4c7",
+      "to": "93cafaab21"
+    }
+  },
+  "sourceAndTestSha256": {
+    "packages/operator-core/lib/harness/docs/subject-ref.ts": "e2cd2f51173b552f653b430ea16b055c0bb47d9cae4e07c4a193acd715fba2fc",
+    "packages/operator-core/lib/harness/docs/drift.ts": "db8c223d4f927e18987a287c6e434842c409803178bf098589377944670cac2a",
+    "packages/operator-core/lib/harness/docs/freshness-sweep.ts": "0dcc3415c12d4ed630a7795055ef74044bdc1057bd6e55a841f8a41c75d6e79c",
+    "packages/operator-core/lib/harness/docs/public-manual-drift.test.ts": "db51d4c535215ab1244d5bd773166b79e9eadae68363dde520c8d94ea6ad65fe",
+    "apps/papercusp-docs/src/content/docs/faq.mdx": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+    "apps/papercusp-docs/src/content/docs/quickstart.mdx": "0475e40907bc1aebd14807b1d9fc262a16407d027c638653675f081a6948e510"
+  },
+  "sharedSourceIntegrity": "verified byte-identical by sanctioned mutation runner",
+  "runner": {
+    "runnerPath": "scripts/mutation-probe.sh",
+    "argv": [
+      "--file",
+      "packages/operator-core/lib/harness/docs/freshness-sweep.ts",
+      "--relocation",
+      "overlay",
+      "--mutate",
+      "s/record.source === 'manual' \\? 'review' : 'stale'/record.source === 'manual' ? 'fresh' : 'stale'/",
+      "--test",
+      "node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs packages/operator-core/lib/harness/docs/public-manual-drift.test.ts",
+      "--expect",
+      "caught"
+    ],
+    "schemaVersion": 1,
+    "cwd": ".",
+    "runnerSha256": "408fd44771e580cc0a7d2124e4451a266f54a28b13fcd390b831d5b74cd7e12a",
+    "result": {
+      "baselineExit": 0,
+      "assertionEvidence": "test-file-assertion-failure",
+      "expected": "caught",
+      "verdict": "caught",
+      "relocation": "overlay",
+      "mutantParse": "unchecked",
+      "guardExit": 1,
+      "target": "copy-out",
+      "mutantLedger": "test_runs:20866057"
+    },
+    "runnerCommit": "28f045a4c751d6398a305be9c594f573edf5d8f3"
+  },
+  "bindings": {
+    "successfulTest": 27800,
+    "actualMutation": 27801,
+    "fixtureCalibration": 27803
+  },
+  "certification": {
+    "issueId": "EI-25272880842081926",
+    "clauses": 1,
+    "passing": 1,
+    "filed": 1,
+    "refused": 0,
+    "notPassing": 0
+  },
+  "rawEvidencePath": "/tmp/cloud-docs-p007-drift-mutation.log",
+  "limitations": [
+    "Unit-level canonical-frontmatter and review-classification proof with controlled GitRunner inputs.",
+    "Overlay-copy baseline reported HEAD movement. Bound source and test files were separately verified unchanged since successfulControl.commitSha with an empty scoped git diff.",
+    "No live background sweep, public retriever/provider, index propagation, novice study, independent final acceptance or production shipment is established."
+  ]
+}

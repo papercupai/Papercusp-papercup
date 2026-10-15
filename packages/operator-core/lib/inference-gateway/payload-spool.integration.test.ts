@@ -48,8 +48,8 @@ let db: FreshPgDb;
 
 beforeAll(async () => {
   db = await createFreshPgDb('pspool');
-  await applyMigrationsForTest(db.sql, ['1022-gateway-payload-spool-blobs.sql'], {
-    runtimeTables: ['harness_shared.gateway_payload_blobs'],
+  await applyMigrationsForTest(db.sql, ['1022-gateway-payload-spool-blobs.sql', '1314-gateway-payload-chunks.sql'], {
+    runtimeTables: ['harness_shared.gateway_payload_blobs', 'harness_shared.gateway_payload_chunks'],
   });
 }, 120_000);
 
@@ -59,6 +59,7 @@ afterAll(async () => {
 
 afterEach(async () => {
   await db.sql`DELETE FROM harness_shared.gateway_payload_blobs`;
+  await db.sql`DELETE FROM harness_shared.gateway_payload_chunks`;
 });
 
 // ── (1) SHARED SAFETY CONTRACT — genuinely identical for both implementations. ──
@@ -377,5 +378,114 @@ describe('createGatewayPayloadSpool — real Postgres round trip', () => {
     const spool = createGatewayPayloadSpool({ sql: db.sql, workspaceId: WS });
 
     expect(await spool.read('a'.repeat(64))).toBeNull();
+  });
+});
+
+// ── D-017 (papercusp-log-performance-remediation-2026-09-23): chunked body storage. ──
+describe('D-017 content-defined chunk storage — real Postgres', () => {
+  /** Deterministic incompressible-ish bytes, so chunk boundaries are reproducible. */
+  const prng = (n: number, seed: number): Buffer => {
+    const out = Buffer.alloc(n);
+    let s = seed >>> 0;
+    for (let i = 0; i < n; i++) {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      out[i] = s >>> 24;
+    }
+    return out;
+  };
+  const spoolFor = () => createGatewayPayloadSpool({ sql: db.sql, workspaceId: WS, ttlMs: DEFAULT_PAYLOAD_SPOOL_TTL_MS });
+  const chunkStats = async () => {
+    const rows = await db.sql<{ n: number; raw: number }[]>`
+      SELECT count(*)::int AS n, coalesce(sum(raw_length), 0)::int AS raw
+        FROM harness_shared.gateway_payload_chunks WHERE workspace_id = ${WS}`;
+    return rows[0]!;
+  };
+  const ageAllChunks = () =>
+    db.sql`UPDATE harness_shared.gateway_payload_chunks SET last_ref_at = now() - interval '2 hours' WHERE workspace_id = ${WS}`;
+  const dropManifest = (ref: string) =>
+    db.sql`DELETE FROM harness_shared.gateway_payload_blobs WHERE workspace_id = ${WS} AND blob_key = ${ref}`;
+
+  it('stores a multi-chunk body as chunks with no inline bytes, and reads back the exact bytes', async () => {
+    const spool = spoolFor();
+    const body = prng(300_000, 1);
+    const { payloadRef } = await spool.spool(body);
+
+    const [manifest] = await db.sql<{ inline: number; chunks: number }[]>`
+      SELECT octet_length(bytes) AS inline, array_length(chunk_hashes, 1) AS chunks
+        FROM harness_shared.gateway_payload_blobs WHERE workspace_id = ${WS} AND blob_key = ${payloadRef!}`;
+    expect(manifest!.inline).toBe(0);
+    expect(manifest!.chunks).toBeGreaterThan(5);
+    expect((await chunkStats()).raw).toBe(body.length);
+    expect(Buffer.compare((await spool.read(payloadRef!))!, body)).toBe(0);
+  });
+
+  it('a following turn that extends the body stores only its new chunks', async () => {
+    const spool = spoolFor();
+    const turn1 = prng(400_000, 2);
+    const turn2 = Buffer.concat([turn1, prng(20_000, 3)]);
+    await spool.spool(turn1);
+    const before = await chunkStats();
+
+    const { payloadRef } = await spool.spool(turn2);
+    const added = (await chunkStats()).raw - before.raw;
+
+    // 20 kB is new; the chunk spanning the old end re-synchronizes, at most one max-size chunk.
+    expect(added).toBeGreaterThanOrEqual(20_000);
+    expect(added).toBeLessThanOrEqual(20_000 + 8 * 8192);
+    expect(Buffer.compare((await spool.read(payloadRef!))!, turn2)).toBe(0);
+  });
+
+  it('sweeps an idle unreferenced chunk, but never one a live manifest references or one inside the grace', async () => {
+    const spool = spoolFor();
+    const kept = prng(200_000, 4);
+    const { payloadRef: keptRef } = await spool.spool(kept);
+    const { payloadRef: goneRef } = await spool.spool(prng(200_000, 5));
+    await dropManifest(goneRef!);
+    await ageAllChunks();
+    const { payloadRef: freshRef } = await spool.spool(prng(150_000, 6));
+    await dropManifest(freshRef!);
+
+    await spool.sweep();
+
+    // Aged chunks of the dropped manifest are gone; the referenced body and the
+    // fresh (inside-grace) chunks remain.
+    expect((await chunkStats()).raw).toBe(200_000 + 150_000);
+    expect(Buffer.compare((await spool.read(keptRef!))!, kept)).toBe(0);
+  });
+
+  it('a writer reusing an aged chunk refreshes it, so the sweep cannot reclaim it under the new manifest', async () => {
+    const spool = spoolFor();
+    const body = prng(250_000, 7);
+    const { payloadRef } = await spool.spool(body);
+    await dropManifest(payloadRef!);
+    await ageAllChunks();
+
+    await spool.spool(body);
+    await spool.sweep();
+
+    expect((await chunkStats()).raw).toBe(250_000);
+    expect(Buffer.compare((await spool.read(payloadRef!))!, body)).toBe(0);
+  });
+
+  it('reads a live manifest with a missing chunk as corruption, never as not-found', async () => {
+    const spool = spoolFor();
+    const { payloadRef } = await spool.spool(prng(120_000, 8));
+    await db.sql`
+      DELETE FROM harness_shared.gateway_payload_chunks
+       WHERE workspace_id = ${WS}
+         AND chunk_hash = (SELECT chunk_hashes[1] FROM harness_shared.gateway_payload_blobs
+                            WHERE workspace_id = ${WS} AND blob_key = ${payloadRef!})`;
+
+    await expect(spool.read(payloadRef!)).rejects.toThrow(/no longer stored/);
+  });
+
+  it('still reads a row written inline before D-017', async () => {
+    const bytes = Buffer.from('pre-chunking body', 'utf8');
+    const ref = await sha256Hex(bytes);
+    await db.sql`
+      INSERT INTO harness_shared.gateway_payload_blobs (workspace_id, blob_key, bytes, byte_length)
+      VALUES (${WS}, ${ref}, ${bytes}, ${bytes.length})`;
+
+    expect(Buffer.compare((await spoolFor().read(ref))!, bytes)).toBe(0);
   });
 });

@@ -54,7 +54,12 @@ fn read_fresh_at(base: &Path, key: &str, max_age: Duration) -> Option<Vec<u8>> {
     let path = cache_path_at(base, key);
     let meta = std::fs::metadata(&path).ok()?;
     let modified = meta.modified().ok()?;
-    let age = SystemTime::now().duration_since(modified).ok()?;
+    // Filesystems can report mtimes slightly ahead of this process's clock
+    // (timestamp granularity or clock skew). Treat that as age zero so a new
+    // cache write remains a hit instead of silently becoming a miss.
+    let age = SystemTime::now()
+        .duration_since(modified)
+        .unwrap_or(Duration::ZERO);
     if age > max_age {
         return None;
     }
@@ -138,16 +143,35 @@ mod tests {
     }
 
     #[test]
+    fn future_mtime_is_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        write_best_effort_at(dir.path(), "plans-list", b"fresh");
+        let path = cache_path_at(dir.path(), "plans-list");
+        let future = SystemTime::now() + Duration::from_secs(2);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(future)
+            .unwrap();
+
+        assert_eq!(
+            read_fresh_at(dir.path(), "plans-list", Duration::from_secs(3)).as_deref(),
+            Some(&b"fresh"[..])
+        );
+    }
+
+    #[test]
     fn distinct_keys_do_not_collide() {
         let dir = tempfile::tempdir().unwrap();
         write_best_effort_at(dir.path(), "plans-list", b"A");
         write_best_effort_at(dir.path(), "attention", b"B");
         assert_eq!(
-            read_fresh_at(dir.path(), "plans-list", Duration::from_secs(3)).as_deref(),
+            read_fresh_at(dir.path(), "plans-list", Duration::from_secs(60)).as_deref(),
             Some(&b"A"[..])
         );
         assert_eq!(
-            read_fresh_at(dir.path(), "attention", Duration::from_secs(3)).as_deref(),
+            read_fresh_at(dir.path(), "attention", Duration::from_secs(60)).as_deref(),
             Some(&b"B"[..])
         );
     }
@@ -158,7 +182,7 @@ mod tests {
         write_best_effort_at(dir.path(), "plans-list", b"first");
         write_best_effort_at(dir.path(), "plans-list", b"second");
         assert_eq!(
-            read_fresh_at(dir.path(), "plans-list", Duration::from_secs(3)).as_deref(),
+            read_fresh_at(dir.path(), "plans-list", Duration::from_secs(60)).as_deref(),
             Some(&b"second"[..])
         );
     }

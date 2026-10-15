@@ -8,6 +8,30 @@
 import { readOperatorState } from '../../../operator-state-pg';
 import { recordTelemetryReport, type StoredTelemetryReport } from '../../../record-telemetry';
 import { defineTool } from '@papercusp/agent-mcp';
+import { observeFallback, type FallbackDecision } from '../../../degradation/fallback-observations';
+
+/** Strict local-only transport ingress. Extra fields never enter storage or telemetry. */
+export function normalizeSyncTransportPayload(value: unknown): FallbackDecision | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  if (input.source !== 'sync-transport' || input.mechanism !== 'browser-sync-transport' || input.eligible !== 1) return null;
+  if (input.scope !== 'SSE' && input.scope !== 'WEBSOCKETS') return null;
+  if (!((input.applied === 0 && input.reason === 'preferred-unavailable') ||
+        (input.applied === 1 && input.reason === 'applied'))) return null;
+  return { eligible: 1, applied: input.applied, reason: input.reason, scope: input.scope };
+}
+
+/** Shared local storage path for desktop and authenticated hosted diagnostics. */
+export function acceptSyncTransportObservation(body: unknown, recordFallback = observeFallback): Response {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return Response.json({ error: 'invalid transport observation' }, { status: 400 });
+  }
+  const input = body as Record<string, unknown>;
+  const decision = input.kind === 'fallback-observation' ? normalizeSyncTransportPayload(input.payload) : null;
+  if (!decision) return Response.json({ error: 'invalid transport observation' }, { status: 400 });
+  const accepted = recordFallback('browser-sync-transport', decision, { processTag: 'browser-sync-ingress' });
+  return Response.json({ ok: accepted }, { status: accepted ? 202 : 503 });
+}
 
 const REPORTS_KEY = 'telemetry_reports';
 const WIZARD_KEY = 'setup_wizard_state';
@@ -63,6 +87,9 @@ const post = defineTool({
       return Response.json({ error: 'invalid body' }, { status: 400 });
     }
     const kind = typeof body.kind === 'string' ? body.kind : 'unknown';
+    if (kind === 'fallback-observation') {
+      return acceptSyncTransportObservation(body);
+    }
     if (kind.length > 64) return Response.json({ error: 'kind too long' }, { status: 400 });
     const claimsRenderCrash = kind === 'crash' &&
       body.payload !== null && typeof body.payload === 'object' &&

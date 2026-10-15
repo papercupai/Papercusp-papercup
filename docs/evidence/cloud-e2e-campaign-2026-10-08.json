@@ -1,0 +1,619 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-cross-feature-e2e-shipment-2026-10-08",
+  "workItem": "WI-10007600",
+  "status": "incomplete",
+  "populationSource": {
+    "report": "docs/reports/cloud-cross-feature-e2e-2026-10-08.md",
+    "section": "Acceptance population",
+    "sourceCommit": "07391377509dcbb7046a4c272441f73641f6d66d",
+    "namesSha256": "43775d5b3628a192b40f15d33fd1425fcc0cde4dd59be0c0636be71f1dd41433",
+    "sourcePaths": [
+      "apps/operator-docs/src/content/docs/cloud/first-agent-lesson-runbook.mdx",
+      "apps/operator/app/cloud-workspaces/page.tsx",
+      "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/connection.ts",
+      "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/provision.ts",
+      "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/action.ts"
+    ]
+  },
+  "population": [
+    "Account admission",
+    "Tenant and workspace switching",
+    "Hosted workspace entry",
+    "GCP connection",
+    "AWS connection",
+    "Unsupported Azure",
+    "Configuration and cost",
+    "Provisioning",
+    "Remote browser/desktop connection",
+    "Agent launch and task",
+    "Stop and start",
+    "Snapshot",
+    "Restore",
+    "Failed provisioning and repair",
+    "Concurrent/replayed operations",
+    "Credential expiry and revocation",
+    "Tutorial and Help",
+    "Billing and entitlements",
+    "Destroy and partial-failure cleanup",
+    "Exact deployed cloud and desktop artifact"
+  ],
+  "scope": {
+    "supportedProviders": ["gcp", "aws"],
+    "plannedProviders": ["azure"],
+    "requiredPlanes": ["fixture", "native-ui", "real-runtime", "deployed"],
+    "destruction": "campaign-created-resources-only"
+  },
+  "inventory": {
+    "checked": [
+      "Account admission",
+      "Tenant and workspace switching",
+      "Hosted workspace entry",
+      "GCP connection",
+      "AWS connection",
+      "Unsupported Azure",
+      "Configuration and cost",
+      "Provisioning",
+      "Remote browser/desktop connection",
+      "Agent launch and task",
+      "Stop and start",
+      "Snapshot",
+      "Restore",
+      "Failed provisioning and repair",
+      "Concurrent/replayed operations",
+      "Credential expiry and revocation",
+      "Tutorial and Help",
+      "Billing and entitlements",
+      "Destroy and partial-failure cleanup",
+      "Exact deployed cloud and desktop artifact"
+    ],
+    "notChecked": [],
+    "notApplicable": [],
+    "residue": ["WI-10007610"]
+  },
+  "detectorMatrix": [
+    {
+      "scenario": "Account admission",
+      "class": "happy",
+      "testFile": "packages/operator-core/lib/auth/hosted/workspace-admission.integration.test.ts",
+      "caseName": "hosted workspace admission (real Postgres, real RLS) > admits a first workspace: host row, binding row, and exactly one provision enqueued",
+      "recordedTestRunId": 20938460,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "integration",
+      "proofScope": "database-backed, provider boundaries simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Tenant and workspace switching",
+      "class": "adversarial",
+      "testFile": "packages/operator-core/lib/auth/hosted/workspace-admission.integration.test.ts",
+      "caseName": "hosted workspace admission (real Postgres, real RLS) > keeps the binding inside its control-plane workspace under RLS",
+      "recordedTestRunId": 20938460,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "integration",
+      "proofScope": "database-backed, provider boundaries simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Hosted workspace entry",
+      "class": "happy",
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "caseName": "beginner entry selects a prepared workspace by keyboard with no provisioning or credentials and passes axe",
+      "recordedTestRunId": 20962319,
+      "recordedSourceSha": "bf8c3d1927dac3d7a48e1f904f9f339aaf5c9933",
+      "recordedResult": "pass",
+      "recordedTestLayer": "e2e",
+      "proofScope": "real component and Chromium, authenticated provider responses simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "GCP connection",
+      "class": "happy",
+      "testFile": "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/connection.test.ts",
+      "caseName": "POST /workspace-hosts/connection > validates and persists the supported GCP connection with normalized catalog rows",
+      "recordedTestRunId": 20938431,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "unit",
+      "proofScope": "unit with injected dependencies",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "AWS connection",
+      "class": "happy",
+      "testFile": "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/connection.test.ts",
+      "caseName": "POST /workspace-hosts/connection — AWS target > AWSP-P-004-connection-stored: stores an AWS connection with its AWS preflight verdict",
+      "recordedTestRunId": 20938431,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "unit",
+      "proofScope": "unit with injected dependencies",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Unsupported Azure",
+      "class": "adversarial",
+      "testFile": "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/connection.test.ts",
+      "caseName": "POST /workspace-hosts/connection > rejects unsupported targets and malformed GCP identity before provider calls",
+      "recordedTestRunId": 20938431,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "unit",
+      "proofScope": "unit with injected dependencies",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Configuration and cost",
+      "class": "happy",
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "caseName": "new user completes the actual Cloud first-agent journey",
+      "recordedTestRunId": 20962319,
+      "recordedSourceSha": "bf8c3d1927dac3d7a48e1f904f9f339aaf5c9933",
+      "recordedResult": "pass",
+      "recordedTestLayer": "e2e",
+      "proofScope": "real component and Chromium, authenticated provider responses simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Provisioning",
+      "class": "happy",
+      "testFile": "packages/operator-core/lib/workspace-host/provisioning-runner.integration.test.ts",
+      "caseName": "workspace-host provisioning runner (real PG + real RLS) > persists desired intent and the whole resource graph before the first provider mutation",
+      "recordedTestRunId": 20938462,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "integration",
+      "proofScope": "database-backed, provider boundaries simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Remote browser/desktop connection",
+      "class": "happy",
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "caseName": "existing workspace completes the actual Cloud first-agent journey",
+      "recordedTestRunId": 20962319,
+      "recordedSourceSha": "bf8c3d1927dac3d7a48e1f904f9f339aaf5c9933",
+      "recordedResult": "pass",
+      "recordedTestLayer": "e2e",
+      "proofScope": "real component and Chromium, authenticated provider responses simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Agent launch and task",
+      "class": "happy",
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "caseName": "gcp lifecycle preserves host identity through restart, snapshot, restore and confirmed teardown",
+      "recordedTestRunId": 20962319,
+      "recordedSourceSha": "bf8c3d1927dac3d7a48e1f904f9f339aaf5c9933",
+      "recordedResult": "pass",
+      "recordedTestLayer": "e2e",
+      "proofScope": "real component and Chromium, authenticated provider responses simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Stop and start",
+      "class": "happy",
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "caseName": "aws lifecycle preserves host identity through restart, snapshot, restore and confirmed teardown",
+      "recordedTestRunId": 20962319,
+      "recordedSourceSha": "bf8c3d1927dac3d7a48e1f904f9f339aaf5c9933",
+      "recordedResult": "pass",
+      "recordedTestLayer": "e2e",
+      "proofScope": "real component and Chromium, authenticated provider responses simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Snapshot",
+      "class": "happy",
+      "testFile": "packages/operator-core/lib/workspace-host/lifecycle-runner.restore.integration.test.ts",
+      "caseName": "workspace-host snapshot restore (real PG + real RLS) > registers a snapshot as a recovery point the host (and its destroy census) can see (D-389, WI-10002470)",
+      "recordedTestRunId": 20938461,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "integration",
+      "proofScope": "database-backed, provider boundaries simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Restore",
+      "class": "happy",
+      "testFile": "packages/operator-core/lib/workspace-host/lifecycle-runner.restore.integration.test.ts",
+      "caseName": "workspace-host snapshot restore (real PG + real RLS) > restores from a READY snapshot after its source host was destroyed (D-388)",
+      "recordedTestRunId": 20938461,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "integration",
+      "proofScope": "database-backed, provider boundaries simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Failed provisioning and repair",
+      "class": "adversarial",
+      "testFile": "packages/operator-core/lib/workspace-host/lifecycle-runner.chaos.test.ts",
+      "caseName": "lifecycle controller — survives termination mid-operation (P-018) > resumes an `applying` row by reconciling, never by issuing a second create",
+      "recordedTestRunId": 20938428,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "unit",
+      "proofScope": "unit with injected dependencies",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Concurrent/replayed operations",
+      "class": "adversarial",
+      "testFile": "packages/operator-core/lib/workspace-host/provisioning-runner.integration.test.ts",
+      "caseName": "workspace-host provisioning runner (real PG + real RLS) > replays an exact request but rejects changed or reordered content for the same operation",
+      "recordedTestRunId": 20938462,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "integration",
+      "proofScope": "database-backed, provider boundaries simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Credential expiry and revocation",
+      "class": "adversarial",
+      "testFile": "packages/operator-core/lib/workspace-host/lifecycle-runner.chaos.test.ts",
+      "caseName": "lifecycle controller — deterministic refusals fail closed > fails the operation on expired credential instead of reconciling forever",
+      "recordedTestRunId": 20938428,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "unit",
+      "proofScope": "unit with injected dependencies",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Tutorial and Help",
+      "class": "adversarial",
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "caseName": "reload resumes saved pause, AI outage leaves controls operable, and Help replays without product writes",
+      "recordedTestRunId": 20962319,
+      "recordedSourceSha": "bf8c3d1927dac3d7a48e1f904f9f339aaf5c9933",
+      "recordedResult": "pass",
+      "recordedTestLayer": "e2e",
+      "proofScope": "real component and Chromium, authenticated provider responses simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Billing and entitlements",
+      "class": "adversarial",
+      "testFile": "packages/operator-core/lib/auth/hosted/billing/billing-store.integration.test.ts",
+      "caseName": "PostgresHostedBillingStore (real Postgres, real roles) > refuses an event whose metadata names another organization than the customer belongs to",
+      "recordedTestRunId": 20938459,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "integration",
+      "proofScope": "database-backed, provider boundaries simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Destroy and partial-failure cleanup",
+      "class": "happy",
+      "testFile": "packages/operator-core/lib/workspace-host/provisioning-runner.integration.test.ts",
+      "caseName": "workspace-host provisioning runner (real PG + real RLS) > persists a complete discard graph and terminal evidence before marking the host absent",
+      "recordedTestRunId": 20938462,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "integration",
+      "proofScope": "database-backed, provider boundaries simulated",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    },
+    {
+      "scenario": "Exact deployed cloud and desktop artifact",
+      "class": "adversarial",
+      "testFile": "packages/operator-core/lib/endpoint-route/routes/workspace-hosts/action.test.ts",
+      "caseName": "POST /workspace-hosts/action release-shipment > returns the measured refusal receipt without claiming shipment committed",
+      "recordedTestRunId": 20938435,
+      "recordedSourceSha": "f812c6ece265ead566822ff9cde3f9897e58c9a0",
+      "recordedResult": "pass",
+      "recordedTestLayer": "unit",
+      "proofScope": "unit with injected dependencies",
+      "affectedSelection": "unverified",
+      "negativeControl": "unverified",
+      "currentSourceBinding": "unverified",
+      "acceptance": "unknown"
+    }
+  ],
+  "detectorMatrixBoundary": "Exact recorded case mappings are source and ledger lookup targets. Historical pass, unit/database/browser fixtures, unknown affected selection and unknown controls cannot satisfy R-2/R-3 or real-runtime/shipment acceptance. Re-read canonical records and bind current source before acceptance.",
+  "requiredFailurePaths": [
+    { "scenario": "Failed provisioning and repair", "boundary": "crash after provider creation before persistence", "testRunId": 20938428, "caseName": "lifecycle controller — survives termination mid-operation (P-018) > carries the lost provider request id into the resume so the reconcile can find the side effect", "negativeControl": "unverified" },
+    { "scenario": "Credential expiry and revocation", "boundary": "bounded bootstrap timeout", "testRunId": 20938433, "caseName": "runWorkspaceHostCredentialLifecycle > bootstrap-readiness gate > fails durably at 0% and runs no step when the bootstrap never becomes ready", "negativeControl": "unverified" },
+    { "scenario": "Failed provisioning and repair", "boundary": "long-running cancellation with resource and billing accounting", "testRunId": null, "caseName": null, "acceptance": "unknown", "ownerWorkItem": "WI-10007610" }
+  ],
+  "defectPopulationRecords": [
+    {
+      "id": "WI-10007605",
+      "title": "Cloud host detail expansion fails four canonical page acceptance tests",
+      "state": "done",
+      "assignee": null,
+      "completionAuthority": "committed",
+      "sourceRef": "work-item:WI-10007605",
+      "rootCauseVerification": {
+        "hypothesis": "Complete nuqs mocks omitted the collection parser exported by the real package.",
+        "testResult": "All4previous failures pass;66tests pass across3fixtures.",
+        "evidenceRefs": [
+          "testing:runs:20938504",
+          "run-group:cloud-e2e-20261008-ui-repair2"
+        ],
+        "testProcedure": "PAPERCUSP_TEST_RUN_GROUP=cloud-e2e-20261008-ui-repair2 PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/npm-install-safe.mjs --exec-under-lock -- bash -c 'cd apps/operator && exec npx vitest run --config vitest.config.ts app/cloud-workspaces/page.test.tsx app/cloud-workspaces/DesktopWorkspacePage.test.tsx app/cloud-workspaces/LocalDesktopWorkspace.test.tsx'",
+        "contractVersion": 2,
+        "actualObservation": "53page plus13desktop assertions passed; product source unchanged.",
+        "distinguishingTest": "Replace only mock parsers with importOriginal exports and execute the unchanged expansion scenarios.",
+        "alternativeHypothesis": "Production host detail collection parsing was broken.",
+        "predictedObservations": {
+          "hypothesis": "Previously failing assertions pass without product edits.",
+          "alternativeHypothesis": "Expansion assertions still fail with production source unchanged."
+        }
+      },
+      "filesChanged": [
+        "apps/operator/app/cloud-workspaces/page.test.tsx",
+        "apps/operator/app/cloud-workspaces/DesktopWorkspacePage.test.tsx",
+        "apps/operator/app/cloud-workspaces/LocalDesktopWorkspace.test.tsx"
+      ]
+    },
+    {
+      "id": "EI-25534651860716701",
+      "title": "Managed current workspace-host cut rejects its materialized source as dirty at sidecar preflight",
+      "state": "done",
+      "assignee": null,
+      "completionAuthority": "committed",
+      "sourceRef": "work-item:EI-25534651860716701",
+      "rootCauseVerification": {
+        "hypothesis": "Mapping-only source enumeration omitted a committed nested-app gitlink and falsely admitted an incomplete source.",
+        "testResult": "Old source refused by missing mapping; corrected physical source materializes the app and records sourceDirty=false. Existing56 canonical regression cases pass.",
+        "evidenceRefs": [
+          "/tmp/cloud-e2e-20261009-cut-preflight-final.log",
+          "test-run:20962703",
+          "test-run:20962704",
+          "/mnt/backup/cloud-e2e-workspace-host-20261009r2/logs/materialize.log",
+          "/mnt/backup/cloud-e2e-workspace-host-20261009r2/sidecar.tmp.9773.identity.json",
+          "/mnt/backup/cloud-e2e-workspace-host-20261009r2/tmp/papercusp-sidecar-dirty-source.TJeUD6"
+        ],
+        "testProcedure": "Old immutable073913 has apps/slack-asana-bug-drill gitlinkf69bb1aa with no committed path/url; physical directory empty; admission exit3 names path despite empty ordinary tracked status. Correctedcc281 physical cut inspected model-preflight/materialize and emitter identity/capture, after all5 tested file hashes match commit.",
+        "contractVersion": 2,
+        "actualObservation": "Corrected app contains pinned files, exact sourceRoot/cc281 identity has sourceDirty=false, dirty capture files=[]; old-source guard names missing app mapping. Separate model pack crypto verification ready.",
+        "distinguishingTest": "Compare failed pinned gitlinks/mappings/physical app, run full-population admission on old and corrected commits, then inspect actual corrected source capture.",
+        "alternativeHypothesis": "Ordinary tracked edits or an incorrectly selected provenance root caused the dirty-source refusal.",
+        "predictedObservations": {
+          "hypothesis": "Old source refuses by named missing mapping; corrected mapping materializes app and yields clean actual capture.",
+          "alternativeHypothesis": "A tracked dirty file or wrong-root identity remains and correcting mapping does not yield a clean emitter verdict."
+        }
+      },
+      "filesChanged": [
+        ".gitmodules",
+        "apps/operator/bin/release/setup-release-checkout.sh",
+        "apps/operator/lib/release/setup-release-checkout-submodule-repos.test.ts",
+        "apps/operator/lib/release/workspace-host-release-cut-cli.ts",
+        "apps/operator/lib/release/workspace-host-release-cut-cli.test.ts"
+      ]
+    },
+    {
+      "id": "EI-25535599233496771",
+      "title": "Git-sync stages nested repositories as unmapped gitlinks",
+      "state": "done",
+      "assignee": null,
+      "completionAuthority": "committed",
+      "sourceRef": "work-item:EI-25535599233496771",
+      "rootCauseVerification": {
+        "hypothesis": "git-sync accepted successfully staged mode160000 entries without inspecting commit-index .gitmodules, so an unmapped nested repository entered the committed source.",
+        "testResult": "Historical source has no mapping. New guard holds unmapped or working-tree-only entries; accepts indexed valid mapping even when working-tree metadata differs; retains ordinary file when invalid gitlink is unstaged; rejects malformed config and index-read failure. Existing193 cases pass.",
+        "evidenceRefs": [
+          "EI-25534651860716701",
+          "test-run:20962877",
+          "test-run:20962881",
+          "/tmp/cloud-e2e-20261009-gitlink-writer.log",
+          "/tmp/cloud-e2e-20261009-gitlink-writer-corrected.log"
+        ],
+        "testProcedure": "Historical49a/073913 contain app gitlinkf69bb1aa with no .gitmodules entry (existing root investigation). Six conventional Vitest tests create real Git object/index fixtures and measure unmapped holding, exact indexed metadata, pairing, removal, unrelated work retention and errors. Existing193-case git-sync suite confirms integration; corrected6case pass uses final code.",
+        "contractVersion": 2,
+        "actualObservation": "Unmapped historical link measured in root repair; final real-index regression suite6passed and existing git-sync193passed. Root materialization separately repaired and actual source capture clean.",
+        "distinguishingTest": "Read actual committed app gitlink/mapping and exercise real Git indexes with absent, working-tree-only, indexed and malformed .gitmodules through the existing pre-commit guard.",
+        "alternativeHypothesis": "The committed gitlink had a valid path/url mapping but release materialization misinterpreted it.",
+        "predictedObservations": {
+          "hypothesis": "Historical commit lacks mapping; a guard consulting the exact index rejects that link, while a properly mapped index passes.",
+          "alternativeHypothesis": "Historical commit contains a valid mapping and the same indexed mapping is refused, locating the failure at materialization instead."
+        }
+      },
+      "filesChanged": [
+        "packages/operator-core/lib/harness/git-sync/run-git-sync.ts",
+        "packages/operator-core/lib/harness/git-sync/unmapped-gitlink-guard.test.ts"
+      ]
+    },
+    {
+      "id": "EI-25537398622311917",
+      "title": "Workspace-host sidecar build cannot resolve Chromium BiDi modules imported by Playwright",
+      "state": "open",
+      "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "completionAuthority": null,
+      "sourceRef": "work-item:EI-25537398622311917"
+    },
+    {
+      "id": "EI-25538099981077070",
+      "title": "P-058 pinned model cache symlink points to a removed relocation target",
+      "state": "open",
+      "assignee": "su-0d2affd0-2198-4734-b54f-186234343375",
+      "completionAuthority": null,
+      "sourceRef": "work-item:EI-25538099981077070"
+    },
+    {
+      "id": "EI-25532541000501660",
+      "title": "Scorecard audit wake timed out although the exact audited card was already passed",
+      "state": "open",
+      "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "completionAuthority": null,
+      "sourceRef": "work-item:EI-25532541000501660"
+    },
+    {
+      "id": "EI-25540445801754635",
+      "state": "done",
+      "assignee": null,
+      "completionAuthority": "committed",
+      "sourceRef": "work-item:EI-25540445801754635",
+      "completionReadbackRef": "papercusp://scratch/papercusp-workspace/work_items:complete/05be4f7a-a9bf-40da-b9d6-1bc4bafca3a9/result-door-1791583380186.md",
+      "rootCauseEvidence": "read canonical completion; identity detector and differing predictions verified in test-run:20963196"
+    },
+    {
+      "id": "WI-10007989",
+      "title": "Cloud campaign R4 evaluator accepts an owned open repair as completed acceptance",
+      "state": "wip",
+      "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "completionAuthority": null,
+      "sourceRef": "work-item:WI-10007989",
+      "rootCauseEvidence": "Canonical open-repair regression failed while owned-deferred control passed; /tmp/cloud-e2e-20261009-open-repair-before.log. Read current canonical completion before acceptance."
+    },
+    {
+      "id": "WI-10007992",
+      "title": "Cloud campaign shipment checker accepts invented nonempty promotion, deployment, audit, grade and report references",
+      "state": "wip",
+      "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8",
+      "completionAuthority": null,
+      "sourceRef": "work-item:WI-10007992",
+      "rootCauseEvidence": "Six maintained wrong-nonempty reference/serving controls reproduced missing canonical shipment joins in test-run:20963516. Read current canonical completion; this snapshot is not acceptance."
+    }
+  ],
+  "defectLedgerBoundary": "Canonical work-item snapshots account for discovered defects. Completed-source records do not imply a measured regression control or a passing triggering real journey. Open cache/build/audit defects remain owned; R-4 and shipment stay unproven until exact canonical records and journey joins satisfy the evaluator.",
+  "outOfScopeResidue": [
+    { "id": "EI-25539085239585028", "assignee": "su-ec5efb56-8a98-4efe-a8e2-02017ee78bb8", "sourceRef": "work-item:EI-25539085239585028", "reason": "Recovery-result shaping friction; raw full reads recover authoritative records, durable platform behavior remains separately accountable" }
+  ],
+  "observations": [
+    {
+      "id": "current-cloud-chromium",
+      "plane": "fixture",
+      "testRunId": 20962319,
+      "specBindingId": 33281,
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "result": "passed",
+      "syntheticCloudResponses": true,
+      "provesRealProviderLifecycle": false
+    },
+    {
+      "id": "restored-task-dispatch-falsifier",
+      "plane": "fixture",
+      "testRunId": 20962300,
+      "specBindingId": 33272,
+      "testFile": "apps/operator/e2e/cloud-tutorial.spec.ts",
+      "result": "mutant-caught",
+      "mutation": "Remove only sendToSessionOwner(ownerId, request.prompt) after session launch",
+      "observation": "After Send action-plan task, the captured submitted prompt is empty",
+      "provesRealProviderLifecycle": false
+    },
+    {
+      "id": "current-native-aws-ui",
+      "plane": "native-ui",
+      "parentRun": "20261009T193758Z-752002",
+      "childRun": "20261009T194500Z-1145653",
+      "sourceSha": "d4c6d7d80d285735590741117d33cfd5db166cda",
+      "binarySha256": "b809153d613cd2099f8dd717affe2a2f4570344a2e2b39e666e906e9cdd6a00c",
+      "receiptPath": "~/.local/state/verification-harness/cloud-workspaces-aws/20261009T194500Z-1145653/phases/native/result.json",
+      "result": "passed",
+      "syntheticCloudResponses": true,
+      "provesRealProviderLifecycle": false
+    }
+  ],
+  "unverified": {
+    "ownerWorkItem": "WI-10007610",
+    "realRuntime": [
+      "hosted account admission and usable remote session",
+      "current GCP artifact install and lifecycle",
+      "current AWS lifecycle within the canonical v4 approval",
+      "real remote agent task completion and reconnect",
+      "provider-side teardown and billing closure"
+    ],
+    "deployed": ["exact authenticated shipped cloud and desktop artifact acceptance"],
+    "authorRepair": [
+      "detector case and ledger mappings for R-2/R-3",
+      "discovered-defect ledger and accountable residue checks for R-4",
+      "current artifact, tenant/account, resource, task and teardown validators for R-5",
+      "promotion, exact served artifact and final journey validators for R-6"
+    ]
+  },
+  "realRuntimeReceipts": [],
+  "physicalSourceAdmission": {
+    "plane": "build-preflight",
+    "sourceSha": "cc28152984853d53fc14e678ccd950387d9ded7a",
+    "cutTaskId": "0mv1flwjbu1jz291cid",
+    "operationId": "c18d38c8-182c-428e-9103-6b1172dc7f84",
+    "sourceReadyAt": "2026-10-09T20:44:08.945Z",
+    "capturedAtUtc": "2026-10-09T20:45:25Z",
+    "sourceDirty": false,
+    "dirtyFiles": [],
+    "materialization": { "objectSourced": 39, "cloned": 39, "archiveFallback": 0, "liveTree": 0 },
+    "modelManifestSha256": "390c44e5eaefed07cade0790a2fe1027fa0fac3620a0fda42dac03a2110a020f",
+    "sourceReadySha256": "316f146f917f049328174d9b0312b385ac024e4b4ee0ad240317ea6fe0b2f8ec",
+    "sourceIdentitySha256": "3736d8b10ae5c8645a6aec8b4f292fd491eb09c4666f49ee5b23232067d3ba5f",
+    "dirtyCaptureSha256": "0bd75ff29015be96015105e82cb506a70c27693d68b2d936f6ac8e1144d0c190",
+    "modelPreflightSha256": "14699d5e273cb7209e98559232c4989b712d378b2b5237a1c6f4a90dfb453336",
+    "sourceReadyPath": "/mnt/backup/cloud-e2e-workspace-host-20261009r2/source.ready.json",
+    "sourceIdentityPath": "/mnt/backup/cloud-e2e-workspace-host-20261009r2/sidecar.tmp.9773.identity.json",
+    "dirtyCapturePath": "/mnt/backup/cloud-e2e-workspace-host-20261009r2/tmp/papercusp-sidecar-dirty-source.TJeUD6",
+    "provesSignedBundle": false,
+    "provesRealProviderLifecycle": false,
+    "provesShipment": false
+  },
+  "shipmentReceipts": [],
+  "acceptanceEvidence": {
+    "detectors": [],
+    "defects": [],
+    "realRuntimeReceipts": [],
+    "shipmentReceipts": []
+  }
+}

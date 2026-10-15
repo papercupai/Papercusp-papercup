@@ -18,6 +18,7 @@
  * 404s every papercup plan).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { InvalidInputError } from '@papercusp/tooldef';
 
 const hiveMocks = vi.hoisted(() => ({
   potHomeSlugForHarness: vi.fn<(_workspaceId: string, harnessSlug: string) => Promise<string | null>>(
@@ -31,6 +32,7 @@ vi.mock('../../../hive-federation', () => ({
 
 import {
   resolvePlanScope,
+  isUnknownPlanScopeError,
   fill_workspace_id_from_projects,
   type ProjectsWorkspaceLookup,
   type RegistryWorkspaceResolver,
@@ -139,12 +141,16 @@ describe('resolvePlanScope — concrete slug, workspace from the projects table'
 });
 
 describe('resolvePlanScope — fail-loud (NO silent default)', () => {
-  it('an unregistered slug (0 projects + 0 registry) THROWS — never silently defaults', async () => {
+  it('an unregistered slug is a typed caller error — never silently defaults', async () => {
     const { lookup } = lookupReturning(); // no projects matches
     const { registryFallback } = registryReturning(null); // not in the registry either
-    await expect(
-      resolvePlanScope({ harnessSlug: 'zzz-never-registered', lookup, registryFallback }),
-    ).rejects.toThrow(/not registered in the harness registry/);
+    const error = await resolvePlanScope({ harnessSlug: 'zzz-never-registered', lookup, registryFallback })
+      .then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(InvalidInputError);
+    expect(error).toMatchObject({
+      message: expect.stringContaining('not registered in the harness registry'),
+    });
+    expect(isUnknownPlanScopeError(error)).toBe(true);
   });
 
   it('a same-name collision across workspaces (2+ matches) THROWS', async () => {
@@ -157,9 +163,11 @@ describe('resolvePlanScope — fail-loud (NO silent default)', () => {
   it('a registered slug with no hive home THROWS — plans cannot be scoped to a standalone harness', async () => {
     hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
     const { lookup } = lookupReturning('ws-standalone');
-    await expect(resolvePlanScope({ harnessSlug: 'standalone', lookup })).rejects.toThrow(
-      /plans are Hive-scoped/,
-    );
+    const error = await resolvePlanScope({ harnessSlug: 'standalone', lookup })
+      .then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(InvalidInputError);
+    expect(error).toMatchObject({ message: expect.stringContaining('plans are Hive-scoped') });
+    expect(isUnknownPlanScopeError(error)).toBe(true);
   });
 });
 

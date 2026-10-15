@@ -1,0 +1,485 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "mdenseon P-005 V7 controlled five-block CPU performance: raw-sample provenance re-verification",
+  "framework": "operational",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    ".papercusp/scratch/p005-v7-operational.mts",
+    "--out=docs/evidence/mdenseon-performance-v8-operational-2026-10-07.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-07T08:29:07.900Z",
+  "finishedAt": "2026-10-07T08:29:08.296Z",
+  "summary": "verifyCompletedPerformanceRun passed (no inference); 15 cells / 5 blocks; every reported latency distribution has its ordered raw request samples and exact local-http-client-worker route identity.",
+  "assertions": [
+    {
+      "id": "v7-terminal-receipts-rederive-summary",
+      "passed": true,
+      "evidence": "verifyCompletedPerformanceRun re-derived the summary from terminal receipts without inference: cells=15, inferencePerformed=false, manifestSha256=78f97d1b622d5507c80a44b9f2a0fe1b582897f94f14f671cfe08f302614bbc1; full structured result under top-level \"rederivation\""
+    },
+    {
+      "id": "v7-raw-samples-ordered-and-complete",
+      "passed": true,
+      "evidence": "every cell samples.jsonl sequence set is an exact permutation of 0..N-1 (rows retained in completion order under concurrency), count equals report.samples, and each raw row deep-equals the report sample with the same sequence"
+    },
+    {
+      "id": "v7-route-identity-exact",
+      "passed": true,
+      "evidence": "transport=local-http-client-worker; one runtime + one modelRev per cell"
+    },
+    {
+      "id": "v7-transport-trace-matches-samples",
+      "passed": true,
+      "evidence": "client-send == server-request == server-response == sample count per cell"
+    }
+  ],
+  "evidencePlane": "tree",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "specId": "MDENSE-latency-sample-provenance",
+  "workItemId": "WI-10004539",
+  "manifest": {
+    "path": "$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/frozen-performance-v7.json",
+    "sha256": "78f97d1b622d5507c80a44b9f2a0fe1b582897f94f14f671cfe08f302614bbc1"
+  },
+  "donorOwnerNote": "Recorded manifest owner su-5dfd8e29-6241-44cf-8982-2cc0fa4ddb50; explicit fingerprint-pinned predecessor identity verified without changing executing session identity",
+  "cells": [
+    {
+      "cell": "performance-b0-harrier",
+      "arm": "harrier",
+      "block": 0,
+      "order": 0,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/harrier-oss-v1-0.6b-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "22771bd76e8e27c1a09d88db364244b2c75bf2a9f844751ad25ac58f39b71a56",
+      "traceSha256": "426b4673d7fb092980daabb2d8f87cba57a75c18fdab5914da76ba01281e6f32"
+    },
+    {
+      "cell": "performance-b0-mdenseon",
+      "arm": "mdenseon",
+      "block": 0,
+      "order": 1,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "a5fdb000f7a21da96c3bddde3a782ef777316df3"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "85601daee20476cc3b6628d680fefcac1339ba63082d3c118303ad34f6a0cc6a",
+      "traceSha256": "83b2553412d48c16f94154c640e7153bbb3a2323455e9781eff56beb55c4325e"
+    },
+    {
+      "cell": "performance-b0-gemma",
+      "arm": "gemma",
+      "block": 0,
+      "order": 2,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/embeddinggemma-300m-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "5979ba84339be6149e6d0eb6fc207d358cf3934b5dd9f7d4a47a251d25ec86ce",
+      "traceSha256": "5f59948d05468615429ea8d22831ca48522fb4c78f36c9e32440f31d0966874d"
+    },
+    {
+      "cell": "performance-b1-mdenseon",
+      "arm": "mdenseon",
+      "block": 1,
+      "order": 0,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "a5fdb000f7a21da96c3bddde3a782ef777316df3"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "96020eee50f109031fb7ed0c5aa1b09e35c648980368e1672e6f8df6ea09c7e7",
+      "traceSha256": "0cdd7c62de9f5ff1bbb69648eb27eb0dbb547db4f5a3baa48546944a5becdd9a"
+    },
+    {
+      "cell": "performance-b1-harrier",
+      "arm": "harrier",
+      "block": 1,
+      "order": 1,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/harrier-oss-v1-0.6b-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "e8b4ec99a183daf8854547397bbcce76a7cd80ae25e833340364a4dc92c97542",
+      "traceSha256": "ef7ab7b97913b964dd78ef6e94b958e584430a8ca31f3fe7927fa0244bdbe360"
+    },
+    {
+      "cell": "performance-b1-gemma",
+      "arm": "gemma",
+      "block": 1,
+      "order": 2,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/embeddinggemma-300m-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "a37b9e7eb111a578bad0ae44b732ed053d7339bf2bba226aea9e554ff7f62592",
+      "traceSha256": "d4bc3efcff5b806675747fa23aec25a7e50bdd683c7e3f3c87481a31d12ca710"
+    },
+    {
+      "cell": "performance-b2-gemma",
+      "arm": "gemma",
+      "block": 2,
+      "order": 0,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/embeddinggemma-300m-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "8479c2029364e01115c379a96b2dbe6d320b75d873d3e65d039283d825862d34",
+      "traceSha256": "4af4df06bd71262b7d5be3d6e65e2d4693a84f7b226f8708c36eecb57ba3b88c"
+    },
+    {
+      "cell": "performance-b2-mdenseon",
+      "arm": "mdenseon",
+      "block": 2,
+      "order": 1,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "a5fdb000f7a21da96c3bddde3a782ef777316df3"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "d319d9268fc7cff17f3a0b39e6e26906e7b9bcf36ed2bda21e3b469d172e59f2",
+      "traceSha256": "f84a5c568a160eebb4abd8cb4e20fdcc69c7d4e29859c393ab4ad6f23aff3ef4"
+    },
+    {
+      "cell": "performance-b2-harrier",
+      "arm": "harrier",
+      "block": 2,
+      "order": 2,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/harrier-oss-v1-0.6b-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "3a59ecfe8702c8363ce277d7770a4da67fe76038d1752918761d2ccd518fbe9b",
+      "traceSha256": "888327c85ab44a1b4c5e51d08689d276e3b5a6578b962ff495ee92462816f3aa"
+    },
+    {
+      "cell": "performance-b3-gemma",
+      "arm": "gemma",
+      "block": 3,
+      "order": 0,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/embeddinggemma-300m-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "86fd715b7ec42953a9f476335a38377daa314214566b5f2aa2be04214c683bdd",
+      "traceSha256": "6e5cfc46e96808eb89c64e26196bafdb7cf49f6bee24aa939a2e83841d4d0ec9"
+    },
+    {
+      "cell": "performance-b3-harrier",
+      "arm": "harrier",
+      "block": 3,
+      "order": 1,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/harrier-oss-v1-0.6b-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "67eae1b48a67b07a08960755951c206e41cb7aa8ed5ff51a5d829310bb42b3c7",
+      "traceSha256": "e4287dbc8a3d4af67fb69fa31868515f167089b57d1a1abc2b4a871c7a250b3b"
+    },
+    {
+      "cell": "performance-b3-mdenseon",
+      "arm": "mdenseon",
+      "block": 3,
+      "order": 2,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "a5fdb000f7a21da96c3bddde3a782ef777316df3"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "6d61c1538182f9abfb3b07a192fe4db234f618976ac5d1dd78ecb00a9264314e",
+      "traceSha256": "00fc3da16d08c6368b2e9916b0b1bf0c45b6e57ed08368cb1482454d58d4f56a"
+    },
+    {
+      "cell": "performance-b4-mdenseon",
+      "arm": "mdenseon",
+      "block": 4,
+      "order": 0,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "a5fdb000f7a21da96c3bddde3a782ef777316df3"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "4c0d4205ae799581dadcd11f13f5e328164fe21fe0459142a1e43bbe271a7dd4",
+      "traceSha256": "5203e834842e1b7e463514bc24b8939c346235057e6a178a69d28239ec74a5c9"
+    },
+    {
+      "cell": "performance-b4-harrier",
+      "arm": "harrier",
+      "block": 4,
+      "order": 1,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/harrier-oss-v1-0.6b-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "24ef200fc21d40c5fa49743cfa106c9cd3b7a35a4ae760ec415054128cce0ee1",
+      "traceSha256": "9450d3d839b77a58cfa5eecbea2a82b1e3ab0a15fa5cfc6425ea3e9233664b9d"
+    },
+    {
+      "cell": "performance-b4-gemma",
+      "arm": "gemma",
+      "block": 4,
+      "order": 2,
+      "samples": 412,
+      "sequenceOrdered": true,
+      "reportSamples": 412,
+      "sends": 412,
+      "requests": 412,
+      "responses": 412,
+      "errorEvents": 0,
+      "route": {
+        "transport": "local-http-client-worker",
+        "device": "cpu",
+        "runtime": [
+          "node-onnx-worker"
+        ],
+        "modelRev": [
+          "onnx-community/embeddinggemma-300m-ONNX"
+        ],
+        "path": [
+          "POST /embed"
+        ]
+      },
+      "samplesSha256": "360715626a858f6fb3df285d7eb1c1ecf568af7a0dba33f82c72783255f9002f",
+      "traceSha256": "6d22bbb18453ae59d7ce04c44cf0425a7906aa8b1be14c4bcc1d57b39a451555"
+    }
+  ],
+  "rederivation": {
+    "manifestSha256": "78f97d1b622d5507c80a44b9f2a0fe1b582897f94f14f671cfe08f302614bbc1",
+    "driver": {
+      "path": "$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v7/driver.json",
+      "sha256": "06c167746b6c2581025ea3fc572fd0fbfdb33687aee57af549bf40607fc77a34",
+      "bytes": 758
+    },
+    "summary": {
+      "path": "$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v7/performance-summary.json",
+      "sha256": "a7ca1070c7b0b8a2c81f0a9a1dd12cbc8b2119eb56f6321a507612dc1a7b07a3",
+      "bytes": 137130
+    },
+    "cells": 15,
+    "inferencePerformed": false
+  }
+}

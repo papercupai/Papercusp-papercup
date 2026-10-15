@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Production new public manual guides and Pagefind browser acceptance",
+  "framework": "playwright",
+  "command": [
+    "../../node_modules/.bin/playwright",
+    "test",
+    "--config",
+    "playwright.config.ts",
+    "e2e/public-manual.spec.ts",
+    "--workers=1",
+    "--reporter=json",
+    "--output=/tmp/public-manual-new-guides-browser"
+  ],
+  "cwd": "apps/operator",
+  "environment": {
+    "OPERATOR_E2E_BASE_URL": "https://app.papercusp.com",
+    "OPERATOR_E2E_REUSE_SERVER": "1",
+    "PAPERCUSP_TEST_RUN_HARNESS": "papercusp",
+    "PAPERCUSP_WORKSPACE_ID": "papercusp-workspace",
+    "PAPERCUSP_TEST_RUN_GROUP": "public-manual-production-new-guides-20261003",
+    "PLAYWRIGHT_JSON_OUTPUT_NAME": "/tmp/public-manual-new-guides-browser.json"
+  },
+  "exitCode": 0,
+  "startedAt": "2026-10-03T05:41:04.402Z",
+  "finishedAt": "2026-10-03T05:41:16.168279Z",
+  "summary": "Six production browser scenarios passed; five guides reached through sidebar, deep links reloaded, mobile width checked, and actual Pagefind result selected. Zero skips or unexpected results. This registers the saved run; no browser replay.",
+  "assertions": [
+    {
+      "id": "guide-1",
+      "passed": true,
+      "evidence": "new public guide is reachable, reloadable and readable on mobile: quickstart; actual Chrome result passed; no retries/skips."
+    },
+    {
+      "id": "guide-2",
+      "passed": true,
+      "evidence": "new public guide is reachable, reloadable and readable on mobile: plans-and-work; actual Chrome result passed; no retries/skips."
+    },
+    {
+      "id": "guide-3",
+      "passed": true,
+      "evidence": "new public guide is reachable, reloadable and readable on mobile: agent-modes-and-fleets; actual Chrome result passed; no retries/skips."
+    },
+    {
+      "id": "guide-4",
+      "passed": true,
+      "evidence": "new public guide is reachable, reloadable and readable on mobile: accounts-and-billing; actual Chrome result passed; no retries/skips."
+    },
+    {
+      "id": "guide-5",
+      "passed": true,
+      "evidence": "new public guide is reachable, reloadable and readable on mobile: voice; actual Chrome result passed; no retries/skips."
+    },
+    {
+      "id": "guide-6",
+      "passed": true,
+      "evidence": "a new guide is present in the actual Pagefind search index; actual Chrome result passed; no retries/skips."
+    }
+  ],
+  "rawReport": {
+    "path": "/tmp/public-manual-new-guides-browser.json",
+    "sha256": "921f49dd86189daa5a786f78ebc983673580b66e7dbb667c9009e3ef93dd38db"
+  },
+  "sourceTest": "apps/operator/e2e/public-manual.spec.ts",
+  "invocationProvenance": "Predecessor transcript function call call_eeT20CQyb1yHQAhFvfrGO0Yb, recovered from CODEX_HOME/sessions/2026/10/03/rollout-2026-10-03T00-30-34-01a10007-31e6-7b21-921f-f3596e3aa792.jsonl",
+  "plan": "public-manual-expansion-and-freshness-2026-10-03",
+  "workItem": "WI-10005841",
+  "origin": "https://app.papercusp.com"
+}

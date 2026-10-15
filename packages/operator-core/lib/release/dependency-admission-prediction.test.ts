@@ -14,6 +14,19 @@ const line = (verdict: string, links = 0, ref = REF) =>
   `DEPENDENCY_GENERATION_PREDICTION schema=1 ref=${ref} input=${INPUT} live=${LIVE} verdict=${verdict} links=${links}`;
 
 describe('WI-10004151: dependency-input path filter mirrors the shell manifest', () => {
+  it('uses maintained tooling while predicting the exact foreign target ref', async () => {
+    const command = vi.fn<PredictionCommand>().mockResolvedValue({ code: 0, stdout: `${line('live-match')}\n`, stderr: '' });
+    const out = await predictDependencyGeneration({
+      integrationRoot: '/app', toolingRoot: '/operator', ref: REF,
+      paths: ['package-lock.json'], run: command,
+    });
+    expect(command).toHaveBeenCalledWith('bash', [
+      '/operator/apps/operator/bin/release/dependency-generation.sh',
+      '--integration', '/app', '--predict-ref', REF,
+    ], expect.objectContaining({ cwd: '/app' }));
+    expect(out).toMatchObject({ verdict: 'live-match', ref: REF });
+  });
+
   it.each([
     ['package-lock.json', true],
     ['libs/papercusp/package-lock.json', true],

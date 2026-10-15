@@ -1,0 +1,207 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Pinned JNA upstream Ant Java/header and four-ABI configured-package preparation",
+  "framework": "operational",
+  "command": [
+    "make test-android-release-provenance",
+    "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ANT_HOME=$HOME/.gradle/wrapper/dists/gradle-8.14.3-bin/cv11ve7ro1n3o1j4so8xd9n66/gradle-8.14.3 tools/build-scripts/android-release-provenance.sh source-verify-build jna-configure"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "commandRepresentation": "The public command derives the home directory with $HOME. The unchanged retained raw receipt records the exact originally executed per-ABI command arguments, resolved runtime paths and fingerprints; this portability correction does not imply a rerun or a different original invocation.",
+  "startedAt": "2026-10-03T09:27:40.454121+00:00",
+  "finishedAt": "2026-10-03T09:27:53.994807+00:00",
+  "timestampSource": "Actual new jna-configure receipt timestamps delimit the real four-ABI preparation command. Maintained tests ran earlier; their retained final log is separately fingerprinted and was not replayed.",
+  "exitCode": 0,
+  "summary": "One new actual configuration attempt passed on committed mobile3726722b. Pinned upstream Ant generated JNI7.0.4 headers/checksum and configured packages for armeabi-v7a, arm64-v8a, x86 and x86_64. Independent read-only audit accounted for every453 regular ZIP member per ABI:445 original native source files, six header/property files, build.sh and one manifest-only native-payload stub JAR. The producer's verifiedArchiveFiles452 measures its required byte-comparison subset, not the entire ZIP population. The separate compiled Java classes are release8/major52.",
+  "scope": "Local pinned-source Ant Java/header and four-ABI source-package preparation only. No native dispatcher compilation/execution, new APK, complete standalone toolchain, original prebuilt invocation, license election, complete native/model rights or notices, source-recipient retrieval/build, signed exact candidate, current paired hosted CI, provider/reviewer, physical-phone or Play acceptance.",
+  "mobileSourceCommit": "3726722bcd5939dd82956a37182acf6852554e6e",
+  "upstreamSourceRevision": "1a91122853f6ab6f1fb2a4a284a6cf2ed8af0a4d",
+  "upstreamSourceTreeSha1": "fc89bf9afa33183da9d35028855f6648b7a8b07b",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/config/SOURCES.json",
+      "sha256": "6a3f21147871b6a7663ed97d411543faa69800ec3b2ded8896fb298d35e7df1c"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "db9f25d5887832aa704fbedbff1086b98e49fc4e86b7566d2412dce7e1497bd8"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "425a8474dda29e3ea7b7cb7c35fcf7fb89bf609e447d6871b528769b544cab8d"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "15f158329e1ac601c082e1c61a53418ebd01199e556e042f18e1989f3743fcc7"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "425a8474dda29e3ea7b7cb7c35fcf7fb89bf609e447d6871b528769b544cab8d"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "committed-source-and-preserved-inputs",
+      "passed": true,
+      "evidence": "Four source/test/review/pin files matched git show3726722b:path. The successful receipt's producer, source archive, reference, upstream tree and source-pin hashes matched retained bytes; the mobile tree was clean. The older536-source archive and input-only proof were neither re-exported nor replayed."
+    },
+    {
+      "id": "actual-four-abi-upstream-preparation",
+      "passed": true,
+      "evidence": "One real jna-configure invocation exited0 in13.54 seconds. Each ABI log and archive hash matched the raw receipt. Java17.0.20.1 and pinned Ant1.10.15 executed the unmodified upstream native-build-package target with explicit Android ABI arguments."
+    },
+    {
+      "id": "complete-configured-zip-population",
+      "passed": true,
+      "evidence": "Independent ZIP reads found453 regular members per ABI with no duplicates:445 native files, six header/property files, build.sh and one ABI-specific stub JAR. All445 native files byte-matched the original retained449-file native population minus exactly four upstream exclusions. No extra root/native/header member was left unaccounted."
+    },
+    {
+      "id": "generated-headers-and-script",
+      "passed": true,
+      "evidence": "Three generated header SHA-256 values per ABI matched the receipt. Packaged JNI properties were version7.0.4/checksum5fb98531302accd485c534c452dd952a; each build.sh carried OS=android, its exact ARCH, JNI version and checksum. The producer compares all six header/property files byte-for-byte during each original packaging iteration. The independent retained-ZIP audit checks recorded header digests, stable checksum/error bytes and per-ABI semantic properties; the four timestamp-bearing jni.properties files are intentionally distinct, not byte-compared against the final reused work directory."
+    },
+    {
+      "id": "stub-jar-versus-java-compilation",
+      "passed": true,
+      "evidence": "Each ABI-specific JAR byte-matched its generated original and contained only META-INF/MANIFEST.MF with Specification-Version7.0.4. The pinned build.xml writer creates this stub and build.sh would later add native binaries. Separately,126 compiled JNA classes and13 compiled Ant-helper classes were present; all139 had class major52. Stub JARs are not compiled Java libraries or native dispatchers."
+    },
+    {
+      "id": "pinned-runtime-and-recipe-inputs",
+      "passed": true,
+      "evidence": "Two helper JARs and four POM templates matched the pinned upstream Git blobs, sizes and receipt digests. Java/javac and two Ant execution JARs matched their recorded resolved-file digests. Ant execution JARs matched the source-ledger runtime pins."
+    },
+    {
+      "id": "maintained-recurrence-and-prerequisite-guards",
+      "passed": true,
+      "evidence": "Retained maintained-suite log0912 exited0: existing source/Rust/APK fixtures, eleven selected-source rejecting controls, fourteen input-consumption rejecting controls, six configuration-prerequisite rejecting controls and stale-success invalidation passed. The new hidden-source regression distinguishes explicit Ant exclusions, default Git-metadata exclusions and required hidden/ordinary files. This suite was not rerun to reconstruct evidence."
+    },
+    {
+      "id": "no-expanded-release-claim",
+      "passed": true,
+      "evidence": "Raw receipt explicitly records nativeCompilationExecuted:false, nativeExecutionPerformed:false, originalInvocationVerified:false, standaloneToolchainVerified:false and recipientRetrievalVerified:false. All original candidate/provider/reviewer/currentCI/phone/Play and rights/notices floors remain open."
+    }
+  ],
+  "rawReceipt": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configure-result.json",
+    "size": 15386,
+    "sha256": "a4a5655a0278e36b7505d182e8332c1467aae885388272613c02e0a947e9431d"
+  },
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-configure-actual-20261003-0930.log",
+      "size": 12816,
+      "sha256": "5bdd1b295dae9b842f3801b85a11604c72ce4bf4aebb57d3fe3233fe178917d3",
+      "exitCode": 0
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-configure-tests-20261003-0912.log",
+      "size": 1381,
+      "sha256": "5c3cfc3e4c49b8dd0a0318bf4838d0345c79d580c5063daebeeb7a90bf42b40f",
+      "exitCode": 0
+    }
+  ],
+  "preservedInputFingerprints": {
+    "sourceArchiveSha256": "ab1f03bd9933411192f7f29518a04123b74626ce11960e84125dce46e6224038",
+    "sourceReferenceSha256": "32efcdba359c159502484fd2fd3ce0fa605692264571c13404ea53779faf19e8",
+    "inputTreeSha256": "f6f599aed8687c8aa01563358d03b39ea39e1c663a7e0102a78af0b11a080707",
+    "sourcePinsSha256": "6a3f21147871b6a7663ed97d411543faa69800ec3b2ded8896fb298d35e7df1c",
+    "selectedSourceFiles": 536,
+    "selectedNativeFiles": 449
+  },
+  "configuration": {
+    "runtimeVersions": {
+      "java": "OpenJDK17.0.20.1",
+      "javac": "17.0.20.1",
+      "ant": "1.10.15"
+    },
+    "sourceWorkPath": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configure-aomjrxt7/source",
+    "upstreamExcludedNativeSources": [
+      "native/libffi/.gitattributes",
+      "native/libffi/.gitignore",
+      "native/libffi/config.guess",
+      "native/libffi/config.sub"
+    ],
+    "perAbiPopulation": {
+      "regularZipFiles": 453,
+      "producerRequiredByteComparisonSubset": 452,
+      "originalNativeSourceFiles": 445,
+      "generatedHeaderAndPropertyFiles": 6,
+      "configuredBuildScripts": 1,
+      "manifestOnlyStubJars": 1
+    },
+    "compiledClassfiles": {
+      "jna": 126,
+      "antHelpers": 13,
+      "majorVersion": 52
+    },
+    "packages": [
+      {
+        "abi": "armeabi-v7a",
+        "osPrefix": "android-armv7",
+        "makeArch": "armv7",
+        "archivePath": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configured-2026-10-03T0927404541210000-build-package-android-armv7-7.0.4.zip",
+        "archiveSize": 977911,
+        "archiveSha256": "507de8e3a432a3e456aa47f0520351989105e3e98438d73fc787343b242dee73",
+        "logPath": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configure-2026-10-03T0927404541210000-armeabi-v7a.log",
+        "logSha256": "562599b6de9129eb4922846252d031920ee3c154d0752de5ba0c42c61c302437",
+        "buildScriptSha256": "761d5a02b0b3f74d5b43a10e1a3639740e62da6fb2f8b8ae61d0057d9e109b1c",
+        "stubJarSha256": "00e0ec3b996359a4d6968400986234523be7b20f18fed2a9e90c2b1ff3cef4a3"
+      },
+      {
+        "abi": "arm64-v8a",
+        "osPrefix": "android-aarch64",
+        "makeArch": "aarch64",
+        "archivePath": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configured-2026-10-03T0927404541210000-build-package-android-aarch64-7.0.4.zip",
+        "archiveSize": 979956,
+        "archiveSha256": "8526062c252b1603719c47caa4864c8c8ed999ec539d47faedc5b886763c2539",
+        "logPath": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configure-2026-10-03T0927404541210000-arm64-v8a.log",
+        "logSha256": "9c62857feaa057af68d76c7c2b79fa235c1550fe16aac76ac3bbda2f42c98969",
+        "buildScriptSha256": "6664daf32308890827b656efe7fa40f0bcc18734bf5f23d6cf3af804548e9ff4",
+        "stubJarSha256": "20a005f7c3ee5951771c6b824a26ad8f4f374e17c127b10744c256d54b32c610"
+      },
+      {
+        "abi": "x86",
+        "osPrefix": "android-x86",
+        "makeArch": "x86",
+        "archivePath": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configured-2026-10-03T0927404541210000-build-package-android-x86-7.0.4.zip",
+        "archiveSize": 975867,
+        "archiveSha256": "6c2daab248a342e192b923785d19c453a44a087e464774c004b9dd81902f55ba",
+        "logPath": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configure-2026-10-03T0927404541210000-x86.log",
+        "logSha256": "cabba9fb28d700e197d87bc9a42ea0fdc6c02795f116cca1304a2b9466e472a0",
+        "buildScriptSha256": "4e261c3e4b6a61cefeb32be88969b77690374756773ba1485fb37ef62b37871a",
+        "stubJarSha256": "b28372d18306ae0f5314cbddc794d9f0f7296d81f0cd3e0e322b3a8682f92bf7"
+      },
+      {
+        "abi": "x86_64",
+        "osPrefix": "android-x86-64",
+        "makeArch": "x86-64",
+        "archivePath": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configured-2026-10-03T0927404541210000-build-package-android-x86-64-7.0.4.zip",
+        "archiveSize": 978933,
+        "archiveSha256": "f1d8bf10656f193e9098c993c09242b72b3ef8350c69a9ba6ab13ab16f8012ca",
+        "logPath": "papercup-rust-mobile/android/app/build/outputs/papercusp-jna-configure-2026-10-03T0927404541210000-x86_64.log",
+        "logSha256": "35e3124d7da3ad9ea4f35691c60aaf05c92e7366bf923424127b11f050fcdb85",
+        "buildScriptSha256": "e6e111d6d8dda29200cf3a15fefc971703f83f2ee8ae0d3669dc8716d0c83d37",
+        "stubJarSha256": "30bb5270a50a317c38159f4f5a385fd680967041d4b1937f9daf1ae16f335d22"
+      }
+    ]
+  },
+  "previousFailedAttempt": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-jna-configure-actual-20261003-0909.log",
+    "sha256": "78fd6ca2515b0391f7de594d0063b3f1c52775287978b3bba4021b1d662b4ce9",
+    "disposition": "Preserved original verifier refusal after successful armv7 Ant generation; shared Ant default-exclusion census and maintained hidden-source regression were corrected before this new actual attempt."
+  },
+  "auditCorrections": [
+    "Read-only caller audit assertions were rejected and corrected without rerunning Ant: verifiedArchiveFiles452 is a required subset, not the full453-file ZIP population; the additional ABI JAR is a manifest-only native-payload stub, not compiled Java classes; per-ABI jni.properties has distinct generated timestamp comments and must not be byte-compared against the last reused work directory. These discoveries were captured immediately as observations before evidence registration."
+  ],
+  "nativeCompilation": false,
+  "nativeExecution": false,
+  "newApkBuilt": false,
+  "originalPrebuiltInvocationVerified": false,
+  "licenseElectionVerified": false,
+  "standaloneToolchainVerified": false,
+  "recipientRetrievalAcceptance": false,
+  "signedCandidateAcceptance": false
+}

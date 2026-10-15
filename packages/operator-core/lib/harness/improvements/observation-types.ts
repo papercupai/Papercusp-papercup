@@ -1,4 +1,5 @@
 import { continuityProbeShapeSchema, type ContinuityProbe } from '../../continuity-probes';
+import { CONTINUITY_PROBE_MAX_PER_WAKE } from '../../agent-tools/limits';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 
 /**
@@ -37,10 +38,19 @@ import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
 export const OBSERVATION_RATING_SCALE = ['healthy', 'degraded', 'broken', 'unknown'] as const;
 export type ObservationRating = (typeof OBSERVATION_RATING_SCALE)[number];
 
-/** Explicit epistemic reason for an unknown rating. */
+/**
+ * Explicit epistemic reason for an unknown rating.
+ *
+ * `not-assessed` = the GRADER has not (yet) assessed this criterion — unfinished
+ * grading, not a measurement failure. It must never be filed as
+ * `instrument-unavailable`: on the 2026-10-08 goal-mode-e2e card 26 of 37 unknowns
+ * were unfinished grading mislabelled as broken instruments (EI-25425148387198503),
+ * which sent the owner hunting for instrument defects that did not exist.
+ */
 export const OBSERVATION_UNKNOWN_REASONS = [
   'idle',
   'not-exercised',
+  'not-assessed',
   'instrument-unavailable',
   'retention-gap',
   'generation-mismatch',
@@ -101,6 +111,19 @@ export interface ObservationRatingEntry {
   /** The explicit alternative to `remediation`: a reasoned, OWNED decision not to
    *  act on this poor rating (≥10 chars — "n/a" is not a decision). */
   disregard?: string;
+  /** test-rubric-unification-2026-10-12 P-007 (D-004 rule 2): server-stamped when
+   *  `scorecards:emit { fromLedger }` rated this criterion from a results-ledger row.
+   *  Never accepted from a caller (the emit rating schema is strict). */
+  ratedFrom?: 'ledger';
+  /** The ledger row that decided a `ratedFrom:'ledger'` rating. */
+  ledgerResult?: ObservationLedgerResult;
+}
+
+/** One harness_shared.test_runs rubric-check row, as cited by a ledger-filled rating. */
+export interface ObservationLedgerResult {
+  testRunId: number;
+  value: number | string | boolean | null;
+  unit: string | null;
 }
 
 /**
@@ -240,6 +263,26 @@ export interface SpecTestAdequacyEvaluatorBuild {
   version: string;
 }
 
+/** Server-measured provenance for one selected evidence binding. */
+export interface SpecTestAdequacyBindingMeasurement {
+  bindingId: number;
+  evidenceKind: string;
+  evidenceRef: string;
+  status: 'measured' | 'unavailable' | 'unmeasured';
+  /** Commit whose repository objects were measured; absent for ledger or non-git measurements. */
+  measuredAtCommit?: string;
+}
+
+/** Measurement summary returned by the evaluator and pinned in newly minted recipes. */
+export interface SpecTestAdequacyMeasurementEvidence {
+  status: 'none' | 'measured' | 'partial' | 'unmeasured' | 'degraded';
+  selectedBindings: number;
+  measuredBindings: number;
+  unavailableBindings: Array<{ id: number; evidenceKind: string; evidenceRef: string; reason: string }>;
+  withoutMeasurementBasis: Array<{ id: number; evidenceKind: string; evidenceRef: string }>;
+  bindings: SpecTestAdequacyBindingMeasurement[];
+}
+
 /**
  * The canonical replay contract emitted with a spec-test-adequacy scorecard.
  * It records both the exact clause/evidence selection and the caller's
@@ -293,6 +336,8 @@ export interface SpecTestAdequacyRerunRecipe {
     workItemIds?: string[];
     /** Preserve exact immutable evidence identities so superseded runs stay excluded. */
     evidenceRefs?: string[];
+    /** Preserve exact immutable binding rows so later rows reusing a ref cannot widen replay. */
+    bindingIds?: number[];
     /** Preserve an explicit plan-item selector instead of widening the replay. */
     planItemIds?: string[];
     /** Bound the evidence page for pressure-safe judge replays. */
@@ -311,12 +356,15 @@ export interface SpecTestAdequacyRerunRecipe {
     specId: string;
     specRevision: number;
     specFingerprint: string;
+    bindingIds?: number[];
     evidence: Array<{ evidenceKind: string; evidenceRef: string }>;
   };
   current: {
     supplied: boolean;
     fingerprints: SpecTestAdequacyCurrentFingerprint[];
   };
+  /** Server-derived binding measurement snapshot; absent only on historical recipes. */
+  measurementEvidence?: SpecTestAdequacyMeasurementEvidence;
   derivation: {
     kind: 'listSpecEvidence.currentness';
     classifier: 'classifySpecEvidenceCurrentness';
@@ -355,6 +403,9 @@ export interface ScorecardReleaseGateBinding {
  * observations carry none of them.
  */
 export interface StructuredObservation {
+  /** test-rubric-unification-2026-10-12 P-007: the card was emitted with `fromLedger`, so
+   *  every executable criterion's rating is a `ratedFrom:'ledger'` entry. Server-stamped. */
+  ledgerFilled?: boolean;
   // ── v1 free-text fields (D-005) — unchanged, still first-class.
   kind?: ObservationKind;
   scope?: ObservationScope;
@@ -431,6 +482,8 @@ export interface StructuredObservation {
    * ledger for audit, but scorecard reads exclude it from the live sample by default.
    */
   supersedes?: string;
+  /** Preserved pre-repair scorecard for a comparable re-grade; never a correction edge. */
+  baselineRef?: string;
   /** A deliberate withdrawal of this scorecard, preserving the original evidence. */
   retracted?: ScorecardRetraction;
   /** Deterministic instrument snapshots attached by scorecards:emit/evaluate. */
@@ -516,6 +569,14 @@ export interface ScorecardTestsCheckRun {
   measuredAt: string;
   /** Bounded failing-test names ("file: test"), only on a 'fail' verdict. */
   failures?: string[];
+  /**
+   * The test-case filter the check named (one file plus a describe/it title path). When
+   * present, verdict/passed/failed describe ONLY the matched cases, resolved against the
+   * per-case ledger (test_case_runs) — never the whole file (test-rubric-unification P-002).
+   */
+  testName?: string;
+  /** How many recorded cases the testName filter matched (≥1; zero matches refuse the emit). */
+  matchedCases?: number;
 }
 
 /**
@@ -526,7 +587,19 @@ export interface ScorecardTestsCheckRun {
  * unknown/error results refuse the emit rather than becoming an unjudgeable
  * scorecard.
  */
-export interface ScorecardProbeCheckRun {
+export type ScorecardProbeCheckRun = ScorecardSingleProbeCheckRun | ScorecardAllProbeCheckRun;
+
+export interface ScorecardAllProbeCheckRun {
+  kind: 'probe';
+  /** Complete independently executed child records; never a boolean-only attestation. */
+  all: ScorecardSingleProbeCheckRun[];
+  verdict: 'pass' | 'fail';
+  status: 'fresh' | 'stale';
+  executed: true;
+  measuredAt: string;
+}
+
+export interface ScorecardSingleProbeCheckRun {
   kind: 'probe';
   /** The schema-versioned probe that was executed. */
   probe: ContinuityProbe;
@@ -700,7 +773,7 @@ export type ObservationSubjectKind =
  * graded; the source author must re-emit it before another audit can make progress.
  */
 export interface ScorecardGradingAudit {
-  /** `cancelled` means the source scorecard was retracted before its audit settled. */
+  /** `cancelled` means the source scorecard was retracted or superseded before its audit settled. */
   state: 'pending' | 'awaiting-reemit' | 'passed' | 'failed' | 'cancelled';
   /** The meta-rubric the audit grades against (grading-integrity). */
   metaRubricRef: string;
@@ -715,6 +788,15 @@ export interface ScorecardGradingAudit {
    * same pending scorecard; an expired reservation may be replaced safely.
    */
   dispatchReservation?: {
+    key: string;
+    reservedAt: string;
+  };
+  /**
+   * Latest fencing epoch, retained when the active dispatch reservation is
+   * released. A lapsed auditor may settle only while this still matches its
+   * exact lease; every newer dispatch replaces the epoch.
+   */
+  lastDispatchReservation?: {
     key: string;
     reservedAt: string;
   };
@@ -866,6 +948,9 @@ export class ObservationEvidenceError extends Error {
   }
 }
 
+const OBSERVATION_EVIDENCE_TRUNCATION_MARKER =
+  /(?:\[TRUNCATED\s+\+\s*(?:\d+|N)\s+chars\b[^\]]*\]|_projection\.cursor\b)/i;
+
 /**
  * Enforce D-002's "MANDATORY evidence per rated criterion": every rating in a
  * structured observation MUST carry non-empty `rating` + `evidence`, and a
@@ -898,6 +983,11 @@ export function validateObservationRatings(obs: StructuredObservation | undefine
       throw new ObservationEvidenceError(
         `observation.ratings['${criterion}'] is missing required evidence — a rubric rating must cite ` +
           'concrete evidence (a metric, a query result, a reference)',
+      );
+    }
+    if (OBSERVATION_EVIDENCE_TRUNCATION_MARKER.test(String(entry.evidence))) {
+      throw new ObservationEvidenceError(
+        `observation.ratings['${criterion}'].evidence contains a projection/truncation marker; recover the full tool result before citing it`,
       );
     }
   }
@@ -1143,6 +1233,16 @@ function asAcceptanceSeatSuccession(v: unknown): AcceptanceSeatSuccession | unde
  * by the READ side to surface the structured view onto a candidate without a
  * hard dependency on how it was written.
  */
+function asLedgerResult(v: unknown): ObservationLedgerResult | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const r = v as Record<string, unknown>;
+  if (typeof r.testRunId !== 'number' || !Number.isInteger(r.testRunId)) return null;
+  const value = r.value;
+  if (!(value === null || typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean')) return null;
+  if (!(r.unit === null || typeof r.unit === 'string')) return null;
+  return { testRunId: r.testRunId, value, unit: r.unit };
+}
+
 export function asStructuredObservation(v: unknown): StructuredObservation | undefined {
   if (!v || typeof v !== 'object') return undefined;
   const o = v as Record<string, unknown>;
@@ -1154,6 +1254,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (typeof o.sourceHive === 'string' && o.sourceHive.trim()) out.sourceHive = o.sourceHive;
   if (typeof o.targetHive === 'string' && o.targetHive.trim()) out.targetHive = o.targetHive;
   if (typeof o.rubricRef === 'string' && o.rubricRef.trim()) out.rubricRef = o.rubricRef;
+  if (o.ledgerFilled === true) out.ledgerFilled = true;
   if (typeof o.rubricRevision === 'number' && Number.isFinite(o.rubricRevision)) {
     out.rubricRevision = o.rubricRevision;
   }
@@ -1239,6 +1340,8 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           ...(typeof e.suggestion === 'string' && e.suggestion.trim() ? { suggestion: e.suggestion } : {}),
           ...(typeof e.remediation === 'string' && e.remediation.trim() ? { remediation: e.remediation } : {}),
           ...(typeof e.disregard === 'string' && e.disregard.trim() ? { disregard: e.disregard } : {}),
+          ...(e.ratedFrom === 'ledger' ? { ratedFrom: 'ledger' as const } : {}),
+          ...(asLedgerResult(e.ledgerResult) ? { ledgerResult: asLedgerResult(e.ledgerResult)! } : {}),
         };
       }
     }
@@ -1434,6 +1537,23 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
     // drops the recipe instead of silently widening its replay.
     const workItemIds = optionalSelector(rawArgs?.workItemIds, 500, 200);
     const evidenceRefs = optionalSelector(rawArgs?.evidenceRefs, 500, 2000);
+    const optionalBindingIds = (value: unknown): number[] | null | undefined => {
+      if (value === undefined) return undefined;
+      if (
+        !Array.isArray(value) ||
+        value.length > 500 ||
+        value.some((id) => typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)
+      )
+        return null;
+      return [...new Set(value as number[])].sort((a, b) => a - b);
+    };
+    const argsBindingIds = optionalBindingIds(rawArgs?.bindingIds);
+    const selectionBindingIds = optionalBindingIds(selection?.bindingIds);
+    const bindingIds = selectionBindingIds ?? argsBindingIds;
+    const bindingIdsMismatch =
+      argsBindingIds !== undefined &&
+      selectionBindingIds !== undefined &&
+      JSON.stringify(argsBindingIds) !== JSON.stringify(selectionBindingIds);
     const planItemIds = optionalSelector(rawArgs?.planItemIds, 200, 200, /^P-\d{3,}$/);
     const specRevision =
       rawArgs?.specRevision === undefined
@@ -1485,6 +1605,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       fingerprints.every((entry): entry is SpecTestAdequacyCurrentFingerprint => entry !== null) &&
       workItemIds !== null &&
       evidenceRefs !== null &&
+      argsBindingIds !== null &&
+      selectionBindingIds !== null &&
+      !bindingIdsMismatch &&
       planItemIds !== null &&
       specRevision !== null &&
       specFingerprint !== null &&
@@ -1510,6 +1633,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           specIds: [selection.specId],
           ...(workItemIds ? { workItemIds } : {}),
           ...(evidenceRefs ? { evidenceRefs } : {}),
+          ...(bindingIds !== undefined && bindingIds !== null ? { bindingIds } : {}),
           ...(planItemIds ? { planItemIds } : {}),
           ...(specRevision !== undefined ? { specRevision } : {}),
           ...(specFingerprint !== undefined ? { specFingerprint } : {}),
@@ -1522,6 +1646,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           specId: selection.specId,
           specRevision: Number(selection.specRevision),
           specFingerprint: selection.specFingerprint,
+          ...(bindingIds !== undefined && bindingIds !== null ? { bindingIds } : {}),
           evidence,
         },
         current: { supplied: current.supplied, fingerprints },
@@ -1538,6 +1663,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   }
   if (typeof o.supersedes === 'string' && o.supersedes.trim()) {
     out.supersedes = o.supersedes;
+  }
+  if (typeof o.baselineRef === 'string' && o.baselineRef.trim()) {
+    out.baselineRef = o.baselineRef;
   }
   if (o.retracted && typeof o.retracted === 'object' && !Array.isArray(o.retracted)) {
     const r = o.retracted as Record<string, unknown>;
@@ -1573,7 +1701,11 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (o.gradingAudit && typeof o.gradingAudit === 'object' && !Array.isArray(o.gradingAudit)) {
     const g = o.gradingAudit as Record<string, unknown>;
     if (
-      (g.state === 'pending' || g.state === 'passed' || g.state === 'failed' || g.state === 'cancelled') &&
+      (g.state === 'pending' ||
+        g.state === 'awaiting-reemit' ||
+        g.state === 'passed' ||
+        g.state === 'failed' ||
+        g.state === 'cancelled') &&
       typeof g.metaRubricRef === 'string' &&
       g.metaRubricRef.trim() &&
       typeof g.stampedAt === 'string' &&
@@ -1586,6 +1718,30 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       const reservationKey = typeof dispatchReservation?.key === 'string' ? dispatchReservation.key : undefined;
       const reservationTimestamp =
         typeof dispatchReservation?.reservedAt === 'string' ? dispatchReservation.reservedAt : undefined;
+      const lastDispatchReservation =
+        g.lastDispatchReservation && typeof g.lastDispatchReservation === 'object' && !Array.isArray(g.lastDispatchReservation)
+          ? (g.lastDispatchReservation as Record<string, unknown>)
+          : undefined;
+      const lastReservationKey =
+        typeof lastDispatchReservation?.key === 'string' ? lastDispatchReservation.key : undefined;
+      const lastReservationTimestamp =
+        typeof lastDispatchReservation?.reservedAt === 'string' ? lastDispatchReservation.reservedAt : undefined;
+      const rawReemitRequired =
+        g.reemitRequired && typeof g.reemitRequired === 'object' && !Array.isArray(g.reemitRequired)
+          ? (g.reemitRequired as Record<string, unknown>)
+          : undefined;
+      const reemitRequired =
+        rawReemitRequired?.code === 'grading_audit_evaluator_changed' &&
+        typeof rawReemitRequired.at === 'string' &&
+        rawReemitRequired.at.trim() &&
+        typeof rawReemitRequired.reason === 'string' &&
+        rawReemitRequired.reason.trim()
+          ? {
+              code: 'grading_audit_evaluator_changed' as const,
+              at: rawReemitRequired.at,
+              reason: rawReemitRequired.reason,
+            }
+          : undefined;
       out.gradingAudit = {
         state: g.state,
         metaRubricRef: g.metaRubricRef,
@@ -1596,6 +1752,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         ...(typeof g.criteriaHash === 'string' && g.criteriaHash.trim()
           ? { criteriaHash: g.criteriaHash }
           : {}),
+        ...(reemitRequired ? { reemitRequired } : {}),
         ...(reservationKey &&
         reservationKey.trim() &&
         reservationTimestamp &&
@@ -1604,6 +1761,17 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
               dispatchReservation: {
                 key: reservationKey,
                 reservedAt: reservationTimestamp,
+              },
+            }
+          : {}),
+        ...(lastReservationKey &&
+        lastReservationKey.trim() &&
+        lastReservationTimestamp &&
+        lastReservationTimestamp.trim()
+          ? {
+              lastDispatchReservation: {
+                key: lastReservationKey,
+                reservedAt: lastReservationTimestamp,
               },
             }
           : {}),
@@ -1697,6 +1865,22 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         // live contract changes, so the READ path checks only the durable probe
         // shape (not its current registry revision). A malformed shape is
         // discarded rather than silently surfacing as executable evidence.
+        if (r.all !== undefined) {
+          if (r.probe !== undefined || !Array.isArray(r.all) || r.all.length === 0 || r.all.length > CONTINUITY_PROBE_MAX_PER_WAKE) continue;
+          const all: ScorecardSingleProbeCheckRun[] = [];
+          for (const child of r.all) {
+            // Reuse the historical single-probe reader, forbidding nested groups.
+            if (!child || typeof child !== 'object' || Array.isArray(child) || 'all' in child) break;
+            const normalized = asStructuredObservation({ checkRuns: { child } })?.checkRuns?.child;
+            if (!normalized || normalized.kind !== 'probe' || !('probe' in normalized)) break;
+            all.push(normalized);
+          }
+          if (all.length !== r.all.length) continue;
+          const pass = all.every(child => child.verdict === 'pass');
+          if (r.verdict !== (pass ? 'pass' : 'fail') || r.status !== (pass ? 'fresh' : 'stale')) continue;
+          runs[key] = { kind: 'probe', all, verdict: r.verdict, status: r.status, executed: true, measuredAt: r.measuredAt };
+          continue;
+        }
         const probe = continuityProbeShapeSchema.safeParse(r.probe);
         if (!probe.success) continue;
         // `observed` is intentionally scalar: runContinuityProbeBatch redacts
@@ -1744,6 +1928,10 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           measuredAt: r.measuredAt,
           ...(Array.isArray(r.failures)
             ? { failures: r.failures.filter((x): x is string => typeof x === 'string') }
+            : {}),
+          ...(typeof r.testName === 'string' && r.testName.trim() !== '' ? { testName: r.testName } : {}),
+          ...(typeof r.matchedCases === 'number' && Number.isSafeInteger(r.matchedCases) && r.matchedCases > 0
+            ? { matchedCases: r.matchedCases }
             : {}),
         };
       } else if (

@@ -24,11 +24,13 @@ import {
   estimateContextTokensForOwner,
   estimateContextWindowForOwner,
   observedPromptFloorForOwner,
+  observeHealthyClaudeTranscriptForOwner,
   resolveLaunchCompactionLimitForOwner,
   resolveModelSpecForOwner,
   resolveSessionRefReconciled,
 } from '../compaction-usage';
 import { clearContextEstimate, setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
+import { bootBudgetLimit } from '../boot-budget';
 import {
   COMPACTION_LIMIT_DEFAULT_1M_CAP,
   COMPACTION_OVERSHOOT_FACTOR,
@@ -39,14 +41,244 @@ import {
   selfSetCeilingForWindow,
   supersededDerivedCompactionLimits,
   MODEL_WINDOW_1M,
+  MODEL_WINDOW_DEFAULT,
   modelWindowForSpec,
+  isDefault1mModelSpec,
   type ModelTier,
 } from '../agent-config-constants';
 import { listActiveClaimFreshnessForOwner } from '../work-item-claims';
 import { classifyStaleClaims, type StaleClaim } from '../agent-tools/coordination/tools/inbox-flush-gate';
-import { recordContextUsage, setContextGaugeEnabled } from './context-usage-cache';
+import { clearContextUsage, recordContextUsage, setContextGaugeEnabled } from './context-usage-cache';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../agent-tools/coordination/compaction-recovery';
 import { addressContinuationToOwner } from '../carry-respawn-addressing';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { coordScopeReady, coordScopeWorkspace } from '../agent-tools/coordination/log';
+import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-log-gc';
+import { hostname } from 'node:os';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { observeFallback } from '../degradation/fallback-observations';
+import type { ResolveResumeResult } from '../agent-launch-core';
+import type {
+  CompactionForceSuccessorInput,
+  CompactionForceSuccessorResult,
+} from './compaction-force-successor';
+
+type CompactionConditionKind = 'context-death' | 'tool-reference-death' | 'compaction-stranding' |
+  'dark-presence' | 'dark-telemetry' | 'implausible-reading' | 'frozen-codex-reading' |
+  'default-1m-served-small' | 'unsatisfiable-limit' | 'carry-respawn-loop' | 'over-limit' |
+  'force-unavailable' | 'stale-cutover';
+export interface CompactionConditionDeps {
+  rail?: AlarmAttentionDeps;
+  readOpenConditions?: () => Promise<Array<{ conditionKey: string; openedAtMs: number }>>;
+  observeHealthyTranscript?: typeof observeHealthyClaudeTranscriptForOwner;
+}
+export function compactionConditionKey(workspace: string, owner: string,
+  kind: CompactionConditionKind, subject = ''): string {
+  return 'alarm:compaction-compliance:' + encodeURIComponent(JSON.stringify([workspace, owner, kind, subject]));
+}
+async function raiseCompactionCondition(workspace: string, owner: string, kind: CompactionConditionKind,
+  detail: string, deps: CompactionConditionDeps, subject = ''): Promise<void> {
+  if (!workspace?.trim() || !owner?.trim()) return;
+  const event = { conditionKey: compactionConditionKey(workspace, owner, kind, subject), oneShot: true,
+    summary: `Compaction ${kind}: ${owner}`, body: `Workspace ${workspace}; owner ${owner}; ${detail}` };
+  try {
+    if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+    else await broadcastSevereEvent(event);
+  } catch (error) { console.warn(`[compaction-watchdog] condition delivery failed: ${String(error)}`); }
+}
+async function readOpenCompactionConditions(
+  sql?: Sql,
+  now = Date.now(),
+): Promise<Array<{ conditionKey: string; openedAtMs: number }>> {
+  // The generic conditions reader is deliberately capped at the newest 25k
+  // envelopes across every subsystem. Compaction alarms are one-shot, so an
+  // old open episode can fall out of that window while its owner's adv_session
+  // is later marked ended. Read this family directly for lifecycle cleanup so
+  // unrelated condition traffic cannot hide an episode from recovery.
+  if (sql) {
+    try {
+      const sinceBound = new Date(now - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+      await coordScopeReady();
+      const workspaceId = coordScopeWorkspace();
+      const familyPrefix = 'alarm:compaction-compliance:%';
+      const rows = await sql<Array<{ condition_key: string; opened_at: string | Date }>>`
+        WITH raw AS (
+          SELECT id, ts, body
+            FROM harness_shared.coord_event_log
+           WHERE workspace_id = ${workspaceId}
+             AND surface = 'messages'
+             AND ts >= ${sinceBound}
+             AND (
+               body->>'condition_key' LIKE ${familyPrefix}
+               OR body->>'resolves_condition' LIKE ${familyPrefix}
+               OR (
+                 jsonb_typeof(body->'resolves_conditions') = 'array'
+                 AND EXISTS (
+                   SELECT 1
+                     FROM jsonb_array_elements_text(body->'resolves_conditions') AS resolved(condition_key)
+                    WHERE resolved.condition_key LIKE ${familyPrefix}
+                 )
+               )
+             )
+        ), events AS (
+          SELECT id, ts, body->>'condition_key' AS condition_key, false AS resolved
+            FROM raw
+           WHERE body->>'condition_key' LIKE ${familyPrefix}
+             AND NOT (body ? 'resolves_condition' OR body ? 'resolves_conditions')
+          UNION ALL
+          SELECT id, ts, body->>'resolves_condition' AS condition_key, true AS resolved
+            FROM raw
+           WHERE body->>'resolves_condition' LIKE ${familyPrefix}
+          UNION ALL
+          SELECT raw.id, raw.ts, resolved.condition_key, true AS resolved
+            FROM raw
+            CROSS JOIN LATERAL jsonb_array_elements_text(
+              CASE WHEN jsonb_typeof(raw.body->'resolves_conditions') = 'array'
+                THEN raw.body->'resolves_conditions' ELSE '[]'::jsonb END
+            ) AS resolved(condition_key)
+           WHERE resolved.condition_key LIKE ${familyPrefix}
+        ), latest AS (
+          SELECT DISTINCT ON (condition_key) condition_key, ts, resolved
+            FROM events
+           ORDER BY condition_key, id DESC
+        )
+        SELECT condition_key, ts AS opened_at
+          FROM latest
+         WHERE NOT resolved
+      `;
+      return rows
+        .map((row) => ({ conditionKey: row.condition_key, openedAtMs: Date.parse(String(row.opened_at)) }))
+        .filter((row) => Number.isFinite(row.openedAtMs));
+    } catch (error) {
+      // A failed lifecycle-condition read is unknown state; recovery remains
+      // fail-open and the normal sweep may retry on the next tick.
+      console.warn(`[compaction-watchdog] ended-session condition read failed: ${String(error)}`);
+      return [];
+    }
+  }
+  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
+  return computeConditionStates(await readConditionEnvelopes())
+    .filter(row => row.open && row.condition_key.startsWith('alarm:compaction-compliance:'))
+    .map(row => ({ conditionKey: row.condition_key,
+      openedAtMs: row.open_since ? Date.parse(row.open_since) : Number.NaN }));
+}
+async function compactionEpisodeReader(deps: CompactionConditionDeps) {
+  let rows: Array<{ conditionKey: string; openedAtMs: number }> = [];
+  try { rows = await (deps.readOpenConditions ?? readOpenCompactionConditions)(); } catch { /* unknown */ }
+  return (workspace: string, owner: string, kind: CompactionConditionKind) => {
+    if (!Array.isArray(rows)) return [];
+    return rows.filter(row => {
+      try {
+        const scope = JSON.parse(decodeURIComponent(row.conditionKey.slice('alarm:compaction-compliance:'.length)));
+        return row.conditionKey.startsWith('alarm:compaction-compliance:') && Array.isArray(scope) &&
+          scope.length === 4 && scope[0] === workspace && scope[1] === owner && scope[2] === kind &&
+          typeof scope[3] === 'string' && (kind === 'compaction-stranding' || kind === 'stale-cutover' || scope[3] === '') &&
+          Number.isFinite(row.openedAtMs) && row.openedAtMs > 0;
+      } catch { return false; }
+    });
+  };
+}
+async function recoverCompactionEpisodes(episodes: Array<{ conditionKey: string; openedAtMs: number }>,
+  measuredAtMs: number, deps: CompactionConditionDeps): Promise<void> {
+  if (!Number.isFinite(measuredAtMs) || measuredAtMs <= 0 || measuredAtMs > Date.now()) return;
+  for (const episode of episodes) {
+    if (episode.openedAtMs > measuredAtMs || episodes.filter(row => row.conditionKey === episode.conditionKey).length !== 1) continue;
+    try {
+      const resolved = await resolveAlarm(episode.conditionKey, 'compaction-compliance-watchdog', deps.rail);
+      if (!resolved) {
+        console.warn(`[compaction-watchdog] condition recovery returned false for exact key ${episode.conditionKey}`);
+      }
+    } catch (error) {
+      console.warn(`[compaction-watchdog] condition recovery failed for ${episode.conditionKey}: ${String(error)}`);
+    }
+  }
+}
+
+type ParsedCompactionCondition = {
+  workspace: string;
+  owner: string;
+  kind: CompactionConditionKind;
+  subject: string;
+};
+
+/** Decode the owner scope carried by a compaction condition key. */
+function parseCompactionConditionKey(conditionKey: string): ParsedCompactionCondition | null {
+  if (!conditionKey.startsWith('alarm:compaction-compliance:')) return null;
+  try {
+    const scope = JSON.parse(decodeURIComponent(conditionKey.slice('alarm:compaction-compliance:'.length)));
+    if (!Array.isArray(scope) || scope.length !== 4 ||
+        typeof scope[0] !== 'string' || typeof scope[1] !== 'string' ||
+        typeof scope[2] !== 'string' || typeof scope[3] !== 'string') return null;
+    return { workspace: scope[0], owner: scope[1], kind: scope[2] as CompactionConditionKind, subject: scope[3] };
+  } catch {
+    return null;
+  }
+}
+
+/** Current-signal conditions are obsolete when their owner has no active
+ * adv-session. Conditions that need an operator or successor action remain
+ * open until their own recovery evidence arrives. */
+const END_RESOLVABLE_SESSION_SIGNAL_KINDS = new Set<CompactionConditionKind>([
+  'dark-telemetry',
+  'over-limit',
+  'force-unavailable',
+  'implausible-reading',
+  'frozen-codex-reading',
+  'default-1m-served-small',
+  'unsatisfiable-limit',
+]);
+
+/**
+ * Resolve one-shot episodes that describe a live session's current signal
+ * after that launched session has ended. Condition-staleness deliberately
+ * does not infer recovery from silence for one-shot conditions. That is right
+ * while the owner is alive, but it strands these episodes when the session
+ * exits: the normal sweep only visits heartbeat-fresh presence rows. Query the
+ * authoritative adv-session lifecycle for owners named by eligible episodes
+ * and resolve only when the read proves there is no unended session. A failed
+ * read is fail-open. Conditions that imply an operator/successor action are
+ * excluded because session end alone does not prove that action happened.
+ */
+async function recoverEndedSessionSignalEpisodes(
+  sql: Sql,
+  episodes: Array<{ conditionKey: string; openedAtMs: number }>,
+  deps: CompactionConditionDeps,
+): Promise<void> {
+  const parsed = episodes
+    .map((episode) => ({ episode, scope: parseCompactionConditionKey(episode.conditionKey) }))
+    .filter((row): row is { episode: { conditionKey: string; openedAtMs: number }; scope: ParsedCompactionCondition } =>
+      row.scope != null && END_RESOLVABLE_SESSION_SIGNAL_KINDS.has(row.scope.kind) &&
+      row.scope.subject === '');
+  if (parsed.length === 0) return;
+  const owners = [...new Set(parsed.map((row) => row.scope.owner))];
+  let activeOwners: Array<{ owner_id: string }>;
+  try {
+    activeOwners = await sql<{ owner_id: string }[]>`
+      SELECT DISTINCT coord_owner_id AS owner_id
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ANY(${owners}::text[])
+         AND ended_at IS NULL
+         AND ended_by IS NULL
+    `;
+  } catch (error) {
+    console.warn(`[compaction-watchdog] ended-session lifecycle read failed: ${String(error)}`);
+    return;
+  }
+  const active = new Set(activeOwners.map((row) => row.owner_id));
+  const endedEpisodesByOwner = new Map<string, Array<{ conditionKey: string; openedAtMs: number }>>();
+  for (const row of parsed) {
+    if (active.has(row.scope.owner)) continue;
+    const ownerEpisodes = endedEpisodesByOwner.get(row.scope.owner) ?? [];
+    ownerEpisodes.push(row.episode);
+    endedEpisodesByOwner.set(row.scope.owner, ownerEpisodes);
+  }
+  for (const ownerEpisodes of endedEpisodesByOwner.values()) {
+    // Keep recoverCompactionEpisodes' duplicate-key guard intact: duplicate
+    // snapshots make the subject ambiguous, even when lifecycle says ended.
+    await recoverCompactionEpisodes(ownerEpisodes, Date.now(), deps);
+  }
+}
 
 /** How often the watchdog sweeps. Off the hot path, so a relaxed cadence. */
 const DEFAULT_INTERVAL_MS = 2 * 60_000; // 2 min
@@ -169,14 +401,20 @@ const carryRespawnStreak = new Map<
 >();
 /** One loop-detected escalation per owner per process; un-deduped on failure. */
 const carryRespawnLoopEscalated = new Set<string>();
-/** EI-237397: one durable escalation per owner when the observed fixed prompt
- * floor is already at/above the configured soft limit. A cut cannot reduce a
- * fixed floor, so repeatedly respawning such a session is a livelock. */
-const unsatisfiableLimitEscalated = new Set<string>();
+/** P-009 (R-9): the limit the boot budget last raised each owner to. Holds the raise
+ * while the gateway's boot floor is stale (it expires after 6 min of silence), so a
+ * quiet sweep cannot lower it back to the role default; a fresh floor that no longer
+ * needs the raise clears it. Same owner across a carry-respawn, so a successor boots
+ * with its predecessor's room before its own first request is observed. */
+const bootBudgetHeld = new Map<string, number>();
+/** WI-10006236: one owner-facing escalation per owner per process when a session whose
+ * model family Papercusp serves at 1M by default is MEASURED at the 200k window. */
+const default1mServedSmallEscalated = new Set<string>();
 /** First under-limit observation in the current carry-respawn streak. A single
  * under-limit sample can be the fresh successor booting after a landed cut, so
  * it does not clear the breaker; only a sustained recovery re-arms it. */
 const carryRespawnUnderLimitSince = new Map<string, number>();
+const carryRespawnHealthySampleAt = new Map<string, number>();
 /** Streak trips at this many respawns without a sustained recovery below the limit.
  *  ⚠ WI-38347: this threshold detects "not recovering", which is NOT by itself
  *  evidence of a broken estimate — the claim this comment used to make ("impossible
@@ -201,16 +439,15 @@ const CARRY_RESPAWN_STREAK_WINDOW_MS = 30 * 60_000;
  *  reachable from any first-cut estimate. */
 const CARRY_RESPAWN_MOVED_MIN_TOKENS = 5_000;
 
-/** Headroom above an observed prompt floor before a repaired soft limit may
+/** Headroom above a verified fixed context cost before a repaired soft limit may
  * become actionable. Rounded limits keep the gauge stable and leave room for
  * one small turn after the fixed prefix. */
 export const UNSATISFIABLE_LIMIT_HEADROOM_TOKENS = 10_000;
 
-/** Derive a model-safe limit that sits above a measured fixed prompt floor.
+/** Derive a model-safe limit that sits above a verified fixed context cost.
  * Returns null when no model window is known or the requested floor cannot fit
- * under the platform's hard window. This helper intentionally ignores the
- * lean fleet-member role cap: that cap is a spend default, but a limit below a
- * proven fixed floor makes every carry/force cut repeat forever (EI-237397). */
+ * under the platform's hard window. Do not pass the gateway's observed prompt
+ * floor here: that metric is minimum total input, not a static-prefix measure. */
 export function satisfiableCompactionLimitForPromptFloor(
   promptFloorTokens: number,
   windowTokens: number | null,
@@ -235,21 +472,27 @@ export function satisfiableCompactionLimitForPromptFloor(
   return Math.max(required, defaultCompactionLimitForWindow(windowTokens, { fleetMember: false }));
 }
 
-/** EI-237397: fixed prompt/carry context already consumes the force band, so
- * another carry-respawn cannot make progress. Keep the condition durable and
- * owner-addressable instead of emitting the ordinary "self-compact" nudge. */
-async function escalateUnsatisfiableCompactionLimit(input: {
+/**
+ * WI-10006236 (owner Avi 2026-10-05, #1309 prevention): the symptom alarm for the
+ * WI-10006049 class. Claude Code auto-updated (2.1.284 → 2.1.289) and its bare /model
+ * menu started saving the 200k pick, so 1M-default sessions were measured at 200k and
+ * this watchdog quietly re-limited them (`re-limited 450000 → 158000`). That log line
+ * was the only trace, and nobody read it until a session reset 8 times in an hour.
+ * After WI-10006049 the gateway serves these families at 1M by default, so a 200k
+ * measurement for one of them means an upstream default changed again: raise it to the
+ * owner instead of logging it. One escalation per owner per process; un-deduped on
+ * failure so the next sweep retries.
+ */
+async function escalateDefault1mServedSmall(input: {
   ownerId: string;
   ownerLabel: string;
-  estimate: number;
-  fixedFloor: number;
-  limit: number;
-  forceAt: number;
-  window: number | null;
+  spec: string;
+  from: number;
+  to: number;
+  window: number;
 }): Promise<void> {
-  if (unsatisfiableLimitEscalated.has(input.ownerId)) return;
-  unsatisfiableLimitEscalated.add(input.ownerId);
-  const windowText = input.window == null ? 'unknown model window' : `${input.window}-token model window`;
+  if (default1mServedSmallEscalated.has(input.ownerId)) return;
+  default1mServedSmallEscalated.add(input.ownerId);
   try {
     const { openEscalation } = await import('../agent-tools/coordination/escalations');
     await openEscalation(
@@ -261,28 +504,28 @@ async function escalateUnsatisfiableCompactionLimit(input: {
         userId: null,
       },
       {
-        severity: 'blocker',
-        summary: `soft compaction limit below fixed context cost: ${input.ownerLabel} (${input.ownerId})`,
+        severity: 'advisory',
+        summary: `1M-default session served at a ${input.window}-token window: ${input.ownerLabel} (${input.ownerId})`,
         body:
-          `The session's measured fixed/post-compaction context floor is ~${Math.round(input.fixedFloor)} ` +
-          `tokens, already at/above the FORCE threshold ~${Math.round(input.forceAt)} for its ` +
-          `configured soft limit ${Math.round(input.limit)} (${windowText}). Another carry-respawn ` +
-          `would recreate the same floor and livelock. Raise the soft limit toward the model ceiling ` +
-          `or reduce the fixed launch context before allowing another cut. (EI-237397)`,
+          `Model '${input.spec}' is a family Papercusp serves with the 1M context window by default, but ` +
+          `this session was measured at ${input.window} tokens, so the watchdog lowered its soft ` +
+          `compaction limit ${input.from} → ${input.to}. That should not happen since WI-10006049. ` +
+          `Likely cause: a Claude Code update changed a default (a model-menu pick, the context beta, ` +
+          `or the gateway route). Check the session's served route (gateway /admin/route?owner=) and ` +
+          `the installed Claude Code version. (WI-10006236)`,
         meta: {
-          subjectSignature: `compaction-watchdog:unsatisfiable-limit:${input.ownerId}`,
-          estimate: Math.round(input.estimate),
-          fixedFloor: Math.round(input.fixedFloor),
-          limit: Math.round(input.limit),
-          forceAt: Math.round(input.forceAt),
+          subjectSignature: `compaction-watchdog:default-1m-served-small:${input.ownerId}`,
+          spec: input.spec,
+          from: input.from,
+          to: input.to,
           window: input.window,
         },
       },
     );
   } catch (e) {
-    unsatisfiableLimitEscalated.delete(input.ownerId);
+    default1mServedSmallEscalated.delete(input.ownerId);
     console.warn(
-      `[compaction-watchdog] unsatisfiable-limit escalation failed (will retry): ` +
+      `[compaction-watchdog] default-1m-served-small escalation failed (will retry): ` +
         `${e instanceof Error ? e.message : String(e)}`,
     );
   }
@@ -334,9 +577,9 @@ const noHostWarned = new Set<string>();
  *  sanity is covered upstream: P-016 seeds the tier-aware default, P-017 lowers any >cap
  *  drift, so a boot-time limit re-assert here would be redundant.) */
 const bootConfigEscalated = new Set<string>();
-/** P-018 dark-telemetry counter: consecutive sweeps a live limit-carrying session's
- *  context estimate stayed null. Cleared when it resolves. */
-const nullEstimateStreak = new Map<string, number>();
+/** P-018 dark-telemetry counter: consecutive active sweeps on one native session ref
+ *  whose context estimate stayed null. A carry-respawned session starts fresh grace. */
+const nullEstimateStreak = new Map<string, { sessionId: string | null; count: number }>();
 
 /** EI-10434: warn ONCE per owner while its readings stay implausible; cleared
  *  the moment a plausible reading is seen again so a later genuine crossing
@@ -474,7 +717,8 @@ export function resetCarryRespawnForTests(): void {
   carryRespawnStreak.clear();
   carryRespawnLoopEscalated.clear();
   carryRespawnUnderLimitSince.clear();
-  unsatisfiableLimitEscalated.clear();
+  carryRespawnHealthySampleAt.clear();
+  default1mServedSmallEscalated.clear();
 }
 
 /** Test seam (EI-9982 diagnostic). */
@@ -831,7 +1075,7 @@ async function tagWatchdogContinuation(ownerId: string, note: string): Promise<s
   const addressedNote = addressContinuationToOwner(note, ownerId);
   try {
     const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
-    return tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: addressedNote }).taggedText;
+    return (await tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: addressedNote })).taggedText;
   } catch {
     return addressedNote; // provenance must never strand a context boundary
   }
@@ -1096,10 +1340,10 @@ async function maybeCarryRespawn(
     return false;
   }
   try {
-    const { findLiveHost, hostSupports, injectIntoHost } = await import(
+    const { findLiveHostAsync, hostSupports, injectIntoHost } = await import(
       '../events/await/psu-pty-discovery'
     );
-    const host = findLiveHost(ownerId);
+    const host = await findLiveHostAsync(ownerId);
     if (!host || !hostSupports(host, 'carry-respawn')) return false;
 
     // EI-13477: reconciled — a same-pid self-relaunch's dead native id must not
@@ -1298,7 +1542,30 @@ async function maybeForceRespawn(
   forceAt: number = limit * FORCE_COMPACT_FRACTION,
   /** Which arm produced forceAt — the note words each regime differently. */
   bound: ForceBound = 'fraction',
+  conditionDeps: CompactionComplianceDeps = {},
 ): Promise<boolean> {
+  // Keep the condition writer inside this original fallback producer: the
+  // immutable inventory identity must remain on the rail itself.
+  const failure = async (detail: string) => {
+    if (!workspaceId?.trim() || !ownerId?.trim()) return;
+    observeFallback('compaction-force-respawn', {
+      eligible: 1, applied: 0, reason: 'force-unavailable', scope: ownerId,
+    }, { workspaceId });
+    const event = { conditionKey: compactionConditionKey(workspaceId, ownerId, 'force-unavailable'),
+      oneShot: true, summary: `Compaction force-unavailable: ${ownerId}`, body: detail };
+    try {
+      if (conditionDeps.rail?.broadcast) await conditionDeps.rail.broadcast(event);
+      else await broadcastSevereEvent(event);
+    } catch (error) { console.warn(`[compaction-watchdog] condition delivery failed: ${String(error)}`); }
+  };
+  const warnNoHostUnavailable = (reason: string) => {
+    if (noHostWarned.has(ownerId)) return;
+    noHostWarned.add(ownerId);
+    console.warn(
+      `[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold (~${est}/${limit} tokens) ` +
+        `but findLiveHost() found no live psu-pty host (EI-9982); ${reason}. Force remains unavailable.`,
+    );
+  };
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([
       import('@papercusp/flags/server'),
@@ -1309,27 +1576,58 @@ async function maybeForceRespawn(
     return false; // flag infra unavailable ⇒ do NOT force (fail-safe)
   }
   try {
-    const { findLiveHost, hostSupports, injectIntoHost } = await import(
+    const { findLiveHostAsync, hostSupports, injectIntoHost } = await import(
       '../events/await/psu-pty-discovery'
     );
-    const host = findLiveHost(ownerId);
+    const host = await findLiveHostAsync(ownerId);
     if (!host) {
-      // EI-9982: distinguish "no live psu-pty host" from the flag-off / grace-suppressed /
-      // inject-failed silent-no-op paths — this is the dominant cause of a continuously-active
-      // session that crosses the FORCE threshold yet is never force-cut.
-      if (!noHostWarned.has(ownerId)) {
-        noHostWarned.add(ownerId);
-        console.warn(
-          `[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold (~${est}/${limit} ` +
-            `tokens) but findLiveHost() found no live psu-pty host — force-respawn silently no-ops here ` +
-            `(EI-9982). Likely a stale/missing discovery file at ~/.papercusp/psu-pty/<ownerId>.json, a ` +
-            `dead pid, or a pidIsPsuHost() identity mismatch (the EI-9748 / WI-3455 discovery-file ` +
-            `fragility class) — check that file + the recorded pid/socket for this owner.`,
-        );
+      const target = conditionDeps.resolveForceSuccessorTarget
+        ? await conditionDeps.resolveForceSuccessorTarget(ownerId)
+        : await (await import('../agent-launch-core')).resolveResumeTarget({ agentId: ownerId });
+      if (!target.ok) {
+        await failure(`No live PTY host, and the bound adv-session could not be resolved: ${target.detail}`);
+        warnNoHostUnavailable('bound source resolution failed');
+        return false;
       }
-      return false;
+      if (target.ownerId !== ownerId || target.workspaceId !== workspaceId ||
+          !target.harnessSlug?.trim() || !target.binding ||
+          target.binding.coordOwnerId !== ownerId || !target.binding.startedAt || target.live) {
+        await failure('No live PTY host, and the resolved source lacks an exact matching workspace, harness, owner, incarnation, or dead-host binding.');
+        warnNoHostUnavailable('source scope or liveness evidence was incomplete');
+        return false;
+      }
+      const source: CompactionForceSuccessorInput['target'] = {
+        ...target,
+        ownerId,
+        workspaceId,
+        harnessSlug: target.harnessSlug,
+        binding: target.binding,
+      };
+      const launch = conditionDeps.dispatchForceSuccessor
+        ? await conditionDeps.dispatchForceSuccessor({
+            target: source,
+            brief: forceCompactContinueNote(est, limit, forceAt, bound),
+          })
+        : await (await import('./compaction-force-successor')).dispatchCompactionForceSuccessor({
+            target: source,
+            brief: forceCompactContinueNote(est, limit, forceAt, bound),
+          });
+      if (!launch.verified) {
+        await failure(`No live PTY host; capability successor refused or lacked positive launch evidence: ${launch.detail}`);
+        warnNoHostUnavailable('capability successor lacked positive launch evidence');
+        return false;
+      }
+      observeFallback('compaction-force-respawn', {
+        eligible: 1, applied: 1, reason: 'applied', scope: ownerId,
+      }, { workspaceId });
+      console.warn(
+        `[compaction-watchdog] FORCE-SUCCEEDED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
+          `with a positively verified capability successor (threshold ~${forceAt}).`,
+      );
+      return true;
     }
     if (!hostSupports(host, 'carry-respawn')) {
+      await failure('Live host lacks carry-respawn capability.');
       console.warn(
         `[compaction-watchdog] ${ownerLabel} (${ownerId}) is at the FORCE threshold but its psu host ` +
           `predates the carry-respawn capability (P-022: native /compact is retired, no fallback) — ` +
@@ -1373,6 +1671,7 @@ async function maybeForceRespawn(
         })
       : null;
     if (!spec) {
+      await failure(transcriptPath ? 'Carry builder failed at the measured force threshold.' : 'No transcript at the measured force threshold.');
       console.warn(
         `[compaction-watchdog] force-respawn for ${ownerLabel} (${ownerId}) could not assemble the ` +
           `carry spec (${transcriptPath ? 'builder failure' : 'no transcript'}) — will retry next pass; ` +
@@ -1397,7 +1696,11 @@ async function maybeForceRespawn(
       systemPromptAddendum: spec.systemPromptAddendum,
       ownerId,
     });
+    if (!ok) await failure('Force injection was not accepted.');
     if (ok) {
+      observeFallback('compaction-force-respawn', {
+        eligible: 1, applied: 1, reason: 'applied', scope: ownerId,
+      }, { workspaceId });
       console.warn(
         `[compaction-watchdog] FORCE-RESPAWNED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
           `(${Math.round((est / limit) * 100)}% of the soft limit; force threshold ~${forceAt}) — ` +
@@ -1406,6 +1709,7 @@ async function maybeForceRespawn(
     }
     return ok;
   } catch (e) {
+    await failure(`Force recovery failed: ${String(e)}`);
     console.warn(
       `[compaction-watchdog] force-respawn inject failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
     );
@@ -2080,8 +2384,11 @@ export interface CompactionComplianceResult {
    *  the current shaped default this pass (a policy change reaching a live session
    *  without a relaunch). */
   relimited: Array<{ owner: string; from: number; to: number }>;
-  /** EI-237397: sessions whose observed fixed prompt floor consumes the force
-   *  band; repairedTo is present when the watchdog raised a derived limit. */
+  /** WI-10006236: subset of `relimited` — sessions whose model family is served at 1M by
+   *  default but were MEASURED at the 200k window and lowered; each is escalated once. */
+  default1mServedSmall: Array<{ owner: string; spec: string; from: number; to: number; window: number }>;
+  /** Legacy result field retained for callers; gateway total-input floors no
+   *  longer establish an unsatisfiable fixed-context limit. */
   unsatisfiableLimits: Array<{
     owner: string;
     fixedFloor: number;
@@ -2137,21 +2444,26 @@ export interface CompactionComplianceResult {
  * session's context estimate and flag any that ran past its own limit.
  * Never throws (best-effort backstop).
  */
-export interface CompactionComplianceDeps {
+export interface CompactionComplianceDeps extends CompactionConditionDeps {
   /** Injectable D-137 side-lock reader; default reads papercusp_su. */
   readExpiredOwnerFileLocks?: CompactionStrandingLockReader;
+  /** Focused, deterministic seams for the hostless force successor path. */
+  resolveForceSuccessorTarget?: (ownerId: string) => Promise<ResolveResumeResult>;
+  dispatchForceSuccessor?: (input: CompactionForceSuccessorInput) => Promise<CompactionForceSuccessorResult>;
 }
 
 export async function checkCompactionCompliance(
   sql: Sql,
   deps: CompactionComplianceDeps = {},
 ): Promise<CompactionComplianceResult> {
+  const episodes = await compactionEpisodeReader(deps);
   const out: CompactionComplianceResult = {
     estimated: [],
     overLimit: [],
     forceCompacted: [],
     carryRespawned: [],
     relimited: [],
+    default1mServedSmall: [],
     unsatisfiableLimits: [],
     seeded: [],
     contextDeaths: [],
@@ -2164,6 +2476,18 @@ export async function checkCompactionCompliance(
     presenceGapsHealed: [],
     compactionStrandingAlerts: [],
   };
+  // One-shot session-signal alarms do not re-emit while true, so the
+  // condition-staleness rail cannot use signal absence to close them. Before
+  // scanning live presence rows, close episodes whose adv-session lifecycle is
+  // now definitively ended; active owners and episodes requiring follow-up
+  // action remain untouched.
+  try {
+    const openEpisodes = await (deps.readOpenConditions ?? (() => readOpenCompactionConditions(sql)))();
+    await recoverEndedSessionSignalEpisodes(sql, openEpisodes, deps);
+  } catch (error) {
+    // A failed lifecycle read must never turn an unknown owner into recovery.
+    console.warn(`[compaction-watchdog] ended-session recovery failed: ${String(error)}`);
+  }
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
   // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
   // hiccup leaves the previous value untouched (fail to the default-ON gauge).
@@ -2184,6 +2508,7 @@ export async function checkCompactionCompliance(
   try {
     const gaps = await discoverPresencelessLoopOwners(sql);
     for (const gap of gaps) {
+      if (gap.workspaceId) await raiseCompactionCondition(gap.workspaceId, gap.ownerId, 'dark-presence', 'An active loop has no presence row.', deps);
       const healed = await healPresenceGap(sql, gap);
       if (healed) out.presenceGapsHealed.push(gap.ownerId);
       out.bootConfigAlerts.push({
@@ -2291,6 +2616,12 @@ export async function checkCompactionCompliance(
          AND heartbeat_at > now() - interval '10 minutes'
     `;
     for (const r of rows) {
+      // A duplicate candidate is ambiguous; neither copy may recover an episode.
+      const uniqueSubject = rows.filter(row => row.workspace_id === r.workspace_id && row.owner_id === r.owner_id).length === 1;
+      const recover = async (kind: CompactionConditionKind, measuredAtMs = Date.now()) => {
+        if (uniqueSubject) await recoverCompactionEpisodes(episodes(r.workspace_id, r.owner_id, kind), measuredAtMs, deps);
+      };
+      if (Number.isFinite(r.compaction_limit) && r.compaction_limit > 0) await recover('dark-presence');
       // P-019 member-death detector: a "Prompt is too long" transcript tail means
       // the session is dead-but-still-beating — escalate once for relaunch. Runs
       // before the estimate gate (a dead session's estimate is exactly the kind
@@ -2304,6 +2635,7 @@ export async function checkCompactionCompliance(
         const toolReferenceDeath = contextDead ? null : await detectToolReferenceDeathForOwner(r.owner_id);
         if (contextDead || toolReferenceDeath) {
           const deathKind: TranscriptDeathKind = contextDead ? 'context-death' : 'tool-reference-death';
+          await raiseCompactionCondition(r.workspace_id, r.owner_id, deathKind, 'Current transcript reports a terminal provider rejection.', deps);
           if (contextDead) out.contextDeaths.push(r.owner_id);
           else out.toolReferenceDeaths.push(r.owner_id);
           // P-019 recovery-first: use the effective model window for the carry
@@ -2335,6 +2667,14 @@ export async function checkCompactionCompliance(
           }
           continue; // no point estimating/flagging a dead session
         }
+        if (uniqueSubject && (episodes(r.workspace_id, r.owner_id, 'context-death').length ||
+            episodes(r.workspace_id, r.owner_id, 'tool-reference-death').length)) {
+          const healthy = await (deps.observeHealthyTranscript ?? observeHealthyClaudeTranscriptForOwner)(r.owner_id);
+          if (healthy?.sessionId?.trim()) {
+            await recover('context-death', healthy.measuredAtMs);
+            await recover('tool-reference-death', healthy.measuredAtMs);
+          }
+        }
       } catch {
         /* best-effort per owner */
       }
@@ -2365,9 +2705,28 @@ export async function checkCompactionCompliance(
       );
       if (strandingAlert) {
         out.compactionStrandingAlerts.push(strandingAlert);
+        await raiseCompactionCondition(r.workspace_id, r.owner_id, 'compaction-stranding',
+          'Repeated compaction boundaries, stale claims, expired target locks and no target edit agree.', deps,
+          JSON.stringify(strandingAlert.targetPaths));
         await escalateCompactionStranding(strandingAlert);
       } else {
         compactionStrandingEscalated.delete(r.owner_id);
+        // A null detector result mixes healthy and unknown. Require a positive
+        // edit of the exact episode's target after it opened instead.
+        for (const episode of episodes(r.workspace_id, r.owner_id, 'compaction-stranding')) {
+          try {
+            const scope = JSON.parse(decodeURIComponent(episode.conditionKey.slice('alarm:compaction-compliance:'.length)));
+            const paths = JSON.parse(scope[3]);
+            if (!Array.isArray(paths) || !paths.length || paths.some(path => typeof path !== 'string' || !path.trim())) continue;
+            const edits = await readTargetEditsAfterBoundary(sql, r.owner_id, paths, episode.openedAtMs);
+            const now = Date.now();
+            if (uniqueSubject && edits?.some(edit => paths.includes(edit.file) &&
+                edit.editedAtMs > episode.openedAtMs && edit.editedAtMs <= now)) {
+              await recoverCompactionEpisodes(episodes(r.workspace_id, r.owner_id, 'compaction-stranding')
+                .filter(row => row.conditionKey === episode.conditionKey), now, deps);
+            }
+          } catch { /* unreadable target evidence preserves the episode */ }
+        }
       }
       // P-017 live-config reach: a stored limit ABOVE COMPACTION_LIMIT_DEFAULT_1M_CAP (the
       // ceiling clampCompactionLimit enforces on EVERY config:set-compaction-limit) cannot be a
@@ -2399,8 +2758,13 @@ export async function checkCompactionCompliance(
           /* best-effort per owner */
         }
       }
-      const est = await estimateContextTokensForOwner(r.owner_id);
+      const estimateRef = await resolveSessionRefReconciled(r.owner_id);
+      const est = estimateRef
+        ? await estimateContextTokensForOwner(r.owner_id, { resolveRef: async () => estimateRef })
+        : null;
       if (est == null) {
+        carryRespawnHealthySampleAt.delete(r.owner_id);
+        carryRespawnUnderLimitSince.delete(r.owner_id);
         // P-018 boot self-assert (dark telemetry): a live limit-carrying session whose context
         // estimate never resolves is BLIND — the gauge, the per-turn reminder, and the P-012
         // force-compact backstop all read null, so it can silently overflow its model window
@@ -2414,8 +2778,10 @@ export async function checkCompactionCompliance(
         // Idle sweeps neither advance nor reset the streak: the hazard is turns-while-blind,
         // and three of those over ANY span is the signal, however much idle time sits between.
         if (!activeWithin(r.last_active_at, DARK_TELEMETRY_ACTIVE_WINDOW_MS)) continue;
-        const streak = (nullEstimateStreak.get(r.owner_id) ?? 0) + 1;
-        nullEstimateStreak.set(r.owner_id, streak);
+        const sessionId = estimateRef?.sessionId ?? null;
+        const previous = nullEstimateStreak.get(r.owner_id);
+        const streak = previous?.sessionId === sessionId ? previous.count + 1 : 1;
+        nullEstimateStreak.set(r.owner_id, { sessionId, count: streak });
         if (streak >= DARK_TELEMETRY_MAX_NULL_SWEEPS) {
           // A null estimate is a FALSE POSITIVE for two owner classes — neither is a blind
           // managed session, so neither may raise a dark-telemetry alarm:
@@ -2431,12 +2797,15 @@ export async function checkCompactionCompliance(
           // adv_sessions row, so it still escalates below — the overflow signal is preserved.
           // EI-13477: reconciled — see resolveLiveTranscriptPath for why the raw
           // ref can under/over-classify an owner across a same-pid relaunch.
-          const ref = await resolveSessionRefReconciled(r.owner_id);
+          // Reuse the same ref used to estimate this sample. Resolving again here can
+          // classify a new session using a null sample read from its predecessor.
+          const ref = estimateRef;
           if (!ref || ref.agent === 'omp') {
             nullEstimateStreak.delete(r.owner_id); // by-design / synthetic null — don't accumulate a streak
             continue;
           }
           out.bootConfigAlerts.push({ owner: r.owner_id, kind: 'dark-telemetry', detail: `${streak} null sweeps` });
+          await raiseCompactionCondition(r.workspace_id, r.owner_id, 'dark-telemetry', `${streak} active null estimate sweeps.`, deps);
           await escalateBootConfig(
             r.owner_id,
             r.owner_label,
@@ -2445,6 +2814,11 @@ export async function checkCompactionCompliance(
             `estimateContextTokensForOwner returns null, so the context gauge, the per-turn usage reminder, and the force-compact backstop are ALL blind to this session — it can silently overflow its model window (the 2026-07-04 836k class). Usually a missing/unreadable transcript or an unresolved model spec. Check the session's transcript path + model resolution; relaunch if wedged. (agent-managed-compaction-2026-07-01 P-018)`,
           );
         }
+        continue;
+      }
+      if (!Number.isFinite(est) || est < 0 || !Number.isFinite(r.compaction_limit) || r.compaction_limit <= 0) {
+        carryRespawnHealthySampleAt.delete(r.owner_id);
+        carryRespawnUnderLimitSince.delete(r.owner_id);
         continue;
       }
       nullEstimateStreak.delete(r.owner_id); // estimate resolved — clear the dark-telemetry streak
@@ -2480,9 +2854,25 @@ export async function checkCompactionCompliance(
       let liveWindow: number | null = null;
       try {
         liveWindow = await estimateContextWindowForOwner(r.owner_id);
+        if (liveWindow != null && (!Number.isFinite(liveWindow) || liveWindow <= 0)) liveWindow = null;
+        if (liveWindow != null && liveWindow > MODEL_WINDOW_DEFAULT) await recover('default-1m-served-small');
+        if (liveWindow != null && liveWindow <= MODEL_WINDOW_DEFAULT) {
+          const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
+          const { spec } = await derivedSeedLimitForOwner(sql, r.owner_id, tierMenu, fleetMember);
+          if (spec && isDefault1mModelSpec(spec)) await raiseCompactionCondition(r.workspace_id, r.owner_id,
+            'default-1m-served-small', `Measured ${liveWindow}-token window for ${spec}.`, deps);
+        }
         if (liveWindow != null) {
           const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
-          const safeLimit = defaultCompactionLimitForWindow(liveWindow, { fleetMember });
+          // P-009 (R-9): guaranteed working room. Raise the derived default so the
+          // measured boot — the gateway's provider-exact first-request floor for this
+          // native session, never the bytes/4 gauge — stays below 60% of the limit.
+          const bootFloor = observedPromptFloorForOwner(r.owner_id);
+          const budget = bootBudgetLimit({ bootTokens: bootFloor?.tokens ?? null, windowTokens: liveWindow, fleetMember });
+          if (budget.raised) bootBudgetHeld.set(r.owner_id, budget.limit);
+          else if (bootFloor != null) bootBudgetHeld.delete(r.owner_id);
+          const held = bootBudgetHeld.get(r.owner_id);
+          const safeLimit = Math.max(budget.limit, held != null && held <= budget.ceiling ? held : 0);
           const selfSetCeiling = selfSetCeilingForWindow(liveWindow, { fleetMember });
           let apply: number | null = null;
           if (r.compaction_limit_explicit) {
@@ -2503,9 +2893,21 @@ export async function checkCompactionCompliance(
             // the extended-codex derivation to the 400k role cap stranded 13
             // live sessions at the old 158,000 (2026-08-18).
             const superseded = supersededDerivedCompactionLimits(seed.spec, { fleetMember });
+            // WI-10006049: the value THIS branch writes when it lowers a session to a
+            // measured 200k window (`re-limited 450000 → 158000 … 200000-token model
+            // window`) is a number the watchdog chose, not a human. Once the live window
+            // is back above 200k it must heal like any other derived seed. Without this a
+            // session dropped to 200k by Claude Code 2.1.289's bare /model menu stayed at
+            // 158k after it was served at 1M again (su-56e2f83b, 2026-10-06): its spec now
+            // derives 450k, so 158k no longer equalled the seed and read as deliberate.
+            const loweredByMeasuredDefaultWindow =
+              liveWindow > MODEL_WINDOW_DEFAULT &&
+              r.compaction_limit === defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT, { fleetMember });
             if (
               !seed.explicit &&
-              (seed.limit === r.compaction_limit || superseded.includes(r.compaction_limit))
+              (seed.limit === r.compaction_limit ||
+                superseded.includes(r.compaction_limit) ||
+                loweredByMeasuredDefaultWindow)
             ) {
               apply = safeLimit;
             }
@@ -2518,6 +2920,17 @@ export async function checkCompactionCompliance(
                 `${r.compaction_limit} → ${apply} tokens from the live effective ` +
                 `${liveWindow}-token model window (Codex D-011).`,
             );
+            // WI-10006236: a LOWERING to the 200k window is the WI-10006049 symptom when
+            // the session's model family is served at 1M by default. Resolve the spec only
+            // on this rare path so a normal sweep pays nothing.
+            if (apply < r.compaction_limit && liveWindow <= MODEL_WINDOW_DEFAULT) {
+              const { spec } = await derivedSeedLimitForOwner(sql, r.owner_id, tierMenu, fleetMember);
+              if (spec != null && isDefault1mModelSpec(spec)) {
+                const hit = { owner: r.owner_id, spec, from: r.compaction_limit, to: apply, window: liveWindow };
+                out.default1mServedSmall.push(hit);
+                await escalateDefault1mServedSmall({ ownerId: r.owner_id, ownerLabel: r.owner_label, ...hit });
+              }
+            }
             r.compaction_limit = apply;
           }
         }
@@ -2528,6 +2941,7 @@ export async function checkCompactionCompliance(
       // anything (cache, gauge, over-limit warn, or force-compact). See the
       // IMPLAUSIBLE_READING_* constants above for the full rationale.
       if (est > IMPLAUSIBLE_READING_ABSOLUTE_CEILING) {
+        await raiseCompactionCondition(r.workspace_id, r.owner_id, 'implausible-reading', `Estimate ${est} exceeds the platform plausibility ceiling.`, deps);
         if (!implausibleWarned.has(r.owner_id)) {
           implausibleWarned.add(r.owner_id);
           console.warn(
@@ -2552,8 +2966,10 @@ export async function checkCompactionCompliance(
       // gate to this branch is what makes it structurally unable to disarm a healthy
       // session — not the thresholds inside it. See frozenCodexReading's header.
       if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
+        carryRespawnHealthySampleAt.delete(r.owner_id);
         const frozen = await frozenCodexReading(r.owner_id, r.last_active_at).catch(() => null);
         if (frozen) {
+          await raiseCompactionCondition(r.workspace_id, r.owner_id, 'frozen-codex-reading', `Estimate came from mismatched frozen rollout ${frozen.rolloutPath}.`, deps);
           out.frozenCodexReadings.push({ owner: r.owner_id, est, lagMs: frozen.lagMs });
           // The cached number is this session's ONLY telemetry, and a frozen one is
           // worse than none: it renders a live session's gauge as over-limit forever
@@ -2584,8 +3000,35 @@ export async function checkCompactionCompliance(
           continue;
         }
       }
+      await recover('dark-telemetry');
+      await recover('implausible-reading');
+      if (uniqueSubject && episodes(r.workspace_id, r.owner_id, 'frozen-codex-reading').length) {
+        const provenance = await codexReadingProvenanceForOwner(r.owner_id).catch(() => null);
+        if (provenance?.refSessionId && provenance.rolloutSessionId === provenance.refSessionId &&
+            typeof provenance.rolloutMtimeMs === 'number' && Number.isFinite(provenance.rolloutMtimeMs) &&
+            provenance.rolloutMtimeMs > 0 && provenance.rolloutMtimeMs <= Date.now()) {
+          await recover('frozen-codex-reading', provenance.rolloutMtimeMs);
+        }
+      }
       frozenCodexWarned.delete(r.owner_id); // trustworthy again — re-arm the dedup
-      await setContextEstimate(r.owner_id, est).catch(() => {});
+      let estimateStored = false;
+      if (estimateRef) {
+        try {
+          estimateStored = await setContextEstimate(r.owner_id, est, {
+            nativeSessionId: estimateRef.sessionId,
+            advSessionId: estimateRef.sessionKey ?? null,
+          });
+        } catch {
+          estimateStored = false;
+        }
+      }
+      if (!estimateStored) {
+        // The estimate's source session changed while it was being measured, or
+        // the guarded write failed. Keep neither a stale local gauge nor any
+        // later over-limit action based on this sample.
+        clearContextUsage(r.owner_id);
+        continue;
+      }
       // P-013/P-015: mirror the fresh estimate into the in-process gauge cache so the
       // result-annotator + native-tool hook render the banded gauge with ZERO per-call
       // DB cost (the watchdog is the single writer; readers never touch PG).
@@ -2619,12 +3062,23 @@ export async function checkCompactionCompliance(
         sampleEntry.minEstSince = est;
       }
 
-      // EI-237397 applies even when the ordinary estimate is still BELOW the
-      // configured limit: the route-bound floor can materialize on the next
-      // turn, so waiting for `est >= limit` would miss the exact first sample
-      // that proves the limit is unsatisfiable.
+      // The gateway's observed prompt floor is a minimum total-input measure
+      // and may include first-turn conversation content. It cannot prove that
+      // static context alone makes a cut impossible. Retire legacy episodes
+      // based on that inference only when the floor sample itself is fresh.
+      if (
+        observedPromptFloor != null &&
+        Number.isFinite(observedPromptFloor.tokens) &&
+        observedPromptFloor.tokens >= 0 &&
+        Number.isFinite(observedPromptFloor.at) &&
+        observedPromptFloor.at > 0 &&
+        observedPromptFloor.at <= Date.now()
+      ) {
+        await recover('unsatisfiable-limit', observedPromptFloor.at);
+      }
+
       let windowForCut: number | null = liveWindow;
-      if (observedPromptFloor?.tokens != null || est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
+      if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
         windowForCut ??= await resolveWindowForOwner(sql, r.owner_id, tierMenu);
         if (windowForCut != null && est >= windowForCut * WINDOW_CONTRADICTED_FACTOR) {
           console.warn(
@@ -2635,51 +3089,9 @@ export async function checkCompactionCompliance(
           windowForCut = null;
         }
       }
-      const fixedFloor = observedPromptFloor?.tokens;
-      if (fixedFloor != null) {
-        const fractionAt = r.compaction_limit * FORCE_COMPACT_FRACTION;
-        const capAt =
-          windowForCut != null
-            ? windowForCut - COMPACTION_WINDOW_MARGIN_TOKENS
-            : r.compaction_limit * COMPACTION_OVERSHOOT_FACTOR;
-        const forceAt = Math.min(fractionAt, capAt);
-        if (fixedFloor >= forceAt) {
-          const repairedTo = r.compaction_limit_explicit
-            ? null
-            : satisfiableCompactionLimitForPromptFloor(fixedFloor, windowForCut, r.compaction_limit);
-          if (repairedTo != null) {
-            const from = r.compaction_limit;
-            await setCompactionLimit(r.owner_id, repairedTo);
-            r.compaction_limit = repairedTo;
-            out.relimited.push({ owner: r.owner_id, from, to: repairedTo });
-            out.unsatisfiableLimits.push({ owner: r.owner_id, fixedFloor, limit: from, forceAt, repairedTo });
-            recordContextUsage(r.owner_id, est, repairedTo, Date.now(), observedPromptFloor);
-            overLimitOwners.delete(r.owner_id);
-            forceCompactedAt.delete(r.owner_id);
-            carryRespawnRequestedAt.delete(r.owner_id);
-            carryRespawnUnderLimitSince.delete(r.owner_id);
-            carryRespawnLoopEscalated.delete(r.owner_id);
-            unsatisfiableLimitEscalated.delete(r.owner_id);
-            if (est < repairedTo) continue;
-          } else {
-            out.unsatisfiableLimits.push({ owner: r.owner_id, fixedFloor, limit: r.compaction_limit, forceAt });
-            await escalateUnsatisfiableCompactionLimit({
-              ownerId: r.owner_id,
-              ownerLabel: r.owner_label,
-              estimate: est,
-              fixedFloor,
-              limit: r.compaction_limit,
-              forceAt,
-              window: windowForCut,
-            });
-            // Do not issue the standard self-compact/carry/force advice: it
-            // is the action that recreates the fixed-floor livelock.
-            continue;
-          }
-        }
-      }
 
       if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
+        await raiseCompactionCondition(r.workspace_id, r.owner_id, 'over-limit', `Measured ${est}/${r.compaction_limit} tokens.`, deps);
         out.overLimit.push(r.owner_id);
         // flush-to-proceed P-003 SURFACE (not seize, D-008): a session over its compaction limit
         // that holds a work-item whose CHECKPOINT is stale is about to lose unflushed work to the
@@ -2729,6 +3141,7 @@ export async function checkCompactionCompliance(
           Date.now() - streakAgeStart < CARRY_RESPAWN_STREAK_WINDOW_MS;
         const streakCount = streakLive ? streakEntry.count : 0;
         if (streakCount >= CARRY_RESPAWN_MAX_STREAK && streakEntry != null) {
+          await raiseCompactionCondition(r.workspace_id, r.owner_id, 'carry-respawn-loop', `${streakCount} cuts without sustained recovery.`, deps);
           await escalateCarryRespawnLoop(r.owner_id, r.owner_label, streakCount, {
             estAtFirstCut: streakEntry.estAtFirstCut,
             minEstSince: streakEntry.minEstSince,
@@ -2797,6 +3210,7 @@ export async function checkCompactionCompliance(
               r.compaction_limit,
               forceAt,
               bound,
+              deps,
             ))
           ) {
             forceCompactedAt.set(r.owner_id, Date.now());
@@ -2804,12 +3218,23 @@ export async function checkCompactionCompliance(
           }
         }
       } else {
+        await recover('over-limit');
+        await recover('force-unavailable');
+        if (episodes(r.workspace_id, r.owner_id, 'carry-respawn-loop').length) {
+          const last = carryRespawnHealthySampleAt.get(r.owner_id);
+          if (last == null || Date.now() - last > DEFAULT_INTERVAL_MS * 3 || last > Date.now()) {
+            carryRespawnUnderLimitSince.delete(r.owner_id);
+          }
+          carryRespawnHealthySampleAt.set(r.owner_id, Date.now());
+          const since = carryRespawnUnderLimitSince.get(r.owner_id) ?? Date.now();
+          carryRespawnUnderLimitSince.set(r.owner_id, since);
+          if (Date.now() - since >= CARRY_RESPAWN_STREAK_WINDOW_MS) await recover('carry-respawn-loop');
+        }
         overLimitOwners.delete(r.owner_id); // recovered (compacted / back under limit)
         forceCompactedAt.delete(r.owner_id); // re-arm the force for a future crossing
         carryRespawnRequestedAt.delete(r.owner_id); // re-arm the deterministic cut
-        unsatisfiableLimitEscalated.delete(r.owner_id);
         const streakEntry = carryRespawnStreak.get(r.owner_id);
-        if (streakEntry == null) {
+        if (streakEntry == null && !episodes(r.workspace_id, r.owner_id, 'carry-respawn-loop').length) {
           carryRespawnUnderLimitSince.delete(r.owner_id);
           carryRespawnLoopEscalated.delete(r.owner_id);
         } else {
@@ -2861,6 +3286,13 @@ export const WATCHDOG_BEHAVIOR_CUTOVERS: ReadonlyArray<{ id: string; atMs: numbe
       'point on; a pre-cutover process still types the retired mode:"compact" (dropped loudly by ' +
       'psu-pty-host as of this same fix, but the SENDER is the thing that needs restarting).',
   },
+  {
+    id: 'ended-session-compaction-exact-key-recovery',
+    atMs: Date.parse('2026-10-14T16:20:00Z'),
+    note:
+      'ended-session compaction alarms are read by family and resolved with an exact-key latest-envelope check; ' +
+      'pre-cutover watchdog processes can miss old open episodes outside the generic condition fold (WI-6554700010009854).',
+  },
 ];
 
 /**
@@ -2896,7 +3328,10 @@ async function escalateStaleCutoverProcess(
   processStartedAtMs: number,
   cutoverAtMs: number,
   note: string,
+  deps: CompactionConditionDeps = {},
 ): Promise<void> {
+  await raiseCompactionCondition(DEFAULT_COORD_WORKSPACE, `${hostname()}:${process.argv[1]}`, 'stale-cutover',
+    `Process booted at ${processStartedAtMs}, before cutover ${cutoverId} at ${cutoverAtMs}.`, deps, cutoverId);
   if (staleCutoverEscalated.has(cutoverId)) return;
   staleCutoverEscalated.add(cutoverId);
   const bootIso = new Date(processStartedAtMs).toISOString();
@@ -2947,7 +3382,7 @@ async function escalateStaleCutoverProcess(
  */
 export function startCompactionComplianceWatchdog(
   sql: Sql,
-  opts: { intervalMs?: number } = {},
+  opts: CompactionConditionDeps & { intervalMs?: number } = {},
 ): void {
   if (process.env.PAPERCUSP_COMPACTION_WATCHDOG === '0') return;
   // EI-16190: version/boot stamp, logged once at start — makes a stale
@@ -2955,12 +3390,27 @@ export function startCompactionComplianceWatchdog(
   // self-flags (+ escalates) the specific known-cutover misses above.
   const processStartedAtMs = Date.now() - process.uptime() * 1000;
   const stale = staleCutoversForProcessStart(processStartedAtMs);
+  // Resolve only this exact runtime's known cutovers from its measured boot.
+  // A different process/host, unknown cutover or missing boot is not recovery.
+  void (async () => {
+    const episodes = await compactionEpisodeReader(opts);
+    const runtimeEpisodes = episodes(DEFAULT_COORD_WORKSPACE, `${hostname()}:${process.argv[1]}`, 'stale-cutover');
+    for (const episode of runtimeEpisodes) {
+      try {
+        const scope = JSON.parse(decodeURIComponent(episode.conditionKey.slice('alarm:compaction-compliance:'.length)));
+        const cutover = WATCHDOG_BEHAVIOR_CUTOVERS.find(row => row.id === scope[3]);
+        if (cutover && Number.isFinite(processStartedAtMs) && processStartedAtMs >= cutover.atMs) {
+          await recoverCompactionEpisodes(runtimeEpisodes.filter(row => row.conditionKey === episode.conditionKey), Date.now(), opts);
+        }
+      } catch { /* unknown cutover preserves */ }
+    }
+  })();
   console.log(
     `[compaction-watchdog] starting (pid ${process.pid}, booted ${new Date(processStartedAtMs).toISOString()})` +
       (stale.length === 0 ? ' — up to date with all known behavior cutovers.' : ''),
   );
   for (const c of stale) {
-    void escalateStaleCutoverProcess(c.id, processStartedAtMs, c.atMs, c.note);
+    void escalateStaleCutoverProcess(c.id, processStartedAtMs, c.atMs, c.note, opts);
   }
   const intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
   if (watchdogTimer) watchdogTimer.stop();
@@ -2968,7 +3418,7 @@ export function startCompactionComplianceWatchdog(
     'compaction-compliance-watchdog',
     intervalMs,
     () => {
-      void checkCompactionCompliance(sql);
+      void checkCompactionCompliance(sql, opts);
     },
     { category: 'watchdog' },
   );

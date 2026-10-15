@@ -24,6 +24,7 @@ import {
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import type { Rubric } from '../../rubrics';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
+import { SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 import {
   areAcceptanceLineageRelated,
   isAcceptanceAuthorIdentity,
@@ -35,11 +36,22 @@ const readRunningGenerationM = vi.hoisted(() => vi.fn());
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
   const getRubric = vi.fn();
+  const readRubric = vi.fn(async (rubricId: string) => {
+    const rubric = await getRubric(rubricId);
+    return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+  });
+  const readRubricWithoutSeeding = vi.fn(async (rubricId: string) => {
+    const rubric = await getRubric(rubricId);
+    return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+  });
   const getRubricCriteriaHash = vi.fn(async (_rubricId: string): Promise<string | null> => null);
   const getRubricPlanRevision = vi.fn(async (_rubricId: string): Promise<number | null> => 7);
   return {
     ...actual,
     getRubric,
+    getRubricWithoutSeeding: getRubric,
+    readRubric,
+    readRubricWithoutSeeding,
     getRubricCriteriaHash,
     getRubricPlanRevision,
     readRubricPlanRevision: vi.fn(async () => ({ ok: true as const, revision: 7 })),
@@ -95,7 +107,14 @@ vi.mock('../../acceptance-author-identity', () => ({
   resolvePlanImplementerIdentities: vi.fn(async () => [] as string[]),
 }));
 
-import { getRubric, getRubricCriteriaHash, getRubricPlanRevision, readRubricPlanRevision } from '../../rubrics';
+import {
+  getRubric,
+  getRubricCriteriaHash,
+  getRubricPlanRevision,
+  readRubric,
+  readRubricPlanRevision,
+  readRubricWithoutSeeding,
+} from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { getIssue, type EngineerIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
@@ -109,6 +128,8 @@ const getRubricM = vi.mocked(getRubric);
 const getRubricCriteriaHashM = vi.mocked(getRubricCriteriaHash);
 const getRubricPlanRevisionM = vi.mocked(getRubricPlanRevision);
 const readRubricPlanRevisionM = vi.mocked(readRubricPlanRevision);
+const readRubricM = vi.mocked(readRubric);
+const readRubricWithoutSeedingM = vi.mocked(readRubricWithoutSeeding);
 const captureM = vi.mocked(captureImprovement);
 const listM = vi.mocked(listScorecards);
 const getIssueM = vi.mocked(getIssue);
@@ -223,6 +244,7 @@ const vettingCard = (critics: string[]) =>
 const RERUN_RECIPE = {
   schemaVersion: 1 as const,
   evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+  evaluatorRevision: SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
   classRef: 'plan-class-feature-ship' as const,
   args: {
     slug: 'reconnect-plan',
@@ -269,6 +291,14 @@ beforeEach(() => {
   lineageRelatedM.mockImplementation(async (author, candidate) => author === candidate);
   planImplementersM.mockResolvedValue([]);
   getRubricM.mockResolvedValue(RUBRIC);
+  readRubricM.mockImplementation(async (rubricId) => {
+    const rubric = await getRubricM(rubricId);
+    return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
+  });
+  readRubricWithoutSeedingM.mockImplementation(async (rubricId) => {
+    const rubric = await getRubricM(rubricId);
+    return rubric ? { kind: 'found', rubric } : { kind: 'missing' };
+  });
   getRubricPlanRevisionM.mockResolvedValue(7);
   getRubricCriteriaHashM.mockResolvedValue(null);
   readRubricPlanRevisionM.mockResolvedValue({ ok: true, revision: 7 });
@@ -411,6 +441,68 @@ describe('emitScorecard', () => {
     });
   });
 
+  it('refuses to persist when the Scout host generation changes during evidence gathering', async () => {
+    readRunningGenerationM
+      .mockResolvedValueOnce({
+        deployedSha: 'release-sha',
+        hostStartedAt: '2026-09-11T00:00:00.000Z',
+        bootHeadSha: 'older-sha',
+        scoutCodeHash: 'older-code',
+        staleHost: true,
+      })
+      .mockResolvedValueOnce({
+        deployedSha: 'release-sha',
+        hostStartedAt: '2026-09-11T00:01:00.000Z',
+        bootHeadSha: 'older-sha',
+        scoutCodeHash: 'older-code',
+        staleHost: true,
+      });
+    captureM.mockImplementationOnce(async (captureInput) => {
+      await captureInput.beforeIssueCreate?.();
+      return { ok: true, created: true, issue: ISSUE_BASE, possibleDuplicates: [] };
+    });
+
+    const result = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'generation_changed_re_gather_required',
+      reGatherRequired: true,
+      generationChange: {
+        evidenceHostStartedAt: '2026-09-11T00:00:00.000Z',
+        persistenceHostStartedAt: '2026-09-11T00:01:00.000Z',
+      },
+    });
+    expect(readRunningGenerationM).toHaveBeenCalledTimes(2);
+    expect(captureM).toHaveBeenCalledTimes(1);
+    expect(captureM.mock.calls[0][0].beforeIssueCreate).toBeTypeOf('function');
+  });
+
+  it('returns and persists unknown host parity when the comparison inputs are unavailable', async () => {
+    const generation = {
+      deployedSha: 'release-sha',
+      hostStartedAt: null,
+      bootHeadSha: null,
+      scoutCodeHash: null,
+      staleHost: null,
+    };
+    readRunningGenerationM
+      .mockResolvedValueOnce(generation)
+      .mockResolvedValueOnce({ ...generation, hostStartedAt: '2026-09-12T00:01:00.000Z' });
+    captureM.mockImplementationOnce(async (captureInput) => {
+      await captureInput.beforeIssueCreate?.();
+      return { ok: true, created: true, issue: ISSUE_BASE, possibleDuplicates: [] };
+    });
+
+    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
+
+    expect(r).toMatchObject({ ok: true, created: true, gradedGeneration: generation, staleHost: null });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: { gradedGeneration: generation } },
+    });
+    expect(readRunningGenerationM).toHaveBeenCalledTimes(2);
+  });
+
   it('surfaces the running generation on a successful emit', async () => {
     const generation = {
       deployedSha: 'current-sha',
@@ -420,6 +512,10 @@ describe('emitScorecard', () => {
       staleHost: false,
     };
     readRunningGenerationM.mockResolvedValue(generation);
+    captureM.mockImplementationOnce(async (captureInput) => {
+      await captureInput.beforeIssueCreate?.();
+      return { ok: true, created: true, issue: ISSUE_BASE, possibleDuplicates: [] };
+    });
 
     const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
 
@@ -631,6 +727,28 @@ describe('emitScorecard', () => {
       ok: false,
       code: 'invalid_spec_test_adequacy_binding',
       error: expect.stringContaining("kind:'plan'"),
+    });
+    expect(getRubricPlanRevisionM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses an obsolete evaluator revision before persisting an otherwise valid recipe', async () => {
+    getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-test-adequacy' } as Rubric);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'spec-test-adequacy',
+        ratings: RATINGS,
+        rerunRecipe: { ...RERUN_RECIPE, evaluatorRevision: SPEC_TEST_ADEQUACY_EVALUATOR_REVISION - 1 },
+        subject: { kind: 'plan', ref: 'reconnect-plan#SPEC-003-01@1' },
+      },
+      { createdBy: 'su-1' },
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining('evaluator rule revision'),
     });
     expect(getRubricPlanRevisionM).not.toHaveBeenCalled();
     expect(captureM).not.toHaveBeenCalled();
@@ -1673,8 +1791,38 @@ describe('evaluateScorecard', () => {
     expect(listM).not.toHaveBeenCalled();
   });
 
+  // WI-10005160: a plan slug is unique per harness, not per workspace, so the BAR read must be
+  // scoped to the rubric's subject harness or it can span two copies and refuse
+  // `bar_snapshot_plan_ambiguous`.
+  it('scopes the BAR lifecycle preflight to the rubric subject harness', async () => {
+    getRubricM.mockResolvedValue({ ...BAR_ACCEPTANCE_RUBRIC, subjectHarnessSlug: 'papercusp' });
+    readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue({ phase: 'pre-grading', satisfied: false, message: 'not ready' });
+
+    await evaluateScorecard({ rubricRef: 'acceptance-rubric' });
+
+    expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenCalledWith('bar-plan', 'pre-grading', {
+      expectedApplicable: true,
+      harnessSlug: 'papercusp',
+    });
+  });
+
+  it('scorecards:emit scopes its pre-grading BAR read to the rubric subject harness', async () => {
+    getRubricM.mockResolvedValue({ ...BAR_ACCEPTANCE_RUBRIC, subjectHarnessSlug: 'papercusp' });
+    const lifecycle = { phase: 'pre-grading', satisfied: false, message: 'acceptance BAR contract is not ready for grading' };
+    readAndEvaluateAcceptanceBarLifecycleM.mockResolvedValue(lifecycle);
+
+    const r = await emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-grader' });
+
+    expect(r).toMatchObject({ ok: false, code: 'acceptance_bar_contract_not_ready', lifecycle });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenCalledWith('bar-plan', 'pre-grading', {
+      expectedApplicable: true,
+      harnessSlug: 'papercusp',
+    });
+  });
+
   it('does not collapse a failed backing-plan read into a false not-found', async () => {
     getRubricM.mockResolvedValue(null);
+    readRubricWithoutSeedingM.mockResolvedValue({ kind: 'read-failed' });
     readRubricPlanRevisionM.mockResolvedValue({ ok: false, revision: null });
 
     const r = await evaluateScorecard({ rubricRef: 'active-acceptance-rubric' });
@@ -1686,14 +1834,102 @@ describe('evaluateScorecard', () => {
         'retry or verify independently before treating it as absent',
     });
     expect(r.error).not.toContain('not found');
-    expect(readRubricPlanRevisionM).toHaveBeenCalledWith('active-acceptance-rubric');
+    expect(readRubricWithoutSeedingM).toHaveBeenCalledWith('active-acceptance-rubric');
+    expect(readRubricPlanRevisionM).not.toHaveBeenCalled();
   });
+
+  it('scorecards:emit reports a backing-plan read failure without claiming the rubric is missing', async () => {
+    readRubricM.mockResolvedValue({ kind: 'read-failed' });
+
+    const result = await emitScorecard(
+      { rubricRef: 'grading-integrity', ratings: RATINGS },
+      { createdBy: 'su-grader' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error:
+        "rubric 'grading-integrity' could not be resolved because the backing plan read failed; " +
+        'retry or verify independently before treating it as absent',
+    });
+    expect(result.error).not.toContain('not found');
+  });
+
+  it.each(['evaluate', 'emit'] as const)(
+    'current BAR fingerprints reach %s while stale proof and implementer grading stay blocked',
+    async (door) => {
+      getRubricM.mockResolvedValue({ ...BAR_ACCEPTANCE_RUBRIC, subjectHarnessSlug: 'papercusp' });
+      planImplementersM.mockResolvedValue(['su-plan-implementer']);
+      const current = [{
+        planSlug: 'bar-plan',
+        specId: 'AUTO-BAR-R-1-P-002',
+        specRevision: 8,
+        specFingerprint: 'spec:current',
+        evidenceKind: 'test' as const,
+        evidenceRef: 'reports.test.ts',
+        sourceFingerprint: 'source:current',
+        testFingerprint: 'test:current',
+      }];
+      // Model the lifecycle's measured comparison, not a blanket successful
+      // preflight: omitted and changed source fingerprints must still refuse.
+      readAndEvaluateAcceptanceBarLifecycleM.mockImplementation(
+        async (_plan, _phase, options: { current?: typeof current; harnessSlug?: string }) => ({
+          phase: 'pre-grading',
+          satisfied: options.harnessSlug === 'papercusp' &&
+            options.current?.[0]?.sourceFingerprint === 'source:current',
+          message: 'R-1 source proof is missing or stale',
+        }),
+      );
+      const run = (fingerprints?: typeof current) => door === 'evaluate'
+        ? evaluateScorecard(
+            scorecardEvaluateArgs.parse({ rubricRef: 'acceptance-rubric', current: fingerprints }),
+            { id: 'su-plan-implementer', workspaceId: 'ws' },
+          )
+        : emitScorecard(
+            scorecardEmitArgs.parse({ rubricRef: 'acceptance-rubric', ratings: RATINGS, current: fingerprints }),
+            { createdBy: 'su-plan-implementer', workspaceId: 'ws' },
+          );
+
+      await expect(run()).resolves.toMatchObject({ ok: false, code: 'acceptance_bar_contract_not_ready' });
+      await expect(run([{ ...current[0], sourceFingerprint: 'source:changed' }])).resolves.toMatchObject({
+        ok: false, code: 'acceptance_bar_contract_not_ready',
+      });
+      await expect(run(current)).resolves.toMatchObject(door === 'evaluate'
+        ? { ok: true, graderEligibility: { role: 'disqualified', refusal: { code: 'grader_in_implementer_lineage' } } }
+        : { ok: false, code: 'grader_in_implementer_lineage' });
+      expect(captureM).not.toHaveBeenCalled();
+    },
+  );
 
   it('with ratings + no latest scorecard: changed:true and every criterion listed as changed', async () => {
     const r = await evaluateScorecard({ rubricRef: 'test-rubric', ratings: RATINGS });
     expect(r).toMatchObject({ ok: true, changed: true });
     expect((r as { delta: { changedCriteria: string[] } }).delta.changedCriteria.sort()).toEqual(['crit-a', 'crit-b']);
   });
+
+  it.each(['evaluate', 'emit'] as const)(
+    '%s refuses a positive rating when a bound artifact key has no snapshot, even without release gating',
+    async (door) => {
+      const artifactKey = 'docs/evidence/retained-report.json:summary';
+      getRubricM.mockResolvedValue({
+        ...RUBRIC,
+        releaseGating: false,
+        criteria: [{ ...RUBRIC.criteria[0], instrumentKey: artifactKey }],
+      } as Rubric);
+      const ratings = { 'crit-a': { rating: 'pass', evidence: 'The artifact appears healthy.' } };
+
+      const result = door === 'evaluate'
+        ? await evaluateScorecard({ rubricRef: 'test-rubric', ratings })
+        : await emitScorecard({ rubricRef: 'test-rubric', ratings }, { createdBy: 'su-1' });
+
+      expect(result).toMatchObject({
+        ok: false,
+        error: expect.stringContaining(artifactKey),
+        instrumentContract: { missingSnapshots: [artifactKey], positiveClaimsWithoutSnapshots: [artifactKey] },
+      });
+      if (door === 'emit') expect(captureM).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps every skeleton + canonical-rating row through an ambient trimmed dispatch', async () => {
     const criteria = Array.from({ length: 26 }, (_, i) => ({
@@ -2151,10 +2387,13 @@ describe('scorecards:evaluate input ownership is explicit', () => {
 
     expect(evaluateSourceHive).toContain('hive that produced/filed the scorecard');
     expect(evaluateSourceHive).toContain('not the harness that owns the rubric subject plan');
-    expect(emitSourceHive).toContain('grader/source hive');
-    expect(emitSourceHive).toContain('use targetHive for that subject hive');
-    expect(emitTargetHive).toContain("rubric subject plan's harness");
-    expect(emitTargetHive).toContain('does not change sourceHive');
+    // emit's descriptions were trimmed for tool prompt-weight (2787acd888); pin the same
+    // four semantics against the compact wording: grader hive, subject hive → targetHive,
+    // targetHive names the subject plan's hive, and the two are independent.
+    expect(emitSourceHive).toContain('grader hive');
+    expect(emitSourceHive).toContain("put the subject plan's hive in targetHive");
+    expect(emitTargetHive).toContain('Subject plan/repository hive');
+    expect(emitTargetHive).toContain('Independent of sourceHive');
   });
 });
 

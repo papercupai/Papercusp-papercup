@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildFleetUnderStaffedBriefAlert,
   buildLeaderBlockerStallBriefView,
   buildLeaderDependencyBottleneckView,
   computeBenchSuggestion,
@@ -32,6 +33,7 @@ import {
   exactPositiveSinglePlanSlugFromFilter,
   FALSIFIER_FORBIDDEN_TOOLS,
   fleetCapacityProviderForMembers,
+  LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS,
   LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
   LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
   LEADER_BRIEF_READ_CONCURRENCY,
@@ -41,11 +43,14 @@ import {
   projectMember,
   projectLeaderBriefOwnerDirectives,
   projectFleetAdmissionBlockRead,
+  projectLeaderBriefFleetPause,
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
   recoverFleetRecordForLeaderControl,
+  boundedLeaderBriefFleetMetricsRead,
   readLeaderBriefFleetMetrics,
+  leaderBriefFleetMetricsUnavailable,
   readLeaderBriefLaneHealth,
   readLeaderAnnouncedGates,
   reconcilePsuHostLiveness,
@@ -57,6 +62,7 @@ import {
   resolveLeaderBriefFleet,
   selectLeaderBriefMembers,
   shouldRefreshLeaderControlForBrief,
+  silentMembersSummary,
   topExcludedFloors,
   selectLeaderBriefObligationFields,
   leaderBriefObligationFields,
@@ -65,10 +71,23 @@ import {
 } from './leader-brief';
 import leaderBriefTool from './leader-brief';
 import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
+import {
+  computeStalledItemRotation,
+  isInstrumentedLongTestTool,
+  materialAdvanceAnchor,
+  STALLED_ITEM_REQUIRED_ACTION,
+  STALLED_ITEM_ROTATION_THRESHOLD_MS,
+} from './stalled-item-rotation';
+import type { AgentClaim } from '../../fleet/assignments';
+import type { FleetHeadcountState } from '../../agent-fleets-store';
 import { computeMemberIdleVerdict } from '../../fleet-member-idle-verdict';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
 import type { AgentObligationAgenda } from '../../agent-obligations';
+import { withBoundedTimeout } from '../../bounded-timeout';
+import type { FleetLaneHealth } from '../../fleet/lane-health';
+import { buildClaimableNowAggregate } from './leader-brief-aggregate';
+import { shapeLeaderBrief } from './leader-brief-shape';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 
@@ -370,7 +389,7 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       harness: 'papercusp',
       flowMode: 'current-spec',
     });
-    expect(listItems).toHaveBeenCalledWith({ harness: 'papercusp', includeObservations: true, limit: 2_000 });
+    expect(listItems).toHaveBeenCalledWith({ harness: 'papercusp', includeObservations: true, resolution });
     expect(readOccurrences).toHaveBeenCalledWith({
       workspaceId: 'ws',
       harnessSlug: 'papercusp',
@@ -379,11 +398,12 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
     expect(build).toHaveBeenCalledWith(
       resolution,
       items,
-      expect.objectContaining({ sourceCapExhausted: false, assignee: 'su-leader' }),
+      // P-001: the workspace scope reaches the builder, else feature/paused reads go unknown.
+      expect.objectContaining({ sourceCapExhausted: false, assignee: 'su-leader', workspaceId: 'ws' }),
     );
   });
 
-  it('starts scope and item reads together, then passes a pending occurrence census to the builder', async () => {
+  it('fixes scope before hydrating selected items and overlaps the occurrence census', async () => {
     const resolution = {
       ok: true,
       scope: { window: { startAt: '2026-08-21T00:00:00.000Z' } },
@@ -432,7 +452,7 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
       { resolveScope, listItems, readOccurrences, build },
     );
     await Promise.resolve();
-    const startedTogether = scopeStarted && itemsStarted;
+    const itemsStartedBeforeScope = itemsStarted;
     releaseScope?.();
     await Promise.resolve();
     await Promise.resolve();
@@ -440,7 +460,8 @@ describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
     releaseItems?.();
 
     await expect(resultPromise).resolves.toEqual(unavailable);
-    expect(startedTogether).toBe(true);
+    expect(scopeStarted).toBe(true);
+    expect(itemsStartedBeforeScope).toBe(false);
     expect(occurrenceStartedBeforeItemsReleased).toBe(true);
     expect(readOccurrences).toHaveBeenCalledWith({
       workspaceId: 'ws',
@@ -512,9 +533,48 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     }
   });
 
+  it('lets the measured 3,272.388ms metrics cohort finish and returns a typed fallback after 5s', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fallback = leaderBriefFleetMetricsUnavailable({
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      reason: 'canonical fleet metric read exceeded the leader-brief leg budget',
+      recoverVia: "work_items:burn_down { harness: 'papercusp', fleet: 'fleet-a', window: 'fleet-lifetime' }",
+    });
+    try {
+      const measuredDurationMs = 3_272.388;
+      const measuredTimerMs = Math.ceil(measuredDurationMs);
+      expect(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBe(5_000);
+      expect(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBeGreaterThan(measuredDurationMs);
+
+      const measuredRead = boundedLeaderBriefFleetMetricsRead(
+        () => new Promise((resolve) => setTimeout(() => resolve({ ok: true, elapsedMs: measuredDurationMs }), measuredTimerMs)),
+        fallback,
+      );
+      await vi.advanceTimersByTimeAsync(measuredTimerMs);
+      await expect(measuredRead).resolves.toEqual({ ok: true, elapsedMs: measuredDurationMs });
+
+      const slowRead = boundedLeaderBriefFleetMetricsRead(
+        () => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS + 1)),
+        fallback,
+      );
+      await vi.advanceTimersByTimeAsync(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS);
+      await expect(slowRead).resolves.toEqual(fallback);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('leader-brief:fleet-metrics exceeded 5000ms'),
+      );
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it('keeps the cumulative server budget below the 30s MCP client deadline', async () => {
     expect(LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS).toBe(3_000);
     expect(LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS).toBe(750);
+    expect(LEADER_BRIEF_FLEET_METRICS_TIMEOUT_MS).toBe(5_000);
     expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS).toBe(25_000);
     expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS).toBeLessThan(30_000);
 
@@ -535,7 +595,7 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     }
   });
 
-  it('passes the optional-read budget into lane health and keeps a typed recovery fallback', async () => {
+  it('gives required lane health the existing diagnostic budget and keeps a typed recovery fallback', async () => {
     const read = vi.fn(async () => ({ laneHealth: null, unavailable: null }));
 
     await readLeaderBriefLaneHealth(
@@ -547,7 +607,7 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
       fleet: 'fleet-a',
       harness: 'papercusp',
       workspaceId: 'ws-a',
-      issueFamilyTotalBudgetMs: LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+      issueFamilyTotalBudgetMs: 12_000,
     });
     expect(leaderBriefLaneHealthUnavailable({ fleet: 'fleet-a', harness: 'papercusp' })).toMatchObject({
       laneHealth: null,
@@ -906,6 +966,79 @@ describe('leader-brief degraded fleet-record control recovery (EI-22668285442179
       }),
     ).resolves.toBeNull();
     expect(listLedFleets).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-25630740795866119: bounded fleet pause evidence', () => {
+  const laneHealth: FleetLaneHealth = {
+    claimable: 2, matchedByFilter: 2, excluded: {},
+    issueFamily: { claimable: 2, matchedByFilter: 2, excluded: {} },
+    featureFamily: { claimable: 0, matchedByFilter: 0, excluded: {} },
+    effective: { claimable: 2, matchedByFilter: 2, excluded: {}, basis: 'issue+feature-family' },
+    familyReachability: { issue: true, feature: true },
+    spec: { ref: 'alpha@4', specId: 'alpha', revision: 4, matchedBy: 'fleet',
+      harness: 'papercusp', assigneeScoped: null, planScoped: false },
+  };
+
+  it.each(['rejected', 'timed out', 'missing'] as const)(
+    'keeps a %s record unknown through claimability and transport', async (failure) => {
+      vi.useFakeTimers();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const read = vi.fn(() => {
+          if (failure === 'rejected') return Promise.reject(new Error('registry unavailable'));
+          if (failure === 'timed out') return new Promise<null>(() => {});
+          return Promise.resolve(null);
+        });
+        const pending = withBoundedTimeout(read, {
+          fallback: undefined, timeoutMs: 20, label: 'leader-brief:fleetRecord',
+        });
+        await vi.advanceTimersByTimeAsync(20);
+        const result = await pending;
+        expect(result.degraded).toBe(failure !== 'missing');
+        expect(result.reason).toBe(failure === 'rejected' ? 'error' : failure === 'timed out' ? 'timeout' : undefined);
+        expect(read).toHaveBeenCalledTimes(1);
+        if (failure === 'missing') expect(warn).not.toHaveBeenCalled();
+        else expect(warn).toHaveBeenCalledWith(expect.stringContaining('leader-brief:fleetRecord'));
+        const pause = projectLeaderBriefFleetPause(result.value);
+        expect(pause).toEqual({ paused: null, reason: null });
+        const aggregate = buildClaimableNowAggregate({ fleet: 'alpha', laneHealth, fleetPaused: pause.paused });
+        expect(aggregate).toMatchObject({ value: 2, interpretation: {
+          state: 'unknown', exactness: { status: 'unknown', reason: expect.stringContaining('pause state') },
+          evidence: { fleetPaused: null },
+        } });
+        for (const tier of ['standard', 'trimmed'] as const) {
+          expect(shapeLeaderBrief({ ok: true, summary: {
+            fleet: 'alpha', members: 0, fleet_paused: pause.paused, claimable_now: aggregate,
+          } }, tier)).toMatchObject({ summary: {
+            fleet_paused: null, claimable_now: { value: 2, interpretation: { state: 'unknown', evidence: { fleetPaused: null } } },
+          } });
+        }
+      } finally {
+        warn.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    { controlState: 'active' as const, paused: false, interpretation: 'claimable', reason: null },
+    { controlState: 'winding-down' as const, paused: true, interpretation: 'paused', reason: 'owner pause' },
+  ])('preserves measured $controlState control and its reason', ({ controlState, paused, interpretation, reason }) => {
+    const pause = projectLeaderBriefFleetPause({ controlState, controlReason: 'owner pause' });
+    expect(pause).toEqual({ paused, reason });
+    expect(buildClaimableNowAggregate({ fleet: 'alpha', laneHealth, fleetPaused: pause.paused }))
+      .toMatchObject({ value: 2, interpretation: { state: interpretation, exactness: { status: 'exact' }, evidence: { fleetPaused: paused } } });
+  });
+
+  it('uses positive recovered paused authority without manufacturing an active fallback', async () => {
+    const recovered = await recoverFleetRecordForLeaderControl({
+      workspaceId: 'ws-1', fleetSlug: 'alpha', ownerId: 'leader-1', allowLeadershipWrites: true,
+      fleetRecordResult: { value: undefined, degraded: true },
+      listLedFleets: vi.fn(async () => [{ fleetSlug: 'alpha', leaderOwnerId: 'leader-1',
+        controlState: 'winding-down', controlReason: 'owner pause' }]) as never,
+    });
+    expect(projectLeaderBriefFleetPause(recovered)).toEqual({ paused: true, reason: 'owner pause' });
   });
 });
 
@@ -3018,10 +3151,28 @@ describe('a PAUSED (winding-down) fleet never gets a wake/bench suggestion (EI-1
     expect(s?.kind).toBe('stalled-no-mcp');
   });
 
-  it('an unread control state (absent/false) is NOT a pause — a real starvation signal survives', () => {
-    for (const notPaused of [undefined, null, false]) {
+  it('preserves legacy omitted and measured active control states', () => {
+    for (const notPaused of [undefined, false]) {
       expect(computeBenchSuggestion(idle, 2, null, notPaused)?.kind).toBe('idle-with-claimable');
     }
+  });
+
+  it('EI-25630740795866119: unknown pause never advises waking or benching idle members', () => {
+    expect(computeBenchSuggestion(idle, 2, null, null)).toBeUndefined();
+    expect(computeBenchSuggestion(idle, 0, { matchedByFilter: 0 }, null)).toBeUndefined();
+    expect(computeDormantAlert({ ...idle, verdict: 'speaking', loopMode: null }, null)).toBe(false);
+    expect(computeIdleWithClaimableAlert({ claimableCount: 2, idleMemberCount: 19, fleetPaused: null })).toBeUndefined();
+    expect(computeFloorStarvedFleetAlert({ claimable: 0, matchedByFilter: 108, idleMemberCount: 5, fleetPaused: null })).toBeUndefined();
+    expect(computeFleetBlockVerdict({
+      fleetPaused: null, claimable: 2, matchedByFilter: 2, idleMemberCount: 19, lanelessIdleCount: 0,
+    })).toBeUndefined();
+  });
+
+  it('EI-25630740795866119: unknown pause retains diagnostics for held stalled work', () => {
+    expect(computeBenchSuggestion({
+      stalled: true, verdict: 'speaking', parkedOn: [],
+      doing: { id: 'WI-1', itemKind: 'bug', title: 'held', status: 'open', rank: 0, rankWriter: null, activity: 'alive' },
+    }, 2, null, null)?.kind).toBe('stalled-no-mcp');
   });
 
   it('projectMember threads the pause through end-to-end', () => {
@@ -3876,5 +4027,291 @@ describe('computeFleetBlockVerdict (P-019/P-012 — which LAYER is blocking the 
     // calibration: the six inputs must actually exercise all five layers, or the
     // read-only assertion above is passing on a set that never reached most of them
     expect(layers).toEqual(new Set(['fleet-paused', 'inference-pool', 'spec-scope', 'claim-floors', 'members']));
+  });
+});
+
+describe('P-004 / R-4 — stalled-item rotation names the held ITEM that has not advanced, not the worker', () => {
+  // feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01. The 0930 incident:
+  // live, BUSY workers sat on week-old items while closeable items waited. Every existing
+  // signal keys on worker activity, so a fresh tool call (status reads, orient, get_next
+  // probes) read them as healthy. These fixtures therefore pair a FRESH tool call with an
+  // item whose own progress clock has not moved.
+  const minAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
+
+  function wiClaim(overrides: Partial<AgentClaim> = {}): AgentClaim {
+    return {
+      type: 'work-item',
+      harnessSlug: 'papercusp',
+      planSlug: null,
+      id: 'WI-77',
+      itemKind: 'change',
+      detail: 'week-old item',
+      status: 'wip',
+      acquiredTs: minAgo(45),
+      expiresTs: null,
+      active: true,
+      orphaned: false,
+      stalled: false,
+      lastProgressAt: null,
+      activity: 'alive' as AgentClaim['activity'],
+      rank: null,
+      rankWriter: null,
+      ...overrides,
+    };
+  }
+
+  const busyMember = (claims: AgentClaim[], extra: Partial<DecoratedAgent> = {}) =>
+    baseAgent({
+      agentId: 'su-busy',
+      sessionState: 'live',
+      lastToolCallAt: minAgo(0.5), // busy worker: a tool call 30s ago
+      load: claims.length,
+      claims,
+      ...extra,
+    });
+
+  it('NAMES the item: held 45 min, never checkpointed, worker busy, ready work waiting', () => {
+    const m = projectMember(busyMember([wiClaim()]), NOW, 2, null, false);
+    expect(m.stalledItem).toEqual({
+      item: 'WI-77',
+      itemTitle: 'week-old item',
+      noAdvanceMin: 45,
+      advancedAt: minAgo(45),
+      advanceSignal: 'claim_acquired_at',
+      readyWaiting: 2,
+      requiredAction: STALLED_ITEM_REQUIRED_ACTION,
+    });
+    // the required action offers all four accountable outcomes
+    for (const verb of ['work_items:complete', 'work_items:create', 'work_items:set_blocker', 'work_items:release']) {
+      expect(STALLED_ITEM_REQUIRED_ACTION).toContain(verb);
+    }
+  });
+
+  it('measures from the last authored checkpoint when one exists, and names the OLDEST stalled item', () => {
+    const r = computeStalledItemRotation(
+      {
+        agentId: 'su-busy',
+        sessionState: 'live',
+        claims: [
+          wiClaim({ id: 'WI-A', acquiredTs: minAgo(300), lastProgressAt: minAgo(40) }),
+          wiClaim({ id: 'WI-B', acquiredTs: minAgo(300), lastProgressAt: minAgo(200) }),
+        ],
+      },
+      NOW,
+      3,
+      false,
+    );
+    expect(r?.item).toBe('WI-B');
+    expect(r?.advanceSignal).toBe('last_progress_at');
+    expect(r?.noAdvanceMin).toBe(200);
+  });
+
+  it('does NOT name an item that advanced inside the threshold (checkpoint 10 min ago)', () => {
+    const m = projectMember(
+      busyMember([wiClaim({ acquiredTs: minAgo(300), lastProgressAt: minAgo(10) })]),
+      NOW,
+      2,
+      null,
+      false,
+    );
+    expect(m.stalledItem).toBeUndefined();
+  });
+
+  it('ignores a MECHANICAL (system-written) checkpoint as advancement', () => {
+    const claim = wiClaim({
+      acquiredTs: minAgo(120),
+      lastProgressAt: minAgo(5),
+      claimHealth: {
+        status: 'stale',
+        reasons: [],
+        expected_cadence_ms: 1_800_000,
+        evidence: [{ writer: 'work_items_checkpoint', signal: 'checkpoint_kind', value: 'mechanical' }],
+      } as unknown as AgentClaim['claimHealth'],
+    });
+    expect(materialAdvanceAnchor(claim)?.signal).toBe('claim_acquired_at');
+    const r = computeStalledItemRotation({ agentId: 'su-busy', claims: [claim] }, NOW, 1, false);
+    expect(r?.noAdvanceMin).toBe(120);
+  });
+
+  it('exempts a PAUSED fleet — a quiet member is the compliant response to a stand-down', () => {
+    expect(projectMember(busyMember([wiClaim()]), NOW, 2, null, true).stalledItem).toBeUndefined();
+  });
+
+  // WI-10005110: R-4's third exclusion, measured at the projection the brief actually
+  // renders (projectMember), not only at computeStalledItemRotation. The same member is
+  // named without the in-flight test (control) and is NOT named while one runs; a non-test
+  // long call (a status read) still names it, so the exemption cannot widen silently.
+  it('AUTO-BAR-R-4-P-004: a member past the stall threshold with ready items waiting is not named while an instrumented long test is in flight (control: named without it)', () => {
+    const member = busyMember([wiClaim()]);
+    const control = projectMember(member, NOW, 2, null, false);
+    expect(control.stalledItem?.item).toBe('WI-77');
+    expect(control.stalledItem?.readyWaiting).toBe(2);
+    expect(control.stalledItem?.noAdvanceMin).toBeGreaterThanOrEqual(STALLED_ITEM_ROTATION_THRESHOLD_MS / 60_000);
+
+    for (const tool of ['testing:run', 'capability:bash', 'build:typecheck', 'release:checkpoint-run']) {
+      const inFlight = { tool, ageSec: 1200 };
+      const m = projectMember(member, NOW, 2, null, false, null, null, inFlight);
+      expect(m.stalledItem).toBeUndefined();
+      expect(m.benchSuggestion).toBeUndefined();
+      expect(m.dormant).toBeUndefined();
+      expect(m.longCallInFlight).toEqual(inFlight);
+    }
+
+    const statusRead = projectMember(member, NOW, 2, null, false, null, null, { tool: 'work_items:get', ageSec: 1200 });
+    expect(statusRead.stalledItem?.item).toBe('WI-77');
+  });
+
+  it('exempts an INSTRUMENTED LONG TEST in flight', () => {
+    for (const tool of ['testing:run', 'capability:bash', 'build:typecheck', 'release:checkpoint-run']) {
+      expect(isInstrumentedLongTestTool(tool)).toBe(true);
+      const r = computeStalledItemRotation(
+        { agentId: 'su-busy', claims: [wiClaim()], longCallInFlight: { tool, ageSec: 600 } },
+        NOW,
+        2,
+        false,
+      );
+      expect(r).toBeUndefined();
+    }
+    // calibration: a non-test long call (a status read) does NOT exempt it
+    expect(isInstrumentedLongTestTool('work_items:get')).toBe(false);
+    expect(
+      computeStalledItemRotation(
+        { agentId: 'su-busy', claims: [wiClaim()], longCallInFlight: { tool: 'work_items:get', ageSec: 600 } },
+        NOW,
+        2,
+        false,
+      )?.item,
+    ).toBe('WI-77');
+  });
+
+  it('names no one when NO ready work waits (claimable 0) or the count was not read (null)', () => {
+    expect(projectMember(busyMember([wiClaim()]), NOW, 0, null, false).stalledItem).toBeUndefined();
+    expect(projectMember(busyMember([wiClaim()]), NOW, null, null, false).stalledItem).toBeUndefined();
+  });
+
+  it('skips items whose accountable action was already taken (blocked / needs-human) and ended sessions', () => {
+    expect(
+      computeStalledItemRotation({ agentId: 'x', claims: [wiClaim({ status: 'blocked' })] }, NOW, 2, false),
+    ).toBeUndefined();
+    expect(
+      computeStalledItemRotation({ agentId: 'x', claims: [wiClaim({ status: 'needs-human' })] }, NOW, 2, false),
+    ).toBeUndefined();
+    expect(
+      computeStalledItemRotation({ agentId: 'x', sessionState: 'ended', claims: [wiClaim()] }, NOW, 2, false),
+    ).toBeUndefined();
+    expect(
+      computeStalledItemRotation({ agentId: 'x', claims: [wiClaim({ orphaned: true })] }, NOW, 2, false),
+    ).toBeUndefined();
+  });
+
+  it('the threshold boundary is 30 minutes (D-007)', () => {
+    expect(STALLED_ITEM_ROTATION_THRESHOLD_MS).toBe(30 * 60_000);
+    const at = (m: number) =>
+      computeStalledItemRotation({ agentId: 'x', claims: [wiClaim({ acquiredTs: minAgo(m) })] }, NOW, 1, false);
+    expect(at(29)).toBeUndefined();
+    expect(at(30)?.noAdvanceMin).toBe(30);
+  });
+});
+
+// P-007 / R-17: the leader brief names the members the silence rule left out of
+// `headcount.current`, and never renders an unreadable leg as "nobody is silent".
+describe('silentMembersSummary (P-007 / R-17)', () => {
+  it('names the silent members with the threshold and pause flag', () => {
+    expect(
+      silentMembersSummary(['busy', 'quiet'], {
+        counted: ['busy'],
+        silent: ['quiet'],
+        paused: false,
+        thresholdMs: 1_200_000,
+      }),
+    ).toEqual({ status: 'measured', ownerIds: ['quiet'], thresholdMs: 1_200_000, paused: false });
+  });
+
+  it('reports a measured empty list only when the partition was actually read', () => {
+    expect(
+      silentMembersSummary(['busy'], { counted: ['busy'], silent: [], paused: true, thresholdMs: 1_200_000 }),
+    ).toEqual({ status: 'measured', ownerIds: [], thresholdMs: 1_200_000, paused: true });
+  });
+
+  it('answers unknown with a reason when the roster or a silence leg is unreadable', () => {
+    expect(silentMembersSummary(null, null)).toEqual({ status: 'unknown', reason: 'live roster unreadable' });
+    expect(silentMembersSummary(['busy'], null)).toEqual({
+      status: 'unknown',
+      reason: 'execution or await leg unreadable',
+    });
+  });
+});
+
+// P-005 / D-030 step 5: the brief's UNDER-staff alert view. The handler passes a
+// null control state when the fleet record was not read, so that leg must stay
+// unknown; a fired alert must carry its reason and a read-only falsifier.
+describe('buildFleetUnderStaffedBriefAlert (P-005 / D-030)', () => {
+  const headcount = (over: Partial<FleetHeadcountState> = {}): FleetHeadcountState => ({
+    enabled: true,
+    target: 3,
+    current: 1,
+    shortfall: 2,
+    underStrength: true,
+    verdict: 'under-strength',
+    held: false,
+    notHeldBecause: 'supervise-not-granted',
+    topUpRule: { status: 'none', kind: null, inherited: null, ratifiedBy: null, reason: null, until: null },
+    basis: {
+      kind: 'agent-origin-execution-attested',
+      liveRosterMembers: 1,
+      executingMembers: 1,
+      transactionWorkerReadyMembers: null,
+    },
+    countEvidence: { productive: null, liveRoster: null, transactionWorkerReady: null, note: '' },
+    ...over,
+  });
+
+  it('fires below target with its reason and a fleet:assignments falsifier for this fleet', () => {
+    const out = buildFleetUnderStaffedBriefAlert({
+      fleet: 'short-fleet',
+      headcount: headcount(),
+      controlState: 'active',
+      fleetPaused: false,
+    });
+    expect(out).toMatchObject({ alert: true, current: 1, target: 3, shortfall: 2 });
+    expect(out?.reason).toContain('1 of 3 target worker(s) are productive');
+    expect(out?.falsifier).toMatchObject({
+      tool: 'fleet:assignments',
+      check: "fleet:assignments { fleet: 'short-fleet' }",
+    });
+    expect(out?.falsifier?.kills).toContain('3 or more members are live');
+    expect(FALSIFIER_FORBIDDEN_TOOLS).not.toContain(out!.falsifier!.tool);
+  });
+
+  it('names the empty-fleet kill condition when no target is set', () => {
+    const out = buildFleetUnderStaffedBriefAlert({
+      fleet: 'empty-fleet',
+      headcount: headcount({ target: null, current: 0, notHeldBecause: 'no-target' }),
+      controlState: 'active',
+    });
+    expect(out?.alert).toBe(true);
+    expect(out?.falsifier?.kills).toContain('at least one live member holds a claim');
+  });
+
+  it('reports a measured no-alert at target, with no falsifier attached', () => {
+    const out = buildFleetUnderStaffedBriefAlert({
+      fleet: 'full-fleet',
+      headcount: headcount({ current: 3 }),
+      controlState: 'active',
+    });
+    expect(out).toMatchObject({ alert: false, current: 3, target: 3 });
+    expect(out?.falsifier).toBeUndefined();
+  });
+
+  it('stays unknown when the fleet record was not read, and fires once it is (positive control)', () => {
+    const unread = { fleet: 'f', headcount: headcount(), controlState: null };
+    expect(buildFleetUnderStaffedBriefAlert(unread)).toBeUndefined();
+    expect(buildFleetUnderStaffedBriefAlert({ ...unread, controlState: 'active' })?.alert).toBe(true);
+  });
+
+  it('stays quiet for a paused or winding-down fleet', () => {
+    const base = { fleet: 'f', headcount: headcount(), controlState: 'active' };
+    expect(buildFleetUnderStaffedBriefAlert({ ...base, fleetPaused: true })).toBeUndefined();
+    expect(buildFleetUnderStaffedBriefAlert({ ...base, controlState: 'winding-down' })).toBeUndefined();
   });
 });

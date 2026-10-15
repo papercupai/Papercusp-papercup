@@ -3,11 +3,16 @@ Description=Papercusp shared-host CPU performance policy (WI-37533)
 Documentation=file:///etc/systemd/system/papercusp-host-performance.sh
 After=systemd-modules-load.service
 Before=postgresql@18-main.service
+# WI-10004865: postgresql@18-main Requires= this unit (RequiredBy below), so a
+# manual stop/restart of it propagates and restarts the shared Postgres. Refuse
+# both; re-apply the policy with `systemctl reload` (ExecReload) instead.
+RefuseManualStop=yes
 ConditionPathExistsGlob=/sys/devices/system/cpu/cpufreq/policy*
 
 [Service]
 Type=oneshot
 ExecStart=/etc/systemd/system/papercusp-host-performance.sh
+ExecReload=/etc/systemd/system/papercusp-host-performance.sh
 RemainAfterExit=yes
 TimeoutStartSec=30
 UMask=0022

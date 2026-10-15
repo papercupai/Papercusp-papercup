@@ -569,9 +569,13 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     const fakeBin = join(dir, 'slow-fuser-bin');
     mkdirSync(fakeBin);
     const fuserInvoked = join(dir, 'fuser-invoked');
+    // The marker proves the fallback was never invoked. An elapsed-time bound
+    // also charges unrelated bash startup to this behavior and can fail even
+    // when direct kernel holder lookup succeeds (WI-6554700010008342).
+    const FUSER_STALL_SEC = 60;
     writeFileSync(
       join(fakeBin, 'fuser'),
-      `#!/usr/bin/env bash\ntouch ${JSON.stringify(fuserInvoked)}\nsleep 60\n`,
+      `#!/usr/bin/env bash\ntouch ${JSON.stringify(fuserInvoked)}\nsleep ${FUSER_STALL_SEC}\n`,
       { mode: 0o755 },
     );
 
@@ -582,7 +586,6 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     let barrier: ReturnType<typeof spawn> | undefined;
     try {
       await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the pre-existing heavy holder');
-      const startedAt = Date.now();
       barrier = spawn(
         'bash',
         [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', 'echo should-not-run'],
@@ -592,7 +595,6 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       const barrierExit = new Promise<number>((res) => barrier?.on('exit', (c) => res(c ?? -1)));
 
       expect(await barrierExit).toBe(75);
-      expect(Date.now() - startedAt).toBeLessThan(5_000);
       expect(barrierErr.text()).toContain(`pid ${holder.pid}`);
       expect(barrierErr.text()).not.toContain('holder could not be identified');
       expect(existsSync(fuserInvoked)).toBe(false);
@@ -600,7 +602,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       killGroup(holder);
       if (barrier) killGroup(barrier);
     }
-  });
+  }, 45_000);
 
   it('WI-41318: every ordinary holder yields its whole child group to an exclusive materializer by default', async () => {
     const workloadPidFile = join(dir, 'preemptible-workload.pid');
@@ -745,8 +747,10 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       PC_HEAVY_SLOTS: '1',
       PC_HEAVY_COALESCE: '0',
       PC_HEAVY_RETRY_PREEMPTIONS: '1',
-      PC_HEAVY_RETRY_INTENT_WAIT_SEC: '8',
-      PC_HEAVY_TIMEOUT_SEC: '8',
+      // Give-up timers far above the loaded sequence: the test releases the writer blocker
+      // itself, so nothing here needs to expire (8s was beaten under gate load, WI-6554700010008342).
+      PC_HEAVY_RETRY_INTENT_WAIT_SEC: '60',
+      PC_HEAVY_TIMEOUT_SEC: '60',
       PC_HEAVY_PREEMPT_GRACE_SEC: '0',
       PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
       PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
@@ -793,21 +797,21 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
         barrierErr,
         (t) => t.includes('another exclusive materializer owns the writer lock — waiting before touching heavy slots'),
         'the materializer remaining pending on the writer lock',
-        4_000,
+        20_000,
       );
       await untilStderr(
         retrying,
         retryingErr,
         (t) => t.includes('retry waiting for exclusive materializer intent to clear'),
         'the retry waiting for the materializer intent',
-        4_000,
+        20_000,
       );
       await untilStderr(
         retrying,
         retryingErr,
         (t) => t.includes('retry still waiting for exclusive materializer intent'),
         'the retry emitting a progress heartbeat while the materializer remains pending',
-        4_000,
+        20_000,
       );
       // The regression is about re-admission ordering: while the materializer is
       // still intent-pending, no second workload attempt may have started. The
@@ -838,7 +842,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       if (barrier) killGroup(barrier);
       killGroup(writerBlocker);
     }
-  }, 15_000);
+  }, 90_000);
 
   it('keeps an opt-in run preemptible until it publishes the after-ready marker', async () => {
     const readyDir = join(dir, 'after-ready-before');
@@ -2256,9 +2260,18 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
   // an identical config with memory headroom must run all 6 at once, so a
   // clamped result cannot be explained by the semaphore, the gate reserve, or a
   // slow box — only by the memory budget.
+  //
+  // Since WI-10005334 the reserve is per job CLASS and the probes are `bash -c`
+  // loops (class `other`, 4 GiB cold start), so every arm here pins
+  // PC_HEAVY_JOB_CLASS=typecheck: these cases are about operator-core compiles,
+  // whose cold-start reserve is still the measured 14 GiB. With every probe
+  // holding its full reserve and using ~nothing, headroom admission
+  // (MemAvailable minus the running reserves >= one more reserve) admits
+  // exactly the old MemAvailable / reserve count.
   it('clamps a FIXED PC_HEAVY_SLOTS down to what MemAvailable can hold', async () => {
     const headroom = await admittedCohortSize(6, {
       PC_HEAVY_SLOTS: '6',
+      PC_HEAVY_JOB_CLASS: 'typecheck',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '600', // budget 50 — nowhere near binding
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
     });
@@ -2266,6 +2279,7 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
 
     const scarce = await admittedCohortSize(6, {
       PC_HEAVY_SLOTS: '6',
+      PC_HEAVY_JOB_CLASS: 'typecheck',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '28', // 28 / 14 GiB-per-slot => 2
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
     });
@@ -2278,12 +2292,14 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
     // 48 / 14 GiB-per-slot (the measured 12.74 GiB peak plus margin) => 3.
     const reportedHeadroom = await admittedCohortSize(6, {
       PC_HEAVY_SLOTS: '6',
+      PC_HEAVY_JOB_CLASS: 'typecheck',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '48',
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
     });
     expect(reportedHeadroom).toBe(3);
     const oldBudget = await admittedCohortSize(6, {
       PC_HEAVY_SLOTS: '6',
+      PC_HEAVY_JOB_CLASS: 'typecheck',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '48',
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
       PC_HEAVY_MEM_PER_SLOT_GIB: '6',
@@ -2298,6 +2314,7 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
     // attributable to PSI alone.
     const calm = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
+      PC_HEAVY_JOB_CLASS: 'typecheck',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '56', // budget 4 — exactly the ask
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
     });
@@ -2305,6 +2322,7 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
 
     const reclaiming = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
+      PC_HEAVY_JOB_CLASS: 'typecheck',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '56',
       PC_HEAVY_MEM_PSI_OVERRIDE: '9', // >= PC_HEAVY_MEM_PSI_BACKOFF (5)
     });
@@ -2317,12 +2335,14 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
     // would be far worse than the pressure it exists to prevent.
     const garbage = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
+      PC_HEAVY_JOB_CLASS: 'typecheck',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: 'not-a-number',
     });
     expect(garbage).toBe(4);
 
     const disabled = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
+      PC_HEAVY_JOB_CLASS: 'typecheck',
       PC_HEAVY_MEM_CLAMP: '0',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '1', // would clamp to 1 if honoured
     });
@@ -2332,11 +2352,168 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
   it('never clamps below 1 — a starved box still makes forward progress', async () => {
     const starved = await admittedCohortSize(2, {
       PC_HEAVY_SLOTS: '2',
+      PC_HEAVY_JOB_CLASS: 'typecheck',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '0',
       PC_HEAVY_MEM_PSI_OVERRIDE: '99',
     });
     expect(starved).toBe(1);
   });
+});
+
+describe('pc-heavy.sh — per-class headroom admission (WI-10005334)', () => {
+  // The defect: one reserve sized from the ledger's largest job (a ~9 GiB
+  // compile) was charged to EVERY slot, and the slot count was MemAvailable /
+  // reserve with running holders still occupying slots — so memory they were
+  // already using was counted twice. On a 16-vCPU VM that held 24 agents where
+  // a flat 4 GiB held 32 (agent-capacity-and-cost-gcp-2026-09-30#D-033).
+  //
+  // Seeded ledger: test runs peak at 900 MiB (=> a 1 GiB `other` reserve) and
+  // no compile has run (=> the 14 GiB `typecheck` constant). The holders use
+  // ~nothing, so each counts at almost its full reserve.
+  const SMALL_JOBS = { PC_HEAVY_MEM_PER_SLOT_MIN_SPAN_SEC: '3600', PC_HEAVY_SLOTS: '12' };
+  function seedSmallJobLedger() {
+    writeFileSync(join(dir, 'job-peaks.tsv'), Array.from({ length: 12 }, (_, i) =>
+      `at=${1_790_000_000 + i * 3600} anon_mib=900 rss_mib=900 samples=5 secs=10 exit=0 class=other label=npx vitest run`,
+    ).join('\n') + '\n');
+  }
+
+  // "memory admission lock busy" is a TRANSIENT refusal by design: _try_acquire_slot
+  // (pc-heavy.sh) counts a 2 s flock miss on mem-admission.lock as "not yet" and the
+  // next 0.5 s sweep retries. Ten simultaneous arrivals serialize on that lock, so under
+  // load the last one can miss it. Counting that line as settled snapshotted `admitted`
+  // mid-admission (8 or 9 of 10, measured 2026-10-11, WI-6554700010008342). Only an
+  // admission or a queue line naming a real reason (headroom shortfall, all slots busy)
+  // settles a probe.
+  const QUEUED_FOR_A_SETTLED_REASON =
+    /\[pc-heavy\] (?:queued for a heavy slot \((?!memory headroom: memory admission lock busy\))|still queued \((?:[^;)]*\)|[^)]*; memory headroom: (?!memory admission lock busy\))))/;
+
+  it('the cohort settle predicate ignores the transient lock-busy refusal and accepts real queue reasons', () => {
+    const shortfall = 'memory headroom: 10240 MiB free after 10 running reserve(s), 14336 MiB needed';
+    expect(QUEUED_FOR_A_SETTLED_REASON.test('[pc-heavy] queued for a heavy slot (memory headroom: memory admission lock busy) — pid 1, waiting up to 900s')).toBe(false);
+    expect(QUEUED_FOR_A_SETTLED_REASON.test('[pc-heavy] still queued (3s elapsed, pid 1, slots=12; memory headroom: memory admission lock busy)')).toBe(false);
+    expect(QUEUED_FOR_A_SETTLED_REASON.test(`[pc-heavy] queued for a heavy slot (${shortfall}) — pid 1, waiting up to 900s`)).toBe(true);
+    expect(QUEUED_FOR_A_SETTLED_REASON.test(`[pc-heavy] still queued (3s elapsed, pid 1, slots=12; ${shortfall})`)).toBe(true);
+    expect(QUEUED_FOR_A_SETTLED_REASON.test('[pc-heavy] queued for a heavy slot (all 12 slot(s) busy) — pid 1, waiting up to 900s')).toBe(true);
+    // A lock-busy probe that then finds every slot busy only heartbeats, with no memory note.
+    expect(QUEUED_FOR_A_SETTLED_REASON.test('[pc-heavy] still queued (3s elapsed, pid 1, slots=12)')).toBe(true);
+  });
+
+  /** Spawn `jobs` probes that hold their admission until `release()`; resolves once each is admitted or queued for a settled reason. */
+  async function holdCohort(jobs: number, env: Record<string, string>) {
+    const cohortDir = mkdtempSync(join(dir, 'held-cohort-'));
+    const releaseFile = join(cohortDir, 'release');
+    const probes = Array.from({ length: jobs }, (_, i) => {
+      const ready = join(cohortDir, `ready.${i}`);
+      const child = spawn('bash',
+        [PC_HEAVY, 'bash', '-c', `touch "${ready}"; while [ ! -f "${releaseFile}" ]; do sleep 0.02; done`],
+        { env: baseEnv({ PC_HEAVY_COALESCE: '0', PC_HEAVY_GATE_RESERVE: '0', ...env }), cwd: dir, detached: true });
+      return {
+        child, ready, stderr: createTextCollector(child.stderr),
+        exited: new Promise<number>((resolve) => child.on('exit', (code) => resolve(code ?? -1))),
+      };
+    });
+    await waitFor('every held probe being admitted or observably queued', () =>
+      probes.every(({ child, ready, stderr }) => {
+        if (existsSync(ready)) return true;
+        if (QUEUED_FOR_A_SETTLED_REASON.test(stderr.peek())) return true;
+        if (child.exitCode !== null || child.signalCode !== null) {
+          throw new Error(`held probe exited ${child.exitCode ?? child.signalCode} before admission or queueing`);
+        }
+        return false;
+      }));
+    return {
+      admitted: probes.filter(({ ready }) => existsSync(ready)).length,
+      stderr: () => probes.map(({ stderr }) => stderr.peek()).join('\n'),
+      release: async () => {
+        writeFileSync(releaseFile, 'go\n');
+        return Promise.all(probes.map(({ exited }) => exited));
+      },
+      kill: () => {
+        writeFileSync(releaseFile, 'go\n');
+        for (const { child } of probes) {
+          if (child.exitCode === null && child.signalCode === null) killGroup(child);
+        }
+      },
+    };
+  }
+
+  it('ten small holders do not block a compile while memory is free; the old single reserve did', async () => {
+    seedSmallJobLedger();
+    const arrivalsEnv = { ...SMALL_JOBS, PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '28', PC_HEAVY_JOB_CLASS: 'typecheck' };
+    const holders = await holdCohort(10, { ...SMALL_JOBS, PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '28' });
+    const arrivals: Array<Awaited<ReturnType<typeof holdCohort>>> = [];
+    try {
+      expect(holders.admitted).toBe(10);
+      // 28 GiB - 10 x 1 GiB reserved = 18 GiB free >= the compile's 14 GiB.
+      const compile = await holdCohort(1, arrivalsEnv);
+      arrivals.push(compile);
+      expect(compile.admitted, compile.stderr()).toBe(1);
+      // CONTROL: the pre-WI-10005334 rule on the same box charges every slot the
+      // larger 14 GiB reserve, so 28 GiB holds 2 slots and both are long taken.
+      const oldRule = await holdCohort(1, { ...arrivalsEnv, PC_HEAVY_MEM_ADMISSION: 'count' });
+      arrivals.push(oldRule);
+      expect(oldRule.admitted).toBe(0);
+      expect(await holders.release()).toEqual(Array(10).fill(0));
+      for (const arrival of arrivals) expect(await arrival.release()).toEqual([0]);
+    } finally {
+      holders.kill();
+      for (const arrival of arrivals) arrival.kill();
+    }
+  }, 60_000);
+
+  it('refuses a compile when the headroom is short, while a small job still fits, and names the shortfall', async () => {
+    seedSmallJobLedger();
+    const tight = { ...SMALL_JOBS, PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '20' };
+    const holders = await holdCohort(10, tight);
+    const arrivals: Array<Awaited<ReturnType<typeof holdCohort>>> = [];
+    try {
+      expect(holders.admitted).toBe(10);
+      // 20 GiB - 10 x 1 GiB reserved = 10 GiB free < 14 GiB.
+      const compile = await holdCohort(1, { ...tight, PC_HEAVY_JOB_CLASS: 'typecheck' });
+      arrivals.push(compile);
+      expect(compile.admitted).toBe(0);
+      expect(compile.stderr()).toMatch(/queued for a heavy slot \(memory headroom: \d+ MiB free after 10 running reserve\(s\), 14336 MiB needed\)/);
+      // The same 10 GiB of headroom fits one more 1 GiB test run.
+      const small = await holdCohort(1, tight);
+      arrivals.push(small);
+      expect(small.admitted, small.stderr()).toBe(1);
+      expect(await holders.release()).toEqual(Array(10).fill(0));
+      // Once the holders leave, the queued compile is admitted and finishes.
+      for (const arrival of arrivals) expect(await arrival.release()).toEqual([0]);
+    } finally {
+      holders.kill();
+      for (const arrival of arrivals) arrival.kill();
+    }
+  }, 60_000);
+
+  it('counts a live holder at its reserve minus the memory it already uses, and drops a dead holder\'s record', async () => {
+    const reserves = join(dir, 'reserves');
+    mkdirSync(reserves, { recursive: true });
+    // A dead holder: nothing holds its record's lock, so its 900 GiB must not count.
+    writeFileSync(join(reserves, 'rec.dead'), 'class=typecheck reserve_mib=921600 pid=1\n');
+    // A live holder reserving 30 GiB: the kernel lock on its record is the liveness proof.
+    writeFileSync(join(reserves, 'rec.live'), 'class=typecheck reserve_mib=30720 pid=1\n');
+    const holder = spawn('flock', [join(reserves, 'rec.live'), 'sleep', '30'], { detached: true, stdio: 'ignore' });
+    const compileEnv = { PC_HEAVY_SLOTS: '4', PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '28', PC_HEAVY_JOB_CLASS: 'typecheck' };
+    const arrivals: Array<Awaited<ReturnType<typeof holdCohort>>> = [];
+    try {
+      await waitFor('the planted holder to take its record lock', () =>
+        spawnSync('flock', ['-n', join(reserves, 'rec.live'), 'true']).status !== 0);
+      // 28 GiB - 30 GiB reserved < 14 GiB: queued.
+      const blocked = await holdCohort(1, compileEnv);
+      arrivals.push(blocked);
+      expect(blocked.admitted).toBe(0);
+      expect(existsSync(join(reserves, 'rec.dead'))).toBe(false);
+      // The holder now reports 20 GiB in use (already gone from MemAvailable), so
+      // only 10 GiB of its reserve is outstanding: 28 - 10 = 18 GiB >= 14 GiB.
+      writeFileSync(join(reserves, 'anon.live'), '20480\n');
+      await waitFor('the queued compile to be admitted', () => blocked.stderr().includes('[pc-heavy] slot acquired'));
+      expect(await blocked.release()).toEqual([0]);
+    } finally {
+      for (const arrival of arrivals) arrival.kill();
+      killGroup(holder);
+    }
+  }, 60_000);
 });
 
 describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
@@ -3095,6 +3272,28 @@ PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
     expect(r.stderr).toContain('package: "packages/<workspace>"');
     expect(r.stderr).toContain('repository-relative directory path (not an npm package name)');
     expect(existsSync(slots)).toBe(false); // refused before coalescing/slot acquisition
+  });
+
+  // WI-10005296 (D-031): the hosted profile's PC_HEAVY_TYPECHECK_GUARD=0 turns the dev-tower guard
+  // off. The SAME inputs that refuse above must then neither refuse nor re-exec into a scope (that
+  // would escape a customer agent's cgroup memory limit): the typecheck runs under admission.
+  it('PC_HEAVY_TYPECHECK_GUARD=0 runs the typecheck in place: no refusal, no detached scope', () => {
+    const runner = join(dir, 'systemd-run-must-not-run');
+    writeFileSync(runner, `#!/usr/bin/env bash\necho scope-runner-invoked >> ${JSON.stringify(join(dir, 'runner.log'))}\nexit 99\n`);
+    chmodSync(runner, 0o755);
+    const r = runSync(['node', typecheckFixture()], {
+      PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '6144',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '768',
+      PAPERCUSP_TSC_HEAP_MB: '8192',
+      PC_HEAVY_SYSTEMD_RUN_BIN: runner,
+      PC_HEAVY_TYPECHECK_GUARD: '0',
+    });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('typecheck-ran');
+    expect(r.stderr).not.toContain('REFUSED typecheck');
+    expect(r.stderr).not.toContain('detached user scope');
+    expect(existsSync(join(dir, 'runner.log'))).toBe(false);
   });
 
   it('runs the same typecheck when a finite cgroup has enough headroom', () => {

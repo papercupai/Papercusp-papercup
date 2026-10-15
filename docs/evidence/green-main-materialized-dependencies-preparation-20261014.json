@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "kind": "prospective-materialized-dependency-preparation",
+  "workItemId": "WI-6554700010010682",
+  "planSlug": "green-main-cycle-time-2026-10-08",
+  "status": "native-maintained-guards-pass-five-source-pins-committed-readiness-fired",
+  "currentVerification20261015": {
+    "reason": "Three saved source pins changed in committed source; retain the original receipt below as historical and verify the current maintained suite once.",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/source-preview-export.test.ts",
+    "log": "~/.papercusp/scratch/c0523-dependency-census-current-20261015.log",
+    "logSha256": "f48b55ef20d4f0596236a48ddc517074f48e5429105255576d4446e08cdf04a5",
+    "logBytes": 15827,
+    "exitCode": 0,
+    "passed": 131,
+    "requestedFiles": 1,
+    "executedFiles": 1,
+    "matchedFiles": 1,
+    "skippedTests": 0,
+    "childSubstituted": 0,
+    "testStamp": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=5b391da272 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-15T03:13:51.630Z childSubstituted=0 skippedTests=0",
+    "sourcePins": [
+      { "path": "scripts/source-preview.mjs", "sha256": "d30584fc42c858e112b6034e23ce3b4466aa99b63f8afbc1cbb04b68c18c7f0d" },
+      { "path": "scripts/source-preview.d.mts", "sha256": "33fa0af4e82f9bbe8c57ca593ec375e79f95be898b03708463befe759f9c9732" },
+      { "path": "libs/test-config/src/verifier-source.ts", "sha256": "1dc605015c3d64ace9f845eb343d2eca3e4b918cc6c60b0f0bf572f6a5d3b062" },
+      { "path": "packages/operator-core/lib/source-preview-export.test.ts", "sha256": "a51c15b88a630cc76b05f587834dbd08f655fb8e5a5e93edd40767e13abf7356" },
+      { "path": "apps/operator/bin/release/dependency-generation.sh", "sha256": "b438d8631416ed524f87a5c261433695028646aded6b9d674978715006338ff1" }
+    ],
+    "sourceReadback": "All five current pins matched committed bytes after the run: superproject 5b391da272f4d576d065548ddc4f3753d830c5f1; test-config e5a48e8ea2ca8cbba07c81e47d08b8424a563d8f. The three changed pins also matched their pre-run observations.",
+    "scope": "Maintained local source/export/dependency guards with real fixture child processes. No original operational chain, live gate, performance comparison, complete runtime closure or shipment is established.",
+    "runtimeClosure": {
+      "status": "unmeasured",
+      "reusedCollectors": [
+        "libs/test-config/src/executed-config-load-capture.ts::observeEngineScriptExecution",
+        "libs/test-config/src/executed-config-load-capture.ts::writeExecutedCaptureDiagnostic",
+        "libs/test-config/src/executed-inputs-capture.ts::installModuleEvaluationCapture"
+      ],
+      "remaining": [
+        "engine bootstrap and script population",
+        "engine URL to original source association",
+        "Node descendant process and loader-chain population",
+        "external and native runtime inputs",
+        "pre-setup and evaluator-wrapper execution"
+      ]
+    },
+    "implementationEdits": 0,
+    "originalCommandsRerun": 0,
+    "manualGit": false
+  },
+  "referenceDisplay": "Historical private log paths use ~ for the recording account's home directory. This portable display substitution changes no original log bytes, log hashes or execution outcomes.",
+  "reused": [
+    "scripts/source-preview.mjs::prepareVerifierDependencies and runVerifierCommand",
+    "papercusp-desktop/bin/lib/pinned-deps.sh::trees",
+    "apps/operator/bin/release/dependency-generation.sh::dependency_generation_source_records",
+    "libs/test-config/src/verifier-source.ts::verifierSourceFiles",
+    "packages/operator-core/lib/source-preview-export.test.ts native source/dependency command fixtures"
+  ],
+  "behavior": {
+    "population": "The maintained release writer selects product-owned node_modules trees and its existing ephemeral-output exclusions. The verifier hashes the selected regular-file bytes, link bytes and executable bits; workspace links must resolve inside the same independently verified source archive.",
+    "before": "After materialization and preflight, retain an external dependencies.json receipt tied to the source receipt and dependency-policy bytes.",
+    "after": "After child close, retain dependencies.after.json and compare it to the original observation before source postverification. Drift refuses; the original receipt is never overwritten.",
+    "limits": "Prospective dependency-file stability guard only. This is not evidence that a historical command used these dependencies, not an executed-import census, and not final transformed/runtime code closure. Known mutable caches and npm bookkeeping follow the existing generation policy."
+  },
+  "sourcePins": [
+    { "path": "scripts/source-preview.mjs", "sha256": "f3e7200884f2299489d7bea48caaa99c0d309fce3c7e515ec023ce95388d61df" },
+    { "path": "scripts/source-preview.d.mts", "sha256": "1508a85724e754b7f05664849aee4eb7a07c4a216c8a062f23601bed22a41dc7" },
+    { "path": "libs/test-config/src/verifier-source.ts", "sha256": "1dc605015c3d64ace9f845eb343d2eca3e4b918cc6c60b0f0bf572f6a5d3b062" },
+    { "path": "packages/operator-core/lib/source-preview-export.test.ts", "sha256": "d303a3d6f1c8255cf7f67876624160355bd89520f984b0a7a20be094bfdbfb23" },
+    { "path": "apps/operator/bin/release/dependency-generation.sh", "sha256": "b438d8631416ed524f87a5c261433695028646aded6b9d674978715006338ff1", "changed": false }
+  ],
+  "maintainedTests": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/source-preview-export.test.ts",
+    "log": "~/.papercusp/scratch/c0523-dependency-census-tests-v3.log",
+    "logSha256": "171773cede2a215cb6c82ee19490eb7978715a0cb89b00707554f0d36e2e5e8b",
+    "nativeExitCode": 0,
+    "testsPassed": 127,
+    "requested": 1,
+    "executed": 1,
+    "matched": 1,
+    "skippedTests": 0,
+    "childSubstituted": 0,
+    "headAtStart": "a883352bff",
+    "headAtEnd": "6505fa29ac",
+    "provenance": "unknown-after-shared-HEAD-movement; named test clean; all five saved source pins separately matched current bytes after run",
+    "scope": "Maintained synthetic source/dependency trees and real child process execution. No original operational command was rerun."
+  },
+  "verification": {
+    "rootCause": "The existing source-only runtime verifier deliberately excludes separately materialized node_modules. prepareVerifierDependencies attached them without retaining and comparing a dependency-file census after the command, leaving installed-byte drift outside source postverification.",
+    "distinguishingControl": "The same native frozen-command fixture passes unchanged, rejects a child that edits an installed dependency at deps.postverify, preserves distinct before/after observations, and still removes its owned tree. Source-only tampering remains independently rejected.",
+    "recurrenceGuards": [
+      "unchanged and changed installed bytes, additions, removals, executable bit and added dependency tree",
+      "safe archive-local workspace link versus absolute, escaping, dangling and indirectly escaping links",
+      "redirected dependency root, invalid/duplicate/missing/nested tree populations",
+      "canonical generation-policy ephemeral output produces an unchanged dependency observation",
+      "real native child dependency mutation refuses with retained receipts and owned-tree cleanup"
+    ],
+    "initialParserFailure": "The v2 run failed 24 cases because trimEnd erased the empty tenth record column on a final regular-file/directory row. The parser now splits lines without trimming record fields; final v3 passed127. v2 evidence remains preserved.",
+    "typechecks": [
+      { "scope": "named operator-core test file", "exitCode": 0, "log": "~/.papercusp/scratch/c0523-dependency-census-tsc-core-v2.log", "sha256": "7e93e0c2b30adfd24e781f316cafcd641353777ced15a3b2bc4be92bc9a588bb" },
+      { "scope": "scripts/source-preview.d.mts only; .mjs is outside scripts compiler program", "exitCode": 0, "log": "~/.papercusp/scratch/c0523-dependency-census-tsc-scripts-v2.log", "sha256": "e8a4990c37e93055be3284f7e9d9f1f2bb3af200a24d527249d2e51f10aac0ed" },
+      { "scope": "libs/test-config owning workspace", "exitCode": 0, "log": "~/.papercusp/scratch/c0523-dependency-census-tsc-test-config-v2.log", "sha256": "77268df3b64a0b7d3bc5c6eed8d8cef16d1cd164091e54e09ed02c55b07fc648" }
+    ],
+    "declarationsGenerated": true,
+    "nodeSyntaxCheck": "passed",
+    "namedDiffWhitespaceCheck": "passed"
+  },
+  "commitSettlement": {
+    "readAtHead": "403faf8006df07c6823c45e8f4cc8fee3ed88bd5",
+    "pending": [],
+    "otherPins": "All five sourcePins matched current and committed bytes at this historical read; libs/test-config HEAD and parent gitlink matched 258f38719a64de9d46fca64780f612c486e05aae. Saved v3 test and all three typecheck log hashes independently matched. No tests were repeated.",
+    "manualGit": "none; background git-sync committed the final parser correction",
+    "readinessEvent": "harness:papercusp:source-preview-dependency-census-20261014-ready",
+    "readinessGeneration": 1,
+    "readinessFired": true,
+    "readinessReceipt": { "ok": true, "event": "harness:papercusp:source-preview-dependency-census-20261014-ready", "woken": 1, "waiters": 1 },
+    "handoffMessage": "coord-send-fa9aaf6072d7bf7dc00830720b53c0f4c14abaf81efd2ddb8bbd6cd01aaccbf9"
+  },
+  "remaining": [
+    "Original parent and per-step receipts for public-docs, fixture and desktop ordered chains remain missing.",
+    "Complete original immutable source/import, installed dependency and final transformed runtime closure remains unmeasured.",
+    "D020/P006 original comparison prerequisites, four real ABBA cohorts and six forms remain held/open.",
+    "Seven-day P018, strict idle60, genuine alarm delivery, P028 pickup/cadence, shipped D045/P031 and final shipment remain open."
+  ],
+  "originalCommandsRerun": 0,
+  "operationalAcceptance": false,
+  "fullPlan": "unshipped"
+}

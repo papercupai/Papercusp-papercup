@@ -99,15 +99,21 @@ describe('D-002 — native turn verification is gated on a per-session isolated 
 
   it('keeps the two negative reasons distinct — a misconfigured session must not hide among legitimately-unsupported ones', () => {
     // 'no-classifier' is a permanent capability gap; 'no-isolated-root' is a fixable
-    // misconfiguration. Collapsing them would bury a broken claude session in the
-    // population of omp/tui sessions that can never support verification.
-    expect(nativeTurnVerifierSupport('omp', {})).toEqual({ supported: false, reason: 'no-classifier' });
+    // misconfiguration. OMP has a classifier, so missing PI_CONFIG_DIR is a root miss.
+    expect(nativeTurnVerifierSupport('omp', {})).toEqual({ supported: false, reason: 'no-isolated-root' });
     expect(nativeTurnVerifierSupport(undefined, {})).toEqual({ supported: false, reason: 'no-classifier' });
-    // Setting an isolated root does NOT buy support for a backend with no classifier —
-    // that would be inventing a completion marker, which P-002 forbids outright.
+    // OMP requires its own PI_CONFIG_DIR root; roots for other backends do not satisfy it.
     expect(nativeTurnVerifierSupport('omp', { CODEX_HOME: '/tmp/x', CLAUDE_CONFIG_DIR: '/tmp/y' })).toEqual({
       supported: false,
-      reason: 'no-classifier',
+      reason: 'no-isolated-root',
     });
+    expect(nativeTurnVerifierSupport('omp', { PI_CONFIG_DIR: '/tmp/isolated-omp' })).toEqual({
+      supported: true,
+      reason: null,
+    });
+    // Even every known root cannot manufacture a classifier for an unknown backend.
+    expect(nativeTurnVerifierSupport(undefined, {
+      CODEX_HOME: '/tmp/x', CLAUDE_CONFIG_DIR: '/tmp/y', PI_CONFIG_DIR: '/tmp/z',
+    })).toEqual({ supported: false, reason: 'no-classifier' });
   });
 });

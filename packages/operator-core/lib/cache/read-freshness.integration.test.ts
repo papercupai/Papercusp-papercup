@@ -103,9 +103,9 @@ function makeWorker() {
   } };
 }
 
-async function seed(id: string, to: string[], workspace = WS) {
+async function seed(id: string, to: string[], workspace = WS, connectionWorkspace = workspace) {
   await org.adminSql.begin(async tx => {
-    await tx`SELECT set_config('app.workspace_id', ${workspace}, true)`;
+    await tx`SELECT set_config('app.workspace_id', ${connectionWorkspace}, true)`;
     const log = new PgCoordLog({ getSql: () => tx as unknown as Sql, getWorkspaceId: () => workspace, ensureSchema: async () => {} });
     await log.appendLine('messages', 'freshness-writer', {
       msg_id: id, kind: 'message', from: 'freshness-writer', to,
@@ -117,6 +117,8 @@ const ids = (rows: Awaited<ReturnType<typeof readInbox>>) => rows.map(row => row
 
 beforeAll(async () => {
   org = await createOrgTestDb();
+  // Exercise the current migrated producer; never replay an older function body
+  // here, which would hide a future notification-scope regression.
   h.sql = org.adminSql;
   h.workspace = WS;
   configureCoordLog(new PgCoordLog({ getSql: () => org.adminSql, getWorkspaceId: () => h.workspace, ensureSchema: async () => {} }));
@@ -135,6 +137,24 @@ afterAll(async () => {
 });
 
 describe('cached inbox freshness over independent PG listeners', () => {
+  it('invalidates the row workspace when a coordination writer has an empty or foreign connection context', async () => {
+    const owner = 'row-workspace-owner';
+    for (const worker of workers) {
+      expect(await worker.inbox(owner)).toEqual([]);
+      expect(await worker.inbox(owner, FOREIGN_WS)).toEqual([]);
+    }
+    await seed('empty-connection-scope', [owner], WS, '');
+    for (const worker of workers) {
+      await expect.poll(async () => ids(await worker.inbox(owner))).toContain('empty-connection-scope');
+      expect(await worker.inbox(owner, FOREIGN_WS)).toEqual([]);
+    }
+    await seed('foreign-connection-scope', [owner], WS, FOREIGN_WS);
+    for (const worker of workers) {
+      await expect.poll(async () => ids(await worker.inbox(owner))).toContain('foreign-connection-scope');
+      expect(await worker.inbox(owner, FOREIGN_WS)).toEqual([]);
+    }
+  });
+
   it('delivers a committed directed write and broadcast to both L1s without leaking another recipient', async () => {
     for (const worker of workers) {
       expect(await worker.inbox('alice')).toEqual([]);

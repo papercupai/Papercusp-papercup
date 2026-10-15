@@ -26,6 +26,8 @@ import { assertPgReachable } from '@papercusp/test-config/pg';
 import { _resetForTests } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
+// eslint-disable-next-line import/no-relative-packages -- mirror the canonical client's jsonb serializer (see restoreRawJsonbSerializer's doc)
+import { restoreRawJsonbSerializer } from '../../../../../../libs/papercusp/libs/db/src/raw-serializers';
 
 export interface PlanPgFixture {
   /** Admin (superuser, RLS-bypassing) client for seed/cleanup of the test DB. */
@@ -82,6 +84,10 @@ export async function setupPlanPgFixture(): Promise<PlanPgFixture> {
     onnotice: () => {},
     connection: { search_path: 'harness_shared, papercusp_shared, public' },
   });
+  // Production clients (buildClient) pass a pre-stringified `${JSON.stringify(v)}::jsonb`
+  // value through unchanged; a raw postgres() client JSON-encodes it AGAIN and stores a
+  // jsonb STRING, so a test here would see a different shape than the live code path.
+  restoreRawJsonbSerializer(admin);
 
   const dispose = async () => {
     await admin.end({ timeout: 5 }).catch(() => {});

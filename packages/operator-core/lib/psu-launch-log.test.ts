@@ -23,7 +23,9 @@ import {
   prunePsuLaunchLogs,
   readPsuLaunchLogTail,
   detectPsuHeadlessLaunchBlockHint,
-  readPsuHeadlessLaunchBlockHint,
+  isCodexWorkspaceDiscoveryTimeout,
+  readPsuHeadlessLaunchBlockHintAsync,
+  readPsuLaunchLogTailAsync,
   ensurePsuLaunchLogPath,
 } from './psu-launch-log.mjs';
 
@@ -117,6 +119,29 @@ describe('readPsuLaunchLogTail', () => {
   });
 });
 
+describe('readPsuLaunchLogTailAsync (EI-24748208098755918 — polled roster path)', () => {
+  it('keeps the sync contract: null for no log, empty string for a silent one, and the TAIL', async () => {
+    expect(await readPsuLaunchLogTailAsync(OWNER, { home })).toBeNull();
+
+    const file = ensurePsuLaunchLogPath(OWNER, { home })!;
+    writeFileSync(file, '   \n  ');
+    expect(await readPsuLaunchLogTailAsync(OWNER, { home })).toBe('');
+
+    writeFileSync(file, `${'boot chatter\n'.repeat(200)}psu: the actual reason it died\n`);
+    const tail = (await readPsuLaunchLogTailAsync(OWNER, { home, chars: 60 }))!;
+    expect(tail).toContain('psu: the actual reason it died');
+    expect(tail.length).toBeLessThanOrEqual(60);
+    // Same answer as the sync reader, byte for byte.
+    expect(tail).toBe(readPsuLaunchLogTail(OWNER, { home, chars: 60 }));
+  });
+
+  it('never rejects: an unreadable path or a rejected owner id is null', async () => {
+    mkdirSync(join(psuLaunchLogRoot(home), `${OWNER}.log`), { recursive: true });
+    await expect(readPsuLaunchLogTailAsync(OWNER, { home })).resolves.toBeNull();
+    await expect(readPsuLaunchLogTailAsync('../../etc/passwd', { home })).resolves.toBeNull();
+  });
+});
+
 describe('headless pre-turn launch blockage', () => {
   const receiptFor = (file: string) => `headless (log: ${file})`;
   const headlessLog = (name = 'claude-headless-123-456.log') =>
@@ -148,31 +173,47 @@ describe('headless pre-turn launch blockage', () => {
     expect(detectPsuHeadlessLaunchBlockHint('settings reset at 7am')).toBeNull();
   });
 
-  it('reads only the bounded tail of the persisted headless receipt', () => {
+  it('identifies the measured native workspace-discovery timeout through TUI paint', () => {
+    const raw = '\x1b[?25h\x1b[0 qError: account/read failed during TUI bootstrap: ' +
+      'account/read failed: workspace routing discovery timed out (code -32603)\r\n';
+    expect(isCodexWorkspaceDiscoveryTimeout(raw)).toBe(true);
+    expect(detectPsuHeadlessLaunchBlockHint(raw)).toBe(
+      'Codex timed out discovering its ChatGPT account workspace before model requests. ' +
+      'Retry after connectivity recovers, or use --account=auto to route through the inference gateway.',
+    );
+    for (const unrelated of ['workspace routing discovery timed out',
+      'Error: account/read failed during TUI bootstrap: invalid token',
+      'Error: model request failed: quota exceeded', null]) {
+      expect(isCodexWorkspaceDiscoveryTimeout(unrelated)).toBe(false);
+      expect(detectPsuHeadlessLaunchBlockHint(unrelated)).toBeNull();
+    }
+  });
+
+  it('reads only the bounded tail of the persisted headless receipt', async () => {
     const file = headlessLog();
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(
       file,
       "You've hit your weekly limit \u00b7 resets 1am\n" + 'x'.repeat(HEADLESS_LAUNCH_LOG_SCAN_BYTES + 20),
     );
-    expect(readPsuHeadlessLaunchBlockHint(receiptFor(file))).toBeNull();
+    expect(await readPsuHeadlessLaunchBlockHintAsync(receiptFor(file))).toBeNull();
 
     writeFileSync(file, `${'x'.repeat(200)}\nYou've hit your weekly limit \u00b7 resets 7am\n`);
-    expect(readPsuHeadlessLaunchBlockHint(receiptFor(file), { scanBytes: 100 })).toContain(
+    expect(await readPsuHeadlessLaunchBlockHintAsync(receiptFor(file), { scanBytes: 100 })).toContain(
       'resets 7am',
     );
   });
 
-  it('rejects arbitrary paths and malformed receipts instead of becoming a file reader', () => {
+  it('rejects arbitrary paths and malformed receipts instead of becoming a file reader', async () => {
     const arbitrary = join(home, 'secret.log');
     writeFileSync(arbitrary, "You've hit your weekly limit \u00b7 resets 7am");
-    expect(readPsuHeadlessLaunchBlockHint(receiptFor(arbitrary))).toBeNull();
-    expect(readPsuHeadlessLaunchBlockHint(arbitrary)).toBeNull();
-    expect(readPsuHeadlessLaunchBlockHint('headless (log: ../../secret.log)')).toBeNull();
+    expect(await readPsuHeadlessLaunchBlockHintAsync(receiptFor(arbitrary))).toBeNull();
+    expect(await readPsuHeadlessLaunchBlockHintAsync(arbitrary)).toBeNull();
+    expect(await readPsuHeadlessLaunchBlockHintAsync('headless (log: ../../secret.log)')).toBeNull();
   });
 
-  it('degrades to null for a valid receipt whose file is absent', () => {
-    expect(readPsuHeadlessLaunchBlockHint(receiptFor(headlessLog()))).toBeNull();
+  it('degrades to null for a valid receipt whose file is absent', async () => {
+    await expect(readPsuHeadlessLaunchBlockHintAsync(receiptFor(headlessLog()))).resolves.toBeNull();
   });
 });
 

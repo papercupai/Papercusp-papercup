@@ -37,6 +37,7 @@
 import type { RunGit } from './run-git-sync';
 import type { ContentOffender } from './content-guard';
 import { parseDeletedPaths } from './deletion-import-guard';
+import { checkIgnoreVerbatimBatches } from './check-ignore-argv';
 
 /**
  * Fraction of a repo's tracked files that must be deleted in one sweep before the
@@ -145,11 +146,8 @@ export function judgeDeletionSet(
   };
 }
 
-/**
- * Max paths per `git check-ignore` invocation, so a repo with a huge deletion set
- * cannot blow ARG_MAX. Purely a batching bound; the answer is the same either way.
- */
-const CHECK_IGNORE_CHUNK = 500;
+/** Concurrent one-path probes for names Git would C-quote (rare: non-ASCII, `"`, `\`). */
+const SINGLE_PROBE_CONCURRENCY = 8;
 
 /**
  * The subset of `paths` that this repo's ignore rules CURRENTLY cover.
@@ -160,25 +158,43 @@ const CHECK_IGNORE_CHUNK = 500;
  * this path", not "has git already been made to track it anyway" — those differ for
  * exactly the population that matters (see the caller).
  *
+ * WI-6554700010010783: this used to pass `-z` with argv paths. Git 2.43 rejects
+ * that (`-z only makes sense with --stdin`), so every call exited 128, this
+ * function always failed open, and the WI-39889 discount never applied. Batching
+ * now goes through checkIgnoreVerbatimBatches (argv mode, names Git echoes
+ * verbatim); names Git would C-quote are probed one at a time, where the exit
+ * status is the answer.
+ *
  * FAILS OPEN (empty set), like every other leg of this guard: if we cannot tell what
  * is ignored we count everything, which is the pre-existing behaviour and errs
- * toward quarantining rather than toward committing a wipe.
+ * toward quarantining rather than toward committing a wipe. A failed BATCH fails
+ * open too rather than re-probing its paths one by one: a real Git error would
+ * recur per path, and a 1,500-path re-probe would sit in bg-host's git admission
+ * queue for many minutes.
  */
 async function ignoredSubset(
   runGit: RunGit,
   repoPath: string,
   paths: string[],
 ): Promise<Set<string>> {
-  const ignored = new Set<string>();
-  for (let i = 0; i < paths.length; i += CHECK_IGNORE_CHUNK) {
-    const chunk = paths.slice(i, i + CHECK_IGNORE_CHUNK);
-    const res = await runGit(['check-ignore', '--no-index', '-z', '--', ...chunk], repoPath);
-    // 0 = at least one path matched, 1 = none matched (NOT a failure). Anything
-    // else is a real git error, and a partial answer is worse than none.
-    if (res.code !== 0 && res.code !== 1) return new Set<string>();
-    for (const p of res.stdout.split('\0')) if (p) ignored.add(p);
-  }
-  return ignored;
+  const flags = ['--no-index'];
+  const { ignored, unresolved, failedBatches } = await checkIgnoreVerbatimBatches(runGit, repoPath, paths, flags);
+  if (failedBatches.length > 0) return new Set<string>();
+  let next = 0;
+  let failed = false;
+  await Promise.all(
+    Array.from({ length: Math.min(SINGLE_PROBE_CONCURRENCY, unresolved.length) }, async () => {
+      while (!failed && next < unresolved.length) {
+        const path = unresolved[next++];
+        const res = await runGit(['check-ignore', ...flags, '--', path], repoPath);
+        // 0 = ignored, 1 = not ignored (NOT a failure). Anything else is a real git
+        // error, and a partial answer is worse than none.
+        if (res.code === 0) ignored.add(path);
+        else if (res.code !== 1) failed = true;
+      }
+    }),
+  );
+  return failed ? new Set<string>() : ignored;
 }
 
 /**
@@ -199,9 +215,11 @@ export async function detectWholesaleDeletion(
   // Tracked count at HEAD — the denominator. `ls-files` reflects the INDEX, which a
   // partially-staged sweep can already have mutated; HEAD is the stable "what this
   // repo was before this tick" that the ratio is meant to be measured against.
-  const treeRes = await runGit(['ls-tree', '-r', '--name-only', 'HEAD'], repoPath);
+  // `-z` so names come back raw, matching `status -z` above: without it Git C-quotes
+  // non-ASCII names, which then never match a deleted path or an ignore answer.
+  const treeRes = await runGit(['ls-tree', '-r', '-z', '--name-only', 'HEAD'], repoPath);
   if (treeRes.code !== 0) return []; // unborn branch / no HEAD yet — no opinion
-  const trackedAtHead = treeRes.stdout.split('\n').filter(Boolean);
+  const trackedAtHead = treeRes.stdout.split('\0').filter(Boolean);
 
   // WI-39889: discount paths .gitignore already covers, on BOTH sides of the ratio.
   //

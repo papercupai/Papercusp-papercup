@@ -5,6 +5,7 @@ import type { Sql } from 'postgres';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import {
   GOAL_OWNER_REPORT_FIELD,
+  GOAL_OWNER_REPORT_HEADING_LIST,
   GOAL_OWNER_REPORT_LEGACY_SQL_PATTERNS,
   GOAL_OWNER_REPORT_SCHEMA_VERSION,
 } from '../goal-owner-report';
@@ -23,6 +24,7 @@ import {
   isPastReportFloorReview,
   readGoalOwnerReportObligation,
   runGoalOwnerReportSweepOnce,
+  goalOwnerReportConditionKey,
   type GoalOwnerReportAlert,
   type GoalOwnerReportRowLike,
   type GoalOwnerReportSweepDeps,
@@ -32,6 +34,17 @@ const NOW = 1_800_000_000_000;
 const FLOOR = GOAL_OWNER_REPORT_MAX_SILENCE_MS;
 const STANDING_FLOOR = GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS;
 const HOUR = 3600_000;
+
+const defaultRails = vi.hoisted(() => ({
+  openEscalation: vi.fn(),
+  wakeRecipients: vi.fn(),
+}));
+vi.mock('../agent-tools/coordination/escalations', () => ({
+  openEscalation: defaultRails.openEscalation,
+}));
+vi.mock('../agent-tools/coordination/inbox-wake', () => ({
+  wakeRecipients: defaultRails.wakeRecipients,
+}));
 
 function makeRow(over: Partial<GoalOwnerReportRowLike> = {}): GoalOwnerReportRowLike {
   return {
@@ -79,6 +92,10 @@ function makeDeps(over: Partial<GoalOwnerReportSweepDeps> = {}): GoalOwnerReport
     escalate: vi.fn(async () => ({ coalesced: false })),
     nudge: vi.fn(async () => {}),
     flagEnabled: vi.fn(async () => true),
+    now: () => Date.now(),
+    readOpenConditionKeys: vi.fn(async () => []),
+    readReport: vi.fn(async () => []),
+    rail: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) },
     ...over,
   };
 }
@@ -97,6 +114,7 @@ describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-si
     expect(v.lastReportAt).toBe(new Date(NOW - 90 * MIN).toISOString());
     expect(v.instruction).toMatch(/^OVERDUE by 30 min/);
     expect(v.instruction).toContain("coord:send { to:['human'] }");
+    expect(v.instruction).toContain(GOAL_OWNER_REPORT_HEADING_LIST);
     // Agreement with the sweep: the sweep would nudge exactly this row.
     expect(findOverdueReports([row], NOW)).toHaveLength(1);
   });
@@ -108,6 +126,7 @@ describe('describeGoalOwnerReportObligation (pure, WI-2140700) — the holder-si
     expect(v.dueInMin).toBe(4);
     expect(v.dueAt).toBe(new Date(NOW + 4 * MIN).toISOString());
     expect(v.instruction).toMatch(/^DUE NOW \(4 min to the 60-min floor\)/);
+    expect(v.instruction).toContain(GOAL_OWNER_REPORT_HEADING_LIST);
     // Not yet overdue for the sweep — the holder is told first, the human second.
     expect(findOverdueReports([row], NOW)).toHaveLength(0);
     expect(GOAL_OWNER_REPORT_DUE_SOON_MARGIN_MS).toBe(5 * MIN);
@@ -421,7 +440,7 @@ describe('the STANDING-goal cadence floor (WI-2091959: two graded FAILs sat BELO
 });
 
 describe('buildReportSkeleton', () => {
-  it("carries the GOAL contract's four report fields and points at the sanctioned rail", () => {
+  it("carries every GOAL WRITE report field and points at the sanctioned rail", () => {
     const skeleton = buildReportSkeleton({
       workspaceId: 'ws',
       goalId: 'g-1',
@@ -437,9 +456,137 @@ describe('buildReportSkeleton', () => {
       'whatItCost',
       'ownerWalled',
       'whatYouKilled',
+      'nextWake',
     ]);
     expect(skeleton.channel).toContain('coord:escalate');
     expect(skeleton.whatMoved).toContain('g-1');
+    expect(skeleton.nextWake).toMatch(/trigger|event|cadence/i);
+    expect(skeleton.nextWake).toMatch(/time/i);
+  });
+});
+
+describe('original owner-report condition lifecycle', () => {
+  const row = makeRow();
+  const key = goalOwnerReportConditionKey(row);
+  const recovered = { ...row, lastReportTsMs: NOW - HOUR };
+  function deps(over: Partial<GoalOwnerReportSweepDeps> = {}) {
+    return makeDeps({ now: () => NOW, readGoalModeOwners: async () => [row], ...over });
+  }
+
+  it('opens before legacy coalescing and resolves a fresh exact report after restart and candidate absence', async () => {
+    const order: string[] = [];
+    const first = deps({
+      rail: { broadcast: vi.fn(async event => { order.push('rail'); expect(event).toMatchObject({ conditionKey: key, oneShot: true }); return true; }) },
+      escalate: vi.fn(async () => { order.push('legacy'); return { coalesced: true }; }),
+    });
+    await runGoalOwnerReportSweepOnce(sqlNever, first);
+    expect(order).toEqual(['rail', 'legacy']);
+    expect(first.nudge).not.toHaveBeenCalled();
+    const restart = deps({ readGoalModeOwners: async () => [], readOpenConditionKeys: async () => [key],
+      readReport: vi.fn(async () => [recovered]), resolveLiveness: vi.fn(async () => new Map()) });
+    await runGoalOwnerReportSweepOnce(sqlNever, restart);
+    expect(restart.readReport).toHaveBeenCalledWith({ workspaceId: row.workspaceId, goalId: row.goalId, ownerId: row.agentId });
+    expect(restart.rail!.resolve).toHaveBeenCalledWith({ conditionKey: key, summary: 'goal-owner-report-watchdog recovered' });
+    expect(restart.resolveLiveness).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', []], ['ambiguous', [recovered, recovered]],
+    ['foreign workspace', [{ ...recovered, workspaceId: 'other' }]],
+    ['foreign goal', [{ ...recovered, goalId: 'other' }]],
+    ['foreign owner', [{ ...recovered, agentId: 'other' }]],
+    ['no report and new baseline', [{ ...row, baselineTsMs: NOW - HOUR }]],
+    ['predates registration', [{ ...recovered, baselineTsMs: NOW - 30 * 60_000 }]],
+    ['overdue report', [{ ...row, lastReportTsMs: NOW - 5 * HOUR }]],
+    ['standing report beyond tight floor', [{ ...row, standing: true, lastReportTsMs: NOW - 2 * HOUR }]],
+    ['future report', [{ ...row, lastReportTsMs: NOW + 1 }]],
+    ['future baseline', [{ ...recovered, baselineTsMs: NOW + 1 }]],
+    ['invalid baseline', [{ ...recovered, baselineTsMs: Number.NaN }]],
+    ['invalid report', [{ ...row, lastReportTsMs: Number.NaN }]],
+    ['unmeasured standing', [{ ...recovered, standing: undefined }]],
+  ])('preserves the durable episode for %s', async (_label, rows) => {
+    const d = deps({ readGoalModeOwners: async () => [], readOpenConditionKeys: async () => [key],
+      readReport: async () => rows as GoalOwnerReportRowLike[] });
+    await runGoalOwnerReportSweepOnce(sqlNever, d);
+    expect(d.rail!.resolve).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('clears only a measured report at the exact floor (standing=%s)', async standing => {
+    const floor = standing ? STANDING_FLOOR : FLOOR;
+    const d = deps({ readGoalModeOwners: async () => [], readOpenConditionKeys: async () => [key],
+      readReport: async () => [{ ...row, standing, lastReportTsMs: NOW - floor }] });
+    await runGoalOwnerReportSweepOnce(sqlNever, d);
+    expect(d.rail!.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves failed exact reads, malformed keys and invalid clocks without suppressing other subjects', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const other = { ...row, goalId: 'g-2' }, otherKey = goalOwnerReportConditionKey(other);
+      const d = deps({ readOpenConditionKeys: async () => [key, otherKey, 'alarm:goal-owner-report:bad',
+        'alarm:goal-owner-report:%5B%22ws%22%2C%22g-1%22%5D', 'unrelated'],
+        readReport: vi.fn(async identity => { if (identity.goalId === row.goalId) throw new Error('unreadable'); return [{ ...other, lastReportTsMs: NOW }]; }) });
+      await runGoalOwnerReportSweepOnce(sqlNever, d);
+      expect(d.readReport).toHaveBeenCalledTimes(2);
+      expect(d.rail!.resolve).toHaveBeenCalledTimes(1);
+      expect(d.rail!.resolve).toHaveBeenCalledWith({ conditionKey: otherKey, summary: 'goal-owner-report-watchdog recovered' });
+      await runGoalOwnerReportSweepOnce(sqlNever, { ...d, now: () => Number.NaN });
+      expect(d.rail!.resolve).toHaveBeenCalledTimes(1);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('keeps legacy delivery independent of a failed rail and rail delivery independent of failed legacy delivery', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const first = deps({ rail: { broadcast: vi.fn(async () => { throw new Error('rail unavailable'); }) } });
+      await runGoalOwnerReportSweepOnce(sqlNever, first);
+      expect(first.nudge).toHaveBeenCalledTimes(1);
+      const second = deps({ escalate: vi.fn(async () => { throw new Error('legacy unavailable'); }) });
+      await runGoalOwnerReportSweepOnce(sqlNever, second);
+      expect(second.rail!.broadcast).toHaveBeenCalledTimes(1);
+      expect(second.nudge).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('preserves episodes on disabled ticks and failed condition discovery', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const off = deps({ flagEnabled: async () => false, readOpenConditionKeys: vi.fn(async () => [key]) });
+      await runGoalOwnerReportSweepOnce(sqlNever, off);
+      expect(off.readOpenConditionKeys).not.toHaveBeenCalled();
+      const unknown = deps({ readOpenConditionKeys: async () => { throw new Error('unreadable ledger'); } });
+      await runGoalOwnerReportSweepOnce(sqlNever, unknown);
+      expect(unknown.rail!.resolve).not.toHaveBeenCalled();
+      expect(unknown.rail!.broadcast).toHaveBeenCalledTimes(1);
+    } finally { warn.mockRestore(); }
+  });
+
+  it.each([
+    { ...row, baselineTsMs: Number.NaN }, { ...row, lastReportTsMs: NOW + 1 },
+    { ...row, standing: undefined }, { ...row, workspaceId: '' },
+  ])('does not open from an invalid candidate %#', async invalid => {
+    const d = deps({ readGoalModeOwners: async () => [invalid as GoalOwnerReportRowLike] });
+    await runGoalOwnerReportSweepOnce(sqlNever, d);
+    expect(d.rail!.broadcast).not.toHaveBeenCalled();
+  });
+
+  it('does not open from ambiguous candidate registrations', async () => {
+    const d = deps({ readGoalModeOwners: async () => [row, row] });
+    await runGoalOwnerReportSweepOnce(sqlNever, d);
+    expect(d.rail!.broadcast).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false, '', ' ', 'Infinity', 'NaN', undefined, null])('refuses malformed raw PG timestamp %s for recovery', async invalid => {
+    for (const field of ['baseline_ts_ms', 'last_report_ts_ms'] as const) {
+      const raw = { workspace_id: row.workspaceId, goal_id: row.goalId, owner_id: row.agentId,
+        standing: false, baseline_ts_ms: String(row.baselineTsMs), last_report_ts_ms: String(NOW), [field]: invalid };
+      const sql = (async (strings: TemplateStringsArray) => strings.join('').includes('FROM harness_shared.agent_modes')
+        ? [raw] : []) as unknown as Sql;
+      const { readReport: _injectedReader, ...productionReader } = deps({ readGoalModeOwners: async () => [],
+        readOpenConditionKeys: async () => [key] });
+      await runGoalOwnerReportSweepOnce(sql, productionReader);
+      expect(productionReader.rail!.resolve).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -448,6 +595,30 @@ describe('runGoalOwnerReportSweepOnce', () => {
   // fixtures anchor there — the fixed NOW constant above is for the pure tests,
   // and a row anchored to it would sit in the future and never be overdue.
   const overdueRow = makeRow({ baselineTsMs: Date.now() - 24 * HOUR }); // 24h silent — overdue by construction
+
+  it('default escalation and directed nudge require the complete canonical WRITE headings', async () => {
+    defaultRails.openEscalation.mockReset().mockResolvedValue({ coalesced: false });
+    defaultRails.wakeRecipients.mockReset().mockResolvedValue(undefined);
+    const { readGoalModeOwners, resolveLiveness, flagEnabled, readOpenConditionKeys, rail } = makeDeps({
+      readGoalModeOwners: vi.fn(async () => [overdueRow]),
+    });
+    // Exercise the real producers; only their outbound transport seams are mocked.
+    const result = await runGoalOwnerReportSweepOnce(sqlNever, {
+      readGoalModeOwners, resolveLiveness, flagEnabled, readOpenConditionKeys, rail,
+    });
+    expect(result.nudged).toBe(1);
+    expect(defaultRails.openEscalation).toHaveBeenCalledTimes(1);
+    expect(defaultRails.wakeRecipients).toHaveBeenCalledTimes(1);
+    const escalation = defaultRails.openEscalation.mock.calls[0][1] as { body: string };
+    const nudge = defaultRails.wakeRecipients.mock.calls[0][1] as {
+      summary: string;
+      payload: { reportSkeleton: Record<string, string> };
+    };
+    expect(escalation.body).toContain(GOAL_OWNER_REPORT_HEADING_LIST);
+    expect(nudge.summary).toContain(GOAL_OWNER_REPORT_HEADING_LIST);
+    expect(defaultRails.wakeRecipients.mock.calls[0][0]).toEqual([overdueRow.agentId]);
+    expect(nudge.payload.reportSkeleton.nextWake).toMatch(/trigger|event|cadence/i);
+  });
 
   it('flag off ⇒ skipped, and nothing is read', async () => {
     const deps = makeDeps({ flagEnabled: vi.fn(async () => false) });

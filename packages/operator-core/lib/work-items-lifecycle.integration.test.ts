@@ -37,7 +37,7 @@ import { fileURLToPath } from 'node:url';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
@@ -230,7 +230,7 @@ beforeAll(async () => {
       usage_provenance jsonb);
   `);
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   // Seed a pre-1214 terminal item with an existing waiter. The migration must
@@ -305,6 +305,13 @@ beforeEach(async () => {
 });
 
 describe('blueprint direct-item revision pin', () => {
+  // Agent operations must declare a pinned policy.identity before admission
+  // (operation-unpinned-agent). One shared pin, matching the accepted-operation
+  // identity the worker launch specs below carry, so the two cannot drift.
+  const WORKER_POLICY_IDENTITY = {
+    kind: 'identity', ref: 'worker', revision: '1.0.0', contentHash: 'b'.repeat(64),
+  } as const;
+
   it.each([
     { name: 'exact', mode: 'exact', models: ['claude-opus-4-8'], actual: 'claude-opus-4-8', effort: undefined },
     { name: 'allowed', mode: 'allowed', models: ['claude-opus-4-8', 'openai/claude-sonnet-4-6'], actual: 'claude-opus-4-8', effort: undefined },
@@ -319,7 +326,10 @@ describe('blueprint direct-item revision pin', () => {
         execution: { kind: 'agent', role: 'worker' },
         inputSchema: { type: 'object' },
         acceptance: { resultSchema: { type: 'object' } },
-        policy: { model: { mode, models: [...models], ...(effort ? { effort } : {}), onUnavailable: 'fail' } },
+        policy: {
+          identity: WORKER_POLICY_IDENTITY,
+          model: { mode, models: [...models], ...(effort ? { effort } : {}), onUnavailable: 'fail' },
+        },
       }],
     };
     await projectBlueprintToPg(db.sql, {
@@ -435,7 +445,7 @@ describe('blueprint direct-item revision pin', () => {
           execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
           acceptance: { resultSchema: { type: 'object', required: ['answer', 'note'],
             properties: { answer: { type: 'string' }, note: { type: 'null' } }, additionalProperties: false } },
-          policy: { model: modelPolicy },
+          policy: { identity: WORKER_POLICY_IDENTITY, model: modelPolicy },
         }],
       };
       await projectBlueprintToPg(db.sql, {
@@ -555,7 +565,7 @@ describe('blueprint direct-item revision pin', () => {
       roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
       operations: [{ id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
-        acceptance: { resultSchema: { type: 'object' } }, policy: { model: modelPolicy } }],
+        acceptance: { resultSchema: { type: 'object' } }, policy: { identity: WORKER_POLICY_IDENTITY, model: modelPolicy } }],
     };
     await projectBlueprintToPg(db.sql, { workspaceId: 'default', harnessSlug: 'papercup',
       blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }) });
@@ -657,7 +667,7 @@ describe('blueprint direct-item revision pin', () => {
       roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
       operations: [{ id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
-        acceptance: { resultSchema: { type: 'object' } }, policy: { model: modelPolicy } }],
+        acceptance: { resultSchema: { type: 'object' } }, policy: { identity: WORKER_POLICY_IDENTITY, model: modelPolicy } }],
     };
     await projectBlueprintToPg(db.sql, { workspaceId: 'default', harnessSlug: 'papercup',
       blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }) });
@@ -758,7 +768,7 @@ describe('blueprint direct-item revision pin', () => {
       operations: [{
         id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'agent', role: 'worker' }, inputSchema: { type: 'object' },
-        acceptance: { resultSchema: { type: 'object' } }, policy: { model: modelPolicy },
+        acceptance: { resultSchema: { type: 'object' } }, policy: { identity: WORKER_POLICY_IDENTITY, model: modelPolicy },
       }],
     };
     await projectBlueprintToPg(db.sql, {
@@ -870,6 +880,7 @@ describe('blueprint direct-item revision pin', () => {
         acceptance: { resultSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } },
         signals: { note: { payloadSchema: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } } } },
         waits: { approve: { responseSchema: { type: 'object', required: ['approved'], properties: { approved: { type: 'boolean' } } } } },
+        policy: { identity: WORKER_POLICY_IDENTITY },
       }],
     };
     await projectBlueprintToPg(db.sql, {
@@ -1062,6 +1073,7 @@ describe('blueprint direct-item revision pin', () => {
         execution: { kind: 'agent', role: 'worker' },
         inputSchema: { type: 'object', additionalProperties: false },
         acceptance: { resultSchema: { type: 'object' } },
+        policy: { identity: WORKER_POLICY_IDENTITY },
       }],
     };
     const request = {
@@ -1093,7 +1105,7 @@ describe('blueprint direct-item revision pin', () => {
         properties: { itemId: { type: 'string' } },
       },
       acceptance: { resultSchema: { type: 'object' } },
-      policy: { model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
+      policy: { identity: WORKER_POLICY_IDENTITY, model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
     };
     const source = {
       id: 'accepted-item-fixture', workItem: { kind: 'feature' }, roles: [{ id: 'worker' }],
@@ -1114,7 +1126,7 @@ describe('blueprint direct-item revision pin', () => {
     expect(accepted.id).toMatch(/^WI-/);
     const bSource = {
       ...source,
-      operations: [{ ...operation, version: 'B', policy: { model: { mode: 'exact', models: ['gpt-6-luna'], onUnavailable: 'fail' } } }],
+      operations: [{ ...operation, version: 'B', policy: { identity: WORKER_POLICY_IDENTITY, model: { mode: 'exact', models: ['gpt-6-luna'], onUnavailable: 'fail' } } }],
     };
     const b = compileAgentSpecification({ source: bSource });
     await projectBlueprintToPg(db.sql, {
@@ -1142,7 +1154,7 @@ describe('blueprint direct-item revision pin', () => {
           properties: { itemId: { type: 'string' } },
         },
         acceptance: { resultSchema: { type: 'object' } },
-        policy: { model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
+        policy: { identity: WORKER_POLICY_IDENTITY, model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
       };
       const source = {
         id: 'receipt-fixture', workItem: { kind: itemKind },
@@ -1782,6 +1794,29 @@ describe('P-004 — completion authority round-trips through both family views',
 // (payload.held_open_by via setWorkItemClaimHold { by }) refuses a TERMINAL
 // transition by anyone but the holder — the dup-close guard for leader-gated items.
 describe('P-006 held-open guard — non-holder terminal transitions refuse', () => {
+  // A non-holder's terminal transition runs the inline hold-liveness check
+  // (isStaleHoldOpenAndCleared), which reads these relations and FAILS CLOSED (with a warn)
+  // when they are missing. Without them every refusal below would pass for the wrong reason
+  // and the WI-10005916 local control could never lift a dead hold. Minimal projections:
+  // migration 348 for the config row, work-items-hold-open.integration.test.ts for the rest.
+  beforeAll(async () => {
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.operator_coord_liveness_config (
+      workspace_id text PRIMARY KEY, payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      updated_at bigint NOT NULL DEFAULT 0)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.coord_presence (
+      owner_id text PRIMARY KEY, heartbeat_at timestamptz)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
+      spawn_id text PRIMARY KEY, session_owner text, run_id text, status text NOT NULL,
+      heartbeat_at timestamptz, finished_at timestamptz, cancelled_at timestamptz)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.routines (
+      id text PRIMARY KEY, workspace_id text NOT NULL, name text NOT NULL,
+      active boolean NOT NULL DEFAULT true, reschedule_interval_sec integer, target_owner_id text,
+      updated_at timestamptz NOT NULL DEFAULT now(), metadata jsonb NOT NULL DEFAULT '{}'::jsonb)`);
+    await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
+      id BIGSERIAL PRIMARY KEY, owner_id text NOT NULL, kind text NOT NULL, summary text,
+      created_at timestamptz NOT NULL DEFAULT now())`);
+  });
+
   async function heldBug(holder = 'leader-1', reason = 'gating on live evidence') {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'held', harness: 'papercup', createdBy: 'agA' });
     await wi.setWorkItemClaimHold(bug.id, true, { harness: 'papercup', by: holder, reason });
@@ -1810,6 +1845,35 @@ describe('P-006 held-open guard — non-holder terminal transitions refuse', () 
     const bug = await heldBug('leader-1');
     const done = await wi.setWorkItemState(bug.id, 'resolved', { by: 'leader-1', completionRef: 'holder closes' });
     expect(done?.state).toBe('done'); // work-item-status-full-unify: issue `resolved`→unified `done`
+  });
+
+  it('WI-10005916: a dead-looking hold on a PEER-WRITTEN (origin=remote) row still refuses a non-holder close', async () => {
+    // Same invisible holder, same past-grace hold age on both rows; only `origin` differs.
+    const local = await heldBug('su-peer-ghost', 'blocked');
+    const remote = await heldBug('su-peer-ghost', 'blocked');
+    const stale = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+    await db.sql`UPDATE harness_shared.work_items
+                    SET payload = jsonb_set(payload, '{held_open_at}', to_jsonb(${stale}::text))
+                  WHERE feature_id IN (${local.id}, ${remote.id})`;
+    await db.sql`UPDATE harness_shared.work_items SET origin = 'remote' WHERE feature_id = ${remote.id}`;
+    // The inline lift announces itself with a console.warn; capture it so the assertions can
+    // name exactly which row was lifted (and so fail-on-console does not reject the expected warn).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Control: on a LOCAL row the inline liveness check lifts the dead hold and lets the close through.
+      const closed = await wi.setWorkItemState(local.id, 'resolved', { by: 'agX', completionRef: 'dead hold lifted' });
+      expect(closed?.state).toBe('done');
+      // A peer's holder is never judged from this node's presence, so the hold stays enforced.
+      await expect(
+        wi.setWorkItemState(remote.id, 'resolved', { by: 'agX', completionRef: 'looks stale' }),
+      ).rejects.toThrow(/HELD OPEN by su-peer-ghost/);
+      expect((await wi.getWorkItem(remote.id, 'papercup'))?.state).toBe('open');
+      const warned = warn.mock.calls.map((c) => String(c[0]));
+      expect(warned.filter((m) => m.startsWith(`[hold-open] lifted EXPIRED hold on ${local.id}:`))).toHaveLength(1);
+      expect(warned.filter((m) => m.includes(remote.id))).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('force:true overrides the hold (leader/reaper escape hatch)', async () => {

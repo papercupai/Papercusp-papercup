@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { readRepoFile } from '@papercusp/test-config';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { createPgHiveEvalStore } from './store-pg';
 import { coerceJson } from '../pg-jsonb';
 import type { HiveEvalRunRow, HiveEvalScenarioRow, HiveEvalScoreRow, InstanceManifest } from './store';
@@ -46,6 +46,7 @@ describe('hive-eval PG store (migrations 264 + 268)', () => {
     const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
     try {
       await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+      await markManagedTestDatabase(admin, dbName);
     } finally {
       await admin.end({ timeout: 5 });
     }

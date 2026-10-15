@@ -1,0 +1,31 @@
+---
+rel_path: "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25286741911883615-ea4bd7a2fd4bde43edf3ca643aa10c60-reconcile.json"
+updated_at: 1791670577638
+_body: "content"
+---
+
+{
+  "schemaVersion": "durable-park-reconcile-v1",
+  "runId": "work-item-durable-park-audit:reconcile:tool:EI-25286741911883615:ea4bd7a2fd4bde43edf3ca643aa10c60",
+  "inputSha256": "ea4bd7a2fd4bde43edf3ca643aa10c607694fd7208efb86825fbeb2fc7064981",
+  "workspaceId": "papercusp-workspace",
+  "harnessSlug": "papercusp",
+  "generatedAt": "2026-10-10T22:16:17.638Z",
+  "actor": "su-6baa8b9a-8d72-4223-b6d2-bf9f687dcfcb",
+  "requested": 1,
+  "cleared": 1,
+  "unchanged": 0,
+  "rows": [
+    {
+      "id": "EI-25286741911883615",
+      "outcome": "cleared",
+      "expectedParkFingerprint": "fd08bbde6403f819f7e37a957b546f56123ea9bba284f7bf4eecc4eb28df8a61",
+      "observedParkFingerprint": "fd08bbde6403f819f7e37a957b546f56123ea9bba284f7bf4eecc4eb28df8a61",
+      "reasonCode": "condition-satisfied",
+      "evidence": "Park release trigger is work-item:done:EI-25286491844937496 (condition: 'The primary judge recovery fix completes and its verified coverage is checked against this item's predecessor transcript and live assignment requirements.'). Re-read 2026-10-10T22:15Z (su-6baa8, psql on harness_shared.work_items, workspace papercusp-workspace): EI-25286491844937496 status=done, taken_by none; EI-25286741911883615 status=open, taken_by null. The trigger target is terminal, so the release condition is met. The re-evaluation the condition describes is the next claimant's work and travels with the row. Settled under plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 P-004 / D-009.",
+      "preservedLease": false,
+      "takenBy": null
+    }
+  ],
+  "artifactPath": "reports/durable-parks/work-item-durable-park-audit-reconcile-tool-EI-25286741911883615-ea4bd7a2fd4bde43edf3ca643aa10c60-reconcile.json"
+}

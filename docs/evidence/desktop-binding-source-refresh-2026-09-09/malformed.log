@@ -1,0 +1,122 @@
+[mutation-probe] copy-out: relocating into a repo mirror — ~/papercupai-workspace/papercusp symlinked into /tmp/mutation-probe.i9YLcw/mirror (.git excluded), mutant at its own repo-relative path packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts
+[mutation-probe] running baseline guard: cd ~/papercupai-workspace/papercusp/packages/operator-core && PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_GROUP=desktop-binding-refresh-malformed-3fd66 DESKTOP_BINDING_PROBE_SOURCE=~/papercupai-workspace/papercusp/packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts ~/papercupai-workspace/papercusp/node_modules/.bin/vitest run lib/agent-tools/work_items/design-evidence-gate.test.ts --config=~/.papercusp/scratch/design-binding-mutation-3fd66.vitest.config.mts --testNamePattern=desktop.binding.malformed --maxWorkers=1
+
+ RUN  v4.1.8 ~/papercupai-workspace/papercusp/packages/operator-core
+
+ ✓ lib/agent-tools/work_items/design-evidence-gate.test.ts (50 tests | 49 skipped) 35ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 49 skipped (50)
+   Start at  01:47:54
+   Duration  21.43s (transform 15.71s, setup 347ms, import 20.79s, tests 35ms, environment 0ms)
+
+[mutation-probe] running unmutated-copy baseline guard: cd ~/papercupai-workspace/papercusp/packages/operator-core && PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_GROUP=desktop-binding-refresh-malformed-3fd66 DESKTOP_BINDING_PROBE_SOURCE=/tmp/mutation-probe.i9YLcw/mirror/packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts ~/papercupai-workspace/papercusp/node_modules/.bin/vitest run lib/agent-tools/work_items/design-evidence-gate.test.ts --config=~/.papercusp/scratch/design-binding-mutation-3fd66.vitest.config.mts --testNamePattern=desktop.binding.malformed --maxWorkers=1
+
+ RUN  v4.1.8 ~/papercupai-workspace/papercusp/packages/operator-core
+
+ ✓ lib/agent-tools/work_items/design-evidence-gate.test.ts (50 tests | 49 skipped) 39ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 49 skipped (50)
+   Start at  01:48:17
+   Duration  24.94s (transform 18.84s, setup 279ms, import 24.36s, tests 39ms, environment 0ms)
+
+[mutation-probe] mutation diff (first 40 lines):
+--- /tmp/mutation-probe.i9YLcw/design-evidence-gate.ts.orig	2026-09-09 01:47:08.854252173 -0400
++++ /tmp/mutation-probe.i9YLcw/mirror/packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts	2026-09-09 01:48:42.693346521 -0400
+@@ -137,7 +137,7 @@
+   if (!declared.success) {
+     return {
+       status: 'unavailable',
+-      enforced,
++      enforced: false,
+       report:
+         'design-evidence gate: approval-binding-malformed: payload.designReferences must contain unique { featureId, referenceId } obligations or versioned revision/SHA-256 bindings; no design check was skipped.',
+     };
+[mutation-probe] mutant applied: 684528ca -> changed (copy-out)
+[mutation-probe] running mutant guard: cd ~/papercupai-workspace/papercusp/packages/operator-core && PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_GROUP=desktop-binding-refresh-malformed-3fd66 DESKTOP_BINDING_PROBE_SOURCE=/tmp/mutation-probe.i9YLcw/mirror/packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts ~/papercupai-workspace/papercusp/node_modules/.bin/vitest run lib/agent-tools/work_items/design-evidence-gate.test.ts --config=~/.papercusp/scratch/design-binding-mutation-3fd66.vitest.config.mts --testNamePattern=desktop.binding.malformed --maxWorkers=1
+
+ RUN  v4.1.8 ~/papercupai-workspace/papercusp/packages/operator-core
+
+ ❯ lib/agent-tools/work_items/design-evidence-gate.test.ts (50 tests | 1 failed | 49 skipped) 43ms
+     ↓ checks the plan slug as well as the work-item id
+     ↓ de-duplicates and tolerates a missing plan slug
+     ↓ is inert when the gate flag is off
+     ↓ reports not-applicable when no candidate feature has a ratified reference
+     ↓ keeps looking when the first candidate has no references
+     ↓ does not let a passing plan reference hide a failing item reference
+     ↓ does not let an advisory plan failure hide an enforceable item failure
+     ↓ checks a declared approved reference even outside the item and plan candidates
+     ↓ does not satisfy an explicit reference with a different passing reference
+     ↓ accepts a declared reference only when that exact active reference passes
+     ↓ refuses malformed design obligations instead of dropping them
+     ↓ does not let a passing reference hide an unavailable later obligation
+     ↓ does NOT enforce by default, and says so in the outcome
+     ↓ does NOT enforce a failing reference the threshold was never measured for
+     ↓ DOES enforce once the enforcement flag is on
+     ↓ a satisfied obligation reports rather than staying silent
+     ↓ reports unavailable rather than passing when the obligation cannot be established
+     ↓ reports an unexpected error without refusing during report-only rollout
+     ↓ preserves enforcement for an unexpected error instead of silently passing
+     ↓ treats an unreadable enforcement flag as not-enforcing
+     ↓ states that nothing was written, so a retry cannot make it worse
+     ↓ REFUSES the close when a ratified reference has no evidence, and writes NO terminal state
+     ↓ REFUSES when the evidence exists but FAILS, and still writes no terminal state
+     ↓ CONTROL: the same close SUCCEEDS once the evidence passes
+     ↓ CONTROL: an UNRATIFIED surface imposes nothing, so exploration still closes
+     ↓ REFUSES a declared approved design with no ratification through the real completion handler
+     ↓ CONTROL: a declared design closes through the real handler once its exact reference passes
+     ↓ REFUSES an unexpected gate fault while enforcing, and writes no terminal state
+     ↓ desktop.binding.missing: original unbound approval cannot close even with passing pixels
+     × desktop.binding.malformed: an invalid revision cannot discharge approval 36ms
+     ↓ desktop.binding.replaced: fresh passing pixels cannot silently replace the approved reference
+     ↓ desktop.binding.repaired: exact approved binding and current evidence allow the same close
+     ↓ desktop.gate.missing-acceptance-registration: the real completion handler writes no terminal state
+     ↓ desktop.gate.missing-proof: the real completion handler writes no terminal state
+     ↓ desktop.gate.wrong-target: the real completion handler writes no terminal state
+     ↓ desktop.gate.stale-source: the real completion handler writes no terminal state
+     ↓ desktop.gate.stale-build: the real completion handler writes no terminal state
+     ↓ desktop.gate.invalid-capture: the real completion handler writes no terminal state
+     ↓ desktop.gate.journey-failed: the real completion handler writes no terminal state
+     ↓ desktop.binding.scope: a different implementing item cannot borrow the approved binding
+     ↓ desktop.binding.invalid-scope: refuses malformed approvalRef before ratification
+     ↓ desktop.binding.invalid-scope: refuses malformed targetRoute before ratification
+     ↓ desktop.binding.invalid-scope: refuses malformed planItemIds before ratification
+     ↓ desktop.binding.invalid-scope: refuses malformed state before ratification
+     ↓ desktop.binding.downgrade: revising the image cannot remove the adopted approval contract
+     ↓ desktop.binding.reapproval: replacement bytes cannot reuse the original approval source
+     ↓ desktop.binding.bytes: changing image bytes behind the same locator invalidates prior passing proof
+     ↓ reports but does NOT refuse while enforcement is off (D-006 report-only rollout)
+     ↓ CONTROL: an unexpected gate fault still reports without refusing while enforcement is off
+     ↓ FALSIFIABILITY CONTROL: a completion path that never consulted the gate would pass every negative test
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  lib/agent-tools/work_items/design-evidence-gate.test.ts > R1: work_items:complete actually consults the design-evidence gate > desktop.binding.malformed: an invalid revision cannot discharge approval
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ lib/agent-tools/work_items/design-evidence-gate.test.ts:897:23
+    895|     approvedDesktopItem([{ ...DESKTOP_BINDING, revision: 'latest' }]);
+    896|     const result = await closeItem();
+    897|     expect(result.ok).toBe(false);
+       |                       ^
+    898|     expect(result.error).toContain('approval-binding-malformed');
+    899|     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 49 skipped (50)
+   Start at  01:48:44
+   Duration  24.54s (transform 18.87s, setup 445ms, import 23.77s, tests 43ms, environment 0ms)
+
+[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓
+MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked
+[mutation-probe] tree integrity: VERIFIED — ~/papercupai-workspace/papercusp/packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts is byte-identical to its pre-probe state

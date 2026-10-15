@@ -17,8 +17,10 @@
  * column lands.
  */
 
-import { generated, getOrgPg } from '@papercusp/db-org';
+import { randomUUID } from 'node:crypto';
+import { generated, getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
 import { mergeRoleQuota } from './quota-overrides';
+import { resolveDispatchPremises } from './agent-tools/premises-gate';
 import {
   PASS_THROUGH,
   papercuspComputeQuotaWindow,
@@ -43,6 +45,7 @@ import { FLAGS } from '@papercusp/flags';
 
 import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { recordToolAuthzEvent } from './tool-authz-audit';
+import { observeFallback } from './degradation/fallback-observations';
 import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
 import { beginInFlightCall, endInFlightCall } from './in-flight-calls';
 import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
@@ -55,10 +58,12 @@ import { isRecoveryDoorCall } from './capability-envelope/recovery-door';
 // Dependency-free leaf, like recovery-door: building the lazy launch-record
 // handle must not statically import the identity port it is handed to.
 import { lazyIdentityLaunchRecord, type LoadedIdentityLaunchRecord } from './capability-envelope/lazy-launch-record';
+import { selectNarrowedLaunchSpecBody } from './capability-envelope/identity-receipt-narrowing';
 // Type-only: the identity gate itself is reached by DYNAMIC import (see the resolver).
 import type { IdentityLaunchAuditStamp } from './capability-envelope/identity-grants-port';
 import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
 import { enforceAppKeyScope } from './connected-apps/enforce';
+import { enforceInheritedPolicy } from './governance-policy/enforce';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
 // confinement resolver. This gate fails SILENTLY when unresolved — no resolver means every
 // session is unconfined, with nothing thrown and nothing logged — so installation is bound to
@@ -83,6 +88,7 @@ import { normalizeSessionActivation } from './session-activation';
 import type { InvocationFrictionRef } from './harness/improvements/invocation-friction';
 import { trackDetached } from './detached-imports';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { installedPerUseChokepoint } from './agent-tools/per-use-chokepoint';
 
 /**
  * The role-scoped `papercusp` MCP surface can be discovered alongside the
@@ -130,6 +136,14 @@ export function authorizationFailureHint(input: {
     ? `this principal lacks ${input.missingCapability} for ${input.toolName}`
     : `role "${input.deniedRole ?? input.ctx.role}" is not on ${input.toolName}'s allowlist` +
       (input.allowedRoles?.length ? ` (allowed: ${input.allowedRoles.join(', ')})` : '');
+  if (input.toolName === 'capability:git' && input.missingCapability === 'capability:git') {
+    return (
+      `This is a judge-scoped MCP session; ${lacks}. ` +
+      '`capability:git` is intentionally withheld from judge sessions. For historical file evidence at a pinned commit, ' +
+      'use `capability:git-evidence` with `op: "readFileAtCommit"`, the full commit SHA, and a repository-relative path. ' +
+      'For Git operations that reader does not cover, use a separate authorized su/operator session through the papercusp-su MCP server.'
+    );
+  }
   return (
     `This is a judge-scoped MCP session; ${lacks}. ` +
     '`tools:invoke` preserves the same judge principal, so do not retry it in this session: it will be denied identically. ' +
@@ -200,6 +214,7 @@ function operatorKernelDenial(
   code: string,
   reason: string,
   policyRevision?: string | null,
+  serverAudit?: KernelEnforcementResult['serverAudit'],
 ): KernelEnforcementResult {
   return {
     decision: 'deny',
@@ -208,6 +223,7 @@ function operatorKernelDenial(
     code,
     reason,
     ...(policyRevision !== undefined ? { policyRevision } : {}),
+    ...(serverAudit ? { serverAudit } : {}),
   };
 }
 
@@ -222,15 +238,125 @@ interface OperatorKernelState extends KernelContextState {
   identityLaunchRecord?: unknown;
   /** Selected adv_sessions row identity/version for immutable artifact replay. */
   identityLaunchRecordVersion?: { sessionId: string; rowVersion: string };
+  /** How the server selected that row; a fallback is not caller attribution. */
+  identityLaunchRecordSelection?: 'caller-row' | 'owner-workspace-fallback';
   /** The control anchor exists, but its owning adv_sessions row does not. */
   identityLaunchRecordMissing?: boolean;
   authorityUnavailable?: boolean;
+  authorityUnavailableSources?: AuthorityUnavailableSource[];
+  authorityReadFailures?: AuthorityReadFailure[];
   /** The server-resolved owner whose active launch/control rows were read. */
   operationOwnerId?: string;
   /** The workspace those rows were read under (the resolver's own scope). */
   operationWorkspaceId?: string;
   /** session_briefs.control_generation at the read, when a brief exists. */
   controlGeneration?: number;
+}
+
+type AuthorityUnavailableSource =
+  | 'control-anchor-query-failed'
+  | 'verified-caller-row-unavailable'
+  | 'power-user-revocation-query-failed'
+  | 'authority-reader-initialization-failed'
+  | 'identity-policy-evaluation-failed';
+
+interface AuthorityReadFailure {
+  source: AuthorityUnavailableSource;
+  /** SQLSTATE only; never retain the error message, SQL, parameters, or stack. */
+  pgCode: string | null;
+  elapsedMs: number;
+  /** Bind PostgreSQL's application_name PID to this invocation's kernel identity. */
+  servingPid: number;
+  servingProcessId: string | null;
+}
+
+type KernelAuthorityTimingName = 'controlAnchorSql' | 'identityGrantEvaluation';
+interface KernelAuthorityTimingSample {
+  calls: number;
+  totalMs: number;
+}
+interface KernelAuthorityQueryTrace {
+  queryFingerprint: 'controlAnchorSql/v1';
+  traceId: string;
+  backendPid: number | null;
+  queryStart: string | null;
+  poolAcquisitionMs: number | null;
+  clientQueryMs: number | null;
+  clientCompletedAt: string | null;
+  outcome: 'fulfilled' | 'rejected';
+}
+type KernelAuthorityTimingCollector = {
+  controlAnchorSql: KernelAuthorityTimingSample & { executions: KernelAuthorityQueryTrace[] };
+  identityGrantEvaluation: KernelAuthorityTimingSample;
+};
+
+function createKernelAuthorityTimingCollector(): KernelAuthorityTimingCollector {
+  return {
+    controlAnchorSql: { calls: 0, totalMs: 0, executions: [] },
+    identityGrantEvaluation: { calls: 0, totalMs: 0 },
+  };
+}
+
+function recordKernelAuthorityTiming(
+  collector: KernelAuthorityTimingCollector | undefined,
+  name: KernelAuthorityTimingName,
+  startedAt: number,
+  queryTrace?: KernelAuthorityQueryTrace,
+): void {
+  if (!collector) return;
+  const sample = collector[name];
+  sample.calls += 1;
+  sample.totalMs += Math.max(0, performance.now() - startedAt);
+  if (queryTrace && name === 'controlAnchorSql') collector.controlAnchorSql.executions.push(queryTrace);
+}
+
+function elapsedMsSince(startedAt: number): number {
+  return Math.round(Math.max(0, performance.now() - startedAt) * 10) / 10;
+}
+
+function attachKernelAuthorityTimings(
+  verdict: KernelEnforcementResult,
+  collector: KernelAuthorityTimingCollector,
+): KernelEnforcementResult {
+  const measured = Object.entries(collector).filter(([, sample]) => sample.calls > 0);
+  if (measured.length === 0) return verdict;
+  const timings = Object.fromEntries(measured.map(([name, sample]) => [name, {
+    calls: sample.calls,
+    totalMs: Math.round(sample.totalMs * 10) / 10,
+    ...('executions' in sample && sample.executions.length ? { executions: sample.executions } : {}),
+  }]));
+  return {
+    ...verdict,
+    serverAudit: {
+      ...verdict.serverAudit,
+      authorityTimings: { schemaVersion: 1, ...timings },
+    },
+  };
+}
+
+function authorityReadFailure(
+  source: AuthorityUnavailableSource,
+  error: unknown,
+  startedAt: number,
+): AuthorityReadFailure {
+  let pgCode: string | null = null;
+  try {
+    const code = error && typeof error === 'object'
+      ? (error as { code?: unknown }).code : null;
+    if (typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code)) pgCode = code;
+  } catch {
+    // Diagnostic access must not replace the original fail-closed verdict.
+  }
+  let servingProcessId: string | null = null;
+  try {
+    servingProcessId = getServingHostIdentity().processId;
+  } catch {
+    // Missing process attribution must never weaken or replace the denial.
+  }
+  return {
+    source, pgCode, elapsedMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    servingPid: process.pid, servingProcessId,
+  };
 }
 
 /**
@@ -244,15 +370,16 @@ async function loadIdentityLaunchRecord(
   advSessionId: number | string | null,
   ownerId: string,
   workspaceId: string,
+  receipts?: readonly unknown[],
 ): Promise<LoadedIdentityLaunchRecord | null> {
   if (advSessionId == null) return null;
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ launch_spec: unknown; launch_spec_xmin: string | null }>>`
-    SELECT s.launch_spec, s.xmin::text AS launch_spec_xmin
-      FROM harness_shared.adv_sessions s
-     WHERE s.id = ${advSessionId} AND s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
-     LIMIT 1
-  `;
+  // WI-10004801: identityHistory is narrowed to the requested receipts in
+  // PostgreSQL — the retained history is most of a 13 MB record, and parsing it
+  // on every cache miss is what spiked worker heaps (#1155).
+  const rows = await selectNarrowedLaunchSpecBody(sql, {
+    advSessionId, ownerId, workspaceId, revisions: receipts ?? null,
+  });
   const row = rows[0];
   return row ? { record: row.launch_spec, rowVersion: row.launch_spec_xmin ?? null } : null;
 }
@@ -325,6 +452,7 @@ function resolveLaunchHeader(
 
 export async function readControlAnchorKernelState(
   request: KernelEnforcementRequest,
+  timingCollector?: KernelAuthorityTimingCollector,
 ): Promise<OperatorKernelState | null> {
   let ownerId: string;
   try {
@@ -340,6 +468,17 @@ export async function readControlAnchorKernelState(
         : null;
   if (!workspaceId) return null;
 
+  // A native MCP caller may carry the exact adv_sessions row that the host
+  // verified for its native CLI session. Without it, owner/workspace selection
+  // can choose a re-armed dead predecessor whose started_at was refreshed.
+  const requestedAdvSessionId = request.ctx.advSessionId;
+  const callerAdvSessionId =
+    typeof requestedAdvSessionId === 'number' &&
+    Number.isSafeInteger(requestedAdvSessionId) &&
+    requestedAdvSessionId > 0
+      ? requestedAdvSessionId
+      : null;
+
   const { sql } = getOrgPg();
   // WI-10002721: the hot read carries the launch record's HEADER only — its
   // type and the two top-level fields the identity gate keys and checks on —
@@ -354,7 +493,7 @@ export async function readControlAnchorKernelState(
   // moves xmin — so the last header seen for this (owner, workspace) is passed
   // back in, and the CASE guards skip the detoast while the newest row is still
   // that exact (id, xmin) (measured: 16 buffers, 0.12ms).
-  const memoKey = JSON.stringify([ownerId, workspaceId]);
+  const memoKey = JSON.stringify([ownerId, workspaceId, callerAdvSessionId]);
   const knownHeader = launchHeaderMemo.get(memoKey);
   const knownId = knownHeader?.sessionId ?? null;
   const knownXmin = knownHeader?.rowVersion ?? null;
@@ -374,8 +513,40 @@ export async function readControlAnchorKernelState(
       }
     | undefined;
   let controlReadFailed = false;
+  const authorityUnavailableSources: AuthorityUnavailableSource[] = [];
+  const authorityReadFailures: AuthorityReadFailure[] = [];
+  const anchorReadStartedAt = performance.now();
+  const anchorAcquisitionStartedAt = performance.now();
+  let anchorConnection: Awaited<ReturnType<typeof sql.reserve>> | null = null;
+  let anchorQueryStartedAt: number | null = null;
+  const anchorTrace: KernelAuthorityQueryTrace = {
+    queryFingerprint: 'controlAnchorSql/v1',
+    traceId: randomUUID(),
+    backendPid: null,
+    queryStart: null,
+    poolAcquisitionMs: null,
+    clientQueryMs: null,
+    clientCompletedAt: null,
+    outcome: 'rejected',
+  };
   try {
-    const rows = await sql<Array<{
+    anchorConnection = await withAcquisitionDeadline(
+      ({ disarm, expired }) =>
+        sql.reserve().then((reserved) => {
+          if (expired()) {
+            reserved.release();
+            throw new Error('control-anchor SQL acquisition expired before query execution');
+          }
+          anchorTrace.poolAcquisitionMs = elapsedMsSince(anchorAcquisitionStartedAt);
+          disarm();
+          return reserved;
+        }),
+      { label: 'control-anchor-sql-acquire', pool: 'org-admin' },
+    );
+    anchorQueryStartedAt = performance.now();
+    const rows = await anchorConnection<Array<{
+      backend_pid?: number | string | null;
+      query_start?: Date | string | null;
       control_state: unknown;
       control_generation: number | string | null;
       workspace_id: string | null;
@@ -388,7 +559,9 @@ export async function readControlAnchorKernelState(
       launch_spec_has_accepted_operation?: boolean | null;
       launch_spec_accepted_operation?: unknown;
     }>>`
-      SELECT b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,
+      /* papercusp:controlAnchorSql/v1 */
+      SELECT pg_backend_pid() AS backend_pid, statement_timestamp() AS query_start,
+             b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,
              a.id AS adv_session_id, a.launch_header_known,
              a.launch_spec_type, a.launch_spec_workspace_id, a.launch_spec_harness_slug,
              a.launch_spec_has_accepted_operation, a.launch_spec_accepted_operation,
@@ -414,21 +587,50 @@ export async function readControlAnchorKernelState(
                       ELSE s.launch_spec->'acceptedOperation' END AS launch_spec_accepted_operation
             FROM harness_shared.adv_sessions s
            WHERE s.coord_owner_id = ${ownerId} AND s.workspace_id = ${workspaceId}
-           ORDER BY (s.ended_at IS NULL AND s.ended_by IS NULL) DESC, s.started_at DESC, s.id DESC
+             AND (${callerAdvSessionId}::bigint IS NULL OR s.id = ${callerAdvSessionId})
+           ORDER BY s.id DESC
            LIMIT 1
         ) a ON true
        LIMIT 1
     `;
     stateRow = rows[0];
-  } catch {
+    const backendPid = Number(stateRow?.backend_pid);
+    anchorTrace.backendPid = Number.isSafeInteger(backendPid) && backendPid > 0 ? backendPid : null;
+    const queryStart = stateRow?.query_start;
+    anchorTrace.queryStart = queryStart instanceof Date
+      ? queryStart.toISOString()
+      : typeof queryStart === 'string' ? queryStart : null;
+    anchorTrace.outcome = 'fulfilled';
+  } catch (error) {
+    anchorTrace.poolAcquisitionMs ??= elapsedMsSince(anchorAcquisitionStartedAt);
     // Unknown authority cannot authorize a new effect. In particular, neither
     // a missing migration nor a failed join is evidence of a legacy session.
     controlReadFailed = true;
+    authorityUnavailableSources.push('control-anchor-query-failed');
+    authorityReadFailures.push(authorityReadFailure('control-anchor-query-failed', error, anchorReadStartedAt));
     stateRow = undefined;
+  } finally {
+    anchorTrace.clientQueryMs = anchorQueryStartedAt === null ? null : elapsedMsSince(anchorQueryStartedAt);
+    anchorTrace.clientCompletedAt = new Date().toISOString();
+    anchorConnection?.release();
+    recordKernelAuthorityTiming(timingCollector, 'controlAnchorSql', anchorReadStartedAt, anchorTrace);
+  }
+  if (callerAdvSessionId !== null) {
+    const selectedAdvSessionId =
+      stateRow?.adv_session_id == null ? null : String(stateRow.adv_session_id);
+    if (selectedAdvSessionId !== String(callerAdvSessionId)) {
+      // A verified caller row that vanished (or no longer matches this owner
+      // and workspace) is unavailable authority. Do not fall through to the
+      // legacy missing-row recovery path or another session's launch record.
+      controlReadFailed = true;
+      authorityUnavailableSources.push('verified-caller-row-unavailable');
+      stateRow = undefined;
+    }
   }
 
   let powerUserRevoked = false;
   if (request.ctx.isPowerUser && request.ctx.uiClientId) {
+    const revocationReadStartedAt = performance.now();
     try {
       const rows = await sql<Array<{ revoked_at: Date | string | null }>>`
         SELECT revoked_at
@@ -440,10 +642,12 @@ export async function readControlAnchorKernelState(
       // Absence is intentionally not treated as revocation: older/in-process
       // callers can carry the power-user marker without this optional table.
       powerUserRevoked = rows.length > 0 && rows[0].revoked_at != null;
-    } catch {
+    } catch (error) {
       // Failed credential-authority reads are not successful "not revoked"
       // reads. Preserve the same fail-closed posture as the control anchor.
       controlReadFailed = true;
+      authorityUnavailableSources.push('power-user-revocation-query-failed');
+      authorityReadFailures.push(authorityReadFailure('power-user-revocation-query-failed', error, revocationReadStartedAt));
     }
   }
 
@@ -489,7 +693,11 @@ export async function readControlAnchorKernelState(
     operationOwnerId: ownerId,
     operationWorkspaceId: workspaceId,
     ...(Number.isSafeInteger(controlGeneration) && controlGeneration >= 0 ? { controlGeneration } : {}),
-    ...(controlReadFailed ? { authorityUnavailable: true } : {}),
+    ...(controlReadFailed ? {
+      authorityUnavailable: true,
+      authorityUnavailableSources: [...new Set(authorityUnavailableSources)],
+      ...(authorityReadFailures.length ? { authorityReadFailures } : {}),
+    } : {}),
     ...(identityLaunchRecordMissing ? { identityLaunchRecordMissing: true } : {}),
     ...(stateRow && Object.prototype.hasOwnProperty.call(stateRow, 'launch_spec_type')
       ? { identityLaunchRecord: lazyIdentityLaunchRecord({
@@ -498,12 +706,13 @@ export async function readControlAnchorKernelState(
           harnessSlug: launchHeader.harnessSlug,
           hasAcceptedOperation: launchHeader.hasAcceptedOperation,
           acceptedOperation: launchHeader.acceptedOperation,
-          load: () => loadIdentityLaunchRecord(launchSessionId, ownerId, workspaceId),
+          load: (receipts) => loadIdentityLaunchRecord(launchSessionId, ownerId, workspaceId, receipts),
         }) } : {}),
     ...(stateRow?.adv_session_id != null && stateRow.adv_session_xmin != null
       ? { identityLaunchRecordVersion: {
           sessionId: String(stateRow.adv_session_id), rowVersion: String(stateRow.adv_session_xmin),
-        } } : {}),
+        }, identityLaunchRecordSelection: callerAdvSessionId !== null
+          ? 'caller-row' as const : 'owner-workspace-fallback' as const } : {}),
     ...(activation ? { activation } : {}),
     ...(activation?.applied ? { appliedRevision: activation.applied } : {}),
     ...(generation ? { policyRevision: `control:${generation}` } : {}),
@@ -517,7 +726,17 @@ function evaluateOperatorKernelRequest(
 ): KernelEnforcementResult {
   const policyRevision = state?.policyRevision ?? null;
   if (state?.authorityUnavailable) {
-    return operatorKernelDenial('policy-unavailable', 'current session authority could not be read; no effect authorized', policyRevision);
+    return operatorKernelDenial(
+      'policy-unavailable',
+      'current session authority could not be read; no effect authorized',
+      policyRevision,
+      state.authorityUnavailableSources?.length
+        ? {
+            authorityUnavailableSources: state.authorityUnavailableSources,
+            ...(state.authorityReadFailures?.length ? { authorityReadFailures: state.authorityReadFailures } : {}),
+          }
+        : undefined,
+    );
   }
   if (state?.revoked === true) {
     return operatorKernelDenial('revoked', 'session or identity authority has been revoked', policyRevision);
@@ -684,28 +903,78 @@ async function healStaleArtifactFromLaunchRecord(heal: StaleArtifactHeal): Promi
 
 /** Live control-anchor resolver installed by the operator bootstrap. */
 export const controlAnchorKernelResolver: KernelEnforcementPort = async (request) => {
+  const timingCollector = createKernelAuthorityTimingCollector();
   const pending: { heal?: StaleArtifactHeal } = {};
-  const first = await resolveControlAnchorKernelOnce(request, (heal) => { pending.heal = heal; });
-  if (!pending.heal) return first;
+  const first = await resolveControlAnchorKernelOnce(
+    request, (heal) => { pending.heal = heal; }, timingCollector,
+  );
+  if (!pending.heal) return attachKernelAuthorityTimings(first, timingCollector);
   // Re-resolve from a fresh read only when the convergence actually wrote; the
   // second pass never heals again, so a session the launch record cannot vouch
   // for keeps its original denial.
-  return (await healStaleArtifactFromLaunchRecord(pending.heal))
-    ? resolveControlAnchorKernelOnce(request)
+  const final = (await healStaleArtifactFromLaunchRecord(pending.heal))
+    ? await resolveControlAnchorKernelOnce(request, undefined, timingCollector)
     : first;
+  return attachKernelAuthorityTimings(final, timingCollector);
 };
+
+function auditLaunchRowSelection(
+  verdict: KernelEnforcementResult,
+  state: OperatorKernelState | null,
+): KernelEnforcementResult {
+  const record = verdict.serverAudit?.identityLaunchRecord;
+  if (!state?.identityLaunchRecordSelection) {
+    return verdict;
+  }
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    const selected = state.identityLaunchRecordVersion;
+    if (!selected) return verdict;
+    // Keep the selected control-anchor row visible on refusals that have no
+    // loaded-record stamp. Its header xmin must not masquerade as a body version.
+    return {
+      ...verdict,
+      serverAudit: {
+        ...verdict.serverAudit,
+        identityLaunchRecordSelection: {
+          advSessionId: selected.sessionId,
+          rowVersion: selected.rowVersion,
+          selection: state.identityLaunchRecordSelection,
+        },
+      },
+    };
+  }
+  // Extend the stamp for the record actually evaluated (including its loaded
+  // xmin). Never substitute a presented owner or tool argument for this source.
+  return {
+    ...verdict,
+    serverAudit: {
+      ...verdict.serverAudit,
+      identityLaunchRecord: { ...record, selection: state.identityLaunchRecordSelection },
+    },
+  };
+}
 
 async function resolveControlAnchorKernelOnce(
   request: KernelEnforcementRequest,
   onStaleArtifact?: (heal: StaleArtifactHeal) => void,
+  timingCollector?: KernelAuthorityTimingCollector,
 ): Promise<KernelEnforcementResult> {
   let state: OperatorKernelState | null;
+  const authorityReadStartedAt = performance.now();
   try {
-    state = await readControlAnchorKernelState(request);
-  } catch {
+    state = await readControlAnchorKernelState(request, timingCollector);
+  } catch (error) {
     // Client initialization itself can fail before the SELECT's try/catch.
     // Never let that escape into the generic optional-port fail-soft handler.
-    return operatorKernelDenial('policy-unavailable', 'session authority reader unavailable; no effect authorized');
+    return operatorKernelDenial(
+      'policy-unavailable',
+      'session authority reader unavailable; no effect authorized',
+      undefined,
+      {
+        authorityUnavailableSources: ['authority-reader-initialization-failed'],
+        authorityReadFailures: [authorityReadFailure('authority-reader-initialization-failed', error, authorityReadStartedAt)],
+      },
+    );
   }
   const verdict = evaluateOperatorKernelRequest(request, state ?? undefined);
   if (verdict.decision === 'deny') return verdict;
@@ -716,20 +985,22 @@ async function resolveControlAnchorKernelOnce(
   // against, so every identity-bearing invocation persists a row reference (D-007).
   const ungoverned: { stamp?: IdentityLaunchAuditStamp } = {};
   if (state && Object.prototype.hasOwnProperty.call(state, 'identityLaunchRecord')) {
+    const identityReadStartedAt = performance.now();
     try {
       const { checkIdentityGrantKernel } = await import('./capability-envelope/identity-grants-port');
       const grants = await checkIdentityGrantKernel(
         request, state, state.identityLaunchRecord, undefined, undefined,
         (stamp) => { ungoverned.stamp = stamp; },
       );
+      recordKernelAuthorityTiming(timingCollector, 'identityGrantEvaluation', identityReadStartedAt);
       if (grants) {
         if (onStaleArtifact && isStaleArtifactResolution(grants)) {
           const heal = staleArtifactHealFor(state);
           if (heal) onStaleArtifact(heal);
         }
-        return grants;
+        return auditLaunchRowSelection(grants, state);
       }
-    } catch {
+    } catch (error) {
       // The generic optional port catches throws as unavailable/allow. This
       // resolver owns real authority, so it must publish an explicit denial —
       // with ONE exception, which is the difference between a degraded session
@@ -761,12 +1032,21 @@ async function resolveControlAnchorKernelOnce(
           reason: 'identity policy evaluation unavailable; the recovery door stays open',
         };
       }
-      return operatorKernelDenial('policy-unavailable', 'identity policy evaluation unavailable; no effect authorized');
+      return operatorKernelDenial(
+        'policy-unavailable',
+        'identity policy evaluation unavailable; no effect authorized',
+        undefined,
+        {
+          authorityUnavailableSources: ['identity-policy-evaluation-failed'],
+          authorityReadFailures: [authorityReadFailure('identity-policy-evaluation-failed', error, identityReadStartedAt)],
+        },
+      );
     }
   }
-  return ungoverned.stamp
+  const resolved = ungoverned.stamp
     ? { ...verdict, serverAudit: { ...verdict.serverAudit, identityLaunchRecord: ungoverned.stamp } }
     : verdict;
+  return auditLaunchRowSelection(resolved, state);
 };
 
 /** Install the DB-backed resolver exactly once at the host's bootstrap seam. */
@@ -791,6 +1071,12 @@ export const operatorKernelEnforcement: KernelEnforcementPort = async (request: 
   // Never throws for an app principal (a failed read is an explicit denial).
   const appScope = await enforceAppKeyScope(request);
   if (appScope) return appScope;
+  // Inherited organization → department → workspace governance policy (enterprise-readiness
+  // P-005). Same seat, every boundary, ahead of the resolver: a descendant layer or a resolver
+  // can never re-open what the organization refuses. Inert until the host installs the loader;
+  // never throws (a failed read is an explicit org_policy:unavailable denial).
+  const orgPolicy = await enforceInheritedPolicy(request);
+  if (orgPolicy) return orgPolicy;
   if (kernelEnforcementResolver) return kernelEnforcementResolver(request);
   return evaluateOperatorKernelRequest(request, request.ctx.kernelState);
 };
@@ -1213,6 +1499,27 @@ export async function flushPendingTelemetry(): Promise<void> {
 }
 
 /**
+ * Deep-merge the MCP settlement phase map while leaving every other invocation
+ * metadata key's existing shallow-merge semantics intact. The late scratch
+ * backfill and dispatch settlement can reach the same row in either order.
+ */
+function mergeMcpRequestSettlementJsonb(existing: string, incoming: string): string {
+  const phaseTimingsPath = "'{mcpRequestSettlement,phaseTimingsMs}'";
+  return [
+    "CASE WHEN ", incoming, " ? 'mcpRequestSettlement' THEN ",
+    "jsonb_build_object('mcpRequestSettlement', ",
+    "COALESCE(", existing, "->'mcpRequestSettlement', '{}'::jsonb) || ",
+    "COALESCE(", incoming, "->'mcpRequestSettlement', '{}'::jsonb) || ",
+    "CASE WHEN jsonb_typeof(", incoming, " #> ", phaseTimingsPath, ") = 'object' ",
+    "THEN jsonb_build_object('phaseTimingsMs', ",
+    "COALESCE(", existing, " #> ", phaseTimingsPath, ", '{}'::jsonb) || ",
+    "COALESCE(", incoming, " #> ", phaseTimingsPath, ", '{}'::jsonb)) ",
+    "ELSE '{}'::jsonb END) ",
+    "ELSE '{}'::jsonb END",
+  ].join("");
+}
+
+/**
  * EI-19389431406847252: `output_ref` is NULL on every `tool_invocations` row
  * (324,661/324,661 measured over 36h) even for calls that demonstrably
  * SPILLED a result to scratch — because the door's own spill decision
@@ -1230,20 +1537,12 @@ export async function flushPendingTelemetry(): Promise<void> {
  * would double-count `status='ok'` quota) or threading a per-row telemetry
  * handle through five generic layers.
  *
- * Correlation is deliberately NOT a hard foreign key — there is no per-call
- * nonce carried into `metadata_json` (adding one is a bigger, separate change).
- * It matches (workspace_id, spawn_id, tool_name, output_ref IS NULL, most
- * recent invoked_at) inside a short recency window, plus run_id when the
- * caller has one. For loopback SU/power-user sessions `runId` is minted FRESH
- * per MCP request (see ctx construction in _mcp-handler.ts — "Per-request
- * UUID, not the 'standalone' sentinel"), so that additional predicate makes
- * the match effectively exact for that traffic; for signed role-scoped/bee
- * spawns `run_id` is stable for the whole spawn and narrows nothing extra, so
- * two back-to-back calls of the SAME tool from the SAME spawn inside the
- * recency window could in principle backfill the wrong one of the pair. Good
- * enough for the stated purpose (spill-rate / paged-rate analytics in one
- * query instead of a two-source forensic reconstruction) — not a substitute
- * for an exact key.
+ * MCP callers also pass their proxy request trace id when available; it is
+ * persisted on the invocation before dispatch. That exact key bypasses the recency window, so
+ * both the initial spill reservation and a later scratch-write settlement can
+ * reach the same row even when the 30-second door deadline has elapsed. Other
+ * callers retain the short recency-window fallback, plus run_id when present;
+ * a late spill settlement may also match the exact reserved output_ref URI.
  *
  * flushPendingTelemetry() first: the row this spill belongs to may still be
  * sitting in the in-memory queue (debounceMs default 10ms) — the UPDATE below
@@ -1255,10 +1554,14 @@ export async function backfillResultDoorOutputRef(input: {
   spawnId: string | null | undefined;
   toolName: string;
   runId?: string | null;
+  mcpRequestTraceId?: string | null;
   outputRef?: string | null;
   outputSize?: number | null;
-  /** Door-only facts unavailable when the dispatcher snapshots the row. Shallow
-   * merged so handler-authored run metadata is preserved. */
+  /** Exact URI already reserved on a pending row; allows a late settlement update
+   *  to match that row after the ordinary 30-second backfill window. */
+  matchOutputRef?: string | null;
+  /** Door-only facts unavailable when the dispatcher snapshots the row. Top-level
+   * keys are shallow merged so handler-authored run metadata is preserved. */
   metadataJson?: Record<string, unknown>;
 }): Promise<void> {
   // Captured into locals so the narrowing survives into the `sql.begin`
@@ -1270,6 +1573,7 @@ export async function backfillResultDoorOutputRef(input: {
   if (!input.outputRef && !input.metadataJson) return;
   const toolName = input.toolName;
   const runId = input.runId ?? null;
+  const mcpRequestTraceId = input.mcpRequestTraceId ?? null;
   try {
     // Force the just-queued row to be durable before we try to UPDATE it.
     await flushPendingTelemetry();
@@ -1280,12 +1584,18 @@ export async function backfillResultDoorOutputRef(input: {
         `UPDATE harness_shared.tool_invocations
             SET output_ref = COALESCE($1, output_ref),
                 output_size = COALESCE($2, output_size),
-                metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $3::jsonb
+                metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $3::jsonb ||
+                  ${mergeMcpRequestSettlementJsonb('metadata_json', '$3::jsonb')}
           WHERE id = (
             SELECT id FROM harness_shared.tool_invocations
              WHERE workspace_id = $4 AND spawn_id = $5 AND tool_name = $6
-               AND ($1::text IS NULL OR output_ref IS NULL)
-               AND invoked_at >= now() - interval '30 seconds'
+               AND ($1::text IS NULL OR output_ref IS NULL OR ($8::text IS NOT NULL AND output_ref = $8))
+               AND (
+                 invoked_at >= now() - interval '30 seconds'
+                 OR ($8::text IS NOT NULL AND output_ref = $8)
+                 OR ($9::text IS NOT NULL AND metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $9)
+               )
+               AND ($9::text IS NULL OR metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $9)
                AND ($7::text IS NULL OR run_id = $7)
              ORDER BY invoked_at DESC
              LIMIT 1
@@ -1298,6 +1608,8 @@ export async function backfillResultDoorOutputRef(input: {
           spawnId,
           toolName,
           runId,
+          input.matchOutputRef ?? null,
+          mcpRequestTraceId,
         ],
       );
     });
@@ -1306,6 +1618,110 @@ export async function backfillResultDoorOutputRef(input: {
       `[projected-tool-deps] backfillResultDoorOutputRef failed for ${input.toolName}: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+type ExactToolInvocationMetadataSelector =
+  | { kind: 'dispatch-call-id'; value: string | null | undefined }
+  | { kind: 'mcp-request-trace-id'; value: string | null | undefined };
+
+/**
+ * Search BOUND (never the selector) for the exact-key backfill, in seconds.
+ *
+ * The exact key still picks the row. This window only stops the search. Without
+ * it, a key that matches no row (about 7% of MCP settlements, measured
+ * 2026-10-11) walked `tool_invocations_invoked_at_cov_idx` backwards through
+ * the whole table: about 6.2M rows and a 7.6 GB heap per miss. That cost a
+ * mean of 966 ms, a max of 342 s, and about one core of continuous DB time
+ * (WI-6554700010008556). The windows are generous because the target row is
+ * always recent. `invoked_at` is the dispatch-settle wall-clock (EI-7040):
+ * - An MCP settlement backfills a row written at that same inner-dispatch
+ *   settle, so 15 minutes leaves room for flush and clock lag.
+ * - A late `scheduler:get_next` settlement can land long after the timed-out
+ *   dispatch row, and that path is rare, so its window is wider.
+ */
+export const EXACT_BACKFILL_WINDOW_SEC: Readonly<Record<ExactToolInvocationMetadataSelector['kind'], number>> = {
+  'mcp-request-trace-id': 15 * 60,
+  'dispatch-call-id': 6 * 60 * 60,
+};
+
+/** Merge late handler metadata onto the exact invocation selected by a stable request key. */
+async function backfillToolInvocationMetadataByExactSelector(input: {
+  workspaceId: string | null | undefined;
+  toolName: string;
+  selector: ExactToolInvocationMetadataSelector;
+  metadataJson: Record<string, unknown>;
+}): Promise<void> {
+  const workspaceId = input.workspaceId;
+  const selectorValue = input.selector.value;
+  if (!workspaceId || !selectorValue || Object.keys(input.metadataJson).length === 0) return;
+
+  // Keep selector SQL closed over these two fixed JSON paths. Both keys are
+  // recorded before handler settlement and avoid the recency join used by the
+  // older result-door output-ref backfill. The `invoked_at >= …` predicate is a
+  // search BOUND, not that recency join: the exact key still picks the row, and
+  // the bound only caps a miss (see EXACT_BACKFILL_WINDOW_SEC).
+  const selectorSql = input.selector.kind === 'dispatch-call-id'
+    ? "metadata_json->'schedulerTimeout'->>'dispatchCallId' = $4"
+    : "metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4";
+  const settlementMergeSql = input.selector.kind === 'mcp-request-trace-id'
+    ? ` || ${mergeMcpRequestSettlementJsonb('metadata_json', '$1::jsonb')}`
+    : '';
+  const windowSec = EXACT_BACKFILL_WINDOW_SEC[input.selector.kind];
+  try {
+    await flushPendingTelemetry();
+    const { sql } = getOrgPg();
+    await sql.begin(async (tx) => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
+      await tx.unsafe(
+        `UPDATE harness_shared.tool_invocations
+            SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $1::jsonb${settlementMergeSql}
+          WHERE id = (
+            SELECT id FROM harness_shared.tool_invocations
+             WHERE workspace_id = $2
+               AND tool_name = $3
+               AND ${selectorSql}
+               AND invoked_at >= now() - make_interval(secs => $5::int)
+             ORDER BY invoked_at DESC
+             LIMIT 1
+          )`,
+        [jsonbSafeStringify(input.metadataJson), workspaceId, input.toolName, selectorValue, windowSec],
+      );
+    });
+  } catch (err) {
+    console.warn(
+      `[projected-tool-deps] backfillToolInvocationMetadataByExactSelector failed for ${input.toolName}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/** Backfill late scheduler metadata by the dispatcher's stable call id. */
+export async function backfillToolInvocationMetadataByCallId(input: {
+  workspaceId: string | null | undefined;
+  toolName: string;
+  dispatchCallId: string | null | undefined;
+  metadataJson: Record<string, unknown>;
+}): Promise<void> {
+  return backfillToolInvocationMetadataByExactSelector({
+    workspaceId: input.workspaceId,
+    toolName: input.toolName,
+    selector: { kind: 'dispatch-call-id', value: input.dispatchCallId },
+    metadataJson: input.metadataJson,
+  });
+}
+
+/** Backfill late MCP settlement metadata by the exact request trace id. */
+export async function backfillToolInvocationMetadataByMcpRequestTraceId(input: {
+  workspaceId: string | null | undefined;
+  toolName: string;
+  mcpRequestTraceId: string | null | undefined;
+  metadataJson: Record<string, unknown>;
+}): Promise<void> {
+  return backfillToolInvocationMetadataByExactSelector({
+    workspaceId: input.workspaceId,
+    toolName: input.toolName,
+    selector: { kind: 'mcp-request-trace-id', value: input.mcpRequestTraceId },
+    metadataJson: input.metadataJson,
+  });
 }
 
 /**
@@ -1371,6 +1787,23 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   const metadataJson = (() => {
     const reaction = input.ctx.reactionCause;
     const requestOrigin = input.ctx.requestOrigin;
+    // WI-6554700010010307: how a caller projection/view materialized this call's
+    // source (e.g. promoted it to the full tier). args_json cannot show it — the
+    // host strips `projection` before dispatch.
+    const sourceMaterialization = input.ctx.sourceMaterialization;
+    // WI-6554700010010439: a nested code:run / recipe call runs UNSHAPED
+    // (contextTier undefined, lossless for the script) yet inherits the outer
+    // session's requestOrigin, ctx_tier included. Without this marker a
+    // script-internal 150KB row reads as a 150KB trimmed-tier result that
+    // reached an agent's context, and every per-tier size audit inflates.
+    const nestedDispatch =
+      input.ctx.indirectDispatch === true
+        ? {
+            indirect: true as const,
+            ...(input.ctx.codeMode === true ? { codeMode: true as const } : {}),
+            contextTier: input.ctx.contextTier ?? null,
+          }
+        : null;
     const kernel =
       input.executionRevision || input.kernelPreflight || input.kernelEnforcement
         ? {
@@ -1380,11 +1813,14 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
           }
         : null;
     const meta =
-      input.metadataJson || reaction || requestOrigin || kernel
+      input.metadataJson || reaction || requestOrigin || kernel || sourceMaterialization || nestedDispatch
         ? {
             ...(input.metadataJson ?? {}),
             ...(requestOrigin ? { requestOrigin } : {}),
             ...(reaction ? { reaction } : {}),
+            // Framework-owned like `kernel`: applied after handler metadata.
+            ...(sourceMaterialization ? { sourceMaterialization } : {}),
+            ...(nestedDispatch ? { nestedDispatch } : {}),
             // Framework-owned kernel fields are applied after handler metadata
             // so a tool cannot spoof what revision actually ran.
             ...(kernel ? { kernel } : {}),
@@ -1612,7 +2048,7 @@ async function checkCapabilityEnvelopeImpl(input: {
   // This gate is a self-imposed narrowing declared by the LAUNCHER, not a privilege ceiling,
   // so privilege is irrelevant to it. It is inert (null) for any session with no declared
   // confinement, i.e. every session until a paired fleet launches one.
-  const confined = await checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx });
+  const confined = await checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx, args: input.args });
   if (confined) return confined;
 
   // WI-2140596: AUDIT mode's read-only-toward-subject clause, mechanically. Same seat and
@@ -1740,6 +2176,8 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
+  resolvePremises: resolveDispatchPremises,
+  aroundInvoke: installedPerUseChokepoint,
   // D-030 kernel seat: the generic dispatcher invokes this before any
   // decorators and immediately before handler execution. The resolver is
   // replaceable by the activation/control owner without changing the shared
@@ -1786,6 +2224,9 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // cheap per-role envelope at the dispatch chokepoint; SU/non-fleet callers are exempt
   // (D-002). Enforce-vs-observe is the CAPABILITY_ENVELOPE flag (default OFF ⇒ shadow).
   checkCapabilityEnvelope: checkCapabilityEnvelopeImpl,
+  observeFallback: (mechanism, observation, ctx) => {
+    observeFallback(mechanism, observation, { workspaceId: ctx.workspaceId });
+  },
   // Event-reaction observation point (event-reaction-system D-001). Fires after
   // every tool settles; the host engine matches rules + schedules reactions.
   // Best-effort + non-blocking — swallow throws so a reaction never breaks its

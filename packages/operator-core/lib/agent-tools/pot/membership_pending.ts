@@ -13,9 +13,7 @@ import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { listPendingJoins } from '../../hive-pending-joins-store';
 import { resolveFederatedPotScope } from '../../federated-pot-scope';
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+const text = (payload: Record<string, unknown>) => ({ data: payload });
 
 export default defineTool({
   name: 'pot:membership_pending',

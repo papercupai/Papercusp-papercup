@@ -1,0 +1,3158 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "mdenseon P-004 complete production hybrid retrieval: paired source-grouped quality, precision and hard-negative rejection across model-owned schemas",
+  "plan": "mdenseon-adoption-measurements-2026-10-01",
+  "workItemId": "WI-10004538",
+  "specId": "AUTO-BAR-R-3-P-004",
+  "relatedSpecIds": [
+    "MDENSE-scope-space-isolation"
+  ],
+  "evidencePlane": "tree",
+  "command": [
+    "node",
+    "--import",
+    "tsx",
+    ".papercusp/scratch/p004-hybrid-operational.mts"
+  ],
+  "assembler": {
+    "path": "$HOME/papercupai-workspace/papercusp/.papercusp/scratch/p004-hybrid-operational.mts",
+    "sha256": "ad7af202f5d7cee6dec92c9c3698f60db16185ee72def544b7d99e4aa795a6c0",
+    "bytes": 10232
+  },
+  "sources": [
+    {
+      "path": "packages/operator-core/lib/memory/bench/complete-hybrid-paired.ts",
+      "sha256": "7074600581ef93f787522709b1ddca50f3efd11ca5383a3586c9d318da20c24d",
+      "bytes": 11184
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/complete-hybrid-bench.ts",
+      "sha256": "68c0cde21847db036d09ef4d958f5b707b8c46497f0f22419c299f208d88bc38",
+      "bytes": 18260
+    },
+    {
+      "path": "packages/operator-core/lib/memory/bench/paired-leg-report.ts",
+      "sha256": "9f7d0c616cd85eecb02274d3d5ce6c07b888cf9a66e52769dcd36514a2b43fda",
+      "bytes": 15631
+    }
+  ],
+  "startedAt": "2026-10-06T23:38:52.729Z",
+  "finishedAt": "2026-10-06T23:38:57.834Z",
+  "exitCode": 0,
+  "input": {
+    "snapshot": {
+      "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/snapshot-v4-prose-source-complete.json",
+      "sha256": "49dbfafc277855af9ff13a46fb95ef466b8cb117fb83b8b5a753854610d204ea",
+      "bytes": 4156938
+    },
+    "memory": {
+      "gold": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v19-resume-v17-format-repair/labels.json",
+        "sha256": "833f6dc372a9380adf7bc113edfa0df146e846ba24f62ac196a1b6c11bc5c487",
+        "bytes": 129298
+      },
+      "ages": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/ages-snapshot-v3-v1.json",
+        "sha256": "dfc36a69d89adb0a4adee02061807c38b5e3b71f91711c7ed8ab6b35023df29c",
+        "bytes": 43328
+      }
+    },
+    "prose": {
+      "gold": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v21-resume-v20-concurrency-succession/labels.json",
+        "sha256": "483b7c46469da4aa39d87c5d1b6b0a3b173beb4211855191178a5d7e72374641",
+        "bytes": 779620
+      },
+      "ages": null
+    }
+  },
+  "runs": [
+    {
+      "corpus": "memory",
+      "taskId": "0muwlqv2twl51ly1v32",
+      "chainLog": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/chain.log",
+        "sha256": "ce72c9d768210846d6b8c632f363435d6d47856345f45da3c93a6ec52626c0fe",
+        "bytes": 260
+      }
+    },
+    {
+      "corpus": "prose",
+      "taskId": "0mux12hbzcw15svmbiq",
+      "chainLog": {
+        "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/prose-chain.log",
+        "sha256": "2de98c139adb7bfd4f742a16b1d67e9132c056472b46b9b351c75b036cdf3fd5",
+        "bytes": 786
+      }
+    }
+  ],
+  "results": {
+    "memory": {
+      "isolation": {
+        "corpus": "memory",
+        "queries": 160,
+        "inputs": {
+          "snapshot": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/snapshot-v4-prose-source-complete.json",
+          "snapshotSha256": "49dbfafc277855af9ff13a46fb95ef466b8cb117fb83b8b5a753854610d204ea",
+          "snapshotAt": "2026-10-01T09:05:27.623Z",
+          "gold": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v19-resume-v17-format-repair/labels.json",
+          "goldSha256": "833f6dc372a9380adf7bc113edfa0df146e846ba24f62ac196a1b6c11bc5c487",
+          "ages": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/ages-snapshot-v3-v1.json",
+          "agesSha256": "dfc36a69d89adb0a4adee02061807c38b5e3b71f91711c7ed8ab6b35023df29c"
+        },
+        "arms": [
+          {
+            "model": "mdenseon",
+            "schema": "bench_memory_856177",
+            "scopeIsolation": {
+              "leakScope": "bench-leak",
+              "decoys": 51,
+              "positiveControlHits": 5,
+              "leakedHits": 0
+            }
+          },
+          {
+            "model": "gemma",
+            "schema": "bench_memory_4068415",
+            "scopeIsolation": {
+              "leakScope": "bench-leak",
+              "decoys": 51,
+              "positiveControlHits": 5,
+              "leakedHits": 0
+            }
+          },
+          {
+            "model": "harrier",
+            "schema": "bench_memory_1694437",
+            "scopeIsolation": {
+              "leakScope": "bench-leak",
+              "decoys": 51,
+              "positiveControlHits": 5,
+              "leakedHits": 0
+            }
+          }
+        ]
+      },
+      "arms": [
+        {
+          "model": "mdenseon",
+          "report": {
+            "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/memory-mdenseon-v1.json",
+            "sha256": "e530e90196763549c8f9f0472240fa7e4e582dedaea2902f7963efda48361c85",
+            "bytes": 309454
+          },
+          "schema": "bench_memory_856177",
+          "seed": {
+            "documents": 635,
+            "leakDecoys": 51,
+            "seedMs": 1188521.520163,
+            "seedEmbedCalls": 20777,
+            "memories": 686,
+            "entities": 14590,
+            "agedRows": 635
+          },
+          "summary": {
+            "pull": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.9081944444444444,
+              "recallAt10": 0.9833333333333333,
+              "precision": 0.10666666666666647,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            },
+            "push": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.8627083333333333,
+              "recallAt10": 0.925,
+              "precision": 0.518334738025004,
+              "emptyPositive": 7,
+              "negativeAdmission": 0.75,
+              "leakedHits": 0
+            },
+            "push-calibrated": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.15,
+              "recallAt10": 0.15,
+              "precision": 0.9722222222222222,
+              "emptyPositive": 102,
+              "negativeAdmission": 0,
+              "leakedHits": 0
+            },
+            "raw": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.9081944444444444,
+              "recallAt10": 0.9833333333333333,
+              "precision": 0.10666666666666647,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            }
+          }
+        },
+        {
+          "model": "gemma",
+          "report": {
+            "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/memory-gemma-v1.json",
+            "sha256": "582dc6a3d71a572b42728139529eae43c6b80d38900ef429ef67bcc2169d3c72",
+            "bytes": 348754
+          },
+          "schema": "bench_memory_4068415",
+          "seed": {
+            "documents": 635,
+            "leakDecoys": 51,
+            "seedMs": 1813314.8710329998,
+            "seedEmbedCalls": 20777,
+            "memories": 686,
+            "entities": 14788,
+            "agedRows": 635
+          },
+          "summary": {
+            "pull": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.8929365079365078,
+              "recallAt10": 0.9833333333333333,
+              "precision": 0.10666666666666647,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            },
+            "push": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.8793849206349207,
+              "recallAt10": 0.9833333333333333,
+              "precision": 0.130972222222222,
+              "emptyPositive": 0,
+              "negativeAdmission": 0.975,
+              "leakedHits": 0
+            },
+            "push-calibrated": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.2916666666666667,
+              "recallAt10": 0.2916666666666667,
+              "precision": 0.9857142857142858,
+              "emptyPositive": 85,
+              "negativeAdmission": 0.1,
+              "leakedHits": 0
+            },
+            "raw": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.8929365079365078,
+              "recallAt10": 0.9833333333333333,
+              "precision": 0.10666666666666647,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            }
+          }
+        },
+        {
+          "model": "harrier",
+          "report": {
+            "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/memory-harrier-v1.json",
+            "sha256": "e89e519fb1f537f6feaf208998c19431f85255a668f31362729679aee40ba59e",
+            "bytes": 310241
+          },
+          "schema": "bench_memory_1694437",
+          "seed": {
+            "documents": 635,
+            "leakDecoys": 51,
+            "seedMs": 2841679.934139,
+            "seedEmbedCalls": 20778,
+            "memories": 686,
+            "entities": 15302,
+            "agedRows": 635
+          },
+          "summary": {
+            "pull": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.875542328042328,
+              "recallAt10": 0.975,
+              "precision": 0.10666666666666647,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            },
+            "push": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.8312499999999999,
+              "recallAt10": 0.8833333333333333,
+              "precision": 0.45656814449917926,
+              "emptyPositive": 4,
+              "negativeAdmission": 0.725,
+              "leakedHits": 0
+            },
+            "push-calibrated": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.11666666666666667,
+              "recallAt10": 0.11666666666666667,
+              "precision": 0.9333333333333333,
+              "emptyPositive": 105,
+              "negativeAdmission": 0.025,
+              "leakedHits": 0
+            },
+            "raw": {
+              "queries": 160,
+              "positives": 120,
+              "negatives": 40,
+              "mrr": 0.875542328042328,
+              "recallAt10": 0.975,
+              "precision": 0.10666666666666647,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            }
+          }
+        }
+      ],
+      "pairs": [
+        {
+          "baseline": "gemma",
+          "candidate": "mdenseon",
+          "routes": {
+            "pull": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.7767,
+                  "candidate": 0.8383,
+                  "delta": 0.0616,
+                  "lower": -0.0363,
+                  "upper": 0.1616,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 1,
+                  "candidate": 0.93,
+                  "delta": -0.07,
+                  "lower": -0.145,
+                  "upper": -0.0125,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.9021,
+                  "candidate": 0.9563,
+                  "delta": 0.0542,
+                  "lower": 0,
+                  "upper": 0.1188,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 40,
+                  "queries": 120,
+                  "baseline": 0.8929,
+                  "candidate": 0.9082,
+                  "delta": 0.0153,
+                  "lower": -0.0365,
+                  "upper": 0.0639,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.025,
+                    "lower": 0,
+                    "upper": 0.075
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": 0.0025,
+                    "lower": 0,
+                    "upper": 0.0075
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.025,
+                    "lower": -0.075,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": -0.0025,
+                    "lower": -0.0075,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": -0.025,
+                    "upper": 0.025
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 120,
+                    "excludedEmpty": 0,
+                    "delta": 0,
+                    "lower": -0.0025,
+                    "upper": 0.0025
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 120,
+                    "p": 1
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 40,
+                  "queries": 40,
+                  "baseline": 1,
+                  "candidate": 1,
+                  "delta": 0,
+                  "lower": 0,
+                  "upper": 0
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 40,
+                  "p": 1
+                }
+              }
+            },
+            "push": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.8065,
+                  "candidate": 0.7842,
+                  "delta": -0.0223,
+                  "lower": -0.1542,
+                  "upper": 0.1045,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.9342,
+                  "candidate": 0.8581,
+                  "delta": -0.076,
+                  "lower": -0.1688,
+                  "upper": 0.0092,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.8975,
+                  "candidate": 0.9458,
+                  "delta": 0.0483,
+                  "lower": -0.0133,
+                  "upper": 0.1217,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 40,
+                  "queries": 120,
+                  "baseline": 0.8794,
+                  "candidate": 0.8627,
+                  "delta": -0.0167,
+                  "lower": -0.0773,
+                  "upper": 0.0472,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.15,
+                    "lower": -0.275,
+                    "upper": -0.05
+                  },
+                  "precision": {
+                    "sourceGroups": 34,
+                    "queries": 34,
+                    "excludedEmpty": 6,
+                    "delta": 0.4307,
+                    "lower": 0.3068,
+                    "upper": 0.5537
+                  },
+                  "nonEmpty": {
+                    "onlyA": 6,
+                    "onlyB": 0,
+                    "concordant": 34,
+                    "p": 0.031250000000000014
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.025,
+                    "lower": -0.125,
+                    "upper": 0.05
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": 0.3217,
+                    "lower": 0.2134,
+                    "upper": 0.4332
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 39,
+                    "queries": 39,
+                    "excludedEmpty": 1,
+                    "delta": 0.4255,
+                    "lower": 0.3035,
+                    "upper": 0.5476
+                  },
+                  "nonEmpty": {
+                    "onlyA": 1,
+                    "onlyB": 0,
+                    "concordant": 39,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.0583,
+                    "lower": -0.1,
+                    "upper": -0.025
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 113,
+                    "excludedEmpty": 7,
+                    "delta": 0.392,
+                    "lower": 0.3041,
+                    "upper": 0.4816
+                  },
+                  "nonEmpty": {
+                    "onlyA": 7,
+                    "onlyB": 0,
+                    "concordant": 113,
+                    "p": 0.015625000000000003
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 40,
+                  "queries": 40,
+                  "baseline": 0.975,
+                  "candidate": 0.75,
+                  "delta": -0.225,
+                  "lower": -0.35,
+                  "upper": -0.1
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 9,
+                  "concordant": 31,
+                  "p": 0.00390625
+                }
+              }
+            },
+            "push-calibrated": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.025,
+                  "candidate": 0.025,
+                  "delta": 0,
+                  "lower": -0.075,
+                  "upper": 0.075,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.375,
+                  "candidate": 0.25,
+                  "delta": -0.125,
+                  "lower": -0.225,
+                  "upper": -0.025,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.475,
+                  "candidate": 0.175,
+                  "delta": -0.3,
+                  "lower": -0.45,
+                  "upper": -0.15,
+                  "marginDecision": "loss-above-margin"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 40,
+                  "queries": 120,
+                  "baseline": 0.2917,
+                  "candidate": 0.15,
+                  "delta": -0.1417,
+                  "lower": -0.2083,
+                  "upper": -0.075,
+                  "marginDecision": "loss-above-margin"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": -0.075,
+                    "upper": 0.075
+                  },
+                  "precision": {
+                    "sourceGroups": 0,
+                    "queries": 0,
+                    "excludedEmpty": 40
+                  },
+                  "nonEmpty": {
+                    "onlyA": 1,
+                    "onlyB": 1,
+                    "concordant": 38,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.125,
+                    "lower": -0.225,
+                    "upper": -0.025
+                  },
+                  "precision": {
+                    "sourceGroups": 10,
+                    "queries": 10,
+                    "excludedEmpty": 30,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 5,
+                    "onlyB": 0,
+                    "concordant": 35,
+                    "p": 0.0625
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.3,
+                    "lower": -0.45,
+                    "upper": -0.15
+                  },
+                  "precision": {
+                    "sourceGroups": 7,
+                    "queries": 7,
+                    "excludedEmpty": 33,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 12,
+                    "onlyB": 0,
+                    "concordant": 28,
+                    "p": 0.0004882812500000003
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.1417,
+                    "lower": -0.2083,
+                    "upper": -0.075
+                  },
+                  "precision": {
+                    "sourceGroups": 12,
+                    "queries": 17,
+                    "excludedEmpty": 103,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 18,
+                    "onlyB": 1,
+                    "concordant": 101,
+                    "p": 0.0000762939453125
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 40,
+                  "queries": 40,
+                  "baseline": 0.1,
+                  "candidate": 0,
+                  "delta": -0.1,
+                  "lower": -0.2,
+                  "upper": -0.025
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 4,
+                  "concordant": 36,
+                  "p": 0.125
+                }
+              }
+            },
+            "raw": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.7767,
+                  "candidate": 0.8383,
+                  "delta": 0.0616,
+                  "lower": -0.0363,
+                  "upper": 0.1616,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 1,
+                  "candidate": 0.93,
+                  "delta": -0.07,
+                  "lower": -0.145,
+                  "upper": -0.0125,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.9021,
+                  "candidate": 0.9563,
+                  "delta": 0.0542,
+                  "lower": 0,
+                  "upper": 0.1188,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 40,
+                  "queries": 120,
+                  "baseline": 0.8929,
+                  "candidate": 0.9082,
+                  "delta": 0.0153,
+                  "lower": -0.0365,
+                  "upper": 0.0639,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.025,
+                    "lower": 0,
+                    "upper": 0.075
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": 0.0025,
+                    "lower": 0,
+                    "upper": 0.0075
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.025,
+                    "lower": -0.075,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": -0.0025,
+                    "lower": -0.0075,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": -0.025,
+                    "upper": 0.025
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 120,
+                    "excludedEmpty": 0,
+                    "delta": 0,
+                    "lower": -0.0025,
+                    "upper": 0.0025
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 120,
+                    "p": 1
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 40,
+                  "queries": 40,
+                  "baseline": 1,
+                  "candidate": 1,
+                  "delta": 0,
+                  "lower": 0,
+                  "upper": 0
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 40,
+                  "p": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "baseline": "harrier",
+          "candidate": "mdenseon",
+          "routes": {
+            "pull": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.7422,
+                  "candidate": 0.8383,
+                  "delta": 0.0961,
+                  "lower": 0.001,
+                  "upper": 0.1976,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.9425,
+                  "candidate": 0.93,
+                  "delta": -0.0125,
+                  "lower": -0.0375,
+                  "upper": 0,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.9419,
+                  "candidate": 0.9563,
+                  "delta": 0.0143,
+                  "lower": -0.0577,
+                  "upper": 0.0857,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 40,
+                  "queries": 120,
+                  "baseline": 0.8755,
+                  "candidate": 0.9082,
+                  "delta": 0.0327,
+                  "lower": -0.0119,
+                  "upper": 0.0802,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.05,
+                    "lower": 0,
+                    "upper": 0.125
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": 0.0025,
+                    "lower": -0.005,
+                    "upper": 0.01
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.025,
+                    "lower": -0.075,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": -0.0025,
+                    "lower": -0.0075,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.0083,
+                    "lower": -0.0167,
+                    "upper": 0.0333
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 120,
+                    "excludedEmpty": 0,
+                    "delta": 0,
+                    "lower": -0.0033,
+                    "upper": 0.0033
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 120,
+                    "p": 1
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 40,
+                  "queries": 40,
+                  "baseline": 1,
+                  "candidate": 1,
+                  "delta": 0,
+                  "lower": 0,
+                  "upper": 0
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 40,
+                  "p": 1
+                }
+              }
+            },
+            "push": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.7708,
+                  "candidate": 0.7842,
+                  "delta": 0.0133,
+                  "lower": -0.1167,
+                  "upper": 0.1458,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.825,
+                  "candidate": 0.8581,
+                  "delta": 0.0331,
+                  "lower": -0.05,
+                  "upper": 0.1281,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.8979,
+                  "candidate": 0.9458,
+                  "delta": 0.0479,
+                  "lower": -0.0104,
+                  "upper": 0.1125,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 40,
+                  "queries": 120,
+                  "baseline": 0.8312,
+                  "candidate": 0.8627,
+                  "delta": 0.0315,
+                  "lower": -0.0294,
+                  "upper": 0.0972,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.05,
+                    "lower": -0.075,
+                    "upper": 0.1756
+                  },
+                  "precision": {
+                    "sourceGroups": 33,
+                    "queries": 33,
+                    "excludedEmpty": 7,
+                    "delta": 0.0432,
+                    "lower": -0.0711,
+                    "upper": 0.1625
+                  },
+                  "nonEmpty": {
+                    "onlyA": 5,
+                    "onlyB": 1,
+                    "concordant": 34,
+                    "p": 0.21875000000000006
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.075,
+                    "lower": 0,
+                    "upper": 0.175
+                  },
+                  "precision": {
+                    "sourceGroups": 39,
+                    "queries": 39,
+                    "excludedEmpty": 1,
+                    "delta": -0.0292,
+                    "lower": -0.1386,
+                    "upper": 0.0791
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 1,
+                    "concordant": 39,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 39,
+                    "queries": 39,
+                    "excludedEmpty": 1,
+                    "delta": 0.1151,
+                    "lower": -0.0135,
+                    "upper": 0.2402
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.0417,
+                    "lower": -0.0083,
+                    "upper": 0.0917
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 111,
+                    "excludedEmpty": 9,
+                    "delta": 0.042,
+                    "lower": -0.038,
+                    "upper": 0.1225
+                  },
+                  "nonEmpty": {
+                    "onlyA": 5,
+                    "onlyB": 2,
+                    "concordant": 113,
+                    "p": 0.453125
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 40,
+                  "queries": 40,
+                  "baseline": 0.725,
+                  "candidate": 0.75,
+                  "delta": 0.025,
+                  "lower": -0.125,
+                  "upper": 0.175
+                },
+                "rejected": {
+                  "onlyA": 5,
+                  "onlyB": 4,
+                  "concordant": 31,
+                  "p": 1
+                }
+              }
+            },
+            "push-calibrated": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.025,
+                  "candidate": 0.025,
+                  "delta": 0,
+                  "lower": -0.075,
+                  "upper": 0.075,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.175,
+                  "candidate": 0.25,
+                  "delta": 0.075,
+                  "lower": -0.025,
+                  "upper": 0.2,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.15,
+                  "candidate": 0.175,
+                  "delta": 0.025,
+                  "lower": -0.1,
+                  "upper": 0.15,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 40,
+                  "queries": 120,
+                  "baseline": 0.1167,
+                  "candidate": 0.15,
+                  "delta": 0.0333,
+                  "lower": -0.0333,
+                  "upper": 0.1,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": -0.075,
+                    "upper": 0.075
+                  },
+                  "precision": {
+                    "sourceGroups": 1,
+                    "queries": 1,
+                    "excludedEmpty": 39,
+                    "delta": 0.5,
+                    "lower": 0.5,
+                    "upper": 0.5
+                  },
+                  "nonEmpty": {
+                    "onlyA": 1,
+                    "onlyB": 0,
+                    "concordant": 39,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.075,
+                    "lower": -0.025,
+                    "upper": 0.175
+                  },
+                  "precision": {
+                    "sourceGroups": 6,
+                    "queries": 6,
+                    "excludedEmpty": 34,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 1,
+                    "onlyB": 4,
+                    "concordant": 35,
+                    "p": 0.375
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.025,
+                    "lower": -0.1,
+                    "upper": 0.15
+                  },
+                  "precision": {
+                    "sourceGroups": 3,
+                    "queries": 3,
+                    "excludedEmpty": 37,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 3,
+                    "onlyB": 4,
+                    "concordant": 33,
+                    "p": 0.9999999999999998
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.0333,
+                    "lower": -0.0333,
+                    "upper": 0.1
+                  },
+                  "precision": {
+                    "sourceGroups": 8,
+                    "queries": 10,
+                    "excludedEmpty": 110,
+                    "delta": 0.0313,
+                    "lower": 0,
+                    "upper": 0.0938
+                  },
+                  "nonEmpty": {
+                    "onlyA": 5,
+                    "onlyB": 8,
+                    "concordant": 107,
+                    "p": 0.5810546875000004
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 40,
+                  "queries": 40,
+                  "baseline": 0.025,
+                  "candidate": 0,
+                  "delta": -0.025,
+                  "lower": -0.075,
+                  "upper": 0
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 1,
+                  "concordant": 39,
+                  "p": 1
+                }
+              }
+            },
+            "raw": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.7422,
+                  "candidate": 0.8383,
+                  "delta": 0.0961,
+                  "lower": 0.001,
+                  "upper": 0.1976,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.9425,
+                  "candidate": 0.93,
+                  "delta": -0.0125,
+                  "lower": -0.0375,
+                  "upper": 0,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 40,
+                  "queries": 40,
+                  "baseline": 0.9419,
+                  "candidate": 0.9563,
+                  "delta": 0.0143,
+                  "lower": -0.0577,
+                  "upper": 0.0857,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 40,
+                  "queries": 120,
+                  "baseline": 0.8755,
+                  "candidate": 0.9082,
+                  "delta": 0.0327,
+                  "lower": -0.0119,
+                  "upper": 0.0802,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.05,
+                    "lower": 0,
+                    "upper": 0.125
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": 0.0025,
+                    "lower": -0.005,
+                    "upper": 0.01
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": -0.025,
+                    "lower": -0.075,
+                    "upper": 0
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 40,
+                    "excludedEmpty": 0,
+                    "delta": -0.0025,
+                    "lower": -0.0075,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 40,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 40,
+                    "delta": 0.0083,
+                    "lower": -0.0167,
+                    "upper": 0.0333
+                  },
+                  "precision": {
+                    "sourceGroups": 40,
+                    "queries": 120,
+                    "excludedEmpty": 0,
+                    "delta": 0,
+                    "lower": -0.0033,
+                    "upper": 0.0033
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 120,
+                    "p": 1
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 40,
+                  "queries": 40,
+                  "baseline": 1,
+                  "candidate": 1,
+                  "delta": 0,
+                  "lower": 0,
+                  "upper": 0
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 40,
+                  "p": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "prose": {
+      "isolation": {
+        "corpus": "prose",
+        "queries": 1140,
+        "inputs": {
+          "snapshot": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/snapshot-v4-prose-source-complete.json",
+          "snapshotSha256": "49dbfafc277855af9ff13a46fb95ef466b8cb117fb83b8b5a753854610d204ea",
+          "snapshotAt": "2026-10-01T09:05:27.623Z",
+          "gold": "$HOME/.cache/papercusp/model-validation/mdenseon-independent-WI10004537-20261001/blind-labels-v21-resume-v20-concurrency-succession/labels.json",
+          "goldSha256": "483b7c46469da4aa39d87c5d1b6b0a3b173beb4211855191178a5d7e72374641",
+          "ages": null,
+          "agesSha256": null
+        },
+        "arms": [
+          {
+            "model": "mdenseon",
+            "schema": "bench_memory_3691106",
+            "scopeIsolation": {
+              "leakScope": "bench-leak",
+              "decoys": 64,
+              "positiveControlHits": 5,
+              "leakedHits": 0
+            }
+          },
+          {
+            "model": "gemma",
+            "schema": "bench_memory_281006",
+            "scopeIsolation": {
+              "leakScope": "bench-leak",
+              "decoys": 64,
+              "positiveControlHits": 5,
+              "leakedHits": 0
+            }
+          },
+          {
+            "model": "harrier",
+            "schema": "bench_memory_623993",
+            "scopeIsolation": {
+              "leakScope": "bench-leak",
+              "decoys": 64,
+              "positiveControlHits": 5,
+              "leakedHits": 0
+            }
+          }
+        ]
+      },
+      "arms": [
+        {
+          "model": "mdenseon",
+          "report": {
+            "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/prose-mdenseon-v1.json",
+            "sha256": "cc9311ec96b8ab8b8bd73bc3d5aa9ac8882c9b0656edec4c9d02bafdc1cbf6d9",
+            "bytes": 3397047
+          },
+          "schema": "bench_memory_3691106",
+          "seed": {
+            "documents": 2487,
+            "leakDecoys": 64,
+            "seedMs": 2700632.99095,
+            "seedEmbedCalls": 47564,
+            "memories": 2551,
+            "entities": 35001,
+            "agedRows": 0
+          },
+          "summary": {
+            "pull": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.7963868003341692,
+              "recallAt10": 0.8818713450292398,
+              "precision": 0.09941520467836218,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            },
+            "push": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.7900737956001112,
+              "recallAt10": 0.8725146198830409,
+              "precision": 0.1938237810094085,
+              "emptyPositive": 20,
+              "negativeAdmission": 0.9649122807017544,
+              "leakedHits": 0
+            },
+            "push-calibrated": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.12514619883040937,
+              "recallAt10": 0.12514619883040937,
+              "precision": 0.9953271028037384,
+              "emptyPositive": 748,
+              "negativeAdmission": 0.02456140350877193,
+              "leakedHits": 0
+            },
+            "raw": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.7963868003341692,
+              "recallAt10": 0.8818713450292398,
+              "precision": 0.09941520467836218,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            }
+          }
+        },
+        {
+          "model": "gemma",
+          "report": {
+            "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/prose-gemma-v1.json",
+            "sha256": "ed72d221924e524d419cd4a4c5ac7d8da6adabe7eb38fb7a545246793b07e1ed",
+            "bytes": 3918652
+          },
+          "schema": "bench_memory_281006",
+          "seed": {
+            "documents": 2487,
+            "leakDecoys": 64,
+            "seedMs": 3626703.872112,
+            "seedEmbedCalls": 47565,
+            "memories": 2551,
+            "entities": 34291,
+            "agedRows": 0
+          },
+          "summary": {
+            "pull": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.815213032581454,
+              "recallAt10": 0.8912280701754386,
+              "precision": 0.10198830409356677,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            },
+            "push": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.8848217766638822,
+              "recallAt10": 0.9555555555555556,
+              "precision": 0.11759537733221846,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            },
+            "push-calibrated": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.13450292397660818,
+              "recallAt10": 0.13450292397660818,
+              "precision": 1,
+              "emptyPositive": 740,
+              "negativeAdmission": 0.021052631578947368,
+              "leakedHits": 0
+            },
+            "raw": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.815213032581454,
+              "recallAt10": 0.8912280701754386,
+              "precision": 0.10198830409356677,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            }
+          }
+        },
+        {
+          "model": "harrier",
+          "report": {
+            "path": "$HOME/.cache/papercusp/model-validation/mdenseon-complete-hybrid-WI10004538-20261006/prose-harrier-v1.json",
+            "sha256": "ba5ad4cc2c51c5a66d853d9b0f8b53b84b770af1c319662e721778357bedc81c",
+            "bytes": 3272411
+          },
+          "schema": "bench_memory_623993",
+          "seed": {
+            "documents": 2487,
+            "leakDecoys": 64,
+            "seedMs": 6630638.744889,
+            "seedEmbedCalls": 47565,
+            "memories": 2551,
+            "entities": 36701,
+            "agedRows": 0
+          },
+          "summary": {
+            "pull": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.775905504501996,
+              "recallAt10": 0.8760233918128655,
+              "precision": 0.09918128654970722,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            },
+            "push": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.7995776478232619,
+              "recallAt10": 0.8538011695906432,
+              "precision": 0.32791500703485604,
+              "emptyPositive": 54,
+              "negativeAdmission": 0.9298245614035088,
+              "leakedHits": 0
+            },
+            "push-calibrated": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.0935672514619883,
+              "recallAt10": 0.0935672514619883,
+              "precision": 0.99375,
+              "emptyPositive": 775,
+              "negativeAdmission": 0.031578947368421054,
+              "leakedHits": 0
+            },
+            "raw": {
+              "queries": 1140,
+              "positives": 855,
+              "negatives": 285,
+              "mrr": 0.775905504501996,
+              "recallAt10": 0.8760233918128655,
+              "precision": 0.09918128654970722,
+              "emptyPositive": 0,
+              "negativeAdmission": 1,
+              "leakedHits": 0
+            }
+          }
+        }
+      ],
+      "pairs": [
+        {
+          "baseline": "gemma",
+          "candidate": "mdenseon",
+          "routes": {
+            "pull": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.6936,
+                  "candidate": 0.6592,
+                  "delta": -0.0344,
+                  "lower": -0.0773,
+                  "upper": 0.0088,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.953,
+                  "candidate": 0.9364,
+                  "delta": -0.0166,
+                  "lower": -0.036,
+                  "upper": 0.0015,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.7923,
+                  "candidate": 0.7846,
+                  "delta": -0.0077,
+                  "lower": -0.0432,
+                  "upper": 0.0285,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 275,
+                  "queries": 855,
+                  "baseline": 0.813,
+                  "candidate": 0.7934,
+                  "delta": -0.0196,
+                  "lower": -0.0394,
+                  "upper": 0.0003,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0273,
+                    "lower": -0.0745,
+                    "upper": 0.0182
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": -0.0033,
+                    "lower": -0.0082,
+                    "upper": 0.0015
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0073,
+                    "lower": -0.0291,
+                    "upper": 0.0109
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": -0.002,
+                    "lower": -0.0049,
+                    "upper": 0.0007
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0012,
+                    "lower": -0.0303,
+                    "upper": 0.0339
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": -0.0032,
+                    "lower": -0.0076,
+                    "upper": 0.0011
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0111,
+                    "lower": -0.0321,
+                    "upper": 0.0099
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 855,
+                    "excludedEmpty": 0,
+                    "delta": -0.0028,
+                    "lower": -0.0053,
+                    "upper": -0.0004
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 855,
+                    "p": 1
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 285,
+                  "queries": 285,
+                  "baseline": 1,
+                  "candidate": 1,
+                  "delta": 0,
+                  "lower": 0,
+                  "upper": 0
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 285,
+                  "p": 1
+                }
+              }
+            },
+            "push": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.7823,
+                  "candidate": 0.6706,
+                  "delta": -0.1118,
+                  "lower": -0.1537,
+                  "upper": -0.0705,
+                  "marginDecision": "loss-above-margin"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.9618,
+                  "candidate": 0.882,
+                  "delta": -0.0797,
+                  "lower": -0.1119,
+                  "upper": -0.0498,
+                  "marginDecision": "loss-above-margin"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.9064,
+                  "candidate": 0.8116,
+                  "delta": -0.0948,
+                  "lower": -0.1328,
+                  "upper": -0.0579,
+                  "marginDecision": "loss-above-margin"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 275,
+                  "queries": 855,
+                  "baseline": 0.8835,
+                  "candidate": 0.7881,
+                  "delta": -0.0954,
+                  "lower": -0.1188,
+                  "upper": -0.0728,
+                  "marginDecision": "loss-above-margin"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.1,
+                    "lower": -0.1473,
+                    "upper": -0.0545
+                  },
+                  "precision": {
+                    "sourceGroups": 269,
+                    "queries": 279,
+                    "excludedEmpty": 6,
+                    "delta": 0.0694,
+                    "lower": 0.0431,
+                    "upper": 0.0982
+                  },
+                  "nonEmpty": {
+                    "onlyA": 6,
+                    "onlyB": 0,
+                    "concordant": 279,
+                    "p": 0.031250000000000014
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0691,
+                    "lower": -0.1018,
+                    "upper": -0.04
+                  },
+                  "precision": {
+                    "sourceGroups": 266,
+                    "queries": 276,
+                    "excludedEmpty": 9,
+                    "delta": 0.0703,
+                    "lower": 0.0462,
+                    "upper": 0.0961
+                  },
+                  "nonEmpty": {
+                    "onlyA": 9,
+                    "onlyB": 0,
+                    "concordant": 276,
+                    "p": 0.00390625
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.08,
+                    "lower": -0.1164,
+                    "upper": -0.0473
+                  },
+                  "precision": {
+                    "sourceGroups": 271,
+                    "queries": 280,
+                    "excludedEmpty": 5,
+                    "delta": 0.0826,
+                    "lower": 0.0569,
+                    "upper": 0.1103
+                  },
+                  "nonEmpty": {
+                    "onlyA": 5,
+                    "onlyB": 0,
+                    "concordant": 280,
+                    "p": 0.0625
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.083,
+                    "lower": -0.1067,
+                    "upper": -0.0606
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 835,
+                    "excludedEmpty": 20,
+                    "delta": 0.0745,
+                    "lower": 0.0571,
+                    "upper": 0.0929
+                  },
+                  "nonEmpty": {
+                    "onlyA": 20,
+                    "onlyB": 0,
+                    "concordant": 835,
+                    "p": 0.0000019073486328125
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 285,
+                  "queries": 285,
+                  "baseline": 1,
+                  "candidate": 0.9649,
+                  "delta": -0.0351,
+                  "lower": -0.0596,
+                  "upper": -0.014
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 10,
+                  "concordant": 275,
+                  "p": 0.001953125
+                }
+              }
+            },
+            "push-calibrated": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.0182,
+                  "candidate": 0.0182,
+                  "delta": 0,
+                  "lower": -0.0182,
+                  "upper": 0.0182,
+                  "marginDecision": "inside-margin"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.2636,
+                  "candidate": 0.2897,
+                  "delta": 0.0261,
+                  "lower": -0.0158,
+                  "upper": 0.0679,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.1273,
+                  "candidate": 0.0636,
+                  "delta": -0.0636,
+                  "lower": -0.1018,
+                  "upper": -0.0273,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 275,
+                  "queries": 855,
+                  "baseline": 0.1364,
+                  "candidate": 0.1238,
+                  "delta": -0.0125,
+                  "lower": -0.0337,
+                  "upper": 0.0081,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0,
+                    "lower": -0.0182,
+                    "upper": 0.0182
+                  },
+                  "precision": {
+                    "sourceGroups": 2,
+                    "queries": 2,
+                    "excludedEmpty": 283,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 3,
+                    "onlyB": 3,
+                    "concordant": 279,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0261,
+                    "lower": -0.0145,
+                    "upper": 0.0679
+                  },
+                  "precision": {
+                    "sourceGroups": 58,
+                    "queries": 60,
+                    "excludedEmpty": 225,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 15,
+                    "onlyB": 24,
+                    "concordant": 246,
+                    "p": 0.19959086691960765
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0636,
+                    "lower": -0.1018,
+                    "upper": -0.0273
+                  },
+                  "precision": {
+                    "sourceGroups": 12,
+                    "queries": 12,
+                    "excludedEmpty": 273,
+                    "delta": -0.0417,
+                    "lower": -0.125,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 23,
+                    "onlyB": 6,
+                    "concordant": 256,
+                    "p": 0.002315700054168696
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0125,
+                    "lower": -0.0339,
+                    "upper": 0.0083
+                  },
+                  "precision": {
+                    "sourceGroups": 66,
+                    "queries": 74,
+                    "excludedEmpty": 781,
+                    "delta": -0.0076,
+                    "lower": -0.0227,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 41,
+                    "onlyB": 33,
+                    "concordant": 781,
+                    "p": 0.41598519750730556
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 285,
+                  "queries": 285,
+                  "baseline": 0.0211,
+                  "candidate": 0.0246,
+                  "delta": 0.0035,
+                  "lower": -0.0175,
+                  "upper": 0.0281
+                },
+                "rejected": {
+                  "onlyA": 6,
+                  "onlyB": 5,
+                  "concordant": 274,
+                  "p": 1
+                }
+              }
+            },
+            "raw": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.6936,
+                  "candidate": 0.6592,
+                  "delta": -0.0344,
+                  "lower": -0.0773,
+                  "upper": 0.0088,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.953,
+                  "candidate": 0.9364,
+                  "delta": -0.0166,
+                  "lower": -0.036,
+                  "upper": 0.0015,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.7923,
+                  "candidate": 0.7846,
+                  "delta": -0.0077,
+                  "lower": -0.0432,
+                  "upper": 0.0285,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 275,
+                  "queries": 855,
+                  "baseline": 0.813,
+                  "candidate": 0.7934,
+                  "delta": -0.0196,
+                  "lower": -0.0394,
+                  "upper": 0.0003,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0273,
+                    "lower": -0.0745,
+                    "upper": 0.0182
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": -0.0033,
+                    "lower": -0.0082,
+                    "upper": 0.0015
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0073,
+                    "lower": -0.0291,
+                    "upper": 0.0109
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": -0.002,
+                    "lower": -0.0049,
+                    "upper": 0.0007
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0012,
+                    "lower": -0.0303,
+                    "upper": 0.0339
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": -0.0032,
+                    "lower": -0.0076,
+                    "upper": 0.0011
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0111,
+                    "lower": -0.0321,
+                    "upper": 0.0099
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 855,
+                    "excludedEmpty": 0,
+                    "delta": -0.0028,
+                    "lower": -0.0053,
+                    "upper": -0.0004
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 855,
+                    "p": 1
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 285,
+                  "queries": 285,
+                  "baseline": 1,
+                  "candidate": 1,
+                  "delta": 0,
+                  "lower": 0,
+                  "upper": 0
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 285,
+                  "p": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "baseline": "harrier",
+          "candidate": "mdenseon",
+          "routes": {
+            "pull": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.6394,
+                  "candidate": 0.6592,
+                  "delta": 0.0198,
+                  "lower": -0.029,
+                  "upper": 0.0683,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.9256,
+                  "candidate": 0.9364,
+                  "delta": 0.0109,
+                  "lower": -0.0145,
+                  "upper": 0.037,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.7568,
+                  "candidate": 0.7846,
+                  "delta": 0.0278,
+                  "lower": -0.0071,
+                  "upper": 0.0624,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 275,
+                  "queries": 855,
+                  "baseline": 0.774,
+                  "candidate": 0.7934,
+                  "delta": 0.0195,
+                  "lower": -0.0058,
+                  "upper": 0.0444,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0006,
+                    "lower": -0.0527,
+                    "upper": 0.0509
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": 0.0007,
+                    "lower": -0.0053,
+                    "upper": 0.0067
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0,
+                    "lower": -0.0218,
+                    "upper": 0.0218
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": 0.0005,
+                    "lower": -0.002,
+                    "upper": 0.0031
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0127,
+                    "lower": -0.0273,
+                    "upper": 0.0545
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": -0.0009,
+                    "lower": -0.006,
+                    "upper": 0.0042
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.004,
+                    "lower": -0.0206,
+                    "upper": 0.0291
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 855,
+                    "excludedEmpty": 0,
+                    "delta": 0.0001,
+                    "lower": -0.0028,
+                    "upper": 0.003
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 855,
+                    "p": 1
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 285,
+                  "queries": 285,
+                  "baseline": 1,
+                  "candidate": 1,
+                  "delta": 0,
+                  "lower": 0,
+                  "upper": 0
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 285,
+                  "p": 1
+                }
+              }
+            },
+            "push": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.6889,
+                  "candidate": 0.6706,
+                  "delta": -0.0183,
+                  "lower": -0.0698,
+                  "upper": 0.0325,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.8913,
+                  "candidate": 0.882,
+                  "delta": -0.0092,
+                  "lower": -0.0492,
+                  "upper": 0.0299,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.8164,
+                  "candidate": 0.8116,
+                  "delta": -0.0048,
+                  "lower": -0.0467,
+                  "upper": 0.0373,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 275,
+                  "queries": 855,
+                  "baseline": 0.7989,
+                  "candidate": 0.7881,
+                  "delta": -0.0108,
+                  "lower": -0.0409,
+                  "upper": 0.0187,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0218,
+                    "lower": -0.0309,
+                    "upper": 0.0764
+                  },
+                  "precision": {
+                    "sourceGroups": 249,
+                    "queries": 258,
+                    "excludedEmpty": 27,
+                    "delta": -0.1329,
+                    "lower": -0.1763,
+                    "upper": -0.0909
+                  },
+                  "nonEmpty": {
+                    "onlyA": 3,
+                    "onlyB": 21,
+                    "concordant": 261,
+                    "p": 0.0002771615982055669
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0036,
+                    "lower": -0.04,
+                    "upper": 0.0291
+                  },
+                  "precision": {
+                    "sourceGroups": 253,
+                    "queries": 262,
+                    "excludedEmpty": 23,
+                    "delta": -0.1743,
+                    "lower": -0.2132,
+                    "upper": -0.1366
+                  },
+                  "nonEmpty": {
+                    "onlyA": 5,
+                    "onlyB": 14,
+                    "concordant": 266,
+                    "p": 0.063568115234375
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0345,
+                    "lower": -0.0073,
+                    "upper": 0.0764
+                  },
+                  "precision": {
+                    "sourceGroups": 262,
+                    "queries": 270,
+                    "excludedEmpty": 15,
+                    "delta": -0.0799,
+                    "lower": -0.1154,
+                    "upper": -0.0456
+                  },
+                  "nonEmpty": {
+                    "onlyA": 3,
+                    "onlyB": 10,
+                    "concordant": 272,
+                    "p": 0.09228515625000004
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0176,
+                    "lower": -0.0109,
+                    "upper": 0.0467
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 790,
+                    "excludedEmpty": 65,
+                    "delta": -0.1353,
+                    "lower": -0.163,
+                    "upper": -0.1091
+                  },
+                  "nonEmpty": {
+                    "onlyA": 11,
+                    "onlyB": 45,
+                    "concordant": 799,
+                    "p": 0.00000537831811014965
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 285,
+                  "queries": 285,
+                  "baseline": 0.9298,
+                  "candidate": 0.9649,
+                  "delta": 0.0351,
+                  "lower": 0.0035,
+                  "upper": 0.0667
+                },
+                "rejected": {
+                  "onlyA": 17,
+                  "onlyB": 7,
+                  "concordant": 261,
+                  "p": 0.06391465663909926
+                }
+              }
+            },
+            "push-calibrated": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.0109,
+                  "candidate": 0.0182,
+                  "delta": 0.0073,
+                  "lower": -0.0109,
+                  "upper": 0.0291,
+                  "marginDecision": "inside-margin"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.2048,
+                  "candidate": 0.2897,
+                  "delta": 0.0848,
+                  "lower": 0.0455,
+                  "upper": 0.1255,
+                  "marginDecision": "improvement-above-margin"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.0727,
+                  "candidate": 0.0636,
+                  "delta": -0.0091,
+                  "lower": -0.0364,
+                  "upper": 0.0182,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 275,
+                  "queries": 855,
+                  "baseline": 0.0962,
+                  "candidate": 0.1238,
+                  "delta": 0.0277,
+                  "lower": 0.0089,
+                  "upper": 0.0461,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0073,
+                    "lower": -0.0109,
+                    "upper": 0.0291
+                  },
+                  "precision": {
+                    "sourceGroups": 0,
+                    "queries": 0,
+                    "excludedEmpty": 285
+                  },
+                  "nonEmpty": {
+                    "onlyA": 3,
+                    "onlyB": 5,
+                    "concordant": 277,
+                    "p": 0.7265624999999999
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0848,
+                    "lower": 0.0461,
+                    "upper": 0.1248
+                  },
+                  "precision": {
+                    "sourceGroups": 52,
+                    "queries": 52,
+                    "excludedEmpty": 233,
+                    "delta": 0,
+                    "lower": 0,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 5,
+                    "onlyB": 32,
+                    "concordant": 248,
+                    "p": 0.000007427530363202107
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0091,
+                    "lower": -0.0364,
+                    "upper": 0.0182
+                  },
+                  "precision": {
+                    "sourceGroups": 11,
+                    "queries": 11,
+                    "excludedEmpty": 274,
+                    "delta": -0.0455,
+                    "lower": -0.1364,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 9,
+                    "onlyB": 7,
+                    "concordant": 269,
+                    "p": 0.803619384765625
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0277,
+                    "lower": 0.0091,
+                    "upper": 0.0461
+                  },
+                  "precision": {
+                    "sourceGroups": 60,
+                    "queries": 63,
+                    "excludedEmpty": 792,
+                    "delta": -0.0083,
+                    "lower": -0.025,
+                    "upper": 0
+                  },
+                  "nonEmpty": {
+                    "onlyA": 17,
+                    "onlyB": 44,
+                    "concordant": 794,
+                    "p": 0.0007299045109347658
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 285,
+                  "queries": 285,
+                  "baseline": 0.0316,
+                  "candidate": 0.0246,
+                  "delta": -0.007,
+                  "lower": -0.0316,
+                  "upper": 0.0175
+                },
+                "rejected": {
+                  "onlyA": 6,
+                  "onlyB": 8,
+                  "concordant": 271,
+                  "p": 0.79052734375
+                }
+              }
+            },
+            "raw": {
+              "mrr": {
+                "lexical-gap": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.6394,
+                  "candidate": 0.6592,
+                  "delta": 0.0198,
+                  "lower": -0.029,
+                  "upper": 0.0683,
+                  "marginDecision": "unresolved"
+                },
+                "exact-identifier": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.9256,
+                  "candidate": 0.9364,
+                  "delta": 0.0109,
+                  "lower": -0.0145,
+                  "upper": 0.037,
+                  "marginDecision": "unresolved"
+                },
+                "session-start-intent": {
+                  "sourceTargets": 275,
+                  "queries": 285,
+                  "baseline": 0.7568,
+                  "candidate": 0.7846,
+                  "delta": 0.0278,
+                  "lower": -0.0071,
+                  "upper": 0.0624,
+                  "marginDecision": "unresolved"
+                },
+                "ALL_ANSWERABLE": {
+                  "sourceTargets": 275,
+                  "queries": 855,
+                  "baseline": 0.774,
+                  "candidate": 0.7934,
+                  "delta": 0.0195,
+                  "lower": -0.0058,
+                  "upper": 0.0444,
+                  "marginDecision": "unresolved"
+                }
+              },
+              "positives": {
+                "lexical-gap": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": -0.0006,
+                    "lower": -0.0527,
+                    "upper": 0.0509
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": 0.0007,
+                    "lower": -0.0053,
+                    "upper": 0.0067
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "exact-identifier": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0,
+                    "lower": -0.0218,
+                    "upper": 0.0218
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": 0.0005,
+                    "lower": -0.002,
+                    "upper": 0.0031
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "session-start-intent": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.0127,
+                    "lower": -0.0273,
+                    "upper": 0.0545
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 285,
+                    "excludedEmpty": 0,
+                    "delta": -0.0009,
+                    "lower": -0.006,
+                    "upper": 0.0042
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 285,
+                    "p": 1
+                  }
+                },
+                "ALL_ANSWERABLE": {
+                  "recallAt10": {
+                    "sourceGroups": 275,
+                    "delta": 0.004,
+                    "lower": -0.0206,
+                    "upper": 0.0291
+                  },
+                  "precision": {
+                    "sourceGroups": 275,
+                    "queries": 855,
+                    "excludedEmpty": 0,
+                    "delta": 0.0001,
+                    "lower": -0.0028,
+                    "upper": 0.003
+                  },
+                  "nonEmpty": {
+                    "onlyA": 0,
+                    "onlyB": 0,
+                    "concordant": 855,
+                    "p": 1
+                  }
+                }
+              },
+              "negatives": {
+                "admission": {
+                  "sourceGroups": 285,
+                  "queries": 285,
+                  "baseline": 1,
+                  "candidate": 1,
+                  "delta": 0,
+                  "lower": 0,
+                  "upper": 0
+                },
+                "rejected": {
+                  "onlyA": 0,
+                  "onlyB": 0,
+                  "concordant": 285,
+                  "p": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "limitations": [
+    "quality is deterministic per arm (one seeded run each); latency is P-005, not measured here",
+    "source-target components are the resampling unit; query-level McNemar tests are secondary diagnostics",
+    "precision is compared only where both arms returned results; empty-vs-non-empty is reported separately (nonEmpty)",
+    "a null inside the 0.03 MRR margin means no decision-relevant loss detected at this power, never equivalence",
+    "memory uses the V19 gold file, whose memory census is proven identical to V21 (assertion memory-gold-unchanged-by-v21)"
+  ],
+  "assertions": [
+    {
+      "id": "memory-gold-unchanged-by-v21",
+      "passed": true,
+      "evidence": "V19 .memory (220 q) serialises identically to V21 .memory (220 q)"
+    },
+    {
+      "id": "memory-mdenseon-exited-zero",
+      "passed": true,
+      "evidence": "memory-mdenseon-v1.log EXIT=0"
+    },
+    {
+      "id": "memory-mdenseon-snapshot-pinned",
+      "passed": true,
+      "evidence": "49dbfafc277855af == 49dbfafc277855af"
+    },
+    {
+      "id": "memory-mdenseon-gold-pinned",
+      "passed": true,
+      "evidence": "833f6dc372a9380a == 833f6dc372a9380a (blind-labels-v19-resume-v17-format-repair/labels.json)"
+    },
+    {
+      "id": "memory-mdenseon-ages-pinned",
+      "passed": true,
+      "evidence": "dfc36a69d89adb0a == dfc36a69d89adb0a"
+    },
+    {
+      "id": "memory-gemma-exited-zero",
+      "passed": true,
+      "evidence": "memory-gemma-v1.log EXIT=0"
+    },
+    {
+      "id": "memory-gemma-snapshot-pinned",
+      "passed": true,
+      "evidence": "49dbfafc277855af == 49dbfafc277855af"
+    },
+    {
+      "id": "memory-gemma-gold-pinned",
+      "passed": true,
+      "evidence": "833f6dc372a9380a == 833f6dc372a9380a (blind-labels-v19-resume-v17-format-repair/labels.json)"
+    },
+    {
+      "id": "memory-gemma-ages-pinned",
+      "passed": true,
+      "evidence": "dfc36a69d89adb0a == dfc36a69d89adb0a"
+    },
+    {
+      "id": "memory-harrier-exited-zero",
+      "passed": true,
+      "evidence": "memory-harrier-v1.log EXIT=0"
+    },
+    {
+      "id": "memory-harrier-snapshot-pinned",
+      "passed": true,
+      "evidence": "49dbfafc277855af == 49dbfafc277855af"
+    },
+    {
+      "id": "memory-harrier-gold-pinned",
+      "passed": true,
+      "evidence": "833f6dc372a9380a == 833f6dc372a9380a (blind-labels-v19-resume-v17-format-repair/labels.json)"
+    },
+    {
+      "id": "memory-harrier-ages-pinned",
+      "passed": true,
+      "evidence": "dfc36a69d89adb0a == dfc36a69d89adb0a"
+    },
+    {
+      "id": "memory-arms-comparable-and-isolated",
+      "passed": true,
+      "evidence": "160 queries; schemas bench_memory_856177, bench_memory_4068415, bench_memory_1694437; leakedHits 0/0/0; positive controls 5/5/5"
+    },
+    {
+      "id": "prose-mdenseon-exited-zero",
+      "passed": true,
+      "evidence": "prose-mdenseon-v1.log EXIT=0"
+    },
+    {
+      "id": "prose-mdenseon-snapshot-pinned",
+      "passed": true,
+      "evidence": "49dbfafc277855af == 49dbfafc277855af"
+    },
+    {
+      "id": "prose-mdenseon-gold-pinned",
+      "passed": true,
+      "evidence": "483b7c46469da4aa == 483b7c46469da4aa (blind-labels-v21-resume-v20-concurrency-succession/labels.json)"
+    },
+    {
+      "id": "prose-mdenseon-ages-pinned",
+      "passed": true,
+      "evidence": "none == none"
+    },
+    {
+      "id": "prose-gemma-exited-zero",
+      "passed": true,
+      "evidence": "prose-gemma-v1.log EXIT=0"
+    },
+    {
+      "id": "prose-gemma-snapshot-pinned",
+      "passed": true,
+      "evidence": "49dbfafc277855af == 49dbfafc277855af"
+    },
+    {
+      "id": "prose-gemma-gold-pinned",
+      "passed": true,
+      "evidence": "483b7c46469da4aa == 483b7c46469da4aa (blind-labels-v21-resume-v20-concurrency-succession/labels.json)"
+    },
+    {
+      "id": "prose-gemma-ages-pinned",
+      "passed": true,
+      "evidence": "none == none"
+    },
+    {
+      "id": "prose-harrier-exited-zero",
+      "passed": true,
+      "evidence": "prose-harrier-v1.log EXIT=0"
+    },
+    {
+      "id": "prose-harrier-snapshot-pinned",
+      "passed": true,
+      "evidence": "49dbfafc277855af == 49dbfafc277855af"
+    },
+    {
+      "id": "prose-harrier-gold-pinned",
+      "passed": true,
+      "evidence": "483b7c46469da4aa == 483b7c46469da4aa (blind-labels-v21-resume-v20-concurrency-succession/labels.json)"
+    },
+    {
+      "id": "prose-harrier-ages-pinned",
+      "passed": true,
+      "evidence": "none == none"
+    },
+    {
+      "id": "prose-arms-comparable-and-isolated",
+      "passed": true,
+      "evidence": "1140 queries; schemas bench_memory_3691106, bench_memory_281006, bench_memory_623993; leakedHits 0/0/0; positive controls 5/5/5"
+    }
+  ],
+  "summary": "27/27 assertions pass over corpora memory, prose."
+}

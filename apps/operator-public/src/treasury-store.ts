@@ -2,13 +2,10 @@
  * D1 store for P-034 DAO treasury routing (mig 027).
  *
  * Two records, with different lifetimes. A Safe DEPLOYMENT is recorded once and
- * read on every routing as a precondition. A TRANSFER is written only AFTER the
- * Safe transaction returns a receipt, for the same reason mig 026 writes a batch
- * only after the claim lands: the row's whole purpose is to record what reached
- * the chain, and a row written first would assert a transfer that may never have
- * happened.
+ * read on every routing as a precondition. A pending TRANSFER reserves the send
+ * before the chain edge; only submitted rows are payment evidence and chained.
  *
- * Idempotency is the unique (receipt_hash, share) index rather than an
+ * Idempotency is the unique (receipt_hash, share, payee_id) index rather than an
  * application check, because two concurrent routings of the same settlement is
  * an ordinary race and only the database can settle it.
  */
@@ -168,6 +165,8 @@ interface TreasuryTransferRow {
   receipt_hash: string;
   split_manifest_hash: string;
   share: string;
+  payee_id: string;
+  submission_state: 'pending' | 'submitted';
   role: string;
   chain_id: number;
   safe_address: string;
@@ -191,6 +190,8 @@ export interface StoredTreasuryTransfer {
   readonly receiptHash: string;
   readonly splitManifestHash: string;
   readonly share: RevenueShare;
+  readonly payeeId?: string;
+  readonly submissionState: 'pending' | 'submitted';
   readonly role: TreasuryRole;
   readonly chainId: number;
   readonly safeAddress: string;
@@ -216,6 +217,8 @@ function transferFromRow(row: TreasuryTransferRow): StoredTreasuryTransfer {
     receiptHash: row.receipt_hash,
     splitManifestHash: row.split_manifest_hash,
     share: row.share as RevenueShare,
+    ...(row.payee_id ? { payeeId: row.payee_id } : {}),
+    submissionState: row.submission_state,
     role: row.role as TreasuryRole,
     chainId: Number(row.chain_id),
     safeAddress: row.safe_address,
@@ -240,6 +243,7 @@ export interface RecordTreasuryTransferInput {
   readonly receiptHash: string;
   readonly splitManifestHash: string;
   readonly share: RevenueShare;
+  readonly payeeId?: string;
   readonly role: TreasuryRole;
   readonly chainId: number;
   readonly safeAddress: string;
@@ -258,10 +262,33 @@ export type RecordTreasuryTransferResult =
   | { readonly ok: true; readonly transfer: StoredTreasuryTransfer }
   | { readonly ok: false; readonly code: 'already-routed'; readonly transfer: StoredTreasuryTransfer };
 
+/** An uncertain submission remains reserved; a retry must not send it again. */
+export async function reserveTreasuryTransfer(
+  db: D1Database,
+  input: Omit<RecordTreasuryTransferInput, 'transactionHash' | 'blockNumber' | 'proofEventId'>,
+): Promise<boolean> {
+  if (input.amountMicros <= 0n || input.amountMicros > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('treasury transfer must fit the exact D1 integer binding');
+  }
+  const result = await db.prepare(
+    `INSERT INTO treasury_transfers
+      (transfer_id, batch_id, channel_id, principal_id, settlement_id, receipt_hash,
+       split_manifest_hash, share, payee_id, role, chain_id, safe_address, roles_module_address,
+       token, recipient, amount_micros, safe_tx_hash, transaction_hash, block_number,
+       proof_event_id, created_at_ms, submission_state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', NULL, ?, 'pending')
+     ON CONFLICT (receipt_hash, share, payee_id) DO NOTHING`,
+  ).bind(input.transferId, input.batchId, input.channelId, input.principalId, input.settlementId,
+    input.receiptHash, input.splitManifestHash, input.share, input.payeeId ?? '', input.role,
+    input.chainId, input.safeAddress, input.rolesModuleAddress, input.token, input.recipient,
+    Number(input.amountMicros), input.safeTxHash, input.nowMs).run();
+  return result.meta.changes === 1;
+}
+
 /**
  * Record a transfer that has already reached the chain.
  *
- * A collision on (receipt_hash, share) means this settlement's share was routed
+ * A collision on (receipt_hash, share, payee_id) means this payee was routed
  * by a concurrent request, and the EXISTING row is returned rather than an
  * error — the caller's own submission may still have landed, so reporting the
  * durable record is the only honest answer available here. Preventing the
@@ -276,11 +303,16 @@ export async function recordTreasuryTransfer(
     .prepare(
       `INSERT INTO treasury_transfers
          (transfer_id, batch_id, channel_id, principal_id, settlement_id, receipt_hash,
-          split_manifest_hash, share, role, chain_id, safe_address, roles_module_address,
+          split_manifest_hash, share, payee_id, role, chain_id, safe_address, roles_module_address,
           token, recipient, amount_micros, safe_tx_hash, transaction_hash, block_number,
-          proof_event_id, created_at_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (receipt_hash, share) DO NOTHING`,
+          proof_event_id, created_at_ms, submission_state)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted')
+       ON CONFLICT (receipt_hash, share, payee_id) DO UPDATE SET
+         transaction_hash = excluded.transaction_hash, block_number = excluded.block_number,
+         proof_event_id = excluded.proof_event_id, submission_state = 'submitted'
+       WHERE treasury_transfers.submission_state = 'pending'
+         AND treasury_transfers.transfer_id = excluded.transfer_id
+         AND treasury_transfers.safe_tx_hash = excluded.safe_tx_hash`,
     )
     .bind(
       input.transferId,
@@ -291,6 +323,7 @@ export async function recordTreasuryTransfer(
       input.receiptHash,
       input.splitManifestHash,
       input.share,
+      input.payeeId ?? '',
       input.role,
       input.chainId,
       input.safeAddress,
@@ -306,7 +339,7 @@ export async function recordTreasuryTransfer(
     )
     .run();
   await witnessAfterAppend(db, 'treasury.transfers', input.nowMs);
-  const stored = await getTreasuryTransferForShare(db, input.receiptHash, input.share);
+  const stored = await getTreasuryTransferForShare(db, input.receiptHash, input.share, input.payeeId);
   if (!stored) throw new Error('treasury transfer did not persist');
   return stored.transferId === input.transferId
     ? { ok: true, transfer: stored }
@@ -317,10 +350,11 @@ export async function getTreasuryTransferForShare(
   db: D1Database,
   receiptHash: string,
   share: RevenueShare,
+  payeeId = '',
 ): Promise<StoredTreasuryTransfer | null> {
   const row = await db
-    .prepare(`SELECT * FROM treasury_transfers WHERE receipt_hash = ? AND share = ?`)
-    .bind(receiptHash, share)
+    .prepare(`SELECT * FROM treasury_transfers WHERE receipt_hash = ? AND share = ? AND payee_id = ?`)
+    .bind(receiptHash, share, payeeId)
     .first<TreasuryTransferRow>();
   return row ? transferFromRow(row) : null;
 }

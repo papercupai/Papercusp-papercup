@@ -21,7 +21,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 // WI-4310: resolveDeadRoutineOverdueMs's lock-probe leg is mocked per-test (it reads a real
 // fs lock file, which is orthogonal to what THIS integration test proves — the pipeline_events
@@ -43,6 +43,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -94,13 +95,14 @@ async function insertRoutine(o: {
   rescheduleIntervalSec?: number | null;
   workspaceId?: string;
   installSlug?: string;
+  lastFiredAt?: Date | null;
 }) {
   const nf = o.nextFireAt === 'infinity' ? null : (o.nextFireAt ?? null);
   await rootSql`
     INSERT INTO harness_shared.routines
-      (id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, workspace_id, reschedule_interval_sec)
+      (id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, workspace_id, reschedule_interval_sec, last_fired_at)
     VALUES (${o.id}, ${o.installSlug ?? 'web'}, ${o.name ?? o.id}, 'schedule', ${JSON.stringify(o.cfg)}::text::jsonb, 'system:loop-wake',
-            ${o.active ?? true}, ${nf}, ${o.workspaceId ?? 'ws1'}, ${o.rescheduleIntervalSec ?? null})`;
+            ${o.active ?? true}, ${nf}, ${o.workspaceId ?? 'ws1'}, ${o.rescheduleIntervalSec ?? null}, ${o.lastFiredAt ?? null})`;
   // 'infinity' can't bind as a Date param — set it via SQL after insert (mirrors a parked loop).
   if (o.nextFireAt === 'infinity') {
     await rootSql`UPDATE harness_shared.routines SET next_fire_at = 'infinity'::timestamptz WHERE id = ${o.id}`;
@@ -156,6 +158,52 @@ describe('readDeadRoutines — engine-starvation detector (EI-11797)', () => {
 
     const census = await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1');
     expect(census).toMatchObject({ count: 1, distinctCount: 1, totalInScope: 2, names: ['current-ws-dead'] });
+  });
+});
+
+describe('readDeadRoutines — cadence-scaled threshold for FAST routines (WI-10005073)', () => {
+  const minAgo = (m: number) => new Date(Date.now() - m * 60_000);
+  /** A row as the engine leaves it after a fire: next_fire_at = last_fired_at + cadence. */
+  async function fired(id: string, cadenceSec: number, overdueMin: number) {
+    const next = minAgo(overdueMin);
+    await insertRoutine({
+      id,
+      cfg: { cron: `*/${cadenceSec} * * * * *` },
+      nextFireAt: next,
+      lastFiredAt: new Date(next.getTime() - cadenceSec * 1000),
+    });
+  }
+
+  it('reports an every-1s routine silent 6 min (past the 5 min fast floor, under the 10 min base)', async () => {
+    await fired('fast-dead', 1, 6);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual(['fast-dead']);
+  });
+
+  it('does NOT report an every-1s routine silent 4 min: a normal restart gap (measured ~3.7 min)', async () => {
+    await fired('fast-restart-gap', 1, 4);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual([]);
+  });
+
+  it('scales with cadence between 30 and 60 s: a 45 s routine is dead after 7.5 min, not 5', async () => {
+    await fired('every-45s-7min', 45, 7);
+    await fired('every-45s-8min', 45, 8);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual(['every-45s-8min']);
+  });
+
+  it('keeps the base threshold for a slower routine (5 min cadence, 6 min overdue)', async () => {
+    await fired('every-5m', 300, 6);
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual([]);
+  });
+
+  it('keeps the base threshold for a never-fired row (no observed cadence)', async () => {
+    await insertRoutine({ id: 'never-fired', cfg: { cron: '*/1 * * * * *' }, nextFireAt: minAgo(6) });
+    expect((await readDeadRoutines(rootSql, OVERDUE_MS, 'ws1')).names).toEqual([]);
+  });
+
+  it('doubles the fast floor with the checkpoint-widened base (20 min -> 10 min)', async () => {
+    await fired('fast-widened-8', 1, 8);
+    await fired('fast-widened-11', 1, 11);
+    expect((await readDeadRoutines(rootSql, 2 * OVERDUE_MS, 'ws1')).names).toEqual(['fast-widened-11']);
   });
 });
 

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   identityPerUseOfferTerms,
+  IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH,
   isIdentityReleaseSkuRef,
   verifyIdentityPerUseOffer,
   type IdentityPerUseOfferResult,
@@ -32,6 +33,7 @@ const offerArgs = z
     offerId: z.string().min(1).max(200),
     skuRef: z.string().min(1).max(300).optional(),
     identityRelease: identityReleaseArgs.optional(),
+    receiptSigningHive: z.object({ workspaceId: z.string().min(1), hiveSlug: z.string().min(1) }).strict().optional(),
     title: z.string().min(1).max(300),
     pricingModel: z.enum(['free', 'one-time', 'subscription', 'per-use']),
     amountMinor: z.number().int().nonnegative().default(0),
@@ -39,13 +41,16 @@ const offerArgs = z
     active: z.boolean().optional(),
     unitPriceMicros: z.number().int().positive().optional(),
     meterUnit: z.string().min(1).max(200).optional(),
-    priceVersion: z.string().min(1).max(200).optional(),
+    priceVersion: z.string().min(1).max(IDENTITY_MARKUP_MAX_PRICE_VERSION_LENGTH).optional(),
     splitManifestHash: z
       .string()
       .regex(/^sha256:[0-9a-f]{64}$/i)
       .optional(),
   })
   .superRefine((args, ctx) => {
+    if (args.receiptSigningHive && args.pricingModel !== 'per-use') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['receiptSigningHive'], message: 'seller receipt signing applies only to per-use offers' });
+    }
     const termFields = ['unitPriceMicros', 'meterUnit', 'priceVersion', 'splitManifestHash'] as const;
     if (args.identityRelease) {
       // Every term is derived from the identity release; a caller-supplied one
@@ -123,6 +128,22 @@ export default defineTool({
     if (identityOffer && !identityOffer.ok) {
       return data({ ok: false, error: identityOffer.code, detail: identityOffer.detail, status: 400 });
     }
+    if (identityOffer?.ok && identityOffer.markup.componentBps > 0) {
+      try {
+        const { readBlueprintReleaseRevenueDependencies } = await import('../../cupboard/blueprint-release');
+        const { INSTALLED_BLUEPRINTS_DIR } = await import('../../blueprint/installed-blueprints');
+        const componentDependencies = await readBlueprintReleaseRevenueDependencies(INSTALLED_BLUEPRINTS_DIR(), identityOffer.identity);
+        const pinned = identityPerUseOfferTerms({ identity: identityOffer.identity, ...identityOffer.markup, componentDependencies });
+        if (!pinned.ok) return data({ ok: false, error: pinned.code, detail: pinned.detail, status: 422 });
+        if (!args.identityRelease && (pinned.terms.priceVersion !== args.priceVersion ||
+            pinned.terms.splitManifestHash !== args.splitManifestHash)) {
+          return data({ ok: false, error: 'identity-offer-mismatch', detail: 'component authors differ from the exact retained release', status: 422 });
+        }
+        identityOffer = pinned;
+      } catch (error) {
+        return data({ ok: false, error: 'identity-component-closure', detail: String(error), status: 422 });
+      }
+    }
     const perUse = identityOffer?.ok
       ? {
           unitPriceMicros: identityOffer.terms.unitPriceMicros,
@@ -138,6 +159,23 @@ export default defineTool({
         };
 
     const { postCommerceOffer } = await import('../../cupboard/commerce-door-gate-io');
+    let receiptAuthority;
+    let userTokenForReceiptAuthority: string | undefined;
+    if (args.receiptSigningHive) {
+      const { loadHiveKeyStatus, signWithHiveKey } = await import('../../identity/hive-keypair');
+      const { resolveLocalGithubIdentity } = await import('../../identity/resolve-local-github-identity');
+      const { sellerReceiptAuthoritySigningBytes } = await import('../../p2p/metered-invocation');
+      const { workspaceId, hiveSlug } = args.receiptSigningHive;
+      const user = await resolveLocalGithubIdentity();
+      if (user.kind !== 'ok') return data({ ok: false, error: 'gh_auth_required', status: 401 });
+      userTokenForReceiptAuthority = user.token;
+      const key = await loadHiveKeyStatus(workspaceId, hiveSlug);
+      if (key.kind !== 'ok') return data({ ok: false, error: 'seller_signing_key_required', status: 422 });
+      const bytes = sellerReceiptAuthoritySigningBytes({ seller: 'gh:' + user.githubUserId, productId: args.productId,
+        offerId: args.offerId, skuRef: identityOffer?.ok ? identityOffer.terms.skuRef : args.skuRef as string,
+        pubkeyBase64: key.pubkeyBase64 });
+      receiptAuthority = { pubkeyBase64: key.pubkeyBase64, proof: (await signWithHiveKey(workspaceId, hiveSlug, bytes)).toString('base64') };
+    }
     const result = await postCommerceOffer({
       productId: args.productId,
       offerId: args.offerId,
@@ -147,7 +185,8 @@ export default defineTool({
       price: { amountMinor: args.amountMinor, currency: args.currency },
       ...(args.active !== undefined ? { active: args.active } : {}),
       ...(args.pricingModel === 'per-use' ? { perUse } : {}),
-    });
+      ...(receiptAuthority ? { receiptAuthority } : {}),
+    }, ...(receiptAuthority ? [{ authToken: userTokenForReceiptAuthority }] as const : [] as const));
     const identity = identityOffer?.ok
       ? {
           identityOffer: {

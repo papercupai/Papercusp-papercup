@@ -22,7 +22,7 @@
  *   manifest  `runPublicationManifestCli`, exactly once per operation: a regenerated manifest
  *             carries a new timestamp, which the publisher reads as a changed stage input.
  *   publish   The journaled publisher, handed the SAME task + operation.
- *   prune     After a real (not --plan-only) publish, the rebuildable intermediates — the pinned
+ *   prune     After a verified build-only cut or real (not --publish-plan-only) publish, the rebuildable intermediates — the pinned
  *             source worktree, the sidecar tree and the extracted audit copy, ~89% of a ~18 GB work
  *             dir — are removed (WI-10003700). Everything resume, R-4 and audit read stays:
  *             publication/, build-result.json, release-cut.json, logs/, sidecar-trust/, the tauri
@@ -45,6 +45,8 @@ import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/prom
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
+import { parseGithubUrl } from '@papercusp/operator-core/lib/harness/clone-github';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import {
@@ -246,6 +248,8 @@ export function parseWorkspaceHostBuildResult(value: unknown): WorkspaceHostBuil
 export interface WorkspaceHostPublicationFacts {
   version: string;
   sourceSha: string;
+  /** Credential-free upstream URL measured from the integration repository's origin. */
+  sourceRepository: string;
   desktopVersion: string;
   /** The papercusp-desktop gitlink — recorded as the `desktop_revision` build parameter. */
   desktopRevision: string;
@@ -257,6 +261,16 @@ export interface WorkspaceHostPublicationFacts {
    * manifest unshippable, so each caller must decide it explicitly.
    */
   rollbackVersion: string | null;
+}
+
+export function readWorkspaceHostSourceRepository(repoRoot: string): string {
+  const origin = execFileSync('git', ['-C', repoRoot, 'remote', 'get-url', 'origin'], {
+    encoding: 'utf8',
+    timeout: 15_000,
+  }).trim();
+  const repository = parseGithubUrl(origin);
+  if (!repository) throw new Error('source origin must be a credential-free GitHub repository URL');
+  return repository.cloneUrl;
 }
 
 /**
@@ -275,6 +289,11 @@ export function buildWorkspaceHostPublicationInput(
   const { schemaVersion: _schema, image, source, builder, materials, parameters, ...rest } = template;
   if (!isRecord(image) || !isRecord(source) || !isRecord(builder)) {
     throw new Error('publication input template needs image, source and builder objects');
+  }
+  const repository = typeof facts.sourceRepository === 'string' ? parseGithubUrl(facts.sourceRepository) : null;
+  if (!repository) throw new Error('publication facts need a measured credential-free GitHub sourceRepository');
+  if (source.repository !== undefined) {
+    throw new Error('template must not pin source.repository: it is measured from the integration origin');
   }
   if (!Array.isArray(materials) || !Array.isArray(parameters)) {
     throw new Error('publication input template needs materials and parameters arrays');
@@ -307,7 +326,7 @@ export function buildWorkspaceHostPublicationInput(
     ...rest,
     ...(lifecycle ? { lifecycle } : {}),
     image: { ...image, version: facts.version },
-    source: { ...source, revision: facts.sourceSha },
+    source: { ...source, repository: repository.cloneUrl, revision: facts.sourceSha },
     builder: { ...builder, version: facts.desktopVersion },
     materials: resolvedMaterials,
     parameters: [...parameters, { name: 'desktop_revision', value: facts.desktopRevision }],
@@ -479,6 +498,69 @@ async function readJsonIfPresent(path: string): Promise<unknown | null> {
   }
 }
 
+/** Directory inside the sidecar (the bundle root) that carries the doc vector seed. The hosted
+ *  unit points PAPERCUSP_DOC_VECTOR_SEED_DIR at `$RUNTIME_ROOT/current/<this>`. */
+export const WORKSPACE_HOST_DOC_VECTOR_SEED_DIR = 'doc-vector-seed';
+
+export type DocVectorSeedCutOutcome = 'skipped' | 'exported' | 'kept-previous' | 'none';
+
+export interface DocVectorSeedCutOptions {
+  sidecarDir: string;
+  /** Integration checkout: it has node_modules and resolves the build database. */
+  repoRoot: string;
+  logFile: string;
+  skip?: boolean;
+  /** Runs the exporter; defaults to `npx <args>` in `cwd`. Injected by tests. */
+  exporter?: (args: readonly string[], options: { cwd: string; logFile: string }) => Promise<void>;
+  warn?: (message: string) => void;
+}
+
+/**
+ * Write precomputed doc_sections vectors into the sidecar before it is packed (WI-10004899).
+ * Mirrors the desktop cut's `cut_doc_vector_seed` (papercusp-desktop/bin/release-local.sh): the
+ * previous seed, if one is already in the sidecar, is applied first so only changed sections are
+ * re-embedded; a failed export never fails the cut, because a bundle without the seed still works
+ * (the host embeds the uncovered sections itself, as before). The new seed replaces the old one only
+ * once the exporter has written a manifest, so a failed export leaves the previous seed in place.
+ */
+export async function cutDocVectorSeed(options: DocVectorSeedCutOptions): Promise<DocVectorSeedCutOutcome> {
+  if (options.skip) return 'skipped';
+  const out = join(options.sidecarDir, WORKSPACE_HOST_DOC_VECTOR_SEED_DIR);
+  const tmp = `${out}.new`;
+  const warn = options.warn ?? ((message: string) => console.warn(message));
+  const exporter =
+    options.exporter ??
+    ((args: readonly string[], runOptions: { cwd: string; logFile: string }) =>
+      runStep('doc-vector-seed', 'npx', args, runOptions));
+  const hasPrevious = existsSync(join(out, 'manifest.json'));
+  await rm(tmp, { recursive: true, force: true });
+  try {
+    await exporter(
+      [
+        'tsx', 'scripts/export-doc-vector-seed.mts',
+        '--out', tmp,
+        '--allow-uncovered',
+        ...(hasPrevious ? ['--previous', out] : []),
+      ],
+      { cwd: options.repoRoot, logFile: options.logFile },
+    );
+    if (!existsSync(join(tmp, 'manifest.json'))) {
+      throw new Error(`the exporter exited 0 but wrote no manifest.json into ${tmp}`);
+    }
+    await rm(out, { recursive: true, force: true });
+    await rename(tmp, out);
+    return 'exported';
+  } catch (err) {
+    await rm(tmp, { recursive: true, force: true });
+    const ships = hasPrevious ? "the previous cut's doc-vector seed" : 'no precomputed doc vectors';
+    warn(
+      `WARNING: doc-vector-seed export failed (${err instanceof Error ? err.message : String(err)}) — ` +
+        `the bundle ships ${ships}; fresh hosts embed the rest on first boot.`,
+    );
+    return hasPrevious ? 'kept-previous' : 'none';
+  }
+}
+
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await writeFile(`${path}.partial`, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   await rename(`${path}.partial`, path);
@@ -488,11 +570,36 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
  * Materialize, build, pack, sign, verify and audit one bundle. Each leg either passes or throws a
  * `WorkspaceHostCutStepError`; `build-result.json` is written last, so its presence means all passed.
  */
+export function workspaceHostModelCache(repoRoot: string, env: NodeJS.ProcessEnv = process.env): string {
+  const cache = env.PAPERCUSP_TRANSFORMERS_MODEL_CACHE ?? join(repoRoot, 'node_modules/@huggingface/transformers/.cache');
+  const root = existsSync(join(cache, 'onnx-community')) ? join(cache, 'onnx-community') : cache;
+  for (const model of ['harrier-oss-v1-0.6b-ONNX', 'embeddinggemma-300m-ONNX']) {
+    if (!existsSync(join(root, model, 'onnx/model.onnx'))) {
+      throw new WorkspaceHostCutStepError('model-preflight', false,
+        `model source ${cache} lacks ${model}/onnx/model.onnx; set PAPERCUSP_TRANSFORMERS_MODEL_CACHE to the maintained model pack before building`);
+    }
+  }
+  return cache;
+}
+
 export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Promise<WorkspaceHostBuildResult> {
   const paths = workspaceHostCutPaths(plan.workDir);
   const { sourceSha } = plan.identity;
   await mkdir(paths.logs, { recursive: true });
   const logFor = (step: string) => join(paths.logs, `${step}.log`);
+  const sidecarReady = await readJsonIfPresent(paths.sidecarReady);
+  const needsSidecar = !(isRecord(sidecarReady) && sidecarReady.sourceSha === sourceSha && sidecarReady.desktopVersion === plan.desktopVersion);
+  // Reject missing model inputs before paying for source materialization. A
+  // completed sidecar resumes downstream without requiring its old build cache.
+  const modelCache = needsSidecar ? workspaceHostModelCache(plan.repoRoot) : undefined;
+  if (modelCache !== undefined) {
+    // The maintained pack verifier checks hashes/config/external tensor data,
+    // not merely the two ONNX path names. Do this before a costly checkout too.
+    await runStep('model-preflight', 'bash', [
+      join(plan.repoRoot, 'papercusp-desktop/bin/lib/transformers-models.sh'),
+      'verify', modelCache, '0', '0',
+    ], { cwd: plan.repoRoot, logFile: logFor('model-preflight') });
+  }
 
   // 1. Pinned source. setup-release's source-only mode stops before any dependency work and
   //    guarantees exact HEAD + submodule pins; the ready marker is what makes a re-run skip it.
@@ -526,8 +633,7 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
 
   // 2. The vm-release sidecar, built from the pinned tree. The environment is the one the r37 cut
   //    ran with (recorded in tool_invocations 2026-09-20 02:04Z); it is now code instead of a paste.
-  const sidecarReady = await readJsonIfPresent(paths.sidecarReady);
-  if (!(isRecord(sidecarReady) && sidecarReady.sourceSha === sourceSha && sidecarReady.desktopVersion === plan.desktopVersion)) {
+  if (needsSidecar) {
     await rm(paths.sidecarTrust, { recursive: true, force: true });
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -541,7 +647,7 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
       PAPERCUSP_SKIP_DEP_GENERATION: '1',
       PAPERCUSP_VM_RELEASE_TRUST_OUTPUT_DIR: paths.sidecarTrust,
       VITE_BUILD_LOCK: join(plan.workDir, 'vite-build.lock'),
-      PAPERCUSP_TRANSFORMERS_MODEL_CACHE: join(plan.repoRoot, 'node_modules/@huggingface/transformers/.cache'),
+      PAPERCUSP_TRANSFORMERS_MODEL_CACHE: modelCache,
     };
     // Provenance must describe the pinned tree, never a value inherited from the calling shell.
     delete env.PROVENANCE_SOURCE_GIT_HEAD;
@@ -569,6 +675,15 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
       `sidecar stamp does not record a passing release identity audit for ${sourceSha}`,
     );
   }
+
+  // 3b. Precomputed doc_sections vectors (WI-10004899), so a fresh hosted host applies them
+  //     instead of embedding every doc section on its own CPU. Never fails the cut.
+  await cutDocVectorSeed({
+    sidecarDir: paths.sidecar,
+    repoRoot: plan.repoRoot,
+    logFile: logFor('doc-vector-seed'),
+    skip: process.env.PAPERCUSP_SKIP_DOC_VECTOR_SEED === '1',
+  });
 
   // 4. Pack into a fresh publication directory: a leftover file from an earlier attempt must not be
   //    published beside bytes it does not describe.
@@ -764,9 +879,9 @@ export interface WorkspaceHostReleaseCutOptions {
   taskId?: string;
   operationId?: string;
   publish: boolean;
-  /** Passed through to the publisher (`--base`, `--token`, `--plan-only`). */
+  /** Passed through to the publisher (`--base`, `--token`, and publisher `--plan-only`). */
   publisherArgs: readonly string[];
-  /** Keep source/, sidecar/ and extracted/ after a real publish (default: prune them). */
+  /** Keep source/, sidecar/ and extracted/ after a verified cut (default: prune them). */
   keepIntermediates?: boolean;
 }
 
@@ -964,8 +1079,7 @@ export async function runWorkspaceHostReleaseCut(
   options: WorkspaceHostReleaseCutOptions,
   deps: WorkspaceHostReleaseCutDeps,
 ): Promise<WorkspaceHostReleaseCutResult> {
-  if (!SOURCE_SHA.test(options.sourceSha)) throw new Error(`--source-sha must be a full commit sha, got '${options.sourceSha}'`);
-  if (!/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(options.version)) throw new Error(`--version '${options.version}' is not a release version`);
+  validateWorkspaceHostReleaseCutIdentity(options.sourceSha, options.version);
 
   const identity: WorkspaceHostReleaseIdentity = {
     sourceSha: options.sourceSha,
@@ -1020,14 +1134,14 @@ export async function runWorkspaceHostReleaseCut(
       operationId: state.operationId,
       args: options.publisherArgs,
     });
-    // Only a REAL publish frees the intermediates: a --plan-only run uploaded nothing, so the cut
-    // may still need them. Re-measure the kept bytes first, so nothing is deleted beside a
-    // publication directory that no longer matches the committed build.
-    if (!options.keepIntermediates && !options.publisherArgs.includes('--plan-only')) {
-      await deps.verifyBuild(result, options.workDir);
-      pruned = await deps.pruneIntermediates({ repoRoot: options.repoRoot, workDir: options.workDir });
-      deps.log(pruned.length > 0 ? `pruned intermediates: ${pruned.join(', ')}` : 'no intermediates left to prune');
-    }
+  }
+  // Build-only cuts already hold the signed bundle and audit evidence in publication/;
+  // bootc baking and later publication read those retained bytes, not source/ or sidecar/.
+  // Keep an explicit publisher preview intact, and verify the retained build before cleanup.
+  if (!options.keepIntermediates && (!options.publish || !options.publisherArgs.includes('--plan-only'))) {
+    await deps.verifyBuild(result, options.workDir);
+    pruned = await deps.pruneIntermediates({ repoRoot: options.repoRoot, workDir: options.workDir });
+    deps.log(pruned.length > 0 ? `pruned intermediates: ${pruned.join(', ')}` : 'no intermediates left to prune');
   }
   return {
     taskId: state.taskId,
@@ -1051,6 +1165,8 @@ export interface WorkspaceHostReleaseCutCliArgs {
   taskId?: string;
   operationId?: string;
   publish: boolean;
+  /** Print a whole-cut preview and exit before creating files or opening a release task. */
+  planOnly: boolean;
   publisherArgs: string[];
   keepIntermediates: boolean;
 }
@@ -1081,12 +1197,14 @@ export function parseWorkspaceHostReleaseCutArgs(
   const valueFlags = new Set(['source-sha', 'version', 'work-dir', 'task-id', 'operation-id', 'base', 'token']);
   let publish = true;
   let planOnly = false;
+  let publishPlanOnly = false;
   let keepIntermediates = false;
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index] ?? '';
     if (flag === '--no-publish') { publish = false; continue; }
     if (flag === '--keep-intermediates') { keepIntermediates = true; continue; }
     if (flag === '--plan-only') { planOnly = true; continue; }
+    if (flag === '--publish-plan-only') { publishPlanOnly = true; continue; }
     if (!flag.startsWith('--')) throw new Error(`unexpected argument '${flag}'`);
     const key = flag.slice(2);
     if (!valueFlags.has(key)) throw new Error(`unknown flag '--${key}'`);
@@ -1098,11 +1216,17 @@ export function parseWorkspaceHostReleaseCutArgs(
   for (const required of ['source-sha', 'version', 'work-dir']) {
     if (!values[required]) throw new Error(`--${required} is required`);
   }
+  if (Boolean(values['task-id']) !== Boolean(values['operation-id'])) {
+    throw new Error('--task-id and --operation-id must be provided together');
+  }
+  if (planOnly && publishPlanOnly) throw new Error('--plan-only and --publish-plan-only cannot be combined');
+  if (publishPlanOnly && !publish) throw new Error('--publish-plan-only requires publishing');
+  validateWorkspaceHostReleaseCutIdentity(values['source-sha']!, values.version!);
   const base = values.base ?? cupboardBaseOverride(env);
   const publisherArgs = [
     ...(base ? ['--base', base] : []),
     ...(values.token ? ['--token', values.token] : []),
-    ...(planOnly ? ['--plan-only'] : []),
+    ...(publishPlanOnly ? ['--plan-only'] : []),
   ];
   return {
     sourceSha: values['source-sha']!,
@@ -1111,9 +1235,51 @@ export function parseWorkspaceHostReleaseCutArgs(
     ...(values['task-id'] ? { taskId: values['task-id'] } : {}),
     ...(values['operation-id'] ? { operationId: values['operation-id'] } : {}),
     publish,
+    planOnly,
     publisherArgs,
     keepIntermediates,
   };
+}
+
+function validateWorkspaceHostReleaseCutIdentity(sourceSha: string, version: string): void {
+  if (!SOURCE_SHA.test(sourceSha)) throw new Error(`--source-sha must be a full commit sha, got '${sourceSha}'`);
+  if (!/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(version)) throw new Error(`--version '${version}' is not a release version`);
+}
+
+export interface WorkspaceHostReleaseCutCliRunner {
+  env?: NodeJS.ProcessEnv;
+  signingKeyPath: string;
+  newTaskId(): string;
+  newOperationId(): string;
+  log(line: string): void;
+  run(args: WorkspaceHostReleaseCutCliArgs): Promise<void>;
+}
+
+/**
+ * Handle the read-only whole-cut preview before the execution callback. This keeps the preview
+ * ahead of work-directory creation, locking, task registration, builds, manifests and publishing.
+ */
+export async function runWorkspaceHostReleaseCutCli(
+  argv: readonly string[],
+  runner: WorkspaceHostReleaseCutCliRunner,
+): Promise<'planned' | 'executed'> {
+  const args = parseWorkspaceHostReleaseCutArgs(argv, runner.env);
+  if (!args.planOnly) {
+    await runner.run(args);
+    return 'executed';
+  }
+
+  const taskId = args.taskId ?? runner.newTaskId();
+  const operationId = args.operationId ?? runner.newOperationId();
+  runner.log('plan-only: no task will be registered and no work-directory files will be written');
+  runner.log(`source sha: ${args.sourceSha}`);
+  runner.log(`version: ${args.version}`);
+  runner.log(`work directory: ${args.workDir}`);
+  runner.log(`task id: ${taskId} (planned)`);
+  runner.log(`operation id: ${operationId} (planned)`);
+  runner.log(`publish: ${args.publish ? 'enabled' : 'disabled'}`);
+  runner.log(`signing key present: ${existsSync(runner.signingKeyPath) ? 'yes' : 'no'}`);
+  return 'planned';
 }
 
 /** One cut per work directory at a time: two would race each other's journal and files. */
@@ -1151,79 +1317,89 @@ function readDesktopVersionFromGit(repoRoot: string, gitlinks: Readonly<Record<s
 }
 
 async function main(): Promise<void> {
-  const args = parseWorkspaceHostReleaseCutArgs(process.argv.slice(2));
-  const repoRoot = resolve(HERE, '../../../..');
-  const paths = workspaceHostCutPaths(args.workDir);
-  await mkdir(args.workDir, { recursive: true });
-  const release = await acquireWorkDirLock(paths.lock);
+  const repoRoot = moduleRepoRoot(import.meta.url);
   const signingKeyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH ?? join(homedir(), '.papercusp/signing/papercusp.key');
   const log = (line: string) => process.stdout.write(`[workspace-host-cut] ${line}\n`);
-  try {
-    const result = await runWorkspaceHostReleaseCut(
-      { repoRoot, ...args },
-      {
-        ledger: { getTask: (taskId) => getTask(taskId), taskReleaseJournalFromDetail, appendTaskReleaseReceipt },
-        registerTask: (spec, opts) => registerTask(spec, opts),
-        newTaskId: () => newTaskId(),
-        newOperationId: () => randomUUID(),
-        readGitlinks: readSourceGitlinks,
-        readDesktopVersion: readDesktopVersionFromGit,
-        sourceEpochSeconds: (root, sha) =>
-          Number.parseInt(execFileSync('git', ['-C', root, 'show', '-s', '--format=%ct', sha], { encoding: 'utf8' }).trim(), 10),
-        build: (plan) =>
-          buildWorkspaceHostBundle({
-            ...plan,
-            releaseIdentityEnvFile: process.env.PAPERCUSP_RELEASE_IDENTITY_ENV ?? join(homedir(), '.papercusp/release-identity.env'),
-            signingKeyPath,
-            signingKeyPassword: process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '',
-            tauriCliVersion: process.env.PAPERCUSP_TAURI_CLI_VERSION ?? DEFAULT_TAURI_CLI_VERSION,
-          }),
-        verifyBuild: verifyWorkspaceHostBuild,
-        readBuildResult: async (workDir) => {
-          const raw = await readJsonIfPresent(workspaceHostCutPaths(workDir).buildResult);
-          return raw === null ? null : parseWorkspaceHostBuildResult(raw);
-        },
-        resolveRollbackRelease: (taskId) => latestGreenShippedReleaseInScope(taskId),
-        emitManifest: async ({ workDir, identity, desktopVersion, rollbackVersion }) => {
-          const cut = workspaceHostCutPaths(workDir);
-          const input = buildWorkspaceHostPublicationInput(
-            JSON.parse(await readFile(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8')),
-            {
-              version: identity.version,
-              sourceSha: identity.sourceSha,
-              desktopVersion,
-              desktopRevision: identity.gitlinks['papercusp-desktop'] ?? '',
-              sourceRoot: cut.source,
-              bundleRoot: cut.extracted,
-              rollbackVersion,
+  await runWorkspaceHostReleaseCutCli(process.argv.slice(2), {
+    env: process.env,
+    signingKeyPath,
+    newTaskId: () => newTaskId(),
+    newOperationId: () => randomUUID(),
+    log,
+    run: async (args) => {
+      const { planOnly: _planOnly, ...cutArgs } = args;
+      const paths = workspaceHostCutPaths(args.workDir);
+      await mkdir(args.workDir, { recursive: true });
+      const release = await acquireWorkDirLock(paths.lock);
+      try {
+        const result = await runWorkspaceHostReleaseCut(
+          { repoRoot, ...cutArgs },
+          {
+            ledger: { getTask: (taskId) => getTask(taskId), taskReleaseJournalFromDetail, appendTaskReleaseReceipt },
+            registerTask: (spec, opts) => registerTask(spec, opts),
+            newTaskId: () => newTaskId(),
+            newOperationId: () => randomUUID(),
+            readGitlinks: readSourceGitlinks,
+            readDesktopVersion: readDesktopVersionFromGit,
+            sourceEpochSeconds: (root, sha) =>
+              Number.parseInt(execFileSync('git', ['-C', root, 'show', '-s', '--format=%ct', sha], { encoding: 'utf8' }).trim(), 10),
+            build: (plan) =>
+              buildWorkspaceHostBundle({
+                ...plan,
+                releaseIdentityEnvFile: process.env.PAPERCUSP_RELEASE_IDENTITY_ENV ?? join(homedir(), '.papercusp/release-identity.env'),
+                signingKeyPath,
+                signingKeyPassword: process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? '',
+                tauriCliVersion: process.env.PAPERCUSP_TAURI_CLI_VERSION ?? DEFAULT_TAURI_CLI_VERSION,
+              }),
+            verifyBuild: verifyWorkspaceHostBuild,
+            readBuildResult: async (workDir) => {
+              const raw = await readJsonIfPresent(workspaceHostCutPaths(workDir).buildResult);
+              return raw === null ? null : parseWorkspaceHostBuildResult(raw);
             },
-          );
-          await writeJsonAtomic(cut.publicationInput, input);
-          return runPublicationManifestCli({ publicationDir: cut.publication, inputFile: cut.publicationInput, sourceRoot: cut.source });
-        },
-        publish: ({ repoRoot: root, workDir, taskId, operationId, args: extra }) =>
-          runStep(
-            'publish',
-            process.execPath,
-            [
-              '--import', 'tsx',
-              join(root, 'scripts/publish-workspace-host-artifacts.mjs'),
-              '--dir', workspaceHostCutPaths(workDir).publication,
-              '--task-id', taskId,
-              '--operation-id', operationId,
-              ...extra,
-            ],
-            { cwd: root },
-          ),
-        pruneIntermediates: (input) => pruneWorkspaceHostCutIntermediates(input),
-        log,
-      },
-    );
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    process.stdout.write(`WORKSPACE_HOST_CUT_TASK_ID=${result.taskId}\nWORKSPACE_HOST_CUT_BUNDLE_SHA256=${result.bundleSha256}\n`);
-  } finally {
-    await release();
-  }
+            resolveRollbackRelease: (taskId) => latestGreenShippedReleaseInScope(taskId),
+            emitManifest: async ({ workDir, identity, desktopVersion, rollbackVersion }) => {
+              const cut = workspaceHostCutPaths(workDir);
+              const input = buildWorkspaceHostPublicationInput(
+                JSON.parse(await readFile(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8')),
+                {
+                  version: identity.version,
+                  sourceSha: identity.sourceSha,
+                  sourceRepository: readWorkspaceHostSourceRepository(repoRoot),
+                  desktopVersion,
+                  desktopRevision: identity.gitlinks['papercusp-desktop'] ?? '',
+                  sourceRoot: cut.source,
+                  bundleRoot: cut.extracted,
+                  rollbackVersion,
+                },
+              );
+              await writeJsonAtomic(cut.publicationInput, input);
+              return runPublicationManifestCli({ publicationDir: cut.publication, inputFile: cut.publicationInput, sourceRoot: cut.source });
+            },
+            publish: ({ repoRoot: root, workDir, taskId, operationId, args: extra }) =>
+              runStep(
+                'publish',
+                process.execPath,
+                [
+                  '--import', 'tsx',
+                  join(root, 'scripts/publish-workspace-host-artifacts.mjs'),
+                  '--dir', workspaceHostCutPaths(workDir).publication,
+                  '--task-id', taskId,
+                  '--operation-id', operationId,
+                  ...extra,
+                ],
+                { cwd: root },
+              ),
+            pruneIntermediates: (input) => pruneWorkspaceHostCutIntermediates(input),
+            log,
+          },
+        );
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        process.stdout.write(`WORKSPACE_HOST_CUT_TASK_ID=${result.taskId}\nWORKSPACE_HOST_CUT_BUNDLE_SHA256=${result.bundleSha256}\n`);
+      } finally {
+        await release();
+      }
+    },
+  });
 }
 
 if (isCliEntry(import.meta.url)) {

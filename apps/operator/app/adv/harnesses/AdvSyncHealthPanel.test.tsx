@@ -209,6 +209,8 @@ describe('IpcSection — three-valued, so a missing bridge never reads as a brok
             lastError: null,
             connectedPath: null,
             ownerIsContentOrigin: false,
+            snapshotStartedAtUnixMs: 1_700_000_000_000,
+            snapshotDurationMs: 0.5,
           },
         }}
       />,

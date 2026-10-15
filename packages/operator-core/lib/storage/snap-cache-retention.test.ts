@@ -50,10 +50,45 @@ Total candidates size: 7.50 GB
 Remaining size: 6.25GiB
 `);
 
-    expect(parsed.bytes).toBe(Math.round(8.29 * 1024 ** 3));
+    expect(parsed.bytes).toBe(Math.round(8.29 * 1000 ** 3));
     expect(parsed.entries).toBe(12);
-    expect(parsed.candidatesBytes).toBe(Math.round(7.5 * 1024 ** 3));
+    expect(parsed.candidatesBytes).toBe(Math.round(7.5 * 1000 ** 3));
     expect(parsed.remainingBytes).toBe(Math.round(6.25 * 1024 ** 3));
+  });
+
+  it('parses the native Snapd aggregate with bare SI suffixes', () => {
+    expect(parseSnapCacheMeasurement(`
+Cache location: /var/lib/snapd/cache
+Max cache-unique items: 5
+Max total size of cache-unique items:     0
+Max age of cache-unique items: 720h0m0s
+Cache entries: 37
+Total size: 11.3G
+Total removed size:     0
+Total candidates size: 1.11G
+Remaining size: 1.11G
+`)).toMatchObject({
+      bytes: 11_300_000_000,
+      entries: 37,
+      removedBytes: 0,
+      candidatesBytes: 1_110_000_000,
+      remainingBytes: 1_110_000_000,
+    });
+  });
+
+  it.each([
+    ['555M', 555_000_000],
+    ['2k', 2_000],
+    ['1.5T', 1_500_000_000_000],
+    ['1 MiB', 1_048_576],
+    ['123 B', 123],
+    ['0', 0],
+  ])('interprets %s with its declared unit', (amount, bytes) => {
+    expect(parseSnapCacheMeasurement(`Total size: ${amount}`).bytes).toBe(bytes);
+  });
+
+  it.each(['', '-1G', 'NaN', 'Infinity', '11.3GX', '1e309'])('rejects invalid amount %s', (amount) => {
+    expect(() => parseSnapCacheMeasurement(`Total size: ${amount}`)).toThrow(/not measurable/);
   });
 
   it('rejects permission/error output instead of treating it as an empty cache', () => {
@@ -64,6 +99,20 @@ Remaining size: 6.25GiB
 });
 
 describe('runSnapCacheRetention', () => {
+  it('reaches manager-owned recovery when the actual Snapd aggregate reports pressure', async () => {
+    const outputs = ['11.3G', '11.3G', '10.2G'];
+    const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
+    const result = await runSnapCacheRetention({
+      target,
+      measure: async () => parseSnapCacheMeasurement(`Total size: ${outputs.shift()}`),
+      runCommand,
+      withMutex: async (_name, run) => run(),
+    });
+
+    expect(runCommand).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ status: 'cleaned', reclaimedBytes: 1_100_000_000 });
+  });
+
   it('does not request Snapd cleanup while measured pressure is below the threshold', async () => {
     const runCommand = vi.fn();
     const withMutex = vi.fn();

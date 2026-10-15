@@ -39,7 +39,8 @@ import { homedir } from 'node:os';
 export type PushKind =
   | 'intervention'
   | 'smoke-fail'
-  | 'operator-suggestion';
+  | 'operator-suggestion'
+  | 'agent-session';
 
 interface PushPayload {
   /** Short title shown on lock screen */
@@ -436,10 +437,11 @@ export function pushEnabled(): { fcm: boolean; apns: boolean } {
 export async function notifyWorkspace(
   workspaceId: string,
   payload: PushPayload,
-  deps?: { dispatch?: (t: DeviceTarget[], p: PushPayload) => Promise<PushSendResult[]> },
+  deps?: { dispatch?: (t: DeviceTarget[], p: PushPayload) => Promise<PushSendResult[]>;
+    requiredCapability?: 'agent-sessions' },
 ): Promise<PushSendResult[]> {
   const { pushTargetsForWorkspace } = await import('./device-store');
-  const targets = await pushTargetsForWorkspace(workspaceId);
+  const targets = await pushTargetsForWorkspace(workspaceId, deps?.requiredCapability);
   if (targets.length === 0) return [];
   const results = await (deps?.dispatch ?? dispatchPush)(targets, payload);
 

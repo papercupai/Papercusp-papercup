@@ -16,12 +16,14 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
+import { lstat, unlink } from 'node:fs/promises';
 import { activeWorkspaceId } from '../workspace-registry';
 import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
 import { emitTaskTerminalEvent, type TaskTerminalEventEmitter } from './task-terminal-events';
 import { recordAttemptOnClose } from '../verification-attempts/attempt-ledger';
 import { nudgeOnNewLoop } from '../verification-attempts/loop-gate';
+import { cleanupEndedVerifierDirectories } from '../verifier-source';
 import {
   TASK_STATES,
   isTerminalState,
@@ -138,8 +140,19 @@ export interface RegisterTaskOptions {
  * Insert the `pending` row. Returns the full row — callers need `taskId` to build
  * the scope name and to correlate the child's exit.
  */
-export async function registerTask(spec: TaskSpec, opts: RegisterTaskOptions = {}, inject?: Sql): Promise<TaskRow> {
+export interface RegisterTaskStageObserver {
+  stage(name: string): void;
+}
+
+export async function registerTask(
+  spec: TaskSpec,
+  opts: RegisterTaskOptions = {},
+  inject?: Sql,
+  observer?: RegisterTaskStageObserver,
+): Promise<TaskRow> {
+  observer?.stage?.('task-ledger-client-init');
   const sql = sqlOf(inject);
+  observer?.stage?.('task-ledger-prepare');
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const taskId = opts.taskId ?? newTaskId();
   const rootTaskId = spec.parentTaskId ? await resolveRoot(spec.parentTaskId, taskId, sql) : taskId;
@@ -158,6 +171,7 @@ export async function registerTask(spec: TaskSpec, opts: RegisterTaskOptions = {
   // the scope under the exact task id, creating an `unaccounted` placeholder;
   // allow that one narrow conflict to regain provenance. Ordinary duplicate ids
   // still return no row and fail below rather than overwriting a real task.
+  observer?.stage?.('task-ledger-insert');
   const rows = await sql`
     INSERT INTO harness_shared.task_ledger (
       task_id, workspace_id, harness_slug, parent_task_id, root_task_id,
@@ -324,6 +338,8 @@ export interface CloseTaskInput {
 }
 
 export interface CloseTaskEffects {
+  /** Cleanup must succeed before the terminal row loses its retry path. */
+  cleanupVerifierDirectories?: typeof cleanupEndedVerifierDirectories;
   /** Test seam; production uses the awaited-event bridge. */
   emitTerminal?: TaskTerminalEventEmitter;
   /** Test seam; production stamps the slow-attempt record (verification-attempts). */
@@ -415,7 +431,7 @@ export async function closeTask(
   effects: CloseTaskEffects = {},
 ): Promise<boolean> {
   const sql = sqlOf(inject);
-  const existing = input.terminalProvenance ? await getTask(taskId, inject) : null;
+  const existing = await getTask(taskId, inject);
   if (input.terminalProvenance && !existing) return false;
   if (input.terminalProvenance && existing?.scopeUnit && existing.scopeUnit !== input.terminalProvenance.scopeUnit) {
     // A systemd snapshot is identity-bearing evidence. Refuse to attach it to a
@@ -425,6 +441,8 @@ export async function closeTask(
   const classified = classifyTerminalClose(input, existing);
   assertState(classified.state);
   if (!isTerminalState(classified.state)) throw new Error(`task-manager: ${classified.state} is not terminal`);
+  if (existing && !existing.endedAt)
+    await (effects.cleanupVerifierDirectories ?? cleanupEndedVerifierDirectories)(existing);
   const terminalJson = classified.terminalProvenance ? JSON.stringify(classified.terminalProvenance) : null;
   const rows = await sql<Array<{
     task_id: string;
@@ -496,7 +514,7 @@ export async function closeTask(
         : false,
     );
   }
-  (effects.emitTerminal ?? emitTaskTerminalEvent)({
+  await (effects.emitTerminal ?? emitTaskTerminalEvent)({
     taskId: closed.task_id,
     workspaceId: closed.workspace_id,
     harnessSlug: closed.harness_slug,
@@ -842,6 +860,10 @@ export interface ListTasksFilter {
   coordOwnerId?: string;
   /** Match one exact task-ledger row by its durable task id. */
   taskId?: string;
+  /** Exact identities, filtered before the result cap. Empty means no matches. */
+  taskIds?: string[];
+  /** Server-owned launch dispatch identity; exact match inside the workspace before LIMIT. */
+  dispatchCallId?: string;
   /** Match one exact systemd scope/service unit before the result limit is applied. */
   scopeUnit?: string;
   /** Match one exact systemd InvocationID stored in terminal provenance. */
@@ -911,6 +933,7 @@ export async function listLatestStrandedByCoordOwners(
 }
 
 export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Promise<TaskRow[]> {
+  if (filter.taskIds?.length === 0) return [];
   const sql = sqlOf(inject);
   const ws = filter.workspaceId ?? activeWorkspaceId();
   const limit = Math.min(Math.max(filter.limit ?? 200, 1), 2000);
@@ -923,6 +946,8 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
        ${filter.launchedBy ? sql`AND launched_by = ${filter.launchedBy}` : sql``}
        ${filter.coordOwnerId ? sql`AND detail ->> 'coordOwnerId' = ${filter.coordOwnerId}` : sql``}
        ${filter.taskId ? sql`AND task_id = ${filter.taskId}` : sql``}
+       ${filter.taskIds ? sql`AND task_id = ANY(${sql.array(filter.taskIds, 25)})` : sql``}
+       ${filter.dispatchCallId ? sql`AND detail ->> 'dispatchCallId' = ${filter.dispatchCallId}` : sql``}
        ${
          filter.scopeUnit
            ? sql`AND (scope_unit = ${filter.scopeUnit} OR detail #>> '{terminalProvenance,scopeUnit}' = ${filter.scopeUnit})`
@@ -948,9 +973,15 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
  * key between those orderings. Updating all matching live rows is deliberate:
  * a duplicate launch under one owner is already an anomaly, and session end
  * must reap every subtree that identity owns rather than leave the duplicate.
+ *
+ * `initialTaskId` is the initial native observation for ONE enrolled launch,
+ * rather than a respawn. That exact row may already have exited before the
+ * stream reports its UUID. Link it without reopening it or replacing a different
+ * UUID, and return its id even for an idempotent observation so the caller can
+ * verify enrollment. The ordinary owner-wide respawn path stays live-only.
  */
 export async function bindLiveAgentSessionTasksToNativeSession(
-  input: { workspaceId?: string; coordOwnerId: string; sessionId: string },
+  input: { workspaceId?: string; coordOwnerId: string; sessionId: string; initialTaskId?: string },
   inject?: Sql,
 ): Promise<string[]> {
   const coordOwnerId = input.coordOwnerId.trim();
@@ -958,6 +989,21 @@ export async function bindLiveAgentSessionTasksToNativeSession(
   if (!coordOwnerId || !sessionId) return [];
   const sql = sqlOf(inject);
   const ws = input.workspaceId ?? activeWorkspaceId();
+  if (input.initialTaskId !== undefined) {
+    const taskId = input.initialTaskId.trim();
+    if (!taskId) return [];
+    const rows = await sql<Array<{ task_id: string }>>`
+      UPDATE harness_shared.task_ledger
+         SET session_id = ${sessionId}, updated_at = now()
+       WHERE workspace_id = ${ws}
+         AND task_id = ${taskId}
+         AND class = 'agent-session'
+         AND detail ->> 'coordOwnerId' = ${coordOwnerId}
+         AND (session_id IS NULL OR session_id = ${sessionId})
+      RETURNING task_id
+    `;
+    return rows.map((row) => row.task_id);
+  }
   const rows = await sql<Array<{ task_id: string }>>`
     UPDATE harness_shared.task_ledger
        SET session_id = ${sessionId}, updated_at = now()
@@ -1049,6 +1095,8 @@ export async function listLifecycleJudgementTasks(
 export interface TaskLifecycleProbeUpdate {
   taskId: string;
   probe: object;
+  /** Set only by the judge for residue confirmed by the current healthy reconcile scan. */
+  terminalResidue?: boolean;
 }
 
 /**
@@ -1062,7 +1110,11 @@ export async function mergeTaskLifecycleProbes(
 ): Promise<number> {
   if (updates.length === 0) return 0;
   const sql = sqlOf(inject);
-  const payload = updates.map((update) => ({ taskId: update.taskId, probe: update.probe }));
+  const payload = updates.map((update) => ({
+    taskId: update.taskId,
+    probe: update.probe,
+    terminalResidue: update.terminalResidue === true,
+  }));
   const rows = await sql`
     UPDATE harness_shared.task_ledger t
        SET detail = jsonb_set(
@@ -1073,11 +1125,19 @@ export async function mergeTaskLifecycleProbes(
            ),
            updated_at = now()
       FROM (
-        SELECT x->>'taskId' AS task_id, x->'probe' AS probe
+        SELECT x->>'taskId' AS task_id,
+               x->'probe' AS probe,
+               CASE WHEN x->>'terminalResidue' = 'true' THEN TRUE ELSE FALSE END AS terminal_residue
           FROM jsonb_array_elements(${JSON.stringify(payload)}::text::jsonb) AS x
       ) u
      WHERE t.task_id = u.task_id
-       AND t.ended_at IS NULL
+       AND (
+         t.ended_at IS NULL OR (
+           u.terminal_residue
+           AND t.ended_at IS NOT NULL
+           AND t.state IN ('exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved')
+         )
+       )
        AND jsonb_typeof(u.probe) = 'object'
     RETURNING t.task_id
   `;
@@ -1650,6 +1710,16 @@ export async function upsertUnaccounted(
   const localBearer = readSuperuserToken();
   const diagnosticSecrets = localBearer ? [localBearer] : [];
   for (const g of groups) {
+    // A residue with its own exact `pc-<taskId>` unit is still positively
+    // cgroup-confined even though the live owner row disappeared. The group
+    // came from the kernel census, so require its observed path to end at that
+    // unit under our slice before recording confinement.
+    const hasOwnedTaskScope = Boolean(
+      g.scopeUnit &&
+      taskIdFromScopeUnit(g.scopeUnit) === g.taskId &&
+      g.cgroupPath.includes('/papercusp.slice/') &&
+      g.cgroupPath.endsWith(`/${g.scopeUnit}`),
+    );
     // Residue samples originate in `/proc/<pid>/cmdline` and are persisted so the
     // reconciler can retain history. Redact before the durable boundary, and before
     // capping, so a credential-shaped assignment cannot survive in the ledger.
@@ -1662,13 +1732,14 @@ export async function upsertUnaccounted(
       ) VALUES (
         ${g.taskId}, ${ws}, ${g.taskId}, 'other',
         ${title},
-        '[]'::jsonb, 'unknown', ${g.scopeUnit}, ${g.cgroupPath}, ${g.pids[0] ?? null}, false, 'unaccounted',
+        '[]'::jsonb, 'unknown', ${g.scopeUnit}, ${g.cgroupPath}, ${g.pids[0] ?? null}, ${hasOwnedTaskScope}, 'unaccounted',
         ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::text::jsonb,
         ${g.metrics?.lastMemoryBytes ?? null}, ${g.metrics?.peakMemoryBytes ?? null},
         ${g.metrics?.cpuUsec ?? null}, ${g.metrics?.pidsCurrent ?? null}
       )
       ON CONFLICT (task_id) DO UPDATE
         SET title = EXCLUDED.title,
+            confined = harness_shared.task_ledger.confined OR EXCLUDED.confined,
             scope_unit = COALESCE(EXCLUDED.scope_unit, harness_shared.task_ledger.scope_unit),
             last_seen_at = now(),
             updated_at = now(),
@@ -1750,8 +1821,42 @@ export async function gcTerminalTasks(
        AND ended_at IS NOT NULL
        AND ended_at < now() - make_interval(hours => ${olderThanHours}::int)
        AND NOT (detail ? 'release')
-    RETURNING task_id
+    RETURNING task_id, log_path
   `;
+
+  // The task ledger is the ownership receipt for its spill log. Keep the file
+  // available while a terminal row is retained so capability:bash_output can
+  // reattach by task id after its worker-local registry is gone. Only paths
+  // returned by the completed DELETE are eligible here; after deleting the
+  // rows, preserve any path that another surviving row still references.
+  const logPaths = [...new Set(
+    rows
+      .map((row: { log_path?: unknown }) => (typeof row.log_path === 'string' ? row.log_path : null))
+      .filter((path: string | null): path is string => Boolean(path?.trim())),
+  )];
+  if (logPaths.length > 0) {
+    const remaining = await sql<{ log_path: string }[]>`
+      SELECT DISTINCT log_path
+        FROM harness_shared.task_ledger
+       WHERE log_path = ANY(${sql.array(logPaths)})
+    `;
+    const stillReferenced = new Set(remaining.map((row) => row.log_path));
+    await Promise.all(
+      logPaths
+        .filter((logPath) => !stillReferenced.has(logPath))
+        .map(async (logPath) => {
+          try {
+            const stat = await lstat(logPath);
+            // `unlink` removes a symlink itself without following it. Never
+            // recurse into a directory if a malformed ledger row names one.
+            if (stat.isFile() || stat.isSymbolicLink()) await unlink(logPath);
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+          }
+        }),
+    );
+  }
   return rows.length;
 }
 

@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "item": "P-011",
+  "scope": "Fresh bounded single-root operatorCache diagnostic on the actual staging main PID; incomplete payload attribution, no physical savings or full P011 acceptance.",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-operator-cache-r3-2026-10-02.json",
+    "sha256": "297c6663211f08cd3a7a6b32fe34412270953284c584b0522290779d1e6aa462",
+    "bytes": 40191
+  },
+  "runtime": {
+    "plane": "live-current-build-operator-api",
+    "mainPid": 2702313,
+    "healthBuildSha": "d849cabb62",
+    "startedAt": "2026-10-02T11:41:27.750Z",
+    "endedAt": "2026-10-02T11:41:36.758Z",
+    "healthBeforeAt": "2026-10-02T11:41:27.867Z",
+    "healthAfterAt": "2026-10-02T11:41:36.606Z",
+    "diskBundleSha256BeforeAndAfter": "331b66e15836d237f733be5f1b85eda781933d8683484a563cf58fb120bd17a3",
+    "processIdentityPreserved": true,
+    "probeOpenedInspectorClosed": true,
+    "sharedStagingLeaseReleasedAfterTerminalCohort": true,
+    "samples": 9,
+    "requests": 24,
+    "requestConcurrency": 2,
+    "ambientWorkloadControlled": false,
+    "httpWorkerAttribution": "unknown; requests may reach sibling workers",
+    "sourceIdentity": "Health-reported loaded application build and disk bundle identity are separate. The local maintained CDP reader injects the diagnostic expression; it is not claimed as loaded application code."
+  },
+  "verification": {
+    "live": {
+      "testRunId": 20524255,
+      "layer": "integration",
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "log": "/tmp/su-7db4f-p011-operator-cache-r3.log",
+      "exit": 0
+    },
+    "ledgerScope": {
+      "workspace": "papercusp-workspace",
+      "harness": "papercusp",
+      "source": "local",
+      "worktreeDirty": true,
+      "commitSha": "61ea9e254de3d43bc4ba427e7728681c796336ba"
+    },
+    "focusedTypes": {
+      "namedFiles": 1,
+      "errors": 0,
+      "exit": 0,
+      "log": "/tmp/su-7db4f-p011-deep-limits-types-r3.log"
+    },
+    "testOracle": "Configurable reader limits cannot replace PID or exact owners; PID reuse and changed executables are rejected; actual live cohort passes those guards and invokes the maintained reader with the recorded deeper limits.",
+    "earlierGuard": "The preliminary 2PASS/1SKIP run was unscoped and is not offered as bindable harness proof. The fresh scoped live run includes all three tests."
+  },
+  "namedSourceIdentity": {
+    "beforeAt": "2026-10-02T11:41:14.908Z",
+    "afterAt": "2026-10-02T11:41:53.215Z",
+    "stable": true,
+    "sha256BeforeAndAfter": {
+      "scripts/cdp-inspector.mjs": "9a832b65de352ca5a5ea2fe241f1e1195f418dc5fc1cfd4bf910c55cbe6f1970",
+      "scripts/cdp-inspector.d.mts": "dc3b0e6e89907e18b7be9518e88c66923fa8ac46e1290fbf1abf15f8a795397e",
+      "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts": "465c2877c7443928e8e67f15aa3cee538949ca00c946976eb62046d3f2837136",
+      "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+      "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+      "libs/generic/cache/src/l1.ts": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977"
+    },
+    "qualification": "Six named files only; full executed transitive graph and current serving source graph remain unknown."
+  },
+  "reader": {
+    "owner": "@papercusp/operator-core.operatorCache",
+    "limits": { "maxSlots": 1, "maxObjects": 16384, "maxEntries": 32768, "maxFields": 64, "maxDepth": 8, "budgetMs": 200 },
+    "registryPopulation": 136,
+    "selectedRootsCheckedPerSample": 1,
+    "excludedRootsPerSample": 135,
+    "observedInEachOfNineSamples": {
+      "objects": 9650,
+      "entries": 32768,
+      "maps": 1,
+      "mapEntries": 29,
+      "arrays": 4905,
+      "arrayEntries": 29451,
+      "stringCodeUnits": 1261807,
+      "byteViewExtents": 0,
+      "arrayBufferExtents": 0,
+      "depthLimited": 872,
+      "traversalLimited": true
+    },
+    "observerMs": { "minimum": 15.205644999994547, "maximum": 34.041142000001855 }
+  },
+  "interpretation": {
+    "measured": "A single 29-entry map was observed under operatorCache. Every traversal exhausted the 32768-entry allowance and stopped 872 objects at depth 8. These partial counters do not identify which individual cached values contribute the payload.",
+    "definitions": "String lengths include observed references and can share storage; array/map sizes are logical sizes and can exceed traversed entries. View extents can overlap. No logical counter is retained heap/native bytes.",
+    "existingMechanism": "Cache.getOrSet already calls bounded hard-expiry pruning with 64 checks per read. Reuse that implementation; do not duplicate it or interpret the capacity comment as measured memory.",
+    "next": "Attribute the existing L1 map values individually with bounded data-property inspection, stable value identities and explicit per-entry limits before selecting a payload reduction.",
+    "acceptanceStillOpen": ["paired physical savings", "useful context preservation", "concurrency", "historical compiler ownership", "R8/R9", "independent acceptance", "final shipment"]
+  }
+}

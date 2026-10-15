@@ -6,16 +6,15 @@
  * system-action registry) to the handler, which creates a work-item / starts a blueprint run.
  * Also covers `materializeBlueprintTriggers` writing the routines rows.
  *
- * Mirrors blueprint-project-pg.integration.test.ts: a throwaway testcontainer DB with the
- * relevant tables created ad-hoc (the full migration set is exercised by
- * fresh-migrate.integration.test.ts). getOrgPg() — what the handler's work-item insert reads —
+ * Uses the canonical migrated org fixture, including durable scheduler receipts.
+ * getOrgPg() — what the handler's work-item insert reads —
  * is pointed at this DB via HARNESS_ADMIN_DATABASE_URL + _resetForTests (the list-workspaces
  * integration pattern).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import postgres from 'postgres';
-import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import type postgres from 'postgres';
+// eslint-disable-next-line import/no-relative-packages -- reuse the migrated, template-cached org fixture
+import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
 import { loadBuiltinBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { _resetForTests } from '@papercusp/db-org';
 import { getSystemAction, type SystemActionCtx } from '@papercusp/operator-core/lib/harness/routines/system-actions';
@@ -32,8 +31,7 @@ import {
   cutoverActiveLearningSingleton,
 } from '@papercusp/operator-core/lib/blueprint/seed-learning-singletons';
 
-let adminUri: string;
-let dbName: string;
+let db: OrgTestDb;
 let sql: postgres.Sql;
 
 const WS = 'ws_test';
@@ -51,94 +49,15 @@ const coding = loadBuiltinBlueprint('coding-solo').blueprint;
 const research = (): Blueprint => ({ ...coding, workItem: { kind: 'chunk', idPrefix: 'R' } });
 
 beforeAll(async () => {
-  adminUri = await getTestPg();
-  dbName = `bpr_${randomBytes(5).toString('hex')}`;
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
-  const u = new URL(adminUri);
-  u.pathname = `/${dbName}`;
-  sql = postgres(u.toString(), { max: 4, onnotice: () => {} });
-
-  await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
-  // getOrgPg() opens with search_path [harness_shared, papercusp_shared, public].
-  await sql.unsafe('CREATE SCHEMA IF NOT EXISTS papercusp_shared');
-
-  // work_items BASE table — head's canonical work-item store. migration 135 (P-020)
-  // moved the base off `harness_features_consolidated`, which is now a VIEW over
-  // work_items: the action INSERTs into work_items, the assertions read the compat view.
-  // The columns are the ones the action writes (incl. item_kind + payload). PK (harness_slug, feature_id).
-  await sql.unsafe(`
-    CREATE TABLE harness_shared.work_items (
-      harness_slug       text NOT NULL,
-      feature_id         text NOT NULL,
-      title              text,
-      summary            text,
-      status             text,
-      attempts           bigint,
-      item_kind          text NOT NULL DEFAULT 'feature',
-      payload            jsonb,
-      needs_human_review boolean,
-      workspace_id       text NOT NULL,
-      ts                 bigint,
-      created_ts         bigint,
-      updated_ts         bigint,
-      admission text, admitted_at timestamptz, admitted_by text,
-      PRIMARY KEY (harness_slug, feature_id)
-    )
-  `);
-  // harness_features_consolidated is a compat VIEW over work_items in head. A simple
-  // `SELECT *` view over one table is auto-updatable, so the test's DELETE/SELECT
-  // against the view still behave exactly as against the base table.
-  await sql.unsafe(`
-    CREATE VIEW harness_shared.harness_features_consolidated AS
-      SELECT * FROM harness_shared.work_items
-  `);
-
-  // routines table (the relevant columns + the (install_slug, name) unique key).
-  await sql.unsafe(`
-    CREATE TABLE harness_shared.routines (
-      id             text PRIMARY KEY,
-      install_slug   text NOT NULL,
-      name           text NOT NULL,
-      trigger_kind   text NOT NULL,
-      trigger_config jsonb NOT NULL,
-      target_role    text NOT NULL,
-      payload_template jsonb,
-      concurrency    text NOT NULL DEFAULT 'queue',
-      catchup        text NOT NULL DEFAULT 'skip-old',
-      active         boolean NOT NULL DEFAULT true,
-      last_fired_at  timestamptz,
-      next_fire_at   timestamptz,
-      created_at     timestamptz NOT NULL DEFAULT now(),
-      updated_at     timestamptz NOT NULL DEFAULT now(),
-      metadata       jsonb,
-      workspace_id   text NOT NULL,
-      reschedule_interval_sec integer,
-      target_owner_id text,
-      UNIQUE (install_slug, name)
-    )
-  `);
-
-  // autoloop_state — the P-009 fire-backoff gate reads this before a mode='run'
-  // decider fire (checkFireGate → readFireState). A real baseline table; without
-  // it the gate fail-opens with a console.warn that trips fail-on-console.
-  await sql.unsafe(`
-    CREATE TABLE harness_shared.autoloop_state (
-      harness_slug       text NOT NULL,
-      role               text NOT NULL DEFAULT 'director',
-      last_fired_at      timestamptz NOT NULL DEFAULT now(),
-      last_status        text,
-      consecutive_errors integer NOT NULL DEFAULT 0,
-      workspace_id       text NOT NULL DEFAULT '',
-      PRIMARY KEY (workspace_id, harness_slug, role)
-    )
-  `);
-
-  process.env.HARNESS_ADMIN_DATABASE_URL = u.toString();
+  db = await createOrgTestDb();
+  sql = db.adminSql;
+  await sql`
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+    VALUES (${WS}, 'demo', ${Buffer.from([0])}, 'kc-blueprint-run-demo', 0)
+    ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
+  `;
+  process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
   await _resetForTests();
 }, 60_000);
 
@@ -147,20 +66,13 @@ afterAll(async () => {
   await _resetForTests();
   setBlueprintResolver(null);
   setBlueprintRunFire(null);
-  if (sql) await sql.end({ timeout: 5 });
-  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-  try {
-    await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
-  } catch {
-    /* best-effort */
-  } finally {
-    await admin.end({ timeout: 5 });
-  }
+  await db?.cleanup();
 });
 
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.harness_features_consolidated`;
   await sql`DELETE FROM harness_shared.routines`;
+  await sql`DELETE FROM harness_shared.blueprint_operation_invocations`;
   setBlueprintResolver(null);
   setBlueprintRunFire(null);
 });
@@ -474,13 +386,14 @@ describe('cutoverActiveLearningSingleton — behavior-neutral active cutover (P-
 
 describe("system:blueprint-run fires through the routine dispatch path", () => {
   it("mode='work-item' creates a feature-kind work-item in the work_items base", async () => {
-    setBlueprintResolver(async () => coding); // workItem.kind='feature', idPrefix='F'
+    setBlueprintResolver(async () => coding); // workItem.kind='feature'
     // Seed the routine (what routinesTick would list as due) — then dispatch its handler.
     await materializeBlueprintTriggers('demo', { triggers: { schedule: [{ cron: '0 0 9 * * *', action: 'system:blueprint-run' }] } }, { sql, workspaceId: WS });
 
     await dispatch({
       installSlug: 'demo',
       workspaceId: WS,
+      workflowId: 'blueprint-run-nightly-sweep',
       triggerConfig: { cron: '0 0 9 * * *' },
       payloadTemplate: { mode: 'work-item', workItem: { title: 'Nightly sweep' } },
     });
@@ -498,7 +411,11 @@ describe("system:blueprint-run fires through the routine dispatch path", () => {
     expect(rows[0].status).toBe('open');
     expect(rows[0].item_kind).toBe('feature');
     expect(rows[0].workspace_id).toBe(WS);
-    expect(rows[0].feature_id.startsWith('F-SCHED-')).toBe(true);
+    expect(rows[0].feature_id).toMatch(/^WI-/);
+    const receipts = await sql<{ target_ref: string; request_key: string }[]>`
+      SELECT target_ref, request_key FROM harness_shared.blueprint_operation_invocations
+       WHERE workspace_id=${WS} AND harness_slug='demo'`;
+    expect(receipts).toEqual([{ target_ref: rows[0].feature_id, request_key: 'blueprint-run-nightly-sweep' }]);
   });
 
   it("mode='work-item' refuses a blueprint that still declares the retired chunk kind", async () => {

@@ -49,6 +49,8 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { setWorkItemClaimHold } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { buildDurableParkReleaseContract } from '../../durable-park-release-contract';
+import type { DurableParkReleaseContract } from '../../work-items-durable-park-audit';
 
 /**
  * The provenance marker stamped into `payload.claim_hold_reason` by the pause leg and
@@ -112,6 +114,8 @@ export async function applyFleetPauseHolds(args: {
   workspaceId: string | null;
   /** The pause invoker — recorded as the park's `claim_hold_by` provenance. */
   byOwnerId: string;
+  /** Exact gate declared by fleet control and fired by resume; never invent a fallback key. */
+  resumeGate?: string | null;
   /**
    * Registry leader retained for call-site compatibility. It is intentionally NOT unioned
    * into the holder set: one leader can control several fleets, but a holder's work-item
@@ -153,9 +157,18 @@ export async function applyFleetPauseHolds(args: {
             WHERE m.fleet_slug = ${args.fleetSlug}
          )`;
 
+    if (!rows.length) return { items: [], failed: [] };
+    if (!args.resumeGate?.trim()) {
+      return { items: [], failed: rows.map((row) => row.feature_id), degraded: 'fleet pause has no declared resume gate' };
+    }
+    const releaseContract = await buildDurableParkReleaseContract({
+      condition: `fleet ${args.fleetSlug} resumes`,
+      trigger: args.resumeGate,
+    }, args.byOwnerId);
     return await writeHolds(rows, true, {
       parkedBy: args.byOwnerId,
       parkedReason,
+      releaseContract,
     });
   } catch (err) {
     return degraded('pause', args.fleetSlug, err);
@@ -192,7 +205,7 @@ export async function clearFleetPauseHolds(args: {
 async function writeHolds(
   rows: { feature_id: string; harness_slug: string | null }[],
   hold: boolean,
-  opts: { parkedBy?: string; parkedReason?: string },
+  opts: { parkedBy?: string; parkedReason?: string; releaseContract?: DurableParkReleaseContract },
 ): Promise<FleetPauseHoldResult> {
   const items: string[] = [];
   const failed: string[] = [];

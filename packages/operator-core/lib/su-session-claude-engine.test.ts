@@ -11,11 +11,15 @@ import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootst
 import { humanToolName } from './su-session-approval-display';
 import {
   CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, claudeDirectiveDispositionSuTools,
-  claudeMemoryFilesInPrompt, claudeReadOnlySuTools, createChildStderrTail,
+  claudeMemoryFilesInPrompt, claudePermissionMode, claudeReadOnlySuTools, createChildStderrTail,
   formatStalledTurnMessage, redactChildStderr, startClaudeSuEngine,
   type ClaudeEngineOptions, type ClaudeSuEngine,
 } from './su-session-claude-engine';
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
+
+const nativeFunding = vi.hoisted(() => vi.fn<typeof import('./cupboard/identity-activation-gate-io').admitNativeIdentityInference>());
+vi.mock('./cupboard/identity-activation-gate-io', () => ({ admitNativeIdentityInference: nativeFunding }));
+beforeEach(() => { nativeFunding.mockReset(); nativeFunding.mockResolvedValue({ ok: true }); });
 
 vi.mock('./su-session-persistence', () => ({
   persistSuSessionDescriptor: vi.fn(async () => true),
@@ -129,6 +133,37 @@ function stalledReports(engine: ClaudeSuEngine) {
 }
 
 describe('structured Claude SU engine', () => {
+  it('awaits the exact native funding guard before writing querying input', async () => {
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    nativeFunding.mockImplementationOnce(async () => { await barrier; return { ok: true }; });
+    const p = peer(), engine = open(p); await engine.ready;
+    const dispatch = engine.adapter.host.startCommand(command(engine) as never);
+    await vi.waitFor(() => expect(nativeFunding).toHaveBeenCalledOnce());
+    expect(nativeFunding).toHaveBeenCalledWith({ workspaceId: 'workspace', ownerId: 'su-test', backend: 'claude' });
+    expect(p.prompts).toHaveLength(0);
+    release();
+    await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(p.prompts).toHaveLength(1);
+  });
+
+  it('refuses unpaid or unsupported paid inference without writing querying input', async () => {
+    nativeFunding.mockResolvedValueOnce({ ok: false, code: 'identity-native-billing-unsupported',
+      message: 'Provider-billed request cost is unavailable', retryable: false });
+    const p = peer(), engine = open(p); await engine.ready;
+    const dispatch = engine.adapter.host.startCommand(command(engine) as never);
+    await expect(dispatch.terminal).resolves.toMatchObject({ status: 'refused', refusal: { code: 'identity-native-billing-unsupported' } });
+    expect(p.prompts).toHaveLength(0);
+  });
+
+  it('keeps ordinary coding-assistant input independent of SU identity funding', async () => {
+    const p = peer(), engine = open(p, { identity: 'coding-assistant' }); await engine.ready;
+    const dispatch = engine.adapter.host.startCommand(command(engine) as never);
+    await expect(dispatch.terminal).resolves.toMatchObject({ status: 'completed' });
+    expect(nativeFunding).not.toHaveBeenCalled();
+    expect(p.prompts).toHaveLength(1);
+  });
+
   it.each([
     { toolApproval: undefined, permissionMode: 'bypassPermissions', dangerouslySkip: true },
     { toolApproval: 'prompt' as const, permissionMode: 'default', dangerouslySkip: undefined },
@@ -304,6 +339,103 @@ describe('structured Claude SU engine', () => {
     }));
   });
 
+  // pui-chat-first-ux P-026 / D-025: /model's pick rides on the next owner turn.
+  describe('P-026 model switching', () => {
+    function switchable(p: ReturnType<typeof peer>, controls: 'both' | 'none' = 'both') {
+      const order: string[] = [];
+      const setModel = vi.fn(async (model?: string) => { order.push(`setModel:${model}:after-${p.prompts.length}-prompts`); });
+      const applyFlagSettings = vi.fn(async (settings: { effortLevel?: string }) => {
+        order.push(`effort:${settings.effortLevel}:after-${p.prompts.length}-prompts`);
+      });
+      const factory: NonNullable<ClaudeEngineOptions['query']> = (args) => {
+        const query = p.factory(args);
+        return controls === 'both' ? Object.assign(query, { setModel, applyFlagSettings }) as typeof query : query;
+      };
+      return { peer: { ...p, factory }, setModel, applyFlagSettings, order };
+    }
+    const withModel = (engine: ClaudeSuEngine, model: string, id = 'switch') =>
+      ({ ...command(engine), commandId: `cmd-${id}`, turnId: `owner-${id}`, model });
+
+    it('switches before the turn is written and names the model on the session', async () => {
+      const s = switchable(peer());
+      const engine = open(s.peer, { model: 'claude-opus-4-1' }); await engine.ready;
+      const result = await engine.adapter.host.startCommand(withModel(engine, 'claude-sonnet-4-5:high')).terminal;
+      expect(result.status).toBe('completed');
+      expect(s.order).toEqual(['setModel:claude-sonnet-4-5:after-0-prompts', 'effort:high:after-0-prompts']);
+      expect(s.peer.prompts).toHaveLength(1);
+      expect(engine.adapter.host.descriptor()).toMatchObject({
+        model: 'claude-sonnet-4-5:high',
+        ownerSelectedModel: 'claude-sonnet-4-5:high',
+      });
+    });
+
+    it('does not switch for a turn naming the current model', async () => {
+      const s = switchable(peer());
+      const engine = open(s.peer, { model: 'claude-opus-4-1' }); await engine.ready;
+      await engine.adapter.host.startCommand(withModel(engine, 'claude-opus-4-1')).terminal;
+      expect(s.setModel).not.toHaveBeenCalled();
+      expect(s.peer.prompts).toHaveLength(1);
+    });
+
+    it('refuses the turn, writes nothing and stays usable when the connection cannot switch', async () => {
+      const s = switchable(peer(), 'none');
+      const engine = open(s.peer, { model: 'claude-opus-4-1' }); await engine.ready;
+      const refused = await engine.adapter.host.startCommand(withModel(engine, 'claude-haiku-4-5')).terminal;
+      expect(refused).toMatchObject({ status: 'refused', refusal: { code: 'model_switch_refused', retryable: false,
+        liftsWhen: expect.stringContaining('omit the model override') } });
+      expect(s.peer.prompts).toHaveLength(0);
+      expect(engine.adapter.host.descriptor().model).not.toBe('claude-haiku-4-5');
+      const next = await engine.adapter.host.startCommand({ ...command(engine), commandId: 'cmd-after', turnId: 'owner-after' }).terminal;
+      expect(next.status).toBe('completed');
+      expect(s.peer.prompts).toHaveLength(1);
+    });
+  });
+
+  // pui-chat-first-ux P-027 / D-026: /approvals rides on the next owner turn.
+  describe('D-026 approvals switching', () => {
+    function permissionable(p: ReturnType<typeof peer>, withControl = true) {
+      const order: string[] = [];
+      const setPermissionMode = vi.fn(async (mode: string) => { order.push(`mode:${mode}:after-${p.prompts.length}-prompts`); });
+      const factory: NonNullable<ClaudeEngineOptions['query']> = (args) => {
+        const query = p.factory(args);
+        return withControl ? Object.assign(query, { setPermissionMode }) as typeof query : query;
+      };
+      return { peer: { ...p, factory }, setPermissionMode, order };
+    }
+    const withApprovals = (engine: ClaudeSuEngine, approvals: string, id = 'approvals') =>
+      ({ ...command(engine), commandId: `cmd-${id}`, turnId: `owner-${id}`, approvals }) as never;
+
+    it('a prompted launch reports ask, and a switch applies before the turn is written', async () => {
+      const s = permissionable(peer());
+      const engine = open(s.peer, { toolApproval: 'prompt' }); await engine.ready;
+      expect(engine.adapter.host.descriptor().approvals).toBe('ask');
+      const result = await engine.adapter.host.startCommand(withApprovals(engine, 'auto-edit')).terminal;
+      expect(result.status).toBe('completed');
+      expect(s.order).toEqual(['mode:acceptEdits:after-0-prompts']);
+      expect(engine.adapter.host.descriptor().approvals).toBe('auto-edit');
+      await engine.adapter.host.startCommand(withApprovals(engine, 'auto-edit', 'same')).terminal;
+      expect(s.setPermissionMode).toHaveBeenCalledTimes(1);
+    });
+
+    it('maps every mode to a Claude permission mode and has no bypass mode', () => {
+      expect(claudePermissionMode('ask')).toBe('default');
+      expect(claudePermissionMode('auto-edit')).toBe('acceptEdits');
+      expect(claudePermissionMode('read-only')).toBe('plan');
+    });
+
+    it('refuses the turn, writes nothing and stays usable when the connection cannot switch', async () => {
+      const s = permissionable(peer(), false);
+      const engine = open(s.peer, { toolApproval: 'prompt' }); await engine.ready;
+      const refused = await engine.adapter.host.startCommand(withApprovals(engine, 'read-only')).terminal;
+      expect(refused).toMatchObject({ status: 'refused', refusal: { code: 'approvals_switch_refused', retryable: false,
+        liftsWhen: expect.stringContaining('start a new Claude session') } });
+      expect(s.peer.prompts).toHaveLength(0);
+      expect(engine.adapter.host.descriptor().approvals).toBe('ask');
+      const next = await engine.adapter.host.startCommand({ ...command(engine), commandId: 'cmd-after', turnId: 'owner-after' }).terminal;
+      expect(next.status).toBe('completed');
+    });
+  });
+
   it('reports a turn that ended with no assistant content instead of completing it silently', async () => {
     const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;
@@ -332,6 +464,19 @@ describe('structured Claude SU engine', () => {
     expect(servedAccountReader).toHaveBeenCalledWith('su-test');
   });
 
+  it('does not report the owner interrupting a turn as a failed turn (P-032)', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    await engine.adapter.host.startCommand(command(engine, 'interrupt')).terminal;
+    expect(p.interrupt).toHaveBeenCalled();
+    // Claude Code 2.1.289 ends an interrupted turn this way; pui printed the raw diagnostic.
+    p.output.write({ type: 'result', subtype: 'error_during_execution', session_id: nativeId, is_error: true,
+      stop_reason: 'api_error', errors: ['[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null'] });
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor()).toMatchObject({ lifecycle: 'waiting-for-owner' }));
+    const errors = engine.adapter.host.recent.map(({ event }) => event).filter((event) => event.type === 'error');
+    expect(errors).toEqual([]);
+  });
+
   it('reports an API error carried on a success result instead of reading it as a reply', async () => {
     const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;
@@ -341,6 +486,22 @@ describe('structured Claude SU engine', () => {
       type: 'error', scope: 'transport', code: 'claude_turn_failed',
       message: expect.stringContaining('Credit balance is too low'),
     })));
+  });
+
+  // pui-chat-first-ux P-025: the adapter also reported a failed result record,
+  // so one refused turn produced two error events and PUI drew two failure
+  // lines under the prompt (seen live on a weekly-limit refusal).
+  it('reports a refused turn exactly once', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId,
+      is_error: true, stop_reason: 'stop_sequence', result: "You've hit your weekly limit" });
+    const errors = () => engine.adapter.host.recent.map(({ event }) => event).filter((event) => event.type === 'error');
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    await vi.waitFor(() => expect(errors().length).toBeGreaterThan(0));
+    expect(errors()).toEqual([expect.objectContaining({
+      code: 'claude_turn_failed', message: expect.stringContaining("You've hit your weekly limit"),
+    })]);
   });
 
   it('does not report an answered turn as empty or failed', async () => {
@@ -392,12 +553,44 @@ describe('structured Claude SU engine', () => {
       await vi.waitFor(() => expect(stalledReports(engine)).toHaveLength(1), { timeout: 2_000 });
     });
 
-    it('does not report a stall on a turn that produced frames and ended', async () => {
-      const p = peer(); const engine = open(p, { turnStallTimeoutMs: 60 }); await engine.ready;
-      await engine.adapter.host.startCommand(command(engine)).terminal;
+    it('does not report a stall after the terminal result while served-account provenance is pending', async () => {
+      const p = peer();
+      let resolveServedAccount!: (account: string) => void;
+      const servedAccountRead = new Promise<string>((resolve) => { resolveServedAccount = resolve; });
+      const servedAccountReader = vi.fn(() => servedAccountRead);
+      const engine = open(p, { turnStallTimeoutMs: 60, servedAccountReader }); await engine.ready;
+      const terminal = engine.adapter.host.startCommand(command(engine)).terminal;
+
+      await vi.waitFor(() => expect(servedAccountReader).toHaveBeenCalledWith('su-test'));
       await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 200));
       expect(stalledReports(engine)).toEqual([]);
+
+      resolveServedAccount('pool-claude-success');
+      await expect(terminal).resolves.toMatchObject({ status: 'completed' });
+      await vi.waitFor(() => expect(engine.adapter.host.descriptor()).toMatchObject({
+        accountServed: 'pool-claude-success',
+      }));
+    });
+
+    it('does not report a stall while an approval card waits for the owner, and restarts the clock after the answer', async () => {
+      const p = peer({ holdResult: true }); const engine = open(p, { turnStallTimeoutMs: 150 }); await engine.ready;
+      await engine.adapter.host.startCommand(command(engine)).terminal;
+      // Claude sends no frames while it waits for a permission answer (P-028 probe 13
+      // reported a false 114s stall under an open card).
+      const permission = p.options()!.canUseTool!('Edit', { file_path: 'calc.js', old_string: 'a', new_string: 'b' }, {
+        signal: new AbortController().signal, toolUseID: 'edit', requestId: 'edit-request', title: 'Edit calc.js?',
+      });
+      await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(stalledReports(engine)).toEqual([]);
+      const [card] = openCards(engine);
+      expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['yes'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+      await expect(permission).resolves.toMatchObject({ behavior: 'allow' });
+      // The silence after the answer is measured from the answer, and still reported.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(stalledReports(engine)).toEqual([]);
+      await vi.waitFor(() => expect(stalledReports(engine)).toHaveLength(1), { timeout: 2_000 });
     });
 
     it('stops watching a stalled turn once the engine is closed', async () => {
@@ -596,7 +789,8 @@ describe('structured Claude SU engine', () => {
     });
     await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
     const card = openCards(engine)[0];
-    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+    // D-028 approval options have stable ids: yes / always / no.
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['no'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
     await expect(permission).resolves.toMatchObject({ behavior: 'deny' });
     const questions = canUseTool('AskUserQuestion', { questions: [
       { question: 'First?', options: [{ label: 'Yes' }, { label: 'No' }] },
@@ -628,9 +822,10 @@ describe('structured Claude SU engine', () => {
       void canUseTool(name, {}, { ...request(id), ...(id === 'ask-rule' ? { matchedAskRule: { source: 'userSettings', toolName: name } } : {}) });
       await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
       const card = openCards(engine)[0];
-      // The card names the tool in its human display form (su-session-approval-display).
-      expect(card.prompt).toContain(humanToolName(name));
-      resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' });
+      // The card names the tool in its human display form (su-session-approval-display),
+      // in its D-028 title above the question.
+      expect(card.approval?.title).toContain(humanToolName(name));
+      resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['no'] }, expectedWorkspaceId: 'workspace' });
       await vi.waitFor(() => expect(openCards(engine)).toHaveLength(0));
     }
   });
@@ -654,8 +849,8 @@ describe('structured Claude SU engine', () => {
     const otherWrite = canUseTool('mcp__papercusp-su__work_items_comment', {}, request('other-write'));
     await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
     const otherCard = openCards(engine)[0];
-    expect(otherCard.prompt).toContain(humanToolName('mcp__papercusp-su__work_items_comment'));
-    resolveCardResponse({ correlationId: otherCard.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' });
+    expect(otherCard.approval?.title).toContain(humanToolName('mcp__papercusp-su__work_items_comment'));
+    resolveCardResponse({ correlationId: otherCard.correlationId, action: 'submit', payload: { picks: ['no'] }, expectedWorkspaceId: 'workspace' });
     await expect(otherWrite).resolves.toMatchObject({ behavior: 'deny' });
     expect(openCards(engine)).toHaveLength(0);
 
@@ -664,8 +859,8 @@ describe('structured Claude SU engine', () => {
     });
     await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
     const askRuleCard = openCards(engine)[0];
-    expect(askRuleCard.prompt).toContain(humanToolName(name));
-    resolveCardResponse({ correlationId: askRuleCard.correlationId, action: 'submit', payload: { picks: ['0'] }, expectedWorkspaceId: 'workspace' });
+    expect(askRuleCard.approval?.title).toContain(humanToolName(name));
+    resolveCardResponse({ correlationId: askRuleCard.correlationId, action: 'submit', payload: { picks: ['yes'] }, expectedWorkspaceId: 'workspace' });
     await expect(forcedByAskRule).resolves.toMatchObject({ behavior: 'allow' });
   });
 

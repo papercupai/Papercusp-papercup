@@ -7,31 +7,36 @@
  * HOW FAR it got before being refused — measured by counting the queries the
  * seam issued, since "the credential was never looked up" is the actual claim.
  *
+ * Since provider-adapters-to-packages-2026-10-11 P-002 the outbound call goes
+ * through the installed provider package for the destination's platform
+ * (`./social-provider.fixture` installs fakes), so "reached the adapter" is now
+ * measured as "the package was invoked", and "no network call" as "no host
+ * fetch was even prepared".
+ *
  * PERMANENT CONTROLS. Three deliberately-wrong implementations live at the
  * bottom of this file and are asserted to FAIL the same properties the real
  * code passes. They exist because a guard that has never failed is a guard
  * nobody has tested, and the repo's mutation-probe discipline forbids proving
  * that by mutating the shared tree. They are the in-file tier of that rule.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getFlagMock = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagMock }));
 
+import { PROVIDER_SOCIAL_REPLY_CAPABILITY } from '@papercusp/plugin-sdk';
 import {
   formatSocialDestinationRef,
-  getSocialWriteAdapter,
   parseSocialDestinationRef,
   parseSocialPostRef,
   postToCanonicalSocialDestination,
-  registerSocialWriteAdapter,
   socialPostIdempotencyKey,
   socialReplyIdempotencyKey,
-  unregisterSocialWriteAdapter,
   type SocialPostRequest,
-  type SocialWriteAdapter,
 } from './social';
 import { AddresseeRefused } from './addressing';
+import type { OutboundDispatchDeps } from './provider-dispatch';
+import { installSocialPackages, invokedArgs } from './social-provider.fixture';
 
 /**
  * Minimal postgres stand-in that also COUNTS calls, because the ordering claims
@@ -75,52 +80,33 @@ const TIKTOK_SOURCE = {
   credentialRef: 'cred-tt-1',
 };
 
-function recordingAdapter(platform: 'reddit' | 'bluesky' | 'mastodon' | 'tiktok' = 'reddit') {
-  const seen: SocialPostRequest[] = [];
-  const adapter: SocialWriteAdapter = {
-    platform,
-    async reply() {
-      throw new Error('reply not exercised by this suite');
-    },
-    async post(request) {
-      seen.push(request);
-      return { externalId: 't3_abc', ref: `${platform}:t3_abc`, url: 'https://example.test/t3_abc' };
-    },
-  };
-  return { adapter, seen };
+/** The platform's package, installed; `seen()` is every post request it received. */
+async function packageFor(platform: 'reddit' | 'bluesky' | 'mastodon' | 'tiktok' = 'reddit') {
+  const installed = await installSocialPackages([
+    { platform, respond: () => ({ externalId: 't3_abc', url: 'https://example.test/t3_abc' }) },
+  ]);
+  return { installed, seen: () => invokedArgs<SocialPostRequest>(installed) };
 }
 
-/** An adapter that implements ONLY reply — the registry says post, it cannot. */
-function replyOnlyAdapter(platform: 'reddit' = 'reddit'): SocialWriteAdapter {
-  return {
-    platform,
-    async reply() {
-      return { externalId: 'x', ref: `${platform}:x` };
-    },
-  };
-}
-
-function post(sql: unknown, overrides: Record<string, unknown> = {}) {
-  return postToCanonicalSocialDestination(sql as never, {
-    workspaceId: 'ws',
-    userId: 'user-1',
-    destination: 'reddit:r/rust',
-    text: 'hello world',
-    provenance: { from: 'owner-instruction' },
-    ...overrides,
-  } as never);
+function post(sql: unknown, overrides: Record<string, unknown> = {}, deps: OutboundDispatchDeps = {}) {
+  return postToCanonicalSocialDestination(
+    sql as never,
+    {
+      workspaceId: 'ws',
+      userId: 'user-1',
+      agentOwnerId: null,
+      destination: 'reddit:r/rust',
+      text: 'hello world',
+      provenance: { from: 'owner-instruction' },
+      ...overrides,
+    } as never,
+    deps,
+  );
 }
 
 beforeEach(() => {
   getFlagMock.mockReset();
   getFlagMock.mockResolvedValue(true);
-});
-
-afterEach(() => {
-  unregisterSocialWriteAdapter('reddit');
-  unregisterSocialWriteAdapter('bluesky');
-  unregisterSocialWriteAdapter('mastodon');
-  unregisterSocialWriteAdapter('linkedin');
 });
 
 /* -------------------------------------------------------------------------- */
@@ -186,38 +172,36 @@ describe('parseSocialDestinationRef — the first-colon rule (D-006)', () => {
 
 describe('rail 2 — a destination lifted from message content is refused', () => {
   it('refuses a body-only destination BEFORE any credential is resolved', async () => {
-    const { adapter, seen } = recordingAdapter('reddit');
-    registerSocialWriteAdapter(adapter);
+    const { installed } = await packageFor('reddit');
     const sql = fakeSql([STANDING_BODY_ONLY, [REDDIT_SOURCE]]);
 
-    await expect(post(sql)).rejects.toBeInstanceOf(AddresseeRefused);
+    await expect(post(sql, {}, installed.deps)).rejects.toBeInstanceOf(AddresseeRefused);
 
     // The ordering claim, stated as a measurement: exactly ONE query ran (the
     // standing classification). Had the credential resolution run first, this
     // would be 2 — and an injected destination would have reached a code path
     // holding the owner's identity before being refused.
     expect(sql.calls()).toBe(1);
-    expect(seen).toHaveLength(0);
+    expect(installed.invokes).toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
   });
 
   it('admits a destination the owner just named that is absent from the vault', async () => {
     // `unknown` is ABSENT, not suspicious — a brand-new subreddit the owner
     // typed. Refusing it would make the verb useless for its actual purpose.
-    const { adapter } = recordingAdapter('reddit');
-    registerSocialWriteAdapter(adapter);
+    const { installed } = await packageFor('reddit');
     const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
 
-    const result = await post(sql);
+    const result = await post(sql, {}, installed.deps);
     expect(result.echo.destinationStanding).toBe('unknown');
     expect(result.published).not.toBeNull();
   });
 
   it('reports the standing it acted on, so the owner sees WHY it was allowed', async () => {
-    const { adapter } = recordingAdapter('reddit');
-    registerSocialWriteAdapter(adapter);
+    const { installed } = await packageFor('reddit');
     const sql = fakeSql([STANDING_KNOWN_CONTACT, [REDDIT_SOURCE]]);
 
-    const result = await post(sql);
+    const result = await post(sql, {}, installed.deps);
     expect(result.echo.destinationStanding).toBe('known-contact');
     expect(result.echo.destinationProvenance).toBe('owner-instruction');
     // owner-instruction is unverifiable by construction — never claim otherwise.
@@ -225,11 +209,11 @@ describe('rail 2 — a destination lifted from message content is refused', () =
   });
 });
 
-describe('registry write gate — runs before the adapter lookup', () => {
-  it('refuses a registry-refused platform EVEN WITH an adapter registered', async () => {
-    // The ordering claim: a registered adapter must never be consulted for a
-    // platform the registry refuses. Registering one here is what makes the
-    // claim falsifiable — if the lookup ran first, `seen` would be non-empty.
+describe('registry write gate — runs before the provider lookup', () => {
+  it('refuses a registry-refused platform EVEN WITH a package installed', async () => {
+    // The ordering claim: an installed package must never be consulted for a
+    // platform the registry refuses. Installing one here is what makes the
+    // claim falsifiable — if the lookup ran first, `invokes` would be non-empty.
     //
     // The subject has moved twice, for the same happy reason each time: it must
     // be a platform the registry still refuses. It was Bluesky until P-011
@@ -237,55 +221,97 @@ describe('registry write gate — runs before the adapter lookup', () => {
     // grant as self-serve. TikTok is now the standing example (unverified,
     // `blockedOn` an owner-side audit). The property is unchanged; only the
     // reason for the refusal is.
-    const { adapter, seen } = recordingAdapter('tiktok');
-    registerSocialWriteAdapter(adapter);
-    expect(getSocialWriteAdapter('tiktok')).toBeDefined();
+    const { installed } = await packageFor('tiktok');
+    expect(installed.deps.registry.get('tiktok')).toBeDefined();
     const sql = fakeSql([STANDING_UNKNOWN, [TIKTOK_SOURCE]]);
 
     await expect(
-      post(sql, { destination: 'tiktok:1234567890' }),
+      post(sql, { destination: 'tiktok:1234567890' }, installed.deps),
     ).rejects.toThrow(/social_platform_unusable:tiktok/);
-    expect(seen, 'the adapter must not be consulted for a refused platform').toHaveLength(0);
+    expect(installed.invokes, 'the package must not be consulted for a refused platform').toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
   });
 
   it('no longer refuses bluesky — its write path verified 2026-08-23 (P-011)', async () => {
     // The state change this suite must not silently absorb. If Bluesky ever
     // regresses to write-unverified, this fails loudly rather than the refusal
     // quietly returning under a test that still says "refuses bluesky".
-    const { adapter, seen } = recordingAdapter('bluesky');
-    registerSocialWriteAdapter(adapter);
+    const { installed } = await packageFor('bluesky');
     const sql = fakeSql([STANDING_UNKNOWN, [BLUESKY_SOURCE]]);
 
-    await post(sql, { destination: 'bluesky:at://did:plc:xyz/app.bsky.feed.post/3k' });
-    expect(seen, 'a verified platform must now reach its adapter').toHaveLength(1);
+    await post(sql, { destination: 'bluesky:at://did:plc:xyz/app.bsky.feed.post/3k' }, installed.deps);
+    expect(installed.invokes, 'a verified platform must now reach its package').toHaveLength(1);
+    expect(installed.invokes[0]!.provider).toBe('bluesky');
   });
 });
 
-describe('adapter capability — an unimplemented verb is not a platform limitation', () => {
-  it('distinguishes "no adapter" from "adapter cannot post"', async () => {
+describe('provider package — absence and a missing capability are distinct refusals (P-002)', () => {
+  it('SPEC-P-002: a social write for a platform with no installed provider package is refused by name before any network call', async () => {
+    // A package for ANOTHER platform is installed, so "nothing was invoked"
+    // cannot pass merely because the registry is empty.
+    const installed = await installSocialPackages([{ platform: 'bluesky' }]);
     const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
-    await expect(post(sql)).rejects.toThrow(/social_post_adapter_missing/);
 
-    registerSocialWriteAdapter(replyOnlyAdapter('reddit'));
-    const sql2 = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
+    await expect(post(sql, {}, installed.deps)).rejects.toThrow(
+      /^outbound_source_not_connected:social-post:reddit — no installed provider package serves reddit$/,
+    );
+    // Only the standing classification ran: the owner's sources were never
+    // listed, no package was invoked, and no provider request was prepared.
+    expect(sql.calls()).toBe(1);
+    expect(installed.invokes).toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
+  });
+
+  it('refuses with the publish flag OFF too — the echo never promises a post no package can make', async () => {
+    getFlagMock.mockResolvedValue(false);
+    const installed = await installSocialPackages([]);
+    const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
+
+    await expect(post(sql, {}, installed.deps)).rejects.toThrow(
+      /^outbound_source_not_connected:social-post:reddit — no installed provider package serves reddit$/,
+    );
+  });
+
+  it('distinguishes "no package" from "package cannot post"', async () => {
+    const none = await installSocialPackages([]);
+    await expect(post(fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]), {}, none.deps)).rejects.toThrow(
+      /no installed provider package serves reddit/,
+    );
+
+    const replyOnly = await installSocialPackages([
+      { platform: 'reddit', capabilities: [PROVIDER_SOCIAL_REPLY_CAPABILITY] },
+    ]);
     // A DIFFERENT error on purpose: collapsing these would send someone to
-    // verify a lexicon when the real gap is an unwritten adapter method.
-    await expect(post(sql2)).rejects.toThrow(/social_post_adapter_verb_missing/);
+    // install a package when the real gap is a capability the package lacks.
+    await expect(post(fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]), {}, replyOnly.deps)).rejects.toThrow(
+      /^provider_capability_unsupported:reddit:social\.post$/,
+    );
+    expect(replyOnly.invokes).toHaveLength(0);
+    expect(replyOnly.hostFetchesBuilt).toBe(0);
+  });
+
+  it('rejects a package answer that is not a social write result', async () => {
+    const installed = await installSocialPackages([
+      { platform: 'reddit', respond: () => ({ externalId: 't3_abc', url: 'http://plain-http.example' }) },
+    ]);
+    await expect(post(fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]), {}, installed.deps)).rejects.toThrow(
+      /^provider_result_invalid:reddit:social\.post:url, when present, must be an https URL$/,
+    );
   });
 });
 
 describe('D-004(b) — the flag withholds the OUTBOUND CALL only', () => {
   it('with publishing un-ratified, returns the real resolution and sends nothing', async () => {
     getFlagMock.mockResolvedValue(false);
-    const { adapter, seen } = recordingAdapter('reddit');
-    registerSocialWriteAdapter(adapter);
+    const { installed } = await packageFor('reddit');
     const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
 
-    const result = await post(sql);
+    const result = await post(sql, {}, installed.deps);
 
     expect(result.published).toBeNull();
     expect(result.withheld?.reason).toBe('publish-flag-off');
-    expect(seen).toHaveLength(0);
+    expect(installed.invokes).toHaveLength(0);
+    expect(installed.hostFetchesBuilt).toBe(0);
 
     // The echo is the whole answer in this branch, so it must be the REAL
     // resolution rather than a prediction of one: the account it names is the
@@ -303,25 +329,23 @@ describe('D-004(b) — the flag withholds the OUTBOUND CALL only', () => {
 
   it('reads the flag itself rather than trusting a caller-supplied boolean', async () => {
     getFlagMock.mockResolvedValue(false);
-    const { adapter, seen } = recordingAdapter('reddit');
-    registerSocialWriteAdapter(adapter);
+    const { installed } = await packageFor('reddit');
     const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
 
     // There is deliberately NO `publish: true` parameter to pass. If one is
     // ever added, this test should be the thing that fails.
-    const result = await post(sql, { publish: true, allowPublish: true, force: true });
+    const result = await post(sql, { publish: true, allowPublish: true, force: true }, installed.deps);
     expect(result.published).toBeNull();
-    expect(seen).toHaveLength(0);
+    expect(installed.invokes).toHaveLength(0);
     expect(getFlagMock).toHaveBeenCalledWith('papercusp-social-auto-publish', 'social-post:ws');
   });
 
   it('publishes once, with a derived key, when the owner has ratified it', async () => {
     getFlagMock.mockResolvedValue(true);
-    const { adapter, seen } = recordingAdapter('reddit');
-    registerSocialWriteAdapter(adapter);
+    const { installed, seen } = await packageFor('reddit');
     const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
 
-    const result = await post(sql);
+    const result = await post(sql, {}, installed.deps);
 
     expect(result.withheld).toBeNull();
     expect(result.published).toEqual({
@@ -330,19 +354,19 @@ describe('D-004(b) — the flag withholds the OUTBOUND CALL only', () => {
       url: 'https://example.test/t3_abc',
       platform: 'reddit',
     });
-    expect(seen).toHaveLength(1);
-    expect(seen[0]!.destination).toBe('r/rust');
-    expect(seen[0]!.idempotencyKey).toBe(result.echo.idempotencyKey);
+    expect(seen()).toHaveLength(1);
+    expect(installed.invokes[0]!.request.capability).toBe('social.post');
+    expect(installed.invokes[0]!.request.source).toBe('src-reddit-1');
+    expect(seen()[0]!.destination).toBe('r/rust');
+    expect(seen()[0]!.idempotencyKey).toBe(result.echo.idempotencyKey);
   });
 });
 
 describe('visibility on a create — no parent to inherit, so no widening rail', () => {
   async function visibilityOf(value: unknown) {
-    const { adapter } = recordingAdapter('reddit');
-    registerSocialWriteAdapter(adapter);
+    const { installed } = await packageFor('reddit');
     const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
-    const result = await post(sql, { visibility: value });
-    unregisterSocialWriteAdapter('reddit');
+    const result = await post(sql, { visibility: value }, installed.deps);
     return result.echo.visibility;
   }
 
@@ -382,8 +406,8 @@ describe('idempotency key', () => {
   });
 
   it('cannot collide with a REPLY key addressed to the same-looking token', () => {
-    // Both refs render as "reddit:r/rust". A shared key space would let an
-    // adapter deduping on it silently drop the second, genuinely different,
+    // Both refs render as "reddit:r/rust". A shared key space would let a
+    // package deduping on it silently drop the second, genuinely different,
     // write.
     const replyKey = socialReplyIdempotencyKey({ platform: 'reddit', externalId: 'r/rust' }, 'hi');
     expect(socialPostIdempotencyKey(ref, 'hi')).not.toBe(replyKey);
@@ -438,11 +462,10 @@ describe('controls — each asserts the property above is FALSIFIABLE', () => {
     expect(wrong).toBe('sent'); // the control fails the property...
 
     // ...while the real seam, handed the same intent, still sends nothing.
-    const { adapter, seen } = recordingAdapter('reddit');
-    registerSocialWriteAdapter(adapter);
+    const { installed } = await packageFor('reddit');
     const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
-    const result = await post(sql, { publish: true });
+    const result = await post(sql, { publish: true }, installed.deps);
     expect(result.published).toBeNull();
-    expect(seen).toHaveLength(0);
+    expect(installed.invokes).toHaveLength(0);
   });
 });

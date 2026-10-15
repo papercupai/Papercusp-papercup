@@ -695,8 +695,7 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     label: 'Facebook Pages',
     egress: {
       hostPolicy: 'fixed',
-      // FACEBOOK_GRAPH_ORIGIN in facebook-common.ts — the single origin every
-      // Pages call in this directory is built from.
+      // The facebook-pages provider package declares this API origin.
       apiHosts: ['graph.facebook.com'],
       permalinkHosts: ['www.facebook.com'],
       notes:

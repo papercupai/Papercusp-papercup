@@ -4,6 +4,7 @@ import {
   workItemFilterColumns,
   WORK_ITEM_FILTER_NS,
 } from './work-item-columns';
+import { deriveItemWorkEvidence } from '@papercusp/operator-core/lib/item-activity';
 
 /**
  * Guards for the SHARED work-item column/filter definition
@@ -18,6 +19,25 @@ import {
 describe('shared work-item column definitions', () => {
   const full = buildWorkItemColumns({ isTrusted: () => false });
   const forFilters = workItemFilterColumns();
+
+  it('distinguishes acceptance from spine and lifecycle; copy includes the decision reason', () => {
+    const column = full.find(c => c.key === 'acceptance')!;
+    const row = { presentation: { stage: 'candidate', reason: 'acceptance-revision-stale' }, spineRole: 'worker', state: 'wip' };
+    expect(column.toCopyText?.(row as never)).toContain('Reproduction or review candidates');
+    expect(column.toCopyText?.(row as never)).toContain('acceptance-revision-stale');
+  });
+
+  it('never presents an assigned or parked row as positive execution evidence', () => {
+    const acceptance = full.find(c => c.key === 'acceptance')!;
+    const work = full.find(c => c.key === 'workEvidence')!;
+    const evidence = deriveItemWorkEvidence({ takenBy: 'su-worker', takenAt: 1000, lastProgressAt: null }, { now: 2000 });
+    const row = { state: 'wip', assignee: 'su-worker', presentation: {
+      stage: 'accepted-active', reason: 'accepted-work-reserved', workEvidence: evidence,
+    } };
+    expect(acceptance.toCopyText?.(row as never)).toContain('Reserved accepted work');
+    expect(work.toCopyText?.(row as never)).toContain('Work attestation unknown');
+    expect(work.toCopyText?.({ ...row, presentation: undefined } as never)).toBe('Work evidence unknown');
+  });
 
   it('exposes the SAME filterable columns to both panes, in the same order', () => {
     const filterable = (cols: typeof full) =>

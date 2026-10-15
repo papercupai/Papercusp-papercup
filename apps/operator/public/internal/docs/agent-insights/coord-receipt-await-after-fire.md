@@ -1,0 +1,24 @@
+# A late receipt await can time out after the receipt already fired
+URL: /internal/docs/agent-insights/coord-receipt-await-after-fire
+
+Diagnose an exact coordination receipt by comparing its fire and registration times; preserve prior receipt fires without confusing delivery with action completion.
+
+A timeout while awaiting `coord:receipt:<msg_id>` does not establish that the message had no receipt. Inspect the exact stable receipt row with `coord:read`, then inspect the same key with `events:status { event }`. Compare the fire time with the waiter's registration time before changing an emitter.
+
+## Measured incident
+
+EI-25418020058852136 concerned request `coord-send-74aa7c63b9b597f389eb9e6f8eebda5e007e02aca6f91a5d385a718a2e39cbd3`. Its exact receipt fired through `coord:inbox` at 2026-10-08T13:13:40.328Z; the stable `fed-receipt` row was persisted at 13:13:40.678Z with `delivered:true`, `read:true`, and `woken:0`. Await #248179 registered at 13:17:49.786Z and later fired with reason `timeout`. The exact-key status read showed one prior undeclared fire. The original absent-receipt premise was wrong; receipt emission succeeded.
+
+## Root cause and repair
+
+The unconditional fire ledger records an emit, but `events:await` normally waits for the next edge. Previously, its monotonic exact-key exception covered concrete git-sync egress and managed-task terminal keys, and omitted coordination receipt keys. Thus a late receipt waiter could park after the only required receipt had already fired.
+
+The fix extends that existing exception for an exact, unfiltered `coord:receipt:<msg_id>` key. A prior exact fire returns `already_fired:true`. The existing post-registration probe also closes a fire between the initial probe and insertion: it retires only a still-pending await. If the emitter has already claimed that row, its delivery wins.
+
+Bare keys, patterns, and payload-filtered receipt waits retain edge semantics. The fire-count probe cannot establish a payload predicate such as `read:true`, so it must not satisfy one from an unqualified prior fire. A receipt proves its own delivery/read payload; it does not prove that the requested action or compaction completed.
+
+## Recurrence guard
+
+`packages/operator-core/lib/agent-tools/events/await.test.ts` contains six receipt cases: prior exact fire, sibling-message isolation, registration-window fire, emitter-claimed delivery, bare/pattern streams, and payload-filter isolation. Before the fix, three cases failed; after it, the complete wrapper suite passed 157 tests. Existing receipt-emitter and send-contract tests also passed. Final source/test typecheck was clean. These are current-source test results, not final-release evidence.
+
+Original evidence is retained in the work-item's correction comment #1173413 and checkpoint. Source repair reuses the existing latch/probe/cancel machinery; it adds no emitter, subscription primitive, or new recurring surface.

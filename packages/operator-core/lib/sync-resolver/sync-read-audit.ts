@@ -112,6 +112,9 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'plans.byHive': { potHomeSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
   'hive.overrides': { potSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
   'hiveRoster.byHive': { potSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+  // The settings panel reads this by harness slug (not the Pot home slug).
+  // Papercusp is a stable in-scope Pot harness for a representative live shape.
+  'potIntegration.settings': { slug: 'papercusp' },
   'insights.tokens': { harness: 'papercusp' }, // `harness`, not `harnessSlug`
   'planSessions.list': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
   // planActivity.list (plan-visibility-revamp-2026-08-23 P-004) — the PlanDashboard
@@ -162,6 +165,10 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'learning.retainDetail': { kind: 'plan', id: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
 
   // ── needs a per-run id → skipped by the live audit (null) ──
+  // The PR viewer is keyed by an exact provider PR number and depends on live
+  // repository state. No stable populated PR fixture exists; skip it rather
+  // than measuring a likely not-found response as the detail payload.
+  'harnessPrs.detail': null,
   'workItems.detail': null, // a specific work-item id
   // Same shape as workItems.detail — a specific work-item id, so DEFAULT_HARNESS_ARGS
   // cannot satisfy its argsSchema. Skipped rather than given a representative id on
@@ -195,6 +202,15 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'conversations.agentMessageDetail': null, // a specific coord_event_log msg_id
   'conversations.deliberationDetail': null,
   'conversations.questionDetail': null,
+  // A pinned report requires its exact reportId. There is no stable report for
+  // the generic audit; a fabricated id would measure a miss, not its payload.
+  'reports.get': null,
+  // A lineage is selected by a particular published report; there is no stable
+  // representative lineage. A made-up id would only measure an empty result.
+  'reports.lineage': null,
+  // The visible listing supplies funded release refs and explicitly refreshes
+  // their outcome costs. Empty or invented refs would not measure that payload.
+  'cupboard.identityOutcomeCosts': null,
   'designFeatures.detail': null, // a specific featureId (WI-7232 list/detail split)
   'designSketches.byFeature': null,
   'dockLayouts.byName': null,
@@ -207,6 +223,9 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'featureNotes.byHarness': null,
   'goals.detail': null, // a specific goalId (from goals.list)
   'hiveFromRepo.progress': null,
+  // P-018: needs a pasted GitHub URL and reads GitHub live — an audit sample
+  // would measure a network call, not a sync read.
+  'potIntegration.createQuestion': null,
   'operatorTurns.page': null,
   // Requires a concrete canonical work-item id. A fabricated id would measure
   // an empty miss rather than the persisted discussion identity payload.
@@ -230,6 +249,9 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // null (intentionally unmeasurable) rather than a fabricated owner, which would measure
   // an empty-queue miss and report it as this read's real payload.
   'personalVault.importJobs': null,
+  // The ticket settings page selects its acting user explicitly. Like the
+  // personal-vault and memory reads, it has no stable audit identity.
+  'integrations.tickets': null,
   'userMemory.feedbackStats': null, // a specific userId
   'userMemory.list': null, // a specific userId
   'userMemory.total': null, // a specific userId (the denominator beside userMemory.list)

@@ -35,6 +35,9 @@ vi.mock('@papercusp/flags', () => ({
 // never touched by any test that does not opt in with ctx.isSuperuser.
 vi.mock('../../harness-core', () => ({ resolveWorkspaceForHarnessSlugIn: vi.fn(async () => null) }));
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+vi.mock('../coordination/wake-mode', () => ({
+  resolveWakeMode: vi.fn(async () => 'auto'),
+}));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({
     ownerId: 'su-caller-own-id',
@@ -49,6 +52,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../acceptance-runtime-wait-guard', () => ({
   acceptancePlaneAdvisoryForWait: vi.fn(async () => null),
+  mainWaitAdvisoryForWait: vi.fn(async () => null),
   mainWaitPlanReviewForWait: vi.fn(async () => null),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
@@ -56,6 +60,14 @@ vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug:
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../pot/_resolve', () => ({ resolveHomePotSlug: vi.fn(async () => 'papercusp') }));
 vi.mock('../../session-brief', () => ({ getSessionBrief: vi.fn(async () => null) }));
+// WI-10005199: the control-anchor projection arm.ts attests. Default (see beforeEach) is a
+// FAITHFUL anchor — the projection reflects what materializeLoop was asked to persist — so
+// every pre-existing test sees an agreeing read and no `controlConsumerView`; the
+// diverging fixtures below override it per-test.
+const controlAnchorH = vi.hoisted(() => ({ refresh: vi.fn() }));
+vi.mock('../coordination/control-anchor', () => ({
+  refreshControlAnchorAfterMutation: controlAnchorH.refresh,
+}));
 // EI-21542193720279374 part (b): the cold-no-carry-note check. Defaults to an EXISTING
 // note (readFailed:false) so every pre-existing test — most of which never anticipate
 // this check — sees no unexpected coldNoCarryNoteWarning; per-test override simulates the
@@ -67,6 +79,16 @@ vi.mock('../../carry-note', () => ({
     readFailed: false,
   })),
 }));
+// EI-24899961156406639: the cold-carry host check. Defaults to an AVAILABLE host so every
+// pre-existing cold-carry test sees no unexpected coldCarryNoHostWarning; per-test override
+// simulates a hostless session. importOriginal keeps psu-pty-discovery's other exports intact.
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../events/await/psu-pty-discovery')>();
+  return {
+    ...actual,
+    selfCompactionAvailabilityAsync: vi.fn(async () => ({ available: true, reason: null, host: {} as never })),
+  };
+});
 vi.mock('../../harness/routines/loop', () => ({
   LOOP_INTERVAL_FLOOR_SEC: 60,
   buildLoopWakePrompt: vi.fn(() => 'kickoff-prompt'),
@@ -176,6 +198,7 @@ import {
 import { computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
 import { mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
+import { selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
 import {
   mockRejectedTyped,
   mockResolvedOnceTyped,
@@ -207,6 +230,8 @@ const eventReachabilityM = vi.mocked(readEventConditionReachability);
 // (non-async) describe callback, and this file's describes are synchronous.
 const resolveWsM = vi.mocked((await import('../../harness-core')).resolveWorkspaceForHarnessSlugIn);
 const carryNoteM = vi.mocked(getLoopCarryNoteWithMeta);
+const selfCompactionM = vi.mocked(selfCompactionAvailabilityAsync);
+const wakeModeM = vi.mocked((await import('../coordination/wake-mode')).resolveWakeMode);
 const tool = (await import('./arm')).default;
 
 describe('loop:arm — ambient workspace transaction safety (EI-20224334803038640)', () => {
@@ -216,12 +241,85 @@ describe('loop:arm — ambient workspace transaction safety (EI-2022433480303864
 });
 
 type Out = { content: { text: string }[] };
-const call = (args: Record<string, unknown>) =>
+const call = (args: Record<string, unknown>, context: Record<string, unknown> = {}) =>
   tool.handler(
     { intervalSec: 120, goal: 'g', ...args } as never,
-    { harnessSlug: 'papercusp' } as never,
+    { harnessSlug: 'papercusp', ...context } as never,
   ) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
+
+describe('loop:arm — awaited helper timings', () => {
+  it('emits a cumulative named timing snapshot through ctx.metadata', async () => {
+    const metadata = vi.fn();
+    selfCompactionM.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { available: true, reason: null, host: {} as never };
+    });
+    const out = body(await call({ carry: 'cold' }, { metadata }));
+
+    expect(out.ok).toBe(true);
+    expect(metadata).toHaveBeenCalled();
+    const recorded = metadata.mock.calls.at(-1)?.[0] as {
+      loopArmStages?: {
+        schemaVersion: string;
+        unit: string;
+        stages: Array<{ name: string; durationMs: number; elapsedMs: number }>;
+      };
+    };
+    expect(recorded.loopArmStages).toMatchObject({
+      schemaVersion: 'loop-arm-stage-timings-v1',
+      unit: 'ms',
+    });
+    const stages = recorded.loopArmStages!.stages;
+    const names = stages.map((stage) => stage.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'feature_flag',
+        'resolve_wake_mode',
+        'read_active_loop_facts',
+        'main_wait_plan_review',
+        'cold_carry_note_read',
+        'cold_carry_host_discovery',
+        'materialize_loop',
+        'refresh_loop_control_anchor',
+        'arm_inbox_wake',
+        'probe_wake_reachability',
+        'acceptance_plane_advisory',
+      ]),
+    );
+    expect(stages.length).toBe(metadata.mock.calls.length);
+    for (const stage of stages) {
+      expect(Number.isFinite(stage.durationMs)).toBe(true);
+      expect(stage.durationMs).toBeGreaterThanOrEqual(0);
+      expect(Number.isFinite(stage.elapsedMs)).toBe(true);
+    }
+    expect(stages.find((stage) => stage.name === 'cold_carry_host_discovery')?.durationMs).toBeGreaterThanOrEqual(20);
+    expect(stages.indexOf(stages.find((stage) => stage.name === 'materialize_loop')!)).toBeLessThan(
+      stages.indexOf(stages.find((stage) => stage.name === 'refresh_loop_control_anchor')!),
+    );
+  });
+});
+
+describe('loop:arm — owner-directed pause guard (EI-24188436415268799)', () => {
+  it('refuses to rearm a target whose effective wake mode is manual', async () => {
+    wakeModeM.mockResolvedValueOnce('manual');
+    const out = body(await call({ ownerId: 'su-paused-owner' }));
+
+    expect(wakeModeM).toHaveBeenCalledWith('su-paused-owner');
+    expect(out).toMatchObject({ ok: false, error: 'wake_mode_manual', ownerId: 'su-paused-owner' });
+    expect(materializeM).not.toHaveBeenCalled();
+    expect(armWakeM).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when effective wake mode cannot be read', async () => {
+    wakeModeM.mockRejectedValueOnce(new Error('settings unavailable'));
+    const out = body(await call({ ownerId: 'su-paused-owner' }));
+
+    expect(out).toMatchObject({ ok: false, error: 'wake_mode_unavailable', ownerId: 'su-paused-owner' });
+    expect(materializeM).not.toHaveBeenCalled();
+    expect(armWakeM).not.toHaveBeenCalled();
+  });
+});
 
 describe('loop:arm — plan progress before a main wait', () => {
   it('refuses to arm before any durable loop is written when staging work is ready', async () => {
@@ -233,6 +331,55 @@ describe('loop:arm — plan progress before a main wait', () => {
     const out = body(await call({ goal: 'wait for green main before continuing plan-a' }));
     expect(out).toMatchObject({ ok: false, error: 'plan_main_wait_review_required', readyItems: ['P-002'] });
     expect(materializeM).not.toHaveBeenCalled();
+  });
+});
+
+describe('loop:arm — consumerView on the control-anchor projection (WI-10005199)', () => {
+  it('stays silent when the projected loop agrees with what was persisted', async () => {
+    const b = body(await call({ intervalSec: 240 }));
+    expect(b.ok).toBe(true);
+    expect(b).not.toHaveProperty('controlConsumerView');
+  });
+
+  it('DIVERGES — and says so on the payload — when the fail-soft refresh returned null', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce(null);
+    const b = body(await call({ intervalSec: 240 }));
+    // The arm itself still succeeded; the exception-only field is what tells the caller the
+    // consumer's read (control_state->loop) cannot be shown to reflect it.
+    expect(b.ok).toBe(true);
+    expect(b.loop.controlGeneration).toBeNull();
+    expect(b.controlConsumerView).toMatchObject({
+      readPath: 'harness_shared.session_briefs.control_state->loop',
+      value: { active: null, intervalSec: null },
+      divergedFromWrite: true,
+    });
+  });
+
+  it('DIVERGES when the projection still shows the loop inactive', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce({ generation: 5, state: { loop: { active: false, intervalSec: null } } });
+    const b = body(await call({ intervalSec: 240 }));
+    expect(b.controlConsumerView).toMatchObject({ value: { active: false, intervalSec: null }, divergedFromWrite: true });
+  });
+
+  it('DIVERGES when the projection carries a stale interval', async () => {
+    controlAnchorH.refresh.mockResolvedValueOnce({ generation: 6, state: { loop: { active: true, intervalSec: 900 } } });
+    const b = body(await call({ intervalSec: 240 }));
+    expect(b.controlConsumerView).toMatchObject({ value: { active: true, intervalSec: 900 }, divergedFromWrite: true });
+  });
+
+  it('compares against the interval materializeLoop PERSISTED, not the requested one', async () => {
+    // If materializeLoop normalised the interval, the projection reads the stored value.
+    mockResolvedOnceTyped(materializeM, {
+      id: 'loop-x',
+      name: 'loop-x',
+      nextFireAt: new Date('2026-01-01T00:00:00Z'),
+      targetRole: 'operator',
+      intervalSec: 300,
+      changed: true,
+    });
+    controlAnchorH.refresh.mockResolvedValueOnce({ generation: 7, state: { loop: { active: true, intervalSec: 300 } } });
+    const b = body(await call({ intervalSec: 240 }));
+    expect(b).not.toHaveProperty('controlConsumerView');
   });
 });
 
@@ -286,6 +433,7 @@ const asWorkItem = (overrides: Partial<WorkItem> = {}): WorkItem => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  wakeModeM.mockResolvedValue('auto');
   materializeM.mockResolvedValue({ name: 'loop-x', nextFireAt: new Date('2026-01-01T00:00:00Z') } as never);
   mockResolvedTyped(probeM, {
     reachable: true,
@@ -318,6 +466,10 @@ beforeEach(() => {
   briefM.mockResolvedValue(null);
   potHomeM.mockReturnValue('papercusp');
   monitorAdmissionM.mockImplementation(async ({ monitor }) => prepareMonitorConfig(monitor));
+  controlAnchorH.refresh.mockImplementation(async () => ({
+    generation: 1,
+    state: { loop: { active: true, intervalSec: materializeM.mock.calls.at(-1)?.[0]?.intervalSec ?? null } },
+  }));
 });
 
 describe('loop:arm — WI-1471 ownerId override', () => {
@@ -692,6 +844,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
       scoped: true,
       code: 'fleet_scope_violation',
       reason: "work-item WI-OUT does not match fleet spec 'fleet-x@rev7'",
+      refusal: { observed: {}, liftsWhen: 'the work-item matches the fleet claim spec', whoCanMakeItTrue: ['another-agent'] },
       scope: {
         ownerId: 'su-caller-own-id',
         fleetSlug: 'fleet-x',
@@ -747,6 +900,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
       revision: 3,
       reason:
         'work-item WI-1774 does not match active scheduler spec only-pui-su-session-runtime-correction@3 for su-caller-own-id; the loop auto-claim was refused before mutation',
+      refusal: { observed: {}, liftsWhen: 'the work-item matches the active scheduler spec', whoCanMakeItTrue: ['self', 'owner'] },
     });
 
     const b = body(await call({ carry: 'cold', goal: 'continue the scoped plan; ignore WI-1774' }));
@@ -1539,6 +1693,47 @@ describe('loop:arm — EI-21542193720279374 part (b): cold-with-no-carry-note wa
   });
 });
 
+describe('loop:arm — EI-24899961156406639: cold carry on a session with no carry-respawn host warns (additive, no refusal)', () => {
+  it('carry cold + NO live psu-pty host ⇒ warning in the note AND the structured field, reason named, loop still arms', async () => {
+    selfCompactionM.mockResolvedValueOnce({ available: false, reason: 'no_live_pty_host', host: null });
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.ok).toBe(true); // warn-only — headless fleet members arm cold by design
+    expect(b.coldCarryNoHostWarning).toContain('no live psu-pty host');
+    expect(b.coldCarryNoHostWarning).toContain('no_live_pty_host');
+    expect(b.coldCarryNoHostWarning).toContain('NOT guaranteed to start on a fresh context');
+    expect(b.note).toContain('no live psu-pty host able to carry-respawn');
+    expect(selfCompactionM).toHaveBeenCalledWith('su-caller-own-id');
+  });
+
+  it('a live host that PREDATES carry-respawn is the same hole — the warning names that reason', async () => {
+    selfCompactionM.mockResolvedValueOnce({ available: false, reason: 'host_predates_carry_respawn', host: {} as never });
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.coldCarryNoHostWarning).toContain('host_predates_carry_respawn');
+  });
+
+  it('POSITIVE CONTROL: carry cold + a carry-respawn-capable host ⇒ no warning', async () => {
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.coldCarryNoHostWarning).toBeNull();
+    expect(b.note).not.toContain('no live psu-pty host able to carry-respawn');
+    expect(selfCompactionM).toHaveBeenCalledTimes(1);
+  });
+
+  it('carry warm ⇒ the host predicate is never consulted (the check is cold-only)', async () => {
+    const b = body(await call({ carry: 'warm' }));
+    expect(b.coldCarryNoHostWarning).toBeNull();
+    expect(selfCompactionM).not.toHaveBeenCalled();
+  });
+
+  it('a throw from the host predicate is fail-soft — the loop still arms with no warning', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    selfCompactionM.mockRejectedValueOnce(new Error('psu-pty dir unreadable'));
+    const b = body(await call({ carry: 'cold' }));
+    expect(b.ok).toBe(true);
+    expect(b.coldCarryNoHostWarning).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[loop:arm] cold-carry host check failed'));
+  });
+});
+
 describe('loop:arm fresh carry default (EI-21424742792137469)', () => {
   it('a fresh caller with no explicit carry materializes the loop WARM', async () => {
     const b = body(await call({}));
@@ -2255,6 +2450,22 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
         },
       });
       expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ intervalSec: 7200 }));
+    });
+
+    it('does not tell a monitor caller to register an exact await for its same predicate', async () => {
+      const b = body(await call({
+        intervalSec: 7200,
+        mode: 'monitor',
+        monitor: monitorConfig(),
+        blockedOn: { reason: 'gate red', event: 'RELEASE:GREEN:PAPERCUSP' },
+      }));
+
+      expect(b.ok).toBe(true);
+      expect(b.loop.monitor).toMatchObject({ predicateKey: 'release:green:papercusp' });
+      expect(b.note).toContain('monitor_exact_await_duplicate');
+      expect(b.note).toContain('do not stack both');
+      expect(b.note).not.toContain('NOW ACTUALLY PARK ON IT');
+      expect(b.note).not.toContain("events:await { event: 'RELEASE:GREEN:PAPERCUSP'");
     });
   });
 });

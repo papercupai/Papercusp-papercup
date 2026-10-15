@@ -154,6 +154,12 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // WI-10004160: the guard did not run 2026-08-29 → 2026-09-30 (no gate route; integration
     // tier is opt-in), so these landed undeclared. Same family as embedding/embedding_mode.
     embedding_profile: 'exact embedding-space identity of the machine-local `embedding` (mig 1154) — describes a vector that never federates',
+    // Mig 1322 (enterprise-data-sources-2026-10-01 P-010, D-017): nature/audience are stamped by
+    // the BEFORE INSERT OR UPDATE trigger nature_stamp_from_registry_trg, which ALWAYS derives them
+    // from the receiver's datatype_registry and overwrites any caller-supplied value. A federated
+    // value would be discarded on receive, so each peer computes its own.
+    nature: 'derived by trigger from datatype_registry on every insert/update (mig 1322); a federated value is overwritten on receive',
+    audience: 'derived by trigger from datatype_registry on every insert/update (mig 1322); a federated value is overwritten on receive',
   },
   harness_issues_consolidated: {
     // Issues federate every content column — only PROVENANCE is local. (Empty.)
@@ -334,6 +340,12 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
       'per-item work-distribution fan-out factor (mig 195), inert unless PAPERCUSP_WORKITEM_REDUNDANCY is on — same dispatch family as feature_order above, which this family already keeps local (REVIEW: remaining-lanes P-201). The feature family federates both as steering; that divergence is deliberate on both sides.',
     goal_id:
       'pointer into harness_shared.goals, which does not federate — would dangle on every peer (EI-21467654382027859; same ruling as harness_plans.goal_id above, decided on the same item). ⚠ OPEN TENSION, deliberately recorded rather than settled: harness_features_consolidated federates goal_id today, so the same column on the same base table federates for features and not for issues. Either the dangling pointer is acceptable (and this should federate too) or it is not (and the feature half is wrong). Revisit with the remaining-lanes work-distribution decision rather than assuming this entry settled it.',
+    // Mig 1322 (enterprise-data-sources-2026-10-01 P-010, D-017): nature/audience are stamped by
+    // the BEFORE INSERT OR UPDATE trigger nature_stamp_from_registry_trg, which ALWAYS derives them
+    // from the receiver's datatype_registry and overwrites any caller-supplied value. A federated
+    // value would be discarded on receive, so each peer computes its own.
+    nature: 'derived by trigger from datatype_registry on every insert/update (mig 1322); a federated value is overwritten on receive',
+    audience: 'derived by trigger from datatype_registry on every insert/update (mig 1322); a federated value is overwritten on receive',
   },
   harness_plan_parts: {
     author: 'rides the op provenance (writerPubkey → author_pubkey), not the row value (mapper doc)',

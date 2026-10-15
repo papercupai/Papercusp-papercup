@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "kind": "scoped-original-receipt-repair-reconciliation",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "workItemId": "WI-10005128",
+  "originalCommit": "f419975deb2dbad5228f3499e51db32238f3be5b",
+  "originalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-f419975deb-S9tYLz",
+  "originalCensus": "/tmp/tutorial-f419-original-root-ledger-census-20261012T1634.json",
+  "priorCandidateMap": "/tmp/tutorial-original-receipt-repair-map-20261012T1822.json",
+  "repairInventory": "/tmp/tutorial-original-current-repairs-20261012T1819.json",
+  "scope": "Five original receipts matched to existing completed repairs. Original failed verdicts and the partial affected census remain unchanged. This document supplies no full affected PASS, production, voice, novice or accessibility acceptance.",
+  "mappings": [
+    {
+      "originalTestRunId": 21103368,
+      "testFile": "packages/operator-core/lib/work-nature/work-predicate-lint.test.ts",
+      "observedFailure": "The real-tree positive control could not resolve the old loop claim assignment anchor.",
+      "repairId": "WI-6554700010009139",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The guard consumes WORK_SELECTION_CENSUS. The completed repair changes the loop census anchor to the existing claimWorkItem call inside the maintained budget wrapper. Current census line183 and loop/arm line1453 contain the same call expression.",
+      "proofBoundary": "The existing committed repair's complete census suite validates its own scope. A separately dispatched current work-predicate guard appears as LOCAL21164771 pass at dirty a11995d0e121ba23780ac1b37a647eadc00a6cd3 with no recorded root; it is working-only evidence and does not replace an immutable affected verdict.",
+      "duplicateDisposition": "WI-6554700010009466 was dropped with committed authority after discovering that the source was already repaired. Its incorrect current-defect statement was corrected in comment1177784."
+    },
+    {
+      "originalTestRunId": 21100870,
+      "testFile": "packages/operator-core/lib/sync-resolver/work-items-ui-projection.test.ts",
+      "observedFailure": "The grid projection guard expected the detail-only reporterStatus field.",
+      "repairId": "WI-6554700010009047",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair separates WorkItemDetailRow from the slim WorkItemRow and preserves the detail reporter reader and grid writer contracts.",
+      "retainedProof": "Three complete unit suites15PASS0FAIL0SKIP at exact0b480; LOCAL21147176/21147185 and the stored completion's third exact ledger reference. No test replay or new universal claim."
+    },
+    {
+      "originalTestRunId": 21100861,
+      "testFile": "packages/operator-core/lib/search/session-turns-text-immutable.test.ts",
+      "observedFailure": "The consult relevance-router fixture replaced session_turns.text without clearing chunked_at.",
+      "repairId": "WI-6554700010009138",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair extends the real PostgreSQL fixture schema and clears the chunk marker in both transcript replacement writers. The unchanged scanner and real-PG marker invalidation assertion pass."
+    },
+    {
+      "originalTestRunId": 21101387,
+      "testFile": "packages/operator-core/lib/sync-interest-single-contract.test.ts",
+      "observedFailure": "The protocol literal scanner reported persisted-cache's erased TypeScript indexed type as a runtime literal.",
+      "repairId": "WI-6554700010009143",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair uses the maintained TypeScript parser to skip TypeNodes while retaining the runtime positive control; no production protocol definition was changed."
+    },
+    {
+      "originalTestRunId": 21100855,
+      "testFile": "packages/operator-core/lib/acceptance-bar-remediation.test.ts",
+      "repairId": "WI-6554700010009144",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair updates the conventional guard to the current server-remeasurement writer, unknownReasons and rebind guidance, retaining rejection of obsolete caller-current-only assertions."
+    }
+  ],
+  "sharedRetainedRepairProof": {
+    "repairIds": ["WI-6554700010009138", "WI-6554700010009139", "WI-6554700010009143", "WI-6554700010009144"],
+    "commit": "bfacb11b26",
+    "root": "/dev/shm/pcv/papercusp-lint-as-committed-bfacb11b26-9nhVSR",
+    "testRunIds": [21147745, 21147746, 21147747, 21147748, 21147751],
+    "testResult": "Five complete suites69PASS0FAIL0SKIP: census10, immutable3, sync-interest6, BAR6 and realPG44. Requested5/executed5/matched5; uncommitted0; provenance stamped.",
+    "completionReceipt": "/tmp/tutorial-f419-four-roots-close-bfacb-20261012T1606.json",
+    "verification": "Current work_items:get reads confirmed DONE and committed completion authority, plus the stored root-cause observations. Preserve these proofs; do not rerun or reclose them."
+  },
+  "recoveredCurrentGuard": {
+    "taskId": "0mv5uklsx1c4264q1o3",
+    "scopeUnit": "pc-0mv5uklsx1c4264q1o3.service",
+    "logPath": "~/papercupai-workspace/papercusp/.papercusp/scratch/bash-facda029-ce5.log",
+    "terminalAt": "2026-10-12T22:52:54.851Z",
+    "exitCode": 0,
+    "testFile": "packages/operator-core/lib/work-nature/work-predicate-lint.test.ts",
+    "passed": 7,
+    "failed": 0,
+    "skipped": 0,
+    "localTestRunId": 21164771,
+    "worktreeDirty": true,
+    "recordedCommit": "a11995d0e121ba23780ac1b37a647eadc00a6cd3",
+    "verification": "Recovered exact task via workItemId-filtered processes:list, then capability:bash_output by durable taskId. Both report exited/completed0; the transient-service terminal sink records JOB END. The launch was not repeated after the MCP proxy lost its response.",
+    "scope": "One full current conventional suite on the working tree; no immutable affected or production acceptance."
+  },
+  "limitations": [
+    "A literal filename candidate search missed repairs made in consumed source files. An unmapped row in that bounded inventory does not prove an unowned or unresolved defect.",
+    "The remaining original receipt population still requires root-cause and repair-owner reconciliation; these five mappings do not partition that whole population.",
+    "Historical failed receipts remain immutable. A present focused PASS does not relabel an original failure or prove full affected acceptance.",
+    "The dispatched current guard's response was lost to upstream_died_mid_stream; its exact task and terminal sink were subsequently recovered as recorded above. No historical receipt was relabeled."
+  ]
+}

@@ -1,0 +1,1 @@
+{"name":"verify-tauri-headless","phases":[{"id":"prepare","dependsOn":[],"reusable":false},{"id":"boot","dependsOn":["prepare"],"reusable":false},{"id":"assert","dependsOn":["boot"],"reusable":false}],"scopeTags":[]}

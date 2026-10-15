@@ -595,6 +595,7 @@ export function declaredGateRecoverySummary(result: DeclaredGateClassifiedResult
     `Declared-gate recovery classified announcement #${e.announcementId} for \`${e.eventKey}\` as **${result.classification}**.`,
     '',
     `- generation: ${e.generation ?? 'none'} (current ${e.currentGeneration ?? 'none'}, state ${e.generationState})`,
+    `- evidence checked at (UTC): ${new Date(e.checkedAtMs).toISOString()}`,
     `- declared by: ${e.declaredBy}`,
     `- catalog membership: ${fmt(e.catalogMembership)}`,
     `- fire latch/history: ${fmt(e.fireHistory)}`,

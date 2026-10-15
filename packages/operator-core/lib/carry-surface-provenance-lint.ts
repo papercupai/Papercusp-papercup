@@ -189,19 +189,24 @@ const NEGATED_OWNER_AUTHORITY_RE = new RegExp(
  * verdict can falsify such an anchor, and a consumer holding that verdict still
  * needs to know the line was claiming owner authority in the first place.
  *
- * Deliberately BROADER than the assertion detectors above — it matches the bare
- * noun `owner` via {@link OWNER_AUTHORITY_REF}'s final alternative, so it also sees
- * shapes no detector here matches ("Owner-directed ordering", "the owner
- * checkpoint records…"). That breadth is safe ONLY because it is used in
- * CONJUNCTION with a resolved-and-falsified turn verdict: the narrowing is carried
- * by the evidence, not by the phrase match. Do not reuse it as a standalone
- * detector — on its own it would fire on any sentence containing the word.
+ * Deliberately broader than the assertion detectors above: it also sees shapes no
+ * detector here matches ("Owner-directed ordering", "the owner checkpoint records…").
+ * It excludes closed peer/technical role-owner forms ("plan owner", "another live
+ * owner's gate lane") because those name who holds a coordination role, not the human
+ * owner. Keep this distinction narrow: D-085's owner-directed and owner-checkpoint
+ * wording must still be recognized. The predicate is used in conjunction with a
+ * resolved-and-falsified turn verdict; do not reuse it as a standalone detector.
  */
-const OWNER_AUTHORITY_LINE_RE = new RegExp(OWNER_AUTHORITY_REF, 'i');
-
 export function assertsOwnerAuthority(line: string | null | undefined): boolean {
   if (!line) return false;
-  return OWNER_AUTHORITY_LINE_RE.test(line);
+  for (const match of line.matchAll(new RegExp(OWNER_AUTHORITY_REF, 'gi'))) {
+    // Explicit owner tags and noun phrases like "owner directive" remain authority
+    // references. A bare `owner` token only counts when it is not part of a peer or
+    // technical role label.
+    if (match[0].toLowerCase() !== 'owner') return true;
+    if (match.index === undefined || !isPeerRoleOwnerMention(line, match.index)) return true;
+  }
+  return false;
 }
 
 /**
@@ -268,13 +273,30 @@ function isOwnerAttributionReportedAgentMention(line: string): boolean {
  * EI-22787623747935751: OWNER_ATTRIBUTION_RE can begin at the `owner` suffix of
  * a peer-owned domain role — "Gate owner asked for ..." — and misclassify that
  * role's report as an attribution to the interactive human owner. Keep this
- * exclusion explicit and narrow: these are the role prefixes used for agent-owned
- * coordination artifacts, while an unqualified "the owner asked ..." remains loud.
+ * exclusion explicit and narrow: gate/fleet/plan/peer/work-item mark agent-owned
+ * coordination roles, while root/storage mark technical owner roles. None means the
+ * interactive human owner whose authority this lint is meant to verify. An unqualified
+ * "the owner asked ..." remains loud.
  */
-const PEER_ROLE_OWNER_PREFIX_RE = /\b(?:gate|fleet|plan|peer|work[-\s]?item)\s*$/i;
+const PEER_ROLE_OWNER_NOUN = String.raw`(?:gate|fleet|plan|peer|root|storage|work[-\s]?item)`;
+const PEER_ROLE_OWNER_PREFIX_RE = new RegExp(String.raw`\b${PEER_ROLE_OWNER_NOUN}\s*$`, 'i');
+// U+2019 (right single quote) is spliced in from its code point, never typed literally: a
+// non-ASCII char inside String.raw makes the host bundle's ascii-escape pass skip the WHOLE
+// bundle (WI-6554700010009506). The built RegExp source is byte-identical to the typed form.
+const RIGHT_SINGLE_QUOTE = String.fromCharCode(0x2019);
+const PEER_ROLE_OWNER_POSSESSIVE_SUFFIX_RE = new RegExp(
+  String.raw`^['${RIGHT_SINGLE_QUOTE}]s\s+${PEER_ROLE_OWNER_NOUN}\b`,
+  'i',
+);
+
+function isPeerRoleOwnerMention(line: string, ownerIndex: number): boolean {
+  const beforeOwner = line.slice(0, ownerIndex);
+  const afterOwner = line.slice(ownerIndex + 'owner'.length);
+  return PEER_ROLE_OWNER_PREFIX_RE.test(beforeOwner) || PEER_ROLE_OWNER_POSSESSIVE_SUFFIX_RE.test(afterOwner);
+}
 
 function isPeerRoleOwnerAttribution(line: string, match: RegExpExecArray): boolean {
-  return match.index !== undefined && PEER_ROLE_OWNER_PREFIX_RE.test(line.slice(0, match.index));
+  return match.index !== undefined && isPeerRoleOwnerMention(line, match.index);
 }
 
 /**
@@ -352,9 +374,10 @@ const OWNER_DIRECTIVE_NOUN_RE = /\bowner\s+(?:directive|mandate)s?\b/i;
 
 /**
  * EI-22454606387399213: a provenance preamble can explicitly DENY owner
- * authority — "these constraints are NOT owner directives" — without carrying
- * one of the per-constraint downgrade tags that {@link isProvenanceWithdrawal}
- * requires. Treat only the copular denial as a disclaimer. A looser
+ * authority — "these constraints are NOT owner directives" or "no applicable
+ * owner directive" — without carrying one of the per-constraint downgrade tags
+ * that {@link isProvenanceWithdrawal} requires. Treat only these explicit
+ * copular and negative-existence forms as disclaimers. A looser
  * "not ... owner directive" exemption would also hide real references such as
  * "do not ignore owner directive #9".
  *
@@ -363,7 +386,7 @@ const OWNER_DIRECTIVE_NOUN_RE = /\bowner\s+(?:directive|mandate)s?\b/i;
  * "this is not an owner directive; do not deploy" remains actionable.
  */
 const NEGATED_OWNER_DIRECTIVE_DISCLAIMER_RE =
-  /\b(?:is|are|was|were)\s+(?:explicitly\s+)?(?:not|never)\s+(?:an?\s+)?owner\s+(?:directive|mandate)s?\b/i;
+  /\b(?:(?:is|are|was|were)\s+(?:explicitly\s+)?(?:not|never)\s+(?:an?\s+)?owner\s+(?:directive|mandate)s?|no\s+(?:applicable\s+)?owner\s+(?:directive|mandate)s?)\b/i;
 
 function isNegatedOwnerDirectiveDisclaimer(line: string): boolean {
   return NEGATED_OWNER_DIRECTIVE_DISCLAIMER_RE.test(line);
@@ -453,6 +476,19 @@ function isOwnerDirectiveNounFieldLabel(line: string): boolean {
 /** Ambiguous — likely documenting/comparing the convention, not asserting a directive. */
 function isOwnerDirectiveNounPossibleMention(line: string): boolean {
   return OWNER_DIRECTIVE_MENTION_CONTEXT_RE.test(line);
+}
+
+/** EI-25481622361549806: a generic safety requirement to preserve directive
+ * records names their category as the object of the imperative; it does not
+ * claim that the requirement itself came from the owner. Keep this exemption
+ * anchored to a line-opening "Preserve … owner directives," list so an explicit
+ * attribution prefix such as "Owner directive 2026-07-06: Preserve …" still
+ * reaches the manual-owner-tag warning. */
+const OWNER_DIRECTIVE_PRESERVATION_REQUIREMENT_RE =
+  /^\s*(?:(?:[-*+]\s+)|(?:\d+[.)]\s+))?preserve\b[^.!?\n]{0,60}\bowner\s+(?:directive|mandate)s?\s*,/i;
+
+function isOwnerDirectivePreservationRequirement(line: string): boolean {
+  return OWNER_DIRECTIVE_PRESERVATION_REQUIREMENT_RE.test(line);
 }
 
 /**
@@ -699,8 +735,12 @@ function classifyMechanismClaim(
  * state:read / measured …), a source tag, a hedge, a question — or ANY checks row in the
  * same write that probes the release plane (the write "attaches a checks probe").
  */
+// Do not use the bare phrase "the release" as a deployment target: named
+// resource release events (for example resource:released:git-sync) use that
+// wording too. Keep concrete release-plane markers so deployment waits remain
+// detectable.
 const DEPLOY_DEPENDENCY_RE =
-  /\b(?:wait(?:ing|s)?\s+(?:on|for)|blocked\s+(?:on|by)|needs?|requires?|depends?\s+on|until|pending|gated\s+on|can'?t\s+\w+\s+(?:until|before|without))\b[^.\n]{0,50}?(?:\bgreen[- ]main\b|\bmain\b|:3070\b|\brelease:deployed\b|\bdeploy(?:ed|ment|s)?\b|\bthe\s+release\b)/i;
+  /\b(?:wait(?:ing|s)?\s+(?:on|for)|blocked\s+(?:on|by)|needs?|requires?|depends?\s+on|until|pending|gated\s+on|can'?t\s+\w+\s+(?:until|before|without))\b[^.;\n]{0,50}?(?:\bgreen[- ]main\b|\bmain\b|:3070\b|\brelease:deployed\b|\bdeploy(?:ment|ments|s)?\b|\b(?:to\s+be|be|been|being|is|are|was|were|get|got)\s+deployed\b|\bdeployed\b(?=\s*(?:[.,;:!?]|$|\b(?:before|until|to|on|at|now|first)\b)))/i;
 
 /** A probe of the release plane, on the line itself or on a checks row. */
 const RELEASE_PLANE_PROBE_RE =
@@ -890,6 +930,7 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       // noun form is what a retraction of a noun-form assertion ("this is [self-imposed],
       // NOT an owner directive") is necessarily written in.
       if (isProvenanceWithdrawal(line)) continue;
+      if (isOwnerDirectivePreservationRequirement(line)) continue;
       if (isOwnerDirectiveNounPossibleMention(line)) {
         matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'possible-owner-tag-mention' });
         continue;

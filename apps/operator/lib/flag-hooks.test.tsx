@@ -7,6 +7,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, renderHook } from '@testing-library/react';
+import { OperatorWorkspaceLocationProvider } from '@papercusp/operator-ui';
 
 // Shared holder so the mocked flag-store/sync-bus callbacks can hand their
 // callbacks back to the test.
@@ -40,6 +41,17 @@ import { useFlag } from './flag-hooks';
 afterEach(cleanup);
 
 describe('useFlag', () => {
+  it('uses hosted defaults without loading or subscribing to the desktop flag store', () => {
+    h.loadFlags.mockClear();
+    const { result } = renderHook(() => useFlag('myFeature' as never), {
+      wrapper: ({ children }) => <OperatorWorkspaceLocationProvider location="cloud">{children}</OperatorWorkspaceLocationProvider>,
+    });
+    expect(result.current).toBe(false);
+    expect(h.loadFlags).not.toHaveBeenCalled();
+    act(() => h.emit({ myFeature: true }));
+    expect(result.current).toBe(false);
+  });
+
   it('starts at the default when the snapshot lacks the key', () => {
     const { result } = renderHook(() => useFlag('myFeature' as never));
     expect(result.current).toBe(false);

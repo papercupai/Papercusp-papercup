@@ -1,0 +1,12 @@
+[Unit]
+# WI-10006303: armed BY pc-estate-mirror.sh when a run DEFERs for lack of an uplink
+# (exit 75). Fires the mirror once, 20 min later; RemainAfterElapse=no lets the next
+# DEFER re-arm it. Not enabled/installed on its own — the daily timer stays authoritative.
+Description=Bounded re-fire of pc-estate-mirror after a no-network DEFER (WI-10006303)
+Documentation=file:%h/papercupai-workspace/papercusp/infra/estate-backup/RESTORE-RUNBOOK.md
+
+[Timer]
+OnActiveSec=20min
+AccuracySec=1min
+RemainAfterElapse=no
+Unit=pc-estate-mirror.service

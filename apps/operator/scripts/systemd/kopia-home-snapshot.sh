@@ -62,42 +62,90 @@ write_vm_verification_marker() {
 # this invocation, and cleanup validates both /proc/<pid>/exe and argv before
 # using sudo to kill that exact PID. Never use pkill/killall here.
 kopia_pid_matches() {
-  local pid="$1" exe="" cmdline=""
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [ "$pid" -gt 1 ] 2>/dev/null || return 1
-  exe="$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
-  # The Kopia child runs as ROOT (sudo), and /proc/<pid>/exe of a root process is
-  # unreadable to this user unit, so the plain readlink above returns nothing for the
-  # exact process this cleanup exists to kill (WI-10002636). Resolve the link with
-  # the same sudo the kill below already uses; cmdline stays world-readable.
-  if [ "$exe" != "$KOPIA_BIN" ]; then
-    exe="$("$SUDO_BIN" -n -- readlink -f -- "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
-  fi
-  [ "$exe" = "$KOPIA_BIN" ] || return 1
-  cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)"
-  [[ "$cmdline" == "$KOPIA_BIN snapshot create "* ]]
+  # Shared exe+argv validator (kopia-cache-bootstrap.sh). The Kopia child runs as
+  # ROOT, so its exe link is unreadable here and is resolved with a bounded sudo
+  # (WI-10002636), but only after the world-readable cmdline already matched, so a
+  # non-Kopia cgroup member costs no sudo (WI-6554700010011924).
+  kopia_exact_snapshot_pid "$1"
+}
+
+# Every root Kopia this unit starts stays in the unit's cgroup until it exits. The
+# user manager cannot signal it ("Failed to kill control group"), and a restart only
+# logs "Found left-over process ... Ignoring". The PID file names just the LAST
+# run's child, so a leftover from an earlier failed attempt was never reaped. On
+# 2026-10-14 three concurrent home walks (19h, 17h and 52m old) were writing to the
+# repository (WI-6554700010011790). cgroup membership is exact (a recycled PID lands
+# in another cgroup), and every candidate is still validated by exe and argv, so this
+# never touches an unrelated process.
+CGROUP_ROOT="${KOPIA_HOME_SNAPSHOT_CGROUP_ROOT:-/sys/fs/cgroup}"
+SELF_CGROUP_FILE="${KOPIA_HOME_SNAPSHOT_SELF_CGROUP:-/proc/self/cgroup}"
+UNIT_CGROUP_LEAF="kopia-home-snapshot.service"
+
+# Lists this unit's cgroup members UNVALIDATED; the caller skips PIDs it already
+# validated before calling kopia_pid_matches, so no PID costs a second sudo.
+unit_cgroup_pids() {
+  local line="" path="" procs="" pid=""
+  line="$(grep -m1 '^0::' "$SELF_CGROUP_FILE" 2>/dev/null || true)"
+  path="${line#0::}"
+  # Only inside this unit's own cgroup: a manual --cleanup run from a terminal or
+  # another unit must never reap that scope's processes.
+  [ "${path##*/}" = "$UNIT_CGROUP_LEAF" ] || return 0
+  procs="$CGROUP_ROOT$path/cgroup.procs"
+  [ -r "$procs" ] || return 0
+  while read -r pid; do
+    [ -n "$pid" ] && [ "$pid" != "$$" ] || continue
+    printf '%s\n' "$pid"
+  done <"$procs"
+}
+
+stop_kopia_pid_logged() {
+  local pid="$1" rc=0
+  # SIGTERM first so Kopia flushes a partial snapshot of the home walk, which the
+  # next run resumes from; SIGKILL discarded it (kopia_stop_flushing,
+  # EI-25211496463956189).
+  kopia_stop_flushing "$pid" "${KOPIA_HOME_SNAPSHOT_FLUSH_GRACE_SEC:-15}"
+  rc=$?
+  case "$rc" in
+    0) echo "CLEANUP: Kopia PID $pid exited after SIGTERM; its progress was flushed" >>"$LOG" ;;
+    2) echo "CLEANUP: killed exact Kopia PID $pid after SIGTERM grace" >>"$LOG" ;;
+    *) echo "WARN: failed to kill exact Kopia PID $pid" >>"$LOG" ;;
+  esac
 }
 
 cleanup_kopia_pid() {
-  local pid=""
-  [ -s "$PID_FILE" ] || return 0
-  pid="$(tr -d '[:space:]' <"$PID_FILE" 2>/dev/null || true)"
-
-  if kopia_pid_matches "$pid"; then
-    if "$SUDO_BIN" -n -- "$KILL_BIN" -KILL "$pid" >>"$LOG" 2>&1; then
-      echo "CLEANUP: killed exact Kopia PID $pid" >>"$LOG"
+  local recorded="" pid="" seen=" "
+  local -a targets=() waits=()
+  if [ -s "$PID_FILE" ]; then
+    recorded="$(tr -d '[:space:]' <"$PID_FILE" 2>/dev/null || true)"
+    if kopia_pid_matches "$recorded"; then
+      targets+=("$recorded")
+      seen+="$recorded "
     else
-      echo "WARN: failed to kill exact Kopia PID $pid" >>"$LOG"
+      echo "INFO: stale/non-Kopia PID file $PID_FILE; refusing to kill PID ${recorded:-<empty>}" >>"$LOG"
     fi
-  else
-    echo "INFO: stale/non-Kopia PID file $PID_FILE; refusing to kill PID ${pid:-<empty>}" >>"$LOG"
   fi
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    case "$seen" in *" $pid "*) continue ;; esac
+    seen+="$pid "
+    kopia_pid_matches "$pid" || continue
+    echo "CLEANUP: leftover Kopia PID $pid found in this unit's cgroup" >>"$LOG"
+    targets+=("$pid")
+  done < <(unit_cgroup_pids)
+  # Stop them in parallel, so any number of leftovers shares ONE flush grace inside
+  # the unit's TimeoutStopSec instead of N graces in sequence.
+  for pid in "${targets[@]}"; do
+    stop_kopia_pid_logged "$pid" &
+    waits+=("$!")
+  done
+  for pid in "${waits[@]}"; do wait "$pid" || true; done
   rm -f -- "$PID_FILE"
 }
 
-# ExecStopPost calls this same script after systemd-oomd or a stop kills the
-# main shell. It is also the safe, non-snapshot test seam for the exact-PID
-# guard. A normal run has already removed the PID file, so this is a no-op.
+# ExecStartPre and ExecStopPost call this same script: after systemd-oomd or a
+# stop kills the main shell, and again before each (re)start so a new walk never
+# runs beside a leftover one. It is also the safe, non-snapshot test seam for the
+# exact-PID guard. With no PID file and no leftover in the cgroup it is a no-op.
 if [ "${1:-}" = "--cleanup" ]; then
   cleanup_kopia_pid
   exit 0
@@ -108,24 +156,29 @@ fi
 # Cleanup stays above this block so ExecStopPost can never wait on backup work.
 if [ "${KOPIA_BACKUP_GUARD_ACTIVE:-0}" != 1 ]; then
   guard="${KOPIA_BACKUP_GUARD_BIN:-$script_dir/kopia-backup-guard.sh}"
-  exec "$guard" --mode wait --label daily-home-vm -- "$0" "$@"
+  # The daily full-home walk is restart-safe but may run for hours. Keep it in
+  # scheduled mode so an overdue DB dump can preempt it; wait mode is reserved
+  # for protected/manual snapshots that must finish before their caller proceeds.
+  exec "$guard" --mode scheduled --label daily-home-vm --priority-on-contention -- "$0" "$@"
 fi
 
 run_kopia_snapshot() {
   local output_file="$LOG_DIR/home-snapshot-output.$$" sudo_pid="" rc=0
+  kopia_retention_pin_all "$SUDO_BIN" "$KOPIA_BIN" add || return
   rm -f -- "$PID_FILE" "$output_file"
 
   # The root helper records its own PID before exec'ing Kopia. `$!` would be
   # sudo's unprivileged parent, not the root Kopia process that can be orphaned.
-  "$SUDO_BIN" -n /usr/bin/bash -c '
+  kopia_as_root "$SUDO_BIN" /usr/bin/bash -c '
     pid_file="$1"
     shift
     printf "%s\n" "$$" >"$pid_file"
     exec "$@"
-  ' bash "$PID_FILE" "$KOPIA_BIN" snapshot create "--parallel=1" "$@" >"$output_file" 2>&1 &
+  ' bash "$PID_FILE" "$KOPIA_BIN" snapshot create "--pin=$KOPIA_RETENTION_PIN" "--parallel=1" "$@" >"$output_file" 2>&1 &
   sudo_pid=$!
   wait "$sudo_pid"
   rc=$?
+  [ "$rc" -ne 0 ] || kopia_retention_finish "$SUDO_BIN" "$KOPIA_BIN" || rc=$?
   cat "$output_file"
   rm -f -- "$output_file" "$PID_FILE"
   return "$rc"

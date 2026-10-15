@@ -7,7 +7,8 @@
  * (`agent-capability-confinement-2026-06-13`).
  */
 
-import { closeSync, createReadStream, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
+import { open, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -17,11 +18,25 @@ import { resolveCapabilityBaseDir, resolveCapabilityIntegrationRoot } from './ba
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { SCRATCH_SCHEME, safeScratchFilesystemPath } from '../../scratch-uri';
+import {
+  QUERY_DEFAULT_CONTEXT,
+  QUERY_DEFAULT_MAX_MATCHES,
+  QUERY_MAX_CONTEXT,
+  QUERY_MAX_MATCHES,
+  VIEW_DEFAULT_LIMIT,
+  VIEW_MAX_LIMIT,
+  querySavedResult,
+  readSavedResultLines,
+} from './read-query';
 import { redactSensitiveText } from '../../sensitive-text';
 import {
   SCRATCH_REFERENCE_MAGIC,
   authorizeScratchReference,
+  isDurableScratchReferenceUri,
+  isVolatileScratchReferenceUri,
   parseScratchReference,
+  readDurableScratchReference,
+  readVolatileScratchReference,
   ScratchReferenceError,
   type ScratchReferenceManifest,
 } from '../../scratch-reference';
@@ -48,7 +63,9 @@ const BYTE_WINDOW_EXCLUSIVITY =
 const CONTENT_INDEX_EXCLUSIVITY =
   'Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), and evidence_class.';
 const EVIDENCE_CLASS_EXCLUSIVITY =
-  'Mutually exclusive with content_indexes, line windows (offset, limit, tail), and byte windows (byte_offset, byte_limit).';
+  'Text or Markdown scratch spills do not support evidence selection; read them with line or byte windows. Mutually exclusive with content_indexes, line windows (offset, limit, tail), and byte windows (byte_offset, byte_limit).';
+const SCRATCH_LINE_WINDOW_SIZE_NOTE =
+  'Scratch-reference line windows can be refused when selected text exceeds the response-size limit; reduce limit/tail or use byte_offset+byte_limit for exact large text.';
 
 const CAPABILITY_READ_SEE_ALSO = [
   'capability:edit (exact-string edit)',
@@ -183,21 +200,71 @@ export function doorSafePageBytes(
   return Math.min(requestedBytes, fits);
 }
 
+/** Scratch references are returned unchanged by tools:invoke, so an oversized
+ * line view would spill into another scratch reference and repeat the same read.
+ * Leave the same envelope slack used by byte pages before allowing a text window. */
+function scratchLineWindowExceedsDoor(text: string): boolean {
+  const budgetBytes = computeTurnDoors(0).resultEach * CHARS_PER_TOKEN_ESTIMATE;
+  return Buffer.byteLength(text, 'utf8') > budgetBytes - DOOR_MARGIN_CHARS;
+}
+
+/** A scratch-reference read returns stored tool output verbatim. Markers such
+ * as `textTruncated` inside that stored payload describe its original producer,
+ * not a truncation performed by this read; the result door uses this metadata
+ * to avoid wrapping the same disclosure in another recursively unreadable
+ * reference envelope. */
+function markScratchReferenceRead<T>(result: T, reference?: ScratchReferenceManifest): T {
+  if (!reference || result === null || typeof result !== 'object') return result;
+  const row = result as Record<string, unknown>;
+  const metadata = row._meta !== null && typeof row._meta === 'object' && !Array.isArray(row._meta)
+    ? row._meta as Record<string, unknown>
+    : {};
+  const capabilityReadMetadata = metadata.capabilityRead !== null && typeof metadata.capabilityRead === 'object' && !Array.isArray(metadata.capabilityRead)
+    ? metadata.capabilityRead as Record<string, unknown>
+    : {};
+  return {
+    ...row,
+    _meta: {
+      ...metadata,
+      capabilityRead: { ...capabilityReadMetadata, source: 'scratch-reference' },
+    },
+  } as T;
+}
+
 const readPathArgs = {
   file_path: z.string().min(1).optional().describe('Absolute path, ~/-relative, or relative to the project dir.'),
   uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
 };
 
+const QUERY_EXCLUSIVITY =
+  'Mutually exclusive with line windows (offset, limit, tail), byte windows (byte_offset, byte_limit), content_indexes, and evidence_class.';
+/** Present on every non-query branch so a stray `query` is rejected instead of silently stripped. */
+const notQuery = {
+  query: z.never().optional().describe(`Only valid for a saved-result query. ${QUERY_EXCLUSIVITY}`),
+};
+/** Present on every branch but the view window, for the same reason (WI-6554700010008917). */
+const notView = {
+  view_lines: z.never().optional().describe('Only valid alone: reads lines of the searched view.'),
+};
+
 const lineWindowArgs = z.object({
   ...readPathArgs,
-  offset: z.number().int().nonnegative().optional().describe(`1-based line to start from. ${LINE_WINDOW_EXCLUSIVITY}`),
-  limit: z.number().int().positive().optional().describe(`Max lines to read (default ${DEFAULT_LIMIT}). ${LINE_WINDOW_EXCLUSIVITY}`),
+  ...notQuery,
+  ...notView,
+  offset: z.number().int().nonnegative().optional().describe(
+    `1-based line to start from. ${SCRATCH_LINE_WINDOW_SIZE_NOTE} ${LINE_WINDOW_EXCLUSIVITY}`,
+  ),
+  limit: z.number().int().positive().optional().describe(
+    `Max lines to read (default ${DEFAULT_LIMIT}). ${SCRATCH_LINE_WINDOW_SIZE_NOTE} ${LINE_WINDOW_EXCLUSIVITY}`,
+  ),
   tail: z
     .number()
     .int()
     .positive()
     .optional()
-    .describe(`Read the LAST N lines instead of reading forward — the \`tail -n N\` equivalent. Ignores offset. ${LINE_WINDOW_EXCLUSIVITY}`),
+    .describe(
+      `Read the LAST N lines instead of reading forward — the \`tail -n N\` equivalent. Ignores offset. ${SCRATCH_LINE_WINDOW_SIZE_NOTE} ${LINE_WINDOW_EXCLUSIVITY}`,
+    ),
   raw: z
     .boolean()
     .optional()
@@ -210,6 +277,8 @@ const lineWindowArgs = z.object({
 
 const byteWindowArgs = z.object({
   ...readPathArgs,
+  ...notQuery,
+  ...notView,
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -233,6 +302,8 @@ const byteWindowArgs = z.object({
 
 const contentIndexArgs = z.object({
   ...readPathArgs,
+  ...notQuery,
+  ...notView,
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -243,12 +314,14 @@ const contentIndexArgs = z.object({
     .array(z.number().int().nonnegative())
     .min(1)
     .max(64)
-    .describe(`For a stable result-door reference whose payload contains an MCP content array, return only these item indexes. The dispatch-level projection can then pick fields from the selected result. ${CONTENT_INDEX_EXCLUSIVITY}`),
+    .describe(`For a stable result-door reference whose payload contains an MCP content array, return only these item indexes under the response's content field. A dispatch-level projection sees the capability:read response (for example, content[].text); it does not parse JSON serialized inside a selected text item's text. Use evidence_class when the reference supplies indexed JSON pointers. ${CONTENT_INDEX_EXCLUSIVITY}`),
   evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
 });
 
 const evidenceClassArgs = z.object({
   ...readPathArgs,
+  ...notQuery,
+  ...notView,
   offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
   tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
@@ -257,7 +330,7 @@ const evidenceClassArgs = z.object({
   byte_limit: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
   content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
   evidence_class: z.enum(OUTPUT_EVIDENCE_CLASSES).describe(
-    `For a stable result-door reference, resolve only the JSON values indexed for this evidence class. ${EVIDENCE_CLASS_EXCLUSIVITY}`,
+    `For a stable result-door reference with a JSON MCP content envelope, resolve only the values indexed for this evidence class. ${EVIDENCE_CLASS_EXCLUSIVITY}`,
   ),
 });
 
@@ -268,7 +341,55 @@ const evidenceClassArgs = z.object({
  * The `z.never().optional()` fields emit the `not` constraints that make each
  * anyOf branch reject the other window modes.
  */
-const readArgs = z.union([lineWindowArgs, byteWindowArgs, contentIndexArgs, evidenceClassArgs]);
+/**
+ * Saved-result query (token-efficiency-prompts-cache-and-behavior-2026-10-11 P-005): search the
+ * whole retained body of a spill (or any readable file) for lines containing every term, instead
+ * of paging base64. Same authorization/expiry gate as every other mode.
+ */
+const queryArgs = z.object({
+  ...readPathArgs,
+  ...notView,
+  query: z.string().trim().min(1).max(200).describe(
+    `Search the whole saved result for lines containing EVERY whitespace-separated term (case-insensitive, literal) and return only those lines with line numbers, context and coverage. JSON is searched pretty-printed, multi-line strings expanded between """ fences. Read around a hit with view_lines. ${QUERY_EXCLUSIVITY}`,
+  ),
+  query_context: z.number().int().nonnegative().max(QUERY_MAX_CONTEXT).optional().describe(`Context lines around each match (default ${QUERY_DEFAULT_CONTEXT}).`),
+  query_max_matches: z.number().int().positive().max(QUERY_MAX_MATCHES).optional().describe(`Max matches returned (default ${QUERY_DEFAULT_MAX_MATCHES}); matchCount still counts all.`),
+  query_from_line: z.number().int().positive().optional().describe('Resume from this line of the searched view (use next_cursor).'),
+  offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  raw: z.never().optional().describe(`Not valid for a query. ${QUERY_EXCLUSIVITY}`),
+  byte_offset: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  byte_limit: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
+  evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
+});
+
+/**
+ * Searched-view window (WI-6554700010008917): read lines of the SAME view a query searched, so a
+ * hit's `line` can be read in context. Raw offset/limit address the spill file's physical lines,
+ * a different coordinate space for a one-line JSON body.
+ */
+const viewWindowArgs = z.object({
+  ...readPathArgs,
+  ...notQuery,
+  view_lines: z
+    .object({
+      offset: z.number().int().positive().describe('1-based line of the searched view (a query match.line).'),
+      limit: z.number().int().positive().max(VIEW_MAX_LIMIT).optional().describe(`Lines to read (default ${VIEW_DEFAULT_LIMIT}).`),
+    })
+    .describe('Read lines of the view a query searches (pretty JSON, multi-line strings expanded); use after query. Alone only.'),
+  offset: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  limit: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  tail: z.never().optional().describe(`Only valid for line windows. ${LINE_WINDOW_EXCLUSIVITY}`),
+  raw: z.never().optional().describe('Not valid for view_lines.'),
+  byte_offset: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  byte_limit: z.never().optional().describe(`Only valid for byte windows. ${BYTE_WINDOW_EXCLUSIVITY}`),
+  content_indexes: z.never().optional().describe(`Only valid for content-index selection. ${CONTENT_INDEX_EXCLUSIVITY}`),
+  evidence_class: z.never().optional().describe(`Only valid for evidence-class selection. ${EVIDENCE_CLASS_EXCLUSIVITY}`),
+});
+
+const readArgs = z.union([lineWindowArgs, byteWindowArgs, contentIndexArgs, evidenceClassArgs, queryArgs, viewWindowArgs]);
 
 /**
  * The handler has two intentional response paths: human-readable MCP text and a
@@ -293,6 +414,8 @@ const capabilityReadResultSchema = z
     byte_length: z.number().int().nonnegative().optional(),
     total_bytes: z.number().int().nonnegative().optional(),
     data: z.string().optional(),
+    sha256: z.string().optional(),
+    fallback_uri: z.string().optional(),
     eof: z.boolean().optional(),
     next_cursor: z
       .object({
@@ -330,6 +453,15 @@ type ReadContext = {
   codeMode?: boolean;
   transport?: string;
   requestedStructured?: boolean;
+  uiClientId?: string | null;
+  isSuperuser?: boolean;
+  isPowerUser?: boolean;
+  workspaceId?: string | null;
+  userId?: string | null;
+  principal?: { kind?: string; slug: string; workspaceId: string } | null;
+  harnessSlug?: string | null;
+  sigVerifiedSpawn?: boolean;
+  spawnId?: string | null;
 };
 
 type SelectedLine = { line: string; index: number };
@@ -400,19 +532,19 @@ async function readLargeLineWindow(
 }
 
 /** Read one exact byte page without materializing the rest of a large file. */
-function readBytePage(abs: string, offset: number, limit: number): Buffer {
-  const fd = openSync(abs, 'r');
+async function readBytePage(abs: string, offset: number, limit: number): Promise<Buffer> {
+  const fd = await open(abs, 'r');
   try {
     const page = Buffer.alloc(limit);
     let bytesRead = 0;
     while (bytesRead < limit) {
-      const count = readSync(fd, page, bytesRead, limit - bytesRead, offset + bytesRead);
+      const { bytesRead: count } = await fd.read(page, bytesRead, limit - bytesRead, offset + bytesRead);
       if (count === 0) break;
       bytesRead += count;
     }
     return page.subarray(0, bytesRead);
   } finally {
-    closeSync(fd);
+    await fd.close();
   }
 }
 
@@ -421,26 +553,27 @@ function readBytePage(abs: string, offset: number, limit: number): Buffer {
  * Detect its magic prefix and fail closed before a streaming line read could
  * expose an owner/workspace-scoped payload as ordinary text.
  */
-function startsWithScratchReference(abs: string): boolean {
+async function startsWithScratchReference(abs: string): Promise<boolean> {
   const magic = Buffer.from(SCRATCH_REFERENCE_MAGIC, 'utf8');
-  let fd: number | undefined;
   try {
-    fd = openSync(abs, 'r');
-    const prefix = Buffer.alloc(magic.length);
-    const count = readSync(fd, prefix, 0, magic.length, 0);
-    return count === magic.length && prefix.equals(magic);
+    const fd = await open(abs, 'r');
+    try {
+      const prefix = Buffer.alloc(magic.length);
+      const { bytesRead } = await fd.read(prefix, 0, magic.length, 0);
+      return bytesRead === magic.length && prefix.equals(magic);
+    } finally {
+      await fd.close();
+    }
   } catch {
     return false;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
   }
 }
 
-function renderByteWindow(
+async function renderByteWindow(
   abs: string,
   args: ByteReadArgs,
   totalBytes: number,
-  readPage: (offset: number, limit: number) => Buffer,
+  readPage: (offset: number, limit: number) => Buffer | Promise<Buffer>,
   reference?: ScratchReferenceManifest,
 ) {
   const effectiveLimit = doorSafePageBytes(abs, args.byte_limit!, reference);
@@ -460,7 +593,7 @@ function renderByteWindow(
     );
   }
   const start = Math.min(args.byte_offset!, totalBytes);
-  const page = readPage(start, effectiveLimit);
+  const page = await readPage(start, effectiveLimit);
   const nextOffset = start + page.length;
   return {
     content: [{
@@ -491,21 +624,27 @@ function renderLargeLineWindow(
 ) {
   const { slice, start, totalLines } = window;
   if (args.raw) {
+    const end = start + slice.length;
+    const rawWindow = {
+      total_lines: totalLines,
+      start_line: slice.length === 0 ? null : start + 1,
+      end_line: slice.length === 0 ? null : end,
+      has_more: end < totalLines,
+    };
     if (slice.length === 0) {
       return {
         content: [{ type: 'text' as const, text: '' }],
         ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
-          ? { structuredContent: { ok: true, file_path: abs, body: '' } }
+          ? { structuredContent: { ok: true, file_path: abs, body: '', ...rawWindow } }
           : {}),
       };
     }
-    const end = start + slice.length;
     const rawBody = slice.map(({ line }) => line).join('\n') +
       (end < totalLines || (end === totalLines && window.endedWithNewline) ? '\n' : '');
     return {
       content: [{ type: 'text' as const, text: rawBody }],
       ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
-        ? { structuredContent: { ok: true, file_path: abs, body: rawBody } }
+        ? { structuredContent: { ok: true, file_path: abs, body: rawBody, ...rawWindow } }
         : {}),
     };
   }
@@ -542,13 +681,13 @@ function renderLargeLineWindow(
 export default defineTool({
   name: 'capability:read',
   description:
-    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.',
+    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. query searches a saved result (spill) for lines holding every term; view_lines reads around a hit. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, a papercusp://scratch URI, or a short-lived in-memory scratch fallback URI.',
   guidance: {
-    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
+    when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line. For a truncated tool result (spill), search it with query, then read around a hit with view_lines.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
-    chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
+    chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite). Spill: query → view_lines (follow read_around).',
     returns:
-      'Across line/raw, byte-page, content/evidence-selection, and error branches: { ok, file_path?, body?, total_lines?, start_line?, end_line?, has_more?, encoding?, byte_offset?, byte_length?, total_bytes?, data?, eof?, next_cursor?, reference?, evidence_class?, evidence?, selected_indexes?, total_content_items?, content?, isError?, reason?, message? }. In code mode, line/raw reads put undecorated text in `body` (not MCP envelope `content`/`text`); byte pages put exact base64 in `data` and expose `next_cursor`.',
+      'Across line/raw, byte-page, content/evidence-selection, and error branches: { ok, file_path?, body?, total_lines?, start_line?, end_line?, has_more?, encoding?, byte_offset?, byte_length?, total_bytes?, data?, eof?, next_cursor?, reference?, evidence_class?, evidence?, selected_indexes?, total_content_items?, content?, isError?, reason?, message? }. In code mode, line/raw reads put undecorated text in `body` (not MCP envelope `content`/`text`); byte pages put exact base64 in `data` and expose `next_cursor`. query returns { matches[{line,text}], matchCount, coverage, read_around, next_cursor, note? }; view_lines returns numbered text or view_window_out_of_range.',
     seeAlso: capabilityReadSeeAlso,
   },
   capability: 'capability:fs-read',
@@ -562,6 +701,126 @@ export default defineTool({
     const filePath = args.file_path ?? args.uri;
     if (!filePath) return err('missing_path', 'file_path or uri must be supplied.');
 
+    // Result-door scratch references get a bounded set of nested timings so a slow
+    // raw line read can be localized without adding phases to ordinary file reads.
+    const scratchPathPattern = /(?:^|[\\/])\.papercusp[\\/]scratch[\\/]/;
+    let scratchReferencePath = scratchPathPattern.test(filePath);
+    if (!scratchReferencePath && filePath.startsWith(`${SCRATCH_SCHEME}/`)) {
+      try {
+        safeScratchFilesystemPath(filePath);
+        scratchReferencePath = true;
+      } catch {
+        // Keep the normal path resolver responsible for returning the URI error.
+      }
+    }
+    const trackScratchAsync = <T>(phase: string, work: () => Promise<T>): Promise<T> => {
+      if (!scratchReferencePath || !ctx.phases) return work();
+      return ctx.phases.track(`capability:read:scratch:${phase}`, work);
+    };
+    const trackScratchSync = <T>(phase: string, work: () => T): T => {
+      if (!scratchReferencePath || !ctx.phases) return work();
+      const startedAt = Date.now();
+      try {
+        return work();
+      } finally {
+        ctx.phases.addCompleted(`capability:read:scratch:${phase}`, startedAt, Date.now() - startedAt);
+      }
+    };
+
+    if (isDurableScratchReferenceUri(filePath)) {
+      if (args.byte_offset === undefined || args.byte_limit === undefined) {
+        return err(
+          'durable_reference_requires_byte_window',
+          'Durable scratch references support exact byte pages only; supply byte_offset and byte_limit from the cursor.',
+        );
+      }
+      if (
+        args.offset !== undefined || args.limit !== undefined || args.tail !== undefined ||
+        args.raw === true || args.content_indexes !== undefined || args.evidence_class !== undefined ||
+        args.query !== undefined || args.view_lines !== undefined
+      ) {
+        return err('mixed_window_modes', 'Durable scratch reference byte pages cannot be combined with other read modes.');
+      }
+      let ownerId: string | null = null;
+      try {
+        const identityCtx = ctx as ResolveIdentityCtx;
+        ownerId = resolveAgentIdentity(
+          identityCtx.sigVerifiedSpawn &&
+          !identityCtx.isSuperuser &&
+          !identityCtx.isPowerUser &&
+          identityCtx.uiClientId
+            ? { ...identityCtx, principal: undefined }
+            : identityCtx,
+        ).ownerId;
+      } catch {
+        ownerId = null;
+      }
+      try {
+        const reference = await readDurableScratchReference(filePath, {
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? null,
+          ownerId,
+        });
+        return renderByteWindow(
+          filePath,
+          args as ByteReadArgs,
+          reference.manifest.byteCount,
+          (offset, limit) => reference.payload.subarray(offset, offset + limit),
+          reference.manifest,
+        );
+      } catch (e: unknown) {
+        if (e instanceof ScratchReferenceError) return err(e.code, e.message);
+        return err('read_failed', e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    if (isVolatileScratchReferenceUri(filePath)) {
+      if (args.byte_offset === undefined || args.byte_limit === undefined) {
+        return err(
+          'volatile_reference_requires_byte_window',
+          'In-memory scratch fallbacks support exact byte pages only; supply byte_offset and byte_limit from the cursor.',
+        );
+      }
+      if (
+        args.offset !== undefined || args.limit !== undefined || args.tail !== undefined ||
+        args.raw === true || args.content_indexes !== undefined || args.evidence_class !== undefined ||
+        args.query !== undefined || args.view_lines !== undefined
+      ) {
+        return err('mixed_window_modes', 'In-memory scratch fallback byte pages cannot be combined with other read modes.');
+      }
+      let ownerId: string | null = null;
+      try {
+        // Use the same signed-spawn identity rule as filesystem scratch references.
+        const identityCtx = ctx as ResolveIdentityCtx;
+        ownerId = resolveAgentIdentity(
+          identityCtx.sigVerifiedSpawn &&
+          !identityCtx.isSuperuser &&
+          !identityCtx.isPowerUser &&
+          identityCtx.uiClientId
+            ? { ...identityCtx, principal: undefined }
+            : identityCtx,
+        ).ownerId;
+      } catch {
+        ownerId = null;
+      }
+      try {
+        const fallback = readVolatileScratchReference(filePath, {
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? null,
+          ownerId,
+        });
+        return renderByteWindow(
+          filePath,
+          args as ByteReadArgs,
+          fallback.manifest.byteCount,
+          (offset, limit) => fallback.payload.subarray(offset, offset + limit),
+          fallback.manifest,
+        );
+      } catch (e: unknown) {
+        if (e instanceof ScratchReferenceError) return err(e.code, e.message);
+        return err('invalid_reference', e instanceof Error ? e.message : String(e));
+      }
+    }
+
+
     let abs: string;
     try {
       const baseDir = selectCapabilityReadBaseDir(filePath, resolveCapabilityBaseDir(ctx));
@@ -571,10 +830,10 @@ export default defineTool({
       return err('invalid_path', msg);
     }
 
-    let stat: ReturnType<typeof statSync>;
+    let fileStat: Awaited<ReturnType<typeof stat>>;
     try {
-      stat = statSync(abs);
-      if (stat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
+      fileStat = await trackScratchAsync('stat', () => stat(abs));
+      if (fileStat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return err('read_failed', msg);
@@ -596,8 +855,8 @@ export default defineTool({
 
     const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
     const boundedLineRead = args.offset !== undefined || args.limit !== undefined || args.tail !== undefined;
-    if (stat.size > MAX_FILE_BYTES) {
-      if (startsWithScratchReference(abs)) {
+    if (fileStat.size > MAX_FILE_BYTES) {
+      if (await trackScratchAsync('large-reference-check', () => startsWithScratchReference(abs))) {
         return err(
           'too_large',
           `${abs} is a large scratch reference; use its emitted reference cursor instead of reading the container as a plain file.`,
@@ -614,31 +873,35 @@ export default defineTool({
           if (args.raw) {
             return err('mixed_window_modes', 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.');
           }
-          return renderByteWindow(
+          return await renderByteWindow(
             abs,
             args as ByteReadArgs,
-            stat.size,
+            fileStat.size,
             (offset, limit) => readBytePage(abs, offset, limit),
           );
         }
         if (boundedLineRead) {
-          return renderLargeLineWindow(
+          const largeLineRead = await trackScratchAsync(
+            'large-line-read',
+            () => readLargeLineWindow(abs, args as LineReadArgs, credentialBearingConfig),
+          );
+          return trackScratchSync('large-line-render', () => renderLargeLineWindow(
             abs,
             args as LineReadArgs,
             ctx as ReadContext,
-            await readLargeLineWindow(abs, args as LineReadArgs, credentialBearingConfig),
-          );
+            largeLineRead,
+          ));
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         return err('read_failed', msg);
       }
-      return err('too_large', `${abs} is ${stat.size} bytes (> ${MAX_FILE_BYTES}). Read a bounded slice with capability:read (offset/limit/tail) or capability:bash.`);
+      return err('too_large', `${abs} is ${fileStat.size} bytes (> ${MAX_FILE_BYTES}). Read a bounded slice with capability:read (offset/limit/tail) or capability:bash.`);
     }
 
     let bytes: Buffer;
     try {
-      bytes = readFileSync(abs);
+      bytes = await trackScratchAsync('file-read', () => readFile(abs));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return err('read_failed', msg);
@@ -646,7 +909,7 @@ export default defineTool({
 
     let reference: ScratchReferenceManifest | undefined;
     try {
-      const parsed = parseScratchReference(bytes);
+      const parsed = trackScratchSync('scratch-reference-parse', () => parseScratchReference(bytes));
       if (parsed) {
         reference = parsed.manifest;
         let ownerId: string | null = null;
@@ -671,15 +934,72 @@ export default defineTool({
             ownerId = null;
           }
         }
-        authorizeScratchReference(reference, {
+        trackScratchSync('scratch-reference-authorize', () => authorizeScratchReference(reference!, {
           workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? null,
           ownerId,
-        });
+        }));
         bytes = parsed.payload;
       }
     } catch (e: unknown) {
-      if (e instanceof ScratchReferenceError) return err(e.code, e.message);
+      if (e instanceof ScratchReferenceError) {
+        return err(e.code, e.message);
+      }
       return err('invalid_reference', e instanceof Error ? e.message : String(e));
+    }
+
+    if (args.view_lines) {
+      const v = args as z.infer<typeof viewWindowArgs>;
+      if (typeof args.query === 'string' || args.content_indexes || args.evidence_class || args.byte_offset !== undefined || args.byte_limit !== undefined || args.offset !== undefined || args.limit !== undefined || args.tail !== undefined || args.raw !== undefined) {
+        return err('mixed_window_modes', 'view_lines cannot be combined with query, line, byte, content or evidence selection.');
+      }
+      const r = readSavedResultLines(bytes, {
+        offset: v.view_lines.offset,
+        limit: v.view_lines.limit,
+        bodyOffset: reference?.bodyOffsetInPayload,
+      });
+      if (!r.ok) return err(r.reason, r.message);
+      const cursorKey = args.uri ? 'uri' : 'file_path';
+      const cursorPath = args.uri ?? args.file_path ?? abs;
+      const footer = r.nextOffset === null
+        ? ''
+        : `\n… more: capability:read { ${cursorKey}, view_lines: { offset: ${r.nextOffset}, limit: ${v.view_lines.limit ?? VIEW_DEFAULT_LIMIT} } }`;
+      return markScratchReferenceRead({ content: [{ type: 'text' as const, text:
+        `${cursorPath} — searched ${r.view} view, lines ${r.startLine}–${r.endLine} of ${r.totalLines}` +
+        `${r.clippedLines > 0 ? ` (${r.clippedLines} long line(s) clipped)` : ''}\n${r.lines.join('\n')}${footer}`,
+      }] }, reference);
+    }
+
+    if (typeof args.query === 'string') {
+      const q = args as z.infer<typeof queryArgs>;
+      if (args.content_indexes || args.evidence_class || args.byte_offset !== undefined || args.byte_limit !== undefined || args.offset !== undefined || args.limit !== undefined || args.tail !== undefined || args.raw !== undefined) {
+        return err('mixed_window_modes', 'query cannot be combined with line, byte, content or evidence selection.');
+      }
+      const result = querySavedResult(bytes, {
+        query: q.query,
+        context: q.query_context,
+        maxMatches: q.query_max_matches,
+        fromLine: q.query_from_line,
+        bodyOffset: reference?.bodyOffsetInPayload,
+      });
+      const cursorPath = args.uri ?? args.file_path ?? abs;
+      return markScratchReferenceRead({ content: [{ type: 'text' as const, text: JSON.stringify({
+        ok: true,
+        file_path: abs,
+        query: q.query,
+        ...result,
+        ...(reference ? { reference: { sha256: reference.sha256, expiresAt: reference.expiresAt, byteCount: reference.byteCount } } : {}),
+        next_cursor: result.nextFromLine === null ? null : {
+          tool: 'capability:read',
+          args: { [args.uri ? 'uri' : 'file_path']: cursorPath, query: q.query, query_from_line: result.nextFromLine },
+        },
+        read_around: result.matches.length === 0 ? undefined : {
+          tool: 'capability:read',
+          args: { [args.uri ? 'uri' : 'file_path']: cursorPath, view_lines: { offset: Math.max(1, result.matches[0].line - 3), limit: 40 } },
+        },
+        note: result.matchCount === 0
+          ? `No line in the searched ${result.view} view (${result.coverage.searchedLines} lines from line ${result.coverage.fromLine}, ${result.coverage.payloadBytes} bytes) contains every term. That is a complete negative for THIS retained body${result.coverage.upstreamPartialMarkers > 0 ? `, but the body itself carries ${result.coverage.upstreamPartialMarkers} upstream truncation marker(s) — the original tool output was partial` : ''}.`
+          : undefined,
+      }) }] }, reference);
     }
 
     if (args.evidence_class) {
@@ -689,30 +1009,71 @@ export default defineTool({
       if (!reference) return err('not_a_reference', 'evidence_class requires a stable scratch reference.');
       const selectors = (reference.evidence ?? []).filter((entry) => entry.evidenceClass === args.evidence_class);
       if (selectors.length === 0) return err('evidence_class_not_found', `scratch reference has no ${args.evidence_class} evidence.`);
+      let selectionBytes = bytes;
+      if (reference.bodyOffsetInPayload !== undefined) {
+        const bodyOffset = reference.bodyOffsetInPayload;
+        if (!Number.isSafeInteger(bodyOffset) || bodyOffset < 0 || bodyOffset >= bytes.length) {
+          return err('evidence_not_selectable', 'scratch reference has an invalid declared JSON body offset.');
+        }
+        selectionBytes = bytes.subarray(bodyOffset);
+      }
       let decoded: unknown;
-      try { decoded = JSON.parse(bytes.toString('utf8')); }
-      catch { return err('evidence_not_selectable', 'scratch reference payload is not JSON.'); }
+      try { decoded = JSON.parse(selectionBytes.toString('utf8')); }
+      catch {
+        return err(
+          'evidence_not_selectable',
+          'scratch reference JSON body is not valid JSON. Use line or byte windows for text or Markdown spills.',
+        );
+      }
       const row = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : null;
       const content = row?.content;
-      if (!Array.isArray(content)) return err('evidence_not_selectable', 'scratch reference payload has no MCP content array.');
+      const isMcpContentEnvelope = Array.isArray(content) && content.some((item) =>
+        item && typeof item === 'object' && (item as { type?: unknown }).type === 'text' &&
+        typeof (item as { text?: unknown }).text === 'string');
       const resolvePointer = (value: unknown, pointer: string): unknown => pointer.split('/').slice(1).reduce<unknown>((cursor, segment) => {
         if (cursor === null || typeof cursor !== 'object') return undefined;
         return (cursor as Record<string, unknown>)[segment.replace(/~1/g, '/').replace(/~0/g, '~')];
       }, value);
-      const evidence = selectors.flatMap((selector) => {
-        const item = content[selector.contentIndex] as { text?: unknown } | undefined;
-        if (!item || typeof item.text !== 'string') return [];
-        let parsed: unknown;
-        try { parsed = JSON.parse(item.text); } catch { return []; }
-        return selector.jsonPointers.map((jsonPointer) => ({
+      let evidence: Array<{ contentIndex: number; jsonPointer: string; value: unknown }>;
+      if (isMcpContentEnvelope) {
+        evidence = selectors.flatMap((selector) => {
+          const item = content[selector.contentIndex] as { text?: unknown } | undefined;
+          if (!item || typeof item.text !== 'string') return [];
+          let parsed: unknown;
+          try { parsed = JSON.parse(item.text); } catch { return []; }
+          return selector.jsonPointers.map((jsonPointer) => ({
+            contentIndex: selector.contentIndex,
+            jsonPointer,
+            value: resolvePointer(parsed, jsonPointer),
+          }));
+        });
+      } else if (reference.bodyOffsetInPayload !== undefined) {
+        // Ordinary JSON spills store the selected JSON body directly after the
+        // human-readable prefix. Their selectors still refer to original MCP
+        // content indexes, so accept this shape only when all indexed evidence
+        // came from one text block; otherwise the raw body cannot disambiguate it.
+        const evidenceIndexes = new Set((reference.evidence ?? []).map((entry) => entry.contentIndex));
+        if (evidenceIndexes.size !== 1 || !selectors.every((entry) => entry.contentIndex === [...evidenceIndexes][0])) {
+          return err('evidence_not_selectable', 'raw JSON spill evidence spans multiple MCP content items.');
+        }
+        const contentIndex = [...evidenceIndexes][0];
+        if (!reference.content.some((entry) => entry.index === contentIndex && entry.type === 'text')) {
+          return err('evidence_not_selectable', 'raw JSON spill selector does not point to a text content item.');
+        }
+        evidence = selectors.flatMap((selector) => selector.jsonPointers.map((jsonPointer) => ({
           contentIndex: selector.contentIndex,
           jsonPointer,
-          value: resolvePointer(parsed, jsonPointer),
-        }));
-      });
-      return { content: [{ type: 'text' as const, text: JSON.stringify({
+          value: resolvePointer(decoded, jsonPointer),
+        })));
+        if (evidence.length === 0 || evidence.some((entry) => entry.value === undefined)) {
+          return err('evidence_not_selectable', 'raw JSON spill does not contain every indexed evidence value.');
+        }
+      } else {
+        return err('evidence_not_selectable', 'scratch reference payload has no MCP content array or declared JSON body.');
+      }
+      return markScratchReferenceRead({ content: [{ type: 'text' as const, text: JSON.stringify({
         ok: true, file_path: abs, reference, evidence_class: args.evidence_class, evidence,
-      }) }] };
+      }) }] }, reference);
     }
 
     if (args.content_indexes) {
@@ -736,7 +1097,7 @@ export default defineTool({
       if (invalid.length > 0) {
         return err('content_index_out_of_range', `content index(es) ${invalid.join(', ')} exceed ${content.length - 1}.`);
       }
-      return {
+      return markScratchReferenceRead({
         content: [{ type: 'text' as const, text: JSON.stringify({
           ok: true,
           file_path: abs,
@@ -746,7 +1107,7 @@ export default defineTool({
           content: unique.map((index) => content[index]),
           ...(row.isError !== undefined ? { isError: row.isError } : {}),
         }) }],
-      };
+      }, reference);
     }
 
     if (byteMode) {
@@ -759,40 +1120,54 @@ export default defineTool({
       if (args.raw) {
         return err('mixed_window_modes', 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.');
       }
-      return renderByteWindow(
+      return markScratchReferenceRead(await renderByteWindow(
         abs,
         args as ByteReadArgs,
         bytes.length,
         (offset, limit) => bytes.subarray(offset, Math.min(bytes.length, offset + limit)),
         reference,
-      );
+      ), reference);
     }
 
-    const sourceText = bytes.toString('utf8');
-    // Redact the complete source before selecting a line window. A secret near
-    // a window boundary must not survive merely because the caller requested a
-    // narrow diagnostic slice.
-    const text = credentialBearingConfig ? redactSensitiveText(sourceText) : sourceText;
+    const decodedLines = trackScratchSync('text-decode-and-line-split', () => {
+      const sourceText = bytes.toString('utf8');
+      // Redact the complete source before selecting a line window. A secret near
+      // a window boundary must not survive merely because the caller requested a
+      // narrow diagnostic slice.
+      const text = credentialBearingConfig ? redactSensitiveText(sourceText) : sourceText;
+      const allLines = text.split('\n');
+      // A trailing newline yields a final empty element; drop it so line counts match the file.
+      if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
+      return { text, allLines };
+    });
+    const { text, allLines } = decodedLines;
 
-    const allLines = text.split('\n');
-    // A trailing newline yields a final empty element; drop it so line counts match the file.
-    if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
-
-    const limit = args.limit ?? DEFAULT_LIMIT;
-    // `tail` addresses the END of the file, which offset (anchored at line 1)
-    // cannot reach without first knowing the line count. The 2026-07-26 bash
-    // audit found this was the single largest un-substitutable file read:
-    // 1,752 `tail -n N FILE` atoms across 63 sessions had no tool form at all.
-    const start = args.tail
-      ? Math.max(0, allLines.length - args.tail)
-      : args.offset && args.offset > 0
-        ? args.offset - 1
-        : 0;
-    const slice = allLines.slice(start, start + (args.tail ? Math.min(args.tail, limit) : limit));
+    const selectedWindow = trackScratchSync('line-window-select', () => {
+      const limit = args.limit ?? DEFAULT_LIMIT;
+      // `tail` addresses the END of the file, which offset (anchored at line 1)
+      // cannot reach without first knowing the line count. The 2026-07-26 bash
+      // audit found this was the single largest un-substitutable file read:
+      // 1,752 `tail -n N FILE` atoms across 63 sessions had no tool form at all.
+      const start = args.tail
+        ? Math.max(0, allLines.length - args.tail)
+        : args.offset && args.offset > 0
+          ? args.offset - 1
+          : 0;
+      const slice = allLines.slice(start, start + (args.tail ? Math.min(args.tail, limit) : limit));
+      return { limit, start, slice };
+    });
+    const { limit, start, slice } = selectedWindow;
 
     if (args.raw) {
+      const end = start + slice.length;
+      const rawWindow = {
+        total_lines: allLines.length,
+        start_line: slice.length === 0 ? null : start + 1,
+        end_line: slice.length === 0 ? null : end,
+        has_more: end < allLines.length,
+      };
       if (slice.length === 0) {
-        return {
+        return markScratchReferenceRead({
           content: [{ type: 'text' as const, text: '' }],
           // EI-22044192752243601: ordinary/raw text reads return a plain string
           // `text` body, not JSON — unwrapToolResult's JSON.parse throws on it and
@@ -808,31 +1183,39 @@ export default defineTool({
           // instead of returning undefined; reusing either name here would let
           // that exact guess silently "succeed" against the wrong field again.
           ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
-            ? { structuredContent: { ok: true, file_path: abs, body: '' } }
+            ? { structuredContent: { ok: true, file_path: abs, body: '', ...rawWindow } }
             : {}),
-        };
+        }, reference);
       }
 
       // Reconstruct the exact source span rather than joining a normalized
       // array. This preserves the source's trailing newline (or lack of one)
       // while still honoring offset/limit/tail line windows.
-      const startOffset = allLines
-        .slice(0, start)
-        .reduce((offset, line) => offset + line.length + 1, 0);
-      const selected = slice.join('\n');
-      const endOffset = startOffset + selected.length;
-      const hasSourceNewline = text[endOffset] === '\n';
-      const rawBody = text.slice(startOffset, endOffset + (hasSourceNewline ? 1 : 0));
-      return {
+      const rawBody = trackScratchSync('raw-window-build', () => {
+        const startOffset = allLines
+          .slice(0, start)
+          .reduce((offset, line) => offset + line.length + 1, 0);
+        const selected = slice.join('\n');
+        const endOffset = startOffset + selected.length;
+        const hasSourceNewline = text[endOffset] === '\n';
+        return text.slice(startOffset, endOffset + (hasSourceNewline ? 1 : 0));
+      });
+      if (reference && scratchLineWindowExceedsDoor(rawBody)) {
+        return err(
+          'scratch_line_window_too_large',
+          'This scratch-reference line window is too large for one result. Use a smaller offset/limit/tail window, or byte_offset+byte_limit when a single line is too large.',
+        );
+      }
+      return trackScratchSync('raw-window-result', () => markScratchReferenceRead({
         content: [{
           type: 'text' as const,
           text: rawBody,
         }],
         // EI-22044192752243601 — see the empty-slice branch above for why.
         ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
-          ? { structuredContent: { ok: true, file_path: abs, body: rawBody } }
+          ? { structuredContent: { ok: true, file_path: abs, body: rawBody, ...rawWindow } }
           : {}),
-      };
+      }, reference));
     }
 
     const numbered = slice
@@ -848,9 +1231,16 @@ export default defineTool({
       ? `\n\n… [${allLines.length - (start + slice.length)} more lines — re-read with offset=${start + slice.length + 1}]`
       : '';
     const head = `${abs} (${allLines.length} lines${start > 0 || more ? `, showing ${start + 1}–${start + slice.length}` : ''})\n`;
+    const displayText = slice.length === 0 ? `${head}(empty)` : head + numbered + footer;
+    if (reference && scratchLineWindowExceedsDoor(displayText)) {
+      return err(
+        'scratch_line_window_too_large',
+        'This scratch-reference line window is too large for one result. Use a smaller offset/limit/tail window, or byte_offset+byte_limit when a single line is too large.',
+      );
+    }
 
-    return {
-      content: [{ type: 'text' as const, text: slice.length === 0 ? `${head}(empty)` : head + numbered + footer }],
+    return markScratchReferenceRead({
+      content: [{ type: 'text' as const, text: displayText }],
       // EI-22044192752243601: same silent-primitive-fallback bug as the raw branch
       // above — the ordinary cat -n view is human/model-readable text, not JSON, so
       // a code:run script reading `.content`/`.text` off it got `undefined` with no
@@ -871,7 +1261,7 @@ export default defineTool({
             },
           }
         : {}),
-    };
+    }, reference);
   },
 });
 

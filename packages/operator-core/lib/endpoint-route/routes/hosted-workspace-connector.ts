@@ -41,15 +41,15 @@ function transport(value: unknown): HostedConnectorTransport | null {
   return value === 'sse' || value === 'websocket' ? value : null;
 }
 
-function browserBinding(ctx: RouteContext, input: ConnectorBody): HostedConnectorBinding | Response {
-  if (!ctx.principal || !isHostedPrincipal(ctx.principal)) return jsonError('hosted_principal_required', 401);
+function browserBinding(ctx: RouteContext, input: ConnectorBody): HostedConnectorBinding | { response: Response } {
+  if (!ctx.principal || !isHostedPrincipal(ctx.principal)) return { response: jsonError('hosted_principal_required', 401) };
   const principal: HostedPrincipal = ctx.principal;
   const customerWorkspaceId = String(ctx.params.workspaceId ?? '').trim();
   const hostId = typeof input.hostId === 'string' ? input.hostId.trim() : '';
   const routeLabel = typeof input.routeLabel === 'string' ? input.routeLabel.trim() : '';
   const selectedTransport = transport(input.transport);
-  if (!customerWorkspaceId || principal.selectedWorkspaceId !== customerWorkspaceId) return jsonError('workspace_binding_mismatch', 403);
-  if (!hostId || !routeLabel || !selectedTransport) return jsonError('invalid_connector_binding', 400);
+  if (!customerWorkspaceId || principal.selectedWorkspaceId !== customerWorkspaceId) return { response: jsonError('workspace_binding_mismatch', 403) };
+  if (!hostId || !routeLabel || !selectedTransport) return { response: jsonError('invalid_connector_binding', 400) };
   return {
     controlPlaneWorkspaceId: principal.workspaceId,
     organizationId: principal.activeOrganizationId,
@@ -114,13 +114,13 @@ export async function authenticateHostedConnectorSocket(
 
 export function createHostedWorkspaceConnectorRoutes(gateway: HostedWorkspaceConnectorGateway) {
   const enroll = defineTool({ method: 'POST', path: HOSTED_WORKSPACE_CONNECTOR_ROUTES[0].path, auth: HOSTED_OPERATE_AUTH,
-    async handler(req, ctx) { const parsed=await body(req); if(!parsed) return jsonError('invalid_json',400); const binding=browserBinding(ctx,parsed); if(binding instanceof Response)return binding; const result=await gateway.enroll(omitLifecycle(binding)); return Response.json({ok:true,...result}); } });
+    async handler(req, ctx) { const parsed=await body(req); if(!parsed) return jsonError('invalid_json',400); const binding=browserBinding(ctx,parsed); if('response' in binding)return binding.response; const result=await gateway.enroll(omitLifecycle(binding)); return Response.json({ok:true,...result}); } });
   const rotate = defineTool({ method: 'POST', path: HOSTED_WORKSPACE_CONNECTOR_ROUTES[1].path, auth: HOSTED_OPERATE_AUTH,
-    async handler(req,ctx){const parsed=await body(req);if(!parsed)return jsonError('invalid_json',400);const binding=browserBinding(ctx,parsed);if(binding instanceof Response)return binding;const result=await gateway.rotate(omitLifecycle(binding));return result?Response.json({ok:true,...result}):jsonError('connector_not_active',409);} });
+    async handler(req,ctx){const parsed=await body(req);if(!parsed)return jsonError('invalid_json',400);const binding=browserBinding(ctx,parsed);if('response' in binding)return binding.response;const result=await gateway.rotate(omitLifecycle(binding));return result?Response.json({ok:true,...result}):jsonError('connector_not_active',409);} });
   const revoke = defineTool({ method: 'POST', path: HOSTED_WORKSPACE_CONNECTOR_ROUTES[2].path, auth: HOSTED_OPERATE_AUTH,
-    async handler(req,ctx){const parsed=await body(req);if(!parsed)return jsonError('invalid_json',400);const binding=browserBinding(ctx,parsed);if(binding instanceof Response)return binding;return (await gateway.revoke(omitLifecycle(binding)))?Response.json({ok:true}):jsonError('connector_not_found',404);} });
+    async handler(req,ctx){const parsed=await body(req);if(!parsed)return jsonError('invalid_json',400);const binding=browserBinding(ctx,parsed);if('response' in binding)return binding.response;return (await gateway.revoke(omitLifecycle(binding)))?Response.json({ok:true}):jsonError('connector_not_found',404);} });
   const sessionTicket = defineTool({ method:'POST',path:HOSTED_WORKSPACE_CONNECTOR_ROUTES[3].path,auth:HOSTED_OPERATE_AUTH,
-    async handler(req,ctx){const parsed=await body(req);if(!parsed)return jsonError('invalid_json',400);const binding=browserBinding(ctx,parsed);if(binding instanceof Response)return binding;const principal=ctx.principal as HostedPrincipal;const result=await gateway.issueSessionTicket({...binding,userId:principal.userId,hostedSessionId:principal.sessionId,audience:typeof parsed.audience==='string'?parsed.audience:'workspace-operator'});return result?Response.json({ok:true,...result}):jsonError('connector_not_active',409);} });
+    async handler(req,ctx){const parsed=await body(req);if(!parsed)return jsonError('invalid_json',400);const binding=browserBinding(ctx,parsed);if('response' in binding)return binding.response;const principal=ctx.principal as HostedPrincipal;const result=await gateway.issueSessionTicket({...binding,userId:principal.userId,hostedSessionId:principal.sessionId,audience:typeof parsed.audience==='string'?parsed.audience:'workspace-operator'});return result?Response.json({ok:true,...result}):jsonError('connector_not_active',409);} });
   const register = defineTool({method:'POST',path:HOSTED_WORKSPACE_CONNECTOR_ROUTES[4].path,auth:'public',async handler(req){const ticket=readHostedConnectorTicket(req);if(!ticket)return jsonError('connector_ticket_required',401);const result=await gateway.register(ticket);return result?Response.json({ok:true,...result}):jsonError('connector_ticket_invalid',401);} });
   const heartbeat = defineTool({method:'POST',path:HOSTED_WORKSPACE_CONNECTOR_ROUTES[5].path,auth:'public',async handler(req){const bearer=readHostedConnectorBearer(req.headers);const parsed=await body(req);const selected=transport(parsed?.transport);if(!bearer||!selected)return jsonError('connector_credential_required',401);const binding=await gateway.heartbeat(bearer,selected);return binding?Response.json({ok:true,binding}):jsonError('connector_credential_invalid',401);} });
   const events = defineTool({method:'GET',path:HOSTED_WORKSPACE_CONNECTOR_ROUTES[6].path,auth:'public',async handler(req){const binding=await authenticateHostedConnectorTransport(gateway,req,'sse');if(!binding)return jsonError('connector_transport_unauthorized',401);const encoder=new TextEncoder();let untrack=()=>{};const stream=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(encoder.encode(`event: bound\ndata: ${JSON.stringify(binding)}\n\n`));untrack=gateway.track(binding,(reason)=>{untrack();controller.enqueue(encoder.encode(`event: close\ndata: ${JSON.stringify({reason})}\n\n`));controller.close();});},cancel(){untrack();}});return new Response(stream,{headers:{'content-type':'text/event-stream','cache-control':'no-store','x-accel-buffering':'no'}});} });

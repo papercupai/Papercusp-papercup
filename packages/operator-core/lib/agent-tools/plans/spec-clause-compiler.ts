@@ -106,7 +106,7 @@ export interface CompileSpecClausesResult {
 const STRICT_VAL_ID_RE = /^VAL-[A-Za-z0-9._-]+$/;
 const STRICT_SPEC_ID_RE = /^\S+$/;
 const OBSERVABLE_VERB =
-  '(?:accepts?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|updates?|writes?)';
+  '(?:accept(?:s|ed|ing)?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|streams?|streamed|streaming|updates?|writes?)';
 const MULTI_OBSERVABLE_CONJUNCTION_RE = new RegExp(
   `\\b${OBSERVABLE_VERB}\\b[^.;\\n]{0,160}\\b(?:and|or)\\b[^.;\\n]{0,160}\\b${OBSERVABLE_VERB}\\b`,
   'i',
@@ -114,7 +114,7 @@ const MULTI_OBSERVABLE_CONJUNCTION_RE = new RegExp(
 const MULTI_SUBJECT_SHARED_PREDICATE_RE =
   /\b(?:[^,.;]+,\s*){2,}(?:and|or)\s+[^,.;]+\s+(?:is|are|was|were|has|have|accepts?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|updates?|writes?)\b/i;
 const ADDITIONAL_OBSERVABLE_VERB =
-  '(?:dismiss(?:es)?|exists?|keeps?|promotes?|proven|reaches?|refuses?|renders?|stays?|turns?|carr(?:y|ies|ied|ying)|preserv(?:e|es|ed|ing)|mak(?:e|es|ing)|made)';
+  '(?:dismiss(?:es)?|exists?|keeps?|promotes?|proven|reaches?|receiv(?:e|es|ed|ing)|refuses?|renders?|stays?|turns?|carr(?:y|ies|ied|ying)|preserv(?:e|es|ed|ing)|mak(?:e|es|ing)|made|reproduc(?:e|es|ed|ing)|separat(?:e|es|ed|ing)|specif(?:y|ies|ied|ying))';
 const EXTENDED_OBSERVABLE_VERB = '(?:' + OBSERVABLE_VERB + '|' + ADDITIONAL_OBSERVABLE_VERB + ')';
 const EXTENDED_OBSERVABLE_PREDICATE_RE = new RegExp('\\b' + EXTENDED_OBSERVABLE_VERB + '\\b', 'i');
 const MULTI_EXTENDED_CONJUNCTION_RE = new RegExp(
@@ -125,12 +125,38 @@ const MULTI_EXTENDED_WHILE_RE = new RegExp(
   '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]*\\bwhile\\b[^.;\\n]*\\b' + EXTENDED_OBSERVABLE_VERB + '\\b',
   'i',
 );
+// A shared predicate can still bundle separately testable output objects:
+// "receives the source watchlist and a brief limit" has one observable verb,
+// but either object can be missing independently. Require a determiner-led
+// object on each side so ordinary verb phrases such as "accepts and streams"
+// stay on the existing multi-verb path and conjunctions in modifiers do not
+// become object bundles by themselves.
+const OBJECT_DETERMINER = '(?:a|an|the|each|every|one|two|both|another|separate|distinct|this|that|these|those|its|their)';
+const MULTI_OBJECT_CONJUNCTION_RE = new RegExp(
+  '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]{0,120}\\b' + OBJECT_DETERMINER +
+    '\\s+[A-Za-z0-9][A-Za-z0-9-]*(?:\\s+[A-Za-z0-9][A-Za-z0-9-]*){0,4}\\s+\\b(?:and|or)\\b\\s+' +
+    OBJECT_DETERMINER + '\\s+[A-Za-z0-9][A-Za-z0-9-]*',
+  'i',
+);
 const INDEPENDENT_CLAUSE_SUBJECT_RE =
   /^(?:a|an|the|both|each|every|this|that|these|those|class-[a-z0-9-]+)\b/i;
+// An umbrella journey claim conceals its individual acceptance outcomes, even
+// when it has only one grammatical predicate. A concrete journey transition
+// (for example "stops at exhaustion") remains a single observable obligation.
+const UMBRELLA_JOURNEY_REQUIREMENTS_RE =
+  /\b(?:journey|flow)\b[^.;\n]{0,100}\b(?:satisf(?:y|ies)|meets?|fulfills?)\b[^.;\n]{0,160}\b(?:promises|requirements|expectations|obligations)\b/i;
 const IMPLEMENTATION_PRESENCE_RE =
   /\b(?:(?:is|are|was|were)\s+)?(?:present|implemented|exists?)\s+in\s+(?:the\s+)?(?:current\s+)?(?:source[ -]code|code(?:base)?|repository|repo|tree|implementation)\b/i;
+// `has` is often the present-perfect auxiliary (`the shared tree has moved`).
+// Keep source-presence detection for possessive uses, but don't treat common
+// regular or irregular past participles after `has` as claims about code contents.
+const PAST_PARTICIPLE_AFTER_HAS =
+  '(?:[a-z]+ed|been|become|built|done|driven|fallen|found|given|gone|grown|held|kept|known|led|left|made|run|seen|set|shown|taken|written)';
 const IMPLEMENTATION_CONTAINS_RE =
-  /\b(?:the\s+)?(?:current\s+)?(?:source[ -]code|code(?:base)?|repository|repo|tree|implementation)\s+(?:contains?|includes?|has)\b/i;
+  new RegExp(
+    '\\b(?:the\\s+)?(?:current\\s+)?(?:source[ -]code|code(?:base)?|repository|repo|tree|implementation)\\s+(?:contains?|includes?|has(?!\\s+' + PAST_PARTICIPLE_AFTER_HAS + '\\b))\\b',
+    'i',
+  );
 const GENERIC_NON_FALSIFIABLE_RE =
   /^(?:(?:it|this|the (?:feature|flow|system))\s+)?(?:works|behaves|functions)(?:\s+(?:correctly|properly|as expected))?[.!]?$/i;
 const PLACEHOLDER_RE = /\b(?:TBD|TODO|to be determined|as appropriate|somehow)\b/i;
@@ -212,10 +238,14 @@ export function specBehaviorNonAtomicReason(rawBehavior: string): string | null 
   if (MULTI_SUBJECT_SHARED_PREDICATE_RE.test(behavior)) {
     return 'behavior groups multiple subjects under one predicate';
   }
+  if (UMBRELLA_JOURNEY_REQUIREMENTS_RE.test(behavior)) {
+    return 'behavior hides multiple requirements behind a journey or flow';
+  }
   if (
     MULTI_OBSERVABLE_CONJUNCTION_RE.test(behavior) ||
     MULTI_EXTENDED_CONJUNCTION_RE.test(behavior) ||
     MULTI_EXTENDED_WHILE_RE.test(behavior) ||
+    MULTI_OBJECT_CONJUNCTION_RE.test(behavior) ||
     hasIndependentCommaClauseSeries(behavior)
   ) {
     return 'behavior joins multiple independently observable outcomes';

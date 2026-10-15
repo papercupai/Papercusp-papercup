@@ -73,12 +73,15 @@ describe('checkpoint qualification terminal outcomes (real Postgres)', () => {
         outcome: { kind: outcome, reason },
       },
     });
-    const events = await sql<{ status: string; candidate: string; run_id: string }[]>`
-      SELECT status, detail->>'candidate' AS candidate, detail->>'runId' AS run_id
+    // WI-10007497: the caller's detail carries no attemptId; the committed event must still name
+    // the logical attempt it settled, from the transaction itself.
+    const events = await sql<{ status: string; candidate: string; run_id: string; attempt_id: string | null }[]>`
+      SELECT status, detail->>'candidate' AS candidate, detail->>'runId' AS run_id,
+             detail->>'attemptId' AS attempt_id
         FROM harness_shared.pipeline_events
        WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
          AND kind = 'green_checkpoint'
     `;
-    expect(events).toEqual([{ status: reason, candidate: 'candidate-1', run_id: runId }]);
+    expect(events).toEqual([{ status: reason, candidate: 'candidate-1', run_id: runId, attempt_id: 'attempt-1' }]);
   });
 });

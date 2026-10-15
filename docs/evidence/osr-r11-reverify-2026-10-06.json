@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-11 re-verification (2026-10-06): the production-mode no-telemetry capture still describes the current public cut",
+  "framework": "manual-reverification",
+  "command": [
+    "cd docs/evidence/osr-r11-prod-2026-09-30 && sha256sum -c SHA256SUMS",
+    "grep -E 'Flags \\[S\\],' docs/evidence/osr-r11-prod-2026-09-30/tcpdump.txt | grep -v -E '127\\.0\\.0\\.1|::1'",
+    "git ls-remote https://github.com/Papercusp/papercusp-app.git refs/heads/main",
+    "TZ=UTC git log -1 --date=iso-strict-local --format='%cd %H' -- docs/evidence/osr-r11-prod-2026-09-30.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T09:09:50Z",
+  "finishedAt": "2026-10-06T09:09:55Z",
+  "summary": "Re-checks the R-11 production-leg evidence (docs/evidence/osr-r11-prod-2026-09-30.json, bound as binding 17198) against the live public repository for grader card EI-25217064677705606. No new capture was taken: the capture was made against a build of public Papercusp/papercusp-app@3c1ed9a1d7dd, and the public main branch is still that exact commit, so the subject under test has not changed. The captured artifacts are unmodified (13/13 SHA256SUMS lines verify), and re-reading the packet capture confirms exactly one non-loopback outbound connection attempt, which is the deliberate control curl.",
+  "assertions": [
+    {
+      "id": "subject-unchanged",
+      "passed": true,
+      "evidence": "git ls-remote https://github.com/Papercusp/papercusp-app.git refs/heads/main -> 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c at 2026-10-06T09:09:55Z, identical to the subjectCommit of osr-r11-prod-2026-09-30.json. The production capture therefore exercised the current public cut."
+    },
+    {
+      "id": "artifacts-intact",
+      "passed": true,
+      "evidence": "sha256sum -c SHA256SUMS in docs/evidence/osr-r11-prod-2026-09-30/: 13 OK, 0 FAILED. artifacts.sha256 records the exercised GUI AppImage 5a6e7e19... and Server deb 8427b0d0..., both built in VM osr18b from 3c1ed9a1 with zero source patches."
+    },
+    {
+      "id": "no-operator-egress",
+      "passed": true,
+      "evidence": "Re-read of tcpdump.txt: the only non-loopback outbound SYN is 18:45:57.514579 10.0.2.15.57010 > 104.20.23.154.443, which ss-samples.txt attributes to the control curl (pid 65220). No Papercusp process opened an outbound connection before opt-in."
+    },
+    {
+      "id": "evidence-committed",
+      "passed": true,
+      "evidence": "docs/evidence/osr-r11-prod-2026-09-30.json last changed in commit d86be6ed69d05a14b087d150864033949518a37d (2026-09-30T20:49:20Z); working-tree sha256 2b55e44815694684a736931b797c59dc98c17fd6ab1a8fb737603744bf500f3c."
+    }
+  ],
+  "limits": [
+    "This file re-verifies existing evidence; it does not add a new capture.",
+    "It covers the public source cut 3c1ed9a1 only. A distributed binary that differs from that build (for example a later D-013 release) needs its own capture."
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-11",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "workItemId": "WI-10003960"
+}

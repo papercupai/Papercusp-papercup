@@ -4,6 +4,8 @@ import {
   BLUEPRINT_PROGRAM_COMPLETION_OWNER,
   blueprintProgramCompletionRef,
   projectBlueprintOperationStatus,
+  terminalOperationWorkerProof,
+  assertBusinessReviewer,
   type BlueprintOperationHandle,
 } from './operation-service';
 import { selectOperationSpecificationRevision } from './operation-admission';
@@ -18,6 +20,29 @@ const plan: BlueprintOperationHandle = {
   ...direct, receiptId: 13,
   target: { kind: 'plan', runId: 25, instanceSlug: 'template@run-25' },
 };
+
+describe('distinct authenticated business reviewer', () => {
+  const policy = { reviewerPrincipals: ['reviewer', 'submitter', 'worker'] };
+  it('allows only a named principal distinct from submitter and worker', () => {
+    expect(() => assertBusinessReviewer('reviewer', 'submitter/client', policy, 'worker/session')).not.toThrow();
+    for (const principal of ['submitter', 'worker', 'intruder', 'reviewer/forged-client']) {
+      expect(() => assertBusinessReviewer(principal, 'submitter/client', policy, 'worker/session')).toThrow(/distinct/);
+    }
+  });
+});
+
+describe('terminalOperationWorkerProof', () => {
+  const worker = { terminalOwner: 'reviewer', terminalCompletionRef: 'completion:12',
+    completionAuthority: 'validated', payload: { blueprintOperation: { input: { reviewContext: { gradedWorkItemRef: 'WI-42' } } } } } as WorkItem;
+  it('attributes the completed worker and preserves the accepted input', () => {
+    expect(terminalOperationWorkerProof(worker)).toEqual({ ownerId: 'reviewer', completionRef: 'completion:12',
+      input: { reviewContext: { gradedWorkItemRef: 'WI-42' } } });
+  });
+  it.each([{ terminalOwner: null }, { terminalCompletionRef: null }, { completionAuthority: null }, { payload: null }])
+    ('refuses incomplete worker proof %j', (patch) => {
+      expect(() => terminalOperationWorkerProof({ ...worker, ...patch } as WorkItem)).toThrow();
+    });
+});
 
 function item(id: string, state: string, assignee: string | null = null): WorkItem {
   return { id, state, assignee, family: 'feature', kind: 'feature',

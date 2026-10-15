@@ -1,0 +1,53 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "framework": "node",
+ "name": "BM25 hybrid fused recall vs the legacy lexical leg on the live search:semantic work_item and session_turn sources (R-13)",
+ "command": [
+  "npx",
+  "tsx",
+  "packages/operator-core/lib/search/bench/bm25-hybrid-recall-cli.ts",
+  "--pairs",
+  "60",
+  "--seed",
+  "r13-20261011",
+  "--out",
+  "docs/evidence/bm25-hybrid-recall-2026-10-11-exact-list.json"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-10-11T12:25:34.501Z",
+ "finishedAt": "2026-10-11T12:27:17.618Z",
+ "provenance": {
+  "sourceReport": "docs/evidence/bm25-hybrid-recall-2026-10-11-exact-list.json",
+  "sourceReportSha256": "dae1ca194ebce6c48779ae1de130b29bbc1a8e18dace4c07ae8d0352f2157c41",
+  "redaction": "One sampled session-turn query held this box's home path, which the release identity audit refuses. After the run, the report's pairs were passed through the instrument's own redactPairsForArtifact (redactedQueries 1). No count, rank or verdict changed; sampleFingerprint is of the raw sample. The CLI now redacts at write time.",
+  "database": "dev-box operator database papercusp on :5432 (inet_server_port recorded in the report), pg_textsearch 1.5.1",
+  "code": "Report field commit ec2cca2131 is the tree HEAD at run time. The run executed the working tree, which already held EXACT_LIST_MAX_AND_ROWS = 5000; that rank.ts edit was committed by git-sync as 30b5c0d36d (2026-10-11T12:33:06Z). sources.ts (exact-list wiring) was committed as d136ee44a1 before the run.",
+  "sameProcess": "Both arms ran in one process on the identical sample; the BM25 flag (PAPERCUSP_FLAG_PAPERCUSP_BM25_LEXICAL_RANKING) was set per arm.",
+  "decisions": "bm25-lexical-search-evoke-adoption-2026-10-10#D-016 (exact list), #D-017 (R-13 scope: search:semantic work_item and session_turn, not the memory store)",
+  "priorFailingRun": "docs/evidence/bm25-hybrid-recall-2026-10-11.json (same sample, before the exact list: work_item 54/60 vs 59/60, session_turn 48/60 vs 49/60)"
+ },
+ "assertions": [
+  {
+   "id": "r13-same-sample-same-process",
+   "passed": true,
+   "evidence": "sameProcess true; sampleFingerprint ffe5c12af7351fc07543d1498afcb7f47e923df2ab65aeb1d86f338fcc921284; 60 scored pairs per source in both arms"
+  },
+  {
+   "id": "r13-work-item-bm25-recall-not-below-legacy",
+   "passed": true,
+   "evidence": "work_item fused recall@10: bm25 59/60 >= legacy 59/60; paired bm25Only 0, legacyOnly 0, both 59, neither 1"
+  },
+  {
+   "id": "r13-session-turn-bm25-recall-not-below-legacy",
+   "passed": true,
+   "evidence": "session_turn fused recall@10: bm25 50/60 >= legacy 50/60; paired bm25Only 0, legacyOnly 0, both 50, neither 10"
+  },
+  {
+   "id": "r13-arms-used-distinct-engines",
+   "passed": true,
+   "evidence": "engines: legacy arm ['legacy'], bm25 arm ['bm25'] on both sources, so the flag changed the lexical leg"
+  }
+ ],
+ "summary": "R-13 pass: fused recall@10 with the BM25 leg equals legacy on both sources (59/60 and 50/60). MRR@10 0.860 vs 0.905 and 0.783 vs 0.790. BM25-arm p95 151.6/324.1 ms vs legacy 675.2/3226.7 ms."
+}

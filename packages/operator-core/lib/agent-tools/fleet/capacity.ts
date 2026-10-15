@@ -94,6 +94,7 @@ interface CapacityScopeArgs {
 interface ResolvedCapacityScope {
   provider: AccountProvider;
   modelProvider?: AccountProvider;
+  accountProvider?: AccountProvider;
   accountRows?: AccountStatusRow[];
   accountFound?: boolean;
 }
@@ -191,16 +192,17 @@ async function resolveFleetProviders(
 /** Resolve the requested backend before reading either gateway or account-pool capacity. */
 async function resolveCapacityScope(args: CapacityScopeArgs): Promise<ResolvedCapacityScope> {
   const modelProvider = providerForModel(args.model);
+  const accountId = accountPin(args.account);
   let accountRows: AccountStatusRow[] | undefined;
   let accountProvider: AccountProvider | undefined;
 
-  // An account pin is itself enough to select a provider. Reuse this read below so an account-only
-  // Codex request cannot fall through to the legacy Claude default (the incident's failure shape).
-  if (args.account && !args.provider && !modelProvider) {
+  // Validate real pins even when a model/provider is supplied. Auto selects the
+  // routable pool; it cannot select a backend or narrow the pool to an account id.
+  if (accountId) {
     try {
       const { accountStatus } = await import('../../deployment/account-pool-store');
       accountRows = await accountStatus(activeWorkspaceId());
-      accountProvider = accountRows.find((row) => row.id === args.account)?.provider;
+      accountProvider = accountRows.find((row) => row.id === accountId)?.provider;
     } catch {
       // Keep the scope explicit but unknown; the later availability read remains fail-safe.
     }
@@ -209,9 +211,14 @@ async function resolveCapacityScope(args: CapacityScopeArgs): Promise<ResolvedCa
   return {
     provider: args.provider ?? modelProvider ?? accountProvider ?? BEE_PROVIDER,
     modelProvider,
+    accountProvider,
     accountRows,
-    accountFound: args.account ? accountRows?.some((row) => row.id === args.account) : undefined,
+    accountFound: accountId ? accountRows?.some((row) => row.id === accountId) : undefined,
   };
+}
+
+function accountPin(account?: string): string | undefined {
+  return account === 'auto' ? undefined : account;
 }
 
 /**
@@ -238,10 +245,11 @@ export async function readProviderAvailability(
   preloadedRows?: AccountStatusRow[],
 ): Promise<AccountPoolAvailability | undefined> {
   try {
+    const pinnedId = accountPin(accountId);
     const ws = activeWorkspaceId();
     const { accountStatus } = await import('../../deployment/account-pool-store');
     const rows = (preloadedRows ?? (await accountStatus(ws))).filter(
-      (r) => r.provider === provider && (!accountId || r.id === accountId),
+      (r) => r.provider === provider && (!pinnedId || r.id === pinnedId),
     );
     if (rows.length === 0) return undefined;
 
@@ -461,7 +469,7 @@ async function readCapacityForProvider(
   // and the SAME report, so it cannot disagree with the fields beside it.
   const capacityVerdict = deriveCapacityVerdict({
     provider,
-    pool: await poolVerdictFor(rows, provider),
+    pool: await poolVerdictFor(rows, provider, args.account),
     admission: {
       reachable: report.reachable,
       blind: report.blind,
@@ -469,16 +477,29 @@ async function readCapacityForProvider(
       inFlight: report.inFlight,
     },
   });
+  // The gateway headroom read is provider-wide; its health count is for a
+  // representative model. Echoing a requested model cannot establish that
+  // model's availability, even when the provider has spare admission slots.
+  if (args.model) {
+    const modelUnknown = `model '${args.model}': availability is UNMEASURED; the gateway headroom and account windows are provider-level observations`;
+    capacityVerdict.unknown.push(modelUnknown);
+    capacityVerdict.reason = `${modelUnknown}. ${capacityVerdict.reason}`;
+  }
   return {
     provider,
     model: args.model ?? null,
     account: args.account ?? null,
-    verdict: report.blind
-      ? 'blind'
-      : accountAvailability || hasMeasuredCodexTierCapacity(provider, report)
-        ? 'measured'
-        : 'unknown',
+    verdict: args.model
+      ? 'unknown'
+      : report.blind
+        ? 'blind'
+        : accountAvailability || hasMeasuredCodexTierCapacity(provider, report)
+          ? 'measured'
+          : 'unknown',
     ...report,
+    // Do not turn the provider's spare slots into a proposed model-specific
+    // launch allowance without a measurement for that requested model.
+    recommendedHeadroom: args.model ? null : report.recommendedHeadroom,
     accountPool,
     capacityVerdict,
     // The RESULT-level unknown channel the `capacity.verdict` cell hoists (axis 2). A caller
@@ -508,10 +529,13 @@ async function readAccountRowsForVerdict(): Promise<AccountStatusRow[] | undefin
 async function poolVerdictFor(
   rows: AccountStatusRow[] | undefined,
   provider: AccountProvider,
+  accountId?: string,
 ): Promise<ProviderPoolVerdict | null> {
   if (!rows) return null;
+  const pinnedId = accountPin(accountId);
+  const scopedRows = rows.filter((row) => row.provider === provider && (!pinnedId || row.id === pinnedId));
   const { poolVerdictByProvider } = await import('../../deployment/account-pool-store');
-  return poolVerdictByProvider(rows).find((v) => v.provider === provider) ?? null;
+  return poolVerdictByProvider(scopedRows).find((v) => v.provider === provider) ?? null;
 }
 
 export default defineTool({
@@ -531,7 +555,7 @@ export default defineTool({
   args: z.object({
     headroom: z.number().int().min(0).max(10000).optional().describe('A proposed fresh-spawn count to clamp to spare capacity.'),
     provider: z.enum(['claude', 'codex']).optional().describe('Inference provider to inspect; defaults to Claude for backward compatibility.'),
-    model: z.string().min(1).max(120).optional().describe('Requested model family; gpt/o/codex models select the Codex backend when provider is omitted.'),
+    model: z.string().min(1).max(120).optional().describe('Requested model family; gpt/o/codex models select the Codex backend when provider is omitted. Model-specific availability is unmeasured and returns unknown; provider headroom alone cannot establish it.'),
     account: z.string().min(1).max(200).optional().describe('Optional pinned account id. An account-only request resolves its provider from accounts:status.'),
     fleet: z.string().min(1).max(200).optional().describe('Optional named fleet to scope capacity to. Without an explicit backend, a caller in a fleet uses its current live member providers.'),
   }),
@@ -562,7 +586,8 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const scope = await resolveCapacityScope(args);
-    const explicitBackend = Boolean(args.provider || args.model || args.account);
+    const pinnedAccount = accountPin(args.account);
+    const explicitBackend = Boolean(args.provider || args.model || pinnedAccount);
     const fleetScope = await resolveFleetScope(args, ctx, !explicitBackend || !!args.fleet);
     const providerSource: ProviderSource = explicitBackend
       ? 'explicit'
@@ -577,12 +602,14 @@ export default defineTool({
       ...fleetPayload,
     };
     const modelProviderMismatch = !!args.provider && !!scope.modelProvider && args.provider !== scope.modelProvider;
-    const accountOnlyScopeUnknown =
-      !!args.account && !args.provider && !scope.modelProvider && scope.accountFound !== true;
-    if (modelProviderMismatch || accountOnlyScopeUnknown) {
+    const accountScopeUnknown = !!pinnedAccount && scope.accountFound !== true;
+    const accountProviderMismatch = !!scope.accountProvider && scope.accountProvider !== scope.provider;
+    if (modelProviderMismatch || accountScopeUnknown || accountProviderMismatch) {
       const reason = modelProviderMismatch
         ? `model '${args.model}' belongs to provider '${scope.modelProvider}', not '${scope.provider}'`
-        : `account '${args.account}' has no measured provider row`;
+        : accountProviderMismatch
+          ? `account '${pinnedAccount}' belongs to provider '${scope.accountProvider}', not '${scope.provider}'`
+          : `account '${pinnedAccount}' has no measured provider row`;
       return {
         content: [
           {

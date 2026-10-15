@@ -85,9 +85,13 @@ describe('activity:report lifecycle → inbox-wake (always-arm)', () => {
     expect(h.cancel).not.toHaveBeenCalled();
   });
 
-  it('judge SessionStart records activity but does not arm the broad inbox-wake watch', async () => {
+  // WI-10005679: a judge reads its directed inbox (WI-10005678), so it is armed like
+  // any other tracked session. The former exclusion left a judge whose launch-time
+  // arm was retired with no SessionStart re-arm and no self-heal.
+  it('judge SessionStart ARMS the inbox-wake watch like any tracked session', async () => {
     await run({ owner: 'judge-abc', role: 'judge', kind: 'lifecycle', summary: '▶ session started' });
-    expect(h.arm).not.toHaveBeenCalled();
+    expect(h.arm).toHaveBeenCalledTimes(1);
+    expect(h.arm.mock.calls[0][0]).toMatchObject({ ownerId: 'judge-abc' });
     expect(h.cancel).not.toHaveBeenCalled();
     expect(h.heal).not.toHaveBeenCalled();
   });
@@ -109,11 +113,12 @@ describe('activity:report lifecycle → inbox-wake (always-arm)', () => {
     expect(h.heal.mock.calls[0][0]).toMatchObject({ ownerId: 'su-abc' });
   });
 
-  it('judge tool reports preserve activity but skip inbox-wake self-heal', async () => {
+  it('judge tool reports drive the inbox-wake self-heal (WI-10005679)', async () => {
     await run({ owner: 'judge-abc', role: 'judge', kind: 'tool', tool_name: 'scorecards:evaluate' });
     expect(h.arm).not.toHaveBeenCalled();
     expect(h.cancel).not.toHaveBeenCalled();
-    expect(h.heal).not.toHaveBeenCalled();
+    expect(h.heal).toHaveBeenCalledTimes(1);
+    expect(h.heal.mock.calls[0][0]).toMatchObject({ ownerId: 'judge-abc' });
   });
 
   it('an unrecognized lifecycle summary is a defensive no-op (no arm/cancel, no self-heal)', async () => {

@@ -40,6 +40,8 @@
  */
 
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { hostname } from 'node:os';
+import type { AlarmAttentionDeps } from '../alarm-attention';
 
 /** IPC message a worker sends to the primary each interval. */
 export const CLUSTER_HEARTBEAT_TYPE = 'papercusp:cluster-heartbeat' as const;
@@ -97,6 +99,8 @@ export interface ClusterLagWatchdogHandle {
   stop(): void;
   /** Test seam: ids currently being watched (registered, not yet exited). */
   watchedIds(): number[];
+  /** Test seam: wait for the condition deliveries already queued by IPC/scans. */
+  settled(): Promise<void>;
 }
 
 export interface ClusterLagWatchdogOptions {
@@ -111,6 +115,9 @@ export interface ClusterLagWatchdogOptions {
   silenceMs?: number;
   now?: () => number;
   log?: (line: string) => void;
+  /** Existing condition delivery seam; production uses the shared alarm rail. */
+  rail?: AlarmAttentionDeps;
+  host?: string;
 }
 
 /**
@@ -126,15 +133,36 @@ export function startClusterLagWatchdog(opts: ClusterLagWatchdogOptions): Cluste
   const log = opts.log ?? ((m) => console.warn(m));
   /** worker id → last heartbeat timestamp (ms). A worker is watched only once seen. */
   const lastBeat = new Map<number, number>();
+  // A killed worker remains unhealthy until its own heartbeat resumes, or its
+  // exit is followed by a NEW worker's first heartbeat. A sibling is no proof.
+  const pending = new Map<number, boolean>(); // worker id → exit observed
+  const conditionKey = `alarm:cluster-lag:${encodeURIComponent(opts.host ?? hostname())}`;
+  // IPC/scan callbacks must never await database delivery or delay a kill. Keep
+  // delivery ordered so an earlier slow broadcast cannot reopen after recovery.
+  let delivery = Promise.resolve();
+  const enqueue = (action: () => Promise<unknown>): void => {
+    delivery = delivery.then(action).then(() => undefined).catch((error) => {
+      try { log(`[cluster-watchdog] condition delivery failed (non-fatal): ${String(error)}`); }
+      catch { /* a broken diagnostic sink cannot reject the delivery queue */ }
+    });
+  };
   let stopped = false;
 
   opts.cluster.on('message', (worker, message) => {
     if (stopped) return;
     if ((message as { type?: unknown } | null | undefined)?.type === CLUSTER_HEARTBEAT_TYPE) {
+      const replacement = !lastBeat.has(worker.id) && !pending.has(worker.id);
       lastBeat.set(worker.id, now());
+      pending.delete(worker.id);
+      if (replacement) {
+        const exited = [...pending].find(([, didExit]) => didExit);
+        if (exited) pending.delete(exited[0]);
+      }
     }
   });
   opts.cluster.on('exit', (worker) => {
+    if (stopped) return;
+    if (pending.has(worker.id)) pending.set(worker.id, true);
     lastBeat.delete(worker.id); // stop tracking a dead worker; the respawn re-registers on its first beat
   });
 
@@ -147,15 +175,34 @@ export function startClusterLagWatchdog(opts: ClusterLagWatchdogOptions): Cluste
       // Drop the entry first so a slow exit doesn't re-trigger a kill next scan; if the
       // worker is already gone, the exit handler will (or did) clean up anyway.
       lastBeat.delete(id);
+      pending.set(id, false);
       if (!worker) continue;
-      log(
-        `[cluster-watchdog] worker ${id} silent ${Math.round((t - last) / 1000)}s (> ${Math.round(silenceMs / 1000)}s) — event loop wedged; SIGKILL to force respawn (EI-1598/1608)`,
-      );
+      try {
+        log(
+          `[cluster-watchdog] worker ${id} silent ${Math.round((t - last) / 1000)}s (> ${Math.round(silenceMs / 1000)}s) — event loop wedged; SIGKILL to force respawn (EI-1598/1608)`,
+        );
+      } catch { /* diagnostic delivery must not suppress recovery or the condition */ }
       try {
         worker.kill('SIGKILL');
       } catch {
         /* already exiting */
       }
+    }
+    if (pending.size > 0) {
+      const ids = [...pending.keys()];
+      enqueue(async () => {
+        const broadcastSevereEvent = opts.rail?.broadcast ?? (await import('../severe-event-broadcast')).broadcastSevereEvent;
+        await broadcastSevereEvent({
+          conditionKey,
+          summary: `Cluster worker heartbeat stalled on ${opts.host ?? hostname()}`,
+          body: `Workers ${ids.join(', ')} exceeded ${silenceMs}ms without a heartbeat. Recovery requires their heartbeat or an exited worker's replacement heartbeat.`,
+        });
+      });
+    } else if (lastBeat.size > 0) {
+      enqueue(async () => {
+        const { resolveAlarm } = await import('../alarm-attention');
+        await resolveAlarm(conditionKey, 'cluster-lag-watchdog', opts.rail);
+      });
     }
   };
   const timer = managedSetInterval('cluster-lag-scan', scanMs, scan, { category: 'watchdog' });
@@ -169,5 +216,6 @@ export function startClusterLagWatchdog(opts: ClusterLagWatchdogOptions): Cluste
     watchedIds() {
       return [...lastBeat.keys()];
     },
+    settled() { return delivery; },
   };
 }

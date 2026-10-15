@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { stringify } from 'yaml';
+import { compileAgentSpecification, layerContentHash } from '@papercusp/orchestrator/blueprint';
+import { commitBlueprintRelease, readBlueprintLifecycle, snapshotBlueprintReleaseSource } from './blueprint-release';
+import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
 import {
   admitIdentityActivation,
+  admitNativeIdentityInference,
+  resolveAppliedIdentityReleaseLayers,
   assertIdentityActivationFunded,
   configureIdentityActivationGateIo,
   IDENTITY_PRICING_CACHE_TTL_MS,
@@ -9,7 +18,8 @@ import {
 } from './identity-activation-gate-io';
 import type { IdentityReleaseFundingRow } from './identity-release-funding-store';
 import { isIdentityActivationRefusedError, type FundingChannelView, type IdentityOfferView } from './identity-activation-gate';
-import { identityPerUseOfferTerms } from './identity-per-use-offer';
+import { identityPerUseOfferTerms, identityReleaseSkuRef } from './identity-per-use-offer';
+import type { AppliedIdentityRules } from '../agent-identities/sync-hook-rules';
 
 const identity = { id: 'acme/reviewer', version: '1.0.0' };
 const derived = identityPerUseOfferTerms({ identity });
@@ -65,6 +75,96 @@ function world() {
 }
 
 afterEach(() => configureIdentityActivationGateIo(null));
+
+describe('APPLIED native identity admission', () => {
+  const rootPin = { packageKind: 'blueprint' as const, ref: identity.id, revision: identity.version, contentHash: 'root' };
+  const dependency = { packageKind: 'rule' as const, ref: 'guard', revision: '1', contentHash: 'dep' };
+  const worn = (): AppliedIdentityRules => ({ applied: { specificationRevision: 'applied-spec', stateRevision: 'applied-state' },
+    packagePins: [rootPin, dependency], pins: { rules: [], unreadable: [] }, sync: { rules: [], unreadable: [] }, declaredClassNeeds: null });
+  const retained = () => ({ schemaVersion: 1 as const, id: identity.id, version: identity.version, contentHash: 'root', artifactContentHash: 'artifact',
+    installedAtMs: 1, source: 'test', slots: ['persona'], pins: [rootPin, dependency] });
+  const context = { ownerId: 'su-native', workspaceId: request.workspaceId, backend: 'codex' };
+
+  it('matches a real compiled installed release after ACTIVE advances', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'p017-applied-release-'));
+    const id = 'p017-compiled-identity';
+    vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
+    try {
+      const install = async (version: string) => {
+        const sourceDir = join(root, version);
+        mkdirSync(join(sourceDir, 'prompts'), { recursive: true });
+        const raw = { id, extends: 'base', version, slots: [{ slot: 'domain' }] };
+        writeFileSync(join(sourceDir, 'blueprint.yaml'), stringify({ ...raw,
+          attestation: { contentHash: layerContentHash(raw), signedBy: 'test-publisher' } }));
+        writeFileSync(join(sourceDir, 'prompts', 'domain.md'), `Release ${version}\n`);
+        const snapshot = await snapshotBlueprintReleaseSource({ blueprintFile: join(sourceDir, 'blueprint.yaml'),
+          resolveExtends: operatorResolveExtends() });
+        await commitBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), sourceDir, id, version,
+          source: 'https://example.invalid/identity', pins: snapshot.archive.pins });
+      };
+      await install('1.0.0');
+      const compiled = compileAgentSpecification({ sourcePath: join(INSTALLED_BLUEPRINTS_DIR(), id, 'blueprint.yaml'),
+        resolve: operatorResolveExtends() });
+      const applied = { packagePins: compiled.inputs.filter((pin) => pin.kind === 'package') };
+      const expectedIdentity = { id, version: '1.0.0' };
+      expect(await resolveAppliedIdentityReleaseLayers(applied)).toEqual([
+        { layerRef: `blueprint:${id}`, identity: expectedIdentity,
+          skuRef: identityReleaseSkuRef(expectedIdentity) },
+      ]);
+      await install('2.0.0');
+      expect((await readBlueprintLifecycle(INSTALLED_BLUEPRINTS_DIR(), id)).active?.version).toBe('2.0.0');
+      expect(await resolveAppliedIdentityReleaseLayers(applied)).toMatchObject([{ identity: expectedIdentity }]);
+    } finally { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('resolves the worn historical release rather than the newer active version', async () => {
+    const readReleases = vi.fn(async () => [retained(), { ...retained(), version: '2.0.0', contentHash: 'new' }]);
+    expect(await resolveAppliedIdentityReleaseLayers(worn(), { readReleases })).toEqual([
+      { layerRef: `blueprint:${identity.id}`, identity, skuRef },
+    ]);
+    expect(readReleases).toHaveBeenCalledExactlyOnceWith(identity.id);
+  });
+
+  it('refuses same-version hash changes, version collisions and changed non-blueprint dependencies', async () => {
+    for (const records of [[{ ...retained(), contentHash: 'changed' }], [retained(), retained()],
+      [{ ...retained(), pins: [rootPin, { ...dependency, contentHash: 'changed' }] }]]) {
+      await expect(resolveAppliedIdentityReleaseLayers(worn(), { readReleases: async () => records })).rejects.toThrow(/APPLIED/);
+    }
+  });
+
+  it('does no commerce IO for ordinary pins without a retained release', async () => {
+    const { state } = world();
+    const decision = await admitNativeIdentityInference(context, {
+      readApplied: async () => worn(), resolveLayers: async (w) => resolveAppliedIdentityReleaseLayers(w, { readReleases: async () => [] }),
+    });
+    expect(decision).toEqual({ ok: true });
+    expect(state.calls).toEqual({ offers: 0, prepaid: 0, channel: 0, funding: 0 });
+  });
+
+  it('re-reads funds for the exact APPLIED release and refuses unsupported billing before any monetary reservation', async () => {
+    const { state, bind } = world();
+    state.channel = { channelId: 'ch_9', state: 'open', escrowMicros: 5_000, committedMicros: 0 };
+    bind('ch_9');
+    const readApplied = vi.fn(async () => worn());
+    const resolveLayers = vi.fn(async (w: Pick<AppliedIdentityRules, 'packagePins'>) =>
+      resolveAppliedIdentityReleaseLayers(w, { readReleases: async () => [retained()] }));
+    expect(await admitNativeIdentityInference(context, { readApplied, resolveLayers }))
+      .toMatchObject({ ok: false, code: 'identity-native-billing-unsupported' });
+    expect(readApplied).toHaveBeenCalledExactlyOnceWith(context.ownerId, context.workspaceId);
+    state.channel = { ...state.channel, state: 'closed' };
+    expect(await admitNativeIdentityInference(context, { readApplied, resolveLayers }))
+      .toMatchObject({ ok: false, code: 'identity-activation-unfunded' });
+    expect(state.calls.channel).toBe(2);
+  });
+
+  it('preserves verified free identities and fails closed on an unreadable APPLIED artifact', async () => {
+    const { state } = world(); state.offers = { ok: true, value: [] };
+    expect(await admitNativeIdentityInference(context, { readApplied: async () => worn(), resolveLayers: async () => [layer] }))
+      .toEqual({ ok: true });
+    expect(await admitNativeIdentityInference(context, { readApplied: async () => { throw new Error('missing receipt'); } }))
+      .toMatchObject({ ok: false, code: 'identity-funding-unverifiable' });
+  });
+});
 
 describe('admitIdentityActivation', () => {
   it('does no store or hosted work for a stack without installed releases', async () => {

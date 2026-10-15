@@ -1,0 +1,782 @@
+{
+  "measuredAt": "2026-10-14T06:02:43.888Z",
+  "protocolPin": "20bb8955d6665afbc484718e573d864d9090fbe2d72fcdb0ea59f98883fcf99b",
+  "blindHash": "57b4ed2c5b2b9f48d3cc2c88d55cf7b58e396b2902a65aee859cfe00dc2aa985",
+  "keyPublication": {
+    "kind": "identity-safe-derived-view",
+    "originalSha256": "fe11fa101ef56226ec10b254f8caf43d45e9095d241d4f2162d011e5cb048332",
+    "originalBytes": 352437,
+    "custody": {
+      "reportId": "rpt_58627438-a267-4570-9330-5a6dc3b1aa80",
+      "path": "/reports?sel=rpt_58627438-a267-4570-9330-5a6dc3b1aa80",
+      "visibility": "owner"
+    },
+    "note": "Diagnostic identity strings are redacted in this view. Original frozen evidence is preserved in owner custody."
+  },
+  "treatments": [
+    {
+      "treatment": "graph",
+      "attempts": 2,
+      "plannedAttempts": 2,
+      "spendCapUsd": 20,
+      "accountedUsd": 0,
+      "withinSpendCap": true,
+      "candidateCount": 0,
+      "noCandidateAttempts": 2,
+      "independentLabels": 0,
+      "missingLabels": 0,
+      "duplicateCandidates": 0,
+      "refinementCandidates": 0,
+      "noveltyUnknownCandidates": 0,
+      "duplicateRate": null,
+      "refinementRate": null,
+      "qualifiedFamilies": 0,
+      "unknownCostCalls": 0
+    },
+    {
+      "treatment": "control",
+      "attempts": 2,
+      "plannedAttempts": 2,
+      "spendCapUsd": 20,
+      "accountedUsd": 0.9491240000000001,
+      "withinSpendCap": true,
+      "candidateCount": 2,
+      "noCandidateAttempts": 0,
+      "independentLabels": 2,
+      "missingLabels": 0,
+      "duplicateCandidates": 0,
+      "refinementCandidates": 1,
+      "noveltyUnknownCandidates": 1,
+      "duplicateRate": null,
+      "refinementRate": null,
+      "qualifiedFamilies": 0,
+      "unknownCostCalls": 0
+    }
+  ],
+  "matchedPairs": [
+    {
+      "pairIndex": 0,
+      "graphRunId": "dream-cycle:papercusp-workspace:papercusp:d2f3a734-ce46-4d93-aa00-4cd9be5bb9c4:dream:1",
+      "controlRunId": "dream-cycle:papercusp-workspace:papercusp:5900197e-8a20-4c74-8192-d7cfa62f28a1:dream:1",
+      "complete": true,
+      "sameUnits": true
+    },
+    {
+      "pairIndex": 1,
+      "graphRunId": "dream-cycle:papercusp-workspace:papercusp:b14709c1-119c-403b-98cc-f02c3c4f867a:dream:1",
+      "controlRunId": "dream-cycle:papercusp-workspace:papercusp:252cdcc1-6c0d-4504-b1e4-84451a482284:dream:1",
+      "complete": true,
+      "sameUnits": true
+    }
+  ],
+  "completeAttempts": true,
+  "commonInput": true,
+  "equalSpendCaps": true,
+  "independentRef": "native-graph-calibration-unblinded-review-2026-10-14.json",
+  "fullyAttributedCost": false,
+  "usefulOutcomesPerDollar": null,
+  "verdict": "inconclusive",
+  "dreams": [
+    {
+      "runId": "dream-cycle:papercusp-workspace:papercusp:d2f3a734-ce46-4d93-aa00-4cd9be5bb9c4:dream:1",
+      "treatment": "graph",
+      "pairIndex": 0,
+      "sourceSnapshot": "b3b4bfc47eeec70823379149b8a5f50bb4c5d721af7370c2fcf493309d0ab656",
+      "inputHash": "f8d9cf53cda458a81c90f60283facf49e4476bfbba94300dfe3a489f20e3a9f3",
+      "unitIds": [
+        "capability:dream.source-freshness",
+        "capability:plans.spec-revisions"
+      ],
+      "candidateCaseId": null,
+      "status": "rejected",
+      "productionVerdict": "unverified",
+      "productionReason": "search-unavailable",
+      "productionNote": "ENOENT: no such file or directory, realpath '/home/builduser/papercupai-workspace/papercusp/es.ts'",
+      "accountedUsd": 0,
+      "unknownCostCalls": 0,
+      "phaseUsd": {
+        "packet": 0,
+        "retrieval": 0
+      },
+      "calls": [
+        {
+          "callId": "packet:catalogue",
+          "phase": "packet",
+          "model": "local:packet",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:packet",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:history",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:snapshot",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:review-preflight",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        }
+      ],
+      "assessments": []
+    },
+    {
+      "runId": "dream-cycle:papercusp-workspace:papercusp:5900197e-8a20-4c74-8192-d7cfa62f28a1:dream:1",
+      "treatment": "control",
+      "pairIndex": 0,
+      "sourceSnapshot": "b3b4bfc47eeec70823379149b8a5f50bb4c5d721af7370c2fcf493309d0ab656",
+      "inputHash": "f8d9cf53cda458a81c90f60283facf49e4476bfbba94300dfe3a489f20e3a9f3",
+      "unitIds": [
+        "capability:dream.source-freshness",
+        "capability:plans.spec-revisions"
+      ],
+      "candidateCaseId": "f28b02b747ad4b59d548",
+      "status": "rejected",
+      "productionVerdict": "unverified",
+      "productionReason": "review-unavailable",
+      "productionNote": "Skeptical review cites missing or unsupported evidence.",
+      "accountedUsd": 0.4917664,
+      "unknownCostCalls": 0,
+      "phaseUsd": {
+        "packet": 0,
+        "retrieval": 0,
+        "rerank": 0,
+        "generation": 0.014382400000000002,
+        "control-b": 0.022388,
+        "control-a": 0.02754,
+        "review": 0.427456
+      },
+      "calls": [
+        {
+          "callId": "packet:catalogue",
+          "phase": "packet",
+          "model": "local:packet",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:packet",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:history",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:snapshot",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:review-preflight",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "rerank:preflight",
+          "phase": "rerank",
+          "model": "local:rerank",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:rerank",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "generation",
+          "phase": "generation",
+          "model": "claude-haiku-4-5",
+          "reservedUsd": 0.047302,
+          "status": "settled",
+          "usage": {
+            "model": "claude-haiku-4-5",
+            "costUsd": 0.014382400000000002,
+            "inputTokens": 7703,
+            "outputTokens": 2055
+          },
+          "error": null,
+          "accountedUsd": 0.014382400000000002,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:review",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "rerank",
+          "phase": "rerank",
+          "model": "local:rerank",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:rerank",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "control-b",
+          "phase": "control-b",
+          "model": "gpt-5.6-sol:xhigh",
+          "reservedUsd": 0.057228,
+          "status": "settled",
+          "usage": {
+            "model": "gpt-5.6-sol:xhigh",
+            "costUsd": 0.022388,
+            "inputTokens": 2072,
+            "outputTokens": 705
+          },
+          "error": null,
+          "accountedUsd": 0.022388,
+          "unknownCost": false
+        },
+        {
+          "callId": "control-a",
+          "phase": "control-a",
+          "model": "gpt-5.6-sol:xhigh",
+          "reservedUsd": 0.071452,
+          "status": "settled",
+          "usage": {
+            "model": "gpt-5.6-sol:xhigh",
+            "costUsd": 0.02754,
+            "inputTokens": 2990,
+            "outputTokens": 779
+          },
+          "error": null,
+          "accountedUsd": 0.02754,
+          "unknownCost": false
+        },
+        {
+          "callId": "review",
+          "phase": "review",
+          "model": "gpt-5.6-sol:xhigh",
+          "reservedUsd": 0.556844,
+          "status": "settled",
+          "usage": {
+            "model": "gpt-5.6-sol:xhigh",
+            "costUsd": 0.427456,
+            "inputTokens": 27959,
+            "outputTokens": 15781
+          },
+          "error": null,
+          "accountedUsd": 0.427456,
+          "unknownCost": false
+        }
+      ],
+      "assessments": []
+    },
+    {
+      "runId": "dream-cycle:papercusp-workspace:papercusp:b14709c1-119c-403b-98cc-f02c3c4f867a:dream:1",
+      "treatment": "graph",
+      "pairIndex": 1,
+      "sourceSnapshot": "b3b4bfc47eeec70823379149b8a5f50bb4c5d721af7370c2fcf493309d0ab656",
+      "inputHash": "f8d9cf53cda458a81c90f60283facf49e4476bfbba94300dfe3a489f20e3a9f3",
+      "unitIds": [
+        "mechanism:dream.cost-admission",
+        "capability:code.secret-scanned-pack"
+      ],
+      "candidateCaseId": null,
+      "status": "rejected",
+      "productionVerdict": "unverified",
+      "productionReason": "source-unavailable",
+      "productionNote": "Compiler graph differs from current cited source",
+      "accountedUsd": 0,
+      "unknownCostCalls": 0,
+      "phaseUsd": {
+        "packet": 0,
+        "retrieval": 0
+      },
+      "calls": [
+        {
+          "callId": "packet:catalogue",
+          "phase": "packet",
+          "model": "local:packet",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:packet",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:history",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:snapshot",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:review-preflight",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        }
+      ],
+      "assessments": []
+    },
+    {
+      "runId": "dream-cycle:papercusp-workspace:papercusp:252cdcc1-6c0d-4504-b1e4-84451a482284:dream:1",
+      "treatment": "control",
+      "pairIndex": 1,
+      "sourceSnapshot": "b3b4bfc47eeec70823379149b8a5f50bb4c5d721af7370c2fcf493309d0ab656",
+      "inputHash": "f8d9cf53cda458a81c90f60283facf49e4476bfbba94300dfe3a489f20e3a9f3",
+      "unitIds": [
+        "mechanism:dream.cost-admission",
+        "capability:code.secret-scanned-pack"
+      ],
+      "candidateCaseId": "208b87ec702b58b3491f",
+      "status": "rejected",
+      "productionVerdict": "unverified",
+      "productionReason": "review-unavailable",
+      "productionNote": "Skeptical review cites missing or unsupported evidence.",
+      "accountedUsd": 0.45735760000000003,
+      "unknownCostCalls": 0,
+      "phaseUsd": {
+        "packet": 0,
+        "retrieval": 0,
+        "rerank": 0,
+        "generation": 0.0142696,
+        "control-a": 0.02402,
+        "control-b": 0.058584,
+        "review": 0.360484
+      },
+      "calls": [
+        {
+          "callId": "packet:catalogue",
+          "phase": "packet",
+          "model": "local:packet",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:packet",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:history",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:snapshot",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:review-preflight",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "rerank:preflight",
+          "phase": "rerank",
+          "model": "local:rerank",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:rerank",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "generation",
+          "phase": "generation",
+          "model": "claude-haiku-4-5",
+          "reservedUsd": 0.044448,
+          "status": "settled",
+          "usage": {
+            "model": "claude-haiku-4-5",
+            "costUsd": 0.0142696,
+            "inputTokens": 7142,
+            "outputTokens": 2139
+          },
+          "error": null,
+          "accountedUsd": 0.0142696,
+          "unknownCost": false
+        },
+        {
+          "callId": "retrieval:review",
+          "phase": "retrieval",
+          "model": "local:retrieval",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:retrieval",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "rerank",
+          "phase": "rerank",
+          "model": "local:rerank",
+          "reservedUsd": 0,
+          "status": "settled",
+          "usage": {
+            "model": "local:rerank",
+            "costUsd": 0,
+            "inputTokens": 0,
+            "outputTokens": 0
+          },
+          "error": null,
+          "accountedUsd": 0,
+          "unknownCost": false
+        },
+        {
+          "callId": "control-a",
+          "phase": "control-a",
+          "model": "gpt-5.6-sol:xhigh",
+          "reservedUsd": 0.04862,
+          "status": "settled",
+          "usage": {
+            "model": "gpt-5.6-sol:xhigh",
+            "costUsd": 0.02402,
+            "inputTokens": 1655,
+            "outputTokens": 870
+          },
+          "error": null,
+          "accountedUsd": 0.02402,
+          "unknownCost": false
+        },
+        {
+          "callId": "control-b",
+          "phase": "control-b",
+          "model": "gpt-5.6-sol:xhigh",
+          "reservedUsd": 0.061388,
+          "status": "settled",
+          "usage": {
+            "model": "gpt-5.6-sol:xhigh",
+            "costUsd": 0.058584,
+            "inputTokens": 2481,
+            "outputTokens": 2433
+          },
+          "error": null,
+          "accountedUsd": 0.058584,
+          "unknownCost": false
+        },
+        {
+          "callId": "review",
+          "phase": "review",
+          "model": "gpt-5.6-sol:xhigh",
+          "reservedUsd": 0.518164,
+          "status": "settled",
+          "usage": {
+            "model": "gpt-5.6-sol:xhigh",
+            "costUsd": 0.360484,
+            "inputTokens": 26061,
+            "outputTokens": 12812
+          },
+          "error": null,
+          "accountedUsd": 0.360484,
+          "unknownCost": false
+        }
+      ],
+      "assessments": []
+    }
+  ],
+  "independentReview": {
+    "version": "dream-study-calibration-review-v1",
+    "sourceWorkItem": "WI-10007888",
+    "conversationId": "conv-mv7kn9c9-0000-9f41f8229b804f3a9452a501f93fe4ac",
+    "blindHash": "57b4ed2c5b2b9f48d3cc2c88d55cf7b58e396b2902a65aee859cfe00dc2aa985",
+    "reviewer": "su-9896aff8-eaff-4e10-9562-1687fe680ccb",
+    "reviewerKind": "independent-ai-domain-reviewer",
+    "reviewerMinutesApproximate": 25,
+    "posts": [
+      {
+        "id": 1179892,
+        "author_id": "su-9896aff8-eaff-4e10-9562-1687fe680ccb",
+        "body": "FROZEN BLIND LABELS (reviewer su-9896aff8, fork). Read ONLY native-graph-calibration-blind-v2.json (dream-study-calibration-v2) + the frozen excerpts inside it. NOT opened: either key file, v1 packet, ledgers, your verdicts, withheld prior-context. Nothing executed or repaired.\n\nPRIOR EXPOSURE: inherited transcript = one consult on plans:bind-independent-verification / resolveFixtureAbsenceVerifications (spec-test-adequacy.ts, spec-evidence-store.ts, independent-verification-gate.ts, set-plan-status.ts, role-principal-caps.ts). None is a candidate source (dream-governor.ts, packer-facade.ts, capability-packets.ts, spec-clauses-store.ts); zero exposure to dream/study artifacts, arms, models or verdicts. This session: `ls` of lib/dream/study (names+sizes only). General repo familiarity via CLAUDE.md. Blindness to outcome/arm/verdict: NOT compromised; arity visible per the packet's own blinding note.\n\n== CASE 208b87ec702b58b3491f (A mechanism:dream.cost-admission + B capability:code.secret-scanned-pack)\nLABEL: REJECT as frozen (not eligible for an executed-benefit experiment). FAMILY: admission-gate composition — budget admission made contingent on evidence-provenance attestation.\nContributions: A VERIFIED — A:budget-code L155-194 (enabled→register→check+sumSince; refuse when cycle.allow=false), A:budget-tests L121-157 ('rolling-cap-exceeded', per-cycle budgetKind). B PARTIAL — verified: explicit non-empty include (pack-code L263-271, pack-policy L293-298), pinned identity check (L273-274), argv cannot carry --no-security-check / smuggling refused (pack-policy L299-313, pack-tests L334-355). UNVERIFIED/over-claimed: 'verifies the security scan completes' and 'returns signed provenance (engine identity, artifact hash, scan status)' — the pack-code excerpt ends at the exec call (L997); no scan verdict, hash or return shape is in evidence, and unit B itself marks 'scanner must finish before a packet is admissible' status:unknown, which the candidate upgraded to observed. Engine hole: op==='diff' selects code2prompt (L256), where no security scan exists at all; 'scan cannot be disabled' is argv-only and repomix-only, and whether a scan runs rests on repomix defaults, not on cited source.\nComposition: `behavior` asserts present-tense pinning/attestation that the candidate's own missingEvidence[0-3] concedes does not exist (no call path, no attestation schema, no test). The written falsifier ('allow=true even when packerFacade returns a failed-scan result') presupposes a failed-scan output packerFacade is never shown to emit → not runnable against unchanged code.\nScoped novelty: no supplied prior (A, B, memory.hive-scope, plans.spec-revisions, acceptance-bar-amendment-requirements-drift.test, 2 withheld prior-context) implements admission-conditioned-on-pack; candidate's own priorArt concedes A and B are standard. Partial in-domain overlap: this same packet's unit capability:dream.source-freshness already hashes per-source evidence and verifies it, so hash-pinned evidence is not new in dream — only the admission coupling is. Beyond the packet: UNKNOWN.\nUsefulness: beneficiary concrete, benefit unobserved — no incidence evidence that unscanned/substituted packs were ever admitted; the attestation would be an unsigned self-claim (no signing infra in evidence). Feasibility: the code change is feasible; the experiment only measures that new code obeys its mock (tautological success criterion). Maintenance risk HIGH: the governor's narrow deps seam (enabled/register/check/sumSince/now) gains a cross-domain dependency on code-intelligence; CODE_INTEL_PACKERS off → refusal (L260-262) would newly block every Dream cycle; version skew/orphaned admissions per its own transferRisks.\nPrerequisite: NOT MET (contribution B not source-verified; falsifier not independently runnable).\nFalsifier of my label: current packer-facade.ts beyond L997 returning a scan verdict + artifact hash in PackerResult, plus an existing dream→packerFacade call path → B becomes verified and the label moves to UNVERIFIED (still needs incidence evidence).\n\n== CASE f28b02b747ad4b59d548 (A capability:dream.source-freshness + B capability:plans.spec-revisions)\nLABEL: REJECT as frozen. FAMILY: write-guard composition — evidence-freshness revalidation fused into an optimistic-concurrency (CAS) revision write.\nContributions: A VERIFIED — freshness-code L148-187 (scope/unitHash/manifest/recipe/prompt checks, budget bounds), freshness-bytes L178-217 (sourceHash + exact excerpt compare, graph fingerprint), freshness-tests L188-227 (edit/rename/delete × impl/test invalidate; working-tree edit detected). B VERIFIED — revision-code L473-512 (`FOR UPDATE OF c`; expectedRevision !== actualRevision → {status:'conflict', actualRevision}), revision-tests L585-624 (race yields exactly one 'revised' + one 'conflict'; history [1,2]; exact-revision read).\nComposition: contradicted by B's source — expectedRevision is an integer CAS counter (`Number(identity?.current_revision ?? 0)`, compared with !==); the hypothesis' 'embed source hashes into the expectedRevision comparison' (assumption[1]) is not representable without changing B's contract. The experiment silently switches mechanism (call verifyCapabilityPacket inside the lock), so hypothesis and experiment are different proposals. The composed object — a capability unit's contract written through setSpecClause — has no evidence: clause identity is harness/plan/specId/sourceValId/sourceBar, packet identity is workspace/pot/repository/unitHash/manifestRevision; missingEvidence[2] concedes no shared namespace. `behavior` again states the composition in present tense.\nScoped novelty: priorArt.knownRelatedWork is EMPTY, yet B's own cited excerpt already carries the pattern — an immutable provenance pin riding forward on each revision (priorBarPin: barHash/barSetHash/rubricRevision/evidencePlane, L316-339, 'IMMUTABLE PROVENANCE'). The delta is anticipated inside the cited source; only freshness-inside-transaction is new. Priors 5-7 (acceptance-bar tests, activation-receipt.test) are discovery candidates, not anticipations. Beyond the packet: UNKNOWN.\nUsefulness: plausible, unobserved — no incidence of a stale-evidence contract being accepted. Feasibility: an integration test is feasible but requires building the change first (unexecuted hypothesis); success criterion is conformance of the new code. Maintenance risk HIGH: filesystem reads + hashing (realpath, readUnitFiles) under a held PG row lock; plans store importing dream/capability-packets (cross-domain dependency); the TOCTOU closure IS the risky in-lock step.\nPrerequisite: NOT MET (composition contradicted by source; falsifier needs the change built; novelty overlap inside the cited source).\nFalsifier of my label: an existing current code path persisting capability-unit contracts via setSpecClause (shared identity) plus a non-integer/composite expectedRevision contract → composition feasible, label moves to UNVERIFIED.\n\nDECISION: as frozen, zero candidates meet the qualified prerequisite; the study should remain inconclusive with zero eligible downstream experiments unless the falsifiers above are satisfied by current source. Both generators were honest in missingEvidence but conflated `behavior` with hypothesis and over-stated one contribution each (case 1: B scan attestation; case 2: expectedRevision mapping). Neither planned experiment is observed benefit. Reviewer minutes ≈ 25. Labels are frozen at this post; available for the separate unblinded novelty pass.",
+        "created_ts": "2026-10-14T03:59:31.885Z"
+      }
+    ],
+    "cases": [
+      {
+        "caseId": "208b87ec702b58b3491f",
+        "verdict": "reject",
+        "family": "admission-gate evidence-provenance composition",
+        "eligible": false
+      },
+      {
+        "caseId": "f28b02b747ad4b59d548",
+        "verdict": "reject",
+        "family": "evidence-freshness CAS revision composition",
+        "eligible": false
+      }
+    ],
+    "qualifiedFamilies": null,
+    "limits": [
+      "Frozen source-stage labels precede key access. Separate unblinded novelty and eligibility review still required.",
+      "AI review, not human validation or observed executed benefit."
+    ]
+  },
+  "unblindedReview": {
+    "version": "dream-unblinded-novelty-review-v1",
+    "sourceWorkItem": "WI-10007888",
+    "conversationId": "conv-mv7kn9c9-0000-9f41f8229b804f3a9452a501f93fe4ac",
+    "blindHash": "57b4ed2c5b2b9f48d3cc2c88d55cf7b58e396b2902a65aee859cfe00dc2aa985",
+    "blindPostId": 1179892,
+    "postIds": [
+      1179964
+    ],
+    "reviewer": "su-9896aff8-eaff-4e10-9562-1687fe680ccb",
+    "reviewerKind": "independent-ai-domain-reviewer",
+    "reviewerMinutesApproximate": 20,
+    "posts": [
+      {
+        "id": 1179964,
+        "author_id": "su-9896aff8-eaff-4e10-9562-1687fe680ccb",
+        "body": "UNBLINDED PASS (separate from frozen post 1179892; frozen labels UNCHANGED: both REJECT as frozen). Read after freezing: native-graph-calibration-key-v2.json `selected[]` for the two exact caseIds (originalReview.priorMatches, priorRefMapping, controls, failures, disposition) + current packer-facade.ts / spec-clauses-store.ts / dream/*.ts line reads. No builds, trials, reruns or proposal repair. Key meta: population 4, eligibleCandidates 2, excluded b14709c1 + d2f3a734 ('No retained candidate and selected source packets'), independentLabels null, outcome 'pending independent human/domain review'. Both cases: arm structured-pair, graphTreatment CONTROL, original verdict unverified / reason review-unavailable (failures.review stage=grounding), disposition 'calibration-only; not held-out'. Treatment efficacy: none inferred (control arm; the graph attempts are excluded runs).\n\nTRUNCATION LIMITS: every `dream:*` prior is capture.parseStatus=truncated at storedChars=12000; code-source priors acceptance-bar-amendment-*.test.ts and acceptance-author-identity.integration.test.ts likewise 12000-truncated; unit priors (code:*:implementation/test) parseable. Where a prior's hypothesis/behavior sits outside the stored prefix I say UNKNOWN, not absent.\n\n== CASE 208b87ec702b58b3491f (cost-admission + secret-scanned-pack)\nPrior refs (priorRefMapping): prior:1/2 = code:mechanism:dream.cost-admission:implementation/test (unit A itself); prior:3 = code:capability:code.secret-scanned-pack:test (unit B itself); prior:4 = dream idea 969eb602 (status 'malformed': `candidate.observed: Invalid input: expected array`; rawTextHead quote: \"When a harness in a confined hive requests a source pack, the packer accepts only the set of harnesses narrowed by hive-scope fi…\"; units: memory.hive-scope + code.secret-scanned-pack); prior:5 = code:mechanism:memory.hive-scope:implementation; prior:6 = acceptance-bar-amendment-requirements-drift.test.ts (truncated; unrelated); prior:7 = code:capability:plans.spec-revisions:implementation (unrelated); prior:8 = dream rejected-attempt b14709c1 (an EXCLUDED run; stored prefix = capabilityRun call log only; units mentioned: dream.cost-admission; its proposal text lies beyond the 12000 prefix → UNKNOWN whether it proposed this pairing).\nDisposition: NOT an exact duplicate (prior:4 pairs hive-scope with the pack, not cost-admission; no readable prior pairs A with B). NOT a refinement of a readable prior. SCOPED NOVELTY: UNKNOWN — prior:8 is an unresolved truncated attempt over unit A; per your rule this stays unknown, not novel. Family (admission gate contingent on provenance attestation) unchanged.\nSOURCE CORRECTION (my own read agrees with 1179930): packer-facade.ts has PackProvenance.securityScan (L510), PackArtifact.bundle.sha256 (L523), PackerResult {answer, artifact} (L564-567), securityScan set at L1028 = `engine === 'repomix' ? 'secretlint+deny-set' : 'deny-set-only'`. My frozen \"no scan verdict, hash or return shape in evidence\" described an INCOMPLETE EXCERPT, not an absent artifact: an artifact hash and a provenance label exist. Unchanged: (a) securityScan is an engine-derived POLICY LABEL, not a scanner RESULT — no pass/fail verdict is produced; (b) 'deny-set-only' confirms the code2prompt/diff path has no secret scan; (c) no signature; (d) no admission coupling — dream-governor.ts has zero packer/securityScan/sha256 references, whereas dream/capability-packets.ts L9/L90 ALREADY calls packerFacade('pack', …) for capability packets. Net: the B-partial basis narrows (hash+label exist) but the composition basis (admission record pinning a scan verdict) is unchanged; the candidate's own missingEvidence[0-2] remain true against current source, and Dream already consuming scanned packs makes governor-side pinning the only new piece.\nEligibility: NOT eligible for an executed-benefit experiment. Recommendation: DROP as an experiment candidate; RETAIN only as a narrowed note (\"record pack sha256 + securityScan label on the Dream admission record\"), caveat: a label is not a verdict.\n\n== CASE f28b02b747ad4b59d548 (source-freshness + spec-revisions)\nPrior refs: prior:1/2 = code:capability:plans.spec-revisions:implementation/test (unit B itself); prior:3 = code:mechanism:memory.hive-scope:test (unrelated); prior:4 = dream rejected-attempt 45baf69a (gpt-5.6-luna:medium; READABLE: insight.text \"Given a hive-scoped candidate set and an expected spec revision, produce a source pack whose manifest records the accepted revision and pack provenance; refuse before packing when the revision is stale, the selection is empty, or the packer identity/security conditions fail.\"; requiresA = the packer; requiresB = \"the authoritative behavioral-contract version gate and immutable history, including stale-writer conflict detection and exact revision addressing\"; verdict unverified, status rejected); prior:5 = acceptance-bar-amendment-orphan-clause.test.ts (truncated; readable head mocks setSpecClause — a live caller of B); prior:6 = acceptance-author-identity.integration.test.ts (truncated; unrelated); prior:7 = activation-receipt.test.ts (parseable; unrelated family); prior:8 = code:capability:dream.source-freshness:test (unit A itself).\nDisposition: NOT an exact duplicate. PARTIAL REFINEMENT / sibling of prior:4 — 45baf69a already proposed gating an artifact on spec-revisions' expected-revision CAS and recording the accepted revision (packer as the other half); this case swaps in source-freshness and adds in-transaction revalidation. Expected-revision-as-gate is therefore NOT new in the Dream corpus; freshness-inside-CAS is the only non-anticipated delta. Also anticipated INSIDE the cited source: spec-clauses-store.ts L316-339 rides an immutable provenance pin (priorBarPin) forward per revision, and prior:5 shows a live caller. SCOPED NOVELTY: narrow — only \"freshness re-check within the row lock\"; beyond the corpus: UNKNOWN.\nSOURCE CORRECTION: none. Re-confirmed: expectedRevision is `number` (L86, L147, L476-477 integer `!==` CAS), so embedding source hashes in it is unrepresentable without a contract change; no setSpecClause caller under lib/dream, so the composed object still has no evidence.\nEligibility: NOT eligible. Recommendation: DROP as a composition experiment; if retained, NARROW to a B-only question (\"should setSpecClause re-validate a declared evidence fingerprint inside the lock\") cross-linked to 45baf69a so the family is not re-minted.\n\nOVERALL: zero eligible downstream experiments; study stays inconclusive. Graph-attempt failures and later successful checks are not treatment efficacy. Original unverified/review-unavailable and my frozen rejects agree in direction; mine are stricter (composition contradicted / unevidenced, not merely unverified). Reviewer minutes this pass ≈ 20. Labels remain frozen at 1179892. consult:close { outcome:'answered' } when settled.",
+        "created_ts": "2026-10-14T04:30:20.663Z"
+      }
+    ],
+    "cases": [
+      {
+        "caseId": "208b87ec702b58b3491f",
+        "novelty": "unknown",
+        "qualified": false,
+        "disposition": "drop-as-experiment; retain narrowed admission provenance note",
+        "reason": "One prior graph attempt is truncated; no exact duplicate/refinement demonstrated but novelty remains unknown. Missing scan-result contract, no measured benefit."
+      },
+      {
+        "caseId": "f28b02b747ad4b59d548",
+        "novelty": "refinement",
+        "qualified": false,
+        "disposition": "drop-as-composition-experiment; narrow to evidence revalidation inside existing revision lock",
+        "reason": "Sibling/refinement of recorded prior45baf69a. Only in-lock freshness check is a narrow delta; expectedRevision numeric contract contradicts hash encoding."
+      }
+    ],
+    "closure": {
+      "downstreamEligibleCandidates": 0,
+      "downstreamTrialsExecuted": 0,
+      "downstreamDisposition": "not-applicable-no-qualified-candidates",
+      "verdict": "inconclusive"
+    },
+    "limitations": [
+      "Independent AI/domain review, not human or held-out confirmation.",
+      "Frozen blind labels remain unchanged.",
+      "Novelty unknown keeps duplicate/refinement rates null.",
+      "No treatment efficacy inferred from later source checks or excluded graph attempts."
+    ]
+  },
+  "recordedLinkedExperiments": {
+    "linked": 0,
+    "executed": 0,
+    "winning": 0,
+    "declaredLinks": 0,
+    "missingResults": 0,
+    "recordedCostUsd": 0,
+    "engineeringTimeMs": null,
+    "decisions": {}
+  },
+  "verifiedBeneficialExperiments": 0,
+  "downstreamTrialsExecuted": 0,
+  "downstreamDisposition": "not-applicable-no-qualified-candidates",
+  "decision": {
+    "route": "narrow",
+    "basis": "Retain bounded source/graph evidence and controls; no automatic graph preference or expanded study spend is justified."
+  },
+  "limitations": [
+    "Exploratory four-trial cohort; no treatment effect estimate.",
+    "Two graph attempts failed before candidate generation. Later source checks do not explain those historical failures.",
+    "Equal attempt and spend caps do not imply equal realized usage or successful generation.",
+    "Provider ledger dollars exclude unpriced local compute and engineer/reviewer time; external independent-review inference cost is separate.",
+    "Independent AI review is not human validation or held-out confirmation.",
+    "Downstream counts cover experiment batteries explicitly linked by stored Dream assessments; unlinked work is not measured.",
+    "No executed benefit is inferred from a candidate, an acceptance label, or a planned experiment."
+  ]
+}

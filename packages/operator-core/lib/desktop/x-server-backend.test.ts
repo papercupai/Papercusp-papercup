@@ -34,11 +34,11 @@ const KASM = {
   passwordFile: '/run/papercusp/desktop/kasmvnc-110.passwd',
 };
 
-describe('P-012 — the xvfb backend is unchanged', () => {
-  it('builds the same argv the provisioner always used, and serves no endpoint', () => {
+describe('P-012 — the xvfb backend preserves root properties across client exit', () => {
+  it('keeps X server state after xprop exits, and serves no endpoint', () => {
     const cmd = buildXServerCommand({ xServer: 'xvfb', display: ':110', width: 1024, height: 768 });
     expect(cmd.binary).toBe('Xvfb');
-    expect(cmd.argv).toEqual([':110', '-screen', '0', '1024x768x24', '-nolisten', 'tcp']);
+    expect(cmd.argv).toEqual([':110', '-screen', '0', '1024x768x24', '-nolisten', 'tcp', '-noreset']);
     // The absence of an endpoint is a LOAD-BEARING fact, not an omission: it is what
     // makes the local desktop's "no listener, ever" property true, and what a
     // kasmvnc-backed session may therefore not claim.

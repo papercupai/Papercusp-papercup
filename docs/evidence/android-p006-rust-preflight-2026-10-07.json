@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android P006 early Rust toolchain discovery and preflight",
+  "framework": "shell",
+  "command": [
+    "bash",
+    "tools/tests/run-android-checks-test.sh",
+    "toolchain"
+  ],
+  "commandCwd": "/home/builduser/papercupai-workspace/papercup-rust-mobile",
+  "exitCode": 0,
+  "startedAt": "2026-10-07T08:49:54.685666+00:00",
+  "finishedAt": "2026-10-07T08:50:05.987290+00:00",
+  "timestampBasis": "Retained fingerprint-start.txt and exit.txt filesystem timestamps bound the focused guard invocation.",
+  "summary": "Final Rust toolchain controls, generation early-refusal controls, full maintained runner suite, CI mutation checks, ShellCheck and actionlint passed with stable fingerprints. This artifact is preflight evidence only; paired native acceptance remains separate.",
+  "finalFullRunner": {
+    "command": [
+      "bash",
+      "tools/tests/run-android-checks-test.sh"
+    ],
+    "startedAt": "2026-10-07T08:52:18.615616+00:00",
+    "finishedAt": "2026-10-07T08:55:09.361036+00:00",
+    "exitCode": 0,
+    "stableFingerprints": true,
+    "rawEvidence": "/home/builduser/papercupai-workspace/papercup-rust-mobile/android/app/build/ci-evidence/p006-rust-final-full-20261007T085300Z",
+    "logSha256": "5acdc6ab675f01ade9112a24df75c989abe792edc981f9953fcc0d60b7111d95"
+  },
+  "committedMobileSource": "c0210fbe3301909573add1b4ed8ad572ff21aa77",
+  "sourceCommit": "5ad3b2094c46561319adf80711184ff582f440d8",
+  "sourceDirtyAtExecution": true,
+  "sourceFingerprints": {
+    "tools/run-android-checks.sh": "fb259e5e30af4ea1de9f725f57ef54810478f096c72c479f71f01e3c3c6d36a4",
+    "tools/tests/run-android-checks-test.sh": "074281eb8b29c76876c92cf3e22d0d44fa64d0a4ef3273629bd75e39769bd712"
+  },
+  "rawEvidence": "/home/builduser/papercupai-workspace/papercup-rust-mobile/android/app/build/ci-evidence/p006-rust-preflight-final-20261007T085200Z",
+  "logHashes": {
+    "guards.log": "08713d901c16be342ac33da112c98cf81748b49b9feea5e419b6ef858a1acd73"
+  },
+  "assertions": [
+    {
+      "id": "home-discovery-and-explicit-path-precedence",
+      "passed": true,
+      "evidence": "Six maintained toolchain controls execute cargo/rustc --version with isolated PATH; explicit CARGO_HOME/RUSTUP_HOME preserved."
+    },
+    {
+      "id": "reject-missing-or-broken-toolchain-before-expensive-work",
+      "passed": true,
+      "evidence": "Generation consumer controls assert no fixture/runtime marker when Cargo is missing or Rust is broken."
+    },
+    {
+      "id": "restricted-service-path-real-toolchain",
+      "passed": true,
+      "evidence": "env PATH=/usr/bin:/bin bash tools/run-android-checks.sh verify-rust-toolchain returns0; cargo/rustc1.99.0."
+    },
+    {
+      "id": "ci-and-lints",
+      "passed": true,
+      "evidence": "Final guards.log: CI38/21/3 mutations rejected, ShellCheck45 scripts and actionlint2 workflows passed."
+    }
+  ],
+  "preRunAudit": [
+    {
+      "failureClass": "unrelated fakeADB readiness refusal",
+      "guard": "mandatory positive readiness and command diagnostic ledger"
+    },
+    {
+      "failureClass": "generation pruned during preparation",
+      "guard": "initial process reference under GC lock/reexec, release before fixtures"
+    },
+    {
+      "failureClass": "Cargo absent in service PATH",
+      "guard": "early Rust discovery and actual executable version probes"
+    },
+    {
+      "failureClass": "ambiguous shell conditional",
+      "guard": "explicit condition plus ShellCheck before native replay"
+    }
+  ]
+}

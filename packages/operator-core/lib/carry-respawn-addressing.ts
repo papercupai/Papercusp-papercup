@@ -11,7 +11,8 @@ export function addressContinuationToOwner(note: string, ownerId: string): strin
   if (!sid) return note;
   return (
     `ADDRESSED TO ${sid} — this continuation was written for that session. ` +
-    'Verify with coord:whoami BEFORE acting on anything below: if your ownerId differs, ' +
+    'Verify with the identity check available to your role (for example coord:orient {} and ' +
+    'the returned self.ownerId) BEFORE acting; compare it with the ADDRESSED TO id. If they differ, ' +
     'this block is not your lane and reached you through a delivery fault — do not act on it, ' +
     'do not claim or progress any work-item it names, report it, and continue from your own ' +
     'loop:checkpoint carry-note instead.\n\n' +

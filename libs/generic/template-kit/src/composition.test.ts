@@ -188,9 +188,11 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
     const keys = composition!.checks.map((c) => `${c.templateId}:${c.item.id}`).sort();
     expect(keys).toEqual([
       "papercusp-app:composition-integrity",
+      "papercusp-app:package-test-targets",
       "papercusp-data-layer:components-integrated",
       "papercusp-ops-pots:confinement-guard",
       "papercusp-ops-pots:gym-signals",
+      "papercusp-ops-pots:operation-first-triggers",
       "papercusp-ops-pots:seam-round-trip",
       "papercusp-tauri-desktop-shell:boot-e2e",
       "papercusp-ui:components-integrated",

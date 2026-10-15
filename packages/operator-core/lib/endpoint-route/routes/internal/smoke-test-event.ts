@@ -8,6 +8,8 @@ import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { notifyAttention } from '../../../attention-notify';
+import { broadcastSevereEvent } from '../../../severe-event-broadcast';
+import { resolveAlarm } from '../../../alarm-attention';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const ti = generated.tokenIndexInHarnessShared;
@@ -71,6 +73,16 @@ export default defineTool({
     });
     void notifySyncInvalidate('harnessSmokeTest.byHarness', { harnessSlug: slug }).catch(() => {});
 
+    const conditionKey = `alarm:smoke-test:${slug}`;
+    // Persist first: rejected requests and failed writes cannot claim a test result.
+    // Refresh the condition even while the legacy owner notification is deduplicated.
+    if (status === 'fail') {
+      await broadcastSevereEvent({ conditionKey, summary: `${slug} smoke test is failing`,
+        body: failureContent ?? undefined, oneShot: true }).catch(() => false);
+    } else {
+      await resolveAlarm(conditionKey, 'smoke-test');
+    }
+
     // P-021: push at the source (replaces the device-intervention-watcher
     // poll). Smoke failure is high-importance. Transition-gated so a smoke
     // run that stays failing doesn't re-ping each time.
@@ -81,6 +93,7 @@ export default defineTool({
         body: `${slug} smoke test is failing.`,
         harnessSlug: slug,
         importance: 'high',
+        data: { conditionKey },
       });
     }
     return Response.json({ ok: true });

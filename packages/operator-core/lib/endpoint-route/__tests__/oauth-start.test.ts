@@ -52,6 +52,14 @@ vi.mock('../../external-triggers/source-store', async (importOriginal) => ({
 import startRoute from '../routes/oauth/start';
 import { __resetRegistryForTest, registerProvider, type OAuthProvider } from '../../oauth/providers';
 import type { RouteContext } from '../define-route';
+import { createRequire } from 'node:module';
+import { providerRegistry } from '../../integrations/provider-registry';
+const facebookAdapter = createRequire(import.meta.url)('../../../../../libs/papercusp/plugins/facebook/index.cjs').providerAdapter;
+vi.mock('../../integrations/provider-registry', async (original) => {
+  const actual = await original<typeof import('../../integrations/provider-registry')>();
+  return { ...actual, readyProviderRegistry: async () => actual.providerRegistry() };
+});
+
 
 const CTX: RouteContext = {
   principal: null,
@@ -77,8 +85,10 @@ const stubProvider: OAuthProvider = {
   refresh: async () => ({ accessToken: 'unused' }),
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   __resetRegistryForTest();
+  providerRegistry().unregister('facebook');
+  await providerRegistry().register({ descriptor: await facebookAdapter.describe(), adapter: facebookAdapter, pluginName: 'facebook' });
   stateMocks.signState.mockClear();
   authMocks.getSessionUserOrDefault.mockClear();
   sourceMocks.listOwned.mockReset();
@@ -266,6 +276,38 @@ describe('GET /api/oauth/start', () => {
     );
   });
 
+  it('carries an internal Settings return path in the signed state, and refuses any other (D-014.2)', async () => {
+    registerProvider({ ...stubProvider, id: 'google', defaultScopes: ['scope:mail'], allowedScopes: ['scope:mail'] });
+    const start = (ret: string) =>
+      GET(new Request(`http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&return=${encodeURIComponent(ret)}`));
+
+    expect((await start('/settings/integrations')).status).toBe(302);
+    expect(stateMocks.signState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ plugin: 'google-workspace' }),
+      { privateContext: expect.objectContaining({ returnPath: '/settings/integrations' }) },
+    );
+
+    stateMocks.signState.mockClear();
+    for (const offsite of ['https://evil.example/x', '//evil.example/x', '/settings/../admin', '/harness/x', '/settings\\evil', '']) {
+      const refused = await start(offsite);
+      expect(refused.status, offsite).toBe(400);
+      expect(await refused.json()).toEqual({ ok: false, error: 'return must be an internal /settings/ path' });
+    }
+    expect(stateMocks.signState).not.toHaveBeenCalled();
+  });
+
+  it('carries the return path for a plugin flow with no connection adapter too', async () => {
+    registerProvider(stubProvider);
+    const response = await GET(
+      new Request('http://x/api/oauth/start?provider=github&plugin=github-repo&harness=demo&field=github_token&return=/settings/integrations'),
+    );
+    expect(response.status).toBe(302);
+    expect(stateMocks.signState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ plugin: 'github-repo' }),
+      { privateContext: { returnPath: '/settings/integrations' } },
+    );
+  });
+
   it('uses a unique private token field for each Google Workspace Add Account flow', async () => {
     registerProvider({
       ...stubProvider,
@@ -359,7 +401,7 @@ describe('GET /api/oauth/start', () => {
     const buildAuthorizeUrl = vi.fn(() => 'https://www.facebook.com/dialog/oauth');
     registerProvider({
       ...stubProvider,
-      id: 'facebook',
+      id: 'provider:facebook',
       defaultScopes: ['public_profile', 'user_posts', 'user_photos'],
       allowedScopes: ['public_profile', 'user_posts', 'user_photos'],
       buildAuthorizeUrl,
@@ -367,15 +409,15 @@ describe('GET /api/oauth/start', () => {
 
     const response = await GET(
       new Request(
-        'http://x/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=ignored&scopes=public_profile',
+        'http://x/api/oauth/start?provider=provider%3Afacebook&plugin=provider%3Afacebook&harness=papercusp&field=ignored&scopes=public_profile',
         { headers: { cookie: 'papercusp_session=opaque' } },
       ),
     );
     expect(response.status).toBe(302);
     expect(stateMocks.signState).toHaveBeenCalledWith(
       expect.objectContaining({
-        provider: 'facebook',
-        plugin: 'facebook-personal-vault',
+        provider: 'provider:facebook',
+        plugin: 'provider:facebook',
         harness: 'papercusp',
         field: expect.stringMatching(/^owner-22222222-2222-4222-8222-222222222222-[a-f0-9]{16}$/),
       }),
@@ -384,6 +426,7 @@ describe('GET /api/oauth/start', () => {
           ownerUserId: '22222222-2222-4222-8222-222222222222',
           workspaceId: 'workspace-1',
           returnPath: '/settings/personal-vault',
+          requestedScopes: JSON.stringify(['public_profile', 'user_posts', 'user_photos']),
         },
       },
     );
@@ -402,7 +445,7 @@ describe('GET /api/oauth/start', () => {
         kind: 'facebook',
         ownerUserId: '22222222-2222-4222-8222-222222222222',
         providerAccountId: 'facebook-user-2',
-        credentialRef: 'facebook-personal-vault:existing-facebook-field',
+        credentialRef: 'provider:facebook:existing-facebook-field',
         status: 'disabled',
         config: {},
         cursor: {},
@@ -410,7 +453,7 @@ describe('GET /api/oauth/start', () => {
     ]);
     registerProvider({
       ...stubProvider,
-      id: 'facebook',
+      id: 'provider:facebook',
       defaultScopes: ['public_profile', 'user_posts', 'user_photos'],
       allowedScopes: ['public_profile', 'user_posts', 'user_photos'],
       buildAuthorizeUrl: () => 'https://www.facebook.com/dialog/oauth',
@@ -418,7 +461,7 @@ describe('GET /api/oauth/start', () => {
 
     const response = await GET(
       new Request(
-        'http://x/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner&account=facebook-user-2',
+        'http://x/api/oauth/start?provider=provider%3Afacebook&plugin=provider%3Afacebook&harness=papercusp&field=owner&account=facebook-user-2',
       ),
     );
     expect(response.status).toBe(302);
@@ -437,7 +480,7 @@ describe('GET /api/oauth/start', () => {
   it('rejects a Facebook reconnect for an account not owned by the local user', async () => {
     registerProvider({
       ...stubProvider,
-      id: 'facebook',
+      id: 'provider:facebook',
       defaultScopes: ['public_profile', 'user_posts', 'user_photos'],
       allowedScopes: ['public_profile', 'user_posts', 'user_photos'],
       buildAuthorizeUrl: () => 'https://www.facebook.com/dialog/oauth',
@@ -445,13 +488,13 @@ describe('GET /api/oauth/start', () => {
 
     const response = await GET(
       new Request(
-        'http://x/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner&account=other-facebook-user',
+        'http://x/api/oauth/start?provider=provider%3Afacebook&plugin=provider%3Afacebook&harness=papercusp&field=owner&account=other-facebook-user',
       ),
     );
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({
       ok: false,
-      error: 'facebook_personal_vault_account_not_found',
+      error: 'provider_facebook_account_not_found',
     });
     expect(stateMocks.signState).not.toHaveBeenCalled();
   });
@@ -460,7 +503,7 @@ describe('GET /api/oauth/start', () => {
     registerProvider(stubProvider);
     const response = await GET(
       new Request(
-        'http://x/api/oauth/start?provider=github&plugin=facebook-personal-vault&harness=papercusp&field=owner',
+        'http://x/api/oauth/start?provider=github&plugin=provider%3Afacebook&harness=papercusp&field=owner',
       ),
     );
     expect(response.status).toBe(400);

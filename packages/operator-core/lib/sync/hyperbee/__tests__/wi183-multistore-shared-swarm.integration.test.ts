@@ -38,6 +38,7 @@ import {
   rigAfterEach,
   pollUntil,
   cleanups,
+  ensureRigHivePolicyReadStub,
   makeIdentity,
   makeSwarm,
   makeTestnet,
@@ -61,6 +62,7 @@ async function bootHarnessOn(opts: {
   /** The ONE remote userId this substrate admits (mutual-admission pairing). */
   admitUserId: number;
 }): Promise<BootedHarnessHandle> {
+  ensureRigHivePolicyReadStub();
   const handle = await bootHarnessSubstrate({
     workspaceRoot: opts.root,
     workspaceId: WS,
@@ -76,6 +78,7 @@ async function bootHarnessOn(opts: {
     reverifyIntervalMs: 0,
     loadRevokedOverride: async () => new Set(),
     announceIdentityOverride: opts.identity.override,
+    rekeyDepsOverride: null, // no re-key build through the live org-admin pool (WI-6554700010008561)
   });
   // handle.close() leaves the topic + closes/evicts the store; the shared swarm
   // itself is destroyed by makeSwarm's own cleanup entry.

@@ -28,12 +28,19 @@ import {
   codexSignedIn,
   ompSignedIn,
   ompAuthStatus,
+  claudeCredentialVerdict,
+  codexCredentialVerdict,
+  agentBackendCredentialVerdict,
   safeCredentialShape,
   githubSignedIn,
   anyAgentSignedIn,
   readClaudeKeychainOAuthBundle,
   writeClaudeKeychainOAuthBundle,
   _setClaudeKeychainAccessForTests,
+  _setClaudeKeychainAsyncAccessForTests,
+  parseDumpKeychainItems,
+  listClaudeKeychainCredentialItemsAsync,
+  readKeychainSecretAsync,
   type KeychainAccess,
 } from './agent-auth-detect';
 
@@ -162,6 +169,73 @@ describe('readClaudeKeychainOAuthBundle / writeClaudeKeychainOAuthBundle (REQ B 
   });
 });
 
+describe('async Keychain list/read helpers (WI-10005306 — the inference gateway freshest-scan)', () => {
+  afterEach(() => _setClaudeKeychainAccessForTests(null));
+
+  const DUMP = [
+    'keychain: "/Users/u/Library/Keychains/login.keychain-db"',
+    '    "acct"<blob>="u"',
+    '    "svce"<blob>="Claude Code-credentials"',
+    '    "acct"<blob>="u"',
+    '    "svce"<blob>="Claude Code-credentials-6ede4198"',
+    '    "acct"<blob>="other"',
+    '    "svce"<blob>="Some Unrelated App"',
+    '    "svce"<blob>="Claude Code"',
+  ].join('\n');
+
+  it('parseDumpKeychainItems pairs each service with the account printed before it (null when none)', () => {
+    expect(parseDumpKeychainItems(DUMP)).toEqual([
+      { service: 'Claude Code-credentials', account: 'u' },
+      { service: 'Claude Code-credentials-6ede4198', account: 'u' },
+      { service: 'Some Unrelated App', account: 'other' },
+      { service: 'Claude Code', account: null },
+    ]);
+  });
+
+  it('listClaudeKeychainCredentialItemsAsync awaits a later-tick lister and keeps only Claude Code items', async () => {
+    _setClaudeKeychainAsyncAccessForTests({
+      read: () => null,
+      write: () => false,
+      list: () => new Promise((resolve) => setTimeout(() => resolve(parseDumpKeychainItems(DUMP)), 5)),
+    });
+    expect(await listClaudeKeychainCredentialItemsAsync()).toEqual([
+      { service: 'Claude Code-credentials', account: 'u' },
+      { service: 'Claude Code-credentials-6ede4198', account: 'u' },
+      { service: 'Claude Code', account: null },
+    ]);
+  });
+
+  it('listClaudeKeychainCredentialItemsAsync is [] for an absent, rejecting, or non-array lister', async () => {
+    _setClaudeKeychainAsyncAccessForTests({ read: () => null, write: () => false });
+    expect(await listClaudeKeychainCredentialItemsAsync()).toEqual([]);
+    _setClaudeKeychainAsyncAccessForTests({ read: () => null, write: () => false, list: () => Promise.reject(new Error('timeout')) });
+    expect(await listClaudeKeychainCredentialItemsAsync()).toEqual([]);
+    _setClaudeKeychainAsyncAccessForTests({
+      read: () => null,
+      write: () => false,
+      list: () => 'garbage' as unknown as { service: string; account: string | null }[],
+    });
+    expect(await listClaudeKeychainCredentialItemsAsync()).toEqual([]);
+  });
+
+  it('readKeychainSecretAsync returns the raw secret, and null on empty / rejecting / non-string', async () => {
+    _setClaudeKeychainAsyncAccessForTests({ read: (s) => Promise.resolve(s === 'svc' ? 'SECRET\n' : ''), write: () => false });
+    expect(await readKeychainSecretAsync('svc')).toBe('SECRET\n');
+    expect(await readKeychainSecretAsync('other')).toBeNull();
+    _setClaudeKeychainAsyncAccessForTests({ read: () => Promise.reject(new Error('ACL')), write: () => false });
+    expect(await readKeychainSecretAsync('svc')).toBeNull();
+  });
+
+  it('the DEFAULT async lister never calls spawnSync (it goes through execFile)', async () => {
+    _setClaudeKeychainAccessForTests(null);
+    spawnSync.mockClear();
+    // Off macOS the real `security` is absent, so execFile rejects → [] — but never via spawnSync.
+    await listClaudeKeychainCredentialItemsAsync();
+    await readKeychainSecretAsync('Claude Code-credentials');
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+});
+
 describe('ompSignedIn', () => {
   it('true for either the .omp or legacy .pi_back auth path', () => {
     onlyExist('/home/u/.omp/agent/auth.json');
@@ -205,6 +279,101 @@ describe('ompAuthStatus', () => {
     expect(ompAuthStatus('/home/u', 1000)).toEqual({
       present: true, provider: null, authType: null, expiresAt: null, accessExpired: false, hasRefresh: false,
     });
+  });
+});
+
+// WI-10004897: a hosted workspace host gets claude/codex login copies whose refresh token is
+// blanked to "" (D-311). Once the access token expires the copy 401s; the failover must not run it.
+describe('claudeCredentialVerdict / codexCredentialVerdict / agentBackendCredentialVerdict', () => {
+  const NOW = 10_000_000;
+  const CLAUDE = '/home/u/.claude/.credentials.json';
+  const CODEX = '/home/u/.codex/auth.json';
+  const base = { home: '/home/u', env: {}, now: NOW, platform: 'linux' as const };
+  const claudeFile = (oauth: Record<string, unknown>) => {
+    onlyExist(CLAUDE);
+    readFileSync.mockReturnValue(JSON.stringify({ claudeAiOauth: oauth }));
+  };
+  const jwt = (claims: Record<string, unknown>) =>
+    `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.s`;
+  const codexFile = (body: Record<string, unknown>) => {
+    onlyExist(CODEX);
+    readFileSync.mockReturnValue(JSON.stringify(body));
+  };
+
+  it('claude: the hosted shape (blank refresh, expired access) is unusable', () => {
+    claudeFile({ accessToken: 'a', refreshToken: '', expiresAt: NOW - 1 });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'expired-no-refresh' });
+    // Inside the expiry skew counts as expired: a spawn started now would land past it.
+    claudeFile({ accessToken: 'a', refreshToken: '', expiresAt: NOW + 30_000 });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'expired-no-refresh' });
+  });
+
+  it('claude: a live access token, a refresh token, or no recorded expiry is usable', () => {
+    claudeFile({ accessToken: 'a', refreshToken: '', expiresAt: NOW + 3_600_000 });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: true, basis: 'live-access' });
+    claudeFile({ accessToken: 'a', refreshToken: 'r', expiresAt: NOW - 1 });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: true, basis: 'refreshable' });
+    claudeFile({ accessToken: 'a' });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: true, basis: 'no-expiry' });
+  });
+
+  it('claude: missing file or access token is absent; malformed JSON is unreadable', () => {
+    onlyExist();
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'absent' });
+    claudeFile({ refreshToken: 'r' });
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'absent' });
+    onlyExist(CLAUDE);
+    readFileSync.mockReturnValue('not json{');
+    expect(claudeCredentialVerdict(base)).toEqual({ usable: false, reason: 'unreadable' });
+  });
+
+  it('claude: a loopback gateway or an env key wins over a dead file (cannot be judged locally)', () => {
+    claudeFile({ accessToken: 'a', refreshToken: '', expiresAt: NOW - 1 });
+    expect(claudeCredentialVerdict({ ...base, env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788' } })).toEqual({
+      usable: true,
+      basis: 'gateway',
+    });
+    // A NON-loopback base URL is not the gateway: the file still decides.
+    expect(claudeCredentialVerdict({ ...base, env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } }).usable).toBe(
+      false,
+    );
+    expect(claudeCredentialVerdict({ ...base, env: { ANTHROPIC_API_KEY: 'k' } })).toEqual({
+      usable: true,
+      basis: 'env-key',
+    });
+  });
+
+  it('codex: the hosted shape (refresh_token "", expired JWT access token) is unusable', () => {
+    codexFile({ OPENAI_API_KEY: null, tokens: { access_token: jwt({ exp: (NOW - 1000) / 1000 }), refresh_token: '' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: false, reason: 'expired-no-refresh' });
+  });
+
+  it('codex: a live JWT, a refresh token, an API key, or an undecodable token is usable', () => {
+    codexFile({ tokens: { access_token: jwt({ exp: (NOW + 3_600_000) / 1000 }), refresh_token: '' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: true, basis: 'live-access' });
+    codexFile({ tokens: { access_token: jwt({ exp: 1 }), refresh_token: 'r' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: true, basis: 'refreshable' });
+    codexFile({ OPENAI_API_KEY: 'sk-x', tokens: { access_token: jwt({ exp: 1 }), refresh_token: '' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: true, basis: 'api-key' });
+    codexFile({ tokens: { access_token: 'opaque', refresh_token: '' } });
+    expect(codexCredentialVerdict(base)).toEqual({ usable: true, basis: 'no-expiry' });
+  });
+
+  it('codex: no auth.json is absent; the gateway route is usable regardless of the file', () => {
+    onlyExist();
+    expect(codexCredentialVerdict(base)).toEqual({ usable: false, reason: 'absent' });
+    expect(codexCredentialVerdict({ ...base, env: { PAPERCUSP_CODEX_GATEWAY: '1' } })).toEqual({
+      usable: true,
+      basis: 'gateway',
+    });
+    expect(codexCredentialVerdict({ ...base, env: { PAPERCUSP_ACCOUNT_ID: 'acct-1' } }).usable).toBe(true);
+  });
+
+  it('agentBackendCredentialVerdict routes by backend and does not judge other backends', () => {
+    onlyExist();
+    expect(agentBackendCredentialVerdict('claude-code', base)).toEqual({ usable: false, reason: 'absent' });
+    expect(agentBackendCredentialVerdict('codex', base)).toEqual({ usable: false, reason: 'absent' });
+    expect(agentBackendCredentialVerdict('omp', base)).toBeNull();
   });
 });
 

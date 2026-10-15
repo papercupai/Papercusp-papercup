@@ -257,10 +257,11 @@ describe('projectFleetHeadcountState — productive worker population (EI-212754
     expect(projected.countEvidence.productive).toMatchObject({
       value: 2,
       contract: {
-        population: { id: 'live-roster-recent-execution-intersection' },
-        cutoff: { kind: 'rolling-window', durationMs: 60 * 60_000, end: 'measuredAt' },
-        status: { id: 'recently-executing-live-member' },
-        writer: { id: 'executingOwnersSince+measureFleetProductiveHeadcount' },
+        population: { id: 'live-roster-non-silent-intersection' },
+        // P-007 / R-17: the 20-minute silence threshold (D-007 item 4), not the old 60-minute window.
+        cutoff: { kind: 'rolling-window', durationMs: 20 * 60_000, end: 'measuredAt' },
+        status: { id: 'non-silent-live-member' },
+        writer: { id: 'readFleetMemberSilence+measureFleetProductiveHeadcount' },
         measuredAt: '2026-09-05T20:00:00.000Z',
       },
     });

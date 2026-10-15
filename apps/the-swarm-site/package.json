@@ -10,7 +10,7 @@
     "deploy": "wrangler pages deploy ./out --project-name the-swarm --branch main --commit-dirty=true"
   },
   "dependencies": {
-    "next": "^16.2.4",
+    "next": "^16.4.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

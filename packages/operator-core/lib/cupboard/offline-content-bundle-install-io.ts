@@ -117,7 +117,10 @@ function safeListingRef(ref: string | undefined): boolean {
   return ref.split('/').every((segment) => segment !== '' && segment !== '.' && segment !== '..');
 }
 
-async function installOfflineBlueprint(unit: BundleContentUnit): Promise<{ ok: true } | { ok: false; error: string }> {
+async function installOfflineBlueprint(
+  unit: BundleContentUnit,
+  cloneRepo: typeof gitCloneShallow,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const url = unit.githubUrl.trim();
   if (!GITHUB_URL_RE.test(url)) return { ok: false, error: `invalid github_url "${url}"` };
   if (!SAFE_BLUEPRINT_ID_RE.test(unit.id)) return { ok: false, error: `unsafe blueprint id "${unit.id}"` };
@@ -139,7 +142,7 @@ async function installOfflineBlueprint(unit: BundleContentUnit): Promise<{ ok: t
 
   const cloneDir = join(tmpdir(), `cupboard-blueprint-offline-${process.pid}-${Date.now()}`);
   try {
-    await gitCloneShallow(url, cloneDir);
+    await cloneRepo(url, cloneDir);
     const candidates = [
       ...(safeListingRef(unit.listingRef) ? [join(cloneDir, unit.listingRef!)] : []),
       cloneDir,
@@ -203,13 +206,13 @@ function contentPath(kind: 'templates' | 'rubrics', unit: BundleContentUnit): st
   return target;
 }
 
-function makeOfflineInstallers(): BundleAppInstallers {
+function makeOfflineInstallers(cloneRepo: typeof gitCloneShallow): BundleAppInstallers {
   // Offline bundle units carry NO content pin (they are addressed by the bundle's own
   // manifest, not a Cupboard listing), so the self-describing core takes the unpinned
   // `cloneRepo` path and never reaches fetchAtSha / listTreeBlobs — but the deps contract
   // is total (P-002), so the real git-backed implementations are supplied rather than a
   // stub that would silently mis-verify if a pinned unit ever arrived here.
-  const cloneDeps = { ...cupboardGitDeps(), cloneRepo: gitCloneShallow };
+  const cloneDeps = { ...cupboardGitDeps(), cloneRepo };
   return {
     resolveAndInstallDeps: async (declared) => ({
       ok: (declared.packs?.length ?? 0) === 0 && (declared.plugins?.length ?? 0) === 0,
@@ -219,7 +222,7 @@ function makeOfflineInstallers(): BundleAppInstallers {
       rounds: 0,
     }),
     installDatatype: async (id) => ({ ok: false, error: `offline content bootstrap refuses datatype "${id}"` }),
-    installBlueprint: installOfflineBlueprint,
+    installBlueprint: (unit) => installOfflineBlueprint(unit, cloneRepo),
     installTemplate: async (unit) => {
       const target = contentPath('templates', unit);
       const existing = await readBundleSource(target, 'template.yaml');
@@ -271,39 +274,63 @@ export async function installOfflineContentBundleAppFromCupboard(
     return { ok: false, status: 400, error: 'offline content bootstrap requires githubUrl' };
   }
 
-  let manifest;
-  try {
-    manifest = await fetchBundleManifest(
-      { githubUrl: input.githubUrl, listingRef: input.listingRef },
-      { cloneRepo: gitCloneShallow, tmpDir: tmpdir },
-    );
-  } catch (error) {
-    if (error instanceof BundleManifestError) return { ok: false, status: error.status, error: error.message };
-    return { ok: false, status: 500, error: 'manifest fetch failed', detail: error instanceof Error ? error.message.slice(0, 300) : String(error) };
-  }
-
-  if ((manifest.datatypes?.length ?? 0) > 0 || (manifest.packs?.length ?? 0) > 0 || (manifest.plugins?.length ?? 0) > 0) {
-    return { ok: false, status: 422, error: 'offline content bootstrap accepts only blueprints, templates, and rubrics' };
-  }
-
-  const host: BundleHostState = {
-    hasDatatype: async () => false,
-    deriveCatalog: async () => emptyCatalog(),
-    installedBlueprintSource: (unit) => readBundleSource(join(contentHome(), 'blueprints', unit.id), 'blueprint.yaml'),
-    installedTemplateSource: (unit) => readBundleSource(contentPath('templates', unit), 'template.yaml'),
-    installedRubricSource: (unit) => readBundleSource(contentPath('rubrics', unit), 'rubric.json'),
+  // The manifest and each content core own and delete their temporary checkout.
+  // Keep one operation-scoped snapshot per repository behind those existing seams:
+  // deleting a checkout must not force another network fetch or select a later tip.
+  const snapshotRoot = await fs.mkdtemp(join(tmpdir(), 'cupboard-bundle-snapshot-'));
+  const snapshots = new Map<string, Promise<string>>();
+  const cloneRepo: typeof gitCloneShallow = async (url, dest) => {
+    const key = url.trim().replace(/\.git\/?$/, '').replace(/\/$/, '').toLowerCase();
+    let snapshot = snapshots.get(key);
+    if (!snapshot) {
+      const dir = join(snapshotRoot, String(snapshots.size));
+      snapshot = gitCloneShallow(url, dir).then(() => dir);
+      snapshots.set(key, snapshot);
+    }
+    await fs.cp(await snapshot, dest, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      filter: (entry) => !entry.split(/[/\\]/).includes('.git'),
+    });
   };
-
   try {
-    const result: BundleAppInstallResult = await installBundleApp(
-      manifest,
-      host,
-      makeOfflineInstallers(),
-      { allowConflicts: input.allowConflicts === true },
-    );
-    return { ok: true, manifest, result };
-  } catch (error) {
-    return { ok: false, status: 500, error: 'offline content install failed', detail: error instanceof Error ? error.message.slice(0, 300) : String(error) };
+    let manifest;
+    try {
+      manifest = await fetchBundleManifest(
+        { githubUrl: input.githubUrl, listingRef: input.listingRef },
+        { cloneRepo, tmpDir: tmpdir },
+      );
+    } catch (error) {
+      if (error instanceof BundleManifestError) return { ok: false, status: error.status, error: error.message };
+      return { ok: false, status: 500, error: 'manifest fetch failed', detail: error instanceof Error ? error.message.slice(0, 300) : String(error) };
+    }
+
+    if ((manifest.datatypes?.length ?? 0) > 0 || (manifest.packs?.length ?? 0) > 0 || (manifest.plugins?.length ?? 0) > 0) {
+      return { ok: false, status: 422, error: 'offline content bootstrap accepts only blueprints, templates, and rubrics' };
+    }
+
+    const host: BundleHostState = {
+      hasDatatype: async () => false,
+      deriveCatalog: async () => emptyCatalog(),
+      installedBlueprintSource: (unit) => readBundleSource(join(contentHome(), 'blueprints', unit.id), 'blueprint.yaml'),
+      installedTemplateSource: (unit) => readBundleSource(contentPath('templates', unit), 'template.yaml'),
+      installedRubricSource: (unit) => readBundleSource(contentPath('rubrics', unit), 'rubric.json'),
+    };
+
+    try {
+      const result: BundleAppInstallResult = await installBundleApp(
+        manifest,
+        host,
+        makeOfflineInstallers(cloneRepo),
+        { allowConflicts: input.allowConflicts === true },
+      );
+      return { ok: true, manifest, result };
+    } catch (error) {
+      return { ok: false, status: 500, error: 'offline content install failed', detail: error instanceof Error ? error.message.slice(0, 300) : String(error) };
+    }
+  } finally {
+    await fs.rm(snapshotRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
 

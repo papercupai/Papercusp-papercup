@@ -74,15 +74,10 @@ export interface OpenRunSandboxDeps {
 export function liveRunTool(): RunTool {
   return async (name, args) => {
     const { operatorApiBase } = await import('../../operator-api-base');
-    const fs = await import('node:fs/promises');
-    const os = await import('node:os');
-    const path = await import('node:path');
-    let token = '';
-    try {
-      token = (await fs.readFile(path.join(os.homedir(), '.papercusp', 'superuser-token'), 'utf8')).trim();
-    } catch {
-      /* a trusted-localhost loopback operator may not require it */
-    }
+    // Shared reader (honours PAPERCUSP_HOME, WI-10006617). '' when absent:
+    // a trusted-localhost loopback operator may not require it.
+    const { readSuperuserToken } = await import('../../superuser-token');
+    const token = readSuperuserToken() ?? '';
     const url = `${operatorApiBase()}/api/mcp?superuser=1`;
     let res: Response;
     try {

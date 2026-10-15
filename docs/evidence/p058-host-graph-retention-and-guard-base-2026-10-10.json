@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-058 retained host dependency graph and compiler guard resolution",
+  "framework": "shell",
+  "cwd": ".",
+  "parentWorkItemId": "WI-10007352",
+  "workItemIds": [
+    "EI-25614031378277343",
+    "EI-25614652398575363"
+  ],
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "conventional-regression-wrapper",
+  "candidateAccepted": false,
+  "command": [
+    "node",
+    "scripts/npm-install-safe.mjs",
+    "--exec-under-lock",
+    "--",
+    "node",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "--root",
+    "packages/operator-core",
+    "lib/bundle-host-fallback.test.ts",
+    "-t",
+    "retains the accepted dependency graph|resolves compiler inputs",
+    "--reporter=verbose"
+  ],
+  "commandPathNormalization": "Repository paths are relative here; the retained raw log records the executed absolute paths. This artifact registers the saved shell-wrapper outcome around two Vitest regressions, not a new execution.",
+  "startedAt": "2026-10-10T17:34:47.000Z",
+  "finishedAt": "2026-10-10T17:35:31.469Z",
+  "timestampEvidence": "Vitest Start at 13:34:47 in America/New_York (UTC-04:00); the durable runner JOB END records 17:35:31.469Z.",
+  "exitCode": 0,
+  "summary": "Saved task 0mv2ocfw8du1msf1x79 completed with two passing targeted regressions, zero failures and fifteen filtered skips. The real bundler retains accepted metadata after cleanup and a compiler refusal, resolves compiler inputs from REPO_ROOT, and restores both bundle and metadata when an actual repository import is held. No suite or ARM producer was replayed to reconstruct this proof.",
+  "producerTaskId": "0mv2ocfw8du1msf1x79",
+  "rawLog": {
+    "path": ".papercusp/scratch/bash-b8d821d9-3ca.log",
+    "sha256": "da271898589d8a71a4d42d7b1fbf733b360589c718ffc3e7a694d93aaa816171"
+  },
+  "sourceSettlementCommit": "5345a9c0e71bd0997ecb1e502b826cbc865a1b84",
+  "sourceSettlementNote": "These tested source bytes were committed after the saved execution. The hashes below matched both the working tree and HEAD during recovery.",
+  "sourceHashes": {
+    "apps/operator/bin/bundle-host.sh": "06c5e64a1c78505137deabee84d77ccbe7ba0d4f702ad3bcac6e8bd1f490b16b",
+    "packages/operator-core/lib/bundle-host-fallback.test.ts": "8041827c371a123357b284e854c530d66b71a08bab059121cbcabadd3dbfa214"
+  },
+  "regression": {
+    "framework": "vitest",
+    "testPath": "packages/operator-core/lib/bundle-host-fallback.test.ts",
+    "passed": 2,
+    "failed": 0,
+    "skipped": 15,
+    "skipReason": "The command selected only the two new cases with -t. The remaining cases were not exercised by this execution.",
+    "tests": [
+      "retains the accepted dependency graph after cleanup and preserves it on a rejected rebuild",
+      "resolves compiler inputs from the repo root and restores bundle and metadata on a held import"
+    ]
+  },
+  "assertions": [
+    {
+      "id": "accepted-graph-survives-cleanup",
+      "passed": true,
+      "evidence": "The first case reads OUTFILE.meta.json, verifies both entry and dependency resolve from REPO_ROOT, and verifies the temporary restricted-gate directory was removed."
+    },
+    {
+      "id": "compiler-refusal-preserves-accepted-pair",
+      "passed": true,
+      "evidence": "The first case injects invalid dependency syntax, requires a nonzero rebuild result, and compares both accepted bundle and metadata bytes with their saved originals."
+    },
+    {
+      "id": "compiler-cwd-and-guard-base-agree",
+      "passed": true,
+      "evidence": "The second case compiles an actual import of libs/generic/module-singleton/src/index.ts and verifies that its recorded input resolves from REPO_ROOT. npm-install-safe.mjs executes the compiler with cwd: repoRoot."
+    },
+    {
+      "id": "held-import-restores-bundle-and-metadata",
+      "passed": true,
+      "evidence": "The second case supplies a fixture hold census for the imported repository module, changes the entry, requires the held restricted write refusal, and verifies exact restoration of the accepted bundle and metadata."
+    },
+    {
+      "id": "saved-wrapper-terminal-success",
+      "passed": true,
+      "evidence": "The retained log reports two passing tests and fifteen filtered skips; capability:bash_output attached to the same durable task and returned completed, running:false, exit_code:0."
+    }
+  ],
+  "limitations": [
+    "The original deleted 00db preparation metafile was not recovered.",
+    "This execution does not qualify a fresh ARM startup or identify the original 60000 ms startup timeout cause.",
+    "This execution does not establish installed-native, trusted signed release, instance-transfer or final plan acceptance."
+  ]
+}

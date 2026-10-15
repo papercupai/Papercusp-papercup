@@ -17,17 +17,20 @@
  * (operator-vite) for the two thin per-project CLIs built on this.
  */
 
-import { execSync, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { execFile, execSync, execFileSync } from 'node:child_process';
+import { constants as osConstants, tmpdir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { findUnextractedDeps } from '../check-declared-deps-extracted.mjs';
 import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
 import { isRootWorkspace, rootWorkspacePatterns } from './submodule-installs.mjs';
 import {
   baselineWithinScope,
+  diagnosticFilesDependingOnChangedTypes,
   formatTscServiceBanner,
+  serviceProjectFromTscCommand,
   tscServiceEligibility,
   typecheckViaService,
 } from './tsc-service.mjs';
@@ -99,6 +102,8 @@ import {
  * @typedef {object} RunTscBaselineGateOptions
  * @property {string} root - cwd the tscCommand runs from (repo root).
  * @property {string} tscCommand - e.g. 'npx tsc -p apps/foo/tsconfig.json --noEmit --incremental false'.
+ * @property {string | null} [preTscCommand] - Optional generated-input preflight. The standard
+ *   declaration generator publishes only explicitly selected modules on a scoped run.
  * @property {string} baselineFile - Absolute path to this project's `.tsc-baseline.json`.
  * @property {string} label - Human label for console output, e.g. 'operator-core'.
  * @property {string[]} argv - `process.argv.slice(2)`.
@@ -1842,16 +1847,22 @@ export function normalizeExplicitFilesForProject({
  *
  * A `''` prefix (whole-repo project) covers everything.
  *
- * @param {{files: Iterable<string>, coveredPrefixes: Iterable<string>}} opts
+ * When supplied, `programFiles` is authoritative: a directory prefix does not establish
+ * enrollment in the actual compiler program (e.g. scripts/*.mjs in a TS-only project).
+ *
+ * @param {{files: Iterable<string>, coveredPrefixes: Iterable<string>, programFiles?: Iterable<string>}} opts
  * @returns {{covered: string[], uncovered: string[]}}
  */
-export function partitionFilesByCoverage({ files, coveredPrefixes }) {
+export function partitionFilesByCoverage({ files, coveredPrefixes, programFiles }) {
   const prefixes = [...coveredPrefixes].filter((p) => typeof p === 'string');
+  const program = programFiles === undefined
+    ? null
+    : new Set([...programFiles].map((file) => String(file).replace(/^\.\//, '')));
   const covered = [];
   const uncovered = [];
   for (const raw of files) {
     const file = String(raw).replace(/^\.\//, '');
-    if (prefixes.some((p) => p === '' || file.startsWith(p))) covered.push(file);
+    if (program === null ? prefixes.some((p) => p === '' || file.startsWith(p)) : program.has(file)) covered.push(file);
     else uncovered.push(file);
   }
   return { covered, uncovered };
@@ -2005,12 +2016,14 @@ export function coveragePrefixesFromGateModule(mod, { onCoverageError } = {}) {
  *
  * @param {string} root Absolute repo root.
  * @param {{exclude?: string[]}} [opts] npm-script names to skip (e.g. the gate doing the asking).
- * @returns {Promise<{gates: {npmScript: string, prefixes: string[]}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ * @returns {Promise<{gates: {npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ *   `scriptPath` is the repo-relative entrypoint; `tscCommand` is the gate's single-project
+ *   command, or null for a multi-project GATE_COVERAGE gate that cannot act as a cross-leg consumer.
  *   `rosterReadable: false` means the root package.json itself could not be read — the roster is
  *   entirely unknown, so NO absence claim of any strength is available.
  */
 export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {}) {
-  /** @type {{npmScript: string, prefixes: string[]}[]} */
+  /** @type {{npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[]} */
   const gates = [];
   /** @type {{npmScript: string, reason: string}[]} */
   const unresolved = [];
@@ -2069,7 +2082,14 @@ export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {})
       });
       continue;
     }
-    gates.push({ npmScript, prefixes });
+    // WI-6554700010009433 — a single-project gate can also judge FOREIGN files as a cross-leg
+    // consumer (see runCrossLegConsumer). Only a gate with its own `-p` command can: a
+    // GATE_COVERAGE fan-out (workspaces, papercusp-libs) spans many programs, so it reports null.
+    const tscCommand =
+      typeof mod?.TSC_COMMAND === 'string' && projectPrefixFromTscCommand(mod.TSC_COMMAND) !== null
+        ? mod.TSC_COMMAND
+        : null;
+    gates.push({ npmScript, prefixes, scriptPath: entry[1], tscCommand });
   }
 
   return { gates, unresolved, rosterReadable: true };
@@ -2169,11 +2189,13 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = 
 
   const routes = [...grouped.values()].map((route) => {
     if (route.scoped) {
-      const filesArg = `--files=${route.files.join(',')}`;
+      // WI-6554700010009716: a huge list goes through a response file, not argv (E2BIG).
+      const { arg: filesArg, responseFile } = scopedFilesArg(route.files);
       return {
         ...route,
         command: `npm run ${route.npmScript} -- ${filesArg}`,
         args: ['run', route.npmScript, '--', filesArg],
+        ...(responseFile ? { responseFile } : {}),
       };
     }
     const args = workspaceTypecheckArgs(route.workspaceDir, route.standalone === true);
@@ -2187,31 +2209,367 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = 
 }
 
 /**
+ * The `filesUnchecked` count of a delegate whose FINAL marker reads `status=out-of-scope`, else
+ * null. The final marker belongs to the delegate itself, after any nested child markers.
+ *
+ * @param {unknown} stdout
+ * @returns {number | null}
+ */
+export function outOfScopeUncheckedCount(stdout) {
+  if (stdout == null) return null;
+  const markers = String(stdout).split(/\r?\n/).filter((line) => line.startsWith('LINT_TSC_RESULT '));
+  const last = markers.at(-1) ?? '';
+  if (!/\bstatus=out-of-scope\b/.test(last)) return null;
+  const count = /\bfilesUnchecked=(\d+)\b/.exec(last);
+  return count ? Number(count[1]) : null;
+}
+
+/**
  * Execute an already-validated set of owning gates and return the first non-zero status.
  *
  * The environment marker prevents a malformed workspace script from recursively routing back
  * into this gate forever. A routed child owns the actual verdict; this caller only aggregates its
  * exit status. `execFile` is injectable for unit tests and never receives a shell command string.
  *
- * @param {{root: string, routes: {args: string[]}[], execFile?: Function}} opts
+ * `outOfScopeIsUnchecked` (WI-6554700010009876) is for the MIXED branch only: a delegate whose own
+ * final marker reads `status=out-of-scope` compiled NONE of its files and exits 1, which is a
+ * coverage gap rather than a type error. With the flag set, that delegate's `filesUnchecked` is
+ * reported through `onUnchecked` and it is not counted as a failure, so the caller's own compile
+ * still gives its verdict. Without the flag (the all-routed branch, where nothing else compiles)
+ * it stays a failure, because exiting 0 there would claim a check that never happened.
+ *
+ * @param {{root: string, routes: {args: string[]}[], execFile?: Function, onUnchecked?: (count: number) => void, outOfScopeIsUnchecked?: boolean}} opts
  * @returns {number}
  */
-export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync }) {
+export function runAutoTypecheckRoutes({ root, routes, execFile = execFileSync, onUnchecked, outOfScopeIsUnchecked = false }) {
   if (!Array.isArray(routes) || routes.length === 0) return 1;
   let firstFailure = 0;
   for (const route of routes) {
     try {
-      execFile('npm', route.args, {
+      const output = execFile('npm', route.args, {
         cwd: root,
-        stdio: 'inherit',
+        stdio: onUnchecked ? ['ignore', 'pipe', 'inherit'] : 'inherit',
+        ...(onUnchecked ? { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 } : {}),
         env: { ...process.env, [AUTO_TYPECHECK_ROUTE_ENV]: '1' },
       });
+      if (onUnchecked && typeof output === 'string') {
+        process.stdout.write(output);
+        // The final marker belongs to the delegate, after any nested child markers. A
+        // successful partial verdict must not become full coverage in its parent.
+        const markers = output.split(/\r?\n/).filter((line) => line.startsWith('LINT_TSC_RESULT '));
+        const count = /\bfilesUnchecked=(\d+)\b/.exec(markers.at(-1) ?? '');
+        if (count) onUnchecked(Number(count[1]));
+      }
     } catch (error) {
+      if (onUnchecked && error?.stdout) process.stdout.write(error.stdout);
+      const outOfScope = outOfScopeIsUnchecked && onUnchecked ? outOfScopeUncheckedCount(error?.stdout) : null;
+      if (outOfScope !== null) {
+        onUnchecked(outOfScope);
+        continue;
+      }
       const status = Number.isInteger(error?.status) && error.status > 0 ? error.status : 1;
       if (firstFailure === 0) firstFailure = status;
+    } finally {
+      // The --files-from response file written by buildAutoTypecheckRoutes (WI-6554700010009716).
+      if (route.responseFile) rmSync(dirname(route.responseFile), { recursive: true, force: true });
     }
   }
   return firstFailure;
+}
+
+/**
+ * WI-6554700010009433 — set on a child gate to make it a CROSS-LEG CONSUMER: judge the named
+ * files inside its own program against its own baseline, with no full compile (see
+ * runCrossLegConsumer). A parent's fan-out sets it; nothing else should.
+ */
+export const CROSS_LEG_CONSUMER_ENV = 'PAPERCUSP_TSC_CROSS_LEG_CONSUMER';
+/** `PAPERCUSP_TSC_CROSS_LEG=0` skips the cross-leg fan-out of a scoped run, like `--no-cross-leg`. */
+export const CROSS_LEG_ENV = 'PAPERCUSP_TSC_CROSS_LEG';
+export const CROSS_LEG_MARKER = 'LINT_TSC_CROSS_LEG';
+
+/**
+ * Only a TypeScript or JavaScript SOURCE file can be a member of a consumer leg's program. A
+ * non-source path (`CLAUDE.md`, a `.json` fixture) can never regress there, yet planning it
+ * costs a full compile of every sibling leg: an all-uncovered `--files=CLAUDE.md` run took 84s
+ * instead of ~1s and then reported five legs `clean` for a file none of them contains
+ * (WI-6554700010009433, measured 2026-10-12).
+ */
+const CROSS_LEG_SOURCE_FILE_RE = /\.[cm]?[jt]sx?$/i;
+
+/**
+ * Which consumer legs must judge which named files.
+ *
+ * A file's OWNING leg judges it on the normal path (this gate's own compile, or the routed
+ * delegate). Every other single-project leg can reach the file by import, and that is where an
+ * ambient declaration visible only through the owner's include glob goes missing: three such reds
+ * reached the gate at once (WI-6554700010009424). So each consumer-capable leg gets the named
+ * files it does NOT own. A multi-project GATE_COVERAGE gate (tscCommand null) cannot act as a
+ * consumer; it is returned in `uncheckable` so the report names it rather than implying a check.
+ *
+ * @param {{gates: {npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[], files: Iterable<string>}} opts
+ * @returns {{plans: {npmScript: string, scriptPath: string, files: string[]}[], uncheckable: string[]}}
+ */
+export function planCrossLegChecks({ gates, files }) {
+  const named = [...files]
+    .map((file) => String(file).replace(/^\.\//, ''))
+    .filter((file) => CROSS_LEG_SOURCE_FILE_RE.test(file));
+  const owners = new Map(named.map((file) => [file, gateCoveringFile(gates, file)?.npmScript ?? null]));
+  /** @type {{npmScript: string, scriptPath: string, files: string[]}[]} */
+  const plans = [];
+  /** @type {string[]} */
+  const uncheckable = [];
+  for (const gate of gates ?? []) {
+    if (typeof gate.tscCommand !== 'string') {
+      uncheckable.push(gate.npmScript);
+      continue;
+    }
+    const consumerFiles = named.filter((file) => owners.get(file) !== gate.npmScript);
+    if (consumerFiles.length > 0) {
+      plans.push({ npmScript: gate.npmScript, scriptPath: gate.scriptPath, files: consumerFiles });
+    }
+  }
+  return { plans, uncheckable };
+}
+
+/**
+ * ONE consumer leg's verdict: each MEMBER file's error count in this leg against this leg's
+ * effective baseline (its own row, else the owning package's row via `foreignBaselines`, else 0).
+ * A non-member is not this leg's to judge. A TS1xxx diagnostic hard-fails regardless of baseline,
+ * exactly as on the full path.
+ *
+ * @param {{members: string[], errors: TscErrorEntry[], baselineByFile: Record<string, number>, foreignBaselines?: {prefix: string, files: Record<string, number>}[]}} opts
+ * @returns {{regressed: {file: string, current: number, baseline: number}[], broken: string[]}}
+ */
+export function judgeCrossLegMembers({ members, errors, baselineByFile, foreignBaselines = [] }) {
+  const memberSet = new Set(members);
+  const memberErrors = errors.filter((error) => error.file !== null && memberSet.has(error.file));
+  const currentByFile = countByFile(memberErrors);
+  const { effective } = effectiveBaselineByFile({ baselineByFile, currentByFile, foreignBaselines });
+  /** @type {{file: string, current: number, baseline: number}[]} */
+  const regressed = [];
+  for (const file of members) {
+    const current = currentByFile[file] ?? 0;
+    const baseline = effective[file] ?? 0;
+    if (current > baseline) regressed.push({ file, current, baseline });
+  }
+  return { regressed, broken: hardFailFiles(memberErrors) };
+}
+
+/**
+ * CONSUMER mode: judge the named files inside THIS leg's program and print one
+ * `LINT_TSC_CROSS_LEG leg=… status=…` line for the parent. No preflight, no coverage routing (the
+ * files are foreign by construction), no full compile, no ratchet. A baseline or program failure
+ * prints `status=undetermined` and a non-1 code, so the parent can never read it as clean or red.
+ *
+ * @param {{root: string, tscCommand: string, baselineFile: string, foreignBaselines?: {prefix: string, baselineFile: string}[], label: string, files: string[], diagnose?: (args: {root: string, tscCommand: string, files: string[]}) => {members: string[], nonMembers: string[], output: string}, log?: (line: string) => void, warn?: (line: string) => void}} opts
+ * @returns {Promise<number>} The exit code: 0 clean, 1 regressed, 66/70 undetermined.
+ */
+export async function runCrossLegConsumer({
+  root,
+  tscCommand,
+  baselineFile,
+  foreignBaselines = [],
+  label,
+  files,
+  diagnose,
+  log = (line) => console.log(line),
+  warn = (line) => console.error(line),
+}) {
+  let baseline;
+  try {
+    baseline = JSON.parse(readFileSync(baselineFile, 'utf-8'));
+  } catch {
+    warn(`❌ ${label} cross-leg consumer could not read its baseline ${baselineFile}: UNMEASURED.`);
+    log(`${CROSS_LEG_MARKER} leg=${label} status=undetermined reason=baseline-unreadable`);
+    return INPUT_UNREADABLE_EXIT_CODE;
+  }
+  const loadedForeign = [];
+  for (const source of foreignBaselines) {
+    try {
+      loadedForeign.push({ ...source, files: JSON.parse(readFileSync(source.baselineFile, 'utf-8')).files ?? {} });
+    } catch {
+      warn(`⚠ ${label} cross-leg consumer could not read ${source.baselineFile}; files under ${source.prefix} fall back to a 0 baseline.`);
+    }
+  }
+  let result;
+  try {
+    const legDiagnostics = diagnose ?? (await import('./tsc-cross-leg-check.mjs')).legFileDiagnostics;
+    result = legDiagnostics({ root, tscCommand, files });
+  } catch (error) {
+    warn(`❌ ${label} cross-leg consumer could not build its program: ${String(error?.message ?? error)}`);
+    log(`${CROSS_LEG_MARKER} leg=${label} status=undetermined reason=program-failed`);
+    return TOOLCHAIN_FAILURE_EXIT_CODE;
+  }
+  const { regressed, broken } = judgeCrossLegMembers({
+    members: result.members,
+    errors: parseTscErrors(result.output),
+    baselineByFile: baseline.files ?? {},
+    foreignBaselines: loadedForeign,
+  });
+  const failing = new Set([...regressed.map((entry) => entry.file), ...broken]);
+  for (const entry of regressed) {
+    warn(`❌ ${label}: ${entry.file} has ${entry.current} error(s) in this leg (baseline ${entry.baseline}); this leg reaches it by import.`);
+  }
+  for (const file of broken) warn(`❌ ${label}: ${file} has a hard-failing TS1xxx diagnostic in this leg.`);
+  const quoted = result.output.split('\n').filter((line) => [...failing].some((file) => line.startsWith(`${file}(`)));
+  for (const line of quoted.slice(0, 20)) warn(`   ${line}`);
+  if (quoted.length > 20) warn(`   … ${quoted.length - 20} more`);
+  log(
+    `${CROSS_LEG_MARKER} leg=${label} status=${failing.size > 0 ? 'regressed' : 'clean'} ` +
+      `members=${result.members.length} nonMembers=${result.nonMembers.length} regressed=${failing.size}`,
+  );
+  return failing.size > 0 ? 1 : 0;
+}
+
+/**
+ * WI-6554700010009716 — Linux caps ONE argv string at MAX_ARG_STRLEN (32 pages = 128 KiB) and the
+ * whole argv+env at ARG_MAX. A candidate ~1,500 commits behind main produced a `--files=a,b,…` list
+ * past that, so every cross-leg child died with `spawn E2BIG` and its leg read as uncheckable (gate
+ * run 4bbfb5d7). Past this many characters the list travels as a `--files-from=` JSON response file
+ * instead — the parser above gives both forms identical scoped-verdict semantics. Kept well under the
+ * kernel limit because the environment shares the ARG_MAX budget.
+ */
+export const INLINE_FILES_ARG_MAX_CHARS = 32 * 1024;
+
+/**
+ * The child argument that names `files`: inline `--files=` when short, else `--files-from=<json>`.
+ * `responseFile` is the written path (null when inline); `cleanup()` removes it and never throws.
+ *
+ * @param {string[]} files
+ * @param {{maxInlineChars?: number, tmpRoot?: string}} [opts]
+ * @returns {{arg: string, responseFile: string | null, cleanup: () => void}}
+ */
+export function scopedFilesArg(files, { maxInlineChars = INLINE_FILES_ARG_MAX_CHARS, tmpRoot = tmpdir() } = {}) {
+  const inline = `--files=${files.join(',')}`;
+  if (inline.length <= maxInlineChars) return { arg: inline, responseFile: null, cleanup: () => {} };
+  const dir = mkdtempSync(join(tmpRoot, 'lint-tsc-files-'));
+  const responseFile = join(dir, 'files.json');
+  writeFileSync(responseFile, JSON.stringify(files));
+  return {
+    arg: `--files-from=${responseFile}`,
+    responseFile,
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+/**
+ * Run the planned consumer legs as child gate processes, at most `concurrency` at once: each one
+ * builds a full program (3-23 s and 1-2 GB, measured 2026-10-12). A child is RED only when it
+ * exits 1 with a `status=regressed` marker; any other outcome is UNDETERMINED, never clean.
+ * A clean child whose marker says `members=0` compiled NONE of the named files, so it checked
+ * nothing: it goes to `notMember`, never `clean` (WI-6554700010009515). A vacuous clean would
+ * read as "verified in this leg". A marker with no `members=` field stays clean.
+ *
+ * @param {{root: string, plans: {npmScript: string, scriptPath: string, files: string[]}[], concurrency?: number, childTimeoutMs?: number, spawnChild?: (plan: {npmScript: string, scriptPath: string, files: string[]}) => Promise<{status: number | null, stdout: string, stderr: string, timedOut?: boolean}>}} opts
+ * @returns {Promise<{clean: string[], notMember: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
+ */
+export async function runCrossLegChecks({ root, plans, concurrency = 2, childTimeoutMs = 120_000, spawnChild }) {
+  const spawnOne =
+    spawnChild ??
+    ((plan) =>
+      new Promise((done) => {
+        const filesArg = scopedFilesArg(plan.files);
+        let settled = false;
+        const finish = (outcome) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          filesArg.cleanup();
+          done(outcome);
+        };
+        const child = execFile(
+          process.execPath,
+          [plan.scriptPath, filesArg.arg],
+          {
+            cwd: root,
+            encoding: 'utf-8',
+            maxBuffer: 64 * 1024 * 1024,
+            env: { ...process.env, [CROSS_LEG_CONSUMER_ENV]: '1', [AUTO_TYPECHECK_ROUTE_ENV]: '1' },
+          },
+          (error, stdout, stderr) => {
+            const code = /** @type {any} */ (error)?.code;
+            finish({ status: error ? (Number.isInteger(code) ? code : null) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+          },
+        );
+        // EI-26062308784379661 — a cross-leg child can enter uninterruptible filesystem wait.
+        // Waiting for execFile's callback in that state blocks the owning-leg verdict forever:
+        // SIGTERM remains pending until the kernel wait clears. Bound OUR wait independently,
+        // detach the stuck child from this gate, and report that leg as UNDETERMINED. The child
+        // is still signalled and its pipes are destroyed so it cannot retain this process.
+        const timer = setTimeout(() => {
+          child.kill('SIGTERM');
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          finish({ status: null, stdout: '', stderr: '', timedOut: true });
+        }, Math.max(1, childTimeoutMs));
+        timer.unref();
+      }));
+  /** @type {{status: number | null, stdout: string, stderr: string, timedOut?: boolean}[]} */
+  const outcomes = new Array(plans.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < plans.length) {
+      const index = next;
+      next += 1;
+      outcomes[index] = await spawnOne(plans[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, plans.length)) }, worker));
+
+  const report = { clean: [], notMember: [], red: [], undetermined: [] };
+  plans.forEach((plan, index) => {
+    const { status, stdout, stderr, timedOut } = outcomes[index];
+    if (timedOut) {
+      report.undetermined.push({ npmScript: plan.npmScript, reason: `timed out after ${childTimeoutMs}ms` });
+      return;
+    }
+    const marker = stdout.split(/\r?\n/).filter((line) => line.startsWith(`${CROSS_LEG_MARKER} `)).at(-1) ?? '';
+    const verdict = /\bstatus=(\S+)/.exec(marker)?.[1] ?? null;
+    const members = /\bmembers=(\d+)\b/.exec(marker)?.[1];
+    if (status === 0 && verdict === 'clean') (members === '0' ? report.notMember : report.clean).push(plan.npmScript);
+    else if (status === 1 && verdict === 'regressed') report.red.push({ npmScript: plan.npmScript, stderr });
+    else {
+      report.undetermined.push({
+        npmScript: plan.npmScript,
+        reason: verdict === null ? `exit ${status ?? 'signal'}, no ${CROSS_LEG_MARKER} marker` : `exit ${status ?? 'signal'}, status=${verdict}`,
+      });
+    }
+  });
+  return /** @type {any} */ (report);
+}
+
+/**
+ * The parent's disclosure of a cross-leg fan-out: one machine-readable summary line, then the
+ * evidence for each red leg and an explicit line for each leg whose view went unchecked.
+ * `checked=` counts only legs that compiled at least one named file; a `notMember` leg compiled
+ * none, so it is named separately and never counted as checked.
+ *
+ * @param {{clean: string[], notMember?: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[], uncheckable: string[]}} report
+ * @returns {string[]}
+ */
+export function formatCrossLegReport({ clean, notMember = [], red, undetermined, uncheckable }) {
+  const names = (list) => (list.length > 0 ? list.join(',') : '-');
+  const lines = [
+    `${CROSS_LEG_MARKER} checked=${clean.length + red.length} clean=${names(clean)} ` +
+      `red=${names(red.map((entry) => entry.npmScript))} ` +
+      `undetermined=${names(undetermined.map((entry) => entry.npmScript))} uncheckable=${names(uncheckable)} ` +
+      `notMember=${names(notMember)}`,
+  ];
+  for (const npmScript of notMember) {
+    lines.push(`ⓘ cross-leg: ${npmScript} compiles none of the named files; nothing was checked there (it cannot red on them).`);
+  }
+  for (const entry of red) {
+    lines.push(`❌ cross-leg: ${entry.npmScript} reaches a named file by import and reports a regression there:`);
+    for (const line of entry.stderr.split(/\r?\n/).filter((text) => text.trim() !== '')) lines.push(`   ${line}`);
+  }
+  for (const entry of undetermined) {
+    lines.push(`⚠ cross-leg: ${entry.npmScript} UNDETERMINED (${entry.reason}); that leg's view of the named files was NOT checked.`);
+  }
+  if (red.length > 0) {
+    lines.push('   The owning leg can pass while these fail: the full gate runs every leg. Skip with --no-cross-leg only to debug.');
+  }
+  return lines;
 }
 
 /**
@@ -2340,22 +2698,28 @@ export function formatUncoveredFilesBanner({
  * declarations.test.ts` already duplicates `BANNER_MARKER` for the identical reason; this
  * follows the same precedent rather than introducing a new one.
  *
- * Fails open (empty array) on any read/parse error — this is a supplementary freshness
- * SIGNAL, not a hard dependency, and a missing/malformed config must never crash the gate.
+ * By default, read/parse errors return an empty array for the supplementary freshness
+ * signal. Publishing callers use strict mode so unreadable enrollment fails the preflight.
  *
  * @param {string} root
+ * @param {{ strict?: boolean }} [options] - Publishing callers must reject unreadable enrollment.
  * @returns {string[]} repo-relative `.d.mts` paths
  */
-export function declarationFilesFromConfig(root) {
+export function declarationFilesFromConfig(root, { strict = false } = {}) {
   try {
     const raw = readFileSync(resolve(root, 'tsconfig.declarations.json'), 'utf8');
     // tsc accepts JSONC (`//` comments) here — strip before parsing, same approach as
     // gen-declarations.ts's own `inputs()`.
     const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
     const parsed = JSON.parse(stripped);
+    if (strict && (!Array.isArray(parsed.files) || parsed.files.length === 0 ||
+      parsed.files.some((file) => typeof file !== 'string' || !file.endsWith('.mjs')))) {
+      throw new Error('tsconfig.declarations.json must name at least one .mjs input');
+    }
     const mjsFiles = Array.isArray(parsed.files) ? parsed.files : [];
     return mjsFiles.map((f) => String(f).replace(/\.mjs$/, '.d.mts'));
-  } catch {
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
 }
@@ -2608,7 +2972,9 @@ export function formatLintTscResultMarker({
   // flag happened to be set before the process died.
   const unchecked = Number.isFinite(filesUnchecked) && filesUnchecked > 0 ? filesUnchecked : 0;
   const status =
-    routed && code === 0
+    code === 0 && unchecked > 0
+      ? 'partial'
+      : routed && code === 0
       ? 'routed'
       : routed && code === 1
         ? 'routed-failed'
@@ -2644,6 +3010,42 @@ export function formatLintTscResultMarker({
   // Stamping the run-start time + the HEAD it judged ON THE TERMINAL LINE — not just a banner —
   // is deliberate: it is the line a `| tail -N` reads and the one a caller pastes as evidence.
   return runStartIso != null ? `${withRouted} at=${runStartIso} head=${headSha ?? 'unknown'}` : withRouted;
+}
+
+/** EX_SOFTWARE (sysexits.h): the fallback when a no-output toolchain failure carries no abnormal code of its own. */
+export const TOOLCHAIN_FAILURE_EXIT_CODE = 70;
+
+// WI-6554700010009284 — the same rule for the gate's own input and usage refusals. Exit 1 is the
+// considered failure the LINT_TSC_RESULT marker labels `regressed`; a run that could not read a
+// baseline, or refused its flags, judged nothing, so it exits a sysexits code and reads `error(N)`.
+// Deliberately NOT exported: these change no declared surface (scripts/lib/tsc-baseline-gate.d.mts).
+/** EX_USAGE (sysexits.h): the invocation asked for something this gate refuses to do. */
+const USAGE_REFUSED_EXIT_CODE = 64;
+/** EX_NOINPUT (sysexits.h): a baseline this run needed could not be read. */
+const INPUT_UNREADABLE_EXIT_CODE = 66;
+
+/**
+ * WI-6554700010009284 — the exit code for a run in which tsc produced NO output: a toolchain
+ * failure (the compiler never ran, was withheld by pc-heavy, or died before printing anything).
+ *
+ * Exit 1 is reserved for this gate's own CONSIDERED failure, which `formatLintTscResultMarker`
+ * labels `regressed` (or a flag-refined variant), and exit 0 is a pass, so this returns neither.
+ * Exiting 1 here told the caller "your edit regressed types" when nothing was measured: observed
+ * in a sandbox with no user D-Bus, where pc-heavy's detached scope failed with
+ * PC_HEAVY_RESULT status=undetermined exit=75. The child's own abnormal status passes through
+ * (pc-heavy's EX_TEMPFAIL 75, a signal as 128+N), so the marker names the real failure as
+ * `error(N)`. Anything else becomes EX_SOFTWARE (70). Every value is non-zero, so CI stays red.
+ *
+ * @param {{ status?: number | null, signal?: string | null }} [child]
+ * @returns {number}
+ */
+export function toolchainFailureExitCode({ status = null, signal = null } = {}) {
+  if (typeof status === 'number' && Number.isInteger(status) && status > 1 && status <= 255) return status;
+  const signalNumber = signal
+    ? /** @type {Record<string, number | undefined>} */ (/** @type {unknown} */ (osConstants.signals))[signal]
+    : undefined;
+  if (typeof signalNumber === 'number' && Number.isInteger(signalNumber)) return 128 + signalNumber;
+  return TOOLCHAIN_FAILURE_EXIT_CODE;
 }
 
 /**
@@ -2822,12 +3224,16 @@ export async function runTscBaselineGate({
   // it is the PARTIAL case (`fatal === false`), where the gate still exits 0 on a true verdict
   // about the covered files and the marker must not let that read as coverage of all of them.
   let filesUnchecked = 0;
+  /** @type {string[]} Files handled by the prefix-based routing branch, not this program. */
+  let outsideProjectFiles = [];
   // EI-21985804122617157 — how many named files a DELEGATE compiled on this run's behalf.
   // Distinct from `autoRouted`, which means "this gate had no verdict of its own and handed the
   // whole request over". Here the parent keeps its own verdict and a sibling gate judged the
   // remainder, so `status` must stay the parent's own word (`clean`/`regressed`) while the
   // marker still discloses that part of the answer came from somewhere else.
   let filesRoutedAway = 0;
+  /** WI-10007624: the routed files themselves, so the service banner can say where they were judged. */
+  let routedAwayFiles = [];
 
   // EI-19323399466378077 — captured HERE, before anything else runs, so it is the run's actual
   // start (not the compile's) and survives into the exit-hook closure below regardless of which
@@ -2883,15 +3289,19 @@ export async function runTscBaselineGate({
   );
   // EI-19421388108187854 — also record it on disk, so a later process can ask
   // whether the standing verdict still covers the current tree. Best-effort:
-  // never let marker bookkeeping fail a typecheck.
-  writeLintTscRunMarker({
-    root,
-    label,
-    runStartIso,
-    headSha: headShaAtStart,
-    scope: runStampScope,
-    files: runStampFiles,
-  });
+  // never let marker bookkeeping fail a typecheck. Never from a cross-leg CONSUMER child
+  // (WI-6554700010009433): it inherits the caller's PAPERCUSP_SID, so its later, narrower stamp
+  // would replace the parent's record of the run the caller actually asked for.
+  if (process.env[CROSS_LEG_CONSUMER_ENV] !== '1') {
+    writeLintTscRunMarker({
+      root,
+      label,
+      runStartIso,
+      headSha: headShaAtStart,
+      scope: runStampScope,
+      files: runStampFiles,
+    });
+  }
 
   // EI-22438149246482169 — an explicit selector is a caller assertion that each named path is
   // real. A typo in `--files=` used to survive normalization and project-coverage checks, then
@@ -2922,6 +3332,50 @@ export async function runTscBaselineGate({
     }
   }
 
+  // WI-6554700010009433 — CONSUMER mode: a parent's cross-leg fan-out asked THIS leg to judge
+  // named files it does not own. Judge them inside this leg's program and stop, before the
+  // coverage refusal below (the files are foreign by construction) and the full compile.
+  if (process.env[CROSS_LEG_CONSUMER_ENV] === '1') {
+    if (explicitFiles === null || explicitFiles.size === 0) {
+      console.error(`❌ ${label}: ${CROSS_LEG_CONSUMER_ENV}=1 requires --files; refusing a whole-program consumer run.`);
+      preflightFailed = true;
+      process.exit(USAGE_REFUSED_EXIT_CODE);
+      return;
+    }
+    process.exit(
+      await runCrossLegConsumer({ root, tscCommand, baselineFile, foreignBaselines, label, files: [...explicitFiles] }),
+    );
+    return;
+  }
+
+  // WI-6554700010009433 — CROSS-LEG fan-out. The owning-leg verdict below can pass while every
+  // OTHER leg that reaches a named file by import reds, when the file leans on an ambient
+  // declaration only its owner's include glob provides (WI-6554700010009424: three at once).
+  // Ask each other single-project leg to judge the named files it reaches, BEFORE the compile so
+  // a red lands in seconds. Never inside a routed or consumer child (no recursion), never on a
+  // baseline write. A red exits 1 with `routed-failed`: the failure came from another leg.
+  if (
+    explicitFiles !== null &&
+    explicitFiles.size > 0 &&
+    process.env[AUTO_TYPECHECK_ROUTE_ENV] !== '1' &&
+    process.env[CROSS_LEG_ENV] !== '0' &&
+    !argv.includes('--no-cross-leg') &&
+    !updateFlag &&
+    !argv.includes('--seed')
+  ) {
+    const { gates } = await discoverSiblingTypecheckGates(root);
+    const { plans, uncheckable } = planCrossLegChecks({ gates, files: explicitFiles });
+    if (plans.length > 0) {
+      const crossLeg = await runCrossLegChecks({ root, plans });
+      for (const line of formatCrossLegReport({ ...crossLeg, uncheckable })) console.log(line);
+      if (crossLeg.red.length > 0) {
+        autoRouted = true;
+        process.exit(1);
+        return;
+      }
+    }
+  }
+
   // EI-19341572300046923 — REFUSE to report a verdict about files this project never compiles.
   //
   // `lint:tsc` is `tsc -p packages/operator-core/tsconfig.json`. Passing
@@ -2946,6 +3400,7 @@ export async function runTscBaselineGate({
         coveredPrefixes: [projectPrefix, ...foreignBaselines.map((b) => b.prefix)],
       });
       if (uncovered.length > 0) {
+        outsideProjectFiles = uncovered;
         const suggestions = new Map(uncovered.map((f) => [f, suggestTypecheckGate(root, f)]));
         const fatal = covered.length === 0;
         // Stamped for BOTH branches: the fatal one already reports `out-of-scope`, and the
@@ -2989,7 +3444,11 @@ export async function runTscBaselineGate({
         if (fatal) {
           if (canAutoRoute) {
             autoRouted = true;
-            process.exit(runAutoTypecheckRoutes({ root, routes: autoRoutes.routes }));
+            filesUnchecked = 0;
+            process.exit(runAutoTypecheckRoutes({
+              root, routes: autoRoutes.routes,
+              onUnchecked: (count) => { filesUnchecked = Math.min(uncovered.length, filesUnchecked + count); },
+            }));
           }
           // Paired with the exit on the very next line so the marker cannot claim `regressed`
           // about a run that compiled nothing (EI-20072775668558359).
@@ -3015,13 +3474,23 @@ export async function runTscBaselineGate({
         // gate. Leaving it set would keep reporting `status=partial` about files that now have a
         // verdict, which is the same false-coverage claim in the opposite direction.
         if (canAutoRoute) {
-          const routedExit = runAutoTypecheckRoutes({ root, routes: autoRoutes.routes });
+          let routeUnchecked = 0;
+          // An OUT-OF-SCOPE delegate (it compiled none of its files) is neither outcome above: it
+          // is a coverage gap, so its files count as unchecked and this gate's own compile still
+          // decides (`partial`, or `regressed` on a real red), never `routed-failed`
+          // (WI-6554700010009876).
+          const routedExit = runAutoTypecheckRoutes({
+            root, routes: autoRoutes.routes,
+            onUnchecked: (count) => { routeUnchecked = Math.min(uncovered.length, routeUnchecked + count); },
+            outOfScopeIsUnchecked: true,
+          });
           if (routedExit !== 0) {
             autoRouted = true;
             process.exit(routedExit);
           }
-          filesRoutedAway = uncovered.length;
-          filesUnchecked = 0;
+          filesRoutedAway = uncovered.length - routeUnchecked;
+          routedAwayFiles = routeUnchecked === 0 ? uncovered : [];
+          filesUnchecked = routeUnchecked;
         }
       }
     }
@@ -3029,22 +3498,58 @@ export async function runTscBaselineGate({
 
   let tscOutput = '';
   let tscThrew = false;
+  // WI-6554700010009284 — the compile child's abnormal exit, kept so a no-output toolchain
+  // failure exits with ITS code (see toolchainFailureExitCode), never the `regressed` exit 1.
+  /** @type {number | null} */
+  let tscChildStatus = null;
+  /** @type {string | null} */
+  let tscChildSignal = null;
   // EI-21441555291852229 — some projects consume tracked declarations generated from
   // JavaScript modules. Running tsc before refreshing those companions makes the first
   // typecheck after an export change fail on the stale `.d.mts`, even though that same
   // validation workflow then writes the declaration that makes its second run green.
-  // Keep this an explicit per-project hook: most gates have no generated-input preflight,
-  // and hiding a repo-wide mutation inside the shared policy would be surprising.
+  // Keep this an explicit per-project hook: most gates have no generated-input preflight.
+  // Immutable qualification must inspect the COMMITTED companions instead of repairing them:
+  // publication here hides stale artifacts from the later freshness test and dirties the
+  // candidate whose clean source identity is required by proof capture/reuse.
   if (preTscCommand) {
+    let command = String(preTscCommand);
     try {
-      execSync(String(preTscCommand), {
-        cwd: root,
-        encoding: 'utf-8',
-        stdio: 'inherit',
-        env: tscChildEnv(),
-      });
-    } catch {
-      console.error(`❌ ${label} typecheck preflight failed: ${preTscCommand}`);
+      // EI-24783793601501800 — a scoped verdict must not publish every peer's
+      // declaration. Reuse the generator's selected-output mode across every
+      // declaration-consuming leg, without changing unrelated custom preflights.
+      const immutableInputs = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === '1' ||
+        process.env.PAPERCUSP_ADMISSION_PRECHECK === '1' ||
+        Boolean(process.env.PAPERCUSP_TEST_RUN_COMMIT?.trim());
+      if (command.trim() === 'npm run gen:declarations' && immutableInputs) {
+        // Reuse the non-publishing generator check and the existing runtime markers.
+        // Check the whole enrolled cohort even when the tsc verdict is scoped: an unchanged
+        // importer can still resolve a stale companion outside the selected source paths.
+        command = 'npm run gen:declarations:check';
+      } else if (command.trim() === 'npm run gen:declarations' && explicitFiles !== null) {
+        const selectedInputs = declarationFilesFromConfig(root, { strict: true })
+          .filter((declaration) => {
+            const normalized = declaration.replace(/\\/g, '/').replace(/^\.\//, '');
+            return explicitFiles.has(normalized) ||
+              explicitFiles.has(normalized.replace(/\.d\.mts$/, '.mjs'));
+          })
+          .map((declaration) => declaration.replace(/\.d\.mts$/, '.mjs'));
+        command = selectedInputs.length > 0
+          ? `${command} -- ${shellQuote(`--files=${selectedInputs.join(',')}`)}`
+          : '';
+        if (!command) console.log('gen:declarations: no enrolled modules explicitly selected; no declarations published');
+      }
+      if (command) {
+        execSync(command, {
+          cwd: root,
+          encoding: 'utf-8',
+          stdio: 'inherit',
+          env: tscChildEnv(),
+        });
+      }
+    } catch (error) {
+      console.error(`❌ ${label} typecheck preflight failed: ${command}`);
+      if (error instanceof Error) console.error(error.message);
       // EI-21467670625776948: the preflight compiles generated-declaration INPUTS across the
       // whole repo, so the failure above is routinely a PEER's in-flight file, not the
       // caller's. Zero of the caller's files were typechecked — say so explicitly, because
@@ -3161,17 +3666,23 @@ export async function runTscBaselineGate({
   // own text format, so everything below parses it unchanged. Any refusal or failure falls back to
   // the compile below with one printed line.
   const serviceRoute = tscServiceEligibility({ tscCommand, explicitFiles, argv, root });
+  // Capture membership from the SAME full compile when the service is unavailable or disabled.
+  // Prefixes are only routing hints; neither an excluded TS file nor unenrolled JS was judged.
+  const captureProgramFiles = explicitFiles !== null && explicitFiles.size > 0 &&
+    serviceProjectFromTscCommand(tscCommand) !== null;
   const served = serviceRoute.eligible
     ? await typecheckViaService({ root, project: serviceRoute.project, files: [...explicitFiles], label })
     : null;
   if (served !== null) {
     tscOutput = served.output;
     tscThrew = served.errorCount > 0;
-    for (const line of formatTscServiceBanner(served)) console.log(line);
+    for (const line of formatTscServiceBanner(served, { routedAway: routedAwayFiles })) console.log(line);
   } else {
     const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
     const freshAfter = coalesceWatermarkFor({ root, files: explicitFiles, updateFlag });
-    const executableTscCommand = resolvePinnedTscCommand(root, tscCommand);
+    const executableTscCommand = resolvePinnedTscCommand(
+      root, captureProgramFiles ? `${tscCommand} --listFiles` : tscCommand,
+    );
     try {
       tscOutput = existsSync(pcHeavyPath)
         ? execFileSync('bash', [pcHeavyPath, ...pcHeavyCompileArgv(executableTscCommand, explicitFiles !== null)], {
@@ -3193,13 +3704,22 @@ export async function runTscBaselineGate({
     } catch (e) {
       tscThrew = true;
       tscOutput = e.stdout || '';
+      tscChildStatus = typeof e.status === 'number' ? e.status : null;
+      tscChildSignal = typeof e.signal === 'string' ? e.signal : null;
     }
   }
   if (tscThrew && !tscOutput) {
     // tsc itself failed to run (no diagnostics at all) — never treat that as zero errors, it would
-    // ratchet every file's baseline to 0 and mask everything.
-    console.error('❌ tsc produced no output — toolchain failure, not a clean run.');
-    process.exit(1);
+    // ratchet every file's baseline to 0 and mask everything. Never exit 1 either (WI-6554700010009284):
+    // exit 1 is the gate's considered failure, which the LINT_TSC_RESULT marker labels `regressed`.
+    const toolchainExit = toolchainFailureExitCode({ status: tscChildStatus, signal: tscChildSignal });
+    console.error(
+      `❌ tsc produced no output — toolchain failure, not a clean run ` +
+        `(child status=${tscChildStatus ?? 'none'} signal=${tscChildSignal ?? 'none'}). Exiting ${toolchainExit}: ` +
+        `the verdict is error(${toolchainExit}), UNMEASURED, not a type regression. Re-run it ` +
+        `(from host context if a sandbox lacked the user D-Bus pc-heavy needs).`,
+    );
+    process.exit(toolchainExit);
   }
 
   const diagnosticRoots = diagnosticPathRoots(root);
@@ -3247,12 +3767,43 @@ export async function runTscBaselineGate({
   // gate's whole job is refusing to report clean on. Fail loudly instead of silently ratcheting
   // every file's baseline to 0.
   if (tscThrew && errors.length === 0) {
+    // WI-6554700010009284 — the same toolchain failure as the no-output guard above, so the same
+    // exit: the child's own abnormal code (an OOM abort is 134), else EX_SOFTWARE. Never 1, which
+    // the LINT_TSC_RESULT marker reads as `regressed` about a compile that measured nothing.
+    const toolchainExit = toolchainFailureExitCode({ status: tscChildStatus, signal: tscChildSignal });
     console.error(
       '❌ tsc exited non-zero (crashed) but produced ZERO parseable diagnostics — ' +
-        'toolchain failure (e.g. an OOM crash), not a clean run. Raw output follows:',
+        `toolchain failure (e.g. an OOM crash), not a clean run. Exiting ${toolchainExit}: the verdict is ` +
+        `error(${toolchainExit}), UNMEASURED, not a type regression. Raw output follows:`,
     );
     console.error(tscOutput.slice(0, 4000));
-    process.exit(1);
+    process.exit(toolchainExit);
+  }
+
+  // Reconcile the actual measured program with the caller's own named files. Already-routed
+  // paths are accounted for separately, including a delegate's partial coverage above.
+  if (explicitFiles !== null && (served !== null || captureProgramFiles)) {
+    const outside = new Set(outsideProjectFiles);
+    const ownFiles = [...explicitFiles].filter((file) => !outside.has(file));
+    const programFiles = served !== null
+      ? served.checked
+      : tscOutput.split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => isAbsolute(line))
+          .map((file) => relative(root, file).replace(/\\/g, '/'));
+    const { uncovered } = partitionFilesByCoverage({
+      files: ownFiles, coveredPrefixes: [], programFiles,
+    });
+    if (uncovered.length > 0) {
+      filesUnchecked += uncovered.length;
+      console.error(`⚠ ${uncovered.length} named file(s) were NOT typechecked: absent from the actual ${label} compiler program.`);
+      for (const file of uncovered) console.error(`   - ${file}`);
+      if (filesRoutedAway === 0 && filesUnchecked === explicitFiles.size) {
+        nothingTypechecked = true;
+        console.error('❌ NOTHING YOU NAMED WAS TYPECHECKED.');
+        process.exit(1);
+      }
+    }
   }
 
   // Keep the verdict's historical TS1xxx hard-fail policy separate from the
@@ -3264,8 +3815,11 @@ export async function runTscBaselineGate({
   try {
     baseline = JSON.parse(readFileSync(baselineFile, 'utf-8'));
   } catch {
-    console.error(`❌ Failed to read baseline file: ${baselineFile}`);
-    process.exit(1);
+    console.error(
+      `❌ Failed to read baseline file: ${baselineFile} — exiting ${INPUT_UNREADABLE_EXIT_CODE}: ` +
+        `error(${INPUT_UNREADABLE_EXIT_CODE}), UNMEASURED, not a type regression.`,
+    );
+    process.exit(INPUT_UNREADABLE_EXIT_CODE);
     return;
   }
   const ownBaselineByFile = baseline.files ?? {};
@@ -3313,7 +3867,7 @@ export async function runTscBaselineGate({
         `❌ --seed refused: ${baselineFile} already has ${Object.keys(ownBaselineByFile).length} file(s) recorded. ` +
           `--seed is ONLY for a brand-new, empty baseline (files: {}) — use --update to ratchet an existing one.`,
       );
-      process.exit(1);
+      process.exit(USAGE_REFUSED_EXIT_CODE);
       return;
     }
     if (brokenFiles.length > 0) {
@@ -3333,7 +3887,7 @@ export async function runTscBaselineGate({
         `❌ --seed refused: ${unavailableForeign.length} owning baseline(s) could not be read. ` +
           `Restore them before partitioning inherited and consumer-context diagnostics.`,
       );
-      process.exit(1);
+      process.exit(INPUT_UNREADABLE_EXIT_CODE);
       return;
     }
 
@@ -3394,27 +3948,18 @@ export async function runTscBaselineGate({
   // files are theirs, so never fall back to the git-status guess for the same run.
   const changedFiles = explicitFiles ?? (mineFlag ? gitChangedFiles(root) : null);
 
-  // EI-18756182128903253 / EI-21833727883305743 — cause-aware widening: when scoped (--mine or
-  // --files), also attribute a regression OUTSIDE the changed set when the file's source OR its
-  // compiler diagnostic references an exported type/interface one of the changed files also
-  // exports (the "I added a required field, an unchanged fixture broke" shape --mine was
-  // otherwise structurally blind to). Cheap: only reads the changed files plus files that already
-  // have a regression, never a tree-wide scan.
+  // Required-field regressions in unchanged consumers remain attributed, but a bare type name
+  // is not causality (EI-25720784739215773). Reuse the service's resolved dependency graph.
   const typeReferencedFiles = changedFiles
     ? (() => {
         const candidates = Object.keys(currentByFile).filter(
           (f) => f !== '(unattributed)' && !changedFiles.has(f),
         );
-        const typeNames = exportedTypeNames(root, changedFiles);
-        return new Set([
-          ...filesReferencingTypeNames(root, candidates, typeNames),
-          ...diagnosticFilesReferencingTypeNames(
-            tscOutput,
-            candidates,
-            typeNames,
-            diagnosticPathOptions,
-          ),
-        ]);
+        const dependent = diagnosticFilesDependingOnChangedTypes({
+          root, named: changedFiles, candidates, output: tscOutput,
+          configFile: serviceProjectFromTscCommand(tscCommand) ?? undefined,
+        });
+        return new Set([...dependent].map((file) => relative(root, file)));
       })()
     : null;
 
@@ -3667,12 +4212,21 @@ export async function runTscBaselineGate({
         // EI-19278299775574199 — same split as the fail-new-file branch: an uncommitted new file is
         // a peer's live buffer, not part of the caller's regression.
         const { liveEdits } = partitionNewFilesByLiveEdit(result.newFiles);
+        const newFileDiagnostics = diagnosticLinesForFiles(
+          tscOutput,
+          result.newFiles.map((r) => r.file),
+          {
+            ...diagnosticPathOptions,
+            maxPerFile: diagnosticCapFromArgv(argv, DEFAULT_DIAGNOSTIC_MAX_PER_FILE),
+          },
+        );
         console.error(
           `   (also ${result.newFiles.length} NEW file(s) with errors` +
             `${liveEdits.length > 0 ? `, ${liveEdits.length} uncommitted — a peer is likely mid-edit, NOT yours` : ''} — see below)`,
         );
         for (const r of result.newFiles) {
           console.error(r.dirty === true ? `${formatRow(r)}  ← uncommitted, not attributed to you` : formatRow(r));
+          for (const line of newFileDiagnostics.get(r.file) ?? []) console.error(`      ${line}`);
         }
       }
       if (result.peerDrift.length > 0) {

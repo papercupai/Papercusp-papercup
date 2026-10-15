@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import * as fallbackRecorder from './degradation/fallback-observations';
 import {
   startMemoryWatchdog,
   readSelfSwapMb,
@@ -15,7 +16,11 @@ import {
 } from './memory-watchdog';
 
 describe('startMemoryWatchdog', () => {
-  beforeEach(() => vi.useFakeTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(fallbackRecorder, 'observeFallback').mockReturnValue(true);
+    vi.spyOn(fallbackRecorder, 'flushFallbackObservations').mockResolvedValue({ written: 0, failed: 0, dropped: 0, rejected: 0 });
+  });
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -210,7 +215,7 @@ describe('startMemoryWatchdog', () => {
     h.stop();
   });
 
-  it('the DEFAULT recycle exits NON-ZERO (75) so systemd restarts under Restart=on-failure too (EI-1613, R4-1)', () => {
+  it('the DEFAULT recycle flushes before exiting NON-ZERO (75) so systemd restarts under Restart=on-failure too (EI-1613, R4-1)', async () => {
     withRss(800); // healthy first — a grow-into-limit process (born-over-budget is suppressed)
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     // no onTrip injected → exercise the default recycle path
@@ -218,20 +223,40 @@ describe('startMemoryWatchdog', () => {
     vi.advanceTimersByTime(1000); // sample 1 — healthy (marks sawHealthySample)
     withRss(4000);
     vi.advanceTimersByTime(1000); // trips → schedules the 250ms flush-then-exit
-    vi.advanceTimersByTime(250); // fire the flush delay → process.exit(recycleExitCode)
+    expect(exitSpy).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(250); // flush observation, then process.exit(recycleExitCode)
+    expect(fallbackRecorder.flushFallbackObservations).toHaveBeenCalledOnce();
     expect(exitSpy).toHaveBeenCalledWith(75);
     expect(exitSpy).not.toHaveBeenCalledWith(0);
     h.stop();
   });
 
-  it('honors an explicit recycleExitCode in the default recycle', () => {
+  it('recycles even when the observation flush never settles', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    withRss(800);
+    vi.mocked(fallbackRecorder.flushFallbackObservations).mockImplementation(() => new Promise(() => {}));
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const h = startMemoryWatchdog({ readSwapMb: noSwap, intervalMs: 1000, tripsToRecycle: 1,
+      warnMb: 2400, log: vi.fn() });
+    try {
+      vi.advanceTimersByTime(1000);
+      withRss(4000); vi.advanceTimersByTime(1000);
+      await vi.advanceTimersByTimeAsync(1249);
+      expect(exitSpy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(exitSpy).toHaveBeenCalledWith(75);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('memory-watchdog-flush exceeded 1000ms'));
+    } finally { h.stop(); }
+  });
+
+  it('honors an explicit recycleExitCode in the default recycle', async () => {
     withRss(800); // healthy first — a grow-into-limit process
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const h = startMemoryWatchdog({ readSwapMb: noSwap, intervalMs: 1000, tripsToRecycle: 1, warnMb: 2400, recycleExitCode: 42, log: vi.fn() });
     vi.advanceTimersByTime(1000); // sample 1 — healthy
     withRss(4000);
     vi.advanceTimersByTime(1000);
-    vi.advanceTimersByTime(250);
+    await vi.advanceTimersByTimeAsync(250);
     expect(exitSpy).toHaveBeenCalledWith(42);
     h.stop();
   });

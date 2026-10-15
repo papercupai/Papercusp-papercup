@@ -39,10 +39,15 @@ const PRIMED = /\b(?:primeWorkScopePolicy|refreshPotControlPolicy|gateWorkScope)
  */
 const ALLOWLIST: Record<string, string> = {};
 
+// A code identifier cannot appear after masking unless it already exists in
+// the source. Keep the full file inventory, but avoid parsing unrelated files.
+const POLICY_IDENTIFIER = /workScopePolicy|isHarnessInScope|classifyForRehome/;
+
 function unprimedReaders(files: ReadonlyArray<{ path: string; source: string }>): string[] {
   return files
-    .filter(({ source }) => {
-      const code = stripCommentsAndStrings(source);
+    .filter(({ source }) => POLICY_IDENTIFIER.test(source))
+    .filter(({ path, source }) => {
+      const code = stripCommentsAndStrings(source, path);
       return READER.test(code) && !PRIMED.test(code);
     })
     .map(({ path }) => path);
@@ -61,6 +66,8 @@ describe('work-scope policy cache: every reader primes it (WI-10002448)', () => 
       { path: 'cold.ts', source: 'export const f = (s: string) => isHarnessInScope(s);' },
       { path: 'cold-rehome.ts', source: 'export const v = classifyForRehome({ harness: h });' },
       { path: 'cold-cache.ts', source: 'export const p = workScopePolicy();' },
+      { path: 'comment-separated.ts', source: 'isHarnessInScope /* between name and call */ (scope);' },
+      { path: 'interpolation.ts', source: 'const text = `${workScopePolicy()}`;' },
       { path: 'primed.ts', source: 'await primeWorkScopePolicy();\nexport const ok = isHarnessInScope(s);' },
       { path: 'gated.ts', source: 'const v = await gateWorkScope(site, subj); workScopePolicy();' },
       { path: 'prose.ts', source: '// isHarnessInScope(x) fails open\nconst m = "call isHarnessInScope(s)";' },
@@ -68,7 +75,7 @@ describe('work-scope policy cache: every reader primes it (WI-10002448)', () => 
     // If the helper stopped stripping, `prose.ts` would appear here and this would fail —
     // that is the property that keeps the WI-10002448 comments in the fixed files from
     // self-matching.
-    expect(flagged).toEqual(['cold.ts', 'cold-rehome.ts', 'cold-cache.ts']);
+    expect(flagged).toEqual(['cold.ts', 'cold-rehome.ts', 'cold-cache.ts', 'comment-separated.ts', 'interpolation.ts']);
   });
 
   it('NON-VACUOUS: the walk reaches the policy module and finds real readers', () => {
@@ -76,7 +83,7 @@ describe('work-scope policy cache: every reader primes it (WI-10002448)', () => 
     expect(files.some((f) => f.path === POLICY_MODULE)).toBe(true);
     // 6 reader modules measured on 2026-09-22. A drop to ~0 means the walker broke, not
     // that the codebase stopped reading the policy.
-    const readers = files.filter((f) => f.path !== POLICY_MODULE && READER.test(stripCommentsAndStrings(f.source)));
+    const readers = files.filter((f) => f.path !== POLICY_MODULE && POLICY_IDENTIFIER.test(f.source) && READER.test(stripCommentsAndStrings(f.source, f.path)));
     expect(readers.length).toBeGreaterThanOrEqual(3);
   });
 

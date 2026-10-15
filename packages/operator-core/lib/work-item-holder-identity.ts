@@ -166,11 +166,26 @@ export async function resolveHolderOwnerId(
 export async function holderIsCaller(
   stored: string | null | undefined,
   callerOwnerId: string,
-  opts: { workspaceId?: string | null; lookup?: OwnerIdPrefixLookup } = {},
+  opts: {
+    workspaceId?: string | null;
+    lookup?: OwnerIdPrefixLookup;
+    /** Only the alias returned by verifiedSpawnSessionAlias for the authenticated context. */
+    verifiedCallerAlias?: string | null;
+  } = {},
 ): Promise<boolean> {
   if (!stored) return false;
   const s = stored.trim();
   if (s === callerOwnerId) return true;
+  // EI-25473220875636506: signed role-scoped launches retain a bare coordination
+  // session id while their operation identity is namespaced by the role bearer.
+  // Never infer this from a slash/client suffix: only the verified launch seam
+  // supplies an alias, and legacy short holders must still resolve uniquely.
+  if (opts.verifiedCallerAlias) {
+    if (s === opts.verifiedCallerAlias) return true;
+    if (isTruncatedSuOwnerId(s) && opts.verifiedCallerAlias.startsWith(s)) {
+      return (await resolveHolderOwnerId(s, opts)) === opts.verifiedCallerAlias;
+    }
+  }
   if (!isTruncatedSuOwnerId(s) || !callerOwnerId.startsWith(s)) return false;
   return (await resolveHolderOwnerId(s, opts)) === callerOwnerId;
 }

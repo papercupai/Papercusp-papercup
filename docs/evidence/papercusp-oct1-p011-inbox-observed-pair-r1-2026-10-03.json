@@ -1,0 +1,5918 @@
+{
+  "schemaVersion": 2,
+  "plane": "isolated-current-build-operator-api",
+  "incomplete": false,
+  "workload": {
+    "population": 256,
+    "bodyCodeUnits": 32768,
+    "variants": 8,
+    "windows": 3,
+    "idleMs": 1000,
+    "concurrency": 8
+  },
+  "cohorts": [
+    {
+      "arm": 0,
+      "mode": "baseline",
+      "bundleSha256": "8db4b1e4081fe2eb12f097f3c60ef830eb9e4eac4a1f78aecbd3dd17c0c895ea",
+      "samples": [
+        {
+          "phase": "before",
+          "pid": 1234502,
+          "at": 1791003841111,
+          "uptime": 8.893667405,
+          "memory": {
+            "rss": 970330112,
+            "heapTotal": 687247360,
+            "heapUsed": 573588256,
+            "external": 154818666,
+            "arrayBuffers": 78039286
+          },
+          "heap": {
+            "total_heap_size": 687247360,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 687247360,
+            "total_available_size": 137065822720,
+            "used_heap_size": 573593144,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112736,
+            "external_memory": 154818706,
+            "total_allocated_bytes": 1941546824
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 950973440,
+            "rssBytes": 1027637248,
+            "anonymousBytes": 947810304
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 244.33795399999872
+        },
+        {
+          "phase": "idle-0-start",
+          "pid": 1234502,
+          "at": 1791003841356,
+          "uptime": 9.138199685,
+          "memory": {
+            "rss": 970330112,
+            "heapTotal": 687390720,
+            "heapUsed": 573857712,
+            "external": 154843667,
+            "arrayBuffers": 78064247
+          },
+          "heap": {
+            "total_heap_size": 687390720,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 687390720,
+            "total_available_size": 137065554064,
+            "used_heap_size": 573857936,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112704,
+            "external_memory": 154843667,
+            "total_allocated_bytes": 1942079064
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 951137280,
+            "rssBytes": 1027801088,
+            "anonymousBytes": 947974144
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 236.51934699999947
+        },
+        {
+          "phase": "idle-0-end",
+          "pid": 1234502,
+          "at": 1791003842593,
+          "uptime": 10.375892774,
+          "memory": {
+            "rss": 970330112,
+            "heapTotal": 687390720,
+            "heapUsed": 573938104,
+            "external": 154911010,
+            "arrayBuffers": 78131590
+          },
+          "heap": {
+            "total_heap_size": 687390720,
+            "total_heap_size_executable": 6455296,
+            "total_physical_size": 687390720,
+            "total_available_size": 137065473672,
+            "used_heap_size": 573938328,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112736,
+            "external_memory": 154911010,
+            "total_allocated_bytes": 1942744112
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 951144448,
+            "rssBytes": 1027809280,
+            "anonymousBytes": 947982336
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 243.42549800000052
+        },
+        {
+          "phase": "workload-0-end",
+          "pid": 1234502,
+          "at": 1791003843534,
+          "uptime": 11.316211125,
+          "memory": {
+            "rss": 1043730432,
+            "heapTotal": 769441792,
+            "heapUsed": 653673544,
+            "external": 157769260,
+            "arrayBuffers": 80989840
+          },
+          "heap": {
+            "total_heap_size": 769441792,
+            "total_heap_size_executable": 6717440,
+            "total_physical_size": 769441792,
+            "total_available_size": 136985732624,
+            "used_heap_size": 653673768,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 157769260,
+            "total_allocated_bytes": 2141139704
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 1027739648,
+            "rssBytes": 1104404480,
+            "anonymousBytes": 1024577536
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 336.0962070000005
+        },
+        {
+          "phase": "idle-1-start",
+          "pid": 1234502,
+          "at": 1791003843871,
+          "uptime": 11.653447708,
+          "memory": {
+            "rss": 1043730432,
+            "heapTotal": 769441792,
+            "heapUsed": 653965688,
+            "external": 157836331,
+            "arrayBuffers": 81056911
+          },
+          "heap": {
+            "total_heap_size": 769441792,
+            "total_heap_size_executable": 6717440,
+            "total_physical_size": 769441792,
+            "total_available_size": 136985440480,
+            "used_heap_size": 653965912,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 157836331,
+            "total_allocated_bytes": 2142199960
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 1027750912,
+            "rssBytes": 1104416768,
+            "anonymousBytes": 1024589824
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 271.8192089999993
+        },
+        {
+          "phase": "idle-1-end",
+          "pid": 1234502,
+          "at": 1791003845144,
+          "uptime": 12.926187848,
+          "memory": {
+            "rss": 1043730432,
+            "heapTotal": 769441792,
+            "heapUsed": 654045592,
+            "external": 157911866,
+            "arrayBuffers": 81132446
+          },
+          "heap": {
+            "total_heap_size": 769441792,
+            "total_heap_size_executable": 6717440,
+            "total_physical_size": 769441792,
+            "total_available_size": 136985360576,
+            "used_heap_size": 654045816,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113376,
+            "external_memory": 157911866,
+            "total_allocated_bytes": 2142582256
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 1027755008,
+            "rssBytes": 1104424960,
+            "anonymousBytes": 1024598016
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 252.24609899999996
+        },
+        {
+          "phase": "workload-1-end",
+          "pid": 1234502,
+          "at": 1791003845924,
+          "uptime": 13.70629062,
+          "memory": {
+            "rss": 1109790720,
+            "heapTotal": 842579968,
+            "heapUsed": 729432840,
+            "external": 158547283,
+            "arrayBuffers": 81767863
+          },
+          "heap": {
+            "total_heap_size": 842579968,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 842579968,
+            "total_available_size": 136909967984,
+            "used_heap_size": 729433064,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 158547283,
+            "total_allocated_bytes": 2316223440
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 1097322496,
+            "rssBytes": 1173987328,
+            "anonymousBytes": 1094160384
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 275.4423459999998
+        },
+        {
+          "phase": "idle-2-start",
+          "pid": 1234502,
+          "at": 1791003846201,
+          "uptime": 13.983445218,
+          "memory": {
+            "rss": 1109790720,
+            "heapTotal": 843104256,
+            "heapUsed": 730216952,
+            "external": 158859999,
+            "arrayBuffers": 82080579
+          },
+          "heap": {
+            "total_heap_size": 843104256,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 843104256,
+            "total_available_size": 136909183496,
+            "used_heap_size": 730217176,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113408,
+            "external_memory": 158859999,
+            "total_allocated_bytes": 2320267392
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 1097474048,
+            "rssBytes": 1174138880,
+            "anonymousBytes": 1094311936
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 319.14413500000046
+        },
+        {
+          "phase": "idle-2-end",
+          "pid": 1234502,
+          "at": 1791003847520,
+          "uptime": 15.30286229,
+          "memory": {
+            "rss": 1110839296,
+            "heapTotal": 843104256,
+            "heapUsed": 734192160,
+            "external": 160225422,
+            "arrayBuffers": 83446002
+          },
+          "heap": {
+            "total_heap_size": 843104256,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 843104256,
+            "total_available_size": 136905208016,
+            "used_heap_size": 734192616,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113408,
+            "external_memory": 160225422,
+            "total_allocated_bytes": 2335872512
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 1097926656,
+            "rssBytes": 1174593536,
+            "anonymousBytes": 1094766592
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 248.4613049999989
+        },
+        {
+          "phase": "workload-2-end",
+          "pid": 1234502,
+          "at": 1791003848121,
+          "uptime": 15.903955285,
+          "memory": {
+            "rss": 1110839296,
+            "heapTotal": 843104256,
+            "heapUsed": 747445600,
+            "external": 161159243,
+            "arrayBuffers": 84379823
+          },
+          "heap": {
+            "total_heap_size": 843104256,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 843104256,
+            "total_available_size": 136891954808,
+            "used_heap_size": 747445744,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113408,
+            "external_memory": 161159243,
+            "total_allocated_bytes": 2355310960
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 1098377216,
+            "rssBytes": 1175044096,
+            "anonymousBytes": 1095217152
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 274.87530700000025
+        },
+        {
+          "phase": "completion-idle",
+          "pid": 1234502,
+          "at": 1791003849397,
+          "uptime": 17.179326551,
+          "memory": {
+            "rss": 1117130752,
+            "heapTotal": 846307328,
+            "heapUsed": 755136920,
+            "external": 162111698,
+            "arrayBuffers": 85323883
+          },
+          "heap": {
+            "total_heap_size": 846307328,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 846135296,
+            "total_available_size": 136884257872,
+            "used_heap_size": 755137160,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 1159240,
+            "used_global_handles_size": 1149024,
+            "external_memory": 162111698,
+            "total_allocated_bytes": 2367902064
+          },
+          "os": {
+            "pid": 1234502,
+            "startTicks": "5129298",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 1103698944,
+            "rssBytes": 1180368896,
+            "anonymousBytes": 1100541952
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 242.99826299999768
+        }
+      ],
+      "windows": [
+        {
+          "window": 0,
+          "startedAtMs": 10845.755864,
+          "endedAtMs": 11541.834401,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 10845.85753,
+              "endedAtMs": 11457.737779
+            },
+            {
+              "variant": 1,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 10846.319304,
+              "endedAtMs": 11537.07363
+            },
+            {
+              "variant": 2,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 10846.553116,
+              "endedAtMs": 11535.654585
+            },
+            {
+              "variant": 3,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 10846.803671,
+              "endedAtMs": 11462.443463
+            },
+            {
+              "variant": 4,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 10847.034397,
+              "endedAtMs": 11465.731264
+            },
+            {
+              "variant": 5,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 10847.230597,
+              "endedAtMs": 11518.150279
+            },
+            {
+              "variant": 6,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 10847.421737,
+              "endedAtMs": 11541.810064
+            },
+            {
+              "variant": 7,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 10847.619199,
+              "endedAtMs": 11527.097078
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 696.0785369999994
+        },
+        {
+          "window": 1,
+          "startedAtMs": 13405.051678,
+          "endedAtMs": 13932.352855,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 13405.076165,
+              "endedAtMs": 13923.155882
+            },
+            {
+              "variant": 1,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 13405.70928,
+              "endedAtMs": 13916.243218
+            },
+            {
+              "variant": 2,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 13405.913034,
+              "endedAtMs": 13912.697779
+            },
+            {
+              "variant": 3,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 13406.059708,
+              "endedAtMs": 13923.757586
+            },
+            {
+              "variant": 4,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 13406.250227,
+              "endedAtMs": 13932.347726
+            },
+            {
+              "variant": 5,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 13406.446576,
+              "endedAtMs": 13911.739515
+            },
+            {
+              "variant": 6,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 13406.61898,
+              "endedAtMs": 13924.223698
+            },
+            {
+              "variant": 7,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 13406.771114,
+              "endedAtMs": 13908.701076
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 527.3011769999994
+        },
+        {
+          "window": 2,
+          "startedAtMs": 15777.99043,
+          "endedAtMs": 16129.935342,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 15777.999277,
+              "endedAtMs": 16061.291428
+            },
+            {
+              "variant": 1,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 15778.476119,
+              "endedAtMs": 16072.039141
+            },
+            {
+              "variant": 2,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 15778.644846,
+              "endedAtMs": 16060.891274
+            },
+            {
+              "variant": 3,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 15778.783534,
+              "endedAtMs": 16058.349556
+            },
+            {
+              "variant": 4,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 15778.931761,
+              "endedAtMs": 16129.930442
+            },
+            {
+              "variant": 5,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 15779.063095,
+              "endedAtMs": 16059.025484
+            },
+            {
+              "variant": 6,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 15779.188377,
+              "endedAtMs": 16059.789712
+            },
+            {
+              "variant": 7,
+              "pid": 1234502,
+              "startTicks": "5129298",
+              "startedAtMs": 15779.333558,
+              "endedAtMs": 16060.457454
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 351.94491200000084
+        }
+      ],
+      "pauses": 0,
+      "descendants": [],
+      "reaped": true,
+      "forcedCleanup": false,
+      "pid": 1234502,
+      "identity": {
+        "pid": 1234502,
+        "entry": "/tmp/pcv/papercusp-inbox-pair-MTqgcB/baseline/hono-host.mjs",
+        "startTicks": "5129298",
+        "parentPid": 1234295,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 946364416,
+        "rssBytes": 1022783488,
+        "anonymousBytes": 943022080
+      },
+      "ownerId": "loopback",
+      "fixture": {
+        "rows": 256,
+        "stringCodeUnits": 8388608,
+        "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da"
+      },
+      "warmCacheEntries": 1,
+      "cachePreflight": {
+        "enabled": true,
+        "entries": 0
+      },
+      "content": [
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        }
+      ],
+      "unreaped": []
+    },
+    {
+      "arm": 1,
+      "mode": "shared",
+      "bundleSha256": "40907a207e1b93c33aa49222284e0c5ffd37e6d4c8c80105d8b7ddf67e9aa047",
+      "samples": [
+        {
+          "phase": "before",
+          "pid": 1252582,
+          "at": 1791003857793,
+          "uptime": 7.583705355,
+          "memory": {
+            "rss": 975802368,
+            "heapTotal": 681857024,
+            "heapUsed": 574573456,
+            "external": 161767719,
+            "arrayBuffers": 84988278
+          },
+          "heap": {
+            "total_heap_size": 681857024,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 681857024,
+            "total_available_size": 137064876232,
+            "used_heap_size": 574578360,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112800,
+            "external_memory": 161767759,
+            "total_allocated_bytes": 1966208912
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 942218240,
+            "rssBytes": 1019121664,
+            "anonymousBytes": 939307008
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 238.20296699999744
+        },
+        {
+          "phase": "idle-0-start",
+          "pid": 1252582,
+          "at": 1791003858031,
+          "uptime": 7.822497281,
+          "memory": {
+            "rss": 975802368,
+            "heapTotal": 681857024,
+            "heapUsed": 575561760,
+            "external": 162155098,
+            "arrayBuffers": 85375617
+          },
+          "heap": {
+            "total_heap_size": 681857024,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 681857024,
+            "total_available_size": 137063892608,
+            "used_heap_size": 575561984,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112800,
+            "external_memory": 162155098,
+            "total_allocated_bytes": 1968670504
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 942276608,
+            "rssBytes": 1019244544,
+            "anonymousBytes": 939364352
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 228.8151539999999
+        },
+        {
+          "phase": "idle-0-end",
+          "pid": 1252582,
+          "at": 1791003859261,
+          "uptime": 9.052404092,
+          "memory": {
+            "rss": 975802368,
+            "heapTotal": 682262528,
+            "heapUsed": 578986912,
+            "external": 163411719,
+            "arrayBuffers": 86632238
+          },
+          "heap": {
+            "total_heap_size": 682262528,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 682262528,
+            "total_available_size": 137060463568,
+            "used_heap_size": 578987136,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112768,
+            "external_memory": 163411719,
+            "total_allocated_bytes": 1981008776
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 942612480,
+            "rssBytes": 1019580416,
+            "anonymousBytes": 939700224
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 231.67901300000085
+        },
+        {
+          "phase": "workload-0-end",
+          "pid": 1252582,
+          "at": 1791003860034,
+          "uptime": 9.824969742,
+          "memory": {
+            "rss": 988385280,
+            "heapTotal": 697729024,
+            "heapUsed": 594639400,
+            "external": 155550160,
+            "arrayBuffers": 78770679
+          },
+          "heap": {
+            "total_heap_size": 697729024,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 697729024,
+            "total_available_size": 137044809776,
+            "used_heap_size": 594639624,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113408,
+            "external_memory": 155550160,
+            "total_allocated_bytes": 2050358376
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 958653440,
+            "rssBytes": 1035616256,
+            "anonymousBytes": 955736064
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 265.858658000001
+        },
+        {
+          "phase": "idle-1-start",
+          "pid": 1252582,
+          "at": 1791003860300,
+          "uptime": 10.091455372,
+          "memory": {
+            "rss": 988385280,
+            "heapTotal": 697729024,
+            "heapUsed": 595901448,
+            "external": 156051249,
+            "arrayBuffers": 79271768
+          },
+          "heap": {
+            "total_heap_size": 697729024,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 697729024,
+            "total_available_size": 137043547728,
+            "used_heap_size": 595901672,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113408,
+            "external_memory": 156051249,
+            "total_allocated_bytes": 2053601808
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 958693376,
+            "rssBytes": 1035657216,
+            "anonymousBytes": 955777024
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 250.81834000000163
+        },
+        {
+          "phase": "idle-1-end",
+          "pid": 1252582,
+          "at": 1791003861552,
+          "uptime": 11.343399194,
+          "memory": {
+            "rss": 988385280,
+            "heapTotal": 697729024,
+            "heapUsed": 600065808,
+            "external": 157661930,
+            "arrayBuffers": 80882449
+          },
+          "heap": {
+            "total_heap_size": 697729024,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 697729024,
+            "total_available_size": 137039383368,
+            "used_heap_size": 600066032,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113472,
+            "external_memory": 157661930,
+            "total_allocated_bytes": 2064799288
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 958893056,
+            "rssBytes": 1035853824,
+            "anonymousBytes": 955973632
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 249.52587800000038
+        },
+        {
+          "phase": "workload-1-end",
+          "pid": 1252582,
+          "at": 1791003862175,
+          "uptime": 11.966473507,
+          "memory": {
+            "rss": 1006211072,
+            "heapTotal": 716603392,
+            "heapUsed": 606485624,
+            "external": 157510637,
+            "arrayBuffers": 80731156
+          },
+          "heap": {
+            "total_heap_size": 716603392,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 716603392,
+            "total_available_size": 137032962208,
+            "used_heap_size": 606485848,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4300952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113408,
+            "external_memory": 157510637,
+            "total_allocated_bytes": 2111185224
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 976573440,
+            "rssBytes": 1053532160,
+            "anonymousBytes": 973651968
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 232.26495400000204
+        },
+        {
+          "phase": "idle-2-start",
+          "pid": 1252582,
+          "at": 1791003862408,
+          "uptime": 12.199231655,
+          "memory": {
+            "rss": 937390080,
+            "heapTotal": 699711488,
+            "heapUsed": 445273432,
+            "external": 87644132,
+            "arrayBuffers": 10864672
+          },
+          "heap": {
+            "total_heap_size": 699711488,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 699711488,
+            "total_available_size": 137075107856,
+            "used_heap_size": 445273656,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113248,
+            "external_memory": 87644132,
+            "total_allocated_bytes": 2115710168
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 905817088,
+            "rssBytes": 982777856,
+            "anonymousBytes": 902897664
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 228.88256000000183
+        },
+        {
+          "phase": "idle-2-end",
+          "pid": 1252582,
+          "at": 1791003863638,
+          "uptime": 13.42937016,
+          "memory": {
+            "rss": 937390080,
+            "heapTotal": 699711488,
+            "heapUsed": 449152696,
+            "external": 89209585,
+            "arrayBuffers": 12430125
+          },
+          "heap": {
+            "total_heap_size": 699711488,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 699711488,
+            "total_available_size": 137071228360,
+            "used_heap_size": 449153152,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 89209585,
+            "total_allocated_bytes": 2121219344
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 905822208,
+            "rssBytes": 982786048,
+            "anonymousBytes": 902905856
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 234.05276199999935
+        },
+        {
+          "phase": "workload-2-end",
+          "pid": 1252582,
+          "at": 1791003864130,
+          "uptime": 13.921351454,
+          "memory": {
+            "rss": 937390080,
+            "heapTotal": 699711488,
+            "heapUsed": 462142456,
+            "external": 90368734,
+            "arrayBuffers": 13589274
+          },
+          "heap": {
+            "total_heap_size": 699711488,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 699711488,
+            "total_available_size": 137184188936,
+            "used_heap_size": 462142600,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 90368734,
+            "total_allocated_bytes": 2138956560
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 905870336,
+            "rssBytes": 982831104,
+            "anonymousBytes": 902950912
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 218.61136800000168
+        },
+        {
+          "phase": "completion-idle",
+          "pid": 1252582,
+          "at": 1791003865350,
+          "uptime": 15.141326196,
+          "memory": {
+            "rss": 937390080,
+            "heapTotal": 699711488,
+            "heapUsed": 467076368,
+            "external": 92365404,
+            "arrayBuffers": 15585944
+          },
+          "heap": {
+            "total_heap_size": 699711488,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 699711488,
+            "total_available_size": 137179254624,
+            "used_heap_size": 467076800,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 92365404,
+            "total_allocated_bytes": 2148702432
+          },
+          "os": {
+            "pid": 1252582,
+            "startTicks": "5131097",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 905981952,
+            "rssBytes": 982945792,
+            "anonymousBytes": 903065600
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 229.90099700000428
+        }
+      ],
+      "windows": [
+        {
+          "window": 0,
+          "startedAtMs": 27626.602681,
+          "endedAtMs": 28042.530678,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 27626.616778,
+              "endedAtMs": 28022.014236
+            },
+            {
+              "variant": 1,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 27627.204535,
+              "endedAtMs": 28026.810125
+            },
+            {
+              "variant": 2,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 27627.435933,
+              "endedAtMs": 28025.942235
+            },
+            {
+              "variant": 3,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 27627.618987,
+              "endedAtMs": 28042.52661
+            },
+            {
+              "variant": 4,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 27627.82222,
+              "endedAtMs": 28021.467038
+            },
+            {
+              "variant": 5,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 27628.277681,
+              "endedAtMs": 28024.630007
+            },
+            {
+              "variant": 6,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 27628.648398,
+              "endedAtMs": 28031.243772
+            },
+            {
+              "variant": 7,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 27628.858816,
+              "endedAtMs": 28023.981081
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 415.92799699999887
+        },
+        {
+          "window": 1,
+          "startedAtMs": 29811.037646,
+          "endedAtMs": 30184.146209,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 29811.042946,
+              "endedAtMs": 30180.591011
+            },
+            {
+              "variant": 1,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 29811.545098,
+              "endedAtMs": 30180.292464
+            },
+            {
+              "variant": 2,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 29811.719315,
+              "endedAtMs": 30184.142282
+            },
+            {
+              "variant": 3,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 29811.888853,
+              "endedAtMs": 30177.95439
+            },
+            {
+              "variant": 4,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 29812.015197,
+              "endedAtMs": 30179.693695
+            },
+            {
+              "variant": 5,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 29812.13018,
+              "endedAtMs": 30183.534666
+            },
+            {
+              "variant": 6,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 29812.271082,
+              "endedAtMs": 30175.708415
+            },
+            {
+              "variant": 7,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 29812.42509,
+              "endedAtMs": 30175.343069
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 373.10856299999796
+        },
+        {
+          "window": 2,
+          "startedAtMs": 31881.494025,
+          "endedAtMs": 32138.955453,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 31881.498464,
+              "endedAtMs": 32094.927687
+            },
+            {
+              "variant": 1,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 31881.940589,
+              "endedAtMs": 32138.951125
+            },
+            {
+              "variant": 2,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 31882.083806,
+              "endedAtMs": 32095.457532
+            },
+            {
+              "variant": 3,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 31882.206514,
+              "endedAtMs": 32095.749857
+            },
+            {
+              "variant": 4,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 31882.320474,
+              "endedAtMs": 32094.478137
+            },
+            {
+              "variant": 5,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 31882.438893,
+              "endedAtMs": 32113.467253
+            },
+            {
+              "variant": 6,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 31882.557633,
+              "endedAtMs": 32093.961858
+            },
+            {
+              "variant": 7,
+              "pid": 1252582,
+              "startTicks": "5131097",
+              "startedAtMs": 31882.670121,
+              "endedAtMs": 32098.870284
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 257.4614279999987
+        }
+      ],
+      "pauses": 0,
+      "descendants": [],
+      "reaped": true,
+      "forcedCleanup": false,
+      "pid": 1252582,
+      "identity": {
+        "pid": 1252582,
+        "entry": "/tmp/pcv/papercusp-inbox-pair-MTqgcB/current/hono-host.mjs",
+        "startTicks": "5131097",
+        "parentPid": 1234295,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 938073088,
+        "rssBytes": 1014976512,
+        "anonymousBytes": 935161856
+      },
+      "ownerId": "loopback",
+      "fixture": {
+        "rows": 256,
+        "stringCodeUnits": 8388608,
+        "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da"
+      },
+      "warmCacheEntries": 1,
+      "cachePreflight": {
+        "enabled": true,
+        "entries": 0
+      },
+      "content": [
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        }
+      ],
+      "unreaped": []
+    },
+    {
+      "arm": 2,
+      "mode": "shared",
+      "bundleSha256": "40907a207e1b93c33aa49222284e0c5ffd37e6d4c8c80105d8b7ddf67e9aa047",
+      "samples": [
+        {
+          "phase": "before",
+          "pid": 1266025,
+          "at": 1791003873525,
+          "uptime": 7.63727735,
+          "memory": {
+            "rss": 988803072,
+            "heapTotal": 699711488,
+            "heapUsed": 579151160,
+            "external": 149281638,
+            "arrayBuffers": 72502197
+          },
+          "heap": {
+            "total_heap_size": 699711488,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 699711488,
+            "total_available_size": 137060201544,
+            "used_heap_size": 579156048,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112800,
+            "external_memory": 149281678,
+            "total_allocated_bytes": 2005090064
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 962713600,
+            "rssBytes": 1039687680,
+            "anonymousBytes": 959787008
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 224.97197400000005
+        },
+        {
+          "phase": "idle-0-start",
+          "pid": 1266025,
+          "at": 1791003873751,
+          "uptime": 7.862829076,
+          "memory": {
+            "rss": 988803072,
+            "heapTotal": 699711488,
+            "heapUsed": 580296696,
+            "external": 149755019,
+            "arrayBuffers": 72975538
+          },
+          "heap": {
+            "total_heap_size": 699711488,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 699711488,
+            "total_available_size": 137059060672,
+            "used_heap_size": 580296920,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112800,
+            "external_memory": 149755019,
+            "total_allocated_bytes": 2007073184
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 962784256,
+            "rssBytes": 1039822848,
+            "anonymousBytes": 959856640
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 223.53541499999847
+        },
+        {
+          "phase": "idle-0-end",
+          "pid": 1266025,
+          "at": 1791003874975,
+          "uptime": 9.08721441,
+          "memory": {
+            "rss": 989851648,
+            "heapTotal": 700116992,
+            "heapUsed": 585709136,
+            "external": 151958679,
+            "arrayBuffers": 75179198
+          },
+          "heap": {
+            "total_heap_size": 700116992,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 700116992,
+            "total_available_size": 137053644304,
+            "used_heap_size": 585709360,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112768,
+            "external_memory": 151958679,
+            "total_allocated_bytes": 2020858512
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 963181568,
+            "rssBytes": 1040220160,
+            "anonymousBytes": 960253952
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 237.47779499999888
+        },
+        {
+          "phase": "workload-0-end",
+          "pid": 1266025,
+          "at": 1791003875592,
+          "uptime": 9.704054835,
+          "memory": {
+            "rss": 1003483136,
+            "heapTotal": 716369920,
+            "heapUsed": 599095512,
+            "external": 147986827,
+            "arrayBuffers": 71207346
+          },
+          "heap": {
+            "total_heap_size": 716369920,
+            "total_heap_size_executable": 7503872,
+            "total_physical_size": 716369920,
+            "total_available_size": 137040256536,
+            "used_heap_size": 599095736,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113408,
+            "external_memory": 147986827,
+            "total_allocated_bytes": 2094174232
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 977964032,
+            "rssBytes": 1055002624,
+            "anonymousBytes": 975036416
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 224.64120199999888
+        },
+        {
+          "phase": "idle-1-start",
+          "pid": 1266025,
+          "at": 1791003875818,
+          "uptime": 9.930179006,
+          "memory": {
+            "rss": 1003483136,
+            "heapTotal": 716369920,
+            "heapUsed": 600156096,
+            "external": 148437278,
+            "arrayBuffers": 71657797
+          },
+          "heap": {
+            "total_heap_size": 716369920,
+            "total_heap_size_executable": 7503872,
+            "total_physical_size": 716369920,
+            "total_available_size": 137039195944,
+            "used_heap_size": 600156320,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113408,
+            "external_memory": 148437278,
+            "total_allocated_bytes": 2097268248
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 978004992,
+            "rssBytes": 1055043584,
+            "anonymousBytes": 975077376
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 230.02314299999853
+        },
+        {
+          "phase": "idle-1-end",
+          "pid": 1266025,
+          "at": 1791003877049,
+          "uptime": 11.161068802,
+          "memory": {
+            "rss": 1003483136,
+            "heapTotal": 716369920,
+            "heapUsed": 605200712,
+            "external": 150457828,
+            "arrayBuffers": 73678347
+          },
+          "heap": {
+            "total_heap_size": 716369920,
+            "total_heap_size_executable": 7503872,
+            "total_physical_size": 716369920,
+            "total_available_size": 137034151312,
+            "used_heap_size": 605200936,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113472,
+            "external_memory": 150457828,
+            "total_allocated_bytes": 2103830656
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 978183168,
+            "rssBytes": 1055219712,
+            "anonymousBytes": 975253504
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 229.262370000004
+        },
+        {
+          "phase": "workload-1-end",
+          "pid": 1266025,
+          "at": 1791003877587,
+          "uptime": 11.698888442,
+          "memory": {
+            "rss": 1019211776,
+            "heapTotal": 732884992,
+            "heapUsed": 613556552,
+            "external": 148048983,
+            "arrayBuffers": 71269502
+          },
+          "heap": {
+            "total_heap_size": 732884992,
+            "total_heap_size_executable": 7766016,
+            "total_physical_size": 732884992,
+            "total_available_size": 137024477120,
+            "used_heap_size": 613556776,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4412208,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113408,
+            "external_memory": 148048983,
+            "total_allocated_bytes": 2143639664
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 994638848,
+            "rssBytes": 1071673344,
+            "anonymousBytes": 991707136
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 234.06306700000277
+        },
+        {
+          "phase": "idle-2-start",
+          "pid": 1266025,
+          "at": 1791003877822,
+          "uptime": 11.933911607,
+          "memory": {
+            "rss": 950046720,
+            "heapTotal": 715440128,
+            "heapUsed": 438859024,
+            "external": 77740596,
+            "arrayBuffers": 961136
+          },
+          "heap": {
+            "total_heap_size": 715440128,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 715440128,
+            "total_available_size": 137208283480,
+            "used_heap_size": 438859248,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113248,
+            "external_memory": 77740596,
+            "total_allocated_bytes": 2145989648
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 923606016,
+            "rssBytes": 1000640512,
+            "anonymousBytes": 920674304
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 227.7672470000034
+        },
+        {
+          "phase": "idle-2-end",
+          "pid": 1266025,
+          "at": 1791003879051,
+          "uptime": 13.163180126,
+          "memory": {
+            "rss": 950046720,
+            "heapTotal": 715440128,
+            "heapUsed": 443306456,
+            "external": 79442999,
+            "arrayBuffers": 2663539
+          },
+          "heap": {
+            "total_heap_size": 715440128,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 715440128,
+            "total_available_size": 137204859912,
+            "used_heap_size": 443306912,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 79442999,
+            "total_allocated_bytes": 2151354072
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 923617280,
+            "rssBytes": 1000652800,
+            "anonymousBytes": 920686592
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 232.73385400000552
+        },
+        {
+          "phase": "workload-2-end",
+          "pid": 1266025,
+          "at": 1791003879558,
+          "uptime": 13.670159289,
+          "memory": {
+            "rss": 950046720,
+            "heapTotal": 715440128,
+            "heapUsed": 457058024,
+            "external": 80381971,
+            "arrayBuffers": 3602511
+          },
+          "heap": {
+            "total_heap_size": 715440128,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 715440128,
+            "total_available_size": 137192801536,
+            "used_heap_size": 457058168,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 80381971,
+            "total_allocated_bytes": 2165762440
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 923698176,
+            "rssBytes": 1000734720,
+            "anonymousBytes": 920768512
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 224.9130340000047
+        },
+        {
+          "phase": "completion-idle",
+          "pid": 1266025,
+          "at": 1791003880784,
+          "uptime": 14.89619249,
+          "memory": {
+            "rss": 950046720,
+            "heapTotal": 715440128,
+            "heapUsed": 462311664,
+            "external": 82494387,
+            "arrayBuffers": 5714927
+          },
+          "heap": {
+            "total_heap_size": 715440128,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 715440128,
+            "total_available_size": 137187547496,
+            "used_heap_size": 462312096,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091096,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 82494387,
+            "total_allocated_bytes": 2171395896
+          },
+          "os": {
+            "pid": 1266025,
+            "startTicks": "5132665",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 923701248,
+            "rssBytes": 1000738816,
+            "anonymousBytes": 920772608
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 1,
+            "rows": [
+              256
+            ]
+          },
+          "observerMs": 217.53056199999992
+        }
+      ],
+      "windows": [
+        {
+          "window": 0,
+          "startedAtMs": 43221.98518,
+          "endedAtMs": 43600.831762,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 43221.991933,
+              "endedAtMs": 43587.138381
+            },
+            {
+              "variant": 1,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 43222.457203,
+              "endedAtMs": 43585.838126
+            },
+            {
+              "variant": 2,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 43222.64143,
+              "endedAtMs": 43584.944247
+            },
+            {
+              "variant": 3,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 43222.778705,
+              "endedAtMs": 43585.280427
+            },
+            {
+              "variant": 4,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 43222.923385,
+              "endedAtMs": 43588.061497
+            },
+            {
+              "variant": 5,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 43223.052756,
+              "endedAtMs": 43600.826582
+            },
+            {
+              "variant": 6,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 43223.177287,
+              "endedAtMs": 43585.573444
+            },
+            {
+              "variant": 7,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 43223.329932,
+              "endedAtMs": 43584.365697
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 378.8465819999983
+        },
+        {
+          "window": 1,
+          "startedAtMs": 45287.710855,
+          "endedAtMs": 45595.636503,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 45287.715354,
+              "endedAtMs": 45581.993931
+            },
+            {
+              "variant": 1,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 45288.17342,
+              "endedAtMs": 45578.890057
+            },
+            {
+              "variant": 2,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 45288.341265,
+              "endedAtMs": 45581.676808
+            },
+            {
+              "variant": 3,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 45288.463591,
+              "endedAtMs": 45579.736364
+            },
+            {
+              "variant": 4,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 45288.579606,
+              "endedAtMs": 45595.631083
+            },
+            {
+              "variant": 5,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 45288.709337,
+              "endedAtMs": 45587.509712
+            },
+            {
+              "variant": 6,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 45288.847955,
+              "endedAtMs": 45578.592521
+            },
+            {
+              "variant": 7,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 45288.968668,
+              "endedAtMs": 45581.212499
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 307.925648000004
+        },
+        {
+          "window": 2,
+          "startedAtMs": 47293.35973,
+          "endedAtMs": 47566.91269,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 47293.364449,
+              "endedAtMs": 47520.674891
+            },
+            {
+              "variant": 1,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 47293.833918,
+              "endedAtMs": 47516.899678
+            },
+            {
+              "variant": 2,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 47294.027262,
+              "endedAtMs": 47520.248186
+            },
+            {
+              "variant": 3,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 47294.168545,
+              "endedAtMs": 47548.310443
+            },
+            {
+              "variant": 4,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 47294.2902,
+              "endedAtMs": 47525.243379
+            },
+            {
+              "variant": 5,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 47294.407227,
+              "endedAtMs": 47521.549954
+            },
+            {
+              "variant": 6,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 47294.526347,
+              "endedAtMs": 47566.908192
+            },
+            {
+              "variant": 7,
+              "pid": 1266025,
+              "startTicks": "5132665",
+              "startedAtMs": 47294.646049,
+              "endedAtMs": 47515.533355
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 273.5529600000009
+        }
+      ],
+      "pauses": 0,
+      "descendants": [],
+      "reaped": true,
+      "forcedCleanup": false,
+      "pid": 1266025,
+      "identity": {
+        "pid": 1266025,
+        "entry": "/tmp/pcv/papercusp-inbox-pair-MTqgcB/current/hono-host.mjs",
+        "startTicks": "5132665",
+        "parentPid": 1234295,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 942773248,
+        "rssBytes": 1019740160,
+        "anonymousBytes": 939839488
+      },
+      "ownerId": "loopback",
+      "fixture": {
+        "rows": 256,
+        "stringCodeUnits": 8388608,
+        "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da"
+      },
+      "warmCacheEntries": 1,
+      "cachePreflight": {
+        "enabled": true,
+        "entries": 0
+      },
+      "content": [
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        }
+      ],
+      "unreaped": []
+    },
+    {
+      "arm": 3,
+      "mode": "baseline",
+      "bundleSha256": "8db4b1e4081fe2eb12f097f3c60ef830eb9e4eac4a1f78aecbd3dd17c0c895ea",
+      "samples": [
+        {
+          "phase": "before",
+          "pid": 1272472,
+          "at": 1791003888878,
+          "uptime": 7.594649978,
+          "memory": {
+            "rss": 989827072,
+            "heapTotal": 700997632,
+            "heapUsed": 612734984,
+            "external": 170946067,
+            "arrayBuffers": 94166687
+          },
+          "heap": {
+            "total_heap_size": 700997632,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 700997632,
+            "total_available_size": 137026607824,
+            "used_heap_size": 612739872,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112896,
+            "external_memory": 170946107,
+            "total_allocated_bytes": 2029709256
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 965582848,
+            "rssBytes": 1042460672,
+            "anonymousBytes": 962711552
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 240.98760200000106
+        },
+        {
+          "phase": "idle-0-start",
+          "pid": 1272472,
+          "at": 1791003889119,
+          "uptime": 7.836282376,
+          "memory": {
+            "rss": 989827072,
+            "heapTotal": 700997632,
+            "heapUsed": 613752712,
+            "external": 171329134,
+            "arrayBuffers": 94549714
+          },
+          "heap": {
+            "total_heap_size": 700997632,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 700997632,
+            "total_available_size": 137025594760,
+            "used_heap_size": 613752936,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112896,
+            "external_memory": 171329134,
+            "total_allocated_bytes": 2030704336
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 965636096,
+            "rssBytes": 1042579456,
+            "anonymousBytes": 962764800
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 234.05700400000205
+        },
+        {
+          "phase": "idle-0-end",
+          "pid": 1272472,
+          "at": 1791003890354,
+          "uptime": 9.071193431,
+          "memory": {
+            "rss": 989827072,
+            "heapTotal": 701665280,
+            "heapUsed": 618777656,
+            "external": 173235001,
+            "arrayBuffers": 96455581
+          },
+          "heap": {
+            "total_heap_size": 701665280,
+            "total_heap_size_executable": 6979584,
+            "total_physical_size": 701665280,
+            "total_available_size": 137020565784,
+            "used_heap_size": 618777880,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 112864,
+            "external_memory": 173235001,
+            "total_allocated_bytes": 2037624296
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 966090752,
+            "rssBytes": 1043034112,
+            "anonymousBytes": 963219456
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 0,
+            "rows": []
+          },
+          "observerMs": 244.64591700000165
+        },
+        {
+          "phase": "workload-0-end",
+          "pid": 1272472,
+          "at": 1791003891155,
+          "uptime": 9.872418697,
+          "memory": {
+            "rss": 944017408,
+            "heapTotal": 702857216,
+            "heapUsed": 527405528,
+            "external": 103126529,
+            "arrayBuffers": 26347130
+          },
+          "heap": {
+            "total_heap_size": 702857216,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 702857216,
+            "total_available_size": 137116440672,
+            "used_heap_size": 527416856,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113248,
+            "external_memory": 103126529,
+            "total_allocated_bytes": 2220968976
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 918715392,
+            "rssBytes": 995635200,
+            "anonymousBytes": 915820544
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 230.5305789999984
+        },
+        {
+          "phase": "idle-1-start",
+          "pid": 1272472,
+          "at": 1791003891387,
+          "uptime": 10.103620646,
+          "memory": {
+            "rss": 944017408,
+            "heapTotal": 702857216,
+            "heapUsed": 528477928,
+            "external": 103451627,
+            "arrayBuffers": 26672228
+          },
+          "heap": {
+            "total_heap_size": 702857216,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 702857216,
+            "total_available_size": 137115379352,
+            "used_heap_size": 528478152,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113248,
+            "external_memory": 103451627,
+            "total_allocated_bytes": 2222277352
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 918717440,
+            "rssBytes": 995635200,
+            "anonymousBytes": 915820544
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 221.6035800000027
+        },
+        {
+          "phase": "idle-1-end",
+          "pid": 1272472,
+          "at": 1791003892610,
+          "uptime": 11.327131735,
+          "memory": {
+            "rss": 944017408,
+            "heapTotal": 702857216,
+            "heapUsed": 532407728,
+            "external": 104938151,
+            "arrayBuffers": 28158752
+          },
+          "heap": {
+            "total_heap_size": 702857216,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 702857216,
+            "total_available_size": 137111449448,
+            "used_heap_size": 532407952,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 104938151,
+            "total_allocated_bytes": 2226868536
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 918973440,
+            "rssBytes": 995635200,
+            "anonymousBytes": 915820544
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 220.6910349999962
+        },
+        {
+          "phase": "workload-1-end",
+          "pid": 1272472,
+          "at": 1791003893229,
+          "uptime": 11.946503592,
+          "memory": {
+            "rss": 996446208,
+            "heapTotal": 773373952,
+            "heapUsed": 588491032,
+            "external": 100253962,
+            "arrayBuffers": 23474563
+          },
+          "heap": {
+            "total_heap_size": 773373952,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 773373952,
+            "total_available_size": 137055350472,
+            "used_heap_size": 588491256,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113248,
+            "external_memory": 100253962,
+            "total_allocated_bytes": 2394169872
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 972919808,
+            "rssBytes": 1049583616,
+            "anonymousBytes": 969768960
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 219.88144699999975
+        },
+        {
+          "phase": "idle-2-start",
+          "pid": 1272472,
+          "at": 1791003893450,
+          "uptime": 12.166998105,
+          "memory": {
+            "rss": 996446208,
+            "heapTotal": 773373952,
+            "heapUsed": 589531880,
+            "external": 100703261,
+            "arrayBuffers": 23923862
+          },
+          "heap": {
+            "total_heap_size": 773373952,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 773373952,
+            "total_available_size": 137054309608,
+            "used_heap_size": 589532104,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113248,
+            "external_memory": 100703261,
+            "total_allocated_bytes": 2395362176
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 972919808,
+            "rssBytes": 1049583616,
+            "anonymousBytes": 969768960
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 219.33464899999672
+        },
+        {
+          "phase": "idle-2-end",
+          "pid": 1272472,
+          "at": 1791003894670,
+          "uptime": 13.387234599,
+          "memory": {
+            "rss": 996446208,
+            "heapTotal": 773373952,
+            "heapUsed": 594206640,
+            "external": 102634797,
+            "arrayBuffers": 25855398
+          },
+          "heap": {
+            "total_heap_size": 773373952,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 773373952,
+            "total_available_size": 137049634464,
+            "used_heap_size": 594207096,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 102634797,
+            "total_allocated_bytes": 2400356088
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 972918784,
+            "rssBytes": 1049583616,
+            "anonymousBytes": 969768960
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 216.03852200000256
+        },
+        {
+          "phase": "workload-2-end",
+          "pid": 1272472,
+          "at": 1791003895146,
+          "uptime": 13.863516516,
+          "memory": {
+            "rss": 996446208,
+            "heapTotal": 773373952,
+            "heapUsed": 607038064,
+            "external": 103682352,
+            "arrayBuffers": 26902953
+          },
+          "heap": {
+            "total_heap_size": 773373952,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 773373952,
+            "total_available_size": 137036803144,
+            "used_heap_size": 607038208,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 103682352,
+            "total_allocated_bytes": 2413752968
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 972934144,
+            "rssBytes": 1049600000,
+            "anonymousBytes": 969785344
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 219.76381799999945
+        },
+        {
+          "phase": "completion-idle",
+          "pid": 1272472,
+          "at": 1791003896367,
+          "uptime": 15.084273619,
+          "memory": {
+            "rss": 996446208,
+            "heapTotal": 773373952,
+            "heapUsed": 611848872,
+            "external": 105484459,
+            "arrayBuffers": 28705060
+          },
+          "heap": {
+            "total_heap_size": 773373952,
+            "total_heap_size_executable": 7241728,
+            "total_physical_size": 773373952,
+            "total_available_size": 137031991952,
+            "used_heap_size": 611849304,
+            "heap_size_limit": 137640280064,
+            "malloced_memory": 4218952,
+            "peak_malloced_memory": 119091112,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 118856,
+            "used_global_handles_size": 113312,
+            "external_memory": 105484459,
+            "total_allocated_bytes": 2419194152
+          },
+          "os": {
+            "pid": 1272472,
+            "startTicks": "5134205",
+            "parentPid": 1234295,
+            "executable": "/home/builduser/.local/node25/bin/node",
+            "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+            "pssBytes": 972961792,
+            "rssBytes": 1049694208,
+            "anonymousBytes": 969814016
+          },
+          "descendants": [],
+          "cache": {
+            "enabled": true,
+            "entries": 8,
+            "rows": [
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256,
+              256
+            ]
+          },
+          "observerMs": 218.02676699999574
+        }
+      ],
+      "windows": [
+        {
+          "window": 0,
+          "startedAtMs": 58608.325998,
+          "endedAtMs": 59164.139837,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 58608.332471,
+              "endedAtMs": 59129.098911
+            },
+            {
+              "variant": 1,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 58608.784866,
+              "endedAtMs": 59120.67246
+            },
+            {
+              "variant": 2,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 58609.003789,
+              "endedAtMs": 59157.766318
+            },
+            {
+              "variant": 3,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 58609.175391,
+              "endedAtMs": 59145.077672
+            },
+            {
+              "variant": 4,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 58609.337325,
+              "endedAtMs": 59157.014253
+            },
+            {
+              "variant": 5,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 58609.501272,
+              "endedAtMs": 59164.136611
+            },
+            {
+              "variant": 6,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 58609.659578,
+              "endedAtMs": 59156.358895
+            },
+            {
+              "variant": 7,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 58609.871789,
+              "endedAtMs": 59160.749408
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 555.8138390000022
+        },
+        {
+          "window": 1,
+          "startedAtMs": 60840.208124,
+          "endedAtMs": 61238.242115,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 60840.212222,
+              "endedAtMs": 61231.72583
+            },
+            {
+              "variant": 1,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 60840.559314,
+              "endedAtMs": 61173.429186
+            },
+            {
+              "variant": 2,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 60840.697301,
+              "endedAtMs": 61232.067531
+            },
+            {
+              "variant": 3,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 60840.832452,
+              "endedAtMs": 61237.209227
+            },
+            {
+              "variant": 4,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 60840.942956,
+              "endedAtMs": 61233.07534
+            },
+            {
+              "variant": 5,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 60841.045043,
+              "endedAtMs": 61232.337984
+            },
+            {
+              "variant": 6,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 60841.148864,
+              "endedAtMs": 61173.778331
+            },
+            {
+              "variant": 7,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 60841.250591,
+              "endedAtMs": 61238.237837
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 398.0339910000039
+        },
+        {
+          "window": 2,
+          "startedAtMs": 62895.640261,
+          "endedAtMs": 63155.171949,
+          "requests": [
+            {
+              "variant": 0,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 62895.645121,
+              "endedAtMs": 63103.51995
+            },
+            {
+              "variant": 1,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 62896.005157,
+              "endedAtMs": 63106.029094
+            },
+            {
+              "variant": 2,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 62896.133646,
+              "endedAtMs": 63105.023388
+            },
+            {
+              "variant": 3,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 62896.247075,
+              "endedAtMs": 63155.166368
+            },
+            {
+              "variant": 4,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 62896.350736,
+              "endedAtMs": 63123.796073
+            },
+            {
+              "variant": 5,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 62896.455268,
+              "endedAtMs": 63103.900075
+            },
+            {
+              "variant": 6,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 62896.581973,
+              "endedAtMs": 63105.692292
+            },
+            {
+              "variant": 7,
+              "pid": 1272472,
+              "startTicks": "5134205",
+              "startedAtMs": 62896.705822,
+              "endedAtMs": 63113.865403
+            }
+          ],
+          "outcomes": [
+            {
+              "variant": 0,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 1
+            },
+            {
+              "variant": 1,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 2
+            },
+            {
+              "variant": 2,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 3
+            },
+            {
+              "variant": 3,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 4
+            },
+            {
+              "variant": 4,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 5
+            },
+            {
+              "variant": 5,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 6
+            },
+            {
+              "variant": 6,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 7
+            },
+            {
+              "variant": 7,
+              "entries": [
+                {
+                  "id": "p011-256",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-255",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-254",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-253",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-252",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-251",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-250",
+                  "summary": "P"
+                },
+                {
+                  "id": "p011-249",
+                  "summary": "P"
+                }
+              ],
+              "total": 256,
+              "returned": 8
+            }
+          ],
+          "wallMs": 259.53168800000276
+        }
+      ],
+      "pauses": 0,
+      "descendants": [],
+      "reaped": true,
+      "forcedCleanup": false,
+      "pid": 1272472,
+      "identity": {
+        "pid": 1272472,
+        "entry": "/tmp/pcv/papercusp-inbox-pair-MTqgcB/baseline/hono-host.mjs",
+        "startTicks": "5134205",
+        "parentPid": 1234295,
+        "executable": "/home/builduser/.local/node25/bin/node",
+        "executableSha256": "7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "pssBytes": 941705216,
+        "rssBytes": 1018519552,
+        "anonymousBytes": 938835968
+      },
+      "ownerId": "loopback",
+      "fixture": {
+        "rows": 256,
+        "stringCodeUnits": 8388608,
+        "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da"
+      },
+      "warmCacheEntries": 1,
+      "cachePreflight": {
+        "enabled": true,
+        "entries": 0
+      },
+      "content": [
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        },
+        {
+          "rows": 256,
+          "sha256": "b99af1604823d6de5537d63deaf68a0bd4baccc0205afa20f2cb214721de90da",
+          "stringCodeUnits": 8388608
+        }
+      ],
+      "unreaped": []
+    }
+  ],
+  "limitations": [
+    "Independent private request-only hosts; no production worker, background or historical recovery claim.",
+    "Baseline is the same emitted bundle with one guarded historical cache-key intervention.",
+    "Unforced heap/PSS windows include transient allocations; no GC, profiler or total native residual estimate.",
+    "Eight controlled full-read display variants are a counterexample workload, not measured production frequency.",
+    "Exact raw-cache content fingerprints are inspected after the resource windows."
+  ],
+  "database": "papercusp",
+  "schema": {
+    "filename": "1347-personal-disclosures-reader-window-idx.sql",
+    "sha256": "c54cbfa25e061513bff7dcb1dcb0820af84a3b92dcf090d7c91e2a23c83f128e"
+  },
+  "variants": [
+    {
+      "directed": true,
+      "limit": 1,
+      "include_ambient": false,
+      "include_intents": false,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 2,
+      "include_ambient": true,
+      "include_intents": false,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 3,
+      "include_ambient": false,
+      "include_intents": true,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 4,
+      "include_ambient": true,
+      "include_intents": true,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 5,
+      "include_ambient": false,
+      "include_intents": false,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 6,
+      "include_ambient": true,
+      "include_intents": false,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 7,
+      "include_ambient": false,
+      "include_intents": true,
+      "max_body_chars": 1
+    },
+    {
+      "directed": true,
+      "limit": 8,
+      "include_ambient": true,
+      "include_intents": true,
+      "max_body_chars": 1
+    }
+  ],
+  "runner": {
+    "status": 0,
+    "signal": null,
+    "stdoutBytes": 0,
+    "stderrBytes": 4000
+  },
+  "sources": {
+    "before": {
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts": "9ce1c54b7dcf1422133f552aa0a2d2722d2b4ab3575b21af8f37e1f782545c81",
+      "packages/operator-core/lib/agent-tools/coordination/messages.ts": "29f667ff871bb2ab5ace31b753c174633ae510a4a851dd8eae8824d900c9387e",
+      "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+      "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+      "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+      "libs/generic/cache/src/l1.ts": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+      "scripts/cdp-inspector.mjs": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1",
+      "apps/operator/bin/bundle-host.sh": "fe6d3392ff22c2df0bc056e53390ef84d0ab62f19f2e92d50f4627227864b59d",
+      "packages/operator-core/lib/service-memory-attribution.integration.test.ts": "6b6bafdd7e944c78d841e1d984d0c30d57c055249024eb7af9c7634e911d5bfc"
+    },
+    "after": {
+      "packages/operator-core/lib/agent-tools/coordination/tools/inbox.ts": "9ce1c54b7dcf1422133f552aa0a2d2722d2b4ab3575b21af8f37e1f782545c81",
+      "packages/operator-core/lib/agent-tools/coordination/messages.ts": "29f667ff871bb2ab5ace31b753c174633ae510a4a851dd8eae8824d900c9387e",
+      "packages/operator-core/lib/cache/cached-read.ts": "73b09e7f3c4b5a53511fd8c51d9cf81a4cc7eff6b2d21e774eeec049dbfc39c9",
+      "packages/operator-core/lib/cache/instance.ts": "19a7a63ec772ae7c35c914eacf07128678b1ca276df9a7e871fd1e9f566f7992",
+      "libs/generic/cache/src/cache.ts": "0cfee2e70c839c00c00bf2f272abd7ea67987918bf3806fb5e80f24e727c1d43",
+      "libs/generic/cache/src/l1.ts": "89ac9e14aeed616e2ba82060f9e153d62975d9c9806a4587f831d8700ad84977",
+      "scripts/cdp-inspector.mjs": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1",
+      "apps/operator/bin/bundle-host.sh": "fe6d3392ff22c2df0bc056e53390ef84d0ab62f19f2e92d50f4627227864b59d",
+      "packages/operator-core/lib/service-memory-attribution.integration.test.ts": "6b6bafdd7e944c78d841e1d984d0c30d57c055249024eb7af9c7634e911d5bfc"
+    },
+    "fullGraph": "unknown"
+  },
+  "build": {
+    "path": "/tmp/pcv/papercusp-inbox-pair-MTqgcB/build.log",
+    "bytes": 2452,
+    "sha256": "ecb38af0edc107e25b55788ea7ae92d6d00ea7400e18a2419bcd63510792d941"
+  },
+  "runtimeLog": {
+    "path": "/tmp/pcv/papercusp-inbox-pair-MTqgcB/runtime.log",
+    "bytes": 633745,
+    "sha256": "e0721251b95430cf861bb7de776bec0fddaa87569d02d60be9b9c2f6a873d154"
+  },
+  "intervention": {
+    "offset": 53399937,
+    "before": "...boundedInbox ? {\n                  limit,\n                  ambient: includeAmbient,\n                  intents: !!args27.include_intents\n                } : {}",
+    "after": "limit,\n                  ambient: includeAmbient,\n                  intents: !!args27.include_intents"
+  },
+  "observedAcceptance": {
+    "pairs": [
+      {
+        "baselineArm": 0,
+        "candidateArm": 1,
+        "pssGrowthDifferenceBytes": 188961792,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 243861720,
+        "rawCopies": [
+          8,
+          1
+        ],
+        "preservedBodyCodeUnits": 8388608,
+        "responsesPerHost": 24,
+        "actualConcurrency": "Eight client requests in flight; server execution parallelism unmeasured",
+        "productionSavings": "unmeasured"
+      },
+      {
+        "baselineArm": 3,
+        "candidateArm": 2,
+        "pssGrowthDifferenceBytes": 46391296,
+        "cumulativeV8AllocationGrowthDifferenceBytes": 223179064,
+        "rawCopies": [
+          8,
+          1
+        ],
+        "preservedBodyCodeUnits": 8388608,
+        "responsesPerHost": 24,
+        "actualConcurrency": "Eight client requests in flight; server execution parallelism unmeasured",
+        "productionSavings": "unmeasured"
+      }
+    ],
+    "overlap": [
+      [
+        {
+          "window": 0,
+          "requestsInFlight": 8,
+          "overlapMs": 610.1185799999985
+        },
+        {
+          "window": 1,
+          "requestsInFlight": 8,
+          "overlapMs": 501.92996200000016
+        },
+        {
+          "window": 2,
+          "requestsInFlight": 8,
+          "overlapMs": 279.01599799999894
+        }
+      ],
+      [
+        {
+          "window": 0,
+          "requestsInFlight": 8,
+          "overlapMs": 392.60822199999893
+        },
+        {
+          "window": 1,
+          "requestsInFlight": 8,
+          "overlapMs": 362.917978999998
+        },
+        {
+          "window": 2,
+          "requestsInFlight": 8,
+          "overlapMs": 211.29173699999956
+        }
+      ],
+      [
+        {
+          "window": 0,
+          "requestsInFlight": 8,
+          "overlapMs": 361.03576500000054
+        },
+        {
+          "window": 1,
+          "requestsInFlight": 8,
+          "overlapMs": 289.6238529999973
+        },
+        {
+          "window": 2,
+          "requestsInFlight": 8,
+          "overlapMs": 220.8873059999969
+        }
+      ],
+      [
+        {
+          "window": 0,
+          "requestsInFlight": 8,
+          "overlapMs": 510.8006710000045
+        },
+        {
+          "window": 1,
+          "requestsInFlight": 8,
+          "overlapMs": 332.1785949999976
+        },
+        {
+          "window": 2,
+          "requestsInFlight": 8,
+          "overlapMs": 206.81412799999816
+        }
+      ]
+    ],
+    "allocationDefinition": "Cumulative V8 allocation, not unique retained or native bytes",
+    "productionSavings": "unmeasured",
+    "historicalRecovery": "unmeasured"
+  }
+}

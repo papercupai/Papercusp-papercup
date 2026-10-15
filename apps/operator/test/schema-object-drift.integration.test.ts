@@ -34,7 +34,7 @@ import { randomBytes } from 'node:crypto';
 import { writeFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import {
   takeIndexCensus,
   compareIndexCensus,
@@ -122,6 +122,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -198,5 +199,87 @@ describe('the migration-derived index manifest', () => {
         `(In this comparison "live" means THE COMMITTED MANIFEST and "reference" means the migrations as they are on disk right now.)\n\n` +
         `Regenerate it:\n  PAPERCUSP_UPDATE_INDEX_MANIFEST=1 npm run test:file -- apps/operator/test/schema-object-drift.integration.test.ts`,
     ).toBe(0);
+  });
+
+  it('carries each index exactly once', () => {
+    const keys = referenceCensus.map((e) => `${e.schema}.${e.name}`);
+    const repeated = [...new Set(keys.filter((k, i) => keys.indexOf(k) !== i))];
+    expect(repeated, 'index keys repeated in the census').toEqual([]);
+  });
+});
+
+/**
+ * The census QUERY against the one shape that broke it (WI-10005064): foreign
+ * keys. A foreign key sets `pg_constraint.conindid` to the REFERENCED table's
+ * unique index, so a census that joins on `conindid` alone emits one row per
+ * referencing FK and calls an FK-referenced plain unique index constraint-backed.
+ *
+ * `LEGACY_JOIN_CENSUS_SQL` is that broken query, kept on purpose as the control:
+ * it must still show the defect on this fixture, or the fixture has stopped
+ * exercising the FK class and the real assertions below would pass vacuously.
+ */
+const FIXTURE_SCHEMA = 'census_fk_fixture';
+
+const LEGACY_JOIN_CENSUS_SQL = `
+  SELECT i.indexname AS name, (con.conindid IS NOT NULL) AS "constraintBacked"
+    FROM pg_indexes i
+    JOIN pg_class ic
+      ON ic.relname = i.indexname
+     AND ic.relnamespace = i.schemaname::regnamespace
+    LEFT JOIN pg_constraint con
+      ON con.conindid = ic.oid
+   WHERE i.schemaname = '${FIXTURE_SCHEMA}'
+`;
+
+describe('the index census query', () => {
+  beforeAll(async () => {
+    await sql.unsafe(`
+      CREATE SCHEMA ${FIXTURE_SCHEMA};
+      CREATE TABLE ${FIXTURE_SCHEMA}.parent (
+        id         integer PRIMARY KEY,
+        code       text,
+        label      text CONSTRAINT parent_label_key UNIQUE,
+        parent_ref integer REFERENCES ${FIXTURE_SCHEMA}.parent (id)
+      );
+      CREATE UNIQUE INDEX parent_code_uq ON ${FIXTURE_SCHEMA}.parent (code);
+      CREATE TABLE ${FIXTURE_SCHEMA}.child_a (
+        parent_id   integer REFERENCES ${FIXTURE_SCHEMA}.parent (id),
+        parent_code text    REFERENCES ${FIXTURE_SCHEMA}.parent (code)
+      );
+      CREATE TABLE ${FIXTURE_SCHEMA}.child_b (
+        parent_id integer REFERENCES ${FIXTURE_SCHEMA}.parent (id)
+      );
+    `);
+  });
+
+  afterAll(async () => {
+    await sql.unsafe(`DROP SCHEMA IF EXISTS ${FIXTURE_SCHEMA} CASCADE`);
+  });
+
+  it('control: a conindid join really is broken on this fixture', async () => {
+    const rows = (await sql.unsafe(LEGACY_JOIN_CENSUS_SQL)) as Array<{
+      name: string;
+      constraintBacked: boolean;
+    }>;
+    // parent_pkey: its own PK + two child FKs + the self-referencing FK.
+    expect(rows.filter((r) => r.name === 'parent_pkey')).toHaveLength(4);
+    expect(rows.find((r) => r.name === 'parent_code_uq')?.constraintBacked).toBe(true);
+  });
+
+  it('returns each index once, constraint-backed only by its own PK / UNIQUE constraint', async () => {
+    const census = (await takeIndexCensus(sql)).filter((e) => e.schema === FIXTURE_SCHEMA);
+    const byName = Object.fromEntries(census.map((e) => [e.name, e.constraintBacked]));
+
+    expect(census.map((e) => e.name).sort()).toEqual([
+      'parent_code_uq',
+      'parent_label_key',
+      'parent_pkey',
+    ]);
+    expect(byName).toEqual({
+      parent_pkey: true,
+      parent_label_key: true,
+      // A plain unique index is not constraint-backed just because an FK uses it.
+      parent_code_uq: false,
+    });
   });
 });

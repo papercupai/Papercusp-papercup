@@ -12,10 +12,10 @@
  * Lib stays domain-free; all the coord/PG coupling is here. Best-effort + throttled — a
  * surfacing failure must never affect the limiter or the spawn path.
  */
-import { onGovernorPause } from '@papercusp/papercusp-shared/agent';
+import { onGovernorPause, onGovernorResumed } from '@papercusp/papercusp-shared/agent';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
-import { escalateAlarm } from './alarm-attention';
+import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from './alarm-attention';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { notifySyncInvalidate } from './sync-sse';
@@ -41,8 +41,14 @@ const GOVERNOR_ESCALATION_TITLE = 'Agent rate-limit pause sustained';
 const lastSurfaced = new Map<string, number>();
 let initialized = false;
 let unsubscribePause: (() => void) | undefined;
+let unsubscribeResumed: (() => void) | undefined;
+let alarmActions: Promise<void> = Promise.resolve();
 
-export interface AgentGovernorObserverDeps {
+export const governorAlarmConditionKey = (bucketKey: string) => `alarm:rate-governor:${encodeURIComponent(bucketKey)}`;
+
+export interface AgentGovernorObserverDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'resolve'> {
+  /** Optional host status sink; production uses the existing coord/toast delivery. */
+  status?: (input: { bucketKey: string; untilIso: string; source: string }) => Promise<void>;
   /** Injectable for tests — defaults to the shared attention-notify rail. */
   escalate?: (t: { title: string; body: string }) => Promise<void>;
   /** Injectable for tests — the persistent cross-restart cooldown floor. */
@@ -58,14 +64,30 @@ export function initAgentGovernorObserver(deps: AgentGovernorObserverDeps = {}):
     // for a flaky proxy is misleading noise. The egress circuit has its own observability.
     if (ev.source === 'transport') return;
     const now = Date.now();
-    if (now - (lastSurfaced.get(ev.key) ?? 0) < SURFACE_THROTTLE_MS) return;
-    lastSurfaced.set(ev.key, now);
+    const surfaceStatus = now - (lastSurfaced.get(ev.key) ?? 0) >= SURFACE_THROTTLE_MS;
+    if (surfaceStatus) lastSurfaced.set(ev.key, now);
     const untilIso = new Date(ev.pausedUntil).toISOString();
     const pauseDurationMs = Math.max(0, ev.pausedUntil - now);
-    void surfacePause(ev.key, untilIso, ev.source, pauseDurationMs, deps).catch(() => {
-      /* observability is best-effort */
-    });
+    alarmActions = alarmActions
+      .then(() => surfacePause(ev.key, untilIso, ev.source, pauseDurationMs, deps, surfaceStatus))
+      .catch(() => {
+        /* observability is best-effort */
+      });
   });
+  unsubscribeResumed = onGovernorResumed((ev) => {
+    alarmActions = alarmActions
+      .then(async () => {
+        await resolveAlarm(governorAlarmConditionKey(ev.key), 'agent-governor-observer', deps);
+      })
+      .catch(() => {
+        /* observability is best-effort */
+      });
+  });
+}
+
+/** Drain the observer's actual queued deliveries for caller coverage and shutdown. */
+export function flushAgentGovernorAlarms(): Promise<void> {
+  return alarmActions;
 }
 
 async function surfacePause(
@@ -74,41 +96,52 @@ async function surfacePause(
   source: string,
   pauseDurationMs: number,
   deps: AgentGovernorObserverDeps,
+  surfaceStatus: boolean,
 ): Promise<void> {
-  const summary = `⏳ agent rate-limit — bucket "${bucketKey}" paused until ${untilIso} (${source})`;
-  // Coord broadcast (transition only), mirroring the service-health monitor.
-  // Ambient category → default-excluded from coord:inbox (opt-in to see it).
-  // P-033 (d): see service-health — `rate-governor` does not match the
-  // conservative MACHINE_SENDER_PATTERN, so mark it machine chatter explicitly;
-  // the sendMessage seam then stamps `expects:'none'` (D-072).
-  await sendMessage(GOVERNOR_IDENTITY, {
-    to: ['*'],
-    summary,
-    category: 'agent-governor',
-    extra: { auto: true },
-  }).catch(() => {});
-  // Toast stream (notifications:recent), mirroring writeVerifierWarningToast.
-  try {
-    const tl = generated.toastLogInHarnessShared;
-    const { db } = getOrgPg();
-    await db.insert(tl).values({
-      level: 'warning',
-      message: 'Agent rate-limited — paused',
-      description: `Rate-limit bucket "${bucketKey}" is paused until ${untilIso}. Agent spawns + in-process LLM calls on this provider/model-class wait until the reset (no work is lost; they resume automatically).`,
-      harnessSlug: null,
-      createdAt: Date.now(),
-      actionLabel: null,
-      actionHref: null,
-    });
-    void (async () => {
-      const stale = await db.select({ id: tl.id }).from(tl).orderBy(desc(tl.createdAt)).offset(TOAST_RING_BUFFER);
-      if (stale.length > 0) await db.delete(tl).where(inArray(tl.id, stale.map((r) => r.id)));
-    })().catch(() => {});
-    void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
-  } catch {
-    /* PG not ready / write failed — best-effort */
+  if (surfaceStatus) {
+    if (deps.status) await deps.status({ bucketKey, untilIso, source });
+    else {
+      const summary = `⏳ agent rate-limit — bucket "${bucketKey}" paused until ${untilIso} (${source})`;
+      // Coord broadcast (transition only), mirroring the service-health monitor.
+      // Ambient category → default-excluded from coord:inbox (opt-in to see it).
+      // P-033 (d): see service-health — `rate-governor` does not match the
+      // conservative MACHINE_SENDER_PATTERN, so mark it machine chatter explicitly;
+      // the sendMessage seam then stamps `expects:'none'` (D-072).
+      await sendMessage(GOVERNOR_IDENTITY, {
+        to: ['*'],
+        summary,
+        category: 'agent-governor',
+        extra: { auto: true },
+      }).catch(() => {});
+      // Toast stream (notifications:recent), mirroring writeVerifierWarningToast.
+      try {
+        const tl = generated.toastLogInHarnessShared;
+        const { db } = getOrgPg();
+        await db.insert(tl).values({
+          level: 'warning',
+          message: 'Agent rate-limited — paused',
+          description: `Rate-limit bucket "${bucketKey}" is paused until ${untilIso}. Agent spawns + in-process LLM calls on this provider/model-class wait until the reset (no work is lost; they resume automatically).`,
+          harnessSlug: null,
+          createdAt: Date.now(),
+          actionLabel: null,
+          actionHref: null,
+        });
+        void (async () => {
+          const stale = await db.select({ id: tl.id }).from(tl).orderBy(desc(tl.createdAt)).offset(TOAST_RING_BUFFER);
+          if (stale.length > 0)
+            await db.delete(tl).where(
+              inArray(
+                tl.id,
+                stale.map((r) => r.id),
+              ),
+            );
+        })().catch(() => {});
+        void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
+      } catch {
+        /* PG not ready / write failed — best-effort */
+      }
+    }
   }
-
   // The coord transition remains the fast agent-facing signal. A human ping is
   // reserved for a pause beyond the reachable 90-second threshold, so a brief
   // 429/backpressure event does not train the owner to ignore this rail.
@@ -116,12 +149,14 @@ async function surfacePause(
     await escalateAlarm(
       {
         title: GOVERNOR_ESCALATION_TITLE,
-        body: `Rate-limit bucket "${bucketKey}" is paused until ${untilIso} (${source}), for at least 90 seconds. ` +
+        body:
+          `Rate-limit bucket "${bucketKey}" is paused until ${untilIso} (${source}), for at least 90 seconds. ` +
           'Provider capacity is holding agent work; inspect account routing and governor state.',
         cooldownMs: GOVERNOR_ESCALATE_COOLDOWN_MS,
         source: 'agent-governor-observer',
+        conditionKey: governorAlarmConditionKey(bucketKey),
       },
-      { notify: deps.escalate, recentlyEscalated: deps.recentlyEscalated },
+      { notify: deps.escalate, recentlyEscalated: deps.recentlyEscalated, broadcast: deps.broadcast },
     );
   }
 }
@@ -130,6 +165,9 @@ async function surfacePause(
 export function _resetAgentGovernorObserver(): void {
   unsubscribePause?.();
   unsubscribePause = undefined;
+  unsubscribeResumed?.();
+  unsubscribeResumed = undefined;
+  alarmActions = Promise.resolve();
   initialized = false;
   lastSurfaced.clear();
 }

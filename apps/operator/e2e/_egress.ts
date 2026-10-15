@@ -72,7 +72,7 @@
  * Loopback is never foreign and is not expressed that way — see LOCAL_HOSTNAMES
  * in egress-monitor.ts.
  */
-import { test as base, expect } from '@playwright/test';
+import { test as base, expect, type Locator, type Page } from '@playwright/test';
 import {
   classifyEgress,
   EGRESS_CONTROL_PARAM,
@@ -134,6 +134,53 @@ export function assertMounted(mounted: boolean, context: string): asserts mounte
 }
 
 /** What a spec may configure, via `test.use({ ... })`. */
+// ── Host network-change recovery (WI-6554700010008424) ──────────────────────
+// TEMPORARY MITIGATION because this dev box creates and removes network interfaces constantly
+// (fleet network namespaces, container veths), and Chromium answers every address change by
+// closing in-flight connections with net::ERR_NETWORK_CHANGED. A page whose module graph is
+// loading at that instant never mounts and stays blank (measured: 130-148 aborted module requests
+// in two ongoing-work-ui failures, run 20261011T042449Z-2447651). The page load failed, not the
+// app, so one reload is the recovery, and only for that error. Durable fix = keep the browser
+// from seeing host interface churn; tracked on WI-6554700010008424.
+const networkChangeSeen = new WeakMap<Page, { seen: boolean }>();
+
+/** Start recording net::ERR_NETWORK_CHANGED request failures for `page`. Idempotent. */
+export function watchNetworkChange(page: Page): void {
+  if (networkChangeSeen.has(page)) return;
+  const state = { seen: false };
+  networkChangeSeen.set(page, state);
+  page.on('requestfailed', (request) => {
+    if (request.failure()?.errorText === 'net::ERR_NETWORK_CHANGED') state.seen = true;
+  });
+}
+
+/**
+ * Wait for `ready` to be visible. When that times out AND the page logged
+ * net::ERR_NETWORK_CHANGED, reload once and wait again; any other timeout is rethrown unchanged.
+ * Call watchNetworkChange(page) before the navigation so failures during it are seen. A recovery
+ * is recorded as a `network-change-recovery` annotation, so it stays visible in the report.
+ */
+export async function waitVisibleRecoveringNetworkChange(ready: Locator, timeout: number): Promise<void> {
+  const page = ready.page();
+  watchNetworkChange(page);
+  const state = networkChangeSeen.get(page)!;
+  try {
+    await ready.waitFor({ state: 'visible', timeout });
+    state.seen = false;
+    return;
+  } catch (error) {
+    if (!state.seen) throw error;
+  }
+  state.seen = false;
+  test.info().annotations.push({
+    type: 'network-change-recovery',
+    description: 'reloaded once after net::ERR_NETWORK_CHANGED left the page blank (WI-6554700010008424)',
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await ready.waitFor({ state: 'visible', timeout });
+  state.seen = false;
+}
+
 export interface EgressFixtureOptions {
   /**
    * Non-local origins this spec is ALLOWED to reach, as exact origins
@@ -225,6 +272,10 @@ export const test = base.extend<EgressFixtureOptions & EgressFixtures>({
       const t0 = Date.now();
       const observed: ResourceTimingLike[] = [];
       const blindTo: string[] = [];
+      const browserDiagnostics = {
+        pageErrors: [] as string[],
+        failedScripts: [] as Array<{ path: string; error: string }>,
+      };
 
       const record = (url: string, via: ResourceTimingLike['via']): void => {
         if (isIgnored(url)) return;
@@ -235,15 +286,31 @@ export const test = base.extend<EgressFixtureOptions & EgressFixtures>({
       // spec opens later, which a page-level listener would miss entirely.
       const onRequest = (req: { url(): string }): void => record(req.url(), 'resource-timing');
       context.on('request', onRequest);
+      const onRequestFailed = (req: {
+        url(): string;
+        resourceType(): string;
+        failure(): { errorText: string } | null;
+      }): void => {
+        if (req.resourceType() !== 'script') return;
+        // Diagnostic URLs retain the module path, never query credentials.
+        browserDiagnostics.failedScripts.push({
+          path: new URL(req.url()).pathname,
+          error: req.failure()?.errorText ?? 'unknown',
+        });
+      };
+      context.on('requestfailed', onRequestFailed);
 
       // WebSockets are a SEPARATE event in Playwright — they do not arrive as
       // 'request'. Desktop sync is SSE-primary but the browser fallback is WS, so
       // without this the fixture would be blind to the app's own live transport.
       const onWebSocket = (ws: { url(): string }): void => record(ws.url(), 'websocket');
-      const attachWs = (p: { on(e: 'websocket', h: (ws: { url(): string }) => void): void }): void =>
+      const onPageError = (error: Error): void => { browserDiagnostics.pageErrors.push(error.message); };
+      const attachPage = (p: Page): void => {
         p.on('websocket', onWebSocket);
-      for (const p of context.pages()) attachWs(p);
-      context.on('page', attachWs);
+        p.on('pageerror', onPageError);
+      };
+      for (const p of context.pages()) attachPage(p);
+      context.on('page', attachPage);
 
       const state: EgressSensorState = {
         controlObserved: false,
@@ -257,6 +324,16 @@ export const test = base.extend<EgressFixtureOptions & EgressFixtures>({
         report: () => classifyEgress(observed, options, state),
         observed: () => observed.map((o) => o.name),
       });
+
+      // A mount/sync assertion can fail before the spec reaches its own error
+      // checks. Preserve those errors before touching a potentially closed page
+      // for the sensor control, without replacing the original failure.
+      if (testInfo.status !== undefined && testInfo.status !== testInfo.expectedStatus) {
+        await testInfo.attach('browser-diagnostics', {
+          body: JSON.stringify(browserDiagnostics, null, 2),
+          contentType: 'application/json',
+        });
+      }
 
       // ---- teardown: prove the sensor was alive, then judge ------------------
       // The control must be issued from the PAGE: context.request.* is a
@@ -280,7 +357,12 @@ export const test = base.extend<EgressFixtureOptions & EgressFixtures>({
       state.controlObserved = observed.some((o) => o.name.includes(EGRESS_CONTROL_PARAM));
 
       context.off('request', onRequest);
-      context.off('page', attachWs);
+      context.off('requestfailed', onRequestFailed);
+      context.off('page', attachPage);
+      for (const p of context.pages()) {
+        p.off('websocket', onWebSocket);
+        p.off('pageerror', onPageError);
+      }
 
       // A test that already failed gets no extra noise piled on: the spec's own
       // failure is the one to act on, and an egress breach behind it will surface

@@ -3,7 +3,7 @@
  * waited out and retried; a far-off reset (past maxPauseMs) or a non-rate error is
  * rethrown for the caller to record + skip. Pure: clock + sleep injected (fake clock).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { runWithRatePause, type RatePauseDeps } from './rate-pause';
 import { LlmCallError } from '@papercusp/testing-shell/llm';
 
@@ -21,9 +21,34 @@ function fakeClock() {
 }
 
 const rateErr = (retryAfterMs?: number, resetAt?: number) =>
-  new LlmCallError({ class: 'rate_limited', message: 'slow down', retryAfterMs, resetAt });
+  Object.assign(new LlmCallError({ class: 'rate_limited', message: 'slow down', retryAfterMs, resetAt }), { costUsd: 0 });
 
 describe('runWithRatePause', () => {
+  it.each([
+    ['absent', {}],
+    ['positive', { costUsd: 0.23 }],
+    ['NaN', { costUsd: NaN }],
+    ['infinite', { costUsd: Infinity }],
+    ['negative', { costUsd: -1 }],
+    ['string zero', { costUsd: '0' }],
+    ['incomplete zero', { costUsd: 0, costUsdMeasurementMissing: true }],
+    ['incomplete subtotal', { costUsd: 0.23, costUsdMeasurementMissing: true }],
+    ['unreported frames', { costUsd: 0, unreportedFrames: 1 }],
+    ['invalid completeness', { costUsd: 0, costUsdMeasurementMissing: 'false' }],
+    ['invalid frame count', { costUsd: 0, unreportedFrames: NaN }],
+  ])('preserves %s usage without replacing it with a later rate retry', async (_label, usage) => {
+    const { deps, slept } = fakeClock();
+    const failure = Object.assign(new LlmCallError({ class: 'rate_limited', message: 'slow down', retryAfterMs: 1 }), usage);
+    const call = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue('later success');
+    const onPause = vi.fn();
+    const onReset = vi.fn();
+    await expect(runWithRatePause(call, { ...deps, onPause, onReset })).rejects.toBe(failure);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(slept).toEqual([]);
+    expect(onPause).not.toHaveBeenCalled();
+    expect(onReset).not.toHaveBeenCalled();
+  });
+
   it('returns the fn result on success with no pause', async () => {
     const { deps, slept } = fakeClock();
     const out = await runWithRatePause(async () => 'ok', deps);

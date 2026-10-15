@@ -2,7 +2,7 @@
  * GET /api/device/qr.svg?payload=<json> — server-rendered pairing QR.
  * Ported from app/api/device/qr.svg/route.ts. `auth: 'public'` — the
  * route keeps its own loopback Host-header gate (the payload carries a
- * one-time 5-min pairToken).
+ * one-time pairToken with the expiry returned by the mint route).
  */
 import { toString as qrToString } from 'qrcode';
 import { defineTool } from '@papercusp/agent-mcp';

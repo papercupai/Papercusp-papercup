@@ -3,6 +3,7 @@ import { buildSnapshotOps, type SnapshotPayload } from '../log-snapshot';
 import {
   combineSnapshotApplyMarks,
   createMergeCursor,
+  LEGACY_UNMARKED_FILTERED_SET_CUTOFF_MS,
   mergeAdmittedLogsIncremental,
   MERGE_PERSIST_EVERY_OPS,
   NO_SNAPSHOT_APPLY,
@@ -60,7 +61,14 @@ interface TestLog extends AdmittedLog {
   history: PeerLogOp[];
   append(...batch: PeerLogOp[]): void;
   /** Append one snapshot set over `history` at the current tail; returns its coversUpTo. */
-  appendSet(opts?: { maxChunkBytes?: number; excludeTables?: string[]; ts?: number; schemaVersion?: number }): {
+  appendSet(opts?: {
+    maxChunkBytes?: number;
+    excludeTables?: string[];
+    /** Mark the set as summarizing this log's own prefix (WI-10005425). */
+    ownPrefix?: boolean;
+    ts?: number;
+    schemaVersion?: number;
+  }): {
     coversUpTo: number;
     chunkCount: number;
     rowCount: number;
@@ -99,6 +107,7 @@ function testLog(keyHex = KEY, knownSchemaVersion = Number.POSITIVE_INFINITY): T
         schema_version: opts?.schemaVersion ?? 1,
         ...(opts?.maxChunkBytes ? { maxChunkBytes: opts.maxChunkBytes } : {}),
         ...(opts?.excludeTables ? { excludeTables: opts.excludeTables } : {}),
+        ...(opts?.ownPrefix ? { ownPrefix: true } : {}),
       });
       log.ops.push(...set);
       const rowCount = set.reduce((n, op) => n + (op.value as SnapshotPayload).rows.length, 0);
@@ -384,13 +393,142 @@ describe('P-008 (e) sets that do not summarize this log\'s own prefix always app
     expect(Object.fromEntries(pg)).toEqual(await historyOracle(source));
   });
 
-  it('a set carrying excludeTables is applied even by a restarted reader that folded the prefix', async () => {
+  it('an unmarked set carrying excludeTables, produced after the legacy cutoff, is applied even by a restarted reader that folded the prefix', async () => {
     const log = testLog();
     for (let i = 0; i < 40; i++) log.append(put(`K${i}`, { v: i }, 1 + i));
     const store = memStore();
     await fold([log], createMergeCursor(), new Map(), { budget: log.length, store });
-    const set = log.appendSet({ excludeTables: ['presence'] });
+    const set = log.appendSet({ excludeTables: ['presence'], ts: LEGACY_UNMARKED_FILTERED_SET_CUTOFF_MS });
     expect(await fold([log], await restart(store), new Map(), { budget: set.chunkCount })).toBe(set.rowCount);
+  });
+});
+
+/**
+ * WI-10005425. The release cut writes a FILTERED head snapshot (`excludeTables` =
+ * presence) into the live own log, and it summarizes exactly that log's prefix. Before
+ * the `ownPrefix` marker existed, `excludeTables` alone made every such set ineligible,
+ * so each reader re-applied ~968k rows per cut on the tower.
+ */
+/**
+ * 40 queue keys plus one row of the excluded table, folded op by op, then a filtered set
+ * stamped `ts` (default: after the legacy cutoff, so only the marker can make it eligible).
+ */
+async function foldedPrefixThenFilteredSet(ownPrefix: boolean, ts = LEGACY_UNMARKED_FILTERED_SET_CUTOFF_MS) {
+  const log = testLog();
+  for (let i = 0; i < 40; i++) log.append(put(`K${i}`, { v: i }, 1 + i));
+  log.append({ type: 'put', table: 'presence', hbKey: 'P1', value: { at: 1 }, ts: 100, schema_version: 1, author_pubkey: 'me' });
+  const store = memStore();
+  const pg: Pg = new Map();
+  await fold([log], createMergeCursor(), pg, { budget: log.length, store });
+  const set = log.appendSet({ excludeTables: ['presence'], ownPrefix, maxChunkBytes: 400, ts });
+  return { log, set, store, pg };
+}
+
+describe('P-008 (e) a filtered set marked ownPrefix summarizes this log, so a reader that folded the prefix skips it', () => {
+  it('applies ZERO rows of the marked set and still lands on the history-only oracle', async () => {
+    const { log, set, store, pg } = await foldedPrefixThenFilteredSet(true);
+    expect(set.chunkCount).toBeGreaterThan(1);
+    expect(set.rowCount).toBeGreaterThan(0);
+
+    const cursor = await restart(store);
+    expect(await fold([log], cursor, pg, { budget: set.chunkCount, store })).toBe(0);
+    expect(cursor.positions.get(KEY)).toBe(set.coversUpTo + set.chunkCount);
+    const skippedLine = `set@${set.coversUpTo}: SKIPPED ${set.chunkCount} chunk(s)`;
+    expect(infoSpy.mock.calls.some((call: unknown[]) => String(call[0]).includes(skippedLine))).toBe(true);
+
+    for (let i = 0; i < 5; i++) log.append(put(`T${i}`, { v: i }, 10_000 + i));
+    await fold([log], cursor, pg, { store });
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
+  });
+
+  it('CONTROL: the identical set WITHOUT the marker is applied in full', async () => {
+    const { log, set, store } = await foldedPrefixThenFilteredSet(false);
+    expect(await fold([log], await restart(store), new Map(), { budget: set.chunkCount })).toBe(set.rowCount);
+  });
+
+  it('the marker never makes a set summarizing ANOTHER log skippable (coversUpTo 0 still applies)', async () => {
+    const source = testLog('cd'.repeat(32));
+    for (let i = 0; i < 30; i++) source.append(put(`S${i}`, { v: i }, 1 + i));
+    const core = testLog('ef'.repeat(32));
+    core.ops.push(
+      ...buildSnapshotOps({
+        ops: source.history,
+        coversUpTo: 0,
+        author_pubkey: 'me',
+        ts: 1_000,
+        schema_version: 1,
+        excludeTables: ['presence'],
+        ownPrefix: true,
+      }),
+    );
+    const pg: Pg = new Map();
+    expect(await fold([core], createMergeCursor(), pg)).toBe(30);
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(source));
+  });
+});
+
+/**
+ * WI-6554700010008538. Release-cut sets produced BEFORE the `ownPrefix` marker are filtered
+ * and unmarked. A reader re-folding the papercusp own log from 0 re-applied each one in full
+ * (~1.4M rows, ~5 min per set, one every ~2-4K ops). Before the cutoff, such a set provably
+ * summarizes its carrier's prefix when it sits at its own anchor (`coversUpTo > 0`): every
+ * synthetic seed core was minted fresh, so its sets are at `coversUpTo` 0.
+ */
+describe('P-008 (e) a LEGACY unmarked filtered set at its own anchor summarizes this log, so it is skipped', () => {
+  const LEGACY_TS = LEGACY_UNMARKED_FILTERED_SET_CUTOFF_MS - 1;
+
+  it('applies ZERO rows of a pre-cutoff unmarked filtered set and still lands on the history-only oracle', async () => {
+    const { log, set, store, pg } = await foldedPrefixThenFilteredSet(false, LEGACY_TS);
+    expect(set.chunkCount).toBeGreaterThan(1);
+    expect(set.rowCount).toBeGreaterThan(0);
+
+    const cursor = await restart(store);
+    expect(await fold([log], cursor, pg, { budget: set.chunkCount, store })).toBe(0);
+    expect(cursor.positions.get(KEY)).toBe(set.coversUpTo + set.chunkCount);
+    const skippedLine = `set@${set.coversUpTo}: SKIPPED ${set.chunkCount} chunk(s)`;
+    expect(infoSpy.mock.calls.some((call: unknown[]) => String(call[0]).includes(skippedLine))).toBe(true);
+
+    for (let i = 0; i < 5; i++) log.append(put(`T${i}`, { v: i }, 10_000 + i));
+    await fold([log], cursor, pg, { store });
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
+  });
+
+  it('BOUNDARY: the identical set stamped AT the cutoff keeps the apply path', async () => {
+    const { log, set, store } = await foldedPrefixThenFilteredSet(false, LEGACY_UNMARKED_FILTERED_SET_CUTOFF_MS);
+    expect(await fold([log], await restart(store), new Map(), { budget: set.chunkCount })).toBe(set.rowCount);
+  });
+
+  it('a pre-cutoff unmarked filtered set that is NOT at its own anchor is applied in full', async () => {
+    const log = testLog();
+    for (let i = 0; i < 40; i++) log.append(put(`K${i}`, { v: i }, 1 + i));
+    const store = memStore();
+    await fold([log], createMergeCursor(), new Map(), { budget: log.length, store });
+    // coversUpTo 2 short of where chunk 0 lands: the set does not start at its anchor.
+    const set = buildSnapshotOps({
+      ops: log.history.slice(0, log.ops.length - 2),
+      coversUpTo: log.ops.length - 2,
+      author_pubkey: 'me',
+      ts: LEGACY_TS,
+      schema_version: 1,
+      excludeTables: ['presence'],
+      maxChunkBytes: 400,
+    });
+    expect(set.length).toBeGreaterThan(1);
+    log.ops.push(...set);
+    const rowCount = set.reduce((n, op) => n + (op.value as SnapshotPayload).rows.length, 0);
+    expect(await fold([log], await restart(store), new Map(), { budget: set.length })).toBe(rowCount);
+  });
+
+  it('the legacy rule never makes a pre-cutoff seed-core set (coversUpTo 0, another log) skippable', async () => {
+    const source = testLog('cd'.repeat(32));
+    for (let i = 0; i < 30; i++) source.append(put(`S${i}`, { v: i }, 1 + i));
+    const core = testLog('ef'.repeat(32));
+    core.ops.push(
+      ...buildSnapshotOps({ ops: source.history, coversUpTo: 0, author_pubkey: 'me', ts: LEGACY_TS, schema_version: 1, excludeTables: ['presence'] }),
+    );
+    const pg: Pg = new Map();
+    expect(await fold([core], createMergeCursor(), pg)).toBe(30);
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(source));
   });
 });
 

@@ -216,14 +216,30 @@ describe('getSessionDetail related_chats', () => {
     expect(dbMocks.orgSql.mock.calls[0]?.slice(1)).toContain('claude-session-2');
   });
 
-  it('resolves a transcript-only native session id through session_turn_parts', async () => {
+  it('resolves transcript-only tool invocations through historical session event sources and time bounds', async () => {
     dbMocks.orgSql.mockReset();
     dbMocks.orgSql
       .mockResolvedValueOnce([]) // no spawned_agents row
       .mockResolvedValueOnce([]) // no adv_sessions row
-      .mockResolvedValueOnce([]) // no tool_invocations row by spawn id
-      .mockResolvedValueOnce([]) // no child spawns
-      .mockResolvedValueOnce([{ owner: 'su-owner-transcript' }]); // transcript part
+      .mockResolvedValueOnce([
+        {
+          owner: 'su-owner-transcript',
+          started_at: '2026-09-13T00:00:00.000Z',
+          ended_at: '2026-09-13T00:30:00.000Z',
+        },
+      ]) // historical session events resolve the owner and this session's time bounds
+      .mockResolvedValueOnce([
+        {
+          id: '43',
+          tool_name: 'work_items:get',
+          invoked_at: '2026-09-13T00:10:00.000Z',
+          duration_ms: 14,
+          status: 'ok',
+          error_message: null,
+          args_json: { id: 'WI-1' },
+        },
+      ]) // tool_invocations by transcript owner + session window
+      .mockResolvedValueOnce([]); // no child spawns
 
     const detail = await getSessionDetail('codex-session-from-transcript');
 
@@ -233,23 +249,53 @@ describe('getSessionDetail related_chats', () => {
       omp_thread_id: null,
       coord_owner_id: 'su-owner-transcript',
       agent: null,
-      invocations: [],
+      invocations: [
+        {
+          id: '43',
+          tool_name: 'work_items:get',
+          invoked_at: '2026-09-13T00:10:00.000Z',
+          duration_ms: 14,
+          status: 'ok',
+          error_message: null,
+          args_json: { id: 'WI-1' },
+        },
+      ],
       children: [],
       related_chats: [],
     });
 
-    const partsCall = dbMocks.orgSql.mock.calls[4];
+    const partsCall = dbMocks.orgSql.mock.calls[2];
     const partsSql = partsCall?.[0] as TemplateStringsArray | undefined;
     const query = partsSql?.join(' ') ?? '';
     expect(query).toContain('FROM harness_shared.session_turn_parts');
     expect(query).toContain("workspace_id = 'default'");
     expect(query).toContain("source_kind IN ('claude', 'omp', 'codex')");
-    expect(partsCall?.slice(1)).toEqual(['codex-session-from-transcript']);
-    expect(
-      dbMocks.orgSql.mock.calls.some(([statement]) =>
-        (statement as TemplateStringsArray).join(' ').includes('harness_shared.session_turns'),
-      ),
-    ).toBe(false);
+    expect(query).toContain('MIN(COALESCE(ts, ingested_at))');
+    expect(query).toContain('MAX(COALESCE(ts, ingested_at))');
+    expect(query).toContain('GROUP BY source_kind, owner');
+    expect(query).toContain('FROM harness_shared.session_turns');
+    expect(query).toContain('FROM harness_shared.agent_activity');
+    expect(partsCall?.slice(1)).toEqual([
+      'codex-session-from-transcript',
+      'codex-session-from-transcript',
+      'codex-session-from-transcript',
+    ]);
+
+    const invocationCall = dbMocks.orgSql.mock.calls[3];
+    const invocationTemplate = invocationCall?.[0] as TemplateStringsArray | undefined;
+    const invocationSql = invocationTemplate
+      ?.reduce((statement, part, index) => `${statement}${index ? `$${index}` : ''}${part}`, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    expect(invocationSql).toContain('WHERE coord_owner_id = $1');
+    expect(invocationSql).toContain('invoked_at >= $2');
+    expect(invocationSql).toContain('invoked_at <= $3');
+    expect(invocationSql).not.toContain('WHERE spawn_id =');
+    expect(invocationCall?.slice(1)).toEqual([
+      'su-owner-transcript',
+      '2026-09-13T00:00:00.000Z',
+      '2026-09-13T00:30:00.000Z',
+    ]);
   });
 
   it('keeps unknown ids unresolved when no transcript part exists', async () => {
@@ -257,9 +303,9 @@ describe('getSessionDetail related_chats', () => {
     dbMocks.orgSql
       .mockResolvedValueOnce([]) // no spawned_agents row
       .mockResolvedValueOnce([]) // no adv_sessions row
+      .mockResolvedValueOnce([]) // no transcript part
       .mockResolvedValueOnce([]) // no tool_invocations row by spawn id
-      .mockResolvedValueOnce([]) // no child spawns
-      .mockResolvedValueOnce([]); // no transcript part
+      .mockResolvedValueOnce([]); // no child spawns
 
     await expect(getSessionDetail('unknown-session')).resolves.toBeNull();
   });

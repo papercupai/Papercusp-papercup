@@ -64,6 +64,7 @@ describe('provisionSystemPrincipal', () => {
     expect(r).not.toBeNull();
     expect(r!.rotated).toBe(false);
     expect(r!.bearer).toBeTruthy();
+    if (!r?.bearer) throw new Error('initial provision must return a fresh bearer');
 
     const sp = await db.adminSql`
       SELECT bearer_hash FROM harness_shared.system_principals
@@ -102,6 +103,7 @@ describe('provisionSystemPrincipal', () => {
     expect(rotated).not.toBeNull();
     expect(rotated!.rotated).toBe(true);
     expect(rotated!.bearer).not.toBe(first!.bearer);
+    if (!rotated?.bearer) throw new Error('rotation must return a fresh bearer');
 
     const sp = await db.adminSql`
       SELECT bearer_hash FROM harness_shared.system_principals
@@ -115,7 +117,7 @@ describe('provisionSystemPrincipal', () => {
        WHERE workspace_id = ${ws} AND harness_slug = ${`system:${name}`}`;
     expect(ti).toHaveLength(1);
     expect(ti[0].token).toBe(rotated!.bearer);
-    expect(ti.map((r: { token: string }) => r.token)).not.toContain(first!.bearer);
+    expect(ti.map((r) => r.token)).not.toContain(first!.bearer);
   });
 });
 
@@ -123,7 +125,7 @@ describe('pi session lifecycle', () => {
   it('startPiSession writes a live session + token; endPiSession sets ended_at and revokes the token', async () => {
     const ws = 'ws-pi';
     const sessionId = 'sess-pi-1';
-    const s = await startPiSession({ workspaceId: ws, sessionId, capabilities: ['harness:read'] });
+    const s = await startPiSession({ workspaceId: ws, sessionId, capabilities: ['harness:read'], allowedTools: ['harness:get'] });
     expect(s.bearer).toBeTruthy();
 
     const live = await db.adminSql`

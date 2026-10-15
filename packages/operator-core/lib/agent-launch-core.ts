@@ -16,9 +16,12 @@
  *     the first turn is delivered through the psu pty-host discovery socket.
  */
 import { z } from 'zod';
+import { FRESH_VERIFY_TIMEOUT_MS } from './agent-kickoff/launch-budgets.mjs';
 import { getOrgPg } from '@papercusp/db-org';
-import { mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
-import { findLiveHost, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
+import { getAdvSession, mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
+import { getSessionPort } from './session-port/store';
+import type { SessionBackend, SessionPortContractSummary } from './session-port/types';
+import { findLiveHost, findLiveHostAsync, injectIntoHost, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import { fetchSelfWake } from './agent-tools/coordination/presence-selfwake';
 import {
   accountFromArgv,
@@ -32,6 +35,7 @@ import {
 } from './agent-config-constants';
 import { resolveCodexModel, resolveCodexModelSelection } from './model-context-budget.mjs';
 import { isSuAgent, SU_AGENTS } from './su-agents';
+import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 
 export type CodexModelSource = 'explicit' | 'inherited' | 'configured-default';
 
@@ -162,15 +166,18 @@ function boundedLaunchModeText(value: unknown, maxChars: number): string | null 
 }
 
 /** Normalize an untrusted launch-mode value before it reaches argv or JSON. */
-export function normalizeLaunchMode(value: unknown): LaunchMode | null {
+export function normalizeLaunchMode(value: unknown, opts: { fleetRole?: 'member' | 'leader' } = {}): LaunchMode | null {
   if (!value || typeof value !== 'object') return null;
   const input = value as Record<string, unknown>;
   if (input.mode !== 'drain' && input.mode !== 'grade' && input.mode !== 'test') return null;
+  // A new member can participate in the caller's mode, but the caller's
+  // personal mission and owner-directed provenance do not belong to that identity.
+  const member = opts.fleetRole === 'member';
   return {
     mode: input.mode,
-    subject: boundedLaunchModeText(input.subject, LAUNCH_MODE_SUBJECT_MAX_CHARS),
-    instructions: boundedLaunchModeText(input.instructions, LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS),
-    ownerDirected: input.ownerDirected === true,
+    subject: member ? null : boundedLaunchModeText(input.subject, LAUNCH_MODE_SUBJECT_MAX_CHARS),
+    instructions: member ? null : boundedLaunchModeText(input.instructions, LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS),
+    ownerDirected: !member && input.ownerDirected === true,
   };
 }
 
@@ -217,7 +224,15 @@ export interface ResumeTarget {
   /** The session's coord identity — the pty-host discovery key + the identity an
    *  in-place resume re-attaches. */
   ownerId: string | null;
+  /** Workspace recorded on the exact adv_sessions source row. */
+  workspaceId: string | null;
+  /** Harness recorded in the exact source launch argv; absent argv stays unknown. */
+  harnessSlug: string | null;
   agent: string | null;
+  /** Persona role recorded on the source session; null means the standard SU role. */
+  role: string | null;
+  /** Feature/work item recorded on the source session, when one was bound. */
+  feature: string | null;
   cwd: string | null;
   /** The model spec recorded in the source session's launch argv, when present. */
   model: string | null;
@@ -225,6 +240,8 @@ export interface ResumeTarget {
   modelSource: CodexModelSource | null;
   /** The account route recorded in the source session's launch argv, when present. */
   account: string | null;
+  /** Recorded terminal placement; used by recovery paths that forbid caller overrides. */
+  headless?: boolean;
   /** ⚠ Only an end time when {@link endedBy} is `'self'`. Otherwise a sweeper stamped it on
    *  NOTICING the process was gone, so it cannot answer "when did this session end". */
   endedAt: string | null;
@@ -239,6 +256,17 @@ export interface ResumeTarget {
   binding: AdvSessionExpectedBinding | null;
 }
 
+/** Server-only guard carried through an internal projected successor dispatch. */
+export const INTERNAL_EXPECTED_SUCCESSOR_BINDING: unique symbol = Symbol('internal-expected-successor-binding');
+export interface InternalExpectedSuccessorBinding {
+  ownerId: string;
+  advSessionId: number;
+  workspaceId: string;
+  harnessSlug: string;
+  binding: AdvSessionExpectedBinding;
+  requirePositiveTerminalEvidence?: boolean;
+}
+
 export type ResolveResumeError =
   | { ok: false; error: 'not_found'; detail: string }
   | { ok: false; error: 'no_native_session_id'; detail: string };
@@ -248,7 +276,7 @@ export type ResolveResumeResult = ({ ok: true } & ResumeTarget) | ResolveResumeE
 /** Read the model and account settings that a resume must carry from launch argv. */
 function resumeLaunchMetadata(
   launchArgv: unknown,
-): Pick<ResumeTarget, 'model' | 'modelSource' | 'account'> {
+): Pick<ResumeTarget, 'model' | 'modelSource' | 'account' | 'harnessSlug'> {
   const source = flagValueFromArgv(launchArgv, 'model-source');
   const account = accountFromArgv(launchArgv);
   return {
@@ -258,6 +286,7 @@ function resumeLaunchMetadata(
         ? source
         : null,
     account: account && isLaunchAccountValue(account) ? account : null,
+    harnessSlug: flagValueFromArgv(launchArgv, 'harness')?.trim() || null,
   };
 }
 
@@ -333,13 +362,16 @@ export async function resolveResumeTarget(ref: {
   }
   const { sql } = getOrgPg();
   // Exact-pin by native session id wins; otherwise start with the newest row for
-  // the requested agent id. A carry-respawn can rotate the coord owner while
+  // the requested agent id by immutable registration id, not mutable started_at.
+  // A predecessor's start timestamp can be refreshed during reconciliation;
+  // that must never promote it above its successor, even after the successor ends.
+  // A carry-respawn can rotate the coord owner while
   // retaining the transcript's native session id, so agent-id lookup must follow
   // that candidate session through the latest session_turns.owner and prefer the
   // current adv_sessions row. Without that bridge, a stale historical owner is
   // handed to the reviver even though its live successor is already running.
   // An agentId may be a PREFIX (the short `su-b0fbf` handle agents actually say
-  // out loud) — match by prefix, newest first. adv_sessions is deliberately NOT
+  // out loud) — match by prefix, newest registration first. adv_sessions is deliberately NOT
   // workspace-scoped here: coord_owner_id and session_id are globally unique
   // (see advSessionsByCoordOwner's note), so a workspace predicate could only
   // drop valid rows.
@@ -360,10 +392,11 @@ export async function resolveResumeTarget(ref: {
       ${
         sessionId
           ? sql`SELECT ${sessionId}::text AS candidate_session_id`
-          : sql`SELECT s.session_id AS candidate_session_id
+          : sql`SELECT CASE WHEN s.agent = 'omp' THEN COALESCE(s.omp_thread_id, s.session_id)
+                            ELSE s.session_id END AS candidate_session_id
                   FROM harness_shared.adv_sessions s
                  WHERE s.coord_owner_id LIKE ${agentId + '%'}
-                 ORDER BY s.started_at DESC
+                 ORDER BY s.id DESC
                  LIMIT 1`
       }
     ),
@@ -382,6 +415,7 @@ export async function resolveResumeTarget(ref: {
      WHERE ${
        sessionId
          ? sql`session_id = ${sessionId}
+                 OR (agent = 'omp' AND omp_thread_id = ${sessionId})
                  OR coord_owner_id = (SELECT owner FROM indexed_owner)`
          : sql`coord_owner_id LIKE ${agentId + '%'}
                  OR coord_owner_id = (SELECT owner FROM indexed_owner)`
@@ -390,7 +424,7 @@ export async function resolveResumeTarget(ref: {
        sessionId
          ? sql`(session_id = ${sessionId}) DESC,`
          : sql`(coord_owner_id = (SELECT owner FROM indexed_owner)) DESC,`
-     } started_at DESC
+     } id DESC
      LIMIT 1
   `;
   if (!rows.length) {
@@ -404,7 +438,7 @@ export async function resolveResumeTarget(ref: {
     };
   }
   const row: AdvSessionRow = mapAdvSessionRow(rows[0]);
-  const nativeSessionId = resolvedNativeSessionId(sessionId, row.sessionId);
+  const nativeSessionId = resolvedNativeSessionId(sessionId, row.agent === 'omp' ? row.ompThreadId ?? row.sessionId : row.sessionId);
   const launchMetadata = resumeLaunchMetadata(row.launchArgv);
   // The psu launcher already supports tracked Codex rows with no native UUID:
   // `psu --resume=<adv row id>` resolves the row, restores its isolated
@@ -420,7 +454,7 @@ export async function resolveResumeTarget(ref: {
         '(`psu --resume` picker) instead.',
     };
   }
-  const host: PsuPtyHost | null = row.coordOwnerId ? findLiveHost(row.coordOwnerId) : null;
+  const host: PsuPtyHost | null = row.coordOwnerId ? await findLiveHostAsync(row.coordOwnerId) : null;
   return {
     ok: true,
     // Exact native UUID pins are never replaced by the logical owner's older
@@ -429,9 +463,13 @@ export async function resolveResumeTarget(ref: {
     ompThreadId: row.ompThreadId,
     resumeId: nativeSessionId ?? String(row.id),
     ownerId: row.coordOwnerId,
+    workspaceId: row.workspaceId?.trim() || null,
     agent: row.agent,
+    role: row.role,
+    feature: row.feature,
     cwd: row.cwd,
     ...launchMetadata,
+    headless: row.launchArgv?.includes('--headless') === true,
     endedAt: row.endedAt,
     endedBy: row.endedBy,
     live: host != null,
@@ -439,6 +477,7 @@ export async function resolveResumeTarget(ref: {
     binding: row.coordOwnerId && rows[0].binding_started_at ? {
       coordOwnerId: row.coordOwnerId,
       sessionId: row.sessionId,
+      ...(row.agent === 'omp' ? { ompThreadId: row.ompThreadId } : {}),
       startedAt: rows[0].binding_started_at,
     } : null,
   };
@@ -605,12 +644,11 @@ export function buildAgentLaunchCommand(opts: {
     // resuming under the RECORDED id instead produces a row pointing at a
     // session that will never answer to it.
     if (opts.ownerId) {
-      const isConversionLaunch = Boolean(targetAgent && targetAgent !== opts.agent?.trim());
+      const isConversionLaunch = Boolean(targetAgent);
       if (opts.mode !== 'fork' && !isConversionLaunch) {
         throw new Error(
-          'buildAgentLaunchCommand: ownerId pre-pins a NEWLY minted identity — valid on a fork or a ' +
-            'cross-backend conversion, but a same-backend resume re-attaches its recorded coord id and ' +
-            'must not be re-pinned',
+          'buildAgentLaunchCommand: ownerId pre-pins a NEWLY minted identity — valid on a fork or an ' +
+            'explicit session-port target; an ordinary same-backend resume must not be re-pinned',
         );
       }
       parts.push(`--owner-id=${safe('ownerId', opts.ownerId)}`);
@@ -1068,7 +1106,9 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   if (opts.seat) parts.push(`--seat=${quoteLaunchValue(opts.seat)}`);
   for (const dir of opts.addDir ?? []) if (dir) parts.push(`--add-dir=${quoteLaunchValue(dir)}`);
   if (opts.launchMode) {
-    const launchMode = normalizeLaunchMode(opts.launchMode);
+    const launchMode = normalizeLaunchMode(opts.launchMode, {
+      fleetRole: opts.fleetRole === 'leader' ? 'leader' : 'member',
+    });
     if (launchMode) {
       parts.push(`--mode=${launchMode.mode}`);
       if (launchMode.subject) parts.push(`--mode-subject=${quoteLaunchValue(launchMode.subject)}`);
@@ -1100,7 +1140,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
     // EI-8393: kept tight — this rule is the single biggest driver of the P-013
     // prompt-bloat budget; trim further before adding anything to it.
     head: 'STAY ALIVE across turns — loop:arm at spawn, not park',
-    body: 'No human is at your keyboard: FIRST call `loop:arm { intervalSec, goal }`. Each wake, `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat. Call `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` only when no claimable work remains or you are blocked; otherwise ending without the loop parks you until a leader wake (EI-8318).',
+    body: 'No human is at your keyboard: FIRST call `loop:arm { intervalSec, goal }`. Each wake, `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat. Blocked? `work_items:set_blocker` + bounded `events:await`, end the turn. `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` only when no claimable work remains and you hold no claims, else you park until a leader wake (EI-8318).',
   },
   {
     head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',
@@ -1108,7 +1148,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'Do not re-claim a ping-ponging item',
-    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of next `scheduler:get_next` pull and loop on it. If an item reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
+    body: 'A released item can re-surface at the top of the next `scheduler:get_next` pull. If it reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
   },
   {
     head: 'Completion evidence is mandatory',
@@ -1294,6 +1334,10 @@ export async function claimAgentLaunch(opts: {
   workspaceId: string;
   idempotencyKey: string | null | undefined;
   launchedBy?: string | null;
+  /** Stored atomically with a new claim so a replay can verify the request identity. */
+  initialSummary?: Record<string, unknown>;
+  /** Callers whose duplicate-launch safety depends on this ledger can refuse on write failure. */
+  failClosed?: boolean;
   now?: number;
 }): Promise<AgentLaunchClaim> {
   const key = opts.idempotencyKey?.trim();
@@ -1308,11 +1352,14 @@ export async function claimAgentLaunch(opts: {
     const won = await sql<Array<{ idempotency_key: string }>>`
       INSERT INTO harness_shared.agent_launch_idempotency AS existing
         (workspace_id, idempotency_key, launched_at, launched_by, summary)
-      VALUES (${opts.workspaceId}, ${key}, ${now}, ${opts.launchedBy ?? null}, '{}'::jsonb)
+      VALUES (
+        ${opts.workspaceId}, ${key}, ${now}, ${opts.launchedBy ?? null},
+        ${JSON.stringify(opts.initialSummary ?? {})}::text::jsonb
+      )
       ON CONFLICT (workspace_id, idempotency_key) DO UPDATE
          SET launched_at = EXCLUDED.launched_at,
              launched_by = EXCLUDED.launched_by,
-             summary = '{}'::jsonb
+             summary = EXCLUDED.summary
        WHERE existing.launched_at < ${now - AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS}
          AND (
            existing.summary = '{}'::jsonb
@@ -1343,8 +1390,10 @@ export async function claimAgentLaunch(opts: {
     };
   } catch (e) {
     // The guard is a safety net, not a gate: a ledger outage must not block a
-    // launch the caller actually wants. Warn loudly and proceed unguarded.
+    // launch the caller actually wants. Warn loudly and proceed unguarded unless
+    // this caller explicitly makes the ledger part of its correctness contract.
     console.warn(`[agent-launch] idempotency claim failed (launching unguarded): ${(e as Error)?.message ?? e}`);
+    if (opts.failClosed) throw e;
     return { won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null };
   }
 }
@@ -1355,18 +1404,21 @@ export async function recordAgentLaunchResult(opts: {
   workspaceId: string;
   idempotencyKey: string | null | undefined;
   summary: Record<string, unknown>;
-}): Promise<void> {
+}): Promise<boolean> {
   const key = opts.idempotencyKey?.trim();
-  if (!key) return;
+  if (!key) return false;
   try {
     const { sql } = getOrgPg();
-    await sql`
+    const updated = await sql<Array<{ idempotency_key: string }>>`
       UPDATE harness_shared.agent_launch_idempotency
          SET summary = ${JSON.stringify(opts.summary)}::text::jsonb
        WHERE workspace_id = ${opts.workspaceId} AND idempotency_key = ${key}
+      RETURNING idempotency_key
     `;
+    return updated.some((row) => row.idempotency_key === key);
   } catch (e) {
     console.warn(`[agent-launch] idempotency result write failed: ${(e as Error)?.message ?? e}`);
+    return false;
   }
 }
 
@@ -1417,20 +1469,22 @@ export async function injectKickoffAfterResume(
   {
     timeoutMs = 120_000,
     pollMs = 2_000,
-    findHost = findLiveHost,
+    findHost = findLiveHostAsync,
     inject = injectIntoHost,
+    tagTurn = tagTurnForInjection,
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
   }: {
     timeoutMs?: number;
     pollMs?: number;
-    findHost?: typeof findLiveHost;
+    findHost?: typeof findLiveHost | typeof findLiveHostAsync;
     inject?: typeof injectIntoHost;
+    tagTurn?: typeof tagTurnForInjection;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<{ delivered: boolean; waitedMs: number; error?: string }> {
   const started = Date.now();
   for (;;) {
-    const host = findHost(ownerId);
+    const host = await findHost(ownerId);
     if (host?.sock) {
       // EI-153 addressing: currently zero production callers, but this is the
       // closest shape-match in the tree to an observed cross-owner fan-out (a
@@ -1438,7 +1492,8 @@ export async function injectKickoffAfterResume(
       // read as the culprit during WI-2140968 triage. Addressing it removes the
       // trap AND the latent hole: without `ownerId` the host's misdelivery
       // guard abstains, so a stale/mis-resolved socket accepts the turn.
-      const ok = await inject(host.sock, { mode: 'turn', data: kickoff, ownerId });
+      const taggedKickoff = (await tagTurn({ sid: ownerId, origin: 'wake-pump', text: kickoff })).taggedText;
+      const ok = await inject(host.sock, { mode: 'turn', data: taggedKickoff, ownerId });
       return ok
         ? { delivered: true, waitedMs: Date.now() - started }
         : {
@@ -1475,7 +1530,7 @@ export async function injectKickoffAfterResume(
 export const LAUNCH_STATUSLINE_TOOLS: readonly string[] = ['activity:report', 'coord:glance'];
 
 /** How long to watch a fresh launch before returning a verdict. */
-export const FRESH_VERIFY_TIMEOUT_MS = 25_000;
+export { FRESH_VERIFY_TIMEOUT_MS };
 /**
  * A session whose LAST signal of any kind is older than this, at the end of the
  * window, has gone silent. Measured basis: across 24h, a session that never made a
@@ -2170,7 +2225,7 @@ export async function probeFreshLaunchSessions({
     const selfWakeByOwner = await fetchSelfWake(ownerIds);
     const wanted = expectedOwnerIds?.length ? new Set(expectedOwnerIds) : null;
     const expectedByOwner = new Map((expectedAttestations ?? []).map((item) => [item.ownerId, item]));
-    return rows.filter((r) => !wanted || (r.coord_owner_id != null && wanted.has(r.coord_owner_id))).map((r) => {
+    return Promise.all(rows.filter((r) => !wanted || (r.coord_owner_id != null && wanted.has(r.coord_owner_id))).map(async (r) => {
       const expected = r.coord_owner_id ? expectedByOwner.get(r.coord_owner_id) : undefined;
       const actual = launchAttestationFromLedger(r.launch_spec, r.launch_argv);
       const attestationDiffs: FreshLaunchAttestationDiff[] = [];
@@ -2196,7 +2251,7 @@ export async function probeFreshLaunchSessions({
       const wakeSource = r.coord_owner_id
         ? selfWakeByOwner.get(r.coord_owner_id)?.selfWake ?? null
         : null;
-      const host = r.coord_owner_id ? findLiveHost(r.coord_owner_id) : null;
+      const host = r.coord_owner_id ? await findLiveHostAsync(r.coord_owner_id) : null;
       const quotaBlocked =
         host && typeof host.quotaBlocked === 'boolean' ? host.quotaBlocked : null;
       const quotaBlockedSinceMs =
@@ -2223,7 +2278,7 @@ export async function probeFreshLaunchSessions({
           claimedWorkItemId: r.claimed_work_item_id,
         }),
       };
-    });
+    }));
   } catch (e) {
     // ⚠ THROW, never `return []`. An empty list means "nothing registered", which
     // this verifier reads as agentStarted:FALSE — so swallowing a DB fault here
@@ -2263,16 +2318,23 @@ export async function verifyResumeStarted(
   ownerId: string,
   {
     expectedSessionId,
+    expectedPort,
     timeoutMs = 30_000,
     pollMs = 1_000,
-    findHost = findLiveHost,
+    findHost = findLiveHostAsync,
+    readAdvSession = getAdvSession,
+    readPort = getSessionPort,
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
   }: {
     /** Exact native transcript UUID the new backend process must carry. */
     expectedSessionId?: string | null;
+    /** Explicit conversion only: attest the prepared target rather than the source UUID. */
+    expectedPort?: { sourceAdvSessionId: number; targetBackend: SessionBackend };
     timeoutMs?: number;
     pollMs?: number;
-    findHost?: typeof findLiveHost;
+    findHost?: typeof findLiveHost | typeof findLiveHostAsync;
+    readAdvSession?: typeof getAdvSession;
+    readPort?: typeof getSessionPort;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<{
@@ -2283,26 +2345,100 @@ export async function verifyResumeStarted(
   mismatch: boolean;
 }> {
   const begun = Date.now();
+  let portExpected: string | null = null;
+  let portActual: string | null = null;
   for (;;) {
-    const host = findHost(ownerId);
+    const host = await findHost(ownerId);
     if (host) {
       const expected = expectedSessionId?.trim() || null;
       const actual = nativeSessionIdFromHost(host);
-      const mismatch = expected != null && actual !== expected;
-      return {
-        started: !mismatch,
-        waitedMs: Date.now() - begun,
-        expectedSessionId: expected,
-        actualSessionId: actual,
-        mismatch,
-      };
+      if (!expectedPort) {
+        // A Codex argv UUID is the requested predecessor, not an observation
+        // of the current child: an immediate carry can replace that transcript.
+        // Keep missing physical identity unknown instead of certifying argv.
+        if (expected == null || actual != null) {
+          const mismatch = expected != null && actual !== expected;
+          return {
+            started: !mismatch,
+            waitedMs: Date.now() - begun,
+            expectedSessionId: expected,
+            actualSessionId: actual,
+            mismatch,
+          };
+        }
+      }
+      if (expectedPort) {
+        // A conversion deliberately creates a new native session. Owner liveness
+        // alone cannot distinguish it from a substituted or unrelated target.
+        // Missing receipts (or an unreadable probe) remain unknown; only a
+        // contradictory binding is an observed mismatch.
+        portActual = actual;
+        let verdict: boolean | null = null;
+        try {
+          const source = await readAdvSession(expectedPort.sourceAdvSessionId);
+          const targetId = Number(host.advSessionId);
+          const target = Number.isSafeInteger(targetId) && targetId > 0
+            ? await readAdvSession(targetId) : null;
+          if (source && target) {
+            const native = target.agent === 'omp' ? target.ompThreadId ?? target.sessionId : target.sessionId;
+            portExpected = native?.trim() || null;
+            const port = target.portId ? await readPort(target.portId, source.workspaceId) : null;
+            if (host.ownerId !== ownerId || source.coordOwnerId !== ownerId || target.coordOwnerId !== ownerId ||
+                target.workspaceId !== source.workspaceId || target.agent !== expectedPort.targetBackend ||
+                target.portSourceAdvSessionId !== expectedPort.sourceAdvSessionId) {
+              verdict = false;
+            } else if (port) {
+              const summary = port.metadata.summary as SessionPortContractSummary | undefined;
+              const proof = port.metadata.persistenceProof as { persisted?: unknown; nativeRef?: unknown; renderedHash?: unknown } | undefined;
+              if (port.sourceAdvSessionId !== expectedPort.sourceAdvSessionId || port.targetAdvSessionId !== target.id ||
+                  port.sourceBackend !== source.agent || port.targetBackend !== expectedPort.targetBackend ||
+                  port.metadata.sourceCoordOwnerId !== ownerId || port.metadata.targetCoordOwnerId !== ownerId ||
+                  (summary && (summary.source.advSessionId !== source.id || summary.source.backend !== source.agent ||
+                    summary.source.workspaceId !== source.workspaceId || (expected != null && summary.source.nativeSessionId !== expected) ||
+                    summary.target.backend !== expectedPort.targetBackend ||
+                    (summary.target.ownerId != null && summary.target.ownerId !== ownerId) ||
+                    summary.hashes.rendered !== port.renderedHash)) ||
+                  // Codex/OMP bootstrap reservations have no native UUID yet.
+                  // The later adv-session, persisted seed and physical child
+                  // attest it; only a populated reservation can contradict it.
+                  (portExpected != null && port.metadata.targetNativeSessionId != null &&
+                    port.metadata.targetNativeSessionId !== portExpected) ||
+                  (port.metadata.bootstrapReceiptTargetAdvSessionId != null && port.metadata.bootstrapReceiptTargetAdvSessionId !== target.id) ||
+                  (proof?.renderedHash != null && proof.renderedHash !== port.renderedHash) ||
+                  (portExpected != null && typeof proof?.nativeRef === 'string' && !proof.nativeRef.endsWith(`${portExpected}.jsonl`)) ||
+                  port.status === 'failed' || port.status === 'expired') {
+                verdict = false;
+              } else if (port.status === 'delivered' && target.portStatus === 'delivered' && summary &&
+                         port.metadata.bootstrapReceiptCommitted === true &&
+                         port.metadata.bootstrapReceiptTargetAdvSessionId === target.id &&
+                         typeof port.metadata.bootstrapRequestHash === 'string' && port.metadata.bootstrapRequestHash.length > 0 &&
+                         proof?.persisted === true && typeof proof.nativeRef === 'string' && proof.nativeRef.length > 0 &&
+                         proof.renderedHash === port.renderedHash && portExpected != null) {
+                // The delivered port attests its intended target. An absent
+                // physical child UUID is still unknown, so allow the host
+                // observation to arrive before declaring a mismatch.
+                verdict = actual == null ? null : actual === portExpected;
+              }
+            }
+          }
+        } catch {
+          // Instrument failure is not evidence that the launched session failed.
+        }
+        if (verdict != null) return {
+          started: verdict,
+          waitedMs: Date.now() - begun,
+          expectedSessionId: portExpected,
+          actualSessionId: actual,
+          mismatch: !verdict,
+        };
+      }
     }
     if (Date.now() - begun + pollMs > timeoutMs) {
       return {
         started: null,
         waitedMs: Date.now() - begun,
-        expectedSessionId: expectedSessionId?.trim() || null,
-        actualSessionId: null,
+        expectedSessionId: expectedPort ? portExpected : expectedSessionId?.trim() || null,
+        actualSessionId: expectedPort ? portActual : null,
         mismatch: false,
       };
     }
@@ -2311,22 +2447,28 @@ export async function verifyResumeStarted(
 }
 
 /**
- * Extract the native transcript UUID from a live backend argv.
+ * Read the current native transcript UUID observed by the managed host.
  *
- * Codex spells this `codex … resume <uuid>`; Claude/OMP use `--resume <uuid>`,
- * `--resume=<uuid>`, or `--resume-session=<uuid>`. Unknown/missing argv is null,
+ * Codex requires the PID-bound writer observation. Its `resume <uuid>` argv
+ * remains the requested predecessor after a carry, so it cannot attest identity.
+ * Claude/OMP use `--resume <uuid>`,
+ * `--resume=<uuid>`, or `--resume-session=<uuid>`. A prepared Claude conversion
+ * forces its new UUID with `--session-id`. Unknown/missing argv is null,
  * never treated as an implicit match.
  */
 export function nativeSessionIdFromHost(
-  host: Pick<PsuPtyHost, 'command' | 'args'> | null | undefined,
+  host: Pick<PsuPtyHost, 'command' | 'args' | 'nativeSessionId'> | null | undefined,
 ): string | null {
+  if (/(^|[\\/])codex(?:\.exe|\.cmd)?$/i.test(host?.command ?? '')) {
+    return typeof host?.nativeSessionId === 'string' ? host.nativeSessionId.trim() || null : null;
+  }
   const args = Array.isArray(host?.args) ? host.args.filter((v): v is string => typeof v === 'string') : [];
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
-    for (const flag of ['--resume=', '--resume-session=']) {
+    for (const flag of ['--resume=', '--resume-session=', '--session-id=']) {
       if (arg.startsWith(flag) && arg.length > flag.length) return arg.slice(flag.length);
     }
-    if ((arg === '--resume' || arg === '--resume-session') && args[i + 1]) return args[i + 1];
+    if ((arg === '--resume' || arg === '--resume-session' || arg === '--session-id') && args[i + 1]) return args[i + 1];
     if (arg === 'resume' && args[i + 1] && !args[i + 1].startsWith('--')) return args[i + 1];
   }
   return null;
@@ -2349,18 +2491,18 @@ export async function waitForPtyHostGone(
   {
     timeoutMs = 10_000,
     pollMs = 100,
-    findHost = findLiveHost,
+    findHost = findLiveHostAsync,
     sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   }: {
     timeoutMs?: number;
     pollMs?: number;
-    findHost?: typeof findLiveHost;
+    findHost?: typeof findLiveHost | typeof findLiveHostAsync;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<boolean> {
   const begun = Date.now();
   for (;;) {
-    if (!findHost(ownerId)) return true;
+    if (!(await findHost(ownerId))) return true;
     if (Date.now() - begun + pollMs > timeoutMs) return false;
     await sleep(pollMs);
   }

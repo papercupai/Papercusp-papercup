@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "kind": "cloud-sql-pitr-drill-evidence",
+  "plan": "cloud-portal-public-release-2026-10-13",
+  "item": "P-009",
+  "rawReceipt": {
+    "timestamp": "2026-10-14T18:48:56.044Z",
+    "receipt": {
+      "source": "pc-cloud-prod-pg",
+      "scratch": "pc-pitr-drill-92b9c5bdf759",
+      "schema": "_p009_restore_92b9c5bdf759",
+      "restorePoint": "2026-10-14T18:32:34.842Z",
+      "latestRecoveryTime": "2026-10-14T18:34:53.762805784Z",
+      "rpoMs": 17123,
+      "rtoMs": 976325,
+      "beforeRows": 1,
+      "afterRows": 0,
+      "passed": true,
+      "cleanup": {
+        "sourceCanaryRemoved": true,
+        "sourceDataApiClosed": true,
+        "scratchDeleted": false
+      },
+      "cleanupErrors": [
+        "scratch_cleanup_failed"
+      ]
+    },
+    "operationId": "ca618181-30c6-40ae-84ea-c66800000032"
+  },
+  "origin": {
+    "nativeSession": "01a13ba1-ec36-7990-8177-7d433c49b61f",
+    "transcriptRef": "session:01a13ba1-ec36-7990-8177-7d433c49b61f"
+  },
+  "cleanupReconciliation": [
+    {
+      "resource": "source",
+      "exitCode": 0,
+      "data": {
+        "name": "pc-cloud-prod-pg",
+        "project": "papercusp-cloud-prod",
+        "state": "RUNNABLE",
+        "createTime": "2026-10-14T03:25:36.604Z",
+        "settings": {
+          "dataApiAccess": "DISALLOW_DATA_API",
+          "deletionProtectionEnabled": true,
+          "backupConfiguration": {
+            "backupRetentionSettings": {
+              "retainedBackups": 7,
+              "retentionUnit": "COUNT"
+            },
+            "backupTier": "STANDARD",
+            "enabled": true,
+            "kind": "sql#backupConfiguration",
+            "pointInTimeRecoveryEnabled": true,
+            "replicationLogArchivingEnabled": true,
+            "startTime": "07:00",
+            "transactionLogRetentionDays": 7,
+            "transactionalLogStorageState": "CLOUD_STORAGE"
+          }
+        }
+      }
+    },
+    {
+      "resource": "scratch",
+      "exitCode": 1,
+      "notFound": true,
+      "errorCode": [
+        "HTTPError 404"
+      ]
+    },
+    {
+      "resource": "operation",
+      "exitCode": 0,
+      "data": {
+        "endTime": "2026-10-14T18:48:32.639Z",
+        "insertTime": "2026-10-14T18:35:13.646Z",
+        "kind": "sql#operation",
+        "name": "ca618181-30c6-40ae-84ea-c66800000032",
+        "operationType": "CLONE",
+        "selfLink": "https://sqladmin.googleapis.com/sql/v1beta4/projects/papercusp-cloud-prod/operations/ca618181-30c6-40ae-84ea-c66800000032",
+        "startTime": "2026-10-14T18:35:14.169Z",
+        "status": "DONE",
+        "targetId": "pc-pitr-drill-92b9c5bdf759",
+        "targetLink": "https://sqladmin.googleapis.com/sql/v1beta4/projects/papercusp-cloud-prod/instances/pc-pitr-drill-92b9c5bdf759",
+        "targetProject": "papercusp-cloud-prod"
+      }
+    }
+  ],
+  "cleanupComplete": true,
+  "cleanupReconciliationMeasuredAt": "2026-10-14 19:24:12 UTC",
+  "notes": [
+    "Original receipt is preserved verbatim, including scratchDeleted=false and cleanupErrors. Cleanup was reconciled separately after the inherited deletion-protection fix.",
+    "This artifact records live PITR and cleanup only. Nightly logical exports, restored-export proof and delivered age alarms remain unverified."
+  ]
+}

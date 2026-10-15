@@ -14,11 +14,50 @@ import {
   COORDINATION_RUBRIC_REF,
   type OverwatchScorecardEndCheckDeps,
   type OpenBackstopFloor,
+  defaultToolUtilizationGrade,
 } from './scorecard-backstop';
-import type { SystemHealth } from '../system-health/types';
+import type { SystemHealth, ToolEfficiencyHealth } from '../system-health/types';
+import type { DerivedSnapshotResult } from '../derived-reads/registry';
 import { resolveLocalRubric } from '../cupboard/rubric-store';
 
 // ── builders ──────────────────────────────────────────────────────────────────
+
+describe('shared adoption grade (EI-25299577060523251)', () => {
+  const snapshot = (meta: Partial<DerivedSnapshotResult<ToolEfficiencyHealth>['meta']> = {}) => ({
+    payload: {
+      codeRunAdoption: { rating: 'healthy', evidence: 'measured seven-day adoption', adoptionRatePct: 80 },
+    } as ToolEfficiencyHealth,
+    meta: { computedAt: 1, computeMs: 20, missing: false, stale: false, error: null, precomputed: true, ...meta },
+  });
+
+  it('grounds the grade from the existing shared result without a raw corpus scan', async () => {
+    const read = vi.fn(async () => snapshot());
+    expect(await defaultToolUtilizationGrade(read)).toEqual({
+      rating: 'healthy', evidence: 'measured seven-day adoption',
+    });
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps cold, stale and failed refreshes unknown instead of starting a scan', async () => {
+    for (const data of [
+      { ...snapshot(), payload: null },
+      snapshot({ missing: true }),
+      snapshot({ stale: true }),
+      snapshot({ error: 'producer failed' }),
+    ]) {
+      expect(await defaultToolUtilizationGrade(async () => data)).toBeUndefined();
+    }
+  });
+
+  it('does not propagate a shared-reader failure into the scorecard backstop', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await defaultToolUtilizationGrade(async () => { throw new Error('snapshot unavailable'); })).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
 
 const BASE = {
   workFeed: { frontier: 0, frontierBlocked: 0, startedPlans: 1, autoEligibleStuck: 0, deadRoutines: 0, deadRoutineNames: [] },

@@ -33,6 +33,21 @@ import { resolve } from 'node:path';
  */
 
 const ENV_VAR = 'PAPERCUSP_HOST_PG_DUMP_DIR';
+const EXPECTED_DUMP_DIR = '/mnt/cold-a/Backup/db-dumps';
+const DUMP_UNITS = [
+  'papercusp-db-backup.service',
+  'papercup-backup-health.service',
+  'kopia-healthcheck.service',
+  'kopia-snapshots.service',
+  'papercusp-db-backup-alert.service',
+];
+const DUMP_READER_SCRIPTS = [
+  '../systemd/papercusp-db-backup.sh',
+  '../papercup-backup-health-check.sh',
+  '../systemd/kopia-snapshot-all.sh',
+  '../systemd/kopia-healthcheck.sh',
+  '../systemd/kopia-backup-alert.sh',
+];
 // Overridable so falsifiability can be proven against a COPY outside the tree, rather
 // than by mutating the shared checkout (which git-sync would commit mid-probe).
 const SYSTEMD_DIR =
@@ -99,12 +114,32 @@ describe(`systemd units that read ${ENV_VAR}`, () => {
     expect(violations).toEqual([]);
   });
 
-  it('requires the dedicated backup mount for scheduled volume writers', () => {
-    const writers = ['papercusp-db-backup.service', 'kopia-snapshots.service'];
+  it('pins each producer, reader, and Kopia source fallback to one cold-a path', () => {
+    for (const scriptPath of DUMP_READER_SCRIPTS) {
+      const source = readFileSync(resolve(SYSTEMD_DIR, scriptPath), 'utf8');
+      expect(source, scriptPath).toContain(`${ENV_VAR}:-${EXPECTED_DUMP_DIR}`);
+    }
+    const coverageReader = readFileSync(resolve(REPO_ROOT, 'packages/backup/src/host-dump-coverage.ts'), 'utf8');
+    expect(coverageReader).toContain(`DEFAULT_HOST_PG_DUMP_DIR = '${EXPECTED_DUMP_DIR}'`);
+  });
 
-    for (const unit of writers) {
+  it('sets the same dump path explicitly on every systemd consumer', () => {
+    for (const unit of DUMP_UNITS) {
       const body = readFileSync(resolve(SYSTEMD_DIR, unit), 'utf8');
-      expect(body, unit).toContain('RequiresMountsFor=/mnt/backup');
+      expect(body, unit).toContain(`Environment=${ENV_VAR}=${EXPECTED_DUMP_DIR}`);
+    }
+  });
+
+  it('requires the dedicated dump mount for scheduled writers and Kopia freshness checks', () => {
+    const mountedConsumers = [
+      'papercusp-db-backup.service',
+      'kopia-snapshots.service',
+      'kopia-healthcheck.service',
+    ];
+
+    for (const unit of mountedConsumers) {
+      const body = readFileSync(resolve(SYSTEMD_DIR, unit), 'utf8');
+      expect(body, unit).toContain(`RequiresMountsFor=${EXPECTED_DUMP_DIR}`);
     }
   });
 

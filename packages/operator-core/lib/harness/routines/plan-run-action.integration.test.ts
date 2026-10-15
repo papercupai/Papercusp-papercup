@@ -25,9 +25,13 @@ import { blueprintOperationAcceptanceSubjectRef, cancelBlueprintOperation, getBl
 import { seedContentHash } from '../../cupboard/rubric-store';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
-import { runScheduledPlanFire } from './plan-run-action';
+import { handlePlanRun, resetManualTokenCounterForTests, runScheduledPlanFire } from './plan-run-action';
+import { retireRunInstancePlan } from './retire-run-instance-plan';
 import { inboxWakeKey } from '../../agent-tools/coordination/inbox-wake';
-import { observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
+import { assignAndWakeActionableWorkItems } from '../../agent-tools/coordination/actionable-work-item-dispatch';
+import { getWorkItem, observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
+import { emitUnblockedOnEdgeRemoved } from '../../work-items-events';
+import { FEATURE_KIND } from '../../issue-blocks-merge';
 import { recordAdvSession } from '../../adv-sessions';
 import { adoptAgentName } from '../../plan-items/agent-names';
 import { drainDetached } from '../../detached-imports';
@@ -151,6 +155,9 @@ beforeEach(async () => {
   await sql`TRUNCATE harness_shared.work_item_deps`;
   await sql`DELETE FROM harness_shared.plan_runs WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS})`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
+  // Instance slugs (`<template>@run-<n>`) repeat across cases, so revisions must be reset
+  // with their plans or a case inherits the previous cases' revision rows.
+  await sql`DELETE FROM harness_shared.plan_revisions WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
   // Seed the TEMPLATE plan with a parsed items index.
   await sql`
@@ -211,6 +218,20 @@ async function completeExecutionWorkItem(id: string, actor: string): Promise<Rec
   return response.data?.results?.[0] ?? {};
 }
 
+/** WI-10004815: a wake-count mismatch must name the writer of every wake. */
+function describeDeliveries(rows: Awaited<ReturnType<typeof listRecentDeliveries>>): string {
+  return JSON.stringify(
+    rows.map((row) => ({
+      source: row.source,
+      summary: row.summary,
+      workItemIds: (row.payload as { workItemIds?: unknown } | null)?.workItemIds,
+      createdAt: row.createdAt,
+    })),
+    null,
+    2,
+  );
+}
+
 describe('runScheduledPlanFire (system:plan-run)', () => {
   it('runs two isolated neutral plan operations with different schemas through the shared admission contract', async () => {
     const secondTemplate = 'score-template';
@@ -268,6 +289,9 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
         }, {
           id: 'leaf', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
           execution: { kind: 'agent', role: 'worker' },
+          // An agent work-item operation must pin the worker identity it will bind
+          // (validate.ts operation-unpinned-agent; WI-10008190).
+          policy: { identity: { kind: 'identity', ref: 'neutral-leaf-worker', revision: '1.0.0', contentHash: 'b'.repeat(64) } },
           inputSchema: { type: 'object', required: [key], additionalProperties: false,
             properties: { [key]: { type: typeof value === 'number' ? 'integer' : 'string' } } },
           acceptance: { resultSchema: consumer.outputSchema },
@@ -830,12 +854,47 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       expect(childAfter?.item).toMatchObject({ state: 'open', assignee: 'email-agent' });
 
       const successorDeliveries = await listRecentDeliveries(wakeOwner);
-      expect(successorDeliveries).toHaveLength(beforeSuccessorWake + 1);
+      expect(successorDeliveries, describeDeliveries(successorDeliveries)).toHaveLength(beforeSuccessorWake + 1);
       expect(successorDeliveries[0]).toMatchObject({
         eventKey: inboxWakeKey(wakeOwner),
         payload: { kind: 'actionable-work-item-dispatch', workItemIds: [child.id] },
       });
       expect(await listRecentDeliveries(genericWaiter)).toHaveLength(0);
+
+      // WI-10004815: two writers dispatch a released successor — the settle
+      // path (work-items-events) and the plan-lane restore. The settle path
+      // reads the dependent BEFORE it dispatches, so when the lane path
+      // assigns and wakes the stable agent inside that window, the settle path
+      // still holds a snapshot with no assignee. Replay exactly that order:
+      // the dispatch must find the row already retained and spend no 2nd wake.
+      const assignedChild = await getWorkItem(child.id, APP_HARNESS);
+      expect(assignedChild?.assignee).toBe('email-agent');
+      const staleSnapshot = { ...assignedChild!, assignee: null };
+      const staleGetItem = (async (id: string, harness?: string) =>
+        id === child.id ? staleSnapshot : getWorkItem(id, harness)) as typeof getWorkItem;
+      const childRef = { kind: FEATURE_KIND, ref: `${APP_HARNESS}#${child.id}` };
+      await emitUnblockedOnEdgeRemoved(childRef, root.id, { getItem: staleGetItem });
+      await drainDetached();
+      const afterStaleSettle = await listRecentDeliveries(wakeOwner);
+      expect(afterStaleSettle, describeDeliveries(afterStaleSettle)).toHaveLength(successorDeliveries.length);
+      expect(await listRecentDeliveries(genericWaiter)).toHaveLength(0);
+
+      // CONTROL: the same replay with the pre-fix dispatch (which also wakes a
+      // row the target already retains) must add exactly one wake. Without
+      // this, the assertion above would also pass if the stale snapshot never
+      // reached the dispatch at all.
+      await emitUnblockedOnEdgeRemoved(childRef, root.id, {
+        getItem: staleGetItem,
+        dispatchActionable: ((args: Parameters<typeof assignAndWakeActionableWorkItems>[0]) =>
+          assignAndWakeActionableWorkItems({ ...args, wakeRetained: undefined })) as typeof assignAndWakeActionableWorkItems,
+      });
+      await drainDetached();
+      const afterLegacyControl = await listRecentDeliveries(wakeOwner);
+      expect(afterLegacyControl, describeDeliveries(afterLegacyControl)).toHaveLength(successorDeliveries.length + 1);
+      expect(afterLegacyControl[0]).toMatchObject({
+        source: 'system:plan-run-successor-dispatch',
+        payload: { kind: 'actionable-work-item-dispatch', workItemIds: [child.id] },
+      });
 
       const ledger = await sql<Array<{ harness: string }>>`
         SELECT harness_slug AS harness FROM harness_shared.plan_runs
@@ -1075,6 +1134,54 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(runs.map((r) => r.trigger)).toEqual(['scheduled', 'manual', 'manual']);
   });
 
+  it('WI-10005127: two PROCESSES drawing the same manual millisecond mint two distinct runs, never one replayed run', async () => {
+    // The manual token is Date.now() behind a PER-PROCESS monotonic counter. Two processes
+    // (cluster workers, separate cold children) can draw the same millisecond. Pin the clock and
+    // reset the counter between the fires to stand in for the second process. Before the fix the
+    // second fire read the first fire's instance as a "replay", returned the SAME run id (its own
+    // run silently lost) and re-entered promotion of that run — concurrently, in P-013 B.
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-06-16T09:00:00.000Z'));
+    try {
+      resetManualTokenCounterForTests();
+      const first = await runScheduledPlanFire(sql, {
+        installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE, trigger: 'manual',
+      });
+      expect(first!.started).toBe(true);
+      expect(first!.replayed).toBe(false);
+      // Settle it so the default concurrency='skip' policy cannot be what refuses the second fire.
+      await sql`UPDATE harness_shared.plan_runs SET status = 'done' WHERE id = ${first!.runId}`;
+
+      resetManualTokenCounterForTests();
+      const second = await runScheduledPlanFire(sql, {
+        installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE, trigger: 'manual',
+      });
+      expect(second!.started).toBe(true);
+      expect(second!.replayed).toBe(false);
+      expect(second!.runId).not.toBe(first!.runId);
+      expect(second!.instanceSlug).not.toBe(first!.instanceSlug);
+
+      const runs = await sql<{ trigger: string; instance_plan_slug: string }[]>`
+        SELECT trigger, instance_plan_slug FROM harness_shared.plan_runs
+         WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE} ORDER BY id`;
+      expect(runs).toEqual([
+        { trigger: 'manual', instance_plan_slug: first!.instanceSlug },
+        { trigger: 'manual', instance_plan_slug: second!.instanceSlug },
+      ]);
+      // Each run owns its own work-items: one per open plan item, none shared or doubled.
+      const perRun = await sql<{ run: string; n: number; items: number }[]>`
+        SELECT payload->'plan_run'->>'runId' AS run, count(*)::int AS n,
+               count(DISTINCT (source_plan_item_ids)[1])::int AS items
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${WS}
+           AND payload->'plan_run'->>'runId' IN (${String(first!.runId)}, ${String(second!.runId)})
+         GROUP BY 1 ORDER BY 1`;
+      expect(perRun).toHaveLength(2);
+      for (const row of perRun) expect(row.n).toBe(row.items);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('mints DISTINCT runs across fires (run_seq increments, fresh work_items)', async () => {
     await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
     const r0 = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
@@ -1122,6 +1229,107 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("template 'does-not-exist' not found"));
     warn.mockRestore();
+  });
+
+  // WI-10004721: the daily schedule of a SHIPPED plan cloned it 21 times — every run
+  // born all-done, zero work-items, settled in seconds like a healthy fire.
+  const SHIPPED_CONTENT = `# Monitor X
+
+## Phase 1
+
+- **P-001** \`done\` check campaign stats
+- **P-002** \`dropped\` already handled`;
+  const SHIPPED_ITEMS = [
+    { id: 'P-001', text: 'check campaign stats', status: 'done' },
+    { id: 'P-002', text: 'already handled', status: 'dropped' },
+  ];
+  async function shipTemplate(storedItems: unknown[]): Promise<void> {
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${SHIPPED_CONTENT}, content_hash = ${hashPlanContent(SHIPPED_CONTENT)},
+             items = ${JSON.stringify(storedItems)}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+  }
+  async function countRunsAndInstances(): Promise<{ runs: number; instances: number; workItems: number }> {
+    const [r] = await sql<Array<{ runs: number; instances: number; work_items: number }>>`
+      SELECT
+        (SELECT count(*)::int FROM harness_shared.plan_runs
+          WHERE harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}) AS runs,
+        (SELECT count(*)::int FROM harness_shared.harness_plans
+          WHERE workspace_id = ${WS} AND template_slug = ${TEMPLATE}) AS instances,
+        (SELECT count(*)::int FROM harness_shared.harness_features_consolidated
+          WHERE harness_slug = ${HARNESS} AND source_plan_slug = ${TEMPLATE}) AS work_items`;
+    return { runs: r!.runs, instances: r!.instances, workItems: r!.work_items };
+  }
+
+  it('WI-10004721: refuses a template whose items are ALL done/dropped — no instance, no run, no work-items', async () => {
+    await shipTemplate(SHIPPED_ITEMS);
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("template 'monitor-x' has nothing left to run"));
+    warn.mockRestore();
+    expect(res).toMatchObject({
+      started: false,
+      reason: 'template-all-terminal',
+      detail: "template 'monitor-x' has nothing left to run: all 2 item(s) are done/dropped",
+      retryable: false,
+      instanceSlug: '',
+      runId: -1,
+      minted: 0,
+    });
+    expect(await countRunsAndInstances()).toEqual({ runs: 0, instances: 0, workItems: 0 });
+  });
+
+  it('WI-10004721: reads the content-derived index when the stored index is empty (legacy rows)', async () => {
+    await shipTemplate([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    warn.mockRestore();
+    expect(res).toMatchObject({ started: false, reason: 'template-all-terminal' });
+    expect(await countRunsAndInstances()).toEqual({ runs: 0, instances: 0, workItems: 0 });
+  });
+
+  it('WI-10004721: the routine door (handlePlanRun) disarms an exhausted schedule — routine inactive, schedule_active false', async () => {
+    await shipTemplate(SHIPPED_ITEMS);
+    await sql`
+      UPDATE harness_shared.harness_plans SET schedule_active = true
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    const before = await sql<Array<{ active: boolean }>>`
+      SELECT active FROM harness_shared.routines
+       WHERE install_slug = ${HARNESS} AND name = ${planScheduleRoutineName(TEMPLATE)}`;
+    expect(before[0]?.active).toBe(true);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await handlePlanRun({
+      installSlug: HARNESS,
+      workspaceId: WS,
+      triggerConfig: {},
+      payloadTemplate: { templateSlug: TEMPLATE, harnessSlug: HARNESS },
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("auto-disarmed schedule 'monitor-x'"));
+    warn.mockRestore();
+
+    const after = await sql<Array<{ active: boolean }>>`
+      SELECT active FROM harness_shared.routines
+       WHERE install_slug = ${HARNESS} AND name = ${planScheduleRoutineName(TEMPLATE)}`;
+    expect(after[0]?.active).toBe(false);
+    const plan = await sql<Array<{ schedule_active: boolean }>>`
+      SELECT schedule_active FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    expect(plan[0]?.schedule_active).toBe(false);
+    expect(await countRunsAndInstances()).toEqual({ runs: 0, instances: 0, workItems: 0 });
+  });
+
+  it('WI-10004721: a template with one open item among terminal ones still mints (guard is all-terminal only)', async () => {
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    // The default fixture is P-001 todo, P-002 done, P-003 todo — mixed.
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(res.started).toBe(true);
+    const routine = await sql<Array<{ active: boolean }>>`
+      SELECT active FROM harness_shared.routines
+       WHERE install_slug = ${HARNESS} AND name = ${planScheduleRoutineName(TEMPLATE)}`;
+    expect(routine[0]?.active).toBe(true);
   });
 
   it('D-044: refuses a post-epoch template with no acceptance BAR contract with the documented refusal, minting nothing', async () => {
@@ -1223,5 +1431,96 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     // compare-and-swap the moment anyone tried to edit the run snapshot.
     expect(inst[0].content_hash).toBe(hashPlanContent(inst[0].content));
     expect(inst[0].content_hash).not.toBe(hashPlanContent(fmContent));
+  });
+
+  it("EI-25654921386861878: the instance's frontmatter `status:` agrees with its `status` column, even when the template's frontmatter says `ready`", async () => {
+    // The fixture above declares `status: active`, which happens to equal the column the
+    // seed writes, so it cannot see this bug. Real templates are `ready`.
+    const fmContent = `---\nslug: ${TEMPLATE}\nstatus: ready\nowner: ops@example.com\n---\n# Monitor X\n\n## Now\n**State:** recurring.`;
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${fmContent}, content_hash = ${hashPlanContent(fmContent)}
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(res).not.toBeNull();
+
+    const inst = await sql<Array<{ status: string; content: string; content_hash: string }>>`
+      SELECT status, content, content_hash FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${res!.instanceSlug}`;
+    expect(inst[0]).toBeTruthy();
+    const frontmatterStatus = inst[0].content.match(/^status:[ \t]*(\S+)[ \t]*$/m)?.[1];
+    expect(inst[0].status).toBe('active');
+    expect(frontmatterStatus).toBe(inst[0].status);
+    expect(inst[0].content).not.toContain('status: ready');
+    // Surgical: the template's other frontmatter lines survive, and the hash covers the
+    // stored bytes.
+    expect(inst[0].content).toContain('owner: ops@example.com');
+    expect(inst[0].content).toContain(`slug: ${res!.instanceSlug}`);
+    expect(inst[0].content_hash).toBe(hashPlanContent(inst[0].content));
+
+    // The template itself is untouched: it stays `ready`.
+    const tpl = await sql<Array<{ content: string }>>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    expect(tpl[0].content).toContain('status: ready');
+  });
+
+  // WI-10006321: both raw instance writers bypass withPlanLock, so each records its own
+  // plan_revisions row. Without it, the plan-parts reconcile sweep has no content clock for
+  // the instance and falls back to updated_at (108 live instances had no revision at all).
+  it('WI-10006321: the clone and its retirement each record a revision of the stored bytes; a replay records none', async () => {
+    const revisionsOf = (slug: string) => sql<Array<{
+      seq: number; author_kind: string; author_id: string; content_hash: string; content_snapshot: string;
+    }>>`
+      SELECT seq, author_kind, author_id, content_hash, content_snapshot
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+       ORDER BY seq`;
+    const live = async (slug: string) => (await sql<Array<{ content: string; content_hash: string }>>`
+      SELECT content, content_hash FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`)[0]!;
+
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    const slug = res!.instanceSlug;
+    // Promotion writes the instance again through withPlanLock (which records its own
+    // revisions), so the clone is the FIRST revision, not the only one.
+    let revs = await revisionsOf(slug);
+    expect(revs[0]).toMatchObject({ seq: 1, author_kind: 'system', author_id: 'plan-run:instance-clone' });
+    expect(revs[0]!.content_hash).toBe(hashPlanContent(revs[0]!.content_snapshot));
+    expect(revs.filter((r) => r.author_id === 'plan-run:instance-clone')).toHaveLength(1);
+    // The spine is complete at the head: the live body has a byte-equal latest revision,
+    // which is exactly what the reconcile sweep's content clock looks up.
+    const promoted = await live(slug);
+    expect(revs.at(-1)).toMatchObject({ content_hash: promoted.content_hash, content_snapshot: promoted.content });
+    const afterFire = revs.length;
+
+    const replay = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(replay!.replayed).toBe(true);
+    expect(await revisionsOf(slug)).toHaveLength(afterFire);
+
+    const retired = await retireRunInstancePlan(sql, {
+      workspaceId: WS, planStorageSlug: HARNESS, instanceSlug: slug, templateSlug: TEMPLATE, outcome: 'failed',
+    });
+    expect(retired.retired).toBe(true);
+    const after = await live(slug);
+    expect(after.content_hash).not.toBe(promoted.content_hash);
+    revs = await revisionsOf(slug);
+    expect(revs).toHaveLength(afterFire + 1);
+    expect(revs.at(-1)).toMatchObject({
+      seq: afterFire + 1,
+      author_kind: 'system',
+      author_id: 'plan-run:instance-retire',
+      content_hash: after.content_hash,
+      content_snapshot: after.content,
+    });
+
+    // A second retire loses the status guard: no write, so no revision.
+    await retireRunInstancePlan(sql, {
+      workspaceId: WS, planStorageSlug: HARNESS, instanceSlug: slug, templateSlug: TEMPLATE, outcome: 'failed',
+    });
+    expect(await revisionsOf(slug)).toHaveLength(afterFire + 1);
   });
 });

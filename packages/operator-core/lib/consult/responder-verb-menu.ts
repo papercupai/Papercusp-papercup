@@ -30,6 +30,8 @@
  * bodies from the real builders and fails if any stops naming the read door.
  */
 
+import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
+
 /** Default evidence qualifier — overridden where a branch admits first-principles reasoning. */
 const DEFAULT_EVIDENCE_NOTE = 'answer requires evidence';
 /**
@@ -41,6 +43,22 @@ const DEFAULT_EVIDENCE_NOTE = 'answer requires evidence';
  * states decline's actual precondition (someone else might still cover it) and its actual cost.
  */
 const DEFAULT_DECLINE_NOTE = 'only when another reviewer might still cover it — decline ADVANCES';
+
+/** Current reviews inspect supplied evidence; historical routing is background,
+ * not a requirement that the new subject already appear in older history. */
+export function consultCurrentReviewContext(policy: string | undefined): string | null {
+  const subject = policy === ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY
+    ? 'CURRENT AMENDMENT — review the supplied patch, rationale and approval JSON against the current subject and cited validation evidence. '
+    : policy === RUBRIC_VETTING_POLICY
+      ? 'CURRENT RUBRIC — review the exact supplied rubric revision and criteria hash against the named meta-rubric and cited source and validation evidence. '
+      : null;
+  if (!subject) return null;
+  return subject +
+    'The routed historical transcript is background evidence; do not decline solely because it does not contain this current review subject. ' +
+    'Read the complete request at results[0].conversation.body and the replies at results[0].posts from conversations:get; recover a truncated brief before judging. ' +
+    'Cite the evidence you actually checked, distinguish unverified claims, and object when the amendment weakens a requirement or cannot be verified. ' +
+    'Historical relevance and first-principles reasoning do not prove live acceptance or authorize an approval.';
+}
 
 export interface ConsultResponderVerbMenuInput {
   /** The consult conversation the responder was routed into. */
@@ -60,6 +78,8 @@ export interface ConsultResponderVerbMenuInput {
 export function consultReadDoorLine(conversationId: string): string {
   return (
     `READ THE THREAD FIRST — conversations:get { id: '${conversationId}' } returns every post oldest-first; ` +
+    `the complete caller request, including observed/tried and replay selectors, is at results[0].conversation.body. ` +
+    `Read that body as well as the replies; recover truncated fields before judging. ` +
     `posts are at results[0].posts (not a top-level .posts field), so a top-level read returns ` +
     `undefined and looks like an empty thread. ` +
     `There is NO consult:read: the verb family is write-only, so the natural guess does not resolve and a ` +

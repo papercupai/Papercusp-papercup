@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005465",
+  "parent": "WI-10004890",
+  "plane": "live-current-build-operator-api",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-cache-selection-r1-2026-10-02.json",
+    "bytes": 437695,
+    "sha256": "b9643aed5855b18359f8f7a811bc2fbf420a8f8952e1eda2a1ba493baca656f5"
+  },
+  "test": {
+    "testRunId": 20527651,
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0,
+    "nativeLog": "/tmp/su-7db4f-p011-cache-selection-r1.log",
+    "scope": "Canonical integration suite; named test path only, full import graph not measured."
+  },
+  "guard": {
+    "testRunId": 20527589,
+    "passed": 10,
+    "failed": 0,
+    "skipped": 0,
+    "nativeLog": "/tmp/su-7db4f-p011-cache-selection-guard.log",
+    "scope": "Real private Node inspector; local dirty source at execution."
+  },
+  "runtime": {
+    "pid": 437037,
+    "buildSha": "94d75a58ff",
+    "startedAt": "2026-10-02T12:31:16.248Z",
+    "endedAt": "2026-10-02T12:31:26.474Z",
+    "cleanup": {
+      "inspector": {
+        "closed": true
+      },
+      "processIdentityPreserved": true
+    }
+  },
+  "sources": {
+    "capture": "post-run only",
+    "named": [
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "7e961d89d1610dc3cd22819b46554e26c42caff798b8bb056c69d4a90f3cbf04"
+      },
+      {
+        "path": "scripts/cdp-inspector.d.mts",
+        "sha256": "6fce8a82100b09e96d58618a6926b0ad4c0b7d505da947741f2322e76705b64f"
+      },
+      {
+        "path": "packages/operator-core/lib/cdp-inspector.test.ts",
+        "sha256": "fdf5aa16b239082d92995f5791c188a57897566a973379c5e744b62604010faa"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+        "sha256": "c4ce5c6d0b8ce3dace4d1b607b01699206481777c76cb4b86552405eaddca5ab"
+      }
+    ],
+    "fullGraph": "UNKNOWN",
+    "beforeHashes": "not captured; post hashes do not establish before/after invariance"
+  },
+  "requests": 24,
+  "samples": [
+    {
+      "label": "idle-0-start",
+      "population": 339,
+      "checked": 32,
+      "scanned": 96,
+      "notChecked": 307,
+      "nextOffset": 96,
+      "partial": 0,
+      "observerMs": 3.5032069999724627
+    },
+    {
+      "label": "idle-0-end",
+      "population": 341,
+      "checked": 32,
+      "scanned": 96,
+      "notChecked": 309,
+      "nextOffset": 96,
+      "partial": 0,
+      "observerMs": 2.329031999921426
+    },
+    {
+      "label": "ordinary-0-end",
+      "population": 342,
+      "checked": 32,
+      "scanned": 96,
+      "notChecked": 310,
+      "nextOffset": 96,
+      "partial": 0,
+      "observerMs": 2.2871909998357296
+    },
+    {
+      "label": "idle-1-start",
+      "population": 342,
+      "checked": 32,
+      "scanned": 96,
+      "notChecked": 310,
+      "nextOffset": 96,
+      "partial": 0,
+      "observerMs": 2.0685589998029172
+    },
+    {
+      "label": "idle-1-end",
+      "population": 342,
+      "checked": 32,
+      "scanned": 96,
+      "notChecked": 310,
+      "nextOffset": 96,
+      "partial": 0,
+      "observerMs": 3.3254329999908805
+    },
+    {
+      "label": "ordinary-1-end",
+      "population": 342,
+      "checked": 32,
+      "scanned": 96,
+      "notChecked": 310,
+      "nextOffset": 96,
+      "partial": 0,
+      "observerMs": 2.533405999885872
+    },
+    {
+      "label": "idle-2-start",
+      "population": 342,
+      "checked": 32,
+      "scanned": 96,
+      "notChecked": 310,
+      "nextOffset": 96,
+      "partial": 0,
+      "observerMs": 2.4988800000865012
+    },
+    {
+      "label": "idle-2-end",
+      "population": 342,
+      "checked": 32,
+      "scanned": 96,
+      "notChecked": 310,
+      "nextOffset": 96,
+      "partial": 0,
+      "observerMs": 2.5999549999833107
+    },
+    {
+      "label": "ordinary-2-end",
+      "population": 342,
+      "checked": 32,
+      "scanned": 96,
+      "notChecked": 310,
+      "nextOffset": 96,
+      "partial": 0,
+      "observerMs": 2.218238999834284
+    }
+  ],
+  "limits": [
+    "Offset64 and32 selected values; 32768 global entries,16384 objects,depth8,200ms unchanged.",
+    "Every skipped map edge consumes the same root/global budget.",
+    "Insertion order and membership may change between calls; this is not a multi-read snapshot.",
+    "All selected payloads in this cohort avoid traversal/depth/field flags, within the reader's documented exclusion of symbols, non-enumerable fields, closures and proxies.",
+    "Unknown key formats remain protected and unattributed.",
+    "Logical string edges are not retained physical bytes; uncontrolled ambient main-process counters do not prove paired savings or plan acceptance."
+  ]
+}

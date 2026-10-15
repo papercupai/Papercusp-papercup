@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   consultPolicyKey,
+  expertiseExecutionHealthFromRows,
+  readExpertiseExecutionHealth,
   resolveRoutingHealthWindow,
   routingHealthFromRows,
   type RoutingHealthConsultRow,
@@ -22,6 +24,31 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const SINCE = T0;
 const UNTIL = T0 + 6 * H;
 const NOW = T0 + 8 * H;
+
+describe('routing execution cohort', () => {
+  const receipt = (durationMs: number, over: object = {}) => ({ metadata_json: {
+    schemaVersion: 1, caller: 'fixture-caller', policy: 'consult-default', buildSha: '1234567',
+    outcome: 'returned', durationMs, stages: { embedding: { durationMs: durationMs / 2, outcome: 'returned' } }, ...over,
+  } });
+  it('keeps caller/policy/build populations and observed stage failures separate', () => {
+    const result = expertiseExecutionHealthFromRows([
+      receipt(10), receipt(40, { outcome: 'threw', stages: { embedding: { durationMs: 20, outcome: 'threw' } } }),
+      receipt(20, { caller: 'preview', buildSha: null, outcome: 'degraded', stages: {} }), { metadata_json: null },
+    ], true);
+    expect(result).toMatchObject({ cohort: 'routing-execution-start', rowsScanned: 4, invalidReceipts: 1, truncatedByLimit: true });
+    expect(result.groups[0]).toMatchObject({ calls: 2, outcomes: { returned: 1, degraded: 0, threw: 1 },
+      latencyMs: { observed: 2, p50: 10, p95: 40 }, stages: { embedding: { observed: 2, threw: 1, p50: 5, p95: 20 } } });
+    expect(result.groups[1].stages.embedding).toBeUndefined();
+    expect(result.groups[1].buildSha).toBeNull();
+  });
+  it('a missing ledger is unavailable rather than a healthy zero', async () => {
+    const sql = (async () => { throw new Error('column metadata_json absent'); }) as never;
+    const result = await readExpertiseExecutionHealth(sql, 'fixture', iso(SINCE), iso(UNTIL));
+    expect(result.status).toBe('unavailable');
+    expect(result.unavailableReason).toBe('routing-invocation-ledger-unavailable');
+    expect(expertiseExecutionHealthFromRows([]).status).toBe('measured-empty');
+  });
+});
 
 const launch = (atMs: number, answeringOwnerId: string, extraAttempts: object[] = []) => ({
   at: iso(atMs),
@@ -167,6 +194,116 @@ describe('routingHealthFromRows — seeded attempts in and out of the window', (
     const before = byPolicy(routingHealthFromRows(SEEDED, { sinceMs: SINCE, untilMs: UNTIL, nowMs: T0 + 6.5 * H }));
     expect(before['acceptance-grading']).toMatchObject({ hung: 0, pending: 2 });
   });
+});
+
+describe('routingHealthFromRows request cohort', () => {
+  it('counts accepted preparation as pending while preserving legacy and terminal unknown controls', () => {
+    const make = (id: string, partial: Partial<RoutingHealthConsultRow>) => row({
+      conversation_id: id, created_at: iso(T0 + H), routing: { deliveryIntent: 'dispatch' }, ...partial,
+    });
+    const health = routingHealthFromRows([
+      make('accepted', { state: 'routing', routing: { deliveryIntent: 'dispatch', request: { version: 1 } } }),
+      make('legacy-routing', { state: 'routing' }),
+      make('recorded-result', { state: 'routing', routing: {
+        deliveryIntent: 'dispatch', request: { version: 1, result: { verdict: 'relevance_unmeasured' } },
+      } }),
+      make('terminal', { state: 'no_qualified_responder' }),
+    ], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+    expect(health.requestCohort.totals).toMatchObject({ requests: 4, dispatchRequested: 4,
+      legacyIntentUnknown: 0, outcomes: { pending: 1, unavailable: 1, unmeasured: 2 } });
+    expect(health.totals.launched).toBe(0);
+  });
+
+  it('partitions explicit intents and terminal receipts without confusing lifecycle or launch attempts', () => {
+    const make = (id: string, partial: Partial<RoutingHealthConsultRow> = {}) => row({
+      conversation_id: id, created_at: iso(T0 + H), routing: { deliveryIntent: 'dispatch' }, ...partial,
+    });
+    const population = [
+      make('retrieval', { routing: { deliveryIntent: 'retrieval-only' }, state: 'expired' }),
+      make('legacy', { routing: {} }),
+      make('expired-answer', { state: 'expired', has_feedback: true }),
+      make('recovered-answer', { has_feedback: true, dispatch_attempts: [launch(T0 + H, 'answerer', [{ outcome: 'failed', reason: 'launch-failed' }])] }),
+      make('decline', { state: 'closed_cant_help' }),
+      make('pending', { state: 'awaiting_responder', expires_at: iso(NOW + H) }),
+      make('capacity', { state: 'no_available_responder', dispatch_attempts: [{ at: iso(T0 + H), dispatched: false, attempts: [{ outcome: 'skipped', reason: 'account-walled' }] }] }),
+      make('failure', { state: 'expired', dispatch_attempts: [answerFailure(T0 + H, 'answerer', 'answer-window-expired')] }),
+      // Experts were selected but none could be launched: its own bucket, not 'unavailable' (R-2).
+      make('unlaunchable', { state: 'no_launchable_responder', dispatch_attempts: [launch(T0 + H, 'answerer', [{ outcome: 'failed', reason: 'launch-failed' }])] }),
+      make('unknown-result'),
+      make('old', { created_at: iso(T0 - H), has_feedback: true }),
+      make('future', { created_at: iso(UNTIL), has_feedback: true }),
+    ];
+    const health = routingHealthFromRows(population, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+    const counts = health.requestCohort.totals;
+    expect(counts).toEqual({
+      requests: 10, dispatchRequested: 8, retrievalOnly: 1, legacyIntentUnknown: 1,
+      outcomes: { received: 2, declined: 1, pending: 1, unavailable: 1, unlaunchable: 1, failed: 1, unmeasured: 1 },
+      followThrough: {
+        applicable: 10, notApplicable: 0, applicabilityUnknown: 0,
+        recorded: { confirmed: 0, rescoped: 0, reversed: 0, moot: 0 },
+        unknown: 10, invalid: 0, recordedWithFeedback: 0, recordedWithoutFeedback: 0,
+      },
+    });
+    expect(counts.dispatchRequested + counts.retrievalOnly + counts.legacyIntentUnknown).toBe(counts.requests);
+    expect(Object.values(counts.outcomes).reduce((sum, value) => sum + value, 0)).toBe(counts.dispatchRequested);
+    expect(health.totals.failed).toBe(3); // The distinct launch-attempt population is preserved (incl. the unlaunchable row's failed launch).
+    expect(health.requestCohort.window.cohort).toBe('request-time');
+  });
+
+  it('requires recorded answer content rather than a closed_answered label and respects scan bounds', () => {
+    const result = routingHealthFromRows([
+      row({ conversation_id: 'label-only', created_at: iso(T0), routing: { deliveryIntent: 'dispatch' }, state: 'closed_answered' }),
+      row({ conversation_id: 'archive', created_at: iso(T0), routing: { deliveryIntent: 'dispatch' }, outcome: { source: 'archive', answer: { answer: 'grounded response' } } }),
+    ], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW, truncatedByLimit: true });
+    expect(result.requestCohort.totals.outcomes).toMatchObject({ received: 1, unmeasured: 1 });
+    expect(result.bounded.truncatedByLimit).toBe(true);
+  });
+
+  it('reports only requester-authored dispositions and keeps missing reconciliation unknown', () => {
+    const make = (id: string, partial: Partial<RoutingHealthConsultRow> = {}) => row({
+      conversation_id: id, requester_id: 'requester', created_at: iso(T0), ...partial,
+    });
+    const reconciliation = (disposition: string, by = 'requester') => ({
+      disposition, by, at: iso(T0 + H), note: 'Checked the advice against the source.',
+    });
+    const population = [
+      ...['confirmed', 'rescoped', 'reversed', 'moot'].map((disposition) => make(disposition, {
+        has_feedback: disposition !== 'moot', outcome: { reconciliation: reconciliation(disposition) },
+      })),
+      make('silence', { has_feedback: true }),
+      make('provider-impression', { outcome: { reconciliation: reconciliation('confirmed', 'reviewer') } }),
+      make('hard-blocked', { latency_contract: 'hard-blocked' }),
+      make('legacy-applicability', { latency_contract: null }),
+    ];
+    const follow = routingHealthFromRows(population, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW }).requestCohort.totals.followThrough;
+    expect(follow).toEqual({
+      applicable: 6, notApplicable: 1, applicabilityUnknown: 1,
+      recorded: { confirmed: 1, rescoped: 1, reversed: 1, moot: 1 },
+      unknown: 1, invalid: 1, recordedWithFeedback: 3, recordedWithoutFeedback: 1,
+    });
+  });
+
+  it.each(['active', 'closed_answered', 'closed_cant_help', 'graduated', 'declined', 'expired'])(
+    'reads retained requester history after %s without inferring a disposition from the lifecycle', (state) => {
+      const population = ['confirmed', 'rescoped', 'reversed', 'moot'].map(disposition => {
+        const historical = Object.freeze({ disposition, by: 'requester', at: iso(T0 + H),
+          note: 'Previously recorded project decision', decision_ref: 'project#D-001' });
+        return Object.freeze(row({ conversation_id: disposition, requester_id: 'requester',
+          state, created_at: iso(T0), has_feedback: true,
+          outcome: Object.freeze({ reconciliation: historical, reason: 'Subsequent lifecycle transition' }) }));
+      });
+      const silence = Object.freeze(row({ conversation_id: 'no-history', requester_id: 'requester',
+        state, created_at: iso(T0), has_feedback: true, outcome: Object.freeze({ answer: 'Delivered advice' }) }));
+      const before = JSON.stringify(population);
+      const follow = routingHealthFromRows([...population, silence], {
+        sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW,
+      }).requestCohort.totals.followThrough;
+      expect(follow.recorded).toEqual({ confirmed: 1, rescoped: 1, reversed: 1, moot: 1 });
+      expect(follow.unknown).toBe(1);
+      expect(follow.invalid).toBe(0);
+      expect(JSON.stringify(population)).toBe(before);
+    },
+  );
 });
 
 describe('routingHealthFromRows — honesty markers', () => {

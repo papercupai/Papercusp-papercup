@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-09",
+  "workItem": "WI-10006917",
+  "plan": "cloud-portal-docs-and-papercup-faq-2026-10-06",
+  "runtime": {
+    "kind": "rebuilt Astro preview",
+    "origin": "http://127.0.0.1:32125",
+    "pidVerifiedBeforeRun": 3730865,
+    "accountHTTPBefore": 200,
+    "accountHTTPAfter": 200,
+    "accountHTMLSHA256BeforeAndAfter": "42d5f01e23a292d39c75f758fb345fb4dec32470a992ffe4cc0026083e3414c1",
+    "accountCanonicalAndPackagedMDXSHA256": "c5119fa0c92fefd75e244627e7d8a0c400b434956cd693064a8a5b05f9949850"
+  },
+  "execution": {
+    "command": "OPERATOR_E2E_BASE_URL=http://127.0.0.1:32125 OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_SKIP_WARMUP=1 PAPERCUSP_TEST_RUN_HARNESS=papercusp scripts/pc-heavy.sh npx playwright test --config apps/operator/playwright.config.ts apps/operator/e2e/public-manual.spec.ts --grep 'accounts-and-billing|account guide separates|actual Pagefind' --workers=1 --output=/tmp/su73-approved-manual-browser-0402-artifacts",
+    "exitCode": 0,
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "runnerDurationSeconds": 9.4,
+    "logPath": "/tmp/su73-approved-manual-browser-0402.log",
+    "logSHA256": "2465c357175ae3a15d2eab1b46c808aaa84ef16ec2a6b235cbfc8289622cc81f",
+    "cases": [
+      "new public guide is reachable, reloadable and readable on mobile: accounts-and-billing",
+      "account guide separates portal identity, model accounts and organization access",
+      "a new guide is present in the actual Pagefind search index",
+      "Common questions is found through alternate wording in the actual Pagefind index"
+    ]
+  },
+  "afterRunSourceObservation": {
+    "head": "3769d4462e7f82fdd79694b84efc69e281ada811",
+    "branch": "staging",
+    "selectedPathsDirty": false,
+    "testSHA256": "a04a140b9240149bf75cb9f4dbf3b7b7a566d946ffd605327ac10be5897b8e6d",
+    "configSHA256": "39f48cf4f278922eef3dd8ce563ad6a78d61c4c176e2be4e3575d5e438e934ee",
+    "pagefindPatchSHA256": "cae5dc20fb0038ea118f3dfff2fd0f291bada17b1e2aadf8672328ce0cdaecd6",
+    "wasmSHA256": "3a74cefceacd066e8d3bc8c52e7bc1c869544ca3d9031b44a9b7136356d5d7f4",
+    "componentUISHA256": "958620129dd14bd851805daeb12ce708bd63b9287325d1d5ae6f73a04d1723f8"
+  },
+  "packagingEvidence": "docs/evidence/cloud-portal-docs-and-papercup-faq-2026-10-06/pagefind-write-completion-20261009.json",
+  "limits": [
+    "Selected four maintained browser cases only; other cases were excluded by the explicit grep.",
+    "The Git HEAD and selected path status above were measured after the run, not a whole-source fingerprint before execution.",
+    "The canonical and operator-copy HTML files match the served account response; these observations do not establish Portal imported-source provenance.",
+    "Existing owner su-7a94555d retains the Portal replacement and workspace transport repair; no suitable replacement artifact was available at this observation.",
+    "No full R-1/R-2 fulfillment, real novice study, independent plan acceptance or production shipment is claimed."
+  ]
+}

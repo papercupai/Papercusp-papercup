@@ -19,7 +19,7 @@ export interface CompletionClaimMismatchStamp {
   declaredRefs: string[];
   /** Declared refs with no equivalent entry in `basedOn`. */
   missingFromBasedOn: string[];
-  note: 'claims completion on artifacts this session never read';
+  note: 'claims completion on artifacts absent from the recent read trace';
 }
 
 export interface CompletionClaimInput {
@@ -29,7 +29,9 @@ export interface CompletionClaimInput {
   basedOn?: readonly Pick<BasedOnEntry, 'ref'>[];
 }
 
-const WORK_ITEM_REF = /\b((?:WI|EI)-\d+)\b/gi;
+// Match the prose boundaries used by ref-hydrate's BODY_WORK_ITEM: ids inside
+// hyphenated filenames/handles are identifier fragments, not artifact refs.
+const WORK_ITEM_REF = /(?<![\w-])((?:WI|EI)-\d+)(?![\w-])/gi;
 const PLAN_TOKEN = /\bplan:([a-z0-9][a-z0-9-]*)/gi;
 const PLAN_LABEL = /\bplan(?:_slug)?\s*[:=]\s*[`'\"]?([a-z0-9][a-z0-9-]*)/gi;
 const PLAN_QUOTED = /\bplan\b[^`'\"\n]{0,24}[`'\"]([a-z0-9][a-z0-9-]*)[`'\"]/gi;
@@ -37,7 +39,7 @@ const RUBRIC_REF = /\brubricRef\s*[:=]\s*[`'\"]?([a-z0-9][a-z0-9-]*)/gi;
 const RUBRIC_QUOTED = /\brubric\b[^`'\"\n]{0,24}[`'\"]([a-z0-9][a-z0-9-]*)[`'\"]/gi;
 const COMPLETION_WORD =
   /\b(?:completed?|finished|shipped|verified?|accepted?|graded?|passed|resolved|closed|delivered)\b/gi;
-const NEGATION_TAIL = /\b(?:not|never|no|without|didn['’]t|doesn['’]t|isn['’t|wasn['’t|weren['’t|cannot|can['’]t)\s*$/i;
+const NEGATION_TAIL = /\b(?:not|never|no|without|didn['’]t|doesn['’]t|isn['’]t|wasn['’]t|weren['’]t|cannot|can['’]t)\s*(?:(?:yet|been|be|actually|already)\s+)*$/i;
 const FUTURE_MARKER =
   /\b(?:will|shall|would|could|should|may|might|can|going\s+to|planning\s+to|plan(?:s|ned|ning)?\s+to|intend(?:s|ed|ing)?\s+to|next|up\s+next|later|after\s+this|then\s+(?:i\s+)?(?:will|shall|read|reconcile|inspect|review|checkpoint|investigate|verify|check|examine|validate|run|fix|update|write|record))\b/i;
 const PROSPECTIVE_INTENT = /\b(?:read-only|this\s+unit|this\s+pass|upcoming|follow-up|future|reconciliation|checkpointing)\b/i;
@@ -75,9 +77,7 @@ function collectMatches(
 function textOf(input: CompletionClaimInput): string {
   const body = Array.isArray(input.body)
     ? input.body
-        .map((section) => [section.text, ...(section.premises ?? [])]
-          .filter((value): value is string => typeof value === 'string')
-          .join(' '))
+        .map((section) => section.text)
         .join('\n')
     : (input.body ?? '');
   return [input.summary ?? '', body].filter(Boolean).join('\n');
@@ -94,7 +94,7 @@ function hasPositiveCompletionClaim(text: string): boolean {
     const afterChar = text[match.index + match[0].length];
     if (beforeChar === '-' || afterChar === '-') continue;
     const before = text.slice(Math.max(0, match.index - 24), match.index);
-    if (!NEGATION_TAIL.test(before)) return true;
+    if (!NEGATION_TAIL.test(before) && !FUTURE_MARKER.test(text.slice(0, match.index))) return true;
   }
   return false;
 }
@@ -102,6 +102,7 @@ function hasPositiveCompletionClaim(text: string): boolean {
 function collectExplicitPremises(input: CompletionClaimInput, out: string[], seen: Set<string>): void {
   if (!Array.isArray(input.body)) return;
   for (const section of input.body) {
+    if (!section.text.split(/[.!?;\n]+/).some(hasPositiveCompletionClaim)) continue;
     for (const premise of section.premises ?? []) {
       const workItem = /^(?:work-item:)?((?:WI|EI)-\d+)(?:#.*)?$/i.exec(premise.trim());
       if (workItem) {
@@ -145,65 +146,72 @@ function comparisonRef(ref: string): string {
  * Return the additive mismatch stamp, or undefined when the message is not a
  * positive completion claim or every named artifact is represented in basedOn.
  */
-export function completionClaimMismatch(input: CompletionClaimInput): CompletionClaimMismatchStamp | undefined {
-  const text = textOf(input);
-  if (!hasPositiveCompletionClaim(text)) return undefined;
-
+export function completionClaimRefs(input: CompletionClaimInput): string[] {
+  // A verified wake or a completed task elsewhere in a report does not make
+  // pending owner requests into completion claims. Preserve statement boundaries.
+  const statements = textOf(input).split(/[.!?;\n]+/).filter(hasPositiveCompletionClaim);
+  if (!statements.length) return [];
   const declaredRefs: string[] = [];
   const seen = new Set<string>();
-  const skipFutureIntent = (match: RegExpExecArray): boolean => isFutureIntentReference(text, match.index);
   if (input.planSlug) {
     const plan = slug(input.planSlug);
     if (plan) addRef(declaredRefs, seen, `plan:${plan}`);
   }
-  collectMatches(text, WORK_ITEM_REF, (match) => `work-item:${match[1]!.toUpperCase()}`, declaredRefs, seen, skipFutureIntent);
-  collectMatches(text, PLAN_TOKEN, (match) => `plan:${match[1]!.toLowerCase()}`, declaredRefs, seen, skipFutureIntent);
-  collectMatches(
-    text,
-    PLAN_LABEL,
-    (match) => {
-      const value = slug(match[1]!);
-      return value ? `plan:${value}` : null;
-    },
-    declaredRefs,
-    seen,
-    skipFutureIntent,
-  );
-  collectMatches(
-    text,
-    PLAN_QUOTED,
-    (match) => {
-      const value = slug(match[1]!);
-      return value ? `plan:${value}` : null;
-    },
-    declaredRefs,
-    seen,
-    skipFutureIntent,
-  );
-  collectMatches(
-    text,
-    RUBRIC_REF,
-    (match) => {
-      const value = slug(match[1]!);
-      return value ? `rubric:${value}` : null;
-    },
-    declaredRefs,
-    seen,
-    skipFutureIntent,
-  );
-  collectMatches(
-    text,
-    RUBRIC_QUOTED,
-    (match) => {
-      const value = slug(match[1]!);
-      return value ? `rubric:${value}` : null;
-    },
-    declaredRefs,
-    seen,
-    skipFutureIntent,
-  );
+  for (const text of statements) {
+    const skipFutureIntent = (match: RegExpExecArray): boolean => isFutureIntentReference(text, match.index);
+    collectMatches(text, WORK_ITEM_REF, (match) => `work-item:${match[1]!.toUpperCase()}`, declaredRefs, seen, skipFutureIntent);
+    collectMatches(text, PLAN_TOKEN, (match) => `plan:${match[1]!.toLowerCase()}`, declaredRefs, seen, skipFutureIntent);
+    collectMatches(
+      text,
+      PLAN_LABEL,
+      (match) => {
+        const value = slug(match[1]!);
+        return value ? `plan:${value}` : null;
+      },
+      declaredRefs,
+      seen,
+      skipFutureIntent,
+    );
+    collectMatches(
+      text,
+      PLAN_QUOTED,
+      (match) => {
+        const value = slug(match[1]!);
+        return value ? `plan:${value}` : null;
+      },
+      declaredRefs,
+      seen,
+      skipFutureIntent,
+    );
+    collectMatches(
+      text,
+      RUBRIC_REF,
+      (match) => {
+        const value = slug(match[1]!);
+        return value ? `rubric:${value}` : null;
+      },
+      declaredRefs,
+      seen,
+      skipFutureIntent,
+    );
+    collectMatches(
+      text,
+      RUBRIC_QUOTED,
+      (match) => {
+        const value = slug(match[1]!);
+        return value ? `rubric:${value}` : null;
+      },
+      declaredRefs,
+      seen,
+      skipFutureIntent,
+    );
+  }
   collectExplicitPremises(input, declaredRefs, seen);
+  return declaredRefs;
+}
 
+export function completionClaimMismatch(input: CompletionClaimInput): CompletionClaimMismatchStamp | undefined {
+  const declaredRefs = completionClaimRefs(input);
   if (!declaredRefs.length) return undefined;
   const readRefs = new Set((input.basedOn ?? []).map((entry) => comparisonRef(entry.ref)));
   const missingFromBasedOn = declaredRefs.filter((ref) => !readRefs.has(comparisonRef(ref)));
@@ -213,6 +221,6 @@ export function completionClaimMismatch(input: CompletionClaimInput): Completion
     kind: 'unread-artifact',
     declaredRefs,
     missingFromBasedOn,
-    note: 'claims completion on artifacts this session never read',
+    note: 'claims completion on artifacts absent from the recent read trace',
   };
 }

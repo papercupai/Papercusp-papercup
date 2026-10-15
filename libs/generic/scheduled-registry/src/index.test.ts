@@ -4,6 +4,9 @@ import {
   resetPinnedModuleStateForTest,
 } from '@papercusp/module-singleton';
 import {
+  ALIGNED_PHASE_MIN_INTERVAL_MS,
+  ALIGNED_PHASE_WARMUP_MS,
+  alignedSlotDelayMs,
   configureScheduledRegistry,
   getManaged,
   listManaged,
@@ -167,6 +170,77 @@ describe('managedSetInterval / listManaged', () => {
     expect(getManaged('slow')!.running).toBe(false);
   });
 
+  it('a wedged async tick is VISIBLE: runningSince + skippedWhileRunning + O(log n) log lines (EI-25221129396992808)', async () => {
+    const h = harness();
+    const logs: string[] = [];
+    configureScheduledRegistry({ log: (m) => logs.push(m) });
+    let resolveFn!: () => void;
+    managedSetInterval('wedged', 30_000, () => new Promise<void>((r) => {
+      resolveFn = r;
+    }), { category: 'global-sweep' });
+
+    h.setNow(1_000_000);
+    h.intervals[0].cb(); // tick starts and never settles on its own
+    await Promise.resolve();
+    expect(getManaged('wedged')!.runningSince).toBe(1_000_000);
+    expect(getManaged('wedged')!.skippedWhileRunning).toBe(0);
+
+    // Ten later fires land while the first tick is still in flight.
+    for (let i = 1; i <= 10; i += 1) {
+      h.setNow(1_000_000 + i * 30_000);
+      h.intervals[0].cb();
+    }
+    await flush();
+    const entry = getManaged('wedged')!;
+    expect(entry.running).toBe(true);
+    expect(entry.fires).toBe(0); // frozen: this is the silent signature the counter exposes
+    expect(entry.skippedWhileRunning).toBe(10);
+    // One skip is jitter and is not reported; 2, 4 and 8 are (power-of-two backoff).
+    const still = logs.filter((m) => m.includes('tick still running'));
+    expect(still).toHaveLength(3);
+    expect(still[0]).toContain('wedged tick still running after 60000ms (2 fire(s) skipped');
+    expect(still[2]).toContain('after 240000ms (8 fire(s) skipped');
+
+    h.setNow(1_000_000 + 330_000);
+    resolveFn();
+    await flush();
+    const done = getManaged('wedged')!;
+    expect(done.running).toBe(false);
+    expect(done.runningSince).toBeNull();
+    expect(done.fires).toBe(1);
+    expect(done.skippedWhileRunning).toBe(10); // cumulative, survives the episode
+    expect(logs.filter((m) => m.includes('long tick finished'))).toEqual([
+      'wedged long tick finished after 330000ms (10 fire(s) skipped while it ran, interval 30000ms)',
+    ]);
+
+    // The episode counter resets: a single later overlap is jitter again and logs nothing new.
+    logs.length = 0;
+    h.intervals[0].cb();
+    await Promise.resolve();
+    h.intervals[0].cb();
+    resolveFn();
+    await flush();
+    expect(logs).toEqual([]);
+    expect(getManaged('wedged')!.skippedWhileRunning).toBe(11);
+  });
+
+  it('a tick that overruns by ONE interval is not reported (jitter, not a wedge)', async () => {
+    const h = harness();
+    const logs: string[] = [];
+    configureScheduledRegistry({ log: (m) => logs.push(m) });
+    let resolveFn!: () => void;
+    managedSetInterval('jitter', 1000, () => new Promise<void>((r) => {
+      resolveFn = r;
+    }), { category: 'global-sweep' });
+    h.intervals[0].cb();
+    await Promise.resolve();
+    h.intervals[0].cb(); // one skipped fire
+    resolveFn();
+    await flush();
+    expect(getManaged('jitter')!.skippedWhileRunning).toBe(1);
+    expect(logs).toEqual([]);
+  });
+
   it('shed: a shed:true timer skips a cycle when shouldShed() is true; a non-shed timer does not', async () => {
     const h = harness();
     let shedCalls = 0;
@@ -201,6 +275,36 @@ describe('managedSetInterval / listManaged', () => {
     h.timeouts[0].cb(); // simulate the immediate fire
     await flush();
     expect(calls).toBe(1);
+  });
+
+  it('keeps a requested CLI lifetime referenced across alignment and stops both interval generations', () => {
+    const timers: Array<{ unref: ReturnType<typeof vi.fn>; cleared: boolean; callback: () => void }> = [];
+    const capture = (callback: () => void) => {
+      const timer = { unref: vi.fn(), cleared: false, callback };
+      timers.push(timer);
+      return timer;
+    };
+    configureScheduledRegistry({
+      now: () => 1_000_000,
+      setIntervalImpl: capture,
+      setTimeoutImpl: capture,
+      clearIntervalImpl: handle => { (handle as typeof timers[number]).cleared = true; },
+    });
+    const background = managedSetInterval('background', 1_000, () => undefined, { category: 'lifecycle' });
+    expect(timers[0].unref).toHaveBeenCalledOnce();
+    background.stop();
+    const lifetime = managedSetInterval('cli-lifetime', 600_000, () => undefined, {
+      category: 'lifecycle', classification: 'timeout-reaper', ref: true, phase: 'aligned',
+    });
+    expect(timers.slice(1).every(timer => timer.unref.mock.calls.length === 0)).toBe(true);
+    const rephase = timers[2];
+    expect(rephase).toBeDefined();
+    rephase.callback();
+    expect(timers[1].cleared).toBe(true);
+    expect(timers[3].unref).not.toHaveBeenCalled();
+    lifetime.stop();
+    expect(timers[3].cleared).toBe(true);
+    expect(getManaged('cli-lifetime')).toBeUndefined();
   });
 
   it('stop() clears the underlying timer and deregisters from the inventory', () => {
@@ -609,6 +713,189 @@ describe('the Vitest inertness guard distinguishes REAL timers from FAKE ones (W
     } finally {
       setIntervalSpy.mockRestore();
       resetScheduledRegistry();
+    }
+  });
+});
+
+describe('restart-resilient aligned phase (WI-10005289)', () => {
+  const HOUR = 60 * 60_000;
+  const MIN = 60_000;
+
+  /** An arm time exactly `before` ms ahead of `name`'s slot (computed, never wall-clock). */
+  function armBeforeSlot(name: string, intervalMs: number, before: number): { arm: number; slot: number } {
+    const t0 = 1_790_914_874_000;
+    const slot = t0 + alignedSlotDelayMs(name, intervalMs, t0);
+    return { arm: slot - before, slot };
+  }
+
+  /**
+   * Drive one timer across a sequence of host lifetimes (each a fresh registry, as after a
+   * restart), running every scheduled callback that falls inside its lifetime. Returns the
+   * instants the timer actually fired.
+   */
+  async function simulateRestarts(
+    name: string,
+    intervalMs: number,
+    uptimesMin: number[],
+    phase: 'aligned' | 'arm',
+  ): Promise<number[]> {
+    const firedAt: number[] = [];
+    let arm = 1_790_900_000_000;
+    for (const uptime of uptimesMin) {
+      resetScheduledRegistry();
+      const h = harness();
+      let now = arm;
+      h.setNow(now);
+      managedSetInterval(name, intervalMs, () => {
+        firedAt.push(now);
+      }, { category: 'watchdog', phase });
+      const death = arm + uptime * MIN;
+      // Event loop for this lifetime: pending one-shots, then any live interval.
+      const pending: { at: number; run: () => void }[] = h.timeouts.map((t) => ({ at: arm + t.ms, run: t.cb }));
+      const intervalAnchor = new Map<number, number>([[0, arm]]);
+      for (;;) {
+        for (let i = 0; i < h.intervals.length; i += 1) {
+          if (!intervalAnchor.has(i)) intervalAnchor.set(i, now);
+        }
+        const candidates = [
+          ...pending.map((p, i) => ({ at: p.at, run: () => { pending.splice(i, 1); p.run(); } })),
+          ...h.intervals
+            .map((iv, i) => ({ iv, i }))
+            .filter(({ iv }) => !iv.cleared)
+            .map(({ iv, i }) => {
+              const anchor = intervalAnchor.get(i)!;
+              return { at: anchor + iv.ms, run: () => { intervalAnchor.set(i, anchor + iv.ms); iv.cb(); } };
+            }),
+        ].sort((a, b) => a.at - b.at);
+        const next = candidates[0];
+        if (!next || next.at >= death) break;
+        now = next.at;
+        h.setNow(now);
+        next.run();
+        await flush();
+      }
+      arm = death;
+    }
+    return firedAt;
+  }
+
+  it('alignedSlotDelayMs puts every arm time on the same slot for one name', () => {
+    const offsets = new Set<number>();
+    for (const t of [0, 1_234_567, 7_777_777_777, 1_790_914_874_000, 1_790_914_874_001]) {
+      const d = alignedSlotDelayMs('wedged-identity-activation-watchdog', HOUR, t);
+      expect(d).toBeGreaterThanOrEqual(0);
+      expect(d).toBeLessThan(HOUR);
+      offsets.add((t + d) % HOUR);
+    }
+    expect(offsets.size).toBe(1);
+    const distinct = new Set(['a', 'b', 'c', 'd', 'e', 'f'].map((n) => alignedSlotDelayMs(n, HOUR, 0)));
+    expect(distinct.size, 'different names must not herd onto one instant').toBeGreaterThan(1);
+  });
+
+  // The defect: measured bg-host uptimes on 2026-10-02 were all under an hour but one, so an
+  // hourly arm-phase timer never fired. The control proves the simulation reproduces that.
+  const MEASURED_UPTIMES_MIN = [44, 2, 22, 5, 30, 3, 25, 13, 12, 13, 8, 11, 10, 1, 15, 21, 32, 51];
+
+  it('CONTROL: arm phase never fires an hourly timer when every uptime is under an hour', async () => {
+    const fired = await simulateRestarts('hourly-sweep', HOUR, MEASURED_UPTIMES_MIN, 'arm');
+    expect(fired).toEqual([]);
+  });
+
+  it('aligned phase fires an hourly timer on its slot despite restarts every few minutes', async () => {
+    const total = MEASURED_UPTIMES_MIN.reduce((a, b) => a + b, 0); // ~5.3h of wall clock
+    const fired = await simulateRestarts('hourly-sweep', HOUR, MEASURED_UPTIMES_MIN, 'aligned');
+    // Every fire is ON the slot, and at most one slot per hour of wall clock is lost (to the
+    // downtime-free model's warm-up window); the rest fire.
+    const slotOffset = (0 + alignedSlotDelayMs('hourly-sweep', HOUR, 0)) % HOUR;
+    for (const t of fired) expect(t % HOUR).toBe(slotOffset);
+    expect(fired.length).toBeGreaterThanOrEqual(Math.floor(total / 60) - 1);
+    expect(new Set(fired).size).toBe(fired.length);
+  });
+
+  it('re-phases onto the slot: arm interval cleared, a slot-anchored one armed, one fire', async () => {
+    const h = harness();
+    const { arm, slot } = armBeforeSlot('hourly', HOUR, 30 * MIN);
+    h.setNow(arm);
+    let calls = 0;
+    const handle = managedSetInterval('hourly', HOUR, () => {
+      calls += 1;
+    }, { category: 'watchdog' });
+
+    // The arm-phase interval is armed at once, exactly as before (the first fire is never later).
+    expect(h.intervals).toHaveLength(1);
+    expect(h.intervals[0].ms).toBe(HOUR);
+    expect(h.timeouts).toHaveLength(1);
+    expect(h.timeouts[0].ms).toBe(30 * MIN);
+
+    h.setNow(slot);
+    h.timeouts[0].cb();
+    await flush();
+    expect(calls).toBe(1);
+    expect(h.intervals[0].cleared).toBe(true);
+    expect(h.intervals).toHaveLength(2);
+    expect(h.intervals[1].ms).toBe(HOUR);
+    expect(getManaged('hourly')).toMatchObject({ fires: 1, lastFireAt: slot });
+
+    handle.stop();
+    expect(h.intervals[1].cleared, 'stop() must clear the slot-anchored interval').toBe(true);
+  });
+
+  it('a stop() before the slot makes the pending re-phase a no-op', async () => {
+    const h = harness();
+    const { arm } = armBeforeSlot('hourly', HOUR, 30 * MIN);
+    h.setNow(arm);
+    let calls = 0;
+    managedSetInterval('hourly', HOUR, () => {
+      calls += 1;
+    }, { category: 'watchdog' }).stop();
+    h.timeouts[0].cb();
+    await flush();
+    expect(calls).toBe(0);
+    expect(h.intervals).toHaveLength(1);
+    expect(managedCount()).toBe(0);
+  });
+
+  it('skips a slot inside the warm-up window after arm, or right before the arm-phase fire', () => {
+    const near = armBeforeSlot('hourly', HOUR, ALIGNED_PHASE_WARMUP_MS - 1);
+    let h = harness();
+    h.setNow(near.arm);
+    managedSetInterval('hourly', HOUR, () => undefined, { category: 'watchdog' });
+    expect(h.timeouts, 'a slot in the startup ramp is not taken').toHaveLength(0);
+
+    resetScheduledRegistry();
+    const late = armBeforeSlot('hourly', HOUR, HOUR - ALIGNED_PHASE_WARMUP_MS + 1);
+    h = harness();
+    h.setNow(late.arm);
+    managedSetInterval('hourly', HOUR, () => undefined, { category: 'watchdog' });
+    expect(h.timeouts, 'the arm-phase fire already covers a slot this late').toHaveLength(0);
+  });
+
+  it('stays arm-phase for short intervals, instanced timers and an explicit phase:"arm"', () => {
+    const h = harness();
+    const short = armBeforeSlot('short', ALIGNED_PHASE_MIN_INTERVAL_MS - 1, 5 * MIN);
+    h.setNow(short.arm);
+    managedSetInterval('short', ALIGNED_PHASE_MIN_INTERVAL_MS - 1, () => undefined, { category: 'watchdog' });
+    managedSetInterval('per-socket', HOUR, () => undefined, { category: 'lifecycle', instanced: true });
+    managedSetInterval('opted-out', HOUR, () => undefined, { category: 'watchdog', phase: 'arm' });
+    expect(h.timeouts).toHaveLength(0);
+    expect(h.intervals).toHaveLength(3);
+  });
+
+  it('keeps a consumer fake-timer test on the deterministic armedAt + n·interval schedule', async () => {
+    resetScheduledRegistry();
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      managedSetInterval('consumer-hourly', HOUR, () => {
+        calls += 1;
+      }, { category: 'watchdog' });
+      await vi.advanceTimersByTimeAsync(HOUR - 1);
+      expect(calls, 'no aligned fire leaks into a default-seam Vitest run').toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls).toBe(1);
+    } finally {
+      resetScheduledRegistry();
+      vi.useRealTimers();
     }
   });
 });

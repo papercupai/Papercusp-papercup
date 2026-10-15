@@ -15,18 +15,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const M = vi.hoisted(() => ({
   readLines: vi.fn(async () => [] as unknown[]),
+  pgFastPath: false,
+  pgQuery: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
+  workspaceId: "ws-test",
+  pgHandle: null as ((...args: unknown[]) => Promise<unknown[]>) | null,
 }));
 
 vi.mock("../log", () => ({
   coordLog: { readLines: M.readLines },
-  coordSql: () => {
-    throw new Error("no PG in this test");
-  },
-  coordWorkspaceId: () => "ws-test",
-  coordHasPgFastPath: () => false,
+  coordSql: () => M.pgHandle ?? M.pgQuery,
+  coordWorkspaceId: () => M.workspaceId,
+  coordHasPgFastPath: () => M.pgFastPath,
 }));
 
-import tool, { computeConditionStates } from "./conditions";
+import tool, {
+  CONDITIONS_FAST_PATH_ROW_CAP,
+  computeConditionStates,
+  readConditionEnvelopes,
+  readConditionEnvelopesForKey,
+  readLatestConditionEnvelope,
+} from "./conditions";
 
 const ctx = (): never =>
   ({ ownerId: "owner-a", workspaceId: "ws-test", metadata: vi.fn(), log: vi.fn(), progress: vi.fn() }) as never;
@@ -36,6 +44,8 @@ type Out = {
   open: Array<Record<string, unknown>>;
   resolved_count: number;
   resolved: Array<Record<string, unknown>>;
+  condition_key?: string;
+  condition_found?: boolean;
 };
 const call = async (args: Record<string, unknown> = {}): Promise<Out> => {
   const res = (await tool.handler(args as never, ctx())) as {
@@ -86,6 +96,102 @@ const resolutionMany = (m: number, keys: string[], summary = `RECOVERED (${keys.
 beforeEach(() => {
   vi.clearAllMocks();
   M.readLines.mockImplementation(async () => []);
+  M.pgFastPath = false;
+  M.pgQuery.mockImplementation(async (..._args: unknown[]) => []);
+  M.workspaceId = "ws-test";
+  M.pgHandle = null;
+});
+
+describe("concurrent PG condition readers", () => {
+  it("shares one bounded query across a watchdog burst without losing the fold", async () => {
+    M.pgFastPath = true;
+    let release!: (rows: unknown[]) => void;
+    const pending = new Promise<unknown[]>((resolve) => { release = resolve; });
+    M.pgQuery.mockImplementation(() => pending);
+    const reads = Array.from({ length: 40 }, () => call());
+    const queriesWhilePending = M.pgQuery.mock.calls.length;
+    release([{ body: JSON.stringify(resolution(2, "shared")) }, { body: alarm(1, "shared") }]);
+    const results = await Promise.all(reads);
+
+    expect(queriesWhilePending).toBe(1);
+    expect(M.pgQuery).toHaveBeenCalledTimes(1);
+    for (const result of results) {
+      expect(result.open_count).toBe(0);
+      expect(result.resolved[0]).toMatchObject({ condition_key: "shared", resolved_at: at(2) });
+    }
+  });
+
+  it("reads fresh state immediately after settlement instead of caching a resolved alarm", async () => {
+    M.pgFastPath = true;
+    M.pgQuery.mockResolvedValueOnce([{ body: alarm(1, "fresh") }]);
+    M.pgQuery.mockResolvedValueOnce([{ body: resolution(2, "fresh") }, { body: alarm(1, "fresh") }]);
+
+    expect((await call()).open_count).toBe(1);
+    expect((await call()).open_count).toBe(0);
+    expect(M.pgQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("propagates a shared query failure and lets the next read retry without a seam fallback", async () => {
+    M.pgFastPath = true;
+    let fail!: (error: Error) => void;
+    M.pgQuery.mockImplementation(() => new Promise<unknown[]>((_resolve, reject) => { fail = reject; }));
+    const reads = [readConditionEnvelopes(), readConditionEnvelopes()];
+    fail(new Error("condition PG unavailable"));
+    const results = await Promise.allSettled(reads);
+    expect(results.every((result) => result.status === "rejected")).toBe(true);
+    expect(M.pgQuery).toHaveBeenCalledTimes(1);
+    expect(M.readLines).not.toHaveBeenCalled();
+
+    M.pgQuery.mockResolvedValue([{ body: alarm(3, "retry") }]);
+    expect((await call()).open[0]?.condition_key).toBe("retry");
+    expect(M.pgQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps simultaneous workspace reads separate and captures each workspace before awaiting", async () => {
+    M.pgFastPath = true;
+    const releases: Array<(rows: unknown[]) => void> = [];
+    M.pgQuery.mockImplementation(() => new Promise<unknown[]>((resolve) => { releases.push(resolve); }));
+    M.workspaceId = "workspace-a";
+    const a = readConditionEnvelopes();
+    M.workspaceId = "workspace-b";
+    const b = readConditionEnvelopes();
+    releases[0]!([{ body: alarm(1, "a") }]);
+    releases[1]!([{ body: alarm(1, "b") }]);
+
+    expect((await a)[0]?.condition_key).toBe("a");
+    expect((await b)[0]?.condition_key).toBe("b");
+    expect(M.pgQuery.mock.calls[0]?.[1]).toBe("workspace-a");
+    expect(M.pgQuery.mock.calls[1]?.[1]).toBe("workspace-b");
+  });
+
+  it("does not share an in-flight read across a replacement PG backend in the same workspace", async () => {
+    M.pgFastPath = true;
+    let release!: (rows: unknown[]) => void;
+    M.pgQuery.mockImplementation(() => new Promise<unknown[]>((resolve) => { release = resolve; }));
+    const original = readConditionEnvelopes();
+    const replacement = vi.fn(async () => [{ body: alarm(2, "replacement") }]);
+    M.pgHandle = replacement;
+    const changed = readConditionEnvelopes();
+    release([{ body: alarm(1, "original") }]);
+
+    expect((await original)[0]?.condition_key).toBe("original");
+    expect((await changed)[0]?.condition_key).toBe("replacement");
+    expect(replacement).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives readers independent envelope arrays and fold fields", async () => {
+    M.pgFastPath = true;
+    let release!: (rows: unknown[]) => void;
+    M.pgQuery.mockImplementation(() => new Promise<unknown[]>((resolve) => { release = resolve; }));
+    const a = readConditionEnvelopes();
+    const b = readConditionEnvelopes();
+    release([{ body: alarm(1, "independent") }]);
+    const [first, second] = await Promise.all([a, b]);
+    first[0]!.condition_key = "changed by caller";
+    first.pop();
+    expect(second).toHaveLength(1);
+    expect(second[0]?.condition_key).toBe("independent");
+  });
 });
 
 describe("computeConditionStates (pure)", () => {
@@ -242,6 +348,83 @@ describe("computeConditionStates (pure)", () => {
 });
 
 describe("coord:conditions handler", () => {
+  it("condition_key performs an exact keyed lifecycle read instead of the aggregate scan", async () => {
+    M.pgFastPath = true;
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => [
+      { body: resolution(4, "target") },
+      { body: alarm(2, "target") },
+    ]);
+
+    const out = await call({ condition_key: "target" });
+
+    expect(out).toMatchObject({
+      condition_key: "target",
+      condition_found: true,
+      open_count: 0,
+      resolved_count: 1,
+    });
+    expect(out.resolved[0]).toMatchObject({
+      condition_key: "target",
+      resolved_at: at(4),
+    });
+    const [template, ...params] = M.pgQuery.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+    const text = template.join("?");
+    expect(text).toContain("body->>'condition_key' =");
+    expect(text).toContain("body->>'resolves_condition' =");
+    expect(text).toContain("body->'resolves_conditions' ?");
+    expect(params).toContain("target");
+  });
+
+  it("condition_key filters the non-PG seam and reports an unmatched key", async () => {
+    M.readLines.mockImplementation(async () => [alarm(1, "target"), alarm(2, "other")]);
+
+    const found = await call({ condition_key: "target" });
+    expect(found).toMatchObject({ condition_key: "target", condition_found: true, open_count: 1 });
+    expect(found.open.map((state) => state.condition_key)).toEqual(["target"]);
+
+    const missing = await call({ condition_key: "missing" });
+    expect(missing).toMatchObject({ condition_key: "missing", condition_found: false, open_count: 0, resolved_count: 0 });
+    expect(missing.open).toEqual([]);
+    expect(missing.resolved).toEqual([]);
+  });
+
+  it("readConditionEnvelopesForKey includes plural resolutions in the exact lookup", async () => {
+    M.readLines.mockImplementation(async () => [
+      alarm(1, "target"),
+      resolutionMany(2, ["target", "other"]),
+      alarm(3, "other"),
+    ]);
+
+    const envelopes = await readConditionEnvelopesForKey("target");
+    expect(envelopes).toHaveLength(2);
+    expect(envelopes.map((envelope) => envelope["resolves_condition"] ?? envelope["condition_key"])).toEqual([
+      "target",
+      "target",
+    ]);
+  });
+
+  it("keeps recent PG resolutions inside the capped window and folds it chronologically", async () => {
+    const key = "bounded-condition";
+    M.pgFastPath = true;
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => [
+      { body: resolution(2, key) },
+      { body: alarm(1, key) },
+    ]);
+
+    const out = await call();
+
+    const template = M.pgQuery.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+    expect(template?.join(" ")).toContain("ORDER BY id DESC");
+    expect(out.open_count).toBe(0);
+    expect(out.resolved[0]).toMatchObject({
+      condition_key: key,
+      first_seen: at(1),
+      last_seen: at(1),
+      latest_summary: "alarm " + key,
+      resolved_at: at(2),
+    });
+  });
+
   it("splits open vs resolved over the seam read", async () => {
     M.readLines.mockImplementation(async () => [
       alarm(1, "git-sync-stall:papercusp"),
@@ -279,5 +462,50 @@ describe("coord:conditions handler", () => {
     expect(capped.resolved).toHaveLength(2);
     // most recent first
     expect(capped.resolved.map((s) => s.condition_key)).toEqual(["c", "b"]);
+  });
+
+  // WI-6554700010011878: a fold over a FULL window is a floor, not the census.
+  it("marks window_saturated when the PG window came back full, and omits it otherwise", async () => {
+    M.pgFastPath = true;
+    const full = Array.from({ length: CONDITIONS_FAST_PATH_ROW_CAP }, (_, i) => ({ body: alarm(i % 60, `k${i % 7}`) }));
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => full);
+    const saturated = (await call()) as Out & { window_saturated?: Record<string, unknown> };
+    expect(saturated.window_saturated).toMatchObject({
+      rows: CONDITIONS_FAST_PATH_ROW_CAP,
+      cap: CONDITIONS_FAST_PATH_ROW_CAP,
+    });
+
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => full.slice(1));
+    const partial = (await call()) as Out & { window_saturated?: unknown };
+    expect(partial.window_saturated).toBeUndefined();
+  });
+});
+
+describe("readLatestConditionEnvelope (WI-6554700010011878)", () => {
+  it("returns null without a PG fast path and issues no query", async () => {
+    await expect(readLatestConditionEnvelope("k")).resolves.toBeNull();
+    expect(M.pgQuery).not.toHaveBeenCalled();
+  });
+
+  it("seeks the newest envelope naming the key in any of the three fields, outside the fold window", async () => {
+    M.pgFastPath = true;
+    M.pgQuery.mockImplementation(async (..._args: unknown[]) => [{ body: JSON.stringify(alarm(3, "k")) }]);
+    await expect(readLatestConditionEnvelope("k")).resolves.toMatchObject({ condition_key: "k", summary: "alarm k" });
+
+    const [template, ...params] = M.pgQuery.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+    const text = template.join("?param?");
+    expect(text).toContain("body->>'condition_key' =");
+    expect(text).toContain("body->>'resolves_condition' =");
+    expect(text).toContain("body->'resolves_conditions' ?");
+    expect(text).toMatch(/ORDER BY id DESC\s+LIMIT 1/);
+    expect(params).toContain("k");
+    expect(params).toContain("ws-test");
+    // Not the bounded fold read: a key older than the 25k window must still be found.
+    expect(params).not.toContain(CONDITIONS_FAST_PATH_ROW_CAP);
+  });
+
+  it("returns null when no envelope names the key", async () => {
+    M.pgFastPath = true;
+    await expect(readLatestConditionEnvelope("absent")).resolves.toBeNull();
   });
 });

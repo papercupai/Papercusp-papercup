@@ -10,6 +10,8 @@ import {
   classifyItemActivity,
   isActivelyWorked,
   isReclaimable,
+  deriveItemWorkEvidence,
+  formatItemWorkEvidence,
   type ItemActivity,
 } from './item-activity';
 import { STALE_MS } from './liveness';
@@ -17,6 +19,44 @@ import { STALE_MS } from './liveness';
 const NOW = 1_800_000_000_000; // fixed clock (Date.now is unavailable in some harnesses anyway)
 const clock = (over: { now?: number; staleMs?: number } = {}) => ({ now: over.now ?? NOW, staleMs: over.staleMs });
 const ago = (ms: number) => NOW - ms;
+
+describe('queue item work evidence', () => {
+  const reserved = { takenBy: 'su-worker', takenAt: ago(60_000), lastProgressAt: null };
+
+  it('keeps a reservation and registered wait independent of recent work and native attestation', () => {
+    const noUpdate = deriveItemWorkEvidence(reserved, clock());
+    const updated = deriveItemWorkEvidence({ ...reserved, lastProgressAt: ago(1_000) }, clock());
+    const waiting = deriveItemWorkEvidence({ ...reserved, registeredWaitRefs: ['gate:ready', 'gate:ready'] }, clock());
+    expect(noUpdate.reservation?.owner).toBe('su-worker');
+    expect(noUpdate.recentItemWork.status).toBe('unknown');
+    expect(updated.recentItemWork.status).toBe('recent');
+    expect(updated.nativeAttestation.status).toBe('unknown');
+    expect(waiting.waiting).toEqual({ status: 'registered', refs: ['gate:ready'] });
+    expect(waiting.recentItemWork.status).toBe('unknown');
+    for (const view of [noUpdate, updated, waiting]) {
+      expect(formatItemWorkEvidence(view)).toContain('Work attestation unknown');
+      expect(formatItemWorkEvidence(view)).not.toMatch(/active|idle|dead/i);
+    }
+  });
+
+  it('does not infer work from a new claim, a previous holder update, or malformed/future timestamps', () => {
+    for (const lastProgressAt of [undefined, 'invalid', NOW + 1, ago(120_000), 1e30]) {
+      const result = deriveItemWorkEvidence({ ...reserved, lastProgressAt }, clock());
+      expect(result.recentItemWork).toMatchObject({ status: 'unknown', at: null });
+      expect(result.reservation?.owner).toBe('su-worker');
+    }
+    expect(deriveItemWorkEvidence({ ...reserved, takenBy: 'unassigned' }, clock()).reservation).toBeNull();
+    expect(formatItemWorkEvidence()).toBe('Work evidence unknown');
+  });
+
+  it('retains older measured progress as history without declaring the worker idle', () => {
+    const result = deriveItemWorkEvidence({ ...reserved, takenAt: ago(3 * STALE_MS),
+      lastProgressAt: ago(2 * STALE_MS) }, clock());
+    expect(result.recentItemWork).toMatchObject({ status: 'stale', at: new Date(ago(2 * STALE_MS)).toISOString() });
+    expect(result.waiting.status).toBe('unknown');
+    expect(formatItemWorkEvidence(result)).toContain('Older item update');
+  });
+});
 
 describe('classifyItemActivity', () => {
   it('free — an unclaimed item (no holder), regardless of any stale progress data', () => {

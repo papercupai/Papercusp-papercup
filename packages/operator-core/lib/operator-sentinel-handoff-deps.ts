@@ -27,6 +27,7 @@
 
 import type { SentinelHandoffDeps } from './operator-sentinel-handoff';
 import { USER_REQUESTED_LABEL, HANDOFF_CAPABILITY } from './operator-sentinel-handoff';
+import { observeFallback } from './degradation/fallback-observations';
 
 /** Build the real-substrate deps. Pure module-level — no PG touched until a dep
  *  is actually called (each lazy-imports its substrate module so importing this
@@ -114,6 +115,13 @@ export function defaultSentinelHandoffDeps(): SentinelHandoffDeps {
           why: `nudge ladder unavailable (${e instanceof Error ? e.message : String(e)})`,
         };
       }
+      // A readable empty recipient set is a primary result. An unresolved read
+      // still parks the durable item, but that fallback is not lookup recovery.
+      observeFallback('workspace-routing-read', {
+        eligible: 1, applied: recipient.kind === 'unresolved' ? 0 : 1,
+        reason: recipient.kind === 'unresolved' ? 'nudge-recipient-unavailable' : 'applied',
+        scope: 'sentinel-nudge-recipient',
+      }, { workspaceId });
 
       // THE LADDER PICKS *WHO*; URGENCY PICKS *HOW LOUD*.
       //

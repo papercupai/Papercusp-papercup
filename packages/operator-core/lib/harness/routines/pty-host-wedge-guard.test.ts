@@ -6,7 +6,9 @@
  * whose assumptions were falsified once is exactly the guard that needs them pinned.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   classifyComposerWedge,
   classifyBusyGateWedge,
@@ -649,5 +651,52 @@ describe('sweepWedgedPtyHosts', () => {
     const res = await sweepWedgedPtyHosts({ dryRun: true }, deps);
     expect(res.wedged).toHaveLength(1);
     expect(deps.broadcast).not.toHaveBeenCalled();
+  });
+});
+
+// WI-10006344: the sweep visits every live psu-pty host on the box, so a synchronous
+// per-host ledger read parks the main thread once per host. Under host IO pressure a
+// single readSync of a 1.5 kB ledger was measured blocked for 1.7 s. The default readers
+// must therefore be the async ones; these cases exercise those defaults on real files.
+describe('sweepWedgedPtyHosts default readers (async, real files)', () => {
+  it('reads the ledger tail and start time through the async defaults', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wedge-guard-'));
+    try {
+      const ownerId = 'su-wedge-async';
+      writeFileSync(
+        join(dir, `${ownerId}.events.jsonl`),
+        defers(12).map((e) => JSON.stringify(e)).join('\n') + '\n',
+      );
+      writeFileSync(join(dir, `${ownerId}.json`), JSON.stringify({ ownerId, startedAt: HOST_STARTED }));
+      const deps = sweepDeps({ listHosts: () => [host({ ownerId, startedAt: undefined })] });
+      delete deps.readEvents;
+      delete deps.readStartedAt;
+      const res = await sweepWedgedPtyHosts({ dir, dryRun: true }, deps);
+      expect(res.unreadable).toEqual([]);
+      expect(res.wedged.map((w) => [w.ownerId, w.startedAt])).toContainEqual([ownerId, HOST_STARTED]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a missing ledger as unreadable rather than throwing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wedge-guard-'));
+    try {
+      const deps = sweepDeps({ listHosts: () => [host({ ownerId: 'su-no-ledger' })] });
+      delete deps.readEvents;
+      delete deps.readStartedAt;
+      const res = await sweepWedgedPtyHosts({ dir, dryRun: true }, deps);
+      expect(res.unreadable).toEqual(['su-no-ledger']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not import the synchronous per-host readers', () => {
+    const src = readFileSync(new URL('./pty-host-wedge-guard.ts', import.meta.url), 'utf8');
+    const importBlock = src.slice(0, src.indexOf("from '../../events/await/psu-pty-discovery'"));
+    expect(importBlock).toMatch(/\breadHostEventTailAsync\b/);
+    expect(importBlock).not.toMatch(/\breadHostEventTail\b(?!Async)/);
+    expect(importBlock).not.toMatch(/\bhostStartedAt\b(?!Async)/);
   });
 });

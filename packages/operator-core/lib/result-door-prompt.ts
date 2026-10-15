@@ -26,6 +26,33 @@
 
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors, type DoorConstants } from './context-doors';
 import { MAX_PICK_PATHS } from './result-projection/parse';
+import { resolveCapabilityPolicy, type CapabilityPolicyDecision } from '@papercusp/orchestrator/managed-capability-policy';
+
+/** Reuse the launch policy's resolved names; readiness alone never disables a tool. */
+export type OutputGuidancePolicy = Pick<CapabilityPolicyDecision, 'deniedNames'>;
+
+export function renderCodexOutputGuidance(
+  policy: OutputGuidancePolicy = resolveCapabilityPolicy({ client: 'codex', surface: 'launch', audience: 'interactive-su' }),
+): string {
+  if (policy.deniedNames.some((name) => ['exec', 'functions.exec', 'functions.*', '*'].includes(name))) return '';
+  return `## Codex native tool output (until exec cutover)
+
+Native \`functions.exec\` has its own output cap (currently about 10,000 tokens by default),
+separate from Papercusp's per-result door and from each nested shell call's cap.
+- Print only the fields you will use; aggregate or filter before returning them.
+- Spill large data to a file and read selected slices instead of printing the whole file.
+- Filter nested shell output before passing it to \`text(...)\`; its cap and the outer exec cap are separate.
+- Set the first-line \`// @exec: {"max_output_tokens": 1000}\` pragma when a smaller output budget is enough.
+- Prefer \`code:run\` for multi-tool scripts so only the useful final result enters context.
+
+This native-exec guidance is omitted when the resolved capability policy disables exec.`;
+}
+
+/** Shared section plus the client's available-tool advice, using the existing policy seam. */
+export function renderClientResultDoorSection(agent: string, policy?: OutputGuidancePolicy): string {
+  const interim = agent === 'codex' ? renderCodexOutputGuidance(policy) : '';
+  return renderResultDoorSection() + (interim ? `\n\n${interim}` : '');
+}
 
 /**
  * The per-result door, in tokens — read through the same `computeTurnDoors` the
@@ -58,18 +85,25 @@ export function renderResultDoorSection(c: DoorConstants = BAKED_DOOR_CONSTANTS)
   const tokens = resultDoorPromptTokens(c);
   const slots = resultDoorPromptSlots(c);
   const chars = tokens * CHARS_PER_TOKEN_ESTIMATE;
-  return `## Tool results are capped — reduce BEFORE you call, not after
+  return `## Papercusp tool results are capped — reduce BEFORE you call, not after
 
-Every tool result is capped at **~${tokens.toLocaleString('en-US')} tokens** (~${chars.toLocaleString('en-US')} chars). Past it the result is
+Papercusp's per-result door defaults to **~${tokens.toLocaleString('en-US')} tokens** (~${chars.toLocaleString('en-US')} chars). Past it the result is
 TRUNCATED and the full text spilled to a scratch file — you get a pointer, and paging
 it back costs a second round-trip you could have avoided. The cap is PER RESULT and a
 hop budgets ${slots} result slots, so two large results in the same hop are both cut. It is
 pinned to the hop floor: a bigger context window does not buy a bigger per-result
-budget. (Default shown; \`config:doors-get\` reads the live effective value.)
+budget. (Default shown; \`config:doors-get\` reads the live effective value.) Tools with
+explicit output exemptions and native client tools use their own output contracts;
+this is not a universal cap on every client tool.
 
 So when a call could return a lot, bound it AT THE SOURCE first — the tool's own
 \`limit\`/filter/\`since\` args, or a narrower query. When you cannot, reduce it in
 flight with \`projection\`.
+
+**Already cut? Search the spill, don't page it.** \`capability:read { file_path, query:"terms" }\`
+returns only the lines holding every term, with line numbers and coverage; then read
+around a hit with \`view_lines\` (the result's \`read_around\` is a ready call). Paging the
+base64 \`cursor\` is for exact bytes only.
 
 **\`projection\` is a DISPATCH argument accepted on EVERY tool** — a sibling of the
 tool's own arguments, not one of them. With \`tools:invoke\` BOTH placements work: one

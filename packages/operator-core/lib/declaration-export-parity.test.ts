@@ -43,6 +43,55 @@ function registeredDeclarations(): Set<string> {
 }
 
 describe('declaration export parity — controls', () => {
+  it('polices the manual fleet sandbox declaration and catches its historical root-read export omission', () => {
+    const declarationPath = 'libs/papercusp/packages/orchestrator/src/fleet-srt-spawn.d.mts';
+    const sourcePath = declarationPath.replace(/\.d\.mts$/, '.mjs');
+    const declaration = readFileSync(join(REPO_ROOT, declarationPath), 'utf8');
+    const source = readFileSync(join(REPO_ROOT, sourcePath), 'utf8');
+
+    expect(allDeclarations(REPO_ROOT)).toContain(declarationPath);
+    expect(registeredDeclarations().has(declarationPath)).toBe(false);
+    expect(comparePair(declaration, source)).toEqual({ stranded: [], phantom: [] });
+
+    // Recreate the missing value export without changing the shared source.
+    const before = [...valueExports(declaration, declarationPath)]
+      .filter((name) => name !== 'rootReadDenyPaths')
+      .map((name) => `export declare const ${name}: unknown;`)
+      .join('\n');
+    expect(comparePair(before, source)).toEqual({
+      stranded: ['rootReadDenyPaths'],
+      phantom: [],
+    });
+  });
+
+  it('polices the manual AMI scan budget declaration and catches its historical four-export omission', () => {
+    const declarationPath = 'packages/operator-core/bin/aws-ami-scan-measure.d.mts';
+    const sourcePath = 'packages/operator-core/bin/aws-ami-scan-measure.mjs';
+    const declaration = readFileSync(join(REPO_ROOT, declarationPath), 'utf8');
+    const source = readFileSync(join(REPO_ROOT, sourcePath), 'utf8');
+    const missing = new Set([
+      'AWS_AMI_SCAN_BUDGETS',
+      'AWS_AMI_SCAN_WORK_TIMEOUT_MS',
+      'AWS_AMI_SCAN_RUNNER_TIMEOUT_MS',
+      'boundAwsAmiScanCommandTimeoutMs',
+    ]);
+
+    expect(allDeclarations(REPO_ROOT)).toContain(declarationPath);
+    expect(registeredDeclarations().has(declarationPath)).toBe(false);
+    expect(comparePair(declaration, source)).toEqual({ stranded: [], phantom: [] });
+
+    // Project the real declaration's value exports without the four additions.
+    // The baseline checks the actual manual declaration; the negative control
+    // asks whether the export detector catches drift in its value exports.
+    const before = [...valueExports(declaration, declarationPath)]
+      .filter((name) => !missing.has(name))
+      .map((name) => `export declare const ${name}: unknown;`)
+      .join('\n');
+    const drift = comparePair(before, source);
+    expect(new Set(drift.stranded)).toEqual(missing);
+    expect(drift.phantom).toEqual([]);
+  });
+
   it('DETECTS an export the source grew and the declaration never got (the filed defect)', () => {
     // This is the shape of the real defect: `commandFor` was added to
     // typecheck-fanout.mjs and never mirrored into its hand-written declaration,

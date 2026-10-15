@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 current ARM24 lightweight collector before SIGTERM",
+  "cwd": ".",
+  "command": [
+    "node",
+    ".papercusp/scratch/p058-current-arm-collector-20261011/run-assay.mjs"
+  ],
+  "startedAt": "2026-10-11T01:22:30.105Z",
+  "finishedAt": "2026-10-11T01:22:44.941Z",
+  "exitCode": 0,
+  "summary": "Current collector passes a reused lightweight ARM Node24.18.1 startup-wait fixture: kernel PID, exact entry/argument and socket binding, wrong identity refusals, sampled target source, raw profile persisted before SIGTERM, unchanged inputs and both owned processes absent. Scope is direct-binfmt UID1000, not server startup or final release.",
+  "workItemId": "EI-25604028797058995",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "current-host-admitted-direct-arm-collector-lightweight",
+  "producerTaskId": "0mv351xlo1uxl8ga19f",
+  "sourceCommit": "ee40e3a0d1e49e7dd63c4a30bbe4669190961bfc",
+  "sourceCommitted": {
+    "scripts/cpu-sample.mjs": true,
+    "scripts/cdp-inspector.mjs": true,
+    "scripts/lib/cpu-profile.mjs": true,
+    "scripts/proc-guard.mjs": true,
+    "packages/operator-core/lib/cpu-sample.test.ts": true
+  },
+  "sourceHashes": {
+    "scripts/cpu-sample.mjs": "c75cb780006a80b85a760550c6cd10539c90fe035d00190e0aef415da32c3df3",
+    "scripts/cdp-inspector.mjs": "bb15dc2ac1ec9cb60d26d62d0790610f2cd097a9171b37c39465c8f5a7d22112",
+    "scripts/lib/cpu-profile.mjs": "b77446b36ee55d5670eb7bcd74955bef10f23e804be9672eeb25aef9f7ba9fc3",
+    "scripts/proc-guard.mjs": "5eb8c0c9ca8a2d39aef88e4840e14e4832f808450e13977b6c628fadd7677cda",
+    "packages/operator-core/lib/cpu-sample.test.ts": "bd2c94a82727d274653b2a63cb9f0f6345698881b08cdb8a96ed9180ddc1271b"
+  },
+  "runtimeInputs": {
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/bin/node": "a990a8ae388fc285ddbce280e63fca48cfd7695f632b66aec6ed581566eace99",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/serve.mjs": "2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/.sidecar-build-stamp": "42d0ad383174cdd3013fc36d1454f6897ceb8af1de8cdeb87601bdf6a80247b3",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/build-provenance.json": "e1e3076ad430d5ad9ff8f314003ba6d820e4c80fd4f0ddd55145ac28543e9f28",
+    ".papercusp/scratch/p058-direct-arm-closed-20261011/usr/lib/aarch64-linux-gnu/libutil.so.1": "c2c2f3733137b0acaee7b3abb9d6ee8ce05783013bce6e20da363cd7eb986703"
+  },
+  "runtimeEnvironment": {
+    "QEMU_LD_PREFIX": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011",
+    "LD_LIBRARY_PATH": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/usr/lib/aarch64-linux-gnu:/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/bin"
+  },
+  "dependency": {
+    "entry": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/node_modules/ws/index.js",
+    "sha256": "924564d5be26d59b9682c4263f68320e48dde7240bd2d1ad17ec305537429dd2"
+  },
+  "fixtureRecovery": {
+    "originalHostCommandSha256": "f91ecacd44f08d0546a14d8da38520840bf88572320ec7191b8bffe229765098",
+    "originalGuestSha256": "6e4a0d90e70fb203ee74e53cb81d18b14f5c4edfdec78a5e46bb9e3a22185751",
+    "adaptedGuestSha256": "b371183d1666fa6e02df5cf4333431058d08133cc29dbc511aba25d2a3dcad09"
+  },
+  "hostAdmission": {
+    "runtime": "v25.9.0",
+    "arch": "x64",
+    "files": [
+      "scripts/cpu-sample.mjs",
+      "scripts/cdp-inspector.mjs",
+      "scripts/lib/cpu-profile.mjs",
+      "scripts/proc-guard.mjs",
+      "packages/operator-core/lib/cpu-sample.test.ts"
+    ],
+    "admission": {
+      "verdict": "admit"
+    },
+    "at": "2026-10-11T01:18:20.835Z"
+  },
+  "elapsedMs": 14832.969929,
+  "deadlines": {
+    "canonicalServerMs": 60000,
+    "outerCollectorMs": 90000,
+    "fixtureCaptureMs": 15000,
+    "sampleWindowMs": 1000
+  },
+  "observation": {
+    "node": "v24.18.1",
+    "arch": "arm64",
+    "uid": 1000,
+    "target": {
+      "pid": 3916920,
+      "entry": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-current-arm-collector-20261011/p058-cold.mjs",
+      "argv": [
+        "--probe-target"
+      ],
+      "execArgv": [
+        "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/bin/node",
+        "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-direct-arm-closed-20261011/native-arm64-release10/bin/node",
+        "--inspect-wait=127.0.0.1:0"
+      ],
+      "startTicks": "47072662",
+      "listenerInode": "965064913",
+      "identity": "proc"
+    },
+    "captureMs": 1000,
+    "samples": 780,
+    "nodes": 308,
+    "applicationStartedAfterResume": true,
+    "startupResumed": true,
+    "targetSourceSampled": true,
+    "wrongPidRefused": true,
+    "wrongArgRefused": true,
+    "profilePersistedBeforeTermination": true,
+    "termination": {
+      "code": null,
+      "signal": "SIGTERM"
+    }
+  },
+  "phaseOrder": [
+    {
+      "phase": "guest-enter",
+      "at": "2026-10-11T01:22:31.943Z"
+    },
+    {
+      "phase": "collector-imported",
+      "at": "2026-10-11T01:22:33.052Z"
+    },
+    {
+      "phase": "target-listen",
+      "at": "2026-10-11T01:22:33.939Z"
+    },
+    {
+      "phase": "capture-start",
+      "at": "2026-10-11T01:22:37.838Z"
+    },
+    {
+      "phase": "capture-returned",
+      "at": "2026-10-11T01:22:44.002Z"
+    },
+    {
+      "phase": "profile-persisted-before-termination",
+      "at": "2026-10-11T01:22:44.016Z"
+    },
+    {
+      "phase": "target-terminate",
+      "at": "2026-10-11T01:22:44.018Z"
+    }
+  ],
+  "cleanup": {
+    "controllerAbsent": true,
+    "targetAbsent": true
+  },
+  "profile": {
+    "path": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/p058-current-arm-collector-20261011/profile.cpuprofile",
+    "sha256": "8725534afbad576e9ec35d926dce7aefa042895bfbb429ec2a70b89d09ff883b",
+    "bytes": 66469
+  },
+  "rawEvidence": {
+    "root": ".papercusp/scratch/p058-current-arm-collector-20261011",
+    "sha256": {
+      "run-assay.mjs": "2bfb9b50524ac64981220ad1aaaff126f0a83b86791f14e057412ac524d5ea79",
+      "collector-fixture.mjs": "b371183d1666fa6e02df5cf4333431058d08133cc29dbc511aba25d2a3dcad09",
+      "p058-cold.mjs": "ecb33cf1e24eb4da8f6a397d5f4346f9dd58bd339b522ab33d24e5c023a11bfe",
+      "result.json": "e5476b60b9a443cd35f4ea2bc7b0dee775ccb47bb95a3de8ddc63ce1862ec096",
+      "profile.cpuprofile": "8725534afbad576e9ec35d926dce7aefa042895bfbb429ec2a70b89d09ff883b",
+      "phases.jsonl": "5e13ad7340b3e0150ad990afac3889273beb5a77e3bc891f2657b3337459bf32",
+      "host-admission.json": "c6f1780c92d44b41e99790657ff4ac0b0d8b18ed88fbc730924061dca1ca7734",
+      "owner.json": "8714401ccb7ff6e4af2888a2812d36ea69bfe82b10faae72f2d7a6766cf43d0f",
+      "child-ownership.json": "cb75cea4449db5189d548e64c1ef6f06298d775cf5073d6a1359ec45be3139d8",
+      "stdout.log": "8cdf381c0ce50459d0c80cd3caec3fe65b136be2af9e4d3e9ebd27ec60ebdaf2",
+      "stderr.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "existingConventionalRecurrenceGuard": {
+    "file": "packages/operator-core/lib/cpu-sample.test.ts",
+    "sourceSha256": "bd2c94a82727d274653b2a63cb9f0f6345698881b08cdb8a96ed9180ddc1271b",
+    "testRunId": 21016571,
+    "passed": 15,
+    "failed": 0,
+    "skipped": 0,
+    "evidenceFile": "docs/evidence/p058-current-profiler-host-suite-2026-10-11.json",
+    "note": "Previously recorded focused host suite on identical current inputs; not rerun by this operational assay."
+  },
+  "assertions": [
+    {
+      "id": "exact-current-collector-inputs",
+      "passed": true,
+      "evidence": "Four collector helpers and conventional test hashes match before/after, and exact committed HEAD bytes."
+    },
+    {
+      "id": "positive-host-admission",
+      "passed": true,
+      "evidence": "Maintained host census explicitly admitted the four source helpers and conventional test before target execution."
+    },
+    {
+      "id": "kernel-bound-target-identity",
+      "passed": true,
+      "evidence": "ARM24 target PID3916920/startTicks47072662/listenerInode965064913; exact entry and --probe-target; wrong PID/argument refused."
+    },
+    {
+      "id": "startup-profile-before-sigterm",
+      "passed": true,
+      "evidence": "Target output absent before resume, exact source sampled afterward, profile persisted at01:22:44.016Z before SIGTERM phase01:22:44.018Z; nonempty SHA8725534a."
+    },
+    {
+      "id": "owned-cleanup-and-stable-runtime",
+      "passed": true,
+      "evidence": "Target terminated with SIGTERM; controller and target /proc entries absent; frozen runtime metadata and source hashes unchanged."
+    }
+  ],
+  "limitations": [
+    "Direct-binfmt ARM execution at UID1000 differs from container UID1001 and physical ARM hardware.",
+    "The lightweight fixture does not exercise the complete Server import graph or fix its original60000ms startup deadline failure.",
+    "No Docker producer replay, installed-native, trusted signing/publication, transfer or independent final shipment acceptance."
+  ],
+  "publication": {
+    "method": "scripts/lib/identity-leak-patterns.mjs::serializeIdentitySafeJson",
+    "privateReceiptSha256": "30a573b1ac45ab07e41c89a7a3bd5e6898eaf9c7c7109b5b97b63ffeffaa4c7c",
+    "privateArchiveRef": ".papercusp/scratch/p058-evidence-publication-20261011/collector-original-30a573b1.json",
+    "keyNormalization": "Canonical-checkout absolute input binding keys become repository-relative; values are unchanged. Other keys retain their original schema.",
+    "publicationOnly": true,
+    "executedAgain": false
+  }
+}

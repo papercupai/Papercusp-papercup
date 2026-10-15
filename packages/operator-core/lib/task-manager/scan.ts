@@ -39,7 +39,7 @@ import {
   type CgroupFs,
 } from './cgroup-read';
 import { TASK_ROOT_SLICE, deriveUserManagerRoot } from './types';
-import { classifyScope, isTerminalWindowScope } from './scope-class';
+import { classifyScope, isTerminalWindowScope, TERMINAL_SLICE } from './scope-class';
 import { readTerminalAppPids, terminalWindowAlive } from './terminal-window';
 import type { ScannedProcess } from './reconcile';
 import { mapWithConcurrency } from '../gym/concurrency';
@@ -107,7 +107,8 @@ const nodeAsyncCgroupFs: AsyncCgroupFs = {
  * against an in-memory CgroupFs; only the IO changes. Prefetch both cgroup
  * passes and procfs facts with bounded concurrency, including the terminal
  * window's application pid set. A failed read stays null/unknown as in the
- * synchronous reconciler. Production reconciliation keeps its own scan path.
+ * synchronous reconciler. `reconcileTick` uses this scan by default too
+ * (jev-memory-timeouts-to-zero-2026-10-01 P-004).
  */
 export async function scanProcessesAsync(opts: ScanOptions = {}): Promise<ScanResult> {
   if (opts.fs && opts.fs !== nodeCgroupFs && !opts.asyncFs) return scanProcesses(opts);
@@ -251,6 +252,20 @@ export interface ScanResult {
   /** The FOREIGN pass hit its cap — the courtesy view is partial. Carries NO
    *  implication for ledger correctness and must never degrade the verdict. */
   foreignTruncated: boolean;
+  /**
+   * User-manager processes the FOREIGN pass read but did NOT list because their
+   * cmdline misses `foreignSignature`: pid → kernel identity. Never displayed
+   * (the signature still keeps an unrelated owner/peer process out of the pane),
+   * but the reconciler needs it (WI-10005782). An enrolled UNCONFINED task stays
+   * in its spawner's cgroup, outside our slice, and its argv need not name the
+   * repo. A wake executor's `claude -p --resume <id>` turn runs in the
+   * operator's own service cgroup with no repo path in argv. Without this map,
+   * such a row read "gone from the kernel" one grace period after spawn while the
+   * process kept running: 405 of 406 resume-headless rows over three days, none
+   * of them shorter than the grace period. Keyed by pid so a match needs the
+   * row's pid AND its start time.
+   */
+  unlistedIdentityByPid: Map<number, string>;
 }
 
 /**
@@ -277,6 +292,7 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
   const ownedRootExists = fs.isDir(ownedRootAbs);
 
   const processes: ScannedProcess[] = [];
+  const unlistedIdentityByPid = new Map<number, string>();
   const seen = new Set<number>();
   let ownedCount = 0;
   let foreignCount = 0;
@@ -294,8 +310,21 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
     const cached = windowAliveByScope.get(absDir);
     if (cached !== undefined) return cached;
 
-    // A window scope's parent IS the terminal app slice.
-    const sliceAbs = absDir.slice(0, absDir.lastIndexOf('/'));
+    // Most VTE scopes are direct children of the terminal app slice. Some
+    // shells are nested in a Papercusp session slice; probe those against the
+    // manager's canonical GNOME Terminal slice instead of their VTE parent.
+    const parentSliceAbs = absDir.slice(0, absDir.lastIndexOf('/'));
+    const segments = cgroupPath.split('/').filter(Boolean);
+    const parentIsTerminalSlice = segments[segments.length - 2] === TERMINAL_SLICE;
+    const sliceAbs = parentIsTerminalSlice
+      ? parentSliceAbs
+      : userManagerRoot
+        ? absCgroupDir(userManagerRoot + '/app.slice/' + TERMINAL_SLICE, cgroupRoot)
+        : null;
+    if (!sliceAbs || !fs.isDir(sliceAbs)) {
+      windowAliveByScope.set(absDir, null);
+      return null;
+    }
     let appPids = appPidsBySlice.get(sliceAbs);
     if (!appPids) {
       appPids = readTerminalAppPids(sliceAbs, fs);
@@ -330,8 +359,9 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
     // at runtime; duplicating it in a component is how the two drift apart, and a
     // pane that classifies for itself is a pane that can quietly invent a coverage
     // hole (EI-19325095302441792).
+    const terminalWindowState = probeWindow(absDir, cgroupPath);
     const { scope, exemptReason } = classifyScope(cgroupPath, owned, {
-      terminalWindowAlive: probeWindow(absDir, cgroupPath),
+      terminalWindowAlive: terminalWindowState,
     });
     const facts = readProcFacts(pid, bootId, uptimeSec, scanNowMs, fs);
     processes.push({
@@ -343,6 +373,9 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
       owned,
       scope,
       exemptReason,
+      ...(owned && terminalWindowState !== undefined
+        ? { terminalWindowAlive: terminalWindowState }
+        : {}),
     });
   };
 
@@ -380,14 +413,29 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
         if (seen.has(pid) || pid === selfPid) continue;
         if (!windowConfirmedDead) {
           const cmdline = parseProcCmdline(fs.readFile(`/proc/${pid}/cmdline`));
-          if (!cmdline || !sig.test(cmdline)) continue;
+          if (!cmdline || !sig.test(cmdline)) {
+            // Not listed, but still a fact about the kernel: keep its identity so
+            // an enrolled unconfined row with a repo-less argv is not misread as
+            // gone (WI-10005782). Visibility is unchanged — this map is never shown.
+            const identity = readProcFacts(pid, bootId, uptimeSec, scanNowMs, fs).identity;
+            if (identity) unlistedIdentityByPid.set(pid, identity);
+            continue;
+          }
         }
         push(pid, node.absDir, false);
       }
     }
   }
 
-  return { processes, ownedRootAbs, ownedRootExists, userManagerRoot, ownedTruncated, foreignTruncated };
+  return {
+    processes,
+    ownedRootAbs,
+    ownedRootExists,
+    userManagerRoot,
+    ownedTruncated,
+    foreignTruncated,
+    unlistedIdentityByPid,
+  };
 }
 
 /**

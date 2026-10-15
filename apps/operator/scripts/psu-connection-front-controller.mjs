@@ -25,6 +25,10 @@ import { homedir, hostname as osHostname } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
+  AWS_CLI_PROFILE_PATTERN,
+  AWS_EC2_INSTANCE_ID_PATTERN,
+  AWS_REGION_PATTERN,
+  buildAwsSsmProxyCommand,
   buildOpenSshControlMasterCommand,
   buildOpenSshPtySessionCommand,
   reserveLoopbackPort,
@@ -56,9 +60,12 @@ const VALUE_FLAGS = new Map([
   ["--connect", "selection"],
   ["--connect-program", "program"],
   ["--connect-add-gcp-iap", "addName"],
+  ["--connect-add-aws-ssm", "addAwsName"],
   ["--connect-remove", "removeName"],
   ["--connect-project", "projectId"],
   ["--connect-zone", "zone"],
+  ["--connect-region", "region"],
+  ["--connect-aws-profile", "awsProfile"],
   ["--connect-instance", "instanceName"],
   ["--connect-user", "sshUser"],
   ["--connect-login", "loginOrigin"],
@@ -97,9 +104,12 @@ export function parsePsuConnectionArgs(argv) {
     selection: null,
     list: false,
     addName: null,
+    addAwsName: null,
     removeName: null,
     projectId: null,
     zone: null,
+    region: null,
+    awsProfile: null,
     instanceName: null,
     sshUser: null,
     login: false,
@@ -156,13 +166,14 @@ export function parsePsuConnectionArgs(argv) {
   const actions = [
     transport.list,
     Boolean(transport.addName),
+    Boolean(transport.addAwsName),
     Boolean(transport.removeName),
     transport.login,
     transport.logout,
   ].filter(Boolean).length;
   if (actions > 1)
     throw new Error(
-      "Choose only one of --connect-list, --connect-add-gcp-iap, --connect-remove, --connect-login, or --connect-logout",
+      "Choose only one of --connect-list, --connect-add-gcp-iap, --connect-add-aws-ssm, --connect-remove, --connect-login, or --connect-logout",
     );
   // `--connect-login --connect` (bare) is the one maintenance+connect pairing:
   // sign in, then open the program on the new sign-in's workspace. PUI's
@@ -184,17 +195,24 @@ export function parsePsuConnectionArgs(argv) {
       `--connect-program must be one of ${[...CONNECT_PROGRAMS].join(", ")}`,
     );
   }
+  // Each provider's fields belong to its own add command, so a GCP zone can
+  // never silently ride into an AWS profile or the other way round.
+  if (!transport.addName && [transport.projectId, transport.zone].some(Boolean)) {
+    throw new Error("--connect-project/zone require --connect-add-gcp-iap");
+  }
+  if (
+    !transport.addAwsName &&
+    [transport.region, transport.awsProfile].some(Boolean)
+  ) {
+    throw new Error("--connect-region/aws-profile require --connect-add-aws-ssm");
+  }
   if (
     !transport.addName &&
-    [
-      transport.projectId,
-      transport.zone,
-      transport.instanceName,
-      transport.sshUser,
-    ].some(Boolean)
+    !transport.addAwsName &&
+    [transport.instanceName, transport.sshUser].some(Boolean)
   ) {
     throw new Error(
-      "--connect-project/zone/instance/user require --connect-add-gcp-iap",
+      "--connect-instance/user require --connect-add-gcp-iap or --connect-add-aws-ssm",
     );
   }
 
@@ -255,6 +273,66 @@ export function normalizeGcpIapProfile(input) {
     ],
     constraints: [
       "No public IP",
+      "Interactive control transport; bulk transfer requires an explicit alternate path",
+      "SSH host keys are verified by the local OpenSSH configuration",
+    ],
+    reconnect: "recreate",
+    audited: true,
+  };
+}
+
+/**
+ * Your own EC2 instance, reached by OpenSSH over an AWS Systems Manager
+ * Session Manager tunnel — the AWS twin of the GCP IAP profile
+ * (aws-byoc-gcp-parity-2026-10-01 P-009). Like IAP it needs no public IP and
+ * no inbound port: the SSH stream rides an SSM session to port 22.
+ */
+export function normalizeAwsSsmProfile(input) {
+  const name = requiredValue(
+    input.name,
+    "Connection profile name",
+    PROFILE_NAME_RE,
+  );
+  const region = requiredValue(input.region, "AWS region", AWS_REGION_PATTERN);
+  const instanceId = requiredValue(
+    input.instanceId,
+    "EC2 instance id",
+    AWS_EC2_INSTANCE_ID_PATTERN,
+  );
+  const sshUser = requiredValue(input.sshUser, "SSH user", SSH_USER_RE);
+  const awsProfile =
+    input.awsProfile == null
+      ? null
+      : requiredValue(input.awsProfile, "AWS CLI profile", AWS_CLI_PROFILE_PATTERN);
+  const query = new URLSearchParams({ region, instance: instanceId });
+  if (awsProfile) query.set("profile", awsProfile);
+
+  return {
+    name,
+    kind: "aws-ssm-ssh",
+    region,
+    instanceId,
+    sshUser,
+    ...(awsProfile ? { awsProfile } : {}),
+    endpoint: `aws-ssm-ssh://${instanceId}?${query.toString()}`,
+    target: `${sshUser}@${instanceId}`,
+    remoteOperatorPort: DEFAULT_REMOTE_OPERATOR_PORT,
+    supportedClientPlatforms: ["linux", "macos", "windows"],
+    features: {
+      command: true,
+      pty: true,
+      tcpForward: true,
+      fileTransfer: true,
+    },
+    prerequisites: [
+      "OpenSSH client",
+      "AWS CLI v2",
+      "AWS Session Manager plugin",
+      "ssm:StartSession on the instance with the AWS-StartSSHSession document",
+      "Your SSH public key authorized for the SSH user on the instance",
+    ],
+    constraints: [
+      "No public IP or inbound SSH port: SSH rides an SSM Session Manager tunnel",
       "Interactive control transport; bulk transfer requires an explicit alternate path",
       "SSH host keys are verified by the local OpenSSH configuration",
     ],
@@ -399,6 +477,7 @@ export function normalizeHostedProfile(input) {
 
 function validateStoredProfile(value) {
   if (value?.kind === "gcp-iap-ssh") return normalizeGcpIapProfile(value);
+  if (value?.kind === "aws-ssm-ssh") return normalizeAwsSsmProfile(value);
   if (value?.kind === "papercusp-hosted") return normalizeHostedProfile(value);
   throw new Error(
     `Unsupported saved psu connection kind '${value?.kind ?? "missing"}'`,
@@ -480,16 +559,48 @@ function platformName(platform) {
   return platform;
 }
 
-function gcpIapExtraArgs(profile) {
-  return [
-    "-o",
-    `ProxyCommand=gcloud compute start-iap-tunnel ${profile.instanceName} 22 --listen-on-stdin --project=${profile.projectId} --zone=${profile.zone}`,
-  ];
+/**
+ * Per machine-profile kind: the OpenSSH routing option, the local programs it
+ * needs, and the provider words for a failure the user has to fix.
+ */
+const MACHINE_TRANSPORTS = {
+  "gcp-iap-ssh": {
+    extraArgs: (profile) => [
+      "-o",
+      `ProxyCommand=gcloud compute start-iap-tunnel ${profile.instanceName} 22 --listen-on-stdin --project=${profile.projectId} --zone=${profile.zone}`,
+    ],
+    commands: ["ssh", "gcloud"],
+    tunnel: "IAP",
+    verify: "known_hosts, OS Login, and IAP permission",
+  },
+  "aws-ssm-ssh": {
+    // `%h` is the SSH destination host, which the profile makes the instance id.
+    extraArgs: (profile) => [
+      "-o",
+      `ProxyCommand=${buildAwsSsmProxyCommand({
+        region: profile.region,
+        ...(profile.awsProfile ? { awsProfile: profile.awsProfile } : {}),
+      })}`,
+    ],
+    commands: ["ssh", "aws", "session-manager-plugin"],
+    tunnel: "SSM",
+    verify:
+      "known_hosts, that your SSH key is authorized for the SSH user on the instance, and that your AWS credentials allow ssm:StartSession with AWS-StartSSHSession",
+  },
+};
+
+function machineTransport(profile) {
+  const transport = MACHINE_TRANSPORTS[profile.kind];
+  if (!transport)
+    throw new Error(`Connection '${profile.name}' has no SSH transport (${profile.kind})`);
+  return transport;
 }
 
 export function describePsuConnectionProfile(profile) {
   if (profile.kind === "papercusp-hosted")
     return `${profile.name} — Papercusp cloud workspaces at ${profile.origin}${profile.organizationName ? ` for ${profile.organizationName}` : ""}`;
+  if (profile.kind === "aws-ssm-ssh")
+    return `${profile.name} — AWS SSM ${profile.region}/${profile.instanceId} as ${profile.sshUser}${profile.awsProfile ? ` (AWS profile ${profile.awsProfile})` : ""}`;
   return `${profile.name} — GCP IAP ${profile.projectId}/${profile.zone}/${profile.instanceName} as ${profile.sshUser}`;
 }
 
@@ -807,7 +918,7 @@ function assertProfileUsable(profile, deps) {
     );
   }
   if (profile.kind === "papercusp-hosted") return;
-  for (const command of ["ssh", "gcloud"]) {
+  for (const command of machineTransport(profile).commands) {
     if (!deps.commandAvailable(command)) {
       throw new Error(
         `Connection '${profile.name}' requires '${command}' on the local PATH`,
@@ -860,7 +971,7 @@ async function establishForward(profile, deps) {
       localPort,
       remoteOperatorPort: profile.remoteOperatorPort,
       controlPersistSeconds: 60,
-      extraArgs: gcpIapExtraArgs(profile),
+      extraArgs: machineTransport(profile).extraArgs(profile),
     });
     const result = await deps.runCommand(
       master.command,
@@ -869,7 +980,7 @@ async function establishForward(profile, deps) {
     );
     if (result.code !== 0) {
       throw new Error(
-        `Could not establish '${profile.name}'. OpenSSH host-key and authentication policy is authoritative; inspect the error above and verify known_hosts, OS Login, and IAP permission.`,
+        `Could not establish '${profile.name}'. OpenSSH host-key and authentication policy is authoritative; inspect the error above and verify ${machineTransport(profile).verify}.`,
       );
     }
   }
@@ -1482,14 +1593,22 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
     deps.output(`Signed out of ${describePsuConnectionProfile(profile)}`);
     return { handled: true, argv: forwardedArgv, exitCode: 0 };
   }
-  if (transport.addName) {
-    const profile = normalizeGcpIapProfile({
-      name: transport.addName,
-      projectId: transport.projectId,
-      zone: transport.zone,
-      instanceName: transport.instanceName,
-      sshUser: transport.sshUser,
-    });
+  if (transport.addName || transport.addAwsName) {
+    const profile = transport.addAwsName
+      ? normalizeAwsSsmProfile({
+          name: transport.addAwsName,
+          region: transport.region,
+          instanceId: transport.instanceName,
+          sshUser: transport.sshUser,
+          awsProfile: transport.awsProfile,
+        })
+      : normalizeGcpIapProfile({
+          name: transport.addName,
+          projectId: transport.projectId,
+          zone: transport.zone,
+          instanceName: transport.instanceName,
+          sshUser: transport.sshUser,
+        });
     if (store.profiles.some((saved) => saved.name === profile.name)) {
       throw new Error(
         `Connection profile '${profile.name}' already exists; remove it before replacing it`,
@@ -1601,7 +1720,7 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
       throw new Error(`Remote psu transport ended on ${result.signal}`);
     if (result.code === 255) {
       throw new Error(
-        `Remote psu transport failed. The tmux session remains reattachable; retry ${transport.program} --connect=${profile.name} after correcting the OpenSSH/IAP error above.`,
+        `Remote psu transport failed. The tmux session remains reattachable; retry ${transport.program} --connect=${profile.name} after correcting the OpenSSH/${machineTransport(profile).tunnel} error above.`,
       );
     }
     return { handled: true, argv: forwardedArgv, exitCode: result.code ?? 1 };

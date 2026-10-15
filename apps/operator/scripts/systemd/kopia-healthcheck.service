@@ -1,15 +1,11 @@
 [Unit]
 Description=Kopia healthcheck — alert if no recent snapshot
+RequiresMountsFor=/mnt/cold-a/Backup/db-dumps
 
 [Service]
 Type=oneshot
-# WI-2145150: healthcheck.sh asserts DUMP-CONTENT freshness, so it must read the
-# same destination the backup writes. Without this the script falls back to its
-# /mnt/data default and measures a tree nothing writes to — which fails LOUD
-# (STATUS.json freezes, so kopia-healthcheck.sh:313 fires within MAX_DUMP_AGE_S=8h,
-# and :310 fires if the stale tree is ever deleted). Noisy, not silent — but a
-# standing false alarm is exactly what trains people to ignore this alarm, and
-# this is the alarm whose ABSENCE hid a 30-day outage (EI-10733).
+# The healthcheck asserts dump-content freshness and Kopia source coverage. Keep
+# it on the cold-a destination and require that mount before reading the tree.
 # ⚠ KEEP IN SYNC with papercusp-db-backup.service, which sets the same var.
-Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/backup/db-dumps
+Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/cold-a/Backup/db-dumps
 ExecStart=%h/.config/kopia/healthcheck.sh

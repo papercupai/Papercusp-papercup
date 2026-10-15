@@ -4,14 +4,40 @@
  * the injectable provisioner seam so no real Xvfb is spawned; asserts the handler output
  * shape + the lease-Map side effects.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const desktopRegistry = vi.hoisted(() => ({
+  registerDesktopSession: vi.fn(async (input: { scope: string; scopeRef: string; name?: string | null }) => ({
+    id: 'desktop-admin-test-session',
+    ...input,
+  })),
+  markDesktopReady: vi.fn(async () => undefined),
+  closeDesktopSession: vi.fn(async () => true),
+  resolveDesktopForScope: vi.fn(async (): Promise<unknown> => undefined),
+  getDesktopSession: vi.fn(async (): Promise<unknown> => undefined),
+  listDesktopSessions: vi.fn(async (): Promise<unknown[]> => []),
+}));
+vi.mock('../../desktop/desktop-session-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../desktop/desktop-session-registry')>()),
+  ...desktopRegistry,
+}));
+
+const headroomAdmission = vi.hoisted(() =>
+  vi.fn(async (): Promise<unknown> => ({ verdict: { admit: true }, releasable: [] })),
+);
+vi.mock('./desktop-headroom', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./desktop-headroom')>()),
+  admitNewDesktop: headroomAdmission,
+}));
+
 import {
   __setProvisionerForTests,
   __resetProvisioner,
   releaseAllHiveDesktops,
+  releaseDesktop,
   leasedHiveDesktops,
 } from './desktop-lease';
-import type { ProvisionOptions, SandboxDesktop } from './desktop-provisioner';
+import type { DesktopAppDiagnostic, ProvisionOptions, SandboxDesktop } from './desktop-provisioner';
 import { NO_GL_STRATEGY } from '../../desktop/gl-strategy';
 import provisionTool from './provision-desktop';
 import releaseTool from './release-desktop';
@@ -26,7 +52,7 @@ const release = releaseTool as unknown as Tool;
 const list = listTool as unknown as Tool;
 
 /** A fake provisioner that records the opts it was handed and hands back a fake desktop. */
-function fakeProvisioner() {
+function fakeProvisioner(diagnostics: DesktopAppDiagnostic[] = []) {
   const seen: ProvisionOptions[] = [];
   let n = 200;
   __setProvisionerForTests(async (opts) => {
@@ -42,9 +68,9 @@ function fakeProvisioner() {
       // WI-1223202: nothing was probed at all here, so it was certainly not probed inside a
       // sandbox. `false` is the honest value, not a placeholder.
       glProbeSandboxed: false,
-      // WI-1105361: this fake spawned no apps, so there is nothing to diagnose. Empty is
-      // the honest answer; a fabricated "alive" row would assert a process that never was.
-      appDiagnostics: () => [],
+      // WI-1105361: by default this fake spawned no apps, so there is nothing to diagnose.
+      // Selected tests inject one row to check that the handler returns it unchanged.
+      appDiagnostics: () => diagnostics,
       // P-012: the default local backend, for the same reason the GL value is the zero
       // one — nothing was really started, so claiming the KasmVNC backend would assert
       // a listener this fake does not have.
@@ -86,6 +112,36 @@ describe('computer desktop-lease admin tools', () => {
     expect(second.reused).toBe(true);
     expect(second.display).toBe(first.display); // same desktop
     expect(seen).toHaveLength(1); // provisioner called ONCE — apps on the 2nd call are not relaunched
+  });
+
+  it('provision_desktop returns bounded diagnostics for apps on the caller-owned lease', async () => {
+    const ownerId = 'desktop-admin-test-owner';
+    const name = 'diagnostics-test';
+    const diagnostic: DesktopAppDiagnostic = {
+      argv: ['firefox', '--no-remote'],
+      pid: 4242,
+      alive: false,
+      exitCode: 46,
+      exitSignal: null,
+      stderrTail: '[VGL] ERROR: display initialization failed',
+    };
+    const seen = fakeProvisioner([diagnostic]);
+    const ctx = { isSuperuser: true, uiClientId: ownerId, harnessSlug: 'papercusp' };
+    try {
+      desktopRegistry.listDesktopSessions.mockResolvedValue([]);
+      const r = parse(await provision.handler({ name, apps: [['firefox', '--no-remote']] }, ctx));
+      expect(r.ok).toBe(true);
+      expect(r.appDiagnostics).toEqual([diagnostic]);
+      expect(seen[0]).toMatchObject({ apps: [['firefox', '--no-remote']] });
+    } finally {
+      await releaseDesktop({ scope: 'agent', ownerId, name, harnessSlug: 'papercusp' });
+      desktopRegistry.listDesktopSessions.mockReset();
+      desktopRegistry.registerDesktopSession.mockReset();
+      desktopRegistry.markDesktopReady.mockReset();
+      desktopRegistry.closeDesktopSession.mockReset();
+      headroomAdmission.mockReset();
+      await releaseAllHiveDesktops();
+    }
   });
 
   it('list_desktops reports every leased hive with its display/geometry', async () => {

@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, teardownTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const childPath = resolve(packageRoot, 'test/_durable-orchestration-crash-child.ts');
@@ -29,6 +29,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe('CREATE DATABASE "' + databaseName + '"');
+    await markManagedTestDatabase(admin, databaseName);
   } finally {
     await admin.end({ timeout: 5 });
   }

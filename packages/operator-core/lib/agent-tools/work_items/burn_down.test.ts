@@ -7,6 +7,9 @@ vi.mock('../../work-items', async (importOriginal) => ({
   // leaves it `undefined`, TypeErroring on the very row this fix is about.
   ...(await importOriginal<object>()),
   listWorkItems: vi.fn(),
+  listAllWorkItemsForFileExport: vi.fn(),
+  countWorkItems: vi.fn(),
+  countWorkItemsByState: vi.fn(),
   getWorkItem: vi.fn(),
   explainIssueClaimFloors: vi.fn(),
 }));
@@ -23,9 +26,20 @@ vi.mock('../../issue-occurrence-ledger', () => ({ readIssueOccurrenceCounts: vi.
 vi.mock('../fleet/fleet-metrics-scope', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   resolveFleetMetricScope: vi.fn(),
+  readFleetMetricSource: vi.fn(),
+  withFleetMetricReadSql: async (read: (sql: undefined) => Promise<unknown>) => read(undefined),
 }));
 
-import { explainIssueClaimFloors, getWorkItem, listWorkItems, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
+import {
+  countWorkItems,
+  countWorkItemsByState,
+  explainIssueClaimFloors,
+  getWorkItem,
+  listWorkItems,
+  listAllWorkItemsForFileExport,
+  WORK_ITEMS_MAX_LIMIT,
+} from '../../work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { listPresence } from '../coordination/presence';
 import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
@@ -36,17 +50,23 @@ import {
   buildCohortAudit,
   liveOwnersFromPresence,
   applyLaneFence,
+  NON_TERMINAL_CENSUS_CEILING,
 } from './burn_down';
 import { shapeBurnDown } from './burn_down-shape';
+import { shapeLeaderBrief } from '../fleet/leader-brief-shape';
+import { computeAgentReviewService } from '../../harness/improvements/flow-metrics';
+import { updateExternalBlockerHistory } from '../../external-blockers';
 import { P2P_LANE_EXCLUSION_TERMS, P2P_LANE_REJECTED_ANTI_TERMS } from '../../scheduler/p2p-lane-fence';
 import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
 import {
   FLEET_METRIC_COMPARISON_RULE,
   FLEET_METRIC_POPULATIONS,
   FLEET_METRICS_SCHEMA_VERSION,
+  fleetMetricsResultSchema,
 } from '../fleet/fleet-metrics-contract';
 import {
   resolveFleetMetricScope,
+  readFleetMetricSource,
   type FleetMetricFlowMode,
   type ResolvedFleetMetricScope,
 } from '../fleet/fleet-metrics-scope';
@@ -54,6 +74,31 @@ import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
 import { compareCountEvidence, materializeCountEvidence } from '../../count-evidence-contract';
 
 const mockListWorkItems = vi.mocked(listWorkItems);
+const mockListAllWorkItems = vi.mocked(listAllWorkItemsForFileExport);
+const mockCountWorkItems = vi.mocked(countWorkItems);
+const mockCountWorkItemsByState = vi.mocked(countWorkItemsByState);
+
+/**
+ * WI-6554700010008464 — the live census no longer issues one capped listWorkItems. It reads
+ * the open rows, a terminal-history slice and two aggregates. Answer all four from one row
+ * set, the way the database would, so each test states its population once.
+ */
+function stubCensus(rows: WorkItem[]): void {
+  const terminal = new Set<string>(ANY_FAMILY_TERMINAL_STATES);
+  const open = rows.filter((r) => !terminal.has(r.state));
+  mockListWorkItems.mockImplementation(async (filter = {}) => {
+    const states = filter.states;
+    const pool = states ? rows.filter((r) => states.includes(r.state)) : filter.notTerminal ? open : rows;
+    return pool.slice(0, filter.limit ?? pool.length);
+  });
+  mockListAllWorkItems.mockImplementation(async (filter = {}) => (filter.notTerminal ? open : rows));
+  mockCountWorkItems.mockImplementation(async (filter = {}) => (filter.notTerminal ? open.length : rows.length));
+  mockCountWorkItemsByState.mockImplementation(async () => {
+    const byState: Record<string, number> = {};
+    for (const r of rows) byState[r.state] = (byState[r.state] ?? 0) + 1;
+    return byState;
+  });
+}
 const mockGetWorkItem = vi.mocked(getWorkItem);
 const mockExplainIssueClaimFloors = vi.mocked(explainIssueClaimFloors);
 const mockListPresence = vi.mocked(listPresence);
@@ -61,6 +106,7 @@ const mockGetModes = vi.mocked(getModes);
 const mockReadDrainFlow = vi.mocked(readDrainFlow);
 const mockReadIssueOccurrenceCounts = vi.mocked(readIssueOccurrenceCounts);
 const mockResolveFleetMetricScope = vi.mocked(resolveFleetMetricScope);
+const mockReadFleetMetricSource = vi.mocked(readFleetMetricSource);
 const tool = (await import('./burn_down')).default;
 
 const FLEET_START = '2026-08-20T12:00:00.000Z';
@@ -308,11 +354,38 @@ function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = 
 describe('work_items:burn_down', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stubCensus([]);
     mockGetWorkItem.mockResolvedValue(null);
     mockExplainIssueClaimFloors.mockResolvedValue([]);
     mockGetModes.mockResolvedValue([]);
     mockReadDrainFlow.mockResolvedValue(drainFlowReport);
     mockReadIssueOccurrenceCounts.mockResolvedValue(issueOccurrenceCounts);
+  });
+
+  it('carries reservation, progress, real waits and unknown attestation independently through the tool shaper', () => {
+    const generatedAt = '2026-10-10T04:00:00.000Z';
+    const result = buildBurnDownResult([
+      item({ id: 'WI-reserved', assignee: 'su-worker', takenAt: '2026-10-10T03:50:00.000Z' }),
+      item({ id: 'WI-progress', assignee: 'su-worker', takenAt: '2026-10-10T03:50:00.000Z',
+        lastProgressAt: '2026-10-10T03:59:00.000Z' }),
+      item({ id: 'WI-wait', assignee: 'su-worker', payload: { externalBlockers:
+        updateExternalBlockerHistory(null, { kind: 'event', ref: 'fixture:ready',
+          summary: 'Await the fixture', capability: 'live-dependency' }, 'su-worker', generatedAt).blockers } }),
+      item({ id: 'WI-park', assignee: 'su-worker', payload: { _claimHold: true } }),
+    ], new Set(['su-worker']), { harness: 'papercusp', generatedAt });
+    const rows = [...result.inFlight, ...result.parked];
+    expect(rows.find(r => r.id === 'WI-reserved')?.workEvidence).toMatchObject({
+      reservation: { owner: 'su-worker' }, recentItemWork: { status: 'unknown' }, nativeAttestation: { status: 'unknown' },
+    });
+    expect(rows.find(r => r.id === 'WI-progress')?.workEvidence.recentItemWork.status).toBe('recent');
+    expect(rows.find(r => r.id === 'WI-wait')?.workEvidence.waiting).toEqual({ status: 'registered', refs: ['event:fixture:ready'] });
+    expect(rows.find(r => r.id === 'WI-park')?.workEvidence.waiting.status).toBe('unknown');
+    const shaped = shapeBurnDown(result, 'trimmed');
+    expect(shaped).toMatchObject({ inFlight: [
+      expect.objectContaining({ workEvidence: expect.objectContaining({ nativeAttestation: { status: 'unknown',
+        reason: 'Owner-bound native execution was not attested by this item read' } }) }),
+      expect.objectContaining({ workEvidence: expect.objectContaining({ recentItemWork: expect.objectContaining({ status: 'recent' }) }) }),
+    ] });
   });
 
   it('classifies terminal, in-flight, parked, and unclaimed rows', () => {
@@ -726,8 +799,70 @@ describe('work_items:burn_down', () => {
     ]);
   });
 
+  it('judges abandonment closes on their recorded disposition, not on verification evidence (WI-6554700010008454)', () => {
+    const droppedWithReason = item({
+      id: 'WI-dropped-reason',
+      state: 'dropped',
+      terminalOwner: 'su-1',
+      completionAuthority: 'proposed',
+      terminalCompletionRef: 'Obsolete on the current build: the subject path was removed',
+      terminalCompletionEvidence: null,
+    });
+    const closedTriageReject = item({
+      id: 'EI-closed-reject',
+      state: 'closed',
+      terminalOwner: 'Queen',
+      completionAuthority: 'proposed',
+      terminalCompletionRef: 'Triage decision: reject — replay succeeded on the serving build',
+      terminalCompletionEvidence: null,
+    });
+    const droppedSilently = item({
+      id: 'EI-dropped-silent',
+      state: 'dropped',
+      terminalOwner: 'system:work-item-admission-promoter',
+      completionAuthority: null,
+      terminalCompletionRef: '   ',
+      terminalCompletionEvidence: null,
+    });
+    const resolvedAssertionOnly = item({
+      id: 'WI-resolved-bare',
+      state: 'resolved',
+      terminalOwner: 'su-2',
+      completionAuthority: 'proposed',
+      terminalCompletionRef: 'fixed it',
+      terminalCompletionEvidence: null,
+    });
+    const audit = buildCohortAudit(
+      ['WI-dropped-reason', 'EI-closed-reject', 'EI-dropped-silent', 'WI-resolved-bare'],
+      [droppedWithReason, closedTriageReject, droppedSilently, resolvedAssertionOnly],
+    );
+    expect(audit).toMatchObject({ requested: 4, found: 4, missing: 0, reopenRecommended: 2 });
+    expect(audit.rows).toEqual([
+      expect.objectContaining({
+        id: 'WI-dropped-reason', closureKind: 'dropped', evidenceVerdict: 'disposition-recorded',
+        reopenRecommended: false, recommendation: null,
+      }),
+      expect.objectContaining({
+        id: 'EI-closed-reject', closureKind: 'closed', evidenceVerdict: 'disposition-recorded',
+        reopenRecommended: false, recommendation: null,
+      }),
+      // A whitespace-only ref is not a disposition: the drop still has to say why.
+      expect.objectContaining({
+        id: 'EI-dropped-silent', closureKind: 'dropped', evidenceVerdict: 'missing',
+        reopenRecommended: true,
+        recommendation: expect.stringContaining('record the disposition'),
+      }),
+      // A resolved close claims a fix, so it still owes structured verification evidence.
+      expect.objectContaining({
+        id: 'WI-resolved-bare', closureKind: 'resolved', evidenceVerdict: 'missing',
+        reopenRecommended: true,
+        recommendation: expect.stringContaining('structured verification evidence'),
+      }),
+    ]);
+  });
+
   it('wires the tool to list work-items and workspace-scoped presence', async () => {
-    mockListWorkItems.mockResolvedValue([item({ id: 'WI-live', assignee: 'su-live' })]);
+    stubCensus([item({ id: 'WI-live', assignee: 'su-live' })]);
     mockListPresence.mockResolvedValue([
       {
         ownerId: 'su-live',
@@ -738,12 +873,17 @@ describe('work_items:burn_down', () => {
 
     const res = await callTool({ harness: 'papercusp', includeChildren: true }, { workspaceId: 'ws-test' });
 
+    // WI-6554700010008464: open rows are read uncapped and counted exactly; terminal rows
+    // only as a bounded newest-first history slice.
+    const selector = { harness: 'papercusp', kind: undefined, includeChildren: true };
+    expect(mockCountWorkItems).toHaveBeenCalledWith({ ...selector, notTerminal: true });
+    expect(mockListAllWorkItems).toHaveBeenCalledWith({ ...selector, notTerminal: true });
     expect(mockListWorkItems).toHaveBeenCalledWith({
-      harness: 'papercusp',
-      kind: undefined,
-      includeChildren: true,
+      ...selector,
+      states: [...ANY_FAMILY_TERMINAL_STATES],
       limit: 2000,
     });
+    expect(mockCountWorkItemsByState).toHaveBeenCalledWith(selector);
     expect(mockListPresence).toHaveBeenCalledWith({ workspaceId: 'ws-test' });
     expect(res.data).toMatchObject({
       ok: true,
@@ -753,7 +893,7 @@ describe('work_items:burn_down', () => {
   });
 
   it('attaches exact canonical drain flow for a since-bounded read by an active DRAIN caller', async () => {
-    mockListWorkItems.mockResolvedValue([]);
+    stubCensus([]);
     mockListPresence.mockResolvedValue([]);
     mockGetModes.mockResolvedValue([
       {
@@ -800,7 +940,7 @@ describe('work_items:burn_down', () => {
   });
 
   it('omits drain flow outside an active since-bounded DRAIN read', async () => {
-    mockListWorkItems.mockResolvedValue([]);
+    stubCensus([]);
     mockListPresence.mockResolvedValue([]);
     const ctx = { workspaceId: 'ws-test', isSuperuser: true, uiClientId: 'su-drainer' };
 
@@ -851,6 +991,177 @@ describe('work_items:burn_down', () => {
     }));
   });
 
+  it('keeps full-population stage waits, overlapping controls and release actions through leader shaping', async () => {
+    const resolution = fleetResolution('current-spec');
+    resolution.claimSpec.current.view.filter = { field: 'kind', op: '=', value: 'bug' };
+    const rows = Array.from({ length: 2002 }, (_, n) => item({ id: `WI-health-${n}`, kind: 'bug',
+      assignee: 'member-live', createdAt: FLEET_START, payload: {
+        _claimHold: true, claim_hold_by: 'su-parker', claim_hold_reason: 'until key supplied', claim_hold_at: FLEET_START,
+        held_open_by: 'member-live', held_open_at: FLEET_START,
+        agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: `idea-${n}`, round: 2,
+          timing: { round: 2, enteredAt: FLEET_REVISION_AT } },
+      } }));
+    // A late, legacy row makes the oldest review wait unknown even after 2000 valid rows.
+    (rows[2001].payload as Record<string, unknown>).agentReview = {
+      status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'legacy', round: 1 };
+    const result = await buildFleetMetricsResult(resolution, rows, {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts,
+      explainFloors: async (_h, ids) => ids.map(id => ({ id, admissible: false, refusedBy: 'claim-hold', detail: null })),
+    });
+    expect(result.ok).toBe(true); if (!result.ok) return;
+    const health = result.snapshot.queueHealth!;
+    expect(health.population).toBe(2002);
+    expect(health.waiting.reviewWait).toMatchObject({ population: 2002, known: 2001, unknown: 1, oldestMs: null,
+      oldestKnownMs: Date.parse(FLEET_END) - Date.parse(FLEET_REVISION_AT) });
+    expect(health.controls).toMatchObject({ activeClaims: 2002, durableParks: 2002, holdOpenLeases: 2002 });
+    expect(health.controlsOverlap).toBe(true);
+    expect(health.releaseConditions.flagged).toBe(2002);
+    expect(health.releaseConditions.nextAction).toBeTruthy();
+    expect(health.releaseConditions.examples).toMatchObject({ total: 2002, omitted: 1992 });
+    expect(health.releaseConditions.examples.rows).toHaveLength(10);
+    expect(health.releaseConditions.examples.rows[0]).toMatchObject({
+      parker: 'su-parker', clearer: null, trigger: null, ageSource: 'payload.claim_hold_at',
+      recheck: expect.stringContaining('No recheck trigger recorded'),
+    });
+    const shaped = shapeLeaderBrief({ ok: true, fleetMetrics: result }, 'trimmed') as { fleetMetrics: typeof result };
+    expect(shaped.fleetMetrics.snapshot.queueHealth).toEqual(health);
+    expect(Object.values(result.snapshot.remaining.buckets).reduce((a, b) => a + b, 0)).toBe(2002);
+    expect(fleetMetricsResultSchema.safeParse({ ...result, snapshot: { ...result.snapshot,
+      queueHealth: { ...health, population: 2000 } } }).success).toBe(false);
+    expect(fleetMetricsResultSchema.safeParse({ ...result, snapshot: { ...result.snapshot,
+      queueHealth: { ...health, waiting: { ...health.waiting,
+        reviewWait: { ...health.waiting.reviewWait, oldestMs: 0 } } } } }).success).toBe(false);
+    expect(fleetMetricsResultSchema.safeParse({ ...result, snapshot: { ...result.snapshot,
+      queueHealth: { ...health, releaseConditions: { ...health.releaseConditions,
+        examples: { ...health.releaseConditions.examples, omitted: 0 } } } } }).success).toBe(false);
+  });
+
+  // SPEC-BQL-P-004-CLEARER: every durable park in the census carries an accountable next action
+  // and a recheck. That includes the broad-trigger 'satisfied' stamp the WAKE guard downgrades:
+  // it must route to contract repair, never to "reconcile now".
+  it('SPEC-BQL-P-004-CLEARER: routes missing, unreachable, broad-satisfied, specific-satisfied and tracked parks to distinct owned actions', async () => {
+    const resolution = fleetResolution('current-spec');
+    resolution.claimSpec.current.view.filter = { field: 'kind', op: '=', value: 'bug' };
+    const park = (id: string, release?: Record<string, unknown>) => item({ id, kind: 'bug',
+      assignee: 'member-live', createdAt: FLEET_START, payload: {
+        _claimHold: true, claim_hold_by: 'su-parker', claim_hold_reason: 'parked pending condition',
+        claim_hold_at: FLEET_START, ...(release ? { claim_hold_release: release } : {}),
+      } });
+    const contract = { condition: 'the dependency reaches a terminal state', owner: 'su-clearer',
+      evidence: 'resolver evidence' };
+    const rows = [
+      park('WI-clear-missing'),
+      park('WI-clear-unreachable', { ...contract, trigger: 'work-item:done:WI-dep', reachability: 'unreachable' }),
+      park('WI-clear-broad', { ...contract, trigger: 'coord:inbox-wake:su-parker', reachability: 'satisfied' }),
+      park('WI-clear-specific', { ...contract, trigger: 'work-item:done:WI-dep', reachability: 'satisfied' }),
+      park('WI-clear-tracked', { ...contract, trigger: 'work-item:done:WI-dep', reachability: 'reachable' }),
+      // A park released only by its own completion is a reservation, never a reachable release.
+      park('WI-clear-self', { ...contract, trigger: 'work-item:done:WI-clear-self', reachability: 'reachable' }),
+    ];
+    const result = await buildFleetMetricsResult(resolution, rows, {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts,
+      explainFloors: async (_h, ids) => ids.map(id => ({ id, admissible: false, refusedBy: 'claim-hold', detail: null })),
+    });
+    expect(result.ok).toBe(true); if (!result.ok) return;
+    const examples = result.snapshot.queueHealth!.releaseConditions.examples;
+    expect(examples).toMatchObject({ total: 6, omitted: 0 });
+    const byId = new Map(examples.rows.map(row => [row.id, row]));
+    expect(byId.get('WI-clear-missing')).toMatchObject({ clearer: null, trigger: null,
+      nextAction: expect.stringContaining('Repair the missing or unverified release contract'),
+      recheck: expect.stringContaining('No recheck trigger recorded') });
+    expect(byId.get('WI-clear-unreachable')).toMatchObject({ clearer: 'su-clearer', reachability: 'unreachable',
+      nextAction: expect.stringContaining('Escalate or reframe'),
+      recheck: expect.stringContaining('work-item:done:WI-dep') });
+    // The WAKE downgrade: a generic inbox wake is not condition proof, so this park is repair work.
+    const broad = byId.get('WI-clear-broad')!;
+    expect(broad).toMatchObject({ clearer: 'su-clearer', reachability: 'blocked',
+      nextAction: expect.stringContaining('Repair the missing or unverified release contract') });
+    expect(broad.findings).toContain('reachability-unverified');
+    expect(broad.nextAction).not.toContain('Reconcile');
+    expect(byId.get('WI-clear-specific')).toMatchObject({ clearer: 'su-clearer', reachability: 'satisfied',
+      nextAction: expect.stringContaining('Reconcile this park with condition evidence') });
+    expect(byId.get('WI-clear-tracked')).toMatchObject({ clearer: 'su-clearer', reachability: 'reachable',
+      nextAction: expect.stringContaining('Retain the park') });
+    expect(byId.get('WI-clear-self')).toMatchObject({ clearer: 'su-clearer', reachability: 'blocked',
+      nextAction: expect.stringContaining('Repair the missing or unverified release contract') });
+    for (const row of examples.rows) {
+      expect(row.nextAction.length).toBeGreaterThan(0);
+      expect(row.recheck.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('names only a runnable independent verifier as the clearer of an overdue round', async () => {
+    const resolution = fleetResolution('current-spec');
+    resolution.claimSpec.current.lane = 'verification';
+    resolution.claimSpec.current.view.filter = { field: 'kind', op: '=', value: 'bug' };
+    const rows = ['su-author', 'member-live'].map((submittedBy, n) => item({
+      id: `WI-review-action-${n}`, kind: 'bug', assignee: 'member-live', payload: {
+        agentReview: { status: 'pending', submittedBy, ledgerIdeaId: `idea-${n}`, round: 1,
+          timing: { round: 1, enteredAt: FLEET_START } },
+      },
+    }));
+    const result = await buildFleetMetricsResult(resolution, rows, {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts,
+      explainFloors: async (_h, ids) => ids.map(id => ({ id, admissible: false, refusedBy: 'agent-review', detail: null })),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.snapshot.queueHealth?.overdueReview.examples).toMatchObject({ total: 2, omitted: 0,
+      rows: [
+        { id: rows[0].id, clearer: 'member-live', nextAction: expect.stringContaining('record a review outcome') },
+        { id: rows[1].id, clearer: null, nextAction: expect.stringContaining('author cannot approve') },
+      ],
+    });
+  });
+
+  it('applies report precedence to concurrent floors beyond the primary claim refusal', async () => {
+    const resolution = fleetResolution('current-spec');
+    resolution.claimSpec.current.view.filter = { field: 'kind', op: '=', value: 'bug' };
+    const rows = [
+      item({ id: 'WI-mixed-dependency', kind: 'bug', payload: { _claimHold: true } }),
+      item({ id: 'WI-mixed-owner', kind: 'bug', assignee: 'member-live' }),
+      item({ id: 'WI-mixed-review', kind: 'bug', payload: { _claimHold: true } }),
+    ];
+    const explainFloors = vi.fn(async () => [
+      { id: rows[0].id, admissible: false, refusedBy: 'claim-hold', detail: null,
+        failedFloors: ['claim-hold', 'blocked-dep'] },
+      { id: rows[1].id, admissible: false, refusedBy: 'already-taken', detail: null,
+        failedFloors: ['already-taken', 'needs-owner-action'] },
+      { id: rows[2].id, admissible: false, refusedBy: 'agent-review', detail: null,
+        failedFloors: ['agent-review', 'claim-hold'] },
+    ]);
+    const result = await buildFleetMetricsResult(resolution, rows, {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts, explainFloors,
+    });
+    expect(explainFloors).toHaveBeenCalledWith('papercusp', rows.map(row => row.id),
+      { assignee: undefined, includeAllFloors: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.snapshot.remaining.buckets).toEqual({
+      needsHuman: 1, blocked: 1, claimHeld: 1, inFlight: 0, claimable: 0, otherUnclaimable: 0,
+    });
+  });
+
+  it('reads review service with the same current spec, runnable workers, window and complete selected ids', async () => {
+    const resolution = fleetResolution('current-spec'); resolution.claimSpec.current.lane = 'verification';
+    const reader = vi.fn(async (scope) => ({ status: 'known' as const, ...computeAgentReviewService(scope, [], []) }));
+    const result = await buildFleetMetricsResult(resolution, fleetMetricItems(), {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts, workspaceId: 'ws-test',
+      explainFloors: async () => [], readReviewService: reader,
+    });
+    expect(reader).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-test', harnessSlug: 'papercusp',
+      verifierIds: ['member-live'], sinceMs: Date.parse(FLEET_START), nowMs: Date.parse(FLEET_END),
+      verificationSpecs: [{ specId: 'fleet-lane', revision: 2 }] }), { itemIds: ['WI-new', 'WI-remaining'] });
+    expect(result.ok && result.snapshot.queueHealth?.verificationService).toMatchObject({ status: 'known', workers: 1 });
+    reader.mockRejectedValueOnce(new Error('service ledger unavailable'));
+    const unknown = await buildFleetMetricsResult(resolution, fleetMetricItems(), {
+      sourceCapExhausted: false, issueOccurrences: issueOccurrenceCounts, workspaceId: 'ws-test',
+      explainFloors: async () => [], readReviewService: reader,
+    });
+    expect(unknown.ok && unknown.snapshot.queueHealth?.verificationService).toEqual({ status: 'unknown',
+      reason: 'service ledger unavailable', recoverVia: expect.any(String) });
+  });
+
   it('builds an exact current-spec fleet snapshot and keeps observations, occurrences, and canonical bugs separate', async () => {
     const result = await buildFleetMetricsResult(fleetResolution('current-spec'), fleetMetricItems(), {
       issueOccurrences: issueOccurrenceCounts,
@@ -894,6 +1205,14 @@ describe('work_items:burn_down', () => {
       occurrences: 5,
       duplicateOccurrences: 3,
       separateUnits: true,
+    });
+    // R-32/R-33: legacy terminal claims remain lifecycle metrics, not verified
+    // accepted delivery, and observation/occurrence units cannot inflate bugs.
+    expect(result.snapshot.intakeStages).toMatchObject({
+      population: 3, remainingBugs: 0, verifiedCompletions: 0,
+      scope: 'current-spec issue-family rows including observation evidence',
+      window: 'current stock at generatedAt', unit: 'work-item rows',
+      counts: { observation: 1, unknown: 1, 'terminal-other': 1 },
     });
   });
 
@@ -968,9 +1287,9 @@ describe('work_items:burn_down', () => {
     expect(result.snapshot.issueUnits).toMatchObject({ canonicalBugs: 2, observations: 1 });
   });
 
-  it('detects the raw work-item source cap before current-spec filtering can shrink the measured population', async () => {
+  it('reads the complete fleet census before filtering and keeps a matching row beyond 2000', async () => {
     const sourceRows = [
-      ...Array.from({ length: WORK_ITEMS_MAX_LIMIT - 1 }, (_, index) =>
+      ...Array.from({ length: WORK_ITEMS_MAX_LIMIT + 1 }, (_, index) =>
         item({
           id: `WI-excluded-${index}`,
           kind: 'bug',
@@ -990,7 +1309,17 @@ describe('work_items:burn_down', () => {
         closedAt: '2026-08-21T08:00:00.000Z',
       }),
     ];
-    mockListWorkItems.mockImplementation(async (args) => (args?.includeObservations ? sourceRows : []));
+    // The ordinary display census cannot see the last matching row. Fleet metrics
+    // must still include it through the uncapped internal reader.
+    stubCensus(sourceRows.slice(0, WORK_ITEMS_MAX_LIMIT));
+    // WI-6554700010008464: the display census reads the OPEN partition (notTerminal) through
+    // this reader; whole-harness hydration for fleet metrics stays forbidden.
+    const openCensus = mockListAllWorkItems.getMockImplementation()!;
+    mockListAllWorkItems.mockImplementation(async (filter = {}) => {
+      if (!filter.notTerminal) throw new Error('whole-harness metric hydration is forbidden');
+      return openCensus(filter);
+    });
+    mockReadFleetMetricSource.mockResolvedValue({ items: sourceRows, terminalContributions: Promise.resolve([]) });
     mockListPresence.mockResolvedValue([]);
     mockResolveFleetMetricScope.mockResolvedValue(fleetResolution('current-spec'));
 
@@ -1008,26 +1337,43 @@ describe('work_items:burn_down', () => {
       fleet: 'fleet-a',
       flowMode: 'current-spec',
     });
-    expect(mockListWorkItems).toHaveBeenCalledWith({
-      harness: 'papercusp',
-      includeObservations: true,
-      limit: WORK_ITEMS_MAX_LIMIT,
-    });
+    expect(mockReadFleetMetricSource).toHaveBeenCalledWith(fleetResolution('current-spec'));
     expect(data.fleetMetrics.ok).toBe(true);
     if (!data.fleetMetrics.ok) return;
     expect(data.fleetMetrics.snapshot.flow).toMatchObject({ opened: 1, terminalLifecycle: 1 });
-    expect(data.fleetMetrics.snapshot.quality.exactness).toMatchObject({
-      status: 'truncated',
-      sourceCap: WORK_ITEMS_MAX_LIMIT,
-      fetched: WORK_ITEMS_MAX_LIMIT,
-      reason: expect.stringContaining('before fleet-spec filtering'),
-    });
+    expect(data.fleetMetrics.snapshot.quality.exactness).toEqual({ status: 'exact', sourceCap: null });
     expect(shapeBurnDown(res.data, 'trimmed')).toMatchObject({
       fleetMetrics: {
         ok: true,
-        snapshot: { quality: { exactness: { status: 'truncated' } } },
+        snapshot: {
+          quality: { exactness: { status: 'exact' } },
+          intakeStages: data.fleetMetrics.snapshot.intakeStages,
+        },
       },
     });
+  });
+
+  it('returns an explicit unavailable metric block without hydrating an unresolved population', async () => {
+    stubCensus([]);
+    mockListPresence.mockResolvedValue([]);
+    mockResolveFleetMetricScope.mockResolvedValue({
+      ok: false,
+      schemaVersion: FLEET_METRICS_SCHEMA_VERSION,
+      error: 'fleet_metrics_unavailable',
+      reason: 'claim-spec history unavailable',
+      recoverVia: 'restore the canonical historical revision',
+      requested: { fleet: 'fleet-a', harness: 'papercusp', flowMode: 'current-spec', window: 'fleet-lifetime' },
+    });
+    const res = await callTool(
+      { harness: 'papercusp', fleet: 'fleet-a', window: 'fleet-lifetime' },
+      { workspaceId: 'ws-test', isSuperuser: true, uiClientId: 'su-leader' },
+    );
+    expect(res.data).toMatchObject({ fleetMetrics: {
+      ok: false, error: 'fleet_metrics_unavailable', reason: 'claim-spec history unavailable',
+    } });
+    expect(mockReadFleetMetricSource).not.toHaveBeenCalled();
+    // The open-partition census read (notTerminal) is not metric hydration.
+    expect(mockListAllWorkItems.mock.calls.filter(([filter]) => !filter?.notTerminal)).toEqual([]);
   });
 
   // ---------------------------------------------------------------------------
@@ -1041,7 +1387,7 @@ describe('work_items:burn_down', () => {
       ...Array.from({ length: 6 }, (_, i) => item({ id: `WI-done-${i}`, state: 'done' })),
       ...Array.from({ length: 4 }, (_, i) => item({ id: `WI-live-${i}`, assignee: `su-${i}` })),
     ];
-    mockListWorkItems.mockResolvedValue(items);
+    stubCensus(items);
     mockListPresence.mockResolvedValue([]);
 
     const res = await callTool({ harness: 'papercusp', limit: 2 });
@@ -1061,7 +1407,10 @@ describe('work_items:burn_down', () => {
     expect(data.terminal.total).toBe(6);
     expect(data.counts).toMatchObject({ total: 10, terminal: 6, inFlight: 4 });
     expect(data.terminal.truncatedByLimit).toBe(false);
-    expect(data.terminal.censusLimit).toBe(WORK_ITEMS_MAX_LIMIT);
+    // WI-6554700010008464: the census limit is now the open-partition read ceiling; either
+    // way it is never the caller's `limit`.
+    expect(data.terminal.censusLimit).toBe(NON_TERMINAL_CENSUS_CEILING);
+    expect(mockListAllWorkItems).toHaveBeenCalledWith(expect.not.objectContaining({ limit: 2 }));
     // `limit` DOES bound the returned row list (display only).
     expect(data.inFlight).toHaveLength(2);
   });
@@ -1148,7 +1497,7 @@ describe('work_items:burn_down', () => {
       },
     });
 
-    mockListWorkItems.mockResolvedValue([]);
+    stubCensus([]);
     const live = await callTool({ harness: 'papercusp' });
     const fixedData = fixed.data as Record<string, any>;
     const liveData = live.data as Record<string, any>;

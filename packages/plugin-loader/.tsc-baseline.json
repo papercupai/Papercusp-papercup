@@ -1,0 +1,7 @@
+{
+  "createdAt": "2026-10-06T21:50:00.000Z",
+  "updatedAt": "2026-10-06T21:50:00.000Z",
+  "description": "PER-FILE type-error baseline for plugin-loader. Starts at zero: plugin-loader's own files carry no standing diagnostics. Files under packages/operator-core/ and packages/agent-mcp/ reached through @papercusp/agent-mcp are judged against those packages' own baselines. Ratchets only downward. See scripts/lint-tsc-plugin-loader.mjs (WI-10006237).",
+  "files": {},
+  "errorCount": 0
+}

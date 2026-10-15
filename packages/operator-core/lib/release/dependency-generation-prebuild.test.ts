@@ -1,11 +1,17 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   awaitDependencyPrebuildState,
+  dependencyGenerationRootRecord,
   dependencyPrebuildKey,
   dependencyPrebuildRequestFromQueuedState,
   enqueueDependencyPrebuild,
+  emitDependencyPrebuildTerminal,
   parseDependencyPrebuildState,
   recoverQueuedDependencyPrebuild,
+  resolveDependencyGenerationRoot,
   runDependencyGenerationPrebuild,
   type DependencyPrebuildBuildingState,
   type DependencyPrebuildCommand,
@@ -73,6 +79,44 @@ function fingerprintResult(candidate: string) {
 }
 
 describe('dependency generation background prebuild', () => {
+  it('ready publication promptly schedules only its matching idle qualification and preserves admission guards', async () => {
+    const emit = vi.fn(async () => ({}));
+    const unsafe = vi.fn(async () => []);
+    await emitDependencyPrebuildTerminal(TARGET, ready(), { emit: emit as never, sql: { unsafe } as unknown as Sql });
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(unsafe).toHaveBeenCalledTimes(1);
+    const [query, params] = unsafe.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual([TARGET.installSlug, TARGET.workspaceId, CANDIDATE_A]);
+    expect(query).toContain("phase' IN ('waiting', 'ready')");
+    expect(query).toContain("'currentPhysicalRunner'), 'null') = 'null'");
+    expect(query).toContain("metadata->'pause' IS NULL");
+    expect(query).toContain('active = true');
+    expect(query).toContain("candidate' = $3");
+    expect(query).toContain("next_fire_at > now() + interval '1 minute'");
+  });
+
+  it('failed preparation emits its outcome without scheduling a checkpoint', async () => {
+    const emit = vi.fn(async () => ({}));
+    const unsafe = vi.fn(async () => []);
+    await emitDependencyPrebuildTerminal(TARGET, {
+      ...building(), status: 'failed', completedAtMs: 120, updatedAtMs: 120, error: 'publisher failed',
+    }, { emit: emit as never, sql: { unsafe } as unknown as Sql });
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(unsafe).not.toHaveBeenCalled();
+  });
+
+  it('ready publication still schedules its matching checkpoint when terminal event delivery fails', async () => {
+    const emit = vi.fn(async () => { throw new Error('event delivery unavailable'); });
+    const unsafe = vi.fn(async () => []);
+    await expect(emitDependencyPrebuildTerminal(TARGET, ready(), {
+      emit: emit as never, sql: { unsafe } as unknown as Sql,
+    })).rejects.toThrow('event delivery unavailable');
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(unsafe).toHaveBeenCalledTimes(1);
+    const [, params] = unsafe.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual([TARGET.installSlug, TARGET.workspaceId, CANDIDATE_A]);
+  });
+
   it('claims candidate+input once, publishes through the existing helper, then persists/emits ready', async () => {
     const calls: string[][] = [];
     let state: DependencyPrebuildState | null = null;
@@ -208,6 +252,74 @@ describe('dependency generation background prebuild', () => {
     // and the producer would look fixed while the evidence still vanished.
     const roundTripped = parseDependencyPrebuildState(JSON.parse(JSON.stringify(persisted)));
     expect(roundTripped).toEqual(persisted);
+    // WI-10004797: the store the identity lives in must survive the round trip,
+    // or a consumer cannot tell a moved root from a valid marker.
+    expect(persisted.generationRoot).toMatch(/^\//);
+    expect(roundTripped && 'generationRoot' in roundTripped && roundTripped.generationRoot).toBe(
+      persisted.generationRoot,
+    );
+  });
+
+  it('WI-10005159: an env-less resolve follows the root recorded for the integration root, and env still wins', () => {
+    const integration = mkdtempSync(join(tmpdir(), 'dep-gen-root-record-'));
+    try {
+      const record = dependencyGenerationRootRecord(integration);
+      expect(record).toBe(join(integration, '.papercusp/dependency-generation-root'));
+      mkdirSync(dirname(record), { recursive: true });
+
+      writeFileSync(record, '/mnt/data/recorded-gens\n');
+      expect(resolveDependencyGenerationRoot(integration, {})).toBe('/mnt/data/recorded-gens');
+      expect(resolveDependencyGenerationRoot(integration, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' })).toBe(
+        '/mnt/data/recorded-gens',
+      );
+      expect(
+        resolveDependencyGenerationRoot(integration, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '/mnt/data/env-gens' }),
+      ).toBe('/mnt/data/env-gens');
+
+      // bash only honors an absolute first line; anything else falls through to the tree store.
+      writeFileSync(record, 'relative/gens\n');
+      expect(resolveDependencyGenerationRoot(integration, {})).toBe(
+        join(integration, '.papercusp/dependency-generations'),
+      );
+    } finally {
+      rmSync(integration, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-10004797: resolves the generation root exactly like dependency-generation.sh and rejects a malformed recorded root', () => {
+    expect(resolveDependencyGenerationRoot('/repo', {})).toBe('/repo/.papercusp/dependency-generations');
+    // bash `${VAR:-default}` treats empty as unset.
+    expect(resolveDependencyGenerationRoot('/repo', { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' })).toBe(
+      '/repo/.papercusp/dependency-generations',
+    );
+    expect(
+      resolveDependencyGenerationRoot('/repo', { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '/mnt/data/gens/' }),
+    ).toBe('/mnt/data/gens');
+
+    const ready = {
+      schema: 1,
+      status: 'ready',
+      key: `${'a'.repeat(40)}:${'b'.repeat(64)}`,
+      candidate: 'a'.repeat(40),
+      inputFingerprint: 'b'.repeat(64),
+      attemptId: 'attempt',
+      queuedAtMs: 1,
+      startedAtMs: 2,
+      updatedAtMs: 3,
+      completedAtMs: 3,
+      producerPid: 4,
+      childPid: null,
+      identity: 'v1-' + 'c'.repeat(64),
+      token: '1:2:3',
+      reused: false,
+    };
+    const legacy = parseDependencyPrebuildState(ready);
+    if (legacy === null) throw new Error('fixture identity must satisfy GENERATION_ID_RE');
+    expect(legacy).not.toHaveProperty('generationRoot');
+    expect(parseDependencyPrebuildState({ ...ready, generationRoot: '/mnt/data/gens' })).toMatchObject({
+      generationRoot: '/mnt/data/gens',
+    });
+    expect(parseDependencyPrebuildState({ ...ready, generationRoot: 'relative/gens' })).toBeNull();
   });
 
   it('P-005: records no telemetry for a re-keyed generation, and drops malformed telemetry without voiding state', async () => {

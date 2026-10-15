@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "managed-capability-p020-http-refusal-readback-v1",
+  "observedAt": "2026-10-12T18:34:56Z",
+  "workItem": "EI-25628417055500602",
+  "parentWorkItem": "WI-10007984",
+  "scope": "One selected-console read-only upstream capacity probe on a containing staging operator; no Claude launch/resume/wake acceptance claim.",
+  "sourceCommit": "714072d2b207a9b9e9e85e53daa2ba2fa942597d",
+  "finalGuardCommit": "dc9aa756ae6c1803a6617b8f9693e4ccc040324a",
+  "runtime": {
+    "name": "staging-operator",
+    "url": "http://127.0.0.1:3170",
+    "buildSha": "307ad2977b",
+    "containsChange": true,
+    "containmentMethod": "blob",
+    "testClass": "operator-api",
+    "snapshotRef": "/dev/shm/p020-http-refusal-runtime-containment-20261012-resume.json"
+  },
+  "probe": {
+    "tool": "accounts:probe-capacity",
+    "args": {
+      "id": "anthropic-console-credits",
+      "provider": "claude",
+      "apply": false
+    },
+    "responseRef": "/dev/shm/p020-http-refusal-console-probe-20261012.json",
+    "result": {
+      "probed": 1,
+      "dryRun": true,
+      "applied": [],
+      "serving": [],
+      "rows": [
+        {
+          "accountId": "anthropic-console-credits",
+          "ok": false,
+          "status": 400,
+          "upstream": {},
+          "verdict": "no-reading",
+          "httpRefusal": {
+            "status": 400,
+            "bodyState": "parsed",
+            "requestId": "req_011CfxpnUXH8ELLCyhphCYu2",
+            "errorType": "invalid_request_error",
+            "message": "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."
+          }
+        }
+      ]
+    }
+  },
+  "verification": {
+    "canonicalTests": {
+      "files": 3,
+      "passed": 75,
+      "log": "/dev/shm/p020-http-refusal-unit-final.log",
+      "rerunThisTurn": false
+    },
+    "scopedTypecheck": {
+      "errors": 0,
+      "log": "/dev/shm/p020-http-refusal-typecheck-final.log",
+      "rerunThisTurn": false
+    },
+    "sourceAndTestsUnchangedSinceSavedVerification": true,
+    "guards": [
+      "Structured and malformed refusals retain bounded sanitized diagnostics without exposing credentials.",
+      "Oversized, hanging and unreadable bodies cancel or terminate within the remaining account deadline.",
+      "Authoritative capacity headers bypass refusal-body waiting.",
+      "Sibling egress success supersedes prior refusal diagnostics.",
+      "Read-only reports preserve refusal metadata without changing the account pool or gateway."
+    ]
+  },
+  "conclusion": {
+    "diagnosticRootCause": "probeAccountCapacity discarded no-header HTTP error bodies, and reportRow omitted their diagnostics.",
+    "durableFix": "The existing probe and report preserve bounded sanitized refusal fields; canonical tests guard the behavior.",
+    "actualUpstreamRefusal": "The selected account reports insufficient Anthropic API credit.",
+    "selectedAccountReadiness": "Not established; the upstream request was refused.",
+    "claudeLaunchResumeWake": "Unverified; no strict Claude retry was performed.",
+    "originalOwnerHashChoice": "Separate pending commitment; no amendment or adoption was performed."
+  }
+}

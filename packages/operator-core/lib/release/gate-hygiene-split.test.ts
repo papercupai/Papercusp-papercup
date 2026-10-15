@@ -7,9 +7,89 @@ import {
   EXPLICIT_HYGIENE_GATE_SCRIPTS,
   classifyGateFailure,
   decidePromotion,
+  decideGateSuite,
+  captureGateSuiteVerdictReplay,
+  parseGateSuiteVerdictReplay,
+  checkGateSuiteVerdictReplay,
+  type GateSuiteDecisionInput,
+  gateReplayCanonical,
   deriveGeneratedArtifactHygiene,
   type HygieneClassificationContext,
 } from "./gate-hygiene-split.ts";
+
+describe('P-014 recorded measured-suite replay', () => {
+  it('compares JSONB object order canonically while preserving array order', () => {
+    expect(gateReplayCanonical({ b: { z: 1, a: 2 }, a: 3 })).toBe(gateReplayCanonical({ a: 3, b: { a: 2, z: 1 } }));
+    expect(gateReplayCanonical([1, 2])).not.toBe(gateReplayCanonical([2, 1]));
+  });
+
+  it.each([{ kind: '', args: [], expected: false }, { kind: 'ready-advance', args: {} },
+    { kind: 'ready-advance', args: [] }])('rejects malformed downstream replay %s', entry => {
+    const snapshot = captureGateSuiteVerdictReplay({ candidate: 'a', runId: null, measuredAtMs: 0 }, {
+      green: true, infraFault: false, failures: [], rootScripts: null, failingCasesByFile: null });
+    expect(parseGateSuiteVerdictReplay({ ...snapshot, decisions: [entry] })).toBeNull();
+  });
+  const input = (overrides: Partial<GateSuiteDecisionInput> = {}): GateSuiteDecisionInput => ({
+    green: false, infraFault: false, failures: ['packages/product.test.ts'],
+    rootScripts: {}, failingCasesByFile: null, ...overrides,
+  });
+  const identity = { candidate: 'a'.repeat(40), runId: 'measured-run', measuredAtMs: 100 };
+
+  it.each([
+    [input({ green: true, failures: [] }), 'green'],
+    [input(), 'red'],
+    [input({ infraFault: true }), 'inconclusive'],
+    [input({ green: null }), 'red'],
+    [input({ failures: [] }), 'red'],
+  ] as const)('reproduces the measured %s decision', (observations, disposition) => {
+    const snapshot = captureGateSuiteVerdictReplay(identity, observations);
+    expect(snapshot.expected.disposition).toBe(disposition);
+    const stored = parseGateSuiteVerdictReplay(JSON.parse(JSON.stringify(snapshot)));
+    expect(stored).not.toBeNull();
+    expect(checkGateSuiteVerdictReplay(stored!).ok).toBe(true);
+  });
+
+  it('captures failing-case attribution and scripts without sharing mutable inputs', () => {
+    const observations = input({ failingCasesByFile: [['packages/product.test.ts', ['a case']]], rootScripts: { check: 'node check.mjs' } });
+    const snapshot = captureGateSuiteVerdictReplay(identity, observations);
+    observations.failures.push('another.test.ts');
+    observations.failingCasesByFile![0]![1].push('another case');
+    observations.rootScripts!.check = 'changed';
+    expect(snapshot.input).toMatchObject({ failures: ['packages/product.test.ts'],
+      failingCasesByFile: [['packages/product.test.ts', ['a case']]], rootScripts: { check: 'node check.mjs' } });
+    expect(checkGateSuiteVerdictReplay(snapshot).ok).toBe(true);
+  });
+
+  it('rejects a prior classifier that promoted a product failure', () => {
+    const prior = captureGateSuiteVerdictReplay(identity, input());
+    prior.expected.disposition = 'green';
+    const replay = checkGateSuiteVerdictReplay(prior);
+    expect(replay.ok).toBe(false);
+    expect(replay.detail).toContain('was green, now red');
+  });
+
+  it('detects failure reclassification even when the top-level verdict remains red', () => {
+    const prior = captureGateSuiteVerdictReplay(identity, input());
+    prior.expected.productFailures = [];
+    expect(checkGateSuiteVerdictReplay(prior)).toMatchObject({ ok: false, detail: expect.stringContaining('productFailures') });
+  });
+
+  it('keeps absent scripts fail-closed and preserves the current hygiene decision', () => {
+    const observations = input({ failures: ['gen:example:check'], rootScripts: {
+      'gen:example': 'node scripts/gen-example.mjs', 'gen:example:check': 'node scripts/gen-example.mjs --check',
+    } });
+    const current = decideGateSuite(observations);
+    expect(current.hygieneSplit).toEqual(decidePromotion({ failures: observations.failures, verdictRendered: true,
+      ctx: { rootScripts: observations.rootScripts! } }));
+    expect(decideGateSuite({ ...observations, rootScripts: null }).signature.disposition).toBe('red');
+  });
+
+  it.each([null, {}, { version: 2 }, { ...captureGateSuiteVerdictReplay(identity, input()), input: {} },
+    { ...captureGateSuiteVerdictReplay(identity, input()), expected: {} },
+  ])('rejects malformed or unsupported stored replay %s', value => {
+    expect(parseGateSuiteVerdictReplay(value)).toBeNull();
+  });
+});
 
 /* The REAL root package.json, read rather than restated. A test that hardcodes the
  * script set proves only that someone once copied it correctly; this one fails when
@@ -104,10 +184,19 @@ describe("gate-hygiene-split", () => {
       expect(got.remedy).toMatch(/^npm run gen:/);
     });
 
-    it("admits the registered budget/fixture checks", () => {
+    it("admits the registered budget check", () => {
       expect(classifyGateFailure("lint:tool-prompts", ctx).klass).toBe("hygiene");
+    });
+
+    it("a RETIRED hygiene script fails closed to product (WI-6554700010009165)", () => {
+      // `lint:migration-fixture-drift:check` was deleted with its registry entry. Pinned so
+      // that re-adding the npm script WITHOUT a deliberate registry decision holds the gate
+      // instead of being waved through as hygiene by a stale entry.
+      expect(EXPLICIT_HYGIENE_GATE_SCRIPTS).not.toHaveProperty(
+        "lint:migration-fixture-drift:check",
+      );
       expect(classifyGateFailure("lint:migration-fixture-drift:check", ctx).klass).toBe(
-        "hygiene",
+        "product",
       );
     });
 

@@ -118,6 +118,11 @@ export async function dispatchProjectedToolToMcp(
       isError: true,
       content: [{ type: 'text', text: `${r.error?.code}: ${r.error?.message}` }],
     };
+    // A late-completion receipt is dispatch metadata on a failure, rather than
+    // a successful handler result. Keep it in MCP's structured _meta channel
+    // so direct callers and wrappers such as tools:invoke can inspect it.
+    const receipt = r.error?.meta?.abortCompletionReceipt;
+    if (receipt !== undefined) failure._meta = { abortCompletionReceipt: receipt };
     if (r.error?.code === 'invalid_input') {
       Object.defineProperty(failure, DISPATCH_VALIDATION_FAILURE, {
         value: true,

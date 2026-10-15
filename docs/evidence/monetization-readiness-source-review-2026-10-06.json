@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Bounded accounting-source review for the monetization readiness matrix",
+  "framework": "operational",
+  "workItem": "WI-10005829",
+  "plan": "papercusp-monetization-2026-09-04",
+  "planItem": "P-002",
+  "executionMethod": "Recover the canonical document through docs:get source:true and validated exact scratch-reference byte pages; compare the named current writers and retained source hashes; preserve the complete prior document through docs:author overwrite:true; re-resolve its new section through docs:get. This is a manual source/document review, not a new test-suite run or independent commercial acceptance.",
+  "reviewedOn": "2026-10-06",
+  "assertions": [
+    {
+      "id": "canonical-source-preserved",
+      "passed": true,
+      "evidence": "Recovered the entire 8854-character canonical source to EOF. The full prior body after the insertion point remains an exact suffix of the replacement. The update labels dependency and owner observations as historical 2026-10-03 context."
+    },
+    {
+      "id": "known-generations-are-not-full-provider-census",
+      "passed": true,
+      "evidence": "The current OpenRouter source reader returns complete:false. The document distinguishes known local generations and original admissions from billing-account identity, full external census, invoice/finality and liability non-overlap."
+    },
+    {
+      "id": "budget-writer-order-retained",
+      "passed": true,
+      "evidence": "The current budget population reader is local preparation. The document retains the early write-capable budget fence before organization/account/source locks and excludes receipt append or append-owning collectors from the later SHARE-only phase."
+    },
+    {
+      "id": "allowance-and-bank-writers-scoped",
+      "passed": true,
+      "evidence": "The inspected entitlement default initializes patch:null; the inspected reconciliation source constructor sets bank to not-configured. The document treats these as named-writer observations, not repository-wide absence or a zero cash balance."
+    },
+    {
+      "id": "source-proof-boundaries-preserved",
+      "passed": true,
+      "evidence": "The current OpenRouter six-file tuple and budget three-file tuple match their retained hashes. The document references their saved 58-unit/31-database and 73-database results; separate journal and Stripe/funding proofs remain references to prior records. No recovery test, combined cross-proof run, full-suite or deployed result is asserted."
+    },
+    {
+      "id": "external-acceptance-remains-open",
+      "passed": true,
+      "evidence": "The updated document leaves independent cash backing, trusted entitlement/spend policy, provider maximum, full billing reconciliation, customer/merchant/security/served-release acceptance and real charging under D-010 open. The existing offer and price sheet remain drafts."
+    }
+  ],
+  "currentSourceHashes": {
+    "packages/operator-core/lib/auth/hosted/billing/openrouter-usage.ts": "63c334a40bd058b273a05ad1980d0158db5ed4e49558a0f02cf6ce1a4b623eca",
+    "packages/operator-core/lib/auth/hosted/billing/openrouter-usage.test.ts": "87e001f4662867a200553a5132419e7cfa8b4b196b744dc6832e7deca4f3464a",
+    "packages/operator-core/lib/auth/hosted/billing/usage-store.ts": "7ec3eb1416ea7a64fea25ec3fc5a794f807553babfee97ad200f5ba3e6ef3f44",
+    "packages/operator-core/lib/auth/hosted/billing/usage-store.integration.test.ts": "48929f9cda34290fe963ae466e5773a46594c08e05c1d2013f00eff2f346b277",
+    "libs/papercusp/libs/db/sql/1382-hosted-usage-population-lock.sql": "57a4652bcb17662d3ec6b0541ab83382d459e48e0188fedbca97bef37bffc6be",
+    "libs/papercusp/libs/db/sql/1391-hosted-openrouter-budget-binding.sql": "b96bf71d9d1b6a3dbb64bc205e7456af52b8d30bb5cbad02e82f5a349042bcad",
+    "packages/operator-core/lib/auth/hosted/billing/budget-store.ts": "5d6ec0059b39ef0e8bf2f4e2d1f72df5e4af20e0509950cc1d75c9edadb10a3b",
+    "packages/operator-core/lib/auth/hosted/billing/budget-store.integration.test.ts": "c06ee889093e5d505ed97f0a1a23cf110f48e297c17aea2db323ce6c4fa75061",
+    "libs/papercusp/libs/db/sql/1388-hosted-budget-population-writer-fence.sql": "aac01974b02790da9478aaa3ebbed2abff1ce7a610c6f52b87854d4a08e77e36"
+  },
+  "evidenceRefs": [
+    "thread-post:1159436",
+    "thread-post:1159245",
+    "thread-post:1159155",
+    "thread-post:1158876",
+    "papercusp-monetization-2026-09-04#D-010",
+    "papercusp-monetization-2026-09-04#D-013",
+    "papercusp-monetization-2026-09-04#D-015"
+  ],
+  "documentationVerification": {
+    "command": "PC_HEAVY_GATE_RESERVE=0 npm run docs:rebuild",
+    "exitCode": 0,
+    "result": "DOCS_MIRROR_OK; the updated HTML and Markdown contain the accounting-source section and proof reference 1159436, and each built artifact equals its served-mirror copy byte-for-byte.",
+    "sourcePath": "apps/operator-docs/src/content/docs/commercialization/monetization-readiness-and-reuse.mdx",
+    "sourceProjectionSha256": "989eaf75a6964400e75d953642ed84f768bec18c6d940634840e374a7391f3d5",
+    "builtAndServedHtmlSha256": "58db823f4a399a333667c2bb1208d8ff23ec01cd4019c8a2e3053cd8eb97570c",
+    "builtAndServedMarkdownSha256": "bc635552d6dca3351542322ac0da96fdd216e16423c394a87d82f6d519e3e333",
+    "initialQueuedBuildExitCode": 130,
+    "initialQueuedBuildDisposition": "Canceled only this session's unstarted build. The successful invocation retained the semaphore and memory admission checks; the documented per-command setting removed only the gate slot clamp."
+  },
+  "limitations": [
+    "The saved tests were not rerun during recovery; this document review is a separate operational record.",
+    "Prior dependency/owner rows were preserved with their original observation date and were not re-certified.",
+    "No current full-suite, promotion, final deployment, customer payment, measured workload/support distribution or paid-runtime installation is asserted.",
+    "This record does not close P-002 or satisfy the separate independent acceptance and active-rubric gates."
+  ]
+}

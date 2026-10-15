@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Phone P-011 sidecar outbound usage-admission mutation guard, re-run after the WI-10006406/WI-10006404 sidecar edits",
+  "framework": "shell",
+  "command": [
+    "scripts/mutation-probe.sh --file \"$PHONE_APP_ROOT/apps/sidecar/src/calls.ts\" --relocation overlay --mutate 's/return dispatchPhoneUsage\\(usage, intent, \\(\\) => this\\.createDialRequest\\(store, number, options\\)\\);/return this.createDialRequest(store, number, options);/' --test \"cd $PHONE_APP_ROOT/apps/sidecar && npx vitest run src/api.test.ts src/telephony.e2e.test.ts\"  # papercusp root, PAPERCUSP_TEST_RUN_HARNESS=papercusp"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T06:30:54Z",
+  "finishedAt": "2026-10-06T06:31:15Z",
+  "summary": "1/1 copy-out overlay mutant CAUGHT. The sidecar suites (api.test.ts + telephony.e2e.test.ts) passed against the canonical and the relocated canonical snapshot, then a mutant of apps/sidecar/src/calls.ts in which prepareOutboundCall dials WITHOUT the usage admission (dispatchPhoneUsage bypassed) failed 2 tests | 79 passed: 'durable carrier preparation > prepares one outbound intent for retries and refuses another tenant's number' and 'admits outbound dials only inside the D-021 owner approval, durably across sidecar restart'. Re-runs the sidecar probe from docs/evidence/phone-p011-usage-mutations-2026-10-06.json at phone-app subject commit 9d8f007f28d58ee92e508bcc6ce8e134843128af, because the WI-10006406 (deleteCallContent) and WI-10006404 (take-over metadata) edits re-fingerprinted calls.ts and api.test.ts. Software falsifiability only; no live Telnyx billing, CDR, PSTN or shipment claim (D-020).",
+  "assertions": [
+    {
+      "id": "sidecar-admission-caught",
+      "passed": true,
+      "evidence": "apps/sidecar/src/calls.ts prepareOutboundCall usage admission bypassed: baseline green, relocated copy green, mutant 2 failed | 79 passed (MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 relocation=overlay)"
+    }
+  ],
+  "probes": [
+    {
+      "name": "sidecar",
+      "subject": "apps/sidecar/src/calls.ts",
+      "subjectSha256": "94b1d3c192c6ce45d59faeada5ed6b16c53284bba3f623891a46c2a7cf95b346",
+      "tests": ["apps/sidecar/src/api.test.ts", "apps/sidecar/src/telephony.e2e.test.ts"],
+      "testSha256": {
+        "apps/sidecar/src/api.test.ts": "72b4d87c480f0110011b3e254876a6b85c0b23aa207a5056a1c303ba906afd63",
+        "apps/sidecar/src/telephony.e2e.test.ts": "537775c03c8d1728d3c1e728688cc94d59a1cef5220ef20018c01273e4bfcc13"
+      },
+      "verdict": "caught",
+      "failedTests": [
+        "src/api.test.ts > durable carrier preparation > prepares one outbound intent for retries and refuses another tenant's number",
+        "src/telephony.e2e.test.ts > admits outbound dials only inside the D-021 owner approval, durably across sidecar restart"
+      ],
+      "logSha256": "59b39b7308e1dfcaac72a54b7613f640d7e70304abd836645fabd51136f1cc50"
+    }
+  ],
+  "subjectRepository": "phone-app harness repository (~/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/phone-app); probes[].subject/tests are relative to that root.",
+  "subjectCommit": "9d8f007f28d58ee92e508bcc6ce8e134843128af",
+  "supersedes": "docs/evidence/phone-p011-usage-mutations-2026-10-06.json (sidecar probe only; the packages/data probes in that file remain current)",
+  "plan": "phone-public-telephone-service-2026-10-01",
+  "planItem": "P-011",
+  "workItem": "WI-10004989",
+  "specIds": ["AUTO-BAR-R-12-P-011", "AUTO-BAR-R-74-P-011", "PHONE-P-011-OUTCOME"],
+  "recordedAt": "2026-10-06T06:33:00Z",
+  "recordedBy": "su-2b9fe461-077c-4fd4-8cd7-c43499f17892",
+  "method": "papercusp scripts/mutation-probe.sh copy-out --relocation overlay (mutant bound over the real path in a private mount namespace; shared tree never mutated; tree integrity verified byte-identical afterwards), phone-app's own Vitest.",
+  "scope": "Falsifiability of the sidecar's outbound usage admission (R-12 / R-74 / P-011 outcome) at unit + in-process e2e layers. Does not prove live carrier billing or reconciliation against real Telnyx CDRs, which stay blocked on D-020."
+}

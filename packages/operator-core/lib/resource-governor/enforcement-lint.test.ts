@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { stripTypeScriptTypes } from 'node:module';
+import { runInNewContext } from 'node:vm';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   RESOURCE_GOVERNOR_INVENTORY,
   BYPASS_REGISTRY,
@@ -71,6 +73,25 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
+  it('detects inline promisified starts and pins the checkpoint liveness bypass', () => {
+    const inline = "await promisify(execFile)('systemctl', ['--user', 'is-active', unit], { timeout: 5_000 });";
+    expect(inspectGovernorSource(inline)).toContain('resource-start-outside-admission');
+
+    const path = 'packages/operator-core/lib/release/checkpoint-qualification-transaction.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = path + '::resource-start-outside-admission';
+    const entry = BYPASS_REGISTRY.get(key);
+    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(entry?.disposition).toBe('bypass');
+    expect(entry?.matchesSource?.(source)).toBe(true);
+    expect(scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true })).toEqual([]);
+
+    const addedStart = source + "\nspawn('unreviewed', []);";
+    expect(scanInventory([[path, addedStart]], { migrations: ['P-016'], validateRegistry: true })).toContain(
+      path + ':resource-start-outside-admission',
+    );
+  });
+
   it('does not count a caller-supplied callback named for a start verb as a start', () => {
     // A pacing/retry wrapper takes the operation as a callback and starts nothing
     // itself; the real child process is started by the caller it wraps, at a site
@@ -84,6 +105,29 @@ describe('resource governor enforcement lint', () => {
     expect(
       inspectGovernorSource(`const runner = { execFile: (): Promise<void> => done() }; await runner.execFile();`),
     ).not.toContain('resource-start-outside-admission');
+  });
+
+  it('detects called lazy promisify wrappers and preserves their reviewed start dispositions', () => {
+    const wrapper = `
+      let memo;
+      const invoke = ((...args: unknown[]) =>
+        Reflect.apply((memo ??= promisify(execFile)), undefined, args));
+    `;
+    expect(inspectGovernorSource(wrapper)).not.toContain('resource-start-outside-admission');
+    expect(inspectGovernorSource(wrapper + "\nawait invoke('git', []);")).toContain('resource-start-outside-admission');
+    expect(inspectGovernorSource(wrapper.replace('execFile', 'readFile') + "\nawait invoke('a');")).not.toContain('resource-start-outside-admission');
+    for (const path of [
+      'apps/operator/lib/release/desktop-perf-gate.ts',
+      'packages/operator-core/lib/sync/pot-git/physical-drill-preflight.ts',
+      'packages/operator-core/lib/harness/routines/dead-citation-sweep-action.ts',
+      'packages/operator-core/lib/harness/routines/dead-target-probe.ts',
+      'packages/operator-core/lib/release/sync-batch-delta-check-deps.ts',
+    ]) {
+      const source = readFileSync(ROOT + path, 'utf8');
+      expect(inspectGovernorSource(source), path).toContain('resource-start-outside-admission');
+      expect(BYPASS_REGISTRY.has(`${path}::resource-start-outside-admission`), path).toBe(true);
+      expect(scanInventory([[path, source]], { validateRegistry: true }), path).toEqual([]);
+    }
   });
 
   it('still flags a real start in a file that also has a same-named callback parameter', () => {
@@ -155,12 +199,195 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
+  it('requires durable evidence to name the resident queue receiver', () => {
+    const queueWithUnrelatedReceipt =
+      "function recordReceipt() {\n const receipt = persistResult();\n}\nconst pendingQueue = new Map();\npendingQueue.set(job.id, job);";
+    expect(inspectGovernorSource(queueWithUnrelatedReceipt)).toContain('unbounded-resident-queue');
+    expect(inspectGovernorSource('work_items.pendingQueue.set(job.id, job);')).not.toContain(
+      'unbounded-resident-queue',
+    );
+  });
+
   it('does not treat pending diagnostic IDs as a resident queue', () => {
     expect(
       inspectGovernorSource(
         `const pendingGradingAuditTargetIds = new Set<string>(); pendingGradingAuditTargetIds.add(issueId);`,
       ),
     ).not.toContain('unbounded-resident-queue');
+  });
+
+  it('dispositions the persisted result memo without hiding a new work queue or lost persistence', () => {
+    const path = 'packages/operator-core/lib/agent-tools/work_items/completion-freshness.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:unbounded-resident-queue`;
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    expect(scanInventory([[path, source + '\npendingQueue.push(work);']])).toContain(finding);
+    expect(scanInventory([[path, source + '\npending.set(job.id, job);']])).toContain(finding);
+    expect(scanInventory([[path, source.replace('await store.save(', 'await forget(')]])).toContain(finding);
+  });
+
+  it('bounds the bench provenance exception to its sole Git read', () => {
+    const path = 'packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
+    expect(scanInventory([[path, source.replace('timeout: 30_000', 'timeout: undefined')]])).toContain(finding);
+    expect(scanInventory([[path, source.replace("execFileSync('git'", "execFileSync('worker'")]])).toContain(finding);
+  });
+
+  it('counts benchmark RegExp.exec parsing separately from its awaited child exec', () => {
+    for (const path of ['scripts/bench-work-item-continuations.ts', 'scripts/bench-work-items-get.ts']) {
+      const source = readFileSync(ROOT + path, 'utf8');
+      const key = `${path}::resource-start-outside-admission`;
+      const entry = BYPASS_REGISTRY.get(key);
+      const finding = `${path}:resource-start-outside-admission`;
+      expect(entry?.matchesSource, path).toBeTypeOf('function');
+      expect(entry?.matchesSource?.(source), path).toBe(true);
+      expect(scanInventory([[path, source]], { migrations: ['P-016'] })).not.toContain(finding);
+      for (const mutant of [
+        source.replace('timeout: 35_000', 'timeout: undefined'),
+        source + "\nspawn('unreviewed-worker', []);",
+      ]) {
+        expect(mutant).not.toBe(source);
+        expect(entry?.matchesSource?.(mutant), path).toBe(false);
+        expect(scanInventory([[path, mutant]], { migrations: ['P-016'] })).toContain(finding);
+      }
+    }
+  });
+
+  it('keeps the isolated hosted-test module child joined and forcibly stoppable', () => {
+    const path = 'packages/operator-core/lib/llm-testing/isolated-hosted-test-user.mts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = `${path}::resource-start-outside-admission`;
+    const finding = `${path}:resource-start-outside-admission`;
+    const entry = BYPASS_REGISTRY.get(key);
+    expect(entry?.matchesSource?.(source)).toBe(true);
+    const mutant = source.replace("child.kill('SIGTERM');", 'child.disconnect();');
+    expect(mutant).not.toBe(source);
+    expect(entry?.matchesSource?.(mutant)).toBe(false);
+    expect(scanInventory([[path, mutant]])).toContain(finding);
+  });
+
+  it('keeps finite native diagnostic dispositions scoped to their reviewed starts and lifecycle', () => {
+    const heapPath = 'scripts/analyze-heap-snapshots.mjs';
+    const heap = readFileSync(ROOT + heapPath, 'utf8');
+    const nativePath = 'packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs';
+    const native = readFileSync(ROOT + nativePath, 'utf8');
+    for (const [path, source] of [[heapPath, heap], [nativePath, native]]) {
+      const finding = `${path}:resource-start-outside-admission`;
+      expect(scanInventory([[path, source]])).not.toContain(finding);
+      expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
+    }
+    expect(BYPASS_REGISTRY.has(`${heapPath}::resource-start-outside-admission`)).toBe(false);
+    expect(inspectGovernorSource(heap)).not.toContain('resource-start-outside-admission');
+    expect(scanInventory([[nativePath, native.replace('await worker.terminate()', 'await ignoreWorker()')]])).toContain(`${nativePath}:resource-start-outside-admission`);
+    expect(scanInventory([[nativePath, native.replace('71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10', 'other-graph')]])).toContain(`${nativePath}:resource-start-outside-admission`);
+  });
+
+  it('bounds the Reports native verifier disposition to isolated awaited helpers', () => {
+    const path = 'scripts/tauri-surface-verify-reports.mts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    expect(P016_DISPOSITION_REGISTRY.get(`${path}::resource-start-outside-admission`)?.reason)
+      .toContain('EI-25357092317407008');
+    for (const unsafe of [
+      source.replace('PAPERCUSP_VERIFY_TAURI_ISOLATED', 'UNVERIFIED_ISOLATION'),
+      source.replace('assert.ok(pid && workspace && process.env.VERIFY_TAURI_POLL', 'assert.ok(true'),
+      source.replace('timeout: 60_000', 'timeout: undefined'),
+      source.replace('timeout: 90_000', 'timeout: undefined'),
+      source.replace('timeout: 300_000', 'timeout: undefined'),
+      source.replace('maxBuffer: 4 * 1024 * 1024', 'maxBuffer: undefined'),
+      source.replace('const env = nativeChildEnvironment(profile);', 'const env = process.env;'),
+      source.replace('env.PAPERCUSP_VERIFY_TAURI_ISOLATED', 'env.UNVERIFIED_ISOLATION'),
+      source.replace('profile.tauriPID === Number(env.VERIFY_TAURI_PID)', 'true'),
+      source.replace('const testEnv = nativeTestDatabaseEnvironment(profile);', 'const testEnv = process.env;'),
+      source.replace('env: { ...testEnv,', 'env: { ...process.env,'),
+      source.replace('recordedDataDir === dataDir && port === address.port', 'true'),
+      source.replace("command[command.indexOf('-D') + 1] === dataDir", 'true'),
+      source.replace('env.PAPERCUSP_SKIP_PG_DISCOVERY', 'env.UNVERIFIED_PG_DISCOVERY'),
+      source.replace("execFile(process.execPath, [bundle, ...args]", "execFile('resident-worker', [bundle, ...args]"),
+      source.replace("assert.ok(prepared, 'Native child must be bundled", "assert.ok(true, 'Native child must be bundled"),
+      source.replace("digest('hex'), prepared.sha256,", "digest('hex'), 'unchecked',"),
+      source.replace("join(sourceRoot, 'apps/operator/bin/bundle-host.sh')", "join(sourceRoot, 'apps/operator/bin/resident-worker.sh')"),
+      source.replace("timeout: 300_000, env: testEnv", "timeout: undefined, env: testEnv"),
+      source.replace("timeout: 60_000, env: nativeLedgerEnvironment()", "timeout: 60_000, env: process.env"),
+      source.replace("new Set(nativeScripts).size === nativeScripts.length", 'true'),
+      source.replace("receipt.files.some((entry: { path: string }) => entry.path === script)", 'true'),
+      source.replace('if (!error) { resolve({ stdout, stderr }); return; }', 'resolve({ stdout, stderr }); return;'),
+      source.replace('execFileSync(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN', 'spawn(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN'),
+      source + "\nspawn('resident-worker', [], { detached: true });",
+      source + "\nconst launch = spawn; launch('resident-worker', []);",
+      source + "\nnew Worker('resident-worker');",
+      // WI-10007542: the third start is only the committed test:file run (governed by
+      // runGovernedTestProcess); retargeting it, or dropping either phase's isolation
+      // assert, must re-flag the file. bfaf34ee moved the call from lint:as-committed to a
+      // direct `npm run test:file`, so the mutation targets that literal call shape.
+      source.replace("execFileSync('npm', ['run', 'test:file', '--', ...testFiles],", "execFileSync('npm', ['run', 'test:affected', '--', ...testFiles],"),
+      source.replace(/assert\.equal\(process\.env\.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Fixture publication/, "assert.ok(true, 'Fixture publication"),
+    ]) expect(scanInventory([[path, unsafe]])).toContain(finding);
+  });
+
+  it('pins the Documenso readiness diagnostic without widening the sandbox lifecycle disposition', () => {
+    const path = 'scripts/with-documenso-sandbox.mjs';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    for (const unsafe of [
+      source.replace("timeout: 5000, maxBuffer: 100_000", "timeout: undefined, maxBuffer: 100_000"),
+      source.replace('attempts = 31, isStopped', 'attempts = Infinity, isStopped'),
+      source.replace('  for (let attempt = 0; ; attempt++) {\n    if (isStopped()) return;',
+        '  for (let attempt = 0; ; attempt++) {'),
+      source.replace('secrets: [databasePassword], isStopped: () => stopped', 'secrets: [], isStopped: () => stopped'),
+      source.replace('for (let attempt = 0; ; attempt++)', 'for (let attempt = 0; attempt < attempts; attempt++)'),
+      source.replace('stalledAttempts = observedStage > startupStage ? 1 : stalledAttempts + 1;', 'stalledAttempts += 1;'),
+      source.replace('if (terminal || stalledAttempts >= attempts)', 'if (terminal)'),
+      source.replace("socket.write('label=papercusp.test.owner=' + owner + '\\n')", "socket.write('label=all\\n')"),
+      source.replace("'--pull=missing', '--name', name", "'--pull=always', '--name', name"),
+      source.replace('if (containers.length || networkCreated) {', 'if (false) {'),
+      source.replace("try { await runPhase('cleanup', cleanup); }", 'try { await ignoreCleanup(); }'),
+      source + "\nspawnSync('unreviewed-worker', []);",
+    ]) {
+      expect(unsafe).not.toBe(source);
+      expect(scanInventory([[path, unsafe]])).toContain(finding);
+    }
+  });
+
+  it('bounds terminal diagnostics and the DAO verifier to their reviewed finite starts', () => {
+    const terminalPath = 'apps/operator/scripts/psu-terminal-diagnostics.mjs';
+    const terminal = readFileSync(ROOT + terminalPath, 'utf8');
+    const daoPath = 'scripts/tauri-surface-verify-dao-workbench.mts';
+    const dao = readFileSync(ROOT + daoPath, 'utf8');
+    for (const [path, source] of [[terminalPath, terminal], [daoPath, dao]]) {
+      const finding = `${path}:resource-start-outside-admission`;
+      expect(scanInventory([[path, source]])).not.toContain(finding);
+      expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
+    }
+    const terminalFinding = `${terminalPath}:resource-start-outside-admission`;
+    expect(scanInventory([[terminalPath, terminal.replace('}, 750)', '}, 0)')]])).toContain(terminalFinding);
+    expect(scanInventory([[terminalPath, terminal.replace("spawnCommand('stty'", "spawnCommand('worker'")]])).toContain(terminalFinding);
+    expect(scanInventory([[terminalPath, terminal + "\nspawnCommand('worker', []);"]])).toContain(terminalFinding);
+    const daoFinding = `${daoPath}:resource-start-outside-admission`;
+    expect(scanInventory([[daoPath, dao.replace('timeout: 65_000', 'timeout: undefined')]])).toContain(daoFinding);
+    expect(scanInventory([[daoPath, dao.replace('PAPERCUSP_VERIFY_TAURI_ISOLATED', 'UNSCOPED_RUNTIME')]])).toContain(daoFinding);
+  });
+
+  it('bounds the per-use chokepoint disposition to funding admission with no process start', () => {
+    const path = 'packages/operator-core/lib/agent-tools/per-use-chokepoint.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    // The detector's `.admit(` arm does fire here; the reviewed row is what clears it.
+    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    expect(BYPASS_REGISTRY.get(`${path}::resource-start-outside-admission`)?.reason).toContain('WI-10007542');
+    for (const unsafe of [
+      source + "\nspawn('resident-worker', []);",
+      source + "\nconst launch = execFile; launch('git', []);",
+      source + "\nnew Worker('resident-worker');",
+      `import { execFileSync } from 'node:child_process';\n${source}`,
+      source.replace("type NativeAdmissionContext = Parameters<SuCodexTurnLifecycle['admit']>[0];", 'type NativeAdmissionContext = unknown;'),
+    ]) expect(scanInventory([[path, unsafe]])).toContain(finding);
   });
 
   it('allows physical upstream constraints only when the writer carries explicit evidence', () => {
@@ -185,6 +412,115 @@ describe('resource governor enforcement lint', () => {
     }
     expect(sourceFiles.length).toBeGreaterThan(5);
     expect(scanActiveInventory(sourceFiles)).toEqual([]);
+  });
+
+  it('keeps the PSU operator-down systemd probe exact and once per launcher', () => {
+    const diagnosisPath = 'apps/operator/scripts/psu-operator-down-diagnosis.mjs';
+    const diagnosis = readFileSync(ROOT + diagnosisPath, 'utf8');
+    const diagnosisFinding = `${diagnosisPath}:resource-start-outside-admission`;
+    const disposition = BYPASS_REGISTRY.get(`${diagnosisPath}::resource-start-outside-admission`);
+    expect(disposition?.disposition).toBe('bypass');
+    expect(disposition?.matchesSource?.(diagnosis)).toBe(true);
+    expect(
+      scanInventory([[diagnosisPath, diagnosis + "\nspawnSync('worker', []);"]], { migrations: ['P-013'] }),
+    ).toContain(diagnosisFinding);
+    for (const unbounded of [
+      diagnosis.replace('const SYSTEMCTL_TIMEOUT_MS = 3_000;', 'const SYSTEMCTL_TIMEOUT_MS = undefined;'),
+      diagnosis.replace('timeout: SYSTEMCTL_TIMEOUT_MS', 'timeout: undefined'),
+    ]) {
+      expect(scanInventory([[diagnosisPath, unbounded]], { migrations: ['P-013'] })).toContain(
+        diagnosisFinding,
+      );
+    }
+
+    const launcher = readFileSync(ROOT + 'apps/operator/scripts/psu-launcher.mjs', 'utf8');
+    expect(launcher).toMatch(/let\s+slowRequestNoticeShown\s*=\s*false/);
+    expect(launcher).toMatch(/if\s*\(slowRequestNoticeShown\)\s*return\s+null/);
+    expect(launcher).toMatch(/slowRequestNoticeShown\s*=\s*true/);
+    expect(launcher.match(/\bslowOperatorNotice\s*\(/g)).toHaveLength(1);
+  });
+
+  it('keeps the GOAL-report Tauri recorder inside its isolated, bounded P-016 disposition', () => {
+    const path = 'scripts/tauri-surface-verify-goal-report.mts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = path + ':resource-start-outside-admission';
+    const disposition = P016_DISPOSITION_REGISTRY.get(path + '::resource-start-outside-admission');
+    expect(disposition?.disposition).toBe('bypass');
+    expect(disposition?.reason).toMatch(/^P-016 reviewed bypass disposition/);
+    expect(disposition?.matchesSource?.(source)).toBe(true);
+    expect(scanInventory([[path, source]], { migrations: ['P-016'] })).toEqual([]);
+    expect(
+      scanInventory([[path, source + "\nspawn('extra-worker', []);"]], { migrations: ['P-016'] }),
+    ).toContain(finding);
+    expect(
+      scanInventory([[path, source.replace("recording.kill('SIGINT');", '')]], { migrations: ['P-016'] }),
+    ).toContain(finding);
+    expect(
+      scanInventory([[path, source.replace("recording!.kill('SIGKILL');", '')]], { migrations: ['P-016'] }),
+    ).toContain(finding);
+    expect(
+      scanInventory([[path, source.replace('}, 10_000).unref()', '}, 10_000)')]], { migrations: ['P-016'] }),
+    ).toContain(finding);
+  });
+
+  it('dispositions only the synchronous, deduplicated admission import traversal', () => {
+    const path = 'packages/operator-core/lib/release/admission-import-completeness.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = path + ':unbounded-resident-queue';
+    const entry = P016_DISPOSITION_REGISTRY.get(path + '::unbounded-resident-queue');
+    expect(inspectGovernorSource(source)).toContain('unbounded-resident-queue');
+    expect(entry?.disposition).toBe('semantic');
+    expect(entry?.matchesSource?.(source)).toBe(true);
+    expect(scanInventory([[path, source]], { migrations: ['P-016'] })).toEqual([]);
+    for (const unsafe of [
+      source.replace('if (visited.has(key)) continue;', ''),
+      source.replace('visited.add(key);', ''),
+      source.replace('pending.shift()', 'pending[0]'),
+      source.replace('sourceByPath.has(candidate)', 'true'),
+      source + '\nconst workQueue = []; workQueue.push(task);',
+      source + '\nasync function enqueue() { pending.push(task); }',
+    ]) {
+      expect(scanInventory([[path, unsafe]], { migrations: ['P-016'] })).toContain(finding);
+    }
+    expect(scanInventory([['packages/operator-core/lib/release/other-import-probe.ts', source]], { migrations: ['P-016'] })).toContain(
+      'packages/operator-core/lib/release/other-import-probe.ts:unbounded-resident-queue',
+    );
+  });
+
+  it.each([false, true])('awaits and clears the real recorder teardown (requires SIGKILL: %s)', async (requiresKill) => {
+    const source = readFileSync(ROOT + 'scripts/tauri-surface-verify-goal-report.mts', 'utf8');
+    const cleanup = source.slice(source.indexOf('let recording:'), source.indexOf('// A textContent match'));
+    let resolveExit!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => { resolveExit = resolve; });
+    const child = { kill: vi.fn((signal: string) => {
+      if (!requiresKill || signal === 'SIGKILL') resolveExit(0);
+      return true;
+    }) };
+    vi.useFakeTimers();
+    try {
+      // Run the actual driver cleanup without starting a display, recorder or DB.
+      const driver = runInNewContext(stripTypeScriptTypes(cleanup +
+        '\nrecording = child; recordingExit = exited; ({ stopRecording, state: () => ({ recording, recordingExit }) });'),
+      { child, exited, setTimeout, clearTimeout });
+      let finished = false;
+      const stopping = driver.stopRecording().then(() => { finished = true; });
+      expect(child.kill).toHaveBeenCalledWith('SIGINT');
+      if (requiresKill) {
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(finished).toBe(false);
+        expect(child.kill).not.toHaveBeenCalledWith('SIGKILL');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      }
+      await stopping;
+      expect(driver.state()).toEqual({ recording: undefined, recordingExit: undefined });
+      expect(vi.getTimerCount()).toBe(0);
+      await driver.stopRecording();
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(child.kill).toHaveBeenCalledTimes(requiresKill ? 2 : 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('requires an explicit reviewed disposition for every active P-016 finding and excludes only scanner self-code', () => {
@@ -226,6 +562,67 @@ describe('resource governor enforcement lint', () => {
     ).toEqual(['packages/operator-core/lib/p2p/new-unreviewed.ts:resource-start-outside-admission']);
   }, 60_000);
 
+  it('pins newly reviewed P-016 and bypass entries to the current source shape', () => {
+    const startPins: Array<[string, string, boolean]> = [
+      ['packages/operator-core/lib/harness/routines/operator-e2e-isolated-action.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/llm-testing/isolated-hosted-test-user.mts', 'resource-start-outside-admission', false],
+      ['packages/operator-core/lib/release/staging-fix-proposal-cli.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/system-health/claude-update-canary.ts', 'resource-start-outside-admission', true],
+      ['scripts/e2e-fixture-affected.mjs', 'resource-start-outside-admission', true],
+      ['scripts/gen-asana-openapi-subset.mjs', 'resource-start-outside-admission', true],
+      ['scripts/gen-graph-dependency-snapshot.mjs', 'resource-start-outside-admission', true],
+      ['scripts/remeasure-callers.ts', 'resource-start-outside-admission', true],
+      ['scripts/review-cloud-tutorial-native.mjs', 'resource-start-outside-admission', true],
+      ['scripts/reviewer-operator-assert.mjs', 'resource-start-outside-admission', true],
+      ['scripts/tauri-surface-verify-reporter-status.mts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts', 'resource-start-outside-admission', false],
+      ['packages/operator-core/lib/memory/bench/measurement-dossier.fixture.ts', 'resource-start-outside-admission', false],
+      ['packages/operator-core/lib/memory/bench/measurement-dossier.ts', 'resource-start-outside-admission', false],
+      ['packages/operator-core/lib/memory/bench/tracked-evidence.ts', 'resource-start-outside-admission', false],
+    ];
+    for (const [path, code, p016] of startPins) {
+      const source = readFileSync(ROOT + path, 'utf8');
+      const entry = BYPASS_REGISTRY.get(`${path}::${code}`);
+      expect(entry?.matchesSource, path).toBeTypeOf('function');
+      expect(entry?.matchesSource?.(source), path).toBe(true);
+      const addedStart = `${source}\nspawn('unreviewed-worker', []);`;
+      expect(entry?.matchesSource?.(addedStart), path).toBe(false);
+      expect(scanInventory([[path, addedStart]], p016 ? { migrations: ['P-016'] } : {})).toContain(`${path}:${code}`);
+    }
+
+    const queuePins: Array<[string, string, string, string, boolean]> = [
+      ['packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts', 'unbounded-resident-queue',
+        'if (commits.has(repo) || pending.has(repo)) return;', 'if (commits.has(repo)) return;', false],
+      ['scripts/gen-asana-openapi-subset.mjs', 'unbounded-resident-queue',
+        'if (seen.has(name)) continue;', 'if (name.length < 0) continue;', true],
+      ['scripts/npm-install-safe.mjs', 'unbounded-resident-queue',
+        'if (!inputPaths.has(targetRelative)) {', 'if (targetRelative) {', true],
+      ['packages/operator-core/lib/agent-tools/plans/spec-test-adequacy.ts', 'unbounded-resident-queue',
+        'if ((seen.get(value) ?? -1) >= mode) continue;', 'if (mode < 0) continue;', false],
+      ['packages/operator-core/lib/endpoint-route/hosted-workspace-session.ts', 'unbounded-resident-queue',
+        'if (pending.size >= 64 || pending.has(requestId)) return;', 'if (pending.has(requestId)) return;', false],
+      ['packages/operator-core/lib/agent-tools/coordination/inbox-visibility.ts', 'unbounded-resident-queue',
+        'pending.set(entry, { key, fingerprint });', 'pending.push(entry);', false],
+      ['scripts/bench-work-item-continuations.ts', 'unbounded-resident-queue',
+        'pending.push(heldWrite);', 'pending.set(heldWrite);', true],
+    ];
+    for (const [path, code, before, after, p016] of queuePins) {
+      const source = readFileSync(ROOT + path, 'utf8');
+      const entry = BYPASS_REGISTRY.get(`${path}::${code}`);
+      expect(entry?.matchesSource, path).toBeTypeOf('function');
+      expect(entry?.matchesSource?.(source), path).toBe(true);
+      const mutant = source.replace(before, after);
+      expect(mutant).not.toBe(source);
+      expect(entry?.matchesSource?.(mutant), path).toBe(false);
+      expect(scanInventory([[path, mutant]], p016 ? { migrations: ['P-016'] } : {})).toContain(`${path}:${code}`);
+    }
+
+    const vintage = 'packages/operator-core/lib/agent-tools/deploys/vintage.ts';
+    expect(BYPASS_REGISTRY.has(`${vintage}::resource-start-outside-admission`)).toBe(false);
+    expect(inspectGovernorSource(readFileSync(ROOT + vintage, 'utf8'))).not.toContain('resource-start-outside-admission');
+  });
+
   it('keeps the hand-written .d.mts declaration aligned with the P-016 runtime exports', () => {
     const declaration = readFileSync(ROOT + 'scripts/check-resource-governor-enforcement.d.mts', 'utf8');
     for (const symbol of [
@@ -237,6 +634,86 @@ describe('resource governor enforcement lint', () => {
     }
     expect(declaration).toContain('migration: string;');
     expect(declaration).toContain('sites: readonly');
+  });
+
+  it('keeps the graph snapshot CLI child timeout-bounded and the traversal disposition path-specific', () => {
+    const path = 'scripts/gen-graph-dependency-snapshot.mjs';
+    const generator = readFileSync(ROOT + path, 'utf8');
+    expect(inspectGovernorSource(generator)).toContain('resource-start-outside-admission');
+    const generatorKey = `${path}::resource-start-outside-admission`;
+    expect(P016_DISPOSITION_REGISTRY.get(generatorKey)?.disposition).toBe('bypass');
+    expect(P016_DISPOSITION_REGISTRY.get(generatorKey)?.reason).toContain('runCliToFile');
+    expect(P016_DISPOSITION_REGISTRY.get(generatorKey)?.matchesSource?.(generator)).toBe(true);
+    const noTimeout = generator.replace(
+      'const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);',
+      'const timer = undefined;',
+    );
+    expect(scanInventory([[path, noTimeout]], { migrations: ['P-016'] })).toContain(
+      `${path}:resource-start-outside-admission`,
+    );
+    const key = 'scripts/lib/graph-dependency-suggestions.mjs::unbounded-resident-queue';
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.disposition).toBe('semantic');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('MAX_VISITED_FILES');
+  });
+
+  it('keeps hosted GCP role reconciliation as a one-shot operator CLI bypass', () => {
+    const path = 'scripts/workspace-host/reconcile-hosted-gcp-roles.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = 'scripts/workspace-host/reconcile-hosted-gcp-roles.ts::resource-start-outside-admission';
+    const disposition = P016_DISPOSITION_REGISTRY.get(key);
+
+    expect(disposition?.disposition).toBe('bypass');
+    expect(disposition?.reason).toContain("execFileSync('gcloud', ['auth', 'print-access-token'])");
+    expect(source).toContain("execFileSync('gcloud', ['auth', 'print-access-token']");
+    expect(source.match(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)).toEqual([
+      'execFileSync(',
+    ]);
+    expect(source).not.toMatch(
+      /\b[A-Za-z_$][\w$]*\s*[=:]\s*(?:promisify\s*\(\s*)?(?:spawn|spawnSync|fork|execFile|execFileSync)\s*[,)\s;}]/,
+    );
+    expect(
+      scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true }),
+    ).toEqual([]);
+  });
+
+  it('reviews declaration suppression lookup as one synchronous build-time Git metadata read', () => {
+    const path = 'scripts/lib/stale-declaration-suppressions.ts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = `${path}::resource-start-outside-admission`;
+    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.disposition).toBe('bypass');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('importerSources');
+    // A second primitive start requires a new review of this exact-path disposition.
+    expect(source.match(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)).toEqual(['execFileSync(']);
+    expect(source).toMatch(/execFileSync\('git',\s*\['-C', repoRoot, 'grep', '-l', '-F'/);
+    expect(scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true })).toEqual([]);
+  });
+
+  it('pins the committed-source loader bypass to its one timeout-bounded git read helper', () => {
+    const path = 'scripts/lib/committed-source-loader.mjs';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = `${path}::resource-start-outside-admission`;
+    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.disposition).toBe('bypass');
+    expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('spawnCensus');
+    expect(source).toMatch(/return execFileSync\(gitExecutable, \['-C', top, \.\.\.args\]/);
+    expect(source).toContain("if (configured && !isAbsolute(configured))");
+    expect(source).toContain("const resolved = realpathSync(candidate);");
+    expect(source).toContain("accessSync(resolved, fsConstants.X_OK);");
+    expect(scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true })).toEqual([]);
+    // A second start, or a detached git child, needs a fresh review: both fall out of the pin.
+    const secondStart = source.replace('function audit(record) {', "function audit(record) {\n  execFileSync('ls', []);");
+    const detached = source.replace("stdio: ['ignore', 'pipe', 'pipe'],", "detached: true,\n    stdio: ['ignore', 'pipe', 'pipe'],");
+    const unresolvedExecutable = source.replace(
+      "return execFileSync(gitExecutable, ['-C', top, ...args], {",
+      "return execFileSync('git', ['-C', top, ...args], {",
+    );
+    for (const mutant of [secondStart, detached, unresolvedExecutable]) {
+      expect(mutant).not.toBe(source);
+      expect(scanInventory([[path, mutant]], { migrations: ['P-016'], validateRegistry: true })).toEqual([
+        `${path}:resource-start-outside-admission`,
+      ]);
+    }
   });
 
   it('can audit a pending migration and applies only centrally registered dispositions', () => {
@@ -268,25 +745,64 @@ describe('resource governor enforcement lint', () => {
     );
   });
 
-  it('limits the completion metadata disposition to the reviewed bounded Git probe', () => {
+  it('retires measurement-pin bypass after git reads moved to the replay helper', () => {
+    const path = 'packages/operator-core/lib/agent-tools/plans/evidence-measurement-pin.ts';
+    const key = `${path}::resource-start-outside-admission`;
+    const source = readFileSync(ROOT + path, 'utf8');
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
+    expect(BYPASS_REGISTRY.has(key)).toBe(false);
+    expect(
+      scanInventory([[path, source]], { migrations: ['P-014'], validateRegistry: true }),
+    ).not.toContain(`stale-bypass-registry:${key}:finding-absent`);
+    expect(
+      scanInventory([[path, source + "\nspawn('resident-worker', []);"]], { migrations: ['P-014'] }),
+    ).toContain(`${path}:resource-start-outside-admission`);
+  });
+
+  it('retires credential-store bypass after keychain starts moved to the authentication helpers', () => {
+    const path = 'packages/operator-core/lib/inference-gateway/credential-store.ts';
+    const key = `${path}::resource-start-outside-admission`;
+    const source = readFileSync(ROOT + path, 'utf8');
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
+    expect(BYPASS_REGISTRY.has(key)).toBe(false);
+    expect(
+      scanInventory([[path, source]], { migrations: ['P-015'], validateRegistry: true }),
+    ).not.toContain(`stale-bypass-registry:${key}:finding-absent`);
+    expect(
+      scanInventory([[path, source + "\nspawn('resident-worker', []);"]], { migrations: ['P-015'] }),
+    ).toContain(`${path}:resource-start-outside-admission`);
+  });
+
+  it('retires supervision reconcile disposition after resource starts moved behind the sidecar helper', () => {
+    const path = 'packages/operator-core/lib/harness/routines/supervision-reconcile-action.ts';
+    const key = `${path}::resource-start-outside-admission`;
+    const source = readFileSync(ROOT + path, 'utf8');
+    expect(P016_DISPOSITION_REGISTRY.has(key)).toBe(false);
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
+    expect(
+      scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true }),
+    ).not.toContain(`stale-bypass-registry:${key}:finding-absent`);
+    expect(
+      scanInventory([[path, source + "\nspawn('worker', []);"]], { migrations: ['P-016'] }),
+    ).toContain(`${path}:resource-start-outside-admission`);
+  });
+
+  it('keeps completion free of resource starts now that its Git probe lives in git-trackedness.ts', () => {
+    // The bounded `git ls-files` trackedness probe moved out of complete.ts into
+    // packages/operator-core/lib/git-trackedness.ts (2026-10-01), so its exact-call
+    // bypass row described nothing and the registry validator reported it stale. The row
+    // is retired; this pins the replacement contract: complete.ts starts nothing, has no
+    // row to hide behind, and a start added back there is a finding again.
     const path = 'packages/operator-core/lib/agent-tools/work_items/complete.ts';
     const source = readFileSync(ROOT + path, 'utf8');
     const finding = `${path}:resource-start-outside-admission`;
-    expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
+    expect(BYPASS_REGISTRY.has(`${path}::resource-start-outside-admission`)).toBe(false);
+    expect(inspectGovernorSource(source)).not.toContain('resource-start-outside-admission');
     expect(scanInventory([[path, source]])).not.toContain(finding);
     expect(scanInventory([[path, source + "\nspawn('resident-worker', []);"]])).toContain(finding);
-    expect(scanInventory([[path, source + "\nconst childStart = spawn; childStart('worker', []);"]])).toContain(finding);
-    for (const [before, after] of [
-      ["'ls-files'", "'checkout'"],
-      ['timeout: 5_000', 'timeout: 0'],
-      ["killSignal: 'SIGKILL'", "killSignal: 'SIGTERM'"],
-      ["stdio: ['ignore', 'ignore', 'ignore']", "stdio: ['ignore', 'pipe', 'pipe']"],
-    ]) {
-      expect(source).toContain(before);
-      const mutant = source.replace(before, after);
-      expect(mutant).not.toBe(source);
-      expect(scanInventory([[path, mutant]])).toContain(finding);
-    }
+    expect(
+      scanInventory([[path, source + "\nexecFileSync('git', ['ls-files', '--error-unmatch', '--', p]);"]]),
+    ).toContain(finding);
   });
 
   it('executes the real blocking CLI over the tracked tree', () => {

@@ -358,6 +358,12 @@ describe('renderFactsFold', () => {
     expect(out).toContain('[role:mug] WI-1439 is owner-residue');
     expect(out).toContain('expires ~3d');
     expect(out).toContain('src WI-1574');
+
+    const lapsedWall = renderFactsFold(
+      [fact({ key: 'wall:owner-action', expiresAt: '2026-07-01T00:00:00.000Z' })],
+      Date.parse('2026-07-02T00:00:00.000Z'),
+    );
+    expect(lapsedWall).toContain('TTL lapsed — remains active until retracted');
   });
 
   it('workspace-scoped facts render without a ref; empty set renders nothing', () => {

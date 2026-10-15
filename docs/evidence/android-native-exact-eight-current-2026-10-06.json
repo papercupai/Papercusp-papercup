@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-002 current-source native exact-eight + paired journey (run #7, local debug)",
+  "framework": "operational",
+  "frameworkDetail": "android-instrumentation (Gradle connectedDebugAndroidTest) via papercup-rust-mobile/tools/run-android-checks.sh native",
+  "command": [
+    "android/gradlew", "-p", "android", ":app:connectedDebugAndroidTest", "--rerun", "--console=plain",
+    "-Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true",
+    "-Pandroid.testInstrumentationRunnerArguments.class=com.papercuspai.operator.mobile.PapercupAppSmokeTest#launcherActivityStarts,com.papercuspai.operator.mobile.PapercupAppSmokeTest#privateInboxScopeAcceptsOnlyDocumentedGlobalControls,com.papercuspai.operator.mobile.OperatorChatScreenTest",
+    "-Pandroid.testInstrumentationRunnerArguments.nativeAuthFixture=true",
+    "-Pandroid.testInstrumentationRunnerArguments.nativePairingFixture=true"
+  ],
+  "commandCwd": "papercup-rust-mobile",
+  "commandParameterBasis": "Recorded verbatim in papercup-rust-mobile/android/app/build/ci-evidence/p002-native-20261006T212423Z/result.json `command`; full launcher log /tmp/p002-run7.log (RC=0, line 22519).",
+  "startedAt": "2026-10-06T21:27:56.741787+00:00",
+  "finishedAt": "2026-10-06T21:34:44.385482+00:00",
+  "exitCode": 0,
+  "summary": "Exactly eight maintained JUnit identities passed (0 failures/errors/skips) on an owned API 36 16 KB-page AVD, and the live owned-runtime paired journey completed: pairing, authenticated JNI request, Inbox scoped read/rendering/unauthorized/recovery, expired-JWT rejection + fresh pair, device revocation gating + fresh pair, navigation, credential clearing; all 25 nativeJourney boolean assertions true. Cleanup verified.",
+  "scope": "Owned local debug native pairing/JNI/navigation with external browser intent fixture; no signed-candidate, mesh, physical-phone or Play acceptance. Local-debug contribution only.",
+  "workItems": ["WI-10004768"],
+  "planItems": ["android-public-release-2026-10-01#P-002"],
+  "containingSourceCommit": {
+    "repo": "papercup-rust-mobile",
+    "sha": "093238a51c16ccd1d09657474d9ad1478e61a176",
+    "committedAt": "2026-10-06T17:39:17-04:00",
+    "basis": "Run started at 28c62b4 with sourceDirty=true; all 23 sourceFingerprints in result.json equal the sha256 of `git show 093238a:<path>` (23/23 match, 0 differ), so 093238a contains every byte the run compiled."
+  },
+  "sourceDirtyAtExecution": true,
+  "runId": "aa7e8f6645bd459f9da2d6b7000e93bf",
+  "sourceFiles": "23 fingerprinted paths; see result.json `sourceFingerprints` (e.g. tools/run-android-checks.sh 8f9da0cf…, tools/build-scripts/build-android.sh 98b8745a…, android/app/build.gradle.kts f90d3fcc…).",
+  "rawEvidence": {
+    "outDir": "papercup-rust-mobile/android/app/build/ci-evidence/p002-native-20261006T212423Z",
+    "resultJson": "result.json",
+    "junitXml": "native-results/TEST-papercusp-api36-release-16k(AVD) - 16-_app-.xml",
+    "nativeTestLog": "native-test.log",
+    "pairingStages": "pairing-stages.log (31 lines; client-start → client-ready → request-start → response-received → credentials-saved, repeated per pairing)",
+    "emulatorPreflight": "emulator-preflight/",
+    "note": "Build outputs are not committed; this file is the durable record of their content."
+  },
+  "testedArtifacts": [
+    { "path": "app-debug.apk", "sha256prefix": "8494447acae6bda6", "sha256": "8494447acae6bda608fab099c01f1c052266fc0cc378b70cfcf2472844448bc8" },
+    { "path": "app-debug-androidTest.apk", "sha256prefix": "23102309dfbd729c" }
+  ],
+  "operator": {
+    "runtime": "http://127.0.0.1:41129",
+    "kind": "owned isolated operator started by the native route",
+    "ownedWorkspace": "android-live-scope-aa7e8f6645bd459f9da2d6b7000e93bf",
+    "ownedDeviceIds": [
+      "a534c2e9-1c10-4d2e-b31d-9d3e075eeb93",
+      "4d05da42-3fcf-4fdf-a060-12c3cb42f363",
+      "d8efbccb-eb26-45c4-b685-5cc9db45683f",
+      "7224743b-b2a8-43df-ba72-becc606a7362"
+    ],
+    "authFixtureStage": "fresh-repair-tokens",
+    "nativePairTokenDisposition": "redeemed-before-cleanup"
+  },
+  "emulator": {
+    "avd": "papercusp-api36-release-16k",
+    "serialPort": 5584,
+    "api": 36,
+    "pageSizeBytes": 16384,
+    "abisCrossCompiled": 4,
+    "uniffiChecksumSymbolsVerified": 55,
+    "debugApk16KbAligned": true
+  },
+  "testCounts": { "native": { "executed": 8, "failed": 0, "errors": 0, "skipped": 0 } },
+  "countBasis": "JUnit XML tests=\"8\" failures=\"0\" errors=\"0\" skipped=\"0\"; Gradle: 'Finished 8 tests on papercusp-api36-release-16k(AVD) - 16'.",
+  "junitIdentities": [
+    "com.papercuspai.operator.mobile.PapercupAppSmokeTest#launcherActivityStarts",
+    "com.papercuspai.operator.mobile.PapercupAppSmokeTest#privateInboxScopeAcceptsOnlyDocumentedGlobalControls",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#repairToAnotherServerDoesNotExposePreviousDraft",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#rejectedDraftSurvivesSameScopeRepairAndActivityRecreation",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#rejectedDraftSurvivesSettingsRoundTrip",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#forbiddenSendKeepsDraftWithoutInventingAPersistedTurn",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#unauthorizedSendKeepsDraftWithoutInventingAPersistedTurn",
+    "com.papercuspai.operator.mobile.OperatorChatScreenTest#repairToAnotherWorkspaceDoesNotExposePreviousDraft"
+  ],
+  "nativeJourney": {
+    "runId": "aa7e8f6645bd459f9da2d6b7000e93bf",
+    "journeyCompleted": true,
+    "currentStage": "completed",
+    "deviceId": "7224743b-b2a8-43df-ba72-becc606a7362",
+    "workspaceId": "android-live-scope-aa7e8f6645bd459f9da2d6b7000e93bf",
+    "enrollmentBrowserStubbed": true,
+    "booleanAssertionsTrue": 25,
+    "booleanAssertionsFalse": [],
+    "assertionsTrue": [
+      "journeyCompleted", "enrollmentBrowserStubbed", "enrollmentIntentObserved", "authenticatedRequestPassed",
+      "returnedToPairedShell", "activityRecreated", "inboxScopedReadPassed", "inboxRenderingPassed",
+      "inboxUnauthorizedPassed", "inboxRecoveryPassed", "expiredJwtControlPassed", "expiredJwtRejected",
+      "expiredJwtRenderingPassed", "expiredJwtFreshPairPassed", "revocationMissingPromptBlocked",
+      "revocationDeniedPromptBlocked", "revocationApprovedPromptInvoked", "revocationBiometricPromptStubbed",
+      "revokedDeviceRejected", "revokedDeviceRenderingPassed", "revokedDeviceFreshPairPassed",
+      "meshEnrollmentClaimCorrect", "valueRowLabelsPassed", "navigationPassed", "credentialsCleared"
+    ],
+    "inboxScopeWitness": "groupCount=1 (alerts:workspace), workItemCount=0"
+  },
+  "cleanup": {
+    "cleanupVerified": true,
+    "errors": []
+  },
+  "assertions": [
+    { "id": "exact-eight-native", "passed": true, "evidence": "Exact eight maintained JUnit identities, zero failures/errors/skips." },
+    { "id": "paired-journey", "passed": true, "evidence": "Owned private operator pairing, authenticated JNI request, Inbox scope + rendering + unauthorized + recovery, invalid/expired JWT rejection with fresh pair, revocation gating with fresh pair, navigation and credential clearing; 25/25 nativeJourney booleans true." },
+    { "id": "current-source", "passed": true, "evidence": "23/23 run-start source fingerprints equal papercup-rust-mobile 093238a blobs." },
+    { "id": "cleanup", "passed": true, "evidence": "result.json cleanupVerified=true, errors=[]." }
+  ],
+  "notClaimed": [
+    "signed release candidate",
+    "physical phone",
+    "Google Play / public installation",
+    "mesh / BYOC-cloud runtime (D-013)",
+    "real browser enrollment (browser intent stubbed)"
+  ]
+}

@@ -62,6 +62,8 @@ const advInsightsCache: AdvInsightsCache = advInsightsCacheState.cache;
 function AdvInsightsTab({ slug }: { slug: string }) {
   const [insights, setInsights] = useState<InsightsTabProps | null>(() => advInsightsCache.get(slug) ?? null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
   useEffect(() => {
     let cancel = false;
     // Stale-while-revalidate: render cached cards immediately; only blank to the
@@ -69,34 +71,46 @@ function AdvInsightsTab({ slug }: { slug: string }) {
     const cached = advInsightsCache.get(slug) ?? null;
     setInsights(cached);
     setError(null);
+    setLoading(true);
     fetch(`/api/harness/${encodeURIComponent(slug)}/insights`, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((body: { insights?: InsightsTabProps }) => {
         if (cancel) return;
-        if (body?.insights) {
-          advInsightsCache.set(slug, body.insights);
-          setInsights(body.insights);
-        } else if (!cached) {
-          setError('insights payload missing');
-        }
+        if (!body?.insights) throw new Error('insights payload missing');
+        advInsightsCache.set(slug, body.insights);
+        setInsights(body.insights);
       })
       .catch((e: unknown) => {
-        // Keep showing stale cards if we have them; only surface the error on a
-        // cold visit with nothing cached.
-        if (!cancel && !cached) setError(e instanceof Error ? e.message : String(e));
+        // Cached cards remain useful, but their failed refresh must be visible.
+        if (!cancel) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancel) setLoading(false);
       });
     return () => {
       cancel = true;
     };
-  }, [slug]);
+  }, [slug, reloadKey]);
 
-  if (error) {
-    return <div className="pc-adv-harness-panel__empty">Could not load insights: {error}</div>;
-  }
+  const failure = error ? (
+    <div role="alert" className={insights ? 'pc-adv-insights__feedback' : 'pc-adv-harness-panel__empty'}>
+      <span>{insights ? 'Could not refresh insights; showing previously loaded data: ' : 'Could not load insights: '}{error}</span>
+      <button type="button" disabled={loading} onClick={() => {
+        setLoading(true);
+        setReloadKey((key) => key + 1);
+      }}>Retry</button>
+    </div>
+  ) : null;
   if (!insights) {
-    return <div className="pc-adv-harness-panel__empty">Loading insights…</div>;
+    return failure ?? <div className="pc-adv-harness-panel__empty">Loading insights…</div>;
   }
-  return <InsightsTab slug={slug} {...insights} />;
+  return (
+    <div className="pc-adv-insights">
+      {failure}
+      {loading && <div role="status" className="pc-adv-insights__feedback">Refreshing insights…</div>}
+      <InsightsTab slug={slug} {...insights} />
+    </div>
+  );
 }
 
 /**
@@ -146,6 +160,19 @@ const PANEL_FILL_CSS = `
     display: grid;
     place-items: center;
     min-height: 220px;
+    color: var(--fg-mute, #7f9bb4);
+    font-size: 13px;
+  }
+  .pc-adv-insights {
+    display: flex;
+    flex-direction: column;
+  }
+  .pc-adv-insights__feedback {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
     color: var(--fg-mute, #7f9bb4);
     font-size: 13px;
   }

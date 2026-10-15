@@ -1,0 +1,579 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-002 fresh Kotlin debug and release host contracts, 2026-10-07",
+  "framework": "operational",
+  "workItemId": "WI-10004768",
+  "planSlug": "android-public-release-2026-10-01",
+  "command": [
+    "android/gradlew",
+    "-p",
+    "android",
+    ":app:testDebugUnitTest",
+    ":app:testReleaseUnitTest",
+    "--rerun",
+    "--no-daemon"
+  ],
+  "commandCwd": "papercup-rust-mobile",
+  "environment": "JAVA_HOME resolved with tools/build-scripts/resolve-java-home.sh",
+  "followupCommand": [
+    "android/gradlew",
+    "-p",
+    "android",
+    ":app:testDebugUnitTest",
+    "--rerun-tasks",
+    "--no-daemon"
+  ],
+  "exitCode": 0,
+  "followupExitCode": 0,
+  "startedAt": "2026-10-07T06:42:16.955000Z",
+  "finishedAt": "2026-10-07T06:44:29.007000Z",
+  "timeBasis": "JUnit assertion window across two sequential successful Gradle invocations; the commands began before their first testcase. Both full command intervals were not timestamped.",
+  "summary": "Release executed 41 maintained host tests with no failures/errors/skips. The first debug task was UP-TO-DATE and is explicitly excluded as a fresh run. A subsequent debug-only --rerun-tasks invocation executed 30 tasks and 41 fresh tests with no failures/errors/skips. These are JVM host contracts, not JNI/device/candidate/Play proof. All 82 individual assertion identities below come from the resulting fresh JUnit reports.",
+  "logs": [
+    "/tmp/android-p002-kotlin-host-20261007.log",
+    "/tmp/android-p002-kotlin-debug-20261007.log"
+  ],
+  "testCounts": {
+    "debug": {
+      "executed": 41,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "release": {
+      "executed": 41,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "reports": [
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "45311b2c3c66602653075265848a70aa76ac191d052f5ddc4118cdf392ce1c18",
+      "timestamp": "2026-10-07T06:44:28.833Z",
+      "tests": 10
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "93bc3fd62b2a45d494fd7b89658598d0e46e44e18f0ecbccee613818072a9090",
+      "timestamp": "2026-10-07T06:44:28.890Z",
+      "tests": 3
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "1125262958db6a7a6a3407d50f56bba12c04de87df2c3d0dce54f1bd523e1a6a",
+      "timestamp": "2026-10-07T06:44:28.901Z",
+      "tests": 7
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml",
+      "sha256": "8d95dab96f498a947317ff7ad11f18d2d81648c56170c17d1b8aea968aed0533",
+      "timestamp": "2026-10-07T06:44:28.915Z",
+      "tests": 3
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml",
+      "sha256": "1646f63063c3739aacda22311b998c1be60eb07a9592618083b315fe88c68ed9",
+      "timestamp": "2026-10-07T06:44:28.952Z",
+      "tests": 5
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "dd0631a40191d286a2a668e01e28b68127f61b8e5c93c3e7671565fe80709d20",
+      "timestamp": "2026-10-07T06:44:28.958Z",
+      "tests": 3
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "1cc02cfa0a4599eef05e18c7cdd71825203150f3953d18eb6bb54794b42d6a84",
+      "timestamp": "2026-10-07T06:44:28.969Z",
+      "tests": 4
+    },
+    {
+      "path": "android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "79b530ebcf93b0352a35f20f1f41aba5b18363db6856c0d76ce4aaa7a25f58af",
+      "timestamp": "2026-10-07T06:44:28.973Z",
+      "tests": 6
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml",
+      "sha256": "0a6de6dba63973a934ae5694daea77bb6b488baa592e38397ddc221ebf2f8ce4",
+      "timestamp": "2026-10-07T06:42:16.955Z",
+      "tests": 10
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml",
+      "sha256": "3c6c40b8b7a1f6e2f530a96aba74becd26cbd51911af1be88dee73e4754f2b2e",
+      "timestamp": "2026-10-07T06:42:17.073Z",
+      "tests": 3
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml",
+      "sha256": "b100a5e437ab35634e5aab943adcb5c06f2095795e5c8d93fcbfa098ae194e28",
+      "timestamp": "2026-10-07T06:42:17.089Z",
+      "tests": 7
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml",
+      "sha256": "a31efb66d928b792769d3792a33d87812938b64fb14f0622f847ac4c48640c87",
+      "timestamp": "2026-10-07T06:42:17.127Z",
+      "tests": 3
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml",
+      "sha256": "6b0abd9fdf103582013705d704edde3cf4f713acdba029bdc26991f41fc4db4c",
+      "timestamp": "2026-10-07T06:42:17.211Z",
+      "tests": 5
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml",
+      "sha256": "03fa046947bad402e946c7e1ae1b6751d7974c216231a62f7649bef4b594a61c",
+      "timestamp": "2026-10-07T06:42:17.222Z",
+      "tests": 3
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml",
+      "sha256": "1f4bef12121dc8e35a054e414030fa9e696a606bd4b80672773ace2e06623540",
+      "timestamp": "2026-10-07T06:42:17.242Z",
+      "tests": 4
+    },
+    {
+      "path": "android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml",
+      "sha256": "92c90966bf55739f86c1365c7032119ac3bdf9f525895e5d85078986f5786447",
+      "timestamp": "2026-10-07T06:42:17.247Z",
+      "tests": 6
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt",
+      "sha256": "26b206496863829ba59e44f13119fda9ba3d2d48986c23cdd110c36b1acd7481"
+    },
+    {
+      "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/PlanItemsContractTest.kt",
+      "sha256": "a60cb2bf96373668097d2682e573cac3e56f2262db798c16d1d2144c89903643"
+    }
+  ],
+  "sourceBasis": "The two measured Kotlin plan-contract files matched before and after the fresh debug invocation. The checkout had peer edits in CI/runner/build files; this is working-tree host proof, not a clean release artifact.",
+  "assertions": [
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#unavailableMonitoringIsDistinctFromZeroPresence",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#systemAlertOnlyFeedIsVisibleAndCounted",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#missingGroupContentCannotClaimInboxZero",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#badgeCountsItemsRatherThanGroupsAndSupportsTheEnvelope",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#presenceDoesNotClaimExecutingWork",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#genuinelyEmptyFeedCanShowInboxZero",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#aMalformedRowCannotBeHiddenByOtherVisibleRows",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#malformedAndMissingGroupPayloadsAreUnavailableRatherThanEmpty",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#missingRowsOrMismatchedCountsDoNotClaimZero",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.CompanionFeedTest#badgeCountsSystemAlertsWithoutNotificationHistory",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.EndpointSecurityTest#releaseRejectsCleartextAndMalformedEndpoints",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.EndpointSecurityTest#debugAllowsOnlyExplicitLoopbackCleartext",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.EndpointSecurityTest#releaseAcceptsHttps",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.HumanErrorTest#unknownThrowableNeverLeaksItsInternals",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.HumanErrorTest#serverErrorsMapByStatus",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.HumanErrorTest#timeoutBecomesRetryGuidance",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.HumanErrorTest#everyShapeStartsWithTheAttemptedAction",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.HumanErrorTest#decodeFailurePointsAtVersionSkew",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.HumanErrorTest#rawReqwestNetworkErrorBecomesReachabilityGuidance",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.HumanErrorTest#unauthorizedPointsAtRePairing",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.LibraryNoticesTest#emptyBundledMetadataCannotBecomeASuccessfulBlankScreen",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.LibraryNoticesTest#damagedBundledMetadataIsRejected",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.LibraryNoticesTest#collectorSchemaPreservesEveryLicenseAndLinkedReference",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.PlanItemsContractTest#malformedPayloadYieldsEmptyListNotCrash",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.PlanItemsContractTest#legacyStatusKeyAndNullsStillParse",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.PlanItemsContractTest#readsStoredStatusFromCurrentServerShape",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.PlanItemsContractTest#effectiveStatusWinsOverStoredStatusWhenServerSendsIt",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.PlanItemsContractTest#ownerAuthorityMarksItemOwnerGated",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.VoiceMicDenialTest#permanentDenialPointsAtSettings",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.VoiceMicDenialTest#denialCopyNeverLeaksInternals",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.VoiceMicDenialTest#firstDenialProducesActionableMicPermissionFailure",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.VoicePrivacyConsentTest#disclosureNamesCloudProcessorsAndDataUse",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.VoicePrivacyConsentTest#cloudVoiceIsBlockedUntilConsent",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.VoicePrivacyConsentTest#inAppPolicyDisclosesEveryShippedProcessor",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.VoicePrivacyConsentTest#desktopLocalVoiceDoesNotRequireCloudConsent",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.WorkspaceSwitchTest#successfulSwitchPersistsTokenAndWorkspaceBeforeReturning",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.WorkspaceSwitchTest#mismatchedWorkspaceOrEmptyTokenCannotReplaceCredentials",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.WorkspaceSwitchTest#revokedOrExpiredSessionPreservesExistingCredentials",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.WorkspaceSwitchTest#storageFailureIsNotReportedAsSuccessfulSwitch",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.WorkspaceSwitchTest#cancelledBiometricOrRequestDoesNotPersist",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "debug:com.papercuspai.operator.mobile.WorkspaceSwitchTest#subsequentSwitchUsesTheReplacementCredentials",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testDebugUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#unavailableMonitoringIsDistinctFromZeroPresence",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#systemAlertOnlyFeedIsVisibleAndCounted",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#missingGroupContentCannotClaimInboxZero",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#badgeCountsItemsRatherThanGroupsAndSupportsTheEnvelope",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#presenceDoesNotClaimExecutingWork",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#genuinelyEmptyFeedCanShowInboxZero",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#aMalformedRowCannotBeHiddenByOtherVisibleRows",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#malformedAndMissingGroupPayloadsAreUnavailableRatherThanEmpty",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#missingRowsOrMismatchedCountsDoNotClaimZero",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.CompanionFeedTest#badgeCountsSystemAlertsWithoutNotificationHistory",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.CompanionFeedTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.EndpointSecurityTest#releaseRejectsCleartextAndMalformedEndpoints",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.EndpointSecurityTest#debugAllowsOnlyExplicitLoopbackCleartext",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.EndpointSecurityTest#releaseAcceptsHttps",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.EndpointSecurityTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.HumanErrorTest#unknownThrowableNeverLeaksItsInternals",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.HumanErrorTest#serverErrorsMapByStatus",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.HumanErrorTest#timeoutBecomesRetryGuidance",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.HumanErrorTest#everyShapeStartsWithTheAttemptedAction",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.HumanErrorTest#decodeFailurePointsAtVersionSkew",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.HumanErrorTest#rawReqwestNetworkErrorBecomesReachabilityGuidance",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.HumanErrorTest#unauthorizedPointsAtRePairing",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.HumanErrorTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.LibraryNoticesTest#emptyBundledMetadataCannotBecomeASuccessfulBlankScreen",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.LibraryNoticesTest#damagedBundledMetadataIsRejected",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.LibraryNoticesTest#collectorSchemaPreservesEveryLicenseAndLinkedReference",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.LibraryNoticesTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.PlanItemsContractTest#malformedPayloadYieldsEmptyListNotCrash",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.PlanItemsContractTest#legacyStatusKeyAndNullsStillParse",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.PlanItemsContractTest#readsStoredStatusFromCurrentServerShape",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.PlanItemsContractTest#effectiveStatusWinsOverStoredStatusWhenServerSendsIt",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.PlanItemsContractTest#ownerAuthorityMarksItemOwnerGated",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.PlanItemsContractTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.VoiceMicDenialTest#permanentDenialPointsAtSettings",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.VoiceMicDenialTest#denialCopyNeverLeaksInternals",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.VoiceMicDenialTest#firstDenialProducesActionableMicPermissionFailure",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoiceMicDenialTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.VoicePrivacyConsentTest#disclosureNamesCloudProcessorsAndDataUse",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.VoicePrivacyConsentTest#cloudVoiceIsBlockedUntilConsent",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.VoicePrivacyConsentTest#inAppPolicyDisclosesEveryShippedProcessor",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.VoicePrivacyConsentTest#desktopLocalVoiceDoesNotRequireCloudConsent",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.VoicePrivacyConsentTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.WorkspaceSwitchTest#successfulSwitchPersistsTokenAndWorkspaceBeforeReturning",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.WorkspaceSwitchTest#mismatchedWorkspaceOrEmptyTokenCannotReplaceCredentials",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.WorkspaceSwitchTest#revokedOrExpiredSessionPreservesExistingCredentials",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.WorkspaceSwitchTest#storageFailureIsNotReportedAsSuccessfulSwitch",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.WorkspaceSwitchTest#cancelledBiometricOrRequestDoesNotPersist",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    },
+    {
+      "id": "release:com.papercuspai.operator.mobile.WorkspaceSwitchTest#subsequentSwitchUsesTheReplacementCredentials",
+      "passed": true,
+      "evidence": "Fresh JUnit testcase in android/app/build/test-results/testReleaseUnitTest/TEST-com.papercuspai.operator.mobile.WorkspaceSwitchTest.xml; no failure, error or skipped element."
+    }
+  ],
+  "notClaimed": [
+    "native JNI journey refreshed",
+    "all device operations accepted",
+    "scorecards emitted",
+    "P-002 closed",
+    "release shipped"
+  ]
+}

@@ -351,9 +351,21 @@ export class HostedSessionStore {
   }
 
   async resolve(id: string, opts: ResolveHostedSessionOptions = {}): Promise<HostedSession | null> {
+    return this.resolveRow(id, opts, false);
+  }
+
+  /** Hold session revocation/rotation behind the caller's admission transaction.
+   * A pool would release the lock before admission, so refuse one explicitly. */
+  async resolveForUpdate(id: string, opts: ResolveHostedSessionOptions = {}): Promise<HostedSession | null> {
+    if (typeof (this.sql as { begin?: unknown }).begin === 'function') {
+      throw new Error('hosted_session_lock_requires_transaction');
+    }
+    return this.resolveRow(id, opts, true);
+  }
+
+  private async resolveRow(id: string, opts: ResolveHostedSessionOptions, lock: boolean): Promise<HostedSession | null> {
     if (!HOSTED_SESSION_ID_RE.test(id)) return null;
-    const at = opts.at ?? this.clock();
-    validDate(at, 'at');
+    if (opts.at !== undefined) validDate(opts.at, 'at');
     if (opts.expectedPermissionVersion !== undefined) {
       permissionVersion(opts.expectedPermissionVersion, 'expectedPermissionVersion');
     }
@@ -362,11 +374,15 @@ export class HostedSessionStore {
         FROM papercusp_auth.hosted_sessions
        WHERE id = ${id}
          AND revoked_at IS NULL
-         AND expires_at > ${at.toISOString()}
        LIMIT 1
+       ${this.sql.unsafe(lock ? 'FOR UPDATE' : '')}
     `;
     if (rows.length === 0) return null;
     const session = fromRow(rows[0]);
+    // Sample time AFTER acquiring the row lock: a waiter may cross expiry.
+    const at = opts.at ?? this.clock();
+    validDate(at, 'at');
+    if (session.revokedAt || session.expiresAt.getTime() <= at.getTime()) return null;
     if (
       opts.expectedPermissionVersion !== undefined
       && session.permissionVersion !== opts.expectedPermissionVersion

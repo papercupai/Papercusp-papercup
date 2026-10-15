@@ -12,10 +12,14 @@
  * reports exit-0 tasks as FAILED").
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 
 import { formatTaskOutcomeFields } from '../../../../scripts/lib/task-progress-line.mjs';
+import { createCgroupMemoryObserver } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 describe('formatTaskOutcomeFields', () => {
   it('renders both fields as "pending" before the task has closed (genuinely unknown)', () => {
@@ -45,6 +49,65 @@ describe('formatTaskOutcomeFields', () => {
       exitStatus: 1,
       signal: 'none',
     });
+  });
+});
+
+describe('affected-tests durable live progress', () => {
+  it('records the real progress emitter in the canonical log before task output is replayed', () => {
+    const source = readFileSync(resolve(__dirname, '../../../../scripts/affected-tests.mjs'), 'utf8');
+    const ast = ts.createSourceFile('affected-tests.mjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const declarations = new Map<string, string>();
+    const visit = (node: ts.Node): void => {
+      if (ts.isFunctionDeclaration(node) && node.name && ['errSync', 'logLine'].includes(node.name.text)) {
+        declarations.set(node.name.text, node.getText(ast));
+      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'emitProgress') {
+        expect(node.initializer).toBeDefined();
+        declarations.set('emitProgress', `const emitProgress = ${node.initializer!.getText(ast)};`);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+    expect([...declarations.keys()].sort()).toEqual(['emitProgress', 'errSync', 'logLine']);
+
+    const dir = mkdtempSync(join(tmpdir(), 'affected-progress-'));
+    const log = join(dir, 'run.log');
+    const stderr: string[] = [];
+    const cgroupMemoryObserver = createCgroupMemoryObserver({
+      read: () => ({ anonMb: 12, peakMb: 16, oomKills: 0 }),
+    });
+    writeFileSync(log, '');
+    try {
+      // Execute the production emitter and its actual log wrapper, not a copied
+      // formatter. No completed-task replay or final verdict exists in this fixture.
+      runInNewContext(
+        `${declarations.get('logLine')}\n${declarations.get('errSync')}\n${declarations.get('emitProgress')}\nemitProgress('running');`,
+        {
+          appendFileSync,
+          RUN_LOG_PATH: log,
+          rawErrSync: (line: string) => stderr.push(line),
+          formatTaskOutcomeFields,
+          cgroupMemoryObserver,
+          Date: { now: () => 5_000 },
+          startedAt: 1_000,
+          progressTask: JSON.stringify('core :: integration'),
+          capturedBytes: 42,
+          taskTimeoutMs: 60_000,
+          taskTimeoutSource: 'history',
+          taskDurationMs: 30_000,
+          countedNonzeroExit: false,
+          observedNonzeroExits: 0,
+          watchdog: { msSinceProgress: 2_000, deadlineMs: 60_000 },
+        },
+      );
+      expect(stderr).toHaveLength(1);
+      expect(stderr[0]).toContain('AFFECTED_TASK_PROGRESS state=running');
+      expect(stderr[0]).toContain('capturedBytes=42 stalledForSec=2');
+      expect(readFileSync(log, 'utf8')).toBe(`${stderr[0]}\n`);
+      expect(cgroupMemoryObserver.summary()).toMatchObject({ samples: 1, maxAnonMb: 12, peakMb: 16, oomKills: 0 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

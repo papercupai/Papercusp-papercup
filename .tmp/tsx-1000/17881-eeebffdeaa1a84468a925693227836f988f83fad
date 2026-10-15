@@ -1,1 +1,0 @@
-{"code":"const DEFAULT_WORKSPACE_ID=\"default\";export{DEFAULT_WORKSPACE_ID};\n","warnings":[],"map":{"version":3,"mappings":"AAgCO,MAAM,qBAAuB","names":[],"ignoreList":[],"sources":["/home/marsh-office/papercupai-workspace/papercusp/packages/operator-core/lib/workspace-id-constant.ts"],"sourcesContent":[null]}}

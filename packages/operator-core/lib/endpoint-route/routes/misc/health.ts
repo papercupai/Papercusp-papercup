@@ -13,6 +13,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { getBuildInfo } from '../../../build-info';
 import { getBundleStaleness } from '../../../bundle-staleness';
+import { CLAIM_SPEC_REVISION_ADOPTION_MODES, DEFAULT_CLAIM_SPEC } from '../../../scheduler/claim-spec';
 
 export default defineTool({
   method: 'GET',
@@ -37,6 +38,12 @@ export default defineTool({
       service: 'papercusp-operator',
       sha,
       version,
+      // This process's compiled reader capabilities, not the mutable checkout.
+      // A newer writer must qualify older strict readers before sharing policy.
+      claimSpec: {
+        specVersion: DEFAULT_CLAIM_SPEC.specVersion,
+        revisionAdoption: CLAIM_SPEC_REVISION_ADOPTION_MODES,
+      },
       // Present ONLY when this process is serving code that is not the tree it
       // was built from. `sha` above cannot express this: it reports the
       // CHECKOUT, which has already moved on to the code that failed to build.

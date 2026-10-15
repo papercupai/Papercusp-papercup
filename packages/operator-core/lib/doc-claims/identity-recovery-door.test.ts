@@ -181,9 +181,18 @@ export function parseBreakGlassCauses(portSource: string): string[] {
   return [...block[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
 }
 
-/** Every cause the port can raise, read from the IdentityGrantFailure union. */
+/**
+ * Every cause the port can raise. The single truth is the const list
+ * IDENTITY_GRANT_FAILURE_CAUSES (the IdentityGrantFailure union derives from it —
+ * EI-23766133296678780 moved it there so the refusal-contract table can derive from
+ * it too). An inline `cause: 'a' | 'b'` union is still read, so a regression back to
+ * the old shape stays covered. An empty parse of BOTH shapes stays a loud violation.
+ */
 export function parseCauseUnion(envelopesSource: string): string[] {
-  const decl = /\bcause:\s*((?:'[^']+'\s*\|\s*)*'[^']+')\s*;/.exec(stripComments(envelopesSource));
+  const code = stripComments(envelopesSource);
+  const list = /\bIDENTITY_GRANT_FAILURE_CAUSES\s*=\s*\[([^\]]*)\]/.exec(code);
+  if (list) return [...list[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  const decl = /\bcause:\s*((?:'[^']+'\s*\|\s*)*'[^']+')\s*;/.exec(code);
   if (!decl) return [];
   return [...decl[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
 }
@@ -313,6 +322,46 @@ describe('CLAUDE.md identity-recovery-door claim', () => {
       });
       expect(verdict.ok).toBe(false);
       expect(verdict.violations.join('\n')).toMatch(/'specification-unreadable'.*classified nowhere/);
+    });
+
+    // EI-23766133296678780: the cause list now lives in a const array the union derives
+    // from. The parser must read THAT shape, and a new cause added to it must still be
+    // caught as unclassified — otherwise moving the list silently vacated check (3).
+    const ARRAY_ENVELOPES = `
+export const IDENTITY_GRANT_FAILURE_CAUSES = [
+  'stale-artifact', 'no-launch-record', 'policy-unavailable', 'provider-unbound',
+  'provider-changed', 'tool-unavailable', 'outside-ceiling',
+] as const;
+export type IdentityGrantFailureCause = (typeof IDENTITY_GRANT_FAILURE_CAUSES)[number];
+export interface IdentityGrantFailure { cause: IdentityGrantFailureCause; }
+`;
+
+    it('reads the cause list from the IDENTITY_GRANT_FAILURE_CAUSES const array', () => {
+      expect(parseCauseUnion(ARRAY_ENVELOPES)).toEqual([
+        'stale-artifact', 'no-launch-record', 'policy-unavailable', 'provider-unbound',
+        'provider-changed', 'tool-unavailable', 'outside-ceiling',
+      ]);
+      expect(judgeRecoveryDoorFailureDomain({
+        portSource: FIXTURE_PORT_OK, doorSource: FIXTURE_DOOR, envelopesSource: ARRAY_ENVELOPES,
+      })).toMatchObject({ ok: true });
+    });
+
+    it('catches a NEW cause added to the const array but classified nowhere', () => {
+      const verdict = judgeRecoveryDoorFailureDomain({
+        portSource: FIXTURE_PORT_OK, doorSource: FIXTURE_DOOR,
+        envelopesSource: ARRAY_ENVELOPES.replace("'outside-ceiling',", "'outside-ceiling', 'specification-unreadable',"),
+      });
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations.join('\n')).toMatch(/'specification-unreadable'.*classified nowhere/);
+    });
+
+    it('still reports an unreadable cause list when neither shape is present', () => {
+      const verdict = judgeRecoveryDoorFailureDomain({
+        portSource: FIXTURE_PORT_OK, doorSource: FIXTURE_DOOR,
+        envelopesSource: 'export interface IdentityGrantFailure { cause: string; }',
+      });
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations.join('\n')).toMatch(/could not read the IdentityGrantFailure cause union/);
     });
 
     it('catches the door module acquiring an import', () => {

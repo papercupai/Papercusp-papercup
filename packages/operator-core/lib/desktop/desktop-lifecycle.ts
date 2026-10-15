@@ -315,6 +315,19 @@ export function classifyDesktopSession(
       refused: true,
     };
   }
+  if (session.scope === 'user') {
+    // personal-cloud-desktop-2026-10-06 R-1: a personal desktop is the person's own
+    // seat. It must survive the person walking away from it — idle is the normal state
+    // of a desktop someone left open — so no agent idle clock may freeze or kill it.
+    return {
+      id,
+      action: 'keep',
+      reason:
+        "refusing to govern a scope='user' desktop — that is a person's own desktop " +
+        '(personal-cloud-desktop D-001), not an agent sandbox',
+      refused: true,
+    };
+  }
 
   const policy = { ...policyFor(session.kind), ...policyOverride };
   const idleAfterSec = session.idleAfterSec ?? policy.idleAfterSec;

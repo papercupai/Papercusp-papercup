@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Generated Rust future callback inline re-entry regression",
+  "framework": "operational",
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "papercup-bindings",
+    "async_bridge_tests::reentrant_polling_finishes",
+    "--",
+    "--exact",
+    "--nocapture"
+  ],
+  "startedAt": "2026-10-02T12:55:32.936000+00:00",
+  "finishedAt": "2026-10-02T12:59:24.721000+00:00",
+  "exitCode": 0,
+  "summary": "Actual generated Rust future poll/complete/free regression fails after a bounded three-second callback re-entry deadlock on UniFFI0.28.3 and passes on0.32.2. Dependency and generated bindings updated using maintained generators. New non-Copy Handle requires clone() at FFI boundaries; callback/future behavior is unchanged. Original0944/1116 causes remain unconfirmed.",
+  "repository": "papercup-rust-mobile",
+  "containingSourceCommit": "d1e1ee255886a9d898bbc3cc8a1e82f02287b4c8",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/Cargo.toml",
+      "sha256": "665012b764bacfaa1587413645e560a69cd12f82c6eb2815974d952be57b46ad"
+    },
+    {
+      "path": "papercup-rust-mobile/Cargo.lock",
+      "sha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81"
+    },
+    {
+      "path": "papercup-rust-mobile/crates/papercup-bindings/src/lib.rs",
+      "sha256": "0a8e283c1bb2c65d9ada8d5ed30236ec9724328e05f5002b9720ddf71a86cdbe"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/uniffi/papercup/papercup.kt",
+      "sha256": "b73af41412d3f1a22e2c76c8582e31440b357e6b706df796f3206933ab9772e3"
+    }
+  ],
+  "workItem": "EI-24872229209182159",
+  "rawEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/uniffi-reentrant-before-20261002.log",
+      "sha256": "a976ea0d6122c24a52df13fbffbe428d943da60c2c382d3e085182cfa4fb2b01"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/uniffi-reentrant-after-20261002.log",
+      "sha256": "0607a269e0640084756b5ff0648dcac8e70ffccedeb93970327f7e1c9be68290"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "old-library-bounded-red",
+      "passed": true,
+      "evidence": "0.28.3 actual generated ABI test failed at3.01s with the exact callback re-entry deadlock panic."
+    },
+    {
+      "id": "maintained-library-green",
+      "passed": true,
+      "evidence": "0.32.2 actual generated ABI test passed one parent test at0.01s with no failures or skips."
+    },
+    {
+      "id": "native-boundary-witness",
+      "passed": true,
+      "evidence": "Native1248 captured HTTP200 finish57.646ms plus callback/inline-resume/nested-poll blocked on the old scheduler mutex."
+    }
+  ],
+  "scope": "Local maintained regression and debug-native preparation only; no signed-candidate, automatic CI, physical-phone or Play acceptance.",
+  "versions": {
+    "red": "0.28.3",
+    "green": "0.32.2"
+  },
+  "testCounts": {
+    "red": {
+      "parentTests": 1,
+      "failures": 1,
+      "ignored": 0
+    },
+    "green": {
+      "parentTests": 1,
+      "failures": 0,
+      "ignored": 0
+    }
+  },
+  "note": "Child isolation executes the same test within the one parent Cargo testcase; do not count nested output as a second acceptance test."
+}

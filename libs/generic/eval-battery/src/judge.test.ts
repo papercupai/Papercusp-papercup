@@ -27,6 +27,69 @@ const input: JudgeInput = {
   rubric: RUBRIC,
 };
 
+describe('judgeBatteryRun spend evidence', () => {
+  const reply = { text: '{"d1":5,"d2":5,"d3":5,"rationale":"measured"}',
+    costUsd: 0.2, inputTokens: 10, outputTokens: 5 };
+
+  it.each([
+    { costUsdMeasurementMissing: true },
+    { unreportedFrames: 2 },
+    { costUsdMeasurementMissing: 'false' },
+    { unreportedFrames: NaN },
+  ])('retains incomplete successful usage %j', async evidence => {
+    const score = await judgeBatteryRun(input, { llmCall: async () => ({ ...reply, ...evidence }) as never });
+    expect(score).toMatchObject({ costUsd: 0.2, costUsdMeasurementMissing: true });
+    if (evidence.unreportedFrames === 2) expect(score).toMatchObject({ unreportedFrames: 2 });
+  });
+
+  it.each([undefined, -1, NaN, Infinity])('does not invent complete usage from cost %s', async costUsd => {
+    const score = await judgeBatteryRun(input, { llmCall: async () => ({ ...reply, costUsd }) as never });
+    expect(score).toMatchObject({ costUsd: 0, costUsdMeasurementMissing: true });
+  });
+
+  it('retains earlier incompleteness through a successful repair', async () => {
+    let calls = 0;
+    const score = await judgeBatteryRun(input, { llmCall: async () => ++calls === 1
+      ? { ...reply, text: 'malformed', costUsdMeasurementMissing: true, unreportedFrames: 2 }
+      : reply });
+    expect(calls).toBe(2);
+    expect(score).toMatchObject({ costUsd: 0.4, costUsdMeasurementMissing: true, unreportedFrames: 2 });
+  });
+
+  it.each([true, false])('retains spent repair attempts on final contract failure (incomplete=%s)', async incomplete => {
+    let error: unknown;
+    try {
+      await judgeBatteryRun(input, { llmCall: async () => ({ ...reply, text: 'malformed',
+        ...(incomplete ? { costUsdMeasurementMissing: true, unreportedFrames: 1 } : {}) }) });
+    } catch (e) { error = e; }
+    expect(error).toBeInstanceOf(JudgeOutputContractError);
+    expect(error).toMatchObject({ costUsd: 0.4, inputTokens: 20, outputTokens: 10,
+      ...(incomplete ? { costUsdMeasurementMissing: true, unreportedFrames: 2 } : {}) });
+    if (!incomplete) expect(error).not.toHaveProperty('costUsdMeasurementMissing');
+  });
+
+  it.each([
+    { costUsd: 0.07, expected: 0.27, missing: false },
+    { costUsd: 0, expected: 0.2, missing: false },
+    { costUsd: 0.07, costUsdMeasurementMissing: true, expected: 0.27, missing: true },
+    { expected: 0.2, missing: true },
+  ])('retains the earlier repair charge when a later call throws %j', async evidence => {
+    let calls = 0;
+    const failure = Object.assign(new Error('repair transport failed'), evidence);
+    let error: unknown;
+    try {
+      await judgeBatteryRun(input, { llmCall: async () => {
+        if (++calls === 1) return { ...reply, text: 'malformed' };
+        throw failure;
+      } });
+    } catch (e) { error = e; }
+    expect(error).toBe(failure);
+    expect(error).toMatchObject({ costUsd: evidence.expected });
+    if (evidence.missing) expect(error).toHaveProperty('costUsdMeasurementMissing', true);
+    else expect(error).not.toHaveProperty('costUsdMeasurementMissing');
+  });
+});
+
 describe('buildJudgePrompt', () => {
   it('instructs JSON-only output over a 0..10 scale with all three dimensions', () => {
     const { system } = buildJudgePrompt(input);

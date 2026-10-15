@@ -1,0 +1,239 @@
+{
+  "schemaVersion": "p011-baseline-independent-v1",
+  "proofs": [
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-forward-main-r1-2026-10-03.json",
+      "sha256": "7bbc9adf5296a8f56d17d094a7b95746dbb01738c9bccd17779f1643b1c7d8d5",
+      "bytes": 146018,
+      "result": {
+        "target": "main",
+        "mainIdentity": "3051078:4847209:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "counterIdentity": "3051078:4847209:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "buildSha": "46ab00ca41",
+        "samples": [
+          {
+            "label": "idle-0-start",
+            "pssBytes": 925145088,
+            "allocatedBytes": 5306278112,
+            "observedPssBytes": 1557888000,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "idle-0-end",
+            "pssBytes": 925143040,
+            "allocatedBytes": 5308157936,
+            "observedPssBytes": 1557954560,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-0-end",
+            "pssBytes": 918234112,
+            "allocatedBytes": 5315505072,
+            "observedPssBytes": 1551032320,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "idle-1-start",
+            "pssBytes": 918233088,
+            "allocatedBytes": 5317424160,
+            "observedPssBytes": 1551027200,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "idle-1-end",
+            "pssBytes": 931887104,
+            "allocatedBytes": 5370065024,
+            "observedPssBytes": 1564404736,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-1-end",
+            "pssBytes": 931233792,
+            "allocatedBytes": 5381021696,
+            "observedPssBytes": 1563747328,
+            "checkedProcesses": 10,
+            "notChecked": [
+              {
+                "pid": 3316443,
+                "parentPid": 3051078,
+                "reason": "read-race-or-unavailable"
+              }
+            ]
+          },
+          {
+            "label": "idle-2-start",
+            "pssBytes": 932072448,
+            "allocatedBytes": 5387714984,
+            "observedPssBytes": 1564765184,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "idle-2-end",
+            "pssBytes": 932062208,
+            "allocatedBytes": 5392251528,
+            "observedPssBytes": 1565318144,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-2-end",
+            "pssBytes": 924006400,
+            "allocatedBytes": 5400140776,
+            "observedPssBytes": 1557396480,
+            "checkedProcesses": 10,
+            "notChecked": []
+          }
+        ],
+        "windows": [
+          {
+            "window": 0,
+            "idlePssDeltaBytes": -2048,
+            "ordinaryPssDeltaBytes": -6908928,
+            "idleAllocatedBytes": 1879824,
+            "ordinaryAllocatedBytes": 7347136
+          },
+          {
+            "window": 1,
+            "idlePssDeltaBytes": 13654016,
+            "ordinaryPssDeltaBytes": -653312,
+            "idleAllocatedBytes": 52640864,
+            "ordinaryAllocatedBytes": 10956672
+          },
+          {
+            "window": 2,
+            "idlePssDeltaBytes": -10240,
+            "ordinaryPssDeltaBytes": -8055808,
+            "idleAllocatedBytes": 4536544,
+            "ordinaryAllocatedBytes": 7889248
+          }
+        ],
+        "allocationOwner": "unknown",
+        "requestAssignment": "unknown",
+        "physicalSavings": "unmeasured",
+        "definition": "Serial bounded raw PSS and cumulative V8 allocation observations; ambient workload uncontrolled."
+      }
+    },
+    {
+      "path": "docs/evidence/papercusp-oct1-p011-forward-spawner-r1-2026-10-03.json",
+      "sha256": "2153ee1c110386749d39e2a03dd0e300e74c0594365d32c08a94eb782105a284",
+      "bytes": 146503,
+      "result": {
+        "target": "maintained-spawner",
+        "mainIdentity": "3051078:4847209:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "counterIdentity": "3111272:4854043:7fd113446e9171a28885227b3c275ff965b2fd1f45ccf1fb3a1c20308f34e627",
+        "buildSha": "46ab00ca41",
+        "samples": [
+          {
+            "label": "idle-0-start",
+            "pssBytes": 345894912,
+            "allocatedBytes": 702242760,
+            "observedPssBytes": 1602814976,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "idle-0-end",
+            "pssBytes": 345889792,
+            "allocatedBytes": 703349152,
+            "observedPssBytes": 1604276224,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-0-end",
+            "pssBytes": 345892864,
+            "allocatedBytes": 704026824,
+            "observedPssBytes": 1600100352,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "idle-1-start",
+            "pssBytes": 345893888,
+            "allocatedBytes": 705037616,
+            "observedPssBytes": 1600106496,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "idle-1-end",
+            "pssBytes": 345888768,
+            "allocatedBytes": 708930312,
+            "observedPssBytes": 1603260416,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-1-end",
+            "pssBytes": 345892864,
+            "allocatedBytes": 712561872,
+            "observedPssBytes": 1603296256,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "idle-2-start",
+            "pssBytes": 345891840,
+            "allocatedBytes": 715932296,
+            "observedPssBytes": 1603291136,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "idle-2-end",
+            "pssBytes": 345892864,
+            "allocatedBytes": 719129744,
+            "observedPssBytes": 1602443264,
+            "checkedProcesses": 10,
+            "notChecked": []
+          },
+          {
+            "label": "ordinary-2-end",
+            "pssBytes": 345896960,
+            "allocatedBytes": 722065120,
+            "observedPssBytes": 1600062464,
+            "checkedProcesses": 10,
+            "notChecked": []
+          }
+        ],
+        "windows": [
+          {
+            "window": 0,
+            "idlePssDeltaBytes": -5120,
+            "ordinaryPssDeltaBytes": 3072,
+            "idleAllocatedBytes": 1106392,
+            "ordinaryAllocatedBytes": 677672
+          },
+          {
+            "window": 1,
+            "idlePssDeltaBytes": -5120,
+            "ordinaryPssDeltaBytes": 4096,
+            "idleAllocatedBytes": 3892696,
+            "ordinaryAllocatedBytes": 3631560
+          },
+          {
+            "window": 2,
+            "idlePssDeltaBytes": 1024,
+            "ordinaryPssDeltaBytes": 4096,
+            "idleAllocatedBytes": 3197448,
+            "ordinaryAllocatedBytes": 2935376
+          }
+        ],
+        "allocationOwner": "unknown",
+        "requestAssignment": "unknown",
+        "physicalSavings": "unmeasured",
+        "definition": "Serial bounded raw PSS and cumulative V8 allocation observations; ambient workload uncontrolled."
+      }
+    }
+  ],
+  "independentOf": "No emitter import or headline totals; raw OS/V8 rows, HTTP records and identity fences.",
+  "physicalSavings": "unmeasured",
+  "allocationOwner": "unknown",
+  "requestAssignment": "unknown"
+}

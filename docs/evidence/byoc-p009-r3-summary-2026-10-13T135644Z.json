@@ -1,0 +1,909 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "BYOC P009 R003 current-build summary cohort",
+  "startedAt": "2026-10-13T13:56:44.463Z",
+  "finishedAt": "2026-10-13T13:57:00.535Z",
+  "endpoint": "http://127.0.0.1:3170/api/mcp",
+  "client": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+  "workspace": "papercusp-workspace",
+  "ids": [
+    "WI-10000399",
+    "WI-10000400",
+    "WI-10000401",
+    "WI-10000402",
+    "WI-10000403",
+    "WI-10000404",
+    "WI-10000405",
+    "WI-10000406",
+    "WI-10000407",
+    "EI-25841466577299173"
+  ],
+  "repeats": 4,
+  "method": "maintained mcp-call subprocess wall clock, including startup and response parsing; unique output group per call",
+  "sourceHashes": {
+    "packages/operator-core/lib/agent-tools/work_items/get.ts": "a88cbbab2c7da2c605772de9e8bb7bedfc30ac33e5a969936fb12dc27ffb157f",
+    "packages/operator-core/lib/agent-tools/work_items/get-shape.ts": "7f5c9d79b5865147cb93e175113f15a0e28fcd7c17cccdc951f764348e2cacd3",
+    "scripts/mcp-call.mjs": "114930a4bea5aa27c9d124559748ded59d2826d4830992cc157b92e96e4ab6cf",
+    "scripts/bench-work-items-get.ts": "2995670684903d3d647c1b7b16e6218aea8cb340bee913f10dadefb92d25b9ae"
+  },
+  "sourceStable": true,
+  "samples": [
+    {
+      "size": 1,
+      "repeat": 1,
+      "wallMs": 360.037271,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 1,
+        "available": 1,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 14,
+        "baseReadMaxMs": 10,
+        "enrichmentMaxMs": 1,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 2,
+      "repeat": 1,
+      "wallMs": 386.06445899999994,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 2,
+        "available": 2,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 8,
+        "baseReadMaxMs": 8,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 3,
+      "repeat": 1,
+      "wallMs": 340.26879800000006,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 3,
+        "available": 3,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 10,
+        "baseReadMaxMs": 10,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 4,
+      "repeat": 1,
+      "wallMs": 368.1741319999999,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 4,
+        "available": 4,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 5,
+      "repeat": 1,
+      "wallMs": 358.59631100000024,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 5,
+        "available": 5,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 5,
+        "baseReadMaxMs": 5,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 6,
+      "repeat": 1,
+      "wallMs": 353.32320800000025,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 6,
+        "available": 6,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 7,
+      "repeat": 1,
+      "wallMs": 360.99331699999993,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 7,
+        "available": 7,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 8,
+      "repeat": 1,
+      "wallMs": 371.663947,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 8,
+        "available": 8,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 28,
+        "baseReadMaxMs": 28,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 9,
+      "repeat": 1,
+      "wallMs": 431.2503959999999,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 9,
+        "available": 9,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 25,
+        "baseReadMaxMs": 24,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 10,
+      "repeat": 1,
+      "wallMs": 779.1944119999998,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 10,
+        "available": 10,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 1,
+      "repeat": 2,
+      "wallMs": 1106.110353,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 1,
+        "available": 1,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 30,
+        "baseReadMaxMs": 30,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 2,
+      "repeat": 2,
+      "wallMs": 369.13381200000003,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 2,
+        "available": 2,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 5,
+        "baseReadMaxMs": 5,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 3,
+      "repeat": 2,
+      "wallMs": 385.8621550000007,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 3,
+        "available": 3,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 8,
+        "baseReadMaxMs": 8,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 4,
+      "repeat": 2,
+      "wallMs": 486.11893000000055,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 4,
+        "available": 4,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 8,
+        "baseReadMaxMs": 8,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 5,
+      "repeat": 2,
+      "wallMs": 349.7545190000001,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 5,
+        "available": 5,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 8,
+        "baseReadMaxMs": 8,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 6,
+      "repeat": 2,
+      "wallMs": 351.023142,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 6,
+        "available": 6,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 8,
+        "baseReadMaxMs": 8,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 7,
+      "repeat": 2,
+      "wallMs": 448.2634900000003,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 7,
+        "available": 7,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 12,
+        "baseReadMaxMs": 12,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 8,
+      "repeat": 2,
+      "wallMs": 450.8079520000001,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 8,
+        "available": 8,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 13,
+        "baseReadMaxMs": 12,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 9,
+      "repeat": 2,
+      "wallMs": 434.5381830000006,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 9,
+        "available": 9,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 10,
+      "repeat": 2,
+      "wallMs": 345.9518819999994,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 10,
+        "available": 10,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 9,
+        "baseReadMaxMs": 9,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 1,
+      "repeat": 3,
+      "wallMs": 378.73441900000034,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 1,
+        "available": 1,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 5,
+        "baseReadMaxMs": 5,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 2,
+      "repeat": 3,
+      "wallMs": 358.82833799999935,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 2,
+        "available": 2,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 5,
+        "baseReadMaxMs": 5,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 3,
+      "repeat": 3,
+      "wallMs": 383.8702919999996,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 3,
+        "available": 3,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 4,
+      "repeat": 3,
+      "wallMs": 389.9851669999989,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 4,
+        "available": 4,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 5,
+      "repeat": 3,
+      "wallMs": 413.7737870000001,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 5,
+        "available": 5,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 4,
+        "baseReadMaxMs": 4,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 6,
+      "repeat": 3,
+      "wallMs": 362.6691489999994,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 6,
+        "available": 6,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 5,
+        "baseReadMaxMs": 4,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 7,
+      "repeat": 3,
+      "wallMs": 358.2554909999999,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 7,
+        "available": 7,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 10,
+        "baseReadMaxMs": 10,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 8,
+      "repeat": 3,
+      "wallMs": 353.1642779999984,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 8,
+        "available": 8,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 9,
+      "repeat": 3,
+      "wallMs": 323.0132789999989,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 9,
+        "available": 9,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 4,
+        "baseReadMaxMs": 4,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 10,
+      "repeat": 3,
+      "wallMs": 354.93932799999857,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 10,
+        "available": 10,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 1,
+      "repeat": 4,
+      "wallMs": 327.2017169999999,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 1,
+        "available": 1,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 4,
+        "baseReadMaxMs": 4,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 2,
+      "repeat": 4,
+      "wallMs": 316.37051000000065,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 2,
+        "available": 2,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 5,
+        "baseReadMaxMs": 5,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 3,
+      "repeat": 4,
+      "wallMs": 332.62105300000076,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 3,
+        "available": 3,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 4,
+        "baseReadMaxMs": 4,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 4,
+      "repeat": 4,
+      "wallMs": 326.7836040000002,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 4,
+        "available": 4,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 9,
+        "baseReadMaxMs": 9,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 5,
+      "repeat": 4,
+      "wallMs": 381.2998740000003,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 5,
+        "available": 5,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 4,
+        "baseReadMaxMs": 4,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 6,
+      "repeat": 4,
+      "wallMs": 458.83671400000094,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 6,
+        "available": 6,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 5,
+        "baseReadMaxMs": 5,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 7,
+      "repeat": 4,
+      "wallMs": 342.90762600000016,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 7,
+        "available": 7,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 4,
+        "baseReadMaxMs": 4,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 8,
+      "repeat": 4,
+      "wallMs": 342.6525450000008,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 8,
+        "available": 8,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 4,
+        "baseReadMaxMs": 4,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 9,
+      "repeat": 4,
+      "wallMs": 372.7780380000004,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 9,
+        "available": 9,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 6,
+        "baseReadMaxMs": 6,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    },
+    {
+      "size": 10,
+      "repeat": 4,
+      "wallMs": 352.53643100000045,
+      "valid": true,
+      "failures": [],
+      "read": {
+        "schemaVersion": "work-items-get-read-v1",
+        "mode": "projected",
+        "requested": 10,
+        "available": 10,
+        "absent": 0,
+        "unavailable": 0,
+        "budgetMs": 30000,
+        "elapsedMs": 5,
+        "baseReadMaxMs": 5,
+        "enrichmentMaxMs": 0,
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      }
+    }
+  ],
+  "verdict": {
+    "complete": true,
+    "p95Ms": 486.11893000000055,
+    "limitMs": 2000,
+    "passed": true
+  },
+  "passed": true,
+  "notExercised": [
+    "stalled unrelated checkpoint/claim write",
+    "same-item ordering/conflict",
+    "cancellation/drain",
+    "forwarding outcome ambiguity",
+    "deployed R006 acceptance"
+  ],
+  "framework": "node",
+  "command": [
+    "npx",
+    "tsx",
+    "scripts/bench-work-items-get.ts",
+    "--port=3170",
+    "--repeats=4",
+    "--ids=WI-10000399,WI-10000400,WI-10000401,WI-10000402,WI-10000403,WI-10000404,WI-10000405,WI-10000406,WI-10000407,EI-25841466577299173"
+  ],
+  "exitCode": 0,
+  "summary": "Current-build summary-read slice only: 40/40 calls preserve requested identity/state and top-level availability/timing disclosure; process-wall p95 486.118930ms <= 2000ms. Source hashes remained stable. This does not establish the full R003 criterion or R006 deployed acceptance.",
+  "assertions": [
+    {
+      "id": "summary-matrix-complete",
+      "passed": true,
+      "evidence": "Sizes 1–10, four repetitions, 40 samples retained."
+    },
+    {
+      "id": "summary-identity-state-disclosure",
+      "passed": true,
+      "evidence": "40/40 successful authoritative responses; requested identity/state and top-level work-items-get-read-v1 timing/availability validated."
+    },
+    {
+      "id": "summary-p95-deadline",
+      "passed": true,
+      "evidence": "Measured subprocess wall p95 486.11893000000055ms <= 2000ms; includes startup and complete response parsing."
+    },
+    {
+      "id": "summary-source-stable",
+      "passed": true,
+      "evidence": "SHA256 of handler, shaper, MCP client and instrument equal before and after cohort."
+    }
+  ],
+  "runtimeVerification": {
+    "method": "dev:pipeline_position exact get.ts currentBuildTestRoute and servingRuntimes before and after cohort",
+    "before": {
+      "buildSha": "094d57643b",
+      "runtime": "staging-operator",
+      "containsChange": true,
+      "method": "blob"
+    },
+    "after": {
+      "runtime": "staging-operator",
+      "role": "owner",
+      "buildSha": "094d57643b",
+      "buildShaSource": "health",
+      "containsChange": true,
+      "method": "blob",
+      "instances": null,
+      "unknownReason": null
+    },
+    "testClass": "operator-api"
+  },
+  "subject": {
+    "plan": "byoc-delivery-acceleration-2026-09-06",
+    "planItem": "P-009",
+    "workItem": "WI-10000407",
+    "specId": "AUTO-BAR-R-003-P-009",
+    "specRevision": 9,
+    "specFingerprint": "fc0d5a3851249f8c4e7888ab228bc6b1cff676e974fe5b6a43b3bef176095868",
+    "scope": "partial live summary-read evidence"
+  }
+}

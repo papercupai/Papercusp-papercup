@@ -13,11 +13,12 @@ situation" — and the system's own prompt surfaces already used it informally
 **A runbook is a procedural agent-insight: a doc whose body is ordered steps you
 execute**, not an explanation you absorb. It is one of three related concepts:
 
-| Concept     | What it is                                                           | Where it lives                       |
-| ----------- | -------------------------------------------------------------------- | ------------------------------------ |
-| **recipe**  | machine-executable, parameterized procedure                          | `recipes:run` / `recipes:list`       |
-| **runbook** | agent/human-readable procedure doc (ordered steps)                   | agent-insights MDX, slug `*-runbook` |
-| **insight** | explanation: incident, root cause, lesson, "what this means for you" | agent-insights MDX (everything else) |
+| Concept     | What it is                                                              | Where it lives                       |
+| ----------- | ----------------------------------------------------------------------- | ------------------------------------ |
+| **recipe**  | machine-executable, parameterized procedure                             | `recipes:run` / `recipes:list`       |
+| **runbook** | agent/human-readable procedure doc (ordered steps)                      | agent-insights MDX, slug `*-runbook` |
+| **insight** | maintained explanation of a subsystem, failure mode, or reusable lesson | agent-insights MDX (everything else) |
+| **report**  | immutable dated evidence, conclusions, audit or incident findings       | Reports library (`reports:publish`)  |
 
 A runbook often *composes* recipes — e.g. `papercusp-desktop/RELEASE-RUNBOOK.md`
 is executed through `recipes:run release-verify-provenance` /
@@ -26,7 +27,7 @@ section. The genre label follows the dominant shape of the page.
 
 ## The convention
 
-When you write a procedural doc (via `docs:author` or by hand):
+When you write a procedural doc through `docs:author`:
 
 1. **Slug** ends in `-runbook` (e.g. `embed-sidecar-runbook`,
    `federation-rig-restart-runbook`).
@@ -62,3 +63,19 @@ surface.
   word is in the ×4/×2 scoring fields.
 * The [agent-insights index](/reference/agent-insights-index) lists tags —
   scan for `runbook`.
+
+## Routing a finished incident or review
+
+A report preserves what was observed and concluded at its publication time. A maintained doc tells the next reader how to act now. Use both when an incident produces a reusable procedure; an old report does not become current procedural authority merely because a search retrieves it.
+
+Preconditions: the incident or review is verified, the procedure is reusable, and its destination audience is permitted to read it. Extract reusable instructions without moving private incident details into broader docs.
+
+1. Find an existing procedure with `docs:search` and read its complete canonical source with `docs:get { source:true }` before replacing it. Extend that procedure when it fits.
+2. Author the maintained procedure with `docs:author`, including its source anchors, preconditions, steps, verification and failure modes. Read it back with `docs:get` and verify the actual stored content and destination.
+3. Publish the dated evidence with `reports:publish`, keeping owner visibility unless a wider audience was requested. Link the maintained procedure from the report. Use a stable request key when retrying the same edition.
+4. Read the published report with `reports:get` and verify the complete Markdown, visibility, report id and procedure link before citing its library path.
+5. A correction publishes a new report edition with `supersedes`; retiring or superseding evidence does not replace the maintained procedure. Update the procedure through its own canonical authoring surface when current instructions change.
+
+Verification: both stored artifacts are readable by their intended audience, the report retains its dated provenance, and the procedure remains a maintained doc with source anchors. The existing S38 Reports scenario rejects report-only completion when reusable procedure routing was requested.
+
+Failure modes: a failed doc write or clipped read is not a verified procedure; a failed report readback is not delivered writing. Preserve the original artifact and diagnose the failed step rather than inventing a successful citation or silently widening visibility. Source indexing and automatic-context selection are separate: retrieval supplies bounded, source-cited excerpts, while `docs:get` and `reports:get` resolve the complete canonical source.

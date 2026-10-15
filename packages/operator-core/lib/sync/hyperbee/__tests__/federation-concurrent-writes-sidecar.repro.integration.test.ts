@@ -51,7 +51,7 @@
  *     lib/sync/hyperbee/__tests__/federation-concurrent-writes-sidecar.repro.integration.test.ts
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -79,10 +79,19 @@ import { _resetCacheForTests, closeHarnessStore } from '../corestore';
 import { drainOutboxOnce } from '../outbox-drain';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../projection';
 import { buildHarnessFeaturesProjection } from '../projections/harness-features';
-import { _resetForTests as resetDbOrgPools } from '@papercusp/db-org';
+import {
+  _resetForTests as resetDbOrgPools,
+  _resetStoreIdentityForTests,
+  pinnedStoreIdentity,
+} from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
+import {
+  _resetLongLivedAdminPoolsForTests,
+  boundAdminPoolUrl,
+  getLongLivedAdminPool,
+} from '../../../long-lived-admin-pool';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { mutateHarnessRegistry } from '../../../harness-registry';
 import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-set';
@@ -90,6 +99,12 @@ import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-s
 // ───────────────────────────── shared scaffolding ─────────────────────────────
 
 const cleanups: Array<() => void | Promise<void>> = [];
+
+function resetFixturePoolState(): void {
+  // Each topology owns a fresh DB; resolver resets do not clear cursor pools.
+  _resetLongLivedAdminPoolsForTests();
+  _resetStoreIdentityForTests();
+}
 
 afterEach(async () => {
   while (cleanups.length) {
@@ -101,6 +116,7 @@ afterEach(async () => {
   }
   _resetCacheForTests();
   _resetBootHistoryForTests();
+  resetFixturePoolState();
 });
 
 function makeWorkspaceRoot(prefix: string): string {
@@ -525,6 +541,20 @@ async function captureConcurrentLwwState(args: {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Migration 813 moved the causal frontier to a sequence; the row retains node identity. */
+async function pinHlcFrontier(
+  sql: postgres.Sql,
+  ms: number,
+  count: number,
+  nodeId: string,
+): Promise<void> {
+  const packed = (BigInt(ms) * 65_536n + BigInt(count)).toString();
+  await sql`UPDATE harness_shared.hlc_clock SET node_id = ${nodeId} WHERE id = 1`;
+  await sql`SELECT pg_catalog.setval('harness_shared.hlc_packed_seq'::regclass, ${packed}::bigint, true)`;
+  const [frontier] = await sql`SELECT last_value::text AS packed FROM harness_shared.hlc_packed_seq`;
+  expect(frontier.packed, 'the production sequence frontier pin did not land').toBe(packed);
+}
+
 /**
  * Boot the two-device hive-home topology used by both `it` blocks: deviceA + deviceB,
  * both VERIFIED members of HIVE_HOME, each on its OWN migrated content DB + OWN HLC
@@ -630,8 +660,8 @@ async function bootTwoDeviceHive(wsId: string, hiveHome: string): Promise<{
       announceIdentityOverride: idB.override,
       verifyBindingOverride: verifyFor(idA.userId),
       hlcClock: clockB,
-      applyOverride: (op) => {
-        applyB ??= buildPeerApply(dbB.adminSql, wsId, hiveHome, peerB.handle.ownLog.keyHex, clockB);
+      applyOverride: (op, ctx) => {
+        applyB ??= buildPeerApply(dbB.adminSql, wsId, hiveHome, ctx.ownLogKeyHex, clockB);
         return applyB(op);
       },
     },
@@ -687,6 +717,70 @@ function lwwGreater(
 // ─────────────────────────────────── tests ───────────────────────────────────
 
 describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence on ONE hive (two devices, real swarm + migrated PG, no membership stubs) — D-053/D-054', () => {
+  it('preserves a real rebind warning while isolating the next database fixture', async () => {
+    const first = await createOrgTestDb();
+    cleanups.push(() => first.cleanup());
+    const second = await createOrgTestDb();
+    cleanups.push(() => second.cleanup());
+    installEnv(first, 'ws-cw-pool-control');
+    const routeTo = (database: OrgTestDb) => {
+      process.env.HARNESS_ADMIN_DATABASE_URL = database.adminDsn;
+      _resetUrlCacheForTests();
+      _resetHarnessAdminUrlCacheForTests();
+      _resetStoreIdentityForTests();
+    };
+    const label = 'pg-merge-cursor-store';
+    resetFixturePoolState();
+    const firstPool = getLongLivedAdminPool(label);
+    cleanups.push(() => firstPool.end({ timeout: 1 }));
+    expect((await firstPool`SELECT current_database() AS name`)[0].name).toBe(first.dbName);
+    await vi.waitFor(() => expect(pinnedStoreIdentity()?.database).toBe(first.dbName));
+    expect(boundAdminPoolUrl(label)).toBe(first.adminDsn);
+
+    routeTo(second);
+    expect(boundAdminPoolUrl(label)).toBe(first.adminDsn);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const secondPool = getLongLivedAdminPool(label);
+      cleanups.push(() => secondPool.end({ timeout: 1 }));
+      expect((await secondPool`SELECT current_database() AS name`)[0].name).toBe(second.dbName);
+      await vi.waitFor(() => expect(pinnedStoreIdentity()?.database).toBe(second.dbName));
+      expect(boundAdminPoolUrl(label)).toBe(second.adminDsn);
+      expect(warn).toHaveBeenCalledExactlyOnceWith(
+        '[db] pg-merge-cursor-store pool rebound: target changed since it was built — rebuilding',
+      );
+
+      resetFixturePoolState();
+      routeTo(first);
+      expect(boundAdminPoolUrl(label)).toBeNull();
+      warn.mockClear();
+      const freshPool = getLongLivedAdminPool(label);
+      cleanups.push(() => freshPool.end({ timeout: 1 }));
+      expect((await freshPool`SELECT current_database() AS name`)[0].name).toBe(first.dbName);
+      await vi.waitFor(() => expect(pinnedStoreIdentity()?.database).toBe(first.dbName));
+      expect(boundAdminPoolUrl(label)).toBe(first.adminDsn);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('distinguishes the obsolete row frontier from the production sequence clock', async () => {
+    const db = await createOrgTestDb();
+    cleanups.push(() => db.cleanup());
+    const ms = Date.now() + 300_000;
+    const count = 500;
+    const nodeId = 'aaaa1111aaaa1111';
+    await db.adminSql`UPDATE harness_shared.hlc_clock
+      SET last_ms = ${ms}, last_count = ${count}, node_id = ${nodeId} WHERE id = 1`;
+    const [unpinned] = await db.adminSql`SELECT harness_shared.hlc_now() AS hlc`;
+    expect(decodeHlc(unpinned.hlc).ms, 'legacy row must not govern the migrated clock').toBeLessThan(ms);
+
+    await pinHlcFrontier(db.adminSql, ms, count, nodeId);
+    const [pinned] = await db.adminSql`SELECT harness_shared.hlc_now() AS hlc`;
+    expect(pinned.hlc).toBe(`${String(ms).padStart(15, '0')}:00501:${nodeId}`);
+  });
+
   it('failure capture distinguishes a present op from a peer log that was not admitted', async () => {
     const op: PeerLogOp = {
       type: 'put',
@@ -854,9 +948,9 @@ describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence 
       const FID = 'F-tied';
       const { dbA, dbB, peerA, peerB } = await bootTwoDeviceHive(wsId, hiveHome);
 
-      // Pin BOTH peers' INDEPENDENT PG hlc_clock singletons to the IDENTICAL
-      // (last_ms, last_count) frontier — last_ms set far into the future so
-      // hlc_now()'s `now_ms > l_ms` branch is FALSE on both regardless of any wall-
+      // Pin BOTH peers' INDEPENDENT PG sequence frontiers to the IDENTICAL
+      // (ms, count) frontier — ms set far into the future so
+      // hlc_now()'s wall-clock ratchet is inactive on both regardless of any wall-
       // clock jitter between the two author() calls below. This reproduces the
       // WI-1672 AMPLIFIER deterministically instead of racing a real clock: "one
       // peer with a briefly-fast clock (or any past skew episode) pins ALL peers'
@@ -876,8 +970,8 @@ describe('SIDECAR concurrent BIDIRECTIONAL writes — conflict-free convergence 
       const pinnedCount = 500;
       const nodeA = 'aaaa1111aaaa1111';
       const nodeB = 'bbbb2222bbbb2222';
-      await dbA.adminSql`UPDATE harness_shared.hlc_clock SET last_ms = ${pinnedMs}, last_count = ${pinnedCount}, node_id = ${nodeA} WHERE id = 1`;
-      await dbB.adminSql`UPDATE harness_shared.hlc_clock SET last_ms = ${pinnedMs}, last_count = ${pinnedCount}, node_id = ${nodeB} WHERE id = 1`;
+      await pinHlcFrontier(dbA.adminSql, pinnedMs, pinnedCount, nodeA);
+      await pinHlcFrontier(dbB.adminSql, pinnedMs, pinnedCount, nodeB);
 
       // Sanity: the node_id column exists (mig 459) and the pin actually landed.
       const [{ node_id: seenA }] = await dbA.adminSql<Array<{ node_id: string | null }>>`

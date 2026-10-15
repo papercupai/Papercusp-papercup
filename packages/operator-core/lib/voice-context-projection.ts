@@ -13,6 +13,7 @@ import {
 } from './personal-vault/store';
 import type { PersonalSearchResult } from './personal-vault/types';
 import { withMemoryTimeout } from './memory/op-deadline';
+import { searchPeople, type PersonView } from './relationship-graph/people';
 
 export const VOICE_CONTEXT_PROJECTION_VERSION = 1 as const;
 export const VOICE_CONTEXT_LIMIT = 12;
@@ -55,7 +56,7 @@ export const VOICE_CONTEXT_MAX_AGE_MS: Readonly<Record<VoiceContextCapability, n
 };
 
 export interface VoiceContextItemProvenance {
-  system: 'personal-vault' | 'caller-history';
+  system: 'personal-vault' | 'caller-history' | 'relationship-graph';
   source: string;
   id: string | null;
   externalId: string | null;
@@ -124,6 +125,8 @@ export type VoiceContextSourceResult =
   | { available: false; reason: 'vault-disabled' | 'source-unavailable' };
 
 export interface VoiceContextSources {
+  /** Owner-only shared person metadata, independent of the Personal Vault. */
+  resolvePeople?(input: { workspaceId: string; query: string }): Promise<VoiceContextSourceResult>;
   resolveOwnerVault(input: {
     workspaceId: string;
     userId: string;
@@ -141,6 +144,7 @@ export interface VoiceContextSources {
 
 export interface CreateVoiceContextSourcesOptions {
   sql?: Sql;
+  searchPeople?: typeof searchPeople;
   embedQuery?: (query: string) => Promise<number[] | null>;
   resolveCallerHistory?: VoiceContextSources['resolveCallerHistory'];
   now?: () => Date;
@@ -159,6 +163,7 @@ function metadataText(metadata: Record<string, unknown>, key: string): string | 
 
 export function personalResultCapability(result: Pick<PersonalSearchResult, 'source'>): VoiceContextDataCapability {
   switch (result.source.trim().toLowerCase()) {
+    case 'mail':
     case 'gmail':
       return 'email';
     case 'calendar':
@@ -197,9 +202,8 @@ function ownerVaultScopes(capabilities: VoiceCapabilityEnvelope): string[] {
   // still mapped and filtered against the capability set below.
   if (reads.has('personal-memory')) return [];
   const scopes: string[] = [];
-  if (reads.has('email')) scopes.push(personalScope('gmail'));
+  if (reads.has('email')) scopes.push(personalScope('mail'));
   if (reads.has('calendar')) scopes.push(personalScope('calendar'));
-  if (reads.has('contacts')) scopes.push(personalScope('contacts'));
   return scopes;
 }
 
@@ -230,6 +234,12 @@ export function createVoiceContextSources(
 ): VoiceContextSources {
   return {
     now: options.now,
+    async resolvePeople(input) {
+      const people = await (options.searchPeople ?? searchPeople)(options.sql ?? getOrgPg().sql, input.workspaceId, {
+        query: input.query.trim().slice(0, 500), limit: VOICE_CONTEXT_LIMIT,
+      });
+      return { available: true, candidates: people.map(personToVoiceContextCandidate) };
+    },
     async resolveOwnerVault(input) {
       const sql = options.sql ?? getOrgPg().sql;
       if (!(await isPersonalVaultEnabled(sql, input.workspaceId, input.userId))) {
@@ -266,12 +276,24 @@ export function createVoiceContextSources(
           query: fallbackQuery,
         });
       }
-      return { available: true, candidates: results.map(personalResultToVoiceContextCandidate) };
+      return { available: true, candidates: results
+        .filter((result) => personalResultCapability(result) !== 'contacts')
+        .map(personalResultToVoiceContextCandidate) };
     },
     resolveCallerHistory: options.resolveCallerHistory ?? (async () => ({
       available: false,
       reason: 'source-unavailable',
     })),
+  };
+}
+
+/** D-033: graph identity metadata only; no interaction content or local alias. */
+export function personToVoiceContextCandidate(person: PersonView): VoiceContextCandidate {
+  return {
+    capability: 'contacts', title: person.displayName,
+    text: [...person.emails, ...person.phones].join(', '), occurredAt: null,
+    provenance: { system: 'relationship-graph', source: 'person', id: person.id,
+      externalId: null, providerAccountId: null, scope: null },
   };
 }
 
@@ -396,7 +418,30 @@ export async function resolveVoiceContextProjection(
     });
   }
 
-  const ownerCapabilities = (['personal-memory', 'contacts', 'calendar', 'email'] as const)
+  if (allowed.has('contacts')) {
+    if (input.principal.kind !== 'owner' || !input.principal.subjectId) {
+      slices.set('contacts', baseSlice('contacts', resolvedAt, 'denied', 'principal-not-owner'));
+    } else {
+      try {
+        const result = sources.resolvePeople
+          ? await sources.resolvePeople({ workspaceId: input.workspaceId, query: input.query })
+          : { available: false as const, reason: 'source-unavailable' as const };
+        if (result.available) {
+          const permitted = result.candidates.filter((candidate) => candidate.capability === 'contacts'
+            && candidate.provenance.system === 'relationship-graph');
+          const projected = resolvedSlice('contacts', permitted, resolvedAt, now.getTime());
+          projected.droppedInvalid += result.candidates.length - permitted.length;
+          slices.set('contacts', projected);
+        } else {
+          slices.set('contacts', unavailableSlices(['contacts'], resolvedAt, result)[0]!);
+        }
+      } catch {
+        slices.set('contacts', baseSlice('contacts', resolvedAt, 'degraded', 'source-unavailable'));
+      }
+    }
+  }
+
+  const ownerCapabilities = (['personal-memory', 'calendar', 'email'] as const)
     .filter((capability) => allowed.has(capability));
   if (ownerCapabilities.length) {
     if (input.principal.kind !== 'owner' || !input.principal.subjectId) {

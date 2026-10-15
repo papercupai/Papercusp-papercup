@@ -31,6 +31,7 @@ import {
   SETTLED_WINDOW_HOURS,
   TOTAL_COVERAGE_FLOOR,
   buildCoverageQuery,
+  coverageTargets,
   computeDrain,
   consecutiveBacklogGrowth,
   consecutiveBacklogStuck,
@@ -46,6 +47,18 @@ import {
 } from './embed-coverage';
 
 const sessionTurns = TARGETS.find((t) => t.table === 'harness_shared.session_turns')!;
+
+describe('shared chunk coverage populations', () => {
+  it('measures each reader collection independently of its healthy siblings', () => {
+    const targets = coverageTargets();
+    const report = targets.find(t => surfaceKey(t) === 'harness_shared.text_chunks.embedding:report')!;
+    const plan = targets.find(t => surfaceKey(t) === 'harness_shared.text_chunks.embedding:plans')!;
+    expect(report).toBeDefined();
+    expect(plan).toBeDefined();
+    expect(buildCoverageQuery(report,true,'gemma').sql).toContain("WHERE surface = 'report'");
+    expect(buildCoverageQuery(plan,true,'gemma').sql).toContain("WHERE surface = 'plans'");
+  });
+});
 
 function sample(over: Partial<CoverageSample> & { observedAt: Date }): CoverageSample {
   return {

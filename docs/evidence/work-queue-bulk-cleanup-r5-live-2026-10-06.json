@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "work-queue-bulk-cleanup R-5 live verification on the current bg-host build (P-009/P-010)",
+  "framework": "operational",
+  "command": ["sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-F|", "-v", "ON_ERROR_STOP=1", "-v", "prevstart=2026-10-06 08:26:20+00", "-v", "bgstart=2026-10-06 08:53:54+00", "-f", "docs/evidence/work-queue-bulk-cleanup-r5-live-2026-10-06.sql"],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T09:32:08Z",
+  "finishedAt": "2026-10-06T09:32:10Z",
+  "summary": "Read-only SQL over the live papercusp database, run against the current bg-host process (PID 3201933, build 6b949fee10, whose five runner blobs equal HEAD). Output: docs/evidence/work-queue-bulk-cleanup-r5-live-2026-10-06.out.txt. Results: (1) a scheduled inbox-resolve run was created at 09:14:36Z with 0 overlapping executing runs; (2) census f3083502-census-0 and stage-1 completed, and digest a16a3ec7 reads the fresh stage-1 census (coverage 5968/5993); (3) model ticks yield promotions/merges (D-006: 6 of 8 vs 0 of 7) and tick latency dropped (p50 283.6s to 67.3s overall; model-tick p50 549.7s to 480.9s); (4) the only unfinished admission run is a bulk stage with a fresh lease heartbeat, and no reapable kind is past its threshold. Disclosures and unknowns are listed below. finishedAt is bounded by the 2.0s command wall time.",
+  "assertions": [
+    { "id": "r5-runtime-identity", "passed": true, "evidence": "bg-host papercusp-bg-host.service PID 3201933 started 08:53:54Z, build 6b949fee10 (dev:pipeline_position servingRuntimes). Runner blobs at 6b949fee10 equal HEAD: bulk-dedup.ts 030d5637e3, promoter.ts 425aa9e391, census.ts 9beee5e1e6, inbox-bulk-resolve-action.ts 197e66a853, admission-runs-reaper.ts 78ac892d94." },
+    { "id": "r5-p1-inbox-run-while-none-executing", "passed": true, "evidence": "P1b: bulk-8e037116-043e-4cec-b342-1c2e8f19aad2 (requested_by system:inbox-bulk-resolve) created 2026-10-06T09:14:36Z on the current process with overlapping_executing_runs=0; predecessor bulk-8b224d21 was in phase review (finished 08:35:29Z)." },
+    { "id": "r5-p2-census-lands-digest-unblocked", "passed": true, "evidence": "P2a: f3083502-census-0 complete 07:54:15Z-08:09:33Z (56623->57048); stage-1 complete 08:13:54Z-08:43:42Z (512 attempted, 510 successful, 2 unchanged, failedAfterMergeCommit false). P2d: digest a16a3ec7 complete 08:45:25Z-09:04:03Z, sourceCensusRunId f3083502-stage-1-census-after, coverage 5968/5993." },
+    { "id": "r5-p3-promoter-yield-and-latency", "passed": true, "evidence": "P3a2 D-006: model ticks with yield 0/7 before vs 6/8 after (promoted 12, merged 13). P3e latency p50 283.6s (before) -> 67.3s (after); model-tick p50 549.7s -> 480.9s, p90 940.0s -> 900.9s. Current-process tick sched-.routinesTick-2026-10-06T09:11:00.000Z-7: 471.1s, promoted 1 (n=1)." },
+    { "id": "r5-p4-reaper-and-residual", "passed": true, "evidence": "P4a: the only unfinished admission run is bulk-stage f3083502-stage-2 (age 44:43, lease heartbeat 09:29:00Z); bulk-stage is not a reapable kind. Reapable thresholds (ADMISSION_RUN_STRANDED_AFTER_MS): promoter-tick 120m, durable-park-audit 60m, delta-sweep 180m, daily-digest 180m; none unfinished. P4c reap ledger: 3 reaping events (09-05, 10-01 11:16Z, 10-03 02:43Z)." }
+  ],
+  "plan": "work-queue-bulk-cleanup-remediation-2026-10-01",
+  "clauses": ["AUTO-BAR-R-5-P-009", "AUTO-BAR-R-5-P-010"],
+  "workItems": ["WI-10005330", "WI-10005784"],
+  "evidencePlane": "live",
+  "takenAt": "2026-10-06T09:32:08Z",
+  "measuredBy": "su-d5db68ea-f13a-43b1-9b40-909f7528e55b",
+  "promise": "Verify on the current build: a scheduled inbox-resolve fire creates a run while no run is executing; a census run lands; the digest is unblocked; the reaper settles the stuck rows; promoter tick latency drops on the next ticks (WI-10005330 / P-009).",
+  "reproduce": {
+    "sql": "docs/evidence/work-queue-bulk-cleanup-r5-live-2026-10-06.sql",
+    "command": "sudo -n -u postgres psql -d papercusp -At -F'|' -v ON_ERROR_STOP=1 -v prevstart='2026-10-06 08:26:20+00' -v bgstart='2026-10-06 08:53:54+00' -f docs/evidence/work-queue-bulk-cleanup-r5-live-2026-10-06.sql",
+    "output": "docs/evidence/work-queue-bulk-cleanup-r5-live-2026-10-06.out.txt",
+    "outputSha256Prefix": "1f9c465d17e776debdaa"
+  },
+  "runtime": {
+    "unit": "papercusp-bg-host.service",
+    "current": { "pid": 3201933, "startedAt": "2026-10-06T08:53:54Z", "buildSha": "6b949fee10", "buildShaSource": "dev:pipeline_position servingRuntimes runtime-vintage (method start-after-mtime)" },
+    "prior": { "pid": 1479514, "startedAt": "2026-10-06T08:26:20Z", "endedAt": "2026-10-06T08:51:21Z" },
+    "runnerBlobsAtBootBuild": {
+      "packages/operator-core/lib/work-items-admission-bulk-dedup.ts": "030d5637e3",
+      "packages/operator-core/lib/work-items-admission-promoter.ts": "425aa9e391",
+      "packages/operator-core/lib/work-items-admission-census.ts": "9beee5e1e6",
+      "packages/operator-core/lib/harness/routines/inbox-bulk-resolve-action.ts": "197e66a853",
+      "packages/operator-core/lib/admission-runs-reaper.ts": "78ac892d94"
+    },
+    "runnerBlobsNote": "Each blob at 6b949fee10 equals HEAD at measurement. bulk-dedup.ts 030d5637e3 carries the WI-10006491 post-commit census fix (committed 2763fadb52).",
+    "workingTreeChangesNotLoaded": [
+      "WI-10006553 recovery-rehydration fix in work-items-admission-census.ts / work-items-admission-bulk-dedup.ts (edited 09:08Z, after boot)",
+      "peer WI-10006515 own-node change in work-items-admission-promoter.ts (mtime 09:01:38Z, after boot)"
+    ]
+  },
+  "writers": {
+    "inboxRuns": "packages/operator-core/lib/harness/routines/inbox-bulk-resolve-action.ts",
+    "bulkStageCensusDigest": "packages/operator-core/lib/work-items-admission-bulk-dedup.ts",
+    "census": "packages/operator-core/lib/work-items-admission-census.ts",
+    "promoterTick": "packages/operator-core/lib/work-items-admission-promoter.ts",
+    "reaper": "packages/operator-core/lib/admission-runs-reaper.ts"
+  },
+  "partitions": [
+    {
+      "id": "1-inbox-scheduling",
+      "promise": "a scheduled inbox-resolve fire creates a run while no run is executing",
+      "verdict": "pass",
+      "sections": ["P1a", "P1b", "P1c", "P1d", "P1e"],
+      "facts": {
+        "currentProcessRun": { "runId": "bulk-8e037116-043e-4cec-b342-1c2e8f19aad2", "requestedBy": "system:inbox-bulk-resolve", "createdAt": "2026-10-06T09:14:36Z", "startedAt": "2026-10-06T09:14:50Z", "phaseAtMeasurement": "running", "totalItems": 75 },
+        "overlappingExecutingRunsAtCreation": 0,
+        "immediatePredecessor": { "runId": "bulk-8b224d21-4f4f-4526-b4c3-187ec0be2cb8", "phase": "review", "finishedAt": "2026-10-06T08:35:29Z" },
+        "phaseCensusAllTime": { "complete": 9, "failed": 20, "review": 197, "running": 1 },
+        "originalStaleRunsDismissed": ["bulk-7d35ee41-f64f-4150-8e12-35524c481213", "bulk-bc6d1eeb-5609-4881-8731-029b5b102682", "bulk-ef1590f9-6abe-4072-9389-8857864d2b90 (14 auto_resolved, 144 dismissed)"]
+      }
+    },
+    {
+      "id": "2-census-and-digest",
+      "promise": "a census run lands; the digest is unblocked and reads fresh census coverage",
+      "verdict": "pass",
+      "sections": ["P2a", "P2b", "P2c", "P2d"],
+      "facts": {
+        "census0": { "runId": "bulk-dedup-scheduled-1791273167828-f3083502-census-0", "status": "complete", "startedAt": "2026-10-06T07:54:15Z", "finishedAt": "2026-10-06T08:09:33Z", "censusBefore": 56623, "censusAfter": 57048 },
+        "stage1": { "runId": "bulk-dedup-scheduled-1791273167828-f3083502-stage-1", "status": "complete", "startedAt": "2026-10-06T08:13:54Z", "finishedAt": "2026-10-06T08:43:42Z", "pairsAttempted": 512, "successful": 510, "unchanged": 2, "rolledBack": 0, "censusAfter": 56352, "failedAfterMergeCommit": false },
+        "digest": { "runId": "a16a3ec7-64c3-4bf9-97f3-303bd1223cdb", "status": "complete", "startedAt": "2026-10-06T08:45:25Z", "finishedAt": "2026-10-06T09:04:03Z", "sourceCensusRunId": "bulk-dedup-scheduled-1791273167828-f3083502-stage-1-census-after", "coverage": { "live": 5993, "covered": 5968, "uncovered": 25, "ratio": 0.9958 }, "modelCalled": true },
+        "previousDigest": { "runId": "sched-.routinesTick-2026-10-06T06:40:00.000Z-21", "sourceCensusRunId": "bulk-dedup-scheduled-1791022871543-c399ec17-stage-2-census-after", "note": "stale (10-03) census; superseded by a16a3ec7" },
+        "stage2": { "runId": "bulk-dedup-scheduled-1791273167828-f3083502-stage-2", "statusAtMeasurement": "running", "startedAt": "2026-10-06T08:47:26Z", "leaseHeartbeatAt": "2026-10-06T09:29:00Z", "takeoverCount": 0 }
+      }
+    },
+    {
+      "id": "3-promoter-yield-and-latency",
+      "promise": "promoter tick latency drops on the next ticks; model ticks yield promotions/merges (D-006)",
+      "verdict": "pass-with-disclosure",
+      "sections": ["P3a", "P3a2", "P3e", "P3d", "P3b", "P3c"],
+      "facts": {
+        "fixedWindows": {
+          "1-before (10-01 10:00-14:00Z)": { "ticks": 16, "modelTicks": 9, "modelTicksWithYield": 5, "promoted": 10, "merged": 13, "failed": 1, "latencyP50s": 283.6, "latencyP90s": 772.3, "modelLatencyP50s": 549.7, "modelLatencyP90s": 940.0 },
+          "2-after (10-01 14:00Z - 10-06 08:00Z)": { "ticks": 285, "modelTicks": 148, "modelTicksWithYield": 81, "promoted": 127, "merged": 41, "failed": 2, "latencyP50s": 67.3, "latencyP90s": 700.7, "modelLatencyP50s": 480.9, "modelLatencyP90s": 900.9 },
+          "3-prior-process": { "ticks": 0, "note": "routinesTick wedged on PID 1479514" },
+          "4-current-process": { "ticks": 1, "modelTicks": 1, "modelTicksWithYield": 1, "promoted": 1, "merged": 0, "latencyS": 471.1 }
+        },
+        "d006YieldWindows": { "before": { "modelTicks": 7, "withYield": 0 }, "after": { "modelTicks": 8, "withYield": 6, "promoted": 12, "merged": 13 } },
+        "currentTick": { "runId": "sched-.routinesTick-2026-10-06T09:11:00.000Z-7", "status": "complete", "startedAt": "2026-10-06T09:11:11Z", "finishedAt": "2026-10-06T09:19:02Z", "batch": 13, "promoted": 1, "held": 12, "tokensIn": 118520, "prescreen": { "window": 60, "deferred": 47, "selected": 13, "forcedHolds": 11, "protectedPairs": 243, "unresolvablePairs": 161 } },
+        "fourteenRowRepairCensus": { "done/local/admitted": 3, "dropped/local/admitted": 8, "dropped/local/pending": 14 }
+      }
+    },
+    {
+      "id": "4-reaper-and-residual",
+      "promise": "the reaper settles the stuck rows; no admission run is left unfinished past its kind threshold",
+      "verdict": "pass",
+      "sections": ["P4a", "P4b", "P4c", "P4d", "P4e"],
+      "facts": {
+        "reaperThresholds": { "promoter-tick": "120m", "durable-park-audit": "60m", "delta-sweep": "180m", "daily-digest": "180m", "source": "ADMISSION_RUN_STRANDED_AFTER_MS in admission-runs-reaper.ts" },
+        "unfinishedRuns": [ { "kind": "bulk-stage", "runId": "bulk-dedup-scheduled-1791273167828-f3083502-stage-2", "age": "00:44:43", "governedBy": "bulk-dedup stage lease (heartbeat 09:29:00Z), not a reapable kind" } ],
+        "last6hByKind": { "bulk-stage": "3 started / 2 finished / 1 unfinished, max 01:57:24 (a3ffb71a, serializable failure fixed by WI-10006491)", "census": "3/3", "daily-digest": "2/2", "delta-sweep": "5/5", "durable-park-audit": "1/1", "promoter-tick": "26/26, max 00:15:17" },
+        "reapLedger": [
+          { "reapedBy": "fc-reconcile-p003-20260905-wm1788628151920", "at": "2026-09-05T17:34:19Z", "kinds": { "bulk-stage": 1, "census": 1, "promoter-tick": 2 } },
+          { "reapedBy": "sched-.routinesTick-2026-10-01T11:16:00.000Z-19", "at": "2026-10-01T11:16:27Z", "kinds": { "durable-park-audit": 1, "promoter-tick": 5 } },
+          { "reapedBy": "bulk-dedup-scheduled-1790995393202-4adfe2f9", "at": "2026-10-03T02:43:33Z", "kinds": { "bulk-stage": 1 } }
+        ],
+        "reviewDebtSeries": [
+          { "at": "2026-10-01T12:16Z", "pending": 2217, "overdue": 2182 },
+          { "at": "2026-10-01T14:00Z", "pending": 1105, "overdue": 1084, "reviewMootClosed": 1148 },
+          { "at": "2026-10-03T09:15Z", "pending": 1045, "overdue": 1033 },
+          { "at": "2026-10-06T09:32Z (independent recount, P4e)", "pending": 1219, "overdue": 1218, "population": 10025 }
+        ]
+      }
+    }
+  ],
+  "disclosures": [
+    "Review debt has risen since 10-03: 1045 pending / 1033 overdue (10-03 09:15Z) to 1219 / 1218 now (P4d/P4e). The 10-01 cleanup halved it (2217 to 1105); the backlog is growing again.",
+    "The 10-06 06:40Z digest read a stale census (c399ec17-stage-2-census-after from 10-03). That is why the f3083502 pass was driven; its digest a16a3ec7 reads the fresh stage-1 census.",
+    "routinesTick was wedged on PID 1479514 (08:26-08:51Z): no promoter ticks or inbox runs ran on that process. Dispatch resumed on PID 3201933.",
+    "WI-10006553: after the 08:51-08:53Z bg-host restart, DBOS recovery recomputed the COMPLETED f3083502-stage-1-census-after (reset 08:54:33Z, re-complete 09:10:54Z). That row now reads census_before 56303 / census_after 56776, not stage-1's census_after 56352. The fix and its falsified guard are in the tree; the running PID 3201933 does not load them yet.",
+    "Model-tick latency fell only modestly (p50 549.7s to 480.9s; p90 940.0s to 900.9s). The large overall p50 drop (283.6s to 67.3s) comes from fast no-model ticks. The current-process sample is n=1 (471.1s).",
+    "f3083502 stage-2 was still running at measurement, with a fresh lease heartbeat."
+  ],
+  "couldNotDetermine": [
+    "Whether digest a16a3ec7 read its census before or after the 08:54:33Z reset. The digest row records no read time. It started 08:45:25Z, spanned the restart, and names the correct fresh sourceCensusRunId.",
+    "The exact working-tree content each bg-host bundle loaded at boot. The runtime method is start-after-mtime, and the runner blobs are measured at the boot commit."
+  ]
+}

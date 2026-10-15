@@ -11,6 +11,7 @@
  * that the pot-bar verdict for a surface is the operator's own verdict for its tab.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 // The bridge writes the grid palette into the document at import; a registry
 // test has no document to paint (same mock the PlansSurface test uses).
@@ -25,6 +26,80 @@ import {
   isOperatorSurfaceKind,
   potScopeForSurface,
 } from '../../../../../packages/operator-ui/src/surfaces';
+
+type InventoryRow = { id: string; destination: string; scenario: string; eligibility: string;
+  disposition: string; owner: string };
+type Inventory = { schemaVersion: number; sourceRef: string; nativeExceptionDecision: string;
+  eligibility: Record<string, string>; rows: InventoryRow[] };
+const inventory: Inventory = JSON.parse(readFileSync(new URL(
+  '../../../../../docs/evidence/cloud-portal-desktop-parity-inventory-2026-10-09.json', import.meta.url), 'utf8'));
+// P-001's agreed population, rather than deriving the expected population from
+// the artifact being checked. Functional pending rows do not claim acceptance.
+const otherDestinations: Record<string, string> = {
+  'utility.plans': '?app=plans', 'utility.inbox': '?app=inbox', 'utility.cloud': '?app=cloud',
+  'utility.cupboard': '?app=cupboard', 'utility.dev': '?app=dev', 'utility.support': '?app=support',
+  'utility.settings': '?app=settings', 'utility.quick-panel': '?panel=quick',
+  'utility.shortcuts': 'existing global shortcut dispatch', 'roster.message': 'selected-agent message',
+  'roster.wake': 'selected-agent wake', 'roster.stop': 'selected managed-session stop',
+  'roster.open-conversation': 'selected-agent conversation', 'native.os-window-focus': 'operator OS terminal window',
+  'existing.voice': 'portal-voice-parity-and-release-2026-09-08#P-031',
+  'existing.hosted-native-cloud': 'cloud-cross-feature-e2e-shipment-2026-10-08#P-002,P-003,P-004',
+};
+const expectedDestinations = { ...otherDestinations, ...Object.fromEntries(
+  ADV_TAB_IDS.map(tab => [`adv.${tab}`, `?app=${ADV_TAB_SURFACE_KINDS[tab]}`])) };
+function inventoryErrors(value: Inventory): string[] {
+  const errors: string[] = [];
+  const ids = value.rows.map(row => row.id);
+  if (value.schemaVersion !== 1 || !value.sourceRef.trim()) errors.push('inventory provenance');
+  if (new Set(ids).size !== ids.length || ids.length !== Object.keys(expectedDestinations).length)
+    errors.push('population cardinality');
+  for (const id of Object.keys(expectedDestinations)) if (!ids.includes(id)) errors.push(`missing:${id}`);
+  for (const row of value.rows) {
+    if (row.destination !== expectedDestinations[row.id]) errors.push(`destination:${row.id}`);
+    if (row.scenario !== row.id) errors.push(`scenario:${row.id}`);
+    if (!value.eligibility[row.eligibility]?.trim() || !/^WI-\d+$/.test(row.owner)) errors.push(`eligibility/owner:${row.id}`);
+    if (!['mapping-reviewed-functional-pending', 'functional-pending', 'existing-lane-pending', 'reviewed-native-only']
+      .includes(row.disposition)) errors.push(`unmeasured:${row.id}`);
+    if ((row.disposition === 'reviewed-native-only') !== (row.id === 'native.os-window-focus'))
+      errors.push(`native-exception:${row.id}`);
+  }
+  if (value.nativeExceptionDecision !== 'cloud-portal-desktop-parity-closure-2026-10-09#D-002')
+    errors.push('native-exception authority');
+  return errors;
+}
+
+describe('PARITY-P001 inventory completeness detector', () => {
+  it('accepts all 36 individually identified destinations, eligibility rules and honest dispositions', () => {
+    expect(inventory.rows).toHaveLength(36);
+    expect(inventoryErrors(inventory)).toEqual([]);
+    expect(inventory.rows.filter(row => row.disposition === 'reviewed-native-only').map(row => row.id))
+      .toEqual(['native.os-window-focus']);
+  });
+  it('detects an omitted non-ADV workflow even when all 20 ADV mappings remain', () => {
+    const changed = structuredClone(inventory);
+    changed.rows = changed.rows.filter(row => row.id !== 'utility.inbox');
+    expect(inventoryErrors(changed)).toContain('missing:utility.inbox');
+  });
+  it('detects duplicate identities and scenarios instead of accepting the same row twice', () => {
+    const changed = structuredClone(inventory);
+    changed.rows[0] = { ...changed.rows[1] };
+    expect(inventoryErrors(changed)).toContain('population cardinality');
+    expect(inventoryErrors(changed)).toContain('missing:adv.overview');
+  });
+  it.each(['destination', 'scenario', 'eligibility', 'owner', 'disposition'] as const)
+  ('detects an unmeasured or misrouted %s', field => {
+    const changed = structuredClone(inventory);
+    changed.rows[0][field] = '';
+    expect(inventoryErrors(changed).length).toBeGreaterThan(0);
+  });
+  it('refuses an additional native-only exception and a missing exception decision', () => {
+    const changed = structuredClone(inventory);
+    changed.rows[0].disposition = 'reviewed-native-only';
+    changed.nativeExceptionDecision = '';
+    expect(inventoryErrors(changed)).toContain('native-exception:adv.overview');
+    expect(inventoryErrors(changed)).toContain('native-exception authority');
+  });
+});
 
 describe('portal surface registry covers every ADV tab', () => {
   it('maps every ADV_TAB_IDS entry to a registered operator surface', () => {

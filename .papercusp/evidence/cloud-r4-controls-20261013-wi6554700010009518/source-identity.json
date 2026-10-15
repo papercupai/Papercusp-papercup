@@ -1,0 +1,20 @@
+{
+  "measuredAt": "2026-10-13T00:40:08.214213+00:00",
+  "workItem": "WI-6554700010009518",
+  "head": "b136f2dac9805ffdc922a65bd04a6c8b3fda1994",
+  "scope": "Exact named checker/source files only; whole import graph and real runtime unproven",
+  "files": [
+    {
+      "path": "packages/operator-core/lib/workspace-host/cloud-e2e-campaign-evidence.ts",
+      "sha256": "6016943d82e87410e81ee5f28b7eff8ac4c77425837967ebf586d1ac572ce4d4",
+      "workingBlob": "0204bc06d8918a911d48704d46d180d2b4cc52c7",
+      "headBlob": "0204bc06d8918a911d48704d46d180d2b4cc52c7"
+    },
+    {
+      "path": "packages/operator-core/lib/workspace-host/cloud-e2e-campaign-evidence.test.ts",
+      "sha256": "c5b378e9f33142484302279578a50fa577842e8bc1d67480c9bf96ba7c909543",
+      "workingBlob": "8e86f2918873c06b60fa58604570f1ea83a77958",
+      "headBlob": "99afbc58eb8f12a7b7249517a74e594db93b1797"
+    }
+  ]
+}

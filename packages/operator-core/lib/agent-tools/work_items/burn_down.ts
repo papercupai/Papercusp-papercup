@@ -14,6 +14,9 @@ import { listPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import {
   explainIssueClaimFloors,
   listWorkItems,
+  listAllWorkItemsForFileExport,
+  countWorkItems,
+  countWorkItemsByState,
   getWorkItem,
   readWorkItemClaimHoldProvenance,
   WORK_ITEMS_MAX_LIMIT,
@@ -22,7 +25,11 @@ import {
   type WorkItemKind,
 } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
-import { countsTowardBurnDown } from '../../work-item-completion-authority';
+import {
+  countsTowardBurnDown,
+  isAbandonmentCloseState,
+  isWorkItemCompletionAuthority,
+} from '../../work-item-completion-authority';
 import { classifyTerminalOwner } from '../../completion-audit';
 import { resolveSelfRef } from '../coordination/self-marker';
 import { buildP2pLaneFence } from '../../scheduler/p2p-lane-fence';
@@ -31,33 +38,46 @@ import { shapeBurnDown } from './burn_down-shape';
 import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
-import { readAgentReviewState } from '../../harness/improvements/agent-review-policy';
+import { readAgentReviewState, countWorkItemPresentationStages } from '../../harness/improvements/agent-review-policy';
+import { computeQueueWaitingTimes, readAgentReviewService } from '../../harness/improvements/flow-metrics';
 import {
   classifyAuditAge,
   classifyDurableParkReleaseLiveness,
   classifyUnparkCondition,
+  buildDurableParkAuditReport,
   type AuditAge,
   type DurableParkReleaseLiveness,
   type UnparkConditionStatus,
 } from '../../work-items-durable-park-audit';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { getOrgPg } from '@papercusp/db-org';
+import { deriveItemWorkEvidence, type ItemWorkEvidence } from '../../item-activity';
+import { activeExternalBlockers } from '../../external-blockers';
 import {
   FLEET_METRIC_ADMISSION_PARITY,
+  FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS,
+  FLEET_METRIC_FEATURE_ORIGIN_RULE,
+  FLEET_METRIC_PAUSED_TIME_RULE,
   FLEET_METRIC_REMAINING_PRECEDENCE,
   FLEET_METRIC_UNITS,
   FLEET_METRIC_WRITERS,
   FLEET_METRICS_SCHEMA_VERSION,
   fleetMetricsResultSchema,
   parseFleetMetricsResult,
+  type FleetFeatureOutcomes,
   type FleetMetricsResult,
+  type FleetPausedTime,
 } from '../fleet/fleet-metrics-contract';
 import {
   resolveFleetMetricScope,
+  readFleetMetricSource,
+  withFleetMetricReadSql,
   selectFleetMetricCurrentItems,
   selectFleetMetricFlowEvents,
   type FleetMetricFlowMode,
   type FleetMetricScopeResolution,
   type ResolvedFleetMetricScope,
+  type FleetMetricTerminalContribution,
 } from '../fleet/fleet-metrics-scope';
 import {
   COUNT_EVIDENCE_COMPARISON_RULE,
@@ -161,6 +181,97 @@ export interface BurnDownDeltaBy {
 // already drifted (missing `done`/`dropped`) and silently scored finished work
 // as failed placements.
 const TERMINAL_STATES = new Set(ANY_FAMILY_TERMINAL_STATES);
+
+/**
+ * WI-6554700010008464 — the open-queue read is uncapped up to this many rows. Measured
+ * 2026-10-11: the largest live open population is 14,261 rows (papercusp, all kinds);
+ * terminal history is ~18x that (53,664 papercusp bugs alone), which is why history is
+ * never read in full. Above the ceiling the open read falls back to a capped read and
+ * the census reports itself bounded rather than guessing.
+ */
+export const NON_TERMINAL_CENSUS_CEILING = 25_000;
+
+/** The terminal-history slice that fed the authority split and the `since` delta. */
+export interface BurnDownTerminalHistory {
+  /** Where `terminal.total` and the per-state counts came from: an exact aggregate over
+   *  the same selector, or the fetched rows (a fenced census, or a fixed-id cohort). */
+  totalsSource: 'aggregate' | 'rows';
+  /** Terminal rows read (after any fence). */
+  rowsRead: number;
+  /** The cap on the terminal-history read, newest `updated_ts` first. */
+  limit: number;
+  truncatedByLimit: boolean;
+  /** `terminal.authority` covers every terminal row (the history read was not capped). */
+  authorityExact: boolean;
+  /** `delta`/`deltaBy`/`closedSince`/`openedSince` cover the whole `since` window: the
+   *  read was not capped, or its oldest row is no newer than `since` (a close after
+   *  `since` also moves `updated_ts` past it). Null without `since`. */
+  deltaExact: boolean | null;
+}
+
+/** WI-6554700010008464 — what a live (no-ids) census read, and how complete it was. */
+export interface LiveCensusSource {
+  /** Every open row (unless `nonTerminal.truncatedByLimit`) plus the terminal-history slice. */
+  items: WorkItem[];
+  /** Exact per-state counts over the selector; absent when not requested (fenced census). */
+  terminalStateCounts: Record<string, number> | undefined;
+  terminalHistory: { limit: number; truncatedByLimit: boolean; oldestUpdatedAt: string | null };
+  nonTerminal: { counted: number; read: number; limit: number; truncatedByLimit: boolean };
+}
+
+export interface LiveCensusDeps {
+  listWorkItems: typeof listWorkItems;
+  listAllWorkItemsForFileExport: typeof listAllWorkItemsForFileExport;
+  countWorkItems: typeof countWorkItems;
+  countWorkItemsByState: typeof countWorkItemsByState;
+}
+
+/**
+ * WI-6554700010008464 — read the live census so the OPEN partition is exact. The old
+ * read was one `listWorkItems` over all states capped at WORK_ITEMS_MAX_LIMIT, ordered
+ * by `updated_ts`, so recently touched terminal history filled the cap before the open
+ * queue: on 2026-10-11 it reported 543 open papercusp bugs against 2,971 real ones.
+ *
+ * Now: open rows uncapped (to NON_TERMINAL_CENSUS_CEILING); terminal totals from the
+ * same aggregate the state histogram uses; terminal ROWS only as a bounded newest-first
+ * slice for the authority split and the `since` delta, whose coverage is reported.
+ */
+export async function readLiveCensus(
+  selector: { harness: string; kind?: WorkItemKind; includeChildren?: boolean },
+  opts: { exactTerminalTotals: boolean },
+  deps: LiveCensusDeps = { listWorkItems, listAllWorkItemsForFileExport, countWorkItems, countWorkItemsByState },
+): Promise<LiveCensusSource> {
+  const [openCount, history, terminalStateCounts] = await Promise.all([
+    deps.countWorkItems({ ...selector, notTerminal: true }),
+    deps.listWorkItems({ ...selector, states: [...ANY_FAMILY_TERMINAL_STATES], limit: WORK_ITEMS_MAX_LIMIT }),
+    opts.exactTerminalTotals ? deps.countWorkItemsByState(selector) : Promise.resolve(undefined),
+  ]);
+  const openBounded = openCount > NON_TERMINAL_CENSUS_CEILING;
+  const open = openBounded
+    ? await deps.listWorkItems({ ...selector, notTerminal: true, limit: WORK_ITEMS_MAX_LIMIT })
+    : await deps.listAllWorkItemsForFileExport({ ...selector, notTerminal: true });
+  let oldestUpdatedAt: string | null = null;
+  for (const row of history) {
+    if (oldestUpdatedAt === null || Date.parse(row.updatedAt) < Date.parse(oldestUpdatedAt)) {
+      oldestUpdatedAt = row.updatedAt;
+    }
+  }
+  return {
+    items: [...open, ...history],
+    terminalStateCounts,
+    terminalHistory: {
+      limit: WORK_ITEMS_MAX_LIMIT,
+      truncatedByLimit: history.length >= WORK_ITEMS_MAX_LIMIT,
+      oldestUpdatedAt,
+    },
+    nonTerminal: {
+      counted: openCount,
+      read: open.length,
+      limit: openBounded ? WORK_ITEMS_MAX_LIMIT : NON_TERMINAL_CENSUS_CEILING,
+      truncatedByLimit: openBounded,
+    },
+  };
+}
 const PARKED_STATES = new Set(['blocked', 'needs-human', 'needs_human', 'cursed']);
 
 type PresenceLike = { ownerId: string; heartbeatAt?: string | null; stale?: boolean | null };
@@ -176,6 +287,7 @@ export interface BurnDownRow {
   assigneeLive?: boolean;
   takenAt: string | null;
   lastProgressAt: string | null;
+  workEvidence: ItemWorkEvidence;
   updatedAt: string;
   severity: string | null;
   priority: number | null;
@@ -240,19 +352,25 @@ export interface BurnDownResult {
     deltaClosedUndated: number;
     /**
      * WI-37381 — `true` when the aggregate below was computed over a HARD-CAPPED fetch
-     * (`censusLimit` rows) rather than the true full queue. This is the ONLY thing that
-     * can make `terminal.*` an undercount: the caller-supplied `limit` arg never bounds
-     * this fetch (see `censusLimit` — it is fixed at WORK_ITEMS_MAX_LIMIT regardless of
-     * what the caller asked for), so a small `limit` can no longer silently zero out the
-     * aggregate. A harness with more open+terminal rows than `censusLimit` can still hit
-     * this flag; when it does, `terminal.*`/`counts.*`/`deltaBy.*` are a FLOOR, not a
-     * total, and should be read as such (same shape as `deltaClosedUndated` above).
+     * (`censusLimit` rows) rather than the true full queue. The caller-supplied `limit` arg
+     * never bounds this fetch, so a small `limit` cannot zero out the aggregate. Live census
+     * (WI-6554700010008464): open rows are read uncapped up to NON_TERMINAL_CENSUS_CEILING
+     * and terminal totals come from an aggregate count, so this flag fires only when the
+     * open partition exceeds that ceiling (or, on a fenced census, the terminal-history
+     * slice was capped). When it fires, `terminal.*`/`counts.*`/`deltaBy.*` are a FLOOR, not
+     * a total, and should be read as such (same shape as `deltaClosedUndated` above).
+     * Terminal-history coverage is reported separately in `terminal.history`.
      */
     truncatedByLimit: boolean;
-    /** The fetch size that produced this census (always WORK_ITEMS_MAX_LIMIT for a
-     *  non-cohort call — see `truncatedByLimit`). Reported so "0 of 5" and "0 of 2000"
-     *  are distinguishable without cross-referencing the request. */
+    /** The fetch size that produced this census: for a live call the open-partition read
+     *  limit (NON_TERMINAL_CENSUS_CEILING, or WORK_ITEMS_MAX_LIMIT once the open partition
+     *  exceeds that ceiling — see `truncatedByLimit`); for a cohort call the row count.
+     *  Reported so "0 of 5" and "0 of 2000" are distinguishable without cross-referencing
+     *  the request. */
     censusLimit: number;
+    /** WI-6554700010008464 — the terminal-history slice behind `authority` and `delta`,
+     *  and whether each covers its whole population. Present on a live census. */
+    history?: BurnDownTerminalHistory;
     /** EI-19313376980892266 fix B — WHO produced `delta`. Present only with `since`.
      *  `delta` is harness-WIDE; without this split it reads as the caller's own fleet's
      *  output and over-reports by whatever the rest of the harness closed. */
@@ -326,7 +444,11 @@ export interface BurnDownResult {
 }
 
 export type CohortBucket = 'terminal' | 'parked' | 'in-flight' | 'unclaimed' | 'missing';
-export type CohortEvidenceVerdict = 'verified' | 'incomplete' | 'missing' | 'not-applicable';
+/**
+ * `disposition-recorded`: an abandonment close (dropped/closed/deprecated) whose reason is
+ * recorded. It settles without verification evidence by design (WI-6554700010008454).
+ */
+export type CohortEvidenceVerdict = 'verified' | 'incomplete' | 'missing' | 'disposition-recorded' | 'not-applicable';
 
 export interface CohortAuditRow {
   id: string;
@@ -421,15 +543,28 @@ export function buildCohortAudit(requestedIds: readonly string[], items: readonl
       // correctly used the new authority path.
       const missingLegacyCompletionRef =
         item.completionAuthority === null && !item.terminalCompletionRef;
-      evidenceVerdict = !hasEvidence || missingLegacyCompletionRef
-        ? 'missing'
-        : hasVerification && countsTowardBurnDown(item.completionAuthority, true)
-          ? 'verified'
-          : 'incomplete';
-      reopenRecommended = evidenceVerdict !== 'verified';
-      recommendation = reopenRecommended
-        ? 'reopen and require structured verification evidence before counting terminal'
-        : null;
+      if (isAbandonmentCloseState(item.state)) {
+        // WI-6554700010008454: a drop/close settles the lifecycle without claiming code
+        // landed (work_items:complete's abandoned-close rule), and its disposition lands in
+        // terminal_completion_ref — never in structured verification evidence. Demanding
+        // verifiedHow/testsRun here recommended reopening every legitimate drop.
+        const hasDisposition = Boolean(item.terminalCompletionRef?.trim()) || hasEvidence;
+        evidenceVerdict = hasDisposition ? 'disposition-recorded' : 'missing';
+        reopenRecommended = !hasDisposition;
+        recommendation = reopenRecommended
+          ? 'record the disposition (why it was dropped or closed) before counting terminal'
+          : null;
+      } else {
+        evidenceVerdict = !hasEvidence || missingLegacyCompletionRef
+          ? 'missing'
+          : hasVerification && countsTowardBurnDown(item.completionAuthority, true)
+            ? 'verified'
+            : 'incomplete';
+        reopenRecommended = evidenceVerdict !== 'verified';
+        recommendation = reopenRecommended
+          ? 'reopen and require structured verification evidence before counting terminal'
+          : null;
+      }
     }
     return {
       id,
@@ -709,14 +844,14 @@ function queueControlFor(item: WorkItem, nowMs: number): BurnDownQueueControl | 
       parkedAt: null,
       age: classifyAuditAge(null, nowMs),
       unparkCondition: classifyUnparkCondition(null),
-      releaseLiveness: classifyDurableParkReleaseLiveness(payload, null),
+      releaseLiveness: classifyDurableParkReleaseLiveness(payload, null, item.id),
     } : parked ? {
       parker: parked.by,
       reason: parked.reason,
       parkedAt: parked.at,
       age: classifyAuditAge(parked.at, nowMs),
       unparkCondition: classifyUnparkCondition(parked.reason),
-      releaseLiveness: classifyDurableParkReleaseLiveness(payload, parked.reason),
+      releaseLiveness: classifyDurableParkReleaseLiveness(payload, parked.reason, item.id),
     } : null,
     agentReview: review,
     unattributedClaimHold: rawClaimHold && !attributed,
@@ -739,6 +874,10 @@ function toRow(item: WorkItem, assigneeLive: boolean | undefined, nowMs: number)
     ...(item.assignee ? { assigneeLive: Boolean(assigneeLive) } : {}),
     takenAt: item.takenAt,
     lastProgressAt: item.lastProgressAt,
+    workEvidence: deriveItemWorkEvidence({
+      takenBy: item.assignee, takenAt: item.takenAt, lastProgressAt: item.lastProgressAt,
+      registeredWaitRefs: activeExternalBlockers(item.payload).map(b => `${b.kind}:${b.ref}`),
+    }, { now: nowMs }),
     updatedAt: item.updatedAt,
     severity: item.severity,
     priority: item.priority,
@@ -850,6 +989,312 @@ function fleetMetricsUnavailable(args: {
   return parsed;
 }
 
+/** P-001: one recorded claim from `worked_by_history` (migrations 806/1036 append `{ at, owner }`). */
+export interface FleetMetricClaimEntry {
+  owner: string;
+  atMs: number;
+}
+
+/**
+ * Parse the raw `worked_by_history` column into time-ordered claims. `null` means the row
+ * carries no usable timed history — the origin is then UNKNOWN, never "no prior worker".
+ * Legacy bare-string entries have no timestamp and are therefore not usable here.
+ */
+export function parseFleetMetricClaimHistory(raw: unknown): FleetMetricClaimEntry[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: FleetMetricClaimEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const rec = entry as Record<string, unknown>;
+    const owner = String(rec.owner ?? rec.ownerId ?? rec.agent ?? rec.by ?? '').trim();
+    const atMs = typeof rec.at === 'string' ? Date.parse(rec.at) : Number.NaN;
+    if (owner && Number.isFinite(atMs)) out.push({ owner, atMs });
+  }
+  return out.length > 0 ? out.sort((a, b) => a.atMs - b.atMs) : null;
+}
+
+export type FleetFeatureCloseOrigin = 'fleetDone' | 'inherited' | 'unknown';
+
+/**
+ * Label one feature close (FLEET_METRIC_FEATURE_ORIGIN_RULE). The closing claim is the latest
+ * claim at or before the close by a fleet ever-member or by the terminal owner (else the close
+ * itself, made by the terminal owner). The close is INHERITED when a worker outside the cohort claimed the row
+ * before that closing claim AND the close followed the closing claim within
+ * FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS — a short finish of someone else's work.
+ */
+export function classifyFeatureCloseOrigin(
+  item: Pick<WorkItem, 'closedAt' | 'terminalOwner'>,
+  history: readonly FleetMetricClaimEntry[] | null,
+  members: ReadonlySet<string>,
+): FleetFeatureCloseOrigin {
+  if (!history || history.length === 0) return 'unknown';
+  const closedMs = item.closedAt ? Date.parse(item.closedAt) : Number.NaN;
+  if (!Number.isFinite(closedMs)) return 'unknown';
+  // The completion path re-stamps `taken_by`, so the closer's completion entry lands AFTER
+  // closedAt (measured live 2026-10-01: 1,694 of ~1,772 done features, +1ms..+12s) and is
+  // excluded here. That stamp is not evidence of pre-close work: the trigger fires only on
+  // UPDATE OF taken_by, so a creation-time assignee never appears in the history at all.
+  const beforeClose = history.filter((entry) => entry.atMs <= closedMs);
+  if (beforeClose.length === 0) return 'unknown';
+  let closingIndex = -1;
+  for (let i = beforeClose.length - 1; i >= 0; i -= 1) {
+    const owner = beforeClose[i].owner;
+    if (members.has(owner) || owner === item.terminalOwner) {
+      closingIndex = i;
+      break;
+    }
+  }
+  if (closingIndex < 0) {
+    // Nobody in the cohort and not the closer ever claimed before the close: every recorded
+    // pre-close worker is an outsider, and the closer's own claim is the close itself
+    // (claim-to-close 0). That is an inherited finish. With no known closer, the actor who
+    // finished it is unrecorded, so the origin is unknown rather than guessed.
+    return item.terminalOwner ? 'inherited' : 'unknown';
+  }
+  const closing = beforeClose[closingIndex];
+  const outsiderBefore = beforeClose
+    .slice(0, closingIndex)
+    .some((entry) => entry.owner !== closing.owner && !members.has(entry.owner));
+  const shortFinish = closedMs - closing.atMs <= FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS;
+  return outsiderBefore && shortFinish ? 'inherited' : 'fleetDone';
+}
+
+/** One successful fleet control invocation, in invocation order. */
+export interface FleetMetricControlEvent {
+  tool: 'fleet:pause' | 'fleet:wind-down' | 'fleet:resume';
+  at: string;
+}
+
+export interface FleetMetricPauseSource {
+  events: readonly FleetMetricControlEvent[];
+  /** The registry's CURRENT control flag; a non-active state with no open recorded interval was set by a routine. */
+  current: { controlState: string | null; controlAt: string | null } | null;
+}
+
+/**
+ * PURE: paused vs working time over the window. Pause and wind-down open an interval; resume
+ * closes it. A resume with no recorded opening (a routine flipped the flag) makes the total
+ * UNKNOWN rather than silently counting that interval as working time.
+ */
+export function computeFleetPausedTime(
+  source: FleetMetricPauseSource,
+  window: { startAt: string; endAt: string },
+): FleetPausedTime {
+  const startMs = Date.parse(window.startAt);
+  const endMs = Date.parse(window.endAt);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+    return {
+      status: 'unknown',
+      reason: 'fleet metric window bounds are not valid timestamps',
+      recoverVia: 'retry fleet:metrics; the resolver must emit an ordered ISO window',
+    };
+  }
+  const intervals: Array<{ start: number; end: number | null }> = [];
+  let open: number | null = null;
+  for (const event of [...source.events].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+    const at = Date.parse(event.at);
+    if (!Number.isFinite(at) || at >= endMs) continue;
+    if (event.tool === 'fleet:resume') {
+      if (open === null) {
+        // Only an unpaired resume INSIDE the window hides paused time we can see.
+        if (at > startMs) {
+          return {
+            status: 'unknown',
+            reason: `fleet:resume at ${event.at} has no recorded fleet:pause/fleet:wind-down opening it (the control flag was set by a routine)`,
+            recoverVia: 'read harness_shared.agent_fleets control history or the fleet-control-reconcile routine fires for the opening time',
+          };
+        }
+        continue;
+      }
+      intervals.push({ start: open, end: at });
+      open = null;
+    } else if (open === null) {
+      open = at;
+    }
+  }
+  const currentlyParked = source.current?.controlState != null && source.current.controlState !== 'active';
+  if (open !== null && source.current?.controlState === 'active') {
+    // The registry says the fleet is running again, but no successful fleet:resume closed the
+    // interval (a refused resume or a routine flipped the flag). Close it at the flag's time —
+    // never run it to the window end, which would count working time as paused.
+    const at = source.current.controlAt ? Date.parse(source.current.controlAt) : Number.NaN;
+    if (!Number.isFinite(at) || at < open) {
+      return {
+        status: 'unknown',
+        reason: 'fleet control_state is active but no recorded resume or control_at time closes the open pause',
+        recoverVia: 'read harness_shared.agent_fleets.control_at for this fleet',
+      };
+    }
+    intervals.push({ start: open, end: at });
+    open = null;
+  }
+  if (open === null && currentlyParked) {
+    const at = source.current?.controlAt ? Date.parse(source.current.controlAt) : Number.NaN;
+    if (!Number.isFinite(at)) {
+      return {
+        status: 'unknown',
+        reason: `fleet control_state is '${source.current?.controlState}' with no recorded opening time`,
+        recoverVia: 'read harness_shared.agent_fleets.control_at for this fleet',
+      };
+    }
+    open = at;
+  }
+  if (open !== null) intervals.push({ start: open, end: null });
+  let pausedMs = 0;
+  let intervalCount = 0;
+  for (const interval of intervals) {
+    const start = Math.max(interval.start, startMs);
+    const end = Math.min(interval.end ?? endMs, endMs);
+    if (end <= start) continue;
+    pausedMs += end - start;
+    intervalCount += 1;
+  }
+  const windowMs = endMs - startMs;
+  return {
+    status: 'measured',
+    windowMs,
+    pausedMs,
+    workingMs: windowMs - pausedMs,
+    intervalCount,
+    openAtGeneratedAt: open !== null,
+    source: 'harness_shared.tool_invocations fleet:pause|fleet:wind-down -> fleet:resume',
+    rule: FLEET_METRIC_PAUSED_TIME_RULE,
+  };
+}
+
+export type FleetMetricHistoryReader = (args: {
+  workspaceId: string;
+  harness: string;
+  ids: readonly string[];
+}) => Promise<ReadonlyMap<string, unknown>>;
+
+export type FleetMetricPauseReader = (args: {
+  workspaceId: string;
+  fleet: string;
+  endAt: string;
+}) => Promise<FleetMetricPauseSource>;
+
+/** Default writer read: the claim history the claim path appends (harness_shared.work_items). */
+export const readFleetMetricClaimHistory: FleetMetricHistoryReader = async ({ workspaceId, harness, ids }) => {
+  if (ids.length === 0) return new Map();
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ feature_id: string; worked_by_history: unknown }>>`
+    SELECT feature_id, worked_by_history
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${harness}
+       AND feature_id = ANY(${[...ids]}::text[])`;
+  return new Map(rows.map((row) => [row.feature_id, row.worked_by_history]));
+};
+
+/** Default writer read: successful fleet control invocations plus the registry's current flag. */
+export const readFleetMetricPauseSource: FleetMetricPauseReader = async ({ workspaceId, fleet, endAt }) => {
+  const { sql } = getOrgPg();
+  const [events, current] = await Promise.all([
+    sql<Array<{ tool_name: FleetMetricControlEvent['tool']; invoked_at: Date | string }>>`
+      SELECT tool_name, invoked_at
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id = ${workspaceId}
+         AND tool_name IN ('fleet:pause', 'fleet:wind-down', 'fleet:resume')
+         AND status = 'ok'
+         AND args_json->>'fleet' = ${fleet}
+         AND invoked_at < ${endAt}::timestamptz
+       ORDER BY invoked_at, id`,
+    sql<Array<{ control_state: string | null; control_at: string | number | null }>>`
+      SELECT control_state, control_at
+        FROM harness_shared.agent_fleets
+       WHERE workspace_id = ${workspaceId} AND fleet_slug = ${fleet}
+       LIMIT 1`,
+  ]);
+  const row = current[0];
+  return {
+    events: events.map((event) => ({
+      tool: event.tool_name,
+      at: event.invoked_at instanceof Date ? event.invoked_at.toISOString() : new Date(event.invoked_at).toISOString(),
+    })),
+    current: row
+      ? {
+          controlState: row.control_state,
+          controlAt: row.control_at == null ? null : new Date(Number(row.control_at)).toISOString(),
+        }
+      : null,
+  };
+};
+
+function errorReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * P-001 (R-1, R-11..R-14): feature-fleet outcomes. Only feature-family closes count; issue-family
+ * closes in the same window are listed as SUPPORTING and never added in; every close carries an
+ * origin label; authority stays partitioned so a proposed close is never a committed outcome.
+ */
+export async function buildFleetFeatureOutcomes(args: {
+  featureCloses: readonly WorkItem[];
+  supportingCloses: readonly WorkItem[];
+  members: ReadonlySet<string>;
+  workspaceId: string | null;
+  harness: string;
+  readHistory: FleetMetricHistoryReader;
+}): Promise<FleetFeatureOutcomes> {
+  let rawHistory: ReadonlyMap<string, unknown> = new Map();
+  if (args.featureCloses.length > 0) {
+    if (!args.workspaceId) {
+      return {
+        status: 'unknown',
+        reason: 'workspace identity is unavailable, so feature claim history could not be read',
+        recoverVia: 'retry work_items:burn_down { fleetMetrics } from a workspace-scoped session',
+      };
+    }
+    try {
+      rawHistory = await args.readHistory({
+        workspaceId: args.workspaceId,
+        harness: args.harness,
+        ids: args.featureCloses.map((item) => item.id),
+      });
+    } catch (error) {
+      return {
+        status: 'unknown',
+        reason: `feature claim history read failed: ${errorReason(error)}`,
+        recoverVia: 'retry; the history writer is harness_shared.work_items.worked_by_history',
+      };
+    }
+  }
+  const origin = { fleetDone: 0, inherited: 0, unknown: 0 };
+  for (const item of args.featureCloses) {
+    origin[classifyFeatureCloseOrigin(item, parseFleetMetricClaimHistory(rawHistory.get(item.id)), args.members)] += 1;
+  }
+  const tasks = args.supportingCloses.filter((item) => item.kind === 'task').length;
+  const bugs = args.supportingCloses.filter((item) => item.kind === 'bug').length;
+  return {
+    status: 'measured',
+    unit: 'distinct canonical feature-family work-item ids',
+    population: 'feature-family-lifecycle-terminal-in-window',
+    closes: authorityPartition(args.featureCloses),
+    origin: {
+      ...origin,
+      partitionsLifecycleTerminal: true,
+      claimToCloseMaxMs: FLEET_METRIC_FEATURE_INHERITED_CLAIM_TO_CLOSE_MAX_MS,
+      rule: FLEET_METRIC_FEATURE_ORIGIN_RULE,
+      historyWriter: 'harness_shared.work_items.worked_by_history',
+    },
+    shipped: {
+      status: 'unknown',
+      reason: 'no writer records a shipped transition for feature-family work-items; lifecycle closes are not shipments',
+      recoverVia: 'join each closed feature to its plan ship record (plans:get) or the release ledger',
+    },
+    supporting: {
+      unit: 'distinct canonical issue-family work-item ids',
+      tasks,
+      bugs,
+      other: args.supportingCloses.length - tasks - bugs,
+      total: args.supportingCloses.length,
+      countedInFeatureOutcomes: false,
+    },
+  };
+}
+
 /** Build the canonical snapshot after the shared resolver has fixed the fleet/spec/window. */
 export async function buildFleetMetricsResult(
   resolution: FleetMetricScopeResolution,
@@ -859,6 +1304,12 @@ export async function buildFleetMetricsResult(
     sourceCapExhausted: boolean;
     assignee?: string;
     explainFloors?: typeof explainIssueClaimFloors;
+    /** P-001: the workspace the claim-history and fleet-control reads are scoped to. */
+    workspaceId?: string | null;
+    readHistory?: FleetMetricHistoryReader;
+    readPauseSource?: FleetMetricPauseReader;
+    readReviewService?: typeof readAgentReviewService;
+    terminalContributions?: PromiseLike<readonly FleetMetricTerminalContribution[]>;
   },
 ): Promise<FleetMetricsResult> {
   if (!resolution.ok) return parseFleetMetricsResult(resolution);
@@ -888,21 +1339,71 @@ export async function buildFleetMetricsResult(
       .map((item) => ({ item, at: item.closedAt!, value: item.terminalOwner })),
   );
   if (!terminalSelection.ok) return parseFleetMetricsResult(terminalSelection);
+  // P-001: the feature cohort is its own population, admitted by the SAME spec evaluator.
+  const featureTerminalSelection = selectFleetMetricFlowEvents(
+    resolution,
+    items
+      .filter(
+        (item) =>
+          item.family === 'feature' &&
+          !isObservationLane(item) &&
+          TERMINAL_STATES.has(item.state) &&
+          inWindow(item.closedAt),
+      )
+      .map((item) => ({ item, at: item.closedAt!, value: item.terminalOwner })),
+  );
+  if (!featureTerminalSelection.ok) return parseFleetMetricsResult(featureTerminalSelection);
 
   const openedItems = openedSelection.events.map((event) => event.item);
   const terminalItems = terminalSelection.events.map((event) => event.item);
+  const featureCloses = featureTerminalSelection.events.map((event) => event.item);
   const remainingItems = currentCanonical.filter((item) => !TERMINAL_STATES.has(item.state));
-  const explainFloors = opts.explainFloors ?? explainIssueClaimFloors;
+  const explainFloors = opts.explainFloors ?? ((harness, ids, options) =>
+    withFleetMetricReadSql(sql => explainIssueClaimFloors(harness, ids, options, sql)));
   // The occurrence census and claim-floor explanation are independent reads. Keep
   // the caller's occurrence promise deferred until this point so the two expensive
   // legs overlap instead of consuming the metric budget back-to-back.
-  const [floorRows, issueOccurrences] = await Promise.all([
+  const workspaceId = opts.workspaceId ?? null;
+  const readPauseSource = opts.readPauseSource ?? readFleetMetricPauseSource;
+  const [floorRows, issueOccurrences, featureOutcomes, pausedTime, terminalContributions] = await Promise.all([
     explainFloors(
       resolution.scope.harness,
       remainingItems.map((item) => item.id),
-      { assignee: opts.assignee },
+      { assignee: opts.assignee, includeAllFloors: true },
     ),
     Promise.resolve(opts.issueOccurrences),
+    buildFleetFeatureOutcomes({
+      featureCloses,
+      supportingCloses: terminalItems,
+      members: new Set(resolution.everMemberIds),
+      workspaceId,
+      harness: resolution.scope.harness,
+      readHistory: opts.readHistory ?? readFleetMetricClaimHistory,
+    }),
+    (async (): Promise<FleetPausedTime> => {
+      if (!workspaceId) {
+        return {
+          status: 'unknown',
+          reason: 'workspace identity is unavailable, so fleet control history could not be read',
+          recoverVia: 'retry work_items:burn_down { fleetMetrics } from a workspace-scoped session',
+        };
+      }
+      try {
+        const source = await readPauseSource({
+          workspaceId,
+          fleet: resolution.scope.fleet,
+          endAt: resolution.scope.window.endAt,
+        });
+        return computeFleetPausedTime(source, resolution.scope.window);
+      } catch (error) {
+        return {
+          status: 'unknown',
+          reason: `fleet control history read failed: ${errorReason(error)}`,
+          recoverVia: 'retry; the writer is harness_shared.tool_invocations (fleet:pause|fleet:wind-down|fleet:resume)',
+        };
+      }
+    })(),
+    Promise.resolve(opts.terminalContributions ?? []),
   ]);
   const floorById = new Map(floorRows.map((row: ClaimFloorAttribution) => [row.id, row]));
   const buckets = {
@@ -915,21 +1416,22 @@ export async function buildFleetMetricsResult(
   };
   for (const item of remainingItems) {
     const floor = floorById.get(item.id);
+    const failsFloor = (label: string) => floor?.refusedBy === label || floor?.failedFloors?.includes(label);
     if (
       hasNeedsHuman(item) ||
       item.state === 'needs-human' ||
       item.state === 'needs_human' ||
-      floor?.refusedBy === 'needs-owner-action'
+      failsFloor('needs-owner-action')
     ) {
       buckets.needsHuman += 1;
     } else if (
       item.state === 'blocked' ||
       hasActiveExternalBlocker(item) ||
-      floor?.refusedBy === 'blocked-dep' ||
-      floor?.refusedBy === 'external-blocker'
+      failsFloor('blocked-dep') ||
+      failsFloor('external-blocker')
     ) {
       buckets.blocked += 1;
-    } else if (hasClaimHold(item) || floor?.refusedBy === 'claim-hold') {
+    } else if (hasClaimHold(item) || failsFloor('claim-hold')) {
       buckets.claimHeld += 1;
     } else if (item.assignee) {
       buckets.inFlight += 1;
@@ -942,6 +1444,47 @@ export async function buildFleetMetricsResult(
 
   const members = new Set(resolution.everMemberIds);
   const authority = authorityPartition(terminalItems);
+  const openedBy = partitionActors(openedItems, item => item.createdBy, members);
+  const terminalBy = partitionActors(terminalItems, item => item.terminalOwner, members);
+  let opened = openedItems.length;
+  let terminalLifecycle = terminalItems.length;
+  let canonicalBugs = currentCanonical.filter(item => item.kind === 'bug').length;
+  let observationCount = observations.length;
+  const intakeStages = countWorkItemPresentationStages(currentMatched.filter(item => item.family === 'issue').map(item => ({
+    kind: item.kind, title: item.title, summary: item.summary, payload: item.payload,
+    status: item.state, assignee: item.assignee, terminalOwner: item.terminalOwner,
+    terminalCompletionRef: item.terminalCompletionRef, completionAuthority: item.completionAuthority,
+    blocked: ['blocked-dep', 'external-blocker', 'claim-hold', 'needs-owner-action']
+      .includes(floorById.get(item.id)?.refusedBy ?? ''),
+  })));
+  const terminalServiceIds: string[] = [];
+  const addActor = (partition: FleetActorPartition, owner: string | null, count: number) => {
+    const classification = classifyTerminalOwner(owner);
+    const key = classification === 'unattributed' ? 'unattributed' : classification === 'system' ? 'system'
+      : owner && members.has(owner) ? 'fleet' : 'otherAgents';
+    partition[key] += count;
+  };
+  for (const group of terminalContributions) {
+    intakeStages.counts[group.stage] += group.n;
+    intakeStages.population += group.n;
+    if (group.stage === 'verified-completion') intakeStages.verifiedCompletions += group.n;
+    if (group.observation) { observationCount += group.n; continue; }
+    canonicalBugs += group.n;
+    for (const id of group.ids) terminalServiceIds.push(id);
+    opened += group.opened;
+    terminalLifecycle += group.closed;
+    addActor(openedBy, group.created_by, group.opened);
+    addActor(terminalBy, group.terminal_owner, group.closed);
+    const value = isWorkItemCompletionAuthority(group.authority) ? group.authority : null;
+    authority.lifecycleTerminal += group.closed;
+    if (countsTowardBurnDown(value, true)) authority.counted += group.closed;
+    const key = value === null ? 'legacy' : value === 'pending_human' ? 'pendingHuman' : value;
+    authority[key] += group.closed;
+    if (featureOutcomes.status === 'measured') {
+      featureOutcomes.supporting.bugs += group.closed;
+      featureOutcomes.supporting.total += group.closed;
+    }
+  }
   const priorExactness = resolution.quality.exactness;
   const quality = {
     ...resolution.quality,
@@ -961,6 +1504,80 @@ export async function buildFleetMetricsResult(
       : priorExactness,
   };
 
+  // Reuse the durable-park detector, including its overlapping control axes.
+  // This is the full current-spec stock, before examples or transport are capped.
+  const parks = buildDurableParkAuditReport({ rows: remainingItems.map(item => ({
+    id: item.id, title: item.title, state: item.state, takenBy: item.assignee, takenAt: item.takenAt,
+    updatedAtMs: null, payload: item.payload, reviewRoutedAtMs: null,
+  })), runId: 'fleet-metrics-read-only', workspaceId: workspaceId ?? '(unresolved)',
+    harnessSlug: resolution.scope.harness, nowMs: windowEnd });
+  // Use the existing park detector's sorted rows, after its complete census.
+  // A parker is provenance; only the typed release owner is an accountable clearer.
+  const parkExamples = parks.durableParks.slice(0, 10).map(park => {
+    const release = park.releaseLiveness;
+    return { id: park.id, parker: park.parker, condition: release.condition,
+      clearer: release.owner, trigger: release.trigger, reachability: release.reachability,
+      findings: release.findings, ageMs: park.age.ageMs, ageSource: 'payload.claim_hold_at' as const,
+      nextAction: release.status === 'satisfied-still-parked'
+        ? 'Reconcile this park with condition evidence and its current control fingerprint; preserve other floors.'
+        : release.status === 'unreachable'
+          ? 'Escalate or reframe this release condition with its accountable owner; retain the park until explicitly resolved.'
+          : release.status === 'tracked'
+            ? 'Retain the park until its exact release condition is evidenced.'
+            : 'Repair the missing or unverified release contract before attempting release.',
+      recheck: release.trigger
+        ? `Re-evaluate on ${release.trigger}; verify condition evidence before clearing this park.`
+        : 'No recheck trigger recorded; establish an accountable release condition and trigger.',
+    };
+  });
+  const remainingById = new Map(remainingItems.map(item => [item.id, item]));
+  const runnableVerifiers = new Set(resolution.claimSpec.current.lane === 'verification'
+    ? resolution.populationLifecycle.currentRunnableRoster.ownerIds : []);
+  const reviewExamples = parks.overdueReviews.rows.slice(0, 10).map(review => {
+    const assignee = remainingById.get(review.id)?.assignee;
+    const clearer = assignee && assignee !== review.submittedBy && runnableVerifiers.has(assignee) ? assignee : null;
+    return { id: review.id, submittedBy: review.submittedBy, ledgerIdeaId: review.ledgerIdeaId,
+      round: review.round, clearer, ageMs: review.ageMs,
+      ageSource: 'payload.agentReview.timing.enteredAt (matching round)' as const,
+      nextAction: clearer
+        ? 'The assigned independent verifier must record a review outcome for this round.'
+        : 'Assign a runnable independent verifier for this review round; its author cannot approve it.',
+      recheck: `Re-read ${review.id} after its current review round records a decision; elapsed time never approves it.`,
+    };
+  });
+  const verificationService = await (async () => {
+    if (resolution.claimSpec.current.lane !== 'verification') return {
+      status: 'not-applicable' as const, reason: 'fleet-spec-is-not-verification' };
+    const recoverVia = 'retry fleet:leader-brief with the verification fleet and harness';
+    if (!workspaceId) return { status: 'unknown' as const, reason: 'workspace identity unavailable', recoverVia };
+    try {
+      const verifierIds = resolution.populationLifecycle.currentRunnableRoster.ownerIds;
+      const service = await (opts.readReviewService ?? readAgentReviewService)({ workspaceId,
+        harnessSlug: resolution.scope.harness, sinceMs: windowStart, nowMs: windowEnd, verifierIds,
+        verificationSpecs: [{ specId: resolution.claimSpec.current.specId, revision: resolution.scope.stock.revision }] },
+      { itemIds: [...currentCanonical.map(item => item.id), ...terminalServiceIds] });
+      if (service.status !== 'known') return { status: 'unknown' as const, reason: service.reason, recoverVia };
+      const history = service.history;
+      const pickupReasons = Object.entries(service.pickups?.noClaimReasons ?? {})
+        .map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
+      return { status: 'known' as const, workers: verifierIds.length,
+        arrivals: service.arrivals + history.arrivals, arrivalsUnknown: service.arrivalsUnknown,
+        priorRoundsUnmeasured: service.priorRoundsUnmeasured,
+        outcomes: service.outcomes && history.outcomes ? {
+          approved: service.outcomes.approved + history.outcomes.approved,
+          revisionRequested: service.outcomes.revisionRequested + history.outcomes.revisionRequested,
+        } : null,
+        outcomesUnknown: service.outcomesUnknown + history.outcomesUnknown,
+        pickups: service.pickups, unscopedPickupAttempts: service.unscopedPickupAttempts,
+        pickupFailureReasons: { rows: pickupReasons.slice(0, 10), omittedReasons: Math.max(0, pickupReasons.length - 10),
+          recoverVia: 'scheduler:pull_ledger for this fleet spec, runnable verifier roster and time window' },
+        since: resolution.scope.window.startAt, until: resolution.scope.window.endAt,
+        specId: resolution.claimSpec.current.specId, specRevision: resolution.scope.stock.revision,
+        basis: 'dated-review-rounds-and-scheduler-dispositions' as const,
+        snapshot: 'selection-then-service-read' as const };
+    } catch (error) { return { status: 'unknown' as const, reason: errorReason(error), recoverVia }; }
+  })();
+
   return parseFleetMetricsResult({
     ok: true,
     snapshot: {
@@ -969,14 +1586,14 @@ export async function buildFleetMetricsResult(
       scope: resolution.scope,
       quality,
       flow: {
-        opened: openedItems.length,
-        terminalLifecycle: terminalItems.length,
+        opened,
+        terminalLifecycle,
         terminalCounted: authority.counted,
-        netLifecycle: openedItems.length - terminalItems.length,
-        netCounted: openedItems.length - authority.counted,
+        netLifecycle: opened - terminalLifecycle,
+        netCounted: opened - authority.counted,
         unit: FLEET_METRIC_UNITS.workItems,
-        openedBy: partitionActors(openedItems, (item) => item.createdBy, members),
-        terminalBy: partitionActors(terminalItems, (item) => item.terminalOwner, members),
+        openedBy,
+        terminalBy,
       },
       remaining: {
         total: remainingItems.length,
@@ -987,8 +1604,8 @@ export async function buildFleetMetricsResult(
       },
       authority,
       issueUnits: {
-        canonicalBugs: currentCanonical.filter((item) => item.kind === 'bug').length,
-        observations: observations.length,
+        canonicalBugs,
+        observations: observationCount,
         occurrences: issueOccurrences.rawOccurrences,
         duplicateOccurrences: issueOccurrences.duplicateOccurrences,
         separateUnits: true,
@@ -1004,7 +1621,35 @@ export async function buildFleetMetricsResult(
           occurrences: FLEET_METRIC_WRITERS.occurrences,
         },
       },
+      intakeStages: {
+        ...intakeStages,
+        scope: 'current-spec issue-family rows including observation evidence',
+        window: 'current stock at generatedAt',
+      },
       populationLifecycle: resolution.populationLifecycle,
+      featureOutcomes,
+      pausedTime,
+      queueHealth: {
+        population: remainingItems.length, scope: 'current-spec non-terminal canonical issue rows',
+        waiting: computeQueueWaitingTimes(remainingItems, windowEnd),
+        controls: parks.population.axes, controlsOverlap: true, parkAgeBuckets: parks.parkAgeBuckets,
+        missingMetadata: parks.missingMetadata,
+        releaseConditions: { statusCounts: parks.releaseConditionHealth.statusCounts,
+          findingCounts: parks.releaseConditionHealth.findingCounts, flagged: parks.releaseConditionHealth.flagged,
+          nextAction: parks.releaseConditionHealth.flagged || parks.missingMetadata.unattributedClaimHolds
+            ? 'Inspect flagged durable parks with the existing durable-park audit; reconcile only with condition evidence.' : null,
+          examples: { rows: parkExamples, total: parks.durableParks.length,
+            omitted: parks.durableParks.length - parkExamples.length,
+            recoverVia: 'Existing durable-park audit report for this harness; work_items:get for a named park' } },
+        overdueReview: { thresholdHours: 24, known: parks.overdueReviews.rows.length,
+          timingUnknown: parks.missingMetadata.pendingReviewTimestamp,
+          nextAction: parks.overdueReviews.rows.length
+            ? 'Assign independent review or escalate the named review condition; age never approves a review.' : null,
+          examples: { rows: reviewExamples, total: parks.overdueReviews.rows.length,
+            omitted: parks.overdueReviews.rows.length - reviewExamples.length,
+            recoverVia: 'Existing durable-park audit overdueReviews for this harness; work_items:get for a named review' } },
+        verificationService,
+      },
       admissionParity: FLEET_METRIC_ADMISSION_PARITY,
     },
   });
@@ -1040,6 +1685,12 @@ export function buildBurnDownResult(
     rowLimit?: number;
     /** Captured on the raw source before a fence/spec filter can shrink it. */
     sourceCapExhausted?: boolean;
+    /** WI-6554700010008464 — exact per-state counts over the same selector. When given,
+     *  `terminal.total`, the per-state counts and `counts.total` come from it, and `items`
+     *  need only carry the terminal slice that feeds `authority` and `delta`. */
+    terminalStateCounts?: Record<string, number>;
+    /** WI-6554700010008464 — the terminal-history read behind `items`' terminal rows. */
+    terminalHistory?: { limit: number; truncatedByLimit: boolean; oldestUpdatedAt: string | null };
   },
 ): BurnDownResult {
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
@@ -1073,6 +1724,8 @@ export function buildBurnDownResult(
     /** WI-37381: see BurnDownResult.terminal.truncatedByLimit / censusLimit docs. */
     truncatedByLimit,
     censusLimit,
+    /** WI-6554700010008464: see BurnDownResult.terminal.history. */
+    history: undefined as BurnDownTerminalHistory | undefined,
     /** EI-19313376980892266 fix B: who produced `delta`. Only present with `since`. */
     deltaBy: undefined as BurnDownDeltaBy | undefined,
     /** True whenever `deltaBy` is present: its four counts sum to `delta` exactly. */
@@ -1205,6 +1858,35 @@ export function buildBurnDownResult(
     return { rows: sorted.slice(0, DELTA_ROW_CAP), total: sorted.length, truncated: sorted.length > DELTA_ROW_CAP };
   };
 
+  // WI-6554700010008464: on a live census `items` holds every open row but only a
+  // bounded, newest-first slice of terminal history, so the loop's per-state tallies
+  // count that slice. Replace them with the exact aggregate; `authority` and `delta`
+  // stay slice-derived and `terminal.history` states whether each covers everything.
+  const terminalRowsRead = terminal.total;
+  if (opts.terminalStateCounts) {
+    terminal.total = 0;
+    for (const s of ['done', 'passed', 'resolved', 'closed', 'deprecated', 'dropped'] as const) terminal[s] = 0;
+    for (const [state, n] of Object.entries(opts.terminalStateCounts)) {
+      if (!TERMINAL_STATES.has(state)) continue;
+      terminal.total += n;
+      if (state in terminal && typeof terminal[state as keyof typeof terminal] === 'number') {
+        (terminal[state as 'done' | 'passed' | 'resolved' | 'closed' | 'deprecated' | 'dropped']) += n;
+      }
+    }
+  }
+  if (opts.terminalHistory) {
+    const h = opts.terminalHistory;
+    const oldestMs = h.oldestUpdatedAt ? Date.parse(h.oldestUpdatedAt) : NaN;
+    terminal.history = {
+      totalsSource: opts.terminalStateCounts ? 'aggregate' : 'rows',
+      rowsRead: terminalRowsRead,
+      limit: h.limit,
+      truncatedByLimit: h.truncatedByLimit,
+      authorityExact: !h.truncatedByLimit,
+      deltaExact: hasSince ? !h.truncatedByLimit || (Number.isFinite(oldestMs) && oldestMs <= sinceMs) : null,
+    };
+  }
+
   terminal.deltaClosedUndated = deltaClosedUndated;
   if (hasSince) {
     // EI-19313376980892266 fix B — PROVENANCE ON A DERIVED NUMBER. `delta` is
@@ -1260,7 +1942,9 @@ export function buildBurnDownResult(
     parked: capRows(parked),
     unclaimed: capRows(unclaimed),
     counts: {
-      total: items.length,
+      // WI-6554700010008464: the fetched terminal slice is swapped for the exact
+      // terminal total; identical to items.length when no aggregate was supplied.
+      total: items.length - terminalRowsRead + terminal.total,
       terminal: terminal.total,
       inFlight: inFlight.length,
       parked: parked.length,
@@ -1335,6 +2019,13 @@ const rowSchema = z.object({
   assigneeLive: z.boolean().optional(),
   takenAt: z.string().nullable(),
   lastProgressAt: z.string().nullable(),
+  workEvidence: z.object({
+    reservation: z.object({ owner: z.string(), claimedAt: z.string().nullable() }).nullable(),
+    recentItemWork: z.object({ status: z.enum(['recent', 'stale', 'unknown']), at: z.string().nullable(),
+      windowMs: z.number().positive(), writer: z.literal('work_items.last_progress_at') }),
+    waiting: z.object({ status: z.enum(['registered', 'unknown']), refs: z.array(z.string()) }),
+    nativeAttestation: z.object({ status: z.literal('unknown'), reason: z.string() }),
+  }).optional(),
   updatedAt: z.string(),
   severity: z.string().nullable(),
   priority: z.number().nullable(),
@@ -1501,6 +2192,16 @@ export default defineTool({
       deltaClosedUndated: z.number(),
       truncatedByLimit: z.boolean(),
       censusLimit: z.number(),
+      history: z
+        .object({
+          totalsSource: z.enum(['aggregate', 'rows']),
+          rowsRead: z.number(),
+          limit: z.number(),
+          truncatedByLimit: z.boolean(),
+          authorityExact: z.boolean(),
+          deltaExact: z.boolean().nullable(),
+        })
+        .optional(),
       deltaBy: z
         .object({
           fleet: z.number().nullable(),
@@ -1639,7 +2340,7 @@ export default defineTool({
           state: z.string().nullable(),
           bucket: z.enum(['terminal', 'parked', 'in-flight', 'unclaimed', 'missing']),
           closureKind: z.string().nullable(),
-          evidenceVerdict: z.enum(['verified', 'incomplete', 'missing', 'not-applicable']),
+          evidenceVerdict: z.enum(['verified', 'incomplete', 'missing', 'disposition-recorded', 'not-applicable']),
           completionRef: z.string().nullable(),
           terminalOwner: z.string().nullable(),
           reopenRecommended: z.boolean(),
@@ -1705,33 +2406,55 @@ export default defineTool({
       (ctx as { principal?: { workspaceId?: string | null } }).principal?.workspaceId,
     );
     const self = args.since || wantsFleetMetrics ? resolveSelfRef(ctx) : undefined;
-    const [items, presence, fleetMetricSourceItems] = await Promise.all([
+    const fleetMetricResolutionPromise = (async (): Promise<FleetMetricScopeResolution | null> => {
+      if (!wantsFleetMetrics) return null;
+      const flowMode = args.flowMode ?? 'current-spec';
+      if (!workspaceId) {
+        return fleetMetricsUnavailable({
+          fleet: args.fleet!,
+          harness: args.harness,
+          flowMode,
+          reason: 'workspace identity is unavailable',
+          recoverVia: 'retry from a workspace-scoped session',
+        });
+      }
+      return resolveFleetMetricScope({
+        workspaceId,
+        harness: args.harness,
+        fleet: args.fleet!,
+        flowMode,
+      });
+    })();
+    // Share the leader brief's complete current/history source selection. Only
+    // hydrate metric rows after resolving their predicate, while the ordinary
+    // display census and presence reads continue independently.
+    const fleetMetricSourceItemsPromise = fleetMetricResolutionPromise.then(resolution =>
+      resolution?.ok ? readFleetMetricSource(resolution) : null);
+    const [census, presence, fleetMetricResolution, fleetMetricSourceItems] = await Promise.all([
       requestedIds
-        ? Promise.all(requestedIds.map((id) => getWorkItem(id, args.harness))).then(
-            (rows) => rows.filter((row): row is WorkItem => row != null),
-          )
-        : listWorkItems({
-            harness: args.harness,
-            kind: args.kind as WorkItemKind | undefined,
-            includeChildren: args.includeChildren,
-            // WI-37381: this fetch feeds the AGGREGATE (terminal.*/counts.*/deltaBy.*),
-            // never just the returned row lists — so it must NEVER be bounded by the
-            // caller's `limit`. A small `limit:5` used to fetch only 5 rows total and
-            // report terminal.total 0 for a queue with 1693 real terminal rows. Always
-            // fetch up to the hard cap here; `args.limit` is applied below (via
-            // buildBurnDownResult's `rowLimit`) to the RETURNED inFlight/parked/unclaimed
-            // arrays only.
-            limit: WORK_ITEMS_MAX_LIMIT,
-          }),
+        ? Promise.all(requestedIds.map((id) => getWorkItem(id, args.harness))).then((rows) => ({
+            items: rows.filter((row): row is WorkItem => row != null),
+            live: null,
+          }))
+        : // WI-37381: this read feeds the AGGREGATE (terminal.*/counts.*/deltaBy.*), so the
+          // caller's `limit` never bounds it; `args.limit` only bounds the RETURNED arrays.
+          // WI-6554700010008464: open rows are read uncapped and terminal totals come from
+          // an exact aggregate. A fence filters rows in JS, so a fenced census keeps
+          // row-derived terminal totals rather than an unfenced aggregate that disagrees.
+          readLiveCensus(
+            {
+              harness: args.harness,
+              kind: args.kind as WorkItemKind | undefined,
+              includeChildren: args.includeChildren,
+            },
+            { exactTerminalTotals: !args.fence },
+          ).then((live) => ({ items: live.items, live })),
       listPresence({ workspaceId }).catch(() => []),
-      wantsFleetMetrics
-        ? listWorkItems({
-            harness: args.harness,
-            includeObservations: true,
-            limit: WORK_ITEMS_MAX_LIMIT,
-          })
-        : Promise.resolve(null),
+      fleetMetricResolutionPromise,
+      fleetMetricSourceItemsPromise,
     ]);
+    const items = census.items;
+    const live = census.live;
     // EI-19313376980892266 fix B: resolve the fleet whose closes count as "ours".
     // Only worth a round-trip when `since` was passed (no `since` ⇒ no delta to split).
     // Best-effort throughout: an attribution read must never cost a leader the census.
@@ -1790,37 +2513,21 @@ export default defineTool({
       harnessSlug: args.harness,
       since: args.since ?? null,
     });
-    const fleetMetricResolution = await (async (): Promise<FleetMetricScopeResolution | null> => {
-      if (!wantsFleetMetrics) return null;
-      const flowMode = args.flowMode ?? 'current-spec';
-      if (!workspaceId) {
-        return fleetMetricsUnavailable({
-          fleet: args.fleet!,
-          harness: args.harness,
-          flowMode,
-          reason: 'workspace identity is unavailable',
-          recoverVia: 'retry from a workspace-scoped session',
-        });
-      }
-      return resolveFleetMetricScope({
-        workspaceId,
-        harness: args.harness,
-        fleet: args.fleet!,
-        flowMode,
-      });
-    })();
     const fleetMetrics = await (async (): Promise<FleetMetricsResult | null> => {
-      if (!fleetMetricResolution || !fleetMetricSourceItems) return null;
+      if (!fleetMetricResolution) return null;
       if (!fleetMetricResolution.ok) return parseFleetMetricsResult(fleetMetricResolution);
-      const metricOccurrences = readIssueOccurrenceCounts({
+      if (!fleetMetricSourceItems) return null;
+      const metricOccurrences = withFleetMetricReadSql(sql => readIssueOccurrenceCounts({
         workspaceId: occurrenceWorkspaceId,
         harnessSlug: args.harness,
         since: fleetMetricResolution.scope.window.startAt,
-      });
-      return buildFleetMetricsResult(fleetMetricResolution, fleetMetricSourceItems, {
+      }, sql));
+      return buildFleetMetricsResult(fleetMetricResolution, fleetMetricSourceItems.items, {
+        terminalContributions: fleetMetricSourceItems.terminalContributions,
         issueOccurrences: metricOccurrences,
-        sourceCapExhausted: fleetMetricSourceItems.length >= WORK_ITEMS_MAX_LIMIT,
+        sourceCapExhausted: false,
         assignee: self?.ownerId,
+        workspaceId,
       });
     })();
     // P-011: apply the lane fence BEFORE the census is built, so every count in the
@@ -1839,9 +2546,20 @@ export default defineTool({
       // so it has no census limit to report. The real-census path always fetches at the
       // hard cap (see above) regardless of `args.limit`; `rowLimit` is where the caller's
       // `limit` actually takes effect — bounding only the returned row lists.
-      censusLimit: requestedIds ? undefined : WORK_ITEMS_MAX_LIMIT,
-      rowLimit: args.limit,
-      sourceCapExhausted: requestedIds ? false : items.length >= WORK_ITEMS_MAX_LIMIT,
+      // WI-6554700010008464: the census is bounded only when the open read hit its
+      // ceiling, or (fenced) when terminal totals had to come from a capped history read.
+      censusLimit: live
+        ? live.nonTerminal.truncatedByLimit || args.fence
+          ? WORK_ITEMS_MAX_LIMIT
+          : live.nonTerminal.limit
+        : undefined,
+      // The open read is uncapped, so default the RETURNED arrays to the old ceiling.
+      rowLimit: args.limit ?? (live ? WORK_ITEMS_MAX_LIMIT : undefined),
+      sourceCapExhausted: live
+        ? live.nonTerminal.truncatedByLimit || (args.fence ? live.terminalHistory.truncatedByLimit : false)
+        : false,
+      terminalStateCounts: live?.terminalStateCounts,
+      terminalHistory: live?.terminalHistory,
     });
     // The cohort audit deliberately reads the UNFENCED rows: it answers "what
     // happened to the exact IDs you named", and silently dropping a named ID because

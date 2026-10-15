@@ -33,6 +33,8 @@ vi.mock('../operator-state-pg', async (importOriginal) => ({
 
 import {
   selectAccountForDeploy,
+  recordNativeCredentialFailure,
+  accountStatus,
   handleAccountExhausted,
   initAccountScaleObserver,
   _resetAccountScaleObserver,
@@ -66,7 +68,56 @@ function poolOf(...ids: string[]): AccountPool {
   ids.forEach((id, i) => (p = registerAccount(p, { id, credentialRef: `token:~/.papercusp/${id}` }, T0 + i)));
   return p;
 }
+
+describe('native credential health', () => {
+  it('alerts and atomically blocks a registered credential, without repeating on replay', async () => {
+    let pool = poolOf('bad');
+    const alert = vi.fn(async () => {});
+    const updatePool = vi.fn(async (mutator: (p: AccountPool) => AccountPool) => (pool = mutator(pool)));
+    const deps = { loadPool: async () => pool, updatePool, alert };
+    const event = { accountId: 'bad', ownerId: 'su-failed', observedAt: T0 + MIN, workspaceId: 'ws' };
+    await recordNativeCredentialFailure(event, deps);
+    expect(alert).toHaveBeenCalledWith('bad', 'su-failed', 'ws');
+    expect(updatePool).toHaveBeenCalledWith(expect.any(Function), 'ws');
+    expect(pool.accounts[0].credentialFailure).toEqual({ observedAt: T0 + MIN, ownerId: 'su-failed' });
+    await recordNativeCredentialFailure(event, deps);
+    expect(alert).toHaveBeenCalledOnce();
+    expect(updatePool).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an alert failure retryable and fences a repair racing the update', async () => {
+    let pool = poolOf('bad');
+    const event = { accountId: 'bad', ownerId: 'su-failed', observedAt: T0 + MIN, workspaceId: 'ws' };
+    const updatePool = vi.fn(async (mutator: (p: AccountPool) => AccountPool) => (pool = mutator(pool)));
+    await expect(recordNativeCredentialFailure(event, { loadPool: async () => pool, updatePool, alert: async () => { throw new Error('alert store unavailable'); } })).rejects.toThrow('alert store unavailable');
+    expect(updatePool).not.toHaveBeenCalled();
+    await recordNativeCredentialFailure(event, {
+      loadPool: async () => pool, updatePool,
+      alert: async () => { pool = registerAccount(pool, { id: 'bad', credentialRef: 'token:repaired' }, T0 + 2 * MIN); },
+    });
+    expect(pool.accounts[0].credentialFailure).toBeNull();
+  });
+});
 const frameOf = (id: string): Frame => ({ id, target: 'hetzner', placement: 'remote' });
+
+describe('account sidebar wallet identity', () => {
+  it('exposes the same public wallet identity for aliases without exposing auth tokens', async () => {
+    let pool = registerAccount(emptyPool(), { id: 'local', provider: 'codex', credentialRef: 'codex-cli:/tmp/local' }, T0);
+    pool = registerAccount(pool, { id: 'alias', provider: 'codex', credentialRef: 'codex-cli:/tmp/alias' }, T0);
+    stateStore.set(stateKey('operator_account_pool', 'credit-test'), pool);
+    const rows = await accountStatus('credit-test', T0, { gatewayStats: null, readCodexWalletId: async () => 'shared-wallet' });
+    expect(rows.map((r) => r.creditWalletId)).toEqual(['shared-wallet', 'shared-wallet']);
+    expect(rows.every((r) => !('accessToken' in r) && !('idToken' in r))).toBe(true);
+  });
+
+  it('keeps the pool readable if a credential identity read fails', async () => {
+    const pool = registerAccount(emptyPool(), { id: 'local', provider: 'codex', credentialRef: 'codex-cli:/tmp/local' }, T0);
+    stateStore.set(stateKey('operator_account_pool', 'credit-error-test'), pool);
+    const rows = await accountStatus('credit-error-test', T0, { gatewayStats: null, readCodexWalletId: async () => { throw new Error('unavailable'); } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].creditWalletId).toBeUndefined();
+  });
+});
 
 // ── P-002: per-provider capacity rollup ──────────────────────────────────────
 

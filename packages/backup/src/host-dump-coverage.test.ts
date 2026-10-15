@@ -12,12 +12,22 @@
  * safety property, not test padding.
  */
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   DEFAULT_HOST_PG_DUMP_DIR,
+  HOST_DUMP_IN_PROGRESS_MAX_AGE_SEC,
+  HOST_PG_DUMP_IN_PROGRESS_PREFIX,
+  HOST_PG_DUMP_IN_PROGRESS_SUFFIX,
+  KOPIA_BACKUP_LOCK_PATH_ENV,
   HOST_DUMP_MAX_AGE_SEC,
   HOST_PG_DUMP_DIR_ENV,
   evaluateHostDumpCoverage,
+  hostDumpGuardInProgressPath,
+  hostDumpInProgressPath,
   hostDumpStatusPath,
+  readHostDumpInProgress,
 } from './host-dump-coverage';
 
 const NOW = 1_788_100_000;
@@ -39,6 +49,20 @@ const evaluate = (over: Partial<Parameters<typeof evaluateHostDumpCoverage>[0]> 
     nowEpoch: NOW,
     ...over,
   });
+
+async function writeFakeProcess(
+  procRoot: string,
+  pid: number,
+  startTicks: string,
+  state = 'S',
+  commandLine?: string,
+): Promise<void> {
+  const processDir = join(procRoot, String(pid));
+  await mkdir(processDir, { recursive: true });
+  const fields = [state, ...Array(18).fill('0'), startTicks, '0', '0'];
+  await writeFile(join(processDir, 'stat'), `${pid} (fake process name) ${fields.join(' ')}\n`);
+  if (commandLine !== undefined) await writeFile(join(processDir, 'cmdline'), commandLine);
+}
 
 describe('evaluateHostDumpCoverage', () => {
   it('covers a fresh successful host dump of the same database on the same cluster', () => {
@@ -248,5 +272,135 @@ describe('hostDumpStatusPath', () => {
     expect(hostDumpStatusPath({ [HOST_PG_DUMP_DIR_ENV]: '   ' })).toBe(
       `${DEFAULT_HOST_PG_DUMP_DIR}/STATUS.json`,
     );
+  });
+});
+
+describe('readHostDumpInProgress', () => {
+  it('recognizes a fresh host-writer marker only for the current live PID generation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'host-dump-progress-'));
+    const dumpDir = join(root, 'dump');
+    const procRoot = join(root, 'proc');
+    const pid = 4242;
+    const startTicks = '987654321';
+    const env = {
+      [HOST_PG_DUMP_DIR_ENV]: dumpDir,
+      [KOPIA_BACKUP_LOCK_PATH_ENV]: join(root, 'kopia-global.lock'),
+    };
+    try {
+      await mkdir(dumpDir, { recursive: true });
+      await writeFakeProcess(procRoot, pid, startTicks);
+      await writeFile(hostDumpInProgressPath(pid, env), JSON.stringify({
+        pid,
+        processStartTicks: startTicks,
+        startedAtEpoch: NOW - 10,
+        phase: 'host-backup',
+      }));
+
+      const active = await readHostDumpInProgress({ env, nowEpoch: NOW, procRoot });
+      expect(active).toMatchObject({ pid, processStartTicks: startTicks, phase: 'host-backup', source: 'host-backup' });
+      expect(evaluate({ inProgress: active })).toMatchObject({
+        covered: false,
+        inProgress: true,
+        reason: expect.stringContaining('host backup is in progress'),
+      });
+      expect(evaluate({
+        status: { ...goodStatus(), lastSuccessEpoch: NOW - HOST_DUMP_MAX_AGE_SEC - 1 },
+        inProgress: active,
+      })).toMatchObject({
+        covered: false,
+        inProgress: true,
+        reason: expect.stringContaining('host backup is in progress'),
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('recognizes the guard run marker and a live legacy .wait marker', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'host-dump-guard-progress-'));
+    const procRoot = join(root, 'proc');
+    const pid = 4343;
+    const startTicks = '987654322';
+    const lockPath = join(root, 'kopia-global.lock');
+    const env = {
+      [HOST_PG_DUMP_DIR_ENV]: join(root, 'dump'),
+      [KOPIA_BACKUP_LOCK_PATH_ENV]: lockPath,
+    };
+    try {
+      await mkdir(env[HOST_PG_DUMP_DIR_ENV], { recursive: true });
+      await writeFakeProcess(procRoot, pid, startTicks);
+      const runPath = hostDumpGuardInProgressPath(pid, env);
+      expect(runPath).toBe(`${lockPath}.db-dump.${pid}.run`);
+      await writeFile(runPath, JSON.stringify({
+        pid,
+        processStartTicks: startTicks,
+        startedAtEpoch: NOW - 10,
+        phase: 'guard-queued',
+      }));
+      await expect(readHostDumpInProgress({ env, nowEpoch: NOW, procRoot })).resolves.toMatchObject({
+        pid,
+        source: 'guard',
+        phase: 'guard-queued',
+      });
+
+      await rm(runPath);
+      const waitPath = `${lockPath}.db-dump.${pid}.wait`;
+      const commandLine = ['/bin/bash', '/opt/kopia-backup-guard.sh', '--mode', 'scheduled', '--label', 'db-dump'].join('\0') + '\0';
+      await writeFakeProcess(procRoot, pid, startTicks, 'S', commandLine);
+      await writeFile(waitPath, `${pid}\n`);
+      const oldEnoughForTest = new Date((NOW - 10) * 1000);
+      await utimes(waitPath, oldEnoughForTest, oldEnoughForTest);
+      await expect(readHostDumpInProgress({ env, nowEpoch: NOW, procRoot })).resolves.toMatchObject({
+        pid,
+        source: 'guard-wait',
+        phase: 'guard-queued',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects stale, future-dated, reused-PID, and zombie markers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'host-dump-invalid-progress-'));
+    const dumpDir = join(root, 'dump');
+    const procRoot = join(root, 'proc');
+    const pid = 4444;
+    const env = {
+      [HOST_PG_DUMP_DIR_ENV]: dumpDir,
+      [KOPIA_BACKUP_LOCK_PATH_ENV]: join(root, 'kopia-global.lock'),
+    };
+    const markerPath = hostDumpInProgressPath(pid, env);
+    const row = (patch: Record<string, unknown> = {}) => ({
+      pid,
+      processStartTicks: '123456',
+      startedAtEpoch: NOW - 10,
+      phase: 'host-backup',
+      ...patch,
+    });
+    try {
+      await mkdir(dumpDir, { recursive: true });
+      await writeFakeProcess(procRoot, pid, '123456');
+
+      for (const invalid of [
+        row({ startedAtEpoch: NOW - HOST_DUMP_IN_PROGRESS_MAX_AGE_SEC - 1 }),
+        row({ startedAtEpoch: NOW + 1 }),
+        row({ processStartTicks: '654321' }),
+      ]) {
+        await writeFile(markerPath, JSON.stringify(invalid));
+        await expect(readHostDumpInProgress({ env, nowEpoch: NOW, procRoot })).resolves.toBeNull();
+      }
+
+      await writeFakeProcess(procRoot, pid, '123456', 'Z');
+      await writeFile(markerPath, JSON.stringify(row()));
+      await expect(readHostDumpInProgress({ env, nowEpoch: NOW, procRoot })).resolves.toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the host marker filename contract explicit', () => {
+    expect(HOST_PG_DUMP_IN_PROGRESS_PREFIX).toBe('IN_PROGRESS.');
+    expect(HOST_PG_DUMP_IN_PROGRESS_SUFFIX).toBe('.json');
+    expect(hostDumpInProgressPath(45, { [HOST_PG_DUMP_DIR_ENV]: '/srv/dumps' })).toBe('/srv/dumps/IN_PROGRESS.45.json');
   });
 });

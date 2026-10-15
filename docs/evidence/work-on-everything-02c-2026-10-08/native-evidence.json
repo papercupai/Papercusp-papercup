@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "mode": "browser-read-fixture; live goal reads separately verified",
+  "sourceRun": "20261008T051556Z-1862813",
+  "runtimeSourceCommit": "76d5b2f278430ec42e9e84f16ad875730bfefeb0",
+  "featureBaseline": "7a0264b54a62e5a40519b0b841a86a79cee7c109",
+  "pid": 2022861,
+  "display": ":90",
+  "origin": "http://localhost:33700",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "legacyGoal": {
+    "id": "work-on-everything-070565",
+    "status": "killed",
+    "schema": "plan-ref-list without collection",
+    "nativeState": "Worklist unavailable"
+  },
+  "fixture": {
+    "source": "same three-row declared collection shape as WorkOnEverythingPanel.test.tsx",
+    "rows": 3,
+    "reads": 87
+  },
+  "checks": {
+    "search": true,
+    "selection": true,
+    "clickReorder": true,
+    "removal": true,
+    "history": true,
+    "evidence": true,
+    "beforeAfterReview": true,
+    "discardRestoresOrderAndScope": true,
+    "goalPropertyPosts": 0
+  },
+  "limitations": [
+    "No Apply changes click or live DB modification",
+    "Initial127.0.0.1 asset import failure tracked WI-10007411; localhost same server succeeded",
+    "Frozen native source predates canonical keyboard propagation fix; fixed shortcut has red/green framework evidence",
+    "Narrow viewport and final release not exercised"
+  ],
+  "measuredAt": "2026-10-08T05:52:54.653Z"
+}

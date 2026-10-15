@@ -22,7 +22,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runFullTextSearch, runHybridSearch, type SearchHit } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../../../agent-tools/search/sources';
-import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../../../agent-tools/search/embedder';
+import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs, withAcquireBudget } from '../../../agent-tools/search/embedder';
 import { rerankCandidateCount, rerankProseHits } from '../../../agent-tools/search/rerank';
 
 interface ProseHit {
@@ -93,8 +93,12 @@ async function searchMemories(q: string, userId: string, limit: number) {
   // through only — the write path no longer emits workspace entries).
   const backend = getMemoryBackend();
   try {
-    if (!(await backend.available()).ok) return [];
-    const ws = activeWorkspaceId();
+    // Availability builds the cold client too. Include it in the recall budget,
+    // rather than starting the deadline only after that potentially slow build.
+    const budgetMs = interactiveEmbedAcquireBudgetMs();
+    const recall = (async () => {
+      if (!(await backend.available()).ok) return [];
+      const ws = activeWorkspaceId();
     // Bound the mem0 recall leg. backend.search() runs its OWN query embed (the
     // cosine leg) — a SECOND unbounded embed NOT covered by the buildQueryEmbedder
     // acquisition bound on the prose leg (WI-3922, same hang class as WI-3860).
@@ -103,17 +107,12 @@ async function searchMemories(q: string, userId: string, limit: number) {
     // whole recall against the same interactive deadline → degrade to no memories
     // (the prose half still returns) rather than block the response. budgetMs ≤ 0
     // keeps it unbounded (the codebase-wide "0 disables the bound" convention).
-    const budgetMs = interactiveEmbedAcquireBudgetMs();
-    const recall = backend.search(q, {
-      scope: [userId, `workspace:${ws}`],
-      limit,
-    });
-    const hits: MemoryEntry[] = budgetMs > 0
-      ? await Promise.race([
-          recall,
-          new Promise<MemoryEntry[]>((resolve) => setTimeout(() => resolve([]), budgetMs)),
-        ])
-      : await recall;
+      return backend.search(q, {
+        scope: [userId, `workspace:${ws}`],
+        limit,
+      });
+    })();
+    const hits: MemoryEntry[] = await withAcquireBudget(recall, budgetMs) ?? [];
     return hits.slice(0, limit).map((e) => ({
       id: e.id,
       text: e.text,

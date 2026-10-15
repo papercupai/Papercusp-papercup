@@ -98,7 +98,9 @@ fi
 source "$DISK_PREFLIGHT_LIB"
 
 CMD="${VITE_BUILD_CMD:-npx vite build}"
-WAIT_SECS="${VITE_BUILD_WAIT_SECS:-300}"
+# PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: the one unattended-build lock budget
+# (EI-24961470606265468); VITE_BUILD_WAIT_SECS still wins when set.
+WAIT_SECS="${VITE_BUILD_WAIT_SECS:-${PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC:-300}}"
 
 # EI-22614955223428270: the full operator graph transformed all 13,126 modules
 # and then exhausted Node's inherited ~4 GiB old-space ceiling during output
@@ -153,7 +155,17 @@ LOCK="${VITE_BUILD_LOCK:-}"
 if [ -z "$LOCK" ]; then
   mkdir -p "$OUT_ROOT"
   LOCK_ROOT="$(cd "$OUT_ROOT" && pwd -P)"
-  LOCK_KEY="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$LOCK_ROOT")"
+  # sha256 of the resolved path. coreutils first (WI-10008303): a Node cold
+  # start costs whole seconds on a loaded host and sat in front of every
+  # default-lock build. The digest is byte-identical across all three, so a
+  # build on an older copy of this script still contends on the same lock file.
+  if command -v sha256sum >/dev/null 2>&1; then
+    LOCK_KEY="$(printf '%s' "$LOCK_ROOT" | sha256sum | cut -d' ' -f1)"
+  elif command -v shasum >/dev/null 2>&1; then
+    LOCK_KEY="$(printf '%s' "$LOCK_ROOT" | shasum -a 256 | cut -d' ' -f1)"
+  else
+    LOCK_KEY="$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$LOCK_ROOT")"
+  fi
   LOCK="${TMPDIR:-/tmp}/papercup-operator-vite-build-${LOCK_KEY}.lock"
 fi
 DIST="$OUT_ROOT/dist"
@@ -177,7 +189,8 @@ fi
 # Release the reservation even when the build is interrupted. The shared helper
 # also treats a dead owner as stale, so this is hygiene rather than correctness.
 MKDIR_LOCK=""
-trap 'papercusp_release_disk_reservation 2>/dev/null || true; rm -rf ${MKDIR_LOCK:+"$MKDIR_LOCK"} ${SNAPSHOT_TMP:+"$SNAPSHOT_TMP"} 2>/dev/null || true' EXIT
+SOURCE_READ_MARK=""
+trap 'papercusp_release_disk_reservation 2>/dev/null || true; rm -rf ${MKDIR_LOCK:+"$MKDIR_LOCK"} ${SNAPSHOT_TMP:+"$SNAPSHOT_TMP"} ${SOURCE_READ_MARK:+"$SOURCE_READ_MARK"} 2>/dev/null || true' EXIT
 
 papercusp_require_free_gb "$OUT_ROOT" "$VITE_BUILD_MIN_FREE_GB" "operator-vite dist build"
 
@@ -262,6 +275,16 @@ echo "$$" > "$LOCK"
 # lock, so no live build owns these).
 rm -rf "$STAGE" "$PREV"
 
+# Source-read mark (WI-10006797). Dated to the moment THIS build begins reading
+# source, i.e. after the lock wait above. On success it becomes
+# dist/.vite-build-source-read-at, which scripts/lib/spa-require-built.sh
+# compares against source mtimes to decide whether the bundle contains an edit.
+# A caller's own "build started" stamp is taken before npm's prebuild and before
+# this wait (measured 38 min behind a peer's build on 2026-10-06), so every edit
+# made during the wait looked unbuilt and the verifier waited for a build it had.
+SOURCE_READ_MARK="$OUT_ROOT/.vite-build-source-read.$$"
+touch "$SOURCE_READ_MARK"
+
 # Run the build. `set -e` off around it so we always reach the swap/cleanup and
 # propagate the build's own exit status. Output is tee'd so a failure leaves a
 # readable log behind for the 503 (below) — PIPESTATUS[0] is the BUILD's status,
@@ -322,6 +345,17 @@ if [ "$status" -ne 0 ]; then
 elif [ "$RETAIN" -eq 1 ] && [ -f "$DIST/index.html" ]; then
   rm -f "$FAILURE"
 fi
+
+# Stamp the bundle with its source-read time (WI-10006797) — only when THIS
+# build produced the index.html now in dist/. Both regimes leave that file no
+# older than the mark when they built (`! mark -nt index`, not `index -nt mark`:
+# a fast build can write it within the same timestamp tick as the mark). A no-op
+# command (exit 0, no bundle) or a failed build leaves the previous bundle, which
+# predates the mark, and its previous stamp untouched.
+if [ "$status" -eq 0 ] && [ -f "$DIST/index.html" ] && ! [ "$SOURCE_READ_MARK" -nt "$DIST/index.html" ]; then
+  touch -r "$SOURCE_READ_MARK" "$DIST/.vite-build-source-read-at" 2>/dev/null || true
+fi
+rm -f "$SOURCE_READ_MARK"
 
 # Capture a packaging snapshot while fd 9 still holds the singleflight lock.
 # The lock release below happens as this process exits; taking the snapshot

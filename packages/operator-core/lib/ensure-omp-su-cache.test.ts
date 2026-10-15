@@ -7,8 +7,8 @@
  *     calls, and HOLDS the cache even when the cached run rejects (a
  *     transient failure must NOT cause the next launch to re-spend ~5s)
  *   - the non-Linux guard early-returns (no bootstrap / no shellouts)
- *   - ensureOmpHindsightConfig's `omp config set` shellouts actually fire
- *     (5 keys), gated on `omp` being on PATH
+ *   - OMP config is delegated to the canonical integration, with no duplicate
+ *     direct `execFile('omp', ...)` child from this bootstrap helper
  *
  * Hermetic: child_process (execSync/execFile) + fs + os + the two
  * desktop-install leaves are all mocked; nothing spawns or touches the
@@ -30,7 +30,6 @@ function setPlatform(p: NodeJS.Platform): void {
 }
 
 const execFileSpy = vi.fn();
-const execSyncSpy = vi.fn();
 const installPapercuspFilesSpy = vi.fn(async () => ({ playbookWritten: true, extensionWritten: true }));
 const installOmpIntegrationSpy = vi.fn(async () => ({ changed: false, actions: [], reason: undefined }));
 // Holder so a single os mock can be flipped to throw from homedir() per-test
@@ -41,17 +40,14 @@ const homeState = { throwAfterInstall: false };
 beforeEach(() => {
   vi.resetModules();
   execFileSpy.mockReset();
-  execSyncSpy.mockReset();
   installPapercuspFilesSpy.mockClear();
   installOmpIntegrationSpy.mockClear();
   homeState.throwAfterInstall = false;
   tmpHome = mkdtempSync(join(tmpdir(), 'ensure-omp-su-cache-'));
 
-  // The source resolves `omp` by scanning process.env.PATH with pure-Node
-  // statSync (audit P-080 — no shell), so the child_process mock below can't
-  // satisfy the on-PATH check. Plant a stub binary in a temp dir and prepend
-  // it so the test is hermetic on boxes WITHOUT a real omp install (the CI
-  // runner — WI-123); the actual shellouts still hit the execFileSync spy.
+  // Plant a stub OMP path so bootstrap-state resolution is deterministic. The
+  // execFile spy below catches any direct OMP config child if this helper grows
+  // a duplicate shellout again.
   mkdirSync(join(tmpHome, 'bin'), { recursive: true });
   writeFileSync(join(tmpHome, 'bin', 'omp'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   writeFileSync(join(tmpHome, 'bin', 'omp-su'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
@@ -69,19 +65,8 @@ beforeEach(() => {
       },
     };
   });
-  // command -v omp / omp-su succeed (omp IS on PATH); execFile (the actual
-  // `omp config set` shellout) is a spy we assert against.
+  // A reintroduced direct OMP config child is recorded but never spawned.
   vi.doMock('node:child_process', () => ({
-    execSync: (...args: unknown[]) => {
-      execSyncSpy(...args);
-      const cmd = args[0] as string;
-      const opts = args[1] as { encoding?: string } | undefined;
-      if (cmd.startsWith('command -v')) {
-        const bin = cmd.split(' ').pop() ?? '';
-        return opts?.encoding ? `${join(tmpHome, 'bin', bin)}\n` : Buffer.from(`${join(tmpHome, 'bin', bin)}\n`);
-      }
-      return opts?.encoding ? '' : Buffer.from('');
-    },
     execFile: (...args: unknown[]) => {
       execFileSpy(...args);
       const callback = args.at(-1) as (error: Error | null) => void;
@@ -126,17 +111,18 @@ describe('ensureOmpSuInstalled — single-flight cache', () => {
     const p2 = mod.ensureOmpSuInstalled();
     await Promise.all([p1, p2]);
 
-    // The heavy bootstrap (installPapercuspFiles) + the 5 omp-config shellouts
-    // (hindsight only: memory.backend + 4 hindsight.*) ran exactly once despite two
-    // concurrent callers — the single-flight guard, not two re-runs. (The eval-tool-tier
-    // disable moved to psu-launcher's per-session config, WI-2382 scoping fix.)
+    // The heavy bootstrap + canonical OMP integration ran once despite two
+    // concurrent callers. This also guards against restoring a second direct
+    // `execFile('omp', ...)` config sequence here.
     expect(installPapercuspFilesSpy).toHaveBeenCalledTimes(1);
-    expect(execFileSpy).toHaveBeenCalledTimes(5);
+    expect(installOmpIntegrationSpy).toHaveBeenCalledTimes(1);
+    expect(execFileSpy).not.toHaveBeenCalled();
 
     // A THIRD call after settle still reuses the cache (no re-run).
     await mod.ensureOmpSuInstalled();
     expect(installPapercuspFilesSpy).toHaveBeenCalledTimes(1);
-    expect(execFileSpy).toHaveBeenCalledTimes(5);
+    expect(installOmpIntegrationSpy).toHaveBeenCalledTimes(1);
+    expect(execFileSpy).not.toHaveBeenCalled();
   });
 
   it('HOLDS the cache on rejection — a failing run is not retried by the next call', async () => {
@@ -178,52 +164,14 @@ describe('ensureOmpSuInstalled — platform guard', () => {
   });
 });
 
-describe('ensureOmpSuInstalled — ensureOmpHindsightConfig shellouts', () => {
-  it('fires the 5 `omp config set` shellouts (omp on PATH) with the hindsight keys only', async () => {
+describe('ensureOmpSuInstalled — OMP integration ownership', () => {
+  it('delegates OMP configuration to the canonical integration without a duplicate child sequence', async () => {
     setPlatform('linux');
     const mod = await import('./ensure-omp-su');
 
     await mod.ensureOmpSuInstalled();
 
-    // 5 keys: memory.backend + 4 hindsight.* (ensureOmpHindsightConfig) — each a separate `omp
-    // config set`. The eval-tool-tier disable is NO LONGER set here: it moved to psu-launcher's
-    // per-session config (writeOmpSessionConfigDir string-surgery) so eval is off only for psu
-    // agent sessions and the user's global ~/.omp keeps eval enabled (WI-2382 scoping fix).
-    expect(execFileSpy).toHaveBeenCalledTimes(5);
-    const keysSet = execFileSpy.mock.calls.map((c) => {
-      const argv = c[1] as string[];
-      return argv[2]; // omp config set <key> <value>
-    });
-    expect(keysSet).toEqual([
-      'memory.backend',
-      'hindsight.apiUrl',
-      'hindsight.scoping',
-      'hindsight.autoRecall',
-      'hindsight.autoRetain',
-    ]);
-    // Each is an `omp config set …` invocation.
-    for (const call of execFileSpy.mock.calls) {
-      expect(call[0]).toBe('omp');
-      expect((call[1] as string[]).slice(0, 2)).toEqual(['config', 'set']);
-    }
-    // memory.backend → hindsight specifically.
-    expect(execFileSpy.mock.calls[0][1]).toEqual(['config', 'set', 'memory.backend', 'hindsight']);
-    // NO eval.* shellout fires here anymore (moved to per-session psu-launcher config).
-    for (const lang of ['eval.py', 'eval.js', 'eval.rb', 'eval.jl']) {
-      expect(execFileSpy.mock.calls.find((c) => (c[1] as string[])[2] === lang)).toBeUndefined();
-    }
-  });
-
-  it('honors PAPERCUSP_HINDSIGHT_API_URL for the hindsight.apiUrl shellout', async () => {
-    setPlatform('linux');
-    process.env.PAPERCUSP_HINDSIGHT_API_URL = 'http://hindsight.test:9999';
-    try {
-      const mod = await import('./ensure-omp-su');
-      await mod.ensureOmpSuInstalled();
-      const apiUrlCall = execFileSpy.mock.calls.find((c) => (c[1] as string[])[2] === 'hindsight.apiUrl');
-      expect(apiUrlCall?.[1]).toEqual(['config', 'set', 'hindsight.apiUrl', 'http://hindsight.test:9999']);
-    } finally {
-      delete process.env.PAPERCUSP_HINDSIGHT_API_URL;
-    }
+    expect(installOmpIntegrationSpy).toHaveBeenCalledTimes(1);
+    expect(execFileSpy).not.toHaveBeenCalled();
   });
 });

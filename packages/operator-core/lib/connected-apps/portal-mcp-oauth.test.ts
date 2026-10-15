@@ -18,10 +18,13 @@ import type { AppRelayConnector, AppRelayPort } from '../workspace-host/hosted-a
 import type { Sql } from 'postgres';
 import {
   InMemoryPortalOAuthStore,
+  PORTAL_MCP_OAUTH_ROUTES,
   PostgresPortalOAuthStore,
   handleHostedMcpOAuth,
   isPortalMcpOAuthPath,
+  matchPortalMcpOAuthRoute,
   narrowedGrant,
+  portalMcpOAuthRoutePath,
   type PortalMcpOAuthDependencies,
 } from './portal-mcp-oauth';
 import type { AppRelayServiceRunner } from '../workspace-host/hosted-app-relay';
@@ -180,10 +183,43 @@ describe('portal MCP OAuth discovery (P-325)', () => {
     expect(isPortalMcpOAuthPath(`/api/workspaces/${WS}/mcp`)).toBe(false);
     expect(isPortalMcpOAuthPath(`/api/workspaces/${WS}/agent-tools/plans/get`)).toBe(false);
     expect(isPortalMcpOAuthPath(`/api/workspaces/${WS}/oauth/../mcp`)).toBe(false);
+    // A template's dots are literal, not regex wildcards.
+    expect(isPortalMcpOAuthPath(`/api/workspaces/${WS}/xwell-known/oauth-authorization-server`)).toBe(false);
+    expect(isPortalMcpOAuthPath(`/xwell-known/oauth-protected-resource/api/workspaces/${WS}/mcp`)).toBe(false);
+  });
+
+  it('matches every route of PORTAL_MCP_OAUTH_ROUTES at its own path, for the workspace it names (WI-10005092)', () => {
+    for (const route of PORTAL_MCP_OAUTH_ROUTES) {
+      expect(matchPortalMcpOAuthRoute(portalMcpOAuthRoutePath(route, WS))).toEqual({ route, workspaceId: WS });
+    }
+    expect(new Set(PORTAL_MCP_OAUTH_ROUTES.map((route) => route.template)).size).toBe(PORTAL_MCP_OAUTH_ROUTES.length);
+  });
+
+  it('accepts each route at its sampleMethod, the method the hosted ingress probe sends (WI-10005092)', async () => {
+    const h = harness();
+    for (const route of PORTAL_MCP_OAUTH_ROUTES) {
+      const response = await h.call(portalMcpOAuthRoutePath(route, WS), { method: route.sampleMethod });
+      expect({ template: route.template, method: route.sampleMethod, status: response.status }).not.toMatchObject({ status: 405 });
+    }
   });
 });
 
 describe('portal MCP OAuth flow (P-325)', () => {
+  it('refuses offline BYOC OAuth verbs with typed ingress alternatives', async () => {
+    const h = harness();
+    h.state.live = false;
+    Object.assign(h.deps, { resolveCustomerWorkspaceHosting: async (id: string) => id === WS ? 'byoc' : null });
+    for (const path of [`/api/workspaces/${WS}/oauth/register`, `/api/workspaces/${WS}/oauth/token`]) {
+      const response = await h.call(path, { method: 'POST', body: 'BYOC_SECRET' });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        error: 'byoc_plaintext_relay_refused',
+        alternatives: ['customer_controlled_ingress', 'sealed_channel'],
+      });
+    }
+    expect(h.state.mints).toEqual([]);
+  });
+
   it('refuses to register or authorize for an offline workspace', async () => {
     const h = harness();
     const clientId = await register(h);

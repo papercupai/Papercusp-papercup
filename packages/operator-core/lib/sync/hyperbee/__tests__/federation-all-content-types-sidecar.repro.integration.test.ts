@@ -523,8 +523,8 @@ async function bootHiveStatePair(cfg: {
     swarmOverride: swarmAuthor,
     verifyBindingOverride: async (_pk, _login, userId) =>
       userId === idReceiver.userId ? 'verified' : 'fail',
-    applyOverride: (op) => {
-      applyAuthor ??= buildHiveStatePeerApply(authorDb.adminSql, authorSlug, handleAuthor!.ownLog.keyHex);
+    applyOverride: (op, ctx) => {
+      applyAuthor ??= buildHiveStatePeerApply(authorDb.adminSql, authorSlug, ctx.ownLogKeyHex);
       return applyAuthor(op);
     },
     mergePollMs: 0,

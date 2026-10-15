@@ -28,7 +28,7 @@ import {
   type ProvisionState,
   type RecordedResource,
 } from './state-store';
-import { buildSandbox, type SandboxBuildResult } from './sandbox';
+import { buildSandbox, prepareSandboxCommand, type SandboxBuildResult } from './sandbox';
 import { buildNetworkPolicy } from './network-policy';
 
 /**
@@ -212,25 +212,6 @@ export async function runPhase(
     data: { scriptHash, configHash, pluginVersion: inputs.pluginVersion, decision },
   }, inputs.provision.auditLogCapMb);
 
-  // Surface sandbox bypass loudly — built before sandbox so the bypass
-  // reason is recorded once per run, regardless of script outcome.
-  // (We rebuild it just below to apply env vars; this is a cheap pre-check.)
-  {
-    const probe = buildSandbox({
-      pluginDir: inputs.pluginDir,
-      scratchDir: '/tmp', // shape-only probe; not the real scratch
-      allowedHosts: [],
-      env: {},
-    });
-    if (probe.smokeBypass) {
-      await appendAudit(inputs.harness, inputs.plugin, {
-        kind: 'sandbox-bypass',
-        runId,
-        data: { reason: probe.smokeBypass.reason, flag: 'PAPERCUSP_ALLOW_NO_SANDBOX' },
-      }, inputs.provision.auditLogCapMb);
-    }
-  }
-
   const scratch = await ensureScratch(inputs.harness, inputs.plugin);
   const runtimeLibPath = await materializeRuntimeLib(scratch);
   const networkPolicy = buildNetworkPolicy({
@@ -278,6 +259,14 @@ export async function runPhase(
       HOME: scratch,
     },
   });
+
+  if (sandbox.smokeBypass || (!sandbox.active && !sandbox.unavailableReason)) {
+    await appendAudit(inputs.harness, inputs.plugin, {
+      kind: 'sandbox-bypass', runId,
+      data: { reason: sandbox.smokeBypass?.reason ?? 'explicitly disabled',
+        flag: sandbox.smokeBypass ? 'PAPERCUSP_ALLOW_NO_SANDBOX' : 'PAPERCUSP_DISABLE_SANDBOX' },
+    }, inputs.provision.auditLogCapMb);
+  }
 
   // Open a FIFO bridge: the substrate watches for record_resource writes
   // and folds them into the WAL in real time. Implementation detail: we
@@ -375,9 +364,17 @@ interface ScriptRunResult {
 }
 
 async function runScript(input: ScriptRunInputs): Promise<ScriptRunResult> {
-  const argv = input.sandbox.active
-    ? [...input.sandbox.argv, '/bin/bash', input.scriptPath]
-    : ['/bin/bash', input.scriptPath];
+  let prepared: ReturnType<typeof prepareSandboxCommand>;
+  try { prepared = prepareSandboxCommand(input.sandbox, ['/bin/bash', input.scriptPath]); }
+  catch (error) { return { ok: false, exitCode: null, error: String(error) }; }
+  try {
+    return await runPreparedScript(input, prepared.argv);
+  } finally {
+    prepared.cleanup();
+  }
+}
+
+async function runPreparedScript(input: ScriptRunInputs, argv: string[]): Promise<ScriptRunResult> {
   const [bin, ...rest] = argv;
 
   // Tail the FIFO file in 200ms ticks; fold each new line into WAL.

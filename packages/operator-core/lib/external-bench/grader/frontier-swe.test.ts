@@ -4,6 +4,10 @@ import type { GraderFs, ProcExec } from './swe-bench-pro';
 import {
   makeFrontierSweGrader,
   parseFrontierSweReward,
+  parseFrontierSweV2Reward,
+  resolveHarborReward,
+  frontierSweGraderCorpusVersion,
+  frontierSweTaskGraderVersion,
   rewardFromJson,
   type FrontierSweGraderConfig,
   type FrontierSweRawReward,
@@ -44,6 +48,164 @@ function graderWithReward(
   };
   return { grader: makeFrontierSweGrader(cfg, { exec, fs }), calls };
 }
+
+const V2_COMMIT = 'da83f84f8fbcec3cbf0f2b17c98ebc811355c2df';
+const V2_VERIFIER = `us-docker.pkg.dev/proximal-evals-public/t@sha256:${'c'.repeat(64)}`;
+const v2Task = (instanceId: string, meta: Record<string, unknown> = {}): BenchTask => ({
+  benchmark: 'frontier-swe',
+  instanceId,
+  problemStatement: 'x',
+  graderMeta: {
+    corpusVersion: 'v2',
+    upstreamCommit: V2_COMMIT,
+    verifierEnvironmentMode: 'separate',
+    verifierDockerImage: V2_VERIFIER,
+    ...meta,
+  },
+});
+const files = (json: string | null, txt: string | null): FrontierSweRawReward => ({ rewardScalar: null, files: { json, txt } });
+
+describe('resolveHarborReward — v2 reward precedence (plan D-003 §3)', () => {
+  it('reward.json is PRIMARY whenever it exists, even when reward.txt disagrees', () => {
+    expect(resolveHarborReward({ json: '{"reward": 0.25}', txt: '0.9' })).toMatchObject({ ok: true, reward: 0.25, source: 'reward.json', key: 'reward' });
+  });
+  it('accepts a bare number, the score key, or a sole key — and keeps every named reward', () => {
+    expect(resolveHarborReward({ json: '0.5', txt: null })).toMatchObject({ ok: true, reward: 0.5, key: null });
+    expect(resolveHarborReward({ json: '{"score": 0.4, "aux": 2}', txt: null })).toMatchObject({ reward: 0.4, key: 'score', rewards: { score: 0.4, aux: 2 } });
+    expect(resolveHarborReward({ json: '{"accuracy": 0.7}', txt: null })).toMatchObject({ reward: 0.7, key: 'accuracy' });
+  });
+  it('a malformed reward.json is an error and NEVER falls back to reward.txt', () => {
+    for (const json of ['', '   ', 'not json', '[0.5]', '{}', '{"reward": "0.5"}', '{"reward": 0.5, "note": "x"}', '{"a": 0.1, "b": 0.2}']) {
+      const r = resolveHarborReward({ json, txt: '0.9' });
+      expect(r.ok, json).toBe(false);
+    }
+  });
+  it('reward.txt is read only when reward.json is ABSENT; empty / non-numeric / inf are errors', () => {
+    expect(resolveHarborReward({ json: null, txt: '0.6\n' })).toMatchObject({ ok: true, reward: 0.6, source: 'reward.txt' });
+    for (const txt of ['', '\n', 'abc', 'inf', 'nan', '0.5 0.6']) expect(resolveHarborReward({ json: null, txt }).ok, txt).toBe(false);
+  });
+  it('neither file → error (no verdict)', () => {
+    expect(resolveHarborReward({ json: null, txt: null })).toMatchObject({ ok: false, error: expect.stringMatching(/neither/) });
+  });
+});
+
+describe('parseFrontierSweV2Reward', () => {
+  it('FSWE-P003-REWARD: a v2 verifier that writes reward.json → that value IS the task score', () => {
+    const g = parseFrontierSweV2Reward(files('{"reward": 0.42, "latency_ms": 12}', '0.99'), 'astronomy-toolkit', 's', 'frontier-swe@v2+x');
+    expect(g.graderError).toBeUndefined();
+    expect(g.score).toBe(0.42);
+    expect(g.rawGraderOutput).toMatchObject({ source: 'reward.json', rewards: { reward: 0.42, latency_ms: 12 }, clamped: false });
+  });
+  it('a real 0 COUNTS; an invalid reward is a graderError with score null (never 0)', () => {
+    expect(parseFrontierSweV2Reward(files('{"reward": 0}', null), 'x', 's', 'v').score).toBe(0);
+    const bad = parseFrontierSweV2Reward(files('', '0.8'), 'x', 's', 'v');
+    expect(bad.score).toBeNull();
+    expect(bad.graderError).toMatch(/reward.json exists but is empty/);
+  });
+  it('a reader that returned no raw files cannot be graded under Harbor precedence', () => {
+    expect(parseFrontierSweV2Reward({ rewardScalar: 0.5 }, 'x', 's', 'v').graderError).toMatch(/no raw reward files/);
+  });
+});
+
+describe('per-task grader version (plan R-1: v1 and v2 never mix)', () => {
+  it('v2 pins the corpus commit + digest-pinned verifier image; v1 pins the configured version', () => {
+    const v2 = frontierSweTaskGraderVersion(v2Task('t'), undefined);
+    expect(v2).toEqual({ ok: true, version: `frontier-swe@v2+da83f84f8fbc verifier=${V2_VERIFIER}`, corpusVersion: 'v2' });
+    expect(frontierSweTaskGraderVersion(undefined, VERSION)).toEqual({ ok: true, version: `frontier-swe@v1 ${VERSION}`, corpusVersion: 'v1' });
+    expect(frontierSweGraderCorpusVersion(v2.version)).toBe('v2');
+    expect(frontierSweGraderCorpusVersion(`frontier-swe@v1 ${VERSION}`)).toBe('v1');
+    expect(frontierSweGraderCorpusVersion(VERSION)).toBe('v1'); // an untagged legacy row is v1 history
+  });
+  it('refuses an unpinnable row instead of guessing', () => {
+    expect(frontierSweTaskGraderVersion(v2Task('t', { verifierDockerImage: 'img:latest' }), VERSION)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/digest-pinned/),
+    });
+    expect(frontierSweTaskGraderVersion(v2Task('t', { upstreamCommit: 'abc' }), VERSION)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/commit/),
+    });
+    expect(frontierSweTaskGraderVersion(undefined, undefined)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/PAPERCUSP_FRONTIER_SWE_VERSION/),
+    });
+  });
+});
+
+describe('makeFrontierSweGrader — v2 separate verifier', () => {
+  function v2Grader(raw: FrontierSweRawReward, opts: { prepareFails?: boolean; releaseFails?: boolean; noHook?: boolean } = {}) {
+    const events: string[] = [];
+    const { grader, calls } = graderWithReward(
+      { t: raw },
+      {
+        version: undefined,
+        prepareVerifierEnv: opts.noHook
+          ? undefined
+          : async ({ envRef }) => {
+              events.push(`prepare:${envRef}`);
+              if (opts.prepareFails) throw new Error('image pull failed');
+              return {
+                verifierRef: 'verifier-1',
+                release: async () => {
+                  events.push('release');
+                  if (opts.releaseFails) throw new Error('rm failed');
+                },
+              };
+            },
+        readReward: async ({ verifierRef }) => {
+          events.push(`read:${verifierRef}`);
+          return raw;
+        },
+      },
+    );
+    return { grader, calls, events };
+  }
+
+  it('prepares the separate env, verifies + reads THERE, scores reward.json, releases, stamps the v2 version', async () => {
+    const { grader, calls, events } = v2Grader(files('{"reward": 0.61}', null));
+    const [g] = await grader.grade([inContainerSub('t', 's', 'arm-1')], [v2Task('t')]);
+    expect(g.score).toBe(0.61);
+    expect(g.graderVersion).toBe(`frontier-swe@v2+da83f84f8fbc verifier=${V2_VERIFIER}`);
+    expect(calls[0]).toMatchObject({ envRef: 'arm-1', verifierRef: 'verifier-1' });
+    expect(events).toEqual(['prepare:arm-1', 'read:verifier-1', 'release']);
+  });
+
+  it('no prepareVerifierEnv hook → graderError (a v2 task cannot be graded in the arm container)', async () => {
+    const { grader } = v2Grader(files('{"reward": 1}', null), { noHook: true });
+    const [g] = await grader.grade([inContainerSub('t')], [v2Task('t')]);
+    expect(g.score).toBeNull();
+    expect(g.graderError).toMatch(/SEPARATE verifier environment/);
+  });
+
+  it('a failed prepare is a graderError; a failed release is recorded but keeps the verdict', async () => {
+    const prep = v2Grader(files('{"reward": 1}', null), { prepareFails: true });
+    expect((await prep.grader.grade([inContainerSub('t')], [v2Task('t')]))[0].graderError).toMatch(/image pull failed/);
+    const rel = v2Grader(files('{"reward": 0.5}', null), { releaseFails: true });
+    const [g] = await rel.grader.grade([inContainerSub('t')], [v2Task('t')]);
+    expect(g.score).toBe(0.5);
+    expect(g.rawGraderOutput).toMatchObject({ verifierReleaseError: 'rm failed' });
+  });
+
+  it('releases even when the reward read throws', async () => {
+    const events: string[] = [];
+    const { grader } = graderWithReward(
+      { t: () => { throw new Error('container vanished'); } },
+      { prepareVerifierEnv: async () => ({ verifierRef: 'v', release: async () => void events.push('release') }) },
+    );
+    const [g] = await grader.grade([inContainerSub('t')], [v2Task('t')]);
+    expect(g.graderError).toMatch(/container vanished/);
+    expect(events).toEqual(['release']);
+  });
+
+  it('a v1 task graded with no version pin is an error row; with the pin it is stamped frontier-swe@v1', async () => {
+    const bare = graderWithReward({ x: { rewardScalar: 0.3 } }, { version: undefined });
+    expect((await bare.grader.grade([inContainerSub('x')], []))[0].graderError).toMatch(/no version pin/);
+    const pinned = graderWithReward({ x: { rewardScalar: 0.3 } });
+    const [g] = await pinned.grader.grade([inContainerSub('x')], []);
+    expect(g.score).toBe(0.3);
+    expect(g.graderVersion).toBe(`frontier-swe@v1 ${VERSION}`);
+  });
+});
 
 describe('rewardFromJson', () => {
   it('reads a bare number', () => expect(rewardFromJson(0.42)).toBe(0.42));

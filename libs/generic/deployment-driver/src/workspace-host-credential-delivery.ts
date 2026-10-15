@@ -37,6 +37,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  readlink,
   rename,
   rm,
   writeFile,
@@ -467,6 +468,22 @@ async function ensureDirectoryWithoutFollowingSymlinks(
       info = await lstat(current);
     }
     if (!info.isDirectory() || info.isSymbolicLink()) {
+      // bootc owns these two fixed aliases in its immutable root. Resolve only
+      // their exact OS targets; customer-controlled links remain forbidden.
+      const systemTarget = current === "/srv" ? "/var/srv" : current === "/home" ? "/var/home" : undefined;
+      if (systemTarget && info.isSymbolicLink() && info.uid === 0 && info.gid === 0) {
+        const target = await readlink(current);
+        if (target === systemTarget || target === systemTarget.slice(1)) {
+          for (const ancestor of ["/var", systemTarget]) {
+            const trusted = await lstat(ancestor);
+            if (!trusted.isDirectory() || trusted.isSymbolicLink() || trusted.uid !== 0 || trusted.gid !== 0 || (trusted.mode & 0o022) !== 0) {
+              throw new Error(`refusing untrusted system directory '${ancestor}'`);
+            }
+          }
+          await ensureDirectoryWithoutFollowingSymlinks(systemTarget + path.slice(current.length), mode, kind);
+          return;
+        }
+      }
       throw new Error(
         `refusing non-directory or symlink at ${kind} '${current}'`,
       );

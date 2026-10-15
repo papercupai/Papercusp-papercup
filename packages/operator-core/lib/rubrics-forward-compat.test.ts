@@ -14,6 +14,12 @@ const criterion = {
   method: 'edit_attribution_ledger rows by the owner',
   driftMarkers: 'any edit-claim',
 };
+const cleanCheck = {
+  kind: 'probe',
+  probe: { kind: 'tool', tool: 'dev:build_status', args: {} },
+  unit: 'ms',
+  ratingBands: [{ rating: 'near', expect: { op: 'lte', value: 150 } }],
+};
 const cleanData = {
   characteristic: 'goal-mode',
   ratingScale: ['healthy', 'degraded', 'broken', 'unknown'],
@@ -23,7 +29,19 @@ const cleanData = {
 const newerBuildData = {
   ...cleanData,
   someFutureTopLevel: 'owner-authorized',
-  criteria: [{ ...criterion, someFutureCriterionField: 1 }],
+  criteria: [{
+    ...criterion,
+    check: {
+      ...cleanCheck,
+      futureProbePolicy: 'read-only',
+      ratingBands: [{ ...cleanCheck.ratingBands[0], confidence: 'measured' }],
+    },
+    someFutureCriterionField: 1,
+  }],
+};
+const compatibleNewerBuildData = {
+  ...cleanData,
+  criteria: [{ ...criterion, check: cleanCheck }],
 };
 const row = (templateData: unknown) =>
   ({
@@ -43,8 +61,13 @@ const row = (templateData: unknown) =>
 describe('stripUnknownRubricKeys (WI-10002803)', () => {
   it('strips unknown top-level AND criterion keys and names each one', () => {
     const tolerant = stripUnknownRubricKeys(newerBuildData);
-    expect(tolerant.stripped).toEqual(['someFutureTopLevel', 'criteria[].someFutureCriterionField']);
-    expect(tolerant.data).toEqual(cleanData);
+    expect(tolerant.stripped).toEqual([
+      'someFutureTopLevel',
+      'criteria[].check.futureProbePolicy',
+      'criteria[].check.ratingBands[0].confidence',
+      'criteria[].someFutureCriterionField',
+    ]);
+    expect(tolerant.data).toEqual(compatibleNewerBuildData);
   });
 
   it('is a no-op on data this build fully understands', () => {
@@ -58,8 +81,14 @@ describe('planRowToRubric forward compatibility (WI-10002803)', () => {
     expect(rubric).not.toBeNull();
     expect(rubric!.criteria.map((c) => c.key)).toEqual(['never-implements']);
     expect(rubric!.readCompat).toEqual({
-      strippedKeys: ['someFutureTopLevel', 'criteria[].someFutureCriterionField'],
+      strippedKeys: [
+        'someFutureTopLevel',
+        'criteria[].check.futureProbePolicy',
+        'criteria[].check.ratingBands[0].confidence',
+        'criteria[].someFutureCriterionField',
+      ],
     });
+    expect(rubric!.criteria[0]!.check).toEqual(cleanCheck);
   });
 
   it('still refuses a malformed KNOWN field — tolerance never masks corruption', () => {

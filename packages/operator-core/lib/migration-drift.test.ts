@@ -10,9 +10,48 @@ import {
   resolveDeployedSqlDir,
   resolveSqlDir,
   resolveCanonicalStagingSqlDir,
+  digestAppliedMigrationRows,
+  readAppliedMigrationLedgerIdentity,
   migrationReplayTestTimeoutMs,
   type MigrationContentDrift,
 } from './migration-drift';
+
+describe('readAppliedMigrationLedgerIdentity', () => {
+  it('hashes a sorted filename and sha256 frontier, excluding row order', async () => {
+    const first = await readAppliedMigrationLedgerIdentity(async () => [
+      { filename: '002-second.sql', sha256: 'sha-b' },
+      { filename: '001-first.sql', sha256: 'sha-a' },
+    ]);
+    const reordered = await readAppliedMigrationLedgerIdentity(async () => [
+      { filename: '001-first.sql', sha256: 'sha-a' },
+      { filename: '002-second.sql', sha256: 'sha-b' },
+    ]);
+    const changed = digestAppliedMigrationRows([
+      { filename: '001-first.sql', sha256: 'sha-a' },
+      { filename: '002-second.sql', sha256: 'sha-c' },
+    ]);
+
+    expect(first).toMatchObject({ state: 'known', rows: [
+      { filename: '001-first.sql', sha256: 'sha-a' },
+      { filename: '002-second.sql', sha256: 'sha-b' },
+    ] });
+    expect(reordered).toEqual(first);
+    expect(first.state === 'known' ? first.digest : null).not.toBe(changed);
+  });
+
+  it('preserves failed or malformed ledger reads as unknown', async () => {
+    await expect(
+      readAppliedMigrationLedgerIdentity(async () => {
+        throw new Error('database unavailable');
+      }),
+    ).resolves.toEqual({ state: 'unknown', reason: 'query-failed' });
+    await expect(
+      readAppliedMigrationLedgerIdentity(async () => [
+        { filename: '001-first.sql', sha256: undefined as unknown as null },
+      ]),
+    ).resolves.toEqual({ state: 'unknown', reason: 'malformed-ledger' });
+  });
+});
 
 describe('migrationReplayTestTimeoutMs', () => {
   it('keeps the historical floor for small corpora and grows with migration count', () => {
@@ -151,8 +190,8 @@ describe('classifyContentDrift', () => {
     commit: 'e786f7391c46dd32ec2a53b7e819289e087f3e86',
   });
 
-  it('classifies a comment-only edit as benign, citing the commit it compared against', () => {
-    const [got] = classifyContentDrift(
+  it('classifies a comment-only edit as benign, citing the commit it compared against', async () => {
+    const [got] = await classifyContentDrift(
       [entry],
       appliedOk('ALTER TABLE t ADD COLUMN c int;\n'),
       () => '-- FORWARD-COMPAT: cannot break the deployed release.\nALTER TABLE t ADD COLUMN c int;\n',
@@ -163,8 +202,8 @@ describe('classifyContentDrift', () => {
     expect(got).toMatchObject(entry);
   });
 
-  it('classifies a real half-landed migration as executable (the mig-708 hazard)', () => {
-    const [got] = classifyContentDrift(
+  it('classifies a real half-landed migration as executable (the mig-708 hazard)', async () => {
+    const [got] = await classifyContentDrift(
       [entry],
       appliedOk('ALTER TABLE t ADD COLUMN a int;\n'),
       () => 'ALTER TABLE t ADD COLUMN a int;\nALTER TABLE t ADD COLUMN closed_ts timestamptz;\n',
@@ -173,10 +212,10 @@ describe('classifyContentDrift', () => {
     expect(got.classificationDetail).toMatch(/never ran and never will/);
   });
 
-  it('SAFETY: unrecoverable applied text is `unclassified`, never benign', () => {
+  it('SAFETY: unrecoverable applied text is `unclassified`, never benign', async () => {
     // The packaged/headless case — no git repo, so recovery is impossible by
     // construction. The correct outcome is today's behavior (report the drift).
-    const [got] = classifyContentDrift(
+    const [got] = await classifyContentDrift(
       [entry],
       () => ({ ok: false, reason: 'the file has no git history in this tree' }),
       () => 'anything',
@@ -185,24 +224,24 @@ describe('classifyContentDrift', () => {
     expect(got.classificationDetail).toMatch(/applied text unrecoverable/);
   });
 
-  it('SAFETY: unlexable SQL on either side is `unclassified`, never benign', () => {
-    const [fromApplied] = classifyContentDrift([entry], appliedOk("SELECT 'oops;"), () => 'SELECT 1;');
+  it('SAFETY: unlexable SQL on either side is `unclassified`, never benign', async () => {
+    const [fromApplied] = await classifyContentDrift([entry], appliedOk("SELECT 'oops;"), () => 'SELECT 1;');
     expect(fromApplied.classification).toBe('unclassified');
     expect(fromApplied.classificationDetail).toMatch(/applied SQL unparseable/);
 
-    const [fromDisk] = classifyContentDrift([entry], appliedOk('SELECT 1;'), () => "SELECT 'oops;");
+    const [fromDisk] = await classifyContentDrift([entry], appliedOk('SELECT 1;'), () => "SELECT 'oops;");
     expect(fromDisk.classification).toBe('unclassified');
     expect(fromDisk.classificationDetail).toMatch(/on-disk SQL unparseable/);
   });
 
-  it('SAFETY: an unreadable on-disk file is `unclassified`, never benign', () => {
-    const [got] = classifyContentDrift([entry], appliedOk('SELECT 1;'), () => null);
+  it('SAFETY: an unreadable on-disk file is `unclassified`, never benign', async () => {
+    const [got] = await classifyContentDrift([entry], appliedOk('SELECT 1;'), () => null);
     expect(got.classification).toBe('unclassified');
     expect(got.classificationDetail).toMatch(/on-disk text unreadable/);
   });
 
-  it('SAFETY: a THROWING seam is caught and reported, never allowed to look benign', () => {
-    const [fromApplied] = classifyContentDrift(
+  it('SAFETY: a THROWING seam is caught and reported, never allowed to look benign', async () => {
+    const [fromApplied] = await classifyContentDrift(
       [entry],
       () => {
         throw new Error('git exploded');
@@ -212,15 +251,15 @@ describe('classifyContentDrift', () => {
     expect(fromApplied.classification).toBe('unclassified');
     expect(fromApplied.classificationDetail).toMatch(/git exploded/);
 
-    const [fromDisk] = classifyContentDrift([entry], appliedOk('SELECT 1;'), () => {
+    const [fromDisk] = await classifyContentDrift([entry], appliedOk('SELECT 1;'), () => {
       throw new Error('EACCES');
     });
     expect(fromDisk.classification).toBe('unclassified');
     expect(fromDisk.classificationDetail).toMatch(/EACCES/);
   });
 
-  it('every entry always carries a populated classificationDetail', () => {
-    const many = classifyContentDrift(
+  it('every entry always carries a populated classificationDetail', async () => {
+    const many = await classifyContentDrift(
       [entry, { ...entry, filename: '728-b.sql' }],
       appliedOk('SELECT 1;'),
       () => 'SELECT 1; -- c',
@@ -229,7 +268,62 @@ describe('classifyContentDrift', () => {
     for (const d of many) expect(d.classificationDetail.length).toBeGreaterThan(0);
   });
 
-  it('stops spending past the budget and marks the REST unclassified, never benign', () => {
+  it('batches applied-text reads in bounded groups and preserves result order', async () => {
+    const many = Array.from({ length: 35 }, (_, i) => ({
+      ...entry,
+      filename: `migration-${i}.sql`,
+    }));
+    const batchSizes: number[] = [];
+    const classified = await classifyContentDrift(
+      many,
+      () => {
+        throw new Error('the batch reader should serve every entry');
+      },
+      () => 'SELECT 1; -- current comment',
+      {
+        readAppliedTexts: async (batch) => {
+          batchSizes.push(batch.length);
+          return batch.map(() => ({
+            ok: true as const,
+            text: 'SELECT 1;',
+            commit: 'e786f7391c46dd32ec2a53b7e819289e087f3e86',
+          }));
+        },
+      },
+    );
+
+    expect(batchSizes).toEqual([32, 3]);
+    expect(classified.map((d) => d.filename)).toEqual(many.map((d) => d.filename));
+    expect(classified.every((d) => d.classification === 'comments-only')).toBe(true);
+  });
+
+  it('fails closed when a batched history read runs past the classifier budget', async () => {
+    let time = 0;
+    const classified = await classifyContentDrift(
+      [entry, { ...entry, filename: '728-b.sql' }],
+      () => {
+        throw new Error('the batch reader should serve every entry');
+      },
+      () => 'SELECT 1;',
+      {
+        budgetMs: 100,
+        now: () => time,
+        readAppliedTexts: async (batch) => {
+          time = 101;
+          return batch.map(() => ({
+            ok: true as const,
+            text: 'SELECT 1;',
+            commit: 'e786f7391c46dd32ec2a53b7e819289e087f3e86',
+          }));
+        },
+      },
+    );
+
+    expect(classified.map((d) => d.classification)).toEqual(['unclassified', 'unclassified']);
+    expect(classified[0]?.classificationDetail).toMatch(/100ms classification budget was exhausted/);
+  });
+
+  it('stops spending past the budget and marks the REST unclassified, never benign', async () => {
     // Injected clock: the first entry is classified, then time jumps past the
     // budget, so everything after it must degrade to unclassified rather than
     // keep walking git history.
@@ -240,7 +334,7 @@ describe('classifyContentDrift', () => {
       { filename: 'b.sql', recordedSha256: 'r', diskSha256: 'd' },
       { filename: 'c.sql', recordedSha256: 'r', diskSha256: 'd' },
     ];
-    const got = classifyContentDrift(
+    const got = await classifyContentDrift(
       many,
       appliedOk('SELECT 1;'),
       () => 'SELECT 1; -- benign comment',
@@ -254,9 +348,9 @@ describe('classifyContentDrift', () => {
     expect(got[2].classification).toBe('unclassified');
   });
 
-  it('is empty-safe — the normal case, where nothing drifted at all', () => {
+  it('is empty-safe — the normal case, where nothing drifted at all', async () => {
     expect(
-      classifyContentDrift(
+      await classifyContentDrift(
         [],
         () => {
           throw new Error('must not be called');
@@ -416,6 +510,10 @@ describe('resolveDeployedSqlDir', () => {
   // Guard against an ambient PAPERCUSP_RELEASE_ROOT in the test-runner's own env
   // (set on a real :3070/:3170 host) shadowing the fixture sibling these tests rely on.
   const savedReleaseRootEnv = process.env.PAPERCUSP_RELEASE_ROOT;
+  // WI-10005161: the shared release-root resolver also anchors on
+  // PAPERCUSP_CANONICAL_TREE (set on :3170), so an inherited one would shadow the
+  // fixture sibling the same way.
+  const savedCanonicalTreeEnv = process.env.PAPERCUSP_CANONICAL_TREE;
   function makeTree(name: string, hasFile: boolean): string {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-drift-test-'));
     tmpRoots.push(parent);
@@ -428,12 +526,34 @@ describe('resolveDeployedSqlDir', () => {
 
   beforeEach(() => {
     delete process.env.PAPERCUSP_RELEASE_ROOT;
+    delete process.env.PAPERCUSP_CANONICAL_TREE;
   });
 
   afterEach(() => {
     for (const p of tmpRoots.splice(0)) fs.rmSync(p, { recursive: true, force: true });
     if (savedReleaseRootEnv === undefined) delete process.env.PAPERCUSP_RELEASE_ROOT;
     else process.env.PAPERCUSP_RELEASE_ROOT = savedReleaseRootEnv;
+    if (savedCanonicalTreeEnv === undefined) delete process.env.PAPERCUSP_CANONICAL_TREE;
+    else process.env.PAPERCUSP_CANONICAL_TREE = savedCanonicalTreeEnv;
+  });
+
+  it('WI-10005161: a staging-generation serving tree finds the release checkout beside the canonical tree', () => {
+    // :3170 serves <ws>/papercusp-staging.generations/.candidate-<sha>.<rand>/checkout
+    // (95-bundled-entry exports it via `pwd -P`). Its parent holds no release checkout;
+    // the box's release checkout sits beside the canonical edit tree.
+    const ws = makeTree('papercusp', false);
+    fs.mkdirSync(path.join(ws, 'papercup-release/libs/papercusp/libs/db/sql'), { recursive: true });
+    const generationSqlDir = path.join(
+      ws,
+      'papercusp-staging.generations/.candidate-ab679a25a55f.LcugsF/checkout/libs/papercusp/libs/db/sql',
+    );
+    fs.mkdirSync(generationSqlDir, { recursive: true });
+    // Without the declared edit tree the generation's sibling is all there is → null.
+    expect(resolveDeployedSqlDir(generationSqlDir)).toBeNull();
+    process.env.PAPERCUSP_CANONICAL_TREE = path.join(ws, 'papercusp');
+    expect(resolveDeployedSqlDir(generationSqlDir)).toBe(
+      path.join(ws, 'papercup-release/libs/papercusp/libs/db/sql'),
+    );
   });
 
   it('returns null for a bogus sqlDir (no such tree)', () => {

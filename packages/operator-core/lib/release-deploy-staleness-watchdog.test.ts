@@ -75,8 +75,12 @@ import type { DeployStateKind } from './release-deploy-launch';
 const HOUR = 3_600_000;
 const NOW = 100 * HOUR;
 
-function status(state: DeployStateKind, deployedAtMs: number | null) {
-  return { state, deploy: { deployedAtMs } };
+function status(
+  state: DeployStateKind,
+  deployedAtMs: number | null,
+  deployedBehindGreenPin: number | null = state === 'up-to-date' ? 0 : null,
+) {
+  return { state, deploy: { deployedAtMs, deployedBehindGreenPin } };
 }
 
 describe('evaluateDeployStaleness', () => {
@@ -375,6 +379,18 @@ describe('releaseDeployStalenessSweep', () => {
       expect(broadcastSevereEventResolved).toHaveBeenCalledWith(
         expect.objectContaining({ conditionKey: 'release-deploy-staleness:papercusp' }),
       );
+    });
+
+    it('does not retract the page while a deploy is in flight and the green pin remains ahead', async () => {
+      computeDeployStatus.mockReturnValue(status('deploy-in-flight', Date.now(), 652));
+      escalationRows = [{ escalation: { kind: 'release-deploy-staleness-watchdog' } }];
+      recoveryUpdateCount = 1;
+
+      const res = await releaseDeployStalenessSweep({ installSlug: 'papercusp' });
+
+      expect(res).toMatchObject({ outcome: 'healthy', recovered: false });
+      expect(sqlStatements.some((s) => /^UPDATE harness_shared\.harness_escalations/i.test(s))).toBe(false);
+      expect(broadcastSevereEventResolved).not.toHaveBeenCalled();
     });
 
     it('a routinely-healthy pass retracts nothing and broadcasts nothing', async () => {

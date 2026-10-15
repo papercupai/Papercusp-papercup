@@ -1,11 +1,15 @@
 /** Real-PostgreSQL coverage for the bounded ledger/work-item rolling cutover. */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import type { CodeIntelAnswer } from '../code-intelligence/contracts';
+import { lspAdmissionClass, lspAdmissionController, runLspAdmission } from '../code-intelligence/lsp-admission';
 import { Governor } from './admission';
 import { PgAdmissionCutoverQueueStore } from './admission-cutover-store';
+import * as execution from './execution';
 import { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver } from './queue';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -95,6 +99,7 @@ function runtime(
   label: string,
   options: {
     now?: () => number;
+    namespace?: string;
     resolveSessionStatesFn?: unknown;
   } = {},
 ) {
@@ -109,7 +114,7 @@ function runtime(
   const store =
     kind === 'legacy' ? new PgWorkItemAdmissionQueueStore(shared) : new PgAdmissionCutoverQueueStore(shared);
   const driver = new WorkItemAdmissionQueueDriver(store, {
-    namespace: NAMESPACE,
+    namespace: options.namespace ?? NAMESPACE,
     now,
     leaseIdFactory: () => `${label}-lease-${++leaseNo}`,
   });
@@ -124,6 +129,69 @@ function runtime(
 }
 
 describe('PgAdmissionCutoverQueueStore', () => {
+  it('persists LSP pressure through the production store and agrees with controller readback until settlement', async () => {
+    // Reuse the production cutover store on the isolated database. Only the
+    // process-global connection lookup and owner liveness are substituted.
+    const deps = runtime('cutover', 'lsp', { now: Date.now, namespace: 'lsp-query' });
+    const connection = vi.spyOn(execution, 'governedExecutionRuntime').mockImplementation((workspaceId, namespace) => {
+      expect(workspaceId).toBe(WORKSPACE);
+      expect(namespace).toBe('lsp-query');
+      return deps;
+    });
+    const observer = new PgAdmissionCutoverQueueStore({ sql: db.sql, workspaceId: WORKSPACE, resolveSessionStatesFn: resolveLive });
+    const base = { workspaceId: WORKSPACE, requestId: 'pg-base', language: 'typescript', projectRoot: '/fixture', op: 'references',
+      query: '/fixture/source.ts', queryKey: 'fixture:source:1', deadlineAtMs: Date.now() + 30_000 };
+    const answer: CodeIntelAnswer = {
+      backend: 'lsp-adapter', intent: 'references', query: base.query,
+      sites: [{ path: base.query, line1: 1, kind: 'reference' }],
+      truncation: { truncated: false, totalAvailable: 1, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, staleVsDisk: false, indexedCommit: null }, latencyMs: 1, error: null,
+    };
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const pending: Promise<unknown>[] = [];
+    const track = (promise: Promise<CodeIntelAnswer>) => { pending.push(promise); void promise.catch(() => undefined); return promise; };
+    const controller = lspAdmissionController(WORKSPACE);
+    const first = track(runLspAdmission({ ...base, requestId: 'pg-held', actor: 'agent-a' }, async () => { await held; return answer; }));
+    const idempotencyKey = `lsp:${createHash('sha256').update(JSON.stringify([WORKSPACE, 'pg-queued'])).digest('hex')}`;
+    try {
+      await vi.waitFor(() => expect(controller.snapshot()).toMatchObject({ inFlight: 1 }));
+      const queued = track(runLspAdmission({ ...base, requestId: 'pg-queued', actor: 'agent-b' }, async () => {
+        // A second store instance reads the committed execution lease before
+        // the LSP task returns; this cannot pass from an in-memory receipt.
+        expect(await observer.find('lsp-query', idempotencyKey)).toMatchObject({ record: { state: 'running', lease: { owner: 'agent-b' } } });
+        return answer;
+      }));
+      await vi.waitFor(async () => {
+        expect(controller.snapshot()).toMatchObject({ queued: 1, inFlight: 1 });
+        expect(await observer.find('lsp-query', idempotencyKey)).toMatchObject({
+          receiptId: expect.stringMatching(/^RG-/),
+          record: { state: 'queued', admissionClass: lspAdmissionClass(base), metadata: { actor: 'agent-b', op: 'references', language: 'typescript' } },
+        });
+      });
+      const cheap = await runLspAdmission({ ...base, requestId: 'pg-cheap', actor: 'agent-c', op: 'symbol' }, async () => ({ ...answer, intent: 'definition' }));
+      expect(cheap.error).toBeNull();
+      expect(controller.snapshot()).toMatchObject({ queued: 1, inFlight: 1 });
+      release();
+      expect((await first).error).toBeNull();
+      expect((await queued).error).toBeNull();
+      await vi.waitFor(async () => {
+        expect(controller.snapshot()).toMatchObject({ assessment: 'idle', queued: 0, inFlight: 0, settlementFailures: [] });
+        const completed = await observer.find('lsp-query', idempotencyKey);
+        expect(completed).toMatchObject({ record: { state: 'completed' } });
+        expect(completed!.record.lease).toBeUndefined();
+      });
+      const rows = await db.sql<Array<{ state: string; namespace: string; lease_id: string | null; owner: string | null }>>`
+        SELECT state, namespace, record->'lease'->>'leaseId' AS lease_id, record->'lease'->>'owner' AS owner
+          FROM harness_shared.resource_governor_admissions WHERE workspace_id = ${WORKSPACE}`;
+      expect(rows).toEqual([{ state: 'completed', namespace: 'lsp-query', lease_id: null, owner: null }]);
+    } finally {
+      release();
+      await Promise.allSettled(pending);
+      connection.mockRestore();
+    }
+  }, 20_000);
+
   it('resumes and exactly settles a pre-cutover WI receipt, then writes only RG receipts', async () => {
     const legacy = runtime('legacy', 'old');
     const prior = await legacy.governor.admit({

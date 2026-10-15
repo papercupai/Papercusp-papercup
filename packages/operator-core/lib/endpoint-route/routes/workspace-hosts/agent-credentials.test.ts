@@ -50,6 +50,7 @@ function harness(overrides: Partial<WorkspaceHostAgentCredentialsRouteDependenci
     buildMaterial: vi.fn(() => 'encoded-material'),
     deriveKey: vi.fn((_ref: string, generation: number) => `derived-key:${generation}`),
     writeKey,
+    findCustomerWorkspaceForHost: vi.fn(async () => null),
     ...overrides,
   };
   return { deps, writeKey, route: createWorkspaceHostAgentCredentialsRoute(deps) };
@@ -205,5 +206,100 @@ describe('POST /workspace-hosts/:hostId/agent-credentials', () => {
     const json = (await res.json()) as Record<string, unknown>;
     expect(json.error).toMatch(/admission gate/);
     expect(json.errorKind).toBe('WorkspaceHostAgentCredentialMaterialError');
+  });
+
+  describe('R-24: never delivers service-held credentials into a customer workspace', () => {
+    const BINDING = { customerWorkspaceId: 'ws-customer-1', organizationId: 'org-1', deleted: false };
+
+    it.each([false, true])(
+      'refuses a customer-bound host with 409 before reading any source (dryRun=%s)',
+      async (dryRun) => {
+        const findCustomerWorkspaceForHost = vi.fn(async () => BINDING);
+        const { route, deps, writeKey } = harness({ findCustomerWorkspaceForHost });
+        const res = await route.handler(
+          post({ credentialRef: REF, generation: 1, sources: SOURCES, dryRun }),
+          CTX,
+        );
+        expect(res.status).toBe(409);
+        const json = (await res.json()) as Record<string, unknown>;
+        expect(json.errorKind).toBe('customer_workspace_service_credential_refused');
+        expect(json.customerWorkspaceId).toBe('ws-customer-1');
+        expect(json.slots).toEqual(['claude', 'codex']);
+        expect(findCustomerWorkspaceForHost).toHaveBeenCalledWith(HOST_ID);
+        // Refused BEFORE the operator's own credential bytes are read, not merely before storage.
+        expect(deps.resolveSources).not.toHaveBeenCalled();
+        expect(deps.storeMaterial).not.toHaveBeenCalled();
+        expect(writeKey).not.toHaveBeenCalled();
+      },
+    );
+
+    it('refuses an integration-key source and a deleted customer binding alike', async () => {
+      const { route, deps } = harness({
+        findCustomerWorkspaceForHost: vi.fn(async () => ({ ...BINDING, deleted: true })),
+      });
+      const res = await route.handler(
+        post({
+          credentialRef: REF,
+          generation: 1,
+          sources: { claude: { kind: 'integration-key', name: 'ANTHROPIC_API_KEY' }, omp: { kind: 'absent' } },
+        }),
+        CTX,
+      );
+      expect(res.status).toBe(409);
+      const json = (await res.json()) as Record<string, unknown>;
+      expect(json.slots).toEqual(['claude']);
+      expect(json.error).toMatch(/\(deleted\)/);
+      expect(deps.resolveSources).not.toHaveBeenCalled();
+    });
+
+    it('treats an unknown source kind as service-held rather than waving it through', async () => {
+      const { route, deps } = harness({ findCustomerWorkspaceForHost: vi.fn(async () => BINDING) });
+      const res = await route.handler(
+        post({ credentialRef: REF, generation: 1, sources: { claude: { kind: 'customer-supplied' } } }),
+        CTX,
+      );
+      expect(res.status).toBe(409);
+      expect(deps.resolveSources).not.toHaveBeenCalled();
+    });
+
+    it('fails closed with 503 when the customer binding cannot be read', async () => {
+      const { route, deps, writeKey } = harness({
+        findCustomerWorkspaceForHost: vi.fn(async () => {
+          throw new Error('connection refused');
+        }),
+      });
+      const res = await route.handler(
+        post({ credentialRef: REF, generation: 1, sources: SOURCES }),
+        CTX,
+      );
+      expect(res.status).toBe(503);
+      const json = (await res.json()) as Record<string, unknown>;
+      expect(json.errorKind).toBe('customer_binding_unverified');
+      expect(deps.resolveSources).not.toHaveBeenCalled();
+      expect(writeKey).not.toHaveBeenCalled();
+    });
+
+    it('does not consult the binding when every slot is absent (nothing service-held is read)', async () => {
+      const findCustomerWorkspaceForHost = vi.fn(async () => BINDING);
+      const { route } = harness({ findCustomerWorkspaceForHost });
+      await route.handler(
+        post({ credentialRef: REF, generation: 1, sources: { omp: { kind: 'absent' } }, dryRun: true }),
+        CTX,
+      );
+      expect(findCustomerWorkspaceForHost).not.toHaveBeenCalled();
+    });
+
+    it('still stores for an operator host that serves no customer workspace', async () => {
+      const findCustomerWorkspaceForHost = vi.fn(async () => null);
+      const { route, deps } = harness({ findCustomerWorkspaceForHost });
+      const res = await route.handler(
+        post({ credentialRef: REF, generation: 1, sources: SOURCES }),
+        CTX,
+      );
+      expect(res.status).toBe(200);
+      expect(findCustomerWorkspaceForHost).toHaveBeenCalledWith(HOST_ID);
+      expect(((await res.json()) as Record<string, unknown>).stored).toBe(true);
+      expect(deps.storeMaterial).toHaveBeenCalledTimes(1);
+    });
   });
 });

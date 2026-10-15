@@ -19,7 +19,7 @@
  * per-test where a method shells out.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, rm, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -36,7 +36,9 @@ import {
   WorkspaceBackup,
   type StepRunner,
 } from './index';
-import { parseKopiaSnapshotJson } from './workspace-backup';
+import { BACKUP_RETENTION_PIN, parseKopiaSnapshotJson } from './workspace-backup';
+import { renameAtomic } from './hook';
+import { IGNORE_PATTERNS } from './policy';
 import { assertSafeBackupCadence } from './types';
 import type { Sql } from 'postgres';
 
@@ -52,6 +54,124 @@ function fakeHost() {
 
 let root: string;
 let wb: WorkspaceBackup;
+
+describe('host backup legal-hold retention (EI-25985604292707665)', () => {
+  function host(lease: <T>(fn: (ids: readonly string[]) => Promise<T>) => Promise<T>) {
+    const sql = ((..._args: unknown[]) => Promise.resolve([])) as unknown as Sql;
+    configureBackup({ getSql: () => sql, workspacesRoot: () => root, ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://test', source: 'test' }), withRetentionLease: lease });
+  }
+
+  it('pins existing and new snapshots before create can expire them; honours a hold placed during capture', async () => {
+    let holdIds: string[] = [];
+    host(async (fn) => fn(holdIds));
+    configureBackupStepRunner({ runStep: async <T>(name: string, fn: () => Promise<T>) => {
+      if (name === 'backup-insert-row') return { id: 701, startedAtMs: Date.now() } as T;
+      if (name === 'backup-pre-snapshot-hook') return { ok: true, error: null } as T;
+      return fn();
+    } });
+    vi.spyOn(wb, 'ensureRepo').mockResolvedValue(undefined);
+    const calls: string[][] = [];
+    vi.spyOn(wb as any, 'kopia').mockImplementation(async (...rawArgs: unknown[]) => {
+      const args = rawArgs[0] as string[];
+      calls.push(args);
+      if (args[0] === 'policy') return JSON.stringify({ files: { ignore: IGNORE_PATTERNS } });
+      if (args[1] === 'list') return JSON.stringify([{ id: 'aabb' }]);
+      if (args[1] === 'create') {
+        holdIds = ['hold-placed-during-capture'];
+        return JSON.stringify({ id: 'ccdd', stats: { totalSize: 10 } });
+      }
+      return '';
+    });
+    await expect(wb.snapshot('manual')).resolves.toMatchObject({ kopiaSnapshotId: 'ccdd', dbDumpOk: true });
+    const pin = calls.findIndex((a) => a.includes(`--add=${BACKUP_RETENTION_PIN}`));
+    const create = calls.findIndex((a) => a[1] === 'create');
+    expect(pin).toBeGreaterThanOrEqual(0);
+    expect(pin).toBeLessThan(create);
+    expect(calls[create]).toContain(`--pin=${BACKUP_RETENTION_PIN}`);
+    expect(calls.some((a) => a.includes(`--remove=${BACKUP_RETENTION_PIN}`) || a[1] === 'expire')).toBe(false);
+  });
+
+  it('refuses expiry on unreadable hold state and malformed manifest lists', async () => {
+    host(async () => { throw new Error('holds database unavailable'); });
+    const kopia = vi.spyOn(wb as any, 'kopia').mockResolvedValue('[{"id":"aabb"}]');
+    await expect((wb as any).expireWithRetentionLease({})).rejects.toThrow(/unavailable/);
+    expect(kopia).not.toHaveBeenCalled();
+    host(async (fn) => fn([]));
+    kopia.mockResolvedValue('{"unexpected":true}');
+    await expect((wb as any).expireWithRetentionLease({})).rejects.toThrow(/malformed/);
+    expect(kopia.mock.calls.some(([a]) => (a as string[])[1] === 'pin' || (a as string[])[1] === 'expire')).toBe(false);
+  });
+
+  it.each([false, true])('maintenance waits for capture admission and releases it (failure=%s)', async (fail) => {
+    let admit!: (lock: { release: () => Promise<void> }) => void;
+    const release = vi.fn(async () => {});
+    const sql = (() => Promise.resolve([])) as unknown as Sql;
+    configureBackup({ getSql: () => sql, workspacesRoot: () => root, ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://test', source: 'test' }),
+      withRetentionLease: async (fn) => fn([]),
+      acquireMigrationLock: () => new Promise((resolve) => { admit = resolve; }) });
+    const kopia = vi.spyOn(wb as any, 'kopia').mockImplementation(async (...raw: unknown[]) => {
+      const args = raw[0] as string[];
+      if (args[0] === 'maintenance' && fail) throw new Error('maintenance failed');
+      return args[1] === 'list' ? '[]' : '';
+    });
+    const maintenance = wb.maintenance();
+    await Promise.resolve();
+    expect(kopia).not.toHaveBeenCalled();
+    admit({ release });
+    if (fail) await expect(maintenance).rejects.toThrow('maintenance failed');
+    else await maintenance;
+    expect(release).toHaveBeenCalledOnce();
+    expect(kopia.mock.calls.some(([args]) => (args as string[])[1] === 'expire')).toBe(!fail);
+  });
+
+  it('rewrites legacy receipts to stable roots before a pin replaces their manifests', async () => {
+    const operations: string[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join('?').includes('UPDATE harness_shared.backup_snapshots')) {
+        expect(values).toEqual(['root-content-id', 'test', 'aabb']);
+        operations.push('receipt');
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    configureBackup({ getSql: () => sql, workspacesRoot: () => root, ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://test', source: 'test' }),
+      withRetentionLease: async (fn) => fn(['active']) });
+    const backup = new WorkspaceBackup({ workspaceId: 'test', workspaceRoot: root });
+    vi.spyOn(backup as any, 'kopia').mockImplementation(async (...rawArgs: unknown[]) => {
+      const args = rawArgs[0] as string[];
+      if (args[1] === 'list') return JSON.stringify([{ id: 'aabb', rootEntry: { obj: 'root-content-id' } }]);
+      operations.push('pin');
+      return '';
+    });
+    await (backup as any).pinForRetention({});
+    expect(operations).toEqual(['receipt', 'pin']);
+  });
+
+  it('retains the previous raw dump while continuing capture, and cleans its archives only after release', async () => {
+    let holds = ['active-even-with-no-live-rows'];
+    host(async (fn) => fn(holds));
+    const current = join(root, 'pg.sql.gz');
+    const next = join(root, 'next.tmp');
+    await writeFile(current, 'previous held historical bytes');
+    await writeFile(next, 'new held bytes');
+    await renameAtomic(next, current);
+    const archived = await readdir(`${current}.legal-hold`);
+    expect(archived).toHaveLength(1);
+    expect(await readFile(join(`${current}.legal-hold`, archived[0]), 'utf8')).toBe('previous held historical bytes');
+    expect(await readFile(current, 'utf8')).toBe('new held bytes');
+    host(async () => { throw new Error('lease unreadable'); });
+    await writeFile(next, 'must not replace');
+    await expect(renameAtomic(next, current)).rejects.toThrow(/unreadable/);
+    expect(await readFile(current, 'utf8')).toBe('new held bytes');
+    holds = [];
+    host(async (fn) => fn(holds));
+    await renameAtomic(next, current);
+    expect(await exists(`${current}.legal-hold`)).toBe(false);
+    expect(await readFile(current, 'utf8')).toBe('must not replace');
+  });
+});
 
 describe('backup cadence safety floor', () => {
   it('allows immediate event-triggered snapshots without an interval', () => {
@@ -531,6 +651,10 @@ describe('promoteRestore — liveTarget escape guard (Gap 2)', () => {
 // Gap 3 — parseKopiaSnapshotJson (pure parser; exported for test).
 // -------------------------------------------------------------------------
 describe('parseKopiaSnapshotJson (Gap 3)', () => {
+  it('records the restorable root object instead of the manifest that pins replace', () => {
+    expect(parseKopiaSnapshotJson(JSON.stringify({ id: 'manifest', rootEntry: { obj: 'content-root' } })))
+      .toMatchObject({ snapshotId: 'content-root' });
+  });
   it('(a) multi-object stdout w/ progress lines → last object wins, uses stats bytes', () => {
     const stdout = [
       'uploading...',                                              // non-JSON progress
@@ -1074,7 +1198,7 @@ describe('db_dump_ok readers stay tri-state and drive rollups', () => {
 // false all-clear — it must see BOTH backup producers, not just the workspace hook
 // this class's own receipt table (list()) tracks.
 describe('liveBackupSessions (EI-22064935119941678)', () => {
-  it('queries pg_stat_activity for both application names, scoped to this database and excluding self', async () => {
+  it('requires a granted relation AccessShareLock while checking both producers, this database, and excluding self', async () => {
     const queries: Array<{ text: string; values: unknown[] }> = [];
     const sql = ((strings: unknown, ...values: unknown[]) => {
       if (Array.isArray(strings)) queries.push({ text: (strings as string[]).join('?'), values });
@@ -1093,16 +1217,56 @@ describe('liveBackupSessions (EI-22064935119941678)', () => {
 
     expect(queries).toHaveLength(1);
     const { text, values } = queries[0];
-    expect(text).toContain('pg_stat_activity');
-    expect(text).toContain('application_name = ANY(');
-    expect(text).toContain('datname = current_database()');
-    expect(text).toContain('pid <> pg_backend_pid()');
+    expect(text).toContain('pg_stat_activity AS a');
+    expect(text).toContain('a.application_name = ANY(');
+    expect(text).toContain('a.datname = current_database()');
+    expect(text).toContain('a.pid <> pg_backend_pid()');
+    expect(text).toContain('FROM pg_locks AS l');
+    expect(text).toContain('l.pid = a.pid');
+    expect(text).toContain("l.locktype = 'relation'");
+    expect(text).toContain('l.granted');
+    expect(text).toContain("l.mode = 'AccessShareLock'");
     expect(values[0]).toEqual(['pcbackup', 'pcbackup-workspace']);
   });
 
-  it('maps a live host-cron session even when it has no snapshot receipt', async () => {
+  it('excludes an idle pcbackup session with no granted AccessShareLock', async () => {
     const sql = ((strings: unknown) => {
-      if (Array.isArray(strings) && (strings as string[]).join('').includes('pg_stat_activity')) {
+      const text = Array.isArray(strings) ? (strings as string[]).join('') : '';
+      const filtersGrantedAccessShare =
+        text.includes('FROM pg_locks AS l') &&
+        text.includes('l.pid = a.pid') &&
+        text.includes("l.locktype = 'relation'") &&
+        text.includes('l.granted') &&
+        text.includes("l.mode = 'AccessShareLock'");
+      return Promise.resolve(filtersGrantedAccessShare ? [] : [{
+        pid: 3294839,
+        application_name: 'pcbackup',
+        state: 'idle',
+        xact_start: null,
+        query_start: '2026-09-01T13:04:00.000Z',
+        age_sec: '369.2',
+      }]);
+    }) as unknown as Sql;
+    (sql as unknown as { array: (v: unknown) => unknown }).array = (v) => v;
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => '/tmp/backup-test-root',
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    });
+    const w = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+
+    await expect(w.liveBackupSessions()).resolves.toEqual([]);
+  });
+
+  it('maps a host-cron session holding a granted AccessShareLock even without a snapshot receipt', async () => {
+    const sql = ((strings: unknown) => {
+      const text = Array.isArray(strings) ? (strings as string[]).join('') : '';
+      if (
+        text.includes('pg_stat_activity AS a') &&
+        text.includes('l.granted') &&
+        text.includes("l.mode = 'AccessShareLock'")
+      ) {
         return Promise.resolve([{
           pid: 3294839,
           application_name: 'pcbackup',

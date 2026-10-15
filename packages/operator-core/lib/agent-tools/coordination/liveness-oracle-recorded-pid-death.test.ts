@@ -28,10 +28,12 @@
  * A fix that simply deleted the `recorded` branch would pass the first
  * assertion of every pair and fail the second.
  */
-import { describe, expect, it } from 'vitest';
-import { resolveSessionStates, type LivenessSubject } from './liveness-oracle';
+import { hostname } from 'node:os';
+import { describe, expect, it, vi } from 'vitest';
+import { deriveVerdict, resolveSessionStates, type LivenessSubject } from './liveness-oracle';
 import type { WakeabilitySignals } from './presence-wakeability';
 import { holderCountsAsAlive, resolveGoalHoldersFromRows } from '../../goals/holder';
+import { mapAdvSessionRow } from '../../adv-sessions';
 
 const NOW = Date.parse('2026-08-27T02:45:00.000Z');
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
@@ -66,6 +68,132 @@ const opts = (pidProbe: () => boolean | null) => ({
   findHostFn: () => null,
 });
 
+describe('WI-10006572 — recorded PID hydration with no presence row', () => {
+  // The immutable incarnation is identical on both paths. Only input assembly
+  // differs: a roster caller already carries the PID; a bare-id caller must
+  // recover it. Never mutate started_at/session_id to make the test pass.
+  const ownerId = 'su-recorded-hydration';
+  const recorded = mapAdvSessionRow({
+    id: 72, workspace_id: 'ws-recorded-hydration', plan_slug: null,
+    agent: 'codex', role: 'su', feature: null, mode: 'console',
+    terminal_bin: null, pid: 3959493, window_id: null, omp_thread_id: null,
+    label: null, cwd: null, coord_owner_id: ownerId, session_id: 'native-72',
+    started_at: iso(3_600_000), ended_at: null, exit_code: null,
+  });
+  const PARKED: WakeabilitySignals = { wakeable: true, liveTurn: false };
+  const common = (wake = PARKED, row = recorded) => ({
+    nowMs: NOW,
+    fetchWakeabilityFn: async () => new Map([[ownerId, wake]]),
+    fetchRecordedLiveFn: async () => new Set<string>(),
+    fetchRecordedEndedFn: async () => new Set<string>(),
+    fetchRecordedSessionsFn: vi.fn(async () => new Map([[ownerId, row]])),
+    getPresenceFn: vi.fn(async () => null),
+    listPresenceFn: vi.fn(async () => []) as never,
+    probePidFn: vi.fn(({ host, pid }: { host?: string | null; pid?: number | null }) =>
+      host === hostname() && pid === recorded.pid ? false : null),
+    findHostFn: () => null,
+  });
+
+  it.each(['hydratePerId', 'hydrateBatch'] as const)(
+    '%s retains the exact recorded PID and agrees with the roster dead-PID verdict',
+    async (mode) => {
+      const options = common();
+      const bindingBefore = JSON.stringify(recorded);
+      const roster = deriveVerdict(
+        { ownerId, host: hostname(), pid: recorded.pid }, PARKED,
+        new Set(), NOW, options.probePidFn,
+      );
+      const hydrated = await resolveSessionStates(
+        [{ ownerId, host: hostname() }], { ...options, [mode]: true },
+      );
+      expect(roster.sessionState).toBe('ended');
+      expect(hydrated.get(ownerId)?.sessionState).toBe(roster.sessionState);
+      expect(options.fetchRecordedSessionsFn).toHaveBeenCalledWith([ownerId]);
+      expect(options.probePidFn).toHaveBeenCalledWith({ host: hostname(), pid: recorded.pid });
+      expect(JSON.stringify(recorded)).toBe(bindingBefore);
+    },
+  );
+
+  it('an identity-verified newer live host still supersedes the dead recorded PID', async () => {
+    const options = common({ wakeable: true, liveTurn: true });
+    const out = await resolveSessionStates([{ ownerId, host: hostname() }], {
+      ...options, hydratePerId: true,
+      findHostFn: () => ({ ownerId, pid: recorded.pid! + 1 }),
+    });
+    expect(out.get(ownerId)?.sessionState).toBe('live');
+    expect(options.fetchRecordedSessionsFn).toHaveBeenCalledWith([ownerId]);
+    expect(options.probePidFn).toHaveBeenCalledWith({ host: hostname(), pid: recorded.pid });
+  });
+
+  it('does not substitute a recorded PID for an existing presence incarnation', async () => {
+    const options = common({ wakeable: true, liveTurn: true });
+    const out = await resolveSessionStates([{ ownerId }], {
+      ...options, hydratePerId: true,
+      getPresenceFn: async () => ({
+        heartbeatAt: iso(5_000), stale: false, host: hostname(),
+        pid: recorded.pid! + 1, source: 'psu', agentRole: 'su',
+      }),
+    });
+    expect(out.get(ownerId)?.sessionState).toBe('live');
+    expect(options.fetchRecordedSessionsFn).not.toHaveBeenCalled();
+  });
+
+  it('uses terminal-local provenance, never a guessed hostname, for a bare recorded PID', async () => {
+    const options = common(PARKED, { ...recorded, display: 'terminal' });
+    const out = await resolveSessionStates([{ ownerId }], { ...options, hydratePerId: true });
+    expect(out.get(ownerId)?.sessionState).toBe('ended');
+    expect(options.probePidFn).toHaveBeenCalledWith({ host: hostname(), pid: recorded.pid });
+  });
+
+  it.each([true, null])('a terminal-local PID probe of %s is not death evidence', async (probe) => {
+    const options = common(NOT_WAKEABLE, { ...recorded, display: 'terminal' });
+    const out = await resolveSessionStates([{ ownerId }], {
+      ...options, hydratePerId: true, probePidFn: () => probe,
+    });
+    expect(out.get(ownerId)?.sessionState).toBe('recorded');
+  });
+
+  it('unknown-host recorded evidence stays fail-closed even when started_at is old', async () => {
+    const options = common(NOT_WAKEABLE);
+    const out = await resolveSessionStates([{ ownerId }], { ...options, hydratePerId: true });
+    expect(out.get(ownerId)).toMatchObject({
+      sessionState: null, signalMissing: true, confirmLiveness: true,
+    });
+    expect(options.probePidFn).not.toHaveBeenCalled();
+  });
+
+  it('a remote host cannot turn a recorded PID into local death evidence', async () => {
+    const options = common(PARKED);
+    const out = await resolveSessionStates(
+      [{ ownerId, host: 'remote-host' }], { ...options, hydratePerId: true },
+    );
+    expect(out.get(ownerId)?.sessionState).toBe('parked');
+  });
+
+  it('a failed presence read does not masquerade as an absent presence row', async () => {
+    const options = common(NOT_WAKEABLE);
+    const out = await resolveSessionStates([{ ownerId }], {
+      ...options, hydratePerId: true,
+      getPresenceFn: async () => { throw new Error('presence unavailable'); },
+    });
+    expect(out.get(ownerId)?.sessionState).toBeNull();
+    expect(options.fetchRecordedSessionsFn).not.toHaveBeenCalled();
+  });
+
+  it('missing, failed or foreign recorded input never fabricates terminal evidence', async () => {
+    for (const fetchRecordedSessionsFn of [
+      async () => new Map(),
+      async () => { throw new Error('recorded unavailable'); },
+      async () => new Map([[ownerId, { ...recorded, coordOwnerId: 'su-other' }]]),
+    ]) {
+      const out = await resolveSessionStates([{ ownerId }], {
+        ...common(NOT_WAKEABLE), hydratePerId: true, fetchRecordedSessionsFn,
+      });
+      expect(out.get(ownerId)?.sessionState).toBeNull();
+    }
+  });
+});
+
 const verdictFor = async (pidProbe: () => boolean | null) => {
   const out = await resolveSessionStates([killedHolder], opts(pidProbe));
   const v = out.get(OWNER);
@@ -93,6 +221,14 @@ describe('EI-21572355077403526 — an affirmative ESRCH disqualifies the `record
     const wrongProbe = process.env.PAPERCUSP_GOAL_PID_LOSS_CONTROL === 'real-pid-loss';
     const v = await verdictFor(() => wrongProbe ? true : false);
     expect(v.sessionState, 'pid-loss-contract:real-pid-loss').toBe('ended');
+  });
+
+  it('detects permanent wrong-seam control: real-pid-loss', async () => {
+    expect((await verdictFor(() => false)).sessionState).toBe('ended');
+    // The deliberately wrong live-pid observation revives the recorded rescue.
+    const wrong = await verdictFor(() => true);
+    expect(wrong.sessionState).toBe('recorded');
+    expect(wrong.sessionState).not.toBe('ended');
   });
 
   it('a probe reporting the process ALIVE leaves `recorded` intact', async () => {
@@ -187,5 +323,75 @@ describe('EI-21572355077403526 — the goal-holder consequence that actually bro
       selfWake: holders.holders[0]!.selfWake,
     };
     expect(holderCountsAsAlive(verdict as never)).toBe(false);
+  });
+});
+
+describe('WI-10005725 — a dead RECORDED pid must not end a live successor incarnation', () => {
+  /**
+   * A session relaunched under a REUSED ownerId keeps its predecessor's pid on
+   * the presence row until its own supervisor beat lands. The probe then
+   * reports ESRCH for the PREDECESSOR while the successor is mid-turn, and the
+   * ESRCH outranked `liveTurn`: a working successor read `ended`, and the goal
+   * respawner replaced it. The only thing allowed to override the ESRCH is an
+   * identity-verified live psu host under a DIFFERENT concrete pid.
+   */
+  const successor: LivenessSubject = {
+    ...killedHolder,
+    ownerId: 'su-test-relaunched-successor',
+    agentRole: 'su',
+  };
+  const LIVE_TURN: WakeabilitySignals = { wakeable: true, liveTurn: true };
+
+  const verdictWithHost = async (host: unknown) => {
+    const out = await resolveSessionStates([successor], {
+      nowMs: NOW,
+      fetchWakeabilityFn: async () => new Map([[successor.ownerId, LIVE_TURN]]),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      fetchRecordedEndedFn: async () => new Set<string>(),
+      probePidFn: () => false, // the RECORDED (predecessor) pid is gone
+      findHostFn: () => host,
+    });
+    const v = out.get(successor.ownerId);
+    if (!v) throw new Error('oracle omitted the subject — totality contract broken');
+    return v;
+  };
+
+  it('CONTROL: with no live host, a dead recorded pid still ends a mid-turn session', async () => {
+    // Keeps the WI-3898 / EI-21572355077403526 precedence: without positive
+    // evidence of a current incarnation, ESRCH beats a fresh turn.
+    expect((await verdictWithHost(null)).sessionState).toBe('ended');
+  });
+
+  it('a verified live host under a DIFFERENT pid supersedes the stale recorded pid', async () => {
+    const v = await verdictWithHost({ ownerId: successor.ownerId, pid: successor.pid! + 1 });
+    expect(v.sessionState).toBe('live');
+  });
+
+  it('a host witness carrying the SAME pid does not override the ESRCH', async () => {
+    const v = await verdictWithHost({ ownerId: successor.ownerId, pid: successor.pid });
+    expect(v.sessionState).toBe('ended');
+  });
+
+  it('a host witness without a concrete pid does not override the ESRCH', async () => {
+    expect((await verdictWithHost({ live: true })).sessionState).toBe('ended');
+    expect((await verdictWithHost({ pid: 'not-a-pid' })).sessionState).toBe('ended');
+  });
+
+  it('the goal-holder consequence: a superseded stale pid keeps the successor `held`', async () => {
+    const out = await resolveSessionStates([successor], {
+      nowMs: NOW,
+      fetchWakeabilityFn: async () => new Map([[successor.ownerId, LIVE_TURN]]),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      fetchRecordedEndedFn: async () => new Set<string>(),
+      probePidFn: () => false,
+      findHostFn: () => ({ ownerId: successor.ownerId, pid: successor.pid! + 1 }),
+    });
+    const holders = resolveGoalHoldersFromRows(
+      'goal-wi-10005725',
+      'papercusp-workspace',
+      [{ goalId: 'goal-wi-10005725', workspaceId: 'papercusp-workspace', ownerId: successor.ownerId, setAtMs: NOW - 60_000 }],
+      out as never,
+    );
+    expect(holders.liveness).toBe('held');
   });
 });

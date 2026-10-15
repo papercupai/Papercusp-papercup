@@ -52,6 +52,7 @@
  * callers. See ./peer-rpc-transport.ts.
  */
 
+import { hostname } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -696,7 +697,60 @@ export interface AuthorityOp<T> {
    * D-004 (git is the backstop) and the only behavior possible without a wire
    * transport.
    */
-  remote?: { kind: string; payload: unknown; decode: (raw: unknown) => T };
+  remote?: {
+    kind: string; payload: unknown; decode: (raw: unknown) => T;
+    /** Read-only capability probe before admitting a fenced operation. */
+    prepare?: { kind: string; payload: unknown; decode: (raw: unknown) => string };
+  };
+  /** An absent pin prepares the route without running the mutation. */
+  authorityFence?: { expected?: string; localStoreIdentity?: () => string; prepare: (authority: string) => T };
+}
+
+export class AuthorityFenceError extends Error {
+  constructor(readonly reason: 'operation_authority_changed' | 'operation_authority_unknown') {
+    super(reason);
+    this.name = 'AuthorityFenceError';
+  }
+}
+
+/** Scope changes and machine changes both invalidate the original pin. */
+export async function localAuthorityFenceKey(scope: string, deps: LockAuthorityDeps = {}, storeIdentity?: string): Promise<string> {
+  const self = await (deps.resolveSelf ?? defaultResolveSelf)();
+  return JSON.stringify([scope, self?.devicePubkey ?? `host:${hostname()}`, ...(storeIdentity ? [storeIdentity] : [])]);
+}
+
+async function prepareAuthorityFence<T>(
+  scope: string, rpcScope: string, resolution: AuthorityResolution, op: AuthorityOp<T>, deps: LockAuthorityDeps,
+): Promise<RouteResult<T> | undefined> {
+  if (!op.authorityFence) return undefined;
+  const remote = !resolution.isSelf && resolution.peer;
+  let key: string;
+  if (remote) {
+    if (op.authorityFence.expected) {
+      let pinned: unknown;
+      try { pinned = JSON.parse(op.authorityFence.expected); } catch { /* reject below */ }
+      if (!Array.isArray(pinned) || pinned[0] !== scope || pinned[1] !== remote.devicePubkey) {
+        throw new AuthorityFenceError('operation_authority_changed');
+      }
+    }
+    const transport = getPeerRpcTransport();
+    const probe = op.remote?.prepare;
+    if (!transport || !probe) throw new AuthorityFenceError('operation_authority_unknown');
+    try {
+      const store = probe.decode(await transport.rpc(remote, { harnessSlug: rpcScope, kind: probe.kind, payload: probe.payload }));
+      if (!store) throw new Error('operation store unavailable');
+      key = JSON.stringify([scope, remote.devicePubkey, store]);
+    } catch {
+      throw new AuthorityFenceError('operation_authority_unknown');
+    }
+  } else {
+    key = await localAuthorityFenceKey(scope, deps, op.authorityFence.localStoreIdentity?.());
+  }
+  if (op.authorityFence.expected) {
+    if (op.authorityFence.expected !== key) throw new AuthorityFenceError('operation_authority_changed');
+    return undefined;
+  }
+  return { value: op.authorityFence.prepare(key), via: remote ? 'remote-authority' : 'local-authority' };
 }
 
 /** Reported when a routed op fell back to local because the authority was remote. */
@@ -728,6 +782,8 @@ export async function routeToAuthority<T>(
   deps: LockAuthorityDeps = {},
 ): Promise<RouteResult<T>> {
   const resolution = await lockAuthorityFor(harnessSlug, deps);
+  const prepared = await prepareAuthorityFence(`harness:${harnessSlug}`, harnessSlug, resolution, op, deps);
+  if (prepared) return prepared;
   if (resolution.isSelf || !resolution.peer) {
     return { value: await op.local(), via: 'local-authority' };
   }
@@ -748,6 +804,7 @@ export async function routeToAuthority<T>(
     }
   }
 
+  if (op.authorityFence) throw new AuthorityFenceError('operation_authority_unknown');
   // FAIL-OPEN (D-004): authority is remote and unreachable (or no transport / no
   // remote envelope). Proceed locally; git-merge is the data-safety backstop.
   const warning =
@@ -772,6 +829,8 @@ export async function routeToAuthorityForHive<T>(
   deps: LockAuthorityDeps = {},
 ): Promise<RouteResult<T>> {
   const resolution = await lockAuthorityForHive(potSlug, deps);
+  const prepared = await prepareAuthorityFence(`hive:${potSlug}`, potSlug, resolution, op, deps);
+  if (prepared) return prepared;
   if (resolution.isSelf || !resolution.peer) {
     return { value: await op.local(), via: 'local-authority' };
   }
@@ -792,6 +851,7 @@ export async function routeToAuthorityForHive<T>(
     }
   }
 
+  if (op.authorityFence) throw new AuthorityFenceError('operation_authority_unknown');
   const warning =
     `lock authority for hive "${potSlug}" is a remote Swarm ` +
     `(${peer.machineLabel}, ${peer.devicePubkey.slice(0, 12)}…) and is unreachable — ` +

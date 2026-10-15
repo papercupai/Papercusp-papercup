@@ -66,6 +66,52 @@ describe('orders:record — no twin of a hook-captured turn', () => {
     });
   });
 
+  it('uses an exact sourceTurnRef before text matching when recovering a committed hook capture', async () => {
+    h.recordOwnerDirective.mockResolvedValue({
+      id: 4243,
+      sourceTurnRef: 'native-session:turn-hash',
+      verbatimText: 'the same owner turn',
+      capturedByHook: true,
+      dispositionStatus: null,
+    });
+
+    const body = await call({
+      verbatim: 'the same owner turn',
+      sourceTurnRef: 'native-session:turn-hash',
+    });
+
+    expect(body).toMatchObject({ ok: true, id: 4243, deduplicated: true, state: 'open' });
+    expect(h.findCapturedTwin).not.toHaveBeenCalled();
+    expect(h.recordOwnerDirective).toHaveBeenCalledWith(expect.objectContaining({
+      ownerId: 'owner',
+      sourceTurnRef: 'native-session:turn-hash',
+      verbatimText: 'the same owner turn',
+    }));
+  });
+
+  it('keeps identical text on different exact source turns as separate directives', async () => {
+    h.findCapturedTwin.mockResolvedValue({ id: 269, dispositionStatus: null });
+    h.recordOwnerDirective.mockResolvedValue({
+      id: 900,
+      sourceTurnRef: 'native-session:second-turn-hash',
+      verbatimText: 'repeat this exact instruction',
+      capturedByHook: false,
+    });
+
+    const body = await call({
+      verbatim: 'repeat this exact instruction',
+      sourceTurnRef: 'native-session:second-turn-hash',
+    });
+
+    expect(body).toMatchObject({ ok: true, id: 900 });
+    expect(body.deduplicated).toBeUndefined();
+    expect(h.findCapturedTwin).not.toHaveBeenCalled();
+    expect(h.recordOwnerDirective).toHaveBeenCalledWith(expect.objectContaining({
+      sourceTurnRef: 'native-session:second-turn-hash',
+      verbatimText: 'repeat this exact instruction',
+    }));
+  });
+
   it('records a genuinely new directive under the single owner label, whatever ownerName says', async () => {
     h.findCapturedTwin.mockResolvedValue(null);
 

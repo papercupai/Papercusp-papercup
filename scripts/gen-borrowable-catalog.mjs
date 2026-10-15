@@ -149,6 +149,7 @@ export const BORROWABLE = [
   ['libs/generic/tauri-release-kit',              'Build & release'],
   ['libs/testing-shell',                          'Testing & QA'],
   ['libs/test-config',                            'Testing & QA'],
+  ['libs/generic/verification-harness',            'Testing & QA'],
 ];
 
 /**

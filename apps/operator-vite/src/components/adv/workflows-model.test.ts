@@ -10,6 +10,7 @@ import {
   nextFutureAutomationAt,
   type BuildAutomationModelInput,
 } from './workflows-model';
+import { dispatcherDependentWorkflows } from './workflows-ledger-model';
 
 const NOW = Date.parse('2026-08-22T20:00:00.000Z');
 
@@ -71,8 +72,8 @@ function fixture(): BuildAutomationModelInput {
     enabled: true,
     counts: { sources: 2, bindings: 2, armed: 2, recentFailures: 0 },
     sources: [
-      { id: 'source-slack', kind: 'slack', status: 'connected', config: {}, credentialRef: null, cursor: {}, lastConnectedAt: '2026-08-22T19:00:00.000Z', lastError: null, bindingCount: 1, armedBindingCount: 1, failedDeliveries24h: 0, social: null },
-      { id: 'source-gmail', kind: 'gmail', status: 'connected', config: {}, credentialRef: null, cursor: {}, lastConnectedAt: '2026-08-22T19:00:00.000Z', lastError: null, bindingCount: 1, armedBindingCount: 1, failedDeliveries24h: 0, social: null },
+      { id: 'source-slack', kind: 'slack', status: 'connected', scope: 'pot', scopeRef: 'papercusp', permissionMode: 'source-acl', backfillStatus: 'not-requested', lastSyncAt: null, nextAttemptAt: null, failureCount: 0, config: {}, credentialRef: null, cursor: {}, lastConnectedAt: '2026-08-22T19:00:00.000Z', lastError: null, bindingCount: 1, armedBindingCount: 1, failedDeliveries24h: 0, social: null },
+      { id: 'source-gmail', kind: 'gmail', status: 'connected', scope: 'pot', scopeRef: 'papercusp', permissionMode: 'source-acl', backfillStatus: 'not-requested', lastSyncAt: null, nextAttemptAt: null, failureCount: 0, config: {}, credentialRef: null, cursor: {}, lastConnectedAt: '2026-08-22T19:00:00.000Z', lastError: null, bindingCount: 1, armedBindingCount: 1, failedDeliveries24h: 0, social: null },
     ],
     bindings: [
       {
@@ -261,6 +262,11 @@ describe('automations model', () => {
         outcomeState: "completed",
       },
     });
+    expect(operation?.operation?.handle).toEqual({
+      workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', receiptId: 41,
+      operationId: 'triage-message', specificationRevision: 'a'.repeat(64),
+      target: { kind: 'work-item', id: 'WI-41' },
+    });
     expect(
       buildAutomationActivity(input).find(
         (row) => row.id === "external-run:run-operation",
@@ -319,5 +325,63 @@ describe('automations model', () => {
         outcomeState: "failed",
       },
     });
+    expect(operation?.operation?.handle).toEqual({
+      workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', receiptId: 42,
+      operationId: 'daily-triage', specificationRevision: 'b'.repeat(64),
+      target: { kind: 'plan', runId: 88, instanceSlug: 'daily-triage@run-88' },
+    });
+  });
+});
+
+describe('trigger dispatcher hold count through the real builders (WI-10004955)', () => {
+  // A sync-triggered sweep (SYNC_TRIGGERED_SWEEPS in schedule-inventory.ts) fires as a
+  // function call at the end of every git-sync. It never passes through
+  // `external-trigger-dispatch`, which drains only binding-created trigger_runs, so a
+  // dispatcher pause does not hold it.
+  const syncSweep = () =>
+    routine({
+      name: 'doc-freshness-sweep',
+      group: 'docs',
+      category: 'docs',
+      cron: null,
+      cadence: null,
+      kind: 'triggered',
+      family: 'docs',
+      armedState: 'armed',
+      triggerLabel: 'after every git-sync',
+      nextFireAt: null,
+    });
+
+  it('counts one held workflow per armed binding target, not per binding', () => {
+    // Two armed bindings, both on plan customer-digest: one workflow is held.
+    const items = buildAutomationItems(fixture());
+    expect(dispatcherDependentWorkflows(items)).toBe(1);
+  });
+
+  it('does not count an armed sync-triggered routine as held by a dispatcher pause', () => {
+    const input = fixture();
+    input.catalog = { ...input.catalog!, routines: [...input.catalog!.routines, syncSweep()] };
+    const items = buildAutomationItems(input);
+    // The routine still renders as an event-driven row; it just is not dispatcher-held.
+    expect(items.find((item) => item.label === 'doc-freshness-sweep')?.triggers[0]).toMatchObject({
+      kind: 'external',
+      armed: true,
+    });
+    expect(dispatcherDependentWorkflows(items)).toBe(1);
+  });
+
+  it('counts an armed blueprint-operation binding as held', () => {
+    const input = fixture();
+    input.external!.bindings = [
+      ...input.external!.bindings,
+      {
+        ...input.external!.bindings[0]!,
+        id: '55555555-5555-4555-8555-555555555555',
+        planHarnessSlug: null,
+        planSlug: null,
+        action: { type: 'blueprint-operation', operationHarnessSlug: 'papercusp', operationId: 'daily-triage' },
+      },
+    ];
+    expect(dispatcherDependentWorkflows(buildAutomationItems(input))).toBe(2);
   });
 });

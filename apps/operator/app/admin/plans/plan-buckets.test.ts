@@ -75,6 +75,28 @@ describe('bucketOf', () => {
   it('paused (not started) approved plan is ready, not running', () => {
     expect(bucketOf(row({ status: 'ready', startStatus: 'paused' }))).toBe('ready');
   });
+
+  // derived-status-not-hand-written-2026-10-12 P-007: a plan whose items are all
+  // terminal is awaiting acceptance whatever its stored status still claims —
+  // including a stale `startStatus: 'started'`, which would otherwise read Running.
+  it('a derived all-terminal verdict buckets as awaiting, above the started-state', () => {
+    const derived = (verdict: NonNullable<PlanListRow['derivedLifecycle']>['verdict']) => ({
+      verdict,
+      disposition: 'agreed',
+    });
+    expect(
+      bucketOf(row({ status: 'ready', startStatus: 'started', derivedLifecycle: derived('implementation-complete') })),
+    ).toBe('awaiting');
+    expect(bucketOf(row({ status: 'active', derivedLifecycle: derived('awaiting-acceptance') }))).toBe('awaiting');
+    // A live (or stalled) plan keeps its operational bucket.
+    expect(bucketOf(row({ status: 'ready', startStatus: 'started', derivedLifecycle: derived('active') }))).toBe(
+      'running',
+    );
+    expect(bucketOf(row({ status: 'ready', derivedLifecycle: derived('stalled') }))).toBe('ready');
+    // Terminal stored statuses still win: the derived verdict never un-ships a plan.
+    expect(bucketOf(row({ status: 'shipped', derivedLifecycle: derived('implementation-complete') }))).toBe('shipped');
+    expect(bucketOf(row({ status: 'superseded', derivedLifecycle: derived('awaiting-acceptance') }))).toBe('rejected');
+  });
 });
 
 describe('applyPlanFilters', () => {

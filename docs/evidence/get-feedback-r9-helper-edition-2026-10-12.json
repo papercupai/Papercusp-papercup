@@ -1,0 +1,52 @@
+{
+  "workItem": "EI-25773062042831705",
+  "measuredAt": "2026-10-12T11:38:47.401Z",
+  "scope": "Immutable fixture population comparison and local conventional regression guard; no native, semantic or shipment acceptance",
+  "fixturePath": "packages/operator-core/lib/consult/subject-evidence.fixtures.ts",
+  "original": {
+    "commit": "64e6e8cf14",
+    "blob": "f80f59f1b8dde158cf73a4ea7fb9fb17b6acf47e",
+    "fileSha256": "be1a33dd4851058db156cf1cb67e5aca7daa2237c92a58792ee836f950642686"
+  },
+  "helperEdition": {
+    "commit": "a27723ae80ab407d49ef357107d432708469f7be",
+    "blob": "efadc3de1d2ff3a2ea17a125e815dab34fff81ec",
+    "fileSha256": "ddc1c6c8a84ef5f206a316f240681ceb52c188dd35a402297dbd7f55431b9585"
+  },
+  "population": {
+    "serialization": "JSON.stringify(HELD_OUT_SUBJECT_CASES), UTF-8",
+    "originalSha256": "137246c6e7f15da78bcda87dd5e3db5395f57cee1b2ea1da720ab3075320d2eb",
+    "helperEditionSha256": "137246c6e7f15da78bcda87dd5e3db5395f57cee1b2ea1da720ab3075320d2eb",
+    "equal": true,
+    "cases": 5,
+    "passages": 10,
+    "positiveCases": 3,
+    "noExpertCases": 2,
+    "ids": ["gui-paraphrase", "gui-no-expert", "widgets-paraphrase", "database-paraphrase", "database-no-expert"]
+  },
+  "distinguishingProcedure": [
+    "git show 64e6e8cf14:packages/operator-core/lib/consult/subject-evidence.fixtures.ts",
+    "git show a27723ae80ab407d49ef357107d432708469f7be:packages/operator-core/lib/consult/subject-evidence.fixtures.ts",
+    "git diff 64e6e8cf14 a27723ae80ab407d49ef357107d432708469f7be -- packages/operator-core/lib/consult/subject-evidence.fixtures.ts",
+    "Evaluate each immutable HELD_OUT_SUBJECT_CASES declaration, then SHA256 its JSON.stringify UTF-8 bytes. Compare every id, subject, relevant label and passage text via the serialized equality."
+  ],
+  "actualDelta": "Only evaluateSubjectCases adds selectedCount, falseExpertSelections and selectionPrecision per D-018; the population declaration and original precision/recall metrics are unchanged.",
+  "contractRepair": {
+    "tool": "rubrics:amend",
+    "idempotencyKey": "get-feedback-r9-helper-edition-20261012-v1",
+    "revision": 9,
+    "criteriaHash": "b0211d5c2bf482567ab58562547d30e6004aafeec01c6493a7be9346a2182ba4",
+    "barSetHash": "e639411e9d5992a3812a25b5057ccc3cc378b6c8ae16e9b60939b7b7c8293f15",
+    "meaningRevision": 7,
+    "classification": "method-only",
+    "acceptanceRequirementsChanged": false
+  },
+  "recurrenceGuard": {
+    "file": "packages/operator-core/lib/consult/subject-evidence.test.ts",
+    "test": "preserves the preregistered labels and passages across measurement helper changes",
+    "command": "npm run test:file -- packages/operator-core/lib/consult/subject-evidence.test.ts",
+    "result": {"passed": 5, "failed": 0, "skipped": 0},
+    "provenance": "Local dirty named test path at HEAD c04415a2ef; pre/post runner stamps both uncommitted=1. No committed or full-graph proof inferred. Ledger harness was not explicitly supplied, so no canonical testing:runs binding is claimed."
+  },
+  "remaining": ["Rubric author re-attestation and independent audit", "Current native isolation and delivery matrix", "R6 original sample shortfall", "Exact final shipment"]
+}

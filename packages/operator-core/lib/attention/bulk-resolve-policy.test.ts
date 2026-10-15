@@ -120,11 +120,32 @@ describe('resolver brief — the D-001/D-002 policy it carries into the run', ()
   });
 
   it('prefers RECOMMEND over resolve for owner-preference, money and irreversible calls', () => {
-    // D-001 grants full-resolve authority; this is the clause that bounds it.
+    // The resolver can recommend around these owner-only decisions even when
+    // the standing policy otherwise permits some terminal actions.
     expect(brief).toMatch(/Prefer recommending over resolving/i);
     expect(brief).toMatch(/owner's preference/i);
     expect(brief).toMatch(/money/i);
     expect(brief).toMatch(/irreversible/i);
+  });
+
+  it('makes L0/review-all recommendation-only, even for high-confidence items', () => {
+    const reviewOnlyBrief = buildResolverBrief('run-l0', 1, {
+      mode: 'review-all',
+      minConfidence: 'high',
+      level: 'L0',
+    });
+    expect(reviewOnlyBrief).toContain('review-only under L0/review-all');
+    expect(reviewOnlyBrief).toMatch(/Never call inbox:bulk-run-act and never\s+report auto_resolved/i);
+    expect(reviewOnlyBrief).toContain('recommendation for every item instead');
+    expect(reviewOnlyBrief).toContain('report a recommendation and take no terminal action');
+    expect(reviewOnlyBrief).not.toContain('report auto_resolved only after');
+  });
+
+  it('treats the launch policy as a snapshot and trusts the live action gate', () => {
+    expect(brief).toContain('This is the launch snapshot');
+    expect(brief).toContain('rechecks current standing policy');
+    expect(brief).toMatch(/Mark auto_resolved only after this call\s+reports success/);
+    expect(brief).toMatch(/do not use another path/);
   });
 
   it('encodes the D-002 consult loop: a bounded window, and a LAPSE downgrades confidence', () => {
@@ -218,6 +239,25 @@ describe('resolver launch — a real supervised headless agent, never a shell gr
       ownerId,
     );
     expect(outcome).toEqual({ ok: true, sessionId: ownerId, child });
+  });
+
+  it('preserves the spawn-time child-exit observer for exits before listener attachment', () => {
+    const child = {} as ChildProcess;
+    const childExit = Promise.resolve({ code: 137, signal: null });
+    const outcome = resolverSpawnOutcome(
+      {
+        status: 'ok',
+        pid: 42,
+        terminal: 'headless',
+        child,
+        childExit,
+        display: null,
+        desktopEnvResolvedVia: null,
+      },
+      ownerId,
+    );
+
+    expect(outcome).toEqual({ ok: true, sessionId: ownerId, child, childExit });
   });
 });
 

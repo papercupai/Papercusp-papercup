@@ -32,7 +32,7 @@ import {
   INTEREST_PARAM,
   MAX_DECLARED_QUERY_NAMES,
 } from '../../../libs/generic/sync/src/interest-protocol';
-import { firstLiveMatch, stripCommentsAndStrings } from '../../../scripts/lib/strip-comments-and-strings.mjs';
+import ts from 'typescript';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 
@@ -155,6 +155,23 @@ const SOURCES: SourceFile[] = (() => {
 const isTest = (rel: string) => /\.(test|spec)\.tsx?$/.test(rel);
 const isContractFile = (rel: string) => rel.split(sep).join('/') === CONTRACT_FILE.split(sep).join('/');
 
+/** Type keys and strings containing JSON do not declare a runtime URL parameter. */
+function writesInterestLiteral(raw: string, rel: string): boolean {
+  const source = ts.createSourceFile(rel, raw, ts.ScriptTarget.Latest, true,
+    rel.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found || ts.isTypeNode(node)) return;
+    if (ts.isStringLiteralLike(node) && node.text === INTEREST_PARAM) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 describe('sync interest declaration — one definition, reached by import', () => {
   it('the scan actually sees the tree (positive control)', () => {
     // Without this, every "no duplicates" assertion below could be satisfied by
@@ -188,13 +205,8 @@ describe('sync interest declaration — one definition, reached by import', () =
     // Read the value off the module rather than restating it: a test that
     // hard-codes 'queries' is itself the duplicate it is trying to forbid.
     const literal = new RegExp(`['"\`]${INTEREST_PARAM}['"\`]`);
-    // A match counts only when its opening quote is a real delimiter. The same
-    // quoted text nested INSIDE another string (a JSON fixture body such as
-    // '{"queries":[]}') is data, not a second declaration of the param.
-    const writesLiteral = (raw: string, rel: string) =>
-      literal.test(raw) && firstLiveMatch(raw, stripCommentsAndStrings(raw, rel), literal) !== null;
     const offenders = SOURCES.filter(
-      (f) => !isTest(f.rel) && !isContractFile(f.rel) && literal.test(f.text) && writesLiteral(f.raw, f.rel),
+      (f) => !isTest(f.rel) && !isContractFile(f.rel) && literal.test(f.text) && writesInterestLiteral(f.raw, f.rel),
     ).map((f) => f.rel);
 
     expect(offenders).toEqual([]);
@@ -203,12 +215,14 @@ describe('sync interest declaration — one definition, reached by import', () =
     const contract = SOURCES.find((f) => isContractFile(f.rel));
     expect(contract).toBeDefined();
     expect(literal.test(contract!.text)).toBe(true);
-    expect(writesLiteral(contract!.raw, contract!.rel)).toBe(true);
+    expect(writesInterestLiteral(contract!.raw, contract!.rel)).toBe(true);
 
     // Calibration: a real literal counts; the name nested in a string does not.
     const q = JSON.stringify(INTEREST_PARAM);
-    expect(writesLiteral(`const p = '${INTEREST_PARAM}';`, 'probe.ts')).toBe(true);
-    expect(writesLiteral(`const body = '{${q}:[]}';`, 'probe.ts')).toBe(false);
+    expect(writesInterestLiteral(`const p = '${INTEREST_PARAM}';`, 'probe.ts')).toBe(true);
+    expect(writesInterestLiteral(`const body = '{${q}:[]}';`, 'probe.ts')).toBe(false);
+    expect(writesInterestLiteral(`type Row = ReturnType<typeof dehydrate>[${q}][number];`, 'probe.ts')).toBe(false);
+    expect(writesInterestLiteral(`type Param = ${q}; const p = ${q};`, 'probe.ts')).toBe(true);
   });
 
   it('the CAP is compared in exactly one place', () => {

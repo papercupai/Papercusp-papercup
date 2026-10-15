@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "agent-multi-desktops-grid e2e: desktop-grid.spec.ts + desktop-grid-local.spec.ts (clean-blob re-run)",
+  "framework": "playwright",
+  "command": [
+    "bash",
+    "-c",
+    "cd apps/operator && OPERATOR_E2E_REUSE_SERVER=1 npx playwright test e2e/desktop-grid.spec.ts e2e/desktop-grid-local.spec.ts --workers=1 --reporter=list"
+  ],
+  "startedAt": "2026-10-06T13:17:22.809Z",
+  "finishedAt": "2026-10-06T13:17:58.660Z",
+  "exitCode": 0,
+  "summary": "11 passed (33.0s), 0 failed, 0 skipped, at superproject HEAD 728748a08564a423e34cc06ba6ea8e3ea69cdcbe. Every spec, fixture and grid component file the run exercised was byte-identical to its HEAD blob at run time (git hash-object == git rev-parse HEAD:<path>; recorded in blobFingerprints). This replaces the earlier ledger rows 20838185 / 20838186 / 20838352, which were recorded with worktreeDirty=true. The --reporter=list flag disabled the ledger reporter (EI-25232220211651248), so this artifact is the record of the run.",
+  "assertions": [
+    { "id": "grid.local.tiles", "passed": true, "evidence": "desktop-grid-local.spec.ts:73 — This computer lists every agent desktop with a thumbnail and its owner/work-item (3.3s)" },
+    { "id": "grid.local.thumbnails", "passed": true, "evidence": "desktop-grid-local.spec.ts:94 — thumbnails refresh on the ~5s cadence and stop for a tile streaming live (11.8s)" },
+    { "id": "grid.local.open", "passed": true, "evidence": "desktop-grid-local.spec.ts:113 — clicking a tile mints a watch session for that display and opens the live viewer (1.3s)" },
+    { "id": "grid.local.pin", "passed": true, "evidence": "desktop-grid-local.spec.ts:128 — two local tiles stream live, a third pin is refused, and pins are URL state (1.3s)" },
+    { "id": "grid.local.arrival", "passed": true, "evidence": "desktop-grid-local.spec.ts:142 — a desktop an agent starts appears when the roster stream delivers it (6.8s)" },
+    { "id": "grid.local.empty", "passed": true, "evidence": "desktop-grid-local.spec.ts:162 — with no agent desktops the page says how one appears (734ms)" },
+    { "id": "grid.cloud.tiles", "passed": true, "evidence": "desktop-grid.spec.ts:62 — every agent desktop is a tile with its thumbnail, owner, work-item and state (882ms)" },
+    { "id": "grid.cloud.open", "passed": true, "evidence": "desktop-grid.spec.ts:82 — clicking a tile opens the live viewer in watch mode and the selection is URL state (617ms)" },
+    { "id": "grid.cloud.pin", "passed": true, "evidence": "desktop-grid.spec.ts:96 — two tiles stream live in place, a third pin is refused, and pins are URL state (806ms)" },
+    { "id": "grid.cloud.filter", "passed": true, "evidence": "desktop-grid.spec.ts:122 — the filter matches agent, work-item and name, and is URL state (614ms)" },
+    { "id": "grid.cloud.url", "passed": true, "evidence": "desktop-grid.spec.ts:142 — a shared URL restores the open viewer and the pinned tiles (635ms)" }
+  ],
+  "plan": "agent-multi-desktops-grid-2026-10-06",
+  "bars": ["R-4", "R-5"],
+  "evidencePlane": "tree",
+  "measuredBy": "plan implementer session (see WI-10006486)",
+  "headSha": "728748a08564a423e34cc06ba6ea8e3ea69cdcbe",
+  "blobFingerprints": {
+    "apps/operator/e2e/desktop-grid.spec.ts": "621248e1ff302a83c81716417622e6fe797eef89",
+    "apps/operator/e2e/desktop-grid-local.spec.ts": "73eafcb864c1d5571a9a00a41dba36cd9f707bc0",
+    "apps/operator/e2e/_desktop-grid-fixture-server.ts": "230711176a3445155ebef16ec8d0c38293812303",
+    "apps/operator/e2e/__fixtures__/desktop-grid.tsx": "16f9f6a5bb2c4f397c8346b6d2360059529a412b",
+    "apps/operator/e2e/__fixtures__/desktop-grid-local.tsx": "0693654c8f3e87ad33b61ebb070b372689caca4d",
+    "apps/operator/e2e/__fixtures__/desktop-grid-sync.ts": "b9b235793200ca3b02c0f792b21c9fc93863259f",
+    "apps/operator/e2e/__fixtures__/desktop-render-rfb.ts": "2cb5709a904091c1074533a1508b10466ce0cab2",
+    "apps/operator/app/_components/desktop-grid/DesktopGrid.tsx": "67415d5554d989ea9d7fdb0f2d671f03aeec87da",
+    "apps/operator/app/_components/desktop-grid/desktop-grid-model.ts": "9bda66bd38fbcaac6743401d2d121ded09c5df06",
+    "apps/operator/app/_components/desktop-grid/use-visible-refresh.ts": "a87575c5109e7ce7c9b7ba4d397cb517f6bad0a7"
+  },
+  "sourceLog": ".papercusp/scratch/bash-d1649a2d-db5.log",
+  "notClaimed": [
+    "A hosted machine. Both specs run the real grid component against a fixture server that substitutes the session ticket and the RFB framebuffer; the hosted-VM run is deferred to EI-25225008797935576 (plan D-017/D-021/D-023).",
+    "A real VNC framebuffer. The RFB stand-in is a fixture; the real-pixel path is covered by live-local-run.json (test run 20839130)."
+  ]
+}

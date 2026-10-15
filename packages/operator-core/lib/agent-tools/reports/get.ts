@@ -16,9 +16,34 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { getReport, listReportLineage } from '../../report-library';
+import { getReport, listReportLineage, type ReportCitationReadScope } from '../../report-library';
+import { readScorecardEvidence, type ScorecardEvidenceCriterion } from '../../scorecards';
 import { mergeIds, runBulk, bulkContent, bulkEnvelopeSchema } from '../_bulk';
-import { resolveViewer, resolveWorkspaceId, toReportFull, toReportSummary } from './_shared';
+import { reportsLibraryDisabled, resolveViewer, resolveWorkspaceId, toReportFull, toReportSummary } from './_shared';
+
+function hasExactReportCitation(criteria: readonly ScorecardEvidenceCriterion[], reportId: string): boolean {
+  if (!reportId) return false;
+  const token = 'report:' + reportId;
+  const hasToken = (text: string | undefined): boolean => {
+    if (!text) return false;
+    let start = text.indexOf(token);
+    while (start >= 0) {
+      const before = text[start - 1];
+      const after = text[start + token.length];
+      const leftBoundary = before === undefined || !/[A-Za-z0-9_]/.test(before);
+      const rightBoundary = after === undefined || !/[A-Za-z0-9_-]/.test(after);
+      if (leftBoundary && rightBoundary) return true;
+      start = text.indexOf(token, start + 1);
+    }
+    return false;
+  };
+  return criteria.some(
+    (criterion) =>
+      hasToken(criterion.evidence) ||
+      criterion.evidenceRef === reportId ||
+      hasToken(criterion.evidenceRef),
+  );
+}
 
 export default defineTool({
   name: 'reports:get',
@@ -61,20 +86,50 @@ export default defineTool({
         .boolean()
         .optional()
         .describe('also return the full supersede history behind each report, newest first'),
+      scorecardIssueId: z
+        .string()
+        .min(1)
+        .max(120)
+        .optional()
+        .describe('judge-only scope: the scorecard issue id whose criteria cite this single id; do not combine with ids or lineage'),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
     }),
   async handler(args, ctx) {
+    const disabled = await reportsLibraryDisabled();
+    if (disabled) return { data: disabled };
     const sql = getOrgPg().sql;
     const workspaceId = resolveWorkspaceId(ctx);
     const viewer = resolveViewer(ctx);
     const ids = mergeIds(args.id, args.ids);
+    let citationScope: ReportCitationReadScope | undefined;
+    let citationError: string | undefined;
+
+    if (args.scorecardIssueId !== undefined) {
+      if (ctx.role !== 'judge') {
+        citationError = 'not_found';
+      } else if (args.id === undefined || args.ids !== undefined || args.lineage === true) {
+        citationError = 'invalid_evidence_scope';
+      } else {
+        const evidence = await readScorecardEvidence(args.scorecardIssueId);
+        if (
+          evidence.kind !== 'found' ||
+          !hasExactReportCitation(evidence.scorecard.criteria, args.id)
+        ) {
+          citationError = 'not_found';
+        } else {
+          citationScope = { kind: 'scorecard-citation', reportId: args.id };
+        }
+      }
+    }
 
     const env = await runBulk(
       ids,
       async (id) => {
-        const report = await getReport(sql, workspaceId, id, viewer);
+        if (citationError) return { ok: false as const, id, error: citationError };
+        const exactScope = citationScope?.reportId === id ? citationScope : undefined;
+        const report = await getReport(sql, workspaceId, id, viewer, exactScope);
         if (!report) return { ok: false as const, id, error: 'not_found' };
 
         const lineage = args.lineage

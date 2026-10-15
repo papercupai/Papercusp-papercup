@@ -96,6 +96,11 @@ const cand = (
   ...(source ? { source } : {}),
 });
 
+const recentResult = (candidates: SemanticDupeCandidate[]) => ({
+  candidates,
+  coverage: { scanned: candidates.length, unembedded: 0, truncated: false, complete: true },
+});
+
 beforeEach(() => {
   createM.mockClear();
   semanticM.mockReset();
@@ -128,7 +133,7 @@ describe('createOneWorkItem × P-001 dedupCandidates payload stamp', () => {
   });
 
   it('recent-lexical candidates are stamped lexical-recent', async () => {
-    recentM.mockResolvedValue([cand('EI-9', 0.8, 'lexical-recent')]);
+    recentM.mockResolvedValue(recentResult([cand('EI-9', 0.8, 'lexical-recent')]));
     const r = await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
     expect(r.ok).toBe(true);
     expect(lastCreatePayload()?.dedupCandidates).toEqual([
@@ -137,7 +142,7 @@ describe('createOneWorkItem × P-001 dedupCandidates payload stamp', () => {
   });
 
   it('R-4: measurement-overlap candidates are stamped under their own method, the create still succeeds, and the summary reaches the guard', async () => {
-    recentM.mockResolvedValue([cand('EI-22393887492211068', 0.89, 'measurement-overlap')]);
+    recentM.mockResolvedValue(recentResult([cand('EI-22393887492211068', 0.89, 'measurement-overlap')]));
     const r = await createOneWorkItem(
       { kind: 'bug', title: 'retention scope is stale', summary: 'session_archive_files 22 GB\ntool_invocations 15 GB' },
       ctx,

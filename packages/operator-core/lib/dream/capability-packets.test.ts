@@ -118,6 +118,81 @@ async function ready(f: Awaited<ReturnType<typeof fixture>>) {
   return result;
 }
 describe('source-backed capability extraction', () => {
+  it('P022: binds compiler boundaries to cited bytes without changing capability claims', async () => {
+    const f = await fixture(), ref = f.input.unit.evidence[0]!;
+    ref.anchor = 'export function nativePacketTarget()';
+    await writeFile(join(f.root, ref.path), ref.anchor + ' { return 1; }\n');
+    const testRef = f.input.unit.evidence[1]!;
+    const hashes = new Map(await Promise.all(f.input.unit.evidence.map(async source =>
+      [source.path, capabilityHash(await readFile(join(f.root, source.path), 'utf8'))] as const)));
+    const endpoint = (path: string, line1: number) => ({ site: { path, line1, kind: 'function', detail: null },
+      contentHash: hashes.get(path)!, versionedSymbolId: null });
+    const evidence = { schemaVersion: 1 as const,
+      sourceScope: { repositoryId: 'repo', identityKind: 'registry' as const, sourceFingerprint: 'a'.repeat(64),
+        paths: [...hashes.keys()], supportingFiles: [...hashes].map(([path, contentHash]) =>
+          ({ path, contentHash, language: 'typescript', representation: 'full-source' as const })) },
+      graphScope: { basis: 'compiler-project' as const, sourceCompleteness: 'unverified' as const, limitations: [] },
+      languageCapabilities: [], siteIdentities: [{ siteIndex: 0, sourcePath: ref.path, contentHash: hashes.get(ref.path)!, versionedSymbolId: null }],
+      relationships: [{ siteIndex: 0, kind: 'definition' as const, origin: 'compiler' as const,
+        knowledge: 'observed' as const, runtimeExecution: 'unknown' as const }, { siteIndex: 0, kind: 'callers' as const,
+        origin: 'compiler' as const, knowledge: 'observed' as const, runtimeExecution: 'unknown' as const,
+        source: endpoint(testRef.path, 1), target: endpoint(ref.path, 1) }] };
+    f.deps.graph = vi.fn(async () => ({ backend: 'typescript-service', intent: 'references', query: 'nativePacketTarget',
+      latencyMs: 0, freshness: { health: 'healthy', staleVsDisk: false, indexedAt: null, indexedCommit: null },
+      error: null, sites: [{ path: ref.path, line1: 1,
+      kind: 'function', detail: null }], evidence,
+      truncation: { truncated: false, totalAvailable: 1, continuation: null } } as CodeIntelAnswer));
+    const original = structuredClone(f.input.unit), result = await ready(f);
+    expect(result.packet.graph).toMatchObject({ status: 'measured', repositoryId: 'repo',
+      claimValidation: 'manifest-evidence-only', candidates: [{ symbol: 'nativePacketTarget',
+        evidenceId: ref.id, path: ref.path, sourceHash: hashes.get(ref.path), line1: 1, capabilityStatus: 'candidate-only' }],
+      relationships: [{ kind: 'callers', runtimeExecution: 'unknown', source: { path: testRef.path }, target: { path: ref.path } }] });
+    expect(result.packet.unit).toEqual(original);
+    expect(await verifyCapabilityPacket(result.packet, f.input, f.deps)).toEqual({ fresh: true });
+    const forged = structuredClone(result.packet);
+    forged.graph!.candidates[0]!.symbol = 'inventedMechanism';
+    expect(await verifyCapabilityPacket(forged, f.input, f.deps)).toMatchObject({ fresh: false, reason: expect.stringContaining('boundary differs') });
+    const inventedEdge = structuredClone(result.packet);
+    inventedEdge.graph!.relationships[0]!.target.line1 = 2;
+    const mismatch = await verifyCapabilityPacket(inventedEdge, f.input, f.deps);
+    expect(mismatch).toMatchObject({ fresh: false, reason: 'Compiler graph differs from current cited source',
+      graphMismatch: { unitId: f.input.unit.id, sourceFingerprint: result.packet.graph!.sourceFingerprint,
+        differingFields: ['relationships'], expected: inventedEdge.graph, actual: result.packet.graph } });
+    if (mismatch.fresh) throw new Error('A forged edge must remain rejected');
+    expect(mismatch.graphMismatch!.expectedHash).toBe(capabilityHash(JSON.stringify(inventedEdge.graph)));
+    expect(mismatch.graphMismatch!.actualHash).toBe(capabilityHash(JSON.stringify(result.packet.graph)));
+    // A measured first discovery followed by an unavailable rebuild must keep
+    // both projections in the builder's failure; no retry may erase the cause.
+    let graphCalls = 0;
+    const changedDiscovery = await buildCapabilityPacket({ ...f.input, manifestRevision: 'mismatch-detector' }, {
+      ...f.deps, graph: async (...args) => {
+        const answer = await f.deps.graph!(...args);
+        return ++graphCalls === 1 ? answer : { ...answer, error: 'seeded compiler refusal' };
+      },
+    });
+    expect(changedDiscovery).toMatchObject({ status: 'unavailable',
+      reason: 'Compiler graph differs from current cited source', graphMismatch: {
+        differingFields: expect.arrayContaining(['status', 'candidates', 'relationships', 'unmapped']),
+        expected: { status: 'measured' }, actual: { status: 'unknown', candidates: [], relationships: [],
+          unmapped: expect.arrayContaining([expect.stringContaining('seeded compiler refusal')]) },
+      } });
+    expect(graphCalls).toBe(2);
+    expect(await verifyCapabilityPacket(result.packet, f.input, { readArtifact: f.deps.readArtifact })).toEqual({
+      fresh: false, reason: 'Compiler graph verification unavailable' });
+    await writeFile(join(f.root, ref.path), ref.anchor + ' { return 2; }\n');
+    expect((await verifyCapabilityPacket(result.packet, f.input, f.deps)).fresh).toBe(false);
+    const stale = await ready(f);
+    expect(stale.packet.graph).toMatchObject({ status: 'unknown', candidates: [], relationships: [] });
+    evidence.sourceScope.repositoryId = 'foreign-repository';
+    const foreign = await buildCapabilityPacket({ ...f.input, manifestRevision: 'foreign-control' }, f.deps);
+    expect(foreign).toMatchObject({ status: 'ready', packet: { graph: { status: 'unknown', candidates: [] } } });
+  });
+  it('P022: keeps missing graph discovery explicit while retaining verified manifest evidence', async () => {
+    const f = await fixture(), result = await ready(f);
+    expect(result.packet.graph).toMatchObject({ status: 'unknown', candidates: [], relationships: [],
+      claimValidation: 'manifest-evidence-only', unmapped: [expect.stringContaining('unavailable')] });
+    expect(result.packet.coverage.status).toBe('partial');
+  });
   it('reuses unchanged packets and preserves dirty bytes, contracts and honest text fallback', async () => {
     const f = await fixture();
     const first = await ready(f);

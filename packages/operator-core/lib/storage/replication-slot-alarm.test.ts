@@ -1,4 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true),
+  broadcastSevereEventResolved: vi.fn(async () => true) }));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({ readConditionEnvelopes: async () => [],
+  computeConditionStates: () => [] }));
 import {
   detectSlotBreaches,
   formatSlotEscalation,
@@ -8,7 +12,24 @@ import {
   activeCeilingBytes,
   type SlotRow,
   type SlotBreach,
+  REPLICATION_SLOT_ALARM_CONDITION_KEY,
 } from './replication-slot-alarm';
+
+it('keeps a keyed breach open through cooldown and failed scans, resolving only measured recovery', async () => {
+  const broadcast = vi.fn(async () => true);
+  const resolve = vi.fn(async () => true);
+  const deps = { broadcast, resolve, emitToast: async () => {}, recentlyEscalated: async () => true };
+  await runReplicationSlotAlarmOnce({ ...deps, fetchSlots: async () => [slot('stuck', 4)] });
+  expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: REPLICATION_SLOT_ALARM_CONDITION_KEY }));
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await runReplicationSlotAlarmOnce({ ...deps, fetchSlots: async () => { throw new Error('scan failed'); } });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('scan failed'));
+  } finally { warn.mockRestore(); }
+  expect(resolve).not.toHaveBeenCalled();
+  await runReplicationSlotAlarmOnce({ ...deps, fetchSlots: async () => [] });
+  expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: REPLICATION_SLOT_ALARM_CONDITION_KEY }));
+});
 
 const GIB = 1024 ** 3;
 

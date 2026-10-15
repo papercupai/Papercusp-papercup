@@ -158,13 +158,16 @@ describe('WI-10002881 — the with-plan-lock revision-spine guard', () => {
       { state: 'blocked', codes: ['bar_snapshot_proof_missing'], nextRepair: { code: 'bar_snapshot_proof_missing', barKey: 'R-1', action: 'Bind evidence.' } },
       'decision-added',
     );
-    expect(restamped).toBe(true);
+    expect(restamped).toMatchObject({ stamped: true });
 
+    // P-004 ("note in, note out"): the cascade restamp now writes the Now NOTE column
+    // (newBody: null), not plan bytes. The spine guard covers BYTE writes only, so a
+    // note-only restamp must leave the content hash — and therefore the spine — exactly
+    // as it was: no new revision row, and the current bytes still have their revision.
+    // (The unhooked BYTE-write path the guard exists for is pinned by the first test.)
     const after = await revisions(slug);
-    expect(after).toHaveLength(2);
-    expect(after[1]!.author_id).toBe(REVISION_SPINE_GUARD_AUTHOR);
-    expect(after[1]!.rationale).toMatch(/scope-write cascade/);
-    expect(after[1]!.rationale).toMatch(/su-test-actor/);
+    expect(after).toHaveLength(before.length);
+    expect(after.map((r) => r.content_hash)).toEqual(before.map((r) => r.content_hash));
     await expectCurrentBytesHaveRevision(slug);
   }, 60_000);
 

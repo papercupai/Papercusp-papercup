@@ -1,0 +1,11 @@
+{
+  "kind": "local-validation-of-current-ssm-read",
+  "source": "ssm-current-read.json",
+  "sourceTask": "0mv5rlz6pq7rala1w4z",
+  "expectedHistoricalIdentity": "sha256:73420c6303698a4b33a0670b942b295d451142d68a6a7f0a2d34ff6304a23402",
+  "recordedIdentity": "sha256:73420c6303698a4b33a0670b942b295d451142d68a6a7f0a2d34ff6304a23402",
+  "recomputedIdentity": "sha256:73420c6303698a4b33a0670b942b295d451142d68a6a7f0a2d34ff6304a23402",
+  "historicalComparison": true,
+  "correction": "The read command's equalsHistorical=false compared prefixed manifest identities with an unprefixed expected hex. Both emitted identity values match the correctly prefixed historical identity. Raw command output is preserved unchanged.",
+  "scope": "Exact r70 version manifest and retained clean-account proof; no new clean-account run or full publication-envelope recovery."
+}

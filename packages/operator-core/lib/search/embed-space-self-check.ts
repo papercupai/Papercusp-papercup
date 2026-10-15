@@ -28,11 +28,14 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { ResolvedEmbedder } from '@papercusp/memory';
+import { pinModuleState } from '@papercusp/module-singleton';
 import {
   DEFAULT_DESYNC_DISTANCE_THRESHOLD,
   cosineDistance,
+  createSelfCheckMemo,
   parseVectorText,
   runStoredRowSelfCheck,
+  type SelfCheckMemo,
 } from '@papercusp/search';
 import { resolveBackfillEmbedder, TARGETS, modeColOf, type BackfillTarget } from './embed-backfill';
 import {
@@ -139,6 +142,25 @@ export interface EmbedSpaceSelfCheckDeps {
   listOpen?: () => Promise<EscalationRecord[]>;
   resolveOpen?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
   distanceThreshold?: number;
+  /** Last healthy pass. Defaults to one per process, so a restart (the moment
+   * an embedder change takes effect) always re-embeds. */
+  memo?: SelfCheckMemo;
+  maxAgeMs?: number;
+  now?: () => number;
+}
+
+// The 15-minute tick used to re-embed the same row with the same embedder on
+// every run. On an idle Server that reloaded the embedding model each time
+// (WI-10005523, measured on cap-p011 2026-10-02), so no idle reclaim of the
+// model could last more than a quarter hour. The memo skips the embed while
+// nothing that could change the answer has changed.
+const selfCheckState = pinModuleState('@papercusp/operator-core.embed-space-self-check', () => ({
+  memo: createSelfCheckMemo(),
+}));
+
+/** Everything about the resolved embedder that decides the vectors it makes. */
+function embedderIdentityOf(resolved: Exclude<ResolvedEmbedder, { mode: 'disabled' }>): string {
+  return JSON.stringify({ mode: resolved.mode, dims: resolved.dims, profile: resolved.profile });
 }
 
 function findOpenSelfCheckEscalation(recs: EscalationRecord[]): EscalationRecord | null {
@@ -206,6 +228,10 @@ export async function runEmbedSpaceSelfCheckTick(
   // mismatch reads as maximal distance there, so a width drift alerts too.
   let canary: CanaryRow | null = null;
   const result = await runStoredRowSelfCheck({
+    embedderIdentity: embedderIdentityOf(resolved),
+    memo: deps.memo ?? selfCheckState.memo,
+    maxAgeMs: deps.maxAgeMs,
+    now: deps.now,
     embed: (text) => resolved.embed(text),
     pickCanary: async () => {
       canary = await pickCanary(sql, resolved.mode);
@@ -250,6 +276,16 @@ export async function runEmbedSpaceSelfCheckTick(
   const table = (canary as CanaryRow | null)?.target.table;
   if ('skipped' in result) {
     if (result.skipped === 'no_row_in_active_space') return { ok: true, skipped: result.skipped, mode: resolved.mode };
+    if (result.skipped === 'unchanged_since_last_pass') {
+      return {
+        ok: true,
+        skipped: result.skipped,
+        table,
+        keyLabel: result.keyLabel,
+        distance: result.distance,
+        mode: resolved.mode,
+      };
+    }
     return result.skipped === 'embed_failed'
       ? { ok: false, skipped: result.skipped, table }
       : { ok: false, skipped: result.skipped };

@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Phone P-010 PHONE-P-010-OUTCOME integration-layer mutation guards (unauthenticated caller never acquires owner permissions)",
+  "framework": "shell",
+  "command": [
+    "bash .papercusp/scratch/p010/wi10004988-p010-probe-outcome-int.sh  # papercusp root, PAPERCUSP_TEST_RUN_HARNESS=papercusp; each probe = scripts/mutation-probe.sh --file <subject> --relocation overlay --mutate <probes[].mutate> --test \"cd $PHONE_APP_ROOT/worker && npx vitest run src/caller-owner-authority.integration.test.ts\""
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T08:25:06Z",
+  "finishedAt": "2026-10-06T08:25:24Z",
+  "summary": "2/2 copy-out overlay mutants CAUGHT by the integration guard worker/src/caller-owner-authority.integration.test.ts at phone-app 4cf94a6462f2e8fa5702df3e99f07e423c203d41. The guard composes the real SidecarClient admission, the agent.ts PhoneCallContext projection, the real voice-turn adapter and the real brain host-trust selection; only the sidecar HTTP response is a double. Each probe ran the unmutated guard, the relocated unmutated copy, then the mutant; the shared tree was never mutated. Software falsifiability only; no live Telnyx/PSTN/provider claim (D-020).",
+  "assertions": [
+    {
+      "id": "outcome-int-policy-caught",
+      "passed": true,
+      "evidence": "worker/src/phone-voice-contract-adapter.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    },
+    {
+      "id": "outcome-int-admission-caught",
+      "passed": true,
+      "evidence": "worker/src/sidecar-client.ts: [mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evi"
+    }
+  ],
+  "subjectRepository": "phone-app",
+  "subjectCommit": "4cf94a6462f2e8fa5702df3e99f07e423c203d41",
+  "plan": "phone-public-telephone-service-2026-10-01",
+  "planItem": "P-010",
+  "workItem": "WI-10004988",
+  "decision": "D-020 (no live carrier claim)",
+  "recordedAt": "2026-10-06T08:28:02.283Z",
+  "recordedBy": "su-2b9fe461-077c-4fd4-8cd7-c43499f17892",
+  "method": "scripts/mutation-probe.sh copy-out overlay (bwrap private mount namespace); verdict from the mutant guard's own Vitest exit code and failing test names.",
+  "scope": "PHONE-P-010-OUTCOME rev1 at the integration layer.",
+  "probes": [
+    {
+      "name": "outcome-int-policy",
+      "clauses": [
+        "OUTCOME"
+      ],
+      "testLayer": "integration",
+      "subject": "worker/src/phone-voice-contract-adapter.ts",
+      "subjectSha256": "5280c672e98ad6afa25ec8ee3a605d762bfc646b5f79f15feb3cd3580e7ec592",
+      "mutate": "s/return principal\\.kind === \"owner\" \\? \"owner\" : \"restricted-call\";/return \"owner\";/",
+      "tests": [
+        "worker/src/caller-owner-authority.integration.test.ts"
+      ],
+      "testSha256": "aa8e13eae7a5de7b961af95efa1cf7eceebefafb98a13ccfd8ff4c07d1685b0f",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "gives an unauthenticated caller restricted policy, no tools and an isolated thread even when the payload names the owner's threads 54ms",
+        "src/caller-owner-authority.integration.test.ts > unauthenticated caller vs owner authority (real admission, adapter and brain trust) > gives an unauthenticated caller restricted policy, no tools and an isolated thread even when the payload names the owner's threads"
+      ],
+      "logSha256": "fa49f76f8e17c8bb79893bc767c654be983f08903d38f497048fdc2d3be91b02"
+    },
+    {
+      "name": "outcome-int-admission",
+      "clauses": [
+        "OUTCOME"
+      ],
+      "testLayer": "integration",
+      "subject": "worker/src/sidecar-client.ts",
+      "subjectSha256": "302de820d97e744673b8b66b67d6142df33f9a949fcdf26356f80919051d1197",
+      "mutate": "s/&& \\(principal\\.subjectId !== context\\.ownerId \\|\\| !context\\.parentOperatorConversationId\\)\\) return \\{ kind: \"denied\" \\};/\\&\\& false) return { kind: \"denied\" };/",
+      "tests": [
+        "worker/src/caller-owner-authority.integration.test.ts"
+      ],
+      "testSha256": "aa8e13eae7a5de7b961af95efa1cf7eceebefafb98a13ccfd8ff4c07d1685b0f",
+      "exitCode": 0,
+      "verdict": "caught",
+      "verdictLine": "[mutation-probe] VERDICT: MUTANT CAUGHT (guard exited 1) — the guard is falsifiable ✓ MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=vitest-failed-tests relocation=overlay",
+      "failedTests": [
+        "refuses a sidecar payload carrying an owner principal for a different subject before any turn can be routed 8ms",
+        "refuses a sidecar payload carrying an owner principal without the owner's parent thread before any turn can be routed 2ms",
+        "src/caller-owner-authority.integration.test.ts > unauthenticated caller vs owner authority (real admission, adapter and brain trust) > refuses a sidecar payload carrying an owner principal for a different subject before any turn can be routed",
+        "src/caller-owner-authority.integration.test.ts > unauthenticated caller vs owner authority (real admission, adapter and brain trust) > refuses a sidecar payload carrying an owner principal without the owner's parent thread before any turn can be routed"
+      ],
+      "logSha256": "34bbd3fd34db5df0abfef1c2bc1d5f7213bf55b9451ade60c52710cf605d4991"
+    }
+  ],
+  "survivedSingleSiteMutants": [
+    {
+      "name": "agent-startup-principal",
+      "subject": "worker/src/agent.ts",
+      "mutate": "s/^\\s*&& JSON\\.stringify\\(current\\.principal\\) === JSON\\.stringify\\(callContextRecord\\.principal\\)\\s*$//",
+      "tests": [
+        "worker/src/agent-authority.integration.test.ts"
+      ],
+      "verdict": "survived",
+      "explanation": "Not a weak guard: a guest-to-owner flip during startup is refused independently by sidecar-client.ts admission (an owner principal needs subjectId === ownerId and an owner parent thread) and by the agent.ts parent-thread equality check, so deleting the principal comparison alone changes no observable outcome. That test also replaces the voice-turn adapter with a double, so it cannot observe the permission decision; the integration guard above was added for that reason."
+    }
+  ]
+}

@@ -1,0 +1,1566 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-portal-desktop-parity-closure-2026-10-09",
+  "sourceRef": "work-item:WI-10007844#terminalCompletionEvidence.checkpointProseSnapshot",
+  "nativeExceptionDecision": "cloud-portal-desktop-parity-closure-2026-10-09#D-002",
+  "acceptanceNote": "Population and mapping inventory only. Pending dispositions require functional evidence in the named owner lane before final acceptance.",
+  "eligibility": {
+    "workspace": "Authenticated selected workspace; use the shared pot-scope provider where the destination requires it.",
+    "agent": "Selected current authorized agent owner in this workspace; backend resolves identity and per-target results.",
+    "managed-session": "Current authorized managed session and incarnation; explicit stop confirmation; server resolves target.",
+    "native": "Operator machine owns the terminal window; portal conversation navigation cannot raise an OS window.",
+    "voice": "Existing voice lane's accepted engine/security scope and private conversation; R-4 owner ruling remains unresolved.",
+    "cloud": "Existing cloud campaign's authenticated workspace, supported provider and privately tagged resources."
+  },
+  "rows": [
+    {
+      "id": "adv.overview",
+      "destination": "?app=overview",
+      "scenario": "adv.overview",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.hud",
+      "destination": "?app=hud",
+      "scenario": "adv.hud",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.brainstorm",
+      "destination": "?app=brainstorm",
+      "scenario": "adv.brainstorm",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.harnesses",
+      "destination": "?app=work",
+      "scenario": "adv.harnesses",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.health",
+      "destination": "?app=health",
+      "scenario": "adv.health",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.prs",
+      "destination": "?app=prs",
+      "scenario": "adv.prs",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.insights",
+      "destination": "?app=insights",
+      "scenario": "adv.insights",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.conversations",
+      "destination": "?app=conversations",
+      "scenario": "adv.conversations",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.learning",
+      "destination": "?app=learning",
+      "scenario": "adv.learning",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.settings",
+      "destination": "?app=adv-settings",
+      "scenario": "adv.settings",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.docs",
+      "destination": "?app=docs",
+      "scenario": "adv.docs",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.history",
+      "destination": "?app=history",
+      "scenario": "adv.history",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.git",
+      "destination": "?app=git",
+      "scenario": "adv.git",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.stats",
+      "destination": "?app=stats",
+      "scenario": "adv.stats",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.testing",
+      "destination": "?app=testing",
+      "scenario": "adv.testing",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.plans",
+      "destination": "?app=create",
+      "scenario": "adv.plans",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.workflows",
+      "destination": "?app=workflows",
+      "scenario": "adv.workflows",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.calendar",
+      "destination": "?app=scheduled",
+      "scenario": "adv.calendar",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.frames",
+      "destination": "?app=frames",
+      "scenario": "adv.frames",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "adv.evals",
+      "destination": "?app=evals",
+      "scenario": "adv.evals",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "utility.plans",
+      "destination": "?app=plans",
+      "scenario": "utility.plans",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "utility.inbox",
+      "destination": "?app=inbox",
+      "scenario": "utility.inbox",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "utility.cloud",
+      "destination": "?app=cloud",
+      "scenario": "utility.cloud",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "utility.cupboard",
+      "destination": "?app=cupboard",
+      "scenario": "utility.cupboard",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "utility.dev",
+      "destination": "?app=dev",
+      "scenario": "utility.dev",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "utility.support",
+      "destination": "?app=support",
+      "scenario": "utility.support",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "utility.settings",
+      "destination": "?app=settings",
+      "scenario": "utility.settings",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "utility.quick-panel",
+      "destination": "?panel=quick",
+      "scenario": "utility.quick-panel",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "utility.shortcuts",
+      "destination": "existing global shortcut dispatch",
+      "scenario": "utility.shortcuts",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "roster.message",
+      "destination": "selected-agent message",
+      "scenario": "roster.message",
+      "eligibility": "agent",
+      "disposition": "functional-pending",
+      "owner": "WI-10007843"
+    },
+    {
+      "id": "roster.wake",
+      "destination": "selected-agent wake",
+      "scenario": "roster.wake",
+      "eligibility": "agent",
+      "disposition": "functional-pending",
+      "owner": "WI-10007843"
+    },
+    {
+      "id": "roster.stop",
+      "destination": "selected managed-session stop",
+      "scenario": "roster.stop",
+      "eligibility": "managed-session",
+      "disposition": "functional-pending",
+      "owner": "WI-10007845"
+    },
+    {
+      "id": "roster.open-conversation",
+      "destination": "selected-agent conversation",
+      "scenario": "roster.open-conversation",
+      "eligibility": "agent",
+      "disposition": "functional-pending",
+      "owner": "WI-10007847"
+    },
+    {
+      "id": "native.os-window-focus",
+      "destination": "operator OS terminal window",
+      "scenario": "native.os-window-focus",
+      "eligibility": "native",
+      "disposition": "reviewed-native-only",
+      "owner": "WI-10007849"
+    },
+    {
+      "id": "existing.voice",
+      "destination": "portal-voice-parity-and-release-2026-09-08#P-031",
+      "scenario": "existing.voice",
+      "eligibility": "voice",
+      "disposition": "existing-lane-pending",
+      "owner": "WI-10007846"
+    },
+    {
+      "id": "existing.hosted-native-cloud",
+      "destination": "cloud-cross-feature-e2e-shipment-2026-10-08#P-002,P-003,P-004",
+      "scenario": "existing.hosted-native-cloud",
+      "eligibility": "cloud",
+      "disposition": "existing-lane-pending",
+      "owner": "WI-10007848"
+    }
+  ],
+  "evidenceAuditThroughEdition23": {
+    "schemaVersion": 1,
+    "auditedAt": "2026-10-12T08:23:14.497328+00:00",
+    "actor": "su-d8130961-3272-4a5f-8f4c-a7f8d337b333",
+    "workItems": [
+      "WI-10007847",
+      "WI-10007849"
+    ],
+    "plan": {
+      "version": 10,
+      "contentHash": "c312ec8398503139d7aad03408088ba4046e4d889cdf99c6bf1fbcbfc4530586"
+    },
+    "scope": "Original36 plus all23 supplement-source audit. This is source/receipt mapping only, not a test replay, accepted BAR binding, grading, complete bootstrap proof or shipment verdict.",
+    "baseRef": "thread-post:1169808",
+    "baseSourcePath": "/mnt/backup/parity-ledger1169808-full-d8130.json",
+    "baseSourceSha256": "8f4afc0da172815636da51cdc504e9670e7bf30f34192329cf5decc1602ac6ef",
+    "editionsReadbackPath": "$HOME/.local/state/o-d8130/recovery-20261012-0806/editions.json",
+    "editionsReadbackSha256": "4c9f03f23d2c6946fa7199f8d86b96dfe0ca1faa5e6380d73a6b6e9dfd121070",
+    "editions": [
+      {
+        "edition": 1,
+        "ref": "thread-post:1171741",
+        "postId": 1171741,
+        "bodySha256": "0d342b8dda4d475f378abe303ca28c74667f197b8b68a055b908825282517283",
+        "bodyChars": 29896,
+        "sourceScope": "Full36-row additive preparatory supplement. Original row fields, identities, order, owners and dispositions preserved exactly. No BAR binding, adequacy card, grade, accepted inventory upgrade or shipment verdict. Receipt observations are immutable run-specific evidence and are not current runtime claims."
+      },
+      {
+        "edition": 2,
+        "ref": "thread-post:1171759",
+        "postId": 1171759,
+        "bodySha256": "c91666aee0e4ce41fdc653369e06aa0bffd855275d897983e67bd805a189b8df",
+        "bodyChars": 27345,
+        "sourceScope": "Full36-row additive preparatory supplement. Original row fields, identities, order, owners and dispositions preserved exactly. No BAR binding, adequacy card, grade, accepted inventory upgrade or shipment verdict. Receipt observations are immutable run-specific evidence and are not current runtime claims."
+      },
+      {
+        "edition": 3,
+        "ref": "thread-post:1173399",
+        "postId": 1173399,
+        "bodySha256": "2771ab181daa81f9721354400b2b59624a7f133c680f316eb48b35f7fe4faf91",
+        "bodyChars": 29241,
+        "sourceScope": "Full36-row additive preparatory supplement; original fields, identity, order, owners and dispositions retained. Scoped original evidence only, no final acceptance or shipment verdict."
+      },
+      {
+        "edition": 4,
+        "ref": "thread-post:1173429",
+        "postId": 1173429,
+        "bodySha256": "b9a02134e1ccf09fb0bc9bd866d0e9ce7fe51113904a3fe1582fa524c00a7839",
+        "bodyChars": 30814,
+        "sourceScope": "Full36-row additive preparatory supplement; original fields, identity, order, owners and dispositions retained. Scoped original evidence only, no final acceptance or shipment verdict."
+      },
+      {
+        "edition": 5,
+        "ref": "thread-post:1174023",
+        "postId": 1174023,
+        "bodySha256": "4edbd92c78f83f06030d9215f2a9bb4294220d2ca9d951342643a79819a14830",
+        "bodyChars": 5695,
+        "sourceScope": "Additive recovery supplement. All36 original row fields/identities/order/owners/dispositions and edition4 observations retained unchanged. Original test proof preserved; current closure observations never upgrade full-source, bootstrap, provider, acceptance or shipment proof."
+      },
+      {
+        "edition": 6,
+        "ref": "thread-post:1174085",
+        "postId": 1174085,
+        "bodySha256": "5072a927a61bb87b0830daeb60c11f7309ea8f6b58113d5f5c8fc43c8df4aa68",
+        "bodyChars": 1656,
+        "sourceScope": "Additive dated observation only. Original36 row identities, dispositions, owners and historical evidence scopes preserved."
+      },
+      {
+        "edition": 7,
+        "ref": "thread-post:1174103",
+        "postId": 1174103,
+        "bodySha256": "af06a60829829f3fff23a1e85c488b287447e8152672e7fcf85509485495d83c",
+        "bodyChars": 2095,
+        "sourceScope": "Additive dated observation; original36 row identities/dispositions/owners/proof scopes preserved."
+      },
+      {
+        "edition": 8,
+        "ref": "thread-post:1174154",
+        "postId": 1174154,
+        "bodySha256": "0358f180ca80e001d513767e3c6cb21d5f053a40016b738abc686dc895a0674d",
+        "bodyChars": 2319,
+        "sourceScope": "Additive original private Shortcuts and GUI report observation; all 36 historical row fields remain unchanged; no acceptance binding or shipment verdict"
+      },
+      {
+        "edition": 9,
+        "ref": "thread-post:1174175",
+        "postId": 1174175,
+        "bodySha256": "befb098338b10919ae5336d801d644b7087b7792cf42b5ded8b3b2b367aafc9e",
+        "bodyChars": 2434,
+        "sourceScope": "Complete prose receipt; original qualifiers retained at cited post."
+      },
+      {
+        "edition": 10,
+        "ref": "thread-post:1174274",
+        "postId": 1174274,
+        "bodySha256": "3862e02fc5742b11cff0ca1f122e862d3d630f8c4070513a5357006b0d07e8eb",
+        "bodyChars": 1875,
+        "sourceScope": "Complete prose receipt; original qualifiers retained at cited post."
+      },
+      {
+        "edition": 11,
+        "ref": "thread-post:1174366",
+        "postId": 1174366,
+        "bodySha256": "fef570676956c863e98c18c5054c16efbcf5562f14e97c7009eadf5e8ee9ecbd",
+        "bodyChars": 1894,
+        "sourceScope": "Complete prose receipt; original qualifiers retained at cited post."
+      },
+      {
+        "edition": 12,
+        "ref": "thread-post:1174643",
+        "postId": 1174643,
+        "bodySha256": "05c057197073b3d8fbd93088f630ea37feb53c24b62d4e606e602195f5a9648e",
+        "bodyChars": 2139,
+        "sourceScope": "Complete prose receipt; original qualifiers retained at cited post."
+      },
+      {
+        "edition": 13,
+        "ref": "thread-post:1174821",
+        "postId": 1174821,
+        "bodySha256": "af7ae40dcb597ce2bb00f61b8f2a0f4e57f175fbf166f5731089f146855fb198",
+        "bodyChars": 2044,
+        "sourceScope": "Complete prose receipt; original qualifiers retained at cited post."
+      },
+      {
+        "edition": 14,
+        "ref": "thread-post:1175009",
+        "postId": 1175009,
+        "bodySha256": "17a25c258e0f936ef984dec9373b358a818d1f0bc1571495ab893692bc5d5620",
+        "bodyChars": 3794,
+        "sourceScope": "Additive original private Stats observation. Original 36 inventory rows, dispositions, owners and historical evidence remain unchanged. No BAR binding, acceptance grade or shipment verdict."
+      },
+      {
+        "edition": 15,
+        "ref": "thread-post:1175345",
+        "postId": 1175345,
+        "bodySha256": "1871c633b641b4ff8f285a636be7ae13555ab72a440ee0be875ec9bdd43b483d",
+        "bodyChars": 3997,
+        "sourceScope": "Additive original private Git observation. Original36 inventory rows, dispositions, owners and historical evidence remain unchanged. No BAR binding, acceptance grade or shipment verdict."
+      },
+      {
+        "edition": 16,
+        "ref": "thread-post:1175444",
+        "postId": 1175444,
+        "bodySha256": "62b062d8cb951e28541fe2b6fa7b71a96612cfd843d64e3fd7cfcbcdd1f335ab",
+        "bodyChars": 5135,
+        "sourceScope": "Additive original adv.frames component-fixture observation. Original 36 inventory rows, fields, owners, dispositions and historical proof remain unchanged. No BAR binding, acceptance grade or shipment verdict."
+      },
+      {
+        "edition": 17,
+        "ref": "thread-post:1175503",
+        "postId": 1175503,
+        "bodySha256": "1a8cb077a624f7f4b16b5ab2b91026f097bc0017a727a8da7bf8a1bedbf2a263",
+        "bodyChars": 2818,
+        "sourceScope": "Additive original component-fixture observation; no BAR binding, acceptance grade or shipment verdict."
+      },
+      {
+        "edition": 18,
+        "ref": "thread-post:1175581",
+        "postId": 1175581,
+        "bodySha256": "72b4e1ad7a99acccdd323045057d7e330bbcb92743afe74cdfc1f73ba8c57381",
+        "bodyChars": 4795,
+        "sourceScope": "Additive explicit component-fixture observation; no BAR binding or acceptance/shipment grade."
+      },
+      {
+        "edition": 19,
+        "ref": "thread-post:1175608",
+        "postId": 1175608,
+        "bodySha256": "bb46455d0d6d23c0a7162373a49ca8511f03c11d294bf8194248a41c0754c380",
+        "bodyChars": 4681,
+        "sourceScope": "Additive local source-publication and scoped defect settlement. No new test, BAR binding, private/provider/hosted acceptance or shipment claim."
+      },
+      {
+        "edition": 20,
+        "ref": "thread-post:1175664",
+        "postId": 1175664,
+        "bodySha256": "cd964712160bc9bd61fbfc0fd2780d41a5830c418435d70cf450f06dffc40f0c",
+        "bodyChars": 5001,
+        "sourceScope": "Additive local committed source join and two scoped defect settlements. Actual component with explicit local HTTP fixture; no new test replay, BAR binding, private/provider/hosted or shipment upgrade."
+      },
+      {
+        "edition": 21,
+        "ref": "thread-post:1175714",
+        "postId": 1175714,
+        "bodySha256": "4ec36a73e20f39af611d8402e36b28e739505dd0ca1a2bf6f640101b4f8b1a52",
+        "bodyChars": 2919,
+        "sourceScope": "Actual Dev route/page/API components with explicit local HTTP fixture responses; additive scoped proof and two local committed verifier settlements. Private/provider/hosted, complete bootstrap and shipment remain open."
+      },
+      {
+        "edition": 22,
+        "ref": "thread-post:1175763",
+        "postId": 1175763,
+        "bodySha256": "3e8019c2314d37c39c98edc70d11ec2232c47891f263c761030e428f39c80fec",
+        "bodyChars": 3307,
+        "sourceScope": "Selected actual private Dev catalog schema and public activity projection on disposable PG; workspaceIds query filtering. Six exact200/200/403/200/403/200 requests, two actual Host403 controls, keyboard/reload/no invocation replay, no unrelated writes, original threephasePASS and boundedcleanup. No cookie tenant authorization/allDev/bootstrap/provider/hosted/finalshipment upgrade."
+      },
+      {
+        "edition": 23,
+        "ref": "thread-post:1175823",
+        "postId": 1175823,
+        "bodySha256": "c6e699d52738986649bf9fc6d390784ad299950937da4accbd7ec6df75d3f45e",
+        "bodyChars": 2541,
+        "sourceScope": "Actual Cupboard page and public proxy with maintained worker listings handler on migrated private SQLite; seeded catalog and test KV, actual Host denials. No workerd, production Cupboard, hosted tenant, install or shipment proof."
+      }
+    ],
+    "verification": {
+      "baseRows": 36,
+      "editionReceipts": 23,
+      "editionReceiptFailures": 0,
+      "originalTableComparisons": [
+        {
+          "edition": 1,
+          "rowCount": 36,
+          "originalFieldMismatches": []
+        },
+        {
+          "edition": 2,
+          "rowCount": 36,
+          "originalFieldMismatches": []
+        },
+        {
+          "edition": 3,
+          "rowCount": 36,
+          "originalFieldMismatches": []
+        },
+        {
+          "edition": 4,
+          "rowCount": 36,
+          "originalFieldMismatches": []
+        }
+      ],
+      "canonicalRowFieldMismatches": [],
+      "parentCheckLedgers": [
+        {
+          "item": "WI-10007849",
+          "hash": "21695567a7b6",
+          "rows": [
+            {
+              "id": "prs-committed-insights-report-gui",
+              "claim": "Report rpt_1ae014ac-6a8a-4ba1-a66d-c15a97205d76 has complete ownerMarkdown readback and intended fullbody observed in actual3270GUI; scoped PR fixture closure has committed authority, overall parity remains unshipped."
+            },
+            {
+              "id": "prs-report-gui",
+              "claim": "Report rpt_e9f66e0d-38e5-4d5c-9e06-d058ef52c1a0 has exact ownerMarkdown readback and complete intended body observed in actual3270 GUI."
+            },
+            {
+              "id": "private-brainstorm-browser-pass",
+              "claim": "Selected actual private Brainstorm workflow21025340 passed independent field saves, denial/retry/reload/isolation and original bounded cleanup; supporting fixture publication and whole parity remain open."
+            },
+            {
+              "id": "private-health-report-gui",
+              "claim": "Health report rpt_a8e14700-b4df-405a-b4f2-dc9241b2679d has exact owner Markdown readback and full body observed in actual3270GUI."
+            },
+            {
+              "id": "private-stop-current-pass",
+              "claim": "Selected actual private Portal stop passed21008888 with exact target/cancel/denial/stale isolation and bounded original cleanup."
+            },
+            {
+              "id": "private-hud-browser-pass",
+              "claim": "The selected actual private HUD workflow passed21007157 with exact workspace/filter/reload/foreign exclusion/global positive control/actual Host403 and original bounded cleanup; no whole-plan or shipped upgrade."
+            },
+            {
+              "id": "private-hud-report-gui",
+              "claim": "Report rpt_cecd3284-7d1e-442a-bb24-50af1bd19962 has exact ownerMarkdown readback and intended fullbody observed in actual3170GUI."
+            },
+            {
+              "id": "private-docs-browser-pass",
+              "claim": "Selected actual private Docs workflow passed20986920 with real403/no-write/exact200/reload/neighbor isolation and bounded cleanup; original run-specific evidence, no full-current or shipment upgrade."
+            },
+            {
+              "id": "private-docs-preflight-body",
+              "claim": "Configured Docs corpus rejection and actual standalone Markdown rendering guards passed20983531 in dirty working-source scope; actual private Docs action acceptance remains unverified."
+            },
+            {
+              "id": "private-plans-browser-pass",
+              "claim": "Selected actual private Plans archive workflow passed20979888 with exact denial/retry, scopedPG isolation, UIabsence/reload and bounded original cleanup; finalpublication/acceptance unverified."
+            },
+            {
+              "id": "inbox-1436-migrated-verdict",
+              "claim": "Producer1436 retains10 canonical privatePG passes; the selected private Inbox workflow now passes20978647 in concrete cache scope with original bounded cleanup."
+            },
+            {
+              "id": "parity-rubric8-recovery",
+              "claim": "Current acceptance revision8 is unvetted and missingattestation."
+            }
+          ]
+        },
+        {
+          "item": "WI-10007847",
+          "hash": "fe8b8ab60d54",
+          "rows": [
+            {
+              "id": "prs-component-read-pass",
+              "claim": "Canonical21031768 passed actual PR component read/filter/details/reload/error-recovery with explicit synthetic HTTP responses; real provider/private API/hosted acceptance remains unverified."
+            },
+            {
+              "id": "private-brainstorm-browser-pass",
+              "claim": "Selected actual private Brainstorm workflow21025340 passed independent field saves, denial/retry/reload/isolation and original bounded cleanup; supporting fixture publication and whole parity remain open."
+            },
+            {
+              "id": "private-health-ack-pass",
+              "claim": "Original scoped private Health21016649 passed ack/unack, denial, exact state/reload and original cleanup in the explicit private fixture scope; no wholePortal/hosted/shipped upgrade."
+            },
+            {
+              "id": "private-work-browser-pass",
+              "claim": "Original selected private Work21012260 passed precise navigation/dock/reload/isolation/Host403 and boundedcleanup; no wholePortal/shipment claim."
+            },
+            {
+              "id": "private-work-report-gui",
+              "claim": "Work report8eee exactownerMD readback andfullbody actual3270GUI."
+            },
+            {
+              "id": "private-stop-current-pass",
+              "claim": "Selected actual private Portal stop passed21008888 with exact target/cancel/denial/stale isolation and bounded original cleanup."
+            },
+            {
+              "id": "private-hud-browser-pass",
+              "claim": "The selected actual private HUD workflow passed21007157 with exact workspace/filter/reload/foreign exclusion/global positive control/actual Host403 and original bounded cleanup; no whole-plan or shipped upgrade."
+            },
+            {
+              "id": "private-hud-report-gui",
+              "claim": "Report rpt_cecd3284-7d1e-442a-bb24-50af1bd19962 has exact ownerMarkdown readback and intended fullbody observed in actual3170GUI."
+            },
+            {
+              "id": "private-docs-browser-pass",
+              "claim": "Selected actual private Docs workflow passed20986920 with real403/no-write/exact200/reload/neighbor isolation and bounded cleanup; original run-specific evidence, no full-current or shipment upgrade."
+            },
+            {
+              "id": "private-docs-preflight-body",
+              "claim": "Configured Docs corpus rejection and actual standalone Markdown rendering guards passed20983531 in dirty working-source scope; actual private Docs action acceptance remains unverified."
+            },
+            {
+              "id": "private-plans-browser-pass",
+              "claim": "Selected actual private Plans archive workflow passed20979888 with exact denial/retry, scopedPG isolation, UIabsence/reload and bounded original cleanup; finalpublication/acceptance unverified."
+            },
+            {
+              "id": "inbox-1436-migrated-verdict",
+              "claim": "Producer1436 retains10 canonical privatePG passes; the selected private Inbox workflow now passes20978647 in concrete cache scope with original bounded cleanup."
+            }
+          ]
+        }
+      ],
+      "retirements": 0,
+      "testsReplayed": 0
+    },
+    "requirements": {
+      "R-1": "Population individually retained; no final acceptance upgrade.",
+      "R-2": "Delivery proof retained; correlated later private parked-native pickup still absent from this reviewed population.",
+      "R-3": "Original scoped private stop proof retained; current final binding open.",
+      "R-4": "Exact owner conversation has no accepted answer/posts; do not self-answer.",
+      "R-5": "Per-harness settings, aggregate Conversations and create-dock actions remain independent functional gaps; fixture-only journeys retain that scope.",
+      "R-6": "Existing real provider/hosted campaign proof must be consumed through its lane.",
+      "R-7": "No independent acceptance, exact final artifact closure or shipment verdict.",
+      "R-8": "Absolute verified GUI citations required; latest retained report rpt_18275dfa-6c63-42e3-a699-fa907032f9cf is separate exact proof."
+    },
+    "workflows": [
+      {
+        "id": "adv.overview",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21055788
+        ],
+        "qualification": "Plan-list/navigation proof only; create-dock actions remain distinct.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1174023",
+            "kind": "dated-observation",
+            "evidenceRef": "work-item:EI-25608713108766291#terminalCompletionEvidence",
+            "qualification": "Component/browser navigation proof using empty/synthetic reads. No private API or whole-shell upgrade; new private Overview case is separately prepared and unverified."
+          },
+          {
+            "ref": "thread-post:1174085",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21055788",
+            "qualification": "Seeded plan-list/keyboard/deep-link/reload/query and actual403/recovery only; other tiles, hosted tenant/full shell/native API complete loader graph and final shipment remain unverified. GenericGit dirty/HEAD-moved unchanged."
+          },
+          {
+            "ref": "thread-post:1174103",
+            "kind": "dated-observation",
+            "evidenceRef": null,
+            "qualification": "Additive dated observation; original36 row identities/dispositions/owners/proof scopes preserved."
+          }
+        ]
+      },
+      {
+        "id": "adv.hud",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21007157
+        ],
+        "qualification": "Exact session filtering, query/reload and Host denial only.",
+        "supplementObservations": []
+      },
+      {
+        "id": "adv.brainstorm",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21025340
+        ],
+        "qualification": "Exact independent field save/recovery; immutable run-specific inputs.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1173399",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21025340",
+            "qualification": "Original explicit20outer/9812browser join at30b4; prepared API digest636958d3 equals receipt. Browserfixtureeb3839/test31a488 now match committed613df725; supporting roster fixture22082 remains unpublished. Complete native/API bootstrap closure is unknown."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21025340",
+            "qualification": "Original explicit20outer/9812browser join at30b4; prepared API digest636958d3 equals receipt. Browserfixtureeb3839/test31a488 now match committed613df725; supporting roster fixture22082 remains unpublished. Complete native/API bootstrap closure is unknown."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "dated-observation",
+            "evidenceRef": "work-item:EI-25648683071292244#terminalCompletionEvidence",
+            "qualification": "Exact five scoped source blobs only; startup rootunknown and full bootstrap/provider/shipment remain open."
+          }
+        ]
+      },
+      {
+        "id": "adv.harnesses",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21012260
+        ],
+        "qualification": "Exact member navigation/dock/reload; not every Work action.",
+        "supplementObservations": []
+      },
+      {
+        "id": "adv.health",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21016649
+        ],
+        "qualification": "Exact acknowledgement/retry/reload only.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1173399",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21016649",
+            "qualification": "Explicit seeded snapshot/history/collector/navigation scope. Other collectors, hosted tenant/full Portal remain unverified. Typed-seed guard21025271 passed; fixture adoption publication pending."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21016649",
+            "qualification": "Explicit seeded snapshot/history/collector/navigation scope. Other collectors, hosted tenant/full Portal remain unverified. Typed-seed guard21025271 passed; fixture adoption publication pending."
+          }
+        ]
+      },
+      {
+        "id": "adv.prs",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "component-fixture-original",
+        "namedOriginalTestRunIds": [
+          21031768
+        ],
+        "qualification": "Synthetic PR HTTP responses do not prove provider/private PR acceptance.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1173429",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21031768",
+            "qualification": "Explicit synthetic HTTP component responses; no private API, live GitHub, hosted authorization or shipment proof. First build failure was new fixture selector missing maintained boundary; same entry passes after2selector additions."
+          }
+        ]
+      },
+      {
+        "id": "adv.insights",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1174023",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21034375",
+            "qualification": "Seeded selected/neighbor/foreign usage samples, private cookie API, keyboard/deep-link/reload and cold/warm/token recovery only. New receipt guard fixes do not convert old proof into a current whole-tree proof."
+          }
+        ]
+      },
+      {
+        "id": "adv.conversations",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "functional-gap",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Distinct aggregate component has no functional receipt in the reviewed supplement population; roster history does not cover it.",
+        "supplementObservations": []
+      },
+      {
+        "id": "adv.learning",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1174643",
+            "kind": "complete-prose-receipt",
+            "testRunRefs": [],
+            "qualification": "Read complete cited prose; never infer broader proof from a mentioned workflow."
+          }
+        ]
+      },
+      {
+        "id": "adv.settings",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "functional-gap",
+        "namedOriginalTestRunIds": [],
+        "qualification": "adv-settings mounts AdvHarnessPanelPage settings then BlueprintSettingsPanel/HarnessSettingsPanel; Profile is utility.settings.",
+        "supplementObservations": []
+      },
+      {
+        "id": "adv.docs",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1174023",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21043025",
+            "qualification": "Original selected private corpus/read-denial acceptance only; existing edit proof20986920 remains separate. No source equivalence or new PASS replay in this continuation."
+          }
+        ]
+      },
+      {
+        "id": "adv.history",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1171741",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-browser-NONPASS",
+            "evidenceRefs": [
+              "work-item:WI-10008068",
+              "report:rpt_494b526b-be60-4008-b8b7-b1860adf751b"
+            ],
+            "qualification": "Failure report correction was published/readback/GUI verified; not functional PASS."
+          },
+          {
+            "ref": "thread-post:1171759",
+            "kind": "retained-supplement",
+            "evidencePlane": "historical-private-modal-proof; no ADV-history-surface-upgrade",
+            "evidenceRefs": [
+              "thread-post:1171751",
+              "work-item:WI-10008068",
+              "test-run:20968546"
+            ],
+            "qualification": "The first supplement's current-unresolved repair claim was withdrawn in1171751. Stored modal/conversation proof does not by itself verify the separate ADV history surface."
+          },
+          {
+            "ref": "thread-post:1173399",
+            "kind": "retained-supplement",
+            "evidencePlane": "historical-private-modal-proof; no ADV-history-surface-upgrade",
+            "evidenceRefs": [
+              "thread-post:1171751",
+              "work-item:WI-10008068",
+              "test-run:20968546"
+            ],
+            "qualification": "The first supplement's current-unresolved repair claim was withdrawn in1171751. Stored modal/conversation proof does not by itself verify the separate ADV history surface."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "retained-supplement",
+            "evidencePlane": "historical-private-modal-proof; no ADV-history-surface-upgrade",
+            "evidenceRefs": [
+              "thread-post:1171751",
+              "work-item:WI-10008068",
+              "test-run:20968546"
+            ],
+            "qualification": "The first supplement's current-unresolved repair claim was withdrawn in1171751. Stored modal/conversation proof does not by itself verify the separate ADV history surface."
+          },
+          {
+            "ref": "thread-post:1174274",
+            "kind": "complete-prose-receipt",
+            "testRunRefs": [
+              "21069092"
+            ],
+            "qualification": "Read complete cited prose; never infer broader proof from a mentioned workflow."
+          }
+        ]
+      },
+      {
+        "id": "adv.git",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1175345",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21134841",
+            "qualification": "Historical original-run evidence; generic dirty ledger remains honest. Committed pin evidence is not a current remote, deployed, hosted/provider or full bootstrap claim. Original failures retained; no completed PASS replay."
+          }
+        ]
+      },
+      {
+        "id": "adv.stats",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1175009",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21122704",
+            "qualification": "Historical exact original-run proof. Generic ledger provenance remains dirty/unknown after HEAD movement. Complete native/API/main loader/bootstrap, hosted/provider/tenant acceptance and final shipped artifact remain unverified. Original failed runs and earlier guard/unit evidence retained; no PASS replay."
+          }
+        ]
+      },
+      {
+        "id": "adv.testing",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1174023",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21045376",
+            "qualification": "Historical09:38 exact19 original input/current/ownHEAD/remoteTracking join retained; new Overview edits subsequently change shared fixture bytes, so no10:09 current-source equivalence asserted. Original9719browserinputs and bounded private cleanup remain historical."
+          }
+        ]
+      },
+      {
+        "id": "adv.plans",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "functional-gap",
+        "namedOriginalTestRunIds": [],
+        "qualification": "app=create renders create dock; opening that destination from Overview does not exercise its product actions.",
+        "supplementObservations": []
+      },
+      {
+        "id": "adv.workflows",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1174821",
+            "kind": "complete-prose-receipt",
+            "testRunRefs": [],
+            "qualification": "Read complete cited prose; never infer broader proof from a mentioned workflow."
+          }
+        ]
+      },
+      {
+        "id": "adv.calendar",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1174366",
+            "kind": "complete-prose-receipt",
+            "testRunRefs": [
+              "21072374"
+            ],
+            "qualification": "Read complete cited prose; never infer broader proof from a mentioned workflow."
+          }
+        ]
+      },
+      {
+        "id": "adv.frames",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "component-fixture-original",
+        "namedOriginalTestRunIds": [
+          21135551
+        ],
+        "qualification": "Seeded SSE stills and explicit roster denial; no real native frames/hosted proof.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1175444",
+            "kind": "dated-observation",
+            "evidenceRef": 21135551,
+            "qualification": "Original dirty working-source PASS; later named local committed bytes are a separate publication observation. No private API, real frame/VNC/video/provider/microphone, hosted or shipment evidence. No PASS replay."
+          }
+        ]
+      },
+      {
+        "id": "adv.evals",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "component-fixture-original",
+        "namedOriginalTestRunIds": [
+          21136085
+        ],
+        "qualification": "Synthetic suite/score responses; real evaluation execution remains distinct.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1175503",
+            "kind": "dated-observation",
+            "evidenceRef": 21136085,
+            "qualification": "2293 captured browser inputs,1216 original worker inputs and6 declared config dependencies match current bytes at snapshot. Configuration load capture/main-process capture remain UNKNOWN; child-process boundary opaque. Two product/unit sources locally committed; two browser fixture/test sources pending publication at snapshot. No remote/serving/shipped upgrade."
+          }
+        ]
+      },
+      {
+        "id": "utility.plans",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1171741",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20979888",
+              "thread-post:1171712",
+              "work-item:WI-10008098",
+              "work-item:EI-25587605329741861",
+              "work-item:EI-25589936686632929"
+            ],
+            "qualification": "WI-10008098 and EI-25589936686632929 are done/committed. EI-25587605329741861 is done/proposed; do not call it committed. No remote/deployed proof."
+          },
+          {
+            "ref": "thread-post:1171759",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20979888",
+              "thread-post:1171712",
+              "work-item:WI-10008098",
+              "work-item:EI-25587605329741861",
+              "work-item:EI-25589936686632929"
+            ],
+            "qualification": "WI-10008098 and EI-25589936686632929 close receipts are done/committed. Latest authoritative EI-25587605329741861 read is also done/committed after automatic settlement, with matching six-path content identity and no residualPaths. This supersedes the initial proposed receipt snapshot; no close or PASS was replayed. No remote/deployed proof."
+          },
+          {
+            "ref": "thread-post:1173399",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20979888",
+              "thread-post:1171712",
+              "work-item:WI-10008098",
+              "work-item:EI-25587605329741861",
+              "work-item:EI-25589936686632929"
+            ],
+            "qualification": "WI-10008098 and EI-25589936686632929 close receipts are done/committed. Latest authoritative EI-25587605329741861 read is also done/committed after automatic settlement, with matching six-path content identity and no residualPaths. This supersedes the initial proposed receipt snapshot; no close or PASS was replayed. No remote/deployed proof."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20979888",
+              "thread-post:1171712",
+              "work-item:WI-10008098",
+              "work-item:EI-25587605329741861",
+              "work-item:EI-25589936686632929"
+            ],
+            "qualification": "WI-10008098 and EI-25589936686632929 close receipts are done/committed. Latest authoritative EI-25587605329741861 read is also done/committed after automatic settlement, with matching six-path content identity and no residualPaths. This supersedes the initial proposed receipt snapshot; no close or PASS was replayed. No remote/deployed proof."
+          }
+        ]
+      },
+      {
+        "id": "utility.inbox",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1171741",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20978647",
+              "work-item:EI-25579142918093536",
+              "work-item:EI-25578764279807379"
+            ],
+            "qualification": "Saved PASS retained by reference, no replay and no current whole-Portal or hosted proof."
+          },
+          {
+            "ref": "thread-post:1171759",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20978647",
+              "work-item:EI-25579142918093536",
+              "work-item:EI-25578764279807379"
+            ],
+            "qualification": "Saved PASS retained by reference, no replay and no current whole-Portal or hosted proof."
+          },
+          {
+            "ref": "thread-post:1173399",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20978647",
+              "work-item:EI-25579142918093536",
+              "work-item:EI-25578764279807379"
+            ],
+            "qualification": "Saved PASS retained by reference, no replay and no current whole-Portal or hosted proof."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20978647",
+              "work-item:EI-25579142918093536",
+              "work-item:EI-25578764279807379"
+            ],
+            "qualification": "Saved PASS retained by reference, no replay and no current whole-Portal or hosted proof."
+          }
+        ]
+      },
+      {
+        "id": "utility.cloud",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "existing-lane-pending",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Existing real cloud campaign governs provider/hosted proof; not inferred from browser fixtures.",
+        "supplementObservations": []
+      },
+      {
+        "id": "utility.cupboard",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21142043
+        ],
+        "qualification": "Worker handler over private SQLite/test KV; no workerd/production/hosted/install proof.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1175664",
+            "kind": "dated-observation",
+            "evidenceRef": 21136892,
+            "qualification": "Additive local committed source join and two scoped defect settlements. Actual component with explicit local HTTP fixture; no new test replay, BAR binding, private/provider/hosted or shipment upgrade."
+          },
+          {
+            "ref": "thread-post:1175823",
+            "kind": "dated-observation",
+            "evidenceRef": 21142043,
+            "qualification": "Actual Cupboard page and public proxy with maintained worker listings handler on migrated private SQLite; seeded catalog and test KV, actual Host denials. No workerd, production Cupboard, hosted tenant, install or shipment proof."
+          }
+        ]
+      },
+      {
+        "id": "utility.dev",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21137674
+        ],
+        "qualification": "Public scoped activity projection and catalog schema; no cookie tenant/all-Dev authorization claim.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1175714",
+            "kind": "dated-observation",
+            "evidenceRef": 21137330,
+            "qualification": "Actual Dev route/page/API components with explicit local HTTP fixture responses; additive scoped proof and two local committed verifier settlements. Private/provider/hosted, complete bootstrap and shipment remain open."
+          },
+          {
+            "ref": "thread-post:1175763",
+            "kind": "dated-observation",
+            "evidenceRef": 21137674,
+            "qualification": "Selected actual private Dev catalog schema and public activity projection on disposable PG; workspaceIds query filtering. Six exact200/200/403/200/403/200 requests, two actual Host403 controls, keyboard/reload/no invocation replay, no unrelated writes, original threephasePASS and boundedcleanup. No cookie tenant authorization/allDev/bootstrap/provider/hosted/finalshipment upgrade."
+          }
+        ]
+      },
+      {
+        "id": "utility.support",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "component-fixture-original",
+        "namedOriginalTestRunIds": [
+          21136594
+        ],
+        "qualification": "Synthetic streamed answer; provider/support action is unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1175581",
+            "kind": "dated-observation",
+            "evidenceRef": 21136594,
+            "qualification": "Original canonical selected component-fixture PASS. Synthetic HTTP/SSE only; no private API/provider/hosted/deployed or complete bootstrap assertion. Original failures retained. No PASS replay."
+          },
+          {
+            "ref": "thread-post:1175608",
+            "kind": "dated-observation",
+            "evidenceRef": 21136594,
+            "qualification": "Additive local source-publication and scoped defect settlement. No new test, BAR binding, private/provider/hosted acceptance or shipment claim."
+          }
+        ]
+      },
+      {
+        "id": "utility.settings",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21057534
+        ],
+        "qualification": "Default Profile only; forwarded upstream Origin denial, no full Settings navigation.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1171759",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-loopback-profile-with-cookie",
+            "evidenceRefs": [
+              "test-run:20970414",
+              "/mnt/backup/papercusp-verification/isolated-integration/20261010T070239Z-2829655/result.json"
+            ],
+            "qualification": "Current3170 exact ledger20970414 read: e2e,1selectedPASS/0FAIL/3unselected; exact selected case title matches. Historical proof recovered without replay; no full Settings navigation, nativebrowser foreignOrigin or hosted tenant-profile claim."
+          },
+          {
+            "ref": "thread-post:1173399",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-loopback-profile-with-cookie",
+            "evidenceRefs": [
+              "test-run:20970414",
+              "/mnt/backup/papercusp-verification/isolated-integration/20261010T070239Z-2829655/result.json"
+            ],
+            "qualification": "Current3170 exact ledger20970414 read: e2e,1selectedPASS/0FAIL/3unselected; exact selected case title matches. Historical proof recovered without replay; no full Settings navigation, nativebrowser foreignOrigin or hosted tenant-profile claim."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-loopback-profile-with-cookie",
+            "evidenceRefs": [
+              "test-run:20970414",
+              "/mnt/backup/papercusp-verification/isolated-integration/20261010T070239Z-2829655/result.json"
+            ],
+            "qualification": "Current3170 exact ledger20970414 read: e2e,1selectedPASS/0FAIL/3unselected; exact selected case title matches. Historical proof recovered without replay; no full Settings navigation, nativebrowser foreignOrigin or hosted tenant-profile claim."
+          },
+          {
+            "ref": "thread-post:1174103",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21057534",
+            "qualification": "Default Profile page only; upstreamOrigin403 forwardedbytestproxy, no nativebrowserforeignOrigin, fullSettingsnavigation or hostedtenantprofile acceptance. GenericGit dirty/HEADmoved and test-runner/task-store substitutions remain qualified; no completeAPIloader graph."
+          }
+        ]
+      },
+      {
+        "id": "utility.quick-panel",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "scoped-original-receipts",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Exact evidence references/qualifiers remain in cited supplements; current final binding and complete bootstrap unverified.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1171741",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20972488",
+              "report:rpt_d6cb2d49-c697-4ad8-b4f4-6148dc1a2f6a"
+            ],
+            "qualification": "Selected prompt workflow only; no full Quick Panel/Portal or hosted claim. Report exact Markdown/owner and actual GUI were separately verified."
+          },
+          {
+            "ref": "thread-post:1171759",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20972488",
+              "report:rpt_d6cb2d49-c697-4ad8-b4f4-6148dc1a2f6a"
+            ],
+            "qualification": "Selected prompt workflow only; no full Quick Panel/Portal or hosted claim. Report exact Markdown/owner and actual GUI were separately verified."
+          },
+          {
+            "ref": "thread-post:1173399",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20972488",
+              "report:rpt_d6cb2d49-c697-4ad8-b4f4-6148dc1a2f6a"
+            ],
+            "qualification": "Selected prompt workflow only; no full Quick Panel/Portal or hosted claim. Report exact Markdown/owner and actual GUI were separately verified."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "retained-supplement",
+            "evidencePlane": "working-source/private-browser",
+            "evidenceRefs": [
+              "test-run:20972488",
+              "report:rpt_d6cb2d49-c697-4ad8-b4f4-6148dc1a2f6a"
+            ],
+            "qualification": "Selected prompt workflow only; no full Quick Panel/Portal or hosted claim. Report exact Markdown/owner and actual GUI were separately verified."
+          }
+        ]
+      },
+      {
+        "id": "utility.shortcuts",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21057665
+        ],
+        "qualification": "Remap/reload/dispatch/reset; substitutions and native outer-exit unknown retained.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1171741",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-loopback-profile-with-cookie",
+            "evidenceRefs": [
+              "test-run:20969575",
+              "thread-post:1170612"
+            ],
+            "qualification": "Profile API explicitly private-loopback-profile-with-cookie, not hostedtenantprofile."
+          },
+          {
+            "ref": "thread-post:1171759",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-loopback-profile-with-cookie",
+            "evidenceRefs": [
+              "test-run:20969575",
+              "thread-post:1170612"
+            ],
+            "qualification": "Profile API explicitly private-loopback-profile-with-cookie, not hostedtenantprofile."
+          },
+          {
+            "ref": "thread-post:1173399",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-loopback-profile-with-cookie",
+            "evidenceRefs": [
+              "test-run:20969575",
+              "thread-post:1170612"
+            ],
+            "qualification": "Profile API explicitly private-loopback-profile-with-cookie, not hostedtenantprofile."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-loopback-profile-with-cookie",
+            "evidenceRefs": [
+              "test-run:20969575",
+              "thread-post:1170612"
+            ],
+            "qualification": "Profile API explicitly private-loopback-profile-with-cookie, not hostedtenantprofile."
+          },
+          {
+            "ref": "thread-post:1174154",
+            "kind": "dated-observation",
+            "evidenceRef": "test-run:21057665",
+            "qualification": "17 explicit original/current/edb1c1f6f8 source inputs and404 explicit browser inputs match. Four committed-source substitutions and generic Git dirty/HEAD moved retained. Host navigation geometry fixture; no full API loader graph or hosted acceptance. Native outer exitcode unobserved; ledger/worker/terminal artifact independent. Nullgroup caller key mistake recovered by exact title/time, no PASSreplay."
+          }
+        ]
+      },
+      {
+        "id": "roster.message",
+        "historicalOwner": "WI-10007843",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          20967502
+        ],
+        "qualification": "Private cookie API target/inbox and draft retry; no parked native pickup.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1171741",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-cookie-HTTP-and-mounted-browser",
+            "evidenceRefs": [
+              "test-run:20967382",
+              "test-run:20967502",
+              "thread-post:1170112"
+            ],
+            "qualification": "Delivery acceptance/inbox proof only, with no later parked recipient turn inferred."
+          },
+          {
+            "ref": "thread-post:1171759",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-cookie-HTTP-and-mounted-browser",
+            "evidenceRefs": [
+              "test-run:20967382",
+              "test-run:20967502",
+              "thread-post:1170112"
+            ],
+            "qualification": "Delivery acceptance/inbox proof only, with no later parked recipient turn inferred."
+          },
+          {
+            "ref": "thread-post:1173399",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-cookie-HTTP-and-mounted-browser",
+            "evidenceRefs": [
+              "test-run:20967382",
+              "test-run:20967502",
+              "thread-post:1170112"
+            ],
+            "qualification": "Delivery acceptance/inbox proof only, with no later parked recipient turn inferred."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-cookie-HTTP-and-mounted-browser",
+            "evidenceRefs": [
+              "test-run:20967382",
+              "test-run:20967502",
+              "thread-post:1170112"
+            ],
+            "qualification": "Delivery acceptance/inbox proof only, with no later parked recipient turn inferred."
+          }
+        ]
+      },
+      {
+        "id": "roster.wake",
+        "historicalOwner": "WI-10007843",
+        "receiptClass": "delivery-only-original",
+        "namedOriginalTestRunIds": [
+          20967502
+        ],
+        "qualification": "Synchronous acceptance cannot establish later parked native pickup (D-006).",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1171741",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-cookie-synchronous-delivery-only",
+            "evidenceRefs": [
+              "test-run:20967382",
+              "test-run:20967502",
+              "cloud-portal-desktop-parity-closure-2026-10-09#D-006"
+            ],
+            "qualification": "Send-time writer pickupConfirmed:false is preserved. This is delivery acceptance, never observed parked pickup."
+          },
+          {
+            "ref": "thread-post:1171759",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-cookie-synchronous-delivery-only",
+            "evidenceRefs": [
+              "test-run:20967382",
+              "test-run:20967502",
+              "cloud-portal-desktop-parity-closure-2026-10-09#D-006"
+            ],
+            "qualification": "Send-time writer pickupConfirmed:false is preserved. This is delivery acceptance, never observed parked pickup."
+          },
+          {
+            "ref": "thread-post:1173399",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-cookie-synchronous-delivery-only",
+            "evidenceRefs": [
+              "test-run:20967382",
+              "test-run:20967502",
+              "cloud-portal-desktop-parity-closure-2026-10-09#D-006"
+            ],
+            "qualification": "Send-time writer pickupConfirmed:false is preserved. This is delivery acceptance, never observed parked pickup."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "retained-supplement",
+            "evidencePlane": "private-cookie-synchronous-delivery-only",
+            "evidenceRefs": [
+              "test-run:20967382",
+              "test-run:20967502",
+              "cloud-portal-desktop-parity-closure-2026-10-09#D-006"
+            ],
+            "qualification": "Send-time writer pickupConfirmed:false is preserved. This is delivery acceptance, never observed parked pickup."
+          }
+        ]
+      },
+      {
+        "id": "roster.stop",
+        "historicalOwner": "WI-10007845",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21008888
+        ],
+        "qualification": "Selected/cancel/stale/foreign target and cleanup original proof; final binding still open.",
+        "supplementObservations": []
+      },
+      {
+        "id": "roster.open-conversation",
+        "historicalOwner": "WI-10007847",
+        "receiptClass": "private-scoped-original",
+        "namedOriginalTestRunIds": [
+          21058407
+        ],
+        "qualification": "Selected native history and explicit HUD conversation target; not aggregate/history tabs or parked pickup.",
+        "supplementObservations": [
+          {
+            "ref": "thread-post:1171759",
+            "kind": "retained-supplement",
+            "evidencePlane": "stored-private-history-and-intended-conversation-proof",
+            "evidenceRefs": [
+              "work-item:WI-10008068",
+              "test-run:20968546",
+              "test-run:20968461"
+            ],
+            "qualification": "Actual history/GUI target only; no full HUD, parkedpickup or shipped claim. This corrects a stale omitted carry finding; no source repair or test replay this continuation."
+          },
+          {
+            "ref": "thread-post:1173399",
+            "kind": "retained-supplement",
+            "evidencePlane": "stored-private-history-and-intended-conversation-proof",
+            "evidenceRefs": [
+              "work-item:WI-10008068",
+              "test-run:20968546",
+              "test-run:20968461"
+            ],
+            "qualification": "Actual history/GUI target only; no full HUD, parkedpickup or shipped claim. This corrects a stale omitted carry finding; no source repair or test replay this continuation."
+          },
+          {
+            "ref": "thread-post:1173429",
+            "kind": "retained-supplement",
+            "evidencePlane": "stored-private-history-and-intended-conversation-proof",
+            "evidenceRefs": [
+              "work-item:WI-10008068",
+              "test-run:20968546",
+              "test-run:20968461"
+            ],
+            "qualification": "Actual history/GUI target only; no full HUD, parkedpickup or shipped claim. This corrects a stale omitted carry finding; no source repair or test replay this continuation."
+          },
+          {
+            "ref": "thread-post:1174175",
+            "kind": "complete-prose-receipt",
+            "testRunRefs": [
+              "21058407"
+            ],
+            "qualification": "Read complete cited prose; never infer broader proof from a mentioned workflow."
+          }
+        ]
+      },
+      {
+        "id": "native.os-window-focus",
+        "historicalOwner": "WI-10007849",
+        "receiptClass": "reviewed-native-only",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Sole reviewed native exception D-002.",
+        "supplementObservations": []
+      },
+      {
+        "id": "existing.voice",
+        "historicalOwner": "WI-10007846",
+        "receiptClass": "pending-owner-scope",
+        "namedOriginalTestRunIds": [],
+        "qualification": "R4 accepted_answer null and posts empty on exact conversation read; cleanup suites do not prove live engine/modes.",
+        "supplementObservations": []
+      },
+      {
+        "id": "existing.hosted-native-cloud",
+        "historicalOwner": "WI-10007848",
+        "receiptClass": "existing-lane-pending",
+        "namedOriginalTestRunIds": [],
+        "qualification": "Consume existing WI-10007848 campaign receipts; do not duplicate providers or monitor a peer.",
+        "supplementObservations": []
+      }
+    ],
+    "nextAction": {
+      "workflow": "adv.settings",
+      "mechanism": "Extend existing canonical panel/browser/private integration suites; reuse current harness panel, config/spec endpoint and disposable runtime.",
+      "proofBoundary": "Utility Profile save/reload is not per-harness settings proof."
+    },
+    "overall": "NOT SHIPPED"
+  }
+}

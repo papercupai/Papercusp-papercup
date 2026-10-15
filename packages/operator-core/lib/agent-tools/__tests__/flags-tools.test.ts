@@ -143,12 +143,12 @@ describe('flags:list', () => {
     vi.doMock('../flags/_register-backend', () => ({}));
 
     const { default: tool } = await import('../flags/list');
-    const result = (await tool.handler({}, MAKE_CTX())) as any;
+    const { ALL_FLAG_KEYS } = await import('@papercusp/flags');
+    const result = await tool.handler({}, MAKE_CTX());
 
     expect(getAllFlags).toHaveBeenCalledTimes(1);
-    const data = JSON.parse(result.content[0].text);
-    expect(data.snapshots).toBe(false);
-    expect(Array.isArray(data.keys)).toBe(true);
+    expect(getAllFlags).toHaveBeenCalledWith('anon-distinct');
+    expect(result).toEqual({ data: { keys: ALL_FLAG_KEYS, ...mockFlags } });
   });
 
   it('resolveDistinctId is called with a Request', async () => {

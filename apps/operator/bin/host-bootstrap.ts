@@ -26,6 +26,12 @@ import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-s
 import { ensureHostedWorkspaceHostRuntime } from '@papercusp/operator-core/lib/workspace-host/hosted-workspace-host-runtime';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
 import { isVmReleaseDistribution } from '@papercusp/operator-core/lib/vm-release-runtime-policy';
+import {
+  MCP_PROXY_TENANT_SERVICE,
+  loopbackPortHeldByForeignUid,
+  pinTenantLoopbackPort,
+  pinTenantLoopbackPorts,
+} from '@papercusp/operator-core/lib/process-supervision/tenant-loopback-port';
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
@@ -33,6 +39,7 @@ import { setLaunchBlueprintResolver, installedAwareLaunchResolver } from '@paper
 import {
   backgroundWorkersEnabled,
   dbosLaunchesHere,
+  declareOperatorHostProcess,
   requestOnlyHost,
   utilityHostEnabled,
 } from '@papercusp/operator-core/lib/background-workers';
@@ -53,12 +60,16 @@ import { runBootAddonPreflight } from '@papercusp/operator-core/lib/native-addon
 import { configureCpuWorkerBreakerNotifier } from '@papercusp/operator-core/lib/cpu-task-worker';
 import { validateHomeHarnessResolution, homeHarnessValidationFatal, isLikelyFreshInstallGap } from '@papercusp/operator-core/lib/startup/validate-home-harness';
 import { applyToProcessEnv, readAgentConfig, agentCmdBootWarning } from '@papercusp/operator-core/lib/agent-config';
-import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
+import {
+  reportPostgresRuntimeVintageOnBoot,
+  reportRuntimeVintageOnBoot,
+} from '@papercusp/operator-core/lib/runtime-vintage';
 import {
   gracefulStopChild,
   isSidecarEnabledFromEnv,
   registerSidecarShutdownHooks,
 } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
+import { markSpawnOffloadHost } from '@papercusp/operator-core/lib/fleet/git-via-sidecar';
 import { assertDbosWorkItemsImportContract } from '@papercusp/operator-core/lib/dbos/work-items-contract';
 import { reconcileLegacyVoiceServices } from '@papercusp/operator-core/lib/voice-node/legacy-service-reconcile';
 // The proxy's retry window, defined ONCE (WI-6738) and shared with psu-launcher.mjs, which
@@ -75,6 +86,9 @@ import {
 import { agentMcpBootstrapFailureCode } from '@papercusp/operator-core/lib/endpoint-route/routes/transport/_mcp-uds-error';
 import { dedupeInFlight } from '@papercusp/operator-core/lib/dedupe-in-flight';
 import { withBoundedTimeout } from '@papercusp/operator-core/lib/bounded-timeout';
+import { observeFallback } from '@papercusp/operator-core/lib/degradation/fallback-observations';
+import { setDiscoveryIdentityObserver } from '@papercusp/db-org';
+import { setMdxRenderObserver } from '@papercusp/docs-engine';
 
 /**
  * All of this module's mutable state, pinned together at module scope ONCE.
@@ -135,7 +149,17 @@ function startPackagedMcpProxy(): void {
     stop: stopPackagedMcpProxy,
   });
 
+  // WI-10005481: on a host shared by several Linux users, :9071 may be ANOTHER tenant's
+  // proxy. Pin this tenant's port first (moves PAPERCUSP_MCP_PROXY_PORT/BASE for every
+  // later reader and child), and never adopt a healthy proxy another uid owns.
+  pinTenantLoopbackPort(MCP_PROXY_TENANT_SERVICE);
   const port = Number(process.env.PAPERCUSP_MCP_PROXY_PORT || 9071);
+  if (loopbackPortHeldByForeignUid(port)) {
+    console.error(
+      `[host] packaged MCP proxy: :${port} belongs to another user — not adopting it and not starting one (WI-10005481)`,
+    );
+    return;
+  }
   void (async () => {
     if (BOOTSTRAP_STATE.packagedMcpProxyShutdownRequested) return;
     if (await packagedMcpProxyAlive(port)) return;
@@ -190,14 +214,17 @@ function startPackagedMcpProxy(): void {
         // (non-proxy squatter that failed the health probe above) would be an
         // uncaught 'error' event and kill the whole operator.
         server.on('error', (e) => {
+          observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'fallback-listen-failed', scope: 'mcp-proxy' });
           void execution.cancel((e as Error)?.message ?? String(e));
           console.warn(`[mcp-proxy] in-process fallback proxy failed on :${port}:`, (e as Error)?.message ?? e);
         });
         server.once('close', () => void execution.finish());
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'packaged-entry-missing', scope: 'mcp-proxy' });
         console.log(
           `[mcp-proxy] packaged proxy entry missing at ${proxyEntry} — serving the MCP proxy IN-PROCESS on 127.0.0.1:${port} (stale-bundle fallback)`,
         );
       } catch (e) {
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'fallback-start-failed', scope: 'mcp-proxy' });
         await execution.cancel((e as Error)?.message ?? String(e));
         console.warn(
           `[mcp-proxy] packaged proxy entry missing at ${proxyEntry} and the in-process fallback failed; psu sessions will use direct discovery:`,
@@ -229,6 +256,10 @@ function startPackagedMcpProxy(): void {
       throw error;
     }
     BOOTSTRAP_STATE.packagedMcpProxyProcess = child;
+    // A returned ChildProcess is not proof that spawn succeeded; wait for its event.
+    child.once('spawn', () => {
+      observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'mcp-proxy' });
+    });
     child.once('exit', () => {
       if (BOOTSTRAP_STATE.packagedMcpProxyProcess === child) {
         BOOTSTRAP_STATE.packagedMcpProxyProcess = null;
@@ -236,6 +267,7 @@ function startPackagedMcpProxy(): void {
       void execution.finish();
     });
     child.once('error', (e) => {
+      observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'packaged-spawn-failed', scope: 'mcp-proxy' });
       if (BOOTSTRAP_STATE.packagedMcpProxyProcess === child) {
         BOOTSTRAP_STATE.packagedMcpProxyProcess = null;
       }
@@ -244,6 +276,9 @@ function startPackagedMcpProxy(): void {
     });
     console.log(`[mcp-proxy] packaged proxy spawned on 127.0.0.1:${port} (dynamic operator.json target)`);
   })().catch((e) => {
+    if (!BOOTSTRAP_STATE.packagedMcpProxyShutdownRequested) {
+      observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'packaged-spawn-failed', scope: 'mcp-proxy' });
+    }
     console.warn('[mcp-proxy] packaged proxy spawn failed:', (e as Error)?.message ?? e);
   });
 }
@@ -276,8 +311,9 @@ async function stopPackagedMcpProxy(): Promise<void> {
  * schema setup, not shared-DB background machinery, and is deliberately
  * repeated per request process so a request-only host cannot silently depend
  * on a background host that may be absent or stale. A null/failed result is
- * rejected by the caller, which refuses to start HTTP rather than serving code
- * against an unresolved schema. On a backgroundWorkers host it polls the
+ * keeps HTTP closed and re-checks in place rather than restarting the process
+ * against an unresolved schema. Each attempt has its own cancellation deadline.
+ * On a backgroundWorkers host it polls the
  * boot-gate flag flipped right after `applyPendingMigrationsAtBoot()` returns
  * (see the substrate-boot IIFE above), and — matching this whole boot path's
  * log-and-continue philosophy — a timeout is logged and swallowed rather than
@@ -297,36 +333,48 @@ export async function waitForBootMigrationGate(timeoutMs = 20_000): Promise<void
       BOOTSTRAP_STATE.requestMigrationGateFlights,
       'request-only-boot-migration',
       async () => {
-        const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
-        const migrationAttempt = await withBoundedTimeout(
-          () => applyPendingMigrationsAtBoot(),
-          {
-            fallback: null,
-            timeoutMs,
-            label: 'request-only boot migration preflight',
-          },
+        const { applyPendingMigrationsNow } = await import(
+          '@papercusp/operator-core/lib/db-boot-migrate'
         );
-        if (migrationAttempt.degraded) {
-          if (migrationAttempt.reason === 'error') {
+        const { awaitBootMigrationGate, raiseBootMigrationGateAlarm, clearBootMigrationGateAlarm } = await import(
+          '@papercusp/operator-core/lib/boot-migration-gate'
+        );
+        const { hostIdentity } = await import('@papercusp/operator-core/lib/serving-host-identity');
+        const gateHost = `request-host:${hostIdentity()}`;
+        const applyBounded = async () => {
+          const migrationAttempt = await withBoundedTimeout(
+            // A later listener can arrive after the HTTP caller's flight has
+            // settled. The once-per-process entry would return null even on
+            // a current schema, so every flight uses a fresh coordinated check.
+            (signal) => applyPendingMigrationsNow({ broadcast: false, signal }),
+            {
+              fallback: null,
+              timeoutMs,
+              label: 'request-only boot migration preflight',
+            },
+          );
+          if (migrationAttempt.degraded && migrationAttempt.reason === 'error') {
             throw migrationAttempt.error instanceof Error
               ? migrationAttempt.error
               : new Error(
                   `[host-bootstrap] request-only migration preflight failed: ${migrationAttempt.errorMessage ?? 'unknown error'}`,
                 );
           }
-          throw new Error(
-            `[host-bootstrap] request-only migration preflight ${migrationAttempt.reason ?? 'degraded'} after ${timeoutMs}ms`,
-          );
-        }
-        const migrationResult = migrationAttempt.value;
-        if (!migrationResult || migrationResult.failed.length > 0) {
-          const failureSummary = migrationResult
-            ? `${migrationResult.failed.length} migration(s) remain pending: ${migrationResult.failed
-                .map((failure) => `${failure.file}: ${failure.error}`)
-                .join('; ')}`
-            : 'migration state could not be determined';
-          throw new Error(`[host-bootstrap] request-only migration preflight failed: ${failureSummary}`);
-        }
+          return migrationAttempt.value;
+        };
+        // A backup or pending migration can outlive one attempt's deadline.
+        // Exiting here used up the desktop supervisor's eight-start budget and
+        // left its window waiting forever even after the database was ready.
+        // Reuse the background gate's paced recovery and alarm, keeping HTTP
+        // closed until a fresh, conclusive migration check succeeds.
+        await awaitBootMigrationGate({
+          plane: 'request',
+          applyAtBoot: applyBounded,
+          applyRetry: applyBounded,
+          onWithheld: () => {},
+          raiseAlarm: (alarm) => raiseBootMigrationGateAlarm(alarm, gateHost, 'request'),
+          clearAlarm: (alarm) => clearBootMigrationGateAlarm(alarm, gateHost, 'request'),
+        });
         const { markMigrationsAppliedForRequestGate } = await import(
           '@papercusp/operator-core/lib/sync/hyperbee/boot-gate'
         );
@@ -357,8 +405,39 @@ const CPU_WORKER_BREAKER_IDENTITY = {
 };
 
 export function runBootstrap(): void {
+  // WI-10006280: declare THIS process an operator host before anything else. Every
+  // host runs this (hono-host primary, each clustered request worker via onWorker,
+  // bg-host, the desktop's serve.ts), and it is what releases the wake-delivery
+  // loops `agent-tools/index.ts` queues through `whenOperatorHostProcess`. A script
+  // that only imports the registry never calls it, so it never sweeps. Idempotent.
+  declareOperatorHostProcess();
   if (BOOTSTRAP_STATE.ran) return;
   BOOTSTRAP_STATE.ran = true;
+  // The generic DB package reports identity outcomes without depending on this host's rail.
+  setDiscoveryIdentityObserver((mechanism, observation) => {
+    observeFallback(mechanism, observation);
+  });
+  setMdxRenderObserver((mechanism, observation) => {
+    observeFallback(mechanism, observation);
+  });
+
+  // WI-10006785: hosts kill timed-out child processes, and a `git status` SIGKILLed while
+  // holding its OPTIONAL `.git/index.lock` leaves a holderless lock that freezes every commit
+  // in the shared tree. Default every git this host spawns to GIT_OPTIONAL_LOCKS=0 (read-only
+  // git then skips that lock; add/commit still take the real one). An explicit value wins.
+  // Same rule as scripts/lib/git-optional-locks.mjs, inlined so app code does not import scripts/.
+  if (!process.env.GIT_OPTIONAL_LOCKS) process.env.GIT_OPTIONAL_LOCKS = '0';
+
+  // WI-10005481 / WI-10005586: decide this tenant's gateway, MCP-proxy and voice-WS ports
+  // by listener ownership BEFORE anything can spawn an agent or bind a voice listener, so
+  // no agent env carries a port another Linux user owns and tenants past the 8th still get
+  // voice. Synchronous (/proc read), idempotent, a no-op when the defaults are free or ours.
+  // Never fatal: a failure leaves the pre-fix defaults in place.
+  try {
+    pinTenantLoopbackPorts();
+  } catch (err) {
+    console.warn('[host] tenant loopback port pin failed (non-fatal):', err instanceof Error ? err.message : err);
+  }
 
   // Request-only hosts serve the HTTP/tool plane but do not own the host-wide
   // warmers, voice transports, or credential refreshers. Keep this predicate
@@ -367,6 +446,15 @@ export function runBootstrap(): void {
   // explicit secondary hosts and for source-level boot guards.
   const requestOnly = requestOnlyHost();
   const utilityHost = utilityHostEnabled();
+  const backgroundWorkers = backgroundWorkersEnabled();
+  const backgroundSpawnerSidecarEnabled =
+    backgroundWorkers &&
+    !utilityHost &&
+    isSidecarEnabledFromEnv({
+      enableVar: 'PAPERCUSP_SPAWNER_SIDECAR',
+      modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
+    });
+  if (backgroundSpawnerSidecarEnabled) markSpawnOffloadHost();
   if (requestOnly) {
     console.log('[host] request-only startup profile — deferring host-wide warmers and voice transports until an explicit request');
   }
@@ -466,6 +554,9 @@ export function runBootstrap(): void {
       arch: process.arch,
       port,
     });
+    // WI-6554700010008529: the database this host serves is a runtime too. Live
+    // DB-state evidence pins `postgres:<port>`, which outlives this process.
+    reportPostgresRuntimeVintageOnBoot();
   } catch (e) {
     console.warn('[runtime-vintage] boot self-report wiring failed (non-fatal):', (e as Error)?.message ?? e);
   }
@@ -546,6 +637,16 @@ export function runBootstrap(): void {
       const { validateDeclaredSingletons } = await import(
         '@papercusp/operator-core/lib/startup/validate-declared-singletons'
       );
+      // Request-only hosts do not own the background routine plane. Their private
+      // operator-api fixtures intentionally start without materialized learning
+      // singletons, so validating here emits a false FATAL even though the fixture
+      // is serving normally. The background owner keeps this guard and its signal.
+      if (requestOnlyHost()) {
+        console.log(
+          '[declared-singletons] startup validation skipped — request-only host does not own background routines',
+        );
+        return;
+      }
       // A fresh operator host's first boot validates before the asynchronous dogfood-hive
       // bootstrap has had a chance to register its first project. This applies to both the
       // packaged desktop and an isolated Hono host: in that known empty-workspace window,
@@ -614,7 +715,10 @@ export function runBootstrap(): void {
       }
       const { sql } = getOrgPg();
       const r = await checkBespokeActiveSeeds({ sql: sql as unknown as never, installSlug, workspaceId });
+      const conditionKey = `alarm:always-on-routines:${workspaceId}`;
+      const { resolveAlarm } = await import('@papercusp/operator-core/lib/alarm-attention');
       if (r.ok) {
+        await resolveAlarm(conditionKey, 'bespoke-active-seeds');
         console.log(`[bespoke-active-seeds] startup validation passed — all always-on routines ACTIVE for "${installSlug}"`);
         return;
       }
@@ -632,7 +736,22 @@ export function runBootstrap(): void {
             : `[bespoke-active-seeds] DARK: "${e.name}" is ACTIVE for "${e.installSlug}" but last fired ${Math.round(e.ageSec / 60)}m ago, far past its declared ${e.intervalSec}s cadence`,
         );
       // Only the un-re-affirmed ones wake a human; a dated `reviewBy` is a deliberate hold.
-      if (r.escalatable.length === 0) return;
+      if (r.escalatable.length === 0) {
+        await resolveAlarm(conditionKey, 'bespoke-active-seeds');
+        return;
+      }
+      // Boot is a one-shot measurement. Silence after it cannot prove that a
+      // missing/paused/dark routine recovered; a later complete check must do so.
+      try {
+        const { broadcastSevereEvent } = await import('@papercusp/operator-core/lib/severe-event-broadcast');
+        await broadcastSevereEvent({
+          conditionKey, oneShot: true,
+          summary: `${r.escalatable.length} always-on routine(s) are not running at operator boot`,
+          body: r.escalatable.map((entry) => `${entry.installSlug}: ${entry.name}`).join(', '),
+        });
+      } catch (e) {
+        console.warn('[bespoke-active-seeds] condition broadcast failed (non-fatal):', (e as Error)?.message ?? e);
+      }
       const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
       // Seed writers may target different harnesses. Keep the existing one-slug notification
       // API and emit one alert per resolved scope rather than attributing every finding to the
@@ -1449,7 +1568,6 @@ export function runBootstrap(): void {
   // desktop app with no :3170, so this branch defaults ON there — correct.
   // EI-312 leg 1: the rule moved to the ONE shared evaluation so the
   // module-scope boot effects in agent-tools/index.ts gate on the same thing.
-  const backgroundWorkers = backgroundWorkersEnabled();
   if (!backgroundWorkers) {
     console.log(
       '[host] PAPERCUSP_BACKGROUND_WORKERS=0 — secondary host: skipping hyperbee substrate, git-export, and DBOS background machinery (EI-126)',
@@ -1679,7 +1797,16 @@ export function runBootstrap(): void {
           '@papercusp/operator-core/lib/projected-tool-deps'
         );
         installControlAnchorKernelResolver();
+        observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'kernel-resolver' });
+        // Inherited governance policy (enterprise-readiness P-005): the same kernel seat now
+        // consults the PG policy store. Installed only here, at the real host bootstrap, so a
+        // unit test that imports the dispatcher never blocks on Postgres.
+        const { installGovernancePolicyEnforcement } = await import(
+          '@papercusp/operator-core/lib/governance-policy/enforce'
+        );
+        installGovernancePolicyEnforcement();
       } catch (e) {
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'startup-failed', scope: 'kernel-resolver' });
         console.warn(
           '[kernel-resolver] FAILED to install the control-anchor kernel resolver before routines started — capability-envelope enforcement falls back to the default resolver until this host restarts:',
           e instanceof Error ? e.message : e,
@@ -1816,20 +1943,7 @@ export function runBootstrap(): void {
   // opt-in, so an operator without the flag never starts an unused sidecar; skipped
   // on a short-lived utility host (EI-368) like the substrate boot above. Detached +
   // fully guarded — a warm-up failure can never wedge boot (lazy fallback covers it).
-  if (
-    backgroundWorkers &&
-    !utilityHost &&
-    // WI-3793: shared, defensively-guarded enable-check (also never fires
-    // from inside the sidecar's own re-exec'd child — see
-    // isSidecarEnabledFromEnv in sidecar-spawn-shared.ts) instead of a bare
-    // inline env read; behavior here is unchanged (backgroundWorkers is
-    // already false in the sidecar child today), it just closes the latent
-    // gap for any future caller of this same condition.
-    isSidecarEnabledFromEnv({
-      enableVar: 'PAPERCUSP_SPAWNER_SIDECAR',
-      modeVar: 'PAPERCUSP_SPAWNER_SIDECAR_MODE',
-    })
-  ) {
+  if (backgroundSpawnerSidecarEnabled) {
     void (async () => {
       try {
         const { spawnSpawnerSidecar, registerSpawnerSidecarShutdownHooks } =
@@ -1837,10 +1951,12 @@ export function runBootstrap(): void {
         const t0 = Date.now();
         await spawnSpawnerSidecar();
         registerSpawnerSidecarShutdownHooks();
+        observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'spawner-warmup' });
         console.log(
           `[spawner-sidecar] warm boot complete in ${Date.now() - t0}ms`,
         );
       } catch (err) {
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'startup-failed', scope: 'spawner-warmup' });
         console.warn(
           '[spawner-sidecar] warm boot failed (non-fatal; lazy fallback covers it):',
           err instanceof Error ? err.message : err,
@@ -1874,10 +1990,12 @@ export function runBootstrap(): void {
         const t0 = Date.now();
         const outcome = await ensureGatewaySidecar();
         registerGatewaySidecarShutdownHooks();
+        observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'gateway-supervision' });
         console.log(
           `[gateway-sidecar] supervision up in ${Date.now() - t0}ms — ${outcome}`,
         );
       } catch (err) {
+        observeFallback('host-startup', { eligible: 1, applied: 0, reason: 'startup-failed', scope: 'gateway-supervision' });
         console.warn(
           '[gateway-sidecar] supervision failed (non-fatal; agents fall back to direct/default credential paths):',
           err instanceof Error ? err.message : err,
@@ -2035,15 +2153,16 @@ export function runBootstrap(): void {
       }
     })();
 
-  // External-triggers P-006: Slack Socket Mode is an outbound, process-local
-  // lifecycle connection. Start it only in the background owner process; its
-  // managed timer is visible through schedule:inventory and retries cold gaps
-  // and disconnects without requiring public ingress.
+  // cupboard-distributable-integrations-2026-10-10 P-003 / D-009: the generic
+  // socket ingress for installed provider packages that declare `ingress.socket`
+  // (Slack Socket Mode is one: the slack package). It is an outbound,
+  // process-local lifecycle connection, so it starts only in the background owner
+  // process; its managed timer is the schedule:inventory row.
   if (backgroundWorkers && cluster.isPrimary)
-    void import('@papercusp/operator-core/lib/external-triggers/slack-socket-manager')
-      .then(({ startSlackSocketManager }) => startSlackSocketManager())
+    void import('@papercusp/operator-core/lib/providers/provider-socket-ingress')
+      .then(({ startProviderSocketIngress }) => startProviderSocketIngress())
       .catch((e) => {
-        console.warn('[slack-socket] boot-start failed (non-fatal):', e instanceof Error ? e.message : e);
+        console.warn('[provider-socket-ingress] boot-start failed (non-fatal):', e instanceof Error ? e.message : e);
       });
 
   // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31).

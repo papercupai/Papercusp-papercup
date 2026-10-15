@@ -575,7 +575,7 @@ describe('stranding vs failing-leg diagnosis (2026-08-02 papercusp misdiagnosis)
     expect(verdict.reason).toContain("failed to push some refs");
   });
 
-  it('WI-10004397: a full local disk names the DISK, keeps the clause through truncation, never blames the reaper', () => {
+  it('EI-25439777241393921: a headroom refusal survives truncation without being asserted as the commit-stall cause', () => {
     // The real 2026-09-30 shape: the actionable clause sits behind a ~110-char generic prefix,
     // and the 240-char headline cut used to drop it ("Cause: libs/token-kit: fetch failed; …").
     const lastError = [
@@ -592,12 +592,17 @@ describe('stranding vs failing-leg diagnosis (2026-08-02 papercusp misdiagnosis)
     expect(verdict.errorHeadline).toContain('critical reserve');
 
     const d = gitSyncStallDiagnosis(verdict, 'papercusp');
-    expect(d.summary).toMatch(/LOCAL DISK FULL/);
+    expect(d.summary).toContain('DISK SPACE / HEADROOM');
+    expect(d.summary).toContain('does not establish a local commit failure');
+    expect(d.summary).not.toContain('nothing commits');
+    expect(d.summary).not.toContain('LOCAL DISK FULL');
     expect(d.summary).toContain('git fetch stopped for disk headroom');
     expect(d.title).toMatch(/disk/i);
     expect(d.why).toMatch(/DISK SPACE/);
     expect(d.why).not.toMatch(/executor reaping|engine wedge/i);
     expect(d.why).not.toMatch(/rescue-commit the tree/i);
+    expect(d.why).toContain('verify the local commit outcome separately');
+    expect(d.why).not.toContain('root cause is DISK SPACE');
   });
 });
 

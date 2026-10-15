@@ -52,6 +52,9 @@ const {
   codexFreshDefaultAuthPreflight,
   reconcileCodexSystemAuth,
   isCodexHomeLaunchReady,
+  codexHomeLaunchReadiness,
+  prepareCodexGatewayLaunch,
+  mintCodexQuotaResumeArgs,
 } = launcher;
 
 let dir: string;
@@ -69,6 +72,43 @@ beforeEach(() => {
   // nothing. Materializing a real home here is what makes both arms test what
   // they claim; do not drop it to "simplify" the fixture.
   writeFileSync(join(dir, 'AGENTS.md'), '# papercusp su\n');
+});
+
+describe('selected Codex route at the actual child boundary', () => {
+  it.each(['auto', 'pin'])('reapplies %s after home refresh and overrides stale provider argv', (mode) => {
+    writeFileSync(join(dir, 'config.toml'), 'model_provider = "openai"\nmodel = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n');
+    const env = { PAPERCUSP_AGENT: 'codex', CODEX_HOME: dir, PAPERCUSP_SID: 'su-route',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: mode, PAPERCUSP_ACCOUNT_ID: 'pool-a' };
+    const id = '12345678-1234-1234-1234-123456789abc';
+    const args = prepareCodexGatewayLaunch(env, ['-c', 'model_provider="openai"', '-m', 'gpt-6.1-sol',
+      '-c', 'model_reasoning_effort="xhigh"', 'resume', id]);
+    expect(args).toEqual(['-c', 'model_provider="papercusp-codex-gateway"', '-m', 'gpt-6.1-sol',
+      '-c', 'model_reasoning_effort="xhigh"', 'resume', id]);
+    const config = readFileSync(join(dir, 'config.toml'), 'utf8');
+    expect(config).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(config).toContain('"x-papercusp-owner" = "su-route"');
+    expect(config.includes('"x-papercusp-account" = "pool-a"')).toBe(mode === 'pin');
+    expect(config).toContain('model_reasoning_effort = "xhigh"');
+    expect(prepareCodexGatewayLaunch(env, args)).toEqual(args);
+  });
+
+  it('keeps deliberate system routing and refuses an incomplete named pin', () => {
+    const args = ['-m', 'gpt-6.1-sol'];
+    expect(prepareCodexGatewayLaunch({ PAPERCUSP_AGENT: 'codex', PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }, args)).toBe(args);
+    expect(() => prepareCodexGatewayLaunch({ PAPERCUSP_AGENT: 'codex', CODEX_HOME: dir,
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin' }, args)).toThrow(/selected route/);
+  });
+
+  it.each([
+    ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="xhigh"', 'old kickoff'],
+    ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="xhigh"', 'resume', '--last', 'old kickoff'],
+    ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="xhigh"', 'fork', 'old-native'],
+  ])('quota recovery resumes the exact conversation without replaying kickoff (%j)', (...args) => {
+    const id = '12345678-1234-1234-1234-123456789abc';
+    expect(mintCodexQuotaResumeArgs(args, { nativeId: id })).toEqual({ nativeId: id,
+      args: ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="xhigh"', 'resume', id] });
+    expect(mintCodexQuotaResumeArgs(args, { nativeId: null })).toBeNull();
+  });
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -284,6 +324,13 @@ function managedHooks(owner: string, includeLifecycle = true) {
                 ],
               },
             ],
+            Stop: [
+              {
+                hooks: [
+                  { command: `PAPERCUSP_SID='${owner}' lifecycle-report.sh` },
+                ],
+              },
+            ],
           }
         : {}),
     },
@@ -336,6 +383,31 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
   it('FALSE for a null/empty home rather than throwing', () => {
     expect(isCodexHomeLaunchReady(null)).toBe(false);
     expect(isCodexHomeLaunchReady('')).toBe(false);
+  });
+
+  // WI-10006770: a resume refusal used to say only "not ready", and the home
+  // was gone by the time anyone looked. The reason must name the ONE check
+  // that failed, so each case below breaks exactly one condition of a home
+  // that is otherwise ready (calibrated first: the healthy home reads null).
+  it('names the single failing check instead of a bare not-ready', () => {
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
+    expect(codexHomeLaunchReadiness(dir)).toBeNull();
+    expect(codexHomeLaunchReadiness(null)).toBe('no Codex home recorded');
+
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG.replace('alternate_screen = "never"\n', ''));
+    expect(codexHomeLaunchReadiness(dir)).toMatch(/\[tui\]/);
+    writeFileSync(join(dir, 'config.toml'), CODEX_STUB);
+    expect(codexHomeLaunchReadiness(dir)).toBe('config.toml has no papercusp-su MCP server');
+    rmSync(join(dir, 'config.toml'));
+    expect(codexHomeLaunchReadiness(dir)).toBe('config.toml is missing');
+
+    writeFileSync(join(dir, 'config.toml'), REAL_CONFIG);
+    rmSync(join(dir, 'AGENTS.md'));
+    expect(codexHomeLaunchReadiness(dir)).toBe('AGENTS.md is missing');
+    writeFileSync(join(dir, 'AGENTS.md'), '   \n');
+    expect(codexHomeLaunchReadiness(dir)).toBe('AGENTS.md is empty');
+    // The boolean is exactly "no reason".
+    expect(isCodexHomeLaunchReady(dir)).toBe(false);
   });
 
   it('FALSE for a structurally ready home whose config/hooks/diagnostics belong to a prior owner', () => {
@@ -394,6 +466,23 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
     );
     expect(isCodexHomeLaunchReady(dir, owner)).toBe(true);
   });
+
+  it("FALSE for a same-owner home whose Stop event omits session-scoped lock cleanup", () => {
+    const owner = "su-stop-lifecycle-gap";
+    writeFileSync(
+      join(dir, "config.toml"),
+      `${REAL_CONFIG}\\n[mcp_servers.papercusp-su]\\nurl = "http://x/api/mcp?superuser=1&client=${owner}"\\n`,
+    );
+    writeFileSync(
+      join(dir, "papercusp-diagnostics.json"),
+      JSON.stringify({ lockOwnerSid: owner }),
+    );
+    const hooks = managedHooks(owner);
+    delete hooks.hooks.Stop;
+    writeFileSync(join(dir, "hooks.json"), JSON.stringify(hooks));
+
+    expect(isCodexHomeLaunchReady(dir, owner)).toBe(false);
+  });
 });
 
 describe('Codex resume reconciles project MCP servers', () => {
@@ -435,9 +524,88 @@ describe('Codex resume reconciles project MCP servers', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  // WI-10006770: the operator keys Codex homes by codexHomesRoot(), which honours
+  // PAPERCUSP_SU_CODEX_HOMES_DIR. The launcher hard-coded ~/.papercusp/su-codex-homes,
+  // so a home under an overridden root (the installed-PUI acceptance fixture) was
+  // never repaired and a stub config.toml failed the readiness check on restore.
+  it('repairs a home under an overridden PAPERCUSP_SU_CODEX_HOMES_DIR, and still refuses a foreign home', async () => {
+    const owner = 'su-overridden-root-resume';
+    const advSessionId = 7;
+    const root = mkdtempSync(join(tmpdir(), 'codex-homes-root-'));
+    const env = { PAPERCUSP_SU_CODEX_HOMES_DIR: root };
+    const home = join(root, `session-${advSessionId}`);
+    mkdirSync(home, { recursive: true });
+    const calls: string[] = [];
+    const fetchImpl = async (url: string) => {
+      calls.push(url);
+      return { json: async () => ({ ok: true, repaired: false }) };
+    };
+    try {
+      expect(launcher.suCodexHomeForAdvSession(advSessionId, env)).toBe(home);
+      expect(launcher.suCodexHomeForAdvSession(advSessionId, {}, '/h')).toBe('/h/.papercusp/su-codex-homes/session-7');
+
+      const ours = await launcher.ensureCodexHomeViaOperator(owner, home, advSessionId, {
+        operatorUrl: 'http://operator', token: 't', env, fetchImpl,
+      });
+      expect(ours).toEqual({ ok: true, repaired: false });
+      expect(calls).toEqual(['http://operator/api/adv/sessions/ensure-codex-home']);
+
+      // Positive control for the guard: a home that is NOT the conventional path for
+      // this id (here, a different session number under the same root) is never sent.
+      const foreign = await launcher.ensureCodexHomeViaOperator(owner, join(root, 'session-8'), advSessionId, {
+        operatorUrl: 'http://operator', token: 't', env, fetchImpl,
+      });
+      expect(foreign).toBeNull();
+      expect(calls).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Codex managed carry keeps the selected account route', () => {
+  it.each([
+    ['http', 'response', 'http-error', 503],
+    ['json', 'response', 'invalid-response', 200],
+    ['refused', 'response', 'operator-refused', 200],
+    ['throw', 'request', 'request-failed', null],
+    ['pin', 'home-route', 'route-restore-failed', 200],
+  ] as const)('reports sanitized %s failures while retaining the null repair contract', async (mode, stage, reason, status) => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-failure-home-'));
+    const env = { PAPERCUSP_SU_CODEX_HOMES_DIR: root };
+    const home = join(root, 'session-7');
+    const failures: unknown[] = [];
+    try {
+      const result = await launcher.ensureCodexHomeViaOperator('su-failure', home, 7, {
+        env, operatorUrl: 'http://operator', token: 'private-token',
+        routeMode: mode === 'pin' ? 'pin' : null,
+        onFailure: failure => { failures.push(failure); },
+        fetchImpl: async () => {
+          if (mode === 'throw') throw new TypeError('request with private-token failed');
+          return { status: mode === 'http' ? 503 : 200, ok: mode !== 'http', json: async () => {
+            if (mode === 'json') throw new SyntaxError('private response is invalid');
+            return { ok: mode !== 'refused', error: 'private-token', repaired: false };
+          } };
+        },
+      });
+      expect(result).toBeNull();
+      expect(failures).toEqual([{ stage, reason, status,
+        ...(mode === 'throw' ? { errorName: 'TypeError' } : mode === 'pin' ? { errorName: 'Error' } : {}) }]);
+      expect(JSON.stringify(failures)).not.toMatch(/private-token|http:\/\/operator|private response/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('reports a scope refusal before issuing a request, even if the observer throws', async () => {
+    const failures: unknown[] = [];
+    const fetchImpl = vi.fn();
+    expect(await launcher.ensureCodexHomeViaOperator('su-failure', '/foreign/home', 7, {
+      fetchImpl, onFailure: failure => { failures.push(failure); throw new Error('observer failed'); },
+    })).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(failures).toEqual([{ stage: 'scope', reason: 'foreign-home', status: null }]);
+  });
+
   it.each([
     ['auto', null],
     ['pin', 'test-account'],

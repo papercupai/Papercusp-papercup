@@ -124,6 +124,9 @@ export interface Env {
    *  a person, not DAO capital — so the door refuses them here rather than
    *  quietly sweeping a creator's earnings into the treasury. */
   TREASURY_ROUTED_SHARES?: string;
+  /** Owner-configured recipients permitted for reconciled component payouts.
+   * Wallet ownership is additionally checked through the signed binding. */
+  TREASURY_COMPONENT_RECIPIENTS?: string;
   /** Owner-gated. Routing on a deployment recorded as `mainnet` refuses unless
    *  this is exactly 'true'. Acceptance line 13 gates Safe signers and any
    *  mainnet capital on the owner; this is that gate, defaulting to refuse. */

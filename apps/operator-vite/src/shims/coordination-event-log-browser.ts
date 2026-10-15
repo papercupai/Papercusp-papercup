@@ -21,6 +21,26 @@
 export const DEFAULT_COORD_WORKSPACE = 'default';
 
 /**
+ * Browser-safe copy of the event-log body's JSON normalization. `parseBody`
+ * is a pure value transform from the PG adapter, so client-reachable modules
+ * can use it without pulling the Postgres backend into the SPA graph.
+ */
+export function parseBody(
+  v: unknown,
+  fallback?: { ts?: unknown; msg_id?: unknown },
+): Record<string, unknown> {
+  const parsed = (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown>;
+  if ((typeof parsed.ts !== 'string' || !parsed.ts) && fallback?.ts != null) {
+    parsed.ts = fallback.ts instanceof Date ? fallback.ts.toISOString() : String(fallback.ts);
+  }
+  if (fallback?.msg_id != null) {
+    const rowMsgId = String(fallback.msg_id);
+    if (parsed.msg_id !== rowMsgId) parsed.msg_id = rowMsgId;
+  }
+  return parsed;
+}
+
+/**
  * Browser stand-in for the coordination log's schema bootstrap.
  *
  * A client-reachable operator-core module imports this value while assembling a

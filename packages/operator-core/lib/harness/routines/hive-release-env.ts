@@ -19,13 +19,14 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { resolveAndValidate } from '../../agent-tools/blueprint/_resolve';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { resolveSiblingTreeRoot } from '../../release/sibling-tree-root';
 
 /** Fallback green command when a hive has neither an explicit releaseGate.greenCmd nor a
  *  detected `testCommand` knob — gate on "it at least builds", never an unconditional FF. */
@@ -62,8 +63,18 @@ export interface HiveReleaseGate {
  * through here is a no-op for that case and changes nothing for the papercusp-style
  * monorepo blueprints that rely on the `staging` convention. Omitted ⇒ the old hardcoded
  * `'staging'` fallback (unknown-branch / no registry entry available to the caller).
+ *
+ * `workingCopyBranch` (WI-10006301, plan pot-review-integration-mode D-011) — set when the
+ * owning pot is a working copy: the branch git-sync integrates on. It wins over the knob and
+ * the registry default, because git-sync commits there unconditionally and the gate must
+ * judge where the work actually lands. Without it a working copy cloned from a `main`-default
+ * repo judged `main` against release ref `main`: permanently up-to-date, never promoted.
  */
-export function resolveHiveReleaseGate(hivePath: string, registryDefaultBranch?: string): HiveReleaseGate | null {
+export function resolveHiveReleaseGate(
+  hivePath: string,
+  registryDefaultBranch?: string,
+  workingCopyBranch?: string,
+): HiveReleaseGate | null {
   const bpFile = join(hivePath, '.papercusp', 'blueprint.yaml');
   if (!existsSync(bpFile)) return null;
   let childObj: Record<string, unknown>;
@@ -110,9 +121,8 @@ export function resolveHiveReleaseGate(hivePath: string, registryDefaultBranch?:
   return {
     enabled,
     integrationBranch:
-      typeof gate.integrationBranch === 'string'
-        ? gate.integrationBranch
-        : registryDefaultBranch || 'staging',
+      workingCopyBranch ||
+      (typeof gate.integrationBranch === 'string' ? gate.integrationBranch : registryDefaultBranch || 'staging'),
     releaseRef: typeof gate.releaseRef === 'string' ? gate.releaseRef : 'main',
     greenCmd: typeof gate.greenCmd === 'string' ? gate.greenCmd : null,
     spaBuildWorkspace,
@@ -142,10 +152,58 @@ export interface HiveReleaseEnv {
   /** True when greenCmd came from the per-hive owner override (hive_settings), not the
    *  blueprint knob / detected testCommand / build fallback (P-014 /admin/git surface). */
   greenCmdOverridden?: boolean;
+  /** Set when the hive is gated but its gate CANNOT promote (WI-10006317). The hive stays
+   *  `enabled` so its routines are still seeded and the fault stays visible; routing turns
+   *  it into an explicit `skipped-misconfigured` fire instead of a silent 'up-to-date'. */
+  misconfiguration?: GateMisconfiguration;
+}
+
+/** A gate configuration that can never produce a promotion (WI-10006317). */
+export interface GateMisconfiguration {
+  code: 'integration-equals-release';
+  detail: string;
+}
+
+/**
+ * PURE (WI-10006317): a gate whose integration branch IS its release ref judges the release
+ * ref against itself, so every fire reads 'up-to-date' (from == candidate) and nothing is
+ * ever tested or promoted — while every surface reports it healthy. Observed on the P-023
+ * pilot: a create_from_repo pot whose GitHub default branch is `main` resolved
+ * integrationBranch 'main' == releaseRef 'main'. Returns the fault, or null when the gate
+ * can promote.
+ */
+export function gateMisconfiguration(
+  gate: Pick<HiveReleaseGate, 'integrationBranch' | 'releaseRef'>,
+): GateMisconfiguration | null {
+  if (gate.integrationBranch !== gate.releaseRef) return null;
+  return {
+    code: 'integration-equals-release',
+    detail:
+      `integration branch '${gate.integrationBranch}' is the release ref itself, so the gate ` +
+      `can never test or promote anything; set releaseGate.integrationBranch (e.g. 'staging') ` +
+      `or releaseGate.releaseRef in the pot blueprint`,
+  };
 }
 
 function disabled(reason: HiveReleaseEnv['reason']): HiveReleaseEnv {
   return { enabled: false, reason, env: {}, clearEnv: [], hasDeploy: false, isOperatorHome: false };
+}
+
+/**
+ * WI-10006301: the integration branch a working-copy pot's git-sync commits on, or
+ * undefined for a direct pot. Same pot-home rule git-sync uses (git-sync-action.ts):
+ * a member's `hive_slug`, else a self_repo home's own slug. Dynamically imported so this
+ * module stays free of a static settings-store dependency.
+ */
+async function workingCopyIntegrationBranchFor(
+  workspaceId: string,
+  entry: { slug: string; hive_slug?: string; self_repo?: boolean },
+): Promise<string | undefined> {
+  const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+  if (!potHomeSlug) return undefined;
+  const { readPotIntegrationMode, WORKING_COPY_INTEGRATION_BRANCH } = await import('../git-sync/pot-integration-mode');
+  const read = await readPotIntegrationMode(workspaceId, potHomeSlug);
+  return read.mode === 'review' ? WORKING_COPY_INTEGRATION_BRANCH : undefined;
 }
 
 /**
@@ -158,7 +216,11 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   const entry = reg.projects.find((p) => p.slug === slug);
   if (!entry) return disabled('not_found');
 
-  const gate = resolveHiveReleaseGate(entry.path, entry.github_default_branch);
+  const gate = resolveHiveReleaseGate(
+    entry.path,
+    entry.github_default_branch,
+    await workingCopyIntegrationBranchFor(workspaceId, entry),
+  );
   if (!gate) return disabled('no_blueprint');
   if (!gate.enabled) return disabled('gate_disabled');
 
@@ -175,7 +237,7 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     return { enabled: true, env: {}, clearEnv: [], hasDeploy: !!gate.deploy, isOperatorHome: true };
   }
 
-  const parent = dirname(entry.path);
+  const misconfiguration = gateMisconfiguration(gate);
   // Per-hive owner override (P-014): top precedence over the blueprint knob / detected
   // testCommand / build fallback, so editing the green command on /admin/git actually
   // changes what the gate runs. Best-effort — a DB hiccup must never break gate routing.
@@ -187,20 +249,37 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     greenCmdOverride = null;
   }
   const greenCmd = greenCmdOverride ?? gate.greenCmd ?? gate.testCommand ?? DEFAULT_GREEN_CMD;
+  const [releaseRoot, checkpointRoot] = await Promise.all([
+    resolveSiblingTreeRoot({ integrationRoot: entry.path, name: `${slug}-release` }),
+    resolveSiblingTreeRoot({ integrationRoot: entry.path, name: `${slug}-checkpoint` }),
+  ]);
   const env: Record<string, string> = {
     PAPERCUSP_INTEGRATION_ROOT: entry.path,
     PAPERCUSP_RELEASE_SLUG: slug,
     PAPERCUSP_INTEGRATION_BRANCH: gate.integrationBranch,
     PAPERCUSP_RELEASE_REF: gate.releaseRef,
     PAPERCUSP_GREEN_CMD: greenCmd,
-    PAPERCUSP_RELEASE_ROOT: join(parent, `${slug}-release`),
-    PAPERCUSP_CHECKPOINT_ROOT: join(parent, `${slug}-checkpoint`),
+    // WI-6554700010009501: a hive nested inside another git work tree (the drill lives at
+    // papercusp/apps/<slug>) must not get these trees derived inside that enclosing tree.
+    PAPERCUSP_RELEASE_ROOT: releaseRoot,
+    PAPERCUSP_CHECKPOINT_ROOT: checkpointRoot,
     PAPERCUSP_CHECKPOINT_LOG_DIR: join(homedir(), '.papercusp', 'checkpoint-logs', slug),
   };
   // WI-2828: ALWAYS thread the resolved value (now always a string — resolveHiveReleaseGate
   // defaults it to '' rather than null) so a subject hive can never fall through to
   // release-config.ts's own '@papercusp/operator-vite' fallback by omission.
   env.PAPERCUSP_SPA_BUILD_WORKSPACE = gate.spaBuildWorkspace ?? '';
+
+  // A foreign hive's recorded store belongs to its integration root. Thread it
+  // through the shared scheduled/manual overlay so the operator host's ambient
+  // store cannot replace it during prewarm. Without a valid record, retain the
+  // existing inherited-env/tree-local fallback. The native writer keeps former
+  // stores in the record for pin/lease retention after a relocation.
+  const { readRecordedDependencyGenerationRoot } = await import('../../release/dependency-generation-root');
+  const recordedDependencyRoot = readRecordedDependencyGenerationRoot(entry.path);
+  if (recordedDependencyRoot) {
+    env.PAPERCUSP_DEPENDENCY_GENERATION_ROOT = recordedDependencyRoot;
+  }
 
   // EI-20709645463022690: the gate subprocess inherited the OPERATOR's DATABASE_URL, so a
   // SUBJECT pot's suite silently dialed the papercusp database instead of its own. Observed
@@ -252,6 +331,7 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     isOperatorHome: false,
     greenCmd,
     greenCmdOverridden: greenCmdOverride != null,
+    ...(misconfiguration ? { misconfiguration } : {}),
   };
 }
 
@@ -263,8 +343,14 @@ export interface CheckpointRouting {
   /** Env keys to DELETE from the inherited env before `extraEnv` is applied (EMPTY for
    *  operator-home / default — its behavior stays byte-identical, D-007). */
   clearEnv: string[];
-  /** Present when this installSlug should NOT run a suite (not a gated coding hive). */
-  skip?: { reason: string };
+  /** Present when this installSlug should NOT run a suite (not a gated coding hive).
+   *  `misconfigured` marks a gated hive whose gate cannot promote (WI-10006317) — the
+   *  handler records it as `skipped-misconfigured`, not as a deliberately disabled gate. */
+  skip?: { reason: string; misconfigured?: boolean };
+  /** The foreign pot's resolved gate command (WI-10006274), so the memory admission can size
+   *  its request by the suite this install actually runs. Absent for the operator home, whose
+   *  suite is the Papercusp Vitest fork runner and keeps the fork-derived cap. */
+  greenCmd?: string | null;
 }
 
 /**
@@ -299,10 +385,53 @@ export async function resolveCheckpointRouting(
   const hive = await resolveHiveReleaseEnv(ctx.installSlug, ctx.workspaceId);
   if (!hive.enabled)
     return { root: defaultRoot, extraEnv: {}, clearEnv: [], skip: { reason: hive.reason ?? 'not-gated' } };
+  if (hive.misconfiguration)
+    return {
+      root: defaultRoot,
+      extraEnv: {},
+      clearEnv: [],
+      skip: { reason: `${hive.misconfiguration.code}: ${hive.misconfiguration.detail}`, misconfigured: true },
+    };
   // CRUCIAL (P-019): `root` is the TOOLING root — where green-checkpoint.ts + setup-release-
   // checkout.sh + tsx physically live (the papercusp operator tree, `defaultRoot`). It is NOT
   // the hive's repo: the hive's checkout has no release scripts. The hive is the SUBJECT,
   // carried ONLY in extraEnv (PAPERCUSP_INTEGRATION_ROOT) so the script runs FROM papercusp
   // and OPERATES ON the hive. (Earlier this returned the hive root → script-not-found.)
-  return { root: defaultRoot, extraEnv: hive.env, clearEnv: hive.clearEnv };
+  return { root: defaultRoot, extraEnv: hive.env, clearEnv: hive.clearEnv, greenCmd: hive.greenCmd ?? null };
+}
+
+/**
+ * The pot's REAL test-suite command, or null when it has none (plan
+ * pot-review-integration-mode-2026-10-05 P-015). Same precedence as the gate's
+ * `greenCmd` above — owner override → blueprint `releaseGate.greenCmd` → detected
+ * `testCommand` — but WITHOUT the `DEFAULT_GREEN_CMD` build fallback: "it builds" is not
+ * a test suite, so a working-copy pot whose only gate is the build fallback must not be
+ * allowed (its PRs would claim "passed the test suite" off a build). Pure, so the surfaces
+ * that offer working-copy mode can test the rule without a registry.
+ */
+export function pickPotSuiteCommand(input: {
+  override?: string | null;
+  greenCmd?: string | null;
+  testCommand?: string | null;
+}): string | null {
+  for (const candidate of [input.override, input.greenCmd, input.testCommand]) {
+    if (typeof candidate === 'string' && candidate.trim() !== '') return candidate.trim();
+  }
+  return null;
+}
+
+/** Resolve {@link pickPotSuiteCommand} for a registered pot (null when not found / no blueprint). */
+export async function resolvePotSuiteCommand(slug: string, workspaceId: string): Promise<string | null> {
+  const reg = await loadHarnessRegistry(workspaceId);
+  const entry = reg.projects.find((p) => p.slug === slug);
+  if (!entry) return null;
+  const gate = resolveHiveReleaseGate(entry.path, entry.github_default_branch);
+  let override: string | null = null;
+  try {
+    const { getReleaseGreenCmdOverride } = await import('../../hive-settings-store');
+    override = await getReleaseGreenCmdOverride(workspaceId, slug);
+  } catch {
+    override = null;
+  }
+  return pickPotSuiteCommand({ override, greenCmd: gate?.greenCmd ?? null, testCommand: gate?.testCommand ?? null });
 }

@@ -1,7 +1,8 @@
 /** Test-time provenance uses existing immutable spec bindings, including pending executions. */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { relative, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
 import {
   bindSpecEvidence, listSpecEvidence, measureRepoFilesEvidenceAtRoot, measureAndPinRepoFilesEvidenceAtRoot, retractSpecEvidence,
   ADHOC_WORK_ITEM_SPEC_SCOPE, MEASUREMENT_PIN_DETAILS_KEY, repoFilesEvidenceMeasurementSchema,
@@ -19,6 +20,7 @@ const bindingSchema = z.object({
   specId: z.string().min(1).max(200), specRevision: z.number().int().positive(),
   testPath: z.string().min(1).max(500),
   sourcePaths: repoFilesEvidenceMeasurementSchema.shape.sourcePaths,
+  sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
   // The ONE recorder taxonomy (EI-24434635346407728); a label the ledger row contradicts
   // is still refused as a layer mismatch below, so widening the vocabulary grants nothing.
   testLayer: z.enum(RECORDED_TEST_LAYERS),
@@ -41,16 +43,28 @@ export const testEvidenceSchema = z.object({
 export const RECOVERY_WAIT_DEFAULT_MS = 30_000;
 export const RECOVERY_WAIT_CEILING_MS = 40_000;
 export const RECOVERY_WAIT_POLL_MS = 2_000;
+/**
+ * A pending evidence row is registered before a test process starts. Give the process
+ * admission/snapshot write a bounded window before treating a missing run as abandoned.
+ */
+export const PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS = 60_000;
 export const recoverTestEvidenceSchema = z.object({
   workItemId: z.string().min(1).max(200), planSlug: z.string().min(1).max(120).optional(),
   originRunId: z.string().uuid(), runId: z.string().uuid(),
   waitMs: z.number().int().min(0).max(RECOVERY_WAIT_CEILING_MS).optional()
-    .describe(`Wait up to this long (default ${RECOVERY_WAIT_DEFAULT_MS}ms) for a still-running detached run to finish before reconciling; 0 reconciles immediately.`),
+    .describe(`Wait up to this long (default ${RECOVERY_WAIT_DEFAULT_MS}ms) for a detached run to finish and its file-level ledger result to arrive before reconciling; 0 reconciles immediately.`),
 }).strict();
 type Request = z.infer<typeof testEvidenceSchema>;
 type Recovery = z.infer<typeof recoverTestEvidenceSchema>;
-type Scope = { workspaceId: string; harnessSlug: string; actorId: string; root: string };
-type Prepared = { input: BindSpecEvidenceInput; binding: Request['bindings'][number]; measurement: RepoFilesEvidenceMeasurement };
+/**
+ * `rootHarnessSlug` names the registered checkout `root` belongs to when it is NOT the
+ * session harness's own tree (a hive app such as phone-app). It is stamped into every
+ * measurement so the evaluator and a later re-measure resolve the SAME checkout instead
+ * of the plan harness root, where the paths do not exist (EI-25203154942838341).
+ */
+type Scope = { workspaceId: string; harnessSlug: string; actorId: string; root: string; rootHarnessSlug?: string };
+type Prepared = { input: BindSpecEvidenceInput; binding: Request['bindings'][number]; measurement: RepoFilesEvidenceMeasurement;
+  observedAt?: string };
 type Deps = {
   bind: typeof bindSpecEvidence; measure: typeof measureRepoFilesEvidenceAtRoot;
   ledger: typeof readHarnessTestRunEvidence; list: typeof listSpecEvidence;
@@ -103,6 +117,12 @@ const succeeded = (status: string) => status === 'created' || status === 'unchan
 
 function isTerminalRunSnapshot(run: RunSnapshot | null | undefined): run is RunSnapshot {
   return run != null && run.finishedAt !== null && run.status !== 'running';
+}
+
+function pendingEvidenceAgeMs(observedAt: string | undefined, now: number): number | null {
+  if (typeof observedAt !== 'string') return null;
+  const observedAtMs = Date.parse(observedAt);
+  return Number.isFinite(observedAtMs) && observedAtMs <= now ? now - observedAtMs : null;
 }
 
 type PendingRetirement = {
@@ -180,7 +200,10 @@ export async function prepareTestEvidence(request: Request, runId: string, files
     if (!selected.has(absolute)) throw new Error(`evidence_test_not_selected:${binding.testPath}`);
     const testPath = relative(scope.root, absolute).replaceAll('\\', '/');
     const measurement = repoFilesEvidenceMeasurementSchema.parse({ schemaVersion: 1, kind: 'repo-files',
-      sourcePaths: binding.sourcePaths, testPaths: [testPath] });
+      ...(scope.rootHarnessSlug ? { rootHarnessSlug: scope.rootHarnessSlug } : {}),
+      sourcePaths: binding.sourcePaths,
+      ...(binding.sourceGlobs ? { sourceGlobs: binding.sourceGlobs } : {}),
+      testPaths: [testPath] });
     const fingerprints = await deps.measure(scope.root, measurement);
     const pin = await pinFor(scope.root, measurement, fingerprints, deps);
     const normalized = { ...binding, testPath };
@@ -229,12 +252,46 @@ export async function retractRefusedTestEvidence(prepared: Prepared[], runId: st
     omitted: Math.max(0, bindingIds.length - 20), failures: failures.slice(0, 20) };
 }
 
+function canonicalFilePath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The run's counts for one bound test file, matched by FILE IDENTITY rather than key spelling
+ * (WI-10006596). `byFile` keys are relative to `result.root`, but a checkout reached through a
+ * symlink (e.g. `papercupai-workspace/email` -> `.papercusp-workspaces/.../apps/email`) gets
+ * Vitest's REALPATH back, so the same file is keyed `../../.papercusp-workspaces/.../tests/x.test.ts`
+ * while the binding says `tests/x.test.ts`. An exact-key miss used to settle a passing proof as
+ * outcome:'unknown', executed:false.
+ */
+type TestFilesByFile = Extract<TestFilesCoreResult, { error?: undefined }>['byFile'];
+
+export function byFileCountsFor(
+  result: { byFile?: TestFilesByFile; root?: string },
+  testPath: string,
+): TestFilesByFile[string] | undefined {
+  const byFile = result.byFile;
+  if (!byFile) return undefined;
+  const exact = byFile[testPath];
+  if (exact || !result.root) return exact;
+  const base = result.root;
+  const target = canonicalFilePath(isAbsolute(testPath) ? testPath : resolve(base, testPath));
+  for (const [key, counts] of Object.entries(byFile)) {
+    if (canonicalFilePath(isAbsolute(key) ? key : resolve(base, key)) === target) return counts;
+  }
+  return undefined;
+}
+
 export function testEvidenceOutcome(
   binding: Request['bindings'][number],
   result?: TestFilesCoreResult,
 ): { outcome: string; collected: boolean; executed: boolean; skipped?: boolean; filteredSkipped?: number } {
   if (!result || result.error) return { outcome: result?.error ?? 'unknown', collected: false, executed: false };
-  const counts = result.byFile[binding.testPath];
+  const counts = byFileCountsFor(result, binding.testPath);
   if (!counts) return { outcome: 'unknown', collected: false, executed: false };
   const executed = !counts.collectionFailed && counts.passed + counts.failed > 0;
   // Vitest reports every non-matching assertion as `skipped` when an explicit
@@ -415,11 +472,21 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
         bindingStatus: retirement.failures.length > 0 ? 'retirement-incomplete' : 'not-bound' });
       continue;
     }
+    // Recovery or a caller-aborted run can have no attributed file row yet. The original
+    // prepare step already wrote the pending marker; appending another pending binding here
+    // only creates twins that every later remeasure also has to skip. Keep the original row
+    // until a reporter result arrives or the bounded abandonment check retires it.
+    if (phase === 'pending') {
+      rows.push({ specId: row.input.specId, specRevision: row.input.specRevision,
+        evidenceRef: row.input.evidenceRef, testRunId: null, ledgerRunGroupId: null,
+        phase, outcome: 'unknown', bindingStatus: 'pending-retained' });
+      continue;
+    }
     const receipt = await deps.bind({ ...row.input, testRunId: run?.id ?? null, details });
     let bindingStatus: string = receipt.status;
-    if (phase === 'settled') {
+    if (succeeded(receipt.status) && (phase === 'settled' || phase === 'source-changed')) {
       const retirement = await retirePendingAttemptBindings(row, originRunId, runId, scope,
-        `Settled test evidence for ${row.input.evidenceRef} supersedes older pending rows from this run attempt.`, deps);
+        `Terminal test evidence for ${row.input.evidenceRef} supersedes older pending rows from this run attempt.`, deps);
       collectRetirement(retirement);
       if (retirement.failures.length > 0) bindingStatus = 'retirement-incomplete';
     }
@@ -523,10 +590,15 @@ export type RemeasureSkip = { specId: string; testPath: string; bindingId: numbe
   detail?: string };
 export type RemeasureSelection = { specId: string; testPath: string; bindingId: number;
   staleReasons: string[]; movedPaths?: unknown; binding: Request['bindings'][number];
+  /** The latest pending attempt was checked and has no live run or scoped file ledger row. */
+  abandonedPending?: true;
   /** Every live row of this recipe at this revision — withdrawn only once a fresh run PASSES. */
   supersedes: number[];
   /** Reviewer judgment those rows carried (WI-10004452): the fresh run will not reproduce it. */
-  judgment?: { fields: string[]; bindingIds: number[] } };
+  judgment?: { fields: string[]; bindingIds: number[] };
+  /** Those rows whose ledger run was a CLEAN tree (worktree_dirty=false, e.g. a lint:as-committed
+   * clone). Only a fresh run that is itself known-clean may retire them (WI-10005451). */
+  cleanBindingIds?: number[] };
 
 /** Evidence kinds a re-measure must ACCOUNT for, even when it cannot re-run them itself. */
 export const REMEASURE_EVIDENCE_KINDS = ['test', 'mutation'] as const;
@@ -605,6 +677,7 @@ function handBoundTestBinding(
     specRevision: row.specRevision,
     testPath,
     sourcePaths: measurement.sourcePaths,
+    ...(measurement.sourceGlobs ? { sourceGlobs: measurement.sourceGlobs } : {}),
     testLayer: values.testLayer,
     ...(scenarioIds && scenarioIds.length > 0 ? { scenarioIds } : {}),
     ...(causalPairIds && causalPairIds.length === 1 ? { causalPairId: causalPairIds[0] } : {}),
@@ -619,10 +692,12 @@ function handBoundTestBinding(
  * still REPORTED (`no-recipe` / `probe-required`), never silently dropped — a silent drop
  * let the completion gate fail freshness on bindings this pass said nothing about.
  */
-export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selected: RemeasureSelection[]; skipped: RemeasureSkip[] } {
+export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[],
+  abandonedPendingBindingIds: ReadonlySet<number> = new Set()): { selected: RemeasureSelection[]; skipped: RemeasureSkip[] } {
   const latest = new Map<string, { row: EvidenceRow; binding: Request['bindings'][number] | null; testPath: string; phase?: string }>();
   const members = new Map<string, number[]>();
   const judgments = new Map<string, { fields: Set<string>; bindingIds: number[] }>();
+  const clean = new Map<string, number[]>();
   for (const row of [...rows].sort((a, b) => b.id - a.id)) {
     // Counterexample proofs assert a SPECIFIC failure against a deliberately broken
     // subject; re-running them against moved code is not the same claim.
@@ -643,9 +718,11 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
       ? JSON.stringify([...new Set(identityPaths)].sort())
       : `unrecorded:${row.evidenceRef}`;
     const key = `${row.specId}\0${row.evidenceKind}\0${pathIdentity}`;
-    if (!latest.has(key)) latest.set(key, { row, binding, testPath, phase: execution?.phase });
+    const phase = abandonedPendingBindingIds.has(row.id) ? 'abandoned' : execution?.phase;
+    if (!latest.has(key)) latest.set(key, { row, binding, testPath, phase });
     if (row.specRevision === latest.get(key)!.row.specRevision) {
       members.set(key, [...(members.get(key) ?? []), row.id]);
+      if (row.testRunProvenance?.worktreeDirty === false) clean.set(key, [...(clean.get(key) ?? []), row.id]);
       const fields = reviewerJudgmentFields(row.details);
       if (fields.length > 0) {
         const judgment = judgments.get(key) ?? { fields: new Set<string>(), bindingIds: [] };
@@ -660,13 +737,18 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
   for (const [key, { row, binding, testPath, phase }] of latest) {
     const base = { specId: row.specId, testPath, bindingId: row.id };
     const { overall, dimensions, staleReasons } = row.currentness;
+    const outcome = (row.details?.adequacy as { outcome?: string } | undefined)?.outcome;
+    const abandonedPending = phase === 'abandoned';
+    // Freshness alone does not make a failed measurement a reusable proof (WI-10004097).
+    const settledFailure = phase === 'settled' && (outcome === 'error' || outcome === 'fail');
     const moved = (row as { serverMeasurement?: { movedPaths?: unknown } }).serverMeasurement?.movedPaths;
     const hasNoStoredTestBinding =
       row.evidenceKind === 'test' &&
       (row.details?.testExecution as { binding?: unknown } | undefined)?.binding === undefined;
     if (dimensions.spec === 'stale') skipped.push({ ...base, reason: 'clause-moved' });
     else if (phase === 'pending') skipped.push({ ...base, reason: 'run-in-flight' });
-    else if (overall === 'current' && (phase === 'settled' || !binding || hasNoStoredTestBinding))
+    else if (overall === 'current' && !settledFailure && !abandonedPending
+      && (phase === 'settled' || !binding || hasNoStoredTestBinding))
       skipped.push({ ...base, reason: 'current' });
     else if (!binding) {
       const why = (overall === 'unknown' ? row.currentness.unknownReasons : staleReasons).join(',') || overall;
@@ -680,14 +762,19 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
           }
         : { ...base, reason: 'no-recipe', detail: `${why}: bound by hand, so re-prove via testing:run { evidence } (which stores the recipe)`.slice(0, 240) });
     } else if (
+      (abandonedPending && overall === 'current') ||
+      (overall === 'current' && settledFailure) ||
       (overall === 'stale' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason))) ||
       // A completed run whose sources moved WHILE it ran is the same drift, observed early.
       (overall !== 'unknown' && phase === 'source-changed' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason)))
     ) {
       const judgment = judgments.get(key);
+      const cleanIds = clean.get(key);
       selected.push({ ...base, staleReasons, ...(moved !== undefined ? { movedPaths: moved } : {}),
         binding: { ...binding, specRevision: row.specRevision }, supersedes: (members.get(key) ?? []).sort((a, b) => a - b),
-        ...(judgment ? { judgment: { fields: [...judgment.fields].sort(), bindingIds: [...judgment.bindingIds].sort((a, b) => a - b) } } : {}) });
+        ...(abandonedPending ? { abandonedPending: true as const } : {}),
+        ...(judgment ? { judgment: { fields: [...judgment.fields].sort(), bindingIds: [...judgment.bindingIds].sort((a, b) => a - b) } } : {}),
+        ...(cleanIds ? { cleanBindingIds: [...cleanIds].sort((a, b) => a - b) } : {}) });
     } else if (overall === 'unknown') skipped.push({ ...base, reason: 'unmeasurable', detail: row.currentness.unknownReasons.join(',').slice(0, 240) });
     else skipped.push({ ...base, reason: 'not-remeasurable', detail: [...staleReasons, phase ?? 'no-phase'].join(',') });
   }
@@ -703,16 +790,83 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
  * ordinary `evidence` request plus the exact test files to run. `request` is null when
  * nothing needs re-measuring, and the caller then starts no process at all.
  */
-export async function buildTestEvidenceRemeasure(remeasure: Remeasure, scope: Pick<Scope, 'harnessSlug'>, deps: Pick<Deps, 'list'> = defaults) {
+async function abandonedPendingBindingIds(rows: readonly EvidenceRow[],
+  scope: Pick<Scope, 'harnessSlug'> & Partial<Pick<Scope, 'workspaceId' | 'root'>>,
+  deps: Pick<Deps, 'list'> & Partial<Pick<Deps, 'ledger' | 'runStatus' | 'now'>>): Promise<Set<number>> {
+  if (!scope.workspaceId || !scope.root || !deps.ledger || !deps.runStatus) return new Set();
+  const now = deps.now?.() ?? Date.now();
+  const candidates = rows.flatMap((row) => {
+    const execution = row.details?.testExecution as { phase?: string; runId?: string; originRunId?: string; binding?: unknown } | undefined;
+    const parsed = row.evidenceKind === 'test' ? bindingSchema.safeParse(execution?.binding) : null;
+    const ageMs = pendingEvidenceAgeMs(row.observedAt, now);
+    if (execution?.phase !== 'pending' || row.testRunId != null || !parsed?.success
+      || typeof execution.runId !== 'string' || ageMs === null
+      || ageMs < PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS) return [];
+    return [{ row, runId: execution.runId,
+      originRunId: typeof execution.originRunId === 'string' ? execution.originRunId : execution.runId,
+      binding: parsed.data }];
+  });
+  const checks = new Map<string, Promise<boolean>>();
+  const abandoned = new Set<number>();
+  await Promise.all(candidates.map(async ({ row, runId, originRunId, binding }) => {
+    const key = JSON.stringify([runId, originRunId, binding.testPath]);
+    let check = checks.get(key);
+    if (!check) {
+      check = (async () => {
+        let snapshot: RunSnapshot | null;
+        try {
+          snapshot = await deps.runStatus!(runId, undefined, {
+            workspaceId: scope.workspaceId!, harnessSlug: scope.harnessSlug, root: scope.root!,
+          });
+        } catch {
+          return false;
+        }
+        // Missing and terminal snapshots mean no live process. An unreadable or malformed
+        // snapshot must fail closed; it is not evidence that the process stopped.
+        if (snapshot !== null && !isTerminalRunSnapshot(snapshot)) return false;
+        const runGroups = [...new Set([runId, originRunId])];
+        for (const runGroupId of runGroups) {
+          let ledgerRows: HarnessTestRunEvidence[] | null;
+          try {
+            ledgerRows = await deps.ledger!({ workspaceId: scope.workspaceId!, harnessSlug: scope.harnessSlug,
+              runGroupId, filePaths: [binding.testPath] });
+          } catch {
+            return false;
+          }
+          if (ledgerRows === null || ledgerRows.length > 0) return false;
+        }
+        return true;
+      })();
+      checks.set(key, check);
+    }
+    if (await check) abandoned.add(row.id);
+  }));
+  return abandoned;
+}
+
+export async function buildTestEvidenceRemeasure(remeasure: Remeasure,
+  scope: Pick<Scope, 'harnessSlug'> & Partial<Pick<Scope, 'workspaceId' | 'root'>>,
+  deps: Pick<Deps, 'list'> & Partial<Pick<Deps, 'ledger' | 'runStatus' | 'now'>> = defaults) {
   const rows = await deps.list({ harnessSlug: scope.harnessSlug,
     planSlugs: [remeasure.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE], workItemIds: [remeasure.workItemId],
     ...(remeasure.specIds ? { specIds: remeasure.specIds } : {}), evidenceKinds: [...REMEASURE_EVIDENCE_KINDS], limit: 500 });
-  const plan = planTestEvidenceRemeasure(rows);
+  const abandoned = await abandonedPendingBindingIds(rows, scope, deps);
+  const plan = planTestEvidenceRemeasure(rows, abandoned);
   const request = plan.selected.length === 0 ? null : testEvidenceSchema.parse({
     workItemId: remeasure.workItemId, ...(remeasure.planSlug ? { planSlug: remeasure.planSlug } : {}),
     bindings: plan.selected.map((entry) => entry.binding) });
-  return { request, files: [...new Set(plan.selected.map((entry) => entry.testPath))], plan,
-    summary: { examined: rows.length, selected: plan.selected.length, skipped: plan.skipped.length } };
+  // The checkout each selected proof was measured in: `null` = the session harness root.
+  // The caller must re-run in THAT checkout; more than one distinct value cannot share a
+  // run (EI-25203154942838341).
+  const rowById = new Map(rows.map((row) => [row.id, row]));
+  const rootHarnessSlugs = [...new Set(plan.selected.map((entry) => {
+    const measured = repoFilesEvidenceMeasurementSchema.safeParse(rowById.get(entry.bindingId)?.details?.currentMeasurement);
+    return measured.success ? measured.data.rootHarnessSlug ?? null : null;
+  }))];
+  return { request, files: [...new Set(plan.selected.map((entry) => entry.testPath))], plan, rootHarnessSlugs,
+    abandonedPendingBindingIds: [...abandoned].sort((a, b) => a - b),
+    summary: { examined: rows.length, selected: plan.selected.length, skipped: plan.skipped.length,
+      abandonedPending: abandoned.size } };
 }
 
 /**
@@ -743,8 +897,14 @@ export async function retireRemeasuredPredecessors(selected: readonly RemeasureS
         reason: `fresh run not a current pass (${execution?.phase ?? 'absent'}/${outcome ?? 'unknown'})` });
       continue;
     }
+    // WI-10005451: a remeasure runs in the SHARED tree, so its run is usually dirty. Retiring a
+    // clean (as-committed) proof for it downgrades the proof the acceptance BAR accepts into one
+    // it rejects. Only a fresh run that is itself known-clean may retire a clean predecessor.
+    const replacementClean = replacement.testRunProvenance?.worktreeDirty === false;
+    const cleanKept = replacementClean ? [] : (entry.cleanBindingIds ?? []).filter((id) => entry.supersedes.includes(id));
     const retired: number[] = [];
     for (const bindingId of entry.supersedes) {
+      if (cleanKept.includes(bindingId)) continue;
       const result = await deps.retract({ harnessSlug: scope.harnessSlug, bindingId, actorId: scope.actorId,
         reason: `superseded by re-measured binding ${replacement.id} (testing:run remeasureEvidence run ${runId}): measured paths moved since this proof` })
         .catch(() => null);
@@ -756,6 +916,11 @@ export async function retireRemeasuredPredecessors(selected: readonly RemeasureS
     const notCarried = (entry.judgment?.fields ?? []).filter((field) => !carried.has(field));
     const lostFrom = (entry.judgment?.bindingIds ?? []).filter((id) => retired.includes(id));
     outcomes.push({ specId: entry.specId, testPath: entry.testPath, replacementId: replacement.id, retired,
+      ...(cleanKept.length > 0
+        ? { cleanProofKept: { bindingIds: cleanKept,
+            reason: `fresh run ${replacement.testRunProvenance?.worktreeDirty === true ? 'ran on a dirty worktree' : 'has unknown worktree cleanliness'}; it may not retire a clean-tree proof`,
+            repair: `re-prove from a clean tree (npm run lint:as-committed -- <script> --keep, then testing:run the clone's test path), bind it, then retract ${cleanKept.join(', ')}` } }
+        : {}),
       ...(notCarried.length > 0 && lostFrom.length > 0
         ? { judgmentNotCarried: { fields: notCarried, fromBindingIds: lostFrom,
             repair: `re-verify against the current test source, then plans:bind-spec-evidence the run behind binding ${replacement.id} with this judgment` } }
@@ -788,6 +953,51 @@ async function awaitTerminalRunSnapshot(runId: string, limitMs: number, deps: De
     if (snapshot === null || isTerminalRunSnapshot(snapshot) || remainingMs <= 0) return { snapshot, waitedMs };
     await sleep(Math.min(RECOVERY_WAIT_POLL_MS, remainingMs));
   }
+}
+
+/** A passing run can become terminal before its reporter's file-level ledger row is visible.
+ * Spend only the recovery budget left after the terminal snapshot before treating that row as absent. */
+async function awaitRecoveryLedgerRows(prepared: Prepared[], originRunId: string, runId: string,
+  scope: Scope, limitMs: number, deps: Deps): Promise<number> {
+  if (limitMs <= 0 || prepared.length === 0) return 0;
+  const sleep = deps.sleep ?? defaults.sleep!;
+  const now = deps.now ?? defaults.now!;
+  const started = now();
+  for (;;) {
+    const primary = await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: runId });
+    const origin = originRunId !== runId && (primary?.length ?? 0) === 0
+      ? await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, runGroupId: originRunId })
+      : null;
+    const ledger = (primary?.length ?? 0) > 0 ? primary : origin ?? primary;
+    const allRowsVisible = prepared.every(row => ledger?.some(entry =>
+      entry.file_path === row.binding.testPath && entry.finished_at !== null));
+    const waitedMs = now() - started;
+    const remainingMs = limitMs - waitedMs;
+    if (allRowsVisible || remainingMs <= 0) return waitedMs;
+    await sleep(Math.min(RECOVERY_WAIT_POLL_MS, remainingMs));
+  }
+}
+
+/** `null` means at least one exact scoped read was unavailable; unreadable is not empty. */
+async function recoveryLedgerPresence(prepared: readonly Prepared[], originRunId: string, runId: string,
+  scope: Scope, deps: Deps): Promise<boolean | null> {
+  const runGroups = [...new Set([runId, originRunId])];
+  let unavailable = false;
+  for (const row of prepared) {
+    for (const runGroupId of runGroups) {
+      let ledger: HarnessTestRunEvidence[] | null;
+      try {
+        ledger = await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+          runGroupId, filePaths: [row.binding.testPath] });
+      } catch {
+        unavailable = true;
+        continue;
+      }
+      if (ledger === null) unavailable = true;
+      else if (ledger.length > 0) return true;
+    }
+  }
+  return unavailable ? null : false;
 }
 
 /** Rehydrate exact persisted mappings; no transcript or user-retyped fingerprints. */
@@ -840,7 +1050,7 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
       evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef,
       testRunId: row.testRunId, coverageEvidenceRef: row.coverageEvidenceRef, details: row.details,
       sourceFingerprint: row.fingerprints.sourceFingerprint, testFingerprint: row.fingerprints.testFingerprint,
-    } });
+    }, observedAt: row.observedAt });
   }
   if (prepared.length === 0) throw new Error('evidence_recovery_not_found');
   if (recoveredRunIds.size !== 1) throw new Error('evidence_recovery_ambiguous_run_id');
@@ -849,10 +1059,63 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
   const { snapshot: runSnapshot, error: runStatusError, waitedMs } =
     await awaitTerminalRunSnapshot(recoveredRunId, waitLimitMs, deps, scope);
   const terminalRun = isTerminalRunSnapshot(runSnapshot) ? runSnapshot : undefined;
+  // A successful detached process may publish its per-file reporter rows just after the
+  // terminal snapshot. Use only the portion of waitMs the process wait did not consume;
+  // otherwise an early empty ledger read can retire a result that is about to be visible.
+  const ledgerWaitedMs = terminalRun?.status === 'pass' && terminalRun.exitCode === 0
+    ? await awaitRecoveryLedgerRows(prepared, recovery.originRunId, recoveredRunId, scope,
+      Math.max(0, waitLimitMs - waitedMs), deps)
+    : 0;
+  const totalWaitedMs = waitedMs + ledgerWaitedMs;
+  const now = deps.now ?? defaults.now!;
+  const allPastAbandonmentGrace = prepared.every(row => {
+    const ageMs = pendingEvidenceAgeMs(row.observedAt, now());
+    return ageMs !== null && ageMs >= PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS;
+  });
+  const allPreparedAttemptsPending = prepared.every(row => {
+    const execution = row.input.details?.testExecution as { phase?: string } | undefined;
+    return execution?.phase === 'pending' && row.input.testRunId == null;
+  });
+  if (runSnapshot === null && !runStatusError && allPreparedAttemptsPending && allPastAbandonmentGrace
+    && await recoveryLedgerPresence(prepared, recovery.originRunId, recoveredRunId, scope, deps) === false) {
+    const retirements = await Promise.all(prepared.map(row => retirePendingAttemptBindings(row,
+      recovery.originRunId, recoveredRunId, scope,
+      `Detached test run ${recoveredRunId} has no live snapshot or scoped file ledger after the ` +
+        `${Math.round(PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS / 1000)}s pending grace; this attempt is abandoned and must be rerun.`, deps)));
+    const retiredIds = [...new Set(retirements.flatMap(retirement => retirement.bindingIds))].sort((a, b) => a - b);
+    const failures = retirements.flatMap(retirement => retirement.failures);
+    return {
+      status: failures.length === 0 ? 'abandoned' as const : 'incomplete' as const,
+      acceptance: 'requires-review' as const,
+      rows: prepared.slice(0, 6).map(row => ({ specId: row.input.specId,
+        specRevision: row.input.specRevision, evidenceRef: row.input.evidenceRef,
+        testRunId: null, ledgerRunGroupId: null, phase: 'abandoned' as const, outcome: 'unknown' as const,
+        bindingStatus: failures.length === 0 ? 'abandoned' as const : 'retirement-incomplete' as const })),
+      total: prepared.length, omitted: Math.max(0, prepared.length - 6),
+      // An abandoned attempt has no settled row, so it can never contribute a fingerprint
+      // (same rule as the deferred bundle). Kept explicit so the recovery union stays uniform.
+      verificationFingerprint: null,
+      readRef: { tool: 'plans:get-spec-evidence', args: { harness: scope.harnessSlug,
+        slug: recovery.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE, workItemIds: [recovery.workItemId],
+        evidenceRefs: prepared.map(row => row.input.evidenceRef) } },
+      pendingRetirement: { status: failures.length === 0 ? 'complete' as const : 'partial' as const,
+        retiredCount: retiredIds.length, bindingIds: retiredIds.slice(0, 20),
+        omitted: Math.max(0, retiredIds.length - 20), failures: failures.slice(0, 20),
+        failuresOmitted: Math.max(0, failures.length - 20) },
+      recovery: { tool: 'testing:run', args: { harness: scope.harnessSlug, recoverEvidence: {
+        workItemId: recovery.workItemId, planSlug: recovery.planSlug,
+        originRunId: recovery.originRunId, runId: recovery.runId,
+      } } },
+      recoveryWait: { limitMs: waitLimitMs, waitedMs: totalWaitedMs, ledgerWaitedMs: 0,
+        outcome: 'abandoned' as const,
+        nextStep: 'The pending attempt was retired. Re-run testing:run { remeasureEvidence } to create fresh evidence.' },
+      detachedRunStatus: { status: 'not-found' as const },
+    };
+  }
   const bundle = await finishTestEvidence(prepared, recovery.originRunId, recoveredRunId, scope, undefined, deps, terminalRun);
   const stillRunning = runSnapshot !== null && !terminalRun;
   return { ...bundle,
-    recoveryWait: { limitMs: waitLimitMs, waitedMs,
+    recoveryWait: { limitMs: waitLimitMs, waitedMs: totalWaitedMs, ledgerWaitedMs,
       outcome: terminalRun ? 'terminal' as const : stillRunning ? 'still-running' as const
         : runStatusError ? 'unavailable' as const : 'not-found' as const,
       ...(stillRunning ? { nextStep: `The detached run was still in flight after waiting ${Math.round(waitedMs / 1000)}s. `

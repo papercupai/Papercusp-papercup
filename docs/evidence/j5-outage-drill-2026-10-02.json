@@ -1,0 +1,681 @@
+{
+  "hostId": "host-19ff2a97befd83b51d2306fd",
+  "config": {
+    "project": "pc-byoc-canary-1002",
+    "network": "pc-host-19ff2a97befd83b51d2306fd-324ccce1-net",
+    "ruleName": "pc-j5-outage-drill-j59bcd7cf874ef",
+    "papercuspOrigin": "https://app.papercusp.com",
+    "modelProviderOrigin": "https://api.anthropic.com",
+    "serviceUnit": "papercusp-workspace.service",
+    "agentCommand": "/home/papercusp-workspace/.papercusp/j5-claude",
+    "workspaceDir": "/srv/papercusp/workspaces/papercusp-workspace",
+    "nonce": "j59bcd7cf874ef",
+    "secret": "90179758e3620e11bd3a1663c9609650"
+  },
+  "evidence": {
+    "startedAt": "2026-10-02T10:08:10.549Z",
+    "finishedAt": "2026-10-02T10:09:26.737Z",
+    "papercuspAddresses": [
+      "104.21.73.140",
+      "172.67.145.145"
+    ],
+    "modelProviderAddresses": [
+      "160.79.104.10"
+    ],
+    "before": {
+      "connections": [
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.18",
+          "remotePort": 37977,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.216",
+          "remotePort": 44809,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 38646,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.216",
+          "remotePort": 40183,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.244.34",
+          "remotePort": 33279,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.16",
+          "remotePort": 34997,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.244.32",
+          "remotePort": 43659,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.216",
+          "remotePort": 39215,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.249.248",
+          "remotePort": 38073,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.130",
+          "remotePort": 35329,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.17",
+          "remotePort": 39707,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.17",
+          "remotePort": 33153,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.244.32",
+          "remotePort": 40631,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.16",
+          "remotePort": 45133,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.48",
+          "remotePort": 34951,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.16",
+          "remotePort": 33129,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.18",
+          "remotePort": 40873,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.17",
+          "remotePort": 38923,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.244.33",
+          "remotePort": 36439,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 52990,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.16",
+          "remotePort": 44085,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.217",
+          "remotePort": 45923,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.16",
+          "remotePort": 38149,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 53840,
+          "remoteAddress": "172.67.145.145",
+          "remotePort": 443,
+          "class": "papercusp"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 53032,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.244.34",
+          "remotePort": 42423,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.129",
+          "remotePort": 34549,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.244.32",
+          "remotePort": 43735,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 52958,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.18",
+          "remotePort": 36905,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.48",
+          "remotePort": 34137,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.244.34",
+          "remotePort": 38929,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 38660,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 53004,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.16",
+          "remotePort": 33187,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.218",
+          "remotePort": 36181,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 52948,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.244.32",
+          "remotePort": 34545,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.129",
+          "remotePort": 37863,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.48",
+          "remotePort": 44735,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.130",
+          "remotePort": 40253,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.216",
+          "remotePort": 44327,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 38094,
+          "remoteAddress": "169.254.169.254",
+          "remotePort": 80,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 39964,
+          "remoteAddress": "169.254.169.254",
+          "remotePort": 80,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 52972,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 45628,
+          "remoteAddress": "74.125.132.95",
+          "remotePort": 443,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.16",
+          "remotePort": 44603,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 52978,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.48",
+          "remotePort": 34717,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.218",
+          "remotePort": 43675,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.244.33",
+          "remotePort": 41921,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 38646,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 38660,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 53092,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 43032,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.216",
+          "remotePort": 46125,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.217",
+          "remotePort": 38507,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 52936,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 52940,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 52942,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 52948,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 52958,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 52972,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 52978,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 52990,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 53004,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 53008,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 53032,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 53092,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 5532,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 52942,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.249.249",
+          "remotePort": 34423,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.129",
+          "remotePort": 44457,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.216",
+          "remotePort": 33311,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.128",
+          "remotePort": 44413,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 52936,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.129",
+          "remotePort": 33711,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.17",
+          "remotePort": 40019,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.217",
+          "remotePort": 40453,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.16",
+          "remotePort": 46281,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 53008,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 52940,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.130",
+          "remotePort": 41199,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.130",
+          "remotePort": 35463,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.245.128",
+          "remotePort": 35441,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.16",
+          "remotePort": 42131,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.217",
+          "remotePort": 42281,
+          "class": "other"
+        },
+        {
+          "localAddress": "127.0.0.1",
+          "localPort": 5532,
+          "remoteAddress": "127.0.0.1",
+          "remotePort": 43032,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.241.49",
+          "remotePort": 32951,
+          "class": "other"
+        },
+        {
+          "localAddress": "10.132.0.2",
+          "localPort": 22,
+          "remoteAddress": "35.235.242.217",
+          "remotePort": 37587,
+          "class": "other"
+        }
+      ],
+      "connectorLastSeenAt": "2026-10-02T10:07:51.209Z"
+    },
+    "blockedAt": "2026-10-02T10:08:22.140Z",
+    "during": {
+      "papercuspReachable": false,
+      "modelProviderReachable": true,
+      "agentRunningWhenBlocked": true,
+      "serviceActive": true,
+      "papercuspConnectionsWhileBlocked": 1
+    },
+    "agent": {
+      "exitCode": 0,
+      "output": "1e047e1118b371c8129277b79fa44d5cf9d8a000cc1d7d14b7677cf27ef09773",
+      "expected": "1e047e1118b371c8129277b79fa44d5cf9d8a000cc1d7d14b7677cf27ef09773",
+      "gateReleasedAt": "2026-10-02T10:08:37.765Z",
+      "completedAt": "2026-10-02T10:08:45.687Z"
+    },
+    "liftedAt": "2026-10-02T10:08:58.249Z",
+    "after": {
+      "connectorLastSeenAt": "2026-10-02T10:09:21.210Z",
+      "papercuspConnections": 1,
+      "serviceActive": true
+    },
+    "ruleDeleted": true,
+    "errors": []
+  },
+  "verdict": {
+    "passed": true,
+    "failures": []
+  }
+}

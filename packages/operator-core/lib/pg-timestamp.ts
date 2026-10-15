@@ -33,7 +33,8 @@
  *
  * - `Date` → `.toISOString()`.
  * - `number` → treated as epoch millis.
- * - `string` (or anything else stringifiable) → parsed as a `Date`; if that
+ * - Integer text (Postgres int8) → treated as epoch millis, like `number`.
+ * - Other `string` (or anything else stringifiable) → parsed as a `Date`; if that
  *   parse fails, the original stringified value is returned as a last-resort
  *   fallback rather than throwing (callers of the pre-existing helpers never
  *   expected this to throw).
@@ -46,7 +47,10 @@ export function pgTimestampToIso(v: unknown): string {
   if (typeof v === 'number') return new Date(v).toISOString();
   if (v == null) return '';
   const str = String(v);
-  const parsed = new Date(str);
+  // postgres-js deliberately keeps bigint values as text to avoid precision loss.
+  // closed_ts and similar persisted clocks are epoch-ms int8, not date strings.
+  const epoch = /^[+-]?\d+$/.test(str) ? Number(str) : NaN;
+  const parsed = Number.isSafeInteger(epoch) ? new Date(epoch) : new Date(str);
   return Number.isNaN(parsed.getTime()) ? str : parsed.toISOString();
 }
 

@@ -1,0 +1,470 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10004890",
+  "defect": "EI-24812912892068980",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "status": "retained-root-defect-confirmed-footprint-unmeasured",
+  "kind": "bounded-staging-cache-root-shapes",
+  "pid": 3389995,
+  "startedAt": "2026-10-01T21:09:20.370Z",
+  "finalMainPid": 3389995,
+  "cleanup": {
+    "closed": true
+  },
+  "samples": [
+    {
+      "at": 1790888960376,
+      "pid": 3389995,
+      "uptime": 3979.253549333,
+      "population": 1042,
+      "checked": 1042,
+      "expired": 438,
+      "expiredChecked": 438,
+      "observerMs": 53.934497999958694,
+      "memory": {
+        "rss": 3717976064,
+        "heapTotal": 2713919488,
+        "heapUsed": 2600946312,
+        "external": 95122521,
+        "arrayBuffers": 4224338
+      },
+      "pssBytes": 3706456064,
+      "definition": "Known cache-root value shapes: character/slot counts and referenced view bytes, not retained bytes or unique heap ownership. Per-root bounds 1500 visits/2ms, arrays256/object keys64; global traversal75ms.",
+      "groupPopulation": 136,
+      "groupEntries": 1042,
+      "topGroups": [
+        {
+          "family": "coord_event_log",
+          "entries": 255,
+          "expired": 234,
+          "rootsInspected": 255,
+          "characters": 5317092,
+          "objects": 28119,
+          "arraySlots": 907814,
+          "partialRoots": 62
+        },
+        {
+          "family": "work_items",
+          "entries": 27,
+          "expired": 21,
+          "rootsInspected": 27,
+          "characters": 295408,
+          "objects": 1514,
+          "arraySlots": 753,
+          "partialRoots": 0
+        },
+        {
+          "family": "harness_plans,plan_revisions,plan_runs,plan_audits",
+          "entries": 13,
+          "expired": 13,
+          "rootsInspected": 13,
+          "characters": 197942,
+          "objects": 1201,
+          "arraySlots": 752,
+          "partialRoots": 1
+        },
+        {
+          "family": "",
+          "entries": 545,
+          "expired": 0,
+          "rootsInspected": 545,
+          "characters": 190274,
+          "objects": 6224,
+          "arraySlots": 15402,
+          "partialRoots": 0
+        },
+        {
+          "family": "harness_plans,plan_revisions,plan_runs",
+          "entries": 8,
+          "expired": 7,
+          "rootsInspected": 8,
+          "characters": 94706,
+          "objects": 819,
+          "arraySlots": 406,
+          "partialRoots": 1
+        }
+      ],
+      "topRoots": [
+        {
+          "keyHash": "1c4bb5c0e664",
+          "family": "coord_event_log",
+          "expired": true,
+          "hardExpiredMs": 1604958,
+          "type": "array",
+          "rootLength": 948,
+          "shape": {
+            "nodes": 1500,
+            "strings": 1045,
+            "characters": 142108,
+            "objects": 356,
+            "arrays": 174,
+            "arraySlots": 1121,
+            "maps": 0,
+            "mapEntries": 0,
+            "buffers": 0,
+            "bufferViewBytes": 0,
+            "accessorsSkipped": 0,
+            "propertiesOmitted": 692,
+            "pending": 158,
+            "complete": false
+          }
+        },
+        {
+          "keyHash": "97b609316cae",
+          "family": "coord_event_log",
+          "expired": false,
+          "hardExpiredMs": 0,
+          "type": "array",
+          "rootLength": 982,
+          "shape": {
+            "nodes": 1500,
+            "strings": 1020,
+            "characters": 114405,
+            "objects": 360,
+            "arrays": 180,
+            "arraySlots": 1164,
+            "maps": 0,
+            "mapEntries": 0,
+            "buffers": 0,
+            "bufferViewBytes": 0,
+            "accessorsSkipped": 0,
+            "propertiesOmitted": 726,
+            "pending": 174,
+            "complete": false
+          }
+        },
+        {
+          "keyHash": "50e5ee577fec",
+          "family": "coord_event_log",
+          "expired": true,
+          "hardExpiredMs": 720670,
+          "type": "array",
+          "rootLength": 996,
+          "shape": {
+            "nodes": 1500,
+            "strings": 1024,
+            "characters": 109849,
+            "objects": 360,
+            "arrays": 188,
+            "arraySlots": 1183,
+            "maps": 0,
+            "mapEntries": 0,
+            "buffers": 0,
+            "bufferViewBytes": 0,
+            "accessorsSkipped": 0,
+            "propertiesOmitted": 740,
+            "pending": 168,
+            "complete": false
+          }
+        }
+      ]
+    },
+    {
+      "at": 1790888963555,
+      "pid": 3389995,
+      "uptime": 3982.429897307,
+      "population": 1042,
+      "checked": 1042,
+      "expired": 438,
+      "expiredChecked": 438,
+      "observerMs": 50.66831299988553,
+      "memory": {
+        "rss": 3717976064,
+        "heapTotal": 2718900224,
+        "heapUsed": 2608162880,
+        "external": 95258021,
+        "arrayBuffers": 4359838
+      },
+      "pssBytes": 3686161408,
+      "definition": "Known cache-root value shapes: character/slot counts and referenced view bytes, not retained bytes or unique heap ownership. Per-root bounds 1500 visits/2ms, arrays256/object keys64; global traversal75ms.",
+      "groupPopulation": 136,
+      "groupEntries": 1042,
+      "topGroups": [
+        {
+          "family": "coord_event_log",
+          "entries": 255,
+          "expired": 234,
+          "rootsInspected": 255,
+          "characters": 5317092,
+          "objects": 28119,
+          "arraySlots": 907814,
+          "partialRoots": 62
+        },
+        {
+          "family": "work_items",
+          "entries": 27,
+          "expired": 21,
+          "rootsInspected": 27,
+          "characters": 295408,
+          "objects": 1514,
+          "arraySlots": 753,
+          "partialRoots": 0
+        },
+        {
+          "family": "harness_plans,plan_revisions,plan_runs,plan_audits",
+          "entries": 13,
+          "expired": 13,
+          "rootsInspected": 13,
+          "characters": 197942,
+          "objects": 1201,
+          "arraySlots": 752,
+          "partialRoots": 1
+        },
+        {
+          "family": "",
+          "entries": 545,
+          "expired": 0,
+          "rootsInspected": 545,
+          "characters": 190274,
+          "objects": 6224,
+          "arraySlots": 15402,
+          "partialRoots": 0
+        },
+        {
+          "family": "harness_plans,plan_revisions,plan_runs",
+          "entries": 8,
+          "expired": 7,
+          "rootsInspected": 8,
+          "characters": 94706,
+          "objects": 819,
+          "arraySlots": 406,
+          "partialRoots": 1
+        }
+      ],
+      "topRoots": [
+        {
+          "keyHash": "1c4bb5c0e664",
+          "family": "coord_event_log",
+          "expired": true,
+          "hardExpiredMs": 1608137,
+          "type": "array",
+          "rootLength": 948,
+          "shape": {
+            "nodes": 1500,
+            "strings": 1045,
+            "characters": 142108,
+            "objects": 356,
+            "arrays": 174,
+            "arraySlots": 1121,
+            "maps": 0,
+            "mapEntries": 0,
+            "buffers": 0,
+            "bufferViewBytes": 0,
+            "accessorsSkipped": 0,
+            "propertiesOmitted": 692,
+            "pending": 158,
+            "complete": false
+          }
+        },
+        {
+          "keyHash": "97b609316cae",
+          "family": "coord_event_log",
+          "expired": false,
+          "hardExpiredMs": 0,
+          "type": "array",
+          "rootLength": 982,
+          "shape": {
+            "nodes": 1500,
+            "strings": 1020,
+            "characters": 114405,
+            "objects": 360,
+            "arrays": 180,
+            "arraySlots": 1164,
+            "maps": 0,
+            "mapEntries": 0,
+            "buffers": 0,
+            "bufferViewBytes": 0,
+            "accessorsSkipped": 0,
+            "propertiesOmitted": 726,
+            "pending": 174,
+            "complete": false
+          }
+        },
+        {
+          "keyHash": "50e5ee577fec",
+          "family": "coord_event_log",
+          "expired": true,
+          "hardExpiredMs": 723849,
+          "type": "array",
+          "rootLength": 996,
+          "shape": {
+            "nodes": 1500,
+            "strings": 1024,
+            "characters": 109849,
+            "objects": 360,
+            "arrays": 188,
+            "arraySlots": 1183,
+            "maps": 0,
+            "mapEntries": 0,
+            "buffers": 0,
+            "bufferViewBytes": 0,
+            "accessorsSkipped": 0,
+            "propertiesOmitted": 740,
+            "pending": 168,
+            "complete": false
+          }
+        }
+      ]
+    },
+    {
+      "at": 1790888966747,
+      "pid": 3389995,
+      "uptime": 3985.617857546,
+      "population": 1045,
+      "checked": 1045,
+      "expired": 439,
+      "expiredChecked": 439,
+      "observerMs": 46.4535269998014,
+      "memory": {
+        "rss": 3717976064,
+        "heapTotal": 2721181696,
+        "heapUsed": 2624282328,
+        "external": 103138933,
+        "arrayBuffers": 12238285
+      },
+      "pssBytes": 3706548224,
+      "definition": "Known cache-root value shapes: character/slot counts and referenced view bytes, not retained bytes or unique heap ownership. Per-root bounds 1500 visits/2ms, arrays256/object keys64; global traversal75ms.",
+      "groupPopulation": 136,
+      "groupEntries": 1045,
+      "topGroups": [
+        {
+          "family": "coord_event_log",
+          "entries": 256,
+          "expired": 235,
+          "rootsInspected": 256,
+          "characters": 5319899,
+          "objects": 28142,
+          "arraySlots": 907829,
+          "partialRoots": 62
+        },
+        {
+          "family": "work_items",
+          "entries": 27,
+          "expired": 21,
+          "rootsInspected": 27,
+          "characters": 295408,
+          "objects": 1514,
+          "arraySlots": 753,
+          "partialRoots": 0
+        },
+        {
+          "family": "harness_plans,plan_revisions,plan_runs,plan_audits",
+          "entries": 13,
+          "expired": 13,
+          "rootsInspected": 13,
+          "characters": 197942,
+          "objects": 1201,
+          "arraySlots": 752,
+          "partialRoots": 1
+        },
+        {
+          "family": "",
+          "entries": 547,
+          "expired": 0,
+          "rootsInspected": 547,
+          "characters": 190906,
+          "objects": 6245,
+          "arraySlots": 15453,
+          "partialRoots": 0
+        },
+        {
+          "family": "harness_plans,plan_revisions,plan_runs",
+          "entries": 8,
+          "expired": 7,
+          "rootsInspected": 8,
+          "characters": 94706,
+          "objects": 819,
+          "arraySlots": 406,
+          "partialRoots": 1
+        }
+      ],
+      "topRoots": [
+        {
+          "keyHash": "1c4bb5c0e664",
+          "family": "coord_event_log",
+          "expired": true,
+          "hardExpiredMs": 1611329,
+          "type": "array",
+          "rootLength": 948,
+          "shape": {
+            "nodes": 1500,
+            "strings": 1045,
+            "characters": 142108,
+            "objects": 356,
+            "arrays": 174,
+            "arraySlots": 1121,
+            "maps": 0,
+            "mapEntries": 0,
+            "buffers": 0,
+            "bufferViewBytes": 0,
+            "accessorsSkipped": 0,
+            "propertiesOmitted": 692,
+            "pending": 158,
+            "complete": false
+          }
+        },
+        {
+          "keyHash": "97b609316cae",
+          "family": "coord_event_log",
+          "expired": false,
+          "hardExpiredMs": 0,
+          "type": "array",
+          "rootLength": 982,
+          "shape": {
+            "nodes": 1500,
+            "strings": 1020,
+            "characters": 114405,
+            "objects": 360,
+            "arrays": 180,
+            "arraySlots": 1164,
+            "maps": 0,
+            "mapEntries": 0,
+            "buffers": 0,
+            "bufferViewBytes": 0,
+            "accessorsSkipped": 0,
+            "propertiesOmitted": 726,
+            "pending": 174,
+            "complete": false
+          }
+        },
+        {
+          "keyHash": "50e5ee577fec",
+          "family": "coord_event_log",
+          "expired": true,
+          "hardExpiredMs": 727041,
+          "type": "array",
+          "rootLength": 996,
+          "shape": {
+            "nodes": 1500,
+            "strings": 1024,
+            "characters": 109849,
+            "objects": 360,
+            "arrays": 188,
+            "arraySlots": 1183,
+            "maps": 0,
+            "mapEntries": 0,
+            "buffers": 0,
+            "bufferViewBytes": 0,
+            "accessorsSkipped": 0,
+            "propertiesOmitted": 740,
+            "pending": 168,
+            "complete": false
+          }
+        }
+      ]
+    }
+  ],
+  "rawEvidence": {
+    "path": ".papercusp/scratch/bash-fa8434fe-c41.log",
+    "sha256": "5343957b0f95cb41636fa31aac98a91aebb1dbd323228122b7c05415b4155f65"
+  },
+  "limitations": [
+    "Ordinary moving staging workload; no matched idle or candidate comparison.",
+    "Character/object/array-slot counts are referenced shapes; shared values can be counted again across roots.",
+    "Per-root and global budgets leave partial values; no total retained-byte estimate.",
+    "No production GC, queryObjects, snapshots, profiler mutation, or cache mutation.",
+    "Traversal clock budget excludes descriptor lookup/key hashing overhead; full observer wall measured.",
+    "This confirms hard-expired strong roots; no leak or total-memory reduction claim.",
+    "Artifact groups and top roots are ranked bounded selections; raw log retains all observed groups."
+  ]
+}

@@ -13,42 +13,63 @@ actually does.
 
 ## Two scopes: app ROOTS and aspects
 
-`scope` in `template.yaml` is the load-bearing distinction.
+`scope` in `template.yaml` distinguishes a whole application from a capability layer.
+A Papercusp app template is a maintained, pre-built scaffold: its chassis, data layer,
+conventions and checks are the starting point for the app.
 
-* **`scope: app`** — a whole application. There are exactly **three app-scope roots**, and
-  picking between them is the first decision in any "build me an app" request:
+* **`scope: app`** — a whole application. Read `templates:list` for the roots that this
+  install actually offers; do not present a remembered roster. The registry read on
+  2026-10-09 returned these app roots:
 
-  | root                            | shape                                                |
-  | ------------------------------- | ---------------------------------------------------- |
-  | `papercusp-webapp`              | a web app (browser; `papercusp-web-host` chassis)    |
-  | `papercusp-desktop-app`         | a standard Tauri desktop app, **no** embedded agents |
-  | `papercusp-agentic-desktop-app` | a desktop app that embeds an agent/pot plane         |
+  | root                    | shape                                                                                    |
+  | ----------------------- | ---------------------------------------------------------------------------------------- |
+  | `papercusp-app`         | desktop, web, or both, chosen through `target`; `agents: pots` adds the agent work plane |
+  | `papercusp-android-app` | Android, composing the mobile base and Android shell                                     |
+  | `papercusp-iphone-app`  | iPhone, composing the mobile base and iPhone shell                                       |
 
-* **`scope: aspect`** — a capability layer that composes *onto* a root: `papercusp-ui`,
-  `papercusp-data-layer`, `papercusp-data-sync`, `papercusp-search`, `papercusp-ops-pots`,
-  `papercusp-release-pipeline`, `papercusp-tauri-desktop-shell`, `papercusp-web-host`.
+  `papercusp-app` replaced the separate web, desktop and agentic variants. Answer
+  `target` first, then the selected chassis's own decision points. Answer `agents`
+  explicitly: `none` keeps the deterministic app; `pots` selects `papercusp-ops-pots`.
+  A separate agentic app root is not needed.
 
-**App roots are THIN by design.** A root contributes glue, decision points and a composition —
-`components: []` is the normal state for one. Capability belongs in aspects. `papercusp-webapp`
-even encodes this as a `must` (`thin-app-template`, enforced by `composition-integrity`).
+* **`scope: aspect`** — a capability layer that composes *onto* a root: UI, data,
+  sync, search, the agent work plane, release support, or a platform chassis.
+  An aspect is not a whole-app starting point.
+
+For an ambiguous app request, present the applicable live registry choices as Papercusp
+app templates, explain their shape, and include **"No template — I'll specify the
+framework myself."** Record an explicitly chosen framework before scaffolding it. In
+AUTO, select the matching root by judgment and disclose the choice. Then follow
+`templates:list` → `templates:get-guide` → `templates:new-app`; read the materialized
+`PROTOCOL.md` and `GUIDE.md` before building.
+
+**App roots are THIN by design.** A root contributes glue, decision points and a
+composition; `components: []` is normal. Capability belongs in aspects.
+`papercusp-app` declares the `thin-app-template` MUST, enforced by
+`composition-integrity`.
 
 ## The closure: `requires` vs `composesWith`
 
 * **`requires`** — HARD, version-pinned dependencies. Composing the template pulls these in.
-  `papercusp-webapp` requires `papercusp-web-host` + `papercusp-data-layer` + `papercusp-ui`.
+  `papercusp-app` hard-requires `papercusp-data-layer` and `papercusp-ui`. Its
+  `target` decision selects the web chassis, desktop chassis, or both; `agents: pots`
+  selects the agent work plane.
 * **`composesWith`** — templates this one is *designed* to sit beside. Advisory: it drives
   suggestions and decision points, not resolution.
 
-The transitive `requires` set is the **closure**, and the closure is what the app is judged
-against.
+The **closure** includes the transitive hard requirements and the aspects selected by
+answered decision points. Expand it with `resolveSelection` in `@papercusp/template-kit`;
+`composeTemplates` validates the selected composition. The app is judged against that
+complete closure.
 
 ## The checks union is what CI runs
 
 Each template declares `checks: [{ id, run, summary }]` pointing at `checks/*.test.ts` inside its
 own dir. An app built from a composition must pass the **UNION of the closure's checks**, not just
-its root's. `composition-integrity` is the one check all three app roots declare — it asserts the
-composed set resolves (pins consistent, exactly one `scope: app`) and that the union is what CI
-runs.
+its root's. App roots declare `composition-integrity`: it asserts that the composed set
+resolves with consistent pins, exactly one `scope: app`, satisfied selecting decision
+points, and the complete union of checks. Read the selected manifests for the current
+check declarations instead of assuming a fixed root or check count.
 
 ⚠ **Template checks do not run in this monorepo.** No vitest config owns
 `templates/**/checks/*.test.ts`, and `testing:run` on one answers `TEST_FILE_ROUTE_ERROR`. That is
@@ -85,10 +106,10 @@ hands it to a builder agent as the kickoff brief.
 The component packages are `private: true` and 404 on npm, so a materialized app gets them one of
 two ways:
 
-* **Vendored INTO the template dir** — `template-kit/` and `pot-app-seam/` are copied inside each
-  app-root template, so they ride `sidecar/templates` to **every platform** and resolve as
-  `"@papercusp/template-kit": "file:./template-kit"` after a plain `npm install`. This is why
-  those two work everywhere.
+* **Vendored INTO the selected templates** — `template-kit/` ships in the app roots;
+  `pot-app-seam/` ships in the `papercusp-ops-pots` aspect selected by `agents: pots`.
+  They travel with their template directories and use the vendored `file:./template-kit`
+  and `file:./pot-app-seam` dependencies in the materialized app.
 * **`file:`-linked from the install's `libs/generic`** — everything else
   (`@papercusp/sync`, `ui-primitives`, …). That tree only exists where the build shipped
   `source.tar.zst`.

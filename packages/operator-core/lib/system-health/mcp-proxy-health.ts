@@ -15,9 +15,9 @@
  * with the other SLOs in ./thresholds.ts — `infraStatus` + `MCP_PROXY_HARD_FAIL_CRIT`.)
  *
  * BOUNDED + fail-soft (perf + correctness floor):
- *  - the reader reads only the TAIL of the ledger (last READ_CAP_BYTES) via a positioned
- *    read, so a ledger that grows under a sustained regression never makes the health
- *    tick read an unbounded file (perf anti-pattern A-list: no full-file slurp);
+ *  - the reader reads bounded tails from the active and one rotated file, each up to the
+ *    writer's shared 10MiB rotation bound, so an ordinary rollover does not cut the 1h
+ *    health window and total I/O remains capped;
  *  - an ABSENT ledger = no failures recorded yet = a healthy zero (`[]`), NOT an error;
  *  - a read/parse error yields `null` ⇒ the Infra panel greys THIS leg (never blanks);
  *  - the summarizer is PURE (no fs) so the window/classification logic unit-tests hermetically.
@@ -27,6 +27,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { McpProxyHealth } from './types';
 import { isCheapRepeatingBeat } from './mcp-proxy-beats';
+import { MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS } from './thresholds';
 
 /** The ledger path — MUST match apps/operator/lib/mcp-proxy/proxy.ts `failureLogPath()`.
  *  Resolved per-call (not cached) so the env override is honoured at runtime + in tests. */
@@ -34,10 +35,10 @@ export function mcpProxyFailureLogPath(): string {
   return process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG || join(homedir(), '.papercusp', 'mcp-proxy-failures.jsonl');
 }
 
-/** Tail bytes read from the ledger — bounded regardless of total file size. 256KB holds
- *  far more than a 1h window's worth of records at any rate that isn't already a loud
- *  crit (a sustained >256KB/h failure stream reds the panel long before the tail clips). */
-export const MCP_PROXY_READ_CAP_BYTES = 256 * 1024;
+/** Shared active/rotated ledger-file bound. Keep the writer and reader on one value so a
+ *  normal rotation never cuts the one-hour health window at the former 256KiB read cap. */
+export const MCP_PROXY_FAILURE_LOG_MAX_BYTES = 10 * 1024 * 1024;
+export const MCP_PROXY_READ_CAP_BYTES = MCP_PROXY_FAILURE_LOG_MAX_BYTES;
 
 /** The default SLO lookback window (1h) — mirrors the dashboard's "this window". */
 export const MCP_PROXY_WINDOW_MS = 60 * 60_000;
@@ -52,6 +53,10 @@ export interface McpProxyFailureRecord {
   method?: string;
   /** Bounded JSON-RPC protocol methods recorded by the proxy; never args/tool names. */
   rpcMethods?: string[];
+  /** Proxy request identity; used to collapse periodic queue-wait samples per request. */
+  traceId?: string;
+  /** Current queue dwell in ms on `critical_continuation_queue_wait` records. */
+  waitedMs?: number;
   path?: string;
   elapsedMs?: number;
   // P-006 instance tags — which proxy instance wrote this record (forensic attribution
@@ -101,24 +106,19 @@ export function isBenignProbe(rec: Pick<McpProxyFailureRecord, 'status' | 'metho
   return rec.status === 408 || (rec.method === 'GET' && rec.status === 405);
 }
 
-/**
- * Read the TAIL of the JSONL ledger and return the parsed records (best-effort). A partial
- * leading line (the tail may start mid-record) is skipped; a malformed line is skipped.
- * Returns `[]` when the ledger is absent/empty (a healthy zero) and `null` on a genuine
- * read error (⇒ the collector greys the leg, fail-soft). Synchronous + bounded: at most
- * one statSync + one positioned readSync of ≤ capBytes — negligible on the health tick.
- */
-export function readMcpProxyFailureTail(
-  path: string = mcpProxyFailureLogPath(),
-  capBytes: number = MCP_PROXY_READ_CAP_BYTES,
+/** Read one retained JSONL segment, best-effort and byte-bounded. */
+function readMcpProxyFailureSegment(
+  path: string,
+  capBytes: number,
 ): McpProxyFailureRecord[] | null {
   let fd: number | undefined;
   try {
     let size: number;
     try {
       size = statSync(path).size;
-    } catch {
-      return []; // absent ledger ⇒ nothing has failed yet ⇒ healthy zero (not an error)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      return null;
     }
     if (size === 0) return [];
     const start = Math.max(0, size - capBytes);
@@ -156,6 +156,24 @@ export function readMcpProxyFailureTail(
       }
     }
   }
+}
+
+/**
+ * Read the active JSONL ledger plus its single retained rotation. Each positioned read is
+ * capped at the same limit the writer uses before rotating, so one-hour summaries retain
+ * failures on both sides of a normal rollover while total I/O stays bounded at 20MiB.
+ * Partial leading lines are skipped and malformed lines ignored. Both files absent means
+ * `[]`; any other read error returns `null` so callers do not mistake it for a healthy zero.
+ */
+export function readMcpProxyFailureTail(
+  path: string = mcpProxyFailureLogPath(),
+  capBytes: number = MCP_PROXY_READ_CAP_BYTES,
+): McpProxyFailureRecord[] | null {
+  const rotated = readMcpProxyFailureSegment(`${path}.1`, capBytes);
+  if (rotated === null) return null;
+  const active = readMcpProxyFailureSegment(path, capBytes);
+  if (active === null) return null;
+  return [...rotated, ...active];
 }
 
 /** True when a forwarded non-2xx bears the W1.3 stale-socket-400 signature: HTTP 400 with
@@ -203,6 +221,9 @@ export function isSoftBeatFailure(
  *                                          sessions tool-dark for hours. See the field doc.
  *  - `shed_max_in_flight`                 → `shed`. Agent-facing 429, but admission control
  *                                          working; sustained nonzero = :3070 not draining.
+ *  - `critical_continuation_queue_wait`   → distinct request count once `waitedMs` reaches
+ *                                          the five-minute alarm floor; periodic samples are
+ *                                          deduplicated by traceId. Short queue dwell stays quiet.
  *  - `post_connect_retry` (P-005 intermediate retry marker) → neither hard nor a failure;
  *                                          it only appears in `byKind` (the terminal
  *                                          outcome is separately recorded recovered/error).
@@ -230,6 +251,9 @@ export function summarizeMcpProxyHealth(
   let nonInstance = 0;
   let handshakeStalls = 0;
   let shed = 0;
+  let criticalContinuationQueueMaxWaitMs = 0;
+  const sustainedCriticalContinuationTraces = new Set<string>();
+  let unattributedSustainedCriticalContinuation = false;
   let newestAt: number | null = null;
   for (const r of records) {
     const t = Date.parse(r.ts);
@@ -244,6 +268,18 @@ export function summarizeMcpProxyHealth(
     if (isNonInstanceRecord(r)) {
       nonInstance += 1;
       continue;
+    }
+    if (r.kind === 'critical_continuation_queue_wait' && typeof r.waitedMs === 'number' && Number.isFinite(r.waitedMs)) {
+      criticalContinuationQueueMaxWaitMs = Math.max(criticalContinuationQueueMaxWaitMs, r.waitedMs);
+      if (r.waitedMs >= MCP_PROXY_CRITICAL_CONTINUATION_WAIT_CRIT_MS) {
+        if (typeof r.traceId === 'string' && r.traceId.length > 0) {
+          sustainedCriticalContinuationTraces.add(r.traceId);
+        } else {
+          // Legacy rows without a trace identity contribute one bounded aggregate signal,
+          // rather than turning periodic samples from one request into many incidents.
+          unattributedSustainedCriticalContinuation = true;
+        }
+      }
     }
     if (isSoftBeatFailure(r)) {
       softBeatFailures += 1;
@@ -273,6 +309,10 @@ export function summarizeMcpProxyHealth(
   }
   return {
     windowMs, total, hardFailures, softBeatFailures, recovered, otherNon2xx, benign, nonInstance,
-    handshakeStalls, shed, byKind, newestAt,
+    handshakeStalls, shed,
+    criticalContinuationQueueStalls:
+      sustainedCriticalContinuationTraces.size + Number(unattributedSustainedCriticalContinuation),
+    criticalContinuationQueueMaxWaitMs,
+    byKind, newestAt,
   };
 }

@@ -16,11 +16,70 @@
  *
  * Plus P-006's per-key ceiling merge, which is the same silent-write class.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendForModelSpec } from '../agent-config-constants';
 import { effectiveTierConfig } from './model-tiers';
-import { resolveRoleLaunch } from './role-launch';
+import { resolveRoleLaunch, resolveRoleLaunchLive, type RoleLaunchConfig, type RoleLaunchDeclaration } from './role-launch';
 import { roleLaunchVerdict } from '../agent-tools/config/role-launch';
+
+const { readConfigMock } = vi.hoisted(() => ({ readConfigMock: vi.fn<() => Promise<RoleLaunchConfig>>(async () => ({})) }));
+vi.mock('../agent-config', async (original) => ({
+  ...await original<typeof import('../agent-config')>(), readAgentConfig: readConfigMock,
+}));
+vi.mock('../owner-steering', () => ({ getOwnerSteering: vi.fn(async () => null) }));
+afterEach(() => { vi.unstubAllEnvs(); readConfigMock.mockResolvedValue({}); });
+
+describe('R-3 declared routing through the live role resolver', () => {
+  const backups: RoleLaunchDeclaration['backups'] = [
+    { backend: 'claude-code', model: 'sonnet', effort: 'medium', account: 'default' },
+    { backend: 'claude-code', model: 'haiku', effort: 'high', account: 'pin:fixture-account' },
+  ];
+  const declaration: RoleLaunchDeclaration = { id: 'r3-custom', reactive: false, account: 'auto', backups };
+
+  it('declared route and ordered backups survive live resolution', async () => {
+    const fromBlueprint = await resolveRoleLaunchLive('r3-custom', { blueprintRole: declaration });
+    expect(fromBlueprint.account).toBe('auto');
+    expect(fromBlueprint.backups).toEqual(backups);
+    readConfigMock.mockResolvedValue({ roleAccounts: { 'r3-custom': 'pin:workspace-account' }, roleBackups: { 'r3-custom': [...backups].reverse() } });
+    const fromConfig = await resolveRoleLaunchLive('r3-custom', { blueprintRole: declaration });
+    expect(fromConfig.account).toBe('pin:workspace-account');
+    expect(fromConfig.backups).toEqual([...backups].reverse());
+    expect(fromConfig.backups).not.toBe(backups);
+  });
+
+  it('undeclared role preserves host command inheritance', async () => {
+    vi.stubEnv('AGENT_CMD', 'omp -p');
+    vi.stubEnv('PAPERCUSP_ACCOUNT', 'pin:host-account');
+    const result = await resolveRoleLaunchLive('r3-external');
+    expect(result.backend).toBeNull();
+    expect(result.backendSource).toBe('inherit');
+    expect(result.spawnModel).toBeNull();
+    expect(result.account).toBeNull();
+    expect(result.backups).toEqual([]);
+    expect(process.env.AGENT_CMD).toBe('omp -p');
+  });
+
+  it('release fixer defaults to auto route and claude backup', async () => {
+    const result = await resolveRoleLaunchLive('release-fixer');
+    expect(result.account).toBe('auto');
+    expect(result.backups).toEqual([{ backend: 'claude-code', model: 'opus', effort: 'max', account: 'auto' }]);
+    for (const role of ['merge-resolver', 'content-fixer', 'doc-steward']) expect((await resolveRoleLaunchLive(role)).account, role).toBe('auto');
+  });
+
+  it('caller account override precedes role route then ambient inheritance', async () => {
+    vi.stubEnv('PAPERCUSP_ACCOUNT', 'pin:host-account');
+    vi.stubEnv('PAPERCUSP_CODEX_GATEWAY', '0');
+    expect((await resolveRoleLaunchLive('r3-custom', { blueprintRole: declaration, account: 'default' })).account).toBe('default');
+    expect((await resolveRoleLaunchLive('r3-custom', { blueprintRole: declaration, account: 'pin:caller-account' })).account).toBe('pin:caller-account');
+    expect((await resolveRoleLaunchLive('r3-custom', { blueprintRole: declaration })).account).toBe('auto');
+    readConfigMock.mockResolvedValue({ roleAccounts: { 'r3-custom': 'default' } });
+    expect((await resolveRoleLaunchLive('r3-custom', { blueprintRole: declaration })).account).toBe('default');
+    expect((await resolveRoleLaunchLive('r3-custom', { blueprintRole: declaration, account: 'auto' })).account).toBe('auto');
+    expect((await resolveRoleLaunchLive('r3-custom', { blueprintRole: declaration, account: null })).account).toBeNull();
+    readConfigMock.mockResolvedValue({});
+    expect((await resolveRoleLaunchLive('r3-external')).account).toBeNull();
+  });
+});
 
 describe('backendForModelSpec — the CLI rides with the model', () => {
   it('reads Anthropic versioned ids as claude-code (the id an owner actually types)', () => {

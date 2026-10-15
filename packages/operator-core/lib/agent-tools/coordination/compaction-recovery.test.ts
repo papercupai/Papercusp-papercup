@@ -18,11 +18,26 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ControlAnchor } from './control-anchor';
 
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+  listAllProjectedTools: () => [{
+    expose: { mcp: { name: 'state:read' } },
+    inputSchema: { type: 'object', properties: { cell: { type: 'string' } }, additionalProperties: false },
+    capabilities: [],
+    effect: 'read',
+  }],
+  projectedToolRegistryRevision: () => 'compaction-recovery-read-only-test-registry',
+}));
+
 vi.mock('../../search/self-session', () => ({
   resolveSelfSession: vi.fn(async () => null),
 }));
 vi.mock('../../harness/routines/loop', () => ({
   getLoopStatus: vi.fn(async () => null),
+}));
+vi.mock('../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-fleets-store')>()),
+  getFleetHeadcountTarget: vi.fn(async () => null),
 }));
 vi.mock('./control-anchor', () => ({
   buildAndPersistControlAnchor: vi.fn(async () => {
@@ -32,6 +47,9 @@ vi.mock('./control-anchor', () => ({
 }));
 vi.mock('../../memory/session-epoch-ledger', () => ({
   currentSessionEpoch: vi.fn(async () => 23),
+}));
+vi.mock('../../carry-probe-eval', () => ({
+  carriedProbeBlockForDelivery: vi.fn(async () => null),
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -297,6 +315,119 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
     expect(delivery.marker.controlStateHash).toBeTruthy();
   });
 
+  it('uses the matching fleet launch plan only when the control scope has no plan', async () => {
+    const [
+      { getFleetHeadcountTarget },
+      { getPlanRow },
+      { buildAndPersistControlAnchor },
+      { buildAutomaticCompactionRecovery },
+    ] = await Promise.all([
+      import('../../agent-fleets-store'),
+      import('../plans/source'),
+      import('./control-anchor'),
+      import('./compaction-recovery'),
+    ]);
+    const fleetControl: ControlAnchor = {
+      ...CONTROL,
+      state: {
+        ...CONTROL.state,
+        route: { kind: 'fleet', fleet: 'feature-drain', role: 'member' },
+        scope: { ...CONTROL.state.scope, harness: null, plan: null, items: [] },
+      },
+    };
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce(fleetControl);
+    vi.mocked(getFleetHeadcountTarget).mockClear().mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'feature-drain',
+      enabled: false,
+      target: 1,
+      config: { plan: 'feature-plan', harness: 'h', agent: 'codex' },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    vi.mocked(getPlanRow).mockClear();
+
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [] });
+
+    expect(getFleetHeadcountTarget).toHaveBeenCalledWith('ws-1', 'feature-drain');
+    expect(getPlanRow).toHaveBeenCalledWith('feature-plan', {
+      workspaceId: 'ws-1',
+      harnessSlug: 'h',
+    });
+    expect(delivery.marker.complete).toBe(true);
+    expect(delivery.recovery.coverage.planAuthority).toBe(true);
+    expect(delivery.recovery.planAuthority).toMatchObject({
+      resolution: 'current',
+      planSlug: 'feature-plan',
+      harness: 'h',
+    });
+  });
+
+  it('keeps plan authority not-applicable for a planless claim-spec fleet profile', async () => {
+    const [
+      { getFleetHeadcountTarget },
+      { getPlanRow },
+      { buildAndPersistControlAnchor },
+      { buildAutomaticCompactionRecovery },
+    ] = await Promise.all([
+      import('../../agent-fleets-store'),
+      import('../plans/source'),
+      import('./control-anchor'),
+      import('./compaction-recovery'),
+    ]);
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce({
+      ...CONTROL,
+      state: {
+        ...CONTROL.state,
+        route: { kind: 'fleet', fleet: 'claim-spec-drain', role: 'member' },
+        scope: { ...CONTROL.state.scope, plan: null, items: [] },
+      },
+    });
+    vi.mocked(getFleetHeadcountTarget).mockClear().mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'claim-spec-drain',
+      enabled: false,
+      target: 1,
+      config: { harness: 'h', agent: 'codex' },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    vi.mocked(getPlanRow).mockClear();
+
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [] });
+
+    expect(getFleetHeadcountTarget).toHaveBeenCalledWith('ws-1', 'claim-spec-drain');
+    expect(getPlanRow).not.toHaveBeenCalled();
+    expect(delivery.marker.complete).toBe(true);
+    expect(delivery.recovery.coverage.planAuthority).toBeNull();
+    expect(delivery.recovery.planAuthority).toBeNull();
+  });
+
+  it('keeps recovery incomplete when a fleet launch profile needed for plan scope is unreadable', async () => {
+    const [{ getFleetHeadcountTarget }, { buildAndPersistControlAnchor }, { buildAutomaticCompactionRecovery }] =
+      await Promise.all([
+        import('../../agent-fleets-store'),
+        import('./control-anchor'),
+        import('./compaction-recovery'),
+      ]);
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce({
+      ...CONTROL,
+      state: {
+        ...CONTROL.state,
+        route: { kind: 'fleet', fleet: 'unknown-profile', role: 'member' },
+        scope: { ...CONTROL.state.scope, plan: null, items: [] },
+      },
+    });
+    vi.mocked(getFleetHeadcountTarget).mockRejectedValueOnce(new Error('profile store unavailable'));
+
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [] });
+
+    expect(delivery.marker.complete).toBe(false);
+    expect(delivery.recovery.coverage.planAuthority).toBe(false);
+  });
+
   it('keeps the marker incomplete when the control-scoped plan is absent in that harness', async () => {
     const [{ getPlanRow }, { buildAndPersistControlAnchor }, { buildAutomaticCompactionRecovery }] =
       await Promise.all([
@@ -370,5 +501,182 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
       'control-state-mismatch',
       'legacy-control-generation-mismatch',
     ]);
+  });
+});
+
+// P-001 (carry-recheck-and-governed-memory-2026-10-14, R-1): compaction recovery RUNS the carried
+// probes the successor inherits, instead of only handing it their text.
+describe('automatic compaction recovery — carried probes run at recovery', () => {
+  const BLOCK = '🧪 CARRIED PROBES re-run at delivery — 0 hold · 1 changed · 0 could not run:\n  ✗ CHANGED — gate is green [WI-1 #g]: observed "red"';
+
+  it('renders a changed carried probe at compaction recovery', async () => {
+    const [{ buildAutomaticCompactionRecovery }, { carriedProbeBlockForDelivery }, { renderCarryNote }, { continuityProbeRevision }] =
+      await Promise.all([
+        import('./compaction-recovery'),
+        import('../../carry-probe-eval'),
+        import('../../carry-note'),
+        import('../../continuity-probes'),
+      ]);
+    const actual = await vi.importActual<typeof import('../../carry-probe-eval')>('../../carry-probe-eval');
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: JSON.stringify({ value: 'red' }) }] }));
+    vi.mocked(carriedProbeBlockForDelivery).mockImplementationOnce((sources, deps) =>
+      actual.carriedProbeBlockForDelivery(sources, { ...deps, dispatchTool }),
+    );
+    const checkpoint = renderCarryNote({ checks: [{
+      id: 'changed-probe',
+      claim: 'the carried value is green',
+      recheck: 'state:read',
+      probe: {
+        kind: 'tool', tool: 'state:read', args: { cell: 'test.carriedValue' },
+        schemaRevision: continuityProbeRevision('state:read')!,
+        expect: { path: '$.value', op: 'eq', value: 'green' },
+      },
+    }] });
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: [{ id: 'WI-1', harness: 'h', checkpoint } as never],
+      carriedRefChangesFn: async () => null,
+    });
+    expect(delivery.recovery.carriedProbes).toContain(
+      '✗ CHANGED — the carried value is green [WI-1 #changed-probe]: observed "red"',
+    );
+    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('state:read', { cell: 'test.carriedValue' });
+    expect(delivery.recovery.carriedProbes).not.toContain('COULD NOT RUN');
+  });
+
+  it('attaches the probe block to the recovery and passes the already-read held items through', async () => {
+    const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');
+    const carriedProbesFn = vi.fn(async () => BLOCK);
+    const heldItems = [{ id: 'WI-1', title: 't', harness: 'h', checkpoint: 'c', holderProof: { ownerId: 'owner-x', workspaceId: 'ws-1' } }];
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: heldItems as never,
+      carriedProbesFn,
+    });
+    expect(carriedProbesFn).toHaveBeenCalledWith('owner-x', 'ws-1', { sessionHarness: 'h', heldItems });
+    expect(delivery.recovery.carriedProbes).toBe(BLOCK);
+  });
+
+  it('omits the field when there is nothing to run, and never lets a probe failure break recovery', async () => {
+    const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');
+    const none = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [], carriedProbesFn: async () => null });
+    expect('carriedProbes' in none.recovery).toBe(false);
+    const thrown = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      heldItems: [],
+      carriedProbesFn: async () => {
+        throw new Error('boom');
+      },
+    });
+    expect('carriedProbes' in thrown.recovery).toBe(false);
+    expect(thrown.recovery.coverage.heldItems).toBe(true);
+  });
+
+  it('the default collector probes held-item checks from the supplied rows without re-reading them', async () => {
+    const [{ defaultRecoveryCarriedProbes }, { carriedProbeBlockForDelivery }, { readHeldWorkItems }, { renderCarryNote }] =
+      await Promise.all([
+        import('./compaction-recovery'),
+        import('../../carry-probe-eval'),
+        import('../../carry-brief'),
+        import('../../carry-note'),
+      ]);
+    vi.mocked(readHeldWorkItems).mockClear();
+    vi.mocked(carriedProbeBlockForDelivery).mockResolvedValueOnce(BLOCK);
+    const probe = { kind: 'state-cell', cell: 'gate.greenCheckpoint.verdict', schemaRevision: 'r', expect: { path: '$.value', op: 'eq', value: 'green' } };
+    const checkpoint = renderCarryNote({ checks: [{ id: 'g', claim: 'gate is green', recheck: 'state:read', probe: probe as never }] });
+    const out = await defaultRecoveryCarriedProbes('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: [{ id: 'WI-1', harness: 'h', checkpoint } as never],
+    });
+    expect(out).toBe(BLOCK);
+    expect(readHeldWorkItems).not.toHaveBeenCalled();
+    const [sources, deps] = vi.mocked(carriedProbeBlockForDelivery).mock.calls.at(-1)! as unknown as [Array<Record<string, any>>, Record<string, any>];
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ source: { kind: 'work-item', id: 'WI-1', harness: 'h' }, checkIndex: 0 });
+    expect(sources[0]!.check.claim).toBe('gate is green');
+    expect(sources[0]!.check.probe).toMatchObject({ kind: 'state-cell', cell: 'gate.greenCheckpoint.verdict' });
+    expect(deps).toMatchObject({ harness: 'h', readAtIso: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
+  });
+
+  it('the carry document renders the probe block for a successor, but not for a judge', async () => {
+    const { renderAutomaticCompactionRecovery } = await import('../../carry-doc');
+    const delivery = {
+      marker: {
+        schemaVersion: 'post-compaction-recovery-v1',
+        complete: false,
+        memoryEpoch: 1,
+        controlGeneration: null,
+        controlStateHash: null,
+        fallback: { verb: 'coord:orient', args: { afterCompaction: true }, when: [] },
+      },
+      recovery: {
+        selfRecall: 'recall',
+        coverage: { selfSession: false, control: false, heldItems: true, staleness: null },
+        carriedProbes: BLOCK,
+      },
+    } as never;
+    expect(renderAutomaticCompactionRecovery(delivery)).toContain('✗ CHANGED — gate is green [WI-1 #g]: observed "red"');
+    expect(renderAutomaticCompactionRecovery(delivery, 'judge')).not.toContain('CARRIED PROBES');
+  });
+});
+
+// P-002 (carry-recheck-and-governed-memory-2026-10-14, R-11 / R-20 / R-22): compaction recovery
+// re-checks the carried references' version stamps and renders only the ones that moved.
+describe('automatic compaction recovery — carried references re-checked at recovery', () => {
+  const REFS =
+    '🔗 CARRIED REFERENCES re-checked at compaction recovery — 1 reference has moved since the checkpoint was written:\n' +
+    '  ✗ GONE — work-item:WI-2 [WI-1 checkpoint]: stamped open@1';
+
+  it('attaches the reference block and passes the already-read held items through', async () => {
+    const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');
+    const carriedRefChangesFn = vi.fn(async () => REFS);
+    const heldItems = [{ id: 'WI-1', title: 't', harness: 'h', checkpoint: 'see WI-2', holderProof: { ownerId: 'owner-x', workspaceId: 'ws-1' } }];
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: heldItems as never,
+      carriedProbesFn: async () => null,
+      carriedRefChangesFn,
+    });
+    expect(carriedRefChangesFn).toHaveBeenCalledWith('owner-x', 'ws-1', { sessionHarness: 'h', heldItems });
+    expect(delivery.recovery.carriedRefChanges).toBe(REFS);
+  });
+
+  it('omits the field when nothing moved, and never lets a re-check failure break recovery', async () => {
+    const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');
+    const none = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      heldItems: [],
+      carriedProbesFn: async () => null,
+      carriedRefChangesFn: async () => null,
+    });
+    expect('carriedRefChanges' in none.recovery).toBe(false);
+    const thrown = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      heldItems: [],
+      carriedProbesFn: async () => null,
+      carriedRefChangesFn: async () => {
+        throw new Error('boom');
+      },
+    });
+    expect('carriedRefChanges' in thrown.recovery).toBe(false);
+    expect(thrown.recovery.coverage.heldItems).toBe(true);
+  });
+
+  it('the carry document renders the reference block for a successor, but not for a judge', async () => {
+    const { renderAutomaticCompactionRecovery } = await import('../../carry-doc');
+    const delivery = {
+      marker: {
+        schemaVersion: 'post-compaction-recovery-v1',
+        complete: false,
+        memoryEpoch: 1,
+        controlGeneration: null,
+        controlStateHash: null,
+        fallback: { verb: 'coord:orient', args: { afterCompaction: true }, when: [] },
+      },
+      recovery: {
+        selfRecall: 'recall',
+        coverage: { selfSession: false, control: false, heldItems: true, staleness: null },
+        carriedRefChanges: REFS,
+      },
+    } as never;
+    expect(renderAutomaticCompactionRecovery(delivery)).toContain('✗ GONE — work-item:WI-2 [WI-1 checkpoint]');
+    expect(renderAutomaticCompactionRecovery(delivery, 'judge')).not.toContain('CARRIED REFERENCES');
   });
 });

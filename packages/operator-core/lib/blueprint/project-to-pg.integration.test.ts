@@ -13,12 +13,18 @@
  * Table DDL mirrors migration 133 (PK + resolved jsonb — RLS/grants are
  * irrelevant on the throwaway admin connection).
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { getEffectiveBlueprint, readBlueprintFromPg } from './project-to-pg';
+import {
+  clearBlueprintReprojectionState,
+  getEffectiveBlueprint,
+  readBlueprintFromPg,
+  readBlueprintReprojectionAttempt,
+  readOrProjectBlueprintHash,
+} from './project-to-pg';
 import { resolveDispatchPolicy } from '../dbos/orchestrator-loop';
 import type { HarnessConfig } from '@papercusp/orchestrator';
 
@@ -88,9 +94,24 @@ beforeAll(async () => {
 }, 90_000);
 
 afterAll(async () => {
+  clearBlueprintReprojectionState();
   await db?.cleanup();
   rmSync(dir, { recursive: true, force: true });
 });
+
+async function projectedAtOf(harnessSlug: string): Promise<number> {
+  const rows = await db.sql<{ projected_at: Date }[]>`
+    SELECT projected_at FROM harness_shared.blueprints
+     WHERE workspace_id = 'default' AND harness_slug = ${harnessSlug}
+  `;
+  return new Date(rows[0].projected_at).getTime();
+}
+
+/** Stamp the source file strictly after the row's projected_at (deterministic, no sleep). */
+async function touchAfterProjection(harnessSlug: string, path: string, aheadMs = 1_000): Promise<void> {
+  const when = new Date((await projectedAtOf(harnessSlug)) + aheadMs);
+  utimesSync(path, when, when);
+}
 
 describe('getEffectiveBlueprint — the dispatch-policy read path of the orchestrator tick', () => {
   it('cache miss → lazily projects the file and returns the dispatch policy', async () => {
@@ -140,6 +161,75 @@ describe('getEffectiveBlueprint — the dispatch-policy read path of the orchest
     });
     expect(bp?.id).toBe('local-child');
     expect(bp?.dispatch?.concurrency).toBe(3);
+  });
+
+  it('a cached row follows its source file: an edit after projection is re-projected (WI-10006722)', async () => {
+    clearBlueprintReprojectionState();
+    const path = join(dir, '.papercusp', 'drift.yaml');
+    writeFileSync(path, YAML, 'utf8');
+    const first = await getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug: 'drift', blueprintPath: path });
+    expect(first?.dispatch?.concurrency).toBe(4);
+    const firstHash = await readOrProjectBlueprintHash(db.sql as never, 'default', 'drift');
+
+    writeFileSync(path, YAML.replace('concurrency: 4', 'concurrency: 7'), 'utf8');
+    await touchAfterProjection('drift', path);
+
+    // The submit path (hash) and the dispatcher path (blueprint) both see the edit.
+    const nextHash = await readOrProjectBlueprintHash(db.sql as never, 'default', 'drift');
+    expect(nextHash).not.toBe(firstHash);
+    const next = await getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug: 'drift', blueprintPath: path });
+    expect(next?.dispatch?.concurrency).toBe(7);
+    expect((await readBlueprintFromPg(db.sql as never, 'default', 'drift'))?.dispatch?.concurrency).toBe(7);
+    expect(readBlueprintReprojectionAttempt('default', 'drift')).toMatchObject({ ok: true, error: null, path });
+  });
+
+  it('an invalid edit keeps the last valid row, reports the error, and is parsed once', async () => {
+    clearBlueprintReprojectionState();
+    const path = join(dir, '.papercusp', 'drift-invalid.yaml');
+    writeFileSync(path, YAML, 'utf8');
+    await getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug: 'drift-invalid', blueprintPath: path });
+    const validHash = await readOrProjectBlueprintHash(db.sql as never, 'default', 'drift-invalid');
+
+    writeFileSync(path, 'id: dispatch-demo\nversion: 0.1.0\nworkItem: 42\n', 'utf8');
+    await touchAfterProjection('drift-invalid', path);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const kept = await getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug: 'drift-invalid', blueprintPath: path });
+      expect(kept?.dispatch?.concurrency).toBe(4);
+      expect(await readOrProjectBlueprintHash(db.sql as never, 'default', 'drift-invalid')).toBe(validHash);
+      const failed = readBlueprintReprojectionAttempt('default', 'drift-invalid');
+      expect(failed).toMatchObject({ ok: false, path });
+      expect(failed?.error).toContain('workItem');
+      // The same file version is not re-parsed on every call: one warning, one attempt.
+      await getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug: 'drift-invalid', blueprintPath: path });
+      expect(readBlueprintReprojectionAttempt('default', 'drift-invalid')?.at).toBe(failed?.at);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('keeping the last projected blueprint');
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Fixing the file recovers without touching the cache by hand.
+    writeFileSync(path, YAML.replace('concurrency: 4', 'concurrency: 5'), 'utf8');
+    await touchAfterProjection('drift-invalid', path, 2_000);
+    const fixed = await getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug: 'drift-invalid', blueprintPath: path });
+    expect(fixed?.dispatch?.concurrency).toBe(5);
+  });
+
+  it('a source mtime ahead of the database clock re-projects once, not on every call', async () => {
+    clearBlueprintReprojectionState();
+    const path = join(dir, '.papercusp', 'drift-future.yaml');
+    writeFileSync(path, YAML, 'utf8');
+    await getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug: 'drift-future', blueprintPath: path });
+    writeFileSync(path, YAML.replace('concurrency: 4', 'concurrency: 6'), 'utf8');
+    await touchAfterProjection('drift-future', path, 3_600_000);
+
+    expect((await getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug: 'drift-future', blueprintPath: path }))?.dispatch?.concurrency).toBe(6);
+    const projectedAt = await projectedAtOf('drift-future');
+    await getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug: 'drift-future', blueprintPath: path });
+    await readOrProjectBlueprintHash(db.sql as never, 'default', 'drift-future');
+    expect(await projectedAtOf('drift-future')).toBe(projectedAt);
   });
 
   it('the cached policy composes through resolveDispatchPolicy to the tick cap', async () => {

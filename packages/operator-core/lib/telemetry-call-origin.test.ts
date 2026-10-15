@@ -50,6 +50,12 @@ const OMP_HOOK_CALL = {
 };
 
 describe("classifyCallOrigin — declaration wins", () => {
+  it("takes a caller-declared agent origin from the query param", () => {
+    expect(
+      classifyCallOrigin({ requestOrigin: { query: { [CALL_ORIGIN_QUERY_PARAM]: "agent" } } }),
+    ).toEqual({ origin: "agent", source: "declared" });
+  });
+
   it("takes the caller's declared origin from the query param", () => {
     expect(
       classifyCallOrigin({
@@ -165,6 +171,29 @@ describe("classifyCallOrigin — refuses to guess", () => {
       origin: "unknown",
       source: "derived",
     });
+  });
+
+  it("derives system only for reserved machine markers when caller metadata is absent", () => {
+    for (const spawnId of ["event-reaction", "predicate-watch", "cell-read"]) {
+      expect(classifyCallOrigin({ spawnId })).toEqual({
+        origin: "system",
+        source: "derived",
+      });
+    }
+
+    expect(classifyCallOrigin({ spawnId: "unregistered-worker" })).toEqual({
+      origin: "unknown",
+      source: "derived",
+    });
+    expect(
+      classifyCallOrigin({ spawnId: "cell-read", requestOrigin: CLAUDE_MODEL_CALL }),
+    ).toEqual({ origin: "agent", source: "derived" });
+    expect(
+      classifyCallOrigin({
+        spawnId: "event-reaction",
+        requestOrigin: { query: { origin: "hook" } },
+      }),
+    ).toEqual({ origin: "hook", source: "declared" });
   });
 
   it("never throws on a malformed request origin — telemetry may not fail a tool call", () => {

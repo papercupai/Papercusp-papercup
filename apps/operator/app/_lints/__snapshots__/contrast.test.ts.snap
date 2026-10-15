@@ -42,11 +42,31 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(52, 211, 153, 0.1))
     frost:background:unsupported-function(rgba(52, 211, 153, 0.1))
     honeycomb:background:unsupported-function(rgba(104, 211, 145, 0.11))",
+  "operator-vite/src/components/adv/scheduled-calendar.css :: .pc-sched-cal__error button :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
   "operator-vite/src/components/adv/scheduled-calendar.css :: .pc-sched-cal__iconbtn:hover :: color:--fg on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator-vite/src/components/dao/dao-workspace.css :: .dao-action :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator-vite/src/components/reports/ReportsRoute.css :: .reports-chip :: color:--fg-dim on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator-vite/src/components/reports/ReportsRoute.css :: .reports-kind-filters button[aria-pressed=true] :: color:--fg on background:--bg-3
+    black:background:unsupported-function(rgba(255, 255, 255, 0.075))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.075))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.075))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.07))",
   "operator-vite/src/components/voice-video/VideoGrid.css :: .pc-video-grid__banner :: color:--warn on background:--warn-bg
     black:background:unsupported-function(rgba(251, 191, 36, 0.1))
     default:background:unsupported-function(rgba(251, 191, 36, 0.1))
@@ -302,6 +322,11 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/adv/hud/WorkOnEverythingPanel.css :: .woe__seg-group button[aria-pressed=true] :: color:--fg on background:--border
+    black:background:unsupported-function(rgba(255, 255, 255, 0.14))
+    default:background:unsupported-function(rgba(125, 211, 252, 0.15))
+    frost:background:unsupported-function(rgba(125, 211, 252, 0.15))
+    honeycomb:background:unsupported-function(rgba(196, 143, 45, 0.16))",
   "operator/app/adv/hud/hud.css :: .hud-goal-composer__btn :: color:--fg on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
@@ -517,6 +542,26 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(251, 191, 36, 0.1))
     frost:background:unsupported-function(rgba(251, 191, 36, 0.1))
     honeycomb:background:unsupported-function(rgba(198, 142, 36, 0.11))",
+  "operator/app/dao/dao-launch.css :: .dao-editor-heading button :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/dao/dao-launch.css :: .dao-form input,.dao-form textarea :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/dao/dao-launch.css :: .dao-status :: color:--dao-muted on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/dao/dao-launch.css :: .dao-summary progress :: color:--accent on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
   "operator/app/globals.css :: .op-ph-chip :: color:--fg-dim on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))

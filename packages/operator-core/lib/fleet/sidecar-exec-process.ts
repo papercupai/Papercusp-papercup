@@ -29,8 +29,11 @@ import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn, type StdioOptions } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
+import { SIDECAR_PROCESS_KILL_GRACE_MS } from './sidecar-exec-lifetime';
+import { observeAdmission, type AdmissionHealthObserver } from './sidecar-admission-wedge';
 
-import { gitSubcommandOf, qualifiesForLazyReceipt } from './sidecar-read-only-git';
+import { isReadOnlyGitBatchExec } from '../git-batch';
+import { gitSubcommandOf, qualifiesForLazyReceipt as qualifiesForLazyGitExec } from './sidecar-read-only-git';
 
 import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import {
@@ -41,11 +44,25 @@ import {
 } from '../resource-governor/execution';
 import { activeWorkspaceId } from '../workspace-registry';
 
+export const PROCESS_EXEC_CALLER_LABELS = {
+  command: 'git-via-sidecar.runCommandViaSpawnerSidecar',
+  stdin: 'git-via-sidecar.runGitStdinViaSpawnerSidecar',
+} as const;
+
+export type ProcessExecCallerLabel =
+  (typeof PROCESS_EXEC_CALLER_LABELS)[keyof typeof PROCESS_EXEC_CALLER_LABELS];
+
 export interface ExecParams {
   command: string;
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /** Include process.env in the child environment; defaults to true. */
+  inheritEnv?: boolean;
+  /** Per-stream byte cap for captured stdout/stderr. */
+  maxBuffer?: number;
+  /** Safe, static callsite identity for transport-fault diagnostics. */
+  callerLabel?: ProcessExecCallerLabel;
   /** Optional no-output deadline. Unlike `timeoutMs` (the absolute hard
    * ceiling), this timer refreshes on observed stdout/stderr progress. File
    * output is sampled at idle deadlines, without copying its bytes into JS. */
@@ -80,12 +97,24 @@ export interface ExecResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** Actual process failure, retained separately from argv-heavy stderr. */
+  error?: { code: string | null; signal: string | null; killed: boolean };
+  /** The captured stream that crossed maxBuffer, when a cap was supplied. */
+  maxBufferExceeded?: 'stdout' | 'stderr';
   /** Bytes the child wrote to `stdoutPath` (fd-handoff mode only), so the
    *  caller can cross-check the file it reads back against what git produced. */
   stdoutBytes?: number;
 }
 
+/** Static lifecycle markers only: no command, paths, environment or output. */
+export type ExecProcessStage =
+  | 'handoff-open' | 'admission-start' | 'admission-ready' | 'admission-failed'
+  | 'spawn-start' | 'child-spawn' | 'child-close' | 'group-exit-confirmed'
+  | 'settlement-start' | 'settlement-complete' | 'handoff-close' | 'exec-complete';
+
 export interface ExecProcessDeps {
+  /** Observer failures must never change process lifetime or receipt settlement. */
+  onStage?: (stage: ExecProcessStage) => void;
   beginExecution?: (params: ExecParams) => Promise<GovernedExecution>;
   /** Control stays local to the sidecar; AbortSignal is never serialized. */
   signal?: AbortSignal;
@@ -100,6 +129,11 @@ export interface ExecProcessDeps {
    * not qualify are always admitted eagerly, whatever this says.
    */
   lazyReceiptMs?: number;
+  /**
+   * Observes every admission outcome (WI-6554700010008488). The spawner
+   * sidecar server passes its wedge breaker here; omitted elsewhere.
+   */
+  admissionHealth?: AdmissionHealthObserver;
 }
 
 /**
@@ -125,6 +159,13 @@ export const SIDECAR_LAZY_RECEIPT_DELAY_MS = 750;
  * Re-exported here so every existing importer keeps working.
  */
 export { gitSubcommandOf, qualifiesForLazyReceipt } from './sidecar-read-only-git';
+
+/** Lazy admission covers ordinary read-only Git and the strictly verified dev-deploy batch. */
+export function qualifiesForLazyReceiptProcess(
+  params: Pick<ExecParams, 'command' | 'args'>,
+): boolean {
+  return qualifiesForLazyGitExec(params) || isReadOnlyGitBatchExec(params);
+}
 
 /** What `execProcess` needs from the durable receipt, whether minted eagerly or late. */
 interface ReceiptHandle {
@@ -198,12 +239,17 @@ export function sidecarReceiptMetadata(
   params: Pick<ExecParams, 'command' | 'args'>,
 ): Record<string, string | boolean> {
   const base = { processKind: 'sidecar-exec', command: params.command };
-  if (params.command !== 'git') return base;
-  return {
-    ...base,
-    gitSubcommand: gitSubcommandOf(params.args ?? []) ?? 'unknown',
-    readOnlyGit: qualifiesForLazyReceipt(params),
-  };
+  if (params.command === 'git') {
+    return {
+      ...base,
+      gitSubcommand: gitSubcommandOf(params.args ?? []) ?? 'unknown',
+      readOnlyGit: qualifiesForLazyGitExec(params),
+    };
+  }
+  if (isReadOnlyGitBatchExec(params)) {
+    return { ...base, gitSubcommand: 'batch', readOnlyGit: true };
+  }
+  return base;
 }
 
 async function beginSidecarProcessExecution(params: ExecParams): Promise<GovernedExecution> {
@@ -224,7 +270,7 @@ async function beginSidecarProcessExecution(params: ExecParams): Promise<Governe
       demand: { cpuWeight: 1 },
       payloadRef: `process:${params.command}`,
       parent,
-      metadata: { processKind: 'sidecar-exec', command: params.command },
+      metadata: sidecarReceiptMetadata(params),
     },
     { owner: params.ownerId?.trim() || params.env?.PAPERCUSP_SID?.trim() || `spawner-sidecar:${process.pid}` },
     governedExecutionRuntime(workspaceId, 'agent-process'),
@@ -232,6 +278,9 @@ async function beginSidecarProcessExecution(params: ExecParams): Promise<Governe
 }
 
 export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}): Promise<ExecResult> {
+  const reportStage = (stage: ExecProcessStage): void => {
+    try { deps.onStage?.(stage); } catch { /* diagnostics cannot own execution */ }
+  };
   const aborted = (): ExecResult => ({ code: -1, stdout: '', stderr: 'process aborted before spawn' });
   if (deps.signal?.aborted) return aborted();
   // Open the handoff files BEFORE spawning: a bad path must come back as a
@@ -239,6 +288,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
   // error (every caller's contract is degrade-to-local, not fail).
   let stdinHandle: fsp.FileHandle | undefined;
   let stdoutHandle: fsp.FileHandle | undefined;
+  reportStage('handoff-open');
   try {
     if (params.stdinPath) stdinHandle = await fsp.open(params.stdinPath, 'r');
     if (params.stdoutPath) stdoutHandle = await fsp.open(params.stdoutPath, 'w');
@@ -248,8 +298,21 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
     return { code: -1, stdout: '', stderr: `spawner sidecar could not open a handoff file: ${String(e)}` };
   }
 
-  const begin = deps.beginExecution ?? beginSidecarProcessExecution;
-  const lazyDelayMs = qualifiesForLazyReceipt(params) ? (deps.lazyReceiptMs ?? SIDECAR_LAZY_RECEIPT_DELAY_MS) : 0;
+  // WI-6554700010008488: every admission outcome (eager AND lazy) feeds the
+  // owner's wedge breaker, so a pool that can no longer begin is detected.
+  const observedBegin = observeAdmission(deps.beginExecution ?? beginSidecarProcessExecution, deps.admissionHealth);
+  const begin = async (request: ExecParams): Promise<GovernedExecution> => {
+    reportStage('admission-start');
+    try {
+      const receipt = await observedBegin(request);
+      reportStage('admission-ready');
+      return receipt;
+    } catch (error) {
+      reportStage('admission-failed');
+      throw error;
+    }
+  };
+  const lazyDelayMs = qualifiesForLazyReceiptProcess(params) ? (deps.lazyReceiptMs ?? SIDECAR_LAZY_RECEIPT_DELAY_MS) : 0;
   let execution: ReceiptHandle;
   try {
     // Lazy: nothing to admit yet — the receipt is minted only if the read outlives the delay.
@@ -257,7 +320,10 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
   } catch (e) {
     await stdinHandle?.close().catch(() => {});
     await stdoutHandle?.close().catch(() => {});
-    return { code: -1, stdout: '', stderr: `spawner sidecar admission failed: ${String(e)}` };
+    // Name WHICH process failed: a wedged pool is per-process, and without the
+    // pid the error cannot say which sidecar to inspect (WI-6554700010008488).
+    // The prefix is matched (isSidecarInfrastructureFault, log greps): keep it first.
+    return { code: -1, stdout: '', stderr: `spawner sidecar admission failed (sidecar pid ${process.pid}): ${String(e)}` };
   }
 
   // Admission may have waited while the caller cancelled. Do not create a
@@ -282,10 +348,11 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         stdoutHandle ? stdoutHandle.fd : 'pipe',
         'pipe',
       ];
+      reportStage('spawn-start');
       const child = spawn(params.command, params.args ?? [], {
         cwd: params.cwd,
         env: {
-          ...process.env,
+          ...(params.inheritEnv === false ? {} : process.env),
           ...(params.env ?? {}),
           ...execution.childEnv,
         },
@@ -304,10 +371,14 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       const errDecoder = new StringDecoder('utf8');
       let stdout = '';
       let stderr = '';
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let maxBufferExceeded: 'stdout' | 'stderr' | undefined;
       let settled = false;
       let commandExited = false;
       let terminating = false;
       let spawnFailed = false;
+      let processError: ExecResult['error'];
       let hardTimer: ReturnType<typeof setTimeout> | null = null;
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       let idleCheck: ReturnType<typeof setImmediate> | null = null;
@@ -346,20 +417,52 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         if (settled) return;
         settled = true;
         stopGuards();
-        resolve({ code: terminating ? -1 : code, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() });
+        resolve({
+          code: terminating ? -1 : code,
+          stdout: stdout + outDecoder.end(),
+          stderr: stderr + errDecoder.end(),
+          ...((terminating || code < 0) ? { error: processError ?? {
+            code: null, signal: child.signalCode, killed: terminating,
+          } } : {}),
+          ...(maxBufferExceeded ? { maxBufferExceeded } : {}),
+        });
       };
       const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
       const idleTimeoutMs = params.idleTimeoutMs && params.idleTimeoutMs > 0 ? params.idleTimeoutMs : 0;
-      const terminate = (reason: string): void => {
+      const terminate = (reason: string, includeDiagnostic = true, errorCode = 'ETIMEDOUT'): void => {
         if (settled || commandExited || terminating) return;
         terminating = true;
+        processError = { code: errorCode, signal: null, killed: true };
         clearTimers();
-        stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
+        if (includeDiagnostic) {
+          stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
+        }
         signalCommand('SIGTERM');
-        killTimer = setTimeout(() => signalCommand('SIGKILL'), deps.killGraceMs ?? 10_000);
+        killTimer = setTimeout(() => signalCommand('SIGKILL'), deps.killGraceMs ?? SIDECAR_PROCESS_KILL_GRACE_MS);
         killTimer.unref?.();
         // A kill signal is not an exit receipt. Only close (or a spawn error)
         // may settle this call and let the caller release repository locks.
+      };
+      const appendOutput = (stream: 'stdout' | 'stderr', chunk: Buffer): void => {
+        const previousBytes = stream === 'stdout' ? stdoutBytes : stderrBytes;
+        const limit = params.maxBuffer;
+        const acceptedBytes = limit === undefined
+          ? chunk.length
+          : Math.max(0, Math.min(chunk.length, limit - previousBytes));
+        const accepted = acceptedBytes === chunk.length ? chunk : chunk.subarray(0, acceptedBytes);
+        if (stream === 'stdout') {
+          stdoutBytes += chunk.length;
+          stdout += outDecoder.write(accepted);
+        } else {
+          stderrBytes += chunk.length;
+          stderr += errDecoder.write(accepted);
+        }
+        if (limit !== undefined && previousBytes + chunk.length > limit && !maxBufferExceeded) {
+          maxBufferExceeded = stream;
+          // Keep child stderr as the rejected execFile-style stderr. The local
+          // adapter builds the maxBuffer error message from the typed marker.
+          terminate(stream + ' maxBuffer length exceeded', false, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+        }
       };
       const armIdleTimer = (): void => {
         if (idleTimeoutMs <= 0 || settled || terminating) return;
@@ -389,7 +492,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
               try {
                 bytes = (await stdoutHandle.stat()).size;
               } catch (error) {
-                if (current()) terminate(`could not verify stdout-file progress: ${String(error)}`);
+                if (current()) terminate(`could not verify stdout-file progress: ${String(error)}`, true, 'SIDECAR_OUTPUT_UNVERIFIED');
                 return;
               }
               // Pipe progress, cancellation or close may have won while fstat
@@ -426,7 +529,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
         hardTimer.unref?.();
       }
       armIdleTimer();
-      const onAbort = (): void => terminate('aborted by caller');
+      const onAbort = (): void => terminate('aborted by caller', true, 'ABORT_ERR');
       if (deps.signal) {
         removeAbortListener = () => deps.signal?.removeEventListener('abort', onAbort);
         deps.signal.addEventListener('abort', onAbort, { once: true });
@@ -434,20 +537,22 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       }
       child.once('spawn', () => {
         try { if (child.pid) deps.onPid?.(child.pid); } catch { /* observer only */ }
+        reportStage('child-spawn');
       });
       // In fd-handoff mode `child.stdout` is null — git writes to the file itself.
       child.stdout?.on('data', (d: Buffer) => {
-        stdout += outDecoder.write(d);
+        appendOutput('stdout', d);
         reportOutput();
         armIdleTimer();
       });
       child.stderr?.on('data', (d: Buffer) => {
-        stderr += errDecoder.write(d);
+        appendOutput('stderr', d);
         reportOutput();
         armIdleTimer();
       });
       child.on('error', async (e) => {
         spawnFailed = true;
+        processError = { code: (e as NodeJS.ErrnoException).code ?? null, signal: null, killed: false };
         stderr += String(e);
         try {
           await execution.cancel(`sidecar process spawn error: ${String(e)}`);
@@ -457,15 +562,24 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
           finish(-1);
         }
       });
-      child.on('close', async (code) => {
+      child.on('close', async (code, signal) => {
+        reportStage('child-close');
+        if (processError) processError.signal = signal;
+        if (signal && !maxBufferExceeded) stderr += `${stderr ? '\n' : ''}${params.command} terminated by signal ${signal}`;
         try {
           await waitForCommandExit();
+          reportStage('group-exit-confirmed');
           // Admission settlement can itself wait on IO. Remove kill timers
           // after command exit, before awaiting admission settlement.
           stopGuards();
-          if (!spawnFailed) await execution.finish({ cpuWeight: 1 });
+          if (!spawnFailed) {
+            reportStage('settlement-start');
+            await execution.finish({ cpuWeight: 1 });
+            reportStage('settlement-complete');
+          }
           finish(code ?? -1);
         } catch (settlementError) {
+          processError = { code: 'SIDECAR_SETTLEMENT_FAILED', signal, killed: terminating };
           stderr += `${stderr ? '\n' : ''}sidecar process admission settlement failed: ${String(settlementError)}`;
           finish(-1);
         }
@@ -481,6 +595,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
     result = { code: -1, stdout: '', stderr: `spawner sidecar could not spawn process: ${String(e)}${settlementError}` };
   }
 
+  reportStage('handoff-close');
   // Size the output BEFORE closing, so the caller can detect a short read.
   let stdoutBytes: number | undefined;
   if (stdoutHandle) {
@@ -492,5 +607,6 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
   }
   await stdinHandle?.close().catch(() => {});
   await stdoutHandle?.close().catch(() => {});
+  reportStage('exec-complete');
   return stdoutBytes === undefined ? result : { ...result, stdoutBytes };
 }

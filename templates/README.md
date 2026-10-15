@@ -143,48 +143,35 @@ official v1 mechanism that closes them:
   Canonical: `libs/generic/pot-app-seam` in the monorepo.
   ⚠ An app repo should link it from the **install-resolved `libs/generic`
   root** (`templates:get-guide` / `templates:new-app` return it as
-  `supplyChain`), NOT from a mirror clone: the mirror is currently pre-rename
-  and 404s on `pot-app-seam/`, still serving `hive-app-seam/` (measured
-  2026-08-10, WI-37775). `npm run mirror:check` tells you whether that is
-  still true.
-- **Mirror sync has a drift CHECK you must run by hand — it is not automatic.**
+  `supplyChain`), NOT from a mirror clone: the mirror can lag the canonical
+  tree. `npm run mirror:check` reports whether it is current.
+- **Mirror sync is a manual PR workflow.**
   `scripts/templates-mirror-sync.mjs` diffs this canonical tree against a local
-  clone of the mirror and exits non-zero on ANY drift:
+  clone of the mirror. The check exits non-zero on any drift; the push command
+  copies canonical files to a content-addressed branch and opens or reuses a PR:
 
   ```bash
   git clone https://github.com/Papercusp/templates.git /tmp/pc-templates-mirror
   PC_TEMPLATES_MIRROR=/tmp/pc-templates-mirror npm run mirror:check   # exit 1 on drift
-  PC_TEMPLATES_MIRROR=/tmp/pc-templates-mirror npm run mirror:push    # apply + commit + push
+  PC_TEMPLATES_MIRROR=/tmp/pc-templates-mirror npm run mirror:push    # apply + open/reuse a PR
   ```
 
   It compares every template dir, this README, and the vendored packages
   (`template-kit/`, `pot-app-seam/` — `src/**` minus `*.test.ts`, plus
   `package.json`/`tsconfig.json`), and leaves the mirror's own root plumbing
-  (`package.json`, lockfile, each vendored `README.md`) alone. Exit codes:
-  `0` in sync · `1` drift · `2` usage/env error.
+  (`package.json`, lockfile, each vendored `README.md`) alone.
 
-  ⚠ **Read this bullet's history before trusting any claim in it.** It used to
-  assert that this same check ran as a gate and that publish tooling "refuses
-  to publish official listings while red". That was false for five weeks: the
-  script had been written but was auto-committed in a side clone that was never
-  pushed, so nothing in this repo ran it or could even see it, and the mirror
-  duly went stale AND pre-rename (WI-37775). The script is now restored here
-  and covered by
+  The push command requires a clean mirror clone, verifies that `origin` is
+  `Papercusp/templates`, and requires authenticated `gh` access. It pushes only
+  the sync branch; it never pushes to or merges `main`. The PR must pass the
+  required `cupboard-verify` check before it is merged. Re-running while the PR
+  is open reuses it. After merge, fetch the updated `main` before checking for
+  later drift. Exit codes: `0` in sync or PR ready · `1` drift in check mode ·
+  `2` usage, Git, or GitHub error.
+
+  Run this workflow after changing a template dir, this README, or a vendored
+  package. Regression coverage is in
   `packages/operator-core/lib/templates-mirror-sync-cli.test.ts`.
-
-  **What still does NOT exist — do not assume otherwise:** no CI job, no
-  green-checkpoint gate and no publish tooling runs `mirror:check`. Nothing
-  stops a stale mirror from being published. Syncing remains a MANUAL step you
-  perform after changing any template dir, this README, or a vendored package —
-  the check just means you can now verify it in one command instead of by eye.
-  Assume the mirror trails the canonical tree unless you just ran the check.
-
-  **Measured 2026-08-10:** the live mirror is at 132 drift items (76 missing,
-  26 changed, 30 extraneous) — including `missing pot-app-seam/package.json`
-  and `extraneous papercusp-ops-hives/…`, i.e. it still serves the pre-rename
-  `hive-app-seam`/`papercusp-ops-hives` layout. Until someone runs
-  `mirror:push`, a `file:`-link into a mirror clone will NOT resolve
-  `@papercusp/pot-app-seam`.
 
 - **Other component packages** (`@papercusp/sync`, `@papercusp/ui-primitives`,
   …) are not published to npm either and are NOT vendored (they have runtime

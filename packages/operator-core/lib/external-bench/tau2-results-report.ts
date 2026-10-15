@@ -21,6 +21,7 @@ import {
   formatFairnessAuditMarkdown,
   formatPerInstanceMatrix,
 } from '@papercusp/bench-metrics';
+import { benchDefaultModelId } from './model-registry-snapshot';
 
 /** The slice of a tau2 simulation we read (other keys ignored). */
 export interface Tau2Simulation {
@@ -41,7 +42,7 @@ export interface Tau2ResultsFile {
 const TAU2_SUITE: BenchSuite = 'tau2-bench';
 
 /** Strip a litellm provider prefix so the id matches the bench-metrics price table
- *  (`anthropic/claude-opus-4-8` → `claude-opus-4-8`; `claude-opus-4-8[1m]` is left intact for prefix-match). */
+ *  (`anthropic/<id>` → `<id>`; an `<id>[1m]` suffix is left intact for prefix-match). */
 export function normalizeModelId(model: string): string {
   const slash = model.lastIndexOf('/');
   return slash >= 0 ? model.slice(slash + 1) : model;
@@ -68,7 +69,7 @@ export function tau2ResultsToRows(
   arm: ArmId,
   opts: { runId: string; modelId?: string; createdAt?: string },
 ): TaskRunResult[] {
-  const modelId = readModel(results, opts.modelId ?? 'claude-opus-4-8');
+  const modelId = readModel(results, opts.modelId ?? benchDefaultModelId());
   const createdAt = opts.createdAt ?? '';
   return (results.simulations ?? []).map((s, i): TaskRunResult => {
     const reward = s.reward_info?.reward;

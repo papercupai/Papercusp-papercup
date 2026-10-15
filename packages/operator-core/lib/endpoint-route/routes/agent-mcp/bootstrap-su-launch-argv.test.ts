@@ -9,7 +9,13 @@
  * The DB-touching sibling modules are mocked so importing the route doesn't reach for
  * @papercusp/db-org (mirrors launch-su.test.ts).
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const budgetMocks = vi.hoisted(() => ({ getPresence: vi.fn() }));
+beforeEach(() => {
+  budgetMocks.getPresence.mockReset();
+  budgetMocks.getPresence.mockResolvedValue(null);
+});
 
 vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: vi.fn(async () => 1),
@@ -21,11 +27,14 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
 // only dynamic-imports touchHeartbeat from it (WI-1893 removed setPendingFleet).
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
+  getPresence: budgetMocks.getPresence,
 }));
 
 import {
   normalizeLaunchArgv,
   reconstructPsuLaunchArgv,
+  codexCompactionLimitFromLaunchArgv,
+  codexCompactionLimitForBootstrap,
   AUTO_MODE_DIRECTIVE,
 } from './bootstrap-su';
 
@@ -47,6 +56,40 @@ describe('normalizeLaunchArgv (WI-1343)', () => {
     expect(normalizeLaunchArgv([long])![0]!.length).toBe(2000);
     const huge = Array.from({ length: 300 }, (_, i) => `--f${i}`);
     expect(normalizeLaunchArgv(huge)!.length).toBe(128);
+  });
+});
+
+describe('codexCompactionLimitFromLaunchArgv (P-005)', () => {
+  it('reads the per-session soft ceiling from the persisted psu argv', () => {
+    expect(codexCompactionLimitFromLaunchArgv(['psu', '--compaction-limit=250000'])).toBe(250_000);
+    expect(codexCompactionLimitFromLaunchArgv(['psu', '--compaction-limit', '250000'])).toBe(250_000);
+  });
+
+  it('falls through when the launch argv has no valid explicit ceiling', () => {
+    expect(codexCompactionLimitFromLaunchArgv(['psu', '--no-picker'])).toBeNull();
+    expect(codexCompactionLimitFromLaunchArgv(['psu', '--compaction-limit=lots'])).toBeNull();
+  });
+});
+
+describe('registered Codex bootstrap budget (WI-6554700010011827)', () => {
+  it.each([
+    { argv: ['psu', '--compaction-limit=250000'] },
+    { argv: ['psu'] },
+  ])('retains the current owner budget over $argv', async ({ argv }) => {
+    budgetMocks.getPresence.mockResolvedValue({ compactionLimit: 225_000 });
+    expect(await codexCompactionLimitForBootstrap('su-current-budget', argv)).toBe(225_000);
+    expect(budgetMocks.getPresence).toHaveBeenCalledWith('su-current-budget');
+  });
+
+  it('preserves legacy argv when no current owner budget exists', async () => {
+    expect(await codexCompactionLimitForBootstrap('su-legacy-budget', ['psu', '--compaction-limit=250000']))
+      .toBe(250_000);
+  });
+
+  it('refuses unreadable metadata before native materialization', async () => {
+    budgetMocks.getPresence.mockRejectedValueOnce(new Error('budget metadata unavailable'));
+    await expect(codexCompactionLimitForBootstrap('su-current-budget', ['psu']))
+      .rejects.toThrow('budget metadata unavailable');
   });
 });
 

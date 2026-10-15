@@ -4,10 +4,14 @@
 // bundle, DSSE in-toto statement), so the positive case exercises the real `@sigstore/verify`
 // chain — Fulcio cert chain, SCT/tlog inclusion promise, DSSE signature — against the
 // checked-in trusted root, not a mock of it.
+import { bundleFromJSON } from '@sigstore/bundle';
+import { toSignedEntity } from '@sigstore/verify';
 import { describe, expect, it } from 'vitest';
 import reply from './fixtures/attestation/api-reply.json';
 import {
   CUPBOARD_WORKFLOW_IDENTITY_PREFIX,
+  checkAttestationPolicy,
+  type CertLike,
   resolveVerifiedBy,
   verifyAttestationBundle,
   verifyCupboardAttestation,
@@ -174,5 +178,53 @@ describe('resolveVerifiedBy — every failure to ask or verify is a quiet "worke
   it('finds a genuine attestation among several (a bad one first does not mask it)', async () => {
     const mixed = { attestations: [{ bundle: {} }, ...reply.attestations] };
     await expect(resolveVerifiedBy(withFixture({ fetchImpl: jsonResponse(200, mixed) }))).resolves.toBe('attestation');
+  });
+});
+
+// A genuine Sigstore bundle cannot be forged into a certificate for a non-public source
+// repository, so the visibility leg of the policy is exercised on the REAL certificate and
+// statement with ONE extension edited at the certificate view (the signature leg is not
+// touched). The unedited control proves the harness itself accepts, so a refusal below is the
+// edited extension and nothing else.
+describe('checkAttestationPolicy — the source repository must be PUBLIC (cert extension edited)', () => {
+  const OID_VISIBILITY = '1.3.6.1.4.1.57264.1.22';
+  const bundleJson = reply.attestations[0]?.bundle;
+  const bundle = bundleFromJSON(bundleJson);
+  const entity = toSignedEntity(bundle);
+  if (bundle.content.$case !== 'dsseEnvelope' || entity.key.$case !== 'certificate') {
+    throw new Error('fixture is not a DSSE + certificate bundle');
+  }
+  const payload = bundle.content.dsseEnvelope.payload;
+  const realCert = entity.key.certificate as unknown as CertLike;
+  const genuine = verifyAttestationBundle(bundleJson, GOOD);
+  const derUtf8 = (text: string): Uint8Array => {
+    const bytes = new TextEncoder().encode(text);
+    return Uint8Array.from([0x0c, bytes.length, ...bytes]);
+  };
+  const withVisibility = (text: string | null): CertLike => ({
+    extension: (oid) =>
+      oid === OID_VISIBILITY ? (text === null ? undefined : { value: derUtf8(text) }) : realCert.extension(oid),
+  });
+  const policy = (cert: CertLike) =>
+    checkAttestationPolicy(
+      { signerWorkflow: genuine.ok ? genuine.signerWorkflow : '', cert, payload },
+      GOOD,
+    );
+
+  it('control: the genuine bundle verifies, and its own certificate says visibility public', () => {
+    expect(genuine.ok).toBe(true);
+    expect(policy(realCert)).toMatchObject({ ok: true });
+    expect(policy(withVisibility('public'))).toMatchObject({ ok: true });
+  });
+
+  it.each([['private'], ['internal'], ['Public'], ['']])(
+    'refuses a certificate whose source-repository-visibility is %j',
+    (visibility) => {
+      expect(policy(withVisibility(visibility))).toEqual({ ok: false, code: 'policy_mismatch', reason: 'visibility' });
+    },
+  );
+
+  it('refuses a certificate with NO source-repository-visibility extension at all', () => {
+    expect(policy(withVisibility(null))).toEqual({ ok: false, code: 'policy_mismatch', reason: 'visibility' });
   });
 });

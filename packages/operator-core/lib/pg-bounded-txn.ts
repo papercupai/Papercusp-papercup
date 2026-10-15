@@ -35,6 +35,7 @@ import {
   DEFAULT_TX_ACQUIRE_DEADLINE_MS,
   DbCallDeadlineError,
   getOrgPg,
+  retryBeforeCallbackStarts,
   retryOnRetryableDbDeadline,
   withAcquisitionDeadline,
 } from '@papercusp/db-org';
@@ -159,6 +160,111 @@ function cancellableTransaction(
   };
 }
 
+export type CandidateWaitSample =
+  | {
+      status: 'sampled';
+      targetPid: number;
+      waitEventType: string | null;
+      waitEvent: string | null;
+      blockingPids: number[];
+    }
+  | { status: 'no-active'; targetPid: number }
+  | {
+      status: 'unavailable';
+      targetPid?: number;
+      reason: 'cancelled' | 'deadline' | 'query-error';
+      /** Where this observer failed; absent on historical diagnostic packets. */
+      phase?: 'acquire' | 'setup' | 'sample' | 'settle';
+    };
+
+export type CandidateWaitSnapshot = CandidateWaitSample & {
+  statementCapMs: number;
+  sampleAfterMs: number;
+};
+
+const CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS = 100;
+
+/**
+ * Take one bounded, PID-and-query-start-targeted pg_stat_activity sample.
+ * This is an instantaneous observation, not evidence about the full duration
+ * of the target statement. The caller owns cancellation when that statement settles.
+ */
+export async function sampleCandidateWaitOnce(
+  client: OrgSql,
+  targetPid: number,
+  targetQueryStartedAfter: Date,
+  signal: AbortSignal,
+): Promise<CandidateWaitSample> {
+  type WaitRow = {
+    waitEventType: string | null;
+    waitEvent: string | null;
+    blockingPids: number[];
+  };
+  let phase: 'acquire' | 'setup' | 'sample' | 'settle' = 'acquire';
+
+  try {
+    const rows = await withAcquisitionDeadline(
+      ({ disarm, expired }) =>
+        client.begin(async (rawTx) => {
+          // A timed-out begin can complete late. Never run even the timeout setup
+          // after its acquisition deadline or after the target statement settled.
+          if (expired() || signal.aborted) throw new Error('candidate wait observer cancelled before begin');
+          const cancellation = cancellableTransaction(rawTx as unknown as OrgSql, signal);
+          try {
+            cancellation.assertNotAborted();
+            phase = 'setup';
+            await cancellation.tx`SELECT set_config('lock_timeout', ${`${CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS}ms`}, true),
+                                        set_config('statement_timeout', ${`${CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS}ms`}, true)`;
+            if (expired()) throw new Error('candidate wait observer acquisition deadline expired');
+            cancellation.assertNotAborted();
+            disarm();
+            phase = 'sample';
+            const query = cancellation.tx<WaitRow[]>`
+              SELECT a.wait_event_type AS "waitEventType",
+                     a.wait_event AS "waitEvent",
+                     pg_blocking_pids(a.pid) AS "blockingPids"
+                FROM pg_stat_activity a
+               WHERE a.datname = current_database()
+                 AND a.pid = ${targetPid}
+                 AND a.query_start >= ${targetQueryStartedAfter}
+                 AND a.state = 'active'
+               LIMIT 1`;
+            const rows = await (cancellation.abort ? Promise.race([query, cancellation.abort]) : query);
+            phase = 'settle';
+            return rows;
+          } finally {
+            cancellation.cleanup();
+          }
+        }),
+      {
+        ms: CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS,
+        label: 'scheduler:get_next:candidate-wait-observer',
+      },
+    );
+    const row = rows[0];
+    if (!row) return { status: 'no-active', targetPid };
+    return {
+      status: 'sampled',
+      targetPid,
+      waitEventType: row.waitEventType,
+      waitEvent: row.waitEvent,
+      blockingPids: row.blockingPids ?? [],
+    };
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    return {
+      status: 'unavailable',
+      targetPid,
+      phase,
+      reason: signal.aborted
+        ? 'cancelled'
+        : error instanceof DbCallDeadlineError || code === '57014' || code === '55P03'
+          ? 'deadline'
+          : 'query-error',
+    };
+  }
+}
+
 /**
  * Thrown when a bounded admin-pool txn can't finish in time: a statement exceeds
  * `statement_timeout` (PG `57014`) or a lock wait exceeds `lock_timeout` (PG `55P03`).
@@ -168,13 +274,18 @@ function cancellableTransaction(
  * EI-19404770733829453: a bare "canceling statement due to lock timeout" names no
  * cause, so every caller who hits it either retries blindly or goes hand-querying
  * `pg_stat_activity`. When `blockerHint` is available (best-effort — see
- * `describeContentionAtFailure` below), it is folded into `.message` so the error
- * ITSELF says what blocked it (e.g. a long-running migration holding a table lock)
- * instead of leaving that diagnosis to whoever reads the stack trace next.
+ * `describeContentionAtFailure` below), it is retained as a separately labeled
+ * snapshot. That diagnostic uses a fresh connection and does not establish which
+ * backend, if any, blocked the timed-out operation.
  */
 export class OrgTxnTimeoutError extends Error {
   readonly pgCode: string;
+  /** Caller-safe summary that excludes the fresh-connection global blocker snapshot. */
+  readonly messageWithoutBlockerHint: string;
+  /** Best-effort fresh-connection snapshot; it does not prove this operation waited on that backend. */
   readonly blockerHint?: string;
+  /** One instantaneous, target-PID sample captured for scheduler candidate-tier diagnostics. */
+  candidateWaitSnapshot?: CandidateWaitSnapshot;
   /**
    * EI-21831306274538775 — did PostgreSQL actually raise this SQLSTATE (`'pg'`), or did a
    * caller SYNTHESIZE the same typed error to report exhausting its own wall-clock budget
@@ -199,17 +310,24 @@ export class OrgTxnTimeoutError extends Error {
     blockerHint?: string,
     timeoutSource: 'pg' | 'caller-budget' = 'pg',
     operation: 'read' | 'write' = 'write',
+    phase?: string,
   ) {
     const subject = operation === 'read' ? 'operator read query' : 'operator write';
-    const base =
+    const baseMessage =
       timeoutSource === 'caller-budget'
         ? `${subject} was abandoned after exceeding the CALLER's own time budget (reported as pg ${pgCode} so it is never mistaken for "nothing matched"; PostgreSQL itself did not time out) — retry shortly`
         : pgCode === '55P03'
           ? `${subject} timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly`
-          : `${subject} exceeded its time budget (pg 57014 statement_timeout) — the database stalled; retry shortly`;
-    super(blockerHint ? `${base} — ${blockerHint}` : base);
+          : `${subject} exceeded its time budget (pg 57014 statement_timeout) — retry shortly`;
+    const base = phase ? `[phase: ${phase}] ${baseMessage}` : baseMessage;
+    super(
+      blockerHint
+        ? `${base} — separate-connection blocker snapshot (not confirmed to block this operation): ${blockerHint}`
+        : base,
+    );
     this.name = 'OrgTxnTimeoutError';
     this.pgCode = pgCode;
+    this.messageWithoutBlockerHint = base;
     this.cause = cause;
     this.blockerHint = blockerHint;
     this.timeoutSource = timeoutSource;
@@ -218,6 +336,37 @@ export class OrgTxnTimeoutError extends Error {
 
 /** PG SQLSTATEs that mean "couldn't finish in time": statement_timeout + lock_timeout. */
 const CONTENTION_CODES = new Set(['57014', '55P03']);
+
+/**
+ * Add a stable operation phase to PG timeouts raised by a post-transaction step.
+ * `boundedOrgTxn` labels errors while its callback is active; callers use this
+ * wrapper for awaited work after that transaction has committed. Keep an inner
+ * label when one already exists so the most specific phase survives.
+ */
+export async function withOrgTxnTimeoutPhase<T>(
+  phase: string,
+  operation: () => Promise<T>,
+  timeoutOperation: 'read' | 'write' = 'write',
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof OrgTxnTimeoutError) {
+      if (error.messageWithoutBlockerHint.startsWith('[phase: ')) throw error;
+      throw new OrgTxnTimeoutError(
+        error.pgCode,
+        error.cause,
+        error.blockerHint,
+        error.timeoutSource,
+        timeoutOperation,
+        phase,
+      );
+    }
+    const code = (error as { code?: unknown } | null)?.code;
+    if (typeof code !== 'string' || !CONTENTION_CODES.has(code)) throw error;
+    throw new OrgTxnTimeoutError(code, error, undefined, 'pg', timeoutOperation, phase);
+  }
+}
 
 /** Bound on the diagnostic query itself — this must never be the thing that hangs
  *  while we're trying to explain why something else hung. */
@@ -285,7 +434,7 @@ async function describeContentionAtFailure(client: OrgSql, pool?: string): Promi
     const q = (head.q ?? '').trim() || '(query text unavailable)';
     const blockedCount = rows.filter((r) => !r.unblocked).length;
     return (
-      `likely blocked by pid ${head.pid} (running ${age}; current/last statement — ` +
+      `observed head blocker pid ${head.pid} (running ${age}; current/last statement — ` +
       `lock may have been taken by an earlier statement in this transaction): ${q}` +
       (blockedCount > 0 ? ` — ${blockedCount} other backend(s) also waiting` : '')
     );
@@ -316,14 +465,24 @@ export interface BoundedOrgTxnOptions {
    * transaction's statement/lock timeouts.
    */
   acquireTimeoutMs?: number;
+  /** Additional retries after the first measured acquisition deadline; defaults to two. */
+  acquireRetries?: number;
+  /** Additional retries for classified BEGIN/setup failures before the caller starts; defaults to two. */
+  connectionSetupRetries?: number;
+  /** Linear backoff base for pre-callback connection/setup retries; defaults to 150ms. */
+  connectionSetupBackoffMs?: number;
   /** Per-statement cap (PG statement_timeout), ms. Default ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS. */
   statementTimeoutMs?: number;
   /** Per-lock-wait cap (PG lock_timeout), ms. Default ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS. */
   lockTimeoutMs?: number;
+  /** Stable caller phase included in a propagated PG timeout; may change inside fn. */
+  phase?: string | (() => string);
   /** Start the transaction READ ONLY before applying its local timeouts. */
   readOnly?: boolean;
   /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
   client?: OrgSql;
+  /** Attribute an injected production client's acquisition to its existing pool registry. */
+  acquirePool?: string;
   /** Cancel in-flight postgres-js queries when the caller abandons this transaction. */
   signal?: AbortSignal;
 }
@@ -331,9 +490,10 @@ export interface BoundedOrgTxnOptions {
 /**
  * Run `fn` inside ONE bounded admin-pool transaction. `fn` receives the
  * transaction-scoped sql handle — every query it runs is in the same txn and
- * under the SET LOCAL timeouts. A contention timeout (PG 57014 / 55P03) is mapped
- * to OrgTxnTimeoutError; any other error propagates unchanged (and rolls the txn
- * back).
+ * under the SET LOCAL timeouts. Classified connection/setup failures may retry
+ * before `fn` starts; once it starts, errors propagate unchanged so a partial
+ * write is never replayed. A contention timeout (PG 57014 / 55P03) is mapped to
+ * OrgTxnTimeoutError.
  *
  * The `tx` is typed as OrgSql so store helpers that take a single `Sql` can be
  * constructed against it (e.g. `new PgThreadStore({ ...opts, getSql: () => tx })`).
@@ -342,12 +502,11 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
   const sql = opts.client ?? getOrgPg().sql;
   const stmtMs = Math.max(100, Math.trunc(opts.statementTimeoutMs ?? ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS));
   const lockMs = Math.max(100, Math.trunc(opts.lockTimeoutMs ?? ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS));
-  const acquireLabel = 'boundedOrgTxn:acquire(admin)';
   // Injected clients are test/non-pool backends, so they must not be counted
   // against the process's org-admin acquisition registry. Production calls use
   // getOrgPg() and therefore share the same measured queue-pressure signal as
   // the other admin-pool callers.
-  const acquirePool = opts.client ? undefined : 'org-admin';
+  const acquirePool = opts.acquirePool ?? (opts.client ? undefined : 'org-admin');
   const acquireMs = opts.acquireTimeoutMs ?? DEFAULT_TX_ACQUIRE_DEADLINE_MS;
   let result: unknown;
   try {
@@ -356,43 +515,73 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
     // saturated, so statement_timeout/lock_timeout alone cannot protect this
     // path. The expired() guard is required because Promise.race cannot cancel
     // a late sql.begin; it rolls that late transaction back without invoking fn.
-    result = await retryOnRetryableDbDeadline(() =>
-      withAcquisitionDeadline(
+    result = await retryOnRetryableDbDeadline(() => {
+      // This deadline covers BEGIN and transaction setup. Keep the measured
+      // stage in the existing error label; a setup stall must not look like a
+      // physical connection acquisition. Each retry owns its label so a late
+      // callback from an expired attempt cannot relabel the next attempt.
+      let acquireLabel = 'boundedOrgTxn:begin(admin)';
+      return withAcquisitionDeadline(
         ({ disarm, expired }) =>
-          sql.begin(async (rawTx) => {
-            const cancellation = cancellableTransaction(rawTx as unknown as OrgSql, opts.signal);
-            try {
-              cancellation.assertNotAborted();
-              // SET TRANSACTION must precede the first query in this transaction.
-              // Bounded search reads use this option to preserve the read-only
-              // contract while still receiving the same per-statement bounds.
-              if (opts.readOnly) await cancellation.tx`SET TRANSACTION READ ONLY`;
-              // set_config(name, value, is_local=true) == SET LOCAL, but binds the value
-              // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
-              // WI-10003631: one round trip for both transaction-local settings.
-              await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true),
-                                           set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
-              if (expired()) {
-                throw new DbCallDeadlineError(acquireLabel, acquireMs, acquireMs, acquirePool);
-              }
-              // The caller's work may legitimately run longer than acquisition;
-              // stop the phase clock immediately before entering it.
-              disarm();
-              const work = Promise.resolve().then(() => {
-                cancellation.assertNotAborted();
-                return fn(cancellation.tx);
-              });
-              // If cancellation wins the race, the transaction callback returns early while
-              // the late `fn` promise is still observed and its rejection is suppressed.
-              work.catch(() => undefined);
-              return await Promise.race(cancellation.abort ? [work, cancellation.abort] : [work]);
-            } finally {
-              cancellation.cleanup();
-            }
-          }),
-        { ms: acquireMs, label: acquireLabel, pool: acquirePool },
-      ),
-    );
+          retryBeforeCallbackStarts(
+            (markStarted) =>
+              sql.begin(async (rawTx) => {
+                const assertWithinAcquisitionDeadline = () => {
+                  if (expired()) {
+                    throw new DbCallDeadlineError(acquireLabel, acquireMs, acquireMs, acquirePool);
+                  }
+                };
+                // Promise.race does not cancel a late sql.begin callback. Check at
+                // entry so a BEGIN that resolves after the caller timed out rolls
+                // back without issuing transaction setup SQL.
+                assertWithinAcquisitionDeadline();
+                const cancellation = cancellableTransaction(rawTx as unknown as OrgSql, opts.signal);
+                try {
+                  cancellation.assertNotAborted();
+                  // SET TRANSACTION must precede the first query in this transaction.
+                  // Bounded search reads use this option to preserve the read-only
+                  // contract while still receiving the same per-statement bounds.
+                  if (opts.readOnly) {
+                    acquireLabel = 'boundedOrgTxn:setup-read-only(admin)';
+                    await cancellation.tx`SET TRANSACTION READ ONLY`;
+                    assertWithinAcquisitionDeadline();
+                  }
+                  // set_config(name, value, is_local=true) == SET LOCAL, but binds the value
+                  // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
+                  // WI-10003631: one round trip for both transaction-local settings.
+                  acquireLabel = 'boundedOrgTxn:setup-timeouts(admin)';
+                  await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true),
+                                               set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
+                  assertWithinAcquisitionDeadline();
+                  // The caller's work may legitimately run longer than acquisition;
+                  // stop the phase clock immediately before entering it. Mark the
+                  // retry boundary at the same point: any later error may follow a
+                  // partial write and must never replay fn.
+                  disarm();
+                  const work = Promise.resolve().then(() => {
+                    cancellation.assertNotAborted();
+                    markStarted();
+                    return fn(cancellation.tx);
+                  });
+                  // If cancellation wins the race, the transaction callback returns early while
+                  // the late `fn` promise is still observed and its rejection is suppressed.
+                  work.catch(() => undefined);
+                  return await Promise.race(cancellation.abort ? [work, cancellation.abort] : [work]);
+                } finally {
+                  cancellation.cleanup();
+                }
+              }),
+            {
+              retries: opts.connectionSetupRetries,
+              backoffMs: opts.connectionSetupBackoffMs,
+              pool: acquirePool,
+            },
+          ),
+        // The guard reads this getter when the deadline fires, after the
+        // callback may have progressed from BEGIN to a setup statement.
+        { ms: acquireMs, get label() { return acquireLabel; }, pool: acquirePool, signal: opts.signal },
+      );
+    }, { retries: opts.acquireRetries });
   } catch (err) {
     const code = (err as { code?: string } | null)?.code;
     if (typeof code === 'string' && CONTENTION_CODES.has(code)) {
@@ -400,7 +589,8 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
       // connection already aborted, so this runs on a fresh one and must never be
       // allowed to throw or hang in place of the real error.
       const blockerHint = await describeContentionAtFailure(sql, acquirePool).catch(() => undefined);
-      throw new OrgTxnTimeoutError(code, err, blockerHint, 'pg', opts.readOnly ? 'read' : 'write');
+      const phase = typeof opts.phase === 'function' ? opts.phase() : opts.phase;
+      throw new OrgTxnTimeoutError(code, err, blockerHint, 'pg', opts.readOnly ? 'read' : 'write', phase);
     }
     throw err;
   }

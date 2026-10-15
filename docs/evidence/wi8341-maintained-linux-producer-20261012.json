@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "WI-8341 maintained nominated Linux GUI producer custody and R6",
+  "framework": "node",
+  "command": ["node", "--test", "--test-global-setup=test/monorepo-host-preflight.mjs", "--test-name-pattern=maintained Linux producer", "test/build-artifact-atomicity.test.js"],
+  "cwd": "papercusp-desktop",
+  "startedAt": "2026-10-12T13:10:15.204Z",
+  "finishedAt": "2026-10-12T13:11:29Z",
+  "timestampScope": "Enclosing observed interval: release of edit locks before checks through subsequent UTC clock read; exact process duration is retained separately.",
+  "exitCode": 0,
+  "summary": "Four new registered node:test cases pass, zero fail/skip, 4440.334518ms. R6 check exits0: 173 scripts, 44 reachable assertion helpers; exemption removed. bash -n exits0. Mocked build/provenance boundaries only; no release build, signing, live gate operation or shipment.",
+  "assertions": [
+    {"id": "maintained-source-composition", "passed": true, "evidence": "Preflight REVIEW/BANK and positional-argument mutations preserve nominated destination; bank/output/RUN readonly mutations fail before output creation."},
+    {"id": "existing-output-refusal", "passed": true, "evidence": "Existing destination fails before preflight sentinel executes."},
+    {"id": "nomination-refusal", "passed": true, "evidence": "Missing nomination and a hash-valid packet with a mismatched source identity refuse before mkdir."},
+    {"id": "nominated-consumer", "passed": true, "evidence": "Bound packet executes mocked Debian consumer with public/gui profile, prepared desktop root and bank/cargo; mocked capture/baked-host/provenance calls reference nominated output and identities; old-bank output absent."},
+    {"id": "r6-and-shell-parse", "passed": true, "evidence": "node scripts/check-assert-integrity.mjs exit0; all 44 assertion helpers reachable across 173 scripts. bash -n papercusp-desktop/bin/build-linux-local.sh exit0. git diff --check exit0."}
+  ],
+  "workItem": "WI-6554700010008341",
+  "sourceFingerprints": {
+    "papercusp-desktop/bin/build-linux-local.sh": "417874ec09f4bda1948dcb0824531e9f18e657227470e3b510be86ac24c00a00",
+    "papercusp-desktop/bin/lib/release-artifacts.sh": "ac9aeb787028227f12f9534e14576d935b6c293804298c3c48fa0c86f871c2a3"
+  },
+  "testFingerprint": "453a7fc21da91b0ff521d2d2a671ad515170904edaa0fbef42c07b36b9a6b8f1",
+  "snapshotCorrection": {
+    "command": ["node", "--test", "--test-global-setup=test/monorepo-host-preflight.mjs", "--test-name-pattern=maintained Linux producer (nominates|consumes)", "test/build-artifact-atomicity.test.js"],
+    "startedAt": "2026-10-12T13:17:09Z",
+    "finishedAt": "2026-10-12T13:17:15Z",
+    "exitCode": 0,
+    "durationMs": 4832.384001,
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0,
+    "reason": "Compare packet script digest to immutable executing snapshot, rather than current canonical path. New regression replaces canonical bytes during sourced preflight and nominates the replacement; running snapshot refuses. Repeated only the affected mocked consumer after this source change.",
+    "finalSourceFingerprint": "5800ab1c58e23d9c3fb446cd672de8a91d53ec0eefc1a83a20a7f4ac6da21b5b",
+    "finalTestFingerprint": "a2af99d60f522880a1165c3c0a800d1b737662ab8613b80f93350ff2cffa5cf5",
+    "assertions": [
+      {"id": "executing-snapshot-custody", "passed": true, "evidence": "Hash-valid replacement-canonical packet refused; output remains absent."},
+      {"id": "corrected-nominated-consumer", "passed": true, "evidence": "Actual executing snapshot matches nominated maintained script; mocked build/provenance consumer passes with bound source/output."}
+    ]
+  },
+  "originalWrapperEvidence": {
+    "session": "codex:01a11ef0-6b85-75d0-90e8-cc45b2da5ed0",
+    "commandExecutionLine": 763,
+    "originalPath": "~/.local/state/verification-harness/release-local/wi10007067-output-binding-review-20261009T0500Z/launch-linux-gui-matching-identity.sh",
+    "currentOriginalPathExists": false,
+    "retainedPriorProof": "docs/evidence/wi10007067-output-binding-composition-20261009.json"
+  },
+  "limitations": ["Original ephemeral wrapper packet is unavailable on disk; its exact source was recovered from the faithful native transcript.", "Only new maintained-consumer cases ran; earlier passing cases were not replayed.", "Build and provenance children were mocked. Real capacity admission, artifact production, signing, gate verdict and shipment were not exercised."]
+}

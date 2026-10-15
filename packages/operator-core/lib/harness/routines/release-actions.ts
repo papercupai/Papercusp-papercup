@@ -40,10 +40,12 @@ import {
   ROUTINE_FIRE_WORKFLOW_ID_ENV,
 } from '../../release/in-flight-candidate';
 import { emitAwaitedEvent } from '../../events/await/engine';
+import { withInstallBoundaryBootWindow } from '../../install-boundary-lease';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposition';
+import type { FreezeCutRecord, RedLegsAtR1 } from '../../release/known-good-freeze';
 import { parseTestPassReuseHealth, type TestPassReuseHealth } from '../../release/test-pass-reuse-report';
 import { parseGateRoundPhases, type GateRoundPhases } from '../../release/gate-round-phases';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
@@ -70,7 +72,7 @@ import { summarizeStreakCause, type StreakCauseDigest, type StreakTick } from '.
 // this module never got that treatment because the tag was believed to live in apps/operator. It
 // does not — it lives in operator-core (checkpoint-log-tags.ts, moved down by
 // EI-19395755190419540), i.e. in THIS package, so the funnel is a plain relative import.
-import { GREEN_CHECKPOINT_RESULT_MARKER, orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
+import { GREEN_CHECKPOINT_RESULT_MARKER, isFixtureLogLine, orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
 import { classifyGateAbort, isRecordedInconclusiveStatus } from '../../release/gate-abort-status';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import { admitCheckpointMemory } from '../../release/checkpoint-memory-admission';
@@ -87,9 +89,14 @@ import {
   type FrozenCandidateRepairQueueRead,
 } from '../../release/frozen-candidate-repair-queue';
 import {
+  FROZEN_REPAIR_CARRY_METADATA_KEY,
+  nextFrozenRepairPendingCarry,
+} from '../../release/frozen-repair-carry';
+import {
   buildIsolatedScopeArgv,
   CHECKPOINT_FORKS_BY_MODE,
   checkpointScopeMemoryMaxG,
+  checkpointScopeMemoryMaxGForGreenCmd,
   SCOPE_LAUNCH_FAILURE_RE,
   SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
 } from '../../systemd-scope';
@@ -102,12 +109,15 @@ import {
   classifyQualificationVerdict,
   classifyScheduledQualificationJoin,
   describeQualificationSettleConflict,
+  projectCheckpointQualificationState,
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationScheduledFire,
   recordStoredQualificationScheduledTerminalRecovery,
   recordStoredQualificationVerdict,
   reserveStoredQualificationRunner,
+  type CheckpointQualificationTransaction,
+  type RunnerLiveness,
 } from '../../release/checkpoint-qualification-transaction';
 import { readLiveReleaseCertification, type LiveReleaseCertification } from '../../release/live-release-certification';
 import { createTextCollector } from '../../child-output';
@@ -151,6 +161,127 @@ function parseMarkerLine(stdout: string, marker: string): Record<string, unknown
   } catch {
     return null;
   }
+}
+
+function parseDetailedCheckpointResult(logText: string, runId: string): Record<string, unknown> | null {
+  let cursor = 0;
+  while (cursor < logText.length) {
+    const newline = logText.indexOf('\n', cursor);
+    const lineEnd = newline < 0 ? logText.length : newline;
+    const line = logText.slice(cursor, lineEnd).replace(/\r$/, '');
+    if (line.startsWith('{')) {
+      const expectedClosers: string[] = [];
+      let inString = false;
+      let escaped = false;
+      let jsonEnd: number | null = null;
+      for (let index = cursor; index < logText.length; index += 1) {
+        const char = logText[index]!;
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (char === '\\') escaped = true;
+          else if (char === '"') inString = false;
+          continue;
+        }
+        if (char === '"') {
+          inString = true;
+          continue;
+        }
+        if (char === '{') expectedClosers.push('}');
+        else if (char === '[') expectedClosers.push(']');
+        else if (char === '}' || char === ']') {
+          if (expectedClosers.pop() !== char) break;
+          if (expectedClosers.length === 0) {
+            jsonEnd = index + 1;
+            break;
+          }
+        }
+      }
+      if (jsonEnd !== null) {
+        try {
+          const parsed: unknown = JSON.parse(logText.slice(cursor, jsonEnd));
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            !Array.isArray(parsed) &&
+            (parsed as Record<string, unknown>).runId === runId &&
+            typeof (parsed as Record<string, unknown>).reason === 'string'
+          ) {
+            return parsed as Record<string, unknown>;
+          }
+        } catch {
+          // The log can contain unrelated JSON; only a complete matching run result is useful.
+        }
+        cursor = jsonEnd;
+        while (cursor < logText.length && (logText[cursor] === '\r' || logText[cursor] === '\n')) {
+          cursor += 1;
+        }
+        continue;
+      }
+    }
+    if (newline < 0) break;
+    cursor = newline + 1;
+  }
+  return null;
+}
+
+export function resolveCheckpointResultFromLogs(
+  primaryLog: string,
+  terminalLog?: string | null,
+  expectedRunId?: string,
+): Record<string, unknown> | null {
+  const marker =
+    parseMarkerLine(primaryLog, GREEN_CHECKPOINT_RESULT_MARKER) ??
+    parseMarkerLine(terminalLog ?? '', GREEN_CHECKPOINT_RESULT_MARKER);
+  if (!marker) return null;
+  const markerRunId = typeof marker.runId === 'string' ? marker.runId : expectedRunId;
+  const runId = expectedRunId ?? markerRunId;
+  if (!runId || (markerRunId && markerRunId !== runId)) return marker;
+  const detail = parseDetailedCheckpointResult(terminalLog ?? primaryLog, runId);
+  if (
+    !detail ||
+    detail.reason !== marker.reason ||
+    (typeof marker.candidate === 'string' &&
+      typeof detail.candidate === 'string' &&
+      marker.candidate !== detail.candidate)
+  ) {
+    return marker;
+  }
+  const resolved = { ...marker };
+  for (const field of ['failingTests', 'flakeSuspects']) {
+    if (!Array.isArray(resolved[field]) && Array.isArray(detail[field])) {
+      resolved[field] = detail[field];
+    }
+  }
+  return resolved;
+}
+
+/**
+ * WI-10005994: classify the green-checkpoint result marker in a merged run log.
+ *
+ * `parsed` — some line carries the marker token followed by an object that parses.
+ * `torn`   — the token is present but no carrying line parses: the CLI REACHED its terminal
+ *            seam and the line was damaged in transit (stdout/stderr chunk interleave in the
+ *            shared `2>&1` pipe). That is never a tooling crash, so callers must not alarm one.
+ * `absent` — no production marker line at all.
+ *
+ * The token is matched ANYWHERE in a line, not only at its start: a torn marker begins mid-line
+ * (measured: column 53 in run 014f2801). Captured suite fixtures are skipped by their stdout tag,
+ * and captured output has the token defanged, so a fixture can never pose as a verdict.
+ */
+export function checkpointResultMarkerState(log: string): 'absent' | 'parsed' | 'torn' {
+  let torn = false;
+  for (const line of log.split(/\r?\n/)) {
+    const at = line.indexOf(GREEN_CHECKPOINT_RESULT_MARKER);
+    if (at < 0 || isFixtureLogLine(line)) continue;
+    try {
+      const parsed: unknown = JSON.parse(line.slice(at + GREEN_CHECKPOINT_RESULT_MARKER.length).trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return 'parsed';
+    } catch {
+      // fall through: a token without a parseable object is a torn marker
+    }
+    torn = true;
+  }
+  return torn ? 'torn' : 'absent';
 }
 
 /** Paths for the external evidence owned by a scheduled green-checkpoint wrapper. */
@@ -376,7 +507,7 @@ async function reconcileLoadedScheduledCheckpointTerminal(
     };
   }
 
-  const emitted = parseMarkerLine(logText, GREEN_CHECKPOINT_RESULT_MARKER);
+  const emitted = resolveCheckpointResultFromLogs(logText, logText, terminal.runId);
   const emittedReason = typeof emitted?.reason === 'string' && emitted.reason.trim() ? emitted.reason.trim() : null;
   const reason = emittedReason ?? checkpointFallbackStatus(false, terminal.exitCode ?? undefined, null, terminal);
   const green = typeof emitted?.green === 'boolean' ? emitted.green : null;
@@ -450,6 +581,19 @@ async function reconcileLoadedScheduledCheckpointTerminal(
       summary: typeof emitted?.summary === 'string' ? emitted.summary : undefined,
       failingTests: Array.isArray(emitted?.failingTests) ? emitted.failingTests.filter((test): test is string => typeof test === 'string') : [],
       logPath: terminal.logPath,
+    });
+  }
+  // WI-10004928 part 1: no result marker + an unexplained non-zero exit = the gate's own tooling
+  // crashed (e.g. a module-load failure). First exact-attempt transition only, like the red wake.
+  // WI-10005994: a PRESENT-but-torn marker means the run rendered a verdict that was damaged in
+  // transit; waking awaiters with "tooling crashed, no suite ran" sent its owner the wrong way.
+  if (settlement.status === 'updated' && terminal.integrationRoot && !emittedReason && reason === 'error') {
+    await emitGateToolingCrashEvent(terminal.integrationRoot, {
+      cause: checkpointResultMarkerState(logText) === 'torn' ? 'result-marker-torn' : 'tooling-crash',
+      exitCode: terminal.exitCode,
+      runId: terminal.runId,
+      logPath: terminal.logPath,
+      tail: logText ? logText.trim().split(/\r?\n/).slice(-5).join('\n') : null,
     });
   }
   if (settlement.status === 'conflict') {
@@ -761,6 +905,117 @@ async function emitLegacyRedVerdictEvent(root: string, verdict: CheckpointVerdic
   }
 }
 
+/**
+ * WI-10004928 part 1: the gate's OWN tooling died before it could report. The CLI is the only
+ * producer of `green-checkpoint:inconclusive`, so a run that crashes at module load (the
+ * 2026-10-01 top-level-await-under-CJS crash: exit 1 in ~9s, for 70+ min) emitted NOTHING and
+ * every `checkpoint:await` slept to its deadline. The routine is the only observer that outlives
+ * that crash, so it emits the inconclusive wake on the CLI's behalf, with reason
+ * `gate-tooling-crash` so a reader can tell it from an ordinary cancel/timeout.
+ * Only call this for a non-zero exit with NO result marker. Best-effort: never changes recording.
+ */
+export interface ManualCheckpointCrashSweepDeps {
+  /** The stable `/tmp/<unit>.log` symlink → the newest manual run's own log. */
+  resolveLog?: (stablePath: string) => Promise<string | null>;
+  readLog?: (logPath: string) => Promise<string | null>;
+  /** Atomic create-if-absent of the per-run sentinel; false when it already existed. */
+  claimSentinel?: (sentinelPath: string) => Promise<boolean>;
+  emit?: typeof emitAwaitedEvent;
+}
+
+export type ManualCheckpointCrashSweepResult =
+  | { status: 'no-log' | 'no-terminal-evidence' | 'not-a-tooling-crash' | 'result-marker-torn' | 'already-alarmed'; logPath: string | null }
+  | { status: 'alarmed'; logPath: string };
+
+/**
+ * WI-10004928 part 1, manual leg: a `release:checkpoint-run` suite runs as a transient systemd
+ * unit, not under the routine, so `reconcileLoadedScheduledCheckpointTerminal` never sees it.
+ * The unit's ExecStopPost (systemd-owned, so it survives the crash) appends the terminal tuple to
+ * the run's own log. A LOAD-TIME crash is that tuple abnormal, with no result marker AND no
+ * candidate line (the CLI dies before it resolves a candidate). A suite that was killed, timed
+ * out, or replaced resolved a candidate first, so it is deliberately not called a tooling crash.
+ * The sentinel `<log>.tooling-crash-alarmed` makes the sweep idempotent per run.
+ */
+export async function sweepManualCheckpointToolingCrash(
+  root: string,
+  deps: ManualCheckpointCrashSweepDeps = {},
+): Promise<ManualCheckpointCrashSweepResult> {
+  const launch = await import('../../release-checkpoint-launch');
+  const stable = launch.checkpointLatestLogPath(launch.checkpointUnitForRoot(root));
+  const { realpath, writeFile } = await import('node:fs/promises');
+  const resolveLog = deps.resolveLog ?? ((p: string) => realpath(p).catch(() => null));
+  const readLog = deps.readLog ?? (async (p: string) => launch.defaultReadLogTail(p));
+  const claimSentinel =
+    deps.claimSentinel ??
+    ((p: string) =>
+      writeFile(p, `${new Date().toISOString()}\n`, { flag: 'wx' }).then(
+        () => true,
+        () => false,
+      ));
+  const logPath = await resolveLog(stable);
+  if (!logPath) return { status: 'no-log', logPath: null };
+  const log = await readLog(logPath);
+  if (log == null) return { status: 'no-log', logPath };
+  const evidence = launch.parseCheckpointSystemdTerminalEvidence(log);
+  if (!evidence) return { status: 'no-terminal-evidence', logPath };
+  // WI-10005994: a marker anywhere in a line (a torn marker starts mid-line) means the CLI reached
+  // its terminal seam; a torn one is reported as such and never alarmed as a crash.
+  const markerState = checkpointResultMarkerState(log);
+  if (!evidence.abnormal || markerState === 'parsed' || evidence.candidate !== null) {
+    return { status: 'not-a-tooling-crash', logPath };
+  }
+  if (markerState === 'torn') return { status: 'result-marker-torn', logPath };
+  if (!(await claimSentinel(`${logPath}.tooling-crash-alarmed`))) return { status: 'already-alarmed', logPath };
+  const exitCode = /^\d+$/.test(evidence.exit_status) ? Number(evidence.exit_status) : null;
+  await emitGateToolingCrashEvent(
+    root,
+    { exitCode, runId: path.basename(logPath), logPath, tail: log.slice(-2000) },
+    deps.emit ?? emitAwaitedEvent,
+  );
+  return { status: 'alarmed', logPath };
+}
+
+export async function emitGateToolingCrashEvent(
+  root: string,
+  info: {
+    exitCode: number | null;
+    runId: string | null;
+    logPath: string | null;
+    tail: string | null;
+    /** WI-10005994: `result-marker-torn` = the run reached a verdict whose marker was damaged. */
+    cause?: 'tooling-crash' | 'result-marker-torn';
+  },
+  emit: typeof emitAwaitedEvent = emitAwaitedEvent,
+): Promise<void> {
+  const pipeline = pipelineName(root);
+  const exit = info.exitCode === null ? 'unknown exit' : `exit ${info.exitCode}`;
+  const torn = info.cause === 'result-marker-torn';
+  const summary = torn
+    ? `${pipelineTag(pipeline)} green-checkpoint: RESULT MARKER TORN (${exit}) — the run reached a verdict but ` +
+      `its result line was damaged in transit, so it was not read; read the run log ${info.logPath ?? '(path unknown)'}`
+    : `${pipelineTag(pipeline)} green-checkpoint: GATE TOOLING CRASHED (${exit}) before any verdict — ` +
+      `no suite ran; the gate is not judging anything until this is fixed`;
+  const payload = {
+    sha: null,
+    pipeline,
+    reason: torn ? 'result-marker-torn' : 'gate-tooling-crash',
+    exitCode: info.exitCode,
+    runId: info.runId,
+    logPath: info.logPath,
+    summary: info.tail ? info.tail.slice(-300) : null,
+  };
+  const cancelSiblingKeysFor = ['release:green', `release:green:${pipeline}`];
+  for (const key of ['green-checkpoint:inconclusive', `green-checkpoint:inconclusive:${pipeline}`]) {
+    try {
+      await emit({ key, summary, payload, source: 'green-checkpoint', cancelSiblingKeysFor });
+    } catch (e) {
+      console.warn(
+        `${orchestratorStdoutTag()} gate-tooling-crash ${key} emit failed: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  }
+}
+
 /** Checkouts that must NEVER serve as the integration tree.
  *
  *  `papercup-release` / `papercusp-release` are the DEPLOY ARTIFACT (pinned to green
@@ -1000,21 +1255,36 @@ function runScript(
         ),
       );
     });
-  return wantScope
-    ? attempt(
-        buildIsolatedScopeArgv(
-          scopedPayload,
-          isolate.memoryMaxG,
-          'allow',
-          CHECKPOINT_SCOPE_RUNTIME_MAX_SEC,
-          isolate.terminalContext?.gateFireId
-            ? scheduledCheckpointScopeUnit(isolate.terminalContext.gateFireId)
-            : null,
-        ),
-        () => attempt(scopedPayload, null, checkpointPaths?.terminalPath),
-        checkpointPaths?.terminalPath,
-      )
-    : attempt(base, null);
+  const launch = (): Promise<RunResult> =>
+    wantScope
+      ? attempt(
+          buildIsolatedScopeArgv(
+            scopedPayload,
+            isolate.memoryMaxG,
+            'allow',
+            CHECKPOINT_SCOPE_RUNTIME_MAX_SEC,
+            isolate.terminalContext?.gateFireId
+              ? scheduledCheckpointScopeUnit(isolate.terminalContext.gateFireId)
+              : null,
+          ),
+          () => attempt(scopedPayload, null, checkpointPaths?.terminalPath),
+          checkpointPaths?.terminalPath,
+        )
+      : attempt(base, null);
+  // WI-10005925: the script boots from `root`'s shared node_modules via tsx. A peer's
+  // install:safe reify in that window crashed the 08:32Z gate before any verdict
+  // ("Cannot find module '@octokit/rest'"). Hold the install boundary across the boot
+  // window only. The gate runs for an hour, and holding the lease that long would
+  // block every install.
+  return withInstallBoundaryBootWindow(root, launch).then(({ value, lease }) => {
+    if (lease.outcome === 'timed-out' || lease.outcome === 'error') {
+      console.warn(
+        `[release-actions] ${relScript} launched without the install boundary (${lease.outcome}` +
+          `${lease.detail ? `: ${lease.detail}` : ''}, waited ${lease.waitedMs}ms)`,
+      );
+    }
+    return value;
+  });
 }
 
 /**
@@ -1138,6 +1408,31 @@ function boundedTypecheckPreflight(
   };
 }
 
+import { parseGateSuiteVerdictReplay, type GateSuiteVerdictReplay } from '../../release/gate-hygiene-split';
+import { withBoundedTimeout } from '../../bounded-timeout';
+
+/** P-014: reuse append-only verdict detail; never read a mutable live verdict as history. */
+export async function readLastGateSuiteVerdictReplay(target: GateVerdictTarget): Promise<GateSuiteVerdictReplay | null> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const result = await withBoundedTimeout(async (signal) => {
+    const query = getOrgPg().sql.unsafe<{ replay: unknown }[]>(`
+    SELECT detail->'suiteVerdictReplay' AS replay FROM harness_shared.pipeline_events
+     WHERE workspace_id = $1 AND install_slug = $2 AND kind = 'green_checkpoint'
+       AND status <> 'decision-pending' AND detail ? 'suiteVerdictReplay'
+       AND COALESCE(detail->>'candidateSource', '') <> 'pinned'
+     ORDER BY created_at DESC, id DESC LIMIT 1`, [target.workspaceId, target.installSlug]);
+    const cancel = () => query.cancel?.();
+    signal.addEventListener('abort', cancel, { once: true });
+    try { return await query; } finally { signal.removeEventListener('abort', cancel); }
+  }, { timeoutMs: 5_000, fallback: null, label: 'gate-suite-replay-history' });
+  if (result.degraded || result.value === null) throw new Error(`measured-suite replay history unavailable (${result.reason ?? 'unreadable'})`);
+  const rows = result.value;
+  if (rows.length === 0) return null;
+  const replay = parseGateSuiteVerdictReplay(rows[0]?.replay);
+  if (!replay) throw new Error('latest measured-suite replay is malformed or has an unsupported version');
+  return replay;
+}
+
 export interface CheckpointVerdict {
   reason: string;
   green?: boolean | null;
@@ -1145,6 +1440,10 @@ export interface CheckpointVerdict {
   candidateSource?: CheckpointCandidateSource;
   /** Compatibility field for older producers that predate candidateSource. */
   diagnostic?: 'candidate-pinned';
+  /** P-012 (green-main-cycle-time-2026-10-08): where a FRESH cut came from (known-good vs tip). */
+  freezeCut?: FreezeCutRecord;
+  /** P-012: the red legs of a fresh candidate's first round (`legs: []` = R1 green). */
+  redLegsAtR1?: RedLegsAtR1;
   candidate?: string;
   from?: string | null;
   summary?: string;
@@ -1166,6 +1465,8 @@ export interface CheckpointVerdict {
    *  this verdict. Re-validated with parseTestPassReuseHealth before it is stored, because the
    *  version-skew fallback reads it back out of JSON. ABSENT ⇒ not reported this round. */
   testPassReuse?: TestPassReuseHealth;
+  suiteVerdictReplay?: GateSuiteVerdictReplay;
+  suiteReplayCanary?: { status: 'passed' | 'bootstrap' | 'mismatch' | 'unreadable'; detail: string };
   /** P-013: structural mirror of CheckpointResult.roundPhases — where this round's time went.
    *  Re-validated with parseGateRoundPhases before storage. ABSENT ⇒ not measured. */
   roundPhases?: GateRoundPhases;
@@ -1333,7 +1634,10 @@ export interface SignedGateVerdictPublishResult {
     | 'identity-unreadable'
     | 'manifest-unreadable'
     | 'no-test-rows'
-    | 'deadline-exceeded';
+    | 'deadline-exceeded'
+    /** WI-6554700010009547: the caller gave publication no time budget (`deadlineMs <= 0`),
+     *  so `publish` was never started. */
+    | 'skipped-no-budget';
 }
 
 /** The signed shard ledger is additive evidence, so it cannot own the checkpoint run lock
@@ -1346,6 +1650,13 @@ export async function publishSignedGateVerdictsWithDeadline(
   log: (line: string) => void,
   deadlineMs = SIGNED_GATE_VERDICT_PUBLISH_DEADLINE_MS,
 ): Promise<SignedGateVerdictPublishResult> {
+  // WI-6554700010009547: a caller with no time to spare (the self-watchdog's last-gasp record)
+  // must not START the publisher: it loads the registry fresh and builds a shard manifest at the
+  // candidate sha, which outlived the watchdog's onFire grace and got the whole tail SIGKILLed.
+  if (!(deadlineMs > 0)) {
+    log('signed gate shard publication skipped (no time budget)');
+    return { published: 0, skipped: 0, reason: 'skipped-no-budget' };
+  }
   const startedAt = Date.now();
   log(`signed gate shard publication started (deadline ${deadlineMs}ms)`);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1364,6 +1675,13 @@ export async function publishSignedGateVerdictsWithDeadline(
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/** WI-6554700010009547: per-call knobs for {@link recordCheckpointVerdict}. */
+export interface RecordCheckpointVerdictOptions {
+  /** Deadline for the additive signed-shard publication step. Omitted = the
+   *  {@link SIGNED_GATE_VERDICT_PUBLISH_DEADLINE_MS} default; `0` = do not publish at all. */
+  signedShardDeadlineMs?: number;
 }
 
 interface GateTestRunRow {
@@ -1690,11 +2008,31 @@ export async function publishSignedGateVerdicts(
   }
 }
 
+/**
+ * WI-10007497: the qualification attempt a verdict event belongs to. The env-transported id wins
+ * (the launcher bound this run to it); otherwise only a settlement that actually BOUND this
+ * verdict (`updated` / `idempotent`) names it. A `conflict` or already-`terminal` transaction is
+ * some other attempt's row, so citing it would mis-join verdicts to attempts.
+ */
+export function verdictQualificationAttemptId(
+  transportedAttemptId: string | undefined,
+  settlement: { status: string; transaction?: { attemptId?: string } } | null | undefined,
+): string | undefined {
+  if (transportedAttemptId) return transportedAttemptId;
+  if (settlement && (settlement.status === 'updated' || settlement.status === 'idempotent')) {
+    return settlement.transaction?.attemptId || undefined;
+  }
+  return undefined;
+}
+
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
  *  producer-side write and the routine's fallback) so a manual run's history row is identical to a
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
 export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?: string): Record<string, unknown> {
   const detail: Record<string, unknown> = { green: v.green ?? null };
+  if (v.suiteVerdictReplay) detail.suiteVerdictReplay = parseGateSuiteVerdictReplay(v.suiteVerdictReplay)
+    ?? { invalid: true, error: 'malformed measured-suite replay' };
+  if (v.suiteReplayCanary) detail.suiteReplayCanary = v.suiteReplayCanary;
   const gateFireId = isGateFireId(v.gateFireId)
     ? v.gateFireId
     : isGateFireId(fallbackGateFireId)
@@ -1706,6 +2044,24 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
   if (v.diagnostic) detail.diagnostic = v.diagnostic;
   if (v.promotionPending === true) detail.promotionPending = true;
   if (v.candidate) detail.candidate = v.candidate.slice(0, 12);
+  // P-012: the append-only green_checkpoint event IS the per-candidate ledger — every fresh cut
+  // records its source, and every measured first round its red legs ([] = green at R1).
+  if (v.freezeCut) {
+    detail.freezeCut = {
+      source: v.freezeCut.source,
+      reason: v.freezeCut.reason,
+      candidate: v.freezeCut.candidate.slice(0, 12),
+      tip: v.freezeCut.tip.slice(0, 12),
+      knownGood: v.freezeCut.knownGood ? v.freezeCut.knownGood.slice(0, 12) : null,
+    };
+  }
+  if (v.redLegsAtR1) {
+    detail.redLegsAtR1 = {
+      candidate: v.redLegsAtR1.candidate.slice(0, 12),
+      source: v.redLegsAtR1.source,
+      legs: [...v.redLegsAtR1.legs],
+    };
+  }
   if (v.from) detail.from = v.from.slice(0, 12);
   if (v.repairQueue) {
     // P-003 / D-002: `candidate` historically carried the mutable repair head on no-suite
@@ -1754,6 +2110,13 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       minSavedTestMs: reuse.minSavedTestMs,
       unmeasured: reuse.unmeasured,
       alarms: reuse.alarms.length,
+      // Keep the qualified measurement on the EXISTING append-only event. The capped display
+      // alarm list and 12-char display SHA cannot reconstruct the audit window later.
+      ...(reuse.audit ? { audit: { ...reuse.audit, judgedSha: reuse.judgedSha, recordedAtMs: reuse.recordedAtMs } } : {}),
+      // Named first-attempt results are acceptance evidence, not a capped display sample.
+      ...(reuse.auditedFiles === undefined ? {} : { auditedFiles: reuse.auditedFiles }),
+      ...(reuse.auditRuns === undefined ? {} : { auditRuns: reuse.auditRuns }),
+      ...(reuse.suite === undefined ? {} : { suite: reuse.suite }),
     };
   }
   // P-013: the round's phase breakdown rides the append-only event whole (it is capped at
@@ -2030,7 +2393,11 @@ export function __resetSelfHealPrebindForTest(): void {
   selfHealPrebound = null;
 }
 
-export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict: CheckpointVerdict): Promise<boolean> {
+export async function recordCheckpointVerdict(
+  target: GateVerdictTarget,
+  verdict: CheckpointVerdict,
+  options: RecordCheckpointVerdictOptions = {},
+): Promise<boolean> {
   // P-003: settle the logical qualification BEFORE filtering non-recordable pipeline outcomes.
   // `skipped-locked`, migrations-pending, and the other typed pre-suite no-verdicts are not gate
   // verdicts, but they are exactly the outcomes that return the same logical attempt to waiting.
@@ -2094,12 +2461,13 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   // result and pipeline event committed together, so do not append or count it twice.
   if (transportedAttemptId && qualificationSettlement?.status === 'terminal') return true;
   if (!atomicTerminalEvent) {
+    const attemptId = verdictQualificationAttemptId(transportedAttemptId, qualificationSettlement);
     await appendPipelineEvent({
       workspaceId: target.workspaceId,
       installSlug: target.installSlug,
       kind: 'green_checkpoint',
       status: verdict.reason,
-      detail: buildCheckpointDetail(verdict),
+      detail: { ...buildCheckpointDetail(verdict), ...(attemptId ? { attemptId } : {}) },
     });
   }
   // A pinned candidate is retained as diagnostic pipeline evidence, but it must not become
@@ -2113,6 +2481,7 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   const signedVerdicts = await publishSignedGateVerdictsWithDeadline(
     () => publishSignedGateVerdicts(target, verdict),
     (line) => console.log(`${orchestratorStdoutTag()} ${line}`),
+    options.signedShardDeadlineMs ?? SIGNED_GATE_VERDICT_PUBLISH_DEADLINE_MS,
   );
   if (signedVerdicts.published > 0) {
     console.log(
@@ -2152,13 +2521,26 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
     console.warn(`${orchestratorStdoutTag()} gate-health projection failed after terminal record: ${error instanceof Error ? error.message : error}`);
   });
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
+  // P-007: measured frozen reds also propose staging fixes in the existing finite worker.
+  // This never admits, changes repairHead, or delays the verdict for pre-check execution.
+  await import('../../release/staging-fix-proposal-cli').then(({ scheduleStagingFixProposal }) =>
+    scheduleStagingFixProposal(target, verdict)).catch((error) =>
+    console.warn(`${orchestratorStdoutTag()} staging proposal launch failed: ${String(error)}`));
+
+  // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
   // recording, which already happened above.
   if (
     !verdict.repairQueue &&
     shouldDispatchReleaseFixer(verdict.reason, verdict.candidate, verdict.failingTests, verdict.retriage)
   ) {
-    await dispatchReleaseFixer(target, verdict.candidate, verdict.failingTests).catch((e) =>
+    await dispatchReleaseFixer(
+      target,
+      verdict.candidate,
+      verdict.failingTests,
+      undefined,
+      verdict.checkpointEvidence,
+    ).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
@@ -2181,12 +2563,13 @@ export async function recordPendingCheckpointVerdict(
   verdict: CheckpointVerdict,
 ): Promise<boolean> {
   if (!verdict.promotionPending || !isRecordableVerdict(verdict.reason)) return false;
+  const attemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined;
   await appendPipelineEvent({
     workspaceId: target.workspaceId,
     installSlug: target.installSlug,
     kind: 'green_checkpoint',
     status: 'decision-pending',
-    detail: buildCheckpointDetail(verdict),
+    detail: { ...buildCheckpointDetail(verdict), ...(attemptId ? { attemptId } : {}) },
   });
   // Keep the pending diagnostic row for history, but never mutate gate health or dispatch a
   // fixer for a candidate that was explicitly pinned for investigation.
@@ -2243,6 +2626,17 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   if (recoveredCount > 0) {
     console.log(`${orchestratorStdoutTag()} reconciled ${recoveredCount} scheduled checkpoint terminal marker(s)`);
   }
+  // WI-10004928: the same reconciliation for a MANUAL (release:checkpoint-run) unit that died at
+  // load — its only terminal evidence is the systemd ExecStopPost tuple in its own log.
+  const manualCrash = await sweepManualCheckpointToolingCrash(integrationRoot()).catch((error) => {
+    console.warn(
+      `${orchestratorStdoutTag()} manual checkpoint crash sweep failed: ${error instanceof Error ? error.message : error}`,
+    );
+    return null;
+  });
+  if (manualCrash?.status === 'alarmed') {
+    console.log(`${orchestratorStdoutTag()} gate-tooling-crash alarm emitted for manual run ${manualCrash.logPath}`);
+  }
   // per-hive-git-and-release-gate P-010: route a per-hive routine to ITS OWN checkout /
   // branches / greenCmd. Operator-home (papercusp) → default root + empty overlay = EXACT
   // current behavior (regression-safe). A non-gated installSlug (gate disabled / no repo) →
@@ -2277,7 +2671,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       workspaceId: ctx.workspaceId,
       installSlug: ctx.installSlug,
       kind: 'green_checkpoint',
-      status: 'skipped-disabled',
+      // WI-10006317: a gated hive whose gate can never promote is a FAULT, not a choice —
+      // record it distinctly so no surface reads it as a deliberately disabled (or healthy) gate.
+      status: routing.skip.misconfigured ? 'skipped-misconfigured' : 'skipped-disabled',
       detail: withGateFireId({ reason: routing.skip.reason }),
     });
     // EI-17065: a green-checkpoint-{stall,watchdog} escalation for THIS installSlug can
@@ -2387,7 +2783,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // Unlike readQualificationAdmission above, this one FAILS OPEN — see the module note. An
   // unmeasurable probe must not be more restrictive than the unbounded status quo it replaces,
   // and a lone run is never refused.
-  const checkpointMemoryG = checkpointScopeMemoryMaxG();
+  // WI-10006274: size the request by the suite this install actually runs. The operator home
+  // runs the Papercusp Vitest fork runner; a foreign pot's own `npm test` requests the overhead.
+  const checkpointMemoryG = checkpointScopeMemoryMaxGForGreenCmd(routing.greenCmd ?? null);
   const memoryAdmission = admitCheckpointMemory({ requestG: checkpointMemoryG });
   if (!memoryAdmission.admit) {
     console.warn(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: ${memoryAdmission.detail}`);
@@ -2443,18 +2841,89 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     qualificationAtLaunch.status === 'present' && qualificationAtLaunch.transaction.phase !== 'terminal'
       ? qualificationAtLaunch.transaction
       : null;
-  const qualificationBegin = activeAttempt
-    ? { status: 'idempotent' as const, transaction: activeAttempt }
-    : await beginStoredQualification(
-        ctx,
-        { attemptId: gateFireId, evidenceRefs: [`gate-fire:${gateFireId}`] },
-        { reconcileTerminalRepairQueueForSuccessor: true },
-      );
+  // Read the queue once for both the eligibility pin and fixer-liveness probe. A pin from this
+  // snapshot is only a request: beginStoredQualification re-reads the same routine row FOR UPDATE
+  // and compares the exact repairHead before preserving the queue, so a moved head stays blocked.
+  const repairQueueRead = await readFrozenCandidateRepairQueueState(ctx).catch(() => null);
+  const repairQueue = repairQueueRead?.status === 'value' ? repairQueueRead.queue : null;
+  // A null-origin legacy queue has no provenance to hand forward. Supply that missing link only
+  // for the exact unassigned awaiting-fixer shape the locked reconciliation can preserve; all
+  // other rows retain the existing fail-closed behavior.
+  const nullOriginAwaitingFixerRepairHead =
+    qualificationAtLaunch.status === 'present' &&
+    qualificationAtLaunch.transaction.phase === 'terminal' &&
+    repairQueue !== null &&
+    repairQueue.qualificationAttemptId === null &&
+    repairQueue.phase === 'awaiting-fixer' &&
+    repairQueue.fixerSpawnId === null &&
+    repairQueue.dispatchReservation == null
+      ? repairQueue.repairHead
+      : undefined;
+  // WI-10007408: successor reconciliation is pure, so a dead ASSIGNED fixer is only provable by
+  // a probe taken here. Bound to the exact spawn id read, so a fixer swapped in between this
+  // read and the locked mutation is never vouched for; any read/probe failure stays 'unknown'
+  // (old fail-closed behaviour).
+  const assignedFixerLiveness = repairQueueRead
+    ? await probeAssignedFrozenRepairFixer(ctx, { readQueue: async () => repairQueueRead }).catch(() => null)
+    : null;
+  // Route active attempts through the same locked-row reconciliation as fresh ones. It is
+  // idempotent for a live runner, while a dead unstarted placeholder can safely adopt a newly
+  // admitted, never-judged repairHead before this fire reserves its physical slot.
+  const qualificationBegin = await beginStoredQualification(
+    ctx,
+    {
+      attemptId: activeAttempt?.attemptId ?? gateFireId,
+      evidenceRefs: [`gate-fire:${gateFireId}`],
+      assignedFixerLiveness,
+      ...(nullOriginAwaitingFixerRepairHead
+        ? { requiredAncestorSha: nullOriginAwaitingFixerRepairHead }
+        : {}),
+    },
+    { reconcileTerminalRepairQueueForSuccessor: true },
+  );
+  const conflictDetail = (
+    stage: 'begin' | 'scheduled-fire' | 'reserve-runner',
+    result: {
+      status: string;
+      transaction?: Parameters<typeof projectCheckpointQualificationState>[0];
+      repairQueueReconciliation?: { status: string; reason: string };
+    },
+    requestedAttemptId: string,
+    requestedRunnerId?: string,
+  ): Record<string, unknown> => {
+    const state = projectCheckpointQualificationState(result.transaction);
+    const current = result.transaction as CheckpointQualificationTransaction | null | undefined;
+    const incumbent = current?.currentPhysicalRunner;
+    return {
+      reason: result.status,
+      // WI-10007398: a begin-stage `conflict` is usually a frozen-queue reconciliation refusal,
+      // and without its reason the event could not say WHICH guard fired — a 12h stall had to be
+      // re-derived from source. Null when the conflict did not come from reconciliation.
+      repairQueueReconciliation: result.repairQueueReconciliation
+        ? { status: result.repairQueueReconciliation.status, reason: result.repairQueueReconciliation.reason }
+        : null,
+      stage,
+      requestedAttemptId,
+      requestedRunnerId: requestedRunnerId ?? null,
+      observedAttemptId: current?.attemptId ?? null,
+      candidate: current?.candidate ?? null,
+      repairHead: current?.repairHead ?? null,
+      phase: current?.phase ?? null,
+      runId: current?.runId ?? null,
+      observedRunnerId: incumbent?.id ?? null,
+      runnerLeaseExpiresAtMs: incumbent?.leaseExpiresAtMs ?? null,
+      runnerHeartbeatAtMs: incumbent?.heartbeatAtMs ?? null,
+      safeNextAction: state.safeNextAction,
+      // No exact process probe was made for a conflict: do not turn a held slot into a
+      // guessed diagnosis of a dead runner or permission to replace it.
+      runnerLiveness: 'unknown',
+    };
+  };
   if (qualificationBegin.status !== 'updated' && qualificationBegin.status !== 'idempotent') {
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
       status: 'skipped-qualification-conflict',
-      detail: withGateFireId({ reason: qualificationBegin.status }),
+      detail: withGateFireId(conflictDetail('begin', qualificationBegin, activeAttempt?.attemptId ?? gateFireId)),
     });
     return;
   }
@@ -2463,13 +2932,13 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
       status: 'skipped-qualification-conflict',
-      detail: withGateFireId({ reason: scheduled.status, attemptId: qualificationBegin.transaction.attemptId }),
+      detail: withGateFireId({ ...conflictDetail('scheduled-fire', scheduled, qualificationBegin.transaction.attemptId), attemptId: qualificationBegin.transaction.attemptId }),
     });
     return;
   }
   const qualificationAttemptId = scheduled.transaction.attemptId;
   const runner = scheduled.transaction.currentPhysicalRunner;
-  const runnerLiveness = probeRunnerLiveness(runner);
+  const runnerLiveness = await probeRunnerLiveness(runner);
   const join = classifyScheduledQualificationJoin(scheduled.transaction, runnerLiveness);
   if (join !== 'launch') {
     await appendPipelineEvent({
@@ -2500,7 +2969,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
       status: 'skipped-qualification-conflict',
-      detail: withGateFireId({ reason: reserved.status, attemptId: qualificationAttemptId }),
+      detail: withGateFireId({ ...conflictDetail('reserve-runner', reserved, qualificationAttemptId, gateFireId), attemptId: qualificationAttemptId }),
     });
     return;
   }
@@ -2575,8 +3044,11 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   let failingTests: string[] | undefined;
   let flakeSuspects: string[] | undefined;
   // P-008: parse the delimited result marker, not a brace-slice of all stdout.
-  const parsed = (parseMarkerLine(r.stdout, GREEN_CHECKPOINT_RESULT_MARKER) ??
-    parseMarkerLine(loadedTerminal?.logText ?? '', GREEN_CHECKPOINT_RESULT_MARKER)) as CheckpointVerdict | null;
+  const parsed = resolveCheckpointResultFromLogs(
+    r.stdout,
+    loadedTerminal?.logText,
+    loadedTerminal?.terminal.runId ?? r.runId,
+  ) as CheckpointVerdict | null;
   if (parsed?.reason) {
     status = parsed.reason; // advanced | up-to-date | not-green | not-fast-forward | create-failed | skipped-locked
     candidate = parsed.candidate;
@@ -2648,15 +3120,20 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     console.log(`${orchestratorStdoutTag()} '${status}' — recorded by the run that produced it (WI-4494)`);
   } else if (!reconciliationRefused && fallbackQualification?.status !== 'conflict' &&
              fallbackQualification?.status !== 'unreadable') {
+    // WI-10007497: the routine bound this run to its attempt; name it on the fallback event too.
+    const attemptId = verdictQualificationAttemptId(qualificationAttemptId ?? undefined, fallbackQualification);
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId,
       installSlug: ctx.installSlug,
       kind: 'green_checkpoint',
       status,
-      detail: parsed?.reason
-        ? buildCheckpointDetail(parsed, gateFireId)
-        : // No parseable result marker (crash before print / non-zero exit) → 'error'.
-          withGateFireId({ code: r.code, stderr: (r.stderr || r.stdout).slice(-300) }),
+      detail: {
+        ...(parsed?.reason
+          ? buildCheckpointDetail(parsed, gateFireId)
+          : // No parseable result marker (crash before print / non-zero exit) → 'error'.
+            withGateFireId({ code: r.code, stderr: (r.stderr || r.stdout).slice(-300) })),
+        ...(attemptId ? { attemptId } : {}),
+      },
     });
   }
   // The old CLI can produce a real red without its own awaitable wake. The exact logical
@@ -2668,6 +3145,15 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       !isPinnedCheckpointVerdict(parsed) && parsed?.green === false && parsed.candidate &&
       (!atomicallyRecorded || fallbackQualification?.status === 'updated')) {
     await emitLegacyRedVerdictEvent(root, parsed);
+  }
+  // WI-10004928 part 1: with a terminal file the reconcile above already emitted this wake.
+  if (!r.terminalPath && !recordedByRun && !parsed?.reason && status === 'error') {
+    await emitGateToolingCrashEvent(root, {
+      exitCode: r.code ?? null,
+      runId: null,
+      logPath: null,
+      tail: (r.stderr || r.stdout || '').slice(-300) || null,
+    });
   }
 
   // P-004: track the red streak + time-since-last-green across ticks and fire a
@@ -2727,7 +3213,13 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     !parsed?.repairQueue &&
     shouldDispatchReleaseFixer(status, candidate, failingTests, parsed?.retriage)
   ) {
-    await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
+    await dispatchReleaseFixer(
+      ctx,
+      candidate as string,
+      failingTests,
+      undefined,
+      parsed?.checkpointEvidence,
+    ).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
@@ -2744,7 +3236,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       console.warn(`${orchestratorStdoutTag()} flake history failed: ${e instanceof Error ? e.message : e}`),
     );
   }
-});
+  // WI-10005745: the orchestrator is tsx <integrationRoot>/apps/operator/lib/release/green-checkpoint.ts —
+  // live-tree code even though the suite it runs judges a committed candidate.
+}, { executesIntegrationTreeCode: true });
 
 /** P-004 thresholds: a gate held this many consecutive hourly checkpoints — or
  *  with no green for this long — is STALLED and worth an urgent, one-shot alert. */
@@ -2992,6 +3486,7 @@ async function readStreakCauseDigest(
 export function gateRedStreakBroadcast(opts: {
   installSlug: string;
   consecutiveReds: number;
+  consecutiveNoVerdict?: number;
   heldHrs: number | null;
   candidate?: string | null;
   failingTests?: string[];
@@ -3000,15 +3495,17 @@ export function gateRedStreakBroadcast(opts: {
   commitsBehindTip?: number | null;
 }): { summary: string; body: string } {
   const tests = (opts.failingTests ?? []).slice(0, 20);
-  const held = opts.heldHrs != null ? ` (~${opts.heldHrs}h since the last green)` : '';
+  const held = opts.heldHrs != null ? `~${opts.heldHrs}h since last green` : 'last green time unknown';
+  const noVerdict = opts.consecutiveNoVerdict ?? 0;
   return {
     summary:
-      `green-checkpoint RED on ${opts.installSlug} — ${opts.consecutiveReds} consecutive red checkpoint(s)${held}; ` +
-      `\`main\` is frozen and staging changes are NOT reaching the release.`,
+      `green-checkpoint held on ${opts.installSlug} — ${held}; ` +
+      `${opts.consecutiveReds} consecutive red verdict(s), ${noVerdict} consecutive no-verdict run(s); ` +
+      `${tests.length ? `last red: ${tests.length} failing check(s); ` : ''}main frozen.`,
     body:
-      `The release gate is FIRING but every verdict is red${
+      `The last measured release verdict was red${
         opts.candidate ? `; the last judged candidate was ${opts.candidate.slice(0, 12)}` : ''
-      }.${
+      }. ${noVerdict} consecutive run(s) have produced no new verdict.${
         tests.length
           ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.`
           : ''
@@ -3040,6 +3537,54 @@ export function gateRedStreakBroadcast(opts: {
       `invisible to the gate, and no path ever re-cuts the candidate from tip. Full rule: ` +
       `/internal/docs/agent-insights/frozen-candidate-fix-only-admission.`,
   };
+}
+
+/** Refresh the existing incident from persisted health; never re-open its condition or claim. */
+async function refreshGateRedStreakHeadline(ctx: GateVerdictTarget): Promise<void> {
+  try {
+    const { findConditionKeyHolder } = await import('../../coord/condition-bridge');
+    const { gateRedStreakConditionKey } = await import('../../coord/gate-ownership');
+    const id = await findConditionKeyHolder(gateRedStreakConditionKey(ctx.installSlug), {
+      harnessSlug: ctx.installSlug,
+      workspaceId: ctx.workspaceId,
+    });
+    if (!id) return;
+    // Read after this tick's atomic write: its initial snapshot may predate another increment
+    // or a green reset. This read and the title-only patch cannot overwrite gate counters.
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+    const rows = (await sql.unsafe(
+      `SELECT metadata->'gate_health' AS headline_health
+         FROM harness_shared.routines
+        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+          AND workspace_id = $2`,
+      [ctx.installSlug, ctx.workspaceId],
+    )) as Array<{ headline_health: {
+      lastVerdict?: string;
+      lastGreenAt?: number;
+      consecutiveReds?: number;
+      consecutiveNoVerdict?: number;
+      failingTests?: string[];
+    } | null }>;
+    const health = rows[0]?.headline_health;
+    if (!health || health.lastVerdict === 'green') return;
+    const heldHrs = typeof health.lastGreenAt === 'number' && Number.isFinite(health.lastGreenAt)
+      ? Math.round(Math.max(0, Date.now() - health.lastGreenAt) / 3_600_000)
+      : null;
+    const { summary } = gateRedStreakBroadcast({
+      installSlug: ctx.installSlug,
+      consecutiveReds: health.consecutiveReds ?? 0,
+      consecutiveNoVerdict: health.consecutiveNoVerdict ?? 0,
+      failingTests: Array.isArray(health.failingTests) ? health.failingTests : undefined,
+      heldHrs,
+    });
+    const { updateWorkItem } = await import('../../work-items');
+    const result = await updateWorkItem(id, { title: summary }, 'system:green-checkpoint', {
+      harness: ctx.installSlug,
+    });
+    if (!result.ok) console.warn(`${orchestratorStdoutTag()} red-streak headline refresh refused: ${result.reason}`);
+  } catch (e) {
+    console.warn(`${orchestratorStdoutTag()} red-streak headline refresh failed: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 /** Pure classification of a green-checkpoint tick's outcome for gate_health tracking.
@@ -3338,6 +3883,9 @@ export function classifyGateStallStatus(
     status === 'cancelled' ||
     status === 'repair-in-progress' ||
     status === 'repair-staging-mismatch' ||
+    // WI-10004108: an install with no configured integration branch cannot run this gate. It
+    // reports a durable not-applicable status, but must not create a red or no-verdict streak.
+    status === 'not-applicable' ||
     // WI-42350: the run DECLINED to re-judge a sha that already reached a red
     // verdict on a byte-identical tree. The producer says so in as many words
     // ("This is NOT a new red: it is the same one") and returns `green: null`
@@ -3620,6 +4168,14 @@ function oneLineMeasuredDetail(detail: string | null | undefined): string | null
 }
 
 export function gateStallNoopLogMessage(status: string, detail?: string | null): string {
+  if (status === 'not-applicable') {
+    const measuredDetail = oneLineMeasuredDetail(detail);
+    return (
+      `${orchestratorStdoutTag()} 'not-applicable' — green-checkpoint has no configured integration ` +
+      `branch for this installation${measuredDetail ? ` (${measuredDetail})` : ''}. This outcome is ` +
+      `recorded under gate_health.inconclusive without advancing the red or no-verdict counters.`
+    );
+  }
   if (status === 'disk-headroom') {
     return (
       // EI-23424266636870803: this said "the temp filesystem", which routes a responder
@@ -3836,6 +4392,7 @@ export async function trackGateStall(
     testPassReuse?: unknown;
     /** P-013: the round's phase breakdown; shape-checked here like testPassReuse. */
     roundPhases?: unknown;
+    alarm?: import('../../alarm-attention').AlarmAttentionDeps;
   } = {},
 ): Promise<void> {
   if (isPinnedCheckpointVerdict(options)) return;
@@ -3927,6 +4484,12 @@ export async function trackGateStall(
     : undefined;
   const fixerLivenessUnknown = repairQueue?.fixerSpawnId != null && repairFixerAlive === null;
   const fixerSuccession = classifyFrozenRepairFixerSuccession(repairQueue, repairFixerAlive, Date.now());
+  // Resolve only a readable queue with measured succession or a measured end.
+  if (rows.length > 0 && (rows[0].rq == null || repairQueue != null) &&
+      (!repairQueue || repairQueue.phase !== 'awaiting-fixer' || repairFixerAlive === true)) {
+    const { resolveAlarm } = await import('../../alarm-attention');
+    await resolveAlarm(`alarm:release-fixer-succession:${ctx.installSlug}`, 'release-fixer-succession', options.alarm);
+  }
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
   // `main` pin the CLI observed. If it MOVED since the last routine observation, green
   // work landed on `main` through a path this routine never saw — a MANUAL detached run
@@ -4241,6 +4804,20 @@ export async function trackGateStall(
     if (repairHold) {
       if (ladder.shouldNotify && ladder.axis === 'fixer' && currentFixerSuccession) {
         try {
+          const broadcastSevereEvent = options.alarm?.broadcast ?? (await import('../../severe-event-broadcast')).broadcastSevereEvent;
+          await broadcastSevereEvent({
+            conditionKey: `alarm:release-fixer-succession:${ctx.installSlug}`,
+            summary: `Release repair fixer ${currentFixerSuccession.state} on ${ctx.installSlug}`,
+            body: `Restore fixer succession for ${currentFixerSuccession.candidate}; this repair hold produced no code verdict.`,
+            oneShot: true,
+          });
+        } catch (e) {
+          console.warn(
+            `${orchestratorStdoutTag()} fixer-succession condition broadcast failed: ${e instanceof Error ? e.message : e}`,
+          );
+        }
+        // A condition-store failure cannot suppress the independent owner-delivery leg.
+        try {
           const { notifyAttentionOnce } = await import('../../attention-notify');
           const gapMins = Math.max(1, Math.round(currentFixerSuccession.ageMs / 60_000));
           const dead = currentFixerSuccession.state === 'dead';
@@ -4373,6 +4950,8 @@ export async function trackGateStall(
             .catch(() => undefined);
           const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
           await broadcastSevereEvent({
+            conditionKey: `alarm:release-gate-no-verdict:${ctx.installSlug}`,
+            oneShot: true,
             summary:
               `[${ctx.installSlug}] green-checkpoint is WEDGED on ${ctx.installSlug} — ${streak} consecutive run(s) ` +
               `ended without producing ANY verdict (latest: ${status}). This is NOT a red build: no failing test has been named.`,
@@ -4386,11 +4965,7 @@ export async function trackGateStall(
               `preflight condition (for example disk-headroom) must be cleared before re-fire; an unreported process ` +
               `exit instead requires diagnosing why the runner died before it could publish a result.`,
             category: 'severe-event',
-            // Deliberately NO conditionKey. `gate-red-streak:<harness>` mints exactly one claimable
-            // work-item whose whole framing is "the reds are yours to fix" — the response this
-            // alarm exists to prevent. Opening it here would hand someone a broken-build ticket for
-            // a gate that never judged a build. A plain severe event still reaches every agent's
-            // inbox, which is the loudness this needs.
+            // The apparatus episode has its own key; it never opens the code-red key.
           });
         }
       } catch (e) {
@@ -4401,7 +4976,18 @@ export async function trackGateStall(
         );
       }
     }
+    await refreshGateRedStreakHeadline(ctx);
     return;
+  }
+  // Only a measured verdict ends a no-verdict episode. Cached/up-to-date,
+  // withheld and diagnostic ticks leave the apparatus condition open.
+  if (!recordOnly && !promotionPending &&
+      ['advanced', 'advanced-prefix', 'not-green'].includes(status)) {
+    const { resolveAlarm } = await import('../../alarm-attention');
+    await resolveAlarm(`alarm:release-gate-no-verdict:${ctx.installSlug}`, 'release-gate-no-verdict', options.alarm);
+    if (isGreen) {
+      await resolveAlarm(`alarm:release-fixer-dispatch:${ctx.installSlug}`, 'release-fixer-dispatch', options.alarm);
+    }
   }
   // EI-19329732364513693: stamp HOW STALE the judged candidate is into the same blob that
   // carries the verdict, so a reader never has to re-derive it (and so the overwhelmingly
@@ -5113,6 +5699,7 @@ export async function trackGateStall(
         AND workspace_id = $3`,
     [ctx.installSlug, JSON.stringify({ gate_health: next }), ctx.workspaceId],
   );
+  if (!isGreen) await refreshGateRedStreakHeadline(ctx);
 }
 
 /** P-009 thresholds: a workspace that has flaked this often is "chronically
@@ -5133,7 +5720,10 @@ export async function trackGateStall(
  * release-fixer's / a human's job (D-003), never a tracked-file write from this
  * routine. Fail-safe — the routine tick never depends on it.
  */
-async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string, flakeSuspects?: string[]): Promise<void> {
+export async function trackFlakeHistory(
+  ctx: GateVerdictTarget, summary?: string, flakeSuspects?: string[],
+  deps: { sql?: postgres.Sql; nowMs?: () => number; alarm?: import('../../alarm-attention').AlarmAttentionDeps } = {},
+): Promise<void> {
   const flaked = new Set<string>();
   if (summary) {
     for (const m of summary.matchAll(/>>>\s+(\S+)\s+passed on retry — counted as a FLAKE/g)) {
@@ -5145,16 +5735,26 @@ async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string, flakeSu
   // keyed by `<ws>::<file>` so the ledger distinguishes a chronically-flaky FILE from a
   // chronically-flaky workspace.
   for (const f of flakeSuspects ?? []) flaked.add(f);
-  if (flaked.size === 0) return;
   const { getOrgPg } = await import('@papercusp/db-org');
-  const { sql } = getOrgPg();
+  const sql = deps.sql ?? getOrgPg().sql;
   const rows = (await sql.unsafe(
     `SELECT metadata->'flake_history' AS fh FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
   )) as Array<{ fh: Record<string, { flakes?: number; lastFlakeAt?: number; notifiedAt?: number }> | null }>;
   const fh = rows[0]?.fh ?? {};
-  const now = Date.now();
+  const now = (deps.nowMs ?? Date.now)();
+  const conditionKey = (ws: string) => `alarm:release-gate-flake:${ctx.installSlug}:${ws}`;
+  const { resolveAlarm } = await import('../../alarm-attention');
+  for (const [ws, prev] of Object.entries(fh)) {
+    // The total stays cumulative for the existing UI. Recovery is a measured quiet
+    // interval, not one clean tick or a failed history read.
+    if (!flaked.has(ws) && typeof prev.lastFlakeAt === 'number' && Number.isFinite(prev.lastFlakeAt) &&
+        now - prev.lastFlakeAt >= releaseCheckpointConfig().flakeNotifyCooldownMs) {
+      await resolveAlarm(conditionKey(ws), 'release-gate-flake', deps.alarm);
+    }
+  }
+  if (flaked.size === 0) return;
   const newlyChronic: string[] = [];
   for (const ws of flaked) {
     const prev = fh[ws] ?? {};
@@ -5175,17 +5775,32 @@ async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string, flakeSu
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug, JSON.stringify({ flake_history: fh })],
   );
+  // A notification cooldown never suppresses the condition's owning work item.
+  for (const ws of flaked) {
+    if ((fh[ws].flakes ?? 0) >= releaseCheckpointConfig().chronicFlakeCount) {
+      try {
+        const broadcastSevereEvent = deps.alarm?.broadcast ?? (await import('../../severe-event-broadcast')).broadcastSevereEvent;
+        await broadcastSevereEvent({
+          conditionKey: conditionKey(ws), summary: `Chronically-flaky release test: ${ws} on ${ctx.installSlug}`,
+          body: `${ws} has flaked ${fh[ws].flakes} times (failed then passed on retry). Quarantine it accountably and retain a de-quarantine follow-up.`,
+          oneShot: true,
+        });
+      } catch (e) { console.warn(`${orchestratorStdoutTag()} flake condition failed: ${String(e)}`); }
+    }
+  }
   if (newlyChronic.length > 0) {
     try {
       const { notifyAttention } = await import('../../attention-notify');
-      await notifyAttention({
+      const input = {
         kind: 'intervention',
         title: 'Chronically-flaky test(s) in the release gate',
         body: `${newlyChronic.join(', ')} has flaked ≥${releaseCheckpointConfig().chronicFlakeCount}× in the green-checkpoint suite (failed then passed on retry). Quarantine it accountably (quarantine.txt + a de-quarantine follow-up) so it stops risking gate stalls.`,
         importance: 'high',
         workspaceId: ctx.workspaceId,
         data: { workspaces: newlyChronic.join(',') },
-      });
+      } as const;
+      if (deps.alarm?.notify) await deps.alarm.notify(input);
+      else await notifyAttention(input);
     } catch (e) {
       console.warn(`${orchestratorStdoutTag()} flake notify failed: ${e instanceof Error ? e.message : e}`);
     }
@@ -5197,8 +5812,10 @@ export interface ReleaseFixerRecord {
   /** Stable failure signature (sorted failing test files) — dedup key across candidates. */
   signature?: string;
   candidate?: string;
-  /** When the fixer was last dispatched for this signature (epoch ms). */
+  /** When this dispatch attempt reserved the dedup slot (epoch ms). */
   at?: number;
+  /** Distinguishes an in-flight reservation from a confirmed fire or a failed fire. */
+  dispatchStatus?: 'reserved' | 'dispatched' | 'failed';
   /** The dispatched fixer's spawn id (fire-and-forget path) — null on the DBOS-durable
    *  path (which re-fires on crash itself) or a legacy record predating this field.
    *  THE signal P-014/D-009 added: the id we check liveness against. */
@@ -5276,7 +5893,7 @@ export interface ReleaseFixerDecision {
   dispatch: boolean;
   /** Notify the human this tick (rate-limited separately from dispatch). */
   notify: boolean;
-  reason: 'fresh' | 'covered' | 'self-heal';
+  reason: 'fresh' | 'covered' | 'self-heal' | 'dispatch-retry';
 }
 
 /** The fixer dedup / self-heal window (2h). The signature dedup that was the ONLY
@@ -5314,6 +5931,15 @@ export function decideReleaseFixerDispatch(args: {
   if (!sameRecent) {
     // A fresh failure (new signature, or the prior one aged out) — dispatch + notify.
     return { dispatch: true, notify: true, reason: 'fresh' };
+  }
+  if (lf.dispatchStatus === 'failed') {
+    // A reserved slot whose fire returned no spawn did not cover the gate. Retry now;
+    // only a notification actually sent by a prior successful fire starts the cooldown.
+    return {
+      dispatch: true,
+      notify: now - (lf.notifiedAt ?? 0) > notifyCooldownMs,
+      reason: 'dispatch-retry',
+    };
   }
   // Same failure within the window: the liveness-aware gate (D-009).
   if (args.fixerAlive !== false) {
@@ -5525,8 +6151,23 @@ export function buildReleaseFixerKickoff(input: {
   failingTests?: readonly string[];
   repairQueue?: FrozenCandidateRepairQueue | null;
   flakeAnnotation?: string;
+  checkpointEvidence?: CheckpointEvidence;
+  /** WI-10007494: queue entries the latest repair tick passed at this same repairHead. When
+   *  non-empty, `failingTests` holds only the remaining real reds. */
+  sameHeadContradicted?: readonly string[];
 }): string {
   const queue = input.repairQueue;
+  const checkpointEvidence = boundedCheckpointEvidence(input.checkpointEvidence);
+  const contradicted = input.sameHeadContradicted ?? [];
+  // The fixer reads the full signature from `release:repair-queue { op: 'get' }`, which keeps
+  // the contradicted entries on purpose, so the brief must say which entries to leave alone.
+  const contradictionNote =
+    queue && contradicted.length > 0
+      ? `\n\nFix ONLY: ${(input.failingTests ?? []).join(', ')}. Do NOT fix: ${contradicted.join(', ')}. ` +
+        `The repair tick re-ran those at repairHead ${queue.repairHead.slice(0, 12)} and they passed, so they ` +
+        `are a same-head measurement contradiction, not a defect at this head. They stay in the queue's ` +
+        `signature (repair-queue get still lists them) and the verification after your admission re-measures them.`
+      : '';
   const kickoff = queue
     ? `green-checkpoint froze candidate ${queue.candidate.slice(0, 8)} and assigned you repair attempt ${queue.attempts + 1}. ` +
       `You are the AUTHORIZED delegated repair child, not a second LIVE_GATE_OPS owner. ` +
@@ -5552,10 +6193,17 @@ export function buildReleaseFixerKickoff(input: {
       `to the gate. Do NOT claim the gate, launch a checkpoint, mutate deployment, commit, or push — ` +
       `git-sync and the gate finalizer own those steps.`
     : `green-checkpoint held \`main\`: candidate ${input.candidate.slice(0, 8)} failed the gate suite. ` +
-      `Read the exact supplied checkpoint artifact, reproduce the failing test(s) locally to classify ` +
+      `Reproduce the failing test(s) locally to classify ` +
       `regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). ` +
       `Do NOT push — the next checkpoint re-verifies.`;
-  return kickoff + (input.flakeAnnotation ? `\n\n${input.flakeAnnotation}` : '');
+  const checkpointNote = checkpointEvidence
+    ? `\n\nAuthoritative checkpoint run evidence: ${JSON.stringify(checkpointEvidence)}. ` +
+      `Read this exact checkpoint artifact and use its failure tail; keep its runId and integrationRoot ` +
+      `attached to your diagnosis. Do not search logs by candidate SHA.`
+    : `\n\nNo exact producing-run checkpoint artifact reference was captured for this dispatch. ` +
+      `Do not search logs by candidate SHA; reproduce the listed failure and disclose that the original ` +
+      `run artifact was unavailable.`;
+  return kickoff + contradictionNote + checkpointNote + (input.flakeAnnotation ? `\n\n${input.flakeAnnotation}` : '');
 }
 
 /** Live-compute {@link ReleaseFixerCandidateStaleCheck} for `candidate` in `root`. */
@@ -5591,6 +6239,33 @@ export async function readFrozenCandidateRepairQueueState(
     [target.workspaceId, target.installSlug],
   )) as Array<{ repair_queue: unknown }>;
   return parseFrozenCandidateRepairQueueRead(rows[0]?.repair_queue);
+}
+
+/**
+ * WI-10007408: the liveness of the fixer an `awaiting-fixer` frozen queue names, keyed by the
+ * spawn id that was actually probed, for successor reconciliation at gate begin. Null when the
+ * queue is absent, unreadable, in another phase, or names no fixer (nothing to judge). A probe
+ * that cannot decide reports 'unknown', which reconciliation treats as fail-closed.
+ */
+export async function probeAssignedFrozenRepairFixer(
+  target: GateVerdictTarget,
+  deps: {
+    readQueue?: (target: GateVerdictTarget) => Promise<FrozenCandidateRepairQueueRead>;
+    fixerAlive?: (spawnId: string) => Promise<boolean | null>;
+  } = {},
+): Promise<{ spawnId: string; liveness: RunnerLiveness } | null> {
+  const read = await (deps.readQueue ?? readFrozenCandidateRepairQueueState)(target);
+  if (read.status !== 'value') return null;
+  const { phase, fixerSpawnId } = read.queue;
+  if (phase !== 'awaiting-fixer' || !fixerSpawnId) return null;
+  const fixerAlive =
+    deps.fixerAlive ??
+    (async (spawnId: string) => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      return releaseFixerSpawnAlive(getOrgPg().sql, spawnId);
+    });
+  const alive = await fixerAlive(fixerSpawnId).catch(() => null);
+  return { spawnId: fixerSpawnId, liveness: alive === true ? 'live' : alive === false ? 'dead' : 'unknown' };
 }
 
 /**
@@ -5923,7 +6598,7 @@ export async function writeFrozenCandidateRepairQueue(
   // construction: a filesystem fault must never fail a release write, and an absent marker
   // simply leaves the hook silent (today's behaviour).
   const { projectFrozenRepairMarker } = await import('../../release/frozen-repair-edit-marker');
-  projectFrozenRepairMarker(queue);
+  projectFrozenRepairMarker(queue, target);
   if (manifested) {
     try {
       await publishRepairManifestToGateWorkItem(sql, target, manifested);
@@ -6101,18 +6776,28 @@ export async function retireFrozenCandidateRepairQueue(
       };
     }
 
+    // P-010 (green-main-cycle-time-2026-10-08#D-026): the retired queue's admitted fixes are
+    // carried into the next fresh cut; the record lands in the SAME write as the retire.
+    const pendingCarry = nextFrozenRepairPendingCarry(
+      lockedMetadata?.[FROZEN_REPAIR_CARRY_METADATA_KEY],
+      current,
+      'owner-retire',
+      Date.now(),
+    );
     const rows = (await tx.unsafe(
       // P-013: retiring the queue also clears `gate_health.convergence` — same reason as the
       // null-queue branch of writeFrozenCandidateRepairQueue. Both cycle-teardown paths must
       // clear it or one of them leaves shrink figures for a candidate that no longer exists.
       `UPDATE harness_shared.routines
-          SET metadata = (CASE
+          SET metadata = ((CASE
                 WHEN metadata #>> '{gate_health,inconclusive,status}'
                        IN ('repair-in-progress', 'repair-staging-mismatch')
                   THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
                        #- '{gate_health,inconclusive}'
                 ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
-              END) #- '{gate_health,convergence}',
+              END) #- '{gate_health,convergence}')
+              || CASE WHEN $7::jsonb IS NULL THEN '{}'::jsonb
+                      ELSE jsonb_build_object('${FROZEN_REPAIR_CARRY_METADATA_KEY}', $7::jsonb) END,
               updated_at = now()
         WHERE workspace_id = $1
           AND install_slug = $2
@@ -6134,6 +6819,7 @@ export async function retireFrozenCandidateRepairQueue(
         expectedQueue.repairHead,
         expectedQueue.updatedAtMs,
         expectedQueue.fixerSpawnId,
+        pendingCarry ? JSON.stringify(pendingCarry) : null,
       ],
     )) as Array<{ retired: boolean }>;
     if (rows[0]?.retired === true) return { retired: true, current: null };
@@ -6149,7 +6835,7 @@ export async function retireFrozenCandidateRepairQueue(
     // warn agents off editing paths for a candidate that no longer exists — a false positive
     // that teaches them to ignore the signal, which is worse than no signal.
     const { projectFrozenRepairMarker } = await import('../../release/frozen-repair-edit-marker');
-    projectFrozenRepairMarker(null);
+    projectFrozenRepairMarker(null, target);
     return result;
   }
   // `result.current` was read while the routine row was locked. Avoid a second liveness query
@@ -6458,6 +7144,11 @@ export async function dispatchReleaseFixer(
   candidate: string,
   failingTests?: string[],
   repairQueue?: FrozenCandidateRepairQueue,
+  checkpointEvidence?: CheckpointEvidence,
+  deps: {
+    checkCandidate?: (root: string, candidate: string) => Promise<ReleaseFixerCandidateStaleCheck>;
+    alarm?: import('../../alarm-attention').AlarmAttentionDeps;
+  } = {},
 ): Promise<{ spawnId: string | null; runId: string | null } | null> {
   // workspace-work-scope-policy-2026-09-04 P-008: an out-of-scope install's gate still runs
   // (verdict-only) but never SPAWNS a release-fixer for it. Denials land on the policy
@@ -6484,11 +7175,16 @@ export async function dispatchReleaseFixer(
   // to the pre-existing dispatch behavior) rather than silently swallowing a real red gate.
   const fixerRoot = integrationRootForDiagnostic();
   const staleCheck: ReleaseFixerCandidateStaleCheck = fixerRoot
-    ? await checkReleaseFixerCandidateStale(fixerRoot, candidate).catch(
+    ? await (deps.checkCandidate ?? checkReleaseFixerCandidateStale)(fixerRoot, candidate).catch(
         () => ({ candidateExists: true, candidatePromoted: false }) satisfies ReleaseFixerCandidateStaleCheck,
       )
     : { candidateExists: true, candidatePromoted: false };
   if (isStaleReleaseFixerCandidate(staleCheck)) {
+    // A missing candidate is not recovery; a verified promoted candidate is.
+    if (staleCheck.candidatePromoted) {
+      const { resolveAlarm } = await import('../../alarm-attention');
+      await resolveAlarm(`alarm:release-fixer-dispatch:${ctx.installSlug}`, 'release-fixer-dispatch', deps.alarm);
+    }
     console.log(
       `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: stale candidate ` +
         `(exists=${staleCheck.candidateExists}, promoted=${staleCheck.candidatePromoted}) — gate already resolved`,
@@ -6546,14 +7242,17 @@ export async function dispatchReleaseFixer(
   // only reordered, plus one more selected column.
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
+  // WI-10007494: `repairTickLegs` rides on the same row read so a frozen dispatch can drop
+  // same-head-contradicted entries from the fixer's targets (see below).
   const rows = (await sql.unsafe(
     `SELECT metadata->'last_fixer' AS lf,
             metadata->'gate_health'->>'failingTestsMeasured' AS ftm,
-            metadata->'gate_health'->'candidateSnapshot' AS cs
+            metadata->'gate_health'->'candidateSnapshot' AS cs,
+            metadata->'gate_health'->'repairTickLegs' AS legs
        FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ lf: ReleaseFixerRecord | null; ftm: string | null; cs: unknown }>;
+  )) as Array<{ lf: ReleaseFixerRecord | null; ftm: string | null; cs: unknown; legs?: unknown }>;
   const lf = rows[0]?.lf ?? null;
   const failingTestsMeasured = rows[0]?.ftm === 'true' ? true : rows[0]?.ftm === 'false' ? false : null;
   const candidateSnapshot = parseCandidateSnapshot(rows[0]?.cs);
@@ -6607,6 +7306,29 @@ export async function dispatchReleaseFixer(
     return null;
   }
 
+  // WI-10007494: a frozen queue can mix a real red with an entry the latest repair tick
+  // re-ran at the SAME repairHead and saw pass (a same-head measurement contradiction).
+  // Nothing removed the contradicted entry, so the fixer was told to fix a leg its own head
+  // passes. Narrow only what the fixer is TOLD: `fixerTargets` drives the brief, the escalation
+  // context, the notification and the flake annotation. The dedup `signature` below stays on
+  // the full set, and so does the queue, whose next verification re-measures every entry.
+  // A parse failure yields no contradiction, i.e. the full set (the pre-existing behaviour).
+  let fixerTargets = failingTests;
+  let sameHeadContradicted: string[] = [];
+  if (repairQueue) {
+    const { parseRepairTickLegs, releaseFixerTargetsAfterSameHeadContradictions } =
+      await import('../../release/repair-tick-legs-snapshot');
+    const narrowed = releaseFixerTargetsAfterSameHeadContradictions(
+      failingTests,
+      parseRepairTickLegs(rows[0]?.legs),
+      repairQueue.repairHead,
+    );
+    if (narrowed.sameHeadContradicted.length > 0) {
+      fixerTargets = narrowed.targets;
+      sameHeadContradicted = narrowed.sameHeadContradicted;
+    }
+  }
+
   // P-012: dedup by the FAILURE SIGNATURE (the failing test files / workspaces), not the
   // candidate sha. While the gate stays red, staging advances hourly so every checkpoint
   // is a NEW candidate — keying on sha re-notified the human + re-spawned a fixer every
@@ -6627,7 +7349,6 @@ export async function dispatchReleaseFixer(
   // Claim the dedup slot BEFORE firing (anti double-fire across ticks): a concurrent
   // tick now sees a fresh `at` with no spawn id → fixerAlive=null → covered → skips.
   // The spawn id is patched in after the fire below.
-  const notifiedAt = decision.notify ? now : (lf?.notifiedAt ?? null);
   const snapshotIdentity = candidateSnapshot.identity;
   const previousLastFixer = JSON.stringify(lf ?? null);
   const writeRecord = async (rec: ReleaseFixerRecord, expectedLastFixer: ReleaseFixerRecord | null): Promise<boolean> => {
@@ -6655,7 +7376,8 @@ export async function dispatchReleaseFixer(
     spawnId: null,
     runId: null,
     snapshotIdentity,
-    notifiedAt: notifiedAt ?? undefined,
+    dispatchStatus: 'reserved',
+    notifiedAt: lf?.notifiedAt,
   };
   // EI-22344736163383832: reserve the dedup slot only if the exact snapshot and prior
   // last_fixer record are still current. Two concurrent dispatchers now cannot both fire.
@@ -6667,33 +7389,6 @@ export async function dispatchReleaseFixer(
     return null;
   }
 
-  // P-003: a user-facing notification (native OS notification on desktop, mobile push).
-  // Rate-limited by decision.notify so an hourly self-heal re-dispatch doesn't spam.
-  if (decision.notify) {
-    try {
-      const { notifyAttention } = await import('../../attention-notify');
-      const selfHeal = decision.reason === 'self-heal';
-      await notifyAttention({
-        kind: 'intervention',
-        title: selfHeal
-          ? 'Release gate still held — prior fixer died, re-dispatched'
-          : 'Release gate held — staging→main blocked',
-        body:
-          `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${failingTests && failingTests.length > 0 ? `: ${failingTests.slice(0, 5).join(', ')}` : ''}); ` +
-          `${selfHeal ? 'the previous release-fixer ended without clearing it — a fresh one was' : 'a release-fixer was'} dispatched to diagnose it.`,
-        importance: 'high',
-        workspaceId: ctx.workspaceId,
-        data: {
-          candidate: candidate.slice(0, 12),
-          failing: (failingTests ?? []).slice(0, 10).join(','),
-          selfHeal: String(selfHeal),
-        },
-      });
-    } catch (e) {
-      console.warn(`${orchestratorStdoutTag()} release-red notify failed: ${e instanceof Error ? e.message : e}`);
-    }
-  }
-
   // EI-7443: best-effort flake annotation for the CURRENTLY-failing files, from the
   // 7d harness_shared.test_runs rollup — never blocks/fails the dispatch (a rollup
   // hiccup just means no annotation, same as today).
@@ -6701,7 +7396,7 @@ export async function dispatchReleaseFixer(
   try {
     const { testFlakeRollup, flagFlakeSuspects } = await import('../../dev-data');
     const { entries } = await testFlakeRollup(7);
-    flakeAnnotation = annotateFailingTestsWithFlakeStats(failingTests, flagFlakeSuspects(entries, 7));
+    flakeAnnotation = annotateFailingTestsWithFlakeStats(fixerTargets, flagFlakeSuspects(entries, 7));
   } catch (e) {
     console.warn(
       `${orchestratorStdoutTag()} flake-suspect annotation skipped (non-fatal): ${e instanceof Error ? e.message : e}`,
@@ -6715,9 +7410,11 @@ export async function dispatchReleaseFixer(
   try {
     const kickoff = buildReleaseFixerKickoff({
       candidate,
-      failingTests,
+      failingTests: fixerTargets,
       repairQueue,
       flakeAnnotation,
+      sameHeadContradicted,
+      checkpointEvidence,
     });
     fired = await fireLaunchBlueprintForEvent('green-checkpoint:red', {
       installSlug: ctx.installSlug,
@@ -6725,15 +7422,22 @@ export async function dispatchReleaseFixer(
       kickoff,
       extra: ['--green-checkpoint-red', JSON.stringify({ candidate })],
       bodyExtra: {
+        // Model/backend resolution does not select an account. Keep the fixer on the
+        // provider pool so a walled local CLI credential cannot strand this dispatch.
+        account: 'auto',
         releaseFixerContext: {
           candidate: candidate.slice(0, 12),
-          failingTests: (failingTests ?? []).slice(0, 20),
+          failingTests: (fixerTargets ?? []).slice(0, 20),
+          ...(sameHeadContradicted.length > 0 ? { sameHeadContradicted: sameHeadContradicted.slice(0, 20) } : {}),
           ...(repairQueue
             ? {
                 frozenCandidate: repairQueue.candidate,
                 repairHead: repairQueue.repairHead,
                 repairAttempt: repairQueue.attempts + 1,
               }
+            : {}),
+          ...(boundedCheckpointEvidence(checkpointEvidence)
+            ? { checkpointEvidence: boundedCheckpointEvidence(checkpointEvidence) }
             : {}),
         },
       },
@@ -6745,35 +7449,91 @@ export async function dispatchReleaseFixer(
   } catch (e) {
     console.warn(`${orchestratorStdoutTag()} release-fixer fire failed: ${e instanceof Error ? e.message : e}`);
   }
-  // Patch the recorded fixer's spawn id so the NEXT tick can check ITS liveness (D-009).
-  const spawnId = fired?.spawn?.spawnId ?? null;
-  const runId = fired?.spawn?.runId ?? null;
-  let recordPatched = true;
-  if (spawnId || runId) {
-    recordPatched = await writeRecord(
-      { ...reservation, spawnId, runId },
-      reservation,
-    ).catch(() => false);
-    if (!recordPatched) {
-      console.warn(
-        `${orchestratorStdoutTag()} release-fixer record patch lost snapshot/last_fixer CAS for ${candidate.slice(0, 8)}`,
-      );
+  // A resolved launch target is not proof of a spawn: fireLaunchBlueprintForEvent returns a
+  // target object with spawn:null when the launch is unavailable. Persist that distinction so
+  // the next tick retries instead of treating unknown liveness as a durable fixer.
+  const spawn = fired?.spawn ?? null;
+  const spawnId = spawn?.spawnId ?? null;
+  const runId = spawn?.runId ?? null;
+  let settledRecord: ReleaseFixerRecord = {
+    ...reservation,
+    spawnId,
+    runId,
+    dispatchStatus: spawn ? 'dispatched' : 'failed',
+  };
+  let recordPatched = await writeRecord(settledRecord, reservation).catch(() => false);
+  if (!recordPatched) {
+    console.warn(
+      `${orchestratorStdoutTag()} release-fixer record patch lost snapshot/last_fixer CAS for ${candidate.slice(0, 8)}`,
+    );
+  }
+
+  if (spawn) {
+    // The condition is independent of the repeat owner-notification cooldown, but only
+    // report “fixer dispatched” after the fire path returned an actual spawn record.
+    try {
+      const broadcastSevereEvent = deps.alarm?.broadcast ?? (await import('../../severe-event-broadcast')).broadcastSevereEvent;
+      await broadcastSevereEvent({
+        conditionKey: `alarm:release-fixer-dispatch:${ctx.installSlug}`,
+        summary: `Release gate held on ${ctx.installSlug} — fixer dispatched`,
+        body: `Candidate ${candidate.slice(0, 12)} has measured failures: ${(fixerTargets ?? []).join(', ')}.`,
+        oneShot: true,
+      });
+    } catch (e) { console.warn(`${orchestratorStdoutTag()} release-fixer condition failed: ${String(e)}`); }
+
+    // P-003: a user-facing notification (native OS notification on desktop, mobile push).
+    // Rate-limited by decision.notify so an hourly self-heal re-dispatch doesn't spam.
+    if (decision.notify) {
+      let notificationSent = false;
+      try {
+        const { notifyAttention } = await import('../../attention-notify');
+        const selfHeal = decision.reason === 'self-heal';
+        const input = {
+          kind: 'intervention',
+          title: selfHeal
+            ? 'Release gate still held — prior fixer died, re-dispatched'
+            : 'Release gate held — staging→main blocked',
+          body:
+            `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${fixerTargets && fixerTargets.length > 0 ? `: ${fixerTargets.slice(0, 5).join(', ')}` : ''}); ` +
+            `${selfHeal ? 'the previous release-fixer ended without clearing it — a fresh one was' : 'a release-fixer was'} dispatched to diagnose it.`,
+          importance: 'high',
+          workspaceId: ctx.workspaceId,
+          data: {
+            candidate: candidate.slice(0, 12),
+            failing: (fixerTargets ?? []).slice(0, 10).join(','),
+            selfHeal: String(selfHeal),
+          },
+        } as const;
+        if (deps.alarm?.notify) await deps.alarm.notify(input);
+        else await notifyAttention(input);
+        notificationSent = true;
+      } catch (e) {
+        console.warn(`${orchestratorStdoutTag()} release-red notify failed: ${e instanceof Error ? e.message : e}`);
+      }
+      if (notificationSent && recordPatched) {
+        const notifiedRecord = { ...settledRecord, notifiedAt: Date.now() };
+        const notifiedRecordPatched = await writeRecord(notifiedRecord, settledRecord).catch(() => false);
+        if (notifiedRecordPatched) settledRecord = notifiedRecord;
+        else console.warn(`${orchestratorStdoutTag()} release-fixer notification timestamp patch lost CAS for ${candidate.slice(0, 8)}`);
+      }
     }
   }
   await appendPipelineEvent({
     workspaceId: ctx.workspaceId,
     installSlug: ctx.installSlug,
     kind: 'release_fixer',
-    status: fired ? 'ok' : 'failed',
+    status: spawn ? 'ok' : 'failed',
     detail: {
       candidate: candidate.slice(0, 12),
       reason: decision.reason,
       spawnId: spawnId ?? undefined,
+      dispatchStatus: spawn ? 'dispatched' : 'failed',
       snapshotIdentity,
       recordPatched,
+      ...(sameHeadContradicted.length > 0 ? { sameHeadContradicted: sameHeadContradicted.slice(0, 20) } : {}),
     },
   }).catch(() => {});
-  return { spawnId, runId };
+  return spawn ? { spawnId, runId } : null;
 }
 
 /** The fixed transient-unit name for the detached auto-deploy — fixed on
@@ -7125,4 +7885,5 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
       resolve();
     });
   });
-});
+  // WI-10005745: the deploy is tsx <integrationRoot>/apps/operator/lib/release/deploy-cli.ts (live-tree code).
+}, { executesIntegrationTreeCode: true });

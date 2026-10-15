@@ -12,6 +12,152 @@ export function resolveRelatedWidenThreshold(env?: Record<string, string | undef
     source: "default" | "env";
     invalid?: string;
 };
+/** Preparation only: enumerate the maintained selector's actual task configs, never executions.
+ * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
+ * @param {Array<object>} tasks
+ * @param {{root?: string, filterDir?: string, runResolver?: Function, syncAstro?: boolean}} [options]
+ */
+export function enumerateAffectedTaskSelection(tasks: Array<object>, { root, filterDir, runResolver, syncAstro }?: {
+    root?: string;
+    filterDir?: string;
+    runResolver?: Function;
+    syncAstro?: boolean;
+}): {
+    schemaVersion: number;
+    kind: string;
+    phase: string;
+    coverage: string;
+    files: any[];
+    fileOccurrences: any[];
+    tasks: ({
+        runner: string;
+        steps: any;
+        files: any[];
+        commandObligations: any;
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        runner: string;
+        files: never[];
+        commandObligations: {
+            kind: string;
+            check: string;
+            command: any;
+            inputs: null;
+            executed: boolean;
+        }[];
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        runner: string;
+        files: any;
+        commandObligations: {
+            kind: string;
+            command: any;
+            check: any;
+            inputs: any;
+            discovery: any;
+            executed: boolean;
+        }[];
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        runner: string;
+        files: string[];
+        shellPatterns: string[];
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        files: never[];
+        commandObligations: any[];
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        files: never[];
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    } | {
+        projects?: any;
+        sync?: any;
+        commandObligations?: any[] | undefined;
+        files: any[];
+        config: any;
+        lifecycleCommands: {
+            script: string;
+            command: any;
+        }[];
+        resolvedCommand?: any;
+        id: string;
+        workspace: any;
+        dir: any;
+        script: any;
+        command: any;
+    })[];
+    commandObligations: any[];
+    unenumerated: ({
+        task: string;
+        step: any;
+        command: any;
+        reason: any;
+    } | {
+        task: string;
+        reason: any;
+        command: any;
+        step?: undefined;
+    })[];
+    overlaps: any[];
+    executed: boolean;
+    runtimeClosure: string;
+    operationalAcceptance: boolean;
+};
 /**
  * Persist a workspace-relative selection as a filter-list file.
  *
@@ -82,6 +228,59 @@ export function unitExcludedVitestTest(file: string): boolean;
  */
 export function classifySpecifier(spec: any): "relative" | "alias" | "bare";
 /**
+ * One tsconfig `compilerOptions.paths` entry, as `tsconfigPathEntriesFor` returns it and as the
+ * `aliases` option of `staticImportClosure` / `buildIndex` / `selectRelatedTests` takes it.
+ *
+ * @typedef {object} TsconfigPathEntry
+ * @property {string}  prefix   the key with any trailing `*` removed
+ * @property {string}  target   absolute target: a dir for a wildcard key, the file itself for an exact key
+ * @property {boolean} wildcard true for a `*` key (matched by prefix), false for an exact key (equality only)
+ */
+/**
+ * Path aliases for a workspace, read from its tsconfig `compilerOptions.paths` as ordered
+ * entries that keep whether each key is a WILDCARD (`"@/*"`, matched by prefix) or EXACT
+ * (`"pkg"`, matched by equality only; its target is the file itself). Resolve a specifier
+ * against them with `matchTsconfigPath` below — never a first-match prefix scan.
+ *
+ * Only intra-package aliases matter to this module's own resolvers (`@/`, `~/`, `#`; see
+ * `classifySpecifier`); a bare package specifier is out of graph by design. Returning [] on any
+ * problem is SAFE, not lossy: an alias we cannot resolve makes the importing file "unresolved",
+ * and every caller of this module treats an unresolved file as reaching everything (or the
+ * closure as not-ok) — so a missing mapping widens the run rather than silently dropping edges.
+ * Moved here from affected-tests.mjs (WI-10006650) so the e2e fixture-spec selector resolves
+ * `@/` exactly as related-test selection does — one parser, not two.
+ *
+ * There is deliberately no flattened `prefix → dir` map any more (WI-10007002). It gave an EXACT
+ * key's FILE target a trailing slash, and the first-match scans that consumed it then let that
+ * key capture longer specifiers by prefix: `@papercusp/operator-core` captured
+ * `@papercusp/operator-core/lib/x` and resolved it to `…/lib/index.ts/lib/x` (WI-10006809
+ * measured 692 dropped edges in the snapshot producer that shared the map).
+ *
+ * @param {string} wsRoot absolute workspace root holding tsconfig.json
+ * @param {{ readFile?: (p: string) => string }} [seam] reads the tsconfig. The admission
+ *   pre-check injects a reader over a pinned Git tree so aliases come from the commit being
+ *   judged, not the shared working tree (green-main-cycle-time-2026-10-08#D-037). A throw
+ *   means "absent", exactly like a missing file on disk.
+ * @returns {TsconfigPathEntry[]}
+ */
+export function tsconfigPathEntriesFor(wsRoot: string, { readFile }?: {
+    readFile?: (p: string) => string;
+}): TsconfigPathEntry[];
+/**
+ * Resolve `spec` against tsconfig `paths` entries the way TypeScript does: an EXACT key matches
+ * by equality only and wins outright; otherwise the LONGEST matching wildcard prefix wins
+ * (independent of declaration order). Returns the base path — repo-relative or absolute,
+ * whichever the entries hold — or null when no key matches. A first-match prefix scan here is the
+ * bug WI-10006809 measured and WI-10007002 removed from this module's own resolvers: the exact key
+ * `@papercusp/operator-core` captured `@papercusp/operator-core/lib/x` ahead of its wildcard.
+ * The ONE matcher: gen-graph-dependency-snapshot.mjs imports it from here.
+ *
+ * @param {Array<[string, string, boolean]>} entries `[prefix, target, wildcard]`
+ * @param {string} spec
+ * @returns {string | null}
+ */
+export function matchTsconfigPath(entries: Array<[string, string, boolean]>, spec: string): string | null;
+/**
  * Walk the transitive static module graph from a small set of entry files.
  *
  * This is the entry-oriented sibling of `buildIndex`: it reuses the same specifier parser and
@@ -101,12 +300,16 @@ export function classifySpecifier(spec: any): "relative" | "alias" | "bare";
  * @param {object} [o]
  * @param {string} o.rootDir absolute repository root
  * @param {string[]} o.entryFiles absolute entry files to walk
+ * @param {TsconfigPathEntry[]} [o.aliases] `tsconfigPathEntriesFor` entries, resolved with
+ *   `matchTsconfigPath` (same rule as `buildIndex`). An alias specifier no key matches stays
+ *   unresolved, so the default `[]` keeps every existing caller's fail-closed behaviour.
  * @param {RelatedFs} [o.fs] filesystem seam (injected in tests)
  * @returns {{ ok: boolean, files: string[], unresolved: string[] }}
  */
-export function staticImportClosure({ rootDir, entryFiles, fs, }?: {
+export function staticImportClosure({ rootDir, entryFiles, aliases, fs, }?: {
     rootDir: string;
     entryFiles: string[];
+    aliases?: TsconfigPathEntry[] | undefined;
     fs?: RelatedFs | undefined;
 }): {
     ok: boolean;
@@ -128,7 +331,28 @@ export function staticImportClosure({ rootDir, entryFiles, fs, }?: {
  * @property {(dir: string) => string[]}      list   recursively enumerate source files under `dir`
  * @property {(p: string) => string | null}   read   file contents, or null when unreadable
  * @property {(p: string) => boolean}         exists does this path resolve on disk
+ * @property {((p: string) => string | null) | undefined} [key] content identity of `p` (a git
+ *   blob sha), or null when unknown. With `buildIndex`'s `edgeCache`, a file whose (path, key)
+ *   pair was parsed before is neither read nor re-parsed.
  */
+/**
+ * Import edges parsed out of one file, or `null` when it did not parse (an unresolved file).
+ * @typedef {{ specifiers: string[], runtimePaths: string[] } | null} ParsedEdges
+ */
+/**
+ * Parsed edges reused across `buildIndex` calls, keyed by `edgeCacheKey(file, fs.key(file))`.
+ * Only the parse is cached: resolution depends on the tree around the file, so it reruns.
+ * @typedef {Map<string, ParsedEdges>} EdgeCache
+ */
+/**
+ * The `EdgeCache` key for `file` with content identity `key`. The path is part of it because
+ * the parser picks its dialect from the extension.
+ *
+ * @param {string} file
+ * @param {string} key
+ * @returns {string}
+ */
+export function edgeCacheKey(file: string, key: string): string;
 /**
  * @typedef {object} RelatedIndex
  * @property {string[]}                files      every source file found under the root
@@ -146,14 +370,17 @@ export function staticImportClosure({ rootDir, entryFiles, fs, }?: {
  *
  * @param {object}                  [o]
  * @param {string}                  o.rootDir   absolute dir to index (a workspace's source root)
- * @param {Record<string, string>}  [o.aliases] tsconfig `paths` prefix -> absolute dir
+ * @param {TsconfigPathEntry[]}     [o.aliases] `tsconfigPathEntriesFor` entries (resolved with `matchTsconfigPath`)
  * @param {RelatedFs}               [o.fs]      filesystem seam (injected in tests)
+ * @param {EdgeCache}               [o.edgeCache] parsed edges reused across calls; consulted only
+ *                                              for files `fs.key` identifies
  * @returns {RelatedIndex}
  */
-export function buildIndex({ rootDir, aliases, fs }?: {
+export function buildIndex({ rootDir, aliases, fs, edgeCache }?: {
     rootDir: string;
-    aliases?: Record<string, string> | undefined;
+    aliases?: TsconfigPathEntry[] | undefined;
     fs?: RelatedFs | undefined;
+    edgeCache?: EdgeCache | undefined;
 }): RelatedIndex;
 /**
  * Exact transitive forward closure, including cyclic import graphs.
@@ -166,6 +393,28 @@ export function buildIndex({ rootDir, aliases, fs }?: {
  */
 export function transitiveDeps(index: any): (file: any) => Set<any>;
 /**
+ * Build the graph index and static candidate superset once. Callers can query a scoped executed
+ * map for `selection.selected`, then pass this same prepared value to `selectRelatedTests`.
+ *
+ * @param {object}                 o
+ * @param {string}                 o.rootDir
+ * @param {string[]}               o.changedPaths
+ * @param {RelatedIndex | null}    [o.index]
+ * @param {TsconfigPathEntry[]}    [o.aliases]
+ * @param {RelatedFs}              [o.fs]
+ * @returns {{ index: RelatedIndex, selection: StaticSelection }}
+ */
+export function prepareRelatedTestSelection({ rootDir, changedPaths, index, aliases, fs }?: {
+    rootDir: string;
+    changedPaths: string[];
+    index?: RelatedIndex | null | undefined;
+    aliases?: TsconfigPathEntry[] | undefined;
+    fs?: RelatedFs | undefined;
+}): {
+    index: RelatedIndex;
+    selection: StaticSelection;
+};
+/**
  * Select the test files that a change to `changedPaths` could affect.
  *
  * `mode` is `'related'` only when we are confident the subset is sound; every other
@@ -175,7 +424,7 @@ export function transitiveDeps(index: any): (file: any) => Set<any>;
  * @param {object}                 [o]
  * @param {string}                 o.rootDir        absolute dir to index (a workspace's source root)
  * @param {string[]}               o.changedPaths   absolute paths that changed
- * @param {Record<string, string>} [o.aliases]      tsconfig `paths` prefix -> absolute dir
+ * @param {TsconfigPathEntry[]}    [o.aliases]      `tsconfigPathEntriesFor` entries
  * @param {number}                 [o.threshold]    share of the suite at/above which the selection is
  *                                                  widened to the whole suite (default: the
  *                                                  `AFFECTED_RELATED_THRESHOLD` env, else
@@ -188,18 +437,23 @@ export function transitiveDeps(index: any): (file: any) => Set<any>;
  * @param {ChangedBetween | null}  [o.changedBetween] P-002: (recordedSha, judgedSha) ⇒ absolute
  *                                                  paths that changed between them, or null when
  *                                                  the pair cannot be diffed (⇒ treated as stale)
+ * @param {{ index: RelatedIndex, selection: StaticSelection } | null} [o.prepared] static selection from `prepareRelatedTestSelection`
  * @returns {{ mode: 'related' | 'full', selected: string[], total: number, reason: string, threshold: number, executedMap: ExecutedMapSummary }}
  */
-export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, fs, index, executedMap, judgedSha, changedBetween, }?: {
+export function selectRelatedTests({ rootDir, changedPaths, aliases, threshold, fs, index, executedMap, judgedSha, changedBetween, prepared, }?: {
     rootDir: string;
     changedPaths: string[];
-    aliases?: Record<string, string> | undefined;
+    aliases?: TsconfigPathEntry[] | undefined;
     threshold?: number | undefined;
     fs?: RelatedFs | undefined;
     index?: RelatedIndex | null | undefined;
     executedMap?: ExecutedMap | null | undefined;
     judgedSha?: string | null | undefined;
     changedBetween?: ChangedBetween | null | undefined;
+    prepared?: {
+        index: RelatedIndex;
+        selection: StaticSelection;
+    } | null | undefined;
 }): {
     mode: "related" | "full";
     selected: string[];
@@ -237,6 +491,24 @@ export const RELATED_WIDEN_THRESHOLD_DEFAULT: 0.95;
 export const RELATED_WIDEN_THRESHOLD_ENV: "AFFECTED_RELATED_THRESHOLD";
 export const RELATED_FILTER_LIST_ENV: "PC_TEST_FILTER_LIST";
 /**
+ * One tsconfig `compilerOptions.paths` entry, as `tsconfigPathEntriesFor` returns it and as the
+ * `aliases` option of `staticImportClosure` / `buildIndex` / `selectRelatedTests` takes it.
+ */
+export type TsconfigPathEntry = {
+    /**
+     * the key with any trailing `*` removed
+     */
+    prefix: string;
+    /**
+     * absolute target: a dir for a wildcard key, the file itself for an exact key
+     */
+    target: string;
+    /**
+     * true for a `*` key (matched by prefix), false for an exact key (equality only)
+     */
+    wildcard: boolean;
+};
+/**
  * The injectable filesystem seam. Declared as a typedef because `gen:declarations`
  * emits from JSDoc: an UNDOCUMENTED destructured option is inferred as a CLOSED
  * literal type (or, with no default to infer from, dropped from the emitted type
@@ -260,7 +532,25 @@ export type RelatedFs = {
      * does this path resolve on disk
      */
     exists: (p: string) => boolean;
+    /**
+     * content identity of `p` (a git
+     * blob sha), or null when unknown. With `buildIndex`'s `edgeCache`, a file whose (path, key)
+     * pair was parsed before is neither read nor re-parsed.
+     */
+    key?: ((p: string) => string | null) | undefined;
 };
+/**
+ * Import edges parsed out of one file, or `null` when it did not parse (an unresolved file).
+ */
+export type ParsedEdges = {
+    specifiers: string[];
+    runtimePaths: string[];
+} | null;
+/**
+ * Parsed edges reused across `buildIndex` calls, keyed by `edgeCacheKey(file, fs.key(file))`.
+ * Only the parse is cached: resolution depends on the tree around the file, so it reruns.
+ */
+export type EdgeCache = Map<string, ParsedEdges>;
 export type RelatedIndex = {
     /**
      * every source file found under the root
@@ -274,6 +564,15 @@ export type RelatedIndex = {
      * files carrying an import we could NOT resolve
      */
     unresolved: Set<string>;
+};
+export type StaticSelection = {
+    mode: "related" | "full";
+    selected: Set<string>;
+    total: number;
+    reason?: string;
+    changedSet?: Set<string>;
+    reach?: (file: string) => Set<string>;
+    unresolved?: Set<string>;
 };
 /**
  * `executed` holds ABSOLUTE module paths (the same shape as `changedPaths`).

@@ -13,7 +13,11 @@
  * packages/operator-core/lib/fleet/assignments.ts's `groupByAgent`).
  */
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import launchOnPlan, {
+  fleetAdmissionRefusalResult,
   DEAD_WAVE_OVERRIDE_MIN_AGE_MS,
   deadWaveSlotOverride,
   cloudModelBackendHint,
@@ -56,6 +60,107 @@ import {
   goalFleetLeaderProfile,
   resolveGoalFleetLeadership,
 } from './goal-fleet-launch-options';
+import { parseScratchReference } from '../../scratch-reference';
+import { applyResultDoorAsync } from '../../result-door';
+import { evaluateExactPlanAdmission, type ExactPlanAdmission } from '../plans/plan-admission-preflight';
+import type { PlanItem } from '@papercusp/plan-parser';
+import workItemsGet from '../work_items/get';
+import workItemsClaim from '../work_items/claim';
+
+describe('scoped lane admission', () => {
+  const planItem: PlanItem = { id: 'P-001', text: 'unrelated peer lane', storedStatus: 'todo',
+    importance: 'normal', blockedBy: [], decisionRefs: [], phase: null, lineNumber: 1, rawLine: '' };
+  const duplicatedPlan = { planSlug: 'plan-a', planItems: [planItem], laneHealth: null,
+    workItems: ['WI-1', 'WI-2'].map(id => ({ id, family: 'issue' as const,
+      sourcePlanItemIds: ['P-001'], payload: null })) };
+
+  it('accepts a lanes-only scope beside an unrelated duplicate-promoted item', () => {
+    expect(evaluateExactPlanAdmission({ ...duplicatedPlan, planItemIds: [] })).toMatchObject({
+      ready: true, reason: 'ready', promotion: { duplicateActionable: [] }, lane: null,
+    });
+  });
+
+  it('returns admission_refused when the lane targets a duplicate-promoted item', async () => {
+    const admission = evaluateExactPlanAdmission({ ...duplicatedPlan, planItemIds: ['P-001'] });
+    const result = await fleetAdmissionRefusalResult({ fleet: 'fleet-a', plan: 'plan-a',
+      harness: 'papercusp', workspaceId: 'ws-1', ownerId: 'owner-1', promotionFailsafe: null, admission });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false, error: 'admission_refused',
+      reason: 'duplicate-coverage', blockingPlanItemIds: ['P-001'], blockingWorkItemIds: ['WI-1', 'WI-2'] });
+  });
+});
+
+describe('compact exact-plan admission refusal', () => {
+  const input = (admission: Partial<ExactPlanAdmission> | null) => ({
+    fleet: 'repair-fleet', plan: 'repair-plan', harness: 'papercusp', workspaceId: 'ws-1', ownerId: 'owner-1',
+    admission: admission as ExactPlanAdmission | null, promotionFailsafe: { ran: true, promoted: 1 },
+  });
+
+  it('keeps reason, blocking ids, named floor and runnable repair inside 6000 characters with lossless detail', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'fleet-admission-receipt-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    try {
+      const admission = {
+        ready: false, reason: 'floor-gated', message: 'P-001 / WI-17 is excluded by stopTheLine.',
+        actionableRows: [{ planItemId: 'P-001', workItemId: 'WI-17' }],
+        lane: { effective: { excluded: { claimFloors: 1, stopTheLine: 1 } } },
+      } as unknown as ExactPlanAdmission;
+      const promotionFailsafe = { ran: true, specQuality: 'full promotion detail '.repeat(4_000) };
+      const result = await fleetAdmissionRefusalResult({ ...input(admission), promotionFailsafe });
+      const text = result.content[0].text;
+      const body = JSON.parse(text);
+      expect(text.length).toBeLessThanOrEqual(6000);
+      expect(result.isError).toBe(true);
+      expect(body).toMatchObject({ error: 'admission_refused', reason: 'floor-gated',
+        message: expect.stringContaining(admission.message),
+        blockingPlanItemIds: ['P-001'], blockingWorkItemIds: ['WI-17'], namedFloors: { stopTheLine: 1 },
+        repairCall: { tool: 'work_items:claim', args: { id: 'WI-17', assignee: 'self', harness: 'papercusp' } } });
+      expect(body.namedFloors).not.toHaveProperty('claimFloors');
+      expect(workItemsClaim.args.safeParse(body.repairCall.args).success).toBe(true);
+      expect(body._projection.cursor.tool).toBe('capability:read');
+      const cursor = body._projection.cursor;
+      const reference = parseScratchReference(readFileSync(cursor.args.file_path))!;
+      const original = JSON.parse(reference.payload.subarray(cursor.bodyOffsetInPayload).toString());
+      expect(original.promotionFailsafe).toEqual(promotionFailsafe);
+      expect(original.admission).toEqual(admission);
+      promotionFailsafe.specQuality = 'changed after return';
+      expect(original.promotionFailsafe.specQuality).toHaveLength(88_000);
+      // The nested MCP door must retain the same head and frozen cursor.
+      const nested = await applyResultDoorAsync(result, { toolName: 'tools:invoke',
+        nestedTargetToolName: 'fleet:launch-on-plan', workspaceId: 'ws-1', ownerId: 'owner-1' });
+      expect(JSON.parse(nested.content[0].text)).toMatchObject({ reason: 'floor-gated',
+        blockingWorkItemIds: ['WI-17'], repairCall: body.repairCall });
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it('names duplicate rows and gives exact-row inspection before choosing a survivor', async () => {
+    const result = await fleetAdmissionRefusalResult(input({ ready: false, reason: 'duplicate-coverage',
+      message: 'Duplicate promotion of P-001.', promotion: { duplicateActionable: [
+        { planItemId: 'P-001', workItemIds: ['WI-17', 'WI-18'] },
+      ] } as ExactPlanAdmission['promotion'] }));
+    const body = JSON.parse(result.content[0].text);
+    expect(body).toMatchObject({ reason: 'duplicate-coverage', blockingPlanItemIds: ['P-001'],
+      blockingWorkItemIds: ['WI-17', 'WI-18'], repairCall: { tool: 'work_items:get', effect: 'inspect',
+        args: { ids: ['WI-17', 'WI-18'], harness: 'papercusp' } } });
+    expect(workItemsGet.args.safeParse(body.repairCall.args).success).toBe(true);
+  });
+
+  it('preserves unknown measurements and never offers to claim a held row', async () => {
+    const result = await fleetAdmissionRefusalResult(input({ ready: false, reason: 'floor-gated',
+      message: 'Row held.', blockingRows: [{ planItemId: 'P-001', workItemId: 'WI-17',
+        holder: 'peer', takenAt: null }], lane: { effective: { excluded: { taken: 1, claimFloors: 1 } } } as never }));
+    const body = JSON.parse(result.content[0].text);
+    expect(body.repairCall).toMatchObject({ tool: 'work_items:get', effect: 'inspect' });
+    const unknown = JSON.parse((await fleetAdmissionRefusalResult({ ...input(null),
+      admissionError: 'measurement unavailable' })).content[0].text);
+    expect(unknown).toMatchObject({ reason: 'lane-unknown', namedFloors: null,
+      message: expect.stringContaining('measurement unavailable'), repairCall: { tool: 'plans:get' } });
+  });
+});
 
 const base: MemberLaunchOpts = {
   fleetSlug: 'atlas-fleet',
@@ -296,6 +401,21 @@ describe('launch-spec route + visibility enforcement (EI-21304203620302419)', ()
 });
 
 describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet into the member launch)', () => {
+  it('keeps mode participation while withholding the launching leader mission and authority from members', () => {
+    const launchMode = { mode: 'drain' as const, subject: 'leader-only',
+      instructions: 'Lead this fleet as su-leader.', ownerDirected: true };
+    const member = memberLaunchCommand({ ...base, launchMode });
+    expect(member).toContain('--mode=drain');
+    expect(member).not.toContain('--mode-subject');
+    expect(member).not.toContain('--mode-instructions');
+    expect(member).not.toContain('--mode-owner-directed');
+    const leader = memberLaunchCommand({ ...base, fleetRole: 'leader', launchMode });
+    expect(leader).toContain('--fleet-role=leader');
+    expect(leader).toContain('--mode-subject=leader-only');
+    expect(leader).toContain("--mode-instructions='Lead this fleet as su-leader.'");
+    expect(leader).toContain('--mode-owner-directed');
+  });
+
   it('always includes --fleet=<slug> — never a colour-only, unfleeted member launch', () => {
     const cmd = memberLaunchCommand(base);
     expect(cmd).toMatch(/(^|\s)--fleet=atlas-fleet(\s|$)/);
@@ -511,6 +631,13 @@ describe('cloudModelBackendHint (native cloud model-family/backend guard)', () =
 });
 
 describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-inheritance-2026-07-03)', () => {
+  it('resolves the versioned human alias before inheriting a caller backend', () => {
+    expect(resolveFleetAgent({ argModel: 'sol 6.1:xhigh', callerAgent: 'claude' })).toEqual({
+      agent: 'codex', model: 'gpt-6.1-sol:xhigh', modelSource: 'explicit',
+    });
+    expect(resolveFleetAgent({ argModel: '6' })).toMatchObject({ error: expect.stringContaining('ambiguous') });
+  });
+
   it('an explicit `agent` arg wins, but no-picker Codex still requires model authority', () => {
     // Owner directive 2026-09-15 (WI-10001535): a claude member with no explicit and no
     // inheritable model now takes the opus 5 xhigh configured default instead of leaving

@@ -1,0 +1,590 @@
+{
+  "schemaVersion": "p011-saved-oracle-mutation-v1",
+  "workItem": "WI-10005810",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "spec": {
+    "id": "PERF-OCT1-P011-MEMORY",
+    "revision": 2,
+    "fingerprint": "6059e251ea51a61458afd5075a8190a60e1f1139d28c55784b4ff12d2c624010"
+  },
+  "recordedAt": "2026-10-03T03:50:36.630199+00:00",
+  "experimentCompletedAt": "2026-10-03T03:38:10.296Z",
+  "status": "caught-scoped-saved-data-guard-mutation",
+  "method": {
+    "mechanism": "scripts/mutation-probe.sh",
+    "target": "copy-out",
+    "relocation": "overlay",
+    "namespace": "bwrap private mount; tracked source never receives mutant",
+    "selectedTestPattern": "P-011 selected saved-source acceptance counterexamples",
+    "testRoute": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- <canonical test path> --testNamePattern=<selected pattern>",
+    "changes": [
+      {
+        "group": "inbox",
+        "old": "if (!condition) throw Error('P011 inbox acceptance: ' + reason);",
+        "new": "if (false && !condition) throw Error('P011 inbox acceptance: ' + reason);"
+      },
+      {
+        "group": "expiry",
+        "old": "if (!condition) throw Error('P011 expiry acceptance: ' + reason);",
+        "new": "if (false && !condition) throw Error('P011 expiry acceptance: ' + reason);"
+      },
+      {
+        "group": "compiler",
+        "old": "if (!condition) throw Error('P011 compiler acceptance: ' + reason);",
+        "new": "if (false && !condition) throw Error('P011 compiler acceptance: ' + reason);"
+      }
+    ],
+    "spawnerOracle": "untouched and filtered out",
+    "scriptResult": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=unchecked assertion_evidence=test-file-assertion-failure relocation=overlay",
+    "parseQualification": "Script reports unchecked. Separately, Vitest collected88, executed52, passed six non-rejection controls and failed46 targeted assertion checks. Executed runtime evidence, not a separate parse-check claim."
+  },
+  "source": {
+    "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "bytes": 159323,
+    "sha256": "50e8b9d619999e5f0f09bdb8f832f53924a27814a0d89c6707f70d69df145375",
+    "afterExperiment": "exact source hash verified by predecessor and continuation"
+  },
+  "savedInputs": {
+    "oracleReceipt": {
+      "path": "docs/evidence/papercusp-oct1-p011-selected-resource-oracles-r2-2026-10-03.json",
+      "bytes": 8788,
+      "sha256": "833ba76bb8170ffc9a8c8411083495d7855183a383661ba7de1de975afa1d61b"
+    },
+    "fixtures": [
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-inbox-physical-pair-r4-2026-10-02.json",
+        "sha256": "8da0585c8cd1155c563aed2dc092a7413ff90b5a0fc7095873b7dcdde0c4ae58"
+      },
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-cache-resource-comparison-r10-2026-10-01.json",
+        "sha256": "07672507519848b146e761652372f82584222c4e9c20b05e8e607e5ca49d1df5"
+      },
+      {
+        "path": "docs/evidence/papercusp-oct1-p011-serving-compiler-r24-2026-10-02.json",
+        "sha256": "d3929023e6b7586ff35b382989a266594cd0da41a6d201ab03bfb3a056ee3ead"
+      }
+    ]
+  },
+  "originalEvidence": {
+    "probeLog": {
+      "path": "/tmp/su-7db4f-p011-oracle-mutation-r1.log",
+      "bytes": 87077,
+      "sha256": "fc673534809e4ae6d7262f6edcf18dfabc0fa65b9db5418be459c27a34bdf45f"
+    },
+    "phaseLedger": {
+      "path": "/tmp/su-7db4f-p011-oracle-mutation-ledger-r1.json",
+      "bytes": 2770,
+      "sha256": "4e7bd1b2f9c7e70c61f3d974eddba688d42137ca30893247cd0eb2dcb24e2eae"
+    },
+    "portability": "Canonical receipt embeds phase facts and exact case names. Machine-local original log/ledger remain hash-addressed; absolute repository root omitted here."
+  },
+  "phases": [
+    {
+      "phase": "original baseline",
+      "ledger": {
+        "id": 20622425,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "filePath": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "status": "pass",
+        "framework": "vitest",
+        "startedAt": "2026-10-03T03:35:18.226Z",
+        "finishedAt": "2026-10-03T03:35:20.528Z",
+        "durationMs": 2302,
+        "commitSha": "d02b44f8eb5214c2563dd6bd271c035736803797",
+        "runGroupId": null,
+        "source": "mutation-probe",
+        "branch": "staging",
+        "loopLagP95Ms": 20.4,
+        "rssMb": 212.7,
+        "saturationSuspect": false,
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "recordedRootScope": "canonical repository; exact original root retained in saved ledger"
+      },
+      "collected": 88,
+      "passed": 52,
+      "failed": 0,
+      "filteredSkipped": 36,
+      "routerResult": "requested=1 executed=1 matched=1 status=passed head=74fd70a513 uncommittedPaths=0/1 provenance=unknown startedAt=2026-10-03T03:34:58.992Z skippedTests=36"
+    },
+    {
+      "phase": "unmodified overlay control",
+      "ledger": {
+        "id": 20622427,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "filePath": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "status": "pass",
+        "framework": "vitest",
+        "startedAt": "2026-10-03T03:36:39.354Z",
+        "finishedAt": "2026-10-03T03:36:42.206Z",
+        "durationMs": 2852,
+        "commitSha": "d02b44f8eb5214c2563dd6bd271c035736803797",
+        "runGroupId": null,
+        "source": "mutation-probe",
+        "branch": "staging",
+        "loopLagP95Ms": 20.4,
+        "rssMb": 191.9,
+        "saturationSuspect": false,
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "recordedRootScope": "canonical repository; exact original root retained in saved ledger"
+      },
+      "collected": 88,
+      "passed": 52,
+      "failed": 0,
+      "filteredSkipped": 36,
+      "routerResult": "requested=1 executed=1 matched=1 status=passed head=d02b44f8eb uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-03T03:36:16.356Z skippedTests=36"
+    },
+    {
+      "phase": "mutant overlay",
+      "ledger": {
+        "id": 20622428,
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "filePath": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "status": "fail",
+        "framework": "vitest",
+        "startedAt": "2026-10-03T03:38:07.270Z",
+        "finishedAt": "2026-10-03T03:38:10.296Z",
+        "durationMs": 3026,
+        "commitSha": "d02b44f8eb5214c2563dd6bd271c035736803797",
+        "runGroupId": null,
+        "source": "mutation-probe",
+        "branch": "staging",
+        "loopLagP95Ms": null,
+        "rssMb": 226.5,
+        "saturationSuspect": null,
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "recordedRootScope": "canonical repository; exact original root retained in saved ledger"
+      },
+      "collected": 88,
+      "passed": 6,
+      "failed": 46,
+      "filteredSkipped": 36,
+      "routerResult": "requested=1 executed=1 matched=1 status=failed head=d02b44f8eb uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-03T03:37:33.117Z skippedTests=36"
+    }
+  ],
+  "failedCorruptionCases": [
+    {
+      "group": "inbox",
+      "id": "incomplete",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects incomplete from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "source-drift",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects source-drift from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "pid-reused",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects pid-reused from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "rss-only",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects rss-only from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "allocation-reset",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects allocation-reset from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "missing-idle",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects missing-idle from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "paused",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects paused from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "unreaped",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects unreaped from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "warm-cache",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects warm-cache from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "fixture-and-digest-forged",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects fixture-and-digest-forged from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "body-truncated",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects body-truncated from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "duplicate-raw-copy",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects duplicate-raw-copy from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "observed-copy-mismatch",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects observed-copy-mismatch from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "response-omitted",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects response-omitted from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "both-arms-lose-context",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects both-arms-lose-context from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "display-variant-changed",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects display-variant-changed from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "pss-no-reduction",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects pss-no-reduction from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "inbox",
+      "id": "allocation-no-reduction",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > rejects allocation-no-reduction from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "fixture-count",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects fixture-count from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "same-process",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects same-process from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "different-node",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects different-node from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "different-generation",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects different-generation from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "wrong-expiry-phase",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects wrong-expiry-phase from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "missing-ordinary-reads",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects missing-ordinary-reads from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "rss-only",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects rss-only from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "expired-root-left",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects expired-root-left from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "useful-entry-lost",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects useful-entry-lost from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "miss-regression",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects miss-regression from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "heap-no-reclamation",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects heap-no-reclamation from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "expiry",
+      "id": "cleanup-root-left",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > rejects cleanup-root-left from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "incomplete",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects incomplete from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "bundle-drift",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects bundle-drift from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "pid-reused",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects pid-reused from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "rss-only",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects rss-only from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "allocation-reset",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects allocation-reset from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "request-omitted",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects request-omitted from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "request-mismatch",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects request-mismatch from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "test-process-started",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects test-process-started from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "wrong-caller-path",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects wrong-caller-path from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "wrong-trace-target",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects wrong-trace-target from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "wrong-fork-caller",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects wrong-fork-caller from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "basename-only",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects basename-only from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "wrong-parent",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects wrong-parent from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "native-no-samples",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects native-no-samples from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "post-request-child",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects post-request-child from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    },
+    {
+      "group": "compiler",
+      "id": "unreaped-child",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > rejects unreaped-child from raw evidence",
+      "outcome": "failed",
+      "failure": "expected [Function] to throw an error; rejection disabled"
+    }
+  ],
+  "positiveControls": [
+    {
+      "group": "inbox",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > accepts exact raw counters and preserves unmeasured conclusions",
+      "outcome": "passed"
+    },
+    {
+      "group": "inbox",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > inbox > ignores a fabricated resource and acceptance headline",
+      "outcome": "passed"
+    },
+    {
+      "group": "expiry",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > accepts exact raw counters and preserves unmeasured conclusions",
+      "outcome": "passed"
+    },
+    {
+      "group": "expiry",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > expiry > ignores a fabricated resource and acceptance headline",
+      "outcome": "passed"
+    },
+    {
+      "group": "compiler",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > accepts exact raw counters and preserves unmeasured conclusions",
+      "outcome": "passed"
+    },
+    {
+      "group": "compiler",
+      "testName": "P-011 private request-host memory cohort > P-011 selected saved-source acceptance counterexamples > compiler > ignores a fabricated resource and acceptance headline",
+      "outcome": "passed"
+    }
+  ],
+  "binding": {
+    "id": 23104,
+    "kind": "counterexample",
+    "evidenceRef": "test-run 20622428 mutation-probe mutant fail packages/operator-core/lib/service-memory-attribution.integration.test.ts @d02b44f8eb52+dirty",
+    "testRunId": 20622428,
+    "targeted": "perf-oct1-p011-memory",
+    "outcome": "caught",
+    "testLayer": "integration",
+    "currentnessAtReadback": {
+      "overall": "current",
+      "dimensions": {
+        "spec": "current",
+        "source": "current",
+        "test": "current",
+        "fixture": "not-applicable",
+        "rubric": "not-applicable",
+        "environment": "not-applicable",
+        "coverageEvidence": "not-applicable",
+        "testRun": "current"
+      },
+      "staleReasons": [],
+      "unknownReasons": [],
+      "comparisonSupplied": true,
+      "provenance": "server-measured"
+    },
+    "adequacyScope": {
+      "outcome": "caught",
+      "skipped": false,
+      "executed": true,
+      "targeted": "perf-oct1-p011-memory",
+      "collected": true,
+      "testLayer": "integration",
+      "disclosedGap": [
+        "L4 and red capability scope is saved-data oracle rejection only. No runtime cohort, matched live counterfactual, retained/native attribution or production savings.",
+        "Historical inbox overlap/expiry allocation and physical reduction/compiler historical attribution qualifications preserved.",
+        "Parent adequacy and independent acceptance/shipment remain open."
+      ],
+      "coverageRungs": {
+        "l4": true
+      },
+      "pathReachable": true,
+      "fixtureCalibrated": true,
+      "oracleIndependent": true
+    },
+    "scope": "L4/red capability for saved-data rejection only; live runtime acceptance not established."
+  },
+  "censusPreservation": {
+    "priorBytes": 40679,
+    "priorSha256": "b4bb29e00e0057ab8a2f2d7598487a3063d24ebde96828012a28cfad82d59eae",
+    "addedField": "selectedSourceOracleMutation",
+    "sourceDispositionCount": 8,
+    "expected": "Removing only selectedSourceOracleMutation reproduces complete prior parsed census, all source dispositions and every prior spawner field."
+  },
+  "limits": [
+    "Expiry heap reclamation does not establish PSS reduction or cumulative allocation.",
+    "Inbox concurrent batch outcomes are preserved; actual overlap timestamps are absent.",
+    "Compiler receipt distinguishes invocation and cleanup, not paired optimization or historical recovery.",
+    "Named-source and executed-graph limits, live paired savings, parent acceptance and shipment remain open.",
+    "No runtime cohort, inspector, host, shared source edit or live-gate operation in this receipt-completion unit.",
+    "Original baseline router provenance unknown; phase ledger identifies dirty tree. Exact marker and ledger preserved without claiming complete source currentness.",
+    "Full P011 fulfillment, complete executed graph, R8/R9, independent acceptance and shipment remain open."
+  ],
+  "recovery": "Saved terminal evidence only; no probe or old cohort rerun."
+}

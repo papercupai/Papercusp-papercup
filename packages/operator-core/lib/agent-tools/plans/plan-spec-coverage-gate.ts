@@ -306,6 +306,10 @@ function acceptedRating(value: unknown): boolean {
 function usableAdequacyCard(card: ScorecardRow, subjectRef: string): boolean {
   return (
     card.rubricRef === SPEC_TEST_ADEQUACY_RUBRIC_REF &&
+    // A complete card from an older or unresolved scoring-rubric identity is
+    // not proof under the rubric currently in force. Missing currentness is
+    // treated as unknown and fails closed at this admission boundary.
+    card.rubricCurrentness?.state === 'current' &&
     card.subject?.kind === 'plan' &&
     card.subject.ref === subjectRef &&
     card.rubricResolved &&

@@ -6,6 +6,8 @@
  * committed `.papercusp/state/<dir>/*` files. This is what makes "clone-and-go"
  * work — a fresh checkout has the files but an empty PG.
  *
+ * Text artifacts retain newer PG revisions while their local export is pending;
+ * an older committed file must not undo a verified artifact update on restart.
  * Disables the git-export capture trigger around the load so re-importing a file
  * doesn't bounce straight back into the export outbox (an echo loop). Generic
  * upsert: object/array values → jsonb, everything else → a normal bind param;
@@ -75,6 +77,7 @@ export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number
   }
 
   let n = 0;
+  let validFiles = 0;
   // EI-19900345996596896: a single unusable file must NOT cost this harness its
   // git-export drain loop. The caller (bootGitExportForHarness) hydrates every table
   // BEFORE calling startGitExportDrain, and catches per HARNESS — so a throw from one
@@ -117,16 +120,24 @@ export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number
           row[c] !== null && typeof row[c] === 'object' ? JSON.stringify(row[c]) : row[c],
         );
         const setCols = cols.filter((c) => !conflictCols.includes(c));
+        // EI-25858658863255291: boot hydrates before starting the outbox drain.
+        // A stale file can therefore replace a newer, not-yet-exported artifact
+        // (including its updated_at), silently dropping verified evidence. Keep
+        // revision comparison in the atomic upsert, rather than a racy pre-read.
+        const revisionGuard = table === 'harness_text_artifacts' && allowed.has('updated_at')
+          ? ` WHERE ${table}.updated_at IS NULL OR EXCLUDED.updated_at >= ${table}.updated_at`
+          : '';
         const onConflict = setCols.length
-          ? `DO UPDATE SET ${setCols.map((c) => `${c} = EXCLUDED.${c}`).join(', ')}`
+          ? `DO UPDATE SET ${setCols.map((c) => `${c} = EXCLUDED.${c}`).join(', ')}${revisionGuard}`
           : 'DO NOTHING';
-        await sql.unsafe(
+        const applied = await sql.unsafe(
           `INSERT INTO harness_shared.${table} (${cols.join(', ')}) ` +
             `VALUES (${placeholders.join(', ')}) ` +
-            `ON CONFLICT (${conflictCols.join(', ')}) ${onConflict}`,
+            `ON CONFLICT (${conflictCols.join(', ')}) ${onConflict} RETURNING 1`,
           params as never[],
         );
-        n += 1;
+        n += applied.length;
+        validFiles += 1;
       } catch (e) {
         if (firstError === null) firstError = e;
         failures.push({ file: f, message: e instanceof Error ? e.message : String(e) });
@@ -139,7 +150,8 @@ export async function hydrateGitTable(opts: HydrateGitTableOpts): Promise<number
     // EVERY file failed ⇒ the cause is systemic (schema drift, dead connection,
     // wholesale corruption), not one bad document. Surface that as a boot failure
     // rather than reporting a silent, empty success.
-    if (n === 0) throw firstError instanceof Error ? firstError : new Error(String(firstError));
+    // A valid stale revision is intentionally skipped, not a failed file.
+    if (validFiles === 0) throw firstError instanceof Error ? firstError : new Error(String(firstError));
     console.warn(
       `[git-export] hydrate ${table}: skipped ${failures.length} of ${files.length} file(s), ` +
         `loaded ${n} — ` +

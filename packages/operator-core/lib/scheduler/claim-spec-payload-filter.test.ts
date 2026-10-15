@@ -66,6 +66,7 @@ function subjectOf(p: {
     planItem: [],
     fleet: null,
     triageGate: null,
+    itemClass: 'work',
     age: null,
     riskTier: null,
     redundancy: null,

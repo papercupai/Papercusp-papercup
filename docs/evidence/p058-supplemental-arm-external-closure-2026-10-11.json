@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 ARM static imports with maintained supplemental JavaScript closure",
+  "command": [
+    "node",
+    ".papercusp/scratch/p058-lazy-target-release-20261011/supplemental-closure.mjs",
+    "static2"
+  ],
+  "cwd": ".",
+  "startedAt": "2026-10-11T18:40:07.440Z",
+  "finishedAt": "2026-10-11T18:41:29.991Z",
+  "exitCode": 0,
+  "summary": "The changed HOST release has one new external, js-tiktoken. The maintained frozen dependency copier staged js-tiktoken1.0.21 and base64-js1.5.1, preserving complete package inventories. Its five canonical tests passed. Fresh static2 resolved all27 bundle externals plus base64-js in the pinned ARM runtime and removed its exact container. Full source, all four build artifacts, old overlay and supplemental inventories remained unchanged. Original60000ms boot qualification is a separate subsequent run; no installed-native, signed, published or shipped acceptance.",
+  "workItemId": "EI-25708127159467940",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "producerTaskId": "0mv462r12199bwqw66z",
+  "sourceCommit": "af73da044b9c67adc47a9a5044968b6139578a8a",
+  "assertions": [
+    {
+      "id": "measured-new-external-delta",
+      "passed": true,
+      "evidence": "New retained metafile adds exactly js-tiktoken vs the original26-external set."
+    },
+    {
+      "id": "maintained-runtime-dependency-closure",
+      "passed": true,
+      "evidence": "Actual frozen copy_pkg_closure and assert_runtime_dependency_closure staged both required packages with0missing; complete source and copied package inventories matched."
+    },
+    {
+      "id": "canonical-copier-regression-tests",
+      "passed": true,
+      "evidence": "task0mv45y2i21g2vo881xe ran maintained Node suite:5pass0fail0skip against bound builder39e4287f/testfd07c593."
+    },
+    {
+      "id": "pure-js-supplemental-inventory",
+      "passed": true,
+      "evidence": "Complete supplemental inventory4481af5c has44entries and0ELF."
+    },
+    {
+      "id": "arm-static-external-resolution",
+      "passed": true,
+      "evidence": "All27 HOST bundle externals plus base64-js resolved in pinned Nodev24.18.1/ARM64/uid1001; P058_LAZY_TARGET_STATIC2_PASS emitted."
+    },
+    {
+      "id": "exact-owned-container-cleanup",
+      "passed": true,
+      "evidence": "Exact static container402fe6d1 removed=true and cleanupPending=false."
+    },
+    {
+      "id": "immutable-inputs-before-after",
+      "passed": true,
+      "evidence": "Complete frozen source39157files, all4release artifacts, whole oldoverlaycedde and supplemental4481 inventories stable."
+    }
+  ],
+  "dependencyDelta": [
+    "js-tiktoken"
+  ],
+  "packages": [
+    {
+      "name": "base64-js",
+      "version": "1.5.1",
+      "entries": 7,
+      "sha256": "ac22aff4d3c00bc0bbfa6868a56debfd7cc235f738bf428a523f42c985ec65f0"
+    },
+    {
+      "name": "js-tiktoken",
+      "version": "1.0.21",
+      "entries": 35,
+      "sha256": "14d59d3180b203e838c44023b6fcb9b8c0a1e454d9745fcc7cf981b7d30e3342"
+    }
+  ],
+  "supplementalInventory": {
+    "sha256": "4481af5cf402a15957a0dd9ab8b86fcc3b261dd54db84a74480b2593c212edea",
+    "entries": 44,
+    "elfFiles": 0
+  },
+  "buildSha256": "e9f1096ff7d1aa4245765f76bda7a1b65b6cdd4078fd51b12184f04fffe75cc4",
+  "builderSha256": "39e4287f64e10431071f797f4c5db4487e52770f932fd6e66fc2b74d50aa7d21",
+  "testSha256": "fd07c593c2950661bdc6d4b84fdcceecb5e7c148d744a3048563e668d6dde17b",
+  "retainedOverlaySha256": "cedde981291a486ce1f23a3e143efd0ff9222ef148bc2c27bddbfeb8cad807c4",
+  "runnerSha256": "35128b706d19bad3051a45e35339ef95357fb46afbecf47e3204ff07bace9b70",
+  "frozenProducerHelperSha256": "478ec0548be8792d553d3f722cc904b230bcbc8fcd2cc39c7b611fe89d2e9137",
+  "runtimeEnvironmentBinding": {
+    "evidenceSha256": "bfc1ee6f47fa06c7fbc7b51e7b0e7ee76267d9e24d410d048c6863dfa5bc0ea5",
+    "environment": {
+      "CONTAINERS_STORAGE_CONF": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-storage.conf",
+      "CONTAINERS_CONF": "/mnt/backup/portable-server-p058/amd-native-build8-20261009/oci-containers.conf",
+      "XDG_RUNTIME_DIR": "/run/user/1000/p058-amd8-oci"
+    },
+    "unset": [
+      "CONTAINER_HOST"
+    ],
+    "configHashes": {
+      "CONTAINERS_STORAGE_CONF": "32d27a26eb39a35be52005de497b4ec80cc17955ceff178d82c1b1e0bec3aaf6",
+      "CONTAINERS_CONF": "5aabfd07777b9c02e3132080ab796f5e5d1860faa6420a60e4de587612999715"
+    }
+  },
+  "staticResult": {
+    "status": "passed",
+    "specifiers": [
+      "@aws-sdk/client-ec2",
+      "@aws-sdk/client-ssm",
+      "@dbos-inc/dbos-sdk",
+      "@lydell/node-pty",
+      "@mcp-ui/server",
+      "@papercusp/embedded-postgres-server/src/migration-runner.js",
+      "@smithy/core",
+      "@smithy/core/cbor",
+      "@smithy/core/checksum",
+      "@smithy/core/client",
+      "@smithy/core/config",
+      "@smithy/core/endpoints",
+      "@smithy/core/protocols",
+      "@smithy/core/retry",
+      "@smithy/core/schema",
+      "@smithy/core/serde",
+      "acorn",
+      "fast-check",
+      "js-tiktoken",
+      "mingo",
+      "mingo/operators/query",
+      "mingo/util",
+      "typescript",
+      "undici",
+      "viem",
+      "viem/accounts",
+      "viem/chains"
+    ],
+    "containerId": "402fe6d1078c065750f9c5dff7de59f14170b160484dae18f5b9955ea7bd60a2",
+    "removed": true,
+    "cleanupPending": false
+  },
+  "rawEvidence": [
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/supplemental-binding.json",
+      "sha256": "e8c2d7d2f91689a06c783d1c72ef040313b436e64d88945f34b18efa22346750"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/supplemental-copier.sh",
+      "sha256": "c8c9f1b3701e9daa89da00bf40fd746aa3c6d48e9808e7967483a475f2f0b9d1"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/supplemental-copier.log",
+      "sha256": "48dbe2c8006ff10f6903d4343da20e01769694ce1ef1fba43fc243eef94bf437"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/supplemental-canonical-tests.json",
+      "sha256": "af39503504a311033c85708f435a9fd26d1528d9c77cf29ba985626036adeb65"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/supplemental-canonical-tests.log",
+      "sha256": "08349099b7749c22911d7001dd62a782de4dd7d12f14f34ce17b9164e6d8d5dc"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/static2.json",
+      "sha256": "18774fb8e928212351bfbde3af6013c3ac955d976f8ba0603cadef4d030db695"
+    },
+    {
+      "path": "/mnt/backup/portable-server-p058/lazy-target-equivalent-release-20261011/static2-config.json",
+      "sha256": "9cbfe1a555d063bef10b4a5a4609e6c379e9583b038a437df09329dc8fb6081e"
+    }
+  ],
+  "priorHarnessPreflight": {
+    "taskId": "0mv45y3d56tgobpzrfv",
+    "status": "failed-before-container",
+    "cause": "Caller omitted saved private Podman environment; exact image guard refused before producer config/output/container. Runner now derives and binds those settings from the original executedShellCommand."
+  },
+  "candidateAccepted": false,
+  "canonicalBootAttempted": false,
+  "originalDeadlineMs": 60000,
+  "signed": false,
+  "published": false,
+  "scope": "ARM static resolver qualification for changed HOST release with supplemental pure-JS dependency closure; installed-native and final release acceptance remain separate"
+}

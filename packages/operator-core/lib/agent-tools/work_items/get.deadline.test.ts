@@ -8,6 +8,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { WorkItemIdAmbiguousError } from '../../work-items-physical-row';
 
 const getWorkItem = vi.fn();
 const getWorkItemsByIds = vi.fn();
@@ -15,6 +16,12 @@ const getWorkItemDetail = vi.fn();
 const getWorkItemThreadWindow = vi.fn();
 const getWorkItemCheckpointWithMeta = vi.fn();
 const getWorkItemCheckpointFreshness = vi.fn();
+const listSpecEvidence = vi.fn();
+const getClaimTimePriorWorkHint = vi.fn();
+const planItemLaneBlockReason = vi.fn();
+const planItemClaimCollision = vi.fn();
+const planItemTextDriftForWorkItem = vi.fn();
+const readCorroborationSummary = vi.fn();
 
 vi.mock('../../work-items', () => ({
   getWorkItem: (...args: unknown[]) => getWorkItem(...args),
@@ -29,7 +36,38 @@ vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpointFreshness: (...args: unknown[]) => getWorkItemCheckpointFreshness(...args),
 }));
 
-import get, { WORK_ITEMS_GET_BUDGET_MS, WORK_ITEMS_GET_MAX_CONCURRENCY } from './get';
+vi.mock('../../work-item-prior-work', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-item-prior-work')>()),
+  getClaimTimePriorWorkHint: (...args: unknown[]) => getClaimTimePriorWorkHint(...args),
+}));
+
+vi.mock('../../scheduler/plan-item-lane-guard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/plan-item-lane-guard')>()),
+  planItemLaneBlockReason: (...args: unknown[]) => planItemLaneBlockReason(...args),
+}));
+
+vi.mock('../../scheduler/plan-item-claim-collision', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../scheduler/plan-item-claim-collision')>()),
+  planItemClaimCollision: (...args: unknown[]) => planItemClaimCollision(...args),
+}));
+
+vi.mock('../../plan-items/text-drift-report', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../plan-items/text-drift-report')>()),
+  planItemTextDriftForWorkItem: (...args: unknown[]) => planItemTextDriftForWorkItem(...args),
+}));
+
+vi.mock('../../harness/improvements/corroboration', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/improvements/corroboration')>()),
+  readCorroborationSummary: (...args: unknown[]) => readCorroborationSummary(...args),
+}));
+
+vi.mock('../plans/spec-evidence-store', async (original) => ({
+  ...(await original<typeof import('../plans/spec-evidence-store')>()),
+  listSpecEvidence: (...args: unknown[]) => listSpecEvidence(...args),
+}));
+
+import get, { WORK_ITEMS_GET_BUDGET_MS, WORK_ITEMS_GET_MAX_CONCURRENCY, workItemsGetSourceReadOptions } from './get';
+import { projectWorkItemOperationalBrief } from '../../operational-brief/work-item-brief';
 
 type Out = { data: { results: Array<Record<string, unknown>> } };
 const ctx = { uiClientId: 'su-deadline-test', workspaceId: 'default' };
@@ -38,6 +76,24 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    // operationalBrief requests a complete source row and therefore reads the checkpoint.
+    // clearAllMocks preserves implementations, so reset the hanging implementation from
+    // the timeout case before the next test exercises that complete-read path.
+    getWorkItemCheckpointWithMeta.mockResolvedValue({
+      checkpoint: null,
+      updatedAtMs: null,
+      checkpointChecks: null,
+      checkpointBody: null,
+      checkpointContentHash: null,
+      latestUpdate: undefined,
+      subjectFingerprint: undefined,
+      readFailed: false,
+    });
+    getClaimTimePriorWorkHint.mockResolvedValue(null);
+    planItemLaneBlockReason.mockResolvedValue(null);
+    planItemClaimCollision.mockResolvedValue(null);
+    planItemTextDriftForWorkItem.mockResolvedValue(null);
+    readCorroborationSummary.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -48,7 +104,9 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     getWorkItem.mockImplementation(() => new Promise(() => {}));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const pending = get.handler({ id: 'WI-timeout' } as never, ctx as never) as Promise<Out>;
+    const pending = get.handler({ id: 'WI-timeout' } as never, ctx as never) as Promise<
+      Out & { data: { read: Record<string, unknown> } }
+    >;
     await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
 
     const out = await pending;
@@ -61,7 +119,39 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       budgetMs: WORK_ITEMS_GET_BUDGET_MS,
     });
     expect(out.data.results[0]).not.toMatchObject({ error: expect.stringContaining('not found') });
+    expect(out.data.read.baseReadDiagnostics).toEqual([
+      expect.objectContaining({
+        id: 'WI-timeout',
+        status: 'pending',
+        elapsedMs: expect.any(Number),
+      }),
+    ]);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('work_items:get:WI-timeout exceeded'));
+
+    warnSpy.mockRestore();
+  });
+
+  it('reports per-ID pending base-read status when a projected batch read never settles', async () => {
+    const ids = ['WI-projected-timeout-1', 'WI-projected-timeout-2'];
+    getWorkItemsByIds.mockImplementation(() => new Promise(() => {}));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const pending = get.handler(
+      { ids, detail: true, threadLimit: 0 } as never,
+      { ...ctx, sourceProjection: { pick: ['results[].id', 'read'] } } as never,
+    ) as Promise<Out & { data: { read: Record<string, unknown> } }>;
+    await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
+
+    const out = await pending;
+    expect(out.data.results).toHaveLength(ids.length);
+    expect(out.data.results.every((row) => row.availability === 'unavailable')).toBe(true);
+    expect(out.data.read.baseReadDiagnostics).toEqual(expect.arrayContaining(
+      ids.map((id) => expect.objectContaining({
+        id,
+        status: 'pending',
+        elapsedMs: expect.any(Number),
+      })),
+    ));
 
     warnSpy.mockRestore();
   });
@@ -85,6 +175,80 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     });
     expect(out.data.results[0]).not.toMatchObject({ error: expect.stringContaining('not found') });
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('work_items:get:WI-detail-timeout exceeded'));
+
+    warnSpy.mockRestore();
+  });
+
+  it('reports the pending enrichment leg and elapsed budget when enrichment times out', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-enrichment-timeout',
+      kind: 'bug',
+      family: 'issue',
+      harness: 'papercusp',
+      state: 'open',
+      title: 'enrichment timeout',
+    });
+    getWorkItemCheckpointWithMeta.mockImplementation(() => new Promise(() => {}));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const pending = get.handler({ id: 'WI-enrichment-timeout' } as never, ctx as never) as Promise<
+      Out & { data: { read: Record<string, unknown> } }
+    >;
+    await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
+
+    const out = await pending;
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-enrichment-timeout',
+      availability: 'unavailable',
+      error: 'timeout',
+    });
+    expect(out.data.read.enrichmentMaxMs).toBeGreaterThan(0);
+    expect(out.data.read.enrichmentDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'WI-enrichment-timeout',
+        stage: 'checkpoint',
+        status: 'pending',
+        elapsedMs: expect.any(Number),
+      }),
+    ]));
+
+    warnSpy.mockRestore();
+  });
+
+  it('bounds resume enrichment when a checkpoint dependency never settles', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-resume-timeout',
+      kind: 'bug',
+      family: 'issue',
+      harness: 'papercusp',
+      state: 'open',
+      title: 'resume timeout',
+      assignee: 'su-test',
+    });
+    getWorkItemCheckpointWithMeta.mockImplementation(() => new Promise(() => {}));
+    getWorkItemCheckpointFreshness.mockResolvedValue({ verdict: 'fresh' });
+    listSpecEvidence.mockResolvedValue([]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const pending = get.handler(
+      { id: 'WI-resume-timeout', resume: true } as never,
+      ctx as never,
+    ) as Promise<Out>;
+    await vi.advanceTimersByTimeAsync(WORK_ITEMS_GET_BUDGET_MS + 100);
+
+    const out = await pending;
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-resume-timeout',
+      availability: 'unavailable',
+      error: 'timeout',
+      retryable: true,
+      phase: 'read',
+      budgetMs: WORK_ITEMS_GET_BUDGET_MS,
+    });
+    expect(getWorkItemCheckpointWithMeta).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('work_items:get:WI-resume-timeout exceeded'));
 
     warnSpy.mockRestore();
   });
@@ -155,6 +319,44 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ workItemsGet: out.data.read }));
   });
 
+  // P-013 (plan scope-unique-identifiers-2026-07-26, R-5): an id held by twin rows is REPORTED
+  // with its candidate harnesses — never read as not-found and never resolved to one twin.
+  it('P-013: reports an ambiguous id with its candidates on the per-id path', async () => {
+    getWorkItem.mockRejectedValue(
+      new WorkItemIdAmbiguousError('WI-twin', 'papercusp-workspace', ['papercup', 'papercusp'], null),
+    );
+    const out = (await get.handler({ id: 'WI-twin' } as never, ctx as never)) as Out & {
+      data: { read: Record<string, unknown> };
+    };
+    expect(out.data.results[0]).toMatchObject({
+      ok: false,
+      id: 'WI-twin',
+      availability: 'ambiguous',
+      error: 'ambiguous_id',
+      retryable: false,
+      candidates: ['papercup', 'papercusp'],
+    });
+    expect(String(out.data.results[0]!.message)).toContain('Pass harness');
+    expect(out.data.read).toMatchObject({ ambiguous: 1, absent: 0, available: 0 });
+  });
+
+  it('P-013: reports an ambiguous id on the projected batch path, not as absent', async () => {
+    getWorkItemsByIds.mockImplementation(
+      async (_ids: string[], _harness: unknown, _opts: unknown, report?: { ambiguous: unknown[] }) => {
+        report?.ambiguous.push(new WorkItemIdAmbiguousError('WI-twin', 'ws', ['a', 'b'], null));
+        return [{ id: 'WI-one', kind: 'bug', family: 'issue', harness: 'papercusp', state: 'done', title: 'one' }];
+      },
+    );
+    const out = (await get.handler(
+      { ids: ['WI-one', 'WI-twin', 'WI-missing'], detail: true, threadLimit: 0 } as never,
+      { ...ctx, sourceProjection: { pick: ['results[].id', 'read'] } } as never,
+    )) as Out;
+    const byId = new Map(out.data.results.map((r) => [r.id, r]));
+    expect(byId.get('WI-one')).toMatchObject({ ok: true, availability: 'available' });
+    expect(byId.get('WI-twin')).toMatchObject({ ok: false, availability: 'ambiguous', candidates: ['a', 'b'] });
+    expect(byId.get('WI-missing')).toMatchObject({ ok: false, availability: 'absent' });
+  });
+
   it('uses one set-based read for projected multi-id completion evidence', async () => {
     const ids = ['WI-batch-1', 'WI-batch-2', 'WI-batch-3', 'WI-batch-4', 'WI-batch-5', 'WI-batch-6'];
     getWorkItemsByIds.mockResolvedValue(
@@ -191,11 +393,119 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       ids,
       undefined,
       { includeBody: false, payloadProjection: 'completionEvidence' },
+      // P-013: the batch read reports ids held by twin rows here instead of picking one.
+      { ambiguous: [] },
     );
     expect(getWorkItem).not.toHaveBeenCalled();
     expect(out.data.results).toHaveLength(ids.length);
     expect(out.data.results.every((row) => row.availability === 'available')).toBe(true);
     expect(out.data.read).toMatchObject({ requested: ids.length, available: ids.length, unavailable: 0 });
+  });
+
+  it('keeps operationalBrief completion evidence under outer field projections for one and many ids', async () => {
+    const ids = [
+      'WI-brief-projection-1',
+      'WI-brief-projection-2',
+      'WI-brief-projection-3',
+      'WI-brief-projection-4',
+      'WI-brief-projection-5',
+    ];
+    const evidence = { summary: 'verified completion', verifiedHow: 'focused regression guard' };
+    getWorkItem.mockImplementation(async (id: string, _harness?: string, options?: { payloadProjection?: string }) => ({
+      id,
+      kind: 'bug',
+      family: 'issue',
+      harness: 'papercup',
+      state: 'done',
+      title: id,
+      closedAt: '2026-10-09T17:00:00.000Z',
+      updatedAt: '2026-10-09T17:00:00.000Z',
+      ...(options === undefined || options.payloadProjection === 'completionEvidence'
+        ? { terminalCompletionEvidence: evidence }
+        : {}),
+    }));
+    const projectedCtx = {
+      ...ctx,
+      sourceProjection: {
+        pick: ['results[].id', 'results[].operationalBrief.lastVerified', 'read'],
+      },
+    };
+
+    const single = await get.handler(
+      { id: ids[0], operationalBrief: true } as never,
+      projectedCtx as never,
+    ) as Out;
+    const batch = await get.handler(
+      { ids, operationalBrief: true } as never,
+      projectedCtx as never,
+    ) as Out;
+
+    for (const row of [...single.data.results, ...batch.data.results]) {
+      expect(row.operationalBrief).toMatchObject({
+        lastVerified: {
+          status: 'known',
+          value: { ref: `${row.id}#completion`, summary: 'focused regression guard' },
+        },
+      });
+    }
+    expect(getWorkItem.mock.calls.every(([, , options]) => options === undefined)).toBe(true);
+    expect(getWorkItemsByIds).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['blocker-only', ['results[].operationalBrief.blockers']],
+    ['identity-and-brief', ['results[].id', 'results[].workItem.state', 'results[].operationalBrief']],
+  ])('keeps operationalBrief active blocker reasons under %s projections for one and many ids', async (_label, pick) => {
+    const ids = ['WI-runtime-blocker-1', 'WI-runtime-blocker-2', 'WI-runtime-blocker-3'];
+    const blocker = {
+      kind: 'runtime',
+      capability: 'live-dependency',
+      capabilitySource: 'explicit',
+      ref: 'authoring-peer:goal-attribution',
+      summary: 'The authoring peer must apply the goal attribution update.',
+      evidence: 'The guarded update refused a remote-authored row.',
+      nextVerb: 'On the authoring peer, validate ownership then work_items:update {id,goal}.',
+      status: 'active',
+      createdAt: '2026-10-11T04:40:24.219Z',
+      createdBy: 'su-reporter',
+      updatedAt: '2026-10-11T04:40:24.219Z',
+    };
+    const makeWorkItem = (id: string, options?: { payloadProjection?: string }) => ({
+      id, kind: 'feature', family: 'feature', harness: 'papercup', state: 'blocked', title: id,
+      // The source reader's narrowed path returns NULL payload. Preserve that
+      // behavior here so the old handler recipe cannot pass on a rich fixture.
+      payload: options === undefined ? {
+        externalBlockers: [blocker, { ...blocker, ref: 'cleared-history', status: 'cleared' }],
+      } : null,
+    });
+    const expected = [`runtime blocker ${blocker.ref}: ${blocker.summary} (next: ${blocker.nextVerb})`];
+    const projectedCtx = { ...ctx, sourceProjection: { pick } };
+
+    // Permanent wrong control: before 42ead3e6b0 the handler applied this
+    // narrowing recipe even when the brief required the complete payload.
+    // Calibrate the same projector on both inputs to distinguish source loss
+    // from a parser that rejects the reporter's valid runtime blocker.
+    const oldOptions = workItemsGetSourceReadOptions(projectedCtx.sourceProjection, false);
+    expect(oldOptions).toEqual({ includeBody: false, payloadProjection: 'none' });
+    const project = (options?: { payloadProjection?: string }) => projectWorkItemOperationalBrief(
+      { id: ids[0], workItem: makeWorkItem(ids[0]!, options) }, { linksRead: false },
+    );
+    expect(project(oldOptions).blockers).toMatchObject({
+      status: 'known', value: ['state is blocked but no blocker reason is recorded'],
+    });
+    expect(project().blockers).toMatchObject({ status: 'known', value: expected });
+
+    getWorkItem.mockImplementation(async (id: string, _harness?: string, options?: { payloadProjection?: string }) => makeWorkItem(id, options));
+    const single = await get.handler({ id: ids[0], operationalBrief: true } as never, projectedCtx as never) as Out;
+    const batch = await get.handler({ ids, operationalBrief: true } as never, projectedCtx as never) as Out;
+
+    expect(single.data.results).toHaveLength(1);
+    expect(batch.data.results).toHaveLength(ids.length);
+    for (const row of [...single.data.results, ...batch.data.results]) {
+      expect(row.operationalBrief).toMatchObject({ blockers: { status: 'known', value: expected } });
+    }
+    expect(getWorkItem.mock.calls.every(([, , options]) => options === undefined)).toBe(true);
+    expect(getWorkItemsByIds).not.toHaveBeenCalled();
   });
 
   it('runs detail=true with threadLimit in the bounded pool instead of serializing the batch', async () => {

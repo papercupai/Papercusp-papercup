@@ -84,6 +84,7 @@ export interface DeepDelegateDeps {
    *  when the delivery did not land (the session died since the presence
    *  read / its wake staged), so the caller can degrade. */
   deliverToDeep?(input: {
+    workspaceId: string;
     ownerId: string;
     workItemId: string;
     harness: string;
@@ -193,6 +194,7 @@ export async function delegateDeep(
     if (!wi) return { ok: false, error: 'work_item create failed' };
     const delivered = await deps
       .deliverToDeep!({
+        workspaceId: input.workspaceId,
         ownerId: deep.ownerId,
         workItemId: wi.id,
         harness: wi.harness,

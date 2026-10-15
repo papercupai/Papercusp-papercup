@@ -195,11 +195,12 @@ describe('read-cursors — ack-on-proof (P-005)', () => {
     expect((await ackAndRead('su-1', 'orient', { confirmedToken: 'tok-2' })).committed).toEqual({ gen: 1 });
   });
 
-  it('a NULL confirmation (nothing provable yet) discards pending like a mismatch', async () => {
+  it('a NULL confirmation discards pending but returns it for diagnostics', async () => {
     await stage('su-1', 'orient', { gen: 1 }, { deliveryToken: 'tok-1' });
     expect(await ackAndRead('su-1', 'orient', { confirmedToken: null })).toEqual({
       committed: null,
       baseline: true,
+      unconfirmedPending: { gen: 1 },
     });
   });
 

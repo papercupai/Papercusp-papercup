@@ -8,6 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import type { RouteContext } from '../define-route';
 import { CODEX_SAFE_DEFAULT_MODEL } from '../../model-context-budget.mjs';
 
@@ -26,6 +27,14 @@ afterAll(() => {
 });
 
 const recordAdvSessionMock = vi.fn(async (_o: unknown) => 7 as number | null);
+const claimAgentLaunchMock = vi.fn(async (_opts: unknown) => ({
+  won: true,
+  priorSummary: null as Record<string, unknown> | null,
+  priorLaunchedAt: null as number | null,
+  priorLaunchedBy: null as string | null,
+}));
+const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => {});
+const releaseAgentLaunchClaimMock = vi.fn(async (_opts: unknown) => true);
 const recordSuLaunchSpecMock = vi.fn(async () => true);
 const adoptStartingTerminalLaunchMock = vi.fn(async (_opts: unknown) => true);
 const repairStaleAdvSessionTerminalMarkersMock = vi.fn(async (_owner: string) => 0);
@@ -37,6 +46,7 @@ const buildRoleLaunchSpecMock = vi.fn();
 const resolveLaunchIdentityModelDefaultMock = vi.fn();
 const mintRoleLaunchIdentityMock = vi.fn(() => ({ sid: 'role-abc', nativeSessionId: 'nsid-abc' }));
 const resolveAcceptedOperationWorkerBindingMock = vi.fn(async (_input: unknown) => null as unknown);
+const prepareSupportOperationNativeLaunchMock = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => null);
 const selectAcceptedOperationWorkerModelMock = vi.fn((_binding: unknown, _requested: unknown, _agent: unknown) => null as unknown);
 const resolveProjectDirMock = vi.fn(async (_slug: string, _workspace: string) => LC_DIR);
 const roleConsumesMock = vi.fn();
@@ -98,6 +108,11 @@ vi.mock('../../adv-sessions', async (orig) => ({
   repairStaleAdvSessionTerminalMarkers: repairStaleAdvSessionTerminalMarkersMock,
   markAdvSessionEnded: markAdvSessionEndedMock,
 }));
+vi.mock('../../agent-launch-core', () => ({
+  claimAgentLaunch: (opts: unknown) => claimAgentLaunchMock(opts),
+  recordAgentLaunchResult: (opts: unknown) => recordAgentLaunchResultMock(opts),
+  releaseAgentLaunchClaim: (opts: unknown) => releaseAgentLaunchClaimMock(opts),
+}));
 vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({
   resolveSessionStates: (...args: unknown[]) => resolveSessionStatesMock(...args),
 }));
@@ -117,6 +132,9 @@ vi.mock('../../blueprint/operation-worker-binding', () => ({
   selectAcceptedOperationWorkerModel: (binding: unknown, requested: unknown, agent: unknown) =>
     selectAcceptedOperationWorkerModelMock(binding, requested, agent),
 }));
+vi.mock('../../blueprint/support-workflow-native-launch', () => ({
+  prepareSupportOperationNativeLaunch: (...args: unknown[]) => prepareSupportOperationNativeLaunchMock(...args),
+}));
 vi.mock('../../spawn-config', async (orig) => ({
   ...(await orig<typeof import('../../spawn-config')>()),
   resolveProjectDir: (slug: string, workspace: string) => resolveProjectDirMock(slug, workspace),
@@ -125,7 +143,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: ownerRowsSqlMock }),
 }));
-vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
+vi.mock('../../role-codex-home', () => ({ writeRoleCodexHomeAsync: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
 // Keep this unit suite off the live flag store. Without this mock the first
 // request waits on getFlag's production datastore timeout (~7s), exceeding
 // Vitest's 5s test budget before any route assertion can run.
@@ -216,6 +234,14 @@ async function callPost(body: unknown): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  claimAgentLaunchMock.mockReset().mockResolvedValue({
+    won: true,
+    priorSummary: null,
+    priorLaunchedAt: null,
+    priorLaunchedBy: null,
+  });
+  recordAgentLaunchResultMock.mockReset().mockResolvedValue(undefined);
+  releaseAgentLaunchClaimMock.mockReset().mockResolvedValue(true);
   resolveLaunchIdentityModelDefaultMock.mockReset().mockResolvedValue(null);
   recordAdvSessionMock.mockResolvedValue(7);
   recordSuLaunchSpecMock.mockResolvedValue(true);
@@ -224,6 +250,7 @@ beforeEach(() => {
   resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
   requestSessionIdentityActivationMock.mockResolvedValue({});
   resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
+  prepareSupportOperationNativeLaunchMock.mockReset().mockResolvedValue(null);
   selectAcceptedOperationWorkerModelMock.mockReset().mockReturnValue(null);
   resolveProjectDirMock.mockResolvedValue(LC_DIR);
   roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
@@ -260,8 +287,35 @@ describe('bootstrap-role', () => {
   const pinnedOwner = 'su-auditor-canonical';
   const pinnedRequest = { role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', owner_id: pinnedOwner };
 
+  it('passes the spawn-host route to signed role composition without accepting an endpoint URL', async () => {
+    const compose = buildRoleLaunchSpecMock.getMockImplementation()!;
+    buildRoleLaunchSpecMock.mockImplementationOnce(async (input) => ({
+      ...await compose(input), mcpTarget: input.mcpTarget,
+      specificationArtifact: { configuration: { grants: {} } },
+    }));
+    const response = await callPost({ ...pinnedRequest, mcp_target: 'spawn-host' });
+    expect(response.status).toBe(200);
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({
+      mcpTarget: 'spawn-host', operatorBaseUrl: 'http://localhost:3070',
+      launchIdentity: { sid: pinnedOwner, nativeSessionId: 'nsid-abc' },
+    }));
+    expect(recordSuLaunchSpecMock).toHaveBeenCalledWith(7, pinnedOwner,
+      expect.objectContaining({ mcpTarget: 'spawn-host', role: 'worker' }));
+    vi.clearAllMocks();
+    const refused = await callPost({ ...pinnedRequest, mcp_target: 'http://other-host:3271' });
+    expect(refused.status).toBe(400);
+    expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
+  });
+
+  it('lets a committed slow role bootstrap return past the generic route watchdog (WI-10006975)', async () => {
+    const mod = await import('../routes/agent-mcp/bootstrap-role');
+    const route = (mod.default as Array<{ method: string; timeoutSec?: number | null }>)
+      .find((r) => r.method === 'POST')!;
+    expect(route.timeoutSec).toBeNull();
+  });
+
   it('preserves a pre-pinned owner through account routing, role composition, record and environment', async () => {
-    const response = await callPost(pinnedRequest);
+    const response = await callPost({ ...pinnedRequest, bootstrap_idempotency_key: 'role-stable-key' });
     expect(response.status).toBe(200);
     const result = await response.json();
     expect(resolveAccountPinMock).toHaveBeenCalledWith('default', null, 'claude', pinnedOwner, false, null);
@@ -273,6 +327,58 @@ describe('bootstrap-role', () => {
     expect(result.envelopeEnv.PAPERCUSP_ROLE).toBe('worker');
     expect(readFileSync(result.mcpJsonPath, 'utf8')).toContain('role=worker');
     expect(repairStaleAdvSessionTerminalMarkersMock).toHaveBeenCalledWith(pinnedOwner);
+    expect(claimAgentLaunchMock).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      idempotencyKey: 'bootstrap-role:role-stable-key',
+      launchedBy: pinnedOwner,
+    });
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'default',
+      idempotencyKey: 'bootstrap-role:role-stable-key',
+      summary: expect.objectContaining({ status: 'ok', sessionId: 7 }),
+    }));
+  });
+
+  it('preserves the independent launcher separately from the role owner for managed recovery', async () => {
+    const launchedBy = 'system:acceptance-bar-amendment-review';
+    const response = await callPost({ ...pinnedRequest, launched_by: launchedBy, bootstrap_idempotency_key: 'reviewer-provenance' });
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.envelopeEnv.PAPERCUSP_SID).toBe(pinnedOwner);
+    expect(result.envelopeEnv.PAPERCUSP_LAUNCHED_BY).toBe(launchedBy);
+    expect(claimAgentLaunchMock).toHaveBeenCalledWith(expect.objectContaining({ launchedBy }));
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      launchArgv: expect.arrayContaining([`--launched-by=${launchedBy}`]),
+    }));
+  });
+
+  it.each([42, 'system:bad launcher', 'x'.repeat(121)])('refuses malformed launcher provenance before any launch effect (%s)', async (launchedBy) => {
+    const response = await callPost({ ...pinnedRequest, launched_by: launchedBy, bootstrap_idempotency_key: 'invalid-provenance' });
+    expect(response.status).toBe(400);
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('replays the completed response before checking whether its pre-pinned owner is live', async () => {
+    const prior = { status: 'ok', sessionId: 19, role: 'worker', agent: 'claude' };
+    claimAgentLaunchMock.mockResolvedValueOnce({
+      won: false,
+      priorSummary: prior,
+      priorLaunchedAt: 1,
+      priorLaunchedBy: pinnedOwner,
+    });
+    ownerRowsSqlMock.mockResolvedValue([{ id: '21', display: 'console', has_session: true, launched: true }]);
+
+    const response = await callPost({
+      ...pinnedRequest,
+      bootstrap_idempotency_key: 'role-stable-key',
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ...prior, bootstrapDeduped: true });
+    expect(ownerRowsSqlMock).not.toHaveBeenCalled();
+    expect(resolveSessionStatesMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
   it.each(['live', 'parked', 'recorded', undefined])('refuses a bound pre-pinned owner with %s liveness', async (sessionState) => {
@@ -371,6 +477,29 @@ describe('bootstrap-role', () => {
     }));
   });
 
+  it('carries the private support route after account routing and refuses a missing boundary', async () => {
+    const accepted = { workItemId: 'F-001', operationId: 'support' };
+    resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(accepted);
+    resolveAccountPinMock.mockResolvedValue({ env: { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' },
+      notice: null, accountId: null, provider: null });
+    const envelopeEnv = { PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({
+      baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) }), PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' };
+    prepareSupportOperationNativeLaunchMock.mockResolvedValueOnce({ envelopeEnv, stop: vi.fn() });
+    const request = { role: 'worker', agent: 'codex', harness_slug: 'papercup', feature: 'F-001',
+      model: 'gpt-6.1-sol:medium', headless: true };
+    const response = await callPost(request);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ envelopeEnv });
+    expect(prepareSupportOperationNativeLaunchMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'default', ownerId: 'role-abc', sessionId: 7, agent: 'codex', checkout: LC_DIR, accepted,
+    }));
+    prepareSupportOperationNativeLaunchMock.mockRejectedValueOnce(new Error('confinement unavailable'));
+    const denied = await callPost(request);
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toMatchObject({ code: 'support_native_route_denied' });
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(7, null, 'reconciler');
+  });
+
   it('refuses a model-policy mismatch before routing an account or recording a session', async () => {
     resolveAcceptedOperationWorkerBindingMock.mockResolvedValueOnce({ modelPolicy: {
       mode: 'exact', models: ['claude-opus-4-8'], onUnavailable: 'fail',
@@ -381,7 +510,43 @@ describe('bootstrap-role', () => {
     const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup',
       feature: 'F-001', model: 'claude-sonnet-4-6' });
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: 'operation_model_denied' });
+    const body = await response.json();
+    expect(body).toMatchObject({ code: 'operation_model_denied',
+      error: 'requested model is outside the accepted exact model policy' });
+    // WI-10005197: the denial carries a RefusalContract beside the unchanged code/error.
+    expect(body.refusal.observed).toEqual({ role: 'worker', agent: 'claude',
+      requestedModel: 'claude-sonnet-4-6', policyMode: 'exact' });
+    expect(body.refusal.liftsWhen).toMatch(/omit `model`/);
+    expect(body.refusal.whoCanMakeItTrue).toEqual(['self', 'owner']);
+    expect(resolveAccountPinMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unauthorized worker binding with a RefusalContract before routing an account', async () => {
+    resolveAcceptedOperationWorkerBindingMock.mockRejectedValueOnce(
+      new Error('accepted blueprint operation does not authorize this worker role'));
+    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toMatchObject({ code: 'operation_worker_denied',
+      error: 'accepted blueprint operation does not authorize this worker role' });
+    expect(body.refusal.observed).toEqual({ harness: 'papercup', feature: 'F-001', role: 'worker' });
+    expect(body.refusal.liftsWhen).toMatch(/accepted blueprint operation/);
+    expect(body.refusal.whoCanMakeItTrue).toEqual(['self', 'owner']);
+    expect(resolveAccountPinMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unresolvable identity stack with a RefusalContract naming the stack', async () => {
+    resolveLaunchIdentityModelDefaultMock.mockRejectedValueOnce(new Error('unknown stack ref domain:nope'));
+    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup',
+      feature: 'F-001', stack: ['domain:nope', 'client:x'] });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toMatchObject({ code: 'identity_model_default_denied', error: 'unknown stack ref domain:nope' });
+    expect(body.refusal.observed).toEqual({ harness: 'papercup', role: 'worker', stack: 'domain:nope,client:x' });
+    expect(body.refusal.liftsWhen).toMatch(/stack ref/);
+    expect(body.refusal.whoCanMakeItTrue).toEqual(['self', 'owner']);
     expect(resolveAccountPinMock).not.toHaveBeenCalled();
     expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
@@ -456,10 +621,21 @@ describe('bootstrap-role', () => {
       specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64),
     }));
     recordSuLaunchSpecMock.mockResolvedValueOnce(false);
-    const response = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
+    const response = await callPost({
+      role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001',
+      bootstrap_idempotency_key: 'role-failed-attempt',
+    });
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({ error: 'restricted role identity receipt was not persisted' });
     expect(requestSessionIdentityActivationMock).not.toHaveBeenCalled();
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(7, null, 'reconciler', { throwOnError: true });
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      idempotencyKey: 'bootstrap-role:role-failed-attempt',
+    });
+    expect(markAdvSessionEndedMock.mock.invocationCallOrder[0]).toBeLessThan(
+      releaseAgentLaunchClaimMock.mock.invocationCallOrder[0],
+    );
   });
 
   it('worker + feature → role-scoped session recorded with role+feature+agent', async () => {

@@ -20,10 +20,18 @@ import { SYSTEM_TARGET_PREFIX, getSystemAction, listSystemActions } from '../har
 const ACTION_NAME = 'coverage-census';
 
 describe('system:coverage-census registration', () => {
-  it('is registered when the production ephemeral executor is imported', async () => {
-    // host-bootstrap imports ephemeral-executor directly for the ephemeral tier; this is the
-    // production module boundary that must load the system-action registry.
-    await import('../dbos/ephemeral-executor');
+  it('is wired through the production import edges and registers an executable handler', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const [executor, registrations] = await Promise.all([
+      readFile(new URL('../dbos/ephemeral-executor.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../harness/routines/register-system-actions.ts', import.meta.url), 'utf8'),
+    ]);
+    // Verify both production edges before executing this action's real registration. Importing
+    // the entire executor couples this unit guard to every unrelated action's initialization
+    // (EI-25473662053794478). Removing either edge must still fail the coverage guard.
+    expect(executor).toMatch(/^import\s+['"]\.\.\/harness\/routines\/register-system-actions['"];?\s*$/m);
+    expect(registrations).toMatch(/^import\s+['"]\.\/coverage-census-action['"];?\s*$/m);
+    await import('../harness/routines/coverage-census-action');
 
     // listSystemActions() is included in the failure message on purpose: when this goes red the
     // useful question is "what name DID it register under", and a bare undefined cannot say.

@@ -13,6 +13,7 @@ import { basename, join } from 'node:path';
 import {
   assertNeverSuSession,
   type OpenCardSnapshot,
+  type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
@@ -22,7 +23,7 @@ import {
 
 import { getAdvSession } from './adv-sessions';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   injectIntoHostWithConfirmation,
   interruptViaPty,
   shutdownViaPty,
@@ -39,6 +40,7 @@ import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-sess
 import { SuOwnerTurnReceiptMatcher, type SuOwnerTurnReceiptRef } from './su-session-commands';
 import { findOmpSessionPath, ompAgentHomeForSessionKey } from './session-transcript-resolvers';
 import { createOmpTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
+import { ompMessageUsage } from './su-session-usage';
 import { gatewayServedAccountForOwner } from './compaction-usage';
 import {
   SuSessionHost,
@@ -64,10 +66,11 @@ export interface OmpSuRuntimeBinding {
 
 export type OmpNativeCommandVerdict =
   | { ok: true }
-  | { ok: false; code: string; message: string; retryable: boolean };
+  | ({ ok: false } & SuSessionRefusal);
 
 export interface OmpSuSessionControls {
-  ownerTurn(input: { ownerId: string; turnId: string; content: string }): Promise<OmpNativeCommandVerdict>;
+  /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<OmpNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<OmpNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -172,7 +175,7 @@ function refused(code: string, message: string, retryable = true): Exclude<OmpNa
 function defaultControls(): OmpSuSessionControls {
   return {
     async ownerTurn({ ownerId, content }) {
-      const host = findLiveHost(ownerId);
+      const host = await findLiveHostAsync(ownerId);
       if (!host) return refused('runtime_unavailable', 'OMP has no live managed-PTY host');
       const delivered = await injectIntoHostWithConfirmation(host.sock, { mode: 'turn', data: content, ownerId });
       if (!delivered.ok) {
@@ -195,7 +198,7 @@ function defaultControls(): OmpSuSessionControls {
         : refused('interrupt_unavailable', 'OMP runtime could not be interrupted');
     },
     async resume({ ownerId }) {
-      return findLiveHost(ownerId)
+      return (await findLiveHostAsync(ownerId))
         ? { ok: true }
         : refused(
             'runtime_reconciliation_required',
@@ -248,7 +251,7 @@ export function ompCapabilities(): SuSessionCapabilities {
       'reasoning-stream': { state: 'supported', implementation: 'native' },
       usage: {
         state: 'conditional', implementation: 'native',
-        reason: 'OMP message records may carry usage/cost metadata but the v1 SU-session event contract has no usage event',
+        reason: 'assistant message records set descriptor.usage (latest-call tokens) and a running costUsd summed from each message cost',
       },
       compaction: {
         state: 'conditional', implementation: 'host',
@@ -259,8 +262,8 @@ export function ompCapabilities(): SuSessionCapabilities {
         reason: 'PUI attached launches and resumptions install OMP native question callbacks with always-ask approval. Other managed engine callers must opt into toolApproval prompt.',
       },
       context: {
-        state: 'unsupported',
-        reason: 'the v1 SU-session contract carries no context event or descriptor field, so OMP context consumption stays inside the native runtime and never reaches the PUI',
+        state: 'conditional', implementation: 'native',
+        reason: 'descriptor.usage.contextTokens comes from assistant message usage; OMP transcripts do not record the model context window, so contextWindow stays absent and no percentage can be shown',
       },
       modes: {
         state: 'conditional', implementation: 'host',
@@ -291,7 +294,8 @@ function firstString(...values: unknown[]): string | null {
 }
 
 function commandRefusal(verdict: Exclude<OmpNativeCommandVerdict, { ok: true }>): SuSessionCommandOutcome {
-  const refusal: SuSessionRefusal = { code: verdict.code, message: verdict.message, retryable: verdict.retryable };
+  const refusal: SuSessionRefusal = { code: verdict.code, message: verdict.message, retryable: verdict.retryable,
+    ...(verdict.liftsWhen ? { liftsWhen: verdict.liftsWhen } : {}) };
   return { status: 'refused', refusal };
 }
 
@@ -363,11 +367,19 @@ function recordIndicatesCompaction(record: Record<string, unknown>): boolean {
   return type.includes('compact') || subtype.includes('compact') || record.isCompaction === true;
 }
 
+/** OMP stops an assistant message to run its tool calls and then continues
+ *  the same turn, so `toolUse` is a pause, not a turn end. Treating it as one
+ *  reported `waiting-for-owner` mid-turn on every tool call: PUI closed the
+ *  turn ("Worked for 3s" above the tool row) and could send a queued draft
+ *  into a turn still running (pui-chat-first-ux P-025). */
+const OMP_TOOL_USE_STOPS = new Set(['tooluse', 'tool_use', 'tool_calls']);
+
 function recordEndsTurn(record: Record<string, unknown>): boolean {
   const type = String(record.type ?? '').toLowerCase();
   if (type === 'turn_end' || type === 'message_end') return true;
   const message = asRecord(record.message);
-  return type === 'message' && message?.role === 'assistant' && message?.stopReason != null;
+  if (type !== 'message' || message?.role !== 'assistant' || message?.stopReason == null) return false;
+  return !OMP_TOOL_USE_STOPS.has(String(message.stopReason).toLowerCase());
 }
 
 export class OmpSuSessionAdapter {
@@ -393,6 +405,8 @@ export class OmpSuSessionAdapter {
    * transcript that never emitted one.
    */
   private sawResolvedModel = false;
+  /** D-029: OMP prices each assistant message; the session cost is their sum. */
+  private sessionCostUsd = 0;
 
   constructor(
     readonly binding: PuiSuSessionBinding & { backend: 'omp' },
@@ -508,6 +522,18 @@ export class OmpSuSessionAdapter {
       }
     }
 
+    // D-029/D-031: usage rides the session descriptor. A replay only re-reads
+    // records this host has not claimed, so each message is counted once.
+    if (record.type === 'message' && messageRecord?.role === 'assistant') {
+      const measured = ompMessageUsage(messageRecord);
+      if (measured) {
+        if (measured.cost !== undefined) this.sessionCostUsd += measured.cost;
+        this.host.updateUsage(measured.cost !== undefined
+          ? { ...measured.usage, costUsd: this.sessionCostUsd }
+          : measured.usage);
+      }
+    }
+
     for (const entry of this.parser.parseLine(line)) {
       const turnId = entry.kind === 'prompt'
         ? (this.currentTurnId = replay ? this.replayTurnId(entry.text ?? '', recordId) : this.nextTurnId(recordId))
@@ -602,7 +628,11 @@ export class OmpSuSessionAdapter {
         // Shown live under this id already; a later replay must not take it.
         this.receiptMatcher.markUsed(command.turnId);
         context.transition('running', 'owner turn accepted');
-        verdict = await this.controls.ownerTurn({ ownerId, turnId: command.turnId, content: command.content });
+        verdict = await this.controls.ownerTurn({
+          ownerId, turnId: command.turnId, content: command.content,
+          ...(command.model ? { model: command.model } : {}),
+          ...(command.approvals ? { approvals: command.approvals } : {}),
+        });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
         break;
       case 'interrupt':

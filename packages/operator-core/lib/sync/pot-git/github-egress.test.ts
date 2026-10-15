@@ -9,6 +9,60 @@ const REMOTE = 'https://github.com/acme/widgets.git';
 const REF = 'refs/heads/staging';
 
 describe('egressCanonicalRefs credential write preflight', () => {
+  it('classifies a DNS failure from ls-remote as transient', async () => {
+    const runGit: RunGit = async (args) => {
+      if (args[0] === 'ls-remote') {
+        return { code: 128, stdout: '', stderr: 'fatal: unable to access URL: Could not resolve host: github.com' };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+
+    const result = await egressCanonicalRefs({
+      repoPath: '/repo',
+      remoteUrl: REMOTE,
+      refs: [{ sha: SHA, remoteRef: REF }],
+      runGit,
+      scanSecrets: false,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.remoteErrors).toEqual([
+      {
+        message: expect.stringContaining('Could not resolve host: github.com'),
+        transient: true,
+      },
+    ]);
+  });
+
+  it('records a DNS fetch failure as transient transport trouble, not a non-FF', async () => {
+    const remoteSha = 'b'.repeat(40);
+    const runGit: RunGit = async (args) => {
+      if (args[0] === 'ls-remote') return { code: 0, stdout: `${remoteSha} ${REF}\n`, stderr: '' };
+      if (args[0] === 'cat-file') return { code: 1, stdout: '', stderr: '' };
+      if (args[0] === 'fetch') {
+        return { code: 128, stdout: '', stderr: 'fatal: unable to access URL: Could not resolve host: github.com' };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+
+    const result = await egressCanonicalRefs({
+      repoPath: '/repo',
+      remoteUrl: REMOTE,
+      refs: [{ sha: SHA, remoteRef: REF }],
+      runGit,
+      scanSecrets: false,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.rejectedNonFF).toEqual([]);
+    expect(result.remoteErrors).toEqual([
+      {
+        message: expect.stringContaining('Could not resolve host: github.com'),
+        transient: true,
+      },
+    ]);
+  });
+
   it('records an unverified-account rejection without attempting the real push', async () => {
     const calls: string[][] = [];
     const runGit: RunGit = async (args) => {

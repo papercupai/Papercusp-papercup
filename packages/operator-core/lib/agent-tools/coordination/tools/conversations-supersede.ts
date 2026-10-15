@@ -24,6 +24,7 @@ const replacementSpec = z.object({
 const itemSpec = z.object({
   id: z.string().min(1).describe('conversation id (alias: conversation_id)'),
   conversation_id: z.string().min(1).optional().describe('alias for id'),
+  expected_answer: hardText(8000).optional().describe('Exact current accepted answer; required to correct a resolved owner question.'),
   replacement: replacementSpec,
   reason: hardText(2000).optional().describe('Why the original gate is no longer answerable.'),
 });
@@ -31,12 +32,13 @@ const itemSpec = z.object({
 export default defineTool({
   name: 'conversations:supersede',
   description:
-    'Retract one OR many open conversations and open corrected replacements as real gates. The old row becomes superseded with a superseded_by pointer and the replacement row is inserted atomically; owner-ask escalation twins are retired too. Single: { id, replacement:{ body, title?, topics?, direct_to?, kind? }, reason? }. Many: items:[{ id, replacement, reason? }]. Returns replacement conversation/thread ids and the old RETRACTED state.',
+    'Retract one OR many open conversations and open corrected replacements as real gates. A resolved owner question can be corrected by supplying its exact current accepted answer as expected_answer. The old row becomes superseded with a superseded_by pointer and the replacement row is inserted atomically; owner-ask escalation twins are retired too. Single: { id, expected_answer?, replacement:{ body, title?, topics?, direct_to?, kind? }, reason? }. Many: items:[{ id, expected_answer?, replacement, reason? }].',
   guidance: {
+    returns: 'Replacement conversation/thread ids and the old RETRACTED state.',
     when:
-      'An open question was framed on a premise that is now false, stale, or otherwise not answerable; use this to replace the gate durably so the correction is visible in conversations and the old gate cannot continue to block work.',
+      'An open question was framed on a premise that is now false, stale, or otherwise not answerable; use this to replace the gate durably so the correction is visible in conversations and the old gate cannot continue to block work. Correcting a resolved owner question requires its exact current accepted answer in expected_answer.',
     notWhen:
-      'You are merely notifying someone → coord:send. The original question is answered → conversations:resolve. An unrelated new owner question → coord:ask-owner; a peer question → coord:send with expects:"answer". An owner question may only be superseded by the agent that asked it; ask that agent to make a correction when it is not yours.',
+      'You are merely notifying someone → coord:send. The original question is answered → conversations:resolve. No replacement is needed → conversations:withdraw. An unrelated new owner question → coord:ask-owner; a peer question → coord:send with expects:"answer". An owner question may only be superseded by the agent that asked it (or a recovered owner with matching lane provenance); ask that agent to make a correction when it is not yours.',
     chaining:
       'conversations:get → conversations:supersede → events:await { event: "conversation:answered:<replacement_id>" } or conversations:resolve on the replacement.',
     seeAlso: [
@@ -52,6 +54,7 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('single-supersede shorthand: the conversation id'),
       conversation_id: z.string().min(1).optional().describe('alias for id'),
+      expected_answer: hardText(8000).optional().describe('Exact current accepted answer; required to correct a resolved owner question.'),
       replacement: replacementSpec.optional().describe('replacement body and optional routing metadata'),
       reason: hardText(2000).optional().describe('why the original gate is no longer answerable'),
       items: z.array(itemSpec).min(1).max(200).optional().describe('supersede many conversations, each with its own replacement'),
@@ -65,12 +68,14 @@ export default defineTool({
     const list = args.items?.length
       ? args.items.map((it) => ({
           id: it.id ?? (it.conversation_id as string),
+          expected_answer: it.expected_answer,
           replacement: it.replacement,
           reason: it.reason,
         }))
       : [
           {
             id: (args.id ?? args.conversation_id) as string,
+            expected_answer: args.expected_answer,
             replacement: args.replacement,
             reason: args.reason,
           },
@@ -81,6 +86,7 @@ export default defineTool({
         if (!it.replacement) return { ok: false as const, id: it.id, error: 'need_replacement' };
         const result = await supersedeConversation(identity, {
           conversation_id: it.id,
+          expected_answer: it.expected_answer,
           replacement: it.replacement,
           reason: it.reason,
         });

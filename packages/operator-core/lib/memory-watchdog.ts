@@ -55,6 +55,8 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { runInNewContext } from 'node:vm';
 import { backgroundWorkersEnabled } from './background-workers';
 import { parseProcStatusMemory } from './process-memory-pressure';
+import { flushFallbackObservations, observeFallback } from './degradation/fallback-observations';
+import { withBoundedTimeout } from './bounded-timeout';
 
 /**
  * Default COMMITTED-memory high-water mark (MiB), by host ROLE — used when
@@ -429,7 +431,12 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
       // Let the log line flush, then exit NON-ZERO so systemd restarts under
       // Restart=on-failure as well as Restart=always (EI-1613, R4-1) — RestartSec
       // (~5 s) brings up a fresh low-RSS process.
-      setTimeout(() => process.exit(recycleExitCode), 250).unref?.();
+      setTimeout(() => {
+        void withBoundedTimeout(async () => {
+          await flushFallbackObservations();
+        }, { timeoutMs: 1000, fallback: undefined, label: 'memory-watchdog-flush' })
+          .then(() => process.exit(recycleExitCode));
+      }, 250).unref?.();
     });
 
   let overCount = 0;
@@ -460,128 +467,146 @@ export function startMemoryWatchdog(opts: MemoryWatchdogOpts = {}): MemoryWatchd
 
   const timer = managedSetInterval('memory-watchdog', intervalMs, () => {
     if (recycled) return;
-    const mem = sample();
-    // EVERY threshold below compares COMMITTED memory, not RSS (WI-2145659). On a
-    // swapping box RSS understates the process's real demand by 13-40%, which
-    // silently held a worker at 93% of its limit below all three lines.
-    const committed = mem.committedMb;
-    if (committed < warnMb) sawHealthySample = true;
-    if (committed >= warnMb) {
-      log('[memory-watchdog] committed memory above soft threshold', {
-        committedMb: committed,
-        rssMb: mem.rssMb,
-        swapMb: mem.swapMb,
-        warnMb,
-        limitMb,
-        overCount,
-        ...heapBreakdown(),
-      });
-    }
-    // PROACTIVE GC (root freeze fix) — runs in the SAFE band (≥ proactiveGcMb, <
-    // limitMb) on a cooldown. A forced full GC here keeps the live heap out of
-    // the multi-GB old-gen regime where a mark-compact pause freezes the event
-    // loop (the bg-host ticker freeze). Cheap relative to a stall: a sub-second GC
-    // every few minutes vs a multi-minute loop freeze + watchdog restart storm.
-    // Skipped once over the recycle limit (the recycle owns that case) and when
-    // disabled (no `--expose-gc`, or proactiveGcMb <= 0).
-    if (
-      forceGc &&
-      proactiveGcMb > 0 &&
-      committed >= proactiveGcMb &&
-      committed < limitMb &&
-      Date.now() - lastGcAt >= gcCooldownMs
-    ) {
-      lastGcAt = Date.now();
-      const before = mem.rssMb;
-      const committedBefore = committed;
-      try {
-        forceGc();
-      } catch {
-        /* a forced GC must never crash the watchdog */
-      }
-      const post = sample();
-      const after = post.rssMb;
-      log('[memory-watchdog] proactive GC (heap kept out of the stall zone)', {
-        // rssMbBefore/rssMbAfter/reclaimedMb keep their pre-WI-2145659 RSS meaning
-        // ON PURPOSE: ~1300 of these records exist per worker per 14h and the
-        // WI-38221 analysis reads them as a time series, so silently re-basing an
-        // existing field would corrupt history rather than correct it. The
-        // committed* trio beside them is the honest quantity, added not swapped in.
-        rssMbBefore: before,
-        rssMbAfter: after,
-        reclaimedMb: Math.max(0, before - after),
-        committedMbBefore: committedBefore,
-        committedMbAfter: post.committedMb,
-        reclaimedCommittedMb: Math.max(0, committedBefore - post.committedMb),
-        swapMbAfter: post.swapMb,
-        proactiveGcMb,
-        limitMb,
-        // POST-GC decomposition. Sampled AFTER the forced full GC, so these are
-        // SURVIVORS — objects a full mark-compact could not collect. That makes
-        // this the single most diagnostic line the process emits: growth here is
-        // growth in the genuinely-live set, which is precisely the distinction
-        // between a retention bug and a GC-tuning problem (WI-38221).
-        ...heapBreakdown(),
-      });
-      // NATIVE HEAP TRIM (WI-2145733) — deliberately AFTER the forced GC, so the
-      // bytes that GC just handed back to the allocator are included in the trim,
-      // and deliberately AFTER the log above rather than before the `sample()` that
-      // feeds it. That ordering is load-bearing: folding the trim into the existing
-      // record would silently re-base `committedMbAfter`/`reclaimedCommittedMb`
-      // from "after GC" to "after GC + trim", corrupting the ~1300-records-per-
-      // worker-per-14h time series the WI-38221 analysis reads, exactly as the
-      // comment above warns. The trim therefore reports its OWN reclaim, so GC
-      // reclaim and allocator reclaim stay separately attributable — the whole
-      // point being that the first was measured at 3.8% and the second at 627 MB.
-      if (trimNativeHeap) {
-        const committedBeforeTrim = post.committedMb;
-        try {
-          trimNativeHeap();
-        } catch {
-          /* a heap trim must never crash the watchdog (same rule as forceGc) */
-        }
-        const postTrim = sample();
-        log('[memory-watchdog] native heap trim (allocator arena returned to the OS)', {
-          committedMbBeforeTrim: committedBeforeTrim,
-          committedMbAfterTrim: postTrim.committedMb,
-          // The measurable this rung exists for. A near-zero value here is a REAL
-          // finding, not a broken trim: it means committed memory is genuinely live
-          // rather than parked in the allocator, which is the case where a recycle
-          // is the correct response rather than an avoidable one.
-          reclaimedCommittedMb: Math.max(0, committedBeforeTrim - postTrim.committedMb),
-          rssMbAfterTrim: postTrim.rssMb,
-          swapMbAfterTrim: postTrim.swapMb,
-          proactiveGcMb,
+    let reason = 'tick-failed';
+    try {
+      const mem = sample();
+      reason = mem.swapMb < 0 ? 'swap-unavailable' : 'healthy';
+      // EVERY threshold below compares COMMITTED memory, not RSS (WI-2145659). On a
+      // swapping box RSS understates the process's real demand by 13-40%, which
+      // silently held a worker at 93% of its limit below all three lines.
+      const committed = mem.committedMb;
+      if (committed < warnMb) sawHealthySample = true;
+      if (committed >= warnMb) {
+        log('[memory-watchdog] committed memory above soft threshold', {
+          committedMb: committed,
+          rssMb: mem.rssMb,
+          swapMb: mem.swapMb,
+          warnMb,
           limitMb,
+          overCount,
+          ...heapBreakdown(),
         });
       }
-    }
-    if (committed >= limitMb) {
-      overCount += 1;
-      if (overCount >= tripsToRecycle) {
-        // BORN-OVER-BUDGET guard (EI-11522): if this process was never observed
-        // below warnMb, its steady-state working set is already over the cap. A
-        // SIGKILL recycle would boot a fresh process into the same footprint and
-        // trip again — a hot loop that reclaims ~nothing and kills every in-flight
-        // converse SSE turn each cycle. Suppress the futile recycle and escalate
-        // loudly instead; the limit is misconfigured / the working set must shed.
-        if (suppressBornOverBudgetRecycle && !sawHealthySample) {
-          if (!bornOverBudgetLogged) {
-            bornOverBudgetLogged = true;
-            log(
-              '[memory-watchdog] committed memory over the recycle limit since boot — SUPPRESSING the recycle to avoid a SIGKILL loop that reclaims ~nothing and severs in-flight turns. The working set is over budget from startup (a restart would boot straight back into it); raise PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB or shed the working set.',
-              { committedMb: committed, rssMb: mem.rssMb, swapMb: mem.swapMb, limitMb, warnMb },
-            );
-          }
-          return;
+      // PROACTIVE GC (root freeze fix) — runs in the SAFE band (≥ proactiveGcMb, <
+      // limitMb) on a cooldown. A forced full GC here keeps the live heap out of
+      // the multi-GB old-gen regime where a mark-compact pause freezes the event
+      // loop (the bg-host ticker freeze). Cheap relative to a stall: a sub-second GC
+      // every few minutes vs a multi-minute loop freeze + watchdog restart storm.
+      // Skipped once over the recycle limit (the recycle owns that case) and when
+      // disabled (no `--expose-gc`, or proactiveGcMb <= 0).
+      if (
+        forceGc &&
+        proactiveGcMb > 0 &&
+        committed >= proactiveGcMb &&
+        committed < limitMb &&
+        Date.now() - lastGcAt >= gcCooldownMs
+      ) {
+        lastGcAt = Date.now();
+        const before = mem.rssMb;
+        const committedBefore = committed;
+        reason = 'proactive-gc';
+        try {
+          forceGc();
+        } catch {
+          reason = 'gc-failed';
+          /* a forced GC must never crash the watchdog */
         }
-        recycled = true;
-        onTrip({ rssMb: mem.rssMb, swapMb: mem.swapMb, committedMb: committed, limitMb });
+        const post = sample();
+        const after = post.rssMb;
+        log('[memory-watchdog] proactive GC (heap kept out of the stall zone)', {
+          // rssMbBefore/rssMbAfter/reclaimedMb keep their pre-WI-2145659 RSS meaning
+          // ON PURPOSE: ~1300 of these records exist per worker per 14h and the
+          // WI-38221 analysis reads them as a time series, so silently re-basing an
+          // existing field would corrupt history rather than correct it. The
+          // committed* trio beside them is the honest quantity, added not swapped in.
+          rssMbBefore: before,
+          rssMbAfter: after,
+          reclaimedMb: Math.max(0, before - after),
+          committedMbBefore: committedBefore,
+          committedMbAfter: post.committedMb,
+          reclaimedCommittedMb: Math.max(0, committedBefore - post.committedMb),
+          swapMbAfter: post.swapMb,
+          proactiveGcMb,
+          limitMb,
+          // POST-GC decomposition. Sampled AFTER the forced full GC, so these are
+          // SURVIVORS — objects a full mark-compact could not collect. That makes
+          // this the single most diagnostic line the process emits: growth here is
+          // growth in the genuinely-live set, which is precisely the distinction
+          // between a retention bug and a GC-tuning problem (WI-38221).
+          ...heapBreakdown(),
+        });
+        // NATIVE HEAP TRIM (WI-2145733) — deliberately AFTER the forced GC, so the
+        // bytes that GC just handed back to the allocator are included in the trim,
+        // and deliberately AFTER the log above rather than before the `sample()` that
+        // feeds it. That ordering is load-bearing: folding the trim into the existing
+        // record would silently re-base `committedMbAfter`/`reclaimedCommittedMb`
+        // from "after GC" to "after GC + trim", corrupting the ~1300-records-per-
+        // worker-per-14h time series the WI-38221 analysis reads, exactly as the
+        // comment above warns. The trim therefore reports its OWN reclaim, so GC
+        // reclaim and allocator reclaim stay separately attributable — the whole
+        // point being that the first was measured at 3.8% and the second at 627 MB.
+        if (trimNativeHeap) {
+          const committedBeforeTrim = post.committedMb;
+          if (reason !== 'gc-failed') reason = 'native-heap-trim';
+          try {
+            trimNativeHeap();
+          } catch {
+            reason = 'trim-failed';
+            /* a heap trim must never crash the watchdog (same rule as forceGc) */
+          }
+          const postTrim = sample();
+          log('[memory-watchdog] native heap trim (allocator arena returned to the OS)', {
+            committedMbBeforeTrim: committedBeforeTrim,
+            committedMbAfterTrim: postTrim.committedMb,
+            // The measurable this rung exists for. A near-zero value here is a REAL
+            // finding, not a broken trim: it means committed memory is genuinely live
+            // rather than parked in the allocator, which is the case where a recycle
+            // is the correct response rather than an avoidable one.
+            reclaimedCommittedMb: Math.max(0, committedBeforeTrim - postTrim.committedMb),
+            rssMbAfterTrim: postTrim.rssMb,
+            swapMbAfterTrim: postTrim.swapMb,
+            proactiveGcMb,
+            limitMb,
+          });
+        }
       }
-    } else {
-      // Reset the debounce on any sample back under the limit (a transient
-      // spike shouldn't recycle a host that GC'd back down).
-      overCount = 0;
+      if (committed >= limitMb) {
+        overCount += 1;
+        if (overCount >= tripsToRecycle) {
+          // BORN-OVER-BUDGET guard (EI-11522): if this process was never observed
+          // below warnMb, its steady-state working set is already over the cap. A
+          // SIGKILL recycle would boot a fresh process into the same footprint and
+          // trip again — a hot loop that reclaims ~nothing and kills every in-flight
+          // converse SSE turn each cycle. Suppress the futile recycle and escalate
+          // loudly instead; the limit is misconfigured / the working set must shed.
+          if (suppressBornOverBudgetRecycle && !sawHealthySample) {
+            reason = 'born-over-budget';
+            if (!bornOverBudgetLogged) {
+              bornOverBudgetLogged = true;
+              log(
+                '[memory-watchdog] committed memory over the recycle limit since boot — SUPPRESSING the recycle to avoid a SIGKILL loop that reclaims ~nothing and severs in-flight turns. The working set is over budget from startup (a restart would boot straight back into it); raise PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB or shed the working set.',
+                { committedMb: committed, rssMb: mem.rssMb, swapMb: mem.swapMb, limitMb, warnMb },
+              );
+            }
+            return;
+          }
+          recycled = true;
+          reason = 'recycle';
+          onTrip({ rssMb: mem.rssMb, swapMb: mem.swapMb, committedMb: committed, limitMb });
+        }
+      } else {
+        // Reset the debounce on any sample back under the limit (a transient
+        // spike shouldn't recycle a host that GC'd back down).
+        overCount = 0;
+      }
+    } catch (error) {
+      reason = 'tick-failed';
+      throw error;
+    } finally {
+      observeFallback('memory-watchdog', { eligible: 1, applied: reason === 'healthy' ? 1 : 0,
+        reason, scope: backgroundWorkersEnabled() ? 'background' :
+          process.env.PAPERCUSP_HONO_PORT === '3270' ? 'desktop' :
+          process.env.PAPERCUSP_HONO_PORT === '3170' ? 'staging' : 'request' });
     }
   }, { category: 'watchdog' });
 

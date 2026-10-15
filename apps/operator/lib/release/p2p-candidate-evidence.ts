@@ -77,8 +77,32 @@ export interface LegBuildProvenance {
   toolchain?: Record<string, unknown> | null;
   releaseHostSha256?: string;
   sidecar?: { gitHead?: string; builtAtUtc?: string; serveMjsSha256?: string } | null;
+  /**
+   * The Server first-boot seed receipt (WI-6554700010012218), written by
+   * emit-build-provenance.sh from bin/lib/release-seed-guard.sh's verdict.
+   * `null` = no guard ran in that leg; ABSENT (undefined) = an emitter older than the field.
+   */
+  seed?: LegSeedReceipt | null;
   builtAtUtc?: string;
   artifacts: readonly LegBuildArtifact[];
+}
+
+/** release-seed-guard.sh's status vocabulary; any other string is judged a contradiction. */
+export const LEG_SEED_STATUSES = [
+  'present',
+  'absent-allowed',
+  'absent-unaudited',
+  'excluded-by-profile',
+  'not-applicable',
+  'refused',
+] as const;
+
+export interface LegSeedReceipt {
+  /** Kept as the raw string so an unknown value stays visible instead of being coerced. */
+  status: string;
+  profile: string | null;
+  manifestSha256: string | null;
+  reason: string | null;
 }
 
 export interface LegProvenanceInput {
@@ -163,6 +187,8 @@ export interface CandidateLegSummary {
   toolchain: Record<string, unknown> | null;
   releaseHostSha256: string | null;
   sidecar: { gitHead: string | null; serveMjsSha256: string | null } | null;
+  /** The leg's seed receipt; `null` when it recorded none (see the server-seed check). */
+  seed: LegSeedReceipt | null;
   artifactCount: number;
 }
 
@@ -229,6 +255,8 @@ export function parseLegBuildProvenance(value: unknown, where: string): LegBuild
   });
   const dirty = value.dirtySource;
   const sidecar = value.sidecar;
+  const seed = value.seed;
+  const optionalString = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
   return {
     version: requireString(value, 'version', where),
     buildSha: requireString(value, 'buildSha', where),
@@ -258,6 +286,20 @@ export function parseLegBuildProvenance(value: unknown, where: string): LegBuild
           ...(typeof sidecar.serveMjsSha256 === 'string' ? { serveMjsSha256: sidecar.serveMjsSha256 } : {}),
         }
       : null,
+    // Present-vs-missing is meaningful (see LegBuildProvenance.seed), so a missing key
+    // stays missing rather than collapsing into `null`.
+    ...('seed' in value
+      ? {
+          seed: isRecord(seed)
+            ? {
+                status: optionalString(seed.status) ?? 'malformed',
+                profile: optionalString(seed.profile),
+                manifestSha256: optionalString(seed.manifestSha256),
+                reason: optionalString(seed.reason),
+              }
+            : null,
+        }
+      : {}),
     ...(typeof value.builtAtUtc === 'string' ? { builtAtUtc: value.builtAtUtc } : {}),
     artifacts,
   };
@@ -274,8 +316,16 @@ export function artifactBasename(name: string): string {
 }
 
 function workspaceHeadOf(record: LegBuildProvenance): string | null {
-  const repo = record.dirtySource?.repositories?.find((r) => r.label === 'workspace');
-  return repo?.gitHead ? repo.gitHead : null;
+  const repositories = record.dirtySource?.repositories ?? [];
+  const repo = repositories.find((r) => r.label === 'workspace');
+  if (repo) return repo.gitHead || null;
+  // emit-build-provenance --capture-source labels its selected root `primary`.
+  // A private producer can select the product monorepo itself rather than the
+  // desktop submodule. Admit that label only when the separately recorded
+  // sidecar source corroborates it; a desktop-only capture is insufficient.
+  const primary = repositories.filter((r) => r.label === 'primary');
+  return primary.length === 1 && primary[0].gitHead === record.sidecar?.gitHead
+    && GIT_SHA.test(primary[0].gitHead) ? primary[0].gitHead : null;
 }
 
 function uniq(values: Iterable<string>): string[] {
@@ -285,6 +335,57 @@ function uniq(values: Iterable<string>): string[] {
 /** Locale-independent order: provenance bytes must not depend on the host's collation. */
 function byCodePoint(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * A Server installer/bundle basename (`Papercusp Server_0.0.26_amd64.deb`, `server.tgz`),
+ * never a GUI one. Letter boundaries, not `\b`: `_` is a word character, so `\bserver\b`
+ * misses the real `Server_<version>` installer names.
+ */
+const SERVER_ARTIFACT = /(^|[^a-z])server([^a-z]|$)/i;
+const SEED_STATUS_FAIL = new Set(['absent-unaudited', 'refused', 'not-applicable']);
+
+/**
+ * Judge every leg that ships a Server artifact by its seed receipt.
+ * fail: a Server leg whose guard recorded no seed without an explicit allowance
+ *       (absent-unaudited / refused), a receipt contradicting its own artifacts
+ *       (not-applicable), or a status outside LEG_SEED_STATUSES.
+ * warn: no receipt (a pre-receipt producer — the log may still hold the SEED_GUARD line),
+ *       an explicitly allowed seedless Server, a present seed without a manifest sha256,
+ *       or Server legs carrying different seeds.
+ * pass: every Server leg present (or excluded by the vm-release profile by design).
+ */
+export function judgeServerSeed(legs: readonly LegProvenanceInput[]): { status: ProvenanceCheckStatus; detail: string } {
+  const known = new Set<string>(LEG_SEED_STATUSES);
+  const serverLegs = legs.filter((l) => l.record.artifacts.some((a) => SERVER_ARTIFACT.test(artifactBasename(a.name))));
+  if (serverLegs.length === 0) return { status: 'pass', detail: 'no leg ships a Server artifact' };
+
+  const fails: string[] = [];
+  const warns: string[] = [];
+  const parts: string[] = [];
+  const manifests = new Set<string>();
+  for (const l of serverLegs) {
+    const seed = l.record.seed;
+    if (seed === undefined || seed === null) {
+      warns.push(`leg ${l.leg} records no seed receipt (${seed === undefined ? 'emitter predates the field' : 'no guard ran'})`);
+      parts.push(`${l.leg}=unrecorded`);
+      continue;
+    }
+    parts.push(`${l.leg}=${seed.status}`);
+    if (!known.has(seed.status)) fails.push(`leg ${l.leg} seed status '${seed.status}' is not a release-seed-guard verdict`);
+    else if (SEED_STATUS_FAIL.has(seed.status)) fails.push(`leg ${l.leg} ships a Server with seed=${seed.status}`);
+    else if (seed.status === 'absent-allowed') warns.push(`leg ${l.leg} ships a seedless Server by allowance: ${seed.reason ?? '(no reason recorded)'}`);
+    else if (seed.status === 'present') {
+      if (seed.manifestSha256) manifests.add(seed.manifestSha256);
+      else warns.push(`leg ${l.leg} seed present but no manifest sha256 recorded`);
+    }
+  }
+  if (manifests.size > 1) warns.push(`Server legs carry different seed manifests: ${[...manifests].join(', ')}`);
+
+  const summary = `${parts.join(', ')}${manifests.size === 1 ? `; manifest ${[...manifests][0]}` : ''}`;
+  if (fails.length) return { status: 'fail', detail: `${fails.join('; ')} (${summary})` };
+  if (warns.length) return { status: 'warn', detail: `${warns.join('; ')} (${summary})` };
+  return { status: 'pass', detail: summary };
 }
 
 export interface DeriveCandidateProvenanceOptions {
@@ -402,6 +503,13 @@ export function deriveCandidateProvenance(options: DeriveCandidateProvenanceOpti
           ? 'no leg records its sidecar payload'
           : `serve.mjs ${sidecarShas[0]} from ${sourceSha}${noSidecar.length ? `; leg(s) ${noSidecar.join(', ')} record no sidecar block` : ' on every leg'}`,
   );
+
+  // --- server first-boot seed (WI-6554700010012218) ---------------------------
+  // D-224 nominated a seedless Mac Server; nothing in the binding could see it until
+  // P-521 J8 failed offline-restore by construction. Each leg now carries the
+  // release-seed-guard verdict, judged here.
+  const seedCheck = judgeServerSeed(legs);
+  check('server-seed', seedCheck.status, seedCheck.detail);
 
   // --- artifact set ------------------------------------------------------------
   const byName = new Map<string, CandidateArtifactRecord>();
@@ -541,6 +649,7 @@ export function deriveCandidateProvenance(options: DeriveCandidateProvenanceOpti
       sidecar: l.record.sidecar
         ? { gitHead: l.record.sidecar.gitHead ?? null, serveMjsSha256: l.record.sidecar.serveMjsSha256 ?? null }
         : null,
+      seed: l.record.seed ?? null,
       artifactCount: l.record.artifacts.length,
     })),
     ledger: ledger

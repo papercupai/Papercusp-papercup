@@ -59,6 +59,13 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('../../agent-facts/store', () => ({
   resolveFactFederationSlug: vi.fn(async () => null),
 }));
+// P-012 / D-006: the shared-pool seal reads the disclosure ledger through
+// getOrgPg, which this file stubs out. Sealing has its own real-PG suite
+// (shared-store-seal.integration.test.ts); here the writer holds no disclosure.
+vi.mock('../../personal-vault/shared-store-seal', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../personal-vault/shared-store-seal')>()),
+  sealSharedText: vi.fn(async (_sql: unknown, params: { text: string }) => ({ sealed: false, text: params.text })),
+}));
 
 import remember from './remember';
 import { getMemoryBackend } from '../../memory/backend';

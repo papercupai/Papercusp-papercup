@@ -19,7 +19,11 @@ for kv in "$@"; do
   [[ "$kv" =~ ^[A-Z_][A-Z0-9_]*=[^[:space:]]*$ ]] || { echo "BAD_ENV_ARG $kv (want KEY=VAL, no spaces)"; exit 2; }
   EXTRA_ENV+=("$kv")
 done
-SVC_USER=pcsrv
+# SVC_USER (env, default pcsrv) names the Linux user whose systemd --user manager runs the
+# Server. One user = one tenant: the package installs once, and each additional user started
+# with linger gets its own Server, Postgres and ports (P-011 multi-tenant density, WI-10004383).
+SVC_USER="${SVC_USER:-pcsrv}"
+[[ "$SVC_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "BAD_SVC_USER $SVC_USER (want a lowercase Linux user name)"; exit 2; }
 DEB=/var/tmp/papercusp-server.deb
 t0=$(date +%s)
 
@@ -38,8 +42,30 @@ else
   echo "== apt install"
   t1=$(date +%s)
   sudo apt-get update -qq
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$DEB" >/tmp/apt-install.log 2>&1 \
-    || { tail -30 /tmp/apt-install.log; exit 4; }
+  # WI-10006853: a long-lived mirror connection can trickle. On c1011r apt had 120 debs and then
+  # gained ~0 B/s for 20+ min, while a fresh request to the same mirror answered in 45 ms. apt's
+  # Acquire::http::Timeout only fires on NO data, never on a trickle, so each download attempt is
+  # bounded by wall clock and retried on fresh connections (partial downloads resume). The
+  # install itself then runs from the local cache.
+  APT_ATTEMPT_SEC="${APT_ATTEMPT_SEC:-300}"
+  APT_ATTEMPTS="${APT_ATTEMPTS:-4}"
+  APT_LOG="${APT_LOG:-/tmp/apt-install.log}"
+  : > "$APT_LOG"
+  fetched=0
+  for attempt in $(seq 1 "$APT_ATTEMPTS"); do
+    rc=0
+    sudo DEBIAN_FRONTEND=noninteractive timeout -k 15 "$APT_ATTEMPT_SEC" apt-get install -y -qq --download-only \
+      -o DPkg::Lock::Timeout=600 "$DEB" >>"$APT_LOG" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then fetched=1; break; fi
+    echo "APT_DOWNLOAD_RETRY attempt=$attempt rc=$rc elapsed=$(( $(date +%s) - t1 ))s"
+  done
+  if [ "$fetched" != 1 ]; then
+    echo "APT_DOWNLOAD_FAILED attempts=$APT_ATTEMPTS attempt_sec=$APT_ATTEMPT_SEC"
+    tail -30 "$APT_LOG"
+    exit 4
+  fi
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=600 "$DEB" >>"$APT_LOG" 2>&1 \
+    || { tail -30 "$APT_LOG"; exit 4; }
   sudo rm -f "$DEB"
   echo "$WANT_SHA" | sudo tee "$MARKER" >/dev/null
   echo "T_APT=$(( $(date +%s) - t1 ))"

@@ -44,6 +44,13 @@ function writeCapture() {
 }
 
 describe('authorHivePolicy', () => {
+  it('refuses a stale reviewed version before signing or writing', async () => {
+    const sign = async () => { throw new Error('must not sign'); };
+    const write = async () => { throw new Error('must not write'); };
+    expect(await authorHivePolicy({ workspaceId: WS, potHomeSlug: HOME, policy: {}, expectedPolicyVersion: 4 }, {
+      resolveWorkspaceId: IDENTITY_RESOLVE, loadOwnerPubkey: async () => 'key', readCurrent: async () => ({ policyVersion: 5 } as ResolvedHivePolicy), sign, write,
+    })).toMatchObject({ ok: false, code: 'policy_version_conflict' });
+  });
   it('signs the bumped version and the signature VERIFIES over the canonical bytes', async () => {
     const kp = generateEd25519KeypairDer();
     const { writes, write } = writeCapture();

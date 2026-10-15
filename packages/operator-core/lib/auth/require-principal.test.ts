@@ -35,17 +35,19 @@ vi.mock('../workspace-registry', () => ({
 // device principal resolves and the capability check is what's exercised.
 vi.mock('../device-store', async (orig) => ({
   ...(await orig<typeof import('../device-store')>()),
-  isRevoked: async () => false,
+  isRevoked: vi.fn(async () => false),
 }));
 
 import { PrincipalCheckError, requirePrincipal, tryResolvePrincipal } from './require-principal';
 import { getSessionUser } from '../auth';
 import { verifyDeviceToken } from '../device-jwt';
+import { isRevoked } from '../device-store';
 import { isLoopbackRequest, isValidSuperuserBearer } from '../superuser-token';
 
 beforeEach(() => {
   vi.mocked(getSessionUser).mockResolvedValue(null);
   vi.mocked(verifyDeviceToken).mockReturnValue(null);
+  vi.mocked(isRevoked).mockResolvedValue(false);
   vi.mocked(isLoopbackRequest).mockReturnValue(false);
   vi.mocked(isValidSuperuserBearer).mockReturnValue(false);
 });
@@ -91,6 +93,22 @@ describe('requirePrincipal — resolver order', () => {
     const p = await requirePrincipal(h({ authorization: 'Bearer mobile_token' }));
     expect(p.kind).toBe('device');
     expect(p.slug).toBe('device_2');
+  });
+
+  it('does not fall through to loopback when a signed device token cannot be checked for revocation', async () => {
+    vi.mocked(verifyDeviceToken).mockReturnValue({
+      sub: 'device_unavailable',
+      workspace_id: 'ws-mobile',
+      device_kind: 'mobile',
+      iat: 0,
+      exp: 9_999_999_999,
+    });
+    vi.mocked(isRevoked).mockRejectedValue(new Error('PG connection refused'));
+    vi.mocked(isLoopbackRequest).mockReturnValue(true);
+
+    await expect(requirePrincipal(h({ authorization: 'Bearer mobile_token' })))
+      .rejects.toThrow('PG connection refused');
+    expect(isLoopbackRequest).not.toHaveBeenCalled();
   });
 
   it('superuser bearer wins over loopback fallback', async () => {

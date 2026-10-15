@@ -7,9 +7,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { LearningLoopHealthSweepReport } from '../harness/routines/learning-loop-health-sweep';
 
 const state = vi.hoisted(() => ({
   stepOutputs: [] as Array<{ name: string; output: unknown }>,
+  /** Every tagged-template call on the mocked org pool: joined SQL text + bound values. */
+  sqlCalls: [] as Array<{ text: string; values: unknown[] }>,
   loopResult: {
     fired: false,
     reason: 'await-blocking',
@@ -20,6 +23,10 @@ const state = vi.hoisted(() => ({
   createDbosClient: vi.fn(),
   clientEnqueue: vi.fn(),
   scheduledTick: undefined as (() => Promise<void>) | undefined,
+  scheduledSweepTick: undefined as (() => Promise<void>) | undefined,
+  scheduledCrontabs: {} as Record<string, string | undefined>,
+  /** Every DBOS.runStep name invoked, including steps a fixture short-circuits. */
+  stepNames: [] as string[],
   poolShedFixture: false,
   probe: { rawMs: 3000, admissionMs: 2500, discountMs: 500 },
   recordPoolShedEvent: vi.fn(),
@@ -38,6 +45,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
     DBOS: {
       workflowID: 'test-routine-fire',
       runStep: async (fn: () => unknown, config?: { name?: string }) => {
+        state.stepNames.push(config?.name ?? '');
         // Execute the real registered scheduler up to its critical-probe return,
         // keeping database occupancy and loop-rebase effects private to this fixture.
         if (state.poolShedFixture && config?.name === 'routine-dispatch-feedback-epoch') {
@@ -49,8 +57,11 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
         return output;
       },
       registerWorkflow: (impl: unknown) => impl,
-      registerScheduled: (impl: () => Promise<void>) => {
-        state.scheduledTick = impl;
+      registerScheduled: (impl: () => Promise<void>, config?: { name?: string; crontab?: string }) => {
+        // WI-10000846: two scheduled ticks — keep each under its own name.
+        state.scheduledCrontabs[config?.name ?? ''] = config?.crontab;
+        if (config?.name === 'routinesSweepTick') state.scheduledSweepTick = impl;
+        else state.scheduledTick = impl;
       },
       startWorkflow: state.startWorkflow,
     },
@@ -78,7 +89,15 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
     ...actual,
-    getOrgPg: () => ({ sql: vi.fn(async () => ({ count: 0 })) }),
+    getOrgPg: () => ({
+      sql: Object.assign(
+        vi.fn(async (strings: unknown, ...values: unknown[]) => {
+          state.sqlCalls.push({ text: Array.isArray(strings) ? strings.join('?') : String(strings), values });
+          return { count: 0 };
+        }),
+        { begin: vi.fn() },
+      ),
+    }),
     listDueCronRoutines: vi.fn(async () => []),
   };
 });
@@ -117,9 +136,11 @@ vi.mock('../harness/routines/register-system-actions', () => ({}));
 vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 
 import { fireLoopWake } from '../harness/routines/loop-fire';
+import { DBOS } from '@dbos-inc/dbos-sdk';
 import { registerSystemAction } from '../harness/routines/system-actions';
 import {
   createRoutineDispatchController,
+  criticalLaneDemandFloor,
   evaluateRoutineDispatchEpoch,
   orderDueRoutinesByAge,
   ROUTINE_FIRE_QUEUES,
@@ -127,6 +148,7 @@ import {
   enqueueRoutineFire,
   routineFireTimeoutMs,
   routineFireWorkflow,
+  learningLoopHealthSweepDbosStep,
 } from './routines-workflow';
 import {
   LOOP_WAKE_TARGET_ROLE,
@@ -138,7 +160,7 @@ import {
   ROUTINES_HEAVY_QUEUE,
   ROUTINES_LOOP_QUEUE,
   ROUTINES_QUEUE,
-  TRIGGER_POLL_ACTIONS,
+  TRIGGERS_QUEUE_ACTIONS,
   queueForRoutine,
 } from './routines-queue-classification';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
@@ -146,6 +168,8 @@ import { CaplessAdaptiveController } from '../resource-governor/controller';
 
 beforeEach(() => {
   state.stepOutputs.length = 0;
+  state.stepNames.length = 0;
+  state.sqlCalls.length = 0;
   vi.clearAllMocks();
   state.poolShedFixture = false;
   state.dbosStarted = true;
@@ -350,6 +374,129 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     });
   });
 
+  // WI-10006946. Measured 2026-10-06 on the tower bg-host: the cold-started window sat at
+  // 4-7 after restarts and critical halvings while 74 git-sync routines on a 10-min cron
+  // needed ~8 concurrent fires; supply fell below demand and 31 routines went overdue.
+  describe('critical-lane demand floor (WI-10006946)', () => {
+    it('derives the floor from cron demand x tick-rounded mean run (Little’s law)', () => {
+      // 74 routines x 6 fires/h + papercusp every 3 min (20/h) = 464 fires/h.
+      // A 45 s mean run occupies a slot for two 30 s ticks: 464/h x 60 s = 7.73 -> 8.
+      expect(
+        criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 75, meanRunMs: 45_000, tickMs: 30_000 }),
+      ).toBe(8);
+      // Slower fires need proportionally more concurrency.
+      expect(
+        criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 75, meanRunMs: 95_000, tickMs: 30_000 }),
+      ).toBe(16);
+      // No finished fire yet: occupancy is one tick, never zero.
+      expect(criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 75, meanRunMs: null, tickMs: 30_000 })).toBe(4);
+      // One routine can never have two fires in flight.
+      expect(
+        criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 3, meanRunMs: 600_000, tickMs: 30_000 }),
+      ).toBe(3);
+      // No demand, no floor.
+      expect(criticalLaneDemandFloor({ firesPerHour: 0, routineCount: 75, meanRunMs: 45_000, tickMs: 30_000 })).toBe(0);
+      expect(criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 0, meanRunMs: 45_000, tickMs: 30_000 })).toBe(0);
+    });
+
+    it('a cold controller admits the demand floor on its first tick instead of one start', () => {
+      const epoch = evaluateRoutineDispatchEpoch({
+        pressure: 'ok',
+        probeMs: 4,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 0 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller: createRoutineDispatchController(),
+        atMs: START,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      expect(queue(epoch, ROUTINES_CRITICAL_QUEUE)).toMatchObject({
+        minimumWindow: 8,
+        desiredWindow: 8,
+        availableStarts: 8,
+      });
+    });
+
+    it('elevated pressure holds at the floor rather than below it', () => {
+      const epoch = evaluateRoutineDispatchEpoch({
+        pressure: 'elevated',
+        probeMs: 400,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 3 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller: new CaplessAdaptiveController({ initialWindow: 4 }),
+        atMs: START,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      expect(queue(epoch, ROUTINES_CRITICAL_QUEUE).desiredWindow).toBe(8);
+      expect(queue(epoch, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(5);
+    });
+
+    it('critical pressure still clamps the lane to one in-flight start, and contraction stops at the floor', () => {
+      const controller = new CaplessAdaptiveController({ initialWindow: 16, contractionCooldownMs: 0 });
+      const critical = evaluateRoutineDispatchEpoch({
+        pressure: 'critical',
+        probeMs: 2_800,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 0 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller,
+        atMs: START,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      // The floor never widens what critical pressure admits.
+      expect(queue(critical, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(1);
+
+      const occupied = evaluateRoutineDispatchEpoch({
+        pressure: 'critical',
+        probeMs: 2_800,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 12 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller,
+        atMs: START + 30_000,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      // An occupied, attributable lane halves 16 -> 8, and a second halving stops at 8.
+      expect(queue(occupied, ROUTINES_CRITICAL_QUEUE).desiredWindow).toBe(8);
+      expect(queue(occupied, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(0);
+      const again = evaluateRoutineDispatchEpoch({
+        pressure: 'critical',
+        probeMs: 2_800,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 12 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller,
+        atMs: START + 60_000,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      expect(queue(again, ROUTINES_CRITICAL_QUEUE).desiredWindow).toBe(8);
+
+      // Without the floor the same feedback keeps halving: the floor is what holds it.
+      const unfloored = new CaplessAdaptiveController({ initialWindow: 16, contractionCooldownMs: 0 });
+      for (const atMs of [START, START + 30_000]) {
+        evaluateRoutineDispatchEpoch({
+          pressure: 'critical',
+          probeMs: 2_800,
+          inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 12 },
+          activeQueues: [ROUTINES_CRITICAL_QUEUE],
+          controller: unfloored,
+          atMs,
+        });
+      }
+      expect(unfloored.snapshot(START + 30_000).classes[0].desiredWindow).toBe(4);
+    });
+
+    it('other queues are unaffected by the critical-lane floor', () => {
+      const epoch = evaluateRoutineDispatchEpoch({
+        pressure: 'ok',
+        probeMs: 4,
+        inFlightByQueue: {},
+        activeQueues: [ROUTINES_QUEUE, ROUTINES_CRITICAL_QUEUE],
+        controller: new CaplessAdaptiveController(),
+        atMs: START,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      expect(queue(epoch, ROUTINES_QUEUE)).toMatchObject({ minimumWindow: 0, availableStarts: 1 });
+      expect(queue(epoch, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(8);
+    });
+  });
+
   it('subtracts actual ENQUEUED/PENDING occupancy before admitting this tick', () => {
     const epoch = evaluateRoutineDispatchEpoch({
       pressure: 'ok',
@@ -491,6 +638,92 @@ describe('routinesTickImpl — probe evidence', () => {
   });
 });
 
+describe('WI-10000846 — dispatch is decoupled from the periodic sweeps', () => {
+  it('schedules the dispatch tick and the sweep tick separately, offset from each other', () => {
+    expect(state.scheduledTick).toBeTypeOf('function');
+    expect(state.scheduledSweepTick).toBeTypeOf('function');
+    expect(state.scheduledSweepTick).not.toBe(state.scheduledTick);
+    expect(state.scheduledCrontabs).toMatchObject({
+      routinesTick: '*/30 * * * * *',
+      routinesSweepTick: '15,45 * * * * *',
+    });
+  });
+
+  it('under a critical pool the dispatch tick runs no sweep; the sweep tick runs exactly the loop-rebase floor', async () => {
+    state.poolShedFixture = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      // Positive control: the dispatch tick really ran its dispatch steps in this fixture.
+      expect(state.stepNames).toContain('routine-dispatch-feedback-epoch');
+      expect(state.stepNames).not.toContain('loop-rebase-sweep');
+      state.stepNames.length = 0;
+      await state.scheduledSweepTick!();
+      expect(state.stepNames).toEqual(['loop-rebase-sweep']);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('every DBOS step in routinesTickImpl is a dispatch step', () => {
+    const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
+    const dispatch =
+      source.split('async function routinesTickImpl(): Promise<void> {')[1]?.split('async function routinesSweepTickImpl')[0] ?? '';
+    const stepNames = [...dispatch.matchAll(/\{\s*name:\s*'([^']+)'\s*\}/g)].map((m) => m[1]);
+    // Positive control so an extraction miss cannot pass vacuously.
+    expect(stepNames).toContain('claim-routine');
+    // A sweep added here delays every dispatch slot by its runtime: put it in routinesSweepTickImpl.
+    expect(new Set(stepNames)).toEqual(new Set(['list-due-routines', 'routine-dispatch-feedback-epoch', 'claim-routine']));
+  });
+});
+
+describe('learning-loop-health-sweep — durable operation output', () => {
+  it('returns the workspace-scoped classifier report as its DBOS step output', async () => {
+    const report: LearningLoopHealthSweepReport = {
+      schemaVersion: 'learning-loop-health-sweep/v1',
+      workspaceId: 'papercusp-workspace',
+      observedAtMs: 1_791_280_000_000,
+      processStartedAtMs: 1_791_279_000_000,
+      runStatus: 'completed',
+      candidateCount: 1,
+      candidates: [
+        {
+          blueprintId: 'regret',
+          alwaysOn: true,
+          singletonRow: null,
+          legacyRow: null,
+          collision: false,
+          active: true,
+          lastFiredAt: '2026-10-06T00:00:00.000Z',
+          daysSinceFire: 0,
+          activityLastAt: null,
+          daysSinceActivity: null,
+          activitySource: null,
+          activityDetail: null,
+          status: 'firing',
+          expectedMaterialized: true,
+          pauseAcknowledged: false,
+          selectedForEscalation: false,
+        },
+      ],
+      escalations: [],
+    };
+    await DBOS.runStep(() => learningLoopHealthSweepDbosStep(async () => report), {
+      name: 'learning-loop-health-sweep',
+    });
+    expect(state.stepOutputs).toContainEqual({ name: 'learning-loop-health-sweep', output: report });
+
+    const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
+    const stepAt = source.lastIndexOf("await DBOS.runStep(", source.indexOf("{ name: 'learning-loop-health-sweep' }"));
+    const stepEnd = source.indexOf("{ name: 'learning-loop-health-sweep' }", stepAt);
+    const step = source.slice(stepAt, stepEnd);
+
+    expect(stepAt).toBeGreaterThan(-1);
+    expect(stepEnd).toBeGreaterThan(stepAt);
+    expect(step).toContain('learningLoopHealthSweepDbosStep');
+  });
+});
+
 describe('routineFireWorkflow — durable loop:wake output', () => {
   it('registers every isolated routine lane at boot', () => {
     // Every lane queueForRoutine can return MUST be registered here, or a fire enqueued
@@ -519,7 +752,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       ...[...CRITICAL_ROUTINE_ACTIONS].map((a) => `system:${a}`),
       ...[...FLEET_CONTROL_ACTIONS].map((a) => `system:${a}`),
       ...[...HEAVY_ROUTINE_ACTIONS].map((a) => `system:${a}`),
-      ...[...TRIGGER_POLL_ACTIONS].map((a) => `system:${a}`),
+      ...[...TRIGGERS_QUEUE_ACTIONS].map((a) => `system:${a}`),
       'system:green-checkpoint',
       'mug',
       '',
@@ -528,6 +761,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine(target));
     }
     expect(queueForRoutine('system:gitnexus-reindex')).toBe(ROUTINES_HEAVY_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-bulk-dedup')).toBe(ROUTINES_HEAVY_QUEUE);
     expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine('system:green-checkpoint', operatorHomeHarnessSlug()));
   });
 
@@ -637,6 +871,53 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       'system:test-replay-completes:settle',
       'clear-reaper-last-error',
     ]);
+  });
+
+  // WI-10005164 recurrence guard: a fail-soft sub-pass failure (`softError`) must reach
+  // `last_error` without failing the fire. Before it, task-reconcile's lifecycle sweep
+  // threw on every pass for a day while the routine's last_error stayed empty.
+  const lastErrorWrites = () =>
+    state.sqlCalls.filter((c) => c.text.includes("jsonb_build_object('last_error'"));
+  const lastErrorClears = () => state.sqlCalls.filter((c) => c.text.includes("- 'last_error'"));
+
+  it('records a single-step action softError as runner last_error, and does not clear it (WI-10005164)', async () => {
+    registerSystemAction('test-soft-error', vi.fn(async () => ({ softError: 'task-lifecycle sub-pass failing' })), {
+      scheduling: 'on-demand',
+    });
+
+    await routineFireWorkflow('rt_papercusp_test_soft', 'papercusp-workspace', 'papercusp', 'system:test-soft-error', {}, null);
+
+    expect(lastErrorWrites().map((c) => c.values)).toEqual([['task-lifecycle sub-pass failing', 'rt_papercusp_test_soft']]);
+    expect(lastErrorClears()).toEqual([]);
+  });
+
+  it('records an ownSteps action softError in its settle step, with the same step sequence (WI-10005164)', async () => {
+    registerSystemAction('test-soft-error-own', vi.fn(async () => ({ softError: 'sub-pass failing' })), {
+      ownSteps: true,
+      scheduling: 'on-demand',
+    });
+
+    await routineFireWorkflow('rt_papercusp_test_soft_own', 'papercusp-workspace', 'papercusp', 'system:test-soft-error-own', {}, null);
+
+    expect(state.stepOutputs.map((s) => s.name)).toEqual([
+      'routine-fire-start',
+      'routine-fire-active-fence',
+      'system:test-soft-error-own:settle',
+      'clear-reaper-last-error',
+    ]);
+    expect(lastErrorWrites().map((c) => c.values)).toEqual([['sub-pass failing', 'rt_papercusp_test_soft_own']]);
+    expect(lastErrorClears()).toEqual([]);
+  });
+
+  it('control: a clean single-step fire clears runner last_error and writes none', async () => {
+    registerSystemAction('test-soft-error-clean', vi.fn(async () => ({ diagnostics: { ok: true } })), {
+      scheduling: 'on-demand',
+    });
+
+    await routineFireWorkflow('rt_papercusp_test_clean', 'papercusp-workspace', 'papercusp', 'system:test-soft-error-clean', {}, null);
+
+    expect(lastErrorWrites()).toEqual([]);
+    expect(lastErrorClears()).toHaveLength(1);
   });
 });
 

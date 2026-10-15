@@ -24,7 +24,10 @@ const src = readFileSync(SCRIPT, 'utf8');
 describe('EI-21617008171422271 — verify-tauri-headless atomically reserves displays', () => {
   it('uses a per-display flock and rechecks occupancy while holding it', () => {
     expect(src).toContain(
-      'DISPLAY_LOCK_DIR="${VERIFY_TAURI_DISPLAY_LOCK_DIR:-${TMPDIR:-/tmp}/papercusp-tauri-display-locks}"',
+      'TAURI_VERIFIER_LOCK_ROOT="${XDG_RUNTIME_DIR:-${HOME:-/tmp}/.cache}/papercusp-tauri-verifier"',
+    );
+    expect(src).toContain(
+      'DISPLAY_LOCK_DIR="${VERIFY_TAURI_DISPLAY_LOCK_DIR:-$TAURI_VERIFIER_LOCK_ROOT/display-locks}"',
     );
     expect(src).toMatch(/path="\$DISPLAY_LOCK_DIR\/display-\$n\.lock"/);
     expect(src).toContain('flock -n "$fd"');
@@ -47,9 +50,13 @@ describe('EI-21617008171422271 — verify-tauri-headless atomically reserves dis
     // logic on a freshly re-picked display) — the "too close to a real seat"
     // guard moved INSIDE that function so a retry-path re-pick inherits it too,
     // so the region now ends at the function's closing brace + its call site
-    // rather than at the (now-indented) guard line itself.
+    // rather than at the (now-indented) guard line itself. The phase-timing
+    // instrumentation may put `vh_step <phase>` marker lines between the closing
+    // brace and the call site; they do not change the picker region.
     const start = src.indexOf('DISPLAY_NUM="${VERIFY_TAURI_DISPLAY_NUM:-}"');
-    const end = src.indexOf('\n}\npick_display\n', start);
+    const callSite = /\n}\n(?:vh_step [\w-]+\n)*pick_display\n/g;
+    callSite.lastIndex = Math.max(start, 0);
+    const end = callSite.exec(src)?.index ?? -1;
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const picker = src.slice(start, end);

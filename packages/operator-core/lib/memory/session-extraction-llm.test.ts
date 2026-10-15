@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ExtractionAuthError } from '@papercusp/memory';
+vi.mock('../agent-chat-stream', () => ({ runAgentChat: vi.fn() }));
+import { runAgentChat } from '../agent-chat-stream';
 import {
   SessionExtractionLlm,
   applyExtractionGatewayEgress,
@@ -134,6 +136,54 @@ describe('SessionExtractionLlm.generateResponse — strict JSON (D-005)', () => 
       content: 'hello',
       role: 'assistant',
     });
+  });
+
+  it('default runner preserves only bounded transport and turn diagnostics on extraction failure', async () => {
+    const rawTransportDiagnostic = {
+      status: 404,
+      providerRequestId: 'req.123',
+      label: 'anthropic-direct',
+      transportFailureCode: 'UND_ERR_HEADERS_TIMEOUT',
+      url: 'https://provider.invalid/private-path',
+      headers: { authorization: 'Bearer secret-token' },
+      body: 'private provider response',
+      account: 'private-account',
+    };
+    vi.mocked(runAgentChat).mockImplementation(async function* (options) {
+      options.onTransportDiagnostic?.(rawTransportDiagnostic as never);
+      yield {
+        type: 'error',
+        message: '404 status code (no body)',
+        turn: { provider: 'anthropic', class: 'permanent' },
+      } as never;
+    });
+
+    const llm = new SessionExtractionLlm({ warn: vi.fn() });
+    let failure: unknown;
+    try {
+      await llm.generateResponse(EXTRACT_MSGS, { type: 'json_object' });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toMatchObject({
+      message: '404 status code (no body)',
+      diagnostics: {
+        status: 404,
+        requestId: 'req.123',
+        type: 'anthropic',
+        classification: 'permanent',
+        transport: 'anthropic-direct',
+        transportFailureCode: 'UND_ERR_HEADERS_TIMEOUT',
+      },
+    });
+    const diagnostics = (failure as Error & { diagnostics: Record<string, unknown> }).diagnostics;
+    expect(Object.keys(diagnostics).sort()).toEqual([
+      'classification', 'requestId', 'status', 'transport', 'transportFailureCode', 'type',
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toContain('secret-token');
+    expect(JSON.stringify(diagnostics)).not.toContain('private provider response');
   });
 });
 

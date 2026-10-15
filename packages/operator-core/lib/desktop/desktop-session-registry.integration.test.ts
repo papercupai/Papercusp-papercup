@@ -15,11 +15,14 @@
  * happily against a sweep that reaps everything, which would tear down working
  * desktops fleet-wide.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
+// Registry mutations enqueue a UI invalidation. This suite uses a throwaway PG
+// schema, so keep that detached signal from opening the protected live org DB.
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 import {
   registerDesktopSession,
   markDesktopReady,
@@ -36,6 +39,7 @@ import {
   markDesktopFrozen,
   markDesktopThawed,
   listGovernableDesktopSessions,
+  listReservedLocalDesktopDisplays,
   guestDisplayBackendError,
   DEFAULT_CAPTURE_GEOMETRY,
   TERMINAL_DESKTOP_STATES,
@@ -48,6 +52,8 @@ const MIGRATION_900 = join(SQL_DIR, '900-desktop-sessions-registry.sql');
  *  would — a hand-rolled CREATE TABLE here would silently fall behind the real
  *  schema the first time either migration changes. */
 const MIGRATION_905 = join(SQL_DIR, '905-desktop-session-lifecycle.sql');
+/** agent-multi-desktops-grid P-002: the `name` column registerDesktopSession now writes. */
+const MIGRATION_1386 = join(SQL_DIR, '1386-desktop-session-name.sql');
 
 const WS = 'ws-registry-test';
 let db: FreshPgDb | undefined;
@@ -78,6 +84,7 @@ beforeAll(async () => {
   sql = db.sql;
   await applyMigrationForTest(sql, MIGRATION_900);
   await applyMigrationForTest(sql, MIGRATION_905);
+  await applyMigrationForTest(sql, MIGRATION_1386);
 }, 180_000);
 
 afterAll(async () => {
@@ -189,6 +196,51 @@ describe('resolution + enumeration', () => {
     await registerDesktopSession(base({ workspaceId: ws, scope: 'agent', scopeRef: 'byoc' }), sql);
     expect(await listDesktopSessions({ workspaceId: ws, scope: 'workspace' }, sql)).toHaveLength(1);
     expect(await listDesktopSessions({ workspaceId: ws, scope: 'agent' }, sql)).toHaveLength(1);
+  });
+});
+
+describe('local display allocation reservations', () => {
+  it('includes live sibling and cross-workspace local leases, but ignores remote and terminal rows', async () => {
+    // A different pid on this boot may be a live sibling operator lease. The
+    // allocator reads it as occupied and leaves its lifecycle entirely untouched.
+    await registerDesktopSession(base({
+      workspaceId: WS,
+      scopeRef: 'sibling-local-lease',
+      display: ':980',
+      ownerPid: 987654,
+    }), sql);
+    await registerDesktopSession(base({
+      workspaceId: 'ws-another-tenant',
+      scopeRef: 'cross-workspace-local-lease',
+      display: ':981',
+      ownerPid: 876543,
+    }), sql);
+    await registerDesktopSession(base({
+      workspaceId: WS,
+      scopeRef: 'remote-lease',
+      display: ':982',
+      hostRef: 'frame-reservation-test',
+    }), sql);
+    const terminal = await registerDesktopSession(base({
+      workspaceId: WS,
+      scopeRef: 'terminal-lease',
+      display: ':983',
+    }), sql);
+    await closeDesktopSession(terminal.id, 'released', sql);
+
+    const displays = await listReservedLocalDesktopDisplays(sql);
+    expect(displays).toContain(':980');
+    expect(displays).toContain(':981');
+    expect(displays).not.toContain(':982');
+    expect(displays).not.toContain(':983');
+    const sibling = await listDesktopSessions({
+      workspaceId: WS,
+      scope: 'pot',
+      scopeRef: 'sibling-local-lease',
+    }, sql);
+    expect(sibling).toHaveLength(1);
+    expect(sibling[0].ownerPid).toBe(987654);
+    expect(sibling[0].state).toBe('provisioning');
   });
 });
 
@@ -586,6 +638,46 @@ describe('P-005 — the idle/freeze/thaw transitions', () => {
 
     await markDesktopFrozen(s.id, sql);
     await touchDesktopSession(s.id, sql);
+    expect((await stateOf(s.scopeRef))?.state).toBe('frozen');
+  });
+
+  it('touchDesktopSession reports the post-touch state, so a driver can see a freeze that beat it (WI-10006636)', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    expect(await touchDesktopSession(s.id, sql)).toBe('ready');
+    await markDesktopFrozen(s.id, sql);
+    expect(await touchDesktopSession(s.id, sql)).toBe('frozen');
+    await closeDesktopSession(s.id, 'released', sql);
+    expect(await touchDesktopSession(s.id, sql)).toBeUndefined();
+  });
+
+  it('a guarded freeze/idle REFUSES once the desktop was touched after the snapshot (WI-10006636)', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    await sql`UPDATE harness_shared.desktop_sessions
+                 SET last_active_at = now() - interval '4 hours'
+               WHERE id = ${s.id}`;
+    const snapshot = (await stateOf(s.scopeRef))!.lastActiveAt;
+
+    // A computer verb drives it after the sweep's scan.
+    await touchDesktopSession(s.id, sql);
+    expect(await markDesktopIdle(s.id, sql, { notActiveAfter: snapshot })).toBe(false);
+    expect(await markDesktopFrozen(s.id, sql, { notActiveAfter: snapshot })).toBe(false);
+    expect((await stateOf(s.scopeRef))?.state).toBe('ready');
+  });
+
+  it('a guarded write PASSES against its own snapshot despite Postgres keeping microseconds', async () => {
+    // The snapshot crosses a JS Date (milliseconds). Pin a sub-millisecond clock
+    // so an untruncated comparison would read the untouched row as touched.
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    await sql`UPDATE harness_shared.desktop_sessions
+                 SET last_active_at = date_trunc('second', now()) - interval '4 hours' + interval '123456 microseconds'
+               WHERE id = ${s.id}`;
+    const snapshot = (await stateOf(s.scopeRef))!.lastActiveAt;
+
+    expect(await markDesktopIdle(s.id, sql, { notActiveAfter: snapshot })).toBe(true);
+    expect(await markDesktopFrozen(s.id, sql, { notActiveAfter: snapshot })).toBe(true);
     expect((await stateOf(s.scopeRef))?.state).toBe('frozen');
   });
 

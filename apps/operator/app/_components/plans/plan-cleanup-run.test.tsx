@@ -56,11 +56,23 @@ vi.mock("@papercusp/sync", () => ({
   },
 }));
 
+vi.mock("@/app/harness/Select", () => ({
+  Select: ({ value, options, onChange, ariaLabel }: {
+    value: string; options: Array<{ value: string; label: string }>;
+    onChange: (value: string) => void; ariaLabel: string;
+  }) => <select aria-label={ariaLabel} value={value} onChange={(event) => onChange(event.target.value)}>
+    {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+  </select>,
+}));
+
 import PlansCleanupStrip, {
+  PlanCleanupReviewSelector,
   type PlansCleanupStripProps,
 } from "./PlansCleanupStrip";
 import {
   derivePlanCleanupCounts,
+  parsePlanCleanupCoverage,
+  planCleanupCoverageNotice,
   snapshotPlanSlugs,
   usePlanCleanupOps,
   usePlanCleanupRun,
@@ -171,6 +183,31 @@ describe("plan clean-up derivation", () => {
 });
 
 describe("usePlanCleanupRun", () => {
+  it("keeps the selected run usable and discloses an unavailable older-review inventory", () => {
+    const inventory = { runs: [], total: 0, error: "Older cleanup reviews could not be loaded." };
+    H.syncData.value = [{ run: run({ phase: "review" }), findings: [], reviewInventory: inventory }];
+    const { result } = renderHook(() => usePlanCleanupRun("run-1"));
+    expect(result.current.run?.runId).toBe("run-1");
+    render(<PlanCleanupReviewSelector inventory={result.current.reviewInventory} selectedRunId="run-1" onReview={vi.fn()} />);
+    expect(screen.getByRole("status").textContent).toContain("could not be loaded");
+  });
+
+  it("preserves older unresolved runs and opens their exact existing report id", () => {
+    const inventory = { total: 2, runs: [
+      { runId: "new-review", createdAt: "2026-10-07T12:00:00Z", unresolved: 77 },
+      { runId: "old-review", createdAt: "2026-10-06T12:00:00Z", unresolved: 104 },
+    ] };
+    H.syncData.value = [{ run: run({ runId: "new-review", phase: "review" }), findings: [], reviewInventory: inventory }];
+    const { result } = renderHook(() => usePlanCleanupRun());
+    expect(result.current.reviewInventory).toEqual(inventory);
+    const onReview = vi.fn();
+    render(<PlanCleanupReviewSelector inventory={result.current.reviewInventory} selectedRunId="new-review" onReview={onReview} />);
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+    expect(screen.getByText(/104 need review/)).toBeTruthy();
+    fireEvent.change(screen.getByRole("combobox", { name: "Unresolved cleanup reviews" }), { target: { value: "old-review" } });
+    expect(onReview).toHaveBeenCalledWith("old-review");
+  });
+
   it("subscribes to plans.cleanupRun by deep-linked run id and derives phase lists", () => {
     const recommended = finding({ findingId: "rec", outcome: "recommended" });
     const pending = finding({ findingId: "pending", outcome: "pending" });
@@ -202,6 +239,44 @@ describe("usePlanCleanupRun", () => {
       args: {},
       enabled: false,
     });
+  });
+});
+
+describe("plan clean-up coverage (P-005, WI-10004732)", () => {
+  it("parses the start response's coverage triple and rejects malformed values", () => {
+    expect(parsePlanCleanupCoverage({ requested: 750, accepted: 200, truncated: 550 })).toEqual({
+      requested: 750,
+      accepted: 200,
+      truncated: 550,
+    });
+    expect(parsePlanCleanupCoverage({})).toBeUndefined();
+    expect(parsePlanCleanupCoverage({ requested: 3, accepted: -1, truncated: 0 })).toBeUndefined();
+  });
+
+  it('says "first N of M" only when the run carries fewer plans than shown', () => {
+    expect(planCleanupCoverageNotice({ requested: 750, accepted: 200, truncated: 550 })).toBe(
+      "Scanning the first 200 of 750 shown plans (least recently scanned first) — run Clean-up again to cover the other 550.",
+    );
+    expect(planCleanupCoverageNotice({ requested: 12, accepted: 12, truncated: 0 })).toBeNull();
+    expect(planCleanupCoverageNotice(undefined)).toBeNull();
+  });
+
+  it("start() surfaces the server's coverage on the result", async () => {
+    H.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        runId: "run-capped",
+        launched: false,
+        resolverNeeded: false,
+        requested: 750,
+        accepted: 200,
+        truncated: 550,
+      }),
+    });
+    const { result } = renderHook(() => usePlanCleanupOps());
+    const started = await result.current.start(["p-one"], { scope: "all" });
+    expect(started.coverage).toEqual({ requested: 750, accepted: 200, truncated: 550 });
   });
 });
 

@@ -353,15 +353,25 @@ describe('release task stage transitions', () => {
     expect(store.journal.spentOperationIds).toHaveLength(2);
   });
 
-  it('refuses changed stage inputs and a mismatched settle request', async () => {
+  it('names changed input identity fields when refusing changed stage inputs', async () => {
     const store = ledger();
-    const first = await beginReleaseTaskStage(context(store), stage);
+    const originalStage = {
+      ...stage,
+      identity: { toolchain: { node: 'v25.9.0', npm: '11.12.1' } },
+    };
+    const changedStage = {
+      ...stage,
+      identity: { toolchain: { node: 'v22.21.1', npm: '10.9.4' } },
+    };
+    const first = await beginReleaseTaskStage(context(store), originalStage);
     await expect(
-      inspectReleaseTaskStage(context(store), { ...stage, identity: 'linux|server|0.0.19-nightly' }),
-    ).rejects.toThrow(/input changed/);
+      inspectReleaseTaskStage(context(store), changedStage),
+    ).rejects.toThrow(
+      /stageIdentity\.toolchain\.node: "v25\.9\.0" -> "v22\.21\.1"; stageIdentity\.toolchain\.npm: "11\.12\.1" -> "10\.9\.4"/,
+    );
     await expect(
       settleReleaseTaskStage(context(store), {
-        ...stage,
+        ...originalStage,
         requestIdentity: 'wrong-request',
         state: 'committed',
       }),

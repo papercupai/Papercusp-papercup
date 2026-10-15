@@ -17,6 +17,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import * as RadixTooltip from '@radix-ui/react-tooltip';
 import type { ReactElement } from 'react';
+import type { IdentityOutcomeCost } from '@papercusp/operator-core/lib/cupboard/shadow-metering-reader';
+
+const outcomeSync = vi.hoisted(() => ({ read: vi.fn(), invalidate: vi.fn() }));
+vi.mock('@papercusp/sync', () => ({ useSyncQuery: outcomeSync.read }));
+beforeEach(() => {
+  outcomeSync.read.mockReset();
+  outcomeSync.invalidate.mockReset();
+  outcomeSync.read.mockReturnValue({ data: [], loading: false, fetching: false, error: null,
+    invalidate: outcomeSync.invalidate });
+});
 
 // Lexicon resolver echoes its key (t('pot') → 'pot') — isolates the hive→pot
 // routed copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
@@ -112,6 +122,32 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
     expect(String(fetchMock.mock.calls[1][0])).toBe('/api/cupboard/listings?limit=100&kind=plugin');
     expect(screen.getByText('Plugin listing')).toBeTruthy();
     expect(screen.queryByText('Harness listing')).toBeNull();
+  });
+
+  it('reads one exact SKU batch for the storefront, hides pending evidence and changes the read key on refresh', async () => {
+    const releaseRef = 'identity-release:reviewer@1.0.0';
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ listings: [
+      listing({ id: 1, title: 'Reviewer A', listing_kind: 'blueprint', blueprint_kind: 'identity', sku_ref: releaseRef }),
+      listing({ id: 2, title: 'Reviewer B', listing_kind: 'blueprint', blueprint_kind: 'identity', sku_ref: releaseRef }),
+    ], next_cursor: null, total: 2 }), { status: 200 }));
+    const data: IdentityOutcomeCost[] = [{ status: 'verified', basis: 'local-funded-release-usage', currency: 'USD',
+      releaseRef, costPerAcceptedOutcomeMicros: '123', totalCostMicros: '123', acceptedOutcomes: 1,
+      totalOutcomes: 1, turns: 1, evidenceRefs: ['graded-clause:accepted'] }];
+    outcomeSync.read.mockReturnValue({ data, loading: false, fetching: false, error: null, invalidate: outcomeSync.invalidate });
+    const view = withTooltips(<CupboardClient />);
+    await waitFor(() => expect(screen.getAllByLabelText('Identity outcome cost')).toHaveLength(2));
+    expect(screen.getAllByLabelText('Identity outcome cost').every(row => row.textContent?.includes('$0.000123'))).toBe(true);
+    const lastQuery = () => outcomeSync.read.mock.calls.at(-1)![0];
+    expect(lastQuery()).toMatchObject({ queryName: 'cupboard.identityOutcomeCosts', args: { releaseRefs: [releaseRef] },
+      enabled: true, staleTime: 0, pollIntervalMs: 0, persist: false });
+    const priorKey = lastQuery().args.readKey;
+    outcomeSync.read.mockReturnValue({ data, loading: false, fetching: true, error: null, invalidate: outcomeSync.invalidate });
+    view.rerender(<RadixTooltip.Provider delayDuration={0}><CupboardClient /></RadixTooltip.Provider>);
+    expect(screen.getAllByLabelText('Identity outcome cost').every(row => row.textContent === 'Cost per accepted outcome: unavailable')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(lastQuery().args.readKey).not.toBe(priorKey);
+    expect(outcomeSync.read.mock.calls.every(([options]) => options.queryName === 'cupboard.identityOutcomeCosts')).toBe(true);
   });
 
   it('renders and filters the Rubrics, Plans, and Recipes tabs', async () => {
@@ -672,6 +708,46 @@ describe('Cupboard ListingCard — D-002 pot-template badge (single Blueprints t
     expect(badge.getAttribute('data-identity')).toBe('true');
     expect(badge.getAttribute('data-pot-template')).toBeNull();
     expect(badge.textContent).toContain('identity');
+    // Neither listing activity nor installations establish verified outcomes.
+    expect(screen.getByLabelText('Identity outcome cost').textContent).toBe(
+      'Cost per accepted outcome: unavailable',
+    );
+  });
+
+  it.each(['harness', 'pot'] as const)('does not attach identity outcome economics to a %s blueprint', (blueprintKind) => {
+    render(
+      <ListingCard
+        listing={listing({ listing_kind: 'blueprint', blueprint_kind: blueprintKind, title: 'Other blueprint' })}
+        onAction={() => {}}
+        onDetail={() => {}}
+      />,
+    );
+    expect(screen.getByTestId('cupboard-kind-badge')).toBeTruthy();
+    expect(screen.queryByLabelText('Identity outcome cost')).toBeNull();
+  });
+
+  it('shows exact local funded cost for the matching release, including its accepted denominator', () => {
+    const releaseRef = 'identity-release:reviewer@1.0.0';
+    render(<ListingCard listing={listing({ listing_kind: 'blueprint', blueprint_kind: 'identity', sku_ref: releaseRef })}
+      outcomeCost={{ status: 'verified', basis: 'local-funded-release-usage', currency: 'USD', releaseRef,
+        costPerAcceptedOutcomeMicros: '9007199254740993', totalCostMicros: '18014398509481985',
+        acceptedOutcomes: 2, totalOutcomes: 3, turns: 4, evidenceRefs: ['graded-clause:accepted'] }}
+      onAction={() => {}} onDetail={() => {}} />);
+    expect(screen.getByLabelText('Identity outcome cost').textContent).toBe(
+      'Cost per accepted outcome: $9007199254.740993 · 2 accepted · local funded usage');
+  });
+
+  it.each(['different-release', 'unavailable', 'zero-denominator', 'malformed-cost'])('keeps %s evidence unavailable', reason => {
+    const releaseRef = 'identity-release:reviewer@1.0.0';
+    const metric = { status: 'verified', basis: 'local-funded-release-usage', currency: 'USD', releaseRef,
+      costPerAcceptedOutcomeMicros: '123', totalCostMicros: '123', acceptedOutcomes: 1,
+      totalOutcomes: 1, turns: 1, evidenceRefs: ['graded-clause:accepted'] };
+    const change = reason === 'different-release' ? { releaseRef: 'identity-release:reviewer@2.0.0' } :
+      reason === 'unavailable' ? { status: 'unavailable', costPerAcceptedOutcomeMicros: null, reason: 'grading-unverified' } :
+      reason === 'zero-denominator' ? { acceptedOutcomes: 0 } : { costPerAcceptedOutcomeMicros: 'unknown' };
+    render(<ListingCard listing={listing({ listing_kind: 'blueprint', blueprint_kind: 'identity', sku_ref: releaseRef })}
+      outcomeCost={{ ...metric, ...change } as IdentityOutcomeCost} onAction={() => {}} onDetail={() => {}} />);
+    expect(screen.getByLabelText('Identity outcome cost').textContent).toBe('Cost per accepted outcome: unavailable');
   });
 
   it('renders a repo slug derived from worker fields when github_repo is absent', () => {

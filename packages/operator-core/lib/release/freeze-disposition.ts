@@ -27,8 +27,10 @@
 import {
   describeUnreadableFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueueRead,
+  type FrozenCandidateRepairQueue,
   type FrozenRepairLatency,
   type FrozenRepairLatencySource,
+  type FrozenRepairLatencyStampKey,
   frozenRepairLatency,
 } from './frozen-candidate-repair-queue';
 
@@ -60,6 +62,8 @@ export interface FreezeAndConvergeDisposition {
   enabled: boolean;
   /** P-007 (R-7): the repair path's latencies, derived from the queue the tick ended holding. */
   repairLatency?: FrozenRepairLatency | null;
+  /** Original round identities held by this tick; absence is legacy/unmeasured. */
+  repairProgress?: FrozenRepairProgress;
   state: FreezeAndConvergeState;
   /**
    * One line answering "why is it in that state". This is the sentence that previously
@@ -73,6 +77,19 @@ export interface FreezeAndConvergeDisposition {
   holdUntilMs?: number | null;
   /** `held` only: when the measured provider wall is expected to lift. */
   capacityRetryAtMs?: number | null;
+}
+
+export interface FrozenRepairProgress {
+  phase: FrozenRepairLatencySource['phase'];
+  /** Preserve ordinal gaps: a capped queue must not become a complete history. */
+  rounds: Array<{ round: number; head: string; atMs: number }>;
+  /** Original admission chain; absent on legacy observations, never backfilled. */
+  admissionHistory?: {
+    version: 1;
+    repairHead: string;
+    admissions: Array<{ atMs: number; fromRepairHead: string; toRepairHead: string;
+      provenance?: 'reconciled-from-ref' }>;
+  };
 }
 
 /** The shape merged into `gate_health` (a SHALLOW merge — never a replace). */
@@ -120,6 +137,7 @@ export interface GateRepairLatencyLedgerRow {
     reason: string;
     observedAtMs: number;
     repairLatency: FrozenRepairLatency;
+    repairProgress?: FrozenRepairProgress;
   };
 }
 
@@ -151,6 +169,7 @@ export function buildGateRepairLatencyLedgerRow(
       reason: disposition.reason,
       observedAtMs,
       repairLatency,
+      ...(disposition.repairProgress ? { repairProgress: disposition.repairProgress } : {}),
     },
   };
 }
@@ -191,7 +210,8 @@ export interface TickFreezeObservation {
   /** FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT as the run actually read it. */
   flagEnabled: boolean;
   /** The frozen repair queue the tick ended holding, when there was one. */
-  repairQueue?: ({ candidate?: string | null } & Partial<FrozenRepairLatencySource>) | null;
+  repairQueue?: ({ candidate?: string | null } & Partial<FrozenRepairLatencySource> &
+    Partial<Pick<FrozenCandidateRepairQueue, 'repairHead' | 'admissions'>>) | null;
   /** P-025: typed queue-read health. `unreadable` outranks any absence-shaped fallback. */
   repairQueueRead?: FrozenCandidateRepairQueueRead;
   /** The run's own one-line summary — the honest reason when no branch recorded a richer one. */
@@ -232,7 +252,23 @@ function readRepairLatency(value: unknown): FrozenRepairLatency | null {
       lastResumeRunStartedAtMs: numOrNull(stamps['lastResumeRunStartedAtMs']),
       lastVerdictAtMs: numOrNull(stamps['lastVerdictAtMs']),
     },
+    ...readInadmissibleStamps(r['inadmissibleStamps']),
   };
+}
+
+const LATENCY_STAMP_KEYS: ReadonlySet<string> = new Set<FrozenRepairLatencyStampKey>([
+  'fixerSpawnedAtMs',
+  'lastAdmittedAtMs',
+  'lastResumeRunStartedAtMs',
+  'lastVerdictAtMs',
+]);
+
+/** WI-10007622: carry the derivation's rejected-stamp marker through the read-side guard, so a
+ *  poisoned clock stays visible on `gate_health` instead of vanishing into a bare `null`. */
+function readInadmissibleStamps(value: unknown): { inadmissibleStamps?: FrozenRepairLatencyStampKey[] } {
+  if (!Array.isArray(value)) return {};
+  const keys = value.filter((k): k is FrozenRepairLatencyStampKey => typeof k === 'string' && LATENCY_STAMP_KEYS.has(k));
+  return keys.length > 0 ? { inadmissibleStamps: keys } : {};
 }
 
 /**
@@ -263,7 +299,21 @@ export function deriveTickFreezeDisposition(
   // it is a property of the queue row, not of the branch that described it.
   const repairLatency = tickRepairLatency(observation);
   const core = deriveTickFreezeDispositionCore(observation);
-  return repairLatency ? { ...core, repairLatency } : core;
+  if (!repairLatency) return core;
+  const queue = observation.repairQueue!;
+  return { ...core, repairLatency,
+    ...(Array.isArray(queue.convergenceRounds) ? { repairProgress: {
+      phase: queue.phase as FrozenRepairLatencySource['phase'],
+      rounds: queue.convergenceRounds.map(({ round, head, atMs }) => ({ round, head, atMs })),
+      ...(typeof queue.repairHead === 'string' && Array.isArray(queue.admissions) ? {
+        admissionHistory: { version: 1 as const, repairHead: queue.repairHead,
+          admissions: queue.admissions.map(({ atMs, fromRepairHead, toRepairHead, provenance }) => ({
+            atMs, fromRepairHead, toRepairHead, ...(provenance ? { provenance } : {}),
+          })),
+        },
+      } : {}),
+    } } : {}),
+  };
 }
 
 function deriveTickFreezeDispositionCore(

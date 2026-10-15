@@ -34,9 +34,9 @@
  *      failovers by ROUTE KEY (as the bearer lane legitimately does) silently
  *      inflates this lane's count on every sibling retry. D-011.
  */
-import { test, afterEach } from 'vitest';
+import { test, afterEach, vi } from 'vitest';
 import assert from 'node:assert/strict';
-import { createInferenceGateway, ACCOUNT_HEADER, ACCOUNT_PIN_HEADER } from './gateway';
+import { createInferenceGateway, ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, ROUTED_ACCOUNT_HEADER } from './gateway';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { RateLimitGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
@@ -72,6 +72,59 @@ const post = (extraHeaders: Record<string, string> = {}) => ({
   method: 'POST',
   headers: { 'content-type': 'application/json', ...extraHeaders },
   body: messagesBody,
+});
+
+test('EI-25729445450023140: failed absorb reacquire attributes the forwarded response to its upstream account', async () => {
+  const A = acct('A', 0);
+  const B = acct('B', 0);
+  const owner = 'su-absorb-response-account';
+  const upstreamAccounts: string[] = [];
+  const governorA = new RateLimitGovernor({ maxConcurrent: 20 });
+  const governorB = new RateLimitGovernor({ maxConcurrent: 20 });
+  // Candidate B never gets a slot, so it cannot have produced an upstream response.
+  const reacquire = vi.spyOn(governorB, 'acquire').mockResolvedValue(null);
+  const fetchImpl = (async (_url: string, init: { headers?: Record<string, string> }) => {
+    upstreamAccounts.push(init.headers?.authorization ?? init.headers?.Authorization ?? '');
+    return new Response('{"type":"error","error":{"type":"rate_limit_error","message":"account A quota"}}', {
+      status: 429,
+      headers: { 'content-type': 'application/json', 'retry-after': '3600', 'x-should-retry': 'true' },
+    });
+  }) as unknown as typeof fetch;
+  const pool: AccountPool = {
+    // A supplies the response; the absorb rung subsequently chooses B.
+    active: () => upstreamAccounts.length ? B : A,
+    onExhausted: () => null,
+    select: (id) => id === 'A' ? A : id === 'B' ? B : null,
+  };
+  gw = createInferenceGateway({
+    pool,
+    upstreamBase: 'http://upstream.invalid',
+    fetchImpl,
+    governorFor: (_model, account) => account === 'A' ? governorA : governorB,
+    maxQueueWaitMs: 200,
+    requestAbsorbMs: 30_000,
+  });
+  port = await gw.listen(0);
+
+  const response = await ask('/v1/messages', {
+    ...post({ 'x-papercusp-owner': owner }),
+    body: JSON.stringify({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, 429);
+  assert.deepEqual(upstreamAccounts, ['Bearer A-tok'], 'B was only an admission candidate, never an upstream attempt');
+  assert.equal(reacquire.mock.calls.length, 1, 'the absorb rung tried and failed to acquire B');
+  assert.equal(response.headers.get(ROUTED_ACCOUNT_HEADER), 'A');
+  assert.equal(response.headers.get('x-should-retry'), 'false', 'the exhausted response remains terminal');
+  assert.match(await response.text(), /account A quota/, 'the forwarded body still belongs to A');
+  const report = await (await ask(`/admin/owner-report?owner=${owner}`)).json() as {
+    ledger: { lastAccount: string; lastStatus: number; recent: Array<{ kind: string; account: string }> };
+    lastRoute: { account: string };
+  };
+  assert.equal(report.ledger.lastAccount, 'A', 'the outcome ledger must name the account that supplied the response');
+  assert.equal(report.ledger.lastStatus, 429);
+  assert.equal(report.ledger.recent.at(-1)?.kind, 'upstream_429');
+  assert.equal(report.ledger.recent.at(-1)?.account, 'A');
+  assert.equal(report.lastRoute.account, 'A', 'session affinity must retain the actual response account');
 });
 
 test('[P-006 golden] a bare-burst 429 retries a SIBLING egress IP on the SAME account BEFORE rotating accounts (ordering, D-011/D-012)', async () => {

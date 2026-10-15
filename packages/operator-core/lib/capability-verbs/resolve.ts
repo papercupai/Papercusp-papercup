@@ -14,14 +14,14 @@
  * property the D-020 rails depend on — see `addressing.ts`.
  */
 import type postgres from 'postgres';
-import { listOwnedExternalTriggerSources, type ExternalTriggerSourceRow } from '../external-triggers/source-store';
+import { listOwnedExternalTriggerSources, sourceTokenHarness, type ExternalTriggerSourceRow } from '../external-triggers/source-store';
 import { listSocialPlatforms } from '../external-triggers/social/platform-registry';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
 /** Canonical datatype (D-004) → the vault source that stores it. */
 export const CANONICAL_SOURCE_BY_DATATYPE = {
-  'email-message': 'gmail',
+  'email-message': 'mail',
   'calendar-event': 'calendar',
   'chat-message': 'slack',
   contact: 'contacts',
@@ -30,12 +30,15 @@ export const CANONICAL_SOURCE_BY_DATATYPE = {
 export type CanonicalDatatype = keyof typeof CANONICAL_SOURCE_BY_DATATYPE;
 
 /**
- * Vault source name → trigger_sources.kind. They differ for calendar
+ * Vault source name → data_sources.kind. They differ for calendar
  * ('calendar' in the vault, 'gcal' as a trigger source), which is exactly the
  * kind of drift a hand-maintained second copy would introduce silently.
+ *
+ * The `mail` partition has no entry on purpose: it is provider-neutral, so mail
+ * verbs pick the provider from the connected source (provider-dispatch.ts),
+ * never from a single partition → kind mapping.
  */
 const TRIGGER_KIND_BY_VAULT_SOURCE: Record<string, string> = {
-  gmail: 'gmail',
   calendar: 'gcal',
   contacts: 'contacts',
   slack: 'slack',
@@ -55,6 +58,8 @@ export interface CanonicalDocument {
   sourceId?: string | null;
   /** Provider-native account identity retained for audit/display. */
   providerAccountId?: string | null;
+  /** Canonical datatype stamped by the Vault route (D-010); null on legacy rows. */
+  datatypeId?: string | null;
   kind: string;
   externalId: string;
   occurredAt: string | null;
@@ -88,12 +93,28 @@ export function string(value: unknown): string {
  */
 export async function resolveCanonicalDocument(
   sql: Db,
-  params: { workspaceId: string; userId: string; source: string; externalId: string; sourceId?: string | null },
+  params: {
+    workspaceId: string;
+    userId: string;
+    /** The vault source (e.g. `mail`). Optional when `datatypeId` names the document instead. */
+    source?: string;
+    externalId: string;
+    sourceId?: string | null;
+    /**
+     * Match on the canonical datatype stamped at ingest instead of the vault
+     * source. Provider-package records are stored under `source = <provider id>`
+     * (connector-runtime admitConnectorRecord), so a provider-neutral verb such as
+     * `chat:reply` names the datatype, never a provider.
+     */
+    datatypeId?: string | null;
+  },
 ): Promise<CanonicalDocument> {
   const source = string(params.source);
+  const datatypeId = string(params.datatypeId);
   const externalId = string(params.externalId);
   const sourceId = string(params.sourceId);
-  if (!source) throw new Error('canonical_source_required');
+  if (!source && !datatypeId) throw new Error('canonical_source_required');
+  const label = source || datatypeId;
   if (!externalId) throw new Error('canonical_external_id_required');
   const rows = await sql<
     Array<{
@@ -101,6 +122,7 @@ export async function resolveCanonicalDocument(
       source: string;
       sourceId: string | null;
       providerAccountId: string | null;
+      datatypeId: string | null;
       kind: string;
       externalId: string | null;
       occurredAt: string | null;
@@ -114,6 +136,7 @@ export async function resolveCanonicalDocument(
            d.source,
            d.source_id::text AS "sourceId",
            d.provider_account_id AS "providerAccountId",
+           d.datatype_id AS "datatypeId",
            d.kind,
            d.external_id AS "externalId",
            d.occurred_at::text AS "occurredAt",
@@ -121,22 +144,24 @@ export async function resolveCanonicalDocument(
            d.title,
            d.text,
            d.metadata
-      FROM harness_shared.personal_documents d
+      FROM harness_shared.documents d
      WHERE d.workspace_id = ${params.workspaceId}
        AND d.user_id = ${params.userId}::uuid
-       AND d.source = ${source}
+       AND (${source || null}::text IS NULL OR d.source = ${source || null})
+       AND (${datatypeId || null}::text IS NULL OR d.datatype_id = ${datatypeId || null})
        AND d.external_id = ${externalId}
        AND (${sourceId || null}::text IS NULL OR d.source_id = ${sourceId || null}::uuid)
      ORDER BY d.id
      LIMIT 2`;
-  if (rows.length > 1) throw new Error(`canonical_document_ambiguous:${source}:${externalId}`);
+  if (rows.length > 1) throw new Error(`canonical_document_ambiguous:${label}:${externalId}`);
   const row = rows[0];
-  if (!row) throw new Error(`canonical_document_not_found:${source}:${externalId}`);
+  if (!row) throw new Error(`canonical_document_not_found:${label}:${externalId}`);
   return {
     id: row.id,
     source: row.source,
     sourceId: row.sourceId,
     providerAccountId: row.providerAccountId,
+    datatypeId: row.datatypeId ?? null,
     kind: row.kind,
     externalId: row.externalId ?? externalId,
     occurredAt: row.occurredAt,
@@ -212,7 +237,7 @@ export async function resolveOutboundContext(
   }
   return {
     source,
-    installSlug: string(source.config.installSlug) || params.defaultInstallSlug || 'papercusp',
+    installSlug: sourceTokenHarness(source.config, params.defaultInstallSlug),
     userId: params.userId,
   };
 }

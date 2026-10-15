@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Slack P-008: per-channel Slack-bugs counts on /admin/admission, verified headlessly in the isolated Tauri desktop shell, including a live update without reload",
+  "framework": "operational",
+  "command": [
+    "env",
+    "VERIFY_TAURI_ISOLATED_DB=1",
+    "VERIFY_TAURI_ISOLATED_SEED=ready",
+    "VERIFY_TAURI_REQUIRE_BUILT=apps/operator/app/admin/admission/ChatBugsHealth.tsx,apps/operator/app/admin/admission/page.tsx,apps/operator-vite/src/routes/admin/admission.tsx",
+    "VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=Slack bug reports",
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    "scripts/tauri-surface-verify-slack-bugs-admission.sh"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T21:13:09Z",
+  "finishedAt": "2026-10-06T21:21:34Z",
+  "plan": "slack-messages-to-bug-reports-2026-10-05",
+  "workItemId": "WI-10006380",
+  "specId": "AUTO-BAR-R-8-P-008",
+  "evidencePlane": "tree",
+  "input": {
+    "verifierRun": "20261006T211309Z-944737",
+    "isolatedWorkspace": "verify-tauri-isolated-90",
+    "assertionScript": {
+      "path": "scripts/tauri-surface-verify-slack-bugs-admission.sh",
+      "sha256": "b52b7e75ada6fec0b4b0432b3c7974b4b899608924f4cd72bc596a7f7c5998da",
+      "bytes": 5444
+    },
+    "fixture": {
+      "dataSource": "slack, provider_account_id T-E2E",
+      "rules": ["chat-thread rule 'bugs' on CE2EBUGS", "chat-thread rule 'quiet' on CE2EQUIET"],
+      "admissions": ["CE2EBUGS #1 created", "CE2EBUGS #2 created", "CE2EBUGS #3 folded", "CE2ENORULE #1 created"],
+      "liveWrite": "CE2EBUGS #4 created, written after the page rendered"
+    }
+  },
+  "results": {
+    "expectedInitial": [["T-E2E","CE2EBUGS","2","1","0","0","—","—"],["T-E2E","CE2EQUIET","0","0","0","0","—","—"],["T-E2E","CE2ENORULE (no rule)","1","0","0","0","—","—"]],
+    "observedInitial": [["T-E2E","CE2EBUGS","2","1","0","0","—","—"],["T-E2E","CE2EQUIET","0","0","0","0","—","—"],["T-E2E","CE2ENORULE (no rule)","1","0","0","0","—","—"]],
+    "expectedLiveUpdate": [["T-E2E","CE2EBUGS","3","1","0","0","—","—"],["T-E2E","CE2EQUIET","0","0","0","0","—","—"],["T-E2E","CE2ENORULE (no rule)","1","0","0","0","—","—"]],
+    "observedLiveUpdate": [["T-E2E","CE2EBUGS","3","1","0","0","—","—"],["T-E2E","CE2EQUIET","0","0","0","0","—","—"],["T-E2E","CE2ENORULE (no rule)","1","0","0","0","—","—"]],
+    "columns": ["workspace", "channel", "filed", "merged into existing", "suggested", "refused", "refusal reason", "last error"],
+    "artifacts": {
+      "rows-initial.json": "f4ba61c284589801d0a3a690e9504c5a2832abd323109d4ff12813228d58aece",
+      "rows-live-update.json": "734b7e6848c516402d18d18ded66b9671cf632f359f0e7d122a320c1994d2069",
+      "admission-initial.png": "ae01cb43a275f0b300b4dc766921f6ec5db68a74035be425ccc5b527a0e56cd7",
+      "admission-live-update.png": "e9d0b35fcdbe13e56001533d154dfe2e0bd92d2e35708b0faaa8ac29284b2d2b"
+    }
+  },
+  "assertions": [
+    {
+      "id": "bundle-contains-the-change",
+      "passed": true,
+      "evidence": "verifier log: 'SPA_REQUIRE_BUILT ok: build stamp 2026-10-06T21:11:25Z is newer than all 3 required path(s)' and 'snapshot containment OK: found 'Slack bug reports' in the frozen SPA bundle.'"
+    },
+    {
+      "id": "isolated-database",
+      "passed": true,
+      "evidence": "verifier log: 'EI-10387 isolation VERIFIED: sidecar pid=1260585 resolved HARNESS_ADMIN_DATABASE_URL to our isolated PG on :46569'; the script refuses any workspace not named verify-tauri-isolated-*"
+    },
+    {
+      "id": "per-channel-counts",
+      "passed": true,
+      "evidence": "SLACKBUGS PASS initial: CE2EBUGS filed 2 / merged 1 (the folded admission), CE2EQUIET 0 / 0 (a rule with no admissions still listed), CE2ENORULE (no rule) 1 / 0 (an admission without a rule still listed). Rows compared as parsed JSON values."
+    },
+    {
+      "id": "live-update-without-reload",
+      "passed": true,
+      "evidence": "SLACKBUGS PASS live-update: after one more created admission was written straight to work_admissions, CE2EBUGS filed went 2 -> 3 on the open page with no navigation (work_admissions trigger -> sync bridge -> admission.chatBugs refetch)."
+    },
+    {
+      "id": "harness-verdict",
+      "passed": true,
+      "evidence": "HARNESS_RESULT harness=verify-tauri-headless verdict=pass run=20261006T211309Z-944737 first_failure=none passed=3 failed=0; EXIT=0"
+    }
+  ],
+  "limitations": [
+    "Two earlier runs of this check failed for harness reasons, not product ones (audit comment on WI-10006380): run 1 tested a bundle built before the edit (now guarded by REQUIRE_BUILT and ASSERT_SNAPSHOT_CONTAINS); run 2 saw exactly these rows but compared text against pretty-printed JSON (now compared as parsed values).",
+    "Suggested and refused counts are 0 in this fixture; their read paths are covered by packages/operator-core/lib/data-sources/chat-bugs-overview.integration.test.ts, not by this UI run.",
+    "The fixture writes admissions directly; filing through a real Slack workspace is P-009's live acceptance."
+  ],
+  "summary": "In the isolated headless Tauri shell, /admin/admission's 'Slack bug reports' section listed every channel with the correct filed and merged counts (including a rule with no admissions and an admission with no rule), and a new admission written behind the page's back appeared without a reload."
+}

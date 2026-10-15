@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "plan": "cloud-portal-docs-and-papercup-faq-2026-10-06",
+  "workItem": "WI-10006919",
+  "bug": "EI-25405858758161678",
+  "result": {
+    "exitCode": 0,
+    "passed": 1,
+    "filterExcluded": 36,
+    "stage": "passed",
+    "recordedAt": "2026-10-08T10:23:03.227Z"
+  },
+  "command": "source apps/operator/.env.local; TMPDIR=/tmp/pcv PAPERCUSP_TEST_RUN_HARNESS=papercusp OPERATOR_BASE_URL=http://127.0.0.1:3397 PAPERCUSP_TEST_PUBLIC_CHAT=1 PAPERCUSP_TEST_PUBLIC_PORTAL=1 PAPERCUSP_TEST_PUBLIC_OPERATOR_BUNDLE_DIR=/tmp/pcv/su73-public-manual-runtime-wyO1iN/operator PAPERCUSP_TEST_PUBLIC_MANUAL_FIXTURE_DIR=/tmp/pcv/su73-public-manual-fixture-FR2UjX/apps/papercusp-docs/src/content/docs PAPERCUSP_TEST_PORTAL_SOURCE_ROOT=/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal PAPERCUSP_TEST_PORTAL_CANDIDATE_ROOT=/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/xCOEzbwT1fd0lWLAzRvmO-20261008050830547-1337251-678324ad PAPERCUSP_PORTAL_HOSTED_ENV_FILE=/home/builduser/.config/papercusp/hosted-control-plane.env LLM_TEST_EVIDENCE_ROOT=/tmp/su73-public-manual-evidence-1022 npm run test:file -- packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts -t 'answers typed input on the actual hosted Portal'",
+  "scope": "Functional current-build evidence from one actual hosted Portal journey with disposable public manual and docs-only principal. This is not final BAR acceptance or production shipment.",
+  "sourceProvenance": {
+    "status": "unknown",
+    "reason": "Runner HEAD moved 5cedb741f7 to 2a00bd3c31 while named test content stayed unchanged; imported source/change radius was not measured.",
+    "testPath": "packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts",
+    "testSha256AtRetention": "51a97d7e7d899fe6fd3831f96147ef39259ad0b13655797dce36b17c12a3786b"
+  },
+  "runtimeBuild": {
+    "sha": "7bf0e2fa65",
+    "measuredAt": "2026-10-08T10:22:26.386Z"
+  },
+  "servedRelease": {
+    "schemaVersion": 2,
+    "buildId": "xCOEzbwT1fd0lWLAzRvmO",
+    "release": "xCOEzbwT1fd0lWLAzRvmO-20261008050830547-1337251-678324ad",
+    "sourceRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
+    "publishedAt": "2026-10-08T05:08:30.547Z",
+    "sourceRootDigest": "45f67485ccb82bbd3262e533b0094f591c122a37253eff6024fc9402f00804f0"
+  },
+  "candidateRoot": "/home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/.portal-runtime/portal/releases/xCOEzbwT1fd0lWLAzRvmO-20261008050830547-1337251-678324ad",
+  "question": "How do I check the orchard workspace? Search the public manual, read the FAQ section, give its recovery marker, and cite the section. Do not perform a recovery.",
+  "frames": [
+    {
+      "event": "provenance",
+      "data": {
+        "engine": "codex",
+        "model": "gpt-5.6-luna:low"
+      }
+    },
+    {
+      "event": "tool_result",
+      "data": {
+        "name": "docs:search",
+        "callId": "item_0",
+        "ok": true
+      }
+    },
+    {
+      "event": "tool_call",
+      "data": {
+        "name": "docs:search",
+        "callId": "item_0"
+      }
+    },
+    {
+      "event": "tool_result",
+      "data": {
+        "name": "docs:get",
+        "callId": "item_1",
+        "ok": true
+      }
+    },
+    {
+      "event": "tool_call",
+      "data": {
+        "name": "docs:get",
+        "callId": "item_1"
+      }
+    },
+    {
+      "event": "delta",
+      "data": {
+        "text": "Check the workspace status first. The recovery marker is PUBLIC-ORCHARD-CONTROL-7391. I did not perform recovery. Source: /docs/faq#how-do-i-check-the-orchard-workspace"
+      }
+    },
+    {
+      "event": "done",
+      "data": {}
+    }
+  ],
+  "history": {
+    "ok": true,
+    "turns": [
+      {
+        "role": "user",
+        "text": "How do I check the orchard workspace? Search the public manual, read the FAQ section, give its recovery marker, and cite the section. Do not perform a recovery.",
+        "seq": 0,
+        "source": "text_typed"
+      },
+      {
+        "role": "assistant",
+        "text": "Check the workspace status first. The recovery marker is PUBLIC-ORCHARD-CONTROL-7391. I did not perform recovery. Source: /docs/faq#how-do-i-check-the-orchard-workspace",
+        "seq": 1,
+        "source": "text_typed",
+        "tools": [
+          {
+            "name": "docs:search",
+            "callId": "item_0"
+          },
+          {
+            "name": "docs:get",
+            "callId": "item_1"
+          }
+        ]
+      }
+    ]
+  },
+  "conversationCreation": {
+    "status": 201,
+    "errorCode": null
+  },
+  "guideMutation": {
+    "status": 200,
+    "errorCode": null
+  },
+  "regressionResult": {
+    "passed": 3,
+    "filterExcluded": 34,
+    "sourceProvenance": "stamped localdirty9ed83d94ec",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/llm-testing/__tests__/papercup-public-manual.e2e.test.ts -t '^public manual Portal docs result pairing'"
+  },
+  "rawCase": {
+    "path": "/tmp/su73-public-manual-evidence-1022/public-manual-portal-7cbcdea2-d03a-4249-966a-1b33ea404ccc/case.json",
+    "sha256": "4665a9c26a9da6edf609df5fb334f11492e922a8af83b8f7ab452ccfb9b2ac2d"
+  },
+  "sourceLogs": [
+    {
+      "path": "/tmp/su73-public-docs-pairing-1017.log",
+      "sha256": "3dce4fc5850871a554bb39a0b0ea5e448e31ec01925480c4aae40a2b1b4df79b"
+    },
+    {
+      "path": "/tmp/su73-public-manual-portal-1022.log",
+      "sha256": "c6885d935f01a816d0774bce49c015bd7c78730319d4f3bf27a85447bfdb8c04"
+    }
+  ],
+  "remaining": [
+    "Bind evidence at current spec revisions on declared planes",
+    "Real novice study",
+    "Deep-path acceptance",
+    "Full isolation and drift obligations",
+    "Independent acceptance",
+    "Exact deployed artifact verification",
+    "Earlier conversation creation 500 root cause remains unknown",
+    "Constrained-principal notice investigation EI-25406461543795897"
+  ],
+  "retention": "Public fixture question, answer, safe tool names/status/IDs and history source retained; fixture user/workspace/conversation/turn IDs, cookies, bearer credentials and raw provider tape omitted."
+}

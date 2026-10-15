@@ -1,0 +1,14 @@
+# Rendered by deploy.sh (WI-10006587). Takes a private custom-format dump of the
+# Phone database to the archive named in ops-alert.env. The ops-alert backup
+# check reads the SAME file, so the archive it verifies is the one written here.
+# The EnvironmentFile is required: without it there is no archive to write to.
+[Unit]
+Description=Phone database backup to the private archive the ops-alert check verifies
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PHONE_CONFIG_DIR=${PHONE_CONFIG_DIR}
+EnvironmentFile=${PHONE_CONFIG_DIR}/ops-alert.env
+ExecStart=${PHONE_NODE_BIN} ${PHONE_BACKUP_SCRIPT} backup --out $PHONE_BACKUP_ARCHIVE --replace
+TimeoutStartSec=10min

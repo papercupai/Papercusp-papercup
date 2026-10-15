@@ -1,0 +1,514 @@
+{
+  "schemaVersion": 1,
+  "kind": "d006-source-repair-focused-evidence",
+  "workItem": "WI-10007273",
+  "parent": "WI-10006170",
+  "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts",
+  "historicalArchive": {
+    "run": "1307302-b9c3dd76",
+    "sha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+    "diagnosticLines": [
+      13518,
+      13663
+    ]
+  },
+  "baseline": {
+    "testRunId": 20905440,
+    "status": "fail",
+    "passed": 2,
+    "failed": 2,
+    "skipped": 0,
+    "exitCode": 1,
+    "testSha256": "ec3792e697466db3d70d0452c70762dbee8d354aa73b6d89c4d4471f106d3bef",
+    "log": "/tmp/d006-sidecar-lifetime-baseline-62.log",
+    "logSha256": "2594ff097cb44496acd75ebff5436ee33ea29601f78d81c807c89814cecdd9f4"
+  },
+  "focused": {
+    "testRunId": 20905559,
+    "status": "pass",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "exitCode": 0,
+    "commitSha": "9a996d182039906f402aabb590326661333734f7",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "root": ".",
+    "branch": "staging",
+    "source": "local",
+    "runGroupId": null,
+    "worktreeDirty": true,
+    "namedTestDirty": true,
+    "isScratchConfig": false,
+    "routerProvenance": "stamped",
+    "testSha256": "5bacd4d1a89e01f78bd8fa1fc13807ad555fcf3cf098eb66f000b72310307663",
+    "log": "/tmp/wi-10007273-focused.log",
+    "logSha256": "9d1962449cd89ae3d6ffdeee1fc9af98f8f9a351782857cf3f885a74c6e25ad3"
+  },
+  "rootCause": "Both intentional IPC-server-death fixtures omitted assertion of the expected diagnostic chain. vitest-fail-on-console correctly failed them; the lifetime/no-replay assertions already passed in the baseline.",
+  "recurrenceGuard": "In both real fault injections assert the entire peer-eof, correlated process:exec transport-error and new ECONNREFUSED connection chain, including active request identity and empty recovery pending requests; reject any extra warning.",
+  "typing": {
+    "project": "packages/operator-core/tsconfig.json",
+    "engine": "tsc-service",
+    "checkedFiles": 1,
+    "requestedFiles": [
+      "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts"
+    ],
+    "errorCount": 0,
+    "exitCode": 0,
+    "semanticCheckIncomplete": false,
+    "scope": "requested file inside full program; transitive/project-global assurance excluded"
+  },
+  "sourceCapture": {
+    "rawRef": "/tmp/wi-10007273-executed-sources.json",
+    "rawSha256": "354027ad52d1a7b773360a4087395477b93ac10fa817ee89aaea7310c81b4866",
+    "workerSources": {
+      "schemaVersion": "vite-collected-source-evidence-v1",
+      "scope": "repository-worker-vite-original-sources",
+      "status": "stable",
+      "sources": [
+        {
+          "path": "libs/generic/module-singleton/src/index.ts",
+          "sha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf",
+          "currentSha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf"
+        },
+        {
+          "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+          "sha256": "83aa1325c1b82f8072bcb8e0518d7bd0b18c0d81298bae772e6f6c3ea4243d59",
+          "currentSha256": "83aa1325c1b82f8072bcb8e0518d7bd0b18c0d81298bae772e6f6c3ea4243d59"
+        },
+        {
+          "path": "libs/test-config/src/console-noise-filter.ts",
+          "sha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888",
+          "currentSha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888"
+        },
+        {
+          "path": "libs/test-config/src/executed-inputs-capture-setup.ts",
+          "sha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90",
+          "currentSha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90"
+        },
+        {
+          "path": "libs/test-config/src/executed-inputs-capture.ts",
+          "sha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba",
+          "currentSha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba"
+        },
+        {
+          "path": "libs/test-config/src/execution-details.ts",
+          "sha256": "d46d02d6f73d2fdc97429ad14bc68032215a32c10b31e2167acaca2ab91fab91",
+          "currentSha256": "d46d02d6f73d2fdc97429ad14bc68032215a32c10b31e2167acaca2ab91fab91"
+        },
+        {
+          "path": "libs/test-config/src/handle-leak-delta.ts",
+          "sha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c",
+          "currentSha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c"
+        },
+        {
+          "path": "libs/test-config/src/hermetic-tmpdir.ts",
+          "sha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7",
+          "currentSha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7"
+        },
+        {
+          "path": "libs/test-config/src/setup-fail-on-console.ts",
+          "sha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb",
+          "currentSha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb"
+        },
+        {
+          "path": "libs/test-config/src/setup-handle-leak-detector.ts",
+          "sha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8",
+          "currentSha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8"
+        },
+        {
+          "path": "libs/test-config/src/setup-hermetic-env.ts",
+          "sha256": "79503fce9ba73b0fa323a1b7680b58a8b4f985e098c9c63a7ca41c834db96dc9",
+          "currentSha256": "79503fce9ba73b0fa323a1b7680b58a8b4f985e098c9c63a7ca41c834db96dc9"
+        },
+        {
+          "path": "libs/test-config/src/setup-no-live-pg.ts",
+          "sha256": "44fc5fb64420b284758c5dd5e34da81afe35cbf489b32c0f760ab743c54497b2",
+          "currentSha256": "44fc5fb64420b284758c5dd5e34da81afe35cbf489b32c0f760ab743c54497b2"
+        },
+        {
+          "path": "libs/test-config/src/setup-testing-library-timeout.ts",
+          "sha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274",
+          "currentSha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274"
+        },
+        {
+          "path": "libs/test-config/src/silenced-console-census.ts",
+          "sha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e",
+          "currentSha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e"
+        },
+        {
+          "path": "libs/test-config/src/timer-leak-ledger.ts",
+          "sha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f",
+          "currentSha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f"
+        },
+        {
+          "path": "packages/operator-core/lib/child-output.ts",
+          "sha256": "ad6298ab7bfdda3edc76baf33426d8429fd642388dc1affde5628307dbea8de5",
+          "currentSha256": "ad6298ab7bfdda3edc76baf33426d8429fd642388dc1affde5628307dbea8de5"
+        },
+        {
+          "path": "packages/operator-core/lib/coverage-census/attribution/context.ts",
+          "sha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1",
+          "currentSha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1"
+        },
+        {
+          "path": "packages/operator-core/lib/coverage-census/attribution/setup-vitest.ts",
+          "sha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9",
+          "currentSha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9"
+        },
+        {
+          "path": "packages/operator-core/lib/detached-imports/index.ts",
+          "sha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d",
+          "currentSha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d"
+        },
+        {
+          "path": "packages/operator-core/lib/detached-imports/setup-vitest.ts",
+          "sha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526",
+          "currentSha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526"
+        },
+        {
+          "path": "packages/operator-core/lib/fleet/git-via-sidecar.ts",
+          "sha256": "d5aeead650807baae44553ab8f32aa22379c68a0cc8af9860bad2dcd2abc38d8",
+          "currentSha256": "d5aeead650807baae44553ab8f32aa22379c68a0cc8af9860bad2dcd2abc38d8"
+        },
+        {
+          "path": "packages/operator-core/lib/fleet/sidecar-dispatch-fault.ts",
+          "sha256": "d73aef78317ab2228762a440b4e6ddac3dcbf3e7b3b7c6df30543fe414c6ba0b",
+          "currentSha256": "d73aef78317ab2228762a440b4e6ddac3dcbf3e7b3b7c6df30543fe414c6ba0b"
+        },
+        {
+          "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts",
+          "sha256": "5bacd4d1a89e01f78bd8fa1fc13807ad555fcf3cf098eb66f000b72310307663",
+          "currentSha256": "5bacd4d1a89e01f78bd8fa1fc13807ad555fcf3cf098eb66f000b72310307663"
+        },
+        {
+          "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.ts",
+          "sha256": "c8919c7348d24ccc5d57f226a954b0347293a2e4cae420977c067bba5995340b",
+          "currentSha256": "c8919c7348d24ccc5d57f226a954b0347293a2e4cae420977c067bba5995340b"
+        },
+        {
+          "path": "packages/operator-core/lib/fleet/sidecar-read-only-git.ts",
+          "sha256": "2d505860398c203d9554df8703e5e7591946bc68860ea988ffd89c73d4f9a724",
+          "currentSha256": "2d505860398c203d9554df8703e5e7591946bc68860ea988ffd89c73d4f9a724"
+        },
+        {
+          "path": "packages/operator-core/lib/fleet/spawner-ipc-client.ts",
+          "sha256": "793da95462cd454c24e307da4414a0ad6840fa680b1fa4d83b0c39eebbe6417f",
+          "currentSha256": "793da95462cd454c24e307da4414a0ad6840fa680b1fa4d83b0c39eebbe6417f"
+        },
+        {
+          "path": "packages/operator-core/lib/fleet/spawner-socket-path.ts",
+          "sha256": "4a9bd486f83e15d83e35466d9aa1035d17613d3caad269d96fb81d076c3fd0d7",
+          "currentSha256": "4a9bd486f83e15d83e35466d9aa1035d17613d3caad269d96fb81d076c3fd0d7"
+        },
+        {
+          "path": "packages/operator-core/lib/git-batch.ts",
+          "sha256": "4f4cf386e42e393b4b2b00dfda9b443254aadf7b7bf6b26d9590711955ac8cea",
+          "currentSha256": "4f4cf386e42e393b4b2b00dfda9b443254aadf7b7bf6b26d9590711955ac8cea"
+        },
+        {
+          "path": "packages/operator-core/lib/process-identity.ts",
+          "sha256": "f6b69be467b347a2185cc91637bbee096be04302e193f41e30005c7eb66daefb",
+          "currentSha256": "f6b69be467b347a2185cc91637bbee096be04302e193f41e30005c7eb66daefb"
+        },
+        {
+          "path": "packages/operator-core/lib/process-supervision/sidecar-spawn-shared.ts",
+          "sha256": "e89004da80008c7fa8e76487cf21e41d5e6f4bf056c69594a58a33633ad87e39",
+          "currentSha256": "e89004da80008c7fa8e76487cf21e41d5e6f4bf056c69594a58a33633ad87e39"
+        },
+        {
+          "path": "packages/operator-core/lib/sensitive-text.ts",
+          "sha256": "16bd299e52efe4f4a83a6dcf9f3ff3ea84d957231af9f6deaa67870b559d7c89",
+          "currentSha256": "16bd299e52efe4f4a83a6dcf9f3ff3ea84d957231af9f6deaa67870b559d7c89"
+        },
+        {
+          "path": "packages/operator-core/lib/sidecar-socket/pid-keyed-socket.ts",
+          "sha256": "5d0e43912e116f87e3a29af16a0263a53a62a1122edba2a0bd75528285f5b988",
+          "currentSha256": "5d0e43912e116f87e3a29af16a0263a53a62a1122edba2a0bd75528285f5b988"
+        },
+        {
+          "path": "packages/operator-core/lib/systemd-scope.ts",
+          "sha256": "e53312ace85088496ce81c2fda841902b92ae87a120e8e346e0277a9d4b1f823",
+          "currentSha256": "e53312ace85088496ce81c2fda841902b92ae87a120e8e346e0277a9d4b1f823"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/cgroup-read.ts",
+          "sha256": "2b7da02cf060e26326c1fd009ec0f87ead103543bc0846fcf6e16bc3a1598d08",
+          "currentSha256": "2b7da02cf060e26326c1fd009ec0f87ead103543bc0846fcf6e16bc3a1598d08"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/kill-notify.ts",
+          "sha256": "854f6c37cd73a0bf9fb39663744f008261c0cdd4de8fd5530ee0085acd54ffe1",
+          "currentSha256": "854f6c37cd73a0bf9fb39663744f008261c0cdd4de8fd5530ee0085acd54ffe1"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/managed-spawn.ts",
+          "sha256": "d2f4bc17f915708a184c3208818385feccb1efe410794f7d6a3961a89958f02c",
+          "currentSha256": "d2f4bc17f915708a184c3208818385feccb1efe410794f7d6a3961a89958f02c"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/scope-terminal-state.ts",
+          "sha256": "eb2b23d05c1f4796fa8db008679359f25025588e6af7daa90822d3772e5d5811",
+          "currentSha256": "eb2b23d05c1f4796fa8db008679359f25025588e6af7daa90822d3772e5d5811"
+        },
+        {
+          "path": "packages/operator-core/lib/task-manager/types.ts",
+          "sha256": "9e0213fe7dec5579529ad9c99f968151af9911b7ec4cb1965b21da31e9aa4395",
+          "currentSha256": "9e0213fe7dec5579529ad9c99f968151af9911b7ec4cb1965b21da31e9aa4395"
+        }
+      ],
+      "reasons": []
+    },
+    "configDiskSnapshots": {
+      "schemaVersion": "vitest-config-disk-snapshots-v1",
+      "scope": "repository-vite-config-dependencies",
+      "basis": "reporter-init-disk",
+      "status": "unchanged",
+      "sources": [
+        {
+          "path": "packages/operator-core/vitest.integration.config.ts",
+          "sha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337",
+          "currentSha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337"
+        }
+      ],
+      "reasons": []
+    },
+    "configLoadedSources": {
+      "schemaVersion": "node-loaded-config-sources-v1",
+      "scope": "repository-vite-config-dependencies",
+      "basis": "node-load-hook",
+      "status": "unknown",
+      "sources": [
+        {
+          "path": "packages/operator-core/vitest.integration.config.ts",
+          "sha256": null,
+          "currentSha256": "1c602625eb644f895fb8bbcb3f333d640575b0f708c6d49e76ecbf6b01baf337"
+        }
+      ],
+      "reasons": [
+        "config-node-load-capture-unavailable",
+        "config-original-load-unavailable:packages/operator-core/vitest.integration.config.ts"
+      ]
+    },
+    "mainProcessLoadedSources": {
+      "schemaVersion": "node-loaded-main-process-sources-v1",
+      "scope": "repository-node-main-process-sources",
+      "basis": "node-load-hook",
+      "status": "unknown",
+      "sources": [],
+      "reasons": [
+        "main-process-dependencies-unavailable",
+        "main-process-loaded-sources-unavailable",
+        "main-process-node-load-capture-unavailable"
+      ]
+    }
+  },
+  "postRunComparison": {
+    "measuredAt": "2026-10-07T19:54:39.218581+00:00",
+    "scope": "captured repository worker sources only",
+    "changed": [],
+    "sources": [
+      {
+        "path": "libs/generic/module-singleton/src/index.ts",
+        "runEndSha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf",
+        "currentSha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf"
+      },
+      {
+        "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+        "runEndSha256": "83aa1325c1b82f8072bcb8e0518d7bd0b18c0d81298bae772e6f6c3ea4243d59",
+        "currentSha256": "83aa1325c1b82f8072bcb8e0518d7bd0b18c0d81298bae772e6f6c3ea4243d59"
+      },
+      {
+        "path": "libs/test-config/src/console-noise-filter.ts",
+        "runEndSha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888",
+        "currentSha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888"
+      },
+      {
+        "path": "libs/test-config/src/executed-inputs-capture-setup.ts",
+        "runEndSha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90",
+        "currentSha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90"
+      },
+      {
+        "path": "libs/test-config/src/executed-inputs-capture.ts",
+        "runEndSha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba",
+        "currentSha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba"
+      },
+      {
+        "path": "libs/test-config/src/execution-details.ts",
+        "runEndSha256": "d46d02d6f73d2fdc97429ad14bc68032215a32c10b31e2167acaca2ab91fab91",
+        "currentSha256": "d46d02d6f73d2fdc97429ad14bc68032215a32c10b31e2167acaca2ab91fab91"
+      },
+      {
+        "path": "libs/test-config/src/handle-leak-delta.ts",
+        "runEndSha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c",
+        "currentSha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c"
+      },
+      {
+        "path": "libs/test-config/src/hermetic-tmpdir.ts",
+        "runEndSha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7",
+        "currentSha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7"
+      },
+      {
+        "path": "libs/test-config/src/setup-fail-on-console.ts",
+        "runEndSha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb",
+        "currentSha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb"
+      },
+      {
+        "path": "libs/test-config/src/setup-handle-leak-detector.ts",
+        "runEndSha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8",
+        "currentSha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8"
+      },
+      {
+        "path": "libs/test-config/src/setup-hermetic-env.ts",
+        "runEndSha256": "79503fce9ba73b0fa323a1b7680b58a8b4f985e098c9c63a7ca41c834db96dc9",
+        "currentSha256": "79503fce9ba73b0fa323a1b7680b58a8b4f985e098c9c63a7ca41c834db96dc9"
+      },
+      {
+        "path": "libs/test-config/src/setup-no-live-pg.ts",
+        "runEndSha256": "44fc5fb64420b284758c5dd5e34da81afe35cbf489b32c0f760ab743c54497b2",
+        "currentSha256": "44fc5fb64420b284758c5dd5e34da81afe35cbf489b32c0f760ab743c54497b2"
+      },
+      {
+        "path": "libs/test-config/src/setup-testing-library-timeout.ts",
+        "runEndSha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274",
+        "currentSha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274"
+      },
+      {
+        "path": "libs/test-config/src/silenced-console-census.ts",
+        "runEndSha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e",
+        "currentSha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e"
+      },
+      {
+        "path": "libs/test-config/src/timer-leak-ledger.ts",
+        "runEndSha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f",
+        "currentSha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f"
+      },
+      {
+        "path": "packages/operator-core/lib/child-output.ts",
+        "runEndSha256": "ad6298ab7bfdda3edc76baf33426d8429fd642388dc1affde5628307dbea8de5",
+        "currentSha256": "ad6298ab7bfdda3edc76baf33426d8429fd642388dc1affde5628307dbea8de5"
+      },
+      {
+        "path": "packages/operator-core/lib/coverage-census/attribution/context.ts",
+        "runEndSha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1",
+        "currentSha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1"
+      },
+      {
+        "path": "packages/operator-core/lib/coverage-census/attribution/setup-vitest.ts",
+        "runEndSha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9",
+        "currentSha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9"
+      },
+      {
+        "path": "packages/operator-core/lib/detached-imports/index.ts",
+        "runEndSha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d",
+        "currentSha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d"
+      },
+      {
+        "path": "packages/operator-core/lib/detached-imports/setup-vitest.ts",
+        "runEndSha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526",
+        "currentSha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/git-via-sidecar.ts",
+        "runEndSha256": "d5aeead650807baae44553ab8f32aa22379c68a0cc8af9860bad2dcd2abc38d8",
+        "currentSha256": "d5aeead650807baae44553ab8f32aa22379c68a0cc8af9860bad2dcd2abc38d8"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-dispatch-fault.ts",
+        "runEndSha256": "d73aef78317ab2228762a440b4e6ddac3dcbf3e7b3b7c6df30543fe414c6ba0b",
+        "currentSha256": "d73aef78317ab2228762a440b4e6ddac3dcbf3e7b3b7c6df30543fe414c6ba0b"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts",
+        "runEndSha256": "5bacd4d1a89e01f78bd8fa1fc13807ad555fcf3cf098eb66f000b72310307663",
+        "currentSha256": "5bacd4d1a89e01f78bd8fa1fc13807ad555fcf3cf098eb66f000b72310307663"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.ts",
+        "runEndSha256": "c8919c7348d24ccc5d57f226a954b0347293a2e4cae420977c067bba5995340b",
+        "currentSha256": "c8919c7348d24ccc5d57f226a954b0347293a2e4cae420977c067bba5995340b"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-read-only-git.ts",
+        "runEndSha256": "2d505860398c203d9554df8703e5e7591946bc68860ea988ffd89c73d4f9a724",
+        "currentSha256": "2d505860398c203d9554df8703e5e7591946bc68860ea988ffd89c73d4f9a724"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/spawner-ipc-client.ts",
+        "runEndSha256": "793da95462cd454c24e307da4414a0ad6840fa680b1fa4d83b0c39eebbe6417f",
+        "currentSha256": "793da95462cd454c24e307da4414a0ad6840fa680b1fa4d83b0c39eebbe6417f"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/spawner-socket-path.ts",
+        "runEndSha256": "4a9bd486f83e15d83e35466d9aa1035d17613d3caad269d96fb81d076c3fd0d7",
+        "currentSha256": "4a9bd486f83e15d83e35466d9aa1035d17613d3caad269d96fb81d076c3fd0d7"
+      },
+      {
+        "path": "packages/operator-core/lib/git-batch.ts",
+        "runEndSha256": "4f4cf386e42e393b4b2b00dfda9b443254aadf7b7bf6b26d9590711955ac8cea",
+        "currentSha256": "4f4cf386e42e393b4b2b00dfda9b443254aadf7b7bf6b26d9590711955ac8cea"
+      },
+      {
+        "path": "packages/operator-core/lib/process-identity.ts",
+        "runEndSha256": "f6b69be467b347a2185cc91637bbee096be04302e193f41e30005c7eb66daefb",
+        "currentSha256": "f6b69be467b347a2185cc91637bbee096be04302e193f41e30005c7eb66daefb"
+      },
+      {
+        "path": "packages/operator-core/lib/process-supervision/sidecar-spawn-shared.ts",
+        "runEndSha256": "e89004da80008c7fa8e76487cf21e41d5e6f4bf056c69594a58a33633ad87e39",
+        "currentSha256": "e89004da80008c7fa8e76487cf21e41d5e6f4bf056c69594a58a33633ad87e39"
+      },
+      {
+        "path": "packages/operator-core/lib/sensitive-text.ts",
+        "runEndSha256": "16bd299e52efe4f4a83a6dcf9f3ff3ea84d957231af9f6deaa67870b559d7c89",
+        "currentSha256": "16bd299e52efe4f4a83a6dcf9f3ff3ea84d957231af9f6deaa67870b559d7c89"
+      },
+      {
+        "path": "packages/operator-core/lib/sidecar-socket/pid-keyed-socket.ts",
+        "runEndSha256": "5d0e43912e116f87e3a29af16a0263a53a62a1122edba2a0bd75528285f5b988",
+        "currentSha256": "5d0e43912e116f87e3a29af16a0263a53a62a1122edba2a0bd75528285f5b988"
+      },
+      {
+        "path": "packages/operator-core/lib/systemd-scope.ts",
+        "runEndSha256": "e53312ace85088496ce81c2fda841902b92ae87a120e8e346e0277a9d4b1f823",
+        "currentSha256": "e53312ace85088496ce81c2fda841902b92ae87a120e8e346e0277a9d4b1f823"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/cgroup-read.ts",
+        "runEndSha256": "2b7da02cf060e26326c1fd009ec0f87ead103543bc0846fcf6e16bc3a1598d08",
+        "currentSha256": "2b7da02cf060e26326c1fd009ec0f87ead103543bc0846fcf6e16bc3a1598d08"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/kill-notify.ts",
+        "runEndSha256": "854f6c37cd73a0bf9fb39663744f008261c0cdd4de8fd5530ee0085acd54ffe1",
+        "currentSha256": "854f6c37cd73a0bf9fb39663744f008261c0cdd4de8fd5530ee0085acd54ffe1"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/managed-spawn.ts",
+        "runEndSha256": "d2f4bc17f915708a184c3208818385feccb1efe410794f7d6a3961a89958f02c",
+        "currentSha256": "d2f4bc17f915708a184c3208818385feccb1efe410794f7d6a3961a89958f02c"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/scope-terminal-state.ts",
+        "runEndSha256": "eb2b23d05c1f4796fa8db008679359f25025588e6af7daa90822d3772e5d5811",
+        "currentSha256": "eb2b23d05c1f4796fa8db008679359f25025588e6af7daa90822d3772e5d5811"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/types.ts",
+        "runEndSha256": "9e0213fe7dec5579529ad9c99f968151af9911b7ec4cb1965b21da31e9aa4395",
+        "currentSha256": "9e0213fe7dec5579529ad9c99f968151af9911b7ec4cb1965b21da31e9aa4395"
+      }
+    ]
+  },
+  "unverified": [
+    "Original loaded config and Node main-process sources",
+    "Subprocess-loaded sidecar fixture and its full dependency graph",
+    "Environment and native dependency fingerprints",
+    "Clean committed full-source rerun",
+    "Final P004/D006 integration-only sweep",
+    "Shipment"
+  ],
+  "acceptanceClaim": false,
+  "shipmentClaim": false
+}

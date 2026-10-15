@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "jev-memory-timeouts-to-zero-2026-10-01 R-1 live measurement: every new-build memory-injection decision call carries calling-thread event-loop utilization",
+  "framework": "operational",
+  "planSlug": "jev-memory-timeouts-to-zero-2026-10-01",
+  "specId": "AUTO-BAR-R-1-P-001",
+  "workItemId": "EI-24748208098755918",
+  "command": [
+    "sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-c",
+    "SELECT count(*) AS total, count(*) FILTER (WHERE loop_busy_ms IS NOT NULL AND loop_utilization BETWEEN 0 AND 1) AS with_loop, min(created_at), max(created_at), now() FROM harness_shared.decision_model_calls WHERE workspace_id='papercusp-workspace' AND consumer='memory-injection' AND surface IS NOT NULL AND created_at >= '2026-10-02T04:13:10Z'"
+  ],
+  "population": "harness_shared.decision_model_calls rows for workspace papercusp-workspace, consumer memory-injection, surface IS NOT NULL (written only by builds carrying this plan's P-001 ledger change: :3170 staging and bg-host), created at or after 2026-10-02T04:13:10Z",
+  "exitCode": 0,
+  "startedAt": "2026-10-02T06:00:54.000Z",
+  "finishedAt": "2026-10-02T06:00:55.000Z",
+  "window": { "from": "2026-10-02T04:13:17.136Z", "to": "2026-10-02T06:00:45.642Z" },
+  "result": { "total": 1141, "withLoopUtilization": 1141 },
+  "summary": "1,141 of 1,141 new-build memory-injection decision calls carry loop_busy_ms and loop_utilization in [0,1]; no row lacks the attribution fields.",
+  "assertions": [
+    { "id": "population-non-empty", "passed": true, "evidence": "total = 1141 > 0" },
+    { "id": "every-row-carries-loop-utilization", "passed": true, "evidence": "withLoopUtilization = total = 1141 (loop_busy_ms NOT NULL and loop_utilization in [0,1])" }
+  ]
+}

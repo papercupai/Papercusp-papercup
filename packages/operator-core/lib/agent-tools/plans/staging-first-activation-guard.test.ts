@@ -28,6 +28,178 @@ ${decisions}
 `);
 
 describe('staging-first activation guard', () => {
+  it.each(['green-checkpoint', 'main', ':3070'])(
+    'does not pair a scanned %s subject with measured condition recovery',
+    (subject) => {
+      const parsed = plan(
+        ['P-003', 'P-008', 'P-017'].map(
+          (id) => `- **${id}** \`todo\` Implement condition recovery using staging.`,
+        ),
+        `### D-013 — Condition recovery\nDate: 2026-10-13\nScan ${subject} routine rows after markers disappear, then resolve only after measured absent markers, verified live runners, terminal qualification, or verified live fresh progress.\nRelated: P-003, P-008, P-017`,
+      );
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
+
+  it.each(['green-checkpoint', 'main', ':3070'])(
+    'preserves a true implementation prerequisite after %s recovery prose',
+    (subject) => {
+      for (const separator of ['; ', '. ']) {
+        const gate = `implementation may start only after ${subject} is green`;
+        const parsed = plan(
+          ['- **P-003** `todo` Implement condition recovery using staging.'],
+          `### D-013 — Condition recovery\nDate: 2026-10-13\nScan ${subject} routine rows, then resolve only after measured recovery${separator}${gate}.\nRelated: P-003`,
+        );
+        const [problem, ...rest] = stagingFirstActivationProblems(parsed);
+        expect(rest).toEqual([]);
+        expect(problem).toEqual(expect.objectContaining({ itemId: 'P-003', code: 'non_final_deployed_main_wait' }));
+        expect(problem!.triggers).toContainEqual({ source: 'decision D-013', clause: expect.stringContaining(gate) });
+      }
+    },
+  );
+
+  it.each(['main-loop', 'main loop', 'main event loop', 'main-event-loop'])(
+    'does not classify the Node runtime %s as a main deployment prerequisite',
+    (runtimePhrase) => {
+      const parsed = plan([
+        '- **P-007** \x60todo\x60 Keep Node ' + runtimePhrase + ' responsiveness below 100ms.',
+        '- **P-009** \x60todo\x60 Implement the dependent source audit using staging. blocked-by: P-007',
+      ]);
+
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+      expect(
+        stagingFirstBlockerProblem({
+          itemId: 'WI-main-loop',
+          itemText: 'Implement a source audit on staging.',
+          blockerText: 'Wait for the Node ' + runtimePhrase + ' benchmark before continuing source work.',
+          kind: 'gate',
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it('does not treat a negated green-main requirement in item-scoped Now text as a release-plane gate', () => {
+    const parsed = plan(
+      [
+        '- **P-001** \x60todo\x60 Restore the API artifact and verify service health.',
+        '- **P-002** \x60todo\x60 Restore model weights and verify the model is served.',
+        '- **P-003** \x60todo\x60 Build the module and verify loaded state.',
+      ],
+      '',
+      '## Now\nP-001, P-002 and P-003 use stage-neutral live-host acceptance and contain no green-main requirement.',
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it('does not treat a deployed-model prerequisite in a linked decision as a release-plane gate', () => {
+    const parsed = plan(
+      ['- **P-001** \x60todo\x60 Restore the catalog-selected model weights and verify the model is served.'],
+      "### D-001 — Preserve the deployed-model prerequisite\nDate: 2026-10-05\nThe plan must preserve the deployed-model prerequisite and existing model-file check.\nRelated: P-001",
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it.each(['deployment ownership', 'deployment configuration', 'deployment topology', 'deployment source'])(
+    'allows a source prerequisite that inventories %s',
+    (metadata) => {
+      const parsed = plan([
+        `- **P-001** \`todo\` Inventory canonical source, ${metadata}, and current test evidence.`,
+        '- **P-002** `todo` Add tenant-bound call routing and run integration tests on current-build. blocked-by: P-001',
+      ]);
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
+
+  it.each(['main promotion', 'the deployed host', 'green-checkpoint'])(
+    'retains a genuine %s prerequisite alongside deployment metadata',
+    (releasePlane) => {
+      const parsed = plan([
+        `- **P-001** \`todo\` Inventory deployment ownership, then verify ${releasePlane}.`,
+        '- **P-002** `todo` Add tenant-bound call routing and run integration tests on current-build. blocked-by: P-001',
+      ]);
+      expect(stagingFirstActivationProblems(parsed)).toEqual([
+        expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+      ]);
+    },
+  );
+
+  it.each(['Prepare', 'Configure', 'Inventory', 'Audit', 'Review', 'Inspect', 'Document', 'Map'])(
+    'allows %s of a self-hosted media deployment as a source prerequisite',
+    (action) => {
+      const parsed = plan([
+        `- **P-001** \`todo\` ${action} public TLS and TURN for the self-hosted media deployment.`,
+        '- **P-002** `todo` Implement current-build recovery tests and alerts. blocked-by: P-001',
+      ]);
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
+
+  it('allows a hosted-readiness audit before building the pilot price sheet', () => {
+    const parsed = plan([
+      '- **P-002** `todo` Audit current hosted readiness and reuse boundaries. Verify assumptions about WorkOS, deployment, customer-content access, credentials, teardown and recovery.',
+      '- **P-003** `todo` Build the pilot unit-economics and price sheet from measured compute and support costs. blocked-by: P-002',
+    ]);
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it.each(['Finalize', 'Define', 'Specify', 'Select', 'Choose', 'Design'])(
+    'allows %s of a deployment contract before dependent source implementation',
+    (action) => {
+      const parsed = plan([
+        `- **P-003** \`todo\` ${action} the pilot scope, threat/deployment/data contract, and implementation estimates.`,
+        '- **P-007** `todo` Implement the data-governance contract on current-build. blocked-by: P-003',
+        '- **P-011** `todo` Deliver the selected connector and exercise separate write authorization on current-build. blocked-by: P-003, P-007',
+      ]);
+
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
+
+  it.each(
+    ['Finalize', 'Define', 'Specify', 'Select', 'Choose', 'Design'].flatMap((action) =>
+      ['main promotion', 'the deployed host', 'green-checkpoint'].map((releasePlane) => [action, releasePlane]),
+    ),
+  )('retains an actual %s prerequisite on %s', (action, releasePlane) => {
+    const parsed = plan([
+      `- **P-001** \`todo\` ${action} the deployment contract, then verify ${releasePlane}.`,
+      '- **P-002** `todo` Implement data-governance checks on current-build. blocked-by: P-001',
+    ]);
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([
+      expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+    ]);
+  });
+
+  it.each(['Audit', 'Review', 'Inspect', 'Document', 'Map'])(
+    'retains real release prerequisites in a %s item',
+    (action) => {
+      for (const releasePlane of ['main promotion', 'final deployment', ':3070', 'production']) {
+        const parsed = plan([
+          `- **P-001** \`todo\` ${action} the deployment after ${releasePlane}.`,
+          '- **P-002** `todo` Implement current-build recovery tests and alerts. blocked-by: P-001',
+        ]);
+        expect(stagingFirstActivationProblems(parsed), releasePlane).toEqual([
+          expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+        ]);
+      }
+    },
+  );
+
+  it.each(['main promotion', 'final deployment', ':3070'])(
+    'still rejects preparation explicitly gated on %s',
+    (releasePlane) => {
+      const parsed = plan([
+        `- **P-001** \`todo\` Prepare the deployment after ${releasePlane}.`,
+        '- **P-002** `todo` Implement current-build recovery tests and alerts. blocked-by: P-001',
+      ]);
+      expect(stagingFirstActivationProblems(parsed)).toEqual([
+        expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
+      ]);
+    },
+  );
+
   it('rejects a direct release-plane blocker on ordinary implementation work', () => {
     expect(
       stagingFirstBlockerProblem({
@@ -259,6 +431,13 @@ describe('staging-first activation guard', () => {
     ]);
   });
 
+  it('does not mistake a legal precondition for a deployment-model wait', () => {
+    const parsed = plan([
+      "- **P-016** `todo` GATE: a legal read of Slack's 2025 API terms for this deployment model must be on record before this ships.",
+    ]);
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
   it.each(['done', 'dropped'])('does not re-report a terminal %s item', (status) => {
     expect(
       stagingFirstActivationProblems(
@@ -282,6 +461,26 @@ describe('staging-first activation guard', () => {
     '- **P-001** `todo` Validate migration ordering between staging and the deployed host before final shipment.',
   ])('preserves staging work and final lifecycle checks: %s', (item) => {
     expect(stagingFirstActivationProblems(plan([item]))).toEqual([]);
+  });
+
+  it('does not treat a classification bucket as source work in a final acceptance item', () => {
+    const parsed = plan([
+      '- **P-009** `todo` Wait for main to turn green before final shipment verification.',
+      '- **P-010** `todo` Outcome pass condition: place every row in exactly one of: (a) claimable to implement; (b) claimable to validate; or (c) worked with item-specific evidence from the last 30 minutes. Final shipment verification. blocked-by: P-009',
+    ]);
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it('still flags actual source work when a final acceptance item is blocked by main', () => {
+    const parsed = plan([
+      '- **P-009** `todo` Wait for main to turn green before final shipment verification.',
+      '- **P-010** `todo` Implement the remaining source fix, then classify the result as exactly one of: (a) done; (b) blocked. Final shipment verification. blocked-by: P-009',
+    ]);
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([
+      expect.objectContaining({ itemId: 'P-010', code: 'non_final_deployed_main_wait' }),
+    ]);
   });
 
   it('accepts an item-local deployed-only exception with a concrete staging limitation', () => {
@@ -353,6 +552,46 @@ describe('staging-first activation guard', () => {
     expect(stagingFirstActivationProblems(parsed)).toEqual([
       expect.objectContaining({ itemId: 'P-001', code: 'non_final_deployed_main_wait' }),
     ]);
+  });
+
+  // EI-25238370394944654: a `Related: P-NNN` line pulls another decision's FULL text into
+  // the item's check, so a refusal must name the decision and clause that tripped it.
+  // Without that, the only way to find the culprit was leave-one-out over plan.decisions.
+  it('names the linked decision and clause that tripped the gate', () => {
+    const parsed = plan(
+      ['- **P-001** `todo` Implement the interactive client on staging.'],
+      [
+        '### D-001 — Client shape\nDate: 2026-10-06\nThe client renders the queue as a flat list.\nRelated: P-001',
+        '### D-002 — Cohort note\nDate: 2026-10-06\nThe stale cohort regrows until main promotes.\nRelated: P-001',
+      ].join('\n\n'),
+    );
+    const [problem, ...rest] = stagingFirstActivationProblems(parsed);
+    expect(rest).toEqual([]);
+    expect(problem!.triggers).toEqual([
+      { source: 'decision D-002', clause: 'The stale cohort regrows until main promotes.' },
+    ]);
+    expect(problem!.detail).toContain('Tripped by: [decision D-002] "The stale cohort regrows until main promotes."');
+    expect(problem!.detail).not.toContain('[decision D-001]');
+  });
+
+  it("attributes a gate in the item's own text to the item, and caps the quoted clauses in detail", () => {
+    const decisions = ['D-001', 'D-002', 'D-003'].map(
+      (id) => `### ${id} — Gate ${id}\nDate: 2026-10-06\nWait for green main before P-001 can continue implementation.\nRelated: P-001`,
+    );
+    const parsed = plan(
+      ['- **P-001** `todo` Implement the client. Wait for main before continuing implementation.'],
+      decisions.join('\n\n'),
+    );
+    const [problem] = stagingFirstActivationProblems(parsed);
+    expect(problem!.triggers!.map((trigger) => trigger.source)).toEqual([
+      'P-001 item text',
+      'decision D-001',
+      'decision D-002',
+      'decision D-003',
+    ]);
+    expect(problem!.detail).toContain('[P-001 item text] "Wait for main before continuing implementation."');
+    expect(problem!.detail).toContain('(+1 more in `triggers`)');
+    expect(problem!.detail).not.toContain('[decision D-003]');
   });
 
   it("does not attribute another item's Now gate to an incidentally mentioned item", () => {

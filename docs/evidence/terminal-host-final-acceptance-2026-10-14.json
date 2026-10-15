@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exact interactive host captured-stall final acceptance",
+  "framework": "operational",
+  "command": [
+    "node",
+    "--input-type=module",
+    "read-only temporary loopback inspector on identity-verified host",
+    "sudo -n timeout --signal=INT 12 strace -f -p 3052562 -e trace=openat -T"
+  ],
+  "exitCode": 0,
+  "postDetachChecks": [
+    {
+      "durationSec": 6,
+      "observedBefore": 1792005838223,
+      "observedAfter": 1792005838223,
+      "status": "unknown",
+      "reason": "This window did not observe a metadata persist; it cannot certify progression."
+    },
+    {
+      "durationSec": 20,
+      "measuredAt": "2026-10-14T19:24:55.898652+00:00",
+      "observedBefore": 1792005868241,
+      "observedAfter": 1792005883242,
+      "hostPidBefore": 3052562,
+      "hostPidAfter": 3052562,
+      "nativeBefore": "01a13bba-580d-7331-80df-8a9922b25097",
+      "nativeAfter": "01a13bba-580d-7331-80df-8a9922b25097",
+      "status": "pass"
+    }
+  ],
+  "historyEvidence": {
+    "basis": "History preservation is inferred from unchanged PTY/window incarnations and absence of restart/clear/history-rewrite commands.",
+    "limitation": "No independent scrollback-content or every-transcript-content comparison was made."
+  },
+  "startedAt": "2026-10-14T19:16:04.341Z",
+  "finishedAt": "2026-10-14T19:18:44.145181+00:00",
+  "summary": "Exact current host loaded both captured repairs. Bounded trace observed local fdinfo and no global lock-table opens with metadata progress and stable native/PTy identity. The discovery-selected interactive inventory was unchanged; inspector closed.",
+  "assertions": [
+    {
+      "id": "loaded-host-version-and-diagnostic-repair",
+      "passed": true,
+      "evidence": "Loaded module matches advertised hash; asynchronous diagnostic output and dual stream finish present."
+    },
+    {
+      "id": "loaded-exact-local-identity",
+      "passed": true,
+      "evidence": "Loaded launcher uses exact-process fdinfo; absent startup PID returns before oracle."
+    },
+    {
+      "id": "current-host-lock-and-metadata-progress",
+      "passed": true,
+      "evidence": "12-second attached trace: 58 local fdinfo opens, 0 global /proc/locks opens; metadata observedAt advanced."
+    },
+    {
+      "id": "native-and-pty-continuity",
+      "passed": true,
+      "evidence": "Native session and PTY PID stayed identical during the measurement; host starttime stayed 73545140."
+    },
+    {
+      "id": "observed-interactive-inventory-preserved",
+      "passed": true,
+      "evidence": "Both 164-entry discovery-selected interactive inventories had identical SHA256 including host/PTY/terminal PID and starttime."
+    },
+    {
+      "id": "temporary-inspector-closed",
+      "passed": true,
+      "evidence": "Inspector target PID verified; built-in inspector close scheduled; listener independently verified absent."
+    }
+  ],
+  "runtime": {
+    "name": "psu-pty-host",
+    "ownerId": "su-f054245c-2b04-4a57-9eda-1655fbfcd8ae",
+    "pid": 3052562,
+    "starttime": "73545140",
+    "hostCodeVersion": "9d8599fa72f75bb199abe75004ceeba8525622c81098e5d990f9ccaed5a3e80f"
+  },
+  "loadedSource": {
+    "observedAt": "2026-10-14T19:16:04.341Z",
+    "owner": "su-f054245c-2b04-4a57-9eda-1655fbfcd8ae",
+    "hostPid": 3052562,
+    "hostStarttime": "73545140",
+    "metadataHostHash": "9d8599fa72f75bb199abe75004ceeba8525622c81098e5d990f9ccaed5a3e80f",
+    "nativeId": "01a13bba-580d-7331-80df-8a9922b25097",
+    "loaded": [
+      {
+        "path": "apps/operator/scripts/psu-launcher.mjs",
+        "loadedSha256": "4dfbe5be2512966423920d62a19b4be9fb198a77b2876d5284329fb16fc9cc83",
+        "diagnosticsUseAsyncWriter": false,
+        "dualStreamDrain": false,
+        "processLocalLockReader": true,
+        "unknownPidEarlyReturn": true
+      },
+      {
+        "path": "apps/operator/scripts/psu-pty-host.mjs",
+        "loadedSha256": "9d8599fa72f75bb199abe75004ceeba8525622c81098e5d990f9ccaed5a3e80f",
+        "diagnosticsUseAsyncWriter": true,
+        "dualStreamDrain": true,
+        "processLocalLockReader": false,
+        "unknownPidEarlyReturn": false
+      }
+    ],
+    "inspectorClosed": true
+  },
+  "trace": {
+    "startedAt": "2026-10-14T19:18:31.716690+00:00",
+    "finishedAt": "2026-10-14T19:18:44.145181+00:00",
+    "hostPid": 3052562,
+    "hostStart": "73545140",
+    "nativeBefore": "01a13bba-580d-7331-80df-8a9922b25097",
+    "nativeAfter": "01a13bba-580d-7331-80df-8a9922b25097",
+    "ptyBefore": 3469268,
+    "ptyAfter": 3469268,
+    "durationSec": 12.269,
+    "traceAttached": true,
+    "traceExit": 124,
+    "globalLockOpens": 0,
+    "localFdinfoOpens": 58,
+    "localExamples": [
+      "[pid 3052562] openat(AT_FDCWD, \"/proc/3469303/fdinfo/0\", O_RDONLY|O_CLOEXEC) = 27 <0.000039>",
+      "[pid 3052562] openat(AT_FDCWD, \"/proc/3469303/fdinfo/1\", O_RDONLY|O_CLOEXEC) = 27 <0.000035>",
+      "[pid 3052562] openat(AT_FDCWD, \"/proc/3469303/fdinfo/10\", O_RDONLY|O_CLOEXEC) = 27 <0.000035>"
+    ],
+    "metaBefore": 1792005501346,
+    "metaAfter": 1792005516363,
+    "interactiveInventoryBeforeCount": 164,
+    "interactiveInventoryAfterCount": 164,
+    "beforeInventorySha256": "55b08d8e85b0fbe813d2d8e4f78749bc4c10262a31fa5adcc04fdfa0d8d43ce0",
+    "afterInventorySha256": "55b08d8e85b0fbe813d2d8e4f78749bc4c10262a31fa5adcc04fdfa0d8d43ce0",
+    "externalChurnUnknown": [],
+    "commandsRestartedPeers": false
+  },
+  "limitations": [
+    "Captured lock-table and diagnostic-output stall scope only.",
+    "No all-host adoption or universal compositor-freeze claim.",
+    "No peer restart, mass adoption, or renderer restart command was issued.",
+    "Interactive census selects live discovery entries carrying bridgeTty or terminalPid; other discovery classes excluded."
+  ],
+  "procedure": {
+    "inspector": "Validate discovery owner/PID/proc starttime. Require port9229 free, signal only target SIGUSR1, Runtime.evaluate process.pid and Debugger.getScriptSource for exact launcher/host modules. Hash loaded source, verify advertised host version and repair markers, close through process.getBuiltinModule('node:inspector').close then verify endpoint absent.",
+    "trace": "Validate same exact target; take discovery/PTY/terminal PID+starttime inventory for live interactive entries. Attach bounded privileged openat trace. Parse local fdinfo/global lock paths, compare metadata/nativeId/PTY PID and inventory digest. External churn remains unknown; this probe never restarts peers."
+  }
+}

@@ -13,11 +13,14 @@ import {
   buildAmendmentReviewBrief,
   filterAmendmentReviewRoute,
   launchFreshAmendmentReviewer,
+  MAX_DEAD_REVIEWER_CHAIN,
   openAcceptanceBarAmendmentReview,
   routeAcceptanceBarAmendmentReview,
+  selectFreshReviewerModelForAccountSteer,
   type AmendmentReviewerScreen,
 } from './acceptance-bar-amendment-review';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
+import { analyzeClaudeResumeTranscript } from '../claude-resume-tool-references.mjs';
 
 // Directed lineage edges: rebind predecessor -> implementer -> spawned child;
 // a common parent launched both the implementer and a sibling.
@@ -320,6 +323,43 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect('freshReviewer' in result).toBe(false);
   });
 
+  it('validates retained evidence before routing and passes the full evidence to the independent recruiter', async () => {
+    const reviewEvidence = { postRef: 'thread-post:50', body: 'Exact API completed in 52.08s; criterion verdict remains fail.' };
+    const resolveEvidence = vi.fn().mockResolvedValue(reviewEvidence);
+    const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null, reason: 'none', screenedOut: [] });
+    const launchFresh = vi.fn().mockResolvedValue({ state: 'not-launched', reason: 'test' });
+    await openAcceptanceBarAmendmentReview({ ...baseInput, reviewEvidencePost: reviewEvidence.postRef },
+      { verifyPreviewPost: vi.fn(), resolveEvidence, route, launchFresh });
+    expect(resolveEvidence).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42',
+      evidencePostRef: 'thread-post:50', applierId: 'su-implementer' });
+    expect(route.mock.calls[0]![0].brief).toContain(reviewEvidence.body);
+    expect(launchFresh).toHaveBeenCalledWith(expect.objectContaining({ previewPostRef: 'thread-post:42', reviewEvidence }));
+    resolveEvidence.mockRejectedValue(new Error('invalid_args: wrong evidence custody'));
+    route.mockClear();
+    launchFresh.mockClear();
+    await expect(openAcceptanceBarAmendmentReview({ ...baseInput, reviewEvidencePost: reviewEvidence.postRef },
+      { verifyPreviewPost: vi.fn(), resolveEvidence, route, launchFresh })).rejects.toThrow('wrong evidence custody');
+    expect(route).not.toHaveBeenCalled();
+    expect(launchFresh).not.toHaveBeenCalled();
+  });
+
+  it('reports a blocked retained reviewer with exact recovery guidance instead of waiting for approval', async () => {
+    const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null, reason: 'no_available_responder', screenedOut: [] });
+    const launchFresh = vi.fn().mockResolvedValue({ state: 'blocked', reason: 'account-walled',
+      evidence: 'Credit balance is too low', ownerId: 'judge-1', nativeRef: '/retained/review.jsonl',
+      taskId: 'task-1', answerOn: { workItemId: 'WI-7', harness: 'papercusp' } });
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh });
+    if (result.state === 'not-required') throw new Error('Expected a reviewer attempt');
+    expect(result.freshReviewer).toMatchObject({ state: 'blocked', ownerId: 'judge-1' });
+    expect(result.next).toContain('Credit balance is too low');
+    expect(result.next).toContain('Containment is unverified');
+    expect(result.next).toContain('Do not resume or fork the reviewer yourself');
+    expect(result.next).not.toContain('capability:launch-agent');
+    expect(result.next).toContain('Do not wait for an approval');
+    expect(result.next).not.toContain("approvalRef:'thread-post:<that post id>'");
+    expect(launchFresh).toHaveBeenCalledTimes(1);
+  });
+
   it('reports a failed fresh launch instead of throwing away the routing result', async () => {
     const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: 'conv-3', reason: 'x', screenedOut: [] });
     const launchFresh = vi.fn().mockRejectedValue(new Error('rubric unreadable'));
@@ -331,16 +371,48 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     });
   });
 
-  it('the brief carries what the reviewer signs and the one line the apply guard accepts', () => {
+  it('the routed brief uses typed consult verbs for the approval and settled outcome', () => {
     const brief = buildAmendmentReviewBrief(baseInput);
     expect(brief).toContain(JSON.stringify(approval));
     expect(brief).toContain(JSON.stringify(baseInput.patch));
     expect(brief).toContain('R-1 (bar-meaning: falsifier)');
     expect(brief).toContain('Tighten the falsifier.');
-    // The apply resolver accepts exactly /^approve thread-post:(\d+)$/ on the reviewer's post.
-    expect(brief.split('\n')).toContain('To approve, answer this consult with exactly one line: approve thread-post:42');
+    expect(brief).toContain('Read the current criteria with rubrics:get and compare');
+    expect(brief).toContain('plans:get-template-data { slug:\'<unprefixed rubric slug>\', harness:\'<current review harness>\' }');
+    expect(brief).toContain('do not treat the rubric as absent');
+    expect(brief).toContain('Do not call rubrics:amend or pass reviewPreviewPost');
+    expect(brief).not.toContain('rubrics:amend { rubricRef');
+    // The first non-empty reviewer line is the pointer; later verification prose is allowed.
+    expect(brief).toContain("the first non-empty body line must be exactly approve thread-post:42. You may add verification notes on later lines");
+    expect(brief).toContain('any later approval pointer must name the same preview.');
+    expect(brief).toContain("Once the review is settled, call consult:close { conversation_id:'<this consult>', outcome:'answered', answer:'<concise review conclusion>', evidence:[...] }.");
+    expect(brief).toContain('consult:reply records the signed post; consult:close records the accepted answer.');
+    expect(brief).not.toContain('answer this consult');
+    expect(brief).not.toContain('conversations:post');
     expect(/^approve thread-post:([1-9][0-9]*)$/.test('approve thread-post:42')).toBe(true);
     expect(brief).not.toContain('coord:send');
+  });
+
+  it('front-loads spill recovery for a long review brief', () => {
+    const changes = [
+      { barKey: 'R-1', kinds: ['bar-meaning' as const], fields: ['model'] },
+      { barKey: 'R-2', kinds: ['bar-meaning' as const], fields: ['model'] },
+    ];
+    const patch = {
+      criteria: [
+        { key: 'r-1', barKey: 'R-1', model: 'R-1 changed contract '.repeat(180) },
+        { key: 'r-2', barKey: 'R-2', model: 'R-2 changed contract '.repeat(180) },
+      ],
+    };
+    const brief = buildAmendmentReviewBrief({
+      ...baseInput,
+      preview: { ...baseInput.preview, changes },
+      patch,
+    });
+
+    expect(brief.length).toBeGreaterThan(5000);
+    expect(brief.indexOf('capability:read')).toBeLessThan(800);
+    expect(brief.slice(0, 800)).toContain('eof:true');
   });
 
   it('preserves changed criteria after a large unchanged prefix', () => {
@@ -349,11 +421,35 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     const patch = { criteria: [...unchanged, changed], reason: 'keep this field' };
     expect(JSON.stringify(patch).length).toBeGreaterThan(2500);
     const brief = buildAmendmentReviewBrief({ ...baseInput, patch });
-    expect(brief).toContain(JSON.stringify({ criteria: [changed], reason: 'keep this field' }));
-    expect(brief).toContain('12 unchanged criteria omitted');
+    const omittedKeys = unchanged.map((criterion) => criterion.key);
+    expect(brief).toContain(JSON.stringify({ reason: 'keep this field', changedCriteria: [changed], omittedUnchangedBarKeys: omittedKeys }));
+    expect(brief).toContain("the requester's replacement has 13 criteria");
+    expect(brief).toContain(`the 12 unchanged criteria (${omittedKeys.join(', ')})`);
+    expect(brief).toContain('UNCHANGED, not removed');
+    expect(brief).toContain('a removed bar appears there with nextBarHash null');
     expect(brief).not.toContain(unchanged[0].model);
     expect(brief).not.toContain('chars clipped');
     expect(brief).toContain('must not be submitted to rubrics:amend');
+  });
+
+  it('emits a trimmed excerpt that cannot be replayed as a full criteria replacement (WI-10006741)', () => {
+    // rubrics:amend reads `criteria` as a FULL replacement: an excerpt keyed `criteria` replays as
+    // "every omitted bar removed". Three reviewers did exactly that on 2026-10-06.
+    const unchanged = Array.from({ length: 12 }, (_, index) => ({ barKey: `R-${index + 2}`, model: 'unchanged '.repeat(35) }));
+    const changed = { barKey: 'R-1', model: 'changed' };
+    const brief = buildAmendmentReviewBrief({ ...baseInput, patch: { criteria: [...unchanged, changed] } });
+    const firstBlock = brief.split('```json\n')[1]?.split('\n```')[0] ?? '';
+    const excerpt = JSON.parse(firstBlock) as Record<string, unknown>;
+    expect('criteria' in excerpt).toBe(false);
+    expect(excerpt.changedCriteria).toEqual([changed]);
+    expect(excerpt.omittedUnchangedBarKeys).toEqual(unchanged.map((criterion) => criterion.barKey));
+  });
+
+  it('shows a patch that fits whole, still keyed criteria', () => {
+    const patch = { criteria: [{ barKey: 'R-1', model: 'small' }] };
+    const brief = buildAmendmentReviewBrief({ ...baseInput, patch });
+    expect(brief).toContain(JSON.stringify(patch));
+    expect(brief).not.toContain('omittedUnchangedBarKeys');
   });
 
   it('keeps an unmappable replacement complete rather than hiding a changed criterion', () => {
@@ -379,16 +475,106 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
   const answerOn = { workItemId: 'WI-7', harness: 'papercusp' };
   const launched = { data: { deduped: false, launch: { tasks: [{ taskId: 'task-1' }] } } };
 
-  function deps(overrides: Record<string, unknown> = {}) {
+  function deps<T extends Record<string, unknown>>(overrides: T = {} as T) {
     return {
       resolveAnswerTarget: vi.fn().mockResolvedValue(answerOn),
       // The implementer's lineage never includes the dedicated launcher.
       resolveScreen: vi.fn(async () => ({ check: lineageScreen('su-implementer') })),
       launch: vi.fn().mockResolvedValue(launched),
       assertAllowed: vi.fn(async () => {}),
+      resolveSteeredModel: vi.fn(async () => undefined),
+      // A deduped reviewer is live unless a test says it ended.
+      readTaskState: vi.fn(async () => 'running' as const),
+      hasReviewerAnswer: vi.fn(async () => false),
+      stopFailedLaunch: vi.fn(async () => 'stop unverified'),
       ...overrides,
     };
   }
+
+  describe('a deduped reviewer that ended without answering (WI-6554700010010527)', () => {
+    const dedupedTo = (taskId: string) => ({ data: { deduped: true, launch: { tasks: [{ taskId, ownerId: `judge-${taskId}` }] } } });
+    const fresh = (taskId: string) => ({ data: { deduped: false, launch: { tasks: [{ taskId }] } } });
+
+    it('reuses a live deduped reviewer and launches nothing new', async () => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(dedupedTo('task-1')) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', taskId: 'task-1', deduped: true });
+      expect(d.launch).toHaveBeenCalledTimes(1);
+      expect(d.hasReviewerAnswer).not.toHaveBeenCalled();
+    });
+
+    it('relaunches under a key derived from the dead task, so the dry run gets a live reviewer', async () => {
+      const launch = vi.fn().mockResolvedValueOnce(dedupedTo('task-1')).mockResolvedValueOnce(fresh('task-2'));
+      const d = deps({ launch, readTaskState: vi.fn(async () => 'ended_unobserved' as const) });
+      const result = await launchFreshAmendmentReviewer(input, d as never);
+      expect(launch).toHaveBeenCalledTimes(2);
+      const firstKey = (launch.mock.calls[0]![0] as { idempotencyKey: string }).idempotencyKey;
+      expect((launch.mock.calls[1]![0] as { idempotencyKey: string }).idempotencyKey).toBe(`${firstKey}:after:task-1`);
+      expect(d.hasReviewerAnswer).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42', authorId: 'judge-task-1' });
+      expect(result).toMatchObject({ state: 'launched', taskId: 'task-2', deduped: false, relaunchedAfter: ['task-1'],
+        idempotencyKey: `${firstKey}:after:task-1` });
+    });
+
+    it('keeps the ended reviewer when it already answered on the thread', async () => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(dedupedTo('task-1')),
+        readTaskState: vi.fn(async () => 'exited' as const), hasReviewerAnswer: vi.fn(async () => true) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', taskId: 'task-1', deduped: true });
+      expect(d.launch).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-reviews later evidence on the same preview once, retaining independence and deduping retries', async () => {
+      const reviewEvidence = { postRef: 'thread-post:50', body: 'New measured verification, retaining the prior objection.' };
+      const launches = new Map<string, string>();
+      const launch = vi.fn(async (args: { idempotencyKey: string }) => {
+        if (!args.idempotencyKey.includes(':evidence:')) return dedupedTo('task-1');
+        if (launches.has(args.idempotencyKey)) return dedupedTo('task-2');
+        launches.set(args.idempotencyKey, 'task-2');
+        return fresh('task-2');
+      });
+      let answered = false;
+      const d = deps({ launch, readTaskState: vi.fn(async (taskId: string) => taskId === 'task-1' || answered ? 'exited' as const : 'running' as const),
+        hasReviewerAnswer: vi.fn(async ({ afterPostRef, authorId }: { afterPostRef?: string; authorId?: string }) =>
+          !afterPostRef || (authorId === 'judge-task-2' && answered)) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ taskId: 'task-1', deduped: true });
+      const request = { ...input, reviewEvidence };
+      expect(await launchFreshAmendmentReviewer(request, d as never)).toMatchObject({ taskId: 'task-2', deduped: false });
+      expect(await launchFreshAmendmentReviewer(request, d as never)).toMatchObject({ taskId: 'task-2', deduped: true });
+      answered = true;
+      expect(await launchFreshAmendmentReviewer(request, d as never)).toMatchObject({ taskId: 'task-2', deduped: true });
+      expect(launches.size).toBe(1);
+      expect(d.hasReviewerAnswer).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42',
+        authorId: 'judge-task-1', afterPostRef: 'thread-post:50' });
+      for (const [args, ctx] of launch.mock.calls as unknown as Array<[Record<string, unknown>, Record<string, unknown>]>) {
+        expect(ctx.ownerId).toBe(ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR);
+        expect(args).toMatchObject({ independent: true, headless: true });
+      }
+    });
+
+    it('does not replace a live or identity-unreadable reviewer when evidence is supplied', async () => {
+      const request = { ...input, reviewEvidence: { postRef: 'thread-post:50', body: 'New evidence' } };
+      for (const [result, state] of [[dedupedTo('task-1'), 'running'],
+        [{ data: { deduped: true, launch: { tasks: [{ taskId: 'task-1' }] } } }, 'exited']] as const) {
+        const d = deps({ launch: vi.fn().mockResolvedValue(result),
+          readTaskState: vi.fn(async () => state) });
+        await launchFreshAmendmentReviewer(request, d as never);
+        expect(d.launch).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('stops walking a chain of dead reviewers and reports reviewer-ended', async () => {
+      let n = 0;
+      const d = deps({ launch: vi.fn(async () => dedupedTo(`task-${++n}`)), readTaskState: vi.fn(async () => 'stranded' as const) });
+      const result = await launchFreshAmendmentReviewer(input, d as never);
+      expect(d.launch).toHaveBeenCalledTimes(MAX_DEAD_REVIEWER_CHAIN);
+      expect(result).toMatchObject({ state: 'blocked', reason: 'reviewer-ended', taskId: `task-${MAX_DEAD_REVIEWER_CHAIN}`,
+        relaunchedAfter: Array.from({ length: MAX_DEAD_REVIEWER_CHAIN }, (_, i) => `task-${i + 1}`) });
+    });
+
+    it('treats an unknown ledger state as live rather than relaunching', async () => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(dedupedTo('task-1')), readTaskState: vi.fn(async () => null) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', taskId: 'task-1' });
+      expect(d.launch).toHaveBeenCalledTimes(1);
+    });
+  });
 
   it('launches ONE headless, independent judge under the system principal, never as the requester', async () => {
     const d = deps();
@@ -451,6 +637,22 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     expect(d.assertAllowed).toHaveBeenCalledWith('ws', reviewerModel);
   });
 
+  it('launches a Codex judge selected from the account steer without an explicit reviewerModel', async () => {
+    const d = deps({ resolveSteeredModel: vi.fn(async () => ({ agent: 'codex', model: 'sol' })) });
+    const steered = await launchFreshAmendmentReviewer(input, d as never);
+    expect(d.resolveSteeredModel).toHaveBeenCalledWith('ws');
+    expect(d.launch.mock.calls[0]![0]).toMatchObject({
+      account: 'auto',
+      members: [{ role: 'judge', agent: 'codex', model: 'sol' }],
+    });
+    const baseline = await launchFreshAmendmentReviewer(input, deps() as never);
+    expect(steered.state).toBe('launched');
+    expect(baseline.state).toBe('launched');
+    if (steered.state === 'launched' && baseline.state === 'launched') {
+      expect(steered.idempotencyKey).not.toBe(baseline.idempotencyKey);
+    }
+  });
+
   it('refuses to launch when the launcher itself fails the check-approver screen', async () => {
     const screen: AmendmentReviewerScreen = async (ownerId) =>
       ownerId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR
@@ -489,15 +691,191 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     });
   });
 
+  function transcriptReply(text: string, synthetic = false) {
+    return analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', ...(synthetic ? { isApiErrorMessage: true } : {}),
+        message: { role: 'assistant', content: text } }),
+    ].join('\n'));
+  }
+
+  function retainedLaunch(deduped = false) {
+    return { data: { deduped, launch: { tasks: [{ taskId: 'task-1', ownerId: 'judge-1',
+      kickoffProof: { nativeRef: '/retained/review.jsonl' } }] } } };
+  }
+
+  it.each([false, true])('reports a provider credit wall on a retained review (deduped=%s)', async (deduped) => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch(deduped)),
+      analyzeTranscript: vi.fn(() => transcriptReply('Credit balance is too low', true)) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({
+      state: 'blocked', reason: 'account-walled', evidence: 'Credit balance is too low',
+      taskId: 'task-1', ownerId: 'judge-1', nativeRef: '/retained/review.jsonl', deduped,
+    });
+    expect(d.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the new reply, rather than treating copied history as a successful review', async () => {
+    let clock = 0;
+    const copied = analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'Old answer' } }),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'New review' } }),
+    ].join('\n'));
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn().mockReturnValueOnce(copied).mockReturnValue(transcriptReply('Credit balance is too low', true)),
+      nowMs: () => clock, sleepMs: vi.fn(async (ms: number) => { clock += ms; }) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'blocked', reason: 'account-walled' });
+    expect(d.sleepMs).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reject a real reviewer quoting a provider error', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn(() => transcriptReply('The earlier turn said Credit balance is too low; I am reviewing now.')) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'observed' });
+    expect(d.stopFailedLaunch).not.toHaveBeenCalled();
+  });
+
+  it('contains a rejected reviewer by exact task, then re-recruits through the same system principal', async () => {
+    let stopped = false;
+    const launch = vi.fn().mockResolvedValueOnce(retainedLaunch()).mockResolvedValueOnce(retainedLaunch(true))
+      .mockResolvedValueOnce({ data: { deduped: false, launch: { tasks: [{ taskId: 'task-2' }] } } });
+    const d = deps({ launch,
+      analyzeTranscript: vi.fn(() => transcriptReply('Credit balance is too low', true)),
+      stopFailedLaunch: vi.fn(async () => { stopped = true; return 'stopped task task-1'; }),
+      readTaskState: vi.fn(async () => stopped ? 'exited' as const : 'running' as const) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'blocked',
+      recovery: { state: 'stopped', evidence: 'stopped task task-1' } });
+    expect(d.stopFailedLaunch).toHaveBeenCalledWith('task-1', { answeringOwnerId: 'judge-1' });
+    const result = await launchFreshAmendmentReviewer(input, d as never);
+    expect(result).toMatchObject({ state: 'launched', taskId: 'task-2', relaunchedAfter: ['task-1'] });
+    const firstKey = launch.mock.calls[0]![0].idempotencyKey;
+    expect(launch.mock.calls[2]![0].idempotencyKey).toBe(`${firstKey}:after:task-1`);
+    expect(launch.mock.calls.every(([, ctx]) => ctx.ownerId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR)).toBe(true);
+  });
+
+  it('keeps containment unverified when the stop returns without terminal task proof', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn(() => transcriptReply('Credit balance is too low', true)),
+      stopFailedLaunch: vi.fn(async () => 'stop refused') });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'blocked',
+      recovery: { state: 'unverified', evidence: 'stop refused' } });
+    expect(d.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an independent answer that arrived before rejected-task containment', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn(() => transcriptReply('Credit balance is too low', true)),
+      hasReviewerAnswer: vi.fn(async () => true) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'observed' });
+    expect(d.stopFailedLaunch).not.toHaveBeenCalled();
+  });
+
+  it('reports a synthetic gateway rate-limit reply as a blocked review', async () => {
+    const text = 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s';
+    const analysis = analyzeClaudeResumeTranscript([
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review the amendment' } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, error: 'rate_limit',
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text }] } }),
+    ].join('\n'));
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+      analyzeTranscript: vi.fn(() => analysis) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({
+      state: 'blocked', reason: 'account-walled', evidence: text,
+      taskId: 'task-1', ownerId: 'judge-1',
+    });
+  });
+
+  it.each(['Prompt is too long', "API Error: 400 Tool reference 'mcp__papercusp_su__old' not found in available tools"])(
+    'reports the existing transcript rejection class: %s', async (text) => {
+      const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()),
+        analyzeTranscript: vi.fn(() => transcriptReply(text, true)) });
+      expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'blocked', reason: 'first-turn-rejected', evidence: text });
+    });
+
+  it('keeps an unreadable transcript as uncertainty', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()), analyzeTranscript: vi.fn(() => null) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'unreadable' });
+  });
+
+  it('bounds a pending first reply even if the clock stalls', async () => {
+    const pending = analyzeClaudeResumeTranscript(JSON.stringify({ type: 'user', message: { role: 'user', content: 'Review' } }));
+    const d = deps({ launch: vi.fn().mockResolvedValue(retainedLaunch()), analyzeTranscript: vi.fn(() => pending),
+      nowMs: () => 0, sleepMs: vi.fn(async () => {}) });
+    expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', firstReply: 'pending' });
+    expect(d.sleepMs).toHaveBeenCalledTimes(40);
+  });
+
   it('the fresh brief asks for one work_items:comment on the preview work-item, not a consult answer', () => {
     const brief = buildAmendmentReviewBrief(input, answerOn);
     expect(brief.split('\n')).toContain(
-      "To approve, post exactly one line with work_items:comment { id:'WI-7', harness:'papercusp' }, body: approve thread-post:42",
+      "To approve, use work_items:comment { id:'WI-7', harness:'papercusp' }, body: approve thread-post:42 on the first non-empty line. Add verification notes on later lines if useful; any later approval pointer must name the same preview.",
     );
     expect(brief).not.toContain('answer this consult');
     // A judge cannot call rubrics:amend, so the fresh brief must not require it.
     expect(brief).not.toContain('rubrics:amend');
     expect(brief).toContain(JSON.stringify(approval));
     expect(brief).toContain(ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR);
+    expect(brief).toContain("call `session:end { reason: 'BAR amendment review complete' }`");
+    expect(brief).toContain('do not just finish the turn');
+  });
+
+  it('asks a headless one-shot consult reviewer to close its session after the verdict', () => {
+    const brief = buildAmendmentReviewBrief(input);
+    expect(brief).toContain('consult:close');
+    expect(brief).toContain('consult:decline');
+    expect(brief).toContain('If you are the headless one-shot reviewer launched for this consult');
+    expect(brief).toContain(
+      "after the review settles (consult:reply then consult:close, or consult:decline), call session:end { reason: 'BAR amendment review complete' } to close this session; do not just finish the turn.",
+    );
+  });
+});
+
+describe('selectFreshReviewerModelForAccountSteer', () => {
+  const ranks = [
+    { rank: 1, agent: 'claude', model: 'fable' },
+    { rank: 2, agent: 'codex', model: 'sol' },
+  ] as const;
+  const accounts = [
+    { id: 'claude-1', provider: 'claude', available: true },
+    { id: 'codex-1', provider: 'codex', available: true },
+  ];
+
+  it('chooses the first expert model whose provider has an allowed account', () => {
+    expect(selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: ['codex-1'], excludeAccounts: [], accounts, ranks,
+    })).toEqual({ agent: 'codex', model: 'sol' });
+    expect(selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: ['claude-1'], accounts, ranks,
+    })).toEqual({ agent: 'codex', model: 'sol' });
+  });
+
+  it('uses the first available allowed rank without account restrictions', () => {
+    expect(selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [], accounts, ranks,
+    })).toEqual({ agent: 'claude', model: 'fable' });
+    expect(selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [],
+      accounts: accounts.map((account) => ({ ...account, available: account.provider === 'codex' })),
+      ranks,
+    })).toEqual({ agent: 'codex', model: 'sol' });
+  });
+
+  it('never widens the model policy or falls back to a default login when no allowed rank is available', () => {
+    expect(() => selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [],
+      accounts: accounts.map((account) => ({ ...account, available: false })), ranks,
+    })).toThrow('no expert model has an available account permitted by the workspace account steer');
+    expect(() => selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: [], excludeAccounts: [],
+      accounts: [{ id: 'codex-1', provider: 'codex', available: true }],
+      ranks: [{ rank: 1, agent: 'claude', model: 'fable' }],
+    })).toThrow('no expert model has an available account permitted by the workspace account steer');
+  });
+
+  it('refuses an unavailable forced pool even if another provider is available', () => {
+    expect(() => selectFreshReviewerModelForAccountSteer({
+      forcedAccounts: ['codex-1'], excludeAccounts: [],
+      accounts: accounts.map((account) => ({ ...account, available: account.id !== 'codex-1' })),
+      ranks,
+    })).toThrow('no expert model has an available account permitted by the workspace account steer');
   });
 });

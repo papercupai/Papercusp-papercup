@@ -18,10 +18,12 @@
  * for side-effect (belt-and-suspenders + discoverability).
  */
 import { z } from 'zod';
+import { CONTINUITY_PROBE_MAX_PER_WAKE, RUBRIC_PROBE_MAX_PER_EMIT } from '../limits';
 import { normalizeRequirementSections } from '../../requirement-contract';
 import { leadingScaleLabel } from '../../rubric-rating-vocabulary';
-import { SERVING_RUNTIME_IDS } from '../../serving-runtimes';
+import { SERVING_RUNTIME_IDS, RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE, type RuntimeVintageEvidenceRuntimeId } from '../../serving-runtimes';
 import { registerPlanTemplate, type PlanTemplate } from './template-registry';
+import { parseProductionConfiguration } from './declared-configuration';
 
 /** The template TYPE name — a rubric-template plan's `template:` frontmatter/column. */
 export const RUBRIC_TEMPLATE_NAME = 'rubric';
@@ -198,6 +200,18 @@ export function resolveCriterionWindow(
  *
  * Fuzzy + deterministic criteria coexist in one rubric.
  */
+const rubricRatingBandSchema = z
+  .object({
+    rating: z.string().trim().min(1).max(80),
+    expect: z
+      .object({
+        op: z.enum(['lt', 'lte', 'gt', 'gte', 'eq']),
+        value: z.number().finite(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
   z
     .object({
@@ -205,14 +219,34 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
       files: z
         .array(z.string().min(1))
         .min(1)
-        .max(20)
+        .max(50)
         .describe(
           'Vitest test files that must pass for this criterion (repo-root-relative preferred; ' +
             'workspace-relative accepted when unambiguous). Validated to resolve against the live ' +
             'tree at propose time; actually RUN at grading time.',
         ),
+      testName: z
+        .string()
+        .trim()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe(
+          'optional test-case filter: a describe/it title path, or a complete suffix of one at a " > " ' +
+            'boundary. Requires exactly one file. At grading time it is resolved against the per-case ' +
+            'results ledger; a filter matching zero recorded cases refuses the emit instead of passing.',
+        ),
     })
-    .strict(),
+    .strict()
+    .superRefine((check, ctx) => {
+      if (check.testName !== undefined && check.files.length !== 1) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['testName'],
+          message: 'a tests check with testName must name exactly one file (the file the test case lives in)',
+        });
+      }
+    }),
   z
     .object({
       kind: z.literal('cargo'),
@@ -247,20 +281,77 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .describe(
           "stable machine-readable instrument binding (the generalized form of the criterion-level instrumentKey field); 'none' means explicitly manual",
         ),
+      expect: z
+        .object({
+          op: z.enum(['lt', 'lte', 'gt', 'gte', 'eq']),
+          value: z.number().finite(),
+        })
+        .strict()
+        .optional()
+        .describe(
+          "the criterion's threshold on the instrument's reading, in the instrument's own unit " +
+            "(e.g. { op:'lt', value:10 } for PSI cpu some avg10 below 10%). With it, a measured " +
+            "reading records pass/fail in the results ledger and scorecards:emit { fromLedger:true } " +
+            'rates the criterion from that row; without it the reading is recorded but a grader rates it.',
+        ),
+      ratingBands: z
+        .array(rubricRatingBandSchema)
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(
+          'Optional ordered intermediate ratings for ledger-backed numeric values, checked only after the current expect fails. ' +
+            'Each entry names a rating from the criterion/rubric scale and a numeric predicate over the same measured value. ' +
+            'List entries in the scale\'s best-to-worst order; omit the best, worst, and unknown levels. Without a matching band, the worst level applies.',
+        ),
     })
-    .strict(),
+    .strict()
+    .superRefine((check, ctx) => {
+      if (check.ratingBands && !check.expect) {
+        ctx.addIssue({ code: 'custom', path: ['ratingBands'], message: 'ratingBands require the instrument check to declare its best-level expect threshold' });
+      }
+    }),
   z
     .object({
       kind: z.literal('probe'),
       probe: z
         .unknown()
+        .optional()
         .describe(
           'an existing typed ContinuityProbe ({ kind:"tool"|"state-cell", schemaRevision, expect, ... }). ' +
             'The rubric template keeps this field dependency-light; the proposal and scorecard write paths ' +
             'validate the live projected-tool/state-cell contract before persisting or executing it.',
         ),
+      all: z.array(z.unknown()).min(1).max(CONTINUITY_PROBE_MAX_PER_WAKE).optional()
+        .describe('ALL of these independently validated read-only probes must pass; mutually exclusive with probe.'),
+      unit: z
+        .string()
+        .trim()
+        .min(1)
+        .max(32)
+        .optional()
+        .describe(
+          "unit of the scalar each probe reads at its predicate path (e.g. 'ms', 'pct', 'cores', 'MB/s'). " +
+            'Recorded on every results-ledger row this check writes, so a reading can be compared with a ' +
+            'baseline or an earlier run; a row with a different unit no longer describes the check. Omitted = unitless.',
+        ),
+      ratingBands: z
+        .array(rubricRatingBandSchema)
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(
+          'Optional ordered intermediate ratings for ledger-backed numeric values, checked only after the current probe predicate fails. ' +
+            'Each entry names a rating from the criterion/rubric scale and a numeric predicate over the scalar recorded by this check. ' +
+            'List entries in the scale\'s best-to-worst order; omit the best, worst, and unknown levels. Without a matching band, the worst level applies.',
+        ),
     })
-    .strict(),
+    .strict()
+    .superRefine((check, ctx) => {
+      if ((check.probe !== undefined) === (check.all !== undefined)) {
+        ctx.addIssue({ code: 'custom', message: 'probe checks require exactly one of probe or non-empty all' });
+      }
+    }),
   z
     .object({
       kind: z.literal('coverage'),
@@ -360,7 +451,16 @@ export type AcceptanceEvidencePlane = z.infer<typeof acceptanceEvidencePlaneSche
  * the ship door check evidence from THAT runtime; an undeclared one is inferred from the
  * BAR's source paths and flagged for review, never silently defaulted to :3070.
  */
-export const acceptanceEvidenceRuntimeSchema = z.enum(SERVING_RUNTIME_IDS);
+export const acceptanceEvidenceRuntimeSchema = z.union([
+  z.enum(SERVING_RUNTIME_IDS),
+  // Tool args must export at host boot: use a representable pattern, never z.custom.
+  // The same pattern validates declarations and advertises their contract to clients.
+  z
+    .string()
+    .regex(RUNTIME_VINTAGE_EVIDENCE_RUNTIME_RE,
+      'Expected runtime-vintage:<workspace>/<unit>@<host> identifying an existing vintage row',
+    ) as unknown as z.ZodType<RuntimeVintageEvidenceRuntimeId>,
+]);
 export type AcceptanceEvidenceRuntime = z.infer<typeof acceptanceEvidenceRuntimeSchema>;
 
 /** Server-owned pin from a subject plan's activation seed to its rubric revision. */
@@ -451,7 +551,7 @@ export const requirementAcceptanceSchema = z
     evidenceRuntime: acceptanceEvidenceRuntimeSchema
       .optional()
       .describe(
-        'deployed/live BARs: the runtime the evidence must be measured on (release-operator is green main; staging-operator, bg-host, gateway, embed-sidecar, psu-pty-host and desktop-shell are not)',
+        'deployed/live BARs: built-in runtime or runtime-vintage:<workspace>/<unit>@<host> from the existing registry; release-operator alone is green main',
       ),
     requiredTestLayers: z.array(z.string().trim().min(1)).min(1).max(50).optional(),
     passRatings: acceptancePassRatingsSchema,
@@ -460,6 +560,22 @@ export const requirementAcceptanceSchema = z
     coversBarKeys: z.array(z.string().trim().min(1)).min(1).max(200).optional(),
   })
   .strict();
+
+/** P-011: the configuration a bar's proof must run under (registered flags, recorded env vars). */
+export const productionConfigurationSchema = z
+  .object({
+    flags: z.record(z.string(), z.boolean()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    try {
+      parseProductionConfiguration(value);
+    } catch (error) {
+      ctx.addIssue({ code: 'custom', message: error instanceof Error ? error.message : String(error) });
+    }
+  })
+  .describe('flags/env the proof must run with; evidence must carry a matching configuration fingerprint');
 
 export const requirementVerificationSchema = z
   .object({
@@ -472,16 +588,42 @@ export const requirementVerificationSchema = z
       ),
     check: rubricCriterionCheckSchema.optional(),
     replication: z.string().trim().min(1).optional(),
+    productionConfiguration: productionConfigurationSchema.optional(),
   })
   .strict();
+
+function isExplicitManualCheck(check: RubricCriterionCheck | null | undefined): boolean {
+  return check?.kind === 'instrument' && check.instrumentKey.trim().toLowerCase() === 'none';
+}
+
+// Requirement blocks need to express the deliberate absence of automated
+// layers for an explicitly manual check. Keep the shared acceptance schema's
+// non-empty rule for other authoring surfaces, and validate the exception at
+// the section boundary where the check is available.
+const requirementSectionAcceptanceSchema = requirementAcceptanceSchema.extend({
+  requiredTestLayers: z
+    .array(z.string().trim().min(1))
+    .max(50)
+    .optional()
+    .describe("required proof layers; an empty array is valid only with {kind:'instrument', instrumentKey:'none'}"),
+});
 
 export const requirementSectionsSchema = z
   .object({
     intent: requirementIntentSchema,
-    acceptance: requirementAcceptanceSchema,
+    acceptance: requirementSectionAcceptanceSchema,
     verification: requirementVerificationSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((sections, ctx) => {
+    if (sections.acceptance.requiredTestLayers?.length === 0 && !isExplicitManualCheck(sections.verification.check)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['acceptance', 'requiredTestLayers'],
+        message: "requiredTestLayers may be empty only for an explicit manual check ({kind:'instrument', instrumentKey:'none'})",
+      });
+    }
+  });
 
 /**
  * One gradeable criterion of a rubric. Field-for-field the v1 `RubricCriterion`
@@ -529,11 +671,13 @@ const rubricCriterionObjectSchema = z
     evidenceRuntime: acceptanceEvidenceRuntimeSchema
       .optional()
       .describe(
-        'acceptance-kind deployed/live BARs only: the runtime whose build the evidence must be measured on; absent ⇒ inferred from source paths and flagged for review, never defaulted to :3070',
+        'acceptance-kind deployed/live BARs: built-in runtime or exact runtime-vintage:<workspace>/<unit>@<host>; absent ⇒ inferred and flagged, never defaulted to :3070',
       ),
-    requiredTestLayers: requirementAcceptanceSchema.shape.requiredTestLayers.describe(
-      'acceptance-kind only: required proof layers, such as integration or e2e; BAR amendment required to change',
-    ),
+    requiredTestLayers: z
+      .array(z.string().trim().min(1))
+      .max(50)
+      .optional()
+      .describe("acceptance-kind only: required proof layers, such as integration or e2e; empty only with an explicit manual check"),
     passRatings: acceptancePassRatingsSchema,
     coversBarKeys: z
       .array(z.string().trim().min(1))
@@ -562,6 +706,9 @@ const rubricCriterionObjectSchema = z
           "can't silently drop it as 'verbose method prose' (WI-4287; rubrics:propose loss-guards " +
           'key off it)',
       ),
+    // P-011: lifted from verification.productionConfiguration by requirement normalization;
+    // the stored criterion is strict, so it must be declared here to persist.
+    productionConfiguration: productionConfigurationSchema.optional(),
     instrumentKey: z
       .string()
       .min(1)
@@ -598,6 +745,13 @@ const rubricCriterionObjectSchema = z
 export const rubricCriterionSchema = rubricCriterionObjectSchema.superRefine((input, ctx) => {
   const message = acceptancePassRatingsError(input);
   if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['passRatings'], message });
+  if (input.requiredTestLayers?.length === 0 && !isExplicitManualCheck(input.check)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['requiredTestLayers'],
+      message: "requiredTestLayers may be empty only for an explicit manual check ({kind:'instrument', instrumentKey:'none'})",
+    });
+  }
 });
 
 /**
@@ -625,17 +779,81 @@ export function stripUnknownCriterionKeys(templateData: unknown): { data: unknow
   const stripped = new Set<string>();
   const criteria = record.criteria.map((criterion) => {
     if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return criterion;
-    const entries = Object.entries(criterion as Record<string, unknown>);
-    if (entries.every(([key]) => known.has(key))) return criterion;
-    return Object.fromEntries(
-      entries.filter(([key]) => {
-        if (known.has(key)) return true;
-        stripped.add(key);
-        return false;
-      }),
-    );
+    const criterionRecord = criterion as Record<string, unknown>;
+    const entries = Object.entries(criterionRecord);
+    const unknownCriterionKeys = entries.filter(([key]) => !known.has(key)).map(([key]) => key);
+    const next: Record<string, unknown> = unknownCriterionKeys.length
+      ? Object.fromEntries(entries.filter(([key]) => known.has(key)))
+      : { ...criterionRecord };
+    for (const key of unknownCriterionKeys) stripped.add(key);
+
+    // Checks are strict at every object level too. A newer writer can add a valid
+    // field under criteria[].check while this reader still understands the existing
+    // check, causing the entire rubric to disappear. Strip only unknown fields from
+    // recognized check shapes; malformed known fields and unknown check kinds still
+    // fail the normal schema parse below.
+    const check = stripUnknownRubricCheckKeys(criterionRecord.check);
+    if (check.stripped.length) {
+      next.check = check.data;
+      for (const key of check.stripped) stripped.add(key);
+    }
+
+    return unknownCriterionKeys.length || check.stripped.length ? next : criterion;
   });
   return stripped.size ? { data: { ...record, criteria }, stripped: [...stripped].sort() } : { data: templateData, stripped: [] };
+}
+
+function stripUnknownRubricCheckKeys(check: unknown): { data: unknown; stripped: string[] } {
+  if (!check || typeof check !== 'object' || Array.isArray(check)) return { data: check, stripped: [] };
+  const record = check as Record<string, unknown>;
+  const fieldsByKind: Record<string, readonly string[]> = {
+    tests: ['kind', 'files', 'testName'],
+    cargo: ['kind', 'manifestPath', 'sourceFiles', 'test'],
+    instrument: ['kind', 'instrumentKey', 'expect', 'ratingBands'],
+    probe: ['kind', 'probe', 'all', 'unit', 'ratingBands'],
+    coverage: ['kind', 'scope', 'floor'],
+    requirements: ['kind'],
+  };
+  const allowed = fieldsByKind[String(record.kind)];
+  if (!allowed) return { data: check, stripped: [] };
+
+  const stripped: string[] = [];
+  const stripRecord = (value: unknown, keys: readonly string[], path: string): Record<string, unknown> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const valueRecord = value as Record<string, unknown>;
+    const result = { ...valueRecord };
+    for (const key of Object.keys(valueRecord)) {
+      if (!keys.includes(key)) {
+        delete result[key];
+        stripped.push(`${path}.${key}`);
+      }
+    }
+    return result;
+  };
+
+  const result = stripRecord(check, allowed, 'check')!;
+  if (record.kind === 'instrument' && record.expect !== undefined) {
+    const expect = stripRecord(record.expect, ['op', 'value'], 'check.expect');
+    if (expect) result.expect = expect;
+  }
+  if ((record.kind === 'instrument' || record.kind === 'probe') && Array.isArray(record.ratingBands)) {
+    result.ratingBands = record.ratingBands.map((band: unknown, index: number) => {
+      const path = `check.ratingBands[${index}]`;
+      const cleanBand = stripRecord(band, ['rating', 'expect'], path);
+      if (!cleanBand) return band;
+      if (cleanBand.expect !== undefined) {
+        const expect = stripRecord(cleanBand.expect, ['op', 'value'], `${path}.expect`);
+        if (expect) cleanBand.expect = expect;
+      }
+      return cleanBand;
+    });
+  }
+  if (record.kind === 'coverage' && record.scope !== undefined) {
+    const scope = stripRecord(record.scope, ['surfaceKind', 'sourceFiles', 'planTouched'], 'check.scope');
+    if (scope) result.scope = scope;
+  }
+
+  return stripped.length ? { data: result, stripped: stripped.sort() } : { data: check, stripped: [] };
 }
 
 /**
@@ -679,6 +897,14 @@ export const acceptanceRubricCriterionSchema = rubricCriterionObjectSchema.parti
   model: true,
   method: true,
   driftMarkers: true,
+}).superRefine((input, ctx) => {
+  if (input.requiredTestLayers?.length === 0 && !isExplicitManualCheck(input.check)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['requiredTestLayers'],
+      message: "requiredTestLayers may be empty only for an explicit manual check ({kind:'instrument', instrumentKey:'none'})",
+    });
+  }
 });
 
 /**
@@ -783,11 +1009,12 @@ export const rubricTemplateDataSchema = z
       .enum(RUBRIC_GRADING_AUTHORITIES)
       .optional()
       .describe(
-        'who may grade the plan this rubric governs (D-002 — the rubric is the authority boundary). ' +
-          "'independent' (the DEFAULT when absent, and the fail-closed one) = a lineage-independent " +
-          "non-implementer must file the grading; 'owner-authorized' additionally admits an OWNER-filed " +
-          'grading even when the owner sits inside the implementer lineage. It never removes the ' +
-          'independent route — it only widens who else qualifies',
+        'For acceptance-kind plan/goal rubrics, controls who may file the acceptance grade (D-002): ' +
+          "'independent' (the default, fail-closed) requires a lineage-independent non-implementer; " +
+          "'owner-authorized' also permits an owner-filed grade, even when the owner sits inside the " +
+          'implementer lineage. It never removes the independent route. This does not control ' +
+          'standard-kind terminal scorecards, which use the separate P-013 non-author grading-integrity ' +
+          'audit. A standard-kind value may separately inform goal-rubric stewardship.',
       ),
     subjectPlan: z
       .string()
@@ -1142,6 +1369,10 @@ export function isForbiddenMandatoryPassRating(value: string): boolean {
  * scale has a label for evidence that cannot produce a verdict.
  */
 const canonicalRubricTemplateDataAuthoringSchema = rubricTemplateDataSchema.superRefine((d, ctx) => {
+  const probeCount = d.criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1) : 0), 0);
+  if (probeCount > RUBRIC_PROBE_MAX_PER_EMIT) {
+    ctx.addIssue({ code: 'custom', path: ['criteria'], message: `rubric declares ${probeCount} probes; execution cap is ${RUBRIC_PROBE_MAX_PER_EMIT}` });
+  }
   if (rubricKindOf(d) !== 'acceptance') return;
 
   if (!d.ratingScale.some(isUnknownRatingEquivalent)) {

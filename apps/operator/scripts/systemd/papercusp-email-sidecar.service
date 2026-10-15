@@ -18,6 +18,11 @@ Type=simple
 WorkingDirectory=%h/papercupai-workspace/email
 # Injected config only — secrets never live in either repo.
 EnvironmentFile=%h/.papercusp/app-producer.env
+# WI-10006978: an enabled platform URL must use a dedicated app credential,
+# never the runtime's implicit superuser-token fallback. Provision this file
+# outside the repo after the app's scoped grant is approved; keep the URL in
+# the injected EnvironmentFile so connecting the app remains explicit.
+Environment=EMAIL_PLATFORM_TOKEN_FILE=%h/.papercusp/email-platform-token
 # Deliberately NOT EMAIL_LOCAL_MODE=1: local mode bypasses jwtVerify entirely
 # and pins a fixed ownerId, which would leave the producer's auth leg unexercised.
 Environment=NODE_ENV=production

@@ -14,9 +14,10 @@
 // Subject: the two P-007 GOAL trials (the same lineages the R-7 probe measures), re-read from the live ledger:
 //   Arm A (goal-local need -> goal-local plan): goals 9368ec -> 406e99 -> 8016e1, plan papercusp-db-backup-invalid-db-2026-09-27.
 //   Arm B (adopt an existing Blender plan):     goals 956e4d -> a88411 -> 81a93e, plan duplicate-screening-keys-on-...-2026-09-05.
-// Reads (SELECT only, via sudo -n -u postgres psql): harness_shared.goals, harness_plans, plan_revisions, scout_routed_ideas.
+// Reads (SELECT only, via connectScriptPg in a read-only transaction): harness_shared.goals, harness_plans,
+// plan_revisions, scout_routed_ideas.
 // Writes nothing. Known residue is REPORTED in `residualUnknowns`, never suppressed to make an assertion pass.
-import { execFileSync } from 'node:child_process';
+import { connectScriptPg } from '../../scripts/lib/pg-url.mjs';
 
 const startedAt = new Date().toISOString();
 const assertions: Array<{ id: string; passed: boolean; evidence: string }> = [];
@@ -24,11 +25,6 @@ const observations: Record<string, unknown> = {};
 const residualUnknowns: string[] = [];
 const assert = (id: string, passed: boolean, evidence: string) => assertions.push({ id, passed, evidence });
 type Row = Record<string, any>;
-const rows = (sql: string): Row[] => {
-  const out = execFileSync('sudo', ['-n', '-u', 'postgres', 'psql', '-d', 'papercusp', '-At', '-c',
-    `SELECT coalesce(json_agg(t), '[]'::json) FROM (${sql}) t`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  return JSON.parse(out.trim()) as Row[];
-};
 const lit = (s: string) => `'${s.replaceAll("'", "''")}'`;
 const inList = (xs: readonly string[]) => xs.map(lit).join(',');
 
@@ -57,28 +53,43 @@ const ARMS = {
 } as const;
 const allGoals = [...ARMS.A.goals, ...ARMS.B.goals];
 
-const goals = rows(`SELECT id, status, metadata->>'agentOwnerId' AS holder FROM harness_shared.goals
-  WHERE workspace_id = ${lit(WS)} AND id IN (${inList(allGoals)})`);
+async function readLiveState() {
+  // bwrap's no_new_privs boundary blocks sudo in the mutation-probe overlay. Use the shared
+  // script DB resolver instead, and keep all evidence reads in a read-only transaction.
+  const client = await connectScriptPg();
+  const rows = async (query: string): Promise<Row[]> => (await client.query(query)).rows;
+  try {
+    await client.query('BEGIN READ ONLY');
+    const goals = await rows(`SELECT id, status, metadata->>'agentOwnerId' AS holder FROM harness_shared.goals
+      WHERE workspace_id = ${lit(WS)} AND id IN (${inList(allGoals)})`);
+    const plans = await rows(`SELECT plan_slug, status, goal_id, updated_at FROM harness_shared.harness_plans
+      WHERE workspace_id = ${lit(WS)} AND plan_slug IN (${inList([ARMS.A.plan, ARMS.B.plan])})`);
+    const ideas = await rows(`SELECT idea_id, origin, lens, rail, routed_ref, created_by, outcome, outcome_checked_at, routed_at
+      FROM harness_shared.scout_routed_ideas WHERE workspace_id = ${lit(WS)}
+       AND routed_ref IN (${inList([`plan:${ARMS.A.plan}`, `plan:${ARMS.B.plan}`])})`);
+    const revs = await rows(`SELECT plan_slug, count(*)::int AS n, min(seq)::int AS lo, max(seq)::int AS hi,
+        count(DISTINCT seq)::int AS distinct_seqs, max(created_at) AS last_at
+      FROM harness_shared.plan_revisions WHERE workspace_id = ${lit(WS)} AND plan_slug IN (${inList([ARMS.A.plan, ARMS.B.plan])})
+      GROUP BY plan_slug`);
+    const goalPlans = await rows(`SELECT plan_slug, goal_id, status FROM harness_shared.harness_plans
+      WHERE workspace_id = ${lit(WS)} AND goal_id IN (${inList(allGoals)})`);
+    const firstShippedRevision = (await rows(`SELECT seq, created_at FROM harness_shared.plan_revisions
+      WHERE workspace_id = ${lit(WS)} AND plan_slug = ${lit(ARMS.A.plan)} AND content_snapshot ~ '(?n)^status:\\s*shipped\\s*$'
+      ORDER BY seq ASC LIMIT 1`))[0] ?? null;
+    return { goals, plans, ideas, revs, goalPlans, firstShippedRevision };
+  } finally {
+    try { await client.query('ROLLBACK'); } catch { /* preserve the original query error */ }
+    await client.end();
+  }
+}
+
+const { goals, plans, ideas, revs, goalPlans, firstShippedRevision } = await readLiveState();
 const goal = (id: string) => goals.find((g) => g.id === id);
 const holdersOf = (arm: keyof typeof ARMS) => ARMS[arm].goals.map((g) => goal(g)?.holder).filter(Boolean) as string[];
-const plans = rows(`SELECT plan_slug, status, goal_id, updated_at FROM harness_shared.harness_plans
-  WHERE workspace_id = ${lit(WS)} AND plan_slug IN (${inList([ARMS.A.plan, ARMS.B.plan])})`);
 const plan = (slug: string) => plans.find((p) => p.plan_slug === slug);
-const ideas = rows(`SELECT idea_id, origin, lens, rail, routed_ref, created_by, outcome, outcome_checked_at, routed_at
-  FROM harness_shared.scout_routed_ideas WHERE workspace_id = ${lit(WS)}
-   AND routed_ref IN (${inList([`plan:${ARMS.A.plan}`, `plan:${ARMS.B.plan}`])})`);
 const ideasFor = (slug: string) => ideas.filter((i) => i.routed_ref === `plan:${slug}`);
-const revs = rows(`SELECT plan_slug, count(*)::int AS n, min(seq)::int AS lo, max(seq)::int AS hi,
-    count(DISTINCT seq)::int AS distinct_seqs, max(created_at) AS last_at
-  FROM harness_shared.plan_revisions WHERE workspace_id = ${lit(WS)} AND plan_slug IN (${inList([ARMS.A.plan, ARMS.B.plan])})
-  GROUP BY plan_slug`);
 const rev = (slug: string) => revs.find((r) => r.plan_slug === slug);
 // Every plan attributed to ANY trial goal: a silent fork would appear here as a second plan.
-const goalPlans = rows(`SELECT plan_slug, goal_id, status FROM harness_shared.harness_plans
-  WHERE workspace_id = ${lit(WS)} AND goal_id IN (${inList(allGoals)})`);
-const shipRev = (slug: string) => rows(`SELECT seq, created_at FROM harness_shared.plan_revisions
-  WHERE workspace_id = ${lit(WS)} AND plan_slug = ${lit(slug)} AND content_snapshot ~ '(?n)^status:\\s*shipped\\s*$'
-  ORDER BY seq ASC LIMIT 1`)[0] ?? null;
 observations.goals = goals;
 observations.plans = plans;
 observations.routedIdeas = ideas;
@@ -100,15 +111,16 @@ observations.goalAttributedPlans = goalPlans;
     !!idea && !!expectedHolder && idea.created_by === expectedHolder,
     `Arm A idea created_by=${idea?.created_by}; expected goal holder ${expectedHolder} `
     + `(${COUNTEREXAMPLE ? `COUNTEREXAMPLE ${COUNTEREXAMPLE}: Arm B first holder` : `goal ${ARMS.A.goals[0]} agentOwnerId`})`);
-  const shippedAt = shipRev(ARMS.A.plan);
+  const shippedAt = firstShippedRevision;
+  const shippedAtDate = shippedAt ? new Date(Number(shippedAt.created_at)) : null;
   const checkedAt = idea?.outcome_checked_at ? new Date(Number(idea.outcome_checked_at)) : null;
   assert('r10-arm-a-terminal-outcome-reaches-feedback-surface',
-    p?.status === 'shipped' && idea?.outcome === 'won' && !!checkedAt && !!shippedAt
-      && checkedAt.getTime() >= new Date(shippedAt.created_at).getTime(),
-    `plan status=${p?.status} (first shipped revision seq ${shippedAt?.seq} at ${shippedAt?.created_at}); `
+    p?.status === 'shipped' && idea?.outcome === 'won' && !!checkedAt && !!shippedAtDate
+      && Number.isFinite(shippedAtDate.getTime()) && checkedAt.getTime() >= shippedAtDate.getTime(),
+    `plan status=${p?.status} (first shipped revision seq ${shippedAt?.seq} at ${shippedAtDate?.toISOString()}); `
     + `routed idea outcome=${idea?.outcome} checked ${checkedAt?.toISOString()} (after the ship)`);
-  if (checkedAt && shippedAt) {
-    const lagMin = Math.round((checkedAt.getTime() - new Date(shippedAt.created_at).getTime()) / 60000);
+  if (checkedAt && shippedAtDate) {
+    const lagMin = Math.round((checkedAt.getTime() - shippedAtDate.getTime()) / 60000);
     observations.armAOutcomeLagMinutes = lagMin;
     residualUnknowns.push(
       `Arm A outcome settled ${lagMin} min after the ship, by an on-demand run of the authoritative reconciliation `

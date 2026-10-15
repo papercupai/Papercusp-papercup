@@ -16,6 +16,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
+import { captureGateDecisionReplay, type GateDecisionReplay } from '@papercusp/operator-core/lib/release/gate-hygiene-split';
 
 const pexec = promisify(execFile);
 
@@ -83,6 +84,14 @@ export interface AdvanceResult {
   to: string;
   /** created | fast-forwarded | already-at-candidate | not-fast-forward */
   reason: 'created' | 'fast-forwarded' | 'already-at-candidate' | 'not-fast-forward';
+  replay?: GateDecisionReplay;
+}
+
+/** The measured ancestry decision, separate from the branch write. */
+export function decideReadyAdvance(from: string | null, to: string, ancestor: boolean): AdvanceResult {
+  if (from === null) return { advanced: true, from, to, reason: 'created' };
+  if (from === to) return { advanced: false, from, to, reason: 'already-at-candidate' };
+  return { advanced: ancestor, from, to, reason: ancestor ? 'fast-forwarded' : 'not-fast-forward' };
 }
 
 /**
@@ -98,17 +107,12 @@ export async function advanceReady(
   readyRef = 'ready',
 ): Promise<AdvanceResult> {
   const to = await revParse(repo, candidate);
-  if (!(await refExists(repo, readyRef))) {
-    await git(repo, ['branch', readyRef, to]);
-    return { advanced: true, from: null, to, reason: 'created' };
-  }
-  const from = await revParse(repo, readyRef);
-  if (from === to) return { advanced: false, from, to, reason: 'already-at-candidate' };
-  if (!(await isAncestor(repo, from, to))) {
-    return { advanced: false, from, to, reason: 'not-fast-forward' };
-  }
-  await git(repo, ['branch', '-f', readyRef, to]);
-  return { advanced: true, from, to, reason: 'fast-forwarded' };
+  const from = await refExists(repo, readyRef) ? await revParse(repo, readyRef) : null;
+  const ancestor = from !== null && from !== to ? await isAncestor(repo, from, to) : false;
+  const decision = decideReadyAdvance(from, to, ancestor);
+  const replay = captureGateDecisionReplay('ready-advance', [from, to, ancestor], decision);
+  if (decision.advanced) await git(repo, from === null ? ['branch', readyRef, to] : ['branch', '-f', readyRef, to]);
+  return { ...decision, replay };
 }
 
 /** The ref the gate stamps with the sha of the last candidate it actually reached a RED verdict

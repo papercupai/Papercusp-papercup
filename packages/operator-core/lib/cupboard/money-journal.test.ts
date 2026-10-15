@@ -111,6 +111,7 @@ describe('money journal (P-042, R-30)', () => {
         const rollups: MicrosRollup[] = [0, 1, 2].map((i) => emptyMicrosRollup(`rollup-${i}`));
         let seq = 0;
         let accruedMicros = 0;
+        const observedAccruals = new Map<string, number>();
         for (const op of ops) {
           seq += 1;
           if (op.op === 'movement') {
@@ -128,12 +129,18 @@ describe('money journal (P-042, R-30)', () => {
             if (posted.ok) journal = posted.state;
           } else if (op.op === 'accrue') {
             const before = rollups[op.rollup]!;
-            const res = accrueMicros(before, { accrualId: `a-${op.rollup}-${op.accrual}`, micros: op.micros });
-            expect(res.ok).toBe(true);
-            if (!res.ok) return;
-            if (!res.duplicate) accruedMicros += op.micros;
-            else expect(res.rollup).toBe(before); // an idempotent repeat changes nothing
-            rollups[op.rollup] = res.rollup;
+            const accrualId = `a-${op.rollup}-${op.accrual}`;
+            const res = accrueMicros(before, { accrualId, micros: op.micros });
+            const priorAmount = observedAccruals.get(accrualId);
+            if (priorAmount !== undefined && priorAmount !== op.micros) {
+              expect(res).toMatchObject({ ok: false, detail: 'accrual replay mismatch' });
+            } else {
+              expect(res.ok).toBe(true);
+              if (!res.ok) return;
+              if (priorAmount === undefined) { accruedMicros += op.micros; observedAccruals.set(accrualId, op.micros); }
+              else expect(res.rollup).toBe(before); // a byte-identical repeat changes nothing
+              rollups[op.rollup] = res.rollup;
+            }
           } else {
             const res = settleRollupIntoJournal(journal, rollups[op.rollup]!, {
               entryId: `s-${seq}`,
@@ -306,6 +313,24 @@ describe('money journal (P-042, R-30)', () => {
     if (r2.ok) expect(r2.rollup.totalMicros).toBe(7);
     expect(accrueMicros(r1.rollup, { accrualId: 'm', micros: 0.5 })).toMatchObject({ ok: false, code: 'invalid-micros' });
     expect(accrueMicros(r1.rollup, { accrualId: 'm', micros: -3 })).toMatchObject({ ok: false, code: 'invalid-micros' });
+  });
+
+  it('preserves exact submicro accruals and settlement residue, refusing changed replays', () => {
+    let rollup = emptyMicrosRollup('exact');
+    for (const [accrualId, micros, microsExact] of [['a', 4999, '4999.6'], ['b', 5000, '5000.6']] as const) {
+      const result = accrueMicros(rollup, { accrualId, micros, microsExact });
+      if (!result.ok) throw new Error(result.detail); rollup = result.rollup;
+    }
+    expect(rollup).toMatchObject({ totalMicros: 10000, totalMicrosExact: '10000.2', roundingMicrosExact: '10000.2' });
+    expect(accrueMicros(rollup, { accrualId: 'a', micros: 4999, microsExact: '4999.6' })).toMatchObject({ ok: true, duplicate: true });
+    expect(accrueMicros(rollup, { accrualId: 'a', micros: 4999, microsExact: '4999.7' })).toMatchObject({ ok: false });
+    const settled = settleRollupIntoJournal(emptyMoneyJournal(), rollup, { entryId: 'exact-s', occurredAtMs: 1,
+      externalRef: chainRef(1), daoBasisPoints: 0 });
+    if (!settled.ok) throw new Error(settled.detail);
+    expect(settled).toMatchObject({ settledCents: 1, rollup: { roundingMicros: 0, roundingMicrosExact: '0.2' } });
+    expect(rollupInvariant(settled.journal.entries, settled.rollup).holds).toBe(true);
+    expect(rollupInvariant(settled.journal.entries, { ...settled.rollup, roundingMicrosExact: '0.3' }).holds).toBe(false);
+    expect(accrueMicros(rollup, { accrualId: 'bad', micros: 1, microsExact: '0.1' }).ok).toBe(false);
   });
 
   it('the invariant check catches lost and invented residue', () => {

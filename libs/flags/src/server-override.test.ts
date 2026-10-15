@@ -192,6 +192,27 @@ describe("flag override store", () => {
     );
   });
 
+  it("carries the store's load error on a degraded read, and null on a healthy one (WI-10006242)", async () => {
+    const failing: FlagOverrideStore = {
+      async load() {
+        throw new Error("store refused: forbidden by policy");
+      },
+      async set() {},
+    };
+    initFlagOverrideStore(failing);
+    const degraded = await getFlagAttestation(KEY, "u");
+    expect(degraded.overrideRead.kind).toBe("store-error");
+    expect(degraded.overrideRead.loadError).toBe(
+      "Error: store refused: forbidden by policy",
+    );
+
+    const { store } = makeFakeStore({ [KEY]: true });
+    initFlagOverrideStore(store);
+    const healthy = await getFlagAttestation(KEY, "u");
+    expect(healthy.overrideRead.kind).toBe("store-load");
+    expect(healthy.overrideRead.loadError).toBeNull();
+  });
+
   it("attests a missing store as a compiled default instead of implying a live override read", async () => {
     initFlagOverrideStore(null);
     const attestation = await getFlagAttestation(KEY, "u");

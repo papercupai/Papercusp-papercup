@@ -15,6 +15,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import setContentTool from '../set-content';
+import { hashPlanContent } from '../content-hash';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { setupPlanPgFixture, cleanupPlans, seedPlan, type PlanPgFixture } from './_pg-tool-fixture';
 
@@ -23,7 +24,7 @@ const SLUG = 'zzz-setc-term-plan-2026-06-04';
 const WS = DEFAULT_WORKSPACE_ID;
 
 /** A minimal non-legacy plan that lints clean, at the given lifecycle status. */
-function planBody(status: 'active' | 'superseded' | 'shipped'): string {
+function planBody(status: 'ready' | 'active' | 'superseded' | 'shipped'): string {
   return `---
 title: Terminal Side-Effect Plan
 slug: ${SLUG}
@@ -73,11 +74,11 @@ async function runSetContent(content: string): Promise<{ data: Record<string, un
 }
 
 /** Seed the plan row AND mark it operationally started. */
-async function seedStartedPlan(status: 'active' | 'superseded' | 'shipped'): Promise<void> {
+async function seedStartedPlan(status: 'active'): Promise<void> {
   await seedPlan(admin, WS, HARNESS, SLUG, planBody(status));
   await admin`
     UPDATE harness_shared.harness_plans
-       SET op_status = 'started', op_started_at = now(), op_updated_at = now()
+       SET status = ${status}, op_status = 'started', op_started_at = now(), op_updated_at = now()
      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
   `;
 }
@@ -88,6 +89,14 @@ async function opStatus(): Promise<string | null> {
      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
   `;
   return rows[0]?.op_status ?? null;
+}
+
+async function planStatus(): Promise<string | null> {
+  const rows = await admin<{ status: string | null }[]>`
+    SELECT status FROM harness_shared.harness_plans
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+  `;
+  return rows[0]?.status ?? null;
 }
 
 async function liveContent(): Promise<string> {
@@ -113,6 +122,31 @@ beforeEach(async () => {
 });
 
 describe('plans:set-content handler — lifecycle status transitions stay on the dedicated writer', () => {
+  it('refuses to copy stale markdown status over the canonical plan row during an unrelated edit', async () => {
+    await seedStartedPlan('active');
+    const staleBody = planBody('ready');
+    await admin`
+      UPDATE harness_shared.harness_plans
+         SET content = ${staleBody}, content_hash = ${hashPlanContent(staleBody)}
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+    `;
+
+    expect(await planStatus()).toBe('active');
+    expect(await liveContent()).toBe(staleBody);
+
+    const proposed = staleBody.replace('Some prose for the body.', 'Revised prose for the body.');
+    const { data, isError } = await runSetContent(proposed);
+    expect(isError).toBe(true);
+    expect(data).toMatchObject({
+      error: 'plan_status_change_requires_lifecycle_writer',
+      currentStatus: 'active',
+      proposedStatus: 'ready',
+      writer: 'plans:set-plan-status',
+    });
+    expect(await planStatus()).toBe('active');
+    expect(await liveContent()).toBe(staleBody);
+  });
+
   it('refuses a raw transition to superseded and leaves the started plan untouched', async () => {
     await seedStartedPlan('active');
     expect(await opStatus()).toBe('started');

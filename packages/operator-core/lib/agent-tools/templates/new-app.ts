@@ -716,7 +716,7 @@ export default defineTool({
       ok: z.boolean().optional(),
       harnessSlug: z.string().optional(),
       path: z.string().optional(),
-      filesCopied: z.number().int().nonnegative().optional(),
+      filesCopied: z.array(z.string()).optional(),
       template: z.unknown().optional(),
       guideBranch: z.string().nullable().optional(),
       sourceCheckout: z.unknown().nullable().optional(),

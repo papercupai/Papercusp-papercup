@@ -67,6 +67,8 @@ export interface GoalDetailGoalInput {
   title: string;
   body?: string | null;
   status: string;
+  standing?: boolean;
+  goalPackage?: { ref: string } | null;
   killCriterion?: string | null;
   tripwires?: GoalDetailTripwire[] | null;
   budgetCents?: number | null;
@@ -109,6 +111,7 @@ export interface GoalDetailActivityInput {
   id: string;
   title: string;
   harnessSlug?: string | null;
+  planSlug?: string | null;
   status?: string | null;
   closedAt?: string | null;
   updatedAt?: string | null;
@@ -307,6 +310,24 @@ export interface GoalModeStateInput {
 }
 
 export interface GoalDetailInput {
+  /** Same goal-detail snapshot; absence is unmeasured, never healthy. */
+  rubricStewardship?: import('@papercusp/operator-core/lib/goal-rubric-stewardship').GoalRubricStewardship | null;
+  goalData?: {
+    /** Already emitted by goals.detail, including for goals created before packages. */
+    propertySchema?: import('@papercusp/operator-core/lib/typed-properties').TypedPropertySchemaDocument;
+    properties?: Record<string, unknown>;
+    error?: string | null;
+    historyError?: string | null;
+    worklistHistory?: Array<{ id: string; ref: string; at: string; actor: string; label: string; detail: string | null }>;
+    collections: Record<string, {
+      selection: import('@papercusp/operator-core/lib/typed-properties').TypedPropertyCollectionRead;
+      rows: Array<{ id: string; selected: boolean; label: string; state: string | null; reason: string | null;
+        harness?: string | null; planSlug?: string | null; nextStep?: string | null;
+        liveLaneOwner?: string | null; fleetMembers?: number | null;
+        counts?: { todo: number; wip: number; blocked: number; needsHuman: number; done: number } | null;
+        outcomes?: GoalDetailActivityInput[] }>;
+    }>;
+  } | null;
   goal: GoalDetailGoalInput | null;
   /** The read-only server projection shared with the goal holder's turn-start
    *  brief. Absent means wire skew/unmeasured, never an all-clear. */
@@ -346,6 +367,9 @@ export interface GoalDetailInput {
   waitingOnYouTotal?: number | null;
   activity?: GoalDetailActivityInput[] | null;
   spendByDay?: GoalDetailSpendDayInput[] | null;
+  /** Work finished per UTC day over a measured rolling window. Absent = a
+   *  server from before WI-10007603 (not measured, never "nothing finished"). */
+  completedByDay?: { windowDays: number; days: Array<{ day: string; done: number }> } | null;
   spendLabel?: string | null;
   spendNote?: string | null;
 }

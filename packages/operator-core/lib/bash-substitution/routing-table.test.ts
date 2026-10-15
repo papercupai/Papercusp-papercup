@@ -282,6 +282,17 @@ describe('renderRoutingBlock', () => {
     expect(block).toContain('KEPT');
   });
 
+  // WI-10006543: an equivalent pair whose call is not yet served by the deployed
+  // operator is withheld; a held-at-observe pair is still routed (git-read).
+  it('OMITS an equivalent pair that sets routingWithheld, but not a held one', () => {
+    const block = renderRoutingBlock([
+      pair({ expectedVerdict: 'equivalent', routingWithheld: 'not deployed', routing: { want: 'WITHHELD', use: '`t`', insteadOf: '`b`' } }),
+      pair({ expectedVerdict: 'equivalent', holdAtObserve: 'held', routing: { want: 'HELD', use: '`t`', insteadOf: '`b`' } }),
+    ]);
+    expect(block).not.toContain('WITHHELD');
+    expect(block).toContain('HELD');
+  });
+
   it('renders a table with no row spilling extra columns', () => {
     const block = renderRoutingBlock(ALL_PAIRS);
     const rows = block.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| you want'));

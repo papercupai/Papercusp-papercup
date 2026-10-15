@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "p011-staging-restart-handler-evidence-v1",
+  "workItem": "EI-25181611831349662",
+  "status": "isolated-current-build-handler-exclusion-verified",
+  "reuse": "Extended existing register-resource-domain.integration.test.ts. The actual dev:restart handler, domain resolver, cooldown transaction, guard and PostgreSQL store run; external preflights and child-process execution are mocked.",
+  "test": {
+    "command": "node scripts/with-test-pg.mjs --isolated-runtime -- env PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+    "exitCode": 0,
+    "passed": 8,
+    "skipped": 0,
+    "handlerCases": [
+      {
+        "target": "staging",
+        "maxDrainSec": 0
+      },
+      {
+        "target": "staging",
+        "maxDrainSec": 0.02
+      }
+    ],
+    "result": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=1951cfc9b3 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-06T00:50:58.344Z skippedTests=0",
+    "assertions": [
+      "Actual PostgreSQL server port and data directory match the disposable fixture.",
+      "Canonical-probe and staging-generation callers resolve the same staging-server resource domain.",
+      "A distinct probe caller holds a real shared staging-server lease.",
+      "The actual restart handler holds its exclusive cooldown marker before attempting the server guard.",
+      "Handler returns resource refusal identifying the probe holder.",
+      "No execFile or spawn runs.",
+      "The refused restart owns neither server reservation nor cooldown marker afterward; the probe remains held.",
+      "Finally releases test-owned leases; the final server queue contains neither caller.",
+      "Both retained publication cases and all four refreshed declaration-reader guard cases also pass."
+    ],
+    "ledgerQualification": "Private DB runner; no shared test-run ledger row asserted."
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+    "exitCode": 0,
+    "namedFiles": 1,
+    "errors": 0,
+    "head": "1951cfc9b3"
+  },
+  "isolation": {
+    "dataDirectory": "/tmp/papercusp-test-pg-tIlHPF",
+    "port": 42703,
+    "dataDirectoryAbsentAfterExit": true,
+    "sharedRuntimeRestartedByThisSession": false
+  },
+  "preliminaryFailures": [
+    {
+      "path": "/tmp/su-7db4f-staging-restart-handler-r1.log",
+      "status": "failed-before-test-collection",
+      "cause": "Full gate-collision mock omitted the imported GIT_SYNC_RESTART_BARRIER_DRAIN_SEC constant; changed to the existing partial-mock pattern."
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-restart-handler-types-r1.log",
+      "status": "failed",
+      "cause": "Fixture reader used null instead of the maintained reset/default and typed empty PeerInFlightEdits receipt; corrected."
+    }
+  ],
+  "runtimeRead": {
+    "source": "dev:pipeline_position on coordination-domain.ts, background-federation route",
+    "stagingBuild": "2ce9df58a8",
+    "backgroundBuild": "ae71fe3f73",
+    "stagingContainsDomainSource": true,
+    "backgroundContainsDomainSource": true,
+    "qualification": "Pipeline reports blob containment by health build identity; does not identify native MCP-serving PID, loaded declaration-cache state or live handler execution."
+  },
+  "priorEvidence": {
+    "path": "docs/evidence/papercusp-oct5-p011-staging-declaration-reader-guard-r1-2026-10-06.json",
+    "receiptChecks": {
+      "matched": 6,
+      "total": 7,
+      "changedPath": "packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts"
+    },
+    "qualification": "Historical four-case proof remains preserved. Test bytes were extended; current eight-case suite supersedes the prior source receipt."
+  },
+  "limitations": [
+    "Private PostgreSQL and mocked external preflights; live/native restart-body acceptance and fleet-wide exclusion remain open.",
+    "Legacy declaration-reader simulation explicitly refreshes its cache. No cold/stale native-cache proof is claimed.",
+    "Current source containment is not exact native serving-process attribution.",
+    "No atomic old-call migration fence is proved.",
+    "Original R3 unknown joins, R4 failure, pending-review unused alias cleanup, full P011/D021/native physical acceptance and final shipment remain open.",
+    "Full imported-source graph was not frozen; named-file stamp is local and dirty.",
+    "No historical producer, R5 cohort, profiler or GC was replayed. LIVE_GATE_OPS remained stopped."
+  ],
+  "receipts": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/__tests__/register-resource-domain.integration.test.ts",
+      "bytes": 13163,
+      "sha256": "d562d8b6958bbe203ead6eaf2e279f0669c9ee41dc7ce7b588ab3d179024c5e1"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/dev/restart.ts",
+      "bytes": 134234,
+      "sha256": "f64bd78976e4de7867f5f7536f3d82d1ccf7fbcdccfe336b0143fa98896a11c4"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/coordination-domain.ts",
+      "bytes": 18909,
+      "sha256": "f75762f4045cf2d699361ae2cc1b8350569c1c2fca849acfced89c893880e732"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/resource-domain-kinds.ts",
+      "bytes": 7792,
+      "sha256": "9dea128f3476f9ee8c7006ec01358c3b12a41f4ae25e3278897d2443bdfbb3b5"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/register_resource.ts",
+      "bytes": 4030,
+      "sha256": "63d8005018c2e5e2525f3ab04dadaebcd4ba5cace12ff071e54ccfe4b275ff4d"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/locks/resource-lock-guard.ts",
+      "bytes": 10278,
+      "sha256": "127eb9debbc0598ce08887ccc6228065679b565ac2e72b155db15be366324e6e"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-restart-handler-r1.log",
+      "bytes": 631946,
+      "sha256": "136e13352d03b417c35e68ee033e9c434d5e24a91609a62f8b4f7851fbf69ed0"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-restart-handler-r2.log",
+      "bytes": 630465,
+      "sha256": "cc1dae330eab01dd8fe794c6389c33deba94d660bf844f32e0f81796da71634e"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-restart-handler-types-r1.log",
+      "bytes": 1758,
+      "sha256": "6cd7ad8710259dd9f5029b76e9f7c43e52eb64ef77ff00df4c2e8d2633c45c84"
+    },
+    {
+      "path": "/tmp/su-7db4f-staging-restart-handler-types-r3.log",
+      "bytes": 1114,
+      "sha256": "ba369da2722bdf792fb2dfd7b0f49a476f47c6eee4819460ad09df8f1262b1a8"
+    }
+  ]
+}

@@ -34,6 +34,7 @@ import {
 } from './consult-expiry-adapters';
 import { requesterAlertForRow, reviewConsultKind, type DueConsultRow } from './consult-expiry-core';
 import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
+import type { TaskRow } from '../task-manager/types';
 
 /** A row workspace that could not be mistaken for an ambient/default one. */
 const ROW_WS = 'ws-row-7f3a';
@@ -199,9 +200,94 @@ describe('consultExpiryDispatch', () => {
     expect(opts.conversationId).toBe('conv-42');
     expect(out).toEqual({ woke: 1, answeringOwnerId: 'su-next-fork' });
   });
+
+  it('preserves cited turns and the pre-launch answering-owner reservation on an expiry cascade', async () => {
+    const evidence = [{ session_id: 'exact-source-session', turn_idx: 8, sim: 0.87 }];
+    const onAnsweringOwner = vi.fn(async (_owner: string) => {});
+    const launch = vi.fn(async (opts) => {
+      // A cross-backend brief needs the exact cited turn before it can launch.
+      if (!opts.evidence?.length) return { woke: 0, answeringOwnerId: null };
+      await opts.onAnsweringOwner('su-expiry-answerer');
+      return { woke: 1, answeringOwnerId: 'su-expiry-answerer' };
+    });
+    const dispatch = consultExpiryDispatch(() => launch);
+    const result = await dispatch({
+      workspaceId: ROW_WS, responder: 'su-source', conversationId: 'conv-expiry-evidence',
+      summary: 'current rubric review', body: 'Read the cited current-subject evidence.',
+      evidence, onAnsweringOwner,
+    });
+
+    expect(result).toEqual({ woke: 1, answeringOwnerId: 'su-expiry-answerer' });
+    expect(launch.mock.calls[0]![0].evidence).toBe(evidence);
+    expect(launch.mock.calls[0]![0].onAnsweringOwner).toBe(onAnsweringOwner);
+    expect(onAnsweringOwner).toHaveBeenCalledExactlyOnceWith('su-expiry-answerer');
+  });
 });
 
 describe('consultExpiryFindSilentResponders', () => {
+  it('recovers a missing reserved answerer only from exact terminal consult-task evidence, retaining live-task and post guards', async () => {
+    const now = new Date('2026-08-27T06:00:00.000Z');
+    const task = (conversationId: string, overrides: Partial<TaskRow> = {}) => ({
+      workspaceId: ROW_WS, class: 'agent-session', state: 'ended_unobserved',
+      // A requester follow-up refreshed routedAt AFTER the failed launch ended.
+      endedAt: '2026-08-27T05:50:00.000Z',
+      detail: { consultAnswer: { conversationId, sourceOwnerId: 'su-source', answeringOwnerId: 'su-reserved' } },
+      ...overrides,
+    });
+    const cases = {
+      exact: [task('exact')],
+      exited: [task('exited', { state: 'exited' })],
+      killed: [task('killed', { state: 'killed' })],
+      absent: [],
+      conversation: [task('other-conversation')],
+      workspace: [task('workspace', { workspaceId: 'another-workspace' })],
+      source: [task('source', { detail: { consultAnswer: { conversationId: 'source', sourceOwnerId: 'other-source', answeringOwnerId: 'su-reserved' } } })],
+      answerer: [task('answerer', { detail: { consultAnswer: { conversationId: 'answerer', sourceOwnerId: 'su-source', answeringOwnerId: 'other-answerer' } } })],
+      untagged: [task('untagged', { detail: { coordOwnerId: 'su-reserved' } })],
+      taskClass: [task('taskClass', { class: 'bash-job' })],
+      running: [task('running', { state: 'running' })],
+      noEnd: [task('noEnd', { endedAt: null })],
+      futureEnd: [task('futureEnd', { endedAt: '2026-08-27T06:01:00.000Z' })],
+      liveSibling: [task('liveSibling'), task('liveSibling', { state: 'running', endedAt: null })],
+      posted: [task('posted')],
+      unknownAuthor: [task('unknownAuthor')],
+      liveOracle: [task('liveOracle')],
+      noSource: [task('noSource')],
+    };
+    const lookup = vi.fn(async (workspaceId: string, answeringOwnerId: string) => {
+      expect(workspaceId).toBe(ROW_WS);
+      expect(answeringOwnerId).toBe('su-reserved');
+      return Object.values(cases).flat() as TaskRow[];
+    });
+    const found = await consultExpiryFindSilentResponders({
+      getPresence: async () => null,
+      resolveSessionStates: async () => new Map(),
+      listAnsweringTasks: lookup,
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: parent.ref }) as never,
+        listRecentPosts: async (id) => ({ total: 1, posts: [{ author_id: id === 'posted' ? 'su-reserved' : id === 'unknownAuthor' ? 'unknown' : 'su-requester' }] }),
+      }),
+      now: () => now,
+    })(Object.keys(cases).filter((id) => id !== 'liveOracle').map((conversationId) => ({
+      workspaceId: ROW_WS, conversationId, answeringOwnerId: 'su-reserved',
+      ...(conversationId === 'noSource' ? {} : { sourceOwnerId: 'su-source' }),
+      requesterId: 'su-requester', routedAt: '2026-08-27T05:59:00.000Z',
+    })));
+    expect(found).toEqual(new Set(['exact', 'exited', 'killed']));
+    expect(lookup).toHaveBeenCalledTimes(1);
+
+    const liveLookup = vi.fn(async () => cases.liveOracle as TaskRow[]);
+    const live = await consultExpiryFindSilentResponders({
+      getPresence: async () => null,
+      resolveSessionStates: async () => new Map([['su-reserved', { sessionState: 'live' }]]),
+      listAnsweringTasks: liveLookup,
+      getThreadStore: () => { throw new Error('live answerer within pickup grace must be retained'); },
+      now: () => now,
+    })([{ workspaceId: ROW_WS, conversationId: 'liveOracle', sourceOwnerId: 'su-source', answeringOwnerId: 'su-reserved', routedAt: '2026-08-27T05:59:00.000Z' }]);
+    expect(live.size).toBe(0);
+    expect(liveLookup).not.toHaveBeenCalled();
+  });
+
   it('uses an empty thread and pickup grace for an unstamped dispatch without reading source liveness', async () => {
     const now = new Date('2026-08-27T06:00:00.000Z');
     const staleRoute = new Date(now.getTime() - 30 * 60_000).toISOString();
@@ -250,6 +336,60 @@ describe('consultExpiryFindSilentResponders', () => {
     })(rows);
 
     expect(found).toEqual(new Set(['conv-prior']));
+  });
+
+  it.each(['ended', 'parked', 'live'])('recovers a reserved %s answerer with only requester or prior replies while retaining history controls', async (sessionState) => {
+    const now = new Date('2026-08-27T06:00:00.000Z');
+    const routedAt = new Date(now.getTime() - 31 * 60_000).toISOString();
+    const histories = {
+      prior: { total: 2, posts: [{ author_id: 'su-prior-source' }, { author_id: 'su-prior-fork' }] },
+      requester: { total: 2, posts: [{ author_id: 'su-requester' }, { author_id: 'su-requester' }] },
+      mixed: { total: 2, posts: [{ author_id: 'su-prior-fork' }, { author_id: 'su-requester' }] },
+      current: { total: 1, posts: [{ author_id: 'su-reserved' }] },
+      unknown: { total: 1, posts: [{ author_id: 'su-unknown' }] },
+      anonymous: { total: 1, posts: [{ author_id: null }] },
+      partial: { total: 2, posts: [{ author_id: 'su-prior-fork' }] },
+      unbounded: { total: 21, posts: [{ author_id: 'su-prior-fork' }] },
+      overlap: { total: 1, posts: [{ author_id: 'su-reserved' }] },
+      requesterOverlap: { total: 1, posts: [{ author_id: 'su-reserved' }] },
+    };
+    const rows = Object.keys(histories).map((conversationId) => ({
+      workspaceId: ROW_WS, conversationId, answeringOwnerId: 'su-reserved', routedAt,
+      requesterId: conversationId === 'requesterOverlap' ? 'su-reserved' : 'su-requester',
+      priorResponderIds: ['su-prior-source', 'su-prior-fork', ...(conversationId === 'overlap' ? ['su-reserved'] : [])],
+    }));
+    const found = await consultExpiryFindSilentResponders({
+      getPresence: async () => ({ lastActiveAt: new Date(now.getTime() - 60_000).toISOString() }),
+      resolveSessionStates: async () => new Map([['su-reserved', { sessionState }]]),
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: parent.ref }) as never,
+        listRecentPosts: async (threadId) => histories[threadId as keyof typeof histories],
+      }),
+      now: () => now,
+    })(rows);
+
+    expect(found).toEqual(new Set(['prior', 'requester', 'mixed']));
+  });
+
+  it.each(['unknown', 'live', 'parked'])('keeps requester replies from bypassing %s answerer liveness and pickup grace', async (sessionState) => {
+    const now = new Date('2026-08-27T06:00:00.000Z');
+    const getThreadStore = vi.fn(() => ({
+      getThreadByParent: async () => ({ thread_id: 'thread' }) as never,
+      listRecentPosts: async () => ({ total: 1, posts: [{ author_id: 'su-requester' }] }),
+    }));
+    const found = await consultExpiryFindSilentResponders({
+      getPresence: async () => ({ lastActiveAt: null }),
+      resolveSessionStates: async () => new Map([['su-reserved', { sessionState }]]),
+      getThreadStore,
+      now: () => now,
+    })([{
+      workspaceId: ROW_WS, conversationId: 'conv-fresh', answeringOwnerId: 'su-reserved',
+      requesterId: 'su-requester',
+      routedAt: new Date(now.getTime() - 60_000).toISOString(), priorResponderIds: ['su-prior-fork'],
+    }]);
+
+    expect(found.size).toBe(0);
+    expect(getThreadStore).not.toHaveBeenCalled();
   });
 
   it('requires active-after-route + parked + zero posts, and reads each thread in its row workspace', async () => {

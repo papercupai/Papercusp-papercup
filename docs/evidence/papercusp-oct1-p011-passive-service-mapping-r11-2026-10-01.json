@@ -1,0 +1,1268 @@
+{
+  "rawEvidence": {
+    "path": ".papercusp/scratch/bash-803df261-a07.log",
+    "sha256": "965a4beb846d2e4e014831d448e40a586688505bfcc1d3b7f113ed3a546e55d5"
+  },
+  "kind": "passive-service-mapping-census",
+  "definition": {
+    "pss": "smaps_rollup Pss kB multiplied by 1024",
+    "mappingPss": "smaps Pss grouped by mapping name; [heap] is brk mapping only, anonymous is not synonymous with native allocation",
+    "cgroup": "recursive cgroup.procs membership, memory.current/stat read separately from process PSS",
+    "role": "MainPID, direct node hono-host/serve descendants, other service-cgroup processes",
+    "mode": "moving production workload; no idle equivalence, GC, inspector, profiler, signal, restart or reduction claim"
+  },
+  "samples": [
+    {
+      "at": "2026-10-01T21:52:08.965055+00:00",
+      "observerMs": 4646.3651090161875,
+      "services": [
+        {
+          "unit": "papercup-dev-api.service",
+          "mainPid": 3194993,
+          "finalMainPid": 3194993,
+          "stable": true,
+          "population": 17,
+          "checked": 17,
+          "notChecked": [],
+          "cgroupBytes": 15903158272,
+          "cgroupStat": {
+            "anon": 13862604800,
+            "file": 1322696704,
+            "kernel": 713596928
+          },
+          "roles": {
+            "direct-host": {
+              "count": 6,
+              "pssBytes": 8069369856,
+              "brkPssBytes": 1151963136,
+              "anonymousPssBytes": 6893338624,
+              "filePssBytes": 24143872,
+              "swapBytes": 0
+            },
+            "other-cgroup-task": {
+              "count": 10,
+              "pssBytes": 4628077568,
+              "brkPssBytes": 24297472,
+              "anonymousPssBytes": 4581875712,
+              "filePssBytes": 21464064,
+              "swapBytes": 0
+            },
+            "primary": {
+              "count": 1,
+              "pssBytes": 788104192,
+              "brkPssBytes": 96497664,
+              "anonymousPssBytes": 689291264,
+              "filePssBytes": 2209792,
+              "swapBytes": 0
+            }
+          },
+          "hostPolicies": {
+            "PAPERCUSP_EXPECTED_OPERATOR_PROCS": [
+              "16",
+              "7"
+            ],
+            "MALLOC_ARENA_MAX": [
+              "2"
+            ],
+            "PAPERCUSP_CLUSTER_WORKERS": [
+              "6"
+            ],
+            "PAPERCUSP_CLUSTER": [
+              "16"
+            ],
+            "PAPERCUSP_BACKGROUND_WORKERS": [
+              "0"
+            ]
+          }
+        },
+        {
+          "unit": "papercup-staging-api.service",
+          "mainPid": 3389995,
+          "finalMainPid": 3389995,
+          "stable": true,
+          "population": 9,
+          "checked": 9,
+          "notChecked": [],
+          "cgroupBytes": 5786206208,
+          "cgroupStat": {
+            "anon": 4484747264,
+            "file": 1142923264,
+            "kernel": 156078080
+          },
+          "roles": {
+            "other-cgroup-task": {
+              "count": 8,
+              "pssBytes": 8995840,
+              "brkPssBytes": 700416,
+              "anonymousPssBytes": 688128,
+              "filePssBytes": 7316480,
+              "swapBytes": 0
+            },
+            "primary": {
+              "count": 1,
+              "pssBytes": 4465798144,
+              "brkPssBytes": 362590208,
+              "anonymousPssBytes": 4087296000,
+              "filePssBytes": 3188736,
+              "swapBytes": 0
+            }
+          },
+          "hostPolicies": {
+            "MALLOC_ARENA_MAX": [
+              "2"
+            ],
+            "PAPERCUSP_BACKGROUND_WORKERS": [
+              "0"
+            ]
+          }
+        },
+        {
+          "unit": "papercup-bg-host.service",
+          "mainPid": 1996367,
+          "finalMainPid": 1996367,
+          "stable": true,
+          "population": 15,
+          "checked": 15,
+          "notChecked": [],
+          "cgroupBytes": 7640539136,
+          "cgroupStat": {
+            "anon": 4817674240,
+            "file": 2657591296,
+            "kernel": 162578432
+          },
+          "roles": {
+            "primary": {
+              "count": 1,
+              "pssBytes": 4240924672,
+              "brkPssBytes": 911826944,
+              "anonymousPssBytes": 3658670080,
+              "filePssBytes": 4983808,
+              "swapBytes": 0
+            },
+            "other-cgroup-task": {
+              "count": 14,
+              "pssBytes": 377951232,
+              "brkPssBytes": 200897536,
+              "anonymousPssBytes": 41517056,
+              "filePssBytes": 135141376,
+              "swapBytes": 0
+            }
+          },
+          "hostPolicies": {
+            "MALLOC_ARENA_MAX": [
+              "2"
+            ],
+            "PAPERCUSP_CLUSTER_WORKERS": [
+              "0"
+            ],
+            "PAPERCUSP_CLUSTER": [
+              "0"
+            ],
+            "PAPERCUSP_BACKGROUND_WORKERS": [
+              "1"
+            ],
+            "PAPERCUSP_EXPECTED_OPERATOR_PROCS": [
+              "6"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "at": "2026-10-01T21:52:18.611534+00:00",
+      "observerMs": 4554.00696201832,
+      "services": [
+        {
+          "unit": "papercup-dev-api.service",
+          "mainPid": 3194993,
+          "finalMainPid": 3194993,
+          "stable": true,
+          "population": 17,
+          "checked": 17,
+          "notChecked": [],
+          "cgroupBytes": 16155615232,
+          "cgroupStat": {
+            "anon": 14100897792,
+            "file": 1324838912,
+            "kernel": 720510976
+          },
+          "roles": {
+            "direct-host": {
+              "count": 6,
+              "pssBytes": 8517225472,
+              "brkPssBytes": 1292689408,
+              "anonymousPssBytes": 7201419264,
+              "filePssBytes": 24354816,
+              "swapBytes": 0
+            },
+            "other-cgroup-task": {
+              "count": 10,
+              "pssBytes": 4828721152,
+              "brkPssBytes": 24297472,
+              "anonymousPssBytes": 4781936640,
+              "filePssBytes": 22026240,
+              "swapBytes": 0
+            },
+            "primary": {
+              "count": 1,
+              "pssBytes": 788131840,
+              "brkPssBytes": 96497664,
+              "anonymousPssBytes": 689307648,
+              "filePssBytes": 2219008,
+              "swapBytes": 0
+            }
+          },
+          "hostPolicies": {
+            "PAPERCUSP_EXPECTED_OPERATOR_PROCS": [
+              "16",
+              "7"
+            ],
+            "MALLOC_ARENA_MAX": [
+              "2"
+            ],
+            "PAPERCUSP_CLUSTER_WORKERS": [
+              "6"
+            ],
+            "PAPERCUSP_CLUSTER": [
+              "16"
+            ],
+            "PAPERCUSP_BACKGROUND_WORKERS": [
+              "0"
+            ]
+          }
+        },
+        {
+          "unit": "papercup-staging-api.service",
+          "mainPid": 3389995,
+          "finalMainPid": 3389995,
+          "stable": true,
+          "population": 8,
+          "checked": 7,
+          "notChecked": [
+            {
+              "pid": 3175141,
+              "reason": "ProcessLookupError"
+            }
+          ],
+          "cgroupBytes": 5770043392,
+          "cgroupStat": {
+            "anon": 4467965952,
+            "file": 1143017472,
+            "kernel": 157487104
+          },
+          "roles": {
+            "other-cgroup-task": {
+              "count": 6,
+              "pssBytes": 11660288,
+              "brkPssBytes": 5128192,
+              "anonymousPssBytes": 1077248,
+              "filePssBytes": 5248000,
+              "swapBytes": 0
+            },
+            "primary": {
+              "count": 1,
+              "pssBytes": 4317618176,
+              "brkPssBytes": 362590208,
+              "anonymousPssBytes": 4091719680,
+              "filePssBytes": 2898944,
+              "swapBytes": 0
+            }
+          },
+          "hostPolicies": {
+            "MALLOC_ARENA_MAX": [
+              "2"
+            ],
+            "PAPERCUSP_BACKGROUND_WORKERS": [
+              "0"
+            ]
+          }
+        },
+        {
+          "unit": "papercup-bg-host.service",
+          "mainPid": 1996367,
+          "finalMainPid": 1996367,
+          "stable": true,
+          "population": 16,
+          "checked": 16,
+          "notChecked": [],
+          "cgroupBytes": 7701340160,
+          "cgroupStat": {
+            "anon": 4818132992,
+            "file": 2708361216,
+            "kernel": 166719488
+          },
+          "roles": {
+            "primary": {
+              "count": 1,
+              "pssBytes": 4500129792,
+              "brkPssBytes": 911826944,
+              "anonymousPssBytes": 3660734464,
+              "filePssBytes": 4959232,
+              "swapBytes": 0
+            },
+            "other-cgroup-task": {
+              "count": 15,
+              "pssBytes": 378080256,
+              "brkPssBytes": 186078208,
+              "anonymousPssBytes": 54494208,
+              "filePssBytes": 136876032,
+              "swapBytes": 0
+            }
+          },
+          "hostPolicies": {
+            "MALLOC_ARENA_MAX": [
+              "2"
+            ],
+            "PAPERCUSP_CLUSTER_WORKERS": [
+              "0"
+            ],
+            "PAPERCUSP_CLUSTER": [
+              "0"
+            ],
+            "PAPERCUSP_BACKGROUND_WORKERS": [
+              "1"
+            ],
+            "PAPERCUSP_EXPECTED_OPERATOR_PROCS": [
+              "6"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "at": "2026-10-01T21:52:28.165627+00:00",
+      "observerMs": 3718.5278290126007,
+      "services": [
+        {
+          "unit": "papercup-dev-api.service",
+          "mainPid": 3194993,
+          "finalMainPid": 3194993,
+          "stable": true,
+          "population": 17,
+          "checked": 17,
+          "notChecked": [],
+          "cgroupBytes": 16184385536,
+          "cgroupStat": {
+            "anon": 14131367936,
+            "file": 1325051904,
+            "kernel": 721375232
+          },
+          "roles": {
+            "direct-host": {
+              "count": 6,
+              "pssBytes": 8540480512,
+              "brkPssBytes": 1311531008,
+              "anonymousPssBytes": 7204413440,
+              "filePssBytes": 23822336,
+              "swapBytes": 0
+            },
+            "other-cgroup-task": {
+              "count": 10,
+              "pssBytes": 4828941312,
+              "brkPssBytes": 24297472,
+              "anonymousPssBytes": 4781936640,
+              "filePssBytes": 22241280,
+              "swapBytes": 0
+            },
+            "primary": {
+              "count": 1,
+              "pssBytes": 788745216,
+              "brkPssBytes": 96497664,
+              "anonymousPssBytes": 689922048,
+              "filePssBytes": 2217984,
+              "swapBytes": 0
+            }
+          },
+          "hostPolicies": {
+            "PAPERCUSP_EXPECTED_OPERATOR_PROCS": [
+              "16",
+              "7"
+            ],
+            "MALLOC_ARENA_MAX": [
+              "2"
+            ],
+            "PAPERCUSP_CLUSTER_WORKERS": [
+              "6"
+            ],
+            "PAPERCUSP_CLUSTER": [
+              "16"
+            ],
+            "PAPERCUSP_BACKGROUND_WORKERS": [
+              "0"
+            ]
+          }
+        },
+        {
+          "unit": "papercup-staging-api.service",
+          "mainPid": 3389995,
+          "finalMainPid": 3389995,
+          "stable": true,
+          "population": 7,
+          "checked": 7,
+          "notChecked": [],
+          "cgroupBytes": 5761208320,
+          "cgroupStat": {
+            "anon": 4458565632,
+            "file": 1144127488,
+            "kernel": 155394048
+          },
+          "roles": {
+            "other-cgroup-task": {
+              "count": 6,
+              "pssBytes": 6847488,
+              "brkPssBytes": 524288,
+              "anonymousPssBytes": 516096,
+              "filePssBytes": 5594112,
+              "swapBytes": 0
+            },
+            "primary": {
+              "count": 1,
+              "pssBytes": 4454207488,
+              "brkPssBytes": 362590208,
+              "anonymousPssBytes": 4089917440,
+              "filePssBytes": 3141632,
+              "swapBytes": 0
+            }
+          },
+          "hostPolicies": {
+            "MALLOC_ARENA_MAX": [
+              "2"
+            ],
+            "PAPERCUSP_BACKGROUND_WORKERS": [
+              "0"
+            ]
+          }
+        },
+        {
+          "unit": "papercup-bg-host.service",
+          "mainPid": 1996367,
+          "finalMainPid": 1996367,
+          "stable": true,
+          "population": 17,
+          "checked": 8,
+          "notChecked": [
+            {
+              "pid": 3195551,
+              "reason": "FileNotFoundError"
+            },
+            {
+              "pid": 3197515,
+              "reason": "FileNotFoundError"
+            },
+            {
+              "pid": 3197521,
+              "reason": "FileNotFoundError"
+            },
+            {
+              "pid": 3197522,
+              "reason": "FileNotFoundError"
+            },
+            {
+              "pid": 3197592,
+              "reason": "FileNotFoundError"
+            },
+            {
+              "pid": 3197593,
+              "reason": "FileNotFoundError"
+            },
+            {
+              "pid": 3197594,
+              "reason": "FileNotFoundError"
+            },
+            {
+              "pid": 3197595,
+              "reason": "FileNotFoundError"
+            },
+            {
+              "pid": 3197597,
+              "reason": "FileNotFoundError"
+            }
+          ],
+          "cgroupBytes": 8191324160,
+          "cgroupStat": {
+            "anon": 5226876928,
+            "file": 2768187392,
+            "kernel": 186028032
+          },
+          "roles": {
+            "primary": {
+              "count": 1,
+              "pssBytes": 4590161920,
+              "brkPssBytes": 911826944,
+              "anonymousPssBytes": 3673239552,
+              "filePssBytes": 4950016,
+              "swapBytes": 0
+            },
+            "other-cgroup-task": {
+              "count": 7,
+              "pssBytes": 824230912,
+              "brkPssBytes": 221263872,
+              "anonymousPssBytes": 463577088,
+              "filePssBytes": 136936448,
+              "swapBytes": 0
+            }
+          },
+          "hostPolicies": {
+            "MALLOC_ARENA_MAX": [
+              "2"
+            ],
+            "PAPERCUSP_CLUSTER_WORKERS": [
+              "0"
+            ],
+            "PAPERCUSP_CLUSTER": [
+              "0"
+            ],
+            "PAPERCUSP_BACKGROUND_WORKERS": [
+              "1"
+            ],
+            "PAPERCUSP_EXPECTED_OPERATOR_PROCS": [
+              "6"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 1,
+  "workItem": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "recordedAt": "2026-10-01T21:55:26.960959+00:00",
+  "status": "attribution-incomplete",
+  "descendantDetails": [
+    {
+      "at": "2026-10-01T21:52:08.965055+00:00",
+      "services": [
+        {
+          "unit": "papercup-dev-api.service",
+          "primary": 3194993,
+          "checked": 17,
+          "population": 17,
+          "roles": [
+            {
+              "pid": 1956574,
+              "ppid": 595872,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 142.2
+            },
+            {
+              "pid": 1987619,
+              "ppid": 445713,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 709.25
+            },
+            {
+              "pid": 2798842,
+              "ppid": 2085405,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 521.89
+            },
+            {
+              "pid": 2857190,
+              "ppid": 2832202,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 57.06
+            },
+            {
+              "pid": 2886671,
+              "ppid": 2837665,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 56.75
+            },
+            {
+              "pid": 2898481,
+              "ppid": 2832202,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.07
+            },
+            {
+              "pid": 3029393,
+              "ppid": 602163,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.08
+            },
+            {
+              "pid": 3118033,
+              "ppid": 2085405,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.07
+            },
+            {
+              "pid": 3120011,
+              "ppid": 2832202,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 2922.2
+            },
+            {
+              "pid": 3148284,
+              "ppid": 2085405,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.11
+            }
+          ],
+          "policies": [
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"0\", \"PAPERCUSP_CLUSTER\": \"16\", \"PAPERCUSP_CLUSTER_WORKERS\": \"6\", \"PAPERCUSP_EXPECTED_OPERATOR_PROCS\": \"16\"}",
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"0\", \"PAPERCUSP_CLUSTER\": \"16\", \"PAPERCUSP_CLUSTER_WORKERS\": \"6\", \"PAPERCUSP_EXPECTED_OPERATOR_PROCS\": \"7\"}"
+          ]
+        },
+        {
+          "unit": "papercup-staging-api.service",
+          "primary": 3389995,
+          "checked": 9,
+          "population": 9,
+          "roles": [
+            {
+              "pid": 1156820,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.08
+            },
+            {
+              "pid": 1550544,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.07
+            },
+            {
+              "pid": 1585622,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.07
+            },
+            {
+              "pid": 1659102,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.08
+            },
+            {
+              "pid": 2678197,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.07
+            },
+            {
+              "pid": 3019266,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.07
+            },
+            {
+              "pid": 3116354,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.07
+            },
+            {
+              "pid": 3123354,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.07
+            }
+          ],
+          "policies": [
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"0\"}"
+          ]
+        },
+        {
+          "unit": "papercup-bg-host.service",
+          "primary": 1996367,
+          "checked": 15,
+          "population": 15,
+          "roles": [
+            {
+              "pid": 2302213,
+              "ppid": 1996367,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 10.99
+            },
+            {
+              "pid": 3111299,
+              "ppid": 1996367,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 11.97
+            },
+            {
+              "pid": 3111733,
+              "ppid": 3111299,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 1.85
+            },
+            {
+              "pid": 3114934,
+              "ppid": 1996367,
+              "exe": "git",
+              "entry": null,
+              "pssMiB": 4.87
+            },
+            {
+              "pid": 3115674,
+              "ppid": 3114934,
+              "exe": "git",
+              "entry": null,
+              "pssMiB": 326.03
+            },
+            {
+              "pid": 3138218,
+              "ppid": 3111733,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 1.83
+            },
+            {
+              "pid": 3138225,
+              "ppid": 3138218,
+              "exe": "xargs",
+              "entry": null,
+              "pssMiB": 0.18
+            },
+            {
+              "pid": 3138663,
+              "ppid": 3138225,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 0.21
+            },
+            {
+              "pid": 3138666,
+              "ppid": 3138663,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 0.21
+            },
+            {
+              "pid": 3138669,
+              "ppid": 3138666,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 0.21
+            },
+            {
+              "pid": 3138733,
+              "ppid": 3138669,
+              "exe": "find",
+              "entry": null,
+              "pssMiB": 0.98
+            },
+            {
+              "pid": 3138735,
+              "ppid": 3138669,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 0.23
+            },
+            {
+              "pid": 3138747,
+              "ppid": 3138735,
+              "exe": "sha256sum",
+              "entry": null,
+              "pssMiB": 0.58
+            },
+            {
+              "pid": 3138750,
+              "ppid": 3138735,
+              "exe": "awk",
+              "entry": null,
+              "pssMiB": 0.3
+            }
+          ],
+          "policies": [
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"1\", \"PAPERCUSP_CLUSTER\": \"0\", \"PAPERCUSP_CLUSTER_WORKERS\": \"0\", \"PAPERCUSP_EXPECTED_OPERATOR_PROCS\": \"6\"}"
+          ]
+        }
+      ]
+    },
+    {
+      "at": "2026-10-01T21:52:18.611534+00:00",
+      "services": [
+        {
+          "unit": "papercup-dev-api.service",
+          "primary": 3194993,
+          "checked": 17,
+          "population": 17,
+          "roles": [
+            {
+              "pid": 1956574,
+              "ppid": 595872,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 142.3
+            },
+            {
+              "pid": 1987619,
+              "ppid": 445713,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 709.35
+            },
+            {
+              "pid": 2798842,
+              "ppid": 2085405,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 522.01
+            },
+            {
+              "pid": 2857190,
+              "ppid": 2832202,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 57.07
+            },
+            {
+              "pid": 2886671,
+              "ppid": 2837665,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 56.75
+            },
+            {
+              "pid": 2898481,
+              "ppid": 2832202,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.1
+            },
+            {
+              "pid": 3029393,
+              "ppid": 602163,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.11
+            },
+            {
+              "pid": 3118033,
+              "ppid": 2085405,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.09
+            },
+            {
+              "pid": 3120011,
+              "ppid": 2832202,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 3113.11
+            },
+            {
+              "pid": 3148284,
+              "ppid": 2085405,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.14
+            }
+          ],
+          "policies": [
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"0\", \"PAPERCUSP_CLUSTER\": \"16\", \"PAPERCUSP_CLUSTER_WORKERS\": \"6\", \"PAPERCUSP_EXPECTED_OPERATOR_PROCS\": \"16\"}",
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"0\", \"PAPERCUSP_CLUSTER\": \"16\", \"PAPERCUSP_CLUSTER_WORKERS\": \"6\", \"PAPERCUSP_EXPECTED_OPERATOR_PROCS\": \"7\"}"
+          ]
+        },
+        {
+          "unit": "papercup-staging-api.service",
+          "primary": 3389995,
+          "checked": 7,
+          "population": 8,
+          "roles": [
+            {
+              "pid": 1550544,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.1
+            },
+            {
+              "pid": 1585622,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.1
+            },
+            {
+              "pid": 1659102,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.1
+            },
+            {
+              "pid": 2678197,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.09
+            },
+            {
+              "pid": 3116354,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.1
+            },
+            {
+              "pid": 3174264,
+              "ppid": 3389995,
+              "exe": "ps",
+              "entry": null,
+              "pssMiB": 5.62
+            }
+          ],
+          "policies": [
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"0\"}"
+          ]
+        },
+        {
+          "unit": "papercup-bg-host.service",
+          "primary": 1996367,
+          "checked": 16,
+          "population": 16,
+          "roles": [
+            {
+              "pid": 2302213,
+              "ppid": 1996367,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 11.08
+            },
+            {
+              "pid": 3111299,
+              "ppid": 1996367,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 11.98
+            },
+            {
+              "pid": 3111733,
+              "ppid": 3111299,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 1.85
+            },
+            {
+              "pid": 3114934,
+              "ppid": 1996367,
+              "exe": "git",
+              "entry": null,
+              "pssMiB": 5.71
+            },
+            {
+              "pid": 3115674,
+              "ppid": 3114934,
+              "exe": "git",
+              "entry": null,
+              "pssMiB": 324.04
+            },
+            {
+              "pid": 3138218,
+              "ppid": 3111733,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 1.83
+            },
+            {
+              "pid": 3138225,
+              "ppid": 3138218,
+              "exe": "xargs",
+              "entry": null,
+              "pssMiB": 0.18
+            },
+            {
+              "pid": 3138663,
+              "ppid": 3138225,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 0.21
+            },
+            {
+              "pid": 3138666,
+              "ppid": 3138663,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 0.21
+            },
+            {
+              "pid": 3138669,
+              "ppid": 3138666,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 0.21
+            },
+            {
+              "pid": 3138733,
+              "ppid": 3138669,
+              "exe": "find",
+              "entry": null,
+              "pssMiB": 0.98
+            },
+            {
+              "pid": 3138735,
+              "ppid": 3138669,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 0.23
+            },
+            {
+              "pid": 3138747,
+              "ppid": 3138735,
+              "exe": "sha256sum",
+              "entry": null,
+              "pssMiB": 0.58
+            },
+            {
+              "pid": 3138750,
+              "ppid": 3138735,
+              "exe": "awk",
+              "entry": null,
+              "pssMiB": 0.3
+            },
+            {
+              "pid": 3177120,
+              "ppid": 1996367,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 1.17
+            }
+          ],
+          "policies": [
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"1\", \"PAPERCUSP_CLUSTER\": \"0\", \"PAPERCUSP_CLUSTER_WORKERS\": \"0\", \"PAPERCUSP_EXPECTED_OPERATOR_PROCS\": \"6\"}"
+          ]
+        }
+      ]
+    },
+    {
+      "at": "2026-10-01T21:52:28.165627+00:00",
+      "services": [
+        {
+          "unit": "papercup-dev-api.service",
+          "primary": 3194993,
+          "checked": 17,
+          "population": 17,
+          "roles": [
+            {
+              "pid": 1956574,
+              "ppid": 595872,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 142.34
+            },
+            {
+              "pid": 1987619,
+              "ppid": 445713,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 709.4
+            },
+            {
+              "pid": 2798842,
+              "ppid": 2085405,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 522.11
+            },
+            {
+              "pid": 2857190,
+              "ppid": 2832202,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 57.07
+            },
+            {
+              "pid": 2886671,
+              "ppid": 2837665,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 56.75
+            },
+            {
+              "pid": 2898481,
+              "ppid": 2832202,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.09
+            },
+            {
+              "pid": 3029393,
+              "ppid": 602163,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.1
+            },
+            {
+              "pid": 3118033,
+              "ppid": 2085405,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.09
+            },
+            {
+              "pid": 3120011,
+              "ppid": 2832202,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 3113.16
+            },
+            {
+              "pid": 3148284,
+              "ppid": 2085405,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.13
+            }
+          ],
+          "policies": [
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"0\", \"PAPERCUSP_CLUSTER\": \"16\", \"PAPERCUSP_CLUSTER_WORKERS\": \"6\", \"PAPERCUSP_EXPECTED_OPERATOR_PROCS\": \"16\"}",
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"0\", \"PAPERCUSP_CLUSTER\": \"16\", \"PAPERCUSP_CLUSTER_WORKERS\": \"6\", \"PAPERCUSP_EXPECTED_OPERATOR_PROCS\": \"7\"}"
+          ]
+        },
+        {
+          "unit": "papercup-staging-api.service",
+          "primary": 3389995,
+          "checked": 7,
+          "population": 7,
+          "roles": [
+            {
+              "pid": 1550544,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.09
+            },
+            {
+              "pid": 1585622,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.09
+            },
+            {
+              "pid": 1659102,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.09
+            },
+            {
+              "pid": 2678197,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.08
+            },
+            {
+              "pid": 3116354,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.09
+            },
+            {
+              "pid": 3192201,
+              "ppid": 3389995,
+              "exe": "systemd-run",
+              "entry": null,
+              "pssMiB": 1.08
+            }
+          ],
+          "policies": [
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"0\"}"
+          ]
+        },
+        {
+          "unit": "papercup-bg-host.service",
+          "primary": 1996367,
+          "checked": 8,
+          "population": 17,
+          "roles": [
+            {
+              "pid": 2302213,
+              "ppid": 1996367,
+              "exe": "esbuild",
+              "entry": null,
+              "pssMiB": 11.08
+            },
+            {
+              "pid": 3111299,
+              "ppid": 1996367,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 11.98
+            },
+            {
+              "pid": 3111733,
+              "ppid": 3111299,
+              "exe": "bash",
+              "entry": null,
+              "pssMiB": 4.29
+            },
+            {
+              "pid": 3114934,
+              "ppid": 1996367,
+              "exe": "git",
+              "entry": null,
+              "pssMiB": 5.38
+            },
+            {
+              "pid": 3115674,
+              "ppid": 3114934,
+              "exe": "git",
+              "entry": null,
+              "pssMiB": 338.27
+            },
+            {
+              "pid": 3188908,
+              "ppid": 1996367,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 12.77
+            },
+            {
+              "pid": 3189290,
+              "ppid": 3188908,
+              "exe": "node",
+              "entry": null,
+              "pssMiB": 402.28
+            }
+          ],
+          "policies": [
+            "{\"MALLOC_ARENA_MAX\": \"2\", \"PAPERCUSP_BACKGROUND_WORKERS\": \"1\", \"PAPERCUSP_CLUSTER\": \"0\", \"PAPERCUSP_CLUSTER_WORKERS\": \"0\", \"PAPERCUSP_EXPECTED_OPERATOR_PROCS\": \"6\"}"
+          ]
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Moving production workload; these intervals are not matched idle/ordinary or baseline/candidate windows.",
+    "Mapping names and PSS do not identify native allocation ownership or allocator fragmentation.",
+    "Service cgroup membership does not prove the current process-parent tree; listed PPIDs need independent lineage reconciliation.",
+    "Vanished processes are explicitly notChecked. Host PIDs remain stable during each service read.",
+    "The six release HTTP workers and MALLOC_ARENA_MAX=2 policies are preserved.",
+    "No signal, inspector, GC, queryObjects, profiler reset, snapshot, restart or memory-policy change was made.",
+    "No production memory reduction or leak is established.",
+    "Original capture completed; only code:run reporting JSON.parse failed on bounded output. Recovery reused the full durable log without rerunning."
+  ],
+  "evidenceRecovery": {
+    "summaryLog": ".papercusp/scratch/bash-0894c0a1-88a.log",
+    "descendantLog": ".papercusp/scratch/bash-0bdab2fa-e71.log",
+    "summaryLogSha256": "fe8f6218d44cf27595242368f2f3053f96b94501683e8ac3fe86555ea0f2a462",
+    "descendantLogSha256": "ee6265f5b029ad4a16294b5c32e2e1666f24c6cc9104ee3504ace8adecb3c524"
+  }
+}

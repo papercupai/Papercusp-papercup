@@ -1,0 +1,1560 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005661",
+  "parent": "WI-10004890",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "planItem": "P-011",
+  "scope": "NEW private request-only serving-artifact copy and current exact-ID analyzer/native tooling; no production physical-memory or final acceptance claim.",
+  "rawReceipt": {
+    "path": "docs/evidence/papercusp-oct1-p011-exact-owner-retainers-r1-2026-10-02.json",
+    "bytes": 847097,
+    "sha256": "283cd13234d20676fc29a85bf883c21b607f099da449c404ca3c1ece7f4bd235"
+  },
+  "run": {
+    "id": 20568411,
+    "status": "pass",
+    "commitSha": "f14b24d3b253dba254d764066d1fce3d5e0566e5",
+    "worktreeDirty": true,
+    "source": "local",
+    "durationMs": 170418,
+    "filePath": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "workspace": "papercusp-workspace",
+    "harness": null,
+    "passed": 1,
+    "filteredSkipped": 18,
+    "originalRuntimeTimeoutMs": 300000,
+    "scopeWarning": "UNSCOPED ledger row; cannot be bound as harness-scoped proof. No relabel or replay was performed."
+  },
+  "preflight": {
+    "runStartedAt": "2026-10-02T21:23:14.650359+00:00",
+    "healthSha": "69c1baeac4",
+    "pid": 2447982,
+    "startTicks": "2359701",
+    "cwd": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-69c1baeac40c.a4UliM/checkout/apps/operator",
+    "entry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-69c1baeac40c.a4UliM/checkout/apps/operator/dist-host/hono-host.mjs",
+    "hostDirectory": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-69c1baeac40c.a4UliM/checkout/apps/operator/dist-host",
+    "bundleSha256": "3016a5ef5f58c877d6bc9fbc85fd15d3341683c31a19c862059ebdf2f3386623",
+    "sourceHeadAtLaunch": "0333a70a715066f29e10edac911e39aeaa95242f",
+    "sources": [
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1"
+      },
+      {
+        "path": "scripts/cdp-inspector.d.mts",
+        "sha256": "767e8c5df22121da5a3198dc56d239bf1e5f0e92b0b2631c47df0578b59636de"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "sha256": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.d.mts",
+        "sha256": "6a93b341aaa087fd2348241c9810f9540678179fa5bb501c9549fb8695a05c7d"
+      },
+      {
+        "path": "scripts/lib/governed-test-process.mjs",
+        "sha256": "6fbe6cd99710d7d840631a06385ce440fdfb7e543624c5c37898a195d1ac4d83"
+      },
+      {
+        "path": "scripts/lib/governed-test-process.d.mts",
+        "sha256": "46ead2d4638edb4e31ef41d3fe1c34fcb5abb8bc7b2b267c24d683038e53b8c0"
+      },
+      {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "sha256": "bc91869ad2498905f31851450bace9b2970c1ead2aeb00af98194408913e6e2b"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "sha256": "72d32d380c424e324fb9899e6875fac401087d0c87e8d27821d42baa516c266b"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      },
+      {
+        "path": "scripts/test-files.mjs",
+        "sha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.toml",
+        "sha256": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.lock",
+        "sha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded"
+      },
+      {
+        "path": "scripts/heap-retainers-native/src/main.rs",
+        "sha256": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9"
+      }
+    ],
+    "distFiles": [
+      {
+        "path": ".bundle-fresh.json",
+        "sha256": "db3fcaf71e4d3d41ce444ebe8f626a03213fdee7a2e3986e9710edfb85b90aa9"
+      },
+      {
+        "path": "admission-jobs.worker.mjs",
+        "sha256": "46238ded66aed12ff7ec1927eaef14248446dcb5903fd2d7525555340c355aae"
+      },
+      {
+        "path": "blueprints/audit/blueprint.yaml",
+        "sha256": "86f7b8d99bb8baf95450f1d0e92b5746e3920d32482e8f478bb1990c8ecaf7f5"
+      },
+      {
+        "path": "blueprints/base/blueprint.yaml",
+        "sha256": "3a306d4492b11f7d5c2cdd52d4f20b58ec2c446ae316c3a84547c07f49e6bdd3"
+      },
+      {
+        "path": "blueprints/base/prompts/agent-base-preamble.md",
+        "sha256": "77b8176b50fe31053b6e6c7015efa22f1d51dfffa74f3a56f849486718fd5316"
+      },
+      {
+        "path": "blueprints/base/prompts/architect.md",
+        "sha256": "4cd03751dd21b4f23b254bdba3ab253a17364b6a707ec6798362977c09069e40"
+      },
+      {
+        "path": "blueprints/base/prompts/auditor.md",
+        "sha256": "ec7b0c60ad67642e6254f7ebc2b8dcd7f92a852c7ac19755685ec8d7f936fa5b"
+      },
+      {
+        "path": "blueprints/base/prompts/committer.md",
+        "sha256": "5b3149c4c6578dbcca948639f120dd7f00a2ff5f05aabffd2c91267088d2790f"
+      },
+      {
+        "path": "blueprints/base/prompts/content-fixer.md",
+        "sha256": "1657e94b97f28d4000d0915d3e3004a3daea4bd6f7604e3d176f1588dd673e28"
+      },
+      {
+        "path": "blueprints/base/prompts/crosscheck.md",
+        "sha256": "346881db0e66a530c57ac2130c2627ebe4721eb6f9fada98a6232ea4aa441bde"
+      },
+      {
+        "path": "blueprints/base/prompts/cup.base.md",
+        "sha256": "ca8c211ddca33e75d4fb715b9932e3165c16d2ab555ce98c504ac2bac7385685"
+      },
+      {
+        "path": "blueprints/base/prompts/curator.md",
+        "sha256": "ace450bb282f909d04469e3483e44a2d4bfdc569a785dc84132ba9ed044ece85"
+      },
+      {
+        "path": "blueprints/base/prompts/debugger.md",
+        "sha256": "cc701fd1a62fabd94e8e00293cc3cc5c3ea1dfb1800fff7134c789207e6dd96e"
+      },
+      {
+        "path": "blueprints/base/prompts/dimension-reviewer.md",
+        "sha256": "fc35535424354f4ad951ce7afe9ead21735471ef9dc4935aeea2a28eb93a01ea"
+      },
+      {
+        "path": "blueprints/base/prompts/directed-implementer.md",
+        "sha256": "47e17a3ff95cc577dee1d12b1494e61519580a525360b62eb07da65c6cdfe6d0"
+      },
+      {
+        "path": "blueprints/base/prompts/director.md",
+        "sha256": "1d2845cb85952626c96a3a71ac125ce0407973c4dac38786ef44fae378495ae3"
+      },
+      {
+        "path": "blueprints/base/prompts/discoverer.md",
+        "sha256": "caf219054cd1d4016fa44c81035d0ee3fa7ea3efc9c9286fd637e7613710de69"
+      },
+      {
+        "path": "blueprints/base/prompts/doc-steward.md",
+        "sha256": "a90a974141d451ef47089adcac9215aff0c6c4d0d97ebd2036be48dc52fd0c33"
+      },
+      {
+        "path": "blueprints/base/prompts/documenter.base.md",
+        "sha256": "fde8f2f9fcbf7b9469f3d829bfaab4769683a9641137c1bedd9db7d7e6ef3b48"
+      },
+      {
+        "path": "blueprints/base/prompts/documenter.md",
+        "sha256": "90e8abbfab793651846d736751deea947af21ef34cf9299ee0d99e2a96ad8817"
+      },
+      {
+        "path": "blueprints/base/prompts/finding-verifier.md",
+        "sha256": "8839548e1f5139558f01402c2ae063e9511543c6b02ebd423ba2d452da649934"
+      },
+      {
+        "path": "blueprints/base/prompts/findings-synthesizer.md",
+        "sha256": "1985f626f15d58a7acec4092b2a5764854f54c2b658c4d31e2d2ec18a1fc18b5"
+      },
+      {
+        "path": "blueprints/base/prompts/foreign-session.md",
+        "sha256": "b3e4c5c180bafd8260ab9af0b9a08c78a3a2cd062f43af72da6b8616f2f3d1c6"
+      },
+      {
+        "path": "blueprints/base/prompts/gym-director.md",
+        "sha256": "6f73a201a1acdd41c40b2c49c5e7fb38838175a0bb17d80af6bb98bbeaa7164f"
+      },
+      {
+        "path": "blueprints/base/prompts/infra-reviewer.md",
+        "sha256": "9f8f906e0d3eae446cf8e3002e7e5f710df0f052cea5e7261086336512272fc6"
+      },
+      {
+        "path": "blueprints/base/prompts/infra-reviewer.role.json",
+        "sha256": "9b3bddbf5b0cfdfbf434b19d95871a6fe694e7c4fb4043483b2a65cdf84368e3"
+      },
+      {
+        "path": "blueprints/base/prompts/judge.md",
+        "sha256": "9a994d5bd1da3888da605fa584d5609e7aa25faeb195b53ac00f1e60edd0f016"
+      },
+      {
+        "path": "blueprints/base/prompts/kettle.md",
+        "sha256": "591c496f45c728014699156c8592332fd4fd31fae9e38842eddb742bcc882bf2"
+      },
+      {
+        "path": "blueprints/base/prompts/merge-resolver.md",
+        "sha256": "8e78280d0c6c0cc5aecee4640eec33c457c855d0ff86a09410ae8ffb12a4940c"
+      },
+      {
+        "path": "blueprints/base/prompts/migration-director.md",
+        "sha256": "9c0453c238e3cff73a71282a73c8ae93a90ae6370d7714fa7f257d2916a0cb78"
+      },
+      {
+        "path": "blueprints/base/prompts/migration-verifier.md",
+        "sha256": "b238f46c983403b6aa1685ef82deaf7b582fa5eb641fd5dfe8073b7dd116c83d"
+      },
+      {
+        "path": "blueprints/base/prompts/monitor.md",
+        "sha256": "6290faf0dfba9f9fdd009c0f95e2d0dba2b8e4a6e1539e3fe9b78f6170f8e44a"
+      },
+      {
+        "path": "blueprints/base/prompts/mug.base.md",
+        "sha256": "316646aa4c45526ecf465239b1223b0b03abde58f81e67313a04e76daa859047"
+      },
+      {
+        "path": "blueprints/base/prompts/mug.md",
+        "sha256": "d595e97506027499e02c795adbbbba69940bb40cb28617e8e95cafa3c8fe9ea0"
+      },
+      {
+        "path": "blueprints/base/prompts/operator.md",
+        "sha256": "2aa83da48a9ad0916519ae3e149b86cbd9d14640c5d3b469cb6c5aee9ac2a447"
+      },
+      {
+        "path": "blueprints/base/prompts/orchestrator.base.md",
+        "sha256": "690f669d4e8334b44f1831035c92216317c655a329567bcff8c108388c21d727"
+      },
+      {
+        "path": "blueprints/base/prompts/orchestrator.md",
+        "sha256": "42ebfed7b609dbb3eb0db42be4a76b13cd60bf9653287ac0a73326a88ce86970"
+      },
+      {
+        "path": "blueprints/base/prompts/pair-director.md",
+        "sha256": "1d8b4e70612ab4635bfd23daceb6592ae0fc5097ff0b6f03c7d401dd493de064"
+      },
+      {
+        "path": "blueprints/base/prompts/papercup-deep.md",
+        "sha256": "35613372f59a205a82280562777cf95d42482781c23def8114e16507d47df9b2"
+      },
+      {
+        "path": "blueprints/base/prompts/papercup.md",
+        "sha256": "97e5e9df2a7529ff7a4bde7fdb18155fddd5d04d9e7bb16166ff2c950a90f82e"
+      },
+      {
+        "path": "blueprints/base/prompts/planner.md",
+        "sha256": "2d1c3d89892ca60dede54cdcd33c4b69c92f29a7f89571fd75851eaf97303a0a"
+      },
+      {
+        "path": "blueprints/base/prompts/promote.md",
+        "sha256": "bd103639cecb0e218dc3769517da0a59ac6a50508bdaa38203ec9c758b61d92a"
+      },
+      {
+        "path": "blueprints/base/prompts/proposer.md",
+        "sha256": "2718b14e5a4ee2146ffe3db50628feb343c3c6808d00fe0aedbb6871d8e84a6a"
+      },
+      {
+        "path": "blueprints/base/prompts/release-fixer.md",
+        "sha256": "a36fcfbffae896c2d003f26ac940728468fbdbfcc5c581358407d81585feb8a3"
+      },
+      {
+        "path": "blueprints/base/prompts/release-manager.md",
+        "sha256": "3617532fda925f2ba9f7f45e1af03feb3d9b6bb5697b91e0cb4682ecbbef9820"
+      },
+      {
+        "path": "blueprints/base/prompts/research-director.md",
+        "sha256": "1a1bdc6f46ef086496dee566f5429c9decc4a942fee8ad4fc12066c929879a52"
+      },
+      {
+        "path": "blueprints/base/prompts/researcher.md",
+        "sha256": "070888940726811311524ea0a93977813fb34cb9d981a8a80b3791584e5b8784"
+      },
+      {
+        "path": "blueprints/base/prompts/review-director.md",
+        "sha256": "6596e73ac9c66314be7ecaef811fc80d647119a8f76a3e7edb3b60a1299bce4f"
+      },
+      {
+        "path": "blueprints/base/prompts/reviewer.md",
+        "sha256": "62b555b138d01df9545d8e79668be0fe1eec23f96267ff5544c06414391ee252"
+      },
+      {
+        "path": "blueprints/base/prompts/scanner.md",
+        "sha256": "5f68367fc69c44087b3d304d98e7f4280c83ba6684b51cdc319ddfd27cdc58a7"
+      },
+      {
+        "path": "blueprints/base/prompts/scoper.md",
+        "sha256": "c216cb8bc92885c25161ee8d66a46e169468903bd3a4cfcafc43b32b973e33b6"
+      },
+      {
+        "path": "blueprints/base/prompts/searcher.md",
+        "sha256": "6dbadfb95856f120dd7e4777d4285ff1fa03a04299d94aa2ec77f905e8eb6251"
+      },
+      {
+        "path": "blueprints/base/prompts/security-reviewer.md",
+        "sha256": "04f9ff7d88342363d4937dab14448239f46f57b422c3cf3180536a59b29fdf80"
+      },
+      {
+        "path": "blueprints/base/prompts/security-reviewer.role.json",
+        "sha256": "69736020a98a34536e5ce14ceb9ddd1a1ab00ca0fb8ccb878eac7a3b196480d9"
+      },
+      {
+        "path": "blueprints/base/prompts/su.instance.md",
+        "sha256": "36574e5501969236d56e29d2b3044262f6f5a4c89bfc689c404070f7f85236f6"
+      },
+      {
+        "path": "blueprints/base/prompts/su.kernel.md",
+        "sha256": "0944486679140578d03fded283b4211aac503bd187164aaf445a69dd0e13e379"
+      },
+      {
+        "path": "blueprints/base/prompts/su.md",
+        "sha256": "cde00dcce3292982a7b31687bc0a108a5d44868a483763518b705f4aee77133d"
+      },
+      {
+        "path": "blueprints/base/prompts/su.practice.md",
+        "sha256": "ac23c0501396047e5f885010ee77cd35075493efb017f0db27b1770828b9da6c"
+      },
+      {
+        "path": "blueprints/base/prompts/summarizer.base.md",
+        "sha256": "463b2a1ffe509df81f30244cd4290db1c1eb1688ad681b42cd39b0496272ae7a"
+      },
+      {
+        "path": "blueprints/base/prompts/synthesizer.md",
+        "sha256": "8be644cd95ee726d974e0ca9b8f2cdd7f4bb37d8e0709b9311481dd41609eda2"
+      },
+      {
+        "path": "blueprints/base/prompts/task-generator.md",
+        "sha256": "14aeb15e5654275644c943de1fc72e78d3273cb4d23dc23d14b0614879da1f38"
+      },
+      {
+        "path": "blueprints/base/prompts/test-writer.md",
+        "sha256": "910d1719174b2a93c37cc219604461428954fb06b6134285219fe566bcced6d1"
+      },
+      {
+        "path": "blueprints/base/prompts/tester.md",
+        "sha256": "e0ebe494d834be922a26b843e2f691e5c85af77deda574468ab54aa901b15f69"
+      },
+      {
+        "path": "blueprints/base/prompts/transformer.md",
+        "sha256": "063400cf7f21e7dc983e738353df805f949c2695414fe1525bd6669314ebbbe7"
+      },
+      {
+        "path": "blueprints/base/prompts/ui-qa.md",
+        "sha256": "114734961b7419d2a3d017b3a00d4ba35048b8542bfd3df5986865fbe567b3c2"
+      },
+      {
+        "path": "blueprints/base/prompts/validator.base.md",
+        "sha256": "ade0ce078ff4c8d69444afd3fd72138585446194d4d435e48d74671b3022d848"
+      },
+      {
+        "path": "blueprints/base/prompts/validator.md",
+        "sha256": "acdafb20927516df17aa911b0785ee809d3eb1e751c5088c75e94b5fe272fa25"
+      },
+      {
+        "path": "blueprints/base/prompts/variant-runner.md",
+        "sha256": "40234c50ebd21c1b27dc1429c75d9a6fbc43b226b4235b0d53cc2b81d760aaad"
+      },
+      {
+        "path": "blueprints/base/prompts/verifier.md",
+        "sha256": "c8292eba887c58f51f6cb66f5dabec21612ff28c6d149babde7250582a9c3be1"
+      },
+      {
+        "path": "blueprints/base/prompts/worker.base.md",
+        "sha256": "25e148f0e751947c409b11bd6a9039d4efbedd6cce0a3a48fe868004eaee3256"
+      },
+      {
+        "path": "blueprints/base/prompts/worker.md",
+        "sha256": "da04402dd58fdd01812a5220a1708472dbb8e7fd4a50f54adc60fb4db8706055"
+      },
+      {
+        "path": "blueprints/blueprint-operation-worker/blueprint.yaml",
+        "sha256": "33d25124e49325c6c934d1f45d5a71e32008451d7a780ff69023e119374ed767"
+      },
+      {
+        "path": "blueprints/blueprint-operation-worker/prompts/domain.md",
+        "sha256": "6034f26a4bf320b0c5ec697d43ba0b9f9684655a580ceb2a18ee6dd0dba534b8"
+      },
+      {
+        "path": "blueprints/calibration/blueprint.yaml",
+        "sha256": "fde2fc53b5a69d5b8cdc5dae627ebd070ff2a1062abada53f9f640be6fdfc846"
+      },
+      {
+        "path": "blueprints/change-ledger/blueprint.yaml",
+        "sha256": "20557a4eed8587b6b8a40d046b7a266ecc833f5d653d6fa027c108776a258d90"
+      },
+      {
+        "path": "blueprints/coding/blueprint.yaml",
+        "sha256": "325ec5597c096bf192084469979def710afd270154a3ee41d0122ed850041b34"
+      },
+      {
+        "path": "blueprints/coding/prompts/cup.md",
+        "sha256": "33fefa888eecef196fd18fa55a205a5137ed7e039598df050a035754fd7bf838"
+      },
+      {
+        "path": "blueprints/coding/prompts/kettle.md",
+        "sha256": "9f56fed08ffbd25ee05d2b0a677e444e44efce581f10e92c9148c69d7af41e4e"
+      },
+      {
+        "path": "blueprints/coding/prompts/mug.md",
+        "sha256": "7217c95e7a56daf8791ea62c956cdc123504e1c071f05893d166774d07f1e8bd"
+      },
+      {
+        "path": "blueprints/coding/prompts/operator.md",
+        "sha256": "64c2f95010221da5b507d32b283b6447fc7ead903aa68333203d32bb6fb2e1d9"
+      },
+      {
+        "path": "blueprints/coding-factory/blueprint.yaml",
+        "sha256": "6310f9e2850d01c4bdf867d5dd5412621239209b2d3a275bc1a8a3c7ec2b9583"
+      },
+      {
+        "path": "blueprints/coding-factory/prompts/agent-base-overlay.md",
+        "sha256": "c425aeaf3d74c0b8efff6ba0ba8ee4577718d56f76770da6a310fc5caf20f180"
+      },
+      {
+        "path": "blueprints/coding-solo/blueprint.yaml",
+        "sha256": "f2c402cdc9664e990f1d8dd0299ea21a6a472910059d16ea2f4684aeafda84d9"
+      },
+      {
+        "path": "blueprints/coding-solo/prompts/worker.md",
+        "sha256": "421195bdeccd7a3c82de6d8bc5c5fc3c961cb147c19c70bd5e781ad97c4d9939"
+      },
+      {
+        "path": "blueprints/content-fix/blueprint.yaml",
+        "sha256": "49af4aa3e64201adbf870b9250175ba1109556bfd2aaa6b73b8c2bcc2d48c861"
+      },
+      {
+        "path": "blueprints/cup/blueprint.yaml",
+        "sha256": "7fb6e79d5d896ace42c8b16210a0ef36ad8adfdd3017fc3c7d017aa170db2a43"
+      },
+      {
+        "path": "blueprints/deferral-interest/blueprint.yaml",
+        "sha256": "b3b64d3a5b857d7eb6a4b8bc9be1c8aea94b39000fb708b4613e4a5240a5a6ae"
+      },
+      {
+        "path": "blueprints/deliberate/blueprint.yaml",
+        "sha256": "87e140409edf6691d8bddc313569a1fc47469afbcc0adc688a39d4be87451839"
+      },
+      {
+        "path": "blueprints/deploy/blueprint.yaml",
+        "sha256": "3d2c103a737be185420a906f82b6253a7e581d198f6e8c3ad2822a18fe3dd2fa"
+      },
+      {
+        "path": "blueprints/dist-blackboard/blueprint.yaml",
+        "sha256": "7822aa5e2b3de0d4aefe981ac0b862e8d154db3a8cea59df648e15cb3a114936"
+      },
+      {
+        "path": "blueprints/dist-broadcast/blueprint.yaml",
+        "sha256": "0f12432470e07013ee8cc8d6dbe39031944da80badd4fc754ea1858349450447"
+      },
+      {
+        "path": "blueprints/dist-peer-review/blueprint.yaml",
+        "sha256": "1167d50514edf31650fe8911db901979a3079d95a349185512bddac0885cb71a"
+      },
+      {
+        "path": "blueprints/dist-repo-huddle/blueprint.yaml",
+        "sha256": "c4bed6f463ff2cd13901a9c511707ff747f7ec8e144fdbbf2e58c496aa7b72f7"
+      },
+      {
+        "path": "blueprints/doc-steward/blueprint.yaml",
+        "sha256": "388ce150a74aadd7aa9b148fde817db2b066ca56c2622806963c28a43041dd2d"
+      },
+      {
+        "path": "blueprints/ensemble-solve/blueprint.yaml",
+        "sha256": "125d84212ea3db8013812c4946c9d77535590ffaa01cdee06236ac60383ea605"
+      },
+      {
+        "path": "blueprints/external-bench/blueprint.yaml",
+        "sha256": "a7becc5ee8dffe264090130a1474b6d9e2efdaf5cbc7dcae6a643319d1d5c9f9"
+      },
+      {
+        "path": "blueprints/fleet-ekg/blueprint.yaml",
+        "sha256": "1bb7dbe46801c7e9822df7396ab76df3458d7743c61686418d9e48d03bc37511"
+      },
+      {
+        "path": "blueprints/gaia-agent/blueprint.yaml",
+        "sha256": "8c8d8cdaf4a24c0993ad69b6c290d473796c3d05f148d6822d7d4d52e77ee651"
+      },
+      {
+        "path": "blueprints/gaia-agent/prompts/gaia-worker.md",
+        "sha256": "32a1195be058037c95db95a87d2120d4cf1dbe0190e0ea23aa10b85429ea0c85"
+      },
+      {
+        "path": "blueprints/graduation/blueprint.yaml",
+        "sha256": "0a431aa2407b633abd82456007dc10b7ff2c71992300105f9a87e6f3e267e543"
+      },
+      {
+        "path": "blueprints/gym/blueprint.yaml",
+        "sha256": "35a0e4c341eb20a2046e3e6d2539152765fd20499ca216d041dabbe4ec0adf5f"
+      },
+      {
+        "path": "blueprints/gym/prompts/judge.md",
+        "sha256": "b5d0dcdb709d3e5db112cfdb6259a83cba865095f1a03c8ad469e095b96c3d65"
+      },
+      {
+        "path": "blueprints/hier-lead-worker/blueprint.yaml",
+        "sha256": "1a137b9926307e7a0dd167b238a125dac299b5d3699beb03e2c3dbabf378d068"
+      },
+      {
+        "path": "blueprints/implement/blueprint.yaml",
+        "sha256": "2cf86b367557d23be5b371175563b332205ca1bb47b4210dbe67cb73ac51a46e"
+      },
+      {
+        "path": "blueprints/implement/prompts/worker.md",
+        "sha256": "d8e1a925ec7ebd18d209919ead5a859616358e500e5afed8b0568e117292e427"
+      },
+      {
+        "path": "blueprints/iq-battery/blueprint.yaml",
+        "sha256": "ecd0ed6ddcba98df87898773f4aeaad90c36f4a78ff895f66d1666f17eff020e"
+      },
+      {
+        "path": "blueprints/memory-live-recall-canary/blueprint.yaml",
+        "sha256": "14bb1f30fdf6aa4fc0ba222260d550e0133cf50bf9a2a8ce73e083e446c18da4"
+      },
+      {
+        "path": "blueprints/memory-precision/blueprint.yaml",
+        "sha256": "868f778e8042d5da822cd2a993a2ee1a5495aa9f9e6ab4d7b2a4ee2809a0cd26"
+      },
+      {
+        "path": "blueprints/merge-resolution/blueprint.yaml",
+        "sha256": "d7b988bb71e42b60586d5b620a14946b03f808dbe90585e330b391b287848350"
+      },
+      {
+        "path": "blueprints/migration/blueprint.yaml",
+        "sha256": "4fa1844fca42cb1de8eea33160bb53bfbf1969fb463e6ef965c90256d6fa606d"
+      },
+      {
+        "path": "blueprints/negative-space/blueprint.yaml",
+        "sha256": "7eedfebfb154f7f24547f0cb4b7446c9726d5cf3f7945ec2ec57661ecf889955"
+      },
+      {
+        "path": "blueprints/neologism/blueprint.yaml",
+        "sha256": "9c99e778c610eff69c45e2d0a368d913942e6846f00921de2748def422030847"
+      },
+      {
+        "path": "blueprints/operator.audience-engineer/blueprint.yaml",
+        "sha256": "f4aee9ceb679ab757d1f00ac565b708acb9b3082f5e5c60c1a4e7e2e471f23ac"
+      },
+      {
+        "path": "blueprints/operator.audience-engineer/prompts/audience.md",
+        "sha256": "4b70d2449ad01397ae4c6c6bb402828ae95cff1a97e04e143986c9179951afb5"
+      },
+      {
+        "path": "blueprints/operator.audience-novice/blueprint.yaml",
+        "sha256": "ee77de1112271eb25c60805663d1f1b8416ecdf6652e517ab7f23b8c250ca319"
+      },
+      {
+        "path": "blueprints/operator.audience-novice/prompts/audience.md",
+        "sha256": "679b1ec482a2d235d78670a079d8862a9b4d4666f851da3f5b814d71fa9ecad3"
+      },
+      {
+        "path": "blueprints/pair/blueprint.yaml",
+        "sha256": "e2b3a50553718e685e07130b340ba93fd881eb59654979ac5adf77d370ae59e6"
+      },
+      {
+        "path": "blueprints/papercup/blueprint.yaml",
+        "sha256": "dd4f47f97932bee0d37a51210b333d0ab47e08f47748f9a2b74f030bd6c55721"
+      },
+      {
+        "path": "blueprints/papercup.audience-engineer/blueprint.yaml",
+        "sha256": "b34be931b86e8a70354f0ad65da8da4f435c288683e7b441a64e59d186a3f548"
+      },
+      {
+        "path": "blueprints/papercup.audience-engineer/prompts/audience.md",
+        "sha256": "495bd54da8e8e8a43ffd0ac44fbc42caebe9e8e58218f05944df5658b2839c81"
+      },
+      {
+        "path": "blueprints/papercup.audience-novice/blueprint.yaml",
+        "sha256": "13c633a040bd244755baa196478b2086c44612d3f624bcc71d84217f2ca808f2"
+      },
+      {
+        "path": "blueprints/papercup.audience-novice/prompts/audience.md",
+        "sha256": "beeda5318dd9a6bc662590046444f37be7c932abb05a66eb2351bd1cf8b365a5"
+      },
+      {
+        "path": "blueprints/papercusp-engineer/blueprint.yaml",
+        "sha256": "82b3f7c65c380a136454fcffddf1151725aed4fac784b221cffc5a6fd854db72"
+      },
+      {
+        "path": "blueprints/papercusp-engineer/prompts/agent-base-overlay.md",
+        "sha256": "b9cae0efa4d2a533dc7379f8e06e40c8dd3b27314c8151daf79a6822fd9bd68e"
+      },
+      {
+        "path": "blueprints/pot-eval/blueprint.yaml",
+        "sha256": "65d6807ef8da47cdbc0c0fa6319640f88d1bfd691a9703d3560ba45421b20126"
+      },
+      {
+        "path": "blueprints/prompt-ablation/blueprint.yaml",
+        "sha256": "7eead8cb58e6b664071b7f65c96990ce6734e7a16a19a1a349796435c9a9ffd0"
+      },
+      {
+        "path": "blueprints/red-queen/blueprint.yaml",
+        "sha256": "662d49a7120e57a911668ad0c44294a6c5b31d0c87402b3fdd6300fa85df8903"
+      },
+      {
+        "path": "blueprints/regret/blueprint.yaml",
+        "sha256": "704bb31b0e59f4e499349957cd370b05ed9546acb056feec3140b7d8481c6675"
+      },
+      {
+        "path": "blueprints/release-fix/blueprint.yaml",
+        "sha256": "cb674fc5a08184ac29032fd8576827c55d66f562b2b44fd1b1491dbb39434b29"
+      },
+      {
+        "path": "blueprints/research/blueprint.yaml",
+        "sha256": "7006b37b052608992fbb1bf0b73acffb7e894d7452fdb75b16f8b8cf92489d31"
+      },
+      {
+        "path": "blueprints/research-steward/blueprint.yaml",
+        "sha256": "34b438fc81922eb339125da3ddd2aa475202f727fd69321f87b6c0a03acaaaec"
+      },
+      {
+        "path": "blueprints/research-steward/prompts/domain.md",
+        "sha256": "29c530d925c1aa9935b52f3a184fbcc68ba70770a943fef0fef7e9484276755e"
+      },
+      {
+        "path": "blueprints/review/blueprint.yaml",
+        "sha256": "dd07fb98ea5cdf2256a0c4da5e26bf00d7d62a3b2c7158feecb407c253bbad1c"
+      },
+      {
+        "path": "blueprints/scan/blueprint.yaml",
+        "sha256": "6494f05a642eb7c0a5d1171a7b0bac616ba9dccc0bebe9cfa95ebf45ab3249f2"
+      },
+      {
+        "path": "blueprints/scan/prompts/scanner.md",
+        "sha256": "5e1c5707310fd15113c0108950d7355175b881d339a9afa7482e8cddd0dac361"
+      },
+      {
+        "path": "blueprints/scout/blueprint.yaml",
+        "sha256": "afb1ac8b6155283732a4e08c7b0bdbf198742e763d1ddf4dd63c7919ad6c0e3b"
+      },
+      {
+        "path": "blueprints/single-agent/blueprint.yaml",
+        "sha256": "e699be95faac3efc15398b7beb4a118f96cc6aebd681fadb795155df290d62fb"
+      },
+      {
+        "path": "blueprints/su/blueprint.yaml",
+        "sha256": "d3b540f02e32d6d737195a9af59f4f75a751783cffb392b3c6949b4ba68dfc28"
+      },
+      {
+        "path": "blueprints/su-collaborator/blueprint.yaml",
+        "sha256": "dccbc64e136880f5e0bc722cfb4be4d48f4bb71c0d8a2e79818bf3760dba6120"
+      },
+      {
+        "path": "blueprints/su-collaborator/prompts/collaboration-stance.md",
+        "sha256": "26a67e710e7aa51df9cc1fbf73fb3224ebdd544df627f37a2abf7da12bfe2bfb"
+      },
+      {
+        "path": "blueprints/su.fleet-leader/blueprint.yaml",
+        "sha256": "f1a982cd4acfeade12605cd7c7a737f8fc5190940783cd0dbf0428f3fb8e446e"
+      },
+      {
+        "path": "blueprints/su.fleet-leader/prompts/fleet-posture.md",
+        "sha256": "a063e39b38fcabb7a787c2fc16922bb781d896b61472fdfa5e2b3defffa1c8b2"
+      },
+      {
+        "path": "blueprints/su.fleet-member/blueprint.yaml",
+        "sha256": "f2684c4c3c62494b007458b8c556db7db885ad7f42b87422cb34d81f8f967af7"
+      },
+      {
+        "path": "blueprints/su.fleet-member/prompts/fleet-posture.md",
+        "sha256": "72597f9cda7e159e49451249196dc3134368bed844e807781c4a412753e55170"
+      },
+      {
+        "path": "blueprints/su.mode-audit/blueprint.yaml",
+        "sha256": "93000bd57a3e2354b303f2c1fabef0ba6894f08fd2709830ddb8e1e7a27c3fa5"
+      },
+      {
+        "path": "blueprints/su.mode-audit/prompts/audit.md",
+        "sha256": "bd9726e8f1b6b4afa789df2a828195dd8d3d329ce9424e70fc5b5b5fa66f79e7"
+      },
+      {
+        "path": "blueprints/su.mode-auto/blueprint.yaml",
+        "sha256": "3d5106dfe5ec1cf2ecaff051767b487b1de1d01463132080f08d0f26d41b2f7f"
+      },
+      {
+        "path": "blueprints/su.mode-auto/prompts/autonomy.md",
+        "sha256": "6dcae35526f7dd1f29954c8da11eaf5dff8e1648232811b9e1494d0e04686496"
+      },
+      {
+        "path": "blueprints/su.mode-drain/blueprint.yaml",
+        "sha256": "242fca04bc1d22caa04b53d5dc8e358c93ed96ae83684d120cc1dd046c017014"
+      },
+      {
+        "path": "blueprints/su.mode-drain/prompts/objective.md",
+        "sha256": "a2b3743c173ded344a1336f7c63fb9c2a70311da6abbb65e642668dc6e720c17"
+      },
+      {
+        "path": "blueprints/su.mode-goal/blueprint.yaml",
+        "sha256": "dd455ea81c6970f00189da0ce46237d64587ed96977a6b0be46c1e685bb44294"
+      },
+      {
+        "path": "blueprints/su.mode-goal/prompts/goal.md",
+        "sha256": "d0eed0f96ecafc083088d1dab66a606ca0caed35f46247e1937e0258e98b5a11"
+      },
+      {
+        "path": "blueprints/su.mode-grade/blueprint.yaml",
+        "sha256": "06107a9063cd87d0a375f29533c001743d565b3d149cdcc4122987d7af7dd8a6"
+      },
+      {
+        "path": "blueprints/su.mode-grade/prompts/grade.md",
+        "sha256": "70213dd85c0180ca3015400c8e1538ee8e2cd05af91b829b91047cfad62c3f03"
+      },
+      {
+        "path": "blueprints/su.mode-ideate/blueprint.yaml",
+        "sha256": "9cb132a144085101100212dba1d6922d355c17ba31befa3409ac07157321054a"
+      },
+      {
+        "path": "blueprints/su.mode-ideate/prompts/ideation.md",
+        "sha256": "0d7bedadbb3f978a02096b8c48333c66980227b7283b72e417799f0e17813ced"
+      },
+      {
+        "path": "blueprints/su.mode-test/blueprint.yaml",
+        "sha256": "443fde4048f1113f8b2b33ada36340bde2ec8ea4e7635417e8d6d06b00586c29"
+      },
+      {
+        "path": "blueprints/su.mode-test/prompts/test.md",
+        "sha256": "29dd79940e7929ce64c690c56baee552ca6f16ca44e4ebcecf4eff7434f36153"
+      },
+      {
+        "path": "blueprints/su.practice/blueprint.yaml",
+        "sha256": "474d483c678f9f72b68217d6bc08bdcbf126f98befa5f4cde3933d2279da5407"
+      },
+      {
+        "path": "blueprints/su.specialist-planner/blueprint.yaml",
+        "sha256": "7e78c29fc4b980a716d42a44984b094412e24487cd1ed16148d902e8973f2be2"
+      },
+      {
+        "path": "blueprints/su.specialist-planner/prompts/practice.md",
+        "sha256": "933d346c5ec09ca9189c408c46044f8c3a0ce4bd0a9d7cf48d60c9215495b67f"
+      },
+      {
+        "path": "blueprints/transfer/blueprint.yaml",
+        "sha256": "abea8f21576dba489d31a635a2b5d1a72b497d6b1f3388e5915811ae6aa974f1"
+      },
+      {
+        "path": "blueprints/vote/blueprint.yaml",
+        "sha256": "815e9f8defafe05443f9264fed4392b7f2803f44a4386c795382c416eca2420e"
+      },
+      {
+        "path": "blueprints/vote/prompts/advocate.md",
+        "sha256": "83797141f76021b98d64f42ba4ff589aed6621ba7f88324c4ed368335e9d3a8c"
+      },
+      {
+        "path": "blueprints/vote/prompts/voter.md",
+        "sha256": "13a317dafebfd2e450a2c95103d88b1a72f422d638678c107fd7c055fe9cc882"
+      },
+      {
+        "path": "blueprints/work/blueprint.yaml",
+        "sha256": "bcb9bc645559382f25d2ac88577ada55f7776d0654ef4d22fa702ffc3bc04273"
+      },
+      {
+        "path": "blueprints/work/prompts/cup.md",
+        "sha256": "2c136564551895b93e79f81488b79ec4b64794c6fefe7dcb5030cd00154aad35"
+      },
+      {
+        "path": "blueprints/work/prompts/documenter.md",
+        "sha256": "a350d0fd2896bb3f811de59ee9f75d87461b89569f87d6a1feeb67a5057e592a"
+      },
+      {
+        "path": "blueprints/work/prompts/judge.md",
+        "sha256": "cc87c780215cc2c091c05dd4141b79e9cd255a777ee685b545b0681efe8f37c6"
+      },
+      {
+        "path": "blueprints/work/prompts/mug.md",
+        "sha256": "4c8877fe2c9d2a6d0f8bcded1c78f2988557385a3adc4e0fdfd85505841918e3"
+      },
+      {
+        "path": "cpu-task-worker.script.mjs",
+        "sha256": "c80dc061f99a983f05b3b7e05833fc949fdd61b4fba858c681dbd13c6f2b56b2"
+      },
+      {
+        "path": "event-loop-sentinel.worker.mjs",
+        "sha256": "d98a36c766bc2c4a36aaf5b34c3b547145470bf5e6ab74d8407ddf0dcee04cc8"
+      },
+      {
+        "path": "git-ext-bridge.mjs",
+        "sha256": "0a11a7fc2e1f0eff6d0329a5cad6176bd5859f7e2f30907f8361a8c919259ea9"
+      },
+      {
+        "path": "hono-host.mjs",
+        "sha256": "3016a5ef5f58c877d6bc9fbc85fd15d3341683c31a19c862059ebdf2f3386623"
+      },
+      {
+        "path": "hono-host.mjs.build-error.log",
+        "sha256": "7d6c29de511b85aff8125108a3f8fa7ff92bde10e8a9427e4fbf97ae8b4bfb3f"
+      },
+      {
+        "path": "hono-host.mjs.build.lock",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "local-embedder-worker.script.mjs",
+        "sha256": "dca0a08083be22913cbbc46dcd0fb115f84d3cc16279f2e1465ec8ecafbb2e39"
+      },
+      {
+        "path": "local-reranker-worker.script.mjs",
+        "sha256": "6e0f04cad0090aa94106e694b88811f6f0f0ea349f93dce7ab2ebfaee162aab6"
+      },
+      {
+        "path": "mutation-probe-closure.worker.mjs",
+        "sha256": "fc4febf9df144a3a704fb29d5dd3dc6a7e4350bda29d17511bfcc0819187fb00"
+      },
+      {
+        "path": "runtime-workers.build-error.log",
+        "sha256": "92af466bfe13b7a1b384111347312ae3deb2989fed98b73a664656029ad2ef7d"
+      },
+      {
+        "path": "snapshot-fold.worker.mjs",
+        "sha256": "671227c52fa06735ded1c444022e3dd8d4fc2384077e25f30017ca0ce1b377a7"
+      },
+      {
+        "path": "sql/001-bootstrap.sql",
+        "sha256": "7c98b4420c3e621be411fc9843e5f2e65c233fc3c32ed7407f31afa84863bfab"
+      },
+      {
+        "path": "sql/002-tables.sql",
+        "sha256": "4fd64a490477d239a3682ee80a7ba329ee77f6bbdaaf8dffe70f60b5ac6eb43b"
+      },
+      {
+        "path": "sql/003-grant-cascade.sql",
+        "sha256": "3b0dba1bcc4ba89158509ca0f6fcbafecb5e0783f15cb37e350140b553a0104f"
+      },
+      {
+        "path": "sql/004-rename-coordination-domain.sql",
+        "sha256": "75a7bc4ef3b9db42197064839276e8913babe95f052e9be38d88adbc5cc01f71"
+      },
+      {
+        "path": "sql/005-named-resource-locks.sql",
+        "sha256": "f8cf9b85cd9ba5e6be453c77332bf086510cb1e780b063c0fa100a964ac0b4ae"
+      },
+      {
+        "path": "sql/006-dev-server-enforced.sql",
+        "sha256": "90a550ec9bb14c2ca22750a75424a18ba8777892f0d08efd11849dd05d2c4b39"
+      },
+      {
+        "path": "sql/007-register-more-resources.sql",
+        "sha256": "7c8da3f292f85d05f014c3ceed7235da70057bcd8c451c12c1858b2b90986cc7"
+      },
+      {
+        "path": "sql/008-register-git-sync-resource.sql",
+        "sha256": "ed826ab9949546392519d6450f0a0b37fda5267a964de0a4cfdc87b4135925de"
+      },
+      {
+        "path": "sql/009-resource-waiters.sql",
+        "sha256": "9b027d2845308e9adc2261767f49e3f874c47dacbbb312e348bc35c50014e501"
+      },
+      {
+        "path": "sql/010-resource-fencing.sql",
+        "sha256": "2664537a880ece7998e24e662d209bf80d290ceded58b63dc498778d1e05a79f"
+      },
+      {
+        "path": "sql/011-granular-locks.sql",
+        "sha256": "9bd446fb6e4e7c1fddae2fc13502ee7dc87f7e950fa68bdca6e5a34d86d584cd"
+      },
+      {
+        "path": "sql/012-resource-max-holders.sql",
+        "sha256": "f79d759e8a8dabaf2c84bbc9683269ca4ea76648e93461ec882ee65702de9a93"
+      },
+      {
+        "path": "sql/013-bounded-notify-channel.sql",
+        "sha256": "4a9c14320afd2e9853925da32d938c0f0ea55d7fd31f6628a71a70b76dca7ee2"
+      },
+      {
+        "path": "sql/014-grant-cascade-expired-steal.sql",
+        "sha256": "46c84999c2dc1dc013ebab12f13b6918a782e51a32dfed3dc75e234144bc68be"
+      },
+      {
+        "path": "sql/015-git-sync-per-slug-naming.sql",
+        "sha256": "b9021b63db15145e317c1e5576ad6578224957c5b9416c01d0551d9a4dc1322e"
+      },
+      {
+        "path": "sql/016-register-hetzner-federation-quota.sql",
+        "sha256": "4438adc17f82b8e4658503f004d5055245b494d17883713c33fa525e48df4114"
+      },
+      {
+        "path": "sql/017-lock-waiter-pending-edit.sql",
+        "sha256": "d42d372cf2bbfe46154edc01e5db9f2bfb3f14c99cc3f0d61d14ddd4926452a9"
+      },
+      {
+        "path": "sql/018-register-staging-server-resource.sql",
+        "sha256": "955fc3be3863b6000769b2379a8a69fbc3264ee7f561d908a19303bafaee41f3"
+      },
+      {
+        "path": "sql/019-register-windows-vm-build.sql",
+        "sha256": "e06fef29f42a27e71a2ca8f10fae731cdc580c9acdfd80a8ec4b7c1cb0093563"
+      },
+      {
+        "path": "sql/020-register-shared-service-restart-resources.sql",
+        "sha256": "0abf8ef5ba3c061653e9fabbff872de7fe654aadd87397058a183cc5714726f4"
+      },
+      {
+        "path": "sql/021-register-release-deploy-resource.sql",
+        "sha256": "15bfb0acf542eddc6e96800b4827998dd2d3af06b6c9fa985d1ae7a8436059cb"
+      },
+      {
+        "path": "sql/022-grant-cascade-path-locks.sql",
+        "sha256": "be2e8000775422fa9e313833eba8f8da76a7b397dc3a28e5890ede3192e28aa0"
+      },
+      {
+        "path": "sql/023-goal-ref-lock-association.sql",
+        "sha256": "2f66183281975dddb8249bc2b1de1d09a7419e6e5bdbb64f7cfcc51bdbbab973"
+      },
+      {
+        "path": "sql/024-register-desktop-dev-server-resource.sql",
+        "sha256": "55308ed2543af84a2d12e5f9920cd542c002d3334a56fe212673526acc4ccaed"
+      },
+      {
+        "path": "sql/025-register-mcp-proxy-restart-resource.sql",
+        "sha256": "5a180ceed800eea5f28fcfd76b8a4fe7c66500574db61a908f4678fc676630c8"
+      },
+      {
+        "path": "sql/026-resource-exclusive-queue.sql",
+        "sha256": "4db2ff93d8f51071f3a880dcbe7019f54356480cfa6fecfe32650c7b1b776c3a"
+      },
+      {
+        "path": "sql/027-resource-coordination-domain-kind.sql",
+        "sha256": "1e900d4e20c694a75ff96fa9ab7103fa135502693b3d33e9e2626dfab6556a58"
+      },
+      {
+        "path": "sql/028-git-sync-registry-prose.sql",
+        "sha256": "6eafebb8f245112d71eaea64a4a4a36ce652d55658a0476899566f0a4ab7d227"
+      },
+      {
+        "path": "sql/029-register-app-sidecar-restart-resources.sql",
+        "sha256": "c94fefc6bc0ee95a0e87a0ca8af55e7b10a9c1360564544f2ba3d54a5ace7701"
+      },
+      {
+        "path": "sql/030-resource-scoped-shared-ops.sql",
+        "sha256": "ef79ffdcd1062f5874817fac6f7030b7c0115d6945586db464e717b94542c0b6"
+      },
+      {
+        "path": "sql/931-locks-recursive-path-overlap.sql",
+        "sha256": "a246d5310e79c31b3369def79f31bb3ea1dfaccc6f439f8c1cff954338bc8d7a"
+      },
+      {
+        "path": "systemd-scope-env-runner.mjs",
+        "sha256": "4705c4d70a86b101b8a5d66560a6d5cb907f22f29ec90309f7a951ac2139ea08"
+      }
+    ],
+    "nativeAdapter": {
+      "path": "/home/builduser/papercupai-workspace/papercusp/.heap-retainers-cargo-target/release/papercusp-heap-retainers",
+      "sha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "version": "papercusp-heap-retainers 0.1.0"
+    }
+  },
+  "terminal": {
+    "exitCode": 0,
+    "at": "2026-10-02T21:26:39.430147+00:00",
+    "sourcesAfter": [
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1"
+      },
+      {
+        "path": "scripts/cdp-inspector.d.mts",
+        "sha256": "767e8c5df22121da5a3198dc56d239bf1e5f0e92b0b2631c47df0578b59636de"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "sha256": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.d.mts",
+        "sha256": "6a93b341aaa087fd2348241c9810f9540678179fa5bb501c9549fb8695a05c7d"
+      },
+      {
+        "path": "scripts/lib/governed-test-process.mjs",
+        "sha256": "6fbe6cd99710d7d840631a06385ce440fdfb7e543624c5c37898a195d1ac4d83"
+      },
+      {
+        "path": "scripts/lib/governed-test-process.d.mts",
+        "sha256": "46ead2d4638edb4e31ef41d3fe1c34fcb5abb8bc7b2b267c24d683038e53b8c0"
+      },
+      {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "sha256": "bc91869ad2498905f31851450bace9b2970c1ead2aeb00af98194408913e6e2b"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "sha256": "72d32d380c424e324fb9899e6875fac401087d0c87e8d27821d42baa516c266b"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      },
+      {
+        "path": "scripts/test-files.mjs",
+        "sha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.toml",
+        "sha256": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.lock",
+        "sha256": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded"
+      },
+      {
+        "path": "scripts/heap-retainers-native/src/main.rs",
+        "sha256": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9"
+      }
+    ],
+    "nativeSha256After": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02"
+  },
+  "ownerBinding": {
+    "pid": 2506527,
+    "roots": [
+      {
+        "owner": "@papercusp/memory:host",
+        "status": "found",
+        "id": 1702725
+      },
+      {
+        "owner": "@papercusp/memory.local-embedder-worker",
+        "status": "found",
+        "id": 1702749
+      },
+      {
+        "owner": "@papercusp/operator-core.harnessCoreCaches",
+        "status": "found",
+        "id": 7665431
+      },
+      {
+        "owner": "@papercusp/operator-core.operatorCache",
+        "status": "found",
+        "id": 7664881
+      },
+      {
+        "owner": "@papercusp/operator-core.snapshot-fold-slots",
+        "status": "found",
+        "id": 7671075
+      },
+      {
+        "owner": "@papercusp/lexicon:host",
+        "status": "found",
+        "id": 7675099
+      },
+      {
+        "owner": "@papercusp/operator-core.repoCitationTrackingCache",
+        "status": "found",
+        "id": 2659349
+      },
+      {
+        "owner": "@papercusp/operator-core.agentsAcrossWorkspaceCache",
+        "status": "found",
+        "id": 2659129
+      },
+      {
+        "owner": "@papercusp/operator-core.midTurnMemoryAdmission",
+        "status": "found",
+        "id": 6105983
+      }
+    ],
+    "definition": "Numeric IDs bind existing singleton values to preceding snapshot nodes; no physical memory estimate."
+  },
+  "ownerNodes": [
+    {
+      "owner": "@papercusp/memory:host",
+      "id": 1702725,
+      "children": 4,
+      "class": "Object",
+      "index": 851362,
+      "retainedSizeBytes": 1480,
+      "retainerCount": 2,
+      "retainers": [
+        {
+          "children": 71920,
+          "class": "(object)",
+          "edgeType": "Context",
+          "id": 624143,
+          "index": 312071,
+          "retainedSizeBytes": 77243002,
+          "retainsIndex": 851362,
+          "selfSizeBytes": 612072,
+          "type": "Object"
+        },
+        {
+          "children": 5,
+          "class": "Object",
+          "edgeType": "Property",
+          "id": 1702723,
+          "index": 851361,
+          "retainedSizeBytes": 88,
+          "retainsIndex": 851362,
+          "selfSizeBytes": 56,
+          "type": "Object"
+        }
+      ],
+      "retainersTruncated": false,
+      "selfSizeBytes": 32,
+      "type": "Object"
+    },
+    {
+      "owner": "@papercusp/memory.local-embedder-worker",
+      "id": 1702749,
+      "children": 13,
+      "class": "Object",
+      "index": 851374,
+      "retainedSizeBytes": 1752,
+      "retainerCount": 2,
+      "retainers": [
+        {
+          "children": 71920,
+          "class": "(object)",
+          "edgeType": "Context",
+          "id": 624143,
+          "index": 312071,
+          "retainedSizeBytes": 77243002,
+          "retainsIndex": 851374,
+          "selfSizeBytes": 612072,
+          "type": "Object"
+        },
+        {
+          "children": 5,
+          "class": "Object",
+          "edgeType": "Property",
+          "id": 1702747,
+          "index": 851373,
+          "retainedSizeBytes": 88,
+          "retainsIndex": 851374,
+          "selfSizeBytes": 56,
+          "type": "Object"
+        }
+      ],
+      "retainersTruncated": false,
+      "selfSizeBytes": 136,
+      "type": "Object"
+    },
+    {
+      "owner": "@papercusp/operator-core.harnessCoreCaches",
+      "id": 7665431,
+      "children": 7,
+      "class": "Object",
+      "index": 3832715,
+      "retainedSizeBytes": 256,
+      "retainerCount": 2,
+      "retainers": [
+        {
+          "children": 71920,
+          "class": "(object)",
+          "edgeType": "Context",
+          "id": 624143,
+          "index": 312071,
+          "retainedSizeBytes": 77243002,
+          "retainsIndex": 3832715,
+          "selfSizeBytes": 612072,
+          "type": "Object"
+        },
+        {
+          "children": 5,
+          "class": "Object",
+          "edgeType": "Property",
+          "id": 5550471,
+          "index": 2775235,
+          "retainedSizeBytes": 88,
+          "retainsIndex": 3832715,
+          "selfSizeBytes": 56,
+          "type": "Object"
+        }
+      ],
+      "retainersTruncated": false,
+      "selfSizeBytes": 56,
+      "type": "Object"
+    },
+    {
+      "owner": "@papercusp/operator-core.operatorCache",
+      "id": 7664881,
+      "children": 5,
+      "class": "Object",
+      "index": 3832440,
+      "retainedSizeBytes": 1328,
+      "retainerCount": 2,
+      "retainers": [
+        {
+          "children": 71920,
+          "class": "(object)",
+          "edgeType": "Context",
+          "id": 624143,
+          "index": 312071,
+          "retainedSizeBytes": 77243002,
+          "retainsIndex": 3832440,
+          "selfSizeBytes": 612072,
+          "type": "Object"
+        },
+        {
+          "children": 5,
+          "class": "Object",
+          "edgeType": "Property",
+          "id": 5550473,
+          "index": 2775236,
+          "retainedSizeBytes": 88,
+          "retainsIndex": 3832440,
+          "selfSizeBytes": 56,
+          "type": "Object"
+        }
+      ],
+      "retainersTruncated": false,
+      "selfSizeBytes": 48,
+      "type": "Object"
+    },
+    {
+      "owner": "@papercusp/operator-core.snapshot-fold-slots",
+      "id": 7671075,
+      "children": 3,
+      "class": "Object",
+      "index": 3835537,
+      "retainedSizeBytes": 144,
+      "retainerCount": 2,
+      "retainers": [
+        {
+          "children": 71920,
+          "class": "(object)",
+          "edgeType": "Context",
+          "id": 624143,
+          "index": 312071,
+          "retainedSizeBytes": 77243002,
+          "retainsIndex": 3835537,
+          "selfSizeBytes": 612072,
+          "type": "Object"
+        },
+        {
+          "children": 5,
+          "class": "Object",
+          "edgeType": "Property",
+          "id": 5550531,
+          "index": 2775265,
+          "retainedSizeBytes": 88,
+          "retainsIndex": 3835537,
+          "selfSizeBytes": 56,
+          "type": "Object"
+        }
+      ],
+      "retainersTruncated": false,
+      "selfSizeBytes": 40,
+      "type": "Object"
+    },
+    {
+      "owner": "@papercusp/lexicon:host",
+      "id": 7675099,
+      "children": 4,
+      "class": "Object",
+      "index": 3837549,
+      "retainedSizeBytes": 320,
+      "retainerCount": 2,
+      "retainers": [
+        {
+          "children": 71920,
+          "class": "(object)",
+          "edgeType": "Context",
+          "id": 624143,
+          "index": 312071,
+          "retainedSizeBytes": 77243002,
+          "retainsIndex": 3837549,
+          "selfSizeBytes": 612072,
+          "type": "Object"
+        },
+        {
+          "children": 5,
+          "class": "Object",
+          "edgeType": "Property",
+          "id": 5550545,
+          "index": 2775272,
+          "retainedSizeBytes": 88,
+          "retainsIndex": 3837549,
+          "selfSizeBytes": 56,
+          "type": "Object"
+        }
+      ],
+      "retainersTruncated": false,
+      "selfSizeBytes": 32,
+      "type": "Object"
+    },
+    {
+      "owner": "@papercusp/operator-core.repoCitationTrackingCache",
+      "id": 2659349,
+      "children": 5,
+      "class": "Object",
+      "index": 1329674,
+      "retainedSizeBytes": 1128,
+      "retainerCount": 2,
+      "retainers": [
+        {
+          "children": 71920,
+          "class": "(object)",
+          "edgeType": "Context",
+          "id": 624143,
+          "index": 312071,
+          "retainedSizeBytes": 77243002,
+          "retainsIndex": 1329674,
+          "selfSizeBytes": 612072,
+          "type": "Object"
+        },
+        {
+          "children": 5,
+          "class": "Object",
+          "edgeType": "Property",
+          "id": 2659347,
+          "index": 1329673,
+          "retainedSizeBytes": 88,
+          "retainsIndex": 1329674,
+          "selfSizeBytes": 56,
+          "type": "Object"
+        }
+      ],
+      "retainersTruncated": false,
+      "selfSizeBytes": 64,
+      "type": "Object"
+    },
+    {
+      "owner": "@papercusp/operator-core.agentsAcrossWorkspaceCache",
+      "id": 2659129,
+      "children": 4,
+      "class": "Object",
+      "index": 1329564,
+      "retainedSizeBytes": 48,
+      "retainerCount": 2,
+      "retainers": [
+        {
+          "children": 71920,
+          "class": "(object)",
+          "edgeType": "Context",
+          "id": 624143,
+          "index": 312071,
+          "retainedSizeBytes": 77243002,
+          "retainsIndex": 1329564,
+          "selfSizeBytes": 612072,
+          "type": "Object"
+        },
+        {
+          "children": 5,
+          "class": "Object",
+          "edgeType": "Property",
+          "id": 2659127,
+          "index": 1329563,
+          "retainedSizeBytes": 88,
+          "retainsIndex": 1329564,
+          "selfSizeBytes": 56,
+          "type": "Object"
+        }
+      ],
+      "retainersTruncated": false,
+      "selfSizeBytes": 48,
+      "type": "Object"
+    },
+    {
+      "owner": "@papercusp/operator-core.midTurnMemoryAdmission",
+      "id": 6105983,
+      "children": 5,
+      "class": "Object",
+      "index": 3052991,
+      "retainedSizeBytes": 576,
+      "retainerCount": 2,
+      "retainers": [
+        {
+          "children": 71920,
+          "class": "(object)",
+          "edgeType": "Context",
+          "id": 624143,
+          "index": 312071,
+          "retainedSizeBytes": 77243002,
+          "retainsIndex": 3052991,
+          "selfSizeBytes": 612072,
+          "type": "Object"
+        },
+        {
+          "children": 5,
+          "class": "Object",
+          "edgeType": "Property",
+          "id": 5550607,
+          "index": 2775303,
+          "retainedSizeBytes": 88,
+          "retainsIndex": 3052991,
+          "selfSizeBytes": 56,
+          "type": "Object"
+        }
+      ],
+      "retainersTruncated": false,
+      "selfSizeBytes": 64,
+      "type": "Object"
+    }
+  ],
+  "commonDirectParents": [
+    {
+      "children": 71920,
+      "class": "(object)",
+      "edgeType": "Context",
+      "id": 624143,
+      "index": 312071,
+      "retainedSizeBytes": 77243002,
+      "retainsIndex": 851362,
+      "selfSizeBytes": 612072,
+      "type": "Object"
+    }
+  ],
+  "nativeGraph": {
+    "parser": "microsoft/vscode-v8-heap-tools native",
+    "upstreamRevision": "05edd8131a77790ab0e7bce2eedf5770d6bb83ae",
+    "limits": {
+      "maxRetainers": 32,
+      "objectIds": [
+        1702725,
+        1702749,
+        7665431,
+        7664881,
+        7671075,
+        7675099,
+        2659349,
+        2659129,
+        6105983
+      ],
+      "perClass": 3,
+      "retainerDepth": 1,
+      "top": 20
+    },
+    "receipt": {
+      "executableSha256": "dfa7a07393597b99fc2c92e3587930ea0e6f7c406bb8c534c786d4fe76a69f02",
+      "inputBytes": 575749691,
+      "inputSha256": "4bbcf7a75820d57a930a322152c935a144d34d1e8e7d2a9007e37c6c89494fa7",
+      "elapsedMs": 15516,
+      "status": 0,
+      "signal": null,
+      "stdoutBytes": 81718,
+      "stderrBytes": 0,
+      "errorCode": null
+    },
+    "definition": "Node retained_size is dominator-owned V8 self_size; class retained sizes overlap. Not total native memory or production savings.",
+    "retainerDefinition": "Depth-one unique incoming parents; excludes weak edges, non-root shortcuts, root and the queried node. First essential edge type per parent; no edge names."
+  },
+  "verified": {
+    "allNineNumericIDsMatched": true,
+    "censusGraphInputIdentical": true,
+    "nativeBinaryMatches": true,
+    "windows": 3,
+    "samples": 14,
+    "hostReaped": true,
+    "snapshotRemoved": true,
+    "postSnapshotRowsPreserved": true
+  },
+  "guards": {
+    "originalExactIDs": {
+      "runId": 20568174,
+      "passed": 9,
+      "skipped": 0,
+      "log": "/tmp/su-7db4f-p011-exact-ids-guard-r1.log",
+      "qualification": "Historical guard before async admission; source identity qualified separately."
+    },
+    "asyncAdmission": {
+      "workItem": "WI-10005658",
+      "completionAuthority": "committed",
+      "exactIDAnalyzerTests": 9,
+      "helperTests": 50,
+      "sourceGuardTests": 44,
+      "correctedAdmissionTests": 3,
+      "log": "/tmp/cloud-tutorial-heap-admission-source-v10.log",
+      "note": "Original source cohort retained63PASS1mock-teardownFAIL; only corrected admission fixture3PASS rerun."
+    }
+  },
+  "sourceQualification": {
+    "named": [
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "before": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1",
+        "after": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1",
+        "current": "0fae03367aef907fa7b42b825b2482417b470d350a02d4a000075be35d04a1c1"
+      },
+      {
+        "path": "scripts/cdp-inspector.d.mts",
+        "before": "767e8c5df22121da5a3198dc56d239bf1e5f0e92b0b2631c47df0578b59636de",
+        "after": "767e8c5df22121da5a3198dc56d239bf1e5f0e92b0b2631c47df0578b59636de",
+        "current": "767e8c5df22121da5a3198dc56d239bf1e5f0e92b0b2631c47df0578b59636de"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "before": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29",
+        "after": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29",
+        "current": "a444859c0bcee15f84981f3c4f1c9ab063c2284d1b0fbc7c1bb382e55bbfec29"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.d.mts",
+        "before": "6a93b341aaa087fd2348241c9810f9540678179fa5bb501c9549fb8695a05c7d",
+        "after": "6a93b341aaa087fd2348241c9810f9540678179fa5bb501c9549fb8695a05c7d",
+        "current": "6a93b341aaa087fd2348241c9810f9540678179fa5bb501c9549fb8695a05c7d"
+      },
+      {
+        "path": "scripts/lib/governed-test-process.mjs",
+        "before": "6fbe6cd99710d7d840631a06385ce440fdfb7e543624c5c37898a195d1ac4d83",
+        "after": "6fbe6cd99710d7d840631a06385ce440fdfb7e543624c5c37898a195d1ac4d83",
+        "current": "6fbe6cd99710d7d840631a06385ce440fdfb7e543624c5c37898a195d1ac4d83"
+      },
+      {
+        "path": "scripts/lib/governed-test-process.d.mts",
+        "before": "46ead2d4638edb4e31ef41d3fe1c34fcb5abb8bc7b2b267c24d683038e53b8c0",
+        "after": "46ead2d4638edb4e31ef41d3fe1c34fcb5abb8bc7b2b267c24d683038e53b8c0",
+        "current": "46ead2d4638edb4e31ef41d3fe1c34fcb5abb8bc7b2b267c24d683038e53b8c0"
+      },
+      {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "before": "bc91869ad2498905f31851450bace9b2970c1ead2aeb00af98194408913e6e2b",
+        "after": "bc91869ad2498905f31851450bace9b2970c1ead2aeb00af98194408913e6e2b",
+        "current": "bc91869ad2498905f31851450bace9b2970c1ead2aeb00af98194408913e6e2b"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "before": "72d32d380c424e324fb9899e6875fac401087d0c87e8d27821d42baa516c266b",
+        "after": "72d32d380c424e324fb9899e6875fac401087d0c87e8d27821d42baa516c266b",
+        "current": "72d32d380c424e324fb9899e6875fac401087d0c87e8d27821d42baa516c266b"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "before": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085",
+        "after": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085",
+        "current": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      },
+      {
+        "path": "scripts/test-files.mjs",
+        "before": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d",
+        "after": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d",
+        "current": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.toml",
+        "before": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb",
+        "after": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb",
+        "current": "fdd3793c7509f72a6c8f1ba7c126732b97c55acec5809da450c4633d813872eb"
+      },
+      {
+        "path": "scripts/heap-retainers-native/Cargo.lock",
+        "before": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded",
+        "after": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded",
+        "current": "5e9b7d3b91540a97a9bccb4ee3c5cf6e246454d61f0e1203684ee607bf9c2ded"
+      },
+      {
+        "path": "scripts/heap-retainers-native/src/main.rs",
+        "before": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9",
+        "after": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9",
+        "current": "6973dd79ab804b10abebcba524b97251654a67e2f8020f4a67131fc16f6f07a9"
+      }
+    ],
+    "beforeAfterChanged": [],
+    "currentChanged": [],
+    "fullTransitiveProvenance": "UNKNOWN",
+    "routerHead": "Moved during run; overall router provenance UNKNOWN.",
+    "servingRuntimePlane": "Copied exact pinned dist bytes; current canonical analyzer/native executable measured separately."
+  },
+  "limitations": [
+    "Dominator-owned V8 self_size does not measure PSS/RSS/native physical memory. Never sum class retained sizes.",
+    "Nine singleton wrapper values all have a shared Context direct parent; small wrapper retained sizes cannot establish that their payloads or services are small or absent. Exact root identity is proven; removable ownership still needs a causal experiment.",
+    "Top20 classes, up to3 ranked nodes/class and first32 essential direct parents/node remain bounded. Exact selected IDs are independent of ranking.",
+    "Snapshot forces GC and a synchronous pause; not an ordinary unprofiled baseline or leak test.",
+    "Private request-only host excludes production/background/fleet context.",
+    "UNSCOPED Vitest ledger20568411 is functional evidence only and cannot be represented as harness-bound acceptance.",
+    "Parent WI-10004890 retains physical counterfactual, useful context/concurrency, historical compiler disposition, R8/R9, independent acceptance and shipment."
+  ]
+}

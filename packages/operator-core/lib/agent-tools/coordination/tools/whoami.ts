@@ -10,13 +10,13 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, deriveFleetMembership } from '../identity';
-import { COORD_ROLES } from '../roles';
+import { COORD_READ_ROLES } from '../roles';
 import { inboxWakeKey } from '../inbox-wake';
 
 export default defineTool({
   name: 'coord:whoami',
   description:
-    'Return the coordination identity the server resolved for you: ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, your current named-fleet membership (fleetSlug/fleetRole, from live presence with launch-env fallback on read failure), and your inbox_wake_key (the key a coord:send {wake:true} fires + the one coord:await-inbox watches). A debug aid for confirming how the coordination layer sees this agent.',
+    "Show this agent's identity. Includes ownerId (the stable per-agent id), ownerLabel, source, workspaceId, userId, named-fleet membership (fleetSlug/fleetRole, live presence with launch-env fallback on read failure), and inbox_wake_key (the key coord:send {wake:true} fires + the one coord:await-inbox watches). Debug aid for how the coordination layer sees this agent.",
   guidance: {
     when: 'Debugging identity — "what ownerId am I?" before relying on lock or message behaviour.',
     notWhen: 'Routine work — identity is resolved automatically by every coord:* and locks:* call.',
@@ -26,7 +26,8 @@ export default defineTool({
   // EI-20226779878046151: identity resolution is self-contained and does not
   // read ctx.tx; avoid an ambient org-app transaction for this orient leg.
   skipWorkspaceTx: true,
-  agentRoles: [...COORD_ROLES],
+  // Identity introspection is read-only; keep it on the narrow judge read lane.
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({}),
   async handler(_args, ctx) {
     // EI-1748: whoami is the IDENTITY-INTROSPECTION tool — when the server can't

@@ -38,6 +38,7 @@ import { FLAGS } from '@papercusp/flags';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { listPresence } from '../coordination/presence';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { liveLockedPaths } from '../locks/live-lock-paths';
 import type { PlacementBee, PlacementTask } from '../../fleet/placement-affinity';
 import type { WakeMode } from '../coordination/wake-mode';
@@ -310,8 +311,15 @@ export function currentFilesFromLivePresence(records: readonly PresenceFileRecor
 
 async function gatherLivePresenceCurrentFiles(workspaceId: string): Promise<string[]> {
   try {
-    return currentFilesFromLivePresence(await listPresence({ workspaceId }));
+    const files = currentFilesFromLivePresence(await listPresence({ workspaceId }));
+    observeFallback('workspace-routing-read', {
+      eligible: 1, applied: 1, reason: 'applied', scope: 'placement-current-files',
+    }, { workspaceId });
+    return files;
   } catch (e) {
+    observeFallback('workspace-routing-read', {
+      eligible: 1, applied: 0, reason: 'placement-presence-unavailable', scope: 'placement-current-files',
+    }, { workspaceId });
     console.warn(
       `[fleet:place_batch] presence file read failed — touch-set exclusion falls back to bee files only:`,
       e instanceof Error ? e.message : e,

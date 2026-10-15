@@ -603,7 +603,7 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
   const OWNER = 'su-successor-owner';
   const TS = '2026-08-25T02:21:27.909Z';
 
-  it('proves a clean predecessor owner turn as owner-turn with explicit scope', async () => {
+  it('proves an authenticated clean predecessor owner turn as owner-turn with explicit scope', async () => {
     const refs = parseTurnRefs(`${formatTurnRef(PREDECESSOR, TS)}: "continue the owner directive"`);
     const calls: Array<{ prefix: string; scope: string }> = [];
     const [verdict] = await verifyTurnRefs(OWNER, refs, {
@@ -617,8 +617,8 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
           ts: TS,
           speaker: 'user',
           text: 'continue the owner directive',
-          turnOrigin: null,
-          turnOriginVerdict: 'unenrolled-origin',
+          turnOrigin: 'hook-authenticated-prompt',
+          turnOriginVerdict: 'owner-typed',
         }];
       },
     });
@@ -628,6 +628,35 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
       found: true,
       checked: true,
       verdict: 'owner-turn',
+      scope: 'cross-session',
+      quoteMatch: true,
+    });
+  });
+
+  it.each([
+    ['unenrolled-origin', 'unenrolled-origin'],
+    ['legacy row without a stored verdict', null],
+    ['an unrecognized future verdict', 'future-non-owner-verdict'],
+  ])('keeps an indexed clean row as unknown when authorship is not positive (%s)', async (_label, turnOriginVerdict) => {
+    const refs = parseTurnRefs(`${formatTurnRef(PREDECESSOR, TS)}: "continue the owner directive"`);
+    const [verdict] = await verifyTurnRefs(OWNER, refs, {
+      filePath: join(tmpdir(), 'successor-only.jsonl'),
+      sessionId: CURRENT,
+      scope: 'cross-session',
+      loadIndexedTurns: async () => [{
+        sessionId: PREDECESSOR,
+        ts: TS,
+        speaker: 'user',
+        text: 'continue the owner directive',
+        turnOrigin: null,
+        turnOriginVerdict,
+      }],
+    });
+
+    expect(verdict).toMatchObject({
+      found: true,
+      checked: true,
+      verdict: 'unknown',
       scope: 'cross-session',
       quoteMatch: true,
     });
@@ -670,7 +699,7 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
     expect(verdict).toMatchObject({ found: false, checked: false, scope: 'cross-session' });
   });
 
-  it('production loader includes the corpus namespace alongside the active workspace', async () => {
+  it('production loader keeps the indexed unenrolled row non-owner and includes the corpus namespace', async () => {
     const sqlCalls: Array<{ text: string; values: unknown[] }> = [];
     const sql = Object.assign(
       async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -702,7 +731,7 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
     expect(verdict).toMatchObject({
       found: true,
       checked: true,
-      verdict: 'owner-turn',
+      verdict: 'unknown',
       scope: 'cross-session',
     });
     expect(sqlCalls).toHaveLength(1);
@@ -738,6 +767,9 @@ describe('hook-stamp agreement — a turn the live hook judged non-owner never r
     'payload hash). This prompt was INJECTED by the papercusp system — NOT typed by the human owner.';
   const VERIFIED_SELF_COMPACTION =
     '⟦turn-provenance⟧ VERIFIED AGENT-ORIGIN turn (origin: self-compaction; envelope lost in transit, matched by ' +
+    'payload hash). This prompt was INJECTED by the papercusp system — NOT typed by the human owner.';
+  const VERIFIED_WATCHDOG =
+    '⟦turn-provenance⟧ VERIFIED AGENT-ORIGIN turn (origin: watchdog; envelope lost in transit, matched by ' +
     'payload hash). This prompt was INJECTED by the papercusp system — NOT typed by the human owner.';
   const VERIFIED_MANGLED =
     '⟦turn-provenance⟧ VERIFIED AGENT-ORIGIN turn (origin: loop-fire; payload hash differs — PTY transit ' +
@@ -798,6 +830,15 @@ describe('hook-stamp agreement — a turn the live hook judged non-owner never r
     ]);
     const stamp = await resolveCurrentTurnStamp('owner-x', { filePath: file, sessionId: SID });
     expect(stamp).toEqual({ ref: '[turn:bf1881bc@2026-09-23T12:00:00.000Z]', verdict: 'agent-injected', origin: 'self-compaction' });
+  });
+
+  it('writtenDuring preserves watchdog compaction as non-owner when the envelope is lost in transit', async () => {
+    write([
+      userLine(ENVELOPE_LOST, '2026-09-23T12:00:00.000Z'),
+      hookStampLine(VERIFIED_WATCHDOG, '2026-09-23T12:00:00.080Z'),
+    ]);
+    const stamp = await resolveCurrentTurnStamp('owner-x', { filePath: file, sessionId: SID });
+    expect(stamp).toEqual({ ref: '[turn:bf1881bc@2026-09-23T12:00:00.000Z]', verdict: 'agent-injected', origin: 'watchdog' });
   });
 
   it('verifyTurnRefs (the work_items:checkpoint refs path) agrees with the hook stamp too', async () => {

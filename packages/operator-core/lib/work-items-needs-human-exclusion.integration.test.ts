@@ -17,14 +17,17 @@ import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb }
 import {
   ADV_SESSIONS_CLAIM_MIN_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  afterUpdate: undefined as ((id: string) => Promise<void>) | undefined,
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -33,8 +36,21 @@ vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
+vi.mock('./agent-tools/coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'condition-tester' }) }));
+vi.mock('./work-items', async (orig) => {
+  const actual = await orig<typeof import('./work-items')>();
+  return {
+    ...actual,
+    updateWorkItem: async (...args: Parameters<typeof actual.updateWorkItem>) => {
+      const result = await actual.updateWorkItem(...args);
+      await h.afterUpdate?.(args[0]);
+      return result;
+    },
+  };
+});
 
 const wi = await import('./work-items');
+const updateTool = (await import('./agent-tools/work_items/update')).default;
 
 const H = 'papercup';
 const WS = 'default';
@@ -56,7 +72,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('wi-needs-human');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(ADV_SESSIONS_CLAIM_MIN_DDL);
   // The by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).
@@ -67,11 +83,16 @@ beforeAll(async () => {
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'work-items-needs-human-exclusion.integration.test.ts',
   });
+  await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.audit_log (
+    id text PRIMARY KEY, ts bigint NOT NULL, actor text NOT NULL,
+    action text NOT NULL, subject text, details jsonb, workspace_id text NOT NULL
+  )`;
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
 });
 beforeEach(async () => {
+  h.afterUpdate = undefined;
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
   setFlagOverridesForTest({
     [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
@@ -79,6 +100,84 @@ beforeEach(async () => {
   });
 });
 afterEach(() => setFlagOverridesForTest({}));
+
+describe('work_items:update requires persisted current owner authority (P-003)', () => {
+  const ownerCondition = {
+    kind: 'human', ref: 'credential:test-service', capability: 'credential', status: 'active',
+    summary: 'Provide the service credential.', nextVerb: 'Configure and verify the credential.',
+    defaultIfUnanswered: 'Keep the credential-dependent work parked.',
+    createdBy: 'requester', createdAt: '2026-10-10T00:00:00Z', updatedAt: '2026-10-10T00:00:00Z',
+    legacyEvidence: { generation: 7 },
+  };
+  const update = async (id: string, extra: Record<string, unknown> = {}) => {
+    const result = await updateTool.handler({ id, harness: H, needsHuman: true, ...extra } as never, { workspaceId: WS } as never);
+    return (result as { data: { results: Array<{ ok: boolean; error?: string }> } }).data;
+  };
+  const read = async (id: string) => (await db.sql<{
+    title: string; status: string; taken_by: string | null; payload: Record<string, unknown>;
+  }[]>`SELECT title, status, taken_by, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id}`)[0]!;
+
+  it.each(['bug', 'feature'])('refuses an unsupported %s flag before mixed edits and preserves the peer park', async (kind) => {
+    const id = `WI-bare-${kind}`;
+    const payload = { sibling: 'keep', needsHuman: true, _park: { ref: 'runtime:independent', owner: 'peer' } };
+    await seedIssue(id, { kind, takenBy: 'peer', payload });
+    const before = await read(id);
+
+    const result = await update(id, { title: 'must not change', payload: { sibling: 'must not change' } });
+
+    expect(result.results[0]).toMatchObject({ ok: false });
+    expect(result.results[0]?.error).toContain('current typed credential');
+    expect(await read(id)).toEqual(before);
+  });
+
+  it.each(['bug', 'feature'])('accepts a persisted credential for %s and preserves its raw condition and peer claim', async (kind) => {
+    const id = `WI-credential-${kind}`;
+    const payload = { sibling: 'keep', needsHuman: true, externalBlockers: [ownerCondition], _park: { ref: 'runtime:independent', owner: 'peer' } };
+    await seedIssue(id, { kind, takenBy: 'peer', payload });
+
+    expect((await update(id)).results[0]).toMatchObject({ ok: true });
+    const row = await read(id);
+    expect(row.taken_by).toBe('peer');
+    expect(row.status).toBe('open');
+    expect(row.payload).toMatchObject({ sibling: 'keep', needsOwnerAction: true });
+    expect(row.payload.externalBlockers).toEqual(payload.externalBlockers);
+    expect(row.payload._park).toEqual(payload._park);
+    expect(Object.hasOwn(row.payload, 'needsHuman')).toBe(false);
+  });
+
+  it.each([
+    ['bug', 'clear'], ['bug', 'close'], ['feature', 'clear'], ['feature', 'close'],
+  ])('fences a concurrent %s %s at the SQL write without restoring the owner flag', async (kind, change) => {
+    const id = `WI-race-${kind}-${change}`;
+    const payload = { sibling: 'keep', needsHuman: true, externalBlockers: [ownerCondition], _park: { ref: 'runtime:independent', owner: 'peer' } };
+    await seedIssue(id, { kind, takenBy: 'peer', payload });
+    h.afterUpdate = async (updatedId) => {
+      expect(updatedId).toBe(id);
+      if (change === 'clear') {
+        await db.sql`UPDATE harness_shared.work_items
+          SET payload = jsonb_set(payload, '{externalBlockers}', ${db.sql.json([{ ...ownerCondition, status: 'cleared' }])})
+          WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id}`;
+      } else {
+        await db.sql`UPDATE harness_shared.work_items SET status = 'done'
+          WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id}`;
+      }
+    };
+
+    const result = await update(id);
+
+    expect(result.results[0]).toMatchObject({ ok: false });
+    expect(result.results[0]?.error).toContain('owner-condition-changed');
+    const row = await read(id);
+    expect(row.taken_by).toBe('peer');
+    expect(row.payload.needsOwnerAction).toBeUndefined();
+    expect(row.payload.needsHuman).toBe(true);
+    expect(row.payload.sibling).toBe('keep');
+    expect(row.payload._park).toEqual(payload._park);
+    expect(row.status).toBe(change === 'close' ? 'done' : 'open');
+    expect(row.payload.externalBlockers).toEqual([{ ...ownerCondition, status: change === 'clear' ? 'cleared' : 'active' }]);
+  });
+});
 
 describe('claimNextWorkItem admits a legacy needsHuman:true OPEN issue after migration 864', () => {
   it('serves the legacy-tagged item normally when it is oldest', async () => {
@@ -146,6 +245,7 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
         ref: 'credential:prod-db',
         summary: 'Provide the production DB credential.',
         nextVerb: 'setup:save_key',
+        defaultIfUnanswered: 'stay parked until the credential is supplied',
       },
       'tester',
       '2026-08-23T18:00:00.000Z',
@@ -194,7 +294,37 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
 
     await expect(
       wi.setWorkItemStateWithAliasInfo('EI-echo-1', 'needs-human', { harness: H, by: 'tester' }),
-    ).rejects.toThrow(/no structured owner ask.*work_items:set_blocker/);
+    ).rejects.toThrow(/no answerable owner ask.*work_items:set_blocker/);
+  });
+
+  // D-029: a structured ask with no defaultIfUnanswered cannot be answered (the owner cannot see
+  // what happens if they never reply), so the canonical writer refuses it exactly like no ask.
+  it('refuses a structured owner ask that carries no defaultIfUnanswered', async () => {
+    const { blockers } = wi.updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'credential',
+        ref: 'credential:no-default',
+        summary: 'Provide the staging credential.',
+        nextVerb: 'setup:save_key',
+      },
+      'tester',
+      '2026-08-23T18:00:00.000Z',
+    );
+    await seedIssue('EI-no-default', {
+      kind: 'change',
+      status: 'open',
+      createdTs: 100,
+      payload: { humanCapability: 'credential', externalBlockers: blockers },
+    });
+
+    await expect(
+      wi.setWorkItemStateWithAliasInfo('EI-no-default', 'needs-human', { harness: H, by: 'tester' }),
+    ).rejects.toThrow(/no answerable owner ask.*defaultIfUnanswered/);
+    const rows = await db.sql<{ status: string }[]>`
+      SELECT status FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = 'EI-no-default'`;
+    expect(rows[0]?.status).toBe('open');
   });
 
   it('keeps a strict structured owner ask parked and replaces the legacy key atomically', async () => {
@@ -206,6 +336,7 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
         ref: 'credential:prod-db',
         summary: 'Provide the production DB credential.',
         nextVerb: 'setup:save_key',
+        defaultIfUnanswered: 'stay parked until the credential is supplied',
       },
       'tester',
       '2026-08-23T18:00:00.000Z',
@@ -235,6 +366,7 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
         ref: 'decision:scope',
         summary: 'Choose the supported scope.',
         nextVerb: 'Record the product decision.',
+        defaultIfUnanswered: 'keep the current scope',
       },
       'tester',
       '2026-08-23T18:00:00.000Z',
@@ -283,10 +415,64 @@ describe('blocked auto-gate lease cleanup (EI-20490353465054928)', () => {
     return rows[0];
   }
 
-  it('clears the temporary blocked hold when no durable park exists', async () => {
-    await seedIssue('EI-blocked-lease-no-park', { kind: 'change', status: 'open' });
+  it('blocks pickup by lifecycle state without creating a duplicate blocked lease', async () => {
+    await seedIssue('EI-live-blocked-no-mirror', { kind: 'change', status: 'open', payload: { marker: 'keep' } });
 
-    await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-no-park', 'blocked', { harness: H, by: 'tester' });
+    const blocked = await wi.setWorkItemStateWithAliasInfo('EI-live-blocked-no-mirror', 'blocked', {
+      harness: H, by: 'tester',
+    });
+    expect(blocked.appliedState).toBe('blocked');
+    expect(await payloadOf('EI-live-blocked-no-mirror')).toMatchObject({ status: 'blocked', payload: { marker: 'keep' } });
+    expect(blocked.workItem?.payload).not.toHaveProperty('_claimHold');
+    expect(blocked.workItem?.payload).not.toHaveProperty('held_open_reason');
+    expect((await payloadOf('EI-live-blocked-no-mirror'))?.payload).not.toHaveProperty('_claimHold');
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'verifier' })).toBeNull();
+
+    await wi.setWorkItemStateWithAliasInfo('EI-live-blocked-no-mirror', 'open', { harness: H, by: 'tester' });
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'verifier' })).toMatchObject({ id: 'EI-live-blocked-no-mirror' });
+  });
+
+  it('records one issue blocked transition without using a lease audit as its history', async () => {
+    await seedIssue('EI-blocked-history-no-mirror', { kind: 'change', status: 'open' });
+    await wi.setWorkItemStateWithAliasInfo('EI-blocked-history-no-mirror', 'blocked', { harness: H, by: 'tester' });
+    await wi.setWorkItemStateWithAliasInfo('EI-blocked-history-no-mirror', 'blocked', { harness: H, by: 'tester' });
+
+    await vi.waitFor(async () => {
+      const rows = await db.sql<{ actor: string; action: string; details: Record<string, unknown> }[]>`
+        SELECT actor, action, details FROM harness_shared.audit_log
+         WHERE workspace_id = ${WS} AND subject = 'EI-blocked-history-no-mirror'`;
+      expect(rows).toEqual([{
+        actor: 'tester', action: 'work_items:state:blocked',
+        details: { to: 'blocked', requested: 'blocked', family: 'issue', by: 'tester' },
+      }]);
+    });
+  });
+
+  it('stores claim-hold audit details as JSON objects for park and lease cleanup writers', async () => {
+    await seedIssue('EI-audit-json-park');
+    await wi.setWorkItemClaimHold('EI-audit-json-park', true, {
+      harness: H, parkedBy: 'park-owner', parkedReason: 'Wait for a decision',
+      releaseContract: { condition: 'owner decision arrives', owner: 'park-owner', trigger: 'work-item:unblocked:EI-audit-json-park', reachability: 'blocked', evidence: 'fixture decision pending' },
+    });
+    await wi.recordBulkHoldClearAudit(db.sql, [{ id: 'EI-audit-json-park', workspaceId: WS, formerHolder: 'park-owner' }], {
+      actor: 'reconciler', sweepName: 'test-sweep',
+    });
+    await vi.waitFor(async () => {
+      const rows = await db.sql<{ action: string; shape: string }[]>`
+        SELECT action, jsonb_typeof(details) AS shape FROM harness_shared.audit_log
+         WHERE workspace_id = ${WS} AND subject = 'EI-audit-json-park' ORDER BY action`;
+      expect(rows).toEqual([
+        { action: 'work_items:claim_hold:clear', shape: 'object' },
+        { action: 'work_items:claim_hold:set', shape: 'object' },
+      ]);
+    });
+  });
+
+  it('clears the temporary blocked hold when no durable park exists', async () => {
+    await seedIssue('EI-blocked-lease-no-park', {
+      kind: 'change', status: 'blocked',
+      payload: { _claimHold: true, held_open_by: 'tester', held_open_reason: 'blocked' },
+    });
     expect(await payloadOf('EI-blocked-lease-no-park')).toMatchObject({
       status: 'blocked',
       payload: { _claimHold: true, held_open_by: 'tester', held_open_reason: 'blocked' },
@@ -307,16 +493,15 @@ describe('blocked auto-gate lease cleanup (EI-20490353465054928)', () => {
   });
 
   it('clears only the temporary lease and preserves a coexisting durable park', async () => {
-    await seedIssue('EI-blocked-lease-durable-park', { kind: 'change', status: 'open' });
-
-    await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-durable-park', 'blocked', {
-      harness: H,
-      by: 'tester',
+    await seedIssue('EI-blocked-lease-durable-park', {
+      kind: 'change', status: 'blocked',
+      payload: { _claimHold: true, held_open_by: 'tester', held_open_reason: 'blocked' },
     });
     await wi.setWorkItemClaimHold('EI-blocked-lease-durable-park', true, {
       harness: H,
       parkedBy: 'park-owner',
       parkedReason: 'deliberate retry hold',
+      releaseContract: { condition: 'retry authorized', owner: 'park-owner', trigger: 'work-item:unblocked:EI-blocked-lease-durable-park', reachability: 'blocked', evidence: 'fixture retry not authorized' },
     });
 
     const reopened = await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-durable-park', 'open', {

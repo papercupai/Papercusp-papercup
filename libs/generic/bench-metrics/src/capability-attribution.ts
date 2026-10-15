@@ -44,6 +44,7 @@ import type { Interval } from './intervals';
 import { bootstrapMeanCI } from './intervals';
 import { aggregateArm, type AggregateOpts } from './aggregate';
 import { isScored } from './cost';
+import { admitCapabilityLift, type CapabilityLiftAdmission } from './capability-exercise';
 
 /** The default control arm every capability is attributed OVER (the empty / bare-model profile). */
 export const DEFAULT_CONTROL_ARM: ArmId = 'vanilla';
@@ -110,6 +111,22 @@ export interface CapabilityArmAttribution {
   /** Per-arm coverage over the comparison universe (C6) — the audit table's attempted/produced/infra counts. */
   controlCoverage: ArmCoverage;
   capabilityCoverage: ArmCoverage;
+  /**
+   * C4 admission (BM-P-004-exercise-evidence): one verdict per capability this arm CLAIMS (declared via
+   * {@link CapabilityAttributionOpts.capabilityExercise}). Empty = the arm declared no claimed capability.
+   */
+  liftAdmissions: CapabilityLiftAdmission[];
+  /**
+   * This arm against the declared matched-cost repeated-session baseline
+   * ({@link CapabilityAttributionOpts.repeatedSessionBaseline}), over the tasks scored in both. `beaten` =
+   * strictly higher value at no higher cost per attempt. `null` when no baseline was declared, it has no
+   * rows, or this arm IS the baseline.
+   */
+  repeatedSessionBaseline: { arm: ArmId; value: number; valueDelta: number; costFraction: number | null; beaten: boolean } | null;
+  /** TRUE only when the arm declared ≥1 claimed capability, EVERY admission passed, AND it beat the
+   *  matched-cost repeated-session baseline. A lift with liftAdmitted=false may be reported as a measured
+   *  delta but never attributed to a capability. */
+  liftAdmitted: boolean;
 }
 
 /** The per-suite attribution report: every non-control arm's lift over the control. */
@@ -123,6 +140,7 @@ export interface CapabilityAttributionReport {
   capabilities: CapabilityArmAttribution[];
   /** MANDATORY honest-framing lines (D-008/D-011 + fairness C1/C3/C6) — a renderer must surface these. */
   caveats: string[];
+  missingMeasurements?: Array<{ arm: ArmId; taskId: string; seed: number }>;
 }
 
 export interface CapabilityAttributionOpts extends AggregateOpts {
@@ -135,10 +153,24 @@ export interface CapabilityAttributionOpts extends AggregateOpts {
   /** C1 fair headline (default TRUE): score both arms on the union-N, infra/absent = false. Set FALSE for
    *  the exclude-infra secondary view (each arm over only its own scored tasks). */
   sameDenominator?: boolean;
+  /**
+   * The capability (or capabilities, for a bundle arm) each arm CLAIMS, keyed by arm id. Each claim is
+   * admitted only on observed delivery + use in the treatment and measured absence in the control
+   * ({@link admitCapabilityLift}). An arm absent from this map claims nothing ⇒ `liftAdmitted:false`.
+   */
+  capabilityExercise?: Readonly<Partial<Record<ArmId, string | readonly string[]>>>;
+  /**
+   * The matched-cost repeated-session baseline arm: the same solver re-run in fresh sessions under the
+   * same frozen budget (e.g. an independent-isolation ensemble in the treatment's solver group). A claimed
+   * lift is admitted only when the treatment beats it at no higher cost; with claims but no baseline,
+   * nothing is admitted.
+   */
+  repeatedSessionBaseline?: ArmId;
 }
 
 /** Per-(task) accumulated stats for ONE arm, over ALL its rows (infra rows included). */
 interface TaskStats {
+  assignedSeeds?: number;
   /** Seeds that passed generation+grader infra. */
   scoredSeeds: number;
   /** Seeds excluded by infra. */
@@ -152,10 +184,11 @@ interface TaskStats {
 }
 
 /** Accumulate per-task stats for one arm's rows. */
-function armTaskStats(rows: readonly TaskRunResult[]): Map<string, TaskStats> {
+function armTaskStats(rows: readonly TaskRunResult[], assignedSeeds?: readonly number[]): Map<string, TaskStats> {
   const m = new Map<string, TaskStats>();
   for (const r of rows) {
-    const s = m.get(r.taskId) ?? { scoredSeeds: 0, infraSeeds: 0, resolvedSeeds: 0, scoreSum: 0, scoreCountScored: 0 };
+    const s = m.get(r.taskId) ?? { assignedSeeds: assignedSeeds ? new Set(assignedSeeds).size : undefined,
+      scoredSeeds: 0, infraSeeds: 0, resolvedSeeds: 0, scoreSum: 0, scoreCountScored: 0 };
     if (isScored(r)) {
       s.scoredSeeds += 1;
       if (r.resolved === true) s.resolvedSeeds += 1;
@@ -180,7 +213,7 @@ function armTaskStats(rows: readonly TaskRunResult[]): Map<string, TaskStats> {
  */
 function taskValue(stats: TaskStats | undefined, metric: AttributionMetric, sameDenominator: boolean): number | null {
   if (sameDenominator) {
-    const denom = (stats?.scoredSeeds ?? 0) + (stats?.infraSeeds ?? 0);
+    const denom = Math.max((stats?.scoredSeeds ?? 0) + (stats?.infraSeeds ?? 0), stats?.assignedSeeds ?? 0);
     if (denom === 0) return 0; // absent task → false under same-denominator.
     return metric === 'meanScore' ? (stats!.scoreSum) / denom : stats!.resolvedSeeds / denom;
   }
@@ -260,19 +293,35 @@ export function buildCapabilityAttribution(
   const capabilityArms = (opts.capabilityArms ?? armOrder).filter((a) => a !== control);
 
   const controlAgg = aggregateArm(controlRows, suite, control, opts);
-  const controlStats = armTaskStats(controlRows);
+  const controlStats = armTaskStats(controlRows, opts.assignedSeeds);
   const controlCostPerAttempt = costPerAttempt(controlAgg.cost.costUsd, controlAgg.attempts);
+  const missingMeasurements = rows.filter(row => row.generationStatus !== 'error' && row.generationStatus !== 'timeout' &&
+    (row.graderStatus === 'error' || row.graderStatus === 'timeout' || (row.resolved == null && row.score == null)))
+    .map(({ arm, taskId, seed }) => ({ arm, taskId, seed }));
+
+  // R-14: the matched-cost repeated-session baseline every claimed lift must beat.
+  const baselineArm = opts.repeatedSessionBaseline;
+  const baselineRows = baselineArm === undefined ? [] : rows.filter((r) => r.arm === baselineArm);
+  const baseline = baselineArm === undefined || baselineRows.length === 0
+    || missingMeasurements.some((m) => m.arm === baselineArm) ? null : {
+      arm: baselineArm,
+      stats: armTaskStats(baselineRows, opts.assignedSeeds),
+      costPerAttempt: (() => { const agg = aggregateArm(baselineRows, suite, baselineArm, opts); return costPerAttempt(agg.cost.costUsd, agg.attempts); })(),
+    };
 
   const capabilities: CapabilityArmAttribution[] = [];
   for (const arm of capabilityArms) {
     const armRows = rows.filter((r) => r.arm === arm);
     if (armRows.length === 0) continue;
+    // Grader outages are missing measurements, not Bernoulli failures. Retain
+    // their identities and suppress this comparison until a repaired grade.
+    if (missingMeasurements.some(row => row.arm === control || row.arm === arm)) continue;
     const armAgg = aggregateArm(armRows, suite, arm, opts);
-    const armStats = armTaskStats(armRows);
+    const armStats = armTaskStats(armRows, opts.assignedSeeds);
 
     // The comparison universe = control ∪ capability task ids. Under same-denominator every task in the
     // universe is scored for BOTH arms (infra/absent = 0); under exclude-infra only tasks scored in both count.
-    const universe = new Set<string>([...controlStats.keys(), ...armStats.keys()]);
+    const universe = new Set<string>(opts.assignedTaskIds ?? [...controlStats.keys(), ...armStats.keys()]);
 
     const controlVals: number[] = [];
     const armVals: number[] = [];
@@ -304,6 +353,31 @@ export function buildCapabilityAttribution(
       armCostPerAttempt <= controlCostPerAttempt &&
       (armV.value > controlV.value || armCostPerAttempt < controlCostPerAttempt);
 
+    const claimed = opts.capabilityExercise?.[arm];
+    const claimedList = claimed === undefined ? [] : typeof claimed === 'string' ? [claimed] : [...claimed];
+    const liftAdmissions = claimedList.map((capability) =>
+      admitCapabilityLift(rows, { capability, treatmentArm: arm, controlArm: control }));
+
+    let versusBaseline: CapabilityArmAttribution['repeatedSessionBaseline'] = null;
+    if (baseline && arm !== baseline.arm) {
+      const pairedArm: number[] = [];
+      const pairedBaseline: number[] = [];
+      for (const taskId of new Set<string>(opts.assignedTaskIds ?? [...baseline.stats.keys(), ...armStats.keys()])) {
+        const bv = taskValue(baseline.stats.get(taskId), metric, sameDenominator);
+        const av = taskValue(armStats.get(taskId), metric, sameDenominator);
+        if (bv === null || av === null) continue;
+        pairedArm.push(av);
+        pairedBaseline.push(bv);
+      }
+      const armVsBaseline = armValue(pairedArm, opts).value;
+      const baselineValue = armValue(pairedBaseline, opts).value;
+      versusBaseline = {
+        arm: baseline.arm, value: baselineValue, valueDelta: armVsBaseline - baselineValue,
+        costFraction: baseline.costPerAttempt === 0 ? null : armCostPerAttempt / baseline.costPerAttempt,
+        beaten: pairedArm.length > 0 && armVsBaseline > baselineValue && armCostPerAttempt <= baseline.costPerAttempt,
+      };
+    }
+
     capabilities.push({
       capability: arm,
       control,
@@ -324,10 +398,24 @@ export function buildCapabilityAttribution(
       tasksCompared: unlockedTasks.length + regressedTasks.length + neutralTasks.length,
       controlCoverage: coverageFor(controlStats, universe),
       capabilityCoverage: coverageFor(armStats, universe),
+      liftAdmissions,
+      repeatedSessionBaseline: versusBaseline,
+      liftAdmitted: liftAdmissions.length > 0 && liftAdmissions.every((a) => a.admitted) && versusBaseline?.beaten === true,
     });
   }
 
-  return { suite, runId, control, metric, sameDenominator, capabilities, caveats: ATTRIBUTION_CAVEATS };
+  const caveats = missingMeasurements.length === 0 ? [...ATTRIBUTION_CAVEATS]
+    : [...ATTRIBUTION_CAVEATS, `${missingMeasurements.length} missing grader measurements: affected comparisons are inconclusive pending regrade.`];
+  if (opts.capabilityExercise) {
+    const withheld = capabilities.filter((c) => !c.liftAdmitted).map((c) => c.capability);
+    if (withheld.length > 0) {
+      caveats.push(`Capability lift NOT admitted for ${withheld.join(', ')}: delivery/use evidence is missing, unexercised, or the control leaked, or the arm did not beat the matched-cost repeated-session baseline — report the delta as measured, never as that capability's effect.`);
+    }
+    if (!baseline) {
+      caveats.push(`No matched-cost repeated-session baseline${baselineArm === undefined ? ' was declared' : ` (${baselineArm}) was measured`}: no capability lift is admitted until the treatment beats re-running the same solver at equal cost.`);
+    }
+  }
+  return { suite, runId, control, metric, sameDenominator, capabilities, missingMeasurements, caveats };
 }
 
 /** The mandatory honest-framing lines that ride every attribution report (D-008/D-011 + fairness C1/C3/C6). */

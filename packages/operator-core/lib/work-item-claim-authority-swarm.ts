@@ -28,6 +28,7 @@
 import { routeToAuthorityForHive, type LockAuthorityDeps } from './authority/lock-authority';
 import type { AuthorityOp } from './authority';
 import { setWorkItemClaimAuthority, type WorkItemClaimAuthority } from './work-item-claim-authority';
+import { observeFallback } from './degradation/fallback-observations';
 
 export class SwarmWorkItemClaimAuthority implements WorkItemClaimAuthority {
   constructor(private readonly deps: LockAuthorityDeps = {}) {}
@@ -40,11 +41,15 @@ export class SwarmWorkItemClaimAuthority implements WorkItemClaimAuthority {
 
   async route<T>(potSlug: string, op: AuthorityOp<T>): Promise<T> {
     const res = await routeToAuthorityForHive<T>(potSlug, op, this.deps);
+    observeFallback('swarm-authority-route', {
+      eligible: 1, applied: res.via === 'fail-open' || res.warning ? 0 : 1,
+      reason: res.via === 'fail-open' || res.warning ? 'authority-unreachable' : 'applied',
+      scope: `work-item-claim:${potSlug}`,
+    });
     if (res.warning) {
       // Fail-open (cross-machine, no transport / unreachable): the lease was taken
       // locally and the P-005 reconcile is the backstop. Surface the warning (D-007).
       // On a single box this never fires.
-       
       console.warn(`[work-item-claim] authority fail-open for hive ${potSlug}: ${res.warning}`);
     }
     return res.value;

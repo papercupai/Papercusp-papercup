@@ -157,14 +157,34 @@ describe('EI-79 step 2 — PG-level fed_ts LWW guard (out-of-order safety)', () 
 
   it('an equal-ts same-writer put is resolved by the deterministic content tie-break', async () => {
     const id = 'F-oo-eq';
-    expect(await apply(featurePut(id, 'first', 1500))).toBe(true);
-    await apply(featurePut(id, 'second', 1500));
     // WI-2923/mig 504 replaced unconditional equal-key apply (`>=`) with
     // fed_apply_wins: same-writer equal keys fall to the symmetric content digest
-    // so healed replicas converge instead of swapping values. For these two
-    // payloads the standing row wins the digest tie-break; the contract is
-    // deterministic convergence, not "the second apply always wins".
-    expect(await statusOf(id)).toBe('first');
+    // so healed replicas converge instead of swapping values. An explicit payload
+    // keeps this fixed first-winner fixture stable across NULL-to-{} normalization.
+    const payload = { scenario: 'same-writer' };
+    for (const order of [['first', 'second'], ['second', 'first']]) {
+      await sql`DELETE FROM harness_shared.work_items WHERE harness_slug = ${HARNESS} AND feature_id = ${id}`;
+      for (const status of order) await apply(featurePut(id, status, 1500, { payload }));
+      expect(await statusOf(id)).toBe('first');
+      const [row] = await sql`SELECT payload FROM harness_shared.work_items
+        WHERE harness_slug = ${HARNESS} AND feature_id = ${id}`;
+      expect(row.payload).toEqual(payload);
+    }
+  });
+
+  it('an omitted payload is normalized before the same-writer content tie-break in both orders', async () => {
+    const id = 'F-oo-eq';
+    // Migration 1328 changes an omitted SQL NULL payload to {} before the LWW
+    // guard. For these normalized contents the second digest wins; omitting that
+    // field from the digest would incorrectly preserve the first-winner oracle.
+    for (const order of [['first', 'second'], ['second', 'first']]) {
+      await sql`DELETE FROM harness_shared.work_items WHERE harness_slug = ${HARNESS} AND feature_id = ${id}`;
+      for (const status of order) await apply(featurePut(id, status, 1500));
+      expect(await statusOf(id)).toBe('second');
+      const [row] = await sql`SELECT payload FROM harness_shared.work_items
+        WHERE harness_slug = ${HARNESS} AND feature_id = ${id}`;
+      expect(row.payload).toEqual({});
+    }
   });
 
   it('a STALE del (older than the standing row) must NOT erase it', async () => {

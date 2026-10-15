@@ -96,6 +96,72 @@ describe('collectScheduleInventory', () => {
     expect(ip.detail).toMatchObject({ intervalMs: 30_000, shed: true });
   });
 
+  it('collects only sources needed for a filtered DBOS lookup while preserving federated DBOS rows', async () => {
+    const calls: string[] = [];
+    const rows = await collectScheduleInventory(
+      {
+        getDbosSchedules: async () => {
+          calls.push('dbos');
+          return [];
+        },
+        getRoutines: async () => {
+          calls.push('routines');
+          return [routine()];
+        },
+        getSiblingManaged: async () => {
+          calls.push('siblings');
+          return [
+            {
+              port: 3271,
+              pid: 42,
+              label: 'bg-host:3271',
+              process: 'bg-host',
+              ok: true,
+              timers: [],
+              dbosSchedules: [
+                {
+                  name: 'sessionSearchIndexBuild',
+                  crontab: '0 7,22,37,52 * * * *',
+                  mode: 'ExactlyOncePerIntervalWhenActive',
+                  queueName: null,
+                },
+              ],
+              stallWaker: null,
+              elapsedMs: 1,
+            },
+          ];
+        },
+        enrichSiblingDbos: async (schedules) =>
+          schedules.map((entry) => ({ ...entry, lastFireMs: null, lastStatus: null })),
+        getManaged: () => {
+          calls.push('managed');
+          return [];
+        },
+        getInProcessChecks: () => {
+          calls.push('in-process');
+          return { checks: [], armed: false };
+        },
+        getExternalProcess: () => {
+          calls.push('external-process');
+          return [];
+        },
+        getSyncTriggered: () => {
+          calls.push('sync-triggered');
+          return [];
+        },
+      },
+      { source: 'dbos', name: 'sessionSearchIndexBuild' },
+    );
+
+    expect(calls.sort()).toEqual(['dbos', 'siblings']);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      source: 'dbos',
+      name: 'sessionSearchIndexBuild',
+      detail: { federated: true, process: 'bg-host:3271' },
+    });
+  });
+
   it('is fail-soft per source — one source throwing yields its empty slice, not a thrown inventory', async () => {
     const rows = await collectScheduleInventory({
       // EI-19445595198254637: the sibling-federation seam is a NETWORK default, so
@@ -238,6 +304,8 @@ describe('collectScheduleInventory', () => {
           lastFireAt: 1_700_000_000_000,
           lastError: null,
           running: false,
+          runningSince: null,
+          skippedWhileRunning: 0,
           instanced: false,
           instances: 1,
           fires: 5,
@@ -252,6 +320,8 @@ describe('collectScheduleInventory', () => {
           lastFireAt: null,
           lastError: 'last tick failed',
           running: false,
+          runningSince: null,
+          skippedWhileRunning: 0,
           instanced: false,
           instances: 1,
           fires: 2,
@@ -380,6 +450,8 @@ describe('schedule-inventory ⇄ host-timer guard reconcile (P-009 / WI-919)', (
           lastFireAt: null,
           lastError: null,
           running: false,
+          runningSince: null,
+          skippedWhileRunning: 0,
           instanced: false,
           instances: 1,
           fires: 0,
@@ -475,6 +547,8 @@ describe('collectScheduleInventory — sibling-process federation', () => {
         lastFireAt: 1_785_770_413_000,
         lastError: 'invalid input syntax for type bigint',
         running: false,
+        runningSince: null,
+        skippedWhileRunning: 0,
         instanced: false,
         instances: 1,
         fires: 7,
@@ -565,6 +639,8 @@ describe('collectScheduleInventory — sibling-process federation', () => {
           lastFireAt: null,
           lastError: null,
           running: false,
+          runningSince: null,
+          skippedWhileRunning: 0,
           instanced: false,
           instances: 1,
           fires: 0,
@@ -599,6 +675,8 @@ describe('collectScheduleInventory — sibling-process federation', () => {
                 lastFireAt: null,
                 lastError: null,
                 running: false,
+                runningSince: null,
+                skippedWhileRunning: 0,
                 instanced: false,
                 instances: 1,
                 fires: 3,

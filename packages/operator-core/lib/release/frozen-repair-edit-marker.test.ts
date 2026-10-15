@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
-import { projectFrozenRepairMarker, readFrozenRepairMarker } from './frozen-repair-edit-marker';
+import { frozenRepairMarkerPath, projectFrozenRepairMarker, readFrozenRepairMarker } from './frozen-repair-edit-marker';
 
 // P-022 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03, D-007 #3): the marker
 // is the completion guard's ONLY evidence source, projected by the one queue write path, so
@@ -92,6 +92,8 @@ const queue = {
   },
 } as unknown as FrozenCandidateRepairQueue;
 
+const target = { workspaceId: 'workspace-a', installSlug: 'papercusp' };
+
 describe('frozen-repair edit marker — P-022 ledger projection', () => {
   it('projects the admission ledger (paths ∪ unchanged, normalized) and the manifest legs, status-only', () => {
     const path = scratch();
@@ -155,5 +157,35 @@ describe('frozen-repair edit marker — P-022 ledger projection', () => {
     projectFrozenRepairMarker(queue, path);
     projectFrozenRepairMarker({ ...queue, phase: 'ready-to-test' } as FrozenCandidateRepairQueue, path);
     expect(readFrozenRepairMarker(path)).toBeNull();
+  });
+
+  it('keeps marker files and identities isolated by workspace and install', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'frozen-repair-scope-'));
+    dirs.push(stateDir);
+    const previousStateDir = process.env.PAPERCUSP_STATE_DIR;
+    process.env.PAPERCUSP_STATE_DIR = stateDir;
+    try {
+      const otherInstall = { workspaceId: 'workspace-a', installSlug: 'other-harness' };
+      const otherWorkspace = { workspaceId: 'workspace-b', installSlug: 'papercusp' };
+      const path = frozenRepairMarkerPath(target)!;
+      expect(path).not.toBe(frozenRepairMarkerPath(otherInstall));
+      expect(path).not.toBe(frozenRepairMarkerPath(otherWorkspace));
+
+      projectFrozenRepairMarker(queue, target);
+      projectFrozenRepairMarker({ ...queue, candidate: 'a'.repeat(40) } as FrozenCandidateRepairQueue, otherInstall);
+      expect(readFrozenRepairMarker(target)).toMatchObject({ scope: target, candidate: 'c'.repeat(40) });
+      expect(readFrozenRepairMarker(otherInstall)).toMatchObject({ scope: otherInstall, candidate: 'a'.repeat(40) });
+
+      // Copying a valid marker into another scope's path cannot make it authoritative there.
+      writeFileSync(frozenRepairMarkerPath(otherWorkspace)!, readFileSync(path, 'utf8'));
+      expect(readFrozenRepairMarker(otherWorkspace)).toBeNull();
+      // A pre-scope global marker is not a fallback for a missing or wildcard target.
+      writeFileSync(join(stateDir, 'frozen-repair-edit-marker.json'), readFileSync(path, 'utf8'));
+      expect(readFrozenRepairMarker(null)).toBeNull();
+      expect(readFrozenRepairMarker({ workspaceId: '*', installSlug: 'papercusp' })).toBeNull();
+    } finally {
+      if (previousStateDir === undefined) delete process.env.PAPERCUSP_STATE_DIR;
+      else process.env.PAPERCUSP_STATE_DIR = previousStateDir;
+    }
   });
 });

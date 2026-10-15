@@ -14,7 +14,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WORK_ITEM_DEPS_DDL,
+  applyClaimPathReadDeps,
+} from '../test/_work-items-schema';
 import type { HarnessFeatureRow } from './sync/hyperbee/projections/harness-features';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -144,6 +149,7 @@ beforeAll(async () => {
   await db.sql.unsafe(CLAIM_SESSION_DDL);
   await db.sql.unsafe(REPLICAS_DDL);
   await db.sql.unsafe(ISSUES_DDL);
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // event tables + any later claim-path dep (WI-10005130)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(HIVE_MEMBERS_DDL);
@@ -440,6 +446,7 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       reviewer: 'su-reviewer',
       harnessSlug: HARNESS,
       review: payload.agentReview,
+      parties: { reporters: [], implementers: [] },
     });
     expect(admission).not.toBeNull();
     const candidate = await getWorkItem('F-REVIEW', HARNESS);
@@ -520,6 +527,7 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       reviewer: 'su-reviewer',
       harnessSlug: HARNESS,
       review: stalePayload.agentReview,
+      parties: { reporters: [], implementers: [] },
     });
     expect(staleAdmission).not.toBeNull();
     await h.sql`

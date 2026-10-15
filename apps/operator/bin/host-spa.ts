@@ -24,6 +24,7 @@ import { Hono } from 'hono';
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { isHashedAssetPath } from '../../operator-vite/dist-atomic-writes';
 // P-006: the destination invariant as a POLICY (the prevention leg), kept in one
 // place so this host, the vite dev server and the desktop cannot drift apart.
@@ -32,10 +33,23 @@ import { isHashedAssetPath } from '../../operator-vite/dist-atomic-writes';
 // webview bootstrap, which have no business being loaded server-side.
 // csp-policy.ts imports nothing at all, so it is safe in any environment.
 import { cspHeaders, crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
-import { describeMissingBundle, readBundleIdentity } from '../lib/spa-build-status';
-import { hostedBrowserApiMarker } from "../lib/hosted-browser-api";
+import * as spaBuildStatusModule from '../lib/spa-build-status';
+import * as hostedBrowserApiModule from '../lib/hosted-browser-api';
+// bin/ is ESM for dev sidecars, while these app-library leaves inherit
+// CommonJS. Native tsx exposes their exports under default; Vitest and bundled
+// builds expose the ES namespace. Keep both paths on the same implementations.
+const { describeMissingBundle, readBundleIdentity } = 'default' in spaBuildStatusModule
+  ? spaBuildStatusModule.default as typeof spaBuildStatusModule
+  : spaBuildStatusModule;
+const { hostedBrowserApiMarker } = 'default' in hostedBrowserApiModule
+  ? hostedBrowserApiModule.default as typeof hostedBrowserApiModule
+  : hostedBrowserApiModule;
 export { hostedBrowserApiMarker };
 export type { HostedBrowserApiMarker } from "../lib/hosted-browser-api";
+
+const HOST_MODULE_DIR = typeof __dirname === 'string'
+  ? __dirname
+  : fileURLToPath(new URL('.', import.meta.url));
 
 /**
  * Vite SPA `dist/` root. In dev (host run via `tsx` from source) this
@@ -55,10 +69,10 @@ function resolveSpaDistRoot(): string {
   //    up), fall back to that bundled location instead of the dev-source path,
   //    which does not exist in the bundle. Defense-in-depth: a missing env var
   //    must never blank the desktop UI.
-  const bundled = resolve(__dirname, 'spa');
+  const bundled = resolve(HOST_MODULE_DIR, 'spa');
   if (existsSync(join(bundled, 'index.html'))) return bundled;
   // 3. Dev (host run via `tsx` from source): `bin/` → sibling `operator-vite/dist`.
-  return resolve(__dirname, '..', '..', 'operator-vite', 'dist');
+  return resolve(HOST_MODULE_DIR, '..', '..', 'operator-vite', 'dist');
 }
 const SPA_DIST_ROOT = resolveSpaDistRoot();
 
@@ -311,6 +325,7 @@ function safeDistPath(rel: string): string | null {
 
 export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): Hono {
   let hostedControlPlaneWorkspaceId: string | null = null;
+  const tracedSessionChatCssHosts = new Set<string>();
   if (profile.kind === 'hosted') {
     const configuredWorkspaceId = profile.controlPlaneWorkspaceId.trim();
     if (configuredWorkspaceId.length === 0) {
@@ -320,6 +335,76 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
   }
 
   const routes = new Hono();
+  const traceFirstSessionChatCssResponse = (
+    request: Request,
+    pathname: string,
+    response: Response,
+    startedAt: bigint,
+  ): Response => {
+    const host = request.headers.get('host');
+    const hostKey = host?.toLowerCase() ?? '';
+    if (
+      tracedSessionChatCssHosts.has(hostKey) ||
+      process.env.PAPERCUSP_TRACE_FIRST_SESSION_CHAT_CSS !== '1' ||
+      !/(?:^|\/)SessionChatModal-[^/]+\.css$/i.test(pathname)
+    ) {
+      return response;
+    }
+
+    tracedSessionChatCssHosts.add(hostKey);
+    const reader = response.body?.getReader();
+    let traceFinished = false;
+    const finishTrace = (completion: 'complete' | 'error' | 'cancelled') => {
+      if (traceFinished) return;
+      traceFinished = true;
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+      const entry = {
+        event: 'spa_css_response',
+        host,
+        path: pathname,
+        status: response.status,
+        contentLength: response.headers.get('content-length'),
+        completion,
+        durationMs: Number(durationMs.toFixed(3)),
+      };
+      try {
+        console.info('[spa-css-response] ' + JSON.stringify(entry));
+      } catch {
+        // Diagnostic output must never affect the asset response.
+      }
+    };
+
+    if (!reader) {
+      finishTrace('complete');
+      return response;
+    }
+
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read();
+          if (done) {
+            finishTrace('complete');
+            controller.close();
+            return;
+          }
+          controller.enqueue(value);
+        } catch (error) {
+          finishTrace('error');
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        finishTrace('cancelled');
+        await reader.cancel(reason);
+      },
+    });
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  };
 
   // EI-15848: the identity of the bundle on disk RIGHT NOW. The running UI
   // compares this against the `window.__PAPERCUSP_BUILD_ID__` it booted with and
@@ -343,6 +428,7 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
   // `/internal/docs/*`, `/wiki`, `/drizzle-studio` and the cross-app proxies
   // have all already terminated before a request reaches here.
   routes.get('*', async (c) => {
+    const requestStartedAt = process.hrtime.bigint();
     const pathname = decodeURI(new URL(c.req.url).pathname);
     const rel = pathname.replace(/^\/+/, '');
 
@@ -350,16 +436,26 @@ export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): H
     if (rel && extname(rel)) {
       const abs = safeDistPath(rel);
       if (abs && existsSync(abs) && statSync(abs).isFile()) {
-        return serveFile(
-          abs,
-          200,
-          isImmutableSpaAssetPath(rel) ? IMMUTABLE_CACHE_CONTROL : undefined,
+        return traceFirstSessionChatCssResponse(
+          c.req.raw,
+          pathname,
+          serveFile(
+            abs,
+            200,
+            isImmutableSpaAssetPath(rel) ? IMMUTABLE_CACHE_CONTROL : undefined,
+          ),
+          requestStartedAt,
         );
       }
-      return new Response('Not found', {
-        status: 404,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      });
+      return traceFirstSessionChatCssResponse(
+        c.req.raw,
+        pathname,
+        new Response('Not found', {
+          status: 404,
+          headers: { 'content-type': 'text/plain; charset=utf-8' },
+        }),
+        requestStartedAt,
+      );
     }
 
     // (2) Extensionless → SPA shell. Client router (TSR) owns the route,

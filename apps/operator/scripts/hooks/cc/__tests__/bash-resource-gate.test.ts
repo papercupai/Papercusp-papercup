@@ -1317,6 +1317,30 @@ describe('wrapped/quoted command evasion (EI-19294800751120438)', () => {
   });
 });
 
+describe('host PostgreSQL restart guard (WI-6554700010008482)', () => {
+  it.each([
+    ['the incident command', 'systemctl restart postgresql@18-main.service'],
+    ['a sudo-prefixed restart', 'sudo systemctl restart postgresql@18-main.service'],
+    ['an explicit system-manager restart', 'systemctl --system restart postgresql.service'],
+    ['the wildcard form', 'systemctl restart postgresql*'],
+    ['a nested shell command', 'bash -c "systemctl restart postgresql@18-main.service"'],
+    ['an env-wrapped command', 'env FOO=bar systemctl restart postgresql@18-main.service'],
+  ])('denies %s without requiring an agent marker', (_label, command) => {
+    const reason = denyReason(runGate(bashCmd(command)));
+    expect(reason).toContain('host PostgreSQL restart guard');
+    expect(reason).toContain('WI-6554700010008482');
+  });
+
+  it.each([
+    ['a user service restart', 'systemctl --user restart papercup-staging-api.service'],
+    ['a different host service restart', 'systemctl restart redis.service'],
+    ['a PostgreSQL status read', 'systemctl status postgresql@18-main.service'],
+    ['quoted prose', 'echo "systemctl restart postgresql@18-main.service"'],
+  ])('allows %s', (_label, command) => {
+    expectAllow(runGate(bashCmd(command)));
+  });
+});
+
 /**
  * EI-13135 — systemd user-manager exit/kill guard.
  *
@@ -2706,6 +2730,20 @@ bar" work_items/`)));
     expectAllow(runGate(at('grep -rn foo work_items 2>/dev/null')));
   });
 
+  it("preserves grep's -- pattern terminator before a stderr redirect", () => {
+    const command =
+      "grep -rn -- '--run=' .papercusp/scratch/wi5384/*.sh scripts/agent-capacity/vm/*.sh 2>/dev/null | grep -i teardown | head";
+    const out = runGate(at(command));
+    expect(out.status).toBe(0);
+    if (out.stdout.trim()) {
+      expect(parseDecision(out).hookSpecificOutput.permissionDecision).toBe('allow');
+    }
+  });
+
+  it('still checks a numeric path operand after -- when no redirect follows', () => {
+    expectFalseAbsenceDeny(runGate(at('grep -rn -- foo 2')));
+  });
+
   it('silent when the search appears only as PROSE inside quotes', () => {
     expectAllow(runGate(at('echo "grep -rn foo no-such-dir/"')));
   });
@@ -2989,6 +3027,112 @@ describe('false-absence symlink-traversal guard (EI-20825101204716643)', () => {
 
   it('silent when a non-`cd` command precedes it — it may be CREATING that path', () => {
     expectAllow(runGate(at(`mkdir -p made && find ${linked} -name package.json`)));
+  });
+});
+
+/**
+ * FIFO-read hang guard (EI-24862273512503301).
+ *
+ * Claude Code re-opens a path after a Bash command reads it, after the command
+ * has returned and outside the Bash timeout. open(2) of a FIFO blocks until a
+ * writer attaches, so once the writer has closed, the tool result never comes
+ * back (measured 2026-10-02 in the J5 outage drill, wchan wait_for_partner).
+ *
+ * Every fixture here is a REAL FIFO made with mkfifo, and the gate is judged
+ * through the same stdin/stdout contract the host uses. The guard itself must
+ * never open the pipe: if it did, these tests would hang rather than pass,
+ * because no test ever attaches a writer.
+ */
+describe('FIFO-read hang guard (EI-24862273512503301)', () => {
+  let dir: string;
+  let fifo: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'fifo-guard-'));
+    fifo = join(dir, 'pipe');
+    execFileSync('mkfifo', [fifo]);
+    writeFileSync(join(dir, 'regular'), 'x\n');
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const at = (command: string, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input: { command },
+    session_id: nextSid(),
+    cwd: dir,
+  });
+
+  const expectFifoDeny = (out: GateOut) => {
+    expect(out.status).toBe(0);
+    const decision = parseDecision(out).hookSpecificOutput;
+    expect(decision.permissionDecision).toBe('deny');
+    expect(decision.permissionDecisionReason as string).toContain('FIFO-read hang guard');
+  };
+
+  it('PREMISE: the fixture is a real FIFO, so every deny below is about a pipe', () => {
+    expect(statSync(fifo).isFIFO()).toBe(true);
+    expect(statSync(join(dir, 'regular')).isFIFO()).toBe(false);
+  });
+
+  it.skipIf(process.platform !== 'linux' || !existsSync('/dev/shm'))('judges user FIFOs under /dev/shm while allowing regular files there', () => {
+    const sharedDir = mkdtempSync(join('/dev/shm', 'fifo-guard-'));
+    const sharedFifo = join(sharedDir, 'pipe');
+    const sharedRegular = join(sharedDir, 'regular');
+    try {
+      execFileSync('mkfifo', [sharedFifo]);
+      writeFileSync(sharedRegular, 'x\n');
+      expectFifoDeny(runGate(at(`cat ${sharedFifo}`)));
+      expectFifoDeny(runGate(at(`sudo -n cat ${sharedFifo}`)));
+      expectAllow(runGate(at(`cat ${sharedRegular}`)));
+    } finally {
+      rmSync(sharedDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['absolute operand', () => `cat ${fifo}`],
+    ['relative operand resolved against the stated cwd', () => 'cat pipe'],
+    ['through a `cd`', () => `cd ${dir} && head -n 3 pipe`],
+    ['behind a wrapper (`sudo -n`)', () => `sudo -n cat ${fifo}`],
+    ['a pattern-taking reader (`grep`)', () => 'grep -n foo pipe'],
+    ['the second segment of a pipeline', () => `echo hi | wc -l ${fifo}`],
+  ])('denies a read of a FIFO: %s', (_label, command) => {
+    expectFifoDeny(runGate(at(command())));
+  });
+
+  it('names the pipe and the regular-file remedy in the refusal', () => {
+    const reason = parseDecision(runGate(at(`cat ${fifo}`)))
+      .hookSpecificOutput.permissionDecisionReason as string;
+    expect(reason).toContain(fifo);
+    expect(reason).toContain('REGULAR FILE');
+    expect(reason).toContain('wait_for_partner');
+  });
+
+  /**
+   * CALIBRATION CONTROL: the same reader on a regular file in the same
+   * directory. Without it, every allow below would also pass if the guard were
+   * simply inert.
+   */
+  it('silent for a regular file — the deny is about the pipe, not about `cat`', () => {
+    expectAllow(runGate(at(`cat ${join(dir, 'regular')}`)));
+  });
+
+  it.each([
+    ['inspecting the pipe without opening it (`ls -l`)', () => `ls -l ${fifo}`],
+    ['inspecting the pipe without opening it (`stat`)', () => `stat ${fifo}`],
+    ['a redirect: the shell opens it, not a named operand', () => `cat < ${fifo}`],
+    ['a command that only MENTIONS the words', () => 'echo cat pipe'],
+    ['an unresolvable operand (`$VAR`)', () => 'cat $P'],
+    ['/dev/stdin, which resolves against the hook process', () => 'cat /dev/stdin'],
+  ])('silent for %s', (_label, command) => {
+    expectAllow(runGate(at(command())));
+  });
+
+  it('silent for a Codex shell — the re-open is a Claude Code behaviour', () => {
+    expectAllow(runGate(at(`cat ${fifo}`, 'exec_command')));
   });
 });
 
@@ -5276,6 +5420,35 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
     expect(reason).toContain('node');
   });
 
+  it('allows node writes whose concatenated absolute prefix is outside the tree', () => {
+    const command =
+      "node -e \"const D='" + join(fakeHome, '.papercusp', 'scratch', 'su-4d323') + "/'; " +
+      "const fs=require('fs'); fs.writeFileSync(D+'identity-kernel-precache-ledger-2026-09-26.json','{}')\"";
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows a HOME-based out-of-tree prefix concatenated with a filename', () => {
+    const command =
+      "node -e \"const D=process.env.HOME+'/.papercusp/perf-baselines/'; " +
+      "const fs=require('fs'); fs.writeFileSync(D+'identity-kernel-precache-ledger.json','{}')\"";
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies an absolute in-tree prefix concatenated with a filename', () => {
+    const command =
+      "node -e \"const D='" + CANON + "/apps/operator/'; " +
+      "const fs=require('fs'); fs.writeFileSync(D+'generated.ts','x')\"";
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows path.join when its statically known absolute prefix is outside the tree', () => {
+    const command =
+      "node -e \"const D='" + join(fakeHome, '.papercusp', 'scratch', 'su-4d323') + "/'; " +
+      "const fs=require('fs'); const path=require('path'); " +
+      "fs.writeFileSync(path.join(D,'identity-kernel-precache-ledger.json'),'{}')\"";
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
   it('denies `perl -i` editing a tree file in place (the in-place-flag leg, same as `sed -i`)', () => {
     const out = runGate(bashCmd("perl -i -pe 's/a/b/' apps/operator/foo.pl", { cwd: CANON }), CANON_ENV);
     const reason = denyReason(out);
@@ -6128,6 +6301,82 @@ describe('substitution verdict handling', () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line) as { params?: { arguments?: Record<string, unknown> } });
     expect(requests.at(-1)?.params?.arguments).not.toHaveProperty('tracked_mutation');
+  });
+
+  /**
+   * WI-10005009: git-sync rewrites .git/index on every sweep, and a half-written index
+   * makes `git ls-files --error-unmatch` answer "not tracked" for a TRACKED path,
+   * byte-for-byte like an untracked one. For this classifier that is the unsafe
+   * direction: a tracked `mv` would slip past the GOAL-mode edit refusal with no
+   * `tracked_mutation` bridge. `_is_tracked_path` must fall back to HEAD's tree.
+   */
+  describe('tracked-mutation classifier under a torn index (WI-10005009)', () => {
+    const tornRepo = () => {
+      const dir = mkdtempSync(join(tmpdir(), 'gate-torn-index-'));
+      const git = (...args: string[]) =>
+        execFileSync('git', [
+          '-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t',
+          '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args,
+        ], { stdio: 'pipe' });
+      git('init', '-q');
+      writeFileSync(join(dir, 'tracked.ts'), 'export const x = 1;\n');
+      git('add', 'tracked.ts');
+      git('commit', '-q', '-m', 'seed');
+      writeFileSync(join(dir, 'untracked.ts'), 'export const y = 2;\n');
+      const index = join(dir, '.git', 'index');
+      const bytes = readFileSync(index);
+      writeFileSync(index, bytes.subarray(0, Math.floor(bytes.length / 2)));
+      return dir;
+    };
+    const rawIndexSaysTracked = (dir: string, rel: string) =>
+      spawnSync('git', ['-C', dir, 'ls-files', '--error-unmatch', '--', rel], { stdio: 'ignore' })
+        .status === 0;
+    const trackedMutationFlags = () =>
+      readFileSync(requestFile, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { params?: { arguments?: Record<string, unknown> } })
+        .map((r) => r.params?.arguments?.tracked_mutation);
+    const runIn = (dir: string, command: string) => {
+      writeFileSync(requestFile, '');
+      return runGate(bashCmd(command, { cwd: dir }), {
+        PAPERCUSP_OPERATOR_URL: url,
+        PAPERCUSP_CANONICAL_TREE: dir,
+      });
+    };
+
+    it('still bridges a tracked `mv` when the index is half-written', () => {
+      const dir = tornRepo();
+      try {
+        // Calibration: the raw index read really does misreport, so this case is not vacuous.
+        expect(rawIndexSaysTracked(dir, 'tracked.ts')).toBe(false);
+        setReply({
+          decision: 'allow',
+          matched: [],
+          goalModeEditDenyReason: 'GOAL mode: you never implement — route it instead.',
+        });
+        const out = runIn(dir, 'mv tracked.ts /tmp/gate-torn-index-moved.ts');
+        const hook = JSON.parse(out.stdout).hookSpecificOutput;
+        expect(hook.permissionDecision).toBe('deny');
+        expect(hook.permissionDecisionReason).toContain('GOAL mode: you never implement');
+        expect(trackedMutationFlags()).toContain(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not promote an untracked path to a tracked mutation under the same torn index', () => {
+      const dir = tornRepo();
+      try {
+        expect(rawIndexSaysTracked(dir, 'untracked.ts')).toBe(false);
+        setReply({ decision: 'allow', matched: [], goalModeEditDenyReason: null });
+        expectAllow(runIn(dir, 'mv untracked.ts /tmp/gate-torn-index-moved.ts'));
+        expect(trackedMutationFlags()).not.toContain(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   it('forwards the shell cwd to locks:check_command for cwd-scoped substitution policy', () => {

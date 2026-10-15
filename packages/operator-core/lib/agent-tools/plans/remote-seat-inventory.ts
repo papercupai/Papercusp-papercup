@@ -26,6 +26,7 @@
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { listOffers as listOffersDefault } from '../../p2p/offer-store';
 import type { RemoteSeatSummary } from './launch-prompt';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 /** DI seam (federation-scope / offer-store-publish discipline) so unit tests
  *  run without PG. */
@@ -55,7 +56,10 @@ export async function resolveRemoteSeatInventory(
   const listOffers = deps.listOffers ?? listOffersDefault;
   try {
     const scope = await resolveScope(workspaceId);
-    if (scope.kind !== 'one') return EMPTY_SUMMARY;
+    if (scope.kind !== 'one') {
+      observeFallback('workspace-routing-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'remote-seat-inventory' }, { workspaceId });
+      return EMPTY_SUMMARY;
+    }
     const rows = await listOffers(workspaceId, scope.homeSlug, {
       kind: 'seat',
       status: 'open',
@@ -76,6 +80,7 @@ export async function resolveRemoteSeatInventory(
       const label = row.record.seat.hostLabel?.trim();
       if (label) labels.add(label);
     }
+    observeFallback('workspace-routing-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'remote-seat-inventory' }, { workspaceId });
     return {
       potShared: true,
       donorCount: donors.size,
@@ -83,7 +88,7 @@ export async function resolveRemoteSeatInventory(
       donorLabels: labels.size > 0 ? Array.from(labels).sort() : undefined,
     };
   } catch (e) {
-
+    observeFallback('workspace-routing-read', { eligible: 1, applied: 0, reason: 'remote-seat-read-failed', scope: 'remote-seat-inventory' }, { workspaceId });
     console.warn(
       `[remote-seat-inventory] resolve failed for ws=${workspaceId} (routing gate falls back to local-only text):`,
       e instanceof Error ? e.message : String(e),

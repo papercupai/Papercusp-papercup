@@ -1,0 +1,246 @@
+{
+  "armId": "baseline-lsp-rg",
+  "version": "rg rg",
+  "unavailable": null,
+  "treeFingerprint": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
+  "coldIndex": {
+    "wallMs": 0,
+    "peakRssKb": 0,
+    "ok": true,
+    "error": null,
+    "loadAvg1": 99.04
+  },
+  "indexBytes": 0,
+  "cases": [
+    {
+      "caseId": "selective-scheduler-edge",
+      "intent": "callees",
+      "coldQueryMs": 815,
+      "warmQueryMs": 91,
+      "warmSamplesMs": [
+        92,
+        91,
+        88
+      ],
+      "responseBytes": 1303,
+      "estTokens": 326,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/scheduler/get-next.ts:2779"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/scheduler/get-next.ts:2779"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/agent-tools/plans/set-frontmatter-field.ts:80",
+        "packages/operator-core/lib/agent-tools/release/checkpoint-run.ts:763",
+        "packages/operator-core/lib/agent-tools/release/trace.ts:52",
+        "packages/operator-core/lib/agent-tools/release/deploy.ts:80",
+        "packages/operator-core/lib/coverage-census/attribution/context.ts:203",
+        "packages/operator-core/lib/coverage-census/attribution/sink.ts:207",
+        "packages/operator-core/lib/coverage-census/attribution/sink.ts:234",
+        "packages/operator-core/lib/agent-tools/capability/pty.ts:116",
+        "packages/operator-core/lib/agent-tools/capability/pty.ts:202",
+        "packages/operator-core/lib/agent-tools/dev/pipeline_position.ts:285",
+        "packages/operator-core/lib/fleet/lock-order.ts:17"
+      ],
+      "error": null
+    },
+    {
+      "caseId": "selective-fingerprint-chain",
+      "intent": "callees",
+      "coldQueryMs": 96,
+      "warmQueryMs": 102,
+      "warmSamplesMs": [
+        320,
+        102,
+        97
+      ],
+      "responseBytes": 38477,
+      "estTokens": 9620,
+      "correct": false,
+      "recall": 0.5,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:74"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:74"
+      },
+      "returnedSites": [
+        "scripts/migrate-snapshots-to-pg.ts:85",
+        "packages/operator-core/lib/hive-settings-store.ts:215",
+        "packages/operator-core/lib/hive-settings-store.ts:333",
+        "scripts/repair-stale-generated-artifacts.ts:138",
+        "packages/operator-core/lib/operator-mcp-tools.ts:388",
+        "scripts/pg-autotune.ts:65",
+        "packages/operator-core/lib/role-capability-grants.ts:86",
+        "packages/operator-core/lib/prior-attempt-context.ts:1037",
+        "packages/operator-core/lib/hive-membership-store.ts:155",
+        "packages/operator-core/lib/attention/triage-store.ts:81",
+        "packages/operator-core/lib/attention/triage-store.ts:104",
+        "packages/operator-core/lib/agents-list.ts:153",
+        "packages/operator-core/lib/code-intelligence/lsp-adapter.ts:2074",
+        "packages/operator-core/lib/search/doc-embed-sync.ts:422",
+        "packages/operator-core/lib/attention/gate-watch.ts:200",
+        "packages/operator-core/lib/attention/gate-watch.ts:231",
+        "packages/operator-core/lib/search/embed-backfill.ts:1152",
+        "packages/operator-core/lib/resource-governor/live-health-supervisor.ts:143",
+        "packages/operator-core/lib/cupboard/tools-search.ts:102",
+        "packages/operator-core/lib/cupboard/rubric-store.ts:217",
+        "packages/operator-core/lib/agent-tools/harness/overview.ts:113",
+        "packages/operator-core/lib/agent-tools/improvements/triage.ts:362",
+        "packages/operator-core/lib/agent-tools/capability/read.ts:545",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:98",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:110"
+      ],
+      "error": null
+    },
+    {
+      "caseId": "selective-external-consumer",
+      "intent": "callers",
+      "coldQueryMs": 785,
+      "warmQueryMs": 55,
+      "warmSamplesMs": [
+        55,
+        74,
+        53
+      ],
+      "responseBytes": 1677,
+      "estTokens": 420,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:123",
+          "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:902",
+          "packages/operator-core/lib/design-compare/acceptance.ts:120"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:123, packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:902, packages/operator-core/lib/design-compare/acceptance.ts:120"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/acceptance-bar-contract-snapshot.integration.test.ts:187",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:128",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:1011",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts:65",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts:66",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts:72",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts:79",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.integration.test.ts:797",
+        "packages/operator-core/lib/design-compare/acceptance.ts:122"
+      ],
+      "error": null
+    },
+    {
+      "caseId": "selective-route-boundary",
+      "intent": "text-search",
+      "coldQueryMs": 52,
+      "warmQueryMs": 54,
+      "warmSamplesMs": [
+        54,
+        53,
+        54
+      ],
+      "responseBytes": 290,
+      "estTokens": 73,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:48"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:48"
+      },
+      "returnedSites": [
+        "scripts/publish-official-blueprints.mts:217",
+        "packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:2"
+      ],
+      "error": null
+    },
+    {
+      "caseId": "selective-exact-index-symbol",
+      "intent": "symbol-search",
+      "coldQueryMs": 49,
+      "warmQueryMs": 43,
+      "warmSamplesMs": [
+        49,
+        43,
+        43
+      ],
+      "responseBytes": 94,
+      "estTokens": 24,
+      "correct": true,
+      "recall": 1,
+      "grade": {
+        "correct": true,
+        "missing": [],
+        "extra": [],
+        "reason": "all 1 expected site(s) present"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/work-items.ts:7991"
+      ],
+      "error": null
+    }
+  ],
+  "fixtures": [
+    {
+      "name": "edit",
+      "pass": true,
+      "detail": "all 1 expected site(s) present",
+      "refreshCost": {
+        "wallMs": 31.001264999999876,
+        "peakRssKb": 9432,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 99.04
+      },
+      "recoveryCost": null,
+      "faultSurfaced": null
+    },
+    {
+      "name": "delete",
+      "pass": true,
+      "detail": "no site from the deleted file is returned",
+      "refreshCost": {
+        "wallMs": 32.07110100000045,
+        "peakRssKb": 9436,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 99.04
+      },
+      "recoveryCost": null,
+      "faultSurfaced": null
+    },
+    {
+      "name": "refresh-failure",
+      "pass": false,
+      "detail": "fault SURFACED; correct cold=1 while-broken=0 after-restore=1; recovery refresh ok=true",
+      "refreshCost": {
+        "wallMs": 31.795549000000392,
+        "peakRssKb": 10480,
+        "ok": false,
+        "error": "exit 2: rg: ./scripts: Permission denied (os error 13)",
+        "loadAvg1": 99.04
+      },
+      "recoveryCost": {
+        "wallMs": 34.20956899999965,
+        "peakRssKb": 10424,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 102.24
+      },
+      "faultSurfaced": true
+    }
+  ],
+  "error": null,
+  "measuredAt": "2026-10-01T14:20:28.023Z"
+}

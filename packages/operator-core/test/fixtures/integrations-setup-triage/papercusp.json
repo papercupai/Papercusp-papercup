@@ -1,0 +1,75 @@
+{
+  "kind": "plugin",
+  "name": "integrations-setup-triage",
+  "version": "0.1.0",
+  "papercusp": "^0.1.0",
+  "description": "Test-only trigger pack for plan cupboard-distributable-integrations-2026-10-10 R-2: the bug-triage setup shape (channels to watch, a destination project), each a picker served by whichever installed provider declares the capability.",
+  "author": "Papercusp",
+  "license": "MIT",
+  "versionPin": { "mode": "exact" },
+  "capabilities": [],
+  "triggerPack": {
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channels", "destination"],
+      "properties": {
+        "channels": {
+          "type": "array",
+          "title": "Channels to watch",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "x-options": { "capability": "chat.channels" }
+        },
+        "destination": {
+          "type": "string",
+          "title": "File bugs in",
+          "minLength": 1,
+          "x-options": { "capability": "ticket.containers", "args": { "purpose": "create" } }
+        }
+      }
+    },
+    "defaultStormPolicy": { "maxRuns": 5, "windowSeconds": 300 },
+    "targets": [
+      {
+        "id": "triage-fixture-message",
+        "kind": "plan",
+        "path": "plan.md",
+        "inputSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["trigger"],
+          "properties": {
+            "trigger": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": ["key", "source", "event", "sourceId", "externalId", "dedupeKey"],
+              "properties": {
+                "key": { "type": "string", "pattern": "^ext:integrations-setup-chat:message$" },
+                "source": { "const": "integrations-setup-chat" },
+                "event": { "const": "message" },
+                "sourceId": { "type": "string", "minLength": 1 },
+                "externalId": { "type": "string", "minLength": 1 },
+                "dedupeKey": { "type": "string", "minLength": 1 },
+                "payload": { "type": "object", "additionalProperties": true }
+              }
+            },
+            "channels": { "type": "array", "items": { "type": "string" } },
+            "destination": { "type": "string" }
+          }
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "id": "fixture-message-to-triage",
+        "source": { "kind": "external", "sourceKind": "integrations-setup-chat" },
+        "target": "triage-fixture-message",
+        "eventPattern": "ext:integrations-setup-chat:message",
+        "filter": { "all": [{ "text": { "exists": true } }] },
+        "mapping": { "mode": "payload-context" }
+      }
+    ],
+    "edges": []
+  }
+}

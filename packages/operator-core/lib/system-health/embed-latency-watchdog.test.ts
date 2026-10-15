@@ -10,6 +10,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { EmbedCallerLatency, EmbedLatencyWindow } from '@papercusp/search';
+import { hostname } from 'node:os';
 
 import {
   EMBED_LATENCY_MIN_SAMPLES_PER_CALLER,
@@ -45,6 +46,10 @@ function win(callers: EmbedCallerLatency[], over: Partial<EmbedLatencyWindow> = 
     truncatedByCapacity: false,
     ...over,
   };
+}
+
+function quietRail() {
+  return { broadcast: async () => true, resolve: async () => true };
 }
 
 describe('judgeEmbedCaller — the classification ladder names the REMEDY', () => {
@@ -121,6 +126,7 @@ describe('runEmbedLatencySweepOnce — sweep plumbing', () => {
     const out = await runEmbedLatencySweepOnce({
       flagEnabled: async () => false,
       readWindow,
+      rail: quietRail(),
       escalate: async () => {},
     });
     expect(out).toEqual({ verdict: 'skipped', escalated: 0 });
@@ -133,6 +139,7 @@ describe('runEmbedLatencySweepOnce — sweep plumbing', () => {
     );
     const out = await runEmbedLatencySweepOnce({
       flagEnabled: async () => true,
+      rail: quietRail(),
       readWindow: () =>
         win([caller({ caller: 'midturn:related-context', budgetMs: 1200, p99Ms: 1900 })]),
       escalate,
@@ -150,11 +157,50 @@ describe('runEmbedLatencySweepOnce — sweep plumbing', () => {
     for (const window of [win([caller()]), win([])]) {
       const out = await runEmbedLatencySweepOnce({
         flagEnabled: async () => true,
+        rail: quietRail(),
         readWindow: () => window,
         escalate,
       });
       expect(out.escalated).toBe(0);
     }
     expect(escalate).not.toHaveBeenCalled();
+  });
+
+  it('keeps a host/caller condition through unknown windows and legacy failures, then resolves measured recovery', async () => {
+    const open = new Set<string>();
+    const broadcast = vi.fn(async (event: { conditionKey?: string }) => {
+      open.add(event.conditionKey!); return true;
+    });
+    const resolve = vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey));
+    const slow = caller({ caller: 'midturn:related-context', budgetMs: 1200, p99Ms: 1900 });
+    const key = `alarm:embed-latency:${encodeURIComponent(hostname())}:midturn%3Arelated-context`;
+    const deps = { flagEnabled: async () => true, rail: { broadcast, resolve },
+      escalate: async () => { throw new Error('legacy unavailable'); } };
+    await expect(runEmbedLatencySweepOnce({ ...deps, readWindow: () => win([slow]) })).rejects.toThrow('legacy unavailable');
+    expect([...open]).toEqual([key]);
+    for (const window of [win([]), win([caller()]), win([{ ...slow, budgetMs: null }]),
+      win([{ ...slow, n: 1 }]), win([{ ...slow, p50Ms: null, p99Ms: null }])]) {
+      await runEmbedLatencySweepOnce({ ...deps, readWindow: () => window });
+      expect([...open]).toEqual([key]);
+    }
+    await runEmbedLatencySweepOnce({ ...deps, flagEnabled: async () => false, readWindow: () => win([{ ...slow, p99Ms: 200 }]) });
+    expect([...open]).toEqual([key]);
+    await runEmbedLatencySweepOnce({ ...deps, readWindow: () => win([{ ...slow, p99Ms: 200 }]) });
+    expect(open.size).toBe(0);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith({ conditionKey: key, summary: 'embed-latency-watchdog recovered' });
+  });
+
+  it('a failed condition delivery leaves the legacy notification independently executable', async () => {
+    const escalate = vi.fn(async () => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = await runEmbedLatencySweepOnce({ flagEnabled: async () => true,
+        readWindow: () => win([caller({ p99Ms: 5000 })]), escalate,
+        rail: { broadcast: async () => { throw new Error('rail unavailable'); } } });
+      expect(out).toEqual({ verdict: 'breach', escalated: 1 });
+      expect(escalate).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('condition broadcast failed (non-fatal): Error: rail unavailable'));
+    } finally { warn.mockRestore(); }
   });
 });

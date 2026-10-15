@@ -7,6 +7,8 @@
  */
 import { describe, expect, it, afterEach, vi } from 'vitest';
 import { Worker } from 'node:worker_threads';
+import { EventEmitter } from 'node:events';
+import type { ChildProcess, spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -327,13 +329,25 @@ describe('agent sandbox leg', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('runProbeCommand: an event loop stalled past the deadline does not turn an exited child into a timeout', async () => {
-    const p = runProbeCommand('/bin/sh', ['-c', 'exit 0'], 50);
-    const until = Date.now() + 400; // the stall: the child exits inside it, the deadline passes inside it
-    while (Date.now() < until) {
-      /* block the loop */
+  it('runProbeCommand: a deadline delivered before close does not turn an exited child into a timeout', async () => {
+    // A real shell plus a busy loop cannot prove the shell exited before its
+    // 50ms deadline (CI run 20871498). Control the observed state and ordering.
+    vi.useFakeTimers();
+    const kill = vi.fn();
+    const child = Object.assign(new EventEmitter(), {
+      stderr: null, exitCode: null as number | null, signalCode: null, kill,
+    });
+    try {
+      const p = runProbeCommand('probe', [], 50, (() => child as unknown as ChildProcess) as typeof spawn);
+      child.exitCode = 0;
+      await vi.advanceTimersByTimeAsync(51);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(kill).not.toHaveBeenCalled();
+      child.emit('close', 0);
+      expect(await p).toEqual({ code: 0, stderr: '' });
+    } finally {
+      vi.useRealTimers();
     }
-    expect(await p).toEqual({ code: 0, stderr: '' });
   });
 
   it('runProbeCommand: reports the exit code and stderr, and kills a child that really overruns', async () => {

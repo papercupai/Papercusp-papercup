@@ -12,20 +12,37 @@ import type { BulkRunRow } from '../attention/bulk-run-store';
 import { reclaimExpiredPlanItemClaims } from '../plan-items/stale-claims';
 import type { CleanupFinding } from './scanner';
 
+function failureDetails(value: Record<string, unknown>): string {
+  const code = typeof value.error === 'string'
+    ? value.error
+    : typeof value.code === 'string'
+      ? value.code
+      : undefined;
+  const detail = typeof value.detail === 'string'
+    ? value.detail
+    : typeof value.message === 'string'
+      ? value.message
+      : undefined;
+  if (code && detail && code !== detail) return `${code}: ${detail}`;
+  return code ?? detail ?? 'operation refused';
+}
+
 function innerFailure(name: string, result: unknown): Error | null {
   if (!result || typeof result !== 'object') return null;
   const value = result as Record<string, unknown>;
-  if (value.ok === false || typeof value.error === 'string') {
-    return new Error(`${name}: ${String(value.error ?? value.message ?? 'operation refused')}`);
-  }
   const failed = Array.isArray(value.results)
     ? value.results.find(
         (entry) => entry && typeof entry === 'object' && (entry as { ok?: unknown }).ok === false,
       ) as Record<string, unknown> | undefined
     : undefined;
-  return failed
-    ? new Error(`${name}: ${String(failed.error ?? failed.detail ?? failed.message ?? 'operation refused')}`)
-    : null;
+  // Bulk envelopes set their outer `ok` from all per-item results. Inspect the
+  // failed member first so an aggregate `ok:false` cannot hide its canonical
+  // rejection code and detail behind the generic fallback.
+  if (failed) return new Error(`${name}: ${failureDetails(failed)}`);
+  if (value.ok === false || typeof value.error === 'string') {
+    return new Error(`${name}: ${failureDetails(value)}`);
+  }
+  return null;
 }
 
 async function callRequired(
@@ -43,6 +60,7 @@ export async function dispatchCleanupFindingAction(input: {
   run: BulkRunRow;
   finding: CleanupFinding;
   call: InnerCall;
+  proposal?: { state: string; next: string };
 }): Promise<unknown> {
   const { run, finding, call } = input;
   const harness = finding.harnessSlug || run.harnessSlug || undefined;
@@ -120,9 +138,18 @@ export async function dispatchCleanupFindingAction(input: {
       }
       return { released: reaped.released[0] };
     }
-    case 'stale-now':
-      throw new Error(
-        `${finding.findingId}: refreshing ## Now requires an authored state/next proposal; keep this finding recommended`,
-      );
+    case 'stale-now': {
+      if (!input.proposal?.state.trim() || !input.proposal.next.trim()) {
+        throw new Error(
+          `${finding.findingId}: refreshing ## Now requires an authored state/next proposal; keep this finding recommended`,
+        );
+      }
+      return callRequired(call, 'plans:set-now', {
+        slug: finding.planSlug,
+        state: input.proposal.state,
+        next: input.proposal.next,
+        ...(harness ? { harness } : {}),
+      });
+    }
   }
 }

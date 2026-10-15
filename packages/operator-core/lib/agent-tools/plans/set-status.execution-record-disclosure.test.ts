@@ -12,10 +12,16 @@
  * actually runs (that path is skipped entirely when no identity resolves).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/plans/set-status.execution-record-disclosure.test.ts
  */
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import { mockRejectedTyped, mockResolvedTyped } from '../../testing/typed-mock';
 import type { convertPlanItem as ConvertPlanItemFn } from '../../plan-items/convert';
 import type { claimForWork as ClaimForWorkFn } from '../../plan-items/claim-discipline';
+
+afterAll(() => {
+  const rail = readRealPgRailBlocks();
+  expect(rail.blocked, `real-PG attempts blocked: ${rail.callers.join(' | ')}`).toBe(0);
+});
 
 const convertMocks = vi.hoisted(() => ({
   convertPlanItem: vi.fn(),
@@ -31,6 +37,8 @@ vi.mock('../_harness-scope', async (orig) => ({
   harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
 }));
 vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
+// WI-10008137: the draft-plan item-start gate has its own suite (draft-item-start-gate.test.ts).
+vi.mock('./draft-item-start-gate', () => ({ checkDraftItemStartGateLive: vi.fn(async () => null) }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
 }));
@@ -49,6 +57,7 @@ vi.mock('./source', () => ({
 vi.mock('../../plan-items/agent-names', () => ({
   resolveAdoptedName: vi.fn(async () => null),
   bestEffortOwnerUser: () => 'tester',
+  listSessionsForAgentName: vi.fn(async () => []),
 }));
 // The auto-convert leg is flag-gated; force it ON so the disclosure path runs.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
@@ -57,10 +66,13 @@ vi.mock('../../plan-items/claim-discipline', () => ({
   claimForWork: claimMocks.claimForWork,
   releaseOwnClaim: claimMocks.releaseOwnClaim,
 }));
-vi.mock('../../plan-items/convert', async (orig) => ({
-  ...(await orig<typeof import('../../plan-items/convert')>()),
+// Keep the conversion IO boundary closed without importing server startup.
+vi.mock('../../plan-items/convert', () => ({
   convertPlanItem: convertMocks.convertPlanItem,
+  findConvertedWorkItemByStamp: vi.fn(async () => null),
   findCoverageWorkItems: convertMocks.findCoverageWorkItems,
+  looksLikeResidualClosure: vi.fn(() => false),
+  TERMINAL_WORK_ITEM_STATES: new Set(['passed', 'resolved', 'closed', 'done', 'deprecated', 'dropped']),
 }));
 
 import { withPlanLock } from './with-plan-lock';

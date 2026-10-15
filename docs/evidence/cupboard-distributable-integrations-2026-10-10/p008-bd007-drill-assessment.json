@@ -1,0 +1,79 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "R-4 live drill re-proof on the current bg-host: the BD007 Slack bug report (a real papercusp defect, a 46-minute git-sync local-sync fire) travelled the installed Cupboard slack + bug-triage 0.2.0 packages end to end on bg-host pid 987208 (build c0c010edb3), and the removed in-app path stayed silent",
+ "framework": "operational",
+ "command": [
+  "Real Slack post into channel C0C8836LU5C at 2026-10-12T22:35:18.492Z (ts 1791844518.326389, client_msg_id 5bef90a0-5f3f-4eba-bd07-202610122240) through the drill reporter account (auth.test team T0C4WJSCV9V, user U0C8BMMPPBQ, bot B0C8FJVE5C1; token injected by capability:bash integration_env from SLACK_BUG_DRILL_REPORTER_TOKEN, not the system bot), script .papercusp/scratch/su-0dd6b-bd007-post.sh, receipt .papercusp/scratch/su-0dd6b-bd007-receipt.json. Per owner directive #1748 the report names a real papercusp defect (one git-sync fire held in local-sync from 21:31:28Z to after 22:18:06Z on 2026-10-12) instead of the retired Delivery Quote toy fixture.",
+  "Classification of plan run 1341 (trigger run e51134b6) by su-0dd6b9aa: ticket:file { planRunId: 1341 } on :3170 build 068e409340 through scripts/mcp-call.mjs (args .papercusp/scratch/su-0dd6b-bd007-ticket-file.json), which returned created:true, externalRef 1219427129030017.",
+  "Measurement: readTriggerPackDrillRows + assessTriggerPackDrill from packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts (tested by trigger-pack-drill-evidence.test.ts), run by su-0dd6b9aa through .papercusp/scratch/p008-bd007-drill-measure.mts against the operator database (HARNESS_ADMIN_DATABASE_URL of papercup-dev-api, workspace papercusp-workspace) at 2026-10-12T22:38:12.312Z."
+ ],
+ "startedAt": "2026-10-12T22:38:12.312Z",
+ "finishedAt": "2026-10-12T22:38:12.463Z",
+ "exitCode": 0,
+ "summary": "Instrument verdict pass on 5 of 5 checks. Slack message ts 1791844518.326389 in C0C8836LU5C arrived on source f0566e25 (kind slack) connected through the installed slack package's provider setup, fired exactly one run (e51134b6, succeeded, plan run 1341) on the installed bug-triage binding 6f0084ec, and that run created Asana task 1219427129030017 in the installation's project 1219381686283984. The removed in-app binding 7c3c95c0 stayed disarmed with zero runs in the 22:30-23:00Z window (read at 2026-10-12T22:38:12.312Z). The ingress process was papercusp-bg-host.service pid 987208, started 2026-10-12T22:21:48Z at build c0c010edb3, the process running at measurement time, so this drill re-proves R-4 on the code now running.",
+ "assertions": [
+  {
+   "id": "package-socket-path",
+   "passed": true,
+   "evidence": "source f0566e25-ec24-4c51-8388-74ebf49fb6fc: kind slack (expected slack), credential_ref provider-setup:slack, status connected, last_error null"
+  },
+  {
+   "id": "chat-message-recorded",
+   "passed": true,
+   "evidence": "1 run(s) on the installed binding carry dedupe prefix connector:f0566e25-ec24-4c51-8388-74ebf49fb6fc:chat-message:C0C8836LU5C:1791844518.326389:"
+  },
+  {
+   "id": "one-run-from-installed-binding",
+   "passed": true,
+   "evidence": "binding 6f0084ec-7571-4751-bdc2-58146a156078 (plan bug-triage, installation 2e0593bb-17cc-4f27-bb68-5ef62cc9ea3c, armed true, channels [C0C8836LU5C]): 1 run(s) in window; e51134b6-fb5f-4981-bd58-619d4e90dc2c succeeded, minted 1, replayed false, planRunId 1341"
+  },
+  {
+   "id": "one-ticket-in-chosen-project",
+   "passed": true,
+   "evidence": "ticket created 1219427129030017 in container 1219381686283984; installation destination 1219381686283984"
+  },
+  {
+   "id": "in-app-path-silent",
+   "passed": true,
+   "evidence": "in-app binding 7c3c95c0-fc75-4832-b66c-c493fefea789 (plan slack-classify-bug-2026-10-08) armed false; 0 run(s) in window"
+  }
+ ],
+ "plan": "cupboard-distributable-integrations-2026-10-10",
+ "items": [
+  "P-007"
+ ],
+ "specs": [
+  "SPEC-R-4-P-007"
+ ],
+ "evidencePlane": "live",
+ "instrument": {
+  "path": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts",
+  "testPath": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.test.ts"
+ },
+ "drill": {
+  "workspaceId": "papercusp-workspace",
+  "sourceKind": "slack",
+  "channelId": "C0C8836LU5C",
+  "messageId": "1791844518.326389",
+  "sourceId": "f0566e25-ec24-4c51-8388-74ebf49fb6fc",
+  "installedBindingId": "6f0084ec-7571-4751-bdc2-58146a156078",
+  "inAppBindingId": "7c3c95c0-fc75-4832-b66c-c493fefea789",
+  "windowStart": "2026-10-12T22:30:00Z",
+  "windowEnd": "2026-10-12T23:00:00Z"
+ },
+ "ticket": {
+  "containerId": "1219381686283984",
+  "externalRef": "1219427129030017",
+  "url": "https://app.asana.com/1/1219197493738449/project/1219381686283984/task/1219427129030017"
+ },
+ "supersedes": "docs/evidence/cupboard-distributable-integrations-2026-10-10/p008-bd006-drill-assessment.json for AUTO-BAR-R-4-P-007: BD006 ran on bg-host pid 1936094 (build 6d0afb5dd2), which restarted at 22:19:22-22:21:48Z onto build c0c010edb3, so its live binding no longer describes the running process. BD007 is the same drill shape on the current process. BD006 stays as the historical record.",
+ "limitations": [
+  "The Slack message was posted by an inline one-shot script, not a committed sender; the instrument measures what the platform recorded after delivery, not the posting.",
+  "The poster and the classifier are the same agent (su-0dd6b9aa, the cupboard plan implementer), posting through the separate drill reporter Slack account. The classification is not independent of the plan under acceptance; the measured facts come from operator rows the agent did not write.",
+  "The reported defect is real papercusp work, but its numbers come from the agent's own 2026-10-12 21:31-22:21Z readings (routines:list git-sync health, git log of staging, tool_invocations for su-loopback dev:restart, the papercusp-bg-host journal), not a re-measurement at post time. R-4 measures ingress, classification and filing, not the defect.",
+  "The window end (23:00Z) was later than the measurement time; the in-app-path-silent check covers only rows present when the instrument ran.",
+  "The Asana task identity comes from the trigger run's recorded ticket filing; the instrument does not query Asana's API.",
+  "This drill posted in the chosen channel, so it does not exercise the non-chosen-channel case; that case is guarded by the ticket.ts channel check and its integration test."
+ ]
+}

@@ -7,32 +7,40 @@
  * sit beyond page one or outside the active filter and still has to resolve.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { resolveSelectionKind } from './DetailPanel';
 
-type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, unknown> };
-const { syncCalls } = vi.hoisted(() => ({ syncCalls: [] as SyncCall[] }));
+type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, unknown>; requestClass?: string };
+const { syncCalls, detailState, issueState } = vi.hoisted(() => ({
+  syncCalls: [] as SyncCall[],
+  detailState: { loading: false, error: null as Error | null, data: [] as unknown[],
+    failureCount: 0, failureReason: null as Error | null },
+  issueState: { issues: [] as unknown[] | null },
+}));
 
 vi.mock('@papercusp/sync', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/sync')>()),
   onSyncBusEvent: () => () => {},
-  useSyncQuery: (opts: { queryName: string; enabled?: boolean; args?: Record<string, unknown> }) => {
-    syncCalls.push({ queryName: opts.queryName, enabled: opts.enabled, args: opts.args });
+  useSyncQuery: (opts: SyncCall) => {
+    syncCalls.push({ queryName: opts.queryName, enabled: opts.enabled, args: opts.args, requestClass: opts.requestClass });
     const enabled = opts.enabled !== false;
+    const detail = enabled && opts.queryName === 'workItems.detail';
     return {
-      data: enabled ? [] : [],
-      loading: false,
+      data: detail ? detailState.data : [],
+      loading: detail && detailState.loading,
       fetching: false,
       transport: 'sse' as const,
       invalidate: () => {},
-      error: null,
+      error: detail ? detailState.error : null,
+      failureCount: detail ? detailState.failureCount : 0,
+      failureReason: detail ? detailState.failureReason : null,
     };
   },
 }));
 vi.mock('./useHarnessData', () => ({
   useHarnessFeature: () => ({ feature: null, loading: false, error: null, patchFeature: vi.fn() }),
-  useHarnessIssues: () => ({ issues: [], patchIssue: vi.fn() }),
+  useHarnessIssues: () => ({ issues: issueState.issues, patchIssue: vi.fn() }),
 }));
 vi.mock('@/lib/useLexicon', () => ({
   useLexicon: () => (key: string, opts?: { plural?: boolean; lower?: boolean }) => {
@@ -50,9 +58,56 @@ import DetailPanel from './DetailPanel';
 afterEach(() => {
   cleanup();
   syncCalls.length = 0;
+  detailState.loading = false;
+  detailState.error = null;
+  detailState.data = [];
+  detailState.failureCount = 0;
+  detailState.failureReason = null;
+  issueState.issues = [];
 });
 
+function renderSelected() {
+  return render(
+    <NuqsTestingAdapter searchParams="?sel=WI-1">
+      <DetailPanel panelId={'p1' as never} panelType={'detail' as never}
+        params={{ harnessSlug: 'h1' } as never} api={{ setTitle: vi.fn() } as never} />
+    </NuqsTestingAdapter>,
+  );
+}
+
 describe('DetailPanel work-item detail subscription', () => {
+  it('reveals a resolver failure during retries before the terminal query error exists', () => {
+    detailState.loading = true;
+    detailState.failureCount = 1;
+    detailState.failureReason = new Error('resolver timeout');
+    renderSelected();
+    expect(screen.getByText('Unable to load WI-1: resolver timeout')).toBeTruthy();
+    expect(screen.queryByText('Loading WI-1…')).toBeNull();
+  });
+
+  it('shows a failed detail read even while unrelated legacy issues and a retry are loading', () => {
+    issueState.issues = null;
+    detailState.loading = true;
+    detailState.error = new Error('resolver timeout');
+    renderSelected();
+    expect(screen.getByText('Unable to load WI-1: resolver timeout')).toBeTruthy();
+    expect(screen.queryByText('Loading WI-1…')).toBeNull();
+  });
+
+  it('settles a missing unified item independently of an unresolved legacy issue feed', () => {
+    issueState.issues = null;
+    renderSelected();
+    expect(screen.getByText('No deliverable found for WI-1.')).toBeTruthy();
+    expect(screen.queryByText('Loading WI-1…')).toBeNull();
+  });
+
+  it('keeps the selected item loading while its own first read is pending', () => {
+    detailState.loading = true;
+    renderSelected();
+    expect(screen.getByText('Loading WI-1…')).toBeTruthy();
+    expect(screen.queryByText('No deliverable found for WI-1.')).toBeNull();
+  });
+
   it('routes a WI- selection to the workItem kind', () => {
     expect(resolveSelectionKind('WI-42')).toBe('workItem');
   });
@@ -101,5 +156,6 @@ describe('DetailPanel work-item detail subscription', () => {
     expect(list, 'detail must not depend on a bounded list page').toBeUndefined();
     const detail = syncCalls.find((c) => c.queryName === 'workItems.detail' && c.enabled !== false);
     expect(detail?.args).toEqual({ harnessSlug: 'h1', id: 'WI-1' });
+    expect(detail?.requestClass, 'selected detail must use the shared scheduler interactive reservation').toBe('interactive-control');
   });
 });

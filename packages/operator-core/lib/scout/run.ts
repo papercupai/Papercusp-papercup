@@ -37,6 +37,11 @@ import {
   type ScoutRevisionRequest,
 } from './scheduler';
 import type { ScoutTickRecord } from './tick-ledger';
+import {
+  assessGenerationPreflight,
+  GENERATION_PREFLIGHT_GATE,
+  type GenerationPreflightTick,
+} from './generation-preflight-guard';
 import type { ScoutCyclePhase } from './cycle';
 import { readHiveIdleRatio, readFrictionSignalCount } from './cadence-signals';
 import type { ScoutCadenceOptions } from './cadence';
@@ -209,6 +214,17 @@ export interface ScoutCycleDeps {
    * P-010 work-queue pressure preflight. Production reads the P-005 queue-health
    * writer and returns an ideator cap; unavailable data fails open.
    */
+  /**
+   * WI-10007380 / P-003 generation preflight: recent tick records (newest first)
+   * for this install, so the cycle can skip paid generation while dedup
+   * saturation persists past the novelty-widening budget
+   * (generation-preflight-guard.ts). Production wires readScoutTicks. Unwired ⇒
+   * only the deep-throttle check applies (the hermetic unit-test contract).
+   */
+  generationPreflightTicks?: (scope: {
+    workspaceId: string;
+    installSlug: string;
+  }) => Promise<readonly GenerationPreflightTick[]>;
   admissionPressureGate?: (input: {
     workspaceId: string;
     harnessSlug?: string;
@@ -410,6 +426,44 @@ export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycle
       // verdict; this keeps injected/legacy seams equally fail-open.
     }
   }
+  // WI-10007380 / P-003: skip PAID generation whose output is already known to be
+  // wasted — a deep admission throttle, or dedup saturation that the novelty
+  // widening could not break (generation-preflight-guard.ts). The ledger read is
+  // best-effort: a failure leaves only the throttle check, never blocks a cycle.
+  let preflightTicks: GenerationPreflightTick[] | null = null;
+  if (deps.generationPreflightTicks) {
+    try {
+      preflightTicks = [
+        ...(await deps.generationPreflightTicks({ workspaceId: input.workspaceId, installSlug: input.installSlug })),
+      ];
+    } catch {
+      preflightTicks = null;
+    }
+  }
+  const preflight = assessGenerationPreflight({
+    admissionPressure: admissionPressure ?? null,
+    recentTicksNewestFirst: preflightTicks,
+  });
+  if (preflight.skip) {
+    if (deps.recordGovernor) {
+      await deps.recordGovernor({
+        workspaceId: input.workspaceId,
+        harnessSlug: input.installSlug,
+        perCycleBudgetUsd: resolveScoutBudget(cfg.budget).maxCostUsd,
+        fired: null,
+      });
+    }
+    await note({
+      status: 'gated',
+      gate: GENERATION_PREFLIGHT_GATE,
+      detail: {
+        ...preflight.detail,
+        ...(admissionPressure ? { admissionThrottle: admissionPressure } : {}),
+      },
+    });
+    return { fired: false, reason: GENERATION_PREFLIGHT_GATE };
+  }
+
   let governedBudget = cfg.budget;
   if (admissionPressure?.maxIdeators != null) {
     const resolved = resolveScoutBudget(cfg.budget);

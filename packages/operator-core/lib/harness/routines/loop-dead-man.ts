@@ -45,6 +45,7 @@ import { autoPauseLoopRoutine } from './loop-cost-cap';
 import type { AttentionNotifyInput } from '../../attention-notify';
 import { getModes } from '../../modes/store';
 import { modeById } from '../../modes/registry';
+import type { SevereEventBroadcast, SevereEventResolution } from '../../severe-event-broadcast';
 
 /**
  * Pure dead-man decision. Duration is checked first (a forgotten loop is the headline case).
@@ -103,6 +104,8 @@ export interface LoopDeadManDeps {
    * must not carry them just to page on the rare dead-man breach.
    */
   notify?: (input: AttentionNotifyInput) => Promise<void>;
+  broadcast?: (input: SevereEventBroadcast) => Promise<boolean>;
+  resolve?: (input: SevereEventResolution) => Promise<boolean>;
 }
 
 /**
@@ -157,7 +160,17 @@ export async function checkLoopDeadMan(
     maxFires: input.maxFires,
     maxDurationSec: input.maxDurationSec,
   });
-  if (!verdict.breach) return verdict;
+  const conditionKey = `alarm:loop-dead-man:${input.routineId}`;
+  if (!verdict.breach) {
+    // A readable disappearance or a valid, within-bound arm ends this episode.
+    // Malformed metadata cannot demonstrate recovery even if the old decision is fail-soft.
+    if (rows.length === 0 || (rows[0].armed_ms != null && rows[0].fire_count != null
+      && Number.isFinite(armedAtMs) && Number.isFinite(fireCountTotal) && Number.isFinite(fireCountAtArm))) {
+      const { resolveAlarm } = await import('../../alarm-attention');
+      await resolveAlarm(conditionKey, 'loop-dead-man', { resolve: deps.resolve });
+    }
+    return verdict;
+  }
 
   await autoPause(db, input.routineId, `dead-man guard: ${verdict.reason}`);
 
@@ -191,12 +204,29 @@ export async function checkLoopDeadMan(
     const modes = await readModes(workspaceId, ownerId, db);
     if (!hasAutonomyPosture(modes)) return { ...verdict, escalated: false };
 
-    const notify =
-      deps.notify ??
-      (async (payload: AttentionNotifyInput) => {
+    // Keep the original anonymous callback shape: the immutable audit names this
+    // producer by checkLoopDeadMan, rather than introducing a new nested row identity.
+    const notify = (async (payload: AttentionNotifyInput) => {
+      // A paused loop cannot refresh its condition; only measured recovery clears it.
+      // Keep both delivery legs in this producer, independent of owner-page failure.
+      try {
+        const event: SevereEventBroadcast = { conditionKey, oneShot: true,
+          summary: `Autonomous loop ${input.routineId} stopped at its dead-man bound`,
+          body: `${ownerId}: ${verdict.reason}` };
+        if (deps.broadcast) await deps.broadcast(event);
+        else {
+          const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
+          await broadcastSevereEvent(event);
+        }
+      } catch (e) {
+        console.warn(`[loop-dead-man] condition broadcast failed: ${String(e)}`);
+      }
+      if (deps.notify) await deps.notify(payload);
+      else {
         const { notifyAttention } = await import('../../attention-notify');
         await notifyAttention(payload);
-      });
+      }
+    });
     await notify({
       kind: 'intervention',
       title: `Autonomous session ${ownerId} was just stopped by its dead-man bound — it cannot restart itself`,
@@ -212,7 +242,7 @@ export async function checkLoopDeadMan(
         `RUNAWAY loop, and a silently halted one is the opposite failure.`,
       importance: 'urgent',
       workspaceId,
-      data: { ownerId, routineId: input.routineId, reason: verdict.reason ?? '', modes: modes.map((m) => m.mode).join(',') },
+      data: { conditionKey, ownerId, routineId: input.routineId, reason: verdict.reason ?? '', modes: modes.map((m) => m.mode).join(',') },
     });
     return { ...verdict, escalated: true };
   } catch (e) {

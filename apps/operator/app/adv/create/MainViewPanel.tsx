@@ -31,8 +31,31 @@ import PreviewPanel from './PreviewPanel';
 import SessionsPanel from './SessionsPanel';
 import { useCreateScope, usePlanListMaps, useCreateView } from './use-create-data';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
+import { PlanCleanupReviewSelector } from '@/app/_components/plans/PlansCleanupStrip';
+import { PLAN_CLEANUP_RUN_PARAM, usePlanCleanupRun } from '@/app/_components/plans/use-plan-cleanup-run';
 
 export default function MainViewPanel(_props?: PanelComponentProps) {
+  const [view] = useCreateView();
+  const enabled = useFlag(FLAGS.PLAN_CLEANUP);
+  const [runId, setRunId] = useQueryState(PLAN_CLEANUP_RUN_PARAM, parseAsString);
+  const cleanup = usePlanCleanupRun(runId, { enabled: enabled && view === 'plans' });
+  return (
+    <>
+      {enabled && view === 'plans' ? (
+        <PlanCleanupReviewSelector
+          inventory={cleanup.reviewInventory}
+          selectedRunId={runId}
+          onReview={(id) => void setRunId(id)}
+        />
+      ) : null}
+      <MainViewContent />
+    </>
+  );
+}
+
+function MainViewContent() {
   const [view] = useCreateView();
   const [plan, setPlan] = useQueryState('plan', parseAsString);
   const [q] = useQueryState('q', parseAsString.withDefault(''));

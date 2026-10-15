@@ -61,12 +61,17 @@ function isPositiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
+function isNonnegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
 /**
  * Normalize and check a requested spending cap for a key of `kind`.
  *
- * - `spendCapCents`: a positive whole number of cents. REQUIRED for a service key (R-13); optional
- *   for an app key, where omitted or null means "no per-key cap" (the workspace's own limits still
- *   apply).
+ * - `spendCapCents`: a non-negative whole number of cents. Zero is a valid no-LLM-spend cap:
+ *   new LLM-running calls are refused while reads and cancel remain allowed. REQUIRED for a
+ *   service key (R-13); optional for an app key, where omitted or null means "no per-key cap" (the
+ *   workspace's own limits still apply).
  * - `spendCapWindowSec`: the trailing window. Omitted = 30 days. Explicit null = the key's whole
  *   lifetime. Only meaningful with a cap, so it is refused on an uncapped key.
  *
@@ -92,11 +97,11 @@ export function resolveSpendCap(
     if (window !== undefined && window !== null) {
       problems.push({ field: 'spendCapWindowSec', value: window, reason: 'a window needs a spending cap to apply to' });
     }
-  } else if (!isPositiveInteger(cents) || cents > MAX_SPEND_CAP_CENTS) {
+  } else if (!isNonnegativeInteger(cents) || cents > MAX_SPEND_CAP_CENTS) {
     problems.push({
       field: 'spendCapCents',
       value: cents,
-      reason: `must be a whole number of cents between 1 and ${MAX_SPEND_CAP_CENTS}`,
+      reason: `must be a whole number of cents between 0 and ${MAX_SPEND_CAP_CENTS}`,
     });
   }
   if (hasCap && window !== undefined && window !== null && !isPositiveInteger(window)) {

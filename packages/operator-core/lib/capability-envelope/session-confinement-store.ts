@@ -31,22 +31,21 @@
  * (WI-39930). So importing this module only ASSIGNS the resolver; the first dispatch that
  * actually consults it primes the cache and arms the refresh timer.
  *
- * WHY THE FIRST CALL AWAITS BUT THE REST DO NOT
- * --------------------------------------------
- * Fail-open on a cold cache is forced, not chosen (D-017 §4): unconfined is the default for
- * every session in the fleet, so a fail-closed miss would deny every dispatch on the box.
- * Ordering closes the window in the launch case — the launch writes the confinement, which
- * primes this process's cache, BEFORE the implementer is spawned. It does not close the
- * OPERATOR-RESTART case, where the cache starts empty with a confined session already live.
- * So the first consult awaits one priming read; every later consult reads the sync cache.
- * That is one await per process, not one per dispatch.
+ * WHY EACH DISPATCH READS AUTHORITATIVE STATE
+ * -----------------------------------------
+ * The launcher persists a confinement BEFORE spawning its session. The dispatch
+ * host may be another process or may restart while that session remains live.
+ * Dispatch now reads authoritative state for its verified workspace on EACH call.
+ * A warm cache miss on another serving process cannot prove absence. The cache
+ * remains a local boundary hint, while exact ceilings survive expiry as denials.
  */
+import { isDeepStrictEqual } from 'node:util';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
 
 import { isTransportOnlyIdentity, resolveAgentIdentity } from '../agent-tools/coordination/identity';
-import { readOperatorState, writeOperatorState } from '../operator-state-pg';
-import type { SessionToolConfinement } from './session-confinement';
+import { readOperatorState, updateOperatorState } from '../operator-state-pg';
+import { validProductReadBoundary, validWorkItemBoundary, type SessionToolConfinement } from './session-confinement';
 import { setSessionConfinementResolver } from './session-confinement-port';
 
 /** One stored confinement, with the expiry that keeps the table from accumulating dead rows. */
@@ -67,7 +66,7 @@ const STATE_TABLE = 'operator_session_confinements' as const;
 const DEFAULT_TTL_SEC = 12 * 60 * 60;
 
 const state = pinModuleState('@papercusp/operator-core.session-confinement-store', () => ({
-  /** The sync cache the dispatch hot path reads. Empty until primed. */
+  /** Local hint for synchronous callers; dispatch reads authoritative PG state. */
   cache: {} as Record<string, StoredSessionConfinement>,
   /** Memoized priming promise — one per process, not one per dispatch. */
   priming: undefined as Promise<void> | undefined,
@@ -77,20 +76,56 @@ const state = pinModuleState('@papercusp/operator-core.session-confinement-store
 
 function isExpired(row: StoredSessionConfinement, nowMs: number): boolean {
   const t = Date.parse(row.expiresAt);
-  // An unparseable expiry is treated as EXPIRED. A confinement is a narrowing, so the
-  // conservative reading of a corrupt row is "do not apply it" — the alternative would let a
-  // malformed row confine a session forever with no way to age out.
+  // Unparseable expiry is expired. Legacy engagements age out; exact launch
+  // ceilings remain denied until explicitly released by the external host.
   return !Number.isFinite(t) || t <= nowMs;
 }
 
+// An exact launch ceiling must never age into broader authority. Legacy pair
+// engagements retain their documented TTL; strict ceilings require explicit release.
+function mayPrune(row: StoredSessionConfinement, nowMs: number): boolean {
+  return row.confinement?.denyOutside === undefined && isExpired(row, nowMs);
+}
+
+function effectiveConfinement(row: StoredSessionConfinement): SessionToolConfinement | null {
+  if (!isExpired(row, Date.now())) return row.confinement;
+  if (row.confinement.denyOutside === undefined) return null;
+  return { ...row.confinement, denyOutside: [], reason: `${row.confinement.reason}; launch ceiling expired, requiring external renewal` };
+}
+
+/** Authoritative per-call read: a warm miss in another host process is not
+ * evidence of absence. Read failures reject instead of manufacturing authority. */
+export async function readSessionConfinement(ownerId: string | null | undefined,
+  workspaceId?: string): Promise<SessionToolConfinement | null> {
+  if (!ownerId || isTransportOnlyIdentity(ownerId)) return null;
+  const payload = await readOperatorState<SessionConfinementsPayload>(STATE_TABLE, workspaceId, { fresh: true });
+  if (payload !== null && (typeof payload !== 'object' || Array.isArray(payload) ||
+      payload.sessions !== undefined && (payload.sessions === null || typeof payload.sessions !== 'object' || Array.isArray(payload.sessions))))
+    throw new Error('Stored session confinement population is malformed');
+  const row = payload?.sessions?.[ownerId];
+  if (row === undefined) return null;
+  if (!row?.confinement || !Array.isArray(row.confinement.denyTools) ||
+      row.confinement.denyTools.some(name => typeof name !== 'string') ||
+      row.confinement.denyOutside !== undefined && (!Array.isArray(row.confinement.denyOutside) ||
+        row.confinement.denyOutside.some(name => typeof name !== 'string')) ||
+      row.confinement.denyAmbientContext !== undefined && row.confinement.denyAmbientContext !== true ||
+      row.confinement.denyWorkItemsOutside !== undefined &&
+        (row.confinement.denyOutside === undefined || !validWorkItemBoundary(row.confinement.denyWorkItemsOutside)) ||
+      row.confinement.denyProductReadsOutside !== undefined &&
+        (row.confinement.denyOutside === undefined || !validProductReadBoundary(row.confinement.denyProductReadsOutside)))
+    throw new Error('Stored session confinement is malformed');
+  state.cache[ownerId] = row;
+  return effectiveConfinement(row);
+}
+
 /** Read the table into the sync cache, dropping expired rows. */
-export async function refreshSessionConfinements(): Promise<void> {
-  const payload = (await readOperatorState<SessionConfinementsPayload>(STATE_TABLE)) ?? {};
+export async function refreshSessionConfinements(workspaceId?: string): Promise<void> {
+  const payload = (await readOperatorState<SessionConfinementsPayload>(STATE_TABLE, workspaceId, { fresh: true })) ?? {};
   const rows = payload.sessions ?? {};
   const nowMs = Date.now();
   const live: Record<string, StoredSessionConfinement> = {};
   for (const [ownerId, row] of Object.entries(rows)) {
-    if (!row?.confinement || isExpired(row, nowMs)) continue;
+    if (!row?.confinement || mayPrune(row, nowMs)) continue;
     // Defence in depth: a population-keyed row must never bind, even if one reached the
     // table by a path that skipped the write guard.
     if (isTransportOnlyIdentity(ownerId)) continue;
@@ -101,8 +136,8 @@ export async function refreshSessionConfinements(): Promise<void> {
 
 /**
  * Prime once per process, and arm the periodic refresh on the same first consult.
- * Never rejects: a store that cannot be read leaves the session UNCONFINED (the forced
- * default) and says so loudly, rather than taking every dispatch on the box down with it.
+ * This legacy cache initializer never rejects. Dispatch does not rely on the
+ * cache: its independent authoritative read fails closed through the resolver port.
  */
 export function ensureSessionConfinementsReady(): Promise<void> {
   if (state.priming) return state.priming;
@@ -111,7 +146,7 @@ export function ensureSessionConfinementsReady(): Promise<void> {
       await refreshSessionConfinements();
     } catch (err) {
       console.error(
-        '[session-confinement] priming read failed — sessions treated as UNCONFINED until the next refresh',
+        '[session-confinement] cache priming failed — dispatch still requires authoritative policy reads',
         err,
       );
     }
@@ -141,16 +176,16 @@ export function ensureSessionConfinementsReady(): Promise<void> {
 }
 
 /**
- * The sync lookup the resolver performs. Returns null for an unknown, expired, or
- * population-keyed owner — all three mean "this session is not confined".
+ * Local synchronous lookup, not the dispatch resolver. Unknown/population owners
+ * and expired legacy rows return null; expired exact ceilings deny every tool.
  */
 export function sessionConfinementFor(
   ownerId: string | null | undefined,
 ): SessionToolConfinement | null {
   if (!ownerId || isTransportOnlyIdentity(ownerId)) return null;
   const row = state.cache[ownerId];
-  if (!row || isExpired(row, Date.now())) return null;
-  return row.confinement;
+  if (!row) return null;
+  return effectiveConfinement(row);
 }
 
 /**
@@ -164,6 +199,7 @@ export async function declareSessionConfinement(args: {
   ownerId: string;
   confinement: SessionToolConfinement;
   ttlSec?: number;
+  workspaceId?: string;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   const ownerId = args.ownerId?.trim();
   if (!ownerId) return { ok: false, reason: 'ownerId is required' };
@@ -176,41 +212,70 @@ export async function declareSessionConfinement(args: {
         `(including the owner's own). Launch the implementer with a per-session identity first.`,
     };
   }
-  if (!args.confinement?.denyTools?.length) {
+  if (!args.confinement?.denyTools?.length && args.confinement?.denyOutside === undefined) {
     return { ok: false, reason: 'confinement must deny at least one tool' };
   }
+  if (args.confinement.denyProductReadsOutside !== undefined &&
+      !validProductReadBoundary(args.confinement.denyProductReadsOutside))
+    return { ok: false, reason: 'confinement requires a valid product read boundary' };
+
+  const confinement = { ...args.confinement, denyTools: [...args.confinement.denyTools],
+    ...(args.confinement.denyOutside === undefined ? {} : { denyOutside: [...args.confinement.denyOutside] }),
+    ...(args.confinement.denyProductReadsOutside === undefined ? {} : { denyProductReadsOutside: {
+      ...args.confinement.denyProductReadsOutside,
+      docsSlugs: [...args.confinement.denyProductReadsOutside.docsSlugs],
+      testFiles: [...args.confinement.denyProductReadsOutside.testFiles],
+    } }),
+    ...(args.confinement.denyWorkItemsOutside === undefined ? {} : { denyWorkItemsOutside: { ...args.confinement.denyWorkItemsOutside } }) };
+  if (!confinement.reason?.trim() || !confinement.imposedBy?.trim() ||
+      confinement.denyTools.some(name => typeof name !== 'string' || !name.trim()) ||
+      confinement.denyOutside?.some(name => typeof name !== 'string' || !/^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$/.test(name)) ||
+      confinement.denyAmbientContext !== undefined && confinement.denyAmbientContext !== true ||
+      confinement.denyWorkItemsOutside !== undefined &&
+        (confinement.denyOutside === undefined || !validWorkItemBoundary(confinement.denyWorkItemsOutside)) ||
+      confinement.denyProductReadsOutside !== undefined &&
+        (confinement.denyOutside === undefined || !validProductReadBoundary(confinement.denyProductReadsOutside)))
+    return { ok: false, reason: 'confinement requires valid canonical ceiling names and attribution' };
 
   const ttlSec = args.ttlSec && args.ttlSec > 0 ? args.ttlSec : DEFAULT_TTL_SEC;
   const now = Date.now();
-  const payload = (await readOperatorState<SessionConfinementsPayload>(STATE_TABLE)) ?? {};
+  await updateOperatorState<SessionConfinementsPayload>(STATE_TABLE, {}, payload => {
   const sessions = { ...(payload.sessions ?? {}) };
+  const previous = sessions[ownerId]?.confinement;
+  // JSONB reorders object keys. Compare the persisted JSON values so an
+  // identical ceiling can be re-declared after a host/listener restart while
+  // any changed permission or assignment remains immutable.
+  if (previous?.denyOutside !== undefined && !isDeepStrictEqual(previous, JSON.parse(JSON.stringify(confinement))))
+    throw new Error('An exact launch ceiling cannot be replaced; launch a fresh session');
 
   // Prune while we hold the payload — the write path is the natural place to age the table out.
   for (const [key, row] of Object.entries(sessions)) {
-    if (!row?.confinement || isExpired(row, now)) delete sessions[key];
+    if (!row?.confinement || mayPrune(row, now)) delete sessions[key];
   }
 
   sessions[ownerId] = {
-    confinement: args.confinement,
+    confinement,
     declaredAt: new Date(now).toISOString(),
     expiresAt: new Date(now + ttlSec * 1000).toISOString(),
   };
 
-  await writeOperatorState<SessionConfinementsPayload>(STATE_TABLE, { ...payload, sessions });
+  return { ...payload, sessions };
+  }, args.workspaceId);
   // Same-process immediacy: the launch primes THIS process's cache before it spawns the
   // implementer, so there is no window in the launch case.
-  await refreshSessionConfinements();
+  await refreshSessionConfinements(args.workspaceId);
   return { ok: true };
 }
 
 /** Lift a confinement (engagement over, or the session ended). Idempotent. */
-export async function releaseSessionConfinement(ownerId: string): Promise<void> {
-  const payload = (await readOperatorState<SessionConfinementsPayload>(STATE_TABLE)) ?? {};
+export async function releaseSessionConfinement(ownerId: string, workspaceId?: string): Promise<void> {
+  await updateOperatorState<SessionConfinementsPayload>(STATE_TABLE, {}, payload => {
   const sessions = { ...(payload.sessions ?? {}) };
-  if (!(ownerId in sessions)) return;
+  if (!(ownerId in sessions)) return payload;
   delete sessions[ownerId];
-  await writeOperatorState<SessionConfinementsPayload>(STATE_TABLE, { ...payload, sessions });
-  await refreshSessionConfinements();
+  return { ...payload, sessions };
+  }, workspaceId);
+  await refreshSessionConfinements(workspaceId);
 }
 
 /** Test seam: replace the sync cache without touching Postgres. */
@@ -241,7 +306,6 @@ setSessionConfinementResolver(
       // spawn. Nothing to look up.
       return null;
     }
-    return sessionConfinementFor(ownerId);
+    return readSessionConfinement(ownerId, ctx.workspaceId ?? undefined);
   },
-  { ensureReady: ensureSessionConfinementsReady },
 );

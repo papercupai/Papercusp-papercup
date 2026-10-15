@@ -46,6 +46,8 @@ describe('lintCarrySurfaceProvenance', () => {
       'peer owner asked for a handoff update.',
       'work-item owner requires the claim to stay open.',
       'fleet owner directed the member to retry.',
+      'the root owner asked for an exact recovery update.',
+      'the storage owner asked for the exact artifact source.',
     ])('does not flag %s', (line) => {
       expect(lintCarrySurfaceProvenance(line)).toEqual({ flagged: false, matches: [] });
     });
@@ -362,6 +364,20 @@ describe('lintCarrySurfaceProvenance', () => {
       ).toBe('possible-owner-tag-mention');
     });
 
+    it('does not treat a safety requirement list for preserving directive records as owner attribution', () => {
+      expect(
+        lintCarrySurfaceProvenance(
+          'Preserve directed asks, owner directives, required wakes, and Stop authority.',
+        ),
+      ).toEqual({ flagged: false, matches: [] });
+
+      expect(
+        lintCarrySurfaceProvenance(
+          'Owner directive 2026-07-06: Preserve directed asks, owner directives, required wakes, and Stop authority.',
+        ).matches[0]?.kind,
+      ).toBe('manual-owner-tag');
+    });
+
     it('downgrades to possible-owner-tag-mention on nearby mention-context words', () => {
       const r = lintCarrySurfaceProvenance('a claimed owner directive with no turn ref is suspect');
       expect(r.matches[0]?.kind).toBe('possible-owner-tag-mention');
@@ -388,6 +404,22 @@ describe('lintCarrySurfaceProvenance', () => {
       expect(
         lintCarrySurfaceProvenance('This is not an owner directive; do NOT deploy until reviewed.').matches[0]?.kind,
       ).toBe('bare-gate-imperative');
+    });
+
+    it('EI-25438670819476017: accepts a negative-existence owner-directive disclaimer', () => {
+      expect(
+        lintCarrySurfaceProvenance('No applicable owner directive was provided for this task.'),
+      ).toEqual({ flagged: false, matches: [] });
+    });
+
+    it('EI-25438670819476017: keeps an imperative loud beside a negative-existence disclaimer', () => {
+      expect(
+        lintCarrySurfaceProvenance('No applicable owner directive was found; do NOT deploy until reviewed.')
+          .matches[0]?.kind,
+      ).toBe('bare-gate-imperative');
+      expect(lintCarrySurfaceProvenance('Do not ignore owner directive #9.').matches[0]?.kind).toBe(
+        'manual-owner-tag',
+      );
     });
 
     it('never flags a backtick-quoted mention of the phrase', () => {

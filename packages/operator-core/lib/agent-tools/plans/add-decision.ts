@@ -34,7 +34,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitDecisionAdded } from '../../harness/usage-emitters';
 import { runBulk, bulkContent, bulkEnvelopeSchema, type BulkItemResult } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
-import { recoverHarnessFromSlugs, requireUnambiguousSlugScope } from './slug-scope';
+import { recoverHarnessFromSlugs, type SlugScopeDecision } from './slug-scope';
 import {
   citedDecisionAuthorities,
   decisionProvenance,
@@ -42,6 +42,7 @@ import {
   hasConcreteDecisionMeasurement,
 } from './decision-provenance';
 import { neutralizeToolCallTags } from '../../text-safety';
+import { containsDeviationFence } from '../../spec-conformance/deviation';
 import { planDecisionRef } from '../../agent-goal-ref';
 import {
   allocateNextDecisionId,
@@ -56,6 +57,8 @@ import {
   evaluateFrozenLineageCarryText,
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
+import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
+import { promotedFromSchema, validatePromotedFrom, promotionDecisionBody, type PromotionSource } from '../../promotion-lineage';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
@@ -81,6 +84,7 @@ const DECISION_BODY_DESC =
   'Measure before you rule: when the decision asserts a factual claim about the tree, read the tree and add a `Measured:` line naming the file:line or command + result. A decision cited from another decision is authority for design, not evidence about current code.';
 
 const itemSpec = z.object({
+  promotedFrom: promotedFromSchema.optional(),
   slug: z.string().min(1),
   title: hardText(LIMITS.SHORT_TITLE),
   body: hardText(5000).describe(DECISION_BODY_DESC),
@@ -94,6 +98,7 @@ const itemSpec = z.object({
 const argsSchema = z
   .object({
     slug: z.string().min(1).optional(),
+    promotedFrom: promotedFromSchema.optional(),
     harness: harnessArg,
     title: hardText(LIMITS.SHORT_TITLE).optional(),
     body: hardText(5000).optional().describe(DECISION_BODY_DESC),
@@ -118,7 +123,8 @@ const argsSchema = z
     { message: 'pass { slug, title, body } for one, or items:[{ slug, title, body }] for many' },
   );
 
-interface NewDecision {
+export interface NewDecision {
+  promotedFrom?: PromotionSource[];
   slug: string;
   title: string;
   body: string;
@@ -127,6 +133,21 @@ interface NewDecision {
   harness?: string;
   rationale?: string;
 }
+
+/** Internal callers only — never reachable from tool args. */
+export interface AddDecisionOptions {
+  /**
+   * The ```deviation fence is reserved to the plans:conformance deviation transaction
+   * (R-17, spec-conformance/deviation.ts). Only that transaction sets this; a hand-authored
+   * decision carrying the fence is refused so it cannot forge an approved deviation.
+   */
+  allowDeviationFence?: boolean;
+}
+
+export const DEVIATION_FENCE_RESERVED_NOTE =
+  'The ```deviation fence is reserved to the deviation transaction: record a deviation with ' +
+  "plans:conformance { op:'propose-deviation' } and approve it with { op:'approve-deviation' }. " +
+  'Remove the fenced block from this decision body.';
 
 export interface DecisionMeasurementAdvisory {
   code: 'tree_fact_measurement_missing';
@@ -276,8 +297,7 @@ type AddDecisionValue =
   // WI-10004529: the live body is missing decisions its own latest revision recorded.
   | { ok: false; code: 'stale_base_decisions_lost'; reason: string };
 
-type WritableSlugScope = ReturnType<typeof requireUnambiguousSlugScope>;
-type WritableSlugScopeFailure = Exclude<WritableSlugScope, { status: 'resolved' }>;
+type WritableSlugScopeFailure = Exclude<SlugScopeDecision, { status: 'resolved' }>;
 
 /** Keep exact-slug recovery failures self-describing inside the bulk result. */
 function decisionScopeFailure(slug: string, decision: WritableSlugScopeFailure): BulkItemResult {
@@ -304,6 +324,7 @@ function decisionScopeFailure(slug: string, decision: WritableSlugScopeFailure):
     slug,
     error: 'plan_slug_ambiguous_across_harnesses',
     candidates: decision.candidates,
+    workspaceId: decision.workspaceId,
   };
 }
 
@@ -318,11 +339,7 @@ async function decisionContext(
     return { ok: true, ctx: harnessScopedCtx(it.harness, ctx) };
   }
 
-  const recovered = await recoverHarnessFromSlugs(ctx, [it.slug]);
-  const decision = requireUnambiguousSlugScope(
-    recovered,
-    ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
-  );
+  const decision = await recoverHarnessFromSlugs(ctx, [it.slug]);
   if (decision.status !== 'resolved') {
     return { ok: false, result: decisionScopeFailure(it.slug, decision) };
   }
@@ -339,7 +356,21 @@ async function decisionContext(
  *  rides the result; not_found / legacy_plan / busy map to this item's failure.
  *  Busy results preserve the safe owner/expiry fields plus the optional point-in-time
  *  PostgreSQL holder snapshot. */
-async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Promise<BulkItemResult> {
+export async function addDecisionOne(
+  rawIt: NewDecision,
+  ctx: UnifiedToolContext,
+  opts: AddDecisionOptions = {},
+): Promise<BulkItemResult> {
+  // R-17: the ```deviation fence is machine authority (drift-alarm suppression, closure
+  // exemption). Checked first, before any write path, against the RAW body.
+  if (!opts.allowDeviationFence && containsDeviationFence(rawIt.body)) {
+    return {
+      ok: false,
+      slug: rawIt.slug,
+      error: 'deviation_fence_reserved',
+      message: DEVIATION_FENCE_RESERVED_NOTE,
+    };
+  }
   // EI-21915372335188454: a client-side tool-call serializer that mis-closes a
   // `<parameter name="body">` block (e.g. `</body>` instead of `</parameter>`)
   // has been observed leaking the literal tool-call XML for every argument AFTER
@@ -354,7 +385,8 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
   const it: NewDecision = {
     ...rawIt,
     title: neutralizeToolCallTags(rawIt.title),
-    body: neutralizeToolCallTags(rawIt.body),
+    body: promotionDecisionBody(neutralizeToolCallTags(rawIt.body),
+      await validatePromotedFrom(rawIt.promotedFrom, ctx.workspaceId)),
   };
   // frozen-candidate-carry-and-launch-fail-closed P-002: plan decisions are
   // durable execution authority. Do not let a positive moving-tip candidate
@@ -363,6 +395,7 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
   const frozenCarryVerdict = evaluateFrozenLineageCarryText({
     surface: 'plan-decision',
     text: `${it.title}\n${it.body}`,
+    target: resolveHomeGateVerdictTarget(),
   });
   if (!frozenCarryVerdict.allowed) {
     const refusal = frozenLineageCarryViolationPayload(frozenCarryVerdict);
@@ -466,6 +499,7 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
     },
   );
 
+  if (result.kind === 'refused') return { slug: it.slug, error: result.value.code, ...result.value };
   if (result.kind === 'busy') {
     return {
       ok: false,
@@ -575,8 +609,12 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
     );
   }
 
+  const cascadeActivationAudit = barReadiness?.activationAudit;
+  if (barReadiness) delete barReadiness.activationAudit;
+
   return {
     ...result.value,
+    ...(cascadeActivationAudit ? { activationAudit: cascadeActivationAudit } : {}),
     // The citable form. `decisionId` alone is allocated per-plan and so is not a
     // reference — cite `ref`. See planDecisionRef for the measured ambiguity.
     ref: planDecisionRef(it.slug, decisionId),
@@ -636,6 +674,7 @@ export default defineTool({
           slug: it.slug,
           title: it.title,
           body: it.body,
+          promotedFrom: it.promotedFrom ?? args.promotedFrom,
           refs: it.refs ?? it.itemRefs ?? batchRefs,
           affects: it.affects ?? args.affects,
           harness: it.harness ?? args.harness,
@@ -646,6 +685,7 @@ export default defineTool({
             slug: args.slug as string,
             title: args.title as string,
             body: args.body as string,
+            promotedFrom: args.promotedFrom,
             refs: batchRefs,
             affects: args.affects,
             harness: args.harness,

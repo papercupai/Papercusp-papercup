@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Current Android exact-eight isolated native integration",
+  "framework": "operational",
+  "command": [
+    "bash",
+    "tools/run-android-checks.sh",
+    "isolated-native",
+    "${PAPERCUP_OPERATOR_CHECKOUT}",
+    "android/app/build/ci-evidence/exact8-20261002-1958"
+  ],
+  "commandCwd": "papercup-rust-mobile",
+  "commandParameterBasis": "PAPERCUP_OPERATOR_CHECKOUT represents the read-only prepared staging generation at the exact operator source commit recorded below. The original command and private path remain in the retained local wrapper evidence; the portable summary preserves its hash without publishing a personal home path.",
+  "startedAt": "2026-10-02T19:57:36.232701+00:00",
+  "finishedAt": "2026-10-02T19:58:38.423415+00:00",
+  "exitCode": 0,
+  "summary": "Eight maintained native Compose/JNI tests executed with zero failures/errors/skips against actual private operator c7bed9. Exact-source/counterpart/APK/JUnit/journey/cleanup barrier passed.",
+  "scope": "Local debug isolated native integration only. Real pairing/authenticated JNI/Inbox/invalid-JWT recovery/navigation plus six chat HTTP fixture lifecycle/scope tests. Not actual expired/revoked JWT verifier, hosted automatic execution, complete product journeys, signed release candidate, physical phone, Play or public-install acceptance.",
+  "workItems": [
+    "WI-10004768",
+    "WI-10004770",
+    "WI-10004773"
+  ],
+  "containingSourceCommit": "f1799b48a9ed37f2c5102aa30280392719f80c7d",
+  "sourceDirtyAtExecution": false,
+  "runId": "c05a970abc8a4f028e3dfad76f1406dd",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/run-android-checks.sh",
+      "sha256": "89dd4265a9cd6f5b8f4db8c561c8f5753596cec686c9630d480c2bc3fec76102"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/build-android.sh",
+      "sha256": "536a01cbce75c84211a8e7043761934f7b6b4e2b69efdf63139185d923ea7596"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "9e412c8c5f580d75cb5c858f41bdea55c2ba357c8dc6bac20497b6d1b82986e3"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/SettingsScreen.kt",
+      "sha256": "47fdad90680d0c1affa8764f7d2bc29340ebe27d72c434ad56474065d86ed57e"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/DiagnosticsScreen.kt",
+      "sha256": "80d061ef6f14b1fe54b093b8464253df80f9c868a1ef8b1fb91036f9554905fd"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/MainActivity.kt",
+      "sha256": "2d9ec406c9485780dfaae59f22abd31f2a04cd8c08f56c40e60a027495e15638"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/AndroidManifest.xml",
+      "sha256": "f2156e5cd114b6c1f21e9fee92505d1b8671f9d5395eba1d5b8167e6e58caaa0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/PapercupApplication.kt",
+      "sha256": "64d99440c8c918d82ca528d4454bd650c21c3eb0232c7153d0d5b78cf44e95ab"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/InboxScreen.kt",
+      "sha256": "1d6e8b64f543ddb9bd20f14e36415ee07c3c87f758adb363f7c2ccf48252e698"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/CompanionFeed.kt",
+      "sha256": "45715903c679d2e1ac2bc5c548ea27bfb401942107177d439550f2b4738baa41"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/Credentials.kt",
+      "sha256": "6ac079028424cdb141b6104298f68d3a38ed5e6807631406a8191459d0d088c1"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/HumanError.kt",
+      "sha256": "3ad6407a781490d8b46f4ad9bb6f6a0dd76d2d992dd4f74366c7b177a13e6783"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/PairScreen.kt",
+      "sha256": "3d7acc64a27e9b12f17c94fc77c2108460e0aa300ba4a10dff0c82eef61da50b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/OperatorChatScreen.kt",
+      "sha256": "a0fda70c5069a35c9649b411bc3f9c61dae545e169d6550de1b9c0f319a3fb3d"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/PapercupAppSmokeTest.kt",
+      "sha256": "2f5bf545c3306e2ece25742f87d0a0868058230c6209ebc0bedc8f3e082c5efa"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/OperatorChatScreenTest.kt",
+      "sha256": "ea8027b17abf01111a4f9b183fb961a2bd237daa370782b100472acaa4cd3160"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/UniffiCallbackTest.kt",
+      "sha256": "96d13216044dc5efe645c7e57f6e509bda62a041edc2dc29b40d14b0c2cd7426"
+    }
+  ],
+  "rawEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/exact8-20261002-1958/result.json",
+      "sha256": "15817ba619ba2570dd757de4562ab6dc5650ca904c0f9014e60e9e09f9c0de32"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/exact8-20261002-1958/native-test.log",
+      "sha256": "66ff0883ccd1f6e082535282791f7e46c488c8ba9fc1d27bfd0be9b8e12aa3c6"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/exact8-20261002-1958-runtime/result.json",
+      "sha256": "6f760191ef97f2f31b700028fbbfc6eb6340d94ec9f19f1b50e902be5ebf2add"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/exact8-20261002-1958-wrapper.log",
+      "sha256": "75e045afdb09dff6ed0866f6d10ef8737aed6d55d6bf00fa1735a5cebadd4324"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/exact8-20261002-1957-preflight/emulator-boot.json",
+      "sha256": "00f3b828b2f07ae96c82b9d0b4e713847c95e8e9fba57d2c092c62d6b4e47d6c"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/exact8-20261002-1955-preflight/avd-space.txt",
+      "sha256": "de5fdbc61b14e8578a5a6824b30ac6dae2acec3f0cf7e3d4205188c7c1cb171b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/exact8-20261002-1958/native-results/TEST-wi10004773-exact8-20261002-1955-16k(AVD) - 16-_app-.xml",
+      "sha256": "e30f31613ea9132e928d7f5fdc349d27e5eae6babce342a04c2d33c59f080d77"
+    }
+  ],
+  "testedArtifacts": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/exact8-20261002-1958/app-debug.apk",
+      "sha256": "666b8d45dacbfa404c0a66a1140043f79d08361e94c22e0a5141bd5861944d69"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/exact8-20261002-1958/app-debug-androidTest.apk",
+      "sha256": "899a9648f729d3b7df0bd46fb382a99ff51590e97e9ab003358c4caf859a20e0"
+    }
+  ],
+  "operator": {
+    "sourceCommit": "c7bed9f262196b314489b1d3e91a565c3201edc5",
+    "bundleSha256": "3169246de01f7d0d5866a22f6bcd35ca522514821dd12538fbed65b25fd6ecc9",
+    "health": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "c7bed9f262",
+      "version": "0.0.0",
+      "ts": "2026-10-02T19:57:36.111Z"
+    },
+    "profile": "with-test-pg --isolated-runtime=operator-api",
+    "containsPinnedWorkflowCounterpart": "eb13aa50f54114aedbceb873d45e3928fc2c9a81",
+    "freshnessManifestVerified": true,
+    "bundleUsedReadOnly": true
+  },
+  "emulator": {
+    "serial": "emulator-5584",
+    "api": 36,
+    "pageSizeBytes": 16384,
+    "ownedAvd": "wi10004773-exact8-20261002-1955-16k",
+    "effectivePartitionBytes": 6442450944
+  },
+  "testCounts": {
+    "native": {
+      "executed": 8,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "countBasis": "Exactly eight JUnit testcase identities required by maintained verify-isolated-native; it rejects failures/errors/skips, stale source, changed APKs, mismatched runtime or incomplete journey.",
+  "nativeJourney": {
+    "runId": "c05a970abc8a4f028e3dfad76f1406dd",
+    "journeyCompleted": true,
+    "enrollmentBrowserStubbed": true,
+    "currentStage": "completed",
+    "deviceId": "a59b005c-6eb7-42fa-80e4-8edf10172bbd",
+    "workspaceId": "android-live-scope-c05a970abc8a4f028e3dfad76f1406dd",
+    "enrollmentIntentObserved": true,
+    "authenticatedRequestPassed": true,
+    "returnedToPairedShell": true,
+    "activityRecreated": true,
+    "inboxScopedReadPassed": true,
+    "inboxSystemAlertCount": 1,
+    "inboxRenderingPassed": true,
+    "inboxUnauthorizedPassed": true,
+    "inboxRecoveryPassed": true,
+    "meshEnrollmentClaimCorrect": true,
+    "valueRowLabelsPassed": true,
+    "navigationPassed": true,
+    "credentialsCleared": true
+  },
+  "cleanup": {
+    "nativeOwnedWorkspaceAndDeviceRemoved": true,
+    "hostStopped": true,
+    "nativeProcessStopped": true,
+    "postgresDataDirsAbsent": [
+      "/tmp/papercusp-test-pg-UlzhqU"
+    ],
+    "ownedEmulatorDisconnected": true,
+    "ownedAvdAndIniRemoved": true,
+    "unitsInactiveMainPidZero": [
+      "android-wi10004773-exact8-20261002-1955",
+      "android-wi10004773-exact8-20261002-1957"
+    ]
+  },
+  "assertions": [
+    {
+      "id": "exact-eight-native",
+      "passed": true,
+      "evidence": "Exact eight maintained JUnit identities, zero failures/errors/skips."
+    },
+    {
+      "id": "paired-journey",
+      "passed": true,
+      "evidence": "Actual private operator pairing/authenticated JNI/Inbox scope and rendering/invalid-JWT recovery/recreation/navigation completed in the same runId and owned workspace."
+    },
+    {
+      "id": "chat-fixture-lifecycle",
+      "passed": true,
+      "evidence": "Six Compose/JNI HTTP fixture cases pass draft retention, explicit retry, Settings, same-scope re-pair/recreation, and server/workspace isolation."
+    },
+    {
+      "id": "provenance-barrier",
+      "passed": true,
+      "evidence": "Maintained verify-isolated-native exit0 pins current mobile source, operator c7bed9 health/bundle, exact tested APKs and successful eight-case reports."
+    },
+    {
+      "id": "cleanup",
+      "passed": true,
+      "evidence": "Runner verified owned device/workspace/input/reverse-map cleanup; wrapper verified host/native process disposal; throwaway PG data dir absent; owned emulator units inactive/MainPID0 and AVD/ini absent."
+    }
+  ]
+}

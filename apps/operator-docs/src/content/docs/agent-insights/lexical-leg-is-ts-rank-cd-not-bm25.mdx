@@ -4,25 +4,29 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "The lexical leg is `ts_rank_cd` (cover density), not BM25 — and four tuning fixes died on that"
-description: "Papercusp's hybrid search called its lexical leg `bm25` for months. It never was BM25. `ts_rank_cd` is COVER DENSITY — it scores how tightly the query lexemes cluster — so on a single-lexeme query it has nothing to measure and collapses hundreds of matches onto a handful of tied scores. It is also called with no normalization argument at every call site, so there is no document-length term at all. Four independent fix directions for a recall complaint were measured and all died on this one fact: a wider rerank pool, a Stage B re-rank, every other built-in PG ranker, and length normalisation (which had nothing to correct). Read the ranker before you tune the ranking."
+title: "The legacy lexical leg is `ts_rank_cd` (cover density), not BM25 — now the fallback behind pg_textsearch BM25"
+description: "SUPERSEDED 2026-10-11: lexical search now ranks with pg_textsearch BM25 (see agent-insights/pg-textsearch-bm25-configuration); ts_rank_cd is the fallback. Papercusp's hybrid search called its lexical leg `bm25` for months. It never was BM25. `ts_rank_cd` is COVER DENSITY — it scores how tightly the query lexemes cluster — so on a single-lexeme query it has nothing to measure and collapses hundreds of matches onto a handful of tied scores. It is also called with no normalization argument at every call site, so there is no document-length term at all. Four independent fix directions for a recall complaint were measured and all died on this one fact: a wider rerank pool, a Stage B re-rank, every other built-in PG ranker, and length normalisation (which had nothing to correct). Read the ranker before you tune the ranking."
+type: Insight
 discovered: 2026-08-09
-tags: [search, hybrid-search, ts_rank_cd, bm25, postgres, full-text, ranking, rrf, fusion, recall, tuning, naming]
-status: active
+tags: ["search", "hybrid-search", "ts_rank_cd", "bm25", "postgres", "full-text", "ranking", "rrf", "fusion", "recall", "tuning", "naming"]
+status: superseded
 documents:
-  - libs/generic/search/src/provenance.ts
-  - libs/generic/search/src/min-score.ts
-  - packages/operator-core/lib/agent-tools/search/sources.ts
+  - "libs/generic/search/src/provenance.ts"
+  - "libs/generic/search/src/min-score.ts"
+  - "packages/operator-core/lib/agent-tools/search/sources.ts"
+plans:
+  - "bm25-lexical-search-evoke-adoption-2026-10-10"
 normative: true
 governs:
-  - tuning search relevance
-  - reading a search score
-  - naming a ranker
-type: Insight
+  - "tuning search relevance"
+  - "reading a search score"
+  - "naming a ranker"
 generated:
   by: agent
   at: 2026-08-09
 ---
+
+> **Status (2026-10-11): superseded as a description of what ranks.** Plan `bm25-lexical-search-evoke-adoption-2026-10-10` moved every lexical call site onto one seam, `packages/operator-core/lib/search/lexical/rank.ts` (call sites get their ranking leg from `lexicalLeg()` or `bm25LegIfAvailable()`), which ranks with real BM25 (pg_textsearch) whenever the `papercusp-bm25-lexical-ranking` flag is on, the library is preloaded, and the corpus's BM25 index is valid. `ts_rank_cd`, described below, is now the **fallback**: it still runs on any call where one of those conditions fails (a host without the extension, a missing or invalid index, the flag switched off). `ts_rank_cd` also still runs on purpose on two corpora: the `work_item` and `session_turn` sources of `search:semantic` fuse a legacy AND exact list with the BM25 list, because BM25 alone loses verbatim-fragment queries on long documents (plan decision D-016; see *Exact-list corpora* on the configuration page). Configuration and failure modes: [pg_textsearch (BM25) configuration](/internal/docs/agent-insights/pg-textsearch-bm25-configuration). The analysis below is kept because it is still exactly how the fallback ranks.
 
 ## The one-line version
 

@@ -49,6 +49,7 @@ function enrichedRow(over: Record<string, unknown> = {}): Record<string, unknown
     planItemIds: ['P-001'],
     spineRole: 'worker',
     spineStatus: 'running',
+    presentation: { stage: 'candidate', reason: 'awaiting-qualifying-acceptance', evidenceRefs: ['WI-2'], completionRef: null },
     ...over,
   };
 }
@@ -78,6 +79,7 @@ describe('projectWorkItemsListForUi', () => {
     expect(row.spineStatus).toBe('running');
     expect(row.updatedAt).toBe('2026-08-02T00:00:00.000Z');
     expect(row.origin).toBe('local');
+    expect(row.presentation).toEqual({ stage: 'candidate', reason: 'awaiting-qualifying-acceptance', evidenceRefs: ['WI-2'], completionRef: null });
   });
 
   it('drops the fields no workItems.byHarness consumer reads', () => {
@@ -115,6 +117,16 @@ describe('projectWorkItemsListForUi', () => {
     expect(declared.length).toBeGreaterThan(10); // the regex actually matched fields
     const wire = new Set<string>([...WORK_ITEMS_LIST_UI_FIELDS, 'summary']);
     expect(declared.filter((f) => !wire.has(f))).toEqual([]);
+  });
+
+  it('keeps reporter enrichment on the detail contract and off the grid wire', () => {
+    const detail = readFileSync(join(REPO_ROOT, 'apps/operator/app/adv/harnesses/DetailPanel.tsx'), 'utf8');
+    const contract = /export interface WorkItemDetailRow extends WorkItemRow \{([\s\S]*?)\n\}/.exec(detail);
+    expect(contract, 'the single-item query must retain its reporter enrichment').toBeTruthy();
+    expect(contract?.[1]).toMatch(/reporterStatus\??:/);
+    expect(detail).toMatch(/useSyncQuery<WorkItemDetailRow>\(\{\s*queryName: 'workItems\.detail'/);
+    const out = projectWorkItemsListForUi([enrichedRow({ reporterStatus: { status: 'being-fixed' } })]);
+    expect(out[0]).not.toHaveProperty('reporterStatus');
   });
 
   it('preserves the list _meta on row[0] (the authoritative total)', () => {

@@ -24,6 +24,10 @@ let server: Server;
 let operatorUrl: string;
 let releaseRequests: Array<Record<string, any>> = [];
 let releaseObservedAfterRegen: boolean[] = [];
+let primaryNoText = false;
+// WI-10006900: a retain (attestation) request answers with this body; null
+// echoes the proof paths as attributed, like an operator that knows `retain`.
+let attestResponse: Record<string, unknown> | null = null;
 
 beforeAll(async () => {
   home = fs.mkdtempSync(join(os.tmpdir(), 'posttoolbatch-home-'));
@@ -61,12 +65,23 @@ beforeAll(async () => {
       if (parsed.params?.name === 'locks:release') {
         releaseObservedAfterRegen.push(fs.existsSync(regenMarker));
       }
+      const args = parsed.params?.arguments ?? {};
+      const result = args.retain
+        ? (attestResponse ?? {
+            ok: true,
+            retained: args.native_edit_proof?.paths ?? [],
+            released: [],
+            attributed: args.native_edit_proof?.paths ?? [],
+          })
+        : { ok: true };
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
-          result: { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] },
+          result: {
+            content: primaryNoText ? [] : [{ type: 'text', text: JSON.stringify(result) }],
+          },
         }),
       );
     });
@@ -79,6 +94,8 @@ beforeAll(async () => {
 afterEach(() => {
   releaseRequests = [];
   releaseObservedAfterRegen = [];
+  primaryNoText = false;
+  attestResponse = null;
   fs.rmSync(regenMarker, { force: true });
   for (const name of fs.readdirSync(cache)) fs.rmSync(join(cache, name), { force: true });
 });
@@ -119,6 +136,7 @@ function writeBatch(
     owner?: string;
     paths?: string[];
     releasePaths?: string[];
+    attestPaths?: string[];
     coordinationDomain?: string;
   } = {},
 ) {
@@ -135,6 +153,7 @@ function writeBatch(
       owner,
       lock_id: 'batch-lock',
       release_paths: options.releasePaths ?? options.paths ?? ['src/first.ts', 'src/second.ts'],
+      ...(options.attestPaths ? { attest_paths: options.attestPaths } : {}),
       coordination_domain: options.coordinationDomain ?? '/repo',
     }),
   );
@@ -196,6 +215,73 @@ describe('posttoolbatch-locks-release.sh', () => {
       },
     });
     expectClean('complete', ['tu-first', 'tu-second']);
+  });
+
+  it('uses the stable authority and confirms the release when the primary response has no text', async () => {
+    const batchId = 'batch-empty-primary';
+    const toolUseId = 'tu-batch-empty-primary';
+    const fallbackRequests: Array<Record<string, any>> = [];
+    const fallbackServer = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        fallbackRequests.push(JSON.parse(body) as Record<string, any>);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ok: true,
+                released: ['src/first.ts', 'src/second.ts'],
+              }),
+            }],
+          },
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => fallbackServer.listen(0, '127.0.0.1', resolve));
+    const address = fallbackServer.address();
+    if (!address || typeof address === 'string') throw new Error('fallback server did not bind');
+
+    writeBatch(batchId, 'granted', [toolUseId]);
+    primaryNoText = true;
+
+    try {
+      const out = await runHook(BATCH_HOOK, {
+        ...batchInput([toolUseId]),
+        tool_calls: [{
+          tool_use_id: toolUseId,
+          tool_name: 'Edit',
+          tool_response: { success: true },
+        }],
+      }, {
+        PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: 'http://127.0.0.1:' + address.port,
+      });
+
+      expect(out.status).toBe(0);
+      expect(releaseRequests).toHaveLength(1);
+      expect(fallbackRequests).toHaveLength(1);
+      expect(fallbackRequests[0]?.params?.arguments).toMatchObject({
+        lock_id: 'batch-lock',
+        paths: ['src/first.ts', 'src/second.ts'],
+        coordination_domain: '/repo',
+        native_edit_proof: {
+          success: true,
+          source: 'claude',
+          tools: ['Edit'],
+          paths: ['src/first.ts', 'src/second.ts'],
+        },
+      });
+      expectClean(batchId, [toolUseId]);
+      expect(fs.existsSync(join(cache, 'owner-batch-owner-last-success.json'))).toBe(true);
+      expect(fs.existsSync(join(cache, 'last-error.json'))).toBe(false);
+    } finally {
+      primaryNoText = false;
+      await new Promise<void>((resolve) => fallbackServer.close(() => resolve()));
+    }
   });
 
   it('regenerates only an enrolled edited source before releasing the batch union', async () => {
@@ -317,6 +403,105 @@ describe('posttoolbatch-locks-release.sh', () => {
   });
 });
 
+describe('posttoolbatch already-held attestation (WI-10006900)', () => {
+  const readAttest = () =>
+    JSON.parse(fs.readFileSync(join(cache, 'last-attest.json'), 'utf8')) as Record<string, any>;
+
+  it('attests a fully already-held batch with retain and proof-only paths, releasing nothing', async () => {
+    writeBatch('held', 'granted', ['tu-first', 'tu-second'], {
+      releasePaths: [],
+      attestPaths: ['src/first.ts', 'src/second.ts'],
+    });
+
+    const out = await runHook(BATCH_HOOK, batchInput(['tu-first', 'tu-second']));
+
+    expect(out.status).toBe(0);
+    expect(out.stdout.trim()).toBe('');
+    expect(releaseRequests).toHaveLength(1);
+    const args = releaseRequests[0]?.params?.arguments;
+    expect(releaseRequests[0]?.params?.name).toBe('locks:release');
+    expect(args).toEqual({
+      retain: true,
+      coordination_domain: '/repo',
+      native_edit_proof: {
+        success: true,
+        source: 'claude',
+        tools: ['Edit', 'Edit'],
+        paths: ['src/first.ts', 'src/second.ts'],
+      },
+    });
+    expect(readAttest()).toMatchObject({
+      handler: 'posttoolbatch',
+      attributed: true,
+      paths: ['src/first.ts', 'src/second.ts'],
+    });
+    expectClean('held', ['tu-first', 'tu-second']);
+  });
+
+  it('releases the newly held subset and attests the already-held subset separately', async () => {
+    writeBatch('mixed', 'granted', ['tu-first', 'tu-second'], {
+      releasePaths: ['src/first.ts'],
+      attestPaths: ['src/second.ts'],
+    });
+
+    const out = await runHook(BATCH_HOOK, batchInput(['tu-first', 'tu-second']));
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(2);
+    const [release, attest] = releaseRequests.map((r) => r.params?.arguments);
+    expect(release).toMatchObject({
+      lock_id: 'batch-lock',
+      paths: ['src/first.ts'],
+      native_edit_proof: { paths: ['src/first.ts'] },
+    });
+    expect(release).not.toHaveProperty('retain');
+    expect(attest).toMatchObject({ retain: true, native_edit_proof: { paths: ['src/second.ts'] } });
+    expect(attest).not.toHaveProperty('lock_id');
+    expect(attest).not.toHaveProperty('paths');
+    expect(readAttest().attributed).toBe(true);
+    expectClean('mixed', ['tu-first', 'tu-second']);
+  });
+
+  it('attests nothing when one batch member failed', async () => {
+    writeBatch('held-failed', 'granted', ['tu-one', 'tu-two'], {
+      releasePaths: [],
+      attestPaths: ['src/first.ts', 'src/second.ts'],
+    });
+
+    const out = await runHook(BATCH_HOOK, {
+      ...batchInput(['tu-one', 'tu-two']),
+      tool_calls: [
+        { tool_use_id: 'tu-one', tool_name: 'Edit', tool_response: { ok: true } },
+        { tool_use_id: 'tu-two', tool_name: 'Edit', tool_response: { is_error: true, error: 'not applied' } },
+      ],
+    });
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(0);
+    expect(fs.existsSync(join(cache, 'last-attest.json'))).toBe(false);
+    expectClean('held-failed', ['tu-one', 'tu-two']);
+  });
+
+  it('records an unconfirmed attestation when the operator refuses retain', async () => {
+    attestResponse = { ok: false, error: 'invalid_args: no selector' };
+    writeBatch('held-refused', 'granted', ['tu-first'], {
+      paths: ['src/first.ts'],
+      releasePaths: [],
+      attestPaths: ['src/first.ts'],
+    });
+
+    const out = await runHook(BATCH_HOOK, batchInput(['tu-first']));
+
+    expect(out.status).toBe(0);
+    expect(out.stdout.trim()).toBe('');
+    expect(releaseRequests).toHaveLength(1);
+    const marker = readAttest();
+    expect(marker.attributed).toBe(false);
+    expect(String(marker.detail)).toContain('no selector');
+    expectClean('held-refused', ['tu-first']);
+  });
+});
+
 describe('posttooluse-locks-release.sh batch deferral', () => {
   it('leaves the per-tool release token untouched while a batch marker exists', async () => {
     const toolUseId = 'tu-deferred';
@@ -394,6 +579,133 @@ describe('posttooluse-locks-release.sh batch deferral', () => {
     expect(JSON.parse(fs.readFileSync(regenMarker, 'utf8'))).toEqual([
       '--files=scripts/input.mjs',
     ]);
+  });
+
+  it('uses the stable release authority when the primary MCP response has no text result', async () => {
+    const toolUseId = 'tu-empty-primary';
+    const fallbackRequests: Array<Record<string, any>> = [];
+    const fallbackServer = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        fallbackRequests.push(JSON.parse(body) as Record<string, any>);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ ok: true, released: ['src/first.ts'] }),
+            }],
+          },
+        }));
+      });
+    });
+    await new Promise<void>((resolve) => fallbackServer.listen(0, '127.0.0.1', resolve));
+    const address = fallbackServer.address();
+    if (!address || typeof address === 'string') throw new Error('fallback server did not bind');
+
+    primaryNoText = true;
+    fs.writeFileSync(join(cache, toolUseId + '.lock'), 'primary-lock');
+    fs.writeFileSync(join(cache, toolUseId + '.paths'), JSON.stringify(['src/first.ts']));
+    fs.writeFileSync(join(cache, toolUseId + '.domain'), '/repo');
+
+    try {
+      const out = await runHook(POST_HOOK, {
+        tool_name: 'apply_patch',
+        tool_use_id: toolUseId,
+        session_id: 'codex-owner',
+        tool_response: { success: true },
+      }, {
+        PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: 'http://127.0.0.1:' + address.port,
+      });
+
+      expect(out.status).toBe(0);
+      expect(releaseRequests).toHaveLength(1);
+      expect(fallbackRequests).toHaveLength(1);
+      expect(fallbackRequests[0]?.params?.arguments).toMatchObject({
+        lock_id: 'primary-lock',
+        paths: ['src/first.ts'],
+        coordination_domain: '/repo',
+        native_edit_proof: {
+          success: true,
+          source: 'codex',
+          tool: 'apply_patch',
+          paths: ['src/first.ts'],
+        },
+      });
+      expect(fs.existsSync(join(cache, toolUseId + '.lock'))).toBe(false);
+      expect(fs.existsSync(join(cache, toolUseId + '.paths'))).toBe(false);
+      expect(fs.existsSync(join(cache, toolUseId + '.domain'))).toBe(false);
+      expect(fs.existsSync(join(cache, 'owner-codex-owner-last-success.json'))).toBe(true);
+      expect(fs.existsSync(join(cache, 'last-error.json'))).toBe(false);
+    } finally {
+      primaryNoText = false;
+      await new Promise<void>((resolve) => fallbackServer.close(() => resolve()));
+    }
+  });
+
+  it('injects a manual lock-mode update when a Codex release cannot be confirmed', async () => {
+    const toolUseId = 'tu-unconfirmed-release';
+    primaryNoText = true;
+    fs.writeFileSync(join(cache, toolUseId + '.lock'), 'unconfirmed-lock');
+    fs.writeFileSync(join(cache, toolUseId + '.paths'), JSON.stringify(['src/first.ts']));
+    fs.writeFileSync(join(cache, toolUseId + '.domain'), '/repo');
+
+    const out = await runHook(POST_HOOK, {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'apply_patch',
+      tool_use_id: toolUseId,
+      session_id: 'codex-owner',
+      tool_response: { success: true },
+    }, {
+      PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: operatorUrl,
+    });
+
+    expect(out.status).toBe(0);
+    const hookOutput = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hookOutput.hookEventName).toBe('PostToolUse');
+    expect(hookOutput.additionalContext).toContain('LOCK MODE UPDATE');
+    expect(hookOutput.additionalContext).toContain('manual');
+    expect(hookOutput.additionalContext).toContain('src/first.ts');
+    expect(fs.existsSync(join(cache, toolUseId + '.lock'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(join(cache, 'last-error.json'), 'utf8'))).toMatchObject({
+      handler: 'posttooluse',
+      phase: 'release',
+      detail: 'response: no-text',
+    });
+  });
+
+  it('injects a manual lock-mode update when a Claude batch release cannot be confirmed', async () => {
+    const batchId = 'batch-unconfirmed-release';
+    const toolUseId = 'tu-batch-unconfirmed-release';
+    writeBatch(batchId, 'granted', [toolUseId]);
+    primaryNoText = true;
+
+    const out = await runHook(BATCH_HOOK, {
+      ...batchInput([toolUseId]),
+      tool_calls: [{
+        tool_use_id: toolUseId,
+        tool_name: 'Edit',
+        tool_response: { success: true },
+      }],
+    }, {
+      PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: operatorUrl,
+    });
+
+    expect(out.status).toBe(0);
+    const hookOutput = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hookOutput.hookEventName).toBe('PostToolBatch');
+    expect(hookOutput.additionalContext).toContain('LOCK MODE UPDATE');
+    expect(hookOutput.additionalContext).toContain('manual');
+    expect(hookOutput.additionalContext).toContain('src/first.ts');
+    expect(JSON.parse(fs.readFileSync(join(cache, 'last-error.json'), 'utf8'))).toMatchObject({
+      handler: 'posttoolbatch',
+      phase: 'release',
+      detail: 'response: no-text',
+    });
+    expectClean(batchId, [toolUseId]);
   });
 
   it('keeps PostToolBatch attribution Claude-only when a Codex edit appears', async () => {

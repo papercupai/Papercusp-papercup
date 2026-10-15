@@ -117,6 +117,26 @@ afterEach(() => {
 });
 
 describe('Remote access screen', () => {
+  it('offers session access only for a phone and enables its workspace-scoped grant', async () => {
+    render(<RemoteAccessSettingsPage />);
+    const grant = screen.getByRole('checkbox', { name: 'Agent sessions for Avi phone' });
+    expect(grant.getAttribute('aria-checked')).toBe('false');
+    expect(screen.queryByRole('checkbox', { name: 'Agent sessions for zapier' })).toBeNull();
+    fireEvent.click(grant);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toEqual({ url: '/api/device/desktop/devices/dev-phone/agent-sessions', body: { workspaceId: 'ws1', enabled: true } });
+  });
+
+  it('can revoke a granted phone session capability without unpairing the phone', async () => {
+    H.rows = [{ ...overview(), entries: [entry({ id: 'dev-phone', kind: 'mobile', label: 'Avi phone', scopes: { capabilities: ['agent-sessions'] } })] }];
+    render(<RemoteAccessSettingsPage />);
+    const grant = screen.getByRole('checkbox', { name: 'Agent sessions for Avi phone' });
+    expect(grant.getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(grant);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toEqual({ url: '/api/device/desktop/devices/dev-phone/agent-sessions', body: { workspaceId: 'ws1', enabled: false } });
+  });
+
   it('lists every phone, app key and service key with creator, last use and its controls (R-26)', () => {
     render(<RemoteAccessSettingsPage />);
     const items = screen.getAllByTestId('remote-access-entry');

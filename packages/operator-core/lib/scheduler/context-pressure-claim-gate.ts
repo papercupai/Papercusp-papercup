@@ -48,6 +48,7 @@
 
 import type {
   ContextPressureBucket,
+  ContextPressureReading,
   ContextPressureRecoveryResolution,
 } from '../agent-tools/coordination/context-pressure';
 // VALUE import (not just types): the headroom predicate below re-derives the SAME bucket this
@@ -93,6 +94,11 @@ export type ContextPressureGateDecision =
          * that cannot. Machine-readable so a caller can act without parsing the prose.
          */
         suggestedLimit: number | null;
+        /** Timestamp and age of the cached reading that produced this refusal. */
+        contextEstimate: {
+          estimatedAt: string | null;
+          ageSec: number | null;
+        };
       };
     };
 
@@ -114,10 +120,10 @@ function remedyForRecoveryPath(
       };
     case 'warm-loop':
       return {
-        label: 'checkpoint, then warm-loop retune',
+        label: 'checkpoint, preserve the warm loop, and use a managed host',
         text:
-          'write/refresh loop:checkpoint { did, left, insight, next }, then call session:request-compaction; ' +
-          'its no-PTY fallback retunes the active WARM loop to COLD before the next wake.',
+          'write/refresh loop:checkpoint { did, left, insight, next }, keep the active WARM loop, and use an authorized managed psu-pty host before expecting a fresh-context successor. ' +
+          'Without a live host, session:request-compaction returns no_live_pty_host with retuned:false; it does not retune WARM to COLD.',
       };
     case 'no-path':
       return {
@@ -263,6 +269,8 @@ function contextCriticalRefusalMessage(
  */
 export function decideContextPressureGate(input: {
   bucket: ContextPressureBucket | null | undefined;
+  /** Provenance from the same cached presence row as the bucket. */
+  reading?: ContextPressureReading | null;
   /** Caller asserts its live gauge contradicts the cached bucket. */
   override?: boolean;
   /** Kill-switch (flag). Default true — finished work does not ship dark. */
@@ -303,6 +311,10 @@ export function decideContextPressureGate(input: {
       overrideArg,
       recoveryPath: input.recovery?.path ?? null,
       suggestedLimit: remedy.suggestedLimit,
+      contextEstimate: {
+        estimatedAt: input.reading?.estimatedAt ?? null,
+        ageSec: input.reading?.ageSec ?? null,
+      },
     },
   };
 }

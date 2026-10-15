@@ -1,10 +1,34 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { minimatch } from 'minimatch';
 import { execFileSync } from 'node:child_process';
+
+// WI-10005353: count every pattern compile the code under test performs, through
+// either minimatch entry point, so the "compile once per distinct pattern" guard
+// below cannot be dodged by switching back to per-call `minimatch()`.
+const mmCount = vi.hoisted(() => ({ compiles: 0 }));
+vi.mock('minimatch', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('minimatch')>();
+  class CountingMinimatch extends mod.Minimatch {
+    constructor(...args: ConstructorParameters<typeof mod.Minimatch>) {
+      super(...args);
+      mmCount.compiles++;
+    }
+  }
+  const countingMinimatch = Object.assign(
+    (...args: Parameters<typeof mod.minimatch>) => {
+      mmCount.compiles++;
+      return mod.minimatch(...args);
+    },
+    mod.minimatch,
+  );
+  return { ...mod, Minimatch: CountingMinimatch, minimatch: countingMinimatch };
+});
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   anchorMatchesChanged,
+  createAnchorMatcher,
   classifyDrift,
   sweepHarnessDocs,
   baselineFor,
@@ -47,6 +71,84 @@ describe('anchorMatchesChanged', () => {
   it('no match on empty inputs', () => {
     expect(anchorMatchesChanged([], ['x'])).toBe(false);
     expect(anchorMatchesChanged(['x'], [])).toBe(false);
+  });
+});
+
+// The pre-WI-10005353 implementation, kept verbatim as the semantic reference.
+function legacyAnchorMatchesChanged(anchorPaths: string[], changedPaths: string[]): boolean {
+  if (!anchorPaths.length || !changedPaths.length) return false;
+  for (const anchor of anchorPaths) {
+    const a = anchor.replace(/\/+$/, '');
+    if (!a) continue;
+    const isGlob = /[*?[\]{}()!+@]/.test(a);
+    const patterns = isGlob ? [a] : [a, `${a}/**`];
+    for (const changed of changedPaths) {
+      for (const pat of patterns) {
+        if (minimatch(changed, pat, { dot: true })) return true;
+      }
+    }
+  }
+  return false;
+}
+
+describe('anchorMatchesChanged — indexed matcher (WI-10005353)', () => {
+  const anchors = [
+    'src/a.ts', 'src/dir', 'src/dir/', 'src/**', '*.md', 'docs/*.md',
+    'apps/operator/app/cupboard/[id]/ThemeInstall.tsx', '#notes', './src', 'a//b', 'a\\b',
+    '{lib,src}/x.ts', '.github', '.github/workflows', 'src/.hidden', 'lib/x(1).ts', 'x', '', '/',
+  ];
+  const changed = [
+    'src/a.ts', 'src/dir/x.ts', 'src/dir/.env', 'src/dirx/y.ts', 'README.md', 'docs/guide.md',
+    'docs/sub/guide.md', 'apps/operator/app/cupboard/i/ThemeInstall.tsx',
+    'apps/operator/app/cupboard/[id]/ThemeInstall.tsx', '#notes', 'src', 'a/b/c', 'a//b/c',
+    '/abs/src/a.ts', 'src/dir/', 'lib/x.ts', '.github/workflows/ci.yml', 'src/.hidden/f',
+    'lib/x(1).ts', 'x', 'xy', 'a\\b', 'src/./a.ts',
+  ];
+
+  it('agrees with per-call minimatch for every anchor × changed path, singly and together', () => {
+    for (const anchor of anchors) {
+      for (const c of changed) {
+        expect([anchor, c, anchorMatchesChanged([anchor], [c])])
+          .toEqual([anchor, c, legacyAnchorMatchesChanged([anchor], [c])]);
+      }
+      expect([anchor, anchorMatchesChanged([anchor], changed)])
+        .toEqual([anchor, legacyAnchorMatchesChanged([anchor], changed)]);
+    }
+    // calibration: the corpus exercises both verdicts
+    expect(anchors.filter((a) => legacyAnchorMatchesChanged([a], changed)).length).toBeGreaterThan(5);
+    expect(anchors.filter((a) => !legacyAnchorMatchesChanged([a], changed)).length).toBeGreaterThan(3);
+  });
+
+  it('compiles each distinct glob pattern once, and plain anchors never, however many paths changed', () => {
+    const plain = Array.from({ length: 300 }, (_, i) => (i % 2 ? `pkg${i}/src` : `pkg${i}/lib/file${i}.ts`));
+    const globs = ['docs/**/*.md', 'apps/*/x.tsx'];
+    const paths = Array.from({ length: 5000 }, (_, i) => `other/area${i % 50}/f${i}.ts`);
+    mmCount.compiles = 0;
+    const matcher = createAnchorMatcher(paths);
+    for (let doc = 0; doc < 50; doc++) expect(matcher(plain)).toBe(false);
+    expect(mmCount.compiles).toBe(0);
+    for (let doc = 0; doc < 50; doc++) expect(matcher([...plain, ...globs])).toBe(false);
+    expect(mmCount.compiles).toBe(globs.length);
+    expect(matcher(['pkg7/src'])).toBe(false);
+    expect(createAnchorMatcher([...paths, 'pkg7/src/deep/a.ts'])(plain)).toBe(true);
+  });
+
+  it('sweepHarnessDocs builds the changed-path index once for all docs (no per-doc compiles)', async () => {
+    const records = Array.from({ length: 200 }, (_, i) => ({
+      docId: `doc-${i}`,
+      status: 'fresh',
+      subjectRef: [{ kind: 'path', path: `pkg${i}/src` }],
+      anchorPaths: [`pkg${i}/src`, `pkg${i}/README.md`],
+    })) as unknown as HarnessDocRecord[];
+    const store = { load: async () => records } as unknown as DocStore;
+    mmCount.compiles = 0;
+    const r = await sweepHarnessDocs({
+      harnessSlug: 'h', repoRoot: '/nonexistent', runGit,
+      changedPaths: Array.from({ length: 3000 }, (_, i) => `unrelated/d${i % 30}/f${i}.ts`),
+      store,
+    });
+    expect(r.candidates).toBe(0);
+    expect(mmCount.compiles).toBe(0);
   });
 });
 

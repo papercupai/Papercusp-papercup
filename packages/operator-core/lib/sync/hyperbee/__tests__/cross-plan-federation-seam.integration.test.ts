@@ -54,7 +54,7 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-keys';
 import type { OpEnvelope } from '../op-envelope-types';
 // The real coord:inbox read seam — drives the subscribe→inject half end-to-end.
@@ -179,6 +179,10 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
   // 150: coord_event_log federation — harness_slug/origin/author_pubkey + fed
   // unique index + the messages/handoffs/escalations capture triggers.
   await sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '150-coord-event-log-federation.sql'), 'utf8')));
+  // Real sendMessage seals against this ledger before persisting or capturing
+  // a message. Both peers need the maintained migration, including with no
+  // active disclosures; an absent ledger must continue to fail closed.
+  await applyDisclosureLedgerForTest(sql);
 
   // 181 (EI-79 step 2): fed_ts LWW-guard column on every federated table the
   // writers stamp, + MASK fed_ts in the broad hfc/issues capture triggers so a
@@ -444,6 +448,37 @@ describe("the brief's marquee SUBSCRIBE→INJECT seam — a coord message round-
     expect(sent).toMatchObject({ msg_id: msgId, from: 'su-A', to, summary, harness_slug: HARNESS });
     return sent;
   }
+
+  it('both peers refuse a missing disclosure ledger before any message or outbox write, then federate after restoration', async () => {
+    for (const { source, destination, sender, recipient, apply, logKey } of [
+      { source: dbA, destination: dbB, sender: SENDER_A, recipient: 'su-B', apply: applyB, logKey: PEER_A_LOG },
+      { source: dbB, destination: dbA, sender: SENDER_B, recipient: 'su-A', apply: applyA, logKey: PEER_B_LOG },
+    ]) {
+      const msgId = `ledger-control-${sender.ownerId}`;
+      configureCoordLog(new PgCoordLog({ getSql: () => source.sql, ensureSchema: async () => {}, workspaceId: WS }));
+      await source.sql`DROP TABLE harness_shared.personal_disclosures`;
+      try {
+        await expect(sendMessage(sender, {
+          msgId, to: [recipient], summary: 'ledger restoration control', harnessSlug: HARNESS,
+        })).rejects.toMatchObject({ code: 'disclosure_ledger_unavailable' });
+        expect(await source.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE msg_id = ${msgId}`).toHaveLength(0);
+        expect(await source.sql`SELECT 1 FROM harness_shared.substrate_outbox`).toHaveLength(0);
+        expect(await destination.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE msg_id = ${msgId}`).toHaveLength(0);
+      } finally {
+        await applyDisclosureLedgerForTest(source.sql);
+      }
+
+      await sendMessage(sender, {
+        msgId, to: [recipient], summary: 'ledger restoration control', harnessSlug: HARNESS,
+      });
+      expect(await drainPeerToPeer(source, destination, apply, logKey)).toBe(1);
+      configureCoordLog(new PgCoordLog({ getSql: () => destination.sql, ensureSchema: async () => {}, workspaceId: WS }));
+      expect((await readInbox(recipient)).find((entry) => entry.msg_id === msgId)).toMatchObject({
+        from: sender.ownerId, to: [recipient], summary: 'ledger restoration control',
+      });
+      expect(await destination.sql`SELECT 1 FROM harness_shared.substrate_outbox`).toHaveLength(0);
+    }
+  });
 
   it("an ADDRESSED message on A lands in B's coord_event_log AND surfaces via the real readInbox — a non-addressed peer's inbox does NOT", async () => {
     await sendOnA('fed-msg-1', ['su-B'], 'cross-machine hello');

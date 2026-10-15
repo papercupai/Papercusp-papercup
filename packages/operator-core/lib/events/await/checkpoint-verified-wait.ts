@@ -1,4 +1,5 @@
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from '../../git-pipeline-stats';
+import { isRecordableVerdict } from '../../release/gate-verdict-target';
 import { pipelineName } from '../../release/pipeline-name';
 import type {
   ProducerHealthCertificate,
@@ -90,6 +91,11 @@ function matchingVerdict(
 ) {
   return (snapshot.recent ?? []).find((event) => {
     if (event.kind !== 'green_checkpoint' || event.createdAtMs < issuedAtMs) return false;
+    // Pipeline history also records scheduler skips and the pre-promotion
+    // `decision-pending` marker. Neither says this wait's checkpoint candidate
+    // was judged to a terminal verdict. Treating one as completion can resume
+    // a candidate-bound waiter while its actual producer is still active.
+    if (!isRecordableVerdict(event.status) || event.status === 'decision-pending') return false;
     const candidate = typeof event.detail.candidate === 'string' ? event.detail.candidate : null;
     const candidateMatches =
       !details.candidateSha ||

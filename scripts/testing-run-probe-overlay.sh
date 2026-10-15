@@ -9,7 +9,10 @@ shift
 shift
 root="$(realpath -e "$root")" || { echo "mutation-probe admission: missing checkout" >&2; exit 2; }
 key="$(printf '%s' "$root" | sha256sum | cut -d' ' -f1)"
-directory="/tmp/papercusp-mutation-probe-$(id -u)-$key"
+# Keep the overlay reader on the same admission base as mutation-probe.sh.
+# Tests override it to isolate manifests; production defaults to /tmp.
+ADMISSION_BASE="${PAPERCUSP_MUTATION_PROBE_ADMISSION_ROOT:-/tmp}"
+directory="$ADMISSION_BASE/papercusp-mutation-probe-$(id -u)-$key"
 mkdir -p -m 700 "$directory"
 lock="$directory/admission.lock"
 manifest="$directory/original.manifest"

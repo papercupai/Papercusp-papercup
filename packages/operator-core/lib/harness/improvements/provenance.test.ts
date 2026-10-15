@@ -4,7 +4,7 @@
  *
  * The load-bearing assertion of the lane: A DRILL-TAGGED ROW NEVER REACHES AN
  * ORGANIC LEARNER. Every loop consumer reads through the one repointable seam
- * (readImprovementItems), so the proof drives REAL consumer entry points over a
+ * (the read-items module), so the proof drives REAL consumer entry points over a
  * mixed-origin store and asserts the synthetic rows are invisible:
  *   - the decay sweep (a learner that writes lifecycle verdicts back),
  *   - the watchdog's key-dup partition (cross-origin dups must not absorb
@@ -17,13 +17,17 @@ import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_SIGNAL_ORIGIN,
   ORGANIC_ONLY,
+  PERSON_REPORTER_KINDS,
   SIGNAL_ORIGINS,
+  deriveReporterProvenance,
   effectiveOrigin,
+  isPersonReporterKind,
+  isReporterKind,
   isSignalOrigin,
+  mergeReporterKinds,
   originAllowed,
 } from './provenance';
-import { readImprovementItems } from './read-items';
-import { runDecaySweep } from './decay';
+import { runDecaySweep, type DecaySweepDeps } from './decay';
 import { partitionSignalsByKnownKeys, type WatchdogSignal } from './watchdog';
 import type { EngineerIssue } from '../../issues-engineer';
 
@@ -39,6 +43,7 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     assignedBy: null,
     assignedAt: null,
     payload: null,
+    parent: null,
     foundDuring: null,
     linkedFeatureId: null,
     createdBy: 'su-test',
@@ -50,9 +55,12 @@ function issue(p: Partial<EngineerIssue> & { id: string; title: string }): Engin
     origin: 'local',
     terminalOwner: null,
     terminalCompletionRef: null,
+    completionAuthority: null,
+    featureOrder: null,
     createdAt: '2026-06-01T00:00:00Z',
     updatedAt: '2026-06-01T00:00:00Z',
     closedAt: null,
+    goalId: null,
     ...p,
   };
 }
@@ -118,15 +126,20 @@ describe('THE PROOF — a drill row never reaches an organic learner (D-002)', (
 
   it('the decay sweep (real consumer, real seam) grades the organic row and never touches a synthetic one', async () => {
     const touched: string[] = [];
+    const deps: DecaySweepDeps = {
+      // The REAL whole-corpus seam with a projector that "forgets" to filter.
+      // The gate inside projectImprovementItemsForBoundedRead is under test.
+      projectIssues: async (filter, projection) => {
+        expect(filter.signalOrigins).toEqual(ORGANIC_ONLY);
+        expect(filter).not.toHaveProperty('limit');
+        return [...(await projection.project(mixedStore))];
+      },
+      mergeIssuePayload: async (id) => (touched.push(id), null),
+      commentIssue: async () => null,
+    };
     const result = await runDecaySweep(
       { nowMs: Date.parse('2026-07-01T00:00:00Z') },
-      {
-        // The REAL seam with an injected lister that "forgets" to filter — the
-        // gate inside readImprovementItems is what is under test.
-        readItems: () => readImprovementItems({}, { listIssues: async () => mixedStore }),
-        mergeIssuePayload: async (id) => (touched.push(id), null),
-        commentIssue: async () => null,
-      },
+      deps,
     );
     expect(result.scanned).toBe(1); // ONLY the organic row entered the learner
     expect(touched).not.toContain('EI-DRILL');
@@ -166,5 +179,30 @@ describe('THE PROOF — a drill row never reaches an organic learner (D-002)', (
     // A legacy dup with NO origin reads organic — still matches an organic signal.
     const legacyDup = { watchdogKey: 'red-test:lib/a.test.ts', state: 'open', updatedAt: '2026-06-01T00:00:00Z' };
     expect(partitionSignalsByKnownKeys([organicSignal], [legacyDup]).knownOpen).toEqual([organicSignal]);
+  });
+});
+
+describe("reporter kind 'chat' — a person's report from a chat door (slack-messages-to-bug-reports D-012)", () => {
+  it("is a reporter kind, and a person's kind like 'end-user'; agents and watchdogs are not people", () => {
+    expect(isReporterKind('chat')).toBe(true);
+    expect([...PERSON_REPORTER_KINDS]).toEqual(['end-user', 'chat']);
+    expect(isPersonReporterKind('chat')).toBe(true);
+    expect(isPersonReporterKind('end-user')).toBe(true);
+    for (const kind of ['agent', 'watchdog', 'slack', '', null, undefined]) expect(isPersonReporterKind(kind)).toBe(false);
+  });
+
+  it('an explicit chat stamp is kept as given', () => {
+    expect(deriveReporterProvenance({ explicitKind: 'chat', createdBy: 'system:slack', at: 'T' })).toEqual({
+      kind: 'chat',
+      id: 'system:slack',
+      basis: 'explicit',
+      at: 'T',
+    });
+  });
+
+  it('folds into the corroboration tally in canonical order, de-duplicated', () => {
+    expect(mergeReporterKinds({ reporterKinds: ['end-user', 'agent'] }, 'chat')).toEqual(['agent', 'end-user', 'chat']);
+    expect(mergeReporterKinds({ reporterKinds: ['chat'] }, 'chat')).toEqual(['chat']);
+    expect(mergeReporterKinds({ reporterKinds: ['chat', 'not-a-kind'] }, 'watchdog')).toEqual(['watchdog', 'chat']);
   });
 });

@@ -24,6 +24,7 @@ export default defineTool({
     checkHandleScope(scope, args.handle);
     return runOperation(() => getBlueprintOperationEvents(scope.sql, args.handle, scope.callerId, {
       cursor: args.cursor, limit: args.limit,
+      ...(args.review ? { reviewAccess: { principalId: scope.principalId } } : {}),
     }));
   },
 });

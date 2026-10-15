@@ -70,4 +70,21 @@ describe('installWorkspaceHeaderFetch', () => {
     expect(spy).toHaveBeenCalledTimes(1);
     expect(stampedWs(spy)).toBe('ws-7');
   });
+
+  it('preserves the injected workspace when Inbox navigation drops the ws query', async () => {
+    const spy = stubWindow('ws-native-fixture');
+    window.location.href = 'http://127.0.0.1:3070/onboarding?ws=ws-native-fixture';
+    installWorkspaceHeaderFetch();
+    window.location.href = 'http://127.0.0.1:3070/inbox?opci=all&opcis=coord-message%3Afixture';
+    await window.fetch('/api/zero-harness/rest-query?name=plans.attention');
+    expect(stampedWs(spy)).toBe('ws-native-fixture');
+  });
+
+  it('without an injected workspace a bare Inbox URL stamps default, unlike an explicit feed probe', async () => {
+    const spy = stubWindow();
+    window.location.href = 'http://127.0.0.1:3070/inbox?opci=all';
+    installWorkspaceHeaderFetch();
+    await window.fetch('/api/zero-harness/rest-query?name=plans.attention');
+    expect(stampedWs(spy)).toBe('default');
+  });
 });

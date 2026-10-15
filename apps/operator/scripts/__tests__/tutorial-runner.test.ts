@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 // plain .mjs module (same pattern as the other script tests) — the directive must sit
 // immediately above the `} from` line for a multi-line import; tsc reports TS7016 there,
 // not at the `import` keyword (EI-19389216343173748).
@@ -23,6 +24,26 @@ import {
   undecidedRequiredItems,
   // @ts-expect-error
 } from '../tutorial-runner.mjs';
+
+describe('packaged tutorial dependency closure', () => {
+  it('declares each directly imported package in the operator manifest and lockfile', () => {
+    const source = readFileSync(new URL('../tutorial-runner.mjs', import.meta.url), 'utf8');
+    const manifest = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+    const lock = JSON.parse(readFileSync(new URL('../../../../package-lock.json', import.meta.url), 'utf8'));
+    const imports = [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)['"]([^'"]+)['"]/g)]
+      .map((match) => match[1]!)
+      .filter((specifier) => !specifier.startsWith('.') && !specifier.startsWith('node:'))
+      .map((specifier) => specifier.startsWith('@')
+        ? specifier.split('/').slice(0, 2).join('/')
+        : specifier.split('/')[0]!);
+    expect(imports).toContain('chalk');
+    for (const dependency of new Set(imports)) {
+      expect(manifest.dependencies[dependency], `${dependency} must not rely on a transitive install`).toBeTruthy();
+      expect(lock.packages['apps/operator'].dependencies[dependency], `${dependency} lock declaration`)
+        .toBe(manifest.dependencies[dependency]);
+    }
+  });
+});
 
 describe('parseArgs', () => {
   it('parses tutorial / operator-url / agent / tab', () => {

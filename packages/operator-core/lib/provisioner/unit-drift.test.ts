@@ -10,6 +10,8 @@ import {
   describeUnitDrift,
   parseUnitExecStartBinary,
   checkUnitExecStartBinary,
+  parseUnitExecStartModelPath,
+  checkUnitExecStartModelFile,
   parseUnitEnvironment,
   checkRequiredEnvironment,
   describeEnvIssues,
@@ -62,6 +64,9 @@ WantedBy=default.target
  *
  * Binary and log paths are genericized, as in DRIFTED_UNIT, because they are per-box and are
  * deliberately not compared.
+ *
+ * Since WI-10006354 the offload is sized at start (`-ngl auto --fit on --fit-target 1024`) rather
+ * than pinned to `-ngl 999`, which could not cold-start beside the box's other GPU tenants.
  */
 const CURRENT_UNIT = `[Unit]
 Description=llama-server serving ornith-35b IQ3_M
@@ -75,7 +80,8 @@ ExecStart=/usr/local/lib/ollama/llama-server \\
   -m /usr/share/ollama/.ollama/models/blobs/sha256-18f775956e1ee05608de578ad9e02b10f5b9c04d6eee59c48a0f38c897857298 \\
   --host 127.0.0.1 --port 11436 \\
   --flash-attn on \\
-  -ngl 999 \\
+  -ngl auto \\
+  --fit on --fit-target 1024 \\
   -np 2 -c 180224 \\
   --cache-type-k q8_0 --cache-type-v q8_0 \\
   --alias maxwell1500/ornith-35b:IQ3_M
@@ -97,6 +103,9 @@ const accessDenied = async () => {
 /** Present, but without +x — F_OK succeeds while X_OK fails. */
 const accessPresentNotExecutable = async (_path: string, mode: number) => {
   if (mode === fsConstants.X_OK) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+};
+const accessPresentNotReadable = async (_path: string, mode: number) => {
+  if (mode === fsConstants.R_OK) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
 };
 
 describe('checkUnitExecStartBinary (EI-20721621940954812)', () => {
@@ -150,6 +159,44 @@ describe('checkUnitExecStartBinary (EI-20721621940954812)', () => {
   });
 });
 
+describe('checkUnitExecStartModelFile', () => {
+  it('parses the model file across systemd line continuations', () => {
+    expect(parseUnitExecStartModelPath(CURRENT_UNIT)).toBe(
+      '/usr/share/ollama/.ollama/models/blobs/sha256-18f775956e1ee05608de578ad9e02b10f5b9c04d6eee59c48a0f38c897857298',
+    );
+  });
+
+  it('supports --model and inline model forms', () => {
+    expect(parseUnitExecStartModelPath('ExecStart=/usr/bin/llama-server --model /models/a.gguf')).toBe('/models/a.gguf');
+    expect(parseUnitExecStartModelPath('ExecStart=/usr/bin/llama-server --model=/models/b.gguf')).toBe('/models/b.gguf');
+    expect(parseUnitExecStartModelPath('ExecStart=/usr/bin/llama-server -m=/models/c.gguf')).toBe('/models/c.gguf');
+  });
+
+  it('distinguishes missing, unreadable, unresolved, and absent model paths', async () => {
+    expect(await checkUnitExecStartModelFile(CURRENT_UNIT, accessOk)).toMatchObject({
+      ok: true,
+      reason: 'ok',
+      modelPath: '/usr/share/ollama/.ollama/models/blobs/sha256-18f775956e1ee05608de578ad9e02b10f5b9c04d6eee59c48a0f38c897857298',
+    });
+    expect(await checkUnitExecStartModelFile(CURRENT_UNIT, accessDenied)).toMatchObject({
+      ok: false,
+      reason: 'missing',
+    });
+    expect(await checkUnitExecStartModelFile(CURRENT_UNIT, accessPresentNotReadable)).toMatchObject({
+      ok: false,
+      reason: 'not-readable',
+    });
+    expect(await checkUnitExecStartModelFile('ExecStart=/usr/bin/llama-server -m $MODEL_PATH', accessOk)).toMatchObject({
+      ok: false,
+      reason: 'unresolved',
+    });
+    expect(await checkUnitExecStartModelFile('ExecStart=/usr/bin/llama-server --host 127.0.0.1', accessOk)).toMatchObject({
+      ok: false,
+      reason: 'no-model-path',
+    });
+  });
+});
+
 describe('parseUnitExecStartBinary', () => {
   it('reads the binary through systemd backslash continuations', () => {
     expect(parseUnitExecStartBinary(DRIFTED_UNIT)).toBe('/opt/llama.cpp/build/bin/llama-server');
@@ -188,6 +235,8 @@ describe('parseLlamaServerUnit', () => {
       // distinction is the entire bug in WI-39735: a guard that defaults a missing `-ngl` to
       // "all layers" reports agreement between a GPU unit and a CPU-only one.
       gpuLayers: null,
+      fit: null,
+      fitTargetMiB: null,
     });
   });
 
@@ -217,14 +266,18 @@ describe('diffCatalogAgainstDeployedUnit', () => {
     // `gpuLayers` joined this list in WI-39735. It is not a historical claim about what that unit
     // did on the GPU — it is the guard reporting that the catalog declares an offload setting the
     // deployed unit does not, which is precisely the silence that hid a CPU-only fallback.
+    // `fit` / `fitTargetMiB` joined it in WI-10006354 for the same reason.
     expect(Object.keys(byParam).sort()).toEqual([
       'ctxTotal',
+      'fit',
+      'fitTargetMiB',
       'gpuLayers',
       'kvCacheTypeK',
       'kvCacheTypeV',
       'parallelSlots',
     ]);
-    expect(byParam.gpuLayers).toMatchObject({ generated: '999', deployed: 'null' });
+    expect(byParam.gpuLayers).toMatchObject({ generated: 'auto', deployed: 'null' });
+    expect(byParam.fit).toMatchObject({ generated: 'on', deployed: 'null' });
     expect(byParam.parallelSlots).toMatchObject({ generated: '2', deployed: '3' });
     expect(byParam.ctxTotal).toMatchObject({ generated: '180224', deployed: '614400' });
     expect(byParam.kvCacheTypeK).toMatchObject({ generated: 'q8_0', deployed: 'q4_0' });
@@ -247,7 +300,8 @@ describe('diffCatalogAgainstDeployedUnit', () => {
     // calibration case: without it, a diff that reported everything as drifted would still
     // pass the control above.
     const selfRendered = diffCatalogAgainstDeployedUnit(ORNITH, DRIFTED_UNIT);
-    expect(selfRendered.length).toBe(5); // sanity: the control really does differ
+    // sanity: the control really does differ (5 params, +fit/fitTargetMiB since WI-10006354)
+    expect(selfRendered.length).toBe(7);
     const clean = diffUnitParams(
       parseLlamaServerUnit(DRIFTED_UNIT),
       parseLlamaServerUnit(DRIFTED_UNIT),
@@ -281,15 +335,50 @@ describe('GPU offload (-ngl) — WI-39735', () => {
   it('reports drift when a deployed unit silently drops the GPU offload flag', () => {
     // The failure this exists for: strip `-ngl` and the unit still starts, still reports active,
     // still answers /health 200, and still matches every OTHER compared parameter.
-    const noNgl = CURRENT_UNIT.replace('  -ngl 999 \\\n', '');
+    const noNgl = CURRENT_UNIT.replace('  -ngl auto \\\n', '');
+    expect(noNgl).not.toBe(CURRENT_UNIT);
     const drift = diffCatalogAgainstDeployedUnit(ORNITH, noNgl);
     expect(drift.map((d) => d.param)).toEqual(['gpuLayers']);
-    expect(describeUnitDrift(drift)).toContain('gpuLayers: catalog=999 deployed=null');
+    expect(describeUnitDrift(drift)).toContain('gpuLayers: catalog=auto deployed=null');
   });
 
   it('reports NO drift for the current deployed shape', () => {
     // Calibration: without this, a guard that flagged everything would still pass the case above.
     expect(diffCatalogAgainstDeployedUnit(ORNITH, CURRENT_UNIT)).toEqual([]);
+  });
+});
+
+describe('start-time GPU fit (--fit) — WI-10006354', () => {
+  it('reads the -ngl keywords and both spellings of the fit flags', () => {
+    expect(parseLlamaServerUnit('ExecStart=llama-server -ngl auto').gpuLayers).toBe('auto');
+    expect(parseLlamaServerUnit('ExecStart=llama-server --n-gpu-layers all').gpuLayers).toBe('all');
+    const long = parseLlamaServerUnit('ExecStart=llama-server --fit on --fit-target 1024');
+    expect(long).toMatchObject({ fit: 'on', fitTargetMiB: 1024 });
+    const short = parseLlamaServerUnit('ExecStart=llama-server -fit off -fitt 2048');
+    expect(short).toMatchObject({ fit: 'off', fitTargetMiB: 2048 });
+    // Absent stays absent: the engine defaults --fit to on, but the guard never assumes it.
+    expect(parseLlamaServerUnit('ExecStart=llama-server -ngl auto')).toMatchObject({ fit: null, fitTargetMiB: null });
+  });
+
+  it('reports the pre-fix pinned unit (-ngl 999, no --fit) as drift', () => {
+    // The shape that could not cold-start beside the embed sidecar: cudaMalloc OOM, exit 1 x3,
+    // StartLimit. A deployed unit reverting to it must be named, not pass as matching.
+    const pinned = CURRENT_UNIT.replace('  -ngl auto \\\n  --fit on --fit-target 1024 \\\n', '  -ngl 999 \\\n');
+    expect(pinned).not.toBe(CURRENT_UNIT);
+    const drift = diffCatalogAgainstDeployedUnit(ORNITH, pinned);
+    expect(drift.map((d) => d.param).sort()).toEqual(['fit', 'fitTargetMiB', 'gpuLayers']);
+    expect(describeUnitDrift(drift)).toContain('gpuLayers: catalog=auto deployed=999');
+  });
+
+  it('every on-demand llama-server entry sizes its offload at start instead of pinning it', () => {
+    // The class guard. An on-demand backend cold-starts into whatever GPU occupancy exists at that
+    // moment, so a pinned layer count makes its availability depend on every other GPU tenant.
+    const onDemand = CERTIFIED_CATALOG.filter((e) => e.backend === 'llama-server' && e.serve.lifecycle === 'on-demand');
+    expect(onDemand.map((e) => e.id)).toContain(ORNITH.id);
+    for (const e of onDemand) {
+      expect({ id: e.id, gpuLayers: e.serve.gpuLayers, fit: e.serve.fit }).toEqual({ id: e.id, gpuLayers: 'auto', fit: 'on' });
+      expect(e.serve.fitTargetMiB, e.id).toBeGreaterThan(0);
+    }
   });
 });
 
@@ -357,40 +446,71 @@ describe('required Environment= vars (WI-39735 / D-012)', () => {
  * (mutate a COPY outside the tree and point the test at it), instead of the tier-3 shape that
  * mutates the shared checkout and races git-sync's sweep.
  *
- * Absent file ⇒ this machine does not deploy this backend, which is a legitimate skip. The skip
- * is announced rather than silent: a guard that quietly always skips is the same "armed and does
- * nothing" failure this plan keeps running into.
+ * An absent file is a valid host-specific outcome, but its worker-resolved path must be visible.
+ * Register only the applicable present/absent branch so an intentionally skipped absence
+ * sentinel cannot look like a skipped live comparison in test:file's aggregate count.
  */
 describe('deployed unit on this machine', () => {
-  const unitPath =
-    process.env.PAPERCUSP_ORNITH_UNIT_PATH ?? join(homedir(), '.config/systemd/user/llama-ornith.service');
-  const present = existsSync(unitPath);
+  const readUnitProbe = () => {
+    const configuredPath = process.env.PAPERCUSP_ORNITH_UNIT_PATH ?? null;
+    const home = homedir();
+    const unitPath = configuredPath ?? join(home, '.config/systemd/user/llama-ornith.service');
+    return {
+      homeEnv: process.env.HOME ?? null,
+      homedir: home,
+      configuredPath,
+      unitPath,
+      present: existsSync(unitPath),
+    };
+  };
+  const unitProbe = readUnitProbe();
+  const { unitPath, present } = unitProbe;
+  const probeDetails =
+    `HOME=${unitProbe.homeEnv ?? '(unset)'}, os.homedir()=${unitProbe.homedir}, ` +
+    `PAPERCUSP_ORNITH_UNIT_PATH=${unitProbe.configuredPath ?? '(unset)'}, ` +
+    `unitPath=${unitProbe.unitPath}, existsSync=${unitProbe.present}`;
 
-  it.runIf(present)('matches the certified catalog entry', () => {
-    const drift = diffCatalogAgainstDeployedUnit(ORNITH, readFileSync(unitPath, 'utf8'));
-    expect(
-      drift,
-      `DEPLOYED UNIT HAS DRIFTED from catalog '${ORNITH.id}' (${unitPath}): ${describeUnitDrift(drift)}. ` +
-        `This entry is status:'${ORNITH.status}' — its certification was earned on the CATALOG's numbers, ` +
-        `so a deployed unit that differs is running an UNCERTIFIED config (D-007). Restore the unit, or ` +
-        `change the catalog and re-run the cert battery; do not relabel one to match the other.`,
-    ).toEqual([]);
+  it('keeps the host-unit path and presence stable from collection through execution', () => {
+    expect(readUnitProbe()).toEqual(unitProbe);
   });
 
-  it.runIf(present)('carries every environment variable the catalog declares it cannot serve without', () => {
-    const issues = checkRequiredEnvironment(ORNITH, readFileSync(unitPath, 'utf8'));
-    expect(
-      issues,
-      `DEPLOYED UNIT IS MISSING REQUIRED ENVIRONMENT (${unitPath}): ${describeEnvIssues(issues)}. ` +
-        `This is the WI-39735 / D-012 failure: the unit will still start, still report active and ` +
-        `still answer /health 200 — while serving from the CPU, at roughly half the load speed and ` +
-        `far worse throughput. Restore the Environment= line(s); do not drop them from the catalog.`,
-    ).toEqual([]);
-  });
+  if (unitProbe.configuredPath !== null) {
+    it('requires an explicit PAPERCUSP_ORNITH_UNIT_PATH override to exist', () => {
+      expect(unitProbe.present, `Configured comparison path does not exist (${probeDetails})`).toBe(true);
+    });
+  }
 
-  it.skipIf(present)('is absent on this machine — nothing deployed to compare', () => {
-    expect(present).toBe(false);
-  });
+  if (present) {
+    it('matches the certified catalog entry', () => {
+      const drift = diffCatalogAgainstDeployedUnit(ORNITH, readFileSync(unitPath, 'utf8'));
+      expect(
+        drift,
+        `DEPLOYED UNIT HAS DRIFTED from catalog '${ORNITH.id}' (${unitPath}): ${describeUnitDrift(drift)}. ` +
+          `This entry is status:'${ORNITH.status}' — its certification was earned on the CATALOG's numbers, ` +
+          `so a deployed unit that differs is running an UNCERTIFIED config (D-007). Restore the unit, or ` +
+          `change the catalog and re-run the cert battery; do not relabel one to match the other.`,
+      ).toEqual([]);
+    });
+
+    it('carries every environment variable the catalog declares it cannot serve without', () => {
+      const issues = checkRequiredEnvironment(ORNITH, readFileSync(unitPath, 'utf8'));
+      expect(
+        issues,
+        `DEPLOYED UNIT IS MISSING REQUIRED ENVIRONMENT (${unitPath}): ${describeEnvIssues(issues)}. ` +
+          `This is the WI-39735 / D-012 failure: the unit will still start, still report active and ` +
+          `still answer /health 200 — while serving from the CPU, at roughly half the load speed and ` +
+          `far worse throughput. Restore the Environment= line(s); do not drop them from the catalog.`,
+      ).toEqual([]);
+    });
+  } else {
+    // Host absence is a legitimate outcome, but its path source must be visible in the result.
+    // Declare only the applicable branch: an intentionally skipped absence sentinel on a host
+    // with a deployed unit looks exactly like the live comparisons were skipped in test:file's
+    // aggregate 43 passed / 1 skipped summary.
+    it(`confirms no deployed unit at the worker-resolved path (${probeDetails})`, () => {
+      expect(present).toBe(false);
+    });
+  }
 });
 
 /**
@@ -447,12 +567,13 @@ describe('resolveCatalogEntryForBackend (WI-39735 wiring / D-016)', () => {
 });
 
 describe('auditDeployedUnit (WI-39735 wiring / D-016)', () => {
-  it('passes the current unit on all three checks at once', async () => {
+  it('passes the current unit on all four checks at once', async () => {
     const audit = await auditDeployedUnit(ORNITH, CURRENT_UNIT, { access: accessOk });
     expect(audit.verdict).toBe('ok');
     expect(audit.drift).toEqual([]);
     expect(audit.envIssues).toEqual([]);
     expect(audit.binary?.ok).toBe(true);
+    expect(audit.model?.ok).toBe(true);
     expect(audit.catalogEntryId).toBe('ornith-35b-iq3m-llama-server');
   });
 
@@ -480,6 +601,24 @@ describe('auditDeployedUnit (WI-39735 wiring / D-016)', () => {
     const audit = await auditDeployedUnit(ORNITH, CURRENT_UNIT, { access: accessDenied });
     expect(audit.verdict).toBe('degraded');
     expect(audit.binary?.reason).toBe('missing');
+  });
+
+  it('catches a MISSING DEPLOYED MODEL FILE while every compared param still matches', async () => {
+    const missingModelPath = '/missing/ornith.gguf';
+    const unit = CURRENT_UNIT.replace(
+      '/usr/share/ollama/.ollama/models/blobs/sha256-18f775956e1ee05608de578ad9e02b10f5b9c04d6eee59c48a0f38c897857298',
+      missingModelPath,
+    );
+    expect(diffCatalogAgainstDeployedUnit(ORNITH, unit)).toEqual(diffCatalogAgainstDeployedUnit(ORNITH, CURRENT_UNIT));
+
+    const access = async (path: string) => {
+      if (path === missingModelPath) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+    const audit = await auditDeployedUnit(ORNITH, unit, { access });
+    expect(audit.verdict).toBe('degraded');
+    expect(audit.binary?.ok).toBe(true);
+    expect(audit.model).toMatchObject({ ok: false, reason: 'missing', modelPath: missingModelPath });
+    expect(audit.summary).toContain('model[missing:');
   });
 
   it('reports a present-but-not-executable binary as degraded too', async () => {

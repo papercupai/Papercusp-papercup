@@ -43,7 +43,7 @@ vi.mock('../../../voice-node/kokoro-local', async (importOriginal) => {
   };
 });
 
-import { synthesize } from './tts-synth';
+import { synthesize, synthesizeReading } from './tts-synth';
 import { synthesize as synthesizeFromRoute } from './operator-tts';
 import type { VoicePrefs } from '../../../voice-prefs';
 
@@ -57,7 +57,7 @@ const PREFS = {
 } as unknown as VoicePrefs;
 
 function stubFetch(opts: { status?: number } = {}) {
-  const mock = vi.fn(async () => new Response('AUDIO-BYTES', { status: opts.status ?? 200 }));
+  const mock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response('AUDIO-BYTES', { status: opts.status ?? 200 }));
   vi.stubGlobal('fetch', mock);
   return mock;
 }
@@ -73,6 +73,76 @@ afterEach(() => {
   keys.el = 'el-key';
   keys.oa = 'oa-key';
   keys.ct = 'ct-key';
+});
+
+describe('incremental original reading', () => {
+  const prefs = () => ({ ...PREFS, ttsEngine: 'elevenlabs' } as VoicePrefs);
+
+  it('sends the whole source once in ordered byte-bounded chunks with a final Unicode tail', async () => {
+    const fetch = stubFetch();
+    const source = '日本語 🐉 paragraph. '.repeat(600) + ' FINAL TAIL {name}.';
+    const results = [];
+    for await (const result of synthesizeReading(source, prefs(), { allowCloud: true })) results.push(result);
+    expect(results.every(result => result.ok)).toBe(true);
+    const sent = fetch.mock.calls.map(call => JSON.parse(String((call[1] as RequestInit).body)).text);
+    expect(sent.join('')).toBe(source);
+    expect(sent.length).toBeGreaterThan(2);
+    for (const text of sent) expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(4000);
+    expect(results.at(-1)).toMatchObject({ end: source.length, index: sent.length - 1, total: sent.length });
+  });
+
+  it('does no synthesis ahead of consumer demand and retains the original provider/voice', async () => {
+    const fetch = stubFetch();
+    const selected = prefs();
+    const reading = synthesizeReading('a'.repeat(8001), selected, { allowCloud: true });
+    expect(fetch).not.toHaveBeenCalled();
+    await reading.next();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    selected.ttsEngine = 'kokoro';
+    selected.elevenlabsVoiceId = 'changed';
+    await reading.next();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[1][0]).toContain('/voice-EL/');
+    await reading.return(undefined);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses cloud disclosure before credentials or upstream requests', async () => {
+    const fetch = stubFetch();
+    const reading = synthesizeReading('private source', prefs());
+    expect((await reading.next()).value).toMatchObject({ ok: false, status: 403 });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('reports provider failure and stops rather than switching engines or continuing the tail', async () => {
+    const fetch = stubFetch({ status: 401 });
+    const results = [];
+    for await (const result of synthesizeReading('a'.repeat(8001), prefs(), { allowCloud: true })) results.push(result);
+    expect(results).toEqual([{ ok: false, error: 'elevenlabs 401', status: 401 }]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels before another chunk starts', async () => {
+    const fetch = stubFetch();
+    const controller = new AbortController();
+    const reading = synthesizeReading('a'.repeat(8001), prefs(), { allowCloud: true, signal: controller.signal });
+    await reading.next();
+    controller.abort();
+    expect((await reading.next()).value).toMatchObject({ ok: false, status: 499 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts in-flight provider fetch and emits no late audio', async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      controller.abort();
+      expect(init.signal?.aborted).toBe(true);
+      throw new DOMException('aborted', 'AbortError');
+    });
+    vi.stubGlobal('fetch', fetch);
+    const result = await synthesize('elevenlabs', 'hello', undefined, PREFS, { signal: controller.signal });
+    expect(result).toEqual({ ok: false, error: 'speech cancelled', status: 499 });
+  });
 });
 
 describe('synthesize() — single server-side TTS registry', () => {

@@ -70,4 +70,18 @@ describe('applyOpVia fires onRefusedOp on decode-null', () => {
     const p = proj(); // no onRefusedOp
     await expect(applyOpVia(() => p as TableProjection<unknown>, remotePut({ bad: true }), applyOpts)).resolves.toBe(false);
   });
+
+  it('preserves an immutable projection delete refusal for the merge cursor', async () => {
+    const deleteFromPg = vi.fn(async () => false as const);
+    const p = proj({ deleteFromPg });
+    await expect(applyOpVia(() => p as TableProjection<unknown>,
+      { ...remotePut(undefined), type: 'del' }, applyOpts)).resolves.toBe(false);
+    expect(deleteFromPg).toHaveBeenCalledWith('k', 1, undefined,
+      expect.objectContaining({ origin: 'remote', authorPubkey: 'remote-source-key' }));
+  });
+
+  it('keeps void-returning ordinary deletes applicable', async () => {
+    await expect(applyOpVia(() => proj() as TableProjection<unknown>,
+      { ...remotePut(undefined), type: 'del' }, applyOpts)).resolves.toBe(true);
+  });
 });

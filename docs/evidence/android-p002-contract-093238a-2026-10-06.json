@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android P-002 current device-contract tree proof at 093238a (Rust client + Kotlin consumers)",
+  "framework": "operational",
+  "command": [
+    "bash",
+    "-c",
+    "cargo test --workspace --all-targets --locked && android/gradlew -p android :app:testDebugUnitTest :app:testReleaseUnitTest --rerun --no-daemon"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T22:12:11.909Z",
+  "finishedAt": "2026-10-06T22:16:02.793Z",
+  "summary": "Fresh tree-plane rerun at papercup-rust-mobile 093238a51c16ccd1d09657474d9ad1478e61a176. It replaces the c37edfc proof, whose source/test bindings went stale after the P-002 client/types/test edits. git status --porcelain over the whole repository was empty at start and at end, and HEAD did not move during the run. Cargo workspace (all targets, locked) exited 0: 7 test binaries, 116 distinct tests passed, 0 failed, 1 ignored. Gradle host unit tests exited 0 and re-executed: 41/41 debug and 41/41 release, 0 failed/errored/skipped. Scope is the tree evidence plane named by the P-002 clauses. The native, scheduled CI, signed candidate, phone and store planes are separate plan items with their own evidence.",
+  "repository": "papercup-rust-mobile",
+  "sourceCommit": "093238a51c16ccd1d09657474d9ad1478e61a176",
+  "sourceDirty": false,
+  "taskLedger": { "taskId": "0mux8ht4zo7jhdlqmqq", "workItem": "WI-10004768", "state": "exited", "exitCode": 0 },
+  "logs": [
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-093238a-20261006/cargo-test.log", "sha256": "d1e9ecdabab05f0c3025a6f7fa5c39340861ff0e26924d10fbb59421bf78b3b7" },
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-093238a-20261006/gradle-host.log", "sha256": "80db150a91149d7a2a33f9e964160aec10100db151b24df56c89b555c0d34add" },
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-093238a-20261006/meta.start", "sha256": "aaa46c88721d84689a60398247e952ac2f6253cc7ff3983f9956113b06d8e01c" },
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-093238a-20261006/meta.end", "sha256": "262131a580e13358dd35a8a4d5c904489d6ff8cd0791674622bd03008c2420de" },
+    { "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-093238a-20261006/rc", "sha256": "ff60b66c8c4a5a5634c1be9b7cd013fe97b89f202886afe4fa71fb5760dd4c5d" }
+  ],
+  "testCounts": {
+    "cargo": { "passed": 116, "failed": 0, "ignored": 1, "testBinaries": 7, "resultLines": 8 },
+    "gradleDebug": { "tests": 41, "failed": 0, "errors": 0, "skipped": 0 },
+    "gradleRelease": { "tests": 41, "failed": 0, "errors": 0, "skipped": 0 }
+  },
+  "cargoSuites": [
+    { "binary": "unittests src/lib.rs (deps/papercup-3683d23898a9102a)", "passed": 6, "note": "async_bridge_tests::reentrant_polling_finishes re-executes the binary once, filtered to itself; that child prints its own result line (1 passed, 5 filtered out), which is not counted again" },
+    { "binary": "uniffi-bindgen unittests", "passed": 0 },
+    { "binary": "unittests src/main.rs (deps/papercup-dea848893b3b8c64)", "passed": 0 },
+    { "binary": "papercup-core unittests src/lib.rs", "passed": 28 },
+    { "binary": "papercup-core tests/android_uniffi_abi_guard.rs", "passed": 7 },
+    { "binary": "papercup-core tests/client_test.rs", "passed": 71 },
+    { "binary": "papercup-core tests/live_smoke.rs", "passed": 4, "ignored": 1 }
+  ],
+  "ignoredTests": [
+    "live_p0_contract_smoke: opt-in smoke that needs a live operator, two workspaces and a one-time pair token; not executed by this invocation"
+  ],
+  "sourceFiles": [
+    { "path": "crates/papercup-core/src/client.rs", "sha256": "e5b9797c67fba02e127d965b5aff0c6dcd10e05a0e15e29b2905ba87f8815a49" },
+    { "path": "crates/papercup-core/src/types.rs", "sha256": "90f83ec5ad9775f47e5d0b45ff4ade126455325d974725d157e80e0ebed9bf0a" },
+    { "path": "crates/papercup-core/tests/client_test.rs", "sha256": "38f2d3ae0f73e108355f9c10dd7d30681e794ef65a48f1d42753c781d857058b" },
+    { "path": "crates/papercup-core/tests/android_uniffi_abi_guard.rs", "sha256": "f074dfe26940e2fe5e9c3d8ec8a8ab3f864803af82911148c9883090151c264e" },
+    { "path": "crates/papercup-bindings/src/papercup.udl", "sha256": "49e62ade6cba7fb9a6e7ffe7605eb5a49ec08e79fc4d5aaa19959036ed1674ea" },
+    { "path": "Cargo.lock", "sha256": "389f43b2d8d5fec43b35c2dc71246e0fd395a598ec9517516b54c8e8c6746c81" },
+    { "path": "android/app/src/main/kotlin/com/papercuspai/operator/mobile/PlansScreen.kt", "sha256": "26b206496863829ba59e44f13119fda9ba3d2d48986c23cdd110c36b1acd7481" },
+    { "path": "android/app/src/test/kotlin/com/papercuspai/operator/mobile/PlanItemsContractTest.kt", "sha256": "a60cb2bf96373668097d2682e573cac3e56f2262db798c16d1d2144c89903643" }
+  ],
+  "assertions": [
+    { "id": "cargo-workspace-exit", "passed": true, "evidence": "cargo test --workspace --all-targets --locked exited 0 (rc file: cargo_rc=0). 7 test binaries, 116 distinct tests passed, 0 failed, 1 ignored (live_p0_contract_smoke)." },
+    { "id": "gradle-host-exit", "passed": true, "evidence": "android/gradlew -p android :app:testDebugUnitTest :app:testReleaseUnitTest --rerun --no-daemon exited 0 (gradle_rc=0). Both test tasks executed rather than UP-TO-DATE. BUILD SUCCESSFUL in 1m 46s." },
+    { "id": "junit-debug", "passed": true, "evidence": "JUnit XML testDebugUnitTest: 41 tests, 0 failures, 0 errors, 0 skipped across 8 classes (PlanItemsContractTest 5, CompanionFeedTest 10, WorkspaceSwitchTest 6, HumanErrorTest 7, EndpointSecurityTest 3, LibraryNoticesTest 3, VoiceMicDenialTest 3, VoicePrivacyConsentTest 4)." },
+    { "id": "junit-release", "passed": true, "evidence": "JUnit XML testReleaseUnitTest: the same 41 tests across the same 8 classes, 0 failures, 0 errors, 0 skipped." },
+    { "id": "source-clean-and-pinned", "passed": true, "evidence": "meta.start (22:12:12Z) and meta.end (22:16:01Z) both record HEAD 093238a51c16ccd1d09657474d9ad1478e61a176 and a whole-repository git status --porcelain count of 0. After the run, git hash-object matched the 093238a blob for client.rs, types.rs, client_test.rs and Cargo.lock." }
+  ]
+}

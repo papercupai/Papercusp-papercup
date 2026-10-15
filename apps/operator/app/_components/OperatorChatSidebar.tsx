@@ -3,6 +3,10 @@
 
 import { Tooltip } from '@/app/harness/Tooltip';
 import { Popover } from '@/app/harness/Popover';
+import { Button } from '@/app/harness/Button';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
+import { toast } from 'sonner';
 /**
  * OperatorChatSidebar — fixed left, full-height, and collapsible.
  *
@@ -72,7 +76,7 @@ import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { VoiceButton } from './voice/VoiceButton';
 import { AudienceModeSelector } from './AudienceModeSelector';
-import { isVoiceOutputMuted, setVoiceOutputMuted } from './voice/voice-mode';
+import { isVoiceOutputMuted, setVoiceOutputMuted, startReading, getReadingState, subscribeReadingState, controlReading } from './voice/voice-mode';
 import {
   OPERATOR_CHAT_COLLAPSED_WIDTH,
   OPERATOR_CHAT_DEFAULT_WIDTH,
@@ -148,6 +152,90 @@ function TtsMuteButton() {
         {muted ? <VolumeX size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
       </button>
     </Tooltip>
+  );
+}
+
+/** Original and explicit summary operations share the existing output row. */
+function ReadingControls() {
+  const [reading, setReading] = useState(getReadingState);
+  const [allowCloud, setAllowCloud] = useState(false);
+  const [allowSummaryCloud, setAllowSummaryCloud] = useState(false);
+  const [sourceText, setSourceText] = useState('');
+  const [summaryText, setSummaryText] = useState('');
+  const [summaryWarnings, setSummaryWarnings] = useState<string[]>([]);
+  const [length, setLength] = useState('standard');
+  const [focus, setFocus] = useState('');
+  const [language, setLanguage] = useState('');
+  const [summaryModel, setSummaryModel] = useState('');
+  const [summaryAccount, setSummaryAccount] = useState('');
+  const [summarizing, setSummarizing] = useState(false);
+  const summaryRequest = useRef<AbortController | null>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => subscribeReadingState(setReading), []);
+  useEffect(() => () => { summaryRequest.current?.abort(); }, []);
+  const active = ['starting', 'playing', 'paused'].includes(reading.status);
+  const setControlsOpen = (next: boolean) => {
+    if (next) {
+      const selection = window.getSelection()?.toString();
+      if (selection) { setSourceText(selection); setSummaryText(''); setSummaryWarnings([]); }
+    }
+    setOpen(next);
+  };
+  const readSelection = () => {
+    try { startReading(sourceText, { allowCloud, coverage: { complete: false, warnings: ['Selected or pasted text only.'] } }); }
+    catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
+  };
+  const summarizeSelection = async (speak: boolean) => {
+    if (!sourceText.trim()) { toast.error('Select or paste text to summarize.'); return; }
+    summaryRequest.current?.abort();
+    const controller = new AbortController(); summaryRequest.current = controller;
+    setSummarizing(true); setSummaryText(''); setSummaryWarnings([]);
+    try {
+      const response = await fetch('/api/agent-mcp/operator-tts', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, signal: controller.signal,
+        body: JSON.stringify({ operation: 'summarize', content: { kind: 'selection', text: sourceText, partial: true },
+          summary: { length, ...(focus ? { focus } : {}), ...(language ? { language } : {}), ...(summaryModel ? { model: summaryModel } : {}), ...(summaryAccount ? { account: summaryAccount } : {}), allowCloud: allowSummaryCloud } }),
+      });
+      const result = await response.json();
+      if (controller.signal.aborted || summaryRequest.current !== controller) return;
+      if (!response.ok || !result.ok || typeof result.summary !== 'string') throw new Error(result.error ?? 'Summary failed.');
+      setSummaryText(result.summary); setSummaryWarnings(result.coverage?.warnings ?? []);
+      if (speak) startReading(result.summary, { allowCloud, coverage: result.coverage });
+    } catch (error) {
+      if (!controller.signal.aborted) toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (summaryRequest.current === controller) { summaryRequest.current = null; setSummarizing(false); }
+    }
+  };
+  const cancelSummary = () => { summaryRequest.current?.abort(); summaryRequest.current = null; setSummarizing(false); };
+  return (
+    <Popover open={open} onOpenChange={setControlsOpen} ariaLabel="Original reading controls" trigger={<Button variant="ghost" onMouseDown={event => event.preventDefault()} aria-label="Read selected text aloud">{active ? 'Reading' : 'Read aloud'}</Button>}>
+      <div role="group" aria-label="Original reading controls">
+        <label>Text to read or summarize<textarea aria-label="Text to read or summarize" value={sourceText} onChange={event => { setSourceText(event.target.value); setSummaryText(''); setSummaryWarnings([]); }} disabled={summarizing} /></label>
+        <label><Checkbox ariaLabel="Allow selected text to use cloud speech" checked={allowCloud} onChange={setAllowCloud} /> Allow selected text to use cloud speech</label>
+        <Button variant="neutral" onMouseDown={event => event.preventDefault()} onClick={readSelection} disabled={active || summarizing}>Read selection</Button>
+        <label><Checkbox ariaLabel="Allow this text to use a cloud summary model" checked={allowSummaryCloud} onChange={setAllowSummaryCloud} /> Allow this text to use a cloud summary model</label>
+        <label>Summary length<Select ariaLabel="Summary length" value={length} onChange={setLength} options={[{ value: 'short', label: 'Short' }, { value: 'standard', label: 'Standard' }, { value: 'detailed', label: 'Detailed' }]} /></label>
+        <label>Summary focus<input aria-label="Summary focus" value={focus} onChange={event => setFocus(event.target.value)} placeholder="Optional" /></label>
+        <label>Summary language<input aria-label="Summary language" value={language} onChange={event => setLanguage(event.target.value)} placeholder="Original language" /></label>
+        <details><summary>Model and account</summary>
+          <label>Summary model<input aria-label="Summary model" value={summaryModel} onChange={event => setSummaryModel(event.target.value)} placeholder="Configured summary model" /></label>
+          <label>Summary account<input aria-label="Summary account" value={summaryAccount} onChange={event => setSummaryAccount(event.target.value)} placeholder="Automatic routing" /></label>
+        </details>
+        <Button variant="neutral" onClick={() => void summarizeSelection(false)} disabled={active || summarizing}>Summarize</Button>
+        <Button variant="neutral" onClick={() => void summarizeSelection(true)} disabled={active || summarizing}>Summarize and read</Button>
+        {summarizing && <><span role="status">Summarizing…</span><Button variant="neutral" onClick={cancelSummary}>Cancel summary</Button></>}
+        {summaryText && <div role="region" aria-label="Summary"><p style={{ whiteSpace: 'pre-wrap' }}>{summaryText}</p><p>Summary of the supplied text.</p>{summaryWarnings.length > 0 && <p>{summaryWarnings.join(' ')}</p>}</div>}
+        {active && reading.readingId && <>
+          <Button variant="neutral" onClick={() => controlReading(reading.readingId!, reading.status === 'paused' ? 'resume' : 'pause')}>{reading.status === 'paused' ? 'Resume' : 'Pause'}</Button>
+          <Button variant="neutral" onClick={() => controlReading(reading.readingId!, 'stop')}>Stop</Button>
+        </>}
+        <progress value={reading.position} max={Math.max(1, reading.total)} aria-label="Reading progress" />
+        <span role="status">{reading.status} · {reading.total ? Math.floor(reading.position / reading.total * 100) : 0}%</span>
+        {reading.error && <p role="alert">{reading.error}</p>}
+        {reading.warnings.length > 0 && <p>{reading.warnings.join(' ')}</p>}
+      </div>
+    </Popover>
   );
 }
 
@@ -786,6 +874,7 @@ export function OperatorChatSidebar({ faces = [], docked = false }: { faces?: re
               <OperatorActiveToggle />
               <VoiceButton />
               <TtsMuteButton />
+              <ReadingControls />
             </div>
             <Tooltip label="Collapse Papercup chat"><button
               type="button"

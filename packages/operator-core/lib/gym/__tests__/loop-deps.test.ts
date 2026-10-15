@@ -4,10 +4,10 @@
  * the proposer are all injected fakes, so the POOL→VariantEval aggregation, the worst-trace
  * selection, and the persist/record seams are verified with zero LLM / no PG / no operator.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { buildLoopDeps, type LoopTask } from '../loop-deps';
-import { composite, GYM_JUDGE_RUBRIC_V1 } from '../judge-scoring';
+import { composite, GYM_JUDGE_RUBRIC_V1, rubricHash } from '../judge-scoring';
 import type { AbDeps } from '../ab-runner';
 import type { JudgeLlmCall } from '../judge';
 import type { GymLlmCall } from '../task-generator';
@@ -98,7 +98,7 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
       outputTokens: 0,
     };
   };
-  const deps = buildLoopDeps({
+  const config: Parameters<typeof buildLoopDeps>[0] = {
     gymSql: fakeSql(sqlSink, sqlValues),
     ports: {} as never,
     judgeCall: fakeJudge,
@@ -117,11 +117,100 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
       proposals.push(rec);
     },
     ...over,
-  });
-  return { deps, sqlSink, sqlValues, proposals, proposerCalls };
+  };
+  const deps = buildLoopDeps(config);
+  return { deps, sqlSink, sqlValues, proposals, proposerCalls, config };
 }
 
 describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
+  it.each([
+    { costUsdMeasurementMissing: true },
+    { unreportedFrames: 2 },
+  ])('stops after an incomplete judge receipt and retains the known subtotal %j', async evidence => {
+    const ab = fakeAbDeps(ALL_MEASURED);
+    const runPipeline = ab.runPipeline;
+    let pipelines = 0;
+    let scored = 0;
+    ab.runPipeline = async input => { pipelines++; return runPipeline(input); };
+    ab.store.recordScore = async () => { scored++; };
+    const { deps } = makeDeps({ abDeps: ab, judgeCall: async opts => ({ ...await fakeJudge(opts), ...evidence }) });
+    await expect(deps.evaluate('baseline', { promptOverrides: {} })).rejects.toMatchObject({
+      costUsd: PIPELINE_USD + JUDGE_USD, costUsdMeasurementMissing: true,
+      ...(evidence.unreportedFrames ? { unreportedFrames: 2 } : {}),
+    });
+    expect(pipelines).toBe(1);
+    expect(scored).toBe(0);
+  });
+
+  it('retains every judge repair charge in a partial evaluation failure', async () => {
+    const { deps } = makeDeps({ judgeCall: async () => ({ text: 'malformed', costUsd: JUDGE_USD,
+      inputTokens: 1, outputTokens: 1 }) });
+    await expect(deps.evaluate('baseline', { promptOverrides: {} })).rejects.toMatchObject({
+      costUsd: PIPELINE_USD + 2 * JUDGE_USD,
+    });
+  });
+
+  it('stops before judging incomplete pipeline usage while retaining its priced subtotal and receipt', async () => {
+    const ab = fakeAbDeps(ALL_MEASURED);
+    const run = ab.runPipeline;
+    const receipt = { knownUsd: 0.3, providerUsd: 0.3, estimatedUsd: 0,
+      complete: false, measured: false, coverageBasis: 'retained-run-output-and-usage-samples' as const,
+      missingRunIds: ['validator'], samples: [] };
+    ab.runPipeline = async (input) => ({ ...await run(input), pipelineUsd: 0.3, pipelineSpend: receipt });
+    let judged = false;
+    const { deps } = makeDeps({ abDeps: ab, tasks: [TASKS[0]], judgeCall: async () => {
+      judged = true; throw new Error('must not judge unknown pipeline spend');
+    } });
+    await expect(deps.evaluate('candidate', { promptOverrides: {} })).rejects.toMatchObject({
+      message: 'Gym pipeline usage evidence is incomplete', costUsd: 0.3,
+      costUsdMeasurementMissing: true, pipelineSpend: receipt,
+    });
+    expect(judged).toBe(false);
+  });
+
+  it('records declared run parameters before judging, including when the judge fails', async () => {
+    const ab = fakeAbDeps(ALL_MEASURED);
+    const started: unknown[] = [];
+    ab.store.startRun = async (run) => { started.push(run); };
+    const task = { ...TASKS[0], repoCommit: 'declared-task-commit' };
+    const rubric = { ...GYM_JUDGE_RUBRIC_V1, version: 'fixture-rubric' };
+    const { deps } = makeDeps({ runId: 'params-loop', abDeps: ab, tasks: [task], rubric,
+      harnessCommit: 'declared-harness-commit', judgeCall: async () => {
+        expect(started).toEqual([expect.objectContaining({
+          runId: 'params-loop::baseline::t-train-lo::c0::r0',
+          params: { harnessCommit: 'declared-harness-commit', substrateCommit: 'declared-task-commit',
+            judgeModel: rubric.model, judgeTemp: rubric.temperature, weights: rubric.weights, rubricHash: rubricHash(rubric) },
+        })]);
+        throw new Error('controlled judge failure');
+      } });
+    await expect(deps.evaluate('baseline', { promptOverrides: {} })).rejects.toThrow('controlled judge failure');
+    expect(started).toHaveLength(1);
+  });
+
+  it('keeps independent baseline evaluations distinct through start, finish and score persistence', async () => {
+    const evaluateBaseline = async (runId: string) => {
+      const ab = fakeAbDeps(ALL_MEASURED);
+      const started: string[] = [];
+      const finished: string[] = [];
+      const scored: string[] = [];
+      ab.store.startRun = async (run) => { started.push(run.runId); };
+      ab.store.finishRun = async (id) => { finished.push(id); };
+      ab.store.recordScore = async (id) => { scored.push(id); };
+      const { deps } = makeDeps({ runId, abDeps: ab, repeats: 2 });
+      const evaluated = await deps.evaluate('baseline', { promptOverrides: {} });
+      expect(finished).toEqual(started);
+      expect(scored).toEqual(started);
+      expect(evaluated).toMatchObject({ runIds: started });
+      expect(new Set(started).size).toBe(TASKS.length * 2);
+      return started;
+    };
+    const first = await evaluateBaseline('independent-first');
+    const second = await evaluateBaseline('independent-second');
+    // The durable copy upserts by this identity. A collision would replace the
+    // earlier run's oracle signals and recorded parameters with the later run.
+    expect(first.filter((id) => second.includes(id))).toEqual([]);
+  });
+
   it('rolls per-pool composites into trainAgg/devAnchorAgg/trainVector + meanCost', async () => {
     const { deps } = makeDeps({}, { ...ALL_MEASURED, 't-train-lo': { regressions: true } });
     const { evalResult, worstTraces, costUsd } = await deps.evaluate('baseline', { promptOverrides: {} });
@@ -295,6 +384,28 @@ describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
 });
 
 describe('buildLoopDeps — propose / persistCycle / recordProposal seams', () => {
+  it('carries the supplied proposer bound through the real native binding after config mutation', async () => {
+    const { bindNativeGymLlmCalls } = await import('../proposer');
+    const requests: Parameters<GymLlmCall>[0][] = [];
+    const native = bindNativeGymLlmCalls(async request => {
+      requests.push(request); return { text: '', json: { promptOverrides: { worker: 'x' }, rationale: 'r' },
+        costUsd: 0, inputTokens: 0, outputTokens: 0 };
+    }, 'native-harness', { log: () => {} });
+    const { deps, config } = makeDeps({ proposerCall: native.proposer, proposerMaxTokens: 257 });
+    config.proposerMaxTokens = 1;
+    await deps.propose({ promptOverrides: {} }, [], '');
+    expect(requests[0]).toMatchObject({ model: 'claude-sonnet-4-6', maxTokens: 257,
+      requireOutputTokenLimit: true, priority: 'gym', harnessSlug: 'native-harness' });
+  });
+
+  it('refuses a native proposer with no supplied bound before the real transport', async () => {
+    const { bindNativeGymLlmCalls } = await import('../proposer');
+    const call = vi.fn(async () => ({ text: '{}', costUsd: 0, inputTokens: 0, outputTokens: 0 }));
+    const { proposer } = bindNativeGymLlmCalls(call, 'native-harness', { log: () => {} });
+    const { deps } = makeDeps({ proposerCall: proposer });
+    await expect(deps.propose({ promptOverrides: {} }, [], '')).rejects.toMatchObject({ costUsd: 0 });
+    expect(call).not.toHaveBeenCalled();
+  });
   it('propose feeds worst traces + changelog to the proposer and returns a merged overlay', async () => {
     const { deps, proposerCalls } = makeDeps();
     const parentOverlay = { promptOverrides: { validator: '# Validator\nbe strict' } };

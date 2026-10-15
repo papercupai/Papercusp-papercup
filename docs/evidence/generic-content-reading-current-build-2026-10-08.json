@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Generic content reading current-build native selector and browser journeys",
+  "framework": "playwright",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "bash",
+    "-c",
+    "set -euo pipefail\n tauri-agent-tools eval --pid \"$VERIFY_TAURI_PID\" 'window.__TSR_ROUTER__?.navigate({to: \"/\", search: {chat: true}})'\n \"$VERIFY_TAURI_POLL\" --selector 'button[aria-label=\"Read selected text aloud\"]'\n cd \"$OPERATOR_SOURCE_ROOT/apps/operator\"\n export OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_BASE_URL=\"$VERIFY_TAURI_DEV_URL\"\n node \"$(node -p 'require.resolve(\"@playwright/test/cli\")')\" test e2e/content-reading.spec.ts --workers=1 --retries=0\n"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-08T08:32:40.757Z",
+  "finishedAt": "2026-10-08T08:41:30.244Z",
+  "summary": "Maintained verifier prepare/boot/assert passed on immutable source5759cb9fc4b5be26b1a20744587554b7b8169607. Native reading-control selector passed; registered Playwright suite4/4 passed; isolated process/PG cleanup finished and managed task recorded completed exit0.",
+  "assertions": [
+    {
+      "id": "original-tail-pause-resume-without-microphone",
+      "passed": true,
+      "evidence": "Playwright content-reading.spec.ts:80 passed: original reading preserves its final tail and pauses/resumes the same output without a microphone."
+    },
+    {
+      "id": "explicit-summary-composition-consent-coverage",
+      "passed": true,
+      "evidence": "Playwright content-reading.spec.ts:119 passed: summary-only and summary-and-read keep separate consent and source coverage."
+    },
+    {
+      "id": "cancel-summary-late-output",
+      "passed": true,
+      "evidence": "Playwright content-reading.spec.ts:155 passed: cancel summary ignores a late result and cannot start obsolete speech."
+    },
+    {
+      "id": "visible-summary-failure",
+      "passed": true,
+      "evidence": "Playwright content-reading.spec.ts:175 passed: summary failure is visible and never becomes summary text or speech."
+    }
+  ],
+  "sourceCommit": "5759cb9fc4b5be26b1a20744587554b7b8169607",
+  "workItemId": "WI-10007267",
+  "planSlug": "generic-content-read-aloud-and-summarization-2026-10-07",
+  "sourceTest": "apps/operator/e2e/content-reading.spec.ts",
+  "taskId": "0muza3f2j1y104xg1cr",
+  "runGroup": "content-reading-P006-resolved-cli-20261008T0832",
+  "verifierRunId": "20261008T083237Z-3879837",
+  "rawLog": ".papercusp/scratch/bash-a2038a57-c18.log",
+  "verificationHarnessEvidence": "$HOME/.local/state/verification-harness/verify-tauri-headless/20261008T083237Z-3879837",
+  "hostImportSmoke": {
+    "outcome": "passed",
+    "exitCode": 0,
+    "elapsedMs": 8132,
+    "timeoutSec": 15,
+    "bundleSha256": "d34f9addb8eab1a6bb0c2201c039313471889efc6d6b998e310d6f3c98891ce0"
+  },
+  "isolation": {
+    "database": "throwaway migrated PostgreSQL",
+    "profile": "disposable native webview",
+    "source": "immutable committed export",
+    "frontend": "frozen SPA requiring OperatorChatSidebar.tsx and voice-mode.ts"
+  },
+  "scopeLimits": [
+    "Browser assertions use controlled summary and audio adapters; real provider, model, local-only routing and long-tail synthesis are separate saved work-item evidence.",
+    "Native webview selector proves the reading controls render; it does not prove audible playback.",
+    "This is current-build implementation acceptance. It does not prove final deployed main or gateway protection."
+  ]
+}

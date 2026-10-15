@@ -6,6 +6,13 @@ import { describe, it, expect } from 'vitest';
 import { resolveSevereEventOwner } from './severe-event-owner';
 
 describe('resolveSevereEventOwner', () => {
+  it('routes hosted availability incidents to the stable operational responder without capturing similar names', () => {
+    expect(resolveSevereEventOwner('hosted-control-plane-degraded')).toMatchObject({
+      ownerSelector: '@role:mug', source: 'registry', reason: expect.stringContaining('workspace-host controller'),
+    });
+    expect(resolveSevereEventOwner('hosted-control-plane-degraded:install')).toMatchObject({ ownerSelector: '@role:mug' });
+    expect(resolveSevereEventOwner('hosted-control-plane-degraded-lookalike')).toBeNull();
+  });
   it('resolves an EXACT registry match to its registered owner', () => {
     const r = resolveSevereEventOwner('health-tick-stale');
     expect(r).toMatchObject({ ownerSelector: '@role:mug', source: 'registry' });

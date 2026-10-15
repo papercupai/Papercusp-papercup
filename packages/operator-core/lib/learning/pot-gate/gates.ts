@@ -21,6 +21,7 @@
  */
 import type { Sql } from 'postgres';
 import { potLearningEnabled } from './store';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 /**
  * Scout's preflight (P-004): resolve the pot this install learns FOR, then ask
@@ -47,8 +48,11 @@ export async function scoutPotGate(input: {
     });
     if (!potSlug) return { enabled: true };
     const { sql } = getOrgPg();
-    return { enabled: await potLearningEnabled(sql, { workspaceId: input.workspaceId, potSlug }) };
+    const enabled = await potLearningEnabled(sql, { workspaceId: input.workspaceId, potSlug });
+    observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'pot-gate' }, { workspaceId: input.workspaceId });
+    return { enabled };
   } catch (e) {
+    observeFallback('scout-state-read', { eligible: 1, applied: 0, reason: 'gate-read-failed', scope: 'pot-gate' }, { workspaceId: input.workspaceId });
     console.warn(
       `[learning-pot-gate] scout gate read failed for ${input.installSlug} — allowing ` +
         `(fail-open, R-5): ${e instanceof Error ? e.message : e}`,
@@ -108,6 +112,7 @@ export async function scoutConfigDelta(input: {
     const { getHiveLocalBlueprintConfig } = await import('../../hive-settings-store');
 
     let home: string | null = null;
+    let homeReadable = true;
     try {
       const [{ resolvePotHomeSlug }, { operatorHomeHarnessSlug }] = await Promise.all([
         import('../../pot/wake'),
@@ -115,6 +120,7 @@ export async function scoutConfigDelta(input: {
       ]);
       home = resolvePotHomeSlug(null, null) ?? operatorHomeHarnessSlug();
     } catch {
+      homeReadable = false;
       /* home resolution unavailable → primary scope only, as before */
     }
 
@@ -128,8 +134,11 @@ export async function scoutConfigDelta(input: {
         out[section] = delta as Record<string, unknown>;
       }
     }
+    observeFallback('scout-state-read', { eligible: 1, applied: homeReadable ? 1 : 0,
+      reason: homeReadable ? 'applied' : 'config-home-unavailable', scope: 'config' }, { workspaceId: input.workspaceId });
     return Object.keys(out).length > 0 ? out : null;
   } catch (e) {
+    observeFallback('scout-state-read', { eligible: 1, applied: 0, reason: 'config-read-failed', scope: 'config' }, { workspaceId: input.workspaceId });
     console.warn(
       `[learning-pot-gate] scout config read failed for ${input.installSlug} — using the ` +
         `routine payload unchanged (fail-open, R-5): ${e instanceof Error ? e.message : e}`,

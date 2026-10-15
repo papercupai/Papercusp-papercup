@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "evidencePlane": "tree",
+  "plan": "shared-vector-search-libraries-2026-09-29",
+  "specId": "SPEC-P-005-SEAM-DECISION",
+  "workItemId": "WI-10004274",
+  "name": "SPEC-P-005-SEAM-DECISION re-check 3: the D-004 seam still assigns every P-005 backfill responsibility to exactly one side, and the as-built code matches it",
+  "subjectCommit": "08dd0879665d",
+  "supersedes": "p005-seam-decision-check-2.json (binding 20051, subject c40acc2f3c9c)",
+  "measuredBy": "su-ea145858-8dc8-4602-ae3d-675eb6c2b804",
+  "note": "[self-imposed under AUTO; owner directive #1413] Re-measured because binding 20051 went source-stale: packages/operator-core/lib/search/embed-backfill.ts changed (last commit c0d46dcd71, 2026-10-03T07:35:27Z; blob now fa0661d8b0) and the libs/generic/search gitlink moved to b1b81f6355 (2026-10-03T07:18:53Z). Same method as check 2. Oracle: the P-005 plan item text, written before D-004 and the implementation.",
+  "startedAt": "2026-10-06T03:57:00.000Z",
+  "finishedAt": "2026-10-06T03:58:45.000Z",
+  "exitCode": 0,
+  "command": [
+    "plans:items { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', item: 'P-005' }",
+    "SELECT body FROM harness_shared.plan_decisions WHERE workspace_id='papercusp-workspace' AND plan_slug='shared-vector-search-libraries-2026-09-29' AND decision_id='D-004'",
+    "grep -c -F <symbol> packages/operator-core/lib/search/embed-backfill.ts and over the concatenation of libs/generic/search/src/backfill/*.ts (with and without *.test.ts), for each symbol listed in assertions",
+    "grep -n -iE 'per-row|batch embed' libs/generic/search/src/backfill/*.ts packages/operator-core/lib/search/embed-backfill.ts"
+  ],
+  "summary": "Re-check of SPEC-P-005 after binding 20051 went stale. P-005 is done and its text is unchanged. D-004 still records the backfill-engine seam: the generic sweep in libs/generic/search/src/backfill (it imports nothing from papercusp) owns selection of missing or wrong-space rows, batch embedding with per-row fallback, the input cap, the vector-plus-label write and the round-robin; papercusp supplies the TARGETS list, embed admission, the sidecar embedder and the resource profile. Against the current tree (HEAD 08dd0879665d, embed-backfill.ts blob fa0661d8b0, libs/generic/search b1b81f6355; both clean), every symbol count equals check 2's, so no responsibility is unassigned or split. The one changed reading is cosmetic: the fallback's log string is now split across two source lines, so the single-line phrase 'using the per-row path' counts 0; the 'batch embed FAILED' prefix counts lib 2 (incl. test), host 0, as before.",
+  "assertions": [
+    {
+      "id": "decision-recorded",
+      "passed": true,
+      "evidence": "plans:items P-005 returns status done and the same text as checks 1 and 2 (generic sweep: select rows whose vector is missing or in the wrong embedding space; batch-embed with per-row fallback on batch failure; cap oversized input; write vector plus label; round-robin across targets within a time budget; papercusp hooks: the TARGETS list, embed admission, the sidecar embedder, resource profile). plan_decisions D-004 still opens 'GENERIC SWEEP. New module libs/generic/search/src/backfill/. It imports nothing from papercusp' and lists stalePredicateSql, eligiblePredicateSql, activeRecipeVersion and BASELINE_RECIPE_VERSION as moved."
+    },
+    {
+      "id": "select-missing-or-wrong-space",
+      "passed": true,
+      "evidence": "Generic side. stalePredicateSql / eligiblePredicateSql / activeRecipeVersion / BASELINE_RECIPE_VERSION: lib 11/6/4/3 (non-test 5/4/4/3), host 3/3/3/2, identical to check 2. Definitions live in libs/generic/search/src/backfill/predicates.ts; the host's references are imports and re-exports, as in check 2."
+    },
+    {
+      "id": "batch-embed-per-row-fallback",
+      "passed": true,
+      "evidence": "Generic side. libs/generic/search/src/backfill/backfill-table.ts:205-206 logs '[<label>] batch embed FAILED for <table>, using the ' + 'per-row path (slower)', and line 210 sends the rest of the batch down the per-row path. 'batch embed FAILED': lib 2 (incl. backfill.test.ts:229), host 0. The host's per-row mentions are doc comments and the batch-embedder builder it supplies as a hook (embed-backfill.ts:191-217), not the fallback logic."
+    },
+    {
+      "id": "cap-oversized-input",
+      "passed": true,
+      "evidence": "Generic side. maxInputChars: lib 13 (non-test 6), host 1 (the config value it passes), identical to check 2."
+    },
+    {
+      "id": "write-vector-plus-label",
+      "passed": true,
+      "evidence": "Generic side. keyCols: lib 12 (non-test 5), host 14 (per-target key declarations in its TARGETS list plus a doc comment, which is the host hook), identical to check 2."
+    },
+    {
+      "id": "round-robin-within-budget",
+      "passed": true,
+      "evidence": "Generic side. sweepCounter: lib 5 (all in libs/generic/search/src/backfill/sweeper.ts, non-test), host 1 (the shared state counter it hands to the library sweeper), identical to check 2."
+    },
+    {
+      "id": "targets-list",
+      "passed": true,
+      "evidence": "Papercusp hook. TARGETS: host 6, lib 3 (all in test files, non-test 0); chunkStoreBackfillTarget: host 2, lib 0. Identical to check 2."
+    },
+    {
+      "id": "embed-admission",
+      "passed": true,
+      "evidence": "Papercusp hook. embedAdmission host 2 / lib 0; adm.acquire host 1 / lib 0."
+    },
+    {
+      "id": "sidecar-embedder",
+      "passed": true,
+      "evidence": "Papercusp hook. sidecarEmbedBatch host 3, sidecarBatchTimeoutMs host 4, resolveBackfillEmbedder host 2; lib 0 for each."
+    },
+    {
+      "id": "resource-profile",
+      "passed": true,
+      "evidence": "Papercusp hook. getResourceProfile host 2, embedBatchSize host 1; lib 0 for each."
+    },
+    {
+      "id": "no-responsibility-unassigned",
+      "passed": true,
+      "evidence": "9 of 9 P-005 responsibilities are on exactly one side in both the decision and the code: 5 generic-sweep responsibilities implemented in libs/generic/search/src/backfill, 4 papercusp hooks implemented only in packages/operator-core/lib/search/embed-backfill.ts."
+    }
+  ]
+}

@@ -5,14 +5,18 @@
  * Invalid/missing declarations fall back to `<project>/docs`, and a declared
  * root can never escape the project (traversal-guarded).
  */
-import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveDocsRoot } from '../routes/harness/project-docs';
+import { resolveDocsRoot, resolveDocsSources } from '../routes/harness/project-docs';
+
+const fixtures: string[] = [];
+afterEach(() => { for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true }); });
 
 function makeProject(): string {
   const root = mkdtempSync(join(tmpdir(), 'project-docs-'));
+  fixtures.push(root);
   mkdirSync(join(root, 'docs'), { recursive: true });
   return root;
 }
@@ -54,5 +58,26 @@ describe('resolveDocsRoot', () => {
     const b = makeProject();
     declare(b, JSON.stringify({ root: 42 }));
     expect(await resolveDocsRoot(b)).toBe(join(b, 'docs'));
+  });
+});
+
+describe('resolveDocsSources', () => {
+  it('preserves the primary root while adding a namespaced public corpus', async () => {
+    const p = makeProject();
+    mkdirSync(join(p, 'manual'));
+    declare(p, JSON.stringify({ root: 'docs', sources: { 'public-manual': 'manual' } }));
+    expect(await resolveDocsRoot(p)).toBe(join(p, 'docs'));
+    expect(await resolveDocsSources(p)).toEqual({ 'public-manual': join(p, 'manual') });
+  });
+  it('rejects missing roots, namespace collisions, traversal and symlink escapes', async () => {
+    const p = makeProject();
+    const outside = makeProject();
+    mkdirSync(join(p, 'docs/collision'));
+    symlinkSync(outside, join(p, 'escape'));
+    declare(p, JSON.stringify({ sources: {
+      bad: '../outside', absent: 'missing', 'bad/name': 'docs', primary: 'docs',
+      collision: 'docs/collision', escape: 'escape',
+    } }));
+    expect(await resolveDocsSources(p)).toEqual({});
   });
 });

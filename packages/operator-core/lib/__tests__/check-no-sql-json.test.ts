@@ -18,6 +18,7 @@ const { checkJsonbSerializerContract, inspectJsonbSerializerContract } = guardMo
     connection: string;
     serializer: string;
     orgTestFixture: string;
+    planToolFixture: string;
   }) => string[];
 };
 
@@ -49,6 +50,10 @@ const VALID = {
     '  restoreRawJsonbSerializer(client);',
     '  return client;',
     '}',
+  ].join('\n'),
+  planToolFixture: [
+    'const admin = postgres(url, { max: 2 });',
+    'restoreRawJsonbSerializer(admin);',
   ].join('\n'),
 };
 
@@ -89,6 +94,13 @@ describe('check-no-sql-json compatibility gate — hybrid serializer contract', 
     });
     expect(problems).toEqual([
       expect.stringContaining('applyRawSerializerFixes must call restoreRawJsonbSerializer(client)'),
+    ]);
+  });
+
+  it('fails if the plan-tool fixture builds its admin client without the serializer', () => {
+    const problems = inspect({ planToolFixture: 'const admin = postgres(url, { max: 2 });' });
+    expect(problems).toEqual([
+      expect.stringContaining('must call restoreRawJsonbSerializer(admin)'),
     ]);
   });
 

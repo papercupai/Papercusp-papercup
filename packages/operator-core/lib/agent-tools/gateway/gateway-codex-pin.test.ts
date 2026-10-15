@@ -9,6 +9,14 @@ import { afterEach, beforeEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
+const activeSessionLookup = vi.hoisted(() => vi.fn());
+vi.mock('../../adv-sessions', () => ({
+  getLatestActiveAdvSessionByOwner: activeSessionLookup,
+}));
+vi.mock('../../sync-sse', () => ({
+  notifySyncInvalidate: vi.fn(),
+}));
+
 const writes: Array<{ workspaceId: string; ownerId: string; account: string; hard: boolean }> = [];
 
 vi.mock('../../deployment/account-owner-pins', () => ({
@@ -24,15 +32,19 @@ const { accountsPinTool } = await import('./gateway');
 const body = (result: unknown) => JSON.parse((result as { content: { text: string }[] }).content[0]!.text);
 const previousPort = process.env.PAPERCUSP_GATEWAY_PORT;
 let server: http.Server | undefined;
+let requests = 0;
+let ownerPinPosts = 0;
 
 async function startGateway(config: { accounts?: string[]; codexAccounts?: string[] }): Promise<void> {
   server = http.createServer((req, res) => {
+    requests += 1;
     if (req.method === 'GET' && req.url === '/admin/config') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(config));
       return;
     }
     if (req.method === 'POST' && req.url === '/admin/owner-pin') {
+      ownerPinPosts += 1;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -46,6 +58,9 @@ async function startGateway(config: { accounts?: string[]; codexAccounts?: strin
 
 beforeEach(() => {
   writes.length = 0;
+  requests = 0;
+  ownerPinPosts = 0;
+  activeSessionLookup.mockReset().mockResolvedValue(null);
 });
 
 afterEach(async () => {
@@ -57,6 +72,10 @@ afterEach(async () => {
 
 test('accepts a named Codex account from the gateway codexAccounts pool', async () => {
   await startGateway({ accounts: ['claude-main'], codexAccounts: ['aviynw5_codex'] });
+  activeSessionLookup.mockResolvedValue({
+    agent: 'codex',
+    launchArgv: ['psu', '--account=auto'],
+  });
 
   const result = body(
     await accountsPinTool.handler(
@@ -67,9 +86,32 @@ test('accepts a named Codex account from the gateway codexAccounts pool', async 
 
   assert.equal(result.ok, true);
   assert.equal(result.appliedLive, true);
+  assert.deepEqual(activeSessionLookup.mock.calls[0], ['su-codex-owner', 'papercusp-workspace']);
   assert.deepEqual(writes, [
     { workspaceId: 'papercusp-workspace', ownerId: 'su-codex-owner', account: 'aviynw5_codex', hard: false },
   ]);
+});
+
+test.each(['default', 'none', 'system'])('refuses an active --account=%s session before any pin write', async (route) => {
+  await startGateway({ accounts: ['claude-main'], codexAccounts: ['aviynw5_codex'] });
+  activeSessionLookup.mockResolvedValue({
+    agent: 'codex',
+    launchArgv: ['psu', `--account=${route}`],
+  });
+
+  const result = body(
+    await accountsPinTool.handler(
+      { agent: 'su-default-owner', account: 'aviynw5_codex' } as never,
+      { workspaceId: 'papercusp-workspace' } as never,
+    ),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /bypass.*gateway.*respawn/i);
+  assert.deepEqual(activeSessionLookup.mock.calls[0], ['su-default-owner', 'papercusp-workspace']);
+  assert.deepEqual(writes, [], 'a known gateway-free session must not get a durable owner pin');
+  assert.equal(ownerPinPosts, 0, 'a known gateway-free session must not receive a live owner-pin request');
+  assert.equal(requests, 0, 'refuse before making gateway requests');
 });
 
 test('retains named Claude account acceptance from the accounts pool', async () => {

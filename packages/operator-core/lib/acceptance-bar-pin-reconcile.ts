@@ -1,6 +1,6 @@
 /**
  * Catch a stranded acceptance-BAR subject-revision pin up to the plan's current
- * revision (EI-22752422043395332).
+ * revision (EI-22752422043395332, WI-6554700010010492).
  *
  * Lives in its own module on purpose: `acceptance-bar-amendment.ts` is the measured
  * SOURCE of live proof clauses on unshipped plans, and any edit to its bytes stales
@@ -11,8 +11,11 @@ import { synchronizeAcceptanceBarSubjectRevision } from './acceptance-bar-amendm
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 
+/** Which stored body supplied the "old" side of the catch-up. */
+export type StaleAcceptanceBarSubjectPinWitness = 'pinned_revision' | 'activation_audit';
+
 export type StaleAcceptanceBarSubjectPinResult =
-  | { reconciled: true; fromRevision: number; toRevision: number }
+  | { reconciled: true; fromRevision: number; toRevision: number; witness: StaleAcceptanceBarSubjectPinWitness }
   | {
       reconciled: false;
       reason:
@@ -20,23 +23,32 @@ export type StaleAcceptanceBarSubjectPinResult =
         | 'not_bar_subject'
         | 'rubric_pin_absent'
         | 'pin_current'
-        | 'no_activation_witness'
+        | 'no_witness'
         | 'not_neutral';
     };
 
 /** `synchronizeAcceptanceBarSubjectRevision` only runs on the write that changes the
  * body, and only when the OLD body is at hand. A neutral write that landed while the
- * serving build predated the synchronizer (a `← WI-… released` item-note reflection)
- * leaves the rubric pin behind with nothing to re-trigger it, and every start door
- * then refuses `bar_snapshot_rubric_revision_mismatch` forever.
+ * serving build predated the synchronizer (a `← WI-… released` item-note reflection,
+ * a decision-only `plans:add-decision` served by a stale `:3070`) leaves the rubric pin
+ * behind with nothing to re-trigger it, and every door then refuses
+ * `bar_snapshot_rubric_revision_mismatch` forever.
  *
- * This supplies the missing old body from the plan's latest ACTIVATION audit snapshot
- * (the same witness `plans:audit` uses for its own catch-up) and defers to the
- * synchronizer, so every safety rule stays in ONE place: source fingerprints must be
- * identical (a Requirements / Bar-to-work-map change stays stale and must go through
- * `rubrics:amend`), the rubric must still be at the pinned revision, and its barSetHash
- * must still match. No activation audit, an unverifiable snapshot, or a semantic change
- * is a refusal to repair, never a guess. Takes the subject's advisory lock itself.
+ * This supplies the missing old body and defers to the synchronizer, so every safety
+ * rule stays in ONE place: source fingerprints must be identical (a Requirements /
+ * Bar-to-work-map change stays stale and must go through `rubrics:amend`), the rubric
+ * must still be at the pinned revision, and its barSetHash must still match.
+ *
+ * Witnesses, in order (WI-6554700010010492):
+ *  1. `plan_revisions` at `seq = barContract.subjectPlanRevision` — the exact body the
+ *     pin names. This is the only witness that survives a `rubrics:amend` of the
+ *     Requirements: after one, the activation snapshot can never be source-equal to
+ *     the current body, so a later neutral write would otherwise strand the pin for good.
+ *  2. The plan's latest ACTIVATION audit snapshot (the witness `plans:audit` uses for
+ *     its own catch-up), for plans whose revision history lacks the pinned row.
+ * A witness is trusted only when its bytes still hash to its recorded hash. No usable
+ * witness, or a semantic change against every witness, is a refusal to repair, never a
+ * guess. Takes the subject's advisory lock itself.
  */
 export async function reconcileStaleAcceptanceBarSubjectPin(args: {
   workspaceId: string; harnessSlug: string; planSlug: string; ttlSec?: number;
@@ -60,11 +72,53 @@ export async function reconcileStaleAcceptanceBarSubjectPin(args: {
       if (!subject.acceptance_bar_rubric_slug) {
         return { reconciled: false as const, reason: 'not_bar_subject' as const };
       }
-      const [witness] = await tx<Array<{
-        content_snapshot: string; content_hash: string; subject_version: string | null;
+      // The pin, plus the revision row it names. Compared as text so a malformed pin can
+      // never raise a cast error inside the join; it simply finds no row.
+      const [pinned] = await tx<Array<{
+        subject_version: string | null; content_snapshot: string | null; content_hash: string | null;
       }>>`
-        SELECT r.content_snapshot, r.content_hash,
-               rubric.template_data->'barContract'->>'subjectPlanRevision' AS subject_version
+        SELECT rubric.template_data->'barContract'->>'subjectPlanRevision' AS subject_version,
+               r.content_snapshot, r.content_hash
+          FROM harness_shared.harness_plans rubric
+          LEFT JOIN harness_shared.plan_revisions r
+            ON r.workspace_id = ${args.workspaceId} AND r.harness_slug = ${args.harnessSlug}
+           AND r.plan_slug = ${args.planSlug}
+           AND r.seq::text = rubric.template_data->'barContract'->>'subjectPlanRevision'
+         WHERE rubric.workspace_id = ${args.workspaceId} AND rubric.harness_slug = ${args.harnessSlug}
+           AND rubric.plan_slug = ${subject.acceptance_bar_rubric_slug}`;
+      const pin = Number(pinned?.subject_version);
+      const version = Number(subject.version);
+      if (pinned?.subject_version == null || !Number.isSafeInteger(pin)) {
+        return { reconciled: false as const, reason: 'rubric_pin_absent' as const };
+      }
+      if (pin === version) return { reconciled: false as const, reason: 'pin_current' as const };
+
+      const tried = new Set<string>();
+      let sawWitness = false;
+      const attempt = async (
+        body: string | null | undefined,
+        hash: string | null | undefined,
+        witness: StaleAcceptanceBarSubjectPinWitness,
+      ): Promise<StaleAcceptanceBarSubjectPinResult | null> => {
+        // The snapshot must be the bytes that were recorded; a corrupted or rewritten
+        // revision row is not a witness.
+        if (body == null || !hash || hashPlanContent(body) !== hash) return null;
+        sawWitness = true;
+        if (tried.has(hash)) return null;
+        tried.add(hash);
+        const moved = await synchronizeAcceptanceBarSubjectRevision(tx, {
+          workspaceId: args.workspaceId, harnessSlug: args.harnessSlug, planSlug: args.planSlug,
+          previousBody: body, nextBody: subject.content,
+          previousVersion: pin, nextVersion: version,
+        });
+        return moved ? { reconciled: true as const, fromRevision: pin, toRevision: version, witness } : null;
+      };
+
+      const fromPinned = await attempt(pinned.content_snapshot, pinned.content_hash, 'pinned_revision');
+      if (fromPinned) return fromPinned;
+
+      const [activation] = await tx<Array<{ content_snapshot: string; content_hash: string }>>`
+        SELECT r.content_snapshot, r.content_hash
           FROM (
             SELECT audited_plan_revision_id, audited_plan_revision_seq, audited_plan_content_hash
               FROM harness_shared.plan_audits
@@ -76,30 +130,13 @@ export async function reconcileStaleAcceptanceBarSubjectPin(args: {
             ON r.id = a.audited_plan_revision_id AND r.seq = a.audited_plan_revision_seq
            AND r.content_hash = a.audited_plan_content_hash
            AND r.workspace_id = ${args.workspaceId} AND r.harness_slug = ${args.harnessSlug}
-           AND r.plan_slug = ${args.planSlug}
-          JOIN harness_shared.harness_plans rubric
-            ON rubric.workspace_id = ${args.workspaceId} AND rubric.harness_slug = ${args.harnessSlug}
-           AND rubric.plan_slug = ${subject.acceptance_bar_rubric_slug}`;
-      if (!witness) return { reconciled: false as const, reason: 'no_activation_witness' as const };
-      const pin = Number(witness.subject_version);
-      const version = Number(subject.version);
-      if (witness.subject_version == null || !Number.isSafeInteger(pin)) {
-        return { reconciled: false as const, reason: 'rubric_pin_absent' as const };
-      }
-      if (pin === version) return { reconciled: false as const, reason: 'pin_current' as const };
-      // The snapshot must be the bytes the audit actually judged; a corrupted or
-      // rewritten revision row is not a witness.
-      if (hashPlanContent(witness.content_snapshot) !== witness.content_hash) {
-        return { reconciled: false as const, reason: 'no_activation_witness' as const };
-      }
-      const moved = await synchronizeAcceptanceBarSubjectRevision(tx, {
-        workspaceId: args.workspaceId, harnessSlug: args.harnessSlug, planSlug: args.planSlug,
-        previousBody: witness.content_snapshot, nextBody: subject.content,
-        previousVersion: pin, nextVersion: version,
-      });
-      return moved
-        ? { reconciled: true as const, fromRevision: pin, toRevision: version }
-        : { reconciled: false as const, reason: 'not_neutral' as const };
+           AND r.plan_slug = ${args.planSlug}`;
+      const fromActivation = await attempt(activation?.content_snapshot, activation?.content_hash, 'activation_audit');
+      if (fromActivation) return fromActivation;
+
+      return sawWitness
+        ? { reconciled: false as const, reason: 'not_neutral' as const }
+        : { reconciled: false as const, reason: 'no_witness' as const };
     });
   } catch (error) {
     // A busy lock must never turn a refusal into a crash at a start door: the caller

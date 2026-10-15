@@ -115,7 +115,13 @@ export default defineTool({
   // tools. role-config.ts holds `doc-steward` out of SU_ROLES for exactly this reason.
   // Safe to widen: this tool audience-filters per reader, so a wider allowlist exposes
   // no cell a role may not see.
-  agentRoles: [...SU_ROLES, 'release-fixer'],
+  //
+  // `judge` (EI-25665485195356795): an acceptance-rubric bar may probe a live cell
+  // (e.g. verification.health), and the rubric executability validator refuses a probe
+  // its grader cannot re-run. The tool_invocations ledger showed judge's state:read calls
+  // refused role_not_allowed while its coord:read tools succeed, so the role list was the
+  // sole blocker. Same use-site widening as release-fixer, and judge stays out of SU_ROLES.
+  agentRoles: [...SU_ROLES, 'release-fixer', 'judge'],
   args: z.object({
     cell: z
       .string()

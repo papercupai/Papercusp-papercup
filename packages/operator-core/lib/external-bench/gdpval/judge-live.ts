@@ -1,7 +1,8 @@
 /**
  * The LIVE GDPval autograder judge (plan benchmark-suite-gdpval-2026-06-17, P-006) — binds the pure pairwise
- * grader's {@link JudgeFn} seam to a real LLM completion through OUR inference gateway (claude-opus-4-8, the
- * same fair-routing path the bees + GAIA arms use; the gateway paces + injects OAuth credentials).
+ * grader's {@link JudgeFn} seam to a real LLM completion through OUR inference gateway (the registry-resolved
+ * benchmark default model, on the same fair-routing path the bees + GAIA arms use; the gateway paces + injects
+ * OAuth credentials).
  *
  * The judge is ONE completion per call (no tools, no extended thinking): it reasons briefly in its text output
  * and finishes with a `WINNER: A|B|TIE` line the pure grader parses. The dual-order position-bias mitigation
@@ -10,16 +11,16 @@
  * are the pure, unit-tested grader. The hosted GDPval grading service is the same seam (a different JudgeFn).
  */
 import Anthropic from '@anthropic-ai/sdk';
-import { gatewayBaseUrl } from '../competitor-live';
+import { DEFAULT_COMPETITOR_MODEL, gatewayBaseUrl } from '../competitor-live';
 import { ACCOUNT_HEADER, PRIORITY_HEADER } from '../../inference-gateway/gateway';
 import { CLAUDE_CODE_IDENTITY } from '../gaia/agent-live';
 import { GDPVAL_JUDGE_SYSTEM, buildJudgeUserPrompt, type JudgeFn } from '../grader/gdpval';
 
-/** Fairness default: the judge runs claude-opus-4-8 via the gateway (matches the arms + competitor default). */
-export const DEFAULT_GDPVAL_JUDGE_MODEL = 'claude-opus-4-8';
+/** Fairness default: the judge runs the arms' registry-resolved model via the gateway (= DEFAULT_COMPETITOR_MODEL). */
+export const DEFAULT_GDPVAL_JUDGE_MODEL: string = DEFAULT_COMPETITOR_MODEL;
 
 export interface LiveGdpvalJudgeConfig {
-  /** Judge model (default claude-opus-4-8). Pin + record this in the grader version for pre-registration. */
+  /** Judge model (default DEFAULT_GDPVAL_JUDGE_MODEL). Pin + record this in the grader version for pre-registration. */
   model?: string;
   /** Anthropic-compatible base url — default the inference gateway. Set null for the SDK default (direct). */
   baseUrl?: string | null;

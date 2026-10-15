@@ -17,9 +17,9 @@
 Description=Papercusp Phone app — portal-facing sidecar (plan phone-app-2026-08-30 WI-1409555)
 After=network.target papercusp-phone-livekit.service
 Wants=papercusp-phone-livekit.service
-# The watcher owns source-change restarts; systemd still brings the watcher back
-# after a crash so a transient failure cannot leave the portal-facing control
-# plane down indefinitely.
+# Systemd must supervise the HTTP process itself. Node --watch can keep its
+# parent alive after the child exits (for example when embedded Postgres rejects
+# overlapping startup), leaving the unit active while the endpoint is dead.
 StartLimitIntervalSec=300
 StartLimitBurst=10
 
@@ -51,11 +51,14 @@ Environment=PHONE_HTTP_PORT=8793
 Environment=PHONE_OPERATOR_ORIGIN=http://127.0.0.1:3070
 Environment=PHONE_OPERATOR_HARNESS=portal
 
-# Node's built-in watcher restarts the tsx entrypoint when the out-of-repo phone
-# checkout changes. This is deliberately in the rendered unit rather than a
-# drop-in, so deploy.sh and review see the restart-on-change contract.
-ExecStart=${PHONE_NODE_BIN} --import tsx --watch src/index.ts
-Restart=always
+# Source deployments converge through deploy.sh, which restarts this unit.
+# A failed child now fails the unit and systemd retries the real HTTP process.
+ExecStart=${PHONE_NODE_BIN} --import tsx src/index.ts
+# Record this start's code identity in the runtime-vintage ledger (WI-10006790): the
+# Phone rubric's live BARs name this unit as their evidenceRuntime. `-` = never fail
+# the unit; the script itself always exits 0 and gives up after a few seconds.
+ExecStartPost=-${PHONE_NODE_BIN} ${PHONE_VINTAGE_SCRIPT} --unit papercusp-phone-sidecar.service
+Restart=on-failure
 RestartSec=5
 
 [Install]

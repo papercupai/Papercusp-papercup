@@ -29,12 +29,12 @@
  * fixture to `os.tmpdir()`; the shared checkout is never touched.
  */
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 // @ts-expect-error — plain-JS repo guard, intentionally not typed
-import { checkIdentityKeyedClassification, buildCensusChildEnv, CENSUS_TEST_REL, TEST_REUSE_SKIP_LIST_ENV, TEST_LANE_ENV } from '../../../../../scripts/check-identity-keyed-classification.mjs';
+import { checkIdentityKeyedClassification, buildCensusChildEnv, CENSUS_TEST_REL, OPERATOR_CORE_REL, TEST_REUSE_SKIP_LIST_ENV, TEST_LANE_ENV, TEST_FILTER_LIST_ENV, TEST_SELECTION_ENVS } from '../../../../../scripts/check-identity-keyed-classification.mjs';
 import { resolveTestRunSource } from '../../testing-run-source';
 import {
   PC_TEST_REUSE_SKIP_LIST_ENV,
@@ -47,6 +47,25 @@ const REAL_SCHEMA = resolve(
   __dirname,
   '../../../../../libs/papercusp/libs/db/src/schema/generated.ts',
 );
+
+const TEST_CONFIG_SRC = resolve(__dirname, '../../../../../libs/test-config/src');
+
+/**
+ * Every `export const PC_TEST_*_ENV = '<name>'` in libs/test-config/src, read from
+ * source so a channel added in any module there is seen without being imported.
+ */
+function testConfigSelectionEnvs(): Map<string, string> {
+  const found = new Map<string, string>();
+  const files = readdirSync(TEST_CONFIG_SRC, { recursive: true }) as string[];
+  for (const rel of files) {
+    if (!rel.endsWith('.ts') || /\.test\.ts$/.test(rel) || rel.includes('__fixtures__')) continue;
+    const text = readFileSync(join(TEST_CONFIG_SRC, rel), 'utf8');
+    for (const m of text.matchAll(/export const (PC_TEST_[A-Z0-9_]+_ENV)\s*=\s*['"]([^'"]+)['"]/g)) {
+      found.set(m[1], m[2]);
+    }
+  }
+  return found;
+}
 
 /** Spawning vitest per case costs ~8s; well past the 5s default. */
 const SPAWN_TIMEOUT_MS = 180_000;
@@ -108,15 +127,33 @@ describe('identity-keyed classification pre-promotion gate (EI-20012634773877104
     // gate's lane-stateful leg exports PC_TEST_LANE=stateful, whose lane split excludes the
     // census file, so the nested run reported `unclassified` on the real schema.
     expect(TEST_LANE_ENV).toBe('PC_TEST_LANE');
-    const gateEnv = { [PC_TEST_REUSE_SKIP_LIST_ENV]: '/tmp/pcv/reuse-skip-x.json', [TEST_LANE_ENV]: 'stateful', KEEP: 'y' };
+    // Verify 4988081a (repairHead d740fc38): and through the related-files filter list,
+    // whose 2,853 listed files did not include the census file.
+    expect(TEST_FILTER_LIST_ENV).toBe('PC_TEST_FILTER_LIST');
+    const gateEnv: Record<string, string> = {
+      [PC_TEST_REUSE_SKIP_LIST_ENV]: '/tmp/pcv/reuse-skip-x.json',
+      [TEST_LANE_ENV]: 'stateful',
+      [TEST_FILTER_LIST_ENV]: '/tmp/pcv/related-filter-x.json',
+      KEEP: 'y',
+    };
     for (const schemaAbs of [null, '/tmp/candidate-generated.ts']) {
       const child = buildCensusChildEnv(gateEnv, schemaAbs);
-      expect(child[PC_TEST_REUSE_SKIP_LIST_ENV]).toBeUndefined();
-      expect(child[TEST_LANE_ENV]).toBeUndefined();
+      for (const name of TEST_SELECTION_ENVS) expect(child[name], name).toBeUndefined();
       expect(child.KEEP).toBe('y');
     }
     // The caller's env is copied, never mutated.
     expect(gateEnv[PC_TEST_REUSE_SKIP_LIST_ENV]).toBe('/tmp/pcv/reuse-skip-x.json');
+  });
+
+  // The leak above arrived one channel per gate red, three times. This pins the scrub
+  // set to the channels libs/test-config actually defines, so the fourth channel fails
+  // here, on the edit that adds it, instead of as an intermittent gate red.
+  it('scrubs exactly the selection channels libs/test-config defines', () => {
+    const defined = testConfigSelectionEnvs();
+    // Positive control: the source scan must see a channel this file also imports,
+    // or an empty scan would make the comparison below meaningless.
+    expect(defined.get('PC_TEST_REUSE_SKIP_LIST_ENV')).toBe(PC_TEST_REUSE_SKIP_LIST_ENV);
+    expect([...TEST_SELECTION_ENVS].sort()).toEqual([...new Set(defined.values())].sort());
   });
 
   it(
@@ -137,20 +174,26 @@ describe('identity-keyed classification pre-promotion gate (EI-20012634773877104
           judgedSha: '0'.repeat(40),
         }),
       );
-      const prior = process.env[PC_TEST_REUSE_SKIP_LIST_ENV];
-      const priorLane = process.env[TEST_LANE_ENV];
-      process.env[PC_TEST_REUSE_SKIP_LIST_ENV] = listPath;
-      // The gate's lane-stateful leg exports this too; its lane split excludes the census file.
-      process.env[TEST_LANE_ENV] = 'stateful';
+      // A related-files list that does not name the census file, as in verify 4988081a.
+      const filterPath = join(dir, 'related-filter-test.json');
+      writeFileSync(filterPath, JSON.stringify(['lib/agent-tools/coordination/not-the-census.test.ts']));
+      const gateEnv: Record<string, string> = {
+        [PC_TEST_REUSE_SKIP_LIST_ENV]: listPath,
+        // The gate's lane-stateful leg exports this too; its lane split excludes the census file.
+        [TEST_LANE_ENV]: 'stateful',
+        [TEST_FILTER_LIST_ENV]: filterPath,
+      };
+      const prior = Object.fromEntries(Object.keys(gateEnv).map((k) => [k, process.env[k]]));
+      Object.assign(process.env, gateEnv);
       try {
         const verdict = checkIdentityKeyedClassification({});
         expect(verdict.code, verdict.output?.slice(-1500)).toBe('classified');
         expect(verdict.ok).toBe(true);
       } finally {
-        if (prior === undefined) delete process.env[PC_TEST_REUSE_SKIP_LIST_ENV];
-        else process.env[PC_TEST_REUSE_SKIP_LIST_ENV] = prior;
-        if (priorLane === undefined) delete process.env[TEST_LANE_ENV];
-        else process.env[TEST_LANE_ENV] = priorLane;
+        for (const [k, v] of Object.entries(prior)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
         rmSync(dir, { recursive: true, force: true });
       }
     },
@@ -208,4 +251,33 @@ export const ei20012634773877104ProbeInHarnessShared = harnessShared.table("ei20
     expect(verdict.ok).toBe(false);
     expect(verdict.code).toBe('check-unavailable');
   });
+
+  it(
+    'reports a run that selected no test file as check-unavailable, not unclassified',
+    () => {
+      // The three gate reds above all surfaced as `unclassified` on a fully classified
+      // schema, because vitest exits 1 when selection leaves it nothing to run. A fake
+      // checkout whose `vitest` prints exactly what the gate's nested run printed keeps
+      // this deterministic and independent of whichever channel leaks next.
+      const root = mkdtempSync(join(tmpdir(), 'identity-keyed-noselect-'));
+      try {
+        const pkg = join(root, OPERATOR_CORE_REL);
+        mkdirSync(dirname(join(pkg, CENSUS_TEST_REL)), { recursive: true });
+        writeFileSync(join(pkg, CENSUS_TEST_REL), '');
+        writeFileSync(join(pkg, 'package.json'), '{"name":"noselect-fixture","private":true}');
+        const bin = join(pkg, 'node_modules', '.bin', 'vitest');
+        mkdirSync(dirname(bin), { recursive: true });
+        writeFileSync(bin, '#!/bin/sh\necho "No test files found, exiting with code 1"\nexit 1\n');
+        chmodSync(bin, 0o755);
+
+        const verdict = checkIdentityKeyedClassification({ repoRoot: root });
+        expect(verdict.output).toContain('No test files found');
+        expect(verdict.ok).toBe(false);
+        expect(verdict.code).toBe('check-unavailable');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    SPAWN_TIMEOUT_MS,
+  );
 });

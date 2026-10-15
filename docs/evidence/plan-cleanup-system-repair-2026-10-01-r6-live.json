@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "plan-cleanup-system-repair-2026-10-01 live-plane acceptance reading for BAR R-6 (fresh run on the build carrying bulk-run-store blob 0c85a490)",
+  "framework": "operational",
+  "command": [
+    "curl -s -X POST http://127.0.0.1:3170/api/admin/plan-cleanup -H 'content-type: application/json' -d '{\"op\":\"start\",\"planSlugs\":[\"acceptance-agent-economy-flywheel-2026-08-30\"]}'",
+    "dev:pg_query SELECT run_id, run_kind, phase, requested_by, total_items, created_at, finished_at FROM harness_shared.attention_bulk_runs WHERE run_id = 'bulk-23ae66f0-14fa-413a-bdb9-e35c1c11ca88'",
+    "scripts/verify-tauri-headless.sh -- bash .papercusp/scratch/p006-plans-strip.sh"
+  ],
+  "startedAt": "2026-10-01T16:52:18.000Z",
+  "finishedAt": "2026-10-01T16:58:49.000Z",
+  "exitCode": 0,
+  "summary": "Fresh R-6 reading after bulk-run-store.ts changed (blob 0c85a490, committed in 1219248f0a). :3170 served build cc30e0be62, whose bulk-run-store.ts is blob 0c85a490 (checked by content). A single clean plan run started through :3170 (bulk-23ae66f0) settled complete with 0 failed. The headless desktop shell, booted from a tree carrying the same blob, rendered the Plans strip review card (harness run 20261001T165223Z-3548450, 3 passed, 0 failed). This replaces the R-6 reading in plan-cleanup-system-repair-2026-10-01-live.json, which predates the bulk-run-store change.",
+  "assertions": [
+    {
+      "id": "r-6-clean-single-plan-run-complete",
+      "passed": true,
+      "evidence": "POST :3170/api/admin/plan-cleanup op:start planSlugs [acceptance-agent-economy-flywheel-2026-08-30] at 16:52:18Z returned ok:true, runId bulk-23ae66f0-14fa-413a-bdb9-e35c1c11ca88, phase complete, totalPlans 1, deterministic failed 0. Ledger row: run_kind=plan-cleanup, phase=complete, requested_by=owner, total_items=1, created 16:52:18Z, finished 16:52:19Z. :3170 /api/health sha cc30e0be62; git rev-parse cc30e0be62:packages/operator-core/lib/attention/bulk-run-store.ts = 0c85a490135118bd509cd9c303288901922beb6c."
+    },
+    {
+      "id": "r-6-headless-strip-renders",
+      "passed": true,
+      "evidence": "verify-tauri-headless run 20261001T165223Z-3548450: HARNESS_RESULT verdict=pass passed=3 failed=0; P006_STRIP_REVIEW_CHECK rc=0, [data-testid=plans-cleanup-review] present. Strip text: '105 assessed · 0 auto-applied · 105 still open … 105 recommendations 9 owner actions 94 cleanup candidates 2 investigate'. Booted tree bulk-run-store.ts blob 0c85a490, assertion script blob 78850d80. Started 16:52:23Z, EXIT=0 at 16:58:49Z."
+    }
+  ],
+  "planSlug": "plan-cleanup-system-repair-2026-10-01",
+  "recordedBy": "su-3d43bdee-11b4-4008-8867-0d51e16a732b",
+  "headlessEvidenceDir": "~/.local/state/verification-harness/verify-tauri-headless/20261001T165223Z-3548450"
+}

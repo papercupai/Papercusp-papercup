@@ -15,7 +15,7 @@
  *
  * OPUS (load-bearing): the bee floor is haiku, the queen floor is sonnet — so the driver process MUST
  * export AGENT_MODELS='{"bee":"opus:xhigh","queen":"opus:xhigh"}' AND use the `opus` CLI alias (claude
- * v2.1.177 runs opus-4-7 for `--model claude-opus-4-8`). VERIFY agent_usage_samples.model before spend.
+ * once silently ran an older model for a concrete `--model` id). VERIFY agent_usage_samples.model before spend.
  *
  * NOT a committed test (spends real model budget) — a throwaway launcher under lib/external-bench so the
  * workspace-relative imports resolve. Run with:
@@ -310,7 +310,11 @@ async function main() {
   // upsertBenchRunTask idempotency + run_minisweagent.py:update_preds). taskCount/totals/nonEmptyDiffs are
   // recomputed from the merged set by writeArmSnapshotMerged.
   const { writeArmSnapshotMerged } = await import('./arm-snapshot');
-  writeArmSnapshotMerged(`${OUT_DIR}/${ARM}.json`, out);
+  const { pinEvaluatedModel } = await import('./model-registry-snapshot');
+  // R-9: record the model-registry snapshot the evaluated model resolves from (XBENCH_MODEL overrides the
+  // default alias). A rerun under a moved registry is refused by the merge instead of pooling two models.
+  const pin = pinEvaluatedModel(process.env.XBENCH_MODEL);
+  writeArmSnapshotMerged(`${OUT_DIR}/${ARM}.json`, { ...out, modelRegistry: pin.snapshot, evaluatedModel: pin.model });
 
   console.log('\n===== ARM RUN SUMMARY =====');
   console.log(JSON.stringify({

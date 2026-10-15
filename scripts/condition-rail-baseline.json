@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "seedRowsSha256": "a2fdb5475a100101ea8dafb6019d75045cb38e53ef1a5e4870c6670d5abb77e4",
+  "rowIds": [
+    "bespoke-watchdog|apps/operator/lib/mcp-proxy/watchdog.mjs|<module>|1",
+    "bespoke-watchdog|apps/operator/scripts/bghost-watchdog.mjs|<module>|1",
+    "bespoke-watchdog|packages/operator-core/lib/dbos/dbos-hang-watchdog.ts|<module>|1",
+    "bespoke-watchdog|packages/operator-core/lib/inference-gateway/watchdog.mjs|<module>|1",
+    "bespoke-watchdog|packages/operator-core/lib/overwatch/watchdog.ts|<module>|1",
+    "bespoke-watchdog|packages/operator-core/lib/pot/watchdog.ts|<module>|1",
+    "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|<module>|1",
+    "log-only-fallback|packages/operator-core/lib/harness/routines/seed-work-item-admission-fail-open-routine.ts|main|1",
+    "log-only-fallback|packages/operator-core/lib/overwatch/watchdog.ts|armFallbackOverwatchWake|1",
+    "log-only-fallback|packages/operator-core/lib/pot/watchdog.ts|armFallbackPotWake|1",
+    "log-only-fallback|packages/operator-core/lib/pot/watchdog.ts|claimWatchdogFire|1",
+    "log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|handler|1",
+    "owner-only-alarm|packages/operator-core/lib/harness/routines/stalled-loops-guard.ts|sweepStalledLoops|1"
+  ],
+  "amendments": [
+    {
+      "rowId": "bespoke-watchdog|apps/operator/lib/mcp-proxy/watchdog.mjs|<module>|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "P-017 independent census found an existing site omitted by the original call-argument scan; retain it in its assigned migration lane.",
+      "change": {
+        "disposition": "migrate",
+        "item": "P-015"
+      },
+      "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/release/green-stall-watchdog.ts|evaluateStrandedRepairQueue|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "pure evaluateStrandedRepairQueue return values, not an emitting detector; checkStrandedRepairQueue consumes this verdict and already opens and resolves the keyed condition",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "pure evaluateStrandedRepairQueue return values, not an emitting detector; checkStrandedRepairQueue consumes this verdict and already opens and resolves the keyed condition"
+      },
+      "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/release/green-stall-watchdog.ts|evaluateStrandedRepairQueue|2",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "pure evaluateStrandedRepairQueue return values, not an emitting detector; checkStrandedRepairQueue consumes this verdict and already opens and resolves the keyed condition",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "pure evaluateStrandedRepairQueue return values, not an emitting detector; checkStrandedRepairQueue consumes this verdict and already opens and resolves the keyed condition"
+      },
+      "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "log-only-fallback|apps/operator/bin/llm-test.ts|usage|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved"
+      },
+      "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "log-only-fallback|libs/papercusp/packages/cli/src/snapshot-cli.ts|cmdSnapshotHelp|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "interactive or developer CLI: the fallback is printed to the invoking caller, and there is no long-running mechanism whose rate can collapse unobserved"
+      },
+      "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/degradation/fallback-observations.ts|warnThrottled|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "the fallback-observation writer’s own write-failure warning: recording it through the same failing writer would recurse, and its losses are counted by the writer’s lifetime failure counter (R-14)",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "the fallback-observation writer’s own write-failure warning: recording it through the same failing writer would recurse, and its losses are counted by the writer’s lifetime failure counter (R-14)"
+      },
+      "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/sync/hyperbee/swarm.ts|handler|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "P-017 independent census found an existing site omitted by the original call-argument scan; retain it in its assigned migration lane.",
+      "change": {
+        "disposition": "migrate",
+        "item": "P-011"
+      },
+      "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "owner-only-alarm|packages/operator-core/lib/agent-tools/release/deploy.ts|handler|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "owner-requested force-deploy audit notice after an explicitly accepted action; no continuing failure predicate is detected by this notification",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "owner-requested force-deploy audit notice after an explicitly accepted action; no continuing failure predicate is detected by this notification"
+      },
+      "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "owner-only-alarm|packages/operator-core/lib/harness/routines/stalled-loops-guard.ts|sweepStalledLoops|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "P-017 independent census found an existing site omitted by the original call-argument scan; retain it in its assigned migration lane.",
+      "change": {
+        "disposition": "migrate",
+        "item": "P-009"
+      },
+      "evidenceRef": "WI-6554700010008597/P-017-census-2026-10-11"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/p2p-perf-actions.ts|fileFindings|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback"
+      },
+      "evidenceRef": "WI-6554700010008689/P-017-p2p-classification-2026-10-12"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalDrainConditionChecks|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "pure goal-drain verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "pure goal-drain verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot"
+      },
+      "evidenceRef": "WI-6554700010008687/D-077-goal-drain-producer-cases"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetConditionChecks|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "pure goal-plan-fleet verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "pure goal-plan-fleet verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot"
+      },
+      "evidenceRef": "WI-6554700010008687/D-077-goal-drain-producer-cases"
+    }
+  ]
+}

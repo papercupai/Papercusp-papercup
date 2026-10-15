@@ -55,23 +55,34 @@
  * Running that build command under the install mutex makes it wait for the
  * verified install boundary instead of repeatedly reading the transition.
  */
-import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import {
-  readFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readlinkSync,
   realpathSync,
+  readFileSync,
   renameSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { constants as osConstants, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import {
   PACKAGE_CACHE_MUTEX_NAME,
+  resolveFsMutexTimeoutMs,
   withFsMutexRead,
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
+import { TEST_FILE_EXIT_NOT_MEASURED } from "./lib/test-file-exit-codes.mjs";
+import { envWithInstallMutex, installLockNameForRoot, installMutexIsHeld } from "./lib/install-lock-name.mjs";
+export { installMutexIsHeld } from "./lib/install-lock-name.mjs";
 import {
   findIncompleteWorkspacePackagesWithRetry,
   findInvalidWorkspacePackageVersionsWithRetry,
@@ -85,6 +96,8 @@ import {
   formatUnsatisfiedDeclaredDepRanges,
   resolveWorkspaceDirs,
 } from "./check-declared-deps-extracted.mjs";
+import { findBrokenBinLinks } from "./check-partial-install.mjs";
+import { auditLockfile } from "../apps/operator/bin/release/dependency-lock-tree-audit.mjs";
 
 const DEFAULT_REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -180,6 +193,139 @@ export function verificationScopeForNpmArgs({
   };
 }
 
+const LOCK_MANIFEST_DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+];
+const LOCK_GUARDED_TEST_RUNNERS = new Set([
+  "scripts/affected-tests.mjs",
+  "scripts/test-files.mjs",
+]);
+
+function normalizedRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/**
+ * Detect the measured npm failure class before either Arborist or a project test
+ * runner consumes the dependency graph. Root-lock workspace entries mirror the
+ * manifest dependency maps; stale copies can detach npm's ideal-tree link targets
+ * and crash inside build-ideal-tree before npm can repair them.
+ */
+function findRootLockManifestMismatches(repoRoot = DEFAULT_REPO_ROOT) {
+  const root = resolve(repoRoot);
+  const shrinkwrapPath = join(root, "npm-shrinkwrap.json");
+  const lockPath = existsSync(shrinkwrapPath)
+    ? shrinkwrapPath
+    : join(root, "package-lock.json");
+  if (!existsSync(lockPath)) return [];
+
+  let lock;
+  try {
+    lock = JSON.parse(readFileSync(lockPath, "utf8"));
+  } catch {
+    return [{
+      workspace: "<lockfile>",
+      field: "JSON",
+      differences: { packageLock: { manifest: "readable", lock: "unparseable" } },
+    }];
+  }
+  const lockPackages = lock?.packages;
+  // Legacy npm lockfile formats do not carry the per-workspace manifest mirror
+  // this guard audits. Leave those trees to npm's own parser.
+  if (!lockPackages || typeof lockPackages !== "object" || Array.isArray(lockPackages))
+    return [];
+
+  const candidates = new Set(["", ...resolveWorkspaceDirs(root)]);
+  for (const key of Object.keys(lockPackages)) {
+    if (!key || key.includes("node_modules/") || lockPackages[key]?.link) continue;
+    const absolute = resolve(root, key);
+    if (!isStrictlyWithin(root, absolute)) continue;
+    const rel = relative(root, absolute).split(sep).join("/");
+    if (existsSync(join(absolute, "package.json"))) candidates.add(rel);
+  }
+
+  const mismatches = [];
+  for (const workspace of [...candidates].sort()) {
+    const manifestPath = workspace
+      ? join(root, workspace, "package.json")
+      : join(root, "package.json");
+    if (!existsSync(manifestPath)) continue;
+
+    const lockEntry = lockPackages[workspace];
+    if (!lockEntry || typeof lockEntry !== "object") {
+      mismatches.push({
+        workspace,
+        field: "packages entry",
+        differences: { entry: { manifest: "present", lock: "missing" } },
+      });
+      continue;
+    }
+    if (lockEntry.link) continue;
+
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    } catch {
+      mismatches.push({
+        workspace,
+        field: "package.json",
+        differences: { manifest: { packageJson: "unparseable", lock: "not compared" } },
+      });
+      continue;
+    }
+
+    for (const field of LOCK_MANIFEST_DEPENDENCY_FIELDS) {
+      const declared = normalizedRecord(manifest[field]);
+      const locked = normalizedRecord(lockEntry[field]);
+      const differences = {};
+      for (const dependency of new Set([
+        ...Object.keys(declared),
+        ...Object.keys(locked),
+      ])) {
+        if (isDeepStrictEqual(declared[dependency], locked[dependency])) continue;
+        differences[dependency] = {
+          manifest: Object.hasOwn(declared, dependency) ? declared[dependency] : "<absent>",
+          lock: Object.hasOwn(locked, dependency) ? locked[dependency] : "<absent>",
+        };
+      }
+      if (Object.keys(differences).length > 0)
+        mismatches.push({ workspace, field, differences });
+    }
+  }
+  return mismatches;
+}
+
+function formatRootLockManifestMismatches(mismatches) {
+  const lines = [
+    `NPM_INSTALL_SAFE_WORKSPACE_LOCK_DRIFT: ${mismatches.length} root lockfile field(s) disagree with package manifests.`,
+    "The guarded operation was not started; stale dependency metadata can crash npm Arborist before it repairs the lock.",
+  ];
+  for (const mismatch of mismatches.slice(0, 20)) {
+    lines.push(
+      `  - ${mismatch.workspace || "<root>"} ${mismatch.field}: ${JSON.stringify(mismatch.differences)}`,
+    );
+  }
+  if (mismatches.length > 20)
+    lines.push(`  - … ${mismatches.length - 20} more mismatch(es)`);
+  lines.push(
+    "FIX: reconcile the reported workspace dependency maps in package-lock.json with package.json, review the lockfile, then retry the install.",
+  );
+  return lines.join("\n");
+}
+
+function isGuardedTestRunner(commandArgs, repoRoot) {
+  const targets = new Set(
+    [...LOCK_GUARDED_TEST_RUNNERS].map((path) => resolve(repoRoot, path)),
+  );
+  return commandArgs.some(
+    (arg) => typeof arg === "string" && targets.has(resolve(repoRoot, arg)),
+  );
+}
+
 /**
  * Verify and repair npm's content-addressed cache before reification. npm's
  * cache verifier removes index entries whose content blobs disappeared, so a
@@ -202,6 +348,61 @@ export function verifyNpmCache({
   return result.status ?? 1;
 }
 
+/** Default wait for EXCLUSIVE use of the shared package cache before verify is skipped. */
+export const NPM_CACHE_VERIFY_WAIT_MS_DEFAULT = 30_000;
+
+/**
+ * Run `verify` (npm cache verify) while holding PACKAGE_CACHE_MUTEX_NAME EXCLUSIVELY.
+ *
+ * `npm cache verify` WRITES the user-level cache that every checkout shares: after its
+ * garbage collection, cacache's `cleanTmp` step runs `rm -rf <cache>/tmp`, deleting every
+ * download another npm process has staged there and not yet renamed into content-v2.
+ * Until WI-10004430 it ran under the shared READ lease, beside other checkouts' reifies
+ * (the repo-keyed install mutex cannot serialize different roots), so a verify in one
+ * checkout could fail an install in another with
+ * `ENOENT rename <cache>/tmp/… -> content-v2/…` — a workspace-host release cut, 2026-09-30.
+ *
+ * Verify is a repair step, not a precondition. The fs-mutex is writer-preferring, so
+ * while this verifier waits, every other checkout's install queues behind it; past
+ * `waitMs` it gives up and skips verify (loudly) rather than fail this install or stall
+ * the others. Returns verify's exit status, or 0 when it was skipped.
+ */
+export async function verifyNpmCacheExclusive({
+  verify,
+  env = process.env,
+  waitMs = Number(env.PAPERCUSP_NPM_CACHE_VERIFY_WAIT_MS) > 0
+    ? Number(env.PAPERCUSP_NPM_CACHE_VERIFY_WAIT_MS)
+    : NPM_CACHE_VERIFY_WAIT_MS_DEFAULT,
+  acquire = withFsMutex,
+  log = console.error,
+} = {}) {
+  let entered = false;
+  try {
+    return await acquire(
+      PACKAGE_CACHE_MUTEX_NAME,
+      async () => {
+        entered = true;
+        return verify();
+      },
+      {
+        timeoutMs: waitMs,
+        onWaiting: ({ owner, elapsedMs }) => {
+          log(
+            `NPM_INSTALL_SAFE cache verify waiting for exclusive use of the shared npm cache (${Math.round(elapsedMs / 1000)}s so far) — holder: ${String(owner).trim()}`,
+          );
+        },
+      },
+    );
+  } catch (error) {
+    // A throw from verify itself is real; only a failure to ACQUIRE the lock is skippable.
+    if (entered) throw error;
+    log(
+      `NPM_INSTALL_SAFE_CACHE_VERIFY_SKIPPED: no exclusive use of the shared npm cache within ${waitMs}ms (${error instanceof Error ? error.message : String(error)}); installing without npm cache verify, because verifying now would delete another checkout's in-flight downloads.`,
+    );
+    return 0;
+  }
+}
+
 function isStrictlyWithin(parent, candidate) {
   const rel = relative(parent, candidate);
   return (
@@ -217,6 +418,9 @@ function isStrictlyWithin(parent, candidate) {
  * its bounded repair. Both the workspace and package segments are untrusted
  * manifest-derived strings, so validate the repo boundary and the narrower
  * <workspace>/node_modules boundary before returning a target.
+ *
+ * @param {{ repoRoot?: string, findings?: Array<{ workspace?: unknown, package?: unknown }> }} [options]
+ * @returns {string[]}
  */
 export function packageLocalRepairTargets({
   repoRoot = DEFAULT_REPO_ROOT,
@@ -267,9 +471,18 @@ function removePackageLocalRepairTargets({ repoRoot, findings, deps = {} }) {
  * current declaration is satisfied by a hoisted package.
  *
  * Only delete an exact entry whose locked version still matches the invalid
- * installed version the detector observed. A newer/different lock entry may be
- * a concurrent repair and must not be removed. The write is atomic so an
+ * installed version, or whose link target matches a detector-confirmed dangling
+ * symlink still on disk. Inspect links before removing them: npm can recreate an
+ * obsolete workspace link from its lock entry even after its declaration changes.
+ * A newer/different lock entry or healthy link must not be removed. The write is atomic so an
  * interrupted repair cannot leave the shared lockfile half-written.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   findings?: Array<{ workspace?: unknown, package?: unknown, installed?: unknown, declared?: unknown }>,
+ *   deps?: { readLock?: () => any, writeLock?: (lock: any) => void },
+ * }} [options]
+ * @returns {string[]} the package-lock.json `packages` keys that were removed.
  */
 export function removePackageLocalRepairLockEntries({
   repoRoot = DEFAULT_REPO_ROOT,
@@ -324,13 +537,21 @@ export function removePackageLocalRepairLockEntries({
     });
     const key = relative(root, target).split(sep).join("/");
     const entry = lock.packages[key];
-    if (
-      typeof finding.installed !== "string" ||
-      typeof entry?.version !== "string" ||
-      entry.version !== finding.installed
-    ) {
-      continue;
+    const staleVersion =
+      typeof finding.installed === "string" &&
+      typeof entry?.version === "string" &&
+      entry.version === finding.installed;
+    let staleLink = false;
+    if (entry?.link === true && typeof entry.resolved === "string") {
+      try {
+        staleLink = lstatSync(target).isSymbolicLink() &&
+          !existsSync(target) &&
+          resolve(root, entry.resolved) === resolve(dirname(target), readlinkSync(target));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
     }
+    if (!staleVersion && !staleLink) continue;
     delete lock.packages[key];
     removed.push(key);
   }
@@ -476,6 +697,15 @@ export function restoreScopedFlagOnlyLockfileRewrite({
  * Verify (post-install, still holding the lock) that dependency directories and
  * critical runtime contents actually landed on disk; repair once if not.
  *
+ * @param {{
+ *   repoRoot?: string,
+ *   npmArgs?: string[],
+ *   runNpm?: (args: string[]) => number,
+ *   probeSpecifiers?: unknown,
+ *   env?: NodeJS.ProcessEnv,
+ *   deps?: Record<string, any>,
+ * }} [options] `probeSpecifiers` and `deps` are forwarded unchanged to the detectors in
+ *   scripts/check-declared-deps-extracted.mjs, which define their shapes.
  * @returns {Promise<0|1>} 0 = healthy (possibly after repair), 1 = still broken.
  */
 export async function verifyDepsExtracted({
@@ -486,14 +716,14 @@ export async function verifyDepsExtracted({
   env = process.env,
   deps = {},
 } = {}) {
-  const spawn =
+  const runRepair =
     runNpm ??
-    ((args) =>
-      spawnSync("npm", args, {
-        cwd: repoRoot,
-        stdio: "inherit",
-        env,
-      }).status ?? 1);
+    ((args, options = {}) =>
+      runNpmWithHeartbeat({
+        phase: "repair",
+        args,
+        ...options,
+      }));
 
   const { workspaceDirs, repairWorkspaceArgs } = verificationScopeForNpmArgs({
     repoRoot,
@@ -501,6 +731,20 @@ export async function verifyDepsExtracted({
     deps,
   });
   const inspect = async () => {
+    // A scoped reify can leave another workspace's old, resolvable hoisting in
+    // place after manifest-only resolution changed the root lock's topology.
+    // Publication copies the whole tree, so resolving declared dependencies is
+    // insufficient: use the publisher's exact-path detector before copying it.
+    const lockPath = existsSync(join(repoRoot, "npm-shrinkwrap.json"))
+      ? join(repoRoot, "npm-shrinkwrap.json")
+      : join(repoRoot, "package-lock.json");
+    const lockTreeDefects = existsSync(lockPath)
+      ? auditLockfile({
+          lock: JSON.parse(readFileSync(lockPath, "utf8")),
+          lockDir: "",
+          treeRoot: repoRoot,
+        }).defects
+      : [];
     const declared = await findUnextractedDepsWithRetry({
       repoRoot,
       workspaceDirs,
@@ -528,11 +772,13 @@ export async function verifyDepsExtracted({
       unsatisfiedRanges.invalid.length > 0
     )
       return {
+        lockTreeDefects,
         missing: declared.missing,
         incomplete: packageLocal.incomplete,
         invalidVersions: packageVersions.invalid,
         unsatisfiedRanges: unsatisfiedRanges.invalid,
         runtimeFailures: [],
+        brokenBinLinks: findBrokenBinLinks(repoRoot, { workspaceDirs }),
       };
     const runtime = await findUnusableRuntimeDepsWithRetry({
       repoRoot,
@@ -540,21 +786,27 @@ export async function verifyDepsExtracted({
       deps,
     });
     return {
+      lockTreeDefects,
       missing: [],
       incomplete: [],
       invalidVersions: [],
       unsatisfiedRanges: [],
       runtimeFailures: runtime.failures,
+      brokenBinLinks: findBrokenBinLinks(repoRoot, { workspaceDirs }),
     };
   };
 
   const report = ({
+    lockTreeDefects,
     missing,
     incomplete,
     invalidVersions,
     unsatisfiedRanges,
     runtimeFailures,
+    brokenBinLinks,
   }) => {
+    for (const defect of lockTreeDefects)
+      console.error(`NPM_INSTALL_SAFE lock-tree ${defect.kind}: ${defect.path} (${defect.detail})`);
     if (missing.length > 0) console.error(formatMissing(missing));
     if (incomplete.length > 0)
       console.error(formatIncompleteWorkspacePackages(incomplete));
@@ -564,33 +816,63 @@ export async function verifyDepsExtracted({
       console.error(formatUnsatisfiedDeclaredDepRanges(unsatisfiedRanges));
     if (runtimeFailures.length > 0)
       console.error(formatRuntimeFailures(runtimeFailures));
+    for (const finding of brokenBinLinks)
+      console.error(`NPM_INSTALL_SAFE dangling executable link: ${finding.workspace}/node_modules/${finding.pkg}`);
   };
 
   const healthy = ({
+    lockTreeDefects,
     missing,
     incomplete,
     invalidVersions,
     unsatisfiedRanges,
     runtimeFailures,
+    brokenBinLinks,
   }) =>
+    lockTreeDefects.length === 0 &&
     missing.length === 0 &&
     incomplete.length === 0 &&
     invalidVersions.length === 0 &&
     unsatisfiedRanges.length === 0 &&
-    runtimeFailures.length === 0;
+    runtimeFailures.length === 0 &&
+    brokenBinLinks.length === 0;
 
   const first = await inspect();
   if (healthy(first)) return 0;
 
   report(first);
-  const removedTargets = removePackageLocalRepairTargets({
+  // Validate every parent before modifying any detected link or its local owner.
+  // unlink removes only the link; it cannot recursively delete its target.
+  const binTargets = first.brokenBinLinks.map((finding) => {
+    const [target] = packageLocalRepairTargets({
+      repoRoot,
+      findings: [{ workspace: finding.workspace === '<root>' ? '.' : finding.workspace, package: finding.pkg }],
+    });
+    if (!isStrictlyWithin(realpathSync(repoRoot), realpathSync(dirname(target))))
+      throw new Error(`refusing executable-link repair outside repo root: ${target}`);
+    return target;
+  });
+  const binPackageFindings = first.brokenBinLinks
+    .filter((finding) => finding.package)
+    .map((finding) => ({ workspace: finding.workspace === '<root>' ? '.' : finding.workspace, package: finding.package }));
+  // A scoped package's parent can itself be a symlink. Validate the physical
+  // parent before recursive removal, as well as the .bin parent before unlink.
+  for (const target of packageLocalRepairTargets({ repoRoot, findings: binPackageFindings })) {
+    if (!isStrictlyWithin(realpathSync(repoRoot), realpathSync(dirname(target))))
+      throw new Error(`refusing executable-package repair outside repo root: ${target}`);
+  }
+  for (const target of binTargets) {
+    if (lstatSync(target).isSymbolicLink() && !existsSync(target)) unlinkSync(target);
+  }
+  // Compare the locked link with the observed symlink before deleting the node.
+  const removedLockEntries = removePackageLocalRepairLockEntries({
     repoRoot,
     findings: [...first.incomplete, ...first.invalidVersions],
     deps,
   });
-  const removedLockEntries = removePackageLocalRepairLockEntries({
+  const removedTargets = removePackageLocalRepairTargets({
     repoRoot,
-    findings: first.invalidVersions,
+    findings: [...first.incomplete, ...first.invalidVersions, ...binPackageFindings],
     deps,
   });
   if (removedTargets.length > 0) {
@@ -607,16 +889,23 @@ export async function verifyDepsExtracted({
         .join("\n")}`,
     );
   }
-  const repairArgs = [...REPAIR_ARGS, ...repairWorkspaceArgs];
+  // The root lock owns every workspace's installed paths. A repair scoped to
+  // the originally selected workspace cannot repair drift elsewhere in it.
+  const repairArgs = [
+    ...REPAIR_ARGS,
+    ...(first.lockTreeDefects.length > 0 ? [] : repairWorkspaceArgs),
+  ];
   console.error(
     `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
   );
-  const repairStatus =
-    spawn(repairArgs, {
+  const repairStatus = await runRepair(
+    repairArgs,
+    {
       cwd: repoRoot,
       stdio: "inherit",
       env,
-    }) ?? 1;
+    },
+  ) ?? 1;
   if (repairStatus !== 0) {
     console.error(
       `NPM_INSTALL_SAFE_FATAL: repair npm exited ${repairStatus}; dependency integrity is unverified.`,
@@ -627,7 +916,7 @@ export async function verifyDepsExtracted({
   const second = await inspect();
   if (healthy(second)) {
     console.log(
-      "NPM_INSTALL_SAFE repaired: dependency directories, package-local manifests and versions, and critical runtime imports are healthy",
+      "NPM_INSTALL_SAFE repaired: dependency directories, package-local manifests and versions, executable links, and critical runtime imports are healthy",
     );
     return 0;
   }
@@ -639,12 +928,10 @@ export async function verifyDepsExtracted({
 }
 
 export function repoLockName(repoRoot = DEFAULT_REPO_ROOT) {
-  // realpath so the `papercup` -> `papercusp` symlink and the canonical path
-  // both resolve to the identical lock; a genuinely different checkout
-  // (different real path) gets its own lock instead of blocking on this one.
-  const real = realpathSync(resolve(repoRoot));
-  const digest = createHash("sha1").update(real).digest("hex").slice(0, 12);
-  return `npm-install-${digest}`;
+  // The derivation lives in scripts/lib/install-lock-name.mjs so runtime code
+  // (headless agent launches, WI-10005137) can wait on the SAME lock without
+  // importing this CLI module.
+  return installLockNameForRoot(repoRoot);
 }
 
 /**
@@ -657,6 +944,609 @@ export function repoLockName(repoRoot = DEFAULT_REPO_ROOT) {
  */
 export function withPackageCacheReadLease(fn, opts = {}) {
   return withFsMutexRead(PACKAGE_CACHE_MUTEX_NAME, fn, opts);
+}
+
+const NPM_HEARTBEAT_INTERVAL_MS = 30_000;
+const INSTALL_VALUE_FLAGS = new Set([
+  "-w",
+  "--workspace",
+  "--prefix",
+  "--cache",
+  "--registry",
+  "--tag",
+  "--access",
+  "--save-prefix",
+  "--install-strategy",
+  "--include",
+  "--omit",
+  "--platform",
+  "--arch",
+  "--cpu",
+  "--os",
+  "--libc",
+  "--userconfig",
+  "--globalconfig",
+  "--loglevel",
+  "--fetch-retries",
+  "--fetch-retry-factor",
+  "--fetch-retry-mintimeout",
+  "--fetch-retry-maxtimeout",
+  "--fetch-timeout",
+  "--maxsockets",
+  "--script-shell",
+  "--lockfile-version",
+  "--node-options",
+  "--proxy",
+  "--https-proxy",
+  "--save-type",
+  "--audit-level",
+]);
+const INSTALL_BOOLEAN_FLAGS = new Set([
+  "--save",
+  "--no-save",
+  "--save-dev",
+  "-D",
+  "--save-optional",
+  "-O",
+  "--save-prod",
+  "-P",
+  "--save-peer",
+  "--save-exact",
+  "-E",
+  "--save-bundle",
+  "-B",
+  "--package-lock",
+  "--package-lock-only",
+  "--ignore-scripts",
+  "--foreground-scripts",
+  "--audit",
+  "--no-audit",
+  "--fund",
+  "--no-fund",
+  "--dry-run",
+  "--force",
+  "-f",
+  "--legacy-peer-deps",
+  "--strict-peer-deps",
+  "--prefer-dedupe",
+  "--workspaces",
+  "--no-workspaces",
+  "--include-workspace-root",
+  "--install-links",
+  "--no-install-links",
+  "--offline",
+  "--prefer-offline",
+  "--prefer-online",
+  "--global",
+  "-g",
+  "--global-style",
+  "--no-bin-links",
+  "--bin-links",
+  "--optional",
+  "--no-optional",
+  "--production",
+  "--json",
+  "--silent",
+  "--quiet",
+  "--verbose",
+  "--timing",
+]);
+
+/** Read the npm process RSS on Linux; other platforms report an unknown value. */
+export function readChildRssBytes(pid, platform = process.platform) {
+  if (platform !== "linux" || !Number.isSafeInteger(pid)) return null;
+  try {
+    const status = readFileSync("/proc/" + pid + "/status", "utf8");
+    const match = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
+    return match ? Number(match[1]) * 1024 : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Spawn npm asynchronously so long resolve/reify/repair phases stay observable. */
+export function runNpmWithHeartbeat({
+  phase,
+  args,
+  cwd = DEFAULT_REPO_ROOT,
+  env = process.env,
+  spawnCommand = spawn,
+  heartbeatIntervalMs = NPM_HEARTBEAT_INTERVAL_MS,
+  readRssBytes = readChildRssBytes,
+  log = (line) => console.error(line),
+  now = Date.now,
+} = {}) {
+  return new Promise((resolveResult, rejectResult) => {
+    const startedAt = now();
+    const child = spawnCommand("npm", args, {
+      cwd,
+      stdio: "inherit",
+      env,
+    });
+    let settled = false;
+    let timer;
+    const finish = () => {
+      if (timer) clearInterval(timer);
+    };
+    const heartbeat = () => {
+      let rssBytes = null;
+      try {
+        rssBytes = readRssBytes(child.pid);
+      } catch {
+        rssBytes = null;
+      }
+      const rssMb =
+        rssBytes == null ? "unknown" : (rssBytes / (1024 * 1024)).toFixed(1);
+      log(
+        "NPM_INSTALL_SAFE phase=" + phase +
+          " heartbeat elapsedMs=" + Math.max(0, now() - startedAt) +
+          " childPid=" + (child.pid ?? "unknown") +
+          " childRssMb=" + rssMb,
+      );
+    };
+    log(
+      "NPM_INSTALL_SAFE phase=" + phase +
+        " started childPid=" + (child.pid ?? "unknown") +
+        " args=npm " + args.join(" ") +
+        " (cwd=" + cwd + ")",
+    );
+    if (heartbeatIntervalMs > 0) {
+      timer = setInterval(heartbeat, heartbeatIntervalMs);
+      timer.unref?.();
+    }
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      finish();
+      rejectResult(error);
+    });
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      finish();
+      log(
+        "NPM_INSTALL_SAFE phase=" + phase +
+          " finished elapsedMs=" + Math.max(0, now() - startedAt) +
+          " exitCode=" + (code ?? "unknown") +
+          " signal=" + (signal ?? "none"),
+      );
+      resolveResult(code ?? 1);
+    });
+  });
+}
+
+function splitInstallPackageSpecs(npmArgs) {
+  if (!Array.isArray(npmArgs) || npmArgs[0] !== "install") return null;
+  const reifyArgs = [npmArgs[0]];
+  const packageSpecs = [];
+  for (let index = 1; index < npmArgs.length; index += 1) {
+    const arg = npmArgs[index];
+    if (arg === "--" || arg === "-") return null;
+    if (!arg.startsWith("-")) {
+      packageSpecs.push(arg);
+      continue;
+    }
+    reifyArgs.push(arg);
+    if (arg.includes("=")) continue;
+    if (INSTALL_VALUE_FLAGS.has(arg)) {
+      const value = npmArgs[index + 1];
+      if (typeof value !== "string" || value.startsWith("-")) return null;
+      reifyArgs.push(value);
+      index += 1;
+      continue;
+    }
+    if (
+      !INSTALL_BOOLEAN_FLAGS.has(arg) &&
+      typeof npmArgs[index + 1] === "string" &&
+      !npmArgs[index + 1].startsWith("-")
+    )
+      return null;
+  }
+  return { reifyArgs, packageSpecs };
+}
+
+function npmBooleanArg(npmArgs, option) {
+  let value;
+  const negative = "--no-" + option.slice(2);
+  for (const arg of npmArgs) {
+    if (arg === option) value = true;
+    else if (arg === negative) value = false;
+    else if (arg.startsWith(option + "=")) {
+      const rawValue = arg.slice(option.length + 1).toLowerCase();
+      value = !["false", "0", "no"].includes(rawValue);
+    }
+  }
+  return value;
+}
+
+function npmConfigValue(env, name) {
+  return env["npm_config_" + name] ?? env["NPM_CONFIG_" + name.toUpperCase()];
+}
+
+function isFalseConfig(value) {
+  return typeof value === "string" &&
+    ["false", "0", "no"].includes(value.toLowerCase());
+}
+
+function isPackageLockOnlyInstall(npmArgs, env) {
+  return npmBooleanArg(npmArgs, "--package-lock-only") === true ||
+    ["true", "1", "yes"].includes(
+      String(npmConfigValue(env, "package_lock_only") ?? "").toLowerCase(),
+    );
+}
+
+function isLocalOrRemotePackageSpec(spec) {
+  const unsupportedTarget =
+    /^(?:file:|git(?:\+|:)|github:|gitlab:|bitbucket:|https?:|ssh:|\.{1,2}[\\/]|[A-Za-z]:[\\/]|[\\/]{1,2})/i;
+  const separator = spec.startsWith("@")
+    ? spec.indexOf("@", spec.indexOf("/") + 1)
+    : spec.indexOf("@");
+  const target = separator < 0 ? spec : spec.slice(separator + 1);
+  const githubShortcut = /^[^/@\s]+\/[^/\s]+(?:#.*)?$/;
+  return unsupportedTarget.test(target) || githubShortcut.test(target);
+}
+
+function manifestOnlyInstallPlan(npmArgs, env) {
+  if (!Array.isArray(npmArgs) || npmArgs[0] !== "install")
+    return { eligible: false };
+  const split = splitInstallPackageSpecs(npmArgs);
+  if (!split)
+    return {
+      eligible: false,
+      reason: "npm options cannot be separated from package targets safely",
+    };
+  if (split.packageSpecs.some(isLocalOrRemotePackageSpec))
+    return {
+      eligible: false,
+      reason: "a command-line package target is local or remote",
+    };
+  const redirectedOrNoSave =
+    npmArgs.some((arg) =>
+      ["--global", "-g", "--dry-run", "--no-package-lock", "--no-save"].includes(arg) ||
+      arg === "--package-lock=false" ||
+      arg === "--save=false" ||
+      arg === "--prefix" ||
+      arg.startsWith("--prefix="),
+    ) ||
+    isFalseConfig(npmConfigValue(env, "package_lock")) ||
+    isFalseConfig(npmConfigValue(env, "save")) ||
+    ["true", "1", "yes"].includes(
+      String(npmConfigValue(env, "global") ?? "").toLowerCase(),
+    ) ||
+    Boolean(npmConfigValue(env, "prefix"));
+  if (redirectedOrNoSave)
+    return {
+      eligible: false,
+      reason: "the invocation disables or redirects manifest or lockfile writes",
+    };
+  const packageLockOnly = isPackageLockOnlyInstall(npmArgs, env);
+  return {
+    eligible: true,
+    packageLockOnly,
+    reifyArgs: split.reifyArgs,
+    resolverArgs: [
+      ...npmArgs,
+      "--package-lock-only=true",
+      "--ignore-scripts=true",
+    ],
+  };
+}
+
+function toRepoRelativePath(repoRoot, absolutePath) {
+  return relative(repoRoot, absolutePath).split(sep).join("/");
+}
+
+function manifestOnlyResolutionLayout(repoRoot) {
+  const workspaceDirs = resolveWorkspaceDirs(repoRoot);
+  const workspaceManifestPaths = workspaceDirs.map((dir) => dir + "/package.json");
+  const outputPaths = [
+    "package.json",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    ...workspaceManifestPaths,
+  ];
+  const inputPaths = new Set([...outputPaths, ".npmrc"]);
+  const pending = ["package.json", ...workspaceManifestPaths];
+  const inspected = new Set();
+  while (pending.length > 0) {
+    const manifestPath = pending.shift();
+    if (inspected.has(manifestPath)) continue;
+    inspected.add(manifestPath);
+    const absolutePath = join(repoRoot, manifestPath);
+    if (!existsSync(absolutePath)) continue;
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(absolutePath, "utf8"));
+    } catch {
+      return { supported: false, reason: "cannot parse " + manifestPath };
+    }
+    for (const section of [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ]) {
+      for (const spec of Object.values(manifest?.[section] ?? {})) {
+        if (typeof spec !== "string") continue;
+        if (/^(?:git\+|github:|gitlab:|bitbucket:)/i.test(spec))
+          return {
+            supported: false,
+            reason: "git dependency in " + manifestPath,
+          };
+        if (!spec.startsWith("file:")) continue;
+        const targetPath = resolve(
+          dirname(absolutePath),
+          spec.slice("file:".length),
+        );
+        if (!isStrictlyWithin(repoRoot, targetPath))
+          return {
+            supported: false,
+            reason: "file dependency leaves the repository in " + manifestPath,
+          };
+        const targetManifest = join(targetPath, "package.json");
+        if (!existsSync(targetManifest))
+          return {
+            supported: false,
+            reason: "file dependency has no package manifest in " + manifestPath,
+          };
+        const targetRelative = toRepoRelativePath(repoRoot, targetManifest);
+        if (!inputPaths.has(targetRelative)) {
+          inputPaths.add(targetRelative);
+          pending.push(targetRelative);
+        }
+      }
+    }
+  }
+  return {
+    supported: true,
+    inputPaths: [...inputPaths].sort(),
+    outputPaths: [...new Set(outputPaths)].sort(),
+  };
+}
+
+function fileBytesEqual(left, right) {
+  if (left === null || right === null) return left === right;
+  return Buffer.isBuffer(left) && Buffer.isBuffer(right) && left.equals(right);
+}
+
+function createManifestOnlyTree(repoRoot, inputPaths) {
+  const scratchRoot = mkdtempSync(join(tmpdir(), "npm-install-safe-resolve-"));
+  const snapshot = new Map();
+  try {
+    for (const path of inputPaths) {
+      const absolutePath = join(repoRoot, path);
+      const contents = existsSync(absolutePath) ? readFileSync(absolutePath) : null;
+      snapshot.set(path, contents);
+      if (contents === null) continue;
+      const destination = join(scratchRoot, path);
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, contents);
+    }
+    return { scratchRoot, snapshot };
+  } catch (error) {
+    rmSync(scratchRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function resolvedManifestFiles(scratchRoot, outputPaths) {
+  return new Map(
+    outputPaths.map((path) => {
+      const absolutePath = join(scratchRoot, path);
+      return [
+        path,
+        existsSync(absolutePath) ? readFileSync(absolutePath) : null,
+      ];
+    }),
+  );
+}
+
+/** Apply resolver output only while the source snapshot is current. */
+export function applyResolvedManifestFiles({
+  repoRoot,
+  snapshot,
+  files,
+  outputPaths,
+}) {
+  for (const [path, expected] of snapshot) {
+    const absolutePath = join(repoRoot, path);
+    const actual = existsSync(absolutePath) ? readFileSync(absolutePath) : null;
+    if (!fileBytesEqual(actual, expected))
+      return { applied: false, reason: "source-changed", path };
+  }
+  for (const path of outputPaths) {
+    const next = files.get(path);
+    if (next === null && snapshot.get(path) !== null)
+      return { applied: false, reason: "resolver-removed-source-file", path };
+  }
+  for (const path of outputPaths) {
+    const next = files.get(path);
+    const before = snapshot.get(path);
+    if (next === null || fileBytesEqual(before, next)) continue;
+    const absolutePath = join(repoRoot, path);
+    mkdirSync(dirname(absolutePath), { recursive: true });
+    const temporaryPath = join(
+      dirname(absolutePath),
+      "." + basename(absolutePath) + ".install-safe-" +
+        process.pid + "-" + randomUUID(),
+    );
+    try {
+      writeFileSync(temporaryPath, next);
+      renameSync(temporaryPath, absolutePath);
+    } finally {
+      rmSync(temporaryPath, { force: true });
+    }
+  }
+  return { applied: true };
+}
+
+async function runManifestOnlyInstall({
+  repoRoot,
+  lockName,
+  npmArgs,
+  npmEnv,
+  plan,
+}) {
+  const resolverLockName = lockName + "-resolver";
+  return withFsMutex(
+    resolverLockName,
+    async () => {
+      let input;
+      // Set when the resolution was computed from manifests that changed before it could be
+      // applied; main() then re-resolves against the current manifests (WI-10006714).
+      let stale = null;
+      const layout = await withFsMutexRead(lockName, async () => {
+        const mismatches = findRootLockManifestMismatches(repoRoot);
+        if (mismatches.length > 0) {
+          console.error(formatRootLockManifestMismatches(mismatches));
+          return { supported: false, preflightDrift: true };
+        }
+        const value = manifestOnlyResolutionLayout(repoRoot);
+        if (!value.supported) return value;
+        input = createManifestOnlyTree(repoRoot, value.inputPaths);
+        return value;
+      });
+      if (layout.preflightDrift)
+        return { supported: true, status: 1 };
+      if (!layout.supported)
+        return { supported: false, reason: layout.reason };
+      try {
+        const cacheStatus = await verifyNpmCacheExclusive({
+          verify: () => verifyNpmCache({ repoRoot, npmArgs, env: npmEnv }),
+        });
+        if (cacheStatus !== 0) {
+          console.error(
+            "NPM_INSTALL_SAFE_FATAL: npm cache verify exited " +
+              cacheStatus + "; cache integrity is unverified.",
+          );
+          return { supported: true, status: cacheStatus };
+        }
+        // Do not hold the repo mutex here, including a shared reader: git-sync needs
+        // the exclusive repo writer and would otherwise queue for the full npm resolve.
+        const resolveStatus = await withPackageCacheReadLease(() =>
+          runNpmWithHeartbeat({
+            phase: "resolve",
+            args: plan.resolverArgs,
+            cwd: input.scratchRoot,
+            env: npmEnv,
+          }),
+        );
+        if (resolveStatus !== 0)
+          return { supported: true, status: resolveStatus };
+        const files = resolvedManifestFiles(input.scratchRoot, layout.outputPaths);
+        const status = await withFsMutex(
+          lockName,
+          async () => {
+            const applied = applyResolvedManifestFiles({
+              repoRoot,
+              snapshot: input.snapshot,
+              files,
+              outputPaths: layout.outputPaths,
+            });
+            if (!applied.applied) {
+              if (applied.reason === "source-changed") {
+                stale = { reason: applied.reason, path: applied.path ?? "unknown" };
+                return 1;
+              }
+              console.error(
+                "NPM_INSTALL_SAFE_RESOLUTION_STALE: " + applied.reason +
+                  " at " + (applied.path ?? "unknown") +
+                  "; no reify ran. Retry the install against the current manifests.",
+              );
+              return 1;
+            }
+            // The resolver can rewrite flags before reify starts. Preserve its
+            // original snapshot here, while holding the writer, so the later
+            // reify/repair snapshot cannot accept those rewritten flags as its
+            // baseline. Substantive dependency changes remain authoritative.
+            const before = input.snapshot.get("package-lock.json");
+            if (
+              before !== null &&
+              workspaceSelectorsForNpmArgs(npmArgs).length > 0
+            ) {
+              const restore = restoreScopedFlagOnlyLockfileRewrite({
+                repoRoot,
+                beforeText: before.toString("utf8"),
+              });
+              if (restore.restored)
+                console.log(
+                  "NPM_INSTALL_SAFE kept the pre-install package-lock.json: " +
+                    "this workspace-scoped command rewrote only npm dependency-type flags (" +
+                    restore.reason + ", " + restore.entries.length +
+                    " entries); a scoped install is not authoritative for them (WI-10003114)",
+                );
+            }
+            if (plan.packageLockOnly) return 0;
+            return withPackageCacheReadLease(async () => {
+              console.log(
+                "NPM_INSTALL_SAFE reifying resolved lockfile: npm " +
+                  plan.reifyArgs.join(" ") + " (root=" + repoRoot +
+                  ", lock=" + lockName + ")",
+              );
+              const lockfileBeforeScopedCommand =
+                workspaceSelectorsForNpmArgs(npmArgs).length > 0
+                  ? readLockfileText(repoRoot)
+                  : undefined;
+              const status = await runNpmWithHeartbeat({
+                phase: "reify",
+                args: plan.reifyArgs,
+                cwd: repoRoot,
+                env: npmEnv,
+              });
+              if (status !== 0) return status;
+              const verdict =
+                npmEnv.PAPERCUSP_SKIP_DEP_VERIFY === "1"
+                  ? 0
+                  : await verifyDepsExtracted({
+                      repoRoot,
+                      npmArgs,
+                      env: npmEnv,
+                    });
+              if (lockfileBeforeScopedCommand !== undefined) {
+                const restore = restoreScopedFlagOnlyLockfileRewrite({
+                  repoRoot,
+                  beforeText: lockfileBeforeScopedCommand,
+                });
+                if (restore.restored)
+                  console.log(
+                    "NPM_INSTALL_SAFE kept the pre-install package-lock.json: " +
+                      "this workspace-scoped command rewrote only npm dependency-type flags (" +
+                      restore.reason + ", " + restore.entries.length +
+                      " entries); a scoped install is not authoritative for them (WI-10003114)",
+                  );
+              }
+              return verdict;
+            });
+          },
+          {
+            ...installLockWaitReporter({
+              lock: "writer",
+              describe: (owner, elapsedMs) =>
+                "NPM_INSTALL_SAFE waiting to reify behind another agent's install (" +
+                Math.round(elapsedMs / 1000) + "s so far) — holder: " + owner,
+              log: (line) => console.log(line),
+              budgetMs: resolveFsMutexTimeoutMs(),
+            }),
+            waitingNoticeIntervalMs: 30_000,
+          },
+        );
+        return stale
+          ? { supported: true, status, stale }
+          : { supported: true, status };
+      } finally {
+        rmSync(input.scratchRoot, { recursive: true, force: true });
+      }
+    },
+    {
+      onWaiting: ({ owner, elapsedMs }) =>
+        console.error(
+          "NPM_INSTALL_SAFE waiting to serialize dependency resolution (" +
+            Math.round(elapsedMs / 1000) + "s so far) — holder: " +
+            String(owner).trim(),
+        ),
+      waitingNoticeIntervalMs: 30_000,
+    },
+  );
 }
 
 /**
@@ -718,6 +1608,7 @@ export async function publishDependencyGeneration({
           `NPM_INSTALL_SAFE dependency generation waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
         );
       },
+      waitingNoticeIntervalMs: 30_000,
     },
   );
   if (result.error) throw result.error;
@@ -739,6 +1630,12 @@ export function parseCliArgs(
   argv = process.argv.slice(2),
   { cwd = process.cwd() } = {},
 ) {
+  // EI-24937341882865098: a wrapper-level help request. Without this, normalizeNpmArgs turns
+  // `--help` into `npm install --help`, which waits on the repo-keyed install mutex first and
+  // reads as a silent multi-minute install. Only the FIRST argument is the wrapper's, so an
+  // explicit `install --help` still reaches npm.
+  if (argv[0] === "--help" || argv[0] === "-h") return { help: true };
+
   let repoRoot = DEFAULT_REPO_ROOT;
   let npmArgv = [...argv];
   let offlineSafe = false;
@@ -756,13 +1653,15 @@ export function parseCliArgs(
     offlineSafe = true;
     npmArgv = npmArgv.slice(1);
   }
-  if (npmArgv[0] === EXEC_UNDER_LOCK_FLAG) {
+  if (npmArgv[0] === EXEC_UNDER_LOCK_FLAG || npmArgv[0] === "--exec-under-cache-lock") {
+    const cacheRead = npmArgv[0] === "--exec-under-cache-lock";
     const commandArgs = npmArgv.slice(npmArgv[1] === "--" ? 2 : 1);
     if (commandArgs.length === 0)
-      throw new Error(`${EXEC_UNDER_LOCK_FLAG} requires a command`);
+      throw new Error(`${npmArgv[0]} requires a command`);
     return {
       repoRoot,
       commandArgs,
+      ...(cacheRead ? { cacheRead: true } : {}),
       ...(offlineSafe ? { offlineSafe: true } : {}),
     };
   }
@@ -777,32 +1676,78 @@ export function parseCliArgs(
 }
 
 /**
+ * WI-10006385: pair a lock's "waiting" notices with ONE closing line that says how long
+ * the wait actually lasted and under what budget. Without it a build log shows
+ * "waiting … (0s so far)" and then nothing, so nobody can tell a 1 s wait from a 50 min
+ * one, or whether PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC raised the budget. Prints nothing
+ * for an uncontested lock: the closing line only follows a printed notice.
+ *
+ * @param {{ lock: 'writer' | 'reader', describe: (owner: string, elapsedMs: number) => string, log: (line: string) => void, budgetMs: number }} opts
+ * @returns {{ onWaiting: (info: { owner: string, elapsedMs: number }) => void, onAcquired: (info: { waitedMs: number }) => void }}
+ */
+export function installLockWaitReporter({ lock, describe, log, budgetMs }) {
+  let noticed = false;
+  return {
+    onWaiting: ({ owner, elapsedMs }) => {
+      noticed = true;
+      log(describe(String(owner).trim(), elapsedMs));
+    },
+    onAcquired: ({ waitedMs }) => {
+      if (!noticed) return;
+      log(`NPM_INSTALL_SAFE_LOCK_ACQUIRED lock=${lock} waitedMs=${waitedMs} budgetMs=${budgetMs}`);
+    },
+  };
+}
+
+/**
  * Run a dependency reader under the SAME repo-keyed mutex as install:safe.
  * The marker environment prevents a wrapped script from recursively wrapping
  * itself while keeping the contract explicit and testable at the child seam.
+ *
+ * @param {{
+ *   repoRoot?: string,
+ *   commandArgs?: string[],
+ *   runCommand?: (command: string, args: string[], options: {
+ *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
+ *   }) => { status?: number | null, signal?: NodeJS.Signals | null, error?: Error },
+ *   acquireReadMutex?: typeof withFsMutexRead,
+ *   log?: (line: string) => void,
+ *   env?: NodeJS.ProcessEnv,
+ *   cacheRead?: boolean — guard the shared package cache instead of repo dependencies,
+ * }} [options]
  */
-export function runCommandUnderInstallMutex({
+export async function runCommandUnderInstallMutex({
   repoRoot = DEFAULT_REPO_ROOT,
   commandArgs,
   runCommand = spawnSync,
+  acquireReadMutex = withFsMutexRead,
+  log = console.error,
   env = process.env,
+  cacheRead = false,
 } = {}) {
   if (!Array.isArray(commandArgs) || commandArgs.length === 0) {
     throw new Error(`${EXEC_UNDER_LOCK_FLAG} requires a command`);
   }
   const [command, ...args] = commandArgs;
   const lockName = repoLockName(repoRoot);
-  const mutexAlreadyHeld = env.PAPERCUSP_INSTALL_MUTEX_HELD === "1";
-  const childEnv = {
-    ...env,
-    ...(mutexAlreadyHeld ? {} : { PAPERCUSP_INSTALL_MUTEX_HELD: "1" }),
-  };
+  const mutexAlreadyHeld = installMutexIsHeld(lockName, env);
+  const childEnv = cacheRead ? env : envWithInstallMutex(lockName, env);
+  let childStarted = false;
 
   const executeReader = async () => {
+    if (!cacheRead && isGuardedTestRunner(commandArgs, repoRoot)) {
+      const mismatches = findRootLockManifestMismatches(repoRoot);
+      if (mismatches.length > 0) {
+        log(formatRootLockManifestMismatches(mismatches));
+        log("TEST_RUN_NOT_MEASURED reason=workspace-lock-manifest-drift");
+        return TEST_FILE_EXIT_NOT_MEASURED;
+      }
+    }
+    childStarted = true;
     // Reader diagnostics belong on stderr: callers such as ptool expose the
     // child command's stdout as a machine-readable JSON stream.
     console.error(
-      `${mutexAlreadyHeld ? "NPM_INSTALL_SAFE mutex already held; running nested reader directly" : "NPM_INSTALL_SAFE guarding reader"}: ${commandArgs.join(" ")} (root=${repoRoot}, lock=${lockName})`,
+      `${cacheRead ? "NPM_INSTALL_SAFE guarding package-cache reader" : mutexAlreadyHeld ? "NPM_INSTALL_SAFE mutex already held; running nested reader directly" : "NPM_INSTALL_SAFE guarding reader"}: ${commandArgs.join(" ")} (root=${repoRoot}, lock=${cacheRead ? PACKAGE_CACHE_MUTEX_NAME : lockName})`,
     );
     const result = runCommand(command, args, {
       cwd: repoRoot,
@@ -810,26 +1755,90 @@ export function runCommandUnderInstallMutex({
       env: childEnv,
     });
     if (result.error) throw result.error;
+    if (result.signal) {
+      // spawnSync reports a signal with status:null. Keep the shell status
+      // and diagnostic so bundle callers can distinguish a killed compiler
+      // from a normal compilation failure, including after candidate cleanup.
+      const signalNumber = osConstants.signals[result.signal];
+      const status = signalNumber ? 128 + signalNumber : 1;
+      log(`NPM_INSTALL_SAFE reader terminated signal=${result.signal} exitCode=${status}`);
+      return status;
+    }
     return result.status ?? 1;
   };
 
   // A command launched by an install-safe reader inherits this marker. Its
-  // nested reader is already inside the install boundary and must not install
+  // nested reader for THIS repository is already inside the install boundary and must not install
   // another reader marker beneath the writer it is waiting on: that is a
   // self-deadlock when the outer command still owns the writer lock.
+  // Package runners share the host cache even when their repository is isolated.
+  // A repo reader marker is not proof that the cache lease is held.
+  if (cacheRead) return withPackageCacheReadLease(executeReader);
   if (mutexAlreadyHeld) return executeReader();
 
-  return withFsMutexRead(lockName, executeReader, {
-    onWaiting: ({ owner, elapsedMs }) => {
-      console.error(
-        `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
-      );
-    },
-  });
+  try {
+    return await acquireReadMutex(lockName, executeReader, {
+      // Reader diagnostics stay on stderr (see executeReader).
+      ...installLockWaitReporter({
+        lock: "reader",
+        describe: (owner, elapsedMs) =>
+          `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner}`,
+        log,
+        // The budget withFsMutexRead itself applies (it resolves from process.env).
+        budgetMs: resolveFsMutexTimeoutMs(),
+      }),
+      waitingNoticeIntervalMs: 30_000,
+    });
+  } catch (error) {
+    const testFileRouter = resolve(repoRoot, "scripts/test-files.mjs");
+    const invokesTestFileRouter = commandArgs.some(
+      (arg) => typeof arg === "string" && resolve(repoRoot, arg) === testFileRouter,
+    );
+    if (childStarted || !invokesTestFileRouter) throw error;
+
+    const message = error instanceof Error ? error.message : String(error);
+    log(`NPM_INSTALL_SAFE_ERROR ${message}`);
+    log(
+      `TEST_FILE_NOT_MEASURED reason=install-reader-lock-acquisition — test child never started (${message})`,
+    );
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
+}
+
+/** Printed for `--help` / `-h`; never takes the install mutex. */
+export const USAGE = `Usage: npm run install:safe [-- <npm args>]   (defaults to plain \`npm install\`)
+       node scripts/npm-install-safe.mjs [--repo-root <path>] [--offline-safe] [--] [<npm args>]
+       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-lock [--] <command> [args...]
+       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-cache-lock [--] <command> [args...]
+
+Serializes npm installs in a shared checkout behind a repo-keyed mutex, then verifies every
+declared dependency landed on disk. Arguments that start with "-" get an implicit \`install\`
+prepended, so \`-- --legacy-peer-deps\` means \`npm install --legacy-peer-deps\`.
+--help / -h is recognised only as the first argument; use \`install --help\` for npm's own help.
+`;
+
+export const RESOLUTION_STALE_ATTEMPTS_DEFAULT = 3;
+
+/**
+ * How many times a manifest-only install resolves before giving up on manifests that keep
+ * changing underneath it. PAPERCUSP_INSTALL_SAFE_STALE_ATTEMPTS overrides it (a positive
+ * integer; 1 restores the old single-attempt behaviour); anything else uses the default.
+ */
+export function resolutionStaleAttempts(env = process.env) {
+  const raw = env.PAPERCUSP_INSTALL_SAFE_STALE_ATTEMPTS;
+  if (raw === undefined || raw === "") return RESOLUTION_STALE_ATTEMPTS_DEFAULT;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 1
+    ? value
+    : RESOLUTION_STALE_ATTEMPTS_DEFAULT;
 }
 
 export async function main(argv = process.argv.slice(2)) {
   const parsed = parseCliArgs(argv);
+  if ("help" in parsed) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
   if ("commandArgs" in parsed) return runCommandUnderInstallMutex(parsed);
 
   const { repoRoot, npmArgs } = parsed;
@@ -841,23 +1850,81 @@ export async function main(argv = process.argv.slice(2)) {
     PAPERCUSP_INSTALL_SAFE_ACTIVE: "1",
   };
   const lockName = repoLockName(repoRoot);
+  const installPlan = manifestOnlyInstallPlan(npmArgs, npmEnv);
+  const packageLockOnly = isPackageLockOnlyInstall(npmArgs, npmEnv);
 
-  const installStatus = await withPackageCacheReadLease(
-    () =>
-      withFsMutex(
+  if (installPlan.eligible) {
+    // The resolve runs outside the repo mutex, so a peer can change the manifests under it, and
+    // the apply step then refuses the stale resolution. The remedy is always to re-resolve
+    // against the current manifests, which needs no human, so do it here, bounded. Exiting
+    // instead killed an unattended deb build after a 470 s lock wait (WI-10006714).
+    const maxAttempts = resolutionStaleAttempts(process.env);
+    let result;
+    for (let attempt = 1; ; attempt += 1) {
+      result = await runManifestOnlyInstall({
+        repoRoot,
         lockName,
+        npmArgs,
+        npmEnv,
+        plan: installPlan,
+      });
+      if (!result.supported || !result.stale) break;
+      if (attempt >= maxAttempts) {
+        console.error(
+          "NPM_INSTALL_SAFE_RESOLUTION_STALE: source-changed at " + result.stale.path +
+            " on all " + maxAttempts + " attempt(s); no reify ran. The manifests kept " +
+            "changing while npm resolved; retry once they settle.",
+        );
+        break;
+      }
+      console.error(
+        "NPM_INSTALL_SAFE_RESOLUTION_RETRY: source-changed at " + result.stale.path +
+          " during attempt " + attempt + "/" + maxAttempts +
+          "; no reify ran. Re-resolving against the current manifests.",
+      );
+    }
+    if (result.supported) {
+      if (result.status !== 0) return result.status;
+      // Lock-only resolution applies manifests without reifying or repairing
+      // node_modules. Publishing here would bind the new lock to the old
+      // installed tree and can fail a healthy metadata operation on copy
+      // headroom. Actual reify/repair paths still publish below.
+      if (installPlan.packageLockOnly) return 0;
+      return publishDependencyGeneration({ repoRoot });
+    }
+    console.error(
+      "NPM_INSTALL_SAFE_RESOLUTION_FALLBACK: " + result.reason +
+        "; running the original npm command under the repo writer.",
+    );
+  } else if (installPlan.reason) {
+    console.error(
+      "NPM_INSTALL_SAFE_RESOLUTION_FALLBACK: " + installPlan.reason +
+        "; running the original npm command under the repo writer.",
+    );
+  }
+
+  // Lock order: repo writer → EXCLUSIVE cache (verify only, released) → shared cache
+  // READ lease (reify). Verify must never overlap another checkout's reify — see
+  // verifyNpmCacheExclusive (WI-10004430).
+  const installStatus = await withFsMutex(
+    lockName,
+    async () => {
+      const mismatches = findRootLockManifestMismatches(repoRoot);
+      if (mismatches.length > 0) {
+        console.error(formatRootLockManifestMismatches(mismatches));
+        return 1;
+      }
+      const cacheStatus = await verifyNpmCacheExclusive({
+        verify: () => verifyNpmCache({ repoRoot, npmArgs, env: npmEnv }),
+      });
+      if (cacheStatus !== 0) {
+        console.error(
+          `NPM_INSTALL_SAFE_FATAL: npm cache verify exited ${cacheStatus}; cache integrity is unverified.`,
+        );
+        return cacheStatus;
+      }
+      return withPackageCacheReadLease(
         async () => {
-          const cacheStatus = verifyNpmCache({
-            repoRoot,
-            npmArgs,
-            env: npmEnv,
-          });
-          if (cacheStatus !== 0) {
-            console.error(
-              `NPM_INSTALL_SAFE_FATAL: npm cache verify exited ${cacheStatus}; cache integrity is unverified.`,
-            );
-            return cacheStatus;
-          }
           console.log(
             `NPM_INSTALL_SAFE running: npm ${npmArgs.join(" ")} (root=${repoRoot}, lock=${lockName})`,
           );
@@ -870,17 +1937,16 @@ export async function main(argv = process.argv.slice(2)) {
           // Tell the root `preinstall` guard that THIS install is the sanctioned one — it holds the
           // writer lock, so it cannot tear a green-checkpoint dependency copy. Without the marker the
           // guard cannot distinguish us from the bare `npm install` it exists to refuse.
-          const result = spawnSync("npm", npmArgs, {
+          const status = await runNpmWithHeartbeat({
+            phase: "install",
+            args: npmArgs,
             cwd: repoRoot,
-            stdio: "inherit",
             env: npmEnv,
           });
-          if (result.error) throw result.error;
-          const status = result.status ?? 1;
           // A FAILED npm run reports its own error — never mask it with a dep verdict.
           if (status !== 0) return status;
           const verdict =
-            process.env.PAPERCUSP_SKIP_DEP_VERIFY === "1"
+            packageLockOnly || process.env.PAPERCUSP_SKIP_DEP_VERIFY === "1"
               ? 0
               : await verifyDepsExtracted({ repoRoot, npmArgs, env: npmEnv });
           // After verification, because its bounded repair re-runs a scoped install.
@@ -899,24 +1965,41 @@ export async function main(argv = process.argv.slice(2)) {
         {
           onWaiting: ({ owner, elapsedMs }) => {
             console.log(
-              `NPM_INSTALL_SAFE waiting on another agent's install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
+              `NPM_INSTALL_SAFE waiting on package-cache maintenance (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
             );
           },
         },
-      ),
+      );
+    },
     {
-      onWaiting: ({ owner, elapsedMs }) => {
-        console.log(
-          `NPM_INSTALL_SAFE waiting on package-cache maintenance (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
-        );
-      },
+      // WI-10006385: re-announce every 30 s (was once) and close with the real wait.
+      ...installLockWaitReporter({
+        lock: "writer",
+        describe: (owner, elapsedMs) =>
+          `NPM_INSTALL_SAFE waiting on another agent's install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner}`,
+        log: (line) => console.log(line),
+        budgetMs: resolveFsMutexTimeoutMs(),
+      }),
+      waitingNoticeIntervalMs: 30_000,
     },
   );
   if (installStatus !== 0) return installStatus;
+  // A fallback can still be metadata-only (for example a local tarball).
+  // Its new lock describes future installs, not the unchanged node_modules.
+  if (packageLockOnly) return 0;
   return publishDependencyGeneration({ repoRoot });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isInvokedDirectly(argv1, moduleUrl) {
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+if (isInvokedDirectly(process.argv[1], import.meta.url)) {
   main()
     .then((status) => {
       process.exitCode = status;

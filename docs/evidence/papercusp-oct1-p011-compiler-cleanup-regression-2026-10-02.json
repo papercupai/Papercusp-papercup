@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005185",
+  "rootCause": "The cleanup exited promise resolved on any child error, including IPC errors from an already spawned worker. terminateSpawnTree sends signals without waiting.",
+  "fix": "Resolve the error branch of the exit wait only when no child pid exists; a spawned worker still requires exit.",
+  "sourceHashes": {
+    "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts": "4127c8da11e326ed7fc5e354b9fe4b84abd890a52e3ea2c3f365348aad4673a4",
+    "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.test.ts": "35ce8df3e843f2915bc257c10cf4932d128583a82818ab0c4adb8a806ab80814",
+    "packages/operator-core/lib/task-manager/no-unenrolled-spawn-guard.test.ts": "64b9682fdf042ff8bd44b0f60c04b41e6250b76cd48decaa37ef031a1df65c1d"
+  },
+  "observedHead": "61a6713ec43929e002fbd0c689328321d522ff99",
+  "runs": [
+    {
+      "kind": "baseline",
+      "log": "/tmp/su-7db4f-compiler-cleanup-baseline.log",
+      "sha256": "ab482f2705a3d44f53a0103abab3c674f3c211ef0dba33fd969a07d47da53588",
+      "terminalMarkers": [
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=f39e9c3d11 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-02T01:16:30.490Z skippedTests=35"
+      ],
+      "evidence": [
+        "Test Files  1 failed (1)",
+        "Tests  1 failed | 1 passed | 35 skipped (37)",
+        "⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯",
+        "TEST_FILE_ASSERTION_FAILURE file=\"~/papercupai-workspace/papercusp/packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.test.ts\" name=\"waits for a spawned compiler to exit after an IPC error before returning or closing its streams\" message=\"AssertionError: IPC failure does not mean the owned worker has exited: expected true to be false // Object.is equality\\n    at ~/papercupai-workspace/papercusp/packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.test.ts:116:78\\n    at file://~/papercupai-workspace/papercusp/node_modules/vitest/node_modules/@vitest/runner/dist/chunk-artifact.js:1903:20\""
+      ]
+    },
+    {
+      "kind": "fixed",
+      "log": "/tmp/su-7db4f-compiler-cleanup-fixed.log",
+      "sha256": "c73c65cbf2e6ef097a08cdec5144e5418e6d3b9eede5e01dc5457ee7683d1122",
+      "terminalMarkers": [
+        "TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=61a6713ec4 uncommittedPaths=1/2 provenance=stamped startedAt=2026-10-02T01:18:12.306Z skippedTests=0"
+      ],
+      "evidence": [
+        "Test Files  2 passed (2)",
+        "Tests  77 passed (77)"
+      ]
+    }
+  ],
+  "scope": "Compiler cleanup function and canonical lifecycle/allowlist guards only. Historical production memory attribution and shipment remain open."
+}

@@ -8,16 +8,10 @@ Type=oneshot
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
-# WI-2145397: THIS PROBE MUST BE TOLD WHERE THE DUMPS ARE, or it judges a dead directory.
-# A systemd user unit inherits no interactive shell env, so without this line the script's
-# fallback resolved to /mnt/data/Backup/db-dumps — the path WI-2145150 relocated AWAY from.
-# It then tailed a db-backup.log frozen at 2026-09-05T00:03:34-04:00 on "backup FAILED":
-# a permanent false alarm that no OK could ever clear, AND total blindness to a real
-# failure. Three agents burned a false CRITICAL triage on it in 30 minutes.
-# ~/.config/environment.d/90-papercusp-backup-dump-dir.conf now sets this for every user
-# unit; this line is kept so the unit stays correct on its own if that file is absent
-# (a fresh checkout, another host). Keep it in step with papercusp-db-backup.service.
-Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/backup/db-dumps
+# Keep this probe pointed at the same cold-a destination as the producer. A
+# systemd user unit has no interactive-shell environment, so the per-unit value
+# remains explicit even though the script fallback and environment.d agree.
+Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/cold-a/Backup/db-dumps
 # Detection + escalation ONLY — never re-runs a dump, kills a process, or edits backup
 # config (EI-8901: a health check must not hold mutate authority over what it judges).
 # Snapshot the health probe and its adjacent lib/*.sh sidecars before starting;

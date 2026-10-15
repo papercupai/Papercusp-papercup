@@ -224,4 +224,56 @@ describe('P-005-request-settlement: transcript → carry continuation', () => {
       'Regarding Tesla, any advancements in this direction?',
     ]);
   });
+
+  // EI-25227743201307257 — the exact shape Claude Code records for an
+  // AskUserQuestion round trip: an assistant tool_use node, then the owner's
+  // answer as a synthetic tool_result user row parented on it. The agent acts on
+  // the first answer and raises a second dialog inside the SAME running turn, so
+  // only the second answer ever meets an end_turn. Measured twice in production
+  // (directives #1379 and #1460): the first answer was re-delivered as OPEN.
+  const askDialog = (uuid: string, parentUuid: string): Line => ({
+    type: 'assistant', uuid, parentUuid,
+    message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: `toolu_${uuid}`, name: 'AskUserQuestion', input: {} }] },
+  });
+  const dialogAnswer = (uuid: string, parentUuid: string, answer: string): Line => ({
+    type: 'user', uuid, parentUuid, promptId: 'prompt-1',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_${parentUuid}`, content: `Your questions have been answered: "Is the mic connected?"="${answer}".` }] },
+  });
+  const dialogChain = (final: Line): Line[] => [
+    owner('o1', null, 'Start the guided microphone session when I am ready.'),
+    assistant('a1', 'o1', 'Checking for the microphone first.', 'tool_use'),
+    askDialog('q1', 'a1'),
+    dialogAnswer('d1', 'q1', 'Re-plugged — check again'),
+    assistant('a2', 'd1', 'Still not detected; asking again.', 'tool_use'),
+    askDialog('q2', 'a2'),
+    dialogAnswer('d2', 'q2', 'Not at the machine now'),
+    final,
+  ];
+
+  it('a dialog answer acted on before the next dialog is settled by the final delivered answer', async () => {
+    const path = transcript('dialog-chain-delivered', dialogChain(
+      assistant('a3', 'd2', 'Understood — nothing starts until you are back.', 'end_turn'),
+    ));
+    const doc = await buildCarryDoc(OWNER, opts(path));
+    // Positive control: both answers really are classified as owner speech.
+    expect(doc.tail.filter((t) => t.provenance?.verdict === 'owner-dialog')).toHaveLength(2);
+    expect(doc.continuation.lastOwnerMessage?.text).toContain('Not at the machine now');
+    expect(doc.continuation.answered).toBe(true);
+    expect(doc.continuation.pendingOwnerMessages).toBeUndefined();
+  });
+
+  // Calibration: the chain settles only on a RESPONSE. If the final answer was
+  // never delivered, every link — including the typed request — stays open.
+  it('an undelivered final dialog keeps the whole chain open', async () => {
+    const path = transcript('dialog-chain-open', dialogChain(
+      assistant('a3', 'd2', 'Noted.', 'tool_use'),
+    ));
+    const doc = await buildCarryDoc(OWNER, opts(path));
+    expect(doc.continuation.answered).toBe(false);
+    const pending = doc.continuation.pendingOwnerMessages?.map((r) => r.text) ?? [];
+    expect(pending).toHaveLength(3);
+    expect(pending[0]).toContain('guided microphone session');
+    expect(pending[1]).toContain('Re-plugged');
+    expect(pending[2]).toContain('Not at the machine now');
+  });
 });

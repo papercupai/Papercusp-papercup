@@ -2,13 +2,19 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import { captureInvocationFriction, recoverInvocationFriction } from './invocation-friction';
+import {
+  buildExpiredInvocationFrictionQuery, captureInvocationFriction, recoverInvocationFriction,
+} from './invocation-friction';
 import { captureToolInvocationFriction, type CaptureDeps, type CaptureImprovementResult } from './capture-core';
 import type { EngineerIssue } from '../../issues-engineer';
 import type { RecordIssueOccurrenceInput } from '../../issue-occurrence-ledger';
 
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../../system-health/compute', () => ({ refreshHealthPanel: vi.fn(async () => {}) }));
+// capture-core's best-effort `work-item:tool-failure-reporter` emit would otherwise open
+// the protected live org-admin pool (refused since WI-10006585, which surfaced as a
+// console.warn failure). No assertion here observes the wake, so keep it in-process.
+vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: async () => ({}) }));
 let db: FreshPgDb;
 const source = (name: string) => readFile(fileURLToPath(new URL(
   `../../../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url)), 'utf8');
@@ -20,7 +26,11 @@ beforeAll(async () => {
     status text, error_code text, error_message text, serving_build_sha text, metadata_json jsonb);
     CREATE TABLE harness_shared.work_items (workspace_id text, harness_slug text,
     feature_id text PRIMARY KEY, item_kind text, status text, payload jsonb)`);
-  await db.sql.unsafe(await source('1148-tool-invocation-friction-pending-index.sql.DRAFT'));
+  // Apply the ARMED migration, never a .DRAFT (WI-10007741). This guard loaded the
+  // 1148 draft for weeks, so its EXPLAIN assertions passed while no real database had
+  // either index and the expiry sweep scanned all of tool_invocations (mean 124 s).
+  // A missing armed file now fails here instead of passing vacuously.
+  await db.sql.unsafe(await source('1454-tool-invocation-friction-pending-index.sql'));
   const identityMigration = await source('865-work-items-watchdog-key-identity-guard.sql');
   // Apply the real arbiter DDL, without the unrelated legacy repair population.
   const index = identityMigration.match(/CREATE UNIQUE INDEX IF NOT EXISTS work_items_watchdog_identity_uq[\s\S]*?;/);
@@ -41,6 +51,9 @@ async function seed(workspace = 'ws-a') {
 const success = async (): Promise<CaptureImprovementResult> => ({
   ok: true, created: false, issue: { id: 'EI-1' } as EngineerIssue, possibleDuplicates: [],
 });
+const coalesced = async (): Promise<CaptureImprovementResult> => ({
+  ok: true, created: false, reason: 'coalesced', possibleDuplicates: [],
+});
 
 /** Exercise the real correlation/promotion logic against persisted payloads.
  * Only issue storage/tagging seams are injected; no application DB or scheduler.
@@ -57,6 +70,7 @@ function persistedCapture() {
     const workspace = input.workspaceId;
     const deps: CaptureDeps = {
       searchIssues: async () => [],
+      resolvePotScope: async ({ rawSlug }) => rawSlug,
       findIssuesByWatchdogKeys: async keys => (await rows(workspace))
         .filter(row => keys.includes(String(row.payload?.watchdogKey))),
       // Deliberately return other contracts too: the production classifier
@@ -126,7 +140,7 @@ describe('R7 private PostgreSQL delivery contract', () => {
     expect(promoted).toHaveLength(1);
     expect(promoted[0]).toMatchObject({ id, kind: 'change', payload: {
       toolFailureProbation: { class: 'caller', state: 'promoted', reporters: ['su-a', 'su-b'] },
-      implementationReadiness: { status: 'unknown', reason: 'corroborated-tool-failure-awaiting-review' },
+      implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' },
     } });
     expect(promoted[0].payload).not.toHaveProperty('lane', 'observation');
     // A further automatic report appends evidence; it cannot downgrade the
@@ -178,10 +192,47 @@ describe('R7 private PostgreSQL delivery contract', () => {
     const ref = await seed();
     await expect(captureInvocationFriction(ref, { sql: sql(), capture: async () => { throw new Error('fixture failure'); } })).rejects.toThrow('fixture failure');
     expect((await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations`)[0].metadata_json.frictionCapture).toBe('pending');
-    expect(await recoverInvocationFriction('ws-a', { sql: sql(), capture: success })).toEqual({ delivered: 1, pending: 0 });
+    expect(await recoverInvocationFriction('ws-a', { sql: sql(), capture: success })).toEqual({ delivered: 1, pending: 0, expired: 0 });
     expect((await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations`)[0].metadata_json)
       .toEqual({ frictionCapture: 'delivered', retained: 'evidence' });
     expect(await captureInvocationFriction(ref, { sql: sql(), capture: success })).toBe(false);
+  });
+
+  it('expires older-than-24-hour pending rows while recovering recent rows', async () => {
+    const stale = await seed();
+    await db.sql`UPDATE harness_shared.tool_invocations
+      SET invoked_at = now() - interval '25 hours'
+      WHERE workspace_id='ws-a' AND id=${stale.id}`;
+    const recent = await seed();
+    const capture = vi.fn(success);
+    expect(await recoverInvocationFriction('ws-a', { sql: sql(), capture })).toEqual({ delivered: 1, pending: 0, expired: 1 });
+    const rows = await db.sql`SELECT id::text, metadata_json FROM harness_shared.tool_invocations ORDER BY invoked_at,id`;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].metadata_json).toMatchObject({ frictionCapture: 'expired', frictionExpiredReason: 'older-than-24-hours' });
+    expect(rows[0].metadata_json.frictionExpiredAt).toBeTypeOf('string');
+    expect(rows[1]).toMatchObject({ id: recent.id, metadata_json: { frictionCapture: 'delivered' } });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(await recoverInvocationFriction('ws-a', { sql: sql(), capture })).toEqual({ delivered: 0, pending: 0, expired: 0 });
+  });
+
+  it('persists safe failure class/code for retry and clears them after successful delivery', async () => {
+    const ref = await seed();
+    const failure = Object.assign(new Error('sensitive invocation detail'), {code:'23505'});
+    const failCapture = vi.fn(async () => { throw failure; });
+    await expect(recoverInvocationFriction('ws-a', { sql: sql(), capture: failCapture }))
+      .rejects.toThrow('failure classes: Error/23505=1');
+    const [failed] = await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id='ws-a' AND id=${ref.id}`;
+    expect(failed.metadata_json).toMatchObject({frictionCapture:'pending',frictionFailureClass:'Error',frictionFailureCode:'23505'});
+    expect(JSON.stringify(failed.metadata_json)).not.toContain('sensitive invocation detail');
+
+    expect(await recoverInvocationFriction('ws-a', {sql:sql(),capture:coalesced}))
+      .toEqual({delivered:1,pending:0,expired:0});
+    const [delivered] = await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id='ws-a' AND id=${ref.id}`;
+    expect(delivered.metadata_json).toMatchObject({frictionCapture:'delivered'});
+    expect(delivered.metadata_json).not.toHaveProperty('frictionFailureClass');
+    expect(delivered.metadata_json).not.toHaveProperty('frictionFailureCode');
   });
 
   it('concurrent delivery skips the row lock and never crosses workspace scope', async () => {
@@ -215,16 +266,30 @@ describe('R7 private PostgreSQL delivery contract', () => {
     expect(JSON.stringify(plan)).toContain('tool_invocations_friction_pending_idx');
   });
 
-  it('D-010: different measured contracts share one signature row under the real unique index and cannot promote it', async () => {
+  it('uses the expiry index for the exact bounded stale-expiry CTE and update', async () => {
+    await seed();
+    const staleBefore = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const query = buildExpiredInvocationFrictionQuery();
+    const [{ plan }] = await db.sql.begin(async tx => {
+      await tx.unsafe('SET LOCAL enable_seqscan = off');
+      const rows = await tx.unsafe(`EXPLAIN (FORMAT JSON) ${query}`, ['ws-a', staleBefore]);
+      return [{ plan: rows[0]['QUERY PLAN'] }];
+    });
+    expect(JSON.stringify(plan)).toContain('tool_invocations_friction_pending_expiry_idx');
+  });
+
+  it('D-010: incomplete metadata keeps changed contracts on the exact-message row without promoting it', async () => {
     const f = persistedCapture();
-    for (const revision of ['schema-one', 'schema-two']) {
-      await f.invoke({ schema: revision, owner: revision });
-    }
+    await f.invoke({ schema: 'schema-one', owner: 'schema-one' });
+    const original = (await f.rows('ws-a'))[0];
+    await f.invoke({ schema: 'schema-two', owner: 'schema-two' });
     const persisted = await db.sql`SELECT payload FROM harness_shared.work_items ORDER BY feature_id`;
     expect(persisted).toHaveLength(1);
-    expect(persisted[0].payload.watchdogKey).toMatch(/^tool-failure-signature:coord:send:/);
+    expect(persisted[0].payload.watchdogKey).toBe(original.payload?.watchdogKey);
+    expect(String(persisted[0].payload.watchdogKey)).toMatch(/^repeated-tool-error:/);
     expect(persisted[0].payload.toolFailureProbation).toMatchObject({ state: 'probation', reporters: ['schema-one'] });
     expect(persisted[0].payload.repeatCount).toBe(2);
+    expect(Object.keys(persisted[0].payload.toolFailureSignature.classes)).toHaveLength(2);
     // Prove the real arbiter can refuse, rather than merely reading two rows
     // from a fixture whose JSON was accidentally encoded as a string.
     await expect(db.sql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,status,payload)

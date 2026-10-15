@@ -44,6 +44,7 @@ export interface SuStdioReceiptState {
   pendingWrites: number;
 }
 export interface SuStdioPeerOptions {
+  stage?: (name: string) => void;
   binary: string;
   args: string[];
   cwd: string;
@@ -59,6 +60,7 @@ export interface SuStdioPeerOptions {
 
 export async function startSuStdioPeer(options: SuStdioPeerOptions): Promise<SuStdioPeer> {
   const { child, taskId } = await managedSpawn(options.binary, options.args, options.spec, {
+    stage: options.stage,
     workspaceId: options.workspaceId,
     spawnOptions: { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] },
   });

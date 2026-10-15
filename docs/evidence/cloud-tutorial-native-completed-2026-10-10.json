@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "kind": "manual-accessibility-evidence",
+  "name": "Cloud lesson completion in attended native review; speech controls unverified",
+  "workItemId": "WI-10007744",
+  "implementationWorkItemId": "WI-10007170",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "specId": "AUTO-BAR-R-12-P-010",
+  "specRevision": 7,
+  "observedAt": "2026-10-10T08:13:49.069Z",
+  "result": "Scoped manual lesson completion; not a full native acceptance or automated PASS",
+  "procedure": "Maintained Cloud beginner Playwright pause seam with private Xvfb, DBus and Orca. Warm-up debug pauses resumed before the intended beginner pause. AT-SPI seeds control focus; native Return activates controls. Practice submission uses exact slow native typing, AT-SPI readback, native Tab and Return. Whole-application pure-Tab navigation was not exercised.",
+  "observed": {
+    "browserZoomPercent": 200,
+    "preparedWorkspaceEntered": true,
+    "configurationReviewAndConnectInvoked": true,
+    "pauseAndResumeObserved": true,
+    "actionPlanReviewed": "Mira will ask the library about a room by Friday. Leon will collect book ideas. Date and budget are unknown.",
+    "revisionRequestedAndReviewed": true,
+    "typedTask": "Goal: make a workshop packing checklist. Context: library session, bring lunch and writing materials. Output: five bullets.",
+    "exactTypedReadbackBeforeSubmission": true,
+    "nativeTabFocusedSendMyOwnTask": true,
+    "nativeReturnSubmittedTask": true,
+    "practiceAnswer": "Pack lunch, water, a notebook, a pen and workshop materials. Ask which materials are needed.",
+    "practiceAnswerReviewed": true,
+    "completionParagraphText": "7 of 7 steps confirmed",
+    "completionStatus": "Your first agent lesson is complete.",
+    "completionScreenshotVisuallyInspected": true,
+    "replayLessonInvoked": true,
+    "sourceCustodyBeforeAndAfter": true
+  },
+  "notVerified": [
+    "Guide mute/unmute state change and Stop/Replay speech actions",
+    "Close guide after the completed review (earlier partial review verified it)",
+    "Whole-application pure-Tab navigation",
+    "Human-heard speech",
+    "Human novice pilot",
+    "Real-provider or native input voice",
+    "Production acceptance"
+  ],
+  "attemptedButUnconfirmed": "Mute guide was located as an accessible toggle button and native Return was sent, but the muted state and Unmute guide were not observed. The attempt is not evidence of successful mute or of a confirmed product defect.",
+  "sourceManifest": "docs/evidence/cloud-tutorial-native-manifest-2026-10-10.json",
+  "previousPartialEvidence": "docs/evidence/cloud-tutorial-native-partial-2026-10-10.json",
+  "refs": [
+    { "path": "/dev/shm/tutorial-cloud-native-current-e6e-20261010T0800.json", "sha256": "3760e531c26193fce1a292985e279d6eb20b59cad05ac40f301b4c26c148d648" },
+    { "path": "/dev/shm/tutorial-cloud-native-current-e6e-20261010T0800-speech.log", "sha256": "22c7320f96317a3ade61dd3230fcaaafc92ebcf5f844fd255d1f468b518b7cc5" },
+    { "path": "/dev/shm/tutorial-native-e6e-guide-0812.png", "sha256": "271997934399f3db51d0742fd1e55b3872e728e91772d2e832ebed2361841c5d" }
+  ],
+  "teardown": {
+    "taskId": "0mv23qget4nu6he1mtl",
+    "scope": "pc-0mv23qget4nu6he1mtl.service",
+    "verifiedEmpty": true,
+    "deliberatelyStopped": true,
+    "exitCode": 143,
+    "terminalAt": "2026-10-10T08:13:49.069Z"
+  },
+  "limitations": [
+    "Fixture returns authored practice answers and refuses speech; this does not prove a provider answer or provider audio.",
+    "No native acceptance proof was bound or renewed from this scoped review.",
+    "Filename records lesson completion, not full acceptance or shipment."
+  ]
+}

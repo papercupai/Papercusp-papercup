@@ -8,9 +8,12 @@
  * converse-prompt-surface.test.ts).
  */
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('../../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 
 import '../../agent_tools/list';
 import '../../tools/find';
+import '../../docs/search';
+import '../../docs/get';
 
 vi.mock('../../../operator-mcp-tools', () => ({
   ALL_AGENT_MCP_TOOLS: ['mcp__agentmcp__agent_tools:list'],
@@ -123,6 +126,38 @@ describe('buildOperatorPrompt — host trust', () => {
     memMock.mockClear();
     await buildOperatorPrompt({ messages: msgs, trigger: 'user_message', role: 'papercup', hostTrust: 'public' }, null);
     expect(memMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['text', 'voice'] as const)('public Papercup repeats the source check on the current %s turn and its resumed delta', async modality => {
+    const p = await buildOperatorPrompt({
+      messages: [{ role: 'user', content: 'Can I close this tab?' }],
+      role: 'papercup', hostTrust: 'public', modality, memoryInUser: true,
+      toolNames: ['mcp__agentmcp__docs:search', 'mcp__agentmcp__docs:get'],
+    }, null);
+    for (const turn of [p.userPromptText, p.userPromptTextDelta]) {
+      const start = turn.indexOf('## Public product answer');
+      expect(start).toBeGreaterThanOrEqual(0);
+      const check = turn.slice(start);
+      expect(check).toContain('Can I close this tab?');
+      expect(check).toContain('docs_search with scope:"public"');
+      expect(check).toContain('docs_get with scope:"public"');
+      expect(check).toContain('An earlier lookup or a remembered answer is insufficient');
+      expect(check).toContain('does not establish whether this account\'s agents or workspace are running now');
+      expect(check).not.toContain('Closing a browser tab does not itself stop');
+      expect(check).toContain(modality === 'voice' ? 'do not read out a URL' : 'Cite the retrieved public reference');
+    }
+  });
+
+  it('does not require public retrieval without both docs tools or on owner trust', async () => {
+    for (const input of [
+      { hostTrust: 'public' as const, toolNames: [] },
+      { hostTrust: 'public' as const, toolNames: ['mcp__agentmcp__docs:search'] },
+      { hostTrust: 'owner' as const, toolNames: ['mcp__agentmcp__docs:search', 'mcp__agentmcp__docs:get'] },
+    ]) {
+      const p = await buildOperatorPrompt({ role: 'papercup', messages: msgs, ...input }, null);
+      expect(p.userPromptText).not.toContain('## Public product answer');
+      expect(p.userPromptTextDelta).not.toContain('## Public product answer');
+    }
   });
 
   it('a global conversation / no uiContext adds no sections on either trust; the catalog advertises the passed toolset', async () => {

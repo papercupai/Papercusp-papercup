@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
   runFakeWorkspaceHostProviderContractSuite,
+  workspaceHostProviderRetryClass,
   type WorkspaceHostApplyResult,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderContext,
@@ -11,6 +12,7 @@ import {
 import {
   azureWorkspaceHostRequestUuid,
   azureWorkspaceHostResourceId,
+  AzureOperationFailedError,
   createAzureWorkspaceHostProvider,
   type AzureArmOperationObservation,
   type AzureArmOperationRef,
@@ -215,6 +217,26 @@ function providerAndClient() {
   return { client, provider };
 }
 
+async function failFirstStep(error?: AzureArmOperationObservation['error']): Promise<unknown> {
+  const { client, provider } = providerAndClient();
+  client.waitForOperation = async (operation) => ({
+    ...operation,
+    status: 'Failed',
+    observedAt: NOW,
+    ...(error ? { error } : {}),
+  });
+  const plan = await provider.plan(
+    { action: 'provision', operationId: 'op-fail', idempotencyKey: 'op-fail', desired: desired() },
+    context(),
+  );
+  return provider
+    .apply({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: [] }, context())
+    .then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    );
+}
+
 function requireAppliedResource(result: WorkspaceHostApplyResult): WorkspaceHostResourceRef {
   if (!('resource' in result) || !result.resource) {
     throw new Error(`expected an applied Azure resource, received '${result.state}'`);
@@ -241,6 +263,51 @@ async function provision(
   expect(client.putCalls).toHaveLength(plan.steps.length);
   return { host: { hostId: desired().hostId, target: 'azure', resources }, resources };
 }
+
+describe('Azure operation that finished with an error (WI-10005333)', () => {
+  it.each([
+    ['AuthorizationFailed', 403],
+    ['LinkedAuthorizationFailed', 403],
+    ['RequestDisallowedByPolicy', 403],
+    ['InvalidTemplate', 400],
+    ['InvalidTemplateDeployment', 400],
+    ['InvalidParameter', 400],
+    ['InvalidParameterValue', 400],
+    ['InvalidRequestContent', 400],
+    ['InvalidResourceReference', 400],
+    ['QuotaExceeded', 400],
+    ['ResourceQuotaExceeded', 400],
+    ['SkuNotAvailable', 400],
+  ] as const)('%s is terminal instead of reconciling forever', async (code, status) => {
+    const thrown = await failFirstStep({ code, message: `ARM operation failed (${code})` });
+    expect(thrown).toBeInstanceOf(AzureOperationFailedError);
+    expect(thrown).toMatchObject({ status, code });
+    expect(workspaceHostProviderRetryClass(thrown)).toBe('terminal');
+  });
+
+  it.each(['TooManyRequests', 'RetryableErrorDueToAnotherOperation'])(
+    '%s is retryable even though the LRO has no HTTP status',
+    async (code) => {
+      const thrown = await failFirstStep({ code, message: `ARM operation failed (${code})` });
+      expect(thrown).toBeInstanceOf(AzureOperationFailedError);
+      expect(thrown).toMatchObject({ code, throttled: true });
+      expect(workspaceHostProviderRetryClass(thrown)).toBe('throttled');
+    },
+  );
+
+  it('leaves overlapping, unknown, and code-less failures ambiguous', async () => {
+    const quotaOrThrottle = await failFirstStep({
+      code: 'OperationNotAllowed',
+      message: 'Operation is not currently allowed',
+    });
+    const unknown = await failFirstStep({ code: 'ProviderSpecificFailure', message: 'Provider failed' });
+    const codeLess = await failFirstStep();
+    for (const thrown of [quotaOrThrottle, unknown, codeLess]) {
+      expect(thrown).toBeInstanceOf(AzureOperationFailedError);
+      expect(workspaceHostProviderRetryClass(thrown)).toBe('ambiguous');
+    }
+  });
+});
 
 describe('Azure workspace-host provider planning', () => {
   it('lets Azure derive the default OS disk size from the source image', async () => {

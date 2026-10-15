@@ -786,7 +786,7 @@ describe('the diagnostic delta', () => {
    * would look reassuring.
    */
   it('marks the delta UNMEASURED — not clean — when a document cannot be re-synced', async () => {
-    const h = harness({ resync: () => false });
+    const h = harness({ resync: async () => false });
     const r = await applyRenameEdit(REQ, h.deps);
     ok(r);
     expect(r.diagnostics.measured).toBe(false);

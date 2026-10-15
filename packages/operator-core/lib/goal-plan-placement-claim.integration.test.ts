@@ -27,6 +27,10 @@ const LEADER = `su-leader-${RUN}`;
 const MEMBER = `su-member-${RUN}`;
 const OUTSIDER = `su-outsider-${RUN}`;
 const OWNERS = [HOLDER, LEADER, MEMBER, OUTSIDER];
+const activityScopeControl = process.env.PAPERCUSP_PLAN_ACTIVITY_SCOPE_CONTROL;
+if (activityScopeControl && !['drain', 'test'].includes(activityScopeControl)) {
+  throw new Error(`Unknown permanent plan activity scope control: ${activityScopeControl}`);
+}
 let fx: BaselineCoordFixture;
 
 async function writeFixturePlan(status = 'ready', items = '- **P-001** `wip` Implement the outcome') {
@@ -91,6 +95,8 @@ afterEach(async () => {
   await fx.admin`DELETE FROM harness_shared.agent_fleets WHERE workspace_id = ${WS} AND fleet_slug = ${FLEET}`;
   await fx.admin`DELETE FROM harness_shared.coord_presence WHERE workspace_id = ${WS} AND owner_id = ANY(${OWNERS}::text[])`;
   await fx.admin`DELETE FROM harness_shared.fleet_membership_events WHERE workspace_id = ${WS} AND owner_id = ANY(${OWNERS}::text[])`;
+  await fx.admin`DELETE FROM harness_shared.agent_modes WHERE workspace_id = ${WS} AND owner_id = ${LEADER}`;
+  await fx.admin`DELETE FROM harness_shared.agent_mode_changes WHERE workspace_id = ${WS} AND owner_id = ${LEADER}`;
 });
 afterAll(async () => {
   if (!fx) return;
@@ -155,6 +161,75 @@ describe('canonical plan lifecycle blocker receipts', () => {
 });
 
 describe('canonical delegated-member claim receipt', () => {
+  it.each([
+    { activity: 'drain', mode: 'repaired' }, { activity: 'test', mode: 'repaired' },
+    { activity: 'drain', mode: 'outer control' }, { activity: 'test', mode: 'outer control' },
+  ])('does not duplicate a plan fleet for canonical $activity activity held by another fleet member: $mode', async ({ activity, mode }) => {
+    // Both activities can have live leaders, members and a real plan lease.
+    // Only the explicit plan allocation distinguishes them from a plan fleet.
+    expect((await setMode({ workspaceId: WS, ownerId: LEADER, modeId: activity,
+      subject: GOAL, enabled: true, reason: 'Isolated exclusion proof', setBy: LEADER, sql: fx.admin })).ok).toBe(true);
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: FLEET, target: 1,
+      config: { plan: `${PLAN}-${activity}`, harness: HARNESS, agent: 'codex', role: activity }, sql: fx.admin });
+    expect((await setClaimSpec({ workspaceId: WS, cupId: `fleet:${FLEET}`, updatedBy: LEADER,
+      spec: { ...DEFAULT_CLAIM_SPEC, specId: `fixture-${activity}`,
+        view: { filter: { field: 'goal', op: '=', value: GOAL } } },
+    }, fx.admin)).ok).toBe(true);
+    const work = await claimedWork();
+    await lease();
+    // Read persisted inputs directly, independently of the portfolio adapter.
+    // A passing receipt cannot hide a fixture writer that stored the wrong scope.
+    const assertPersistedScope = async (plan: string, field: string, value: string) => {
+      const fleets = await fx.admin`SELECT headcount_config FROM harness_shared.agent_fleets
+        WHERE workspace_id = ${WS} AND fleet_slug = ${FLEET}`;
+      expect(fleets).toMatchObject([{ headcount_config: { plan, harness: HARNESS, role: activity } }]);
+      const specs = await fx.admin`SELECT spec FROM harness_shared.cup_claim_specs
+        WHERE workspace_id = ${WS} AND bee_id = ${`fleet:${FLEET}`}`;
+      expect(specs).toMatchObject([{ spec: { view: { filter: { field, op: '=', value } } } }]);
+      const claims = await fx.admin`SELECT taken_by, source_plan_slug, source_plan_item_ids
+        FROM harness_shared.work_items WHERE harness_slug = ${HARNESS} AND feature_id = ${work.id}`;
+      expect(claims).toMatchObject([{ taken_by: MEMBER, source_plan_slug: PLAN, source_plan_item_ids: ['P-001'] }]);
+    };
+    await assertPersistedScope(`${PLAN}-${activity}`, 'goal', GOAL);
+    const assertExcluded = (row: Awaited<ReturnType<typeof placement>>) => expect(row, `plan-activity-exclusion:${activity}`).toMatchObject({
+      state: 'blocked', fleet: null, launchTransaction: null,
+      activeLane: { ownerId: MEMBER, ownerFleet: FLEET, holderLive: true },
+      reconciliation: { consistent: false, action: 'reconcile-plan-lane-holder',
+        reason: expect.stringContaining(FLEET), toolCall: null },
+    });
+    if (mode === 'outer control') assertExcluded(await placement());
+    if (mode === 'outer control' || activityScopeControl === activity) {
+      // Wrong adapter: promote goal activity into the reader's actual plan
+      // scope inputs. Keep the literal oracle below and all liveness intact.
+      await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: FLEET, target: 1,
+        config: { plan: PLAN, harness: HARNESS, agent: 'codex', role: activity }, sql: fx.admin });
+      expect((await setClaimSpec({ workspaceId: WS, cupId: `fleet:${FLEET}`, updatedBy: LEADER,
+        spec: { ...DEFAULT_CLAIM_SPEC, specId: `fixture-${activity}-wrong-plan-scope`,
+          view: { filter: { field: 'plan', op: '=', value: PLAN } } },
+      }, fx.admin)).ok).toBe(true);
+      await assertPersistedScope(PLAN, 'plan', PLAN);
+    }
+    const row = await placement();
+    if (mode === 'outer control') {
+      expect(() => assertExcluded(row)).toThrowError();
+      expect(row.state).toBe('working');
+      // Distinguish the fixture oracle from the production receipt: role is
+      // persisted fixture provenance, while admission reads plan/harness scope.
+      // A broken fixture writer must be caught even when admission stays green.
+      await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: FLEET, target: 1,
+        config: { plan: PLAN, harness: HARNESS, agent: 'codex', role: 'wrong-fixture-role' }, sql: fx.admin });
+      expect((await placement()).state).toBe('working');
+      await expect(assertPersistedScope(PLAN, 'plan', PLAN)).rejects.toThrow();
+      await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: FLEET, target: 1,
+        config: { plan: PLAN, harness: HARNESS, agent: 'codex', role: activity }, sql: fx.admin });
+      await assertPersistedScope(PLAN, 'plan', PLAN);
+      expect((await placement()).state).toBe('working');
+      return;
+    }
+    assertExcluded(row);
+    expect(row.state).not.toBe('working');
+    expect(row.state).not.toBe('independently-led');
+  });
   it('keeps a verified launch without a member claim admitting and preserves the one fleet', async () => {
     expect(await placement()).toMatchObject({ state: 'admitting', activeLane: null, reconciliation: { consistent: false, toolCall: null } });
     expect((await createFleetIfAbsent({ workspaceId: WS, fleetSlug: FLEET, leaderOwnerId: LEADER }, fx.admin)).created).toBe(false);

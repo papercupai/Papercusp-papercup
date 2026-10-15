@@ -1,3 +1,6 @@
+import { paymentTestOpening, paymentTestKey } from '@papercusp/operator-core/lib/p2p/_payment-voucher-fixture';
+import { paymentChannelPayerSigningBytes } from '@papercusp/operator-core/lib/p2p/channel-funding';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '@papercusp/operator-core/lib/identity/ed25519';
 /**
  * Buyer-side channel funding through the shipped Worker production door.
  *
@@ -81,7 +84,7 @@ function bearerJson(body: unknown): RequestInit {
       Authorization: 'Bearer test-token',
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(paymentTestOpening(body, { payer: 'gh:42', chainId: CHAIN_ID, stablecoinAddress: STABLECOIN, settlementContractAddress: SETTLEMENT_CONTRACT, walletAddress: SIGNER })),
   };
 }
 
@@ -136,6 +139,38 @@ describe('payment-channel Worker production door', () => {
     });
   });
 
+  it('refuses missing, forged and altered opening-key proofs before escrow I/O', async () => {
+    const rail = fakeAdapter(); const h = harness(rail.adapter); await bindWallet(h.db);
+    const signed = JSON.parse(String(bearerJson({ channelId: 'authenticated-key', escrowMicros: 100,
+      fundingSource: 'bound-wallet' }).body)) as Record<string, unknown>;
+    for (const change of [ { payerPubkeyBase64: undefined, payerKeyProof: undefined },
+      { payerKeyProof: 'forged' }, { channelId: 'substituted-channel' }, { escrowMicros: 101 } ]) {
+      const response = await h.api.request('/commerce/payment-channels', bearerJson({ ...signed, ...change }), h.env);
+      expect(response.status).toBe(422); expect(await response.json()).toMatchObject({ error: 'invalid_payer_key' });
+    }
+    expect(rail.openChannel).not.toHaveBeenCalled();
+    expect(h.raw.prepare('SELECT COUNT(*) AS n FROM payment_channels').get()).toMatchObject({ n: 0 });
+  });
+
+  it('pins the authenticated opening key and refuses replacement on retry and in D1', async () => {
+    const rail = fakeAdapter(); const h = harness(rail.adapter); await bindWallet(h.db);
+    const body = { channelId: 'immutable-key', escrowMicros: 100, fundingSource: 'bound-wallet' };
+    expect((await h.api.request('/commerce/payment-channels', bearerJson(body), h.env)).status).toBe(201);
+    const stranger = generateEd25519KeypairDer();
+    const binding = { channelId: body.channelId, payer: 'gh:42', payerPubkeyBase64: stranger.pubkeyBase64,
+      chainId: CHAIN_ID, stablecoinAddress: STABLECOIN, settlementContractAddress: SETTLEMENT_CONTRACT,
+      escrowMicros: '100', fundingSource: { kind: 'bound-wallet' as const, walletAddress: SIGNER } };
+    const replacement = { ...body, payerPubkeyBase64: stranger.pubkeyBase64,
+      payerKeyProof: signWithPrivateKeyDer(stranger.privateKeyDer, paymentChannelPayerSigningBytes(binding)).toString('base64') };
+    const response = await h.api.request('/commerce/payment-channels', bearerJson(replacement), h.env);
+    expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ error: 'channel-conflict' });
+    expect(rail.openChannel).toHaveBeenCalledTimes(1);
+    expect(() => h.raw.prepare('UPDATE payment_channels SET payer_pubkey_base64 = ? WHERE channel_id = ?')
+      .run(stranger.pubkeyBase64, body.channelId)).toThrow('payer authority is immutable');
+    expect(h.raw.prepare('SELECT payer_pubkey_base64 FROM payment_channels WHERE channel_id = ?').get(body.channelId))
+      .toMatchObject({ payer_pubkey_base64: paymentTestKey.pubkeyBase64 });
+  });
+
   it('fails closed when the viem rail secrets and vars are not configured', async () => {
     const { api, env, raw } = harness();
     const response = await api.request(
@@ -176,6 +211,7 @@ describe('payment-channel Worker production door', () => {
       replayed: false,
       channel: {
         channelId: request.channelId,
+        principalId: 'gh:42',
         state: 'open',
         fundingSource: {
           kind: 'prepaid-credit',
@@ -228,6 +264,7 @@ describe('payment-channel Worker production door', () => {
       env,
     );
     expect(visible.status).toBe(200);
+    expect(await visible.json()).toMatchObject({ channel: { channelId: request.channelId, principalId: 'gh:42' } });
 
     auth.resolveGithubBearer.mockResolvedValueOnce({
       id: 99,

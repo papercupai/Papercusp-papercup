@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "get-feedback-compaction-ancestry-v1",
+  "workItem": "EI-25726755269834817",
+  "scope": "Current source adaptation and local focused tests; native cross-backend acceptance and final shipment remain open.",
+  "native": "1ffb53de-f8f2-4140-b908-e40f7a36927d",
+  "source": "archive-manifest",
+  "sourceSha256": "9969b7cb1a733d5c4a2edb112cacfec7ce920bea761480fac45040d42ffb2d6d",
+  "sourceBytes": 9513058,
+  "exactPriorMatch": true,
+  "before": {
+    "adapted": false,
+    "error": "Error: unrecoverable Claude transcript graph: cycle detected at eb2572be-92f5-4dde-b33e-320f2d1f8e91",
+    "ref": "b943bf331b",
+    "adapterSha256": "031764d503f257c14ce484e72ca045316ae2b7027c4589a0f479f72d1a297116"
+  },
+  "after": {
+    "adapted": true,
+    "adapterVersion": 2,
+    "adapterSha256": "ac6d125256648791bd33cfa6451dbd533ecae8ed9dff871e82456d43100d739a",
+    "testSha256": "607a828b9c3f0e244cfa4ce42e6fbe3d396375361441a45af8e8837aff9485d1",
+    "activeLeafId": "4a40293a-b126-4d7d-b6c5-a876a0de709f",
+    "firstTurnId": "bd0d3341-79f1-4700-bd74-e739880a0fb2",
+    "firstTurnIsSummary": true,
+    "stats": {
+      "sourceRecords": 555,
+      "activePathRecords": 219,
+      "malformedRecords": 0,
+      "sidechainRecords": 0,
+      "compactedAncestors": 3,
+      "toolCalls": 71,
+      "toolResults": 60,
+      "unlinkedToolResults": 0,
+      "truncatedToolNarratives": 0,
+      "omittedAttachments": 0,
+      "textAttachments": 0,
+      "truncatedAttachments": 0,
+      "omittedThinkingBlocks": 42,
+      "omittedSignatureBlocks": 42,
+      "unsupportedBlocks": 0,
+      "syntheticRecords": 237,
+      "redactions": 0,
+      "controlBytesRemoved": 0,
+      "delimiterEscapes": 0
+    },
+    "warnings": [
+      "summarized ancestor cycle detected at eb2572be-92f5-4dde-b33e-320f2d1f8e91; discarded history counted once",
+      "42 provider thinking block(s) omitted",
+      "42 provider signature block(s) omitted",
+      "237 synthetic bookkeeping record(s) excluded"
+    ]
+  },
+  "tests": {
+    "red": {
+      "log": "/dev/shm/get-feedback-compaction-ancestry-red-20261011T2321.log",
+      "passed": 7,
+      "failed": 1,
+      "skipped": 0,
+      "expectedFailure": "retains the compact summary and tail when discarded logical ancestry contains a cycle"
+    },
+    "green": {
+      "log": "/dev/shm/get-feedback-compaction-ancestry-green-20261011T2322.log",
+      "passed": 64,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        "packages/operator-core/lib/session-port/claude-adapter.test.ts",
+        "packages/operator-core/lib/session-port/native-adapter.test.ts",
+        "packages/operator-core/lib/session-port/service.test.ts"
+      ],
+      "plane": "local shared-tree"
+    }
+  }
+}

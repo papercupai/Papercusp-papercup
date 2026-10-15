@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   releaseGateTile,
+  releaseGateApplicability,
   poolTile,
   fleetsAndPotsTile,
   connectionTile,
@@ -11,6 +12,25 @@ import type { listPresence } from './agent-tools/coordination/presence';
 import type { fetchPresenceFleet } from './agent-tools/coordination/presence-fleet';
 
 // ── releaseGateTile (P-009) ──────────────────────────────────────────────────
+describe('releaseGateApplicability', () => {
+  it('proves absence with a successful strict read of the selected checkpoint routine', async () => {
+    const read = vi.fn(async () => null);
+    expect(await releaseGateApplicability('customer', { read })).toBe('not-applicable');
+    expect(read).toHaveBeenCalledExactlyOnceWith('customer', 'green-checkpoint');
+  });
+
+  it.each([true, false])('requires a measurement even when a configured routine is active=%s', async (active) => {
+    const read = async () => ({ name: 'green-checkpoint', active, cron: null,
+      lastFiredAtMs: null, nextFireAtMs: null, groupSlug: null, pause: null });
+    expect(await releaseGateApplicability(undefined, { read })).toBe('configured');
+  });
+
+  it('preserves unknown when the strict configuration read fails', async () => {
+    const read = async () => { throw new Error('routine store unavailable'); };
+    expect(await releaseGateApplicability(undefined, { read })).toBe('unknown');
+  });
+});
+
 describe('releaseGateTile', () => {
   const pipe = (over: Partial<OrientPipeline>): OrientPipeline => ({
     gate: 'green',

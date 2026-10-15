@@ -10,7 +10,7 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { BlueprintSchema, compileAgentSpecification, loadBuiltinBlueprint, operationFromSpecification } from '@papercusp/orchestrator/blueprint';
 import {
   projectBlueprintToPg,
@@ -32,6 +32,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -125,7 +126,10 @@ it('keeps accepted operation revision A after the mutable blueprint cache moves 
     execution: { kind: 'agent', role: 'worker' },
     inputSchema: { type: 'object', properties: { itemId: { type: 'string' } } },
     acceptance: { resultSchema: { type: 'object', properties: { value: { type: 'string' } } } },
-    policy: { model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' } },
+    policy: {
+      identity: { kind: 'identity', ref: 'snapshot-worker', revision: '1.0.0', contentHash: 'b'.repeat(64) },
+      model: { mode: 'exact', models: ['gpt-6-sol'], onUnavailable: 'fail' },
+    },
   };
   const source = {
     id: 'snapshot-fixture', workItem: { kind: 'feature' }, roles: [{ id: 'worker' }],
@@ -134,7 +138,7 @@ it('keeps accepted operation revision A after the mutable blueprint cache moves 
   const a = compileAgentSpecification({ source });
   await projectBlueprintToPg(sql, { workspaceId: WS, harnessSlug: 'snapshot-demo', blueprint: BlueprintSchema.parse(source), specification: a });
   const acceptedRevision = a.specificationRevision;
-  const bSource = { ...source, operations: [{ ...operation, version: 'B', policy: { model: { mode: 'exact', models: ['gpt-6-luna'], onUnavailable: 'fail' } } }] };
+  const bSource = { ...source, operations: [{ ...operation, version: 'B', policy: { ...operation.policy, model: { mode: 'exact', models: ['gpt-6-luna'], onUnavailable: 'fail' } } }] };
   const b = compileAgentSpecification({ source: bSource });
   await projectBlueprintToPg(sql, { workspaceId: WS, harnessSlug: 'snapshot-demo', blueprint: BlueprintSchema.parse(bSource), specification: b });
 
@@ -143,7 +147,10 @@ it('keeps accepted operation revision A after the mutable blueprint cache moves 
   expect(retained?.specificationRevision).toBe(acceptedRevision);
   expect(operationFromSpecification(retained!, 'extract').operation).toMatchObject({
     version: 'A', execution: { kind: 'agent', role: 'worker' },
-    inputSchema: { type: 'object' }, policy: { model: { mode: 'exact', models: ['gpt-6-sol'] } },
+    inputSchema: { type: 'object' }, policy: {
+      identity: { kind: 'identity', ref: 'snapshot-worker', revision: '1.0.0', contentHash: 'b'.repeat(64) },
+      model: { mode: 'exact', models: ['gpt-6-sol'] },
+    },
   });
   expect(await readBlueprintSpecificationSnapshot(sql, 'other-workspace', 'snapshot-demo', acceptedRevision)).toBeNull();
   expect(await readBlueprintSpecificationSnapshot(sql, WS, 'other-harness', acceptedRevision)).toBeNull();

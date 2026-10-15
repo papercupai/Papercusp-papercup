@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "generic-rag-chunking-2026-09-29 R-30 live census (P-016 re-measure 2): every harness doc collection has an embedded doc_sections row",
+  "framework": "operational",
+  "command": [
+    "dev:pg_query { allowUnscoped: true, sql: \"WITH d AS (SELECT harness_slug, count(*) AS docs FROM harness_shared.harness_docs WHERE retired_at IS NULL GROUP BY harness_slug), s AS (SELECT source_key, count(*) AS n, count(embedding) AS e FROM harness_shared.doc_sections WHERE source_key LIKE 'harness:%' GROUP BY source_key) SELECT coalesce(d.harness_slug, substr(s.source_key, 9)) AS slug, d.docs, s.n AS sections, s.e AS embedded, now() AS at FROM d FULL JOIN s ON s.source_key = 'harness:' || d.harness_slug ORDER BY (coalesce(s.e,0) = 0) DESC, slug\" } against the live operator DB (native PG :5432, database papercusp)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T16:52:32.000Z",
+  "finishedAt": "2026-10-01T16:52:32.224Z",
+  "summary": "20 harness doc collections (source_key harness:<slug>), 4,164 doc_sections rows, all 4,164 embedded; 0 collections without an embedded row. Denominator cross-check: all 4 harnesses with live (non-retired) harness_docs rows (oddsmith 63 docs, papercup-rust-mobile 16, papercusp 1013, restart 54) have embedded sections, so no harness with docs is missing from doc_sections. The other 16 collections come from harness content paths the sweep reads from disk and have no harness_docs rows. The census starts from harness_docs (FULL JOIN), so a harness whose sections were never written (the R-30 mutant's failure) would appear as a row with sections null.",
+  "assertions": [
+    {
+      "id": "r30-every-collection-embedded",
+      "passed": true,
+      "evidence": "Every one of the 20 harness:<slug> collections has embedded = sections (> 0): brood-box-alpha 27/27, calendar 2/2, email 2/2, hive-canary 24/24, oddsmith 653/653, oddsmith-hive 653/653, oddsmith-ops 68/68, papercup-rust-mobile 176/176, papercusp 1504/1504, papercusp/libs/papercusp 33/33, papercusp/papercusp-desktop 5/5, phone-app 6/6, portal 2/2, quartermaster 6/6, quartermaster-hive 2/2, restart 836/836, shared-hive-test 4/4, shared-hive-test-hive-2 4/4, sidestage 137/137, spawn-demo 20/20."
+    },
+    {
+      "id": "r30-no-docs-without-sections",
+      "passed": true,
+      "evidence": "FULL JOIN of live harness_docs per harness_slug against doc_sections per source_key returned no row with docs > 0 and sections null or embedded 0 (the query orders such rows first; the first row is brood-box-alpha with 27 embedded)."
+    }
+  ],
+  "rows": [
+    { "slug": "brood-box-alpha", "docs": null, "sections": 27, "embedded": 27 },
+    { "slug": "calendar", "docs": null, "sections": 2, "embedded": 2 },
+    { "slug": "email", "docs": null, "sections": 2, "embedded": 2 },
+    { "slug": "hive-canary", "docs": null, "sections": 24, "embedded": 24 },
+    { "slug": "oddsmith", "docs": 63, "sections": 653, "embedded": 653 },
+    { "slug": "oddsmith-hive", "docs": null, "sections": 653, "embedded": 653 },
+    { "slug": "oddsmith-ops", "docs": null, "sections": 68, "embedded": 68 },
+    { "slug": "papercup-rust-mobile", "docs": 16, "sections": 176, "embedded": 176 },
+    { "slug": "papercusp", "docs": 1013, "sections": 1504, "embedded": 1504 },
+    { "slug": "papercusp/libs/papercusp", "docs": null, "sections": 33, "embedded": 33 },
+    { "slug": "papercusp/papercusp-desktop", "docs": null, "sections": 5, "embedded": 5 },
+    { "slug": "phone-app", "docs": null, "sections": 6, "embedded": 6 },
+    { "slug": "portal", "docs": null, "sections": 2, "embedded": 2 },
+    { "slug": "quartermaster", "docs": null, "sections": 6, "embedded": 6 },
+    { "slug": "quartermaster-hive", "docs": null, "sections": 2, "embedded": 2 },
+    { "slug": "restart", "docs": 54, "sections": 836, "embedded": 836 },
+    { "slug": "shared-hive-test", "docs": null, "sections": 4, "embedded": 4 },
+    { "slug": "shared-hive-test-hive-2", "docs": null, "sections": 4, "embedded": 4 },
+    { "slug": "sidestage", "docs": null, "sections": 137, "embedded": 137 },
+    { "slug": "spawn-demo", "docs": null, "sections": 20, "embedded": 20 }
+  ],
+  "note": "[self-imposed under AUTO; owner directives #970/#1180] Re-measured because operational binding 18901 went stale on freshness after 13:56Z.",
+  "supersedes": "p016-live-r-30-census.json (operational binding 18901, 2026-10-01T13:56Z)",
+  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "plan": "generic-rag-chunking-2026-09-29",
+  "planItem": "P-013 (re-measured live under P-016)",
+  "bar": "R-30"
+}

@@ -28,6 +28,20 @@ import {
 
 const LS_KEY = 'papercusp.testing.perf-events.v1';
 
+const indexed = vi.hoisted(() => ({
+  rows: [] as Array<{ id: string; v: number; events: unknown[] }>,
+  load: vi.fn(),
+  save: vi.fn(),
+}));
+vi.mock('@papercusp/kv-persist-indexeddb', () => ({
+  createIndexedDbPersistence: () => ({ load: indexed.load, save: indexed.save }),
+}));
+
+async function ready(): Promise<void> {
+  getEvents();
+  await window.__papercuspPerfRecorder!.ready;
+}
+
 function installLocalStorage(): void {
   const store = new Map<string, string>();
   const ls: Storage = {
@@ -53,8 +67,12 @@ function pe(i: number): PerfEvent {
 beforeEach(() => {
   installLocalStorage();
   resetRecorder();
+  indexed.rows = [];
+  indexed.load.mockReset().mockImplementation(async () => structuredClone(indexed.rows));
+  indexed.save.mockReset().mockImplementation((rows) => { indexed.rows = structuredClone(rows); });
 });
-afterEach(() => {
+afterEach(async () => {
+  await window.__papercuspPerfRecorder?.ready;
   vi.restoreAllMocks();
   resetRecorder();
 });
@@ -132,19 +150,83 @@ describe('subscribe', () => {
 });
 
 describe('clearEvents', () => {
-  it('empties the buffer, notifies listeners, and persists the empty buffer', () => {
+  it('empties the buffer, notifies listeners, and persists the empty buffer', async () => {
     localStorage.setItem(LS_KEY, JSON.stringify([pe(1), pe(2)]));
     resetRecorder();
     const listener = vi.fn();
     subscribe(listener); // immediate call #1
     listener.mockClear();
 
+    await ready();
     clearEvents();
     expect(getEvents()).toEqual([]);
     expect(listener).toHaveBeenCalledTimes(1);
     expect(listener.mock.calls[0][0]).toEqual([]);
     // The empty buffer was flushed — a fresh hydrate also reads empty.
     resetRecorder();
+    await ready();
     expect(getEvents()).toEqual([]);
+  });
+});
+
+describe('IndexedDB retention', () => {
+  it('migrates legacy events without rewriting or removing the legacy store', async () => {
+    localStorage.setItem(LS_KEY, JSON.stringify([pe(1)]));
+    const write = vi.spyOn(localStorage, 'setItem');
+    const remove = vi.spyOn(localStorage, 'removeItem');
+    await ready();
+    expect(indexed.save).toHaveBeenCalledWith([{ id: LS_KEY, v: 1, events: [pe(1)] }]);
+    clearEvents();
+    clearEvents();
+    expect(indexed.save).toHaveBeenCalledTimes(2); // unchanged buffers are not rewritten
+    expect(write).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem(LS_KEY)!)).toEqual([pe(1)]);
+  });
+
+  it('restores persisted events and preserves events received during the read', async () => {
+    let resolve!: (rows: typeof indexed.rows) => void;
+    indexed.load.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    localStorage.setItem(LS_KEY, JSON.stringify([pe(0)]));
+    getEvents();
+    window.__papercuspPerfRecorder!.events.push(pe(3));
+    const listener = vi.fn();
+    subscribe(listener);
+    resolve([{ id: LS_KEY, v: 1, events: [pe(1), pe(2)] }]);
+    await ready();
+    expect(getEvents()).toEqual([pe(1), pe(2), pe(3)]);
+    expect(listener).toHaveBeenLastCalledWith([pe(1), pe(2), pe(3)]);
+    expect(indexed.rows[0].events).toEqual([pe(1), pe(2), pe(3)]);
+  });
+
+  it('does not resurrect old events when cleared before restore finishes', async () => {
+    let resolve!: (rows: typeof indexed.rows) => void;
+    indexed.load.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    getEvents();
+    clearEvents();
+    resolve([{ id: LS_KEY, v: 1, events: [pe(1)] }]);
+    await ready();
+    expect(getEvents()).toEqual([]);
+    expect(indexed.rows[0].events).toEqual([]);
+  });
+
+  it('caps restored history and advances the observer sequence', async () => {
+    indexed.rows = [{ id: LS_KEY, v: 1, events: Array.from({ length: 300 }, (_, i) => pe(i)) }];
+    await ready();
+    expect(getEvents()).toHaveLength(250);
+    expect(getEvents()[0].id).toBe('ev-50');
+    expect((window as unknown as { __papercuspPerfSeq: number }).__papercuspPerfSeq).toBeGreaterThanOrEqual(299);
+  });
+
+  it('keeps the in-memory history when IndexedDB fails, without localStorage fallback', async () => {
+    localStorage.setItem(LS_KEY, JSON.stringify([pe(1)]));
+    indexed.load.mockRejectedValueOnce(new Error('unavailable'));
+    indexed.save.mockImplementation(() => { throw new Error('unavailable'); });
+    const write = vi.spyOn(localStorage, 'setItem');
+    await ready();
+    expect(getEvents()).toEqual([pe(1)]);
+    clearEvents();
+    expect(getEvents()).toEqual([]);
+    expect(write).not.toHaveBeenCalled();
   });
 });

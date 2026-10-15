@@ -12,26 +12,36 @@
  * a long dev session.
  *
  * P-014 persistence (admin-ui rows):
- * - For 'vitest' / 'playwright' spawns, we set `PAPERCUSP_TEST_RUN_SOURCE=admin-ui`
- *   on the child env. The admin-test-runs reporter inside the child reads it
- *   and writes per-file rows with `source='admin-ui'`. This preserves
- *   per-file granularity, including for vitest-multi (Run section / Run all).
+ * - For 'vitest' / 'playwright' spawns, the child reporter defaults to
+ *   `PAPERCUSP_TEST_RUN_SOURCE=admin-ui`. Internal callers can select a
+ *   different provenance when their rows need another documented adoption path.
+ *   Per-file granularity is preserved, including for vitest-multi (Run section / Run all).
  * - For 'node' / 'shell' spawns there's no in-process reporter, so the store
  *   itself writes one fallback row on close. Fail-soft (D-007) — never throws.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFile, rm } from 'node:fs/promises';
-import { basename, isAbsolute, relative as pathRelative, posix } from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
+import { readFile, readdir, rm } from 'node:fs/promises';
+import { basename, dirname, join, isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   parseTestRunExecutionDetails,
+  isRecordedInstant,
+  isRecordedCaseTitle,
+  MAX_RECORDED_FAILED_CASES,
+  MAX_RECORDED_PASSED_CASES,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
+import {
+  captureConfigurationSnapshot,
+  type ConfigurationSnapshot,
+} from '@papercusp/test-config/configuration-snapshot';
 import { resolveGitContext } from './testing-branch-resolve';
-import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
+import type { TestRunSource } from './testing-run-source';
+import { captureWorktreeSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 import {
   beginSyncEnrolment,
@@ -43,7 +53,7 @@ import { isTerminalState, type TaskSpec, type TaskState } from './task-manager/t
 import { boundedPgReadTxn } from './pg-read-query';
 import { boundedOrgTxn } from './pg-bounded-txn';
 
-export { captureWorktreeSnapshot, computeWorktreeDirty };
+export { captureWorktreeSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty };
 export type { WorktreeGitSnapshot };
 
 /** A postgres-js-like tagged-template client; injectable so persistence seams are testable. */
@@ -108,6 +118,8 @@ export interface RunSnapshot {
   kind: 'vitest' | 'playwright' | 'cargo' | 'node' | 'shell' | 'admin-suite';
   label: string;
   filePath?: string;
+  /** Exact per-file request manifest for detached Vitest recovery. */
+  requestedFiles?: string[];
   command: string[];
   status: RunStatus;
   exitCode: number | null;
@@ -131,6 +143,7 @@ interface RunState {
   proc: ChildProcess | null;
   cwd: string;
   worktreeBefore: WorktreeGitSnapshot;
+  finalization: Promise<void> | null;
 }
 
 const _runs = new Map<string, RunState>();
@@ -197,7 +210,6 @@ async function snapshotSql(sqlOverride?: SqlLike): Promise<SqlLike | null> {
   if (sqlOverride) return sqlOverride;
   if (!snapshotPersistenceEnabled()) return null;
   try {
-    const { getOrgPg } = await import('@papercusp/db-org');
     return getOrgPg().sql as unknown as SqlLike;
   } catch {
     return null;
@@ -237,6 +249,25 @@ function commandFromRow(value: unknown): string[] | null {
   }
 }
 
+function requestedFilesFromValue(value: unknown): string[] | null {
+  let candidate = value;
+  if (typeof candidate === 'string') {
+    try { candidate = JSON.parse(candidate); } catch { return null; }
+  }
+  if (!Array.isArray(candidate) || candidate.length === 0
+    || !candidate.every((entry) => typeof entry === 'string' && entry.length > 0)) return null;
+  return [...candidate];
+}
+
+function requestedFilesFromTaskDetail(value: unknown): string[] | null {
+  let detail = value;
+  if (typeof detail === 'string') {
+    try { detail = JSON.parse(detail); } catch { return null; }
+  }
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return null;
+  return requestedFilesFromValue((detail as { requestedFiles?: unknown }).requestedFiles);
+}
+
 function snapshotFromRow(row: DurableRunSnapshotRow): RunSnapshot | null {
   const startedAt = epochMs(row.started_at);
   const command = commandFromRow(row.command);
@@ -247,6 +278,9 @@ function snapshotFromRow(row: DurableRunSnapshotRow): RunSnapshot | null {
     kind: row.kind,
     label: row.label,
     ...(row.file_path === null ? {} : { filePath: row.file_path }),
+    ...(requestedFilesFromTaskDetail(row.task_detail) === null
+      ? {}
+      : { requestedFiles: requestedFilesFromTaskDetail(row.task_detail)! }),
     command,
     status: row.status,
     exitCode: row.exit_code,
@@ -435,8 +469,41 @@ async function readReportRecoveryTask(
        AND task_ledger.state IN ('exited', 'ended_unobserved')
      LIMIT 2
   `);
-  // Ambiguous launch identity and unavailable task reads cannot authorize ingestion.
-  return rows?.length === 1 ? rows[0]! : null;
+  // An unreadable or ambiguous task lookup is not evidence of an absent run.
+  if (rows === null || rows.length > 1) throw new TestingRunSnapshotUnavailableError();
+  return rows[0] ?? null;
+}
+
+/** Foreground routers have a task row, but never write a detached snapshot.
+ * Preserve their liveness before evidence recovery can abandon a missing origin. */
+async function readLiveForegroundSnapshot(
+  runId: string, scope: DetachedReportRecoveryScope, sql: SqlLike,
+): Promise<RunSnapshot | null> {
+  const rows = await boundedSnapshotQuery<Array<{
+    task_id: string; title: string; argv: unknown; state: string; started_at: Date | string | number;
+  }>>(sql`
+    SELECT task_id, title, argv, state, started_at
+      FROM harness_shared.task_ledger
+     WHERE workspace_id = ${scope.workspaceId}
+       AND cwd = ${scope.root}
+       AND (harness_slug = ${scope.harnessSlug} OR harness_slug IS NULL)
+       AND class = 'test-run' AND launched_by = ${`testing:run:${runId}`}
+       AND detail->>'runGroup' = ${runId} AND detail->>'foreground' = 'true'
+     LIMIT 2
+  `);
+  if (rows === null || rows.length > 1) throw new TestingRunSnapshotUnavailableError();
+  const row = rows[0];
+  if (!row) return null;
+  // Terminal task state permits an absence verdict, never a manufactured pass.
+  // A stranded owner can leave escaped children; keep that case unknown.
+  if (['exited', 'ended_unobserved', 'killed', 'timed_out'].includes(row.state)) return null;
+  const startedAt = epochMs(row.started_at);
+  const command = commandFromRow(row.argv);
+  if (!['pending', 'running'].includes(row.state) || startedAt === null || !command || !row.task_id)
+    throw new TestingRunSnapshotUnavailableError();
+  return { runId, taskId: row.task_id, kind: 'vitest', label: row.title, command,
+    status: 'running', exitCode: null, startedAt, finishedAt: null, truncated: false,
+    output: 'The exact managed foreground task is still in flight; no test verdict has been recorded.' };
 }
 
 async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
@@ -471,7 +538,7 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, re
   if (rows === null) throw new TestingRunSnapshotUnavailableError();
   const reportTaskRecovery = rows.length === 0 && recoveryScope !== undefined;
   const row = rows[0] ?? (recoveryScope ? await readReportRecoveryTask(runId, recoveryScope, sql) : null);
-  if (!row) return null;
+  if (!row) return recoveryScope ? readLiveForegroundSnapshot(runId, recoveryScope, sql) : null;
   // Exact evidence mappings supply the missing harness on older enrolments.
   // Their durable workspace and execution root must still agree.
   if (!row.task_harness_slug && recoveryScope && row.task_workspace_id === recoveryScope.workspaceId
@@ -512,6 +579,7 @@ interface PersistedTestRunRow {
   status: string;
   finished_at: Date | string | number | null;
   output_tail: string | null;
+  execution_details?: unknown;
 }
 
 type TestRunLedgerFileStatus = 'pass' | 'fail' | 'skip' | 'cancelled' | 'error';
@@ -526,17 +594,83 @@ export interface DetachedRunLedgerRecovery {
     filePath: string;
     status: TestRunLedgerFileStatus;
     finishedAt: number;
+    executionDetails: TestRunExecutionDetails | null;
   }>;
   message: string;
 }
 
 const MAX_DETACHED_RUN_LEDGER_FILES = 200;
 
+function hasExactPassedFileCoverage(
+  requestedFiles: string[] | null,
+  files: DetachedRunLedgerRecovery['files'],
+): boolean {
+  if (!requestedFiles || requestedFiles.length === 0
+    || new Set(requestedFiles).size !== requestedFiles.length
+    || files.length !== requestedFiles.length) return false;
+  const outcomes = new Map(files.map((file) => [file.filePath, file]));
+  return requestedFiles.every((filePath) => {
+    const file = outcomes.get(filePath);
+    const details = file?.executionDetails;
+    // A reporter status or process exit alone does not prove an assertion ran.
+    // Legacy, zero-match and collection-only rows remain unverified.
+    return file?.status === 'pass' && details !== null && details !== undefined
+      && details.passed > 0 && details.failed === 0 && !details.collectionFailed;
+  });
+}
+
+interface PersistedDetachedTaskRow {
+  state: string;
+  exit_code: number | null;
+  requested_files?: unknown;
+}
+
+type DetachedTaskLedgerLookup =
+  | { kind: 'found'; task: PersistedDetachedTaskRow }
+  | { kind: 'absent' | 'ambiguous' | 'unavailable' };
+
+async function readPersistedDetachedTask(
+  runId: string,
+  sql: SqlLike,
+): Promise<DetachedTaskLedgerLookup> {
+  let query: PromiseLike<unknown>;
+  try {
+    query = sql`
+      SELECT state, exit_code, detail->'requestedFiles' AS requested_files
+        FROM harness_shared.task_ledger
+       WHERE detail->>'runId' = ${runId}
+         AND class = 'test-run'
+         AND launched_by = 'testing-run-store'
+       LIMIT 2
+    `;
+  } catch {
+    return { kind: 'unavailable' };
+  }
+  const rows = await boundedSnapshotQuery<PersistedDetachedTaskRow[]>(query);
+  if (rows === null) return { kind: 'unavailable' };
+  if (rows.length === 0) return { kind: 'absent' };
+  if (rows.length !== 1) return { kind: 'ambiguous' };
+  return { kind: 'found', task: rows[0]! };
+}
+
+function taskAllowsDetachedLedgerRecovery(
+  task: PersistedDetachedTaskRow | null,
+  taskLinked: boolean,
+  verdict?: DetachedRunLedgerRecovery['status'],
+): boolean {
+  if (!task) return !taskLinked;
+  if (!isTerminalState(task.state as TaskState)) return false;
+  // A per-file Vitest ledger cannot prove that the outer multi-workspace
+  // command (including non-Vitest runners) completed successfully.
+  if (verdict === 'pass') return task.state === 'exited' && task.exit_code === 0;
+  return true;
+}
+
 async function readPersistedTestRunLedgerRows(runId: string, sql: SqlLike): Promise<PersistedTestRunRow[] | null> {
   let query: PromiseLike<unknown>;
   try {
     query = sql`
-      SELECT DISTINCT ON (file_path) file_path, status, finished_at, output_tail
+      SELECT DISTINCT ON (file_path) file_path, status, finished_at, output_tail, execution_details
         FROM harness_shared.test_runs
        WHERE run_group_id = ${runId}
        ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
@@ -569,10 +703,12 @@ function deriveDetachedRunLedgerRecovery(
       // reporter has not supplied a terminal per-file outcome yet.
       return null;
     }
+    const details = parseTestRunExecutionDetails(row.execution_details);
     files.push({
       filePath: row.file_path,
       status: row.status as TestRunLedgerFileStatus,
       finishedAt,
+      executionDetails: details?.filePath === row.file_path && details.runGroupId === runId ? details : null,
     });
   }
 
@@ -604,8 +740,9 @@ function deriveDetachedRunLedgerRecovery(
 /**
  * Last-resort detached status recovery when the lifecycle snapshot is missing
  * or unreadable. The same exact run_group_id and terminal-row rules used to
- * reconcile a readable running snapshot apply here; partial/active groups stay
- * unavailable rather than being promoted to a test verdict.
+ * reconcile a readable running snapshot apply here. When a task-manager row
+ * exists, it must be terminal before its streamed per-file rows are trusted;
+ * an all-pass subset from an early workspace is not a completed run.
  */
 export async function getTestRunLedgerRecoveryAsync(
   runId: string,
@@ -613,8 +750,17 @@ export async function getTestRunLedgerRecoveryAsync(
 ): Promise<DetachedRunLedgerRecovery | null> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) return null;
+  const taskLookup = await readPersistedDetachedTask(runId, sql);
+  if (taskLookup.kind === 'unavailable' || taskLookup.kind === 'ambiguous') return null;
+  const task = taskLookup.kind === 'found' ? taskLookup.task : null;
+  const taskLinked = taskLookup.kind === 'found';
+  if (!taskAllowsDetachedLedgerRecovery(task, taskLinked)) return null;
   const rows = await readPersistedTestRunLedgerRows(runId, sql);
-  return rows ? deriveDetachedRunLedgerRecovery(runId, rows) : null;
+  if (!rows) return null;
+  const recovery = deriveDetachedRunLedgerRecovery(runId, rows);
+  if (recovery?.status === 'pass'
+    && !hasExactPassedFileCoverage(requestedFilesFromValue(task?.requested_files), recovery.files)) return null;
+  return recovery && taskAllowsDetachedLedgerRecovery(task, taskLinked, recovery.status) ? recovery : null;
 }
 
 /**
@@ -628,13 +774,64 @@ export async function getTestRunLedgerRecoveryAsync(
  * running snapshot into a terminal result. Latest-per-file selection also
  * prevents an older retry from poisoning the recovered verdict.
  */
-async function reconcilePersistedTestRun(snapshot: RunSnapshot, sql: SqlLike): Promise<RunSnapshot> {
-  if (snapshot.status !== 'running') return snapshot;
+const TERMINAL_FAILURE_OUTPUT_START =
+  '\n[detached-recovery] terminal test_runs failure output (begin)\n';
+const TERMINAL_FAILURE_OUTPUT_END =
+  '\n[detached-recovery] terminal test_runs failure output (end)\n';
+
+async function reconcilePersistedTestRun(
+  snapshot: RunSnapshot,
+  task: PersistedDetachedTaskRow | null,
+  taskLinked: boolean,
+  sql: SqlLike,
+): Promise<RunSnapshot> {
+  if (snapshot.status === 'fail' || snapshot.status === 'error') {
+    // The snapshot's terminal verdict is already authoritative, but its
+    // router output can omit the per-file failure detail persisted by the
+    // reporter. Enrich diagnostics only; never re-derive terminal fields here.
+    if (snapshot.finishedAt === null) return snapshot;
+    const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
+    if (!rows) return snapshot;
+    const failureOutputs = rows
+      .filter((row) => (row.status === 'fail' || row.status === 'error')
+        && typeof row.file_path === 'string'
+        && row.file_path.length > 0
+        && typeof row.output_tail === 'string'
+        && row.output_tail.length > 0)
+      .map((row) => '[' + row.file_path + ']\n' + row.output_tail);
+    if (failureOutputs.length === 0) return snapshot;
+
+    const previousStart = snapshot.output.indexOf(TERMINAL_FAILURE_OUTPUT_START);
+    let baseOutput = snapshot.output;
+    if (previousStart >= 0) {
+      const previousEnd = snapshot.output.indexOf(TERMINAL_FAILURE_OUTPUT_END, previousStart);
+      baseOutput = previousEnd >= 0
+        ? snapshot.output.slice(0, previousStart) + snapshot.output.slice(previousEnd + TERMINAL_FAILURE_OUTPUT_END.length)
+        : snapshot.output.slice(0, previousStart);
+    }
+    const combinedOutput = baseOutput
+      + TERMINAL_FAILURE_OUTPUT_START
+      + failureOutputs.join('\n\n')
+      + TERMINAL_FAILURE_OUTPUT_END;
+    const output = combinedOutput.length > OUTPUT_CAP_BYTES
+      ? combinedOutput.slice(-OUTPUT_CAP_BYTES)
+      : combinedOutput;
+    const truncated = snapshot.truncated || combinedOutput.length > OUTPUT_CAP_BYTES;
+    if (output === snapshot.output && truncated === snapshot.truncated) return snapshot;
+    return persistReconciledSnapshot(snapshot, { ...snapshot, output, truncated }, sql);
+  }
+
+  if (snapshot.status !== 'running' || !taskAllowsDetachedLedgerRecovery(task, taskLinked)) return snapshot;
 
   const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
   if (!rows) return snapshot;
   const recovery = deriveDetachedRunLedgerRecovery(snapshot.runId, rows);
-  if (!recovery) return snapshot;
+  if (!recovery || !taskAllowsDetachedLedgerRecovery(task, taskLinked, recovery.status)) return snapshot;
+  if (recovery.status === 'pass'
+    && !hasExactPassedFileCoverage(
+      requestedFilesFromValue(task?.requested_files) ?? requestedFilesFromValue(snapshot.requestedFiles),
+      recovery.files,
+    )) return snapshot;
 
   const { status, exitCode, finishedAt } = recovery;
   const ledgerOutput = rows
@@ -689,8 +886,9 @@ async function persistReconciledSnapshot(
  * A detached snapshot is not itself a liveness oracle: the worker that owned
  * its child may have disappeared after writing `status='running'`. The linked
  * task-manager row is the durable process-liveness authority. Once that row is
- * terminal, the process is conclusively gone (or was killed), so keeping the
- * snapshot running would manufacture a live result forever.
+ * terminal, the process is conclusively gone (or was killed). Per-file rows are
+ * streamed as workspaces finish, so a linked nonterminal task must not be
+ * finalized from an all-pass subset.
  *
  * The update is compare-and-set on `status='running'`. A late child close or a
  * concurrent status reader therefore cannot resurrect a terminal snapshot, and
@@ -701,15 +899,20 @@ async function reconcilePersistedOrphan(
   row: DurableRunSnapshotRow,
   sql: SqlLike,
 ): Promise<RunSnapshot> {
-  const fromReport = await reconcilePersistedReportArtifact(snapshot, row, sql);
-  if (fromReport !== snapshot) return fromReport;
-  const fromTestRunLedger = await reconcilePersistedTestRun(snapshot, sql);
-  if (fromTestRunLedger !== snapshot) return fromTestRunLedger;
-
   const taskState = row.task_state;
   const taskDeadlineAt = epochMs(row.task_deadline_at ?? null);
   const deadlineExpired = taskDeadlineAt !== null && taskDeadlineAt <= Date.now();
   const taskTerminal = typeof taskState === 'string' && isTerminalState(taskState as TaskState);
+  const taskLinked = row.task_id !== null || snapshot.taskId !== undefined;
+  const task = typeof taskState === 'string'
+    ? { state: taskState, exit_code: row.task_exit_code ?? null }
+    : null;
+
+  const fromReport = await reconcilePersistedReportArtifact(snapshot, row, sql);
+  if (fromReport !== snapshot) return fromReport;
+  const fromTestRunLedger = await reconcilePersistedTestRun(snapshot, task, taskLinked, sql);
+  if (fromTestRunLedger !== snapshot) return fromTestRunLedger;
+
   if (snapshot.status !== 'running' || (!taskTerminal && !deadlineExpired)) {
     return snapshot;
   }
@@ -767,11 +970,19 @@ export interface SpawnRequest {
   kind: RunSnapshot['kind'];
   label: string;
   filePath?: string;
+  /** Exact per-file request manifest for Vitest status verification. */
+  requestedFiles?: string[];
   command: string;
   args: string[];
   cwd?: string;
   /** Environment values supplied by the caller for the child process. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Reporter provenance for this run. The default remains admin-ui; detached
+   * testing:run recovery opts into local so an unscoped result can be adopted
+   * by the plan harness that later binds it.
+   */
+  testRunSource?: TestRunSource;
   /**
    * Durable wall-clock ceiling for the task-manager scope. Detached recovery
    * must carry its requested timeout into systemd so an operator restart cannot
@@ -786,11 +997,9 @@ export interface SpawnRequest {
    */
   workItemId?: string | null;
   /**
-   * JSON reports produced by detached Vitest commands that cannot load the
-   * Papercusp admin reporter (typically an independent checkout). The store
-   * ingests these on close, in the operator process where the tenant-scoped
-   * database handle is available. Managed commands keep their own reporter
-   * and must not provide an artifact here, or rows would be duplicated.
+   * JSON reports retained by detached Vitest commands. The store ingests
+   * missing file rows on close or after observer loss; its run-group lock and
+   * ledger check deduplicate reports from commands that also load the admin reporter.
    */
   detachedReportArtifacts?: DetachedReportArtifact[];
 }
@@ -798,6 +1007,8 @@ export interface SpawnRequest {
 export interface DetachedReportArtifact {
   /** Absolute path to the child command's Vitest JSON output file. */
   reportPath: string;
+  /** The exact-file router may emit <base>.1.json, <base>.2.json, ... beside this report. */
+  routerReports?: boolean;
   /** Optional reporter sidecar with structured actual/expected assertion values. */
   failureDetailsPath?: string;
   /** Worktree root used to relativize file names from the report. */
@@ -813,6 +1024,41 @@ export interface DetachedReportArtifact {
 
 interface PreparedDetachedReportArtifact extends DetachedReportArtifact {
   worktreeBefore: WorktreeGitSnapshot;
+}
+
+async function expandDetachedReportArtifacts(
+  artifacts: PreparedDetachedReportArtifact[],
+): Promise<PreparedDetachedReportArtifact[]> {
+  const expanded = await Promise.all(artifacts.map(async artifact => {
+    if (!artifact.routerReports) return [artifact];
+    // Only the UUID-bound output basename supplied at launch is trusted. Do
+    // not scan arbitrary reports or reconstruct their provenance from HEAD.
+    const name = basename(artifact.reportPath);
+    const stem = name.endsWith('.json') ? name.slice(0, -5) : name;
+    const siblings = (await readdir(dirname(artifact.reportPath))).filter(candidate => {
+      if (!candidate.startsWith(stem + '.') || !candidate.endsWith('.json')) return false;
+      return /^[1-9]\d*$/.test(candidate.slice(stem.length + 1, -5));
+    }).sort();
+    return [artifact, ...siblings.map(candidate => ({
+      ...artifact, reportPath: join(dirname(artifact.reportPath), candidate), routerReports: false,
+    }))];
+  }));
+  return expanded.flat();
+}
+
+function hasCompleteRouterReportCoverage(
+  artifacts: PreparedDetachedReportArtifact[],
+  requestedFiles: string[] | undefined,
+  reports: Array<{ rows: HarnessTestFileRow[] | null }>,
+): boolean {
+  if (!artifacts.some(artifact => artifact.routerReports)) return true;
+  const requested = requestedFilesFromValue(requestedFiles);
+  const rows = reports.flatMap(report => report.rows ?? []);
+  const measured = new Set(rows.map(row => row.filePath));
+  return requested !== null && requested.length > 0
+    && reports.every(report => report.rows !== null)
+    && rows.length === measured.size && measured.size === requested.length
+    && requested.every(file => measured.has(file));
 }
 
 function detachedArtifactsFromRow(snapshot: RunSnapshot, row: DurableRunSnapshotRow): PreparedDetachedReportArtifact[] {
@@ -890,10 +1136,12 @@ async function reconcilePersistedReportArtifact(
   const artifacts = detachedArtifactsFromRow(snapshot, row);
   if (artifacts.length === 0) return snapshot;
   try {
-    const reports = await Promise.all(artifacts.map(async artifact => ({
+    const expanded = await expandDetachedReportArtifacts(artifacts);
+    const reports = await Promise.all(expanded.map(async artifact => ({
       artifact, rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root),
     })));
-    if (reports.some(report => report.rows === null)) return snapshot;
+    if (reports.some(report => report.rows === null)
+      || !hasCompleteRouterReportCoverage(artifacts, snapshot.requestedFiles, reports)) return snapshot;
     const recovered = await boundedOrgTxn(async tx => {
       const scopedSql = tx as unknown as SqlLike;
       // Sibling recovery readers share one transaction lock. Ingestion and the
@@ -910,6 +1158,7 @@ async function reconcilePersistedReportArtifact(
         const result = await persistHarnessTestRunsWithIds({
           harnessSlug: artifact.scope!.harnessSlug, workspaceId: artifact.scope!.workspaceId,
           rows: missing, runGroupId: snapshot.runId, source: 'local',
+          runStartedAt: new Date(snapshot.startedAt).toISOString(),
           commit: artifact.worktreeBefore.commit, worktreeDirty: true,
           root: artifact.root, testNamePattern: artifact.testNamePattern ?? null, sql: scopedSql,
         });
@@ -931,7 +1180,7 @@ async function reconcilePersistedReportArtifact(
       return reconciled;
     }, { client: sql as unknown as NonNullable<Parameters<typeof boundedOrgTxn>[1]>['client'],
       statementTimeoutMs: 3_000, lockTimeoutMs: 1_000 });
-    await Promise.all(artifacts.map(async artifact => {
+    await Promise.all(expanded.map(async artifact => {
       await rm(artifact.reportPath, { force: true }).catch(() => undefined);
       if (artifact.failureDetailsPath) await rm(artifact.failureDetailsPath, { force: true }).catch(() => undefined);
     }));
@@ -975,6 +1224,8 @@ interface PreparedRun {
   cwd: string;
   worktreeBefore: WorktreeGitSnapshot;
   childEnv: NodeJS.ProcessEnv;
+  /** The child's configuration (P-011), recorded on every ledger row this run writes. */
+  configurationSnapshot: ConfigurationSnapshot;
   taskSpec: TaskSpec;
   enrolment: SyncEnrolment;
   scopeCgroupPath: string | null;
@@ -982,14 +1233,18 @@ interface PreparedRun {
   detachedReportArtifacts: PreparedDetachedReportArtifact[];
 }
 
-function prepareRun(req: SpawnRequest): PreparedRun {
-  evictOldRuns();
+function prepareRun(
+  req: SpawnRequest,
+  snapshots?: Pick<PreparedRun, 'cwd' | 'worktreeBefore' | 'detachedReportArtifacts'>,
+): PreparedRun {
+  if (!snapshots) evictOldRuns();
   const runId = randomUUID();
   const snapshot: RunSnapshot = {
     runId,
     kind: req.kind,
     label: req.label,
     filePath: req.filePath,
+    ...(req.requestedFiles ? { requestedFiles: [...req.requestedFiles] } : {}),
     command: [req.command, ...req.args],
     status: 'running',
     exitCode: null,
@@ -1002,9 +1257,9 @@ function prepareRun(req: SpawnRequest): PreparedRun {
   // Use the same integration-root resolver as agent capability tools. The
   // operator may run from the release checkout while the agent edits staging;
   // process.cwd() is therefore not a safe implicit tree for detached runs.
-  const cwd = req.cwd ?? resolveAgentWorkspaceRoot({});
-  const worktreeBefore = captureWorktreeSnapshot(cwd);
-  const detachedReportArtifacts = (req.detachedReportArtifacts ?? []).map((artifact) => ({
+  const cwd = snapshots?.cwd ?? req.cwd ?? resolveAgentWorkspaceRoot({});
+  const worktreeBefore = snapshots?.worktreeBefore ?? captureWorktreeSnapshot(cwd);
+  const detachedReportArtifacts = snapshots?.detachedReportArtifacts ?? (req.detachedReportArtifacts ?? []).map((artifact) => ({
     ...artifact,
     worktreeBefore: artifact.root === cwd ? worktreeBefore : captureWorktreeSnapshot(artifact.root),
   }));
@@ -1020,7 +1275,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     // rows with source='admin-ui' instead of inferring ci/local. For
     // node/shell runners we additionally write a single fallback row
     // from this store at close (see persistFallbackRow below).
-    PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui',
+    PAPERCUSP_TEST_RUN_SOURCE: req.testRunSource ?? 'admin-ui',
   };
   const taskSpec: TaskSpec = {
     class: 'test-run',
@@ -1030,9 +1285,14 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     runtimeMaxSec: req.runtimeMaxSec,
     launchedBy: 'testing-run-store',
     workItemId: req.workItemId ?? null,
-    detail: { runId, kind: req.kind, ...(detachedReportArtifacts.length > 0 ? {
-      detachedReportArtifacts: { schemaVersion: 1, artifacts: detachedReportArtifacts },
-    } : {}) },
+    detail: {
+      runId,
+      kind: req.kind,
+      ...(req.requestedFiles ? { requestedFiles: [...req.requestedFiles] } : {}),
+      ...(detachedReportArtifacts.length > 0 ? {
+        detachedReportArtifacts: { schemaVersion: 1, artifacts: detachedReportArtifacts },
+      } : {}),
+    },
   };
   // task-manager P-008: mint the task id + confinement decision before the
   // fork. Ledger writes remain fire-and-forget so the synchronous startRun API
@@ -1047,12 +1307,26 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     cwd,
     worktreeBefore,
     childEnv,
+    configurationSnapshot: captureConfigurationSnapshot(childEnv),
     taskSpec,
     enrolment,
     scopeCgroupPath,
     wrapped,
     detachedReportArtifacts,
   };
+}
+
+async function prepareRunAsync(req: SpawnRequest): Promise<PreparedRun> {
+  evictOldRuns();
+  // Resolve provenance before spawning, but await the sidecar-backed Git reads
+  // so a slow checkout cannot freeze the operator host's request loop.
+  const cwd = req.cwd ?? resolveAgentWorkspaceRoot({});
+  const worktreeBefore = await captureWorktreeSnapshotAsync(cwd);
+  const detachedReportArtifacts = await Promise.all((req.detachedReportArtifacts ?? []).map(async (artifact) => ({
+    ...artifact,
+    worktreeBefore: artifact.root === cwd ? worktreeBefore : await captureWorktreeSnapshotAsync(artifact.root),
+  })));
+  return prepareRun(req, { cwd, worktreeBefore, detachedReportArtifacts });
 }
 
 /**
@@ -1065,9 +1339,20 @@ function prepareRun(req: SpawnRequest): PreparedRun {
 async function persistDetachedReportArtifacts(
   snapshot: RunSnapshot,
   artifacts: PreparedDetachedReportArtifact[],
+  configurationSnapshot: ConfigurationSnapshot | null,
 ): Promise<void> {
+  let expanded: PreparedDetachedReportArtifact[];
+  try {
+    expanded = await expandDetachedReportArtifacts(artifacts);
+    if (artifacts.some(artifact => artifact.routerReports)) {
+      const reports = await Promise.all(expanded.map(async artifact => ({
+        rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root),
+      })));
+      if (!hasCompleteRouterReportCoverage(artifacts, snapshot.requestedFiles, reports)) return;
+    }
+  } catch { return; } // Keep incomplete/unreadable evidence for a later recovery read.
   await Promise.all(
-    artifacts.map(async (artifact) => {
+    expanded.map(async (artifact) => {
       let consumed = false;
       try {
         const reportText = await readFile(artifact.reportPath, 'utf8');
@@ -1101,7 +1386,7 @@ async function persistDetachedReportArtifacts(
         }
         const rows = parseVitestJsonForHarnessRows(reportText, artifact.root);
         if (rows.length > 0 && artifact.scope) {
-          const after = captureWorktreeSnapshot(artifact.root);
+          const after = await captureWorktreeSnapshotAsync(artifact.root);
           await boundedOrgTxn(async tx => {
             const scopedSql = tx as unknown as SqlLike;
             // A task can finish before its local close callback ingests the
@@ -1117,17 +1402,28 @@ async function persistDetachedReportArtifacts(
               rows: missing,
               runGroupId: snapshot.runId,
               source: 'local',
+              runStartedAt: new Date(snapshot.startedAt).toISOString(),
               commit: after.commit,
               worktreeDirty: computeWorktreeDirty(artifact.worktreeBefore, after),
               root: artifact.root,
               testNamePattern: artifact.testNamePattern ?? null,
+              configurationSnapshot,
               sql: scopedSql,
             });
             if (result.written !== missing.length) throw new Error('detached_report_ledger_write_failed');
           });
           consumed = true;
-        } else {
-          consumed = rows.length > 0;
+        } else if (rows.length > 0) {
+          // WI-10006949: with no concrete harness/workspace scope these rows cannot be
+          // written to test_runs. This branch used to mark the report consumed and delete
+          // it, so the run's per-file evidence vanished with no row and no trace. Keep the
+          // report and say so in the run output, so the verdict is never silently unbindable.
+          appendSnapshotOutput(
+            snapshot,
+            `\n[detached-recovery] ${rows.length} per-file result row(s) were NOT written to test_runs: ` +
+              `this run had no concrete harness/workspace scope (pass harness on testing:run). ` +
+              `The Vitest JSON report is kept at ${artifact.reportPath}.\n`,
+          );
         }
       } catch {
         /* swallow — D-007 */
@@ -1151,28 +1447,32 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     cwd,
     worktreeBefore,
     childEnv,
+    configurationSnapshot,
     taskSpec,
     enrolment,
     scopeCgroupPath,
     wrapped,
     detachedReportArtifacts,
   } = prepared;
-  let terminalFinalizationStarted = false;
-  const finalizeTerminalRun = (): void => {
-    if (terminalFinalizationStarted) return;
-    terminalFinalizationStarted = true;
-    void (async () => {
+  const state: RunState = { snapshot, proc: null, cwd, worktreeBefore, finalization: null };
+  _runs.set(snapshot.runId, state);
+  let terminalFinalization: Promise<void> | null = null;
+  const finalizeTerminalRun = (): Promise<void> => {
+    if (terminalFinalization) return terminalFinalization;
+    terminalFinalization = (async () => {
       try {
         // The final snapshot must be written only after detached report rows and
         // failure details have been reconciled; otherwise testing:run-status can
         // observe a terminal run while its Vitest evidence is still in flight.
-        await persistDetachedReportArtifacts(snapshot, detachedReportArtifacts);
-        await persistFallbackRow(snapshot, worktreeBefore, cwd);
+        await persistDetachedReportArtifacts(snapshot, detachedReportArtifacts, configurationSnapshot);
+        await persistFallbackRow(snapshot, worktreeBefore, cwd, configurationSnapshot);
         await persistRunSnapshot(snapshot);
       } catch {
         /* swallow — terminal observability remains fail-soft (D-007) */
       }
     })();
+    state.finalization = terminalFinalization;
+    return terminalFinalization;
   };
   let enrolmentFinished = false;
   const finishEnrolment = (outcome: Parameters<typeof finishSyncEnrolment>[1]): void => {
@@ -1199,8 +1499,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     snapshot.exitCode = -1;
     snapshot.finishedAt = Date.now();
     snapshot.output = e instanceof Error ? e.message : String(e);
-    _runs.set(snapshot.runId, { snapshot, proc: null, cwd, worktreeBefore });
-    finalizeTerminalRun();
+    void finalizeTerminalRun();
     finishEnrolment({
       state: 'exited',
       exitCode: null,
@@ -1209,8 +1508,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     return snapshot;
   }
 
-  const state: RunState = { snapshot, proc, cwd, worktreeBefore };
-  _runs.set(snapshot.runId, state);
+  state.proc = proc;
   if (opts.persistInitialSnapshot) void persistRunSnapshot(snapshot);
 
   proc.stdout?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
@@ -1261,6 +1559,11 @@ export function startRun(req: SpawnRequest): RunSnapshot {
   return launchPreparedRun(prepareRun(req), { persistInitialSnapshot: true });
 }
 
+/** Start a Hono-hosted run after an awaited Git snapshot, keeping child-process waits off the event loop. */
+export async function startRunAsync(req: SpawnRequest): Promise<RunSnapshot> {
+  return launchPreparedRun(await prepareRunAsync(req), { persistInitialSnapshot: true });
+}
+
 /**
  * Start a detached recovery with an actionable handle before waiting on its
  * optional durable snapshot. The child must start first: a slow dynamic import
@@ -1277,7 +1580,7 @@ export async function startRunDurable(
   req: SpawnRequest,
   sqlOverride?: SqlLike,
 ): Promise<{ snapshot: RunSnapshot; durable: boolean }> {
-  const prepared = prepareRun(req);
+  const prepared = await prepareRunAsync(req);
   const snapshot = launchPreparedRun(prepared, { persistInitialSnapshot: false });
   const persistence = persistRunSnapshotWithRetry(snapshot, sqlOverride);
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1299,7 +1602,12 @@ export async function startRunDurable(
  *
  * D-007 fail-soft: every error swallowed, never throws.
  */
-async function persistFallbackRow(s: RunSnapshot, worktreeBefore: WorktreeGitSnapshot, cwd: string): Promise<void> {
+async function persistFallbackRow(
+  s: RunSnapshot,
+  worktreeBefore: WorktreeGitSnapshot,
+  cwd: string,
+  configurationSnapshot: ConfigurationSnapshot | null,
+): Promise<void> {
   if (s.kind === 'vitest' || s.kind === 'playwright' || s.kind === 'cargo') return;
   if (s.kind === 'admin-suite') return;
   if (s.status === 'running') return;
@@ -1314,8 +1622,11 @@ async function persistFallbackRow(s: RunSnapshot, worktreeBefore: WorktreeGitSna
     const finishedAtIso = s.finishedAt ? new Date(s.finishedAt).toISOString() : null;
     const duration = s.finishedAt ? s.finishedAt - s.startedAt : null;
     const outputTail = s.output ? s.output.slice(-4096) : null;
+    // This fallback has no per-file reporter counts, so persist only its
+    // trustworthy run-wide timestamp rather than inventing a full measurement.
+    const executionDetails = { runStartedAt: startedAtIso };
 
-    const worktreeAfter = captureWorktreeSnapshot(cwd);
+    const worktreeAfter = await captureWorktreeSnapshotAsync(cwd);
     const worktreeDirty = computeWorktreeDirty(worktreeBefore, worktreeAfter);
     let branch: string | null = null;
     try {
@@ -1345,15 +1656,17 @@ async function persistFallbackRow(s: RunSnapshot, worktreeBefore: WorktreeGitSna
       process.env.PAPERCUSP_TEST_RUN_HARNESS || process.env.HARNESS_SLUG || process.env.PAPERCUSP_HARNESS_SLUG || null;
     const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || null;
     const { loopLagP95Ms, rssMb } = captureSaturationSnapshot();
-    const { getOrgPg } = await import('@papercusp/db-org');
-    const { sql } = getOrgPg();
+    // SqlLike, as in persistHarnessTestRunsInternal: the jsonb snapshot is an
+    // interface without an index signature, which the strict tag type refuses.
+    const sql = getOrgPg().sql as unknown as SqlLike;
     await Promise.race([
       sql`
         INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details, configuration_snapshot)
         VALUES
           (${filePath}, ${s.kind}, ${s.status}, ${duration}, ${startedAtIso},
-           ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty})
+           ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty},
+           ${executionDetails}, ${configurationSnapshot})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => {
@@ -1369,6 +1682,81 @@ export function getRun(runId: string): RunSnapshot | null {
   return s ? { ...s.snapshot } : null;
 }
 
+const UNVERIFIED_VITEST_PASS_NOTE =
+  '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not prove that every requested file passed.\n';
+const VITEST_COVERAGE_DIAGNOSTIC_RE = /\n\[coverage-gate:verification\] [^\n]*\n/g;
+
+type VitestCoverageWithheldReason =
+  | 'requested-files-unavailable'
+  | 'snapshot-store-unavailable'
+  | 'ledger-read-unavailable'
+  | 'ledger-empty'
+  | 'ledger-verdict-unavailable'
+  | 'ledger-not-passed'
+  | 'exact-file-coverage-unverified';
+
+function isWithheldUnverifiedVitestPass(snapshot: RunSnapshot): boolean {
+  return snapshot.kind === 'vitest'
+    && snapshot.status === 'error'
+    && snapshot.exitCode === 0
+    && snapshot.output.includes(UNVERIFIED_VITEST_PASS_NOTE);
+}
+
+async function withholdUnverifiedVitestPass(
+  snapshot: RunSnapshot,
+  sqlOverride?: SqlLike,
+): Promise<RunSnapshot> {
+  const withheldPass = isWithheldUnverifiedVitestPass(snapshot);
+  if (snapshot.kind !== 'vitest' || (snapshot.status !== 'pass' && !withheldPass)) return snapshot;
+
+  const requestedFiles = requestedFilesFromValue(snapshot.requestedFiles);
+  const sql = await snapshotSql(sqlOverride);
+  let reason: VitestCoverageWithheldReason = requestedFiles
+    ? 'snapshot-store-unavailable' : 'requested-files-unavailable';
+  let ledgerRowCount: number | null = null;
+  let ledgerStatus: DetachedRunLedgerRecovery['status'] | null = null;
+  if (requestedFiles && sql) {
+    const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
+    const recovery = rows ? deriveDetachedRunLedgerRecovery(snapshot.runId, rows) : null;
+    ledgerRowCount = rows?.length ?? null;
+    ledgerStatus = recovery?.status ?? null;
+    reason = rows === null ? 'ledger-read-unavailable'
+      : rows.length === 0 ? 'ledger-empty'
+      : !recovery ? 'ledger-verdict-unavailable'
+      : recovery.status !== 'pass' ? 'ledger-not-passed'
+      : 'exact-file-coverage-unverified';
+    if (recovery?.status === 'pass' && hasExactPassedFileCoverage(requestedFiles, recovery.files)) {
+      if (!withheldPass) return snapshot;
+      const restored: RunSnapshot = {
+        ...snapshot,
+        status: 'pass',
+        exitCode: recovery.exitCode,
+        finishedAt: recovery.finishedAt,
+        output: snapshot.output.replace(
+          UNVERIFIED_VITEST_PASS_NOTE,
+          '\n[detached-recovery] recovered pass from exact requested-file ledger rows.\n',
+        ).replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
+      };
+      return persistReconciledSnapshot(snapshot, restored, sql);
+    }
+  }
+
+  // Keep the compatibility marker used for late-ledger recovery, but record
+  // the prerequisite measured by this read. A query failure is unavailable;
+  // it is never labelled a timeout without evidence from that query.
+  const unverified: RunSnapshot = {
+    ...snapshot, status: 'error',
+    output: snapshot.output.replace(VITEST_COVERAGE_DIAGNOSTIC_RE, ''),
+  };
+  if (!withheldPass) appendSnapshotOutput(unverified, UNVERIFIED_VITEST_PASS_NOTE);
+  appendSnapshotOutput(unverified, '\n[coverage-gate:verification] ' + JSON.stringify({
+    reason, requestedFileCount: requestedFiles?.length ?? null, ledgerRowCount, ledgerStatus,
+  }) + '\n');
+  if (withheldPass && unverified.output === snapshot.output) return snapshot;
+  if (sql) await persistReconciledSnapshot(snapshot, unverified, sql);
+  return unverified;
+}
+
 /**
  * Async local-first reader for status surfaces. A worker that owns the child
  * returns immediately from `_runs`; a sibling worker falls through to the
@@ -1376,9 +1764,19 @@ export function getRun(runId: string): RunSnapshot | null {
  */
 export async function getRunAsync(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
   evictOldRuns();
-  const local = getRun(runId);
-  if (local) return local;
-  return readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope);
+  const local = _runs.get(runId);
+  if (local) {
+    if (local.snapshot.finishedAt !== null && local.finalization) await local.finalization;
+    const snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride);
+    if ((local.snapshot.status === 'pass' && snapshot.status !== 'pass')
+      || (isWithheldUnverifiedVitestPass(local.snapshot)
+        && (snapshot.status === 'pass' || snapshot.output !== local.snapshot.output))) {
+      Object.assign(local.snapshot, snapshot);
+    }
+    return snapshot;
+  }
+  const persisted = await readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope);
+  return persisted ? withholdUnverifiedVitestPass(persisted, sqlOverride) : null;
 }
 
 export function cancelRun(runId: string): boolean {
@@ -1460,7 +1858,8 @@ export interface HarnessTestFileRow {
   finishedAt: Date;
   outputTail: string | null;
   /** Exact completed assertion counts when the source report exposed them. */
-  execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed'>;
+  execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed'
+    | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated' | 'runStartedAt' | 'operational'>;
 }
 
 /** Minimal shape of the jest-compatible vitest `--reporter=json` output. */
@@ -1484,11 +1883,25 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
   let passed = 0;
   let failed = 0;
   let skipped = 0;
+  const failedCaseTitles = new Set<string>();
+  const passedCaseTitles = new Set<string>();
+  let passedCaseTitlesTruncated = false;
   for (const assertion of assertions) {
     if (!assertion || typeof assertion !== 'object') return undefined;
     switch (assertion.status) {
-      case 'passed': passed += 1; break;
-      case 'failed': failed += 1; break;
+      case 'passed':
+        passed += 1;
+        if (isRecordedCaseTitle(assertion.fullName) && !passedCaseTitles.has(assertion.fullName)) {
+          if (passedCaseTitles.size < MAX_RECORDED_PASSED_CASES) passedCaseTitles.add(assertion.fullName);
+          else passedCaseTitlesTruncated = true;
+        }
+        break;
+      case 'failed':
+        failed += 1;
+        if (isRecordedCaseTitle(assertion.fullName) && failedCaseTitles.size < MAX_RECORDED_FAILED_CASES) {
+          failedCaseTitles.add(assertion.fullName);
+        }
+        break;
       // Vitest's completed JSON reporter calls filtered-out tests "pending".
       case 'skipped':
       case 'pending':
@@ -1504,6 +1917,9 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
     failed,
     skipped,
     collectionFailed: false,
+    ...(failedCaseTitles.size > 0 ? { failedCaseTitles: [...failedCaseTitles] } : {}),
+    ...(passedCaseTitles.size > 0 ? { passedCaseTitles: [...passedCaseTitles] } : {}),
+    ...(passedCaseTitlesTruncated ? { passedCaseTitlesTruncated: true as const } : {}),
   };
 }
 
@@ -1592,8 +2008,8 @@ export function parseVitestJsonForHarnessRows(jsonText: string, rootAbs: string)
 // So this is a SECOND PURE PROJECTION over the SAME parsed JSON, not a second
 // parser and never a stdout scrape (D-022). The two differ only in grain:
 // `parseVitestJsonForHarnessRows` collapses every failure message into a
-// 4000-char `outputTail` and DISCARDS `assertionResults[].fullName`; this one
-// keeps the test identity and drops everything the agent will not read.
+// 4000-char `outputTail`; exact failed identities now also survive in execution
+// details. This projection keeps the richer per-test diagnostics an agent reads.
 
 /** One failing test, identified precisely enough to re-run it with `-t`. */
 export interface DistilledTestFailure {
@@ -2073,6 +2489,8 @@ export interface PersistHarnessTestRunsParams {
   workspaceId: string;
   rows: HarnessTestFileRow[];
   runGroupId: string;
+  /** Run-wide start captured before Vitest collects test modules. */
+  runStartedAt?: string;
   branch?: string | null;
   commit?: string | null;
   /** test_runs.source — must satisfy the CHECK ('ci'|'local'|'admin-ui'|'mutation-probe'); defaults to 'admin-ui'. */
@@ -2090,6 +2508,13 @@ export interface PersistHarnessTestRunsParams {
   testNamePattern?: string | null;
   /** Test-config mutation phase, if any. */
   mutationPhase?: string | null;
+  /**
+   * test_runs.configuration_snapshot (migration 1448): the configuration the MEASURED child
+   * process ran under — capture it from that child's env with captureConfigurationSnapshot.
+   * Omit (NULL) only when this process cannot know it, e.g. results recorded from elsewhere;
+   * never substitute this process's own env for a child's.
+   */
+  configurationSnapshot?: ConfigurationSnapshot | null;
   /** Test seam: inject a fake sql client. Defaults to getOrgPg().sql. */
   sql?: SqlLike;
 }
@@ -2123,6 +2548,8 @@ export interface HarnessTestRunEvidence {
   worktree_dirty: boolean;
   /** Nullable versioned reporter measurement. Consumers must validate, not cast. */
   execution_details?: unknown;
+  /** Nullable configuration snapshot (migration 1448). Validate with readConfigurationSnapshot. */
+  configuration_snapshot?: unknown;
 }
 
 /** Same scoped ledger as findHarnessTestRunIds; null distinguishes an unreadable ledger. */
@@ -2130,7 +2557,6 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
   try {
     let sql = params.sql;
     if (!sql) {
-      const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     const requestedFilePaths = params.filePaths ?? (params.filePath === undefined ? null : [params.filePath]);
@@ -2139,7 +2565,8 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
     const rows = await sql`
       SELECT id, workspace_id, harness_slug, run_group_id, file_path, status, finished_at,
              commit_sha, worktree_dirty,
-             to_jsonb(test_runs)->'execution_details' AS execution_details
+             to_jsonb(test_runs)->'execution_details' AS execution_details,
+             to_jsonb(test_runs)->'configuration_snapshot' AS configuration_snapshot
         FROM harness_shared.test_runs
        WHERE workspace_id = ${params.workspaceId} AND harness_slug = ${params.harnessSlug}
          AND run_group_id = ${params.runGroupId}
@@ -2299,7 +2726,6 @@ export async function countUnattributedTestRunRows(params: {
   try {
     let sql = params.sql;
     if (!sql) {
-      const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     const rows = await sql`
@@ -2326,7 +2752,6 @@ export async function findHarnessTestRunIds(params: HarnessTestRunIdQuery): Prom
   try {
     let sql = params.sql;
     if (!sql) {
-      const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     const readIds = async (client: SqlLike): Promise<unknown[]> => {
@@ -2391,6 +2816,9 @@ async function persistHarnessTestRunsInternal(
   const branch = params.branch ?? null;
   const commit = params.commit ?? null;
   const worktreeDirty = params.worktreeDirty ?? Boolean(params.root);
+  if (params.runStartedAt !== undefined && !isRecordedInstant(params.runStartedAt)) {
+    throw new TypeError('persistHarnessTestRuns requires a valid runStartedAt');
+  }
   // Captured ONCE for the whole persist call (the run's persist moment), not
   // per-file-row — the lag gauge already windows/averages, and a re-sample per
   // row would be noise without adding signal.
@@ -2400,10 +2828,12 @@ async function persistHarnessTestRunsInternal(
   try {
     let sql = params.sql;
     if (!sql) {
-      const { getOrgPg } = await import('@papercusp/db-org');
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     for (const row of rows) {
+      const runStartedAt = isRecordedInstant(row.execution?.runStartedAt)
+        ? row.execution.runStartedAt
+        : isRecordedInstant(params.runStartedAt) ? params.runStartedAt : undefined;
       // Reuse the reporter's strict versioned contract. Legacy status-only
       // records and malformed measurements stay NULL, never invented proof.
       const executionDetails = params.root && row.execution
@@ -2416,6 +2846,7 @@ async function persistHarnessTestRunsInternal(
             harnessSlug,
             testNamePattern: params.testNamePattern ?? null,
             ...row.execution,
+            ...(runStartedAt ? { runStartedAt } : {}),
             mutationPhase: params.mutationPhase ?? null,
             commitSha: commit,
             worktreeDirty,
@@ -2424,11 +2855,11 @@ async function persistHarnessTestRunsInternal(
       const insert = Promise.resolve(
         sql`
           INSERT INTO harness_shared.test_runs
-            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details)
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details, configuration_snapshot)
           VALUES
             (${row.filePath}, ${row.framework ?? 'vitest'}, ${row.status}, ${row.durationMs}, ${row.startedAt},
              ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty},
-             ${executionDetails ? JSON.stringify(executionDetails) : null})
+             ${executionDetails ?? null}, ${params.configurationSnapshot ?? null})
           RETURNING id
         `,
       );

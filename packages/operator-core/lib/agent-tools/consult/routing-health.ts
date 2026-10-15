@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
+import { readExpertiseRoutingRecorderHealth } from '../../endpoint-route/telemetry';
 
 const countsShape = z
   .object({
@@ -31,7 +32,7 @@ export default defineTool({
   // @not-a-cell A caller-windowed report over persisted consult dispatch records; one door derives it and no other surface re-derives these counts.
   profile: 'engineer',
   description:
-    'Is review routing working? Per selection policy, the answering sessions the router launched in a window, and what became of each: answered, declined, failed (by reason), hung past its answer window, or still pending, plus skipped ranks by reason. The window is a launch cohort (default: the last 24 h).',
+    'Is consultation delivery working? Reports separate launch-attempt and request-time cohorts. Request intent distinguishes dispatch, deliberate retrieval-only and unknown legacy intent; requested dispatch is partitioned into recorded feedback, honest decline, pending, unavailable, failed and unmeasured outcomes. Feedback receipts outrank later lifecycle labels. Default window: last 24 h.',
   guidance: {
     when:
       'You need the answer rate or failure reasons of routed reviews/consults (rubric vetting, acceptance grading, grading-integrity audits, ordinary consults) — instead of hand-written SQL over consult_state.',
@@ -40,7 +41,7 @@ export default defineTool({
     chaining:
       'Read bounded.truncatedByLimit and consultsWithoutDispatchRecords before trusting a zero: consults routed before the dispatch recorder shipped carry no records.',
     returns:
-      '{ ok, window:{since,until,cohort}, asOf, policies:[{ policy, consults, consultsWithoutDispatchRecords, launched, answered, declined, failed, failedReasons, hung, pending, skipped, skippedReasons }], totals, bounded:{ truncatedByLimit, consultsScanned, consultLimit, dispatchLogCapped } }.',
+      '{ ok, window:{since,until,cohort}, asOf, policies, totals, bounded, requestCohort, routingExecutions, routingRecorder }. Routing executions group recorded shared-router calls by caller/policy/build with observed stage latencies; unavailable ledgers remain unknown. routingRecorder describes this serving process since startup, including pending and failed writes, independently of all windowed cohorts.',
   },
   capability: 'coord:read',
   requirePrincipal: false,
@@ -73,6 +74,13 @@ export default defineTool({
           dispatchLogCapped: z.number(),
         })
         .optional(),
+      requestCohort: z.unknown().optional(),
+      routingExecutions: z.unknown().optional(),
+      routingRecorder: z.object({
+        scope: z.literal('serving-process'), processId: z.number(), since: z.string(),
+        attempted: z.number(), persisted: z.number(), failed: z.number(), pending: z.number(),
+        lastFailure: z.object({ at: z.string(), code: z.string(), caller: z.string(), policy: z.string() }).nullable(),
+      }).optional(),
     })
     .passthrough(),
   async handler(args, ctx) {
@@ -95,8 +103,13 @@ export default defineTool({
       workspaceId,
       new Date(window.sinceMs).toISOString(),
       new Date(window.untilMs).toISOString(),
+      undefined,
+      new Date(nowMs).toISOString(),
     );
     const result = health.routingHealthFromRows(rows, { ...window, nowMs, truncatedByLimit: truncated });
-    return { data: { ok: true, ...result } };
+    const routingExecutions = await health.readExpertiseExecutionHealth(
+      getOrgPg().sql, workspaceId, new Date(window.sinceMs).toISOString(), new Date(window.untilMs).toISOString(),
+    );
+    return { data: { ok: true, ...result, routingExecutions, routingRecorder: readExpertiseRoutingRecorderHealth() } };
   },
 });

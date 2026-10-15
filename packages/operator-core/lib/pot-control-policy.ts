@@ -28,6 +28,7 @@ import { registerOverrideConcern, type OverrideEntry } from './config-overrides/
 import { lazyFlagRefresh } from './lazy-flag-refresh';
 import type { WorkScopePolicy } from './work-scope-policy';
 import type { PotGitMode } from './harness/git-sync/hive-git-mode';
+import type { PotIntegrationMode } from './harness/git-sync/pot-integration-mode';
 
 export interface PotControlPolicy {
   breakerThreshold?: number;
@@ -49,6 +50,19 @@ export interface PotControlPolicy {
    * decision is recorded — there is no automatic flip.
    */
   newHiveGitMode?: PotGitMode;
+  /**
+   * Workspace default answer to "Where should the agents' work go?" for a NEW
+   * pot (pot-review-integration-mode-2026-10-05 P-018). Used when the creator
+   * does not answer and the repo's facts do not lock the answer; unset ⇒
+   * 'direct' (today's behaviour). Read via resolveNewPotIntegrationModeDefault.
+   */
+  newPotIntegrationMode?: PotIntegrationMode;
+}
+
+/** P-018: the configured new-pot integration default, or null when unset / invalid. */
+export function resolveNewPotIntegrationModeDefault(policy: PotControlPolicy | null | undefined): PotIntegrationMode | null {
+  const v = policy?.newPotIntegrationMode;
+  return v === 'direct' || v === 'review' ? v : null;
 }
 
 /** The consumers' baked defaults — for diff/display + the tool's "default" reporting. */
@@ -168,6 +182,9 @@ registerOverrideConcern({
     }
     if (c.newHiveGitMode !== undefined) {
       entries.push({ key: 'newHiveGitMode', effective: c.newHiveGitMode, default: 'legacy', layer: 'pg-settings' });
+    }
+    if (c.newPotIntegrationMode !== undefined) {
+      entries.push({ key: 'newPotIntegrationMode', effective: c.newPotIntegrationMode, default: 'direct', layer: 'pg-settings' });
     }
     return entries;
   },

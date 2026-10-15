@@ -1,3 +1,7 @@
+import { getBuildInfo } from '../../build-info';
+import { recordExpertiseRoutingInvocation } from '../../endpoint-route/telemetry';
+import { CONSULT_DEFAULT_POLICY } from '../../consult/selection-policies';
+
 /**
  * plans:start — approve a plan and promote its items into work_items.
  *
@@ -55,12 +59,15 @@ import {
   validatePlanCandidateDependencies,
 } from './plan-candidate-dependencies';
 import { evaluatePlanSpecQualityGate, type PlanSpecQualityGateVerdict } from './plan-spec-quality-gate';
+import { evaluatePlanStartBarCritique, type PlanStartBarCritiqueOutcome } from './plan-start-critique-gate';
+import { specQualityPlanItemIds } from './spec-quality';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { buildPromotedRows, upsertPromotedBlock } from '../coordination/tools/promote';
 import { titleFromPlanItem } from '../../plan-workitem-promotion';
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 import type { ActivationAuditEditNotice } from '../../plan-audits';
+import { applyResultDoorAsync } from '../../result-door';
 import {
   planRevisionCapture,
   PlanRevisionUnavailableError,
@@ -77,6 +84,13 @@ const stringTolerantBool = z.preprocess((v) => (v === 'true' ? true : v === 'fal
 // instead of an ambiguous timeout (EI-22583060887975914).
 export const PLANS_START_TIMEOUT_SEC = 120;
 
+/**
+ * Requirement-contract refusals plans:start returns itself (the gates it calls
+ * carry their own unions). Registered in doc-claims/verification-system-map.ts,
+ * whose test demands a map entry and a triggering test for every member.
+ */
+export type PlanStartDoorRefusalCode = 'spec_quality_not_current' | 'claim_spec_binding_failed';
+
 const argsSchema = z
   .object({
     slug: z.string().min(1).optional().describe('Plan slug to start (filename without .md).'),
@@ -92,10 +106,21 @@ const argsSchema = z
       .max(2000)
       .optional()
       .describe('Why you are overriding (consulted: false) or what the consult concluded (consulted: true). Recorded.'),
+    consult_id: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'Consult you requested and proceeded on (full id or unique prefix). Recorded as the consultation that informed this plan. Needs `consulted`.',
+      ),
     harness: harnessArg,
   })
   .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
     message: 'pass `slug` or `slugs`',
+  })
+  .refine((a) => a.consult_id === undefined || a.consulted !== undefined, {
+    message: 'consult_id needs `consulted` — it names the consult behind your override/acknowledgement',
   })
   .refine((a) => a.consulted !== false || Boolean(a.consult_reason), {
     message:
@@ -258,11 +283,13 @@ export default defineTool({
         // plans with zero first-class clauses remain explicitly report-only.
         let specQuality: PlanSpecQualityGateVerdict | undefined;
         if (read) {
-          const planItemIds = (read.row.items.length ? read.row.items : read.parsed.items).map((item) => item.id);
+          const planItems = read.row.items.length ? read.row.items : read.parsed.items;
+          const planItemIds = specQualityPlanItemIds(planItems);
           specQuality = await evaluatePlanSpecQualityGate({
             harnessSlug,
             planSlug: slug,
             planItemIds,
+            planItems,
           });
           ctxAny.metadata?.({
             slug,
@@ -277,9 +304,46 @@ export default defineTool({
               ok: false as const,
               slug,
               harnessSlug,
-              error: 'spec_quality_not_current' as const,
+              error: 'spec_quality_not_current' as const satisfies PlanStartDoorRefusalCode,
               ...specQuality,
             };
+          }
+        }
+
+        // P-007 (verification-system-improvements-2026-10-10, D-003/D-004/D-014/D-015): a
+        // contracted plan starts only once outside-lineage bar critiques cover its current
+        // contract. Plans created before the cohort boundary, or whose contract the
+        // spec-quality gate does not enforce, record the verdict here and never refuse.
+        let barCritique: PlanStartBarCritiqueOutcome | null = null;
+        if (read && specQuality?.applicable) {
+          const planItems = read.row.items.length ? read.row.items : read.parsed.items;
+          barCritique = await evaluatePlanStartBarCritique({
+            workspaceId: startWorkspaceId,
+            harnessSlug,
+            planSlug: slug,
+            nonDroppedItemCount: specQualityPlanItemIds(planItems).length,
+            contractEnforced: specQuality.mode === 'enforced',
+          });
+          if (barCritique) {
+            ctxAny.metadata?.({
+              slug,
+              harnessSlug,
+              barCritiqueMode: barCritique.mode,
+              barCritiqueSatisfied: barCritique.verdict.satisfied,
+              barCritiqueThreshold: barCritique.verdict.threshold,
+              barCritiqueConsultIds: barCritique.verdict.consultIds,
+              ...(barCritique.verdict.code ? { barCritiqueCode: barCritique.verdict.code } : {}),
+            });
+            if (barCritique.mode === 'enforced' && !barCritique.verdict.satisfied) {
+              return {
+                ok: false as const,
+                slug,
+                harnessSlug,
+                error: barCritique.verdict.code ?? ('critique_missing' as const),
+                message: barCritique.verdict.message,
+                barCritique,
+              };
+            }
           }
         }
 
@@ -369,16 +433,52 @@ export default defineTool({
           // Override / acknowledgement path: routing already ran on the
           // refused call — record the caller's disposition durably (the
           // tool_invocations ledger via ctx.metadata + the result) and start.
+          // WI-10005177: an optional structured consult_id ties the override to a
+          // consult_state row the caller requested (read-only; refuses before any
+          // approval/promotion write so a mistyped id never half-starts a plan).
+          let linkedConsult: Record<string, unknown> | undefined;
+          if (args.consult_id) {
+            const [{ getOrgPg }, { consultResolveRequestedConsult }, { resolveAgentIdentity }] = await Promise.all([
+              import('@papercusp/db-org'),
+              import('../../consult/consult-verbs-core'),
+              import('../coordination/identity'),
+            ]);
+            const resolvedConsult = await consultResolveRequestedConsult(
+              {
+                workspaceId: startWorkspaceId,
+                requesterId: resolveAgentIdentity(ctx).ownerId,
+                conversationRef: args.consult_id,
+              },
+              { getSql: () => getOrgPg().sql },
+            );
+            if ('error' in resolvedConsult) {
+              return {
+                ok: false as const,
+                slug,
+                harnessSlug,
+                error: 'invalid_consult_id' as const,
+                consultError: resolvedConsult,
+                hint: 'consult_id must be a consult YOU requested (full id or unique prefix) — fix it or omit consult_id; nothing was started.',
+              };
+            }
+            linkedConsult = {
+              consultId: resolvedConsult.conversation_id,
+              consultState: resolvedConsult.consult_state,
+              latencyContract: resolvedConsult.latency_contract,
+            };
+          }
           checkpointConsult = {
             overridden: true,
             consulted: args.consulted,
             ...(args.consult_reason ? { reason: args.consult_reason } : {}),
+            ...(linkedConsult ?? {}),
           };
           ctxAny.metadata?.({
             slug,
             harnessSlug,
             consultOverride: args.consulted,
             ...(args.consult_reason ? { consultReason: args.consult_reason } : {}),
+            ...(linkedConsult ? { consultId: linkedConsult.consultId } : {}),
           });
         } else if (read?.row.content) {
           try {
@@ -412,7 +512,10 @@ export default defineTool({
               },
               {
                 route: (params) =>
-                  routeConsult(params, {
+                  routeConsult({ ...params, telemetry: {
+                    caller: 'plans:start', policy: CONSULT_DEFAULT_POLICY, buildSha: getBuildInfo().sha,
+                  } }, {
+                    recordTelemetry: receipt => recordExpertiseRoutingInvocation(receipt, getOrgPg().sql),
                     getSql: () => getOrgPg().sql,
                     embed: resolved?.embed ?? null,
                     embeddingProfile,
@@ -545,7 +648,10 @@ export default defineTool({
                 },
               };
               const currentSpecQuality = await evaluatePlanSpecQualityGate({
-                harnessSlug, planSlug: slug, planItemIds: lockedPlan.items.map((item) => item.id),
+                harnessSlug,
+                planSlug: slug,
+                planItemIds: specQualityPlanItemIds(lockedPlan.items),
+                planItems: lockedPlan.items,
               });
               if (!currentSpecQuality.satisfied) return {
                 newBody: null,
@@ -754,6 +860,8 @@ export default defineTool({
             );
             if (writeResult.kind === 'busy') {
               promotedBlockError = 'plan_locked';
+            } else if (writeResult.kind === 'refused') {
+              promotedBlockError = writeResult.value.code;
             } else if (!writeResult.value.ok) {
               promotedBlockError = writeResult.value.error;
             } else {
@@ -856,7 +964,7 @@ export default defineTool({
             ...(promotedBlockError ? { promotedBlockError } : {}),
             admission,
             ...(admissionError ? { admissionError } : {}),
-            ...(specQuality ? { specQuality } : {}),
+            ...(specQuality ? { specQuality } : {}), ...(barCritique ? { barCritique } : {}),
             ...(checkpointConsult ? { checkpointConsult } : {}),
             message: `${promotionMessage}${promotedBlockMessage} ${admission ? admission.message : `Exact-plan admission could not be measured: ${admissionError ?? 'unknown error'}`}`,
             ...(axisLive ? {} : { opStatusRetired: true as const }),
@@ -872,7 +980,7 @@ export default defineTool({
           });
           return {
             ok: false as const,
-            error: 'claim_spec_binding_failed' as const,
+            error: 'claim_spec_binding_failed' as const satisfies PlanStartDoorRefusalCode,
             slug,
             harnessSlug,
             status: axisLive ? 'started' : null,
@@ -888,7 +996,7 @@ export default defineTool({
             admission,
             claimSpecBinding,
             claimSpecBindingError,
-            ...(specQuality ? { specQuality } : {}),
+            ...(specQuality ? { specQuality } : {}), ...(barCritique ? { barCritique } : {}),
             ...(checkpointConsult ? { checkpointConsult } : {}),
             message: `${promotionMessage}${promotedBlockMessage} Exact-plan claim-spec binding failed: ${claimSpecBindingError}`,
             ...(axisLive ? {} : { opStatusRetired: true as const }),
@@ -914,7 +1022,7 @@ export default defineTool({
           ...(promotionError ? { promotionError } : {}),
           ...(promotedBlock ? { promotedBlock } : {}),
           ...(promotedBlockError ? { promotedBlockError } : {}),
-          ...(specQuality ? { specQuality } : {}),
+          ...(specQuality ? { specQuality } : {}), ...(barCritique ? { barCritique } : {}),
           ...(checkpointConsult ? { checkpointConsult } : {}),
           message:
             promotionMessage +
@@ -932,6 +1040,28 @@ export default defineTool({
       { keyOf: (slug) => ({ slug }) },
     );
 
-    return bulkContent(env);
+    // Approval/promotion can commit before an admission refusal. Generic tier
+    // shaping discards that receipt and advertises a plans:start replay. Save
+    // the original response through the existing lossless door first, on every
+    // agent-facing transport (including the HTTP CLI). Machine consumers keep
+    // the canonical data response; raw ToolResult serialization skips tiering.
+    const receiptCtx = ctx as typeof ctx & {
+      transport?: string;
+      transportCapExempt?: boolean;
+      requestedStructured?: boolean;
+      workspaceId?: string;
+    };
+    if (!receiptCtx.transport || receiptCtx.transportCapExempt || receiptCtx.requestedStructured) {
+      return bulkContent(env);
+    }
+    const { resolveAgentIdentity } = await import('../coordination/identity');
+    return applyResultDoorAsync(
+      { content: [{ type: 'text' as const, text: JSON.stringify(env) }] },
+      {
+        toolName: 'plans:start',
+        workspaceId: receiptCtx.workspaceId,
+        ownerId: resolveAgentIdentity(ctx).ownerId,
+      },
+    );
   },
 });

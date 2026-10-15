@@ -1,0 +1,237 @@
+{
+  "schemaVersion": "p011-standalone-spawner-adoption-guards-v1",
+  "workItem": "WI-10005714",
+  "parent": "WI-10004890",
+  "originalComparison": {
+    "workItem": "WI-10005706",
+    "raw": "docs/evidence/papercusp-oct1-p011-spawner-boot-pair-r2-2026-10-02.json",
+    "sha256": "1367a39d36b3cf3f32fbc2dcce7611f3afca948c5b42b60a9046072f205cc057",
+    "qualificationSha256": "19235b3dadc726e320ec73cc2a542a7bf09e7cc9954be652cc502ba21504f28d",
+    "replayed": false
+  },
+  "implementation": {
+    "reused": [
+      "existing spawner-sidecar entry and server",
+      "shared sidecar spawn resolver",
+      "host and desktop bundle recipes",
+      "serve parent death watch, extracted with existing exports retained",
+      "host-recycle fatal diagnostics, extracted with existing exports retained"
+    ],
+    "artifact": "spawner-sidecar.mjs",
+    "fallback": "nonempty regular sibling when available, otherwise full host entry; dev source and other sidecar routes unchanged",
+    "boot": [
+      "allocator re-exec and self-only preload scrub",
+      "integrity preflight",
+      "flag override store before server imports",
+      "stdio guard",
+      "fatal report diagnostics",
+      "packaged declared-parent watch",
+      "timestamped console",
+      "existing per-host process fault policy"
+    ]
+  },
+  "verification": {
+    "testsPassed": 206,
+    "skipped": 0,
+    "ledger": [
+      {
+        "id": 20577229,
+        "filePath": "packages/operator-core/lib/process-supervision/sidecar-spawn-shared.test.ts",
+        "status": "pass",
+        "commitSha": "df320f497656cafcdb9a3438d2957c667d9411b1",
+        "worktreeDirty": true,
+        "startedAt": "2026-10-02T22:54:47.580Z",
+        "finishedAt": "2026-10-02T22:54:47.628Z"
+      },
+      {
+        "id": 20577230,
+        "filePath": "packages/operator-core/lib/host-recycle.test.ts",
+        "status": "pass",
+        "commitSha": "df320f497656cafcdb9a3438d2957c667d9411b1",
+        "worktreeDirty": true,
+        "startedAt": "2026-10-02T22:54:59.273Z",
+        "finishedAt": "2026-10-02T22:54:59.309Z"
+      },
+      {
+        "id": 20577870,
+        "filePath": "apps/operator/bin/serve.test.ts",
+        "status": "pass",
+        "commitSha": "df320f497656cafcdb9a3438d2957c667d9411b1",
+        "worktreeDirty": true,
+        "startedAt": "2026-10-02T22:55:15.259Z",
+        "finishedAt": "2026-10-02T22:55:22.214Z"
+      },
+      {
+        "id": 20577869,
+        "filePath": "apps/operator/bin/packaged-sidecar-topology.test.ts",
+        "status": "pass",
+        "commitSha": "df320f497656cafcdb9a3438d2957c667d9411b1",
+        "worktreeDirty": true,
+        "startedAt": "2026-10-02T22:55:15.248Z",
+        "finishedAt": "2026-10-02T22:55:17.390Z"
+      },
+      {
+        "id": 20578803,
+        "filePath": "packages/operator-core/lib/spawner-sidecar-bundle.integration.test.ts",
+        "status": "pass",
+        "commitSha": "df320f497656cafcdb9a3438d2957c667d9411b1",
+        "worktreeDirty": true,
+        "startedAt": "2026-10-02T22:57:02.653Z",
+        "finishedAt": "2026-10-02T22:57:35.898Z"
+      },
+      {
+        "id": 20579443,
+        "filePath": "apps/operator/bin/spawner-sidecar.test.ts",
+        "status": "pass",
+        "commitSha": "df320f497656cafcdb9a3438d2957c667d9411b1",
+        "worktreeDirty": true,
+        "startedAt": "2026-10-02T22:58:06.988Z",
+        "finishedAt": "2026-10-02T22:58:07.062Z"
+      }
+    ],
+    "types": {
+      "coreErrors": 0,
+      "operatorErrors": 0,
+      "scope": "focused named files and direct importers; not whole-project typechecking"
+    },
+    "shellSyntaxPassed": true,
+    "diffCheckPassed": true,
+    "assertions": [
+      {
+        "id": "packaged-resolver",
+        "passed": true,
+        "evidence": "Real filesystem sibling selection and absent/empty/directory fallback; unchanged parent declaration and other sidecar opt-out."
+      },
+      {
+        "id": "boot-order-and-fault-policy",
+        "passed": true,
+        "evidence": "Entry unit test composes actual entry with mocked boot seams; safeguards before dynamic server evaluation and systemd/desktop fault policy and closed-stdio behavior."
+      },
+      {
+        "id": "guarded-artifact-build",
+        "passed": true,
+        "evidence": "Real maintained helper builds standalone, guard and syntax checks pass; metafile contains server and boot/lifecycle helpers and excludes the four HTTP boot entries."
+      },
+      {
+        "id": "rejected-build-keeps-prior-artifact",
+        "passed": true,
+        "evidence": "Invalid compiler option causes real helper failure without changing prior entry bytes."
+      },
+      {
+        "id": "existing-lifecycle-regressions",
+        "passed": true,
+        "evidence": "Existing serve/watch/packaged topology/host-recycle and sidecar-shared suites passed unchanged plus new resolver cases."
+      }
+    ]
+  },
+  "sources": [
+    {
+      "path": "apps/operator/bin/spawner-sidecar.ts",
+      "sha256": "b1c1827d9babbfaa51325e6004ecb0db359a8778f785c1603154b3dfd24f55f5"
+    },
+    {
+      "path": "apps/operator/bin/spawner-sidecar.test.ts",
+      "sha256": "10a8b9bcf1289e303c2dcb626175cbf162e11472907f1a88ab949b30f11d8e12"
+    },
+    {
+      "path": "apps/operator/bin/serve.ts",
+      "sha256": "77bf656844f444a6f03a7d035878cee276631319890ba99214cefec390df8e3f"
+    },
+    {
+      "path": "apps/operator/bin/bundle-host.sh",
+      "sha256": "afcbc433e70ef048e35258a2ab83cecf89437c76612383f91610b333ef16cfd8"
+    },
+    {
+      "path": "apps/operator/bin/bundle-host-common.sh",
+      "sha256": "b054afa3b92f0d98576144d2d794280b7a60ce49ea4d6d437d28dfdc2cb1de70"
+    },
+    {
+      "path": "packages/operator-core/lib/process-supervision/fatal-diagnostics.ts",
+      "sha256": "5f57a7d25a2048bc9eab48c81f7ca49831f1a5bc673edfc7a94fccc9c0d4ff86"
+    },
+    {
+      "path": "packages/operator-core/lib/process-supervision/parent-death-watch.ts",
+      "sha256": "e6798817ffb4ffac99381dfc011912a7e85d52691d504dcb430dba05f43c1057"
+    },
+    {
+      "path": "packages/operator-core/lib/process-supervision/sidecar-spawn-shared.ts",
+      "sha256": "e89004da80008c7fa8e76487cf21e41d5e6f4bf056c69594a58a33633ad87e39"
+    },
+    {
+      "path": "packages/operator-core/lib/process-supervision/sidecar-spawn-shared.test.ts",
+      "sha256": "a1a1d15a1972d3275020e76dfa79bfc080c2a11b66472cab60db86cb4d7abff2"
+    },
+    {
+      "path": "packages/operator-core/lib/host-recycle.ts",
+      "sha256": "28e55b295a2a26bd091ea4a72e758623bdbb3152525aeac8efe731867469b416"
+    },
+    {
+      "path": "packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts",
+      "sha256": "ccbd237a7647c8bea30eadfb07bd4e84a0b4d1b3d2747ae4ea01b3adb98fa045"
+    },
+    {
+      "path": "packages/operator-core/lib/spawner-sidecar-bundle.integration.test.ts",
+      "sha256": "ff7cfbfa2d71cccefa5d293cb9154115169c936f83d324ec9dc6ff9bb2b25c96"
+    },
+    {
+      "path": "papercusp-desktop/bin/build-desktop-sidecar.sh",
+      "sha256": "2fff78d0ec60d70cc50e6847db1e16969fb5e295325b6e66ee2c6830796ee5d4"
+    },
+    {
+      "path": "papercusp-desktop/bin/vm-rig/compose-rig-sidecar-current.sh",
+      "sha256": "b78fb18cff5cc752cb924a30266999ecc5c632a9167f5010d386cf1e3db64cf1"
+    }
+  ],
+  "logs": [
+    {
+      "path": "/tmp/su-7db4f-p011-spawner-safety-r1.log",
+      "bytes": 17078,
+      "sha256": "3bfcce4f9497b36e1b24add6d7251f14d980577ac3e6423ce89636fd885592bc",
+      "terminal": [
+        "      Tests  91 passed (91)",
+        "      Tests  112 passed (112)",
+        "TEST_FILE_RESULT requested=4 executed=4 matched=4 status=passed head=91fe520c67 uncommittedPaths=1/4 provenance=unknown startedAt=2026-10-02T22:54:37.344Z skippedTests=0"
+      ]
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-spawner-bundle-r1.log",
+      "bytes": 4977,
+      "sha256": "c8f38779f983bec68f51283c0f26981e4561b700fc441bf260b4a1eac4051e6a",
+      "terminal": [
+        "      Tests  1 passed (1)",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=df320f4976 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-02T22:56:48.253Z skippedTests=0"
+      ]
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-spawner-entry-r1.log",
+      "bytes": 3741,
+      "sha256": "3e1d0a8e56b8877ef468ba59c27eb55dd584e2fab2df1c9cb9f0976033ecbb1c",
+      "terminal": [
+        "      Tests  2 passed (2)",
+        "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=df320f4976 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-02T22:57:54.738Z skippedTests=0"
+      ]
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-spawner-types-core-r1.log",
+      "bytes": 1389,
+      "sha256": "2abd3d0ebbf95bc48bbe783ac093969b5403b1b3b9f2f285fa91aa1f14a75340",
+      "terminal": [
+        "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean at=2026-10-02T22:58:21.376Z head=df320f4976"
+      ]
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-spawner-types-app-r1.log",
+      "bytes": 1050,
+      "sha256": "9d09981bdf66ad46893cdb63bf453bddecfff3e391e702257d55c0e7d37490bf",
+      "terminal": [
+        "LINT_TSC_RESULT label=operator scope=files exit=0 status=clean at=2026-10-02T22:58:21.377Z head=df320f4976"
+      ]
+    }
+  ],
+  "limitations": [
+    "Local dirty test plane; safety router HEAD moved, so transitive provenance is unknown. All ledger rows are local and dirty.",
+    "Final bundle-host standalone-failure supervisor fallback and desktop dogfood define additions were syntax-checked after the listed build guard; their complete runtime build/release contracts still need acceptance.",
+    "The full desktop distribution was not built, no service restarted, no agent invokeOnce RPC exercised, no production memory savings or shipment claim.",
+    "No original R2 or other historical matrix replayed. Source extraction and safeguards change the candidate; independent current-build runtime acceptance remains open."
+  ]
+}

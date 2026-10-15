@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-4 live drill with no hand classification and no wake intervention: the BD012 Slack bug report (a real papercusp defect, WI-6554700010009238) travelled the installed Cupboard slack + bug-triage packages to one Asana task, classified and filed by the named executor bug-triage on bg-host pid 179292 (started 2026-10-13T08:04:52Z, build df574832a0)",
+  "framework": "operational",
+  "command": [
+    "Real Slack post into channel C0C8836LU5C at 2026-10-13T08:16:20.528Z (ts 1791879380.435859, client_msg_id 7c1d2e3f-4a5b-4c6d-bd12-202610130815) through the drill reporter account (auth.test team T0C4WJSCV9V, user U0C8BMMPPBQ), not the system bot; script .papercusp/scratch/su-0dd6b-bd012-post.sh.",
+    "Classification: NOT by the implementer. Trigger run 5df85891 (binding 209f8c45, action.execution agentName bug-triage) fired at 08:16:29Z, created plan run 1346 and assigned WI-6554700010009944 to the executor. The executor read the payload (triggers:read-payload 08:18:04Z), judged it a real defect, filed it (ticket:file 08:18:13Z) and closed the item (08:18:21Z), all on :3170 build df574832a0. The implementer made no ticket:file call and sent the executor no wake or message after launch.",
+    "Measurement: readTriggerPackDrillRows + assessTriggerPackDrill from packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts (tested by trigger-pack-drill-evidence.test.ts), run as .papercusp/scratch/p008-bd012-drill-measure.mts against the operator database."
+  ],
+  "startedAt": "2026-10-13T08:22:50.998Z",
+  "finishedAt": "2026-10-13T08:22:51.127Z",
+  "exitCode": 0,
+  "summary": "Instrument verdict pass on 5 of 5 checks. Slack message ts 1791879380.435859 in C0C8836LU5C arrived on source f0566e25 (kind slack) through the installed slack package's provider setup, fired exactly one run (5df85891, succeeded, plan run 1346) from installed binding 209f8c45, produced exactly one Asana task 1219438146953218 in project 1219381686283984, and the in-app binding 7c3c95c0 stayed silent.",
+  "assertions": [
+    {
+      "id": "package-socket-path",
+      "passed": true,
+      "evidence": "source f0566e25-ec24-4c51-8388-74ebf49fb6fc: kind slack (expected slack), credential_ref provider-setup:slack, status connected, last_error null"
+    },
+    {
+      "id": "chat-message-recorded",
+      "passed": true,
+      "evidence": "1 run(s) on the installed binding carry dedupe prefix connector:f0566e25-ec24-4c51-8388-74ebf49fb6fc:chat-message:C0C8836LU5C:1791879380.435859:"
+    },
+    {
+      "id": "one-run-from-installed-binding",
+      "passed": true,
+      "evidence": "binding 209f8c45-2d5a-48ed-8b82-78ec6f0148a0 (plan bug-triage, installation 2e0593bb-17cc-4f27-bb68-5ef62cc9ea3c, armed true, channels [C0C8836LU5C]): 1 run(s) in window; 5df85891-8f05-49ac-8552-b65f6254501c succeeded, minted 1, replayed false, planRunId 1346"
+    },
+    {
+      "id": "one-ticket-in-chosen-project",
+      "passed": true,
+      "evidence": "ticket created 1219438146953218 in container 1219381686283984; installation destination 1219381686283984"
+    },
+    {
+      "id": "in-app-path-silent",
+      "passed": true,
+      "evidence": "in-app binding 7c3c95c0-fc75-4832-b66c-c493fefea789 (plan slack-classify-bug-2026-10-08) armed false; 0 run(s) in window"
+    }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": [
+    "P-007"
+  ],
+  "specs": [
+    "SPEC-R-4-P-007"
+  ],
+  "evidencePlane": "live",
+  "instrument": {
+    "path": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.ts",
+    "testPath": "packages/operator-core/lib/integrations/trigger-pack-drill-evidence.test.ts"
+  },
+  "drill": {
+    "workspaceId": "papercusp-workspace",
+    "sourceKind": "slack",
+    "channelId": "C0C8836LU5C",
+    "messageId": "1791879380.435859",
+    "sourceId": "f0566e25-ec24-4c51-8388-74ebf49fb6fc",
+    "installedBindingId": "209f8c45-2d5a-48ed-8b82-78ec6f0148a0",
+    "inAppBindingId": "7c3c95c0-fc75-4832-b66c-c493fefea789",
+    "windowStart": "2026-10-13T08:15:00Z",
+    "windowEnd": "2026-10-13T08:50:00Z"
+  },
+  "ticket": {
+    "containerId": "1219381686283984",
+    "externalRef": "1219438146953218",
+    "url": "https://app.asana.com/1/1219197493738449/project/1219381686283984/task/1219438146953218"
+  },
+  "executor": {
+    "agentName": "bug-triage",
+    "session": "su-5c17f739-71cd-49f0-8501-7aea1613102a",
+    "workItem": "WI-6554700010009944",
+    "readPayloadAt": "2026-10-13T08:18:04.269Z",
+    "ticketFileAt": "2026-10-13T08:18:13.184Z",
+    "servingHost": "port-3170",
+    "servingBuild": "df574832a0"
+  },
+  "supersedes": "docs/evidence/cupboard-distributable-integrations-2026-10-10/p008-bd011-drill-assessment.json for AUTO-BAR-R-4-P-007 currency only: BD011 stays the record of the 05:59Z run, but its bg-host process (pid 1496768) ended at the 08:04:52Z watchdog restart, so its live proof is environment-stale.",
+  "limitations": [
+    "The Slack message was posted by an inline one-shot script, not a committed sender; the instrument measures what the platform recorded after delivery, not the posting.",
+    "The executor session su-5c17f739 was launched by the implementer at 08:12Z through capability:launch-agent with a brief to adopt the agent name bug-triage and work its assigned items, because the previous executor (su-7cca71f6) had ended. After its adopt_name message at 08:13Z the implementer sent it nothing; the dispatch wake alone started its turn.",
+    "The executor must be connected to a build that serves ticket:file (here :3170, df574832a0). An executor connected to :3070 (green main d740fc3802) gets unknown_tool; tracked as EI-25837118762007088.",
+    "The window end (08:50Z) was later than the measurement time (08:22:51Z); the in-app-path-silent check covers only rows present when the instrument ran.",
+    "The Asana task identity comes from the trigger run's recorded ticket filing; the instrument does not query Asana's API.",
+    "This drill posted in the chosen channel, so it does not exercise the non-chosen-channel case; that case is guarded by the ticket.ts channel check and its integration test."
+  ]
+}

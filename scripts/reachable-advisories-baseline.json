@@ -86,18 +86,39 @@
     "@modelcontextprotocol/sdk, @anthropic-ai/sdk, …), and in that state `npm audit --omit=dev`",
     "dropped style-dictionary's GHSA-vj5c-m527-mpff and reported stagehand's vulnerable range",
     "narrower than it is. Once the lock was reconciled, both reverted, and their entries stand",
-    "unchanged. Judge STALE and drift only on a tree where `npm ls --omit=dev` is clean."
+    "unchanged. Judge STALE and drift only on a tree where `npm ls --omit=dev` is clean.",
+    "",
+    "RE-MEASURED 2026-10-06 (frozen-repair lint:reachable-advisories red, WI-10006055): the npm-ls",
+    "fail-closed added 2026-10-02 refused EVERY tree, because third-party peer-range problems are",
+    "always present, so analysis never ran and new advisories went unseen for four days.",
+    "classifyNpmTreeProblems narrowed that refusal to problems that can hide a shipping edge. That",
+    "exposed a second hole: `npm audit --omit=dev` drops a package that reaches prod only as a",
+    "workspace PEER dependency (the lock flags it dev:true), so it was never gated, and the accepted",
+    "style-dictionary read STALE while 4.4.0 was installed. findPeerMaskedAdvisories now folds",
+    "those in; entries marked PEER-MASKED below came in that way. 20 entries were added in one",
+    "batch, measured on staging and on the frozen candidate c0ad6500. Every one cites WI-10006989,",
+    "where the patch-eligible ones are to be patched and removed. This is growth under a stated",
+    "reason, not a policy change: the list is still shrink-only."
   ],
   "seededAt": "2026-09-05",
   "seededFrom": "npm audit --omit=dev --json (reachability/severity) + npm audit --json (fix feasibility, tree as installed) + npm ls --omit=dev --all --json, attributed by workspace",
   "accepted": [
     "@browserbasehq/stagehand",
+    "@bundled-es-modules/glob",
+    "@excalidraw/excalidraw",
+    "@modelcontextprotocol/sdk",
+    "chokidar",
     "d3",
     "d3-color",
+    "fast-glob",
+    "find-yarn-workspace-root",
     "js-yaml",
-    "langsmith",
     "markmap-view",
+    "mcp-handler",
+    "micromatch",
     "nanoid",
+    "patch-package",
+    "sass",
     "style-dictionary"
   ],
   "entries": {
@@ -105,12 +126,6 @@
       "severity": "high",
       "disposition": "deferred-semver-major",
       "reason": "Deferring the semver-major upgrade @browserbasehq/stagehand@3.4.0 -> 4.0.2 (latest published). CORRECTED 2026-09-05 from patch-eligible: npm returns the bare boolean fixAvailable:true, which the analyzer reads as patch-compatible, but the advisory range is `3.0.0 - 4.0.0-alpha-49bc5b68e4fbeb28a120b301b51c31a36db7d922` and apps/operator declares \"^3.4.0\" — `^3.4.0` is a semver SUBSET of that range (prereleases sort below 4.0.0), so no compatible 3.x escapes it. The bare `true` is npm saying it could fix the deps this package is vulnerable THROUGH (@langchain/core, puppeteer-core), not that stagehand itself has a compatible fix.",
-      "owners": ["@papercusp/testing-shell", "@papercusp/web"]
-    },
-    "langsmith": {
-      "severity": "high",
-      "disposition": "deferred-semver-major",
-      "reason": "Deferring the breaking upgrade langsmith@0.3.87 -> 0.6.0+ (0.10.1 is latest published). CORRECTED 2026-09-05 from patch-eligible: the hoisted copy at node_modules/langsmith is 0.8.7 and is NOT vulnerable — the vulnerable copy is the one nested under @browserbasehq/stagehand at 0.3.87. The worst advisory (GHSA-3644-q5cj-c5c7, high) is fixed only at >=0.6.0, and `^0.3.87` is a semver SUBSET of `<0.6.0`; under 0.x semver a minor bump is breaking, so no compatible version escapes. Also blocked behind the stagehand entry: the vulnerable copy is stagehand's own pinned dependency, so a root override would force it inside a package that was never tested against it. This row now reports CORROBORATED. ⚠ RETRACTED 2026-09-05: it previously said 'EXPECT THIS ROW TO REPORT UNCORROBORATED, permanently and correctly', on the claim that the 0.3.87 copy was reachable only through a dev path. That was FALSE — stagehand is a PROD `dependencies` entry of apps/operator (dev=false) and 0.3.87 IS in the --omit=dev tree. The derivation could not see it because collectInstalledVersions keyed its cycle guard on `name@version` and npm ls emits a workspace both as a dedupe stub and once in full, so the populated subtree was skipped. That was a fail-OPEN bug in our own collector, now fixed by guarding on node identity. The disposition below was right all along and is now DERIVED-corroborated rather than merely asserted — but the instruction not to investigate was wrong, and is exactly why the bug survived.",
       "owners": ["@papercusp/testing-shell", "@papercusp/web"]
     },
     "style-dictionary": {
@@ -157,6 +172,66 @@
         "@papercusp/operator-core",
         "@papercusp/web"
       ]
+    },
+    "@bundled-es-modules/glob": {
+      "severity": "high",
+      "disposition": "patch-eligible",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; fix tracked on WI-10006989). PEER-MASKED: absent from npm audit --omit=dev (lock dev flag) while the prod npm ls tree holds 10.4.2 under @papercusp/token-kit. Range 10.3.4 - 10.4.2; derived patch-eligible (^10.4.2 escapes). Accepted only to keep a lockfile change off the frozen-candidate repair; patch on staging and remove this entry.",
+      "owners": ["@papercusp/token-kit"]
+    },
+    "@excalidraw/excalidraw": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 0.18.1 is inside the vulnerable range (>=0.18.0-699826); npm's only fix is @excalidraw/excalidraw@0.17.6, flagged semver-major (a downgrade). Deferred pending a compatibility assessment of the whiteboard surface.",
+      "owners": ["@papercusp/web"]
+    },
+    "@modelcontextprotocol/sdk": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 1.29.0, range 1.12.0 - 1.30.1. npm routes the fix through mcp-handler@2.2.0, semver-major. Check on WI-10006989 whether the direct copies can move to a fixed 1.x independently of mcp-handler.",
+      "owners": ["@papercusp/agent-mcp", "@papercusp/omp", "@papercusp/operator-core", "@papercusp/testing-shell", "@papercusp/tooldef-mcp", "@papercusp/web"]
+    },
+    "chokidar": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 3.6.0, range 2.0.0 - 3.6.0 (^3.6.0 cannot escape). npm routes the fix through @excalidraw/excalidraw@0.17.6, semver-major. Deferred pending a compatibility assessment.",
+      "owners": ["@papercupai/operator-docs", "@papercusp/operator-core"]
+    },
+    "fast-glob": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 3.3.3; npm reports every version vulnerable (range *) and routes the fix through knip@6.40.0, semver-major. Deferred pending a compatibility assessment.",
+      "owners": ["@papercusp/operator-core"]
+    },
+    "find-yarn-workspace-root": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). PEER-MASKED: absent from npm audit --omit=dev (lock dev flag) while the prod npm ls tree holds 2.0.0; UNATTRIBUTED, so it fails closed as shipping. Range * (no fixed version); npm's fix is patch-package@6.0.7, semver-major (a downgrade). Deferred pending a compatibility assessment.",
+      "owners": []
+    },
+    "mcp-handler": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 1.1.0, range 1.0.7 - 1.1.0; the fix is mcp-handler@2.2.0, semver-major. Deferred pending a compatibility assessment of the MCP route handler.",
+      "owners": ["@papercusp/web"]
+    },
+    "micromatch": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 4.0.8; range >=0.2.0 (no fixed version). npm routes the fix through patch-package@6.0.7, semver-major. Deferred pending a compatibility assessment.",
+      "owners": ["@papercupai/operator-docs", "@papercusp/operator-core"]
+    },
+    "patch-package": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). PEER-MASKED: absent from npm audit --omit=dev (lock dev flag) while the prod npm ls tree holds 8.0.1 under @papercusp/token-kit. Range >=6.1.0-0; npm's fix is patch-package@6.0.7, semver-major (a downgrade). Deferred pending a compatibility assessment.",
+      "owners": ["@papercusp/token-kit"]
+    },
+    "sass": {
+      "severity": "high",
+      "disposition": "deferred-semver-major",
+      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 1.51.0, range 1.6.0 - 1.78.0. npm routes the fix through @excalidraw/excalidraw@0.17.6, semver-major. Check on WI-10006989 whether the direct copy can move within ^1.",
+      "owners": ["@papercup/marketplace-public-ui"]
     }
   }
 }

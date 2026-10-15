@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Android exported-source compilation verifier regression suite",
+  "framework": "shell",
+  "command": [
+    "make",
+    "test-android-release-provenance"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T01:14:43.781886764Z",
+  "finishedAt": "2026-10-03T01:15:01.761674879Z",
+  "timestampSource": "Birth time and final modification time of retained final command log; exitCode 0 observed from command envelope.",
+  "exitCode": 0,
+  "summary": "Maintained provenance suite compiled a real miniature Rust cdylib and locked vendored dependency from exported source; rejected seven damaged dependency supplements and a real compiler failure. Existing root/submodule/version/artifact guards passed. This receipt covers verifier regressions, not compilation of the complete Papercusp application.",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/build-scripts/android-release-provenance.sh",
+      "sha256": "28b7ced143e7e38ae45d9ac2775fd57649e3fa9f7889a65d5ec12971fcf47c4a"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "2b07f85a31e8e07d2cfa20525010fb5a94dc3a3861687bc9617064c4a6c2b6be"
+    },
+    {
+      "path": "papercup-rust-mobile/store/APP-STORE-REVIEW.md",
+      "sha256": "ecad3dceb1839847d0fbd74177c653bb294cecaa6f5f0461dd7a673a9c8f6b56"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-release-provenance-test.sh",
+      "sha256": "2b07f85a31e8e07d2cfa20525010fb5a94dc3a3861687bc9617064c4a6c2b6be"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "real-exported-fixture-compilation",
+      "passed": true,
+      "evidence": "Actual Cargo compiled the tiny exported cdylib and locked source_proof_dependency; output exists with nonzero size, one registry package and two source-file checksums verified."
+    },
+    {
+      "id": "stale-dependency-lock-rejected",
+      "passed": true,
+      "evidence": "Corrupted cargoLockSha256 supplement was rejected and stale success receipt removed."
+    },
+    {
+      "id": "damaged-vendor-content-rejected",
+      "passed": true,
+      "evidence": "Changed source bytes and extra unchecksummed files were separately rejected."
+    },
+    {
+      "id": "archive-boundary-guards",
+      "passed": true,
+      "evidence": "Root Cargo.toml replacement, escaping path and duplicate archive entry were separately rejected."
+    },
+    {
+      "id": "redirected-cargo-config-rejected",
+      "passed": true,
+      "evidence": "A supplement that redirected Cargo sources away from the delivered vendor recipe was rejected."
+    },
+    {
+      "id": "real-compiler-failure-retained",
+      "passed": true,
+      "evidence": "Invalid committed fixture Rust produced nonzero compiler exit, no compiled artifacts and a retained unique error log; restored source subsequently compiled."
+    },
+    {
+      "id": "existing-provenance-guards",
+      "passed": true,
+      "evidence": "Existing suite still verified pinned nested submodules and rejected root source loss/mutation, dirty or mispinned submodules, version drift and APK hash drift."
+    }
+  ],
+  "evidenceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-source-build-provenance-tests-final-20261003.log",
+      "sha256": "7a83a29e665a204b147aa99dc29d3abc4d10da7fdc954031c5d0df307971fa3e"
+    }
+  ],
+  "limitations": [
+    "Full current-app exported-source compilation has not yet executed.",
+    "Android ABI compilation mode has not executed in this regression proof.",
+    "No signed-candidate, complete license/notice clearance, recipient retrieval, physical phone or Play acceptance."
+  ],
+  "preservedHistoricalSource": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-original-source-f41bf7f4.tar.gz",
+    "sha256": "c561a22028182be695a96b3b3e05f4f4be9df5c8ad46bb790148638496a7932e"
+  }
+}

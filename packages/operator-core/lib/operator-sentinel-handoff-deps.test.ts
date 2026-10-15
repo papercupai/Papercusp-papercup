@@ -13,6 +13,7 @@
  * this dep makes) so the test asserts the exact args without touching PG.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+vi.mock('./degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 
 const openEscalationSpy = vi.fn(async (_identity: unknown, input: unknown) => ({ ...(input as object), msg_id: 'esc-1' }));
 const refreshCandidatesSpy = vi.fn(async () => {});

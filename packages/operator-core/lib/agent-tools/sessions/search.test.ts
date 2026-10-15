@@ -16,6 +16,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/sessions/search.test.ts
  */
 import { describe, expect, it, vi } from 'vitest';
+import type { SearchLegs } from '@papercusp/search';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -43,7 +44,24 @@ vi.mock('../../search/session-ingest', async (importOriginal) => ({
 // The verbatim tests below never reach the hybrid branch, but search.ts
 // statically imports both — mock them inertly so the module loads without a
 // live embedder/DB, and let the one hybrid test override the return value.
-const runHybridSearch = vi.fn(async () => ({ results: [], totalHits: 0, embedderAvailable: true }));
+// `legs` is optional on the mock's return type so a case can install the engine's
+// per-leg verdict (WI-10005676) with a genuinely typechecked fixture — no
+// `as never` cast on the mock argument (lint:mock-cast-escape is shrink-only).
+interface HybridSearchMockResult {
+  results: Array<{
+    source: string;
+    source_id: string;
+    excerpt: string;
+    score: number;
+    highlight?: string;
+    rankers?: string[];
+    scope?: string | null;
+  }>;
+  totalHits: number;
+  embedderAvailable: boolean;
+  legs?: SearchLegs;
+}
+const runHybridSearch = vi.fn(async (): Promise<HybridSearchMockResult> => ({ results: [], totalHits: 0, embedderAvailable: true }));
 // `configureSearchDefaults` is NOT used by these tests — it is here because
 // `search.ts` -> `../search/sources` side-effect-imports
 // `lib/search/configure-search-defaults`, which CALLS it at module load (P-017).
@@ -93,12 +111,12 @@ function makeTx(rows: unknown[]) {
   return vi.fn(async () => rows);
 }
 
-function callTool(args: Record<string, unknown>, tx: unknown) {
+function callTool(args: Record<string, unknown>, tx: unknown, log?: (message: string) => void, metadata?: (value: Record<string, unknown>) => void) {
   return (
     tool as unknown as {
       handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
     }
-  ).handler(args, { workspaceId: 'default', tx });
+  ).handler(args, { workspaceId: 'default', tx, log, metadata });
 }
 
 describe('sessions:search limit contract', () => {
@@ -140,6 +158,24 @@ describe('sessions:search explicit session refresh scope (EI-21720673196644332)'
     expect(parsed.total_hits).toBe(0);
     expect(refreshTargetSessionBeforeRead).toHaveBeenCalledWith(tx, undefined, sessionId);
     expect(refreshLiveSessionsBeforeRead).not.toHaveBeenCalled();
+  });
+
+  it('logs a bounded phase duration when a refresh is slow', async () => {
+    refreshTargetSessionBeforeRead.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 125));
+      return { attempted: 1, refreshed: 1 };
+    });
+    const logs: string[] = [];
+
+    const res = await callTool({
+      query: 'targeted needle',
+      mode: 'verbatim',
+      session: 'slow-session',
+      context: 0,
+    }, makeTx([]), (message) => logs.push(message));
+
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, total_hits: 0 });
+    expect(logs.some((message) => /\[sessions:search:phase\] secondary_live_refresh duration_ms=\d+/.test(message))).toBe(true);
   });
 });
 
@@ -337,6 +373,26 @@ describe('sessions:search owner-directive provenance filters', () => {
     expect(main?.values).toContain('owner-typed');
     expect(main?.values).toContain(true);
   });
+
+  it('uses the indexed lower(text) LIKE predicate and escapes literal LIKE metacharacters', async () => {
+    const calls: Array<{ sql: string; values: unknown[] }> = [];
+    const tx = vi.fn(async (...args: unknown[]) => {
+      const [strings, ...values] = args;
+      const sql = Array.isArray(strings) ? (strings as string[]).join(' ? ') : String(strings);
+      calls.push({ sql, values });
+      return [];
+    });
+
+    const res = await callTool({ query: 'Needle%_\\fragment', mode: 'verbatim', context: 0 }, tx);
+    const main = calls.find((call) => call.sql.includes('left(text, 700)'));
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+
+    expect(parsed.ok).toBe(true);
+    expect(main).toBeDefined();
+    expect(main?.sql).toContain('lower(text) LIKE');
+    expect(main?.sql).not.toContain('text ILIKE');
+    expect(main?.values).toContain('%needle\\%\\_\\\\fragment%');
+  });
 });
 
 describe('sessions:search response-door shaping', () => {
@@ -514,5 +570,165 @@ describe('sessions:search mode enum is closed (EI-22100689099416717)', () => {
     const modeField = (tool.args as unknown as { shape: Record<string, { description?: string }> }).shape.mode;
     expect(modeField.description ?? '').toMatch(/hybrid/);
     expect(modeField.description ?? '').toMatch(/meaning/i);
+  });
+});
+
+/**
+ * WI-10005676 / EI-19478862482607876 — the engine's per-leg verdict reaches the
+ * RESULT.
+ *
+ * `sessions:search` used to destructure `{ results }` out of `runHybridSearch` and
+ * discard `legs`. The tool the compaction contract tells a successor to recover
+ * context with therefore could not say whether its semantic half had contributed
+ * anything: a search that silently went lexical-only read exactly like one that
+ * found nothing, and the only place the degradation was visible was a hook banner
+ * on a DIFFERENT code path. These cases pin both halves of the contract: the verdict
+ * is on a hybrid result (with the semantic candidate count stated even at zero), and
+ * it is absent in verbatim mode, which never runs an engine leg.
+ */
+describe('sessions:search surfaces the engine leg report (WI-10005676)', () => {
+  const healthyLeg = {
+    status: 'ran' as const,
+    candidates: 4,
+    floored: 0,
+    stage2Added: 0,
+    callsRun: 1,
+    callsFailed: 0,
+    failures: [],
+    blocked: null,
+  };
+
+  it('puts legs on a hybrid result and states semantic.candidates even when it is 0', async () => {
+    runHybridSearch.mockClear();
+    runHybridSearch.mockResolvedValueOnce({
+      results: [],
+      totalHits: 0,
+      embedderAvailable: true,
+      legs: {
+        degraded: true,
+        warning: 'semantic leg contributed 0 candidates',
+        lexical: { ...healthyLeg, candidates: 3 },
+        semantic: { ...healthyLeg, candidates: 0 },
+      },
+    });
+
+    const metadata = vi.fn();
+    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]), undefined, metadata);
+    const parsed = JSON.parse(res.content[0].text) as {
+      legs?: {
+        degraded: boolean;
+        warning: string | null;
+        lexical: { candidates: number };
+        semantic: { candidates: number };
+      };
+    };
+
+    expect(parsed.legs).toBeDefined();
+    expect(parsed.legs?.degraded).toBe(true);
+    expect(parsed.legs?.warning).toBe('semantic leg contributed 0 candidates');
+    expect(parsed.legs?.lexical.candidates).toBe(3);
+    // The load-bearing assertion: a zero is STATED, not omitted — it is what tells a
+    // leg that ran and found nothing apart from a leg that never ran.
+    expect(parsed.legs?.semantic.candidates).toBe(0);
+    const engineContext = (runHybridSearch.mock.calls[0] as unknown as [unknown, Record<string, unknown>])[1];
+    const receipt = metadata.mock.lastCall?.[0].sessionsSearchRead;
+    expect(engineContext.correlationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(receipt).toMatchObject({ correlationId: engineContext.correlationId,
+      legs: { degraded: true, warning: 'semantic leg contributed 0 candidates' } });
+  });
+
+  it('keeps lexical hits and reports a budget-blocked semantic leg without failing the tool', async () => {
+    runHybridSearch.mockClear();
+    const timeout = 'query embed exceeded 4000ms budget';
+    const { newLegAccumulator, finaliseLeg, summariseLegs } = await import('@papercusp/search');
+    type LegFacts = Partial<{
+      attempted: boolean;
+      candidates: number;
+      callsRun: number;
+      blocked: string | null;
+    }>;
+    const makeLeg = (facts: LegFacts) => Object.assign(newLegAccumulator(), facts);
+    const legs = summariseLegs(
+      finaliseLeg(makeLeg({ attempted: true, callsRun: 1, candidates: 1 })),
+      finaliseLeg(makeLeg({ attempted: true, blocked: timeout })),
+    );
+    runHybridSearch.mockResolvedValueOnce({
+      results: [{
+        source: 'coord_message',
+        source_id: 'coord-message-1',
+        excerpt: 'lexical fallback hit',
+        highlight: 'lexical fallback hit',
+        score: 0.5,
+        rankers: ['lexical'],
+      }],
+      totalHits: 1,
+      embedderAvailable: false,
+      legs,
+    });
+
+    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult & {
+      legs?: {
+        degraded: boolean;
+        warning: string | null;
+        lexical: { status: string; candidates: number };
+        semantic: { status: string; candidates: number; blocked: string | null };
+      };
+    };
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed.total_hits).toBe(1);
+    expect(parsed.results).toMatchObject([{ source: 'coord_message', excerpt: 'lexical fallback hit' }]);
+    expect(parsed.legs).toMatchObject({
+      degraded: true,
+      lexical: { status: 'ran', candidates: 1 },
+      semantic: { status: 'errored', candidates: 0, blocked: timeout },
+    });
+    expect(parsed.legs?.warning).toMatch(/semantic leg blocked/);
+  });
+
+  it('reports a healthy hybrid search as not degraded', async () => {
+    runHybridSearch.mockClear();
+    runHybridSearch.mockResolvedValueOnce({
+      results: [],
+      totalHits: 0,
+      embedderAvailable: true,
+      legs: {
+        degraded: false,
+        warning: null,
+        lexical: healthyLeg,
+        semantic: healthyLeg,
+      },
+    });
+
+    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as { legs?: { degraded: boolean; warning: string | null } };
+
+    expect(parsed.legs?.degraded).toBe(false);
+    expect(parsed.legs?.warning).toBeNull();
+  });
+
+  it('omits legs when the engine returned none rather than inventing a verdict', async () => {
+    // The pre-existing hybrid fixtures return no `legs`; the response must stay
+    // well-formed for them instead of throwing in the projection.
+    runHybridSearch.mockClear();
+    runHybridSearch.mockResolvedValueOnce({ results: [], totalHits: 0, embedderAvailable: true });
+
+    const res = await callTool({ query: 'needle', mode: 'hybrid', limit: 20, context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as { ok: boolean; legs?: unknown };
+
+    expect(parsed.ok).toBe(true);
+    expect(parsed).not.toHaveProperty('legs');
+  });
+
+  it('does NOT report legs in verbatim mode, which never runs an engine leg', async () => {
+    runHybridSearch.mockClear();
+
+    const res = await callTool({ query: 'needle', mode: 'verbatim', limit: 20, context: 0 }, makeTx([]));
+    const parsed = JSON.parse(res.content[0].text) as { ok: boolean; legs?: unknown };
+
+    expect(parsed.ok).toBe(true);
+    expect(runHybridSearch).not.toHaveBeenCalled();
+    expect(parsed).not.toHaveProperty('legs');
   });
 });

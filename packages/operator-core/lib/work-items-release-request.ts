@@ -239,6 +239,16 @@ export async function resolveWorkItemReleaseRequest(
                  THEN 'superseded'::text
                ELSE ${opts.resolution}::text
              END,
+             -- Retain the episode after the consequence CAS so delivery failures
+             -- retry on the existing sweep and recovery survives a host restart.
+             'release_request_condition', CASE
+               WHEN ${opts.resolution}::text = 'consequence-escalate'
+                 AND NOT (COALESCE(status, '') = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+               THEN jsonb_build_object('by', payload->>'release_request_by',
+                 'holder', payload->>'release_request_holder',
+                 'deadlineAt', (payload->>'release_request_deadline_at')::bigint)
+               ELSE payload->'release_request_condition'
+             END,
              'release_request_resolved_at', ${resolvedAt}::bigint
            ),
            updated_ts = ${Date.now()}
@@ -260,6 +270,8 @@ export interface DueReleaseRequestRow {
   workspaceId: string;
   holderNow: string | null;
   lastProgressAt: string | Date | null;
+  terminal: boolean;
+  conditionRequest: { by: string; holder: string; deadlineAt: number } | null;
   /** The durable work-item touch-set used to target consequence lock release. */
   paths: string[];
   request: WorkItemReleaseRequest;
@@ -290,17 +302,19 @@ export function readWorkItemPaths(payload: unknown): string[] {
  */
 export async function findDueReleaseRequests(
   sql: Sql,
-  opts: { nowMs: number; limit?: number },
+  opts: { nowMs: number; limit?: number; alarmPending?: boolean },
 ): Promise<DueReleaseRequestRow[]> {
   const rows = await sql<
-    { feature_id: string; harness_slug: string | null; workspace_id: string; taken_by: string | null; last_progress_at: string | Date | null; payload: Record<string, unknown> | null }[]
+    { feature_id: string; harness_slug: string | null; workspace_id: string; taken_by: string | null; status: string | null; last_progress_at: string | Date | null; payload: Record<string, unknown> | null }[]
   >`
-    SELECT feature_id, harness_slug, workspace_id, taken_by, last_progress_at, payload
+    SELECT feature_id, harness_slug, workspace_id, taken_by, status, last_progress_at, payload
       FROM harness_shared.work_items
      WHERE payload ? 'release_request_by'
-       AND COALESCE(payload->>'release_request_resolved', 'false') <> 'true'
-       AND (payload->>'release_request_deadline_at')::bigint <= ${opts.nowMs}
-     ORDER BY (payload->>'release_request_deadline_at')::bigint ASC
+       AND ${opts.alarmPending
+         ? sql`jsonb_typeof(payload->'release_request_condition') = 'object'`
+         : sql`COALESCE(payload->>'release_request_resolved', 'false') <> 'true'
+           AND (payload->>'release_request_deadline_at')::bigint <= ${opts.nowMs}`}
+     ORDER BY ${opts.alarmPending ? sql`updated_ts` : sql`(payload->>'release_request_deadline_at')::bigint`} ASC
      LIMIT ${opts.limit ?? 200}`;
   const out: DueReleaseRequestRow[] = [];
   for (const r of rows) {
@@ -312,9 +326,29 @@ export async function findDueReleaseRequests(
       workspaceId: r.workspace_id,
       holderNow: r.taken_by,
       lastProgressAt: r.last_progress_at,
+      terminal: ANY_FAMILY_TERMINAL_STATES.includes(r.status ?? ''),
+      conditionRequest: (r.payload?.release_request_condition ?? null) as DueReleaseRequestRow['conditionRequest'],
       paths: readWorkItemPaths(r.payload),
       request,
     });
   }
   return out;
+}
+
+/** CAS only the measured episode; never retire a replacement timeout. Refreshing
+ * updated_ts rotates the bounded pending scan without manufacturing item progress. */
+export async function settleReleaseRequestCondition(
+  sql: Sql,
+  row: DueReleaseRequestRow,
+  recovered: boolean,
+): Promise<boolean> {
+  if (!row.conditionRequest) return false;
+  const changed = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items
+       SET payload = ${recovered ? sql`payload - 'release_request_condition'` : sql`payload`},
+           updated_ts = ${Date.now()}
+     WHERE workspace_id = ${row.workspaceId} AND feature_id = ${row.id}
+       AND payload->'release_request_condition' = ${JSON.stringify(row.conditionRequest)}::text::jsonb
+     RETURNING feature_id`;
+  return changed.length > 0;
 }

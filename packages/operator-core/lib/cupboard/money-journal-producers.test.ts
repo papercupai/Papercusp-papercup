@@ -101,12 +101,16 @@ describe('Stripe balance transaction -> journal entry', () => {
     expect(byAccount['customer-credit-reserve:credit']).toBeGreaterThan(0);
   });
 
-  it('a refund draws from the refund provision and leaves operating', () => {
-    const entry = entryOf(bt({ id: 'txn_ref', type: 'refund', amount: -1_500, source: { id: 're_1', object: 'refund' } }));
+  it.each(['refund', 'payment_refund'])('%s draws the exact refund from the provision and leaves operating with its BT reference', (type) => {
+    const id = `txn_${type.replaceAll('_', '')}`;
+    const entry = entryOf(bt({ id, type, amount: -1_500, source: { id: 're_1', object: 'refund' } }));
+    expect(entry.entryId).toBe(`stripe-bt:${id}`);
+    expect(entry.externalRef).toEqual({ kind: 'stripe-balance-transaction', id });
     expect(entry.movement).toBe('refund');
-    const { debit, credit, byAccount } = totals(entry);
-    expect(debit).toBe(credit);
-    expect(byAccount['operating:credit']).toBe(1_500);
+    expect(entry.lines).toEqual([
+      { account: 'refund-chargeback-reserve', side: 'debit', cents: 1_500 },
+      { account: 'operating', side: 'credit', cents: 1_500 },
+    ]);
   });
 
   it('a lost dispute is a chargeback carrying the dispute fee; a won dispute reversal is unmapped, not invented', () => {
@@ -121,10 +125,25 @@ describe('Stripe balance transaction -> journal entry', () => {
     expect(won.disposition).toBe('unmapped');
   });
 
-  it('a standalone Stripe fee is a provider payment', () => {
-    const entry = entryOf(bt({ id: 'txn_fee', type: 'stripe_fee', amount: -199 }));
+  it.each(['stripe_fee', 'tax_fee'])('%s is an exact provider payment with its BT reference', (type) => {
+    const id = `txn_${type.replaceAll('_', '')}`;
+    const entry = entryOf(bt({ id, type, amount: -199 }));
+    expect(entry.entryId).toBe(`stripe-bt:${id}`);
+    expect(entry.externalRef).toEqual({ kind: 'stripe-balance-transaction', id });
     expect(entry.movement).toBe('provider-payment');
-    expect(totals(entry).byAccount['provider-cost:debit']).toBe(199);
+    expect(entry.lines).toEqual([
+      { account: 'provider-cost', side: 'debit', cents: 199 },
+      { account: 'operating', side: 'credit', cents: 199 },
+    ]);
+  });
+
+  it.each([
+    { type: 'payment_refund', amount: 1_500, fee: 0 },
+    { type: 'payment_refund', amount: -1_500, fee: 1 },
+    { type: 'tax_fee', amount: 199, fee: 0 },
+  ])('$type with amount=$amount and fee=$fee reports an unmapped BT with a reason', (movement) => {
+    const verdict = journalVerdictForStripeBalanceTransaction(bt({ id: 'txn_invalidalias', ...movement }), POLICY);
+    expect(verdict).toMatchObject({ disposition: 'unmapped', sourceId: 'txn_invalidalias', reason: expect.stringContaining(movement.type) });
   });
 
   it('a payout is skipped with its reason (Stripe balance and bank are both operating)', () => {
@@ -162,14 +181,16 @@ describe('Stripe balance transaction -> journal entry', () => {
           },
         };
       }),
-      fc.integer({ min: 1, max: 5_000_000 }).map((a) => ({ type: 'refund', amount: -a, fee: 0, source: null })),
+      fc.record({ type: fc.constantFrom('refund', 'payment_refund'), a: fc.integer({ min: 1, max: 5_000_000 }) })
+        .map((r) => ({ type: r.type, amount: -r.a, fee: 0, source: null })),
       fc.record({ a: fc.integer({ min: 1, max: 5_000_000 }), f: fc.integer({ min: 0, max: 5_000 }) }).map((r) => ({
         type: 'adjustment',
         amount: -r.a,
         fee: r.f,
         source: { id: 'dp', object: 'dispute' },
       })),
-      fc.integer({ min: 1, max: 100_000 }).map((a) => ({ type: 'stripe_fee', amount: -a, fee: 0, source: null })),
+      fc.record({ type: fc.constantFrom('stripe_fee', 'tax_fee'), a: fc.integer({ min: 1, max: 100_000 }) })
+        .map((r) => ({ type: r.type, amount: -r.a, fee: 0, source: null })),
     );
     const policyArb = fc
       .record({ dao: fc.integer({ min: 0, max: 10_000 }), reserve: fc.integer({ min: 0, max: 10_000 }) })
@@ -272,6 +293,30 @@ describe('importStripeBalanceTransactions', () => {
     const again = await importStripeBalanceTransactions({ list: pages(ACCOUNT, 10).list, post: journal.post, policy: POLICY });
     expect(again).toMatchObject({ posted: 0, duplicates: 3 });
     expect(journal.state.entries).toHaveLength(3);
+  });
+
+  it('shifted overlapping Stripe windows import the unseen BTs once and retain the shared prefix without duplicate journal entries', async () => {
+    const history = [
+      bt({ id: 'txn_overlapnew', type: 'charge', amount: 1_000, created: CREATED + 4 }),
+      bt({ id: 'txn_overlaprefund', type: 'payment_refund', amount: -400, created: CREATED + 3 }),
+      bt({ id: 'txn_overlapfee', type: 'tax_fee', amount: -25, created: CREATED + 2 }),
+      bt({ id: 'txn_overlapoldrefund', type: 'refund', amount: -100, created: CREATED + 1 }),
+      bt({ id: 'txn_overlapoldfee', type: 'stripe_fee', amount: -10, created: CREATED }),
+    ];
+    const journal = memoryPoster();
+    const importWindow = (createdGte: number) => importStripeBalanceTransactions({
+      list: pages(history.filter((t) => t.created >= createdGte), 2).list,
+      post: journal.post, policy: POLICY, createdGte, pageSize: 2,
+    });
+    expect(await importWindow(CREATED + 2)).toEqual({ scanned: 3, posted: 3, duplicates: 0, skipped: [], unmapped: [], refused: [], truncated: false });
+    const prefix = journal.state.entries.slice();
+    expect(await importWindow(CREATED)).toEqual({ scanned: 5, posted: 2, duplicates: 3, skipped: [], unmapped: [], refused: [], truncated: false });
+    expect(journal.state.entries.slice(0, 3)).toEqual(prefix);
+    expect(journal.state.entries.map((e) => e.entryId)).toEqual(history.map((t) => `stripe-bt:${t.id}`));
+    expect(journal.state.entries.map((e) => e.externalRef)).toEqual(history.map((t) => ({ kind: 'stripe-balance-transaction', id: t.id })));
+    expect(trialBalance(journal.state.entries).balanced).toBe(true);
+    expect(await importWindow(CREATED + 1)).toMatchObject({ scanned: 4, posted: 0, duplicates: 4, truncated: false });
+    expect(journal.state.entries).toHaveLength(5);
   });
 
   it('a page budget that runs out is reported as truncated, not as a complete window', async () => {

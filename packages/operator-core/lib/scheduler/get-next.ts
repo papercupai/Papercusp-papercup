@@ -44,6 +44,8 @@
  * remain unreachable).
  */
 import type postgres from 'postgres';
+import { performance } from 'node:perf_hooks';
+import { ITEM_CLASS_SQL_TEXT } from '../scout/ideation-origin';
 import {
   type ClaimSpec,
   type FilterNode,
@@ -54,7 +56,14 @@ import {
   claimSpecReferencesField,
 } from './claim-spec';
 import { getOrgPg } from '@papercusp/db-org';
-import { boundedOrgTxn, OrgTxnTimeoutError } from '../pg-bounded-txn';
+import { lockGoalPlanClaimSelections, goalPlanClaimFragments } from '../typed-properties-db';
+import {
+  boundedOrgTxn,
+  OrgTxnTimeoutError,
+  sampleCandidateWaitOnce,
+  type CandidateWaitSample,
+  type CandidateWaitSnapshot,
+} from '../pg-bounded-txn';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
   claimFloorsWhereSql,
@@ -91,9 +100,22 @@ import {
   isIssueLocallyClaimableWhereSql,
   liveGateOpsSelfSelectExclusionSql,
   stopTheLineExclusionSql,
+  readGateRedStreakSinceMs,
+  redInflowMemberSelected,
+  redInflowStamp,
+  RED_INFLOW_REPAIR_FIRST_HOURS,
+  type RedInflowStamp,
 } from '../work-items-admission';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { systemDistinctId } from '../flag-distinct-id';
 import { trackDetached } from '../detached-imports';
-import { agentReviewNormalExclusionSql, readAgentReviewState } from '../harness/improvements/agent-review-policy';
+import { agentWorkWhereSql, issueFamilyRouteSql } from '../work-nature/agent-work-predicate';
+import {
+  intakeStageClaimFloorSql,
+  LEGACY_AGENT_REVIEW_SUBMITTER,
+  readAgentReviewState,
+} from '../harness/improvements/agent-review-policy';
 import {
   classifyAuditAge,
   classifyDurableParkReleaseLiveness,
@@ -132,6 +154,10 @@ export interface BeeContext {
   currentPlan?: string;
 }
 
+export type ResolutionStepEvent =
+  | { phase: 'start'; startedAtMs: number }
+  | { phase: 'end'; elapsedMs: number };
+
 export interface GetNextOpts {
   harness: string;
   /**
@@ -140,6 +166,8 @@ export interface GetNextOpts {
    * process-wide org pool. Omitted preserves every existing caller/test path.
    */
   client?: OrgSql;
+  /** Explicit acquisition attribution for an injected pool; omitted preserves legacy defaults. */
+  acquirePool?: string;
   /**
    * WI-5261: the caller's already-resolved workspace (e.g. resolveClaimSpecWorkspace's
    * output in getNextForBee) — explicitly threaded through so tier 1/2/3 don't have to
@@ -173,12 +201,60 @@ export interface GetNextOpts {
   rigAvailable?: boolean;
   /** Abort the active claim transaction when the scheduler caller's bounded deadline fires. */
   signal?: AbortSignal;
+  /** Diagnostic only: candidate phase entry and elapsed duration survive a caller timeout. */
+  onResolutionStep?: (step: string, event: ResolutionStepEvent) => void;
+  /** Enable one bounded, target-PID wait snapshot for candidate feature tier 1. */
+  captureCandidateWait?: boolean;
 }
 
 export interface GetNextResult {
   workItem: WorkItem;
   /** Provenance (D-003/D-006): WHICH spec revision selected this item. */
   claimedUnder: { specId: string; revision: number };
+  /**
+   * P-017 / D-032: present only when red-gate inflow control shaped this claim (an 8h+
+   * red harness and a fleet member in the repair-first share), so the member can see why
+   * it got a repair item — or that none was claimable and backlog was served instead.
+   */
+  redInflow?: RedInflowStamp;
+}
+
+/**
+ * P-017 / D-032 eligibility for the red-inflow repair preclaim. Returns the red streak's
+ * start (epoch ms) when the preclaim should run, else null. Cheapest checks first: the
+ * caller must be a FLEET member (get_next with a fleet slug is the self-select drain path)
+ * inside the stable repair-first share, then the kill-switch flag, then issue claiming,
+ * and only then one indexed read of the harness's open red-streak item, which must be at
+ * least RED_INFLOW_REPAIR_FIRST_HOURS old. Fail-soft: any error skips the preference and
+ * leaves the normal ladder untouched.
+ */
+export async function redInflowRepairFirstSinceMs(
+  sql: OrgSql,
+  workspaceId: string,
+  opts: Pick<GetNextOpts, 'fleetSlug' | 'harness' | 'signal' | 'acquirePool'>,
+  assignee: string,
+  issueClaimsEnabled: () => Promise<boolean>,
+  nowMs: number = Date.now(),
+): Promise<number | null> {
+  if (!opts.fleetSlug || !opts.harness || !redInflowMemberSelected(assignee)) return null;
+  try {
+    if (!(await getFlag(FLAGS.RED_INFLOW_REPAIR_FIRST, systemDistinctId()))) return null;
+    if (!(await issueClaimsEnabled())) return null;
+    const harness = opts.harness;
+    const sinceMs = await boundedOrgTxn((tx) => readGateRedStreakSinceMs(tx as OrgSql, workspaceId, harness), {
+      client: sql,
+      signal: opts.signal,
+      acquirePool: opts.acquirePool,
+      readOnly: true,
+      acquireTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+      statementTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+      lockTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+    });
+    if (sinceMs == null) return null;
+    return nowMs - sinceMs >= RED_INFLOW_REPAIR_FIRST_HOURS * 3_600_000 ? sinceMs : null;
+  } catch {
+    return null;
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -308,12 +384,19 @@ const FIELD_MAP: Record<string, FieldMap> = {
   plan: {
     col: (sql) => sql`COALESCE(
       source_plan_slug,
-      payload->'plan_item'->>'plan_slug',
-      payload->'plan_item'->>'slug',
-      payload->'planItem'->>'plan_slug',
-      payload->'planItem'->>'slug',
-      payload->>'source_plan_slug'
+      CASE WHEN payload ?| ${['plan_item', 'planItem', 'source_plan_slug']}::text[] THEN
+        COALESCE(
+          payload->'plan_item'->>'plan_slug',
+          payload->'plan_item'->>'slug',
+          payload->'planItem'->>'plan_slug',
+          payload->'planItem'->>'slug',
+          payload->>'source_plan_slug'
+        )
+      END
     )`,
+    // Most issue payloads have no plan keys. Their large TOASTed bodies were read
+    // separately by each fallback above. One top-level existence check skips those
+    // reads while preserving column precedence, every fallback and NULL semantics.
     kind: 'scalar-text',
   },
   // EI-20288961198837165: plan-item provenance is split across the indexed physical column and
@@ -360,6 +443,10 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // and the other NONE). The nested `->'ideaLifecycle'->>'triageDecision'` reach is the whole
   // reason this needed a FIELD_MAP entry rather than a plain column.
   triage_gate: { col: (sql) => sql`payload->'ideaLifecycle'->>'triageDecision'`, kind: 'scalar-text' },
+  // P-005 (R-10/R-11): 'ideation' | 'work', never NULL. The CASE text is single-sourced in
+  // scout/ideation-origin.ts beside its JS twin itemClassOfPayload (claim-spec-match.ts's
+  // `itemClass` subject field) — literal SQL with no bound values, so sql.unsafe is safe here.
+  item_class: { col: (sql) => sql`${sql.unsafe(ITEM_CLASS_SQL_TEXT)}`, kind: 'scalar-text' },
   // Not first-class columns — projected out of payload jsonb (no schema change).
   // `risk_tier` is FILTER-ONLY (EI-19286311763526137): `payload->>'risk_tier'` is TEXT
   // however numeric the authored value looks, so a bare `risk_tier` rank sorts lexically
@@ -784,7 +871,31 @@ export function compileFilter(sql: OrgSql, filter: FilterNode | undefined) {
       return parts.reduce((acc, p) => sql`${acc} AND ${p}`);
     }
     if ('any' in node) {
-      const parts = node.any.map(walk);
+      // A broad exclusion fence often checks many literal words in the same
+      // summary/title/plan. One regex per word repeatedly scans (and can detoast)
+      // the same text. Combine only direct scalar-text word alternatives; keep
+      // other operators, array membership and nested boolean scopes unchanged.
+      const words = new Map<FilterLeaf['field'], FilterLeaf[]>();
+      for (const child of node.any) {
+        if (!isLeaf(child) || child.op !== 'word' || FIELD_MAP[child.field]?.kind !== 'scalar-text') continue;
+        const group = words.get(child.field) ?? [];
+        group.push(child);
+        words.set(child.field, group);
+      }
+      const emitted = new Set<FilterLeaf['field']>();
+      const parts = node.any.flatMap((child): SqlFragment[] => {
+        if (!isLeaf(child) || child.op !== 'word') return [walk(child)];
+        const group = words.get(child.field);
+        if (!group || group.length < 2) return [walk(child)];
+        if (emitted.has(child.field)) return [];
+        emitted.add(child.field);
+        const literals = [...new Set(group.map(leaf => escapePgRegexLiteral(String(leaf.value))))];
+        const pattern = `(^|[^A-Za-z0-9])(${literals.join('|')})([^A-Za-z0-9]|$)`;
+        const col = FIELD_MAP[child.field]!.col(sql);
+        // Like the individual leaves, NULL remains NULL until the enclosing
+        // `not` applies its existing COALESCE-before-negation semantics.
+        return [sql`${col}::text ~* ${pattern}`];
+      });
       // Parenthesize the OR so it binds correctly when ANDed into the floors.
       return parts.reduce((acc, p) => sql`(${acc} OR ${p})`);
     }
@@ -1062,6 +1173,13 @@ export interface IssueClaimExclusionBreakdown {
     unattributedClaimHolds: number;
     pendingAgentReview: number;
     revisionRequestedAgentReview: number;
+    /** bug-queue-legitimacy D-007/D-008: an exact partition of `revisionRequestedAgentReview`
+     *  (reproduction + content + legacy === revisionRequestedAgentReview). Reproduction rows
+     *  pass the intake claim floor as validation work. Content rows are the adopt-next discovery
+     *  pool only: submitter liveness is a per-row oracle verdict, not a SQL fact. */
+    revisionReproductionValidation: number;
+    revisionContentAdoptionCandidates: number;
+    revisionLegacyException: number;
   };
 }
 
@@ -1203,6 +1321,11 @@ export function issueClaimCandidateSubquery(
           -- path, and the failure is silent — asserted by
           -- claimability-snapshot-projection-covers-floors.test.ts.
           wi.condition_key,
+          -- P-007 (WI-10004706): floor #16 (implementation readiness + acceptance contract,
+          -- inside intakeStageClaimFloorSql) derives the intake stage from item_kind,
+          -- title AND summary, and compares created_ts to the enforcement cutover. Same
+          -- pushdown-path rule as wi.lane above.
+          wi.summary,
           wi.goal_id,
           wi.expected_cost_cents,
           wi.tags,
@@ -1220,8 +1343,12 @@ export function issueClaimCandidateSubquery(
   // Keep broad/non-pushed callers unchanged: delta reads need a population wide
   // enough to cover both filters, and unfiltered callers retain their existing
   // SQL shape.
+  // P-009 / D-022: the issue-family ROUTE (which claim mechanism) comes from the one
+  // routing helper, and claimability from the one work predicate (nature/audience +
+  // the observation-lane and needs-owner-action exclusions). Neither is a local list.
   const baseWhere = sql`
-    wi.item_kind IN ('bug', 'change', 'task')
+    ${issueFamilyRouteSql(sql, 'wi')}
+    AND ${agentWorkWhereSql(sql, 'wi')}
     AND wi.workspace_id = ${issueWs}
     AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
     AND wi.status = ANY(${states as string[]}::text[])
@@ -1249,7 +1376,7 @@ export function issueClaimCandidateSubquery(
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
       (${needsOwnerActionExclusionSql(sql)})                             AS ok_needs_owner_action,
-      (${agentReviewNormalExclusionSql(sql)})                            AS ok_agent_review,
+      (${intakeStageClaimFloorSql(sql)})                            AS ok_agent_review,
       (${observationLaneExclusionSql(sql)})                             AS ok_observation,
       (${externalBlockersExclusionSql(sql)})                            AS ok_external_blocker,
       (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
@@ -1413,12 +1540,31 @@ async function aggregateIssueClaimExclusionsOn(
           AND NULLIF(BTRIM(COALESCE(payload ->> 'held_open_by', '')), '') IS NULL
           AND NULLIF(BTRIM(COALESCE(payload ->> 'claim_hold_by', '')), '') IS NULL
       )::int AS unattributed_claim_holds,
+      -- EI-25949663083795915: count only review rows THIS caller could claim.
+      -- improvements:agent-review refuses a row another agent holds
+      -- (holder !== reviewer -> 'claim-conflict'), so counting held rows told a
+      -- drained claimant "REVIEWABLE, NOT IDLE" about work it could never take.
       count(*) FILTER (
         WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'pending'
+          AND (NULLIF(BTRIM(COALESCE(taken_by, '')), '') IS NULL OR BTRIM(taken_by) = ${assignee})
       )::int AS pending_agent_review,
       count(*) FILTER (
         WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
-      )::int AS revision_requested_agent_review
+      )::int AS revision_requested_agent_review,
+      count(*) FILTER (
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
+          AND payload -> 'agentReview' ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER}
+      )::int AS revision_legacy_exception,
+      count(*) FILTER (
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
+          AND payload -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}
+          AND payload -> 'agentReview' ->> 'revisionKind' = 'reproduction'
+      )::int AS revision_reproduction_validation,
+      count(*) FILTER (
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
+          AND payload -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${LEGACY_AGENT_REVIEW_SUBMITTER}
+          AND payload -> 'agentReview' ->> 'revisionKind' IS DISTINCT FROM 'reproduction'
+      )::int AS revision_content_adoption_candidates
     FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
   `) as Array<
     IssueClaimExclusionCountRow & {
@@ -1430,6 +1576,9 @@ async function aggregateIssueClaimExclusionsOn(
       unattributed_claim_holds: number;
       pending_agent_review: number;
       revision_requested_agent_review: number;
+      revision_legacy_exception: number;
+      revision_reproduction_validation: number;
+      revision_content_adoption_candidates: number;
     }
   >;
   const r = rows[0];
@@ -1464,6 +1613,9 @@ async function aggregateIssueClaimExclusionsOn(
       unattributedClaimHolds: r?.unattributed_claim_holds ?? 0,
       pendingAgentReview: r?.pending_agent_review ?? 0,
       revisionRequestedAgentReview: r?.revision_requested_agent_review ?? 0,
+      revisionReproductionValidation: r?.revision_reproduction_validation ?? 0,
+      revisionContentAdoptionCandidates: r?.revision_content_adoption_candidates ?? 0,
+      revisionLegacyException: r?.revision_legacy_exception ?? 0,
     },
   };
 }
@@ -1543,9 +1695,10 @@ export interface IssueQueueControlSample {
     unparkCondition: { status: UnparkConditionStatus; text: string | null };
     releaseLiveness: DurableParkReleaseLiveness;
   }>;
+  /** Only immediately claimable reviewer candidates. Revision-requested rows are owned by their submitter. */
   agentReview: Array<{
     id: string;
-    status: 'pending' | 'revision-requested' | 'approved';
+    status: 'pending';
     submittedBy: string;
     ledgerIdeaId: string;
     round: number;
@@ -1670,7 +1823,10 @@ export async function sampleIssueClaimExclusions(
       UNION ALL
       (SELECT 'agent-review'::text AS axis, feature_id, taken_by, taken_at, payload
          FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} c
-        WHERE spec_match AND payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'pending'
+          -- Same claimability predicate as pending_agent_review (EI-25949663083795915):
+          -- never advise an id the review claim would refuse as held by another agent.
+          AND (NULLIF(BTRIM(COALESCE(taken_by, '')), '') IS NULL OR BTRIM(taken_by) = ${assignee})
         ORDER BY updated_ts DESC NULLS LAST LIMIT ${sampleLimit})
     ) queue_control
   `) as Array<{
@@ -1718,11 +1874,11 @@ export async function sampleIssueClaimExclusions(
         parkedAt,
         age: classifyAuditAge(parkedAt, nowMs),
         unparkCondition: classifyUnparkCondition(reason),
-        releaseLiveness: classifyDurableParkReleaseLiveness(payload, reason),
+        releaseLiveness: classifyDurableParkReleaseLiveness(payload, reason, row.feature_id),
       });
     } else if (row.axis === 'agent-review') {
       const review = readAgentReviewState(payload);
-      if (review) queueControl.agentReview.push({ id: row.feature_id, ...review });
+      if (review?.status === 'pending') queueControl.agentReview.push({ id: row.feature_id, ...review, status: 'pending' });
     }
   }
   const r = rows[0];
@@ -2035,6 +2191,17 @@ export interface IssueClaimabilityReading {
   admitted: IssueClaimAdmittedComposition;
 }
 
+/** Individually timed stages inside work_items:claimable's snapshot read. */
+export type IssueClaimabilityReadStage =
+  | 'transaction-isolation'
+  | 'statement-timeout'
+  | 'candidate-materialization'
+  | 'lane-scope-population'
+  | 'claim-exclusion-breakdown'
+  | 'claimable-rows'
+  | 'excluded-sample'
+  | 'admitted-composition';
+
 /**
  * Read the FULL claimability picture — {@link aggregateIssueClaimExclusions}'s counts,
  * {@link listIssueClaimableRows}' survivor rows, and optionally
@@ -2092,10 +2259,24 @@ export async function readIssueClaimability(
     sampleLimit?: number;
     /** Per-statement cap for the snapshot txn, ms (default 15000). */
     statementTimeoutMs?: number;
+    /** Optional best-effort per-stage timings for diagnosing slow claimability reads. */
+    onStageTiming?: (stage: IssueClaimabilityReadStage, elapsedMs: number) => void;
   },
 ): Promise<IssueClaimabilityReading> {
   const sql = opts.client ?? getOrgPg().sql;
   const stmtMs = Math.max(100, Math.trunc(readOpts.statementTimeoutMs ?? 15_000));
+  const timed = async <T>(stage: IssueClaimabilityReadStage, operation: () => Promise<T>): Promise<T> => {
+    const startedAt = performance.now();
+    try {
+      return await operation();
+    } finally {
+      try {
+        readOpts.onStageTiming?.(stage, Math.max(0, Math.round(performance.now() - startedAt)));
+      } catch {
+        // Diagnostics must never change claimability or transaction semantics.
+      }
+    }
+  };
   const shared = {
     harness: opts.harness,
     workspaceId: opts.workspaceId,
@@ -2124,8 +2305,8 @@ export async function readIssueClaimability(
     // view of the real tables); READ ONLY was defense-in-depth against an accidental write to
     // a REAL table, which this function still never performs (every write below targets only
     // the session-local temp table created below).
-    await tx.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-    await tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`);
+    await timed('transaction-isolation', () => tx.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ'));
+    await timed('statement-timeout', () => tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`));
     const client = tx as unknown as OrgSql;
 
     // EI-18802055183255275: materialize the candidate set — the spec `view.filter` is
@@ -2189,7 +2370,9 @@ export async function readIssueClaimability(
       claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
     });
     const precomputedTable = 'claim_candidate_snapshot';
-    await client`CREATE TEMP TABLE ${client.unsafe(precomputedTable)} ON COMMIT DROP AS ${sub}`;
+    await timed('candidate-materialization', () =>
+      client`CREATE TEMP TABLE ${client.unsafe(precomputedTable)} ON COMMIT DROP AS ${sub}`,
+    );
 
     // WI-525554: the two counts the lane pushdown above would otherwise destroy, measured over the
     // FULL candidate population (observations included). This reuses the SAME
@@ -2216,14 +2399,17 @@ export async function readIssueClaimability(
     });
     // Both expressions are byte-identical to aggregateIssueClaimExclusions' own `matched` and
     // `observation_lane` columns — keep them that way if either definition moves.
-    const [laneScopeRow] = (await client`
-      SELECT
-        count(*) FILTER (WHERE spec_match)::int                                        AS matched,
-        count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int  AS observation_lane
-      FROM (${laneScopeSub}) lane_scope
-    `) as Array<{ matched: number; observation_lane: number }>;
+    const [laneScopeRow] = (await timed(
+      'lane-scope-population',
+      () => client`
+        SELECT
+          count(*) FILTER (WHERE spec_match)::int                                        AS matched,
+          count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int  AS observation_lane
+        FROM (${laneScopeSub}) lane_scope
+      `,
+    )) as Array<{ matched: number; observation_lane: number }>;
 
-    const breakdown = await aggregateIssueClaimExclusions(filter, {
+    const breakdown = await timed('claim-exclusion-breakdown', () => aggregateIssueClaimExclusions(filter, {
       ...shared,
       client,
       precomputedTable,
@@ -2231,19 +2417,25 @@ export async function readIssueClaimability(
         matchedByFilter: laneScopeRow?.matched ?? 0,
         observationLane: laneScopeRow?.observation_lane ?? 0,
       },
-    });
+    }));
     const rows = readOpts.breakdownOnly
       ? []
-      : await listIssueClaimableRows(filter, { ...shared, spec: opts.spec, client, precomputedTable }, readOpts.limit);
+      : await timed('claimable-rows', () =>
+          listIssueClaimableRows(filter, { ...shared, spec: opts.spec, client, precomputedTable }, readOpts.limit),
+        );
     const sample = readOpts.sampleLimit
-      ? await sampleIssueClaimExclusions(filter, { ...shared, client, precomputedTable }, readOpts.sampleLimit)
+      ? await timed('excluded-sample', () =>
+          sampleIssueClaimExclusions(filter, { ...shared, client, precomputedTable }, readOpts.sampleLimit!),
+        )
       : undefined;
     // WI-6673: composition of the ADMITTED set, in the SAME snapshot as the count it
     // describes. Unconditional — it is not an opt-in extra, because the whole failure
     // mode is a caller quoting the count WITHOUT having thought to ask for composition.
     // EI-18802055183255275: this used to be a genuine "fourth serial full scan" cost (see
     // the COST NOTE this replaced) — now it is a cheap scan of the materialized table above.
-    const admitted = await aggregateAdmittedComposition(filter, { ...shared, client, precomputedTable });
+    const admitted = await timed('admitted-composition', () =>
+      aggregateAdmittedComposition(filter, { ...shared, client, precomputedTable }),
+    );
 
     return { breakdown, rows, admitted, ...(sample ? { sample } : {}) };
   })) as IssueClaimabilityReading;
@@ -2329,6 +2521,25 @@ export interface ClaimSpecDeltaSide {
  * to a zeroed delta, because "measured no change" is the answer that would wave a starving
  * spec through.
  */
+/**
+ * The filter bounding which rows enter the delta snapshot: the UNION of both sides.
+ *
+ * An absent filter matches EVERY row, so if either side is unfiltered the union is
+ * unfiltered too. WI-10007576: this used to fall back to the OTHER side's filter
+ * (`current ?? proposed`), so the default unfiltered lane previewed against a
+ * `kind = bug` proposal materialized only bug rows. `currentClaimable` then equalled
+ * `proposedClaimable` and every narrowing re-steer read `newlyExcluded: 0` (measured
+ * 423/423 and 403/403 on the live papercusp lane). The mirror case — a filtered lane
+ * widened to unfiltered — hid every newly admitted row the same way.
+ */
+export function claimSpecDeltaCandidateFilter(
+  current: FilterNode | undefined,
+  proposed: FilterNode | undefined,
+): FilterNode | undefined {
+  if (!current || !proposed) return undefined;
+  return { any: [current, proposed] };
+}
+
 export async function readClaimSpecDelta(
   current: ClaimSpecDeltaSide,
   proposed: ClaimSpecDeltaSide,
@@ -2375,10 +2586,7 @@ export async function readClaimSpecDelta(
     // alongside an existing plan/property filter: proposed-only rows never reach the
     // `proposed_match` projection, so the preview reports 0 newly admitted even though
     // scheduler:set_claim_spec's whole-pool preview sees and admits them (EI-20414245235902773).
-    const candidateFilter: FilterNode | undefined =
-      current.filter && proposed.filter
-        ? { any: [current.filter, proposed.filter] }
-        : (current.filter ?? proposed.filter);
+    const candidateFilter = claimSpecDeltaCandidateFilter(current.filter, proposed.filter);
     const currentMatch = compileFilter(client, current.filter);
     const candidateMatch = compileFilter(client, candidateFilter);
     const sub = issueClaimCandidateSubquery(client, {
@@ -2425,10 +2633,19 @@ export async function readClaimSpecDelta(
     // failing it is false on both sides and can reach no count and neither row list. Unlike the
     // claim_candidate_snapshot path above, this path measures nothing over the pre-floor
     // population, so there is no laneScopedPopulation-style count to restore.
+    //
+    // WI-10007576 follow-up: the same argument covers EVERY floor, not just the observation
+    // one, so the snapshot keeps only rows passing ALL_ISSUE_CLAIM_FLOORS_PASS. Once an
+    // unfiltered side made the candidate union unbounded (the WI-10007576 correctness fix),
+    // the default lane's preview materialized the whole floor-decorated open pool (~9.7k
+    // rows at full payload width on the live papercusp lane, of which ~420 pass the floors)
+    // and failed on :3170 with either `no empty local buffer available` or the 15s
+    // statement timeout. Only floor-passing rows can reach a count or a row list, because
+    // in_current and in_proposed both AND `floors`; a row failing one is dead weight.
     await client`
       CREATE TEMP TABLE ${client.unsafe(table)} ON COMMIT DROP AS
       SELECT c.*, (${proposedMatch}) AS proposed_match FROM (${sub}) c
-      WHERE (${candidateMatch}) AND c.ok_observation
+      WHERE (${candidateMatch}) AND c.ok_observation AND (${client.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)})
     `;
 
     // in_current / in_proposed are the FULL claimability predicate per side: that side's
@@ -2810,9 +3027,49 @@ export async function getNextWorkItem(
   // getNextForBee -> here -> tier 3's claimNextIssueWorkItem), several awaits deep. Falls back
   // to the legacy activeWorkspaceId() when omitted (unchanged behavior for other callers).
   const ws = opts.workspaceId ?? activeWorkspaceId();
+  const resolutionStep = (step: string): number => {
+    const startedAtMs = performance.now();
+    try {
+      opts.onResolutionStep?.(step, { phase: 'start', startedAtMs });
+    } catch {
+      // Observability must not change claim admission or strand a committed row.
+    }
+    return startedAtMs;
+  };
+  const resolutionStepFinished = (step: string, startedAtMs: number): void => {
+    try {
+      opts.onResolutionStep?.(step, {
+        phase: 'end',
+        elapsedMs: Math.max(0, performance.now() - startedAtMs),
+      });
+    } catch {
+      // Observability must not change claim admission or strand a committed row.
+    }
+  };
+  resolutionStep('candidate-ready-flag-read');
   const useMaintainedReady = await schedulerMaintainedReadyEnabled();
+  resolutionStep('candidate-worker-binding-read');
   const operationClaims = await import('../blueprint/operation-worker-binding');
-  const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(ws, bee.assignee);
+  // This authority read ran on the unbounded shared admin pool BEFORE the ladder's
+  // 15s deadline. A queued read could exhaust the public 30s claim watchdog without
+  // entering any of the bounded feature attempts. Use the caller's dedicated claim
+  // pool and bound acquisition + statements; keep the helper's legacy behavior for
+  // all other claim doors that do not opt into error propagation.
+  const operationClaimRead = await boundedOrgTxn(
+    (tx) => operationClaims.readActiveOperationWorkerClaimBinding(ws, bee.assignee, {
+      sql: tx,
+      throwOnError: true,
+    }),
+    {
+      client: sql,
+      signal: opts.signal,
+      acquirePool: opts.acquirePool,
+      readOnly: true,
+      acquireTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+      statementTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+      lockTimeoutMs: CLAIM_ATTEMPT_BUDGET_MS,
+    },
+  );
   if (operationClaimRead.status === 'unavailable') {
     throw new Error(`operation claim authority unavailable: ${operationClaimRead.reason}`);
   }
@@ -2870,17 +3127,24 @@ export async function getNextWorkItem(
   // cross-family priority preclaim and the existing tier-3 fallback use the same
   // issue floors/filter/rank. The feature-side comparator uses the widened feature
   // view because the ladder may fall through tier 2 before tier 3.
-  const widened = widenPastKind(spec.view.filter);
+  // WI-10002617: named fleet filters are hard scope boundaries. Widening past
+  // kind made a feature-only member atomically claim an adjacent issue, only
+  // for getNextForBee to reject and release it. Apply the complete filter before
+  // both issue doors (priority preclaim and tier 3), avoiding that doomed bounce.
+  // Solo callers retain WI-1407's adjacent-family fallback.
+  const widened = opts.fleetSlug ? spec.view.filter : widenPastKind(spec.view.filter);
   const issueKinds = issueKindsForFallback(spec.view.filter);
   const idValues = positiveIdCohortIds(spec.view.filter) ?? undefined;
   const excludeIds = negativeIdExclusions(spec.view.filter);
-  const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
+  const specFilterSql = compileFilter(sql, opts.fleetSlug
+    ? spec.view.filter
+    : stripFeatureOnlyKindLeaves(spec.view.filter));
   const specOrderSql = compileRank(sql, spec, bee);
   const featurePriorityFilterSql = sql`${compileFilter(sql, widened)} AND
     ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
       payload: 'payload', id: 'feature_id', harness: 'harness_slug',
     })}`;
-  const claimIssue = (priorityBeforeFeature?: boolean) =>
+  const claimIssue = (priorityBeforeFeature?: boolean, repairFirstOnly?: boolean) =>
     claimNextIssueWorkItem(
       {
         harness: opts.harness,
@@ -2896,11 +3160,23 @@ export async function getNextWorkItem(
       ws,
       {
         client: sql,
+        operationClaimRead,
         signal: opts.signal,
-        issueKinds,
-        ids: idValues,
-        excludeIds: excludeIds.length ? excludeIds : undefined,
-        specFilterSql,
+        acquirePool: opts.acquirePool,
+        onResolutionStep: opts.onResolutionStep,
+        // green-main-cycle-time-2026-10-08 D-033: the red-inflow repair preclaim drops the
+        // fleet's LANE (kind narrowing, id allowlist, compiled view filter). Repair items are
+        // harness-wide gate work that matches almost no lane, so keeping the lane would mean
+        // no lane-scoped member ever moves. redInflowRepairItemSql is the whole selection;
+        // every claim floor inside claimNextIssueWorkItem still applies, and the rank is kept.
+        ...(repairFirstOnly
+          ? { repairFirstOnly: true }
+          : {
+              issueKinds,
+              ids: idValues,
+              excludeIds: excludeIds.length ? excludeIds : undefined,
+              specFilterSql,
+            }),
         specOrderSql,
         ...(priorityBeforeFeature
           ? {
@@ -2924,7 +3200,10 @@ export async function getNextWorkItem(
   };
 
   /** One attempt at the compiled query under a given (possibly widened) filter node. */
-  const attempt = async (filterNode: FilterNode | undefined): Promise<WorkItem | null> => {
+  const attempt = async (
+    filterNode: FilterNode | undefined,
+    captureCandidateWait = false,
+  ): Promise<WorkItem | null> => {
     const remainingMs = ladderDeadline - Date.now();
     if (remainingMs <= 0) {
       // The budget is gone. Report it as the same typed contention error a per-statement
@@ -2936,56 +3215,162 @@ export async function getNextWorkItem(
         'caller-budget',
       );
     }
-    const rows = await boundedOrgTxn(
-      async (tx) => {
-        // Compile against the TRANSACTION client so the fragments belong to the connection
-        // that carries the SET LOCAL statement_timeout.
-        const floors = claimFloorsWhereSql(tx, floorOpts);
-        const order = compileRank(tx, spec, bee);
-        const filter = compileFilter(tx, filterNode);
-        const rows = await tx<FeatureRowDb[]>`
+    const statementTimeoutMs = Math.max(
+      100,
+      Math.trunc(Math.min(remainingMs, ladderBudgetMs, CLAIM_ATTEMPT_BUDGET_MS)),
+    );
+    let candidateWaitSnapshot: CandidateWaitSnapshot | undefined;
+    try {
+      const rows = await boundedOrgTxn(
+        async (tx) => {
+          // Compile against the TRANSACTION client so the fragments belong to the connection
+          // that carries the SET LOCAL statement_timeout.
+          const floors = claimFloorsWhereSql(tx, floorOpts);
+          const selection = goalPlanClaimFragments(tx as OrgSql,
+            await lockGoalPlanClaimSelections(tx as OrgSql, ws, bee.assignee), {
+              harness: 'harness_slug', goal: 'goal_id', payload: 'payload', sourcePlan: 'source_plan_slug',
+            });
+          const order = compileRank(tx, spec, bee);
+          const filter = compileFilter(tx, filterNode);
+          const updateCandidate = () => tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET taken_by = ${bee.assignee}, taken_at = now(), last_progress_at = NULL, updated_ts = ${Date.now()}
        WHERE (harness_slug, feature_id) = (
          SELECT harness_slug, feature_id
            FROM harness_shared.harness_features_consolidated
           WHERE ${floors}
+            AND ${selection.where}
             AND ${operationClaims.operationWorkerClaimWhereSql(tx, operationClaimRead, {
               payload: 'payload', id: 'feature_id', harness: 'harness_slug',
             })}
             AND ${filter}
-          ORDER BY ${order}
+          ORDER BY ${selection.order} ${order}
           LIMIT 1
           FOR UPDATE SKIP LOCKED
        )
       RETURNING ${tx.unsafe(FEATURE_COLS)}`;
-        if (!rows[0]) return rows;
-        return (await guardPlanItemSiblingClaim(tx, rows[0], {
-          workspaceId: ws,
-          assignee: bee.assignee,
-          family: 'feature',
-        }))
-          ? rows
-          : [];
-      },
-      {
-        client: sql,
-        signal: opts.signal,
-        statementTimeoutMs: Math.min(remainingMs, ladderBudgetMs, CLAIM_ATTEMPT_BUDGET_MS),
-      },
-    );
-    return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+          let rows: FeatureRowDb[];
+          if (captureCandidateWait) {
+            // Record the backend and a lower-bound start instant on the same
+            // transaction immediately before the candidate UPDATE. The observer
+            // later requires both, so it cannot attach a stale activity row to this
+            // claim attempt.
+            const [target] = await tx<Array<{ pid: number; queryStartedAfter: Date }>>`
+              SELECT pg_backend_pid()::int AS pid,
+                     clock_timestamp() AS "queryStartedAfter"`;
+            const sampleAfterMs = Math.floor(statementTimeoutMs * 0.8);
+            if (!target) {
+              candidateWaitSnapshot = {
+                status: 'unavailable',
+                reason: 'query-error',
+                statementCapMs: statementTimeoutMs,
+                sampleAfterMs,
+              };
+              rows = await updateCandidate();
+            } else {
+              const sampleAbort = new AbortController();
+              let sampleTimer: ReturnType<typeof setTimeout> | undefined;
+              let samplePromise: Promise<CandidateWaitSample> | undefined;
+              let sample: CandidateWaitSample | undefined;
+              sampleTimer = setTimeout(() => {
+                samplePromise = sampleCandidateWaitOnce(
+                  sql,
+                  Number(target.pid),
+                  target.queryStartedAfter,
+                  sampleAbort.signal,
+                ).then((value) => {
+                  sample = value;
+                  return value;
+                });
+                void samplePromise.catch(() => undefined);
+              }, sampleAfterMs);
+              try {
+                rows = await updateCandidate();
+              } finally {
+                if (sampleTimer) clearTimeout(sampleTimer);
+                // The observer uses its own AbortSignal-backed query cancellation;
+                // settling the UPDATE always ends the diagnostic, even if it is still
+                // acquiring its spare scheduler-claim connection.
+                sampleAbort.abort(new Error('candidate statement settled'));
+                if (samplePromise) {
+                  sample = await samplePromise.catch(() => ({
+                    status: 'unavailable' as const,
+                    targetPid: Number(target.pid),
+                    reason: 'query-error' as const,
+                  }));
+                } else {
+                  sample = { status: 'no-active', targetPid: Number(target.pid) };
+                }
+                candidateWaitSnapshot = {
+                  ...sample,
+                  statementCapMs: statementTimeoutMs,
+                  sampleAfterMs,
+                };
+              }
+            }
+          } else {
+            rows = await updateCandidate();
+          }
+          if (!rows[0]) return rows;
+          return (await guardPlanItemSiblingClaim(tx, rows[0], {
+            workspaceId: ws,
+            assignee: bee.assignee,
+            family: 'feature',
+          }))
+            ? rows
+            : [];
+        },
+        {
+          client: sql,
+          signal: opts.signal,
+          acquirePool: opts.acquirePool,
+          statementTimeoutMs,
+        },
+      );
+      return rows[0] ? featureRowToWorkItem(rows[0]) : null;
+    } catch (error) {
+      if (error instanceof OrgTxnTimeoutError && candidateWaitSnapshot) {
+        error.candidateWaitSnapshot = candidateWaitSnapshot;
+      }
+      throw error;
+    }
   };
 
-  // Priority preclaim: this is the only issue-family path that runs before the
-  // feature tiers. Equal/worse priorities return null here and preserve feature-first.
   let claimed: WorkItem | null = null;
-  if (hasPriorityRank && (await issueClaimsEnabled())) {
-    claimed = await claimIssue(true);
+
+  // P-017 / D-032 red-gate inflow control: past 8h of red, a stable half of FLEET members
+  // claim a repair item (a failing frozen-queue leg or a per-sync red) before anything
+  // else. A preference, not a floor — a miss falls through to the normal ladder below, so
+  // no member idles. The cheap red read runs first so a green harness never pays for the
+  // extra claim query; the claim itself re-checks red per row via redInflowRepairItemSql.
+  let redInflow: RedInflowStamp | undefined;
+  const redInflowSinceMs = await redInflowRepairFirstSinceMs(sql, ws, opts, bee.assignee, issueClaimsEnabled);
+  if (redInflowSinceMs != null) {
+    const startedAtMs = resolutionStep('candidate-red-inflow-repair-preclaim');
+    try {
+      claimed = await claimIssue(false, true);
+    } finally {
+      resolutionStepFinished('candidate-red-inflow-repair-preclaim', startedAtMs);
+    }
+    redInflow = redInflowStamp(claimed != null, redInflowSinceMs);
+  }
+
+  // Priority preclaim: this is the only other issue-family path that runs before the
+  // feature tiers. Equal/worse priorities return null here and preserve feature-first.
+  if (!claimed && hasPriorityRank && (await issueClaimsEnabled())) {
+    const startedAtMs = resolutionStep('candidate-priority-issue-preclaim');
+    try {
+      claimed = await claimIssue(true);
+    } finally {
+      resolutionStepFinished('candidate-priority-issue-preclaim', startedAtMs);
+    }
   }
 
   // Tier 1: the spec's view exactly as authored.
-  if (!claimed) claimed = await attempt(spec.view.filter);
+  if (!claimed) {
+    resolutionStep('candidate-feature-tier-1');
+    claimed = await attempt(spec.view.filter, opts.captureCandidateWait === true);
+  }
 
   // Tier 2 (fallback-ladder P-005, fleet-backlog-lessons-2026-07-01, WI-1407): a spec that
   // narrowed to one feature-family `kind` and drained it must not exit — widen to the REST
@@ -2994,6 +3379,7 @@ export async function getNextWorkItem(
   // shapes it can simplify safely (a bare leaf or one inside a top-level `all`); when it can't
   // (kind nested in an `any`/`not`), it hands back the SAME node and this tier is a no-op.
   if (!claimed && widened !== spec.view.filter) {
+    resolutionStep('candidate-feature-tier-2');
     claimed = await attempt(widened);
   }
 
@@ -3049,6 +3435,7 @@ export async function getNextWorkItem(
   // spec-violating item (the post-claim check releases and retries) — it only stops the
   // ENTIRE-lane starvation that a merely-inconvenient-to-extract id leaf used to cause.
   if (!claimed && (await schedulerIssuesClaimableEnabled())) {
+    resolutionStep('candidate-issue-tier-3');
     const idValues = positiveIdCohortIds(spec.view.filter) ?? undefined;
     const issueKinds = issueKindsForFallback(spec.view.filter);
     // WI-5258: a positive allowlist (idValues) and a negative exclusion are mutually
@@ -3090,7 +3477,7 @@ export async function getNextWorkItem(
         'caller-budget',
       );
     }
-    const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
+    // Reuse the same fleet-aware filter as the priority preclaim above.
     // EI-19497592871345016: thread the spec's compiled RANK down too, not just its filter.
     // Tier 3 is the ONLY tier the issue family ever reaches (tiers 1/2 query the
     // feature-family table), so without this every bug/change/task claim ignored spec.rank
@@ -3114,7 +3501,10 @@ export async function getNextWorkItem(
       ws,
       {
         client: sql,
+        operationClaimRead,
         signal: opts.signal,
+        acquirePool: opts.acquirePool,
+        onResolutionStep: opts.onResolutionStep,
         issueKinds,
         ids: idValues,
         excludeIds: excludeIds.length ? excludeIds : undefined,
@@ -3125,12 +3515,25 @@ export async function getNextWorkItem(
   }
 
   if (!claimed) return null;
-  claimed.interestWatch = await armWorkItemHolderInterests(claimed, bee.assignee);
+  resolutionStep('candidate-holder-interests');
+  // The claim has committed, so this optional best-effort registration must not consume
+  // the bounded claim promise's remaining budget. Track the complete side-effect promise
+  // (including the arm call) so test teardown can drain it before the environment closes.
+  const claimedWorkItem = claimed;
+  void trackDetached(
+    armWorkItemHolderInterests(claimedWorkItem, bee.assignee).then((interestWatch) => {
+      claimedWorkItem.interestWatch = interestWatch;
+    }),
+  ).catch(() => {});
   // Same claimed-event as the legacy claim path (best-effort fanout).
   void trackDetached(import('../work-items-events'))
     .then((m) => m.emitWorkItemClaimedEvent(claimed!, bee.assignee))
     .catch(() => {});
-  return { workItem: claimed, claimedUnder: { specId: spec.specId, revision: spec.revision } };
+  return {
+    workItem: claimed,
+    claimedUnder: { specId: spec.specId, revision: spec.revision },
+    ...(redInflow ? { redInflow } : {}),
+  };
 }
 
 /** Convenience: claim under the baseline spec (no spec = today's ordering, D-003). */

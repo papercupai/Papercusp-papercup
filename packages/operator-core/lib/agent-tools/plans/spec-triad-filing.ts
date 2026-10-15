@@ -21,6 +21,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { upsertConditionWorkItem } from '../../coord/condition-upsert';
+import { isSpecTriadCompanion } from './spec-triad-policy';
 
 /** Work-item statuses that mean an existing filing is still outstanding. */
 export const SPEC_TRIAD_NON_TERMINAL_STATUSES = [
@@ -44,7 +45,7 @@ export interface SpecTriadFilingInput {
   gap: string;
 }
 
-export type SpecTriadFilingOutcome = 'created' | 'already-open' | 'error';
+export type SpecTriadFilingOutcome = 'created' | 'already-open' | 'suppressed' | 'error';
 
 export interface SpecTriadFilingResult {
   outcome: SpecTriadFilingOutcome;
@@ -59,6 +60,25 @@ export function specTriadPlanRef(i: {
   planSlug: string;
 }): string {
   return `${i.workspaceId}/${i.harnessSlug}/${i.planSlug}`;
+}
+
+/** Promotion and the sweep honor the same open reminder or reasoned drop. */
+export async function listSpecTriadFilingSuppressions(ref?: string): Promise<Array<{
+  feature_id: string;
+  ref: string;
+  status: string;
+}>> {
+  const { sql } = getOrgPg();
+  return await sql`
+    SELECT feature_id, payload->>'specTriadPlan' AS ref, status
+      FROM harness_shared.work_items
+     WHERE payload->>'specTriadPlan' IS NOT NULL
+       AND (${ref ?? null}::text IS NULL OR payload->>'specTriadPlan' = ${ref ?? null})
+       AND (status = ANY(${SPEC_TRIAD_NON_TERMINAL_STATUSES})
+         OR (status IN ('dropped', 'deprecated', 'closed')
+           AND (NULLIF(BTRIM(terminal_completion_ref), '') IS NOT NULL
+             OR NULLIF(BTRIM(payload #>> '{_completionEvidence,summary}'), '') IS NOT NULL)))
+  ` as unknown as Array<{ feature_id: string; ref: string; status: string }>;
 }
 
 /** The item body. Extracted so both callers say exactly the same thing. */
@@ -93,19 +113,15 @@ export async function ensureSpecTriadFiling(
   input: SpecTriadFilingInput,
 ): Promise<SpecTriadFilingResult> {
   const ref = specTriadPlanRef(input);
+  if (isSpecTriadCompanion(input.planSlug)) return { outcome: 'suppressed', id: null, ref };
   try {
-    const { sql } = getOrgPg();
     // Legacy fast path: rows filed before the condition-key upsert existed carry
     // only the payload marker. Keep honoring them so a pre-existing open filing
     // is adopted instead of joined by a keyed sibling.
-    const open = (await sql`
-      SELECT 1
-        FROM harness_shared.work_items
-       WHERE payload->>'specTriadPlan' = ${ref}
-         AND status = ANY(${SPEC_TRIAD_NON_TERMINAL_STATUSES})
-       LIMIT 1
-    `) as unknown as unknown[];
-    if (open.length > 0) return { outcome: 'already-open', id: null, ref };
+    const existing = await listSpecTriadFilingSuppressions(ref);
+    const dropped = existing.find((r) => !SPEC_TRIAD_NON_TERMINAL_STATUSES.includes(r.status));
+    if (dropped) return { outcome: 'suppressed', id: dropped.feature_id, ref };
+    if (existing.length > 0) return { outcome: 'already-open', id: null, ref };
 
     // WI-39594: the payload check above is check-then-act and RACED — the two
     // callers (promotion refusal + daily sweep) run on independent schedules and

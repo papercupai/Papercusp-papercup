@@ -43,7 +43,9 @@
  */
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
-import { escalateAlarm } from '../alarm-attention';
+import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+
+export const STORAGE_GROWTH_ALARM_CONDITION_KEY = 'alarm:storage-growth';
 import { notifySyncInvalidate } from '../sync-sse';
 import { isPgCategory, STORAGE_CATEGORIES } from './categories';
 import {
@@ -55,9 +57,17 @@ import {
 } from './disk';
 import { computeStorageUsage, type StorageUsageRow } from './usage';
 import { bareTableName, CHUNK_STORES } from '../search/chunks/registry';
+import { FALLBACK_RETENTION_MS } from '../degradation/fallback-observations';
+import { SESSION_TURN_PART_RETENTION_DAYS, SESSION_TURN_RETENTION_DAYS } from '../search/session-retention';
+import { CENSUS_RETENTION_DAYS } from './disk-consumer-census';
+import { samplePgTableSizes, recordPgTableSizeSample } from './pg-table-growth';
 
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
+// `tool-invocations` keeps a 14-day history used by activity and correction readers.
+// A live 2026-10-12 sample measured 22.3 GiB; the last-7d call rate projects ~32 GiB
+// after the full window turns over, so 48 GiB leaves room for normal variation.
+const TOOL_INVOCATIONS_CEILING_GIB = 48;
 /** The marker phrase that makes "nothing prunes this" MACHINE-READABLE. The
  *  unpruned-by-design set is derived from it rather than maintained beside the
  *  map, so a new blanket exemption cannot slip past the subset guard below by
@@ -71,11 +81,12 @@ function envNum(name: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
-/** Absolute ceiling (GiB) above which a PG category is flagged. The bloat-queue
- *  (substrate_outbox) is the EI-126 102 GB class — it should stay small while
- *  draining, so a much tighter ceiling. Both env-overridable. */
+/** Absolute ceiling (GiB) above which a PG category is flagged. The
+ *  tool-invocations and substrate-outbox categories have workload-specific
+ *  ceilings; the general and outbox values remain env-overridable. */
 export function categoryCeilingBytes(id: string): number {
   if (id === 'substrate-outbox') return envNum('PAPERCUSP_STORAGE_ALARM_OUTBOX_GB', 3) * GIB;
+  if (id === 'tool-invocations') return TOOL_INVOCATIONS_CEILING_GIB * GIB;
   return envNum('PAPERCUSP_STORAGE_ALARM_DEFAULT_GB', 10) * GIB;
 }
 
@@ -87,7 +98,7 @@ export interface StorageBreach {
   trimmable: boolean;
 }
 
-export interface GrowthAlarmDeps {
+export interface GrowthAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 'resolve'> {
   /** Injectable for tests — defaults to a sizes-only (cheap) usage scan. */
   computeUsage?: () => Promise<StorageUsageRow[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
@@ -102,6 +113,9 @@ export interface GrowthAlarmDeps {
    *  entry. Feeds the THIRD leg: growth inside a table the other two legs are
    *  structurally forbidden to look at (WI-936229). */
   countExemptSubsets?: () => Promise<ExemptSubsetCount[]>;
+  /** Injectable for tests — defaults to one indexed min(ageColumn) per RETENTION_WINDOWS
+   *  entry. Feeds the FOURTH leg: a pruner that exists but has fallen behind its window. */
+  readRetentionAges?: () => Promise<RetentionAgeReading[]>;
   /** Injectable for tests — defaults to the shared attention-notify rail. */
   escalate?: (t: { title: string; body: string }) => Promise<void>;
   /** Injectable for tests — the persistent cross-restart cooldown floor. */
@@ -164,10 +178,17 @@ export const RETENTION_COVERED_ELSEWHERE: Readonly<Record<string, string>> = {
   operator_turns: 'pruned by operator-turns-gc.ts',
   operator_conversations: 'pruned by operator-turns-gc.ts',
   plan_revisions: 'pruned by agent-tools/plans/revisions-gc.ts',
-  coord_thread_posts: 'pruned by agent-tools/coordination/message-log-gc.ts',
+  // Payload pruned (SET payload = NULL), rows kept as each sink's dedupe identity —
+  // the row horizon is an open decision, tracked on WI-10004921.
+  trigger_deliveries:
+    'payload pruned by external-triggers/delivery-retention.ts pruneTriggerDeliveryPayloads (30d horizon; non-event-bus copies immediately); rows kept as per-sink dedupe identity',
+  disk_census_runs: 'pruned by storage/disk-consumer-census.ts pruneDiskCensus (CENSUS_RETENTION_DAYS=30)',
+  disk_census_consumers: 'cascade-deleted with disk_census_runs by storage/disk-consumer-census.ts pruneDiskCensus',
   session_archive_files: `permanent canonical archive — archiveSession() writes/updates it in session-archive.ts; ${NOT_AGE_PRUNABLE}`,
   session_turns: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (RETENTION_DAYS=45)',
   session_turn_parts: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (PART_RETENTION_DAYS=14)',
+  fallback_observations:
+    'pruned by degradation/fallback-observations.ts pruneFallbackObservations (FALLBACK_RETENTION_MS=14d), driven by system-health/degradation-watchdog.ts',
   // Every chunk store (session_turn_chunks, text_chunks, …): DERIVED from
   // search/chunks/registry.ts CHUNK_STORES, each with its deleting mechanism
   // (generic-rag-chunking P-005).
@@ -284,6 +305,154 @@ export function detectExemptSubsetGrowth(
   return { over: over.sort((a, b) => b.rows - a.rows), unknown: unknown.sort() };
 }
 
+/* ─────────────────── THE FOURTH LEG (WI-6554700010009732) ───────────────────
+ *
+ * RETENTION_COVERED_ELSEWHERE records that a pruner EXISTS. Nothing checked that
+ * the pruner KEEPS UP. session_turn_parts carried "pruned by … (PART_RETENTION_DAYS=14)"
+ * while its oldest row was 41.7 days old (measured 2026-10-13): the daily prune
+ * stopped at a fixed 200k-row cap against ~470k rows/day of inflow
+ * (WI-6554700010009718), and every leg above still read the table as covered.
+ * A retention claim is only as good as its oldest row.
+ *
+ * Each window names the column the pruner's own DELETE predicate ages by, and
+ * takes its length from the pruner's constant, so claim and check cannot drift.
+ */
+
+/** A declared age window for a table some pruner owns. */
+export interface RetentionWindow {
+  /** `harness_shared` table. It MUST also carry a RETENTION_COVERED_ELSEWHERE entry. */
+  table: string;
+  /** timestamptz column the pruner's DELETE predicate ages by. Must be indexed: probed every tick. */
+  ageColumn: string;
+  /** The pruner's window, imported from the pruner and never restated. */
+  windowDays: number;
+  /** Lag tolerated past the window before reporting: one pruner cadence plus one missed run. */
+  graceDays: number;
+  /** The deleting call site, named in the toast. */
+  prunedBy: string;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export const RETENTION_WINDOWS: readonly RetentionWindow[] = [
+  {
+    table: 'session_turn_parts',
+    ageColumn: 'ingested_at',
+    windowDays: SESSION_TURN_PART_RETENTION_DAYS,
+    graceDays: 2,
+    prunedBy: 'search/session-ingest.ts pruneSessionTurnsOnce (daily)',
+  },
+  {
+    table: 'session_turns',
+    ageColumn: 'ingested_at',
+    windowDays: SESSION_TURN_RETENTION_DAYS,
+    graceDays: 2,
+    prunedBy: 'search/session-ingest.ts pruneSessionTurnsOnce (daily)',
+  },
+  {
+    table: 'fallback_observations',
+    ageColumn: 'observed_at',
+    windowDays: FALLBACK_RETENTION_MS / DAY_MS,
+    graceDays: 2,
+    prunedBy: 'degradation/fallback-observations.ts pruneFallbackObservations',
+  },
+  {
+    table: 'disk_census_runs',
+    ageColumn: 'finished_at',
+    windowDays: CENSUS_RETENTION_DAYS,
+    graceDays: 2,
+    prunedBy: 'storage/disk-consumer-census.ts pruneDiskCensus (each census run)',
+  },
+];
+
+/** Covered tables whose recorded horizon is deliberately NOT a row age, with the
+ *  reason. A covered entry naming a day horizon must appear either here or in
+ *  RETENTION_WINDOWS; the guard test fails on one in neither, so an age claim
+ *  cannot be added without the check that it holds. */
+export const NO_ROW_AGE_WINDOW: Readonly<Record<string, string>> = {
+  trigger_deliveries:
+    'the 30d horizon prunes PAYLOADS (SET payload = NULL); rows are kept as per-sink dedupe identity, so row age is expected to exceed it',
+};
+
+/** One window's oldest row. `measured:false` = the probe FAILED (unknown, never
+ *  healthy); `measured:true` with `oldestAgeDays:null` = the table is empty. */
+export interface RetentionAgeReading {
+  table: string;
+  measured: boolean;
+  oldestAgeDays: number | null;
+}
+
+/** A pruner that has fallen behind its window by more than its grace. */
+export interface RetentionLag {
+  table: string;
+  oldestAgeDays: number;
+  windowDays: number;
+  graceDays: number;
+  lagDays: number;
+  prunedBy: string;
+}
+
+/**
+ * Pure: which declared windows hold rows older than window + grace.
+ *
+ * A window with no reading, a failed reading, or a non-finite age is UNKNOWN,
+ * never silently healthy. An empty table has nothing past its window.
+ */
+export function detectRetentionLag(
+  readings: readonly RetentionAgeReading[],
+  windows: readonly RetentionWindow[] = RETENTION_WINDOWS,
+): { lagging: RetentionLag[]; unknown: string[] } {
+  const lagging: RetentionLag[] = [];
+  const unknown: string[] = [];
+
+  for (const w of windows) {
+    const hit = readings.find((r) => r.table === w.table);
+    if (!hit || !hit.measured || (hit.oldestAgeDays !== null && !Number.isFinite(hit.oldestAgeDays))) {
+      unknown.push(w.table);
+      continue;
+    }
+    if (hit.oldestAgeDays === null) continue;
+    const lagDays = hit.oldestAgeDays - w.windowDays;
+    if (lagDays > w.graceDays) {
+      lagging.push({
+        table: w.table,
+        oldestAgeDays: hit.oldestAgeDays,
+        windowDays: w.windowDays,
+        graceDays: w.graceDays,
+        lagDays,
+        prunedBy: w.prunedBy,
+      });
+    }
+  }
+
+  return { lagging: lagging.sort((a, b) => b.lagDays - a.lagDays), unknown: unknown.sort() };
+}
+
+export function formatRetentionLagToast(
+  lagging: readonly RetentionLag[],
+  unknown: readonly string[],
+): { level: string; message: string; description: string } {
+  const lines = lagging.map(
+    (l) =>
+      `${l.table}: oldest row ${l.oldestAgeDays.toFixed(1)}d vs a ${l.windowDays}d window ` +
+      `(${l.lagDays.toFixed(1)}d behind; pruned by ${l.prunedBy})`,
+  );
+  const unmeasured =
+    unknown.length > 0 ? `\n\n⚠ Oldest-row probe FAILED (age unknown, not healthy) for: ${unknown.join(', ')}.` : '';
+  return {
+    level: 'warning',
+    message:
+      lagging.length > 0
+        ? `Retention lag — ${lagging.length} table(s) keep rows past their pruner's window`
+        : `Retention lag — ${unknown.length} window(s) could not be measured`,
+    description:
+      (lines.length > 0 ? lines.join('\n') + '\n\n' : '') +
+      'The pruner exists but is not keeping up. Check its per-run cap against the ' +
+      "table's inflow, and that its routine fires. Declared in RETENTION_WINDOWS " +
+      `(storage/storage-growth-alarm.ts).${unmeasured}`,
+  };
+}
+
 /** `bak_*` pre-migration snapshots are frozen undo trails, never live growth —
  *  skipped STRUCTURALLY rather than listed, mirroring the same carve-out in
  *  identity-keyed-state-inventory.test.ts (hand-listing each new one red the
@@ -370,8 +539,8 @@ export function detectUndeclaredDiskGrowth(
   return { undeclared, incomplete: truncated };
 }
 
-function fmtGb(bytes: number): string {
-  return `${(bytes / GIB).toFixed(1)} GB`;
+function fmtGiB(bytes: number): string {
+  return `${(bytes / GIB).toFixed(1)} GiB`;
 }
 
 /** Pure breach detection over a usage snapshot — unit-testable without PG. Only
@@ -379,7 +548,7 @@ function fmtGb(bytes: number): string {
 export function detectBreaches(rows: StorageUsageRow[]): StorageBreach[] {
   const breaches: StorageBreach[] = [];
   for (const r of rows) {
-    if (r.kind !== 'pg') continue;
+    if (r.kind !== 'pg' || r.totalBytes === null) continue;
     const ceilingBytes = categoryCeilingBytes(r.id);
     if (r.totalBytes > ceilingBytes) {
       breaches.push({ id: r.id, label: r.label, bytes: r.totalBytes, ceilingBytes, trimmable: r.trimmable });
@@ -419,7 +588,7 @@ export function formatBreachToast(breaches: StorageBreach[]): { level: string; m
   const lines = breaches
     .map(
       (b) =>
-        `• ${b.label} (${b.id}): ${fmtGb(b.bytes)} > ${fmtGb(b.ceilingBytes)} ceiling${b.trimmable ? '' : ' — read-only/federated'}`,
+        `• ${b.label} (${b.id}): ${fmtGiB(b.bytes)} > ${fmtGiB(b.ceilingBytes)} ceiling${b.trimmable ? '' : ' — read-only/federated'}`,
     )
     .join('\n');
   return {
@@ -427,7 +596,7 @@ export function formatBreachToast(breaches: StorageBreach[]): { level: string; m
     message: `Storage growth alarm — ${breaches.length} table(s) over threshold`,
     description:
       `These Postgres tables crossed their size ceiling (the silent-growth guard for the EI-126 102 GB class):\n${lines}\n\n` +
-      `Review in Settings → Storage. Tune a ceiling via PAPERCUSP_STORAGE_ALARM_DEFAULT_GB / PAPERCUSP_STORAGE_ALARM_OUTBOX_GB.`,
+      `Review in Settings → Storage. Tune general and outbox ceilings via PAPERCUSP_STORAGE_ALARM_DEFAULT_GB / PAPERCUSP_STORAGE_ALARM_OUTBOX_GB; tool-invocations uses its 48 GiB 14-day-history ceiling.`,
   };
 }
 
@@ -440,13 +609,13 @@ export function formatGrowthEscalation(breaches: StorageBreach[]): { title: stri
   return {
     title: STORAGE_GROWTH_ESCALATION_TITLE,
     body:
-      `${worst.label} (${worst.id}) is ${fmtGb(worst.bytes)} over its ${fmtGb(worst.ceilingBytes)} ceiling. ` +
+      `${worst.label} (${worst.id}) is ${fmtGiB(worst.bytes)} over its ${fmtGiB(worst.ceilingBytes)} ceiling. ` +
       `${action}`,
   };
 }
 
 function fmtSize(bytes: number): string {
-  return bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GB` : `${Math.round(bytes / (1024 * 1024))} MB`;
+  return bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GiB` : `${Math.round(bytes / (1024 * 1024))} MiB`;
 }
 
 /** Build ONE aggregated toast for the undeclared sweep. Pure — unit-testable.
@@ -573,24 +742,49 @@ async function defaultCountExemptSubsets(
   return out;
 }
 
+/** Default retention-lag probe: one indexed min(ageColumn) per window. A failed
+ *  probe reports measured:false (UNKNOWN), never an empty table. */
+async function defaultReadRetentionAges(
+  windows: readonly RetentionWindow[] = RETENTION_WINDOWS,
+): Promise<RetentionAgeReading[]> {
+  const sqlClient = getOrgPg().sql as unknown as {
+    unsafe: (q: string) => Promise<Array<{ age_days: string | number | null }>>;
+  };
+  const ident = /^[a-z_][a-z0-9_]*$/;
+  const out: RetentionAgeReading[] = [];
+  for (const w of windows) {
+    if (!ident.test(w.table) || !ident.test(w.ageColumn)) {
+      out.push({ table: w.table, measured: false, oldestAgeDays: null });
+      continue;
+    }
+    try {
+      const rows = await sqlClient.unsafe(
+        `SELECT extract(epoch FROM now() - min(${w.ageColumn})) / 86400.0 AS age_days FROM harness_shared.${w.table}`,
+      );
+      const raw = rows?.[0]?.age_days;
+      out.push({ table: w.table, measured: true, oldestAgeDays: raw === null || raw === undefined ? null : Number(raw) });
+    } catch (err) {
+      console.warn(
+        `[storage-growth-alarm] retention probe ${w.table} failed (reported UNKNOWN): ${(err as Error)?.message ?? String(err)}`,
+      );
+      out.push({ table: w.table, measured: false, oldestAgeDays: null });
+    }
+  }
+  return out;
+}
+
 /** Default undeclared-table scan: the catalog, NOT the category list. */
 async function defaultListTableSizes(): Promise<TableSizeRow[]> {
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const sql = getOrgPg().sql as unknown as (
-    strings: TemplateStringsArray,
-    ...v: unknown[]
-  ) => Promise<Array<{ table: string; total_bytes: string | number; rows: string | number }>>;
-  const rows = await sql`
-    SELECT relname AS table,
-           pg_total_relation_size(relid) AS total_bytes,
-           n_live_tup AS rows
-      FROM pg_stat_user_tables
-     WHERE schemaname = 'harness_shared'`;
-  return rows.map((r) => ({
-    table: String(r.table),
-    totalBytes: Number(r.total_bytes),
-    rows: Number(r.rows),
-  }));
+  const { activeWorkspaceId } = await import('../workspace-registry');
+  const sql = getOrgPg().sql;
+  const sample = await samplePgTableSizes(sql, activeWorkspaceId());
+  try {
+    await recordPgTableSizeSample(sql, sample);
+  } catch (error) {
+    // A history-write failure must not suppress the existing catalog alarm leg.
+    console.warn(`[storage-growth-alarm] table-size history unavailable (growth UNKNOWN): ${String(error)}`);
+  }
+  return sample.tables.map(t => ({ table: t.name, totalBytes: t.totalBytes, rows: t.rows ?? 0 }));
 }
 
 /** One read-only pass: size every storage category, toast on any breach. Never
@@ -603,6 +797,8 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
   diskScanIncomplete: boolean;
   exemptSubsets: ExemptSubsetGrowth[];
   exemptUnknown: string[];
+  retentionLag: RetentionLag[];
+  retentionUnknown: string[];
 }> {
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;
@@ -613,8 +809,10 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
   const recentlyEscalated = deps.recentlyEscalated;
 
   let rows: StorageUsageRow[] = [];
+  let usageMeasured = false;
   try {
     rows = await computeUsage();
+    usageMeasured = true;
   } catch (err) {
     console.warn(`[storage-growth-alarm] usage scan skipped (non-fatal): ${(err as Error)?.message ?? String(err)}`);
     rows = [];
@@ -635,9 +833,13 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
         ...formatGrowthEscalation(breaches),
         cooldownMs: STORAGE_GROWTH_ESCALATE_COOLDOWN_MS,
         source: 'storage-growth-alarm',
+        conditionKey: STORAGE_GROWTH_ALARM_CONDITION_KEY,
       },
-      { notify: escalate, recentlyEscalated },
+      { notify: escalate, recentlyEscalated, broadcast: deps.broadcast },
     );
+  } else if (usageMeasured && rows.some((row) => row.kind === 'pg') &&
+      rows.every((row) => row.kind !== 'pg' || (row.totalBytes !== null && Number.isFinite(row.totalBytes)))) {
+    await resolveAlarm(STORAGE_GROWTH_ALARM_CONDITION_KEY, 'storage-growth-alarm', deps);
   }
 
   // ── The undeclared sweep (the leg detectBreaches structurally cannot cover) ──
@@ -715,6 +917,26 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
     );
   }
 
+  // ── The retention-lag sweep (a pruner that exists but has fallen behind) ──
+  // Independent of all three legs above: each of them reads a covered table as
+  // fine, which is exactly the blind spot this leg closes.
+  let retentionLag: RetentionLag[] = [];
+  let retentionUnknown: string[] = [];
+  try {
+    const readRetentionAges = deps.readRetentionAges ?? (() => defaultReadRetentionAges());
+    const result = detectRetentionLag(await readRetentionAges());
+    retentionLag = result.lagging;
+    retentionUnknown = result.unknown;
+    if (retentionLag.length > 0 || retentionUnknown.length > 0) {
+      await emitToast(formatRetentionLagToast(retentionLag, retentionUnknown));
+    }
+  } catch (err) {
+    retentionUnknown = RETENTION_WINDOWS.map((w) => w.table).sort();
+    console.warn(
+      `[storage-growth-alarm] retention-lag sweep skipped (UNKNOWN, non-fatal): ${(err as Error)?.message ?? String(err)}`,
+    );
+  }
+
   return {
     checked: rows.length,
     breaches,
@@ -723,5 +945,7 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
     diskScanIncomplete,
     exemptSubsets,
     exemptUnknown,
+    retentionLag,
+    retentionUnknown,
   };
 }

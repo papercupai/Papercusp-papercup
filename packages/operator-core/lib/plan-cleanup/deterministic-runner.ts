@@ -22,14 +22,12 @@ import {
 } from '../attention/bulk-run-store';
 import { notifyPlanCleanupRunChanged } from '../attention/bulk-run-sync';
 import {
-  bulkAutomationEligibility,
   normalizeBulkAutomationPolicy,
-  type BulkAutomationPolicy,
-  type BulkConfidence,
 } from '../attention/bulk-dispositions';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { dispatchCleanupFindingAction } from './action-dispatch';
 import { gatherCleanupInputs } from './gather';
+import { cleanupAutomationEligibility, cleanupHasDeterministicAction } from './automation-policy';
 import {
   DEFAULT_ENLIST_PLAN_LIMIT,
   scanForCleanupFindings,
@@ -44,24 +42,6 @@ import {
   type CleanupFindingWriteRefusal,
   type CleanupRunFindingRow,
 } from './run-store';
-
-/**
- * The resolver tool path (agent-tools/plans/cleanup-run.ts) refuses to
- * auto-apply a finding whose confidence sits below the run's standing
- * automation policy (WI-2141525 — until this fix the deterministic pass had
- * no equivalent gate, so a review-all/L0 policy held every LLM-driven apply
- * but not a single deterministic one). Mirrors that check exactly: no
- * policy on the run ⇒ unrestricted (legacy runs predate P-006); otherwise
- * defer to the same `bulkAutomationEligibility` authority the resolver uses.
- */
-function policyPermitsAutoApply(
-  policy: BulkAutomationPolicy | null,
-  row: { confidence: CleanupFinding['confidence']; confidenceLevel?: BulkConfidence | null },
-): boolean {
-  if (!policy) return true;
-  const confidenceLevel = row.confidenceLevel ?? (row.confidence === 'provable' ? 'high' : 'medium');
-  return bulkAutomationEligibility(policy, confidenceLevel).allowed;
-}
 
 export async function scanCleanupRun(
   run: BulkRunRow,
@@ -205,6 +185,12 @@ export async function runDeterministicPlanCleanup(input: {
       runId: run.runId,
       findings: scan,
       workspaceId: run.workspaceId,
+      reconcile: {
+        harnessSlug: run.harnessSlug ?? operatorHomeHarnessSlug(),
+        planSlugs: run.seedRefs,
+        carryReviewFindingIds: scan.filter((finding) =>
+          !cleanupAutomationEligibility(policy, finding).allowed).map((finding) => finding.findingId),
+      },
     });
     if (seeded.refused) {
       authorityRevoked = true;
@@ -216,8 +202,8 @@ export async function runDeterministicPlanCleanup(input: {
     const currentById = new Map(scan.map((finding) => [finding.findingId, finding]));
     const candidates = rows.filter((row) => {
       const current = currentById.get(row.findingId);
-      if (row.outcome !== 'pending' || current?.autoApply !== true) return false;
-      return policyPermitsAutoApply(policy, { confidence: current.confidence, confidenceLevel: row.confidenceLevel });
+      if (row.outcome !== 'pending' || !current || !cleanupHasDeterministicAction(current)) return false;
+      return cleanupAutomationEligibility(policy, current, row.confidenceLevel ?? undefined).allowed;
     });
     if (candidates.length === 0) break;
 
@@ -238,14 +224,10 @@ export async function runDeterministicPlanCleanup(input: {
             if (!fresh) {
               throw new Error(`${locked.findingId}: finding disappeared during locked re-verification`);
             }
-            if (!fresh.autoApply) {
+            const eligibility = cleanupAutomationEligibility(policy, fresh, locked.confidenceLevel ?? undefined);
+            if (!eligibility.allowed) {
               throw new Error(
-                `${locked.findingId}: auto-apply is no longer authorized (${fresh.autoApplyBlockedBy ?? fresh.confidence})`,
-              );
-            }
-            if (!policyPermitsAutoApply(policy, { confidence: fresh.confidence, confidenceLevel: locked.confidenceLevel })) {
-              throw new Error(
-                `${locked.findingId}: auto-apply is no longer authorized (standing automation policy)`,
+                `${locked.findingId}: auto-apply is no longer authorized (${eligibility.reason})`,
               );
             }
             const dispatched = await deps.dispatch({ run, finding: fresh, call: input.call });
@@ -312,6 +294,12 @@ export async function runDeterministicPlanCleanup(input: {
     runId: run.runId,
     findings: finalScan,
     workspaceId: run.workspaceId,
+    reconcile: {
+      harnessSlug: run.harnessSlug ?? operatorHomeHarnessSlug(),
+      planSlugs: run.seedRefs,
+      carryReviewFindingIds: finalScan.filter((finding) =>
+        !cleanupAutomationEligibility(policy, finding).allowed).map((finding) => finding.findingId),
+    },
   });
   if (finalSeed.refused) {
     authorityRevoked = true;
@@ -333,8 +321,8 @@ export async function runDeterministicPlanCleanup(input: {
       });
       skipped += 1;
     } else if (
-      current.autoApply &&
-      policyPermitsAutoApply(policy, { confidence: current.confidence, confidenceLevel: row.confidenceLevel })
+      cleanupHasDeterministicAction(current) &&
+      cleanupAutomationEligibility(policy, current, row.confidenceLevel ?? undefined).allowed
     ) {
       reports.push({
         findingId: row.findingId,

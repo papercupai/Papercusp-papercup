@@ -6,8 +6,9 @@ const m = vi.hoisted(() => ({
   live: vi.fn(), holder: vi.fn(), witness: vi.fn(), transcript: vi.fn(), ompPath: vi.fn(), account: vi.fn(),
   codexRoute: vi.fn(), ompRoute: vi.fn(), envelope: vi.fn(), archive: vi.fn(),
   ensureCodex: vi.fn(),
+  codexReadiness: vi.fn(), exists: vi.fn(),
 }));
-vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: () => true }));
+vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: m.exists }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
   resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,
   normalizeModelSpecForAgent: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).normalizeModelSpecForAgent,
@@ -20,7 +21,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
   ensureResumeTranscriptPresent: m.transcript,
   tryRematerializeFromArchive: m.archive,
   ensureCodexHomeViaOperator: m.ensureCodex, ensureInteractiveConfigViaOperator: vi.fn(),
-  isClaudeConfigDirLaunchReady: () => true, isCodexHomeLaunchReady: () => true,
+  isClaudeConfigDirLaunchReady: () => true, isCodexHomeLaunchReady: () => true, codexHomeLaunchReadiness: m.codexReadiness,
   rehealResumeCredentials: vi.fn(), rehealResumeCodexAuth: vi.fn(),
   applyCodexGatewayRoute: m.codexRoute, applyOmpResumeAccountRoute: m.ompRoute,
   ompTrackedResumeEnv: () => ({ PI_CODING_AGENT_DIR: '/saved/omp', PI_CONFIG_DIR: '.saved/omp' }),
@@ -38,8 +39,14 @@ vi.mock('./adv-sessions', async (orig) => ({
 vi.mock('./su-persona-render', () => ({ parseSuLaunchSpecRecord: (value: unknown) => value }));
 vi.mock('./console-launcher', () => ({ buildConsoleEnvelope: m.envelope }));
 vi.mock('./interactive-safety-floor', () => ({ checkInteractiveSafetyFloor: async () => ({ ok: true }) }));
-vi.mock('./events/await/psu-pty-discovery', () => ({ findLiveHost: m.live }));
-vi.mock('./mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://localhost:3170' }));
+vi.mock('./events/await/psu-pty-discovery', () => ({
+  findLiveHost: m.live,
+  findLiveHostAsync: async (ownerId: string) => m.live(ownerId),
+}));
+vi.mock('./mcp-base-url', () => ({
+  resolveSpawnHostOperatorBaseUrl: () => 'http://localhost:3170',
+  resolveChildSessionOperatorBaseUrl: () => 'http://localhost:3170',
+}));
 vi.mock('./session-transcript-resolvers', () => ({ findOmpSessionPath: m.ompPath }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ resolveAccountPin: m.account }));
 import { prepareStructuredSuResume } from './su-session-resume';
@@ -64,6 +71,7 @@ function fixture(backend: 'claude' | 'codex' | 'omp'): DurableSuSessionRecord {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  m.exists.mockReturnValue(true);
   m.live.mockReturnValue(null);
   m.holder.mockReturnValue({ held: false, reason: 'clean-scan' });
   m.witness.mockReturnValue({ version: 1, kind: 'no-live-claude-process' });
@@ -77,6 +85,46 @@ beforeEach(() => {
 });
 
 describe('structured exact resume preparation', () => {
+  it('identifies the pending resume operation before it settles or refuses', async () => {
+    const saved = fixture('codex');
+    let refuse!: (error: Error) => void;
+    m.account.mockReturnValue(new Promise((_, reject) => { refuse = reject; }));
+    const stage = vi.fn();
+    const pending = prepareStructuredSuResume(saved, { stage });
+    const rejected = expect(pending).rejects.toThrow('route unavailable');
+    await vi.waitFor(() => expect(stage).toHaveBeenLastCalledWith('resume-account-route'));
+    expect(stage).not.toHaveBeenCalledWith('resume-console-envelope');
+    expect(m.envelope).not.toHaveBeenCalled();
+    refuse(new Error('route unavailable'));
+    await rejected;
+    expect(m.release).toHaveBeenCalled();
+  });
+
+  it('resumes a coding-assistant Codex home without restoring or requiring the SU playbook', async () => {
+    const saved = fixture('codex');
+    m.codexReadiness.mockReturnValue('AGENTS.md is missing');
+    m.exists.mockImplementation((path: string) => !path.endsWith('AGENTS.md'));
+    const resume = await prepareStructuredSuResume(saved, { identity: 'coding-assistant' });
+    expect(resume.boot.envelopeEnv.CODEX_HOME).toBe('/saved/codex');
+    expect(m.ensureCodex).not.toHaveBeenCalled();
+    expect(m.codexReadiness).not.toHaveBeenCalled();
+    await resume.release();
+  });
+
+  it('still refuses a registered-project Codex home without its SU playbook', async () => {
+    const saved = fixture('codex');
+    m.codexReadiness.mockReturnValue('AGENTS.md is missing');
+    await expect(prepareStructuredSuResume(saved)).rejects.toThrow('AGENTS.md is missing');
+    expect(m.ensureCodex).toHaveBeenCalled();
+  });
+
+  it('refuses an SU instruction artifact missing after home readiness succeeds', async () => {
+    const saved = fixture('codex');
+    m.exists.mockImplementation((path: string) => !path.endsWith('AGENTS.md'));
+    await expect(prepareStructuredSuResume(saved)).rejects.toThrow('full SU instruction artifact');
+    expect(m.release).toHaveBeenCalled();
+  });
+
   it.each(['claude', 'codex', 'omp'] as const)('preserves %s identity, scope and settings and finalizes only after a child exists', async (backend) => {
     const saved = fixture(backend);
     const resume = await prepareStructuredSuResume(saved);
@@ -116,6 +164,23 @@ describe('structured exact resume preparation', () => {
     expect(m.account).toHaveBeenCalledWith(
       'workspace', 'named-account', 'claude', 'saved-owner', true, 'claude-fable-5-1[1m]',
     );
+  });
+
+  it('resumes with the latest owner-selected model when the launch spec is stale', async () => {
+    const saved = fixture('claude');
+    saved.descriptor!.model = 'claude-sonnet-4-5'; // native resolved id may omit effort
+    saved.descriptor!.ownerSelectedModel = 'claude-haiku-4-5:high';
+    m.spec.mockResolvedValue({ agent: 'claude', workspaceId: 'workspace', harnessSlug: 'project',
+      profile: 'engineer', model: 'claude-opus-4-1:low', planSlug: 'saved-plan',
+      specificationRevision: 'spec-1', stateRevision: 'state-2' });
+
+    const resume = await prepareStructuredSuResume(saved);
+
+    expect(resume.options.model).toBe('claude-haiku-4-5:high');
+    expect(m.account).toHaveBeenCalledWith(
+      'workspace', 'named-account', 'claude', 'saved-owner', true, 'claude-haiku-4-5:high',
+    );
+    await resume.release();
   });
 
   it('refuses scope mismatch and a competing host before reserving or touching credentials', async () => {
@@ -238,6 +303,17 @@ describe('structured exact resume preparation', () => {
     const resume = await prepareStructuredSuResume(saved);
     expect(m.archive).toHaveBeenCalledWith('saved-native', 'omp', { operatorUrl: 'http://localhost:3170' });
     expect(resume.nativeSession).toMatchObject({ backend: 'omp', ompThreadId: 'saved-native', agentHome: '/saved/omp' });
+    await resume.release();
+  });
+
+  it('passes the saved OMP home into transcript preflight before preparing the native executor', async () => {
+    const saved = fixture('omp');
+    m.transcript.mockImplementation(async (source) => source.agentHome === '/saved/omp');
+    const resume = await prepareStructuredSuResume(saved);
+    expect(m.transcript).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'omp', ompThreadId: 'saved-native', agentHome: '/saved/omp',
+    }), expect.any(Object));
+    expect(resume.boot.envelopeEnv.PI_CODING_AGENT_DIR).toBe('/saved/omp');
     await resume.release();
   });
 });

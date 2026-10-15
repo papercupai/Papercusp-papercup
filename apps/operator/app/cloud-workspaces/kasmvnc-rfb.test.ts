@@ -121,4 +121,17 @@ describe("kasmvncRfbClass over the real @novnc/novnc", () => {
       /_sendMouse/,
     );
   });
+
+  // The Playwright fixtures replace @novnc/novnc with this framebuffer stand-in, and the
+  // viewers wrap it in kasmvncRfbClass. When the refusal above landed, the stand-in had no
+  // `_sendMouse`, so every e2e viewer rendered "Desktop stream failed" for two weeks with no
+  // signal: test:affected never selects e2e specs. This keeps the two in step.
+  it("accepts the e2e framebuffer stand-in the Playwright fixtures alias @novnc/novnc to", async () => {
+    const { default: FixtureRfb } = await import(
+      "../../e2e/__fixtures__/desktop-render-rfb"
+    );
+    expect(() =>
+      kasmvncRfbClass(FixtureRfb as unknown as typeof RFB),
+    ).not.toThrow();
+  });
 });

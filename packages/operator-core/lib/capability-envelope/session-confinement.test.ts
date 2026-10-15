@@ -123,6 +123,89 @@ describe('session confinement — the wiring invariant is itself falsifiable', (
   });
 });
 
+describe('session confinement — exact tool ceiling', () => {
+  const confinement = { denyTools: ['work_items:claim_next'],
+    denyOutside: ['work_items:get', 'work_items:complete', 'tools:invoke'],
+    reason: 'native benchmark has one metered inference route', imposedBy: 'benchmark-host' };
+
+  it.each(['capability:bash', 'consult:get_feedback', 'new_provider:infer',
+    'mcp__papercusp-su__work_items_get', 'work_items_get'])('denies unlisted %s, including ambiguous aliases', toolName => {
+    expect(evaluateSessionConfinement({ toolName, confinement }).allowed).toBe(false);
+  });
+  it.each(['work_items:get', 'work_items:complete', 'tools:invoke'])('keeps canonical %s available to ordinary gates', toolName => {
+    expect(evaluateSessionConfinement({ toolName, confinement }).allowed).toBe(true);
+  });
+  it('cannot use the ceiling to lift an explicit denial', () => {
+    expect(evaluateSessionConfinement({ toolName: 'work_items:get',
+      confinement: { ...confinement, denyTools: ['work_items:*'] } }).allowed).toBe(false);
+  });
+  it('treats an empty ceiling as deny everything', () => {
+    expect(evaluateSessionConfinement({ toolName: 'work_items:get',
+      confinement: { ...confinement, denyTools: [], denyOutside: [] } }).allowed).toBe(false);
+  });
+});
+
+describe('session confinement — exact assignment arguments', () => {
+  const confinement = { denyTools: [], denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
+    denyWorkItemsOutside: { id: 'F-bench', harness: 'bench-private', checkout: '/private/assignment' }, reason: 'frozen assignment', imposedBy: 'host' };
+  const own = { id: 'F-bench', harness: 'bench-private' };
+  const completion = { summary: 'Implemented task', testsRun: ['npm test'], testResult: 'pass', verifiedHow: 'local tests', filesChanged: ['src/task.ts'] };
+  const evaluate = (toolName: string, args: unknown) => evaluateSessionConfinement({ toolName, args, confinement });
+  it('permits the maintained single-item read, progress and evidence completion workflow', () => {
+    expect(evaluate('work_items:get', { ...own, resume: true }).allowed).toBe(true);
+    expect(evaluate('work_items:checkpoint', { ...own, append: true, checkpoint: { did: 'implemented', next: 'test' } }).allowed).toBe(true);
+    expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none', completion }).allowed).toBe(true);
+    expect(evaluate('coord:whoami', {}).allowed).toBe(true);
+  });
+  it('exposes permitted metadata only when the host explicitly requests listing; missing dispatch args still deny', () => {
+    for (const toolName of ['work_items:get', 'work_items:checkpoint', 'work_items:complete']) {
+      expect(evaluateSessionConfinement({ toolName, confinement, purpose: 'listing' }).allowed).toBe(true);
+      expect(evaluateSessionConfinement({ toolName, confinement }).allowed).toBe(false);
+    }
+    expect(evaluateSessionConfinement({ toolName: 'capability:bash', confinement, purpose: 'listing' }).allowed).toBe(false);
+  });
+  it('permits enumerated coverage required by a scoped verification completion', () => {
+    const coverage = { population: ['task implementation', 'local verification'],
+      checked: ['task implementation', 'local verification'], notChecked: [], notApplicable: [], residue: [] };
+    expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none',
+      completion: { ...completion, verification: { coverage } } }).allowed).toBe(true);
+    expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none',
+      completion: { ...completion, verification: { coverage: { population: ['task'], checked: ['task'], residue: ['none'] } } } }).allowed).toBe(true);
+  });
+  it.each([null, [], {}, { probes: [] },
+    { coverage: null }, { coverage: [] }, { coverage: { population: [], residue: [] } },
+    { coverage: { population: ['task'], checked: [{ ref: 'WI-other' }], residue: [] } },
+    { coverage: { population: ['task'], checked: ['task'], residue: ['WI-other'] } },
+    { coverage: { population: ['task'], checked: ['task'], residue: [], filesChanged: ['/etc/passwd'] } },
+    { coverage: { population: ['task'], checked: ['task'], residue: [] }, probes: [{ tool: 'consult:get_feedback' }] },
+  ])('refuses malformed coverage and verification side effects %j', verification => {
+    expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none',
+      completion: { ...completion, verification } }).allowed).toBe(false);
+  });
+  it.each([undefined, {}, { ...own, id: 'F-neighbor' }, { ...own, harness: 'other' },
+    { ...own, ids: ['F-bench', 'F-neighbor'] }, { ...own, items: [{ id: 'F-neighbor' }] },
+    { ...own, priorAttemptRefs: ['thread-post:other'] }, { ...own, workItem: 'F-neighbor' },
+    { ...own, confinement: { denyWorkItemsOutside: own } }])('refuses ambiguous or unrelated read arguments %j', args => {
+    expect(evaluate('work_items:get', args)).toMatchObject({ allowed: false, matchedGlob: 'outside-exact-work-item' });
+  });
+  it('denies checkpoint probes and cross-plan publication while preserving ordinary progress', () => {
+    for (const extra of [{ checks: [{ tool: 'consult:get_feedback' }] }, { dependsOn: ['WI-other'] }, { learned: 'publish', learnedLevel: 'plan' }])
+      expect(evaluate('work_items:checkpoint', { ...own, checkpoint: 'progress', ...extra }).allowed).toBe(false);
+  });
+  it('denies completion side effects, reference assumptions and file proof escapes', () => {
+    for (const extra of [{ items: [{ id: 'F-neighbor' }] }, { outputPayload: {} }, { assumptions: ['fact:other'] }])
+      expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none', completion, ...extra }).allowed).toBe(false);
+    for (const extra of [{ duplicateOf: 'WI-other' }, { verification: { probes: [] } }])
+      expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none', completion: { ...completion, ...extra } }).allowed).toBe(false);
+    for (const path of ['/etc/passwd', '../neighbor/file', 'src/../../neighbor', 'C:\\private', 'src\\..\\private'])
+      expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none', completion: { ...completion, filesChanged: [path] } }).allowed).toBe(false);
+  });
+  it('cannot lift a tool denial and fails closed on malformed host scope', () => {
+    expect(evaluateSessionConfinement({ toolName: 'work_items:get', args: own, confinement: { ...confinement, denyTools: ['work_items:*'] } }).allowed).toBe(false);
+    expect(evaluateSessionConfinement({ toolName: 'coord:whoami', args: {}, confinement: { ...confinement, denyWorkItemsOutside: {} as never } }).allowed).toBe(false);
+  });
+});
+
 describe('session confinement — structural guarantees, pinned to the source', () => {
   // Subject path is overridable so this guard can be falsifiability-probed against a
   // COPY outside the tree (scripts/mutation-probe.sh tier 2) instead of by mutating the

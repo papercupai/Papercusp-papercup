@@ -18,10 +18,49 @@ import {
   lensWeightRowsFromReport,
   samplingWeightsWithFloor,
   winCredit,
+  outcomeOfWorkItemTag,
+  workItemOutcomeTag,
   SAMPLING_FLOOR_FRACTION,
   type RoutedIdeaProvenance,
   type ScoutOutcomeReaders,
 } from './outcome-feedback';
+
+describe('workItemOutcomeTag (WI-10007390)', () => {
+  const tag = (status: string, over: Partial<Parameters<typeof workItemOutcomeTag>[0]> = {}) =>
+    workItemOutcomeTag({ status, terminalOwner: 'su-x', triageRejected: false, ...over });
+
+  it('a winning status is a win, with or without a terminal owner (status is the fate)', () => {
+    for (const s of ['done', 'passed', 'resolved', 'closed']) {
+      expect(outcomeOfWorkItemTag(tag(s))).toBe('won');
+    }
+    expect(outcomeOfWorkItemTag(tag('Done', { terminalOwner: null }))).toBe('won');
+  });
+
+  it('a hygiene close or a triage reject is a loss, though `closed` is a winning status', () => {
+    expect(tag('closed', { terminalOwner: 'improvement-hygiene' })).toBe('rejected');
+    expect(tag('done', { triageRejected: true })).toBe('rejected');
+    expect(outcomeOfWorkItemTag('rejected')).toBe('lost');
+  });
+
+  it('dropped / deprecated are losses', () => {
+    expect(outcomeOfWorkItemTag(tag('dropped'))).toBe('lost');
+    expect(outcomeOfWorkItemTag(tag('deprecated', { terminalOwner: 'improvement-hygiene' }))).toBe('lost');
+  });
+
+  it('a live status settles nothing', () => {
+    expect(tag('open')).toBeNull();
+    expect(tag('wip')).toBeNull();
+    expect(outcomeOfWorkItemTag(null)).toBeNull();
+  });
+
+  it('classifyIdeaOutcome reads the rejected tag back as lost', () => {
+    const prov: RoutedIdeaProvenance = { ideaId: 'i1', lens: CREATIVE_LENSES[0], rail: 'improvement', routedRef: 'wi:EI-1' };
+    const entry: ChangeFeedEntry = { id: 'wi:EI-1', kind: 'completion', title: 'Closed: EI-1', detail: 'Status: rejected', ref: 'wi:EI-1', ts: '2026-10-01T00:00:00.000Z' };
+    expect(classifyIdeaOutcome(prov, new Map([[entry.ref, entry]]))).toBe('lost');
+    const won: ChangeFeedEntry = { ...entry, detail: 'Status: done', title: 'Completed: EI-1' };
+    expect(classifyIdeaOutcome(prov, new Map([[won.ref, won]]))).toBe('won');
+  });
+});
 
 function prov(p: Partial<RoutedIdeaProvenance> & { lens: CreativeLens; routedRef: string }): RoutedIdeaProvenance {
   return { ideaId: p.ideaId ?? `idea-${p.routedRef}`, rail: p.rail ?? 'improvement', ...p };
@@ -134,14 +173,15 @@ describe('Scout outcome-feedback (P-013 / D-009)', () => {
       );
     });
 
-    it("a LEGACY shared gym ref (gym:SP-NNN) classifies 'pending' even with a feed entry — D-003, the 80%-poisoned-outcomes exclusion", () => {
+    it("a LEGACY shared gym ref (gym:SP-NNN) classifies 'unresolvable' even with a feed entry — D-003 exclusion, P-002 (scout-su-ideate-pipeline-gaps-2026-10-08) label", () => {
       const poisoned = new Map([
         ['gym:SP-001', entry({ ref: 'gym:SP-001', kind: 'proposal', detail: 'Status: accepted' })],
       ]);
-      // The frozen verdict is RIGHT THERE in the feed — and must not join.
+      // The frozen verdict is RIGHT THERE in the feed — and must not join. Its true
+      // per-idea outcome is unknowable, so it is unresolvable, not 'pending'.
       expect(
         classifyIdeaOutcome(prov({ lens: 'analogical', routedRef: 'gym:SP-001', rail: 'gym' }), poisoned),
-      ).toBe('pending');
+      ).toBe('unresolvable');
       // CONTROL: a batch-stamped id (the post-fix recombine format) still joins.
       const stamped = new Map([
         ['gym:SP-mekkv1x2-001', entry({ ref: 'gym:SP-mekkv1x2-001', kind: 'proposal', detail: 'Status: accepted' })],

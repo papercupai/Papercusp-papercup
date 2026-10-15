@@ -12,7 +12,7 @@
  *   - Concurrent 'deny' rejects second caller with code:'conflict'
  */
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { z } from 'zod';
 import {
   __resetRegistryForTests,
@@ -30,6 +30,7 @@ const ctx = (overrides: Partial<CommandContext> = {}): CommandContext => ({
 });
 
 beforeEach(() => __resetRegistryForTests());
+afterEach(() => vi.unstubAllGlobals());
 
 describe('runCommand basics', () => {
   it('returns unknown for an unregistered id', async () => {
@@ -129,6 +130,28 @@ describe('runCommand basics', () => {
 });
 
 describe('browser-requirement gate', () => {
+  it.each(['palette', 'shortcut'] as const)(
+    'allows a local %s command before voice assigns a session ID',
+    async (agent) => {
+      vi.stubGlobal('window', { sessionStorage: { getItem: () => null } });
+      const handler = vi.fn(() => ({ path: '/settings/shortcuts' }));
+      register({
+        id: 'nav.settings-shortcuts',
+        kind: 'command',
+        description: 'Open keyboard shortcuts',
+        schema: z.object({}),
+        agents: ['palette', 'shortcut'],
+        browser: 'required',
+        tier: 'reflexive',
+        handler,
+      });
+
+      const result = await runCommand('nav.settings-shortcuts', {}, ctx({ agent }));
+      expect(result).toEqual({ ok: true, value: { path: '/settings/shortcuts' } });
+      expect(handler).toHaveBeenCalledOnce();
+    },
+  );
+
   it("rejects browser:'required' commands when ctx has no sessionId", async () => {
     register({
       id: 'panel.toggle',

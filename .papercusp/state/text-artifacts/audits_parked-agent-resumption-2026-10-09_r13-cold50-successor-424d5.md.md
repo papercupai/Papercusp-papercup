@@ -1,0 +1,7 @@
+---
+rel_path: "audits/parked-agent-resumption-2026-10-09/r13-cold50-successor-424d5.md"
+updated_at: 1791988156961
+_body: "content"
+---
+
+Cold50: verify coord:whoami first, then use matching complete recovery without reorient. Same SELF/AUTO/P013/account/cold. New dossier r13-cold50-original018-dated-control-custody-424d5.json references five exact-readback artifacts. Recorded wake23766617 at02:52:57 repeats independent row89, wake572850; delivery/pickup NOT proven (commentary corrected). Self/selected external MCP after02:38 throughcutoff0 positivecontrol35083319; corrected audit0 with positivecontrol, audit units Date.now milliseconds. Failed SQL22P02 saved; observation EI25965124557912473 is caller-only, not platform fault. user-frame locator122 includes111tool-result rows;11text=3instructions+3environment+5wake/recovery. Original018 final16:00:36.515 custody remainsreview-open; no universal stop/control/assignment absence. Preserve Cold45four-worked_by rows (no direction), Cold49earlier checkpoint.116/113accepted/24unresolved/eligibility0/continuity0/outcomes0 unchanged. Next original018 fullhold/applicablecontrols + other110 before wholeeligibilityfreeze/outcomes. Preserve R5/root961/R12/allfinalfix-runtime/actual>=24hR14. No sourceedit/tests/acquisition/replay/restore/route/account/gateops/terminalclose. Preserve six original narratives/hashes/checks and12loopchecks. Context192450/220000; clean managedcompaction now.

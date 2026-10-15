@@ -104,13 +104,18 @@ def configure_anthropic_env(inp: dict) -> str:
     key = os.environ.get(key_env) or ("sk-gateway-routed" if base_url else "")
     if key:
         os.environ["ANTHROPIC_API_KEY"] = key
-    return inp.get("model") or "claude-opus-4-8"
+    model = (inp.get("model") or "").strip()
+    if not model:
+        # R-9: the TS driver resolves the evaluated model from the pinned model-registry snapshot and passes
+        # it; a framework never falls back to a hard-coded id (a silent default would mislabel the arm).
+        raise ValueError("competitor input is missing 'model' (the registry-resolved evaluated model id)")
+    return model
 
 
 def thinking_config(inp: dict) -> tuple[int, int]:
     """
-    The xhigh extended-thinking realization: returns (budget_tokens, max_tokens). Every arm runs
-    claude-opus-4-8 @ xhigh; for the raw-API frameworks that means extended thinking at `budget_tokens`
+    The xhigh extended-thinking realization: returns (budget_tokens, max_tokens). Every arm runs the same
+    registry-resolved model @ xhigh; for the raw-API frameworks that means extended thinking at `budget_tokens`
     (the `--effort xhigh` equivalent — the claude CLI owns the canonical mapping, so the budget is supplied
     by the TS driver and confirmed with the owner). max_tokens must exceed the thinking budget.
     """

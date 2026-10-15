@@ -290,6 +290,20 @@ export function transitionsFrom(from: CompletionAuthorityFrom, by?: CompletionAu
 }
 
 /**
+ * Terminal states that settle a work-item WITHOUT claiming that code landed: the
+ * abandonment closes. Their disposition is recorded in `terminal_completion_ref`, never
+ * in structured completion evidence, so a reader must not demand verification evidence
+ * from them. Single source for `work_items:complete`'s abandoned-close rule and the
+ * burn-down cohort audit (WI-6554700010008454).
+ */
+export const ABANDONMENT_CLOSE_STATES: ReadonlySet<string> = new Set(['closed', 'deprecated', 'dropped']);
+
+/** Is `state` an abandonment close (see {@link ABANDONMENT_CLOSE_STATES})? Case/space-insensitive. */
+export function isAbandonmentCloseState(state: string | null | undefined): boolean {
+  return ABANDONMENT_CLOSE_STATES.has(String(state ?? '').trim().toLowerCase());
+}
+
+/**
  * Does a terminal row count toward burn-down, claimable-drain, and "done" in a leader
  * brief?
  *
@@ -385,6 +399,7 @@ export function reconcileStampedAuthority(input: {
   const contentIdentityDowngrade =
     input.inProcessContentIdentityMissing ||
     (stampedAuthority === 'proposed' &&
+      input.computed === 'committed' &&
       input.authorityByEvidence === 'committed' &&
       input.declaredFilesCount > 0);
   return {

@@ -4,12 +4,21 @@
 // seams (PAPERCUSP_INTEGRATION_ROOT / _RELEASE_ROOT / _RELEASE_REF / _BRANCH)
 // the live host sets, so the "N commits behind main" maths is verified end-to-end.
 
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { classifyCommitRefFailure, devDeployState, resetDevDeployStateCache } from './dev-deploy-state';
+import {
+  classifyCommitRefFailure,
+  DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS,
+  DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS,
+  devDeployState,
+  resetDevDeployStateCache,
+  runDevDeployGitBatch,
+  type DevDeployGitBatchDeps,
+} from './dev-deploy-state';
+import { getSidecarBreakerState, getSidecarFallbackStats, noteSidecarDeadlineFallback, resetSidecarFallbackStatsForTest } from './fleet/git-via-sidecar';
 
 function git(repo: string, args: string[]): string {
   return execFileSync('git', ['-C', repo, ...args], {
@@ -166,6 +175,76 @@ describe('devDeployState', () => {
     }
   });
 
+  it('routes verified read-only batches through the bounded sidecar and parses its frames', async () => {
+    const commands = [{ repo: integration, args: ['log', '-1', '--format=%H%n%ct%n%s', 'main^{commit}'] }];
+    const viaSidecar: NonNullable<DevDeployGitBatchDeps['viaSidecar']> = async (command, args, options) => {
+      expect(command).toBe('sh');
+      expect(options.timeoutMs).toBe(DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS);
+      expect(options.rpcTimeoutMs).toBe(DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS);
+      expect(options.signal).toBeUndefined();
+      const nonce = args[3]!;
+      return { code: 0, stdout: `sidecar-head\n\u0000${nonce} o0 0\u0000\u0000${nonce} e0 0\u0000`, stderr: '' };
+    };
+    const localBatch = vi.fn(async () => []);
+
+    const result = await runDevDeployGitBatch(commands, true, {
+      sidecarEnabled: () => true,
+      viaSidecar,
+      localBatch,
+    });
+
+    expect(result).toEqual([{ code: 0, stdout: 'sidecar-head\n', stderr: '' }]);
+    expect(localBatch).not.toHaveBeenCalled();
+  });
+
+  it('keeps the diagnostic RPC alive through the production ten-second child teardown', () => {
+    expect(DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS).toBeGreaterThan(
+      DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS + 10_000,
+    );
+    expect(DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS).toBeLessThan(35_000);
+  });
+
+  it('counts a sidecar batch deadline miss without tripping the breaker, then falls back locally', async () => {
+    const commands = [{ repo: integration, args: ['log', '-1', '--format=%H%n%ct%n%s', 'main^{commit}'] }];
+    const viaSidecar: NonNullable<DevDeployGitBatchDeps['viaSidecar']> = vi.fn(async () => ({
+      code: -1,
+      stdout: '',
+      stderr: `sh timed out after ${DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS}ms — killed by the spawner sidecar guard`,
+    }));
+    const localResult = [{ code: 0, stdout: 'local-head', stderr: '' }];
+    const localBatch = vi.fn(async () => localResult);
+    const noteDeadlineFallback = vi.fn();
+    const noteFallback = vi.fn();
+
+    const result = await runDevDeployGitBatch(commands, true, {
+      sidecarEnabled: () => true,
+      viaSidecar,
+      localBatch,
+      noteDeadlineFallback,
+      noteFallback,
+    });
+
+    expect(result).toEqual(localResult);
+    expect(localBatch).toHaveBeenCalledTimes(1);
+    expect(noteDeadlineFallback).toHaveBeenCalledWith('dev-deploy', expect.any(Error));
+    expect(noteFallback).not.toHaveBeenCalled();
+  });
+
+  it('keeps non-matching batches local even when the caller enables the sidecar', async () => {
+    const commands = [{ repo: integration, args: ['log', '-1', '--output=/tmp/unsafe', 'HEAD'] }];
+    const viaSidecar: NonNullable<DevDeployGitBatchDeps['viaSidecar']> = vi.fn();
+    const localResult = [{ code: 0, stdout: 'local-only', stderr: '' }];
+    const localBatch = vi.fn(async () => localResult);
+
+    expect(await runDevDeployGitBatch(commands, true, {
+      sidecarEnabled: () => true,
+      viaSidecar,
+      localBatch,
+    })).toEqual(localResult);
+    expect(viaSidecar).not.toHaveBeenCalled();
+    expect(localBatch).toHaveBeenCalledTimes(1);
+  });
+
   it('computes the "behind" distances correctly', async () => {
     const st = await devDeployState();
     // main = A→B→C. deployed=A → 2 behind main (B, C). ready=B → 1 behind main (C).
@@ -318,6 +397,24 @@ describe('devDeployState', () => {
         git(integration, ['reset', '-q', '--hard', shaC]);
       }
     });
+  });
+});
+
+describe('sidecar deadline fallback accounting', () => {
+  it('keeps deadline misses visible without adding a shared breaker failure', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resetSidecarFallbackStatsForTest();
+    try {
+      noteSidecarDeadlineFallback('dev-deploy', new Error('deadline exceeded'), 1_000);
+      expect(getSidecarFallbackStats()).toMatchObject({
+        total: 1,
+        bySubsystem: { 'dev-deploy': { count: 1, lastReason: 'deadline exceeded' } },
+      });
+      expect(getSidecarBreakerState(1_000)).toMatchObject({ state: 'closed', consecutiveFailures: 0, trips: 0 });
+    } finally {
+      warn.mockRestore();
+      resetSidecarFallbackStatsForTest();
+    }
   });
 });
 

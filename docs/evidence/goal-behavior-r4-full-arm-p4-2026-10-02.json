@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-4 matched live trial: full arm window 4 on goal 60d3a8 (goal-agent-behavior-feedback-2026-09-06#D-063)",
+  "framework": "operational",
+  "command": [
+    "sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-F|", "-c",
+    "WITH a AS (SELECT id, owner_id, created_at, tool_use_id LIKE '%:window-orphan:%' orphan, detail->'goalPlacementTurnEnd' g FROM harness_shared.agent_activity WHERE workspace_id='papercusp-workspace' AND tool_use_id LIKE 'goal-placement-turn-end:%' AND detail->'goalPlacementTurnEnd'->>'goalId'='work-on-everything-fresh-grading-and-improvement-60d3a8' AND created_at > '2026-10-02T12:31:30.496Z' AND created_at <= '2026-10-02T14:11:54.426Z') SELECT coalesce(r->>'status','<norows>') st, orphan, owner_id LIKE 'su-9ec5d030%' holder, count(*) FROM a LEFT JOIN LATERAL jsonb_array_elements(coalesce(g->'rows','[]')) r ON true GROUP BY 1,2,3 ORDER BY 1,2;"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T19:53:37.737Z",
+  "finishedAt": "2026-10-02T19:53:37.841Z",
+  "summary": "Live behavioral trial of the goal brief on the real 60d3a8 GOAL holder. With behaviorArm=full (opened 12:31:30.496Z), holder su-9ec5d030 placed the worklist plan hud-orders-instant-load-2026-09-13 as a plan fleet at 14:11:54.426Z after 1 valid due placement-turn-end row (8 rows total: due 1 valid + 1 window-orphan, blocked 2, unknown 3 + 1 orphan). The baseline arm (D-061) was censored after 4 valid due rows with no placement. Prior arms: full p1 placed after 10, brief-only after 7, full p3 after 3.",
+  "observed": {
+    "censusRows": [
+      "blocked|f|t|2",
+      "due|f|t|1",
+      "due|t|t|1",
+      "unknown|f|t|3",
+      "unknown|t|t|1"
+    ],
+    "placement": {
+      "agentFleet": "papercusp-hud-orders-instant-load-2026-09-13-plan-fleet",
+      "createdAt": "2026-10-02T14:11:54.426Z",
+      "owner": "su-9ec5d030-11ff-4168-b2f9-013c71e60fac",
+      "leader": "su-dccaf330-231a-431c-ac40-191a0cc2b9c9",
+      "toolInvocationId": 31298800,
+      "toolInvocationStatus": "ok"
+    }
+  },
+  "assertions": [
+    {
+      "id": "holder-placed-under-full-arm",
+      "passed": true,
+      "evidence": "agent_fleets row papercusp-hud-orders-instant-load-2026-09-13-plan-fleet created 14:11:54.426Z, owned by the 60d3a8 holder su-9ec5d030, produced by that holder's own fleet:launch-on-plan call (tool_invocations 31298800, status ok), re-queried by su-cf569f3f at 19:5xZ."
+    },
+    {
+      "id": "census-reproduces",
+      "passed": true,
+      "evidence": "The bounded census above reproduces su-32d1b8df's WI-10003890 comment 1156150 counts exactly: 1 valid due row before placement."
+    },
+    {
+      "id": "baseline-contrast",
+      "passed": true,
+      "evidence": "Baseline arm (goal-agent-behavior-feedback-2026-09-06#D-061) censored after 4 valid due rows with no placement; the full arm placed after 1."
+    }
+  ],
+  "limitations": [
+    "Brief delivery into su-9ec5d030's context in this window was not transcript-verified.",
+    "One placement event per arm: directional evidence, not an effect size.",
+    "After 14:58Z there were 12 holder elections; those rows are context, not the result (window closes on first placement per D-061)."
+  ]
+}

@@ -29,11 +29,12 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { fileURLToPath } from 'node:url';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   SUBSTRATE_OUTBOX_DDL,
-  USER_TRUST_LIST_DDL,
+  applyClaimPathReadDeps,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
@@ -52,7 +53,7 @@ vi.mock('../workspace-registry', async () => {
 
 const { aggregateIssueClaimExclusions, listIssueClaimableRows } = await import('./get-next');
 const { claimNextIssueWorkItem, claimNextWorkItem, claimWorkItem } = await import('../work-items');
-const { STOP_THE_LINE_RED_HOURS } = await import('../work-items-admission');
+const { STOP_THE_LINE_RED_HOURS, stopTheLineExclusionSql } = await import('../work-items-admission');
 
 const H = 'papercup';
 const H2 = 'other-harness';
@@ -96,9 +97,14 @@ beforeAll(async () => {
   db = await createFreshPgDb('stop-the-line-floor');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // Use the production singleton index for the probe-plan recurrence guard.
+  await applyMigrationForTest(
+    db.sql,
+    fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/741-work-items-condition-key-singleton.sql', import.meta.url)),
+  );
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(SUBSTRATE_OUTBOX_DDL).simple();
-  await db.sql.unsafe(USER_TRUST_LIST_DDL).simple();
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
   // The explicit by-id assertion auto-subscribes the gate fixer to the item.
   await ensureCoordCapabilityTables(db.sql);
   await db.sql
@@ -128,6 +134,39 @@ const AGE_ACTIVE = (STOP_THE_LINE_RED_HOURS + 1) * HOUR_MS; // 25h — over the 
 const AGE_FRESH = (STOP_THE_LINE_RED_HOURS - 1) * HOUR_MS; // 23h — under it
 
 describe('P-013/D-012 — stop-the-line claim floor', () => {
+  it('bounds both family probes by the complete condition singleton key', async () => {
+    // Many unrelated conditions made the old correlated row-expression scan the
+    // whole harness thousands of times before returning a scheduler candidate.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, origin,
+         created_ts, updated_ts, title, condition_key)
+      SELECT ${WS}, ${H}, 'WI-NOISE-' || n, 'task', 'open', 'local', 0, 0,
+             'unrelated condition', 'unrelated:' || n
+        FROM generate_series(1, 4000) n`;
+    await seedRow('WI-CANDIDATE', { itemKind: 'change' });
+    await seedRow('F-CANDIDATE', { itemKind: 'feature' });
+    await db.sql`ANALYZE harness_shared.work_items`;
+
+    type PlanNode = { Alias?: string; 'Index Cond'?: string; Plans?: PlanNode[] };
+    const nodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(nodes)];
+    for (const context of ['issue-wi', 'feature-consolidated'] as const) {
+      const relation = context === 'issue-wi'
+        ? db.sql`harness_shared.work_items wi`
+        : db.sql`harness_shared.harness_features_consolidated`;
+      const id = context === 'issue-wi' ? 'WI-CANDIDATE' : 'F-CANDIDATE';
+      const rows = await db.sql<{ 'QUERY PLAN': { Plan: PlanNode }[] }[]>`
+        EXPLAIN (FORMAT JSON)
+        SELECT feature_id, ${stopTheLineExclusionSql(db.sql, context)} AS survives
+          FROM ${relation}
+         WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = ${id}`;
+      const probes = nodes(rows[0]['QUERY PLAN'][0].Plan).filter((node) => node.Alias === 'stl');
+      expect(probes, context).toHaveLength(1);
+      // Assert the indexed bound rather than a wall-clock limit or planner cost.
+      expect(probes[0]['Index Cond'], context).toContain('condition_key =');
+    }
+  });
+
   it('PREVIEW: >24h open red-streak throttles non-repair rows, exempts bugs + alarm conditions', async () => {
     await seedRedStreakCondition({ ageMs: AGE_ACTIVE });
     await seedRow('WI-CHANGE', { itemKind: 'change' });

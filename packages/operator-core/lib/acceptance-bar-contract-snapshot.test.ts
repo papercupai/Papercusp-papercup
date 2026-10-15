@@ -7,6 +7,7 @@ import {
   ACCEPTANCE_BAR_SNAPSHOT_PLAN_ITEM_LIMIT,
   ACCEPTANCE_BAR_SNAPSHOT_SCORECARD_LIMIT,
   diffAcceptanceBarContractSnapshots,
+  nextRepair,
   projectAcceptanceBarContractSnapshot,
   readAcceptanceBarContractSnapshot,
   type AcceptanceBarContractSnapshotInput,
@@ -28,11 +29,13 @@ import {
 import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import type { ScorecardRow } from './scorecards';
 import { evaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
+import { evaluateSpecTestAdequacy } from './agent-tools/plans/spec-test-adequacy';
 import {
   BAR_READINESS_NOW_MARK,
   reevaluateBarReadinessOnScopeWrite,
   stampBarReadinessNowBlock,
 } from './agent-tools/plans/plan-scope-cascade';
+import { buildAmendmentReviewBrief } from './consult/acceptance-bar-amendment-review';
 
 const iso = '2026-09-04T12:00:00.000Z';
 
@@ -281,9 +284,75 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
   };
 }
 
+function currentRegisteredTestEvidence(
+  base: AcceptanceBarEvidenceSource,
+  filePath: string,
+  testRunId: number,
+): AcceptanceBarEvidenceSource {
+  return {
+    ...base,
+    id: testRunId,
+    evidenceKind: 'test',
+    evidenceRef: `test-run:${testRunId}:${filePath}`,
+    testRunId,
+    fingerprints: {
+      sourceFingerprint: 'source-current',
+      testFingerprint: `test-${testRunId}`,
+      fixtureFingerprint: `fixture-${testRunId}`,
+      rubricFingerprint: `rubric-${testRunId}`,
+      environmentFingerprint: `environment-${testRunId}`,
+    },
+    testRunProvenance: { filePath, commitSha: 'abc123', worktreeDirty: false },
+    testRunExecution: {
+      status: 'pass',
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer: 'integration',
+      filePath,
+      passedCaseTitles: [`source-bar-check-${testRunId}`],
+    },
+    details: {
+      evidencePlane: 'tree',
+      adequacy: {
+        testLayer: 'integration',
+        pathReachable: true,
+        fixtureCalibrated: true,
+        falsifiable: true,
+        oracleIndependent: true,
+        collected: true,
+        skipped: false,
+        executed: true,
+        outcome: 'passed',
+        targeted: base.specId,
+        testCases: [`source-bar-check-${testRunId}`],
+      },
+    },
+    currentness: {
+      ...base.currentness,
+      overall: 'current',
+      comparisonSupplied: true,
+      dimensions: {
+        ...base.currentness.dimensions,
+        source: 'current',
+        test: 'current',
+        fixture: 'current',
+        rubric: 'current',
+        environment: 'current',
+        testRun: 'current',
+      },
+      staleReasons: [],
+      unknownReasons: [],
+    },
+  } as unknown as AcceptanceBarEvidenceSource;
+}
+
 function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
   const input = fixture(n);
   const rubric = input.rubrics.rows[0]!;
+  const proofTestPath = 'packages/operator-core/lib/bar-proof-fixture.test.ts';
+  const proofCaseTitle = (index: number) => 'bar-proof-case-' + (index + 1);
   for (const criterion of rubric.criteria) {
     criterion.requiredTestLayers = ['integration'];
     criterion.check = { kind: 'instrument', instrumentKey: 'none' };
@@ -297,35 +366,113 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     clause.sourceBar!.barHash = rubric.criteria[index]!.barHash!;
     clause.sourceBar!.barSetHash = barSetHash;
   });
-  for (const evidence of input.evidence.rows) {
+  input.evidence.rows.forEach((evidence, index) => {
+    const caseTitle = proofCaseTitle(index);
     evidence.currentness = { ...evidence.currentness, overall: 'current', comparisonSupplied: true,
       dimensions: { ...evidence.currentness.dimensions, source: 'current' }, unknownReasons: [] };
+    evidence.fingerprints = { ...evidence.fingerprints,
+      testFingerprint: 'test-fingerprint-' + (index + 1),
+      fixtureFingerprint: 'fixture-fingerprint-' + (index + 1),
+    };
     evidence.details = { evidencePlane: 'tree', adequacy: { testLayer: 'integration', pathReachable: true,
-      falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
-      outcome: 'passed', coverageRungs: { l3: true } } };
-  }
+      fixtureCalibrated: true, falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
+      outcome: 'passed', targeted: evidence.specId, testCases: [caseTitle] } };
+    // Since 39ce2b4152 a counterexample proves falsifiability only when its run's test file
+    // also carries this clause's current passing `test` binding (clauseBoundCurrentTests pairs
+    // them by testRunProvenance.filePath). The counterexamples below spread this row, so each
+    // pairs with its own positive proof, as a real binding would (WI-10006871).
+    evidence.testRunProvenance = { filePath: proofTestPath,
+      framework: 'vitest', source: 'local', mutationPhase: null, commitSha: 'abc123', worktreeDirty: false };
+    evidence.testRunExecution = { status: 'pass', passed: 1, failed: 0, skipped: 0,
+      filePath: proofTestPath, collectionFailed: false, testLayer: 'integration', passedCaseTitles: [caseTitle] };
+  });
   // Falsifiability is demonstrated by an executed negative control, not by the
   // positive row's `falsifiable: true` self-attestation. Keep the logical
   // identity distinct from the recurrence row so the evaluator retains both.
-  input.evidence.rows.push(...input.evidence.rows.map((evidence, index) => ({
-    ...evidence,
-    id: input.evidence.rows.length + index + 1,
-    evidenceKind: 'counterexample' as const,
-    evidenceRef: `counterexample:${index + 1}`,
-    testRunId: input.evidence.rows.length + index + 1,
-    bindingFingerprint: `counterexample-binding-${index + 1}`,
+  const positiveEvidence = [...input.evidence.rows];
+  input.evidence.rows.push(...positiveEvidence.map((evidence, index) => {
+    const caseTitle = proofCaseTitle(index);
+    return {
+      ...evidence,
+      id: positiveEvidence.length + index + 1,
+      evidenceKind: 'counterexample' as const,
+      evidenceRef: 'counterexample:' + (index + 1),
+      coverageEvidenceRef: null,
+      testRunId: positiveEvidence.length + index + 1,
+      testRunProvenance: {
+        ...evidence.testRunProvenance!,
+        source: 'mutation-probe',
+        mutationPhase: 'mutant',
+        mutationFailedCaseTitles: [caseTitle],
+        mutationFailureLines: [caseTitle + ': the pre-fix behavior violates the expected outcome'],
+      },
+      testRunExecution: { status: 'fail' as const, passed: 0, failed: 1, skipped: 0,
+        filePath: proofTestPath, collectionFailed: false, testLayer: 'integration' },
+      bindingFingerprint: 'counterexample-binding-' + (index + 1),
+      details: {
+        evidencePlane: 'tree',
+        adequacy: {
+          fixtureCalibrated: true, testLayer: 'integration', pathReachable: true,
+          falsifiable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
+          targeted: evidence.specId, outcome: 'killed', testCases: [caseTitle],
+        },
+      },
+    };
+  }));
+  const firstCoverageRowId = input.evidence.rows.length + 1;
+  input.evidence.rows.push(...positiveEvidence.map((evidence, index) => ({
+    ...structuredClone(evidence),
+    id: firstCoverageRowId + index,
+    evidenceKind: 'coverage-census' as const,
+    evidenceRef: 'coverage-census:' + (index + 1),
+    coverageEvidenceRef: 100 + index,
     details: {
       evidencePlane: 'tree',
       adequacy: {
-        collected: true, skipped: false, executed: true,
-        targeted: evidence.specId.toLowerCase(), outcome: 'killed',
+        ...(evidence.details.adequacy as object),
+        targeted: evidence.specId,
+        coverageRungs: { l3: true },
       },
     },
+    bindingFingerprint: 'coverage-binding-' + (index + 1),
   })));
   return input;
 }
 
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  it('evaluates every structured tests check file even when requiredTestLayers is empty', () => {
+    const input = fixture(1);
+    const rubric = input.rubrics.rows[0]!;
+    const criterion = rubric.criteria[0]!;
+    const files = [
+      'packages/service/src/api.test.ts',
+      'packages/service/src/store.test.ts',
+    ];
+    criterion.requiredTestLayers = [];
+    criterion.check = { kind: 'tests', files };
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    input.clauses.rows[0]!.requiredTestLayers = [];
+    input.clauses.rows[0]!.sourceBar = {
+      ...input.clauses.rows[0]!.sourceBar!,
+      barHash: criterion.barHash!,
+      barSetHash,
+      rubricSlug: rubric.rubricId,
+      rubricRevision: rubric.revision!,
+      evidencePlane: 'tree',
+    };
+    const base = input.evidence.rows[0]!;
+    input.evidence.rows = files.map((file, index) => currentRegisteredTestEvidence(base, file, index + 1));
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    const adequacy = snapshot.bars[0]!.proof.adequacy;
+
+    expect(adequacy).toMatchObject({ checks: [{ verdict: 'unknown' }] });
+    expect(adequacy!.checks[0]!.wouldBlock).not.toContain('correct-layer');
+  });
+
   it.each([{ floor: [] }, { floor: ['integration'] }])('keeps a stricter clause current above the BAR test floor $floor', ({ floor }) => {
     const input = floor.length ? provedFixture(1) : fixture(1);
     input.clauses.rows[0]!.requiredTestLayers = [...floor, 'e2e'];
@@ -657,7 +804,54 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.readiness.workContract).toBe('stale');
   });
   it('projects exact source revisions, per-BAR trace, authoritative grading, and one content hash', () => {
-    const snapshot = projectAcceptanceBarContractSnapshot(provedFixture());
+    const input = provedFixture();
+    const adequacy = evaluateSpecTestAdequacy({
+      clause: input.clauses.rows[0]!,
+      evidence: input.evidence.rows,
+      classRef: 'plan-class-feature-ship',
+      harness: 'papercusp',
+      sourceBarTestRequirements: { status: 'not-required' },
+    });
+    expect(adequacy).toMatchObject({
+      requiredProofFloor: 'l3',
+      verdict: 'pass',
+      wouldBlock: [],
+      ratings: {
+        falsifiability: { rating: 'pass' },
+        'execution-integrity': { rating: 'pass' },
+      },
+    });
+    const coverageRows = input.evidence.rows.filter((row) => row.evidenceKind === 'coverage-census');
+    expect(coverageRows).toEqual(expect.arrayContaining(input.clauses.rows.map((clause) =>
+      expect.objectContaining({
+        specId: clause.specId,
+        coverageEvidenceRef: expect.any(Number),
+        details: expect.objectContaining({
+          adequacy: expect.objectContaining({ targeted: clause.specId, coverageRungs: { l3: true } }),
+        }),
+      }),
+    )));
+    const counterexampleRows = input.evidence.rows.filter((row) => row.evidenceKind === 'counterexample');
+    expect(counterexampleRows).toEqual(expect.arrayContaining(input.clauses.rows.map((clause, index) =>
+      expect.objectContaining({
+        specId: clause.specId,
+        testRunExecution: expect.objectContaining({
+          status: 'fail', passed: 0, failed: 1, collectionFailed: false,
+        }),
+        testRunProvenance: expect.objectContaining({
+          source: 'mutation-probe',
+          mutationPhase: 'mutant',
+          mutationFailedCaseTitles: ['bar-proof-case-' + (index + 1)],
+          mutationFailureLines: [
+            'bar-proof-case-' + (index + 1) + ': the pre-fix behavior violates the expected outcome',
+          ],
+        }),
+        details: expect.objectContaining({
+          adequacy: expect.objectContaining({ targeted: clause.specId, outcome: 'killed' }),
+        }),
+      }),
+    )));
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
 
     expect(snapshot).toMatchObject({
       schemaVersion: ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION,
@@ -691,7 +885,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]).toMatchObject({
       barKey: 'R-1',
       readiness: { state: 'ready', mapping: 'live', method: 'declared', workContract: 'current' },
-      proof: { state: 'current', currentEvidence: 2 },
+      proof: { state: 'current', currentEvidence: 3 },
       grading: { state: 'pass', scorecardId: 'SC-GRADE', rating: 'healthy' },
     });
   });
@@ -719,7 +913,10 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     const accepted = projectAcceptanceBarContractSnapshot(input);
     expect(accepted.bars[0]!.proof.adequacy?.state).toBe('pass');
     expect(evaluateAcceptanceBarLifecycle(accepted, 'ship').satisfied).toBe(true);
-    input.evidence.rows[0]!.details.adequacy = { ...(input.evidence.rows[0]!.details.adequacy as object), testLayer: 'unit' };
+    input.evidence.rows.filter((row) => row.testRunExecution?.status === 'pass').forEach((row) => {
+      row.details.adequacy = { ...(row.details.adequacy as object), testLayer: 'unit' };
+      row.testRunExecution = { ...row.testRunExecution!, testLayer: 'unit' };
+    });
     const blocked = projectAcceptanceBarContractSnapshot(input);
     expect(blocked.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('correct-layer');
     expect(evaluateAcceptanceBarLifecycle(blocked, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
@@ -883,7 +1080,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       .not.toContain('bar_snapshot_proof_depth_missing');
   });
 
-  it('requires proof depth when a live-plane BAR declares a tests check', () => {
+  it('requires current file proof when a live-plane BAR declares a tests check without layers', () => {
     const input = fixture(1);
     input.rubrics.rows[0]!.criteria[0]!.evidencePlane = 'live';
     input.rubrics.rows[0]!.criteria[0]!.check = {
@@ -895,7 +1092,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     const snapshot = projectAcceptanceBarContractSnapshot(input);
 
     expect(snapshot.bars[0]!.automatedProofRequired).toBe(true);
-    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_depth_missing');
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_inadequate');
   });
 
   // An EXPLICITLY manual BAR (check instrument:'none') must not carry an automated proof
@@ -933,7 +1130,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
   // ANTI-LOOPHOLE (both directions). The exemption is keyed to an explicit authored
   // instrument:'none'; an ordinary automated BAR keeps its floor, so this cannot become a
   // general way to skip proof depth.
-  it('still requires proof depth for a tree-plane BAR that declares a structured test check', () => {
+  it('requires current file proof for a tree-plane BAR that declares a structured test check without layers', () => {
     const input = fixture(1);
     input.rubrics.rows[0]!.criteria[0]!.check = {
       kind: 'tests',
@@ -942,7 +1139,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
 
     const snapshot = projectAcceptanceBarContractSnapshot(input);
 
-    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_depth_missing');
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_inadequate');
   });
 
   // FAILS CLOSED: an instrument:'none' criterion whose CLAUSE still declares an automated
@@ -979,15 +1176,19 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       evidencePlane: 'tree',
       adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'unit' },
     };
+    treeUnit.testRunExecution = { ...treeUnit.testRunExecution!, testLayer: 'unit' };
     const liveE2e = {
       ...treeUnit,
-      id: 2,
+      id: 99,
+      testRunId: 99,
       evidenceRef: 'test:e2e',
+      bindingFingerprint: 'binding-e2e',
       details: {
         evidencePlane: 'live',
         adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'e2e' },
       },
     };
+    liveE2e.testRunExecution = { ...treeUnit.testRunExecution!, testLayer: 'e2e' };
     input.evidence.rows = [treeUnit, liveE2e, ...input.evidence.rows.slice(1)];
 
     const snapshot = projectAcceptanceBarContractSnapshot(input);
@@ -1036,16 +1237,27 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     ['failed', { outcome: 'failed' }], ['self-oracle', { oracleIndependent: false }],
   ])('refuses %s proof even when the independent rating claims success', (_name, patch) => {
     const input = provedFixture(1);
-    input.evidence.rows[0]!.details.adequacy = { ...(input.evidence.rows[0]!.details.adequacy as object), ...patch };
+    input.evidence.rows.forEach((row) => {
+      if (_name === 'skipped' && row.evidenceKind !== 'test') return;
+      row.details.adequacy = { ...(row.details.adequacy as object), ...patch };
+      if (_name === 'skipped' && row.testRunExecution) {
+        // A binder's skipped bit is not canonical evidence. Measure the skip on
+        // test_runs and leave the declared case unaccounted for in passed titles.
+        row.testRunExecution = { ...row.testRunExecution, skipped: 1, passedCaseTitles: [] };
+      }
+    });
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     expect(snapshot.bars[0]!.grading.state).toBe('pass');
+    if (_name === 'skipped') {
+      expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('execution-integrity');
+    }
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
   });
 
   it('does not treat absent freshness comparisons as current proof', () => {
     const input = provedFixture(1);
-    input.evidence.rows[0]!.currentness = fixture(1).evidence.rows[0]!.currentness;
-    input.evidence.rows[1]!.currentness = fixture(1).evidence.rows[0]!.currentness;
+    const unknownCurrentness = fixture(1).evidence.rows[0]!.currentness;
+    input.evidence.rows.forEach((row) => { row.currentness = structuredClone(unknownCurrentness); });
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     expect(snapshot.bars[0]!.proof.adequacy?.checks[0]?.wouldBlock).toContain('freshness');
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(false);
@@ -1083,13 +1295,19 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
         return [pending, ...(result === 'pending' ? [] : [{ ...pending, id: n * 10 + 1, testRunId: n,
           details: { ...pending.details, evidencePlane: 'tree',
             testExecution: { ...pending.details.testExecution, phase: 'settled' },
-            adequacy: { ...(base.details.adequacy as object), outcome: result } } }])];
+            adequacy: { ...(base.details.adequacy as object), outcome: result } },
+          testRunExecution: result === 'failed'
+            ? { ...base.testRunExecution!, status: 'fail', passed: 0, failed: 1 }
+            : result === 'unknown'
+              ? null
+              : base.testRunExecution,
+        }])];
       };
       const old = makeAttempt(1, outcome === 'pass' ? 'unknown' : 'pass');
       const fresh = makeAttempt(2, outcome === 'stale' ? 'pass' : outcome);
       if (outcome === 'stale') fresh[1]!.currentness = { ...fresh[1]!.currentness, overall: 'stale',
         staleReasons: ['source-fingerprint-changed'] };
-      input.evidence.rows = [...old, ...fresh, input.evidence.rows[1]!];
+      input.evidence.rows = [...old, ...fresh, ...input.evidence.rows.slice(1)];
       if (outcome === 'pass') input.evidence.rows.push({ ...old[1]!, id: 99,
         evidenceKind: 'counterexample', evidenceRef: 'manual-negative-controls:old',
         currentness: { ...old[1]!.currentness, overall: 'stale', staleReasons: ['source-stale'] } });
@@ -1297,6 +1515,62 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
     expect(diff.changes).toEqual([
       expect.objectContaining({ barKey: 'R-1', kinds: ['method-only'], fields: ['method'] }),
     ]);
+  });
+
+  it('reports changed requirement intent in the amendment candidate diff', () => {
+    const input = fixture(1);
+    const before = projectAcceptanceBarContractSnapshot(input);
+    const rubric = input.rubrics.rows[0]!;
+    const changedCriterion = {
+      ...rubric.criteria[0]!,
+      intent: {
+        request: 'Keep the amended source lineage explicit.',
+        constraints: ['Preserve the acceptance contract.'],
+        rationale: 'New references are part of the signed BAR intent.',
+        sourceRefs: ['D-021 §1-3', 'D-024 §1-5', 'D-027 §1-5'],
+      },
+      method: 'Inspect the amended source references.',
+    };
+    changedCriterion.barHash = computeAcceptanceBarHash(changedCriterion);
+
+    const candidate = buildAcceptanceBarAmendmentCandidate(
+      before,
+      [changedCriterion],
+      new Map([['R-1', { planItemIds: ['P-001'] }]]),
+      new Map([['P-001', 'done']]),
+      {
+        rubricRevision: 3,
+        subjectPlanRevision: 8,
+        barSetHash: computeAcceptanceBarSetHash([changedCriterion]),
+        barContract: { ...rubric.barContract!, subjectPlanRevision: 8 },
+      },
+    );
+
+    const diff = diffAcceptanceBarContractSnapshots(before, candidate, 'amend');
+
+    expect(diff.changes).toEqual([
+      expect.objectContaining({
+        barKey: 'R-1',
+        kinds: ['bar-meaning', 'method-only'],
+        fields: ['intent', 'method'],
+      }),
+    ]);
+
+    const brief = buildAmendmentReviewBrief({
+      rubricRef: rubric.rubricId,
+      previewPostRef: 'thread-post:42',
+      preview: {
+        approval: {
+          schemaVersion: 1,
+          kind: 'acceptance-bar-approval',
+          rubricRef: rubric.rubricId,
+          bars: [{ barKey: 'R-1' }],
+        } as never,
+        changes: diff.changes,
+      },
+      patch: { criteria: [changedCriterion] },
+    });
+    expect(brief).toContain('Changed BARs: R-1 (bar-meaning+method-only: intent, method).');
   });
 
   it('names a required proof-layer change instead of reporting a hash-only BAR amendment', () => {
@@ -1723,5 +1997,111 @@ describe('blocking BARs carry their contract kind (P-038 guard)', () => {
     expect(automatedVerdict.blockingBars).toEqual([
       expect.objectContaining({ barKey: 'R-1', contract: 'automated', codes: expect.arrayContaining(['bar_snapshot_proof_depth_missing']) }),
     ]);
+  });
+});
+
+// verification-system-improvements-2026-10-10 P-001: every contract refusal code the
+// verification-system map names must have a test that triggers it. Each case breaks one
+// source of an otherwise valid fixture and looks for the code wherever the snapshot reports it.
+describe('snapshot source codes (verification-system map)', () => {
+  const allCodes = (snapshot: ReturnType<typeof projectAcceptanceBarContractSnapshot>): string[] => [
+    ...snapshot.completeness.problems.map((problem) => problem.code),
+    ...snapshot.readiness.codes,
+    ...snapshot.bars.flatMap((b) => b.readiness.codes),
+  ];
+  const triggered = [
+    'bar_snapshot_plan_missing',
+    'bar_snapshot_cohort_incomplete',
+    'bar_snapshot_rubric_ambiguous',
+    'bar_snapshot_bar_key_duplicate',
+    'bar_snapshot_bar_set_hash_mismatch',
+    'bar_snapshot_work_contract_missing',
+    'bar_snapshot_work_contract_stale',
+    'bar_snapshot_author_verdict_stale',
+    'bar_snapshot_grading_missing',
+  ];
+
+  it('no grading scorecard raises bar_snapshot_grading_missing', () => {
+    const input = fixture(1);
+    input.scorecards.rows.length = 0;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_grading_missing');
+  });
+
+  it('CALIBRATION: the unmodified fixture raises none of these codes', () => {
+    const codes = allCodes(projectAcceptanceBarContractSnapshot(fixture(2)));
+    for (const code of triggered) expect(codes).not.toContain(code);
+  });
+
+  it('an absent subject plan row raises bar_snapshot_plan_missing', () => {
+    const input = fixture(1);
+    input.planRows = rows([], 1);
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_plan_missing');
+  });
+
+  it('a post-epoch plan with no seed identity raises bar_snapshot_cohort_incomplete', () => {
+    const input = fixture(1);
+    input.planRows.rows[0]!.seededBy = null as unknown as string;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_cohort_incomplete');
+  });
+
+  it('two active acceptance rubrics raise bar_snapshot_rubric_ambiguous', () => {
+    const input = fixture(1);
+    input.rubrics.rows.push({ ...input.rubrics.rows[0]!, rubricId: 'acceptance-plan-a-twin' } as Rubric);
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_rubric_ambiguous');
+  });
+
+  it('two BARs sharing one key raise bar_snapshot_bar_key_duplicate', () => {
+    const input = fixture(2);
+    const criteria = input.rubrics.rows[0]!.criteria;
+    criteria[1]!.barKey = criteria[0]!.barKey;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_bar_key_duplicate');
+  });
+
+  it('a plan BAR-set pin that differs from the recomputed hash raises bar_snapshot_bar_set_hash_mismatch', () => {
+    const input = fixture(2);
+    input.planRows.rows[0]!.barSetHash = 'f'.repeat(64);
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_bar_set_hash_mismatch');
+  });
+
+  it('a clause with no linked work-item raises bar_snapshot_work_contract_missing', () => {
+    const input = fixture(1);
+    input.workContracts.rows.length = 0;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_work_contract_missing');
+  });
+
+  it('a work-item linked to an older clause revision raises bar_snapshot_work_contract_stale', () => {
+    const input = fixture(1);
+    input.workContracts.rows[0]!.specRevision = 99;
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_work_contract_stale');
+  });
+
+  it('an implementer verdict older than the grading raises bar_snapshot_author_verdict_stale', () => {
+    const input = fixture(1);
+    const author = input.scorecards.rows.find((card) => card.issueId === 'SC-AUTHOR')!;
+    author.createdAt = '2026-09-04T00:00:00.000Z';
+    expect(allCodes(projectAcceptanceBarContractSnapshot(input))).toContain('bar_snapshot_author_verdict_stale');
+  });
+});
+
+// plan-verification-friction-reduction-2026-10-11 P-002 (D-001): the server re-measures
+// bound proof when a caller omits current fingerprints, so the inadequate-proof repair must
+// not send agents to hand-supply them. It must instead name the two unknownReasons that
+// distinguish "the server could not measure" from "the binding has no recipe to measure".
+describe('bar_snapshot_proof_inadequate repair text (P-002)', () => {
+  const action = nextRepair(['bar_snapshot_proof_inadequate'], [
+    { barKey: 'R-2', readiness: { codes: ['bar_snapshot_proof_inadequate'] } },
+  ])?.action ?? '';
+
+  it('does not tell the caller to supply current fingerprints', () => {
+    expect(action).toContain('plans:evaluate-spec-test-adequacy');
+    expect(action).toMatch(/do not need to supply current fingerprints/i);
+    expect(action).not.toMatch(/\bsupply current fingerprints before\b/i);
+    expect(action).not.toMatch(/with current fingerprints/i);
+  });
+
+  it('names the reasons that separate a failed server measurement from a recipe-less binding', () => {
+    expect(action).toContain('server-measurement-unavailable:');
+    expect(action).toContain('-current-fingerprint-not-supplied');
+    expect(action).toContain('fromTestRun');
   });
 });

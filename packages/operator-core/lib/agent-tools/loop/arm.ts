@@ -19,12 +19,15 @@
  * `kettle:declare-wake`, retired with the tier — retire-mug-kettle-su-only-2026-08-09
  * P-059/D-080.)
  */
+import { performance } from 'node:perf_hooks';
+import { observeFallback } from '../../degradation/fallback-observations';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
+import { resolveWakeMode } from '../coordination/wake-mode';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
@@ -59,14 +62,21 @@ import {
 } from '../../external-condition-reachability';
 import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
+import { attestLoopControlConsumerView } from '../coordination/control-anchor-consumer-view';
 import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
-import { acceptancePlaneAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
+import {
+  acceptancePlaneAdvisoryForWait,
+  mainWaitAdvisoryForWait,
+  mainWaitPlanReviewForWait,
+} from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
+import { selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
 import {
   admitMonitorArm,
   monitorPredicateDedupRefusal,
   monitorArmConfigSchema,
+  normalizeMonitorPredicateKey,
   prepareMonitorConfig,
   type PersistedMonitorConfig,
 } from '../../harness/routines/monitor-policy';
@@ -500,7 +510,7 @@ export default defineTool({
   guidance: {
     when: 'Use for an su/interactive session that should keep advancing a goal on a recurring cadence. Arm it last before ending your turn. Pass ownerId only to arm an already-running, wake-reachable session other than your own.',
     notWhen:
-      'Not for wall-clock schedules (plans:set-schedule) or autonomous queen/bee/scout loops (pot:declare-wake). Do not use Claude /loop instead. Not the PRIMARY watcher when the thing you watch already emits — park on it with events:await and keep the loop as the slow backstop.',
+      'Not for wall-clock schedules (plans:set-schedule) or autonomous queen/bee/scout loops (pot:declare-wake). Do not use Claude /loop instead. For an event-driven one-shot wake, prefer events:await, but do not stack it with a mode:"monitor" loop for the same normalized predicate: events:await refuses duplicate monitoring. Keep the monitor loop, or end it before registering the exact await.',
     chaining:
       'loop:arm { intervalSec, goal } → end turn → re-wakes each iteration → loop:status to inspect → loop:end to stop.',
     seeAlso: [
@@ -557,7 +567,7 @@ export default defineTool({
           .max(200)
           .optional()
           .describe(
-            "The events:catalog key that fires when this blocker CLEARS. The key is checked against event authority at arm time: only a proven reachable key bypasses the 15min cap; unknown or impossible keys remain capped with evidence in the result. Naming it does not register the await — actually park on it with events:await { event, timeout_sec, on_timeout:'wake' }. Omit it and the interval is CAPPED to 15min.",
+            "The events:catalog key that fires when this blocker CLEARS. The key is checked against event authority at arm time: only a proven reachable key bypasses the 15min cap; unknown or impossible keys remain capped with evidence in the result. Naming it does not register the await — actually park on it with events:await { event, timeout_sec, on_timeout:'wake' }. If the active monitor loop already uses the same normalized predicate, events:await refuses the duplicate; keep the monitor loop or end it before registering the exact await. Omit this key and the interval is CAPPED to 15min.",
           ),
         // EI-21526226279199560 — the same `kind`/`ref` vocabulary coord's blockedOn uses
         // (D-003), deliberately NOT a second spelling of one concept. Prose cannot be
@@ -663,10 +673,35 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    const handlerStartedAt = performance.now();
+    const loopArmStages: Array<{ name: string; durationMs: number; elapsedMs: number }> = [];
+    const measure = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+      const stageStartedAt = performance.now();
+      try {
+        return await operation();
+      } finally {
+        const stageFinishedAt = performance.now();
+        loopArmStages.push({
+          name,
+          durationMs: Math.round((stageFinishedAt - stageStartedAt) * 10) / 10,
+          elapsedMs: Math.round((stageFinishedAt - handlerStartedAt) * 10) / 10,
+        });
+        // ctx.metadata is last-write-wins. Send a bounded cumulative snapshot after
+        // every awaited helper so a late/aborted call retains all completed timings.
+        ctx.metadata?.({
+          loopArmStages: {
+            schemaVersion: 'loop-arm-stage-timings-v1',
+            unit: 'ms',
+            stages: loopArmStages.slice(-32).map((stage) => ({ ...stage })),
+          },
+        });
+      }
+    };
+
     // Feature gate (papercusp-loops). Default OFF until the full loop engine
     // (fire + completion-rebase) is verified green end-to-end; flip in
     // /admin/features. loop:end is intentionally NOT gated (always stoppable).
-    if (!(await getFlag(FLAGS.LOOPS, 'system'))) {
+    if (!(await measure('feature_flag', () => getFlag(FLAGS.LOOPS, 'system')))) {
       return {
         content: [
           {
@@ -732,6 +767,51 @@ export default defineTool({
         isError: true,
       };
     }
+    // EI-24188436415268799 — an owner-directed graceful pause sets the effective
+    // wake mode to `manual` and ends the current engine loop. Without checking the
+    // target's mode here, a later loop:arm call can recreate that loop while the
+    // pause is still in force; wake-mode would only stage its future wake after the
+    // routine had already been re-armed. Refuse before any routine, claim, or wake
+    // mutation. If the pause state cannot be read, fail closed for the same reason.
+    let targetWakeMode: 'auto' | 'manual';
+    try {
+      targetWakeMode = await measure('resolve_wake_mode', () => resolveWakeMode(ownerId));
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'wake_mode_unavailable',
+              ownerId,
+              message:
+                `Refusing to arm a loop for ${ownerId}: the effective wake mode could not be verified ` +
+                `(${error instanceof Error ? error.message : String(error)}). No loop or wake was created.`,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+    if (targetWakeMode === 'manual') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'wake_mode_manual',
+              ownerId,
+              message:
+                `Refusing to arm a loop for ${ownerId} while the effective wake mode is manual. ` +
+                'Restore auto with coord:wake-mode before intentionally resuming loop scheduling.',
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
     // Read the active loop before resolving mode. A retune commonly omits mode and
     // monitor because it is changing only cadence/carry; defaulting that omission to
     // 'work' silently converts a fleet-leader monitor into a work loop. Explicit mode
@@ -739,8 +819,10 @@ export default defineTool({
     // persisted lifecycle.
     let prior: PriorLoopFacts | null = null;
     try {
-      prior = await readActiveLoopFacts(ownerId);
+      prior = await measure('read_active_loop_facts', () => readActiveLoopFacts(ownerId));
+      observeFallback('routine-capability-read', { eligible: 1, applied: 1, reason: 'applied', scope: 'loop-prior-facts' });
     } catch (e) {
+      observeFallback('routine-capability-read', { eligible: 1, applied: 0, reason: 'prior-facts-unavailable', scope: 'loop-prior-facts' });
       console.warn(
         `[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`,
       );
@@ -859,11 +941,13 @@ export default defineTool({
     // Refuse a plan-wide release wait while staging work remains available or
     // blocked descendants have not been reviewed. This runs before any loop or
     // work-item claim is written; the same guard serves events:await and sugar.
-    const mainWaitPlanReview = await mainWaitPlanReviewForWait({
-      ownerId,
-      goal,
-      note: [goal, args.blockedOn?.reason].filter(Boolean).join('\n'),
-    });
+    const mainWaitPlanReview = await measure('main_wait_plan_review', () =>
+      mainWaitPlanReviewForWait({
+        ownerId,
+        goal,
+        note: [goal, args.blockedOn?.reason].filter(Boolean).join('\n'),
+      }),
+    );
     if (mainWaitPlanReview && !mainWaitPlanReview.allowWait) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: mainWaitPlanReview.code, ...mainWaitPlanReview }) }],
@@ -915,7 +999,9 @@ export default defineTool({
     // above, so ordinary re-arms do not silently migrate an already-installed routine.
     if (!isConcreteHarness(requestedHarness) && !harness && scopeWorkItem) {
       try {
-        const item = await getWorkItem(scopeWorkItem.toUpperCase());
+        const item = await measure('work_item_scope_read', () =>
+          getWorkItem(scopeWorkItem.toUpperCase()),
+        );
         if (isConcreteHarness(item?.harness)) {
           harness = resolvePotHomeSlug(item!.harness!, undefined);
         }
@@ -939,7 +1025,9 @@ export default defineTool({
     // the session re-oriented; let an active plan brief correct it when the context is
     // concrete too.
     if (!harness && isConcreteHarness(ctx.harnessSlug)) {
-      const brief = await getSessionBrief({ ownerId }).catch(() => null);
+      const brief = await measure('session_brief_active_plan', () =>
+        getSessionBrief({ ownerId }).catch(() => null),
+      );
       if (brief?.currentPlanSlug && isConcreteHarness(brief.harnessSlug)) {
         harness = resolvePotHomeSlug(brief.harnessSlug, undefined);
       }
@@ -960,7 +1048,9 @@ export default defineTool({
     // args, concrete request context, an active routine, and the workspace home
     // all win by construction above.
     if (onlyWorkspaceScope && !harness) {
-      const brief = await getSessionBrief({ ownerId }).catch(() => null);
+      const brief = await measure('session_brief_scope_fallback', () =>
+        getSessionBrief({ ownerId }).catch(() => null),
+      );
       if (isConcreteHarness(brief?.harnessSlug)) {
         harness = resolvePotHomeSlug(brief!.harnessSlug!, undefined);
       }
@@ -1005,12 +1095,18 @@ export default defineTool({
     // workspaces), and we fail OPEN on a resolver throw/miss — fail CLOSED only on a
     // CONFIRMED foreign resolution.
     const scopedClamp =
-      ctx.isSuperuser === true && workspaceId !== '*' && (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
+      ctx.isSuperuser === true &&
+      workspaceId !== '*' &&
+      (await measure('scoped_superuser_flag', () => getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system')));
     if (scopedClamp) {
       let harnessWs: string | null = null;
       try {
-        const { resolveWorkspaceForHarnessSlugIn } = await import('../../harness-core');
-        harnessWs = await resolveWorkspaceForHarnessSlugIn(workspaceId, harness);
+        const { resolveWorkspaceForHarnessSlugIn } = await measure('load_harness_workspace_resolver', () =>
+          import('../../harness-core'),
+        );
+        harnessWs = await measure('resolve_harness_workspace', () =>
+          resolveWorkspaceForHarnessSlugIn(workspaceId, harness),
+        );
       } catch {
         // Ambiguous cross-workspace collision (resolver throws) or an infra error:
         // fail OPEN — never block a legitimate arm on a read we could not complete.
@@ -1082,17 +1178,23 @@ export default defineTool({
     // and exact-await dedup gates.
     let admittedMonitorConfig: PersistedMonitorConfig | null = preparedMonitorConfig;
     if (requestedMode === 'monitor' && !preservingPriorMonitor) {
-      const admission = await admitMonitorArm({
-        ownerId,
-        workspaceId,
-        harness,
-        monitor: args.monitor,
-      });
+      const admission = await measure('admit_monitor', () =>
+        admitMonitorArm({
+          ownerId,
+          workspaceId,
+          harness,
+          monitor: args.monitor,
+        }),
+      );
       if (!admission.allowed) {
         return monitorRefusal(admission.code, admission.message, admission.details);
       }
       admittedMonitorConfig = admission.config;
-      if (await hasLiveExactAwaitForSubscriberKey(ownerId, admission.config.predicateKey)) {
+      if (
+        await measure('has_exact_monitor_await', () =>
+          hasLiveExactAwaitForSubscriberKey(ownerId, admission.config.predicateKey),
+        )
+      ) {
         const refusal = monitorPredicateDedupRefusal(admission.config.predicateKey, 'exact-await')!;
         return monitorRefusal(refusal.code, refusal.message, refusal.details);
       }
@@ -1126,7 +1228,9 @@ export default defineTool({
     let livePush: LivePushChannels = { status: 'unknown' };
     if (args.blockedOn && !args.blockedOn.event) {
       try {
-        const { totalCount, sample } = await listWakeAwaitsForSubscriber(ownerId);
+        const { totalCount, sample } = await measure('list_live_wake_awaits', () =>
+          listWakeAwaitsForSubscriber(ownerId),
+        );
         livePush =
           totalCount > 0
             ? { status: 'found', count: totalCount, sample: sample.slice(0, 2).map((a) => a.eventKey) }
@@ -1145,7 +1249,9 @@ export default defineTool({
     let eventReachability: ExternalConditionReachability | null = null;
     if (args.blockedOn?.event) {
       try {
-        eventReachability = await readEventConditionReachability(args.blockedOn.event);
+        eventReachability = await measure('event_condition_reachability', () =>
+          readEventConditionReachability(args.blockedOn!.event!),
+        );
       } catch (e) {
         eventReachability = {
           verdict: 'unknown',
@@ -1242,7 +1348,7 @@ export default defineTool({
       | null = null;
     if (priorWorkItem) {
       try {
-        const priorItem = await getWorkItem(priorWorkItem, harness);
+        const priorItem = await measure('prior_work_item_read', () => getWorkItem(priorWorkItem, harness));
         if (priorItem && ANY_FAMILY_TERMINAL_STATES.includes(String(priorItem.state))) {
           claimedWorkItem = null;
           workItemBindingNeedsClear = true;
@@ -1264,15 +1370,21 @@ export default defineTool({
         // lower-level compare-and-claim primitive. Otherwise a member can bind an out-of-spec
         // item to its loop even though the authoritative by-id claim tool refuses it.
         // EI-21659493450381888 extends this to non-fleet callers with an authored per-cup spec.
-        const { admitWorkItemForLoopTarget } = await import('../../scheduler/fleet-scope-admission');
-        const schedulerSpecEnabled = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ownerId).catch(() => true);
-        const admission = await admitWorkItemForLoopTarget({
-          target: ownerId,
-          workItemId: drivenCandidate,
-          harness,
-          workspaceId,
-          enforceSchedulerSpec: schedulerSpecEnabled && !explicitWorkItem,
-        });
+        const { admitWorkItemForLoopTarget } = await measure('load_loop_target_admission', () =>
+          import('../../scheduler/fleet-scope-admission'),
+        );
+        const schedulerSpecEnabled = await measure('scheduler_spec_claim_flag', () =>
+          getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ownerId).catch(() => true),
+        );
+        const admission = await measure('loop_target_admission', () =>
+          admitWorkItemForLoopTarget({
+            target: ownerId,
+            workItemId: drivenCandidate,
+            harness,
+            workspaceId,
+            enforceSchedulerSpec: schedulerSpecEnabled && !explicitWorkItem,
+          }),
+        );
         if (!admission.allowed) {
           // The loop itself is useful even when its optional death-resilience anchor is out of
           // scope; skip only the binding and surface the exact admission reason to the caller.
@@ -1287,7 +1399,9 @@ export default defineTool({
           // work. The lower-level by-id claim path can return an idempotent-looking
           // row for a terminal item, so read lifecycle state BEFORE mutation and
           // keep both the routine binding and wake prompt free of the stale id.
-          const beforeClaim = await getWorkItem(drivenCandidate, harness);
+          const beforeClaim = await measure('work_item_before_claim', () =>
+            getWorkItem(drivenCandidate, harness),
+          );
           if (beforeClaim && ANY_FAMILY_TERMINAL_STATES.includes(String(beforeClaim.state))) {
             workItemClaim = { id: drivenCandidate, claimed: false, reason: 'terminal' };
           } else if (beforeClaim && isClaimHoldParked(beforeClaim.payload)) {
@@ -1314,7 +1428,8 @@ export default defineTool({
             // refuses to hand it out (it is not a requestable `states` value; blocked items
             // are leader-triage-only), so the member can neither progress it nor re-pull it.
             // It is still non-terminal, so getActiveClaimsForBee counts it against
-            // maxConcurrentClaims — and under the default cap of 1 the member is then
+            // maxConcurrentClaims (unless it carries an active external blocker — P-010,
+            // which a bare `blocked` binding here does not) — and under the default cap of 1 the member is then
             // starved from ALL work until it manually releases. That refusal is correct and
             // deliberately fires BEFORE lane evaluation (EI-12095), so the starvation reads
             // as "claim cap reached" with no hint that an unworkable auto-binding caused it.
@@ -1338,14 +1453,18 @@ export default defineTool({
                 'the loop armed without it. Claim it explicitly with work_items:claim if that is genuinely intended.',
             };
           } else {
-            const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });
+            const wi = await measure('claim_work_item', () =>
+              claimWorkItem(drivenCandidate, ownerId, { harness }),
+            );
             if (wi) {
               claimedWorkItem = drivenCandidate;
               workItemClaim = { id: drivenCandidate, claimed: true };
             } else {
               // claimWorkItem returns a bare null for three outcomes — re-read + classify
               // for an accurate, actionable note (mirrors work_items:claim's claimOne).
-              const current = await getWorkItem(drivenCandidate, harness);
+              const current = await measure('work_item_after_claim_miss', () =>
+                getWorkItem(drivenCandidate, harness),
+              );
               const failure = classifyClaimFailure(current, ownerId);
               workItemClaim =
                 failure.reason === 'conflict'
@@ -1437,7 +1556,9 @@ export default defineTool({
     let coldNoCarryNoteWarning: string | null = null;
     if (carry === 'cold') {
       try {
-        const existing = await getLoopCarryNoteWithMeta({ harness, ownerId });
+        const existing = await measure('cold_carry_note_read', () =>
+          getLoopCarryNoteWithMeta({ harness, ownerId }),
+        );
         if (!existing.readFailed && !existing.note) {
           coldNoCarryNoteWarning =
             'This loop is armed COLD with no existing carry-note for this harness/owner scope — a cold wake rebuilds solely from the carry-note, so the next wake will start BLIND with no prior context. Write one with loop:checkpoint before ending your turn.';
@@ -1445,6 +1566,35 @@ export default defineTool({
       } catch (e) {
         console.warn(
           `[loop:arm] cold-carry-note check failed (loop still armed): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+
+    // EI-24899961156406639 — a COLD loop only sheds context when a live psu-pty host can
+    // carry-respawn the session. Without one a cold wake may resume the SAME transcript or
+    // park inbox-only, so `carry:'cold'` silently fails to deliver the fresh context it
+    // promises (the continuation gate's old over-ceiling remedy; see EI-24836531791426051).
+    // Read the SHARED predicate `session:request-compaction` and the continuation gate use,
+    // so this warning, that refusal and that advice cannot drift apart. Warn-only, never a
+    // refusal: headless fleet members arm cold by design and the carry-note path still works
+    // for them. Fail-soft, like the carry-note check above.
+    let coldCarryNoHostWarning: string | null = null;
+    if (carry === 'cold') {
+      try {
+        const availability = await measure('cold_carry_host_discovery', () =>
+          selfCompactionAvailabilityAsync(ownerId),
+        );
+        if (!availability.available) {
+          coldCarryNoHostWarning =
+            `This loop is armed COLD, but this session has no live psu-pty host able to carry-respawn it ` +
+            `(${availability.reason}), so a cold wake is NOT guaranteed to start on a fresh context — it may ` +
+            `resume this same transcript or park as inbox-only, and session:request-compaction would refuse. ` +
+            `Do not rely on carry:'cold' to shed context here; the compaction watchdog is the only backstop for an ` +
+            `over-ceiling session. Relaunch through a managed psu-pty host (psu) before relying on cold carry, or arm warm.`;
+        }
+      } catch (e) {
+        console.warn(
+          `[loop:arm] cold-carry host check failed (loop still armed): ${e instanceof Error ? e.message : e}`,
         );
       }
     }
@@ -1471,41 +1621,53 @@ export default defineTool({
         }
       : null;
 
-    const loop = await materializeLoop({
-      workspaceId,
-      harnessSlug: harness,
-      ownerId,
-      intervalSec: intervalSec,
-      kickoff,
-      ...(blockedOnRecord ? { blockedOn: blockedOnRecord } : {}),
-      // EI-20072281215342526: persist the goal STRUCTURALLY, not only rendered into
-      // `kickoff`. A carry-respawn never renders a kickoff, so this is the copy that
-      // reaches a successor (via loop:status and the carry document).
-      goal,
-      costCapCents: args.costCapCents ?? null,
-      maxFires: args.maxFires ?? null,
-      maxDurationSec: args.maxDurationSec ?? null,
-      carry,
-      continuation: args.continuation ?? 'settle',
-      mode: resolvedMode,
-      ...(admittedMonitorConfig ? { monitor: admittedMonitorConfig } : {}),
-      // Preserve the omission-vs-clear distinction through the writer: materializeLoop
-      // intentionally preserves its stored anchor only for `undefined`, while `null`
-      // clears it.
-      ...(workItemBindingNeedsClear
-        ? { workItem: null }
-        : claimedWorkItem
-          ? { workItem: claimedWorkItem }
-          : {}),
-      customWakePrompt: hasCustomWakePrompt,
-    });
-    const control = await refreshControlAnchorAfterMutation({
-      ownerId,
-      workspaceId,
-      origin: 'agent',
-      actorId: identity.ownerId,
-      source: 'loop:arm',
-    });
+    const loop = await measure('materialize_loop', () =>
+      materializeLoop({
+        workspaceId,
+        harnessSlug: harness,
+        ownerId,
+        intervalSec: intervalSec,
+        kickoff,
+        ...(blockedOnRecord ? { blockedOn: blockedOnRecord } : {}),
+        // EI-20072281215342526: persist the goal STRUCTURALLY, not only rendered into
+        // `kickoff`. A carry-respawn never renders a kickoff, so this is the copy that
+        // reaches a successor (via loop:status and the carry document).
+        goal,
+        costCapCents: args.costCapCents ?? null,
+        maxFires: args.maxFires ?? null,
+        maxDurationSec: args.maxDurationSec ?? null,
+        carry,
+        continuation: args.continuation ?? 'settle',
+        mode: resolvedMode,
+        ...(admittedMonitorConfig ? { monitor: admittedMonitorConfig } : {}),
+        // Preserve the omission-vs-clear distinction through the writer: materializeLoop
+        // intentionally preserves its stored anchor only for `undefined`, while `null`
+        // clears it.
+        ...(workItemBindingNeedsClear
+          ? { workItem: null }
+          : claimedWorkItem
+            ? { workItem: claimedWorkItem }
+            : {}),
+        customWakePrompt: hasCustomWakePrompt,
+      }),
+    );
+    const control = await measure('refresh_loop_control_anchor', () =>
+      refreshControlAnchorAfterMutation({
+        ownerId,
+        workspaceId,
+        origin: 'agent',
+        actorId: identity.ownerId,
+        source: 'loop:arm',
+      }),
+    );
+    // WI-10005199 (EI-23770243810745552): the `routines` loop row is the WRITE target, but the
+    // wake-source verdict reads the projected `control_state->loop`, and that refresh is
+    // fail-soft (null on timeout while the arm stays committed). Attest the read the consumer
+    // will actually do, against what materializeLoop PERSISTED. Exception-only.
+    const controlConsumerView = attestLoopControlConsumerView(
+      { active: true, intervalSec: loop.intervalSec ?? intervalSec },
+      control,
+    );
 
     // WI-655 — wake-reachability is INTRINSIC to arming a loop, not a separate step.
     // (1) ARM the standing inbox-wake watch right here, so a loop is wakeable the instant
@@ -1517,8 +1679,10 @@ export default defineTool({
     // honest reachability read on top.
     let reachability: WakeReachabilityVerdict | null = null;
     try {
-      await armInboxWake({ ownerId, workspaceId, note: `loop-armed inbox-wake (${loop.name})` });
-      reachability = await probeWakeReachability(ownerId);
+      await measure('arm_inbox_wake', () =>
+        armInboxWake({ ownerId, workspaceId, note: `loop-armed inbox-wake (${loop.name})` }),
+      );
+      reachability = await measure('probe_wake_reachability', () => probeWakeReachability(ownerId));
     } catch (e) {
       console.warn(
         `[loop:arm] reachability arm/probe failed (loop still armed): ${e instanceof Error ? e.message : e}`,
@@ -1560,7 +1724,23 @@ export default defineTool({
     // but says something the agent CANNOT infer from the echoed interval alone: whether it
     // was capped, and (when an event was named) that naming it is not the same as parking
     // on it. A silently-capped interval would be worse than no cap at all.
-    const backoffNote = backoff.note ? ` ${backoff.note}` : '';
+    const monitorPredicateKey =
+      resolvedMode === 'monitor' && admittedMonitorConfig
+        ? normalizeMonitorPredicateKey(admittedMonitorConfig.predicateKey)
+        : null;
+    const blockedEventPredicateKey = args.blockedOn?.event
+      ? normalizeMonitorPredicateKey(args.blockedOn.event)
+      : null;
+    const blockedOnEventConflictsWithMonitor = Boolean(
+      monitorPredicateKey && blockedEventPredicateKey && monitorPredicateKey === blockedEventPredicateKey,
+    );
+    const backoffNote = blockedOnEventConflictsWithMonitor && args.blockedOn?.event
+      ? ` ⚠ Backoff recorded: blocked on "${args.blockedOn.reason}". Interval ${intervalSec}s${backoff.clamped ? ` (requested ${intervalSecArg}s; capped)` : ''}. ` +
+        `${eventReachabilityEvidence(args.blockedOn.event, backoff.eventReachability ?? unmeasuredEventReachability())} ` +
+        `This key is already the active monitor's predicate. events:await on the same normalized key is refused as monitor_exact_await_duplicate. Keep this loop as the sole monitor, or end it before registering the one-shot await; do not stack both.`
+      : backoff.note
+        ? ` ${backoff.note}`
+        : '';
 
     // EI-21526226279199560 — the caller NAMED an agent in prose but passed no `ref`, so
     // the per-wake liveness check cannot resolve a subject and stays silent. Offered here
@@ -1573,9 +1753,20 @@ export default defineTool({
       : '';
     const warningNote = unboundedWarmLoopWarning ? ` ⚠ ${unboundedWarmLoopWarning}` : '';
     // acceptance-runtime-plane P-003 — never throws, never alters the arm.
-    const acceptancePlaneAdvisory = await acceptancePlaneAdvisoryForWait({ ownerId, goal });
+    const acceptancePlaneAdvisory = await measure('acceptance_plane_advisory', () =>
+      acceptancePlaneAdvisoryForWait({ ownerId, goal }),
+    );
+    // WI-6554700010014960: a main-shaped loop goal the presence-plan review could not see
+    // still gets the reminder to do every step that does not need green main first.
+    const mainWaitAdvisory = mainWaitPlanReview
+      ? null
+      : await measure('main_wait_advisory', () =>
+          mainWaitAdvisoryForWait({ ownerId, goal, note: [goal, args.blockedOn?.reason].filter(Boolean).join('\n') }),
+        );
     // EI-21542193720279374 part (b) — see the coldNoCarryNoteWarning computation above.
     const coldCarryNoteWarningText = coldNoCarryNoteWarning ? ` ⚠ ${coldNoCarryNoteWarning}` : '';
+    // EI-24899961156406639 — see the coldCarryNoHostWarning computation above.
+    const coldCarryNoHostWarningText = coldCarryNoHostWarning ? ` ⚠ ${coldCarryNoHostWarning}` : '';
     // EI-18792078711601844: a RE-ARM that PRESERVED the prior loop's carry gets
     // an explicit disclosure, so an omitted carry is never mistaken for a fresh
     // default. Fresh arms are warm and need no exceptional lifecycle warning.
@@ -1598,10 +1789,12 @@ export default defineTool({
     // prompt weight, fires only for monitor loops, and arrives with the keys
     // already spelled out — static guidance is read before the decision, this
     // is read during it. The clock loop stays armed either way; this argues
-    // for demoting it to a backstop, never refuses it.
+    // for demoting it to a backstop, never refuses it. Exact duplicate monitoring is
+    // intentionally refused by monitor-policy, so the runtime note must make the
+    // mutually-exclusive choice clear instead of telling callers to stack both.
     const monitorPushNote =
       resolvedMode === 'monitor'
-        ? ' 📡 Monitor loop armed — but prefer PUSH wherever the thing you are watching already emits. A fleet leader can park on fleet:member-dead · fleet:claim-released · fleet:item-completed · fleet:context-critical via events:await { event, timeout_sec, on_timeout:"wake" }, which wakes you ON the transition instead of N times between transitions. Keep THIS loop as the slow backstop (a longer intervalSec) rather than the primary watcher. events:catalog lists the full set.'
+        ? ' 📡 Monitor loop armed. A separate exact event await can provide a one-shot wake for a different predicate, but an await on this monitor’s same normalized predicate is refused as monitor_exact_await_duplicate. For the same predicate, choose one: keep this loop, or end it before registering events:await; do not stack both. events:catalog lists the full set.'
         : '';
     const note =
       baseNote +
@@ -1611,6 +1804,7 @@ export default defineTool({
       claimNote +
       warningNote +
       coldCarryNoteWarningText +
+      coldCarryNoHostWarningText +
       carryResolutionNote +
       monitorPushNote;
 
@@ -1661,15 +1855,18 @@ export default defineTool({
               workItem: claimedWorkItem,
               controlGeneration: control?.generation ?? null,
             },
+            ...(controlConsumerView.divergedFromWrite ? { controlConsumerView } : {}),
             workItemClaim,
             reachability: reachabilityOut,
             unboundedWarmLoopWarning,
             coldNoCarryNoteWarning,
+            coldCarryNoHostWarning,
             priorLoopOverwrite: overwriteNote,
             // acceptance-runtime-plane P-003: a loop whose goal waits on main/:3070/a deploy,
             // armed by an agent whose held live acceptance bars run elsewhere. Advisory only.
             ...(acceptancePlaneAdvisory ? { acceptancePlaneAdvisory } : {}),
             ...(mainWaitPlanReview ? { mainWaitPlanReview } : {}),
+            ...(mainWaitAdvisory ? { mainWaitAdvisory } : {}),
             note,
           }),
         },

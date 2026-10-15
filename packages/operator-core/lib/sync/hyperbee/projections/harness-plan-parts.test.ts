@@ -15,6 +15,7 @@ import {
   type PlanPartWireRow,
 } from './harness-plan-parts';
 import { stampForcedPastWaiver, summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
+import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index';
 
 function part(planSlug: string, partKey: string, body: string, overrides: Partial<PlanPartWireRow> = {}): PlanPartWireRow {
   return { harness_slug: 'h', plan_slug: planSlug, part_key: partKey, kind: 'item', body, ordinal: 0, tombstone: false, ...overrides };
@@ -34,6 +35,58 @@ function rig(flag: boolean) {
 }
 
 describe('harness-plan-parts projection', () => {
+  it('per-part recomposition refreshes legacy JSONB indexes from canonical content', async () => {
+    const content = [
+      '---',
+      'slug: p1',
+      'status: active',
+      '---',
+      '',
+      '# Plan',
+      '',
+      '## Now',
+      '',
+      '**State:** active',
+      '**Next:** keep both indexes aligned',
+      '',
+      '## Phase 1',
+      '',
+      '- **P-001** `todo` retain the item',
+      '',
+      '## Decisions',
+      '',
+      '### D-001 — retain the decision',
+      'Date: 2026-10-08',
+      'Preserve the decision body.',
+    ].join('\n');
+    const derived = deriveIndexFromContent(content);
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join(' ').replace(/\s+/g, ' ').trim().toUpperCase(), values });
+      return Promise.resolve([]);
+    }) as unknown as postgres.Sql;
+    const store = new InMemoryPlanPartsStore();
+    const proj = buildHarnessPlanPartsProjection({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      store,
+      sql,
+      isFlagOn: async () => true,
+      readLocalContent: async () => content,
+    });
+
+    await proj.writeToPg(
+      part('p1', 'section:now', '## Now\n\nchanged', { kind: 'section' }),
+      { authorPubkey: 'A', origin: 'remote', ts: 200 },
+    );
+
+    const update = calls.find((c) => c.text.startsWith('UPDATE HARNESS_SHARED.HARNESS_PLANS'))!;
+    expect(update.text).toContain('ITEMS');
+    expect(update.text).toContain('DECISIONS');
+    expect(update.values).toContain(JSON.stringify(derived.items));
+    expect(update.values).toContain(JSON.stringify(derived.decisions));
+  });
+
   it('recomputes forced_past when a federated part recomposes canonical content', async () => {
     const baseline = stampForcedPastWaiver(
       '---\nslug: p1\nstatus: active\n---\n\n# Plan\n\n## Now\n\nold\n',

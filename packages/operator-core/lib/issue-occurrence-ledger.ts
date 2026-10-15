@@ -6,9 +6,14 @@
  * chooses the canonical candidate and appends the incoming report/evidence.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { performance } from 'node:perf_hooks';
 import type { AdmissionIdentity } from './harness/improvements/digest';
+import { recordTelemetryReport } from './record-telemetry';
+import { TELEMETRY_KINDS } from './telemetry-kinds';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+
+const SLOW_CAPTURE_OCCURRENCE_TELEMETRY_MS = 500;
 
 export type IssueOccurrenceKind =
   | 'canonical-created'
@@ -307,45 +312,101 @@ export async function recordIssueOccurrence(
   // Unit suites use injected recorders. Never let an unrelated pure test open PG.
   if (process.env.VITEST && !sqlOverride) return null;
   const sql = sqlOverride ?? getOrgPg().sql;
+  const operationStartedAt = new Date().toISOString();
+  const operationStarted = performance.now();
+  let canonicalLookupAwaitMs: number | null = null;
+  let occurrenceInsertAwaitMs: number | null = null;
+  let outcome: 'recorded' | 'canonical-missing' | 'insert-empty' | 'failed' = 'failed';
+  let failedStage: 'canonical-lookup' | 'occurrence-insert' | null = null;
   try {
-    const canonical = (await sql<Array<{
-      workspace_id: string;
-      harness_slug: string;
-      feature_id: string;
-    }>>`
-      SELECT workspace_id, harness_slug, feature_id
-        FROM harness_shared.work_items
-       WHERE feature_id = ${input.canonicalId}
-         ${input.canonicalHarness ? sql`AND harness_slug = ${input.canonicalHarness}` : sql``}
-       ORDER BY created_ts DESC
-       LIMIT 1
-    `)[0];
-    if (!canonical) return null;
+    const lookupStarted = performance.now();
+    let canonical: { workspace_id: string; harness_slug: string; feature_id: string } | undefined;
+    try {
+      canonical = (await sql<Array<{
+        workspace_id: string;
+        harness_slug: string;
+        feature_id: string;
+      }>>`
+        SELECT workspace_id, harness_slug, feature_id
+          FROM harness_shared.work_items
+         WHERE feature_id = ${input.canonicalId}
+           ${input.canonicalHarness ? sql`AND harness_slug = ${input.canonicalHarness}` : sql``}
+         ORDER BY created_ts DESC
+         LIMIT 1
+      `)[0];
+    } catch (error) {
+      failedStage = 'canonical-lookup';
+      throw error;
+    } finally {
+      canonicalLookupAwaitMs = Math.round((performance.now() - lookupStarted) * 100) / 100;
+    }
+    if (!canonical) {
+      outcome = 'canonical-missing';
+      return null;
+    }
     const evidence = JSON.stringify(input.evidence ?? {});
     const identity = input.admissionIdentity ? JSON.stringify(input.admissionIdentity) : null;
-    const rows = await sql<Array<{ occurrence_id: string | number; occurred_at: Date | string }>>`
-      INSERT INTO harness_shared.work_item_occurrences
-        (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter,
-         source_tool, report_kind, reported_title, evidence, admission_identity)
-      VALUES
-        (${canonical.workspace_id}, ${canonical.harness_slug}, ${canonical.feature_id},
-         ${input.reporter ?? null}, ${input.sourceTool}, ${input.reportKind}, ${input.reportedTitle},
-         ${evidence}::text::jsonb, ${identity}::text::jsonb)
-      RETURNING occurrence_id, occurred_at
-    `;
+    const insertStarted = performance.now();
+    let rows: Array<{ occurrence_id: string | number; occurred_at: Date | string }>;
+    try {
+      rows = await sql<Array<{ occurrence_id: string | number; occurred_at: Date | string }>>`
+        INSERT INTO harness_shared.work_item_occurrences
+          (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter,
+           source_tool, report_kind, reported_title, evidence, admission_identity)
+        VALUES
+          (${canonical.workspace_id}, ${canonical.harness_slug}, ${canonical.feature_id},
+           ${input.reporter ?? null}, ${input.sourceTool}, ${input.reportKind}, ${input.reportedTitle},
+           ${evidence}::text::jsonb, ${identity}::text::jsonb)
+        RETURNING occurrence_id, occurred_at
+      `;
+    } catch (error) {
+      failedStage = 'occurrence-insert';
+      throw error;
+    } finally {
+      occurrenceInsertAwaitMs = Math.round((performance.now() - insertStarted) * 100) / 100;
+    }
     const row = rows[0];
-    return row
-      ? {
-          occurrenceId: Number(row.occurrence_id),
-          workspaceId: canonical.workspace_id,
-          canonicalHarness: canonical.harness_slug,
-          canonicalId: canonical.feature_id,
-          reportKind: input.reportKind,
-          occurredAt: new Date(row.occurred_at).toISOString(),
-        }
-      : null;
+    if (!row) {
+      outcome = 'insert-empty';
+      return null;
+    }
+    outcome = 'recorded';
+    return {
+      occurrenceId: Number(row.occurrence_id),
+      workspaceId: canonical.workspace_id,
+      canonicalHarness: canonical.harness_slug,
+      canonicalId: canonical.feature_id,
+      reportKind: input.reportKind,
+      occurredAt: new Date(row.occurred_at).toISOString(),
+    };
   } catch {
+    outcome = 'failed';
     return null;
+  } finally {
+    const totalElapsedMs = Math.round((performance.now() - operationStarted) * 100) / 100;
+    if (
+      input.sourceTool === 'improvements:capture' &&
+      input.reportKind === 'canonical-created' &&
+      totalElapsedMs >= SLOW_CAPTURE_OCCURRENCE_TELEMETRY_MS
+    ) {
+      // Best-effort local diagnostic telemetry; never add this write to the
+      // capture's critical path. These are client-observed SQL-await times, so
+      // they include pool/driver/network latency as well as database execution.
+      void recordTelemetryReport({
+        kind: TELEMETRY_KINDS.capture_stage_timing,
+        payload: {
+          operation: 'issue_occurrence_persistence',
+          sourceTool: input.sourceTool,
+          reportKind: input.reportKind,
+          startedAt: operationStartedAt,
+          canonicalLookupAwaitMs,
+          occurrenceInsertAwaitMs,
+          totalElapsedMs,
+          outcome,
+          failedStage,
+        },
+      }).catch(() => {});
+    }
   }
 }
 
@@ -372,13 +433,21 @@ export async function readIssueOccurrenceCounts(
     raw_occurrences: string | number;
     duplicate_occurrences: string | number;
   }>>`
-    SELECT count(DISTINCT (canonical_harness_slug, canonical_work_item_id)) AS canonical_clusters,
-           count(*)                                                        AS raw_occurrences,
-           count(*) FILTER (WHERE report_kind <> 'canonical-created')      AS duplicate_occurrences
-      FROM harness_shared.work_item_occurrences
-     WHERE workspace_id = ${args.workspaceId}
-       ${args.harnessSlug ? sql`AND canonical_harness_slug = ${args.harnessSlug}` : sql``}
-       ${args.since ? sql`AND occurred_at > ${args.since}::timestamptz` : sql``}
+    -- Group the exact composite identity before counting clusters. DISTINCT
+    -- over a record sorted every occurrence even beside the covering index;
+    -- ordinary grouping can hash the two keys without that record sort.
+    SELECT count(*) AS canonical_clusters,
+           COALESCE(sum(raw_occurrences), 0)::bigint AS raw_occurrences,
+           COALESCE(sum(duplicate_occurrences), 0)::bigint AS duplicate_occurrences
+      FROM (
+        SELECT count(*) AS raw_occurrences,
+               count(*) FILTER (WHERE report_kind <> 'canonical-created') AS duplicate_occurrences
+          FROM harness_shared.work_item_occurrences
+         WHERE workspace_id = ${args.workspaceId}
+           ${args.harnessSlug ? sql`AND canonical_harness_slug = ${args.harnessSlug}` : sql``}
+           ${args.since ? sql`AND occurred_at > ${args.since}::timestamptz` : sql``}
+         GROUP BY canonical_harness_slug, canonical_work_item_id
+      ) clusters
   `;
   const row = rows[0];
   return {
@@ -392,4 +461,101 @@ export async function readIssueOccurrenceCounts(
     },
     writer: 'harness_shared.work_item_occurrences',
   };
+}
+
+export interface RecurringInstanceEvidenceRow {
+  id: string;
+  /** The canonical item's own harness (engineer_issues.base_harness_slug). */
+  harness: string;
+  /** Severity as the filer left it — only minor/nit rows are ever returned. */
+  severity: 'minor' | 'nit';
+  /** Ledger rows for this canonical item INSIDE the window (all report kinds). */
+  rows: number;
+  /** DISTINCT non-null reporters among those rows (a null reporter is not independent evidence). */
+  reporters: number;
+  firstAt: string;
+  lastAt: string;
+}
+
+export interface RecurringInstanceEvidenceArgs {
+  workspaceId: string;
+  windowDays: number;
+  minRows: number;
+  minReporters: number;
+  limit: number;
+  /** Body prefix of the audited proposal comment; an item already carrying one is excluded. */
+  proposedMarker: string;
+}
+
+/**
+ * Open, unassigned, minor/nit WORK items (observation lane excluded — D-005) whose OWN
+ * occurrence ledger shows sustained independent re-reporting inside a window: ≥`minRows`
+ * rows from ≥`minReporters` distinct reporters. This is the cross-instance view that the
+ * filer's n=1 severity never sees (EI-23768242440859949).
+ *
+ * The population is measured, not assumed: on 2026-10-01 the lifetime form of this gate
+ * passed ~90% of the 232 open minor/nit items and the 7-day form still passed ~105 of 233,
+ * so the caller MUST treat the result as a ranked, capped proposal slate — never a bulk
+ * apply. Ranking is reporters DESC, rows DESC, id; `limit` bounds the slate.
+ *
+ * The `NOT EXISTS` over the item's comment thread is what makes the proposal idempotent:
+ * once the marker comment lands the item drops out, so a re-run never re-posts.
+ */
+export async function readRecurringInstanceEvidence(
+  args: RecurringInstanceEvidenceArgs,
+  sqlOverride?: OrgSql,
+): Promise<RecurringInstanceEvidenceRow[]> {
+  const sql = sqlOverride ?? getOrgPg().sql;
+  const rows = await sql<Array<{
+    id: string;
+    harness: string;
+    severity: string;
+    rows: string | number;
+    reporters: string | number;
+    first_at: Date | string;
+    last_at: Date | string;
+  }>>`
+    WITH ev AS (
+      SELECT canonical_harness_slug AS harness,
+             canonical_work_item_id AS id,
+             count(*)                AS rows,
+             count(DISTINCT reporter) AS reporters,
+             min(occurred_at)        AS first_at,
+             max(occurred_at)        AS last_at
+        FROM harness_shared.work_item_occurrences
+       WHERE workspace_id = ${args.workspaceId}
+         AND occurred_at > now() - make_interval(days => ${args.windowDays}::int)
+       GROUP BY 1, 2
+      HAVING count(*) >= ${args.minRows}::int
+         AND count(DISTINCT reporter) >= ${args.minReporters}::int
+    )
+    SELECT ev.id, ev.harness, i.severity, ev.rows, ev.reporters, ev.first_at, ev.last_at
+      FROM ev
+      JOIN harness_shared.engineer_issues i
+        ON i.workspace_id = ${args.workspaceId}
+       AND i.issue_id = ev.id
+       AND i.base_harness_slug = ev.harness
+     WHERE i.state = 'open'
+       AND i.assignee IS NULL
+       AND i.lane IS DISTINCT FROM 'observation'
+       AND i.severity IN ('minor', 'nit')
+       AND NOT EXISTS (
+         SELECT 1
+           FROM harness_shared.coord_thread_posts p
+          WHERE p.workspace_id = ${args.workspaceId}
+            AND p.thread_id = 'issue-thread-' || ev.id
+            AND starts_with(p.body, ${args.proposedMarker})
+       )
+     ORDER BY ev.reporters DESC, ev.rows DESC, ev.id
+     LIMIT ${args.limit}::int
+  `;
+  return rows.map((r) => ({
+    id: r.id,
+    harness: r.harness,
+    severity: r.severity === 'nit' ? 'nit' : 'minor',
+    rows: Number(r.rows),
+    reporters: Number(r.reporters),
+    firstAt: new Date(r.first_at).toISOString(),
+    lastAt: new Date(r.last_at).toISOString(),
+  }));
 }

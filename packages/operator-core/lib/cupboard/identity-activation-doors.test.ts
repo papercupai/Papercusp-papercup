@@ -30,12 +30,6 @@ const DOORS: readonly Door[] = [
   { door: 'launch: SU bootstrap', file: 'endpoint-route/routes/agent-mcp/bootstrap-su.ts', call: 'assertIdentityActivationFunded' },
   { door: 'switch/rebind: identity management', file: 'identity-management.ts', call: 'assertIdentityActivationFunded' },
   { door: 'restart: codex home repair', file: 'endpoint-route/routes/adv/sessions.ts', call: 'rebuildSuLaunchArtifactFunded' },
-];
-
-// The SU persona refresh restart door is wired by a prepared patch
-// (.papercusp/scratch/p016/persona-refresh-all.patch) that waits on a peer hold of that file
-// (su-mode P-008 evidence fingerprints it). Move it into DOORS when that patch lands (WI-10004280).
-const PENDING_DOORS: readonly Door[] = [
   { door: 'restart: SU persona refresh', file: 'endpoint-route/routes/agent-mcp/bootstrap-su-persona-refresh.ts', call: 'rebuildSuLaunchArtifactFunded' },
 ];
 
@@ -51,8 +45,6 @@ describe('identity activation doors route through the funding gate (P-016)', () 
   it.each(DOORS)('$door calls $call', ({ file, call }) => {
     expect(callsIn(masked(file), call), `${file} must call ${call}(…)`).toBeGreaterThanOrEqual(1);
   });
-
-  for (const { door, call } of PENDING_DOORS) it.todo(`${door} calls ${call}`);
 
   it('the gate symbols the doors call are real exports (positive control)', () => {
     expect(readFileSync(resolve(LIB, 'cupboard/identity-activation-gate-io.ts'), 'utf8'))

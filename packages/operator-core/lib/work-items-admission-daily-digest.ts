@@ -163,7 +163,7 @@ export const DAILY_DIGEST_MAX_TITLE_CHARS = 200;
  * partial coverage is.
  */
 export interface DailyDigestCoverage {
-  /** Live non-terminal, non-observation corpus size read at digest time. */
+  /** Live non-terminal source corpus size; excludes observations and prior daily-digest umbrellas. */
   live: number;
   /** Corpus items present in the census shard map — the subset this run digested. */
   covered: number;
@@ -783,6 +783,7 @@ async function readDigestContext(
      WHERE wi.workspace_id = ${input.workspaceId}
        AND wi.harness_slug = ${input.harnessSlug}
        AND wi.payload ->> 'lane' IS DISTINCT FROM 'observation'
+       AND wi.payload -> 'dailyDigest' IS NULL
        AND (wi.status IS NULL OR NOT (wi.status = ANY(${terminal}::text[])))
      ORDER BY wi.feature_id`;
   const mapRows = await sql<ShardMapRow[]>`

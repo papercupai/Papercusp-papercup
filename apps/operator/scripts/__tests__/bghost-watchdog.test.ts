@@ -100,7 +100,7 @@ let readCommittedHotPathState: (deps?: {
   sh?: (
     cmd: string,
     args: string[],
-    opts?: { stdin?: string; timeout?: number },
+    opts?: { stdin?: string; timeout?: number; env?: NodeJS.ProcessEnv },
   ) => Promise<{ err: Error | null; stdout: string; stderr?: string }>;
 }) => Promise<{
   root: string | null;
@@ -237,11 +237,11 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
   });
 
   it('reads the latest NON-TEST commit but treats every dirty/untracked hot-path file as unsafe', async () => {
-    const calls: string[][] = [];
+    const calls: Array<{ args: string[]; options?: { env?: NodeJS.ProcessEnv } }> = [];
     const state = await readCommittedHotPathState({
       root: '/repo',
-      sh: async (_cmd, args) => {
-        calls.push(args);
+      sh: async (_cmd, args, options) => {
+        calls.push({ args, options });
         if (args.includes('log')) return { err: null, stdout: '950\u0000abcdef1234567890\n' };
         return {
           err: null,
@@ -260,8 +260,9 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
       ],
       error: null,
     });
-    const logArgs = calls.find((args) => args.includes('log'))!;
-    const statusArgs = calls.find((args) => args.includes('status'))!;
+    const logArgs = calls.find((call) => call.args.includes('log'))!.args;
+    const statusCall = calls.find((call) => call.args.includes('status'))!;
+    const statusArgs = statusCall.args;
     expect(logArgs).toContain(':(exclude,glob)**/*.test.ts');
     expect(logArgs).toContain(':(exclude,glob)**/__tests__/**');
     expect(logArgs).toContain(
@@ -273,6 +274,7 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
     expect(statusArgs).toContain('packages/operator-core/lib/red-queen');
     expect(statusArgs).toContain('packages/operator-core/lib/release/routine-engine-liveness.ts');
     expect(statusArgs).not.toContain(':(exclude,glob)**/*.test.ts');
+    expect(statusCall.options?.env).toMatchObject({ GIT_OPTIONAL_LOCKS: '0' });
   });
 
   it('waits out a git-sync fire but still fast-fails an exclusive-resource holder, with no unsafe overrides', async () => {

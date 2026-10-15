@@ -102,9 +102,14 @@ export type GraderModality = 'diff' | 'in-container' | 'qa' | 'interactive' | 'd
 /**
  * Normalized grader outcome. `error`/`timeout` are INFRA failures, distinct
  * from a genuine `failed` — they are excluded from accuracy and surfaced
- * separately (METR elicitation discipline; P-001 §5).
+ * separately (METR elicitation discipline; P-001 §5). `invalid` means a
+ * pre-grade evidence-integrity check found the attempt's protected
+ * verifier/scorer/fixture paths changed, so the grader refused to score it.
+ * Like `error`, it is a missing measurement (never a silent 0), but it is
+ * disclosed as its own count and is TERMINAL: a resume must not re-run it.
+ * Plan benchmark-coverage-frontierswe-v2-2026-10-10 D-008.
  */
-export type GraderStatus = 'passed' | 'failed' | 'error' | 'timeout';
+export type GraderStatus = 'passed' | 'failed' | 'error' | 'timeout' | 'invalid';
 
 /**
  * Outcome of the GENERATION half (parallel to GraderStatus, distinct surface —
@@ -190,6 +195,13 @@ export interface TaskRunResult {
   /** Arm-specific detail; OPAQUE to scoring, published for reproducibility.
    *  Baseline C: { n, selectedCandidate, candidates:[{tokensIn,tokensOut,verifierPass,score}], verifierTokens }. */
   armMeta?: Record<string, unknown> | null;
+  /** Structured scorer output the grade step returned (e.g. an integrity verdict, the reward source, the
+   *  grader's raw report). OPAQUE to scoring; retained so a campaign bundle can hold each task's scorer
+   *  output beside its trace. Absent when the grade step returned none. */
+  graderDetail?: unknown;
+  /** Transcript pointers of every agent run that produced this attempt, the GRADED agent's first (a judge,
+   *  navigator or team lead follows). Absent when no run reported one — a campaign bundle then shows the gap. */
+  traceRefs?: string[];
 
   // ── reproducibility slice (P-010 — referenced here by id/hash/ref) ────────
   /** Exact model id, e.g. 'claude-opus-4-8[1m]'. */
@@ -226,6 +238,8 @@ export interface CostAccount {
   tokensPerRun: number;
   /** $ per resolved task — the "more resolved per dollar" headline denominator. */
   costPerResolved: number | null;
+  /** Rows with incomplete usage. costUsd remains their known normalized subtotal. */
+  missingMeasurements?: number;
 }
 
 /** A pass@k point at one k, with the tasks it was estimated over. */
@@ -240,9 +254,13 @@ export interface PassAtKPoint {
 export interface ArmReport {
   arm: ArmId;
   suite: BenchSuite;
-  /** Distinct tasks and total scored attempts (excludes infra-error rows). */
+  /** Assigned tasks and observed attempts (generation failures included). */
   tasks: number;
   attempts: number;
+  gradedAttempts?: number;
+  absentTasks?: number;
+  missingMeasurements?: number;
+  conditionalPassAt1?: number;
   /** Attempts dropped because graderStatus was error/timeout (surfaced, not scored). */
   infraErrors: number;
   /** Of the GENERATION runs, how many hit the iso-budget cap. */
@@ -250,11 +268,11 @@ export interface ArmReport {
   /** The iso-budget cap shared by these runs (null = uncapped, or mixed → see verifyIsoBudget). */
   budgetTokens: number | null;
   /** pass@1 = mean over tasks of (mean over seeds of resolved). The headline accuracy. */
-  passAt1: number;
-  /** Bootstrap CI over tasks for pass@1 (task heterogeneity is the dominant noise). */
-  passAt1Ci: Interval;
-  /** Wilson interval on the pooled task×seed Bernoulli resolved-rate (cross-check). */
-  resolvedRateWilson: Interval;
+  passAt1: number | null;
+  /** Primary CI under the report's sampling policy; null means unmeasured. */
+  passAt1Ci: Interval | null;
+  /** Pooled Bernoulli diagnostic, not independent task/repository inference. */
+  resolvedRateWilson: Interval | null;
   /** pass@k / pass^k at the protocol k's (same k for every arm). */
   passAtK: PassAtKPoint[];
   passHatK: PassAtKPoint[];
@@ -267,7 +285,21 @@ export interface ArmDelta {
   treatment: ArmId; // 'papercusp'
   baseline: ArmId;
   /** passAt1(treatment) − passAt1(baseline). Positive = treatment resolves more. */
-  accuracyDelta: number;
+  accuracyDelta: number | null;
+  /** Paired candidate-minus-baseline interval after collapsing seeds per task. */
+  accuracyDeltaCi: Interval | null;
+  uncertainty: {
+    status: 'measured' | 'missing-grade' | 'insufficient-independent-units' | 'unregistered-policy';
+    taskPairs: number;
+    independentUnits: number | null;
+    missingMeasurements: number;
+    baselineObservedAttempts: number;
+    treatmentObservedAttempts: number;
+    baselineAbsentAttempts: number;
+    treatmentAbsentAttempts: number;
+  };
+  /** False when either arm lacks observed, complete usage. */
+  efficiencyMeasured: boolean;
   /** costPerResolved ratio treatment/baseline (null if a denominator is 0). */
   costRatio: number | null;
   /** treatment cost as a fraction of baseline cost ("at Z% of the cost"). */
@@ -290,6 +322,17 @@ export interface ParetoPoint {
 export interface SuiteReport {
   runId: string;
   suite: BenchSuite;
+  /** Frozen table used for normalized token cost, distinct from actual bills. */
+  priceTableVersion?: string;
+  /** Explicitly distinguish a frozen population from legacy observed-only evidence. */
+  assignment?: {
+    basis: 'frozen' | 'observed';
+    taskIds: string[];
+    seeds: number[] | null;
+    arms: ArmId[];
+    preregHash?: string;
+    protocolCommitted?: boolean;
+  };
   arms: ArmReport[];
   /** Cost/accuracy frontier across arms; `onFrontier` flags the non-dominated set. */
   frontier: ParetoPoint[];
@@ -299,4 +342,15 @@ export interface SuiteReport {
   isoBudget: { ok: boolean; budgetTokens: number | null; violations: string[] };
   /** The k's the pass@k/pass^k protocol used (identical across arms). */
   protocolKs: number[];
+  sampling: {
+    unit: 'task' | 'repository' | 'unregistered';
+    taskPairs: number;
+    independentUnits: number | null;
+    seedPolicy: 'collapse-within-task';
+    assignedSeeds: number[] | null;
+    ci: number;
+    bootstrapSeed: number;
+    bootstrapIterations: number;
+    repositoryByTask: Record<string, string> | null;
+  };
 }

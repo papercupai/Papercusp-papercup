@@ -12,6 +12,7 @@
  * hive-eval live-ports pattern) so this is unit-testable with fakes before live harness-spin lands.
  */
 import type { ArmAttempt, BenchTask, GenerationBudget, GenerationPorts, GenerationStopReason, TaskCheckout } from './types';
+import { FULL_SPINE_BLUEPRINT } from './run-loop';
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -87,6 +88,7 @@ export async function runArmGeneration(input: RunArmGenerationInput, ports: Gene
       trajectoryRef: t.trajectoryRef,
       stopReason,
       generationError,
+      ...(t.armMeta ? { armMeta: t.armMeta } : {}),
     };
   } catch (e) {
     // Harness instantiation / run threw — infra failure during generation.
@@ -107,12 +109,12 @@ export async function runArmGeneration(input: RunArmGenerationInput, ports: Gene
   }
 }
 
-/** The FULL Papercusp arm — the multi-agent spine ON. Arm id 'papercusp', blueprint 'external-bench'. */
+/** The current Papercusp treatment through the maintained native su binding. */
 export function runPapercuspArm(
   task: BenchTask,
   seed: string,
   budget: GenerationBudget,
   ports: GenerationPorts,
 ): Promise<ArmAttempt> {
-  return runArmGeneration({ arm: 'papercusp', blueprintId: 'external-bench', task, seed, budget }, ports);
+  return runArmGeneration({ arm: 'papercusp', blueprintId: FULL_SPINE_BLUEPRINT, task, seed, budget }, ports);
 }

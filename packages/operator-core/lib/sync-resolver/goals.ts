@@ -38,7 +38,9 @@
 // package leaves it inferred for the same reason.
 
 import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
-import { budgetSpendScope } from '../goal-launch-settings';
+import { traceNamedQueryStage } from '../agent-tools/db-diagnostic-correlation-wiring';
+import { createReadDeadline, isReadBudgetExceeded } from './read-deadline';
+import { budgetSpendScope, type GoalPortfolioBrief } from '../goal-launch-settings';
 // P-001 — goal-live-holder-guarantee-2026-08-18: ROW PRESENCE IS NOT LIVENESS.
 // A goal-mode row outlives the session that wrote it, so both surfaces below
 // (the board and the popup) reported goals dark for days as staffed. The
@@ -110,6 +112,8 @@ export interface GoalSummaryRow {
    * showing what was DECLARED, not what is true now.
    */
   effectiveStatus: string | null;
+  /** Existing goal identity: ongoing presentation must never match by title. */
+  standing: boolean;
   /** True when `effectiveStatus` differs from `status` for the P-004 reason. */
   deactivated: boolean;
   killCriterion: string | null;
@@ -304,6 +308,7 @@ interface RawGoal {
   title: string;
   body: string | null;
   status: string;
+  standing: boolean;
   parent_id: string | null;
   /** json_agg output from the agents subselect — `unknown` because it arrives
    *  as parsed JSON from pg and is narrowed in toSummary, not trusted here. */
@@ -318,6 +323,8 @@ interface RawGoal {
   last_activity_at: string | Date | null;
   /** Raw jsonb — parsed by `parseGoalLaunchSettings`, never trusted here. */
   launch_settings?: unknown;
+  property_schema?: unknown;
+  properties?: unknown;
   pot_count: string | null;
   /** json_agg of the sampled pots — shape validated by parsePotChips, not here. */
   pots: unknown;
@@ -379,6 +386,7 @@ function toSummary(
     title: r.title,
     body: r.body,
     status: r.status,
+    standing: r.standing === true,
     parentId: r.parent_id,
     // Already a json array from the subselect's COALESCE (never SQL NULL), but
     // narrowed defensively: a legacy/cached payload predating P-006 has no such
@@ -538,7 +546,7 @@ export async function resolveGoalsList(args: {
   const rows = await sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
     const goalRows = (await tx`
-      SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
+      SELECT g.id, g.title, g.body, g.status, g.standing, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.budget_window_sec, g.metadata, g.launch_settings, g.created_at, g.updated_at,
              (SELECT COUNT(*) FROM harness_shared.goal_pots gp
                WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
@@ -816,20 +824,20 @@ export async function resolveGoalDetail(args: {
   // Dynamic like its neighbour above, and for the same reason: this module is
   // imported by callers that must not pay for the store's server dependencies at
   // module load. The TYPE it validates into is imported statically (erased).
-  const { parseGoalLaunchSettings, LAUNCH_PROFILE_OPTIONS, GOAL_LAUNCH_DEFAULTS } = await import(
-    '../goal-launch-settings'
-  );
+  const { parseGoalLaunchSettings, LAUNCH_PROFILE_OPTIONS, GOAL_LAUNCH_DEFAULTS } =
+    await traceNamedQueryStage('goal-detail-dependencies', () => import('../goal-launch-settings'));
   const { sql } = getOrgPg();
   const { workspaceId, goalId, activityLimit = 40 } = args;
   // Same cut as resolveGoalsList — see the note there.
   const recentSinceMs = Date.now() - SPEND_RECENT_WINDOW_MS;
 
-  const detail = await sql.begin(async (tx) => {
+  const rawDetail = await traceNamedQueryStage('goal-detail-sql', () => sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
 
     const [goalRow] = (await tx`
-      SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
+      SELECT g.id, g.title, g.body, g.status, g.standing, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.budget_window_sec, g.metadata, g.launch_settings, g.created_at, g.updated_at,
+             g.property_schema, g.properties,
              0 AS pot_count, '[]'::json AS pots, 0 AS open_work_items, 0 AS needs_human,
              -- The goal-attributed stream, identical to the list query's, so the
              -- popup and the card it opened from report one figure.
@@ -848,7 +856,7 @@ export async function resolveGoalDetail(args: {
        WHERE g.workspace_id = ${workspaceId} AND g.id = ${goalId}
        LIMIT 1
     `) as unknown as RawGoal[];
-    if (!goalRow) return { goal: null };
+    if (!goalRow) return null;
 
     // Pots, INCLUDING removed ones (see the note above) — `removedAt`
     // non-null is what the greyed-out card renders from.
@@ -908,7 +916,7 @@ export async function resolveGoalDetail(args: {
     `) as unknown as Array<Record<string, unknown>>;
 
     const activity = (await tx`
-      SELECT wi.feature_id AS id, wi.title, wi.harness_slug, wi.status,
+      SELECT wi.feature_id AS id, wi.title, wi.harness_slug, wi.status, wi.source_plan_slug,
              to_timestamp(wi.closed_ts / 1000.0) AS closed_at,
              to_timestamp(wi.updated_ts / 1000.0) AS updated_at
         FROM harness_shared.work_items wi
@@ -1031,95 +1039,21 @@ export async function resolveGoalDetail(args: {
        ORDER BY day ASC
     `) as unknown as Array<Record<string, unknown>>;
 
-    const pots = potRows.map((p) => ({
-      harnessSlug: String(p.harness_slug),
-      role: p.role === 'owner' ? 'owner' : 'contributing',
-      killCriterion: (p.kill_criterion as string | null) ?? null,
-      note: (p.note as string | null) ?? null,
-      addedAt: iso(p.added_at as string | Date | null),
-      removedAt: iso(p.removed_at as string | Date | null),
-      servesGoals: num(p.serves_goals),
-      spendUsd: num(p.spend_usd),
-      openWorkItems: num(p.open_work_items),
-    }));
-
-    // P-001: the popup's holder verdict, folded from the rows already fetched
-    // above — one shared classifier, no second oracle round-trip, and the same
-    // held/unheld/lost/unknown vocabulary the board uses.
-    const detailHolderRows: GoalHolderRow[] = agentRows.map((a) => ({
-      goalId,
-      workspaceId,
-      ownerId: String(a.owner_id),
-      setAtMs: Number(a.set_ms ?? 0),
-      setBy: (a.set_by as string | null) ?? null,
-    }));
-    const detailHolders = resolveGoalHoldersFromRows(
-      goalId,
-      workspaceId,
-      detailHolderRows,
-      await resolveHolderLiveness(detailHolderRows.map((r) => r.ownerId)),
-    );
-    /* PER-GOAL LAUNCH SETTINGS (P-005), read through the SAME schema that
-       validates the write. Parsed here rather than handed over raw so the panel
-       renders a document the launch resolver would actually honour — a raw blob
-       would let the editor show, and re-save, a shape the ceiling code rejects.
-
-       AN INVALID DOCUMENT IS REPORTED, NOT SWALLOWED. `readGoalLaunchSettings`
-       makes the same call for the same reason: a settings blob that fails to
-       parse means the owner's ceiling is NOT IN FORCE, and rendering that as
-       "no settings" would show an unlimited goal as deliberately unlimited.
-       The panel says so instead.
-
-       HOISTED above `goal` (P-004) because the activity fold below needs it and
-       `goal` carries the fold's result. */
-    const {
-      settings: launchSettings,
-      error: launchSettingsInvalid,
-      unknownKeys: launchSettingsUnknownKeys,
-    } = parseGoalLaunchSettings(
-      (goalRow as unknown as { launch_settings?: unknown }).launch_settings,
-      `goal ${goalId} launch settings`,
-    );
-
-    /* P-004: fold status + holder policy + liveness into the reading the popup
-       should actually show. Both inputs are already in hand — no extra query.
-
-       NOTE the interaction with `launchSettingsInvalid` above: an unreadable
-       document parses to `null`, which resolves to the DEFAULT policy
-       (requireLive: true), so a corrupt blob makes the goal MORE guarded, not
-       less. That is the opposite of the ceiling case, and deliberately so: a
-       ceiling that fails open spends money, a holder requirement that fails
-       open hides a dead goal. */
-    const { resolveGoalEffectiveActivity } = await import('../goals/activity');
-    const detailActivity = resolveGoalEffectiveActivity({
-      status: (goalRow as unknown as { status?: string | null }).status ?? null,
-      launchSettings,
-      liveness: detailHolders.liveness,
-    });
-
-    const goal: GoalSummaryRow = {
-      ...toSummary(goalRow, makeGoalPackageLookup()),
-      agents: detailHolders.holders.map((h) => ({
-        ownerId: h.ownerId,
-        live: h.live,
-        sessionState: h.sessionState,
-      })),
-      holderLiveness: detailHolders.liveness,
-      effectiveStatus: detailActivity.effectiveStatus,
-      deactivated: detailActivity.deactivated,
-    };
-    goal.potCount = pots.filter((p) => !p.removedAt).length;
-    // From the UNBOUNDED count, never `waiting.length` — that array stops at 25,
-    // so a goal with 31 parked items used to render "31 needs you" on the card
-    // (goals.list counts unbounded) and "25 waiting on you" in this panel, with
-    // nothing disclosing the cap. Sourcing both from the same predicate makes the
-    // two surfaces agree BY CONSTRUCTION rather than by coincidence.
-    goal.needsHuman = num(waitingTotalRow?.total);
-    // spendUsd / spendRecentUsd stay as the goal row measured them (the
-    // goal-attributed stream). They are NOT re-summed from the pots below: a
-    // pot's spend is its harness's whole population, not this goal's, and a
-    // goal with no pots would sum to a $0 nothing measured (WI-1074208).
-    goal.openWorkItems = pots.reduce((acc, p) => acc + p.openWorkItems, 0);
+    // Work finished per UTC day over a rolling 21 days (WI-10007603): the goal
+    // panel's progress-over-time chart. Counted here, not from `activity`,
+    // because that list is capped and would under-report a busy day. Days with
+    // nothing finished are absent; the client fills the gaps as zeros because
+    // the window itself is measured.
+    const completedByDay = (await tx`
+      SELECT to_char(to_timestamp(wi.closed_ts / 1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day,
+             COUNT(*)::int AS done
+        FROM harness_shared.work_items wi
+       WHERE wi.goal_id = ${goalId}
+         AND wi.status IN ('done', 'resolved')
+         AND wi.closed_ts >= (EXTRACT(EPOCH FROM now() - interval '21 days') * 1000)::bigint
+       GROUP BY day
+       ORDER BY day ASC
+    `) as unknown as Array<Record<string, unknown>>;
 
     /* SUBDIRECTIVES + the parent, for the popup's hierarchy section
        (goals-tab-improvement-2026-08-09 P-017).
@@ -1153,107 +1087,209 @@ export async function resolveGoalDetail(args: {
         `) as unknown as Array<{ id: string; title: string | null }>)
       : [];
 
-    return {
-      goal,
-      /** Null = none declared, and NOT an error. Since D-015 that means the
-       *  SYSTEM DEFAULT ceilings (shipped below), not no ceiling — a goal that is
-       *  deliberately ungoverned says so with an explicit 'unlimited'. */
-      launchSettings,
-      /** Non-null when the stored document could not be read — the ceilings are
-       *  therefore NOT being enforced, which the panel must say out loud. */
-      launchSettingsInvalid,
-      /** WI-2140573: keys the lenient read STRIPPED (dotted paths). Every other
-       *  key is in force; these bind nothing on this host — usually a key from a
-       *  newer schema than the reader runs, else a typo. Never render them as
-       *  configured. */
-      launchSettingsUnknownKeys,
-      /** What an UNPINNED ceiling actually resolves to (D-015). Shipped for the
-       *  same reason as the option lists below: the editor must be able to say
-       *  "default 12" without hand-spelling a number the resolver owns and can
-       *  change underneath it. */
-      launchSettingsDefaults: GOAL_LAUNCH_DEFAULTS,
-      /** The closed sets the editor may offer, from the schema's own constants
-       *  (D-011): shipped rather than re-spelled client-side so the form cannot
-       *  drift from the validator. */
-      launchSettingsOptions: LAUNCH_PROFILE_OPTIONS,
-      /** Present and empty when this goal has none — never absent, so the panel
-       *  can tell "no subdirectives" from "this payload predates P-017". */
-      subGoals: childRows.map((c) => ({
-        id: String(c.id),
-        title: (c.title as string | null) ?? String(c.id),
-        status: String(c.status ?? '').toLowerCase(),
-      })),
-      /** Null unless this goal IS a subdirective. */
-      parent: parentRow
-        ? { id: String(parentRow.id), title: (parentRow.title as string | null) ?? String(parentRow.id) }
-        : null,
-      pots,
-      /** P-001: each holder carries its LIVENESS. `live: null` means the oracle
-       *  could not resolve it — UNKNOWN, never dead. The popup's conversation
-       *  affordance is only honest for a holder that is actually there. */
-      agents: detailHolders.holders.map((h) => ({
-        ownerId: h.ownerId,
-        // From the holder row's own setAtMs — never a positional lookup back
-        // into agentRows, which would silently mis-pair if the classifier ever
-        // filtered or reordered.
-        setAt: h.setAtMs > 0 ? new Date(h.setAtMs).toISOString() : null,
-        setBy: h.setBy ?? null,
-        live: h.live,
-        sessionState: h.sessionState,
-      })),
-      /** held | unheld | lost | unknown — see GoalSummaryRow.holderLiveness. */
-      holderLiveness: detailHolders.liveness,
-      /** P-004: the status a reader should USE — `status` verbatim, or
-       *  `'dormant'` when this goal requires a live holder and has none.
-       *  Derived on this read from the settings and liveness already fetched
-       *  above; the raw column is never written. */
-      effectiveStatus: detailActivity.effectiveStatus,
-      deactivated: detailActivity.deactivated,
-      /** Why `deactivated` is what it is — the resolved policy the fold used,
-       *  so the panel can say "inheriting the default" rather than re-deriving
-       *  it from an absent key (D-008). */
-      holderPolicy: detailActivity.policy,
-      plans: planRows.map((p) => ({
-        planSlug: String(p.plan_slug),
-        harnessSlug: String(p.harness_slug),
-        title: (p.title as string | null) ?? null,
-        status: (p.status as string | null) ?? null,
-        archived: p.archived === true,
-        items: num(p.items),
-        openItems: num(p.open_items),
-        stamped: p.stamped === true,
-        updatedAt: iso(p.updated_at as string | Date | null),
-      })),
-      /** The unbounded total, so the client can say "showing 25 of 31" instead of
-       *  presenting a capped row count as the whole truth. */
-      waitingOnYouTotal: num(waitingTotalRow?.total),
-      waitingOnYou: waiting.map((w) => ({
-        id: String(w.id),
-        title: String(w.title),
-        harnessSlug: (w.harness_slug as string | null) ?? null,
-        updatedAt: iso(w.updated_at as string | Date | null),
-      })),
-      activity: activity.map((a) => ({
-        id: String(a.id),
-        title: String(a.title),
-        harnessSlug: (a.harness_slug as string | null) ?? null,
-        status: (a.status as string | null) ?? null,
-        closedAt: iso(a.closed_at as string | Date | null),
-        updatedAt: iso(a.updated_at as string | Date | null),
-      })),
-      spendByDay: spendByDay.map((d) => ({
-        day: String(d.day),
-        harnessSlug: (d.harness_slug as string | null) ?? null,
-        costUsd: num(d.cost),
-      })),
-      // Repeated on the detail payload because this is the page most likely to
-      // be screenshotted into a report, and a spend number without this caveat
-      // invites the wrong comparison.
-      spendLabel: 'goal-attributed spend',
-      spendNote:
-        'Priced usage stamped with this goal when it was recorded — the figure the budget is enforced on. No attributed usage reads as unmeasured, not $0. Per-pot figures are each pot harness’s whole spend and are not part of this total.',
-    };
+    return { goalRow, potRows, waiting, waitingTotalRow, activity, planRows, agentRows, spendByDay, completedByDay,
+      childRows, parentRow };
+  }));
+  if (!rawDetail) return { goal: null };
+  const { goalRow, potRows, waiting, waitingTotalRow, activity, planRows, agentRows, spendByDay, completedByDay,
+    childRows, parentRow } = rawDetail;
+
+  // Holder liveness performs independent pool reads. Release the detail
+  // transaction first so concurrent goal reads cannot each hold a connection
+  // while waiting for another one from the same exhausted pool.
+  const pots = potRows.map((p) => ({
+    harnessSlug: String(p.harness_slug),
+    role: p.role === 'owner' ? 'owner' : 'contributing',
+    killCriterion: (p.kill_criterion as string | null) ?? null,
+    note: (p.note as string | null) ?? null,
+    addedAt: iso(p.added_at as string | Date | null),
+    removedAt: iso(p.removed_at as string | Date | null),
+    servesGoals: num(p.serves_goals),
+    spendUsd: num(p.spend_usd),
+    openWorkItems: num(p.open_work_items),
+  }));
+
+  // P-001: the popup's holder verdict, folded from the rows already fetched
+  // above — one shared classifier, no second oracle round-trip, and the same
+  // held/unheld/lost/unknown vocabulary the board uses.
+  const detailHolderRows: GoalHolderRow[] = agentRows.map((a) => ({
+    goalId,
+    workspaceId,
+    ownerId: String(a.owner_id),
+    setAtMs: Number(a.set_ms ?? 0),
+    setBy: (a.set_by as string | null) ?? null,
+  }));
+  const detailHolders = resolveGoalHoldersFromRows(
+    goalId,
+    workspaceId,
+    detailHolderRows,
+    await traceNamedQueryStage('goal-holder-liveness', () => resolveHolderLiveness(detailHolderRows.map((r) => r.ownerId))),
+  );
+  /* PER-GOAL LAUNCH SETTINGS (P-005), read through the SAME schema that
+     validates the write. Parsed here rather than handed over raw so the panel
+     renders a document the launch resolver would actually honour — a raw blob
+     would let the editor show, and re-save, a shape the ceiling code rejects.
+
+     AN INVALID DOCUMENT IS REPORTED, NOT SWALLOWED. `readGoalLaunchSettings`
+     makes the same call for the same reason: a settings blob that fails to
+     parse means the owner's ceiling is NOT IN FORCE, and rendering that as
+     "no settings" would show an unlimited goal as deliberately unlimited.
+     The panel says so instead.
+
+     HOISTED above `goal` (P-004) because the activity fold below needs it and
+     `goal` carries the fold's result. */
+  const {
+    settings: launchSettings,
+    error: launchSettingsInvalid,
+    unknownKeys: launchSettingsUnknownKeys,
+  } = parseGoalLaunchSettings(
+    (goalRow as unknown as { launch_settings?: unknown }).launch_settings,
+    `goal ${goalId} launch settings`,
+  );
+
+  /* P-004: fold status + holder policy + liveness into the reading the popup
+     should actually show. Both inputs are already in hand — no extra query.
+
+     NOTE the interaction with `launchSettingsInvalid` above: an unreadable
+     document parses to `null`, which resolves to the DEFAULT policy
+     (requireLive: true), so a corrupt blob makes the goal MORE guarded, not
+     less. That is the opposite of the ceiling case, and deliberately so: a
+     ceiling that fails open spends money, a holder requirement that fails
+     open hides a dead goal. */
+  const { resolveGoalEffectiveActivity } = await import('../goals/activity');
+  const detailActivity = resolveGoalEffectiveActivity({
+    status: (goalRow as unknown as { status?: string | null }).status ?? null,
+    launchSettings,
+    liveness: detailHolders.liveness,
   });
+
+  const goal: GoalSummaryRow = {
+    ...toSummary(goalRow, makeGoalPackageLookup()),
+    agents: detailHolders.holders.map((h) => ({
+      ownerId: h.ownerId,
+      live: h.live,
+      sessionState: h.sessionState,
+    })),
+    holderLiveness: detailHolders.liveness,
+    effectiveStatus: detailActivity.effectiveStatus,
+    deactivated: detailActivity.deactivated,
+  };
+  goal.potCount = pots.filter((p) => !p.removedAt).length;
+  // From the UNBOUNDED count, never `waiting.length` — that array stops at 25,
+  // so a goal with 31 parked items used to render "31 needs you" on the card
+  // (goals.list counts unbounded) and "25 waiting on you" in this panel, with
+  // nothing disclosing the cap. Sourcing both from the same predicate makes the
+  // two surfaces agree BY CONSTRUCTION rather than by coincidence.
+  goal.needsHuman = num(waitingTotalRow?.total);
+  // spendUsd / spendRecentUsd stay as the goal row measured them (the
+  // goal-attributed stream). They are NOT re-summed from the pots below: a
+  // pot's spend is its harness's whole population, not this goal's, and a
+  // goal with no pots would sum to a $0 nothing measured (WI-1074208).
+  goal.openWorkItems = pots.reduce((acc, p) => acc + p.openWorkItems, 0);
+
+  const detail = {
+    goal,
+    goalData: { propertySchema: goalRow.property_schema ?? {}, properties: goalRow.properties ?? {} },
+    /** Null = none declared, and NOT an error. Since D-015 that means the
+     *  SYSTEM DEFAULT ceilings (shipped below), not no ceiling — a goal that is
+     *  deliberately ungoverned says so with an explicit 'unlimited'. */
+    launchSettings,
+    /** Non-null when the stored document could not be read — the ceilings are
+     *  therefore NOT being enforced, which the panel must say out loud. */
+    launchSettingsInvalid,
+    /** WI-2140573: keys the lenient read STRIPPED (dotted paths). Every other
+     *  key is in force; these bind nothing on this host — usually a key from a
+     *  newer schema than the reader runs, else a typo. Never render them as
+     *  configured. */
+    launchSettingsUnknownKeys,
+    /** What an UNPINNED ceiling actually resolves to (D-015). Shipped for the
+     *  same reason as the option lists below: the editor must be able to say
+     *  "default 12" without hand-spelling a number the resolver owns and can
+     *  change underneath it. */
+    launchSettingsDefaults: GOAL_LAUNCH_DEFAULTS,
+    /** The closed sets the editor may offer, from the schema's own constants
+     *  (D-011): shipped rather than re-spelled client-side so the form cannot
+     *  drift from the validator. */
+    launchSettingsOptions: LAUNCH_PROFILE_OPTIONS,
+    /** Present and empty when this goal has none — never absent, so the panel
+     *  can tell "no subdirectives" from "this payload predates P-017". */
+    subGoals: childRows.map((c) => ({
+      id: String(c.id),
+      title: (c.title as string | null) ?? String(c.id),
+      status: String(c.status ?? '').toLowerCase(),
+    })),
+    /** Null unless this goal IS a subdirective. */
+    parent: parentRow
+      ? { id: String(parentRow.id), title: (parentRow.title as string | null) ?? String(parentRow.id) }
+      : null,
+    pots,
+    /** P-001: each holder carries its LIVENESS. `live: null` means the oracle
+     *  could not resolve it — UNKNOWN, never dead. The popup's conversation
+     *  affordance is only honest for a holder that is actually there. */
+    agents: detailHolders.holders.map((h) => ({
+      ownerId: h.ownerId,
+      // From the holder row's own setAtMs — never a positional lookup back
+      // into agentRows, which would silently mis-pair if the classifier ever
+      // filtered or reordered.
+      setAt: h.setAtMs > 0 ? new Date(h.setAtMs).toISOString() : null,
+      setBy: h.setBy ?? null,
+      live: h.live,
+      sessionState: h.sessionState,
+    })),
+    /** held | unheld | lost | unknown — see GoalSummaryRow.holderLiveness. */
+    holderLiveness: detailHolders.liveness,
+    /** P-004: the status a reader should USE — `status` verbatim, or
+     *  `'dormant'` when this goal requires a live holder and has none.
+     *  Derived on this read from the settings and liveness already fetched
+     *  above; the raw column is never written. */
+    effectiveStatus: detailActivity.effectiveStatus,
+    deactivated: detailActivity.deactivated,
+    /** Why `deactivated` is what it is — the resolved policy the fold used,
+     *  so the panel can say "inheriting the default" rather than re-deriving
+     *  it from an absent key (D-008). */
+    holderPolicy: detailActivity.policy,
+    plans: planRows.map((p) => ({
+      planSlug: String(p.plan_slug),
+      harnessSlug: String(p.harness_slug),
+      title: (p.title as string | null) ?? null,
+      status: (p.status as string | null) ?? null,
+      archived: p.archived === true,
+      items: num(p.items),
+      openItems: num(p.open_items),
+      stamped: p.stamped === true,
+      updatedAt: iso(p.updated_at as string | Date | null),
+    })),
+    /** The unbounded total, so the client can say "showing 25 of 31" instead of
+     *  presenting a capped row count as the whole truth. */
+    waitingOnYouTotal: num(waitingTotalRow?.total),
+    waitingOnYou: waiting.map((w) => ({
+      id: String(w.id),
+      title: String(w.title),
+      harnessSlug: (w.harness_slug as string | null) ?? null,
+      updatedAt: iso(w.updated_at as string | Date | null),
+    })),
+    activity: activity.map((a) => ({
+      id: String(a.id),
+      title: String(a.title),
+      harnessSlug: (a.harness_slug as string | null) ?? null,
+      planSlug: (a.source_plan_slug as string | null) ?? null,
+      status: (a.status as string | null) ?? null,
+      closedAt: iso(a.closed_at as string | Date | null),
+      updatedAt: iso(a.updated_at as string | Date | null),
+    })),
+    spendByDay: spendByDay.map((d) => ({
+      day: String(d.day),
+      harnessSlug: (d.harness_slug as string | null) ?? null,
+      costUsd: num(d.cost),
+    })),
+    completedByDay: { windowDays: 21, days: completedByDay.map((d) => ({ day: String(d.day), done: num(d.done) })) },
+    // Repeated on the detail payload because this is the page most likely to
+    // be screenshotted into a report, and a spend number without this caveat
+    // invites the wrong comparison.
+    spendLabel: 'goal-attributed spend',
+    spendNote:
+      'Priced usage stamped with this goal when it was recorded — the figure the budget is enforced on. No attributed usage reads as unmeasured, not $0. Per-pot figures are each pot harness’s whole spend and are not part of this total.',
+  };
 
   /* P-009 (shared-agent-obligations-and-briefs-2026-09-05): the goal popup
      shows the SAME bounded obligation projection the goal holder receives at
@@ -1273,8 +1309,55 @@ export async function resolveGoalDetail(args: {
   } & Record<string, unknown>;
   if (!shaped.goal) return detail;
 
-  const { readAgentGoalModeState } = await import('../agent-obligation-reader');
-  const goalModeState = await readAgentGoalModeState({
+  const { readTypedPropertyCollection, TypedPropertySchemaDocumentSchema } = await import('../typed-properties');
+  const rawData = shaped.goalData as { propertySchema: unknown; properties: unknown };
+  const declaration = TypedPropertySchemaDocumentSchema.safeParse(rawData.propertySchema);
+  const legacyWorklist = declaration.success ? declaration.data.worklist : undefined;
+  const workOnEverything = shaped.goal.goalPackage?.ref === 'work-on-everything' ||
+    (!shaped.goal.goalPackage && legacyWorklist?.datatype === 'plan-ref-list' &&
+      legacyWorklist.collection?.source === 'active-workspace-plans' &&
+      legacyWorklist.collection.policy === 'worklist_policy' && legacyWorklist.collection.selectable);
+  // These evidence reads depend only on the saved goal, not on its portfolio
+  // projection. Serial composition charged both complete reads to one 10s
+  // deadline (measured portfolio 6.7s + stewardship 4.1s, before base SQL).
+  const enrichmentRead = (async () => {
+    if (!workOnEverything) return { rubricStewardship: null, worklistHistory: [], historyError: null };
+    const [rubricStewardship, history] = await Promise.all([
+      traceNamedQueryStage('goal-stewardship', async () => {
+        const { readGoalRubricStewardship } = await import('../goal-rubric-stewardship');
+        return readGoalRubricStewardship({ workspaceId, goalId }, { sql });
+      }),
+      traceNamedQueryStage('goal-worklist-history', async () => {
+        const [{ readPlanEvents }, { projectWorklistHistory }] = await Promise.all([
+          import('../agent-tools/coordination/plan-events'), import('../goals/worklist-console'),
+        ]);
+        return { worklistHistory: projectWorklistHistory(await readPlanEvents({ planSlugs: [goalId],
+          events: ['property_changed'], limit: 40 })), historyError: null };
+      }).catch(() => ({ worklistHistory: [], historyError: 'Worklist change history could not be read.' })),
+    ]);
+    return { rubricStewardship, ...history };
+  })();
+  // Keep a fast enrichment failure handled while its sibling reads finish;
+  // awaiting the original promise below still propagates the same failure.
+  void enrichmentRead.catch(() => undefined);
+
+  // The optional agenda may time out without cancelling its portfolio read.
+  // Keep that promise for the collection fallback instead of starting a second
+  // copy. Each declared property still owns its independent saved policy.
+  const portfolioReads = new Map<string, Promise<GoalPortfolioBrief | null>>();
+  const readPortfolio = (property: string): Promise<GoalPortfolioBrief | null> => {
+    let read = portfolioReads.get(property);
+    if (!read) {
+      read = traceNamedQueryStage('goal-portfolio', () => import('../goal-launch-settings').then(({ readGoalPortfolioBrief }) =>
+        readGoalPortfolioBrief({ workspaceId, goalId, sql, collectionProperty: property,
+          claimability: 'skip', rubricStewardship: 'skip' })));
+      portfolioReads.set(property, read);
+    }
+    return read;
+  };
+  const goalModeState = await traceNamedQueryStage('goal-mode-state', async () => {
+    const { readAgentGoalModeState } = await import('../agent-obligation-reader');
+    return readAgentGoalModeState({
     workspaceId,
     goalId,
     // The popup and its conversation already define “the agent” as the most
@@ -1283,6 +1366,61 @@ export async function resolveGoalDetail(args: {
     // coordination fault leaves two stamps visible.
     ownerId: shaped.agents?.[0]?.ownerId ?? null,
     planSlugs: [...new Set((shaped.plans ?? []).map((plan) => plan.planSlug).filter(Boolean))],
+    deps: { goalPortfolio: () => readPortfolio('worklist') },
+    });
   });
-  return { ...shaped, goalModeState };
+  const portfolios = new Map<string, NonNullable<typeof goalModeState.portfolio>>();
+  const collectionReadErrors = new Map<string, string>();
+  // An owner can inspect/steer a paused or unheld goal too. Its collection is
+  // goal data. Resolve each declaration through its own saved policy; the
+  // agent-mode projection belongs only to the conventional worklist property.
+  if (declaration.success) {
+    const withinCollectionBudget = createReadDeadline(6_000);
+    await Promise.all(Object.entries(declaration.data)
+      .filter(([, definition]) => definition.collection?.source === 'active-workspace-plans')
+      .map(async ([property]) => {
+        if (property === 'worklist' && goalModeState.portfolio) {
+          portfolios.set(property, goalModeState.portfolio);
+          return;
+        }
+        try {
+          const portfolio = await withinCollectionBudget(readPortfolio(property), `goal collection ${property}`);
+          if (portfolio) portfolios.set(property, portfolio);
+        } catch (error) {
+          collectionReadErrors.set(property, isReadBudgetExceeded(error)
+            ? 'Active workspace plans could not be read in time.'
+            : 'Active workspace plans could not be read.');
+        }
+      }));
+  }
+  const collections = Object.fromEntries(Object.entries(declaration.success ? declaration.data : {})
+    .filter(([, definition]) => definition.collection)
+    .map(([property, definition]) => {
+      const portfolio = portfolios.get(property);
+      const source = definition.collection!.source === 'active-workspace-plans'
+        ? portfolio?.collection?.available
+          ? { ok: true as const, items: portfolio.worklist.map((p) => p.harness ? `plan:${p.harness}/${p.slug}` : p.ref) }
+          : { ok: false as const, reason: collectionReadErrors.get(property) ?? portfolio?.collection?.reason ?? 'Active plans could not be read.' }
+        : undefined;
+      const selection = readTypedPropertyCollection({ ...rawData, property, source });
+      const rows = selection.ok && selection.configured ? selection.items.map((item) => {
+        const plan = definition.collection!.source === 'active-workspace-plans'
+          ? portfolio?.worklist.find((p) => (p.harness ? `plan:${p.harness}/${p.slug}` : p.ref) === item.id) : undefined;
+        const outcomes = (shaped.activity as Array<{ status?: string; planSlug?: string; harnessSlug?: string;
+          closedAt?: string; id: string; title: string }> | undefined)?.filter((a) =>
+          a.status === 'done' && a.closedAt && a.planSlug === plan?.slug && a.harnessSlug === plan?.harness) ?? [];
+        return { ...item, label: plan?.title ?? item.id, state: plan?.placement.state ?? null,
+          reason: plan?.placement.reconciliation.reason ?? null,
+          harness: plan?.harness ?? null, planSlug: plan?.slug ?? null,
+          nextStep: plan?.next?.text ?? null, counts: plan?.counts ?? null,
+          liveLaneOwner: plan?.placement.activeLane?.holderLive ? plan.placement.activeLane.ownerId : null,
+          fleetMembers: plan?.placement.fleet?.planScoped ? plan.placement.fleet.liveMembers : null,
+          outcomes: outcomes.sort((a, b) => Date.parse(b.closedAt!) - Date.parse(a.closedAt!)),
+        };
+      }) : [];
+      return [property, { selection, rows }];
+    }));
+  const { rubricStewardship, worklistHistory, historyError } = await enrichmentRead;
+  return { ...shaped, goalModeState, rubricStewardship, goalData: { ...rawData, collections, worklistHistory, historyError,
+    error: declaration.success ? null : 'Goal data declarations could not be read.' } };
 }

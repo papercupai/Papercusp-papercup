@@ -41,6 +41,19 @@ vi.mock('./release/checkpoint-memory-admission', async (orig) => ({
     detail: `checkpoint-memory: TEST STUB — admitting ${opts.requestG} GiB (host scope census is not a unit-test input)`,
   }),
 }));
+// WI-10005763: launchDetachedCheckpoint asks the D-012 restricted-hold fence before anything else.
+// The real census reads git metadata and the org database for the roots it is given (several tests
+// here pass real mkdtemp checkouts), which is host state, not a unit-test input. Default: nothing
+// held, returned SYNCHRONOUSLY so the same-tick spawn contract these tests drive (child.emit right
+// after the call) still holds. The WI-10005763 tests below swap in a refusal.
+const restrictedFence = vi.hoisted(() => ({
+  refusal: vi.fn((_roots: readonly string[]): RestrictedHoldRefusal | null => null),
+}));
+vi.mock('./agent-tools/testing/restricted-hold-fence', async (orig) => ({
+  ...(await orig<typeof import('./agent-tools/testing/restricted-hold-fence')>()),
+  restrictedTreeHoldRefusal: restrictedFence.refusal,
+}));
+import type { RestrictedHoldRefusal } from './agent-tools/testing/restricted-hold-fence';
 import { cancelSupersededCandidateAwaits } from './events/await/engine';
 import {
   buildCheckpointSystemdArgv,
@@ -78,6 +91,7 @@ import {
   resolveCheckpointCapacity,
   CHECKPOINT_CAPACITY_MODE_ENV,
 } from './release-checkpoint-launch';
+import type { ExecSyncLike } from './release-checkpoint-launch';
 // WI-38356: the control + calibration cases below call the underlying reads directly, to prove
 // the submodule fixture is exercising the blind spot rather than a broken fake.
 import { containingSubmodulePath, excludedCommitsTouchingPath, gitReadFromExecSync } from './candidate-contains';
@@ -136,7 +150,8 @@ describe('WI-5377: ANSI escapes are stripped before the persisted log is written
     const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin').at(-1)!;
     // green-checkpoint.ts's combined stdout+stderr feeds the filter, whose OWN stdout is
     // what lands in the file — never a raw, unfiltered write straight from the CLI.
-    expect(inner).toContain("2>&1 | sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp.log");
+    expect(inner).toContain("2>&1 | setsid --wait sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp.log");
+    expect(inner).toMatch(/^set -o pipefail;/);
     const csIdx = inner.indexOf('green-checkpoint.ts');
     const sedIdx = inner.indexOf('sed -u');
     const redirectIdx = inner.lastIndexOf('> /tmp/cp.log');
@@ -161,7 +176,7 @@ describe('WI-5377: ANSI escapes are stripped before the persisted log is written
 
   it('applies through the per-run-log path too (the run log, not just the stable symlink target)', () => {
     const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin', false, '/tmp/cp-RUN.log').at(-1)!;
-    expect(inner).toContain("2>&1 | sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp-RUN.log");
+    expect(inner).toContain("2>&1 | setsid --wait sed -u 's/\\x1b\\[[0-9;]*m//g' > /tmp/cp-RUN.log");
   });
 });
 
@@ -195,6 +210,28 @@ describe('buildCheckpointSystemdArgv', () => {
     // WI-5377: the redirect binds to the ANSI-stripping filter's output — see the
     // dedicated describe block for the filter itself.
     expect(inner).toContain('> /tmp/cp.log');
+  });
+
+  // WI-10008187 / WI-10006055: a detached `systemd-run --user` unit does NOT inherit the
+  // launcher's env. Without the DSN forwarded, the gate logs `database: <unset> (source=none)`
+  // and resolves the discovery file (another install's sidecar DB), where it cannot see its own
+  // frozen repair queue. This pins the forward so a refactor of the argv builder cannot drop it.
+  it('forwards the launcher DB target (DSN) into the detached unit, and never an empty one', () => {
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', 'postgresql://gate@127.0.0.1:5432/papercusp');
+    vi.stubEnv('HARNESS_DATABASE_URL', '   ');
+    vi.stubEnv('DATABASE_URL', undefined);
+    try {
+      const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
+      expect(argv).toContain('--setenv=HARNESS_ADMIN_DATABASE_URL=postgresql://gate@127.0.0.1:5432/papercusp');
+      expect(argv.some((arg) => arg.startsWith('--setenv=HARNESS_DATABASE_URL='))).toBe(false);
+      expect(argv.some((arg) => arg.startsWith('--setenv=DATABASE_URL='))).toBe(false);
+      // The forward must precede the inner `bash -c` command: systemd-run options after the
+      // command are treated as the command's own arguments, not as unit environment.
+      const dsnIndex = argv.indexOf('--setenv=HARNESS_ADMIN_DATABASE_URL=postgresql://gate@127.0.0.1:5432/papercusp');
+      expect(dsnIndex).toBeLessThan(argv.indexOf('bash'));
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('keeps the tooling root separate from the routed subject root and forwards the env overlay safely', () => {
@@ -334,6 +371,35 @@ describe('buildCheckpointSystemdArgv', () => {
     } finally {
       if (previous === undefined) delete process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX;
       else process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX = previous;
+    }
+  });
+
+  it('WI-10006055: forwards the launcher DB target so the detached gate never falls through to the discovery file', () => {
+    const keys = ['HARNESS_ADMIN_DATABASE_URL', 'HARNESS_DATABASE_URL', 'DATABASE_URL'] as const;
+    const previous = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    try {
+      for (const k of keys) delete process.env[k];
+      // No DSN in the launcher: nothing to forward (and no empty --setenv that would pin '').
+      const bare = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
+      expect(bare.filter((a) => keys.some((k) => a.startsWith(`--setenv=${k}=`)))).toEqual([]);
+
+      // :3070 carries HARNESS_ADMIN_DATABASE_URL; :3170 carries DATABASE_URL. Both must reach the unit.
+      process.env.HARNESS_ADMIN_DATABASE_URL = 'postgresql://admin:x@localhost:5432/papercusp';
+      process.env.DATABASE_URL = 'postgresql://admin:y@localhost:5432/papercusp';
+      process.env.HARNESS_DATABASE_URL = '   ';
+      const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
+      expect(argv).toContain('--setenv=HARNESS_ADMIN_DATABASE_URL=postgresql://admin:x@localhost:5432/papercusp');
+      expect(argv).toContain('--setenv=DATABASE_URL=postgresql://admin:y@localhost:5432/papercusp');
+      expect(argv.some((a) => a.startsWith('--setenv=HARNESS_DATABASE_URL='))).toBe(false);
+      // The DSN rides as systemd-run properties, before the command, never inside the shell string.
+      const bashAt = argv.indexOf('bash');
+      expect(argv.indexOf('--setenv=DATABASE_URL=postgresql://admin:y@localhost:5432/papercusp')).toBeLessThan(bashAt);
+      expect(argv.at(-1)).not.toContain('postgresql://');
+    } finally {
+      for (const k of keys) {
+        if (previous[k] === undefined) delete process.env[k];
+        else process.env[k] = previous[k];
+      }
     }
   });
 
@@ -638,6 +704,21 @@ const noPreLockAuthority = () => ({
   harness: null,
 });
 
+/**
+ * WI-10005268: the production default exec now runs its probes off the event loop (async), so a
+ * test that omits `execFn` would reach `spawnFn` a few ticks late and miss the fake child's events
+ * it emits right after the call. Answer exactly what the real host answered for '/tree' (captured
+ * 2026-10-02): an unknown systemd unit, and no git repository at the root.
+ */
+const inertLaunchExec: ExecSyncLike = (cmd) =>
+  cmd === 'systemctl'
+    ? {
+        status: 0,
+        stdout: 'MainPID=0\nExecMainStartTimestamp=\nLoadState=not-found\nActiveState=inactive\nInvocationID=\n',
+        stderr: '',
+      }
+    : { status: 128, stdout: '', stderr: "fatal: cannot change to '/tree': No such file or directory\n" };
+
 function launchDetachedCheckpoint(
   ...args: [
     Parameters<typeof launchDetachedCheckpointImpl>[0]?,
@@ -663,7 +744,7 @@ function launchDetachedCheckpoint(
   return launchDetachedCheckpointImpl(
     opts,
     spawnFn,
-    execFn,
+    execFn ?? inertLaunchExec,
     readLogHead,
     cancelStaleAwaits,
     recordDisplacement,
@@ -710,6 +791,34 @@ describe('launchDetachedCheckpoint', () => {
     expect(recordGateFire).toHaveBeenCalledWith(
       target,
       expect.objectContaining({ route: 'detached', root: '/tree', unit: checkpointUnitForRoot('/tree') }),
+    );
+  });
+
+  it('EI-256693: preserves a caller-reserved runner ID through detached CLI and gate-fire recording', async () => {
+    const gateFireId = 'manual-runner-fire-1';
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const recordGateFire = vi.fn(async () => {});
+    const target = { workspaceId: 'test-workspace', installSlug: 'test-install' };
+    const p = launchDetachedCheckpoint(
+      { root: '/tree', target, gateFireId },
+      spawnFn,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      recordGateFire,
+    );
+
+    child.emit('close', 0);
+    const result = await p;
+
+    expect(result.launched).toBe(true);
+    expect(result.argv).toContain(`--setenv=PAPERCUSP_GATE_FIRE_ID=${gateFireId}`);
+    expect(recordGateFire).toHaveBeenCalledWith(
+      target,
+      expect.objectContaining({ gateFireId }),
     );
   });
 
@@ -960,6 +1069,18 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
 
     expect(r).toMatchObject({ active: false, terminal_marker: false });
     expect(r).not.toHaveProperty('terminal_evidence');
+  });
+
+  it('binds an idle manual terminal to its own log vintage rather than probe time', () => {
+    const oldLogAt = Date.parse('2026-10-06T06:21:06Z');
+    const r = checkActiveCheckpointRun(
+      '/tree', fakeSystemctlShow({ ActiveState: 'inactive' }), () => null,
+      undefined, undefined, undefined,
+      () => '[green-checkpoint] checkpointing candidate abc12345\n' +
+        `${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} service_result=exit-code exit_code=exited exit_status=137`,
+      undefined, () => oldLogAt,
+    );
+    expect(r.terminal_evidence).toMatchObject({ candidate: 'abc12345', observed_at_ms: oldLogAt, exit_status: '137' });
   });
 
   it('reports active:true with started_at, a bounded eta_sec, and the parsed candidate when the unit is active', () => {
@@ -1623,27 +1744,39 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     });
 
     it('returns UNKNOWN when one procfs read exceeds its per-read deadline', async () => {
-      const startedAt = Date.now();
-      const reading = await probe({
-        readEnvironment: () => new Promise<string>(() => {}),
-        totalTimeoutMs: 100,
-        perReadTimeoutMs: 5,
-      });
-      expect(reading.active).toBe(false);
-      expect(reading.probeFailed).toBe(true);
-      expect(Date.now() - startedAt).toBeLessThan(80);
+      vi.useFakeTimers();
+      try {
+        let settled = false;
+        const reading = probe({
+          readEnvironment: () => new Promise<string>(() => {}),
+          totalTimeoutMs: 100,
+          perReadTimeoutMs: 5,
+        }).then((result) => { settled = true; return result; });
+        await vi.advanceTimersByTimeAsync(4);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(reading).resolves.toMatchObject({ active: false, probeFailed: true });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('returns UNKNOWN when the total census budget is exhausted', async () => {
-      const startedAt = Date.now();
-      const reading = await probe({
-        readEnvironment: () => new Promise<string>((resolve) => setTimeout(() => resolve(env()), 50)),
-        totalTimeoutMs: 5,
-        perReadTimeoutMs: 100,
-      });
-      expect(reading.active).toBe(false);
-      expect(reading.probeFailed).toBe(true);
-      expect(Date.now() - startedAt).toBeLessThan(80);
+      vi.useFakeTimers();
+      try {
+        let settled = false;
+        const reading = probe({
+          readEnvironment: () => new Promise<string>(() => {}),
+          totalTimeoutMs: 5,
+          perReadTimeoutMs: 100,
+        }).then((result) => { settled = true; return result; });
+        await vi.advanceTimersByTimeAsync(4);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(reading).resolves.toMatchObject({ active: false, probeFailed: true });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('returns UNKNOWN when an async procfs dependency rejects', async () => {
@@ -2491,6 +2624,63 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(cancelStaleAwaits).toHaveBeenCalledWith('/tree', '11111111');
     expect(r.launched).toBe(true);
     expect(recordDisplacement).toHaveBeenCalledTimes(1);
+  });
+
+  describe('WI-10005763: restricted-hold fence (D-012)', () => {
+    const held: RestrictedHoldRefusal = {
+      error: 'restricted_write_held',
+      hint: '1 held restricted write(s) in /tree (secret.ts). This action executes code from that tree with network access (D-012)',
+    };
+
+    it('refuses before any probe or spawn — force included — and asks about both trees the launch executes from', async () => {
+      for (const refusal of [held, { error: 'restricted_hold_state_unknown' as const, hint: 'census failed' }]) {
+        restrictedFence.refusal.mockImplementationOnce(() => refusal);
+        const spawnFn = vi.fn();
+        const execFn = vi.fn();
+        const r = await launchDetachedCheckpoint(
+          { root: '/tooling', integrationRoot: '/subject', force: true },
+          spawnFn as never,
+          execFn as never,
+        );
+        expect(restrictedFence.refusal).toHaveBeenLastCalledWith(['/tooling', '/subject']);
+        expect(spawnFn).not.toHaveBeenCalled();
+        expect(execFn).not.toHaveBeenCalled();
+        expect(r).toMatchObject({ launched: false, argv: [], reason: refusal.error, restrictedHold: refusal });
+      }
+    });
+
+    it('never stops a live stale run under replaceStale; the same fixture DOES stop it when nothing is held', async () => {
+      const run = async (refusal: RestrictedHoldRefusal | null) => {
+        restrictedFence.refusal.mockImplementationOnce(() => refusal);
+        const child = fakeChild();
+        const spawnFn = vi.fn(() => child);
+        const execFn = staleActiveExecFn(0, WEDGED_AGE_MIN);
+        const recordDisplacement = vi.fn();
+        const cancelStaleAwaits = vi.fn(async () => ({ cancelled: 0 }));
+        const p = launchDetachedCheckpoint(
+          { root: '/tree', replaceStale: true },
+          spawnFn as never,
+          execFn,
+          vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n'),
+          cancelStaleAwaits,
+          recordDisplacement,
+        );
+        child.emit('close', 0);
+        const r = await p;
+        const killed = execFn.mock.calls.some(([cmd, args]) => cmd === 'systemctl' && args[1] === 'kill');
+        return { r, killed, spawned: spawnFn.mock.calls.length, displaced: recordDisplacement.mock.calls.length };
+      };
+
+      const refused = await run(held);
+      expect(refused).toMatchObject({ killed: false, spawned: 0, displaced: 0 });
+      expect(refused.r).toMatchObject({ launched: false, reason: 'restricted_write_held', restrictedHold: held });
+
+      // Control: without a hold this exact fixture reaches the stop, so the refusal above is what
+      // prevented it — not a fixture that never gets that far.
+      const control = await run(null);
+      expect(control).toMatchObject({ killed: true, spawned: 1, displaced: 1 });
+      expect(control.r.launched).toBe(true);
+    });
   });
 
   it('WI-4957: a FAILED stop never calls cancelStaleAwaits (the run is not proven dead — nothing to retire)', async () => {

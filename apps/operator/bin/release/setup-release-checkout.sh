@@ -54,10 +54,15 @@
 #                             [--node-modules-generation-id <v1-sha256>]
 #                             [--node-modules-generation-token <stat-token>]
 #                             [--node-modules-workspace-dir <repo-relative-dir>]...
+#                             [--dependency-generation-root <dir>]
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
 #                             [--source-only]
+#                             [--source-root-mode worktree|clone]
+#                             [--spa-only]
 #                             [--source-integrity allow-live-tree|object-sourced]
+#                             [--build-spa]
+#   setup-release-checkout.sh -h|--help   print this usage and exit 0 (touches nothing)
 #
 # `--source-integrity object-sourced` (P-008) refuses the one materialization path
 # that reads the integration tree's live working directory instead of git objects
@@ -73,6 +78,17 @@
 #
 # Env overrides: PAPERCUSP_INTEGRATION_ROOT, PAPERCUSP_RELEASE_ROOT.
 set -euo pipefail
+
+# EI-24760202132078287: usage discovery must be non-mutating, so it is handled
+# before anything else runs (no helper sourcing, no trap, no git). The text is
+# the header's own `# Usage:` … `# Env overrides:` block, so it cannot drift.
+for _arg in "$@"; do
+  case "$_arg" in
+    -h|--help)
+      sed -n '/^# Usage:/,/^# Env overrides:/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}"
+      exit 0 ;;
+  esac
+done
 
 # Default to the checkout this script actually lives in — never one box's path
 # (WI-4419: a hardcoded /home/<user>/… default is wrong on every other machine
@@ -127,8 +143,10 @@ release_dependency_generation_lease_on_exit() {
 trap release_dependency_generation_lease_on_exit EXIT
 
 BUILD_SPA="0"
+SPA_ONLY="0"
 PREPARE_EXISTING="0"
 SOURCE_ONLY="0"
+SOURCE_ROOT_MODE="worktree"
 REF_WAS_SET="0"
 
 while [ $# -gt 0 ]; do
@@ -145,8 +163,10 @@ while [ $# -gt 0 ]; do
     --integration) INTEGRATION_ROOT="$2"; shift 2 ;;
     --release) RELEASE_ROOT="$2"; shift 2 ;;
     --build-spa) BUILD_SPA="1"; shift ;;
+    --spa-only) SPA_ONLY="1"; PREPARE_EXISTING="1"; BUILD_SPA="1"; shift ;;
     --prepare-existing) PREPARE_EXISTING="1"; shift ;;
     --source-only) SOURCE_ONLY="1"; shift ;;
+    --source-root-mode) SOURCE_ROOT_MODE="$2"; shift 2 ;;
     *) echo "[setup-release] unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -163,6 +183,14 @@ case "$SOURCE_INTEGRITY_MODE" in
   allow-live-tree|object-sourced) ;;
   *) echo "[setup-release] bad --source-integrity mode: $SOURCE_INTEGRITY_MODE" >&2; exit 2 ;;
 esac
+case "$SOURCE_ROOT_MODE" in
+  worktree|clone) ;;
+  *) echo "[setup-release] bad --source-root-mode: $SOURCE_ROOT_MODE" >&2; exit 2 ;;
+esac
+if [ "$SOURCE_ROOT_MODE" = "clone" ] && [ "$SOURCE_ONLY" != "1" ]; then
+  echo "[setup-release] --source-root-mode clone requires --source-only" >&2
+  exit 2
+fi
 if [ -n "$NODE_MODULES_GENERATION_ID" ] \
   && { [ "$NODE_MODULES_GENERATION_MODE" != "required" ] || [ "$NODE_MODULES_COPY_MODE" != "copy" ]; }; then
   echo "[setup-release] --node-modules-generation-id requires --node-modules-generation required and --node-modules-copy copy" >&2
@@ -178,6 +206,95 @@ if [ "$SOURCE_ONLY" = "1" ] && [ "$PREPARE_EXISTING" = "1" ]; then
 fi
 
 log() { echo "[setup-release] $*"; }
+
+# Return the device id for a path or its nearest existing ancestor. Git's local
+# clone hardlinks immutable objects only when both stores are on one device.
+filesystem_device() {
+  local path="$1" parent
+  while [ ! -e "$path" ]; do
+    parent="$(dirname "$path")"
+    [ "$parent" = "$path" ] && break
+    path="$parent"
+  done
+  stat -c '%d' "$path"
+}
+
+# Estimate checked-out blob allocation from the PIN, never the dirty donor
+# tree. Cross-device clones also need a real copy of the Git object store.
+source_clone_allocation_kib() {  # <repository> <pin> <destination-device>
+  local repo="$1" pin="$2" dest_device="$3" objects tree_kib object_kib=0
+  objects="$(git -C "$repo" rev-parse --path-format=absolute --git-path objects)" || return 1
+  tree_kib="$(git -C "$repo" ls-tree -rl "$pin" \
+    | awk '$2 == "blob" { kib += int(($4 + 4095) / 4096) * 4 } END { printf "%.0f\n", kib }')" || return 1
+  if [ "$(filesystem_device "$objects")" != "$dest_device" ]; then
+    object_kib="$(du -sk "$objects" | awk '{print $1}')" || return 1
+  fi
+  echo "$((tree_kib + object_kib))"
+}
+
+preflight_source_clone() {
+  local ancestor="$RELEASE_ROOT" dest_device required available child_kib pin path module_key
+  local source_real destination_real
+  source_real="$(realpath "$INTEGRATION_ROOT")" || return 1
+  destination_real="$(realpath -m "$RELEASE_ROOT")" || return 1
+  case "$destination_real" in
+    "$source_real"|"$source_real"/*)
+      echo "[setup-release] source clone destination must be outside integration tree (avoids nested repositories being auto-committed)" >&2
+      return 1 ;;
+  esac
+  while [ ! -e "$ancestor" ]; do ancestor="$(dirname "$ancestor")"; done
+  dest_device="$(filesystem_device "$ancestor")" || return 1
+  required="$(source_clone_allocation_kib "$INTEGRATION_ROOT" "$TARGET_SHA" "$dest_device")" || return 1
+  # The materializer supports top-level gitlinks; include their exact pins in
+  # the same preflight so a root clone cannot consume space needed by its children.
+  while IFS=$'\t' read -r pin path; do
+    [ -n "$pin" ] || continue
+    # This standalone clone uses Git's recursive traversal, which requires
+    # .gitmodules names. Refuse an unsupported pin before allocating anything;
+    # scripts/source-preview.mjs verifier-prepare supports unnamed gitlinks by
+    # attesting each repository's index separately.
+    module_key="$(git -C "$INTEGRATION_ROOT" config --blob "$TARGET_SHA:.gitmodules" \
+      --get-regexp '^submodule\..*\.path$' 2>/dev/null \
+      | awk -v path="$path" '$2 == path { sub(/^submodule\./, "", $1); sub(/\.path$/, "", $1); print $1 }')" || module_key=''
+    if [ -z "$module_key" ] || ! git -C "$INTEGRATION_ROOT" config \
+      --blob "$TARGET_SHA:.gitmodules" --get "submodule.$module_key.url" >/dev/null 2>&1; then
+      echo "[setup-release] source clone requires .gitmodules path/url for gitlink $path (destination untouched; use verifier-prepare for unnamed gitlinks)" >&2
+      return 1
+    fi
+    child_kib="$(source_clone_allocation_kib "$INTEGRATION_ROOT/$path" "$pin" "$dest_device")" || return 1
+    required="$((required + child_kib))"
+  done < <(git -C "$INTEGRATION_ROOT" ls-tree -r "$TARGET_SHA" \
+    | awk '$1 == "160000" { pin=$3; sub(/^[^\t]*\t/, ""); print pin "\t" $0 }')
+  # Allow metadata and allocation rounding overhead; this is a fail-fast
+  # capacity check, not a promise against concurrent disk consumers.
+  required="$((required + required / 20 + 65536))"
+  available="$(df -Pk "$ancestor" | awk 'NR == 2 {print $4}')" || return 1
+  case "$available" in ''|*[!0-9]*) echo "[setup-release] cannot measure source-clone capacity" >&2; return 1 ;; esac
+  log "SOURCE_CLONE_CAPACITY required_kib=$required available_kib=$available"
+  if [ "$available" -lt "$required" ]; then
+    echo "[setup-release] insufficient source-clone capacity: required_kib=$required available_kib=$available (destination untouched)" >&2
+    return 1
+  fi
+  # Fitting the clone is insufficient: preserve the same shared reserve and
+  # allocation margin as dependency copies. Probe the existing ancestor so a
+  # refusal never creates even the destination's parent directories.
+  DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 \
+    dependency_generation_check_headroom "$INTEGRATION_ROOT" \
+      "$ancestor/.source-clone-allocation" "$((required * 1024))"
+}
+
+# Shared by ordinary deployment preparation and the finite SPA-only phase.
+build_release_spa() {
+  log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
+  local spa_log="${TMPDIR:-/tmp}/setup-release-spa-build.$$.log"
+  if (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build) >"$spa_log" 2>&1; then
+    rm -f "$spa_log"
+  else
+    tail -n 60 "$spa_log" >&2
+    echo "[setup-release] SPA build FAILED — the swap would serve a stale SPA; aborting (full build output: $spa_log)" >&2
+    return 1
+  fi
+}
 
 # EI-21181583819839124: a crashed Git process can leave the linked checkout's
 # index.lock behind. Every later checkpoint then fails before running a single
@@ -288,6 +405,11 @@ refresh_release_worktree() {
 # on the real tree regardless of how the caller named the root.
 INTEGRATION_ROOT="$(realpath "$INTEGRATION_ROOT")"
 RELEASE_ROOT="$(realpath -m "$RELEASE_ROOT")"
+# WI-10006767: this script sources dependency-generation.sh instead of running
+# its main, so record the integration root as the headroom reserve's protected
+# filesystem here. Otherwise every copy (including generation builds on the
+# data disk) falls back to the full percentage reserve.
+dependency_generation_record_reserve_fs "$INTEGRATION_ROOT"
 
 # Worktree-safe repo check: ASK GIT, never stat `.git`. A git WORKTREE's `.git` is a
 # FILE (`gitdir: <path>`), not a directory, so the old `[ -d "$INTEGRATION_ROOT/.git" ]`
@@ -346,9 +468,109 @@ else
   log "target ref=$REF sha=$TARGET_SHA"
 fi
 
+# EI-25534651860716701: enumerating only .gitmodules silently omitted an
+# accidentally committed nested repository. Ordinary status was empty, but the
+# resulting source-only snapshot could not be traversed by Git and was not a
+# complete input. Compare the committed gitlinks with the SAME commit's mapping
+# before any checkout/dependency mutation; never borrow staging's newer mapping.
+assert_target_gitlink_mappings() {  # <repository> <commit>
+  local repo="$1" sha="$2" tree mappings="" meta path rc
+  tree="$(git -c core.quotePath=false -C "$repo" ls-tree -r "$sha")" || return 3
+  if ! printf '%s\n' "$tree" | grep '^160000 ' >/dev/null; then
+    return 0
+  fi
+  if ! git -C "$repo" cat-file -e "$sha:.gitmodules" 2>/dev/null; then
+    echo "[setup-release] FATAL pinned source $sha contains gitlinks without .gitmodules; use verifier-prepare for unnamed gitlinks" >&2
+    return 3
+  fi
+  rc=0
+  mappings="$(git -C "$repo" config --blob "$sha:.gitmodules" --get-regexp '^submodule\..*\.path$')" || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "[setup-release] FATAL unreadable pinned .gitmodules for $sha" >&2
+    return 3
+  fi
+  mappings="$(printf '%s\n' "$mappings" | sed 's/^[^[:space:]]*[[:space:]]*//')"
+  while IFS=$'\t' read -r meta path; do
+    case "$meta" in
+      '160000 '*)
+        if ! printf '%s\n' "$mappings" | grep -Fx -- "$path" >/dev/null; then
+          echo "[setup-release] FATAL pinned gitlink $path has no .gitmodules mapping at $sha; repair source registration before materializing" >&2
+          return 3
+        fi
+        ;;
+    esac
+  done <<< "$tree"
+}
+
+if [ "$SPA_ONLY" = "1" ]; then
+  # The existing-checkout/ref checks above apply, but source, dependencies and
+  # runtime assets are already prepared. Never re-clone or re-copy them here.
+  build_release_spa
+  log "release checkout ready at $RELEASE_ROOT (detached $TARGET_SHA)"
+  exit 0
+fi
+
+assert_target_gitlink_mappings "$INTEGRATION_ROOT" "$TARGET_SHA" || exit $?
+
+# Refuse an already-insufficient destination before resetting source or publishing
+# dependencies. The copy path still measures each tree under its allocation lock;
+# this read-only minimum check preserves its reserve and margin without reaping.
+if [ "$SOURCE_ONLY" = "0" ] && [ "$NODE_MODULES_MODE" != "skip" ] \
+  && [ "$NODE_MODULES_COPY_MODE" = "copy" ]; then
+  _headroom_ancestor="$RELEASE_ROOT"
+  while [ ! -e "$_headroom_ancestor" ]; do
+    _headroom_ancestor="$(dirname "$_headroom_ancestor")"
+  done
+  DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 \
+    dependency_generation_check_headroom '' \
+      "$_headroom_ancestor/.dependency-generation-headroom-check" || exit $?
+fi
+
+# EI-25223821707990839: an explicit generation can expire while source checkout
+# and submodule replacement run. Take its process-owned selector lease before
+# those mutations, so a missing generation leaves the existing source untouched
+# and retention cannot remove a live selection during preparation. Source-only
+# and dependency-skip callers deliberately do not consume a generation.
+if [ "$SOURCE_ONLY" = "0" ] && [ "$NODE_MODULES_MODE" != "skip" ] \
+  && [ "$NODE_MODULES_COPY_MODE" = "copy" ] \
+  && [ "$NODE_MODULES_GENERATION_MODE" = "required" ] \
+  && [ -n "$NODE_MODULES_GENERATION_ID" ]; then
+  DEPENDENCY_GENERATION_ROOT="$(dependency_generation_resolve_root "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT")"
+  dependency_generation_acquire_selector_lease \
+    "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID" "$$" \
+    "$NODE_MODULES_GENERATION_TOKEN"
+  log "leased explicit dependency generation before source preparation: $NODE_MODULES_GENERATION_ID"
+fi
+
 # 1. Worktree --------------------------------------------------------------
 if [ "$PREPARE_EXISTING" = "1" ]; then
   log "preserving existing checkout and submodules (prepare-existing)"
+elif [ "$SOURCE_ROOT_MODE" = "clone" ]; then
+  # Reuse the object-only submodule clone recipe for immutable root inputs,
+  # without registering a linked worktree or reading dirty source files.
+  # Never replace an existing clone: dependency-only retries use the exact
+  # source-only receipt with --prepare-existing.
+  if [ -e "$RELEASE_ROOT" ]; then
+    echo "[setup-release] clone source destination already exists: $RELEASE_ROOT" >&2
+    exit 1
+  fi
+  # Hold the existing host-wide allocation lock through root and gitlink
+  # materialization. The shell's exit releases the fd, including on failure.
+  dependency_generation_acquire_copy_lock "source clone $RELEASE_ROOT"
+  preflight_source_clone
+  log "creating independent release source clone at $RELEASE_ROOT"
+  _root_objects="$(git -C "$INTEGRATION_ROOT" rev-parse --path-format=absolute --git-path objects)"
+  _root_clone_args=(--quiet --local --no-checkout)
+  # Share only immutable object inodes. Refs, index and checked-out source are
+  # independent, and no alternates file depends on later donor retention.
+  [ "$(filesystem_device "$_root_objects")" = "$(filesystem_device "$RELEASE_ROOT")" ] \
+    || _root_clone_args+=(--no-hardlinks)
+  git clone "${_root_clone_args[@]}" "$INTEGRATION_ROOT" "$RELEASE_ROOT"
+  git -C "$RELEASE_ROOT" checkout --quiet --detach "$TARGET_SHA"
+  # A standalone clone does not inherit integration's submodule active config.
+  # Register gitlinks locally so recursive tracked-source guards see their files;
+  # source cloning below still reads the exact pins from local Git objects only.
+  git -C "$RELEASE_ROOT" submodule init
 elif [ -e "$RELEASE_ROOT/.git" ]; then
   log "release worktree exists; checking out $TARGET_SHA"
   refresh_release_worktree
@@ -495,20 +717,6 @@ extract_submodule_source() {  # <repo-relative path> <pinned sha>
   # it is unreachable in the default mode.
   _LAST_EXTRACT_USED_LIVE_TREE=1
   return 0
-}
-
-# Return the device id for a path or its nearest existing ancestor. Both the
-# submodule clone and node_modules materializer use this: local Git clones
-# hardlink objects by default and fail with EXDEV rather than falling back to a
-# copy when the destination is on another filesystem.
-filesystem_device() {
-  local path="$1" parent
-  while [ ! -e "$path" ]; do
-    parent="$(dirname "$path")"
-    [ "$parent" = "$path" ] && break
-    path="$parent"
-  done
-  stat -c '%d' "$path"
 }
 
 # EI-19299565558496583: clone a REAL submodule repository at the pinned sha. This
@@ -665,7 +873,7 @@ while IFS= read -r P; do
 # the target still pins the old set would otherwise be extracted from the wrong list
 # during the transition window. `git config --blob <sha>:.gitmodules` reads the committed
 # config; 2>/dev/null + an empty loop is the correct no-op when a sha has no .gitmodules.
-done < <(git -C "$INTEGRATION_ROOT" config --blob "${TARGET_SHA}:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{print $2}')
+done < <(git -C "$INTEGRATION_ROOT" config --blob "${TARGET_SHA}:.gitmodules" --get-regexp '\.path$' 2>/dev/null | sed 's/^[^[:space:]]*[[:space:]]*//')
 [ -z "$_nm_stash" ] || rm -rf "$_nm_stash"
 log "SUBMODULE_NODE_MODULES_KEPT trees=$SUBMODULE_NODE_MODULES_KEPT (pinned-generation trees carried across the submodule re-clone)"
 
@@ -691,8 +899,22 @@ log "submodule recursion: cloned=$_sub_cloned archive-fallback=$_sub_fallback tr
 # from the absence of a WARN. `live_tree=` is the number that matters: non-zero
 # means the tree carries content belonging to no commit.
 log "CANDIDATE_SOURCE_INTEGRITY mode=$SOURCE_INTEGRITY_MODE object_sourced=$((_sub_cloned + _sub_fallback - _sub_live_tree)) cloned=$_sub_cloned archive=$((_sub_fallback - _sub_live_tree)) live_tree=$_sub_live_tree"
-if [ "$_sub_cloned" -gt 0 ] && [ "$_recursive" -le "$_plain" ]; then
+if [ "$SOURCE_ROOT_MODE" = "clone" ]; then
+  # One tracked child replaces one gitlink, so equal counts can be healthy.
+  # Inspect membership: a residual mode-160000 entry means Git failed to walk
+  # that module. awk consumes the whole stream (no pipefail/SIGPIPE shortcut).
+  _remaining_gitlinks="$(git -C "$RELEASE_ROOT" ls-files --recurse-submodules --stage \
+    | awk '$1 == "160000" { print $0 }')"
+  if [ -n "$_remaining_gitlinks" ]; then
+    log "FATAL independent source clone has unwalked gitlinks: $_remaining_gitlinks"
+    exit 3
+  fi
+elif [ "$_sub_cloned" -gt 0 ] && [ "$_recursive" -le "$_plain" ]; then
   log "WARN recursion added NO files despite $_sub_cloned cloned submodule repo(s) — tracked-files guards are probably scanning the superproject only"
+fi
+if [ "$SOURCE_ROOT_MODE" = "clone" ] && [ "$_uninit" -gt 0 ]; then
+  log "FATAL independent source clone has uninitialized submodule metadata"
+  exit 3
 fi
 fi
 
@@ -1034,6 +1256,7 @@ sync_one_node_modules() {
   fi
   rm -rf "$tmp" "$old"                 # defensive: clear this run's leftovers (crash-safety)
   mkdir -p "$(dirname "$dest")"
+  dependency_generation_reap_dead_siblings "$dest"   # and dead runs' (WI-10004825)
   case "${NODE_MODULES_COPY_MODE:-hardlink}" in
     hardlink) cp -al "$src" "$tmp" ;;  # fast; source and destination share file data
     copy)
@@ -1127,7 +1350,14 @@ sync_one_node_modules() {
         cp -al "$dest" "$tmp"
       else
         log "isolated node_modules snapshot missing or drifted; performing full independent copy"
-        cp -a "$src" "$tmp"
+        # Use the same serialized capacity admission as generation copies.
+        # A failed copy must not strand a partial tree on the shared disk.
+        local copy_rc=0
+        dependency_generation_copy_independent "$src" "$tmp" || copy_rc=$?
+        if [ "$copy_rc" -ne 0 ]; then
+          rm -rf -- "$tmp"
+          return "$copy_rc"
+        fi
       fi
 
       # Do not publish a mixed snapshot if npm/test tooling rewrote the source
@@ -1167,9 +1397,17 @@ sync_one_node_modules() {
 record_node_modules_copy_metadata() {
   local metadata_root="$RELEASE_ROOT/node_modules"
   mkdir -p "$metadata_root"
-  [ -f "$INTEGRATION_ROOT/package-lock.json" ] \
-    && cp "$INTEGRATION_ROOT/package-lock.json" "$metadata_root/.papercusp-source-package-lock.json"
+  # WI-10004928 part 7: a REUSED immutable generation carries both markers
+  # read-only (0444). A plain `cp` / `>` onto one fails EACCES and the verify
+  # ends verdictless. Unlink first (needs only directory write), so each write
+  # creates a fresh file. Never chmod the inherited file in place: it may be a
+  # hard link into the immutable generation store.
+  if [ -f "$INTEGRATION_ROOT/package-lock.json" ]; then
+    rm -f "$metadata_root/.papercusp-source-package-lock.json"
+    cp "$INTEGRATION_ROOT/package-lock.json" "$metadata_root/.papercusp-source-package-lock.json"
+  fi
   if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
+    rm -f "$metadata_root/.papercusp-dependency-generation"
     printf 'identity=%s\nsource=%s\n' \
       "$PINNED_DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
       > "$metadata_root/.papercusp-dependency-generation"
@@ -1180,13 +1418,15 @@ record_node_modules_copy_metadata() {
 if need_node_modules; then
   NODE_MODULES_SOURCE_ROOT="$INTEGRATION_ROOT"
   if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
-    DEPENDENCY_GENERATION_ROOT="${DEPENDENCY_GENERATION_ROOT:-$INTEGRATION_ROOT/.papercusp/dependency-generations}"
+    DEPENDENCY_GENERATION_ROOT="$(dependency_generation_resolve_root "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT")"
     dependency_generation_configure_workspace_dirs \
       "$INTEGRATION_ROOT" "${NODE_MODULES_WORKSPACE_DIRS[@]}"
     if [ -n "$NODE_MODULES_GENERATION_ID" ]; then
       # Lease BEFORE the full validation walk. Otherwise a retention pass can
       # remove this exact identity between selection and materialization.
-      dependency_generation_acquire_selector_lease "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"
+      if [ -z "${DEPENDENCY_GENERATION_SELECTOR_LEASE:-}" ]; then
+        dependency_generation_acquire_selector_lease "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"
+      fi
       if [ -n "$NODE_MODULES_GENERATION_TOKEN" ]; then
         dependency_generation_select_prevalidated \
           "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID" \
@@ -1331,7 +1571,7 @@ reconcile_pinned_lock_deps() {
     --pinned-lock "$pinned_lock" \
     --integration-lock "$INTEGRATION_ROOT/package-lock.json" \
     --release "$RELEASE_ROOT" \
-    --generations "${DEPENDENCY_GENERATION_ROOT:-$INTEGRATION_ROOT/.papercusp/dependency-generations}" \
+    --generations "$(dependency_generation_resolve_root "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT")" \
     --backfill 2>&1)" && rc=0 || rc=$?
   rm -f "$pinned_lock"
   [ -z "$out" ] || while IFS= read -r line; do log "$line"; done <<<"$out"
@@ -1779,18 +2019,7 @@ fi
 # in apps/operator-vite/dev-dist-prune.ts. Plan
 # `dist-chunk-retention-default-2026-07-26` P-002 — do not "fix" this by adding =0.
 if [ "$BUILD_SPA" = "1" ]; then
-  log "building operator-vite SPA dist at the deployed sha (this can take a minute)"
-  # WI-10003918: vite-build-singleflight writes vite's own error to STDOUT, and a
-  # retain-mode build leaves no failure record, so discarding stdout left only
-  # `npm error code 1` in the deploy log and the next build overwrote the cause.
-  _spa_log="${TMPDIR:-/tmp}/setup-release-spa-build.$$.log"
-  if (cd "$RELEASE_ROOT" && npm --workspace @papercusp/operator-vite run build) >"$_spa_log" 2>&1; then
-    rm -f "$_spa_log"
-  else
-    tail -n 60 "$_spa_log" >&2
-    echo "[setup-release] SPA build FAILED — the swap would serve a stale SPA; aborting (full build output: $_spa_log)" >&2
-    exit 1
-  fi
+  build_release_spa
 fi
 
 log "release checkout ready at $RELEASE_ROOT (detached $TARGET_SHA)"

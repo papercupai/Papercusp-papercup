@@ -30,6 +30,33 @@ async function resolveSql(sql?: SqlLike): Promise<SqlLike> {
 }
 
 const FAIL_STATUSES = new Set(['fail', 'error']);
+
+/**
+ * Flip statistics over ONE ordered status history (oldest first). A FLIP is a
+ * transition between pass and fail/error across two consecutive entries;
+ * flipRate = flips / (n - 1), and a single entry has nothing to compare (0).
+ * Shared by the per-file read below and the per-case categories read
+ * (testing-case-categories.ts, plan test-rubric-unification-2026-10-12 R-3), so
+ * both grains answer "how flaky" with one definition. Pass executed statuses
+ * only: a skip is not a verdict.
+ */
+export function statusFlipStats(statuses: readonly string[]): {
+  flips: number;
+  flipRate: number;
+  passCount: number;
+  failCount: number;
+} {
+  let flips = 0;
+  let passCount = 0;
+  let failCount = 0;
+  for (let i = 0; i < statuses.length; i++) {
+    const isFail = FAIL_STATUSES.has(statuses[i]);
+    if (isFail) failCount++; else passCount++;
+    if (i > 0 && FAIL_STATUSES.has(statuses[i - 1]) !== isFail) flips++;
+  }
+  const flipRate = statuses.length > 1 ? flips / (statuses.length - 1) : 0;
+  return { flips, flipRate: Math.round(flipRate * 1000) / 1000, passCount, failCount };
+}
 // A run row addressed via the restored-checkout scheme (a checkpoint/gate
 // worktree copy) uses a different path scheme than a harness's own root —
 // same exclusion testing-orphan-runs.ts applies, so it's not double-counted
@@ -132,15 +159,7 @@ export async function computeFlakiness(opts: FlakinessOpts = {}): Promise<Flakin
   const out: FlakinessRow[] = [];
   for (const [filePath, runs] of byFile) {
     if (runs.length < minRuns) continue;
-    let flips = 0;
-    let passCount = 0;
-    let failCount = 0;
-    for (let i = 0; i < runs.length; i++) {
-      const isFail = FAIL_STATUSES.has(runs[i].status);
-      if (isFail) failCount++; else passCount++;
-      if (i > 0 && FAIL_STATUSES.has(runs[i - 1].status) !== isFail) flips++;
-    }
-    const flipRate = runs.length > 1 ? flips / (runs.length - 1) : 0;
+    const { flips, flipRate, passCount, failCount } = statusFlipStats(runs.map((r) => r.status));
     const last = runs[runs.length - 1];
     out.push({
       filePath,

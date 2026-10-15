@@ -47,9 +47,11 @@ export interface DeadlineBearing {
 }
 
 /**
- * PURE: fill in each row's deadline from its tree root, where the row has none of its
- * own. Returns NEW objects — a decoration must not surprise a caller by mutating rows
- * it also holds elsewhere.
+ * PURE: fill in each row's deadline and timeout policy from its tree root, where the
+ * row has no deadline of its own. Leaves and delivery anchors expire silently on
+ * their own; only the root's policy determines whether the tree deadline wakes its
+ * subscriber. Keeping the row's raw policy would reject a bounded wake tree.
+ * Returns NEW objects — never mutate rows a caller also holds elsewhere.
  *
  * A row's OWN `expiresTs` always wins. The helper only fills a gap, so an ordinary
  * (non-composed) await is returned untouched and can never be re-dated by this — which
@@ -64,7 +66,11 @@ export function applyRootDeadlines<T extends DeadlineBearing>(
     if (r.rootId == null) return r;
     const root = roots.get(r.rootId);
     if (!root?.expiresTs) return r;
-    return { ...r, expiresTs: root.expiresTs };
+    return {
+      ...r,
+      expiresTs: root.expiresTs,
+      ...(root.timeoutBehavior != null ? { timeoutBehavior: root.timeoutBehavior } : {}),
+    };
   });
 }
 

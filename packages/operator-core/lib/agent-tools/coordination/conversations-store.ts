@@ -115,6 +115,12 @@ export interface ConversationRow {
   superseded_ts: string | null;
 }
 
+/** The minimum lifecycle data needed for an id-based reconciliation. */
+export interface ConversationStateById {
+  id: string;
+  state: ConversationState;
+}
+
 export interface CreateConversationInput {
   id: string;
   kind: ConversationKind;
@@ -241,7 +247,19 @@ export interface SupersedeStoreResult {
 
 export type ReopenResolvedConversationResult = 'reopened' | 'not_found' | 'already_open' | 'source_changed';
 
-export type SupersedeStoreError = { error: 'not_found' } | { error: 'not_open'; conversation: ConversationRow };
+export type SupersedeStoreError =
+  | { error: 'not_found' }
+  | { error: 'not_open'; conversation: ConversationRow }
+  | { error: 'source_changed'; conversation: ConversationRow };
+
+export interface CloseIfOpenStoreResult {
+  ok: true;
+  conversation: ConversationRow;
+}
+
+export type CloseIfOpenStoreError =
+  | { error: 'not_found' }
+  | { error: 'not_open'; conversation: ConversationRow };
 
 /** The same column list QUALIFIED to the `c` alias, for the list query's LEFT JOIN
  *  against coord_threads. Required, not cosmetic: coord_threads also has `title`,
@@ -287,6 +305,20 @@ export class PgConversationStore {
         FROM harness_shared.coord_conversations
        WHERE workspace_id = ${this.ws} AND id = ${id}`;
     return rows[0] ? toRow(rows[0]) : null;
+  }
+
+  /** Read lifecycle for only the requested ids; the caller bounds this set to
+   *  a capped source batch and workspace/id is the table's primary key. */
+  async getStatesByIds(ids: readonly string[]): Promise<ConversationStateById[]> {
+    const uniqueIds = [...new Set(ids.filter((id) => typeof id === 'string' && id.trim().length > 0))];
+    if (uniqueIds.length === 0) return [];
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    return sql<ConversationStateById[]>`
+      SELECT id, state
+        FROM harness_shared.coord_conversations
+       WHERE workspace_id = ${this.ws}
+         AND id = ANY(${uniqueIds}::text[])`;
   }
 
   /**
@@ -367,6 +399,30 @@ export class PgConversationStore {
   }
 
   /**
+   * Atomically close an OPEN conversation with no answer and no replacement —
+   * the store half of conversations:withdraw. The `state = 'open'` predicate is
+   * the compare-and-set: two racing withdraws (or a withdraw racing a resolve)
+   * cannot both win, and the loser learns which terminal state beat it.
+   */
+  async closeIfOpen(
+    id: string,
+    opts: { now_ts: string },
+  ): Promise<CloseIfOpenStoreResult | CloseIfOpenStoreError> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const rows = await sql<ConversationRowDb[]>`
+      UPDATE harness_shared.coord_conversations
+         SET state = 'closed',
+             updated_at = ${opts.now_ts},
+             resolved_at = NULL
+       WHERE workspace_id = ${this.ws} AND id = ${id} AND state = 'open'
+   RETURNING ${sql.unsafe(SELECT_COLS)}`;
+    if (rows[0]) return { ok: true, conversation: toRow(rows[0]) };
+    const current = await this.get(id);
+    return current ? { error: 'not_open', conversation: current } : { error: 'not_found' };
+  }
+
+  /**
    * Atomically retire an open conversation and insert its replacement. The
    * replacement row is the durable gate; thread/tags/subscriptions are
    * materialized by the workflow immediately after this row transaction.
@@ -376,7 +432,7 @@ export class PgConversationStore {
   async supersede(
     id: string,
     replacement: CreateConversationInput,
-    opts: { now_ts: string },
+    opts: { now_ts: string; expected_answer?: string },
   ): Promise<SupersedeStoreResult | SupersedeStoreError> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
@@ -388,7 +444,13 @@ export class PgConversationStore {
          FOR UPDATE`;
       const old = oldRows[0];
       if (!old) return { error: 'not_found' as const };
-      if (old.state !== 'open') return { error: 'not_open' as const, conversation: toRow(old) };
+      const resolvedAnswerMatches = old.state === 'resolved' &&
+        opts.expected_answer != null && old.accepted_answer === opts.expected_answer;
+      if (old.state !== 'open' && !resolvedAnswerMatches) {
+        return old.state === 'resolved'
+          ? { error: 'source_changed' as const, conversation: toRow(old) }
+          : { error: 'not_open' as const, conversation: toRow(old) };
+      }
 
       await tx`
         INSERT INTO harness_shared.coord_conversations
@@ -404,7 +466,10 @@ export class PgConversationStore {
                superseded_by = ${replacement.id},
                superseded_at = ${opts.now_ts},
                updated_at = ${opts.now_ts},
-               resolved_at = NULL
+               resolved_at = NULL,
+               accepted_answer = NULL,
+               accepted_post_id = NULL,
+               capture_target = NULL
          WHERE workspace_id = ${this.ws} AND id = ${id}`;
 
       const updatedOldRows = await tx<ConversationRowDb[]>`

@@ -19,7 +19,7 @@ import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path publication DDL
@@ -62,6 +62,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -315,6 +316,7 @@ describe('fresh migrate — empty Postgres → head (STRICT SUCCESS GATE)', () =
     const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
     try {
       await admin.unsafe(`CREATE DATABASE "${bName}"`);
+      await markManagedTestDatabase(admin, bName);
       const u = new URL(adminUri);
       u.pathname = `/${bName}`;
       const bSql = postgres(u.toString(), { max: 1, onnotice: () => {} });

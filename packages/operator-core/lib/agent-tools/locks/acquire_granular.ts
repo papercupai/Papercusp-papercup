@@ -26,6 +26,7 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireGranular, validatePath } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { hardText, LIMITS } from '../limits';
+import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC } from './lock-config';
 
@@ -33,10 +34,28 @@ const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
 
+function workspaceContended(error: unknown) {
+  const source = error as { pgCode?: unknown; code?: unknown } | null;
+  const pgCode =
+    typeof source?.pgCode === 'string'
+      ? source.pgCode
+      : typeof source?.code === 'string'
+        ? source.code
+        : undefined;
+  return json({
+    ok: false,
+    reason: 'workspace_contended',
+    transient: true,
+    holder: 'unknown',
+    ...(pgCode ? { pgCode } : {}),
+    hint: 'The workspace transaction timed out before the granular path-conflict check; retry after brief backoff.',
+  });
+}
+
 export default defineTool({
   name: 'locks:acquire_granular',
   description:
-    'Acquire a multi-granularity intention lock on a path NODE (a file, a directory/subtree, or the harness root ""). mode "X" = own the subtree exclusively (a directory lock for a refactor, or a file write); "S" = read the whole subtree; "SIX" = read the subtree while writing one node; IS/IX are the intention modes (usually derived for you). The lock places the matching intention on every ancestor incl. the harness root, so a harness-exclusive (X on "") conflicts with any descendant GRANULAR lock. ⚠ It does NOT exclude classic file locks (locks:acquire, and every automatic per-edit hook claim) — a separate domain the granular conflict check never reads — so a root X is NOT an exclusive snapshot of the tree and peer edits still land under it. All-or-nothing — you get the whole lock-set or a conflict list. Release with locks:release_granular.',
+    'Acquire a multi-granularity intention lock on a file, directory/subtree, or harness root "". X owns the subtree; S reads it; SIX reads it while writing a node; IS/IX are intention modes. Matching intentions on ancestors make root X conflict with descendant GRANULAR locks. It does NOT exclude classic file locks (locks:acquire or automatic per-edit hooks): the granular conflict check never reads that separate domain, so root X is NOT an exclusive snapshot and peer edits still land. Acquire the whole lock-set or receive conflicts. Transient workspace transaction timeouts are retried; persistent timeouts return `reason:"workspace_contended"` and an unknown holder because no path-conflict check completed. Release with locks:release_granular.',
   guidance: {
     when:
       'A directory/subtree refactor (X on a dir), reading a whole subtree (S), or coordinating file-vs-harness-level work when a single-file lock is too narrow. Use "" for the harness root.',
@@ -69,17 +88,28 @@ export default defineTool({
         return json({ ok: false, error: (e as Error).message });
       }
     }
-    const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-      tryAcquireGranular(tx, {
-        coordinationDomain,
-        path: args.path,
-        mode: args.mode,
-        owner: ownerId,
-        ownerLabel,
-        intent: args.intent ?? '',
-        ttlSec: args.ttl_sec ?? DEFAULT_TTL_SEC,
-      }),
-    );
+    let r: Awaited<ReturnType<typeof tryAcquireGranular>>;
+    try {
+      // Each retry gets a fresh workspace transaction. A transient advisory-lock
+      // or statement timeout must not leak as handler_error; after the bounded
+      // retries, report unknown contention rather than inventing a path conflict.
+      r = await acquireWithContentionRetry(() =>
+        inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+          tryAcquireGranular(tx, {
+            coordinationDomain,
+            path: args.path,
+            mode: args.mode,
+            owner: ownerId,
+            ownerLabel,
+            intent: args.intent ?? '',
+            ttlSec: args.ttl_sec ?? DEFAULT_TTL_SEC,
+          }),
+        ),
+      );
+    } catch (error) {
+      if (isWorkspaceContended(error)) return workspaceContended(error);
+      throw error;
+    }
     if (!r.ok) {
       return json({ ok: false, reason: r.reason, conflicts: r.conflicts });
     }

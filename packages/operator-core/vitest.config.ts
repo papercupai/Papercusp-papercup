@@ -33,8 +33,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export default defineVitestConfig({
   layer: 'unit',
   laneSplit: true,
+  // R6 spends real provider capacity and belongs only to the explicit e2e route.
+  exclude: ['lib/blueprint/launch-blueprint-account-route.e2e.test.ts'],
   setupFiles: [
     resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts'),
     resolve(__dirname, 'lib/detached-imports/setup-vitest.ts'),
+    resolve(__dirname, 'lib/release/dependency-copy-isolation.setup-vitest.ts'),
   ],
 });

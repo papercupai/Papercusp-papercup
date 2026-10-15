@@ -12,9 +12,19 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const identity = vi.hoisted(() => ({ ownerId: 'me' }));
+const identity = vi.hoisted(() => ({ ownerId: 'me', workspaceId: 'ws-1' as string | null }));
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: identity.ownerId }),
+  resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
+}));
+
+// D-009: keep the REAL pure planner + fingerprint (the CAS semantics under test), mock only
+// the two database seams. The real-store path is pinned by hold_open.integration.test.ts.
+const readDurableParkControlRow = vi.fn();
+const runWorkItemDurableParkReconciliation = vi.fn();
+vi.mock('../../work-items-durable-park-audit', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  readDurableParkControlRow: (...a: unknown[]) => readDurableParkControlRow(...a),
+  runWorkItemDurableParkReconciliation: (...a: unknown[]) => runWorkItemDurableParkReconciliation(...a),
 }));
 
 const getWorkItem = vi.fn();
@@ -33,6 +43,7 @@ vi.mock('../coordination/messages', () => ({
 }));
 
 const holdOpen = (await import('./hold_open')).default;
+const { durableParkFingerprint, durableParkSingleReconcileRunId } = await import('../../work-items-durable-park-audit');
 
 const parse = (x: unknown) => (holdOpen.args as { parse: (x: unknown) => unknown }).parse(x);
 const call = async (x: unknown, ctx: unknown = {}) => {
@@ -49,6 +60,7 @@ function itemWith(payload: Record<string, unknown> | null) {
 beforeEach(() => {
   vi.clearAllMocks();
   identity.ownerId = 'me';
+  identity.workspaceId = 'ws-1';
   sendMessage.mockResolvedValue(undefined);
   setWorkItemClaimHold.mockResolvedValue({ id: 'WI-9', harness: 'papercup', hold: false, applicable: true });
 });
@@ -172,5 +184,148 @@ describe('work_items:hold_open hold — lease-expiry disclosure', () => {
     const out = await call({ id: 'WI-9', reason: 'taking over the gate' });
     expect(out.note).toMatch(/re-stamped \(was held by peer\)/);
     expect(out.leaseNote).toMatch(/LEASE/);
+  });
+});
+
+/**
+ * Plan bug-queue-legitimacy-and-actionable-validation-2026-10-10 D-009 — the AGENT DOOR to the
+ * evidence-based durable-park clearer. Before it, a park whose release condition was met could
+ * be lifted by an agent only with force:true, which bypasses the fingerprint/evidence contract.
+ */
+describe('work_items:hold_open clear+reconcile — evidence-based durable-park settlement (D-009)', () => {
+  const PARK = {
+    _claimHold: 'true',
+    claim_hold_by: 'peer',
+    claim_hold_reason: 'parked until 768c5d609 is deployed to :3070',
+    claim_hold_at: '2026-10-08T10:00:00.000Z',
+  };
+  const EVIDENCE = 'deploy.3070.sha=d740fc3802 contains 768c5d609 (git merge-base --is-ancestor; blob equal at the fix path)';
+  const controlRow = (payload: Record<string, unknown>, takenBy: string | null = null) => ({
+    id: 'WI-9', state: 'blocked', takenBy, payload,
+  });
+  const fpOf = (payload: Record<string, unknown>, takenBy: string | null = null) =>
+    durableParkFingerprint({ state: 'blocked', takenBy, payload });
+  const reconcileResult = (row: Record<string, unknown>) => ({
+    schemaVersion: 'durable-park-reconcile-v1', runId: 'rid', inputSha256: 'x', workspaceId: 'ws-1',
+    harnessSlug: 'papercup', generatedAt: '2026-10-10T19:00:00.000Z', actor: 'me', requested: 1,
+    cleared: row.outcome === 'cleared' ? 1 : 0, unchanged: row.outcome === 'cleared' ? 0 : 1,
+    rows: [row], artifactPath: 'reports/durable-parks/rid-reconcile.json',
+  });
+
+  beforeEach(() => {
+    getWorkItem.mockResolvedValue(itemWith(PARK));
+    readDurableParkControlRow.mockResolvedValue(controlRow(PARK));
+  });
+
+  it('omitting the fingerprint is a DRY RUN: returns the CAS fingerprint and writes nothing', async () => {
+    const out = await call({ id: 'WI-9', clear: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE } });
+    expect(out).toMatchObject({ ok: true, dryRun: true, outcome: 'cleared', wouldClear: true, ownerOverrideRequired: false });
+    expect(out.observedParkFingerprint).toBe(fpOf(PARK));
+    expect(out.next).toContain(fpOf(PARK));
+    expect(readDurableParkControlRow).toHaveBeenCalledWith({ workspaceId: 'ws-1', harnessSlug: 'papercup', id: 'WI-9' });
+    expect(runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('dryRun:true with a fingerprint previews a STALE one without writing', async () => {
+    const out = await call({
+      id: 'WI-9', clear: true,
+      reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE, expectedParkFingerprint: 'a'.repeat(64), dryRun: true },
+    });
+    expect(out).toMatchObject({ ok: true, dryRun: true, outcome: 'stale-fingerprint', wouldClear: false });
+    expect(out.next).toMatch(/Re-read with reconcile.dryRun/);
+    expect(runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+  });
+
+  it('a dry run reports a live holder as `assigned` (real planner: never cleared from under a claim)', async () => {
+    readDurableParkControlRow.mockResolvedValue(controlRow(PARK, 'someone-live'));
+    const out = await call({ id: 'WI-9', clear: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE } });
+    expect(out).toMatchObject({ dryRun: true, outcome: 'assigned', wouldClear: false, takenBy: 'someone-live' });
+  });
+
+  it('clears a PEER\'s park with evidence + fingerprint and NO force — via the reconciler, never setWorkItemClaimHold', async () => {
+    const fp = fpOf(PARK);
+    runWorkItemDurableParkReconciliation.mockResolvedValue(reconcileResult({
+      id: 'WI-9', outcome: 'cleared', expectedParkFingerprint: fp, observedParkFingerprint: fp,
+      reasonCode: 'condition-satisfied', evidence: EVIDENCE, preservedLease: false, takenBy: null,
+    }));
+    const out = await call({
+      id: 'WI-9', clear: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE, expectedParkFingerprint: fp },
+    });
+    expect(out).toMatchObject({ ok: true, outcome: 'cleared', held: false, clearedFrom: 'peer', runId: 'rid' });
+    const decision = { id: 'WI-9', expectedParkFingerprint: fp, reasonCode: 'condition-satisfied', evidence: EVIDENCE };
+    expect(runWorkItemDurableParkReconciliation).toHaveBeenCalledWith({
+      workspaceId: 'ws-1', harnessSlug: 'papercup', actor: 'me', decisions: [decision],
+      runId: durableParkSingleReconcileRunId({ workspaceId: 'ws-1', harnessSlug: 'papercup', actor: 'me', decision: decision as never }),
+    });
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0][1]).toMatchObject({ extra: { lifecycle: 'durable_park_reconcile', work_item: 'WI-9' } });
+  });
+
+  it('returns a non-clearing reconciler verdict VERBATIM as a refusal with a next step, and broadcasts nothing', async () => {
+    const fp = fpOf(PARK);
+    runWorkItemDurableParkReconciliation.mockResolvedValue(reconcileResult({
+      id: 'WI-9', outcome: 'stale-fingerprint', expectedParkFingerprint: fp, observedParkFingerprint: 'b'.repeat(64),
+      reasonCode: 'condition-satisfied', evidence: EVIDENCE, preservedLease: false, takenBy: null,
+    }));
+    const out = await call({
+      id: 'WI-9', clear: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE, expectedParkFingerprint: fp },
+    });
+    expect(out).toMatchObject({ ok: false, outcome: 'stale-fingerprint', error: 'reconcile_stale-fingerprint' });
+    expect(out.hint).toMatch(/dryRun/);
+    expect(out.observedParkFingerprint).toBe('b'.repeat(64));
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('a policy-tier park is previewable but its WRITE needs ownerOverride — evidence alone does not lift an owner gate', async () => {
+    const gated = { ...PARK, claim_hold_reason: 'Explicit policy-tier human gate (D-003): owner decides' };
+    getWorkItem.mockResolvedValue(itemWith(gated));
+    readDurableParkControlRow.mockResolvedValue(controlRow(gated));
+    const preview = await call({ id: 'WI-9', clear: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE } });
+    expect(preview).toMatchObject({ ok: true, dryRun: true, ownerOverrideRequired: true, wouldClear: false });
+    const overridden = await call({ id: 'WI-9', clear: true, ownerOverride: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE } });
+    expect(overridden).toMatchObject({ ok: true, dryRun: true, ownerOverrideRequired: true, wouldClear: true });
+    const out = await call({
+      id: 'WI-9', clear: true,
+      reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE, expectedParkFingerprint: fpOf(gated) },
+    });
+    expect(out).toMatchObject({ ok: false, error: 'policy_gate_requires_owner_override', heldBy: 'peer' });
+    expect(runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+  });
+
+  it('operator-directed asserts an owner instruction, so it needs ownerOverride:true', async () => {
+    const out = await call({
+      id: 'WI-9', clear: true,
+      reconcile: { reasonCode: 'operator-directed', evidence: 'owner said so', expectedParkFingerprint: fpOf(PARK) },
+    });
+    expect(out).toMatchObject({ ok: false, error: 'operator_directed_requires_owner_override' });
+    expect(runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+  });
+
+  it('refuses without a workspace scope rather than reading or writing an unscoped row', async () => {
+    identity.workspaceId = null;
+    const out = await call({ id: 'WI-9', clear: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE } });
+    expect(out).toMatchObject({ ok: false, error: 'reconcile_scope_unresolved' });
+    expect(readDurableParkControlRow).not.toHaveBeenCalled();
+  });
+
+  it('reconcile without clear:true, a bad reason code, blank evidence or a malformed fingerprint are schema refusals', () => {
+    expect(() => parse({ id: 'WI-9', reason: 'x', reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE } })).toThrow(/clear:true/);
+    expect(() => parse({ id: 'WI-9', clear: true, reconcile: { reasonCode: 'stale-age', evidence: EVIDENCE } })).toThrow();
+    expect(() => parse({ id: 'WI-9', clear: true, reconcile: { reasonCode: 'condition-satisfied', evidence: '   ' } })).toThrow();
+    expect(() => parse({ id: 'WI-9', clear: true, reconcile: { reasonCode: 'condition-satisfied', evidence: EVIDENCE, expectedParkFingerprint: 'abc' } })).toThrow();
+  });
+
+  it('the runId is deterministic for identical input and changes when any decision input changes', () => {
+    const base = { workspaceId: 'ws-1', harnessSlug: 'papercup', actor: 'me' };
+    const d = { id: 'WI-9', expectedParkFingerprint: 'c'.repeat(64), reasonCode: 'condition-satisfied' as const, evidence: EVIDENCE };
+    const a = durableParkSingleReconcileRunId({ ...base, decision: d });
+    expect(durableParkSingleReconcileRunId({ ...base, decision: { ...d } })).toBe(a);
+    expect(a).toContain(':reconcile:tool:WI-9:');
+    expect(durableParkSingleReconcileRunId({ ...base, decision: { ...d, evidence: `${EVIDENCE} (rechecked)` } })).not.toBe(a);
+    expect(durableParkSingleReconcileRunId({ ...base, decision: { ...d, expectedParkFingerprint: 'd'.repeat(64) } })).not.toBe(a);
+    expect(durableParkSingleReconcileRunId({ ...base, actor: 'other', decision: d })).not.toBe(a);
   });
 });

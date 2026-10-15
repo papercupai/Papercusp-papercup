@@ -36,6 +36,8 @@
  * recurring fault stays one line a minute while remaining countable.
  */
 
+import { namedQueryStageTimings } from '../agent-tools/db-diagnostic-correlation-wiring';
+
 /** A successful resolve at or above this is logged as slow. */
 const SLOW_MS = Number(process.env.PAPERCUSP_SYNC_SLOW_RESOLVE_MS) || 2_000;
 
@@ -138,11 +140,13 @@ export function observeResolve(input: ObserveResolveInput): void {
 
     const suppressed = admit(`${kind}:${name}`, now);
     if (suppressed === null) return;
+    const stages = namedQueryStageTimings();
 
     emit(
       `[${kind}] name=${name} ms=${Math.round(elapsedMs)}` +
         briefArgs(argsJson) +
         detail +
+        (stages ? ` stages=${JSON.stringify(stages)}` : '') +
         (suppressed > 0 ? ` suppressed=${suppressed}` : ''),
     );
   } catch {

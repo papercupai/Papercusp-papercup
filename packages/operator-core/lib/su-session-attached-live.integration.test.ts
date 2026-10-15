@@ -1,15 +1,237 @@
 /** Opt-in acceptance against the current source, real SU bootstrap and engine.
  * Creates one named test conversation in the selected project and archives it.
  * No UI/PTY is launched. Provider tokens are spent only with the explicit flag;
- * backend is Claude and account defaults to `auto` so the gateway can choose
- * from its provider pool.
+ * backend is Claude, model defaults to explicitly pinned `sonnet` (PUI D-012),
+ * and account defaults to `auto` so the gateway can choose from its provider pool.
  */
-import { randomUUID } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createAdaptorServer } from '@hono/node-server';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA, type SuSessionEvent } from '@papercusp/chat-protocol';
 import { confirmedProviderRateLimit } from './su-session-attached-live-rate-limit';
+import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
+import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
+import { modelArgsFor } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { redactSensitiveText } from './sensitive-text';
+import { buildClaudeMcpEntry } from './desktop-install/claude-integration';
+import { SuNativeCards } from './su-session-native-cards';
+import type { SuSessionEventInput } from './su-session-host';
+import { approvalCardText } from './su-session-approval-display';
+import { resolveCardResponse } from '@papercusp/agent-mcp';
+
+type StartedTool = Extract<SuSessionEventInput, { type: 'tool'; phase: 'started' }>;
+type OpenedCard = Extract<SuSessionEventInput, { type: 'card'; phase: 'opened' }>;
+
+/** This fixture may answer only the read-only identity call requested by its
+ * owner turn. Keep native permissions and reject unrelated cards immediately. */
+function assertIdentityApproval(event: OpenedCard, call: StartedTool | undefined, turnId: string): void {
+  expect(event.turnId).toBe(turnId);
+  expect(call?.turnId, 'approval must have a matching started tool in this turn').toBe(turnId);
+  if (!call) throw new Error('Identity approval has no matching tool');
+  const input = call.input ?? {};
+  expect(input).toBeTypeOf('object');
+  expect(Array.isArray(input)).toBe(false);
+  expect(input).not.toBeNull();
+  const wrapped = ['tools:invoke', 'mcp__papercusp-su__tools_invoke'].includes(call.name);
+  if (wrapped) {
+    expect(input).toEqual({ name: 'coord:whoami', args: {} });
+  } else {
+    expect(['coord:whoami', 'mcp__papercusp-su__coord_whoami']).toContain(call.name);
+    expect(input).toEqual({});
+  }
+  const view = approvalCardText(call.name, input);
+  expect(event.card.approval?.title, 'card must describe this exact identity call').toBe(view.title);
+  expect(event.card.details).toBe(view.details);
+  expect(event.card.presentation).toMatchObject({ kind: 'radio', options: expect.arrayContaining([{ id: 'yes', label: 'Yes' }]) });
+}
+
+describe('bounded attached identity approval', () => {
+  it.each([
+    ['mcp__papercusp-su__coord_whoami', {}],
+    ['mcp__papercusp-su__tools_invoke', { name: 'coord:whoami', args: {} }],
+  ])('answers the actual native permission for %s without broadening it', async (name, input) => {
+    const events: SuSessionEventInput[] = [];
+    const cards = new SuNativeCards('identity-fixture', `identity-${randomUUID()}`, event => events.push(event));
+    const pending = cards.handleClaude(name as string, input as Record<string, unknown>, 'identity-turn', {
+      signal: new AbortController().signal, toolUseID: 'identity-call', requestId: 'identity-request',
+    });
+    try {
+      const opened = events.find((event): event is OpenedCard => event.type === 'card' && event.phase === 'opened');
+      if (!opened) throw new Error('Native permission did not open a card');
+      assertIdentityApproval(opened, { type: 'tool', phase: 'started', turnId: 'identity-turn',
+        callId: 'identity-call', name: name as string, input }, 'identity-turn');
+      expect(resolveCardResponse({ correlationId: opened.card.correlationId, action: 'submit',
+        payload: { picks: ['yes'] }, expectedWorkspaceId: 'identity-fixture' })).toEqual({ ok: true });
+      await expect(pending).resolves.toMatchObject({ behavior: 'allow', updatedInput: input });
+      expect(events).toContainEqual(expect.objectContaining({ type: 'card', phase: 'closed', resolution: 'submitted' }));
+    } finally { cards.cancel(); }
+  });
+
+  it.each([
+    ['Bash', { command: 'touch unauthorized.txt' }, 'identity-turn'],
+    ['mcp__papercusp-su__tools_invoke', { name: 'work_items:create', args: {} }, 'identity-turn'],
+    ['mcp__papercusp-su__coord_whoami', { owner: 'someone-else' }, 'identity-turn'],
+    ['mcp__papercusp-su__coord_whoami', {}, 'another-turn'],
+  ])('refuses an unrelated %s request in %s', async (name, input, turnId) => {
+    const events: SuSessionEventInput[] = [];
+    const cards = new SuNativeCards('identity-fixture', `identity-${randomUUID()}`, event => events.push(event));
+    const pending = cards.handleClaude(name as string, input as Record<string, unknown>, turnId as string, {
+      signal: new AbortController().signal, toolUseID: 'unrelated-call', requestId: 'unrelated-request',
+    });
+    try {
+      const opened = events.find((event): event is OpenedCard => event.type === 'card' && event.phase === 'opened');
+      if (!opened) throw new Error('Native permission did not open a card');
+      expect(() => assertIdentityApproval(opened, { type: 'tool', phase: 'started', turnId: turnId as string,
+        callId: 'unrelated-call', name: name as string, input }, 'identity-turn')).toThrow();
+    } finally { cards.cancel(); await pending; }
+  });
+});
+
+const claudeFixture = vi.hoisted(() => ({ sourceHome: undefined as string | undefined }));
+// Preserve real bootstrap/config materialization while supplying this operator's
+// private MCP credential, rather than the global operator's fixed bearer.
+vi.mock('./interactive-claude-config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./interactive-claude-config')>();
+  return { ...actual, writeInteractiveClaudeConfig: (opts: Parameters<typeof actual.writeInteractiveClaudeConfig>[0]) => {
+    if (!claudeFixture.sourceHome) throw new Error('Private Claude source config is not prepared');
+    return actual.writeInteractiveClaudeConfig({ ...opts, home: claudeFixture.sourceHome });
+  } };
+});
 
 describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attached SU engine', () => {
+  let db: OrgTestDb | undefined;
+  let pg: DedicatedNativePg | undefined;
+  let fixture: BaselineCoordFixture | undefined;
+  let server: ReturnType<typeof createAdaptorServer> | undefined;
+  let home: string | undefined;
+  let previousEnv: Record<string, string | undefined> = {};
+
+  beforeAll(async () => {
+    const account = process.env.PAPERCUSP_ATTACHED_TEST_ACCOUNT?.trim() || 'auto';
+    const catalogPath = process.env.PUI_NATIVE_ACCOUNT_CATALOG;
+    const accounts = account === 'auto' ? (() => {
+      if (!catalogPath) throw new Error('Attached auto-route acceptance requires PUI_NATIVE_ACCOUNT_CATALOG');
+      const catalog = JSON.parse(readFileSync(catalogPath, 'utf8')) as { accounts?: unknown };
+      if (!Array.isArray(catalog.accounts) || !catalog.accounts.length) throw new Error('Attached account catalog is empty');
+      return catalog.accounts.map((entry: { id?: string; provider?: string }) => {
+        if (!entry.id || !/^[A-Za-z0-9._-]+$/.test(entry.id) || !['claude', 'codex'].includes(entry.provider ?? '')) {
+          throw new Error('Attached account catalog needs valid id/provider metadata');
+        }
+        return { id: entry.id, provider: entry.provider, credentialRef: '', addedAt: 0, boundTo: [] };
+      });
+    })() : [];
+    home = mkdtempSync(join(tmpdir(), 'pui-attached-live-'));
+    previousEnv.PAPERCUSP_TEST_PG_ADMIN_URL = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+    pg = await startDedicatedNativePg({ baseDir: home,
+      settings: { max_connections: '120', fsync: 'off', synchronous_commit: 'off' } });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = pg.getConnectionUri();
+    db = await createOrgTestDb();
+    expect(new URL(db.adminDsn).port, 'the org fixture must use this test-owned PG process')
+      .toBe(new URL(pg.getConnectionUri()).port);
+    if (account === 'auto') await db.adminSql`
+      INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
+      VALUES ('papercusp-workspace', ${JSON.stringify({ accounts })}::text::jsonb, ${Date.now()})
+      ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
+    const privateHome = join(home, '.papercusp');
+    mkdirSync(privateHome, { recursive: true });
+    writeFileSync(join(privateHome, 'superuser-token'), randomBytes(32).toString('base64url'), { mode: 0o600 });
+    const env = {
+      PAPERCUSP_HOME: privateHome, DATABASE_URL: db.adminDsn,
+      PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
+      PAPERCUSP_WORKSPACES_ROOT: join(home, 'workspaces'),
+      PAPERCUSP_LAUNCH_CONTEXT_DIR: join(home, 'launch-context'),
+      PAPERCUSP_SU_CODEX_HOMES_DIR: join(home, 'native-codex'),
+      PAPERCUSP_SU_OMP_HOMES_DIR: join(home, 'native-omp'),
+      PAPERCUSP_SESSION_CLAUDE_DIR: join(home, 'native-claude'),
+      PAPERCUSP_SESSION_MCP_DIR: join(home, 'native-mcp'),
+      PAPERCUSP_BACKGROUND_WORKERS: '0', PAPERCUSP_DBOS_ENABLE: '0',
+      PAPERCUSP_MEMORY_EMBEDDER: 'disabled', PAPERCUSP_SERVE_UI: '0',
+    };
+    Object.assign(previousEnv, Object.fromEntries([...Object.keys(env), 'HARNESS_DATABASE_URL',
+      'HARNESS_ADMIN_DATABASE_URL', 'PAPERCUSP_HONO_PORT', 'PAPERCUSP_OPERATOR_URL',
+      'PAPERCUSP_MCP_PROXY_BASE', 'OPERATOR_DEV_PORT'].map(key => [key, process.env[key]])));
+    Object.assign(process.env, env);
+    delete process.env.OPERATOR_DEV_PORT;
+    fixture = await setupBaselineCoordFixture({ dsn: db.adminDsn });
+    const harness = process.env.PAPERCUSP_ATTACHED_TEST_HARNESS ?? 'papercusp';
+    const { insertHiveIfAbsent } = await import('./hive-store');
+    await insertHiveIfAbsent({ workspaceId: 'papercusp-workspace', homeSlug: harness,
+      pubkeyBase64: randomBytes(32).toString('base64'), keychainId: `attached-fixture-${randomUUID()}` }, db.adminSql);
+    const { setHiveSetting } = await import('./hive-settings-store');
+    await setHiveSetting({ workspaceId: 'papercusp-workspace', potHomeSlug: harness,
+      settingKey: 'promptOverride.su', value: readFileSync(resolve(import.meta.dirname,
+        '../../../apps/operator/prompts/pot-instances/papercup-pot.su.md'), 'utf8') }, db.adminSql);
+    const { saveHarnessRegistry } = await import('./harness-registry');
+    await saveHarnessRegistry({ projects: [{ slug: harness, path: resolve(import.meta.dirname, '../../..'),
+      harness_kind: 'hive', self_repo: true }] }, 'papercusp-workspace');
+    const { scaffoldHarnessSchema } = await import('./scaffold-harness-schema');
+    await scaffoldHarnessSchema(harness);
+    const { app } = await import('../../../apps/operator/bin/host-app');
+    server = createAdaptorServer({ fetch: app.fetch });
+    await new Promise<void>((done, reject) => {
+      server!.once('error', reject);
+      server!.listen(0, '127.0.0.1', done);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Private attached test operator has no port');
+    expect([3070, 3170, 3271, 3278]).not.toContain(address.port);
+    const origin = `http://127.0.0.1:${address.port}`;
+    Object.assign(process.env, { PAPERCUSP_HONO_PORT: String(address.port),
+      PAPERCUSP_OPERATOR_URL: origin, PAPERCUSP_MCP_PROXY_BASE: origin });
+    claudeFixture.sourceHome = join(home, 'claude-source');
+    mkdirSync(join(claudeFixture.sourceHome, '.claude'), { recursive: true });
+    const { readSuperuserToken } = await import('./superuser-token');
+    const token = readSuperuserToken();
+    if (!token) throw new Error('Private attached operator has no MCP bearer');
+    const entry = buildClaudeMcpEntry(origin, token, 'attached-fixture', '');
+    writeFileSync(join(claudeFixture.sourceHome, '.claude.json'), JSON.stringify({
+      hasCompletedOnboarding: true, mcpServers: { 'papercusp-su': entry },
+    }), { mode: 0o600 });
+    const { ensureProjectTrust } = await import('./interactive-claude-config');
+    await ensureProjectTrust(claudeFixture.sourceHome, resolve(import.meta.dirname, '../../..'));
+    expect(entry.headers.Authorization === `Bearer ${token}`, 'MCP config must use the private operator bearer').toBe(true);
+    const client = new Client({ name: 'attached-fixture-preflight', version: '1.0.0' });
+    const mcpUrl = new URL('/api/mcp', origin);
+    mcpUrl.search = new URLSearchParams({ superuser: '1', workspace: 'papercusp-workspace',
+      tools: 'coord:whoami,tools:invoke' }).toString();
+    try {
+      await client.connect(new StreamableHTTPClientTransport(mcpUrl, {
+        requestInit: { headers: entry.headers },
+      }));
+      const listed = await client.listTools({}, { timeout: 30_000 });
+      expect(listed.tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['coord:whoami', 'tools:invoke']));
+    } finally {
+      await client.close();
+    }
+  }, 180_000);
+
+  afterAll(async () => {
+    try {
+      if (server) await new Promise<void>((done, reject) => {
+        server!.close(error => error ? reject(error) : done());
+        if ('closeAllConnections' in server! && typeof server!.closeAllConnections === 'function') server!.closeAllConnections();
+      });
+    } finally {
+      try { await fixture?.dispose(); } finally {
+        try { await db?.cleanup(); } finally {
+          try { await pg?.stop(); } finally {
+            for (const [key, value] of Object.entries(previousEnv)) {
+              if (value === undefined) delete process.env[key]; else process.env[key] = value;
+            }
+            if (home) rmSync(home, { recursive: true, force: true });
+            claudeFixture.sourceHome = undefined;
+          }
+        }
+      }
+    }
+  }, 60_000);
+
   it('creates through launch-su, commits an owner turn, proves scoped SU tools, and ends the child', async (ctx) => {
     const [{ createChat, archiveChat, getChat }, { default: launchRoutes }, { suSessionRoutes }, { getRegisteredSuSessionHost }, { readSuperuserToken }, { activeWorkspaceId }, { readDurableSuSession }] = await Promise.all([
       import('./agent-chats-data'), import('./endpoint-route/routes/adv/launch-su'),
@@ -18,6 +240,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
     ]);
     const harness = process.env.PAPERCUSP_ATTACHED_TEST_HARNESS ?? 'papercusp';
     const backend = 'claude' as const;
+    const model = process.env.PAPERCUSP_ATTACHED_TEST_MODEL?.trim() || 'sonnet';
     const account = process.env.PAPERCUSP_ATTACHED_TEST_ACCOUNT?.trim() || 'auto';
     const workspaceId = activeWorkspaceId();
     const created = await createChat({ slug: harness, role: 'operator', title: `PUI attached acceptance ${randomUUID()}` });
@@ -35,7 +258,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
         'http://localhost/api/adv/sessions/launch-su', {
           method: 'POST', headers,
           body: JSON.stringify({ agent: backend, attached_engine: true, agent_chat_id: chatId,
-            harness_slug: harness, account, carry: 'warm' }),
+            harness_slug: harness, model, account, carry: 'warm' }),
         }), context);
       const launched = await response.json() as { status: string; transport?: string; advSessionId: number; ownerId?: string };
       expect(response.status, JSON.stringify(launched)).toBe(200);
@@ -73,11 +296,22 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       const identity = host.descriptor().identity;
       expect(identity).toMatchObject({ workspaceId, harnessSlug: harness, ownerId: launched.ownerId });
       expect(identity.nativeSessionId).toBeTruthy();
+      const actualModel = host.descriptor().model;
+      expect(actualModel, 'the native engine must identify the model that will answer').toBeTruthy();
+      expect(host.descriptor().accountRoute).toBe(account);
       const { listTasks } = await import('./task-manager/store');
       const tasks = await listTasks({ workspaceId, sessionId: identity.nativeSessionId!, coordOwnerId: identity.ownerId, classes: ['agent-session'] });
       expect(tasks).toHaveLength(1);
       engineTaskId = tasks[0].taskId;
       expect(tasks[0].argv.length).toBeGreaterThan(0);
+      const modelFlag = tasks[0].argv.indexOf('--model');
+      expect(modelFlag, 'the real native launch must carry the explicit model pin').toBeGreaterThanOrEqual(0);
+      const requestedArgs = modelArgsFor('claude', model);
+      const nativeModel = tasks[0].argv[modelFlag + 1];
+      // Claude's configured context window can add [1m] to the pinned family.
+      // Preserve the exact native value in the receipt; compare the family here.
+      expect(nativeModel.replace(/\[1m\]$/, ''))
+        .toBe(requestedArgs[requestedArgs.indexOf('--model') + 1].replace(/\[1m\]$/, ''));
       expect(tasks[0].detail).toMatchObject({ coordOwnerId: identity.ownerId, transport: 'structured' });
       iterator = host.subscribe()[Symbol.asyncIterator]();
       const nonce = `PUI-ATTACHED-${randomUUID()}`;
@@ -108,11 +342,30 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
             ctx.skip(`NOT MEASURED: provider account limit during the owner turn (${rateLimit.signals[0]})`);
           }
           const recentTypes = buffered.slice(-8).map((event) => event.type).join(',') || 'none';
-          throw new Error(`${String(error)}; lifecycle=${host.descriptor().lifecycle}; bufferedEvents=${buffered.length}; recentTypes=${recentTypes}`);
+          const text = buffered.flatMap(event => event.type === 'transcript' && 'content' in event
+            && event.role === 'assistant' ? [event.content ?? ''] : []).join('').slice(-2400);
+          const errors = buffered.flatMap(event => event.type === 'error'
+            ? [{ code: event.code, message: event.message }] : []).slice(-4);
+          const secrets = Object.entries(process.env).filter(([key]) =>
+            /token|secret|password|credential|authorization|api.?key/i.test(key)).map(([, value]) => value);
+          const calls = buffered.filter(event => event.type === 'tool' && event.phase === 'started').slice(-4);
+          const cards = buffered.filter(event => event.type === 'card').slice(-4);
+          const diagnostic = redactSensitiveText(JSON.stringify({ assistantText: text, errors, calls, cards }), secrets);
+          throw new Error(`${String(error)}; lifecycle=${host.descriptor().lifecycle}; bufferedEvents=${buffered.length}; recentTypes=${recentTypes}; nativeDiagnostic=${diagnostic}`);
         }
         if (next.done) throw new Error('SU stream ended before acceptance');
         const event = next.value.event;
         observedEvents.push(event);
+        if (event.type === 'card' && event.phase === 'opened') {
+          const call = observedEvents.slice().reverse().find((entry): entry is Extract<SuSessionEvent, { type: 'tool'; phase: 'started' }> =>
+            entry.type === 'tool' && entry.phase === 'started' && entry.turnId === event.turnId);
+          assertIdentityApproval(event, call, command.turnId);
+          const answered = await fetch(`${process.env.PAPERCUSP_OPERATOR_URL}/api/operator/conversations/${encodeURIComponent(chatId)}/card-response`, {
+            method: 'POST', headers, body: JSON.stringify({ correlationId: event.card.correlationId,
+              workspaceId, action: 'submit', payload: { picks: ['yes'] } }),
+          });
+          expect(answered.status, JSON.stringify(await answered.json())).toBe(200);
+        }
         if (event.type === 'error') {
           const rateLimit = confirmedProviderRateLimit(observedEvents);
           if (rateLimit.confirmed) {
@@ -136,7 +389,7 @@ describe.skipIf(process.env.PAPERCUSP_REAL_ATTACHED_ENGINE !== '1')('live attach
       expect({ toolIdentity, reply }).toEqual({ toolIdentity: true, reply: true });
       const replay = await commandRoute.handler(new Request('http://localhost/commands', { method: 'POST', headers, body: JSON.stringify(command) }), context);
       expect(await replay.json()).toMatchObject({ ok: true, replayed: true });
-      console.log(JSON.stringify({ acceptance: 'attached-su-identity', workspaceId, harness, chatId, ownerId: identity.ownerId, nativeSessionId: identity.nativeSessionId, toolIdentity, reply }));
+      console.log(JSON.stringify({ acceptance: 'attached-su-identity', workspaceId, harness, chatId, ownerId: identity.ownerId, nativeSessionId: identity.nativeSessionId, requestedModel: model, nativeModel, actualModel, accountRoute: account, toolIdentity, reply }));
     } finally {
       host ??= getRegisteredSuSessionHost(key);
       if (host && !host.snapshot().terminal) {

@@ -52,8 +52,10 @@
  * caller-supplied resolver (swarm.ts wires `resolveVerifiedDevicePubkeyForSocket`
  * from peer-dial-registry.ts's SIGNED hello handshake) that answers "which
  * device, if any, has cryptographically PROVEN it owns this live connection".
- * No resolver, or no verified device on this socket yet ⇒ refuse — serving
- * unauthenticated would be worse than not serving at all.
+ * WI-10006832: that identity gates EVERY repo, not just scopes/ ones
+ * (`resolvePeerAdmission`): no resolver or no verified device ⇒ `unverified-peer`,
+ * a revoked device ⇒ `revoked-device`, a device no member of this pot attests ⇒
+ * `unknown-device` — serving unauthenticated would be worse than not serving at all.
  *
  * CLIENT side ({@link openHiveGitFetchDuplex}): sends `req`, returns a Duplex
  * the caller drives with `fetchOverDuplex` — the SAME `openDuplex: () =>
@@ -87,6 +89,7 @@ import { runGovernedOperation } from '../../resource-governor/execution';
 import { authorizeScopeRepoServe, type ScopeRepoServeGrant } from './scope-serve-gate';
 import { getScopeRoster } from '../../p2p/scope-roster';
 import { resolveGithubUserIdForDevicePubkey } from '../hyperbee/hive-member-identity-set';
+import { loadRevokedHivePubkeysForLocalPot } from '../../federated-pot-scope';
 import {
   findSupersededRepoKey,
   supersededRepoKeyRefusal,
@@ -108,11 +111,10 @@ export interface PotGitServeConfig {
   /**
    * WI-3641: resolve the SIGNATURE-VERIFIED device_pubkey bound to a live
    * connection socket, or `undefined` if none has been verified on it yet.
-   * Required to authorize a `scopes/` repo fetch — swarm.ts wires
+   * Required to serve ANY repo (WI-10006832) — swarm.ts wires
    * `resolveVerifiedDevicePubkeyForSocket` (peer-dial-registry.ts's signed
-   * hello handshake) here. Omitted ⇒ every scope-repo fetch refuses
-   * (`scope-repo-no-resolver`) — fail-closed, matching the pre-WI-3641
-   * deferral's behavior when this config is absent.
+   * hello handshake) here. Omitted, or no verified device on the socket ⇒
+   * every fetch refuses `unverified-peer` — fail-closed.
    */
   resolvePeerDevicePubkey?: (socket: unknown) => string | undefined;
 }
@@ -1154,6 +1156,18 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       read = { mode: 'legacy', source: 'error' };
     }
     if (read.mode === 'legacy') return refuse(POT_GIT_MODE_REFUSAL[read.source]);
+    // WI-10006832: EVERY repo, the pot's main repo included, is served only to a
+    // SIGNATURE-VERIFIED device that is an attested, non-revoked member of this pot.
+    // WI-10006827's deny-list refused a verified REVOKED device, but a modified client that
+    // never sends the signed hello stayed unidentified and was still served. Measured before
+    // tightening: no tower serve since 2026-09-30 went to an unverified or unattested peer,
+    // and soak c1010r's joiner was attested ~10 min before its first fetch.
+    const peerAdmission = await resolvePeerAdmission({
+      workspaceId: cfg.workspaceId,
+      potHomeSlug: cfg.potHomeSlug,
+      peerDevicePubkey: cfg.resolvePeerDevicePubkey?.(state.socket),
+    });
+    if (!peerAdmission.ok) return refuse(peerAdmission.refusal);
     // WI-3641: a `scope:`-prefixed wire repoKey (scopeRepoWireKey) addresses a
     // `scopes/` family repo — hiveGitRepoPath's single-path-component join can
     // never itself PRODUCE a `scopes/<owner>/<slug>.git` path (that's 2
@@ -1183,26 +1197,14 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     if (isScopeRepoFamilyPath(repoPath)) {
       // WI-3641: authorize via the roster serve-gate, keyed by the caller's
       // SIGNATURE-VERIFIED device identity (never the wire `req` frame's
-      // self-reported `peerGithubUserId` — see module header). Every branch
-      // below fails closed: no resolver, no verified device, an unresolvable
-      // member, or a roster refusal all refuse rather than serve.
-      const devicePubkey = cfg.resolvePeerDevicePubkey?.(state.socket);
-      if (!devicePubkey) return refuse('scope-repo-no-verified-peer');
-      let githubUserId: number | null;
-      try {
-        githubUserId = await resolveGithubUserIdForDevicePubkey(
-          cfg.workspaceId,
-          cfg.potHomeSlug,
-          devicePubkey,
-        );
-      } catch {
-        return refuse('scope-repo-member-lookup-error');
-      }
-      if (githubUserId == null) return refuse('scope-repo-unknown-device');
+      // self-reported `peerGithubUserId` — see module header). The identity is
+      // the one the pot-wide peer-admission gate above already resolved (WI-10006832):
+      // no verified device, an unknown or revoked device, or a lookup error never
+      // reaches this block. A roster refusal here still refuses rather than serves.
       const roster = getScopeRoster({ workspaceId: cfg.workspaceId, potSlug: cfg.potHomeSlug });
       const decision = await authorizeScopeRepoServe({
         repoPath,
-        peerGithubUserId: githubUserId,
+        peerGithubUserId: peerAdmission.githubUserId,
         isScopeMember: roster.predicate,
       });
       if (!decision.ok) return refuse(`scope-repo:${decision.refusal.reason}`);
@@ -1653,6 +1655,68 @@ export async function openHiveGitFetchDuplex(
     duplex.destroy(e instanceof Error ? e : new Error(String(e)));
   }
   return duplex;
+}
+
+/** Why {@link resolvePeerAdmission} refused a peer. Each travels back to the dialer verbatim
+ *  (`pot-git serve refused: <reason>`), and none is special-cased there: the dialer retries on
+ *  its next tick, so a refusal that later stops applying (an attestation landing) heals itself. */
+export type PeerAdmissionRefusal =
+  | 'unverified-peer'
+  | 'revoked-device'
+  | 'unknown-device'
+  | 'revocation-lookup-error'
+  | 'member-lookup-error';
+
+/**
+ * WI-10006832: the serve-time admission gate for EVERY repo. A peer is served only when its
+ * socket carries a SIGNATURE-VERIFIED device pubkey (peer-dial-registry's signed hello) that an
+ * attested member of this pot owns (`pot_members.device_attestations`) and that is not in the
+ * pot's revoked set (`pot_members.revoked_pubkeys`, the set substrate:revoke_contributor writes).
+ * It replaces WI-10006827's deny-list, which refused a verified revoked device but served an
+ * unverified socket, so a modified client that skipped the hello kept pulling the main repo.
+ *
+ * - No verified pubkey: `unverified-peer`. A stock client sends its hello when the channel opens,
+ *   on the same ordered stream and before it can address any fetch, and the server verifies it
+ *   synchronously, so the hello always precedes the request.
+ * - Revoked: `revoked-device`, checked before membership so a revoked device is named as such.
+ * - Not attested in this pot: `unknown-device`. A cold joiner whose attestation has not reached
+ *   this node yet is refused and retried on its next tick; soak c1010r measured the attestation
+ *   landing ~10 min before the joiner's first fetch.
+ * - Either lookup erroring: refuse (`revocation-lookup-error` / `member-lookup-error`), fail
+ *   closed. The dialer retries; serving a possibly revoked or unknown device is the worse error.
+ *
+ * Uncached: an authorization decision must see a revoke at once, and the reads are one row set
+ * each per inbound fetch request.
+ */
+export async function resolvePeerAdmission(input: {
+  workspaceId: string;
+  potHomeSlug: string;
+  peerDevicePubkey: string | undefined;
+  loadRevoked?: (workspaceId: string, localPotHomeSlug: string) => Promise<Set<string>>;
+  resolveMember?: (workspaceId: string, potHomeSlug: string, devicePubkey: string) => Promise<number | null>;
+}): Promise<{ ok: true; githubUserId: number } | { ok: false; refusal: PeerAdmissionRefusal }> {
+  const pubkey = input.peerDevicePubkey;
+  if (!pubkey) return { ok: false, refusal: 'unverified-peer' };
+  const loadRevoked =
+    input.loadRevoked ?? ((ws: string, slug: string) => loadRevokedHivePubkeysForLocalPot(ws, slug));
+  const resolveMember =
+    input.resolveMember ??
+    ((ws: string, slug: string, pk: string) => resolveGithubUserIdForDevicePubkey(ws, slug, pk));
+  let revoked: Set<string>;
+  try {
+    revoked = await loadRevoked(input.workspaceId, input.potHomeSlug);
+  } catch {
+    return { ok: false, refusal: 'revocation-lookup-error' };
+  }
+  if (revoked.has(pubkey)) return { ok: false, refusal: 'revoked-device' };
+  let githubUserId: number | null;
+  try {
+    githubUserId = await resolveMember(input.workspaceId, input.potHomeSlug, pubkey);
+  } catch {
+    return { ok: false, refusal: 'member-lookup-error' };
+  }
+  if (githubUserId == null) return { ok: false, refusal: 'unknown-device' };
+  return { ok: true, githubUserId };
 }
 
 /**

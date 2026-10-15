@@ -22,11 +22,10 @@ vi.mock('./slug-scope', () => ({
     status: 'resolved',
     harnessSlug: 'papercusp',
     bySlug: Object.fromEntries(slugs.map((slug) => [slug, 'papercusp'])),
-    ambiguous: {},
   })),
   slugScopeErrorResult: vi.fn(),
 }));
-vi.mock('./source', () => ({ getPlanRow: vi.fn(), planItemsForRow: (row: { items: unknown[] }) => row.items }));
+vi.mock('./source', () => ({ getPlanItemRow: vi.fn(), planItemsForRow: (row: { items: unknown[] }) => row.items }));
 vi.mock('./effective-status', () => ({
   // pass the items through unchanged (effectiveStatus resolution is tested elsewhere)
   resolveEffectiveStatusForItems: (items: unknown[]) => ({ items }),
@@ -37,10 +36,10 @@ vi.mock('../../issue-blocks-merge', () => ({
   planItemRef: (slug: string, id: string) => `${slug}#${id}`,
 }));
 
-import { getPlanRow } from './source';
+import { getPlanItemRow } from './source';
 import { harnessScopedCtx } from '../_harness-scope';
 import { recoverHarnessFromSlugs } from './slug-scope';
-const getRowM = vi.mocked(getPlanRow);
+const getRowM = vi.mocked(getPlanItemRow);
 const scopeM = vi.mocked(harnessScopedCtx);
 const recoverM = vi.mocked(recoverHarnessFromSlugs);
 const tool = (await import('./get-item')).default;
@@ -61,6 +60,13 @@ const rowOf = (slug: string, ids: string[]) =>
 beforeEach(() => vi.clearAllMocks());
 
 describe('plans:get-item handler (bulk keyed-array)', () => {
+  it('uses the item-index projection instead of fetching a full plan row', async () => {
+    getRowM.mockResolvedValue(rowOf('plan-a', ['P-001']));
+    const b = await body({ slug: 'plan-a', item: 'P-001' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(getRowM).toHaveBeenCalledTimes(1);
+  });
+
   it('inline { slug, item } returns a single result', async () => {
     getRowM.mockResolvedValue(rowOf('plan-a', ['P-001']));
     const b = await body({ slug: 'plan-a', item: 'P-001' });

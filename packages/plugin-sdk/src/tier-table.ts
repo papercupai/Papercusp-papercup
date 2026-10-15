@@ -1,4 +1,4 @@
-import tierTable from './tier-table.json';
+import tierTable from './tier-table.json' with { type: 'json' };
 
 export type CapabilityTier = 'low' | 'medium' | 'high';
 

@@ -23,14 +23,19 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { execPath } from 'node:process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { applyCodexGatewayRoute } from '../scripts/psu-launcher.mjs';
 import {
+  findNativeTranscriptMarker,
   hostThroughPty,
+  leadingTurnOriginMarker,
   socketPathFor,
   metaPathFor,
   eventLogPathForOwner,
+  nativeLatestExecution,
   KICKOFF_PROOF_PATH_ENV,
   KICKOFF_PROOF_TOKEN_ENV,
 } from '../scripts/psu-pty-host.mjs';
@@ -88,6 +93,328 @@ async function waitForHost(
 function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
+
+/** Preserve the host's refusal reason before fixture teardown removes its log. */
+function hostTestDiagnostics(ownerId: string, captured: () => string): string {
+  const log = eventLogPathForOwner(ownerId);
+  const events = existsSync(log)
+    ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).slice(-12).map((line) => JSON.parse(line))
+    : [];
+  return JSON.stringify({ output: captured().slice(-2000), events });
+}
+
+it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-after-reconcile', 'rearmed-replaced'] as const)(
+  'keeps a repainting tagged wake pending until native submission: %s',
+  async (scenario) => {
+    const root = mkdtempSync(join(tmpdir(), 'pty-submit-ack-'));
+    const projects = join(root, 'projects', 'fixture');
+    mkdirSync(projects, { recursive: true });
+    const transcript = join(projects, 'native.jsonl');
+    const ownerId = uniqueOwner(`SUBMIT-${scenario}`);
+    const sock = socketPathFor(ownerId);
+    const log = eventLogPathForOwner(ownerId);
+    const marker = '⟦turn-origin:wake-pump nonce:6554700010008912⟧';
+    const data = `${marker}\nverify the exact staged wake`;
+    const deliveryId = `submit-ack-${scenario}`;
+    const rearmed = scenario.startsWith('rearmed-');
+    const replaced = scenario.includes('replaced');
+    const { io, captured } = fakeIo();
+    const childCode = [
+      "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "let line='',crs=0;process.stdout.write('READY\\n');",
+      rearmed ? "const busy=setInterval(()=>process.stdout.write('BUSY\\n'),15);setTimeout(()=>clearInterval(busy),400);" : '',
+      "process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\x04'){process.exit(0);return;}",
+      "if(c!=='\\r'){line+=c;continue;}crs++;process.stdout.write('REPAINT:'+crs+'\\n');",
+      "if(process.env.TEST_ACCEPT==='retry'&&crs===2){",
+      "fs.appendFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:line}})+'\\n');",
+      "process.stdout.write('NATIVE_ACCEPTED\\n');line='';}}});",
+      'setTimeout(()=>process.exit(0),18000);',
+    ].join('');
+    const freshCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('FRESH_READY\\n');",
+      "let line='';process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\x04'){process.exit(0);return;}if(c==='\\r'){process.stdout.write('FRESH_SUBMIT:'+line+'\\n');line='';}else{line+=c;}}});",
+      'setTimeout(()=>process.exit(0),12000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+      bridgeTty: false, onExit: () => {},
+      env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        CLAUDE_CONFIG_DIR: root, TEST_TRANSCRIPT: transcript, TEST_ACCEPT: scenario,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: rearmed ? '100' : '3000',
+        PAPERCUSP_PSU_PTY_REARM_CAP_MS: '2000',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '6',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '40',
+      }),
+      mintCarryRespawnArgs: () => ({ args: ['-e', freshCode], nativeId: null }),
+    });
+    const events = () => existsSync(log)
+      ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+    try {
+      expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      const envelope = { mode: 'turn' as const, ownerId, data, deliveryId };
+      // Acceptance remains immediate even though the real submit pipeline is
+      // pending. The child's first Enter only repaints its unchanged composer.
+      expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'accepted' });
+      expect(await waitForOutput(captured, 'REPAINT:1')).toBe(true);
+      if (rearmed) {
+        expect(events()).toContainEqual(expect.objectContaining({ kind: 'wake-rearm-queued' }));
+      }
+      expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline && !events().some((row) =>
+        row.kind === (scenario === 'retry' ? 'turn-delivered' : 'submit-verify-unconfirmed'))) await sleep(20);
+      if (scenario === 'retry') {
+        expect(captured()).toContain('NATIVE_ACCEPTED');
+        expect(events()).toContainEqual(expect.objectContaining({ kind: 'turn-delivered', confirmed: 'native', resubmits: 1 }));
+      } else {
+        expect(events()).toContainEqual(expect.objectContaining({ kind: 'submit-verify-unconfirmed', reason: 'native-submission-unconfirmed' }));
+        expect(events().some((row) => row.kind === 'turn-delivered')).toBe(false);
+        expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+        if (replaced) {
+          // Replace only this disposable child, without launching an LLM or
+          // typing into an owner terminal. An empty carry adds no new prompt.
+          expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
+            data: '', systemPromptAddendum: 'fixture replacement' })).toMatchObject({ ok: true, reason: 'accepted' });
+          expect(await waitForOutput(captured, 'FRESH_READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+          if (scenario === 'replaced-after-reconcile') {
+            expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
+              data: 'FRESH_CONTROL', deliveryId: 'fresh-control' })).toMatchObject({ ok: true, reason: 'accepted' });
+            expect(await waitForOutput(captured, 'FRESH_SUBMIT:FRESH_CONTROL')).toBe(true);
+          }
+          // Even an exact late predecessor row cannot certify that the new
+          // child accepted this wake. Keep its ID safe from a second paste.
+          writeFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(),
+            message: { role: 'user', content: data } }) + '\n');
+          const verdict = { ok: false, reason: 'deferred-native-turn-start-superseded' };
+          expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject(verdict);
+          expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject(verdict);
+          expect(events()).toContainEqual(expect.objectContaining({
+            kind: 'native-turn-start-superseded', deliveryId,
+          }));
+          expect(captured()).not.toContain('FRESH_SUBMIT:'+marker);
+          expect((captured().match(/REPAINT:/g) ?? []).length).toBe(2);
+          return;
+        }
+        // A slow backend can persist the written prompt after verification's
+        // window. Reconcile that exact row without pasting the text again.
+        writeFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(),
+          message: { role: 'user', content: data } }) + '\n');
+      }
+      expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+      expect((captured().match(/REPAINT:/g) ?? []).length).toBe(2);
+      expect(existsSync(sock)).toBe(true);
+    } finally {
+      await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
+      await done;
+      rmSync(root, { recursive: true, force: true });
+      rmSync(log, { force: true });
+    }
+  },
+  20_000,
+);
+
+it('preserves the classified Codex home failure when refusing carry before stopping the child', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pty-carry-route-failure-'));
+  const ownerId = uniqueOwner('CARRY-ROUTE-FAILURE');
+  const sock = socketPathFor(ownerId);
+  const log = eventLogPathForOwner(ownerId);
+  const { io, captured } = fakeIo();
+  let mints = 0;
+  const failure = { stage: 'response', reason: 'http-error', status: 503 };
+  const childCode = "process.stdin.setRawMode(true);process.stdout.write('READY\\n');" +
+    "process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);process.stdout.write('ORIGINAL-ALIVE\\n');});" +
+    "setTimeout(()=>process.exit(0),18000);";
+  const done = hostThroughPty({ command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+    bridgeTty: false, onExit: () => {},
+    env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto', PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+      PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500', PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1000' }),
+    ensureCodexHome: async () => ({ ok: false, failure }),
+    mintCarryRespawnArgs: () => { mints++; throw new Error('must not mint an unavailable route'); },
+  });
+  try {
+    expect(await waitForHost(ownerId)).not.toBeNull();
+    expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
+      data: 'saved work', systemPromptAddendum: 'saved work', deliveryId: 'classified-route-failure' }))
+      .toMatchObject({ ok: true, reason: 'accepted' });
+    const deadline = Date.now() + 6500;
+    while (Date.now() < deadline && !(existsSync(log) && readFileSync(log, 'utf8').includes('codex-route-unavailable'))) await sleep(15);
+    const events = readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-failed', mode: 'carry-respawn',
+      reason: 'codex-route-unavailable', homeEnsureFailure: failure }));
+    expect(mints).toBe(0);
+    expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
+    await injectIntoHost(sock, { mode: 'raw', ownerId, data: 'still here' });
+    expect(await waitForOutput(captured, 'ORIGINAL-ALIVE')).toBe(true);
+  } finally {
+    await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
+    await done;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(log, { force: true });
+  }
+}, 20_000);
+
+it('defers an already-admitted wake before writing when carry becomes pending', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pty-queued-carry-'));
+  const ownerId = uniqueOwner('QUEUED-CARRY');
+  const sock = socketPathFor(ownerId);
+  const log = eventLogPathForOwner(ownerId);
+  const { io, captured } = fakeIo();
+  const childCode = [
+    "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
+    "let line='';process.stdin.on('data',data=>{for(const c of data){",
+    "if(c==='\\u0004'){process.exit(0);return;}",
+    "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+    'setTimeout(()=>process.exit(0),12000);',
+  ].join('');
+  const done = hostThroughPty({
+    command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+    bridgeTty: false, onExit: () => {},
+    env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', CLAUDE_CONFIG_DIR: root,
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
+      PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1000',
+      // First wake's acknowledged submit verifier owns the mutex during this
+      // interval. Observe its actual echo before admitting the queued wake.
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '1500',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+    }),
+    // Exercise the real carry queue without spawning any model CLI. Its later
+    // argv/setup pipeline is independent of the wake-dequeue boundary under test.
+    mintCarryRespawnArgs: () => { throw new Error('fixture carry argv unavailable'); },
+  });
+  try {
+    expect(await waitForHost(ownerId)).not.toBeNull();
+    expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
+      data: 'HOLD_INJECT', deliveryId: 'queued-carry-holder' })).toMatchObject({ ok: true, reason: 'accepted' });
+    expect(await waitForOutput(captured, 'ECHO:HOLD_INJECT')).toBe(true);
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
+      data: 'QUEUED_WAKE', deliveryId: 'queued-before-carry' })).toMatchObject({ ok: true, reason: 'accepted' });
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
+      data: 'fixture carry', systemPromptAddendum: 'fixture carry',
+      deliveryId: 'carry-after-wake' })).toMatchObject({ ok: true, reason: 'accepted' });
+    const deadline = Date.now() + 6500;
+    while (Date.now() < deadline && !captured().includes('ECHO:QUEUED_WAKE') &&
+      !(existsSync(log) && readFileSync(log, 'utf8').includes('"phase":"pre-write"'))) await sleep(15);
+    expect(captured()).not.toContain('ECHO:QUEUED_WAKE');
+    const events = readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: 'wake-turn-deferred-for-pending-respawn', phase: 'pre-write',
+    }));
+    // The carry mint seam is selected by systemPromptAddendum. Without it the
+    // fixture spawned a fresh child, and teardown's EOT raced onto its dying
+    // predecessor. Verify the intended pre-spawn refusal before cleanup.
+    const mintDeadline = Date.now() + 3000;
+    while (Date.now() < mintDeadline && !readFileSync(log, 'utf8').includes('"reason":"argv-build-failed"')) await sleep(15);
+    expect(readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({ kind: 'respawn-failed', reason: 'argv-build-failed', detail: 'fixture carry argv unavailable' }));
+  } finally {
+    await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
+    await done;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(log, { force: true });
+  }
+}, 15_000);
+
+it.each(['gate-wait', 're-arm'] as const)(
+  'defers an admitted wake at %s when a carry arrives before the native boundary',
+  async (deliveryPhase) => {
+    const root = mkdtempSync(join(tmpdir(), 'pty-carry-boundary-'));
+    const sessions = join(root, 'sessions', '2026', '10', '03');
+    mkdirSync(sessions, { recursive: true });
+    const transcript = join(sessions, 'rollout-carry-boundary.jsonl');
+    const ownerId = uniqueOwner(`CARRY-${deliveryPhase}`);
+    const sock = socketPathFor(ownerId);
+    const log = eventLogPathForOwner(ownerId);
+    const { io, captured } = fakeIo();
+    const childCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('READY\\n');setInterval(()=>process.stdout.write('REPAINT\\n'),10);",
+      "let line='';process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\u0004'){process.exit(0);return;}",
+      "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+      'setTimeout(()=>process.exit(0),12000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+      bridgeTty: false, onExit: () => {},
+      env: hermeticEnv({
+        PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: deliveryPhase === 're-arm' ? '150' : '2000',
+        PAPERCUSP_PSU_PTY_REARM_CAP_MS: '2000',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '500',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+      }),
+      // Queue a real carry without launching a model process. This oracle is
+      // the wake's PTY bytes, independent of subsequent carry argv creation.
+      mintCarryRespawnArgs: () => { throw new Error('fixture carry argv unavailable'); },
+    });
+    const events = () => existsSync(log) ? readFileSync(log, 'utf8') : '';
+    try {
+      expect(await waitForHost(ownerId)).not.toBeNull();
+      expect(await waitForOutput(captured, 'REPAINT', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      expect(await injectIntoHostWithConfirmation(sock, {
+        mode: 'turn', ownerId, data: 'WAKE_BEFORE_CARRY', deliveryId: `wake-${deliveryPhase}`,
+      })).toMatchObject({ ok: true, reason: 'accepted' });
+      if (deliveryPhase === 're-arm') {
+        const deadline = Date.now() + 4000;
+        while (Date.now() < deadline && !events().includes('"kind":"wake-rearm-queued"')) await sleep(15);
+        expect(events()).toContain('"kind":"wake-rearm-queued"');
+      } else {
+        // Repaints and the missing native completion keep the first prompt
+        // wait closed throughout this interval (well below its 2s cap).
+        await sleep(100);
+        expect(events()).not.toContain('"kind":"wake-rearm-queued"');
+      }
+      expect(await injectIntoHostWithConfirmation(sock, {
+        mode: 'carry-respawn', ownerId, data: 'fixture carry', deliveryId: `carry-${deliveryPhase}`,
+      })).toMatchObject({ ok: true, reason: 'accepted' });
+      writeFileSync(transcript, JSON.stringify({
+        timestamp: new Date().toISOString(), type: 'event_msg',
+        payload: { type: 'task_complete', turn_id: 'boundary-after-carry' },
+      }) + '\n');
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && !captured().includes('ECHO:WAKE_BEFORE_CARRY') &&
+        !events().includes('"phase":"pre-write"')) await sleep(15);
+      expect(captured()).not.toContain('ECHO:WAKE_BEFORE_CARRY');
+      const rows = events().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      expect(rows).toContainEqual(expect.objectContaining({
+        kind: 'wake-turn-deferred-for-pending-respawn', phase: 'pre-write',
+        ...(deliveryPhase === 're-arm' ? { rearmed: true } : {}),
+      }));
+      if (deliveryPhase === 're-arm') {
+        // WI-10008172: since f61d2dab1f a re-armed wake that reaches its prompt
+        // while a carry-respawn owns the next write is an ORDERING deferral, not
+        // a terminal failure: performDelivery marks it retryable and the re-arm
+        // keeps the delivery id pending for a paced retry, so the loop wake is
+        // not lost. The old contract dropped it (wake-rearm-dropped). The drop
+        // row would land within milliseconds of the pre-write deferral, so a
+        // short bounded window is enough to prove its absence.
+        await sleep(250);
+        const settled = events().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        expect(settled).not.toContainEqual(expect.objectContaining({
+          kind: 'wake-rearm-dropped', reason: 'carry-respawn-pending',
+        }));
+      }
+    } finally {
+      await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
+      await done;
+      rmSync(root, { recursive: true, force: true });
+      rmSync(log, { force: true });
+    }
+  }, 15_000,
+);
 
 it('re-armed wake uses its verified native boundary without a second busy-gate wait', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pty-rearm-boundary-'));
@@ -242,11 +569,13 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
       const freshCode = [
         "const fs=require('node:fs');process.stdin.setRawMode(true);",
         "process.stdout.write('FRESH-BOOT\\n');",
-        scenario === 'not-ready' ? '' : "setTimeout(()=>process.stdout.write('100% context left\\n'),150);",
+        // A tagged initial kickoff requires a probe followed by a configured
+        // model frame; context-left chrome alone cannot authorize submission.
+        scenario === 'not-ready' ? '' : "setTimeout(()=>process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n100% context left\\n'),150);",
         "setInterval(()=>process.stdout.write('IDLE-REPAINT\\n'),15);",
         // The composer echoes typed text like the real Codex TUI: a fresh launch
         // kickoff is only submitted once its turn-origin marker is visible.
-        "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString()){",
+        "let line='';process.stdin.on('data',data=>{let echo='';const input=data.toString().replace(/\\x1b\\[[0-9;]*R/g,'');for(const c of input){",
         "if(c==='\\u0004')process.exit(0);",
         "if(c==='\\r'){if(line){fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');line='';process.stdout.write('SUBMITTED\\n');}}else{line+=c;echo+=c;}}",
         'if(echo)process.stdout.write(echo);});',
@@ -280,6 +609,9 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
           PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS: '10',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+          // This composer fixture never emits quota errors. Keep its receipt
+          // phase explicit instead of inheriting the production 10s grace.
+          PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '20',
         }),
         ownerId,
         io,
@@ -300,11 +632,19 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
         }
         expect(await waitForOutput(captured, 'FRESH-BOOT')).toBe(true);
         if (scenario === 'launch-ready') {
-          expect(await waitForOutput(captured, 'SUBMITTED')).toBe(true);
+          const submitted = await waitForOutput(captured, 'SUBMITTED');
+          expect(submitted, hostTestDiagnostics(ownerId, captured)).toBe(true);
           const deadline = Date.now() + 2000;
           while (!readFileSync(proofPath, 'utf8') && Date.now() < deadline) await sleep(20);
-          expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toMatchObject({ persisted: true });
+          const receipt = readFileSync(proofPath, 'utf8');
+          expect(receipt, hostTestDiagnostics(ownerId, captured)).not.toBe('');
+          expect(JSON.parse(receipt)).toMatchObject({ persisted: true });
           expect(readFileSync(nativePath, 'utf8').trim().split('\n')).toHaveLength(1);
+          const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n')
+            .map((line) => JSON.parse(line));
+          expect(events).toContainEqual(expect.objectContaining({
+            kind: 'backend-session-frame-observed', msSinceMachineTurnWriteStarted: null,
+          }));
           return;
         }
         if (scenario === 'terminal-reply') type('\u001b[12;40R');
@@ -336,6 +676,828 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
       }
     },
     10000,
+  );
+});
+
+it(
+  'refreshes a pending Codex carry-respawn from a same-delivery retry before the re-arm commits (EI-24915900486106554)',
+  async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-carry-retry-refresh-'));
+    const ownerId = uniqueOwner('CARRY-RETRY-REFRESH');
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const { captured, io } = fakeIo();
+    const marker = '⟦turn-origin:self-compaction nonce:1234567890abcdef⟧';
+    const staleText = `${marker} STALE_CHECKPOINT hash=old age=900s`;
+    const freshText = `${marker} FRESH_CHECKPOINT hash=new age=2s`;
+    const staleAddendum = 'STALE_CHECKPOINT hash=old age=900s';
+    const freshAddendum = 'FRESH_CHECKPOINT hash=new age=2s';
+    const originalCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('OLD-READY\\n');",
+      "const repaint=setInterval(()=>process.stdout.write('REPAINT\\n'),10);",
+      'setTimeout(()=>clearInterval(repaint),1000);',
+      "let line='';process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\u0004'){process.exit(0);return;}",
+      "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+      'setTimeout(()=>process.exit(0),8000);',
+    ].join('');
+    const freshCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('FRESH-BOOT\\n');",
+      "let line='';process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\u0004'){process.exit(0);return;}",
+      "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+      'setTimeout(()=>process.exit(0),5000);',
+    ].join('');
+    const mintedAddenda: string[] = [];
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', originalCode],
+      cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '150',
+        PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1500',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '700',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
+        PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+      }),
+      ownerId,
+      io,
+      bridgeTty: false,
+      mintCarryRespawnArgs: (_args, options) => {
+        mintedAddenda.push(options.systemPromptAddendum);
+        return { args: ['-e', freshCode], nativeId: null };
+      },
+      onExit: () => {},
+    });
+
+    try {
+      expect(await waitForHost(ownerId)).not.toBeNull();
+      expect(await waitForOutput(captured, 'OLD-READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      const envelope = {
+        mode: 'carry-respawn' as const,
+        ownerId,
+        deliveryId: 'loop-fire-checkpoint-retry-1',
+      };
+      expect(await injectIntoHostWithConfirmation(sock, {
+        ...envelope,
+        data: staleText,
+        systemPromptAddendum: staleAddendum,
+      })).toMatchObject({ ok: true, reason: 'accepted' });
+
+      const queuedDeadline = Date.now() + 3000;
+      let events = '';
+      while (Date.now() < queuedDeadline) {
+        if (existsSync(eventLog)) {
+          events = readFileSync(eventLog, 'utf8');
+          if (events.includes('"kind":"respawn-rearm-queued"')) break;
+        }
+        await sleep(20);
+      }
+      expect(events).toContain('"kind":"respawn-rearm-queued"');
+
+      expect(await injectIntoHostWithConfirmation(sock, {
+        ...envelope,
+        data: freshText,
+        systemPromptAddendum: freshAddendum,
+      })).toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+      expect(readFileSync(eventLog, 'utf8')).toContain('"refreshedPendingCarryRespawn":true');
+
+      const respawnDeadline = Date.now() + 5000;
+      while (mintedAddenda.length === 0 && Date.now() < respawnDeadline) await sleep(20);
+      expect(mintedAddenda).toEqual([freshAddendum]);
+      expect(await waitForOutput(captured, `ECHO:${freshText}`, 3000)).toBe(true);
+      expect(captured()).not.toContain(`ECHO:${staleText}`);
+    } finally {
+      if (existsSync(sock)) await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+      await done;
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+  15_000,
+);
+
+describe('owner input cannot cancel a late Codex native binding (WI-10007230)', () => {
+  it.each(['adopted', 'in-place'] as const)(
+    'reattaches the %s successor even when owner input drops its carry',
+    async (route) => {
+      const root = mkdtempSync(join(tmpdir(), 'codex-owner-input-binding-'));
+      const ownerId = uniqueOwner(`OWNER-INPUT-BINDING-${route}`);
+      const nativeId = '12345678-1234-4234-8234-123456789abc';
+      const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
+      const carry = marker + '\nContinue the saved task';
+      const { captured, io, type } = bridgedIo();
+      let resolvedNativeId: string | null = null;
+      const reportedIds: string[] = [];
+      const emitted: string[] = [];
+      const freshCode = [
+        "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        "process.stdout.write('FRESH-BOOT\\n');",
+        "setTimeout(()=>process.stdout.write('100% context left\\n'),800);",
+        "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);process.stdout.write('INPUT:'+data+'\\n');});",
+        'setTimeout(()=>process.exit(0),5000);',
+      ].join('');
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', route === 'adopted' ? freshCode : "process.stdout.write('OLD-READY\\n');setTimeout(()=>process.exit(0),5000);"],
+        cwd: root,
+        env: hermeticEnv({
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: root,
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '60',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '150',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1500',
+        }),
+        ownerId,
+        io,
+        bridgeTty: true,
+        kickoff: route === 'adopted' ? carry : null,
+        adoptedCarryRespawn: route === 'adopted' ? { nativeId: null } : null,
+        resolveRespawnNativeId: () => resolvedNativeId,
+        mintCarryRespawnArgs: () => ({ args: ['-e', freshCode], nativeId: null }),
+        onRespawn: async (id: string) => { reportedIds.push(id); return true; },
+        emitCompacted: (_owner: string, _focus: string, options: { nativeId?: string | null } = {}) => {
+          emitted.push(options.nativeId ?? 'missing');
+          return null;
+        },
+        onExit: () => {},
+      });
+      try {
+        if (route === 'in-place') {
+          expect(await waitForOutput(captured, 'OLD-READY')).toBe(true);
+          await injectIntoHost(socketPathFor(ownerId), {
+            mode: 'carry-respawn', data: carry, systemPromptAddendum: 'saved task', ownerId,
+          });
+        }
+        expect(await waitForOutput(captured, 'FRESH-BOOT')).toBe(true);
+        type('owner draft');
+        // The native writer lock becomes readable after input has already
+        // cancelled carry delivery. It still belongs to this live child.
+        resolvedNativeId = nativeId;
+        const deadline = Date.now() + 2000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < deadline) {
+          if (existsSync(eventLogPathForOwner(ownerId))) {
+            events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+              .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+          }
+          // Callback entry precedes the persisted confirmation receipt. Wait
+          // for the actual two outcomes instead of racing the report's return.
+          if (events.some((event) => event.kind === 'respawn-binding-confirmed' && event.nativeId === nativeId) &&
+              events.some((event) => event.reason === 'fresh-child-owner-input')) break;
+          await sleep(20);
+        }
+        expect(events).toContainEqual(expect.objectContaining({ reason: 'fresh-child-owner-input' }));
+        expect(reportedIds).toEqual([nativeId]);
+        expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-binding-confirmed', nativeId }));
+        expect(captured()).toContain('INPUT:owner draft');
+        expect(captured()).not.toContain(marker);
+        expect(emitted).toEqual([]);
+      } finally {
+        await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+        await done;
+        rmSync(root, { recursive: true, force: true });
+        rmSync(eventLogPathForOwner(ownerId), { force: true });
+      }
+    },
+    15_000,
+  );
+});
+
+describe('Codex native id discovered after carry binding deadline (EI-25344556501316035)', () => {
+  it.each([true, false])('gates a later wake on successor reanchor (confirmed %s)', async (mappingConfirmed) => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-binding-deadline-'));
+    const ownerId = uniqueOwner('BINDING-DEADLINE');
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const { captured, io } = fakeIo();
+    let resolvedNativeId: string | null = null;
+    const reportedIds: string[] = [];
+    const childCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
+      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);process.stdout.write('INPUT:'+data+'\\n');});",
+      'setTimeout(()=>process.exit(0),8000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '200',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+      }),
+      ownerId, io, bridgeTty: false,
+      kickoff: 'saved carry', adoptedCarryRespawn: { nativeId: null },
+      resolveRespawnNativeId: () => resolvedNativeId,
+      onRespawn: async (id: string) => { reportedIds.push(id); return mappingConfirmed; },
+      emitCompacted: () => null, onExit: () => {},
+    });
+    try {
+      expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      const deadline = Date.now() + 2000;
+      let events: Array<Record<string, unknown>> = [];
+      while (Date.now() < deadline) {
+        if (existsSync(eventLogPathForOwner(ownerId))) {
+          events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+            .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        }
+        if (events.some(event => event.kind === 'respawn-binding-unconfirmed')) break;
+        await sleep(20);
+      }
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing',
+      }));
+      expect(reportedIds).toEqual([]);
+      resolvedNativeId = nativeId;
+      const accepted = await injectIntoHost(socketPathFor(ownerId), {
+        mode: 'turn', data: 'later wake', ownerId,
+      });
+      // Socket acceptance precedes the gated pipeline's terminal outcome.
+      expect(accepted).toBe(true);
+      const settledDeadline = Date.now() + 2000;
+      let confirmation: Array<Record<string, unknown>> = [];
+      while (Date.now() < settledDeadline) {
+        confirmation = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        if (confirmation.some(event => event.nativeId === nativeId &&
+          event.kind === (mappingConfirmed ? 'respawn-binding-confirmed' : 'respawn-binding-unconfirmed'))) break;
+        await sleep(20);
+      }
+      expect(reportedIds).toEqual([nativeId]);
+      if (mappingConfirmed) {
+        expect(await waitForOutput(captured, 'INPUT:later wake')).toBe(true);
+        expect(confirmation).toContainEqual(expect.objectContaining({
+          kind: 'respawn-binding-confirmed', nativeId,
+        }));
+      } else {
+        expect(confirmation).toContainEqual(expect.objectContaining({
+          kind: 'respawn-binding-unconfirmed', nativeId, reason: 'successor-reanchor-unconfirmed',
+        }));
+        expect(captured()).not.toContain('later wake');
+      }
+    } finally {
+      await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+      await done;
+      for (const file of [eventLogPathForOwner(ownerId), metaPathFor(ownerId), socketPathFor(ownerId)]) {
+        rmSync(file, { force: true });
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Codex recycle reanchors its fresh native session before carry delivery', () => {
+  it('waits for the exact successor mapping before submitting the recycle carry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-recycle-reanchor-'));
+    const ownerId = uniqueOwner('RECYCLE-REANCHOR');
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const nativeDir = join(root, 'sessions', '2026', '10', '15');
+    const nativePath = join(nativeDir, `rollout-2026-10-15T00-00-00-${nativeId}.jsonl`);
+    mkdirSync(nativeDir, { recursive: true });
+    const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
+    const nativeSinceMs = Date.now();
+    const { captured, io } = fakeIo();
+    const reportedIds: string[] = [];
+    let confirmReport!: () => void;
+    const reportGate = new Promise<void>((resolve) => { confirmReport = resolve; });
+    const childCode = [
+      "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
+      "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString()){",
+      "if(c==='\\u0004'){process.exit(0);}if(c==='\\r'){if(line){",
+      "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',timestamp:new Date().toISOString(),payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');",
+      "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'recycle-carry'}})+'\\n');",
+      "line='';process.stdout.write('SUBMITTED\\n');}}else{line+=c;echo+=c;}}if(echo)process.stdout.write(echo);});",
+      'setTimeout(()=>process.exit(0),10000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: root,
+        CARRY_NATIVE_PATH: nativePath,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '20',
+      }),
+      ownerId,
+      io,
+      bridgeTty: false,
+      resolveRespawnNativeId: () => nativeId,
+      nativePersistenceTimeoutMs: 300,
+      mintRecycleArgs: () => ({ args: ['-e', childCode], nativeId: null }),
+      onRespawn: async (id: string) => {
+        reportedIds.push(id);
+        await reportGate;
+        return true;
+      },
+      onExit: () => {},
+    });
+    let recycleDispatch: Promise<unknown> | null = null;
+    try {
+      expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      recycleDispatch = injectIntoHost(socketPathFor(ownerId), {
+        mode: 'recycle', data: `${marker}\nCARRIED`, ownerId,
+      });
+      const reportDeadline = Date.now() + 3000;
+      while (reportedIds.length === 0 && Date.now() < reportDeadline) await sleep(20);
+      await sleep(150);
+      expect(reportedIds).toEqual([nativeId]);
+      expect(captured()).not.toContain('SUBMITTED');
+      expect(existsSync(nativePath)).toBe(false);
+
+      confirmReport();
+      expect(await waitForOutput(captured, 'SUBMITTED', 5000)).toBe(true);
+      expect(await recycleDispatch).toBe(true);
+      expect(readFileSync(nativePath, 'utf8')).toContain(marker);
+      expect(findNativeTranscriptMarker({
+        agent: 'codex', env: hermeticEnv({ CODEX_HOME: root }), marker, sinceMs: nativeSinceMs,
+      })).toBe(nativePath);
+      const eventDeadline = Date.now() + 5000;
+      let events: Array<Record<string, unknown>> = [];
+      while (Date.now() < eventDeadline) {
+        events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        if (events.some((event) => event.kind === 'respawn-carry-delivered' || event.kind === 'respawn-carry-dropped')) break;
+        await sleep(20);
+      }
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-binding-confirmed', nativeId }));
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-carry-delivered', nativeId }));
+      expect(events.findIndex((event) => event.kind === 'respawn-binding-confirmed' && event.nativeId === nativeId))
+        .toBeLessThan(events.findIndex((event) => event.kind === 'respawn-carry-delivered' && event.nativeId === nativeId));
+    } finally {
+      confirmReport();
+      await recycleDispatch?.catch(() => {});
+      await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+      await done;
+      for (const file of [eventLogPathForOwner(ownerId), metaPathFor(ownerId), socketPathFor(ownerId)]) {
+        rmSync(file, { force: true });
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
+
+describe('unbound Codex successor is replaced or refused, never stranded (P-005 / D-003)', () => {
+  const readEvents = (ownerId: string): Array<Record<string, unknown>> =>
+    existsSync(eventLogPathForOwner(ownerId))
+      ? readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+  const cleanupHost = async (ownerId: string, root: string, done: Promise<unknown>) => {
+    await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+    await done;
+    for (const file of [eventLogPathForOwner(ownerId), metaPathFor(ownerId), socketPathFor(ownerId)]) {
+      rmSync(file, { force: true });
+    }
+    rmSync(root, { recursive: true, force: true });
+  };
+
+  it('replaces a carry successor that never exposes its native id within the spawn-anchored window', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-unbound-carry-'));
+    const ownerId = uniqueOwner('UNBOUND-CARRY');
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const marker = '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧';
+    const carry = marker + '\nContinue the saved task';
+    const { captured, io } = fakeIo();
+    const reportedIds: string[] = [];
+    let mints = 0;
+    const freshCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('FRESH-BOOT\\n');",
+      "setTimeout(()=>process.stdout.write('100% context left\\n'),100);",
+      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);process.stdout.write('INPUT:'+data+'\\n');});",
+      'setTimeout(()=>process.exit(0),15000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', "process.stdout.write('OLD-READY\\n');setTimeout(()=>process.exit(0),15000);"],
+      cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '60',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '150',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '8000',
+        PAPERCUSP_PSU_PTY_UNBOUND_CHILD_WINDOW_MS: '400',
+      }),
+      ownerId,
+      io,
+      bridgeTty: false,
+      // Only the FIRST successor is wedged (the measured update-menu case); its
+      // fresh-epoch replacement mints and exposes an id normally.
+      resolveRespawnNativeId: () => (mints >= 2 ? nativeId : null),
+      mintCarryRespawnArgs: () => { mints += 1; return { args: ['-e', freshCode], nativeId: null }; },
+      onRespawn: async (id: string) => { reportedIds.push(id); return true; },
+      emitCompacted: () => null,
+      onExit: () => {},
+    });
+    try {
+      expect(await waitForOutput(captured, 'OLD-READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      await injectIntoHost(socketPathFor(ownerId), {
+        mode: 'carry-respawn', data: carry, systemPromptAddendum: 'saved task', ownerId,
+      });
+      const deadline = Date.now() + 7000;
+      let events = readEvents(ownerId);
+      while (Date.now() < deadline &&
+        !events.some((event) => event.kind === 'respawn-binding-confirmed' && event.nativeId === nativeId)) {
+        await sleep(25);
+        events = readEvents(ownerId);
+      }
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing', windowMs: 400,
+      }));
+      const retry = events.find((event) => event.kind === 'respawn-carry-fresh-epoch-retry');
+      expect(retry).toMatchObject({ reason: 'successor-native-id-missing' });
+      // Bounded by the 400ms spawn-anchored window, not the 8s carry budget
+      // (pre-fix: no retry at all, a terminal drop after the full budget).
+      const firstRespawn = events.find((event) => event.kind === 'respawned');
+      expect(Date.parse(String(retry?.ts)) - Date.parse(String(firstRespawn?.ts))).toBeLessThan(4000);
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-binding-confirmed', nativeId }));
+      expect(reportedIds).toEqual([nativeId]);
+      expect(await waitForOutput(captured, marker)).toBe(true);
+    } finally {
+      await cleanupHost(ownerId, root, done);
+    }
+  }, 25_000);
+
+  it('refuses wakes to a still-unbound child as a durable deferral, then self-heals once it binds', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-unbindable-wake-'));
+    const ownerId = uniqueOwner('UNBINDABLE-WAKE');
+    const sock = socketPathFor(ownerId);
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const { captured, io } = fakeIo();
+    let resolvedNativeId: string | null = null;
+    const childCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
+      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);process.stdout.write('INPUT:'+data+'\\n');});",
+      'setTimeout(()=>process.exit(0),15000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '200',
+        PAPERCUSP_PSU_PTY_UNBOUND_CHILD_WINDOW_MS: '300',
+        // Isolate (c): no fresh-child replacement, so the wedged child stays.
+        PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES: '0',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+      }),
+      ownerId, io, bridgeTty: false,
+      kickoff: 'saved carry', adoptedCarryRespawn: { nativeId: null },
+      resolveRespawnNativeId: () => resolvedNativeId,
+      onRespawn: async () => true,
+      emitCompacted: () => null, onExit: () => {},
+    });
+    try {
+      expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline &&
+        !readEvents(ownerId).some((event) => event.kind === 'respawn-binding-unconfirmed')) await sleep(20);
+      await sleep(400); // the child is now past its 300ms window
+      const wake = { mode: 'turn' as const, ownerId, data: 'later wake', deliveryId: 'unbindable-wake-1' };
+      // Pre-fix: { ok: true, reason: 'accepted' }, then `pending-delivery-id` on
+      // every retry while the pipeline waited on a child that could never bind.
+      expect(await injectIntoHostWithConfirmation(sock, wake))
+        .toMatchObject({ ok: false, reason: 'deferred-successor-unbindable' });
+      expect(await injectIntoHostWithConfirmation(sock, wake))
+        .toMatchObject({ ok: false, reason: 'deferred-successor-unbindable' });
+      expect(readEvents(ownerId).filter((event) => event.kind === 'successor-unbindable-refused')).toHaveLength(1);
+      expect(captured()).not.toContain('INPUT:later wake');
+      // The id appears (e.g. an owner dismissed the menu): the next wake binds and lands.
+      resolvedNativeId = nativeId;
+      expect(await injectIntoHostWithConfirmation(sock, { ...wake, deliveryId: 'unbindable-wake-2' }))
+        .toMatchObject({ ok: true, reason: 'accepted' });
+      expect(await waitForOutput(captured, 'INPUT:later wake')).toBe(true);
+      expect(readEvents(ownerId)).toContainEqual(expect.objectContaining({
+        kind: 'respawn-binding-confirmed', nativeId,
+      }));
+    } finally {
+      await cleanupHost(ownerId, root, done);
+    }
+  }, 25_000);
+
+  // D-007 (d) / WI-6554700010008321: the copy is accepted INSIDE the window, the
+  // busy gate re-arms it (still PENDING), and the child crosses the window while
+  // it waits. Pre-fix the sender's retry of that same id answered
+  // `{ ok: true, reason: 'pending-delivery-id' }` forever; now it is refused like
+  // a first delivery, under phase `duplicate-pending`.
+  it.each(['continuous', 'repaint-gap'] as const)('refuses a PENDING retry once the child crosses the unbound window, and keeps the completed answer: %s', async (outputMode) => {
+    const windowMs = 4_000;
+    const root = mkdtempSync(join(tmpdir(), 'codex-unbindable-pending-'));
+    const sessions = join(root, 'sessions');
+    mkdirSync(sessions);
+    const transcript = join(sessions, 'rollout-pending.jsonl');
+    const ownerId = uniqueOwner('UNBINDABLE-PENDING');
+    const sock = socketPathFor(ownerId);
+    const nativeId = '12345678-1234-4234-8234-123456789abd';
+    const { captured, io } = fakeIo();
+    let resolvedNativeId: string | null = null;
+    // Native work, rather than repaint timer punctuality, holds the busy gate.
+    // \u0001 starts work, \u0002 settles it, \u0003 models a repaint gap, and
+    // \u0004 exits; anything else is echoed as INPUT:<bytes>.
+    const childCode = [
+      "const fs=require('node:fs');const native=(type)=>fs.writeFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type,turn_id:'pending-fixture'}})+'\\n');",
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
+      'let repaint=null;',
+      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);",
+      "if(data.includes('\\u0001')){native('task_started');if(!repaint)repaint=setInterval(()=>process.stdout.write('.'),20);process.stdout.write('NATIVE_RUNNING\\n');return;}",
+      "if(data.includes('\\u0002')){clearInterval(repaint);repaint=null;native('task_complete');return;}",
+      "if(data.includes('\\u0003')){clearInterval(repaint);repaint=null;setTimeout(()=>{repaint=setInterval(()=>process.stdout.write('.'),20);},180);return;}",
+      "process.stdout.write('INPUT:'+data+'\\n');});",
+      'setTimeout(()=>process.exit(0),20000);',
+    ].join('');
+    const hostStartedAt = Date.now();
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex', CODEX_HOME: root, TEST_TRANSCRIPT: transcript,
+        PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '200',
+        PAPERCUSP_PSU_PTY_UNBOUND_CHILD_WINDOW_MS: String(windowMs),
+        PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES: '0',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+      }),
+      ownerId, io, bridgeTty: false,
+      kickoff: 'saved carry', adoptedCarryRespawn: { nativeId: null },
+      resolveRespawnNativeId: () => resolvedNativeId,
+      onRespawn: async () => true,
+      emitCompacted: () => null, onExit: () => {},
+    });
+    const waitForEvent = async (predicate: (event: Record<string, unknown>) => boolean, timeoutMs = 3_000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline && !readEvents(ownerId).some(predicate)) await sleep(20);
+      return readEvents(ownerId).some(predicate);
+    };
+    try {
+      expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      const readyAt = Date.now();
+      // The kickoff's own binding attempt has ended unconfirmed, so this child
+      // owes a binding (carryBindingChild) that nothing has confirmed.
+      expect(await waitForEvent((event) => event.kind === 'respawn-binding-unconfirmed')).toBe(true);
+      expect(await injectIntoHost(sock, { mode: 'raw', data: '\x01', ownerId })).toBeTruthy();
+      expect(await waitForOutput(captured, 'NATIVE_RUNNING')).toBe(true);
+      expect(nativeLatestExecution({ agent: 'codex', env: { CODEX_HOME: root }, receivedAtMs: hostStartedAt }))
+        .toMatchObject({ phase: 'running' });
+
+      // (2) Admitted inside the window. childStartedAt >= hostStartedAt, so this
+      // bound proves the child is younger than the window at admission.
+      expect(Date.now() - hostStartedAt).toBeLessThan(windowMs - 500);
+      const wake = { mode: 'turn' as const, ownerId, data: 'pending x', deliveryId: 'unbindable-pending-x' };
+      expect(await injectIntoHostWithConfirmation(sock, wake)).toMatchObject({ ok: true, reason: 'accepted' });
+      expect(await waitForEvent((event) => event.kind === 'wake-rearm-scheduled')).toBe(true);
+      // Scheduling alone does not prove the re-arm still owns this ID. Assert
+      // that prerequisite before spending the unbound-window wait, and retain
+      // lifecycle evidence in the failure instead of deleting it in cleanup.
+      expect(await injectIntoHostWithConfirmation(sock, wake), JSON.stringify(readEvents(ownerId)))
+        .toMatchObject({ ok: true, reason: 'pending-delivery-id' });
+      if (outputMode === 'repaint-gap') {
+        // This gap previously let the re-arm attempt binding, fail, and clear
+        // its ID. Native running evidence must retain the intended busy state.
+        expect(await injectIntoHost(sock, { mode: 'raw', data: '\x03', ownerId })).toBeTruthy();
+        await sleep(500);
+      }
+      expect(readEvents(ownerId).filter((event) => event.kind === 'wake-rearm-dropped')).toHaveLength(0);
+      expect(readEvents(ownerId).filter((event) => event.kind === 'successor-unbindable-refused')).toHaveLength(0);
+
+      // (3) Let the child cross its window while the accepted copy stays PENDING
+      // on the busy-gate re-arm. childStartedAt <= readyAt, so this wait proves it.
+      await sleep(Math.max(0, readyAt + windowMs + 300 - Date.now()));
+
+      // (4) Pre-fix: { ok: true, reason: 'pending-delivery-id' } on every retry.
+      expect(await injectIntoHostWithConfirmation(sock, wake))
+        .toMatchObject({ ok: false, reason: 'deferred-successor-unbindable' });
+      expect(await injectIntoHostWithConfirmation(sock, wake))
+        .toMatchObject({ ok: false, reason: 'deferred-successor-unbindable' });
+      const refusals = readEvents(ownerId).filter((event) => event.kind === 'successor-unbindable-refused');
+      expect(refusals).toHaveLength(1);
+      expect(refusals[0], JSON.stringify(readEvents(ownerId)))
+        .toMatchObject({ mode: 'turn', phase: 'duplicate-pending' });
+      expect(captured()).not.toContain('INPUT:pending x');
+
+      // The refusal does not cancel the accepted copy. Once the id appears and
+      // the child goes idle, the re-arm writes it exactly once, and a completed
+      // retry keeps its idempotent duplicate answer.
+      resolvedNativeId = nativeId;
+      expect(await injectIntoHost(sock, { mode: 'raw', data: '\x02', ownerId })).toBeTruthy();
+      expect(await waitForOutput(captured, 'INPUT:pending x', 6_000)).toBe(true);
+      expect(await waitForEvent((event) => event.kind === 'wake-rearm-delivered', 6_000)).toBe(true);
+      expect(await injectIntoHostWithConfirmation(sock, wake))
+        .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+      await sleep(200);
+      expect((captured().match(/INPUT:pending x/g) ?? []).length).toBe(1);
+      expect(readEvents(ownerId)).toContainEqual(expect.objectContaining({
+        kind: 'respawn-binding-confirmed', nativeId,
+      }));
+    } finally {
+      await cleanupHost(ownerId, root, done);
+    }
+  }, 30_000);
+});
+
+describe('host-code-adopted carry with a late Codex native id (EI-24961854655864836)', () => {
+  it.each([['adopted', true], ['adopted', false], ['in-place', true], ['in-place', false]] as const)(
+    'gates %s carry before submission, then proves delivery (confirmation %s)',
+    async (route, mappingConfirmed) => {
+      const root = mkdtempSync(join(tmpdir(), 'codex-adopted-carry-proof-'));
+      const ownerId = uniqueOwner('ADOPTED-CARRY-LATE-ID');
+      const nativeId = '12345678-1234-4234-8234-123456789abc';
+      const nativePath = join(
+        root,
+        'sessions',
+        '2026',
+        '09',
+        '12',
+        'rollout-2026-09-12T00-00-00-' + nativeId + '.jsonl',
+      );
+      mkdirSync(join(root, 'sessions', '2026', '09', '12'), { recursive: true });
+      const marker = '⟦turn-origin:self-compaction nonce:0011223344556677⟧';
+      const kickoff = marker + '\nContinue the adopted carry';
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const order: string[] = [];
+      const reportedIds: string[] = [];
+      let confirmBinding: (() => void) | null = null;
+      const emitted: Array<{ ownerId: string; focus: string; nativeId: string | null }> = [];
+      const childCode = [
+        "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        "process.stdout.write('FRESH-BOOT\\n\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n');",
+        // Terminal capability replies are not composer input.
+        "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString().replace(/\\x1b\\[[0-9;]*R/g,'')){",
+        "if(c==='\\u0004'){process.stdout.write('EOT_RECEIVED\\n',()=>process.exit(0));return;}",
+        "if(c==='\\r'){if(line){",
+        "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');",
+        "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'adopted-carry'}})+'\\n');",
+        "line='';process.stdout.write('SUBMITTED\\n');",
+        "}}else{line+=c;echo+=c;}}if(echo)process.stdout.write(echo);});",
+        'setTimeout(()=>process.exit(0),8000);',
+      ].join('');
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        env: hermeticEnv({
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_SID: ownerId,
+          CODEX_HOME: root,
+          CARRY_NATIVE_PATH: nativePath,
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_RESPAWN_REPORT_TIMEOUT_MS: '80',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1500',
+        }),
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff: route === 'adopted' ? kickoff : null,
+        adoptedCarryRespawn: route === 'adopted' ? { nativeId: null } : null,
+        resolveRespawnNativeId: () => nativeId,
+        mintCarryRespawnArgs: () => ({ args: ['-e', childCode], nativeId: null }),
+        nativePersistenceTimeoutMs: 1_000,
+        onRespawn: async (freshId: string, { onConfirmed }: { onConfirmed: (id: string) => void }) => {
+          order.push('reanchor');
+          reportedIds.push(freshId);
+          confirmBinding = () => { order.push('confirmed'); onConfirmed(freshId); };
+          // The initial report fails; production's existing durable retry owns
+          // the eventual confirmation. No user work can reach this child yet.
+          return false;
+        },
+        emitCompacted: (emittedOwner: string, focus: string, options: { nativeId?: string | null } = {}) => {
+          order.push('emit');
+          emitted.push({ ownerId: emittedOwner, focus, nativeId: options.nativeId ?? null });
+          return null;
+        },
+        onExit: () => {},
+      });
+
+      let carryDispatch: Promise<unknown> | null = null;
+      let eotReceived = false;
+      let carryDispatchSettled = true;
+      try {
+        expect(await waitForOutput(captured, 'FRESH-BOOT', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+        if (route === 'in-place') {
+          carryDispatch = injectIntoHost(socketPathFor(ownerId), {
+            mode: 'carry-respawn', data: kickoff, systemPromptAddendum: 'saved task', ownerId,
+          });
+        }
+        const reportDeadline = Date.now() + 2_000;
+        while (!confirmBinding && Date.now() < reportDeadline) await sleep(20);
+        expect(confirmBinding).toBeTypeOf('function');
+        expect(existsSync(nativePath)).toBe(false);
+        expect(captured()).not.toContain('SUBMITTED');
+        if (mappingConfirmed) {
+          confirmBinding!();
+          const submitted = await waitForOutput(captured, 'SUBMITTED', 5_000);
+          expect(submitted, hostTestDiagnostics(ownerId, captured)).toBe(true);
+        }
+
+        const terminalDeadline = Date.now() + 2_000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < terminalDeadline) {
+          if (existsSync(eventLog)) {
+            events = readFileSync(eventLog, 'utf8')
+              .trim()
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => JSON.parse(line));
+            if (events.some((event) =>
+              event.kind === 'respawn-carry-delivered' ||
+              event.kind === 'startup-turn-dropped')) break;
+          }
+          await sleep(20);
+        }
+
+        expect(reportedIds).toEqual([nativeId]);
+        expect(events, hostTestDiagnostics(ownerId, captured)).toContainEqual(expect.objectContaining({
+          kind: 'backend-session-frame-observed', msSinceMachineTurnWriteStarted: null,
+        }));
+        if (mappingConfirmed) {
+          expect(readFileSync(nativePath, 'utf8')).toContain(marker);
+          const unannounced = events.find((event) => event.kind === 'respawn-compaction-unannounced');
+          expect(order, 'unannounced reason=' + String(unannounced?.reason)).toEqual(['reanchor', 'confirmed', 'emit']);
+          expect(emitted).toEqual([{ ownerId, focus: 'carry-respawn', nativeId }]);
+          expect(events).toContainEqual(expect.objectContaining({
+            kind: 'respawn-carry-delivered',
+            nativeId,
+            turnStartVerified: true,
+            ...(route === 'adopted' ? { adopted: true } : {}),
+          }));
+          expect(events).not.toContainEqual(expect.objectContaining({
+            kind: 'respawn-compaction-unannounced',
+            nativeId,
+          }));
+        } else {
+          expect(order).toEqual(['reanchor']);
+          expect(emitted).toHaveLength(0);
+          expect(existsSync(nativePath)).toBe(false);
+          expect(captured()).not.toContain('SUBMITTED');
+          expect(events, hostTestDiagnostics(ownerId, captured)).toContainEqual(expect.objectContaining({
+            kind: 'respawn-binding-unconfirmed',
+            nativeId,
+            reason: 'successor-reanchor-unconfirmed',
+          }));
+          expect(events).not.toContainEqual(expect.objectContaining({ kind: 'respawn-carry-delivered' }));
+        }
+      } finally {
+        await injectIntoHost(socketPathFor(ownerId), {
+          mode: 'raw',
+          data: '\x04',
+          ownerId,
+        }).catch(() => false);
+        eotReceived = await waitForOutput(captured, 'EOT_RECEIVED', 1000);
+        await done;
+        const pendingDispatch = carryDispatch;
+        if (pendingDispatch) {
+          carryDispatchSettled = await new Promise<boolean>((resolve) => {
+            const timer = setTimeout(() => resolve(false), 2000);
+            void pendingDispatch.then(
+              () => { clearTimeout(timer); resolve(true); },
+              () => { clearTimeout(timer); resolve(true); },
+            );
+          });
+        }
+        rmSync(eventLog, { force: true });
+        rmSync(metaPathFor(ownerId), { force: true });
+        rmSync(root, { recursive: true, force: true });
+      }
+      expect(eotReceived, 'raw cleanup must deliver Ctrl-D to the spawned child').toBe(true);
+      expect(carryDispatchSettled, 'in-place carry dispatch must settle after child shutdown').toBe(true);
+    },
+    20_000,
   );
 });
 
@@ -428,6 +1590,61 @@ it('leaves a later Codex model menu to the agent after a turn was submitted', as
     rmSync(root, { recursive: true, force: true });
   }
 }, 10_000);
+
+it('records a sanitized Codex provider and endpoint after a successful PTY spawn', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-route-spawn-receipt-'));
+  const codexHome = join(root, 'codex');
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(join(codexHome, 'config.toml'), [
+    'model_provider = "papercusp-codex-gateway"',
+    '',
+    '[model_providers.papercusp-codex-gateway]',
+    'wire_api = "responses"',
+    'base_url = "https://user:receipt-secret@codex.example/v1?token=receipt-secret#fragment"',
+  ].join('\n'));
+  const ownerId = uniqueOwner('SPAWN-ROUTE-RECEIPT');
+  const eventPath = eventLogPathForOwner(ownerId);
+  const { captured, io } = fakeIo();
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('READY\\n');",
+      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),10000);',
+    ].join('')],
+    cwd: root,
+    env: hermeticEnv({
+      PAPERCUSP_SID: ownerId,
+      PAPERCUSP_AGENT: 'codex',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto',
+      CODEX_HOME: codexHome,
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+    }),
+    ownerId,
+    io,
+    bridgeTty: false,
+    onExit: () => {},
+  });
+  try {
+    expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+    const events = readFileSync(eventPath, 'utf8').trim().split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const receipt = events.find((event) => event.kind === 'pty-spawned');
+    expect(receipt).toMatchObject({
+      kind: 'pty-spawned',
+      agent: 'codex',
+      routeMode: 'auto',
+      provider: 'papercusp-codex-gateway',
+      endpoint: 'https://codex.example/v1',
+    });
+    expect(JSON.stringify(receipt)).not.toContain('receipt-secret');
+  } finally {
+    await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+    await done;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
 
 it('records initial submit plus each resubmit as attempts on a verified turn', async () => {
   const ownerId = uniqueOwner('TURN-ATTEMPTS');
@@ -554,31 +1771,40 @@ it('quota wall during launch kickoff preserves the host and publishes recovery t
   expect(existsSync(sock)).toBe(false);
 }, 25000);
 
-it('eligible quota recovery recycles once under the same owner and settles the exact delivery id', async () => {
+it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'interactive-replay', 'owner-edit', 'automatic', 'automatic-transient', 'automatic-unavailable'] as const)('Codex quota recovery verifies its auto route before replacing the child (%s)', async (repair) => {
   const root = mkdtempSync(join(tmpdir(), 'psu-quota-recovery-'));
   const codexHome = join(root, 'codex');
-  const transcript = join(codexHome, 'sessions', '2026', '09', '07', 'recovered.jsonl');
+  const originalNativeId = '12345678-1234-1234-1234-123456789abc';
+  const transcript = join(codexHome, 'sessions', '2026', '09', '07', `rollout-${originalNativeId}.jsonl`);
   mkdirSync(join(codexHome, 'sessions'), { recursive: true });
+  writeFileSync(join(codexHome, 'config.toml'), 'model_provider = "openai"\n');
   const ownerId = uniqueOwner('QUOTA-RECOVERY');
   const sock = socketPathFor(ownerId);
   const eventPath = eventLogPathForOwner(ownerId);
-  const { io, captured } = fakeIo();
+  const automatic = repair.startsWith('automatic');
+  const fixture = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic ? bridgedIo() : fakeIo();
+  const { io, captured } = fixture;
   const operationId = String(9_000_000 + Math.floor(performance.now()));
   const marker = '⟦turn-origin:wake-pump nonce:0123456789abcdef⟧';
+  const preservesConversation = ['interactive', 'interactive-replay', 'owner-edit'].includes(repair) || automatic;
   const childCode = [
     "const fs=require('node:fs'),path=require('node:path');",
     "const recycled=process.argv[1]==='RECYCLED';",
+    "if(recycled){const config=fs.readFileSync(path.join(process.env.CODEX_HOME,'config.toml'),'utf8');",
+    "process.stdout.write('RECYCLED-ROUTE:'+process.env.PAPERCUSP_ACCOUNT_ROUTING_MODE+':'+config.includes('model_provider = \"papercusp-codex-gateway\"')+'\\n');}",
     "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');let b='';",
+    repair === 'interactive-replay' ? "if(recycled)process.stdout.write(\"You've hit your usage limit.\\n\");" : '',
     "process.stdout.write(recycled?'RECYCLED-READY\\n':'READY\\n');",
     "process.stdin.on('data',d=>{if(d.includes('\\x04'))process.exit(0);b+=d;if(!b.includes('\\r'))return;",
     "const prompt=b;b='';if(!recycled){process.stdout.write(\"You've hit your usage limit.\\n\");return;}",
     "fs.mkdirSync(path.dirname(process.env.TEST_TRANSCRIPT),{recursive:true});",
-    "fs.writeFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({prompt,marker:process.env.TEST_MARKER})+'\\n');",
+    "fs.appendFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({timestamp:new Date().toISOString(),type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:prompt}]}})+'\\n');",
     "process.stdout.write('RECOVERED-TURN\\n');});",
     'setTimeout(()=>process.exit(0),20000);',
   ].join('');
   let exitCode: number | null = null;
   let recycleMints = 0;
+  let routeRepairs = 0;
   const done = hostThroughPty({
     command: execPath,
     args: ['-e', childCode, 'ORIGINAL'],
@@ -587,9 +1813,9 @@ it('eligible quota recovery recycles once under the same owner and settles the e
       PAPERCUSP_SID: ownerId,
       PAPERCUSP_AGENT: 'codex',
       PAPERCUSP_LAUNCHED_BY: 'su-integration-leader',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: automatic ? 'auto' : 'default',
       CODEX_HOME: codexHome,
       TEST_TRANSCRIPT: transcript,
-      TEST_MARKER: marker,
       PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
       PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '30',
       PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
@@ -601,8 +1827,28 @@ it('eligible quota recovery recycles once under the same owner and settles the e
     }),
     ownerId,
     io,
-    bridgeTty: false,
+    bridgeTty: preservesConversation,
+    ...(preservesConversation ? {
+      resolveRespawnNativeId: () => originalNativeId,
+      mintQuotaResumeArgs: (_a: string[], options: { nativeId: string | null }) => {
+        expect(options.nativeId).toBe(originalNativeId);
+        if (options.nativeId === null) throw new Error('quota recovery requires the original native session');
+        recycleMints += 1;
+        return { args: ['-e', childCode, 'RECYCLED'], nativeId: originalNativeId };
+      },
+    } : {}),
     nativePersistenceTimeoutMs: 1_000,
+    activityPersistMs: 50,
+    ensureCodexHome: async (options?: { routeMode?: string }) => {
+      routeRepairs += 1;
+      expect(options).toEqual({ routeMode: 'auto' });
+      expect(recycleMints).toBe(0);
+      if (repair === 'unavailable' || repair === 'automatic-unavailable' ||
+          (repair === 'automatic-transient' && routeRepairs === 1)) return null;
+      if (repair === 'repaired' || preservesConversation) applyCodexGatewayRoute(codexHome, { mode: 'auto', ownerId });
+      if (repair === 'owner-edit' && 'type' in fixture) fixture.type('unfinished owner input');
+      return { ok: true };
+    },
     mintRecycleArgs: (a: string[]) => {
       recycleMints += 1;
       return { args: a.slice(0, -1).concat('RECYCLED'), nativeId: null };
@@ -614,6 +1860,27 @@ it('eligible quota recovery recycles once under the same owner and settles the e
     expect(await waitForOutput(captured, 'READY', 5_000)).toBe(true);
     expect(await injectIntoHost(sock, { mode: 'turn', data: 'trigger-wall', ownerId })).toBe(true);
     expect(await waitForOutput(captured, "You've hit your usage limit", 5_000)).toBe(true);
+    if (repair === 'automatic-unavailable') {
+      const deadline = Date.now() + 8_000;
+      while (routeRepairs < 2 && Date.now() < deadline) await sleep(20);
+      expect(routeRepairs).toBe(2);
+      await sleep(200);
+      expect(routeRepairs).toBe(2); // repeated ticks cannot exceed the existing hourly budget
+      expect(recycleMints).toBe(0);
+      expect(captured()).not.toContain('RECYCLED-READY');
+      return;
+    }
+    if (automatic) {
+      expect(await waitForOutput(captured, 'RECYCLED-READY', 8_000)).toBe(true);
+      expect(routeRepairs).toBe(repair === 'automatic-transient' ? 2 : 1);
+      expect(recycleMints).toBe(1);
+      expect(captured()).toContain('RECYCLED-ROUTE:auto:true');
+      expect(captured()).not.toContain('RECOVERED-TURN'); // no automatic prompt replay
+      const events = readFileSync(eventPath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'quota-recovery-resumed', nativeId: originalNativeId }));
+      expect(events.some(event => event.kind === 'quota-recovery-ready')).toBe(false); // spawn is not productive pickup
+      return;
+    }
     const wallDeadline = Date.now() + 3_000;
     while (findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.quotaBlocked !== true && Date.now() < wallDeadline) {
       await sleep(20);
@@ -626,7 +1893,7 @@ it('eligible quota recovery recycles once under the same owner and settles the e
       data: `${marker}\nresume exact delivery`,
       ownerId,
       deliveryId: operationId,
-      quotaRecovery: { operationId, ownerId, startedAtMs },
+      quotaRecovery: { operationId, ownerId, startedAtMs, cause: repair === 'auth' ? 'auth' : 'quota' },
     });
     expect(accepted).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
 
@@ -636,10 +1903,43 @@ it('eligible quota recovery recycles once under the same owner and settles the e
       events = existsSync(eventPath)
         ? readFileSync(eventPath, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
         : [];
-      if (events.some((event) => event.kind === 'quota-recovery-ready')) break;
+      if (events.some((event) => event.kind === 'quota-recovery-ready' || event.kind === 'quota-recovery-dropped')) break;
       await sleep(25);
     }
+    expect(routeRepairs).toBe(repair === 'auth' ? 0 : 1);
+    if (repair === 'unavailable' || repair === 'wrong-route' || repair === 'owner-edit') {
+      expect(recycleMints).toBe(0);
+      expect(captured()).not.toContain('RECYCLED-READY');
+      expect(findLiveHost(ownerId, PSU_PTY_DIR, ID_OK)?.quotaBlocked).toBe(true);
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'quota-recovery-dropped', operationId,
+        reason: repair === 'owner-edit' ? 'owner-input-or-native-work' : 'codex-auto-route-unavailable',
+      }));
+      expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
+      return;
+    }
+    expect(captured()).toContain(repair === 'auth' ? 'RECYCLED-ROUTE:default:false' : 'RECYCLED-ROUTE:auto:true');
     expect(captured()).toContain('RECOVERED-TURN');
+    const transcriptLines = readFileSync(transcript, 'utf8').split(/\r?\n/).filter(Boolean);
+    const transcriptRows = transcriptLines.map((line) => JSON.parse(line));
+    const nativeRow = transcriptRows.find((row) => {
+      const prompt = row.payload.content.map((part: { text?: string }) => part.text ?? '').join('');
+      return leadingTurnOriginMarker(prompt) === marker;
+    });
+    expect(nativeRow, `native transcript rows: ${JSON.stringify(transcriptRows)}`).toBeDefined();
+    const nativePrompt = nativeRow?.payload.content.map((part: { text?: string }) => part.text ?? '').join('') ?? '';
+    const respawnEvents = events.filter((event) => event.kind === 'respawned');
+    const finalRespawnAtMs = Date.parse(String(respawnEvents[respawnEvents.length - 1]?.ts ?? ''));
+    expect(nativeRow.timestamp).toBeTypeOf('string');
+    expect(Date.parse(nativeRow.timestamp)).toBeGreaterThanOrEqual(finalRespawnAtMs);
+    expect(leadingTurnOriginMarker(nativePrompt), `native prompt row: ${JSON.stringify(nativePrompt)}`).toBe(marker);
+    expect(findNativeTranscriptMarker({
+      agent: 'codex',
+      env: hermeticEnv({ CODEX_HOME: codexHome }),
+      marker,
+      sinceMs: finalRespawnAtMs,
+      home: codexHome,
+    })).toBe(transcript);
     expect(events).toContainEqual(expect.objectContaining({
       kind: 'quota-recovery-ready',
       operationId,
@@ -690,32 +1990,6 @@ async function waitForOutput(
     if (Date.now() >= deadline) return false;
     await sleep(15);
   }
-}
-
-/** `process.env` with the PAPERCUSP_FLEET_* vars stripped, so this test is hermetic
- *  to whether the AGENT RUNNING IT happens to be a fleet member. `hostThroughPty`
- *  emits a fleet-recolor OSC banner (fleetOscFromEnv, psu-pty-host.mjs) to the
- *  child's stdout whenever `PAPERCUSP_FLEET_BG` is set — a plain `...process.env`
- *  spread inherits it from whatever shell runs the test, so this whole file passed
- *  cleanly from a non-fleet dev shell but genuinely failed (captured() polluted with
- *  literal OSC bytes ahead of the child's own output) when run from inside an su
- *  fleet-member session (PAPERCUSP_FLEET_BG/_FG/_CURSOR set by bootstrap-su for the
- *  fleet's bound color scheme) — exactly the environment backlog-drain agents run
- *  `npm run test:affected` in, which is almost certainly why the watchdog saw this
- *  file red repeatedly. */
-function hermeticEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const {
-    PAPERCUSP_FLEET_BG: _bg,
-    PAPERCUSP_FLEET_FG: _fg,
-    PAPERCUSP_FLEET_CURSOR: _cursor,
-    // Backend-specific startup readiness (for example Codex's `% context left`
-    // marker) must be selected explicitly by a test.  In a fleet session the
-    // ambient Codex value would make generic echo-child tests wait for a marker
-    // they can never emit, masking the clean-boundary behavior under test.
-    PAPERCUSP_AGENT: _agent,
-    ...rest
-  } = process.env;
-  return { ...rest, ...extra };
 }
 
 /** A fake stdout that accumulates the pty's output; a non-TTY fake stdin.
@@ -787,6 +2061,7 @@ function silentChildCode(ttlMs: number): string {
   // stdout and falsely look like output from a submitted turn.
   return (
     "try{process.stdin.setRawMode&&process.stdin.setRawMode(true);}catch(e){}" +
+    "process.stdout.write('RAW_READY\\n');" +
     `process.stdin.resume();setTimeout(()=>process.exit(0),${ttlMs});`
   );
 }
@@ -823,17 +2098,21 @@ function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
   );
 }
 
-/** A child that models a MID-TURN agent: it writes a '.' to stdout every
- *  `intervalMs` (a generating TUI repaints constantly) for `busyMs`, then goes
- *  QUIET (back at its prompt). It also echoes 'ECHO:<line>' per newline-terminated
- *  stdin line, so a CR-submitted wake turn is observable. Self-exits after ttlMs.
- *  The output stream is what the host's mid-turn gate watches. */
+/** A child that models a MID-TURN agent: a worker thread writes a '.' to stdout
+ *  every `intervalMs` (a generating TUI repaints constantly) for `busyMs`, then
+ *  goes QUIET (back at its prompt). Keeping the emitter off the agent's main
+ *  event loop prevents a delayed timer from creating a false output-quiet window
+ *  while the fixture is meant to stay busy. It also echoes 'ECHO:<line>' per
+ *  newline-terminated stdin line, so a CR-submitted wake turn is observable.
+ *  Self-exits after ttlMs. The output stream is what the host's mid-turn gate watches. */
 function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number): string {
   return (
+    "const {Worker}=require('node:worker_threads');" +
+    `const emitter=new Worker(${JSON.stringify(`setInterval(()=>process.stdout.write('.'),${intervalMs})`)},{eval:true});` +
+    `setTimeout(()=>{void emitter.terminate();},${busyMs});` +
+    "process.on('exit',()=>{void emitter.terminate();});" +
     "process.stdin.setEncoding('utf8');let b='';" +
     "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
-    `const iv=setInterval(()=>process.stdout.write('.'),${intervalMs});` +
-    `setTimeout(()=>clearInterval(iv),${busyMs});` +
     `setTimeout(()=>process.exit(0),${ttlMs});`
   );
 }
@@ -858,7 +2137,12 @@ function rawSubmitChildCode(ttlMs: number): string {
 }
 
 describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)', () => {
-  it.each(['settled', 'active'] as const)(
+  // WI-10008172: the boundary fence includes childStartedAtMs (bf8c3d1927 — "a
+  // predecessor's completion cannot certify a newly resumed child before that
+  // child has executed a turn"). So the CHILD's own turn rows must be written
+  // after it is up; a row written before spawn models a PREDECESSOR's
+  // completion, which must never certify the prompt boundary.
+  it.each(['settled', 'active', 'predecessor-settled'] as const)(
     'Codex idle repaint with a %s native turn uses only a verified completion boundary',
     async (state) => {
       const root = mkdtempSync(join(tmpdir(), 'codex-warm-turn-boundary-'));
@@ -867,10 +2151,11 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       const eventLog = eventLogPathForOwner(ownerId);
       const transcript = join(root, 'sessions', '2026', '09', '12', 'rollout-current.jsonl');
       mkdirSync(join(root, 'sessions', '2026', '09', '12'), { recursive: true });
-      writeFileSync(transcript, JSON.stringify({
+      const writeTurnRow = (type: 'task_complete' | 'task_started') => writeFileSync(transcript, JSON.stringify({
         type: 'event_msg', timestamp: new Date().toISOString(),
-        payload: { type: state === 'settled' ? 'task_complete' : 'task_started', turn_id: 'turn-current' },
+        payload: { type, turn_id: 'turn-current' },
       }) + '\n');
+      if (state === 'predecessor-settled') writeTurnRow('task_complete');
       const { captured, io } = fakeIo();
       const childCode = [
         "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
@@ -907,6 +2192,8 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
         // the same bounded READY-marker budget as the other loaded-host cases in
         // this file instead of turning a scheduler pause into a lifecycle red.
         expect(await waitForOutput(captured, 'READY', 10_000)).toBe(true);
+        if (state === 'settled') writeTurnRow('task_complete');
+        if (state === 'active') writeTurnRow('task_started');
         expect(await injectIntoHost(sock, { mode: 'turn', data: `warm-${state}`, ownerId })).toBe(true);
         if (state === 'settled') {
           // injectIntoHost acknowledges admission before the detached gate/write
@@ -918,7 +2205,7 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
           expect(events).not.toContain('"kind":"busy-gate-expired"');
         } else {
           await sleep(700);
-          expect(captured()).not.toContain('SUBMITTED:warm-active');
+          expect(captured()).not.toContain(`SUBMITTED:warm-${state}`);
           const events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
           expect(events).toContain('"kind":"busy-gate-expired"');
           expect(events).toContain('"mode":"turn"');
@@ -1020,7 +2307,7 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       const ownerId = uniqueOwner('SUBMIT-UNCONFIRMED');
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
-      const { io } = fakeIo();
+      const { io, captured } = fakeIo();
 
       let exitCode: number | null = null;
       let exitSignal: string | null = null;
@@ -1064,6 +2351,9 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
 
       const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
+      // Discovery exists before Node enters raw mode. Wait for that boundary
+      // so kernel line-discipline echo cannot stand in for child acceptance.
+      expect(await waitForOutput(captured, 'RAW_READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
       expect(await injectIntoHost(host!.sock, { mode: 'turn', data: 'never-confirmed' })).toBe(true);
 
       // Wait for the verifier to spend its whole CR budget and give up. Polling
@@ -1362,6 +2652,103 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         // AND that it did not double-inject alongside the folded retry, where the old form
         // could only ever prove the wake had been lost.
         expect((output.match(/ECHO:F03_DIAG parent-A/g) ?? []).length).toBe(1);
+      } finally {
+        await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+        await done;
+        rmSync(meta, { force: true });
+      }
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
+    'keeps a same delivery ID pending until a busy-gate turn re-arm settles',
+    async () => {
+      const busyMs = 1_500;
+      const ownerId = uniqueOwner('DEDUP-SAME-ID-REARM');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = bridgedIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', busyThenIdleChildCode(busyMs, 50, 5_000)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        },
+        ownerId,
+        advSessionId: 35_094,
+        io,
+        bridgeTty: true,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      try {
+        const host = await waitForHost(ownerId);
+        expect(host).not.toBeNull();
+        expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+
+        const envelope = { mode: 'turn' as const, ownerId, deliveryId: 'same-id-busy-rearm' };
+        const first = await injectIntoHostWithConfirmation(sock, {
+          ...envelope,
+          data: 'same delivery survives re-arm',
+        });
+        expect(first).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
+
+        const rearmDeadline = Date.now() + 3_000;
+        let events = '';
+        while (Date.now() < rearmDeadline) {
+          events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (events.includes('"kind":"wake-rearm-queued"')) break;
+          await sleep(20);
+        }
+        expect(events).toContain('"kind":"wake-rearm-queued"');
+
+        // The first promise has settled as deferred-busy-gate, but carryRearm
+        // still owns this same ID. A retry must report pending rather than start
+        // another gated pipeline while the re-arm is waiting for an idle prompt.
+        const retry = await injectIntoHostWithConfirmation(sock, {
+          ...envelope,
+          data: 'same delivery survives re-arm',
+        });
+        expect(retry).toMatchObject({ ok: true, confirmation: 'acked', reason: 'pending-delivery-id' });
+
+        expect(await waitForOutput(captured, 'ECHO:same delivery survives re-arm', 6_000)).toBe(true);
+        const settleDeadline = Date.now() + 3_000;
+        while (Date.now() < settleDeadline) {
+          events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
+          if (events.includes('"kind":"wake-rearm-delivered"')) break;
+          await sleep(20);
+        }
+        expect(events).toContain('"kind":"wake-rearm-delivered"');
+
+        const afterSettlement = await injectIntoHostWithConfirmation(sock, {
+          ...envelope,
+          data: 'same delivery survives re-arm',
+        });
+        expect(afterSettlement).toMatchObject({
+          ok: true,
+          confirmation: 'acked',
+          reason: 'duplicate-delivery-id',
+        });
+        await sleep(300);
+        expect((captured().match(/ECHO:same delivery survives re-arm/g) ?? []).length).toBe(1);
       } finally {
         await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
         await done;
@@ -1938,7 +3325,15 @@ describe(
         const done = hostThroughPty({
           command: execPath,
           // Busy (emitting '.') for 900ms, then quiet; self-exits at 4000ms.
-          args: ['-e', busyThenIdleChildCode(900, 50, 4000)],
+          // Keep a persona flag so Claude follows the in-place clear path;
+          // without it coldResetModeForAgent correctly selects hard recycle.
+          args: [
+            '-e',
+            "process.stdout.write('RESET-BOOT:'+process.pid+'\\n');" + busyThenIdleChildCode(900, 50, 4000),
+            '--',
+            '--system-prompt-file',
+            'fixture.md',
+          ],
           cwd: '/tmp',
           env: {
             ...hermeticEnv(),
@@ -1961,6 +3356,7 @@ describe(
         await waitForHost(ownerId);
         expect(await waitForOutput(captured, '.', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true); // genuinely busy now
 
+        expect([...captured().matchAll(/RESET-BOOT:/g)]).toHaveLength(1);
         const ok = await injectIntoHost(sock, { mode: 'reset', data: 'midturn-reset-carry' });
         expect(ok).toBe(true);
 
@@ -1981,6 +3377,7 @@ describe(
         // purpose: it proves the carry is HELD while the child is busy, and a
         // slow box only makes that direction more likely to hold.
         expect(await waitForOutput(captured, 'ECHO:midturn-reset-carry', 6000)).toBe(true);
+        expect([...captured().matchAll(/RESET-BOOT:/g)]).toHaveLength(1);
 
         await injectIntoHost(sock, { mode: 'raw', data: 'QUIT\n' });
         const code = await done;
@@ -2292,6 +3689,18 @@ describe('owner keystrokes during submit verification (WI-10001508)', () => {
         const submitted = await waitForOutput(captured, 'SUBMIT:', 6000);
         expect(submitted, `captured=${JSON.stringify(captured().slice(-600))}`).toBe(true);
         expect(captured()).toContain('KICKOFF-CARRY');
+        // The initial CR can already produce SUBMIT before keyboard overlap
+        // aborts verification. Require the settled retry's receipt too, so an
+        // obsolete input baseline cannot spin forever behind a passing echo.
+        const settledDeadline = Date.now() + 6000;
+        while (Date.now() < settledDeadline) {
+          rows = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+            .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+          if (rows.some((row) => row.kind === 'turn-delivered')) break;
+          await sleep(25);
+        }
+        expect(rows.some((row) => row.kind === 'turn-delivered'),
+          `kinds=${JSON.stringify(rows.map((row) => row.kind))}`).toBe(true);
       } finally {
         if (typing) clearInterval(typing);
         await injectIntoHost(socketPathFor(ownerId), {

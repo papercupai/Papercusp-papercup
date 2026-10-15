@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { Buffer } from 'node:buffer';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { maybeEmptyMappingHint, EMPTY_MAPPING_METADATA_KEY } from '../../empty-mapping-hint';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
@@ -19,9 +19,12 @@ import {
 import {
   CODE_RUN_REPLAY_PROOF_META_KEY,
   DEFAULT_SCRIPT_TIMEOUT_MS,
+  type AbortCompletionContext,
+  type AbortCompletionReceipt,
   type FieldMiss,
   type ToolResult,
 } from '@papercusp/tooldef';
+import { completedResultPayload } from '../abort-completion-payload';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
@@ -31,10 +34,18 @@ import {
 } from '../capability/foreground-transport-cap';
 import { captureRecipe, type RecipeCaptureDisposition } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
-import { deriveRecipeAuthority, recipeRevision } from '../../recipe-authority';
+import {
+  deriveRecipeAuthority,
+  recipeAuthorityContextFromRefs,
+  recipeRevision,
+  resolveLiveBoundRefs,
+  type RecipeAuthorityContext,
+} from '../../recipe-authority';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 import { recordRecipeRun } from '../../code-recipes-store';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
+import { buildScratchUri, safeScratchFilesystemPath } from '../../scratch-uri';
+import { storeVolatileScratchReference, writeScratchReference } from '../../scratch-reference';
 import {
   normalizeExecutionTrace,
   type NormalizedExecutionTrace,
@@ -47,8 +58,21 @@ import type {
 import { ORCHESTRATION_RECURSION_EXCLUSIONS } from '../orchestration/contract-preflight';
 import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
 import { canonicalJson } from '../../authority/authority-rpc-envelope';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { deriveFleetMembership } from '../coordination/identity';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
+import { readIdentity } from '../locks/identity';
+import { getTxPool } from '../locks/su-lock-store';
+import { openManagedKernel, controlManagedKernel, runManagedKernelScript } from './kernel-owner';
 
 export type CodeRunCaptureMode = 'auto' | 'never';
+
+/** Scope is derived from authenticated transport context, never from tool arguments. */
+export function codeRunKernelScope(ctx: UnifiedToolContext): string {
+  if (!ctx.workspaceId?.trim()) throw new Error('kernel_workspace_required');
+  const identity = resolveAgentIdentity(ctx);
+  return JSON.stringify([ctx.workspaceId, identity.ownerId, resolveConcreteHarnessSlug(undefined, ctx)]);
+}
 
 /** SHA-256 of the complete, validated outer code:run argument body. */
 export function codeRunRequestHash(args: unknown): string {
@@ -130,6 +154,42 @@ export async function withCodeRunResponseBudget<T>(
 export { bindCurrentCallerDispatch as bindInnerDispatch } from '../orchestration/current-caller-dispatch';
 
 /**
+ * A successful code:run response is the complete outcome of this orchestration attempt: it
+ * includes the final script result and the mutation summary (including any partial-effect
+ * warnings). If the dispatch deadline fired just before the handler returned, surface that exact
+ * result instead of an ambiguous timeout that invites replaying already-dispatched writes.
+ */
+export function codeRunAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  if (payload?.ok !== true) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'code:run result did not confirm a completed successful orchestration',
+      failures: ['missing-successful-run-result'],
+    };
+  }
+  if (typeof context.callId !== 'string' || context.callId.trim().length === 0) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'code:run completion did not include the dispatcher attempt identity',
+      failures: ['missing-attempt-id'],
+    };
+  }
+  return {
+    status: 'recorded',
+    effectRef: `code-run:${context.callId}`,
+    reason:
+      payload.partial === true
+        ? 'code:run completed; returned result includes partial inner-effect details'
+        : 'code:run completed; returning the full result and mutation summary',
+  };
+}
+
+/**
  * `code:run` — execute a multi-step tool-orchestration SCRIPT in one call
  * (code-execution-tool-orchestration B-CX-2A).
  *
@@ -181,6 +241,7 @@ export default defineTool({
   // they already have; every inner call still runs through its own capability/role/envelope gates.
   capability: 'agent_tools:read',
   effect: 'write',
+  abortCompletionReceipt: codeRunAbortCompletionReceipt,
   requirePrincipal: false,
   // EI-20191260319468035: the orchestration handler itself never reads ctx.tx. Holding the
   // host's workspace transaction open around the whole script made a write through an inner
@@ -202,16 +263,37 @@ export default defineTool({
   // recipes:run/search/list/get) and CODE_RUN_CAPABLE_ROLES (the batch-nudge audience) in lockstep.
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    kernel: z.object({
+      op: z.enum(['open', 'run', 'status', 'close']),
+      id: z.string().uuid().optional(),
+    }).strict().superRefine((kernel, refinement) => {
+      if (kernel.op !== 'open' && !kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'id required for an existing kernel' });
+      if (kernel.op === 'open' && kernel.id) refinement.addIssue({ code: z.ZodIssueCode.custom, path: ['id'], message: 'open creates a new kernel; omit id' });
+    }).optional().describe(
+      'Opt into a live JavaScript worker/VM: open creates an owner/workspace/harness-scoped id, run executes a cell, status inspects it, close cancels and cleans it up. ' +
+      'Use globalThis for cross-cell objects/functions/binary state; lexical locals remain cell-local. Each cell dispatches with CURRENT caller authority. ' +
+      'No Python kernel, implicit lexical-declaration persistence, or process-restart recovery is claimed. Timeout/cancel loses state; idle expires after 5 minutes. ' +
+      'Dry-run kernel operations are refused because VM state mutations cannot be previewed safely.',
+    ),
     script: z
       .string()
       .min(1)
       .max(20_000)
+      .optional()
       .describe(
         'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
+          'There is no tools.invoke shortcut in this sandbox; dynamic dispatch is tools.tools.invoke({ name, args }), or use tools.ns.verb(args) directly. ' +
+          'The recursive execution doors `tools.code.run` and `tools.orchestrate.run` are deliberately excluded from this facade; keep the sequence in this outer script. ' +
+          'On script timeout, `timeoutSettledReadRecovery.calls` returns settled read-only child results, capped at 24 KiB/20 calls; ' +
+          'check `omittedReadCount`, and never assume a slow Promise.all sibling returned to the script. Write results are never included in timeout recovery. ' +
           'No ambient `exec`/shell helper exists -- `tools` exposes ONLY `tools.ns.verb(args)` calls; ' +
-          'to run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
+          'To run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
+          'If you hold multiple work-items, pass `work_item_id` naming a work-item you currently hold: ' +
+          '`await tools.capability.bash({ command, work_item_id: "WI-1234" })`. ' +
+          'Omission returns `work_item_id_required` before dispatch; a single held claim can remain implicit. ' +
           'Nested tool calls return their typed result root, not an MCP `content`/`text` envelope: for example, ' +
           'read `result.output`, `result.exit_code`, and `result.status` from capability:bash; do not read `result.content[0].text`. ' +
+          'For `dev:pg_query`, query results expose `result.rows`, `result.fields`, and `result.rowCount`; relation descriptions expose `result.columns`, `result.indexes`, and `result.constraints`. ' +
           'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +
           'media from intermediate tool calls is never emitted implicitly. ' +
           'Compatibility helpers are ambient: `notify(value)` and `yield_control()` stream through the current transport; ' +
@@ -229,7 +311,8 @@ export default defineTool({
           'Regex literals containing path slashes are another string layer: an extra backslash before `/` can close the literal early and yield `compile_error: Invalid regular expression flags`; prefer `String.includes(...)` or `new RegExp("...")` when composing scripts through another string layer. ' +
           'Generated data needs the same JS layer: do not interpolate `JSON.stringify(ids)` into a JavaScript double-quoted command literal. ' +
           'Nested tools.capability.bash searches: apostrophe regexes break single-quoted arguments; use rg -F, -e per pattern, or quoted stdin/file. ' +
-          'The JSON quotes can close that outer string and cause `compile_error` before bash is dispatched; keep the serialized value in a script variable and concatenate it into the command at runtime (or pass it through quoted stdin, a heredoc, or an argument).',
+          'The JSON quotes can close that outer string and cause `compile_error` before bash is dispatched; keep the serialized value in a script variable and concatenate it into the command at runtime (or pass it through quoted stdin, a heredoc, or an argument). ' +
+          "For inline Python `-c`, put the shell command in a JavaScript template literal and the Python program in single quotes, e.g. ``const command = String.raw`journalctl -u app.service | python3 -c 'import sys; print(\"ts\", sys.stdin.readline().strip())'`;``. This keeps Python's quotes from closing a JavaScript double-quoted command and prevents `compile_error` before bash is dispatched.",
       ),
     title: z
       .string()
@@ -274,6 +357,26 @@ export default defineTool({
     // host-side work after the orchestration worker returns. The worker's own timeout is only one
     // leg of this response budget; it must not be followed by an unbounded trace/capture tail.
     const responseDeadlineAtMs = runStartedAtMs + FOREGROUND_TIMEOUT_CEILING_MS;
+    const kernelReply = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] }) as ToolResult;
+    let kernelScope: string | undefined;
+    if (args.kernel) {
+      if (args.dryRun) return kernelReply({ ok: false, error: 'kernel_dry_run_unsupported', executed: false });
+      try { kernelScope = codeRunKernelScope(ctx); }
+      catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
+      if (args.kernel.op === 'status' || args.kernel.op === 'close') {
+        try {
+          const kernel = await controlManagedKernel(args.kernel.op, args.kernel.id!, kernelScope);
+          return kernelReply({ ok: kernel.state !== 'unrecoverable', kernel, executed: false });
+        } catch (error) {
+          return kernelReply({ ok: false, error: String(error), reattachment: 'retry', executed: false });
+        }
+      }
+      if (args.kernel.op === 'open' && !args.script) {
+        try { return kernelReply({ ok: true, kernel: await openManagedKernel(kernelScope), executed: false }); }
+        catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
+      }
+    }
+    if (!args.script) return kernelReply({ ok: false, error: 'script_required', executed: false });
     const script = args.script;
     // The proof is about this exact validated request body. Compute it at the
     // server boundary; neither the script nor a caller-supplied result field
@@ -411,7 +514,18 @@ export default defineTool({
       effectiveTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
       remainingWorkerMs,
     );
+    let kernelHandle: { id: string; scope: string } | undefined;
+    if (args.kernel && kernelScope) {
+      try {
+        kernelHandle = {
+          id: args.kernel.op === 'open' ? (await openManagedKernel(kernelScope)).id : args.kernel.id!,
+          scope: kernelScope,
+        };
+      } catch (error) { return kernelReply({ ok: false, error: String(error), executed: false }); }
+    }
     const result = await runToolOrchestration(script, {
+      ...(kernelHandle ? { kernel: kernelHandle } : {}),
+      ...(kernelHandle ? { executeScript: runManagedKernelScript } : {}),
       ctx,
       // Thread the host's REAL dispatch deps (B-CX-DEPS): inner tool calls route through
       // the same dispatcher pipeline as any MCP `tools/call` — so they are recordInvocation-
@@ -427,7 +541,8 @@ export default defineTool({
       // opaque transport-level request_timeout after the script's own budget was never reached.
       timeoutMs: workerTimeoutMs,
       wrapDispatch: bindCurrentCallerDispatch,
-      requestHash,
+      // A cell can mutate live VM state even with zero nested write tools. It is not replay-safe.
+      ...(args.kernel ? {} : { requestHash }),
       ...(contract ? { inputs: contract.inputs } : {}),
     });
 
@@ -505,16 +620,17 @@ export default defineTool({
     // resolved. recipes:run rejects such a recipe with authority_unresolved every
     // time, and that refusal is permanent — capturing it anyway mints a recipe that
     // can never run, then lets it accrue run/success counts that certify it.
-    if (codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
+    // A live cell depends on process-local objects; saving it as a portable recipe would lose that state.
+    if (!args.kernel && codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
       const authority = await runPostprocessing(
         'recipe authority check',
-        () => isRecipeCaptureAuthorityEligible(args.script),
+        () => isRecipeCaptureAuthorityEligible(script),
         false,
       );
       if (authority.value && !authority.degraded) {
         const capture = await runPostprocessing(
           'recipe capture',
-          () => maybeCaptureRecipe(args, ctx, all, allowed, executionTrace, contract),
+          () => maybeCaptureRecipe({ ...args, script }, ctx, all, allowed, executionTrace, contract),
           null,
         );
         recipeCapture = capture.value;
@@ -618,18 +734,28 @@ export default defineTool({
         ),
       ),
     );
+    const summaryNotice = (shownResult as { summaryNotice?: CodeRunSummaryNotice }).summaryNotice;
+    const rawSummaryCursor = summaryNotice?.truncated
+      ? await createCodeRunRawSummaryCursor(result.summary, ctx)
+      : undefined;
+    const shownResultWithRawCursor = summaryNotice && rawSummaryCursor
+      ? {
+          ...shownResult,
+          summaryNotice: { ...summaryNotice, rawSummaryCursor },
+        }
+      : shownResult;
 
     const similarRecipePayload = similarRecipes.length > 0 ? shapeCodeRunSimilarRecipes(similarRecipes) : {};
     const payload =
       similarRecipes.length > 0 || facadeHelp || fieldMissHelp || sleepCapHelp
         ? {
-            ...shownResult,
+            ...shownResultWithRawCursor,
             ...similarRecipePayload,
             ...(facadeHelp ? { facadeHelp } : {}),
             ...(fieldMissHelp ? { fieldMissHelp } : {}),
             ...(sleepCapHelp ? { sleepCapHelp } : {}),
           }
-        : shownResult;
+        : shownResultWithRawCursor;
 
     // EI-10892 (fleet telemetry half). The MCP handler already tells THIS agent, in
     // THIS response, when its script returned `ok:true` with every field blank — a
@@ -1042,6 +1168,8 @@ const CODE_RUN_SUMMARY_PROJECTION_STEPS = [
 ] as const;
 const CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS = 80;
 const CODE_RUN_SUMMARY_PATH_LIMIT = 16;
+const CODE_RUN_SUMMARY_INLINE_ARRAY_OMISSION_LIMIT = 128;
+const CODE_RUN_SUMMARY_OMITTED_ARRAY_SLOT = '[omitted]';
 
 // EI-22572881407380085: release:trace is a deliberately wide diagnostic envelope. A common
 // code:run summary is `Promise.all([...release:trace])`, where every row carries a distinct target
@@ -1095,15 +1223,140 @@ export interface CodeRunSummaryNotice {
   originalChars: number;
   returnedChars: number;
   arraysTruncated: number;
+  arrayOriginalLengths: Record<string, number>;
   stringsTruncated: number;
   valuesTruncated: number;
   omittedItems: number;
   paths: string[];
+  rawSummaryCursor?: CodeRunRawSummaryCursor;
   note: string;
+}
+
+export type CodeRunRawSummaryCursor =
+  | {
+      status: 'available' | 'volatile-fallback';
+      tool: 'capability:read';
+      args: { uri: string; byte_offset: 0; byte_limit: 3072 };
+      bodyOffsetInPayload: 0;
+      byteCount: number;
+      sha256: string;
+      expiresAt: string;
+      note: string;
+    }
+  | {
+      status: 'unavailable';
+      reason: 'scope-unavailable' | 'serialization-failed' | 'scratch-write-failed' | 'fallback-capacity-exceeded';
+      note: string;
+    };
+
+const CODE_RUN_RAW_SUMMARY_SPILL_WAIT_MS = 5_000;
+
+/**
+ * Keep the complete script return recoverable when the inline summary shaper
+ * has to omit array entries or clip nested strings. This uses the existing
+ * owner-scoped scratch-reference reader, so the model-facing result stays
+ * bounded while the original bytes remain available through capability:read.
+ */
+async function createCodeRunRawSummaryCursor(
+  summary: unknown,
+  ctx: UnifiedToolContext,
+): Promise<CodeRunRawSummaryCursor> {
+  const workspaceId = ctx.workspaceId?.trim() ?? '';
+  const ownerId = resolveAgentIdentity(ctx).ownerId;
+  if (!workspaceId || !ownerId) {
+    return {
+      status: 'unavailable',
+      reason: 'scope-unavailable',
+      note: 'The original summary was not spilled because workspace or owner scope could not be resolved.',
+    };
+  }
+
+  let rawSummary: string;
+  try {
+    const serialized = JSON.stringify(summary);
+    if (typeof serialized !== 'string') throw new TypeError('summary is not JSON serializable');
+    rawSummary = serialized;
+  } catch {
+    return {
+      status: 'unavailable',
+      reason: 'serialization-failed',
+      note: 'The original summary could not be serialized for exact recovery.',
+    };
+  }
+
+  const byteCount = Buffer.byteLength(rawSummary, 'utf8');
+  const content = [{ index: 0, type: 'text', byteCount }];
+  const cursorFor = (
+    status: 'available' | 'volatile-fallback',
+    uri: string,
+    manifest: { byteCount: number; sha256: string; expiresAt: string },
+  ): CodeRunRawSummaryCursor => ({
+    status,
+    tool: 'capability:read',
+    args: { uri, byte_offset: 0, byte_limit: 3072 },
+    bodyOffsetInPayload: 0,
+    byteCount: manifest.byteCount,
+    sha256: manifest.sha256,
+    expiresAt: manifest.expiresAt,
+    note: status === 'available'
+      ? 'Read this owner-scoped scratch reference with capability:read, follow next_cursor, and parse the JSON body after the manifest header.'
+      : 'The exact bytes are in a short-lived in-memory fallback; read them with capability:read before expiresAt and follow next_cursor.',
+  });
+
+  try {
+    const uri = buildScratchUri({
+      workspaceId,
+      toolName: 'code:run',
+      runId: randomUUID(),
+      basename: `raw-summary-${Date.now()}.json`,
+    });
+    const deferredWrites: Promise<void>[] = [];
+    const manifest = writeScratchReference({
+      filePath: safeScratchFilesystemPath(uri),
+      payload: rawSummary,
+      workspaceId,
+      ownerId,
+      audience: 'owner',
+      mediaType: 'application/json',
+      content,
+      bodyOffsetInPayload: 0,
+      deferredWrites,
+    });
+    const settled = await withBoundedTimeout(Promise.all(deferredWrites), {
+      fallback: null,
+      timeoutMs: CODE_RUN_RAW_SUMMARY_SPILL_WAIT_MS,
+      label: 'code:run raw summary scratch spill',
+    });
+    if (!settled.degraded) return cursorFor('available', uri, manifest);
+  } catch {
+    // Keep the code:run result useful even when scratch persistence is unavailable.
+  }
+
+  try {
+    const fallback = storeVolatileScratchReference({
+      payload: rawSummary,
+      workspaceId,
+      ownerId,
+      audience: 'owner',
+      mediaType: 'application/json',
+      content,
+      bodyOffsetInPayload: 0,
+    });
+    if (fallback) return cursorFor('volatile-fallback', fallback.uri, fallback.manifest);
+  } catch {
+    // The explicit unavailable status below is the final, honest fallback.
+  }
+
+  return {
+    status: 'unavailable',
+    reason: byteCount > 16 * 1024 * 1024 ? 'fallback-capacity-exceeded' : 'scratch-write-failed',
+    note: 'The original summary could not be persisted; re-run code:run with a smaller return split into bounded slices.',
+  };
 }
 
 interface CodeRunSummaryProjectionStats {
   arraysTruncated: number;
+  arrayOriginalLengths: Record<string, number>;
   stringsTruncated: number;
   valuesTruncated: number;
   omittedItems: number;
@@ -1298,7 +1551,7 @@ function projectCodeRunReleaseTraceArray(
   path: string,
   options: CodeRunSummaryProjectionOptions,
   stats: CodeRunSummaryProjectionStats,
-): unknown[] | undefined {
+): unknown | undefined {
   const rows = value.map(codeRunReleaseTraceRow);
   if (value.length === 0 || rows.some((row) => row === undefined)) return undefined;
 
@@ -1309,18 +1562,58 @@ function projectCodeRunReleaseTraceArray(
   const projected = indices.map((index) =>
     projectCodeRunReleaseTraceRow(rows[index] as Record<string, unknown>, `${path}[${index}]`, options, stats),
   );
-  if (value.length > limit) {
-    stats.arraysTruncated++;
-    stats.omittedItems += value.length - limit;
-    noteCodeRunSummaryPath(stats, path);
-  }
-  return projected;
+  return projectCodeRunSummaryArray(value.length, path, indices, projected, stats);
 }
 
 function noteCodeRunSummaryPath(stats: CodeRunSummaryProjectionStats, path: string): void {
   if (stats.paths.length < CODE_RUN_SUMMARY_PATH_LIMIT && !stats.paths.includes(path)) {
     stats.paths.push(path);
   }
+}
+
+function makeCodeRunSummaryTruncatedArrayWrapper(
+  originalLength: number,
+  indices: number[],
+  items: unknown[],
+): Record<string, unknown> {
+  return { __truncatedArray: true, originalLength, shownIndices: indices, items };
+}
+
+/**
+ * Keep the original array cardinality visible when bounded projection omits elements. TOON's
+ * `[N]` header is derived from the projected array, so returning only the retained prefix makes
+ * that header look like the source count. Small omissions use explicit slots; large omissions use
+ * a compact wrapper carrying the true source length and retained indices.
+ */
+function projectCodeRunSummaryArray(
+  originalLength: number,
+  path: string,
+  indices: number[],
+  items: unknown[],
+  stats: CodeRunSummaryProjectionStats,
+  forceWrapper = false,
+): unknown {
+  if (originalLength <= indices.length) return items;
+
+  const omitted = originalLength - indices.length;
+  stats.arraysTruncated++;
+  stats.omittedItems += omitted;
+  noteCodeRunSummaryPath(stats, path);
+  if (
+    Object.keys(stats.arrayOriginalLengths).length < CODE_RUN_SUMMARY_PATH_LIMIT ||
+    path in stats.arrayOriginalLengths
+  ) {
+    stats.arrayOriginalLengths[path] = originalLength;
+  }
+
+  if (forceWrapper || omitted > CODE_RUN_SUMMARY_INLINE_ARRAY_OMISSION_LIMIT) {
+    return makeCodeRunSummaryTruncatedArrayWrapper(originalLength, indices, items);
+  }
+
+  const retainedByIndex = new Map(indices.map((index, itemIndex) => [index, items[itemIndex]]));
+  return Array.from({ length: originalLength }, (_, index) =>
+    retainedByIndex.has(index) ? retainedByIndex.get(index) : CODE_RUN_SUMMARY_OMITTED_ARRAY_SLOT,
+  );
 }
 
 /**
@@ -1375,28 +1668,35 @@ function projectCodeRunSummaryTextContent(
   path: string,
   options: CodeRunSummaryProjectionOptions,
   stats: CodeRunSummaryProjectionStats,
-): unknown[] | undefined {
+): unknown | undefined {
   if (!Array.isArray(value)) return undefined;
 
   const indices = codeRunSummaryArrayIndices(value, path, options.arrayLimit);
-  const projected: unknown[] = [];
+  const projectedByIndex = new Map<number, unknown>();
   let hasText = false;
   for (const index of indices) {
     const entry = value[index];
-    if (!isCodeRunSummaryRecord(entry) || typeof entry.text !== 'string') continue;
+    if (!isCodeRunSummaryRecord(entry) || typeof entry.text !== 'string') {
+      projectedByIndex.set(index, CODE_RUN_SUMMARY_OMITTED_ARRAY_SLOT);
+      stats.valuesTruncated++;
+      stats.omittedItems++;
+      noteCodeRunSummaryPath(stats, `${path}[${index}]`);
+      continue;
+    }
     hasText = true;
     const text = clipCodeRunSummaryString(entry.text, `${path}[${index}].text`, options.stringChars, stats);
     const item: Record<string, unknown> = { text };
     if (typeof entry.type === 'string') item.type = entry.type;
-    projected.push(item);
+    projectedByIndex.set(index, item);
   }
   if (!hasText) return undefined;
-  if (value.length > options.arrayLimit) {
-    stats.arraysTruncated++;
-    stats.omittedItems += value.length - options.arrayLimit;
-    noteCodeRunSummaryPath(stats, path);
-  }
-  return projected;
+  return projectCodeRunSummaryArray(
+    value.length,
+    path,
+    indices,
+    indices.map((index) => projectedByIndex.get(index) ?? CODE_RUN_SUMMARY_OMITTED_ARRAY_SLOT),
+    stats,
+  );
 }
 
 function projectCodeRunSummaryDepthBoundary(
@@ -1461,7 +1761,7 @@ function projectCodeRunSummaryBoundaryArray(
   path: string,
   options: CodeRunSummaryProjectionOptions,
   stats: CodeRunSummaryProjectionStats,
-): unknown[] {
+): unknown {
   const content = projectCodeRunSummaryTextContent(value, path, options, stats);
   if (content !== undefined) {
     stats.valuesTruncated++;
@@ -1475,10 +1775,12 @@ function projectCodeRunSummaryBoundaryArray(
 
   const projected: unknown[] = [];
   const indices = codeRunSummaryArrayIndices(value, path, options.arrayLimit);
+  const projectedIndices: number[] = [];
   for (const index of indices) {
     const entry = value[index];
     const entryPath = `${path}[${index}]`;
     if (isCodeRunSummaryScalar(entry)) {
+      projectedIndices.push(index);
       projected.push(
         typeof entry === 'string' ? clipCodeRunSummaryString(entry, entryPath, options.stringChars, stats) : entry,
       );
@@ -1487,6 +1789,7 @@ function projectCodeRunSummaryBoundaryArray(
 
     const boundaryProjection = projectCodeRunSummaryDepthBoundary(entry, entryPath, options, stats);
     if (boundaryProjection !== undefined) {
+      projectedIndices.push(index);
       projected.push(boundaryProjection);
       continue;
     }
@@ -1494,17 +1797,13 @@ function projectCodeRunSummaryBoundaryArray(
     // Preserve the fact that this array had an element even when that element's
     // shape contains no boundary-safe scalar fields. The notice/path remains the
     // authoritative disclosure of what was omitted.
+    projectedIndices.push(index);
     projected.push(Array.isArray(entry) ? [null] : codeRunSummaryOmittedValue());
     stats.valuesTruncated++;
     stats.omittedItems++;
     noteCodeRunSummaryPath(stats, entryPath);
   }
-  if (value.length > options.arrayLimit) {
-    stats.arraysTruncated++;
-    stats.omittedItems += value.length - options.arrayLimit;
-    noteCodeRunSummaryPath(stats, path);
-  }
-  return projected;
+  return projectCodeRunSummaryArray(value.length, path, projectedIndices, projected, stats);
 }
 
 function projectCodeRunSummaryValue(
@@ -1534,15 +1833,11 @@ function projectCodeRunSummaryValue(
   }
 
   if (Array.isArray(value)) {
-    const shown = codeRunSummaryArrayIndices(value, path, options.arrayLimit).map((index) =>
+    const indices = codeRunSummaryArrayIndices(value, path, options.arrayLimit);
+    const shown = indices.map((index) =>
       projectCodeRunSummaryValue(value[index], `${path}[${index}]`, depth + 1, options, stats),
     );
-    if (value.length > options.arrayLimit) {
-      stats.arraysTruncated++;
-      stats.omittedItems += value.length - options.arrayLimit;
-      noteCodeRunSummaryPath(stats, path);
-    }
-    return shown;
+    return projectCodeRunSummaryArray(value.length, path, indices, shown, stats);
   }
 
   if (isCodeRunSummaryRecord(value)) {
@@ -1583,23 +1878,34 @@ function minimalCodeRunSummaryProjection(
       // truncation counters must not leak into the disclosure for entries we actually kept.
       const scratch = newCodeRunSummaryProjectionStats();
       const candidate = projectCodeRunSummaryValue(entry, `summary[${projected.length}]`, 0, entryOptions, scratch);
-      if (codeRunSummarySerializedChars([...projected, candidate]) > budget) break;
+      const next = [...projected, candidate];
+      const nextBody =
+        next.length < value.length
+          ? makeCodeRunSummaryTruncatedArrayWrapper(
+              value.length,
+              Array.from({ length: next.length }, (_, index) => index),
+              next,
+            )
+          : next;
+      if (codeRunSummarySerializedChars(nextBody) > budget) break;
       projected.push(candidate);
       entryStats.push(scratch);
-    }
-    const dropped = value.length - projected.length;
-    if (dropped > 0) {
-      stats.arraysTruncated++;
-      stats.omittedItems += dropped;
-      noteCodeRunSummaryPath(stats, 'summary');
     }
     // Keep the baseline prefix, then spend spare budget growing strings inside its retained
     // entries. This preserves array breadth while avoiding the fixed 80-character cap when it
     // would leave useful output space unused.
+    const currentBody = () =>
+      projected.length < value.length
+        ? makeCodeRunSummaryTruncatedArrayWrapper(
+            value.length,
+            Array.from({ length: projected.length }, (_, index) => index),
+            projected,
+          )
+        : projected;
     for (let index = 0; index < projected.length; index++) {
       if (
         entryStats[index]?.stringsTruncated === 0 ||
-        codeRunSummarySerializedChars(projected) >= budget * 0.9
+        codeRunSummarySerializedChars(currentBody()) >= budget * 0.9
       ) {
         continue;
       }
@@ -1608,15 +1914,40 @@ function minimalCodeRunSummaryProjection(
         entryOptions,
         budget,
         `summary[${index}]`,
-        (candidate) => projected.map((entry, entryIndex) => (entryIndex === index ? candidate : entry)),
+        (candidate) =>
+          projected.length < value.length
+            ? makeCodeRunSummaryTruncatedArrayWrapper(
+                value.length,
+                Array.from({ length: projected.length }, (_, shownIndex) => shownIndex),
+                projected.map((entry, entryIndex) => (entryIndex === index ? candidate : entry)),
+              )
+            : projected.map((entry, entryIndex) => (entryIndex === index ? candidate : entry)),
       );
       if (grown) {
         projected[index] = grown.value;
         entryStats[index] = grown.stats;
       }
     }
+
+    // This is the last-resort byte-budget path, so use a compact wrapper instead of one marker
+    // slot per omitted row. Reserve the wrapper overhead and trim retained rows until it fits.
+    while (
+      projected.length > 0 &&
+      codeRunSummarySerializedChars(currentBody()) > budget
+    ) {
+      projected.pop();
+      entryStats.pop();
+    }
+    const result = projectCodeRunSummaryArray(
+      value.length,
+      'summary',
+      Array.from({ length: projected.length }, (_, index) => index),
+      projected,
+      stats,
+      true,
+    );
     for (const scratch of entryStats) mergeCodeRunSummaryStats(stats, scratch);
-    return projected;
+    return result;
   }
   if (!isCodeRunSummaryRecord(value)) return String(value);
 
@@ -1657,6 +1988,7 @@ function minimalCodeRunSummaryProjection(
       projected[key] = candidate;
       retainedEntries.push({ key, value: entry, stats: scratch });
     } else {
+      mergeCodeRunSummaryArrayLengths(stats, scratch);
       stats.valuesTruncated++;
       stats.omittedItems++;
       noteCodeRunSummaryPath(stats, `summary.${key}`);
@@ -1693,7 +2025,29 @@ function minimalCodeRunSummaryProjection(
 }
 
 function newCodeRunSummaryProjectionStats(): CodeRunSummaryProjectionStats {
-  return { arraysTruncated: 0, stringsTruncated: 0, valuesTruncated: 0, omittedItems: 0, paths: [] };
+  return {
+    arraysTruncated: 0,
+    arrayOriginalLengths: {},
+    stringsTruncated: 0,
+    valuesTruncated: 0,
+    omittedItems: 0,
+    paths: [],
+  };
+}
+
+function mergeCodeRunSummaryArrayLengths(
+  target: CodeRunSummaryProjectionStats,
+  source: CodeRunSummaryProjectionStats,
+): void {
+  for (const [path, length] of Object.entries(source.arrayOriginalLengths)) {
+    if (
+      Object.keys(target.arrayOriginalLengths).length >= CODE_RUN_SUMMARY_PATH_LIMIT &&
+      !(path in target.arrayOriginalLengths)
+    ) {
+      break;
+    }
+    target.arrayOriginalLengths[path] = length;
+  }
 }
 
 /** Fold a trial projection's disclosure counters into the surviving ones once it is kept. */
@@ -1702,6 +2056,7 @@ function mergeCodeRunSummaryStats(
   source: CodeRunSummaryProjectionStats,
 ): void {
   target.arraysTruncated += source.arraysTruncated;
+  mergeCodeRunSummaryArrayLengths(target, source);
   target.stringsTruncated += source.stringsTruncated;
   target.valuesTruncated += source.valuesTruncated;
   target.omittedItems += source.omittedItems;
@@ -1798,6 +2153,7 @@ export function shapeCodeRunSummary<T extends { summary?: unknown } | Record<str
       originalChars,
       returnedChars,
       arraysTruncated: stats.arraysTruncated,
+      arrayOriginalLengths: stats.arrayOriginalLengths,
       stringsTruncated: stats.stringsTruncated,
       valuesTruncated: stats.valuesTruncated,
       omittedItems: stats.omittedItems,
@@ -2183,14 +2539,15 @@ export function shapeMutationEcho<T extends OrchestrationRunResult | Record<stri
           inFlightAttempts,
         )
       : {}),
-    // EI-7669: a write-effect call can dispatch fine (no throw) yet report its OWN semantic
-    // rejection (ok: false in its result body — e.g. work_items:set_state's completion-integrity
-    // check). Nothing in `result.ok` / `error` reflects this — the SCRIPT still ran to a normal
-    // finish — so a batched script that doesn't inspect every individual result silently miscounts
-    // a rejected write as executed. Surface it unconditionally (independent of result.ok) so it
-    // can't be missed the way a bare `Promise.allSettled` count would miss it. Defensive `?? []`:
-    // fixture results built by hand (tests predating this field) omit it — never let an older/
-    // partial result object throw here instead of just showing no okFalse warning.
+    // EI-7669: a write-effect call can dispatch fine (no throw) yet report its OWN `ok:false`
+    // (e.g. work_items:set_state's completion-integrity check). Nothing in `result.ok` / `error`
+    // reflects this — the SCRIPT still ran to a normal finish — so a batched script that doesn't
+    // inspect every individual result silently miscounts the outcome. Surface it unconditionally
+    // (independent of result.ok) so it can't be missed the way a bare `Promise.allSettled` count
+    // would miss it. Do not infer zero effects from `ok:false`: a child such as capability:bash
+    // may report a later command failure after earlier operations already caused side effects.
+    // Defensive `?? []`: fixture results built by hand (tests predating this field) omit it — never
+    // let an older/partial result object throw here instead of just showing no okFalse warning.
     ...(okFalseMutationsList.length > 0
       ? {
           // EI-7784: `partial: true` is ALSO on the result's top level (a structured signal a
@@ -2198,10 +2555,10 @@ export function shapeMutationEcho<T extends OrchestrationRunResult | Record<stri
           // to it, not the only place it's surfaced.
           okFalseWarning:
             `${okFalseMutationsList.length} write-effect call(s) dispatched without throwing but reported ` +
-            `ok:false in their own result (did NOT take effect): ` +
-            `${okFalseMutationsList.map((m) => m.tool).join(', ')}. Check okFalseMutations for details — ` +
-            'do not assume these succeeded just because the script did not throw. `partial: true` is set ' +
-            'on this result for exactly this reason — check it, not just `ok`.',
+            `ok:false in their own result: ${okFalseMutationsList.map((m) => m.tool).join(', ')}. ` +
+            'Their effects may be partial or absent. Check okFalseMutations for details and verify ' +
+            'their effects before retrying; do not assume success or that the whole call did nothing. ' +
+            '`partial: true` is set on this result for exactly this reason — check it, not just `ok`.',
           okFalseMutations: okFalseMutationsList,
         }
       : {}),
@@ -2303,6 +2660,13 @@ export function buildFacadeHelp(
 
   const present = [...referencedNs].filter((ns) => known.has(ns));
   const missing = [...referencedNs].filter((ns) => !known.has(ns));
+  const recursiveExecutionRefs = [...new Set(unknownRefs.map((ref) => {
+    const withoutToolsPrefix = ref.startsWith('tools.') ? ref.slice('tools.'.length) : ref;
+    const canonical = withoutToolsPrefix.includes(':')
+      ? withoutToolsPrefix
+      : withoutToolsPrefix.replace(/^([^.]+)\./, '$1:');
+    return ORCHESTRATION_RECURSION_EXCLUSIONS.has(canonical) ? canonical : null;
+  }).filter((ref): ref is string => ref !== null))];
   // EI-23783922587988483: render FULL signatures only for the verbs closest to the ones the script
   // actually typed. Rendering the whole namespace measured 67,864 chars for one bad `work_items`
   // ref — it overflows the per-result cap and spills, costing more context than the failed call.
@@ -2372,7 +2736,16 @@ export function buildFacadeHelp(
 
   const note =
     'code:run accepts a script directly — no code:tools pre-call required. These refs were not in ' +
-    'your allowed facade; fix the tools.ns.verb name/args and re-run. ' +
+    'your allowed facade; inspect the signatures and any exclusion reason below before re-running. ' +
+    (unknownRefs.includes('tools.call') && byNs.has('tools') && !byNs.get('tools')!.verbs.includes('call')
+      ? 'The universal helper is on the ROOT object: use `tools.call("ns:verb", args)`. ' +
+        '`tools.tools.call(...)` is a missing `call` verb in the `tools` namespace; the actual ' +
+        '`tools:invoke` tool is `tools.tools.invoke({ name, args })`. '
+      : '') +
+    (recursiveExecutionRefs.length
+      ? `Recursive execution entrypoints ${recursiveExecutionRefs.map((ref) => `${ref} (tools.${ref.replace(':', '.')})`).join(', ')} ` +
+        'are deliberately excluded from this facade to prevent nested orchestration. Keep the sequence in this outer script. '
+      : '') +
     (signatures
       ? partiallyRendered.length
         ? 'Typed signatures for the verbs CLOSEST to the ones you named are in `signatures` — not ' +
@@ -2428,6 +2801,40 @@ async function maybeCaptureRecipe(
       ownerId = null; // unattributable ctx (e.g. a test/in-process call) — still capture
     }
 
+    // Similar-recipe runArgs are actionable only when the recommended recipe is
+    // bound to the caller's CURRENT lane. Do not derive this from the new script:
+    // a code:run script can mention a historical plan/item while the caller no
+    // longer holds it, which would advertise a proof that recipes:run rejects.
+    // Keep the broad workspace/harness scope even when the live claim read fails;
+    // that still permits genuinely generic recipes while filtering bound ones.
+    let recommendationContext: RecipeAuthorityContext = {
+      workspace: workspaceId,
+      ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+    };
+    try {
+      const identity = readIdentity(ctx);
+      const liveRefs = await resolveLiveBoundRefs(
+        getOrgPg().sql,
+        getTxPool(),
+        identity.ownerId,
+        identity.coordinationDomain,
+      );
+      let liveFleet: string | null = null;
+      try {
+        liveFleet = (await resolvePresenceFleet(identity.ownerId, deriveFleetMembership())).fleetSlug;
+      } catch {
+        liveFleet = null;
+      }
+      recommendationContext = {
+        ...recipeAuthorityContextFromRefs(liveRefs),
+        workspace: workspaceId,
+        ...(liveFleet ? { fleet: liveFleet } : {}),
+        ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+      };
+    } catch (err) {
+      ctx.log(`code:run live recipe authority read failed (bound recommendations filtered): ${(err as Error)?.message ?? String(err)}`);
+    }
+
     const resolved = await buildQueryEmbedderResolved({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }).catch(() => null);
     const profile = resolved ? resolveProseProfileSelection(resolved.mode, resolved.profile) : null;
 
@@ -2451,6 +2858,7 @@ async function maybeCaptureRecipe(
         ...(contract?.bindingSchema ? { bindingSchema: contract.bindingSchema } : {}),
         ...(contract ? { capabilityManifest: contract.capabilityManifest } : {}),
         ...(contract?.tags ? { tags: contract.tags } : {}),
+        recommendationContext,
         tools,
         allowed,
         executionTrace,

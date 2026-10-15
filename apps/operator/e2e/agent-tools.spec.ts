@@ -146,8 +146,17 @@ test.describe('agent-tools catch-all routing', () => {
     expect(res.status()).toBe(200);
     const body = await res.json();
     const parsed = JSON.parse(body.content?.[0]?.text ?? '{}');
-    expect(parsed).toHaveProperty('features');
-    expect(Array.isArray(parsed.features)).toBe(true);
+    // A DB that has the 'papercusp' harness answers { features }; a fresh or
+    // isolated DB has no harnesses and answers the handler's own structured
+    // { error: 'unknown project' }. Both prove the unauthenticated call reached
+    // the handler; anything else (no body, a 401/5xx shape) still fails.
+    // WI-10006791: the isolated rig registers no harness, so pinning
+    // `features` failed every isolated run.
+    if ('error' in parsed) {
+      expect(parsed.error).toBe('unknown project');
+    } else {
+      expect(Array.isArray(parsed.features)).toBe(true);
+    }
   });
 
   test('docs:get accepts slug arg', async ({ request }) => {

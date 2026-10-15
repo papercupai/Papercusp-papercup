@@ -26,6 +26,7 @@ const readAgentConfig = vi.fn();
 const getFleet = vi.fn();
 const setFleetLaunchTransaction = vi.fn();
 const findLiveHost = vi.fn();
+const resolveGoalLaunch = vi.fn();
 
 const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
@@ -78,6 +79,13 @@ vi.mock('../../agent-fleets-store', async (importOriginal) => {
 });
 vi.mock('../../events/await/psu-pty-discovery', () => ({
   findLiveHost: (...a: unknown[]) => findLiveHost(...a),
+  findLiveHostAsync: async (...a: unknown[]) => findLiveHost(...a),
+}));
+// EI-24909345582884838: the goal-ceiling preflight that now runs BEFORE the destructive drain.
+// Mocked so the test controls the verdict and ASSERTS the call (the real resolver reads the DB).
+vi.mock('../../goal-launch-settings', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveGoalLaunch: (...a: unknown[]) => resolveGoalLaunch(...a),
 }));
 // P-009: the recovery IO the two REFUSAL paths now perform. These are mocked so the call site
 // can be ASSERTED rather than merely not-throwing: without them the real store/control modules
@@ -209,6 +217,9 @@ beforeEach(() => {
   // WI-2141730: no colliding live host by default — the ordinary respawn path never sees this
   // guard fire. Individual tests override this to exercise the refusal.
   findLiveHost.mockReturnValue(null);
+  // EI-24909345582884838: no goal ceiling binds by default (an agent outside any goal / under its
+  // ceilings resolves with no refusal). Individual tests override this to exercise the refusal.
+  resolveGoalLaunch.mockReset().mockResolvedValue({ refusal: null });
   // P-009: an EMPTY enrolled-task list is the honest default for a member with no tracked
   // processes. The containment tests below override it with real rows.
   listTasks.mockResolvedValue([]);
@@ -602,7 +613,10 @@ describe('fleet:respawn-member (P-008)', () => {
   });
 
   it('refuses an unavailable saved Claude model before reading the roster or killing the old member', async () => {
-    const res = await tool.handler({ member: MEMBER, agent: 'claude', model: 'claude-opus-4' } as never, {} as never);
+    // `claude-sonet-5` is a typo of the `sonnet` family, so no menu family prefixes it. (A CONCRETE
+    // versioned id of a real family — `claude-opus-4`, `claude-sonnet-5-5` — is accepted: see the
+    // EI-24909345582884838 tests below.)
+    const res = await tool.handler({ member: MEMBER, agent: 'claude', model: 'claude-sonet-5' } as never, {} as never);
     const p = parse(res);
 
     expect(p).toMatchObject({
@@ -610,7 +624,7 @@ describe('fleet:respawn-member (P-008)', () => {
       error: 'saved_model_invalid',
       fleet: SLUG,
       member: MEMBER,
-      model: 'claude-opus-4:xhigh',
+      model: 'claude-sonet-5:xhigh',
       agent: 'claude',
       killed: false,
       launched: false,
@@ -700,6 +714,135 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(p.message).toMatch(/not registered in the effective model tiers or CLOUD_MODEL_MENU/);
     expect(killHandler).not.toHaveBeenCalled();
     expect(launchHandler).not.toHaveBeenCalled();
+  });
+
+  // EI-24909345582884838 — the saved model validator must accept the spelling the goal's own
+  // launchSettings use and capability:launch-agent accepts: a CONCRETE versioned id of a menu
+  // family. Only the bare aliases (`sonnet`) used to pass, so respawning a member whose saved
+  // launch_spec carried `claude-sonnet-5-5[1m]:xhigh` was refused before anything was killed.
+  it.each([
+    ['claude-sonnet-5-5[1m]', 'claude-sonnet-5-5[1m]:xhigh'],
+    ['claude-sonnet-5-5', 'claude-sonnet-5-5:xhigh'],
+    ['claude-opus-4', 'claude-opus-4:xhigh'],
+  ])('accepts the concrete versioned Claude id %s of a menu family', async (model) => {
+    const res = await tool.handler(
+      { member: MEMBER, agent: 'claude', model, effort: 'xhigh', verifySec: 0 } as never,
+      {} as never,
+    );
+    const p = parse(res);
+
+    expect(p).toMatchObject({ ok: true, fleet: SLUG, oldMember: MEMBER });
+    expect(killHandler).toHaveBeenCalledWith(expect.objectContaining({ owner: MEMBER }), expect.anything());
+    expect(launchHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        members: [expect.objectContaining({ agent: 'claude', model: expect.stringContaining('claude-') })],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it.each(['claude-sonet-5-5', 'claude-sonnetx-5', 'claude-5-5'])(
+    'still refuses %s — a versioned id whose family is not a menu family',
+    async (model) => {
+      const res = await tool.handler(
+        { member: MEMBER, agent: 'claude', model, effort: 'xhigh' } as never,
+        {} as never,
+      );
+      const p = parse(res);
+
+      expect(p).toMatchObject({ ok: false, error: 'saved_model_invalid', killed: false, launched: false });
+      expect(killHandler).not.toHaveBeenCalled();
+      expect(launchHandler).not.toHaveBeenCalled();
+    },
+  );
+
+  // EI-24909345582884838 — the goal ceiling (maxAgents / maxPerFleet) is validated BEFORE the
+  // destructive drain. capability:launch-agent runs the same check, but only AFTER the old member
+  // was SIGTERMed, so a fleet already AT maxPerFleet killed its member, then refused the
+  // replacement, and ended a seat short.
+  describe('goal ceiling preflight (EI-24909345582884838)', () => {
+    const CEILING_MESSAGE =
+      'goal allows 3 agent(s) per fleet; fleet has 3 live, so launching 1 more would exceed it';
+
+    it('refuses BEFORE killing when the goal ceiling would refuse the replacement, naming the refusal', async () => {
+      resolveGoalLaunch.mockResolvedValueOnce({
+        refusal: { code: 'goal_max_per_fleet', message: CEILING_MESSAGE },
+      });
+
+      const res = await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never);
+      const p = parse(res);
+
+      expect(p).toMatchObject({
+        ok: false,
+        error: 'goal_ceiling_refused',
+        fleet: SLUG,
+        member: MEMBER,
+        killed: false,
+        launched: false,
+        refusal: { code: 'goal_max_per_fleet' },
+      });
+      expect(p.message).toContain(CEILING_MESSAGE);
+      expect(p.message).toContain('The old member was NOT killed and no replacement was launched.');
+      // The whole point: nothing was drained, nothing was launched, no yield was even sent.
+      expect(killHandler).not.toHaveBeenCalled();
+      expect(launchHandler).not.toHaveBeenCalled();
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('charges the replaced member nothing: the preflight excludes it from the headcount (net-zero respawn)', async () => {
+      await tool.handler({ member: MEMBER, model: 'sonnet:high', verifySec: 0 } as never, {} as never);
+
+      expect(resolveGoalLaunch).toHaveBeenCalledTimes(1);
+      expect(resolveGoalLaunch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: 'ws',
+          launcherOwnerId: LEADER,
+          fleetSlug: SLUG,
+          count: 1,
+          excludeOwnerIds: [MEMBER],
+        }),
+      );
+    });
+
+    it('runs the ceiling check BEFORE the drain, and hands the launcher the same exclusion', async () => {
+      const res = await tool.handler({ member: MEMBER, model: 'sonnet:high', verifySec: 0 } as never, {} as never);
+
+      expect(parse(res)).toMatchObject({ ok: true, oldMember: MEMBER });
+      expect(resolveGoalLaunch.mock.invocationCallOrder[0]).toBeLessThan(killHandler.mock.invocationCallOrder[0]);
+      // capability:launch-agent repeats the ceiling check; without this seam it would charge the
+      // (still-live, draining) replaced member and could disagree with this preflight.
+      expect(launchHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ __respawnReplacesOwnerId: MEMBER }),
+        expect.anything(),
+      );
+    });
+
+    it('fails closed — kills nothing — when the ceiling check itself throws (fatal goal-holder verdict)', async () => {
+      resolveGoalLaunch.mockRejectedValueOnce(new Error('goal holder verdict: fatal'));
+
+      const res = await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never);
+      const p = parse(res);
+
+      expect(p).toMatchObject({
+        ok: false,
+        error: 'goal_ceiling_preflight_failed',
+        killed: false,
+        launched: false,
+      });
+      expect(p.message).toContain('goal holder verdict: fatal');
+      expect(killHandler).not.toHaveBeenCalled();
+      expect(launchHandler).not.toHaveBeenCalled();
+    });
+
+    it('lets the respawn through when no goal ceiling binds (an agent outside any goal)', async () => {
+      resolveGoalLaunch.mockResolvedValueOnce({ refusal: null });
+
+      const res = await tool.handler({ member: MEMBER, model: 'sonnet:high', verifySec: 0 } as never, {} as never);
+
+      expect(parse(res)).toMatchObject({ ok: true, oldMember: MEMBER });
+      expect(killHandler).toHaveBeenCalledTimes(1);
+      expect(launchHandler).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('accepts an explicit role override so stale saved-role recovery can be repaired before launch', async () => {

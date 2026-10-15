@@ -89,7 +89,7 @@ describe('turn-provenance ledger GC is actually scheduled', () => {
     const src = readFileSync(join(HERE, 'turn-provenance.ts'), 'utf8');
 
     expect(
-      new RegExp(`export function ${ENTRY_POINT}`).test(src),
+      new RegExp(`export (async )?function ${ENTRY_POINT}`).test(src),
       `${ENTRY_POINT} is no longer exported from turn-provenance.ts — the scheduled ` +
         'tick cannot import it.',
     ).toBe(true);
@@ -97,8 +97,9 @@ describe('turn-provenance ledger GC is actually scheduled', () => {
     // The unlink is the half that actually reclaims a dead session's file.
     // Dropping it would silently reduce the sweep to row-compaction, which is
     // what appendLedgerRow already did while the directory grew to 34,560 files.
+    // (fs.promises `unlink` since WI-10005327 moved the sweep off the event loop.)
     expect(
-      src.includes('unlinkSync'),
+      /\bawait unlink\(/.test(src),
       'turn-provenance.ts no longer unlinks fully-expired ledger files — row ' +
         'compaction alone never reclaims a file whose session has ended.',
     ).toBe(true);

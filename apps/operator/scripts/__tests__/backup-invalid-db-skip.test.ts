@@ -155,12 +155,49 @@ function dumpLoopBlock(): string {
   return block;
 }
 
+/**
+ * `guarded_dump_one() { … }` — what the loop above has called since WI-10008166
+ * (2026-10-10). It is defined ABOVE is_tiered(), so dumpLoopBlock() does not carry
+ * it. Left out, every dump is `guarded_dump_one: command not found` (exit 127):
+ * nothing is attempted and every database lands in FAILED.
+ */
+function guardedDumpBlock(): string {
+  const start = src.indexOf('guarded_dump_one() {');
+  expect(start, 'guarded_dump_one() must exist').toBeGreaterThan(-1);
+  const end = src.indexOf('\n}\n', start);
+  expect(end).toBeGreaterThan(-1);
+  return src.slice(start, end + 2);
+}
+
+/**
+ * guarded_dump_one's third external edge: the migration rendezvous, a Postgres
+ * advisory-lock session held around each dump of the migration database. It is
+ * stubbed here like `sudo` and `dump_one`; its real behaviour is pinned by
+ * backup-migration-rendezvous.test.ts.
+ */
+const RENDEZVOUS_EDGE_STUB = [
+  'BACKUP_MIGRATION_ADVISORY_DATABASE=papercusp',
+  'acquire_migration_rendezvous() { return 0; }',
+  'release_migration_rendezvous() { :; }',
+  'reap_own_stragglers() { :; }',
+].join('\n');
+
 /** From the ELAPSED computation to end of file: OK, STATUS.json, and the exit code. */
 function tailBlock(): string {
   const start = src.indexOf('ELAPSED=$(( $(date +%s) - START ))');
   expect(start, 'ELAPSED computation must exist').toBeGreaterThan(-1);
   return src.slice(start);
 }
+
+/**
+ * The tail's recovery broadcast (coord:send through scripts/mcp-call.mjs, reached
+ * only on an OK run) is an outward-facing edge that reads BACKUP_REPO_ROOT, which
+ * the script sets above the tail. Left unset, nounset aborts the OK path (exit
+ * 127). An EMPTY root takes the broadcast's "coord:send unavailable" branch, so
+ * this suite can never tell the fleet "BACKUP RECOVERED". Never point it at a
+ * real checkout here.
+ */
+const RECOVERY_EDGE_STUB = "BACKUP_REPO_ROOT=''";
 
 function runPipeline(failDbs: readonly string[]) {
   const dir = mkdtempSync(join(tmpdir(), 'backup-pipeline-'));
@@ -179,11 +216,14 @@ function runPipeline(failDbs: readonly string[]) {
       'PC_BACKUP_TIERS_ENABLED=0; PC_BACKUP_TIER_DBS=papercusp',
       // pg_dump edge: record the attempt, fail for anything in STUB_FAIL_DBS.
       `dump_one() { printf 'DUMP_ATTEMPT %s\\n' "$1"; case " $STUB_FAIL_DBS " in *" $1 "*) return 1 ;; esac; return 0; }`,
+      RENDEZVOUS_EDGE_STUB,
+      guardedDumpBlock(),
       dumpLoopBlock(),
       `START=$(date +%s); DUMP='${dump}'; STATUS="$DUMP/STATUS.json"; ODDS_OK=false; ODDS_NOTE=''; PSQL=false`,
       // WI-10004603 state set BETWEEN the dump loop and the tail (neither block
       // carries it). Without these `set -u` aborts before STATUS.json is written.
       'TIER_NOT_DUE=(); PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC=9000',
+      RECOVERY_EDGE_STUB,
       tailBlock(),
     ].join('\n');
     const run = spawnSync('bash', ['-c', harness], {
@@ -198,7 +238,7 @@ function runPipeline(failDbs: readonly string[]) {
       invalidSkipped: string[];
     };
     const attempted = [...run.stdout.matchAll(/^DUMP_ATTEMPT (\S+)$/gm)].map((m) => m[1]);
-    return { exitCode: run.status, status, attempted, stdout: run.stdout };
+    return { exitCode: run.status, status, attempted, stdout: run.stdout, stderr: run.stderr };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -209,7 +249,8 @@ describe('papercusp-db-backup.sh — exit code with INVALID leftovers present (p
     // pg_dump fails on every INVALID database, exactly as it does live.
     const r = runPipeline(INVALID_NAMES);
     expect(r.attempted).toEqual(['papercusp', 'oddsdb']);
-    expect(r.exitCode).toBe(0);
+    expect(r.exitCode, r.stderr).toBe(0);
+    expect(r.stderr, 'the recovery broadcast must stay disabled under test').toMatch(/coord:send unavailable/);
     expect(r.status.ok).toBe(true);
     expect(r.status.failed).toEqual([]);
     expect(r.status.dumped).toEqual(['papercusp', 'oddsdb']);
@@ -226,5 +267,129 @@ describe('papercusp-db-backup.sh — exit code with INVALID leftovers present (p
     // The INVALID leftovers stay reported as skipped, never folded into failed.
     expect([...r.status.invalidSkipped].sort()).toEqual([...INVALID_NAMES].sort());
     expect(r.stdout).toMatch(/LOG backup FAILED in \d+s: oddsdb$/m);
+  });
+});
+
+/**
+ * WI-10006723 — a database DROPPED between enumeration and its dump.
+ *
+ * Measured 2026-10-06: the 06:48 EDT run enumerated three P-011 rehearsal
+ * databases that the rehearsal dropped while the run was still working through
+ * its list. Each later pg_dump failed with `database "p011_pre" does not exist`
+ * and the run ended `backup FAILED ... p011_pre p011_mid p011_post`, although
+ * every database that still existed dumped fine.
+ *
+ * Same real enumeration -> dump loop -> STATUS.json tail as above, but the
+ * stubbed catalog lives in a FILE so the dump_one stub can drop a database
+ * DURING its dump, exactly as happened live: it is enumerated, then gone when
+ * the dump runs, then gone when the loop re-checks. The catalog can also be
+ * taken down mid-run, which must never be read as "the database is gone".
+ */
+const DROP_CATALOG: ReadonlyArray<readonly [name: string, allow: string, limit: string]> = [
+  ['papercusp', '1', '-1'],
+  ['p011_pre', '1', '-1'],
+  ['oddsdb', '1', '-1'],
+  ['org_x', '1', '-2'],
+];
+
+function runDropPipeline(opts: { drop?: string[]; fail?: string[]; catalogDownOn?: string[] }) {
+  const dir = mkdtempSync(join(tmpdir(), 'backup-vanished-'));
+  try {
+    const bin = join(dir, 'bin');
+    const dump = join(dir, 'dump');
+    execFileSync('mkdir', ['-p', bin, dump]);
+    writeFileSync(join(dir, 'catalog'), `${DROP_CATALOG.map((r) => r.join('\t')).join('\n')}\n`);
+    const stub = STUB_SUDO.replace(
+      /^rows=.*$/m,
+      () => '[ -e "$STUB_DIR/catalog-down" ] && exit 2\nrows=$(cat "$STUB_DIR/catalog")',
+    );
+    expect(stub, 'the catalog must be read from the file').not.toBe(STUB_SUDO);
+    writeFileSync(join(bin, 'sudo'), stub);
+    chmodSync(join(bin, 'sudo'), 0o755);
+    const harness = [
+      'set -uo pipefail',
+      `EXCLUDE_RE='(_test$|^template)'`,
+      `log() { printf 'LOG %s\\n' "$*"; }`,
+      enumerationBlock(),
+      'DUMPED=(); FAILED=(); TIER_DUMPED=(); TIER_FAILED=()',
+      'PC_BACKUP_TIERS_ENABLED=0; PC_BACKUP_TIER_DBS=papercusp',
+      // pg_dump edge. STUB_DOWN_DBS: Postgres goes away during this dump.
+      // STUB_DROP_DBS: the database is dropped during its dump (pg_dump then
+      // fails with "does not exist"). STUB_FAIL_DBS: a real dump failure on a
+      // database that still exists.
+      [
+        `dump_one() { printf 'DUMP_ATTEMPT %s\\n' "$1";`,
+        `case " $STUB_DOWN_DBS " in *" $1 "*) touch "$STUB_DIR/catalog-down"; return 1 ;; esac;`,
+        `case " $STUB_DROP_DBS " in *" $1 "*) awk -F'\\t' -v n="$1" '$1 != n' "$STUB_DIR/catalog" > "$STUB_DIR/catalog.next" && mv "$STUB_DIR/catalog.next" "$STUB_DIR/catalog"; return 1 ;; esac;`,
+        `case " $STUB_FAIL_DBS " in *" $1 "*) return 1 ;; esac; return 0; }`,
+      ].join(' '),
+      RENDEZVOUS_EDGE_STUB,
+      guardedDumpBlock(),
+      dumpLoopBlock(),
+      `START=$(date +%s); DUMP='${dump}'; STATUS="$DUMP/STATUS.json"; ODDS_OK=false; ODDS_NOTE=''; PSQL=false`,
+      'TIER_NOT_DUE=(); PC_BACKUP_TRANSCRIPT_MIN_AGE_SEC=9000',
+      RECOVERY_EDGE_STUB,
+      tailBlock(),
+    ].join('\n');
+    const run = spawnSync('bash', ['-c', harness], {
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        STUB_DIR: dir,
+        STUB_DROP_DBS: (opts.drop ?? []).join(' '),
+        STUB_FAIL_DBS: (opts.fail ?? []).join(' '),
+        STUB_DOWN_DBS: (opts.catalogDownOn ?? []).join(' '),
+      },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    const status = JSON.parse(readFileSync(join(dump, 'STATUS.json'), 'utf8')) as {
+      ok: boolean;
+      dumped: string[];
+      failed: string[];
+      invalidSkipped: string[];
+      vanishedSkipped: string[];
+    };
+    const attempted = [...run.stdout.matchAll(/^DUMP_ATTEMPT (\S+)$/gm)].map((m) => m[1]);
+    return { exitCode: run.status, status, attempted, stdout: run.stdout, stderr: run.stderr };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('papercusp-db-backup.sh — a database dropped after enumeration (WI-10006723)', () => {
+  it('records it as vanished, not failed, and the run stays ok', () => {
+    const r = runDropPipeline({ drop: ['p011_pre'] });
+    expect(r.attempted, 'p011_pre must have been enumerated and attempted').toEqual(['papercusp', 'p011_pre', 'oddsdb']);
+    expect(r.exitCode, r.stderr).toBe(0);
+    expect(r.stderr, 'the recovery broadcast must stay disabled under test').toMatch(/coord:send unavailable/);
+    expect(r.status.ok).toBe(true);
+    expect(r.status.failed).toEqual([]);
+    expect(r.status.dumped).toEqual(['papercusp', 'oddsdb']);
+    expect(r.status.vanishedSkipped).toEqual(['p011_pre']);
+    expect(r.status.invalidSkipped).toEqual(['org_x']);
+    expect(r.stdout).toMatch(/^LOG p011_pre VANISHED — dropped after enumeration/m);
+    expect(r.stdout).toMatch(/^LOG backup OK in \d+s: papercusp oddsdb \(vanished after enumeration: p011_pre\)$/m);
+  });
+
+  it('still fails the run on a real dump failure of a database that exists', () => {
+    const r = runDropPipeline({ drop: ['p011_pre'], fail: ['oddsdb'] });
+    expect(r.exitCode).toBe(1);
+    expect(r.status.ok).toBe(false);
+    expect(r.status.failed).toEqual(['oddsdb']);
+    expect(r.status.vanishedSkipped).toEqual(['p011_pre']);
+    expect(r.stdout).toMatch(/^LOG backup FAILED in \d+s: oddsdb$/m);
+  });
+
+  it('never reads an unreachable catalog as "the database is gone"', () => {
+    // Postgres goes away during p011_pre's dump: the dump fails AND the
+    // presence re-check cannot read pg_database. That must count as FAILED.
+    const r = runDropPipeline({ catalogDownOn: ['p011_pre'] });
+    expect(r.attempted).toContain('p011_pre');
+    expect(r.exitCode).toBe(1);
+    expect(r.status.ok).toBe(false);
+    expect(r.status.failed).toContain('p011_pre');
+    expect(r.status.vanishedSkipped).toEqual([]);
+    expect(r.stdout).not.toMatch(/VANISHED/);
   });
 });

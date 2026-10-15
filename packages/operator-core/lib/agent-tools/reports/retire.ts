@@ -20,7 +20,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getReport, retireReport } from '../../report-library';
 import { mergeIds, runBulk, bulkContent, bulkEnvelopeSchema } from '../_bulk';
-import { invalidateReportsSync, resolveViewer, resolveWorkspaceId, toReportSummary } from './_shared';
+import { invalidateReportsSync, reportsLibraryDisabled, resolveViewer, resolveWorkspaceId, toReportSummary } from './_shared';
 
 export default defineTool({
   name: 'reports:retire',
@@ -62,6 +62,8 @@ export default defineTool({
       message: 'pass `id` (one) or `ids` (many)',
     }),
   async handler(args, ctx) {
+    const disabled = await reportsLibraryDisabled();
+    if (disabled) return { data: disabled };
     const sql = getOrgPg().sql;
     const workspaceId = resolveWorkspaceId(ctx);
     const viewer = resolveViewer(ctx);

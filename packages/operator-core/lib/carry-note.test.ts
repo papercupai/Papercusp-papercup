@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 const SURFACE_ROOT = dirname(fileURLToPath(import.meta.url));
 import {
   evidenceFirst,
+  checkpointRowsMode,
   isProhibitionShaped,
   lintRelativeScratchPaths,
   RELATIVE_SCRATCH_ADVISORY,
@@ -399,6 +400,16 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(renderCheckLine(row!)).toContain('- ✓ ');
   });
 
+  it('does not treat a JSON out-of-scope disposition count as a coverage disclaimer', () => {
+    const claim = 'the scoped cohort snapshot is verified';
+    const evidence = JSON.stringify({ checked: 5, 'out-of-scope': 2, notChecked: 0 });
+
+    expect(findVerificationConflict(evidence, claim)).toBeNull();
+    expect(findVerificationConflict('two producer files were out-of-scope for this run', claim)).toMatch(
+      /out-of-scope/i,
+    );
+  });
+
   it('keeps running evidence VERIFIED when it supports a queued/running claim', () => {
     const claim = 'fresh typechecks remain queued';
     const evidence = "both sessions were 'still running and queued at ~180s'";
@@ -484,6 +495,18 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
 
     const affirmative = 'one uncovered lockfile remains and needs remediation';
     expect(findVerificationConflict(affirmative, claim)).toMatch(/uncovered/i);
+  });
+
+  it('does not downgrade a timestamped past-tense lifecycle snapshot', () => {
+    const evidence = 'the git-sync fire was in-flight since 19:40:08Z';
+    expect(findVerificationConflict(evidence, 'git-sync is healthy')).toBeNull();
+    const [row] = normalizeCheckEntries(
+      [{ claim: 'git-sync is healthy', recheck: 'inspect the routine snapshot', verified: evidence }],
+      [],
+      Date.parse('2026-09-05T17:00:00.000Z'),
+    );
+    expect(row).toMatchObject({ claim: 'git-sync is healthy', verified: expect.stringContaining(evidence) });
+    expect(row).not.toHaveProperty('contested');
   });
 
   it('still detects affirmative unresolved status phrases', () => {
@@ -2198,6 +2221,32 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
   });
 });
 
+describe('P-007 — individually governed carry-row survival', () => {
+  it.each([undefined, 'replace', 'merge'] as const)('preserves omitted row ids and evidence on a %s rewrite', requested => {
+    const rows = [{ id: 'open-check', claim: 'observed state', recheck: 'read state', verified: 'observed' }];
+    const prior = mergeCarryRows({ priorNote: null, baseNote: 'old', checks: rows,
+      walls: [{ id: 'open-wall', claim: 'await decision', recheck: 'read ruling' }], hasNoteWrite: true }).note;
+    const rewritten = mergeCarryRows({ priorNote: prior, baseNote: 'new', checks: [], walls: [],
+      mode: checkpointRowsMode(requested), hasNoteWrite: true });
+    expect(rewritten.checks[0]).toMatchObject({ id: 'open-check', claim: 'observed state', recheck: 'read state' });
+    expect(rewritten.checks[0].verified).toContain('observed');
+    expect(rewritten.walls[0]).toMatchObject({ id: 'open-wall', claim: 'await decision' });
+    expect(rewritten.droppedChecks).toEqual([]);
+    expect(rewritten.droppedWalls).toEqual([]);
+    expect(rewritten.note).toContain('new');
+  });
+
+  it('closes only the named row and keeps other stable ids', () => {
+    const prior = mergeCarryRows({ priorNote: null, baseNote: 'old', hasNoteWrite: true,
+      checks: [{ id: 'one', claim: 'one' }, { id: 'two', claim: 'two' }] }).note;
+    const rewritten = mergeCarryRows({ priorNote: prior, baseNote: 'new', checks: [],
+      retire: ['one'], mode: checkpointRowsMode('replace'), hasNoteWrite: true });
+    expect(rewritten.checks.map(row => row.id)).toEqual(['two']);
+    expect(rewritten.retiredChecks).toEqual(['one']);
+    expect(rewritten.droppedChecks).toEqual([]);
+  });
+});
+
 describe('P-025 — editing or retiring ONE carried row at the cap is a one-row write', () => {
   // Measured 2026-09-23 (review-system-rework-reduction P-025): 1,675
   // checkpoint_merge_would_evict_rows refusals in 7 days; the recovery each time was
@@ -2492,7 +2541,7 @@ describe('relative scratch references are advised against (R-6b)', () => {
   // — but it does NOT prove the branch is reachable at runtime. Both handlers
   // are heavy (PG + locks); the runtime path stays covered by the integration
   // sibling, and this gap is disclosed rather than papered over.
-  it('wires the lint to the advisory on BOTH checkpoint surfaces', () => {
+  it('uses the registered-harness tracked-path filter on BOTH checkpoint surfaces', () => {
     const surfaces = [
       'agent-tools/loop/checkpoint.ts',
       'agent-tools/work_items/checkpoint.ts',
@@ -2502,9 +2551,10 @@ describe('relative scratch references are advised against (R-6b)', () => {
       // Vacuity floor: a file rewritten into a stub must fail here rather than
       // sail past the matchers below on an empty string.
       expect(text.length, `${relpath} is unexpectedly small`).toBeGreaterThan(1000);
-      // It computes the refs...
-      expect(text, relpath).toMatch(/lintRelativeScratchPaths\(/);
-      // ...and returns them to the caller as scratchPathLint carrying THIS
+      // It resolves tracked paths against the checkpoint's own harness scope...
+      expect(text, relpath).toMatch(/filterTrackedRelativeScratchPaths\(/);
+      expect(text, relpath).toMatch(/workspaceId,\s*harness/);
+      // ...and returns remaining warnings as scratchPathLint carrying THIS
       // advisory. Matching the field-to-constant wiring, not two independent
       // mentions, is what makes the assertion fail when the emission is cut
       // while the import happens to survive.

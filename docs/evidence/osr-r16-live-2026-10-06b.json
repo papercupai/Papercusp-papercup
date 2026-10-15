@@ -1,0 +1,357 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-16: the hosted service serves no paid feature to an account without a subscription",
+  "framework": "operational",
+  "command": [
+    "python3 .papercusp/scratch/osr/r1006/r16-live.py (HTTP probes of the running :3880 hosted runtime; mounted-route census of hosted-runtime.ts at the deployed sha; unauthenticated GET of every mounted GET route; git grep of the DEPLOYED hosted sha (from :3880 /api/health) for entitlement gates and 402 refusal sites; live papercusp DB census of billing relations via sudo -n -u postgres psql; git ls-tree of the live public main clone of Papercusp/papercusp-app)"
+  ],
+  "startedAt": "2026-10-06T06:00:42.562309Z",
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-16",
+  "decision": "open-source-release-2026-09-29#D-025",
+  "subjectCommit": "da36b814e3a55d2d1a90d9fb79edd98b4e6579b6",
+  "workItemId": "WI-10003960",
+  "controls": {
+    "health": {
+      "status": 200,
+      "sha": "2041f3e9c7"
+    },
+    "mountedRoute": {
+      "path": "/api/hosted/auth/session",
+      "status": 401,
+      "expect": "not 404"
+    },
+    "unmountedRoute": {
+      "path": "/api/hosted/r16-probe/no-such-route-r16",
+      "status": 404,
+      "expect": "404"
+    }
+  },
+  "deployedBuild": {
+    "healthSha": "2041f3e9c7",
+    "resolvedSha": "2041f3e9c74f84e3b5316f3f4492e4a357fe3acc",
+    "treeHead": "da36b814e3a55d2d1a90d9fb79edd98b4e6579b6",
+    "inventorySha": "2041f3e9c74f84e3b5316f3f4492e4a357fe3acc",
+    "inventoryAtDeployedBuild": true
+  },
+  "mountedRouteCensus": {
+    "source": "packages/operator-core/lib/endpoint-route/hosted-runtime.ts",
+    "keyCount": 40,
+    "keys": [
+      "GET /health",
+      "GET /health/ready",
+      "POST /auth/workos/webhook",
+      "GET /hosted/browser/rest-query",
+      "GET /hosted/browser/sse",
+      "POST /hosted/browser/workspace-hosts/connection",
+      "POST /hosted/browser/workspace-hosts/provision",
+      "POST /hosted/browser/workspace-hosts/action",
+      "POST /hosted/browser/onboarding/first-workspace",
+      "POST /hosted/browser/onboarding/select-workspace",
+      "GET /hosted/browser/onboarding/tutorial-progress",
+      "POST /hosted/browser/onboarding/tutorial-progress",
+      "POST /hosted/browser/onboarding/tutorial-help",
+      "POST /hosted/browser/onboarding/tutorial-speech",
+      "POST /hosted/workspaces/:workspaceId/connectors/enroll",
+      "POST /hosted/workspaces/:workspaceId/connectors/rotate",
+      "POST /hosted/workspaces/:workspaceId/connectors/revoke",
+      "POST /hosted/workspaces/:workspaceId/connectors/session-ticket",
+      "POST /hosted/connectors/register",
+      "POST /hosted/connectors/heartbeat",
+      "GET /hosted/connectors/events",
+      "GET /hosted/connectors/socket",
+      "POST /hosted/workspaces/:workspaceId/provider-delegations/onboard",
+      "POST /hosted/workspaces/:workspaceId/provider-delegations/verify",
+      "POST /hosted/workspaces/:workspaceId/provider-delegations/rotate",
+      "POST /hosted/workspaces/:workspaceId/provider-delegations/revoke",
+      "POST /hosted/cli/device/code",
+      "GET /hosted/cli/device",
+      "POST /hosted/cli/device/decision",
+      "POST /hosted/cli/device/token",
+      "GET /hosted/cli/workspaces",
+      "POST /hosted/cli/workspaces/:workspaceId/terminal",
+      "POST /hosted/cli/logout",
+      "POST /hosted/relay/device/code",
+      "POST /hosted/relay/device/token",
+      "POST /hosted/relay/unlink",
+      "GET /hosted/auth/sign-in",
+      "GET /hosted/auth/callback",
+      "POST /hosted/auth/logout",
+      "GET /hosted/auth/session"
+    ],
+    "billingOrSubscriptionKeys": [],
+    "bootTimeExactMatchAssertionPresent": true
+  },
+  "compatibility": {
+    "claim": "the deployed hosted build serves every mounted GET route (no 404 or 5xx; authentication enforced)",
+    "deployedSha": "2041f3e9c74f84e3b5316f3f4492e4a357fe3acc",
+    "probed": 10,
+    "routes": [
+      {
+        "key": "GET /health",
+        "path": "/api/health",
+        "status": 200
+      },
+      {
+        "key": "GET /health/ready",
+        "path": "/api/health/ready",
+        "status": 200
+      },
+      {
+        "key": "GET /hosted/browser/rest-query",
+        "path": "/api/hosted/browser/rest-query",
+        "status": 401
+      },
+      {
+        "key": "GET /hosted/browser/sse",
+        "path": "/api/hosted/browser/sse",
+        "status": 401
+      },
+      {
+        "key": "GET /hosted/browser/onboarding/tutorial-progress",
+        "path": "/api/hosted/browser/onboarding/tutorial-progress",
+        "status": 401
+      },
+      {
+        "key": "GET /hosted/connectors/events",
+        "path": "/api/hosted/connectors/events",
+        "status": 401
+      },
+      {
+        "key": "GET /hosted/connectors/socket",
+        "path": "/api/hosted/connectors/socket",
+        "status": 426
+      },
+      {
+        "key": "GET /hosted/cli/device",
+        "path": "/api/hosted/cli/device",
+        "status": 303
+      },
+      {
+        "key": "GET /hosted/cli/workspaces",
+        "path": "/api/hosted/cli/workspaces",
+        "status": 401
+      },
+      {
+        "key": "GET /hosted/auth/session",
+        "path": "/api/hosted/auth/session",
+        "status": 401
+      }
+    ],
+    "excluded": [
+      {
+        "key": "GET /hosted/auth/sign-in",
+        "reason": "OAuth flow route: a GET starts or completes an identity-provider flow"
+      },
+      {
+        "key": "GET /hosted/auth/callback",
+        "reason": "OAuth flow route: a GET starts or completes an identity-provider flow"
+      }
+    ],
+    "unserved": [],
+    "liveEntitledRequest": "not measured: a hosted session is minted only by the browser OAuth sign-in, and forging one would bypass the authorization under test; the entitled grant is carried by the unit layer (hosted-entitlements.test.ts) and a live entitled request is deferred with D-025's monetization follow-up (D-028)"
+  },
+  "billingRouteProbe": [
+    {
+      "method": "GET",
+      "path": "/api/hosted/billing/plans",
+      "status": 404
+    },
+    {
+      "method": "GET",
+      "path": "/api/hosted/billing/subscription",
+      "status": 404
+    }
+  ],
+  "gateInventory": {
+    "resolver": {
+      "source": "packages/operator-core/lib/auth/hosted-entitlements.ts",
+      "definitionHits": 2,
+      "productionCallers": []
+    },
+    "billingEntitlementSeam": {
+      "source": "packages/operator-core/lib/auth/hosted/billing/entitlement-seam.ts",
+      "productionImporters": [
+        "packages/operator-core/lib/auth/hosted/billing/billing-store.ts",
+        "packages/operator-core/lib/auth/hosted/billing/entitlement-seam.ts",
+        "packages/operator-core/lib/auth/hosted/billing/stripe-billing-events.ts",
+        "packages/operator-core/lib/endpoint-route/hosted-billing-runtime.ts",
+        "packages/operator-core/lib/endpoint-route/routes/hosted-billing/index.ts"
+      ],
+      "importersOutsideBillingDisplay": [],
+      "role": "reports what a subscription entitles on GET /hosted/billing/subscription; gates nothing"
+    }
+  },
+  "refusal402Census": {
+    "siteCount": 6,
+    "sites": [
+      {
+        "site": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts:1623",
+        "class": "identity-activation"
+      },
+      {
+        "site": "packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts:1641",
+        "class": "identity-activation"
+      },
+      {
+        "site": "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts:444",
+        "class": "cost-cap"
+      },
+      {
+        "site": "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts:457",
+        "class": "cost-cap"
+      },
+      {
+        "site": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts:3065",
+        "class": "identity-activation"
+      },
+      {
+        "site": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-converse.ts:118",
+        "class": "cost-cap"
+      }
+    ]
+  },
+  "liveBillingRelations": [
+    {
+      "schema": "harness_shared",
+      "relation": "coord_entity_subscriptions",
+      "est_rows": 253991,
+      "rows": 262054
+    },
+    {
+      "schema": "harness_shared",
+      "relation": "data_source_subscriptions",
+      "est_rows": -1,
+      "rows": 0
+    },
+    {
+      "schema": "papercusp_auth",
+      "relation": "hosted_billing_customers",
+      "est_rows": -1,
+      "rows": 17
+    },
+    {
+      "schema": "papercusp_auth",
+      "relation": "hosted_billing_webhook_events",
+      "est_rows": 32,
+      "rows": 60
+    },
+    {
+      "schema": "papercusp_auth",
+      "relation": "hosted_entitlements",
+      "est_rows": -1,
+      "rows": 25
+    },
+    {
+      "schema": "papercusp_auth",
+      "relation": "hosted_subscriptions",
+      "est_rows": 12,
+      "rows": 12
+    },
+    {
+      "schema": "papercusp_marketplace",
+      "relation": "webhook_subscriptions",
+      "est_rows": 1,
+      "rows": 1
+    },
+    {
+      "schema": "pg_catalog",
+      "relation": "pg_subscription",
+      "est_rows": 0,
+      "rows": 0
+    },
+    {
+      "schema": "pg_catalog",
+      "relation": "pg_subscription_rel",
+      "est_rows": 0,
+      "rows": 0
+    }
+  ],
+  "publicCut": {
+    "repo": "https://github.com/Papercusp/papercusp-app.git",
+    "commit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+    "publicFileCount": 16275,
+    "closedServices": [
+      {
+        "path": "apps/papercusp-publish/",
+        "privateTrackedFiles": 37,
+        "publicFiles": 0
+      },
+      {
+        "path": "libs/marketplace-public-ui/",
+        "privateTrackedFiles": 46,
+        "publicFiles": 0
+      },
+      {
+        "path": "apps/the-swarm-site/",
+        "privateTrackedFiles": 15,
+        "publicFiles": 0
+      }
+    ],
+    "shipsByDecision": [
+      {
+        "path": "libs/papercusp-publish-auth/",
+        "privateTrackedFiles": 24,
+        "publicFiles": 16,
+        "basis": "D-009 / D-026: public code imports it"
+      }
+    ]
+  },
+  "resolver": {
+    "source": {
+      "path": "packages/operator-core/lib/auth/hosted-entitlements.ts",
+      "sha256": "5fcf0b9795db6fe708bf4e3bc7844b8f002e201afda62cc7922b59b755d796c8"
+    },
+    "test": {
+      "path": "packages/operator-core/lib/auth/hosted-entitlements.test.ts",
+      "sha256": "c235ed1cbf6079d23a25dbc75be1bce74ac390a363ec6bfb329c0751250925c7"
+    },
+    "claim": "fail-closed: missing, malformed, ambiguous and inactive authority resolve to no entitlement (unit layer)"
+  },
+  "gatedOperationInventory": [],
+  "finishedAt": "2026-10-06T06:00:58.992133Z",
+  "failures": [],
+  "status": "pass",
+  "exitCode": 0,
+  "assertions": [
+    {
+      "id": "positive-controls",
+      "passed": true,
+      "evidence": "/api/health 200 (sha 2041f3e9c7); mounted /api/hosted/auth/session 401; unmounted 404; 40 boot-asserted mounted keys; resolver definition hits 2; public files 16275"
+    },
+    {
+      "id": "gated-operation-inventory-empty",
+      "passed": true,
+      "evidence": "resolver production callers: 0; 402 sites: 6 (cost-cap, identity-activation), subscription-tied: 0; mounted billing/subscription keys: none; billing route probes: /api/hosted/billing/plans 404; /api/hosted/billing/subscription 404"
+    },
+    {
+      "id": "inventory-at-deployed-build",
+      "passed": true,
+      "evidence": "deployed sha 2041f3e9c74f84e3b5316f3f4492e4a357fe3acc (health 2041f3e9c7); every census read at 2041f3e9c74f84e3b5316f3f4492e4a357fe3acc; resolver definition located at that sha (2 hits) so zero callers is a measured absence"
+    },
+    {
+      "id": "hosted-tier-serves-mounted-routes",
+      "passed": true,
+      "evidence": "GET /health 200; GET /health/ready 200; GET /hosted/browser/rest-query 401; GET /hosted/browser/sse 401; GET /hosted/browser/onboarding/tutorial-progress 401; GET /hosted/connectors/events 401; GET /hosted/connectors/socket 426; GET /hosted/cli/device 303; GET /hosted/cli/workspaces 401; GET /hosted/auth/session 401 (excluded: ['GET /hosted/auth/sign-in', 'GET /hosted/auth/callback'])"
+    },
+    {
+      "id": "billing-seam-gates-nothing",
+      "passed": true,
+      "evidence": "entitlement-seam importers: 5, all within billing display; outside: none"
+    },
+    {
+      "id": "closed-services-absent-from-public-cut",
+      "passed": true,
+      "evidence": "apps/papercusp-publish/ private 37 / public 0; libs/marketplace-public-ui/ private 46 / public 0; apps/the-swarm-site/ private 15 / public 0 (public main 3c1ed9a1d7)"
+    }
+  ],
+  "summary": "No hosted operation is subscription-gated at the running :3880 hosted runtime: the hosted entitlement resolver has no production caller, every 402 refusal in the route layer is a cost cap or an identity activation refusal, and the Stripe billing composition only reports what a subscription entitles. The empty inventory is recorded beside non-vacuous controls. The three closed cloud services are absent from live public main (publish-auth ships by D-009). Gating a specific paid feature is deferred to a monetization follow-up (D-025).",
+  "limitations": [
+    "The fail-closed resolver claim is carried by the unit layer (hosted-entitlements.test.ts); no production route calls it yet.",
+    "The hosted billing composition (stripe-subscription-signup-2026-10-01) is source in the tree; its mount status on :3880 is the billingRouteProbe result.",
+    "No live entitled request: a hosted session comes only from the browser OAuth sign-in (D-028).",
+    "D-025 is a default taken under AUTO (#1412) while the owner's R-16 question is unanswered; the owner may override it."
+  ]
+}

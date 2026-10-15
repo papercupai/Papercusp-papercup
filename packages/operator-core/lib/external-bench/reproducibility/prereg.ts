@@ -30,6 +30,7 @@ export const PREREG_DIR_REL = path.join('benchmarks', 'preregistrations');
 
 /** Repo-relative path the pre-registered config for `runId` lands at. */
 export function preregFilePath(runId: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) throw new Error('Pre-registration run id must be a safe file name.');
   return path.join(PREREG_DIR_REL, `${runId}.json`);
 }
 
@@ -39,6 +40,8 @@ export function computePreregHash(config: unknown): string {
 }
 
 const jb = (v: unknown): string | null => (v == null ? null : JSON.stringify(v));
+const decoded = (v: unknown): unknown => typeof v === 'string' ? JSON.parse(v) : v;
+const immutableConflict = () => Object.assign(new Error('Pre-registration identity/config is immutable; use a new run id and protocol.'), { code: '23505' });
 
 export interface PreregisterInput extends DbScope {
   runId: string;
@@ -71,30 +74,42 @@ export async function preregister(input: PreregisterInput): Promise<PreregisterR
   const repoRoot = input.repoRoot ?? REPO_ROOT;
   const absFilePath = path.join(repoRoot, filePath);
 
-  const fileDoc = {
-    runId: input.runId,
-    preregHash,
-    label: input.label ?? null,
-    suites: input.suites,
-    createdAt: new Date().toISOString(),
-    config: input.config,
+  const checkFile = () => {
+    const doc = JSON.parse(readFileSync(absFilePath, 'utf8')) as { runId?: unknown; preregHash?: unknown; config?: unknown; suites?: unknown };
+    if (doc.runId !== input.runId || doc.preregHash !== preregHash ||
+        computePreregHash(doc.config) !== preregHash || canonicalJson(doc.suites) !== canonicalJson(input.suites)) throw immutableConflict();
   };
-  mkdirSync(path.dirname(absFilePath), { recursive: true });
-  writeFileSync(absFilePath, `${JSON.stringify(fileDoc, null, 2)}\n`, 'utf8');
-
-  await sql`
-    INSERT INTO harness_shared.benchmark_prereg
-      (prereg_hash, run_id, workspace_id, label, suites, config, file_path)
-    VALUES
-      (${preregHash}, ${input.runId}, ${ws}, ${input.label ?? null},
-       ${jb(input.suites)}::text::jsonb, ${jb(input.config)}::text::jsonb, ${filePath})
-    ON CONFLICT (prereg_hash) DO UPDATE SET
-      run_id = EXCLUDED.run_id,
-      label = EXCLUDED.label,
-      suites = EXCLUDED.suites,
-      config = EXCLUDED.config,
-      file_path = EXCLUDED.file_path
-  `;
+  // Serialize both the DB firewall and the file for this path. In particular a
+  // refused INSERT must never overwrite the already-frozen protocol on disk.
+  await sql.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${absFilePath}, 0))`;
+    if (existsSync(absFilePath)) checkFile();
+    await tx`
+      INSERT INTO harness_shared.benchmark_prereg
+        (prereg_hash, run_id, workspace_id, label, suites, config, file_path)
+      VALUES
+        (${preregHash}, ${input.runId}, ${ws}, ${input.label ?? null},
+         ${jb(input.suites)}::text::jsonb, ${jb(input.config)}::text::jsonb, ${filePath})
+      ON CONFLICT (prereg_hash) DO NOTHING
+    `;
+    const [row] = await tx`
+      SELECT run_id, workspace_id, config, suites, label, created_at
+        FROM harness_shared.benchmark_prereg WHERE prereg_hash = ${preregHash}
+    `;
+    if (!row || row.run_id !== input.runId || row.workspace_id !== ws ||
+        computePreregHash(decoded(row.config)) !== preregHash ||
+        canonicalJson(decoded(row.suites)) !== canonicalJson(input.suites)) throw immutableConflict();
+    if (!existsSync(absFilePath)) {
+      const fileDoc = { runId: input.runId, preregHash, label: row.label ?? null,
+        suites: input.suites, createdAt: new Date(row.created_at).toISOString(), config: input.config };
+      mkdirSync(path.dirname(absFilePath), { recursive: true });
+      try { writeFileSync(absFilePath, `${JSON.stringify(fileDoc, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        checkFile();
+      }
+    }
+  });
 
   return { preregHash, filePath, absFilePath };
 }
@@ -105,6 +120,8 @@ export interface VerifyPreregResult {
   hashMatches: boolean;
   /** The prereg file is present in git history. */
   committed: boolean;
+  /** The actual introducing git blob contains the same frozen protocol. */
+  committedHashMatches: boolean;
   gitCommitSha: string | null;
   /** The committing commit predates the earliest rollout for this run (null = no rollouts / unknown). */
   predatesRollouts: boolean | null;
@@ -129,7 +146,7 @@ export async function verifyPreregistration(
      WHERE run_id = ${runId} AND workspace_id = ${ws} LIMIT 1
   `;
   if (rows.length === 0) {
-    return { found: false, hashMatches: false, committed: false, gitCommitSha: null, predatesRollouts: null };
+    return { found: false, hashMatches: false, committed: false, committedHashMatches: false, gitCommitSha: null, predatesRollouts: null };
   }
   const { prereg_hash, file_path } = rows[0];
   const absPath = path.join(repoRoot, file_path);
@@ -137,14 +154,15 @@ export async function verifyPreregistration(
   let hashMatches = false;
   if (existsSync(absPath)) {
     try {
-      const doc = JSON.parse(readFileSync(absPath, 'utf8')) as { config?: unknown };
-      hashMatches = computePreregHash(doc.config) === prereg_hash;
+      const doc = JSON.parse(readFileSync(absPath, 'utf8')) as { runId?: unknown; preregHash?: unknown; config?: unknown };
+      hashMatches = doc.runId === runId && doc.preregHash === prereg_hash && computePreregHash(doc.config) === prereg_hash;
     } catch {
       hashMatches = false;
     }
   }
 
   let committed = false;
+  let committedHashMatches = false;
   let gitCommitSha: string | null = null;
   let commitIso: string | null = null;
   try {
@@ -159,6 +177,11 @@ export async function verifyPreregistration(
       gitCommitSha = shaPart || null;
       commitIso = isoPart || null;
       committed = Boolean(gitCommitSha);
+      if (gitCommitSha) {
+        const blob = await execFileAsync('git', ['show', `${gitCommitSha}:${file_path}`], { cwd: repoRoot });
+        const doc = JSON.parse(blob.stdout) as { runId?: unknown; preregHash?: unknown; config?: unknown };
+        committedHashMatches = doc.runId === runId && doc.preregHash === prereg_hash && computePreregHash(doc.config) === prereg_hash;
+      }
     }
   } catch {
     committed = false;
@@ -176,9 +199,34 @@ export async function verifyPreregistration(
 
   await sql`
     UPDATE harness_shared.benchmark_prereg
-       SET git_committed = ${committed}, git_commit_sha = ${gitCommitSha}
+       SET git_committed = ${committed && committedHashMatches && hashMatches}, git_commit_sha = ${gitCommitSha}
      WHERE prereg_hash = ${prereg_hash} AND workspace_id = ${ws}
   `;
 
-  return { found: true, hashMatches, committed, gitCommitSha, predatesRollouts };
+  return { found: true, hashMatches, committed, committedHashMatches, gitCommitSha, predatesRollouts };
+}
+
+/** The generation-side firewall; bind this BEFORE budget reservation or launch. */
+export async function requireCommittedPreregistration(
+  runId: string,
+  expected: { preregHash: string; config: Record<string, unknown> },
+  opts: { repoRoot?: string } & DbScope = {},
+): Promise<{ preregHash: string; gitCommitSha: string; receiptRef: string }> {
+  const { sql, ws } = resolveDb(opts);
+  const [row] = await sql`
+    SELECT prereg_hash, config FROM harness_shared.benchmark_prereg
+     WHERE run_id = ${runId} AND workspace_id = ${ws} LIMIT 1
+  `;
+  if (!row || row.prereg_hash !== expected.preregHash ||
+      computePreregHash(expected.config) !== expected.preregHash ||
+      computePreregHash(decoded(row.config)) !== expected.preregHash) {
+    throw new Error('Generation requires the exact frozen pre-registration config.');
+  }
+  const verified = await verifyPreregistration(runId, opts);
+  if (!verified.hashMatches || !verified.committed || !verified.committedHashMatches ||
+      !verified.gitCommitSha || verified.predatesRollouts === false) {
+    throw new Error('Generation requires matching pre-registration bytes committed before outcomes.');
+  }
+  return { preregHash: expected.preregHash, gitCommitSha: verified.gitCommitSha,
+    receiptRef: `prereg:${ws}/${runId}#${expected.preregHash}@${verified.gitCommitSha}` };
 }

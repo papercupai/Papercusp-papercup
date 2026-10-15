@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-008 live drill (D-010, parent D-013 BD003): with the in-app Slack path removed, a bug report posted in the chosen Slack channel reaches the installed Cupboard slack package, fires the installed bug-triage binding once, and becomes one Asana task in the chosen project",
+  "framework": "operational",
+  "command": [
+    "Real Slack post by the parent plan's drill driver su-2a4e1f4a (slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08 D-013 BD003) into channel C0C8836LU5C, receipts /tmp/2a4e1f4a-bd003-slack-post.json and /tmp/2a4e1f4a-bd003-trigger-runs.json",
+    "Readback by su-0dd6b9aa via dev:pg_query on harness_shared.trigger_runs, trigger_bindings, data_sources, plan_runs and tool_invocations (workspace papercusp-workspace), 2026-10-12T03:30Z-03:45Z"
+  ],
+  "startedAt": "2026-10-12T03:30:09.184Z",
+  "finishedAt": "2026-10-12T03:38:55.000Z",
+  "exitCode": 0,
+  "summary": "Slack message ts 1791775809.184469 in C0C8836LU5C (sender U0C8BMMPPBQ) was delivered by the package socket path of source f0566e25 (kind slack, credential_ref provider-setup:slack, status connected, last_error null) as a chat-message (dedupe connector:f0566e25:chat-message:C0C8836LU5C:1791775809.184469, delivery 6af72540). It fired exactly one trigger run, 6bdb0d6b on the installed bug-triage binding 68b68066 (pack installation 2e0593bb, armed, event ext:slack:message), status succeeded, minted 1, replayed false, which started plan run 1335 (bug-triage@run-494413284177559313). Run 1335's one work-item, WI-6554700010008784, classified the report as a defect and called ticket:file once (invocation 36617490, 03:36:47Z, status ok, bg-host port-3271 build 34c8d80287) with no destination argument; the installation's destination, Asana project 1219381686283984, received task 1219394945745672. Plan run 1335 finished done at 03:38:55Z. The removed built-in binding 7c3c95c0 (slack-classify-bug-2026-10-08) is disarmed and has no run after 2026-10-11T16:28:02Z.",
+  "assertions": [
+    {
+      "id": "chat-message-recorded",
+      "passed": true,
+      "evidence": "trigger_runs 6bdb0d6b args.trigger: datatypeId chat-message, payload.channelId C0C8836LU5C, payload.sender U0C8BMMPPBQ, payload.text begins 'BD003: SAVE10 applies only half of the advertised discount', extensions.slack.ts 1791775809.184469, eventType message, channelType channel."
+    },
+    {
+      "id": "package-socket-path",
+      "passed": true,
+      "evidence": "data_sources f0566e25: kind slack, credential_ref provider-setup:slack (the installed package's provider setup, not the removed in-app credential), status connected, last_error null."
+    },
+    {
+      "id": "one-run-from-installed-binding",
+      "passed": true,
+      "evidence": "trigger_runs on binding 68b68066 (plan bug-triage, pack_installation_id 2e0593bb, armed true): exactly 1 row, 6bdb0d6b, succeeded 03:30:39Z, outcome {minted:1, replayed:false, planRunId:1335}."
+    },
+    {
+      "id": "one-ticket-in-chosen-project",
+      "passed": true,
+      "evidence": "tool_invocations: exactly one ticket:file between 03:30Z and 03:40Z (id 36617490, status ok, args title 'BD003: SAVE10 applies 5% instead of advertised 10% discount', planRunId 1335, no destination argument). WI-6554700010008784 completion: Asana task 1219394945745672 created in installation-selected destination 1219381686283984."
+    },
+    {
+      "id": "in-app-path-silent",
+      "passed": true,
+      "evidence": "Built-in binding 7c3c95c0 (slack-classify-bug-2026-10-08, the removed in-app path) armed false; its only trigger run is 2026-10-11T16:28:02Z (BD001), none for BD003."
+    }
+  ],
+  "plan": "cupboard-distributable-integrations-2026-10-10",
+  "items": ["P-006", "P-007", "P-008"],
+  "specs": ["SPEC-R-4-P-006", "SPEC-R-4-P-007", "SPEC-R-4-P-008"],
+  "evidencePlane": "live",
+  "liveRun": {
+    "slackTs": "1791775809.184469",
+    "channel": "C0C8836LU5C",
+    "source": "f0566e25-ec24-4c51-8388-74ebf49fb6fc",
+    "binding": "68b68066-ce37-4550-adf7-ea4824b108fa",
+    "packInstallation": "2e0593bb-17cc-4f27-bb68-5ef62cc9ea3c",
+    "triggerRun": "6bdb0d6b-5fd7-4de5-825a-836e2e5da217",
+    "delivery": "6af72540-0e77-4f08-8fb8-161d13b07f19",
+    "planRun": 1335,
+    "workItem": "WI-6554700010008784",
+    "ticketInvocation": 36617490,
+    "asanaProject": "1219381686283984",
+    "asanaTask": "1219394945745672",
+    "servingBuild": "34c8d80287"
+  },
+  "limitations": [
+    "The classification step was performed by the parent plan's drill driver su-2a4e1f4a, which claimed the run's work-item WI-6554700010008784; the classifier is therefore not independent of the drill author. The defect is unambiguous (the posted report and the fixture's own API both show 500 instead of 1000 cents discount).",
+    "The Asana task id comes from the work-item completion and su-2a4e1f4a's report; this readback did not query Asana's API directly. The ticket:file invocation (status ok) is the independent ledger record.",
+    "The binding's event filter is only text-exists; the chosen-channel restriction is enforced by the pack's channels input inside the plan, not by the binding (tracked as WI-6554700010008770). This drill posted in the chosen channel, so it does not exercise the non-chosen-channel case."
+  ]
+}

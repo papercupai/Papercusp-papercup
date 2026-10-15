@@ -13,6 +13,7 @@ import { createInterface } from 'node:readline';
 
 import {
   assertNeverSuSession,
+  type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
@@ -22,7 +23,7 @@ import {
 
 import { getAdvSession } from './adv-sessions';
 import {
-  findLiveHost,
+  findLiveHostAsync,
   injectIntoHostWithConfirmation,
   interruptViaPty,
   shutdownViaPty,
@@ -42,6 +43,7 @@ import {
   findCodexRolloutPath,
 } from './session-transcript-resolvers';
 import { createCodexTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
+import { codexPlanCall, codexTokenUsage } from './su-session-usage';
 import { gatewayServedAccountForOwner } from './compaction-usage';
 import {
   SuSessionHost,
@@ -66,10 +68,11 @@ export interface CodexSuRuntimeBinding {
   rolloutPath: string | null;
 }
 
-export type CodexNativeCommandVerdict = { ok: true } | { ok: false; code: string; message: string; retryable: boolean };
+export type CodexNativeCommandVerdict = { ok: true } | ({ ok: false } & SuSessionRefusal);
 
 export interface CodexSuSessionControls {
-  ownerTurn(input: { ownerId: string; turnId: string; content: string }): Promise<CodexNativeCommandVerdict>;
+  /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<CodexNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -83,6 +86,8 @@ export interface CodexSuSessionControls {
 export interface CodexSuSessionDescriptorOptions {
   agentChatId: string;
   model?: string | null;
+  /** D-026: the approvals mode the engine launched in, when it has one. */
+  approvals?: SuApprovalsMode;
   accountRoute?: string | null;
   servedAccountReader?: SuSessionServedAccountReader;
   carry?: 'warm' | 'cold';
@@ -134,7 +139,7 @@ export interface ResolveCodexSuRuntimeDeps {
   getSession?: typeof getAdvSession;
   findRolloutPath?: typeof findCodexRolloutPath;
   findLiveThreadId?: typeof findCodexLiveThreadId;
-  findHost?: typeof findLiveHost;
+  findHost?: typeof findLiveHostAsync | ((ownerId: string) => ReturnType<typeof findLiveHostAsync> | null);
 }
 
 /**
@@ -152,7 +157,7 @@ export async function resolveCodexSuRuntime(
 ): Promise<CodexSuRuntimeBinding | null> {
   if (binding.backend !== 'codex') return null;
   const findPath = deps.findRolloutPath ?? findCodexRolloutPath;
-  const host = binding.ownerId ? (deps.findHost ?? findLiveHost)(binding.ownerId) : null;
+  const host = binding.ownerId ? await (deps.findHost ?? findLiveHostAsync)(binding.ownerId) : null;
   const returnedHandle =
     binding.nativeSession?.backend === 'codex' ? materializedCodexHandle(binding.nativeSession) : null;
   if (returnedHandle) {
@@ -203,7 +208,7 @@ function refused(code: string, message: string, retryable = true): Exclude<Codex
 function defaultControls(): CodexSuSessionControls {
   return {
     async ownerTurn({ ownerId, content }) {
-      const host = findLiveHost(ownerId);
+      const host = await findLiveHostAsync(ownerId);
       if (!host) return refused('runtime_unavailable', 'Codex has no live managed-PTY host');
       const delivered = await injectIntoHostWithConfirmation(host.sock, {
         mode: 'turn',
@@ -245,7 +250,7 @@ function defaultControls(): CodexSuSessionControls {
       // Resume of a still-attached runtime is an interaction-state transition.
       // Re-launch/reconciliation after process loss belongs to P-004 and calls
       // replaceRuntime once the exact rollout has been resumed.
-      return findLiveHost(ownerId)
+      return (await findLiveHostAsync(ownerId))
         ? { ok: true }
         : refused(
             'runtime_reconciliation_required',
@@ -306,7 +311,7 @@ export function codexCapabilities(): SuSessionCapabilities {
       usage: {
         state: 'conditional',
         implementation: 'native',
-        reason: 'native token-count records are available but the v1 SU-session event contract has no usage event',
+        reason: 'rollout token_count records set descriptor.usage (latest-call tokens and context window); Codex reports no cost, so costUsd stays absent',
       },
       compaction: {
         state: 'conditional',
@@ -319,8 +324,9 @@ export function codexCapabilities(): SuSessionCapabilities {
         reason: 'PUI attached launches and resumptions use approvalPolicy on-request and a workspace-write sandbox; native requests become owner approval cards. Other managed engine callers must opt into toolApproval prompt.',
       },
       context: {
-        state: 'unsupported',
-        reason: 'the v1 SU-session contract carries no context event or descriptor field, so Codex context consumption stays inside the native runtime and never reaches the PUI',
+        state: 'conditional',
+        implementation: 'native',
+        reason: 'descriptor.usage.contextTokens and contextWindow come from rollout token_count records; absent until the first model call of the session',
       },
       modes: {
         state: 'conditional',
@@ -387,6 +393,7 @@ function commandRefusal(verdict: Exclude<CodexNativeCommandVerdict, { ok: true }
     code: verdict.code,
     message: verdict.message,
     retryable: verdict.retryable,
+    ...(verdict.liftsWhen ? { liftsWhen: verdict.liftsWhen } : {}),
   };
   return { status: 'refused', refusal };
 }
@@ -413,6 +420,7 @@ function descriptorFor(
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
+    ...(options.approvals ? { approvals: options.approvals } : {}),
     accountServed: null,
     accountRoute: options.accountRoute ?? null,
     carry: options.carry ?? 'warm',
@@ -609,6 +617,15 @@ export class CodexSuSessionAdapter {
     if (record.type === 'compacted') {
       if (!preserveLifecycle) this.host.transition('compacting', 'Codex native transcript compacted');
     }
+    // D-029/D-031: usage and the agent's plan ride the session descriptor.
+    if (record.type === 'event_msg' && payloadType === 'token_count') {
+      const usage = codexTokenUsage(payload);
+      if (usage) this.host.updateUsage(usage);
+    }
+    if (record.type === 'response_item') {
+      const plan = codexPlanCall(payload);
+      if (plan) this.host.updatePlan(plan);
+    }
 
     const error = nativeError(record);
     if (error) {
@@ -762,6 +779,8 @@ export class CodexSuSessionAdapter {
           ownerId,
           turnId: command.turnId,
           content: command.content,
+          ...(command.model ? { model: command.model } : {}),
+          ...(command.approvals ? { approvals: command.approvals } : {}),
         });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
         break;

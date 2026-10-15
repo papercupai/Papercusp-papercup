@@ -26,7 +26,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';
-import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
+import { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
+import { requirePrincipal } from '../../../auth/require-principal';
+export { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
 // WI-42439: the single source for which `--account=` spellings bypass the gateway.
 import { isGatewayFreeAccount } from '../../../agent-config-constants';
 import { normalizeSuContextSize } from '../../../su-context-size.mjs';
@@ -36,6 +38,7 @@ import {
   endedRecordedOwnerIds,
   acquireAdvSessionResume,
   finalizeAdvSessionResume,
+  getAdvSession,
   isAdvSessionLocalLivenessEvidence,
   markAdvSessionEnded,
   parseKilledBySignalReport,
@@ -45,7 +48,6 @@ import {
   reanchorAdvSessionNativeIdByOwner,
   recordAdvSession,
   recordSuLaunchSpec,
-  repairStaleAdvSessionTerminalMarkers,
 } from '../../../adv-sessions';
 // stale-prompt-render-in-live-sessions-2026-08-02 P-002/D-001: the prompt-assembly
 // steps this route shares with the carry-respawn persona refresh. Both paths must
@@ -57,12 +59,8 @@ import {
   type SuLaunchSpecRecord,
 } from '../../../su-persona-render';
 import { getOrgPg } from '@papercusp/db-org';
-import {
-  classifyPrePinnedOwnerRows,
-  describePrePinnedConflicts,
-  mapPrePinnedOwnerSessionState,
-} from './pre-pinned-owner-rows';
-import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
+import { describePrePinnedConflicts } from './pre-pinned-owner-rows';
+import { readPrePinnedOwnerBindings } from './pre-pinned-owner-conflicts';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec, compileLaunchSpecificationArtifact, provisionLaunchIdentityResources, resolveLaunchIdentityModelDefault } from '../../../role-launch-spec';
@@ -86,12 +84,13 @@ import {
   releaseAgentLaunchClaim,
   type LaunchMode,
 } from '../../../agent-launch-core';
+import { renderModeInstructionsFact } from '../../../agent-tools/mode/set';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
-import { writeSuCodexHome } from '../../../role-codex-home';
+import { writeSuCodexHomeAsync } from '../../../role-codex-home';
 // EI-11366: the real liveness check wired into writeSuCodexHome's identity-
 // split collision guard — is there a LIVE psu-pty host process for a sid that
 // previously owned the CODEX_HOME directory we're about to rebuild?
-import { findLiveHost } from '../../../events/await/psu-pty-discovery';
+import { findLiveHostAsync } from '../../../events/await/psu-pty-discovery';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
 import { resolveSuLaunchCwd, type SuLaunchCwdPolicy } from '../../../su-launch-cwd';
 import {
@@ -100,7 +99,9 @@ import {
   materializeHarnessPrompts,
 } from '../../../saved-prompts-materialize';
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
+import { sessionAllowsAmbientContext } from '../../../capability-envelope/session-confinement-port';
 import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
+import { parseLaunchCompactionLimitArgv } from '../../../compaction-usage';
 import { readSuperuserToken } from '../../../superuser-token';
 import { homedir } from 'node:os';
 import {
@@ -110,37 +111,17 @@ import {
 } from '../../../backend-feature-capabilities';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION, type SessionPortContractSummary } from '../../../session-port/types';
 import { recordSessionPortTelemetry } from '../../../session-port/telemetry';
+import {
+  consumePendingCarryRespawn,
+  restorePendingCarryRespawn,
+  type PendingCarryRespawn,
+} from '../../../session-brief';
 import { readOmpModelCatalog, type OmpModelCatalogEntry } from '../../../omp-config';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
 import { resolveCodexModel, resolveCodexModelSelection } from '../../../model-context-budget.mjs';
 import { requestSessionIdentityActivation } from '../../../agent-tools/coordination/control-anchor';
 import type { ModeRow } from '../../../modes/store';
 
-// Exported for the sibling launcher-facing routes split out of this file (the
-// persona refresh) — one copy of the CORS/principal boilerplate, not two.
-export const CORS_HEADERS: Record<string, string> = {
-  'access-control-allow-origin': '*',
-  'access-control-allow-methods': 'GET, POST, OPTIONS',
-  'access-control-allow-headers': 'content-type, accept, authorization',
-};
-
-export function jsonRes(body: unknown, init?: number | ResponseInit): Response {
-  const r = Response.json(body, typeof init === 'number' ? { status: init } : init);
-  for (const [k, v] of Object.entries(CORS_HEADERS)) r.headers.set(k, v);
-  return r;
-}
-
-export async function gatePrincipal(headers: Headers): Promise<Response | null> {
-  try {
-    await requirePrincipal(headers);
-    return null;
-  } catch (err) {
-    if (err instanceof PrincipalCheckError) {
-      return jsonRes({ status: 'error', error: err.reason }, err.status);
-    }
-    throw err;
-  }
-}
 
 /**
  * Join a pre-fork headless task row to the native session identity bootstrap
@@ -210,6 +191,8 @@ export interface BootstrapSuResult {
    * `envelopeEnv.CODEX_HOME`.
    */
   codexHome: string | null;
+  /** Resolved managed budget used by Codex config and native CLI argv. */
+  compactionLimit?: number | null;
   /**
    * The omp coordination extension path (`~/.papercusp/papercusp-coord.ts`)
    * the launcher loads via `-e` for lock enforcement, or null if not
@@ -349,9 +332,10 @@ export async function resolveAccountPin(
   /** Present only when an explicit nondefault route could not be honored. Route
    * handlers reject the launch before recording/spawning anything. */
   error?: string;
-  /** WI-3645: explicit-auto routing for a config-FILE-carried backend (codex) — the CODEX_HOME
-   *  writers translate this into an UNPINNED gateway provider block (codexGatewayAuto). Claude
-   *  auto needs no marker (its routing rides entirely in `env`); absent on pins/default/fail. */
+  /** Unpinned gateway routing for every backend. Session-port bootstrap uses this
+   * marker to verify the canonical prepared account independently of how each
+   * backend carries its credentials. CODEX_HOME writers also translate it into
+   * codexGatewayAuto; absent on pins/default/fail. */
   gatewayAuto?: boolean;
 }> {
   const raw = requested?.trim();
@@ -404,7 +388,10 @@ export async function resolveAccountPin(
       // Marker parity with the raw-node launcher. The default route is not the
       // absence of routing state: it actively forces Claude back to the machine's
       // system `/login`, regardless of ambient env inherited from a prior session.
-      env: agent === 'claude' ? { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' } : {},
+      // Codex also needs the marker so the PTY host can restore this route on carry.
+      env: agent === 'claude' || agent === 'codex'
+        ? { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }
+        : {},
       notice: raw ? 'using the default system account (inference gateway skipped).' : null,
       accountId: null,
       provider: null,
@@ -470,6 +457,7 @@ export async function resolveAccountPin(
       const pool = await loadAccountPool(workspaceId);
       const override = await getAccountOverride(workspaceId);
       const candidates = pool.accounts.filter((candidate) => {
+        if (candidate.credentialFailure) return false;
         if (accountProvider(candidate) !== expected) return false;
         if (override.excludeAccounts.includes(candidate.id)) return false;
         return !override.forcedAccounts.length || override.forcedAccounts.includes(candidate.id);
@@ -488,6 +476,7 @@ export async function resolveAccountPin(
             : 'routing through the inference gateway (auto — it selects an available pool account and fails over).',
           accountId: null,
           provider: expected,
+          gatewayAuto: true,
         };
       }
       if (expected === 'codex' && agent !== 'omp') {
@@ -495,11 +484,10 @@ export async function resolveAccountPin(
         // config.toml, not env — the writer call sites translate `gatewayAuto` into
         // codexGatewayAuto, and the SHARED builder (@papercusp/orchestrator/codex-gateway-config)
         // renders the provider block WITHOUT the x-papercusp-account header; the gateway then
-        // auto-selects (bearer pool first, codex-CLI account fallback). The old fail() here
-        // rested on a premise the gateway has since outgrown ("needs a specific account") —
-        // an unpinned codex request is served, it is not an error.
+        // auto-selects (bearer pool first, codex-CLI account fallback). The route marker
+        // below lets the PTY host reapply that config after a carry or recycle.
         return {
-          env: {},
+          env: { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' },
           notice: 'routing through the inference gateway (auto — it selects an available codex account).',
           accountId: null,
           provider: expected,
@@ -535,6 +523,7 @@ export async function resolveAccountPin(
     const pool = await loadAccountPool(workspaceId);
     const acct = (pool.accounts ?? []).find((a: { id: string }) => a.id === id);
     if (!acct) return fail(`'${id}' is not in the account pool (see accounts:list)`);
+    if (acct.credentialFailure) return fail(`'${id}' has a confirmed provider authentication failure; repair and re-register the account before pinning it`);
     const provider = accountProvider(acct as never);
     if (provider !== expected)
       return fail(`'${id}' is a ${provider} account, but ${agent} sessions require ${expected} accounts`);
@@ -599,7 +588,10 @@ export async function resolveAccountPin(
       };
     }
     return {
-      env: { PAPERCUSP_ACCOUNT_ID: id },
+      env: {
+        PAPERCUSP_ACCOUNT_ID: id,
+        PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin',
+      },
       notice:
         `pinned to Codex account ${id} (routed through the inference gateway).`,
       accountId: id,
@@ -651,7 +643,7 @@ export async function resolveAccountChoices(
     if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) return empty;
     const { loadAccountPool } = await import('../../../deployment/account-pool-store');
     const { accountsForProvider, accountFull, accountReadingStatus } = await import('../../../deployment/account-pool');
-    const accounts = accountsForProvider(await loadAccountPool(workspaceId), provider);
+    const accounts = accountsForProvider(await loadAccountPool(workspaceId), provider).filter((a) => !a.credentialFailure);
     const pool = accounts.map((a: { id: string }) => a.id);
     const now = Date.now();
     const accountStates = Object.fromEntries(accounts.flatMap((account) => {
@@ -897,7 +889,17 @@ export async function stampPresenceAtBoot(opts: {
   agentRole?: string | null;
 }): Promise<string | null> {
   try {
-    const { writePresence } = await import('../../../agent-tools/coordination/presence');
+    const { writePresence, getPresence } = await import('../../../agent-tools/coordination/presence');
+    // WI-10006674: a session with NO harness (a workspace-level su, and every
+    // consult/headless `--fork`) has no pot_slug to stamp, so the only job here is to
+    // make the row EXIST — the launcher's supervisor beat (touchHeartbeat) never mints
+    // one (D-003). Without it, a session that never completes a first turn (a fork whose
+    // inherited transcript is already at the context limit) parks with a live host and
+    // NO presence row, which coord:presence reports as absent. Mint only when absent:
+    // store.write() overwrites intent/current_plan_slug unconditionally, and a
+    // carry-respawn re-POSTs bootstrap with the same ownerId, so an unconditional write
+    // here would wipe the live session's declared lane.
+    if (!opts.harnessSlug && (await getPresence(opts.ownerId))) return null;
     const agentRole = opts.agentRole?.trim() || 'su';
     await writePresence(
       {
@@ -936,6 +938,32 @@ export async function stampPresenceAtBoot(opts: {
  * only in the sense of not failing the request — this function itself never
  * throws, returning a message instead, mirroring stampFleetMembershipAtBoot).
  */
+/**
+ * A launcher's session scope is not a member's role assignment. In particular,
+ * copying a leader's pre-rendered DRAIN fact also copied "set by the owner" and
+ * made the child owner-sticky. Derive member scope from the registered fleet
+ * role and reuse its admitted claim spec for the work boundary instead.
+ * Use this same normalization for both durable writes and first-turn prose.
+ */
+export function normalizeBootstrapLaunchMode(
+  value: unknown,
+  fleet?: { slug: string; role: string | null } | null,
+): LaunchMode | null {
+  const mode = normalizeLaunchMode(value);
+  if (!mode || mode.mode !== 'drain' || fleet?.role !== 'member') return mode;
+  return normalizeLaunchMode({
+    ...mode,
+    ownerDirected: false,
+    instructions: renderModeInstructionsFact({
+      modeId: mode.mode,
+      instructions: `Work as a member of fleet '${fleet.slug}' under its current registered leader. ` +
+        'Use only the fleet\'s admitted claim spec. Do not take leadership or monitor the fleet.',
+      ownerDirected: false,
+      setBy: 'bootstrap-su:registered-fleet-member',
+    }),
+  });
+}
+
 export async function syncLaunchModeToRegistry(opts: {
   workspaceId: string;
   ownerId: string;
@@ -947,6 +975,7 @@ export async function syncLaunchModeToRegistry(opts: {
   subject?: string | null;
   instructions?: string | null;
   ownerDirected?: boolean;
+  fleet?: { slug: string; role: string | null } | null;
 }): Promise<string | null> {
   const namedMode = opts.namedMode ?? (opts.drainMode ? 'drain' : null);
   if (!opts.autoMode && !namedMode) return null;
@@ -956,19 +985,21 @@ export async function syncLaunchModeToRegistry(opts: {
       '../../../agent-tools/coordination/control-anchor'
     );
     const launchMode: LaunchMode | null = namedMode
-      ? normalizeLaunchMode({
+      ? normalizeBootstrapLaunchMode({
           mode: namedMode,
           subject: opts.subject,
           instructions: opts.instructions,
           ownerDirected: opts.ownerDirected,
-        })
+        }, opts.fleet)
       : null;
+    const memberDrain = namedMode === 'drain' && opts.fleet?.role === 'member';
+    let namedModeCommitted = false;
     for (const modeId of [...(opts.autoMode ? ['auto'] : []), ...(namedMode ? [namedMode] : [])]) {
       const namedFields =
-        modeId === namedMode && (opts.subject !== undefined || opts.ownerDirected !== undefined)
+        modeId === namedMode && (opts.subject !== undefined || opts.ownerDirected !== undefined || memberDrain)
           ? {
               ...(opts.subject !== undefined ? { subject: launchMode?.subject ?? null } : {}),
-              ...(opts.ownerDirected !== undefined ? { ownerDirected: launchMode?.ownerDirected === true } : {}),
+              ...(opts.ownerDirected !== undefined || memberDrain ? { ownerDirected: launchMode?.ownerDirected === true } : {}),
             }
           : {};
       const res = await setMode({
@@ -985,13 +1016,14 @@ export async function syncLaunchModeToRegistry(opts: {
         // which just means a peer/earlier launch already armed it more strongly)
         return res.error ?? `setMode('${modeId}') failed`;
       }
+      if (modeId === namedMode) namedModeCommitted = res.ok;
     }
     // D-002: when a launch carries the parent's bounded standing instruction,
     // assert that exact body under the canonical mode key. Do not render it a
     // second time: callers read the already-rendered fact from the parent, and
     // duplicating the prefix would alter the operative instruction on every
     // resumption. A supplied empty value deliberately retracts stale scope.
-    if (namedMode && opts.instructions !== undefined) {
+    if (namedMode && namedModeCommitted && (opts.instructions !== undefined || memberDrain)) {
       const { assertFact, retractFact } = await import('../../../agent-facts/store');
       const { modeInstructionsFactKey } = await import('../../../agent-tools/mode/set');
       const key = modeInstructionsFactKey(namedMode);
@@ -1067,39 +1099,6 @@ async function awaitGoalBootstrapModes(workspaceId: string, ownerId: string, sub
   return `GOAL subject ${subject} was not attached to ${ownerId} within 20 seconds`;
 }
 
-/**
- * fleet-auto-mode (WI-1356): the durable AUTO-mode activation a fleet/auto launch
- * bakes into the session — a fleet member has no human at its keyboard, so it must
- * start in the persona's "act, don't ask, loop until done" standing state. Injected
- * into the assembled system prompt (survives compaction) AND prepended to the seeded
- * turn-1 kickoff (so turn 1 enters AUTO). Shared so the two copies never drift.
- */
-export const AUTO_MODE_DIRECTIVE =
-  'AUTO mode is ON for this session — act on your judgment, do not stop to ask, ' +
-  'loop continuously until the work is done. You are a fleet member with no human at your ' +
-  'keyboard, so to persist across turns instead of PARKING after turn 1 you MUST ARM A ' +
-  'SELF-SUSTAINING LOOP: call loop:arm { intervalSec, goal } toward your assigned work; each ' +
-  'wake self-assign + advance a work_item; loop:end ONLY when the goal is done or you are ' +
-  "blocked. (The persona's AUTO-mode section governs; the narrow irreversible-high-stakes " +
-  'brakes still apply.)';
-
-/**
- * kickoff-prompt-absorption-2026-07-17 P-004: the AUTO activation for a member
- * whose engine loop the server ALREADY armed at boot (P-001's
- * `autoArmFleetMemberLoop`). The "MUST ARM A SELF-SUSTAINING LOOP" compliance
- * clause is replaced by its landed absorber — persistence is now a structural
- * boot-time effect — leaving the one-line "already armed" notice P-004
- * specifies. Everything else (act-don't-ask posture, per-wake work contract,
- * loop:end exit, the persona pointer) is unchanged from AUTO_MODE_DIRECTIVE.
- */
-export const AUTO_MODE_DIRECTIVE_LOOP_ARMED =
-  'AUTO mode is ON for this session — act on your judgment, do not stop to ask, ' +
-  'loop continuously until the work is done. You are a fleet member with no human at your ' +
-  'keyboard; your self-sustaining engine loop is ALREADY ARMED server-side, so each wake ' +
-  're-invokes you: self-assign + advance a work_item every wake (loop:status inspects it; ' +
-  'loop:end + loop:arm retunes it; loop:end ONLY when the goal is done or you are blocked). ' +
-  "(The persona's AUTO-mode section governs; the narrow irreversible-high-stakes brakes " +
-  'still apply.)';
 
 /**
  * WI-10004449: the AUTO activation for a fleet LEADER. The member directive above
@@ -1132,39 +1131,6 @@ export function leaderPlanKickoff(planSlug: string, harnessSlug?: string | null,
   );
 }
 
-/** The AUTO activation a launch bakes/prepends, picked by whether P-001's
- *  server-side auto-arm actually took (never assume — a leader, an unplanned
- *  member, a disabled flag, or an arm error all fall back to the full
- *  self-arm instruction). */
-export function autoModeDirective(loopAutoArmed: boolean): string {
-  return loopAutoArmed ? AUTO_MODE_DIRECTIVE_LOOP_ARMED : AUTO_MODE_DIRECTIVE;
-}
-
-/**
- * drain-mode-2026-07-03 (P-003): the durable DRAIN-mode activation a `--mode=drain`
- * launch bakes into the session — the owner's "drain the work queue to terminal"
- * standing state. DRAIN IMPLIES AUTO (the server forces autoMode on), so this
- * directive REPLACES the plain AUTO one (never both) — it carries the act-don't-ask
- * posture itself plus the drain mission loop. Injected into the assembled system
- * prompt (survives compaction) AND prepended to the seeded turn-1 kickoff, same
- * dual delivery as AUTO_MODE_DIRECTIVE. The full operating clause lives in the
- * persona (operating-modes-policy.ts renderModesPolicy, 'full' tier § DRAIN mode);
- * this is the activation + a faithful compression of its 6-step loop.
- */
-export const DRAIN_MODE_DIRECTIVE =
-  'DRAIN mode is ON for this session — DRAIN implies AUTO mode ON: act on your judgment, do ' +
-  'not stop to ask. Your mission is to drain the target work queue to TERMINAL, per the ' +
-  "persona's DRAIN-mode section (which governs): (1) TRIAGE + RANK the queue first — the " +
-  'ranking IS the batch plan, no hand-built batches; (2) CAPACITY PREFLIGHT before any fleet ' +
-  'launch (accounts:status + gateway headroom); (3) CANARY-FIRST bring-up — take fleet ' +
-  'leadership as your FIRST act, verify member first-turns via tool_invocations (join ≠ ' +
-  'liveness), then loop:arm; (4) FEED BY CLAIM-SPEC (scheduler:set_claim_spec revision bumps ' +
-  '+ member scheduler:get_next — never id-pins or hand-assignment); (5) run the lean LEADER ' +
-  'LOOP each wake (burn-down delta, member liveness, completion-integrity spot-audits, ' +
-  'orphan/stall reclaim, blocked triage); (6) WIND DOWN with loop:end + a final residue ' +
-  'report when only owner-gated/live-dep residue remains. NOT licensed: skipping ' +
-  'spawn-announcements (account + model), force-deploying past a red gate, or trading ' +
-  'completion integrity for speed.';
 
 /**
  * WI-1962: the turn-1 kickoff for a MISSION-BRIEF launch (`--launch-context` with
@@ -1288,47 +1254,6 @@ export function buildLaunchProvenanceFactBody(opts: {
   );
 }
 
-/**
- * context-trimming-tiers P-007: the context-discipline line a fleet launch bakes
- * next to the AUTO directive — durable system prompt (survives compaction) +
- * turn-1 kickoff, same dual delivery. Six 200k-window members died mid-task on
- * 2026-07-01 ("Prompt is too long") because nothing told them to act on the
- * `context: N/LIMIT (X%)` signal the coord inbox injects (agent-managed-compaction
- * P-007) once the compliance watchdog seeds their limit.
- */
-export const CONTEXT_DISCIPLINE_DIRECTIVE =
-  'CONTEXT DISCIPLINE: your coord inbox injects a `context: N/LIMIT (X%)` usage line once ' +
-  'your session carries a compaction limit. HONOR it — past ~80%, finish the current unit of ' +
-  'work, write durable state (plan `## Now` / work_items:checkpoint), then call ' +
-  'session:request-compaction at that clean stopping point. Do NOT run to the hard window: ' +
-  '"Prompt is too long" kills the session mid-task and loses your in-flight work. On a ' +
-  'trimmed session, tool payloads are already tier-shaped; pass payloadTier:"full" on a call ' +
-  'only when you genuinely need the unshaped result.';
-
-/**
- * The AUTO/DRAIN section a launch appends to the assembled system prompt — '' when
- * the session is neither. Shared with the carry-respawn persona refresh
- * (stale-prompt-render-in-live-sessions-2026-08-02 P-002) so a re-rendered prompt
- * carries byte-identical mode prose; it lives HERE, next to the directives it
- * composes and the kickoff that shares them, rather than in `su-persona-render`.
- *
- * drain-mode P-003: the DRAIN section REPLACES the plain AUTO one — the DRAIN
- * directive carries the act-don't-ask posture itself (DRAIN implies AUTO), so
- * baking both would just double-print the activation.
- */
-export function composeModePromptSection(opts: {
-  autoMode: boolean;
-  drainMode: boolean;
-  loopArmed: boolean;
-}): string {
-  if (opts.drainMode) {
-    return `---\n## DRAIN mode\n\n${DRAIN_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
-  }
-  if (opts.autoMode) {
-    return `---\n## AUTO mode\n\n${autoModeDirective(opts.loopArmed)}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
-  }
-  return '';
-}
 
 /**
  * launch-path-argv-reconstruction (WI-1343): normalize a caller-supplied
@@ -1342,6 +1267,20 @@ export function normalizeLaunchArgv(v: unknown): string[] | null {
   if (!Array.isArray(v)) return null;
   const out = v.filter((x): x is string => typeof x === 'string').map((x) => x.slice(0, 2000));
   return out.length ? out.slice(0, 128) : null;
+}
+
+/** Read the requested soft context ceiling from the same psu argv persisted for replay. */
+export function codexCompactionLimitFromLaunchArgv(argv: unknown): number | null {
+  return parseLaunchCompactionLimitArgv(argv);
+}
+
+/** A SAME-owner successor retains later budget changes, even without a launch flag. */
+export async function codexCompactionLimitForBootstrap(ownerId: string, argv: unknown): Promise<number | null> {
+  const { getPresence } = await import('../../../agent-tools/coordination/presence');
+  const current = (await getPresence(ownerId))?.compactionLimit;
+  return typeof current === 'number' && Number.isFinite(current) && current > 0
+    ? Math.floor(current)
+    : codexCompactionLimitFromLaunchArgv(argv);
 }
 
 /**
@@ -1410,7 +1349,8 @@ const brainGet = defineTool({
  *                                    [{ id, name }], harnesses: [{ slug, path, status }] }
  *   - ?workspace=<id>            → harnesses for that workspace
  *   - ?workspace=<id>&harness=<slug> → { plans: [{ slug }] } (non-archived)
- * `workspace` defaults to the active workspace when omitted.
+ * `workspace` defaults to the active workspace when omitted. `include` selects
+ * comma-separated sections; omitted retains the full response for older clients.
  */
 const optionsGet = defineTool({
   method: 'GET',
@@ -1500,20 +1440,34 @@ const optionsGet = defineTool({
       }
     }
 
-    const { listHarnessesFor } = await import('../../../device-harnesses');
-    const harnesses = (await listHarnessesFor(workspace)).map((h) => ({
-      slug: h.slug,
-      path: h.path,
-      status: h.status,
-    }));
-    const workspaces = readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name }));
+    // Each terminal menu used to re-read ALL sections, serially, including an
+    // OMP subprocess and account/fleet stores it did not need. Keep the existing
+    // endpoint and full-response default, but allow independent picker reads.
+    const include = url.searchParams.get('include');
+    const sections = include === null ? null : new Set(include.split(',').map((s) => s.trim()));
+    const supported = ['workspaces', 'harnesses', 'roles', 'accounts', 'ompCatalog', 'fleets'];
+    if (sections && [...sections].some((section) => !supported.includes(section)))
+      return jsonRes({ status: 'error', error: 'unknown launch-options section' }, 400);
+    const want = (section: string) => sections === null || sections.has(section);
+    let harnesses;
+    if (want('harnesses')) {
+      const { listHarnessesFor } = await import('../../../device-harnesses');
+      harnesses = (await listHarnessesFor(workspace)).map((h) => ({
+        slug: h.slug, path: h.path, status: h.status,
+      }));
+    }
+    const workspaces = want('workspaces')
+      ? readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name })) : undefined;
     // Roles + their consumes (feature/plan needs) for the psu --role picker.
-    const { getKnownRoles } = await import('../../../known-roles');
-    const { roleConsumes } = await import('../../../role-registry');
-    const roles = getKnownRoles().map((id) => ({ id, consumes: roleConsumes(id, harness ?? '') }));
+    let roles;
+    if (want('roles')) {
+      const { getKnownRoles } = await import('../../../known-roles');
+      const { roleConsumes } = await import('../../../role-registry');
+      roles = getKnownRoles().map((id) => ({ id, consumes: roleConsumes(id, harness ?? '') }));
+    }
     // psu-account-chooser P-005: pool accounts the interactive picker offers (empty +
     // hidden unless the gateway is on — see resolveAccountChoices).
-    const accounts = await resolveAccountChoices(workspace, accountAgent);
+    const accounts = want('accounts') ? await resolveAccountChoices(workspace, accountAgent) : undefined;
     // D-001: OMP remains the source of truth. A catalog read failure must not
     // take down the rest of the launch picker, but it must remain observable —
     // an empty successful catalog and an unavailable catalog are different.
@@ -1534,8 +1488,9 @@ const optionsGet = defineTool({
           upstream: 'unchecked';
           models: [];
           error: string;
-        };
-    try {
+        }
+      | undefined;
+    if (want('ompCatalog')) try {
       const { models } = await readOmpModelCatalog();
       ompCatalog = {
         status: 'available',
@@ -1569,7 +1524,7 @@ const optionsGet = defineTool({
     // The full curated catalog (name + colours) so the psu picker can offer a
     // scheme SELECTOR with per-row swatches when creating a new fleet.
     let schemes: SchemeColor[] = [];
-    try {
+    if (want('fleets')) try {
       const { listFleets, resolveFleetScheme } = await import('../../../agent-fleets-store');
       const { COLOR_SCHEMES, allocateNextSchemeName, schemeByName } = await import('../../../console-color-schemes');
       schemes = COLOR_SCHEMES.map((s) => ({ name: s.name, bg: s.bg, fg: s.fg, cursor: s.cursor }));
@@ -1591,14 +1546,12 @@ const optionsGet = defineTool({
       status: 'ok',
       activeWorkspace: activeWorkspaceId(),
       workspace,
-      workspaces,
-      harnesses,
-      roles,
-      accounts,
-      ompCatalog,
-      fleets,
-      nextScheme,
-      schemes,
+      ...(want('workspaces') ? { workspaces } : {}),
+      ...(want('harnesses') ? { harnesses } : {}),
+      ...(want('roles') ? { roles } : {}),
+      ...(want('accounts') ? { accounts } : {}),
+      ...(want('ompCatalog') ? { ompCatalog } : {}),
+      ...(want('fleets') ? { fleets, nextScheme, schemes } : {}),
     });
   },
 });
@@ -1976,9 +1929,19 @@ export const bootstrapSu = defineTool({
     try {
       identityModelDefault = await resolveLaunchIdentityModelDefault({
         cwd, harnessSlug, role: suRoleRaw ?? 'su', stack: body.stack,
+        impliedStack: 'su-static',
       });
     } catch (error: any) {
-      return jsonRes({ status: 'error', code: 'identity_model_default_denied', error: error?.message ?? String(error) }, 400);
+      return jsonRes({ status: 'error', code: 'identity_model_default_denied', error: error?.message ?? String(error),
+        refusal: {
+          observed: { harness: harnessSlug, role: suRoleRaw ?? 'su', stack: Array.isArray(body.stack) ? body.stack.join(',') : null },
+          liftsWhen:
+            'the selected launch identity stack resolves against this launch\'s blueprint source: every ' +
+            'stack ref (and a `composition:` root) exists and loads, so its model default can be read ' +
+            '(`error` names the failing ref). Retrying the identical request cannot lift it: correct the ' +
+            'stack ref or repair the identity definition',
+          whoCanMakeItTrue: ['self', 'owner'],
+        } }, 400);
     }
     const suppliedModel = body.model?.trim() || null;
     const requestedModel = body.model_source === 'configured-default' ? null : suppliedModel;
@@ -2002,7 +1965,11 @@ export const bootstrapSu = defineTool({
     // (best-effort — buildLaunchSpec composes the addendum from these). Lives in
     // su-persona-render so the carry-respawn refresh resolves plan context through
     // the SAME code, including the WI-1442 liveness decoration of su-* mentions.
+    // The launcher persisted the pinned session's policy before spawning. Load
+    // the durable resolver in this serving process before any native prompt read.
+    await import('../../../capability-envelope/session-confinement-store');
     const { planNow, planTitle } = await resolveSuPlanContext({
+      ownerId: body.owner_id?.trim() || null,
       planSlug,
       harnessSlug,
       workspaceId: workspace,
@@ -2034,6 +2001,7 @@ export const bootstrapSu = defineTool({
     try {
       spec = await buildLaunchSpec({
         kind: 'su',
+        ownerId: body.owner_id?.trim() || null,
         agent,
         workspaceId: workspace,
         operatorBaseUrl: launchMcpBaseUrl,
@@ -2071,6 +2039,7 @@ export const bootstrapSu = defineTool({
       row: import('../../../session-port/store').SessionPortRow;
       seed: string;
       requestHash: string;
+      targetOwnerId: string;
     } | null = null;
     const portToken = body.session_port_token?.trim() || null;
     const portProtocol = body.session_port_protocol;
@@ -2150,14 +2119,20 @@ export const bootstrapSu = defineTool({
       }
       const sourceCoordOwnerId =
         typeof row.metadata.sourceCoordOwnerId === 'string' ? row.metadata.sourceCoordOwnerId.trim() : '';
+      let targetOwnerId: string;
+      try {
+        targetOwnerId = service.resolveSessionPortTargetOwner(sourceCoordOwnerId, summary?.target?.ownerId);
+      } catch (error) {
+        return jsonRes({ status: 'error', error: error instanceof Error ? error.message : String(error) }, 409);
+      }
       const requestedOwnerId = body.owner_id?.trim() || '';
-      if (!sourceCoordOwnerId || requestedOwnerId !== sourceCoordOwnerId) {
+      if (requestedOwnerId !== targetOwnerId) {
         return jsonRes(
           {
             status: 'error',
-            error: sourceCoordOwnerId
-              ? `session port must continue source coordination identity ${sourceCoordOwnerId}; got ${requestedOwnerId || 'none'}`
-              : 'prepared session port is missing its source coordination identity; inspect again with the current launcher/operator',
+            error: summary?.target?.ownerId === undefined
+              ? `session port must continue source coordination identity ${targetOwnerId}; got ${requestedOwnerId || 'none'}`
+              : `session port must use prepared isolated target owner ${targetOwnerId}; got ${requestedOwnerId || 'none'}`,
           },
           409,
         );
@@ -2167,10 +2142,10 @@ export const bootstrapSu = defineTool({
         logicalRequestHash: row.idempotencyKey,
         workspaceId: workspace,
         sourceAdvSessionId: row.sourceAdvSessionId,
-        ownerId: sourceCoordOwnerId,
+        ownerId: targetOwnerId,
         target: {
           ...summary.target,
-          backend: row.targetBackend === 'omp' ? 'omp' : 'codex',
+          backend: row.targetBackend,
         },
         cwd,
         planSlug,
@@ -2237,7 +2212,7 @@ export const bootstrapSu = defineTool({
           error: `prepared session port no longer fits the target launch budget (${estimatedTokens} > ${previewBudget.availableInputTokens}); inspect again`,
         }, 409);
       }
-      sessionPortContext = { row, seed, requestHash };
+      sessionPortContext = { row, seed, requestHash, targetOwnerId };
     }
 
     // WI-41363: claim before the first session/fleet/account write. A replay
@@ -2247,6 +2222,8 @@ export const bootstrapSu = defineTool({
     // durable idempotency surface for every launch path.
     let bootstrapClaimWon = false;
     let bootstrapCompleted = false;
+    let pendingCarryRespawnForBootstrap: PendingCarryRespawn | null = null;
+    let pendingCarryRespawnOwnerId: string | null = null;
     // EI-21365235532676472 recurrence: the bootstrap route records/adopts its
     // adv_sessions row BEFORE several later fallible artifact/presence writes.
     // If one of those throws, a same-key client replay is safe only after that
@@ -2296,17 +2273,11 @@ export const bootstrapSu = defineTool({
     let adoptableStartingRowId: number | null = null;
     const requestedSid = body.owner_id?.trim() || null;
     if (sessionPortContext) {
-        const sourceCoordOwnerId =
-          typeof sessionPortContext.row.metadata.sourceCoordOwnerId === 'string'
-        ? sessionPortContext.row.metadata.sourceCoordOwnerId.trim()
-        : '';
-      if (!sourceCoordOwnerId || requestedSid !== sourceCoordOwnerId) {
+      if (requestedSid !== sessionPortContext.targetOwnerId) {
         return jsonRes(
           {
             status: 'error',
-            error: sourceCoordOwnerId
-              ? `session port must continue source coordination identity ${sourceCoordOwnerId}; got ${requestedSid ?? 'none'}`
-              : 'prepared session port is missing its source coordination identity; inspect again with the current launcher/operator',
+            error: `session port must use its prepared target coordination identity ${sessionPortContext.targetOwnerId}; got ${requestedSid ?? 'none'}`,
           },
           409,
         );
@@ -2322,7 +2293,6 @@ export const bootstrapSu = defineTool({
           400,
         );
       }
-      const { sql } = getOrgPg();
       // EI-21417550055038906: a teardown that died mid-write leaves a HALF-TERMINAL
       // tuple (ended_by recorded, ended_at NULL). The freshness query below filters
       // only `ended_at IS NULL`, so that ghost read as a live binding and 409'd the
@@ -2330,14 +2300,10 @@ export const bootstrapSu = defineTool({
       // ended_at NULL). Stamp the missing timestamp first — the repair is narrow +
       // idempotent (fills only the missing ended_at, never overwrites a terminal
       // tuple), so a repaired ghost simply drops out of the query.
-      await repairStaleAdvSessionTerminalMarkers(requestedSid);
-        const live = await sql<Array<{ id: string; display: string | null; has_session: boolean; launched: boolean }>>`
-        SELECT id::text, display, (session_id IS NOT NULL) AS has_session,
-               (launched_at IS NOT NULL) AS launched
-          FROM harness_shared.adv_sessions
-         WHERE coord_owner_id = ${requestedSid} AND ended_at IS NULL
-         ORDER BY id DESC
-      `;
+      // That repair, the un-ended-row read and the oracle verdict below are
+      // ONE shared read (readPrePinnedOwnerBindings) — the session-port inspect
+      // route runs the same read to refuse a live-source cross-backend resume
+      // before preparation (consult-backed-parking-2026-10-12#P-010).
       // WI-37743: "fresh" must mean "not already RUNNING as someone else", not
       // "has no row at all". The spawner that pre-pinned this id also writes a
       // `display='terminal'` STARTING row for it (WI-6376) so the board can render
@@ -2364,16 +2330,10 @@ export const bootstrapSu = defineTool({
       // this route starts one pre-pinned owner at a time. The read is fail-soft:
       // an oracle failure is indistinguishable from an unknown verdict here and
       // must keep the binding blocking, never authorise a reclaim.
-        const oracleSessionState = await resolveSessionStates([{ ownerId: requestedSid }], { hydratePerId: true })
-        .then((verdicts) => verdicts.get(requestedSid)?.sessionState)
-        .catch(() => undefined);
       // Only the oracle's confirmed terminal states may reclaim. In particular,
       // recorded/live/unknown (and every other non-terminal state) remain a
       // blocking conflict; missing oracle evidence is not proof of death.
-      const liveness = mapPrePinnedOwnerSessionState(oracleSessionState);
-      const { precursors, reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows(
-        live.map((row) => ({ ...row, liveness })),
-      );
+      const { precursors, reclaimableConflicts, conflicts } = await readPrePinnedOwnerBindings(requestedSid);
       if (conflicts.length > 0) {
         // Carry WHY each live row failed the precursor test. This refusal is
         // launch-blocking and reaches the owner (psu prints it; since WI-37841 it
@@ -2413,6 +2373,10 @@ export const bootstrapSu = defineTool({
     // the false "not started by psu" path). omp's native handle is the
     // omp_thread_id (linked post-launch); codex resumes via its per-session
     // CODEX_HOME and can't have its rollout id forced — so both stay null.
+    // A fresh bootstrap is the durable fallback when the host cannot reuse the
+    // existing PTY incarnation. Consume only after the caller's owner id has
+    // passed stable-identity and liveness checks; a minted launch or prepared
+    // session-port transfer must not take another launch's carry.
     const nativeSessionId = backendFeatureGuard(agent, 'forced-native-session-id').supported ? randomUUID() : null;
 
     // launch-path-argv-reconstruction (WI-1343): the exact `psu …` invocation that
@@ -2677,12 +2641,12 @@ export const bootstrapSu = defineTool({
     // shared core is the single bound for subject/instructions, so a direct
     // loopback POST cannot smuggle an unbounded scope into a child session.
     const launchMode = modeRaw
-      ? normalizeLaunchMode({
+      ? normalizeBootstrapLaunchMode({
           mode: modeRaw,
           subject: body.mode_subject,
           instructions: body.mode_instructions,
           ownerDirected: body.mode_owner_directed === true,
-        })
+        }, fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null)
       : null;
 
     // EI-11110 / WI-5976: keep the mode REGISTRY in sync with the AUTO/DRAIN prose
@@ -2695,6 +2659,7 @@ export const bootstrapSu = defineTool({
       autoMode,
       drainMode,
       namedMode: launchMode?.mode ?? null,
+      fleet: fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null,
       ...(launchMode?.subject !== null && launchMode?.subject !== undefined
         ? { subject: launchMode.subject }
         : body.mode_subject !== undefined
@@ -2848,11 +2813,41 @@ export const bootstrapSu = defineTool({
     // agent-launched. Fail-soft: a write hiccup just reverts to the pre-fix inherited
     // default, never blocks the launch (a coordination-quality write, not a
     // correctness gate — unlike the WI-1893 membership stamp above).
+    let wakeModeTools: typeof import('../../../agent-tools/coordination/wake-mode') | null = null;
     try {
-      const { ensureLaunchedWakeAuto } = await import('../../../agent-tools/coordination/wake-mode');
+      wakeModeTools = await import('../../../agent-tools/coordination/wake-mode');
+      const { ensureLaunchedWakeAuto } = wakeModeTools;
       await ensureLaunchedWakeAuto(sid, { fleetRole: fleetPin.fleetRole, launchedByAgent: !!launchedBy });
     } catch {
       /* degrade to the inherited default; non-fatal */
+    }
+    if (requestedSid != null && !sessionPortContext) {
+      if (!wakeModeTools) {
+        return jsonRes({ status: 'error', error: 'wake_mode_unavailable' }, 503);
+      }
+      let wakeMode: 'auto' | 'manual';
+      try {
+        wakeMode = await wakeModeTools.resolveWakeMode(sid);
+      } catch (error) {
+        return jsonRes({
+          status: 'error',
+          error: 'wake_mode_unavailable',
+          detail: error instanceof Error ? error.message : String(error),
+        }, 503);
+      }
+      if (wakeMode !== 'manual') {
+        pendingCarryRespawnOwnerId = sid;
+        try {
+          pendingCarryRespawnForBootstrap = await consumePendingCarryRespawn(sid);
+        } catch (error) {
+          return jsonRes({
+            status: 'error',
+            error: 'pending_carry_respawn_unavailable',
+            detail: error instanceof Error ? error.message : String(error),
+          }, 503);
+        }
+        if (!pendingCarryRespawnForBootstrap) pendingCarryRespawnOwnerId = null;
+      }
     }
 
     // kickoff-prompt-absorption-2026-07-17 P-001: auto-arm a plan-bound fleet
@@ -2922,6 +2917,12 @@ export const bootstrapSu = defineTool({
     });
     let promptText = overlaid.promptText;
     let instructionLint = overlaid.instructionLint;
+    if (pendingCarryRespawnForBootstrap) {
+      // Append the saved system carry after normal launch overlays, then audit
+      // those final bytes and include them in the immutable launch artifact.
+      promptText += '\n\n' + pendingCarryRespawnForBootstrap.systemPromptAddendum;
+      instructionLint = lintInstructionText(promptText, 20, instructionRuntime);
+    }
     if (
       instructionLint.conflicts.length > 0 ||
       instructionLint.staleRules.length > 0 ||
@@ -2963,6 +2964,8 @@ export const bootstrapSu = defineTool({
         harnessSlug,
         role: suRoleRaw ?? 'su',
         stack: spec.stack,
+        // WI-10004747: the persona always composes the su static layers; record them.
+        impliedStack: 'su-static',
         expectedModelDefault: identityModelDefault,
         compositionRootId: body.stack?.length === 1 && body.stack[0]?.startsWith('composition:')
           ? body.stack[0].slice('composition:'.length) : null,
@@ -3013,17 +3016,23 @@ export const bootstrapSu = defineTool({
     // a raw launch — no per-launch .mcp.json needed for su).
     let promptFile = '';
     let codexHome: string | null = null;
+    let codexCompactionLimit: number | null = null;
+    const ambientContextAllowed = await sessionAllowsAmbientContext({ ownerId: sid, workspaceId: workspace });
     try {
       if (agent === 'codex') {
+        codexCompactionLimit = await codexCompactionLimitForBootstrap(sid, launchArgv);
         // D-006: the superuser bearer is baked into the home's config.toml
         // (codex 0.135's bearer_token_env_var doesn't deliver for HTTP MCP).
         // Read it server-side — it never transits the bootstrap HTTP response.
-        const ch = writeSuCodexHome({
+        const ch = await writeSuCodexHomeAsync({
+          ...(ambientContextAllowed ? {} : { denyAmbientContext: true as const }),
           sessionKey,
           mcpUrl: spec.mcpUrl,
           promptText,
           sid,
           model,
+          // Current registered budget wins over stale or absent launch argv.
+          compactionLimit: codexCompactionLimit,
           token: readSuperuserToken(),
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
           // WI-3645: explicit-auto → the UNPINNED gateway provider block (header omitted;
@@ -3035,13 +3044,7 @@ export const bootstrapSu = defineTool({
           // "Do you trust this directory?" boot prompt (an su launch is trusted).
           trustDir: cwd,
           instructionRuntime,
-          // EI-11366: refuse to silently destroy a DIFFERENT sid's still-live
-          // Codex home (the identity-split incident this bug reported) —
-          // findLiveHost is the same self-validating (pid-alive + socket-exists
-          // + cmdline-verified) liveness oracle the wake-executor injects
-          // through, so "live" here means a real running psu-pty host, not
-          // just a DB row.
-          isOwnerLive: (priorSid: string) => findLiveHost(priorSid) != null,
+          isOwnerLive: async (priorSid) => (await findLiveHostAsync(priorSid)) != null,
         });
         codexHome = ch.codexHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics
@@ -3075,7 +3078,10 @@ export const bootstrapSu = defineTool({
     // Codex needs them in its ephemeral home; claude/omp read .claude/commands.
     // Best-effort — never block a launch.
     try {
-      if (agent === 'codex' && codexHome) {
+      // Native homes are readable inside the scoped sandbox. Copying saved
+      // workspace prompts or the full slash catalog here would reintroduce
+      // live context after the frozen persona builder has suppressed it.
+      if (ambientContextAllowed && agent === 'codex' && codexHome) {
         await materializeCodexPrompts(codexHome, workspace, harnessSlug);
         // Slash exposure (slash-exposure-tool-catalog-2026-06-12 P-009):
         // Codex doesn't surface MCP prompts as slash commands, so the
@@ -3085,7 +3091,7 @@ export const bootstrapSu = defineTool({
         process.stderr.write(
           `[bootstrap-su] slash tool prompts: ${r.written} written, ${r.pruned} pruned in ${Math.round(r.ms)}ms\n`,
         );
-      } else {
+      } else if (ambientContextAllowed) {
         await materializeWorkspacePrompts(workspace);
         if (harnessSlug) await materializeHarnessPrompts(workspace, harnessSlug);
       }
@@ -3112,7 +3118,7 @@ export const bootstrapSu = defineTool({
       try {
         // P-020: a fleet-tier member gets the pruned plugin/MCP surface
         // (github/cloudflare/firecrawl plugins + the playwright mcpServer dropped).
-        claudeConfigDir = writeInteractiveClaudeConfig({
+        claudeConfigDir = (await writeInteractiveClaudeConfig({
           sid,
           prunePlugins: spec.personaTier === 'fleet',
           // WI-3280: park the playbook so the SessionStart recovery hook can
@@ -3123,7 +3129,7 @@ export const bootstrapSu = defineTool({
           // fleet member) can't wedge forever on an external-CLAUDE.md-
           // imports / trust-dialog TTY prompt nobody is there to answer.
           cwd,
-        }).configDir;
+        })).configDir;
       } catch (e: any) {
         process.stderr.write(`[bootstrap-su] claude config-dir materialize failed (non-fatal): ${e?.message}\n`);
       }
@@ -3225,16 +3231,20 @@ export const bootstrapSu = defineTool({
     // fleet-launched member is visible to hive-scoped coord:presence before its
     // first agent turn/orient call. The session row exists on both ordinary and
     // port paths at this point, so this cannot create a launch ghost.
-    if (harnessSlug) {
+    // WI-10006674: a harness-less session is stamped too (create-if-absent — see
+    // stampPresenceAtBoot); gating this on harnessSlug left every `--fork` and
+    // workspace-level session invisible until its first turn, and forever when that
+    // turn never comes.
+    {
       const presenceStampErr = await stampPresenceAtBoot({
         workspaceId: workspace,
         ownerId: sid,
         ownerLabel: body.label?.trim() || null,
-        harnessSlug,
+        harnessSlug: harnessSlug || null,
       });
       if (presenceStampErr) {
         process.stderr.write(
-          `[bootstrap-su] presence pot-scope stamp failed (non-fatal; first coord:orient can repair it): ${presenceStampErr}\n`,
+          `[bootstrap-su] presence stamp failed (non-fatal; first coord:orient can repair it): ${presenceStampErr}\n`,
         );
       }
     }
@@ -3361,9 +3371,11 @@ export const bootstrapSu = defineTool({
     // --no-kickoff); the server supplies the canonical text (deriveKickoffPrompt,
     // pure + tested) — shared with plans:launch's headless kickoff via
     // ./launch-prompt, so the two never drift.
-    const kickoffPrompt = sessionPortContext
-      ? null
-      : deriveKickoffPrompt({
+    const kickoffPrompt = pendingCarryRespawnForBootstrap
+      ? pendingCarryRespawnForBootstrap.firstPrompt
+      : sessionPortContext
+        ? null
+        : deriveKickoffPrompt({
           planSlug,
           harnessSlug,
           autoMode,
@@ -3395,6 +3407,7 @@ export const bootstrapSu = defineTool({
       stateRevision: launchArtifact.stateRevision,
       compositionSource: launchArtifact.compositionSource,
       codexHome,
+      compactionLimit: codexCompactionLimit,
       coordExtPath,
       envelopeEnv,
       accountNotice: accountPin.notice,
@@ -3439,6 +3452,21 @@ export const bootstrapSu = defineTool({
     incompleteBootstrapSessionId = null;
     return jsonRes(result);
     } finally {
+      if (pendingCarryRespawnForBootstrap && pendingCarryRespawnOwnerId && !bootstrapCompleted) {
+        try {
+          await restorePendingCarryRespawn(
+            pendingCarryRespawnOwnerId,
+            workspace,
+            pendingCarryRespawnForBootstrap,
+          );
+        } catch (error) {
+          process.stderr.write(
+            '[bootstrap-su] pending carry-respawn restore failed for ' +
+              pendingCarryRespawnForBootstrap.nonce + ': ' +
+              (error instanceof Error ? error.message : String(error)) + '\n',
+          );
+        }
+      }
       // A validation/storage exception after winning the claim must not strand
       // an empty replay row. EI-21365235532676472 recurrence: when the exception
       // happened AFTER recordAdvSession, releasing the claim first let the
@@ -3804,12 +3832,18 @@ const sessionResumed = defineTool({
     let advSessionId: number | null = null;
     let resumeClaimKey: string | null = null;
     let localLivenessEvidence: unknown = undefined;
+    let allowRetired = false;
     try {
       const body = (await req.json()) as {
         advSessionId?: unknown;
         resumeClaimKey?: unknown;
         localLivenessEvidence?: unknown;
+        allowRetired?: unknown;
       };
+      if (body.allowRetired !== undefined && typeof body.allowRetired !== 'boolean') {
+        return jsonRes({ error: 'allowRetired must be boolean' }, 400);
+      }
+      allowRetired = body.allowRetired === true;
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
       }
@@ -3839,7 +3873,7 @@ const sessionResumed = defineTool({
     }
     try {
       if (resumeClaimKey) {
-        const reservation = localLivenessEvidence === undefined
+        const reservation = localLivenessEvidence === undefined && !allowRetired
           ? await acquireAdvSessionResume(advSessionId, resumeClaimKey)
           : await acquireAdvSessionResume(
             advSessionId,
@@ -3847,11 +3881,13 @@ const sessionResumed = defineTool({
             undefined,
             undefined,
             localLivenessEvidence,
+            allowRetired,
           );
         return jsonRes({ ok: true, ...reservation, reactivated: reservation.acquired });
       }
       const claimed = await claimAdvSessionResume(advSessionId, null);
-      return jsonRes({ ok: true, reactivated: claimed });
+      return jsonRes({ ok: true, reactivated: claimed === true,
+        ...(claimed === 'retired' ? { status: 'retired' } : {}) });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
     }
@@ -3860,16 +3896,22 @@ const sessionResumed = defineTool({
 
 async function parseResumeTransitionBody(
   req: Request,
-): Promise<{ advSessionId: number; resumeClaimKey: string; launchArgv?: string[] } | Response> {
+): Promise<{ advSessionId: number; resumeClaimKey: string; launchArgv?: string[]; allowRetired?: boolean } | Response> {
   let advSessionId: number | null = null;
   let resumeClaimKey: string | null = null;
   let launchArgv: string[] | undefined;
+  let allowRetired: boolean | undefined;
   try {
     const body = (await req.json()) as {
       advSessionId?: unknown;
       resumeClaimKey?: unknown;
       launchArgv?: unknown;
+      allowRetired?: unknown;
     };
+    if (body.allowRetired !== undefined && typeof body.allowRetired !== 'boolean') {
+      return jsonRes({ error: 'allowRetired must be boolean' }, 400);
+    }
+    if (body.allowRetired === true) allowRetired = true;
     if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
       advSessionId = body.advSessionId;
     }
@@ -3906,7 +3948,8 @@ async function parseResumeTransitionBody(
   if (!resumeClaimKey) {
     return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
   }
-  return { advSessionId, resumeClaimKey, ...(launchArgv ? { launchArgv } : {}) };
+  return { advSessionId, resumeClaimKey, ...(launchArgv ? { launchArgv } : {}),
+    ...(allowRetired ? { allowRetired } : {}) };
 }
 
 /** Finalize a keyed resume reservation from concrete child/host spawn evidence. */
@@ -3924,7 +3967,25 @@ const sessionResumeFinalized = defineTool({
         parsed.advSessionId,
         parsed.resumeClaimKey,
         parsed.launchArgv,
+        parsed.allowRetired,
       );
+      if (finalized) {
+        try {
+          const session = await getAdvSession(parsed.advSessionId);
+          if (session?.coordOwnerId) {
+            const { armInboxWake } = await import('../../../events/await/inbox-wake-arm');
+            await armInboxWake({ ownerId: session.coordOwnerId });
+          } else {
+            process.stderr.write(
+              `[bootstrap-su] resumed inbox-wake arm skipped: no coord owner for adv session ${parsed.advSessionId}\n`,
+            );
+          }
+        } catch (err) {
+          process.stderr.write(
+            `[bootstrap-su] resumed inbox-wake arm failed (non-fatal): ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+      }
       return jsonRes({ ok: true, finalized, resumeClaimKey: parsed.resumeClaimKey });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
@@ -4047,6 +4108,50 @@ const sessionRespawned = defineTool({
         const fallback = await reanchorAdvSessionNativeIdByOwner(coordOwnerId, sessionId);
         reanchored = fallback.reanchored;
         owner = fallback.owner ?? owner;
+      }
+      // The host confirms the native binding before sending a fresh Codex
+      // kickoff. An accepted worker also needs its launch-proven identity and
+      // model evidence sink ready at that boundary, before any provider call.
+      // Use the existing activation writer; a lifecycle receipt never widens
+      // grants or acknowledges delivery of a control update.
+      if (owner) {
+        const { readSuLaunchSpecByOwner } = await import('../../../adv-sessions');
+        const launch = await readSuLaunchSpecByOwner(owner) as {
+          acceptedOperation?: { kind?: string; modelPolicy?: unknown };
+        } | null;
+        if (launch?.acceptedOperation?.kind === 'blueprint-operation-worker') {
+          const workspaceId = activeWorkspaceId();
+          const {
+            preparePendingControlTransition, applyRelaunchedActivation,
+          } = await import('../../../agent-tools/coordination/control-anchor');
+          const pending = await preparePendingControlTransition(owner, workspaceId);
+          if (pending?.state.activation?.desired) {
+            await applyRelaunchedActivation(
+              owner, workspaceId, pending.generation, pending.state.activation.desired,
+            );
+          }
+          const { readActiveOperationWorkerClaimBinding, readActiveOperationModelPolicy } =
+            await import('../../../blueprint/operation-worker-binding');
+          const binding = await readActiveOperationWorkerClaimBinding(workspaceId, owner);
+          if (binding.status !== 'bound') {
+            return jsonRes({ ok: false, reanchored, error: 'accepted operation identity is not ready' }, 503);
+          }
+          if (launch.acceptedOperation.modelPolicy != null) {
+            const [native] = await getOrgPg().sql<Array<{ agent: string }>>`
+              SELECT agent FROM harness_shared.adv_sessions
+               WHERE id = ${binding.receipt.sessionId} AND workspace_id = ${workspaceId}
+                 AND coord_owner_id = ${owner} AND session_id = ${sessionId}
+                 AND ended_at IS NULL AND ended_by IS NULL
+            `;
+            if (native?.agent !== 'claude' && native?.agent !== 'codex') {
+              return jsonRes({ ok: false, reanchored, error: 'accepted operation native session is not ready' }, 503);
+            }
+            const policy = await readActiveOperationModelPolicy(workspaceId, owner, native.agent);
+            if (policy.status !== 'bound' || policy.attestation?.nativeSessionId !== sessionId) {
+              return jsonRes({ ok: false, reanchored, error: 'accepted operation attestation is not ready' }, 503);
+            }
+          }
+        }
       }
       if (owner) {
         await bindKnownAgentSessionTasks({

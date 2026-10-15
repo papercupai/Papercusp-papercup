@@ -62,6 +62,7 @@ import {
   FACT_PROVENANCE_QUOTE_CHARS,
   factCitationRef,
   isAssumptionFact,
+  WALL_KEY_PREFIX,
   type FactConfidence,
   type FactKind,
   type FactScope,
@@ -448,7 +449,9 @@ function assumptionFieldsOf(row: RawRow): Pick<ResolvedAssumption, 'kind' | 'con
 
 function conditionOfRow(r: RawRow): AssumptionCondition {
   if (r.retracted_at) return 'retracted';
-  if (r.expired) return 'lapsed';
+  if (r.superseded_at) return 'superseded';
+  // A wall TTL marks a review deadline; the unretracted blocker remains active.
+  if (r.expired && !r.key.startsWith(WALL_KEY_PREFIX)) return 'lapsed';
   return 'live';
 }
 

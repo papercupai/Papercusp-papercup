@@ -35,6 +35,7 @@ import {
   registerSidecarShutdownHooks as registerSharedSidecarShutdownHooks,
 } from '../../process-supervision/sidecar-spawn-shared';
 import { isBenignHostError } from '../../host-benign-errors';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 // EI-1612 (infra round-3/4): this package is ESM (type:module), where `__dirname`
 // is undefined. The previous `path.join(__dirname, …)` threw "__dirname is not
@@ -168,6 +169,7 @@ function scheduleRespawn(socketPath: string): void {
   respawnAttempts = pruneRespawnWindow(respawnAttempts, now, RESPAWN_WINDOW_MS);
   if (respawnBudgetExhausted(respawnAttempts, MAX_RESPAWN_ATTEMPTS)) {
     gaveUp = true;
+    observeFallback('substrate-sidecar-respawn', { eligible: 1, applied: 0, reason: 'budget-exhausted' });
     console.error(
       `[substrate-sidecar] ${MAX_RESPAWN_ATTEMPTS} crashes within ${Math.round(RESPAWN_WINDOW_MS / 1000)}s — giving up auto-respawn. ` +
         'Substrate stays on its in-process fallback (see substrate-boot-wrapper) until an explicit spawnSubstrateSidecar() call.',
@@ -183,12 +185,14 @@ function scheduleRespawn(socketPath: string): void {
     respawnTimer = null;
     spawnSubstrateSidecar(socketPath)
       .then(() => {
+        observeFallback('substrate-sidecar-respawn', { eligible: 1, applied: 1, reason: 'applied' });
         // WI-1877: the process is back, but the new instance knows about
         // ZERO harnesses — notify so the harness-level reconcile (owned by
         // boot-all.ts via substrate-boot-wrapper) re-registers each one.
         notifySidecarRespawned();
       })
       .catch((err) => {
+        observeFallback('substrate-sidecar-respawn', { eligible: 1, applied: 0, reason: 'respawn-failed' });
         console.error('[substrate-sidecar] auto-respawn failed:', err);
       });
   }, backoffMs);

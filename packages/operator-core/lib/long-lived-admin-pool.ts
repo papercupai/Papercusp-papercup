@@ -172,3 +172,11 @@ export function boundAdminPoolUrl(label: string): string | null {
 export function _resetLongLivedAdminPoolsForTests(): void {
   _pools.clear();
 }
+
+/** Test-only — end ONE label's pool and drop it from the registry; the next get rebuilds it. */
+export async function _endLongLivedAdminPoolForTests(label: string): Promise<void> {
+  const cached = _pools.get(label);
+  if (!cached) return;
+  _pools.delete(label);
+  await cached.sql.end({ timeout: 1 }).catch(() => {});
+}

@@ -23,8 +23,13 @@
  * report, not a fix.
  */
 import type { AdequacyRatingEntry } from '../plans/spec-test-adequacy';
+import { agentReviewIsReproductionValidation } from '../../harness/improvements/agent-review-policy';
 
-export const TERMINAL_CRITERION_KEYS = ['durable-change', 'forbidden-evidence-mode'] as const;
+export const TERMINAL_CRITERION_KEYS = [
+  'durable-change',
+  'forbidden-evidence-mode',
+  'reproduction-receipt',
+] as const;
 export type TerminalCriterionKey = (typeof TERMINAL_CRITERION_KEYS)[number];
 
 /**
@@ -143,6 +148,15 @@ export interface TerminalCriteriaInput {
    * {@link DEFAULT_FORBIDDEN_EVIDENCE_ONLY_MODES}; pass `[]` to disable the criterion.
    */
   forbiddenEvidenceOnlyModes?: readonly string[];
+  /**
+   * Is the item still REPRODUCTION-VALIDATION work at close time? That is, an independent
+   * agent review passed its content and returned it ONLY for a missing or unaccepted
+   * current-build reproduction receipt (plan
+   * `bug-queue-legitimacy-and-actionable-validation-2026-10-10`, D-006 / D-011). Absent means
+   * "not observed": the criterion stands down rather than inventing a failure.
+   * {@link evaluateCloseTerminalCriteria} derives it from the row's payload.
+   */
+  reproductionValidationPending?: boolean;
 }
 
 export interface TerminalCriteriaResult {
@@ -391,6 +405,60 @@ function forbiddenEvidenceModeRating(
 }
 
 /**
+ * Does a SUCCESSFUL bug close skip the reproduction it was returned for?
+ *
+ * Plan `bug-queue-legitimacy-and-actionable-validation-2026-10-10`, D-011 ruling A. The
+ * intake floor admits reproduction-validation bugs to ordinary claimers (D-006), and the
+ * claim brief tells them "do not start a fix" — but that brief is advisory, and this was the
+ * gap: measured 2026-10-11, EI-25318915268790777 closed `done` with authority `committed` by
+ * shipping a fix, while its agent review still read revision-requested/reproduction. Nothing
+ * on the row showed the defect had ever been reproduced, so the close could not distinguish
+ * a fix from no fix — the same reason `forbidden-evidence-mode` exists.
+ *
+ * Two legitimate exits leave a reproduction-validation bug, and the rating names both:
+ * resubmit with a receipt (which moves the review off `reproduction`), or close `dropped` as
+ * not reproducible. A `dropped` close is not a success status, so it rates not-applicable.
+ *
+ * A FAIL here DOWNGRADES authority; it does not REFUSE the close (D-003 / D-015 of plan
+ * `machine-enforced-terminal-criteria-2026-09-05`). Refusal would trap a truthful closer: a
+ * validator who already landed a fix can no longer reproduce the defect on the current build,
+ * so the receipt they are told to supply has become unobtainable.
+ *
+ * Applicability is its own, narrower than {@link claimsRemediation}'s kind set: only `bug`
+ * rows carry the reproduction gate, so a declaration widening the remediating kinds (via
+ * `requireDurableChange`) must not widen this criterion with it.
+ */
+function reproductionReceiptRating(input: TerminalCriteriaInput): AdequacyRatingEntry {
+  const appliesToBug = claimsRemediation({ ...input, remediatingKinds: ['bug'] });
+  if (!appliesToBug) {
+    return {
+      rating: 'not-applicable',
+      evidence: 'Close does not claim to have fixed a bug, so no reproduction receipt is required of it.',
+    };
+  }
+  if (input.reproductionValidationPending !== true) {
+    return {
+      rating: 'not-applicable',
+      evidence:
+        'The bug is not awaiting reproduction validation: no review on the row returned it for a ' +
+        'missing current-build reproduction receipt.',
+    };
+  }
+  return {
+    rating: 'fail',
+    evidence:
+      'Close claims this bug is fixed, but its agent review still reads revision-requested for a ' +
+      'missing current-build reproduction receipt (reproduction-validation work, D-006). Nothing on ' +
+      'the row shows the defect was ever reproduced, so the close cannot distinguish a fix from no fix.',
+    suggestion:
+      "Reproduced it? Record the receipt: improvements:agent-review { mode:'resubmit', id, " +
+      "reproduction:{ kind:'failing-test'|'scripted-repro'|'current-build-observation', ref, buildSha } }. " +
+      "Not reproducible on the current build? Close it with state:'dropped' and cite the attempt " +
+      '(what you ran, on which build) in completion.verifiedHow.',
+  };
+}
+
+/**
  * Evaluate the item-scoped terminal criteria for one close.
  *
  * Pure and side-effect free by design: it is the FILTER, and D-003 requires that an unmet
@@ -402,6 +470,7 @@ export function evaluateTerminalCriteria(input: TerminalCriteriaInput): Terminal
   const ratings: Record<TerminalCriterionKey, AdequacyRatingEntry> = {
     'durable-change': durableChangeRating(input, applies),
     'forbidden-evidence-mode': forbiddenEvidenceModeRating(input, applies),
+    'reproduction-receipt': reproductionReceiptRating(input),
   };
   const wouldBlock = TERMINAL_CRITERION_KEYS.filter((key) =>
     ['fail', 'unknown'].includes(ratings[key].rating),
@@ -713,6 +782,12 @@ export function evaluateCloseTerminalCriteria(
     verifiedHow: input.verifiedHow,
     remediatingKinds,
     forbiddenEvidenceOnlyModes: resolved.forbiddenEvidenceOnlyModes,
+    // Read from the ROW, through the one shared predicate the claim doors and the SQL intake
+    // floor also use, so "awaiting reproduction" cannot mean two different things. An
+    // explicit `true` can only add to it: like every criterion here, it may tighten, never
+    // loosen, so a caller cannot pass `false` to wave a pending row through.
+    reproductionValidationPending:
+      input.reproductionValidationPending === true || agentReviewIsReproductionValidation(input.payload),
   });
 
   const unmet = TERMINAL_CRITERION_KEYS.filter((key) => result.ratings[key].rating === 'fail');

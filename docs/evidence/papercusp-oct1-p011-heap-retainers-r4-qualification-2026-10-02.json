@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005600",
+  "parent": "WI-10004890",
+  "outcome": "failed",
+  "plane": "serving-artifact-private-operator-api-retainer-attempt",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-heap-retainers-r4-2026-10-02.json",
+    "bytes": 635874,
+    "sha256": "83e09ab9da3285bf6be8653e8febcce5a10884d59fa456d4cbc1b03808a094f9"
+  },
+  "before": {
+    "pid": 1210227,
+    "startTicks": "1711161",
+    "cwd": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-c7bed9f26219.zU1GJf/checkout/apps/operator",
+    "entry": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-c7bed9f26219.zU1GJf/checkout/apps/operator/dist-host/hono-host.mjs",
+    "hostDirectory": "/home/builduser/papercupai-workspace/papercusp-staging.generations/.candidate-c7bed9f26219.zU1GJf/checkout/apps/operator/dist-host",
+    "bundleSha256": "3169246de01f7d0d5866a22f6bcd35ca522514821dd12538fbed65b25fd6ecc9",
+    "buildSha": "c7bed9f262",
+    "observedAt": "2026-10-02T19:57:07.117426+00:00",
+    "sources": [
+      {
+        "path": "scripts/analyze-heap-snapshots.mjs",
+        "sha256": "0709dfd1353e80cbba95c21872fdf0df8a951171ba9b61aad222d9c0fb6c72e3"
+      },
+      {
+        "path": "scripts/analyze-heap-snapshots.d.mts",
+        "sha256": "0c17df47a4b327ebfea4a0ba04bf2eae4594c932dc195d69ef091333ab5bbbc4"
+      },
+      {
+        "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+        "sha256": "c01d6294e2f9f5683006bfa54e22c18160451c5d2125bbedf2244283fbeb75f5"
+      },
+      {
+        "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+        "sha256": "2102d7375e2fd4187f53ae1ab68221b91e759f885fe55cebd5194e87976e0bee"
+      },
+      {
+        "path": "scripts/cdp-inspector.mjs",
+        "sha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968"
+      },
+      {
+        "path": "scripts/with-test-pg.mjs",
+        "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+      },
+      {
+        "path": "scripts/test-files.mjs",
+        "sha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d"
+      },
+      {
+        "path": "node_modules/@vscode/v8-heap-parser/pkg/nodejs/v8_heap_parser_bg.wasm",
+        "sha256": "20b097dba67b7b52c7c33e721059fb6c1118aebc942b682ad70432b7bf35262b"
+      }
+    ],
+    "sourceHead": "ac82ce3cce2fdc4f5a3d9c789793df2f22993d9b",
+    "nativeControl": {
+      "executable": "/tmp/su-7db4f-v8-heap-native/bin/v8-heap",
+      "sha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24",
+      "upstreamCommit": "05edd8131a77790ab0e7bce2eedf5770d6bb83ae",
+      "version": "v8-heap-cli 0.1.0"
+    }
+  },
+  "sourcesAfter": [
+    {
+      "path": "scripts/analyze-heap-snapshots.mjs",
+      "sha256": "0709dfd1353e80cbba95c21872fdf0df8a951171ba9b61aad222d9c0fb6c72e3",
+      "afterSha256": "0709dfd1353e80cbba95c21872fdf0df8a951171ba9b61aad222d9c0fb6c72e3"
+    },
+    {
+      "path": "scripts/analyze-heap-snapshots.d.mts",
+      "sha256": "0c17df47a4b327ebfea4a0ba04bf2eae4594c932dc195d69ef091333ab5bbbc4",
+      "afterSha256": "0c17df47a4b327ebfea4a0ba04bf2eae4594c932dc195d69ef091333ab5bbbc4"
+    },
+    {
+      "path": "packages/operator-core/lib/analyze-heap-snapshots.test.ts",
+      "sha256": "c01d6294e2f9f5683006bfa54e22c18160451c5d2125bbedf2244283fbeb75f5",
+      "afterSha256": "c01d6294e2f9f5683006bfa54e22c18160451c5d2125bbedf2244283fbeb75f5"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "sha256": "2102d7375e2fd4187f53ae1ab68221b91e759f885fe55cebd5194e87976e0bee",
+      "afterSha256": "2102d7375e2fd4187f53ae1ab68221b91e759f885fe55cebd5194e87976e0bee"
+    },
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "sha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968",
+      "afterSha256": "31075a5ed406304cd4733ad3b3ae9807e636d03420d767ceefe7ea481dabd968"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "sha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085",
+      "afterSha256": "0f9dd85f70d585515d9e869ffc7c3533a01250d794fc5c95936005906daa8085"
+    },
+    {
+      "path": "scripts/test-files.mjs",
+      "sha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d",
+      "afterSha256": "4255ee1644532ff3a5ffbb5e1f2a457d4eea209abc8f7d7b49153d760f14404d"
+    },
+    {
+      "path": "node_modules/@vscode/v8-heap-parser/pkg/nodejs/v8_heap_parser_bg.wasm",
+      "sha256": "20b097dba67b7b52c7c33e721059fb6c1118aebc942b682ad70432b7bf35262b",
+      "afterSha256": "20b097dba67b7b52c7c33e721059fb6c1118aebc942b682ad70432b7bf35262b"
+    }
+  ],
+  "test": {
+    "testRunId": 20557233,
+    "passed": 0,
+    "failed": 1,
+    "filteredSkipped": 18,
+    "layer": "integration",
+    "source": "local",
+    "exitCode": 1,
+    "ledgerCommitSha": "72a9a049127e15194eca52bdedb54dc00f81052b",
+    "worktreeDirty": true,
+    "provenance": "unknown: shared HEAD changed; eight before/after named source hashes match; full transitive source graph not recorded"
+  },
+  "measurement": {
+    "error": "Error: Heap retainer analysis failed at decode-bytes (RuntimeError)",
+    "diagnostic": {
+      "phase": "decode-bytes",
+      "inputBytes": 569141063,
+      "wasmMemoryBytes": 3755343872,
+      "panic": {
+        "kind": "unclassified",
+        "source": "",
+        "allocationBytes": 0,
+        "length": 0,
+        "index": 0
+      },
+      "wasmFrames": [
+        {
+          "functionIndex": 282,
+          "offset": "0x2667c"
+        },
+        {
+          "functionIndex": 44,
+          "offset": "0x13d2c"
+        }
+      ],
+      "nativeControl": {
+        "parser": "microsoft/vscode-v8-heap-tools native decoder",
+        "executableSha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24",
+        "inputBytes": 569141063,
+        "inputSha256": "523fcbed5d628108e471fb1b1f89fa10fb89f01214d601189f7e59a91e353607",
+        "elapsedMs": 8101,
+        "status": 0,
+        "signal": null,
+        "decoded": true,
+        "stdoutBytes": 3,
+        "stderrBytes": 0,
+        "errorCode": null,
+        "definition": "Native decode and class enumeration only; no dominators or retaining-owner proof."
+      }
+    },
+    "snapshotBytes": 569141063,
+    "snapshotSha256": "523fcbed5d628108e471fb1b1f89fa10fb89f01214d601189f7e59a91e353607",
+    "nodes": 4885534,
+    "captureAndStreamCensusMs": 127589,
+    "nativeDecoderPreflight": {
+      "version": "v8-heap-cli 0.1.0",
+      "sha256": "2697f0cf15785272b24e08e0bcec0a43c8fd5f2ba4fec8a4ffda1d89d8f7ff24"
+    }
+  },
+  "cleanup": {
+    "hostReaped": true,
+    "snapshotRemoved": true,
+    "temporarySnapshotPersisted": false
+  },
+  "limits": [
+    "Exact same-byte native decode succeeded and WASM decode failed; precise WASM allocation or panic mechanism remains unproven.",
+    "Native control performs decode and class enumeration only; no retained dominators or direct-retainer ownership was measured.",
+    "No post-snapshot useful-row acceptance, production savings or shipment.",
+    "Forced snapshot GC/pause and automatic host profiler remain interventions."
+  ]
+}

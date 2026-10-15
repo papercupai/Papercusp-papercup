@@ -17,12 +17,13 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
-import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
+import { PgPresenceStore } from '@papercusp/coordination/presence';
+import { disposeBaselineCoordFixture, setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { sweepStalePresence, listPresence } from './presence';
 import { fetchWakeability, LIVE_TURN_WINDOW_MS, WAKE_PICKUP_GRACE_MS } from './presence-wakeability';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 
-let fx: BaselineCoordFixture;
+let fx: BaselineCoordFixture | undefined;
 let admin: postgres.Sql;
 
 /** Seed a presence row with an explicit heartbeat age (seconds in the past). */
@@ -40,14 +41,26 @@ async function ownerIds(): Promise<string[]> {
   return rows.map((r) => r.owner_id);
 }
 
+async function cleanWakeabilityRows(sql: postgres.Sql): Promise<void> {
+  const prefix = 'wkt-%';
+  await sql`DELETE FROM harness_shared.event_awaits WHERE subscriber_id LIKE ${prefix}`;
+  await sql`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id LIKE ${prefix}`;
+  await sql`DELETE FROM harness_shared.event_wake_attempts WHERE subscriber_id LIKE ${prefix}`;
+  await sql`DELETE FROM harness_shared.tool_invocations WHERE coord_owner_id LIKE ${prefix}`;
+  await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id LIKE ${prefix}`;
+}
+
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
   admin = fx.admin;
 });
-afterAll(async () => {
-  await admin`TRUNCATE harness_shared.coord_presence`.catch(() => {});
-  await fx.dispose();
-});
+afterAll(() => disposeBaselineCoordFixture(fx, async (sql) => {
+  try {
+    await sql`TRUNCATE harness_shared.coord_presence`;
+  } finally {
+    await cleanWakeabilityRows(sql);
+  }
+}));
 beforeEach(async () => {
   await admin`TRUNCATE harness_shared.coord_presence`;
 });
@@ -90,12 +103,31 @@ describe('sweepStalePresence (real PG)', () => {
   });
 
   it('clamps a sub-second maxAgeMs to a 1s floor (still removes a clearly-old row)', async () => {
-    await seed('ancient', 3600);
-    await seed('just-now', 0);
-    // maxAgeMs=0 → floor of 1s: the hour-old row goes, the just-now row stays.
-    const removed = await sweepStalePresence(0);
-    expect(removed).toBe(1);
-    expect(await ownerIds()).toEqual(['just-now']);
+    // WI-10007115: separate seed/delete statements let a "just-now" row
+    // cross the 1s boundary before GC runs. Postgres now() is stable inside
+    // this transaction; use the store's existing SQL seam for this boundary
+    // case. The other cases exercise the operator adapter's own connection.
+    await admin.begin(async (sql) => {
+      await sql`
+        INSERT INTO harness_shared.coord_presence (owner_id, owner_label, workspace_id, source, heartbeat_at)
+        VALUES ('ancient', 'ancient', 'default', 'static-client', now() - interval '2 seconds'),
+               ('half-second-old', 'half-second-old', 'default', 'static-client', now() - interval '0.5 seconds')
+      `;
+      const store = new PgPresenceStore({
+        getSql: () => sql as unknown as postgres.Sql,
+        ensureSchema: async () => {},
+      });
+      expect(await store.sweepStale(0)).toBe(1);
+      const rows = await sql<{ owner_id: string }[]>`
+        SELECT owner_id FROM harness_shared.coord_presence ORDER BY owner_id`;
+      expect(rows.map((row) => row.owner_id)).toEqual(['half-second-old']);
+
+      // Counterfactual: without the 1s clamp the same surviving row is old
+      // enough for a zero-second cutoff, using exactly the same DB clock.
+      const withoutFloor = await sql<{ owner_id: string }[]>`
+        DELETE FROM harness_shared.coord_presence WHERE heartbeat_at < now() RETURNING owner_id`;
+      expect(withoutFloor.map((row) => row.owner_id)).toEqual(['half-second-old']);
+    });
   });
 
   it('the surviving rows are visible through the listPresence read path', async () => {
@@ -124,15 +156,7 @@ describe('fetchWakeability (real PG)', () => {
   const P = 'wkt-';
   const own = (id: string) => `${P}${id}`;
 
-  async function clean(): Promise<void> {
-    await admin`DELETE FROM harness_shared.event_awaits WHERE subscriber_id LIKE ${`${P}%`}`;
-    await admin`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id LIKE ${`${P}%`}`;
-    await admin`DELETE FROM harness_shared.event_wake_attempts WHERE subscriber_id LIKE ${`${P}%`}`;
-    await admin`DELETE FROM harness_shared.tool_invocations WHERE coord_owner_id LIKE ${`${P}%`}`;
-    await admin`DELETE FROM harness_shared.agent_activity WHERE owner_id LIKE ${`${P}%`}`;
-  }
-  beforeEach(clean);
-  afterAll(clean);
+  beforeEach(() => cleanWakeabilityRows(admin));
 
   /** Seed one standing inbox-wake await (the `wakeable` signal). Defaults to a
    *  LIVE await (unfired, uncancelled, unexpired, correctly-keyed). */

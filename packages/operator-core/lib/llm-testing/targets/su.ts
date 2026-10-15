@@ -33,16 +33,19 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { applySemanticDelta } from '@papercusp/tooldef';
-import { resolveAnthropicBaseUrl, resolveDelegatedGatewayUrl } from '@papercusp/papercusp-shared/agent';
+import { createStatelessDiagnosticFetch, resolveAnthropicBaseUrl, resolveDelegatedGatewayUrl } from '@papercusp/papercusp-shared/agent';
 import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type {
   ChatSession,
   ChatTarget,
+  LlmCallDiagnostic,
   SessionOptions,
   SseEvent,
   ToolCallEvent,
@@ -561,6 +564,8 @@ export interface SuTargetOpts {
   loadSystemPrompt?: () => string | Promise<string>;
   /** Injectable Responses transport for hermetic target tests. */
   codexFetch?: typeof fetch;
+  /** Injectable Messages transport; the shared diagnostic wrapper still observes it. */
+  anthropicFetch?: typeof fetch;
 }
 
 export class SuTarget implements ChatTarget {
@@ -577,6 +582,7 @@ export class SuTarget implements ChatTarget {
   /** A sibling SUT supplied its own prompt loader, so targetConfig.modes cannot apply. */
   private readonly customPrompt: boolean;
   private readonly codexFetch?: typeof fetch;
+  private readonly anthropicFetch?: typeof fetch;
 
   constructor(opts: SuTargetOpts = {}) {
     this.id = opts.id ?? 'su';
@@ -586,6 +592,7 @@ export class SuTarget implements ChatTarget {
     this.loadSystemPrompt = opts.loadSystemPrompt ?? (() => loadPlaybook());
     this.customPrompt = opts.loadSystemPrompt !== undefined;
     this.codexFetch = opts.codexFetch;
+    this.anthropicFetch = opts.anthropicFetch;
   }
 
   async open(opts: SessionOptions): Promise<ChatSession> {
@@ -631,6 +638,8 @@ export class SuTarget implements ChatTarget {
       ...(opts.variant?.promptOverlay ? { promptOverlay: opts.variant.promptOverlay } : {}),
       modelOverride: delta.sutModel ?? opts.sutModel,
       codexFetch: this.codexFetch,
+      anthropicFetch: this.anthropicFetch,
+      onDiagnostic: opts.onDiagnostic,
     });
   }
 }
@@ -645,6 +654,8 @@ interface SessionState {
   /** Variant configDelta.sutModel (P-001) — overrides the env/default model. */
   modelOverride?: string;
   codexFetch?: typeof fetch;
+  anthropicFetch?: typeof fetch;
+  onDiagnostic?: (diagnostic: LlmCallDiagnostic) => void;
 }
 
 class SuSession implements ChatSession {
@@ -699,14 +710,25 @@ class SuSession implements ChatSession {
     // (EI-281): the shared ~/.claude/.credentials.json refreshes under fleet load, so
     // resolveTransport() is re-read on each build rather than frozen at turn start. The
     // upfront `transport` check above still gives a clean error turn when creds are absent.
+    const diagnosticState = { callId: randomUUID(), attempt: 0 };
     const makeClient = (): AnthropicClient => {
       const t = resolveTransport();
       if ('error' in t) throw new Error(t.error);
+      const headers = buildSuTransportHeaders(t, this.state.runId);
+      const diagnosticFetch = this.state.onDiagnostic
+        ? createStatelessDiagnosticFetch({
+          baseURL: t.baseURL ?? 'https://api.anthropic.com',
+          token: t.authToken ?? t.apiKey ?? '',
+          headers,
+          label: headers['x-papercusp-owner'] ? 'gateway-pool' : 'anthropic-direct',
+        }, this.state.onDiagnostic, this.state.anthropicFetch ?? globalThis.fetch, diagnosticState)
+        : this.state.anthropicFetch;
       return new Anthropic({
         ...(t.baseURL ? { baseURL: t.baseURL } : {}),
         ...(t.apiKey ? { apiKey: t.apiKey } : {}),
         ...(t.authToken ? { authToken: t.authToken } : {}),
-        defaultHeaders: buildSuTransportHeaders(t, this.state.runId),
+        defaultHeaders: headers,
+        ...(diagnosticFetch ? { fetch: diagnosticFetch } : {}),
         maxRetries: 2,
       });
     };
@@ -1213,14 +1235,20 @@ export function isAuthFailure(err: unknown): boolean {
 
 /** Seconds from a `retry-after` header (plain seconds or an HTTP date), if the
  *  SDK error exposed headers. */
-function retryAfterMs(err: unknown): number | undefined {
+function errorHeader(err: unknown, name: string): string | null | undefined {
   const h = (err as { headers?: Record<string, string | undefined> | { get?: (k: string) => string | null } })?.headers;
-  let raw: string | null | undefined;
   if (h && typeof (h as { get?: unknown }).get === 'function') {
-    raw = (h as { get: (k: string) => string | null }).get('retry-after');
-  } else if (h && typeof h === 'object') {
-    raw = (h as Record<string, string | undefined>)['retry-after'];
+    return (h as { get: (k: string) => string | null }).get(name);
   }
+  if (h && typeof h === 'object') {
+    const key = Object.keys(h).find((k) => k.toLowerCase() === name);
+    return key === undefined ? undefined : (h as Record<string, string | undefined>)[key];
+  }
+  return undefined;
+}
+
+function retryAfterMs(err: unknown): number | undefined {
+  const raw = errorHeader(err, 'retry-after');
   if (!raw) return undefined;
   const secs = Number(raw);
   if (Number.isFinite(secs)) return Math.min(120_000, secs * 1000);
@@ -1232,7 +1260,7 @@ export async function callWithRetry(
   makeClient: () => AnthropicClient,
   params: Record<string, unknown>,
   signal: AbortSignal,
-  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  sleep: (ms: number) => Promise<void> = (ms) => delay(ms, undefined, { signal }),
 ): Promise<AnthropicResponse> {
   // Patient retry — the SUT shares one Claude-Max OAuth session with the whole
   // fleet, so a transient 429 is expected under contention. Honor Retry-After
@@ -1253,6 +1281,9 @@ export async function callWithRetry(
       return await client.messages.create(params, { signal });
     } catch (err) {
       lastErr = err;
+      // The gateway already exhausted its recovery ladder. The SDK honors this
+      // header; our outer ladder must not undo that verdict and sleep to the cap.
+      if (signal.aborted || errorHeader(err, 'x-should-retry')?.trim().toLowerCase() === 'false') throw err;
       if (isAuthFailure(err) && authReReads < AUTH_REREAD_MAX) {
         authReReads++;
         // Let a concurrent credential rotation settle, then re-read the file + rebuild.

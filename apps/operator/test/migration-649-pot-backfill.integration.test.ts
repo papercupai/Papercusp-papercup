@@ -40,9 +40,9 @@ import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 // eslint-disable-next-line import/no-relative-packages -- exercise the real boot-path runner
-import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
+import { applyPendingMigrations, compareMigrationFilenames, defaultSkipFile } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -74,6 +74,16 @@ const BOOT_PREREQS_DDL = `
 let adminUri: string;
 let dbName: string;
 let sql: postgres.Sql;
+
+/** Exercise the backfill at its real boot stage. Later migrations (1134)
+ * replace its legacy capture trigger, so replaying 649 against head is invalid. */
+function applyThrough649() {
+  return applyPendingMigrations({
+    client: sql,
+    sqlDir: SQL_DIR,
+    skipFile: (file) => defaultSkipFile(file) || compareMigrationFilenames(file, MIGRATION) > 0,
+  });
+}
 
 /** A slug the CASE maps onto an OPTIONAL Pot that does not exist here. */
 const optionalTargetId = `EI-TEST-649-opt-${randomBytes(4).toString('hex')}`;
@@ -110,8 +120,8 @@ async function seededRowCount(): Promise<number> {
 async function createPlatformPot(): Promise<void> {
   await sql.unsafe(
     `INSERT INTO harness_shared.pots
-       (workspace_id, pot_home_slug, canonical_pot_home_slug, public_key, keychain_id, created_at)
-     VALUES ($1, $2, $2, '\\x00'::bytea, $3, $4)
+       (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+     VALUES ($1, $2, '\\x00'::bytea, $3, $4)
      ON CONFLICT DO NOTHING`,
     [WORKSPACE, CATCH_ALL_POT, `kc-${randomBytes(4).toString('hex')}`, Date.now()],
   );
@@ -124,6 +134,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -133,7 +144,7 @@ beforeAll(async () => {
   sql = postgres(u.toString(), { max: 1, onnotice: () => {} });
 
   await sql.unsafe(BOOT_PREREQS_DDL);
-  await applyPendingMigrations({ client: sql, sqlDir: SQL_DIR });
+  await applyThrough649();
 
   // A fresh database has no work_items, so 649 was a no-op above. Seed the exact two
   // shapes the packaged app had, in a database that (like the packaged one) has no Pots.
@@ -157,6 +168,26 @@ afterAll(async () => {
 });
 
 describe('migration 649 — a backfill must not gate the boot on post-boot state', () => {
+  it('uses the historical boot stage with its legacy capture trigger intact', async () => {
+    const applied = await sql<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.schema_migrations`;
+    expect(applied.some((row) => row.filename === MIGRATION)).toBe(true);
+    expect(applied.every((row) => compareMigrationFilenames(row.filename, MIGRATION) <= 0)).toBe(true);
+    const triggers = await sql<{ tgname: string }[]>`
+      SELECT tgname FROM pg_trigger
+       WHERE tgrelid='harness_shared.work_items'::regclass AND NOT tgisinternal`;
+    expect(triggers.map((row) => row.tgname)).toContain('capture_work_items_outbox_ins_del_trg');
+    expect(triggers.map((row) => row.tgname)).not.toContain('capture_work_items_outbox_ins_trg');
+    const columns = await sql<{ column_name: string }[]>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema='harness_shared' AND table_name='pots'`;
+    expect(columns.map((row) => row.column_name)).toEqual(expect.arrayContaining([
+      'workspace_id', 'pot_home_slug', 'public_key', 'keychain_id', 'created_at',
+    ]));
+    // Added by 686, so it cannot be part of a 649-era seed.
+    expect(columns.map((row) => row.column_name)).not.toContain('canonical_pot_home_slug');
+  });
+
   it('APPLIES CLEANLY on a database with no Pots at all — the shipped-app case', async () => {
     // Precisely the packaged 0.0.13 state: rows to re-home, and nowhere yet to put them
     // because the operator that creates Pots has not run. This is a normal deployment
@@ -168,7 +199,7 @@ describe('migration 649 — a backfill must not gate the boot on post-boot state
     expect(pots).toBe(0);
 
     await rearm649();
-    await expect(applyPendingMigrations({ client: sql, sqlDir: SQL_DIR })).resolves.toBeDefined();
+    await expect(applyThrough649()).resolves.toBeDefined();
   });
 
   it('leaves every row EXACTLY as it was when it declines to backfill', async () => {
@@ -193,7 +224,7 @@ describe('migration 649 — a backfill must not gate the boot on post-boot state
     expect(n).toBe(0);
 
     await rearm649();
-    await expect(applyPendingMigrations({ client: sql, sqlDir: SQL_DIR })).resolves.toBeDefined();
+    await expect(applyThrough649()).resolves.toBeDefined();
 
     // Re-homed, and — the point of the dedup fix — still TWO rows, not one.
     expect(await slugOf(optionalTargetId)).toBe(CATCH_ALL_POT);
@@ -203,7 +234,7 @@ describe('migration 649 — a backfill must not gate the boot on post-boot state
 
   it('is idempotent — re-running after a successful backfill changes nothing', async () => {
     await rearm649();
-    await expect(applyPendingMigrations({ client: sql, sqlDir: SQL_DIR })).resolves.toBeDefined();
+    await expect(applyThrough649()).resolves.toBeDefined();
     expect(await seededRowCount()).toBe(2);
     expect(await slugOf(optionalTargetId)).toBe(CATCH_ALL_POT);
     expect(await slugOf(selfTargetId)).toBe(CATCH_ALL_POT);

@@ -157,6 +157,12 @@ describe('checkBespokeActiveSeeds', () => {
 
   it('queries each seed in the install scope its writer actually targets', async () => {
     const calls: Array<{ installSlug: string; names: string[] }> = [];
+    const projectHistoryEntry = BESPOKE_ACTIVE_SEEDS.find((seed) => seed.name === 'project-history-refresh');
+    if (!projectHistoryEntry) throw new Error('project-history-refresh must be in BESPOKE_ACTIVE_SEEDS');
+    expect(projectHistoryEntry).toMatchObject({
+      seedScript: 'seed-project-history-refresh-routine.ts',
+      scope: 'sidestage',
+    });
     const res = await checkBespokeActiveSeeds({
       sql: routedFakeSql(
         {
@@ -165,6 +171,7 @@ describe('checkBespokeActiveSeeds', () => {
             { name: 'hive-canary', active: true },
             { name: 'hive-canary-sla', active: true },
           ],
+          sidestage: [{ name: 'project-history-refresh', active: true }],
         },
         calls,
       ),
@@ -174,12 +181,14 @@ describe('checkBespokeActiveSeeds', () => {
         { name: 'home-routine', seedScript: 'seed-home-routine.ts' },
         { name: 'hive-canary', seedScript: 'seed-hive-canary-routine.ts', scope: 'hive-canary' },
         { name: 'hive-canary-sla', seedScript: 'seed-hive-canary-sla-routine.ts', scope: 'hive-canary' },
+        projectHistoryEntry,
       ],
     });
 
     expect(calls).toEqual([
       { installSlug: 'papercusp', names: ['home-routine'] },
       { installSlug: 'hive-canary', names: ['hive-canary', 'hive-canary-sla'] },
+      { installSlug: 'sidestage', names: ['project-history-refresh'] },
     ]);
     expect(res.ok).toBe(true);
     expect(res.missing).toEqual([]);

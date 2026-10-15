@@ -841,14 +841,24 @@ const DRILL_VS_PRODUCTION =
  * `submodule-origin-push` leg) calls `runGitSync` against a DISPOSABLE super/sub repo pair it clones
  * under its own temp root, to prove exactly one thing: the `beforePush` owner-challenge fence
  * (`requireHiveEffectAuthority`) gates a submodule-origin push. Production (`git-sync-action.ts`)
- * also wires `loadRoster` (commit attribution from fleet presence) and `refreshLiveLockHoldings`
- * (re-read peers' live file locks before staging). Neither concern exists in the fixture: no peer
- * holds a lock on a temp clone and no fleet roster attributes its commits, so wiring the real
+ * also wires `loadRoster` (commit attribution from fleet presence), `loadMigrationFenceRoster`
+ * (attribution for paths fenced after a managed child repo's migration refusal), and `refreshLiveLockHoldings`
+ * (re-read peers' live file locks before staging). None of these concerns exists in the fixture: no peer
+ * holds a lock on a temp clone, no fleet roster attributes its commits, and no managed migration
+ * reservation owns its disposable child repositories, so wiring the real
  * readers would query the operator DB for state that cannot apply. Omitting them is correct.
  */
 const PHASE_I_FENCE_FIXTURE =
   'adjudicated 2026-09-30: phase-I drill runs git-sync on a disposable temp clone to prove the beforePush ' +
-  'owner-challenge fence; fleet roster attribution and peer live-lock refresh cannot apply there';
+  'owner-challenge fence; fleet roster attribution, managed migration-fence attribution and peer live-lock refresh cannot apply there';
+
+// WI-10006015: these are message-specific overrides, not shared prerequisites.
+// messages.ts uses the supplied body without bodyWithMsgId, and the ordinary
+// coord log append without persistEnvelope. The goal-reference producer needs
+// transactional persistence; fleet cues need their freshly minted id in prose.
+const SEND_MESSAGE_SPECIFIC_OVERRIDES =
+  'adjudicated WI-10006015: ordinary coord sends supply body directly; fleet cues use the default coord-log ' +
+  'append rather than the goal-reference transaction; each callback applies only to its producer';
 
 const PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK =
   'inTransaction runs INSIDE the plan write transaction and exists for applyPlanDrainTransition ' +
@@ -890,6 +900,83 @@ const LIVE_LOCK_IMPORTER_NO_HEAD_FALLBACK =
 const AUDIT_ROW_OWN_WORKSPACE_DEFAULT =
   'intentional (adjudicated 2026-09-30, WI-10004167): omitting workspaceId writes to the process\'s own workspace ' +
   '(desktop-audit.ts:163-165 `activeWorkspaceId()`); only the control-plane relay copy targets another workspace.';
+
+/**
+ * WI-10005393 — `AwsSdkCredentialResolvers.getWebIdentityToken` is consumed ONLY by the
+ * `fromWebToken` branch of `createAwsSdkCredentialProvider` (aws-sdk-client.ts:452-453:
+ * `const mint = resolvers.getWebIdentityToken; if (!mint) throw …`), and that branch is
+ * reachable only from the hosted OIDC method (`planAwsSdkCredentialProvider`,
+ * aws-connection.ts:54+). The two sites below build a provider ONLY for a hosted
+ * `customer-role` source — hosted-aws-auth.ts `customerRoleSource` and
+ * hosted-aws-host-discovery.ts both throw `hosted_provider_delegation_aws_method_not_organization_bound`
+ * for any other method — and a `customer-role` source plans to `fromTemporaryCredentials`
+ * (aws-connection.ts:37-52), never `fromWebToken`. So the minter is unreachable at these
+ * sites, and its absence cannot become a silent no-op: if the plan ever DID reach
+ * `fromWebToken`, `aws_workspace_host_web_identity_token_source_required` would fail LOUD.
+ * The wired site (aws-sdk-client.ts:596) serves every credential method, which is why it
+ * carries the seam. Wiring a minter here would be dead code, not a fix.
+ */
+const CUSTOMER_ROLE_NEVER_WEB_IDENTITY =
+  'WI-10005393 adjudicated: this site builds credentials only for a hosted customer-role source, which plans to fromTemporaryCredentials and never reaches the fromWebToken branch that reads getWebIdentityToken (aws-sdk-client.ts:452); an absent minter there fails loud';
+
+/**
+ * WI-10006261 adjudicated. Outbound dispatch has no failure classifier to feed: the sync
+ * driver maps a reconnect to ProviderSyncFailure{kind:'auth'} (connector-runtime.ts:386)
+ * because that marks the SOURCE as needing reconnection, while an outbound verb simply
+ * returns the refusal. The unwired seam therefore falls to a real, named default —
+ * HostFetchError('token-unavailable', 'source "<id>" must be reconnected (<reason>)')
+ * (source-host-fetch.ts:56-60) — not a silent no-op.
+ */
+const OUTBOUND_RECONNECT_DEFAULT_REFUSAL =
+  'WI-10006261 adjudicated: outbound dispatch has no sync failure classifier; an unwired reconnectRequired throws ' +
+  "HostFetchError('token-unavailable', '…must be reconnected') (source-host-fetch.ts:56-60), a real refusal";
+
+/**
+ * WI-10006261 adjudicated. The connector sync driver's test seam is the WHOLE host fetch
+ * (ConnectorSyncDeps.hostFetchFor, connector-runtime.ts:117), not the raw fetch beneath it;
+ * production leaves fetchImpl unset so createHostFetch uses global fetch
+ * (host-fetch.ts:60 `deps.fetchImpl ?? fetch`). Outbound dispatch wires fetchImpl only
+ * because OutboundDispatchDeps.hostFetchImpl (provider-dispatch.ts:77) is its HTTP-mock seam.
+ */
+const SYNC_FETCH_SEAM_IS_HOSTFETCHFOR =
+  'WI-10006261 adjudicated: sync tests replace the whole host fetch via ConnectorSyncDeps.hostFetchFor ' +
+  '(connector-runtime.ts:117); production fetchImpl defaults to global fetch (host-fetch.ts:60)';
+
+/**
+ * 2026-10-13 (WI-6554700010009462, fleet gate-lint-green): adjudications for the 18
+ * findings that accumulated at tip while this guard was not gating. Each was checked
+ * against the code that READS its seam, and every reason below names that reader.
+ */
+const GOVERNOR_RECEIPT_KEYS_TEST_SEAM =
+  'benign: P-530 test seam with a real production default (boot.ts:3694-3696 `?? loadLiveGovernorReceiptSnapshotKeys`); ' +
+  'only perf/peer-child.ts injects a PG-free census. Omitting it is the production read, and a failed load keeps every encrypted row (boot.ts:3698).';
+const DECISION_REVIEW_PARK_IS_REPLY_ONLY =
+  'unreachable here: only consultReplyCore reads onDecisionReviewReply (consult-verbs-core.ts:694); close and decline never call it, ' +
+  'and the expiry sweep re-runs the park resolver. Resolving parks on close/decline would be a core change, not a wiring gap.';
+const SIDECAR_DISABLED_CASE_NEVER_ROUTES =
+  'unreachable here: this degradation case pins sidecarEnabled: () => false (rail-migration-cases.ts:2637-2638) to prove disabled ' +
+  'routing records no sidecar decision; execFileViaSidecar reads viaSidecar only inside `if (sidecarEnabled())` (git-via-sidecar.ts:812-816).';
+const MANAGED_SPAWN_FN_TEST_SEAM =
+  'benign: "Injected for tests" (managed-spawn.ts:75-76) with the real default `opts.spawnFn ?? spawn` (managed-spawn.ts:236); ' +
+  'omitting it is the production spawn path.';
+const MANAGED_SPAWN_STAGE_IS_TRACER =
+  'benign: stage is an optional launch tracer (managed-spawn.ts:60-61) called only as `opts.stage?.(…)`; omitting it changes no behavior.';
+const SIDE_EFFECT_HEAD_FALLS_BACK_TO_LEGACY_SEAM =
+  'benign: the guard resolves side-effect edges with `sideEffectTargetAtHead ?? isResolvableAtHead` (quarantine-import-guard.ts:217), ' +
+  'and the pre-deletion pass wires isResolvableAtHead (run-git-sync.ts:5544). Only the post-stage pass (run-git-sync.ts:4269) needs the ' +
+  'narrower seam, to keep absent-from-index and gitlink/package-closure exclusions unresolvable.';
+const RESULT_DOOR_CHILD_HAS_NO_INVOCATION_ROW =
+  'benign: this test child calls applyResultDoorAsync directly with no transport invocation row; onScratchWritePending persists that ' +
+  "row's bounded-wait timeout (result-door.ts:139-140, wired by _mcp-host.ts:5032), so there is nothing here to persist.";
+const PHASE_I_DRILL_HAS_NO_RESTART_BARRIER =
+  'deliberate: the phase-I drill runs git-sync on a disposable temp clone outside the shared git-sync restart barrier, so there is no ' +
+  'waiting exclusive to yield to; an absent shouldYield never yields (run-git-sync.ts:6909).';
+const LIVE_SEARCH_RECONNECT_DEFAULT_REFUSAL =
+  'deliberate: like outbound dispatch, live search has no sync failure classifier; an unwired reconnectRequired falls back to the ' +
+  "built-in '… must be reconnected' error (source-host-fetch.ts:93-98), a real refusal to the person searching.";
+const FETCH_IMPL_TEST_PASSTHROUGH =
+  'benign: fetchImpl is a test pass-through (source-host-fetch.ts:61) with the real default `deps.fetchImpl ?? fetch` (host-fetch.ts:97); ' +
+  'push delivery and socket ingress inject no fetch, so they take the production path.';
 
 const FAIL_BASELINE = new Map([
   // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
@@ -949,7 +1036,10 @@ const FAIL_BASELINE = new Map([
   ['BuildScoutCycleDepsOptions|packages/operator-core/lib/scout/register-scout-action.ts|noveltyCorpus', OVERRIDE_WITH_REAL_DEFAULT],
   ['BuildScoutCycleDepsOptions|packages/operator-core/lib/scout/rubric-live-drill.ts|onScoutDraftCreated', DRILL_VS_PRODUCTION],
   ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|loadRoster', PHASE_I_FENCE_FIXTURE],
+  ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|loadMigrationFenceRoster', PHASE_I_FENCE_FIXTURE],
   ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|refreshLiveLockHoldings', PHASE_I_FENCE_FIXTURE],
+  ['SendOptions|packages/operator-core/lib/agent-tools/coordination/tools/send.ts|bodyWithMsgId', SEND_MESSAGE_SPECIFIC_OVERRIDES],
+  ['SendOptions|packages/operator-core/lib/agent-tools/fleet_registry/control-core.ts|persistEnvelope', SEND_MESSAGE_SPECIFIC_OVERRIDES],
   ['DesktopAuditDeps|packages/operator-core/lib/workspace-host/hosted-workspace-host-runtime.ts|now', OVERRIDE_WITH_REAL_DEFAULT],
   // 2026-09-30 — WI-10004167 added the control-plane relay copy (hosted-handler.ts), which
   // injects workspaceId and takes the Date.now default for `now` (desktop-audit.ts `deps.now ?? Date.now`).
@@ -979,11 +1069,9 @@ const FAIL_BASELINE = new Map([
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-input-schema.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-blocked-by.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-phase.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-now.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-output-schema.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-plan-status.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-status.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-template-data.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-title.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|afterWrite', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
@@ -1008,9 +1096,7 @@ const FAIL_BASELINE = new Map([
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-input-schema.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-blocked-by.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-item-phase.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-now.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-output-schema.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-plan-status.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-template-data.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-title.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|inTransaction', PLAN_LOCK_DRAIN_ONLY_TRANSACTION_HOOK],
@@ -1028,6 +1114,37 @@ const FAIL_BASELINE = new Map([
   // call site states: a dependency held by a live lock may be changing its EXPORTS,
   // so an old copy at HEAD cannot satisfy the importer's new symbols.
   ['QuarantineImportGuardDeps|packages/operator-core/lib/harness/git-sync/run-git-sync.ts|isResolvableAtHead', LIVE_LOCK_IMPORTER_NO_HEAD_FALLBACK],
+
+  // WI-10005393 — rows taken from the measured `--list` population, not hand-written.
+  ['AwsSdkCredentialResolvers|packages/operator-core/lib/workspace-host/hosted-aws-auth.ts|getWebIdentityToken', CUSTOMER_ROLE_NEVER_WEB_IDENTITY],
+  ['AwsSdkCredentialResolvers|packages/operator-core/lib/workspace-host/hosted-aws-host-discovery.ts|getWebIdentityToken', CUSTOMER_ROLE_NEVER_WEB_IDENTITY],
+
+  // WI-10006261 — the two SourceHostFetchOptions sites (plan generalized-integrations…, D-014.4).
+  ['SourceHostFetchOptions|packages/operator-core/lib/capability-verbs/provider-dispatch.ts|reconnectRequired', OUTBOUND_RECONNECT_DEFAULT_REFUSAL],
+  ['SourceHostFetchOptions|packages/operator-core/lib/providers/connector-runtime.ts|fetchImpl', SYNC_FETCH_SEAM_IS_HOSTFETCHFOR],
+
+  // 2026-10-13 (WI-6554700010009462) — the 18 findings that accumulated at tip, one row per
+  // file and seam, from the measured run (composition-rig.ts and merge-cost.ts have two
+  // construction sites each). The reason constants above cite each seam's reader.
+  ['BootHarnessOpts|packages/operator-core/lib/deployment/p2p-perf-tier3/loop-agent.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['BootHarnessOpts|packages/operator-core/lib/p2p/two-peer-commerce/commerce-peer-child.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['BootHarnessOpts|packages/operator-core/lib/shared-pot-loop/composition-rig.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/fixture.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['BootHarnessOpts|packages/operator-core/lib/sync/hyperbee/perf/scenarios/merge-cost.ts|loadOwnCompactionGovernorReceiptKeys', GOVERNOR_RECEIPT_KEYS_TEST_SEAM],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/close.ts|onDecisionReviewReply', DECISION_REVIEW_PARK_IS_REPLY_ONLY],
+  ['ConsultVerbDeps|packages/operator-core/lib/agent-tools/consult/decline.ts|onDecisionReviewReply', DECISION_REVIEW_PARK_IS_REPLY_ONLY],
+  ['ExecFileViaSidecarDeps|packages/operator-core/lib/degradation/rail-migration-cases.ts|viaSidecar', SIDECAR_DISABLED_CASE_NEVER_ROUTES],
+  ['ManagedSpawnOptions|packages/operator-core/lib/su-session-stdio-peer.ts|spawnFn', MANAGED_SPAWN_FN_TEST_SEAM],
+  ['ManagedSpawnOptions|packages/operator-core/lib/voice-node/local-whisper-service.ts|stage', MANAGED_SPAWN_STAGE_IS_TRACER],
+  // File-keyed: this row also covers any OTHER run-git-sync.ts site that later drops the
+  // seam. Today only the pre-deletion pass (:5540) omits it; the live-lock and post-stage
+  // passes wire it.
+  ['QuarantineImportGuardDeps|packages/operator-core/lib/harness/git-sync/run-git-sync.ts|sideEffectTargetAtHead', SIDE_EFFECT_HEAD_FALLS_BACK_TO_LEGACY_SEAM],
+  ['ResultDoorOpts|packages/operator-core/test/_scorecards-list-result-door-child.ts|onScratchWritePending', RESULT_DOOR_CHILD_HAS_NO_INVOCATION_ROW],
+  ['RunGitSyncOpts|packages/operator-core/lib/sync/pot-git/physical-drill-phase-i.ts|shouldYield', PHASE_I_DRILL_HAS_NO_RESTART_BARRIER],
+  ['SourceHostFetchOptions|packages/operator-core/lib/data-sources/live-search-adapter.ts|reconnectRequired', LIVE_SEARCH_RECONNECT_DEFAULT_REFUSAL],
+  ['SourceHostFetchOptions|packages/operator-core/lib/providers/connector-push.ts|fetchImpl', FETCH_IMPL_TEST_PASSTHROUGH],
+  ['SourceHostFetchOptions|packages/operator-core/lib/providers/provider-socket-ingress.ts|fetchImpl', FETCH_IMPL_TEST_PASSTHROUGH],
 ]);
 
 /**
@@ -1195,7 +1312,8 @@ function main() {
     );
   }
 
-  if (staleBaseline.length > 0) {
+  // JSON mode already includes staleBaseline; prose after it corrupts the document.
+  if (!opts.json && staleBaseline.length > 0) {
     if (opts.includeObservers) {
       // ⚠ DO NOT report these as prunable. `--include-observers` widens the seam set,
       // which changes each finding's `missing` list — and the baseline key is built

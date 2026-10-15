@@ -457,12 +457,47 @@ describe('the sampling leg — live without any stamp', () => {
     const out = detectIntentActionDivergence(
       flail(RETRY_THRASH_THRESHOLD).map((c) => ({
         ...c,
-        metadataJson: { dispatchWrapper: true },
+        metadataJson: { dispatchWrapper: true, effectiveStatus: 'error', childFailureCount: 1 },
       })),
     );
     expect(out.divergences).toEqual([]);
     expect(out.coverage.failuresSeen).toBe(0);
     expect(out.coverage.thrashRuns).toBe(0);
+  });
+
+  it('uses successful code:run wrappers to break an interleaved auth-failure run', () => {
+    const authFailure = (id: number, afterMs: number): DivergenceCall =>
+      call({
+        id,
+        toolName: 'code:run',
+        status: 'error',
+        invokedAt: new Date(T0 + afterMs).toISOString(),
+      });
+    const successfulWrapper = (id: number, afterMs: number): DivergenceCall =>
+      call({
+        id,
+        toolName: 'code:run',
+        status: 'ok',
+        invokedAt: new Date(T0 + afterMs).toISOString(),
+        metadataJson: { dispatchWrapper: true, effectiveStatus: 'ok', childFailureCount: 0 },
+      });
+
+    const firstFailures = [authFailure(1, 1_000), authFailure(2, 2_000), authFailure(3, 3_000)];
+    const secondFailures = [authFailure(5, 5_000), authFailure(6, 6_000), authFailure(7, 7_000)];
+    const out = detectIntentActionDivergence([
+      ...firstFailures,
+      successfulWrapper(4, 4_000),
+      ...secondFailures,
+      successfulWrapper(8, 8_000),
+    ]);
+    const withoutBoundaries = detectIntentActionDivergence([...firstFailures, ...secondFailures]);
+
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage.failuresSeen).toBe(6);
+    expect(out.coverage.thrashRuns).toBe(2);
+    expect(out.coverage.convergedRuns).toBe(2);
+    expect(withoutBoundaries.divergences).toHaveLength(1);
+    expect(withoutBoundaries.divergences[0].retryLoop?.attempts).toBe(6);
   });
 
   it('retains direct invalid-input failures as retry evidence', () => {

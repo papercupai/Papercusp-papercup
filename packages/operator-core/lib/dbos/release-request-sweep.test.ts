@@ -4,11 +4,13 @@
  * work_items:request_release deadlines that passed unanswered.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DueReleaseRequestRow } from '../work-items-release-request';
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 
 const findDueReleaseRequests = vi.fn();
 const resolveWorkItemReleaseRequest = vi.fn();
+const settleReleaseRequestCondition = vi.fn();
 const hasWorkItemProgressAfterReleaseRequest = vi.fn(
   (request: { requestedAt: number }, lastProgressAt: string | Date | null) => {
     if (lastProgressAt == null) return false;
@@ -23,6 +25,7 @@ vi.mock('../work-items-release-request', () => ({
     lastProgressAt: string | Date | null,
   ) => hasWorkItemProgressAfterReleaseRequest(request, lastProgressAt),
   resolveWorkItemReleaseRequest: (...a: unknown[]) => resolveWorkItemReleaseRequest(...a),
+  settleReleaseRequestCondition: (...a: unknown[]) => settleReleaseRequestCondition(...a),
 }));
 
 const releaseWorkItem = vi.fn();
@@ -49,6 +52,13 @@ vi.mock('../attention-notify', () => ({
   notifyAttention: (...a: unknown[]) => notifyAttention(...a),
 }));
 
+const broadcastSevereEvent = vi.fn();
+const broadcastSevereEventResolved = vi.fn();
+vi.mock('../severe-event-broadcast', () => ({
+  broadcastSevereEvent: (...a: unknown[]) => broadcastSevereEvent(...a),
+  broadcastSevereEventResolved: (...a: unknown[]) => broadcastSevereEventResolved(...a),
+}));
+
 const assessForceRelease = vi.fn();
 vi.mock('../agent-tools/work_items/release-force-guard', () => ({
   assessForceRelease: (...a: unknown[]) => assessForceRelease(...a),
@@ -57,7 +67,7 @@ vi.mock('../agent-tools/work_items/release-force-guard', () => ({
 const { buildDefaultChecks } = await import('./in-process-periodic');
 const check = buildDefaultChecks().find((c) => c.name === 'release-request-sweep')!;
 
-function dueRow(overrides: Partial<{ id: string; harness: string | null; workspaceId: string; holderNow: string | null; onSilence: 'reclaim' | 'escalate' | 'nothing' }> = {}) {
+function dueRow(overrides: Partial<{ id: string; harness: string | null; workspaceId: string; holderNow: string | null; onSilence: 'reclaim' | 'escalate' | 'nothing' }> = {}): DueReleaseRequestRow {
   const onSilence = overrides.onSilence ?? 'reclaim';
   return {
     id: overrides.id ?? 'WI-1',
@@ -65,6 +75,8 @@ function dueRow(overrides: Partial<{ id: string; harness: string | null; workspa
     workspaceId: overrides.workspaceId ?? 'default',
     holderNow: overrides.holderNow ?? 'holder-1',
     lastProgressAt: null,
+    terminal: false,
+    conditionRequest: null as { by: string; holder: string; deadlineAt: number } | null,
     paths: ['packages/target.ts'],
     request: {
       by: 'requester-1',
@@ -86,6 +98,9 @@ beforeEach(() => {
   // (operational visibility, mirrors every other sweep in this file) — expected, not a bug.
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   findDueReleaseRequests.mockResolvedValue([]);
+  settleReleaseRequestCondition.mockResolvedValue(true);
+  broadcastSevereEvent.mockResolvedValue(true);
+  broadcastSevereEventResolved.mockResolvedValue(true);
   commentWorkItem.mockResolvedValue({ id: 'post' });
   sendMessage.mockResolvedValue(undefined);
   notifyAttention.mockResolvedValue(undefined);
@@ -96,6 +111,39 @@ beforeEach(() => {
 });
 
 describe('release-request-sweep check', () => {
+  it('refreshes a durable timeout after failed paging; unreadable scans and failed resolution preserve it', async () => {
+    const row = dueRow({ onSilence: 'escalate' });
+    row.request = { ...row.request, resolved: true, resolution: 'consequence-escalate' };
+    row.conditionRequest = { by: row.request.by, holder: row.request.holder, deadlineAt: row.request.deadlineAt };
+    findDueReleaseRequests.mockImplementation(async (_sql, opts) => opts.alarmPending ? [row] : []);
+    await check.tick(); await check.tick();
+    expect(broadcastSevereEvent).toHaveBeenCalledTimes(2);
+    expect(notifyAttention).not.toHaveBeenCalled();
+    expect(broadcastSevereEventResolved).not.toHaveBeenCalled();
+    findDueReleaseRequests.mockRejectedValueOnce(new Error('scan unavailable'));
+    await expect(check.tick()).rejects.toThrow('scan unavailable');
+    expect(broadcastSevereEventResolved).not.toHaveBeenCalled();
+    row.lastProgressAt = new Date(row.request.requestedAt + 1).toISOString();
+    broadcastSevereEventResolved.mockResolvedValueOnce(false);
+    await check.tick();
+    expect(settleReleaseRequestCondition).not.toHaveBeenCalledWith(expect.anything(), row, true);
+    await check.tick();
+    expect(settleReleaseRequestCondition).toHaveBeenCalledWith(expect.anything(), row, true);
+  });
+
+  it.each(['release', 'terminal', 'replacement'])('resolves only the measured %s recovery without replaying the consequence', async (kind) => {
+    const row = dueRow({ onSilence: 'escalate' });
+    row.conditionRequest = { by: row.request.by, holder: row.request.holder, deadlineAt: row.request.deadlineAt };
+    if (kind === 'release') row.holderNow = null;
+    if (kind === 'terminal') row.terminal = true;
+    if (kind === 'replacement') row.request.deadlineAt++;
+    findDueReleaseRequests.mockImplementation(async (_sql, opts) => opts.alarmPending ? [row] : []);
+    await check.tick();
+    expect(broadcastSevereEventResolved).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: 'alarm:release-request:default:WI-1' }));
+    expect(settleReleaseRequestCondition).toHaveBeenCalledWith(expect.anything(), row, true);
+    expect(resolveWorkItemReleaseRequest).not.toHaveBeenCalled();
+    expect(notifyAttention).not.toHaveBeenCalled();
+  });
   it('is registered at a 60s cadence and does not shed under load', () => {
     expect(check.intervalMs).toBe(60_000);
     expect(check.shed).toBeFalsy();
@@ -218,7 +266,7 @@ describe('release-request-sweep check', () => {
 
   it('onSilence:"escalate" — CAS wins → pages the owner, item is NEVER released', async () => {
     const row = dueRow({ onSilence: 'escalate' });
-    findDueReleaseRequests.mockResolvedValue([row]);
+    findDueReleaseRequests.mockImplementation(async (_sql, opts) => opts.alarmPending ? [] : [row]);
     resolveWorkItemReleaseRequest.mockResolvedValue({ ...row.request, resolved: true, resolution: 'consequence-escalate' });
 
     await check.tick();
@@ -227,6 +275,9 @@ describe('release-request-sweep check', () => {
     expect(notifyAttention).toHaveBeenCalledTimes(1);
     expect(notifyAttention.mock.calls[0][0]).toMatchObject({ kind: 'intervention', importance: 'high' });
     expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(broadcastSevereEvent).toHaveBeenCalledWith(expect.objectContaining({
+      conditionKey: 'alarm:release-request:default:WI-1', oneShot: true,
+    }));
   });
 
   it('onSilence:"nothing" — CAS wins → records the silence, no release, no escalation', async () => {

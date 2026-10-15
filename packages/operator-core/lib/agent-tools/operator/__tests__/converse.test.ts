@@ -26,6 +26,22 @@ const principalMocks = vi.hoisted(() => ({
     trust: 'trusted' as const,
   })),
 }));
+const customerPiMocks = vi.hoisted(() => ({
+  spawnTransform: vi.fn(() => false),
+  start: vi.fn(async (args: { sessionId: string; expiresAt: Date }) => ({
+    sessionId: args.sessionId,
+    bearer: 'pi-customer-token',
+  })),
+  end: vi.fn(async (_workspaceId: string, _sessionId: string) => undefined),
+}));
+vi.mock('@papercusp/papercusp-shared/agent', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  agentSpawnTransformConfigured: () => customerPiMocks.spawnTransform(),
+}));
+vi.mock('@papercusp/agent-mcp/provisioning', () => ({
+  startPiSession: (args: { sessionId: string; expiresAt: Date }) => customerPiMocks.start(args),
+  endPiSession: (workspaceId: string, sessionId: string) => customerPiMocks.end(workspaceId, sessionId),
+}));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
@@ -36,6 +52,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
         ? ['chat:write']
         : name === 'voice:delegate_deep'
           ? ['operator:read']
+          : name === 'docs:search' || name === 'docs:get'
+            ? ['docs:read']
           : ['not-granted'],
       inputSchema: { type: 'object', properties: {} },
     }),
@@ -76,6 +94,15 @@ vi.mock('node:fs', async (orig) => {
           (actual.readFileSync as any)(p, ...rest)) as typeof actual.readFileSync,
   };
 });
+// WI-10004897: the papercup failover judges the alternate's login from local credential
+// files. Pin that verdict so these tests never depend on the host's real ~/.claude/~/.codex.
+const agentBackendCredentialVerdictMock = vi.hoisted(() =>
+  vi.fn((_backend: string): unknown => ({ usable: true, basis: 'refreshable' })),
+);
+vi.mock('../../../agent-auth-detect', async (orig) => ({
+  ...(await orig<typeof import('../../../agent-auth-detect')>()),
+  agentBackendCredentialVerdict: (backend: string) => agentBackendCredentialVerdictMock(backend),
+}));
 vi.mock('../../../operator-budget', () => ({
   recordSpend: vi.fn(),
   checkBudget: vi.fn(async () => ({ state: null, exceeded: false })),
@@ -111,7 +138,7 @@ vi.mock('../../../agent-config', () => ({
 vi.mock('../../../operator-mcp-tools', () => ({
   ALL_AGENT_MCP_TOOLS: ['tasks:read', 'mcp__agentmcp__chat:ask_choice'],
   INTERACTIVE_CHAT_TOOLS: ['mcp__agentmcp__chat:ask_choice'],
-  canonicalToolName: (n: string) => n,
+  canonicalToolName: (n: string) => n.replace(/^mcp__agentmcp__/, ''),
 }));
 // P-005: the public-trust door list comes from the projected-tool registry;
 // stub it so the handler test never loads the catalog.
@@ -150,7 +177,9 @@ import { dispatchSentinelHandoff } from '../../../operator-sentinel-handoff';
 import { delegateDeep } from '../../../papercup/papercup-deep-delegate';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { checkBudget } from '../../../operator-budget';
+import { configureAgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
 import tool from '../converse';
+import { buildOperatorPrompt } from '../converse-prompt';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyGen = AsyncGenerator<any, void, unknown>;
@@ -180,6 +209,9 @@ function makeCtx() {
 let fetchMock: any;
 
 beforeEach(() => {
+  customerPiMocks.spawnTransform.mockReturnValue(false);
+  customerPiMocks.start.mockClear();
+  customerPiMocks.end.mockClear();
   vi.mocked(runAgentChat).mockReset();
   // Default: a non-empty stream so the handler commits output (no retry/throw).
   vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
@@ -195,6 +227,29 @@ afterEach(() => {
 });
 
 describe('operator:converse — mcpUrl / state-channel shape', () => {
+  it.each([
+    { context: { step: 'connection', status: 'ready' }, title: 'Connect Google Cloud' },
+    { context: { version: 3, step: 'billing', status: 'ready' }, title: 'Understand the bills' },
+  ])('lesson context $title shrinks even an owner request to public text with no tools, private context, memory or action tags', async ({ context, title }) => {
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield { type: 'delta', text: '<spawn role="su" harness="demo"/> Use the connection form.' };
+    });
+    await handler({ lessonContext: context, hostTrust: 'owner', principalToken: 'owner-token',
+      uiContext: 'private-resource-record', conversationId: 'private-conversation',
+      sessionUser: { id: 'private-user', username: 'private', display_name: 'Private', has_password: true },
+      messages: [{ role: 'system', content: 'private-history' }, { role: 'user', content: 'Connect my project for me.' }] }, makeCtx());
+    const invocation = vi.mocked(runAgentChat).mock.calls[0][0];
+    expect(invocation.mcpConfig).toBeUndefined(); expect(invocation.allowedTools).toEqual([]);
+    expect(invocation.disallowBuiltins).toBe(true);
+    expect(principalMocks.resolveBearer).not.toHaveBeenCalled();
+    const prompt = vi.mocked(buildOperatorPrompt).mock.calls[0];
+    expect(prompt[0]).toMatchObject({ hostTrust: 'public', toolNames: [], role: 'papercup' });
+    expect(prompt[0].messages).toEqual([{ role: 'user', content: 'Connect my project for me.' }]);
+    expect(prompt[0].conversationId).toBeUndefined(); expect(prompt[1]).toBeNull();
+    expect(prompt[0].uiContext).toContain(title);
+    for (const privateValue of ['private-resource-record', 'private-conversation', 'private-user', 'private-history']) expect(prompt[0].uiContext).not.toContain(privateValue);
+    expect(spawnAgentInHarness).not.toHaveBeenCalled(); expect(rememberConversationMock).not.toHaveBeenCalled();
+  });
   it('mcpUrl includes ?superuser=1 + &workspace=<id> (http MCP shape)', async () => {
     await handler({ messages: [], trigger: 'user_message', sessionUser: null }, makeCtx());
     expect(runAgentChat).toHaveBeenCalled();
@@ -214,6 +269,51 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
     // The param is the colon MCP-catalog name (mcp__agentmcp__ prefix stripped).
     const tools = new URL(url).searchParams.get('tools') ?? '';
     expect(tools.split(',')).toEqual(['tasks:read', 'chat:ask_choice']);
+  });
+
+  it('D-421 customer-run owner chat gets an exact PI mount and revokes its temporary bearer', async () => {
+    customerPiMocks.spawnTransform.mockReturnValue(true);
+    await handler(
+      { messages: [], trigger: 'user_message', role: 'papercup', hostTrust: 'owner', sessionUser: null },
+      { ...makeCtx(), role: 'papercup' },
+    );
+
+    const call = vi.mocked(runAgentChat).mock.calls[0][0] as {
+      allowedTools?: string[];
+      mcpConfig?: McpConfig;
+    };
+    const url = mcpUrlOf(call.mcpConfig)!;
+    expect(url).toContain('/api/mcp?principal=pi&workspace=ws-real');
+    expect(url).not.toContain('superuser');
+    expect(call.mcpConfig?.mcpServers.agentmcp.headers.Authorization).toBe('Bearer pi-customer-token');
+    expect(new URL(url).searchParams.get('tools')?.split(',')).toEqual([
+      'capability:read',
+      'tasks:ops',
+      'chat:ask_choice',
+      'voice:delegate_deep',
+      'docs:search',
+      'docs:get',
+    ]);
+    expect(call.allowedTools).toEqual([
+      'mcp__agentmcp__capability:read',
+      'mcp__agentmcp__tasks:ops',
+      'mcp__agentmcp__chat:ask_choice',
+      'mcp__agentmcp__voice:delegate_deep',
+      'mcp__agentmcp__docs:search',
+      'mcp__agentmcp__docs:get',
+    ]);
+    expect(customerPiMocks.start).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-real',
+      allowedTools: ['capability:read', 'tasks:ops', 'chat:ask_choice', 'voice:delegate_deep', 'docs:search', 'docs:get'],
+      capabilities: ['chat:write', 'docs:read', 'not-granted', 'operator:read'],
+      expiresAt: expect.any(Date),
+    }));
+    const sessionId = customerPiMocks.start.mock.calls[0]?.[0]?.sessionId;
+    const expiresAt = customerPiMocks.start.mock.calls[0]?.[0]?.expiresAt;
+    expect(sessionId).toMatch(/^operator-converse-/);
+    expect(expiresAt?.getTime()).toBeGreaterThan(Date.now());
+    expect(expiresAt?.getTime()).toBeLessThan(Date.now() + 31 * 60 * 1000);
+    expect(customerPiMocks.end).toHaveBeenCalledWith('ws-real', sessionId);
   });
 
   it('spawns with disableToolSearch so the shrunk surface loads non-deferred (P-009)', async () => {
@@ -304,6 +404,26 @@ describe('operator:converse — mcpUrl / state-channel shape', () => {
 });
 
 describe('operator:converse — loop behaviors (P-019)', () => {
+  it.each(['authorized', 'wrong-workspace', 'absent'] as const)(
+    'public provenance records its selected catalog without credentials: %s', async (kind) => {
+      if (kind !== 'absent') principalMocks.resolveBearer.mockResolvedValueOnce({
+        kind: 'pi', slug: 'pi:private-fixture', workspaceId: kind === 'authorized' ? 'ws-real' : 'other-workspace',
+        capabilities: new Set(['docs:read']), authMethod: 'bearer-token', trust: 'trusted',
+      });
+      const ctx = makeCtx();
+      await handler({ messages: [], trigger: 'user_message', role: 'papercup', hostTrust: 'public',
+        ...(kind !== 'absent' ? { principalToken: 'secret-public-fixture' } : {}) }, ctx);
+      const invocation = vi.mocked(runAgentChat).mock.calls[0][0];
+      const provenance = ctx.emit.mock.calls.find(([event]) => event === 'provenance')![1];
+      const names = kind === 'authorized' ? ['docs:search', 'docs:get'] : [];
+      expect(provenance.toolContext).toEqual({ toolNames: names,
+        authorization: kind === 'authorized' ? 'granted' : 'unavailable',
+        promptHash: expect.stringMatching(/^[a-f0-9]{32}$/) });
+      expect(invocation.allowedTools).toEqual(names.map((name) => `mcp__agentmcp__${name}`));
+      expect(vi.mocked(buildOperatorPrompt).mock.calls.at(-1)![0].toolNames).toEqual(invocation.allowedTools);
+      expect(JSON.stringify(provenance)).not.toMatch(/secret-public-fixture|private-fixture|other-workspace/);
+    });
+
   it('budget exceeded → throws + never invokes the model', async () => {
     vi.mocked(checkBudget).mockResolvedValue({
       state: { capUsd: 5 },
@@ -575,7 +695,7 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     errSpy.mockRestore();
   });
 
-  it('papercup: when the alternate also fails, the turn error names the backend that ran LAST', async () => {
+  it('papercup: when the alternate also fails, the turn error names BOTH backends in order (WI-10004897)', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     let n = 0;
     vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
@@ -589,9 +709,66 @@ describe('operator:converse — loop behaviors (P-019)', () => {
       };
     });
     const { run } = papercupTurn();
-    await expect(run()).rejects.toThrow(/claude-code, model sonnet:low: .*401/);
+    // The first backend's cause (the cap) used to be dropped; only the 401 reached the user.
+    await expect(run()).rejects.toThrow(
+      /codex, model gpt-5\.6-luna:low: .*usage limit.*; then claude-code, model sonnet:low: .*401/,
+    );
     expect(runAgentChat).toHaveBeenCalledTimes(2);
+    expect(agentBackendCredentialVerdictMock).toHaveBeenCalledWith('claude-code');
     errSpy.mockRestore();
+  });
+
+  it('papercup: a failover whose alternate login has expired with no refresh token is skipped and named (WI-10004897)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    agentBackendCredentialVerdictMock.mockReturnValueOnce({ usable: false, reason: 'expired-no-refresh' });
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield { type: 'error', message: CODEX_CAP };
+    });
+    const { ctx, run } = papercupTurn();
+    await expect(run()).rejects.toThrow(
+      /codex, model gpt-5\.6-luna:low: .*usage limit.*; failover to claude-code \(model sonnet:low\) skipped: .*expired and has no refresh token/,
+    );
+    // Neither a doomed spawn on the dead alternate nor a same-backend re-run of the cap.
+    expect(runAgentChat).toHaveBeenCalledTimes(1);
+    const provenance = ctx.emit.mock.calls.filter(([name]) => name === 'provenance');
+    expect(provenance).toHaveLength(1);
+    errSpy.mockRestore();
+  });
+
+  it('papercup: under the D-421 customer-identity spawn transform the local probe is NOT consulted and the failover runs', async () => {
+    // The brain runs as the customer account there; this process cannot read its login, so a
+    // local verdict would say `absent` for every alternate and wrongly skip every failover.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    agentBackendCredentialVerdictMock.mockReturnValue({ usable: false, reason: 'absent' });
+    // converse's seam mock reads this switch, not the real transform configuration below.
+    customerPiMocks.spawnTransform.mockReturnValue(true);
+    configureAgentSpawnTransform((request) => ({
+      command: request.command,
+      args: [...request.args],
+      cwd: request.cwd,
+      env: request.env,
+    }));
+    try {
+      let n = 0;
+      vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+        n += 1;
+        if (n === 1) {
+          yield { type: 'error', message: CODEX_CAP };
+          return;
+        }
+        yield { type: 'delta', text: 'answered on claude' };
+      });
+      const { run } = papercupTurn();
+      const res = await run();
+      expect(agentBackendCredentialVerdictMock).not.toHaveBeenCalled();
+      expect(callOf(1)).toMatchObject({ model: 'sonnet:low', backend: 'claude-code' });
+      expect(res.data.assembled).toBe('answered on claude');
+    } finally {
+      configureAgentSpawnTransform(undefined);
+      customerPiMocks.spawnTransform.mockReturnValue(false);
+      agentBackendCredentialVerdictMock.mockReturnValue({ usable: true, basis: 'refreshable' });
+      errSpy.mockRestore();
+    }
   });
 
   it('the operator role never fails over — only the papercup chat pin pairs backends', async () => {
@@ -604,6 +781,33 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     expect(callOf(1).model).toBe(callOf(0).model);
     expect(callOf(1).backend).toBe(callOf(0).backend);
     errSpy.mockRestore();
+  });
+
+  it('publishes redacted public manual returns, omits other tools and never observes owner returns', async () => {
+    vi.mocked(runAgentChat).mockImplementation(async function* (opts): AnyGen {
+      yield { type: 'tool_call', name: 'docs:get', input: {}, callId: 'docs-get-1' };
+      opts.onToolResult?.({ name: 'docs:get', output: JSON.stringify({ marker: 'PUBLIC-ORCHARD', token: 'secret-fixture' }), isError: false, callId: 'docs-get-1' });
+      yield { type: 'tool_call', name: 'docs:search', input: {}, callId: 'docs-search-1' };
+      opts.onToolResult?.({ name: 'docs:search', output: 'public manual unavailable', isError: true, callId: 'docs-search-1' });
+      opts.onToolResult?.({ name: 'documents:read', output: 'PRIVATE-FIXTURE', isError: false });
+      yield { type: 'delta', text: 'hi' };
+    });
+    const publicCtx = { ...makeCtx(), role: 'papercup' };
+    await handler({ messages: [], trigger: 'user_message', role: 'papercup', hostTrust: 'public',
+      principalToken: 'portal-user-bearer', sessionUser: null }, publicCtx);
+    const returns = publicCtx.emit.mock.calls.filter(([name]) => name === 'tool_result');
+    expect(returns).toHaveLength(2);
+    expect(publicCtx.emit.mock.calls.filter(([name]) => name === 'tool_call').map(([, data]) => data.callId))
+      .toEqual(['docs-get-1', 'docs-search-1']);
+    expect(returns[0][1]).toMatchObject({ name: 'docs:get', ok: true, callId: 'docs-get-1' });
+    expect(returns[0][1].summary).toContain('PUBLIC-ORCHARD');
+    expect(returns[0][1].summary).not.toContain('secret-fixture');
+    expect(returns[1][1]).toMatchObject({ name: 'docs:search', ok: false, callId: 'docs-search-1' });
+    expect(JSON.stringify(returns)).not.toContain('PRIVATE-FIXTURE');
+    const ownerCtx = makeCtx();
+    await handler({ messages: [], trigger: 'user_message', hostTrust: 'owner', sessionUser: null }, ownerCtx);
+    expect(vi.mocked(runAgentChat).mock.calls.at(-1)?.[0].onToolResult).toBeUndefined();
+    expect(ownerCtx.emit.mock.calls.some(([name]) => name === 'tool_result')).toBe(false);
   });
 
   it('hostTrust=public: NO superuser mount, doors + card + deep tool; tool-less without the boundary bearer (D-007 §2)', async () => {

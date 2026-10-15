@@ -1242,6 +1242,35 @@ describe("ProductionWorkspaceHostRemoteInitializerHost workspace directory (WI-1
     }
   });
 
+  it("NodeWorkspaceHostSystem does not change a symlink target's ownership", async (context) => {
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    const primaryGid = typeof process.getgid === "function" ? process.getgid() : undefined;
+    if (uid === undefined || primaryGid === undefined) return context.skip();
+
+    const supplementaryGid =
+      typeof process.getgroups === "function"
+        ? process.getgroups().find((gid) => gid !== primaryGid)
+        : undefined;
+    const targetGid = supplementaryGid ?? (uid === 0 ? (primaryGid === 0 ? 1 : 0) : undefined);
+    if (targetGid === undefined) return context.skip();
+
+    const root = await scratch();
+    try {
+      const target = join(root, "protected-target");
+      const link = join(root, "workspace-link");
+      await writeFile(target, "protected");
+      await symlink(target, link);
+      const before = await stat(target);
+
+      await new NodeWorkspaceHostSystem().setOwnership(link, String(uid), String(targetGid));
+
+      const after = await stat(target);
+      expect({ uid: after.uid, gid: after.gid }).toEqual({ uid: before.uid, gid: before.gid });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   const hasAclTools =
     spawnSync("setfacl", ["--version"]).status === 0 &&
     spawnSync("getfacl", ["--version"]).status === 0;

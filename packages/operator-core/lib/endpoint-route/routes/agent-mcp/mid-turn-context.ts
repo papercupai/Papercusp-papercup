@@ -60,6 +60,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
 import { recordInjectionCoverage } from '../../../memory/injection-delivery-coverage';
 import { takePendingFailureLoopHint, type FailureLoopHint } from '../../../failure-loop-circuit-breaker';
+import { turnStartRespondBy } from './turn-start-memory';
+import { createMemoryWorkDeadline } from '../../../memory/op-deadline';
 
 /**
  * Query clamp — embed the head of a long command, not a pasted heredoc.
@@ -849,7 +851,10 @@ function clampSection(section: string, budget: number): string {
   // Prefer a word boundary, but never sacrifice most of the budget to find one.
   const lastSpace = cut.lastIndexOf(' ');
   const head = lastSpace > budget * 0.6 ? cut.slice(0, lastSpace) : cut;
-  return `${head.trimEnd()} … (clipped — memory:search the id above for the rest)`;
+  // Principals calling this shared endpoint can have different tool grants.
+  // Keep the stable id, but do not prescribe memory:search to callers that
+  // may not be allowed to invoke it.
+  return `${head.trimEnd()} … (clipped; id retained)`;
 }
 
 /** One tool call as the PostToolBatch hook ships it (clamped, see the script). */
@@ -1019,6 +1024,7 @@ const midTurnContext = defineTool({
   path: '/agent-mcp/mid-turn-context',
   auth: 'loopback',
   async handler(req) {
+    const arrivedAt = Date.now();
     let body: {
       owner?: string;
       /** Private detector key carried separately from the public injection owner. */
@@ -1032,6 +1038,8 @@ const midTurnContext = defineTool({
       cwd?: string;
       /** Which TUI is asking — 'claude' | 'codex' | 'omp'. Recorded only (P-005). */
       client?: string;
+      /** Native hook response wall, shared with both retrieval legs. */
+      wallMs?: number;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -1040,6 +1048,12 @@ const midTurnContext = defineTool({
     }
     const owner = (body.owner ?? '').trim();
     if (!owner) return Response.json({ ok: false, error: 'owner required' }, { status: 400 });
+    const { sessionAllowsAmbientContext } = await import('../../../capability-envelope/session-confinement-port');
+    const { activeWorkspaceId } = await import('../../../workspace-registry');
+    const contextWorkspace = body.workspace?.trim();
+    if (!await sessionAllowsAmbientContext({ ownerId: owner,
+      workspaceId: contextWorkspace && contextWorkspace !== '*' ? contextWorkspace : activeWorkspaceId() }))
+      return Response.json({ ok: true, text: '' });
 
     // Drain before any query/admission branch. A repeated-failure advisory is
     // orthogonal to memory recall, so it must still be delivered when this
@@ -1169,8 +1183,15 @@ const midTurnContext = defineTool({
         // AFTER admitCall: the cost guards above key on the tool-derived query alone,
         // and a tail that shifts as ingest lands would perturb the
         // "identical consecutive query ⇒ skip" guard.
-        return (
+        // A ready corpus must not wait past the native hook's wall for an
+        // unrelated memory availability probe. Reuse turn-start's response
+        // margin and the builder's existing shared, cancellable deadline.
+        const respondBy = turnStartRespondBy(arrivedAt, body.wallMs);
+        const deadline = respondBy === null ? undefined
+          : createMemoryWorkDeadline(Math.max(1, respondBy - Date.now()), req.signal);
+        try { return (
           (await buildMemoryContextBlock({
+            ...(deadline ? { deadline, respondByMs: respondBy! } : {}),
             userId: user?.id ?? null,
             workspaceId,
             harnessSlugs: harness ? [harness] : [],
@@ -1193,7 +1214,7 @@ const midTurnContext = defineTool({
             budgetChars: MID_TURN_BUDGET_CHARS,
             heading: 'Possibly relevant (mid-turn)',
           })) ?? ''
-        );
+        ); } finally { deadline?.close(); }
       });
       if (!admitted.admitted) return respond();
       const block = admitted.value;

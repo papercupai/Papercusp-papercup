@@ -116,6 +116,7 @@ describe('sessionPartsWriterSweep', () => {
   });
 
   const deps = (observations: PartsWriterObservation[], fires = 0) => ({
+    rail: { broadcast: vi.fn(async () => true), resolve: vi.fn(async () => true) },
     observe: async (_windowMs: number) => observations,
     recentWatchdogFires: vi.fn(
       // `_hours` MUST be optional to match typeof recentWatchdogFires — a

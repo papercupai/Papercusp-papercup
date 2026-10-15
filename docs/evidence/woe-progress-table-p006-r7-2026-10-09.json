@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "WOE progress table P-006: retained native R7 actual-goal proof",
+  "framework": "operational",
+  "command": ["scripts/verify-tauri-headless.sh"],
+  "commandScope": "The retained run identifies this maintained verifier. This edition imports its completed evidence; it does not claim a new execution or reconstruct the original full argument vector.",
+  "startedAt": "2026-10-09T01:04:37.736Z",
+  "finishedAt": "2026-10-09T02:18:37Z",
+  "exitCode": 0,
+  "summary": "Native R7 ran committed source 7cb2d808 against the shared database and passed prepare, boot and actual-goal DOM assertions. This evidence edition preserves that run and the later authoritative migration/declaration readback. Narrow viewport and trusted keyboard proof belong to the separate maintained native matrix; they are not asserted here.",
+  "planSlug": "woe-progress-table-2026-10-08",
+  "workItemId": "WI-10007685",
+  "parentWorkItemId": "WI-10007603",
+  "sourceCommit": "7cb2d80833cd59bd69584c75ee09ae0903deb1cd",
+  "evidencePlane": "live",
+  "evidenceRuntime": "desktop-shell",
+  "nativeRun": {
+    "harness": "verify-tauri-headless",
+    "runId": "20261009T010435Z-4058118",
+    "resultPath": "~/.local/state/verification-harness/verify-tauri-headless/20261009T010435Z-4058118/result.json",
+    "sourceReceiptPath": "~/.local/state/verification-harness/verify-tauri-headless/20261009T010435Z-4058118/phases/prepare/verifier-source-receipt.json",
+    "endedAt": "2026-10-09T01:17:11.694Z",
+    "wrapperFinishedAt": "2026-10-09T01:18:55Z",
+    "verdict": "pass",
+    "database": "shared actual-goal database; no isolated fixture goal",
+    "goalId": "work-on-everything-fresh-grading-and-improvement-60d3a8"
+  },
+  "assertions": [
+    {
+      "id": "real-goal-table-has-plan-rows",
+      "passed": true,
+      "evidence": "R7 state-all.json: found=true, rows=88, unavailable=null; verdict.json R4-1-rows.pass=true. The scoped native URL includes tab=hud, hudtab=goals, ws=papercusp-workspace and the actual goal id."
+    },
+    {
+      "id": "real-goal-stored-picks-match-dom",
+      "passed": true,
+      "evidence": "R7 DOM has In worklist count10 and ten marker labels. WI-10007603 thread-post1166808 records exact equality with titles resolved from all ten stored worklist refs, version14. Later goals:get still returns version14 and the same ten refs."
+    },
+    {
+      "id": "real-goal-totals-and-chart-present",
+      "passed": true,
+      "evidence": "R7 state-all.json totalsTiles=6 and chart='1495 work items finished in the last 21 days'; verdict.json R4-3-totals.pass=true and R4-4-chart.pass=true. These are observed snapshot values, not current portfolio totals."
+    },
+    {
+      "id": "migration-and-live-opt-in-declaration",
+      "passed": true,
+      "evidence": "db:migrations like1430 returned applied 1430-woe-worklist-only-picked-plans.sql at2026-10-08T22:57:59.993Z, sha2568b7caafe0a941d67ea73bf114b717cd41e9a53ce2ad070f5dedc35003c87a901. goals:get readback on2026-10-09 confirms propertySchema.worklist.collection.defaultSelected=false; goal remains paused."
+    }
+  ],
+  "retainedArtifacts": [
+    {
+      "path": ".papercusp/scratch/woe-p006-run7/state-all.json",
+      "sha256": "9d7b0b380d14c93e444fb66d77f6f3870f1abb08f86a2c6063c22cc473b1cbbf"
+    },
+    {
+      "path": ".papercusp/scratch/woe-p006-run7/verdict.json",
+      "sha256": "01c80905891d1da34a37e360e751751f60d13565e935231997bb8ab58d3ab464"
+    },
+    {
+      "path": "/tmp/woe-headless7.log",
+      "sha256": "bbea56aa4d47c6a4e5e465ad9a3bd145ad140a4477069d118d16c8f78a5998e4"
+    }
+  ],
+  "scope": "Actual-goal render, saved-pick equality, totals/chart, migration and opt-in declaration. The separately corrected native fixture test, narrow viewport, keyboard reorder and final release shipment are outside this proof."
+}

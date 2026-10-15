@@ -105,6 +105,17 @@ describe('same-listener WebSocket sites (EI-21855861879191381)', () => {
       expect(sharesListener(sites[0]!)).toBe(true);
     });
 
+    it('retains a real constructor after a route wildcard string', () => {
+      const source = [
+        'app.all("/api/*", handler);',
+        'const websocketServer = new WebSocketServer({ noServer: true });',
+        '/* a later real comment */',
+      ].join('\n');
+      expect(findWsSites('fixture.ts', source)).toEqual([
+        { file: 'fixture.ts', line: 2, binding: 'noServer' },
+      ]);
+    });
+
     it('catches a direct { server } attachment, shorthand or not', () => {
       expect(classifyWsBinding('new WebSocketServer({ server })')).toBe('server-attach');
       expect(classifyWsBinding('new WebSocketServer({ server: httpServer })')).toBe(

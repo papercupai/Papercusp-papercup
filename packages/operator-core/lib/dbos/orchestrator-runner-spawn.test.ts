@@ -63,8 +63,13 @@ const node = (script: string) => ({ command: execPath, args: ['-e', script], env
 // startup against the guard. WI-10003853 measured 1028ms of spawn cost under gate load, and a
 // 200ms guard lost that race at repairHead cef7d918 (WI-10004340). Cases that must NOT trip
 // the guard use this window; cases that must trip it keep a short one (a slow start only
-// makes those fire more surely).
-const SPAWN_SAFE_FIRST_TURN_MS = 3_000;
+// makes those fire more surely). 3000ms then lost the same race at repairHead f07043ba
+// (WI-10006055: both clear-cases saw the guard fire before the child's first byte), so the
+// window is sized for a heavily loaded gate, not an idle box. Only the stderr-marker case
+// pays it in wall time; the stdout case exits after 20ms.
+const SPAWN_SAFE_FIRST_TURN_MS = 10_000;
+// Each clear-case's Vitest budget must outlive the inner spawn timeout (3x the guard).
+const SPAWN_SAFE_TEST_BUDGET_MS = SPAWN_SAFE_FIRST_TURN_MS * 3 + 10_000;
 
 beforeEach(() => {
   // P-005 failLog / spawn-error log → console.error; silence (fail-on-console).
@@ -243,7 +248,7 @@ describe('spawnInvokeOnce', () => {
     );
     expect(r.exitCode).toBe(0);
     expect(r.firstTurnTimedOut).toBe(false);
-  }, 20_000);
+  }, SPAWN_SAFE_TEST_BUDGET_MS);
 
   it('release-fixer first-turn guard clears on the stderr activity marker (production shape)', async () => {
     // WI-85288 regression. The test above disarms the guard via STDOUT, which is a
@@ -281,7 +286,7 @@ describe('spawnInvokeOnce', () => {
     expect(Date.now() - start).toBeGreaterThan(SPAWN_SAFE_FIRST_TURN_MS); // it really outlived the guard
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
-  }, 20_000);
+  }, SPAWN_SAFE_TEST_BUDGET_MS);
 
   it('resolves (never rejects) with exitCode 1 on a spawn error (bad command)', async () => {
     H.cmd = { command: 'papercusp-no-such-binary-zzz', args: [], env: process.env };

@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { itemIndexDivergence, lintParsed, summarizeLintReports, type PlanLintReport } from './lint';
 import { evaluateSetContent } from './set-content';
 import { parsePlan } from './parser';
-import { stampTerminalNowBlock } from './terminal-now-stamp';
 
 /**
  * P-002 (promote-spawn-child-harness): `plans:lint` emits a soft WARNING (never
@@ -831,14 +830,22 @@ describe('plans:lint — terminal_status_stale_now (WI-38303)', () => {
     }
   });
 
-  it('is SILENCED by the set-plan-status stamp — the two guards do not double-report', async () => {
-    const stamped = stampTerminalNowBlock(
-      planDoc({ status: 'shipped', nowNext: 'Grade the rubric, then flip the plan to shipped.' }),
-      'shipped',
-      new Date('2026-08-12T21:00:00Z'),
-    );
-    expect(stamped).not.toBeNull();
-    expect(has(await lintDoc(stamped as string))).toBe(false);
+  it('is SILENCED by a legacy terminal stamp (plans stamped before P-006 retired it)', async () => {
+    // derived-status P-006 retired the WI-38303 stamp writer; plans stamped
+    // before then still carry its mark in their Now, and it still means "closed".
+    const stamped = planDoc({
+      status: 'shipped',
+      nowState: '⛔ PLAN CLOSED — SHIPPED 2026-08-12. shipped it',
+      nowNext: 'Grade the rubric, then flip the plan to shipped.',
+    });
+    expect(has(await lintDoc(stamped))).toBe(false);
+  });
+
+  it('points the author at plans:set-now, not at a stamp the status verb no longer writes', async () => {
+    const r = await lintDoc(planDoc({ status: 'shipped', nowNext: 'Grade the rubric, then flip the plan to shipped.' }));
+    const message = r.warnings.find((f) => f.code === 'terminal_status_stale_now')!.message;
+    expect(message).toContain('plans:set-now');
+    expect(message).not.toMatch(/stamps the block/);
   });
 
   it('CONTROL: the same doc unstamped DOES warn', async () => {

@@ -969,6 +969,51 @@ const bashOutputResultSchema = z
   })
   .catchall(z.unknown());
 
+const bashOutputHandleSchemas = {
+  bash_id: z
+    .string()
+    .min(1)
+    .describe('The process-local id returned by capability:bash (run_in_background). Use only in the launching context.'),
+  task_id: z
+    .string()
+    .min(1)
+    .describe('The durable task id returned by capability:bash. Preferred after compaction/carry; attachment never restarts the job.'),
+};
+
+const bashOutputOptionSchemas = {
+  filter: z
+    .string()
+    .optional()
+    .describe(
+      'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter. A leading bare PCRE-style inline-flag prefix — (?i), (?im), (?is) — is honored as JS case-insensitive/multiline/dotAll flags rather than rejected as invalid.',
+    ),
+  peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
+  tail: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      'Return only the LAST N lines of the output text in THIS response (whichever of `output`/`output_tail` it carries — every response branch, including stranded/recovered ones, is covered). The read cursor still advances past the ENTIRE chunk regardless, exactly like `filter` — this only narrows what is RETURNED. Composes with `filter`: filter is applied first, then tail keeps the last N of what remains.',
+    ),
+};
+
+// A root union enforces and publishes the at-least-one handle requirement.
+// The former superRefine enforced it only at runtime, so tools:find showed two
+// optional IDs and invited callers to submit neither.
+const bashOutputArgsSchema = z.union([
+  z.object({
+    bash_id: bashOutputHandleSchemas.bash_id,
+    task_id: bashOutputHandleSchemas.task_id.optional(),
+    ...bashOutputOptionSchemas,
+  }),
+  z.object({
+    bash_id: bashOutputHandleSchemas.bash_id.optional(),
+    task_id: bashOutputHandleSchemas.task_id,
+    ...bashOutputOptionSchemas,
+  }),
+]);
+
 export default defineTool({
   name: 'capability:bash_output',
   description:
@@ -988,60 +1033,16 @@ export default defineTool({
   },
   result: bashOutputResultSchema,
   capability: 'capability:bash',
+  // A peek leaves the per-job output cursor untouched; a normal poll consumes output and
+  // advances it. Preserve write gating for consuming polls while treating peeks as reads.
+  effectForCall: (args) => (args.peek === true ? 'read' : 'write'),
   requirePrincipal: false,
   // EI-20190459016345227: output polling does not read ctx.tx and can await
   // the durable task-ledger fallback while a live seed cut is running. Do not
   // retain the ambient workspace transaction across that control-path I/O.
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
-  args: z
-    .object({
-      bash_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe(
-          'The process-local id returned by capability:bash (run_in_background). Use only in the launching context.',
-        ),
-      task_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe(
-          'The durable task id returned by capability:bash. Preferred after compaction/carry; attachment never restarts the job.',
-        ),
-      filter: z
-        .string()
-        .optional()
-        .describe(
-          'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter. A leading bare PCRE-style inline-flag prefix — (?i), (?im), (?is) — is honored as JS case-insensitive/multiline/dotAll flags rather than rejected as invalid.',
-        ),
-      peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
-      tail: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe(
-          'Return only the LAST N lines of the output text in THIS response (whichever of `output`/`output_tail` it carries — every response branch, including stranded/recovered ones, is covered). The read cursor still advances past the ENTIRE chunk regardless, exactly like `filter` — this only narrows what is RETURNED. Composes with `filter`: filter is applied first, then tail keeps the last N of what remains.',
-        ),
-    })
-    .superRefine((args, refinementCtx) => {
-      // EI-21240465530065342: capability:bash hands the caller BOTH ids at
-      // launch, so passing both back is the NATURAL recovery call — and it is
-      // exactly the call an agent makes after a carry, when it still holds the
-      // launch result. Rejecting that shape put a schema error on the one path
-      // that recovers a job whose worker-local JOBS entry is gone. Only the
-      // no-handle case is a real caller error here; a both-ids call that
-      // disagrees is caught in the handler, where the ledger can adjudicate.
-      if (!args.bash_id && !args.task_id) {
-        refinementCtx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Pass at least one of bash_id or task_id.',
-          path: ['bash_id'],
-        });
-      }
-    }),
+  args: bashOutputArgsSchema,
   async handler(args, ctx) {
     // EI-22068327735595657: the ENTIRE existing body below is unchanged and now
     // runs inside this IIFE; `tail` is applied uniformly to whatever it returns,
@@ -1272,17 +1273,24 @@ export default defineTool({
               )
             : false;
 
+        const scopeActive =
+          ledgerVerdict.kind === 'ledger_inconclusive' && ledgerRow ? await taskScopeIsActive(ledgerRow) : false;
+        const currentTaskIsLive = ledgerVerdict.kind === 'confirmed_alive' || scopeActive;
+
         // EI-20230176152308336: the durable JOB END marker is stronger than a
         // stale/non-terminal task-ledger row. The marker is appended from the
         // child close handler, so once it is present the job has a recoverable
         // terminal verdict even though the in-memory BashJob and/or its ledger
         // update may have been lost. An OBSERVED terminal ledger exit is stronger
-        // still and wins a conflict with a later marker. `stranded` and
-        // `ended_unobserved` prove only that the process is gone: they carry no
-        // observed shell exit, so a durable JOB END must win over their generic
+        // still and wins a conflict with a later marker. Positive liveness for
+        // this task is stronger than any marker in its output: commands can
+        // print or copy a JOB END line from another task while still running.
+        // `stranded` and `ended_unobserved` prove only that the process is gone:
+        // they carry no observed shell exit, so a durable JOB END must win over their generic
         // job_process_gone/re-run advice (EI-23696035248162547).
         if (
           strandedLog.terminal &&
+          !currentTaskIsLive &&
           (ledgerVerdict.kind !== 'confirmed_dead' || isLedgerConfirmedUnobservedDeath(ledgerVerdict.state))
         ) {
           const markerOk = strandedLog.terminal.status === 'completed';
@@ -1313,7 +1321,7 @@ export default defineTool({
         // A previous recovery read may already have appended JOB DIED. It is a
         // durable failed terminal verdict just like JOB END is a durable normal
         // terminal verdict, but never a success signal.
-        if (strandedLog.died) {
+        if (strandedLog.died && !currentTaskIsLive) {
           return {
             content: [
               {
@@ -1338,10 +1346,7 @@ export default defineTool({
           };
         }
 
-        const scopeActive =
-          ledgerVerdict.kind === 'ledger_inconclusive' && ledgerRow ? await taskScopeIsActive(ledgerRow) : false;
-
-        if (ledgerVerdict.kind === 'confirmed_alive' || scopeActive) {
+        if (currentTaskIsLive) {
           // EI-20218784292451325: a durable liveness proof is a successful
           // recovery, not a tool failure. The worker-local JOBS map may be
           // missing after a cross-worker read, but the task is still healthy;

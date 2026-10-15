@@ -4,6 +4,7 @@ import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { setMode } from '../../modes/store';
 import { parseGoalPlanningReview, readGoalPlanningReviewContext } from '../../goal-planning-review';
+import { readGoalDayCandidates } from '../../goal-holder-behavior-metrics';
 import recordTool, { ideatePassRecordArgs, type IdeatePassRecordResult } from './ideate-pass-record';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -47,6 +48,9 @@ async function record(goalId = GOAL, owner = OWNER) {
       goalId, disposition: 'no-eligible-work',
       rationale: 'The isolated recording fixture has no product work requiring a new plan.',
       evidenceRefs: [`goal:${GOAL}`],
+      // P-003/P-009: a no-new-plan review must carry a coverage map; [] states there is
+      // no recurring need, which is true of this isolated fixture.
+      coverage: [],
     },
   });
   const context: Parameters<typeof recordTool.handler>[1] = {
@@ -112,5 +116,40 @@ describe('goal review production persistence', () => {
     } finally {
       await fx.admin`UPDATE harness_shared.goals SET body = 'A controlled recording fixture with no product work to launch.' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
     }
+  }, 90_000);
+});
+
+describe('goal-day ideation yield on real PG (P-004 / D-001)', () => {
+  const SPAWN = `p004-${RUN}`;
+  const seed = (tool: string, o: { goalId?: string | null; args?: unknown; status?: string; minutesAgo?: number }) => fx.admin`
+    INSERT INTO harness_shared.tool_invocations
+      (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status, goal_id, args_json, invoked_at)
+    VALUES (${WS}, 'papercusp', 'p004-test', ${tool}, 'su', ${SPAWN}, 'p004', ${o.status ?? 'ok'}, ${o.goalId ?? null},
+            ${o.args === undefined ? null : fx.admin.json(o.args as Parameters<typeof fx.admin.json>[0])},
+            now() - make_interval(mins => ${o.minutesAgo ?? 10}))`;
+
+  afterEach(async () => {
+    if (fx) await fx.admin`DELETE FROM harness_shared.tool_invocations WHERE workspace_id = ${WS} AND spawn_id = ${SPAWN}`;
+  });
+
+  it('tells the holder on the receipt that a goal-day with no candidate still owes one', async () => {
+    const { payload } = await record();
+    expect(payload).toMatchObject({ ok: true, ideationYield: { goalId: GOAL, candidates: 0, owed: true } });
+  }, 90_000);
+
+  it('counts only settled plan proposals and reported ideas for this goal inside the goal-day', async () => {
+    await seed('plans:new', { goalId: GOAL });
+    await seed('plans:new', { goalId: GOAL, status: 'error' });
+    await seed('plans:new', { goalId: GOAL, minutesAgo: 25 * 60 });
+    await seed('plans:new', { goalId: `other-${GOAL}` });
+    await seed('blender:ideate-pass-record', { args: { ideasFiled: 2, goalReview: { goalId: GOAL } } });
+    await seed('blender:ideate-pass-record', { args: { ideasFiled: 3, goalReview: { goalId: `other-${GOAL}` } } });
+    await seed('blender:ideate-pass-record', { args: { ideasFiled: 5, goalReview: { goalId: GOAL } }, minutesAgo: 25 * 60 });
+
+    const read = await readGoalDayCandidates({ workspaceId: WS, goalId: GOAL, at: new Date() }, { sql: fx.admin });
+    expect(read).toMatchObject({ plansNew: 1, ideasFiled: 2 });
+
+    const { payload } = await record();
+    expect(payload).toMatchObject({ ok: true, ideationYield: { plansNew: 1, ideasFiled: 2, candidates: 3, owed: false } });
   }, 90_000);
 });

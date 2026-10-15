@@ -29,8 +29,17 @@ import './rubrics/get';
 import './rubrics/trend';
 import './code/run';
 import './code/tools';
+import workItemsGet from './work_items/get';
 
 describe('Tool Argument Parity Guard (EI-11400, WI-4652)', () => {
+  it.each([[true, 'full'], [false, 'summary']] as const)('work_items:get detail %s and %s select the same enrichment scope', (booleanDetail, stringDetail) => {
+    const base = { id: 'WI-detail-p009' };
+    const aliased = workItemsGet.args.parse({ ...base, detail: booleanDetail });
+    const canonical = workItemsGet.args.parse({ ...base, detail: stringDetail });
+    expect(aliased).toEqual(canonical);
+    expect(aliased).toMatchObject({ id: base.id, detail: booleanDetail });
+  });
+
   /**
    * Rubrics family parity: get, trend, list, search, etc. should all accept
    * rubricRef (canonical) and none should expose the superseded rubricId alias.

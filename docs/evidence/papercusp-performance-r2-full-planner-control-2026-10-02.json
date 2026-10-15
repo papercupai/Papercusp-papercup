@@ -1,0 +1,466 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R2 full-query planner profile control after setup100 failed live acceptance",
+  "framework": "shell",
+  "command": [
+    "sudo",
+    "-n",
+    "-u",
+    "postgres",
+    "psql",
+    "-X",
+    "-A",
+    "-t",
+    "-q",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-d",
+    "papercusp"
+  ],
+  "commandRepeated": 8,
+  "exitCode": 0,
+  "startedAt": "2026-10-02T00:20:24.711234+00:00",
+  "finishedAt": "2026-10-02T00:22:36.382092+00:00",
+  "summary": "Two identified slow full-projection session queries still selected serial ranking under setup100. Private setup0/tuple0.01 selected GatherMerge with two planned/launched workers and reduced execution to408–439ms. Returning to current settings restored serial execution at888–1083ms. Each query's complete20rank vector remained identical across the four profiles. This diagnostic supports the source correction; it is not a live HTTP acceptance pass.",
+  "assertions": [
+    {
+      "id": "current-profile-reproduces-serial-plan",
+      "passed": true,
+      "evidence": "session native preservation current922.258ms and compaction native id current1018.788ms use serial bitmap/rank/sort. One actualscan estimated3571 rows and visited88501."
+    },
+    {
+      "id": "corrected-profile-selects-bounded-workers",
+      "passed": true,
+      "evidence": "setup0/tuple0.01:407.854ms and438.969ms; both GatherMerge nodes plan and launch2workers. The worker cap is unchanged2; allsettingsareprivate/read-only/transaction-local."
+    },
+    {
+      "id": "profile-effect-distinguished-from-cache-warmup",
+      "passed": true,
+      "evidence": "Later current-after control returns toserial:1082.691ms and888.25ms. tuple100 alone also staysserial:926.628/965.136ms. Thus a generic warmup explanation doesnotmatchthe observedplanchanges."
+    },
+    {
+      "id": "all-selected-rank-values-preserved",
+      "passed": true,
+      "evidence": "For eachquery allfour complete20-elementrank vectors have identicalSHA:f69cc6d57f7ad13cef5496726327fd3c33a832f92f86ef110faa51e7b3dd10f5;89ede88b40cce718caaaf36ec86d0c23cba7ecdd606198d826b8a9c688f86704."
+    }
+  ],
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10004474",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 5,
+  "evidencePlane": "operational-diagnostic",
+  "executionIntervalBasis": "Conservative interval starts at completion of the immediately preceding full-projection control and ends at the retained full-profile diagnostic timestamp. It includes orchestration between controls; no exact child start is asserted.",
+  "profiles": {
+    "current100": "workers2;setup100;defaulttuplecost",
+    "tuple100": "workers2;setup100;tuple0.01",
+    "both0": "workers2;setup0;tuple0.01",
+    "current_after": "workers2;setup100;defaulttuplecost"
+  },
+  "transaction": "BEGIN READ ONLY; SET LOCAL application_name='papercusp-su:25bc:R2-full-profile-control'; SET LOCAL statement_timeout='15s'; SET LOCAL max_parallel_workers_per_gather=2; profileSettings; EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) fullQuery; SELECT rankVector FROM(fullQuery); ROLLBACK",
+  "measurement": {
+    "at": "2026-10-02T00:22:36.382092+00:00",
+    "readOnly": true,
+    "workersCap": 2,
+    "rows": [
+      {
+        "query": "session native preservation",
+        "profile": "current100",
+        "executionMs": 922.258,
+        "nodes": [
+          {
+            "Node Type": "Sort",
+            "Actual Total Time": 916.439,
+            "Actual Rows": 20,
+            "Actual Loops": 1,
+            "Plan Rows": 3571,
+            "Sort Method": "top-N heapsort"
+          },
+          {
+            "Node Type": "Bitmap Heap Scan",
+            "Actual Total Time": 895.006,
+            "Actual Rows": 88501,
+            "Actual Loops": 1,
+            "Plan Rows": 3571
+          }
+        ],
+        "rankValues": [
+          0.1,
+          0.1,
+          0.1,
+          0.053703703,
+          0.05,
+          0.035897437,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.027573632,
+          0.02508432,
+          0.023611112,
+          0.021666666,
+          0.02,
+          0.02,
+          0.019642858,
+          0.019615386,
+          0.01960373
+        ],
+        "rankSha256": "f69cc6d57f7ad13cef5496726327fd3c33a832f92f86ef110faa51e7b3dd10f5"
+      },
+      {
+        "query": "session native preservation",
+        "profile": "tuple100",
+        "executionMs": 926.628,
+        "nodes": [
+          {
+            "Node Type": "Sort",
+            "Actual Total Time": 918.249,
+            "Actual Rows": 20,
+            "Actual Loops": 1,
+            "Plan Rows": 3571,
+            "Sort Method": "top-N heapsort"
+          },
+          {
+            "Node Type": "Bitmap Heap Scan",
+            "Actual Total Time": 897.376,
+            "Actual Rows": 88501,
+            "Actual Loops": 1,
+            "Plan Rows": 3571
+          }
+        ],
+        "rankValues": [
+          0.1,
+          0.1,
+          0.1,
+          0.053703703,
+          0.05,
+          0.035897437,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.027573632,
+          0.02508432,
+          0.023611112,
+          0.021666666,
+          0.02,
+          0.02,
+          0.019642858,
+          0.019615386,
+          0.01960373
+        ],
+        "rankSha256": "f69cc6d57f7ad13cef5496726327fd3c33a832f92f86ef110faa51e7b3dd10f5"
+      },
+      {
+        "query": "session native preservation",
+        "profile": "both0",
+        "executionMs": 407.854,
+        "nodes": [
+          {
+            "Node Type": "Gather Merge",
+            "Actual Total Time": 407.775,
+            "Actual Rows": 20,
+            "Actual Loops": 1,
+            "Plan Rows": 3571,
+            "Workers Planned": 2,
+            "Workers Launched": 2
+          },
+          {
+            "Node Type": "Sort",
+            "Actual Total Time": 383.221,
+            "Actual Rows": 15.67,
+            "Actual Loops": 3,
+            "Plan Rows": 1488,
+            "Sort Method": "top-N heapsort"
+          },
+          {
+            "Node Type": "Bitmap Heap Scan",
+            "Actual Total Time": 375.095,
+            "Actual Rows": 29500.33,
+            "Actual Loops": 3,
+            "Plan Rows": 1488
+          }
+        ],
+        "rankValues": [
+          0.1,
+          0.1,
+          0.1,
+          0.053703703,
+          0.05,
+          0.035897437,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.027573632,
+          0.02508432,
+          0.023611112,
+          0.021666666,
+          0.02,
+          0.02,
+          0.019642858,
+          0.019615386,
+          0.01960373
+        ],
+        "rankSha256": "f69cc6d57f7ad13cef5496726327fd3c33a832f92f86ef110faa51e7b3dd10f5"
+      },
+      {
+        "query": "session native preservation",
+        "profile": "current_after",
+        "executionMs": 1082.691,
+        "nodes": [
+          {
+            "Node Type": "Sort",
+            "Actual Total Time": 1078.602,
+            "Actual Rows": 20,
+            "Actual Loops": 1,
+            "Plan Rows": 3571,
+            "Sort Method": "top-N heapsort"
+          },
+          {
+            "Node Type": "Bitmap Heap Scan",
+            "Actual Total Time": 1051.887,
+            "Actual Rows": 88501,
+            "Actual Loops": 1,
+            "Plan Rows": 3571
+          }
+        ],
+        "rankValues": [
+          0.1,
+          0.1,
+          0.1,
+          0.053703703,
+          0.05,
+          0.035897437,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.033333335,
+          0.027573632,
+          0.02508432,
+          0.023611112,
+          0.021666666,
+          0.02,
+          0.02,
+          0.019642858,
+          0.019615386,
+          0.01960373
+        ],
+        "rankSha256": "f69cc6d57f7ad13cef5496726327fd3c33a832f92f86ef110faa51e7b3dd10f5"
+      },
+      {
+        "query": "compaction native id",
+        "profile": "current100",
+        "executionMs": 1018.788,
+        "nodes": [
+          {
+            "Node Type": "Sort",
+            "Actual Total Time": 1007.507,
+            "Actual Rows": 20,
+            "Actual Loops": 1,
+            "Plan Rows": 4925,
+            "Sort Method": "top-N heapsort"
+          },
+          {
+            "Node Type": "Bitmap Heap Scan",
+            "Actual Total Time": 985.914,
+            "Actual Rows": 81296,
+            "Actual Loops": 1,
+            "Plan Rows": 4925
+          }
+        ],
+        "rankValues": [
+          0.031957015,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.02725332,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037
+        ],
+        "rankSha256": "89ede88b40cce718caaaf36ec86d0c23cba7ecdd606198d826b8a9c688f86704"
+      },
+      {
+        "query": "compaction native id",
+        "profile": "tuple100",
+        "executionMs": 965.136,
+        "nodes": [
+          {
+            "Node Type": "Sort",
+            "Actual Total Time": 954.82,
+            "Actual Rows": 20,
+            "Actual Loops": 1,
+            "Plan Rows": 4925,
+            "Sort Method": "top-N heapsort"
+          },
+          {
+            "Node Type": "Bitmap Heap Scan",
+            "Actual Total Time": 931.916,
+            "Actual Rows": 81296,
+            "Actual Loops": 1,
+            "Plan Rows": 4925
+          }
+        ],
+        "rankValues": [
+          0.031957015,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.02725332,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037
+        ],
+        "rankSha256": "89ede88b40cce718caaaf36ec86d0c23cba7ecdd606198d826b8a9c688f86704"
+      },
+      {
+        "query": "compaction native id",
+        "profile": "both0",
+        "executionMs": 438.969,
+        "nodes": [
+          {
+            "Node Type": "Gather Merge",
+            "Actual Total Time": 438.879,
+            "Actual Rows": 20,
+            "Actual Loops": 1,
+            "Plan Rows": 4925,
+            "Workers Planned": 2,
+            "Workers Launched": 2
+          },
+          {
+            "Node Type": "Sort",
+            "Actual Total Time": 407.37,
+            "Actual Rows": 14.67,
+            "Actual Loops": 3,
+            "Plan Rows": 2052,
+            "Sort Method": "top-N heapsort"
+          },
+          {
+            "Node Type": "Bitmap Heap Scan",
+            "Actual Total Time": 398.472,
+            "Actual Rows": 27098.67,
+            "Actual Loops": 3,
+            "Plan Rows": 2052
+          }
+        ],
+        "rankValues": [
+          0.031957015,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.02725332,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037
+        ],
+        "rankSha256": "89ede88b40cce718caaaf36ec86d0c23cba7ecdd606198d826b8a9c688f86704"
+      },
+      {
+        "query": "compaction native id",
+        "profile": "current_after",
+        "executionMs": 888.25,
+        "nodes": [
+          {
+            "Node Type": "Sort",
+            "Actual Total Time": 877.168,
+            "Actual Rows": 20,
+            "Actual Loops": 1,
+            "Plan Rows": 4925,
+            "Sort Method": "top-N heapsort"
+          },
+          {
+            "Node Type": "Bitmap Heap Scan",
+            "Actual Total Time": 856.324,
+            "Actual Rows": 81296,
+            "Actual Loops": 1,
+            "Plan Rows": 4925
+          }
+        ],
+        "rankValues": [
+          0.031957015,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.027262134,
+          0.02725332,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037,
+          0.027143037
+        ],
+        "rankSha256": "89ede88b40cce718caaaf36ec86d0c23cba7ecdd606198d826b8a9c688f86704"
+      }
+    ]
+  },
+  "retainedLog": ".papercusp/scratch/bash-f07712aa-615.log",
+  "taskId": "0muq7xydi19lb7k669y",
+  "rootCauseVerification": {
+    "hypothesis": "Underestimated correlated-term selectivity keeps setup100 full-projection exact ranking serial; the corrected private planner costs select bounded parallel execution.",
+    "alternativeHypothesis": "The observed benefit is simply cache warmup or HTTP/driver overhead.",
+    "distinguishingTest": "Execute identical scoped full-projection SQL with current100,tuple100,both0 andcurrent-after controls;retain executionplans, worker counts and complete20rank vectors.",
+    "predictedObservations": {
+      "hypothesis": "both0 selectively uses2workers and runsnear400ms, whilelatercurrent-after returnsserialand remainsmuchslower; rankvectorsmatch.",
+      "alternativeHypothesis": "Laterwarmcurrent-after is comparablyfast or plannerprofilesdo notselectivelychangethequery'sexecutioncost."
+    },
+    "actualObservation": "both0 uses2workers at407.854/438.969ms;latercurrent-after uses0parallelworkers at1082.691/888.25ms;perqueryrankvectorsmatch.",
+    "evidenceRefs": [
+      "task:0muq7xydi19lb7k669y",
+      "docs/evidence/papercusp-performance-r2-live-2026-10-02T0005.json"
+    ]
+  },
+  "residualUnknowns": [
+    "Rank-vector parity does not establish identity ordering for ties at the cutoff.",
+    "The newsource requires its own conventionalguards and identified serving-runtime HTTP acceptance; no universal workload claim is made."
+  ]
+}

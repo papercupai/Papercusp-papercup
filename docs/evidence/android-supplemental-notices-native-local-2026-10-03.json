@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Packaged supplemental Android notices on the exact retained exported debug APK",
+  "framework": "shell",
+  "command": ["adb", "-s", "emulator-5580", "shell", "am", "instrument", "-w", "-r", "-e", "class", "com.papercuspai.operator.mobile.LibraryNoticesScreenTest", "com.papercuspai.operator.mobile.test/androidx.test.runner.AndroidJUnitRunner"],
+  "startedAt": "2026-10-03T03:17:08.302139+00:00",
+  "finishedAt": "2026-10-03T03:21:46.504351+00:00",
+  "timestampBasis": "Positive instrumentation log filesystem creation and final write bound its execution (03:17:08.302139 to 03:17:31.577332 UTC). The negative-control receipt records completion of the subsequent restore-positive check. Buffered negative/restored log write times are not their execution start times.",
+  "exitCode": 0,
+  "workingDirectory": "papercup-rust-mobile",
+  "summary": "Four maintained AndroidJUnit4/Compose notice tests passed on retained exported debug APK81bfbe9f, with airplane mode enabled, wifi disabled and no routes. The new test verifies the complete source-pinned contents of five supplements and opens their actual bundled library dialogs without pairing. A private real-APK mutant with libyuv content removed was caught by this same maintained test, and reinstalling the exact original APK restored the passing result. No production app or native library was rebuilt for this verification.",
+  "appSourceCommit": "68bc889325937c16c7b299146beb093858dd51d4",
+  "testSourceCommit": "131ce62f4f21427cabc062e89d2691b1c9199168",
+  "nativeAdmissionSourceCommit": "0e9b7ea74dc5aadc6c635c696644223b526bf163",
+  "sourceFiles": [
+    {"path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt", "sha256": "b380aff3586418d4326eb55e88618ac3efa07d70b8e4901577f0153bd998fb8c"},
+    {"path": "papercup-rust-mobile/android/app/src/main/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreen.kt", "sha256": "3a36b7054d5387813a5546b27f96c9c57701a47cb65b8c173bebe110201105b1"},
+    {"path": "papercup-rust-mobile/android/config/SOURCES.json", "sha256": "37b3d17ea19ed92cb658b6ca64c2459c4a2337ce2ff242657eb6205ee17ebd56"},
+    {"path": "papercup-rust-mobile/android/app/build.gradle.kts", "sha256": "0f3517b0b3668789876e7d5dea15c6b5543222836dbce9177547b8550ec3e5f4"},
+    {"path": "papercup-rust-mobile/tools/run-android-checks.sh", "sha256": "5a4b0de1a3491999eca5d0486d471783f33b1110a85a77bcd098e82733e1babd"},
+    {"path": "papercup-rust-mobile/tools/tests/run-android-checks-test.sh", "sha256": "66fee96529f702fbe00cae591edb847acb12dcc6563b08acd87ce30594b36840"},
+    {"path": "papercup-rust-mobile/.github/workflows/ci.yml", "sha256": "461b8d46aebc2dd2e327309c09af53061eb96fe2d29573f3c2bead59e45b8498"},
+    {"path": "papercup-rust-mobile/tools/tests/android-ci-contract-test.sh", "sha256": "5effce52e1fc93a782fb8bee19c92512118f22c3640e0697f8bad7d62b07188b"}
+  ],
+  "testFiles": [
+    {"path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt", "sha256": "b380aff3586418d4326eb55e88618ac3efa07d70b8e4901577f0153bd998fb8c"},
+    {"path": "papercup-rust-mobile/tools/tests/run-android-checks-test.sh", "sha256": "66fee96529f702fbe00cae591edb847acb12dcc6563b08acd87ce30594b36840"},
+    {"path": "papercup-rust-mobile/tools/tests/android-ci-contract-test.sh", "sha256": "5effce52e1fc93a782fb8bee19c92512118f22c3640e0697f8bad7d62b07188b"}
+  ],
+  "nativeExecution": {
+    "avd": "papercusp-api36-release-16k",
+    "image": "system-images/android-36/google_apis_ps16k/x86_64",
+    "renderer": "swiftshader",
+    "readOnly": true,
+    "sdk": 36,
+    "pageSize": 16384,
+    "airplaneMode": 1,
+    "wifiOn": 0,
+    "routesBeforeAndAfter": [],
+    "positiveTests": 4,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0,
+    "cases": [
+      "bundledSupplementalNoticesMatchSourceAndOpenWithoutPairing",
+      "failedResourceDisplaysAnErrorInsteadOfACompletedEmptyList",
+      "dialogPreservesMultipleLicenseTextsAndLinkedOnlyTerms",
+      "unpairedRecipientCanOpenBundledLicenseTextAndReturn"
+    ],
+    "setup": "The read-only emulator copy inherited a non-debuggable app signed with a different key. Its package was inspected and removed only in this owned copy before installing the exact retained APK. The original AVD storage was not changed.",
+    "cleanup": "Exact original APK restored after the private mutant. Final framework health passed. The owned emulator was stopped with its console command and all three owned emulator exec handles returned exit0."
+  },
+  "supplements": [
+    {"module": "androidx.camera:camera-core", "sha256": "2b2cc1180c7e6988328ad2033b04b80117419db9c4c584918bbb3cfec7e9364f"},
+    {"module": "io.github.webrtc-sdk:android-prefixed", "sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482"},
+    {"module": "com.google.mlkit:common", "sha256": "b1efdb95a59c9170929d5bf81f2c0b34cc61f6fa7dcf26635079644606817e89"},
+    {"module": "com.google.android.gms:play-services-basement", "sha256": "f046c8bbdfc36989e98e40b5915b2a09545d06c3ce204dd1f53f188604902976"},
+    {"module": "javax.sip:android-jain-sip-ri", "sha256": "dc6bd4b4a6fd417e4245b55d6f532cf482e56500350f8f8ac1890caaf8eec702"}
+  ],
+  "negativeControl": {
+    "mutation": "Remove only libyuv content from the actual APK raw/aboutlibraries.json, then sign the private copy with the local debug key.",
+    "mutantSha256": "5eb7c891f274469d53378a0224ca75b36d8f95a5346a2eb581129f27c2e1be85",
+    "testExecutedOnce": true,
+    "caught": true,
+    "actualFailure": "JUnit ComparisonFailure: expected complete libyuv source hash2b2cc118, but missing content parses as empty text hash e3b0c442.",
+    "restoredPositive": "The same maintained supplemental-notice method passed after reinstalling exact original APK81bfbe9f."
+  },
+  "admissionGuard": {
+    "scope": "Local maintained runner and CI contract controls only; not hosted CI execution.",
+    "passed": true,
+    "controls": "Healthy framework accepted; sticky boot with missing process, changing process IDs, broken settings service and retained SurfaceFlinger DMA assertion rejected. CI rejects the retired indirect renderer and omitted admission phase.",
+    "ciMutationControlsRejected": 33,
+    "runnerPhaseControlsRejected": 20,
+    "openRuntimeIssue": "EI-24926092400277910 remains owned/open: API36.1 image crashed with the DMA assertion using both indirect and supported SwiftShader modes. The later API36 image stayed healthy. This is not proof that changing renderer fixes the API36.1 runtime origin."
+  },
+  "assertions": [
+    {"id": "exact-retained-apk-and-test-bound", "passed": true, "evidence": "APK81bfbe9f was independently hashed and installed; test APK111a2aa7 was compiled from maintained test source b380aff3 and retained before instrumentation."},
+    {"id": "five-complete-packaged-supplements", "passed": true, "evidence": "Independent APK raw-resource inspection matched all five SOURCES.json content hashes; the actual Android resource parser and dialog path verified these same complete texts without pairing."},
+    {"id": "four-native-cases-executed", "passed": true, "evidence": "AndroidJUnitRunner emitted four successful case completions and OK (4 tests), with no failures, errors or skips."},
+    {"id": "offline-owned-runtime", "passed": true, "evidence": "Owned read-only API36/16384-byte-page emulator had airplane1/wifi0/no IP routes before and after execution; native tests retained null credentials and return navigation."},
+    {"id": "real-apk-mutation-caught", "passed": true, "evidence": "Removing one actual bundled supplemental text caused the maintained content-hash assertion to fail once; restoring the exact original APK made the same method pass."},
+    {"id": "framework-admission-recurrence-controls", "passed": true, "evidence": "Final canonical shell runner suite passed its original controls and four unhealthy-framework controls. CI contract passed and rejected33 workflow mutations plus20 runner-phase omissions."},
+    {"id": "owned-cleanup", "passed": true, "evidence": "Final framework admission passed with stable SurfaceFlinger546/system_server706; the owned emulator console stop completed and all owned emulator exec sessions ended."}
+  ],
+  "evidenceFiles": [
+    {"path": "papercup-rust-mobile/android/app/build/outputs/papercusp-exported-app-debug-3c5c6ce622404f7faf827f30ecb5fec6.apk", "sha256": "81bfbe9ff235dfc8480211b8974041c30a293b1629d85d6617d3bbab9bb8a3db"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-supplemental-viewer-20261003/app-supplemental-viewer-androidTest.apk", "sha256": "111a2aa78125639aff92d8a5a68d9ef0f7165bc3800c394fda1e2b35bca0852c"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-supplemental-viewer-20261003/native-positive.log", "sha256": "3c3f53a51896daa166dc052072f68a2abae33ca933ddfc4e1485e5c341943c56"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-supplemental-viewer-20261003/native-negative.log", "sha256": "0327f7f102ba1906de06bbc94911c7c38abe3c1b06b0584d2360272ff53ca976"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-supplemental-viewer-20261003/native-restored.log", "sha256": "52faf32d360692551672a51775edfd7f2a041c1f4e6ed98573f68d045fcc53b1"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-supplemental-viewer-20261003/negative-result.json", "sha256": "b5ae8fde889ab30f52134259542c3ba95ceb1a7f0166ac43fe7c5e8a68e42f4e"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-supplemental-viewer-20261003/final-health/emulator-boot.json", "sha256": "92fe3f58d3ef5498a09c3ba19a72bf4811c868016c94dc553c99685bec366c99"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-emulator-health-regressions-final-20261003.log", "sha256": "458e9ece100e2f80b635a78d0816ee0461afedbc885a32a599742c93249a1db3"},
+    {"path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-emulator-ci-contract-20261003.log", "sha256": "89beb329723ba60eb02902dcb4ac33e86bb64b4b85e0808c174fd3a7f56643ce"}
+  ],
+  "relatedWorkItems": ["WI-10004774", "EI-24926092400277910"],
+  "scope": "Local native notice/debug preparation only. Signed-candidate identity, complete Android/native/model/Rust notices, distribution rights, actual source-recipient retrieval, hosted automatic paired CI, physical phone, Play and public-install acceptance remain open."
+}

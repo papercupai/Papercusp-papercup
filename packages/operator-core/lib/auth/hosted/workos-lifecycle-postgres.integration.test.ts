@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
-import { WorkosLifecycleWorker } from './workos-lifecycle-worker';
+import { WorkosLifecycleWorker, workosDirectoryIdentitySubject } from './workos-lifecycle-worker';
 import {
   PostgresWorkosAccessClosureSink,
   PostgresWorkosLifecycleProjectionStore,
@@ -111,11 +111,14 @@ beforeAll(async () => {
     '903-customer-organization-boundary.sql',
     '904-hosted-identity-links.sql',
     '906-customer-workspace-directory.sql',
+    '907-hosted-governance.sql',
     '978-hosted-customer-rls.sql',
   ]) {
     await sql.unsafe(migration(name));
   }
   await sql.unsafe(migration('1005-hosted-service-lifecycle-runtime.sql', true));
+  await sql.unsafe(migration('1473-hosted-directory-binding-audit.sql'));
+  await sql.unsafe(migration('1496-hosted-directory-group-mappings.sql'));
   runAsService = async (fn) =>
     sql.begin(async (tx) => {
       await tx.unsafe('SET LOCAL ROLE hosted_service');
@@ -129,6 +132,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await sql`TRUNCATE papercusp_auth.directory_user_observations`;
   await sql`TRUNCATE papercusp_auth.webhook_event_receipts`;
   await sql`TRUNCATE papercusp_auth.workos_lifecycle_entity_cursors`;
   await sql`TRUNCATE papercusp_auth.hosted_sessions`;
@@ -140,6 +144,178 @@ beforeEach(async () => {
 });
 
 describe('PostgresWorkosLifecycleProjectionStore', () => {
+  async function directoryFixture() {
+    // The provider events are historical. Seed creation/link times before
+    // them so a deletion tests lifecycle behavior, not an impossible timeline.
+    const establishedAt = new Date(OCCURRED_AT.getTime() - 86_400_000);
+    const users = await sql<IdRow[]>`
+      INSERT INTO papercusp_auth.hosted_users (primary_email, created_at)
+      VALUES ('directory@example.com', ${establishedAt}), ('unrelated@example.com', ${establishedAt})
+      RETURNING id::text AS id
+    `;
+    const orgs = await sql<IdRow[]>`
+      INSERT INTO papercusp_auth.organizations (identity_provider, external_organization_id, display_name)
+      VALUES ('workos', 'directory-org', 'Directory Org'), ('workos', 'other-org', 'Other Org')
+      RETURNING id::text AS id
+    `;
+    const subject = workosDirectoryIdentitySubject('directory-org', 'directory-1', 'directory-user-1');
+    await sql`
+      INSERT INTO papercusp_auth.external_identities (hosted_user_id, provider, subject, profile, linked_at)
+      VALUES (${users[0].id}::uuid, 'workos-dsync', ${subject}, '{"authorized_directory_groups":["allowed-group"]}'::jsonb, ${establishedAt}),
+        (${users[0].id}::uuid, 'workos', 'login-user', '{}'::jsonb, ${establishedAt})
+    `;
+    const sessions: string[] = [];
+    for (let u = 0; u < users.length; u++) {
+      for (let o = 0; o < orgs.length; o++) {
+        await sql`
+          INSERT INTO papercusp_auth.organization_memberships (organization_id,user_id,role,status,authority,created_via)
+          VALUES (${orgs[o].id}::uuid,${users[u].id}::uuid,'member','active','papercusp','member_management')
+        `;
+        const id = `hs_${String.fromCharCode(65 + sessions.length).repeat(43)}`;
+        await sql`
+          INSERT INTO papercusp_auth.hosted_sessions
+            (id,user_id,organization_id,permission_version,upstream_provider,upstream_session_id,expires_at)
+          VALUES (${id},${users[u].id},${orgs[o].id},1,'workos',${`upstream-${sessions.length}`},now()+interval '1 hour')
+        `;
+        sessions.push(id);
+      }
+    }
+    const worker = new WorkosLifecycleWorker(new PostgresWorkosLifecycleProjectionStore(runAsService), new PostgresWorkosAccessClosureSink(runAsService));
+    const userData = { id:'directory-user-1', directory_id:'directory-1', organization_id:'directory-org', state:'inactive' };
+    return { worker, userData, sessions, users, orgs };
+  }
+
+  async function applyReceipt(worker: WorkosLifecycleWorker, value: WorkOsWebhookReceiptResult) {
+    await insertReceipt(value);
+    return worker.apply(workosLifecycleEventFromReceipt(value)!);
+  }
+
+  async function revokedSessionIds() {
+    return (await sql<IdRow[]>`SELECT id FROM papercusp_auth.hosted_sessions WHERE revoked_at IS NOT NULL ORDER BY id`).map(row => row.id);
+  }
+
+  it.each(['dsync.user.updated','dsync.user.deleted'])('closes only the bound organization membership for %s and retains replay ordering', async (type) => {
+    const { worker,userData,sessions } = await directoryFixture();
+    const value = receipt('directory-revoke',type,userData);
+    expect(await applyReceipt(worker,value)).toMatchObject({ disposition:'applied',closureDelivered:true });
+    expect(await worker.apply(workosLifecycleEventFromReceipt(value)!)).toMatchObject({ disposition:'duplicate' });
+    const stale = receipt('directory-old','dsync.user.updated',{...userData,state:'active'});
+    stale.eventCreatedAt = new Date(OCCURRED_AT.getTime()-1000);
+    expect(await applyReceipt(worker,stale)).toMatchObject({ disposition:'stale' });
+    expect(await revokedSessionIds()).toEqual([sessions[0]]);
+    const rows = await sql<{status:string}[]>`SELECT status FROM papercusp_auth.organization_memberships ORDER BY status`;
+    expect(rows.map(row => row.status)).toEqual(['active','active','active','revoked']);
+    expect((await sql<{status:string}[]>`SELECT status FROM papercusp_auth.hosted_users`).map(row=>row.status)).toEqual(['active','active']);
+  });
+
+  it('ordinary login membership revocation also preserves unrelated users and organizations', async () => {
+    const { worker,sessions,users,orgs } = await directoryFixture();
+    await applyReceipt(worker,receipt('login-member-revoke','organization_membership.deleted',{user_id:'login-user',organization_id:'directory-org'}));
+    expect(await revokedSessionIds()).toEqual([sessions[0]]);
+    // Distinguishing control for EI-25792063050875001: reproduce the former
+    // returned union on the identical isolated population. The closure sink is
+    // deliberately global for user/org shutdown; a membership producer must
+    // send exact session IDs instead of these wildcard targets.
+    await sql`UPDATE papercusp_auth.hosted_sessions SET revoked_at=NULL,revocation_reason=NULL`;
+    await new PostgresWorkosAccessClosureSink(runAsService).closeAffectedAccess({
+      signalId:'legacy-membership-control', source:'workos-lifecycle', eventId:'login-member-revoke',
+      cause:'reduce-membership-access', receivedAt:RECEIVED_AT.toISOString(),
+      deadlineAt:new Date(RECEIVED_AT.getTime()+60_000).toISOString(), maxPropagationMs:60_000,
+      targets:{userIds:[users[0].id],organizationIds:[orgs[0].id]},
+      channels:['hosted-session','sse','websocket','pty-ticket','file-ticket','connector-ticket'],
+    });
+    expect(await revokedSessionIds()).toEqual(sessions.slice(0,3));
+  });
+
+  it.each(['organization_membership.deleted', 'dsync.user.deleted'])(
+    'appends one tenant receipt with the membership revocation, not on replay: %s', async (type) => {
+      const { worker, userData, orgs } = await directoryFixture();
+      const eventId = `membership-audit-${type}`;
+      const value = receipt(eventId, type, type === 'dsync.user.deleted' ? userData : {
+        user_id: 'login-user', organization_id: 'directory-org',
+      });
+      expect(await applyReceipt(worker, value)).toMatchObject({ disposition: 'applied' });
+      expect(await worker.apply(workosLifecycleEventFromReceipt(value)!)).toMatchObject({ disposition: 'duplicate' });
+      const audit = await sql<Array<{ organization_id: string; action: string; metadata: Record<string, unknown> }>>`
+        SELECT organization_id::text, action, metadata FROM papercusp_auth.organization_audit_events
+         WHERE metadata->>'providerEventId' = ${eventId}`;
+      expect(audit).toEqual([expect.objectContaining({
+        organization_id: orgs[0].id, action: 'membership.revoked',
+        metadata: expect.objectContaining({ providerEventId: eventId }),
+      })]);
+    },
+  );
+
+  it('rolls back membership reduction and provider processing if tenant audit cannot be appended', async () => {
+    const { worker, orgs, users } = await directoryFixture();
+    const value = receipt('membership-audit-unavailable', 'organization_membership.deleted', {
+      user_id: 'login-user', organization_id: 'directory-org',
+    });
+    await insertReceipt(value);
+    await sql.unsafe('REVOKE INSERT ON papercusp_auth.organization_audit_events FROM hosted_service');
+    try {
+      await expect(worker.apply(workosLifecycleEventFromReceipt(value)!)).rejects.toThrow(/permission denied/);
+      const rows = await sql`SELECT status FROM papercusp_auth.organization_memberships
+        WHERE organization_id = ${orgs[0].id}::uuid AND user_id = ${users[0].id}::uuid`;
+      expect(rows[0].status).toBe('active');
+      expect(await revokedSessionIds()).toEqual([]);
+      const events = await sql`SELECT lifecycle_entity_key FROM papercusp_auth.webhook_event_receipts WHERE event_id = ${value.eventId}`;
+      expect(events[0].lifecycle_entity_key).toBeNull();
+    } finally {
+      await sql.unsafe('GRANT INSERT ON papercusp_auth.organization_audit_events TO hosted_service');
+    }
+    expect(await worker.apply(workosLifecycleEventFromReceipt(value)!)).toMatchObject({ disposition: 'applied' });
+  });
+
+  it('records an organization deletion under its tenant and dedupes the provider replay', async () => {
+    const { worker, orgs } = await directoryFixture();
+    const value = receipt('organization-delete-audit', 'organization.deleted', { id: 'directory-org' });
+    expect(await applyReceipt(worker, value)).toMatchObject({ disposition: 'applied' });
+    expect(await worker.apply(workosLifecycleEventFromReceipt(value)!)).toMatchObject({ disposition: 'duplicate' });
+    const audit = await sql`SELECT organization_id::text, action FROM papercusp_auth.organization_audit_events
+      WHERE metadata->>'providerEventId' = ${value.eventId}`;
+    expect(audit).toEqual([{ organization_id: orgs[0].id, action: 'organization.deleted' }]);
+  });
+
+  it('records a provider user deletion in each affected tenant without duplicating on replay', async () => {
+    const { worker, orgs, users } = await directoryFixture();
+    const value = receipt('user-delete-audit', 'user.deleted', { id: 'login-user' });
+    expect(await applyReceipt(worker, value)).toMatchObject({ disposition: 'applied' });
+    expect(await worker.apply(workosLifecycleEventFromReceipt(value)!)).toMatchObject({ disposition: 'duplicate' });
+    const audit = await sql`SELECT organization_id::text, action, target_id FROM papercusp_auth.organization_audit_events
+      WHERE metadata->>'providerEventId' = ${value.eventId} ORDER BY organization_id`;
+    expect(audit).toEqual(orgs.map((org) => ({
+      organization_id: org.id, action: 'user.deleted', target_id: users[0].id,
+    })).sort((a, b) => a.organization_id.localeCompare(b.organization_id)));
+  });
+
+  it('does not match missing/different directory bindings or a mutable email', async () => {
+    const { worker,userData } = await directoryFixture();
+    await applyReceipt(worker,receipt('unbound','dsync.user.updated',{...userData,id:'unbound',email:'directory@example.com'}));
+    await applyReceipt(worker,receipt('other-directory','dsync.user.updated',{...userData,directory_id:'other-directory'}));
+    await applyReceipt(worker,receipt('other-organization','dsync.user.updated',{...userData,organization_id:'other-org'}));
+    expect(await revokedSessionIds()).toEqual([]);
+  });
+
+  it('requires a locally authorized group mapping for removal and never grants on addition', async () => {
+    const { worker,userData,sessions } = await directoryFixture();
+    const data = (groupId:string) => ({directory_id:'directory-1',user:userData,group:{id:groupId,directory_id:'directory-1',organization_id:'directory-org'}});
+    await applyReceipt(worker,receipt('other-group','dsync.group.user_removed',data('unmapped-group')));
+    await applyReceipt(worker,receipt('group-add','dsync.group.user_added',data('allowed-group')));
+    expect(await revokedSessionIds()).toEqual([]);
+    await applyReceipt(worker,receipt('group-remove','dsync.group.user_removed',data('allowed-group')));
+    expect(await revokedSessionIds()).toEqual([sessions[0]]);
+    await applyReceipt(worker,receipt('later-group-add','dsync.group.user_added',data('allowed-group')));
+    expect((await sql<{status:string}[]>`SELECT status FROM papercusp_auth.organization_memberships WHERE status='revoked'`)).toHaveLength(1);
+  });
+
+  it('rejects malformed directory states and conflicting group scopes', () => {
+    expect(()=>workosLifecycleEventFromReceipt(receipt('invalid-state','dsync.user.updated',{id:'x',directory_id:'d',organization_id:'o',state:'maybe'}))).toThrow('state_invalid');
+    expect(()=>workosLifecycleEventFromReceipt(receipt('invalid-scope','dsync.group.user_removed',{
+      directory_id:'d',user:{id:'u',directory_id:'d',organization_id:'o'},group:{id:'g',directory_id:'d',organization_id:'other'},
+    }))).toThrow('scope_mismatch');
+  });
+
   it('projects a verified identity exactly once and persists the entity cursor on the receipt ledger', async () => {
     const accepted = receipt('event_user_1', 'user.created', {
       id: 'user_workos_1',

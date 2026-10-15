@@ -25,6 +25,15 @@ import { MANDATED_INVARIANTS, type InvariantStatus, type ReconciliationInvariant
 import { statementDigest } from './transparency-statement';
 
 export const TRANSPARENCY_REPORT_VERSION = 1 as const;
+export const LIVE_MINIMUM_PAYMENTS = 2 as const;
+const HOUR_MS = 3_600_000;
+
+export interface LiveDisclosure {
+  readonly version: 1;
+  readonly minimumPayments: typeof LIVE_MINIMUM_PAYMENTS;
+  readonly status: 'complete' | 'folded';
+  readonly streams: Readonly<Partial<Record<MovementKind, { readonly payments: number; readonly root: string }>>>;
+}
 
 /** The anchored root a report points at (D-024): enough to look it up on chain. */
 export interface ReportAnchor {
@@ -89,6 +98,8 @@ export interface TransparencyReport {
   readonly entriesRoot: string;
   /** Entries in the period kept out because they are in another currency. */
   readonly excludedOtherCurrency: number;
+  /** Live snapshots only. Monthly statement bytes retain their original shape. */
+  readonly disclosure?: LiveDisclosure;
 }
 
 export interface ReportPeriod {
@@ -120,6 +131,44 @@ export function treasuryFigure(safe: SafeSnapshot | null, notMeasuredReason: str
     : { status: 'not-measured', reason: notMeasuredReason };
 }
 
+/** A closed hour joins the next window until every private movement has two distinct economic references. */
+function foldedLivePeriod(entries: readonly JournalEntry[], period: ReportPeriod, asOfMs: number): ReportPeriod {
+  const closedUntil = Math.max(period.fromMs, Math.min(period.untilMs, Math.floor(asOfMs / HOUR_MS) * HOUR_MS));
+  const closed = entries.filter((e) => e.occurredAtMs < closedUntil);
+  let untilMs = period.fromMs;
+  const pending = new Map<MovementKind, Set<string>>();
+  for (let i = 0; i < closed.length; i++) {
+    const e = closed[i]!;
+    // A DAO transfer's amount is already public on chain; it is not a private payment.
+    if (e.movement !== 'dao-transfer') {
+      const refs = pending.get(e.movement) ?? new Set<string>();
+      refs.add(canonicalJson(e.externalRef));
+      pending.set(e.movement, refs);
+    }
+    const hour = Math.floor(e.occurredAtMs / HOUR_MS);
+    const next = closed[i + 1];
+    if ((!next || Math.floor(next.occurredAtMs / HOUR_MS) !== hour) && [...pending.values()].every((refs) => refs.size >= LIVE_MINIMUM_PAYMENTS)) {
+      untilMs = Math.min(closedUntil, (hour + 1) * HOUR_MS);
+      pending.clear();
+    }
+  }
+  if (pending.size === 0) untilMs = closedUntil;
+  return { ...period, untilMs };
+}
+
+function liveDisclosure(entries: readonly JournalEntry[], folded: boolean): LiveDisclosure {
+  const streams: Partial<Record<MovementKind, { payments: number; root: string }>> = {};
+  for (const movement of new Set(entries.map((e) => e.movement))) {
+    if (movement === 'dao-transfer') continue;
+    const mine = entries.filter((e) => e.movement === movement);
+    streams[movement] = {
+      payments: new Set(mine.map((e) => canonicalJson(e.externalRef))).size,
+      root: sha256Hex(canonicalJson(mine.map((e) => entryDigest(e)))),
+    };
+  }
+  return { version: 1, minimumPayments: LIVE_MINIMUM_PAYMENTS, status: folded ? 'folded' : 'complete', streams };
+}
+
 /** Build the report for one period from the workspace's journal entries. Pure. */
 export function buildTransparencyReport(input: {
   readonly workspaceId: string;
@@ -130,12 +179,17 @@ export function buildTransparencyReport(input: {
   readonly currency?: string;
   readonly treasury: TreasuryFigure;
   readonly latestAnchor: ReportAnchor | null;
+  /** Live reports stop before the current, still-changing hour. */
+  readonly asOfMs?: number;
 }): TransparencyReport {
   const currency = input.currency ?? 'USD';
-  const periodEntries = input.entries.filter((e) => inPeriod(e, input.period));
-  const entries = periodEntries
+  const allPeriodEntries = input.entries.filter((e) => inPeriod(e, input.period));
+  const candidates = allPeriodEntries
     .filter((e) => e.currency === currency)
     .sort((a, b) => a.occurredAtMs - b.occurredAtMs || (a.entryId < b.entryId ? -1 : a.entryId > b.entryId ? 1 : 0));
+  const period = input.kind === 'live' ? foldedLivePeriod(candidates, input.period, input.asOfMs ?? input.period.untilMs) : input.period;
+  const entries = candidates.filter((e) => inPeriod(e, period));
+  const periodEntries = allPeriodEntries.filter((e) => inPeriod(e, period));
 
   const revenueByStream: Partial<Record<MovementKind, number>> = {};
   let revenueCents = 0;
@@ -172,7 +226,7 @@ export function buildTransparencyReport(input: {
     workspaceId: input.workspaceId,
     month: input.period.month,
     fromMs: input.period.fromMs,
-    untilMs: input.period.untilMs,
+    untilMs: period.untilMs,
     provisional: input.provisional,
     currency,
     revenueCents,
@@ -186,6 +240,7 @@ export function buildTransparencyReport(input: {
     entryCount: entries.length,
     entriesRoot: sha256Hex(canonicalJson(entries.map((e) => entryDigest(e)))),
     excludedOtherCurrency: periodEntries.length - entries.length,
+    ...(input.kind === 'live' ? { disclosure: liveDisclosure(entries, entries.length < candidates.length) } : {}),
   };
 }
 

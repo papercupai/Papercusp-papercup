@@ -45,7 +45,10 @@ import {
 import type { CoordEnvelope } from '@papercusp/coordination/core';
 import type { InjectSink } from '../fanout-delivery';
 import type { AgentIdentity } from '../identity';
+import { ADMIN_COORD_UI_OWNER } from '../identity';
 import type {
+  CloseIfOpenStoreError,
+  CloseIfOpenStoreResult,
   ConversationRow,
   ConversationState,
   CreateConversationInput,
@@ -65,6 +68,7 @@ import {
   resolveConversationCore,
   settleConsultConversationCore,
   supersedeConversationCore,
+  withdrawConversationCore,
   type CaptureFn,
   type ConversationDeps,
   type ConversationStoreLike,
@@ -175,18 +179,39 @@ class InMemoryConversationStore implements ConversationStoreLike {
   async supersede(
     id: string,
     replacement: CreateConversationInput,
-    opts: { now_ts: string },
+    opts: { now_ts: string; expected_answer?: string },
   ): Promise<SupersedeStoreResult | SupersedeStoreError> {
     const old = this.rows.get(id);
     if (!old) return { error: 'not_found' };
-    if (old.state !== 'open') return { error: 'not_open', conversation: { ...old } };
+    const resolvedAnswerMatches = old.state === 'resolved' &&
+      opts.expected_answer != null &&
+      old.accepted_answer === opts.expected_answer;
+    if (old.state !== 'open' && !resolvedAnswerMatches) {
+      return old.state === 'resolved'
+        ? { error: 'source_changed', conversation: { ...old } }
+        : { error: 'not_open', conversation: { ...old } };
+    }
     const replacementRow = await this.create(replacement);
     old.state = 'superseded';
     old.superseded_by = replacementRow.id;
     old.superseded_ts = opts.now_ts;
     old.updated_ts = opts.now_ts;
     old.resolved_ts = null;
+    old.accepted_answer = null;
+    old.accepted_post_id = null;
+    old.capture_target = null;
     return { conversation: { ...old }, replacement: replacementRow };
+  }
+
+  /** Mirrors PgConversationStore.closeIfOpen: compare-and-set open → closed. */
+  async closeIfOpen(id: string, opts: { now_ts: string }): Promise<CloseIfOpenStoreResult | CloseIfOpenStoreError> {
+    const row = this.rows.get(id);
+    if (!row) return { error: 'not_found' };
+    if (row.state !== 'open') return { error: 'not_open', conversation: { ...row } };
+    row.state = 'closed';
+    row.updated_ts = opts.now_ts;
+    row.resolved_ts = null;
+    return { ok: true, conversation: { ...row } };
   }
 
   async setAcceptedAnswer(
@@ -435,6 +460,40 @@ describe('supersedeConversationCore', () => {
     expect((await store.get(old.conversation.id))?.state).toBe('open');
   });
 
+  it('corrects a resolved owner question only when the exact accepted answer is supplied', async () => {
+    const old = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      producer: 'coord:ask-owner',
+      body: 'Which IAM scope should be used?',
+    });
+    const resolved = await resolveConversationCore(deps, ident(ADMIN_COORD_UI_OWNER), {
+      conversation_id: old.conversation.id,
+      accepted_answer: 'Use the existing read-only scope.',
+    });
+    if ('error' in resolved) throw new Error(resolved.error);
+
+    const stale = await supersedeConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      expected_answer: 'Grant the extra permissions.',
+      replacement: { body: 'Which scope should replace the accepted scope?' },
+    });
+    expect(stale).toEqual({ error: 'resolution_changed' });
+    expect((await store.list()).map((row) => row.id)).toEqual([old.conversation.id]);
+
+    const correction = await supersedeConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      expected_answer: 'Use the existing read-only scope.',
+      replacement: { body: 'Which scope should replace the accepted scope?' },
+    });
+    if ('error' in correction) throw new Error(correction.error);
+    expect(correction.conversation).toMatchObject({
+      state: 'superseded',
+      accepted_answer: null,
+      accepted_post_id: null,
+    });
+    expect(correction.replacement.conversation).toMatchObject({ state: 'open' });
+  });
+
   it('retires the old gate, points to an open replacement, and notifies old subscribers', async () => {
     const old = await openConversationCore(deps, ident('asker'), {
       kind: 'question',
@@ -492,6 +551,121 @@ describe('supersedeConversationCore', () => {
       replacement: { body: '   ' },
     })).toEqual({ error: 'invalid_replacement' });
     expect((await store.get(fresh.conversation.id))?.state).toBe('open');
+  });
+});
+
+describe('withdrawConversationCore (WI-6554700010012347)', () => {
+  it('lets the asker close an owner question with no answer, no capture and no replacement', async () => {
+    const old = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      producer: 'coord:ask-owner',
+      body: 'Should I fix the 502 now?',
+    });
+    await subs.subscribe({
+      subscriber_id: 'follower',
+      target_kind: 'object',
+      target_ref: objectToTargetRef({ kind: 'conversation', ref: old.conversation.id }),
+      created_ts: T0,
+    });
+    sinkBox.clear();
+
+    const result = await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      reason: 'The owner told me to fix it in chat.',
+    });
+
+    if ('error' in result) throw new Error(result.error);
+    expect(result.conversation).toMatchObject({
+      state: 'closed',
+      accepted_answer: null,
+      accepted_post_id: null,
+      superseded_by: null,
+      resolved_ts: null,
+    });
+    expect(captureCalls).toEqual([]);
+    expect(await store.list()).toHaveLength(1);
+    const posts = await threads.listPosts(`thr-${old.conversation.id}`);
+    expect(posts.map((p) => ({ author: p.author_id, body: p.body }))).toEqual([
+      { author: 'asker', body: 'Withdrawn by the asker: The owner told me to fix it in chat.' },
+    ]);
+    expect(result.reasonPostId).toBe(posts[0]!.id);
+    expect(result.delivered).toBe(1);
+    expect(sinkBox.inbox.follower?.[0]).toMatchObject({
+      notify_kind: 'conversation_withdrawn',
+      withdrawn_reason: 'The owner told me to fix it in chat.',
+    });
+    expect(sinkBox.inbox.asker).toBeUndefined();
+    expect(await postReplyCore(deps, ident('latecomer'), { conversation_id: old.conversation.id, body: 'late' })).toEqual({
+      error: 'closed',
+    });
+  });
+
+  it('refuses a peer, leaving the gate open', async () => {
+    const old = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'mine' });
+    expect(await withdrawConversationCore(deps, ident('peer'), {
+      conversation_id: old.conversation.id,
+      reason: 'not my question',
+    })).toEqual({ error: 'not_owner' });
+    expect((await store.get(old.conversation.id))?.state).toBe('open');
+  });
+
+  it('refuses a blank reason, an unknown id, a consult, and an already-terminal conversation', async () => {
+    const open = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q' });
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: open.conversation.id,
+      reason: '   ',
+    })).toEqual({ error: 'invalid_reason' });
+    expect((await store.get(open.conversation.id))?.state).toBe('open');
+
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: 'conv-missing',
+      reason: 'gone',
+    })).toEqual({ error: 'not_found' });
+
+    const consult = await openConversationCore(deps, ident('asker'), { kind: 'consult', body: 'q' });
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: consult.conversation.id,
+      reason: 'moot',
+    })).toEqual({ error: 'consult_requires_typed_verb' });
+
+    const answered = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'peer q' });
+    const resolved = await resolveConversationCore(deps, ident('peer'), {
+      conversation_id: answered.conversation.id,
+      accepted_answer: 'yes',
+    });
+    if ('error' in resolved) throw new Error(resolved.error);
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: answered.conversation.id,
+      reason: 'too late',
+    })).toEqual({ error: 'already_terminal', state: 'resolved' });
+    expect((await store.get(answered.conversation.id))?.accepted_answer).toBe('yes');
+  });
+
+  it('a second withdraw reports already_terminal instead of closing twice', async () => {
+    const old = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q' });
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      reason: 'moot',
+    })).not.toHaveProperty('error');
+    expect(await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      reason: 'moot again',
+    })).toEqual({ error: 'already_terminal', state: 'closed' });
+    expect(await threads.listPosts(`thr-${old.conversation.id}`)).toHaveLength(1);
+  });
+
+  it('still closes when the best-effort reason post fails', async () => {
+    const old = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q' });
+    deps.threadTxn = async () => {
+      throw new Error('thread write stalled');
+    };
+    const result = await withdrawConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      reason: 'moot',
+    });
+    if ('error' in result) throw new Error(result.error);
+    expect(result.reasonPostId).toBeNull();
+    expect((await store.get(old.conversation.id))?.state).toBe('closed');
   });
 });
 
@@ -662,6 +836,84 @@ describe('resolveConversationCore', () => {
     expect(res).toEqual({ error: 'no_answer' });
     expect(captureCalls).toHaveLength(0);
     expect((await store.get(opened.conversation.id))?.state).toBe('open');
+  });
+
+  it('refuses to resolve an owner question from an agent-authored reply', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      producer: 'coord:ask-owner',
+      body: 'May this role receive the additional IAM permissions?',
+    });
+    const agentAnswer = await answerQuestionCore(deps, ident('resolver'), {
+      conversation_id: opened.conversation.id,
+      body: 'Grant the extra permissions.',
+    });
+    if ('error' in agentAnswer) throw new Error(agentAnswer.error);
+
+    const result = await resolveConversationCore(deps, ident('resolver'), {
+      conversation_id: opened.conversation.id,
+      accepted_post_id: agentAnswer.post.id,
+    });
+
+    expect(result).toEqual({ error: 'owner_answer_required' });
+    expect(captureCalls).toHaveLength(0);
+    expect(await store.get(opened.conversation.id)).toMatchObject({
+      state: 'open',
+      accepted_answer: null,
+      accepted_post_id: null,
+    });
+  });
+
+  it('requires the accepted answer to match the owner-authored decision post', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      producer: 'coord:ask-owner',
+      body: 'May this role receive the additional IAM permissions?',
+    });
+    const ownerAnswer = await answerQuestionCore(deps, ident(ADMIN_COORD_UI_OWNER), {
+      conversation_id: opened.conversation.id,
+      body: 'Keep the existing read-only scope.',
+    });
+    if ('error' in ownerAnswer) throw new Error(ownerAnswer.error);
+
+    const mismatch = await resolveConversationCore(deps, ident('resolver'), {
+      conversation_id: opened.conversation.id,
+      accepted_answer: 'Grant the extra permissions.',
+      accepted_post_id: ownerAnswer.post.id,
+    });
+    expect(mismatch).toEqual({ error: 'owner_answer_mismatch' });
+    expect((await store.get(opened.conversation.id))?.state).toBe('open');
+
+    const result = await resolveConversationCore(deps, ident('resolver'), {
+      conversation_id: opened.conversation.id,
+      accepted_post_id: ownerAnswer.post.id,
+    });
+    if ('error' in result) throw new Error(result.error);
+    expect(result.conversation).toMatchObject({
+      state: 'resolved',
+      accepted_answer: 'Keep the existing read-only scope.',
+      accepted_post_id: ownerAnswer.post.id,
+    });
+  });
+
+  it('records an owner-authored post when the owner resolves with direct accepted_answer text', async () => {
+    const opened = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      producer: 'coord:ask-owner',
+      body: 'Which IAM scope should be used?',
+    });
+    const result = await resolveConversationCore(deps, ident(ADMIN_COORD_UI_OWNER), {
+      conversation_id: opened.conversation.id,
+      accepted_answer: 'Use the existing read-only scope.',
+    });
+    if ('error' in result) throw new Error(result.error);
+
+    const detail = await getConversationCore(deps, opened.conversation.id);
+    expect(detail?.posts).toContainEqual(expect.objectContaining({
+      id: result.conversation.accepted_post_id,
+      author_id: ADMIN_COORD_UI_OWNER,
+      body: 'Use the existing read-only scope.',
+    }));
   });
 
   it('an explicit accepted_answer wins over accepted_post_id (trimmed; the post id is still recorded)', async () => {
@@ -1003,7 +1255,7 @@ describe('conversation producer attribution (EI-21462599108204160)', () => {
       body: 'q',
       producer: 'coord:ask-owner',
     });
-    const res = await resolveConversationCore(deps, ident('asker'), {
+    const res = await resolveConversationCore(deps, ident(ADMIN_COORD_UI_OWNER), {
       conversation_id: opened.conversation.id,
       accepted_answer: 'yes',
     });
@@ -1039,7 +1291,8 @@ describe('conversation producer attribution (EI-21462599108204160)', () => {
 
     // Answer two of the three; the unanswered one must stay attributable too.
     for (const c of [ownerAsk, peerAsk]) {
-      const r = await resolveConversationCore(deps, ident('asker'), {
+      const resolver = c === ownerAsk ? ADMIN_COORD_UI_OWNER : 'asker';
+      const r = await resolveConversationCore(deps, ident(resolver), {
         conversation_id: c.conversation.id,
         accepted_answer: 'answered',
       });
@@ -1074,7 +1327,7 @@ describe('conversation producer attribution (EI-21462599108204160)', () => {
     expect((await store.get(res.replacement.conversation.id))?.producer).toBe('coord:ask-owner');
   });
 
-  it('falls back to the supersede verb only when the original had no producer to inherit', async () => {
+  it('preserves the owner gate for an unattributed legacy question', async () => {
     // Models a row opened before this column existed, or federated from a peer
     // running older code — the only way a live row carries a NULL producer.
     await store.create({
@@ -1094,6 +1347,33 @@ describe('conversation producer attribution (EI-21462599108204160)', () => {
     const res = await supersedeConversationCore(deps, ident('asker'), {
       conversation_id: 'conv-legacy',
       replacement: { body: 'replacement' },
+    });
+    if ('error' in res) throw new Error(res.error);
+    expect((await store.get(res.replacement.conversation.id))?.producer).toBe('coord:ask-owner');
+    expect(await resolveConversationCore(deps, ident('different-agent'), {
+      conversation_id: res.replacement.conversation.id,
+      accepted_answer: 'agent decision',
+    })).toEqual({ error: 'owner_answer_required' });
+  });
+
+  it('uses the supersede producer for an unattributed legacy discussion', async () => {
+    await store.create({
+      id: 'legacy-discussion',
+      kind: 'discussion',
+      scope: 'operator',
+      asker_id: 'asker',
+      body: 'pre-attribution discussion',
+      producer: 'test',
+      created_ts: T0,
+    });
+    const legacy = await store.get('legacy-discussion');
+    if (!legacy) throw new Error('fixture missing');
+    legacy.producer = null;
+    store.rows.set('legacy-discussion', legacy);
+
+    const res = await supersedeConversationCore(deps, ident('asker'), {
+      conversation_id: 'legacy-discussion',
+      replacement: { body: 'replacement discussion' },
     });
     if ('error' in res) throw new Error(res.error);
     expect((await store.get(res.replacement.conversation.id))?.producer).toBe('conversations:supersede');

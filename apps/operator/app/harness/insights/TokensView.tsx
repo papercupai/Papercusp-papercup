@@ -22,10 +22,13 @@
  * rather than a fabricated breakdown.
  */
 
-import type { CSSProperties, ReactNode } from 'react';
+import { useState, type CSSProperties, type ReactNode } from 'react';
 import { Coins, RefreshCw, Cpu, UserRound, CalendarDays, Info } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import type { TokensDashboardSnapshot, TokenGroupRow } from '@papercusp/operator-core/lib/harness-insights/card-types';
+import { operatorUi, useOperatorWorkspaceLocation } from '@papercusp/operator-ui/seam';
+import { Table } from '../Table';
+import { Select } from '../Select';
 
 // ─── number formatting (matches SpendCard's idiom) ──────────────────
 function formatUsd(n: number): string {
@@ -174,6 +177,24 @@ function DayTrend({ snapshot }: { snapshot: TokensDashboardSnapshot }) {
 }
 
 export function TokensView({ slug }: { slug: string }): ReactNode {
+  const location = useOperatorWorkspaceLocation();
+  const [exporting, setExporting] = useState(false);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [exportWindow, setExportWindow] = useState(24 * 60 * 60 * 1000);
+  const exportDiagnostics = async () => {
+    setExporting(true); setExportStatus(null);
+    try {
+      const response = await operatorUi().apiFetch(`/api/harness/${encodeURIComponent(slug)}/insights/diagnostic-export`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation_id: crypto.randomUUID(), window_ms: exportWindow }),
+      });
+      const result = await response.json();
+      setExportStatus(response.ok && result.delivered === true ? 'Aggregate accepted for delivery.' :
+        result.code === 'consent_disabled' ? 'Enable aggregate diagnostic export in Settings → Profile first.' :
+        'Aggregate was not delivered. Check your monitoring choice and local usage availability.');
+    } catch { setExportStatus('Aggregate was not delivered. Local diagnostics remain available.'); }
+    finally { setExporting(false); }
+  };
   const sync = useSyncQuery<TokensDashboardSnapshot>({
     queryName: 'insights.tokens',
     args: { harness: slug },
@@ -191,7 +212,7 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
           <div style={TITLE}>
             <Coins size={16} aria-hidden /> Token spend
           </div>
-          <div style={SUB}>Cache-inclusive token &amp; cost burn this week, broken down by model, role, and day.</div>
+          <div style={SUB}>Calls observed by this runtime, with cache-inclusive tokens and labeled model costs.</div>
         </div>
         <button
           type="button"
@@ -203,11 +224,29 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
           <RefreshCw size={13} aria-hidden /> Refresh
         </button>
       </div>
+      <p style={SUB}>This local ledger covers calls this runtime observes. It does not measure provider-account usage,
+        subscription balances, invoices, or cloud bills. Papercusp service charges are separate.
+        Customer usage stays local unless you explicitly authorize aggregate diagnostic export.</p>
+      {location === 'cloud' && <section style={CARD} aria-label="Aggregate diagnostic export">
+        <p style={SUB}>Send only call and token counts, provider-reported or estimated model cost, and the count of unpriced calls
+          to Papercusp’s PostHog at flags.papercuspai.com. No prompts, code, private tasks, logs, account details or host/cloud bills.
+          Export is off by default; enable it in Settings → Profile. The period starts after your latest opt-in.
+          Revocation stops future delivery. Previously sent events remain under the project’s current unlimited retention.</p>
+        <label>Export period <Select ariaLabel="Export period" value={String(exportWindow)} disabled={exporting}
+          onChange={value => setExportWindow(Number(value))} options={[
+            { value: String(24 * 60 * 60 * 1000), label: 'Last 24 hours' },
+            { value: String(7 * 24 * 60 * 60 * 1000), label: 'Last 7 days' },
+          ]} /></label>
+        <button type="button" disabled={exporting} onClick={() => { void exportDiagnostics(); }}>Send aggregate diagnostics</button>
+        {exportStatus && <p role="status">{exportStatus}</p>}
+      </section>}
 
       {sync.loading && !snap ? (
         <div style={EMPTY}>Loading token spend…</div>
       ) : sync.error ? (
         <div style={EMPTY}>Token spend unavailable: {sync.error.message}</div>
+      ) : snap?.observation === 'unavailable' ? (
+        <div style={EMPTY} role="status" data-testid="tokens-unavailable">Local usage is unavailable. Token counts and costs are unknown.</div>
       ) : !snap || snap.totals.runs === 0 ? (
         <div style={EMPTY} data-testid="tokens-empty">
           <Coins size={20} aria-hidden />
@@ -217,9 +256,9 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
       ) : (
         <>
           <div style={SCOREBOARD} aria-label="Token spend totals">
-            <Stat value={formatUsd(snap.totals.costUsd)} label="Total spend" testid="tokens-stat-cost" />
+            <Stat value={formatUsd(snap.totals.costUsd)} label="Recorded model cost" testid="tokens-stat-cost" />
             <Stat value={formatTokens(snap.totals.tokens)} label="Total tokens" testid="tokens-stat-tokens" />
-            <Stat value={snap.totals.runs.toLocaleString()} label="Agent runs" testid="tokens-stat-runs" />
+            <Stat value={snap.totals.runs.toLocaleString()} label="Observed calls" testid="tokens-stat-runs" />
             <Stat value={cacheReadShare} label="Cache-read share" testid="tokens-stat-cache" />
           </div>
 
@@ -231,10 +270,27 @@ export function TokensView({ slug }: { slug: string }): ReactNode {
               {snap.totals.estimatedUsd > 0
                 ? ` Includes ${formatUsd(snap.totals.estimatedUsd)} estimated from token counts (codex/OMP report no billed cost).`
                 : ''}
+              {snap.totals.reportedUsd !== undefined ? ` Provider-reported call cost: ${formatUsd(snap.totals.reportedUsd)}.` : ''}
+              {(snap.totals.unpricedCalls ?? 0) > 0 ? ` Cost is unknown for ${snap.totals.unpricedCalls} call(s); these are excluded from the recorded total.` : ''}
             </span>
           </div>
 
           <DayTrend snapshot={snap} />
+          <section style={CARD} aria-label="Recent local calls">
+            <div style={CARD_HEAD}>Recent local calls</div>
+            <p style={SUB}>Up to 20 recorded calls in the selected window. Unknown counters remain unknown.</p>
+            <div style={{ overflowX: 'auto' }}><Table rows={snap.recentCalls ?? []} getRowKey={call => call.id}
+              ariaLabel="Recent local call usage" columns={[
+                { key: 'time', header: 'Time', render: call => new Date(call.atMs).toLocaleString() },
+                { key: 'model', header: 'Model', render: call => call.model },
+                { key: 'input', header: 'Input', render: call => call.inputTokens === null ? 'Unknown' : formatTokens(call.inputTokens) },
+                { key: 'output', header: 'Output', render: call => call.outputTokens === null ? 'Unknown' : formatTokens(call.outputTokens) },
+                { key: 'cache-read', header: 'Cache read', render: call => call.cacheReadTokens === null ? 'Unknown' : formatTokens(call.cacheReadTokens) },
+                { key: 'cache-write', header: 'Cache write', render: call => call.cacheCreationTokens === null ? 'Unknown' : formatTokens(call.cacheCreationTokens) },
+                { key: 'cost', header: 'Model cost', render: call => call.costUsd === null ? 'Unknown' :
+                  `${formatUsd(call.costUsd)} (${call.costSource === 'provider' ? 'provider reported' : 'estimated'})` },
+              ]} /></div>
+          </section>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
             <Breakdown

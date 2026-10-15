@@ -176,8 +176,8 @@ export function engineDeathSignal(
 
 /**
  * The drill leg's sandbox collector: runs the REAL detector over the planted
- * synthetic snapshot (drill payload), emitting an origin='drill' signal scoped
- * to the sandbox. The snapshot — not live rows — is deliberate: planting
+ * synthetic snapshot (drill payload), emitting an origin='drill' signal captured
+ * under the workspace platform Pot. The snapshot — not live rows — is deliberate: planting
  * active rows in harness_shared.routines would be FIRED by the live engine.
  */
 export function engineDeathDrillCollector(snapshot: RoutineLivenessRow[], nowMs?: number): WatchdogCollector {

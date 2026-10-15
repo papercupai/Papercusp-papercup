@@ -1,0 +1,347 @@
+{
+  "schemaVersion": 1,
+  "kind": "manual-source-delta-review",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "implementationWorkItemId": "WI-10007170",
+  "evidenceWorkItemId": "WI-10007744",
+  "observedDate": "2026-10-09",
+  "operatorCommitAtRead": "93bde66b2d12cb84d6dd3b1462264aeb03853e10",
+  "portalCommitAtRead": "b6af32ef662bce05cc45dd10103b1f95a9c4b1d5",
+  "procedure": "Read exact current clauses, each original manual binding, its maintained measurement recipe, baseline repository pins and server-reported moved paths on attributed current-build3170. Compare each changed file against that baseline and inspect its current implementation. Preserve unchanged prior review conclusions and renew only the manual source assessment; no test or native replay.",
+  "sourceFiles": [
+    { "root": "papercusp", "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx", "sha256": "da2e086b896f2f6c16b56f8daded5e61f42b06203dfc4f1c5073e4de312571ea" },
+    { "root": "papercusp", "path": "packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts", "sha256": "b07594bc0aeff81564fa10b1c10df1a2e836f5527b2e5714bffecb2f1d1d7394" },
+    { "root": "papercusp", "path": "packages/operator-core/lib/workspace-host/hosted-operator-http.ts", "sha256": "ed9425fc15116cde61347f3e4d7493cae97288800a3ee0fff7bcfa88b1059dcb" },
+    { "root": "papercusp", "path": "apps/operator/lib/onboarding/cloud-tutorial.ui.json", "sha256": "291f7f492d28f75e3731c66511fe3c75fd80031da758236002087b968c8f7559" },
+    { "root": "portal", "path": "packages/ui/src/shell.tsx", "sha256": "8432c6424f9e30238f8aafd1b2af85f03afab0fdc2ee6d82f85b59541101c6a4" },
+    { "root": "portal", "path": "apps/host/src/api.ts", "sha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701" }
+  ],
+  "r11FullProductReview": {
+    "schemaVersion": 1,
+    "specId": "AUTO-BAR-R-11-P-016",
+    "specRevision": 2,
+    "specFingerprint": "a26bd754ff3206bcd5dff3fed1aafa6d0735f741badd8fcbd7c896c3ccdeb102",
+    "observedAt": "2026-10-10T16:14:00Z",
+    "commits": {
+      "papercusp": "50251d1ea31340a130cfacacb4639b0c10d0d183",
+      "portal": "ad1c224bed6345a6bb94baaeb97b6c4c56e3a0fe"
+    },
+    "oracle": "The immutable R11@2 falsifier requires full-product extensions of existing surfaces and a specific reuse assessment for each new durable surface. Evaluate that boundary from source and registry relationships.",
+    "procedure": "Read the full-product catalogue, independent source-census test, account progress writer, minimal lesson Help context, mounted account guide, Portal entry, authenticated host routes and Settings/theme provider seam. Compare each to its existing owner instead of deriving a pass from UI output.",
+    "findings": [
+      "ProductTutorialTarget entries navigate to registered destinations and their product controls. The full-product guide uses the existing product catalogue, maintained source census, operator surfaces and authenticated Portal entry; Cloud retains its domain lesson and workspace receipts.",
+      "Account progress extends the existing hosted_user_preferences profile.productTutorial version slot through readAccountTutorialProgress/updateAccountTutorialProgress/enrollAccountTutorial. Its transaction scope, optimistic revision and idempotency checks stay in that existing storage boundary.",
+      "Lesson Help extends cloud-tutorial-help with a strict versioned full-product context. It feeds the existing authorized Help/provider boundary with lesson information, with deterministic local guidance retained.",
+      "PortalEntry supplies authenticated account/session/workspace identity to AccountProductTutorial around FirstRunPortal or the existing shell destination. The guide renders navigation and review controls while explicit domain actions stay in their existing product surfaces.",
+      "Personalization retains NativeThemeSettings behind the existing OperatorSettingsSlot fallback; PortalSettingsAdditions supplies PortalAppearanceSettings through the theme case. Portal switchTheme continues to persist through /api/preferences and applyPortalTheme. This extends the existing page, slot and writer.",
+      "Portal API and web-runtime extend existing authenticated host/tutorial routes and the exact speech leaf under D-037. No separate host, theme store, progress table, service, cron or config key is introduced by these reviewed changes."
+    ],
+    "sourceFiles": [
+      {
+        "root": "papercusp",
+        "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+        "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4"
+      },
+      {
+        "root": "papercusp",
+        "path": "packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts",
+        "sha256": "b07594bc0aeff81564fa10b1c10df1a2e836f5527b2e5714bffecb2f1d1d7394"
+      },
+      {
+        "root": "papercusp",
+        "path": "packages/operator-core/lib/onboarding/cloud-tutorial-help.ts",
+        "sha256": "40d4d987304cfa59bba8c66a3dad79b6c22076f263986fd31ac58dd152630db8"
+      },
+      {
+        "root": "papercusp",
+        "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx",
+        "sha256": "6ef334883debb8355a81cfedba8308cd386977682e3661c971012a570ddd4453"
+      },
+      {
+        "root": "papercusp",
+        "path": "packages/operator-ui/src/settings-slots.tsx",
+        "sha256": "3aac0738311424fbef541dda2a8c8828eaf1d280f041b8ea7b2c16022739fd92"
+      },
+      {
+        "root": "papercusp",
+        "path": "apps/operator/app/settings/personalization/page.tsx",
+        "sha256": "57a711a1918c5ac75b103ee1110a0379dfd3c9fb1ab4a1455236e0d4fef63509"
+      },
+      {
+        "root": "papercusp",
+        "path": "apps/operator/app/settings/layout.tsx",
+        "sha256": "46452ead3cd622e9db03cab864ab1292c6e448c293167358d072d8934560cf29"
+      },
+      {
+        "root": "papercusp",
+        "path": "apps/operator/lib/theme.ts",
+        "sha256": "70a631c641a05aca5470a799da2325b57c2e7a84758dd1b509551cbb1f701776"
+      },
+      {
+        "root": "portal",
+        "path": "packages/ui/src/shell.tsx",
+        "sha256": "ac3b8ece7caf4311227efbd0879a0737d24632f6b5ca5c058e2bf30803d0b370"
+      },
+      {
+        "root": "portal",
+        "path": "apps/host/src/api.ts",
+        "sha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701"
+      },
+      {
+        "root": "portal",
+        "path": "apps/host/src/web-runtime.ts",
+        "sha256": "ad036f0d349bb7e172e552a1937e9ae2daf1bb6234242732ea3c5c8d244dcf85"
+      }
+    ],
+    "result": "The reviewed full-product implementation extends the identified existing product/control surfaces. R11@2 reuse assessment passes.",
+    "parentShipment": "Owner directive1534 and the full plan remain open. Original hosted failures, protected voice/human/native acceptance, novice review, required affected suite and final release obligations stay in their own acceptance records. This review changes no BAR, spec or shipment requirement."
+  },
+  "r11CurrentDeltaReview": {
+    "schemaVersion": 1,
+    "specId": "AUTO-BAR-R-11-P-016",
+    "specRevision": 2,
+    "specFingerprint": "a26bd754ff3206bcd5dff3fed1aafa6d0735f741badd8fcbd7c896c3ccdeb102",
+    "observedAt": "2026-10-11T17:57:00Z",
+    "commits": {
+      "papercusp": "af73da044b9c67adc47a9a5044968b6139578a8a",
+      "portal": "0e88e2e67bb9ff2e214bc74c95320dc39af65da7"
+    },
+    "priorBindings": [34588, 34590],
+    "comparisonBaselines": {
+      "papercusp": "fc723ef3f924af543510f19ea6aef5daa59628fa",
+      "portal": "cc880c5d44f91e93325cb865956d4bfc3eff2c00"
+    },
+    "oracle": "The unchanged R11@2 falsifier rejects a forked product/control plane or a new durable surface without a specific reuse assessment. This source review establishes reuse only.",
+    "procedure": "Read complete diffs for all nine core measurement paths and three Portal measurement paths from their original binding pins. Read the exact existing SettingsSlots, workspace-location, account-progress and Help seams. Compare each changed behavior to its maintained owner; byte-check all eleven implementation files against committed blobs. Preserve the earlier full-product findings and all wider acceptance requirements.",
+    "findings": [
+      "Hosted Settings adds profile and saved-prompts cases to the existing OperatorSettingsSlot union. Personalization keeps its existing SavedPromptsSection fallback; PortalSettingsAdditions selects hosted disclosure through the existing workspace-location provider. SettingsLayout uses that same location to avoid a desktop-only startup reader. These changes extend one maintained composition seam rather than adding a Settings store or API.",
+      "PortalEntry wraps the account guide in the existing OperatorWorkspaceLocationProvider because the guide mounts above its destination. AccountProductTutorial passes that location into the existing captureBrowserTelemetry writer. The account/session/workspace scope and original destination remain owned by PortalEntry.",
+      "The optional Portal microphone launcher now dynamically imports the existing voice-elevenlabs module after the explicit start gesture and preserves the caller's abort signal. Added query-owner entries extend the existing SURFACE_PARAM_OWNERS map; they introduce no parallel router.",
+      "authorizeTutorialVoice extends the existing strict lesson request schemas and compares the verified principal against persisted account/workspace progress. Optional row locking and persisted-enrollment checks extend readTutorialProgress/readAccountTutorialProgress within the existing tenant transaction and hosted_user_preferences record. No new progress table, service, provider or configuration surface is introduced by these changes.",
+      "The versioned catalogue, theme writer, authenticated Portal host API and web-runtime files are byte-identical to their previous measurement pins. Their original reuse findings remain applicable. The changed mounted guide, Help, progress and Settings paths are explicitly assessed above rather than treated as unchanged."
+    ],
+    "sourceFiles": [
+      { "root": "papercusp", "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts", "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4" },
+      { "root": "papercusp", "path": "packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts", "sha256": "b74c6d8dc6fd64ffb0799802bef871bbdadf85d9abc86cceb2a9d8eaf45ae2fe" },
+      { "root": "papercusp", "path": "packages/operator-core/lib/onboarding/cloud-tutorial-help.ts", "sha256": "64d1a204e7323bdd9866aba203388e72a0cb08062ba5ccb7d088881500517687" },
+      { "root": "papercusp", "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx", "sha256": "cd741196a73abd62f1b5f57108524b7fea0455045657891ceeb035a4a97bf512" },
+      { "root": "papercusp", "path": "packages/operator-ui/src/settings-slots.tsx", "sha256": "0f895053db818541640d7a336623a42fce8c4db1be04f69c94e53810aa9a7cbf" },
+      { "root": "papercusp", "path": "apps/operator/app/settings/personalization/page.tsx", "sha256": "8b1fa89493e70ec394929f95302ef9c9d9ce6fcac2f118ef9babf91f964ad78a" },
+      { "root": "papercusp", "path": "apps/operator/app/settings/layout.tsx", "sha256": "19767c7f32aa3323fcf81e569e4174c882c860814aa50f249c8431f84e4600b3" },
+      { "root": "papercusp", "path": "apps/operator/lib/theme.ts", "sha256": "70a631c641a05aca5470a799da2325b57c2e7a84758dd1b509551cbb1f701776" },
+      { "root": "portal", "path": "packages/ui/src/shell.tsx", "sha256": "0477784fbbae1dc88523f309b926104d752d9ff3f462ac6c799bbe99a370e470" },
+      { "root": "portal", "path": "apps/host/src/api.ts", "sha256": "f8578479d1e80191533a341812079fbe7a15da003ff79216248928ecf845a701" },
+      { "root": "portal", "path": "apps/host/src/web-runtime.ts", "sha256": "ad036f0d349bb7e172e552a1937e9ae2daf1bb6234242732ea3c5c8d244dcf85" }
+    ],
+    "result": "The reviewed current full-product source extends the identified existing product/control surfaces. R11@2 reuse assessment passes for these measured files.",
+    "parentShipment": "Directive1534 remains open. This source review does not establish security correctness, current affected-suite PASS, protected native microphone use, human-heard audio, novice review, pilot baseline or exact production shipment. Older source reviews, browser runs and failures retain their original scope and lineage."
+  },
+  "r11LegacyDeltaReview": {
+    "schemaVersion": 1,
+    "specId": "AUTO-BAR-R-11-P-010",
+    "specRevision": 5,
+    "specFingerprint": "5eed7ac8277f1af370aeefa89bac9d3361616dcab71e42207781f68259d0274d",
+    "observedAt": "2026-10-12T01:31:39.292052+00:00",
+    "commits": {
+      "papercusp": "076100a289e1dbbb07b8a05a4c268c44a65d8ad3",
+      "portal": "9832c507aad6277608b7f69168b72b793c297aa3"
+    },
+    "priorBindings": [
+      34366,
+      34367
+    ],
+    "procedure": "Read complete committed diffs from each original review pin. Verify all fifteen core and two Portal paths against current committed blobs. Assess the five changed core paths and changed Portal shell against their maintained product owners; retain the original findings for eleven byte-identical paths.",
+    "findings": [
+      "The protected voice route extends existing hosted assistance composition, strict lesson-context schemas, verified principal binding, and tenant-scoped persisted progress. The reservation/provider uses the existing TutorialVoiceTokenProvider seam; server-selected signed WebSocket URLs replace a permissive transport shape without adding a second progress store or agent loop. Optional row locking and persisted-enrollment checks extend existing hosted_user_preferences readers.",
+      "The mounted guide keeps its versioned catalogue, persisted account progress and existing voice-output player. Its changed question textarea uses bounded CSS on the existing form. Hosted analytics receives the maintained workspace-location context, and the existing telemetry writer returns before querying desktop consent for a cloud location.",
+      "The Portal shell extends existing SettingsSlots for theme/profile/saved-prompts and the existing query-owner map. Its AccountProductTutorial mount adds the maintained OperatorWorkspaceLocationProvider above the destination; the optional voice launcher dynamically imports the existing transport only after the start gesture. Existing account/session/history/theme persistence boundaries remain in place.",
+      "The other ten core paths and Portal agents-popover are byte-identical to the previous exact review pins. This completes the original measured source population, rather than replacing the fifteen-path review with the narrower full-product review."
+    ],
+    "sourceFiles": {
+      "papercusp": [
+        {
+          "path": "apps/operator/app/_components/LazyDetails.tsx",
+          "sha256": "7eca01c8efe95232f2406f002631ced6baaa82ff8fc139b28bafb3cf93e02a80",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/cloud-tutorial-adapter.tsx",
+          "sha256": "79a2aa82872981734a9511431becd83e050efda3eff9ae8eba7ee4eaa08f0e8c",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/cloud-tutorial-companion.tsx",
+          "sha256": "84ea26eaf2b66568692e4bb56b3ee179d915337c1d6cc5c520a70ec6a1aaacad",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/cloud-tutorial-guide.tsx",
+          "sha256": "4cf71289dd180044a434752a76052f41eb4e0aafb1db0540078927f771acff57",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/cloud-tutorial-session.tsx",
+          "sha256": "9da7999eb5277bc27038615c04b5de6167915abf81219adbbc30423f60c1f9a5",
+          "matchesPrior": true
+        },
+        {
+          "path": "apps/operator/lib/onboarding/use-cloud-tutorial-progress.ts",
+          "sha256": "70dc7f2fb58f478f4f026ebc4f0c8212d536853adb0be52997fd44e16ffb16bb",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/hosted-tutorial-assistance-runtime.ts",
+          "sha256": "90ff734f65e3eecf5004900a650be687665eec0942403251ec885ae80f44cb72",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/hosted-tutorial-progress-routes.ts",
+          "sha256": "589ebbe69782acc43cc0e956b09bbd623fd169bfb7584876a156419559f48b88",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/hosted-tutorial-progress.ts",
+          "sha256": "773f6e1f59186ce58b926f30a5e40c8582268ba25754e140be8eb5afcf199b23",
+          "matchesPrior": false
+        },
+        {
+          "path": "packages/operator-core/lib/onboarding/cloud-tutorial-help.ts",
+          "sha256": "64d1a204e7323bdd9866aba203388e72a0cb08062ba5ccb7d088881500517687",
+          "matchesPrior": false
+        },
+        {
+          "path": "packages/operator-core/lib/onboarding/cloud-tutorial-lesson.ts",
+          "sha256": "2a82ef578fb4514b270cd495f3afb9df7977717a2ebbbd91f036e08947385907",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts",
+          "sha256": "b74c6d8dc6fd64ffb0799802bef871bbdadf85d9abc86cceb2a9d8eaf45ae2fe",
+          "matchesPrior": false
+        },
+        {
+          "path": "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+          "sha256": "b91a3ea0338f77ad37f990f63cb8e5f7406dda731373e457684a471841a51ea4",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/operator-ui/src/browser-telemetry.tsx",
+          "sha256": "02273e39a12546a75e2c5a8081e5f10a5a093cbb681f84d5cbcf2b36ead18cb0",
+          "matchesPrior": false
+        },
+        {
+          "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx",
+          "sha256": "cd741196a73abd62f1b5f57108524b7fea0455045657891ceeb035a4a97bf512",
+          "matchesPrior": false
+        }
+      ],
+      "portal": [
+        {
+          "path": "packages/ui/src/agents-popover.tsx",
+          "sha256": "5ff8c18e06f4be5fda5cb5af739051c6f733c9d3b298cc469b8dccd4bf3d09f3",
+          "matchesPrior": true
+        },
+        {
+          "path": "packages/ui/src/shell.tsx",
+          "sha256": "0477784fbbae1dc88523f309b926104d752d9ff3f462ac6c799bbe99a370e470",
+          "matchesPrior": false
+        }
+      ]
+    },
+    "result": "Current source reuse review passes within the unchanged R11 tree clause. No hosted/native/human/affected-suite or shipment acceptance is inferred."
+  },
+  "reviews": [
+    {
+      "specId": "AUTO-BAR-R-11-P-016",
+      "specRevision": 2,
+      "observedAt": "2026-10-10T15:56:37Z",
+      "operatorCommitAtRead": "efdcd30aeff97d2775d71f26aa44b73ac000c90d",
+      "portalCommitAtRead": "ad1c224bed6345a6bb94baaeb97b6c4c56e3a0fe",
+      "procedure": "Read the exact full-product R11 revision2 falsifier and existing P010 reuse assessment below. Compare ce6b3cf879..efdcd30aef for Personalization and settings-slots; inspect the PortalSettingsAdditions theme declaration and unchanged applyPortalTheme/switchTheme preference writer. Verify the current canonical Settings layout, Personalization, native theme writer, settings slot and product guide equal retained efdcd committed blobs. No hosted or historical test replay.",
+      "findings": [
+        "AccountProductTutorial still mounts the versioned full-product curriculum through the existing account-first Portal entry. Cloud remains one module; the existing product catalogue, contextual Help, account preferences, billing controls and scoped progress/domain receipts remain the implementation surfaces described below.",
+        "The theme repair adds the theme case and inert fallback argument to the existing OperatorSettingsSlot seam. Personalization retains its native control as NativeThemeSettings and mounts it only when the host supplies no theme slot. PortalSettingsAdditions supplies its existing PortalAppearanceSettings through that case; no parallel settings page, theme store, service, table or config key is introduced.",
+        "Portal light/system/dark still uses its existing switchTheme/applyPortalTheme and persisted /api/preferences flow. The repair removes a competing native writer without replacing that persistence boundary. The measured keyboard correction selects the existing responsive Settings page picker rather than adding navigation.",
+        "The committed Portal shell suite passed108 tests; the retained core focused suite passed21 tests. Working browser preflights passed2 tests. These are scoped recurrence guards, not hosted persistence, whole-product or production shipment evidence. The two original hosted failures remain retained and a distinct candidate is still required."
+      ],
+      "sourceFiles": [
+        { "root": "papercusp", "path": "apps/operator/app/settings/layout.tsx", "sha256": "46452ead3cd622e9db03cab864ab1292c6e448c293167358d072d8934560cf29" },
+        { "root": "papercusp", "path": "apps/operator/app/settings/personalization/page.tsx", "sha256": "57a711a1918c5ac75b103ee1110a0379dfd3c9fb1ab4a1455236e0d4fef63509" },
+        { "root": "papercusp", "path": "apps/operator/lib/theme.ts", "sha256": "70a631c641a05aca5470a799da2325b57c2e7a84758dd1b509551cbb1f701776" },
+        { "root": "papercusp", "path": "packages/operator-ui/src/settings-slots.tsx", "sha256": "3aac0738311424fbef541dda2a8c8828eaf1d280f041b8ea7b2c16022739fd92" },
+        { "root": "papercusp", "path": "packages/operator-ui/src/onboarding/product-tutorial.tsx", "sha256": "6ef334883debb8355a81cfedba8308cd386977682e3661c971012a570ddd4453" }
+      ],
+      "result": "Full-product R11 reuse review: the measured changes extend existing product/control surfaces. Wider acceptance and shipment obligations remain open."
+    },
+    {
+      "specId": "GUIDE-INTERACTION-SPEC",
+      "specRevision": 1,
+      "priorBindingId": 32850,
+      "priorReview": "WI-10007734#comment:1167773",
+      "baselineCommit": "b8ea13460545d9a8ac7b0e8d7df922f076d56b9d",
+      "changedPaths": ["packages/operator-ui/src/onboarding/product-tutorial.tsx"],
+      "findings": [
+        "The only measured source delta adds explicit Start tutorial for unenrolled returning accounts and Restart tutorial for enrolled paused/skipped/closed accounts. Native buttons call the existing scoped progress save with a welcome-only reset; they do not replay product actions.",
+        "The declared account guide precedes workspace entry, preserves keyboard interaction, focuses the heading after explicit lesson navigation, and leaves microphone access behind consent. Waiting/failed states retain usable app and guide recovery; paused/skipped states preserve Resume/Restart controls.",
+        "Current save success sets heading or resume focus intent only after the acknowledged record. The destination places guide controls through its existing render callback; attachResume preserves focus across replacement by a modal or destination startup wrapper.",
+        "Current native mounted-guide review33699 separately demonstrates keyboard Help, scoped question submission and pause/resume heading focus; it does not prove whole-app pure-Tab acceptance."
+      ],
+      "validatorReceipts": {
+        "validate": { "ok": true, "errors": [] },
+        "lint": { "errorCount": 0, "warnCount": 5, "warnings": ["replay declared but unused", "restart declared but unused", "locate declared but unused", "raw escape hatch at /layout/children/2", "raw escape hatch at /layout/children/3/children/6"] }
+      },
+      "result": "Current source/manual design agreement passed; lint warnings remain qualified."
+    },
+    {
+      "specId": "LESSON-SUPPORT-CONTENT",
+      "specRevision": 1,
+      "priorBindingId": 32871,
+      "priorReview": "WI-10007735#comment:1167792",
+      "baselineCommit": "35d75a5c25bb054b39879de19a2bfb7a9ac635e7",
+      "changedPaths": ["packages/operator-ui/src/onboarding/product-tutorial.tsx"],
+      "findings": [
+        "The measured delta is the same Start/Restart control change; lesson introduction/help and existing cost/privacy/prerequisite sources are unchanged from the original review.",
+        "Current billing Help distinguishes Papercusp subscription, cloud-resource and model/provider bills; explains BYOC resource and retained-disk charges, explicit checkout/cancellation, permission restrictions and unavailable billing recovery; it invents no allowance or price.",
+        "Current account Help remains advisory and uses the authorized tutorial-help route. Text warns against credentials/private content. Spoken questions disclose ElevenLabs and require explicit microphone consent; full shared free-user quota/budget/abuse/duration/kill-switch acceptance remains a separate open dependency.",
+        "Restart clears reviewed explanations to Welcome through the existing account progress plane. It neither recreates resources nor represents explanation review as domain task success."
+      ],
+      "result": "Current source-to-UI prerequisite, cost, privacy and recovery agreement passed."
+    },
+    {
+      "specId": "AUTO-BAR-R-11-P-010",
+      "specRevision": 5,
+      "priorBindingIds": [32911, 32912],
+      "priorReviews": ["WI-10007740#comment:1167869", "WI-10007740#comment:1167873"],
+      "baselineCommits": ["bf29f0de4dd81df211dcf6974a25d234b5ec1d59", "7127b4b70e6992ccfddf92f3fb246ccc8701e7ee"],
+      "changedPaths": ["packages/operator-core/lib/onboarding/cloud-tutorial-progress.ts", "packages/operator-ui/src/onboarding/product-tutorial.tsx", "packages/ui/src/shell.tsx"],
+      "findings": [
+        "Start/Restart extends the existing typed account update schema and existing hosted_user_preferences.profile.productTutorial storage. Explicit restart reuses enrollAccountTutorial, preserves tenant/user checks and transaction binding, and retains revision/conflict/idempotency checks. No new table, service or progress plane is introduced.",
+        "The Portal shell delta imports and supplies openPortalTutorialVoice to its existing AccountProductTutorial mount. Actual session identity, sessionSignal, FirstRunPortal/PortalShell destination selection and renderer trust remain in the existing entry.",
+        "The account guide, product catalogue, preferences, scoped tutorial-progress route and provider seams from the original reuse assessment remain the implementation surfaces. Domain receipts remain workspace-scoped."
+      ],
+      "result": "Current operator and Portal tree reuse assessment passed."
+    },
+    {
+      "specId": "TUTORIAL-HOST-BOUNDARY",
+      "specRevision": 1,
+      "priorBindingIds": [32965, 32966],
+      "priorReview": "WI-10004837#comment:1167911",
+      "baselineCommits": ["ba7f434a695052b7ce2d730134ff51ada6b943c6", "7127b4b70e6992ccfddf92f3fb246ccc8701e7ee"],
+      "changedPaths": ["packages/operator-core/lib/workspace-host/hosted-operator-http.ts", "packages/ui/src/shell.tsx", "apps/host/src/api.ts"],
+      "findings": [
+        "The operator allowlist delta adds explicit autonomy-policy save and confirmed managed-session stop entries. It does not change reviewed authenticated account/workspace entry or correlated launch/message/transcript/result routes.",
+        "PortalEntry continues to route loading, signed-out and unavailable states before an authenticated tutorial mount; account orientation wraps existing first-run or selected-workspace destinations with real organization/user/session/workspace identity.",
+        "The Portal API delta extends the existing voice token boundary with strict tutorial purpose/consent, configured public-origin comparison, authenticated account/session scope, current saved lesson checks and restricted lesson Help prompt. It does not replace the hosted workspace task entry or open a product mutator from guide navigation.",
+        "Original source-backed outcome/falsifier review remains applicable to reaching the maintained agent task controls and correlated result inspection. This is review of the current flow and boundary, not evidence of a successful final production task."
+      ],
+      "result": "Current operator and Portal source-backed host-flow review passed."
+    }
+  ],
+  "limitations": [
+    "Manual source review only; no new test execution or automated native PASS.",
+    "Five UI lint warnings remain; no warning-free claim.",
+    "Historical source reviews and native evidence remain historical, not rewritten.",
+    "No human-heard audio, full protected shared voice lifecycle, affected-suite PASS or exact production acceptance is claimed.",
+    "Existing outside-lineage BAR reviewer and existing voice dependency owner are preserved."
+  ]
+}

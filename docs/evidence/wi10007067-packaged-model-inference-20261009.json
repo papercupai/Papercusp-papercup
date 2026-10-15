@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Exact D219 Linux Server extracted-payload real local model worker inference",
+  "framework": "node",
+  "testLayer": "integration",
+  "evidencePlane": "isolated",
+  "scope": "Extracted exact final Server payload on Linux x64; installed target/health/GO unmeasured",
+  "workItem": "WI-10007067",
+  "testFile": "papercusp-desktop/test/installed-local-model-inference.test.js",
+  "command": ["PAPERCUSP_MODEL_INFERENCE_BINDING=~/.local/state/verification-harness/release-local/wi10007067-next-leg-review-20261009T0440Z/extracted-payload-inference-binding.json node --test --test-global-setup=test/monorepo-host-preflight.mjs test/installed-local-model-inference.test.js test/test-registry-coverage.test.js"],
+  "redactions": ["The operator home directory is represented as ~; original command and evidence bytes remain in the private raw receipt. Measurements, assertions, timestamps and source hashes are unchanged."],
+  "originalEvidence": {"path": "~/.local/state/verification-harness/release-local/wi10007067-output-binding-review-20261009T0500Z/raw-repository-inference-evidence.json", "sha256": "21950308b0232611a754c9bf6095a748fbd7c2914fa50f504980e6a38b4b8a73"},
+  "startedAt": "2026-10-09T04:42:28.796Z",
+  "finishedAt": "2026-10-09T04:43:21.651Z",
+  "exitCode": 0,
+  "summary": "9PASS0fail0skip. Actual Gemma768/Harrier1024 finite/nonzero vectors and relevance order via exact bundledNode/maintained worker; local-only policy. Installed target inference, physical acceptance, GO and publication remain unmeasured.",
+  "assertions": [
+    { "id": "actual-packaged-gemma", "passed": true, "evidence": "Actual bundled worker produced 768 finite nonzero dimensions; relevant cosine0.800667 exceeds unrelated0.381904; worker/node/snapshot hashes stayed bound." },
+    { "id": "actual-packaged-harrier", "passed": true, "evidence": "Actual bundled worker sentence_embedding produced1024 finite nonzero dimensions; relevant cosine0.654644 exceeds unrelated0.310481; worker/node/snapshot hashes stayed bound." },
+    { "id": "registered-suite-outcome", "passed": true, "evidence": "Durable task0mv0hbf2kolyk3s1xux terminal exit0; original log941ef927 records9passed0failed0skipped, including test registration coverage." }
+  ],
+  "sourceFingerprint": "6c3bcb01029dd22a8415ffcdf5472e2d94a3c9230dd54c1d70a6e6b7fd8259dc",
+  "testFingerprint": "6c3bcb01029dd22a8415ffcdf5472e2d94a3c9230dd54c1d70a6e6b7fd8259dc",
+  "sourceRefs": {
+    "productRoot": "bb0f15e16648907717ad34dae04858b06787b051",
+    "desktop": "e7752b9eebab9dfa32b0dc1c6bf050a76f6415a7"
+  },
+  "taskId": "0mv0hbf2kolyk3s1xux",
+  "runnerLog": {
+    "path": "~/.local/state/verification-harness/release-local/wi10007067-next-leg-review-20261009T0440Z/extracted-payload-inference.log",
+    "sha256": "941ef927d8b72cb9f2bbea13ee4f2a3d8bc87abff1ad2cccc3e8d233a18972b6",
+    "bytes": 1498
+  },
+  "binding": {
+    "path": "~/.local/state/verification-harness/release-local/wi10007067-next-leg-review-20261009T0440Z/extracted-payload-inference-binding.json",
+    "sha256": "d013d2a06c152fa8fd5fe63b58f6d3b8bdd5818ad7a0e14e202eab8a48aea797"
+  },
+  "result": {
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "models": [
+      { "model": "embeddinggemma-300m-ONNX", "dimensions": 768, "relevantCosine": 0.8006672430144347, "unrelatedCosine": 0.3819035724309831 },
+      { "model": "harrier-oss-v1-0.6b-ONNX", "dimensions": 1024, "relevantCosine": 0.6546442668820862, "unrelatedCosine": 0.3104810449963342 }
+    ]
+  },
+  "candidateAccepted": false,
+  "GO": false,
+  "publication": false
+}

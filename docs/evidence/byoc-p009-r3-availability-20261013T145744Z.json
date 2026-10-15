@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "BYOC P009 R003 live mixed available/absent disclosure",
+  "framework": "node",
+  "command": [
+    "node",
+    "scripts/mcp-call.mjs",
+    "work_items:get",
+    "ids=WI-10000407,WI-0; detail=false; threadLimit=0; explicit identity/availability/state/count/read projection",
+    "--port=3170"
+  ],
+  "exitCode": 5,
+  "clientExitCode": 5,
+  "startedAt": "2026-10-13T14:57:41.254Z",
+  "finishedAt": "2026-10-13T14:57:44.944Z",
+  "summary": "Preflight negative client read: expected exit5 and mixed result were observed. Original claimed exit0 was the orchestrator assertion outcome, not the actual client command exit; corrected before ledger registration. Retained as preflight only; use guarded150338Z edition.",
+  "assertions": [
+    {
+      "id": "requested-identity-census",
+      "passed": true,
+      "evidence": "Actual result contains exactly WI-10000407 and WI-0."
+    },
+    {
+      "id": "available-state-retained",
+      "passed": true,
+      "evidence": "Actual available row retains requested identity/state."
+    },
+    {
+      "id": "absent-is-explicit",
+      "passed": true,
+      "evidence": "Actual absent row is keyed, explicitly absent, and contains no invented workItem."
+    },
+    {
+      "id": "partial-result-not-healthy",
+      "passed": true,
+      "evidence": "Maintained mcp-call exit5 is expected here: overall ok:false and successful1/failed1; never healthy."
+    },
+    {
+      "id": "availability-disclosure",
+      "passed": true,
+      "evidence": "Actual read disclosure distinguishes available1, absent1, unavailable0 and retains server timing attribution."
+    },
+    {
+      "id": "source-stable",
+      "passed": true,
+      "evidence": "The three source fingerprints are unchanged across the measured read."
+    }
+  ],
+  "sourceHashes": {
+    "packages/operator-core/lib/agent-tools/work_items/get.ts": "a88cbbab2c7da2c605772de9e8bb7bedfc30ac33e5a969936fb12dc27ffb157f",
+    "packages/operator-core/lib/agent-tools/work_items/get-shape.ts": "7f5c9d79b5865147cb93e175113f15a0e28fcd7c17cccdc951f764348e2cacd3",
+    "scripts/mcp-call.mjs": "114930a4bea5aa27c9d124559748ded59d2826d4830992cc157b92e96e4ab6cf"
+  },
+  "response": {
+    "ok": false,
+    "results": [
+      {
+        "id": "WI-10000407",
+        "availability": "available",
+        "ok": true,
+        "workItem": {
+          "id": "WI-10000407",
+          "state": "open"
+        }
+      },
+      {
+        "id": "WI-0",
+        "availability": "absent",
+        "ok": false,
+        "error": "work_item 'WI-0' not found"
+      }
+    ],
+    "counts": {
+      "ok": 1,
+      "failed": 1
+    },
+    "read": {
+      "schemaVersion": "work-items-get-read-v1",
+      "mode": "projected",
+      "requested": 2,
+      "available": 1,
+      "absent": 1,
+      "unavailable": 0,
+      "budgetMs": 30000,
+      "elapsedMs": 23,
+      "baseReadMaxMs": 22,
+      "enrichmentMaxMs": 0,
+      "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+    }
+  },
+  "clientWallSeconds": 0.358246764,
+  "notExercised": [
+    "Unavailable due to timeout/cancellation/PG failure",
+    "All read paths",
+    "Shared deployed proxy stall/claim mutations",
+    "R006 deployed producer/soak/customer/shipment"
+  ],
+  "preflightOnly": true
+}

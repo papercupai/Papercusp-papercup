@@ -7,6 +7,7 @@ import {
   renderCoordLegend,
   type CoordLineSource,
 } from './coord-schema';
+import { canonicalRefKey, type HydratedRef } from './agent-tools/coordination/ref-hydrate';
 import {
   COORD_EXECUTABLE_KINDS,
   COORD_CONVERSATIONAL_KINDS,
@@ -526,6 +527,35 @@ describe('renderInjection — P-008 body auto-ref hydration (coord-authority-har
     expect(out).toContain(
       'picking WI-4173 back up after the compaction ↪ WI-4173 [feature/wip @4c85f]: "D: auto-detect ids ⌁ …wire into delivery render + tests"',
     );
+  });
+
+  it('uses the envelope harness when the same work-item id is cited in two harnesses', () => {
+    const emailRef = {
+      ...WI_HIT,
+      ref: { kind: 'work-item', id: 'WI-4173', harness: 'email' },
+      label: 'WI-4173 [feature/wip in email]',
+    } as const;
+    const papercuspRef = {
+      ...WI_HIT,
+      ref: { kind: 'work-item', id: 'WI-4173', harness: 'papercusp' },
+      label: 'WI-4173 [feature/wip in papercusp]',
+    } as const;
+    const out = renderInjection(
+      [
+        e({ summary: 'email item WI-4173', harness_slug: 'email' }),
+        e({ summary: 'Papercusp item WI-4173', harness_slug: 'papercusp' }),
+      ],
+      {
+        bodyRefs: new Map<string, HydratedRef>([
+          [canonicalRefKey(emailRef.ref), emailRef],
+          [canonicalRefKey(papercuspRef.ref), papercuspRef],
+        ]),
+        nowMs: FIXTURE_NOW,
+      },
+    );
+
+    expect(out).toContain('email item WI-4173 ↪ WI-4173 [feature/wip in email]');
+    expect(out).toContain('Papercusp item WI-4173 ↪ WI-4173 [feature/wip in papercusp]');
   });
 
   it('detection covers the BODY too (the shown summary line still gets the suffix)', () => {

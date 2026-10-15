@@ -17,7 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
-import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { runSessionSearchIndexBuildOnce } from '../../session-search-index-build';
 import { retrieveSessionTurnFuzzy, retrieveSessionTurnLiteralTiers } from './session-turn-literal';
 
@@ -26,7 +26,9 @@ const SQL_DIR = path.resolve(here, '../../../../../libs/papercusp/libs/db/sql');
 const M501 = path.join(SQL_DIR, '501-session-turns.sql');
 const M794 = path.join(SQL_DIR, '794-session-turns-provenance-at-ingest.sql');
 const M1273 = path.join(SQL_DIR, '1273-session-turns-trigram-exact-fuzzy-index.sql');
+const M1347 = path.join(SQL_DIR, '1347-personal-disclosures-reader-window-idx.sql');
 const TRGM = 'session_turns_text_trgm_idx';
+const LEDGER_IDX = 'personal_disclosures_owner_window_idx';
 const WS = 'w-plan';
 
 interface Captured {
@@ -46,6 +48,8 @@ beforeAll(async () => {
   await applyMigrationForTest(sql, M501);
   await applyMigrationForTest(sql, M794);
   await applyMigrationForTest(sql, M1273);
+  await applyDisclosureLedgerForTest(sql); // D-006 reader rule (WI-10005570)
+  await applyMigrationForTest(sql, M1347); // the index that serves the reader rule (WI-10005669)
   // The corpus is large enough, and the target literal RARE enough, for the planner to prefer the GIN
   // (a literal present in every row is correctly served by the newest-first btree instead — that is a
   // selectivity fact, not an index defect; and on a ~3k-row table the workspace pkey bitmap + post-filter
@@ -83,6 +87,15 @@ afterAll(async () => {
 const literalBranches = (): Captured[] =>
   captured.filter((c) => /FROM\s+harness_shared\.session_turns/i.test(c.query) && /LIKE/i.test(c.query));
 
+/**
+ * Every seq-scanned relation in a plan. Both halves of each statement must be index-servable:
+ * the session_turns access (the trigram GIN), and the D-006 reader rule's correlated EXISTS over
+ * `personal_disclosures` (WI-10005570). The ledger's 1302 indexes are partial (released_at IS NULL),
+ * so before migration 1347 that subquery seq-scanned the ledger on every transcript read even with
+ * enable_seqscan=off (WI-10005669). No relation is exempt any more.
+ */
+const seqScans = (plan: string): string[] => plan.split('\n').filter((l) => /Seq Scan/.test(l));
+
 async function planOf(c: Captured): Promise<string> {
   return sql.begin(async (tx) => {
     // Forbid the seq scan fallback so the plan reveals whether the predicate is INDEX-SERVABLE at all.
@@ -102,7 +115,8 @@ describe('production literal branches are served by the trigram GIN (not a hand-
     expect(branches[0]!.query).toMatch(/lower\(text\) LIKE/);
     const plan = await planOf(branches[0]!);
     expect(plan, `EXACT plan:\n${plan}`).toContain(TRGM);
-    expect(plan).not.toMatch(/Seq Scan/);
+    expect(plan, `EXACT plan (reader rule must use the ledger index):\n${plan}`).toContain(LEDGER_IDX);
+    expect(seqScans(plan), `EXACT plan:\n${plan}`).toEqual([]);
   }, 90_000);
 
   it('every FUZZY variant statement (typo query) is a lower(text) LIKE and uses the trigram index', async () => {
@@ -117,7 +131,8 @@ describe('production literal branches are served by the trigram GIN (not a hand-
       expect(b.query).toMatch(/lower\(text\) LIKE/);
       const plan = await planOf(b);
       expect(plan).toContain(TRGM);
-      expect(plan).not.toMatch(/Seq Scan/);
+      expect(plan, `FUZZY plan (reader rule must use the ledger index):\n${plan}`).toContain(LEDGER_IDX);
+      expect(seqScans(plan), `FUZZY plan:\n${plan}`).toEqual([]);
     }
   }, 90_000);
 

@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10000407",
+  "plan": "byoc-delivery-acceleration-2026-09-06",
+  "planItem": "P-009",
+  "spec": "AUTO-BAR-R-004-P-009@8",
+  "acceptanceStatus": "incomplete",
+  "evidencePlane": "controlled-historical-input-current-live-wake-transport",
+  "preparedAtUtc": "2026-10-13T18:00:06.603Z",
+  "ownerId": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+  "sourceFixture": {
+    "path": "docs/evidence/byoc-p009-r004-matched-input-2026-10-13.json",
+    "sha256": "80cd254870b28f07e08668149d30fb5e54d1ce31834399d8840ef32180dbfe90",
+    "baselineDeliveryId": "353224",
+    "candidateRawUtf8Bytes": 3400,
+    "candidateRawSha256": "bba3997f870150b389fb56513759fd61ca37b9240ba39c42a585619d1631e943",
+    "originalCheckRows": 12,
+    "nonCheckBytesIdentical": true,
+    "limitation": "Historical content is fixture data. The live wake transport does not turn its historical claims into current authority."
+  },
+  "transport": {
+    "mechanism": "coord:send to this verified owner with wake:required",
+    "encoding": "Historical raw wake text encoded as one JSON string after an identical provenance label in both quantitative arms.",
+    "baselineSummaryUtf8Bytes": 7598,
+    "candidateSummaryUtf8Bytes": 3529,
+    "reductionPct": 53.55356672808633,
+    "candidateSummarySha256": "f88309a53cda09c35626862086205379365ad6927630b1f9e59f0d597f159139",
+    "candidateSummary": "R004-transport-fixture-20261013: historical carry data only; preserve current P009 lane and R006 wall. \"Loop wake #145 — short form (the full loop contract ships on wake 1, then every 10 wakes).\\n\\n⛔ OPEN WALLS — owner-gated / pending decisions you are carrying (re-check, do not re-litigate or re-declare resolved; clear a resolved one via loop:checkpoint { walls }):\\n  • Do not revive ENOSPC as the cause of the later G10 failure; low storage remains only a required negative fixture. — re-check: EI-22546401885805378 and EI-22541164568715011 (standing 6d)\\n\\n🧪 CARRIED CHECKS — claims + probes (✓ verified w/ evidence · ⚠ CONTESTED: evidence contradicts verification; ? PREDICTED: run the re-check before relying on it; update/clear via loop:checkpoint { checks }):\\n  • ✓ 11 older verified check(s) retained in loop:checkpoint: #p004-audit-settlement, #p004-final-settlement, #p002-final-settlement, #p002-audit-passed, #p002-typechecks, #p003-spec-adequacy, #p003-final-settlement, #p003-current-benchmark, #p003-audit-passed, #p005-final-settlement, #p005-audit-passed\\n  • ✓ [#p005-bindings-current] Exact P-005 bindings 2208/2209 remain current on current-build. — re-check: plans:get-spec-evidence for WI-10000403/BYOC-ACCEL-P005-RESUME with exact refs and fingerprints on :3170 — evidence: 2 current, 0 stale, 0 unknown; spec/source/test/testRun dimensions current, server-measured. @2026-09-08T12:42:40.707Z (since 2026-09-08T12:42:40.707Z)\\n\\nCurrent loop:checkpoint (you wrote it [09-13T03:43:21Z] 11m ago as of fire time; if this wake's delivery was delayed, that gap may be larger now) — this is the authority for what to do this wake:\\n## Did\\nRecovered cold wake, revalidated live claim, ran current 13-file cohort (218/218 pass), measured R-004 production byte cohorts, reran R-005 benchmark (85.769% reduction), wrote and bound canonical P-009 evidence matrix, and obtained R-006 producer ACK.\\n\\n## Left\\nR-004 is genuinely red at 25.999% mean-byte reduction versus 50% required; diagnose/fix and add recurrence guard. R-006 remains pending on canonical BYOC cloud-workspaces deployed canary/literal 24h soak/cleanup/billing/shipment receipts. Then rerun adequacy, independent grade/audit, close and ship.\\n\\n## Key insight\\nExact evaluator now passes R-002/R-003/R-005. Do not confuse green tests with acceptance: current R-004 metric fails and R-006 deployed proof does not exist yet. Canonical R-006 lane is owned and progressing elsewhere; consume its receipts without duplicating it.\\n\\n## Next action\\nContinue locally on R-004: define a matched routine cohort from event_wake_deliveries, trace the dominant payload bytes to their writers, make the smallest reuse-first reduction with a regression test, remeasure. Preserve P-009 evidence matrix and bindings; do not claim or supervise su-a910e's R-006 lane.\\n\\nArm-time goal (frozen at arm time — the checkpoint above is the fresher source): 🔁 Loop wake (every ~600s after each turn settles). You are continuing your OWN warm session toward: ⟦agent-authored-goal⟧Finish byoc-delivery-acceleration-2026-09-06 end to end: close verified P-006, implement/verify P-007 and P-008 in dependency order, run P-009 combined acceptance including required soak/cleanup/final-green evidence, and ship only when every acceptance BAR is current and independently graded.⟦/agent-authored-goal⟧\\n\\nOn settle: refresh loop:checkpoint { did, left, insight, next }; END YOUR TURN. `loop:end` stops; `loop:status` inspects.\"",
+    "msgId": "coord-send-779cee259a8e777a1a7465f18e4977179ef9c804afe3ef251a6e37afed6f833a",
+    "queued": 1,
+    "pickupConfirmed": false
+  },
+  "observations": {
+    "tool": "dev:pg_query",
+    "writer": "packages/operator-core/lib/events/await/wake-executor.ts: wakeTurnText; packages/operator-core/lib/events/await/store.ts: observeAwaitingTurnProofs",
+    "delivery": {
+      "id": "762875",
+      "subscriber_id": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "source": "su-respawn-80c8e4065aac34e2ea45c7655f6b43fe",
+      "status": "parked",
+      "channel": null,
+      "utf8_bytes": 3529,
+      "summary_sha256": "f88309a53cda09c35626862086205379365ad6927630b1f9e59f0d597f159139",
+      "created_at": "2026-10-13 18:00:06.646895+00",
+      "delivered_at": null,
+      "turn_proof": null,
+      "turn_started_at": null,
+      "pickup_deadline_at": null
+    },
+    "exactPersistedSummaryHashMatches": true,
+    "exactPersistedUtf8BytesMatch": true,
+    "liveDeliveryConfirmed": false,
+    "confirmedNewTurnPickup": false
+  },
+  "localVerification": {
+    "retainedNativeTestsPassed": 125,
+    "retainedNativeTestsSkipped": 0,
+    "scope": "Prior saved local dirty loop-fire.test.ts run; not repeated here.",
+    "sourceCapture": "~/.papercusp/scratch/papercusp-workspace/byoc-p009-r004-executed-source-20261013.json",
+    "latestMatchingLedgerRow": "Not returned by bounded release-operator exact-file/local/since17:34Z read; no absence outside that selector is inferred.",
+    "eligibility": "Saved worktreeDirty/config-deps-unavailable remains ineligible for clean canonical reuse."
+  },
+  "settledObservation": {
+    "observedOnUtcDate": "2026-10-13",
+    "tool": "dev:pg_query",
+    "corpusNamespace": "default",
+    "selector": "Exact subscriber_id, delivery id 762875 and transport.msgId",
+    "delivery": {
+      "id": "762875",
+      "status": "delivered",
+      "channel": "suppressed-redundant",
+      "utf8_bytes": 3529,
+      "summary_sha256": "f88309a53cda09c35626862086205379365ad6927630b1f9e59f0d597f159139",
+      "msg_id": "coord-send-779cee259a8e777a1a7465f18e4977179ef9c804afe3ef251a6e37afed6f833a",
+      "delivered_at": "2026-10-13 18:01:17.010954+00",
+      "turn_proof": null,
+      "turn_started_at": null,
+      "pickup_deadline_at": null
+    },
+    "exactPersistedSummaryHashMatches": true,
+    "exactPersistedUtf8BytesMatch": true,
+    "eventsStatusTurnInvoked": false,
+    "actualFixtureObservedInContinuationPrompt": false,
+    "confirmedNewTurnPickup": false,
+    "verdict": "Transport corroboration failed: this self-send settled without invoking a turn. Delivered status and persisted bytes do not prove prompt consumption. No resend or further pickup monitoring for this candidate.",
+    "limitation": "Null turn proof remains unknown. The suppressed channel and turn_invoked=false establish that this attempt does not meet the required pickup evidence; they do not establish a general wake-system failure."
+  },
+  "next": {
+    "action": "Advance eligible current-source R004 evidence and matched routine-renderer acceptance. Preserve the failed controlled transport attempt and the authoritative P009 checkpoint.",
+    "stopCondition": "Exact candidate settled suppressed-redundant without a turn; this experiment is finished and cannot supply live pickup acceptance.",
+    "noDeltaBudget": 0
+  },
+  "remaining": [
+    "Current matched routine-renderer acceptance is distinct from this controlled fixture transport corroboration.",
+    "Eligible clean current evidence binding.",
+    "Canonical R006 deployed producer scope decision through existing Avi conversation; literal24h soak, customer acceptance, eight-kind census, cleanup/billing and final green shipment.",
+    "Original mixed-cohort TDZ root cause remains unproven in EI-25841466577299173."
+  ]
+}

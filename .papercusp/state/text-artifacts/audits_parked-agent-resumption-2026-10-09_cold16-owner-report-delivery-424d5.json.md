@@ -1,0 +1,19 @@
+---
+rel_path: "audits/parked-agent-resumption-2026-10-09/cold16-owner-report-delivery-424d5.json"
+updated_at: 1791880424260
+_body: "content"
+---
+
+{
+  "schemaVersion": "cold16-owner-report-delivery-v1",
+  "report_id": "rpt_33b84acb-bff9-4eec-bc1f-b1890cfec110",
+  "request_key": "parked-cold16-source-corpus-correction-424d5-20261013-v1",
+  "publishedVia": "ptool --url=http://127.0.0.1:3170 reports:publish",
+  "publishPath": "/reports?sel=rpt_33b84acb-bff9-4eec-bc1f-b1890cfec110",
+  "visibility": "owner",
+  "exactBodyReadbackVerified": true,
+  "sourceBodyMd": "Avi, the audit remains open. This continuation corrected the COLD source lookup and preserved the original request evidence needed for the next verification step.\n\nThe predecessor queried transcript parts with the tenant key `papercusp-workspace`. The current writer, `packages/operator-core/lib/search/session-ingest.ts:1937`, stores those parts under the corpus key `default`. A known-positive session read confirmed that scope. The predecessor’s zero result describes its query scope and does not establish missing source evidence.\n\nThe corrected lookup found indexed parts for 19 of the 21 native IDs inherited from mutable session records. All 21 COLD owners have dated tool-call source locations across 217 native intervals in the specified window. These are source coordinates; model, account and carry continuity still need verification.\n\nThe preserved population contains 137 original compaction requests from those 21 owners. Within the recorded timing window, 74 requests have one candidate call, nine have multiple candidates, and 54 have no candidate. A missing candidate in this window does not establish global absence. The complete original request population and candidate sources were saved and read back exactly.\n\nReceipt assessment remains provisional. Its first version handles JSON and imposes restrictive call-name and timing checks. A direct source read shows that original request 34778962 returned a complete MCP response containing TOON plus an advisory, with `requested: true` and `respawn: queued`. Request 34777625 returned a complete `flush-required` refusal. Before accepting further pairs, the next continuation must validate the existing TOON decoder, exact arguments, and ledger duration semantics. A queued receipt does not prove a performed respawn. An `auto` routing notice also leaves the serving credential unresolved.\n\nCanonical evidence in the `papercusp` artifact store:\n\n- `audits/parked-agent-resumption-2026-10-09/r13-21cold-source-inventory-cold16-v2-424d5.json` — 58,748 characters; exact full readback in six chunks.\n- `audits/parked-agent-resumption-2026-10-09/r13-cold21-original137-call-candidates-cold16-424d5.json` — 413,424 characters; exact full readback in 21 chunks.\n- `audits/parked-agent-resumption-2026-10-09/r13-cold21-original137-receipt-assessment-cold16-424d5.json` — 237,798 characters; exact full readback in 12 chunks, with its parser limits preserved.\n\nThe original 116-owner cutoff and cohort identity remain unchanged. Cutoff continuity, eligibility and recovery outcomes remain unaccepted. The outstanding R5, lock lifecycle, moved R12 proof, final runtime anchor and actual 24-hour R14 measurement remain open. All seven owned checkpoints and the loop carry-note were refreshed. No repository source was edited and no tests were rerun during this evidence recovery.\n",
+  "warning": "Connected native report publisher buildd740 rejectsrequest_key. Current3170schema accepted it. Old native reports:get formats /reports/id; use currentpublishquerysel path.",
+  "currentGuiRouteSource": "apps/operator-vite/src/routes/reports.tsx; components/reports/ReportsRoute.tsx",
+  "next": "Continue unchanged SELF/AUTO/P013 from WI8887 currentcheckpoint; source continuity and recovery acceptance remain open."
+}

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-18 fresh-machine README-only build at public head 3c1ed9a1 (2026-10-06 re-run) - FAILS: the operator sidecar crash-loops under npm run dev",
+  "framework": "manual-vm-run",
+  "command": [
+    "Host: .papercusp/scratch/osr/r18/host-r18c.sh (fresh overlay osr18c off the linux-test-vm golden image, 150G disk)",
+    "Guest: .papercusp/scratch/osr/r18/guest-r18c.sh - follows only the public README and the desktop README Ubuntu prerequisites row at 3c1ed9a1 (including libasound2-dev): apt prerequisites, pgvector for PostgreSQL 18, rustup stable, nvm, git clone https://github.com/Papercusp/papercusp-app.git, nvm install, npm ci, npm run lint:tsc, operator-vite build, papercusp-desktop npm ci, then DISPLAY=:0 npm run dev"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-10-06T09:03:56Z",
+  "finishedAt": "2026-10-06T09:23:25Z",
+  "summary": "Every README step through the build succeeds on a fresh Ubuntu VM at the current public head (clone sha 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c): toolchain absent at start; apt prerequisites, pgvector, rustup, nvm, clone, node, npm ci, lint:tsc (status=clean), UI build and desktop npm ci all exit 0. The final step, npm run dev, builds and opens the Tauri shell, but its operator sidecar dies at module load with 'TypeError: Cannot read properties of undefined (reading CLAIM_STATES_ALLOWLIST)' (work-items-events.ts:211, a read of a value re-exported from work-items.ts while that module is still evaluating under tsx's CJS loader). The supervisor restarted it 8 times and stopped. /api/health and the SPA root never answered, so the window shows only the recovery page. R-18 does not pass at 3c1ed9a1. The fix (import CLAIM_STATES_ALLOWLIST directly from ./scheduler/claim-states) has been on staging since 80b0167a (2026-09-30T13:06Z) and is not in the public cut, so a new public export is required.",
+  "assertions": [
+    {
+      "id": "fresh-machine",
+      "passed": true,
+      "evidence": "steps.log toolchain-absent rc=0 at 09:03:56Z on a new overlay; the prerequisite and toolchain installs all ran from scratch."
+    },
+    {
+      "id": "readme-build-steps",
+      "passed": true,
+      "evidence": "steps.log: apt-prereqs, pgvector, rustup, nvm, clone, node, npm-ci, lint-tsc, ui-build and desktop-ci all END rc=0 (09:03:56Z-09:18:02Z). lint-tsc tail: LINT_TSC_RESULT label=operator-core scope=all exit=0 status=clean head=3c1ed9a1d7."
+    },
+    {
+      "id": "subject-is-public-head",
+      "passed": true,
+      "evidence": "clone step prints 3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c, equal to git ls-remote refs/heads/main at 2026-10-06T09:09:55Z."
+    },
+    {
+      "id": "app-boots",
+      "passed": false,
+      "evidence": "desktop-dev.log: 8 x '[serve] fatal: TypeError: Cannot read properties of undefined (reading 'CLAIM_STATES_ALLOWLIST')' at packages/operator-core/lib/work-items-events.ts:211:55 (module load, via tsx register); 'operator dev server exited code=1 - restarting in 3s (attempt 7/8)'; 'main-frame load failed for http://127.0.0.1:3270/ (Connection refused) - showing recovery page'. Probes at 09:23:25Z inside the guest: health=000, spa=000."
+    }
+  ],
+  "rootCause": {
+    "observed": "work-items-events.ts evaluates `new Set(CLAIM_STATES_ALLOWLIST)` at module scope, importing the name through work-items.ts, which imports work-items-events.ts back. When tsx's CJS loader enters the cycle from work-items.ts, the binding is still undefined at that read.",
+    "fixOnStaging": "80b0167a53 (2026-09-30T13:06:13Z): work-items-events.ts imports CLAIM_STATES_ALLOWLIST from ./scheduler/claim-states, breaking the cycle. The staging comment above that import quotes this exact error.",
+    "notCovered": "The packaged production build of the same commit boots (docs/evidence/osr-r11-prod-2026-09-30.json, health ok at 3c1ed9a1), so this crash is specific to the README's npm run dev path."
+  },
+  "scratchArtifacts": ".papercusp/scratch/osr/r18/out-2026-10-06/{steps.log,sidecar-crash.txt,supervision.txt,probes.txt} (host-local, gitignored)",
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-18",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
+  "workItemId": "WI-10003960"
+}

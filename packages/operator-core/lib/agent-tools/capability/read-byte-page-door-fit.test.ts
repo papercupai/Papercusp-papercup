@@ -18,7 +18,7 @@
  * and decodes cleanly — rather than any particular page size, and they exercise
  * the real door rather than re-deriving its arithmetic.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,7 +29,7 @@ vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstan
 
 import { applyResultDoor } from '../../result-door';
 import type { DoorableResult } from '../../result-door';
-import { writeScratchReference } from '../../scratch-reference';
+import { storeVolatileScratchReference, writeScratchReference } from '../../scratch-reference';
 import readTool, { MAX_BYTE_PAGE, MIN_PAGE_BYTES, doorSafePageBytes } from './read';
 
 let sandbox: string;
@@ -115,6 +115,23 @@ async function rawResponseText(args: Record<string, unknown>): Promise<string> {
 
 const DOOR_BUDGET_CHARS = computeTurnDoors(0).resultEach * CHARS_PER_TOKEN_ESTIMATE;
 
+describe('EI-25801373601150765: capability:read async filesystem contract', () => {
+  it('keeps filesystem calls on the byte-page path asynchronous', () => {
+    const source = readFileSync(new URL('./read.ts', import.meta.url), 'utf8');
+
+    expect(source).toMatch(/import\s+\{\s*open,\s*readFile,\s*stat\s*\}\s+from\s+['\"]node:fs\/promises['\"]/);
+    expect(source).toMatch(/await\s+stat\(abs\)/);
+    expect(source).toMatch(/await\s+open\(abs,\s*['\"]r['\"]\)/);
+    expect(source).toMatch(/await\s+fd\.read\(/);
+    expect(source).toMatch(/await\s+fd\.close\(\)/);
+    expect(source).toMatch(/await\s+readFile\(abs\)/);
+
+    for (const syncApi of ['openSync', 'readSync', 'closeSync', 'statSync', 'readFileSync']) {
+      expect(source).not.toMatch(new RegExp(`\\b${syncApi}\\b`));
+    }
+  });
+});
+
 describe('WI-39670: byte-window pages survive the result door intact', () => {
   it('emits a response within the door budget at the ADVERTISED max byte_limit', async () => {
     // The crisp invariant, independent of how the door happens to project: a
@@ -180,6 +197,104 @@ describe('WI-39670: byte-window pages survive the result door intact', () => {
     expect(decoded.toString('base64')).toBe(data);
     expect(decoded.equals(original.subarray(0, decoded.length))).toBe(true);
     expect((parsed.next_cursor as { args: { byte_offset: number } }).args.byte_offset).toBe(decoded.length);
+  });
+
+  it('pages a volatile scratch fallback losslessly through capability:read uri alias and tools:invoke', async () => {
+    const original = payload(40_000);
+    const fallback = storeVolatileScratchReference({
+      payload: original,
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'application/octet-stream',
+      content: [{ index: 0, type: 'text', byteCount: original.length }],
+    });
+    expect(fallback).not.toBeNull();
+
+    const chunks: Buffer[] = [];
+    let args: Record<string, unknown> = {
+      uri: fallback!.uri,
+      byte_offset: 0,
+      byte_limit: MAX_BYTE_PAGE,
+    };
+    for (let hop = 0; hop < 200; hop++) {
+      const { parsed } = await readThroughNestedInvokeDoor(args, { workspaceId: 'ws-1' });
+      expect(parsed).not.toHaveProperty('_projection');
+      expect(parsed).toMatchObject({ ok: true, total_bytes: original.length });
+      const data = parsed.data as string;
+      const decoded = Buffer.from(data, 'base64');
+      expect(decoded.length).toBe(parsed.byte_length);
+      expect(decoded.toString('base64')).toBe(data);
+      chunks.push(decoded);
+
+      const next = parsed.next_cursor as { args: Record<string, unknown> } | null;
+      if (next === null) {
+        expect(parsed.eof).toBe(true);
+        break;
+      }
+      expect(next.args.file_path).toBe(fallback!.uri);
+      args = next.args;
+    }
+
+    expect(Buffer.concat(chunks).equals(original)).toBe(true);
+  });
+
+  it('requires byte windows and enforces workspace scope for volatile scratch fallbacks', async () => {
+    const fallback = storeVolatileScratchReference({
+      payload: 'small fallback',
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'text/plain',
+    });
+    expect(fallback).not.toBeNull();
+
+    const noWindow = await readThroughDoor({ file_path: fallback!.uri });
+    expect(noWindow.parsed).toMatchObject({ ok: false, reason: 'volatile_reference_requires_byte_window' });
+
+    const wrongWorkspace = await readThroughDoor(
+      { file_path: fallback!.uri, byte_offset: 0, byte_limit: 256 },
+      { workspaceId: 'ws-2' },
+    );
+    expect(wrongWorkspace.parsed).toMatchObject({ ok: false, reason: 'workspace_mismatch' });
+  });
+
+  it('refuses oversized scratch-reference line and raw windows before they spill recursively', async () => {
+    const cases = [
+      {
+        name: 'raw single line',
+        fileName: 'oversized-raw-line.md',
+        original: payload(DOOR_BUDGET_CHARS + 1_024),
+        args: { raw: true },
+      },
+      {
+        name: 'numbered line window',
+        fileName: 'oversized-numbered-lines.md',
+        original: Buffer.from(Array.from({ length: 5 }, () => 'x'.repeat(1_500)).join('\n')),
+        args: {},
+      },
+    ];
+
+    for (const example of cases) {
+      expect(example.original.length).toBeGreaterThan(DOOR_BUDGET_CHARS);
+      const referencePath = join(sandbox, 'scratch', example.fileName);
+      writeScratchReference({
+        filePath: referencePath,
+        payload: example.original,
+        workspaceId: 'ws-1',
+        audience: 'workspace',
+        mediaType: 'text/plain',
+        content: [{ index: 0, type: 'text', byteCount: example.original.length }],
+      });
+
+      const { text, parsed } = await readThroughNestedInvokeDoor(
+        { file_path: referencePath, ...example.args },
+        { workspaceId: 'ws-1' },
+      );
+
+      expect(parsed).toMatchObject({ ok: false, reason: 'scratch_line_window_too_large' });
+      expect(parsed.message).toContain('byte_offset+byte_limit');
+      expect(parsed).not.toHaveProperty('_projection');
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(DOOR_BUDGET_CHARS);
+    }
   });
 
   it('reports the page it actually returned, and advances by exactly that', async () => {

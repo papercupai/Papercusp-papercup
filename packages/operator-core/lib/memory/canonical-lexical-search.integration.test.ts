@@ -53,9 +53,16 @@ describe('CanonicalVectorStore.lexicalSearch (real PG ranking)', () => {
     await db?.cleanup();
   });
 
-  /** Use the real query builder/admission and real PG, changing only the old
-   * SQL normalization placement in the counterfactual arm. */
-  function comparisonStore(legacy: boolean) {
+  /** Use the real query builder/admission and real PG, rewriting only what the
+   * counterfactual arms differ in:
+   *  - 'ilike' — the pre-P-004 matcher: ILIKE over the RAW fields;
+   *  - 'like'  — the P-004 matcher (production until P-007): LIKE over lowered fields;
+   *  - 'current' — the builder's SQL untouched (strpos + canonical row_kind).
+   * Both counterfactuals are pre-P-007, so they take each token as the escaped
+   * `%…%` pattern the builder used to send, and drop the canonical row_kind
+   * predicate — i.e. they are byte-for-byte the old queries, with no extra per-row
+   * work that would bias a timing comparison. */
+  function comparisonStore(arm: 'ilike' | 'like' | 'current') {
     const u = new URL(db.adminDsn);
     const variant = new CanonicalVectorStore({ ...storageConfig,host:u.hostname,port:Number(u.port),
       user:decodeURIComponent(u.username),password:decodeURIComponent(u.password),
@@ -63,8 +70,15 @@ describe('CanonicalVectorStore.lexicalSearch (real PG ranking)', () => {
     const calls: {text:string;params:unknown[]}[]=[];
     (variant as unknown as {pool:unknown}).pool = {
       query: async (text:string,params:unknown[]) => {
-        if(legacy) text=text.replace(/lower\((payload->>'(?:name|description|data)')\)/g,'$1')
-          .replace(/\b(nm|ds|dt) LIKE\b/g,'$1 ILIKE');
+        if(arm!=='current') {
+          const tokenParams=new Set<number>();
+          text=text.replace(/strpos\((nm|ds|dt), \$(\d+)\) > 0/g,(_m,field:string,n:string)=>{
+            tokenParams.add(Number(n)-1);
+            return `${field} ${arm==='ilike'?'ILIKE':'LIKE'} $${n}`;
+          }).replace(/row_kind = '(?:memory|entity)' AND /g,'');
+          if(arm==='ilike') text=text.replace(/lower\((payload->>'(?:name|description|data)')\)/g,(_m,e:string)=>e);
+          params=params.map((p,i)=>tokenParams.has(i)?`%${String(p).replace(/[\\%_]/g,(m)=>`\\${m}`)}%`:p);
+        }
         calls.push({text,params});
         return {rows:await db.adminSql.unsafe(text,params as never[])};
       },
@@ -171,12 +185,17 @@ describe('CanonicalVectorStore.lexicalSearch (real PG ranking)', () => {
       await db.adminSql`INSERT INTO harness_shared.memory_canonical(payload,state,created_at,invalid_at)
         VALUES(${db.adminSql.json({user_id:scope,name:'ALPHA MEMORY',...extra})},${state},'2026-01-20T00:00:00Z',${invalidAt})`;
     }
-    const legacy=comparisonStore(true).variant;
-    for(const query of ['MEMORY alpha','PAPERCUSP_MEMORY_TIMEOUT','user_id','SS ii cafe PATH','123 true','nothing']) {
+    const legacy=comparisonStore('ilike').variant;
+    // P-007: the strpos + row_kind builder must also agree with the LIKE builder it
+    // replaced — on `PATH\NAME 100%`, `user_id` vs `userxid`, NULL/non-text fields,
+    // the entity row, the archived row and the closed-window row above.
+    const like=comparisonStore('like').variant;
+    for(const query of ['MEMORY alpha','PAPERCUSP_MEMORY_TIMEOUT','user_id','SS ii cafe PATH','123 true','nothing','100% path\\name']) {
       for(const filters of [{user_id:scope},{user_id:scope,include_superseded:true},{user_id:scope,as_of:'2026-01-25T00:00:00Z'}]) {
         const expected=await legacy.lexicalSearch(query,20,filters);
         const actual=await store.lexicalSearch(query,20,filters);
         expect(actual).toEqual(expected);
+        expect(await like.lexicalSearch(query,20,filters)).toEqual(actual);
         expect(await store.lexicalSearch(query,20,filters)).toEqual(actual);
       }
     }
@@ -192,11 +211,12 @@ describe('CanonicalVectorStore.lexicalSearch (real PG ranking)', () => {
       FROM generate_series(1,2000) n`;
     await db.adminSql`ANALYZE harness_shared.memory_canonical`;
     const query='papercusp memory lexical retrieval ranking scope deterministic query performance timeout lineage candidate exclusion active history search';
-    const legacy=comparisonStore(true),current=comparisonStore(false);
+    const legacy=comparisonStore('ilike'),like=comparisonStore('like'),current=comparisonStore('current');
     const expected=await legacy.variant.lexicalSearch(query,10,{user_id:scope});
-    const times={legacy:[] as number[],current:[] as number[]};
-    for(const key of ['legacy','current','current','legacy'] as const) {
-      const variant=key==='legacy'?legacy:current;
+    const times={legacy:[] as number[],like:[] as number[],current:[] as number[]};
+    // Interleaved so drift in box load lands on every arm, not one.
+    for(const key of ['legacy','like','current','current','like','legacy'] as const) {
+      const variant=key==='legacy'?legacy:key==='like'?like:current;
       for(let i=0;i<5;i++) {
         const started=performance.now();
         expect(await variant.variant.lexicalSearch(query,10,{user_id:scope})).toEqual(expected);
@@ -205,13 +225,17 @@ describe('CanonicalVectorStore.lexicalSearch (real PG ranking)', () => {
     }
     const median=(xs:number[])=>[...xs].sort((a,b)=>a-b)[Math.ceil(xs.length/2)-1];
     const plans:Record<string,unknown>={};
-    for(const [key,arm] of [['legacy',legacy],['current',current]] as const) {
+    for(const [key,arm] of [['legacy',legacy],['like',like],['current',current]] as const) {
       const call=arm.calls.at(-1)!;
       const [row]=await db.adminSql.unsafe('EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) '+call.text,call.params as never[]);
       const p=row['QUERY PLAN'][0];
       plans[key]={executionMs:p['Execution Time'],hits:p.Plan['Shared Hit Blocks']};
     }
-    console.info('P004_LEXICAL_NORMALIZATION',JSON.stringify({rows:2000,tokens:16,legacyMedian:median(times.legacy),currentMedian:median(times.current),plans}));
+    console.info('P004_LEXICAL_NORMALIZATION',JSON.stringify({rows:2000,tokens:16,legacyMedian:median(times.legacy),likeMedian:median(times.like),currentMedian:median(times.current),plans}));
+    // P-004: lowering once beats ILIKE's per-token case folding.
     expect(median(times.current)).toBeLessThan(median(times.legacy));
-  },60_000);
+    // P-007 (papercusp-performance-audit-2026-10-12): strpos beats the LIKE
+    // `%…%` walker it replaced, on the same lowered fields and the same top-K.
+    expect(median(times.current)).toBeLessThan(median(times.like));
+  },90_000);
 });

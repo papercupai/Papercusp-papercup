@@ -40,9 +40,9 @@
  * pin CODE tokens (`resultLine('failed')`, `process.exit(1)`) and never prose.
  */
 import { describe, it, expect } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -520,7 +520,7 @@ describe('affected-tests.mjs: a terminated run leaves a self-identifying log (EI
     expect(runLog).toContain(String(pid));
   });
 
-  it('nests full-run logs under one TMPDIR entry and sweeps only stale diagnostics (WI-41782)', () => {
+  it('retains full-run evidence outside TMPDIR while sweeping stale task scratch', () => {
     const isolatedTmp = mkdtempSync(join(tmpdir(), 'affected-tests-log-root-'));
     const logRoot = join(isolatedTmp, 'papercusp-affected-tests');
     const stale = join(logRoot, 'stale.log');
@@ -530,22 +530,29 @@ describe('affected-tests.mjs: a terminated run leaves a self-identifying log (EI
     writeFileSync(recent, 'young');
     const fiveHoursAgo = (Date.now() - 5 * 60 * 60 * 1_000) / 1_000;
     utimesSync(stale, fiveHoursAgo, fiveHoursAgo);
+    let runLog: string | undefined;
 
     try {
       const { stdout, status } = runAffected(['--changed-paths', 'scripts/affected-tests.mjs', '--dry'], {
         TMPDIR: isolatedTmp,
         TMP: isolatedTmp,
         TEMP: isolatedTmp,
+        // WI-10005970: this case pins scratch cleanup, not the headroom policy. The child re-applies
+        // tmpdir-guard, which relocates a low-headroom TMPDIR to /dev/shm and so ignores the
+        // TMPDIR above. Pin the critical floors near zero so host disk state cannot decide it.
+        PAPERCUSP_DISK_ALARM_CRITICAL_PCT: '0.000001',
+        PAPERCUSP_DISK_ALARM_CRITICAL_GB: '0.000001',
       });
-      const runLog = /Full run log: (\S+)/.exec(stdout)?.[1];
+      runLog = /Full run log: (\S+)/.exec(stdout)?.[1];
 
       expect(status).toBe(0);
       expect(runLog, `no run-log path announced in:\n${stdout}`).toBeTruthy();
-      expect(dirname(runLog!)).toBe(logRoot);
+      expect(dirname(runLog!)).toBe(join(homedir(), '.papercusp', 'logs', 'papercusp-affected-tests'));
       expect(existsSync(runLog!)).toBe(true);
       expect(existsSync(stale)).toBe(false);
       expect(existsSync(recent)).toBe(true);
     } finally {
+      if (runLog && existsSync(runLog)) unlinkSync(runLog);
       rmSync(isolatedTmp, { recursive: true, force: true });
     }
   });

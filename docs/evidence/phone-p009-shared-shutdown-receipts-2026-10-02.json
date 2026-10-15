@@ -1,0 +1,118 @@
+{
+  "schemaVersion": "phone-p009-shared-shutdown-receipts-v1",
+  "workItem": "WI-10005364",
+  "phoneItem": "WI-10004987",
+  "plan": "phone-public-telephone-service-2026-10-01",
+  "sourceRootRef": "harness:papercusp",
+  "pathNormalization": "Machine-local absolute roots are represented by stable source-root references and relative paths; measured source hashes and run outcomes are unchanged.",
+  "rootCause": "The shared embedded Postgres handle caught a rejecting pg.stop(), logged it, and resolved undefined. Phone's corrected wrapper could not detect this swallowed rejection.",
+  "reuse": "Extended the existing shared stop() method and existing embedded-pg-supervisor.integration.test.ts; no new service or abstraction.",
+  "change": "Keep the existing stop-error log and rethrow the exact low-level error. Preserve supervisor stand-down and the dead-child fast path.",
+  "measurement": {
+    "measuredAt": "2026-10-02T07:50:17.969433+00:00",
+    "sourceFiles": [
+      {
+        "path": "libs/papercusp/packages/embedded-postgres-server/src/index.js",
+        "sha256": "ca66bc4224b3ef1213a8bccef69c790e3e62057e2e6614061fab6ff008672dee",
+        "repositoryRootRef": "harness:papercusp",
+        "repositoryRootRelativePath": "libs/papercusp",
+        "repositoryPath": "packages/embedded-postgres-server/src/index.js",
+        "head": "0a1e3bf0e30824b58c184d26aca5c814685ec072",
+        "workingBlob": "a4f41192a12286d7276d327c990df6f0ebe0e076",
+        "headBlob": "a4f41192a12286d7276d327c990df6f0ebe0e076"
+      },
+      {
+        "path": "packages/operator-core/lib/embedded-pg-supervisor.integration.test.ts",
+        "sha256": "d7249012e5ab90be19e3613d739a7b539da61d1533e9fae209a367afe98dbdfc",
+        "repositoryRootRef": "harness:papercusp",
+        "repositoryRootRelativePath": ".",
+        "repositoryPath": "packages/operator-core/lib/embedded-pg-supervisor.integration.test.ts",
+        "head": "878b416d3595c59e0476654cc5d2aed93253f508",
+        "workingBlob": "e064455009fca549676e63e56a81fb2c6fa1f683",
+        "headBlob": "77015004b428dd8afc2965b24e4d0a761feda1c2"
+      },
+      {
+        "path": "packages/operator-core/lib/embedded-pg-supervisor.test.ts",
+        "sha256": "cf0f7291ec457e313db969c5fd867cdab681e1f24a3b414ac88768a4069c3539",
+        "repositoryRootRef": "harness:papercusp",
+        "repositoryRootRelativePath": ".",
+        "repositoryPath": "packages/operator-core/lib/embedded-pg-supervisor.test.ts",
+        "head": "878b416d3595c59e0476654cc5d2aed93253f508",
+        "workingBlob": "abf6a0ac0fd6b1eeefe806e88e9f769b92eee72f",
+        "headBlob": "abf6a0ac0fd6b1eeefe806e88e9f769b92eee72f"
+      }
+    ]
+  },
+  "distinguishingControl": {
+    "runId": "18643a37-f20a-4313-a86d-0c739ad30afe",
+    "testRunId": 20496635,
+    "passed": 0,
+    "failed": 1,
+    "intentionallyFiltered": 2,
+    "observed": "The real embedded database handle resolved undefined after an injected low-level stop rejection. The assertion expected the exact original error."
+  },
+  "finalRun": {
+    "ok": true,
+    "runId": "d0fc5a4e-f819-4efd-a37f-0475e67c110f",
+    "rootRef": "harness:papercusp",
+    "rootRefs": [
+      "harness:papercusp",
+      "managed-app:phone-app"
+    ],
+    "passed": 17,
+    "failed": 0,
+    "skipped": 0,
+    "files": 3,
+    "failures": [],
+    "failuresTruncated": false,
+    "durationMs": 14415,
+    "byFile": {
+      "packages/operator-core/lib/embedded-pg-supervisor.integration.test.ts": {
+        "passed": 3,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20496886
+      },
+      "packages/operator-core/lib/embedded-pg-supervisor.test.ts": {
+        "passed": 10,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20496884
+      },
+      "managed-app:phone-app/apps/sidecar/src/voicemail-persistence.e2e.test.ts": {
+        "passed": 4,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "runId": 20496889
+      }
+    },
+    "testRunIds": [
+      20496884,
+      20496886,
+      20496889
+    ],
+    "rootSource": "sourceRootRef"
+  },
+  "checks": {
+    "nodeSyntaxCheckExitCode": 0,
+    "diffCheckExitCode": 0
+  },
+  "verificationScope": [
+    "Original low-level exception propagates by identity through real owned Postgres handle.",
+    "Rejected stop remains available for explicit cleanup after the injected fault is removed.",
+    "Existing supervised real postmaster SIGKILL recovery and deliberate stop remain working.",
+    "Existing already-dead postmaster stop remains prompt.",
+    "Ten existing supervisor unit guards pass.",
+    "Four actual Phone sidecar/database crash-restart outcomes pass after the shared dependency source change."
+  ],
+  "limits": [
+    "A controlled injected rejection proves catch-and-resolve behavior, not the cause of historical Phone failure20483755.",
+    "EI-24845567110086010 remains owned and unexplained.",
+    "Earlier Phone default232 execution is retained historical evidence; current affected run17 covers the changed shared stop dependency.",
+    "No recording/transcription consent policy, retention value, notification recipient, external carrier/media acceptance, P009 completion or public PSTN shipment."
+  ],
+  "immutableLineage": "Earlier Phone shutdown receipt and original/derivative/card/audit author artifacts are preserved unchanged."
+}

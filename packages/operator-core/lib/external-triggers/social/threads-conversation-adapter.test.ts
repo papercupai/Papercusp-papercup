@@ -19,7 +19,6 @@ import { describe, expect, it } from 'vitest';
 import { runSocialAdapterConformance, type SocialConformanceHarness } from './conformance';
 import { isCoherentReconcileResult, type SocialAdapter, type SocialNormalizedEvent } from './adapter-contract';
 import { SOCIAL_POST_SCHEMA_FIXTURE } from './social-post-schema.fixture';
-import { instagramWindowOverflowed } from './instagram-common';
 import { isSocialWatermarkCursor, type SocialWatermarkCursor } from './social-watermark';
 import { ThreadsCredentialError, type ThreadsCredential } from './threads-common';
 import {
@@ -185,15 +184,9 @@ describe('no loss, and it is EARNED rather than merely unreported (D-036)', () =
     const stored = first.result.cursor as SocialWatermarkCursor;
 
     publishReplies(world, 20);
-    const newestWindow = [...world.replies]
-      .reverse()
-      .slice(0, 2)
-      .map((r) => ({ id: r.id, timestamp: r.timestamp as string }));
-
-    // Instagram's predicate, run over the equivalent window: OVERFLOW.
-    expect(
-      instagramWindowOverflowed(newestWindow, { watermark: stored.watermark, seenAtWatermark: stored.boundaryIds }, 2),
-    ).toBe(true);
+    // The package's capped-window controls live in instagram-provider.test.ts.
+    // This suite proves the contrasting paginated Threads path stays lossless.
+    expect(Date.parse(world.replies[world.replies.length - 3]!.timestamp as string)).toBeGreaterThan(Date.parse(stored.watermark!));
 
     // Threads', over the same data: nothing lost, because it can page.
     const second = await drain(newAdapter(world), first.result.cursor);

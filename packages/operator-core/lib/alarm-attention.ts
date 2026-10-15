@@ -8,6 +8,8 @@
  * the attention-notify delivery path, and fail-open observability semantics.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { AttentionNotifyInput } from './attention-notify';
+import type { SevereEventBroadcast, SevereEventResolution } from './severe-event-broadcast';
 
 export const DEFAULT_ALARM_ESCALATION_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
@@ -19,13 +21,24 @@ export interface AlarmAttentionRequest {
   cooldownMs: number;
   /** Used only to make non-fatal failures attributable in logs. */
   source: string;
+  /** Stable per-caller identity, independent of the repeat-notification cooldown. */
+  conditionKey: string;
+  /** Native detector evidence persisted with the existing notification receipt. */
+  data?: AttentionNotifyInput['data'];
 }
 
 export interface AlarmAttentionDeps {
-  /** Injectable for tests; production defaults to notifyAttention. */
-  notify?: (input: { title: string; body: string }) => Promise<void>;
+  /**
+   * Injectable for tests; production defaults to notifyAttention. Takes the FULL
+   * AttentionNotifyInput (kind, importance, routing data), never a {title, body}
+   * subset: a narrowed seam hides urgency and routing from every test that injects
+   * it (WI-6554700010009741; guarded by lint:di-seam-arity-strands).
+   */
+  notify?: (input: AttentionNotifyInput) => Promise<void>;
   /** Injectable for tests; production reads the durable notification rail. */
   recentlyEscalated?: () => Promise<boolean>;
+  broadcast?: (input: SevereEventBroadcast) => Promise<boolean>;
+  resolve?: (input: SevereEventResolution) => Promise<boolean>;
 }
 
 async function defaultRecentlyEscalated(title: string, cooldownMs: number): Promise<boolean> {
@@ -46,14 +59,41 @@ async function defaultRecentlyEscalated(title: string, cooldownMs: number): Prom
   }
 }
 
-async function defaultNotify(input: { title: string; body: string }): Promise<void> {
-  const { notifyAttention } = await import('./attention-notify');
-  await notifyAttention({
-    kind: 'intervention',
-    title: input.title,
-    body: input.body,
-    importance: 'urgent',
-  });
+async function defaultResolve(input: SevereEventResolution): Promise<boolean> {
+  const { computeConditionStates, readConditionEnvelopes, readLatestConditionEnvelope } =
+    await import('./agent-tools/coordination/tools/conditions');
+  // The generic fold deliberately stops at CONDITIONS_FAST_PATH_ROW_CAP across
+  // every condition family. Long-open one-shot conditions can age out of that
+  // window while still being current, so prefer the indexed exact-key read when
+  // it is available and use the bounded fold only for non-PG transports.
+  const latest = await readLatestConditionEnvelope(input.conditionKey);
+  if (latest) {
+    const hasResolution =
+      (typeof latest['resolves_condition'] === 'string' && latest['resolves_condition'].length > 0) ||
+      (Array.isArray(latest['resolves_conditions']) &&
+        latest['resolves_conditions'].some((key) => typeof key === 'string' && key.length > 0));
+    if (hasResolution || latest['condition_key'] !== input.conditionKey) return false;
+  } else {
+    const open = computeConditionStates(await readConditionEnvelopes())
+      .some((condition) => condition.condition_key === input.conditionKey && condition.open);
+    if (!open) return false;
+  }
+  const { broadcastSevereEventResolved } = await import('./severe-event-broadcast');
+  return broadcastSevereEventResolved(input);
+}
+
+/** Resolve only after the caller successfully measured recovery; unreadable scans never clear. */
+export async function resolveAlarm(
+  conditionKey: string,
+  source: string,
+  deps: AlarmAttentionDeps = {},
+): Promise<boolean> {
+  try {
+    return await (deps.resolve ?? defaultResolve)({ conditionKey, summary: `${source} recovered` });
+  } catch (err) {
+    console.warn(`[${source}] condition resolution failed (non-fatal): ${String(err)}`);
+    return false;
+  }
 }
 
 /**
@@ -67,13 +107,43 @@ export async function escalateAlarm(
   request: AlarmAttentionRequest,
   deps: AlarmAttentionDeps = {},
 ): Promise<boolean> {
+  return defaultNotify(request, deps);
+}
+
+async function defaultNotify(request: AlarmAttentionRequest, deps: AlarmAttentionDeps): Promise<boolean> {
   const recentlyEscalated =
     deps.recentlyEscalated ?? (() => defaultRecentlyEscalated(request.title, request.cooldownMs));
-  const notify = deps.notify ?? defaultNotify;
+
+  // The owning work-item must remain visible even while owner notifications are cooling down.
+  // Failures in either delivery leg cannot suppress an attempt on the other leg.
+  if (request.conditionKey) {
+    try {
+      const event = { conditionKey: request.conditionKey, summary: request.title, body: request.body };
+      if (deps.broadcast) await deps.broadcast(event);
+      else {
+        const { broadcastSevereEvent } = await import('./severe-event-broadcast');
+        await broadcastSevereEvent(event);
+      }
+    } catch (err) {
+      console.warn(`[${request.source}] condition broadcast failed (non-fatal): ${String(err)}`);
+    }
+  }
 
   try {
     if (await recentlyEscalated()) return false;
-    await notify({ title: request.title, body: request.body });
+    // ONE input for both legs, so an injected seam observes exactly what production delivers.
+    const input: AttentionNotifyInput = {
+      kind: 'intervention',
+      title: request.title,
+      body: request.body,
+      importance: 'urgent',
+      data: request.conditionKey ? { ...request.data, conditionKey: request.conditionKey } : request.data,
+    };
+    if (deps.notify) await deps.notify(input);
+    else {
+      const { notifyAttention } = await import('./attention-notify');
+      await notifyAttention(input);
+    }
     return true;
   } catch (err) {
     console.warn(

@@ -101,6 +101,7 @@ describe('chunkOverCapMessage (RSR-P-008-B)', () => {
       expect(continuation.expects).toBe('none');
       expect(continuation.wake).toBeUndefined();
       expect(continuation.related_msg_id).toBeUndefined();
+      expect(continuation.recipientAuthRelatedMsgId).toBe('msg-parent');
       expect(continuation.blocking).toBeUndefined();
       expect(continuation).toMatchObject({ to: ['bee-1'], harness: 'papercusp', plan_slug: 'some-plan', noBodyRefs: true });
       expect(continuation.summary).toBe(`the headline (part ${meta.part}/${meta.of})`);

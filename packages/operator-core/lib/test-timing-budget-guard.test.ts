@@ -23,6 +23,8 @@ import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: tsc reports TS7016 at the module-SPECIFIER line, so on a multi-line import the @ts-ignore lands on `import {` and suppresses nothing.
 import { findNestedChildBudgetInversions, findWallClockBudgets, hasTightLiteralBudget, TIGHT_BUDGET_FLOOR_MS, BASELINE, SPAWN_SYNC_EXPLICIT_BASELINE, findChildIdleWindowBudgets, IDLE_WINDOW_FLOOR_MS, IDLE_WINDOW_KEY_RE, SPAWNS_CHILD_RE, IDLE_WINDOW_BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
+// @ts-ignore — same untyped module as above; one line for the same TS7016 reason.
+import { classifyFileDuration, durationSubjects, FILE_DURATION_BUDGET_MS, FILE_GROWTH_RATIO, FILE_GROWTH_FLOOR_MS, FILE_DURATION_BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
 
 describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () => {
   it('FLAGS a tight literal budget on a direct elapsed assertion', () => {
@@ -214,6 +216,16 @@ describe('child idle-window guard (WI-10004030 — the WI-10004029 gate-red clas
     ]);
   });
 
+  it('ignores report cadence data in a spawning file while retaining the actual child option', () => {
+    const src = [
+      'const report = { workload: { idleMs: 200 } };',
+      'execProcess({ command: process.execPath, idleTimeoutMs: 300 });',
+    ].join('\n');
+    expect(findChildIdleWindowBudgets(src)).toEqual([
+      expect.objectContaining({ key: 'idleTimeoutMs', budgetMs: 300, via: 'literal', exempt: false }),
+    ]);
+  });
+
   it('RESOLVES a same-file const, so hoisting the literal into a name does not evade the floor', () => {
     const src = `const IDLE_MS = 300;\nexecProcess({ command: process.execPath, idleTimeoutMs: IDLE_MS });`;
     expect(findChildIdleWindowBudgets(src)).toEqual([
@@ -264,5 +276,86 @@ describe('child idle-window guard (WI-10004030 — the WI-10004029 gate-red clas
     expect(IDLE_WINDOW_FLOOR_MS).toBe(1000);
     expect(IDLE_WINDOW_BASELINE as Set<string>).toBeInstanceOf(Set);
     expect((IDLE_WINDOW_BASELINE as Set<string>).size).toBe(0);
+  });
+});
+
+// green-main-cycle-time-2026-10-08 P-004 — the FILE-DURATION class. The verdict is a pure
+// function of a file's CI samples, so every branch is pinned here without a database.
+describe('file-duration long-pole class (P-004)', () => {
+  const DAY = 86_400_000;
+  const T0 = Date.parse('2026-10-08T12:00:00Z');
+  /** Newest-first samples: `recent` are the newest runs, `prior` the ones before them (1h apart). */
+  function samples(recent: number[], prior: number[], priorAgeDays = 1) {
+    const out: { durationMs: number; finishedAt: string }[] = [];
+    recent.forEach((ms, i) => out.push({ durationMs: ms, finishedAt: new Date(T0 - i * 3_600_000).toISOString() }));
+    prior.forEach((ms, i) => out.push({ durationMs: ms, finishedAt: new Date(T0 - priorAgeDays * DAY - i * 3_600_000).toISOString() }));
+    return out;
+  }
+  type Verdict = { recentMs: number | null; priorMs: number | null; overBudget: boolean; grew: boolean; growthJudged: boolean };
+  const classify = (s: ReturnType<typeof samples>, o?: object) => classifyFileDuration(s, o) as Verdict;
+
+  it('keeps the measured constants the class was calibrated with', () => {
+    expect(FILE_DURATION_BUDGET_MS).toBe(300_000);
+    expect(FILE_GROWTH_RATIO).toBe(1.5);
+    expect(FILE_GROWTH_FLOOR_MS).toBe(60_000);
+    expect(FILE_GROWTH_FLOOR_MS).toBeLessThan(FILE_DURATION_BUDGET_MS);
+  });
+
+  it('FLAGS the measured long pole: recent median over budget AND grown', () => {
+    const v = classify(samples([2_744_000, 2_464_000, 2_800_000], [1_094_000, 1_000_000, 1_200_000, 1_094_000]));
+    expect(v.recentMs).toBe(2_744_000);
+    expect(v.overBudget).toBe(true);
+    expect(v.grew).toBe(true);
+  });
+
+  it('uses the MEDIAN of the newest 3, so one load-inflated run is not a finding', () => {
+    const v = classify(samples([900_000, 100_000, 110_000], [100_000, 105_000, 95_000]));
+    expect(v.recentMs).toBe(110_000);
+    expect(v.overBudget).toBe(false);
+    expect(v.grew).toBe(false);
+  });
+
+  it('FLAGS growth past the ratio for a file above the noise floor', () => {
+    const v = classify(samples([222_000, 220_000, 225_000], [142_000, 140_000, 145_000]));
+    expect(v.overBudget).toBe(false);
+    expect(v.growthJudged).toBe(true);
+    expect(v.grew).toBe(true);
+  });
+
+  it('does NOT flag a file that is stable just under budget', () => {
+    const v = classify(samples([280_000, 279_000, 281_000], [275_000, 276_000, 274_000]));
+    expect(v.overBudget).toBe(false);
+    expect(v.grew).toBe(false);
+  });
+
+  it('does NOT judge growth below the noise floor (2s -> 6s is not a gate problem)', () => {
+    const v = classify(samples([6_000, 6_000, 6_000], [2_000, 2_000, 2_000]));
+    expect(v.growthJudged).toBe(false);
+    expect(v.grew).toBe(false);
+  });
+
+  it('does NOT judge growth on too little prior history, nor on runs older than the window', () => {
+    expect(classify(samples([200_000, 200_000, 200_000], [100_000, 100_000])).growthJudged).toBe(false);
+    expect(classify(samples([200_000, 200_000, 200_000], [100_000, 100_000, 100_000], 9)).growthJudged).toBe(false);
+  });
+
+  it('reports no verdict for a file with no CI history (a new or just-split file)', () => {
+    const v = classify([]);
+    expect(v.recentMs).toBeNull();
+    expect(v.overBudget).toBe(false);
+    expect(v.grew).toBe(false);
+  });
+
+  it('judges only test files among the forwarded changed paths', () => {
+    expect(durationSubjects(['scripts/check-test-timing-budgets.mjs', 'apps/x/a.test.ts', 'apps/x/a.test.ts', 'libs/y/b.spec.tsx', 'node_modules/z/c.test.ts'])).toEqual(['apps/x/a.test.ts', 'libs/y/b.spec.tsx']);
+  });
+
+  it('keeps a reason on every shrink-only baseline entry', () => {
+    const baseline = FILE_DURATION_BASELINE as Map<string, string>;
+    expect(baseline.size).toBeLessThanOrEqual(3);
+    for (const [path, reason] of baseline) {
+      expect(path).toMatch(/\.test\.ts$/);
+      expect(reason.length).toBeGreaterThan(20);
+    }
   });
 });

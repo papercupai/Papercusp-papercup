@@ -13,6 +13,7 @@
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 
 const ROOT = resolve(__dirname, '..');
 const ENTRY = resolve(__dirname, 'hosted-auth-runtime.ts');
@@ -24,6 +25,8 @@ const FORBIDDEN = [
   'auth/hosted/secret-ref.ts',
   'sync-sse.ts',
   'endpoint-route/routes/index.ts',
+  'endpoint-route/routes/hosted-tutorial-assistance-runtime.ts',
+  'agent-tools/operator/converse.ts',
 ] as const;
 
 const IMPORT_RE = /(?:^|\n)\s*(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]|(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g;
@@ -52,11 +55,50 @@ function walk(entry: string): Map<string, string> {
       const target = resolveRelative(file, spec);
       if (target && target.startsWith(ROOT) && !seen.has(target)) queue.push([target, file]);
     }
+    // esbuild follows lazy literal imports too; ignoring them let Help pull
+    // the execution graph into hosted sign-in without this guard noticing.
+    const syntax = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+        && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0])) {
+        const target = resolveRelative(file, node.arguments[0].text);
+        if (target && target.startsWith(ROOT) && !seen.has(target)) queue.push([target, file]);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(syntax);
   }
   return seen;
 }
 
 describe('hosted-auth-runtime bundle cone', () => {
+  it('excludes the agent runtime barrel even for types and runtime tooldef barrels', () => {
+    // The relative-only walk missed an agent-mcp barrel import in a tutorial
+    // preference leaf: esbuild traversed its side effects into DBOS/telemetry.
+    // Inspect runtime imports throughout the same cone, including named imports
+    // with inline type modifiers. Narrow package subpaths remain available.
+    const offenders: string[] = [];
+    for (const file of walk(ENTRY).keys()) {
+      const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+      for (const node of source.statements) {
+        if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) continue;
+        if (!['@papercusp/agent-mcp', '@papercusp/tooldef'].includes(node.moduleSpecifier.text)) continue;
+        // TypeScript follows type-only barrel exports too. Importing RouteContext
+        // from agent-mcp pulls its agent execution graph into the Next program.
+        if (node.moduleSpecifier.text === '@papercusp/agent-mcp') {
+          offenders.push(`${file} imports ${node.moduleSpecifier.text}`);
+          continue;
+        }
+        const clause = node.importClause;
+        if (clause?.isTypeOnly) continue;
+        if (clause && !clause.name && clause.namedBindings && ts.isNamedImports(clause.namedBindings)
+          && clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every(item => item.isTypeOnly)) continue;
+        offenders.push(`${file} imports ${node.moduleSpecifier.text}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('never reaches the operator substrate (operator-state-pg / integration store / sync engine / route registry)', () => {
     const cone = walk(ENTRY);
     const offenders = FORBIDDEN.map((suffix) => {

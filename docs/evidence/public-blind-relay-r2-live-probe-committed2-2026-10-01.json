@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "public-blind-relay R-2: the deployed relay key b1015b56 is live on the public DHT (tower probe, re-run on committed fail-closed fix d181473c10)",
+  "framework": "shell",
+  "command": ["npx", "tsx", "scripts/relay/probe-relay-key.ts"],
+  "exitCode": 0,
+  "startedAt": "2026-10-01T19:12:50.812Z",
+  "finishedAt": "2026-10-01T19:12:57.124Z",
+  "summary": "Re-run of the R-2 probe after the relay fail-closed fix landed at d181473c10. Before the run, HEAD was d181473c10 and voice-relay.ts, sync-relay.ts and scripts/relay/probe-relay-key.ts each had a working-tree blob identical to HEAD (meta.txt CLEAN lines). The probe ran on the tower against the public DHT with no relay configuration. It called runRelayLivenessCheck (the boot check's own function) for the shipped default key, which reported live, and the probe exited 0. Plan public-blind-relay-2026-10-01 clause AUTO-BAR-R-2-P-002. Raw log: .papercusp/scratch/relay-live-rerun/r2.log.",
+  "assertions": [
+    {
+      "id": "auto-bar-r-2-p-002",
+      "passed": true,
+      "evidence": "stdout: '[swarm] relay b1015b56 is live on the DHT' and '[swarm] relay fallback: 1 of 1 relay key(s) live on the DHT'; JSON {\"key\":\"b1015b569f617f58d68a41542a3f42ba0765909ffee43379a96d4c7c9cf49f4c\",\"status\":\"live\"}"
+    },
+    {
+      "id": "r2-exit-code-live",
+      "passed": true,
+      "evidence": "R2_EXIT=0 in .papercusp/scratch/relay-live-rerun/meta.txt (the probe exits 0 only when every key is live; 1 not-found; 2 unknown)"
+    },
+    {
+      "id": "r2-sources-clean-at-committed-sha",
+      "passed": true,
+      "evidence": "meta.txt: HEAD=d181473c10a6eabc7e0b23530a3961525439b5d6; CLEAN packages/operator-core/lib/voice-node/voice-relay.ts, packages/operator-core/lib/sync/hyperbee/sync-relay.ts, scripts/relay/probe-relay-key.ts"
+    }
+  ]
+}

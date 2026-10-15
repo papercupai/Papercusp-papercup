@@ -18,7 +18,7 @@
 
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { runTscBaselineGate } from './lib/tsc-baseline-gate.mjs';
+import { runTscBaselineGate, TOOLCHAIN_FAILURE_EXIT_CODE } from './lib/tsc-baseline-gate.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const baselineFile = resolve(ROOT, 'scripts/.tsc-baseline.json');
@@ -52,8 +52,9 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   main().catch((err) => {
-    // A crashed gate must never read as a clean typecheck.
+    // A crashed gate must never read as a clean typecheck — nor as a regression: exit 1 prints
+    // status=regressed, so a crash exits EX_SOFTWARE and reads error(70) (EI-25816656568127078).
     console.error(err);
-    process.exit(1);
+    process.exit(TOOLCHAIN_FAILURE_EXIT_CODE);
   });
 }

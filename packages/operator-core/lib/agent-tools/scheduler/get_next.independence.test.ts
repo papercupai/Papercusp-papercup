@@ -31,6 +31,9 @@ vi.mock('../../work-item-claim-lease-wiring', () => ({
 
 vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: vi.fn(async () => new Map()),
+  // get_next's preflight reads fetchContextPressureReadings; without it the preflight
+  // degrades to its fallback and this success-path test sees no claim (red since 2026-10-13).
+  fetchContextPressureReadings: vi.fn(async () => new Map()),
 }));
 
 vi.mock('../locks/live-lock-paths', () => ({
@@ -42,7 +45,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   readFleetPauseState: vi.fn(async () => ({ windingDown: false, reason: null })),
   diagnoseFleetScopeCooldownMiss: vi.fn(async () => null),
   diagnoseFleetScopeIssueFloorMiss: vi.fn(async () => null),
-  diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
+  diagnoseFleetScopeFeatureFamilyExclusions: vi.fn(async () => null),
   diagnoseFleetScopeTerminalExhaustion: vi.fn(async () => null),
   diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
   diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),

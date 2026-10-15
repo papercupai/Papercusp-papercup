@@ -66,6 +66,111 @@ import {
   type SeatUsage,
 } from './commerce-accounts';
 import { type DeliveryIntent } from '../p2p/artifact-distribution';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { quoteRevenueAllocations } from '../p2p/revenue-settlement';
+import { quoteIdentityInferenceTurn, verifyIdentityPerUseOffer } from './identity-per-use-offer';
+import type { UsageReceiptWire } from './metered-invocation-door-io';
+
+export interface IdentityUsageStatementLine {
+  readonly channelId: string;
+  readonly usageNonce: string;
+  readonly offerId: string;
+  readonly releaseRef: string;
+  readonly payer: string;
+  readonly seller: string;
+  readonly priceVersion: string;
+  readonly splitManifestHash: string;
+  /** BYOC base, displayed per identity; never added to Cupboard charges. */
+  readonly billedInferenceMicros: string;
+  readonly markupMicros: string;
+  /** Per-receipt arithmetic quote; batch rounding and payout are separate. */
+  readonly allocationQuote: {
+    readonly creatorMicros: string;
+    readonly daoMicros: string;
+    readonly componentMicros: string;
+    readonly componentAuthorsMicros: Readonly<Record<string, string>> | null;
+  };
+}
+
+export interface IdentityUsageStatement {
+  readonly basis: 'hosted-settled-usage';
+  readonly currency: 'USD';
+  readonly chainFinality: 'not-measured';
+  readonly allocationBasis: 'per-receipt-quote';
+  readonly lines: readonly IdentityUsageStatementLine[];
+  readonly markupMicros: string;
+  readonly reservedReceipts: number;
+  readonly complete: boolean;
+  readonly issues: readonly { readonly channelId: string; readonly usageNonce: string; readonly reason: string }[];
+  readonly costPerAcceptedOutcomeMicros: null;
+  readonly outcomeEvidence: 'unavailable';
+}
+
+/**
+ * Project only the caller's durable receipt snapshot. Settled usage is a
+ * monetary claim, not chain finality; inference is a BYOC base, not a second
+ * charge. Re-quote recorded terms, never today's mutable offer catalog.
+ */
+export function identityUsageStatement(receipts: readonly UsageReceiptWire[], principalId: string): IdentityUsageStatement {
+  const byKey = new Map<string, UsageReceiptWire>();
+  const conflicts = new Set<string>();
+  const issues: { channelId: string; usageNonce: string; reason: string }[] = [];
+  for (const receipt of receipts) {
+    if ((receipt.payer !== principalId && receipt.seller !== principalId) ||
+        !receipt.releaseRef.startsWith('identity-release:')) continue;
+    const key = canonicalJson([receipt.channelId, receipt.usageNonce]);
+    const prior = byKey.get(key);
+    if (prior && canonicalJson(prior) !== canonicalJson(receipt)) conflicts.add(key);
+    else byKey.set(key, receipt);
+  }
+  const micros = (value: string | null | undefined): bigint | null =>
+    typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) ? BigInt(value) : null;
+  const lines: IdentityUsageStatementLine[] = [];
+  let markupMicros = 0n;
+  let reservedReceipts = 0;
+  for (const [key, receipt] of [...byKey].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    const issue = (reason: string) => issues.push({ channelId: receipt.channelId, usageNonce: receipt.usageNonce, reason });
+    if (conflicts.has(key)) { issue('conflicting-receipt'); continue; }
+    if (receipt.state === 'reserved') { reservedReceipts += 1; continue; }
+    const inference = receipt.identityInference;
+    const billed = micros(inference?.billedInferenceMicros), ceiling = micros(inference?.ceilingMicros);
+    const prior = micros(inference?.priorRemainderNumerator), remainder = micros(inference?.remainderNumerator);
+    const amount = micros(receipt.amountMicros), quantity = micros(receipt.meterQuantity);
+    const price = micros(receipt.unitPriceMicros), reserved = micros(receipt.reservedMicros);
+    if (receipt.state !== 'settled' || !receipt.channelId.trim() || !receipt.usageNonce.trim() ||
+        !receipt.offerId.trim() || !receipt.payer.trim() || !receipt.seller.trim() ||
+        !receipt.voucherSignature?.trim() || !receipt.receiptSignature?.trim() ||
+        !Number.isSafeInteger(receipt.reservedAtMs) || receipt.reservedAtMs < 0 ||
+        !Number.isSafeInteger(receipt.settledAtMs) || receipt.settledAtMs! < receipt.reservedAtMs ||
+        billed === null || ceiling === null || prior === null || remainder === null ||
+        amount === null || quantity === null || price === null || reserved === null ||
+        price > BigInt(Number.MAX_SAFE_INTEGER)) { issue('incomplete-identity-receipt'); continue; }
+    const offer = { skuRef: receipt.releaseRef, meterUnit: receipt.meterUnit, unitPriceMicros: Number(price),
+      priceVersion: receipt.priceVersion, splitManifestHash: receipt.splitManifestHash };
+    const verified = verifyIdentityPerUseOffer(offer);
+    const quote = quoteIdentityInferenceTurn({ offer, billedInferenceMicros: billed,
+      inferenceCeilingMicros: ceiling, priorRemainderNumerator: prior });
+    if (!verified.ok || !quote.ok || quote.amountMicros !== amount || quote.remainderNumerator !== remainder ||
+        quote.reservationQuantity !== quantity || quote.reservedMarkupMicros !== reserved) {
+      issue('identity-quote-mismatch'); continue;
+    }
+    const allocation = quoteRevenueAllocations({ distributableMicros: amount, splitManifest: verified.manifest });
+    if (!allocation.ok) { issue(allocation.code); continue; }
+    lines.push({ channelId: receipt.channelId, usageNonce: receipt.usageNonce, offerId: receipt.offerId,
+      releaseRef: receipt.releaseRef, payer: receipt.payer, seller: receipt.seller,
+      priceVersion: receipt.priceVersion, splitManifestHash: receipt.splitManifestHash,
+      billedInferenceMicros: billed.toString(), markupMicros: amount.toString(), allocationQuote: {
+        creatorMicros: allocation.allocationsMicros.creator.toString(), daoMicros: allocation.allocationsMicros.dao.toString(),
+        componentMicros: allocation.allocationsMicros.component.toString(),
+        componentAuthorsMicros: allocation.componentAllocationsMicros === undefined ? null :
+          Object.fromEntries(Object.entries(allocation.componentAllocationsMicros).map(([author, value]) => [author, value.toString()])),
+      } });
+    markupMicros += amount;
+  }
+  return { basis: 'hosted-settled-usage', currency: 'USD', chainFinality: 'not-measured',
+    allocationBasis: 'per-receipt-quote', lines, markupMicros: markupMicros.toString(), reservedReceipts,
+    complete: issues.length === 0, issues, costPerAcceptedOutcomeMicros: null, outcomeEvidence: 'unavailable' };
+}
 
 // ---------------------------------------------------------------------------
 // Money aggregation — refuses to mix currencies

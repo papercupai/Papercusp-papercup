@@ -100,12 +100,31 @@ describe('toCellOwnership', () => {
         takenBy: 'su-abc',
         takenAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
         lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        expiresAt: new Date(OWNERSHIP_NOW_MS - 1).toISOString(),
       }),
       'recorded',
       noSubjectThread('test thread'),
       OWNERSHIP_NOW_MS,
     );
     expect(own.assessment).toBe('held-stalled');
+  });
+
+  it('respects the effective lease extended by the holder’s pending gate-run wait', () => {
+    const own = toCellOwnership(
+      mkObj({
+        claimState: 'held',
+        takenBy: 'su-abc',
+        takenAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+        // condition-object has already bounded this expiry to the matching pending wait.
+        expiresAt: new Date(OWNERSHIP_NOW_MS + 60 * 60_000).toISOString(),
+      }),
+      'live',
+      noSubjectThread('test thread'),
+      OWNERSHIP_NOW_MS,
+    );
+    expect(own.assessment).toBe('held-live');
+    expect(shouldStandDownForLivePeer(own, 'su-caller')).toBe(true);
   });
 
   it('projects a reclaimed gate item as held before its first new progress checkpoint', () => {

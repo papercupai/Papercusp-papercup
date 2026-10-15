@@ -29,6 +29,7 @@ import {
   measureRepairTickLegs,
   NON_TEST_GATE_SCRIPTS,
   REPAIR_TICK_SETUP_LOCK_MAX_RETRIES,
+  type CheckpointDeps,
   type CheckpointResult,
   type RepairTickLegs,
 } from "./green-checkpoint";
@@ -379,7 +380,11 @@ describe("augmentWithRepairTickLegs", () => {
     const result = await augmentWithRepairTickLegs(holdResult(), { runRepairTickLegs, log });
     // A failing TEST FILE is the fixer's subject, not a cheap leg, so the asked-for set is
     // exactly the registry — this hold's queue holds `a/one.test.ts` and nothing re-runnable.
-    expect(runRepairTickLegs).toHaveBeenCalledWith(HEAD, Object.keys(NON_TEST_GATE_SCRIPTS));
+    // WI-10004340: the frozen queue's clock rides along, so a guard leg measured on the
+    // hold tick judges sidecar reviewBy as of the freeze, not the wall clock.
+    expect(runRepairTickLegs).toHaveBeenCalledWith(HEAD, Object.keys(NON_TEST_GATE_SCRIPTS), {
+      frozenCandidateOpenedAtMs: 1_000,
+    });
     expect(result.repairTickLegs).toEqual(measured);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("FAILING lint:tsc"));
   });
@@ -465,5 +470,157 @@ describe("augmentWithRepairTickLegs", () => {
     const result = await augmentWithRepairTickLegs(base, { runRepairTickLegs, log });
     expect(result).toBe(base);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("measurement failed"));
+  });
+
+  // WI-6554700010008915: a hold tick returns BEFORE the candidate path's disk preflight, so
+  // a full /tmp made every leg fail with ENOSPC and those were folded into queue.legs as
+  // code reds. The tick must apply the same admission check and leave the legs unmeasured.
+  describe("disk-headroom admission (WI-6554700010008915)", () => {
+    it("does not run the legs when headroom is insufficient, and says why", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const writeFrozenRepairQueue = vi.fn();
+      const log = vi.fn();
+      const base = holdResult();
+      const result = await augmentWithRepairTickLegs(base, {
+        runRepairTickLegs,
+        writeFrozenRepairQueue,
+        log,
+        checkDiskHeadroom: async () => ({ ok: false, summary: "/tmp 3.1 GiB free" }),
+      });
+      expect(runRepairTickLegs).not.toHaveBeenCalled();
+      expect(writeFrozenRepairQueue).not.toHaveBeenCalled();
+      expect(result).toBe(base);
+      expect(result.repairTickLegs).toBeUndefined();
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining("NOT measured: disk-headroom — /tmp 3.1 GiB free"),
+      );
+    });
+
+    it("fails closed when the headroom probe throws", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const log = vi.fn();
+      const base = holdResult();
+      const result = await augmentWithRepairTickLegs(base, {
+        runRepairTickLegs,
+        log,
+        checkDiskHeadroom: async () => {
+          throw new Error("statfs EIO");
+        },
+      });
+      expect(runRepairTickLegs).not.toHaveBeenCalled();
+      expect(result).toBe(base);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("disk headroom probe failed: statfs EIO"));
+    });
+
+    it("measures as before when headroom is sufficient", async () => {
+      const runRepairTickLegs = vi.fn(async () => measured);
+      const result = await augmentWithRepairTickLegs(holdResult(), {
+        runRepairTickLegs,
+        log: vi.fn(),
+        checkDiskHeadroom: async () => ({ ok: true, summary: "ok" }),
+      });
+      expect(runRepairTickLegs).toHaveBeenCalledTimes(1);
+      expect(result.repairTickLegs).toEqual(measured);
+    });
+
+    it("never probes disk for a tick that would not measure anyway", async () => {
+      const checkDiskHeadroom = vi.fn(async () => ({ ok: false, summary: "x" }));
+      const base = holdResult({ reason: "not-green", green: false });
+      await augmentWithRepairTickLegs(base, {
+        runRepairTickLegs: vi.fn(async () => measured),
+        log: vi.fn(),
+        checkDiskHeadroom,
+      });
+      expect(checkDiskHeadroom).not.toHaveBeenCalled();
+    });
+  });
+
+  // WI-10005728: the tick's measurement used to reach gate_health only; queue.legs stayed
+  // empty, so every leg read `never-admitted` and leg shrink / fixedAtHead never moved.
+  describe("folds the measurement into the queue's leg lifecycle (WI-10005728)", () => {
+    const NEXT_HEAD = "b".repeat(40);
+
+    it("admits a measured-red leg as failing and persists it with the snapshot's CAS token", async () => {
+      const queue = awaitingFixerQueue();
+      const writeFrozenRepairQueue = vi.fn(async () => {});
+      const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), {
+        runRepairTickLegs: vi.fn(async () => measured),
+        writeFrozenRepairQueue,
+        log: vi.fn(),
+      });
+      expect(writeFrozenRepairQueue).toHaveBeenCalledTimes(1);
+      const [written, options] = writeFrozenRepairQueue.mock.calls[0] as unknown as [
+        NonNullable<CheckpointResult["repairQueue"]>,
+        { expectedUpdatedAtMs: number | null },
+      ];
+      expect(options).toEqual({ expectedUpdatedAtMs: queue.updatedAtMs });
+      expect(written.legs).toEqual([
+        expect.objectContaining({ id: "lint:tsc", state: "failing", admittedHead: HEAD }),
+      ]);
+      expect(written.updatedAtMs).toBeGreaterThan(queue.updatedAtMs);
+      expect(result.repairQueue).toEqual(written);
+    });
+
+    it("marks the leg fixed when a later tick measures it passing at a newer head", async () => {
+      const writes: NonNullable<CheckpointResult["repairQueue"]>[] = [];
+      const writeFrozenRepairQueue = vi.fn(async (q: NonNullable<CheckpointResult["repairQueue"]> | null) => {
+        if (q) writes.push(q);
+      });
+      await augmentWithRepairTickLegs(holdResult({ repairQueue: awaitingFixerQueue() }), {
+        runRepairTickLegs: vi.fn(async () => measured),
+        writeFrozenRepairQueue,
+        log: vi.fn(),
+      });
+      const afterFix = { ...writes[0], repairHead: NEXT_HEAD };
+      const passed: RepairTickLegs = {
+        head: NEXT_HEAD,
+        atMs: 2_000,
+        ok: true,
+        failingSignatures: [],
+        legs: [{ id: "lint:tsc", status: "pass", durationMs: 5 }],
+      };
+      await augmentWithRepairTickLegs(holdResult({ repairQueue: afterFix }), {
+        runRepairTickLegs: vi.fn(async () => passed),
+        writeFrozenRepairQueue,
+        log: vi.fn(),
+      });
+      expect(writes[1].legs).toEqual([
+        expect.objectContaining({ id: "lint:tsc", state: "fixed", resolvedHead: NEXT_HEAD }),
+      ]);
+    });
+
+    it("folds into the FRESH row and leaves a different frozen candidate untouched", async () => {
+      const snapshot = awaitingFixerQueue();
+      const reopened = { ...snapshot, candidate: "c".repeat(40), updatedAtMs: 5_000 };
+      const transitionFrozenRepairQueue = vi.fn(
+        async (transition: (fresh: typeof snapshot) => typeof snapshot) => ({
+          queue: transition(reopened),
+        }),
+      );
+      const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: snapshot }), {
+        runRepairTickLegs: vi.fn(async () => measured),
+        transitionFrozenRepairQueue:
+          transitionFrozenRepairQueue as unknown as CheckpointDeps["transitionFrozenRepairQueue"],
+        log: vi.fn(),
+      });
+      expect(transitionFrozenRepairQueue).toHaveBeenCalledTimes(1);
+      expect(result.repairQueue).toBe(reopened);
+      expect(result.repairQueue?.legs).toBeUndefined();
+    });
+
+    it("keeps the hold result (with its measurement) when the lifecycle write fails", async () => {
+      const queue = awaitingFixerQueue();
+      const log = vi.fn();
+      const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), {
+        runRepairTickLegs: vi.fn(async () => measured),
+        writeFrozenRepairQueue: vi.fn(async () => {
+          throw new Error("conflict");
+        }),
+        log,
+      });
+      expect(result.repairTickLegs).toEqual(measured);
+      expect(result.repairQueue).toBe(queue);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining("leg lifecycle write failed"));
+    });
   });
 });

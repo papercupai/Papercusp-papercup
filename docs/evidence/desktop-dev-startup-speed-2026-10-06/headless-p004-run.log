@@ -1,0 +1,267 @@
+VH_RUN harness=verify-tauri-headless run=20261006T165138Z-2520308 evidence=~/.local/state/verification-harness/verify-tauri-headless/20261006T165138Z-2520308 plan=prepare:run,boot:run,assert:run
+VH_BEGIN phase=prepare
+    (disk preflight ✓ 42GB effectively free on '~/papercupai-workspace/papercusp/.papercusp/tmp' — 52GB free less 10GB reserved by other builds; reserved 5GB for verifier source + hardlink metadata)
+    (disk preflight ✓ 119GB effectively free on '/tmp/verify-tauri-headless.0IQGID' — 139GB free less 20GB reserved by other builds; reserved 10GB for verifier SPA + profile + database)
+NPM_INSTALL_SAFE guarding reader: bash /tmp/verify-tauri-headless.0IQGID/pinned-deps.sh snapshot ~/papercupai-workspace/papercusp ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source hardlink (root=~/papercupai-workspace/papercusp, lock=npm-install-79e418157b6a)
+snapshotting apps/operator-docs/node_modules (mode=hardlink)
+snapshotting apps/operator-public/node_modules (mode=hardlink)
+snapshotting apps/operator-vite/node_modules (mode=hardlink)
+snapshotting apps/operator/node_modules (mode=hardlink)
+snapshotting apps/papercusp-docs/node_modules (mode=hardlink)
+snapshotting apps/papercusp-publish/node_modules (mode=hardlink)
+snapshotting libs/agent-chat/node_modules (mode=hardlink)
+snapshotting libs/generic/activity-bridge/node_modules (mode=hardlink)
+snapshotting libs/generic/artifact-registry/node_modules (mode=hardlink)
+snapshotting libs/generic/audio-dsp/node_modules (mode=hardlink)
+snapshotting libs/generic/bench-metrics/node_modules (mode=hardlink)
+snapshotting libs/generic/cache/node_modules (mode=hardlink)
+snapshotting libs/generic/chat-cards/node_modules (mode=hardlink)
+snapshotting libs/generic/chat-protocol/node_modules (mode=hardlink)
+snapshotting libs/generic/control-mutation/node_modules (mode=hardlink)
+snapshotting libs/generic/debounce-coalesce/node_modules (mode=hardlink)
+snapshotting libs/generic/dependency-order/node_modules (mode=hardlink)
+snapshotting libs/generic/deployment-driver/node_modules (mode=hardlink)
+snapshotting libs/generic/desktop-ipc/node_modules (mode=hardlink)
+snapshotting libs/generic/dock-workbench/node_modules (mode=hardlink)
+snapshotting libs/generic/embedded-pg-discovery/node_modules (mode=hardlink)
+snapshotting libs/generic/eval-battery/node_modules (mode=hardlink)
+snapshotting libs/generic/event-reaction/node_modules (mode=hardlink)
+snapshotting libs/generic/facets/node_modules (mode=hardlink)
+snapshotting libs/generic/failure-detector/node_modules (mode=hardlink)
+snapshotting libs/generic/fanout-resolver/node_modules (mode=hardlink)
+snapshotting libs/generic/git-graph/node_modules (mode=hardlink)
+snapshotting libs/generic/gui-readiness/node_modules (mode=hardlink)
+snapshotting libs/generic/image-blankness/node_modules (mode=hardlink)
+snapshotting libs/generic/ipc-endpoint-server/node_modules (mode=hardlink)
+snapshotting libs/generic/ipc-framing/node_modules (mode=hardlink)
+snapshotting libs/generic/kokoro-tts/node_modules (mode=hardlink)
+snapshotting libs/generic/lexicon/node_modules (mode=hardlink)
+snapshotting libs/generic/linkable-edges/node_modules (mode=hardlink)
+snapshotting libs/generic/locks-core/node_modules (mode=hardlink)
+snapshotting libs/generic/memory/node_modules (mode=hardlink)
+snapshotting libs/generic/model-pricing/node_modules (mode=hardlink)
+snapshotting libs/generic/module-singleton/node_modules (mode=hardlink)
+snapshotting libs/generic/overlap-clusters/node_modules (mode=hardlink)
+snapshotting libs/generic/p2p-voice/node_modules (mode=hardlink)
+snapshotting libs/generic/plan-parser/node_modules (mode=hardlink)
+snapshotting libs/generic/plugin-loader/node_modules (mode=hardlink)
+snapshotting libs/generic/pot-app-seam/node_modules (mode=hardlink)
+snapshotting libs/generic/projection-index/node_modules (mode=hardlink)
+snapshotting libs/generic/prospect-contract/node_modules (mode=hardlink)
+snapshotting libs/generic/pubsub-substrate/node_modules (mode=hardlink)
+snapshotting libs/generic/ranked-selection/node_modules (mode=hardlink)
+snapshotting libs/generic/rate-limit/node_modules (mode=hardlink)
+snapshotting libs/generic/release-profile/node_modules (mode=hardlink)
+snapshotting libs/generic/rerank/node_modules (mode=hardlink)
+snapshotting libs/generic/resource-profile/node_modules (mode=hardlink)
+snapshotting libs/generic/result-encoding/node_modules (mode=hardlink)
+snapshotting libs/generic/resumable-download/node_modules (mode=hardlink)
+snapshotting libs/generic/rrf/node_modules (mode=hardlink)
+snapshotting libs/generic/rules/node_modules (mode=hardlink)
+snapshotting libs/generic/scheduled-registry/node_modules (mode=hardlink)
+snapshotting libs/generic/search-core/node_modules (mode=hardlink)
+snapshotting libs/generic/search/node_modules (mode=hardlink)
+snapshotting libs/generic/seed-bundle/node_modules (mode=hardlink)
+snapshotting libs/generic/sequence-patterns/node_modules (mode=hardlink)
+snapshotting libs/generic/step-program/node_modules (mode=hardlink)
+snapshotting libs/generic/structured-concurrency/node_modules (mode=hardlink)
+snapshotting libs/generic/tauri-release-kit/node_modules (mode=hardlink)
+snapshotting libs/generic/tauri-verify/node_modules (mode=hardlink)
+snapshotting libs/generic/template-kit/node_modules (mode=hardlink)
+snapshotting libs/generic/tooldef-http/node_modules (mode=hardlink)
+snapshotting libs/generic/tooldef/node_modules (mode=hardlink)
+snapshotting libs/generic/ui-primitives/node_modules (mode=hardlink)
+snapshotting libs/host-platform/node_modules (mode=hardlink)
+snapshotting libs/papercusp-publish-auth/node_modules (mode=hardlink)
+snapshotting libs/papercusp-shared/node_modules (mode=hardlink)
+snapshotting libs/papercusp/node_modules (mode=hardlink)
+snapshotting libs/test-config/node_modules (mode=hardlink)
+snapshotting libs/testing-shell/node_modules (mode=hardlink)
+snapshotting node_modules (mode=hardlink)
+snapshotting packages/agent-mcp/node_modules (mode=hardlink)
+snapshotting packages/backup/node_modules (mode=hardlink)
+snapshotting packages/coordination/node_modules (mode=hardlink)
+snapshotting packages/docs-engine/node_modules (mode=hardlink)
+snapshotting packages/omp-plugin/node_modules (mode=hardlink)
+snapshotting packages/operator-core/node_modules (mode=hardlink)
+snapshotting packages/operator-ui/node_modules (mode=hardlink)
+snapshotting packages/plugin-sdk/node_modules (mode=hardlink)
+snapshotting packages/plugin-wit/node_modules (mode=hardlink)
+snapshotting packages/tooldef-mcp/node_modules (mode=hardlink)
+snapshotting papercusp-desktop/node_modules (mode=hardlink)
+snapshotting templates/papercusp-iphone-shell/checks/node_modules (mode=hardlink)
+snapshotting templates/papercusp-iphone-shell/node_modules (mode=hardlink)
+snapshotting templates/papercusp-ops-pots/node_modules (mode=hardlink)
+snapshotting tools/perf-test/wdio/node_modules (mode=hardlink)
+snapshotted 90 dependency tree(s) from ~/papercupai-workspace/papercusp into ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source
+
+[verify-tauri-headless] operator source/dependency snapshot frozen at ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source — IMMUTABLE for this run
+
+[verify-tauri-headless] building frozen plain-node operator host (tsx runtime loader excluded)
+NPM_INSTALL_SAFE guarding reader: ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source/apps/operator/bin/bundle-host.sh bin/hono-host.ts ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source/apps/operator/dist-verify/hono-host.mjs (root=~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source, lock=npm-install-fe6976b17ecc)
+→ restricted-hold gate: snapshotted 0/15 last-known-good artifact(s)
+→ esbuild-bundling bin/hono-host.ts → ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source/apps/operator/dist-verify/hono-host.mjs (plain-node host entry, no tsx loader)
+
+  dist-verify/hono-host.mjs.tmp.3026659  66.0mb ⚠️
+
+⚡ Done in 12646ms
+✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.
+✓ bundled top-level-await check passed: no repo-owned bundled input uses top-level await.
+BUNDLE_FREE_REFS_RESULT status=skipped selection=no-baseline inputs=6568 checked=0 findings=0 unparsed=0 ms=0
+→ ascii-escape: 13,336 non-ASCII chars escaped (66.0 MB → 66.0 MB on disk; the win is in-memory: the source string stays one-byte in every host process)
+✓ bundled: 67M ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source/apps/operator/dist-verify/hono-host.mjs
+✓ bundled systemd scope environment runner beside the host entry
+✓ bundled pot-git ext bridge beside the host entry
+→ bundling @papercusp/harness blueprints → ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source/apps/operator/dist-verify/blueprints
+    ✓ bundled @papercusp/harness blueprints include base/blueprint.yaml
+→ bundling @papercusp/locks DDL → ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source/apps/operator/dist-verify/sql
+    ✓ bundled @papercusp/locks DDL matches the tree (highest migration 931, 33 files)
+
+  dist-verify/event-loop-sentinel.worker.mjs.new.3026659.mjs  30.4kb
+
+⚡ Done in 22ms
+
+  dist-verify/snapshot-fold.worker.mjs.new.3026659.mjs  27.2kb
+
+⚡ Done in 29ms
+
+  dist-verify/mutation-probe-closure.worker.mjs.new.3026659.mjs  18.2kb
+
+⚡ Done in 20ms
+
+  dist-verify/admission-jobs.worker.mjs.new.3026659.mjs  72.6kb
+
+⚡ Done in 29ms
+
+  dist-verify/precision-bench-worker.mjs.new.3026659.mjs  430.8kb
+
+⚡ Done in 62ms
+
+  dist-verify/spawner-sidecar.mjs.new.3026659  63.4mb ⚠️
+
+⚡ Done in 5338ms
+✓ bundled CLI-entry guard check passed: no repo-owned raw ESM self-exec guard reached the bundle graph.
+✓ bundled top-level-await check passed: no repo-owned bundled input uses top-level await.
+→ ascii-escape: 12,972 non-ASCII chars escaped (63.4 MB → 63.4 MB on disk; the win is in-memory: the source string stays one-byte in every host process)
+✓ restricted-hold gate: 9307 bundle inputs checked, none is a held restricted write (D-012)
+
+[verify-tauri-headless] frozen plain-node operator host ready at ~/papercupai-workspace/papercusp/.papercusp/tmp/verify-tauri-headless.oOIoAF/operator-source/apps/operator/dist-verify/hono-host.mjs
+
+[verify-tauri-headless] assertion input snapshot captured before boot: 1 file-backed argument(s)
+
+[verify-tauri-headless] assertion script snapshot frozen at /tmp/verify-tauri-headless.0IQGID/assertion-script.sh (source ~/papercupai-workspace/papercusp/.papercusp/scratch/p004-assert.sh) — IMMUTABLE for this run; restart to pick up a newer version.
+
+[verify-tauri-headless] verifier cgroup inheritance enabled: children stay in capability:bash managed task scope (task=0muwx1gt21569cimhna)
+
+[verify-tauri-headless] display=:91 devPort=33710 ptyPort=33714 work=/tmp/verify-tauri-headless.0IQGID
+
+[verify-tauri-headless] contention: 1 live verifier instance(s), 19 work dir(s) under /tmp
+
+[verify-tauri-headless] GPU GL confirmed: OpenGL renderer string: NVIDIA GeForce RTX 3090/PCIe/SSE2
+
+[verify-tauri-headless] SPA build stamp: 2026-10-06T16:24:53Z (when the bundle's build started). 45 frontend source file(s) are newer and NOT in this bundle. Verifying an edit? Set VERIFY_TAURI_REQUIRE_BUILT=<the paths you edited> to wait for a build that contains them (WI-10004972).
+
+[verify-tauri-headless] shared SPA dist quiesced after 20s (stable 20s) — freezing now.
+
+[verify-tauri-headless] SPA snapshot frozen at /tmp/verify-tauri-headless.0IQGID/spa — IMMUTABLE for this run; restart to pick up a newer build.
+
+[verify-tauri-headless]   → edited source AFTER this boot? run: bash "/tmp/verify-tauri-headless.0IQGID/check-freshness.sh" ($VERIFY_TAURI_FRESHNESS_CHECK) BEFORE trusting a re-check — it warns loudly if the shared bundle drifted (EI-17134).
+
+[verify-tauri-headless]   → waiting for a REBUILD (not just checking one)? do NOT stat one specific hashed asset (e.g. dist/assets/adv-D5qbAjO8.js) — a rebuild emits a NEW content-hash filename, so the file you're watching is orphaned and its mtime is frozen forever; the poll hangs indefinitely (EI-18812301452864060). Compare the newest matching file instead: `ls -t dist/assets/adv-*.js | head -1`, or just use check-freshness.sh above.
+
+[verify-tauri-headless] VERIFY_TAURI_ISOLATED_DB=1 — booting a throwaway migrated Postgres (data=/tmp/verify-tauri-headless.0IQGID/isolated-pgdata)
+
+[verify-tauri-headless] isolated-db postgres ready on :37451 (data=/tmp/verify-tauri-headless.0IQGID/isolated-pgdata) after 15s
+VH_PHASE phase=prepare status=passed
+VH_BEGIN phase=boot
+VH_STEP phase=boot step=launch-attempt-1
+
+[verify-tauri-headless] waiting up to 300s for the desktop binary to start (pid=3138278, log=/tmp/verify-tauri-headless.0IQGID/tauri.log, attempt=1/2)
+
+[verify-tauri-headless] waiting up to 180s for the dev bridge (pid=3138278, log=/tmp/verify-tauri-headless.0IQGID/tauri.log, attempt=1/2; desktop binary started after 54s)
+
+[verify-tauri-headless] bridge is up after 2s
+
+[verify-tauri-headless] EI-10387 isolation VERIFIED: sidecar pid=3148155 resolved HARNESS_ADMIN_DATABASE_URL to our isolated PG on :37451
+
+[verify-tauri-headless] bridge provenance verified: owner=agent:su-8ec23f4a-5d17-4f1c-bf4c-790edb53f5e3:run:1791305498597511408-2520308-5647 pid=3152959 display=:91 port=33710
+
+[verify-tauri-headless] origin health confirmed: apiHealth=200 rootHtml=200 (pid=3152959)
+
+[verify-tauri-headless] isolated WebView profile VERIFIED: sentinel round-tripped and cleared under /tmp/verify-tauri-headless.0IQGID/webview-profile
+
+[verify-tauri-headless] isolated instance ready: pid=3152959 port=33710 display=:91
+
+[verify-tauri-headless] X11 verifier window: WID=4194306 client_origin=(321,162) frame_position=(322,184)
+[verify-tauri-headless] Ready-to-paste REAL X11 click helper (client coordinates; do not use xdotool getwindowgeometry Position):
+  WID=4194306
+  CLIENT_CX=<x coordinate inside the WebView>
+  CLIENT_CY=<y coordinate inside the WebView>
+  read OX OY < <(DISPLAY=":91" xwininfo -id "$WID" | awk '/Absolute upper-left X/{x=$4} /Absolute upper-left Y/{y=$4} END{print x, y}')
+  DISPLAY=":91" xdotool mousemove --sync $((OX + CLIENT_CX)) $((OY + CLIENT_CY))
+  DISPLAY=":91" xdotool click 1
+
+  # For controls activated by pointerdown (including Radix Popover), a
+  # tauri-agent-tools/DOM synthetic click can stay closed; use the X11 click
+  # above, then assert the intended target (document.activeElement/focusin).
+
+[verify-tauri-headless] booted slug=<undetermined from URL> — this instance may have landed on an arbitrary last-persisted pot; a "verify at scale" run should pin/check the slug explicitly (EI-19930573774744721)
+
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │  ✅  THIS INSTANCE HAS A GENUINELY ISOLATED DATABASE (EI-10387)         │
+  │                                                                        │
+  │  Isolated: X display · devUrl port · pty port · sidecar process · SPA  │
+  │            module bundle · DATABASE (throwaway, on :37451) │
+  │            · PAPERCUSP_HOME · PAPERCUSP_WORKSPACE · WebView profile   │
+  │                                                                        │
+  │  ALL writes here are safe — they land in the throwaway DB and are      │
+  │  discarded at teardown. The instance boots into the normal first-run   │
+  │  onboarding flow (empty, freshly-migrated DB), not real pots/plans.    │
+  └────────────────────────────────────────────────────────────────────────┘
+
+[probe] === Tauri Bridge Probe ===
+[probe] 
+[probe] Running bridges:  2
+[probe]   PID 3066633  port 40367
+[probe]   PID 3152959  port 34191
+[probe] 
+[probe] Platform:         x11
+[probe] Bridge alive:     yes
+[probe] Bridge version:   0.8.1
+[probe] Endpoints:        /eval, /logs, /describe, /version, /process, /capabilities, /devtools, /health
+[probe] App PID:          3152959
+[probe] Windows:          main
+[probe] Capabilities:     eval, logs, describe
+[probe] 
+[probe] Page:
+[probe]   URL:      http://127.0.0.1:33710/onboarding?ws=verify-tauri-isolated-91
+[probe]   Title:    Papercusp Operator
+[probe]   Viewport: 1280x800
+
+[verify-tauri-headless] assertion input integrity OK: 1 file-backed argument(s) unchanged since boot
+VH_PHASE phase=boot status=passed step=launch-attempt-1
+VH_BEGIN phase=assert
+
+[verify-tauri-headless] running assertion command: bash /tmp/verify-tauri-headless.0IQGID/assertion-script.sh
+[17:05:07] pid=3152959 dev_url=http://127.0.0.1:33710
+[17:05:07] app title: Papercusp Operator
+[17:05:07] app url: http://127.0.0.1:33710/onboarding?ws=verify-tauri-isolated-91
+[17:05:07] app #root children: 13
+screenshot app.png
+[17:05:08] navigating main frame to never-answering origin http://127.0.0.1:50867/
+scheduled
+[17:05:17] +9s title=[Papercusp — starting] elapsed=[Waiting 8 s] hintHidden=[true]
+screenshot starting-early.png
+[17:05:30] +22s elapsed=[Waiting 21 s]
+[17:08:27] +199s elapsed=[Waiting 3 min 16 s] hintHidden=[false]
+[17:08:27] hint text: Still waiting after 3 minutes. On a busy machine that can be normal, but the server may also have crashed. If it did, its error is in the terminal window where you ran npm run dev.
+screenshot starting-hint.png
+--- desktop log lines about the recovery page ---
+[papercusp-desktop] main-frame load failed for http://127.0.0.1:50867/ (Could not connect to 127.0.0.1: Connection refused) — showing recovery page
+P004_RESULT rc=0
+VH_PHASE phase=assert status=passed
+HARNESS_RESULT harness=verify-tauri-headless verdict=pass run=20261006T165138Z-2520308 first_failure=none passed=3 failed=0 blocked=0 skipped=0 reused=0 evidence=~/.local/state/verification-harness/verify-tauri-headless/20261006T165138Z-2520308
+
+[verify-tauri-headless] tearing down (exit=0)
+/tmp/verify-tauri-headless-source.8a9vD8: line 2188: 3129336 Killed                  setsid env ISOLATED_PG_REPO_DIR="$REPO_DIR" ISOLATED_PG_DATA_DIR="$ISOLATED_PG_DATA_DIR" ISOLATED_PG_SQL_DIR="$ISOLATED_PG_SQL_DIR" node "$ISOLATED_PG_BOOT_SCRIPT" > "$ISOLATED_PG_LOG" 2>&1
+verify rc=0

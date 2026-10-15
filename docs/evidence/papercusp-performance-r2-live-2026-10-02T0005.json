@@ -1,0 +1,676 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R2 live acceptance after planner100 and SDK1.29 adoption",
+  "framework": "node",
+  "command": [
+    "node",
+    "--input-type=module",
+    "-e",
+    "const originalFetch=globalThis.fetch;globalThis.fetch=async(...a)=>{const start=performance.now();const r=await originalFetch(...a);await r.clone().text();console.error('R2_HTTP_TIMING '+JSON.stringify({ms:Math.round(performance.now()-start),status:r.status}));return r;};process.argv=['node','scripts/mcp-call.mjs','search:fulltext','--json','-','--client',process.env.PAPERCUSP_SID,'--workspace','papercusp-workspace','--harness','papercusp','--port','3170'];await import('./scripts/mcp-call.mjs');"
+  ],
+  "commandRepeated": 20,
+  "exitCode": 0,
+  "startedAt": "2026-10-02T00:05:22.555819+00:00",
+  "finishedAt": "2026-10-02T00:15:07.393Z",
+  "summary": "R2 remains red on identified staging buildf655898692: the unchanged twenty task-topic queries returned HTTP200/exit0 but nearest-rank p95 was1488ms (limit1000ms), max1550ms. All20 canonical rows attribute this build. Original25turn hash and allfour hit/rank sets are unchanged; actualinstalledhook glance_stale was accepted. Physicalsourcehash matches current proof and contains setup100; this is a failing live acceptance receipt, not proof that the planner change achieves the SLO.",
+  "assertions": [
+    {
+      "id": "twenty-successful-attributed-requests",
+      "passed": true,
+      "evidence": "Same SID su-25bc0450-2829-42b9-a2dd-1431c99e4ba8/workspace papercusp-workspace/harness papercusp/port3170. All20 requests returned exactly one measured HTTP200/exit0; all20 matching ledger rows identify port3170/buildf655898692."
+    },
+    {
+      "id": "representative-http-p95-at-most-one-second",
+      "passed": false,
+      "evidence": "Nearest-rank sorted index19of20=1488ms; maximum1550ms. Initial slow requests and the original20distinctquery population are retained. Timing covers fetch through cloned complete response-body consumption and excludes CLI startup."
+    },
+    {
+      "id": "physical-serving-source-contains-planner-profile",
+      "passed": true,
+      "evidence": "00:04:39Z user-unit PID3012494 cwd resolves to staging-generation:.candidate-f65589869282.dr8mHm/checkout/apps/operator; actual sources.ts SHA487355a96f8a84cc0c643a14db0cc11abfaa675fa3720cb3e99412ec83f832b9 contains SET LOCAL parallel_setup_cost = 100. The handler resolves SDK1.29.0 transport with requestInfo.url. Own00:00:02health200 and attributed3170whoami succeeded."
+    },
+    {
+      "id": "original-frozen-corpus-unchanged",
+      "passed": true,
+      "evidence": "Fresh3170read: default workspace, originalnative01a0f68e-3037-7dc3-b898-a1cc12441884,25turns0..24,exclusiveuntil2026-10-01T09:14:42Z, hash0303e7a27eb9d4d8122224393fec8d0f using originalhashwriter md5(string_agg(turn_idx::text||':'||md5(text),'|' ORDER BYturn_idx))."
+    },
+    {
+      "id": "frozen-lexical-literal-punctuation-no-match-parity",
+      "passed": true,
+      "evidence": "Fresh originalsession queries: memory admission→turns6/8/22 ranks.2/.2/.1;04474→turns1/23/3 allrank0;WI-10004474→turns1/23 ranks.2/.1;zz-r2-absent-20261001→empty. Canonical invocationIDs30950544/549/556/558 allok/buildf655898692. Hit sets andranktiers agreewith1153616 baseline; zerorankties have no total-order oracle."
+    },
+    {
+      "id": "actual-installed-hook-glance-stale-accepted",
+      "passed": true,
+      "evidence": "Actual installedhook SHAa3a8cf50de7394a9bda92d0b8e1f3a1175fea5a80659ec756e35906faa8531b6 matches canonical. Invocation30951822 at00:08:44.860Z originhook/statusok/port3170/buildf655898692 contains hook_bundle.glance_stale=true and generation1skge-muq74czp:22757291. Explicit execution of the installed script at00:09:33 exited0; cursor was not modified."
+    }
+  ],
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10004474",
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 5,
+  "evidencePlane": "live",
+  "populationRef": "docs/evidence/papercusp-performance-r2-varied-live-2026-10-01T1919.json",
+  "stdinTemplate": {
+    "query": "taskQueries[i]",
+    "scope": [
+      "session_turn"
+    ],
+    "limit": 5
+  },
+  "taskQueries": [
+    "corpus recall",
+    "furnishedfinder",
+    "memory admission",
+    "WI-10004474",
+    "session native preservation",
+    "compaction native id",
+    "hook_bundle.glance_stale",
+    "literal fallback",
+    "coverage graded",
+    "staging runtime identity",
+    "source proof freshness",
+    "execution trace integrity",
+    "cold loop wake",
+    "model preservation",
+    "acceptance rubric",
+    "checkpoint lineage",
+    "resource lease",
+    "session search",
+    "recall pointer section clamp",
+    "test provenance"
+  ],
+  "measurement": {
+    "startedAt": "2026-10-02T00:05:22.555819+00:00",
+    "finishedAt": "2026-10-02T00:05:35.262131+00:00",
+    "rows": [
+      {
+        "query": "corpus recall",
+        "startedAt": "2026-10-02T00:05:22.555832+00:00",
+        "finishedAt": "2026-10-02T00:05:22.978874+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 356,
+            "status": 200
+          }
+        ],
+        "cliMs": 423,
+        "stderr": ""
+      },
+      {
+        "query": "furnishedfinder",
+        "startedAt": "2026-10-02T00:05:22.979042+00:00",
+        "finishedAt": "2026-10-02T00:05:23.328312+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 289,
+            "status": 200
+          }
+        ],
+        "cliMs": 349,
+        "stderr": ""
+      },
+      {
+        "query": "memory admission",
+        "startedAt": "2026-10-02T00:05:23.328350+00:00",
+        "finishedAt": "2026-10-02T00:05:23.741965+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 346,
+            "status": 200
+          }
+        ],
+        "cliMs": 414,
+        "stderr": ""
+      },
+      {
+        "query": "WI-10004474",
+        "startedAt": "2026-10-02T00:05:23.741994+00:00",
+        "finishedAt": "2026-10-02T00:05:23.988416+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 183,
+            "status": 200
+          }
+        ],
+        "cliMs": 246,
+        "stderr": ""
+      },
+      {
+        "query": "session native preservation",
+        "startedAt": "2026-10-02T00:05:23.988443+00:00",
+        "finishedAt": "2026-10-02T00:05:25.596439+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 1550,
+            "status": 200
+          }
+        ],
+        "cliMs": 1608,
+        "stderr": ""
+      },
+      {
+        "query": "compaction native id",
+        "startedAt": "2026-10-02T00:05:25.596472+00:00",
+        "finishedAt": "2026-10-02T00:05:27.082809+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 1424,
+            "status": 200
+          }
+        ],
+        "cliMs": 1486,
+        "stderr": ""
+      },
+      {
+        "query": "hook_bundle.glance_stale",
+        "startedAt": "2026-10-02T00:05:27.082841+00:00",
+        "finishedAt": "2026-10-02T00:05:27.348933+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 185,
+            "status": 200
+          }
+        ],
+        "cliMs": 266,
+        "stderr": ""
+      },
+      {
+        "query": "literal fallback",
+        "startedAt": "2026-10-02T00:05:27.348972+00:00",
+        "finishedAt": "2026-10-02T00:05:28.157129+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 720,
+            "status": 200
+          }
+        ],
+        "cliMs": 808,
+        "stderr": ""
+      },
+      {
+        "query": "coverage graded",
+        "startedAt": "2026-10-02T00:05:28.157156+00:00",
+        "finishedAt": "2026-10-02T00:05:28.569593+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 350,
+            "status": 200
+          }
+        ],
+        "cliMs": 412,
+        "stderr": ""
+      },
+      {
+        "query": "staging runtime identity",
+        "startedAt": "2026-10-02T00:05:28.569619+00:00",
+        "finishedAt": "2026-10-02T00:05:28.959295+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 306,
+            "status": 200
+          }
+        ],
+        "cliMs": 390,
+        "stderr": ""
+      },
+      {
+        "query": "source proof freshness",
+        "startedAt": "2026-10-02T00:05:28.959336+00:00",
+        "finishedAt": "2026-10-02T00:05:29.464872+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 436,
+            "status": 200
+          }
+        ],
+        "cliMs": 506,
+        "stderr": ""
+      },
+      {
+        "query": "execution trace integrity",
+        "startedAt": "2026-10-02T00:05:29.464915+00:00",
+        "finishedAt": "2026-10-02T00:05:29.941453+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 397,
+            "status": 200
+          }
+        ],
+        "cliMs": 477,
+        "stderr": ""
+      },
+      {
+        "query": "cold loop wake",
+        "startedAt": "2026-10-02T00:05:29.941483+00:00",
+        "finishedAt": "2026-10-02T00:05:31.509305+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 1488,
+            "status": 200
+          }
+        ],
+        "cliMs": 1568,
+        "stderr": ""
+      },
+      {
+        "query": "model preservation",
+        "startedAt": "2026-10-02T00:05:31.509331+00:00",
+        "finishedAt": "2026-10-02T00:05:32.357747+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 785,
+            "status": 200
+          }
+        ],
+        "cliMs": 848,
+        "stderr": ""
+      },
+      {
+        "query": "acceptance rubric",
+        "startedAt": "2026-10-02T00:05:32.357782+00:00",
+        "finishedAt": "2026-10-02T00:05:33.015785+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 582,
+            "status": 200
+          }
+        ],
+        "cliMs": 658,
+        "stderr": ""
+      },
+      {
+        "query": "checkpoint lineage",
+        "startedAt": "2026-10-02T00:05:33.015835+00:00",
+        "finishedAt": "2026-10-02T00:05:33.345873+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 271,
+            "status": 200
+          }
+        ],
+        "cliMs": 330,
+        "stderr": ""
+      },
+      {
+        "query": "resource lease",
+        "startedAt": "2026-10-02T00:05:33.345915+00:00",
+        "finishedAt": "2026-10-02T00:05:33.646414+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 247,
+            "status": 200
+          }
+        ],
+        "cliMs": 301,
+        "stderr": ""
+      },
+      {
+        "query": "session search",
+        "startedAt": "2026-10-02T00:05:33.646440+00:00",
+        "finishedAt": "2026-10-02T00:05:34.452204+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 753,
+            "status": 200
+          }
+        ],
+        "cliMs": 806,
+        "stderr": ""
+      },
+      {
+        "query": "recall pointer section clamp",
+        "startedAt": "2026-10-02T00:05:34.452230+00:00",
+        "finishedAt": "2026-10-02T00:05:34.913260+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 346,
+            "status": 200
+          }
+        ],
+        "cliMs": 461,
+        "stderr": ""
+      },
+      {
+        "query": "test provenance",
+        "startedAt": "2026-10-02T00:05:34.913293+00:00",
+        "finishedAt": "2026-10-02T00:05:35.262074+00:00",
+        "exitCode": 0,
+        "http": [
+          {
+            "ms": 289,
+            "status": 200
+          }
+        ],
+        "cliMs": 349,
+        "stderr": ""
+      }
+    ],
+    "httpP95NearestRankMs": 1488,
+    "httpMaxMs": 1550,
+    "servingBuild": "f655898692",
+    "httpMilliseconds": [
+      356,
+      289,
+      346,
+      183,
+      1550,
+      1424,
+      185,
+      720,
+      350,
+      306,
+      436,
+      397,
+      1488,
+      785,
+      582,
+      271,
+      247,
+      753,
+      346,
+      289
+    ],
+    "invocationRows": [
+      {
+        "id": 30949873,
+        "query": "corpus recall",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 278,
+        "retrievalMs": 27.018,
+        "rerankMs": 219.755,
+        "invokeMs": 249.092
+      },
+      {
+        "id": 30949878,
+        "query": "furnishedfinder",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 216,
+        "retrievalMs": 36.715,
+        "rerankMs": 175.326,
+        "invokeMs": 212.679
+      },
+      {
+        "id": 30949893,
+        "query": "memory admission",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 267,
+        "retrievalMs": 75.644,
+        "rerankMs": 184.995,
+        "invokeMs": 261.127
+      },
+      {
+        "id": 30949894,
+        "query": "WI-10004474",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 107,
+        "retrievalMs": 17.456,
+        "rerankMs": 84.96,
+        "invokeMs": 102.88
+      },
+      {
+        "id": 30949915,
+        "query": "session native preservation",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 1480,
+        "retrievalMs": 1288.398,
+        "rerankMs": 187.913,
+        "invokeMs": 1476.693
+      },
+      {
+        "id": 30949926,
+        "query": "compaction native id",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 1333,
+        "retrievalMs": 1145.86,
+        "rerankMs": 184.032,
+        "invokeMs": 1330.375
+      },
+      {
+        "id": 30949929,
+        "query": "hook_bundle.glance_stale",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 96,
+        "retrievalMs": 29.725,
+        "rerankMs": 49.097,
+        "invokeMs": 79.458
+      },
+      {
+        "id": 30949942,
+        "query": "literal fallback",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 635,
+        "retrievalMs": 430.113,
+        "rerankMs": 200.183,
+        "invokeMs": 630.826
+      },
+      {
+        "id": 30949946,
+        "query": "coverage graded",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 275,
+        "retrievalMs": 93.194,
+        "rerankMs": 176.143,
+        "invokeMs": 269.833
+      },
+      {
+        "id": 30949948,
+        "query": "staging runtime identity",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 227,
+        "retrievalMs": 56.823,
+        "rerankMs": 166.581,
+        "invokeMs": 224.167
+      },
+      {
+        "id": 30949955,
+        "query": "source proof freshness",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 348,
+        "retrievalMs": 123.157,
+        "rerankMs": 220.601,
+        "invokeMs": 344.192
+      },
+      {
+        "id": 30949958,
+        "query": "execution trace integrity",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 298,
+        "retrievalMs": 126.682,
+        "rerankMs": 165.538,
+        "invokeMs": 292.685
+      },
+      {
+        "id": 30949985,
+        "query": "cold loop wake",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 1334,
+        "retrievalMs": 934.622,
+        "rerankMs": 389.581,
+        "invokeMs": 1324.666
+      },
+      {
+        "id": 30950000,
+        "query": "model preservation",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 696,
+        "retrievalMs": 477.843,
+        "rerankMs": 212.864,
+        "invokeMs": 691.148
+      },
+      {
+        "id": 30950003,
+        "query": "acceptance rubric",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 493,
+        "retrievalMs": 322.401,
+        "rerankMs": 158.755,
+        "invokeMs": 481.604
+      },
+      {
+        "id": 30950004,
+        "query": "checkpoint lineage",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 204,
+        "retrievalMs": 81.286,
+        "rerankMs": 118.748,
+        "invokeMs": 200.441
+      },
+      {
+        "id": 30950014,
+        "query": "resource lease",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 176,
+        "retrievalMs": 37.836,
+        "rerankMs": 135.951,
+        "invokeMs": 174.097
+      },
+      {
+        "id": 30950017,
+        "query": "session search",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 689,
+        "retrievalMs": 549.283,
+        "rerankMs": 136.436,
+        "invokeMs": 686.065
+      },
+      {
+        "id": 30950022,
+        "query": "recall pointer section clamp",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 280,
+        "retrievalMs": 148.641,
+        "rerankMs": 128.576,
+        "invokeMs": 277.548
+      },
+      {
+        "id": 30950026,
+        "query": "test provenance",
+        "build": "f655898692",
+        "host": "port-3170",
+        "status": "ok",
+        "ledgerMs": 207,
+        "retrievalMs": 107.429,
+        "rerankMs": 96.508,
+        "invokeMs": 204.339
+      }
+    ],
+    "physicalSourceSha256": "487355a96f8a84cc0c643a14db0cc11abfaa675fa3720cb3e99412ec83f832b9",
+    "sdkVersion": "1.29.0",
+    "parityInvocationRows": [
+      {
+        "id": "30950558",
+        "invoked_at": "2026-10-02 00:06:29.45+00",
+        "status": "ok",
+        "serving_build_sha": "f655898692",
+        "query": "zz-r2-absent-20261001"
+      },
+      {
+        "id": "30950556",
+        "invoked_at": "2026-10-02 00:06:28.367+00",
+        "status": "ok",
+        "serving_build_sha": "f655898692",
+        "query": "WI-10004474"
+      },
+      {
+        "id": "30950549",
+        "invoked_at": "2026-10-02 00:06:28.08+00",
+        "status": "ok",
+        "serving_build_sha": "f655898692",
+        "query": "04474"
+      },
+      {
+        "id": "30950544",
+        "invoked_at": "2026-10-02 00:06:27.647+00",
+        "status": "ok",
+        "serving_build_sha": "f655898692",
+        "query": "memory admission"
+      }
+    ],
+    "hookInvocation": {
+      "id": "30951822",
+      "invoked_at": "2026-10-02 00:08:44.86+00",
+      "status": "ok",
+      "serving_build_sha": "f655898692",
+      "serving_host": "port-3170",
+      "call_origin": "hook",
+      "hook_bundle": {
+        "generation": "1skge-muq74czp:22757291",
+        "glance_stale": true
+      }
+    }
+  },
+  "priorEvidence": [
+    "test-run:20430960",
+    "spec-evidence:19642",
+    "test-run:20437658",
+    "spec-evidence:19777",
+    "docs/evidence/papercusp-performance-r2-live-2026-10-01T1824.json",
+    "docs/evidence/papercusp-performance-r2-varied-live-2026-10-01T1919.json"
+  ],
+  "finishedAtBasis": "Receipt assembly after the separately timestamped HTTP sample, original fixture checks and installed-hook observation.",
+  "residualUnknowns": [
+    "The slow-query retrieval mechanism has not yet been distinguished with current execution plans; no resource or planner-only explanation is inferred from aggregate stage timing.",
+    "This twenty-query sequential sample does not establish universal latency or concurrent workload performance.",
+    "This failed operational receipt must not supersede earlier proof as a green result; conventional source proof remains separate.",
+    "The original pinModuleState admission failure remains owned and unconfirmed under EI-24811036735173410; this runtime check does not resolve that incident."
+  ]
+}

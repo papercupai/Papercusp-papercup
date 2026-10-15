@@ -17,8 +17,30 @@
  * The capture trigger FUNCTION is stubbed no-op (its real body drags the whole
  * outbox dependency chain in; the wire SHAPE is asserted via to_jsonb directly).
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
+
+// These tests exercise the store's SQL and eviction ranking against a throwaway
+// database. Owner notices are covered by notify-evicted.test.ts; letting this
+// suite send them through the real coord adapter escapes the fixture and can
+// reach the protected live org-admin pool.
+vi.mock('./notify-evicted', () => ({
+  notifyEvictedFactOwners: async () => [],
+}));
+
+// P-003: retract/supersede now cascades to closed work items. This fixture
+// applies only the agent_facts migrations (no work_items table), and the cascade
+// is covered by retraction-cascade.test.ts — record the store's calls instead, so
+// this suite still pins that the hooks fire with the right fact identity.
+const cascadeCalls = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('./retraction-cascade', () => ({
+  cascadeFactChange: async (_sql: unknown, e: Record<string, unknown>) => {
+    cascadeCalls.push(e);
+    return { ok: true, kind: e.kind, factRef: '', matched: 0, flagged: [], notified: [], failedRecipients: [], unnotifiable: [], truncated: false };
+  },
+  supersessionChangedBody: async () => true,
+}));
+
 import {
   assertFact,
   retractFact,
@@ -38,6 +60,7 @@ import {
   FACT_VOLATILE_MAX_TTL_SEC,
   GUARD_RAIL_KEY_PREFIX,
   listLapsedWallFacts,
+  sweepExpiredFacts,
   listConventionFacts,
   factCitationRef,
   listFactEvictionDisclosures,
@@ -294,6 +317,38 @@ afterAll(async () => {
 });
 afterEach(async () => {
   await db.sql.unsafe('TRUNCATE harness_shared.agent_facts');
+});
+
+describe('wall lapse exact recovery reader', () => {
+  it('measures reassertion or explicit retraction, preserving evicted, absent and foreign identities', async () => {
+    const identity = { workspaceId: WS, scope: 'owner' as const, scopeRef: 'su-wall', key: 'wall:recovery' };
+    await assertFact({ ...identity, body: 'Owner action pending', createdBy: 'su-int', ttlSec: 3600 }, db.sql);
+    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 day' WHERE key = ${identity.key}`;
+    const lapsed = await listLapsedWallFacts({}, db.sql);
+    expect(lapsed).toHaveLength(1);
+    expect(lapsed[0]).toMatchObject({ ...identity, sourceHive: null });
+    const read = () => listLapsedWallFacts({ recoveryFor: [identity] }, db.sql);
+    expect((await read())[0].recovered).toBe(false);
+    await assertFact({ ...identity, body: 'Wall reaffirmed', createdBy: 'su-int', ttlSec: 3600 }, db.sql);
+    expect((await read())[0].recovered).toBe(true);
+    expect(await listLapsedWallFacts({}, db.sql)).toEqual([]);
+    await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 day'
+      WHERE key = ${identity.key} AND superseded_at IS NULL`;
+    await retractFact({ ...identity, reason: 'Explicit owner disposition', retractedBy: 'su-int' }, db.sql);
+    expect((await read())[0].recovered).toBe(true);
+    await db.sql`UPDATE harness_shared.agent_facts SET evicted_at = now()
+      WHERE key = ${identity.key} AND superseded_at IS NULL`;
+    expect((await read())[0].recovered).toBe(false);
+    expect(await listLapsedWallFacts({ recoveryFor: [{ ...identity, scopeRef: 'su-other' }] }, db.sql)).toEqual([]);
+    expect(await listLapsedWallFacts({ recoveryFor: [{ ...identity, sourceHive: 'peer' }] }, db.sql)).toEqual([]);
+    await db.sql`INSERT INTO harness_shared.agent_facts
+      (workspace_id, scope, scope_ref, key, body, created_by, expires_at, source_hive)
+      VALUES (${WS}, 'owner', 'su-wall', ${identity.key}, 'Foreign wall still lapsed', 'su-peer',
+        now() - interval '1 day', 'peer')`;
+    expect((await listLapsedWallFacts({ recoveryFor: [{ ...identity, sourceHive: 'peer' }] }, db.sql))[0])
+      .toMatchObject({ sourceHive: 'peer', recovered: false });
+    expect(await listLapsedWallFacts({ recoveryFor: [] }, db.sql)).toEqual([]);
+  });
 });
 
 // P-008 (c) / D-012 / D-077 — the cell version is minted by the REAL stamp
@@ -3003,6 +3058,32 @@ describe('listLapsedWallFacts', () => {
     await assertFact({ ...base, key: 'wall:renewed', body: 'fresh body', ttlSec: 3600 }, db.sql);
     expect((await listLapsedWallFacts({}, db.sql)).map((f) => f.key)).not.toContain('wall:renewed');
   });
+
+  it('keeps a lapsed wall folded and retained until explicit retraction', async () => {
+    await assertLapsed('wall:retained-after-lapse', 'owner action is still required', 45);
+    const selector = { scope: 'harness' as const, scopeRef: 'papercusp' };
+
+    const folded = await foldFacts([selector], { workspaceId: WS, audiences: 'all' }, db.sql);
+    expect(folded.map((fact) => fact.key)).toContain('wall:retained-after-lapse');
+    await expect(countLiveFacts(selector, { workspaceId: WS, audiences: 'all' }, db.sql)).resolves.toBe(1);
+    expect(renderFactsFold(folded, Date.now())).toContain('TTL lapsed — remains active until retracted');
+    const resolved = await resolveAssumptions(['wall:retained-after-lapse'], [selector], { workspaceId: WS }, db.sql);
+    expect(resolved[0]?.condition).toBe('live');
+
+    // The ordinary 30-day reaper must not erase an unretracted wall's only
+    // durable record just because the review deadline was missed.
+    expect(await sweepExpiredFacts(db.sql)).toBe(0);
+    expect(await factVersions({ ...base, key: 'wall:retained-after-lapse' }, db.sql)).toHaveLength(1);
+
+    await retractFact({ scope: 'harness', scopeRef: 'papercusp', key: 'wall:retained-after-lapse', workspaceId: WS }, db.sql);
+    const afterRetraction = await foldFacts([selector], { workspaceId: WS, audiences: 'all' }, db.sql);
+    expect(afterRetraction.map((fact) => fact.key)).not.toContain('wall:retained-after-lapse');
+    await db.sql`UPDATE harness_shared.agent_facts
+                    SET retracted_at = now() - interval '31 days'
+                  WHERE workspace_id = ${WS} AND key = 'wall:retained-after-lapse'`;
+    expect(await sweepExpiredFacts(db.sql)).toBe(1);
+    expect(await factVersions({ ...base, key: 'wall:retained-after-lapse' }, db.sql)).toHaveLength(0);
+  });
 });
 
 /**
@@ -3499,5 +3580,55 @@ describe('countLiveFacts is the census behind a listFacts page (WI-38910)', () =
 
     expect(folded).toHaveLength(0);
     expect(total).toBe(0);
+  });
+});
+
+describe('P-003 retraction cascade hooks (real PG)', () => {
+  const base = { scope: 'owner' as const, scopeRef: 'su-cascade', key: 'cascade-premise', createdBy: 'su-int', workspaceId: WS };
+  const ids = async () =>
+    (
+      await db.sql<{ id: string }[]>`
+        SELECT id::text FROM harness_shared.agent_facts
+         WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = 'su-cascade' AND key = 'cascade-premise'
+`
+    )
+      // Numeric sort in JS: ORDER BY on the `id::text` alias would sort '1000' before '999'.
+      .map((r) => Number(r.id))
+      .sort((a, b) => a - b);
+
+  it('retractFact cascades with the retracted version id, reason and retractor', async () => {
+    cascadeCalls.length = 0;
+    await assertFact({ ttlSec: 3600, ...base, body: 'premise v1' }, db.sql);
+    const [v1] = await ids();
+    await retractFact({ ...base, reason: 'premise disproved', retractedBy: 'su-retractor' }, db.sql);
+    expect(cascadeCalls).toEqual([
+      expect.objectContaining({
+        kind: 'retracted',
+        workspaceId: WS,
+        scope: 'owner',
+        scopeRef: 'su-cascade',
+        key: 'cascade-premise',
+        versionId: v1,
+        reason: 'premise disproved',
+        by: 'su-retractor',
+      }),
+    ]);
+  });
+
+  it('a re-assert that replaces a version cascades a supersession naming old and new ids', async () => {
+    await assertFact({ ttlSec: 3600, ...base, body: 'premise v2' }, db.sql);
+    cascadeCalls.length = 0;
+    await assertFact({ ttlSec: 3600, ...base, body: 'premise v3' }, db.sql);
+    const all = await ids();
+    const [oldId, newId] = all.slice(-2);
+    expect(cascadeCalls).toEqual([
+      expect.objectContaining({ kind: 'superseded', key: 'cascade-premise', versionId: oldId, supersededBy: newId }),
+    ]);
+  });
+
+  it('a first assert (nothing superseded) cascades nothing', async () => {
+    cascadeCalls.length = 0;
+    await assertFact({ ttlSec: 3600, ...base, key: 'cascade-fresh', body: 'new' }, db.sql);
+    expect(cascadeCalls).toEqual([]);
   });
 });

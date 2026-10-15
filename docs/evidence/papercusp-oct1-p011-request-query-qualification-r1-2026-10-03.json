@@ -1,0 +1,108 @@
+{
+  "schemaVersion": "p011-request-query-qualification-v1",
+  "measuredAt": "2026-10-03T12:35:57.644Z",
+  "raw": {
+    "path": "docs/evidence/papercusp-oct1-p011-request-ordinary-r4-2026-10-03.json",
+    "bytes": 745779,
+    "sha256": "75d53593c9533426a1c2dbfb4c0f30cc90318a7402b00d0f22d80bf691ebb830"
+  },
+  "oracle": {
+    "path": "docs/evidence/papercusp-oct1-p011-request-query-oracle-r1-2026-10-03.json",
+    "bytes": 10806,
+    "sha256": "7f427b7158cbcd2c265a7659370b9e4ef7b5ff798a57fa18b4e5ff9279c54e90"
+  },
+  "sources": [
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 46649,
+      "sha256": "2c74b9ce5e4494a966db093bbb0a5585c7b49292bfdfd2d0f9ebef861778989e",
+      "beforeSha256": "2c74b9ce5e4494a966db093bbb0a5585c7b49292bfdfd2d0f9ebef861778989e",
+      "stable": true
+    },
+    {
+      "path": "scripts/cdp-inspector.d.mts",
+      "bytes": 13600,
+      "sha256": "60dd2f4d5f088ff38ae39b9b5e1be4ac6e9764d529ca38f4d10de77e371c9c7e",
+      "beforeSha256": "60dd2f4d5f088ff38ae39b9b5e1be4ac6e9764d529ca38f4d10de77e371c9c7e",
+      "stable": true
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+      "bytes": 198933,
+      "sha256": "28ca444914da67f2e085500ba6aaa1e79192920b02e28be0b7918ce4831cd53a",
+      "beforeSha256": "28ca444914da67f2e085500ba6aaa1e79192920b02e28be0b7918ce4831cd53a",
+      "stable": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query.ts",
+      "bytes": 9288,
+      "sha256": "5f5bad1c9ad0904bd0a48b111533974dff2dafaf3b282ae7c3d3b315e6c99002",
+      "beforeSha256": "5f5bad1c9ad0904bd0a48b111533974dff2dafaf3b282ae7c3d3b315e6c99002",
+      "stable": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/zero-harness/rest-query.test.ts",
+      "bytes": 10842,
+      "sha256": "99aa48c394069be1fe2108e1f68c49ecd77537f2baf44162ba21e0387efb8ff0",
+      "beforeSha256": "99aa48c394069be1fe2108e1f68c49ecd77537f2baf44162ba21e0387efb8ff0",
+      "stable": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+      "bytes": 2198,
+      "sha256": "64da0b2e68cf63797127d31cc787fa14584a6603da496c21eb3cc8577ce9982d",
+      "beforeSha256": "64da0b2e68cf63797127d31cc787fa14584a6603da496c21eb3cc8577ce9982d",
+      "stable": true
+    },
+    {
+      "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+      "bytes": 29071,
+      "sha256": "3918249ea811b95ec308ab3be078ea6e64d23dd5646bc8314d4023feb24dd972",
+      "beforeSha256": "3918249ea811b95ec308ab3be078ea6e64d23dd5646bc8314d4023feb24dd972",
+      "stable": true
+    }
+  ],
+  "oracleTest": {
+    "path": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+    "bytes": 41658,
+    "sha256": "c89dc0dc4e4df92a4bf6c259fadd684ab31a28663cf566e9386f1f3ea5540770"
+  },
+  "logs": [
+    {
+      "path": "/tmp/su-7db4f-p011-request-oracle-r3.log",
+      "bytes": 25675,
+      "sha256": "d98d405bd466038e769ad0f169d073833e02ee0775e1f105e22260a388535ce0"
+    },
+    {
+      "path": "/tmp/su-7db4f-p011-request-oracle-types-r1.log",
+      "bytes": 1074,
+      "sha256": "7dae4c75c124e6d1edbdf04989e90924a9aa215b86dfa7638aff29a0cf861ea7"
+    }
+  ],
+  "oracleRuns": [
+    {
+      "id": 20699973,
+      "status": "pass",
+      "workspaceId": "papercusp-workspace",
+      "harnessSlug": "papercusp",
+      "filePath": "packages/operator-core/lib/service-memory-baseline-evidence.integration.test.ts",
+      "commitSha": "b87a8b045b8badd0326f257e2e7ef53888efa2e8",
+      "startedAt": "2026-10-03T12:33:41.277Z",
+      "finishedAt": "2026-10-03T12:33:41.573Z"
+    }
+  ],
+  "producerTestRunId": 20695753,
+  "producerBuildSha": "3dc82d62c3e05597d69ad97be88d1865c7f52d01",
+  "routerBuildSha": "487f30f697cc2e002517d2d9042143b35b6a6221",
+  "currentHead": "779299a7b38cde0bc9169ed8253a87f67aad0762",
+  "cleanupObserved": {
+    "hostReaped": true,
+    "privateHomeAbsent": true
+  },
+  "scope": "Saved isolated ordinary HTTP/query identity and raw resource evidence only",
+  "limitations": [
+    "Seven named source files were fenced; full executed source graph is unknown.",
+    "Oracle29 executed/60 filtered skips; producer1 executed/136 filtered skips.",
+    "No new retained graph, worker clone or physical memory reduction; full P011@2/D021 acceptance stays open."
+  ]
+}

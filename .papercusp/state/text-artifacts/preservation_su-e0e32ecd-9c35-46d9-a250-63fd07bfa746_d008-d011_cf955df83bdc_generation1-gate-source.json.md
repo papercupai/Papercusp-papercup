@@ -1,0 +1,7 @@
+---
+rel_path: "preservation/su-e0e32ecd-9c35-46d9-a250-63fd07bfa746/d008-d011/cf955df83bdc/generation1-gate-source.json"
+updated_at: 1791414488239
+_body: "content"
+---
+
+{"event_inspection":{"current_generation":1,"current_state":"declared","declarations":[{"actual_sha":null,"bound_to":{"kind":"fleet-leadership","ref":"nonp2p-feature-drain-sol61-xhigh-0930"},"cancelled_at":null,"declared_at":"2026-10-06T05:43:54.686Z","declared_by":"su-7bc9c327-070e-4aba-87af-e3eef1aa86df","declared_by_liveness":"ended","expected":null,"expected_verdict":"not-declared","fired_at":null,"fired_by":null,"generation":1,"live_successor_ids":["su-61a88fd2-510d-4ca6-8a71-fde8957fb3bc"],"logical_gate":"nonp2p-feature-drain-sol61-xhigh-0930-admission-qualified-d008","note":"Leader7bc9c will lift D008 new-pull hold only after supported in-scope admission/source routes and original worker profile are qualified. Existing claims continue; a bug close or launch receipt alone does not lift the hold.","state":"declared","superseded_at":null}],"event":"fleet:nonp2p-feature-drain-sol61-xhigh-0930:admission-qualified-d008","resync":{"authoritative_generation":1,"consumer_generation":1,"next_verb":"events:status { event: \"fleet:nonp2p-feature-drain-sol61-xhigh-0930:admission-qualified-d008\", after_generation: 1 }","reason":"in_sync","required":false,"rule":"Replace cached state with this exact-key snapshot whenever required=true; then persist authoritative_generation as the next watermark."}},"ok":true}

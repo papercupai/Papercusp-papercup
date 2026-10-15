@@ -54,6 +54,9 @@ function makeDelivery(payload: unknown, over: Partial<DeliveryWork> = {}): Deliv
     source: null,
     wakeHandle: null,
     note: null,
+    turnProof: null,
+    turnStartedAt: null,
+    pickupDeadlineAt: null,
     ...over,
   };
 }

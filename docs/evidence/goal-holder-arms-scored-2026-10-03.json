@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-4 trial arms on goal 60d3a8 scored with the holder behavior metrics; per-arm table recorded as plan Decisions",
+  "framework": "operational",
+  "plan": "goal-holder-plans-ideation-truthful-reports-2026-10-03",
+  "clauses": ["SPEC-P-011-arms-scored"],
+  "workItem": "WI-10005911",
+  "command": [
+    "npx tsx .papercusp/scratch/p011/arms.mts > .papercusp/scratch/p011/arms-rev.json"
+  ],
+  "commandNote": "Probe source: docs/evidence/goal-holder-arm-windows-probe-2026-10-03.md (read-only; calls collectGoalHolderBehaviorMetrics + rateGoalHolderBehavior from packages/operator-core/lib/goal-holder-behavior-metrics.ts over the live Postgres ledger). Output: docs/evidence/goal-holder-arm-windows-rev-2026-10-03.json (re-measure on the cluster basis after the metric fix); the first run is docs/evidence/goal-holder-arm-windows-2026-10-03.json. Arm windows are taken exactly as goal-agent-behavior-feedback-2026-09-06 bound them (D-044..D-063). startedAt/finishedAt are minute-resolution, taken from the mtimes of arms-rev.err (04:41Z) and arms-rev.json (04:42Z).",
+  "workingDirectory": "papercusp",
+  "startedAt": "2026-10-03T04:41:00Z",
+  "finishedAt": "2026-10-03T04:42:00Z",
+  "exitCode": 0,
+  "summary": "The six R-4 arms (full-p1, brief-only, full-p2, full-p3, baseline, full-w4) were scored as 8 holder-windows with per-window plan, ideation, report, loop and nudge counts plus verdicts. The result is recorded as Decision goal-holder-plans-ideation-truthful-reports-2026-10-03#D-008 (corrected for the cluster basis by #D-010) and as pointer Decision goal-agent-behavior-feedback-2026-09-06#D-064. Finding: 0 plans written in every arm, and the full arm's reminders were 95% undelivered, so the run could not test reminders.",
+  "assertions": [
+    { "id": "per-arm-table", "passed": true, "evidence": "goal-holder-arm-windows-rev-2026-10-03.json holds 8 holder-window rows covering all 6 arms, each with plans, ideation, reports, loop, nudges and verdicts" },
+    { "id": "decision-this-plan", "passed": true, "evidence": "harness_plans decisions: goal-holder-plans-ideation-truthful-reports-2026-10-03 D-008 'P-011 result: across all R-4 arms the holder wrote 0 plans and missed ideation...' and correction D-010" },
+    { "id": "decision-feedback-plan", "passed": true, "evidence": "harness_plans decisions: goal-agent-behavior-feedback-2026-09-06 D-064 'R-4 arms scored on holder-behavior metrics: 0 plans written in every arm; full-arm reminders 95% undelivered'" }
+  ]
+}

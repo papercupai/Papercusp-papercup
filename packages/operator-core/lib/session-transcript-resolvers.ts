@@ -21,7 +21,302 @@
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import type { Sql } from 'postgres';
+import type { IdentityTurnUsageBinding, IdentityTurnBilledCost } from './cupboard/shadow-metering-reader';
+import type { ClosedCodexSessionPopulation } from './interactive-usage/ingest-adapters';
+import { codexToolCallArgsRaw } from './transcript-wire';
+
+class CodexSourceProofError extends Error {
+  constructor(readonly code: Exclude<IdentityTurnBilledCost, { ok: true }>['code'], detail: string) { super(detail); }
+}
+
+/** One stable, complete host-owned source for both token and monetary proofs. */
+async function readCompleteCodexSource(binding: { nativeSessionId: string; codexHome: string }) {
+  const [{ constants }, path] = await Promise.all([import('node:fs'), import('node:path')]);
+  const file = await findCodexRolloutPathByUuid(binding.nativeSessionId, { homeOverride: binding.codexHome });
+  if (!file) throw new CodexSourceProofError('identity-usage-incomplete', 'the host native transcript is unavailable');
+  const root = await fs.realpath(path.join(binding.codexHome, 'sessions'));
+  const realFile = await fs.realpath(file), relative = path.relative(root, realFile);
+  if (realFile !== file || !relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+    throw new CodexSourceProofError('identity-usage-binding-mismatch', 'the native transcript must belong to this exact runtime home');
+  }
+  const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.size <= 0 || before.size > 16 * 1024 * 1024) throw new CodexSourceProofError('identity-usage-incomplete', 'native transcript size is incomplete or unbounded');
+    const bytes = Buffer.alloc(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (read.bytesRead === 0) throw new CodexSourceProofError('identity-usage-incomplete', 'the native transcript changed during proof');
+      offset += read.bytesRead;
+    }
+    const unchanged = async () => {
+      const after = await fs.lstat(file);
+      return after.isFile() && before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
+        before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs;
+    };
+    if (!await unchanged()) throw new CodexSourceProofError('identity-usage-incomplete', 'the native transcript changed during proof');
+    const transcript = bytes.toString('utf8');
+    if (!Buffer.from(transcript, 'utf8').equals(bytes)) throw new CodexSourceProofError('identity-usage-incomplete', 'the native source is not complete UTF-8');
+    return { file, transcript, sourceSha256: createHash('sha256').update(bytes).digest('hex'), unchanged };
+  } finally { await handle.close(); }
+}
+
+type ClosedCodexSourceSubtotal = Extract<ClosedCodexSessionPopulation, { ok: true }> & {
+  readonly file: string; readonly sourceSha256: string;
+};
+export type ClosedCodexSessionUsage = ClosedCodexSourceSubtotal |
+  (Extract<ClosedCodexSessionPopulation, { ok: false }> & { readonly knownSubtotal?: ClosedCodexSourceSubtotal });
+
+/** Complete session token census from native bytes plus the atomic ingest
+ * frontier. Never promotes estimated/list-price costs to provider bills.
+ * The authenticated execution host must verify process termination and supply
+ * the exact home/session binding; this reader does not discover participants. */
+export async function readClosedCodexSessionUsage(sql: Sql, input: {
+  readonly workspaceId: string; readonly nativeSessionId: string; readonly codexHome: string;
+}): Promise<ClosedCodexSessionUsage> {
+  const binding = { ...input };
+  const fail = (detail: string): ClosedCodexSessionUsage => ({ ok: false, detail });
+  if ([binding.workspaceId, binding.nativeSessionId, binding.codexHome].some(v => typeof v !== 'string' || !v.trim())) {
+    return fail('an exact workspace, native session and host-owned home are required');
+  }
+  try {
+    const source = await readCompleteCodexSource(binding);
+    const [frontier] = await sql<{ byte_offset: string; parser_state: { fileGeneration?: number; initialized?: boolean; bootstrapOffset?: number } }[]>`
+      SELECT byte_offset::text, parser_state FROM harness_shared.interactive_usage_files
+      WHERE workspace_id = ${binding.workspaceId} AND file_path = ${source.file}`;
+    const offset = Number(frontier?.byte_offset), sourceBytes = Buffer.byteLength(source.transcript);
+    if (!frontier || frontier.parser_state?.initialized !== true || frontier.parser_state.bootstrapOffset !== undefined ||
+        !Number.isSafeInteger(offset) || offset < 0 || offset > sourceBytes) {
+      return fail('the canonical ingest frontier must identify verified native source bytes');
+    }
+    const { closedCodexSessionPopulation } = await import('./interactive-usage/ingest-adapters');
+    const populationInput = { file: source.file, fileGeneration: frontier.parser_state.fileGeneration ?? 0,
+      nativeSessionId: binding.nativeSessionId };
+    const population = offset === sourceBytes ? closedCodexSessionPopulation({ ...populationInput, transcript: source.transcript }) :
+      fail('the canonical ingest frontier does not cover the entire native source');
+    if (!await source.unchanged()) return fail('the native source changed while reconciling its frontier');
+    if (population.ok) return { ...population, file: source.file, sourceSha256: source.sourceSha256 };
+    // A later open turn or trailing partial record must not erase earlier
+    // closed work. Locate a complete prefix within the atomic frontier, then
+    // validate it through the SAME canonical population/key writer. The outer
+    // result remains incomplete; this is a known subtotal, never a total.
+    let start = 0, consumedBytes = 0, closedEnd = 0;
+    while (start < source.transcript.length) {
+      const end = source.transcript.indexOf('\n', start);
+      if (end < 0) break;
+      const line = source.transcript.slice(start, end);
+      consumedBytes += Buffer.byteLength(line + '\n');
+      if (consumedBytes > offset) break;
+      let record: { type?: unknown; payload?: { type?: unknown } };
+      try { record = JSON.parse(line); } catch { break; }
+      if (!record || typeof record !== 'object' || Array.isArray(record) || !record.payload || typeof record.payload !== 'object') break;
+      if (record.type === 'event_msg' && ['task_complete', 'turn_completed'].includes(String(record.payload.type))) closedEnd = end + 1;
+      start = end + 1;
+    }
+    if (!closedEnd) return population;
+    const known = closedCodexSessionPopulation({ ...populationInput, transcript: source.transcript.slice(0, closedEnd) });
+    if (!known.ok) return population;
+    return { ok: false, detail: population.detail,
+      knownSubtotal: { ...known, file: source.file, sourceSha256: source.sourceSha256 } };
+  } catch { return fail('the complete native source and canonical frontier could not be verified'); }
+}
+
+/** Exact native user input observed in a completed source turn. This proves
+ * recording in the native turn, not a provider request body or billed send.
+ * The host supplies the source indices; candidate text cannot select a ref. */
+export async function readClosedCodexTurnInput(sql: Sql, input: {
+  readonly workspaceId: string; readonly nativeSessionId: string; readonly codexHome: string;
+  readonly nativeTurnId: string; readonly recordIndex: number; readonly contentIndex: number;
+}): Promise<{ file: string; sourceSha256: string; nativeSessionId: string; nativeTurnId: string;
+  recordIndex: number; contentIndex: number; at: string; text: string } | null> {
+  const binding = { ...input };
+  if ([binding.workspaceId, binding.nativeSessionId, binding.codexHome, binding.nativeTurnId].some(v => typeof v !== 'string' || !v.trim()) ||
+      ![binding.recordIndex, binding.contentIndex].every(n => Number.isSafeInteger(n) && n >= 0)) return null;
+  try {
+    const source = await readCompleteCodexSource(binding);
+    const population = await readClosedCodexSessionUsage(sql, binding);
+    if (!population.ok || population.sourceSha256 !== source.sourceSha256 || population.file !== source.file ||
+        !population.nativeTurnIds.includes(binding.nativeTurnId)) return null;
+    // The canonical population proof already rejects malformed/partial records
+    // and foreign headers. Keep the complete record ordinal, including header.
+    const records = source.transcript.slice(0, -1).split('\n').map(line => JSON.parse(line));
+    const record = records[binding.recordIndex];
+    const payload = record?.payload, content = payload?.content?.[binding.contentIndex];
+    if (record?.type !== 'response_item' || payload?.type !== 'message' || payload.role !== 'user' ||
+        !Array.isArray(payload.content) || content?.type !== 'input_text' || typeof content.text !== 'string' || !content.text.length ||
+        typeof record.timestamp !== 'string' || !Number.isFinite(Date.parse(record.timestamp)) ||
+        payload.turn_id !== undefined && payload.turn_id !== binding.nativeTurnId) return null;
+    let active: string | null = null, started = false;
+    for (const row of records.slice(0, binding.recordIndex)) {
+      if (row.type === 'event_msg' && row.payload.type === 'task_started') {
+        active = typeof row.payload.turn_id === 'string' ? row.payload.turn_id : null;
+        started = active === binding.nativeTurnId;
+      }
+      if (row.type === 'turn_context') active = typeof row.payload.turn_id === 'string' ? row.payload.turn_id : null;
+      if (row.type === 'event_msg' && ['task_complete', 'turn_completed'].includes(row.payload.type)) active = null;
+    }
+    if (!started || active !== binding.nativeTurnId || !await source.unchanged()) return null;
+    return { file: source.file, sourceSha256: source.sourceSha256, nativeSessionId: binding.nativeSessionId,
+      nativeTurnId: binding.nativeTurnId, recordIndex: binding.recordIndex, contentIndex: binding.contentIndex,
+      at: new Date(record.timestamp).toISOString(), text: content.text };
+  } catch { return null; }
+}
+
+/** Exact call/result pair in one completed native turn. Preserve the native
+ * tool name and raw arguments: a functions.exec wrapper is not evidence that
+ * any particular nested platform invocation succeeded. Semantic/tool-specific
+ * authority must be joined separately, without guessing from timestamps. */
+export async function readClosedCodexTurnToolResult(sql: Sql, input: {
+  readonly workspaceId: string; readonly nativeSessionId: string; readonly codexHome: string;
+  readonly nativeTurnId: string; readonly callRecordIndex: number; readonly resultRecordIndex: number;
+}): Promise<{ file: string; sourceSha256: string; nativeSessionId: string; nativeTurnId: string;
+  callRecordIndex: number; resultRecordIndex: number; callId: string; name: string;
+  callType: 'function_call' | 'custom_tool_call';
+  arguments: string; output: string | unknown[]; isError: boolean | null; calledAt: string; at: string } | null> {
+  const binding = { ...input };
+  if ([binding.workspaceId, binding.nativeSessionId, binding.codexHome, binding.nativeTurnId].some(v => typeof v !== 'string' || !v.trim()) ||
+      ![binding.callRecordIndex, binding.resultRecordIndex].every(n => Number.isSafeInteger(n) && n >= 0) ||
+      binding.callRecordIndex >= binding.resultRecordIndex) return null;
+  try {
+    const source = await readCompleteCodexSource(binding);
+    const population = await readClosedCodexSessionUsage(sql, binding);
+    if (!population.ok || population.sourceSha256 !== source.sourceSha256 || population.file !== source.file ||
+        !population.nativeTurnIds.includes(binding.nativeTurnId)) return null;
+    const records = source.transcript.slice(0, -1).split('\n').map(line => JSON.parse(line));
+    const call = records[binding.callRecordIndex], result = records[binding.resultRecordIndex];
+    const request = call?.payload, response = result?.payload;
+    const outputType = request?.type === 'function_call' ? 'function_call_output' :
+      request?.type === 'custom_tool_call' ? 'custom_tool_call_output' : null;
+    const args = request && codexToolCallArgsRaw(request);
+    if (!outputType || call?.type !== 'response_item' || result?.type !== 'response_item' ||
+        response?.type !== outputType || typeof request.call_id !== 'string' || !request.call_id.trim() ||
+        response.call_id !== request.call_id || typeof request.name !== 'string' || !request.name.trim() ||
+        request.namespace !== undefined && (typeof request.namespace !== 'string' || !request.namespace.trim()) ||
+        typeof args !== 'string' || !(typeof response.output === 'string' || Array.isArray(response.output)) ||
+        response.is_error !== undefined && typeof response.is_error !== 'boolean' ||
+        [request, response].some(row => row.turn_id !== undefined && row.turn_id !== binding.nativeTurnId)) return null;
+    // Reject duplicate IDs anywhere in this source, including earlier turns.
+    const pairs = records.filter(row => row.type === 'response_item' && row.payload?.call_id === request.call_id &&
+      ['function_call', 'custom_tool_call', 'function_call_output', 'custom_tool_call_output'].includes(row.payload.type));
+    if (pairs.length !== 2) return null;
+    let active: string | null = null, startIndex: number | null = null;
+    let callStart: number | null = null, resultStart: number | null = null;
+    for (let index = 0; index <= binding.resultRecordIndex; index++) {
+      const row = records[index];
+      if (index === binding.callRecordIndex && active === binding.nativeTurnId) callStart = startIndex;
+      if (index === binding.resultRecordIndex && active === binding.nativeTurnId) resultStart = startIndex;
+      if (row.type === 'event_msg' && row.payload?.type === 'task_started') {
+        active = typeof row.payload.turn_id === 'string' ? row.payload.turn_id : null;
+        startIndex = index;
+      }
+      if (row.type === 'turn_context') {
+        const turn = typeof row.payload?.turn_id === 'string' ? row.payload.turn_id : null;
+        if (turn !== active) startIndex = null;
+        active = turn;
+      }
+      if (row.type === 'event_msg' && ['task_complete', 'turn_completed'].includes(row.payload?.type)) {
+        active = null; startIndex = null;
+      }
+    }
+    const calledAt = typeof call.timestamp === 'string' ? Date.parse(call.timestamp) : NaN;
+    const at = typeof result.timestamp === 'string' ? Date.parse(result.timestamp) : NaN;
+    if (callStart === null || callStart !== resultStart || !Number.isFinite(calledAt) || !Number.isFinite(at) || at < calledAt ||
+        !await source.unchanged()) return null;
+    return { file: source.file, sourceSha256: source.sourceSha256, nativeSessionId: binding.nativeSessionId,
+      nativeTurnId: binding.nativeTurnId, callRecordIndex: binding.callRecordIndex, resultRecordIndex: binding.resultRecordIndex,
+      callId: request.call_id, name: `${request.namespace ? request.namespace + '.' : ''}${request.name}`,
+      callType: request.type,
+      arguments: args, output: response.output, isError: response.is_error ?? null,
+      calledAt: new Date(calledAt).toISOString(), at: new Date(at).toISOString() };
+  } catch { return null; }
+}
+
+/** Source-defined carry/recovery census within one host-allocated runtime home.
+ * A latest adv_sessions.session_id is not the population: a carry can leave
+ * multiple native transcripts behind. Bound and re-read the directory census,
+ * retaining an explicit failure for each unreadable/incomplete source. */
+export async function readClosedCodexRuntimeUsage(sql: Sql, input: {
+  readonly workspaceId: string; readonly codexHome: string;
+}): Promise<{ complete: boolean; sessions: readonly { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] }> {
+  const binding = { ...input };
+  const list = async () => {
+    const root = join(binding.codexHome, 'sessions');
+    const found: { nativeSessionId: string; sourceStamp: string }[] = [];
+    let entries = 0;
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      const children = await fs.readdir(dir, { withFileTypes: true });
+      entries += children.length;
+      if (entries > 5000) throw new Error('native source directory census exceeds its bound');
+      for (const child of children) {
+        if (child.isDirectory() && depth < 3 && /^\d+$/.test(child.name)) { await walk(join(dir, child.name), depth + 1); continue; }
+        if (!child.isFile()) throw new Error('native source directory contains a noncanonical entry');
+        const match = /^rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(child.name);
+        if (!match || depth !== 3) throw new Error('native source directory contains an unidentified source');
+        const file = join(dir, child.name), stat = await fs.lstat(file, { bigint: true });
+        if (!stat.isFile()) throw new Error('native source census changed file kind');
+        found.push({ nativeSessionId: match[1].toLowerCase(),
+          sourceStamp: [file, stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(':') });
+      }
+    };
+    await walk(root, 0);
+    if (!found.length || found.length > 1000 || new Set(found.map(source => source.nativeSessionId)).size !== found.length) throw new Error('native source census is empty or ambiguous');
+    return found.sort((a, b) => a.nativeSessionId.localeCompare(b.nativeSessionId));
+  };
+  try {
+    if ([binding.workspaceId, binding.codexHome].some(v => typeof v !== 'string' || !v.trim())) throw new Error('missing runtime binding');
+    // ID equality alone misses changes to an earlier source during a later
+    // frontier read. Cover the whole read with physical content/identity stamps.
+    const census = await list();
+    const sessions: { nativeSessionId: string; usage: ClosedCodexSessionUsage }[] = [];
+    for (const { nativeSessionId } of census) sessions.push({ nativeSessionId, usage: await readClosedCodexSessionUsage(sql, { ...binding, nativeSessionId }) });
+    return { complete: JSON.stringify(census) === JSON.stringify(await list()) && sessions.every(source => source.usage.ok), sessions };
+  } catch { return { complete: false, sessions: [] }; }
+}
+
+/** Trusted Codex host resolver. The native home is a runtime capability owned
+ * by the authenticated engine, never a command argument. Full source defines
+ * the expected set; SQL supplies only its atomic frontier and billed evidence. */
+export async function readClosedCodexTurnBilledCost(sql: Sql,
+  input: Omit<IdentityTurnUsageBinding, 'usageEventKeys'> & { readonly codexHome: string },
+): Promise<(Extract<IdentityTurnBilledCost, { ok: true }> & { readonly usageEventKeys: readonly string[] }) | Exclude<IdentityTurnBilledCost, { ok: true }>> {
+  const binding = { ...input };
+  const fail = (code: Exclude<IdentityTurnBilledCost, { ok: true }>['code'], detail: string): Exclude<IdentityTurnBilledCost, { ok: true }> =>
+    ({ ok: false, code, detail });
+  if ([binding.workspaceId, binding.ownerId, binding.principalId, binding.nativeSessionId, binding.nativeTurnId,
+      binding.specificationRevision, binding.stateRevision, binding.codexHome].some((v) => typeof v !== 'string' || !v.trim())) {
+    return fail('identity-usage-invalid-binding', 'a closed host turn needs its exact native runtime and identity');
+  }
+  try {
+    const [{ readIdentityTurnBilledCost }, { closedCodexTurnPopulation }] = await Promise.all([
+      import('./cupboard/shadow-metering-reader'), import('./interactive-usage/ingest-adapters'),
+    ]);
+    const source = await readCompleteCodexSource(binding);
+    const { file, transcript } = source;
+    const [frontier] = await sql<{ byte_offset: string; parser_state: { fileGeneration?: number; initialized?: boolean; bootstrapOffset?: number } }[]>`
+      SELECT byte_offset::text, parser_state FROM harness_shared.interactive_usage_files
+      WHERE workspace_id = ${binding.workspaceId} AND file_path = ${file}`;
+    if (!frontier || frontier.parser_state?.initialized !== true || frontier.parser_state.bootstrapOffset !== undefined) {
+      return fail('identity-usage-incomplete', 'the native source has no complete canonical ingest frontier');
+    }
+    const population = closedCodexTurnPopulation({ transcript, file, fileGeneration: frontier.parser_state.fileGeneration ?? 0,
+      nativeSessionId: binding.nativeSessionId, nativeTurnId: binding.nativeTurnId });
+    if (!population.ok) return fail('identity-usage-incomplete', population.detail);
+    const byteOffset = Number(frontier.byte_offset);
+    if (!Number.isSafeInteger(byteOffset) || byteOffset < population.closedByteOffset || byteOffset > Buffer.byteLength(transcript)) {
+      return fail('identity-usage-incomplete', 'the atomic ingest frontier does not cover the full native turn closure');
+    }
+    const cost = await readIdentityTurnBilledCost(sql, { ...binding, usageEventKeys: population.usageEventKeys });
+    if (!await source.unchanged()) return fail('identity-usage-incomplete', 'the native source changed while verifying its bill');
+    return cost.ok ? { ...cost, usageEventKeys: population.usageEventKeys } : cost;
+  } catch (error) {
+    if (error instanceof CodexSourceProofError) return fail(error.code, error.message);
+    return fail('identity-usage-unavailable', 'the complete native source and canonical billed proof could not be verified');
+  }
+}
 
 /**
  * OMP transcript root. Tracked psu sessions isolate PI_CODING_AGENT_DIR under

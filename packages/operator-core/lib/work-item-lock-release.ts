@@ -9,6 +9,7 @@
  */
 import { inWorkspaceTxn } from './agent-tools/locks/in-workspace-txn';
 import { ensureBootstrap, getTxPool, readQueue, tryRelease } from './agent-tools/locks/su-lock-store';
+import { observeFallback } from './degradation/fallback-observations';
 
 export interface ReclaimWorkItemLocksParams {
   ownerId: string | null | undefined;
@@ -74,6 +75,7 @@ export async function releaseReclaimedWorkItemLocks(
     const queue = await readQueue(getTxPool(), { coordinationDomain: null, owner: ownerId });
     activeLocks = queue.active_locks as ActiveLock[];
   } catch (error) {
+    observeFallback('work-item-lock-reclaim', { eligible: 1, applied: 0, reason: 'lock-read-failed' });
     console.warn(
       `[work-item-lock-reclaim] could not inspect locks for ${ownerId}; claim release will proceed and leases remain as fallback (${error instanceof Error ? error.message : String(error)})`,
     );
@@ -130,5 +132,7 @@ export async function releaseReclaimedWorkItemLocks(
     }
   }
 
+  observeFallback('work-item-lock-reclaim', { eligible: 1, applied: failures === 0 ? 1 : 0,
+    reason: failures === 0 ? 'applied' : 'lock-release-failed' });
   return { releases, failures, skipped: null };
 }

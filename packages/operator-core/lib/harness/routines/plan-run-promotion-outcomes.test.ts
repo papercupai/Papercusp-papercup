@@ -26,6 +26,13 @@ vi.mock('../../plan-workitem-promotion-run', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../plan-workitem-promotion-run')>()),
   promotePlanItems: promoteMock,
 }));
+// This file has no database. Without this mock, runScheduledPlanFire's pot lookup
+// reaches an absent org-PG, is reported as unmeasured (console.warn, by design since
+// WI-10004845), and vitest-fail-on-console fails every case (WI-10005470).
+vi.mock('../../pot-membership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../pot-membership')>()),
+  routineStorageSlug: async (slug: string) => slug,
+}));
 
 import { runScheduledPlanFire } from './plan-run-action';
 

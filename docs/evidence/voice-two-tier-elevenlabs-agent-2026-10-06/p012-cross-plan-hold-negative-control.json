@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "SPEC-P-012 counterexample: the probe exits 1 for an item that does not hold the tutorial release",
+  "framework": "operational",
+  "testLayer": "integration",
+  "command": ["bash", "docs/evidence/voice-two-tier-elevenlabs-agent-2026-10-06/p012-cross-plan-hold-probe.sh", "WI-10006876"],
+  "commandCwd": ".",
+  "exitCode": 1,
+  "startedAt": "2026-10-06T20:53:30Z",
+  "finishedAt": "2026-10-06T20:53:30Z",
+  "summary": "Falsifier check for SPEC-P-012 ('the tutorial plan final release item has no blocker on this plan P-010'). Run on WI-10006876 (this plan's P-003), which has no blocks edge onto WI-10004839, the probe reported edges=0 and exited 1. The probe therefore distinguishes a held release from an unheld one.",
+  "scope": "Read-only query of the operator database on the dev host, run in host context (sudo -n -u postgres psql). Nothing was changed.",
+  "repository": "papercusp",
+  "headAtExecution": "781edde2d8c6d34695f6750e0cc89debad7d9ed7",
+  "workItems": ["WI-10006885", "WI-10006876", "WI-10004839"],
+  "spec": {
+    "planSlug": "voice-two-tier-elevenlabs-agent-2026-10-06",
+    "specId": "SPEC-P-012",
+    "specRevision": 1,
+    "evidencePlane": "tree"
+  },
+  "oracle": "The persisted dependency rows for WI-10006876 (blocks WI-10006878 and WI-10006880 only), read directly from harness_shared.work_item_deps.",
+  "sourceFiles": [
+    {
+      "path": "docs/evidence/voice-two-tier-elevenlabs-agent-2026-10-06/p012-cross-plan-hold-probe.sh",
+      "sha256": "6f7c1aaa77a152448070ba727419ec09feec6ce54362230acf55456ef5c4281b"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "unheld-item-is-rejected",
+      "passed": true,
+      "evidence": "p012-probe blocker=papercusp#WI-10006876 blocked=papercusp#WI-10004839 edges=0 (exit 1)"
+    }
+  ]
+}

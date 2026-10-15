@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { COORD_ROLES } from '../coordination/roles';
+import { COORD_READ_ROLES } from '../coordination/roles';
 import { searchRubrics } from '../../rubrics';
 
 export default defineTool({
@@ -26,7 +26,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({
     query: z.string().min(1),
     limit: z.number().int().positive().max(200).optional(),

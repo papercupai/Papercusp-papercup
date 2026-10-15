@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "AWS desktop native parity diagnostic 20261002T040406Z-286126",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1",
+    "VERIFY_TAURI_ISOLATED_SEED=ready",
+    "VERIFY_TAURI_REQUIRE_BUILT=apps/operator/app/cloud-workspaces/ConnectStage.tsx,apps/operator/app/cloud-workspaces/cloud-workspaces.module.css,apps/operator/app/cloud-workspaces/page.tsx,apps/operator/app/cloud-workspaces/workspace-host-actions.ts,apps/operator/app/cloud-workspaces/workspace-view-model.ts",
+    "scripts/verify-tauri-headless.sh",
+    "--",
+    "node",
+    "scripts/verify-cloud-workspaces-aws.mjs"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-10-02T04:04:07.298Z",
+  "finishedAt": "2026-10-02T04:12:02.431Z",
+  "summary": "Native AWS inputs, setup-template link, form-scoped connection submission, Configure pane geometry and provision request passed against matching frozen UI files. Operate host rendered; driver failed searching Stop although actual UI says Stop machine. No native lifecycle or restore acceptance. Driver labels/preflight/lookup inventory corrected after this result. Synthetic cloud responses; real AWS lifecycle unproved.",
+  "assertions": [
+    {
+      "id": "aws-connect-request",
+      "passed": true,
+      "evidence": "Native form-scoped pointer submission captured /api/workspace-hosts/connection target=aws, account and launch resource fields."
+    },
+    {
+      "id": "configure-pane-and-provision",
+      "passed": true,
+      "evidence": "Workspace-name input pointer hit actual input; gridColumns394px, gridWidth394; account-scope provision request captured."
+    },
+    {
+      "id": "native-lifecycle-and-restore",
+      "passed": false,
+      "evidence": "Bridge returned Missing Stop. Actual captured DOM and screenshot say Stop machine; driver had old label."
+    },
+    {
+      "id": "owned-cleanup",
+      "passed": true,
+      "evidence": "Owned verifier/launchers/bridge PIDs absent, source snapshot absent, ports33700/33701 refused connection. Measured after exit1."
+    }
+  ],
+  "workItemId": "WI-10005035",
+  "planSlug": "aws-byoc-gcp-parity-2026-10-01",
+  "specId": "AWSP-P-011-desktop-aws-option",
+  "specRevision": 2,
+  "run": "20261002T040406Z-286126",
+  "native": {
+    "display": ":90",
+    "bridgePid": 599304,
+    "ownerSid": "su-0da9d55e-30de-4a57-9380-8c81a7e3c99d",
+    "launchProvenance": "agent:su-0da9d55e-30de-4a57-9380-8c81a7e3c99d:run:1790913846215637233-286126-12929",
+    "sourceHashes": {
+      "apps/operator/app/cloud-workspaces/ConnectStage.tsx": "41fa7be43c7d8490356a3c2eb23f72dd6049e374ee02c0f9bbd7d8eeb690a7eb",
+      "apps/operator/app/cloud-workspaces/cloud-workspaces.module.css": "741c4ed794dd0ad8e1d18a4aa9d057919c0ae832190cbdf7a324d28fd985120d",
+      "apps/operator/app/cloud-workspaces/page.tsx": "f5602bb864d76268bfa711dc861551762701c8a68d7ab3bc354781a7cd6705b0",
+      "apps/operator/app/cloud-workspaces/workspace-host-actions.ts": "ac843415aa85faad7553e3aa112d12a837d2aed2ae88dc2f2ae838a8111167e2",
+      "apps/operator/app/cloud-workspaces/workspace-view-model.ts": "2556c1859d8d8ef579e618b5c238161c40ec14680d6dfa778bf253758b2217b9",
+      "scripts/verify-cloud-workspaces-aws.mjs": "4729c88926ec4d139e723ed542314e9653a72726e76532607683a35653740fa5"
+    },
+    "syntheticCloudResponses": true,
+    "realAwsLifecycleProven": false
+  },
+  "requests": [
+    {
+      "path": "/api/workspace-hosts/connection",
+      "payload": {
+        "action": "connect",
+        "label": "AWS native fixture",
+        "credentialRef": "resolver://aws/native",
+        "target": "aws",
+        "credentialSource": {
+          "environment": "local",
+          "method": "default-chain"
+        },
+        "accountId": "123456789012",
+        "region": "us-east-1",
+        "subnetId": "subnet-native",
+        "imageId": "ami-native",
+        "kmsKeyArn": "arn:aws:kms:us-east-1:123456789012:key/native",
+        "instanceProfileArn": "arn:aws:iam::123456789012:instance-profile/native",
+        "vpcId": "vpc-native",
+        "launchTemplateId": "lt-native",
+        "securityGroupIds": [
+          "sg-native"
+        ]
+      }
+    },
+    {
+      "path": "/api/workspace-hosts/provision",
+      "payload": {
+        "connectionId": "aws-native",
+        "name": "native-aws",
+        "desired": {
+          "hostId": "host-native-aws",
+          "target": "aws",
+          "scope": {
+            "kind": "account",
+            "id": "123456789012"
+          },
+          "region": "us-east-1",
+          "zone": "us-east-1a",
+          "size": "m6i.xlarge",
+          "image": {
+            "id": "ami-native"
+          },
+          "data": {
+            "volumeGiB": 100,
+            "encrypted": true
+          },
+          "provider": {
+            "subnetId": "subnet-native"
+          }
+        }
+      }
+    }
+  ],
+  "rawEvidence": [
+    {
+      "path": "/tmp/cw-aws-native-wi10005035-configure/result.json",
+      "sha256": "5df25a7fbda61947551031f4a92a5f544f83ce44e2917a6a5f7eb169343e9fbd"
+    },
+    {
+      "path": "/tmp/cw-aws-native-wi10005035-configure/final.png",
+      "sha256": "c52c0465c03d5933fe42ed7e7c2a616faa9e4b777b1e19b65d9d24d77606d42e"
+    },
+    {
+      "path": "~/.local/state/verification-harness/verify-tauri-headless/20261002T040406Z-286126/phases.jsonl",
+      "sha256": "a5f43648c63a4cc1fdd441e81fd1106774f89554784205ac8b36da3bb5ec7323"
+    }
+  ],
+  "cleanup": {
+    "ownedPidsAbsent": {
+      "286126": true,
+      "519840": true,
+      "554301": true,
+      "599304": true
+    },
+    "portConnectEx": {
+      "33700": 111,
+      "33701": 111
+    },
+    "sourceSnapshotAbsent": true
+  },
+  "limitations": [
+    "Cloud discovery and lifecycle responses are fixtures. No real AWS resource completion.",
+    "The failed native run did not exercise Stop/Start/snapshot/restore.",
+    "This diagnostic is not passing spec acceptance."
+  ]
+}

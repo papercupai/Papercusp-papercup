@@ -20,11 +20,11 @@ export function parseArgv(raw: Buffer | string): string[];
  * Format a process command line for human-facing output without flooding a
  * terminal with a launcher's embedded work-item brief.
  *
- * @param {string} cmdline
+ * @param {string | string[]} cmdline
  * @param {{ verbose?: boolean }} [opts]
  * @returns {string}
  */
-export function formatProcessCmdline(cmdline: string, opts?: {
+export function formatProcessCmdline(cmdline: string | string[], opts?: {
     verbose?: boolean;
 }): string;
 /**
@@ -287,6 +287,27 @@ export function matchExternalProcessesDetailed(pattern: string, opts?: {
  * @returns {string | null} null when there is no v2 line (cgroup v1-only host).
  */
 export function parseCgroupPath(raw: Buffer | string): string | null;
+/**
+ * Assert the managed test's actual cgroup before measuring worker demand.
+ * Attribution alone is insufficient: test-files needs both the run group and
+ * the real inherited deadline to retain Vitest in its caller's bounded scope.
+ * A Node preload calls this in each fork, so a sibling scope cannot silently
+ * produce passing tests alongside parent-only memory observations.
+ * @param {{ env?: NodeJS.ProcessEnv | undefined; pid?: number | undefined; now?: number | undefined; procRoot?: string | undefined; readFile?: ((path: string, encoding: "utf8") => string) | undefined }} [opts]
+ *   `readFile` is a test seam; it is only ever called as `readFile(path, "utf8")`.
+ */
+export function assertManagedTestCgroup({ env, pid, now, procRoot, readFile, }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+    pid?: number | undefined;
+    now?: number | undefined;
+    procRoot?: string | undefined;
+    readFile?: ((path: string, encoding: "utf8") => string) | undefined;
+}): {
+    pid: number;
+    cgroupPath: string | null | undefined;
+    runGroup: string | undefined;
+    deadlineEpochMs: number;
+};
 /**
  * Parse `usage_usec <n>` out of a cgroup `cpu.stat` body. This counter is
  * MONOTONIC, which is what makes a two-sample delta a true rate even as

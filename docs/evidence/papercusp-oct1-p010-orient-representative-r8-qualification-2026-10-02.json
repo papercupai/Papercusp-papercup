@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10004889",
+  "planSlug": "papercusp-log-performance-remediation-2026-09-23",
+  "rawReport": "docs/evidence/papercusp-oct1-p010-orient-representative-r8-2026-10-02.json",
+  "rawReportSha256": "28fc861816103be221243ab900985df8d45c2e78f4addd84a0ce98c04c9d02f2",
+  "testRunId": 20484011,
+  "testResult": { "status": "pass", "passed": 10, "failed": 0, "skipped": 0, "source": "local", "worktreeDirty": true },
+  "router": { "exitCode": 0, "provenance": "unknown", "startHead": "28d642279a", "endHead": "1a4ce69553" },
+  "scope": "Real orientation handler and PostgreSQL providers. The shared-portfolio arm met the five-second p95 timing budget across all four matrix phases. This is supporting orientation evidence, not full R-5, a historical baseline, an HTTP measurement, complete import-graph proof, or shipment.",
+  "databaseQualification": "Reusable isolated Docker baseline database papercusp_it, serialized by the maintained fixture mutex; not a fresh private database per run. Actual database/server/postmaster identity is in the raw report.",
+  "coldQualification": "Operator L1 reset and joined durable L2 workspace clear; PostgreSQL connections/buffers, process imports and independent source caches remain warm.",
+  "sourceQualification": { "namedFiles": 15, "changedDuringRun": [], "currentDriftBeforeTypeRepair": [], "completeImportGraphMeasured": false },
+  "postRunTypeRepair": {
+    "change": "Add an explicit array element type to closure-preflight observations; no executable statement changed.",
+    "originalTestSha256": "1efb1d5f76664bdd9a589bb28910e87de0139732bf0f0ab817cddff0c7eb73a8",
+    "correctedTestSha256": "046116af5d28a6bcddbb43b69591fe06abd7c2bad4a916ace2671fd4a4738dd8",
+    "esbuildTransform": { "loader": "ts", "target": "node22", "outputsEqual": true, "outputSha256": "a21b751e12cd561d26474dc68814c29125ecd88b1de2a5a7f053e9d11e6de2b0" },
+    "scopedTypecheck": { "exitCode": 0, "files": 1, "errors": 0 },
+    "qualification": "The full-suite receipt names the original TypeScript bytes. Identical emitted JavaScript qualifies this annotation-only repair; the suite was not replayed. This does not establish equivalence of the full runtime import graph."
+  },
+  "negativeObservations": [
+    "The fact-write correctness guard took 9255.08029 ms; the timing-budget assertion applies to matrix phases, not that guard.",
+    "The independent-portfolio counterfactual was faster for sequential cold and warm p95. The shared arm improved concurrent p95; no universal speedup is claimed."
+  ],
+  "remaining": ["Independent R-5 acceptance", "Complete live/build source qualification", "P-011 actual compiler/native/descendant attribution", "R-8/R-9 and final shipment"]
+}

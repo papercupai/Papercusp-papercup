@@ -49,6 +49,8 @@ import {
   type EvmSettlementConfig,
 } from '../evm-settlement';
 import type { CumulativePaymentVoucher } from '../microcharge';
+import { paymentVoucherSigningBytes, unsignedVoucher, verifyPaymentVoucherSignature } from '../microcharge';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { buildUsageReceiptEvent } from './escrow-authority';
 import { localCommercePeerLauncher, type CommercePeerLauncher } from './commerce-peer-launcher';
 import type { CommercePeerConfig, CommercePeerState } from './commerce-peer-child';
@@ -112,12 +114,14 @@ const eventSigner = (() => {
   });
 })();
 
+const payerKey = generateEd25519KeypairDer();
+
 function voucherFor(input: {
   readonly usageNonce: string;
   readonly cumulativeClaimMicros: bigint;
   readonly splitManifestHash: string;
 }): CumulativePaymentVoucher {
-  return {
+  const voucher: CumulativePaymentVoucher = {
     channelId: CHANNEL_ID,
     payer: PAYER,
     seller: SELLER,
@@ -131,8 +135,9 @@ function voucherFor(input: {
     // expiry; the voucher window simply has to contain that instant.
     expiresAtMs: 1_000_000,
     cumulativeClaimMicros: input.cumulativeClaimMicros,
-    signature: `voucher-sig-${input.usageNonce}`,
+    signature: '',
   };
+  return { ...voucher, signature: signWithPrivateKeyDer(payerKey.privateKeyDer, paymentVoucherSigningBytes(unsignedVoucher(voucher))).toString('base64') };
 }
 
 // -------------------------------------------------------------------- driver
@@ -202,6 +207,8 @@ export async function runTwoPeerCommerce(
         meshSize: launcher.slots.length,
         channelId: CHANNEL_ID,
         escrowMicros: escrowMicros.toString(),
+        payer: PAYER,
+        payerPubkeyBase64: payerKey.pubkeyBase64,
       };
       return slot.launch(cfg);
     });
@@ -461,6 +468,9 @@ export async function runTwoPeerCommerce(
       config,
       channel: createPaymentChannel(CHANNEL_ID, 'evm-x402', escrowMicros),
       vouchers: [voucherA],
+      verifySignature: (voucher) => verifyPaymentVoucherSignature(voucher, {
+        channelId: CHANNEL_ID, payer: PAYER, pubkeyBase64: payerKey.pubkeyBase64,
+      }),
       nowMs: 0,
       settlementId: `settle-${createHash('sha256').update(voucherA.usageNonce).digest('hex').slice(0, 12)}`,
       splitManifest: split,

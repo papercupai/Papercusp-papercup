@@ -29,12 +29,14 @@
  *
  * Pure + cached; unit-testable with no DB.
  */
-import Ajv2020 from 'ajv/dist/2020';
+import Ajv2020 from 'ajv/dist/2020.js';
 import type { ErrorObject, ValidateFunction } from 'ajv';
+import addFormats from 'ajv-formats';
 
 // One instance; compiled validators cached by serialized schema. A workspace's
 // declared schemas are few and stable, so this avoids recompiling per call.
 const ajv = new Ajv2020({ allErrors: true, strict: false });
+addFormats(ajv);
 const cache = new Map<string, ValidateFunction>();
 
 /** Compile (or reuse) a validator for `schema`. Throws on a malformed schema. */

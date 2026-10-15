@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Graphics Path pinned native source attribution delivery",
+  "framework": "operational",
+  "command": [
+    "make test-android-library-notices",
+    "android/gradlew -p android --console=plain :app:compileDebugAndroidTestKotlin -x :app:generateUniFfiKotlin",
+    "android/gradlew -p android --console=plain :app:generateReleaseResources -x :app:generateUniFfiKotlin",
+    "android/gradlew -p android --console=plain :app:mergeReleaseResources -x :app:generateUniFfiKotlin"
+  ],
+  "workingDirectory": "papercup-rust-mobile",
+  "startedAt": "2026-10-03T05:17:32+00:00",
+  "finishedAt": "2026-10-03T05:20:10.299122+00:00",
+  "timestampSource": "New retained metadata log creation time through final resource log modification time; all four actual command shell envelopes exited0.",
+  "exitCode": 0,
+  "summary": "Pinned29file upstream Graphics Path subtree verified against Git blob IDs; four Maven Kotlin source matches; ten native source/header comments supply four complete attribution blocks. Actual debug/release graphs retained eight offline supplements through cached add/remove transitions, rejecting29 damaged controls per variant/phase. Original Apache label retained. Native eight-text guard compiled and exact release JSON compiled byte-identically; no native execution or new APK.",
+  "scope": "Local pinned source comparison, selected attribution generation, release resource and native-test compilation only. No exact native binary/source equivalence, complete native/model/Rust rights or notice census, source-recipient retrieval, signed candidate, current paired hosted CI, physical phone or Play acceptance.",
+  "mobileCommitAtCapture": "09527c5cab6cfee4d9579421ff0bd08b25b299ca",
+  "sourceFiles": [
+    {
+      "path": "papercup-rust-mobile/android/config/SOURCES.json",
+      "sha256": "11a61155edf9c2c1f8fee2f29b0b12d17a0ed07444d59af8358598c0c90e195b"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/licenses/graphics-path-notice.json",
+      "sha256": "60f2986a9aac672d0f7e71c24205f44dfd07f963fc7bf9e93f1c2a22355ef157"
+    },
+    {
+      "path": "papercup-rust-mobile/android/config/libraries/graphics-path-notice.json",
+      "sha256": "70a1e16e9a791545c792e701ecd418a731a0d685585a29874afe34a52c6e94ee"
+    },
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "d064b2019ab542e93f13ec5a11d66ca6440dac7e3b805c363fc8596b6b56a446"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/src/androidTest/kotlin/com/papercuspai/operator/mobile/LibraryNoticesScreenTest.kt",
+      "sha256": "483a05c366ad8461e7810325b848b43cd3dd51ea480f28581092ff4ca9106c39"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build.gradle.kts",
+      "sha256": "0f3517b0b3668789876e7d5dea15c6b5543222836dbce9177547b8550ec3e5f4"
+    }
+  ],
+  "testFiles": [
+    {
+      "path": "papercup-rust-mobile/tools/tests/android-library-notices-test.sh",
+      "sha256": "d064b2019ab542e93f13ec5a11d66ca6440dac7e3b805c363fc8596b6b56a446"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "pinned-upstream-tree",
+      "passed": true,
+      "evidence": "29 archive files matched exact upstream Git blob IDs at8a05a22af450d589ef911d772a001a49dcb05b71;12 native source/build files including10 Apache-commented C++/headers."
+    },
+    {
+      "id": "maven-kotlin-source-comparison",
+      "passed": true,
+      "evidence": "All four Kotlin files in published1.0.1 sourceJAR match pinned subtree; no native binary/source equivalence inferred."
+    },
+    {
+      "id": "derived-attribution-text",
+      "passed": true,
+      "evidence": "Four distinct complete native comments concatenate to SHA09700dee0f298c3bde3435f539010e7f1b7ed50339a144d8907cd49094232a4b; source ledger pins10 full-file/header hashes and extraction rule."
+    },
+    {
+      "id": "variant-graphs-and-damaged-controls",
+      "passed": true,
+      "evidence": "Actual release221/222/221 and debug227/228/227 modules/records;8 exact texts and29 rejecting controls in each variant/phase; originalApache label retained."
+    },
+    {
+      "id": "native-guard-compile",
+      "passed": true,
+      "evidence": "Actual compileDebugAndroidTestKotlin exited0 with eighth text hash added. No native test ran."
+    },
+    {
+      "id": "compiled-release-resource",
+      "passed": true,
+      "evidence": "Actual mergeReleaseResources exited0; compiled flat resource contains one complete byte-identical rawJSON payload atoffset132."
+    }
+  ],
+  "variantTransitions": {
+    "release": [
+      221,
+      222,
+      221
+    ],
+    "debug": [
+      227,
+      228,
+      227
+    ]
+  },
+  "retainedLogs": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-graphics-path-notices-20261003.log",
+      "sha256": "178e303b5d77062dc996c3cb86d57c0ff0fe71bde9be0f39c7373e504a358aa8"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-graphics-path-native-guard-compile-20261003.log",
+      "sha256": "81550890068d05bc4f5743316b98e6b03934d1c21194799191bbc53334955562"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-graphics-path-release-resource-20261003.log",
+      "sha256": "79e1b374b42db0b1b9186a5cf67ff4f027023933c94ed1015db14cc42b4d1e04"
+    }
+  ],
+  "generatedResources": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-graphics-path-0f3d93155e66bb7a-aboutlibraries.json",
+      "sha256": "0f3d93155e66bb7a5a11ef805425b13935181f307d9deb9d2267bc6f58615fc9"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/ci-evidence/p007-graphics-path-a414c50b3fc063af-raw_aboutlibraries.json.flat",
+      "sha256": "a414c50b3fc063af767ebf2f0929b9eb6c4a4c179c79b0010a892350db131459"
+    }
+  ],
+  "upstreamEvidence": [
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/graphics-path-SOURCE-MATCH.json",
+      "sha256": "1f5049792febb83f520533a4285dd5742aa02fd3ef44b9872ad33de9c4691703"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/graphics-path-1.0.1-upstream.tar.gz",
+      "sha256": "7437f80f2b35aed4341f482064aa69d0108c4035769537b9430fc11bc0cb8027"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/androidx.graphics.graphics-path-1.0.1-sources.jar",
+      "sha256": "9f1b5995b9577a8876525c3411ebb2a49f9ef0e875f6aec3059e807596dc6ca6"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/graphics-path-LICENSE.txt",
+      "sha256": "809fa1ed21450f59827d1e9aec720bbc4b687434fa22283c6cb5dd82a47ab9c0"
+    },
+    {
+      "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-android-dependency-sources/graphics-path-native-NOTICE.txt",
+      "sha256": "09700dee0f298c3bde3435f539010e7f1b7ed50339a144d8907cd49094232a4b"
+    }
+  ],
+  "unchangedHistoricalArtifact": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-exported-app-debug-3c5c6ce622404f7faf827f30ecb5fec6.apk",
+    "sha256": "81bfbe9ff235dfc8480211b8974041c30a293b1629d85d6617d3bbab9bb8a3db"
+  },
+  "unchangedBuildReceipt": {
+    "path": "papercup-rust-mobile/android/app/build/outputs/papercusp-source-build-android-apk-c0adc01280f54ac1.json",
+    "sha256": "c0adc01280f54ac134518efd6a2fe27a6a4bafa847feee59fea08c052624bb52"
+  },
+  "limitations": [
+    "Original tested exported debug APK still has its original five texts; no APK/native/Rust rebuild or settled proof replay.",
+    "Pinned upstream source/header attribution is a derived selected reference, not an original NOTICE file or proof that this source built the Maven native binary.",
+    "Complete candidate notice/rights/source-recipient/provider/reviewer/current paired CI/phone/Play requirements and four pending Avi asks remain open."
+  ]
+}

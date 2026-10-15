@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   isScoredRecord,
+  isSettledRecord,
+  settledTrials,
   readRunResults,
   appendRunResult,
   scoredTrials,
@@ -97,4 +99,22 @@ describe('scoredTrials + missingTrials (the resume plan)', () => {
   });
 
   it('rejects k < 1', () => expect(() => missingTrials(['a'], 0, records)).toThrow());
+});
+
+// Plan benchmark-coverage-frontierswe-v2-2026-10-10 D-008 (P-020): an integrity-invalid trial is settled,
+// never re-run — re-rolling it until a clean attempt appears would launder the tampering.
+describe('invalid (tampered) trials are terminal on resume', () => {
+  const tampered = rec({ instanceId: 'a', seed: 0, graderStatus: 'invalid', score: null, resolved: null });
+  it('is not a scored record, but is settled', () => {
+    expect(isScoredRecord(tampered)).toBe(false);
+    expect(isScoredRecord({ ...tampered, score: 1, resolved: true })).toBe(false); // a stray verdict never scores
+    expect(isSettledRecord(tampered)).toBe(true);
+    expect(isSettledRecord(rec({ graderStatus: 'error', score: null, resolved: null }))).toBe(false);
+  });
+  it('is excluded from scoredTrials yet removed from the resume plan', () => {
+    expect(scoredTrials([tampered]).get('a')).toBeUndefined();
+    expect(settledTrials([tampered]).get('a')).toEqual(new Set([0]));
+    expect(missingTrials(['a'], 2, [tampered])).toEqual([{ instanceId: 'a', seeds: [1] }]);
+    expect(isRunComplete(['a'], 1, [tampered])).toBe(true);
+  });
 });

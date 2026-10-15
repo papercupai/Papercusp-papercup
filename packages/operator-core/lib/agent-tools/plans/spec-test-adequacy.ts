@@ -1,7 +1,18 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
-import { repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
-import { SPEC_PROOF_OBLIGATION_ID_RE, type SpecBehaviorClass, type SpecClauseRevision } from './spec-clauses-store';
+import {
+  hasMatchingDeclaredCaseTitle,
+  hasSameCaseTitleIdentity,
+  repoFilesEvidenceMeasurementSchema,
+  SPEC_EVIDENCE_KINDS,
+} from './spec-evidence-store';
+import { readMeasurementPin } from './evidence-measurement-pin';
+import {
+  SPEC_PROOF_OBLIGATION_ID_RE,
+  SPEC_TARGET_ID_RE,
+  type SpecBehaviorClass,
+  type SpecClauseRevision,
+} from './spec-clauses-store';
 import type {
   EvidenceCurrentInput,
   EvidenceCurrentness,
@@ -13,7 +24,14 @@ import type {
   SpecTestAdequacyCurrentFingerprint,
   SpecTestAdequacyRerunRecipe,
 } from '../../harness/improvements/observation-types';
-import { isRecordedTestLayer } from '@papercusp/test-config/execution-details';
+import type { SourceBarTestRequirements } from './source-bar-test-requirements';
+import {
+  isRecordedCaseTitle,
+  isRecordedTestLayer,
+  MAX_RECORDED_PASSED_CASES,
+  passedCaseTitlesIncomplete,
+} from '@papercusp/test-config/execution-details';
+import { CALIBRATION_LEGS, type MutationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 
 export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
 
@@ -24,6 +42,27 @@ export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
  * pass the MCP recovery allowlist when the operator is saturated.
  */
 export const SPEC_TEST_ADEQUACY_REPLAY_LIMIT = 25;
+
+/**
+ * The evidence-row limit a persisted rerun recipe pins (WI-6554700010010541).
+ *
+ * The evaluator refuses with `evidence_selection_hit_limit` once the rows it
+ * loads reach the limit, and the exact replay loads at least every binding the
+ * card graded. A fixed 25 therefore made every clause with 25 or more bindings
+ * permanently uncertifiable: `scorecards:emit` replays the recipe and is
+ * refused every time (measured 2026-10-13 on
+ * green-main-cycle-time-2026-10-08#AUTO-BAR-R-11-P-007@3, 31 bindings).
+ *
+ * A cohort that fits keeps the critical-pressure budget. A larger cohort pins
+ * exactly one row more than its largest loaded population, so the replay stays
+ * bounded and can still load both selected and clause-wide disclosure bindings.
+ * Its judge replay is refused admission under critical
+ * pressure (a transient wait), rather than the card being impossible.
+ */
+export function specTestAdequacyReplayLimit(gradedRows: number): number {
+  const rows = Number.isSafeInteger(gradedRows) && gradedRows > 0 ? gradedRows : 0;
+  return rows < SPEC_TEST_ADEQUACY_REPLAY_LIMIT ? SPEC_TEST_ADEQUACY_REPLAY_LIMIT : rows + 1;
+}
 
 export const PLAN_CLASS_RUBRIC_REFS = [
   'plan-class-feature-ship',
@@ -104,11 +143,65 @@ export interface SpecEvidenceForAdequacy {
   };
   coverageEvidenceRef: number | null;
   testRunId: number | null;
+  /** Store-owned citation and author, never details supplied by a binder. */
+  verifiesBindingId?: number;
+  createdBy?: string;
+  /** Certified by the shared reader from stored citations, pins and lineage. */
+  fixtureAbsenceVerification?: { verifierBindingIds: number[] };
   /** Canonical ledger attributes, independent of author-written evidenceRef prose. */
   testRunProvenance?: {
     filePath: string;
+    /** Canonical runner framework; an LLM scenario is never inferred from binder metadata. */
+    framework?: string | null;
+    /** Server-owned test_runs.source, independent of details written by the binding author. */
+    source?: string | null;
+    /** Server-parsed phase from test_runs.execution_details. */
+    mutationPhase?: string | null;
+    /** Reporter-written descriptor and its server-read calibration row, never binder metadata. */
+    mutation?: MutationDescriptor;
+    mutationBaseline?: {
+      testRunId: number;
+      status: string | null;
+      mutation: MutationDescriptor;
+      passed: number;
+      failed: number;
+      skipped: number;
+      collectionFailed: boolean;
+      /** Canonical calibration-row identities, independent of binder declarations. */
+      passedCaseTitles?: string[];
+      passedCaseTitlesIncomplete?: boolean;
+    } | null;
     commitSha: string | null;
     worktreeDirty: boolean | null;
+    /**
+     * Server-derived failure lines of a failed mutation-probe test run, in the ledger reporter's
+     * `<case full name>: <message>` format (admin-test-runs-reporter `buildOutputTail`, one line
+     * per failed case). A declared `adequacy.testCases` entry is a measured failed case only when
+     * a line starts with exactly `<entry>: ` — never parsed out of free text (WI-10006745).
+     */
+    mutationFailureLines?: string[];
+    /**
+     * The failed mutant run's recorded failed-case identities (execution_details.failedCaseTitles,
+     * TestCase.fullName). When present, a declared case is measured only by EXACT membership —
+     * prefix-matching `mutationFailureLines` would let `suite > a` claim a failed `suite > a: b`
+     * (WI-10006753). Absent on legacy rows, which keep the line-prefix fallback.
+     */
+    mutationFailedCaseTitles?: string[];
+  } | null;
+  /** Server-parsed counters for the bound test_runs row; null means its details were absent or invalid. */
+  testRunExecution?: {
+    status?: string | null;
+    passed: number;
+    failed: number;
+    skipped: number;
+    collectionFailed: boolean;
+    testLayer?: string;
+    passedCaseTitles?: string[];
+    /** Derived from the explicit marker or the legacy 64-title/count signal. */
+    passedCaseTitlesIncomplete?: boolean;
+    /** Retained from the canonical LLM recorder, not converted into Vitest titles. */
+    scenarioId?: string;
+    filePath?: string;
   } | null;
   details: Record<string, unknown>;
   observedAt?: string;
@@ -117,6 +210,24 @@ export interface SpecEvidenceForAdequacy {
   /** True when evidenceRef resolves to a provisional scorecard working note. */
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
+  /** Binding rows whose same-proof coverage metadata was preserved on this active row. */
+  supportingBindingIds?: number[];
+}
+
+function logicalEvidenceReferenceKey(row: SpecEvidenceForAdequacy): string {
+  return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
+}
+
+function proofIdentity(row: SpecEvidenceForAdequacy): string {
+  return JSON.stringify([
+    row.testRunId ?? null,
+    row.coverageEvidenceRef ?? null,
+    row.fingerprints.sourceFingerprint ?? null,
+    row.fingerprints.testFingerprint ?? null,
+    row.fingerprints.fixtureFingerprint ?? null,
+    row.fingerprints.rubricFingerprint ?? null,
+    row.fingerprints.environmentFingerprint ?? null,
+  ]);
 }
 
 function hasTestAttemptReference(row: SpecEvidenceForAdequacy): boolean {
@@ -155,7 +266,13 @@ export function latestLogicalEvidence<T extends SpecEvidenceForAdequacy>(rows: r
     return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
   };
   rows.forEach((row, index) => {
-    const key = [row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef].join('\0');
+    // A mutation target is a distinct claim even when bindings cite the same
+    // mutant run. Keep each target so measured failed cases can corroborate them
+    // independently instead of letting the newest target replace its sibling.
+    const targeted = row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample'
+      ? detailsOf(row).targeted ?? null
+      : null;
+    const key = JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef, targeted]);
     const prior = selected.get(key);
     if (!prior) {
       selected.set(key, { row, index });
@@ -266,7 +383,53 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     if (!previous || row.id! < previous.id) anchors.set(key, { id: row.id!, scope });
   }
   const latest = latestLogicalEvidence(rows);
-  const candidates = latest.map((row) => {
+  const byReference = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = logicalEvidenceReferenceKey(row);
+    const bucket = byReference.get(key) ?? [];
+    bucket.push(row);
+    byReference.set(key, bucket);
+  }
+  // Scenario, causal-pair, and test-case ids are set-valued coverage metadata. When a re-bind
+  // changes only that metadata, the newest immutable row must retain the union from
+  // earlier rows for the same proof; otherwise latestLogicalEvidence silently hides
+  // coverage the unchanged run already established. A new run or changed fingerprint
+  // remains a new proof identity and starts a new metadata set.
+  const reconciled = latest.map((row) => {
+    const rawAdequacy = row.details.adequacy;
+    if (
+      rawAdequacy !== undefined &&
+      (!rawAdequacy || typeof rawAdequacy !== 'object' || Array.isArray(rawAdequacy))
+    ) return row;
+    const adequacy = (rawAdequacy ?? {}) as Record<string, unknown>;
+    const ownDetails = detailsOf(row);
+    const sameProofRows = (byReference.get(logicalEvidenceReferenceKey(row)) ?? [row])
+      .filter((candidate) => proofIdentity(candidate) === proofIdentity(row));
+    const mergedAdequacy = { ...adequacy };
+    let changed = false;
+    for (const key of ['scenarioIds', 'causalPairIds', 'testCases'] as const) {
+      if (ownDetails.contractMetadataIssues?.includes(`${key}:invalid`)) continue;
+      const values = [...new Set(sameProofRows.flatMap((candidate) => {
+        const details = detailsOf(candidate);
+        return details.contractMetadataIssues?.includes(`${key}:invalid`) ? [] : details[key] ?? [];
+      }))].sort((a, b) => a.localeCompare(b));
+      const own = ownDetails[key] ?? [];
+      if (JSON.stringify(values) === JSON.stringify(own)) continue;
+      if (values.length === 0) continue;
+      mergedAdequacy[key] = values;
+      changed = true;
+    }
+    if (!changed) return row;
+    const supportingBindingIds = [...new Set(sameProofRows
+      .map((candidate) => candidate.id)
+      .filter((id): id is number => Number.isSafeInteger(id) && id! > 0))].sort((a, b) => a - b);
+    return {
+      ...row,
+      details: { ...row.details, adequacy: mergedAdequacy },
+      ...(supportingBindingIds.length > 1 ? { supportingBindingIds } : {}),
+    };
+  });
+  const candidates = reconciled.map((row) => {
     const scope = identity(row);
     const anchor = anchors.get(logicalKey(row));
     // An annotation cannot change the registered proof's identity or source scope.
@@ -292,7 +455,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     )
       superseded.add(candidate.row);
   }
-  return latest.filter((row) => !superseded.has(row));
+  return reconciled.filter((row) => !superseded.has(row));
 }
 
 export type SpecEvidenceLineage = 'durable' | 'ephemeral' | 'unknown';
@@ -304,6 +467,7 @@ export interface SpecEvidenceLineageAssessment {
 
 interface AdequacyDetails {
   fixtureCalibrated?: boolean;
+  fixtureFree?: boolean;
   falsifiable?: boolean;
   testLayer?: string;
   pathReachable?: boolean;
@@ -316,6 +480,7 @@ interface AdequacyDetails {
   coverageRungs?: Partial<Record<'l1' | 'l2' | 'l3' | 'l4', boolean>>;
   scenarioIds?: string[];
   causalPairIds?: string[];
+  testCases?: string[];
   contractMetadataIssues?: string[];
   provisionalProofBase?: boolean;
   /**
@@ -382,7 +547,6 @@ const HIGH_RISK_BEHAVIOR_CLASSES = new Set<SpecBehaviorClass>([
 // proof, while only the ordinary test outcomes below count as repaired proof.
 const SUCCESS_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded', 'killed', 'caught']);
 const REPAIRED_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded']);
-const FAILURE_OUTCOMES = new Set(['fail', 'failed', 'error', 'timed-out', 'timeout', 'survived']);
 const EXECUTABLE_EVIDENCE_KINDS = new Set<SpecEvidenceKind>([
   'test',
   'coverage-census',
@@ -398,9 +562,27 @@ const EXECUTABLE_EVIDENCE_KINDS = new Set<SpecEvidenceKind>([
  * weak/stale/failing row keeps a criterion blocked beside newer proof until it is withdrawn.
  */
 export const SUPERSEDE_DRAGGING_SUGGESTION =
-  'The dragging binding ids are listed in draggingBindingIds. If newer bound proof already establishes this clause, ' +
-  're-bind that proof with plans:bind-spec-evidence { supersedeAtRevision:true } (retracts the other live rows of the ' +
-  'same kind at this revision) or retract the named ids with a reason; otherwise re-run the proof.';
+  "The dragging binding ids are listed in this row's draggingBindingIds (beside ratings, keyed by criterion). If newer bound proof already establishes this clause, " +
+  're-bind that proof with plans:bind-spec-evidence { supersedeAtRevision:true } (retracts only same-kind rows of the ' +
+  "same test file that claim no other target or causal pair; other files' and seams' rows stay live and are listed in " +
+  'supersession[].kept) or retract the named ids with a reason; otherwise re-run the proof.';
+// EI-25220306060165214 / review-system-rework-reduction-2026-09-23#D-046: supersession is scoped
+// to the superseding row's proof subject, so this advice can no longer cost a sibling file's proof.
+
+/**
+ * EI-25215634977268694: the freshness repair when current proof sits beside the stale rows but
+ * NONE of it may supersede them. `supersedeAtRevision` retracts only rows of the superseding
+ * binding's own evidenceKind, and only a successful ledger-backed executable binding may
+ * supersede (`supersedeEligibilityGaps`, D-011). Offering it for, e.g., live operational
+ * evidence with no testRunId sends the binder into a call whose `supersession[]` comes back
+ * `refused` while the clause stays blocked — measured on P-011's R-34..R-37, where every
+ * re-bind returned ok and freshness still failed until an explicit retract.
+ */
+export const RETRACT_DRAGGING_SUGGESTION =
+  "The dragging binding ids are listed in this row's draggingBindingIds.freshness (beside ratings). The current proof " +
+  "beside them cannot supersede them: supersedeAtRevision retracts only rows of the superseding binding's own evidenceKind, " +
+  'and only a successful ledger-backed executable binding (testRunId or coverageEvidenceRef) may supersede. Withdraw the ' +
+  'stale ids with plans:bind-spec-evidence { retract:[{ bindingId, reason }] }, or re-run the stale proof with a ledger reference.';
 
 /**
  * P-019: make the ledger requirement discoverable where the refusal lands. falsifiability,
@@ -413,16 +595,71 @@ export const LEDGER_PROOF_HINT =
   'scripts/mutation-probe.sh with PAPERCUSP_TEST_RUN_HARNESS set records source=mutation-probe rows ' +
   "(listed only by testing:runs { source:'mutation-probe' }).";
 
-const DURABLE_WORK_ITEM_REF_RE = /\b(?:WI|EI|F)-\d+\b/i;
+/**
+ * A work-item id anchors a binding only when it IS the reference: its first
+ * token, optionally after a typed-prefix chain (`scorecard:EI-…`,
+ * `testing:run :: WI-…`), a tool-call verb (`work_items:get WI-…`), or a
+ * hyphen-joined kind (`work-item-thread-WI-…#post-…`). An id mentioned inside
+ * prose (`LIVE PLANE RE-VERIFICATION … (su-…, WI-…)`) names who did the work,
+ * not where the proof can be re-run, and must not make the row durable
+ * (WI-10005325).
+ */
+const DURABLE_WORK_ITEM_REF_RE =
+  /^(?:[a-z][\w-]*\s*:{1,2}\s*)*(?:[a-z][\w-]*:[a-z][\w-]*\s+)?(?:[a-z][a-z-]*-)?(?:WI|EI|F)-\d+\b/i;
+/**
+ * Directories whose files another evaluator cannot find again: every plain
+ * directory the repo-root .gitignore ignores, plus nested scratch and temp
+ * roots. PINNED: spec-test-adequacy.test.ts fails when .gitignore ignores a
+ * plain directory missing from this list, so a new ignored root cannot
+ * silently grade durable. Shared by the relative and absolute file rules so one
+ * spelling of a path is never durable while the other is not.
+ */
+export const EPHEMERAL_EVIDENCE_ROOTS: readonly string[] = [
+  '.papercusp/scratch', 'var/tmp', 'tmp', 'node_modules', 'scratch', 'scratchpad', 'coverage', 'test-results',
+  'design-evidence-report', '.tmp', '.vitest-tmp', '.vitest-tmpdir', '.tsx-tmp', '.agent-tmp', '.tmp-claude',
+  '.content-fixer-tmp', '.papercusp-tmp', '.papercusp-pinned-deps', '.papercusp-smoke-snapshots', '.next',
+  '.next-prod', '.next-build-cache', '.source', '.astro', '.playwright-mcp', '.rig-sidecar-current', '.gitnexus',
+];
+/** .gitignore glob roots (`/scratch-*`, `coverage-*`) the literal list above cannot express. */
+const EPHEMERAL_GLOB_ROOTS = [String.raw`scratch-[^\/\s]*`, String.raw`coverage-[^\/\s]*`];
+const EPHEMERAL_FILE_ROOT = `(?:${[
+  ...EPHEMERAL_EVIDENCE_ROOTS.map((root) => root.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')),
+  ...EPHEMERAL_GLOB_ROOTS,
+].join('|')})\\/`;
+/**
+ * A repo-relative file path. Durability is DERIVED, not hand-listed
+ * (WI-6554700010008517): any relative path is a rerun anchor unless it sits
+ * under an ephemeral root, the same rule DURABLE_ABSOLUTE_FILE_REF_RE applies
+ * to absolute paths. The old allowlist (apps|packages|libs|scripts|src|lib|
+ * test|tests|bin|docs|rubrics) graded a committed `reports/…` or
+ * `papercusp-desktop/…` file 'unknown' while the same file spelled absolutely
+ * graded 'durable'. A leading all-digit segment is refused so `host:3170/x.json`
+ * is not read as a path.
+ */
+const REPO_RELATIVE_FILE = String.raw`(?:\.\.\/|\.\/)?(?!${EPHEMERAL_FILE_ROOT})(?!\d+\/)[a-z0-9_@.][\w.@-]*\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)`;
+/**
+ * A repo file that LEADS the reference is a rerun anchor even when prose
+ * follows it (`apps/…/x.test.ts — 21 passed @ b97d892c71`). DURABLE_FILE_REF_RE
+ * already accepts a path followed by `#`/`:` and any text; this accepts the
+ * same path followed by whitespace, `,` or `;`.
+ */
+const DURABLE_LEADING_FILE_REF_RE = new RegExp(
+  String.raw`^(?:(?:file|path|repo-file):(?:\/\/)?)?${REPO_RELATIVE_FILE}(?=[\s,;#:]|$)`,
+  'i',
+);
 const DURABLE_ARTIFACT_REF_RE =
   /\b(?:artifact|artifact[-_ ]?ref|artifact[-_ ]?id)\s*(?:[:/#=]|\s+)\s*[a-z0-9][^\s,;]*/i;
 const DURABLE_TEST_RUN_REF_RE =
   /\b(?:test[-_ ]?run|testing[-_ ]?run)(?:[-_ ]?id)?\s*(?:[-:/#=]|\s+)\s*[a-z0-9][^\s,;]*/i;
 const DURABLE_COVERAGE_REF_RE = /\bcoverage(?:[-_ ]?(?:evidence|run))(?:[-_ ]?id)?\s*[:/#=]\s*\d+\b/i;
-const DURABLE_FILE_REF_RE =
-  /(?:^|[\s:(])(?:(?:file|path|repo-file):(?:\/\/)?|(?:\.\.\/|\.\/)?)(?:apps|packages|libs|scripts|src|lib|test|tests|bin|docs|rubrics)\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?:[#:].*)?$/i;
-const DURABLE_ABSOLUTE_FILE_REF_RE =
-  /^(?!\/?(?:tmp|var\/tmp)(?:\/|$))\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?:[#:].*)?$/i;
+const DURABLE_FILE_REF_RE = new RegExp(
+  String.raw`(?:^|[\s:(])(?:(?:file|path|repo-file):(?:\/\/)?)?${REPO_RELATIVE_FILE}(?:[#:].*)?$`,
+  'i',
+);
+const DURABLE_ABSOLUTE_FILE_REF_RE = new RegExp(
+  String.raw`^(?!\/?(?:tmp|var\/tmp)(?:\/|$))(?![^\s,;]*\/${EPHEMERAL_FILE_ROOT})\/[^\s,;]+\.(?:[cm]?[jt]sx?|json|sql|rs|mdx?|sh)(?:[#:].*)?$`,
+  'i',
+);
 
 function ephemeralEvidenceRefReason(evidenceRef: string): string | null {
   const normalized = evidenceRef.trim().replaceAll('\\', '/');
@@ -453,6 +690,7 @@ export function classifySpecEvidenceLineage(
     DURABLE_TEST_RUN_REF_RE.test(evidenceRef) ||
     DURABLE_COVERAGE_REF_RE.test(evidenceRef) ||
     DURABLE_FILE_REF_RE.test(evidenceRef) ||
+    DURABLE_LEADING_FILE_REF_RE.test(evidenceRef) ||
     DURABLE_ABSOLUTE_FILE_REF_RE.test(evidenceRef)
   ) {
     return { lineage: 'durable', reason: 'explicit durable evidence reference' };
@@ -473,6 +711,100 @@ function disclosedGapList(value: unknown): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
+  /\b(?:leg|portion|part|subset|subsection|path|scenario)\b[^.;]{0,60}(?<!\b(?:read|write|append|ledger)-)\b(?:only|just)\b/i,
+  // A mutation can change only the coverage result/field without limiting the
+  // proof. Keep the noun "coverage" restrictive when it describes the proof,
+  // while leaving separate omitted-behavior statements and explicit gap fields
+  // enforceable even when they accompany technical field descriptions.
+  // Qualified test nouns (test/fixture, test\\fixture, test.ts) in an input
+  // inventory are not testing verbs. Real coverage statements beside them
+  // still match, and explicit disclosedGap fields bypass this heuristic.
+  // Technical modifiers such as read-only and ledger-only describe the mechanism,
+  // not an outstanding proof limitation. Separate scope claims in the same prose
+  // and explicit gap fields must still be enforced (EI-25719594988320201).
+  /(?<!\b(?:read|write|append|ledger)-)\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed)?|test(?:s|ed|ing)?(?![/\\]|\.[A-Za-z])|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage(?!\s+(?:result|field|flag|value|record|metadata)\b))\b/i,
+  /\b(?:does not|doesn't|did not|didn't|has not|hasn't|is not|isn't|are not|aren't)\b[^.;]{0,60}\b(?:cover|test|exercise|verify|validate|address|include)\b/i,
+  /\b(?:outside|out of)\s+(?:the\s+)?(?:scope|coverage)\b|\bnot\s+(?:covered|tested|exercised|verified|validated|addressed)\b/i,
+  /\b(?:remains?|is|are)\s+(?:a\s+)?separate\s+(?:requirement|integration|validation|work|proof)\b/i,
+  /\b(?:remaining|other|rest|cutover)\b[^.;]{0,100}\b(?:mapped|assigned|tracked|covered|handled|addressed)\b[^.;]{0,60}\b(?:P-\d{3,}|[A-Z][A-Z0-9-]*-\d+)\b/i,
+  /\bnot\s+(?:the\s+)?whole\b[^.;]{0,60}\b(?:proof|behavior|coverage|operational adoption)\b/i,
+  /\b(?:behavior|scope parity|cancellation|retirement|proposal routing)\b[^.;]{0,100}\b(?:requires?|needs?)\b[^.;]{0,60}\b(?:proof|bindings)\b/i,
+  // Provisional component notes can explicitly leave the composite proof pending
+  // without using "only" or "not covered". Parent shipment bookkeeping is a
+  // separate plane; require proof/coverage or clause/composite acceptance here.
+  /\b(?:proof|coverage|(?:clause|composite)\s+acceptance)\b[^.;]{0,60}\b(?:remains?|is|are)\s+(?:pending|incomplete|unproven|unverified)\b/i,
+  /\bdisclosures?\b[^.;]{0,40}\b(?:remains?|is|are)\s+(?:live|open|unresolved)\b/i,
+];
+
+// Evidence-ledger replacement scope is operational bookkeeping, not a claim about
+// which behavior the proof covers. Strip only that clause before applying the broad
+// prose heuristic so a separate proof limitation in the same note remains visible.
+const EVIDENCE_SUPERSESSION_SCOPE_PATTERN =
+  /\b(?:replace|replaces|replaced|replacing|supersede|supersedes|superseded|superseding|rebind|rebinds|rebound|retract|retracts|retracted|retracting)\b[^.;]{0,120}\b(?:only|just)\b[^.;]{0,100}\b(?:in|within|on|at)\s+(?:the\s+)?same\s+test\s+subject\b/gi;
+
+// "Links only when the tested diff contains the fix" describes a production
+// safety condition, not a restriction on which cases were tested. Remove only
+// the logical qualifier after a behavior verb; other limitations in the same
+// observation and explicit disclosedGap fields still participate normally.
+const BEHAVIOR_GUARD_CONDITION_PATTERN =
+  /(\b(?:links?|admits?|merges?|allows?|permits?|publishes?|dispatch(?:es)?|accepts?|rejects?)\b[^.;]{0,100}\b)only(\s+(?:when|if)\b)/gi;
+
+/** Only observations with explicit coverage-boundary language count as disclosures. */
+function explicitCoverageLimitations(value: unknown): string[] {
+  const raw = typeof value === 'string'
+    ? [value]
+    : Array.isArray(value)
+      ? value
+      : value && typeof value === 'object'
+        ? ['scope', 'proofScope', 'notes'].flatMap((key) => {
+            const entry = (value as Record<string, unknown>)[key];
+            return typeof entry === 'string' || Array.isArray(entry) ? (Array.isArray(entry) ? entry : [entry]) : [];
+          })
+        : [];
+  return [
+    ...new Set(
+      raw
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter((entry) => {
+          if (entry.length === 0) return false;
+          const coverageProse = entry
+            .replace(EVIDENCE_SUPERSESSION_SCOPE_PATTERN, ' ')
+            .replace(BEHAVIOR_GUARD_CONDITION_PATTERN, '$1$2');
+          return EXPLICIT_COVERAGE_LIMITATION_PATTERNS.some((pattern) => pattern.test(coverageProse));
+        }),
+    ),
+  ];
+}
+
+/** Free-form metadata cannot hide a live proof gap by moving it out of scopeNote. */
+function metadataCoverageLimitations(details: Record<string, unknown>): string[] {
+  const gaps: string[] = [];
+  const pending: Array<{ value: unknown; disclosure: boolean; explicitGap: boolean }> = [
+    { value: details, disclosure: false, explicitGap: false },
+  ];
+  const seen = new WeakMap<object, number>();
+  while (pending.length > 0) {
+    const { value, disclosure, explicitGap } = pending.pop()!;
+    if (typeof value === 'string') {
+      if (explicitGap) gaps.push(...disclosedGapList(value));
+      else if (disclosure) gaps.push(...explicitCoverageLimitations(value));
+      continue;
+    }
+    if (!value || typeof value !== 'object') continue;
+    const mode = explicitGap ? 2 : disclosure ? 1 : 0;
+    if ((seen.get(value) ?? -1) >= mode) continue;
+    seen.set(value, mode);
+    for (const [key, child] of Object.entries(value)) {
+      pending.push({ value: child,
+        disclosure: disclosure || /disclos|boundary|gap|limitation/i.test(key),
+        explicitGap: explicitGap || /^(?:disclosedGap|limitation|limitations)$/i.test(key) });
+    }
+  }
+  return [...new Set(gaps)];
+}
+
 function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   const nested = evidence.details.adequacy;
   // A disclosure is read from BOTH the nested adequacy block and the top level.
@@ -480,12 +812,24 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   // who writes `details.disclosedGap` gets no error — reading only the nested
   // spelling would silently drop exactly the disclosure this criterion exists to
   // catch (EI-22953893504383574 is the same trap for the other adequacy keys).
-  const topLevelGap = disclosedGapList((evidence.details as Record<string, unknown>).disclosedGap);
+  const topLevelDetails = evidence.details as Record<string, unknown>;
+  // details is free-form, so explicit limitation fields are author disclosures too.
+  const topLevelGap = [
+    ...disclosedGapList(topLevelDetails.disclosedGap),
+    ...disclosedGapList(topLevelDetails.limitation),
+    ...disclosedGapList(topLevelDetails.limitations),
+  ];
+  const observationGaps = [
+    ...explicitCoverageLimitations(topLevelDetails.observations),
+    ...explicitCoverageLimitations(topLevelDetails.scopeNote),
+    ...metadataCoverageLimitations(topLevelDetails),
+  ];
   if (!nested || typeof nested !== 'object' || Array.isArray(nested)) {
-    return topLevelGap.length > 0 ? { disclosedGap: topLevelGap } : {};
+    const disclosedGap = [...new Set([...topLevelGap, ...observationGaps])];
+    return disclosedGap.length > 0 ? { disclosedGap } : {};
   }
   const raw = nested as Record<string, unknown>;
-  const disclosedGap = [...new Set([...topLevelGap, ...disclosedGapList(raw.disclosedGap)])];
+  const disclosedGap = [...new Set([...topLevelGap, ...disclosedGapList(raw.disclosedGap), ...observationGaps])];
   const bool = (key: string): boolean | undefined =>
     typeof raw[key] === 'boolean' ? (raw[key] as boolean) : undefined;
   const coverageRaw = raw.coverageRungs;
@@ -510,15 +854,29 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   };
   const scenarioIds = idList('scenarioIds');
   const causalPairIds = idList('causalPairIds');
+  let testCases: string[] | undefined;
+  if (raw.testCases !== undefined) {
+    if (
+      Array.isArray(raw.testCases) &&
+      raw.testCases.length <= MAX_RECORDED_PASSED_CASES &&
+      raw.testCases.every(isRecordedCaseTitle) &&
+      new Set(raw.testCases).size === raw.testCases.length
+    ) {
+      testCases = [...raw.testCases];
+    } else {
+      contractMetadataIssues.push('testCases:invalid');
+    }
+  }
   const targeted =
     typeof raw.targeted === 'boolean'
       ? raw.targeted
-      : typeof raw.targeted === 'string' && SPEC_PROOF_OBLIGATION_ID_RE.test(raw.targeted.trim())
+      : typeof raw.targeted === 'string' && SPEC_TARGET_ID_RE.test(raw.targeted.trim())
         ? raw.targeted.trim()
         : undefined;
   if (raw.targeted !== undefined && targeted === undefined) contractMetadataIssues.push('targeted:invalid');
   return {
     ...(bool('fixtureCalibrated') !== undefined ? { fixtureCalibrated: bool('fixtureCalibrated') } : {}),
+    ...(bool('fixtureFree') !== undefined ? { fixtureFree: bool('fixtureFree') } : {}),
     ...(bool('falsifiable') !== undefined ? { falsifiable: bool('falsifiable') } : {}),
     ...(typeof raw.testLayer === 'string' ? { testLayer: raw.testLayer } : {}),
     ...(bool('pathReachable') !== undefined ? { pathReachable: bool('pathReachable') } : {}),
@@ -539,6 +897,7 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
       : {}),
     ...(scenarioIds ? { scenarioIds } : {}),
     ...(causalPairIds ? { causalPairIds } : {}),
+    ...(testCases ? { testCases } : {}),
     ...(contractMetadataIssues.length > 0 ? { contractMetadataIssues } : {}),
     ...(evidence.provisionalProofBase === true || raw.provisionalProofBase === true
       ? { provisionalProofBase: true }
@@ -551,8 +910,48 @@ function normalizedLayer(value: string): string {
   return value.trim().toLowerCase().replaceAll('_', '-');
 }
 
+/** Older accepted bars used these provenance labels for canonical operational evidence. */
+function canonicalRequiredLayer(value: string): string {
+  const layer = normalizedLayer(value);
+  return layer === 'behavioral' || layer === 'manual-provenance' ? 'operational' : layer;
+}
+
 function clauseIdentity(clause: SpecClauseRevision): string {
   return `${clause.planSlug}/${clause.specId}@${clause.revision} (${clause.contentHash})`;
+}
+
+/**
+ * Layer coverage is clause-scoped proof. The canonical binding row identifies the
+ * selected clause by plan/spec/revision/fingerprint; its author-supplied target must
+ * independently name that exact spec. A title that happens to match a case in a
+ * different clause is not a substitute for this target.
+ */
+function bindingIdentityMatchesClause(row: SpecEvidenceForAdequacy, clause: SpecClauseRevision): boolean {
+  return row.planSlug === clause.planSlug &&
+    row.specId === clause.specId &&
+    row.specRevision === clause.revision &&
+    row.specFingerprint === clause.contentHash;
+}
+
+/**
+ * The `adequacy.targeted` spellings that name a clause ITSELF: its specId, or that id
+ * lowercased (the long-standing binder convention). ONE set for every rater: the layer,
+ * coverage-census and mutation-target rules all read it, so a binding can never target the
+ * clause for falsifiability and miss it for correct-layer (WI-6554700010008391: the exact
+ * `=== clause.specId` here rated a lowercase-targeted proof `unknown` that
+ * mutationTargetRequirement accepted).
+ */
+export function clauseSelfTargetIds(clause: { specId: string }): string[] {
+  return [...new Set([clause.specId, clause.specId.toLowerCase()])];
+}
+
+function bindingTargetsClause(row: SpecEvidenceForAdequacy, clause: SpecClauseRevision): boolean {
+  const targeted = detailsOf(row).targeted;
+  return (
+    bindingIdentityMatchesClause(row, clause) &&
+    typeof targeted === 'string' &&
+    clauseSelfTargetIds(clause).includes(targeted)
+  );
 }
 
 function clauseProbe(clause: SpecClauseRevision, harness?: string): string {
@@ -581,18 +980,90 @@ function clauseDeclarationProbe(clause: SpecClauseRevision, harness?: string): s
   );
 }
 
+const MAX_RENDERED_ADEQUACY_CASES = 8;
+
+function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<AdequacyDetails, 'testCases'>) {
+  const execution = row.testRunExecution;
+  if (!execution) return null;
+
+  const passedCaseTitles = execution.passedCaseTitles ?? [];
+  const declaredCases = Array.isArray(details.testCases)
+    ? [...new Set(details.testCases.filter((value): value is string => typeof value === 'string' && value.trim().length > 0))]
+    : [];
+  const corroborates = (caseTitle: string) => execution.testLayer === 'llm'
+    ? hasPassingLlmScenarioCase(row, caseTitle)
+    : hasMatchingDeclaredCaseTitle(caseTitle, passedCaseTitles);
+  const passedDeclaredCases = declaredCases.filter(corroborates);
+  const missingDeclaredCases = declaredCases.filter((caseTitle) => !corroborates(caseTitle));
+  const caseIdentityIncomplete = execution.testLayer !== 'llm' && execution.passedCaseTitlesIncomplete === true;
+  const unknownDeclaredCases = caseIdentityIncomplete ? missingDeclaredCases : [];
+  const confirmedMissingDeclaredCases = caseIdentityIncomplete ? [] : missingDeclaredCases;
+  const adequacyTestCases = declaredCases.length === 0
+    ? undefined
+    : declaredCases.length <= MAX_RENDERED_ADEQUACY_CASES
+      ? {
+          declared: declaredCases,
+          passed: passedDeclaredCases,
+          missing: confirmedMissingDeclaredCases,
+          ...(unknownDeclaredCases.length > 0 ? { unknown: unknownDeclaredCases } : {}),
+        }
+      : {
+          declaredCount: declaredCases.length,
+          passedCount: passedDeclaredCases.length,
+          missingCount: confirmedMissingDeclaredCases.length,
+          ...(unknownDeclaredCases.length > 0 ? { unknownCount: unknownDeclaredCases.length } : {}),
+          declaredExamples: declaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
+          passedExamples: passedDeclaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
+          missingExamples: confirmedMissingDeclaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES),
+          ...(unknownDeclaredCases.length > 0
+            ? { unknownExamples: unknownDeclaredCases.slice(0, MAX_RENDERED_ADEQUACY_CASES) }
+            : {}),
+          examplesTruncated: true,
+        };
+
+  return {
+    status: execution.status ?? null,
+    passed: execution.passed,
+    failed: execution.failed,
+    skipped: execution.skipped,
+    collectionFailed: execution.collectionFailed,
+    testLayer: execution.testLayer ?? null,
+    passedCaseTitleCount: passedCaseTitles.length,
+    ...(caseIdentityIncomplete ? { passedCaseTitlesIncomplete: true } : {}),
+    ...(execution.scenarioId !== undefined ? { scenarioId: execution.scenarioId } : {}),
+    ...(adequacyTestCases ? { adequacyTestCases } : {}),
+  };
+}
+
 function bindingDescription(row: SpecEvidenceForAdequacy): string {
   const details = detailsOf(row);
+  const evidencePlane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
   const lineage = classifySpecEvidenceLineage(row);
   // An authored reference can outlive the run it described. A dirty run cannot
   // substantiate a claim about the committed HEAD, so omit that stale clause.
   const evidenceRef = row.testRunProvenance?.worktreeDirty === true
     ? row.evidenceRef.replace(/\s*,?\s*at current HEAD\.?$/i, '')
     : row.evidenceRef;
+  const measurementPin = readMeasurementPin(row.details);
+  const renderedMeasurementPin = measurementPin
+    ? `measurementPin=${JSON.stringify({
+        repos: measurementPin.repos.map(({ repo, rootHarnessSlug, head, gitlink }) => ({
+          repo, ...(rootHarnessSlug ? { rootHarnessSlug } : {}), head, gitlink,
+        })),
+        files: measurementPin.files.map(({ path, repo, rootHarnessSlug }) => ({
+          repositoryPath: repo,
+          path: repo !== '.' && path.startsWith(`${repo}/`) ? path.slice(repo.length + 1) : path,
+          ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
+        })),
+      })}`
+    : null;
   const fields = [
     // P-019: lead with the row id so a reader can act on THIS row (retract it, or re-bind
     // over it with supersedeAtRevision) without a separate plans:get-spec-evidence hunt.
     Number.isSafeInteger(row.id) ? `id=${row.id}` : null,
+    row.supportingBindingIds && row.supportingBindingIds.length > 1
+      ? `sameProofMetadataBindingIds=${JSON.stringify(row.supportingBindingIds)}`
+      : null,
     `kind=${row.evidenceKind}`,
     `ref=${JSON.stringify(evidenceRef)}`,
     `lineage=${lineage.lineage}`,
@@ -614,14 +1085,22 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
       : null,
     row.coverageEvidenceRef !== null ? `coverageEvidenceRef=${row.coverageEvidenceRef}` : null,
     row.testRunId !== null ? `testRunId=${row.testRunId}` : null,
+    row.testRunId !== null && row.testRunExecution === null ? 'testRunLedgerExecution=unavailable' : null,
+    row.testRunId !== null && row.testRunExecution != null
+      ? 'testRunLedgerExecution=' + JSON.stringify(renderedTestRunExecution(row, details))
+      : null,
     row.testRunProvenance
       ? `testRunLedgerFile=${JSON.stringify(row.testRunProvenance.filePath)}, ` +
         `testRunLedgerCommit=${JSON.stringify(row.testRunProvenance.commitSha)}, ` +
         `testRunLedgerWorktreeDirty=${row.testRunProvenance.worktreeDirty ?? 'unknown'}`
       : null,
+    renderedMeasurementPin,
+    ...mutationProvenanceDescription(row),
     details.fixtureCalibrated !== undefined ? `fixtureCalibrated=${details.fixtureCalibrated}` : null,
+    details.fixtureFree !== undefined ? `fixtureFree=${details.fixtureFree}` : null,
     details.falsifiable !== undefined ? `falsifiable=${details.falsifiable}` : null,
     details.testLayer !== undefined ? `testLayer=${JSON.stringify(details.testLayer)}` : null,
+    typeof evidencePlane === 'string' ? `evidencePlane=${JSON.stringify(evidencePlane)}` : null,
     details.pathReachable !== undefined ? `pathReachable=${details.pathReachable}` : null,
     details.oracleIndependent !== undefined ? `oracleIndependent=${details.oracleIndependent}` : null,
     details.collected !== undefined ? `collected=${details.collected}` : null,
@@ -655,11 +1134,155 @@ function bindingSummary(rows: SpecEvidenceForAdequacy[]): string {
   }
   const maxRows = 6;
   const shown = ordered.slice(0, maxRows).map(bindingDescription).join('; ');
-  return ordered.length > maxRows ? `${shown}; +${ordered.length - maxRows} more binding(s)` : shown;
+  const omitted = ordered.slice(maxRows).map((row) =>
+    Number.isSafeInteger(row.id) ? `id=${row.id}` : `${row.evidenceKind}:${row.evidenceRef}`,
+  );
+  return omitted.length > 0
+    ? `${shown}; +${omitted.length} more binding(s) omitted: ${omitted.join(', ')}`
+    : shown;
+}
+
+function fixtureCalibrationBindingSummary(rows: SpecEvidenceForAdequacy[]): string {
+  const ordered = [...rows].sort((a, b) =>
+    `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`),
+  );
+  const shown = ordered.slice(0, 6).map((row) => {
+    const identity = Number.isSafeInteger(row.id) ? `id=${row.id}` : `${row.evidenceKind}:${row.evidenceRef}`;
+    const fixtureCalibrated = detailsOf(row).fixtureCalibrated;
+    return `${identity} fixtureCalibrated=${fixtureCalibrated ?? 'unattested'}`;
+  }).join('; ');
+  const omitted = Math.max(0, ordered.length - 6);
+  return omitted > 0 ? `${shown}; +${omitted} more binding(s) omitted` : shown;
+}
+
+function bindingNotesSummary(rows: SpecEvidenceForAdequacy[]): string {
+  const notes = rows
+    .map((row) => {
+      const note = typeof row.details.note === 'string' ? row.details.note.trim() : '';
+      if (note.length === 0) return null;
+      const excerpt = note.length > 500 ? note.slice(0, 500) + '…[truncated]' : note;
+      const id = Number.isSafeInteger(row.id) ? 'id=' + row.id + ' ' : '';
+      return id + 'note=' + JSON.stringify(excerpt);
+    })
+    .filter((note): note is string => note !== null);
+  if (notes.length === 0) return '';
+  const maxNotes = 6;
+  const shown = notes.slice(0, maxNotes).join('; ');
+  const omitted = notes.length > maxNotes ? '; +' + (notes.length - maxNotes) + ' more note(s)' : '';
+  return (
+    ' Free-form binding notes are visible for review but are not interpreted as disclosures: ' +
+    shown +
+    omitted +
+    '.'
+  );
 }
 
 function evidenceWithBindings(statement: string, rows: SpecEvidenceForAdequacy[]): string {
   return `${statement} Bound evidence: ${bindingSummary(rows)}.`;
+}
+
+/** Card prose points into one shared binding table; evaluator diagnostics stay detailed. */
+function scorecardBindingEvidence(
+  ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
+  rows: SpecEvidenceForAdequacy[],
+  rerunRecipe: SpecTestAdequacyRerunRecipe,
+): { ratings: typeof ratings; table: string } {
+  // One immutable binding can reach this presentation layer through multiple
+  // evidence projections. Their rendered descriptions may differ, but they must
+  // still share one B label in the scorecard.
+  const entries = uniqueBindingRows(rows)
+    .map((row) => [bindingDescription(row), row] as const)
+    .sort(([a], [b]) => a.localeCompare(b));
+  const references = entries.map(([description, row], index) => ({
+    description,
+    ref: Number.isSafeInteger(row.id) ? `id=${row.id}, binding=B${index + 1}` : `binding=B${index + 1}`,
+  }));
+  return {
+    ratings: Object.fromEntries(Object.entries(ratings).map(([criterion, rating]) => [criterion, {
+      ...rating,
+      evidence: references.reduce(
+        (text, binding) => text.replaceAll(binding.description, binding.ref),
+        rating.evidence,
+      ).replace(
+        ratingRerunProbeText(criterion as AdequacyCriterion, rerunRecipe),
+        ratingRerunProbeReference(criterion as AdequacyCriterion),
+      ),
+    }])) as typeof ratings,
+    table: references.length > 0
+      ? '\n\nShared binding evidence (criterion references B1, B2, ... resolve here):\n' +
+        references.map((binding) => `${binding.ref}: ${binding.description}`).join('\n')
+      : '',
+  };
+}
+
+type CorrectLayerEvidencePart = {
+  rating: AdequacyRating;
+  evidence: string;
+  statement: string;
+  bindingRows: SpecEvidenceForAdequacy[];
+  suggestion?: string;
+};
+
+function plainCorrectLayerPart(
+  rating: AdequacyRating,
+  evidence: string,
+  suggestion?: string,
+): CorrectLayerEvidencePart {
+  return {
+    rating,
+    evidence,
+    statement: evidence,
+    bindingRows: [],
+    ...(suggestion ? { suggestion } : {}),
+  };
+}
+
+function boundCorrectLayerPart(
+  rating: AdequacyRating,
+  statement: string,
+  bindingRows: SpecEvidenceForAdequacy[],
+  suggestion?: string,
+  suffix = '',
+): CorrectLayerEvidencePart {
+  return {
+    rating,
+    evidence: evidenceWithBindings(statement, bindingRows) + suffix,
+    statement: statement + suffix,
+    bindingRows,
+    ...(suggestion ? { suggestion } : {}),
+  };
+}
+
+function bindingIdentity(row: SpecEvidenceForAdequacy): string {
+  return Number.isSafeInteger(row.id)
+    ? 'id:' + row.id
+    : 'ref:' + logicalEvidenceReferenceKey(row);
+}
+
+function uniqueBindingRows(rows: SpecEvidenceForAdequacy[]): SpecEvidenceForAdequacy[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = bindingIdentity(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function correctLayerMutationExclusion(
+  evidence: SpecEvidenceForAdequacy[],
+  layerBindings: SpecEvidenceForAdequacy[],
+): string {
+  const included = new Set(layerBindings.map(bindingIdentity));
+  const excludedMutations = uniqueBindingRows(
+    evidence.filter((row) => row.evidenceKind === 'mutation' && !included.has(bindingIdentity(row))),
+  );
+  if (excludedMutations.length === 0) return '';
+  const labels = excludedMutations
+    .map((row) => Number.isSafeInteger(row.id) ? 'id=' + row.id : 'ref=' + JSON.stringify(row.evidenceRef))
+    .join(', ');
+  return ' Mutation binding(s) ' + labels +
+    ' are excluded because mutation outcomes establish falsifiability, not correct-layer path reachability.';
 }
 
 /**
@@ -691,16 +1314,337 @@ function hasExecutionLedgerReference(row: SpecEvidenceForAdequacy): boolean {
   );
 }
 
+/**
+ * Binding details and evidenceRef are claims about identity; the joined test_runs row is the
+ * authority. Older rows can predate the write-schema guard, so every executable verdict checks
+ * that these identities still name the canonical id and file.
+ */
+function canonicalTestRunIdentityGaps(row: SpecEvidenceForAdequacy): string[] {
+  const gaps: string[] = [];
+  const evidenceRef = typeof row.evidenceRef === 'string' ? row.evidenceRef : '';
+  const detailsRunValue = row.details.testRun;
+  const detailsRun = detailsRunValue !== null && typeof detailsRunValue === 'object' && !Array.isArray(detailsRunValue)
+    ? detailsRunValue as Record<string, unknown>
+    : null;
+  const hasDetailsRun = detailsRunValue !== undefined;
+  const runReference = /^test-run\s+(\d+)\b/.exec(evidenceRef);
+  const pathReference = /^test-run:(\d+):(.+)$/.exec(evidenceRef);
+  const canonicalPath = row.testRunProvenance?.filePath ?? row.testRunExecution?.filePath ?? null;
+  if (pathReference && row.testRunId != null && Number(pathReference[1]) !== row.testRunId) {
+    gaps.push('evidenceRef testRunId=' + pathReference[1] + ' differs from canonical testRunId=' + row.testRunId);
+  }
+  if (runReference && row.testRunId != null && Number(runReference[1]) !== row.testRunId) {
+    gaps.push(`evidenceRef testRunId=${runReference[1]} differs from canonical testRunId=${row.testRunId}`);
+  }
+  if (hasDetailsRun) {
+    if (!detailsRun) {
+      gaps.push('details.testRun is not an identity object');
+    } else if (row.testRunId != null && detailsRun.id != null && detailsRun.id !== row.testRunId) {
+      gaps.push(`details.testRun.id=${String(detailsRun.id ?? 'missing')} differs from canonical testRunId=${row.testRunId ?? 'missing'}`);
+    }
+    const declaredPath = typeof detailsRun?.filePath === 'string' ? detailsRun.filePath.trim() : '';
+    if (declaredPath && !canonicalPath) {
+      gaps.push('canonical test-run file path is unavailable');
+    } else if (declaredPath && canonicalPath && !testFilePathMatches(declaredPath, canonicalPath)) {
+      const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+      const cargoSourceMatches = canonicalPath.includes('::') && measurement.success &&
+        measurement.data.testPaths?.some((path) => testFilePathMatches(declaredPath, path));
+      if (!cargoSourceMatches) {
+        gaps.push(`details.testRun.filePath=${JSON.stringify(declaredPath)} differs from canonical test-run file=${JSON.stringify(canonicalPath)}`);
+      }
+    }
+    if (row.testRunId != null && row.evidenceKind !== 'test') {
+      const referencePath = evidenceRef.replaceAll('\\', '/');
+      if (runReference && (Number(runReference[1]) !== row.testRunId || !referencePath.includes(declaredPath.replaceAll('\\', '/')))) {
+        gaps.push('run-derived evidenceRef does not identify details.testRun');
+      }
+    }
+  }
+  if (row.testRunId != null && row.evidenceKind === 'test' && pathReference) {
+    const referencePath = pathReference[2]!;
+    if (!canonicalPath) {
+      gaps.push('canonical test-run file path is unavailable');
+    } else if (!testFilePathMatches(referencePath, canonicalPath)) {
+      gaps.push(`test evidenceRef=${JSON.stringify(referencePath)} differs from canonical test-run file=${JSON.stringify(canonicalPath)}`);
+    }
+  }
+  return [...new Set(gaps)];
+}
+
+/** A binder's case list is corroborated by an exact or runner-prefix-suffixed case in a passing ledger row. */
+function hasPassingLedgerCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
+  const run = row.testRunExecution;
+  return row.testRunId !== null &&
+    canonicalTestRunIdentityGaps(row).length === 0 &&
+    run != null &&
+    run.status?.toLowerCase() === 'pass' &&
+    run.passed > 0 &&
+    run.failed === 0 &&
+    run.collectionFailed === false &&
+    hasMatchingDeclaredCaseTitle(caseTitle, run.passedCaseTitles ?? []);
+}
+
+/** Mutation and counterexample baselines must remain test-run evidence. */
+function hasPassingTestBaselineCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
+  return row.evidenceKind === 'test' && hasPassingLedgerCase(row, caseTitle);
+}
+
+/** A live LLM case is identified by its exact recorded scenario, framework and executed file. */
+function hasPassingLlmScenarioCase(row: SpecEvidenceForAdequacy, scenarioId: string): boolean {
+  const run = row.testRunExecution;
+  const provenance = row.testRunProvenance;
+  return row.evidenceKind === 'test' && row.testRunId !== null &&
+    canonicalTestRunIdentityGaps(row).length === 0 &&
+    run != null && run.testLayer === 'llm' &&
+    run.status?.toLowerCase() === 'pass' && run.passed > 0 &&
+    run.failed === 0 && run.skipped === 0 && run.collectionFailed === false &&
+    typeof run.scenarioId === 'string' && run.scenarioId.length > 0 &&
+    run.scenarioId === scenarioId &&
+    provenance?.framework === 'llm-test' && provenance.worktreeDirty === false &&
+    typeof run.filePath === 'string' && run.filePath.length > 0 &&
+    run.filePath === provenance.filePath;
+}
+
+/** LLM scenarios and operational adapters retain their own canonical execution identities. */
+function hasPassingRequiredLayerCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
+  if (row.testRunExecution?.testLayer === 'llm') return hasPassingLlmScenarioCase(row, caseTitle);
+  return hasPassingTestBaselineCase(row, caseTitle) ||
+    (row.evidenceKind === 'operational' &&
+      row.testRunExecution?.testLayer === 'operational' &&
+      hasPassingLedgerCase(row, caseTitle));
+}
+
+function hasUnmatchedPassingCaseDeclaration(row: SpecEvidenceForAdequacy): boolean {
+  if (!['test', 'operational'].includes(row.evidenceKind) || row.testRunExecution?.status?.toLowerCase() !== 'pass') {
+    return false;
+  }
+  return (detailsOf(row).testCases ?? []).some((caseTitle) => !hasPassingRequiredLayerCase(row, caseTitle));
+}
+
+type MeasuredExecutionVerdict = 'pass' | 'fail' | 'unknown';
+
+/** A descriptor-bearing catch must be calibrated by this invocation's measured pass. */
+function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean {
+  const provenance = row.testRunProvenance;
+  const mutation = provenance?.mutation;
+  const baseline = provenance?.mutationBaseline;
+  const measurement = mutation === undefined
+    ? null
+    : repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+  // Descriptors use the subject's own Git root, while a multi-repository
+  // measurement uses workspace paths. Resolve only one pinned source whose
+  // repository and exact bytes agree; a suffix or fixture match is insufficient.
+  // This normalizes identity only: the independent freshness verdict still applies.
+  const pin = readMeasurementPin(row.details);
+  const nestedSubjects = mutation !== undefined && measurement?.success
+    ? pin?.files.filter(file => file.dimension === 'source' && !file.rootHarnessSlug &&
+      file.repo !== '.' && file.path === `${file.repo}/${mutation.subjectPath}` &&
+      file.sha256 === mutation.subjectBeforeSha256 &&
+      measurement.data.sourcePaths.includes(file.path) &&
+      pin.repos.some(repo => repo.repo === file.repo && !repo.rootHarnessSlug && repo.gitlink !== null)) ?? []
+    : [];
+  const mutationSubjectMeasured =
+    mutation !== undefined &&
+    measurement !== null &&
+    measurement.success &&
+    (measurement.data.sourcePaths.includes(mutation.subjectPath) || nestedSubjects.length === 1);
+  const declaredCases = detailsOf(row).testCases ?? [];
+  // A focused runner counts filtered-out cases as skipped. Credit only cases the
+  // calibration row actually measured passing; an incomplete list never proves
+  // an omitted case passed, and binder-written passed titles cannot qualify it.
+  const baselineScopePassed = baseline != null && (baseline.skipped === 0 ||
+    (declaredCases.length > 0 && declaredCases.every(caseTitle =>
+      hasMatchingDeclaredCaseTitle(caseTitle, baseline.passedCaseTitles ?? []))));
+  return mutation !== undefined && mutationSubjectMeasured && mutation.leg === 'mutant' &&
+    provenance?.source === 'mutation-probe' && provenance.mutationPhase === 'mutant' &&
+    baseline != null && baseline.testRunId !== row.testRunId &&
+    baseline.status === 'pass' && baseline.passed > 0 && baseline.failed === 0 &&
+    baselineScopePassed && baseline.collectionFailed === false &&
+    CALIBRATION_LEGS.includes(baseline.mutation.leg) &&
+    baseline.mutation.probeInvocationId === mutation.probeInvocationId &&
+    baseline.mutation.subjectBeforeSha256 === mutation.subjectBeforeSha256;
+}
+
+function mutationProvenanceDescription(row: SpecEvidenceForAdequacy): string[] {
+  if (row.evidenceKind !== 'mutation' && !isCanonicalMutantCounterexample(row)) return [];
+  const provenance = row.testRunProvenance;
+  const mutation = provenance?.mutation;
+  const reaim = row.details.reaim;
+  const measuredFields = [
+    `mutationLeg=${JSON.stringify(mutation?.leg ?? provenance?.mutationPhase ?? null)}`,
+    `mutationFailedCaseTitles=${JSON.stringify(provenance?.mutationFailedCaseTitles ?? [])}`,
+    `mutationReaim=${JSON.stringify(reaim ?? null)}`,
+    'mutationReaimCoverage=ledgered-mutant-leg-rows-only',
+  ];
+  if (!mutation) return ['mutationLinkage=unverified-legacy', ...measuredFields];
+  return [
+    `mutationLinkage=${hasLinkedMutationBaseline(row) ? 'verified' : 'unverified'}`,
+    ...measuredFields,
+    `probeInvocationId=${JSON.stringify(mutation.probeInvocationId)}`,
+    `mutationSubjectPath=${JSON.stringify(mutation.subjectPath)}`,
+    `mutationExpression=${JSON.stringify(mutation.mutateExpression)}`,
+    `mutationAgainstCommit=${JSON.stringify(mutation.againstCommit)}`,
+    `mutationSubjectBeforeSha256=${mutation.subjectBeforeSha256}`,
+    `mutationBaselineTestRunId=${provenance?.mutationBaseline?.testRunId ?? 'unavailable'}`,
+  ];
+}
+
+/** Only canonical ledger provenance can identify a counterexample mutant run. */
+function isCanonicalMutantCounterexample(row: SpecEvidenceForAdequacy): boolean {
+  return row.testRunId !== null &&
+    canonicalTestRunIdentityGaps(row).length === 0 &&
+    row.testRunProvenance?.source === 'mutation-probe' &&
+    row.testRunProvenance.mutationPhase === 'mutant';
+}
+
+/** Every declared case must have a measured outcome; mutant scopes must include a failed case. */
+function hasMeasuredCaseScope(row: SpecEvidenceForAdequacy, failedCases?: string[]): boolean | undefined {
+  const declared = detailsOf(row).testCases ?? [];
+  if (declared.length === 0) return false;
+  const executed = [...(row.testRunExecution?.passedCaseTitles ?? []), ...(failedCases ?? [])];
+  const unmatched = declared.filter((title) => !hasMatchingDeclaredCaseTitle(title, executed));
+  if (unmatched.length > 0) {
+    return row.testRunExecution?.passedCaseTitlesIncomplete === true ? undefined : false;
+  }
+  return failedCases === undefined || declared.some((title) => hasMatchingDeclaredCaseTitle(title, failedCases));
+}
+
+/** Run-backed proof takes its execution verdict from test_runs, never copied binder booleans. */
+function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecutionVerdict {
+  if (row.testRunId === null) return 'unknown';
+  if (canonicalTestRunIdentityGaps(row).length > 0) return 'unknown';
+  const run = row.testRunExecution;
+  const status = run?.status?.toLowerCase();
+  if (!run || !status || status === 'running' || status === 'error') return 'unknown';
+  if (status === 'skipped' || status === 'cancelled' || status === 'canceled') return 'fail';
+
+  if ((row.evidenceKind === 'mutation' || isCanonicalMutantCounterexample(row)) &&
+      row.testRunProvenance?.mutation) {
+    const outcome = detailsOf(row).outcome?.toLowerCase();
+    if (!hasLinkedMutationBaseline(row) ||
+        !row.testRunProvenance.mutationFailedCaseTitles?.length ||
+        (outcome !== undefined && outcome !== 'caught' && outcome !== 'killed') || status !== 'fail') return 'unknown';
+  }
+
+  if (row.evidenceKind === 'mutation') {
+    if (status === 'pass') return 'fail';
+    if (status !== 'fail' || run.collectionFailed || run.failed < 1) return 'unknown';
+    if (run.skipped > 0 && !hasMeasuredCaseScope(row, row.testRunProvenance?.mutationFailedCaseTitles ?? [])) return 'unknown';
+    // The evidence reader exposes these lines only for a failed mutation-probe row;
+    // the paired test binding must also match this canonical file.
+    return row.testRunProvenance?.mutationFailureLines?.length ? 'pass' : 'unknown';
+  }
+
+  if (row.evidenceKind === 'counterexample') {
+    const rawMutant = isCanonicalMutantCounterexample(row);
+    if (rawMutant) {
+      if (status === 'pass') return 'fail';
+      if (status !== 'fail' || run.collectionFailed || run.failed < 1) return 'unknown';
+      if (run.skipped > 0 && !hasMeasuredCaseScope(row, row.testRunProvenance?.mutationFailedCaseTitles ?? [])) return 'unknown';
+      return row.testRunProvenance?.mutationFailureLines?.length || row.testRunProvenance?.mutationFailedCaseTitles?.length
+        ? 'pass'
+        : 'unknown';
+    }
+    if (status === 'pass') return 'unknown';
+    if (status !== 'fail') return 'unknown';
+    return 'fail';
+  }
+
+  if (status === 'fail') return 'fail';
+  if (status !== 'pass') return 'unknown';
+  return run.collectionFailed || run.failed > 0 || run.passed < 1 ||
+    (run.skipped > 0 && !hasMeasuredCaseScope(row))
+    ? 'fail'
+    : 'pass';
+}
+
+function executionFailureDetails(row: SpecEvidenceForAdequacy): string {
+  const run = row.testRunExecution;
+  const status = run?.status?.toLowerCase();
+  const predicates: string[] = [];
+  if (!run) {
+    predicates.push('canonical execution_details are unavailable');
+  } else {
+    if (status === 'skipped' || status === 'cancelled' || status === 'canceled') {
+      predicates.push('predicate=status is skipped or cancelled');
+    }
+    if (run.collectionFailed) predicates.push('predicate=collectionFailed=true');
+    if (run.failed > 0) predicates.push('predicate=failed>0 (' + run.failed + ')');
+    if (run.passed < 1) predicates.push('predicate=passed<1 (' + run.passed + ')');
+    if (run.skipped > 0) {
+      const failedCases = row.evidenceKind === 'mutation' || isCanonicalMutantCounterexample(row)
+        ? row.testRunProvenance?.mutationFailedCaseTitles
+        : undefined;
+      if (hasMeasuredCaseScope(row, failedCases) !== true) {
+        predicates.push(
+          'predicate=skipped>0 without complete measured case scope (skipped=' + run.skipped +
+            ', declaredCaseCount=' + (detailsOf(row).testCases?.length ?? 0) +
+            ', passedCaseTitleCount=' + (run.passedCaseTitles ?? []).length + ')',
+        );
+      }
+    }
+    if ((row.evidenceKind === 'mutation' || isCanonicalMutantCounterexample(row)) && status === 'pass') {
+      predicates.push('predicate=mutant run passed instead of killing the mutant');
+    } else if (status === 'fail' && row.evidenceKind !== 'mutation' && !isCanonicalMutantCounterexample(row)) {
+      predicates.push('predicate=status=fail');
+    }
+  }
+
+  if (predicates.length === 0) predicates.push('predicate=measured-execution-verdict-fail');
+  const bindingId = Number.isSafeInteger(row.id) ? String(row.id) : 'unknown';
+  const runId = row.testRunId ?? 'unknown';
+  const measurements = run
+    ? [
+        'status=' + (run.status ?? 'unset'),
+        'passed=' + run.passed,
+        'failed=' + run.failed,
+        'skipped=' + run.skipped,
+        'collectionFailed=' + run.collectionFailed,
+        'passedCaseTitleCount=' + (run.passedCaseTitles ?? []).length,
+        'worktreeDirty=' + (row.testRunProvenance?.worktreeDirty ?? 'unknown'),
+      ].join(', ')
+    : 'executionDetails=unavailable';
+  return 'binding ' + bindingId + ' / run ' + runId + ': ' +
+    predicates.join('; ') + '; measured ' + measurements;
+}
+
+function executionFailureSuggestion(rows: SpecEvidenceForAdequacy[]): string {
+  const suggestions = new Set<string>();
+  for (const row of rows) {
+    const run = row.testRunExecution;
+    const status = run?.status?.toLowerCase();
+    if (run && run.skipped > 0) {
+      suggestions.add('Re-run the full test file without a test-name filter (remove -t), then bind the passing run.');
+    }
+    if (status === 'skipped' || status === 'cancelled' || status === 'canceled') {
+      suggestions.add('Resolve the skipped or cancelled run, then re-run the proof and bind the passing result.');
+    }
+    if (run?.collectionFailed) {
+      suggestions.add('Fix test collection errors, then re-run the full file and bind the passing run.');
+    }
+    if (run && (run.failed > 0 || status === 'fail')) {
+      suggestions.add('Fix the failing test case(s), then re-run the full file and bind the passing run.');
+    } else if (run && run.passed < 1) {
+      suggestions.add('Ensure the proof run executes at least one passing case, then bind that run.');
+    }
+    if (row.testRunProvenance?.worktreeDirty === true) {
+      suggestions.add('Re-run on a clean worktree at the intended source revision and bind that result.');
+    }
+    if ((row.evidenceKind === 'mutation' || isCanonicalMutantCounterexample(row)) && status === 'pass') {
+      suggestions.add('Correct the mutant or probe so the intended behavior is caught, then bind the measured result.');
+    }
+  }
+  if (suggestions.size === 0) {
+    suggestions.add('Correct the measured execution failure, then re-run the proof and bind the passing result.');
+  }
+  return [...suggestions].join(' ');
+}
+
 function isSuccessfulExecutableEvidence(row: SpecEvidenceForAdequacy): boolean {
-  const details = detailsOf(row);
-  return (
-    EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
-    hasExecutionLedgerReference(row) &&
-    details.collected === true &&
-    details.skipped === false &&
-    details.executed === true &&
-    SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')
-  );
+  if (!EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) || !hasExecutionLedgerReference(row)) return false;
+  // A coverage-evidence reference is useful traceability, but it does not carry the
+  // canonical test_runs status/count verdict. Binder booleans cannot stand in for that row.
+  return row.testRunId !== null && measuredExecutionVerdict(row) === 'pass';
 }
 
 // EI-23756870948948211: when a row FAILS isSuccessfulExecutableEvidence, callers need to know
@@ -718,6 +1662,18 @@ function executableEvidenceGaps(row: SpecEvidenceForAdequacy): string[] {
   }
   if (!hasExecutionLedgerReference(row)) {
     gaps.push('no testRunId/coverageEvidenceRef ledger reference');
+  }
+  gaps.push(...canonicalTestRunIdentityGaps(row));
+  if (row.testRunId === null) {
+    gaps.push('no canonical test-run execution verdict');
+  } else if (measuredExecutionVerdict(row) !== 'pass') {
+    const run = row.testRunExecution;
+    gaps.push(
+      run
+        ? `canonical execution=${measuredExecutionVerdict(row)} for ${row.evidenceKind}: status=${run.status ?? 'unset'}, passed=${run.passed}, failed=${run.failed}, skipped=${run.skipped}, collectionFailed=${run.collectionFailed}` +
+          (row.evidenceKind === 'mutation' ? `, measuredMutationFailure=${Boolean(row.testRunProvenance?.mutationFailureLines?.length)}` : '')
+        : 'canonical test-run execution details unavailable',
+    );
   }
   if (details.collected !== true) {
     gaps.push(`collected=${show(details.collected)}`);
@@ -763,12 +1719,16 @@ export function supersedeEligibilityGaps(binding: {
   evidenceKind: SpecEvidenceKind;
   testRunId?: number | null;
   coverageEvidenceRef?: number | null;
+  testRunExecution?: SpecEvidenceForAdequacy['testRunExecution'];
+  testRunProvenance?: SpecEvidenceForAdequacy['testRunProvenance'];
   details?: Record<string, unknown>;
 }): string[] {
   const row = {
     evidenceKind: binding.evidenceKind,
     testRunId: binding.testRunId ?? null,
     coverageEvidenceRef: binding.coverageEvidenceRef ?? null,
+    ...(binding.testRunExecution !== undefined ? { testRunExecution: binding.testRunExecution } : {}),
+    ...(binding.testRunProvenance !== undefined ? { testRunProvenance: binding.testRunProvenance } : {}),
     details: binding.details ?? {},
   } as SpecEvidenceForAdequacy;
   const details = detailsOf(row);
@@ -779,9 +1739,150 @@ export function supersedeEligibilityGaps(binding: {
   ];
 }
 
+/**
+ * EI-25215634977268694: the repair to name when stale rows drag freshness. Supersession
+ * clears a stale row only when a CURRENT sibling of the SAME evidenceKind may itself
+ * supersede — the exact rule `plans:bind-spec-evidence` enforces via
+ * `supersedeEligibilityGaps`, reused here so the advice and the verb cannot drift. When any
+ * stale row lacks such a sibling, supersession would be refused for it, so the honest
+ * remedy is an explicit retract (which works for every row).
+ */
+function freshnessDragSuggestion(evidence: SpecEvidenceForAdequacy[]): string {
+  const current = evidence.filter((row) => row.currentness.overall === 'current');
+  if (current.length === 0) {
+    return 'Re-run the stale proof (testing:run with evidence) so the server re-measures it against current source.';
+  }
+  const supersedingKinds = new Set(
+    current.filter((row) => supersedeEligibilityGaps(row).length === 0).map((row) => row.evidenceKind),
+  );
+  const everyStaleRowSupersedable = evidence
+    .filter((row) => row.currentness.overall === 'stale')
+    .every((row) => supersedingKinds.has(row.evidenceKind));
+  return everyStaleRowSupersedable ? SUPERSEDE_DRAGGING_SUGGESTION : RETRACT_DRAGGING_SUGGESTION;
+}
+
 function isSuccessfulRepairedEvidence(row: SpecEvidenceForAdequacy): boolean {
   const details = detailsOf(row);
   return isSuccessfulExecutableEvidence(row) && REPAIRED_OUTCOMES.has(details.outcome?.toLowerCase() ?? '');
+}
+
+function testFilePathMatches(required: string, measured: string): boolean {
+  const normalize = (value: string) => value.trim().replaceAll('\\', '/').replace(/\/{2,}/g, '/').replace(/^\.\//, '');
+  const expected = normalize(required);
+  const actual = normalize(measured);
+  return expected === actual || actual.endsWith(`/${expected}`) || expected.endsWith(`/${actual}`);
+}
+
+function distinctTestRunRows(rows: SpecEvidenceForAdequacy[]): SpecEvidenceForAdequacy[] {
+  const seenRuns = new Set<number>();
+  const seenRefs = new Set<string>();
+  return rows.filter((row) => {
+    if (row.testRunId !== null) {
+      if (seenRuns.has(row.testRunId)) return false;
+      seenRuns.add(row.testRunId);
+      return true;
+    }
+    const key = `${row.evidenceKind}\0${row.evidenceRef}`;
+    if (seenRefs.has(key)) return false;
+    seenRefs.add(key);
+    return true;
+  });
+}
+
+function sourceBarTestSuiteRating(
+  clause: SpecClauseRevision,
+  evidence: SpecEvidenceForAdequacy[],
+  requirements: SourceBarTestRequirements | undefined,
+): CorrectLayerEvidencePart | null {
+  const resolved = requirements ?? (clause.sourceBar
+    ? { status: 'unavailable' as const, reason: 'the pinned source BAR requirements were not resolved by the caller' }
+    : { status: 'not-required' as const });
+  if (resolved.status === 'not-required') return null;
+  if (resolved.status === 'unavailable') {
+    return plainCorrectLayerPart(
+      'unknown',
+      `Source BAR registered test files are unknown for ${clauseIdentity(clause)}: ${resolved.reason}.`,
+      'Resolve the exact pinned source rubric revision and BAR identity before grading this clause.',
+    );
+  }
+
+  const requiredFiles = [...new Set(resolved.files.map((file) => file.trim()).filter(Boolean))].sort();
+  if (requiredFiles.length === 0) {
+    return plainCorrectLayerPart(
+      'unknown',
+      `The pinned source BAR test-file list is empty for ${clauseIdentity(clause)}.`,
+      'Repair the source BAR check.files list before grading this clause.',
+    );
+  }
+
+  const rowsByFile = new Map<string, SpecEvidenceForAdequacy[]>();
+  const ambiguousFiles = new Set<string>();
+  for (const row of evidence) {
+    if (row.evidenceKind !== 'test') continue;
+    const measuredPath = row.testRunProvenance?.filePath ?? row.testRunExecution?.filePath;
+    if (typeof measuredPath !== 'string' || measuredPath.trim().length === 0) continue;
+    const matches = requiredFiles.filter((file) => testFilePathMatches(file, measuredPath));
+    if (matches.length > 1) {
+      for (const file of matches) ambiguousFiles.add(file);
+      continue;
+    }
+    if (matches.length !== 1) continue;
+    const rows = rowsByFile.get(matches[0]!) ?? [];
+    rows.push(row);
+    rowsByFile.set(matches[0]!, rows);
+  }
+
+  const failed: Array<{ file: string; rows: SpecEvidenceForAdequacy[] }> = [];
+  const missing: string[] = [];
+  const uncertain: string[] = [];
+  const citedRows: SpecEvidenceForAdequacy[] = [];
+  for (const file of requiredFiles) {
+    const rows = distinctTestRunRows(rowsByFile.get(file) ?? []);
+    const currentRows = rows.filter((row) => row.currentness.overall === 'current');
+    const failedRows = currentRows.filter(
+      (row) => row.testRunId !== null && measuredExecutionVerdict(row) === 'fail',
+    );
+    if (failedRows.length > 0) {
+      failed.push({ file, rows: failedRows });
+      citedRows.push(...failedRows);
+      continue;
+    }
+    const passingRows = currentRows.filter(isSuccessfulExecutableEvidence);
+    if (passingRows.length > 0 && !ambiguousFiles.has(file)) {
+      citedRows.push(...passingRows);
+      continue;
+    }
+    if (rows.length === 0) missing.push(file);
+    else uncertain.push(file);
+    citedRows.push(...rows);
+  }
+
+  if (failed.length > 0) {
+    return boundCorrectLayerPart(
+      'fail',
+      `Current source BAR suite run(s) fail for ${clauseIdentity(clause)}: ${failed.map(({ file }) => file).join(', ')}.`,
+      distinctTestRunRows(citedRows),
+      'Re-run each failing registered source BAR file against the current source and bind its measured passing result.',
+    );
+  }
+  if (missing.length > 0 || uncertain.length > 0 || ambiguousFiles.size > 0) {
+    const unresolved = [...new Set([
+      ...missing,
+      ...uncertain,
+      ...[...ambiguousFiles].map((file) => `${file} (ambiguous measured path)`),
+    ])].sort();
+    return boundCorrectLayerPart(
+      'unknown',
+      `Current passing bindings are not established for every registered source BAR file for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
+      distinctTestRunRows(citedRows),
+      'Bind a current, ledger-backed passing test result for every registered source BAR file; missing, stale, and ambiguous paths remain unknown.',
+    );
+  }
+  return boundCorrectLayerPart(
+    'pass',
+    `Every registered source BAR test file has a current passing binding for ${clauseIdentity(clause)}: ${requiredFiles.join(', ')}.`,
+    distinctTestRunRows(citedRows),
+  );
 }
 
 function booleanRating(
@@ -861,25 +1962,57 @@ function riskFloorRating(
     };
   }
   const detailRows = evidence.map((row) => ({ row, details: detailsOf(row) }));
+  const isMutation = (row: SpecEvidenceForAdequacy) =>
+    row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample';
+  const isCoverageCensusProof = (row: SpecEvidenceForAdequacy) =>
+    row.evidenceKind === 'coverage-census' && row.coverageEvidenceRef !== null;
+  const hasCoverageRung = (
+    { row, details }: (typeof detailRows)[number],
+    rung: 'l3' | 'l4',
+  ): boolean =>
+    isCoverageCensusProof(row) &&
+    details.coverageRungs?.[rung] === true &&
+    bindingTargetsClause(row, clause);
+  const coverageRowsWithoutExactTarget = (rung: 'l3' | 'l4') => detailRows
+    .filter(({ row, details }) =>
+      isCoverageCensusProof(row) &&
+      details.coverageRungs?.[rung] !== undefined &&
+      bindingIdentityMatchesClause(row, clause) &&
+      !bindingTargetsClause(row, clause),
+    )
+    .map(({ row }) => row);
+  const hasClauseBoundMutationProof = (row: SpecEvidenceForAdequacy) =>
+    isClauseBoundMutationProof(clause, row, evidence);
   const isL4Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
-    details.coverageRungs?.l4 === true ||
-    ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-      (details.targeted === true || typeof details.targeted === 'string') &&
-      SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? ''));
-  const meetsL4 = detailRows.some(isL4Proof);
-  const meetsL3 = meetsL4 || detailRows.some(({ details }) => details.coverageRungs?.l3 === true);
-  const meetsL3Rows = detailRows.filter(
-    ({ row, details }) => details.coverageRungs?.l3 === true || isL4Proof({ row, details }),
-  );
+    isMutation(row) ? hasClauseBoundMutationProof(row) : hasCoverageRung({ row, details }, 'l4');
+  const l4ProofRows = detailRows.filter(isL4Proof);
+  const isL3Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
+    isL4Proof({ row, details }) ||
+    hasCoverageRung({ row, details }, 'l3');
+  const meetsL3 = detailRows.some(isL3Proof);
+  const meetsL3Rows = detailRows.filter(isL3Proof);
+  const proofBindings = (rows: typeof detailRows) =>
+    [...new Set(rows.flatMap(({ row }) => {
+      const pairedTest = isMutation(row) ? clauseBoundMutationTest(clause, row, evidence) : null;
+      return pairedTest ? [row, pairedTest] : [row];
+    }))];
   if (floor === 'l4') {
-    if (meetsL4) {
+    if (l4ProofRows.length > 0) {
+      const proofBasis = [
+        l4ProofRows.some(({ row, details }) => hasCoverageRung({ row, details }, 'l4'))
+          ? 'targeted L4 coverage-census evidence'
+          : null,
+        l4ProofRows.some(({ row }) => isMutation(row) && hasClauseBoundMutationProof(row))
+          ? 'clause-bound mutation/counterexample evidence with a passing baseline case'
+          : null,
+      ].filter((entry): entry is string => entry !== null).join(' and ');
       return {
         floor,
         rating: {
           rating: 'pass',
           evidence: evidenceWithBindings(
-            `Targeted L4 proof meets the ${clauseIdentity(clause)} floor.`,
-            detailRows.filter(isL4Proof).map(({ row }) => row),
+            `The ${clauseIdentity(clause)} L4 risk floor is met via ${proofBasis}.`,
+            proofBindings(l4ProofRows),
           ),
         },
       };
@@ -896,7 +2029,11 @@ function riskFloorRating(
         },
       };
     }
-    const hasExplicitL4Miss = detailRows.some(({ details }) => details.coverageRungs?.l4 === false);
+    const hasExplicitL4Miss = detailRows.some(
+      ({ row, details }) =>
+        isCoverageCensusProof(row) && details.coverageRungs?.l4 === false && bindingTargetsClause(row, clause),
+    );
+    const untargetedL4Rows = coverageRowsWithoutExactTarget('l4');
     return {
       floor,
       rating: {
@@ -904,17 +2041,31 @@ function riskFloorRating(
         evidence: hasExplicitL4Miss
           ? evidenceWithBindings(
               `Bound coverage explicitly reports L4=false for ${clauseIdentity(clause)} and no current approved waiver exists.`,
-              detailRows.filter(({ details }) => details.coverageRungs?.l4 === false).map(({ row }) => row),
+              detailRows
+                .filter(({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l4 === false)
+                .map(({ row }) => row),
             )
-          : `${evidenceWithBindings(
-              `No targeted L4 coverage/mutation/counterexample result or current approved waiver is bound for ${clauseIdentity(clause)}.`,
-              evidence,
-            )} ${clauseProbe(clause, harness)}`,
-        suggestion: 'Bind targeted L4 proof or record a justified approvalRef-bearing waiver on the spec revision.',
+          : untargetedL4Rows.length > 0
+            ? evidenceWithBindings(
+                `L4 coverage is present, but its binding target does not identify the exact clause ${clauseIdentity(clause)}.`,
+                untargetedL4Rows,
+              )
+            : `${evidenceWithBindings(
+                `No targeted L4 coverage/mutation/counterexample result or current approved waiver is bound for ${clauseIdentity(clause)}.`,
+                evidence,
+              )} ${clauseProbe(clause, harness)}`,
+        suggestion:
+          untargetedL4Rows.length > 0
+            ? `Bind L4 coverage to ${clause.planSlug}/${clause.planItemId}/${clause.specId}@${clause.revision} with adequacy.targeted=${JSON.stringify(clause.specId)}.`
+            : 'Bind targeted L4 proof or record a justified approvalRef-bearing waiver on the spec revision.',
       },
     };
   }
-  const hasExplicitL3Miss = detailRows.some(({ details }) => details.coverageRungs?.l3 === false);
+  const hasExplicitL3Miss = detailRows.some(
+    ({ row, details }) =>
+      isCoverageCensusProof(row) && details.coverageRungs?.l3 === false && bindingTargetsClause(row, clause),
+  );
+  const untargetedL3Rows = coverageRowsWithoutExactTarget('l3');
   return {
     floor,
     rating: meetsL3
@@ -922,7 +2073,7 @@ function riskFloorRating(
           rating: 'pass',
           evidence: evidenceWithBindings(
             `Targeted L3 or stronger proof meets the ${clauseIdentity(clause)} floor.`,
-            meetsL3Rows.map(({ row }) => row),
+            proofBindings(meetsL3Rows),
           ),
         }
       : {
@@ -930,13 +2081,23 @@ function riskFloorRating(
           evidence: hasExplicitL3Miss
             ? evidenceWithBindings(
                 `Bound coverage explicitly reports L3=false for ${clauseIdentity(clause)}.`,
-                detailRows.filter(({ details }) => details.coverageRungs?.l3 === false).map(({ row }) => row),
+                detailRows
+                  .filter(({ row, details }) => isCoverageCensusProof(row) && details.coverageRungs?.l3 === false)
+                  .map(({ row }) => row),
+              )
+          : untargetedL3Rows.length > 0
+            ? evidenceWithBindings(
+                `L3 coverage is present, but its binding target does not identify the exact clause ${clauseIdentity(clause)}.`,
+                untargetedL3Rows,
               )
             : `${evidenceWithBindings(
                 `No explicit meets_l3 result is bound for ${clauseIdentity(clause)}; depth or a generic passing test is not a rung verdict.`,
                 evidence,
               )} ${clauseProbe(clause, harness)}`,
-          suggestion: 'Bind a coverage-census row whose independent meets_l3 flag is current.',
+          suggestion:
+            untargetedL3Rows.length > 0
+              ? `Bind L3 coverage to ${clause.planSlug}/${clause.planItemId}/${clause.specId}@${clause.revision} with adequacy.targeted=${JSON.stringify(clause.specId)}.`
+              : 'Bind a current coverage-census row whose independent meets_l3 flag and adequacy.targeted identify this exact clause.',
         },
   };
 }
@@ -957,7 +2118,8 @@ function rerunRecipeFor(
   current: EvidenceCurrentInput[] | undefined,
   harness: string | undefined,
   classRef: PlanClassRubricRef,
-  selection: { workItemIds?: string[]; evidenceRefs?: string[]; planItemIds?: string[] } | undefined,
+  selection: { workItemIds?: string[]; evidenceRefs?: string[]; bindingIds?: number[]; planItemIds?: string[] } | undefined,
+  loadedClauseRows: number,
 ): SpecTestAdequacyRerunRecipe {
   const evaluatorBuild = getBuildInfo();
   const selectedEvidence = [
@@ -981,6 +2143,16 @@ function rerunRecipeFor(
     selectedEvidenceRefs.length > 0
       ? selectedEvidenceRefs
       : [...new Set(selection?.evidenceRefs ?? [])].sort((a, b) => a.localeCompare(b));
+  const replayBindingIds =
+    evidence.length > 0 && evidence.every((row) => Number.isSafeInteger(row.id) && row.id! > 0)
+      ? [...new Set(evidence.flatMap((row) => row.supportingBindingIds ?? [row.id!]))].sort((a, b) => a - b)
+      : selection?.bindingIds !== undefined
+        ? [...new Set(selection.bindingIds)].sort((a, b) => a - b)
+        // An empty graded population is still an exact selection. Leaving the selector
+        // omitted would let a later binding silently enter this scorecard's rerun.
+        : evidence.length === 0
+          ? []
+          : undefined;
   const currentByKey = new Map((current ?? []).map((row) => [evidenceCurrentInputKey(row), row]));
   const currentForEvidence = (row: SpecEvidenceForAdequacy): EvidenceCurrentInput | undefined => {
     const scopedCurrentKey = evidenceCurrentInputKey({
@@ -1055,9 +2227,10 @@ function rerunRecipeFor(
       // item. Reusing only the caller's optional evidenceRefs would let later
       // bindings silently widen a persisted scorecard's replay.
       ...(replayEvidenceRefs.length ? { evidenceRefs: replayEvidenceRefs } : {}),
+      ...(replayBindingIds !== undefined ? { bindingIds: replayBindingIds } : {}),
       ...(selection?.planItemIds?.length ? { planItemIds: [...selection.planItemIds] } : {}),
       includeDraft: true,
-      limit: SPEC_TEST_ADEQUACY_REPLAY_LIMIT,
+      limit: specTestAdequacyReplayLimit(Math.max(loadedClauseRows, evidence.length, replayBindingIds?.length ?? 0)),
       // Replay the exact immutable clause snapshot that produced this grade. The pin
       // fixes WHICH clause revision is graded; it does not freeze freshness — the
       // server re-measures each binding's persisted recipe, so this card replays
@@ -1076,6 +2249,7 @@ function rerunRecipeFor(
       specRevision: clause.revision,
       specFingerprint: clause.contentHash,
       evidence: selectedEvidence,
+      ...(replayBindingIds !== undefined ? { bindingIds: replayBindingIds } : {}),
     },
     current: {
       supplied: current !== undefined,
@@ -1100,18 +2274,31 @@ export function crossGenerationAuditProbeArgs(rerunRecipe: SpecTestAdequacyRerun
   return { ...rerunRecipe.args };
 }
 
+function ratingRerunProbeText(
+  criterion: AdequacyCriterion,
+  rerunRecipe: SpecTestAdequacyRerunRecipe,
+): string {
+  return (
+    `Replay the shared scorecard rerunRecipe (${rerunRecipe.evaluator}) once with its stored args; ` +
+    `inspect rows[0].ratings[${JSON.stringify(criterion)}] against the current evidence state. ` +
+    'This replay remeasures currentness at replay time, so freshness-dependent ratings may differ from the emitted card after evidence changes. ' +
+    'It is not a historical as-of replay; grading-integrity audits reconstruct the emitted card using its creation-time snapshot.'
+  );
+}
+
+function ratingRerunProbeReference(criterion: AdequacyCriterion): string {
+  return `Replay result: rows[0].ratings[${JSON.stringify(criterion)}] via rerunRecipe.`;
+}
+
 function appendRatingRerunProbes(
   ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
   rerunRecipe: SpecTestAdequacyRerunRecipe,
 ): void {
-  const args = JSON.stringify(crossGenerationAuditProbeArgs(rerunRecipe));
   for (const criterion of ADEQUACY_CRITERIA) {
     const rating = ratings[criterion];
     ratings[criterion] = {
       ...rating,
-      evidence:
-        `${rating.evidence} Re-run ${rerunRecipe.evaluator} with args=${args}; ` +
-        `inspect rows[0].ratings[${JSON.stringify(criterion)}].`,
+      evidence: `${rating.evidence} ${ratingRerunProbeText(criterion, rerunRecipe)}`,
     };
   }
 }
@@ -1125,8 +2312,80 @@ function appendRatingRerunProbes(
  *   2 — the a49fca9b96 scenario-scoped falsifiability target + the WI-10002724 own-specId
  *       fallback (D-009), which the stamp was introduced alongside.
  *   3 — correct-layer requires the declared live/deployed evidence plane on a current binding.
+ *   4 — a mutation/counterexample target must be corroborated by successful current test evidence
+ *       for its canonical test file on the same clause revision.
+ *   5 — a mutation's measured failed case must exactly appear in that test binding's adequacy.testCases.
+ *   6 — canonical test-run status/counts and exact passed-case identities corroborate positive binder claims;
+ *       correct-layer reads the runtime-measured layer and rejects a contradictory binder layer.
+ *   7 — a null fixture fingerprint no longer proves fixture-free evidence; executable bindings must
+ *       explicitly attest fixtureFree=true before fixture calibration is not-applicable.
+ *   8 — pair Cargo case receipts by canonical source and measurement root, preserving exact case checks.
+ *   9 — recognize canonical operational adapter layers without extending recorded runner layers.
+ *  10 — map legacy behavioral requirements only to passing canonical operational case evidence.
+ *  11 — require each executable binding to attest fixture-free status or carry fingerprinted calibration.
+ *  12 — corroborate live LLM reachability with exact canonical scenario, framework and executed-file receipts.
+ *  13 — an ordinary passing test run rebound as a counterexample no longer establishes falsifiability.
+ *  14 — risk-floor rung metadata is accepted only from a current clause-bound coverage census or clause-bound mutation proof.
+ *  15 — structured observations.scope/proofScope/notes disclosures are extracted and block a machine PASS.
+ *  16 — explicit scopeNote coverage gaps are extracted too, including same-proof rebinds.
+ *  17 — technical coverage result/field mechanics do not imply incomplete proof; genuine gaps still block.
+ *  18 — map legacy manual-provenance requirements only to canonical measured operational cases.
+ *  19 — pending clause/composite proof and unresolved disclosure scope notes block a machine PASS.
+ *  20 — disclosure-bearing metadata is scanned recursively, preserving gaps moved outside scopeNote.
+ *  21 — passing selected scopes tolerate unrelated skips only when every declared case canonically passed.
+ *  22 — qualified test nouns in input inventories do not imply a coverage limitation.
+ *  23 — descriptor-bearing catches require invocation-linked calibration and named failures;
+ *       grader evidence exposes the descriptor, linkage and ledger-only re-aim coverage.
+ *  24 — technical compound modifiers do not turn negative-control observations into proof gaps.
+ *  25 — execution verdicts reconcile explicit nested and structured test-run IDs/files to the joined ledger row.
+ *  26 — shared mutant runs preserve distinct targets and require a measured case for each target.
+ *  28 — binder-authored fixtureFree=true no longer establishes fixture absence for test-backed evidence without a fixture fingerprint.
+ *  29 — outside-lineage re-observations can establish fixture absence for the same measured executable proof and selected cases.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 3;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 29;
+
+/**
+ * EI-25889625242363568: a null fixture fingerprint proves nothing by itself.
+ * Reuse the independently authored, source-pinned re-observation of the SAME
+ * executable proof to establish fixture absence. Lineage is resolved by the
+ * server; metadata written by the implementer alone remains insufficient.
+ */
+export async function resolveFixtureAbsenceVerifications(
+  rows: readonly SpecEvidenceForAdequacy[],
+  isIndependent: (reviewer: string, citedAuthor: string, planSlug: string) => Promise<boolean>,
+): Promise<Map<number, number[]>> {
+  const verified = new Map<number, number[]>();
+  const measured = (row: SpecEvidenceForAdequacy) =>
+    row.currentness?.overall === 'current' && row.currentness.provenance === 'server-measured';
+  for (const review of rows) {
+    if (review.evidenceKind !== 'independent-verification' || !review.id ||
+        !review.verifiesBindingId || !review.createdBy || !measured(review) ||
+        detailsOf(review).fixtureFree !== true) continue;
+    const cited = rows.find(row => row.id === review.verifiesBindingId);
+    if (!cited?.id || !cited.createdBy || cited.createdBy === review.createdBy ||
+        !EXECUTABLE_EVIDENCE_KINDS.has(cited.evidenceKind) || !measured(cited) ||
+        detailsOf(cited).fixtureFree !== true ||
+        cited.planSlug !== review.planSlug || cited.specId !== review.specId ||
+        cited.specRevision !== review.specRevision || cited.specFingerprint !== review.specFingerprint ||
+        !cited.testRunId || cited.testRunId !== review.testRunId ||
+        !cited.fingerprints.testFingerprint ||
+        cited.fingerprints.sourceFingerprint !== review.fingerprints.sourceFingerprint ||
+        cited.fingerprints.testFingerprint !== review.fingerprints.testFingerprint ||
+        cited.fingerprints.environmentFingerprint !== review.fingerprints.environmentFingerprint ||
+        cited.fingerprints.fixtureFingerprint !== null || review.fingerprints.fixtureFingerprint !== null) continue;
+    const cases = detailsOf(cited).testCases ?? [];
+    const reviewedCases = new Set(detailsOf(review).testCases ?? []);
+    if (cases.length === 0 || cases.some(title => !reviewedCases.has(title))) continue;
+    try {
+      if (!(await isIndependent(review.createdBy, cited.createdBy, cited.planSlug))) continue;
+    } catch {
+      // An unreadable lineage is uncertainty, never proof of independence.
+      continue;
+    }
+    verified.set(cited.id, [...(verified.get(cited.id) ?? []), review.id]);
+  }
+  return verified;
+}
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -1137,8 +2396,9 @@ type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
  * ids. WI-10002724 / D-009: a clause that declares NONE has no scenario id to name, so under the
  * scenario-only rule its falsifiability could never pass (4,026 of 4,136 active clauses on
  * 2026-09-23); the clause itself is the case, so a target naming its own specId qualifies.
- * Obligation ids are lower-case (SPEC_PROOF_OBLIGATION_ID_RE), so the specId is lower-cased. A
- * boolean target, or one naming a sibling spec or scenario, never qualifies.
+ * Keep the clause's exact ID (platform-generated IDs can be uppercase) and accept the historical
+ * lowercase form for compatibility. Scenario targets remain exact and case-sensitive. A boolean
+ * target, or one naming a sibling spec or scenario, never qualifies.
  */
 export function mutationTargetRequirement(clause: MutationTargetClause): {
   acceptedTargets: string[];
@@ -1146,9 +2406,10 @@ export function mutationTargetRequirement(clause: MutationTargetClause): {
   requirement: string;
 } {
   const scenarios = [...new Set(clause.falsifier?.requiredScenarios ?? [])];
-  const selfTarget = scenarios.length === 0 ? clause.specId.toLowerCase() : null;
+  const selfTarget = scenarios.length === 0 ? clause.specId : null;
+  const acceptedSelfTargets = selfTarget === null ? scenarios : clauseSelfTargetIds(clause);
   return {
-    acceptedTargets: selfTarget !== null ? [selfTarget] : scenarios,
+    acceptedTargets: acceptedSelfTargets,
     selfTarget,
     requirement:
       selfTarget !== null
@@ -1159,6 +2420,175 @@ export function mutationTargetRequirement(clause: MutationTargetClause): {
 
 export function isAcceptedMutationTarget(clause: MutationTargetClause, targeted: unknown): boolean {
   return typeof targeted === 'string' && mutationTargetRequirement(clause).acceptedTargets.includes(targeted);
+}
+
+/**
+ * `adequacy.targeted` is caller-authored metadata. A mutation probe is clause-scoped only when
+ * its canonical test file also has successful, current test evidence bound to the same immutable
+ * clause revision. This prevents a killed mutant from a sibling clause's test suite from
+ * satisfying falsifiability or the proof floor by naming this clause in its own binding.
+ */
+function clauseBoundCurrentTest(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): SpecEvidenceForAdequacy | null {
+  return clauseBoundCurrentTests(clause, mutation, evidence)[0] ?? null;
+}
+
+/** Cargo's case identity is not a file. Legacy crate receipts resolve only through the
+ * persisted, server-measured single test source inside that crate. Include the checkout root
+ * so equal relative paths in independently registered checkouts cannot corroborate each other. */
+function canonicalTestSourceKey(row: SpecEvidenceForAdequacy): string | null {
+  const recorded = row.testRunProvenance?.filePath;
+  if (!recorded?.trim()) return null;
+  const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+  const root = measurement.success ? measurement.data.rootHarnessSlug ?? null : null;
+  const at = recorded.indexOf('::');
+  let filePath = recorded;
+  if (at > 0) {
+    const prefix = recorded.slice(0, at);
+    if (prefix.endsWith('.rs')) filePath = prefix;
+    else if (measurement.success && measurement.data.testPaths?.length === 1) {
+      const source = measurement.data.testPaths[0];
+      if (source.endsWith('.rs') && source.startsWith(`${prefix}/`)) filePath = source;
+    }
+  }
+  return JSON.stringify([root, filePath]);
+}
+
+function clauseBoundCurrentTests(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): SpecEvidenceForAdequacy[] {
+  const sourceKey = canonicalTestSourceKey(mutation);
+  if (!sourceKey) return [];
+  return evidence.filter(
+    (row) =>
+      row.evidenceKind === 'test' &&
+      row.planSlug === clause.planSlug &&
+      row.specId === clause.specId &&
+      row.specRevision === clause.revision &&
+      row.specFingerprint === clause.contentHash &&
+      canonicalTestSourceKey(row) === sourceKey &&
+      row.currentness.overall === 'current' &&
+      isSuccessfulRepairedEvidence(row),
+  );
+}
+
+function isWellFormedCaseTitle(title: unknown): title is string {
+  if (typeof title !== 'string' || title.length === 0 || title.trim() !== title) return false;
+  for (const character of title) {
+    const code = character.charCodeAt(0);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+/**
+ * True when the failed mutant run measured `caseTitle` as a failed case. The ledger reporter
+ * writes one `<case full name>: <message>` line per failed case, so the declared title must be a
+ * whole line prefix ending at the reporter's `: ` separator. WI-10006745: deriving one title by
+ * splitting the tail on ' — ' matched no reporter output (a describe title may itself contain an
+ * em dash), so every mutation binding failed this check.
+ */
+export function mutationMeasuredFailedCase(mutation: SpecEvidenceForAdequacy, caseTitle: unknown): boolean {
+  if (!isWellFormedCaseTitle(caseTitle)) return false;
+  // Preserve WI-10006753's exact-identity rule while accepting Vitest's full-title joiner spelling.
+  const recordedTitles = mutation.testRunProvenance?.mutationFailedCaseTitles;
+  if (recordedTitles !== undefined) {
+    return recordedTitles.some((recordedTitle) => hasSameCaseTitleIdentity(caseTitle, recordedTitle));
+  }
+  const prefix = `${caseTitle}: `;
+  return (mutation.testRunProvenance?.mutationFailureLines ?? []).some((line) => {
+    if (line.startsWith(prefix)) return true;
+    const separatorIndex = line.indexOf(': ');
+    return separatorIndex >= 0 &&
+      line.indexOf(': ', separatorIndex + 2) < 0 &&
+      hasSameCaseTitleIdentity(caseTitle, line.slice(0, separatorIndex));
+  });
+}
+
+/** A shared mutant run must have a measured failing case for each claimed scenario target. */
+function mutationTargetMatchesMeasuredCase(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  caseTitle: string,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): boolean {
+  const target = detailsOf(mutation).targeted;
+  if (typeof target !== 'string') return false;
+  const sameRun = (row: SpecEvidenceForAdequacy) =>
+    (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
+    row.testRunId === mutation.testRunId &&
+    row.evidenceRef === mutation.evidenceRef;
+  const targetRequirement = mutationTargetRequirement(clause);
+  const targetsOnRun = new Set(evidence
+    .filter(sameRun)
+    .map((row) => detailsOf(row).targeted)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    // Exact and historical lowercase self-clause IDs name one target. Scenario IDs
+    // remain case-sensitive, so distinct scenarios still need distinct failed cases.
+    .map((value) => targetRequirement.selfTarget !== null && targetRequirement.acceptedTargets.includes(value)
+      ? targetRequirement.selfTarget
+      : value));
+  if (targetsOnRun.size <= 1) return true;
+
+  const separator = caseTitle.lastIndexOf(' > ');
+  const scenarioCase = separator >= 0 ? caseTitle.slice(separator + 3) : caseTitle;
+  const labelEnd = scenarioCase.indexOf(': ');
+  const measuredScenario = labelEnd >= 0 ? scenarioCase.slice(0, labelEnd).trim() : '';
+  return measuredScenario.length > 0 &&
+    (clause.falsifier?.requiredScenarios ?? []).includes(measuredScenario) &&
+    measuredScenario === target;
+}
+
+function summarizeMutationFailedCaseTitles(mutations: readonly SpecEvidenceForAdequacy[]): string {
+  const lines = mutations
+    .flatMap((mutation) => mutation.testRunProvenance?.mutationFailureLines ?? [])
+    .map((line) => (line.length > 200 ? `${line.slice(0, 200)}…` : line));
+  const distinctLines = [...new Set(lines)].sort((a, b) => a.localeCompare(b)).slice(0, 5);
+  return distinctLines.length > 0
+    ? `Measured failing case line(s), reporter format "<case full name>: <message>" — declare the part before ": " exactly: ${distinctLines.map((line) => JSON.stringify(line)).join(', ')}.`
+    : 'No measured failing case line is available for the mutation run.';
+}
+
+function clauseBoundMutationTest(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): SpecEvidenceForAdequacy | null {
+  if (mutation.evidenceKind !== 'mutation' && mutation.evidenceKind !== 'counterexample') {
+    return clauseBoundCurrentTest(clause, mutation, evidence);
+  }
+  // Any successful current same-clause same-file test binding may carry the exact measured case.
+  // Checking only the first row let an older binding without testCases shadow a newer match.
+  return clauseBoundCurrentTests(clause, mutation, evidence).find((testBinding) =>
+    (detailsOf(testBinding).testCases ?? []).some((caseTitle) =>
+      mutationMeasuredFailedCase(mutation, caseTitle) &&
+      mutationTargetMatchesMeasuredCase(clause, mutation, caseTitle, evidence) &&
+      hasPassingTestBaselineCase(testBinding, caseTitle),
+    ),
+  ) ?? null;
+}
+
+function isClauseBoundMutationTest(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): boolean {
+  return clauseBoundMutationTest(clause, mutation, evidence) !== null;
+}
+
+function isClauseBoundMutationProof(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): boolean {
+  return isSuccessfulExecutableEvidence(mutation) &&
+    isAcceptedMutationTarget(clause, detailsOf(mutation).targeted) &&
+    isClauseBoundMutationTest(clause, mutation, evidence);
 }
 
 export type AdequacyCardRevisionDisposition = {
@@ -1214,30 +2644,47 @@ export function evaluateSpecTestAdequacy(input: {
   clause: SpecClauseRevision;
   evidence: SpecEvidenceForAdequacy[];
   classRef: PlanClassRubricRef;
+  /** Exact files from the clause's immutable source BAR check, when one is pinned. */
+  sourceBarTestRequirements?: SourceBarTestRequirements;
   /** Resolved harness scope to persist for operator-scope reruns. */
   harness?: string;
   /** The caller-attested current fingerprints used by listSpecEvidence. */
   current?: EvidenceCurrentInput[];
   /** Exact caller selectors that constrain the evidence population on replay. */
-  rerunSelection?: { workItemIds?: string[]; evidenceRefs?: string[]; planItemIds?: string[] };
+  rerunSelection?: { workItemIds?: string[]; evidenceRefs?: string[]; bindingIds?: number[]; planItemIds?: string[] };
+  /** Full active clause population for the rubric's universal disclosed-gap check. */
+  disclosedGapEvidence?: SpecEvidenceForAdequacy[];
+  /** Server-resolved outside-lineage re-observations, scoped to the selected proof. */
+  fixtureAbsenceVerifications?: ReadonlyMap<number, readonly number[]>;
   /** Work-item classification; `task` is the canonical non-code kind. */
   workItemKind?: string | null;
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
+  const fixtureAbsenceVerifications = new Map<number, readonly number[]>(input.fixtureAbsenceVerifications);
+  for (const row of input.evidence) {
+    if (row.id && row.currentness?.overall === 'current' && row.currentness.provenance === 'server-measured' &&
+        row.fixtureAbsenceVerification?.verifierBindingIds.length) {
+      fixtureAbsenceVerifications.set(row.id, row.fixtureAbsenceVerification.verifierBindingIds);
+    }
+  }
+  const belongsToClause = (row: SpecEvidenceForAdequacy) =>
+    row.planSlug === clause.planSlug &&
+    row.specId === clause.specId &&
+    row.specRevision === clause.revision &&
+    row.specFingerprint === clause.contentHash;
   // WI-10002082: keep the pre-projection selector match addressable. A binding can satisfy every
   // clause selector and still be dropped by `activeSpecEvidence` (it carries no test-execution
   // identity, or a later attempt superseded it). Without this population the falsifiability refusal
   // below reports a FALSE ABSENCE — "no binding is bound" — while a live, fingerprint-matching
   // binding sits in the table, which drives binders to stack redundant re-bindings on one clause.
-  const exactSelectorMatches = input.evidence.filter(
-    (row) =>
-      row.planSlug === clause.planSlug &&
-      row.specId === clause.specId &&
-      row.specRevision === clause.revision &&
-      row.specFingerprint === clause.contentHash,
-  );
+  const exactSelectorMatches = input.evidence.filter(belongsToClause);
   const exactEvidence = activeSpecEvidence(exactSelectorMatches);
+  const exactDisclosedGapMatches = (input.disclosedGapEvidence ?? input.evidence).filter(belongsToClause);
+  const activeDisclosedGapEvidence = activeSpecEvidence(exactDisclosedGapMatches);
+  const activeDisclosedGapByLogicalReference = new Map(
+    activeDisclosedGapEvidence.map((row) => [logicalEvidenceReferenceKey(row), row]),
+  );
   const currentEvidence = exactEvidence.filter(
     (row) =>
       row.currentness.overall === 'current' ||
@@ -1298,7 +2745,11 @@ export function evaluateSpecTestAdequacy(input: {
         : {
             rating: 'pass',
             evidence: evidenceWithBindings(
-              `${evidence.length} immutable binding(s) have durable rerunnable lineage for ${clauseIdentity(clause)}.`,
+              `${new Set(evidence.map((row) => row.testRunId !== null
+                ? `test-run:${row.testRunId}`
+                : row.coverageEvidenceRef !== null
+                  ? `coverage:${row.coverageEvidenceRef}`
+                  : `${row.evidenceKind}:${row.evidenceRef}`)).size} distinct immutable proof record(s) have durable rerunnable lineage for ${clauseIdentity(clause)}.`,
               evidence,
             ),
           };
@@ -1311,25 +2762,109 @@ export function evaluateSpecTestAdequacy(input: {
     (row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null,
   );
   const fixtureOutsideCurrent = fixtureBindings.filter((row) => !evidence.includes(row));
+  const clauseDeclaresFixtureUse = [
+    clause.behavior,
+    clause.falsifier?.observation,
+    clause.falsifier?.probeMethod,
+  ].some((text) => /\bfixtures?\b/i.test(text ?? ''));
+  const fixtureUseRequired =
+    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) || clauseDeclaresFixtureUse;
+  const executableFixtureFreeProof = exactEvidence.filter(
+    (row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) && detailsOf(row).fixtureFree === true,
+  );
+  const fixtureUseAttested = exactEvidence.some((row) => detailsOf(row).fixtureFree === false);
+  // Binder-authored fixtureFree cannot establish fixture absence for test-backed evidence.
+  // Operational work-item evidence has no test bytes whose fixture use could contradict it.
+  const unresolvedFixtureProof = exactEvidence.filter(
+    (row) =>
+      row.evidenceKind !== 'operational' &&
+      EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
+      row.fingerprints.fixtureFingerprint === null &&
+      !(row.id && fixtureAbsenceVerifications.has(row.id) && !fixtureUseRequired),
+  );
+  const fixtureFreeAttestationUnverified = unresolvedFixtureProof.some(
+    (row) => detailsOf(row).fixtureFree === true,
+  );
+  const fixtureFreeConflicts = exactEvidence.filter(
+    (row) =>
+      detailsOf(row).fixtureFree === true &&
+        (row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null),
+  );
   const fixtureApplicable =
-    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) || fixtureBindings.length > 0;
-  const fixtureRating: AdequacyRatingEntry = fixtureApplicable
-    ? booleanRating(evidence, (d) => d.fixtureCalibrated, {
+    fixtureUseRequired ||
+    fixtureBindings.length > 0 ||
+    fixtureUseAttested ||
+    unresolvedFixtureProof.length > 0;
+  const fixtureProofEvidence = evidence.filter(
+    (row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null,
+  );
+  const fixtureCurrentNotCalibrated = fixtureProofEvidence.filter(
+    (row) => detailsOf(row).fixtureCalibrated !== true,
+  );
+  const fixtureCurrentNotCalibratedSummary = fixtureCalibrationBindingSummary(fixtureCurrentNotCalibrated);
+  const fixtureOutsideCurrentSummary = fixtureCalibrationBindingSummary(fixtureOutsideCurrent);
+  // Keep ratings scoped to the current cohort, but show both non-passing current rows and
+  // exact fixture rows outside it so a pass cannot hide uncalibrated evidence.
+  const fixtureOutsideCurrentNote = fixtureOutsideCurrent.length > 0
+    ? `${fixtureOutsideCurrent.length} exact fixture binding(s) are outside the current grading cohort; this cohort narrowing does not establish spec-scoped fixture absence. Excluded binding calibration: ${fixtureOutsideCurrentSummary}.`
+    : null;
+  const fixtureRating: AdequacyRatingEntry = fixtureFreeConflicts.length > 0
+    ? {
+        rating: 'fail',
+        evidence: evidenceWithBindings(
+          `Binding(s) claim fixtureFree=true while also carrying fixture evidence for ${clauseIdentity(clause)}.`,
+          fixtureFreeConflicts,
+        ),
+        suggestion: 'Remove the contradictory fixture-free attestation or bind the fixture evidence under a separate row.',
+      }
+    : unresolvedFixtureProof.length > 0
+      ? {
+          rating: 'unknown',
+          evidence: evidenceWithBindings(
+            (fixtureFreeAttestationUnverified
+              ? fixtureUseRequired
+                ? 'The clause declares fixture use, so binder-authored fixtureFree=true cannot replace calibration evidence for '
+                : 'Binder-authored fixtureFree=true does not establish fixture absence for '
+              : fixtureUseRequired || fixtureBindings.length > 0 || fixtureUseAttested
+                ? 'A fixture is required or used, but no fixture fingerprint or calibration evidence is bound for '
+                : 'A null fixtureFingerprint does not establish fixture-free proof; fixture absence is not independently measured for ') +
+              clauseIdentity(clause) + '.',
+            unresolvedFixtureProof,
+          ),
+          suggestion: fixtureFreeAttestationUnverified
+            ? fixtureUseRequired
+              ? 'Bind a measured fixture fingerprint and calibration proof; fixtureFree=true cannot override fixture use declared by the clause.'
+              : 'Fixture-free status needs independent measurement: an outside-lineage independent-verification of the same measured source, test, run and selected cases; fixtureFree=true alone is binder-authored metadata.'
+            : fixtureUseRequired || fixtureBindings.length > 0 || fixtureUseAttested
+              ? 'Bind a measured fixture fingerprint and calibration proof before rating fixture calibration.'
+              : 'Fixture absence is not independently measured; bind a measured fixture fingerprint and calibration proof or provide independent fixture-absence evidence.',
+        }
+      : fixtureApplicable
+    ? booleanRating(fixtureProofEvidence, (d) => d.fixtureCalibrated, {
         pass: 'An applicable binding explicitly attests fixtureCalibrated=true.',
         fail: 'Applicable binding metadata explicitly attests fixtureCalibrated=false.',
         unknown: 'A fixture is required or used, but no binding attests fixtureCalibrated=true/false.',
       })
     : {
         rating: 'not-applicable',
-        evidence: `No fixture binding or fixture fingerprint is present for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(exactEvidence)}.`,
+        evidence: executableFixtureFreeProof.length > 0
+          ? evidenceWithBindings(
+              executableFixtureFreeProof.some(row => row.id && fixtureAbsenceVerifications.has(row.id))
+                ? `Fixture absence for ${clauseIdentity(clause)} is independently verified for the selected measured executable binding(s); fixture calibration is not applicable. Verification citations: ${JSON.stringify(executableFixtureFreeProof.flatMap(row => row.id ? fixtureAbsenceVerifications.get(row.id) ?? [] : []))}.`
+                : `Executable binding(s) explicitly attest fixtureFree=true for ${clauseIdentity(clause)}; fixture calibration is not applicable.`,
+              executableFixtureFreeProof,
+            )
+          : `No fixture-dependent proof is bound for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(exactEvidence)}.`,
       };
-  ratings['fixture-calibration'] =
-    fixtureOutsideCurrent.length > 0
-      ? {
-          ...fixtureRating,
-          evidence: `${fixtureRating.evidence} ${fixtureOutsideCurrent.length} exact fixture binding(s) are outside the current grading cohort; this cohort narrowing does not establish spec-scoped fixture absence.`,
-        }
-      : fixtureRating;
+  const fixtureCurrentNotCalibratedNote = fixtureRating.rating === 'pass' && fixtureCurrentNotCalibrated.length > 0
+    ? `Current fixture bindings not attesting calibration: ${fixtureCurrentNotCalibratedSummary}.`
+    : null;
+  const fixtureEvidenceNotes = [fixtureCurrentNotCalibratedNote, fixtureOutsideCurrentNote]
+    .filter((note): note is string => note !== null)
+    .join(' ');
+  ratings['fixture-calibration'] = fixtureEvidenceNotes
+    ? { ...fixtureRating, evidence: `${fixtureRating.evidence} ${fixtureEvidenceNotes}` }
+    : fixtureRating;
 
   // EI-22128161413448729: a self-attested `adequacy.falsifiable=true` flag is a WEAKER claim
   // than an actually-bound mutation/counterexample row with a killed/survived outcome — the two
@@ -1341,11 +2876,31 @@ export function evaluateSpecTestAdequacy(input: {
     );
   });
   // The targeting rule (scenario ids, or the WI-10002724 own-specId fallback) lives in
-  // mutationTargetRequirement so plans:bind-spec-evidence refuses at bind exactly what fails here.
+  // mutationTargetRequirement. A syntactically valid target remains a claim until the
+  // mutation run's canonical test file has its own successful test binding to this clause.
   const { selfTarget: clauseSelfTarget, requirement: clauseTargetRequirement } = mutationTargetRequirement(clause);
   const clauseScopedMutationOrCounterexample = boundMutationOrCounterexample.filter((row) =>
-    isAcceptedMutationTarget(clause, detailsOf(row).targeted),
+    isClauseBoundMutationProof(clause, row, evidence),
   );
+  const targetedMutationWithoutTestBinding = boundMutationOrCounterexample.filter(
+    (row) =>
+      isAcceptedMutationTarget(clause, detailsOf(row).targeted) &&
+      !clauseBoundCurrentTest(clause, row, evidence),
+  );
+  const targetedMutationWithoutMatchingCase = boundMutationOrCounterexample.filter(
+    (row) =>
+      isAcceptedMutationTarget(clause, detailsOf(row).targeted) &&
+      clauseBoundCurrentTest(clause, row, evidence) !== null &&
+      !isClauseBoundMutationTest(clause, row, evidence),
+  );
+  const clauseScopedProofBindings = [
+    ...new Set(
+      clauseScopedMutationOrCounterexample.flatMap((row) => [
+        row,
+        clauseBoundMutationTest(clause, row, evidence)!,
+      ]),
+    ),
+  ];
   const exactMutationOrCounterexample = exactEvidence.filter(
     (row) => row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample',
   );
@@ -1385,6 +2940,14 @@ export function evaluateSpecTestAdequacy(input: {
       ? `${mutationInCohortNotExecutable.length} mutation or counterexample binding(s) are in the current grading cohort for ${clauseIdentity(clause)} but do not qualify as successful executable evidence (${summarizeExecutableEvidenceGaps(mutationInCohortNotExecutable)}).`
       : mutationOutsideCohort.length > 0
         ? `${mutationOutsideCohort.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
+      : targetedMutationWithoutTestBinding.length > 0
+        ? `${targetedMutationWithoutTestBinding.length} successful mutation or counterexample binding(s) name ${clauseIdentity(clause)} but their canonical test file is not also bound as a successful current test for this clause.`
+        : targetedMutationWithoutMatchingCase.length > 0
+          ? targetedMutationWithoutMatchingCase.length +
+            ' successful mutation or counterexample binding(s) name ' +
+            clauseIdentity(clause) +
+            ', but the measured failed case is missing or is not an exact member of the successful current same-clause adequacy.testCases binding. ' +
+            summarizeMutationFailedCaseTitles(targetedMutationWithoutMatchingCase)
         : boundMutationOrCounterexample.length > 0
           ? clauseSelfTarget !== null
             ? `Successful mutation or counterexample binding(s) for ${clauseIdentity(clause)} do not target this clause's own specId.`
@@ -1396,19 +2959,24 @@ export function evaluateSpecTestAdequacy(input: {
           rating: 'pass',
           evidence: evidenceWithBindings(
             clauseSelfTarget !== null
-              ? `A bound mutation or counterexample binding targets ${clauseIdentity(clause)} itself, which declares no falsifier.requiredScenarios${clause.falsifier ? ' (its falsifier observation and probe method do not name scenarios)' : ''}.`
-              : `A bound mutation or counterexample binding targets a declared falsifier scenario for ${clauseIdentity(clause)}.`,
-            clauseScopedMutationOrCounterexample,
+              ? `A bound mutation or counterexample targets ${clauseIdentity(clause)} itself, which declares no structured falsifier.requiredScenarios list; its canonical test file is separately bound as a successful current test for this clause.`
+              : `A bound mutation or counterexample targets a declared falsifier scenario for ${clauseIdentity(clause)}; its canonical test file is separately bound as a successful current test for this clause.`,
+            clauseScopedProofBindings,
           ),
         }
       : boundMutationOrCounterexample.length > 0
         ? {
             rating: 'unknown',
             evidence: evidenceWithBindings(
-              `Successful mutation or counterexample binding(s) lack a target matching ${clauseTargetRequirement} for ${clauseIdentity(clause)}; ${unboundMutationReason}`,
+              `Successful mutation or counterexample binding(s) do not establish clause-scoped falsifiability for ${clauseIdentity(clause)}; ${unboundMutationReason}`,
               boundMutationOrCounterexample,
             ),
-            suggestion: `Set adequacy.targeted to ${clauseTargetRequirement}; a boolean or sibling-case target is insufficient.`,
+            suggestion:
+              targetedMutationWithoutTestBinding.length > 0
+                ? `Bind a successful test result for the mutation run's canonical test file to ${clauseIdentity(clause)}; adequacy.targeted alone cannot establish that link.`
+                : targetedMutationWithoutMatchingCase.length > 0
+                  ? 'Add the exact measured failed case title from the mutation run to adequacy.testCases on the successful current same-clause test binding; missing or mismatched case identity cannot establish falsifiability.'
+                : `Set adequacy.targeted to ${clauseTargetRequirement}; a boolean or sibling-case target is insufficient.`,
           }
       : attestedFalsifiableOnly.length > 0
         ? {
@@ -1433,70 +3001,165 @@ export function evaluateSpecTestAdequacy(input: {
                   `No bound evidence demonstrates how ${clauseIdentity(clause)} fails when behavior is wrong.`,
           });
 
-  let layerRating: AdequacyRatingEntry;
+  let layerRating: CorrectLayerEvidencePart;
   if (clause.requiredTestLayers.length === 0) {
-    layerRating = {
-      rating: 'not-applicable',
-      evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseDeclarationProbe(clause, input.harness)}`,
-    };
+    layerRating = boundCorrectLayerPart(
+      'not-applicable',
+      `The clause ${clauseIdentity(clause)} declares no required test layer; layer reachability is not evaluated. ${clauseDeclarationProbe(clause, input.harness)}`,
+      evidence.filter((row) => row.evidenceKind !== 'mutation'),
+    );
   } else {
-    const required = [...new Set(clause.requiredTestLayers.map(normalizedLayer))];
+    const legacyOperationalRequired = clause.requiredTestLayers.find((layer) =>
+      ['behavioral', 'manual-provenance'].includes(normalizedLayer(layer)));
+    const required = [...new Set(clause.requiredTestLayers.map(canonicalRequiredLayer))];
+    const displayLayer = (layer: string) =>
+      legacyOperationalRequired && layer === 'operational'
+        ? `${normalizedLayer(legacyOperationalRequired)} (canonical operational adapter)` : layer;
     const present = new Map<string, boolean | undefined>();
+    const targetMismatchRows = new Map<string, SpecEvidenceForAdequacy[]>();
+    const targetMatchedLayers = new Set<string>();
+    const contradictoryLayerRows: SpecEvidenceForAdequacy[] = [];
     for (const row of evidence) {
       const details = detailsOf(row);
-      if (typeof details.testLayer !== 'string') continue;
-      const layer = normalizedLayer(details.testLayer);
+      const claimedLayer = typeof details.testLayer === 'string' ? normalizedLayer(details.testLayer) : undefined;
+      const measuredLayer = row.testRunExecution?.testLayer;
+      const measuredCases = (details.testCases ?? []).filter((caseTitle) => hasPassingRequiredLayerCase(row, caseTitle));
+      if (
+        row.testRunId === null ||
+        row.testRunExecution?.status?.toLowerCase() !== 'pass' ||
+        row.testRunExecution.failed !== 0 ||
+        row.testRunExecution.collectionFailed !== false ||
+        // Operational is derived by the canonical evidence adapter, not a
+        // Vitest/Playwright recorded runner layer. Keep those vocabularies
+        // separate while accepting the adapter's measured case provenance.
+        (!isRecordedTestLayer(measuredLayer) && measuredLayer !== 'operational') ||
+        measuredCases.length === 0
+      ) {
+        // Preserve an author claim as unresolved so an unmeasured positive cannot
+        // be mistaken for either proof or a measured contradiction.
+        const unresolvedLayer = claimedLayer ? canonicalRequiredLayer(claimedLayer) : undefined;
+        if (unresolvedLayer && required.includes(unresolvedLayer) && !present.has(unresolvedLayer)) {
+          present.set(unresolvedLayer, undefined);
+        }
+        continue;
+      }
+      const layer = normalizedLayer(measuredLayer);
+      const relevantLayers = [...new Set([
+        canonicalRequiredLayer(layer),
+        ...(claimedLayer ? [canonicalRequiredLayer(claimedLayer)] : []),
+      ])].filter((requiredLayer) => required.includes(requiredLayer));
+      // Evidence belonging to another canonical clause is outside this clause's
+      // population. For a row bound to this exact revision, however, an absent or
+      // sibling adequacy.targeted is unresolved target evidence, not layer coverage.
+      if (!bindingIdentityMatchesClause(row, clause)) continue;
+      if (!bindingTargetsClause(row, clause)) {
+        for (const requiredLayer of relevantLayers) {
+          const rows = targetMismatchRows.get(requiredLayer) ?? [];
+          rows.push(row);
+          targetMismatchRows.set(requiredLayer, rows);
+        }
+        continue;
+      }
+      for (const requiredLayer of relevantLayers) targetMatchedLayers.add(requiredLayer);
+      const legacyOperationalClaim =
+        legacyOperationalRequired &&
+        row.evidenceKind === 'operational' &&
+        (claimedLayer === 'behavioral' || claimedLayer === 'manual-provenance') &&
+        layer === 'operational';
+      if (claimedLayer && claimedLayer !== layer && !legacyOperationalClaim) {
+        if (required.includes(canonicalRequiredLayer(claimedLayer)) || required.includes(layer)) {
+          contradictoryLayerRows.push(row);
+          const claimedRequirement = canonicalRequiredLayer(claimedLayer);
+          if (required.includes(claimedRequirement)) present.set(claimedRequirement, false);
+          if (required.includes(layer)) present.set(layer, false);
+        }
+        continue;
+      }
       if (!required.includes(layer)) continue;
       const prior = present.get(layer);
       present.set(layer, prior === true || details.pathReachable === true ? true : details.pathReachable);
     }
-    const missing = required.filter((layer) => !present.has(layer));
+    const unresolvedTarget = required.filter(
+      (layer) => targetMismatchRows.has(layer) && !targetMatchedLayers.has(layer),
+    );
+    const missing = required.filter((layer) => !present.has(layer) && !unresolvedTarget.includes(layer));
     const unreachable = required.filter((layer) => present.get(layer) === false);
-    const unresolved = required.filter((layer) => present.get(layer) === undefined);
+    const unresolved = required.filter(
+      (layer) => present.get(layer) === undefined || unresolvedTarget.includes(layer),
+    );
     layerRating =
-      missing.length || unreachable.length
-        ? {
-            rating: 'fail',
-            evidence: `${evidenceWithBindings(
-              `Required layer/path gaps for ${clauseIdentity(clause)}: ${[
-                ...missing.map((layer) => `${layer}:missing`),
-                ...unreachable.map((layer) => `${layer}:unreachable`),
-              ].join(', ')}.`,
-              evidence,
-            )} ${clauseDeclarationProbe(clause, input.harness)}`,
-            suggestion: 'Bind proof for every requiredTestLayer and attest that it reaches the real path.',
-          }
-        : unresolved.length
-          ? {
-              rating: 'unknown',
-              evidence: evidenceWithBindings(
-                `Required layer(s) are represented but path reachability is unverified for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
+      contradictoryLayerRows.length || missing.length || unreachable.length
+        ? boundCorrectLayerPart(
+            'fail',
+            `Required layer/path gaps for ${clauseIdentity(clause)}: ${[
+              ...contradictoryLayerRows.map((row) => {
+                const details = detailsOf(row);
+                return `testLayer-claim-mismatch:${String(details.testLayer)}!=${String(row.testRunExecution?.testLayer)}`;
+              }),
+              ...missing.map((layer) => `${displayLayer(layer)}:missing`),
+              ...unreachable.map((layer) => `${displayLayer(layer)}:unreachable`),
+            ].join(', ')}.`,
+            [...new Set([...contradictoryLayerRows, ...evidence])],
+            'Bind passing measured evidence for every requiredTestLayer; its canonical layer and exact passing case or LLM scenario must match the binding, with path reachability attested.',
+            ` ${clauseDeclarationProbe(clause, input.harness)}`,
+          )
+        : unresolvedTarget.length > 0
+          ? boundCorrectLayerPart(
+              'unknown',
+              `Required layer(s) have passing case evidence whose binding target does not identify the exact clause ${clause.planItemId}/${clauseIdentity(clause)}: ${unresolvedTarget.map(displayLayer).join(', ')}.`,
+              unresolvedTarget.flatMap((layer) => targetMismatchRows.get(layer) ?? []),
+              `Bind passing measured evidence to ${clause.planSlug}/${clause.planItemId}/${clause.specId}@${clause.revision} ` +
+                `(${clause.contentHash}) with adequacy.targeted=${JSON.stringify(clause.specId)}; missing, boolean, and sibling-clause targets remain unknown.`,
+            )
+          : unresolved.length
+            ? boundCorrectLayerPart(
+                'unknown',
+                `Required layer(s) are represented but path reachability is unverified for ${clauseIdentity(clause)}: ${unresolved.map(displayLayer).join(', ')}.`,
                 evidence.filter((row) => {
                   const details = detailsOf(row);
+                  const measuredLayer = row.testRunExecution?.testLayer;
                   return (
-                    typeof details.testLayer === 'string' && unresolved.includes(normalizedLayer(details.testLayer))
+                    (typeof details.testLayer === 'string' && unresolved.includes(canonicalRequiredLayer(details.testLayer))) ||
+                    (isRecordedTestLayer(measuredLayer) && unresolved.includes(normalizedLayer(measuredLayer)))
                   );
                 }),
-              ),
-            }
-          : {
-              rating: 'pass',
-              evidence: evidenceWithBindings(
-                `Every required layer reaches the claimed path for ${clauseIdentity(clause)}: ${required.join(', ')}.`,
+                `Rebind passing measured evidence whose server-measured testLayer is one of the required layers (${unresolved.map(displayLayer).join(', ')}), ` +
+                  'whose exact passedCaseTitles (or canonical llm-test scenarioId and executed file) corroborate adequacy.testCases, and whose adequacy.testLayer claim matches the measured layer; binder-only layer/path claims remain unknown.',
+              )
+            : boundCorrectLayerPart(
+                'pass',
+                `Every required layer reaches the claimed path for ${clauseIdentity(clause)}: ${required.map(displayLayer).join(', ')}.`,
                 evidence.filter((row) => {
                   const details = detailsOf(row);
-                  return (
+                  const measuredLayer = row.testRunExecution?.testLayer;
+                  const measuredRecordedLayer = isRecordedTestLayer(measuredLayer);
+                  const measuredOperationalLayer =
+                    row.evidenceKind === 'operational' && measuredLayer === 'operational';
+                  const operationalCompatibilityClaim =
+                    legacyOperationalRequired &&
+                    measuredOperationalLayer &&
                     typeof details.testLayer === 'string' &&
-                    required.includes(normalizedLayer(details.testLayer)) &&
+                    ['behavioral', 'manual-provenance'].includes(normalizedLayer(details.testLayer));
+                  const claimMatchesMeasurement =
+                    details.testLayer === undefined ||
+                    (typeof details.testLayer === 'string' &&
+                      ((measuredRecordedLayer && normalizedLayer(details.testLayer) === normalizedLayer(measuredLayer)) ||
+                        operationalCompatibilityClaim));
+                  return (
+                    row.testRunId !== null &&
+                    ((row.evidenceKind === 'test' && measuredRecordedLayer) || measuredOperationalLayer) &&
+                    bindingTargetsClause(row, clause) &&
+                    required.includes(normalizedLayer(measuredLayer)) &&
+                    claimMatchesMeasurement &&
+                    (details.testCases ?? []).some((caseTitle) => hasPassingRequiredLayerCase(row, caseTitle)) &&
                     details.pathReachable === true
                   );
                 }),
-              ),
-            };
+              );
   }
 
   const requiredScenarios = [...new Set(clause.falsifier?.requiredScenarios ?? [])].sort();
-  let scenarioRating: AdequacyRatingEntry | null = null;
+  let scenarioRating: CorrectLayerEvidencePart | null = null;
   if (requiredScenarios.length > 0) {
     const malformedScenarioRows = evidence.filter((row) =>
       detailsOf(row).contractMetadataIssues?.includes('scenarioIds:invalid'),
@@ -1508,34 +3171,49 @@ export function evaluateSpecTestAdequacy(input: {
     const missing = requiredScenarios.filter((scenario) => !covered.has(scenario));
     scenarioRating =
       missing.length > 0
-        ? {
-            rating: 'fail',
-            evidence: evidenceWithBindings(
-              `Canonical acceptance scenario(s) are not covered by successful ledger-backed path proof for ${clauseIdentity(clause)}: ${missing.join(', ')}. Required scenarios: ${requiredScenarios.join(', ')}.`,
-              successfulScenarioRows,
-            ),
-            suggestion:
-              'Bind successful executed proof whose adequacy.scenarioIds cover every falsifier.requiredScenarios id.',
-          }
+        ? boundCorrectLayerPart(
+            'fail',
+            `Canonical acceptance scenario(s) are not covered by successful ledger-backed path proof for ${clauseIdentity(clause)}: ${missing.join(', ')}. Required scenarios: ${requiredScenarios.join(', ')}.`,
+            successfulScenarioRows,
+            'Bind successful executed proof whose adequacy.scenarioIds cover every falsifier.requiredScenarios id.',
+          )
         : malformedScenarioRows.length > 0
-          ? {
-              rating: 'unknown',
-              evidence: evidenceWithBindings(
-                `All named scenarios are represented, but malformed scenarioIds metadata prevents a complete scenario-cohort verdict for ${clauseIdentity(clause)}.`,
-                malformedScenarioRows,
+          ? boundCorrectLayerPart(
+              'unknown',
+              `All named scenarios are represented, but malformed scenarioIds metadata prevents a complete scenario-cohort verdict for ${clauseIdentity(clause)}.`,
+              malformedScenarioRows,
+              'Supersede malformed bindings with schema-valid adequacy.scenarioIds.',
+            )
+          : boundCorrectLayerPart(
+              'pass',
+              `Every canonical acceptance scenario has successful ledger-backed path proof for ${clauseIdentity(clause)}: ${requiredScenarios.join(', ')}.`,
+              successfulScenarioRows.filter((row) =>
+                (detailsOf(row).scenarioIds ?? []).some((scenario) => requiredScenarios.includes(scenario)),
               ),
-              suggestion: 'Supersede malformed bindings with schema-valid adequacy.scenarioIds.',
-            }
-          : {
-              rating: 'pass',
-              evidence: evidenceWithBindings(
-                `Every canonical acceptance scenario has successful ledger-backed path proof for ${clauseIdentity(clause)}: ${requiredScenarios.join(', ')}.`,
-                successfulScenarioRows.filter((row) =>
-                  (detailsOf(row).scenarioIds ?? []).some((scenario) => requiredScenarios.includes(scenario)),
-                ),
-              ),
-            };
+            );
   }
+  // Required evidence strings are generally descriptive, but exact canonical evidence-kind
+  // tokens are executable requirements. Check them against the active rows for this pinned
+  // revision so a declared kind cannot disappear behind unrelated passing evidence.
+  // `fixture` has its own fixture-calibration path below and is intentionally excluded here.
+  const requiredEvidenceKinds = [...new Set(clause.requiredEvidence
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry): entry is SpecEvidenceKind =>
+      entry !== 'fixture' && SPEC_EVIDENCE_KINDS.includes(entry as SpecEvidenceKind),
+    ))];
+  const boundEvidenceKinds = new Set(exactEvidence.map((row) => row.evidenceKind));
+  const missingEvidenceKinds = requiredEvidenceKinds.filter((kind) => !boundEvidenceKinds.has(kind));
+  const evidenceKindRating: CorrectLayerEvidencePart | null = requiredEvidenceKinds.length === 0 ? null
+    : missingEvidenceKinds.length > 0
+      ? plainCorrectLayerPart(
+          'fail',
+          `Required evidence kind(s) are absent from active bindings for ${clauseIdentity(clause)} at revision ${clause.revision}: ${missingEvidenceKinds.join(', ')}.`,
+          'Bind active evidence of each required evidence kind to this exact clause revision.',
+        )
+      : plainCorrectLayerPart(
+          'pass',
+          `Active bindings at revision ${clause.revision} cover the required evidence kind(s) for ${clauseIdentity(clause)}: ${requiredEvidenceKinds.join(', ')}.`,
+        );
   // A standalone clause can require a live or deployed observation without a source BAR.
   // The BAR ship gate checks its own evidence plane, but cannot cover such a clause.
   // Inspect only current-cohort bindings and use the same explicit plane metadata as
@@ -1543,22 +3221,50 @@ export function evaluateSpecTestAdequacy(input: {
   const requiredPlanes = [...new Set(clause.requiredEvidence
     .map((entry) => entry.trim().toLowerCase())
     .filter((entry) => entry === 'live' || entry === 'deployed'))];
-  const presentPlanes = new Set(currentEvidence.flatMap((row) => {
+  const planeBindings = currentEvidence.filter((row) => {
+    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+    return typeof plane === 'string' && requiredPlanes.some((requiredPlane) => requiredPlane === plane.trim().toLowerCase());
+  });
+  const presentPlanes = new Set(planeBindings.flatMap((row) => {
     const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
     return typeof plane === 'string' ? [plane.trim().toLowerCase()] : [];
   }));
   const missingPlanes = requiredPlanes.filter((plane) => !presentPlanes.has(plane));
-  const planeRating: AdequacyRatingEntry | null = requiredPlanes.length === 0 ? null : missingPlanes.length > 0
-    ? {
-        rating: 'fail',
-        evidence: `Required evidence plane(s) are absent for ${clauseIdentity(clause)}: ${missingPlanes.join(', ')}.`,
-        suggestion: 'Bind current evidence with an explicit matching evidencePlane for each requiredEvidence plane.',
-      }
-    : {
-        rating: 'pass',
-        evidence: `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
-      };
-  const parts = [layerRating, scenarioRating, planeRating].filter((part): part is AdequacyRatingEntry => part !== null);
+  const planeBlockerRows = missingPlanes.length === 0 ? [] : exactEvidence.filter((row) => {
+    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+    const normalizedPlane = typeof plane === 'string' ? plane.trim().toLowerCase() : null;
+    const recognizedPlane = normalizedPlane === 'live' || normalizedPlane === 'deployed' ? normalizedPlane : null;
+    const planeMatchesMissingRequirement = recognizedPlane !== null && missingPlanes.includes(recognizedPlane);
+    const evidenceKindCanSatisfyPlane = ['manual', 'operational', 'independent-verification'].includes(row.evidenceKind);
+    const isNotCurrent = !currentEvidence.includes(row);
+    return (
+      (planeMatchesMissingRequirement && isNotCurrent) ||
+      (evidenceKindCanSatisfyPlane && (recognizedPlane === null || !requiredPlanes.includes(recognizedPlane)))
+    );
+  });
+  const planeRating: CorrectLayerEvidencePart | null = requiredPlanes.length === 0 ? null : missingPlanes.length > 0
+    ? boundCorrectLayerPart(
+        'fail',
+        `Required evidence plane(s) are absent from current bindings for ${clauseIdentity(clause)}: ${missingPlanes.join(', ')}. ` +
+          (planeBlockerRows.length > 0
+            ? 'Non-current or plane-mismatched manual/operational binding(s) are listed below for inspection.'
+            : 'No current binding declares one of the required planes.'),
+        planeBlockerRows,
+        'Bind current evidence with an explicit matching evidencePlane for each requiredEvidence plane.',
+      )
+    : boundCorrectLayerPart(
+        'pass',
+        `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
+        planeBindings,
+      );
+  const parts = [
+    layerRating,
+    sourceBarTestSuiteRating(clause, evidence, input.sourceBarTestRequirements),
+    scenarioRating,
+    evidenceKindRating,
+    planeRating,
+  ]
+    .filter((part): part is CorrectLayerEvidencePart => part !== null);
   const combinedRating: AdequacyRating = parts.some((part) => part.rating === 'fail')
     ? 'fail'
     : parts.some((part) => part.rating === 'unknown')
@@ -1568,7 +3274,14 @@ export function evaluateSpecTestAdequacy(input: {
         : 'pass';
   ratings['correct-layer'] = {
     rating: combinedRating,
-    evidence: parts.map((part) => part.evidence).join(' '),
+    evidence:
+      evidenceWithBindings(
+        parts.map((part) => part.statement).join(' '),
+        uniqueBindingRows(parts.flatMap((part) => part.bindingRows)),
+      ) + correctLayerMutationExclusion(
+        evidence,
+        uniqueBindingRows(parts.flatMap((part) => part.bindingRows)),
+      ),
     ...((parts.map((part) => part.suggestion).filter(Boolean).length > 0)
       ? { suggestion: parts.map((part) => part.suggestion).filter(Boolean).join(' ') }
       : {}),
@@ -1582,93 +3295,82 @@ export function evaluateSpecTestAdequacy(input: {
 
   const executable = evidence.filter((row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind));
   const unbackedExecution = executable.filter((row) => !hasExecutionLedgerReference(row));
-  const explicitBadExecutionRows = executable.filter((row) => {
-    const d = detailsOf(row);
-    return (
-      d.collected === false ||
-      d.skipped === true ||
-      d.executed === false ||
-      FAILURE_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-    );
-  });
+  const unmeasuredTestRunExecution = executable.filter(
+    (row) => row.testRunId !== null && row.testRunExecution === null,
+  );
+  const explicitBadExecutionRows = executable.filter((row) => measuredExecutionVerdict(row) === 'fail');
   const explicitBadExecution = explicitBadExecutionRows.length > 0;
-  const successfulExecution = executable.some((row) => {
-    const d = detailsOf(row);
-    return (
-      hasExecutionLedgerReference(row) &&
-      d.collected === true &&
-      d.skipped === false &&
-      d.executed === true &&
-      SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-    );
-  });
-  const incompleteMeasuredExecution = executable.filter((row) => {
-    if (!row.details.testExecution) return false;
-    const d = detailsOf(row);
-    return (
-      d.collected !== true ||
-      d.skipped !== false ||
-      d.executed !== true ||
-      !SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-    );
-  });
+  const successfulExecution = executable.some((row) => measuredExecutionVerdict(row) === 'pass');
+  const incompleteMeasuredExecution = executable.filter((row) => measuredExecutionVerdict(row) === 'unknown');
   const executionRating: AdequacyRatingEntry = explicitBadExecution
     ? {
         rating: 'fail',
         evidence: evidenceWithBindings(
-          `At least one relied-on binding reports an uncollected, skipped, unexecuted, or failing outcome for ${clauseIdentity(clause)}.`,
+          'Canonical test_runs execution-integrity predicates failed for ' + clauseIdentity(clause) + ': ' +
+            explicitBadExecutionRows.map(executionFailureDetails).join('; ') + '.',
           explicitBadExecutionRows,
         ),
         // P-019: bindings are append-only, so an older failing attempt keeps failing this
         // criterion beside a newer passing one until it is withdrawn.
-        ...(successfulExecution ? { suggestion: SUPERSEDE_DRAGGING_SUGGESTION } : {}),
+        ...(successfulExecution
+          ? { suggestion: SUPERSEDE_DRAGGING_SUGGESTION }
+          : { suggestion: executionFailureSuggestion(explicitBadExecutionRows) }),
       }
     : unbackedExecution.length > 0
       ? {
           rating: 'unknown',
           evidence: evidenceWithBindings(
-            `Executable binding(s) attest execution details but have no testRunId or coverageEvidenceRef in the execution ledger for ${clauseIdentity(clause)}; author-attested booleans cannot establish execution-integrity.`,
+            `Executable binding(s) attest execution details but have no durable ledger reference for ${clauseIdentity(clause)}; author-attested booleans cannot establish execution-integrity.`,
             unbackedExecution,
           ),
           suggestion:
-            'Bind a recorded testRunId or coverageEvidenceRef; details.adequacy booleans alone are insufficient.',
+            'Bind a recorded testRunId with valid test_runs status and execution_details; binding metadata alone is insufficient.',
         }
-      : incompleteMeasuredExecution.length > 0
-        ? {
-            rating: 'unknown',
-            evidence: evidenceWithBindings(
-              `Active measured test attempts have incomplete execution proof for ${clauseIdentity(clause)}.`,
-              incompleteMeasuredExecution,
-            ),
-          }
-        : successfulExecution
+        : unmeasuredTestRunExecution.length > 0
           ? {
-              rating: 'pass',
+              rating: 'unknown',
               evidence: evidenceWithBindings(
-                `Bound proof was collected, not skipped, executed, and produced a successful outcome for ${clauseIdentity(clause)}.`,
-                executable.filter((row) => {
-                  const d = detailsOf(row);
-                  return (
-                    d.collected === true &&
-                    d.skipped === false &&
-                    d.executed === true &&
-                    SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-                  );
-                }),
+                `Bound testRunId(s) have absent or invalid execution_details, so canonical status, counts, and case identities cannot be verified for ${clauseIdentity(clause)}.`,
+                unmeasuredTestRunExecution,
               ),
+              suggestion: 'Re-record the test run with valid test_runs status and execution_details before relying on it.',
             }
-          : {
-              rating: executable.length ? 'unknown' : 'fail',
-              evidence: executable.length
-                ? evidenceWithBindings(
-                    `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
-                    executable,
-                  )
-                : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
-              // EI-23958122348412546: with zero executable rows this 'fail' reports ABSENCE,
-              // not bad evidence — the non-code exemption below must be able to reach it.
-              ...(executable.length ? {} : { absenceOnly: true }),
-            };
+          : incompleteMeasuredExecution.length > 0
+            ? {
+                rating: 'unknown',
+                evidence: evidenceWithBindings(
+                  `Executable bindings have no complete canonical test_runs status/count verdict for ${clauseIdentity(clause)}.`,
+                  incompleteMeasuredExecution,
+                ),
+                suggestion: 'Attach a testRunId whose canonical status and execution_details establish a passing run (or a measured killed mutation).',
+            }
+            : successfulExecution
+              ? {
+                  rating: 'pass',
+                  evidence: [
+                    evidenceWithBindings(
+                      `Canonical test_runs status/counts and selected case identities show the bound proof scope was collected, not skipped, executed, and successful for ${clauseIdentity(clause)}.`,
+                      executable.filter((row) => measuredExecutionVerdict(row) === 'pass'),
+                    ),
+                    ...(executable.some((row) => measuredExecutionVerdict(row) === 'pass' && hasUnmatchedPassingCaseDeclaration(row))
+                      ? [
+                          'Unmatched adequacy.testCases labels remain visible in the per-run detail but do not invalidate execution-integrity for a non-skipped passing run, which measures canonical runner status/counts; a skipped ordinary run requires every declared case to have canonically passed. correct-layer separately checks required-layer reachability using at least one corroborated declared case per required layer.',
+                        ]
+                      : []),
+                  ].join(' '),
+                }
+              : {
+                  rating: executable.length ? 'unknown' : 'fail',
+                  evidence: executable.length
+                    ? evidenceWithBindings(
+                        `Executable bindings exist for ${clauseIdentity(clause)}, but collection/skip/execution/outcome metadata is incomplete.`,
+                        executable,
+                      )
+                    : `No executable test/check/mutation/counterexample/coverage/operational proof is bound for ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
+                  // EI-23958122348412546: with zero executable rows this 'fail' reports ABSENCE,
+                  // not bad evidence — the non-code exemption below must be able to reach it.
+                  ...(executable.length ? {} : { absenceOnly: true }),
+                };
 
   let causalPairRating: AdequacyRatingEntry | null = null;
   if (clause.falsifier?.causalPairing === 'one-to-one') {
@@ -1787,9 +3489,8 @@ export function evaluateSpecTestAdequacy(input: {
           evidence.filter((row) => row.currentness.overall === 'stale'),
         ),
         // P-019: a stale row drags this criterion even when a current sibling proves the clause.
-        suggestion: evidence.some((row) => row.currentness.overall === 'current')
-          ? SUPERSEDE_DRAGGING_SUGGESTION
-          : 'Re-run the stale proof (testing:run with evidence) so the server re-measures it against current source.',
+        // EI-25215634977268694: name supersession only when it would actually clear the rows.
+        suggestion: freshnessDragSuggestion(evidence),
       }
     : freshnessStates.includes('unknown')
       ? {
@@ -1899,9 +3600,31 @@ export function evaluateSpecTestAdequacy(input: {
   // could record a known hole in the proof on the binding and still collect a
   // machine PASS, because no evaluator field read the disclosure — so the gap
   // travelled with the evidence while the verdict said the clause was proven.
-  // Reading it here makes the disclosure cost something: it fails, and the gap
-  // text itself is named in the would-block reason rather than left on the row.
-  const disclosedGapRows = evidence.filter((row) => (detailsOf(row).disclosedGap ?? []).length > 0);
+  // Re-binding the same immutable proof can also append a newer metadata row
+  // without the disclosure. Keep that gap attached to the active logical
+  // reference while its run/fingerprints are unchanged, and until changed proof
+  // is server-current. A stale or unknown replacement has not closed the gap.
+  const disclosedGapRows = exactDisclosedGapMatches.filter((row) => {
+    if ((detailsOf(row).disclosedGap ?? []).length === 0) return false;
+    const active = activeDisclosedGapByLogicalReference.get(logicalEvidenceReferenceKey(row));
+    if (!active) return false;
+    return proofIdentity(row) === proofIdentity(active) || active.currentness.overall !== 'current';
+  });
+  const freeFormNoteRows = exactDisclosedGapMatches.filter((row) => {
+    const note = row.details.note;
+    if (typeof note !== 'string' || note.trim().length === 0) return false;
+    const active = activeDisclosedGapByLogicalReference.get(logicalEvidenceReferenceKey(row));
+    if (!active) return false;
+    return proofIdentity(row) === proofIdentity(active) || active.currentness.overall !== 'current';
+  });
+  const noDisclosureStatement =
+    'No bound proof for ' +
+    clauseIdentity(clause) +
+    ` records a structured author-disclosed gap. Checked ${activeDisclosedGapEvidence.length} active binding(s) for the clause.` +
+    bindingNotesSummary(freeFormNoteRows) +
+    (freeFormNoteRows.length > 0
+      ? ' Record any coverage limitation under details.adequacy.disclosedGap so machine grading blocks it.'
+      : '');
   ratings['disclosed-gap'] =
     disclosedGapRows.length > 0
       ? {
@@ -1922,25 +3645,33 @@ export function evaluateSpecTestAdequacy(input: {
           // provisional one especially), including the criteria that found nothing.
           evidence:
             evidence.length > 0
-              ? evidenceWithBindings(
-                  `No bound proof for ${clauseIdentity(clause)} records a disclosed gap.`,
-                  evidence,
-                )
-              : `No bound proof for ${clauseIdentity(clause)} records a disclosed gap.`,
+              ? evidenceWithBindings(noDisclosureStatement, evidence)
+              : noDisclosureStatement,
         };
 
   // P-019: surface the ledger requirement on every ledger-gated criterion that is still
   // short of proof, where the binder reads the refusal, not in a doc they must find first.
+  const executionNeedsLedgerHint =
+    executable.length === 0 ||
+    (explicitBadExecutionRows.length === 0 &&
+      (unbackedExecution.length > 0 || incompleteMeasuredExecution.some((row) => row.testRunId === null)));
   for (const criterion of ['falsifiability', 'execution-integrity', 'traceability'] as const) {
     const current = ratings[criterion];
     if (current.rating !== 'fail' && current.rating !== 'unknown') continue;
+    if (criterion === 'execution-integrity' && !executionNeedsLedgerHint) continue;
     ratings[criterion] = {
       ...current,
       suggestion: current.suggestion ? `${current.suggestion} ${LEDGER_PROOF_HINT}` : LEDGER_PROOF_HINT,
     };
   }
 
-  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current, input.harness, classRef, input.rerunSelection);
+  // Store ceilings apply before logical evidence consolidation, and replay also
+  // loads the unselected clause bindings for its universal disclosure check.
+  // Preserve headroom for both reads without widening the exact binding selector.
+  const rerunRecipe = rerunRecipeFor(
+    clause, evidence, input.current, input.harness, classRef, input.rerunSelection,
+    Math.max(exactSelectorMatches.length, exactDisclosedGapMatches.length),
+  );
   appendRatingRerunProbes(ratings, rerunRecipe);
 
   const wouldBlock = ADEQUACY_CRITERIA.filter((key) => ['fail', 'unknown'].includes(ratings[key].rating));
@@ -1949,22 +3680,33 @@ export function evaluateSpecTestAdequacy(input: {
   // absence has no such row and is omitted rather than reported with an empty list.
   const draggingRows: Partial<Record<AdequacyCriterion, SpecEvidenceForAdequacy[]>> = {
     traceability: ephemeralEvidence.length > 0 ? ephemeralEvidence : unknownLineageEvidence,
-    'fixture-calibration': evidence.filter((row) => detailsOf(row).fixtureCalibrated === false),
+    'fixture-calibration': [
+      ...evidence.filter((row) => {
+        const details = detailsOf(row);
+        return details.fixtureCalibrated === false || details.fixtureFree === false;
+      }),
+      ...unresolvedFixtureProof,
+    ],
     falsifiability: [
       ...evidence.filter((row) => detailsOf(row).falsifiable === false),
       ...mutationInCohortNotExecutable,
     ],
-    'correct-layer': evidence.filter((row) => detailsOf(row).pathReachable === false),
+    'correct-layer': [
+      ...evidence.filter((row) => detailsOf(row).pathReachable === false),
+      ...planeBlockerRows,
+    ],
     'oracle-independence': evidence.filter((row) => detailsOf(row).oracleIndependent === false),
     'execution-integrity': explicitBadExecution
       ? explicitBadExecutionRows
       : unbackedExecution.length > 0
         ? unbackedExecution
-        : incompleteMeasuredExecution.length > 0
-          ? incompleteMeasuredExecution
-          : successfulExecution
-            ? []
-            : executable,
+        : unmeasuredTestRunExecution.length > 0
+          ? unmeasuredTestRunExecution
+          : incompleteMeasuredExecution.length > 0
+            ? incompleteMeasuredExecution
+            : successfulExecution
+              ? []
+              : executable,
     freshness: evidence.some((row) => row.currentness.overall === 'stale')
       ? evidence.filter((row) => row.currentness.overall === 'stale')
       : evidence.filter((row) => row.currentness.overall === 'unknown'),
@@ -1994,6 +3736,26 @@ export function evaluateSpecTestAdequacy(input: {
   const rawRefs = evidenceRefs.join(', ') || '(none)';
   const bodyRefs =
     rawRefs.length <= 7_000 ? rawRefs : `${rawRefs.slice(0, 6_980)}… (see evidenceRefs for the full set)`;
+  const cardEvidence = scorecardBindingEvidence(ratings, [
+    ...exactEvidence,
+    ...disclosedGapRows,
+    ...freeFormNoteRows,
+  ], rerunRecipe);
+  const replayInstructions =
+    `Replay instructions: execute the card-level rerunRecipe (${rerunRecipe.evaluator}) once with its stored args. ` +
+    'Compare each returned criterion rating with this card and the current evidence. Replay remeasures currentness at replay time, so freshness-dependent ratings can differ after evidence changes. ' +
+    'It is not a historical as-of replay; grading-integrity audits reconstruct this card from its creation-time snapshot.';
+  const cardBody = `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.\n\n${replayInstructions}`;
+  // emit caps body at 8,000 characters. Keep the full shared proof in an existing
+  // uncapped criterion evidence field when it cannot fit, with an explicit pointer
+  // for every B reference. This changes presentation only, never evaluator ratings.
+  const tableInBody = cardBody.length + cardEvidence.table.length <= 8_000;
+  if (!tableInBody) {
+    cardEvidence.ratings.traceability = {
+      ...cardEvidence.ratings.traceability,
+      evidence: cardEvidence.ratings.traceability.evidence + cardEvidence.table,
+    };
+  }
   return {
     planSlug: clause.planSlug,
     specId: clause.specId,
@@ -2012,8 +3774,10 @@ export function evaluateSpecTestAdequacy(input: {
       rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
       subject: { kind: 'plan', ref: subjectRef },
       title: `${clause.specId}@${clause.revision} test adequacy`,
-      body: `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.`,
-      ratings,
+      body: tableInBody
+        ? cardBody + cardEvidence.table
+        : cardBody + '\n\nShared binding evidence (B1, B2, ...) resolves in the traceability criterion evidence.',
+      ratings: cardEvidence.ratings,
       rerunRecipe,
       terminal: true,
     },

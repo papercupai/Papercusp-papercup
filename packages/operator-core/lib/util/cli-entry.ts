@@ -18,8 +18,8 @@
  * The sidecar bundle is built with `--define:__PAPERCUSP_BUNDLED_SIDECAR__=true`
  * (see `papercusp-desktop/bin/build-desktop-sidecar.sh`). In that build an
  * inlined library module is NEVER the real entry — the bundle entry
- * (`apps/operator/bin/serve.ts`) boots unconditionally and does not use this
- * helper — so we report `false` and no library `main()` fires.
+ * (`apps/operator/bin/serve.ts`) uses isBundledEntry('serve.mjs') instead —
+ * so we report `false` and no library `main()` fires.
  *
  * Outside the bundle (tsx, dev, vitest) the define is absent, so we fall back
  * to the real path comparison: `tsx some-cli.ts` still self-executes exactly
@@ -28,12 +28,23 @@
  * symmetric fix for the ESM `import.meta.url` idiom.
  */
 import { realpathSync } from 'node:fs';
+import { basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // Injected by esbuild (`--define`) only in the desktop-sidecar bundle. Absent
 // (a genuine `undefined` global) under tsx/dev/test — read it via `typeof` so
 // that reference never throws.
 declare const __PAPERCUSP_BUNDLED_SIDECAR__: boolean | undefined;
+
+/** Only the named bundled executable may boot; inlined library CLIs stay inert. */
+export function isBundledEntry(bundleBasename: string): boolean {
+  return (
+    typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined' &&
+    __PAPERCUSP_BUNDLED_SIDECAR__ === true &&
+    Boolean(process.argv[1]) &&
+    basename(process.argv[1]!) === bundleBasename
+  );
+}
 
 /**
  * True iff `importMetaUrl` is the directly-executed entrypoint — i.e. the file

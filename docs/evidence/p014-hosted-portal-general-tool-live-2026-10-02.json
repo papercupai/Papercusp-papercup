@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "EAA P-014 leg (a), R-43: an app on another network (a GCP VM) runs the allowlisted general MCP tool work_items:list on a Papercusp-hosted workspace through the portal with a limited OAuth-minted app key and gets its result (live, 2026-10-02 re-run)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "external-app-access-to-workspaces-2026-09-29",
+  "workItem": "WI-10004027",
+  "specs": [
+    "AUTO-BAR-R-43-P-014"
+  ],
+  "observer": "su-e445ff19-9904-4cb9-9694-88cb40f1ec82",
+  "outcome": "passed",
+  "command": [
+    "bash .papercusp/scratch/eaa/p014/a2r43-hosted.sh r43-5"
+  ],
+  "assertions": [
+    {
+      "id": "limited-key-includes-general-tool",
+      "passed": true,
+      "evidence": "P014_OK the hosted machine minted an app key over the relay (scope: tool:blueprint:submit tool:blueprint:status tool:work_items:list harness:p014a-085838)"
+    },
+    {
+      "id": "general-tool-listed",
+      "passed": true,
+      "evidence": "P014_OK tools/list lists the granted blueprint tools; P014_OK tools/list also lists the granted general tool work_items:list"
+    },
+    {
+      "id": "general-tool-result-from-another-network",
+      "passed": true,
+      "evidence": "P014_OK the app on another network ran the allowlisted general tool work_items:list on the hosted workspace through the portal and got its result"
+    },
+    {
+      "id": "key-stays-limited",
+      "passed": true,
+      "evidence": "P014_OK a tool outside the consented scope is refused (plans:list)"
+    },
+    {
+      "id": "rest-of-leg-a",
+      "passed": true,
+      "evidence": "a2-r43-5.log: 20 P014_OK lines (expected 20), 0 P014_FAIL, 0 retry lines. Covered: including no-key/bad-key 401, MCP OAuth discovery, consent, single-use code, blueprint submit + replay + status through the portal; 0 P014_FAIL, 0 retries."
+    }
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-02T08:58:38Z",
+  "finishedAt": "2026-10-02T09:00:36Z",
+  "rig": {
+    "log": ".papercusp/scratch/eaa/p014/a2-r43-5.log (20 P014_OK, 0 P014_FAIL); per-step bodies in .papercusp/scratch/eaa/p014/a2-r43-5/ (access tokens redacted at capture)",
+    "script": ".papercusp/scratch/eaa/p014/a2r43-hosted.sh = a2-hosted.sh (the R-31 run) with tool:work_items:list added to the requested scope, a work_items:list call that must answer, and plans:list as the out-of-scope probe",
+    "portal": "https://app.papercusp.com, workspace ws-2802cefffb052f989eae2969",
+    "hostedMachine": "pc-host-2802cefffb052f989eae2969-6b67e4ba-vm",
+    "appClient": "GCP VM pc-host-560adc2a196edd88206fb582-190a4acd-vm, public address 34.70.0.169: a different network from both the portal and the hosted machine",
+    "oauthClient": "pcoc_sImHe86BR-qieMD2MzVUMg",
+    "hostedMachineBuild": "papercusp-operator sha 549ebc0879a03172d415cbdd5e6a4dd1fb704948 version 0.0.26, read from the machine's own /api/health just after the run (2026-10-02T09:00:40.400Z); the same sha and version were read before the refresh series at 2026-10-02T08:34:05Z",
+    "buildNote": "The hosted machine runs a released build, not the development tree. The source files this evidence is pinned to (the dev tree at bind time) are newer than that build for _mcp-host.ts, portal-mcp-oauth.ts and mcp-oauth.ts; this run proves the hosted outcome on the build users are served today.",
+    "rerunOf": "docs/evidence/p014-hosted-portal-general-tool-live-2026-10-01.json"
+  },
+  "earlierRuns": "r43-1 (2026-10-01 06:02Z) and r43-2 (06:05Z) also passed the R-43 assertions (work_items:list answered through the portal, plans:list refused) but each failed one auxiliary tools/list check: r43-1 because the harness cut the response body to 4000 characters and work_items:list's long description pushed blueprint:submit past the cut; r43-2 because the VM's tools/list call hit a 90 s connection timeout to the portal that the retry helper did not retry. Both harness defects were fixed (body cap 60000; retry on a curl transport failure) before r43-3 (2026-10-01 06:10-06:12Z), which passed and is the run docs/evidence/p014-hosted-portal-general-tool-live-2026-10-01.json records. In this 2026-10-02 refresh, r43-4 (08:35-08:37Z) got through OAuth client registration and the consent page, then failed one step for a harness reason: its local OAuth callback listener had picked a random fixed port that was already in use (EADDRINUSE), so the consent redirect had nowhere to land. The listener now binds port 0 and the redirect URI is built from the kernel-chosen port; r43-5 is the first run after that fix.",
+  "results": {
+    "R-43": {
+      "verdict": "pass",
+      "observed": "From a GCP VM on another network, an app that obtained a limited key through MCP OAuth consent on the portal (scope: blueprint:submit, blueprint:status, work_items:list, one harness) called the general tool work_items:list on the hosted workspace through https://app.papercusp.com/api/workspaces/ws-2802cefffb052f989eae2969/mcp and got its result (it lists WI-7). The same key was refused plans:list, which it was not granted.",
+      "artifacts": [
+        "vm-general-tool.txt",
+        "vm-outside-scope.txt",
+        "vm-tools-list.txt",
+        "vm-submit1.txt",
+        "vm-status.txt",
+        "web-consent-page.png"
+      ]
+    }
+  },
+  "summary": "Live P-014 re-run on 2026-10-02 (r43-5) on the hosted workspace; 5 of 5 assertions passed from 20 P014_OK and 0 P014_FAIL lines."
+}

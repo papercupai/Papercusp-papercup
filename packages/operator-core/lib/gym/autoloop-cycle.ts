@@ -25,10 +25,11 @@
  */
 import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, existsSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readSuperuserToken } from '../superuser-token';
+import { moduleRepoRoot } from '../module-repo-root';
 import { createHash, randomBytes } from 'node:crypto';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
@@ -53,16 +54,20 @@ import type { JudgeLlmCall } from './judge';
 import type { GymLlmCall } from './task-generator';
 import { spawnGymOperatorWithRetry } from './operator-ready';
 import { findFreeBasePort } from '../deployment/p2p-perf-tier3/free-port-base';
-import { gatewayLlmEnv, gatewayPort, resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
+import { applyGatewayLlmEnv, resolveSpawnGatewayEnv } from '../inference-gateway/spawn-env';
 import { activeWorkspaceId } from '../workspace-registry';
 import { resolveGymAccountWorkspace } from './account-workspace';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
+import { bindNativeGymLlmCalls, requireNativeGymOutputLimit, snapshotNativeGymGatewayConfig,
+  startNativeGymGateway, type NativeGymGatewayConfig } from './proposer';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, '../../../..');
-const FAKE_AGENT = join(__dirname, 'fixtures/fake-agent.mjs');
+// Anchored on the checkout, not on this module's directory: this module is inlined into the
+// esbuild host bundle, where import.meta.url is the bundle's URL, so both a `..` climb and a
+// sibling `fixtures/` path resolved outside the checkout (P-016; see module-repo-root.ts).
+const REPO_ROOT = moduleRepoRoot(import.meta.url);
+const FAKE_AGENT = join(REPO_ROOT, 'packages/operator-core/lib/gym/fixtures/fake-agent.mjs');
 
 // EI-18154750714519366: the gym-operator's default port used to be the FIXED 3976 — on a busy
 // box where a routine cycle (or a leftover process) already holds it, a concurrent manual
@@ -160,6 +165,11 @@ export interface RunOneAutoloopCycleOptions {
   agentCmd?: string;
   /** Proposer model (default: the canonical learning model). */
   proposerModel?: string;
+  /** Required in real mode. Supplied output limit; no implicit token default. */
+  proposerMaxTokens?: number;
+  /** Required for real mode. Host-issued authenticated per-cycle authority;
+   * the host owns reservation/settlement and the final provider bounds. */
+  nativeGateway?: NativeGymGatewayConfig;
   /** QD novelty weight ∈ [0,1] (P-011/D-008; default env GYM_LOOP_NOVELTY_WEIGHT / 0.3). */
   noveltyWeight?: number;
   log?: (msg: string) => void;
@@ -186,11 +196,29 @@ export async function runOneAutoloopCycle(
   slug: string,
   opts: RunOneAutoloopCycleOptions = {},
 ): Promise<AutoloopCycleOutcome> {
-  const FAKE = opts.fake ?? process.env.GYM_LOOP_FAKE === '1';
+  // The routine host runs multiple cycles and other LLM callers concurrently.
+  // Capture inherited configuration once; route patches belong to this cycle's
+  // child environment, never to the shared host or its native scoped transport.
+  const cycleEnv = { ...process.env };
+  const FAKE = opts.fake ?? cycleEnv.GYM_LOOP_FAKE === '1';
+  // Refuse before probing ports, changing routing env or provisioning anything.
+  // Missing native policy is not authority to dispatch an unbounded proposer.
+  const proposerMaxTokens = opts.proposerMaxTokens;
+  let nativeGatewayConfig: NativeGymGatewayConfig | undefined;
+  if (!FAKE) {
+    try {
+      requireNativeGymOutputLimit(proposerMaxTokens, 'proposer');
+      nativeGatewayConfig = snapshotNativeGymGatewayConfig(opts.nativeGateway!);
+    }
+    catch (error) {
+      return { ok: false, result: null, report: { mode: 'real', harnessSlug: slug,
+        error: error instanceof Error ? error.message : String(error), costUsd: 0 } };
+    }
+  }
   // Explicit pin (opts.port or GYM_LOOP_PORT) always wins; otherwise probe a genuinely-free
   // ephemeral port so concurrent/manual cycles on this box never collide (see
   // GYM_LOOP_PORT_RANGE above for the full rationale — EI-18154750714519366).
-  const explicitPort = opts.port ?? (process.env.GYM_LOOP_PORT !== undefined ? Number(process.env.GYM_LOOP_PORT) : undefined);
+  const explicitPort = opts.port ?? (cycleEnv.GYM_LOOP_PORT !== undefined ? Number(cycleEnv.GYM_LOOP_PORT) : undefined);
   const PORT = explicitPort ?? (await findFreeBasePort({ count: 1, ...GYM_LOOP_PORT_RANGE }));
   // WI-5675: the cycle spans TWO workspace AXES that a single `WS` used to conflate:
   //  - DURABLE_WS — the workspace the cycle is FOR. Every write that must OUTLIVE the run
@@ -207,45 +235,35 @@ export async function runOneAutoloopCycle(
   //  tab showed 0 rows forever despite completed runs (WI-5675 — same class as WI-5125).
   const DURABLE_WS =
     opts.workspaceId ??
-    (process.env.GYM_LOOP_WORKSPACE?.trim() || undefined) ??
-    resolveGymAccountWorkspace(process.env, activeWorkspaceId);
-  const EPHEMERAL_WS = process.env.GYM_LOOP_EPHEMERAL_WORKSPACE?.trim() || 'gym-loop-ws';
-  const MAX_CYCLES = Math.max(1, opts.maxCycles ?? Number(process.env.GYM_LOOP_MAX_CYCLES ?? 1));
-  const REPEATS = Math.max(1, opts.repeats ?? Number(process.env.GYM_LOOP_REPEATS ?? 1));
+    (cycleEnv.GYM_LOOP_WORKSPACE?.trim() || undefined) ??
+    resolveGymAccountWorkspace(cycleEnv, activeWorkspaceId);
+  const EPHEMERAL_WS = cycleEnv.GYM_LOOP_EPHEMERAL_WORKSPACE?.trim() || 'gym-loop-ws';
+  const MAX_CYCLES = Math.max(1, opts.maxCycles ?? Number(cycleEnv.GYM_LOOP_MAX_CYCLES ?? 1));
+  const REPEATS = Math.max(1, opts.repeats ?? Number(cycleEnv.GYM_LOOP_REPEATS ?? 1));
   const BUDGET_USD =
     opts.budgetUsd !== undefined
       ? opts.budgetUsd
-      : process.env.GYM_LOOP_BUDGET_USD
-        ? Number(process.env.GYM_LOOP_BUDGET_USD)
+      : cycleEnv.GYM_LOOP_BUDGET_USD
+        ? Number(cycleEnv.GYM_LOOP_BUDGET_USD)
         : FAKE
           ? null
           : 50;
-  const REAL_AGENT_CMD = opts.agentCmd ?? process.env.GYM_LOOP_AGENT_CMD ?? 'claude -p --model claude-sonnet-4-6';
-  const PROPOSER_MODEL = opts.proposerModel ?? process.env.GYM_LOOP_PROPOSER_MODEL ?? LEARNING_MODEL_SPEC;
-  const NOVELTY_WEIGHT = Math.min(1, Math.max(0, opts.noveltyWeight ?? Number(process.env.GYM_LOOP_NOVELTY_WEIGHT ?? 0.3)));
+  const REAL_AGENT_CMD = opts.agentCmd ?? cycleEnv.GYM_LOOP_AGENT_CMD ?? 'claude -p --model claude-sonnet-4-6';
+  const PROPOSER_MODEL = opts.proposerModel ?? cycleEnv.GYM_LOOP_PROPOSER_MODEL ?? LEARNING_MODEL_SPEC;
+  const NOVELTY_WEIGHT = Math.min(1, Math.max(0, opts.noveltyWeight ?? Number(cycleEnv.GYM_LOOP_NOVELTY_WEIGHT ?? 0.3)));
   const manageRow = opts.manageAutoloopRow ?? true;
   const log = opts.log ?? ((m: string) => process.stdout.write(`[gym-loop] ${m}\n`));
 
-  // FB-16 / EI-368 follow-up: route the gym's IN-PROCESS judge + proposer through the pacing
-  // gateway when the INFERENCE_GATEWAY flag is ON. Spawned pipeline agents already egress through
-  // it (operator-spawn.ts merges gatewaySpawnEnv → ANTHROPIC_BASE_URL at the spawn chokepoint), but
-  // the in-process anthropic-direct llmCalls (judgeCall/proposerCall in loop-deps.ts) never pass
-  // through that chokepoint — on the live :3070 cycle they hit api.anthropic.com directly with the
-  // org-blocked OAuth → LlmCallError 401, opening the circuit every tick. Point the anthropic-direct
-  // SDK (PAPERCUSP_ANTHROPIC_URL) AND any claude-CLI subprocess (ANTHROPIC_BASE_URL) at the localhost
-  // gateway so every gym LLM call egresses through the bound pool account, exactly like the agents.
-  // Flag-OFF → unchanged (direct egress). Respects an explicit pre-set override.
+  // Native judge/proposer calls have their own host-issued per-cycle gateway.
+  // Role subprocesses retain the existing shared AUTO account policy. Apply its
+  // base-URL defaults to the child copy, preserving explicit custom routes.
   // The FULL gateway auto-routing env for the spawned gym-operator (and, by inheritance, its role
   // subprocesses: director/worker/validator/CURATOR/documenter). Empty unless the gateway is on.
   let gymSpawnGatewayEnv: Record<string, string> = {};
   if (!FAKE && (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) {
-    for (const [k, v] of Object.entries(gatewayLlmEnv(true))) {
-      // Respect an explicit pre-set override (e.g. a test or a manual GYM_LOOP run).
-      if (!process.env[k]) process.env[k] = v;
-    }
+    applyGatewayLlmEnv(true, cycleEnv);
     // Owner directive 2026-07-20 (WI-5637): PIN the gym to the gateway's AUTO account mode. The thin
-    // gatewayLlmEnv above only sets ANTHROPIC_BASE_URL — enough for the IN-PROCESS judge/proposer SDK
-    // (it reads PAPERCUSP_ANTHROPIC_URL) but NOT for a `claude` CLI role subprocess: without
+    // The base-URL defaults alone are NOT enough for a `claude` CLI role subprocess: without
     // ANTHROPIC_AUTH_TOKEN the CLI ignores the base URL and auths on its LOCAL ~/.claude login
     // (scrubLauncherClaudeSessionEnv/boot-spec deliberately point it there, EI-232), which lacks 1M
     // usage credits → the curator died "API Error: Usage credits required for 1M context". Resolve the
@@ -268,7 +286,7 @@ export async function runOneAutoloopCycle(
     // process pin, else the operator's active workspace (papercusp-workspace in the
     // routine host, where the pool lives). Data writes scope per-axis: DURABLE_WS
     // for control-plane/durable rows, EPHEMERAL_WS for the throwaway gym stack (WI-5675).
-    const accountRoutingWs = resolveGymAccountWorkspace(process.env, activeWorkspaceId);
+    const accountRoutingWs = resolveGymAccountWorkspace(cycleEnv, activeWorkspaceId);
     try {
       gymSpawnGatewayEnv = await resolveSpawnGatewayEnv({
         workspaceId: accountRoutingWs,
@@ -281,13 +299,14 @@ export async function runOneAutoloopCycle(
     } catch (e) {
       log(`inference-gateway auto-route unavailable for account workspace '${accountRoutingWs}' (${(e as Error).message.split('\n')[0]}) — falling back to base-URL routing; the CURATOR MAY 429 (WI-5637)`);
     }
-    log(`inference-gateway ON (account=auto) → routing gym LLM calls through http://127.0.0.1:${gatewayPort()}`);
+    log('inference-gateway ON (account=auto) → routing role subprocesses through their explicit spawn environment');
   }
 
   const HEX = randomBytes(4).toString('hex');
   const DB_NAME = `papercusp_gym_loop_${HEX}`;
 
   let pgContainer: StartedPostgreSqlContainer | undefined;
+  let nativeGateway: Awaited<ReturnType<typeof startNativeGymGateway>> | undefined;
   let operator: ChildProcess | undefined;
   let logFd: number | undefined;
 
@@ -341,6 +360,10 @@ export async function runOneAutoloopCycle(
   };
 
   try {
+    if (nativeGatewayConfig) {
+      nativeGateway = await startNativeGymGateway(nativeGatewayConfig,
+        resolveGymAccountWorkspace(cycleEnv, activeWorkspaceId), log);
+    }
     // 1. Dedicated gym DB (execution data). Self-heal sweep FIRST (WI-4332): reclaims
     // any orphaned container a crashed prior gym run left behind before Ryuk could reap it.
     await sweepOrphanedGymPgContainers({ image: GYM_PROVISION_PG_IMAGE }).catch(() => {});
@@ -357,7 +380,7 @@ export async function runOneAutoloopCycle(
     ({ databaseUri: gymUri } = await provisionGymDatabase({ maintenanceUri: pgContainer.getConnectionUri(), dbName: DB_NAME }));
     gymSql = postgres(gymUri, { max: 4, onnotice: () => {}, prepare: false });
     // Control plane (proposals/autoloop/QD) → caller's client, else a DSN we open, else the gym DB.
-    const controlDsn = opts.controlDsn ?? process.env.GYM_LOOP_CONTROL_DSN;
+    const controlDsn = opts.controlDsn ?? cycleEnv.GYM_LOOP_CONTROL_DSN;
     if (opts.controlSql) {
       controlSql = opts.controlSql;
     } else if (controlDsn) {
@@ -428,7 +451,7 @@ export async function runOneAutoloopCycle(
         // WI-5637: merge the gateway auto-routing env AFTER the scrub so ANTHROPIC_AUTH_TOKEN +
         // account routing survive (the scrub only strips CLAUDE_* session vars) and the role
         // subprocesses egress via a credited pool account instead of the local ~/.claude login.
-        env: { ...scrubLauncherClaudeSessionEnv({ ...process.env, ...spec.env, PAPERCUSP_FLEET_SANDBOX: '0', PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0', NODE_ENV: 'production', PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none' }), ...gymSpawnGatewayEnv },
+        env: { ...scrubLauncherClaudeSessionEnv({ ...cycleEnv, ...spec.env, PAPERCUSP_FLEET_SANDBOX: '0', PAPERCUSP_USE_WORKER_CHUNK_LOOP: '0', NODE_ENV: 'production', PAPERCUSP_DBOS_ORCHESTRATOR_HARNESSES: 'none' }), ...gymSpawnGatewayEnv },
         stdio: ['ignore', logFd, logFd],
         detached: true,
       },
@@ -444,39 +467,21 @@ export async function runOneAutoloopCycle(
     // ("TypeError: fetch failed" — undici, no HTTP status) killed a whole
     // provisioned cycle 16s in (14:42:49, same window as other outbound flakiness
     // on this box). A provisioned cycle is EXPENSIVE (container + operator boot
-    // ~2.5min) — retry the bare-network failure class (never HTTP-status errors:
-    // the gateway already owns those semantics) 2× with short backoff.
-    const withNetRetry = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) =>
-      async (...a: A): Promise<R> => {
-        let lastErr: unknown;
-        for (let attempt = 0; attempt <= 2; attempt++) {
-          try {
-            return await fn(...a);
-          } catch (e) {
-            lastErr = e;
-            const msg = e instanceof Error ? e.message : String(e);
-            if (!/fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(msg)) throw e;
-            log(`llm call transient network failure (attempt ${attempt + 1}/3): ${msg.slice(0, 120)}`);
-            await new Promise((r) => setTimeout(r, 2_000 * (attempt + 1)));
-          }
-        }
-        throw lastErr;
-      };
+    // ~2.5min). Retry only bare-network failures with complete measured-zero
+    // spend; unknown/positive failed spend must reach reservation settlement
+    // without being replaced by a later receipt. The gateway owns HTTP retries.
     const rawGymLlm = FAKE ? null : await import('../llm-testing/llm-client');
+    const nativeCalls = rawGymLlm ? bindNativeGymLlmCalls(rawGymLlm.llmCall, slug,
+      { log, transport: nativeGateway!.transport }) : null;
     const judge: JudgeLlmCall = FAKE
       ? fakeJudge
-      : withNetRetry((opts: Parameters<JudgeLlmCall>[0]) =>
-          rawGymLlm!.llmCall({ ...opts, priority: 'gym', harnessSlug: slug }),
-        );
+      : nativeCalls!.judge;
     const proposer: GymLlmCall = FAKE
       ? fakeProposer
-      : (withNetRetry((opts: Parameters<GymLlmCall>[0]) =>
-          rawGymLlm!.llmCall({ ...(opts as object), priority: 'gym', harnessSlug: slug } as never),
-        ) as unknown as GymLlmCall);
+      : nativeCalls!.proposer;
 
     // 5. Ports + loop deps.
-    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
-    const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
+    const suToken = readSuperuserToken() ?? '';
     const ports = createGymRunnerPorts({
       operatorBaseUrl: `http://127.0.0.1:${PORT}`,
       gymSql,
@@ -511,6 +516,7 @@ export async function runOneAutoloopCycle(
       judgeCall: judge,
       proposerCall: proposer,
       proposerModel: PROPOSER_MODEL,
+      ...(proposerMaxTokens === undefined ? {} : { proposerMaxTokens }),
       // WI-5697: reuse this run's own random token (already minted above for the ephemeral
       // DB name / log path) so every candidate id is unique PER RUN, not just per cycle —
       // without this, autoloop cycles (almost always maxCycles=1) always minted "cand-c1",
@@ -641,6 +647,10 @@ export async function runOneAutoloopCycle(
   } catch (err) {
     report.error = String(err);
   } finally {
+    if (nativeGateway) {
+      try { await nativeGateway.stop(); }
+      catch (error) { report.nativeGatewayTeardownError = error instanceof Error ? error.message : String(error); }
+    }
     if (controlSql && ownsControlSql) { try { await controlSql.end({ timeout: 5 }); } catch { /* ignore */ } }
     if (gymSql) { try { await gymSql.end({ timeout: 5 }); } catch { /* ignore */ } }
     if (operator?.pid) {

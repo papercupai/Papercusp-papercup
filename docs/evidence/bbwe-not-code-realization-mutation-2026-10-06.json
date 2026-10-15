@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "BBWE not-code realization probe: falsifiability (copy-out mutation probes for BBWE-R-1-P-001-owner-scope and BBWE-R-10-P-002-budgets-declared)",
+  "framework": "node",
+  "command": [
+    "bash",
+    "-c",
+    "F=docs/evidence/bbwe-not-code-realization-probe-2026-10-06.mjs; scripts/mutation-probe.sh --file $F --relocation mirror --expect caught --mutate 's/new Date\\(act\\.first_activation\\) > new Date\\(t107\\.ts\\)/new Date(act.first_activation) < new Date(t107.ts)/' --test 'node {} >> /tmp/bbwe-mut-r1.out' && scripts/mutation-probe.sh --file $F --relocation mirror --expect caught --mutate 's/new Date\\(a\\) < new Date\\(b\\)/new Date(a) > new Date(b)/' --test 'node {} >> /tmp/bbwe-mut-r10.out'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T05:51:39.483Z",
+  "finishedAt": "2026-10-06T05:52:04.294Z",
+  "summary": "Copy-out mutation probes (scripts/mutation-probe.sh, relocation=mirror so the read-only sudo psql reads run outside any mount namespace) against the read-only operational probe docs/evidence/bbwe-not-code-realization-probe-2026-10-06.mjs at blob c7cfd876e96dd35fc5d4d4b59129944cdd7335e7 (sha256 679f376f...). Baseline guard on the unmutated probe and on its unmutated copy: exit 0, 10/10 assertions passed against the live database, both probes. Mutant 1 (R-1 / P-001) inverts the activation-after-approval comparison so the probe would accept an activation that preceded the owner's turn-107 approval: guard exit 1, failed exactly p001-activation-follows-approval; MUTATION_PROBE_RESULT verdict=caught. Mutant 2 (R-10 / P-002) inverts the ordering helper so the probe would accept budgets declared after the first R-10 measurement and after P-013's claim: guard exit 1, failed exactly p002-d016-before-first-r10-measurement and p002-d016-before-p013-claim; verdict=caught. Exit 1 is the assertion-failure code, not exit 2 (database unreachable), so neither verdict is an instrument failure. Tree integrity verified byte-identical after each probe.",
+  "assertions": [
+    {
+      "id": "baseline-unmutated-probe-passes",
+      "passed": true,
+      "evidence": "Both probe invocations ran the unmutated probe and its unmutated mirror copy first: each run exited 0 with 10/10 assertions passed (p001-owner-correction-turn-63 .. p002-d016-before-p013-claim)."
+    },
+    {
+      "id": "bbwe-r-1-p-001-owner-scope-mutant-caught",
+      "passed": true,
+      "evidence": "Mutation s/new Date(act.first_activation) > new Date(t107.ts)/... < .../ (accept activation BEFORE owner approval turn 107). Mutant guard exit 1; failed assertions: p001-activation-follows-approval only. MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=ok relocation=mirror."
+    },
+    {
+      "id": "bbwe-r-10-p-002-budgets-declared-mutant-caught",
+      "passed": true,
+      "evidence": "Mutation s/new Date(a) < new Date(b)/new Date(a) > new Date(b)/ in the before() helper (accept D-016 budgets declared AFTER the first R-10 measurement and P-013 claim). Mutant guard exit 1; failed assertions: p002-d016-before-first-r10-measurement, p002-d016-before-p013-claim. MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1 mutant_parse=ok relocation=mirror."
+    },
+    {
+      "id": "tracked-subject-untouched",
+      "passed": true,
+      "evidence": "mutation-probe tree integrity: VERIFIED byte-identical after both probes; git status --porcelain on the probe file was empty."
+    }
+  ]
+}

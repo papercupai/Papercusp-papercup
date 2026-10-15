@@ -5,7 +5,7 @@
  * registry verdicts (no_replicator / frozen / sampling_stale), edge-triggered
  * stall episodes, the health-verdict input, and the durable-EI dedup.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   sampleReplicationLiveness,
   getReplicationLiveness,
@@ -30,6 +30,13 @@ import {
   type StallEiEpisode,
 } from '../replication-stall-ei';
 import { assessHarnessSubstrateHealth } from '../health';
+import {
+  _resetBootHistoryForTests,
+  _setMirrorForTests,
+  _setNowForTests,
+  _setPgWriteForTests,
+  type BootHistoryEntry,
+} from '../boot-history';
 
 const WS = 'ws-1';
 const HS = 'harness-a';
@@ -45,6 +52,98 @@ function collect(): { episodes: ReplicationStallEpisode[]; on: (e: ReplicationSt
   const episodes: ReplicationStallEpisode[] = [];
   return { episodes, on: (e) => episodes.push(e) };
 }
+
+describe('WI-10007965: retained replication episode transitions', () => {
+  let writes: BootHistoryEntry[];
+  let now: number;
+
+  beforeEach(() => {
+    writes = [];
+    now = 1_000_000;
+    _resetBootHistoryForTests();
+    _setNowForTests(() => now);
+    _setMirrorForTests(() => {});
+    _setPgWriteForTests((entry) => writes.push(entry));
+    setOpenStallEiProbeForTests(async () => false);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    _resetBootHistoryForTests();
+    vi.restoreAllMocks();
+  });
+
+  function sample(peers: number, length = 5, position = 5): void {
+    // Exercise the production reporters, not the per-call callback overrides.
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: length, mergedPosition: position, peersCount: peers },
+      { graceMs: GRACE, nowMs: now },
+    );
+  }
+
+  it('retains keyed start/end/re-stall edges without periodic duplicates or registry dependence', () => {
+    sample(1);
+    now += GRACE + 1;
+    sample(0);
+    sample(0);
+    now += 1;
+    sample(1);
+    now += GRACE + 1;
+    sample(0);
+
+    expect(writes.map((entry) => entry.kind)).toEqual([
+      'replication_episode_started',
+      'replication_condition_ended',
+      'replication_episode_started',
+    ]);
+    expect(writes.map((entry) => entry.ts)).toEqual([1_010_001, 1_010_002, 1_020_003]);
+    for (const entry of writes) {
+      expect(entry).toMatchObject({ workspaceId: WS, harnessSlug: HS });
+      expect(JSON.parse(entry.message!)).toMatchObject({
+        logKeyHex: KEY,
+        detectorKind: 'no_replicator',
+        stalledForMs: expect.any(Number),
+        detail: expect.any(String),
+      });
+    }
+
+    _resetReplicationLivenessForTests();
+    _resetBootHistoryForTests();
+    expect(getReplicationLiveness()).toEqual([]);
+    expect(writes).toHaveLength(3); // the handed-off durable records survive both rings
+  });
+
+  it('records frozen ending on detachment without claiming healthy replication', () => {
+    sample(1, 10, 5);
+    now += GRACE + 1;
+    sample(1, 10, 5);
+    sample(0, 10, 5);
+    sample(0, 10, 5);
+
+    expect(writes.map((entry) => entry.kind)).toEqual([
+      'replication_episode_started',
+      'replication_condition_ended',
+    ]);
+    expect(JSON.parse(writes[1]!.message!)).toMatchObject({
+      logKeyHex: KEY,
+      detectorKind: 'frozen',
+      detail: expect.stringContaining('replicator detached'),
+    });
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.peersCount).toBe(0);
+  });
+
+  it('still detects and recovers when the durable history sink throws', () => {
+    _setPgWriteForTests(() => { throw new Error('history sink unavailable'); });
+    sample(1);
+    now += GRACE + 1;
+    expect(() => sample(0)).not.toThrow();
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe('no_replicator');
+    expect(() => sample(1)).not.toThrow();
+    expect(getReplicationLiveness({ nowMs: now, graceMs: GRACE })[0]!.logs[0]!.verdict).toBe('live');
+  });
+});
 
 describe('no_replicator axis (the original WI-183 symptom)', () => {
   it('fires ONCE per stall episode after grace, only for a log that WAS replicating; clears + re-fires on recovery→re-stall', () => {

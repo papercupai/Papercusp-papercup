@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P002 Cargo null decoder mutation detected by executed test",
+  "framework": "cargo",
+  "command": [
+    "bash",
+    "../papercusp/scripts/mutation-probe.sh",
+    "--file",
+    "crates/papercup-core/src/types.rs",
+    "--relocation",
+    "overlay",
+    "--mutate",
+    "s/(    pub port: Option<u16>,)/    #[serde(deserialize_with = \"de_port_must_exist\")]\\n$1/; $_ .= \"\\nfn de_port_must_exist<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>\\nwhere D: Deserializer<'de> { u16::deserialize(deserializer).map(Some) }\\n\" if eof;",
+    "--test",
+    "test -f \"{}\" && cargo clean -p papercup-core && cargo test -p papercup-core --test client_test runtime_config_null_voice_port_decodes_as_none --locked",
+    "--expect",
+    "caught"
+  ],
+  "startedAt": "2026-10-01T23:30:09.835526+00:00",
+  "finishedAt": "2026-10-01T23:30:58.414069+00:00",
+  "exitCode": 0,
+  "summary": "Baseline and relocated baseline each executed one passing canonical test. Compiled null-rejecting decoder mutant executed the same test and failed with Cargo exit 101. Probe reported caught. Scope: voice-port null decoding; other optional contracts and exact signed candidate are not verified.",
+  "repository": "papercup-rust-mobile",
+  "commandRepresentation": "Portable equivalent of the actual absolute-path command, executed from the mobile repository. Original argv and local target directory are retained in the ignored raw metadata referenced below.",
+  "rawEvidence": {
+    "path": "papercup-rust-mobile/android/app/build/ci-evidence/p002-null-red-verified-20261001/probe.log",
+    "sha256": "b6cee78d7edbd8df1ca05589167aa427de4ce183b1621f0299d669ec38210b97",
+    "metadataPath": "papercup-rust-mobile/android/app/build/ci-evidence/p002-null-red-verified-20261001/result.json"
+  },
+  "sourceSha256": "932eb532d8532109ee66189336bbe14c37883269e1ba0b417a5b8e0e5d7f6ad2",
+  "testSha256": "cdaffbceedace6ad19dab39114db12756cead9363d21fe34fbc1e574f4c995b6",
+  "probeSha256": "27c44f8d064955a9c035982c61e12f0e685abb3cbb7e54f139aeead7461c4e87",
+  "privateTargetDir": "android/app/build/ci-evidence/p002-null-red-capability-20261001/target",
+  "cacheRule": "Rebuild papercup-core in the private target in each phase; preview Perl mutation using actual -pi semantics before running.",
+  "assertions": [
+    {
+      "id": "baseline-and-relocation-pass",
+      "passed": true,
+      "evidence": "Two canonical-test baseline executions, each 1 passed/0 failed/0 ignored."
+    },
+    {
+      "id": "compiled-mutant-caught",
+      "passed": true,
+      "evidence": "MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=101 mutant_parse=unchecked assertion_evidence=cargo-libtest-failed-tests relocation=overlay"
+    },
+    {
+      "id": "source-preserved",
+      "passed": true,
+      "evidence": "932eb532d8532109ee66189336bbe14c37883269e1ba0b417a5b8e0e5d7f6ad2"
+    }
+  ]
+}

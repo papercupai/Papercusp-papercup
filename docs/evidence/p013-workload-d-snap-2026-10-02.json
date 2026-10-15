@@ -1,0 +1,2318 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "P-013 workload D R-10 re-measurement under the D-050 interleaved runner, executed from a frozen snapshot (plan D-059): same knobs, frozen D-016 limits/marks/statistic",
+ "framework": "operational",
+ "testLayer": "integration",
+ "evidencePlane": "isolated",
+ "plan": "blueprint-backed-work-item-execution-2026-09-23",
+ "planItem": "P-013",
+ "workItem": "WI-10004402",
+ "parentWorkItem": "WI-10002948",
+ "isolationWorkItem": "WI-10005096",
+ "supersedesEvidence": "docs/evidence/p013-workload-d-2026-09-29.json",
+ "governingDecisions": [
+  "D-016",
+  "D-019",
+  "D-022",
+  "D-023",
+  "D-024",
+  "D-048",
+  "D-050",
+  "D-053",
+  "D-059"
+ ],
+ "observer": "su-c0b38c83-dc1a-4a6f-93c2-652aef1d791e",
+ "testFile": "packages/operator-core/lib/blueprint/operation-performance-d.integration.test.ts",
+ "command": [
+  "RIG_LOCK_ID=<p013-benchmark-rig lease> bash .papercusp/scratch/p013-r10-reproof-0930/run-matrix-snap.sh d 0 4 (snap=74be7b651c648b9f1e914aac4c0c551fe65f78e4)",
+  "per rep: node scripts/npm-install-safe.mjs --repo-root <canonical> --exec-under-lock -- node <OUT>/snap-tool/lint-as-committed.mjs test:file --any --ref=74be7b651c648b9f1e914aac4c0c551fe65f78e4 -- packages/operator-core/lib/blueprint/operation-performance-d.integration.test.ts with P013_MATRIX=1 P013_MODES=warm,cold P013_CONCURRENCIES=1,8 P013_WARMUPS=20 P013_WARM_SAMPLES=200 P013_COLD_SAMPLES=50 P013_REPETITIONS=1 P013_REPETITION_OFFSET=<k> P013_DEDICATED_PG=native",
+  "runner: D-050 — each arm's trial measured in P013_INTERLEAVE_CHUNKS=5 chunks alternating arms ABBA within the trial"
+ ],
+ "measuredRunner": {
+  "path": "packages/operator-core/test/_paired-operation-benchmark.ts",
+  "blob": "5122217101a28e935f65d2ce86799f29685f9adf",
+  "interleaveChunks": 5,
+  "order": "ABBA within each trial (D-050)",
+  "gradedWith": "the measured blob (extracted from the object store)"
+ },
+ "measuredSnapshot": {
+  "rule": "plan D-059: every rep ran in a fresh `git clone --local --shared` of ONE commit via scripts/lint-as-committed.mjs (test:file --any --ref=<snap>): submodules from local checkouts, node_modules linked entry by entry with workspace links remapped into the clone. The measured graph is frozen for the matrix, so the D-042 drift disclosure is N/A. Third-party node_modules are the one input not versioned against the snapshot.",
+  "snap": "74be7b651c648b9f1e914aac4c0c551fe65f78e4",
+  "executor": {
+   "path": "scripts/lint-as-committed.mjs",
+   "blob": "026600ebedd7de3cf58eacce96cf03db172bc17c"
+  },
+  "pinWorkingTreeDiffsAllowed": [],
+  "perRep": [
+   {
+    "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep0.log",
+    "submodules": 38,
+    "linkedNodeModulesDirs": 27,
+    "workspaceLinksRemapped": 111,
+    "sharedFallback": 0
+   },
+   {
+    "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep1.log",
+    "submodules": 38,
+    "linkedNodeModulesDirs": 27,
+    "workspaceLinksRemapped": 111,
+    "sharedFallback": 0
+   },
+   {
+    "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep2.log",
+    "submodules": 38,
+    "linkedNodeModulesDirs": 27,
+    "workspaceLinksRemapped": 111,
+    "sharedFallback": 0
+   },
+   {
+    "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep3.log",
+    "submodules": 38,
+    "linkedNodeModulesDirs": 27,
+    "workspaceLinksRemapped": 111,
+    "sharedFallback": 0
+   },
+   {
+    "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep4.log",
+    "submodules": 38,
+    "linkedNodeModulesDirs": 27,
+    "workspaceLinksRemapped": 111,
+    "sharedFallback": 0
+   }
+  ]
+ },
+ "matrixSegments": [
+  {
+   "index": 0,
+   "start": "MATRIX_START 2026-10-02T04:17:19Z offsets=0..4 runner=snap-v2 snap=74be7b651c648b9f1e914aac4c0c551fe65f78e4 snapTool=026600ebedd7de3cf58eacce96cf03db172bc17c loadMax=1.0 gpuFreeMinMiB=6144 load=84.20 113.83 133.85 cores=128 gpuFreeMiB=9819 dbUptimeSec=52941",
+   "offsetSet": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "resume": null,
+   "end": "MATRIX_END overall=0 2026-10-02T09:29:53Z",
+   "overall": 0,
+   "reps": [
+    "REP offset=0 rc=0 attempt=1 2026-10-02T05:14:14Z",
+    "REP offset=1 rc=0 attempt=1 2026-10-02T06:20:25Z",
+    "REP offset=2 rc=0 attempt=1 2026-10-02T07:22:29Z",
+    "REP offset=3 rc=0 attempt=1 2026-10-02T08:24:44Z",
+    "REP offset=4 rc=0 attempt=1 2026-10-02T09:29:53Z"
+   ],
+   "replaced": []
+  }
+ ],
+ "replacedReps": [],
+ "failedAttemptLogs": [],
+ "exitCode": 0,
+ "startedAt": "2026-10-02T04:17:19Z",
+ "finishedAt": "2026-10-02T09:29:53Z",
+ "summary": "Workload D R-10 re-measurement under the D-050 runner, executed from frozen snapshot 74be7b651c (D-059), graded PASS 9/9 D-016 bars on the median of five process-isolated repetitions (frozen limits/marks/statistic).",
+ "runnerLogs": [
+  {
+   "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep0.log",
+   "segment": 0,
+   "sha256": "cd100b640d98ff26bb25454e40c8dd9be34a415a65e5c83b539bba1a53ec724c",
+   "bytes": 95650,
+   "start": "REP_START offset=0 2026-10-02T04:17:19Z runner=snap-v2 snap=74be7b651c648b9f1e914aac4c0c551fe65f78e4 head=74be7b651c648b9f1e914aac4c0c551fe65f78e4 waitedSec=0 load=84.20 113.83 133.85 cores=128 gpuFreeMiB=9819 dbUptimeSec=52941",
+   "end": "REP_END offset=0 rc=0 2026-10-02T05:14:14Z load=146.89 125.74 118.42 cores=128 gpuFreeMiB=14192 dbUptimeSec=56355",
+   "head": "74be7b651c648b9f1e914aac4c0c551fe65f78e4"
+  },
+  {
+   "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep1.log",
+   "segment": 0,
+   "sha256": "bcc094565439c6dcddabeb88d8a63f5c2bbcdb9df7910b13cb4badeb97bfff31",
+   "bytes": 103756,
+   "start": "REP_START offset=1 2026-10-02T05:17:14Z runner=snap-v2 snap=74be7b651c648b9f1e914aac4c0c551fe65f78e4 head=5beda66f0d6cdf8bd307bee25aa9def69d6e70a8 waitedSec=180 load=111.29 123.83 119.28 cores=128 gpuFreeMiB=14396 dbUptimeSec=56535",
+   "end": "REP_END offset=1 rc=0 2026-10-02T06:20:25Z load=102.35 112.00 112.92 cores=128 gpuFreeMiB=12916 dbUptimeSec=60326",
+   "head": "5beda66f0d6cdf8bd307bee25aa9def69d6e70a8"
+  },
+  {
+   "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep2.log",
+   "segment": 0,
+   "sha256": "94edf97380a5b45b79ff5aeaa4462e8731c2450ca3e247d2c161dc4e64898807",
+   "bytes": 103362,
+   "start": "REP_START offset=2 2026-10-02T06:20:25Z runner=snap-v2 snap=74be7b651c648b9f1e914aac4c0c551fe65f78e4 head=5551278b5c1ec7e4d169570ed33ffac47befaae9 waitedSec=0 load=102.35 112.00 112.92 cores=128 gpuFreeMiB=12922 dbUptimeSec=60326",
+   "end": "REP_END offset=2 rc=0 2026-10-02T07:22:29Z load=132.05 134.30 126.84 cores=128 gpuFreeMiB=10120 dbUptimeSec=64051",
+   "head": "5551278b5c1ec7e4d169570ed33ffac47befaae9"
+  },
+  {
+   "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep3.log",
+   "segment": 0,
+   "sha256": "cbb69d06d11be004a6d9fa285ef25e01203ae5069101a7b538307a0c84e47244",
+   "bytes": 104366,
+   "start": "REP_START offset=3 2026-10-02T07:22:29Z runner=snap-v2 snap=74be7b651c648b9f1e914aac4c0c551fe65f78e4 head=6789c24c9aae11e10cf158e1f24522f92abf36f1 waitedSec=0 load=125.96 133.00 126.46 cores=128 gpuFreeMiB=10120 dbUptimeSec=64051",
+   "end": "REP_END offset=3 rc=0 2026-10-02T08:24:44Z load=58.77 77.12 95.10 cores=128 gpuFreeMiB=10884 dbUptimeSec=67785",
+   "head": "6789c24c9aae11e10cf158e1f24522f92abf36f1"
+  },
+  {
+   "file": ".papercusp/scratch/p013-r10-reproof-0930/d-snap/matrix-rep4.log",
+   "segment": 0,
+   "sha256": "8fb4c0ca1754b486c4c30b036b0eba320754cb72140b434093650e2759670ccd",
+   "bytes": 107641,
+   "start": "REP_START offset=4 2026-10-02T08:24:44Z runner=snap-v2 snap=74be7b651c648b9f1e914aac4c0c551fe65f78e4 head=247b9ed162bd4eea55acb28814f8b05a60a897c9 waitedSec=0 load=58.77 77.12 95.10 cores=128 gpuFreeMiB=10884 dbUptimeSec=67785",
+   "end": "REP_END offset=4 rc=0 2026-10-02T09:29:53Z load=68.75 93.92 101.75 cores=128 gpuFreeMiB=10909 dbUptimeSec=71694",
+   "head": "247b9ed162bd4eea55acb28814f8b05a60a897c9"
+  }
+ ],
+ "measuredBlobs": [
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-performance-d.integration.test.ts",
+   "blob": "c0b69eecf8dee80c02ffb8e9e07d7bc3b5fdf114"
+  },
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-performance-d-driver.ts",
+   "blob": "cd00b1ddb24b98077d8c52c2176502f63519acd0"
+  },
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-performance-d-child.ts",
+   "blob": "580ac0560a9a444771fedda0c7eb8c565ffa94fe"
+  },
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-performance-d-runtime.ts",
+   "blob": "86291309b75654389d4d3024950cc9799f2b18fd"
+  },
+  {
+   "path": "packages/operator-core/lib/dbos/durable-orchestration-workflow.ts",
+   "blob": "7fb7a35f1d5c7a6d1250935fcbd34b139b67b453"
+  },
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-admission.ts",
+   "blob": "93e4b7e7a26cc0d70afb1cde1ee450b27c010f6e"
+  },
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-service.ts",
+   "blob": "2bd24ae36de3bd49628b2408ce157ec74be6b890"
+  },
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-worker-binding.ts",
+   "blob": "a6d1a8ee74035899732efcc62855b59a4f169f1a"
+  },
+  {
+   "path": "packages/operator-core/lib/pot-membership.ts",
+   "blob": "c18f0845131c9bb6649dfcfd73b7a69720049fd6"
+  },
+  {
+   "path": "packages/operator-core/test/_org-test-db.ts",
+   "blob": "2007d6cbc8c03da74263460a3e08986a6e3ab278"
+  },
+  {
+   "path": "packages/operator-core/test/_paired-operation-benchmark.ts",
+   "blob": "5122217101a28e935f65d2ce86799f29685f9adf"
+  }
+ ],
+ "rig": "Dedicated native PostgreSQL 18 cluster per repetition (libs/test-config/src/dedicated-native-pg.ts; Docker create was wedged, WI-10003403). Candidate cold children use a private DBOS system schema per run; production DBOS scheduled workflows suppressed in the benchmark executor; PAPERCUSP_MEMORY_EMBEDDER=disabled plus deterministic embedder on both arms (D-022(a)). Declared wait satisfied by the same fixture signal on both arms.",
+ "meta": [
+  {
+   "repetitions": 1,
+   "repetitionOffset": 0,
+   "coldSamples": 50,
+   "warmSamples": 200,
+   "warmups": 20,
+   "modes": [
+    "warm",
+    "cold"
+   ],
+   "concurrencies": [
+    1,
+    8
+   ],
+   "cluster": "dedicated",
+   "clusterSubstrate": "native",
+   "orgPoolMax": 52,
+   "dispatchBeforeReceipt": 0,
+   "candidateSamples": 540
+  },
+  {
+   "repetitions": 1,
+   "repetitionOffset": 1,
+   "coldSamples": 50,
+   "warmSamples": 200,
+   "warmups": 20,
+   "modes": [
+    "warm",
+    "cold"
+   ],
+   "concurrencies": [
+    1,
+    8
+   ],
+   "cluster": "dedicated",
+   "clusterSubstrate": "native",
+   "orgPoolMax": 52,
+   "dispatchBeforeReceipt": 0,
+   "candidateSamples": 540
+  },
+  {
+   "repetitions": 1,
+   "repetitionOffset": 2,
+   "coldSamples": 50,
+   "warmSamples": 200,
+   "warmups": 20,
+   "modes": [
+    "warm",
+    "cold"
+   ],
+   "concurrencies": [
+    1,
+    8
+   ],
+   "cluster": "dedicated",
+   "clusterSubstrate": "native",
+   "orgPoolMax": 52,
+   "dispatchBeforeReceipt": 0,
+   "candidateSamples": 540
+  },
+  {
+   "repetitions": 1,
+   "repetitionOffset": 3,
+   "coldSamples": 50,
+   "warmSamples": 200,
+   "warmups": 20,
+   "modes": [
+    "warm",
+    "cold"
+   ],
+   "concurrencies": [
+    1,
+    8
+   ],
+   "cluster": "dedicated",
+   "clusterSubstrate": "native",
+   "orgPoolMax": 52,
+   "dispatchBeforeReceipt": 0,
+   "candidateSamples": 540
+  },
+  {
+   "repetitions": 1,
+   "repetitionOffset": 4,
+   "coldSamples": 50,
+   "warmSamples": 200,
+   "warmups": 20,
+   "modes": [
+    "warm",
+    "cold"
+   ],
+   "concurrencies": [
+    1,
+    8
+   ],
+   "cluster": "dedicated",
+   "clusterSubstrate": "native",
+   "orgPoolMax": 52,
+   "dispatchBeforeReceipt": 0,
+   "candidateSamples": 540
+  }
+ ],
+ "grade": {
+  "verdict": "pass",
+  "passed": 9,
+  "total": 9,
+  "checks": [
+   {
+    "metric": "warmP50",
+    "concurrency": 1,
+    "control": 97.2646484375,
+    "candidate": 114.81103515625,
+    "limit": 195.89697265625,
+    "passed": true
+   },
+   {
+    "metric": "warmP95",
+    "concurrency": 1,
+    "control": 143.759033203125,
+    "candidate": 181.446533203125,
+    "limit": 351.57830810546875,
+    "passed": true
+   },
+   {
+    "metric": "warmP99",
+    "concurrency": 1,
+    "control": 232.3525390625,
+    "candidate": 217.746826171875,
+    "limit": 722.793212890625,
+    "passed": true
+   },
+   {
+    "metric": "coldP95",
+    "concurrency": 1,
+    "control": 383.23974609375,
+    "candidate": 398.91064453125,
+    "limit": 1958.099365234375,
+    "passed": true
+   },
+   {
+    "metric": "warmP50",
+    "concurrency": 8,
+    "control": 292.27783203125,
+    "candidate": 240.909423828125,
+    "limit": 488.416748046875,
+    "passed": true
+   },
+   {
+    "metric": "warmP95",
+    "concurrency": 8,
+    "control": 442.02587890625,
+    "candidate": 372.36474609375,
+    "limit": 873.5452880859375,
+    "passed": true
+   },
+   {
+    "metric": "warmP99",
+    "concurrency": 8,
+    "control": 493.109130859375,
+    "candidate": 503.41259765625,
+    "limit": 1309.4955444335938,
+    "passed": true
+   },
+   {
+    "metric": "coldP95",
+    "concurrency": 8,
+    "control": 331.505615234375,
+    "candidate": 481.07373046875,
+    "limit": 1828.7640380859375,
+    "passed": true
+   },
+   {
+    "metric": "throughput8",
+    "concurrency": 8,
+    "control": 24.362951347788247,
+    "candidate": 29.918341760587417,
+    "limit": 15.835918376062361,
+    "passed": true
+   }
+  ]
+ },
+ "comparisonToPrior": {
+  "evidence": "docs/evidence/p013-workload-d-2026-09-29.json",
+  "priorVerdict": "pass",
+  "priorPassed": 9,
+  "priorTotal": 9,
+  "perCheck": [
+   {
+    "metric": "warmP50",
+    "concurrency": 1,
+    "priorCandidate": 108.38232421875,
+    "candidate": 114.81103515625,
+    "priorPassed": true,
+    "passed": true
+   },
+   {
+    "metric": "warmP95",
+    "concurrency": 1,
+    "priorCandidate": 119.98681640625,
+    "candidate": 181.446533203125,
+    "priorPassed": true,
+    "passed": true
+   },
+   {
+    "metric": "warmP99",
+    "concurrency": 1,
+    "priorCandidate": 127.20849609375,
+    "candidate": 217.746826171875,
+    "priorPassed": true,
+    "passed": true
+   },
+   {
+    "metric": "coldP95",
+    "concurrency": 1,
+    "priorCandidate": 420.6787109375,
+    "candidate": 398.91064453125,
+    "priorPassed": true,
+    "passed": true
+   },
+   {
+    "metric": "warmP50",
+    "concurrency": 8,
+    "priorCandidate": 189.271240234375,
+    "candidate": 240.909423828125,
+    "priorPassed": true,
+    "passed": true
+   },
+   {
+    "metric": "warmP95",
+    "concurrency": 8,
+    "priorCandidate": 257.6064453125,
+    "candidate": 372.36474609375,
+    "priorPassed": true,
+    "passed": true
+   },
+   {
+    "metric": "warmP99",
+    "concurrency": 8,
+    "priorCandidate": 278.88134765625,
+    "candidate": 503.41259765625,
+    "priorPassed": true,
+    "passed": true
+   },
+   {
+    "metric": "coldP95",
+    "concurrency": 8,
+    "priorCandidate": 468.050048828125,
+    "candidate": 481.07373046875,
+    "priorPassed": true,
+    "passed": true
+   },
+   {
+    "metric": "throughput8",
+    "concurrency": 8,
+    "priorCandidate": 39.822844301916874,
+    "candidate": 29.918341760587417,
+    "priorPassed": true,
+    "passed": true
+   }
+  ]
+ },
+ "trials": [
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 0,
+   "samples": 200,
+   "wallMs": 18313.817659999986,
+   "throughputPerSec": 10.9207159158753,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 51.101806640625,
+     "p95": 61.26611328125,
+     "p99": 65.79931640625
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 38.48779296875,
+     "p95": 50.035888671875,
+     "p99": 56.20166015625
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 90.138916015625,
+     "p95": 109.287841796875,
+     "p99": 121.349853515625
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 0,
+   "samples": 200,
+   "wallMs": 23043.752064999993,
+   "throughputPerSec": 8.679142156878612,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 8.72265625,
+     "p95": 12.096435546875,
+     "p99": 14.91357421875
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 72.805908203125,
+     "p95": 106.23095703125,
+     "p99": 126.124755859375
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 26.853271484375,
+     "p95": 35.6533203125,
+     "p99": 55.240966796875
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 1.348388671875,
+     "p95": 1.94091796875,
+     "p99": 2.793212890625
+    },
+    "total": {
+     "count": 200,
+     "p50": 110.104736328125,
+     "p95": 152.166259765625,
+     "p99": 197.2294921875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 0,
+   "samples": 50,
+   "wallMs": 509411.1155299997,
+   "throughputPerSec": 0.09815255002431421,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 135.2978515625,
+     "p95": 171.60009765625,
+     "p99": 195.816650390625
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 81.059814453125,
+     "p95": 240.37451171875,
+     "p99": 2659.024658203125
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 220.37890625,
+     "p95": 378.1943359375,
+     "p99": 2797.8251953125
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 0,
+   "samples": 50,
+   "wallMs": 2112684.9205070008,
+   "throughputPerSec": 0.023666567368692645,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 37.32861328125,
+     "p95": 82.860107421875,
+     "p99": 271.08544921875
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 161.60693359375,
+     "p95": 191.712646484375,
+     "p99": 403.115478515625
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 48.377685546875,
+     "p95": 72.534912109375,
+     "p99": 1266.2265625
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 3.139404296875,
+     "p95": 4.52197265625,
+     "p99": 6.15869140625
+    },
+    "total": {
+     "count": 50,
+     "p50": 253.268310546875,
+     "p95": 433.286865234375,
+     "p99": 1944.949462890625
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 0,
+   "samples": 200,
+   "wallMs": 8257.590836000163,
+   "throughputPerSec": 24.220139259997122,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 97.78662109375,
+     "p95": 201.563232421875,
+     "p99": 214.26220703125
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 197.74951171875,
+     "p95": 330.162109375,
+     "p99": 421.834716796875
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 292.27783203125,
+     "p95": 500.079833984375,
+     "p99": 558.796875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 0,
+   "samples": 200,
+   "wallMs": 7459.093826000113,
+   "throughputPerSec": 26.812908466556802,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 15.925048828125,
+     "p95": 58.834228515625,
+     "p99": 60.144775390625
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 132.996826171875,
+     "p95": 224.6044921875,
+     "p99": 256.8486328125
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 101.91650390625,
+     "p95": 205.22509765625,
+     "p99": 259.315185546875
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 2.9140625,
+     "p95": 20.4345703125,
+     "p99": 39.124755859375
+    },
+    "total": {
+     "count": 200,
+     "p50": 253.1318359375,
+     "p95": 442.961181640625,
+     "p99": 578.63427734375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 0,
+   "samples": 50,
+   "wallMs": 123305.22597600007,
+   "throughputPerSec": 0.4054978173409448,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 157.3017578125,
+     "p95": 234.3779296875,
+     "p99": 281.995361328125
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 94.635009765625,
+     "p95": 163.560791015625,
+     "p99": 189.34326171875
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 253.669189453125,
+     "p95": 381.813232421875,
+     "p99": 427.763916015625
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 0,
+   "samples": 50,
+   "wallMs": 467961.8767990009,
+   "throughputPerSec": 0.10684631052002558,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 45.090087890625,
+     "p95": 207.8896484375,
+     "p99": 547.55810546875
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 180.17333984375,
+     "p95": 337.4267578125,
+     "p99": 379.1025390625
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 55.677978515625,
+     "p95": 194.908203125,
+     "p99": 456.08447265625
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 3.678466796875,
+     "p95": 6.46435546875,
+     "p99": 16.31884765625
+    },
+    "total": {
+     "count": 50,
+     "p50": 292.274658203125,
+     "p95": 823.14599609375,
+     "p99": 1067.33251953125
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 1,
+   "samples": 200,
+   "wallMs": 30869.419956999976,
+   "throughputPerSec": 6.478903726684629,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 10.56494140625,
+     "p95": 44.218505859375,
+     "p99": 135.729736328125
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 77.0517578125,
+     "p95": 171.76513671875,
+     "p99": 298.379150390625
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 30.006591796875,
+     "p95": 104.45361328125,
+     "p99": 228.423583984375
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 1.8125,
+     "p95": 3.88134765625,
+     "p99": 10.108642578125
+    },
+    "total": {
+     "count": 200,
+     "p50": 118.18701171875,
+     "p95": 320.72021484375,
+     "p99": 622.30859375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 1,
+   "samples": 200,
+   "wallMs": 20276.074101000006,
+   "throughputPerSec": 9.86384242845789,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 48.252197265625,
+     "p95": 73.66552734375,
+     "p99": 96.2099609375
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 38.043212890625,
+     "p95": 82.747802734375,
+     "p99": 262.145263671875
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 86.424072265625,
+     "p95": 152.71728515625,
+     "p99": 330.6416015625
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 1,
+   "samples": 50,
+   "wallMs": 2344597.900561,
+   "throughputPerSec": 0.02132561834506306,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 37.796630859375,
+     "p95": 58.197021484375,
+     "p99": 86.7060546875
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 171.15234375,
+     "p95": 248.941650390625,
+     "p99": 370.819580078125
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 47.528076171875,
+     "p95": 67.223388671875,
+     "p99": 182.39111328125
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 3.367431640625,
+     "p95": 5.3701171875,
+     "p99": 8.77783203125
+    },
+    "total": {
+     "count": 50,
+     "p50": 258.806884765625,
+     "p95": 352.50927734375,
+     "p99": 645.286865234375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 1,
+   "samples": 50,
+   "wallMs": 580693.3884450002,
+   "throughputPerSec": 0.08610395949899076,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 138.6103515625,
+     "p95": 186.27783203125,
+     "p99": 199.440673828125
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 88.214111328125,
+     "p95": 646.98193359375,
+     "p99": 824.966064453125
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 230.5908203125,
+     "p95": 802.384521484375,
+     "p99": 996.16943359375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 1,
+   "samples": 200,
+   "wallMs": 6684.862470000517,
+   "throughputPerSec": 29.918341760587417,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 14.16015625,
+     "p95": 47.72265625,
+     "p99": 77.3466796875
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 128.120849609375,
+     "p95": 191.86572265625,
+     "p99": 339.0009765625
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 91.48828125,
+     "p95": 135.32763671875,
+     "p99": 185.77734375
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 2.3564453125,
+     "p95": 18.48291015625,
+     "p99": 23.873291015625
+    },
+    "total": {
+     "count": 200,
+     "p50": 240.909423828125,
+     "p95": 370.77734375,
+     "p99": 503.41259765625
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 1,
+   "samples": 200,
+   "wallMs": 8209.186035999563,
+   "throughputPerSec": 24.362951347788247,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 101.9287109375,
+     "p95": 166.342041015625,
+     "p99": 202.598876953125
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 204.6005859375,
+     "p95": 305.751220703125,
+     "p99": 360.7451171875
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 309.383056640625,
+     "p95": 442.02587890625,
+     "p99": 466.82080078125
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 1,
+   "samples": 50,
+   "wallMs": 515642.78899499914,
+   "throughputPerSec": 0.09696635164325922,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 44.810791015625,
+     "p95": 69.544921875,
+     "p99": 70.342529296875
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 181.78369140625,
+     "p95": 261.295166015625,
+     "p99": 263.676025390625
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 53.8603515625,
+     "p95": 87.65576171875,
+     "p99": 103.216064453125
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 4.01806640625,
+     "p95": 6.15478515625,
+     "p99": 8.44580078125
+    },
+    "total": {
+     "count": 50,
+     "p50": 287.56005859375,
+     "p95": 410.48974609375,
+     "p99": 420.01318359375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 1,
+   "samples": 50,
+   "wallMs": 134892.1883159997,
+   "throughputPerSec": 0.3706663864246129,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 155.982177734375,
+     "p95": 248.830078125,
+     "p99": 319.2451171875
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 95.904052734375,
+     "p95": 238.06787109375,
+     "p99": 370.03955078125
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 249.7822265625,
+     "p95": 453.842529296875,
+     "p99": 582.461669921875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 2,
+   "samples": 200,
+   "wallMs": 21621.511205000003,
+   "throughputPerSec": 9.250047237852169,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 57.289306640625,
+     "p95": 72.56982421875,
+     "p99": 81.83544921875
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 46.774169921875,
+     "p95": 60.392822265625,
+     "p99": 115.89208984375
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 104.5107421875,
+     "p95": 134.47802734375,
+     "p99": 202.067138671875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 2,
+   "samples": 200,
+   "wallMs": 26307.941493999984,
+   "throughputPerSec": 7.602267172656353,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 11.07373046875,
+     "p95": 17.593994140625,
+     "p99": 22.063232421875
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 71.076904296875,
+     "p95": 121.26513671875,
+     "p99": 139.151123046875
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 32.141357421875,
+     "p95": 49.728515625,
+     "p99": 75.819091796875
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 1.97705078125,
+     "p95": 2.626708984375,
+     "p99": 3.54052734375
+    },
+    "total": {
+     "count": 200,
+     "p50": 115.531494140625,
+     "p95": 181.446533203125,
+     "p99": 217.746826171875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 2,
+   "samples": 50,
+   "wallMs": 554289.6567659997,
+   "throughputPerSec": 0.09020554396003842,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 134.548583984375,
+     "p95": 206.514892578125,
+     "p99": 256.390869140625
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 80.151611328125,
+     "p95": 164.313720703125,
+     "p99": 364.398193359375
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 216.811279296875,
+     "p95": 383.23974609375,
+     "p99": 502.64599609375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 2,
+   "samples": 50,
+   "wallMs": 2341396.4852080005,
+   "throughputPerSec": 0.021354777081062457,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 38.366455078125,
+     "p95": 65.810791015625,
+     "p99": 120.274658203125
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 164.2060546875,
+     "p95": 214.636962890625,
+     "p99": 326.323486328125
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 48.488037109375,
+     "p95": 113.939697265625,
+     "p99": 193.873779296875
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 3.441650390625,
+     "p95": 4.911865234375,
+     "p99": 6.462890625
+    },
+    "total": {
+     "count": 50,
+     "p50": 258.682861328125,
+     "p95": 398.91064453125,
+     "p99": 502.933349609375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 2,
+   "samples": 200,
+   "wallMs": 8990.297908000182,
+   "throughputPerSec": 22.246203857385673,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 108.774658203125,
+     "p95": 177.006591796875,
+     "p99": 232.227783203125
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 225.987060546875,
+     "p95": 325.1748046875,
+     "p99": 349.15380859375
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 337.72216796875,
+     "p95": 475.5654296875,
+     "p99": 529.410888671875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 2,
+   "samples": 200,
+   "wallMs": 7400.382803999819,
+   "throughputPerSec": 27.025628983936127,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 15.76220703125,
+     "p95": 70.0517578125,
+     "p99": 81.31787109375
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 140.805419921875,
+     "p95": 218.2822265625,
+     "p99": 245.082275390625
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 109.354248046875,
+     "p95": 157.42138671875,
+     "p99": 184.259765625
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 2.781005859375,
+     "p95": 14.844970703125,
+     "p99": 25.819580078125
+    },
+    "total": {
+     "count": 200,
+     "p50": 271.695556640625,
+     "p95": 396.122802734375,
+     "p99": 465.612060546875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 2,
+   "samples": 50,
+   "wallMs": 117363.1855919999,
+   "throughputPerSec": 0.4260279724667619,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 156.6318359375,
+     "p95": 190.2275390625,
+     "p99": 193.9951171875
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 94.351318359375,
+     "p95": 116.349853515625,
+     "p99": 124.026611328125
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 250.7734375,
+     "p95": 296.06494140625,
+     "p99": 299.839111328125
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 2,
+   "samples": 50,
+   "wallMs": 498731.43997899955,
+   "throughputPerSec": 0.10025435733930346,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 40.058837890625,
+     "p95": 66.891845703125,
+     "p99": 79.38671875
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 175.55126953125,
+     "p95": 199.726806640625,
+     "p99": 233.031982421875
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 53.036865234375,
+     "p95": 84.6982421875,
+     "p99": 132.639892578125
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 3.763427734375,
+     "p95": 4.842041015625,
+     "p99": 5.813720703125
+    },
+    "total": {
+     "count": 50,
+     "p50": 273.373291015625,
+     "p95": 349.186767578125,
+     "p99": 386.811279296875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 3,
+   "samples": 200,
+   "wallMs": 25905.003203999993,
+   "throughputPerSec": 7.7205163197632025,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 9.53173828125,
+     "p95": 16.089111328125,
+     "p99": 22.31884765625
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 73.2666015625,
+     "p95": 115.2373046875,
+     "p99": 136.389404296875
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 28.69189453125,
+     "p95": 56.7158203125,
+     "p99": 110.962158203125
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 1.72216796875,
+     "p95": 2.35107421875,
+     "p99": 2.699951171875
+    },
+    "total": {
+     "count": 200,
+     "p50": 112.263671875,
+     "p95": 170.570556640625,
+     "p99": 205.7998046875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 3,
+   "samples": 200,
+   "wallMs": 22344.539814999996,
+   "throughputPerSec": 8.950732557299705,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 53.996337890625,
+     "p95": 69.89599609375,
+     "p99": 76.51220703125
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 43.038818359375,
+     "p95": 106.203369140625,
+     "p99": 429.242919921875
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 97.2646484375,
+     "p95": 164.76611328125,
+     "p99": 493.491943359375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 3,
+   "samples": 50,
+   "wallMs": 2384869.1722589997,
+   "throughputPerSec": 0.02096551063748244,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 39.17431640625,
+     "p95": 83.899658203125,
+     "p99": 171.291748046875
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 164.347900390625,
+     "p95": 246.000244140625,
+     "p99": 289.96875
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 48.974853515625,
+     "p95": 193.146240234375,
+     "p99": 999.448486328125
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 3.369384765625,
+     "p95": 4.921142578125,
+     "p99": 5.49462890625
+    },
+    "total": {
+     "count": 50,
+     "p50": 259.128662109375,
+     "p95": 457.794189453125,
+     "p99": 1464.248046875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 3,
+   "samples": 50,
+   "wallMs": 561407.8593750001,
+   "throughputPerSec": 0.08906180981446113,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 140.175537109375,
+     "p95": 190.91845703125,
+     "p99": 200.2734375
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 85.30517578125,
+     "p95": 542.0771484375,
+     "p99": 780.580322265625
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 223.90185546875,
+     "p95": 682.252685546875,
+     "p99": 908.677001953125
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 3,
+   "samples": 200,
+   "wallMs": 6455.636819999665,
+   "throughputPerSec": 30.98067713171175,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 14.103515625,
+     "p95": 50.842041015625,
+     "p99": 53.55810546875
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 122.836669921875,
+     "p95": 179.941650390625,
+     "p99": 219.345947265625
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 96.774169921875,
+     "p95": 136.681640625,
+     "p99": 236.956298828125
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 2.430908203125,
+     "p95": 21.8466796875,
+     "p99": 54.298828125
+    },
+    "total": {
+     "count": 200,
+     "p50": 235.1220703125,
+     "p95": 372.36474609375,
+     "p99": 444.3984375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 3,
+   "samples": 200,
+   "wallMs": 7231.599150000606,
+   "throughputPerSec": 27.656400175330965,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 87.86962890625,
+     "p95": 134.516357421875,
+     "p99": 139.533935546875
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 185.115966796875,
+     "p95": 261.447265625,
+     "p99": 356.02099609375
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 271.31396484375,
+     "p95": 391.115478515625,
+     "p99": 493.109130859375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 3,
+   "samples": 50,
+   "wallMs": 461075.1095169997,
+   "throughputPerSec": 0.10844220164557922,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 38.984619140625,
+     "p95": 78.1826171875,
+     "p99": 326.950927734375
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 176.803466796875,
+     "p95": 202.264404296875,
+     "p99": 517.27783203125
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 51.809814453125,
+     "p95": 159.94091796875,
+     "p99": 373.39404296875
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 3.70751953125,
+     "p95": 5.378662109375,
+     "p99": 23.601318359375
+    },
+    "total": {
+     "count": 50,
+     "p50": 277.692626953125,
+     "p95": 555.640869140625,
+     "p99": 637.27197265625
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 3,
+   "samples": 50,
+   "wallMs": 109722.1563159991,
+   "throughputPerSec": 0.45569647625225596,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 133.66650390625,
+     "p95": 159.709716796875,
+     "p99": 172.994873046875
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 79.451171875,
+     "p95": 219.27294921875,
+     "p99": 1329.300048828125
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 217.87158203125,
+     "p95": 331.505615234375,
+     "p99": 1455.822265625
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 4,
+   "samples": 200,
+   "wallMs": 22189.62610699999,
+   "throughputPerSec": 9.013220819295714,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 57.029296875,
+     "p95": 79.09814453125,
+     "p99": 91.556884765625
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 44.856689453125,
+     "p95": 71.061279296875,
+     "p99": 173.126708984375
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 102.1845703125,
+     "p95": 143.759033203125,
+     "p99": 232.3525390625
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 1,
+   "repetition": 4,
+   "samples": 200,
+   "wallMs": 28821.714498,
+   "throughputPerSec": 6.939212447402406,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 10.464111328125,
+     "p95": 17.5654296875,
+     "p99": 44.583251953125
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 73.05419921875,
+     "p95": 123.198486328125,
+     "p99": 153.099365234375
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 30.575927734375,
+     "p95": 107.946044921875,
+     "p99": 365.57373046875
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 1.85302734375,
+     "p95": 2.739013671875,
+     "p99": 3.0947265625
+    },
+    "total": {
+     "count": 200,
+     "p50": 114.81103515625,
+     "p95": 275.2294921875,
+     "p99": 578.115234375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 4,
+   "samples": 50,
+   "wallMs": 636701.187382,
+   "throughputPerSec": 0.07852977344928623,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 148.829345703125,
+     "p95": 191.185791015625,
+     "p99": 208.4443359375
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 88.740966796875,
+     "p95": 128.038818359375,
+     "p99": 205.49951171875
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 238.931884765625,
+     "p95": 325.498779296875,
+     "p99": 374.96875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 1,
+   "repetition": 4,
+   "samples": 50,
+   "wallMs": 2445432.0954960003,
+   "throughputPerSec": 0.020446284356899568,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 38.07080078125,
+     "p95": 50.82275390625,
+     "p99": 85.939697265625
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 165.9619140625,
+     "p95": 194.49755859375,
+     "p99": 212.970947265625
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 47.14697265625,
+     "p95": 193.205078125,
+     "p99": 2193.743896484375
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 3.421630859375,
+     "p95": 6.176025390625,
+     "p99": 7.081298828125
+    },
+    "total": {
+     "count": 50,
+     "p50": 262.557861328125,
+     "p95": 336.429931640625,
+     "p99": 2404.309814453125
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 4,
+   "samples": 200,
+   "wallMs": 5668.152552999556,
+   "throughputPerSec": 35.284865417773744,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 72.551025390625,
+     "p95": 118.360107421875,
+     "p99": 152.418212890625
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 141.43310546875,
+     "p95": 189.03759765625,
+     "p99": 205.96044921875
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 200,
+     "p50": 216.93798828125,
+     "p95": 297.179931640625,
+     "p99": 338.627685546875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "warm",
+   "concurrency": 8,
+   "repetition": 4,
+   "samples": 200,
+   "wallMs": 5937.408252999652,
+   "throughputPerSec": 33.684731027036506,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 200,
+     "p50": 10.595947265625,
+     "p95": 46.766845703125,
+     "p99": 161.63232421875
+    },
+    "acceptedToDispatch": {
+     "count": 200,
+     "p50": 96.437744140625,
+     "p95": 157.19970703125,
+     "p99": 596.255126953125
+    },
+    "dispatchToTerminal": {
+     "count": 200,
+     "p50": 69.684326171875,
+     "p95": 115.442626953125,
+     "p99": 551.624267578125
+    },
+    "terminalToBusinessEvent": {
+     "count": 200,
+     "p50": 1.912109375,
+     "p95": 13.437744140625,
+     "p99": 23.939697265625
+    },
+    "total": {
+     "count": 200,
+     "p50": 185.585205078125,
+     "p95": 319.050537109375,
+     "p99": 1038.08154296875
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 998000,
+    "durableSteps": 800
+   }
+  },
+  {
+   "arm": "control",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 4,
+   "samples": 50,
+   "wallMs": 108590.98554299958,
+   "throughputPerSec": 0.4604433761235285,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 122.911376953125,
+     "p95": 138.372802734375,
+     "p99": 176.015380859375
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 72.386474609375,
+     "p95": 90.9208984375,
+     "p99": 2038.15087890625
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 0,
+     "p95": 0,
+     "p99": 0
+    },
+    "total": {
+     "count": 50,
+     "p50": 196.360595703125,
+     "p95": 231.8193359375,
+     "p99": 2169.5205078125
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": null,
+    "durableSteps": null
+   }
+  },
+  {
+   "arm": "candidate",
+   "mode": "cold",
+   "concurrency": 8,
+   "repetition": 4,
+   "samples": 50,
+   "wallMs": 493673.2245910005,
+   "throughputPerSec": 0.1012815715120546,
+   "phasesMs": {
+    "ingressToAccepted": {
+     "count": 50,
+     "p50": 41.780029296875,
+     "p95": 98.9287109375,
+     "p99": 313.3681640625
+    },
+    "acceptedToDispatch": {
+     "count": 50,
+     "p50": 163.34716796875,
+     "p95": 215.803955078125,
+     "p99": 412.046875
+    },
+    "dispatchToTerminal": {
+     "count": 50,
+     "p50": 50.228759765625,
+     "p95": 119.15966796875,
+     "p99": 256.09521484375
+    },
+    "terminalToBusinessEvent": {
+     "count": 50,
+     "p50": 3.540283203125,
+     "p95": 4.691650390625,
+     "p99": 5.477783203125
+    },
+    "total": {
+     "count": 50,
+     "p50": 261.8935546875,
+     "p95": 481.07373046875,
+     "p99": 761.8984375
+    }
+   },
+   "persistence": {
+    "dbRoundTrips": null,
+    "dbBytes": 250300,
+    "durableSteps": 200
+   }
+  }
+ ],
+ "notProven": [
+  "dbRoundTrips is null (UNKNOWN, not zero) for both arms; control dbBytes/durableSteps are null because the foreground arm has no DBOS persistence to measure.",
+  "The bounded actual-provider smoke (kept separate from fixture latency by D-016).",
+  "The exactly-once idempotent write invariant is asserted inside the test per sample (test passed on all 5 repetitions); it is not re-derived here.",
+  "Host load was not held constant across reps (shared box); per-rep load is not recorded in this artifact."
+ ]
+}

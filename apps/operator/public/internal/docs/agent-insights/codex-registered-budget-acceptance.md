@@ -1,0 +1,79 @@
+# Registered Codex budgets: acceptance and replication procedure
+URL: /internal/docs/agent-insights/codex-registered-budget-acceptance
+
+Reproduce wake/bootstrap/fresh-launch budget checks and qualify native/admission receipts without crossing the existing owner and lineage boundaries.
+
+This procedure belongs to plan `codex-registered-budget-propagation-2026-10-14`, harness `papercusp`, and WI-6554700010013538. It extends the maintained test, isolated HTTP, mutation-probe and independent-evidence mechanisms; the general [compaction guide](/internal/docs/agents/compaction) covers context recovery. Neither managed carry-respawn nor this procedure establishes native Codex compaction.
+
+## Evidence and authority
+
+Read the current acceptance rubric and exact immutable spec revisions before grading. Preserve the original five BAR meanings, falsifiers, test layers and scope. Parent authority is `nonp2p-feature-queue-cleanup-2026-10-03#D-006` and `#D-008` through `#D-011`. The route is this assigned direct session; no additional implementation agents, provider/profile/model/account/carry changes, scheduler pull, shared restart, release operation or forced acceptance is authorized.
+
+Saved passing runs remain evidence only while the shared reader qualifies their source, test, fixture/environment, spec and rubric identities and their actual passed case selections. A file-level PASS with skipped required cases is insufficient. Refresh only invalidated proof; do not replay settled mutations merely to recover identifiers. Read current bindings with `plans:get-spec-evidence` and adequacy with `plans:evaluate-spec-test-adequacy`. A current passing run is not an adequacy or independent-acceptance verdict.
+
+For a clean proof, use the maintained `npm run lint:as-committed -- --materialize-only --ref=<qualified-commit>` route. Before running, compare BOTH source and guard-test bytes with the intended candidate and verify the named assertion exists. A recent source-file commit alone may predate a separately committed guard. Run only inside the exact prepared root printed by this invocation; never infer its path by listing other agents' temp directories. Source files stay unchanged; mutation-probe uses its private overlay. Preserve full logs and authoritative test-run IDs.
+
+## R1: wake precedence replication
+
+From the qualified source root run:
+
+```sh
+npm run test:file -- packages/operator-core/lib/events/await/wake-executor-codex-home-repair.test.ts
+```
+
+Read the production defaultEnsureCodexHomeForWake assertions, not just their titles. Required cases: registered225000 with stale250000 launch argv; registered225000 with absent launch argv; no registered value with both legacy argv spellings; metadata rejection; the actual native-home writer. Observe positive writer calls with225000 and physical threshold180000, legacy250000 yielding200000, and repair-failed plus no home rewrite on metadata-read rejection. The positive writer case prevents a never-writes implementation from passing the negative case.
+
+The counterexample/positive-control map is: replace current metadata with legacy argv => current-over-stale/absent cases fail; omit writer budget => real-home180000 assertion fails; swallow metadata-read failure => no-write assertion fails. Preserve the maintained causal run and same-case passing baselines; current reader qualification decides whether saved rows need refreshing. These are wake/home observations, not native runtime compaction.
+
+## R2: bootstrap consistency replication
+
+First read the maintained codex-budget HTTP integration test and its private fixture preflight. Verify the committed async snapshot export consumed by testing:run is present and call-able; the existing testing-run-store.test.ts consumer regression guards this. Run the maintained real host builder through `bash scripts/pc-heavy.sh -- npm run lint:host-bundle-builds` before another expensive integration. A size-guard failure remains a failed check even if compile succeeds. Do not widen storage/size/time limits or delete shared PG data.
+
+Run the existing bootstrap unit file through `npm run test:file -- packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-launch-argv.test.ts`. Its required precedence/legacy/error cases must actually execute.
+
+For HTTP use the maintained `node scripts/with-test-pg.mjs -- npm run test:file -- packages/operator-core/lib/endpoint-route/routes/agent-mcp/codex-budget-http.integration.test.ts` from a qualified committed source root, with an owned temporary PG volume that passes its existing storage preflight. The fixture itself uses with-test-pg --isolated-runtime=operator-api and the current production bootstrap route. Preserve the established PAPERCUSP\_TEST\_RUNS\_DB\_URL/PAPERCUSP\_TEST\_RUN\_HARNESS reporter configuration without printing credentials, and use PAPERCUSP\_TEST\_RUN\_RECEIPT\_FILE for durable run registration. Do not copy a DB secret into a tree file.
+
+Require response registeredBudget=responseBudget225000, physical configThreshold180000 and supporting argvThreshold180000 for stale and absent argv; legacy response250000/config200000/argv200000. The outer test's fixed numbers are independent oracles. Require hostStopped:true, nativeLaunched:false, bundle/source/runtime identity, phase evidence, actual test ledger row and cleanup. nativeLaunched:false explicitly limits this to HTTP/artifact consistency; helper-composed argv is supporting R2 evidence, not observation of a fresh native process. Failed setup9738 and failed private builder21255286 are historical failures, not passing receipts.
+
+## R3: fresh launcher replication
+
+Run the canonical launcher assertions:
+
+```sh
+npm run test:file -- apps/operator/lib/psu-launcher.test.ts -t 'registered Codex bootstrap budget|fresh Codex launch boundary'
+```
+
+The maintained boundary test executes production launchFreshSu. It intercepts only bootstrap HTTP, pool/preflight and runWrapper; no backend or extra agent starts. Its input matrix includes registered225000 over stale250000 and absent arguments, legacy250000 without current metadata, model default without either budget, conflicting duplicate -c/--config spellings and an unmanaged model passthrough control. Read the intercepted process argv, not just the helper output. Require exactly one effective managed threshold180000, legacy200000, no retained stale784800 in the managed cases, preserved unrelated configuration and unchanged unmanaged behavior. Keep the direct suWrapperExtraArgs180000 assertion as a positive control.
+
+From the same qualified clean root run the maintained copy-out overlay probe:
+
+```sh
+bash scripts/mutation-probe.sh --file apps/operator/scripts/psu-launcher.mjs \
+  --mutate 's/compactionLimit: res.compactionLimit \?\? args.compactionLimit,/compactionLimit: args.compactionLimit,/' \
+  --test 'npm run test:file -- apps/operator/lib/psu-launcher.test.ts -t "fresh Codex launch boundary"' \
+  --relocation overlay
+```
+
+The original and unmutated-copy selected assertions must pass, and the dropped-handoff mutant must fail the registered boundary cases while the unchanged helper positive control remains healthy. Independently removing the duplicate-filter condition must fail the duplicate-override case. Preserve byte-identical original-source proof, full phase logs and same-case baseline/mutation pairing. A setup error, no matching assertions or surviving mutant is not a caught result. Do not mutate shared source or replace the runtime observation with a source-text assertion.
+
+## R4: qualified actual native compaction receipt
+
+This is deliberately manual: neither unit tests nor HTTP decide whether the authorized native process consumed the configuration and emitted a real compaction event. Request the receipt once from the existing leader-owned restoration lane through coord:send to the verified supervisor, with expects:answer, WI3538 and the exact missing evidence. Consume the returned work-item/receipt reference; do not recruit a substitute native process.
+
+Before any trigger, require a leader-issued authorization naming the existing owner, adv/native session and process, approved exact model/effort/account/WARM route, source commit and loaded runtime, registered budget, physical CODEX\_HOME/config file and effective argv. Require the receipt to name the permitted native compaction trigger and a bounded observation interval with start/end timestamps and expected event source. This lane has no independent trigger or invented timeout authorization. If any of those prerequisites is missing, record the missing field and rate the unexercised outcome unknown/open.
+
+For an authorized receipt correlate its native compacted-event identity, native session/process and timestamp with the same approved process, config and effective argv during that interval. A threshold/config contradiction or an explicitly observed missing required event under the authorized observation contract is broken. An absent runtime, authorization, interval, receipt or event observation is unknown/open. Managed session:request-compaction, carry-respawn, pressure-ok, source tests and earlier8192 smoke cannot satisfy this outcome.
+
+## R5: admission authority receipt
+
+This is also deliberately manual. Read the current parent D006/D008-D011 and leader's original admission-qualified D008 gate and generation before consuming a disposition. The existing gate is the fleet's `admission-qualified-d008` gate; resolve its exact returned key from the leader's canonical declaration/catalog rather than registering or hand-typing a new gate. A timeout wake is not the leader's qualified gate delivery.
+
+Before any admission action require the actual leader-issued lift receipt and its original key/generation, the governed owner/session/fleet/spec identity and allowed one-shot disposition. The leader/restoration lane supplies the actual supported scheduler admission result and its durable ledger reference. Correlate that result with the same permitted owner/session/budget and current decisions. This assigned budget lane does not pull or fire the gate to generate proof.
+
+Report two distinct observations: hold observed/preserved, and authorized admission exercised/accepted. The first cannot establish the second. With no qualified lift/runtime/disposition receipt the admission outcome is unknown/open and the hold remains; an unauthorized pull, changed spec/profile/route or contradictory receipt is broken. Retain D011's exact existing watch/inbox lifecycle; no fallback monitor or claim reassignment.
+
+## Independent qualification and cleanup
+
+The original completed critique WI-6554700010014615#1183159 is author feedback, not a meta-scorecard, fixture certificate or product acceptance. Address its detection/procedure findings before author meta-vetting and obtain the separate required independent grading-integrity audit. Fixture-free claims need a genuinely outside-lineage qualified verifier using plans:bind-independent-verification against the exact executable binding/run/spec/cases/fingerprints, followed by successful shared-reader fixtureAbsenceVerification. The existing author-child critic is ineligible for that stricter seat. An eligible-but-ended identity is not permission for author-relaunch or reparenting.
+
+Keep test logs, source receipts, causal failures and cleanup proof on WI3538. File and assign any residue before closing. Do not close the plan or report shipment while integration, fixture qualification, native or admission acceptance remains open.

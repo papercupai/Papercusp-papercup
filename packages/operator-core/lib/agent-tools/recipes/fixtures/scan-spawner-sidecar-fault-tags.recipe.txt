@@ -1,0 +1,63 @@
+// Audited source fixture for the saved recipe of the same name. Update through
+// recipes:revise; the framework test executes these exact bytes.
+if (!inputs.workItemId) throw new Error("workItemId is required");
+// The caller supplies work_items:get { id: workItemId, resume: true } from this
+// invocation. Recipes intentionally refuse dynamically selected scoped reads.
+const read = inputs.checkpoint || {};
+const rows = Array.isArray(read.results) ? read.results : [];
+const row = rows.find(value => value.id === inputs.workItemId && value.ok);
+const resume = row?.resume;
+if (resume?.checkpoint?.status !== "available" || resume?.nextAction?.status !== "available") {
+  throw new Error("Current checkpoint boundary unavailable; no log scan performed");
+}
+const next = String(resume.nextAction.text || "");
+const currentMarkers = [...next.matchAll(/\bNext\s+scan\s+starts\s+at\s+(@\d+(?:\.\d+)?)/gi)].map(match => match[1]);
+if (currentMarkers.length > 1) throw new Error("Checkpoint next action needs exactly one current next-scan marker");
+let since;
+if (currentMarkers.length === 1) {
+  since = currentMarkers[0];
+} else {
+  const boundaries = [...new Set([...next.matchAll(/\b(?:from|since|start(?:ing)?(?:\s+at)?)\s+(@\d+(?:\.\d+)?)/gi)].map(match => match[1]))];
+  if (boundaries.length !== 1) throw new Error("Checkpoint next action needs exactly one explicit from/since/start @epoch boundary");
+  since = boundaries[0];
+}
+if (inputs.since !== undefined && inputs.since !== since) throw new Error("Requested since does not match the current checkpoint boundary");
+const nowSeconds = Math.floor(Date.now() / 1000);
+const until = inputs.until === undefined ? "@" + nowSeconds : inputs.until;
+if (!/^@\d+(?:\.\d+)?$/.test(until)) throw new Error("until must be an explicit @epoch boundary");
+const startSeconds = Number(since.slice(1));
+const endSeconds = Number(until.slice(1));
+if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds >= endSeconds || endSeconds > nowSeconds) {
+  throw new Error("Scan window must be finite, increasing, and no later than the current clock");
+}
+const tags = ["spawner-socket-error", "spawner-socket-peer-eof", "spawner-ipc-client-fault", "spawner-process-exec-fault", "spawner-process-drain"];
+const pattern = "\\[(?:" + tags.join("|") + ")\\]";
+const r = await tools.logs.read({ unit: "papercusp-bg-host.service", since, until, grep: pattern, limit: 1000, scope: "user" });
+const entriesValue = r.entries ?? null;
+const entries = Array.isArray(entriesValue) ? entriesValue : [];
+const journalAvailable = r.journalAvailable ?? null;
+const journalError = r.journalError ?? null;
+const truncated = r.truncated ?? null;
+const windowOutsideJournal = r.windowOutsideJournal ?? null;
+const unitsUnknown = r.unitsUnknown ?? null;
+const tagCounts = Object.fromEntries(tags.map(tag => [tag, entries.filter(e => String(e.message || "").includes("[" + tag + "]")).reduce((sum, e) => sum + (Number(e.repeat) || 1), 0)]));
+const peerExec = entries.filter(e => String(e.message || "").includes("[spawner-socket-peer-eof]") && /"method"\s*:\s*"process:exec"/.test(String(e.message || ""))).map(e => ({ ts: e.ts, unit: e.unit, message: e.message }));
+const complete = Array.isArray(entriesValue) && journalAvailable === true && !journalError && truncated === false && !windowOutsideJournal && !(Array.isArray(unitsUnknown) && unitsUnknown.length);
+return {
+  workItemId: inputs.workItemId,
+  checkpointContentHash: resume.checkpoint.contentHash || null,
+  checkpointBoundary: since,
+  window: { since, until },
+  pattern,
+  complete,
+  matched: r.matched ?? null,
+  collapsed: r.collapsed ?? null,
+  returned: entries.length,
+  truncated,
+  journalAvailable,
+  journalError,
+  windowOutsideJournal,
+  unitsUnknown,
+  tagCounts,
+  peerExec,
+};

@@ -27,7 +27,7 @@
 import type { MiddlewareHandler } from 'hono';
 import { currentExternalIngressListener } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
 import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
-import { isHostedControlPlaneDistributionProfile } from '@papercusp/operator-core/lib/endpoint-route/hosted-runtime';
+import { isHostedControlPlaneDistributionProfile } from '@papercusp/operator-core/lib/remote-auth-policy';
 import { isVmReleaseDistribution } from '@papercusp/operator-core/lib/vm-release-runtime-policy';
 
 /** RFC 6761: every `*.localhost` name resolves to loopback and cannot be rebound. */

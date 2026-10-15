@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import {
   beginQualificationTransaction,
   checkpointPidIdentity,
@@ -48,7 +51,7 @@ const runningWithRunner = (unit: string | null): CheckpointQualificationTransact
 // Well inside the 3h lease: without a liveness term every case below would be a `conflict`.
 const DURING_LEASE = 1_000 + 60_000;
 
-it('keeps a not-yet-created named scope single-flight, then recovers its dead reservation', () => {
+it('keeps a not-yet-created named scope single-flight, then recovers its dead reservation', async () => {
   const begun = beginQualificationTransaction(null, { attemptId: 'scheduled-attempt', nowMs: 1_000 }).transaction;
   const reserved = reserveQualificationRunner(begun, {
     attemptId: 'scheduled-attempt', runnerId: 'fire-1', unit: 'papercusp-checkpoint-fire-1.scope',
@@ -58,7 +61,7 @@ it('keeps a not-yet-created named scope single-flight, then recovers its dead re
   configureRunnerLivenessProber(() => 'dead');
   try {
     const duringLaunch = 1_000 + QUALIFICATION_LAUNCH_GRACE_MS - 1;
-    expect(probeRunnerLiveness(runner, duringLaunch)).toBe('unknown');
+    await expect(probeRunnerLiveness(runner, duringLaunch)).resolves.toBe('unknown');
     expect(reserveQualificationRunner(reserved, {
       attemptId: 'scheduled-attempt', runnerId: 'fire-2', leaseDurationMs: LEASE_MS,
       incumbentLiveness: 'dead', nowMs: duringLaunch,
@@ -68,7 +71,7 @@ it('keeps a not-yet-created named scope single-flight, then recovers its dead re
     }).status).toBe('conflict');
 
     const afterLaunch = 1_000 + QUALIFICATION_LAUNCH_GRACE_MS;
-    expect(probeRunnerLiveness(runner, afterLaunch)).toBe('dead');
+    await expect(probeRunnerLiveness(runner, afterLaunch)).resolves.toBe('dead');
     const reclaimed = reserveQualificationRunner(reserved, {
       attemptId: 'scheduled-attempt', runnerId: 'fire-2', leaseDurationMs: LEASE_MS,
       incumbentLiveness: 'dead', nowMs: afterLaunch,
@@ -82,18 +85,18 @@ it('keeps a not-yet-created named scope single-flight, then recovers its dead re
   }
 });
 
-it('proves a scheduled CLI runner by PID boot/start identity, including recycled and unknown cases', () => {
+it('proves a scheduled CLI runner by PID boot/start identity, including recycled and unknown cases', async () => {
   configureRunnerLivenessProber(null);
   const identity = checkpointPidIdentity(process.pid);
   expect(identity).toMatch(/^[0-9a-f-]+:\d+$/);
   const current = runningWithRunner(null).currentPhysicalRunner!;
   const runner = { ...current, pid: process.pid, pidIdentity: identity };
-  expect(probeRunnerLiveness(runner)).toBe('live');
-  expect(probeRunnerLiveness({ ...runner, pidIdentity: `${identity}-recycled` })).toBe('dead');
-  expect(probeRunnerLiveness({ ...runner, pidIdentity: null })).toBe('unknown');
+  await expect(probeRunnerLiveness(runner)).resolves.toBe('live');
+  await expect(probeRunnerLiveness({ ...runner, pidIdentity: `${identity}-recycled` })).resolves.toBe('dead');
+  await expect(probeRunnerLiveness({ ...runner, pidIdentity: null })).resolves.toBe('unknown');
 });
 
-it('declares an UNBOUND launch reservation (no pid, no unit) dead only once it outlived the runner ceiling (WI-10004694)', () => {
+it('declares an UNBOUND launch reservation (no pid, no unit) dead only once it outlived the runner ceiling (WI-10004694)', async () => {
   // The prober would answer 'unknown' for this row; it must never be consulted past the ceiling.
   configureRunnerLivenessProber(() => 'unknown');
   try {
@@ -101,19 +104,43 @@ it('declares an UNBOUND launch reservation (no pid, no unit) dead only once it o
     const runner = { ...reserved.currentPhysicalRunner!, phase: 'launching' as const, pid: null, unit: null };
     const lastSign = Math.max(runner.reservedAtMs, runner.leaseExpiresAtMs ?? 0);
     // Fails closed inside the ceiling: an unbound reservation is not yet proof of death.
-    expect(probeRunnerLiveness(runner, lastSign + QUALIFICATION_OWNER_ABANDONED_MS)).toBe('unknown');
+    await expect(probeRunnerLiveness(runner, lastSign + QUALIFICATION_OWNER_ABANDONED_MS)).resolves.toBe('unknown');
     const past = lastSign + QUALIFICATION_OWNER_ABANDONED_MS + 1;
-    expect(probeRunnerLiveness(runner, past)).toBe('dead');
+    await expect(probeRunnerLiveness(runner, past)).resolves.toBe('dead');
     // A recent heartbeat extends the evidence of life.
-    expect(probeRunnerLiveness({ ...runner, heartbeatAtMs: past - 1 }, past)).toBe('unknown');
+    await expect(probeRunnerLiveness({ ...runner, heartbeatAtMs: past - 1 }, past)).resolves.toBe('unknown');
     // A bound runner (unit or pid) is NEVER judged by age — only its probe can falsify it.
-    expect(probeRunnerLiveness({ ...runner, unit: 'papercusp-checkpoint-x.scope' }, past)).toBe('unknown');
-    expect(probeRunnerLiveness({ ...runner, pid: 4242 }, past)).toBe('unknown');
+    await expect(probeRunnerLiveness({ ...runner, unit: 'papercusp-checkpoint-x.scope' }, past)).resolves.toBe('unknown');
+    await expect(probeRunnerLiveness({ ...runner, pid: 4242 }, past)).resolves.toBe('unknown');
     // And the wedge clears: a successor attempt can take over with the probed verdict.
     expect(beginQualificationTransaction(reserved, {
-      attemptId: 'successor-attempt', incumbentLiveness: probeRunnerLiveness(runner, past), nowMs: past,
+      attemptId: 'successor-attempt', incumbentLiveness: await probeRunnerLiveness(runner, past), nowMs: past,
     }).status).not.toBe('conflict');
   } finally {
+    configureRunnerLivenessProber(null);
+  }
+});
+
+it.skipIf(process.platform !== 'linux')('runs systemctl liveness checks without blocking the event loop', async () => {
+  configureRunnerLivenessProber(null);
+  const bin = mkdtempSync(join(tmpdir(), 'qualification-systemctl-'));
+  const previousPath = process.env.PATH;
+  try {
+    const fakeSystemctl = join(bin, 'systemctl');
+    writeFileSync(fakeSystemctl, '#!/bin/sh\nsleep 0.25\nprintf "active\\n"\n');
+    chmodSync(fakeSystemctl, 0o755);
+    process.env.PATH = `${bin}${delimiter}${previousPath ?? ''}`;
+
+    let eventLoopAdvanced = false;
+    const timer = setTimeout(() => { eventLoopAdvanced = true; }, 25);
+    const liveness = await probeRunnerLiveness(runningWithRunner('papercusp-checkpoint-test.service').currentPhysicalRunner);
+    clearTimeout(timer);
+
+    expect(liveness).toBe('live');
+    expect(eventLoopAdvanced).toBe(true);
+  } finally {
+    process.env.PATH = previousPath;
+    rmSync(bin, { recursive: true, force: true });
     configureRunnerLivenessProber(null);
   }
 });

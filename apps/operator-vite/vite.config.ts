@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { tanstackRouter } from '@tanstack/router-plugin/vite';
 import { resolve } from 'node:path';
-import { isDesktopHmrEnabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } from './dev-mode';
+import { isDesktopHmrEnabled, isDevWatchDisabled, NO_VITE_CLIENT_BODY, shouldServeNoopViteClient } from './dev-mode';
 import {
   devDistPrunePlugin,
   distDocsSwapLeftoverPrunePlugin,
@@ -372,7 +372,12 @@ export default defineConfig({
     // categories, only 9% on the actual module graph. This is a startup cost,
     // not drift: eleven days of uptime added just 3% more. See dev-watch-ignore.ts
     // for the measurement and why this is a predicate rather than glob strings.
-    watch: { ignored: createDevWatchIgnore({ viteRoot: import.meta.dirname, operatorRoot }) },
+    // PAPERCUSP_DEV_WATCH=0 (the e2e webServer) disables watching outright so a
+    // peer's edit to the shared tree cannot full-reload pages mid-test
+    // (WI-10006950; see isDevWatchDisabled in dev-mode.ts).
+    watch: isDevWatchDisabled(process.env)
+      ? null
+      : { ignored: createDevWatchIgnore({ viteRoot: import.meta.dirname, operatorRoot }) },
     proxy: {
       // PAPERCUSP_API_TARGET points the /api proxy at a different operator —
       // e.g. the staging host (:3170) when an e2e rig must exercise staging-tree

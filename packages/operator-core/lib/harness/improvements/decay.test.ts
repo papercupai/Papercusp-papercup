@@ -7,6 +7,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { planDecaySweep, runDecaySweep, type DecaySweepDeps } from './decay';
 import type { ImprovementCandidate } from './policy';
 import type { IdeaLifecyclePayload } from './lifecycle';
+import type { EngineerIssue, ListIssuesFilter } from '../../issues-engineer';
+
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+vi.mock('../../system-health/compute', () => ({ refreshHealthPanel: vi.fn(async () => {}) }));
 
 const NOW = Date.parse('2026-06-09T12:00:00Z');
 const daysAgo = (d: number): string => new Date(NOW - d * 24 * 60 * 60 * 1000).toISOString();
@@ -20,6 +24,72 @@ function cand(p: Partial<ImprovementCandidate> & { id: string }): ImprovementCan
     createdAt: daysAgo(30),
     updatedAt: daysAgo(30),
     ...p,
+  };
+}
+
+function issue(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
+  return {
+    kind: 'bug',
+    scope: 'operator',
+    body: '',
+    severity: 'minor',
+    source: 'su',
+    state: 'open',
+    assignee: null,
+    assignedBy: null,
+    assignedAt: null,
+    payload: null,
+    parent: null,
+    foundDuring: null,
+    linkedFeatureId: null,
+    createdBy: 'su-test',
+    signalOrigin: 'organic',
+    assigneeRank: null,
+    rankWriter: null,
+    rankUpdatedAt: null,
+    lastProgressAt: null,
+    origin: 'local',
+    terminalOwner: null,
+    terminalCompletionRef: null,
+    completionAuthority: null,
+    featureOrder: null,
+    createdAt: daysAgo(30),
+    updatedAt: daysAgo(30),
+    closedAt: null,
+    goalId: null,
+    ...p,
+  };
+}
+
+function issueFromCandidate(candidate: ImprovementCandidate): EngineerIssue {
+  return issue({
+    id: candidate.id,
+    title: candidate.title,
+    kind: candidate.kind === 'feature' ? 'change' : candidate.kind === 'chunk' ? 'task' : candidate.kind,
+    scope: candidate.scope,
+    state: candidate.state === 'resolved' ? 'done' : candidate.state === 'closed' ? 'closed' : 'open',
+    createdAt: candidate.createdAt ?? daysAgo(30),
+    updatedAt: candidate.updatedAt ?? daysAgo(30),
+    payload: {
+      ...(candidate.watchdogKey ? { watchdogKey: candidate.watchdogKey } : {}),
+      ...(candidate.ideaLifecycle ? { ideaLifecycle: candidate.ideaLifecycle } : {}),
+    },
+  });
+}
+
+function projectCandidates(
+  candidates: readonly ImprovementCandidate[],
+  observe?: (filter: ListIssuesFilter, maxRows: number) => void,
+): DecaySweepDeps['projectIssues'] {
+  return async <T>(
+    filter: ListIssuesFilter,
+    projection: {
+      maxRows: number;
+      project: (issues: readonly EngineerIssue[]) => Promise<readonly T[]> | readonly T[];
+    },
+  ): Promise<T[]> => {
+    observe?.(filter, projection.maxRows);
+    return [...(await projection.project(candidates.map(issueFromCandidate)))];
   };
 }
 
@@ -208,14 +278,73 @@ describe('planDecaySweep — pure grading of resolved+applied items', () => {
 });
 
 describe('runDecaySweep — persistence glue', () => {
+  it('plans a mature fix beyond the newest 500 against a later recurrence in the full population', async () => {
+    let readFilter: ListIssuesFilter | undefined;
+    let projectedMaxRows: number | undefined;
+    const matureFix = cand({
+      id: 'mature-fix',
+      title: 'the original fix wording',
+      watchdogKey: 'decay-starvation:row-501',
+      state: 'resolved',
+      createdAt: daysAgo(30),
+      updatedAt: daysAgo(20),
+      ideaLifecycle: applied({ ideaType: 'process-prompt' }),
+    });
+    const laterCapture = cand({
+      id: 'later-capture',
+      title: 'a different report after the fix',
+      watchdogKey: 'decay-starvation:row-501',
+      createdAt: daysAgo(2),
+    });
+    const recent = Array.from({ length: 499 }, (_, i) =>
+      cand({
+        id: `recent-${i}`,
+        title: `unrelated recent capture ${i}`,
+        createdAt: daysAgo(1),
+        updatedAt: daysAgo(1),
+      }),
+    );
+    // The SQL list is newest-first. The matching recurrence is inside the old
+    // 500-row window, while the mature resolved candidate sits just beyond it.
+    const corpus = [laterCapture, ...recent, matureFix];
+    const merged: Array<{ id: string; patch: Record<string, unknown> }> = [];
+    const deps: DecaySweepDeps = {
+      projectIssues: projectCandidates(corpus, (filter, maxRows) => {
+        readFilter = filter;
+        projectedMaxRows = maxRows;
+      }),
+      mergeIssuePayload: vi.fn(async (id, patch) => {
+        merged.push({ id, patch });
+        return null;
+      }),
+      commentIssue: vi.fn(async () => null),
+    };
+
+    const result = await runDecaySweep({ nowMs: NOW }, deps);
+
+    expect(readFilter).toMatchObject({
+      topic: 'papercusp-improvement',
+      signalOrigins: ['organic'],
+      includeBody: false,
+    });
+    expect(readFilter).not.toHaveProperty('limit');
+    expect(projectedMaxRows).toBe(1);
+    expect(result).toEqual({ scanned: 501, verified: 0, recurred: 1, initialized: 0 });
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      id: 'mature-fix',
+      patch: { ideaLifecycle: { state: 'recurred' } },
+    });
+  });
+
   it('merges each action and comments verified/recurred but not init-applied', async () => {
     const merged: string[] = [];
     const comments: string[] = [];
     const deps: DecaySweepDeps = {
-      readItems: vi.fn(async () => [
-        cand({ id: 'v', state: 'resolved', updatedAt: daysAgo(20), ideaLifecycle: applied() }),
-        cand({ id: 'legacy', title: 'an entirely different friction', state: 'closed', updatedAt: daysAgo(30) }),
-      ]),
+      projectIssues: projectCandidates([
+          cand({ id: 'v', state: 'resolved', updatedAt: daysAgo(20), ideaLifecycle: applied() }),
+          cand({ id: 'legacy', title: 'an entirely different friction', state: 'closed', updatedAt: daysAgo(30) }),
+        ]),
       mergeIssuePayload: vi.fn(async (id) => {
         merged.push(id);
         return null;

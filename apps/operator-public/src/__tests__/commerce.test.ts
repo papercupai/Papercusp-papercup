@@ -286,9 +286,17 @@ describe('GET /commerce/entitlements', () => {
     expect((await res.json() as { error: string }).error).toBe('unauthorized');
   });
 
-  it('requires a buyer', async () => {
-    const { api, env } = entitlementsHarness();
+  it('defaults to the authenticated principal without inheriting organization purchases', async () => {
+    const { api, env, raw } = entitlementsHarness();
+    await grant(api, env, raw);
     const res = await api.request('/commerce/entitlements', {}, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ buyer: MEMBER, entitlements: [] });
+  });
+
+  it('refuses an explicitly empty buyer rather than substituting a principal', async () => {
+    const { api, env } = entitlementsHarness();
+    const res = await api.request('/commerce/entitlements?buyer=', {}, env);
     expect(res.status).toBe(400);
     expect((await res.json() as { error: string }).error).toBe('buyer_required');
   });

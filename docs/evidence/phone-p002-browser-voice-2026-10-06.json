@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Phone P-002 deployed signed-in browser voice: two-way audio from an external network over UDP and over TURN/TLS with UDP blocked, public-only media endpoints, certificate renewal",
+  "framework": "playwright",
+  "command": [
+    "bash .papercusp/scratch/p002-evidence/su2b9-browser-run-trace.sh udp-blocked   # papercusp root; runs portal e2e/portal-phone-voice-live.spec.ts against https://app.papercusp.com from a playwright run-server on an external GCP VM",
+    "bash .papercusp/scratch/p002-evidence/su2b9-browser-run-trace.sh external-udp"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-06T14:43:36Z",
+  "finishedAt": "2026-10-06T14:51:05Z",
+  "summary": "Both declared network cases passed on the released hosted portal (release yV84XeEPp_fhVqs7rxE6j-20261006140358255-3986201-50b68849) with the media edge at its WI-10006708 v2 configuration. udp-blocked: all UDP dropped on the browser VM, media over a TURN relay reached by TLS via turns:phone-turn.papercusp.com:443, two-way audio measured from WebRTC stats. external-udp: public server-reflexive UDP pair to 34.23.13.209:7892, two-way audio. LiveKit handed caller and agent only 34.23.13.209 candidates in every room. Both certificates (edge WSS phone-voice, box TURN phone-turn) pass a live renewal dry-run and have an active renewal timer.",
+  "assertions": [
+    {
+      "id": "R-2.udp-blocked.two-way-audio",
+      "passed": true,
+      "evidence": "Run TS 144336 (receipt sha256 d62e483edc5967a90556aaf04e277e745468d235bffcd5884bc2f97542bb7a1b, playwright '1 passed (34.5s)'): browser VM nft rules applied (3 rules, all UDP dropped, TCP out only to 443). Outbound 463 audio packets; SFU RTCP receiver report present (max RTT 0.159s, 3 lost); inbound 157 packets, totalAudioEnergy 0.186, 0 lost."
+    },
+    {
+      "id": "R-2.udp-blocked.turn-tls-path",
+      "passed": true,
+      "evidence": "Selected pair local relay/udp relayProtocol tls via turns:phone-turn.papercusp.com:443?transport=tcp (relay 104.148.223.66:34843) -> remote host udp 34.23.13.209:7892, state succeeded. Local candidate types relay/udp/tls, host/tcp, host/udp: no srflx candidate exists, proving UDP was blocked."
+    },
+    {
+      "id": "R-2.external-udp.two-way-audio",
+      "passed": true,
+      "evidence": "Run TS 145028 (receipt sha256 46cc081fb6ae8b7190debdccc9a4daade3411b5e3d9fee0429eb4dde06bb6e77, playwright '1 passed (22.2s)'): outbound 386 audio packets; SFU receiver report RTT 0.095s, 0 lost; inbound 109 packets, totalAudioEnergy 0.0049, 0 lost. Selected pair srflx udp 34.168.26.215:52933 -> host udp 34.23.13.209:7892, state succeeded, requestsSent 7 / responsesReceived 7, transport iceState+dtlsState connected."
+    },
+    {
+      "id": "R-2.signed-in-user",
+      "passed": true,
+      "evidence": "Each run admits a genuine WorkOS TEST user into an isolated tenant server-side (session preflight 200, organization f2b5ef9b-5beb-42aa-b0cd-ce6acfb4af6e), places the call from the signed-in portal UI (grant 200, url wss://phone-voice.papercusp.com), and revokes the session + deletes the TEST user afterwards. Upstream AuthKit login UI is not exercised (recorded in each receipt's authFixture)."
+    },
+    {
+      "id": "R-13.secure-public-endpoints-only",
+      "passed": true,
+      "evidence": "Both receipts: media URL wss://phone-voice.papercusp.com (secure, public); issued ICE servers turns:phone-turn.papercusp.com:443 plus public STUN only, each checked non-private by the spec. LiveKit journal 'participant active' [local] candidates for caller AND agent in rooms phone-802119b5 (udp-blocked), phone-edd37a99 and phone-b891aabd (external-udp) list only 34.23.13.209:7891 and 34.23.13.209:7892; zero 192.168./10./127. addresses (before WI-10006708 the same check listed 192.168.4.34 udp/7892 + tcp/7891)."
+    },
+    {
+      "id": "R-2.no-lan-or-hairpin-dependence",
+      "passed": true,
+      "evidence": "The browser ran on an external GCP VM (us-west1 public NAT 34.168.26.215), not on the media host. Every selected pair joins two public addresses. The edge drops all box-originated traffic into private or special ranges: live rule `iifname \"wg-phone\" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, ..., 192.168.0.0/16, ... } counter packets 34 bytes 4352 drop` (log su2b9-edge-private-drop-live.log sha256 b150fcccea50d67164eb499d1494b35ed3a9c838c8e9c848609f8abf6d1e3b3c), so the SFU cannot reach the VM's private VPC address (WI-10006686)."
+    },
+    {
+      "id": "R-2.certificate-renewal.edge-wss",
+      "passed": true,
+      "evidence": "On phone-media-edge 2026-10-06T14:54:51Z: `sudo certbot renew --dry-run --no-random-sleep-on-renew` -> 'Simulating renewal of an existing certificate for phone-voice.papercusp.com ... all simulated renewals succeeded', EXIT=0; certbot.timer enabled + active (log su2b9-edge-wss-cert-renew-dryrun.log sha256 decd9276f9ca4d3a5f1368e556049327d9af0449272ed60552fc070278970869)."
+    },
+    {
+      "id": "R-2.certificate-renewal.box-turn",
+      "passed": true,
+      "evidence": "On the media box: certbot DNS-01 renew dry-run for phone-turn.papercusp.com -> '/etc/letsencrypt/live/phone-turn.papercusp.com/fullchain.pem (success)', EXIT=0 (log su2b9-box-turn-cert-renew-dryrun.log sha256 2df4d64b21d5acb661243477c3fc7706f99788847356de0002e115a346a25cb6; deploy hook phone-turn-livekit.sh skipped in dry-run by design). certbot.timer enabled, next run 2026-10-06 16:16:53 EDT; certificate valid until 2027-01-04 (89 days)."
+    },
+    {
+      "id": "instrument.disclosed-failure",
+      "passed": true,
+      "evidence": "Disclosed for completeness: an external-udp run at TS 144442 (receipt sha256 eb0e46399d820e329da0c05f6e5da6caf934d6441b71bb2a02394f8c1dfbd365) failed only the selected-pair assertion with state 'in-progress' while carrying two-way audio (inbound 120 pkts, energy 0.0497, SFU report 0 lost). Cause: libwebrtc sets a pair IN_PROGRESS on every consent ping (connection.cc Connection::Ping). The spec now records responsesReceived/dtlsState and accepts in-progress only on an already-verified, DTLS-connected pair (WI-10006721, unit test portal/tests/ice-selected-pair.test.ts); run 145028 used the fixed spec and sampled 'succeeded'."
+    }
+  ],
+  "subjectRepository": "papercusp",
+  "subjectPaths": [
+    "infra/phone-app/edge/edge-config.mjs",
+    "infra/phone-app/edge/edge.sh",
+    "infra/phone-app/livekit-server.yaml.tmpl",
+    "portal/e2e/portal-phone-voice-live.spec.ts",
+    "portal/e2e/ice-selected-pair.ts"
+  ],
+  "runtime": {
+    "servedPortalRelease": "yV84XeEPp_fhVqs7rxE6j-20261006140358255-3986201-50b68849",
+    "servedPortalSourceRootDigest": "c8285c4ecfa6084fecd5fc2df4346465d90a6c2ff1cf5aa1e89e5fe1982428c8",
+    "renderedLivekitConfigSha256": "e8f77e9c162334f091c3a414c6f441ac544f5662ecb1a0ef14eb17ffd294eb5d",
+    "livekitExternalIps": "34.23.13.209/10.77.0.2 (advertiseInternalIP false)",
+    "turnRelayRange": "30000-40000",
+    "browser": "Chromium 147.0.7727.15 via playwright run-server on GCP VM phone-browser-probe",
+    "specSha256": {
+      "portal/e2e/portal-phone-voice-live.spec.ts": "0d0a714ade4e3606363c4181fe126b12df2f5052fc5b2d0053b3dafb1e9cc44e",
+      "portal/e2e/ice-selected-pair.ts": "e9f3add936f47a182c363a3fc204691a7a5fecac7e2c627e8167bc844b4d46aa"
+    }
+  },
+  "receipts": [
+    { "case": "udp-blocked", "ts": "144336", "path": ".papercusp/scratch/p002-evidence/su2b9-browser-receipt-udp-blocked-144336.json", "sha256": "d62e483edc5967a90556aaf04e277e745468d235bffcd5884bc2f97542bb7a1b", "room": "phone-802119b5-464a-4f8d-bdd6-5892e1d652d3", "playwrightLogSha256": "814ed49d36f179725deddb1b5c45a96e6a43b8bf2329dd9a7cee910ca05b2177", "browserNftLogSha256": "71602b501b295bfb6832835331e81e6b700efca22e7ee47082a86740a1e34937" },
+    { "case": "external-udp", "ts": "145028", "path": ".papercusp/scratch/p002-evidence/su2b9-browser-receipt-external-udp-145028.json", "sha256": "46cc081fb6ae8b7190debdccc9a4daade3411b5e3d9fee0429eb4dde06bb6e77", "room": "phone-b891aabd-0e31-470a-ab29-e615746ea3ca", "playwrightLogSha256": "95f5e9f9f26dfe13dd1a5cfe700a8fe2ad1ece0b6bb8425c2dfc744401ad0dae" }
+  ],
+  "plan": "phone-public-telephone-service-2026-10-01",
+  "planItem": "P-002",
+  "specs": ["AUTO-BAR-R-2-P-002@3", "AUTO-BAR-R-13-P-002@2", "PHONE-P-002-OUTCOME@1"],
+  "workItem": "WI-10004984",
+  "relatedWorkItems": ["WI-10006708", "WI-10006721", "WI-10006686", "WI-10006603"],
+  "decision": "D-024 as amended by D-025 (GCP e2-micro media edge + WireGuard to the box)",
+  "recordedAt": "2026-10-06T14:58:00Z",
+  "recordedBy": "su-2b9fe461-077c-4fd4-8cd7-c43499f17892",
+  "scope": "Browser (WebRTC) voice only. No PSTN/carrier claim: Telnyx is not provisioned (D-020), so P-004 onward is out of scope for this evidence."
+}

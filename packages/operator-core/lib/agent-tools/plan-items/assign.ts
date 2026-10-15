@@ -140,6 +140,7 @@ export default defineTool({
             planItem: [it.item],
             fleet: null,
             triageGate: null,
+            itemClass: 'work',
             age: Date.now(),
             riskTier: null,
             redundancy: null,

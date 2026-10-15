@@ -15,17 +15,32 @@ import type { ToolResult } from '@papercusp/tooldef';
 import { resolveAgentIdentity } from '../coordination/identity';
 import type { IdleRecipientReport } from '../coordination/inbox-wake';
 import { COORD_REPLY_ROLES } from '../coordination/roles';
+import { lookupEndedSessions } from '../coordination/dead-session-recipient-guidance';
 import { hardText } from '../limits';
 import { consultPostAbortCompletionReceipt } from './abort-completion';
+import { DECISION_REVIEW_POSITIONS, OBJECTION_BASES, OWNER_AUTHORITY_TOPICS } from '../../consult/decision-review';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
 /** A follow-up may reroute only on a complete, positive ended-session verdict. */
 export function isConfirmedDeadConsultResponder(
-  report: Pick<IdleRecipientReport, 'confirmedDead' | 'degraded'> | null | undefined,
+  report:
+    | (Pick<IdleRecipientReport, 'confirmedDead' | 'degraded'> &
+        Partial<Pick<IdleRecipientReport, 'live' | 'aliveNotWakeable' | 'dormantScheduled'>>)
+    | null
+    | undefined,
   responder: string,
+  endedSessions?: ReadonlyMap<string, string | null>,
 ): boolean {
-  return report?.degraded !== true && report?.confirmedDead?.includes(responder) === true;
+  const currentlyActionable =
+    report?.live?.includes(responder) === true ||
+    report?.aliveNotWakeable?.includes(responder) === true ||
+    report?.dormantScheduled?.some(({ ownerId }) => ownerId === responder) === true;
+  if (currentlyActionable) return false;
+  return (
+    endedSessions?.has(responder) === true ||
+    (report?.degraded !== true && report?.confirmedDead?.includes(responder) === true)
+  );
 }
 
 /**
@@ -50,7 +65,7 @@ const evidenceRef = z.object({
 export default defineTool({
   name: 'consult:reply',
   description:
-    'Post a TYPED reply into a consult thread. Responder kinds: answer (evidence REQUIRED — cite the transcript turns), clarifying_question, new_fact. Requester follow-up kinds: question, new_fact. Untyped posts into a consult are refused (conversations:post will not work); the exchange cap binds — at the cap, close instead.',
+    'Post a TYPED reply into a consult thread. Responder kinds: answer (evidence REQUIRED — cite the transcript turns), clarifying_question, new_fact. Requester follow-up kinds: question, new_fact. On an undelivered consult with a saved reviewer menu, requester new_fact continues its finite cascade through untried reviewers. Untyped posts into a consult are refused (conversations:post will not work); the exchange cap binds — at the cap, close instead.',
   guidance: {
     when:
       'You were routed a consult (a 🧭 wake naming a conversation) and are answering/clarifying from your own transcript — or you are the requester following up.',
@@ -62,6 +77,12 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_REPLY_ROLES],
+  // Reply handling persists the post, then waits for the requester signal and
+  // (for a responder perspective) cascade dispatch. The nested tools:invoke
+  // transport otherwise cuts this off at 55s, before the target's completion
+  // receipt can identify a post that already landed. Keep enough budget for
+  // that synchronous delivery path; the MCP nested deadline adds its 5s buffer.
+  timeoutSec: 120,
   abortCompletionReceipt: consultReplyAbortCompletionReceipt,
   args: z
     .object({
@@ -75,6 +96,29 @@ export default defineTool({
         .max(16)
         .optional()
         .describe('Transcript grounding [{ session_id, turn_idx, note? }] — REQUIRED for kind=answer (D-004).'),
+      stance: z
+        .object({
+          position: z.enum(DECISION_REVIEW_POSITIONS),
+          basis: z.enum(OBJECTION_BASES).optional(),
+          reason: z.string().max(2000).optional(),
+          alternative: z.string().max(2000).optional(),
+          evidence: z.array(z.string().min(1).max(500)).max(16).optional(),
+          topic: z.enum(OWNER_AUTHORITY_TOPICS).optional(),
+        })
+        .optional()
+        .describe(
+          "Decision-review consults (a parked product decision) ONLY, and REQUIRED there on every reviewer reply: support | no-view, or object with basis 'alternative' (reason + alternative), 'hazard' (reason + evidence refs) or 'owner-authority' (topic).",
+        ),
+      parkResponse: z
+        .object({
+          kind: z.enum(['adopt', 'rebut']),
+          text: z.string().min(1).max(4000),
+          objectionId: z.string().min(1).max(200).optional(),
+        })
+        .optional()
+        .describe(
+          "Parked agent (requester of a decision review) ONLY: answer an objection — adopt (take the alternative) or rebut (keep your default, with reasoning). Omitting objectionId answers the latest standing objection.",
+        ),
     })
     .refine((a) => a.kind !== 'answer' || (a.evidence?.length ?? 0) > 0, {
       message: 'kind=answer requires evidence — cite the transcript turns the answer rests on',
@@ -82,7 +126,7 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     // Heavy prod seams — imported per-call, never at registration.
-    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }, { makeConsultReachDispatcher }, { reportIdleRecipients }] =
+    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }, { makeDeferredConsultReachDispatcher }, { reportIdleRecipients }] =
       await Promise.all([
         import('@papercusp/db-org'),
         import('../../consult/consult-verbs-core'),
@@ -105,6 +149,8 @@ export default defineTool({
         kind: args.kind,
         body: args.body,
         evidence: args.evidence,
+        stance: args.stance,
+        parkResponse: args.parkResponse,
       },
       {
         getSql: () => getOrgPg().sql,
@@ -127,22 +173,38 @@ export default defineTool({
             wake: true,
           });
           if (r.woke !== 0) return { woke: r.woke };
-          const report = await reportIdleRecipients([opts.responder], {
-            workspaceId: identity.workspaceId ?? undefined,
-          });
+          const [report, endedSessions] = await Promise.all([
+            reportIdleRecipients([opts.responder], {
+              workspaceId: identity.workspaceId ?? undefined,
+            }),
+            // coord:send's `unknown_recipient` diagnosis uses this same
+            // adv_sessions.ended_at evidence. The liveness report can remain
+            // inconclusive when that exact ended fork is absent from the live
+            // roster, so preserve the terminal record as an independent signal.
+            lookupEndedSessions([opts.responder], identity.workspaceId),
+          ]);
           return {
             woke: r.woke,
-            confirmedDead: isConfirmedDeadConsultResponder(report, opts.responder),
+            confirmedDead: isConfirmedDeadConsultResponder(report, opts.responder, endedSessions),
           };
         },
         // D-011 seam 2 of 2: a cascade advance addresses an expert who is NOT
         // in this conversation — fork/convert a fresh answering session from
         // their transcript, never a wake.
-        dispatch: makeConsultReachDispatcher({
+        dispatch: makeDeferredConsultReachDispatcher({
           workspaceId,
           harnessSlug: ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
           launchedBy: identity.ownerId,
         }),
+        // consult-backed-parking P-006 (R-6/R-16): resolve the park after the reply.
+        onDecisionReviewReply: async ({ workspaceId: ws, conversationId, now }) => {
+          const [{ runParkTriggersForConsult }, { makeProdParkSeams }] = await Promise.all([
+            import('../../consult/park-adapters'),
+            import('../../consult/park-prod'),
+          ]);
+          const sql = getOrgPg().sql;
+          await runParkTriggersForConsult(sql, ws, conversationId, makeProdParkSeams(sql, ws), now);
+        },
       },
     );
     return ok(result as unknown as Record<string, unknown>);

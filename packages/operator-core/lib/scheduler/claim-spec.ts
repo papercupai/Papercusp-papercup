@@ -160,6 +160,13 @@ export const ITEM_FIELDS = [
   // NOT rankable — a triage decision is a category, not an order; excluded from
   // `RANKABLE_ITEM_FIELDS` alongside `fleet`/`risk_tier`.
   'triage_gate',
+  // `item_class` — plan scout-su-ideate-pipeline-gaps-2026-10-08 P-005 (R-10/R-11),
+  // EI-18697923246606437. 'ideation' for a Scout/su-ideate idea, 'work' for everything else;
+  // never NULL. Lets a lane EXCLUDE ideas (`{ field:'item_class', op:'=', value:'work' }`) that a
+  // keyword title glob would otherwise pull in, or TARGET them (`value:'ideation'`). The one
+  // definition lives in scout/ideation-origin.ts; FIELD_MAP.item_class and the JS subject both
+  // read it. Filter-only — excluded from RANKABLE_ITEM_FIELDS.
+  'item_class',
 ] as const;
 export type ItemField = (typeof ITEM_FIELDS)[number];
 
@@ -305,7 +312,9 @@ export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
     f !== 'risk_tier' &&
     f !== 'goal' &&
     f !== 'fleet' &&
-    f !== 'triage_gate',
+    f !== 'triage_gate' &&
+    // P-005: a two-valued partition ('ideation'|'work'), not an ordering — filter-only.
+    f !== 'item_class',
 );
 
 export const CURRENT_SPEC_VERSION = '1.0' as const;
@@ -522,6 +531,14 @@ export const limitsSchema = z
  * `get_next` still WINS over this (member judgment overrides the spec, same precedence as
  * every other narrowing) — this field is only the fallback when the caller omits one.
  */
+/** P-007 Phase B (D-027): the pools a claim spec can staff. */
+export const CLAIM_SPEC_LANES = ['implementation', 'verification'] as const;
+export type ClaimSpecLane = (typeof CLAIM_SPEC_LANES)[number];
+
+/** D-011 B of `bug-queue-legitimacy-and-actionable-validation-2026-10-10`: when a member adopts orphaned revisions. */
+export const CLAIM_SPEC_REVISION_ADOPTION_MODES = ['first'] as const;
+export type ClaimSpecRevisionAdoptionMode = (typeof CLAIM_SPEC_REVISION_ADOPTION_MODES)[number];
+
 export const claimableStatesSchema = z
   .array(z.enum(CLAIM_STATES_ALLOWLIST as unknown as [string, ...string[]]))
   .max(20);
@@ -542,6 +559,22 @@ export const claimSpecSchema = z
     rank: rankSchema,
     limits: limitsSchema.optional(),
     states: claimableStatesSchema.optional(),
+    /**
+     * P-007 Phase B (D-027): which pool a member of this spec pulls from. Absent or
+     * 'implementation' is the ordinary claim pool. 'verification' staffs a verifier fleet:
+     * get_next serves pending agent reviews, then verification tasks, and never
+     * implementation work. Reporters and implementers are refused by the D-021 rule.
+     */
+    lane: z.enum(CLAIM_SPEC_LANES).optional(),
+    /**
+     * Plan `bug-queue-legitimacy-and-actionable-validation-2026-10-10`, D-011 ruling B: an
+     * implementation-lane member adopts an ORPHANED content revision (a revision-requested
+     * report whose submitter is provably gone, D-008) BEFORE its ordinary claim. Absent = off.
+     * 'first' rather than "on an empty lane", because measured 2026-10-11 the ordinary bug
+     * pool held 560 claimable rows, so an empty-lane leg would never fire. Authorization is
+     * unchanged: only the orphan proof admits an adoption, scoped by this spec's view.filter.
+     */
+    revisionAdoption: z.enum(CLAIM_SPEC_REVISION_ADOPTION_MODES).optional(),
   })
   .strict();
 
@@ -878,6 +911,17 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
     );
   }
 
+  // (2b) D-011 B: revision adoption is report revision done by an IMPLEMENTATION member. A
+  // verifier-lane spec never pulls implementation work (D-027), and getNextForBee serves it
+  // before the adoption leg is reached, so the field would be silently inert there. Refuse
+  // it instead of storing a setting that does nothing.
+  if (spec.revisionAdoption !== undefined && spec.lane === 'verification') {
+    errors.push(
+      "revisionAdoption: applies only to an implementation-lane spec; a lane:'verification' spec is " +
+        'served reviews and verification tasks and never adopts revisions. Remove one of the two fields.',
+    );
+  }
+
   // (2a) WI-6050: expand a named `view.fence` macro into `view.filter`, HERE, at
   // validate time — which is also write time (setClaimSpec persists `v.spec`, this
   // function's return value, never the caller's raw input) and read time (getClaimSpec
@@ -1060,10 +1104,44 @@ export function fixedCohortIds(spec: { view?: { filter?: unknown } } | null | un
  * intersect, matching boolean semantics instead of letting the first leaf win.
  */
 export function positiveIdCohortIds(filter: unknown): string[] | null {
+  return positiveFieldCohortValues(filter, 'id');
+}
+
+/** Extend only a bounded positive ID cohort; every non-ID fence remains intact. */
+export function appendIdsToClaimSpec(spec: ClaimSpec, ids: readonly string[]): ClaimSpec | null {
+  const fixed = fixedCohortIds(spec);
+  const cohort = fixed ?? positiveIdCohortIds(spec.view.filter);
+  if (cohort === null) return null;
+  const extend = (values: readonly string[]) => [...new Set([...values, ...ids])];
+  const incumbentFilter = spec.view.filter;
+  const all = incumbentFilter && 'all' in incumbentFilter ? incumbentFilter.all : undefined;
+  let filter: FilterNode;
+  if (fixed !== null || !all) {
+    filter = { field: 'id', op: 'in', value: extend(cohort) };
+  } else {
+    filter = {
+      all: all.map((node): FilterNode => {
+        if ('field' in node && node.field === 'id' && (node.op === '=' || node.op === 'in')) {
+          const values = Array.isArray(node.value) ? node.value : [node.value];
+          return { field: 'id', op: 'in', value: extend(values.map(String)) };
+        }
+        return node;
+      }),
+    };
+  }
+  return { ...spec, view: { ...spec.view, filter } };
+}
+
+/** Positive kind bounds share the ID extractor's conservative boolean rules. */
+export function positiveKindCohortKinds(filter: unknown): string[] | null {
+  return positiveFieldCohortValues(filter, 'kind');
+}
+
+function positiveFieldCohortValues(filter: unknown, field: 'id' | 'kind'): string[] | null {
   function leafSet(node: unknown): Set<string> | null {
     if (node === null || typeof node !== 'object' || Array.isArray(node)) return null;
     const obj = node as Record<string, unknown>;
-    if (obj.field !== 'id' || (obj.op !== '=' && obj.op !== 'in')) return null;
+    if (obj.field !== field || (obj.op !== '=' && obj.op !== 'in')) return null;
     const raw = Array.isArray(obj.value) ? obj.value : [obj.value];
     return new Set(
       raw

@@ -22,9 +22,11 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 
 import { recordScoutTick, type RecordScoutTickInput } from '../../scout/tick-ledger';
 import {
+  goalDayIdeationYield,
   goalPlanningReviewInputSchema,
   goalPlanningReviewSchema,
   readGoalPlanningReviewContext,
+  type GoalDayIdeationYield,
   type GoalPlanningReview,
   type GoalPlanningReviewContext,
 } from '../../goal-planning-review';
@@ -48,8 +50,17 @@ export const ideatePassRecordArgs = z
     notes: softText(LIMITS.ANNOTATION)
       .optional()
       .describe('a short free-form note on the pass (theme, corpus, what was skipped) — stored on the tick detail'),
+    lens: z
+      .string()
+      .trim()
+      .min(1)
+      .max(60)
+      .optional()
+      .describe(
+        'the ONE ideation lens this pass ran under (e.g. risk-first, user-value-first, cost-leverage) — stored on the tick so lens rotation across passes is measurable. Per-idea lens tags still go in improvements:capture { ideation:{ lens } }.',
+      ),
     goalReview: goalPlanningReviewInputSchema.optional().describe(
-      'Evidence-backed review of your current GOAL: adopt/revise/create a necessary plan, route work, report a blocker, or explain why existing plans suffice. Zero new ideas is valid. The server measures scope and portfolio fingerprint; this is not execution authority or a worker claim.',
+      'Evidence-backed review of your current GOAL: adopt/revise/create a necessary plan, route work, report a blocker, or explain why existing plans suffice. existing-plans-sufficient/no-eligible-work need coverage: each recurring need, its itemRefs and its live planRef; a 3+ item need with no plan is refused. The server measures scope and portfolio fingerprint; this is not execution authority or a worker claim.',
     ),
   })
   .strict();
@@ -63,6 +74,8 @@ export interface IdeatePassRecordSuccess {
   ideasFiled: number;
   observationsMined?: number;
   notes?: string;
+  /** The ideation lens the pass ran under (stored on detail.lens). */
+  lens?: string;
   /** The ownerId the tick is attributed to (stored on detail.owner). */
   owner: string;
   /** The harness the pass ran for (the tick's install_slug). */
@@ -70,13 +83,41 @@ export interface IdeatePassRecordSuccess {
   goalReview?: GoalPlanningReview;
   /** Per-plan ledger disposition for the review's goal-local plans (P-009). */
   goalFeedback?: GoalPlanFeedbackResult[];
+  /**
+   * P-004 (D-001): the goal-day's evaluated candidates for the reviewed goal, this pass
+   * included. `owed:true` means the goal-day has not yet yielded the one candidate the
+   * WOE ideation-yield criterion requires. Omitted when the count could not be read.
+   */
+  ideationYield?: GoalDayIdeationYield;
 }
 
 export type IdeatePassRecordResult = IdeatePassRecordSuccess | {
   ok: false;
-  reason: 'goal-review-unavailable' | 'goal-review-scope-mismatch';
+  reason: 'goal-review-unavailable' | 'goal-review-scope-mismatch' | 'goal-review-unresolved-plan-ref';
   message: string;
 };
+
+/**
+ * P-003: a coverage map is falsifiable only if its planRefs name real plans.
+ * Returns the refs (plan:<harness>/<slug>) with no live, unarchived plan row.
+ */
+export async function missingCoveragePlanRefs(workspaceId: string, refs: readonly string[]): Promise<string[]> {
+  const parsed = [...new Set(refs)].map((ref) => ({ ref, match: /^plan:([^/\s]+)\/(\S+)$/.exec(ref) }));
+  const wellFormed = parsed.filter((entry) => entry.match);
+  if (wellFormed.length === 0) return parsed.map((entry) => entry.ref);
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const keys = wellFormed.map((entry) => `${entry.match![1]}/${entry.match![2]}`);
+  const rows = await sql<{ key: string }[]>`
+    SELECT harness_slug || '/' || plan_slug AS key
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${workspaceId}
+       AND (harness_slug || '/' || plan_slug) = ANY(${keys})
+       AND coalesce(archived, false) = false
+  `;
+  const found = new Set(rows.map((row) => row.key));
+  return parsed.filter((entry) => !entry.match || !found.has(`${entry.match[1]}/${entry.match[2]}`)).map((entry) => entry.ref);
+}
 
 /** Injectable seam — unit tests drive the flow with a fake recorder (no PG). */
 export interface IdeatePassRecordDeps {
@@ -88,12 +129,26 @@ export interface IdeatePassRecordDeps {
     ownerId: string;
     review: GoalPlanningReview;
   }) => Promise<GoalPlanFeedbackResult[]>;
+  /** P-003: which coverage planRefs do not resolve to a live plan. Omitted ⇒ not checked. */
+  missingPlanRefs?: (workspaceId: string, refs: readonly string[]) => Promise<string[]>;
+  /** P-004: the goal-day candidate count already in the ledger. Omitted ⇒ not reported. */
+  readGoalDayCandidates?: (input: {
+    workspaceId: string;
+    goalId: string;
+    at: Date;
+  }) => Promise<{ since: string; plansNew: number; ideasFiled: number }>;
 }
 
 const defaultDeps: IdeatePassRecordDeps = {
   recordTick: recordScoutTick,
   readGoalReviewContext: readGoalPlanningReviewContext,
+  missingPlanRefs: missingCoveragePlanRefs,
   recordGoalFeedback: async (input) => (await import('../../scout/goal-feedback')).recordGoalReviewFeedback(input),
+  readGoalDayCandidates: async (input) => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { readGoalDayCandidates } = await import('../../goal-holder-behavior-metrics');
+    return readGoalDayCandidates(input, { sql: getOrgPg().sql });
+  },
 };
 
 /**
@@ -113,6 +168,7 @@ export async function runIdeatePassRecord(
   const installSlug =
     typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : 'papercusp';
   const notes = typeof args.notes === 'string' && args.notes.trim() ? args.notes.trim() : undefined;
+  const lens = typeof args.lens === 'string' && args.lens.trim() ? args.lens.trim() : undefined;
   const workspaceId = identity.workspaceId?.trim();
   let goalReview: GoalPlanningReview | undefined;
   if (args.goalReview) {
@@ -125,6 +181,17 @@ export async function runIdeatePassRecord(
     }
     if (requested.goalId !== context.goalId) {
       return { ok: false, reason: 'goal-review-scope-mismatch', message: 'The review does not name this caller\'s current GOAL; no review was recorded.' };
+    }
+    const coverageRefs = (requested.coverage ?? []).flatMap((entry) => (entry.planRef ? [entry.planRef] : []));
+    if (coverageRefs.length > 0 && deps.missingPlanRefs) {
+      const missing = await deps.missingPlanRefs(workspaceId!, coverageRefs);
+      if (missing.length > 0) {
+        return {
+          ok: false,
+          reason: 'goal-review-unresolved-plan-ref',
+          message: `Coverage planRef(s) name no live plan: ${missing.join(', ')}. Cite an existing plan as plan:<harness>/<slug>, or write it first (plans:new, then plans:start); no review was recorded.`,
+        };
+      }
     }
     goalReview = goalPlanningReviewSchema.parse({
       ...requested,
@@ -141,7 +208,12 @@ export async function runIdeatePassRecord(
     installSlug,
     ideasRouted: args.ideasFiled,
     ideasGenerated: args.observationsMined ?? 0,
-    detail: { owner: identity.ownerId, ...(notes ? { notes } : {}), ...(goalReview ? { goalReview } : {}) },
+    detail: {
+      owner: identity.ownerId,
+      ...(notes ? { notes } : {}),
+      ...(lens ? { lens } : {}),
+      ...(goalReview ? { goalReview } : {}),
+    },
   });
 
   // Best-effort AFTER the review is durable: ledger feedback is derived metadata,
@@ -153,6 +225,24 @@ export async function runIdeatePassRecord(
       .catch(() => undefined);
   }
 
+  // P-004: tell the holder, at the moment it records a review, whether its goal-day has
+  // yielded a candidate yet. Best-effort like the feedback above: a failed read omits it.
+  let ideationYield: GoalDayIdeationYield | undefined;
+  if (goalReview && workspaceId && deps.readGoalDayCandidates) {
+    const read = await deps
+      .readGoalDayCandidates({ workspaceId, goalId: goalReview.goalId, at: new Date() })
+      .catch(() => null);
+    if (read) {
+      ideationYield = goalDayIdeationYield({
+        goalId: goalReview.goalId,
+        since: read.since,
+        plansNew: read.plansNew,
+        priorIdeasFiled: read.ideasFiled,
+        thisPassIdeasFiled: args.ideasFiled,
+      });
+    }
+  }
+
   return {
     ok: true,
     origin: 'su-ideate',
@@ -160,10 +250,12 @@ export async function runIdeatePassRecord(
     ideasFiled: args.ideasFiled,
     ...(args.observationsMined != null ? { observationsMined: args.observationsMined } : {}),
     ...(notes ? { notes } : {}),
+    ...(lens ? { lens } : {}),
     owner: identity.ownerId,
     installSlug,
     ...(goalReview ? { goalReview } : {}),
     ...(goalFeedback ? { goalFeedback } : {}),
+    ...(ideationYield ? { ideationYield } : {}),
   };
 }
 
@@ -184,11 +276,11 @@ export default defineTool({
     "Record one su IDEATE pass on the Scout tick ledger: a status='ran', origin='su-ideate' tick attributed to you, carrying the pass's yield. Pass `ideasFiled` (required), `observationsMined?`, `notes?`. origin='su-ideate' keeps the row OFF Scout's cadence floor and health reads — a su pass is observed, never mistaken for a Scout cycle. Best-effort observability: call it once at the end of an ideate pass.",
   capability: 'harness:write',
   guidance: {
-    when: 'At the end of an ideation pass or a scoped GOAL gap review. Record evidence and disposition in goalReview; ideasFiled may be zero when existing plans suffice or no eligible work exists. A recorded review is not proof of delegated execution.',
+    when: 'At the end of an ideation pass or a scoped GOAL gap review. Record evidence and disposition in goalReview. One pass may file zero ideas; a GOAL owes one evaluated candidate per goal-day (receipt: ideationYield). A review is not proof of delegated execution.',
     notWhen:
       'Filing an individual idea (improvements:capture) or routing one to a plan (blender:route-idea) — this records the PASS, not an idea. Recording a Scout-cycle tick — that is the scout-cycle routine, not this tool.',
     chaining:
-      'improvements:capture / blender:route-idea (file the ideas) → blender:ideate-pass-record { ideasFiled, observationsMined?, notes? } (record the pass). The su-partition pacing/observability reads (Phase 3) aggregate these origin=su-ideate ticks.',
+      'improvements:capture / blender:route-idea (file the ideas) → blender:ideate-pass-record { ideasFiled, observationsMined?, lens?, notes? } (record the pass). The su-partition pacing/observability reads (Phase 3) aggregate these origin=su-ideate ticks.',
     seeAlso: [
       'blender:route-idea (route one idea onto the plan rail)',
       'improvements:capture (file one idea/improvement)',

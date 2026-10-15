@@ -210,6 +210,9 @@ export function isGoalHolderLaunchPolicyRefusal(
   );
 }
 
+/** psu `--launched-by` for every goal holder this door opens (a system id, not an owner). */
+export const GOAL_HOLDER_LAUNCHED_BY = 'system:goal-holder-launch';
+
 /**
  * Resolve one existing goal and launch its replacement holder.
  *
@@ -303,6 +306,13 @@ export async function launchGoalHolderSession(
     // The GOAL attachment below is the only authority for AUTO and IDEATE.
     // Bootstrap waits for that exact subject and its cascade before turn one.
     goalBootstrapSubject: goalId,
+    // EI-24748255500835957: a holder is a system launch, so it carries the same
+    // launcher marker every tool-driven psu launch carries. Without it the psu host
+    // refuses session:end (`not-agent-launched`) and a holder can never exit itself.
+    // A fixed system id, not `launcherOwnerId`: bootstrap-su inherits the
+    // launcher's goal context, and a holder's goal is `goalBootstrapSubject` above,
+    // never the goal of whoever asked for the launch.
+    launchedBy: GOAL_HOLDER_LAUNCHED_BY,
     deferSpawn: input.deferSpawn ?? false,
     kickoffPrompt,
   });

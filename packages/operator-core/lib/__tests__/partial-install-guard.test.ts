@@ -97,6 +97,42 @@ afterEach(() => {
 });
 
 describe('findHollowPackages — the true positives', () => {
+  it('flags a dangling workspace .bin link even when a healthy hoisted package exists', () => {
+    const r = makeRoot(['libs/*']);
+    const ws = join(r, 'libs', 'tooling');
+    mkdirSync(ws, { recursive: true });
+    writeFileSync(join(ws, 'package.json'), JSON.stringify({ name: 'tooling' }));
+    installPackage(nodeModulesOf(r), 'vitest');
+    const nm = nodeModulesOf(ws);
+    mkdirSync(join(nm, '.bin'));
+    symlinkSync('../vitest/vitest.mjs', join(nm, '.bin', 'vitest'));
+    expect(findHollowPackages(r).findings).toEqual([
+      { workspace: 'libs/tooling', pkg: '.bin/vitest', kind: 'dangling-bin-symlink' },
+    ]);
+  });
+
+  it('identifies a local package whose manifest survived but executable target did not', () => {
+    const r = makeRoot();
+    const nm = nodeModulesOf(r);
+    installPackage(nm, '@scope/tool');
+    mkdirSync(join(nm, '.bin'));
+    symlinkSync('../@scope/tool/bin/cli.js', join(nm, '.bin', 'tool'));
+    expect(findHollowPackages(r).findings).toEqual([
+      { workspace: '<root>', pkg: '.bin/tool', kind: 'dangling-bin-symlink', package: '@scope/tool' },
+    ]);
+  });
+
+  it('accepts a relative .bin link to a healthy hoisted workspace target and regular shims', () => {
+    const r = makeRoot();
+    const nm = nodeModulesOf(r);
+    installPackage(nm, 'tool');
+    writeFileSync(join(nm, 'tool', 'cli.js'), 'process.exit(0)');
+    mkdirSync(join(nm, '.bin'));
+    symlinkSync('../tool/cli.js', join(nm, '.bin', 'tool'));
+    writeFileSync(join(nm, '.bin', 'tool.cmd'), 'regular Windows shim');
+    expect(findHollowPackages(r).findings).toEqual([]);
+  });
+
   it('flags a package whose directory survived but whose package.json did not', () => {
     const r = makeRoot();
     const nm = nodeModulesOf(r);
@@ -262,6 +298,16 @@ describe('findHollowPackages — degenerate inputs must not throw or invent find
 });
 
 describe('expandWorkspaceDirs', () => {
+  it('excludes checkpoint patterns while retaining real workspaces for corruption checks', () => {
+    const r = makeRoot();
+    for (const name of ['operator', 'drill-checkpoint']) {
+      const d = join(r, 'apps', name);
+      mkdirSync(d, { recursive: true });
+      writeFileSync(join(d, 'package.json'), JSON.stringify({ name }));
+    }
+    expect(expandWorkspaceDirs(['apps/*', '!apps/*-checkpoint'], r)).toEqual(['apps/operator']);
+  });
+
   it('expands a dir/* glob to only those children that carry a package.json', () => {
     const r = makeRoot();
     for (const name of ['alpha', 'beta']) {

@@ -1,0 +1,303 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10005546",
+  "parent": "WI-10004890",
+  "plane": "live-current-build-operator-api",
+  "generatedAt": "2026-10-02T17:04:25.952Z",
+  "cohorts": [
+    {
+      "name": "main",
+      "raw": {
+        "path": "docs/evidence/papercusp-oct1-p011-live-role-main-r1-2026-10-02.json",
+        "bytes": 1139295,
+        "sha256": "a81956a8ebfc49bb36d0c59a634a0007d2991791d3ea8f40c12f6a322a906169"
+      },
+      "testRunId": 20542898,
+      "testCount": {
+        "passed": 11,
+        "failed": 0,
+        "skipped": 0
+      },
+      "buildSha": "599bb79e5a",
+      "mainPid": 3879274,
+      "counterPid": 3879274,
+      "startedAt": "2026-10-02T16:58:30.803Z",
+      "endedAt": "2026-10-02T16:58:41.847Z",
+      "windows": 3,
+      "requests": 24,
+      "concurrency": 2,
+      "observedRoles": [
+        {
+          "clusterRole": "primary",
+          "requestOnly": true,
+          "configuredSidecar": null,
+          "requestAssignment": "unknown",
+          "allocationOwner": "unknown"
+        }
+      ],
+      "factsStable": true,
+      "facts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": true,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": false,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "metricDefinitions": {
+        "pssBytes": "smaps_rollup Pss kernel kB times 1024",
+        "heapAndNative": "V8/Node counters, overlapping with PSS; no additive native-residual estimate",
+        "pinnedState": "Reachable logical payloads under named roots; not total retained heap/native bytes",
+        "observerMs": "wall time for inspector counter read and proc descendant census"
+      },
+      "pssBytes": {
+        "min": 966093824,
+        "max": 968671232
+      },
+      "heapUsedBytes": {
+        "min": 499182408,
+        "max": 523930400
+      },
+      "externalBytes": {
+        "min": 83549669,
+        "max": 85891013
+      },
+      "arrayBufferBytes": {
+        "min": 963298,
+        "max": 3304642
+      },
+      "observerMs": {
+        "min": 104.1212200000009,
+        "max": 931.5505430000003
+      },
+      "pinnedRoots": {
+        "population": {
+          "min": 140,
+          "max": 140
+        },
+        "checked": {
+          "min": 140,
+          "max": 140
+        },
+        "limited": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true
+        ]
+      },
+      "descendantResidue": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "cleanup": {
+        "inspector": {
+          "closed": true
+        },
+        "processIdentityPreserved": true,
+        "counterIdentityPreserved": true
+      },
+      "operations": [],
+      "diskBundleStable": true,
+      "diskBundleSha256": "d15a7d16c755b6f1d4af5f191b254bbce944551452ce416854945049581aeccb"
+    },
+    {
+      "name": "descendant",
+      "raw": {
+        "path": "docs/evidence/papercusp-oct1-p011-live-role-descendant-r1-2026-10-02.json",
+        "bytes": 1109326,
+        "sha256": "fb55320f280c6d2859fd3ef4e18a64b5b5577ce1e1a68dd4ef3de5a539fe6f47"
+      },
+      "testRunId": 20542985,
+      "testCount": {
+        "passed": 11,
+        "failed": 0,
+        "skipped": 0
+      },
+      "buildSha": "599bb79e5a",
+      "mainPid": 3879274,
+      "counterPid": 4044991,
+      "startedAt": "2026-10-02T17:02:22.523Z",
+      "endedAt": "2026-10-02T17:02:50.239Z",
+      "windows": 3,
+      "requests": 24,
+      "concurrency": 2,
+      "observedRoles": [
+        {
+          "clusterRole": "primary",
+          "requestOnly": true,
+          "configuredSidecar": "spawner",
+          "requestAssignment": "unknown",
+          "allocationOwner": "unknown"
+        }
+      ],
+      "factsStable": true,
+      "facts": {
+        "cluster": {
+          "isPrimary": true,
+          "isWorker": false,
+          "workerId": null,
+          "primaryWorkerCount": 0
+        },
+        "backgroundWorkersOverride": "disabled",
+        "stagingPort": false,
+        "sidecarFlags": {
+          "substrate": false,
+          "spawner": true,
+          "gateway": false,
+          "embed": false,
+          "resourceHealth": false
+        }
+      },
+      "metricDefinitions": {
+        "pssBytes": "smaps_rollup Pss kernel kB times 1024",
+        "heapAndNative": "V8/Node counters, overlapping with PSS; no additive native-residual estimate",
+        "pinnedState": "Reachable logical payloads under named roots; not total retained heap/native bytes",
+        "observerMs": "wall time for inspector counter read and proc descendant census"
+      },
+      "pssBytes": {
+        "min": 700219392,
+        "max": 700475392
+      },
+      "heapUsedBytes": {
+        "min": 428825320,
+        "max": 431872328
+      },
+      "externalBytes": {
+        "min": 82845975,
+        "max": 82904842
+      },
+      "arrayBufferBytes": {
+        "min": 343804,
+        "max": 403678
+      },
+      "observerMs": {
+        "min": 91.92150499999843,
+        "max": 2730.7466849999996
+      },
+      "pinnedRoots": {
+        "population": {
+          "min": 136,
+          "max": 136
+        },
+        "checked": {
+          "min": 136,
+          "max": 136
+        },
+        "limited": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true
+        ]
+      },
+      "descendantResidue": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "cleanup": {
+        "inspector": {
+          "closed": true
+        },
+        "processIdentityPreserved": true,
+        "counterIdentityPreserved": true
+      },
+      "operations": [],
+      "diskBundleStable": true,
+      "diskBundleSha256": "d15a7d16c755b6f1d4af5f191b254bbce944551452ce416854945049581aeccb"
+    }
+  ],
+  "sources": [
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "sha256": "f835cd28f30bad3d4612757afb25f1310930ebb02dbb9f8ef00fe9e1bd38ec9e",
+      "measurement": "after both cohorts; full import graph unmeasured"
+    },
+    {
+      "path": "scripts/cdp-inspector.d.mts",
+      "sha256": "fbda6d43b8777d198a08e0b27145e67f0b861ba029c4faa6ee91ef0750596c72",
+      "measurement": "after both cohorts; full import graph unmeasured"
+    },
+    {
+      "path": "packages/operator-core/lib/cdp-inspector.test.ts",
+      "sha256": "dba4817d0a245e2e8b5ea313f39c4d7906879e9b1b8803f0b7325dc59057b401",
+      "measurement": "after both cohorts; full import graph unmeasured"
+    },
+    {
+      "path": "packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+      "sha256": "6398051b1278dc38378274a0e2b30a2ec2af721ddbabbe711ff7abe2a263d7a9",
+      "measurement": "after both cohorts; full import graph unmeasured"
+    },
+    {
+      "path": "packages/operator-core/lib/background-workers.ts",
+      "sha256": "2c4c31597075252183391b9a4b68ffb7bb2bde033448bc337c5ee5d59d2e1008",
+      "measurement": "after both cohorts; full import graph unmeasured"
+    },
+    {
+      "path": "apps/operator/bin/hono-host.ts",
+      "sha256": "d0bd77254d9b0ec9216a4cd2d52d911f78fa8a7751ce90a2a734b3717d9b56bd",
+      "measurement": "after both cohorts; full import graph unmeasured"
+    }
+  ],
+  "guard": {
+    "testRunId": 20542900,
+    "file": "packages/operator-core/lib/cdp-inspector.test.ts",
+    "passed": 13,
+    "failed": 0,
+    "skipped": 0,
+    "localDirty": true
+  },
+  "typecheck": {
+    "taskId": "0mur7mcbrzwgoacphge",
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/cdp-inspector.test.ts,packages/operator-core/lib/service-memory-live-baseline.integration.test.ts",
+    "exit": 0
+  },
+  "provenance": {
+    "testLedgerWorktreeDirty": true,
+    "descendantPostRunNamedPathClean": true,
+    "fullSourceGraph": "unknown",
+    "codeCountersPhysicalOwnership": "unknown"
+  },
+  "limitations": [
+    "Sequential cohorts on one observed build; uncontrolled ambient workload prevents causal or atomic cross-process comparison.",
+    "PID/startTicks/executable and selected descendant ancestry checked in each resource sample; roles are cluster state plus normalized configuration.",
+    "Configured spawner diversion follows hono-host source priority; no actual HTTP request assignment or retainer/allocation ownership established.",
+    "Pinned payload traversal is limited in every sample and is not retained bytes or a complete per-root value census.",
+    "Serial descendant PSS is not a service/cgroup/native total; observed utility subprocesses include concurrent platform work.",
+    "No production memory reduction, historical compiler recovery, independent acceptance or shipped-status claim."
+  ],
+  "next": "Inspect spawner configured-sidecar boot and largest pinned roots under its exact PID; preserve logical/physical ownership distinction. Parent P011 remains open."
+}

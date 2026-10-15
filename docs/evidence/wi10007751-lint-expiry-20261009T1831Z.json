@@ -1,0 +1,145 @@
+{
+  "workItem": "WI-10007751",
+  "at": "2026-10-09T18:32:23.020Z",
+  "mechanism": "scripts/lint-as-committed.mjs sweepStaleWorkRoots",
+  "preview": {
+    "removed": [
+      {
+        "name": "papercusp-lint-as-committed-2286e44283-ywFRvU",
+        "reason": "keep-expired"
+      },
+      {
+        "name": "papercusp-lint-as-committed-576c0a1980-M3CbQG",
+        "reason": "keep-expired"
+      }
+    ],
+    "kept": [
+      {
+        "name": "papercusp-lint-as-committed-1a2b71f9de-YVPQsa",
+        "reason": "dependent-artifact"
+      },
+      {
+        "name": "papercusp-lint-as-committed-3b34a9e160-rLxuL0",
+        "reason": "dependent-artifact"
+      },
+      {
+        "name": "papercusp-lint-as-committed-7055a080d9-zW5l4Y",
+        "reason": "dependent-artifact"
+      },
+      {
+        "name": "papercusp-lint-as-committed-723d78419d-XeLJcX",
+        "reason": "dependent-artifact"
+      },
+      {
+        "name": "papercusp-lint-as-committed-b7937697dc-AapKpQ",
+        "reason": "keep-young"
+      }
+    ]
+  },
+  "processCensus": {
+    "complete": true,
+    "holders": []
+  },
+  "freshCensus": {
+    "complete": true,
+    "holders": []
+  },
+  "source": [
+    {
+      "path": "/tmp/papercusp-lint-as-committed-2286e44283-ywFRvU",
+      "dev": 66304,
+      "ino": 4981046521,
+      "marker": {
+        "pid": 645913,
+        "keep": true,
+        "createdAtMs": 1791545947264,
+        "sha": "2286e44283c930339cdf480366012e9a2e00ab85"
+      },
+      "allocatedBytes": 2071576576
+    },
+    {
+      "path": "/tmp/papercusp-lint-as-committed-576c0a1980-M3CbQG",
+      "dev": 66304,
+      "ino": 2738230500,
+      "marker": {
+        "pid": 3185135,
+        "keep": true,
+        "createdAtMs": 1791543516396,
+        "sha": "576c0a1980e7878212e17f962ddd815f0573ffc0"
+      },
+      "allocatedBytes": 2071613440
+    }
+  ],
+  "before": [
+    {
+      "path": "/",
+      "availableBytes": 22863851520
+    },
+    {
+      "path": "/tmp",
+      "availableBytes": 32690176
+    },
+    {
+      "path": "/mnt/data",
+      "availableBytes": 32690176
+    }
+  ],
+  "after": [
+    {
+      "path": "/",
+      "availableBytes": 22844289024
+    },
+    {
+      "path": "/tmp",
+      "availableBytes": 4192092160
+    },
+    {
+      "path": "/mnt/data",
+      "availableBytes": 4192092160
+    }
+  ],
+  "result": {
+    "removed": [
+      {
+        "name": "papercusp-lint-as-committed-2286e44283-ywFRvU",
+        "reason": "keep-expired"
+      },
+      {
+        "name": "papercusp-lint-as-committed-576c0a1980-M3CbQG",
+        "reason": "keep-expired"
+      }
+    ],
+    "kept": [
+      {
+        "name": "papercusp-lint-as-committed-1a2b71f9de-YVPQsa",
+        "reason": "dependent-artifact"
+      },
+      {
+        "name": "papercusp-lint-as-committed-3b34a9e160-rLxuL0",
+        "reason": "dependent-artifact"
+      },
+      {
+        "name": "papercusp-lint-as-committed-7055a080d9-zW5l4Y",
+        "reason": "dependent-artifact"
+      },
+      {
+        "name": "papercusp-lint-as-committed-723d78419d-XeLJcX",
+        "reason": "dependent-artifact"
+      },
+      {
+        "name": "papercusp-lint-as-committed-b7937697dc-AapKpQ",
+        "reason": "keep-young"
+      }
+    ]
+  },
+  "readback": [
+    {
+      "path": "/tmp/papercusp-lint-as-committed-2286e44283-ywFRvU",
+      "exists": false
+    },
+    {
+      "path": "/tmp/papercusp-lint-as-committed-576c0a1980-M3CbQG",
+      "exists": false
+    }
+  ]
+}

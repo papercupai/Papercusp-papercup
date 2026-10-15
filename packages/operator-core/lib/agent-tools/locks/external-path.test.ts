@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -77,5 +77,51 @@ describe('resolveExternalPathLockIdentity', () => {
       home: '/home/jdoe',
       runtimeDir: null,
     })).toEqual({ path: '@external/home/.config/mimeapps.list' });
+  });
+
+  it('coordinates a physical offloaded file with its proven HOME alias, including a new lock-file leaf', () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'lock-offloaded-home-')));
+    cleanup.push(fixture);
+    const home = join(fixture, 'home', 'person');
+    const physicalHome = join(fixture, 'offload', home.slice(1));
+    const physicalBank = join(physicalHome, '.papercusp', 'bank');
+    mkdirSync(physicalBank, { recursive: true });
+    mkdirSync(join(home, '.papercusp'), { recursive: true });
+    symlinkSync(physicalBank, join(home, '.papercusp', 'bank'));
+    writeFileSync(join(physicalBank, 'cache.txt'), 'controlled cache');
+    for (const leaf of ['cache.txt', 'sidecar.build.lock']) {
+      const physical = join(physicalBank, leaf);
+      const alias = join(home, '.papercusp', 'bank', leaf);
+      const expected = { path: `@external/home/.papercusp/bank/${leaf}` };
+      expect(resolveExternalPathLockIdentity(physical, { home, runtimeDir: null })).toEqual(expected);
+      expect(resolveExternalPathLockIdentity(alias, { home, runtimeDir: null })).toEqual(expected);
+    }
+  });
+
+  it('refuses a mirrored layout when the HOME alias is missing or resolves to different bytes', () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'lock-offload-refusal-')));
+    cleanup.push(fixture);
+    const home = join(fixture, 'home', 'person');
+    const physical = join(fixture, 'offload', home.slice(1), '.cache', 'bank', 'cache.txt');
+    mkdirSync(dirname(physical), { recursive: true });
+    writeFileSync(physical, 'physical data');
+    expect(() => resolveExternalPathLockIdentity(physical, { home, runtimeDir: null })).toThrow(/below/);
+    const other = join(fixture, 'other-bank');
+    mkdirSync(other);
+    writeFileSync(join(other, 'cache.txt'), 'different data');
+    mkdirSync(join(home, '.cache'), { recursive: true });
+    symlinkSync(other, join(home, '.cache', 'bank'));
+    expect(() => resolveExternalPathLockIdentity(physical, { home, runtimeDir: null })).toThrow(/below/);
+  });
+
+  it('does not accept another user’s mirrored HOME tree or an unrelated external directory', () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'lock-offload-other-home-')));
+    cleanup.push(fixture);
+    const home = join(fixture, 'home', 'person');
+    const other = join(fixture, 'offload', fixture.slice(1), 'home', 'peer', 'cache.txt');
+    mkdirSync(dirname(other), { recursive: true });
+    writeFileSync(other, 'peer data');
+    expect(() => resolveExternalPathLockIdentity(other, { home, runtimeDir: null })).toThrow(/below/);
+    expect(() => resolveExternalPathLockIdentity(join(fixture, 'unrelated', 'cache.txt'), { home, runtimeDir: null })).toThrow(/below/);
   });
 });

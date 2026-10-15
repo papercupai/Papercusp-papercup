@@ -25,7 +25,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { PgPresenceStore, ensureCoordPresenceTable } from '@papercusp/coordination/presence';
 
 let sql: postgres.Sql;
@@ -36,6 +36,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -43,6 +44,15 @@ beforeAll(async () => {
   u.pathname = `/${dbName}`;
   sql = postgres(u.toString(), { max: 8, onnotice: () => {} });
   await ensureCoordPresenceTable(sql);
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY,
+      coord_owner_id text,
+      session_id text,
+      agent text,
+      started_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
 }, 120_000);
 
 afterAll(async () => {
@@ -57,6 +67,15 @@ const identity = (ownerId: string) => ({
   workspaceId: 'default',
 });
 const owner = () => `own_${randomBytes(4).toString('hex')}`;
+async function addSession(ownerId: string): Promise<{ nativeSessionId: string; advSessionId: number }> {
+  const nativeSessionId = `native_${randomBytes(4).toString('hex')}`;
+  const [row] = await sql<{ id: number | string }[]>`
+    INSERT INTO harness_shared.adv_sessions (coord_owner_id, session_id, agent)
+    VALUES (${ownerId}, ${nativeSessionId}, 'claude')
+    RETURNING id
+  `;
+  return { nativeSessionId, advSessionId: Number(row.id) };
+}
 
 /** Read the column back through the store's own getter (not raw SQL). */
 async function filesOf(ownerId: string): Promise<string[] | undefined> {
@@ -112,5 +131,55 @@ describe('coord_presence.current_files omission semantics (EI-18776963284535761)
     const [row] = await sql<{ current_files: unknown }[]>`
       SELECT current_files FROM harness_shared.coord_presence WHERE owner_id = ${o}`;
     expect(row?.current_files).not.toBeNull();
+  });
+});
+
+describe('supervisor liveness across declarations (EI-25888806017497809)', () => {
+  it('preserves a supervisor heartbeat when the next declaration omits liveness', async () => {
+    const o = owner();
+    const presence = store();
+    await presence.write(identity(o), { intent: 'registered' });
+    await presence.touchHeartbeat(o, { host: 'supervisor-box', pid: 4242, tty: '/dev/pts/42' });
+    await presence.setContextEstimate(o, 1234, await addSession(o));
+
+    await presence.write(identity(o), { intent: 'implementing the assigned lane' });
+
+    expect(await presence.get(o)).toMatchObject({
+      intent: 'implementing the assigned lane',
+      host: 'supervisor-box', pid: 4242, tty: '/dev/pts/42', contextTokens: 1234,
+    });
+  });
+
+  it('keeps first registration unknown and permits an explicit liveness clear', async () => {
+    const o = owner();
+    const presence = store();
+    await presence.write(identity(o), { intent: 'registered' });
+    expect(await presence.get(o)).toMatchObject({ host: '', pid: null, tty: null });
+    await presence.touchHeartbeat(o, { host: 'supervisor-box', pid: 4242, tty: '/dev/pts/42' });
+    await presence.write(identity(o), { host: '', pid: null, tty: null });
+    expect(await presence.get(o)).toMatchObject({ host: '', pid: null, tty: null });
+  });
+
+  it('accepts a new process binding and invalidates the previous context estimate', async () => {
+    const o = owner();
+    const presence = store();
+    await presence.write(identity(o), { host: 'old-box', pid: 4242, tty: '/dev/pts/42' });
+    await presence.setContextEstimate(o, 1234, await addSession(o));
+    await presence.write(identity(o), { host: 'new-box', pid: 5555, tty: '/dev/pts/55' });
+    expect(await presence.get(o)).toMatchObject({
+      host: 'new-box', pid: 5555, tty: '/dev/pts/55',
+      contextTokens: null, contextEstimatedAt: null,
+    });
+  });
+
+  it('does not restore retired liveness when the owner registers again', async () => {
+    const o = owner();
+    const presence = store();
+    await presence.write(identity(o), { host: 'old-box', pid: 4242, tty: '/dev/pts/42' });
+    await presence.clear(o);
+    await presence.write(identity(o), { intent: 'new native continuation' });
+    expect(await presence.get(o)).toMatchObject({ host: '', pid: null, tty: null });
+    await presence.touchHeartbeat(o, { host: 'new-box', pid: 5555 });
+    expect(await presence.get(o)).toMatchObject({ host: 'new-box', pid: 5555, tty: null });
   });
 });

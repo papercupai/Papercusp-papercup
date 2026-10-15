@@ -202,6 +202,24 @@ To invoke the tests directly, export `PUI_LIVE_AUDIO=1` yourself and set
 `PUI_VOICE_INPUT` / `PUI_VOICE_OUTPUT` to the cpal device-name substrings you
 intend to exercise.
 
+**Synthetic speech round trip** (`smoke_speech_roundtrip_via_operator`,
+voice-final-public-release-2026-10-01 D-006). When Kokoro (`KOKORO_URL`, default
+`:8880`) renders speech, the wrapper also runs this smoke. It plays a Kokoro
+pangram WAV into the null-sink as the "microphone", records it through the PUI
+capture, and transcribes it with the operator STT proxy. It then speaks a reply
+through the operator TTS proxy, plays it back through the PUI player, records it
+again and transcribes it. The operator is `PUI_OPERATOR` (default `staging`, i.e.
+`:3170`). Those proxy routes write no conversation turn, so a shared operator is
+safe. Release acceptance runs it as:
+
+```bash
+PUI_OPERATOR=staging PAPERCUSP_REQUIRE_LIVE_VOICE=1 scripts/audio-loopback-smoke.sh
+```
+
+With `PAPERCUSP_REQUIRE_LIVE_VOICE=1` an unreachable Kokoro, operator or audio
+device fails the run instead of passing by skipping. It does not replace the
+owner's real-microphone session; it lets agents re-check the pipeline without one.
+
 This is the device-level complement to the deterministic, no-hardware **synthetic-voice**
 bus E2Es at `packages/operator-core/lib/voice-node/operator-voice-{multiclient,synthetic-audio}.test.ts`
 (synthetic voice through the real socket + `OperatorVoiceSession`, fake EL). It needs

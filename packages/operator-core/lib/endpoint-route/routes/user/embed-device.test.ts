@@ -151,6 +151,16 @@ describe('/api/user/embed-device', () => {
     expect(body.applied.sidecar.error).toContain('ECONNREFUSED');
   });
 
+  it('P-530: an on-demand sidecar that is not running is neither probed nor reloaded — and is not an error', async () => {
+    const { get, post, deps } = makeDeps({ resolveHost: () => ({ kind: 'sidecar-idle' }) });
+    const body = await (await get.handler(getReq())).json();
+    expect(body).toMatchObject({ host: { kind: 'sidecar-idle' }, health: null, healthError: null, reloadSupported: null });
+    const applied = await (await post.handler(postReq({ preference: 'gpu' }))).json();
+    expect(applied.applied.sidecar).toBeNull();
+    expect(deps.probeSidecar).not.toHaveBeenCalled();
+    expect(deps.reloadSidecar).not.toHaveBeenCalled();
+  });
+
   it('POST with no sidecar applies to this process only', async () => {
     const { post, deps } = makeDeps({ resolveHost: () => ({ kind: 'in-process' }) });
     const body = await (await post.handler(postReq({ preference: 'cpu' }))).json();

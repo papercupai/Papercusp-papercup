@@ -6,11 +6,13 @@
  * Scope-aware: search within { title, now, items, decisions, prose }
  * subsets. Defaults to all.
  *
- * Implementation note: this is a small-corpus search (~50 plans).
- * A real BM25 is overkill — we use TF-style scoring with case-
- * insensitive token matching and a position-weighted boost for
- * title/now hits. If/when corpus size or query complexity grows,
- * lift this to a proper index.
+ * Implementation note: this tool scores with TF-style, case-insensitive
+ * token matching and a position-weighted boost for title/now hits, in JS,
+ * because it returns scope-attributed `matches[]` (see the D-025 note below).
+ * `harness_plans` does have a BM25 index (`harness_plans_bm25`, plan
+ * bm25-lexical-search-evoke-adoption-2026-10-10); the plan source behind
+ * search:semantic / search:fulltext ranks with it (agent-tools/search/
+ * knowledge-sources.ts), this tool does not.
  *
  * WI-5683: the lexical TF ranking above is fused with the migration-553
  * plan-embedding semantic ranking by Reciprocal Rank Fusion before the top-N

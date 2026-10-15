@@ -147,6 +147,16 @@ describe('isDesktopOnlyDelta — D-003 desktop-only deploy skip', () => {
 });
 
 describe('executeDeploy — happy path', () => {
+  it('retains the complete shipped artifact SHA in the successful native receipt', async () => {
+    const events: Array<{ status: string; detail: Record<string, unknown> }> = [];
+    const targetSha = 'abcdef1234567890abcdef1234567890abcdef1234';
+    const { deps } = makeDeps({ recordEvent: async (event) => { events.push(event); } });
+    expect((await executeDeploy(cfg, { ...plan, targetSha }, deps)).ok).toBe(true);
+    expect(events).toEqual([{ status: 'ok', detail: {
+      targetSha: targetSha.slice(0, 12), fullTargetSha: targetSha, commits: 2, migrations: 1,
+    } }]);
+  });
+
   it('runs steps in order inside the drain, broadcasts success', async () => {
     const { deps, calls } = makeDeps();
     const res = await executeDeploy(cfg, plan, deps);

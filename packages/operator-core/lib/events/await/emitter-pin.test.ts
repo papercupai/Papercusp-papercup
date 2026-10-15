@@ -124,6 +124,23 @@ describe('fixture controls (the detector must be able to FAIL)', () => {
     expect(v.violations.join('\n')).toMatch(/only in PROSE/);
   });
 
+  it('a buildKey(family) emit is static code — the exemption doc\'s prescribed fix needs no exemption', () => {
+    // The live drift (2026-10-13): pickup-sweep.ts built wake:not-picked-up via buildKey and
+    // mentioned the head only in comments, so a head-only matcher read it as prose-only.
+    const built = "// fires p:fired per tick\nemit({ key: buildKey('p', { id }) });";
+    expect(judge([entry({ family: 'p', keyTemplate: 'p:fired' })], { 'packages/x/emit.ts': built }).ok).toBe(true);
+    // Exact family match only: a buildKey for a prefix-sharing sibling does not attribute p.
+    const sibling = "// fires p:fired per tick\nemit({ key: buildKey('p-other', { id }) });";
+    const v = judge([entry({ family: 'p', keyTemplate: 'p:fired' })], { 'packages/x/emit.ts': sibling });
+    expect(v.undeclaredDynamic).toHaveLength(1);
+    // A buildKey call inside a comment is prose, not an emit.
+    const commented = "// emit({ key: buildKey('p', { id }) }) fires p:fired\nemit(other());";
+    expect(judge([entry({ family: 'p', keyTemplate: 'p:fired' })], { 'packages/x/emit.ts': commented }).undeclaredDynamic).toHaveLength(1);
+    // And a buildKey emit spends a dynamic exemption exactly like a literal head does.
+    const spent = judge([entry({ family: 'p', keyTemplate: 'p:fired' })], { 'packages/x/emit.ts': built }, { dynamic: { p: 'was built at runtime' } });
+    expect(spent.staleDynamic).toHaveLength(1);
+  });
+
   it('catches a SPENT dynamic exemption — the key became static code', () => {
     const v = judge(
       [entry({ family: 'p', keyTemplate: 'p:fired' })],
